@@ -1,0 +1,45 @@
+'use client';
+
+import { useEffect, useState, type ReactNode } from 'react';
+import { NextIntlClientProvider } from 'next-intl';
+import { useSettingStore, type Locale } from '@/stores/setting';
+
+import zh_hansMessages from '../../public/locale/zh_hans.json';
+import zh_hantMessages from '../../public/locale/zh_hant.json';
+import enMessages from '../../public/locale/en.json';
+
+const messages: Record<Locale, typeof zh_hansMessages> = {
+    zh_hans: zh_hansMessages,
+    zh_hant: zh_hantMessages,
+    en: enMessages,
+};
+
+const intlLocales: Record<Locale, string> = {
+    zh_hans: 'zh-Hans',
+    zh_hant: 'zh-Hant',
+    en: 'en',
+};
+
+export function LocaleProvider({ children }: { children: ReactNode }) {
+    const { locale } = useSettingStore();
+    const [currentLocale, setCurrentLocale] = useState<Locale>('zh_hans');
+    const [timeZone, setTimeZone] = useState('UTC');
+
+    useEffect(() => {
+        setCurrentLocale(locale);
+    }, [locale]);
+
+    useEffect(() => {
+        setTimeZone(Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
+    }, []);
+
+    return (
+        <NextIntlClientProvider
+            locale={intlLocales[currentLocale]}
+            messages={messages[currentLocale]}
+            timeZone={timeZone}
+        >
+            {children}
+        </NextIntlClientProvider>
+    );
+}

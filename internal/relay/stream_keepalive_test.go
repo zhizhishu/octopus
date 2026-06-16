@@ -1,0 +1,1042 @@
+package relay
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	dbmodel "github.com/bestruirui/octopus/internal/model"
+	"github.com/bestruirui/octopus/internal/op"
+	"github.com/bestruirui/octopus/internal/transformer/inbound"
+	"github.com/bestruirui/octopus/internal/transformer/outbound"
+	"github.com/gin-gonic/gin"
+)
+
+func TestAnthropicStreamForwardsPingKeepalive(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayErrorDB(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			t.Errorf("unexpected upstream path: %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`event: message_start
+data: {"type":"message_start","message":{"id":"msg_keepalive","type":"message","role":"assistant","model":"claude-upstream","content":[],"usage":{"input_tokens":3,"output_tokens":0}}}
+
+event: ping
+data: {"type":"ping"}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	channel := dbmodel.Channel{
+		Name:    "anthropic-ping-upstream",
+		Type:    outbound.OutboundTypeAnthropic,
+		Enabled: true,
+		BaseUrls: []dbmodel.BaseUrl{{
+			URL: upstream.URL,
+		}},
+		Keys: []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "anthropic-key"}},
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	group := dbmodel.Group{Name: "claude-request", Mode: dbmodel.GroupModeFailover}
+	if err := op.GroupCreate(&group, ctx); err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	if err := op.GroupItemAdd(&dbmodel.GroupItem{
+		GroupID:   group.ID,
+		ChannelID: channel.ID,
+		ModelName: "claude-upstream",
+		Priority:  1,
+		Weight:    1,
+	}, ctx); err != nil {
+		t.Fatalf("create group item: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{
+		"model":"claude-request",
+		"max_tokens":16,
+		"stream":true,
+		"messages":[{"role":"user","content":"ping"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+	c.Set("api_key_id", 0)
+	c.Set("user_id", 0)
+	c.Set("request_ip", "127.0.0.1")
+
+	Handler(inbound.InboundTypeAnthropic, c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected anthropic stream to succeed, got %d body %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "event: ping") || !strings.Contains(body, `"type":"ping"`) {
+		t.Fatalf("expected downstream anthropic ping keepalive, got %s", body)
+	}
+	if !strings.Contains(body, "event:message_stop") && !strings.Contains(body, "event: message_stop") {
+		t.Fatalf("expected downstream message_stop, got %s", body)
+	}
+}
+
+func TestAnthropicStreamReturnsAfterMessageStopEvenWhenUpstreamKeepsPinging(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayErrorDB(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		_, _ = w.Write([]byte(`event: message_start
+data: {"type":"message_start","message":{"id":"msg_terminal_ping","type":"message","role":"assistant","model":"claude-upstream","content":[],"usage":{"input_tokens":3,"output_tokens":0}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"OK"}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`))
+		if flusher != nil {
+			flusher.Flush()
+		}
+		ticker := time.NewTicker(20 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-ticker.C:
+				_, _ = w.Write([]byte("event: ping\ndata: {\"type\":\"ping\"}\n\n"))
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	channel := dbmodel.Channel{
+		Name:    "anthropic-terminal-ping-upstream",
+		Type:    outbound.OutboundTypeAnthropic,
+		Enabled: true,
+		BaseUrls: []dbmodel.BaseUrl{{
+			URL: upstream.URL,
+		}},
+		Keys: []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "anthropic-key"}},
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	group := dbmodel.Group{Name: "claude-terminal-ping-request", Mode: dbmodel.GroupModeFailover}
+	if err := op.GroupCreate(&group, ctx); err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	if err := op.GroupItemAdd(&dbmodel.GroupItem{
+		GroupID:   group.ID,
+		ChannelID: channel.ID,
+		ModelName: "claude-upstream",
+		Priority:  1,
+		Weight:    1,
+	}, ctx); err != nil {
+		t.Fatalf("create group item: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	reqCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{
+		"model":"claude-terminal-ping-request",
+		"max_tokens":16,
+		"stream":true,
+		"messages":[{"role":"user","content":"ping"}]
+	}`)).WithContext(reqCtx)
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+	c.Set("api_key_id", 0)
+	c.Set("user_id", 0)
+	c.Set("request_ip", "127.0.0.1")
+
+	started := time.Now()
+	Handler(inbound.InboundTypeAnthropic, c)
+	elapsed := time.Since(started)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected anthropic stream to succeed, got %d body %s", rec.Code, rec.Body.String())
+	}
+	if elapsed > 1500*time.Millisecond {
+		t.Fatalf("message_stop should end relay without waiting for post-stop pings, elapsed=%s body=%s", elapsed, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{`"text":"OK"`, "event:message_stop"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected body to contain %q, got %s", want, body)
+		}
+	}
+}
+
+func TestAnthropicStreamFallsBackToNonStreamUpstream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayErrorDB(t)
+
+	calls := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			t.Errorf("unexpected upstream path: %q", r.URL.Path)
+		}
+		calls++
+		var payload struct {
+			Stream *bool `json:"stream"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		if calls == 1 {
+			if payload.Stream == nil || !*payload.Stream {
+				t.Fatalf("first upstream request should be stream")
+			}
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		if payload.Stream != nil && *payload.Stream {
+			t.Fatalf("fallback upstream request should be non-stream")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"msg_fallback",
+			"type":"message",
+			"role":"assistant",
+			"model":"claude-upstream",
+			"content":[{"type":"text","text":"OK"}],
+			"stop_reason":"end_turn",
+			"usage":{"input_tokens":3,"output_tokens":1}
+		}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	channel := dbmodel.Channel{
+		Name:    "anthropic-stream-fallback-upstream",
+		Type:    outbound.OutboundTypeAnthropic,
+		Enabled: true,
+		BaseUrls: []dbmodel.BaseUrl{{
+			URL: upstream.URL,
+		}},
+		Keys: []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "anthropic-key"}},
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	group := dbmodel.Group{Name: "claude-fallback-request", Mode: dbmodel.GroupModeFailover}
+	if err := op.GroupCreate(&group, ctx); err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	if err := op.GroupItemAdd(&dbmodel.GroupItem{
+		GroupID:   group.ID,
+		ChannelID: channel.ID,
+		ModelName: "claude-upstream",
+		Priority:  1,
+		Weight:    1,
+	}, ctx); err != nil {
+		t.Fatalf("create group item: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{
+		"model":"claude-fallback-request",
+		"max_tokens":16,
+		"stream":true,
+		"messages":[{"role":"user","content":"ping"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+	c.Set("api_key_id", 0)
+	c.Set("user_id", 0)
+	c.Set("request_ip", "127.0.0.1")
+
+	Handler(inbound.InboundTypeAnthropic, c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected fallback stream to succeed, got %d body %s", rec.Code, rec.Body.String())
+	}
+	if calls != 2 {
+		t.Fatalf("expected stream request plus non-stream fallback, got %d calls", calls)
+	}
+	if rec.Header().Get("X-Octopus-Stream-Fallback") != "non-stream-upstream" {
+		t.Fatalf("expected fallback header, got %q", rec.Header().Get("X-Octopus-Stream-Fallback"))
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"message_start", `"text":"OK"`, "message_stop"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected fallback SSE body to contain %q, got %s", want, body)
+		}
+	}
+}
+
+func TestAnthropicStreamErrorEventFails(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayErrorDB(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`event: error
+data: {"type":"error","error":{"type":"overloaded_error","message":"busy"}}
+
+`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	channel := dbmodel.Channel{
+		Name:    "Claude-Error-Stream",
+		Type:    outbound.OutboundTypeAnthropic,
+		Enabled: true,
+		BaseUrls: []dbmodel.BaseUrl{{
+			URL: upstream.URL,
+		}},
+		Keys: []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "anthropic-key"}},
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	group := dbmodel.Group{Name: "claude-error", Mode: dbmodel.GroupModeFailover}
+	if err := op.GroupCreate(&group, ctx); err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	if err := op.GroupItemAdd(&dbmodel.GroupItem{
+		GroupID:   group.ID,
+		ChannelID: channel.ID,
+		ModelName: "claude-opus-4-8",
+		Priority:  1,
+		Weight:    1,
+	}, ctx); err != nil {
+		t.Fatalf("create group item: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{
+		"model":"claude-error",
+		"max_tokens":128,
+		"stream":true,
+		"messages":[{"role":"user","content":"ping"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+	c.Set("api_key_id", 0)
+	c.Set("user_id", 0)
+	c.Set("request_ip", "127.0.0.1")
+
+	Handler(inbound.InboundTypeAnthropic, c)
+
+	if rec.Code == http.StatusOK {
+		t.Fatalf("expected Anthropic error event to fail, got %d body %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAnthropicStreamErrorEventAfterContentFails(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayErrorDB(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`event: message_start
+data: {"type":"message_start","message":{"id":"msg_error_after_content","type":"message","role":"assistant","model":"claude-opus-4-8","content":[],"usage":{"input_tokens":3,"output_tokens":0}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}
+
+event: error
+data: {"type":"error","error":{"type":"overloaded_error","message":"busy after partial"}}
+
+`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	channel := dbmodel.Channel{
+		Name:    "Claude-Error-After-Content",
+		Type:    outbound.OutboundTypeAnthropic,
+		Enabled: true,
+		BaseUrls: []dbmodel.BaseUrl{{
+			URL: upstream.URL,
+		}},
+		Keys: []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "anthropic-key"}},
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	group := dbmodel.Group{Name: "claude-error-after-content", Mode: dbmodel.GroupModeFailover}
+	if err := op.GroupCreate(&group, ctx); err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	if err := op.GroupItemAdd(&dbmodel.GroupItem{
+		GroupID:   group.ID,
+		ChannelID: channel.ID,
+		ModelName: "claude-opus-4-8",
+		Priority:  1,
+		Weight:    1,
+	}, ctx); err != nil {
+		t.Fatalf("create group item: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{
+		"model":"claude-error-after-content",
+		"max_tokens":128,
+		"stream":true,
+		"messages":[{"role":"user","content":"ping"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+	c.Set("api_key_id", 0)
+	c.Set("user_id", 0)
+	c.Set("request_ip", "127.0.0.1")
+
+	Handler(inbound.InboundTypeAnthropic, c)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "partial") {
+		t.Fatalf("expected partial content before error, got %s", body)
+	}
+	if strings.Contains(body, "message_stop") {
+		t.Fatalf("stream error after content must not synthesize success stop, got %s", body)
+	}
+	if !strings.Contains(body, "event: error") || !strings.Contains(body, "upstream stream failed before terminal event") {
+		t.Fatalf("stream error after content should send explicit Anthropic error event, got %s", body)
+	}
+	logs, err := op.RelayLogList(ctx, nil, nil, 1, 10, nil)
+	if err != nil {
+		t.Fatalf("list relay logs: %v", err)
+	}
+	if len(logs) == 0 || logs[0].ErrorStatus == 0 {
+		t.Fatalf("expected failed relay log after stream error, logs=%#v", logs)
+	}
+}
+
+func TestAnthropicCPAOneMillionStreamPrefersStreamUpstream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayErrorDB(t)
+
+	calls := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			t.Errorf("unexpected upstream path: %q", r.URL.Path)
+		}
+		calls++
+		var payload struct {
+			Stream *bool `json:"stream"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		if payload.Stream == nil || !*payload.Stream {
+			t.Fatalf("CPA [1m] should try real stream upstream first")
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`event: message_start
+data: {"type":"message_start","message":{"id":"msg_cpa_1m","type":"message","role":"assistant","model":"claude-opus-4-7","content":[],"usage":{"input_tokens":3,"output_tokens":0}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"OK"}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	channel := dbmodel.Channel{
+		Name:    "Claude-CPA",
+		Type:    outbound.OutboundTypeAnthropic,
+		Enabled: true,
+		BaseUrls: []dbmodel.BaseUrl{{
+			URL: upstream.URL,
+		}},
+		Keys: []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "anthropic-key"}},
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	group := dbmodel.Group{Name: "claude-opus-4-7[1m]", Mode: dbmodel.GroupModeFailover}
+	if err := op.GroupCreate(&group, ctx); err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	if err := op.GroupItemAdd(&dbmodel.GroupItem{
+		GroupID:   group.ID,
+		ChannelID: channel.ID,
+		ModelName: "claude-opus-4-7[1m]",
+		Priority:  1,
+		Weight:    1,
+	}, ctx); err != nil {
+		t.Fatalf("create group item: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{
+		"model":"claude-opus-4-7[1m]",
+		"max_tokens":128000,
+		"stream":true,
+		"tools":[],
+		"messages":[{"role":"user","content":[{"type":"text","text":"ping"}]}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "claude-cli/2.1.126")
+	req.Header.Set("X-Stainless-Lang", "js")
+	req.Header.Set("X-Stainless-Timeout", "600")
+	c.Request = req
+	c.Set("api_key_id", 0)
+	c.Set("user_id", 0)
+	c.Set("request_ip", "127.0.0.1")
+
+	Handler(inbound.InboundTypeAnthropic, c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected CPA [1m] stream to succeed, got %d body %s", rec.Code, rec.Body.String())
+	}
+	if calls != 1 {
+		t.Fatalf("expected one stream upstream call, got %d", calls)
+	}
+	if got := rec.Header().Get("X-Octopus-Stream-Fallback"); got != "" {
+		t.Fatalf("did not expect fallback header, got %q", got)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, `"text":"OK"`) || strings.Contains(body, "Service Unavailable") {
+		t.Fatalf("unexpected stream body: %s", body)
+	}
+}
+
+func TestAnthropicOneMillionPlainClientGetsClaudeCompatibleStreamShape(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayErrorDB(t)
+	// adaptive thinking + clear_thinking context management are now opt-in.
+	if err := op.SettingSetString(dbmodel.SettingKeyClaudeCLIAutoCompact, "true"); err != nil {
+		t.Fatalf("set auto compact: %v", err)
+	}
+	if err := op.SettingSetString(dbmodel.SettingKeyClaudeCLIReasoningEffort, "high"); err != nil {
+		t.Fatalf("set reasoning effort: %v", err)
+	}
+
+	var sawPath string
+	var sawModel string
+	var sawStream bool
+	var sawBeta string
+	var sawAPIKey string
+	var sawAuthorization string
+	var sawUserAgent string
+	var sawClientRequestID string
+	var sawClaudeSessionID string
+	var sawTrace string
+	var sawStainlessTimeout string
+	var sawContextManagement string
+	var sawThinking string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawPath = r.URL.Path
+		sawBeta = r.Header.Get("Anthropic-Beta")
+		sawAPIKey = r.Header.Get("X-API-Key")
+		sawAuthorization = r.Header.Get("Authorization")
+		sawUserAgent = r.Header.Get("User-Agent")
+		sawClientRequestID = r.Header.Get("X-Client-Request-Id")
+		sawClaudeSessionID = r.Header.Get("X-Claude-Code-Session-Id")
+		sawTrace = r.Header.Get("AH-Trace-Id")
+		sawStainlessTimeout = r.Header.Get("X-Stainless-Timeout")
+		var payload struct {
+			Model  string `json:"model"`
+			Stream *bool  `json:"stream"`
+		}
+		var raw map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		if data, err := json.Marshal(raw["context_management"]); err == nil {
+			sawContextManagement = string(data)
+		}
+		if data, err := json.Marshal(raw["thinking"]); err == nil {
+			sawThinking = string(data)
+		}
+		rawData, _ := json.Marshal(raw)
+		if err := json.Unmarshal(rawData, &payload); err != nil {
+			t.Fatalf("decode upstream request shape: %v", err)
+		}
+		sawModel = payload.Model
+		sawStream = payload.Stream != nil && *payload.Stream
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`event: message_start
+data: {"type":"message_start","message":{"id":"msg_plain_1m","type":"message","role":"assistant","model":"claude-opus-4-8[1m]","content":[],"usage":{"input_tokens":3,"output_tokens":0}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"OK"}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	channel := dbmodel.Channel{
+		Name:    "AnyRouter Claude 1M",
+		Type:    outbound.OutboundTypeAnthropic,
+		Enabled: true,
+		BaseUrls: []dbmodel.BaseUrl{{
+			URL: upstream.URL,
+		}},
+		Keys: []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "anthropic-key"}},
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	group := dbmodel.Group{Name: "claude-opus-4-8[1m]", Mode: dbmodel.GroupModeFailover}
+	if err := op.GroupCreate(&group, ctx); err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	if err := op.GroupItemAdd(&dbmodel.GroupItem{
+		GroupID:   group.ID,
+		ChannelID: channel.ID,
+		ModelName: "claude-opus-4-8[1m]",
+		Priority:  1,
+		Weight:    1,
+	}, ctx); err != nil {
+		t.Fatalf("create group item: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{
+		"model":"claude-opus-4-8[1m]",
+		"max_tokens":128000,
+		"stream":true,
+		"messages":[{"role":"user","content":"ping"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "plain-http-client/1.0")
+	req.Header.Set("Authorization", "Bearer client-should-not-leak")
+	req.Header.Set("AH-Trace-Id", "trace-should-not-leak")
+	req.Header.Set("X-Stainless-Timeout", "1")
+	c.Request = req
+	c.Set("api_key_id", 0)
+	c.Set("user_id", 0)
+	c.Set("request_ip", "127.0.0.1")
+
+	Handler(inbound.InboundTypeAnthropic, c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected plain-client [1m] stream to succeed, got %d body %s", rec.Code, rec.Body.String())
+	}
+	if sawPath != "/v1/messages" || sawModel != "claude-opus-4-8" || !sawStream {
+		t.Fatalf("unexpected upstream shape: path=%q model=%q stream=%t", sawPath, sawModel, sawStream)
+	}
+	if !strings.Contains(sawBeta, defaultClaudeOneMillionBeta) {
+		t.Fatalf("expected 1m beta %q, got %q", defaultClaudeOneMillionBeta, sawBeta)
+	}
+	if sawAPIKey != "anthropic-key" || sawAuthorization != "Bearer anthropic-key" {
+		t.Fatalf("unexpected upstream auth headers: x-api-key=%q authorization=%q", sawAPIKey, sawAuthorization)
+	}
+	if sawClientRequestID == "" || sawClaudeSessionID == "" {
+		t.Fatalf("expected Claude-compatible identity headers, request_id=%q session=%q", sawClientRequestID, sawClaudeSessionID)
+	}
+	if !strings.Contains(sawThinking, `"adaptive"`) || !strings.Contains(sawContextManagement, "clear_thinking_20251015") {
+		t.Fatalf("expected Claude CLI-like 1M body shape, thinking=%s context=%s", sawThinking, sawContextManagement)
+	}
+	if sawUserAgent == "plain-http-client/1.0" || sawTrace != "" || sawStainlessTimeout == "1" {
+		t.Fatalf("client headers leaked upstream: ua=%q trace=%q stainless_timeout=%q", sawUserAgent, sawTrace, sawStainlessTimeout)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, `"text":"OK"`) {
+		t.Fatalf("unexpected downstream body: %s", body)
+	}
+}
+
+func TestAnthropicNativeClaudeOneMillionShapeIsNotSynthesized(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayErrorDB(t)
+
+	var sawModel string
+	var sawBeta string
+	var sawThinking string
+	var sawOutputConfig string
+	var sawContextManagement string
+	var sawToolsPresent bool
+	var sawToolsLen int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawBeta = r.Header.Get("Anthropic-Beta")
+		var raw map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		if modelName, _ := raw["model"].(string); modelName != "" {
+			sawModel = modelName
+		}
+		if data, err := json.Marshal(raw["thinking"]); err == nil {
+			sawThinking = string(data)
+		}
+		if data, err := json.Marshal(raw["output_config"]); err == nil {
+			sawOutputConfig = string(data)
+		}
+		if data, err := json.Marshal(raw["context_management"]); err == nil {
+			sawContextManagement = string(data)
+		}
+		if tools, ok := raw["tools"].([]any); ok {
+			sawToolsPresent = true
+			sawToolsLen = len(tools)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`event: message_start
+data: {"type":"message_start","message":{"id":"msg_native_1m","type":"message","role":"assistant","model":"claude-opus-4-8","content":[],"usage":{"input_tokens":3,"output_tokens":0}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"OK"}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	channel := dbmodel.Channel{
+		Name:               "AnyRouter Claude native 1M",
+		Type:               outbound.OutboundTypeAnthropic,
+		Enabled:            true,
+		AnthropicContext1M: true,
+		BaseUrls:           []dbmodel.BaseUrl{{URL: upstream.URL}},
+		Keys:               []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "anthropic-key"}},
+		SelectedModels:     []string{"claude-opus-4-8"},
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	group := dbmodel.Group{Name: "claude-opus-4-8", Mode: dbmodel.GroupModeFailover}
+	if err := op.GroupCreate(&group, ctx); err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	if err := op.GroupItemAdd(&dbmodel.GroupItem{
+		GroupID:   group.ID,
+		ChannelID: channel.ID,
+		ModelName: "claude-opus-4-8",
+		Priority:  1,
+		Weight:    1,
+	}, ctx); err != nil {
+		t.Fatalf("create group item: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{
+		"model":"claude-opus-4-8",
+		"max_tokens":64000,
+		"stream":true,
+		"metadata":{"user_id":"{\"device_id\":\"device\",\"account_uuid\":\"\",\"session_id\":\"session\"}"},
+		"system":[{"type":"text","text":"You are a Claude agent."}],
+		"thinking":{"type":"disabled"},
+		"output_config":{"effort":"high","format":{"type":"json_schema","schema":{"type":"object","properties":{"title":{"type":"string"}},"required":["title"],"additionalProperties":false}}},
+		"tools":[],
+		"messages":[{"role":"user","content":[{"type":"text","text":"<session>Reply with exactly OK.</session>"}]}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Anthropic-Beta", "claude-code-20250219,context-1m-2025-08-07,structured-outputs-2025-12-15")
+	req.Header.Set("Authorization", "Bearer client-should-not-leak")
+	c.Request = req
+	c.Set("api_key_id", 0)
+	c.Set("user_id", 0)
+	c.Set("request_ip", "127.0.0.1")
+
+	Handler(inbound.InboundTypeAnthropic, c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected native Claude [1m] stream to succeed, got %d body %s", rec.Code, rec.Body.String())
+	}
+	if sawModel != "claude-opus-4-8" {
+		t.Fatalf("unexpected upstream model %q", sawModel)
+	}
+	for _, want := range []string{defaultClaudeOneMillionBeta, "structured-outputs-2025-12-15"} {
+		if !strings.Contains(sawBeta, want) {
+			t.Fatalf("expected beta %q in %q", want, sawBeta)
+		}
+	}
+	if !strings.Contains(sawThinking, `"disabled"`) {
+		t.Fatalf("native thinking should stay disabled, got %s", sawThinking)
+	}
+	if !strings.Contains(sawOutputConfig, "json_schema") || !strings.Contains(sawOutputConfig, "additionalProperties") {
+		t.Fatalf("native output_config format was not preserved: %s", sawOutputConfig)
+	}
+	if sawContextManagement != "null" {
+		t.Fatalf("native title request should not synthesize context_management, got %s", sawContextManagement)
+	}
+	if !sawToolsPresent || sawToolsLen != 0 {
+		t.Fatalf("native empty tools array was not preserved, present=%t len=%d", sawToolsPresent, sawToolsLen)
+	}
+}
+
+func TestAnthropicOpusOneMillionShortcutRoutesToClaude48(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayErrorDB(t)
+
+	var sawModel, sawBeta string
+	var sawStream bool
+	var sawMetadata map[string]any
+	var sawSystem any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Model    string         `json:"model"`
+			Stream   bool           `json:"stream"`
+			Metadata map[string]any `json:"metadata"`
+			System   any            `json:"system"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode upstream body: %v", err)
+		}
+		sawModel = body.Model
+		sawStream = body.Stream
+		sawMetadata = body.Metadata
+		sawSystem = body.System
+		sawBeta = r.Header.Get("Anthropic-Beta")
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`event: message_start
+data: {"type":"message_start","message":{"id":"msg_alias","type":"message","role":"assistant","model":"claude-opus-4-8","content":[],"usage":{"input_tokens":3,"output_tokens":0}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"OK"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}
+
+event: message_stop
+data: {"type":"message_stop"}
+`))
+	}))
+	defer upstream.Close()
+
+	channel := dbmodel.Channel{
+		Name:    "AnyRouter Claude 4-8",
+		Type:    outbound.OutboundTypeAnthropic,
+		Enabled: true,
+		BaseUrls: []dbmodel.BaseUrl{{
+			URL: upstream.URL,
+		}},
+		Keys: []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "anthropic-key"}},
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	group := dbmodel.Group{Name: "claude-opus-4-8", Mode: dbmodel.GroupModeFailover}
+	if err := op.GroupCreate(&group, ctx); err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	if err := op.GroupItemAdd(&dbmodel.GroupItem{
+		GroupID:   group.ID,
+		ChannelID: channel.ID,
+		ModelName: "claude-opus-4-8",
+		Priority:  1,
+		Weight:    1,
+	}, ctx); err != nil {
+		t.Fatalf("create group item: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{
+		"model":"opus[1m]",
+		"max_tokens":128000,
+		"stream":true,
+		"messages":[{"role":"user","content":"ping"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+	c.Set("api_key_id", 0)
+	c.Set("user_id", 0)
+	c.Set("request_ip", "127.0.0.1")
+
+	Handler(inbound.InboundTypeAnthropic, c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected opus[1m] alias stream to succeed, got %d body %s", rec.Code, rec.Body.String())
+	}
+	if sawModel != "claude-opus-4-8" || !sawStream {
+		t.Fatalf("unexpected upstream shape: model=%q stream=%t", sawModel, sawStream)
+	}
+	if sawMetadata["user_id"] == nil || sawSystem == nil {
+		t.Fatalf("expected synthesized Claude agent metadata/system, metadata=%#v system=%#v", sawMetadata, sawSystem)
+	}
+	if !strings.Contains(sawBeta, defaultClaudeOneMillionBeta) {
+		t.Fatalf("expected 1m beta %q, got %q", defaultClaudeOneMillionBeta, sawBeta)
+	}
+}
+
+func TestStreamKeepaliveEventDetection(t *testing.T) {
+	if !isStreamKeepaliveEvent("ping", `{"type":"message_start"}`) {
+		t.Fatalf("expected SSE event type ping to be recognized")
+	}
+	if !isStreamKeepaliveEvent("", `{"type":"ping"}`) {
+		t.Fatalf("expected JSON type ping to be recognized")
+	}
+	if isStreamKeepaliveEvent("", `{"type":"content_block_stop"}`) {
+		t.Fatalf("did not expect content block stop to be treated as keepalive")
+	}
+}
+
+func TestCurrentStreamKeepaliveIntervalUsesSetting(t *testing.T) {
+	t.Setenv("OCTOPUS_RELAY_STREAM_KEEPALIVE_INTERVAL_SECONDS", "")
+	setupRelayErrorDB(t)
+
+	if got := currentStreamKeepaliveInterval(); got != 15*time.Second {
+		t.Fatalf("expected default keepalive interval 15s, got %s", got)
+	}
+	if err := op.SettingSetString(dbmodel.SettingKeyRelayStreamKeepaliveSec, "0"); err != nil {
+		t.Fatalf("disable keepalive setting: %v", err)
+	}
+	if got := currentStreamKeepaliveInterval(); got != 0 {
+		t.Fatalf("expected disabled keepalive interval, got %s", got)
+	}
+	if err := op.SettingSetString(dbmodel.SettingKeyRelayStreamKeepaliveSec, "30"); err != nil {
+		t.Fatalf("set keepalive setting: %v", err)
+	}
+	if got := currentStreamKeepaliveInterval(); got != 30*time.Second {
+		t.Fatalf("expected keepalive interval 30s, got %s", got)
+	}
+}
+
+func TestCurrentStreamDataIntervalTimeoutUsesSetting(t *testing.T) {
+	t.Setenv("OCTOPUS_RELAY_STREAM_DATA_INTERVAL_TIMEOUT_SECONDS", "")
+	setupRelayErrorDB(t)
+
+	if got := currentStreamDataIntervalTimeout(); got != 900*time.Second {
+		t.Fatalf("expected default stream data interval timeout 900s, got %s", got)
+	}
+	if err := op.SettingSetString(dbmodel.SettingKeyRelayStreamDataTimeoutSec, "0"); err != nil {
+		t.Fatalf("disable stream data timeout setting: %v", err)
+	}
+	if got := currentStreamDataIntervalTimeout(); got != 0 {
+		t.Fatalf("expected disabled stream data interval timeout, got %s", got)
+	}
+	if err := op.SettingSetString(dbmodel.SettingKeyRelayStreamDataTimeoutSec, "45"); err != nil {
+		t.Fatalf("set stream data timeout setting: %v", err)
+	}
+	if got := currentStreamDataIntervalTimeout(); got != 45*time.Second {
+		t.Fatalf("expected stream data interval timeout 45s, got %s", got)
+	}
+}
+
+func TestStreamDataIntervalTimeoutStopsSilentUpstream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayErrorDB(t)
+	if err := op.SettingSetString(dbmodel.SettingKeyRelayStreamKeepaliveSec, "0"); err != nil {
+		t.Fatalf("disable keepalive setting: %v", err)
+	}
+	if err := op.SettingSetString(dbmodel.SettingKeyRelayStreamDataTimeoutSec, "1"); err != nil {
+		t.Fatalf("set stream data timeout setting: %v", err)
+	}
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			t.Errorf("unexpected upstream path: %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`event: message_start
+data: {"type":"message_start","message":{"id":"msg_timeout","type":"message","role":"assistant","model":"claude-upstream","content":[],"usage":{"input_tokens":3,"output_tokens":0}}}
+
+`))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		<-r.Context().Done()
+	}))
+	t.Cleanup(upstream.Close)
+
+	channel := dbmodel.Channel{
+		Name:    "silent-anthropic-upstream",
+		Type:    outbound.OutboundTypeAnthropic,
+		Enabled: true,
+		BaseUrls: []dbmodel.BaseUrl{{
+			URL: upstream.URL,
+		}},
+		Keys: []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "anthropic-key"}},
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	group := dbmodel.Group{Name: "claude-timeout-request", Mode: dbmodel.GroupModeFailover}
+	if err := op.GroupCreate(&group, ctx); err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	if err := op.GroupItemAdd(&dbmodel.GroupItem{
+		GroupID:   group.ID,
+		ChannelID: channel.ID,
+		ModelName: "claude-upstream",
+		Priority:  1,
+		Weight:    1,
+	}, ctx); err != nil {
+		t.Fatalf("create group item: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{
+		"model":"claude-timeout-request",
+		"max_tokens":16,
+		"stream":true,
+		"messages":[{"role":"user","content":"timeout"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+	c.Set("api_key_id", 0)
+	c.Set("user_id", 0)
+	c.Set("request_ip", "127.0.0.1")
+
+	startedAt := time.Now()
+	Handler(inbound.InboundTypeAnthropic, c)
+	if elapsed := time.Since(startedAt); elapsed > 3*time.Second {
+		t.Fatalf("expected silent upstream to be stopped quickly, elapsed %s", elapsed)
+	}
+	if !strings.Contains(rec.Body.String(), "message_start") {
+		t.Fatalf("expected initial stream data before timeout, got %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "event: error") || !strings.Contains(rec.Body.String(), "upstream stream failed before terminal event") {
+		t.Fatalf("expected explicit Anthropic error event after timeout, got %s", rec.Body.String())
+	}
+}

@@ -1,0 +1,380 @@
+package relay
+
+import (
+	"encoding/json"
+	"strings"
+
+	dbmodel "github.com/bestruirui/octopus/internal/model"
+	transformerModel "github.com/bestruirui/octopus/internal/transformer/model"
+	"github.com/bestruirui/octopus/internal/transformer/outbound"
+)
+
+const codexReasoningEncryptedContentInclude = "reasoning.encrypted_content"
+const codexDefaultInstructions = "You are Codex, a coding agent based on GPT-5. You and the user share one workspace. Answer directly and do not call tools unless the user asks for workspace inspection or file changes."
+
+func (ra *relayAttempt) prepareCodexRequestShape() {
+	if ra == nil || ra.internalRequest == nil || ra.channel == nil || !ra.shouldUseCodexFingerprint() {
+		return
+	}
+	if ra.channel.Type != outbound.OutboundTypeOpenAIResponse {
+		return
+	}
+	req := ra.internalRequest
+	addCodexResponsesInclude(req)
+	ra.bridgePlainResponsesCodexHistory()
+	ensureCodexAgentContext(req)
+	if req.Store == nil {
+		store := false
+		req.Store = &store
+	}
+	applyCodexFastMode(req)
+	if len(req.ResponsesInputRaw) == 0 || !responsesInputRawLooksCodexShaped(req.ResponsesInputRaw) {
+		if raw := synthesizeCodexResponsesInputRaw(req.Messages); len(raw) > 0 {
+			req.ResponsesInputRaw = raw
+		}
+	}
+}
+
+func applyCodexFastMode(req *transformerModel.InternalLLMRequest) {
+	if req == nil || !settingBool(dbmodel.SettingKeyCodexFastMode, false) {
+		return
+	}
+	if len(req.ResponsesTextRaw) == 0 {
+		req.ResponsesTextRaw = json.RawMessage(`{"verbosity":"low"}`)
+	}
+	if strings.TrimSpace(req.ReasoningEffort) == "" {
+		req.ReasoningEffort = "low"
+	}
+}
+
+func (ra *relayAttempt) bridgePlainResponsesCodexHistory() {
+	if ra == nil || ra.internalRequest == nil || !ra.shouldBridgePlainResponsesCodexHistory() {
+		return
+	}
+	req := ra.internalRequest
+	if responsesMessagesContainToolOutput(req.Messages) {
+		return
+	}
+	if req.PreviousResponseID == nil || strings.TrimSpace(*req.PreviousResponseID) == "" {
+		return
+	}
+	ra.applyPlainResponsesCodexHistoryForPreviousResponseID(*req.PreviousResponseID)
+}
+
+func (ra *relayAttempt) applyPlainResponsesCodexHistoryForPreviousResponseID(previousResponseID string) {
+	if ra == nil || ra.internalRequest == nil {
+		return
+	}
+	req := ra.internalRequest
+	previousResponseID = strings.TrimSpace(previousResponseID)
+	if previousResponseID == "" {
+		return
+	}
+	if responsesMessagesAlreadyCarryAssistantContext(req.Messages) {
+		return
+	}
+	history, ok := responsesSessionTranscript(previousResponseID)
+	if !ok || len(history) == 0 {
+		return
+	}
+	req.Messages = appendPlainResponsesHistory(history, req.Messages)
+	req.PreviousResponseID = nil
+	req.ResponsesInputRaw = nil
+}
+
+func responsesMessagesContainToolOutput(messages []transformerModel.Message) bool {
+	for _, msg := range messages {
+		if strings.EqualFold(strings.TrimSpace(msg.Role), "tool") {
+			return true
+		}
+	}
+	return false
+}
+
+func responsesMessagesAlreadyCarryAssistantContext(messages []transformerModel.Message) bool {
+	for _, msg := range messages {
+		if strings.EqualFold(strings.TrimSpace(msg.Role), "assistant") {
+			return true
+		}
+	}
+	return false
+}
+
+func appendPlainResponsesHistory(history, current []transformerModel.Message) []transformerModel.Message {
+	out := make([]transformerModel.Message, 0, len(history)+len(current))
+	for _, msg := range current {
+		role := strings.TrimSpace(msg.Role)
+		if strings.EqualFold(role, "system") || strings.EqualFold(role, "developer") {
+			out = append(out, cloneResponseSessionMessage(msg))
+		}
+	}
+	out = append(out, cloneResponsesSessionMessages(history)...)
+	for _, msg := range current {
+		role := strings.TrimSpace(msg.Role)
+		if strings.EqualFold(role, "system") || strings.EqualFold(role, "developer") {
+			continue
+		}
+		out = append(out, cloneResponseSessionMessage(msg))
+	}
+	return out
+}
+
+func ensureCodexAgentContext(req *transformerModel.InternalLLMRequest) {
+	if req == nil {
+		return
+	}
+	if req.ResponsesInstructions == nil && !messagesContainInstruction(req.Messages) {
+		content := codexDefaultInstructions
+		req.Messages = append([]transformerModel.Message{{
+			Role:    "system",
+			Content: transformerModel.MessageContent{Content: &content},
+		}}, req.Messages...)
+	}
+	if responsesMessagesContainToolOutput(req.Messages) {
+		return
+	}
+	if len(req.Tools) == 0 && len(req.ResponsesToolsRaw) == 0 {
+		req.Tools = defaultCodexTools()
+	}
+	if req.ToolChoice == nil && len(req.ResponsesToolChoiceRaw) == 0 && len(req.Tools) > 0 {
+		choice := "auto"
+		req.ToolChoice = &transformerModel.ToolChoice{ToolChoice: &choice}
+	}
+	if req.ParallelToolCalls == nil && len(req.Tools) > 0 && len(req.ResponsesToolsRaw) == 0 {
+		parallel := false
+		req.ParallelToolCalls = &parallel
+	}
+}
+
+func messagesContainInstruction(messages []transformerModel.Message) bool {
+	for _, msg := range messages {
+		switch strings.TrimSpace(msg.Role) {
+		case "system", "developer":
+			return true
+		}
+	}
+	return false
+}
+
+func defaultCodexTools() []transformerModel.Tool {
+	return []transformerModel.Tool{
+		codexFunctionTool(
+			"shell_command",
+			"Runs a Powershell command (Windows) and returns its output.",
+			`{"additionalProperties":false,"properties":{"command":{"description":"The shell script to execute in the user's default shell","type":"string"},"justification":{"description":"Only set if sandbox_permissions is \"require_escalated\". Request approval from the user to run this command outside the sandbox.","type":"string"},"login":{"description":"Whether to run the shell with login semantics. Defaults to true.","type":"boolean"},"prefix_rule":{"description":"Only specify when sandbox_permissions is require_escalated. Suggest a prefix command pattern for similar future requests.","items":{"type":"string"},"type":"array"},"sandbox_permissions":{"description":"Sandbox permissions for the command. Set to require_escalated to request running without sandbox restrictions; defaults to use_default.","type":"string"},"timeout_ms":{"description":"The timeout for the command in milliseconds","type":"number"},"workdir":{"description":"The working directory to execute the command in","type":"string"}},"required":["command"],"type":"object"}`,
+		),
+		codexFunctionTool(
+			"update_plan",
+			"Updates the task plan. At most one step can be in_progress at a time.",
+			`{"additionalProperties":false,"properties":{"explanation":{"type":"string"},"plan":{"description":"The list of steps","items":{"additionalProperties":false,"properties":{"status":{"description":"One of: pending, in_progress, completed","type":"string"},"step":{"type":"string"}},"required":["step","status"],"type":"object"},"type":"array"}},"required":["plan"],"type":"object"}`,
+		),
+		codexFunctionTool(
+			"request_user_input",
+			"Request user input for one to three short questions and wait for the response.",
+			`{"additionalProperties":false,"properties":{"questions":{"description":"Questions to show the user. Prefer 1 and do not exceed 3","items":{"additionalProperties":false,"properties":{"header":{"description":"Short header label shown in the UI (12 or fewer chars).","type":"string"},"id":{"description":"Stable identifier for mapping answers (snake_case).","type":"string"},"options":{"description":"Provide 2-3 mutually exclusive choices. The client may add a free-form Other option.","items":{"additionalProperties":false,"properties":{"description":{"description":"One short sentence explaining impact/tradeoff if selected.","type":"string"},"label":{"description":"User-facing label (1-5 words).","type":"string"}},"required":["label","description"],"type":"object"},"type":"array"},"question":{"description":"Single-sentence prompt shown to the user.","type":"string"}},"required":["id","header","question","options"],"type":"object"},"type":"array"}},"required":["questions"],"type":"object"}`,
+		),
+		codexFunctionTool(
+			"view_image",
+			"View a local image from the filesystem.",
+			`{"additionalProperties":false,"properties":{"detail":{"description":"Optional detail override. Supported values are high and original.","enum":["high","original"],"type":"string"},"path":{"description":"Local filesystem path to an image file","type":"string"}},"required":["path"],"type":"object"}`,
+		),
+	}
+}
+
+func codexFunctionTool(name, description, parameters string) transformerModel.Tool {
+	strict := false
+	return transformerModel.Tool{
+		Type: "function",
+		Function: transformerModel.Function{
+			Name:        name,
+			Description: description,
+			Parameters:  json.RawMessage(parameters),
+			Strict:      &strict,
+		},
+	}
+}
+
+func addCodexResponsesInclude(req *transformerModel.InternalLLMRequest) {
+	if req == nil {
+		return
+	}
+	for _, item := range req.Include {
+		if strings.EqualFold(strings.TrimSpace(item), codexReasoningEncryptedContentInclude) {
+			return
+		}
+	}
+	req.Include = append(req.Include, codexReasoningEncryptedContentInclude)
+}
+
+func responsesInputRawLooksCodexShaped(raw json.RawMessage) bool {
+	raw = json.RawMessage(strings.TrimSpace(string(raw)))
+	if len(raw) == 0 || raw[0] != '[' {
+		return false
+	}
+	var items []map[string]any
+	if err := json.Unmarshal(raw, &items); err != nil || len(items) == 0 {
+		return false
+	}
+	for _, item := range items {
+		if strings.TrimSpace(codexShapeStringValue(item["type"])) == "message" {
+			if _, ok := item["content"]; ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func synthesizeCodexResponsesInputRaw(messages []transformerModel.Message) json.RawMessage {
+	items := make([]map[string]any, 0, len(messages))
+	for _, msg := range messages {
+		switch msg.Role {
+		case "system", "developer":
+			continue
+		case "assistant":
+			items = append(items, codexAssistantItems(msg)...)
+		case "tool":
+			if item := codexToolOutputItem(msg); item != nil {
+				items = append(items, item)
+			}
+		default:
+			if item := codexUserMessageItem(msg); item != nil {
+				items = append(items, item)
+			}
+		}
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	raw, err := json.Marshal(items)
+	if err != nil {
+		return nil
+	}
+	return raw
+}
+
+func codexUserMessageItem(msg transformerModel.Message) map[string]any {
+	content := codexInputContentItems(msg.Content)
+	if len(content) == 0 {
+		return nil
+	}
+	role := strings.TrimSpace(msg.Role)
+	if role == "" || role == "function" || role == "tool" {
+		role = "user"
+	}
+	return map[string]any{
+		"type":    "message",
+		"role":    role,
+		"content": content,
+	}
+}
+
+func codexAssistantItems(msg transformerModel.Message) []map[string]any {
+	items := make([]map[string]any, 0, len(msg.ToolCalls)+1)
+	if text := strings.TrimSpace(messageTextContent(msg.Content)); text != "" {
+		items = append(items, map[string]any{
+			"type":   "message",
+			"role":   "assistant",
+			"status": "completed",
+			"content": []map[string]any{{
+				"type": "output_text",
+				"text": text,
+			}},
+		})
+	}
+	for _, toolCall := range msg.ToolCalls {
+		callID := strings.TrimSpace(toolCall.ID)
+		if callID == "" {
+			callID = strings.TrimSpace(toolCall.Function.Name)
+		}
+		if callID == "" {
+			continue
+		}
+		items = append(items, map[string]any{
+			"type":      "function_call",
+			"call_id":   callID,
+			"name":      strings.TrimSpace(toolCall.Function.Name),
+			"arguments": toolCall.Function.Arguments,
+		})
+	}
+	return items
+}
+
+func codexToolOutputItem(msg transformerModel.Message) map[string]any {
+	callID := ""
+	if msg.ToolCallID != nil {
+		callID = strings.TrimSpace(*msg.ToolCallID)
+	}
+	if callID == "" {
+		return nil
+	}
+	output := messageTextContent(msg.Content)
+	return map[string]any{
+		"type":    "function_call_output",
+		"call_id": callID,
+		"output":  output,
+	}
+}
+
+func codexInputContentItems(content transformerModel.MessageContent) []map[string]any {
+	if content.Content != nil {
+		text := *content.Content
+		if strings.TrimSpace(text) == "" {
+			return nil
+		}
+		return []map[string]any{{
+			"type": "input_text",
+			"text": text,
+		}}
+	}
+	items := make([]map[string]any, 0, len(content.MultipleContent))
+	for _, part := range content.MultipleContent {
+		switch part.Type {
+		case "text":
+			if part.Text != nil && strings.TrimSpace(*part.Text) != "" {
+				items = append(items, map[string]any{
+					"type": "input_text",
+					"text": *part.Text,
+				})
+			}
+		case "image_url":
+			if part.ImageURL != nil && strings.TrimSpace(part.ImageURL.URL) != "" {
+				item := map[string]any{
+					"type":      "input_image",
+					"image_url": part.ImageURL.URL,
+				}
+				if part.ImageURL.Detail != nil && strings.TrimSpace(*part.ImageURL.Detail) != "" {
+					item["detail"] = *part.ImageURL.Detail
+				}
+				items = append(items, item)
+			}
+		}
+	}
+	return items
+}
+
+func messageTextContent(content transformerModel.MessageContent) string {
+	if content.Content != nil {
+		return *content.Content
+	}
+	var sb strings.Builder
+	for _, part := range content.MultipleContent {
+		if part.Type != "text" || part.Text == nil {
+			continue
+		}
+		if sb.Len() > 0 {
+			sb.WriteString("\n")
+		}
+		sb.WriteString(*part.Text)
+	}
+	return sb.String()
+}
+
+func codexShapeStringValue(value any) string {
+	switch v := value.(type) {
+	case string:
+		return v
+	default:
+		return ""
+	}
+}

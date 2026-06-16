@@ -1,0 +1,33 @@
+data
+build
+.codex-runtime/
+test-results/
+static/out/*
+!static/out/README.md
+.vscode
+.cursor/
+.ace-tool/
+.codex/
+.serena/
+
+# 参考项目（本地学习用，不上传）
+references/
+
+# 本地 agent 工作笔记 / 记忆文件（仅本地使用，不上传 github）
+/AGENTS.md
+/LOG.md
+/PROJECT_CONTEXT.md
+/PROJECT_ID.md
+/PROJECT_MAP.md
+/TASK.md
+/TASK_LOG.md
+/FUTURE.md
+/MANDATORY_CHECKLIST.md
+/UPSTREAM_SYNCED.md
+
+# docs 下的二改设计笔记（不上传；截图 docs/screenshots/ 保留）
+docs/*.md
+
+# fork 维护脚本（不上传）
+/scripts/sync-upstream-future.ps1
+/scripts/learning-audit-report.ps1

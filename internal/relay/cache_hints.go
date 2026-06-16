@@ -1,0 +1,142 @@
+package relay
+
+import (
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	llmmodel "github.com/bestruirui/octopus/internal/transformer/model"
+	"github.com/bestruirui/octopus/internal/transformer/outbound"
+)
+
+const autoPromptCacheKeyPrefix = "octo_pc_"
+
+func openAIPromptCacheKeyChannel(channelType outbound.OutboundType) bool {
+	return channelType == outbound.OutboundTypeOpenAIChat ||
+		channelType == outbound.OutboundTypeOpenAIResponse ||
+		channelType == outbound.OutboundTypeCustomOpenAIChat
+}
+
+func applyOpenAIAutoPromptCacheKey(req *llmmodel.InternalLLMRequest, channelType outbound.OutboundType, userID, apiKeyID int, requestModel string, enabled bool) {
+	if !enabled || req == nil || !openAIPromptCacheKeyChannel(channelType) || !req.IsChatRequest() {
+		return
+	}
+	if req.PromptCacheKey != nil && strings.TrimSpace(*req.PromptCacheKey) != "" {
+		return
+	}
+	key := deriveOpenAIAutoPromptCacheKey(req, userID, apiKeyID, requestModel)
+	if key == "" {
+		return
+	}
+	req.PromptCacheKey = &key
+}
+
+func deriveOpenAIAutoPromptCacheKey(req *llmmodel.InternalLLMRequest, userID, apiKeyID int, requestModel string) string {
+	if req == nil {
+		return ""
+	}
+
+	modelName := strings.TrimSpace(requestModel)
+	if modelName == "" {
+		modelName = strings.TrimSpace(req.Model)
+	}
+	if modelName == "" {
+		return ""
+	}
+
+	parts := []string{
+		"ns=" + cacheHintNamespace(userID, apiKeyID),
+		"model=" + strings.ToLower(modelName),
+	}
+	anchors := 0
+
+	if value := strings.TrimSpace(req.ReasoningEffort); value != "" {
+		parts = append(parts, "reasoning_effort="+value)
+		anchors++
+	}
+	if appendCacheHintJSONSeed(&parts, "tool_choice", req.ToolChoice) {
+		anchors++
+	}
+	if len(req.Tools) > 0 && appendCacheHintJSONSeed(&parts, "tools", req.Tools) {
+		anchors++
+	}
+	if req.ResponseFormat != nil && appendCacheHintJSONSeed(&parts, "response_format", req.ResponseFormat) {
+		anchors++
+	}
+
+	firstUserCaptured := false
+	for _, msg := range req.Messages {
+		role := strings.ToLower(strings.TrimSpace(msg.Role))
+		switch role {
+		case "system", "developer":
+			if seed := messageContentCacheSeed(msg.Content); seed != "" {
+				parts = append(parts, role+"="+seed)
+				anchors++
+			}
+		case "user":
+			if firstUserCaptured {
+				continue
+			}
+			if seed := messageContentCacheSeed(msg.Content); seed != "" {
+				parts = append(parts, "first_user="+seed)
+				anchors++
+				firstUserCaptured = true
+			}
+		}
+	}
+
+	if anchors == 0 {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(strings.Join(parts, "|")))
+	return fmt.Sprintf("%s%x", autoPromptCacheKeyPrefix, sum[:16])
+}
+
+func cacheHintNamespace(userID, apiKeyID int) string {
+	if userID > 0 {
+		return fmt.Sprintf("user:%d", userID)
+	}
+	if apiKeyID > 0 {
+		return fmt.Sprintf("api_key:%d", apiKeyID)
+	}
+	return "anonymous"
+}
+
+func appendCacheHintJSONSeed(parts *[]string, label string, value any) bool {
+	if value == nil {
+		return false
+	}
+	seed := normalizeCacheHintJSON(value)
+	if strings.TrimSpace(seed) == "" || seed == "null" {
+		return false
+	}
+	*parts = append(*parts, label+"="+seed)
+	return true
+}
+
+func messageContentCacheSeed(content llmmodel.MessageContent) string {
+	if content.Content != nil {
+		return strings.TrimSpace(*content.Content)
+	}
+	if len(content.MultipleContent) == 0 {
+		return ""
+	}
+	return normalizeCacheHintJSON(content.MultipleContent)
+}
+
+func normalizeCacheHintJSON(value any) string {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return strings.TrimSpace(fmt.Sprint(value))
+	}
+	var normalized any
+	if err := json.Unmarshal(raw, &normalized); err != nil {
+		return strings.TrimSpace(string(raw))
+	}
+	out, err := json.Marshal(normalized)
+	if err != nil {
+		return strings.TrimSpace(string(raw))
+	}
+	return strings.TrimSpace(string(out))
+}

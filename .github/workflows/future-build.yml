@@ -1,0 +1,195 @@
+name: future-build
+
+on:
+  push:
+    branches:
+      - future
+  pull_request:
+    branches:
+      - future
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository }}
+  FUTURE_REPO: https://github.com/zhizhishu/octopus
+
+jobs:
+  validate:
+    name: Validate future branch
+    runs-on: ubuntu-latest
+    outputs:
+      upstream_version: ${{ steps.upstream_version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Resolve upstream version
+        id: upstream_version
+        shell: bash
+        run: |
+          set -euo pipefail
+          api_url="https://api.github.com/repos/bestruirui/octopus/releases/latest"
+          headers=(-H "Accept: application/vnd.github+json")
+          if [ -n "${GITHUB_TOKEN:-}" ]; then
+            headers+=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+          fi
+          response="$(curl -fsSL "${headers[@]}" "$api_url" || true)"
+          version="$(printf '%s' "$response" | python3 -c 'import json,sys; data=json.load(sys.stdin); print(data.get("tag_name",""))' 2>/dev/null || true)"
+          if [ -z "$version" ]; then
+            version="future-${GITHUB_SHA::7}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Using upstream version: $version"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Install frontend dependencies
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend
+        working-directory: web
+        run: |
+          NEXT_PUBLIC_APP_VERSION="${{ steps.upstream_version.outputs.version }}" \
+          NEXT_PUBLIC_GITHUB_REPO="${FUTURE_REPO}" \
+          pnpm run build
+
+      - name: Embed frontend output
+        run: |
+          rm -rf static/out
+          mv web/out static/out
+
+      - name: Run Go tests
+        run: go test ./...
+
+      - name: Build binary
+        run: |
+          mkdir -p build
+          go build \
+            -ldflags="-X 'github.com/bestruirui/octopus/internal/conf.Version=${{ steps.upstream_version.outputs.version }}' -X 'github.com/bestruirui/octopus/internal/conf.Author=zhizhishu' -X 'github.com/bestruirui/octopus/internal/conf.Commit=${GITHUB_SHA::7}' -X 'github.com/bestruirui/octopus/internal/conf.Repo=${FUTURE_REPO}'" \
+            -o build/octopus-future .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: octopus-future-linux-amd64
+          path: build/octopus-future
+
+  image:
+    name: Build and push future images
+    needs: validate
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Build release artifacts
+        run: |
+          GIT_VERSION="${{ needs.validate.outputs.upstream_version }}" \
+          GIT_AUTHOR="zhizhishu" \
+          GIT_REPO="${FUTURE_REPO}" \
+          bash scripts/build.sh release
+
+      - name: Docker meta (Debian)
+        id: meta-debian
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=future
+            type=raw,value=future-debian
+            type=sha,prefix=future-
+
+      - name: Docker meta (Alpine)
+        id: meta-alpine
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=future-alpine
+            type=sha,prefix=future-alpine-
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push (Alpine)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./scripts/dockerfiles/Dockerfile.alpine
+          push: true
+          platforms: linux/amd64,linux/386,linux/arm64,linux/arm/v7
+          tags: ${{ steps.meta-alpine.outputs.tags }}
+          labels: ${{ steps.meta-alpine.outputs.labels }}
+          build-args: |
+            TARGETPLATFORM
+
+      - name: Build and push (Debian)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./scripts/dockerfiles/Dockerfile.debian
+          push: true
+          platforms: linux/amd64,linux/386,linux/arm64,linux/arm/v7
+          tags: ${{ steps.meta-debian.outputs.tags }}
+          labels: ${{ steps.meta-debian.outputs.labels }}
+          build-args: |
+            TARGETPLATFORM
