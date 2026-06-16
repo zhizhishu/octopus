@@ -170,7 +170,7 @@ export function Toolbar() {
                                 value={searchTerm}
                                 onChange={(e) => setSearchTerm(toolbarItem, e.target.value)}
                                 autoFocus
-                                className="w-20 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+                                className="w-36 bg-transparent text-base outline-none placeholder:text-muted-foreground sm:w-20 sm:text-sm"
                             />
                             <button
                                 onClick={() => {

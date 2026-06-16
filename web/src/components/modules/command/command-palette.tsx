@@ -149,7 +149,7 @@ export function CommandPalette() {
                 <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
                 <DialogPrimitive.Content
                     onOpenAutoFocus={(event) => event.preventDefault()}
-                    className="fixed left-1/2 top-[12vh] z-50 flex max-h-[70vh] w-[calc(100vw-1.5rem)] max-w-xl -translate-x-1/2 flex-col overflow-hidden rounded-2xl border border-border/60 bg-popover text-popover-foreground shadow-2xl data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95"
+                    className="fixed left-1/2 top-[8vh] z-50 flex max-h-[85vh] w-[calc(100vw-1.5rem)] max-w-xl sm:top-[12vh] sm:max-h-[70vh] -translate-x-1/2 flex-col overflow-hidden rounded-2xl border border-border/60 bg-popover text-popover-foreground shadow-2xl data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95"
                 >
                     <DialogPrimitive.Title className="sr-only">全局搜索</DialogPrimitive.Title>
                     <DialogPrimitive.Description className="sr-only">搜索并跳转到页面或渠道</DialogPrimitive.Description>
@@ -161,7 +161,7 @@ export function CommandPalette() {
                             onChange={(event) => setQuery(event.target.value)}
                             onKeyDown={onKeyDown}
                             placeholder="搜索页面、渠道…"
-                            className="h-12 w-full min-w-0 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+                            className="h-12 w-full min-w-0 bg-transparent text-base outline-none placeholder:text-muted-foreground sm:text-sm"
                         />
                         <kbd className="hidden shrink-0 rounded border border-border/60 px-1.5 py-0.5 text-[10px] text-muted-foreground sm:inline">Esc</kbd>
                     </div>
@@ -189,7 +189,7 @@ export function CommandPalette() {
                                             onMouseMove={() => setHighlight(index)}
                                             onClick={() => entry.onSelect()}
                                             className={cn(
-                                                'flex w-full min-w-0 items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-sm transition-colors',
+                                                'flex w-full min-w-0 items-center gap-2.5 rounded-xl px-3 py-3 text-left text-sm transition-colors sm:py-2.5',
                                                 isActive ? 'bg-accent text-accent-foreground' : 'text-foreground'
                                             )}
                                         >

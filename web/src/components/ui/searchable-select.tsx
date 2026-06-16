@@ -142,10 +142,10 @@ export function SearchableSelect({
                         onChange={(event) => setQuery(event.target.value)}
                         onKeyDown={onKeyDown}
                         placeholder={searchPlaceholder}
-                        className="h-9 w-full min-w-0 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+                        className="h-10 w-full min-w-0 bg-transparent text-base outline-none placeholder:text-muted-foreground sm:h-9 sm:text-sm"
                     />
                 </div>
-                <div ref={listRef} className="max-h-64 overflow-y-auto overscroll-contain p-1">
+                <div ref={listRef} className="max-h-[50vh] overflow-y-auto overscroll-contain p-1 sm:max-h-64">
                     {filtered.length === 0 ? (
                         <div className="px-3 py-6 text-center text-sm text-muted-foreground">{emptyText}</div>
                     ) : (
@@ -161,7 +161,7 @@ export function SearchableSelect({
                                     onMouseMove={() => setHighlight(index)}
                                     onClick={() => commit(option)}
                                     className={cn(
-                                        'flex w-full min-w-0 items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-colors',
+                                        'flex w-full min-w-0 items-center gap-2 rounded-lg px-2.5 py-2.5 text-left text-sm transition-colors sm:py-2',
                                         isActive ? 'bg-accent text-accent-foreground' : 'text-foreground',
                                         isSelected && 'font-medium',
                                         option.disabled && 'pointer-events-none opacity-50'
