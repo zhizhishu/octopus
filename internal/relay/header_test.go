@@ -479,6 +479,10 @@ func TestClaudeBetaHeaderMatchesGenuineCliOrder(t *testing.T) {
 	}
 
 	upstreamReq := httptest.NewRequest(http.MethodPost, "https://anyrouter.top/v1/messages", nil)
+	// Reproduce the real wire condition: the outbound transformer already appended a
+	// lone context-1m beta to the request before relay header defaults run. The
+	// rebuild must override this so 1m does NOT stay stuck at position 1.
+	upstreamReq.Header.Set("Anthropic-Beta", transformermodel.AnthropicOneMillionBeta)
 	ra.copyHeaders(upstreamReq)
 
 	gotBeta := upstreamReq.Header.Get("Anthropic-Beta")

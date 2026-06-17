@@ -76,18 +76,42 @@ func (ra *relayAttempt) applyClaudeHeaderDefaults(req *http.Request) {
 		setHeaderIfMissing(req.Header, "X-Stainless-OS", settingString(dbmodel.SettingKeyClaudeHeaderOS, defaultClaudeOS))
 		setHeaderIfMissing(req.Header, "X-Stainless-Arch", settingString(dbmodel.SettingKeyClaudeHeaderArch, defaultClaudeArch))
 	}
-	// Emit the canonical claude-code beta set FIRST so the wire ORDER matches a
-	// genuine claude-cli request exactly — in particular context-1m-2025-08-07 sits
-	// in its real position (7th, after mid-conversation-system) instead of being
-	// prepended. Any extra client/transform betas are appended after and de-duped,
-	// so a real claude-code client's own betas are still preserved.
-	for _, beta := range model.AnthropicClaudeCodeBetas(shouldEnableClaudeOneMillionBeta(ra.internalRequest)) {
-		addAnthropicBetaHeader(req.Header, beta)
+	// REBUILD the anthropic-beta header so its ORDER exactly matches a genuine
+	// claude-cli request: the canonical claude-code beta set is authoritative (with
+	// context-1m-2025-08-07 in its real 7th slot when 1M is wanted). This must
+	// OVERRIDE the beta header already on the request — the outbound transformer
+	// appends a lone context-1m beta, which otherwise leaves it stuck at position 1
+	// (a non-CLI tell). Any extra betas a real client sent that are NOT part of the
+	// canonical set are preserved and appended after, except context-1m which is only
+	// ever emitted via the canonical set (and only when 1M is actually wanted).
+	canonical := model.AnthropicClaudeCodeBetas(shouldEnableClaudeOneMillionBeta(ra.internalRequest))
+	inCanonical := make(map[string]bool, len(canonical))
+	for _, b := range canonical {
+		inCanonical[strings.ToLower(b)] = true
+	}
+	isExtra := func(b string) bool {
+		b = strings.TrimSpace(b)
+		return b != "" && !inCanonical[strings.ToLower(b)] && !strings.EqualFold(b, model.AnthropicOneMillionBeta)
+	}
+	var extras []string
+	for _, b := range strings.Split(req.Header.Get("Anthropic-Beta"), ",") {
+		if isExtra(b) {
+			extras = append(extras, strings.TrimSpace(b))
+		}
 	}
 	if ra != nil && ra.internalRequest != nil {
-		for _, beta := range ra.internalRequest.TransformOptions.AnthropicBetas {
-			addAnthropicBetaHeader(req.Header, beta)
+		for _, b := range ra.internalRequest.TransformOptions.AnthropicBetas {
+			if isExtra(b) {
+				extras = append(extras, strings.TrimSpace(b))
+			}
 		}
+	}
+	req.Header.Del("Anthropic-Beta")
+	for _, beta := range canonical {
+		addAnthropicBetaHeader(req.Header, beta)
+	}
+	for _, beta := range extras {
+		addAnthropicBetaHeader(req.Header, beta)
 	}
 }
 
