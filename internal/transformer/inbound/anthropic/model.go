@@ -403,6 +403,10 @@ type ImageSource struct {
 	// URL is the URL of the image.
 	// It will be present if Type is url.
 	URL string `json:"url,omitempty"`
+
+	// FileID references a provider-side uploaded file. It is present when Type is
+	// "file" (used by Anthropic document blocks via the Files API).
+	FileID string `json:"file_id,omitempty"`
 }
 
 // StreamEvent represents events in Anthropic streaming response.

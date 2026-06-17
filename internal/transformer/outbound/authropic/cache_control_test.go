@@ -30,8 +30,10 @@ func TestAutoCacheControlAddsSystemBreakpoint(t *testing.T) {
 	if cc == nil || cc.Type != "ephemeral" || cc.TTL != "" {
 		t.Fatalf("expected default ephemeral cache control, got %#v", cc)
 	}
-	if countCacheControls(converted) != 1 {
-		t.Fatalf("expected one cache control block, got %d", countCacheControls(converted))
+	// Automatic caching now also places a sliding breakpoint on the last user message
+	// (leapfrog caching), so a system prefix breakpoint plus the last-user breakpoint = 2.
+	if countCacheControls(converted) != 2 {
+		t.Fatalf("expected system prefix + last-user sliding breakpoint (2), got %d", countCacheControls(converted))
 	}
 }
 
@@ -92,8 +94,11 @@ func TestAutoCacheControlMarksFirstLongUserWhenNoStablePrefix(t *testing.T) {
 
 	converted := convertToAnthropicRequest(req)
 
-	if countCacheControls(converted) != 1 {
-		t.Fatalf("expected one cache control block, got %d", countCacheControls(converted))
+	// The first long user message takes the prefix breakpoint; the last user message gets
+	// a sliding (leapfrog) breakpoint. With only 3 messages there is no second sliding
+	// breakpoint, so the total is 2.
+	if countCacheControls(converted) != 2 {
+		t.Fatalf("expected first-user prefix + last-user sliding breakpoint (2), got %d", countCacheControls(converted))
 	}
 	if len(converted.Messages[0].Content.MultipleContent) != 1 {
 		t.Fatalf("expected first user string content to be converted to a text block")

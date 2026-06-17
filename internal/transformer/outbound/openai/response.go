@@ -405,6 +405,12 @@ type ResponsesItem struct {
 	ImageURL *string         `json:"image_url,omitempty"`
 	Detail   *string         `json:"detail,omitempty"`
 
+	// input_file fields (Codex / OpenAI Responses document input)
+	FileID   *string `json:"file_id,omitempty"`
+	Filename *string `json:"filename,omitempty"`
+	FileData *string `json:"file_data,omitempty"`
+	FileURL  *string `json:"file_url,omitempty"`
+
 	// Annotations for output_text content
 	Annotations []ResponsesAnnotation `json:"annotations,omitempty"`
 
@@ -985,6 +991,10 @@ func convertUserMessageToResponses(msg model.Message) ResponsesItem {
 						Detail:   p.ImageURL.Detail,
 					})
 				}
+			case "file":
+				if fileItem := convertFileToInputFile(p); fileItem != nil {
+					contentItems = append(contentItems, *fileItem)
+				}
 			}
 		}
 	}
@@ -994,6 +1004,43 @@ func convertUserMessageToResponses(msg model.Message) ResponsesItem {
 		Role:    msg.Role,
 		Content: &ResponsesInput{Items: contentItems},
 	}
+}
+
+// convertFileToInputFile rebuilds the internal "file" content part into a Codex
+// / OpenAI Responses `input_file` item, mirroring the input_image handling. It
+// preserves base64 data, remote url, file id and filename. Returns nil when the
+// part carries no usable file reference.
+func convertFileToInputFile(p model.MessageContentPart) *ResponsesItem {
+	if p.File == nil {
+		return nil
+	}
+	file := p.File
+
+	item := &ResponsesItem{Type: "input_file"}
+	has := false
+	if file.Filename != "" {
+		item.Filename = &file.Filename
+		has = true
+	}
+	if file.FileData != "" {
+		data := file.FileData
+		item.FileData = &data
+		has = true
+	}
+	if file.FileURL != "" {
+		url := file.FileURL
+		item.FileURL = &url
+		has = true
+	}
+	if file.FileID != "" {
+		id := file.FileID
+		item.FileID = &id
+		has = true
+	}
+	if !has {
+		return nil
+	}
+	return item
 }
 
 func convertAssistantMessageToResponses(msg model.Message) []ResponsesItem {

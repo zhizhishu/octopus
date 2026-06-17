@@ -741,7 +741,25 @@ type File struct {
 	// The filename of the file.
 	Filename string `json:"filename"`
 	// The base64 encoded data of the file.
+	// For OpenAI Chat this is a data URL (e.g. "data:application/pdf;base64,...").
+	// Document carriers (Anthropic document / Codex Responses input_file) also
+	// store base64 documents here as a data URL so a single field round-trips
+	// across providers.
 	FileData string `json:"file_data"`
+
+	// MediaType is the document MIME type (e.g. "application/pdf"). It is set when
+	// the source carried an explicit media type that is not already encoded in
+	// FileData's data URL. Not part of the OpenAI Chat schema, so it is omitted
+	// when empty to avoid changing existing passthrough output.
+	MediaType string `json:"media_type,omitempty"`
+
+	// FileURL holds a remote document URL when the source referenced the document
+	// by URL instead of inline base64 data.
+	FileURL string `json:"file_url,omitempty"`
+
+	// FileID holds a provider-side file identifier (e.g. Anthropic Files API or
+	// OpenAI uploaded file id) when the source referenced the document by id.
+	FileID string `json:"file_id,omitempty"`
 }
 
 // ResponseFormat specifies the format of the response.

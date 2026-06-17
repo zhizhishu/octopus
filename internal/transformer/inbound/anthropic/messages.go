@@ -193,6 +193,11 @@ func (i *MessagesInbound) TransformRequest(ctx context.Context, body []byte) (*m
 						contentParts = append(contentParts, part)
 						hasContent = true
 					}
+				case "document":
+					if docPart := convertDocumentBlockToPart(block.Source, block.CacheControl); docPart != nil {
+						contentParts = append(contentParts, *docPart)
+						hasContent = true
+					}
 				case "tool_result":
 					hasToolResult = true
 					toolMsg := model.Message{
@@ -420,6 +425,10 @@ func convertToolResultContent(content *MessageContent, modelName string, inputTo
 					URL: imageURL,
 				},
 			})
+		case "document":
+			if docPart := convertDocumentBlockToPart(contentBlock.Source, contentBlock.CacheControl); docPart != nil {
+				parts = append(parts, *docPart)
+			}
 		}
 	}
 
@@ -427,6 +436,70 @@ func convertToolResultContent(content *MessageContent, modelName string, inputTo
 		return model.MessageContent{Content: lo.ToPtr("")}
 	}
 	return model.MessageContent{MultipleContent: parts}
+}
+
+// convertDocumentBlockToPart maps an Anthropic `document` block source to the
+// internal "file" content part. It preserves base64 data + media type, remote
+// URL, or a provider file id so the document can be faithfully rebuilt by the
+// outbound transformers. Returns nil when the source carries nothing usable.
+func convertDocumentBlockToPart(source *ImageSource, cacheControl *CacheControl) *model.MessageContentPart {
+	if source == nil {
+		return nil
+	}
+
+	file := &model.File{}
+	switch source.Type {
+	case "base64":
+		if source.Data == "" {
+			return nil
+		}
+		mediaType := source.MediaType
+		if mediaType == "" {
+			// Anthropic base64 document sources require a media type (PDF is the
+			// only base64 document type), so default a missing one instead of
+			// round-tripping an invalid source.media_type="" upstream.
+			mediaType = "application/pdf"
+		}
+		file.MediaType = mediaType
+		file.FileData = fmt.Sprintf("data:%s;base64,%s", mediaType, source.Data)
+	case "url":
+		if source.URL == "" {
+			return nil
+		}
+		file.FileURL = source.URL
+		file.MediaType = source.MediaType
+	case "file":
+		if source.FileID == "" {
+			return nil
+		}
+		file.FileID = source.FileID
+		file.MediaType = source.MediaType
+	default:
+		// Tolerate sources that omit an explicit type but carry data/url/id.
+		switch {
+		case source.Data != "":
+			file.MediaType = source.MediaType
+			if source.MediaType != "" {
+				file.FileData = fmt.Sprintf("data:%s;base64,%s", source.MediaType, source.Data)
+			} else {
+				file.FileData = source.Data
+			}
+		case source.URL != "":
+			file.FileURL = source.URL
+			file.MediaType = source.MediaType
+		case source.FileID != "":
+			file.FileID = source.FileID
+			file.MediaType = source.MediaType
+		default:
+			return nil
+		}
+	}
+
+	return &model.MessageContentPart{
+		Type:         "file",
+		File:         file,
+		CacheControl: convertToLLMCacheControl(cacheControl),
+	}
 }
 
 func (i *MessagesInbound) TransformResponse(ctx context.Context, response *model.InternalLLMResponse) ([]byte, error) {

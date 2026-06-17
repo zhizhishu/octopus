@@ -31,6 +31,11 @@ import (
 
 const imagesUpstreamErrorBodyLimit = 16 * 1024
 
+// streamKeepaliveComment 是注入到 Images SSE 透传流的 keepalive 心跳。Images 走
+// OpenAI 兼容流，与主路径 handleStreamResponse 的 OpenAI 心跳一致使用 SSE 注释行
+// (":\n\n")：合法、被客户端忽略、不污染数据流、也不参与 usage/id 扫描。
+var streamKeepaliveComment = []byte(":\n\n")
+
 // ImagesHandler 是 OpenAI Images API 的统一 relay 入口。
 // endpoint 形如：/images/generations、/images/edits、/images/variations（不含 /v1 前缀）。
 func ImagesHandler(endpoint string, c *gin.Context) {
@@ -1103,12 +1108,46 @@ func proxySSEWithOptions(ctx context.Context, c *gin.Context, respUp *http.Respo
 		}()
 	}
 
+	// keepalive 心跳：与主路径 handleStreamResponse 一致，按配置间隔向下游写一个
+	// 合法且不污染流的 SSE 注释心跳（OpenAI 兼容流为 ":\n\n"），并 Flush。
+	var keepaliveC <-chan time.Time
+	var keepaliveTicker *time.Ticker
+	keepaliveInterval := currentStreamKeepaliveInterval()
+	if keepaliveInterval > 0 {
+		keepaliveTicker = time.NewTicker(keepaliveInterval)
+		keepaliveC = keepaliveTicker.C
+		defer keepaliveTicker.Stop()
+	}
+	// 上游空闲超时：每收到一行 SSE 就 reset；相邻 event 间隔过久则断上游并返回
+	// 带 octopus_upstream_stream_timeout 语义的错误（与主路径一致）。
+	var dataTimeoutC <-chan time.Time
+	var dataTimeoutTimer *time.Timer
+	dataIntervalTimeout := currentStreamDataIntervalTimeout()
+	if dataIntervalTimeout > 0 {
+		dataTimeoutTimer = time.NewTimer(dataIntervalTimeout)
+		dataTimeoutC = dataTimeoutTimer.C
+		defer dataTimeoutTimer.Stop()
+	}
+	resetDataTimeout := func() {
+		if dataTimeoutTimer == nil {
+			return
+		}
+		if !dataTimeoutTimer.Stop() {
+			select {
+			case <-dataTimeoutTimer.C:
+			default:
+			}
+		}
+		dataTimeoutTimer.Reset(dataIntervalTimeout)
+	}
+
 	var (
 		firstWrite        = true
 		currentEvent      string
 		completedScanner  = newUsageScanner()
 		idScanner         = newResponsesIDScanner()
 		stopAfterBoundary bool
+		lastWriteAt       = time.Now()
 	)
 
 	for {
@@ -1126,6 +1165,27 @@ func proxySSEWithOptions(ctx context.Context, c *gin.Context, respUp *http.Respo
 			_ = respUp.Body.Close()
 			return completedScanner.Usage(), c.Writer.Written(), idScanner.ID(), fmt.Errorf("first token timeout (%ds)", firstTokenTimeOutSec)
 
+		case <-keepaliveC:
+			// 仅在距离上次下游写入已超过一个心跳间隔时才注入，避免与正常数据流叠加；
+			// 注释心跳不参与 usage/id 扫描，也不改 firstWrite/firstToken 计时。
+			if time.Since(lastWriteAt) >= keepaliveInterval {
+				if _, werr := c.Writer.Write(streamKeepaliveComment); werr != nil {
+					return completedScanner.Usage(), true, idScanner.ID(), werr
+				}
+				c.Writer.Flush()
+				lastWriteAt = time.Now()
+			}
+
+		case <-dataTimeoutC:
+			log.Warnf("stream data interval timeout (%s), closing upstream stream", dataIntervalTimeout)
+			_ = respUp.Body.Close()
+			return completedScanner.Usage(), c.Writer.Written(), idScanner.ID(), &localRelayError{
+				status:   http.StatusGatewayTimeout,
+				code:     "octopus_upstream_stream_timeout",
+				strategy: "stream_data_interval_timeout;upstream_forwarded=true",
+				message:  fmt.Sprintf("upstream stream timed out waiting for SSE event (%s)", dataIntervalTimeout),
+			}
+
 		case r, ok := <-results:
 			if !ok {
 				return completedScanner.Usage(), c.Writer.Written(), idScanner.ID(), nil
@@ -1136,6 +1196,8 @@ func proxySSEWithOptions(ctx context.Context, c *gin.Context, respUp *http.Respo
 			if r.err != nil {
 				return completedScanner.Usage(), c.Writer.Written(), idScanner.ID(), fmt.Errorf("failed to read stream line: %w", r.err)
 			}
+			// 收到一行上游 SSE：重置空闲超时（与主路径 resetDataTimeout 一致）。
+			resetDataTimeout()
 
 			line := r.line
 			trimmed := bytes.TrimRight(line, "\r\n")
@@ -1166,6 +1228,7 @@ func proxySSEWithOptions(ctx context.Context, c *gin.Context, respUp *http.Respo
 				return completedScanner.Usage(), true, idScanner.ID(), werr
 			}
 			c.Writer.Flush()
+			lastWriteAt = time.Now()
 
 			if firstWrite {
 				metrics.SetFirstTokenTime(time.Now())

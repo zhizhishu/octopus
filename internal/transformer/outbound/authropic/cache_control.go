@@ -17,13 +17,71 @@ func applyAutomaticCacheControl(req *anthropicModel.MessageRequest) {
 	}
 
 	minChars := autoCacheControlMinChars(req.Model)
-	if markSystemCacheControl(req, minChars) {
+
+	// Prefix breakpoint (system -> tools -> first user message), gated by min-chars.
+	// This anchors the cache at the front of the request so the stable prefix is reused.
+	// markFirstUserMessageCacheControl reports the message index it marked (or -1) so the
+	// sliding breakpoints below can avoid double-marking the same block.
+	prefixHit := false
+	prefixUserIdx := -1
+	if markSystemCacheControl(req, minChars) || markToolsCacheControl(req, minChars) {
+		prefixHit = true
+	} else if prefixUserIdx = markFirstUserMessageCacheControl(req, minChars); prefixUserIdx >= 0 {
+		prefixHit = true
+	}
+
+	// Sliding breakpoints only make sense once a cacheable prefix exists: their value is
+	// that the long prefix in front of them gets cached for the next turn (leapfrog). If
+	// no prefix breakpoint was placed (nothing met min-chars), the request is too small to
+	// be worth caching at all, so skip them — adding a lone breakpoint to a tiny request
+	// just pays the write premium for nothing.
+	if !prefixHit {
 		return
 	}
-	if markToolsCacheControl(req, minChars) {
+
+	// Mark up to the last two user messages. They don't need a min-chars gate of their
+	// own — what matters is the cached prefix ahead of them.
+	// Anthropic allows at most 4 cache_control breakpoints; prefix(1) + sliding(<=2) = <=3.
+	markSlidingUserCacheControls(req, prefixUserIdx)
+}
+
+// markSlidingUserCacheControls marks the last user message, and (when there are at least
+// 4 messages) the second-to-last user message. The message index already claimed by the
+// prefix breakpoint (prefixUserIdx, -1 if none) is skipped to avoid re-marking the same block.
+func markSlidingUserCacheControls(req *anthropicModel.MessageRequest, prefixUserIdx int) {
+	lastUserIdx := lastUserMessageIndex(req, len(req.Messages))
+	if lastUserIdx >= 0 && lastUserIdx != prefixUserIdx {
+		markMessageContentCacheControl(&req.Messages[lastUserIdx].Content)
+	}
+
+	// Only add the second sliding breakpoint once the conversation has enough turns,
+	// so short single-turn requests stay minimal.
+	if len(req.Messages) < 4 {
 		return
 	}
-	markFirstUserMessageCacheControl(req, minChars)
+
+	upperBound := lastUserIdx
+	if upperBound < 0 {
+		upperBound = len(req.Messages)
+	}
+	prevUserIdx := lastUserMessageIndex(req, upperBound)
+	if prevUserIdx >= 0 && prevUserIdx != prefixUserIdx {
+		markMessageContentCacheControl(&req.Messages[prevUserIdx].Content)
+	}
+}
+
+// lastUserMessageIndex returns the index of the last user message strictly before `before`,
+// or -1 if none exists.
+func lastUserMessageIndex(req *anthropicModel.MessageRequest, before int) int {
+	if before > len(req.Messages) {
+		before = len(req.Messages)
+	}
+	for i := before - 1; i >= 0; i-- {
+		if req.Messages[i].Role == "user" {
+			return i
+		}
+	}
+	return -1
 }
 
 func autoCacheControlMinChars(model string) int {
@@ -126,14 +184,21 @@ func toolsTextLen(tools []anthropicModel.Tool) int {
 	return total
 }
 
-func markFirstUserMessageCacheControl(req *anthropicModel.MessageRequest, minChars int) bool {
+// markFirstUserMessageCacheControl marks the first user message whose text meets the
+// min-chars threshold. It returns the index of the marked message, or -1 if none qualified
+// (or the chosen block had no cacheable text). The index lets the sliding breakpoints skip
+// a block that's already been marked as the prefix breakpoint.
+func markFirstUserMessageCacheControl(req *anthropicModel.MessageRequest, minChars int) int {
 	for i := range req.Messages {
 		if req.Messages[i].Role != "user" || messageContentTextLen(req.Messages[i].Content) < minChars {
 			continue
 		}
-		return markMessageContentCacheControl(&req.Messages[i].Content)
+		if markMessageContentCacheControl(&req.Messages[i].Content) {
+			return i
+		}
+		return -1
 	}
-	return false
+	return -1
 }
 
 func markMessageContentCacheControl(content *anthropicModel.MessageContent) bool {

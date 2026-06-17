@@ -914,6 +914,12 @@ type ResponsesItem struct {
 	ImageURL *string         `json:"image_url,omitempty"`
 	Detail   *string         `json:"detail,omitempty"`
 
+	// input_file fields (Codex / OpenAI Responses document input)
+	FileID   *string `json:"file_id,omitempty"`
+	Filename *string `json:"filename,omitempty"`
+	FileData *string `json:"file_data,omitempty"`
+	FileURL  *string `json:"file_url,omitempty"`
+
 	// Annotations for output_text content
 	Annotations *[]ResponsesAnnotation `json:"annotations,omitempty"`
 
@@ -1434,6 +1440,17 @@ func convertItemToMessage(item *ResponsesItem) (*model.Message, error) {
 		}
 		return nil, nil
 
+	case item.Type == "input_file":
+		if filePart := convertInputFileToPart(*item); filePart != nil {
+			return &model.Message{
+				Role: normalizeResponsesInputRole(item.Role),
+				Content: model.MessageContent{
+					MultipleContent: []model.MessageContentPart{*filePart},
+				},
+			}, nil
+		}
+		return nil, nil
+
 	case isResponsesToolCallItemType(item.Type):
 		callID := strings.TrimSpace(item.CallID)
 		if callID == "" {
@@ -1515,6 +1532,38 @@ func normalizeResponsesInputRole(role string) string {
 	}
 }
 
+// convertInputFileToPart maps a Codex / OpenAI Responses `input_file` item to
+// the internal "file" content part, preserving base64 data, remote url, file id
+// and filename so the document can be faithfully rebuilt outbound. Returns nil
+// when the item carries no usable file reference.
+func convertInputFileToPart(item ResponsesItem) *model.MessageContentPart {
+	file := &model.File{}
+	has := false
+	if item.Filename != nil && *item.Filename != "" {
+		file.Filename = *item.Filename
+		has = true
+	}
+	if item.FileData != nil && *item.FileData != "" {
+		file.FileData = *item.FileData
+		has = true
+	}
+	if item.FileURL != nil && *item.FileURL != "" {
+		file.FileURL = *item.FileURL
+		has = true
+	}
+	if item.FileID != nil && *item.FileID != "" {
+		file.FileID = *item.FileID
+		has = true
+	}
+	if !has {
+		return nil
+	}
+	return &model.MessageContentPart{
+		Type: "file",
+		File: file,
+	}
+}
+
 func convertInputToMessageContent(input ResponsesInput) model.MessageContent {
 	if input.Text != nil {
 		return model.MessageContent{Content: input.Text}
@@ -1539,6 +1588,10 @@ func convertInputToMessageContent(input ResponsesInput) model.MessageContent {
 						Detail: item.Detail,
 					},
 				})
+			}
+		case "input_file":
+			if filePart := convertInputFileToPart(item); filePart != nil {
+				parts = append(parts, *filePart)
 			}
 		}
 	}

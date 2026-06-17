@@ -420,7 +420,7 @@ func convertToAnthropicRequest(req *model.InternalLLMRequest) *anthropicModel.Me
 		} else {
 			result.Thinking = &anthropicModel.Thinking{
 				Type:         anthropicModel.ThinkingTypeEnabled,
-				BudgetTokens: getThinkingBudget(req.ReasoningEffort, req.ReasoningBudget),
+				BudgetTokens: getThinkingBudget(req.ReasoningEffort, req.ReasoningBudget, result.MaxTokens),
 			}
 		}
 	}
@@ -727,6 +727,10 @@ func convertToolResultBlock(msg model.Message) anthropicModel.MessageContentBloc
 				if imageBlock := convertImageURLToBlock(part); imageBlock != nil {
 					blocks = append(blocks, *imageBlock)
 				}
+			case "file":
+				if docBlock := convertFileToDocumentBlock(part); docBlock != nil {
+					blocks = append(blocks, *docBlock)
+				}
 			}
 		}
 
@@ -879,6 +883,10 @@ func convertMultiplePartContent(msg model.Message) anthropicModel.MessageContent
 					blocks = append(blocks, *block)
 				}
 			}
+		case "file":
+			if block := convertFileToDocumentBlock(part); block != nil {
+				blocks = append(blocks, *block)
+			}
 		}
 	}
 
@@ -934,6 +942,58 @@ func convertImageURLToBlock(part model.MessageContentPart) *anthropicModel.Messa
 	}
 }
 
+// convertFileToDocumentBlock rebuilds the internal "file" content part into an
+// Anthropic `document` block, mirroring convertImageURLToBlock for images. It
+// supports base64 (data URL or raw base64 + media type), remote url, and
+// provider file_id sources. Returns nil when there is nothing to rebuild.
+func convertFileToDocumentBlock(part model.MessageContentPart) *anthropicModel.MessageContentBlock {
+	if part.File == nil {
+		return nil
+	}
+	file := part.File
+
+	var source *anthropicModel.ImageSource
+	switch {
+	case file.FileData != "":
+		if parsed := xurl.ParseDataURL(file.FileData); parsed != nil {
+			mediaType := parsed.MediaType
+			if mediaType == "" {
+				mediaType = file.MediaType
+			}
+			source = &anthropicModel.ImageSource{
+				Type:      "base64",
+				MediaType: mediaType,
+				Data:      parsed.Data,
+			}
+		} else {
+			source = &anthropicModel.ImageSource{
+				Type:      "base64",
+				MediaType: file.MediaType,
+				Data:      file.FileData,
+			}
+		}
+	case file.FileURL != "":
+		source = &anthropicModel.ImageSource{
+			Type:      "url",
+			MediaType: file.MediaType,
+			URL:       file.FileURL,
+		}
+	case file.FileID != "":
+		source = &anthropicModel.ImageSource{
+			Type:   "file",
+			FileID: file.FileID,
+		}
+	default:
+		return nil
+	}
+
+	return &anthropicModel.MessageContentBlock{
+		Type:         "document",
+		Source:       source,
+		CacheControl: convertCacheControl(part.CacheControl),
+	}
+}
+
 func convertTools(tools []model.Tool) []anthropicModel.Tool {
 	result := make([]anthropicModel.Tool, 0, len(tools))
 	for _, tool := range tools {
@@ -973,21 +1033,32 @@ func convertCacheControl(cc *model.CacheControl) *anthropicModel.CacheControl {
 	}
 }
 
-func getThinkingBudget(effort string, budget *int64) *int64 {
+func getThinkingBudget(effort string, budget *int64, maxTokens int64) *int64 {
+	var result int64
 	if budget != nil {
-		return budget
+		result = *budget
+	} else {
+		switch effort {
+		case anthropicModel.EffortLow:
+			result = 1024
+		case anthropicModel.EffortMedium:
+			result = 8192
+		case anthropicModel.EffortHigh:
+			result = 32768
+		case anthropicModel.EffortMax:
+			// "max" maps to a budget above "high".
+			result = 64000
+		default:
+			result = 8192
+		}
 	}
 
-	var result int64
-	switch effort {
-	case anthropicModel.EffortLow:
-		result = 1024
-	case anthropicModel.EffortMedium:
-		result = 8192
-	case anthropicModel.EffortHigh:
-		result = 32768
-	default:
-		result = 8192
+	// Anthropic requires thinking budget_tokens < max_tokens. Clamp so a high/max
+	// effort (or an oversized explicit budget) never produces an upstream 400 when
+	// the resolved max_tokens is small (e.g. the 8192 default). maxTokens <= 0 means
+	// unknown/unbounded, so leave the budget untouched in that case.
+	if maxTokens > 0 && result >= maxTokens {
+		result = maxTokens - 1
 	}
 	return &result
 }
