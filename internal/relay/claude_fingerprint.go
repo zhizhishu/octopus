@@ -45,11 +45,31 @@ func claudeFingerprintDeviceID(userID, apiKeyID int) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// claudeFingerprintSessionID is stable for a sticky client session and otherwise a
-// fresh UUID, so multi-turn conversations keep one session id.
+// claudeFingerprintSessionID returns the session UUID shared by BOTH the
+// X-Claude-Code-Session-Id header and the body metadata.user_id.session_id, the way
+// real Claude Code emits one UUID in both places. It is deterministic for a sticky
+// client session / prompt-cache key / api-key context so the header and body always
+// agree (and multi-turn conversations keep one id), falling back to a fresh UUID only
+// for fully anonymous requests.
 func (ra *relayAttempt) claudeFingerprintSessionID() string {
-	if ra != nil && strings.TrimSpace(ra.clientSessionKey) != "" {
-		return uuid.NewSHA1(uuid.NameSpaceOID, []byte("octopus:claude:session:"+ra.clientSessionKey)).String()
+	if ra != nil {
+		if key := strings.TrimSpace(ra.clientSessionKey); key != "" {
+			return claudeSessionUUID(key)
+		}
+		if ra.internalRequest != nil && ra.internalRequest.PromptCacheKey != nil {
+			if value := strings.TrimSpace(*ra.internalRequest.PromptCacheKey); value != "" {
+				return claudeSessionUUID("prompt-cache:" + value)
+			}
+		}
+		if ra.apiKeyID > 0 || ra.userID > 0 {
+			return claudeSessionUUID(fmt.Sprintf("octopus:%d:%d", ra.userID, ra.apiKeyID))
+		}
 	}
 	return uuid.NewString()
+}
+
+// claudeSessionUUID derives a stable RFC-4122 UUID from a seed so the synthesized
+// session id has the same shape a real Claude Code session id does.
+func claudeSessionUUID(seed string) string {
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte("octopus:claude:session:"+seed)).String()
 }

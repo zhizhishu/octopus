@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	transformermodel "github.com/bestruirui/octopus/internal/transformer/model"
 	"github.com/bestruirui/octopus/internal/transformer/outbound"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 func TestShouldForwardClientHeaderFiltersTimeoutHeaders(t *testing.T) {
@@ -395,5 +397,59 @@ func TestCopyHeadersToUpstreamFiltersClientTimeoutHeaders(t *testing.T) {
 	}
 	if got := upstreamReq.Header.Get("Authorization"); got != "Bearer upstream-key" {
 		t.Fatalf("expected upstream authorization to be set, got %q", got)
+	}
+}
+
+// TestClaudeFingerprintSessionHeaderMatchesBodyUserID pins that the synthesized
+// Claude fingerprint matches the real claude-cli/2.1.178 wire shape: the upstream
+// User-Agent is the current CLI version, and the X-Claude-Code-Session-Id header is
+// a UUID equal to the session_id embedded in body metadata.user_id (real Claude Code
+// emits one UUID in both places — a 32-hex header that disagreed with the body was a
+// detectable non-CLI tell).
+func TestClaudeFingerprintSessionHeaderMatchesBodyUserID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	pck := "fp-consistency-session"
+	ra := &relayAttempt{
+		relayRequest: &relayRequest{
+			c:           c,
+			inboundType: inbound.InboundTypeAnthropic,
+			internalRequest: &transformermodel.InternalLLMRequest{
+				Model:          "claude-opus-4-8",
+				PromptCacheKey: &pck,
+			},
+		},
+		channel: &dbmodel.Channel{Type: outbound.OutboundTypeAnthropic},
+	}
+
+	ra.ensureClaudeMetadataUserID()
+	upstreamReq := httptest.NewRequest(http.MethodPost, "https://anyrouter.top/v1/messages", nil)
+	ra.copyHeaders(upstreamReq)
+
+	if got := upstreamReq.Header.Get("User-Agent"); got != dbmodel.DefaultClaudeHeaderUserAgent {
+		t.Fatalf("user-agent = %q, want %q", got, dbmodel.DefaultClaudeHeaderUserAgent)
+	}
+
+	headerSession := upstreamReq.Header.Get("X-Claude-Code-Session-Id")
+	if _, err := uuid.Parse(headerSession); err != nil {
+		t.Fatalf("X-Claude-Code-Session-Id = %q is not a UUID: %v", headerSession, err)
+	}
+
+	var meta struct {
+		DeviceID    string `json:"device_id"`
+		AccountUUID string `json:"account_uuid"`
+		SessionID   string `json:"session_id"`
+	}
+	raw := ra.internalRequest.Metadata["user_id"]
+	if err := json.Unmarshal([]byte(raw), &meta); err != nil {
+		t.Fatalf("metadata.user_id is not JSON: %q (%v)", raw, err)
+	}
+	if meta.SessionID != headerSession {
+		t.Fatalf("body session_id %q != header session %q (real Claude Code uses one UUID for both)", meta.SessionID, headerSession)
+	}
+	if len(meta.DeviceID) != 64 {
+		t.Fatalf("device_id should be 64-hex like real Claude Code, got %d chars: %q", len(meta.DeviceID), meta.DeviceID)
 	}
 }

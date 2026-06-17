@@ -62,6 +62,12 @@ type Setting struct {
 const (
 	DefaultCodexHeaderUserAgent = "codex_exec/0.132.0 (Windows 10.0.26200; x86_64) unknown (codex_exec; 0.132.0)"
 
+	// DefaultClaudeHeaderUserAgent is the locally packet-verified Claude Code CLI
+	// user-agent (claude-cli/2.1.178). Keep it in lockstep with the billing-header
+	// cc_version in the Anthropic outbound transformer so the UA and the body billing
+	// block never disagree on the client version.
+	DefaultClaudeHeaderUserAgent = "claude-cli/2.1.178 (external, sdk-cli)"
+
 	DefaultRelayStreamDataIntervalTimeoutSeconds       = "900"
 	LegacyDefaultRelayStreamDataIntervalTimeoutSeconds = "180"
 
@@ -70,6 +76,11 @@ const (
 	// custom value, so upgraded deployments converge to the locally verified
 	// Codex CLI fingerprint without requiring a manual settings edit.
 	LegacyDefaultCodexHeaderUserAgent0133 = "codex_exec/0.133.0 (Windows 10.0.26200; x86_64) unknown (codex_exec; 0.133.0)"
+
+	// LegacyDefaultClaudeHeaderUserAgent2168 was the previous Claude header default
+	// (claude-cli/2.1.168). Treat it as a product default, not an admin custom value,
+	// so upgraded deployments converge to the current fingerprint without a manual edit.
+	LegacyDefaultClaudeHeaderUserAgent2168 = "claude-cli/2.1.168 (external, sdk-cli)"
 )
 
 func DefaultSettings() []Setting {
@@ -87,7 +98,7 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyOpenAIAutoPromptCacheKey, Value: "true"},
 		{Key: SettingKeyRelayStreamDataTimeoutSec, Value: defaultRelayStreamDataIntervalTimeoutSeconds()},
 		{Key: SettingKeyResponsesSessionTTL, Value: "3600"},
-		{Key: SettingKeyClaudeHeaderUserAgent, Value: "claude-cli/2.1.168 (external, sdk-cli)"},
+		{Key: SettingKeyClaudeHeaderUserAgent, Value: DefaultClaudeHeaderUserAgent},
 		{Key: SettingKeyClaudeHeaderPackage, Value: "0.94.0"},
 		{Key: SettingKeyClaudeHeaderRuntime, Value: "v24.3.0"},
 		{Key: SettingKeyClaudeHeaderOS, Value: "Windows"},

@@ -517,7 +517,11 @@ const claudeBillingHeaderPrefix = "x-anthropic-billing-header:"
 // relays (e.g. AnyRouter) use it to recognise a genuine Claude CLI client, so
 // omitting it gets the request risk-rejected (429/503 before the business layer).
 func claudeBillingHeaderText() string {
-	return claudeBillingHeaderPrefix + " cc_version=2.1.126.e65; cc_entrypoint=sdk-cli; cch=05b53;"
+	// cc_version is kept in lockstep with the Claude header User-Agent
+	// (model.DefaultClaudeHeaderUserAgent = claude-cli/2.1.178); the suffix and cch are
+	// the values observed on a genuine claude-cli/2.1.178 request, so a synthesized
+	// (non-CLI) request does not disagree with the UA on the client version.
+	return claudeBillingHeaderPrefix + " cc_version=2.1.178.a3f; cc_entrypoint=sdk-cli; cch=c68a9;"
 }
 
 // claudeAgentIdentityText is the Claude Code agent-identity system block. Real

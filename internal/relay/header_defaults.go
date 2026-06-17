@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
-	"strconv"
 	"strings"
 
 	dbmodel "github.com/bestruirui/octopus/internal/model"
@@ -16,7 +15,7 @@ import (
 )
 
 const (
-	defaultClaudeUserAgent      = "claude-cli/2.1.168 (external, sdk-cli)"
+	defaultClaudeUserAgent      = dbmodel.DefaultClaudeHeaderUserAgent
 	defaultClaudePackageVersion = "0.94.0"
 	defaultClaudeRuntimeVersion = "v24.3.0"
 	defaultClaudeOS             = "Windows"
@@ -65,7 +64,7 @@ func (ra *relayAttempt) applyClaudeHeaderDefaults(req *http.Request) {
 	setHeaderIfMissing(req.Header, "User-Agent", settingString(dbmodel.SettingKeyClaudeHeaderUserAgent, defaultClaudeUserAgent))
 	setHeaderIfMissing(req.Header, "X-App", "cli")
 	setHeaderIfMissing(req.Header, "X-Client-Request-Id", uuid.NewString())
-	setHeaderIfMissing(req.Header, "X-Claude-Code-Session-Id", ra.safeClaudeSessionID())
+	setHeaderIfMissing(req.Header, "X-Claude-Code-Session-Id", ra.claudeFingerprintSessionID())
 	setHeaderIfMissing(req.Header, "X-Stainless-Lang", "js")
 	setHeaderIfMissing(req.Header, "X-Stainless-Retry-Count", "0")
 	setHeaderIfMissing(req.Header, "X-Stainless-Runtime", "node")
@@ -95,24 +94,6 @@ func ensureClaudeBetaQuery(req *http.Request) {
 		q.Set("beta", "true")
 		req.URL.RawQuery = q.Encode()
 	}
-}
-
-func (ra *relayAttempt) safeClaudeSessionID() string {
-	if ra == nil {
-		return ""
-	}
-	if ra.clientSessionKey != "" {
-		return hashClaudeSessionHeader(ra.clientSessionKey)
-	}
-	if ra.internalRequest != nil && ra.internalRequest.PromptCacheKey != nil {
-		if value := strings.TrimSpace(*ra.internalRequest.PromptCacheKey); value != "" {
-			return hashClaudeSessionHeader("prompt-cache:" + value)
-		}
-	}
-	if ra.apiKeyID > 0 || ra.userID > 0 {
-		return hashClaudeSessionHeader("octopus:" + strconv.Itoa(ra.userID) + ":" + strconv.Itoa(ra.apiKeyID))
-	}
-	return ""
 }
 
 func hashClaudeSessionHeader(value string) string {

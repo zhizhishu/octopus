@@ -35,7 +35,7 @@ const (
 	maxConcurrency                         = 20
 	maxModels                              = 100
 	upstreamBodyLimit                      = 32 * 1024
-	defaultClaudeUserAgent                 = "claude-cli/2.1.168 (external, sdk-cli)"
+	defaultClaudeUserAgent                 = dbmodel.DefaultClaudeHeaderUserAgent
 	defaultClaudePackageVersion            = "0.94.0"
 	defaultClaudeRuntimeVersion            = "v24.3.0"
 	defaultClaudeOS                        = "Windows"
