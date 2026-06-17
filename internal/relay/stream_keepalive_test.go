@@ -669,8 +669,14 @@ data: {"type":"message_stop"}
 	if sawAPIKey != "anthropic-key" || sawAuthorization != "Bearer anthropic-key" {
 		t.Fatalf("unexpected upstream auth headers: x-api-key=%q authorization=%q", sawAPIKey, sawAuthorization)
 	}
-	if sawClientRequestID == "" || sawClaudeSessionID == "" {
-		t.Fatalf("expected Claude-compatible identity headers, request_id=%q session=%q", sawClientRequestID, sawClaudeSessionID)
+	if sawClaudeSessionID == "" {
+		t.Fatalf("expected X-Claude-Code-Session-Id to be set, got %q", sawClaudeSessionID)
+	}
+	// Genuine claude-cli (2.1.168 and 2.1.178, captured on the wire) does NOT send
+	// X-Client-Request-Id; synthesizing one is a detectable non-CLI tell, so octopus
+	// must leave it absent upstream.
+	if sawClientRequestID != "" {
+		t.Fatalf("X-Client-Request-Id must be absent to match genuine claude-cli, got %q", sawClientRequestID)
 	}
 	if !strings.Contains(sawThinking, `"adaptive"`) || !strings.Contains(sawContextManagement, "clear_thinking_20251015") {
 		t.Fatalf("expected Claude CLI-like 1M body shape, thinking=%s context=%s", sawThinking, sawContextManagement)

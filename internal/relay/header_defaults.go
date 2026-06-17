@@ -11,7 +11,6 @@ import (
 	"github.com/bestruirui/octopus/internal/transformer/inbound"
 	"github.com/bestruirui/octopus/internal/transformer/model"
 	"github.com/bestruirui/octopus/internal/transformer/outbound"
-	"github.com/google/uuid"
 )
 
 const (
@@ -63,7 +62,9 @@ func (ra *relayAttempt) applyClaudeHeaderDefaults(req *http.Request) {
 	setHeaderIfMissing(req.Header, "Anthropic-Version", "2023-06-01")
 	setHeaderIfMissing(req.Header, "User-Agent", settingString(dbmodel.SettingKeyClaudeHeaderUserAgent, defaultClaudeUserAgent))
 	setHeaderIfMissing(req.Header, "X-App", "cli")
-	setHeaderIfMissing(req.Header, "X-Client-Request-Id", uuid.NewString())
+	// NB: genuine claude-cli (2.1.168 and 2.1.178, captured on the wire) does NOT
+	// send X-Client-Request-Id, so we must not synthesize one — an extra header the
+	// real CLI never emits is a detectable non-CLI tell to AnyRouter's shape check.
 	setHeaderIfMissing(req.Header, "X-Claude-Code-Session-Id", ra.claudeFingerprintSessionID())
 	setHeaderIfMissing(req.Header, "X-Stainless-Lang", "js")
 	setHeaderIfMissing(req.Header, "X-Stainless-Retry-Count", "0")
@@ -75,13 +76,18 @@ func (ra *relayAttempt) applyClaudeHeaderDefaults(req *http.Request) {
 		setHeaderIfMissing(req.Header, "X-Stainless-OS", settingString(dbmodel.SettingKeyClaudeHeaderOS, defaultClaudeOS))
 		setHeaderIfMissing(req.Header, "X-Stainless-Arch", settingString(dbmodel.SettingKeyClaudeHeaderArch, defaultClaudeArch))
 	}
+	// Emit the canonical claude-code beta set FIRST so the wire ORDER matches a
+	// genuine claude-cli request exactly — in particular context-1m-2025-08-07 sits
+	// in its real position (7th, after mid-conversation-system) instead of being
+	// prepended. Any extra client/transform betas are appended after and de-duped,
+	// so a real claude-code client's own betas are still preserved.
+	for _, beta := range model.AnthropicClaudeCodeBetas(shouldEnableClaudeOneMillionBeta(ra.internalRequest)) {
+		addAnthropicBetaHeader(req.Header, beta)
+	}
 	if ra != nil && ra.internalRequest != nil {
 		for _, beta := range ra.internalRequest.TransformOptions.AnthropicBetas {
 			addAnthropicBetaHeader(req.Header, beta)
 		}
-	}
-	for _, beta := range model.AnthropicClaudeCodeBetas(shouldEnableClaudeOneMillionBeta(ra.internalRequest)) {
-		addAnthropicBetaHeader(req.Header, beta)
 	}
 }
 

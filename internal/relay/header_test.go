@@ -453,3 +453,43 @@ func TestClaudeFingerprintSessionHeaderMatchesBodyUserID(t *testing.T) {
 		t.Fatalf("device_id should be 64-hex like real Claude Code, got %d chars: %q", len(meta.DeviceID), meta.DeviceID)
 	}
 }
+
+// TestClaudeBetaHeaderMatchesGenuineCliOrder pins that the upstream anthropic-beta
+// header is emitted in the EXACT order a genuine claude-cli request uses — in
+// particular context-1m-2025-08-07 sits in its real position (7th, after
+// mid-conversation-system), NOT prepended. Regression guard: a transform-injected
+// 1m beta must not reorder the canonical set (AnyRouter shape checks can key on beta
+// order/set). Also pins that X-Client-Request-Id stays absent (genuine cli omits it).
+func TestClaudeBetaHeaderMatchesGenuineCliOrder(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	ir := &transformermodel.InternalLLMRequest{Model: "claude-opus-4-8"}
+	ir.TransformOptions.AnthropicOneMillionBeta = true
+	// Reproduce the bug trigger: 1m also present in the transform beta list.
+	ir.TransformOptions.AnthropicBetas = []string{transformermodel.AnthropicOneMillionBeta}
+	ra := &relayAttempt{
+		relayRequest: &relayRequest{
+			c:               c,
+			inboundType:     inbound.InboundTypeAnthropic,
+			internalRequest: ir,
+		},
+		channel: &dbmodel.Channel{Type: outbound.OutboundTypeAnthropic},
+	}
+
+	upstreamReq := httptest.NewRequest(http.MethodPost, "https://anyrouter.top/v1/messages", nil)
+	ra.copyHeaders(upstreamReq)
+
+	gotBeta := upstreamReq.Header.Get("Anthropic-Beta")
+	wantBeta := strings.Join(transformermodel.AnthropicClaudeCodeBetas(true), ",")
+	if gotBeta != wantBeta {
+		t.Fatalf("anthropic-beta order mismatch:\n got=%q\nwant=%q", gotBeta, wantBeta)
+	}
+	if strings.HasPrefix(gotBeta, transformermodel.AnthropicOneMillionBeta) {
+		t.Fatalf("1m beta must not be prepended (genuine cli puts it 7th): %q", gotBeta)
+	}
+	if got := upstreamReq.Header.Get("X-Client-Request-Id"); got != "" {
+		t.Fatalf("X-Client-Request-Id must be absent to match genuine claude-cli, got %q", got)
+	}
+}
