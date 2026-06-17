@@ -411,6 +411,10 @@ type ResponsesItem struct {
 	FileData *string `json:"file_data,omitempty"`
 	FileURL  *string `json:"file_url,omitempty"`
 
+	// input_audio carries audio content for the OpenAI Responses
+	// `input_audio` item type: {type:"input_audio", input_audio:{data, format}}.
+	InputAudio *ResponsesInputAudio `json:"input_audio,omitempty"`
+
 	// Annotations for output_text content
 	Annotations []ResponsesAnnotation `json:"annotations,omitempty"`
 
@@ -433,6 +437,14 @@ type ResponsesItem struct {
 	// Reasoning fields
 	Summary          []ResponsesReasoningSummary `json:"summary,omitempty"`
 	EncryptedContent *string                     `json:"encrypted_content,omitempty"`
+}
+
+// ResponsesInputAudio is the nested payload of an OpenAI Responses
+// `input_audio` content item. Data is base64-encoded audio and Format is the
+// codec (e.g. "wav", "mp3"), mirroring the internal model.Audio fields.
+type ResponsesInputAudio struct {
+	Data   string `json:"data"`
+	Format string `json:"format"`
 }
 
 // decodeFlexibleJSONString reads a JSON value that is normally a string but may
@@ -995,6 +1007,10 @@ func convertUserMessageToResponses(msg model.Message) ResponsesItem {
 				if fileItem := convertFileToInputFile(p); fileItem != nil {
 					contentItems = append(contentItems, *fileItem)
 				}
+			case "input_audio":
+				if audioItem := convertAudioToInputAudio(p); audioItem != nil {
+					contentItems = append(contentItems, *audioItem)
+				}
 			}
 		}
 	}
@@ -1041,6 +1057,24 @@ func convertFileToInputFile(p model.MessageContentPart) *ResponsesItem {
 		return nil
 	}
 	return item
+}
+
+// convertAudioToInputAudio rebuilds the internal "input_audio" content part into
+// an OpenAI Responses `input_audio` item, mirroring the input_image / input_file
+// handling. Internal audio (carried as model.Audio by chat / gemini inbounds)
+// holds base64 data and a format; without this the audio is silently dropped on
+// the way out to a Responses upstream. Returns nil when no audio data is present.
+func convertAudioToInputAudio(p model.MessageContentPart) *ResponsesItem {
+	if p.Audio == nil || p.Audio.Data == "" {
+		return nil
+	}
+	return &ResponsesItem{
+		Type: "input_audio",
+		InputAudio: &ResponsesInputAudio{
+			Data:   p.Audio.Data,
+			Format: p.Audio.Format,
+		},
+	}
 }
 
 func convertAssistantMessageToResponses(msg model.Message) []ResponsesItem {

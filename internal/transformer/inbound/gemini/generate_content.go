@@ -196,13 +196,25 @@ func convertGeminiContent(content *model.GeminiContent, contentIndex int, callID
 		if part.InlineData != nil {
 			parts = append(parts, convertGeminiInlineData(part.InlineData))
 		}
-		if part.FileData != nil && part.FileData.FileURI != "" && strings.HasPrefix(part.FileData.MimeType, "image/") {
-			parts = append(parts, model.MessageContentPart{
-				Type: "image_url",
-				ImageURL: &model.ImageURL{
-					URL: part.FileData.FileURI,
-				},
-			})
+		if part.FileData != nil && part.FileData.FileURI != "" {
+			if strings.HasPrefix(part.FileData.MimeType, "image/") {
+				parts = append(parts, model.MessageContentPart{
+					Type: "image_url",
+					ImageURL: &model.ImageURL{
+						URL: part.FileData.FileURI,
+					},
+				})
+			} else {
+				// Non-image fileData (e.g. application/pdf) -> internal file part
+				// so documents referenced by URI are not dropped.
+				parts = append(parts, model.MessageContentPart{
+					Type: "file",
+					File: &model.File{
+						FileURL:   part.FileData.FileURI,
+						MediaType: part.FileData.MimeType,
+					},
+				})
+			}
 		}
 		if part.FunctionCall != nil && role == "assistant" {
 			args, _ := json.Marshal(part.FunctionCall.Args)

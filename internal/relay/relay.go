@@ -1775,15 +1775,29 @@ func messageToSyntheticDeltas(index int, msg *model.Message) []model.Choice {
 	if msg == nil {
 		return nil
 	}
-	deltas := make([]model.Choice, 0, 3)
-	if msg.ReasoningContent != nil && strings.TrimSpace(*msg.ReasoningContent) != "" {
-		reasoning := *msg.ReasoningContent
+	deltas := make([]model.Choice, 0, 4)
+	// Carry reasoning content together with its Anthropic thinking signature in the
+	// same delta. The Anthropic inbound stream synthesizer only emits a
+	// signature_delta while the thinking content block is still open (it does not
+	// open one itself), so the signature must accompany the reasoning chunk;
+	// otherwise the rebuilt thinking block loses its signature and the next turn is
+	// rejected by Anthropic. A signature with no reasoning text is still forwarded
+	// so it is not silently dropped.
+	reasoning := strings.TrimSpace(deref(msg.ReasoningContent))
+	signature := strings.TrimSpace(deref(msg.ReasoningSignature))
+	if reasoning != "" || signature != "" {
+		reasoningDelta := &model.Message{Role: "assistant"}
+		if reasoning != "" {
+			text := *msg.ReasoningContent
+			reasoningDelta.ReasoningContent = &text
+		}
+		if signature != "" {
+			sig := *msg.ReasoningSignature
+			reasoningDelta.ReasoningSignature = &sig
+		}
 		deltas = append(deltas, model.Choice{
 			Index: index,
-			Delta: &model.Message{
-				Role:             "assistant",
-				ReasoningContent: &reasoning,
-			},
+			Delta: reasoningDelta,
 		})
 	}
 	if text := messageText(msg); text != "" {
@@ -1794,6 +1808,20 @@ func messageToSyntheticDeltas(index int, msg *model.Message) []model.Choice {
 				Content: model.MessageContent{
 					Content: &text,
 				},
+			},
+		})
+	}
+	// Preserve image parts (msg.Images plus any image parts inlined in
+	// MultipleContent). Without this, an Anthropic stream that falls back to a
+	// non-stream upstream loses generated images when re-synthesized as a stream.
+	// The downstream OpenAI inbound merges Delta.Images / Delta.Content.MultipleContent
+	// back into the aggregated message.
+	if images := messageImageParts(msg); len(images) > 0 {
+		deltas = append(deltas, model.Choice{
+			Index: index,
+			Delta: &model.Message{
+				Role:   "assistant",
+				Images: images,
 			},
 		})
 	}
@@ -1830,6 +1858,46 @@ func messageText(msg *model.Message) string {
 		}
 	}
 	return builder.String()
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+// messageImageParts collects image content parts carried by a message so the
+// non-stream -> stream synthesizer does not drop generated images. It includes
+// both msg.Images (where providers like Gemini-via-OpenAI place generated
+// images) and any image parts inlined in Content.MultipleContent.
+func messageImageParts(msg *model.Message) []model.MessageContentPart {
+	if msg == nil {
+		return nil
+	}
+	parts := make([]model.MessageContentPart, 0, len(msg.Images)+len(msg.Content.MultipleContent))
+	parts = append(parts, msg.Images...)
+	for _, part := range msg.Content.MultipleContent {
+		if isImagePart(part) {
+			parts = append(parts, part)
+		}
+	}
+	if len(parts) == 0 {
+		return nil
+	}
+	return parts
+}
+
+func isImagePart(part model.MessageContentPart) bool {
+	if part.ImageURL != nil {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(part.Type)) {
+	case "image", "image_url":
+		return true
+	default:
+		return false
+	}
 }
 
 func (ra *relayAttempt) transformStreamData(ctx context.Context, data string, outAdapter model.Outbound) ([]byte, error) {

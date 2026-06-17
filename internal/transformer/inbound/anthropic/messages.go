@@ -1153,6 +1153,18 @@ func (i *MessagesInbound) GetInternalResponse(ctx context.Context) (*model.Inter
 					*existingChoice.Message.ReasoningContent += *delta.ReasoningContent
 				}
 
+				// Preserve reasoning signature. Unlike reasoning content, the
+				// signature arrives as a complete value (Anthropic emits it via a
+				// single signature_delta, mapped to ReasoningSignature by the
+				// outbound transformer) rather than as incremental fragments, so we
+				// keep the last non-empty value instead of appending. Without this
+				// the aggregated thinking block loses its signature and gets
+				// rejected when sent back to Anthropic on the next turn.
+				if delta.ReasoningSignature != nil && *delta.ReasoningSignature != "" {
+					sig := *delta.ReasoningSignature
+					existingChoice.Message.ReasoningSignature = &sig
+				}
+
 				// Aggregate tool calls
 				for _, toolCall := range delta.ToolCalls {
 					existingChoice.Message.ToolCalls = mergeToolCall(existingChoice.Message.ToolCalls, toolCall)

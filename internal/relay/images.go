@@ -875,7 +875,13 @@ func imagesAttempt(
 			return 0, false, nil, "", errors.New("nil json payload")
 		}
 		if isGrokImagesModel(actualModel) {
+			// Grok image generation has no streaming variant; the normalized
+			// payload drops "stream", so the local stream flag must follow suit.
+			// Otherwise stream=true would route into proxySSE while the upstream
+			// replies with application/json, failing with a non-SSE content-type
+			// error instead of returning the image via proxyNonStream.
 			jsonPayload = normalizeGrokImagesPayload(jsonPayload)
+			stream = false
 		}
 		jsonPayload["model"] = actualModel
 		b, err := json.Marshal(jsonPayload)

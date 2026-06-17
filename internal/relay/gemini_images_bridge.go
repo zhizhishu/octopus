@@ -131,7 +131,7 @@ func geminiImagesAttempt(
 }
 
 func geminiImageRequestBodyAndURL(baseURL, modelName, key string, payload map[string]any, prompt string) ([]byte, string, error) {
-	if strings.HasPrefix(strings.ToLower(modelName), "imagen") {
+	if transformerModel.IsImagenModel(modelName) {
 		reqBody := geminiImagePredictRequest{
 			Instances: []geminiImageInstance{{Prompt: prompt}},
 			Parameters: geminiImageParameters{
@@ -194,7 +194,7 @@ func joinGeminiModelMethod(baseURL, modelName, method, key string) (string, erro
 }
 
 func openAIImagesResponseFromGemini(body io.Reader, modelName string, payload map[string]any) (*imagesGenerationAPIResponse, *imagesUsage, error) {
-	if strings.HasPrefix(strings.ToLower(modelName), "imagen") {
+	if transformerModel.IsImagenModel(modelName) {
 		var geminiResp geminiImagePredictResponse
 		if err := json.NewDecoder(body).Decode(&geminiResp); err != nil {
 			return nil, nil, fmt.Errorf("failed to decode gemini imagen response: %w", err)
@@ -372,6 +372,13 @@ func isGrokImagesModel(modelName string) bool {
 		strings.Contains(modelName, "grok-2-image")
 }
 
+// normalizeGrokImagesPayload trims the inbound Images payload down to the small
+// set of fields the xAI/Grok image endpoint accepts. Grok image generation has
+// no streaming variant, so the upstream "stream" field is intentionally dropped
+// here. Callers that track a separate local stream flag must force it to false
+// alongside this call (see imagesAttempt); otherwise a client request with
+// stream=true would route into the SSE path while the upstream replies with
+// application/json, failing with a non-SSE content-type error.
 func normalizeGrokImagesPayload(payload map[string]any) map[string]any {
 	normalized := make(map[string]any, 4)
 	for _, key := range []string{"model", "prompt", "n", "response_format"} {

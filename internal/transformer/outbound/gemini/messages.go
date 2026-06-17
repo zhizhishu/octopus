@@ -193,48 +193,7 @@ func convertLLMToGeminiRequest(request *model.InternalLLMRequest) *model.GeminiG
 			}
 
 			if msg.Content.MultipleContent != nil {
-				for _, part := range msg.Content.MultipleContent {
-					switch part.Type {
-					case "text":
-						if part.Text != nil {
-							content.Parts = append(content.Parts, &model.GeminiPart{
-								Text: *part.Text,
-							})
-						}
-					case "image_url":
-						// get mime type from url extension
-						dataurl := xurl.ParseDataURL(part.ImageURL.URL)
-						if dataurl != nil && dataurl.IsBase64 {
-							content.Parts = append(content.Parts, &model.GeminiPart{
-								InlineData: &model.GeminiBlob{
-									MimeType: dataurl.MediaType,
-									Data:     dataurl.Data,
-								},
-							})
-						}
-					case "input_audio":
-						if part.Audio != nil {
-							content.Parts = append(content.Parts, &model.GeminiPart{
-								InlineData: &model.GeminiBlob{
-									MimeType: audioTypeToMimeType(part.Audio.Format),
-									Data:     part.Audio.Data,
-								},
-							})
-						}
-					case "file":
-						if part.File != nil {
-							dataurl := xurl.ParseDataURL(part.File.FileData)
-							if dataurl != nil && dataurl.IsBase64 {
-								content.Parts = append(content.Parts, &model.GeminiPart{
-									InlineData: &model.GeminiBlob{
-										MimeType: dataurl.MediaType,
-										Data:     dataurl.Data,
-									},
-								})
-							}
-						}
-					}
-				}
+				content.Parts = append(content.Parts, geminiPartsFromMultipleContent(msg.Content.MultipleContent)...)
 			}
 
 			geminiReq.Contents = append(geminiReq.Contents, content)
@@ -249,6 +208,11 @@ func convertLLMToGeminiRequest(request *model.InternalLLMRequest) *model.GeminiG
 				content.Parts = append(content.Parts, &model.GeminiPart{
 					Text: *msg.Content.Content,
 				})
+			}
+			// Handle multimodal content (e.g. images from prior image-generation
+			// turns) so multi-turn drawing history is not silently dropped.
+			if msg.Content.MultipleContent != nil {
+				content.Parts = append(content.Parts, geminiPartsFromMultipleContent(msg.Content.MultipleContent)...)
 			}
 			// Handle tool calls
 			if len(msg.ToolCalls) > 0 {
@@ -309,7 +273,17 @@ func convertLLMToGeminiRequest(request *model.InternalLLMRequest) *model.GeminiG
 		hasConfig = true
 	}
 
-	if request.ReasoningEffort != "" {
+	// Prefer an explicit ReasoningBudget (e.g. round-tripped from a Gemini
+	// thinkingConfig.thinkingBudget on the inbound side) over the coarse
+	// ReasoningEffort mapping so the original budget is preserved.
+	if request.ReasoningBudget != nil {
+		budget := int32(*request.ReasoningBudget)
+		config.ThinkingConfig = &model.GeminiThinkingConfig{
+			ThinkingBudget:  &budget,
+			IncludeThoughts: true,
+		}
+		hasConfig = true
+	} else if request.ReasoningEffort != "" {
 		budget := reasoningToThinkingBudget(request.ReasoningEffort)
 
 		config.ThinkingConfig = &model.GeminiThinkingConfig{
@@ -430,6 +404,99 @@ func convertLLMToGeminiRequest(request *model.InternalLLMRequest) *model.GeminiG
 
 	return geminiReq
 
+}
+
+// geminiPartsFromMultipleContent converts an OpenAI-style multimodal content
+// array into Gemini parts. It is shared by the user and assistant branches so
+// images/files round-trip in multi-turn (e.g. image-generation) histories.
+//
+//   - text         -> text part
+//   - image_url    -> inlineData for base64 data URLs, otherwise fileData with
+//     the remote http(s) URI (symmetric with the inbound fileData->image_url path)
+//   - input_audio  -> inlineData
+//   - file         -> inlineData for base64 data URLs; remote File.FileURL or
+//     provider File.FileID fall back to fileData, using File.MediaType as the
+//     mime hint when the data URL does not carry one
+func geminiPartsFromMultipleContent(parts []model.MessageContentPart) []*model.GeminiPart {
+	out := make([]*model.GeminiPart, 0, len(parts))
+	for _, part := range parts {
+		switch part.Type {
+		case "text":
+			if part.Text != nil {
+				out = append(out, &model.GeminiPart{
+					Text: *part.Text,
+				})
+			}
+		case "image_url":
+			if part.ImageURL == nil || part.ImageURL.URL == "" {
+				continue
+			}
+			// get mime type from url extension
+			dataurl := xurl.ParseDataURL(part.ImageURL.URL)
+			if dataurl != nil && dataurl.IsBase64 {
+				out = append(out, &model.GeminiPart{
+					InlineData: &model.GeminiBlob{
+						MimeType: dataurl.MediaType,
+						Data:     dataurl.Data,
+					},
+				})
+			} else {
+				// Remote http(s) image URL: reference it via fileData instead of
+				// dropping it (symmetric with inbound fileData -> image_url).
+				out = append(out, &model.GeminiPart{
+					FileData: &model.GeminiFileData{
+						FileURI: part.ImageURL.URL,
+					},
+				})
+			}
+		case "input_audio":
+			if part.Audio != nil {
+				out = append(out, &model.GeminiPart{
+					InlineData: &model.GeminiBlob{
+						MimeType: audioTypeToMimeType(part.Audio.Format),
+						Data:     part.Audio.Data,
+					},
+				})
+			}
+		case "file":
+			if part.File == nil {
+				continue
+			}
+			dataurl := xurl.ParseDataURL(part.File.FileData)
+			if dataurl != nil && dataurl.IsBase64 {
+				mimeType := dataurl.MediaType
+				// Prefer the explicit File.MediaType when the data URL carries no
+				// real media type. ParseDataURL defaults a missing media type to
+				// "text/plain" (RFC 2397), which is rarely correct for documents.
+				if (mimeType == "" || mimeType == "text/plain") && part.File.MediaType != "" {
+					mimeType = part.File.MediaType
+				}
+				out = append(out, &model.GeminiPart{
+					InlineData: &model.GeminiBlob{
+						MimeType: mimeType,
+						Data:     dataurl.Data,
+					},
+				})
+			} else if uri := part.File.FileURL; uri != "" {
+				// Remote document URL -> fileData reference.
+				out = append(out, &model.GeminiPart{
+					FileData: &model.GeminiFileData{
+						MimeType: part.File.MediaType,
+						FileURI:  uri,
+					},
+				})
+			} else if id := part.File.FileID; id != "" {
+				// Provider-side file id -> fileData reference.
+				out = append(out, &model.GeminiPart{
+					FileData: &model.GeminiFileData{
+						MimeType: part.File.MediaType,
+						FileURI:  id,
+					},
+				})
+			}
+		}
+	}
+	return out
 }
 
 func geminiResponseModality(modality string) string {
@@ -581,7 +648,7 @@ func convertGeminiToLLMResponse(geminiResp *model.GeminiGenerateContentResponse,
 			var reasoningContent *string
 			var hasInlineData bool
 
-			for idx, part := range candidate.Content.Parts {
+			for _, part := range candidate.Content.Parts {
 				if part.Thought {
 					// Handle thinking/reasoning content
 					if part.Text != "" && reasoningContent == nil {
@@ -610,9 +677,14 @@ func convertGeminiToLLMResponse(geminiResp *model.GeminiGenerateContentResponse,
 				}
 				if part.FunctionCall != nil {
 					argsJSON, _ := json.Marshal(part.FunctionCall.Args)
+					// Index must count tool calls only; using the parts-loop idx
+					// (which also covers text/thought parts) makes the streaming
+					// tool_call index jump or collide when multiple part kinds
+					// interleave. Use the current tool-call count instead.
+					toolCallIndex := len(toolCalls)
 					toolCall := model.ToolCall{
-						Index: idx,
-						ID:    fmt.Sprintf("call_%s_%d", part.FunctionCall.Name, idx),
+						Index: toolCallIndex,
+						ID:    fmt.Sprintf("call_%s_%d", part.FunctionCall.Name, toolCallIndex),
 						Type:  "function",
 						Function: model.FunctionCall{
 							Name:      part.FunctionCall.Name,

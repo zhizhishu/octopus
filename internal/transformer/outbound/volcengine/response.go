@@ -102,9 +102,13 @@ type Thinking struct {
 type ResponsesInput struct {
 	Text  *string
 	Items []ResponsesItem
+	Raw   json.RawMessage
 }
 
 func (i ResponsesInput) MarshalJSON() ([]byte, error) {
+	if len(i.Raw) > 0 {
+		return i.Raw, nil
+	}
 	if i.Text != nil {
 		return json.Marshal(i.Text)
 	}
@@ -112,6 +116,7 @@ func (i ResponsesInput) MarshalJSON() ([]byte, error) {
 }
 
 func (i *ResponsesInput) UnmarshalJSON(data []byte) error {
+	i.Raw = append(i.Raw[:0], data...)
 	var text string
 	if err := json.Unmarshal(data, &text); err == nil {
 		i.Text = &text
@@ -132,6 +137,12 @@ type ResponsesItem struct {
 
 func convertToResponsesInput(input openai.ResponsesInput) ResponsesInput {
 	result := ResponsesInput{}
+	// When the source input is an OpenAI Responses raw passthrough, copy it so
+	// MarshalJSON emits it verbatim instead of dropping everything to "[]".
+	if len(input.Raw) > 0 && input.Text == nil && len(input.Items) == 0 {
+		result.Raw = cloneRawMessage(input.Raw)
+		return result
+	}
 	if input.Text != nil {
 		result.Text = input.Text
 		return result
@@ -141,9 +152,23 @@ func convertToResponsesInput(input openai.ResponsesInput) ResponsesInput {
 		result.Items = append(result.Items, ResponsesItem{ResponsesItem: item})
 	}
 	// If the role of the last message is the assistant, needs set partial.
-	idx := len(input.Items) - 1
-	if result.Items[idx].Role == "assistant" {
-		result.Items[idx].Partial = true
+	// Guard against empty input (e.g. a system-only request whose system
+	// message is lifted into Instructions, leaving Items empty) to avoid an
+	// out-of-range panic on result.Items[-1].
+	if len(result.Items) > 0 {
+		idx := len(result.Items) - 1
+		if result.Items[idx].Role == "assistant" {
+			result.Items[idx].Partial = true
+		}
 	}
 	return result
+}
+
+func cloneRawMessage(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make([]byte, len(raw))
+	copy(out, raw)
+	return out
 }

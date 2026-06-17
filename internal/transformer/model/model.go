@@ -486,7 +486,7 @@ func isImageGenerationModelName(name string) bool {
 		strings.Contains(name, "image-2") ||
 		strings.HasPrefix(name, "dall-e") ||
 		strings.Contains(name, "/dall-e") ||
-		strings.Contains(name, "imagen-") ||
+		IsImagenModel(name) ||
 		strings.HasPrefix(name, "flux-") ||
 		strings.Contains(name, "/flux-") ||
 		strings.HasPrefix(name, "flux.1-") ||
@@ -505,6 +505,32 @@ func isGeminiImageGenerationModelName(name string) bool {
 func isGrokImageGenerationModelName(name string) bool {
 	return strings.Contains(name, "grok-imagine-image") ||
 		strings.Contains(name, "grok-2-image")
+}
+
+// IsImagenModel reports whether the model name refers to a Google Imagen model
+// (served via the Gemini :predict endpoint), as opposed to a Gemini image model
+// (served via :generateContent). This is the single source of truth shared by
+// the image-generation request detection here and the Gemini images bridge in
+// the relay package, so Imagen vs Gemini-image routing stays consistent.
+//
+// It matches both the canonical hyphenated form (e.g. "imagen-4.0-generate-001",
+// "models/imagen-3.0") and hyphen-less variants some routers expose (e.g.
+// "imagen", "imagen4"). A leading path segment such as "models/" or a vendor
+// prefix like "google/" is tolerated.
+func IsImagenModel(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		return false
+	}
+	// Strip a leading path/vendor prefix so "models/imagen-3.0" and
+	// "google/imagen-4" are detected the same as a bare "imagen-4".
+	if idx := strings.LastIndex(name, "/"); idx >= 0 {
+		name = name[idx+1:]
+	}
+	if strings.Contains(name, "imagen-") {
+		return true
+	}
+	return strings.HasPrefix(name, "imagen")
 }
 
 type TransformOptions struct {
