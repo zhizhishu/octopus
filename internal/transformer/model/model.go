@@ -1084,13 +1084,27 @@ type ModalityTokenCount struct {
 	TokenCount int64 `json:"token_count,omitempty"`
 }
 
+// ToolTypeAnthropicBuiltin marks an internal Tool that carries an Anthropic
+// built-in tool (computer-use, bash, text_editor, code_execution, ...) verbatim
+// in RawTool. Outbound transformers that don't understand these tools (openai,
+// gemini) match on Type=="function" and therefore skip it safely; the Anthropic
+// outbound transformer restores RawTool unchanged.
+const ToolTypeAnthropicBuiltin = "anthropic_builtin"
+
 // Tool represents a function tool.
 type Tool struct {
 	// Type is the type of the tool.
-	// Any of "function", "image_generation".
+	// Any of "function", "image_generation", "anthropic_builtin".
 	Type            string           `json:"type"`
 	Function        Function         `json:"function"`
 	ImageGeneration *ImageGeneration `json:"image_generation,omitempty"`
+
+	// RawTool holds the original provider tool object for tools that cannot be
+	// represented by the function shape — currently Anthropic built-in tools, whose
+	// proprietary fields (display_width_px/display_number/etc.) must round-trip
+	// untouched. Present only when Type == ToolTypeAnthropicBuiltin. Not serialized
+	// in the standard llm JSON format.
+	RawTool json.RawMessage `json:"-"`
 
 	// CacheControl is used for provider-specific cache control (e.g., Anthropic).
 	// This field is not serialized in JSON.

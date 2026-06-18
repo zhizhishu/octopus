@@ -997,6 +997,18 @@ func convertFileToDocumentBlock(part model.MessageContentPart) *anthropicModel.M
 func convertTools(tools []model.Tool) []anthropicModel.Tool {
 	result := make([]anthropicModel.Tool, 0, len(tools))
 	for _, tool := range tools {
+		// Anthropic built-in tools (computer-use, bash, text_editor, ...) were
+		// preserved verbatim on the inbound path. Restore the original tool object
+		// instead of dropping it, so proprietary fields (display_width_px, etc.)
+		// reach the model. cache_control attached on the internal side is merged
+		// back in by anthropicModel.Tool.MarshalJSON.
+		if tool.Type == model.ToolTypeAnthropicBuiltin && len(tool.RawTool) > 0 {
+			result = append(result, anthropicModel.Tool{
+				Raw:          tool.RawTool,
+				CacheControl: convertCacheControl(tool.CacheControl),
+			})
+			continue
+		}
 		if tool.Type != "function" {
 			continue
 		}

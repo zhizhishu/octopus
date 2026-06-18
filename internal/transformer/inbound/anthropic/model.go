@@ -256,11 +256,85 @@ type ToolChoice struct {
 type Tool struct {
 	// Ensure the omitempty, otherwise it will be sent empty string to the API, will cause some providers ignore the tool.
 	// For now, we only support function (client tool or custom tool in anthropic) tool, so we can just omit the type.
-	// Type         string          `json:"type,omitempty"`
+	// Type is parsed only to detect Anthropic built-in tools (computer-use, bash,
+	// text_editor, code_execution, ...). Those carry no standard input_schema and
+	// instead use proprietary fields (display_width_px, display_number, ...), so we
+	// preserve their original JSON in Raw instead of forcing them into a function.
+	Type         string          `json:"type,omitempty"`
 	Name         string          `json:"name"`
 	Description  string          `json:"description"`
 	InputSchema  json.RawMessage `json:"input_schema"`
 	CacheControl *CacheControl   `json:"cache_control,omitempty"`
+
+	// Raw holds the original, untouched tool object as it arrived from the client.
+	// It is populated for every tool on unmarshal and is what lets the transformer
+	// round-trip built-in tools (and any future proprietary fields) without knowing
+	// their full shape. Not serialized directly.
+	Raw json.RawMessage `json:"-"`
+}
+
+// UnmarshalJSON captures the original tool object in Raw while still decoding the
+// standard fields. This keeps proprietary built-in tool fields
+// (display_width_px/display_height_px/display_number, etc.) from being silently
+// dropped during inbound parsing.
+func (t *Tool) UnmarshalJSON(data []byte) error {
+	type alias Tool
+	var parsed alias
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return err
+	}
+	*t = Tool(parsed)
+	t.Raw = append(json.RawMessage(nil), data...)
+	return nil
+}
+
+// MarshalJSON re-emits the original tool object verbatim when Raw is set (built-in
+// tools restored on the outbound path), so proprietary fields survive the
+// round-trip. cache_control, if it was attached on the internal side, is merged
+// back into the raw object. Standard custom/function tools fall back to the field
+// set (with type omitted, preserving prior behavior).
+func (t Tool) MarshalJSON() ([]byte, error) {
+	if len(t.Raw) > 0 {
+		if t.CacheControl == nil {
+			return append(json.RawMessage(nil), t.Raw...), nil
+		}
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal(t.Raw, &obj); err != nil {
+			// Not an object we can merge into; emit as-is.
+			return append(json.RawMessage(nil), t.Raw...), nil
+		}
+		cc, err := json.Marshal(t.CacheControl)
+		if err != nil {
+			return nil, err
+		}
+		obj["cache_control"] = cc
+		return json.Marshal(obj)
+	}
+	type standardTool struct {
+		Name         string          `json:"name"`
+		Description  string          `json:"description"`
+		InputSchema  json.RawMessage `json:"input_schema"`
+		CacheControl *CacheControl   `json:"cache_control,omitempty"`
+	}
+	return json.Marshal(standardTool{
+		Name:         t.Name,
+		Description:  t.Description,
+		InputSchema:  t.InputSchema,
+		CacheControl: t.CacheControl,
+	})
+}
+
+// IsBuiltin reports whether this tool is an Anthropic built-in tool (computer-use,
+// bash, text_editor, code_execution, web_search, ...) rather than a standard
+// custom/function tool. Built-in tools declare a non-empty Type that is not
+// "custom"/"function"; custom tools either omit type or set it to "custom".
+func (t Tool) IsBuiltin() bool {
+	switch t.Type {
+	case "", "custom", "function":
+		return false
+	default:
+		return true
+	}
 }
 
 type CacheControl struct {

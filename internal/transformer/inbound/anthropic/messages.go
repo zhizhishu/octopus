@@ -270,6 +270,19 @@ func (i *MessagesInbound) TransformRequest(ctx context.Context, body []byte) (*m
 	if len(anthropicReq.Tools) > 0 {
 		tools := make([]model.Tool, 0, len(anthropicReq.Tools))
 		for _, tool := range anthropicReq.Tools {
+			if tool.IsBuiltin() {
+				// Anthropic built-in tools (computer-use, bash, text_editor, ...)
+				// carry no standard input_schema and rely on proprietary fields.
+				// Preserve the original tool object verbatim so the Anthropic
+				// outbound transformer can re-emit it without loss.
+				tools = append(tools, model.Tool{
+					Type:         model.ToolTypeAnthropicBuiltin,
+					RawTool:      tool.Raw,
+					CacheControl: convertToLLMCacheControl(tool.CacheControl),
+				})
+				i.inputToken += int64(tokenizer.CountTokens(string(tool.Raw), chatReq.Model))
+				continue
+			}
 			llmTool := model.Tool{
 				Type: "function",
 				Function: model.Function{
