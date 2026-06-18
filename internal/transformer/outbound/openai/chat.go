@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/bestruirui/octopus/internal/transformer/model"
 	"github.com/bestruirui/octopus/internal/utils/xurl"
@@ -42,6 +43,8 @@ func transformChatRequest(ctx context.Context, request *model.InternalLLMRequest
 		}
 	}
 
+	applyGLMThinking(request)
+
 	body, err := json.Marshal(request)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
@@ -72,6 +75,87 @@ func transformChatRequest(ctx context.Context, request *model.InternalLLMRequest
 	mergeInboundQuery(req.URL, request.Query)
 	req.Method = http.MethodPost
 	return req, nil
+}
+
+// glmThinkingEnabled and glmThinkingDisabled are the canonical thinking
+// payloads GLM (glm-4.5/glm-4.6 ...) and z.ai (zai) models expect on the
+// OpenAI Chat Completions endpoint. GLM does not understand the OpenAI
+// reasoning_effort field, so the client's reasoning intent must be projected
+// onto this thinking object instead.
+var (
+	glmThinkingEnabled  = json.RawMessage(`{"type":"enabled"}`)
+	glmThinkingDisabled = json.RawMessage(`{"type":"disabled"}`)
+)
+
+// isGLMModel reports whether the model name targets a GLM / z.ai model that
+// uses the thinking:{type} switch instead of reasoning_effort.
+func isGLMModel(model string) bool {
+	lower := strings.ToLower(model)
+	return strings.Contains(lower, "glm") || strings.Contains(lower, "zai")
+}
+
+// applyGLMThinking maps the internal reasoning intent
+// (ReasoningEffort / ReasoningBudget / AdaptiveThinking) onto the GLM-specific
+// thinking:{type:"enabled"|"disabled"} field.
+//
+// It is strictly gated on the model name so non-GLM chat providers
+// (openai/deepseek/...) keep their existing behaviour and are never injected
+// with a thinking field (deepseek-reasoner reasons automatically and has no
+// such parameter). When the client already supplied a thinking payload
+// (request.Thinking is non-empty, e.g. DeepSeek-style direct passthrough) the
+// original value is respected and never overwritten.
+func applyGLMThinking(request *model.InternalLLMRequest) {
+	if request == nil || !isGLMModel(request.Model) {
+		return
+	}
+
+	// Respect a client-provided thinking payload (direct passthrough).
+	if rawJSONPresent(request.Thinking) {
+		return
+	}
+
+	switch {
+	case glmWantsThinking(request):
+		request.Thinking = append(json.RawMessage(nil), glmThinkingEnabled...)
+	case glmDisablesThinking(request):
+		request.Thinking = append(json.RawMessage(nil), glmThinkingDisabled...)
+	default:
+		// No explicit reasoning intent: leave the request untouched instead of
+		// force-injecting a thinking field on ordinary GLM requests.
+	}
+}
+
+// glmWantsThinking reports an explicit request to enable reasoning.
+func glmWantsThinking(request *model.InternalLLMRequest) bool {
+	if request.AdaptiveThinking {
+		return true
+	}
+	if request.ReasoningBudget != nil && *request.ReasoningBudget > 0 {
+		return true
+	}
+	switch strings.ToLower(request.ReasoningEffort) {
+	case "low", "medium", "high":
+		return true
+	}
+	return false
+}
+
+// glmDisablesThinking reports an explicit request to turn reasoning off.
+// Mirrors the volcengine semantics where "minimal" maps to disabled, and also
+// covers the OpenAI "none" effort.
+func glmDisablesThinking(request *model.InternalLLMRequest) bool {
+	switch strings.ToLower(request.ReasoningEffort) {
+	case "minimal", "none":
+		return true
+	}
+	return false
+}
+
+// rawJSONPresent reports whether a json.RawMessage carries meaningful content
+// (non-empty and not the literal null).
+func rawJSONPresent(raw json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(raw))
+	return trimmed != "" && trimmed != "null"
 }
 
 func (o *CustomChatOutbound) TransformResponse(ctx context.Context, response *http.Response) (*model.InternalLLMResponse, error) {

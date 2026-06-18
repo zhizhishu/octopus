@@ -700,8 +700,14 @@ func (i *MessagesInbound) TransformStream(ctx context.Context, stream *model.Int
 	if len(stream.Choices) > 0 {
 		choice := stream.Choices[0]
 
-		// Handle reasoning content (thinking) delta
-		if choice.Delta != nil && choice.Delta.ReasoningContent != nil && *choice.Delta.ReasoningContent != "" {
+		// Handle reasoning content (thinking) delta.
+		// Use GetReasoningContent so upstreams that emit the `reasoning` field
+		// (OpenRouter/Ollama ...) instead of `reasoning_content` are not dropped.
+		var reasoningDelta string
+		if choice.Delta != nil {
+			reasoningDelta = choice.Delta.GetReasoningContent()
+		}
+		if reasoningDelta != "" {
 			// If the tool content has started before the thinking content, we need to stop it
 			if i.hasToolContentStarted {
 				i.hasToolContentStarted = false
@@ -745,7 +751,7 @@ func (i *MessagesInbound) TransformStream(ctx context.Context, stream *model.Int
 				Index: &i.contentIndex,
 				Delta: &StreamDelta{
 					Type:     lo.ToPtr("thinking_delta"),
-					Thinking: choice.Delta.ReasoningContent,
+					Thinking: lo.ToPtr(reasoningDelta),
 				},
 			}
 			data, err := json.Marshal(deltaEvent)

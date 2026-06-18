@@ -160,9 +160,13 @@ func (i *ResponseInbound) TransformStream(ctx context.Context, stream *model.Int
 	if len(stream.Choices) > 0 {
 		choice := stream.Choices[0]
 
-		// Handle reasoning content delta
-		if choice.Delta != nil && choice.Delta.ReasoningContent != nil && *choice.Delta.ReasoningContent != "" {
-			events = append(events, i.handleReasoningContent(choice.Delta.ReasoningContent)...)
+		// Handle reasoning content delta.
+		// Use GetReasoningContent so upstreams that emit the `reasoning` field
+		// (OpenRouter/Ollama ...) instead of `reasoning_content` are not dropped.
+		if choice.Delta != nil {
+			if reasoning := choice.Delta.GetReasoningContent(); reasoning != "" {
+				events = append(events, i.handleReasoningContent(lo.ToPtr(reasoning))...)
+			}
 		}
 
 		// Handle text content delta
