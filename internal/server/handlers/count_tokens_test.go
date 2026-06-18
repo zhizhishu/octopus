@@ -75,8 +75,42 @@ func TestCountAnthropicInputTokens(t *testing.T) {
 			}}},
 		},
 	}
-	if got := countAnthropicInputTokens(withBlocks); got <= 0 {
-		t.Fatalf("array content: got %d want > 0", got)
+	textOnly := countAnthropicInputTokens(withBlocks)
+	if textOnly <= 0 {
+		t.Fatalf("array content: got %d want > 0", textOnly)
+	}
+
+	// An image block (base64 source) must add a flat estimate, so the same
+	// message with an extra image is strictly larger than text-only.
+	withImageBase64 := anthropic.MessageRequest{
+		Model: "claude-3-5-sonnet",
+		Messages: []anthropic.MessageParam{
+			{Role: "user", Content: anthropic.MessageContent{MultipleContent: []anthropic.MessageContentBlock{
+				{Type: "text", Text: strPtr("Explain goroutines and channels in detail please.")},
+				{Type: "image", Source: &anthropic.ImageSource{Type: "base64", MediaType: "image/png", Data: "iVBORw0KGgo="}},
+			}}},
+		},
+	}
+	imgBase64 := countAnthropicInputTokens(withImageBase64)
+	if imgBase64 <= textOnly {
+		t.Fatalf("base64 image: got %d want > %d (text only)", imgBase64, textOnly)
+	}
+	if imgBase64-textOnly != imageBlockTokenEstimate {
+		t.Fatalf("base64 image delta: got %d want %d", imgBase64-textOnly, imageBlockTokenEstimate)
+	}
+
+	// A url image source must also be counted.
+	withImageURL := anthropic.MessageRequest{
+		Model: "claude-3-5-sonnet",
+		Messages: []anthropic.MessageParam{
+			{Role: "user", Content: anthropic.MessageContent{MultipleContent: []anthropic.MessageContentBlock{
+				{Type: "text", Text: strPtr("Explain goroutines and channels in detail please.")},
+				{Type: "image", Source: &anthropic.ImageSource{Type: "url", URL: "https://example.com/a.png"}},
+			}}},
+		},
+	}
+	if imgURL := countAnthropicInputTokens(withImageURL); imgURL <= textOnly {
+		t.Fatalf("url image: got %d want > %d (text only)", imgURL, textOnly)
 	}
 }
 

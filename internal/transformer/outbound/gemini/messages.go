@@ -157,6 +157,68 @@ func audioTypeToMimeType(format string) string {
 	}
 }
 
+// mimeFromURL infers a MIME type from a remote URL's file extension. Gemini
+// fileData parts want an explicit mimeType, and some upstreams reject a bare
+// fileUri with an empty mimeType. We only return a value for extensions we are
+// confident about; unknown extensions yield "" so callers can leave the field
+// empty rather than guessing.
+func mimeFromURL(rawURL string) string {
+	if rawURL == "" {
+		return ""
+	}
+	// Strip query/fragment before inspecting the extension so things like
+	// "https://host/a.png?sig=..." still resolve.
+	path := rawURL
+	if i := strings.IndexAny(path, "?#"); i >= 0 {
+		path = path[:i]
+	}
+	dot := strings.LastIndex(path, ".")
+	if dot < 0 {
+		return ""
+	}
+	// Reject a "." that belongs to a host/path segment rather than a filename,
+	// e.g. "https://a.b/c" where the last dot precedes a slash.
+	if strings.ContainsAny(path[dot:], "/") {
+		return ""
+	}
+	switch strings.ToLower(path[dot+1:]) {
+	case "png":
+		return "image/png"
+	case "jpg", "jpeg":
+		return "image/jpeg"
+	case "webp":
+		return "image/webp"
+	case "gif":
+		return "image/gif"
+	case "heic":
+		return "image/heic"
+	case "heif":
+		return "image/heif"
+	case "bmp":
+		return "image/bmp"
+	case "pdf":
+		return "application/pdf"
+	case "mp4":
+		return "video/mp4"
+	case "mov":
+		return "video/quicktime"
+	case "webm":
+		return "video/webm"
+	case "mp3":
+		return "audio/mpeg"
+	case "wav":
+		return "audio/wav"
+	case "ogg":
+		return "audio/ogg"
+	case "flac":
+		return "audio/flac"
+	case "aac":
+		return "audio/aac"
+	default:
+		return ""
+	}
+}
+
 func convertLLMToGeminiRequest(request *model.InternalLLMRequest) *model.GeminiGenerateContentRequest {
 	geminiReq := &model.GeminiGenerateContentRequest{
 		Contents: []*model.GeminiContent{},
@@ -443,9 +505,12 @@ func geminiPartsFromMultipleContent(parts []model.MessageContentPart) []*model.G
 			} else {
 				// Remote http(s) image URL: reference it via fileData instead of
 				// dropping it (symmetric with inbound fileData -> image_url).
+				// Infer mimeType from the URL extension; Gemini wants it set and
+				// some upstreams reject fileData with an empty mimeType.
 				out = append(out, &model.GeminiPart{
 					FileData: &model.GeminiFileData{
-						FileURI: part.ImageURL.URL,
+						MimeType: mimeFromURL(part.ImageURL.URL),
+						FileURI:  part.ImageURL.URL,
 					},
 				})
 			}
@@ -478,10 +543,16 @@ func geminiPartsFromMultipleContent(parts []model.MessageContentPart) []*model.G
 					},
 				})
 			} else if uri := part.File.FileURL; uri != "" {
-				// Remote document URL -> fileData reference.
+				// Remote document URL -> fileData reference. Prefer an explicit
+				// File.MediaType; otherwise infer it from the URL extension so the
+				// fileData mimeType is not left empty.
+				mimeType := part.File.MediaType
+				if mimeType == "" {
+					mimeType = mimeFromURL(uri)
+				}
 				out = append(out, &model.GeminiPart{
 					FileData: &model.GeminiFileData{
-						MimeType: part.File.MediaType,
+						MimeType: mimeType,
 						FileURI:  uri,
 					},
 				})

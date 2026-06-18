@@ -134,13 +134,14 @@ func apiKeyEndpointFamilyForPath(path string) model.APIKeyEndpointFamily {
 	if strings.HasPrefix(path, "/v1beta/") {
 		return model.APIKeyEndpointFamilyGemini
 	}
-	if path == "/v1/messages" {
+	if path == "/v1/messages" || path == "/v1/messages/count_tokens" {
 		return model.APIKeyEndpointFamilyAnthropic
 	}
 	if path == "/v1/chat/completions" ||
 		path == "/v1/responses" ||
 		path == "/v1/embeddings" ||
 		path == "/v1/models" ||
+		strings.HasPrefix(path, "/v1/models/") ||
 		path == "/v1/completions" ||
 		path == "/v1/edits" ||
 		path == "/v1/responses/compact" ||

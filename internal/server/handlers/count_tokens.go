@@ -89,12 +89,28 @@ func countAnthropicInputTokens(req anthropic.MessageRequest) int64 {
 	return total
 }
 
+// imageBlockTokenEstimate is a conservative, flat per-image approximation. We
+// cannot know the real pixel dimensions without decoding the image, so we use a
+// constant in the ballpark of a single medium-sized Anthropic image (Anthropic
+// bills vision tokens roughly as (width*height)/750, which for a ~1100x1100px
+// image lands near ~1600 tokens). This intentionally over- rather than
+// under-estimates so callers do not blow past upstream limits. It is an
+// approximation, not the upstream-precise count.
+const imageBlockTokenEstimate int64 = 1600
+
 // countContentBlockTokens counts the textual payload of a single content block,
-// recursing into tool_result content which may itself carry text blocks.
+// recursing into tool_result content which may itself carry text blocks. Image
+// blocks contribute a flat conservative estimate (see imageBlockTokenEstimate)
+// since their true token cost depends on pixel dimensions we cannot read here.
 func countContentBlockTokens(block anthropic.MessageContentBlock, model string) int64 {
 	var total int64
 	if block.Text != nil && *block.Text != "" {
 		total += int64(tokenizer.CountTokens(*block.Text, model))
+	}
+	// Image blocks (base64 or url source) have no text we can tokenize; charge a
+	// flat conservative per-image estimate. Approximate by design.
+	if block.Type == "image" && block.Source != nil {
+		total += imageBlockTokenEstimate
 	}
 	if block.Thinking != nil && *block.Thinking != "" {
 		total += int64(tokenizer.CountTokens(*block.Thinking, model))

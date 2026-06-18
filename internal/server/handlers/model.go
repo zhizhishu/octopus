@@ -57,20 +57,32 @@ func init() {
 		AddRoute(
 			router.NewRoute("/models", http.MethodGet).
 				Handle(getModelList),
+		).
+		AddRoute(
+			// GET /v1/models/{id} -> single model detail. Some OpenAI-compatible
+			// tools probe a specific model id to validate availability. The model
+			// source is identical to GET /v1/models.
+			router.NewRoute("/models/:id", http.MethodGet).
+				Handle(getModel),
 		)
 }
 
-func getModelList(c *gin.Context) {
+// apiKeyAllowedModels resolves the model list for the current API key: the
+// group plan models, narrowed by the key's supported_models allow-list and then
+// by the endpoint family. This is the single source of truth shared by
+// GET /v1/models (list) and GET /v1/models/{id} (single). It writes an error
+// response and returns ok=false on failure.
+func apiKeyAllowedModels(c *gin.Context) (models []string, ok bool) {
 	apiKeyId := c.GetInt("api_key_id")
 	models, err := op.GroupListModelForAPIKeyPlan(apiKeyId, modelListAccessPlanHeader(c), c.Request.Context())
 	if err != nil {
 		resp.Error(c, http.StatusForbidden, err.Error())
-		return
+		return nil, false
 	}
 	apiKey, err := op.APIKeyGet(apiKeyId, c.Request.Context())
 	if err != nil {
 		resp.Error(c, http.StatusInternalServerError, err.Error())
-		return
+		return nil, false
 	}
 	if apiKey.SupportedModels != "" {
 		supportedModels := op.SupportedModelsList(apiKey.SupportedModels)
@@ -80,6 +92,14 @@ func getModelList(c *gin.Context) {
 	}
 	if endpointFamily := c.GetString("endpoint_family"); endpointFamily != "" {
 		models = op.FilterModelNamesForEndpointFamily(c.Request.Context(), models, model.APIKeyEndpointFamily(endpointFamily))
+	}
+	return models, true
+}
+
+func getModelList(c *gin.Context) {
+	models, ok := apiKeyAllowedModels(c)
+	if !ok {
+		return
 	}
 
 	if c.GetString("request_type") == "anthropic" {
@@ -117,6 +137,36 @@ func getModelList(c *gin.Context) {
 			"object":  "list",
 		})
 	}
+}
+
+// getModel implements GET /v1/models/{id}. It returns a single OpenAI-format
+// model object only if the requested id is in the key's allowed model set (same
+// source as GET /v1/models); otherwise it responds 404. Tools that validate a
+// single model call this endpoint.
+func getModel(c *gin.Context) {
+	requested := strings.TrimSpace(c.Param("id"))
+	if requested == "" {
+		resp.Error(c, http.StatusNotFound, "model not found")
+		return
+	}
+
+	models, ok := apiKeyAllowedModels(c)
+	if !ok {
+		return
+	}
+
+	for _, m := range models {
+		if m == requested {
+			c.JSON(http.StatusOK, model.OpenAIModel{
+				ID:      m,
+				Object:  "model",
+				Created: 1763395200,
+				OwnedBy: "octopus",
+			})
+			return
+		}
+	}
+	resp.Error(c, http.StatusNotFound, "model not found")
 }
 
 func modelListAccessPlanHeader(c *gin.Context) string {

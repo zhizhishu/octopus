@@ -150,6 +150,55 @@ func TestAPIKeyEndpointFamilyForCodexResponsesAliases(t *testing.T) {
 	}
 }
 
+func TestAPIKeyEndpointFamilyForCountTokensIsAnthropic(t *testing.T) {
+	if got := apiKeyEndpointFamilyForPath("/v1/messages/count_tokens"); got != model.APIKeyEndpointFamilyAnthropic {
+		t.Fatalf("count_tokens endpoint family: got %q want %q", got, model.APIKeyEndpointFamilyAnthropic)
+	}
+	// The plain messages path must keep its anthropic mapping unchanged.
+	if got := apiKeyEndpointFamilyForPath("/v1/messages"); got != model.APIKeyEndpointFamilyAnthropic {
+		t.Fatalf("messages endpoint family: got %q want %q", got, model.APIKeyEndpointFamilyAnthropic)
+	}
+}
+
+func TestAPIKeyEndpointFamilyForSingleModelIsOpenAICompatible(t *testing.T) {
+	if got := apiKeyEndpointFamilyForPath("/v1/models/gpt-4o"); got != model.APIKeyEndpointFamilyOpenAICompatible {
+		t.Fatalf("single model endpoint family: got %q want %q", got, model.APIKeyEndpointFamilyOpenAICompatible)
+	}
+	// The list path must keep its openai-compatible mapping unchanged.
+	if got := apiKeyEndpointFamilyForPath("/v1/models"); got != model.APIKeyEndpointFamilyOpenAICompatible {
+		t.Fatalf("models list endpoint family: got %q want %q", got, model.APIKeyEndpointFamilyOpenAICompatible)
+	}
+}
+
+func TestAPIKeyAuthCountTokensRespectsAnthropicFamily(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupMiddlewareAuthDB(t)
+	user := createMiddlewareAuthUser(t, ctx)
+
+	router := gin.New()
+	handler := func(c *gin.Context) { c.Status(http.StatusNoContent) }
+	router.POST("/v1/messages/count_tokens", APIKeyAuth(), handler)
+
+	// An anthropic-scoped key is allowed to call count_tokens.
+	anthropicKey := createMiddlewareAuthAPIKey(t, ctx, user, "anthropic only", "sk-octopus-anthropic-ct-test", []model.APIKeyEndpointFamily{
+		model.APIKeyEndpointFamilyAnthropic,
+	})
+	rec := performAuthRequest(router, http.MethodPost, "/v1/messages/count_tokens", "x-api-key", anthropicKey.APIKey)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected anthropic key to pass count_tokens, got %d body %s", rec.Code, rec.Body.String())
+	}
+
+	// An openai-only key must be forbidden from count_tokens (anthropic family).
+	openaiKey := createMiddlewareAuthAPIKey(t, ctx, user, "openai only", "sk-octopus-openai-ct-test", []model.APIKeyEndpointFamily{
+		model.APIKeyEndpointFamilyOpenAICompatible,
+	})
+	rec = performAuthRequest(router, http.MethodPost, "/v1/messages/count_tokens", "x-api-key", openaiKey.APIKey)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected openai-only key to be forbidden from count_tokens, got %d body %s", rec.Code, rec.Body.String())
+	}
+	assertResponseErrorCode(t, rec, "endpoint_not_allowed")
+}
+
 func TestAPIKeyEndpointFamiliesCreateUpdateListGetPreserveField(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx := setupMiddlewareAuthDB(t)

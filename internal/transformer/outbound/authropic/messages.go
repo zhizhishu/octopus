@@ -425,11 +425,61 @@ func convertToAnthropicRequest(req *model.InternalLLMRequest) *anthropicModel.Me
 		}
 	}
 
+	// Cross-protocol structured output: when an OpenAI client requested
+	// json_schema structured output and there is no native Anthropic
+	// output_config to honor (Claude Code's own output_config always wins and is
+	// never overwritten), map the schema onto Anthropic's output_config.format so
+	// the structured-output intent survives the OpenAI -> Anthropic hop.
+	if result.OutputConfig == nil {
+		if format, ok := anthropicOutputFormatFromResponseFormat(req.ResponseFormat); ok {
+			result.OutputConfig = &anthropicModel.OutputConfig{Format: format}
+		}
+	}
+
 	if req.TransformOptions.AnthropicAutoCacheControl {
 		applyAutomaticCacheControl(result)
 	}
 
 	return result
+}
+
+// anthropicOutputFormatFromResponseFormat converts an OpenAI-style json_schema
+// response_format into the Anthropic output_config.format shape
+// ({"type":"json_schema","name":...,"schema":...}). It returns ok=false for nil,
+// non-json_schema, or empty/unparseable schemas so the caller leaves
+// output_config untouched. The internal ResponseFormat.JSONSchema arrives in two
+// shapes: the OpenAI Chat wrapper {"name","schema","strict"} and the OpenAI
+// Responses bare schema object; both are normalized here.
+func anthropicOutputFormatFromResponseFormat(rf *model.ResponseFormat) (json.RawMessage, bool) {
+	if rf == nil || rf.Type != "json_schema" || !rawJSONPresent(rf.JSONSchema) {
+		return nil, false
+	}
+
+	var decoded map[string]json.RawMessage
+	if err := json.Unmarshal(rf.JSONSchema, &decoded); err != nil || decoded == nil {
+		return nil, false
+	}
+
+	format := map[string]json.RawMessage{
+		"type": json.RawMessage(`"json_schema"`),
+	}
+
+	// Chat-style wrapper carries the actual schema under "schema" alongside an
+	// optional "name". Responses-style payloads are the bare schema object.
+	if schema, ok := decoded["schema"]; ok && rawJSONPresent(schema) {
+		format["schema"] = append(json.RawMessage(nil), schema...)
+		if name, ok := decoded["name"]; ok && rawJSONPresent(name) {
+			format["name"] = append(json.RawMessage(nil), name...)
+		}
+	} else {
+		format["schema"] = append(json.RawMessage(nil), rf.JSONSchema...)
+	}
+
+	raw, err := json.Marshal(format)
+	if err != nil {
+		return nil, false
+	}
+	return raw, true
 }
 
 func decodeAnthropicThinking(raw json.RawMessage) (*anthropicModel.Thinking, bool) {
