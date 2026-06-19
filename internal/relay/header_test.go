@@ -454,6 +454,47 @@ func TestClaudeFingerprintSessionHeaderMatchesBodyUserID(t *testing.T) {
 	}
 }
 
+// TestClaudeFingerprintSuppressedWhenCloakOff pins that an Anthropic channel with
+// cloak mode "never" gets NO synthetic Claude fingerprint: ensureClaudeMetadataUserID
+// injects no body metadata.user_id, and applyHeaderDefaults (via copyHeaders) sets no
+// Claude CLI headers. This lets a domestic Anthropic-compatible upstream (GLM/DeepSeek)
+// be reached clean. auto/always stay covered by the sibling tests above.
+func TestClaudeFingerprintSuppressedWhenCloakOff(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	pck := "cloak-off-session"
+	ra := &relayAttempt{
+		relayRequest: &relayRequest{
+			c:           c,
+			inboundType: inbound.InboundTypeAnthropic,
+			internalRequest: &transformermodel.InternalLLMRequest{
+				Model:          "glm-4.6",
+				PromptCacheKey: &pck,
+			},
+		},
+		channel: &dbmodel.Channel{
+			Type:  outbound.OutboundTypeAnthropic,
+			Cloak: dbmodel.ChannelCloak{Mode: "never"},
+		},
+	}
+
+	ra.ensureClaudeMetadataUserID()
+	if got := ra.internalRequest.Metadata["user_id"]; got != "" {
+		t.Fatalf("cloak off must not inject metadata.user_id, got %q", got)
+	}
+
+	upstreamReq := httptest.NewRequest(http.MethodPost, "https://glm.example/v1/messages", nil)
+	ra.copyHeaders(upstreamReq)
+	if got := upstreamReq.Header.Get("X-Claude-Code-Session-Id"); got != "" {
+		t.Fatalf("cloak off must not set X-Claude-Code-Session-Id, got %q", got)
+	}
+	if got := upstreamReq.Header.Get("User-Agent"); got == dbmodel.DefaultClaudeHeaderUserAgent {
+		t.Fatalf("cloak off must not set the claude-cli User-Agent")
+	}
+}
+
 // TestClaudeBetaHeaderMatchesGenuineCliOrder pins that the upstream anthropic-beta
 // header is emitted in the EXACT order a genuine claude-cli request uses — in
 // particular context-1m-2025-08-07 sits in its real position (7th, after

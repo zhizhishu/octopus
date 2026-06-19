@@ -26,6 +26,12 @@ func (ra *relayAttempt) ensureClaudeMetadataUserID() {
 	if ra.channel.Type != outbound.OutboundTypeAnthropic {
 		return
 	}
+	// Respect the channel cloak switch: mode "never" disables the Claude fingerprint,
+	// so a domestic Anthropic-compatible upstream (GLM/DeepSeek) gets no synthetic
+	// metadata.user_id. auto/always keep it (anyrouter requires it for non-CLI clients).
+	if !shouldApplyChannelCloak(ra.channel.Cloak) {
+		return
+	}
 	if ra.internalRequest.Metadata == nil {
 		ra.internalRequest.Metadata = map[string]string{}
 	}

@@ -761,7 +761,7 @@
             "cloakModeAuto": "Auto stable",
             "cloakModeAlways": "Always inject",
             "cloakModeNever": "Off",
-            "cloakModeHint": "Auto fills Claude/Codex identity headers by protocol. Custom headers still win.",
+            "cloakModeHint": "Simulates the Claude/Codex CLI identity (request headers + body) so risk-controlled relays accept the request. Choose Off for upstreams that don't need it — e.g. domestic models (DeepSeek/GLM). Custom headers still win.",
             "channelProxy": "Channel Proxy",
             "channelProxyPlaceholder": "Optional: proxy for this channel (overrides global proxy)",
             "paramOverride": "Param Override",

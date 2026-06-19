@@ -608,6 +608,19 @@ func convertSystemPrompt(req *model.InternalLLMRequest) *anthropicModel.SystemPr
 		})
 	}
 
+	// Cloak disabled (channel cloak mode "never"): do not synthesize the Claude CLI
+	// billing-header / agent-identity blocks. Pass the client's own system blocks
+	// through untouched so non-anyrouter Anthropic-compatible upstreams (e.g. domestic
+	// GLM/DeepSeek anthropic endpoints) never receive injected Claude identity. A
+	// genuine Claude CLI client's own billing/identity blocks (sent as system messages)
+	// still flow through here; only octopus's synthetic injection is skipped.
+	if req.TransformOptions.SuppressClaudeIdentity {
+		if len(parts) == 0 {
+			return nil
+		}
+		return &anthropicModel.SystemPrompt{MultiplePrompts: parts}
+	}
+
 	// Prepend the Claude CLI billing-header system block when the client did not
 	// already send one (genuine Claude CLI puts it as the first system block, so
 	// real CLI requests pass through unchanged; non-CLI clients get it injected).

@@ -1031,6 +1031,11 @@ func isOpenAIResponsesEndpointUnsupportedError(statusCode int, body string) bool
 
 func (ra *relayAttempt) applyTransformOptions() {
 	ra.internalRequest.TransformOptions.AnthropicAutoCacheControl = false
+	// Channel cloak mode "never" disables Claude identity simulation end to end:
+	// header defaults are already gated by shouldApplyChannelCloak; this flag carries
+	// the same decision into the Anthropic outbound transformer so it skips the
+	// synthetic billing-header / agent-identity system blocks too.
+	ra.internalRequest.TransformOptions.SuppressClaudeIdentity = !shouldApplyChannelCloak(ra.channel.Cloak)
 
 	if openAIPromptCacheKeyChannel(ra.channel.Type) {
 		if enabled, err := op.SettingGetBool(dbmodel.SettingKeyOpenAIAutoPromptCacheKey); err == nil {

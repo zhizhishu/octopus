@@ -552,6 +552,15 @@ type TransformOptions struct {
 	// of the Anthropic-Beta header; outbound Anthropic requests merge these into
 	// the header instead of forwarding a non-standard body field.
 	AnthropicBetas []string `json:"-"`
+
+	// SuppressClaudeIdentity, when true, tells the Anthropic outbound transformer
+	// NOT to synthesize the Claude CLI billing-header / agent-identity system
+	// blocks. The relay sets this when a channel's cloak mode is "never" — e.g. a
+	// domestic GLM/DeepSeek Anthropic-compatible upstream that must not receive
+	// injected Claude identity. Default false preserves the cloak behaviour, so
+	// auto/always channels (and non-relay callers) keep the genuine-CLI shape that
+	// AnyRouter requires. A genuine client's own system blocks always pass through.
+	SuppressClaudeIdentity bool `json:"-"`
 }
 
 type StreamOptions struct {

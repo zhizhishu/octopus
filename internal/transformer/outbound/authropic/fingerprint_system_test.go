@@ -88,6 +88,61 @@ func TestSystemFingerprintInjectionVariants(t *testing.T) {
 	})
 }
 
+// TestSystemFingerprintSuppressedWhenCloakOff pins that with cloak disabled
+// (TransformOptions.SuppressClaudeIdentity = true, set by the relay for channel
+// cloak mode "never") the synthetic billing-header + agent-identity blocks are NOT
+// injected: domestic Anthropic-compatible upstreams (GLM/DeepSeek) must receive the
+// request free of injected Claude identity. The client's own system blocks still pass
+// through, and a request with no system yields no system field at all.
+func TestSystemFingerprintSuppressedWhenCloakOff(t *testing.T) {
+	suppress := func(parts []model.Message) *model.InternalLLMRequest {
+		req := &model.InternalLLMRequest{Model: "glm-4.6", Messages: parts}
+		req.TransformOptions.SuppressClaudeIdentity = true
+		return req
+	}
+
+	t.Run("no_system_yields_nil", func(t *testing.T) {
+		got := convertToAnthropicRequest(suppress([]model.Message{
+			{Role: "user", Content: model.MessageContent{Content: stringPtr("hi")}},
+		}))
+		if got.System != nil {
+			t.Fatalf("cloak off + no client system must yield nil system, got %#v", got.System)
+		}
+	})
+
+	t.Run("client_system_passthrough_no_injection", func(t *testing.T) {
+		got := convertToAnthropicRequest(suppress([]model.Message{
+			sysMsg("You are a helpful assistant."),
+			{Role: "user", Content: model.MessageContent{Content: stringPtr("hi")}},
+		}))
+		if got.System == nil {
+			t.Fatalf("client system must pass through")
+		}
+		mp := got.System.MultiplePrompts
+		if len(mp) != 1 || mp[0].Text != "You are a helpful assistant." {
+			t.Fatalf("expected only the client system block, got %#v", mp)
+		}
+		if c := countPrefix(mp, claudeBillingHeaderPrefix); c != 0 {
+			t.Fatalf("billing header must not be injected when cloak off, found %d", c)
+		}
+		if c := countText(mp, claudeAgentIdentityText); c != 0 {
+			t.Fatalf("agent identity must not be injected when cloak off, found %d", c)
+		}
+	})
+
+	t.Run("cloak_on_still_injects", func(t *testing.T) {
+		// Sanity: the SAME messages with cloak ON (default) still get the fingerprint,
+		// guarding against an accidental flip of the default behaviour.
+		req := &model.InternalLLMRequest{Model: "claude-opus-4-8", Messages: []model.Message{
+			{Role: "user", Content: model.MessageContent{Content: stringPtr("hi")}},
+		}}
+		mp := convertToAnthropicRequest(req).System.MultiplePrompts
+		if countPrefix(mp, claudeBillingHeaderPrefix) != 1 || countText(mp, claudeAgentIdentityText) != 1 {
+			t.Fatalf("cloak on (default) must still inject billing+identity, got %#v", mp)
+		}
+	})
+}
+
 func countText(parts []anthropicModel.SystemPromptPart, text string) int {
 	n := 0
 	for _, p := range parts {

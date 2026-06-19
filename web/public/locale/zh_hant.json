@@ -761,7 +761,7 @@
             "cloakModeAuto": "自動穩定",
             "cloakModeAlways": "始終注入",
             "cloakModeNever": "關閉",
-            "cloakModeHint": "自動會按 Claude/Codex 協議補預設身份 Header；自定義 Header 仍然優先。",
+            "cloakModeHint": "模擬 Claude/Codex CLI 客戶端身份（請求 Header + Body），讓有風控的中轉放行。不需要模擬的上游（如國產模型 DeepSeek/GLM）選「關閉」。自定義 Header 仍然優先。",
             "channelProxy": "供應源代理",
             "channelProxyPlaceholder": "可選：僅對該供應源生效（覆蓋全域代理）",
             "paramOverride": "參數覆蓋",
