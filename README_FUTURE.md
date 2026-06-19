@@ -22,17 +22,17 @@ Claude/Anthropic 渠道按协议自动处理 URL 后缀。渠道 Base URL 建议
 
 如果旧配置里已经写了 `/v1`、`/messages`、`/v1/messages` 或 `/v1/models`，Octopus 会在 Anthropic 渠道里自动清理后再拼接正确端点：对话走 `/v1/messages`，模型同步走 `/v1/models`。模型测试和日志尝试记录会显示 `upstream_path`，方便确认最终打到了 `/v1/messages` 还是 `/api/provider/anthropic/v1/messages`。
 
-## 最新发布重点
+## 最新发布重点（要点速览）
 
-- **缓存修复版**：缓存能力是本项目的核心资产，需优先保留稳定性。
-- **控制台更清楚**：API Key 和价格已独立成页，设置页不再混放密钥、价格库或提示词快捷入口。
-- **提示词管理上线**：管理员可集中管理全局、方案组、模型路由和渠道四层提示词；普通用户只看到只读说明，不泄露管理员策略。
-- **友好错误响应**：上游 429/430/530 等失败可统一替换成公开错误码和自定义提示，管理员日志仍保留真实上游状态与错误码。
-- **模型单测 / 并发测试**：管理员可按方案组测试单个模型或批量并发测试模型，直接看到成功率、耗时、渠道、上游模型、HTTP 状态和错误摘要。
-- **每日签到奖励**：管理员可开关用户签到，并配置固定点数或随机区间点数，签到奖励直接进入用户余额。
-- **流式保活与静默超时可视化**：Claude/MCP 长工具调用的流式保活间隔、上游静默超时都可在“设置 -> 系统”调整，`0` 表示关闭对应保护。
-- **New API 迁移工具**：支持离线命令和管理员后台迁移页；后台页用异步 Job 跑 dry-run / 正式导入，接受服务器路径或 DSN，不通过浏览器上传大库文件。
-- **个人部署友好**：镜像发布到 `ghcr.io/zhizhishu/octopus:future`，推荐宿主机 `5050` 映射容器内 `8080`。
+- **claude-code / Codex CLI 形态保真**：对接只认官方 CLI 形态的上游时，Octopus 把出站请求重建成与真实 claude-code / Codex CLI 一字不差的形态（User-Agent、`anthropic-beta` 规范顺序、billing/metadata、Codex instructions 与默认工具集），让这类上游把 Octopus 当作正规 CLI 客户端处理。全部是代码内置默认值，**部署即生效，无需任何配置**；渠道 `cloak.mode` 可关闭。
+- **容量感知调度**：同优先级内按「健康分层 + 容量评分 + 轮转打底」分摊负载，配合三态熔断（指数退避 + 陈旧自愈）、选择期预留防并发踩踏、上游 429/5xx 分级冷却；打满并发也平稳，失败一律安全降级，绝不返回 0 可用渠道兜底。
+- **全 provider 互转 + 国产模型**：OpenAI Chat / Responses、Anthropic Messages、Gemini、Volcengine（火山）、以及 DeepSeek、GLM（智谱）等 OpenAI 兼容上游统一互转，客户端拿回自己入口协议的响应。
+- **多模态贯通**：图片（base64 / 远程 URL / file_id）、文档 / PDF、音频在 claude / OpenAI / Gemini 各路进出透传；Gemini 远程图自动转 `fileData` 并按后缀推断 mime；OpenAI `json_schema` 跨协议映射到 Anthropic `output_config.format`；图像生成（OpenAI / Imagen / Gemini / Grok）统一路由。
+- **推理 / 思考透传**：claude 扩展思考（含 `max` 档 + 预算钳制到 `< max_tokens`）、Codex reasoning effort、Gemini `thinkingBudget` 回读、DeepSeek `reasoning_content`、GLM `thinking:{type}`（按 reasoning effort 自动映射）——各家推理控制与思维链输出在流式 / 非流式、跨协议下都接住，含思考块 signature 聚合。
+- **IDE 工具兼容**：`POST /v1/messages/count_tokens`、Gemini `GET /v1beta/models` 列模型、Anthropic 内置工具（computer-use / bash / text_editor）透传、raw/SSE 长会话空闲闸 + keepalive —— Cursor / Cline / Continue / Claude Code 等 IDE 内编程工具开箱即用。
+- **缓存稳定性修复**：缓存是本项目核心资产，ReplaceAll 快照替换、原子读改写、增量记账等改造保住命中率与一致性（详见下文第 1/2 节）。
+- **运维与多用户**：控制台清晰（API Key / 价格独立成页）、四层提示词管理、友好错误码、模型单测 / 并发测试、每日签到、流式保活与静默超时可视化、New API 活跃用户迁移（离线命令 + 后台异步 Job 迁移页）。
+- **个人部署友好**：镜像发布到 `ghcr.io/zhizhishu/octopus:future`（**公开，无需登录即可拉取**），推荐宿主机 `5050` 映射容器内 `8080`。
 
 ## 截图预览
 
@@ -217,6 +217,41 @@ Future 分支会参考 sub2api 的实用引导方式，但不搬入它的支付�
 - 普通用户只需要首页、API Key、提示词说明、日志四个入口的使用说明；管理员才看到提示词管理、全局设置、全用户筛选和完整日志详情。
 - 额度、月卡、兑换码、缓存率、首字延迟、吞吐和错误状态都要用人话解释，不把 Unix 秒、内部字段或上游密钥暴露给普通用户。
 
+
+### 11. claude-code / Codex CLI 形态保真
+
+部分上游（例如某些聚合站的风控）只把官方 claude-code / Codex CLI 的请求形态当作可信客户端，裸 curl / SDK 会被挡。Octopus 对接这类上游时，把出站请求重建成与真实 CLI 一字不差的形态，保证被正常处理：
+
+- **claude-code**：User-Agent（`claude-cli/<版本> (external, sdk-cli)`）、`anthropic-beta` 按官方规范顺序重建（含 1M context、prompt-caching、interleaved-thinking、effort 等）、billing header、`metadata.user_id`（device_id + session_id，且头部与请求体使用同一 UUID）、agent-identity system 块。
+- **Codex**：`codex_exec` User-Agent / originator、`x-codex-*` 头、Codex instructions 与默认工具集、`store=false`、reasoning `encrypted_content`、installation / turn metadata。
+- 这些形态全部是代码内置默认值，**部署即生效、无需任何配置**；渠道 `cloak.mode` 设 `never` / `off` 可关闭注入。1M context 作为「能力」而非模型名后缀，出站发 clean 模型名 + `context-1m` beta。
+- 会话标识按 `apiKeyID:model:clientSessionKey` 隔离，Responses 的 `previous_response_id` 只转发给确实持有它的同渠道/同 key，跨 channel/key 强制丢弃，避免串会话。
+
+### 12. 容量感知调度
+
+调度在保留优先级硬边界的前提下，吸收 axonhub / CLIProxyAPI 思路做了容量感知（UI 不变）：
+
+- 同优先级内：健康分层（spreadTier）+ 容量评分（负载 / 连续失败 / 延迟 / 首字延迟）+ round-robin 打底，避免全压一个渠道。
+- 三态熔断：连续失败开闸、冷却后半开试探、成功闭合；瞬态 5xx 的 `Retry-After` 封顶，429 按上游真实限流信号冷却。
+- 陈旧自愈：一次慢采样不会把渠道永久钉死，超过窗口当未观测、重回轮转。
+- 选择期预留防止并发同时踩一个渠道；sticky 会话遇熔断 / 冷却自动跳过重选；失败一律安全降级，**绝不返回 0 可用渠道兜底**。
+- 注：当上游（如聚合站）整体高负载返回 429/5xx 时，Octopus 会如实把 `service_busy` 透出并触发熔断保护——这是上游容量问题，不是网关故障。
+
+### 13. 多 provider、多模态与国产模型
+
+- **provider**：OpenAI（Chat / Responses）、Anthropic、Gemini、Volcengine（火山豆包）、以及 DeepSeek、GLM（智谱）等 OpenAI 兼容上游。
+- **多模态**：图片（base64 / 远程 URL / file_id）、文档 / PDF（claude `document` 块、OpenAI Responses `input_file`）、音频（`input_audio`）在各路进出透传；Gemini 远程图自动转 `fileData` 并按 URL 后缀推断 mime；OpenAI `json_schema` 结构化输出跨协议映射到 Anthropic `output_config.format`。
+- **图像生成**：OpenAI images、Gemini Imagen（`:predict`）、Gemini 原生图像（`:generateContent`）、Grok 图像统一路由；普通文本模型不会被误判成图像请求。
+- **推理 / 思考**：claude 扩展思考（`max` 档高预算并钳制到 `< max_tokens`，避免上游 400）、Gemini `thinkingBudget` 回读、DeepSeek `reasoning_content`、GLM `thinking:{type:enabled/disabled}`（按 reasoning effort 自动映射）——流式 / 非流式、跨协议都保真，含思考块 signature 在「流→非流聚合」「非流→流合成」两向补全。
+
+### 14. IDE 工具兼容
+
+针对 Cursor / Cline / Roo / Continue / Claude Code 等 IDE 内编程工具补齐了关键端点与能力：
+
+- `POST /v1/messages/count_tokens`：本地 tokenizer 估算返回 `input_tokens`，供 Claude Code 等预估上下文（近似值，非上游精确计费）。
+- Gemini `GET /v1beta/models`（及单模型 GET）：让 Gemini 原生 IDE 插件能列出模型、填充模型选择器。
+- Anthropic 内置工具 `computer_*` / `bash_*` / `text_editor_*` 原样透传，专有字段（如 `display_width_px`）不丢。
+- raw / SSE 透传路径（Codex / Cursor 非流式常走）补上「上游空闲超时 + 下游 keepalive」，长会话上游卡死不再无限挂。
 
 ## Docker 部署
 

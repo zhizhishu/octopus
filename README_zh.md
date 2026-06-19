@@ -10,7 +10,7 @@
 
 </div>
 
-> 说明：`zhizhishu/octopus` 提供缓存稳定性修复、自动模型分组、模型单测/并发测试、缓存率观测、日志审核、真实多用户管理、月卡/兑换码、New API 活跃用户迁移与后台 Job 迁移页、方案组模型映射、独立 API Key、提示词管理、Gemini / OpenAI / Anthropic 协议互转、API Key 用法引导和 GHCR 镜像发布。详见 [README_FUTURE.md](README_FUTURE.md)。
+> 说明：`zhizhishu/octopus` 是个人向 LLM 网关。主打 **claude-code / Codex CLI 形态保真**（出站请求重建成真实 CLI 形态，部署即生效）、**容量感知调度**（健康分层 + 容量评分 + 三态熔断）、**全 provider 互转**（OpenAI / Anthropic / Gemini / Volcengine / DeepSeek / GLM 智谱）、**多模态贯通**（图片 / 文档·PDF / 音频 / 图像生成）、**推理思考透传**（claude `max` 档 / Gemini thinkingBudget / DeepSeek `reasoning_content` / GLM `thinking`）、**IDE 工具兼容**（`count_tokens` / computer-use 内置工具 / Cursor·Cline·Continue·Claude Code）；并保留缓存稳定性修复、自动模型分组、真实多用户管理、月卡/兑换码、New API 活跃用户迁移、方案组模型映射、四层提示词管理、独立 API Key、模型单测/并发和 GHCR 公开镜像发布。详见 [README_FUTURE.md](README_FUTURE.md)。
 
 
 ## ✨ 特性
