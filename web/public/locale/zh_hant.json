@@ -744,6 +744,8 @@
             "type": "供應源類型",
             "priority": "供應源優先級",
             "priorityHint": "數字越小優先級越高；同優先級預設輪詢，可配合故障冷卻和會話黏住。",
+            "maxConcurrent": "並發上限",
+            "maxConcurrentHint": "本供應源在途請求數硬上限（0=不限）。達到上限後降檔、讓突發請求鋪到其它供應源，但無更優時仍可用。",
             "baseUrls": "Base URLs",
             "baseUrlUrl": "地址",
             "baseUrlDelay": "延遲(ms)",

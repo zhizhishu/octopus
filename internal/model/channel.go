@@ -24,6 +24,7 @@ type Channel struct {
 	Type                 outbound.OutboundType `json:"type"`
 	Enabled              bool                  `json:"enabled" gorm:"default:true"`
 	Priority             int                   `json:"priority" gorm:"default:0"`
+	MaxConcurrent        int                   `json:"max_concurrent" gorm:"default:0"` // 单渠道并发上限(在途+预约请求数), 0=不限. 达到上限后该渠道在选路中降档(让请求铺到其它渠道), 但不硬拉黑(无更优时仍可用)
 	BaseUrls             []BaseUrl             `json:"base_urls" gorm:"serializer:json"`
 	Keys                 []ChannelKey          `json:"keys" gorm:"foreignKey:ChannelID"`
 	Model                string                `json:"model"`
@@ -94,6 +95,7 @@ type ChannelUpdateRequest struct {
 	Type                 *outbound.OutboundType `json:"type,omitempty"`
 	Enabled              *bool                  `json:"enabled,omitempty"`
 	Priority             *int                   `json:"priority,omitempty"`
+	MaxConcurrent        *int                   `json:"max_concurrent,omitempty"`
 	BaseUrls             *[]BaseUrl             `json:"base_urls,omitempty"`
 	Model                *string                `json:"model,omitempty"`
 	CustomModel          *string                `json:"custom_model,omitempty"`

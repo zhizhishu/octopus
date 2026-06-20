@@ -180,6 +180,11 @@ func spreadTier(item model.GroupItem) int {
 		return 3
 	case rt.CooldownRemainingMs > 0:
 		return 2
+	case rt.MaxConcurrent > 0 && rt.InFlight+rt.PendingSelections >= int64(rt.MaxConcurrent):
+		// At its configured concurrency cap: demote (like a soft cooldown) so a burst
+		// spreads to peers with spare capacity, but keep it usable as a last resort —
+		// consistent with never hard-blacking-out a route that still has a usable key.
+		return 2
 	case rt.InFlight+rt.PendingSelections > 0:
 		return 1
 	default:

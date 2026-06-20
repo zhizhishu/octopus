@@ -124,6 +124,7 @@ export interface ChannelFormData {
     name: string;
     type: ChannelType;
     priority: number;
+    max_concurrent: number;
     base_urls: Channel['base_urls'];
     custom_header: Channel['custom_header'];
     cloak_mode: string;
@@ -330,6 +331,7 @@ export function ChannelForm({
         type: formData.type,
         enabled: formData.enabled,
         priority: formData.priority,
+        max_concurrent: formData.max_concurrent,
         base_urls: formData.base_urls.map((item) => ({
             ...item,
             url: normalizeBaseUrlForChannelType(formData.type, item.url),
@@ -639,6 +641,26 @@ export function ChannelForm({
                         }}
                     />
                     <p className="text-xs text-muted-foreground">{t('priorityHint')}</p>
+                </div>
+
+                <div className="space-y-2">
+                    <label htmlFor={`${idPrefix}-max-concurrent`} className="text-sm font-medium text-card-foreground">
+                        {t('maxConcurrent')}
+                    </label>
+                    <Input
+                        className='rounded-xl'
+                        id={`${idPrefix}-max-concurrent`}
+                        type="number"
+                        inputMode="numeric"
+                        min={0}
+                        step={1}
+                        value={String(formData.max_concurrent ?? 0)}
+                        onChange={(event) => {
+                            const n = Number.parseInt(event.target.value, 10);
+                            onFormDataChange({ ...formData, max_concurrent: Number.isFinite(n) && n > 0 ? n : 0 });
+                        }}
+                    />
+                    <p className="text-xs text-muted-foreground">{t('maxConcurrentHint')}</p>
                 </div>
             </div>
 

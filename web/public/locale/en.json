@@ -744,6 +744,8 @@
             "type": "Channel Type",
             "priority": "Channel Priority",
             "priorityHint": "Lower numbers mean higher priority. Same-priority channels round-robin by default, with cooldown and session affinity.",
+            "maxConcurrent": "Max concurrent",
+            "maxConcurrentHint": "Hard cap on in-flight requests for this channel (0 = unlimited). At the cap, the channel is deprioritized so bursts spread to other channels, but it stays usable as a last resort.",
             "baseUrls": "Base URLs",
             "baseUrlUrl": "URL",
             "baseUrlDelay": "Delay(ms)",

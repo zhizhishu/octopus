@@ -72,6 +72,7 @@ type RoutingRuntimeStats struct {
 	CooldownRemainingMs  int64
 	AvailableKeyCount    int
 	HealthyKeyCount      int
+	MaxConcurrent        int // 渠道并发上限(0=不限)，由 enrichGroupForSmartRouting 从 Channel 配置填入，供 spreadTier 判定是否到顶降档
 	CircuitTripped       bool
 	CircuitOpenKeys      int
 	CircuitRemainingMs   int64
