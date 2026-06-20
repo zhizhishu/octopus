@@ -89,6 +89,7 @@ export function CreateDialogContent() {
                         name: '',
                         type: ChannelType.OpenAIChat,
                         priority: 0,
+                        max_concurrent: 0,
                         base_urls: [{ url: '', delay: 0 }],
                         custom_header: [],
                         cloak_mode: 'auto',
