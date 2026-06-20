@@ -103,6 +103,17 @@ func ChannelKeyRecordUse(key model.ChannelKey, statusCode int, usedAt int64, cos
 		current.StatusCode = statusCode
 		current.LastUseTimeStamp = usedAt
 		current.TotalCost += costDelta
+		// Quarantine bookkeeping: a 401 means the key itself is bad (invalid/revoked),
+		// so record why + when for operator visibility (and persistence across restart).
+		// Any healthy 2xx clears it — the key self-heals after the auth re-probe.
+		switch {
+		case statusCode == 401:
+			current.DisabledReason = "auth error 401 (key likely invalid/revoked)"
+			current.DisabledAt = usedAt
+		case statusCode >= 200 && statusCode < 300:
+			current.DisabledReason = ""
+			current.DisabledAt = 0
+		}
 		return current, true
 	})
 	if err := channelCacheSetKey(key.ChannelID, updated); err != nil {

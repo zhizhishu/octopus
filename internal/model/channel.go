@@ -78,6 +78,13 @@ type ChannelKey struct {
 	LastUseTimeStamp int64   `json:"last_use_time_stamp"`
 	TotalCost        float64 `json:"total_cost"`
 	Remark           string  `json:"remark"`
+	// DisabledReason/DisabledAt record WHY a key was last quarantined (e.g. an auth
+	// error) and when, for operator visibility. They are set when the key's last
+	// upstream status indicates a dead key and cleared on the next healthy (2xx)
+	// response (self-heal). Persisted alongside StatusCode so the reason survives a
+	// restart instead of silently retrying a known-bad key.
+	DisabledReason string `json:"disabled_reason,omitempty"`
+	DisabledAt     int64  `json:"disabled_at,omitempty"`
 }
 
 // ChannelUpdateRequest 渠道更新请求 - 仅包含变更的数据
@@ -213,6 +220,13 @@ func (c *Channel) GetChannelKey() ChannelKey {
 var (
 	ChannelKeyCooldown          = 60 * time.Second
 	ChannelKeyTransientCooldown = 30 * time.Second
+	// ChannelKeyAuthErrorCooldown quarantines a key whose last upstream status was
+	// 401 (the key itself is invalid/revoked — affects every model, unlike a
+	// per-model rate-limit/circuit trip). It is long enough to stop burning requests
+	// on a dead key every turn, but still finite so the key is periodically re-probed
+	// and self-heals if the 401 was transient. Genuine 403/429/5xx stay on their own
+	// (shorter, per-model-circuit) paths; only a key-wide 401 lands here.
+	ChannelKeyAuthErrorCooldown = 15 * time.Minute
 )
 
 // keyCooldownWindow returns how long a key whose last upstream status was code
@@ -222,6 +236,10 @@ var (
 // runtime path's exponential backoff and Retry-After.
 func keyCooldownWindow(code int) (time.Duration, bool) {
 	switch code {
+	case 401:
+		// Key-wide auth failure (invalid/revoked) — quarantine longer so we stop
+		// retrying a dead key every turn, but keep it finite for periodic re-probe.
+		return ChannelKeyAuthErrorCooldown, true
 	case 429:
 		return ChannelKeyCooldown, true
 	case 502, 503, 504, 520, 529:

@@ -35,6 +35,44 @@ func TestChannelGetAvailableChannelKeysSkipsRecent429AndSortsByCost(t *testing.T
 	}
 }
 
+func TestChannelGetAvailableChannelKeysQuarantines401(t *testing.T) {
+	now := time.Now().Unix()
+	channel := Channel{
+		Keys: []ChannelKey{
+			// Within the auth cooldown → quarantined (dead key, stop burning requests).
+			{ID: 1, Enabled: true, ChannelKey: "recent-401", StatusCode: 401, LastUseTimeStamp: now - 60, TotalCost: 0},
+			// Past the auth cooldown → self-heals back into rotation for a re-probe.
+			{ID: 2, Enabled: true, ChannelKey: "old-401", StatusCode: 401, LastUseTimeStamp: now - int64(16*time.Minute/time.Second), TotalCost: 5},
+			{ID: 3, Enabled: true, ChannelKey: "fresh", StatusCode: 0, TotalCost: 9},
+		},
+	}
+
+	ids := map[int]bool{}
+	for _, k := range channel.GetAvailableChannelKeys() {
+		ids[k.ID] = true
+	}
+	if ids[1] {
+		t.Fatalf("recent 401 key must be quarantined within the auth cooldown: %v", ids)
+	}
+	if !ids[2] {
+		t.Fatalf("401 key past the auth cooldown must self-heal into rotation: %v", ids)
+	}
+	if !ids[3] {
+		t.Fatalf("fresh key must be available: %v", ids)
+	}
+}
+
+func TestKeyCooldownWindow401UsesAuthCooldown(t *testing.T) {
+	if d, ok := keyCooldownWindow(401); !ok || d != ChannelKeyAuthErrorCooldown {
+		t.Fatalf("401 cooldown = (%v, %v), want (%v, true)", d, ok, ChannelKeyAuthErrorCooldown)
+	}
+	// 403 stays on the per-model circuit-breaker path, not the key-wide cooldown, so a
+	// key that 403s on one model is not blacked out for every model.
+	if _, ok := keyCooldownWindow(403); ok {
+		t.Fatalf("403 must NOT use the key-wide cooldown")
+	}
+}
+
 func TestChannelGetAvailableChannelKeysCooldownIsStatusAware(t *testing.T) {
 	now := time.Now().Unix()
 	channel := Channel{
