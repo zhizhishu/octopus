@@ -67,6 +67,8 @@ type RelayLog struct {
 	OutputTokens          int              `json:"output_tokens"`
 	CacheHitTokens        int              `json:"cache_hit_tokens"`
 	CacheWriteTokens      int              `json:"cache_write_tokens"`
+	CacheWrite5mTokens    int              `json:"cache_write_5m_tokens,omitempty"` // 5 分钟 TTL 缓存写入(Anthropic ephemeral_5m_input_tokens), CacheWriteTokens 的子集
+	CacheWrite1hTokens    int              `json:"cache_write_1h_tokens,omitempty"` // 1 小时 TTL 缓存写入(Anthropic ephemeral_1h_input_tokens), 计费高于 5m
 	CacheInputTokens      int              `json:"cache_input_tokens"`
 	CacheHitRate          float64          `json:"cache_hit_rate" gorm:"type:real"`
 	Ftut                  int              `json:"ftut"`

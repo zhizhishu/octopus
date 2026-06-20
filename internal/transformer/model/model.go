@@ -937,6 +937,13 @@ type Usage struct {
 	// Provider-native cache fields kept for metrics and billing.
 	AnthropicUsage           bool  `json:"-"`
 	CacheCreationInputTokens int64 `json:"-"`
+	// CacheCreation5m/1hInputTokens split the cache-creation total by TTL bucket, from
+	// Anthropic's nested usage.cache_creation{ephemeral_5m/1h_input_tokens}. Anthropic
+	// prices 5m vs 1h cache writes differently, so keeping the split lets logs/billing
+	// reflect that instead of lumping both into one figure. Zero when the upstream did
+	// not report the breakdown.
+	CacheCreation5mInputTokens int64 `json:"-"`
+	CacheCreation1hInputTokens int64 `json:"-"`
 	// Some OpenAI-compatible proxies expose Anthropic-style cache fields where
 	// input_tokens excludes cache read/write tokens.
 	SeparateCacheInputTokens bool `json:"-"`
@@ -954,6 +961,10 @@ func (u *Usage) UnmarshalJSON(data []byte) error {
 		PromptCacheHitTokens     *int64                   `json:"prompt_cache_hit_tokens"`
 		CacheCreationInputTokens int64                    `json:"cache_creation_input_tokens"`
 		CacheReadInputTokens     int64                    `json:"cache_read_input_tokens"`
+		CacheCreation            *struct {
+			Ephemeral5m int64 `json:"ephemeral_5m_input_tokens"`
+			Ephemeral1h int64 `json:"ephemeral_1h_input_tokens"`
+		} `json:"cache_creation"`
 	}
 
 	if err := json.Unmarshal(data, &aux); err != nil {
@@ -973,6 +984,18 @@ func (u *Usage) UnmarshalJSON(data []byte) error {
 	if aux.CacheCreationInputTokens > 0 {
 		u.CacheCreationInputTokens = aux.CacheCreationInputTokens
 		u.SeparateCacheInputTokens = true
+	}
+	if aux.CacheCreation != nil {
+		u.CacheCreation5mInputTokens = aux.CacheCreation.Ephemeral5m
+		u.CacheCreation1hInputTokens = aux.CacheCreation.Ephemeral1h
+		// If the upstream only sent the per-TTL split (no flat total), derive the total
+		// so downstream metrics/billing stay consistent.
+		if u.CacheCreationInputTokens == 0 {
+			if total := aux.CacheCreation.Ephemeral5m + aux.CacheCreation.Ephemeral1h; total > 0 {
+				u.CacheCreationInputTokens = total
+				u.SeparateCacheInputTokens = true
+			}
+		}
 	}
 	if aux.CacheReadInputTokens > 0 {
 		u.SeparateCacheInputTokens = true

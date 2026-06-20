@@ -65,6 +65,43 @@ func TestUsageUnmarshalOpenAIAliasesPreservesCacheTokens(t *testing.T) {
 	}
 }
 
+func TestUsageUnmarshalCacheCreationTTLBuckets(t *testing.T) {
+	body := []byte(`{
+		"input_tokens":10,
+		"output_tokens":5,
+		"cache_read_input_tokens":30,
+		"cache_creation_input_tokens":40,
+		"cache_creation":{"ephemeral_5m_input_tokens":25,"ephemeral_1h_input_tokens":15}
+	}`)
+
+	var usage Usage
+	if err := json.Unmarshal(body, &usage); err != nil {
+		t.Fatalf("unexpected unmarshal error: %v", err)
+	}
+	if usage.CacheCreation5mInputTokens != 25 || usage.CacheCreation1hInputTokens != 15 {
+		t.Fatalf("ttl buckets not parsed: 5m=%d 1h=%d", usage.CacheCreation5mInputTokens, usage.CacheCreation1hInputTokens)
+	}
+	if usage.CacheCreationInputTokens != 40 {
+		t.Fatalf("flat cache-creation total should stay 40, got %d", usage.CacheCreationInputTokens)
+	}
+}
+
+func TestUsageUnmarshalCacheCreationTTLDerivesTotal(t *testing.T) {
+	// Only the per-TTL split present (no flat total) → total derived from the buckets.
+	body := []byte(`{"input_tokens":10,"output_tokens":5,"cache_creation":{"ephemeral_5m_input_tokens":7,"ephemeral_1h_input_tokens":3}}`)
+
+	var usage Usage
+	if err := json.Unmarshal(body, &usage); err != nil {
+		t.Fatalf("unexpected unmarshal error: %v", err)
+	}
+	if usage.CacheCreationInputTokens != 10 {
+		t.Fatalf("total should be derived from buckets (7+3), got %d", usage.CacheCreationInputTokens)
+	}
+	if !usage.SeparateCacheInputTokens {
+		t.Fatalf("deriving a cache-creation total from the TTL split should mark separate cache input tokens")
+	}
+}
+
 func TestUsageUnmarshalAnthropicStyleAliasesMarkSeparateCacheTokens(t *testing.T) {
 	body := []byte(`{
 		"input_tokens":60,

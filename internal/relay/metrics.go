@@ -415,6 +415,8 @@ func (m *RelayMetrics) saveLog(ctx context.Context, err error, duration time.Dur
 		cacheHit, cacheWrite, cacheInput := usageCacheStats(m.InternalResponse.Usage)
 		relayLog.CacheHitTokens = int(cacheHit)
 		relayLog.CacheWriteTokens = int(cacheWrite)
+		relayLog.CacheWrite5mTokens = int(m.InternalResponse.Usage.CacheCreation5mInputTokens)
+		relayLog.CacheWrite1hTokens = int(m.InternalResponse.Usage.CacheCreation1hInputTokens)
 		relayLog.CacheInputTokens = int(cacheInput)
 		relayLog.CacheHitRate = cacheHitRate(cacheHit, cacheInput)
 		relayLog.Cost = m.Stats.InputCost + m.Stats.OutputCost
