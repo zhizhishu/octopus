@@ -495,6 +495,76 @@ func TestClaudeFingerprintSuppressedWhenCloakOff(t *testing.T) {
 	}
 }
 
+// TestClaudeHeaderDefaultsAdoptsInboundClientVersion pins that a genuine claude-cli
+// downstream client's reported version values (UA + X-Stainless-* version/os/arch) are
+// mirrored onto the upstream request instead of a single pinned version, so octopus
+// tracks the real client version. The canonical fixed headers (X-App etc.) stay put.
+func TestClaudeHeaderDefaultsAdoptsInboundClientVersion(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	c.Request.Header.Set("User-Agent", "claude-cli/9.9.9 (external, sdk-cli)")
+	c.Request.Header.Set("X-Stainless-Package-Version", "1.2.3")
+	c.Request.Header.Set("X-Stainless-Runtime-Version", "v22.0.0")
+	c.Request.Header.Set("X-Stainless-OS", "MacOS")
+	c.Request.Header.Set("X-Stainless-Arch", "arm64")
+
+	ra := &relayAttempt{
+		relayRequest: &relayRequest{
+			c:               c,
+			inboundType:     inbound.InboundTypeAnthropic,
+			internalRequest: &transformermodel.InternalLLMRequest{Model: "claude-opus-4-8"},
+		},
+		channel: &dbmodel.Channel{Type: outbound.OutboundTypeAnthropic},
+	}
+	up := httptest.NewRequest(http.MethodPost, "https://anyrouter.top/v1/messages", nil)
+	ra.copyHeaders(up)
+
+	want := map[string]string{
+		"User-Agent":                  "claude-cli/9.9.9 (external, sdk-cli)",
+		"X-Stainless-Package-Version": "1.2.3",
+		"X-Stainless-Runtime-Version": "v22.0.0",
+		"X-Stainless-OS":              "MacOS",
+		"X-Stainless-Arch":            "arm64",
+	}
+	for h, w := range want {
+		if got := up.Header.Get(h); got != w {
+			t.Fatalf("%s = %q, want adopted client value %q", h, got, w)
+		}
+	}
+	if up.Header.Get("X-App") != "cli" {
+		t.Fatalf("canonical X-App must remain cli")
+	}
+}
+
+// TestClaudeHeaderDefaultsUsesStaticForNonCLIClient pins that a non-claude-cli client
+// (no genuine claude-cli UA) still gets the pinned static fingerprint version, i.e. the
+// adopt path is strictly gated and prior behaviour is unchanged for non-CLI callers.
+func TestClaudeHeaderDefaultsUsesStaticForNonCLIClient(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	c.Request.Header.Set("User-Agent", "python-requests/2.31")
+
+	ra := &relayAttempt{
+		relayRequest: &relayRequest{
+			c:               c,
+			inboundType:     inbound.InboundTypeAnthropic,
+			internalRequest: &transformermodel.InternalLLMRequest{Model: "claude-opus-4-8"},
+		},
+		channel: &dbmodel.Channel{Type: outbound.OutboundTypeAnthropic},
+	}
+	up := httptest.NewRequest(http.MethodPost, "https://anyrouter.top/v1/messages", nil)
+	ra.copyHeaders(up)
+
+	if got := up.Header.Get("User-Agent"); got != dbmodel.DefaultClaudeHeaderUserAgent {
+		t.Fatalf("non-CLI client must get the static claude UA, got %q", got)
+	}
+	if got := up.Header.Get("X-Stainless-OS"); got != defaultClaudeOS {
+		t.Fatalf("non-CLI client must get the static pinned OS %q, got %q", defaultClaudeOS, got)
+	}
+}
+
 // TestClaudeBetaHeaderMatchesGenuineCliOrder pins that the upstream anthropic-beta
 // header is emitted in the EXACT order a genuine claude-cli request uses — in
 // particular context-1m-2025-08-07 sits in its real position (7th, after

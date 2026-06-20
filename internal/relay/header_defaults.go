@@ -56,11 +56,54 @@ func shouldApplyChannelCloak(cloak dbmodel.ChannelCloak) bool {
 	}
 }
 
+// claudeClientVersion holds the version-bearing headers a genuine claude-cli
+// DOWNSTREAM client reported. octopus strips the client's User-Agent / X-Stainless-*
+// (hop-by-hop) and re-emits its own; pinning a single hard-coded version across ALL
+// traffic is itself a weak tell and goes stale as clients upgrade. When the inbound
+// IS a genuine claude-cli, we mirror its real version values instead — the canonical
+// header SET + ORDER (the part AnyRouter shape-checks) is unchanged, only the version
+// strings track the real client. Non-claude clients yield an empty struct, so the
+// static settings (prior behaviour) apply byte-for-byte.
+type claudeClientVersion struct {
+	UserAgent      string
+	PackageVersion string
+	RuntimeVersion string
+	OS             string
+	Arch           string
+}
+
+func (ra *relayAttempt) inboundClaudeClientVersion() claudeClientVersion {
+	if ra == nil || ra.c == nil || ra.c.Request == nil {
+		return claudeClientVersion{}
+	}
+	h := ra.c.Request.Header
+	ua := strings.TrimSpace(h.Get("User-Agent"))
+	// Only adopt from a genuine claude-cli UA (claude-cli/<version> ...).
+	if !strings.HasPrefix(strings.ToLower(ua), "claude-cli/") {
+		return claudeClientVersion{}
+	}
+	return claudeClientVersion{
+		UserAgent:      ua,
+		PackageVersion: strings.TrimSpace(h.Get("X-Stainless-Package-Version")),
+		RuntimeVersion: strings.TrimSpace(h.Get("X-Stainless-Runtime-Version")),
+		OS:             strings.TrimSpace(h.Get("X-Stainless-OS")),
+		Arch:           strings.TrimSpace(h.Get("X-Stainless-Arch")),
+	}
+}
+
+func firstNonEmptyHeader(client, fallback string) string {
+	if strings.TrimSpace(client) != "" {
+		return client
+	}
+	return fallback
+}
+
 func (ra *relayAttempt) applyClaudeHeaderDefaults(req *http.Request) {
+	client := ra.inboundClaudeClientVersion()
 	ensureClaudeBetaQuery(req)
 	setHeaderIfMissing(req.Header, "Anthropic-Dangerous-Direct-Browser-Access", "true")
 	setHeaderIfMissing(req.Header, "Anthropic-Version", "2023-06-01")
-	setHeaderIfMissing(req.Header, "User-Agent", settingString(dbmodel.SettingKeyClaudeHeaderUserAgent, defaultClaudeUserAgent))
+	setHeaderIfMissing(req.Header, "User-Agent", firstNonEmptyHeader(client.UserAgent, settingString(dbmodel.SettingKeyClaudeHeaderUserAgent, defaultClaudeUserAgent)))
 	setHeaderIfMissing(req.Header, "X-App", "cli")
 	// NB: genuine claude-cli (2.1.168 and 2.1.178, captured on the wire) does NOT
 	// send X-Client-Request-Id, so we must not synthesize one — an extra header the
@@ -69,12 +112,12 @@ func (ra *relayAttempt) applyClaudeHeaderDefaults(req *http.Request) {
 	setHeaderIfMissing(req.Header, "X-Stainless-Lang", "js")
 	setHeaderIfMissing(req.Header, "X-Stainless-Retry-Count", "0")
 	setHeaderIfMissing(req.Header, "X-Stainless-Runtime", "node")
-	setHeaderIfMissing(req.Header, "X-Stainless-Runtime-Version", settingString(dbmodel.SettingKeyClaudeHeaderRuntime, defaultClaudeRuntimeVersion))
-	setHeaderIfMissing(req.Header, "X-Stainless-Package-Version", settingString(dbmodel.SettingKeyClaudeHeaderPackage, defaultClaudePackageVersion))
+	setHeaderIfMissing(req.Header, "X-Stainless-Runtime-Version", firstNonEmptyHeader(client.RuntimeVersion, settingString(dbmodel.SettingKeyClaudeHeaderRuntime, defaultClaudeRuntimeVersion)))
+	setHeaderIfMissing(req.Header, "X-Stainless-Package-Version", firstNonEmptyHeader(client.PackageVersion, settingString(dbmodel.SettingKeyClaudeHeaderPackage, defaultClaudePackageVersion)))
 	setHeaderIfMissing(req.Header, "X-Stainless-Timeout", settingString(dbmodel.SettingKeyClaudeHeaderTimeout, defaultClaudeTimeout))
 	if settingBool(dbmodel.SettingKeyClaudeHeaderStabilize, true) {
-		setHeaderIfMissing(req.Header, "X-Stainless-OS", settingString(dbmodel.SettingKeyClaudeHeaderOS, defaultClaudeOS))
-		setHeaderIfMissing(req.Header, "X-Stainless-Arch", settingString(dbmodel.SettingKeyClaudeHeaderArch, defaultClaudeArch))
+		setHeaderIfMissing(req.Header, "X-Stainless-OS", firstNonEmptyHeader(client.OS, settingString(dbmodel.SettingKeyClaudeHeaderOS, defaultClaudeOS)))
+		setHeaderIfMissing(req.Header, "X-Stainless-Arch", firstNonEmptyHeader(client.Arch, settingString(dbmodel.SettingKeyClaudeHeaderArch, defaultClaudeArch)))
 	}
 	// REBUILD the anthropic-beta header so its ORDER exactly matches a genuine
 	// claude-cli request: the canonical claude-code beta set is authoritative (with
