@@ -67,13 +67,19 @@ func NewIteratorWithSessionKey(group model.Group, apiKeyID int, requestModel, cl
 		MarkRuntimeSelection(candidates[0].ChannelID, candidates[0].ModelName)
 	}
 
-	return &Iterator{
+	it := &Iterator{
 		candidates:  candidates,
 		index:       -1,
 		stickyIdx:   stickyIdx,
 		stickyKeyID: stickyKeyID,
 		modelName:   requestModel,
 	}
+	// Optional decision-trace hook (set by the relay layer when the debug setting is
+	// on). Kept as an injected hook so this package needs no logger/settings import.
+	if DecisionLogHook != nil {
+		DecisionLogHook(requestModel, it)
+	}
+	return it
 }
 
 // PrioritizeChannels keeps the balancer order inside each bucket while moving
