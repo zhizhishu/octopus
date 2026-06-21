@@ -144,13 +144,15 @@ func TestGetModelListStillReturnsSeededModel(t *testing.T) {
 	}
 }
 
-// TestModelListFiltersByClientProtocol guards the fix for the regression where
-// GET /v1/models was path-classified as openai-compatible, so the endpoint-family
-// filter hid every model served only by an Anthropic channel (e.g. Claude) from
-// x-api-key (request_type "anthropic") clients like CherryStudio. The list must
-// follow the client's protocol: an Anthropic client sees the Anthropic-channel
-// model; an OpenAI client does not.
-func TestModelListFiltersByClientProtocol(t *testing.T) {
+// TestModelListShowsModelsAcrossChannelTypes guards that the model list is NOT
+// narrowed by channel type. octopus transforms between protocols, so a model on
+// an Anthropic channel (e.g. Claude) must be listed for EVERY client regardless
+// of inbound protocol — an OpenAI client can call it too (oct converts the
+// request). This is the fix for the regression where GET /v1/models was
+// path-classified as openai-compatible and the endpoint-family filter hid every
+// Anthropic/Gemini-channel model from callers (notably x-api-key Claude clients
+// like CherryStudio).
+func TestModelListShowsModelsAcrossChannelTypes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx := setupModelGetDB(t)
 	user := createModelGetUser(t, ctx)
@@ -197,11 +199,12 @@ func TestModelListFiltersByClientProtocol(t *testing.T) {
 		}
 		return ids
 	}
-	if anth := listIDs("anthropic"); !slices.Contains(anth, "claude-opus-4-8") {
-		t.Fatalf("anthropic client must see claude-opus-4-8, got %v", anth)
-	}
-	if oai := listIDs("openai"); slices.Contains(oai, "claude-opus-4-8") {
-		t.Fatalf("openai client must NOT see anthropic-only claude-opus-4-8, got %v", oai)
+	// Every client protocol (and an unset one) must see the Anthropic-channel
+	// model, because oct can transform any inbound protocol onto that channel.
+	for _, rt := range []string{"anthropic", "openai", ""} {
+		if ids := listIDs(rt); !slices.Contains(ids, "claude-opus-4-8") {
+			t.Fatalf("request_type %q must list claude-opus-4-8 (oct transforms across channel types), got %v", rt, ids)
+		}
 	}
 }
 

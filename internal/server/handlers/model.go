@@ -90,34 +90,17 @@ func apiKeyAllowedModels(c *gin.Context) (models []string, ok bool) {
 			return lo.Contains(supportedModels, m)
 		})
 	}
-	if family := modelListFilterFamily(c); family != "" {
-		models = op.FilterModelNamesForEndpointFamily(c.Request.Context(), models, family)
-	}
+	// Deliberately NOT filtered by channel type / endpoint family. octopus
+	// transforms between the Anthropic / OpenAI / Gemini protocols, so a model
+	// served by ANY enabled channel is callable by a client on ANY inbound
+	// protocol — e.g. an Anthropic (x-api-key) client can use a model that lives
+	// on an OpenAI-compatible channel because oct converts the request on the way
+	// out (verified in production: a Claude request was served by an OpenAI
+	// channel). The previous path-based family filter classified GET /v1/models as
+	// openai-compatible and dropped every Anthropic/Gemini-channel model (e.g.
+	// Claude), hiding usable models from clients. The key's supported_models
+	// allow-list above is the only intended narrowing of the list.
 	return models, true
-}
-
-// modelListFilterFamily picks the endpoint family used to narrow the model list
-// to what the caller can actually invoke. It must follow the CLIENT's protocol,
-// not the static path classification: GET /v1/models is path-classified as
-// openai-compatible, but an Anthropic client (x-api-key -> request_type
-// "anthropic") that lists models will then call /v1/messages and must see
-// anthropic-channel models such as Claude. Filtering by the path family instead
-// wrongly hid every model served only by Anthropic/Gemini channels from those
-// clients. Fall back to the path-derived family only when the request type is
-// unknown (e.g. internal probes).
-func modelListFilterFamily(c *gin.Context) model.APIKeyEndpointFamily {
-	switch c.GetString("request_type") {
-	case "anthropic":
-		return model.APIKeyEndpointFamilyAnthropic
-	case "gemini":
-		return model.APIKeyEndpointFamilyGemini
-	case "openai":
-		return model.APIKeyEndpointFamilyOpenAICompatible
-	}
-	if endpointFamily := c.GetString("endpoint_family"); endpointFamily != "" {
-		return model.APIKeyEndpointFamily(endpointFamily)
-	}
-	return ""
 }
 
 func getModelList(c *gin.Context) {
