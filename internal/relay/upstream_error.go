@@ -146,7 +146,13 @@ func relayErrorResponse(err error) (status int, code string, message string) {
 		return status, upstreamErrorPublicCode(code), upstreamErrorUserMessage(err)
 	}
 	if status, code, _, ok := localRelayErrorDetails(err); ok && status >= 400 && status < 600 {
-		return status, code, errSafeMessage(err)
+		// Local route-selection errors carry internal detail (channel names, circuit /
+		// cooldown state) in their underlying message — never surface that to the caller.
+		// Return a clean, unified public message (the admin custom message when set, so
+		// upstream + local errors read the same); the full detail stays in the audit log
+		// + channel attempts. The safe local code (e.g. octopus_channel_circuit_open) is
+		// kept for client-side diagnosis.
+		return status, code, localErrorPublicMessage("service temporarily unavailable, please retry")
 	}
 	if status, code, _, ok := clientAbortErrorDetails(err); ok && status >= 400 && status < 600 {
 		if code == "octopus_client_timeout" {
@@ -154,7 +160,22 @@ func relayErrorResponse(err error) (status int, code string, message string) {
 		}
 		return status, code, "request canceled by client"
 	}
-	return http.StatusBadGateway, "octopus_all_channels_failed", "all channels failed"
+	return http.StatusBadGateway, "octopus_all_channels_failed", localErrorPublicMessage("service temporarily unavailable, please retry")
+}
+
+// localErrorPublicMessage returns the user-facing message for an octopus-internal
+// (route-selection / all-channels-failed) error. The underlying error message carries
+// internal routing detail (channel names, circuit/cooldown state) that must never reach
+// the caller. Honour the admin custom message when configured so every error surface
+// (upstream + local) reads the same; otherwise return a clean generic. The detailed
+// message stays in the admin audit log and per-attempt records.
+func localErrorPublicMessage(defaultMsg string) string {
+	if upstreamErrorBodyMode() == "custom_message" {
+		if m := upstreamErrorCustomMessage(); m != "" {
+			return m
+		}
+	}
+	return defaultMsg
 }
 
 func routeSelectionErrorFromAttempts(attempts []dbmodel.ChannelAttempt) error {

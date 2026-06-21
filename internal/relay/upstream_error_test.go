@@ -238,8 +238,10 @@ func TestRelayErrorDetailsClassifiesLocalRouteSelection(t *testing.T) {
 	if respStatus != http.StatusServiceUnavailable || respCode != "octopus_channel_circuit_open" {
 		t.Fatalf("unexpected local route response: status=%d code=%q message=%q", respStatus, respCode, message)
 	}
-	if !strings.Contains(message, "Claude-CPA") {
-		t.Fatalf("expected channel name in local route message, got %q", message)
+	// The user-facing message must NOT leak the channel name or circuit/cooldown state;
+	// that internal detail stays in the audit log (strategy/attempts), not the response.
+	if strings.Contains(message, "Claude-CPA") || strings.Contains(strings.ToLower(message), "circuit") || strings.Contains(strings.ToLower(message), "cooldown") {
+		t.Fatalf("local route response must not leak channel/circuit detail, got %q", message)
 	}
 }
 
@@ -387,6 +389,41 @@ func TestHandlerReturnsToOriginalGroupAfterRouteFailure(t *testing.T) {
 	}
 	if logs[0].TotalAttempts != 2 {
 		t.Fatalf("expected route + original group attempts, got %d", logs[0].TotalAttempts)
+	}
+}
+
+func TestRelayErrorResponseRedactsLocalRouteDetail(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	setupRelayErrorDB(t)
+
+	// A local route-selection error whose underlying message carries a channel name +
+	// circuit/cooldown detail (the audit-log form). The user-facing response must not.
+	leaky := &localRelayError{
+		status:   http.StatusServiceUnavailable,
+		code:     "octopus_channel_circuit_open",
+		strategy: "local_route_selection;reason=circuit_break;upstream_forwarded=false",
+		message:  "no available channel: tmp-anyrouter-claude-no1m (circuit breaker tripped, remaining cooldown: 30s)",
+	}
+
+	status, code, message := relayErrorResponse(leaky)
+	if status != http.StatusServiceUnavailable || code != "octopus_channel_circuit_open" {
+		t.Fatalf("status/code must be preserved: %d %q", status, code)
+	}
+	for _, leak := range []string{"tmp-anyrouter", "circuit", "cooldown", "no available channel"} {
+		if strings.Contains(strings.ToLower(message), strings.ToLower(leak)) {
+			t.Fatalf("user-facing message leaked internal route detail %q: %q", leak, message)
+		}
+	}
+
+	// A configured custom message unifies upstream + local error surfaces to one line.
+	if err := op.SettingSetString(dbmodel.SettingKeyUpstreamErrorBodyMode, "custom_message"); err != nil {
+		t.Fatalf("set body mode: %v", err)
+	}
+	if err := op.SettingSetString(dbmodel.SettingKeyUpstreamErrorCustom, "服务繁忙，请稍后再试"); err != nil {
+		t.Fatalf("set custom message: %v", err)
+	}
+	if _, _, message = relayErrorResponse(leaky); message != "服务繁忙，请稍后再试" {
+		t.Fatalf("custom message must apply to local errors too, got %q", message)
 	}
 }
 
