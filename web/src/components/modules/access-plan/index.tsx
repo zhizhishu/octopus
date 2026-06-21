@@ -106,7 +106,7 @@ const ACCESS_PLAN_TEXT = {
         jsonCopy: '生成当前 JSON',
         jsonPlaceholder: '[\n  {\n    "request_model": "claude-fable-5",\n    "channel_id": 1,\n    "upstream_model": "claude-fable-5",\n    "priority": 1,\n    "weight": 1,\n    "enabled": true\n  }\n]',
         targetCount: '映射 {count} 条',
-        requestModel: '请求模型',
+        requestModel: '原请求模型',
         upstreamModel: '发送模型',
         priority: '优先级',
         weight: '同级轮询权重',
@@ -114,7 +114,7 @@ const ACCESS_PLAN_TEXT = {
         missingChannel: '渠道 #{id} 已不存在',
         empty: '暂无映射目标',
         canvasTitle: '无限画布视图',
-        canvasHint: '从方案到请求模型，再到上游渠道；横向滚动看完整链路。',
+        canvasHint: '每行＝一条替换规则：原请求模型 → 改走某个渠道、用该渠道上的发送模型；横向看完整链路。',
         canvasEmpty: '暂无可视化链路，先重建映射或添加目标。',
         targetSummary: '候选渠道 / 发送模型',
         setupTitle: '调用前先确认模型池 / 方案',
@@ -938,10 +938,10 @@ function RouteFlowCanvas({
             ) : (
                 <div className="max-h-[520px] overflow-auto">
                     <div className="relative min-w-[1120px] space-y-4 bg-[linear-gradient(90deg,rgba(125,125,125,0.13)_1px,transparent_1px),linear-gradient(0deg,rgba(125,125,125,0.10)_1px,transparent_1px)] bg-[length:32px_32px] p-5">
-                        <div className="grid grid-cols-[210px_260px_minmax(0,1fr)] gap-8 text-[10px] font-black uppercase tracking-[0.22em] text-muted-foreground">
-                            <span>Plan</span>
-                            <span>Request Model</span>
-                            <span>Upstream Channels</span>
+                        <div className="grid grid-cols-[210px_260px_minmax(0,1fr)] gap-8 text-[10px] font-black tracking-[0.18em] text-muted-foreground">
+                            <span>方案</span>
+                            <span>原请求模型</span>
+                            <span>替换为：渠道 · 发送模型</span>
                         </div>
                         {visibleRows.map((row, rowIndex) => (
                             <div key={row.requestKey || `route-row-${rowIndex}`} className="grid grid-cols-[210px_260px_minmax(0,1fr)] items-center gap-8">
@@ -954,7 +954,7 @@ function RouteFlowCanvas({
                                 <div className="relative rounded-2xl border border-amber-500/25 bg-amber-500/10 p-3 shadow-sm">
                                     <div className="absolute -left-8 top-1/2 h-px w-8 bg-primary/35" />
                                     <div className="absolute -right-8 top-1/2 h-px w-8 bg-amber-500/35" />
-                                    <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-600 dark:text-amber-300">request</div>
+                                    <div className="text-[10px] font-bold tracking-[0.16em] text-amber-600 dark:text-amber-300">原请求模型</div>
                                     <div className="mt-1 break-all font-mono text-sm font-black text-foreground">{cleanOneMillionModelName(row.requestModel)}</div>
                                     <div className="mt-3 flex gap-2">
                                         <Button
@@ -1059,18 +1059,23 @@ function RouteTargetEditorCard({
 
     return (
         <div className={cn('min-w-0 rounded-xl border border-border/80 bg-muted/15', compact ? 'p-2.5' : 'p-3')}>
-            <div className="grid min-w-0 gap-2 xl:grid-cols-[minmax(0,1fr)_minmax(120px,0.8fr)_minmax(0,1fr)_auto] xl:items-end">
-                <label className="grid min-w-0 gap-1 text-xs text-muted-foreground">
-                    {t('routes.requestModel')}
-                    <Input
-                        value={target.request_model}
-                        list={requestModelListId}
-                        onChange={(event) => updateTarget(index, { request_model: cleanOneMillionModelName(event.target.value) })}
-                        placeholder={t('routes.requestModel')}
-                        disabled={lockRequestModel}
-                        className="h-9 min-w-0 rounded-xl"
-                    />
-                </label>
+            <div className={cn('grid min-w-0 gap-2 xl:items-end', lockRequestModel ? 'xl:grid-cols-[minmax(120px,0.9fr)_minmax(0,1fr)_auto]' : 'xl:grid-cols-[minmax(0,1fr)_minmax(120px,0.8fr)_minmax(0,1fr)_auto]')}>
+                {/* In the per-model quick-edit modal the request model is fixed (shown in
+                    the title), so the redundant per-target request-model input is hidden;
+                    it stays editable only in the full list where a new mapping is added. */}
+                {!lockRequestModel && (
+                    <label className="grid min-w-0 gap-1 text-xs text-muted-foreground">
+                        {t('routes.requestModel')}
+                        <Input
+                            value={target.request_model}
+                            list={requestModelListId}
+                            onChange={(event) => updateTarget(index, { request_model: cleanOneMillionModelName(event.target.value) })}
+                            placeholder={t('routes.requestModel')}
+                            disabled={lockRequestModel}
+                            className="h-9 min-w-0 rounded-xl"
+                        />
+                    </label>
+                )}
                 <label className="grid min-w-0 gap-1 text-xs text-muted-foreground">
                     {t('routes.targetSummary')}
                     <SearchableSelect
