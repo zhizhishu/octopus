@@ -82,6 +82,20 @@ const (
 	// (claude-cli/2.1.168). Treat it as a product default, not an admin custom value,
 	// so upgraded deployments converge to the current fingerprint without a manual edit.
 	LegacyDefaultClaudeHeaderUserAgent2168 = "claude-cli/2.1.168 (external, sdk-cli)"
+
+	// LegacyDefaultCodexHeaderUserAgentCliRs0114 was an early Codex header default
+	// (codex_cli_rs/0.114.0 on macOS) shipped before the locally packet-verified
+	// codex_exec Windows fingerprint. Deployments seeded with it stayed pinned to the
+	// stale macOS UA across image updates because it was never on the upgrade list;
+	// treat it as a product default so it converges to DefaultCodexHeaderUserAgent.
+	LegacyDefaultCodexHeaderUserAgentCliRs0114 = "codex_cli_rs/0.114.0 (Mac OS 14.2.0; x86_64) vscode/1.111.0"
+
+	// DefaultCodexHeaderBetaFeatures is the current Codex beta-feature header value.
+	DefaultCodexHeaderBetaFeatures = "terminal_resize_reflow"
+
+	// LegacyDefaultCodexHeaderBetaFeaturesMultiAgent was the Codex beta-feature
+	// default paired with the early macOS UA above; migrate it to the current value.
+	LegacyDefaultCodexHeaderBetaFeaturesMultiAgent = "multi_agent"
 )
 
 func DefaultSettings() []Setting {
@@ -109,7 +123,7 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyClaudeCLIAutoCompact, Value: "false"},
 		{Key: SettingKeyClaudeCLIReasoningEffort, Value: "auto"},
 		{Key: SettingKeyCodexHeaderUserAgent, Value: DefaultCodexHeaderUserAgent},
-		{Key: SettingKeyCodexHeaderBetaFeatures, Value: "terminal_resize_reflow"},
+		{Key: SettingKeyCodexHeaderBetaFeatures, Value: DefaultCodexHeaderBetaFeatures},
 		{Key: SettingKeyCodexFastMode, Value: "false"},
 		{Key: SettingKeyUserRegistrationEnabled, Value: "false"}, // 默认只允许邀请码注册
 		{Key: SettingKeyCircuitBreakerThreshold, Value: "10"},    // 默认连续失败10次触发熔断

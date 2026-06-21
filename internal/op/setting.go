@@ -17,7 +17,11 @@ var settingLegacyDefaultUpgrades = map[model.SettingKey]map[string]string{
 		model.LegacyDefaultClaudeHeaderUserAgent2168: model.DefaultClaudeHeaderUserAgent,
 	},
 	model.SettingKeyCodexHeaderUserAgent: {
-		model.LegacyDefaultCodexHeaderUserAgent0133: model.DefaultCodexHeaderUserAgent,
+		model.LegacyDefaultCodexHeaderUserAgent0133:      model.DefaultCodexHeaderUserAgent,
+		model.LegacyDefaultCodexHeaderUserAgentCliRs0114: model.DefaultCodexHeaderUserAgent,
+	},
+	model.SettingKeyCodexHeaderBetaFeatures: {
+		model.LegacyDefaultCodexHeaderBetaFeaturesMultiAgent: model.DefaultCodexHeaderBetaFeatures,
 	},
 	model.SettingKeyRelayStreamDataTimeoutSec: {
 		model.LegacyDefaultRelayStreamDataIntervalTimeoutSeconds: model.DefaultRelayStreamDataIntervalTimeoutSeconds,

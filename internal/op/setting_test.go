@@ -78,6 +78,40 @@ func TestSettingRefreshCacheKeepsCustomCodexUserAgent(t *testing.T) {
 	}
 }
 
+func TestSettingRefreshCacheUpgradesLegacyMacCodexDefaults(t *testing.T) {
+	ctx := setupSettingTest(t)
+
+	seed := []model.Setting{
+		{Key: model.SettingKeyCodexHeaderUserAgent, Value: model.LegacyDefaultCodexHeaderUserAgentCliRs0114},
+		{Key: model.SettingKeyCodexHeaderBetaFeatures, Value: model.LegacyDefaultCodexHeaderBetaFeaturesMultiAgent},
+	}
+	for i := range seed {
+		if err := db.GetDB().WithContext(ctx).Create(&seed[i]).Error; err != nil {
+			t.Fatalf("seed %s: %v", seed[i].Key, err)
+		}
+	}
+
+	if err := settingRefreshCache(ctx); err != nil {
+		t.Fatalf("refresh setting cache: %v", err)
+	}
+
+	ua, err := SettingGetString(model.SettingKeyCodexHeaderUserAgent)
+	if err != nil {
+		t.Fatalf("get codex ua: %v", err)
+	}
+	if ua != model.DefaultCodexHeaderUserAgent {
+		t.Fatalf("legacy macOS Codex UA must upgrade to %q, got %q", model.DefaultCodexHeaderUserAgent, ua)
+	}
+
+	beta, err := SettingGetString(model.SettingKeyCodexHeaderBetaFeatures)
+	if err != nil {
+		t.Fatalf("get codex beta: %v", err)
+	}
+	if beta != model.DefaultCodexHeaderBetaFeatures {
+		t.Fatalf("legacy Codex beta must upgrade to %q, got %q", model.DefaultCodexHeaderBetaFeatures, beta)
+	}
+}
+
 func TestSettingRefreshCacheUpgradesLegacyStreamDataTimeoutDefault(t *testing.T) {
 	ctx := setupSettingTest(t)
 
