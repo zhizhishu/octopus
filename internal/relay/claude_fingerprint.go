@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/bestruirui/octopus/internal/transformer/model"
 	"github.com/bestruirui/octopus/internal/transformer/outbound"
 	"github.com/google/uuid"
 )
@@ -40,8 +41,8 @@ func (ra *relayAttempt) ensureClaudeMetadataUserID() {
 	}
 	device := claudeFingerprintDeviceID(ra.userID, ra.apiKeyID)
 	session := ra.claudeFingerprintSessionID()
-	// Compact, no spaces — AnyRouter rejects the spaced json form.
-	ra.internalRequest.Metadata["user_id"] = `{"device_id":"` + device + `","account_uuid":"","session_id":"` + session + `"}`
+	// Shared builder (compact, golden key order) so relay == channel test byte-for-byte.
+	ra.internalRequest.Metadata["user_id"] = model.BuildClaudeMetadataUserID(device, session)
 }
 
 // claudeFingerprintDeviceID returns a stable 64-hex device id per user+api key,

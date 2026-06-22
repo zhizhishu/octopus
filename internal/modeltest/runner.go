@@ -967,12 +967,22 @@ func applyClaudeHeaderDefaults(req *http.Request, internalRequest *transformermo
 		setHeaderIfMissing(req.Header, "X-Stainless-OS", settingString(dbmodel.SettingKeyClaudeHeaderOS, defaultClaudeOS))
 		setHeaderIfMissing(req.Header, "X-Stainless-Arch", settingString(dbmodel.SettingKeyClaudeHeaderArch, defaultClaudeArch))
 	}
+	// Build anthropic-beta via the SAME shared helper the relay forward path uses,
+	// so a channel/model test is byte-for-byte identical to real traffic (context-1m
+	// in its real slot, not stuck at position 1). This previously prepended the
+	// transform betas (a lone context-1m) before the canonical set — a divergent copy
+	// that let strict upstreams identify the test request as not-real claude-cli.
+	var transformBetas []string
 	if internalRequest != nil {
-		for _, beta := range internalRequest.TransformOptions.AnthropicBetas {
-			addAnthropicBetaHeader(req.Header, beta)
-		}
+		transformBetas = internalRequest.TransformOptions.AnthropicBetas
 	}
-	for _, beta := range transformermodel.AnthropicClaudeCodeBetas(shouldEnableClaudeOneMillionBeta(internalRequest)) {
+	betas := transformermodel.BuildClaudeCodeBetaOrder(
+		shouldEnableClaudeOneMillionBeta(internalRequest),
+		strings.Split(req.Header.Get("Anthropic-Beta"), ","),
+		transformBetas,
+	)
+	req.Header.Del("Anthropic-Beta")
+	for _, beta := range betas {
 		addAnthropicBetaHeader(req.Header, beta)
 	}
 }
@@ -1109,20 +1119,20 @@ func prepareClaudeOneMillionModelTestShape(req *transformermodel.InternalLLMRequ
 		req.Metadata = map[string]string{}
 	}
 	if strings.TrimSpace(req.Metadata["user_id"]) == "" {
-		userMeta := map[string]string{
-			"device_id":    modelTestStableID("device", sessionID),
-			"account_uuid": "",
-			"session_id":   sessionID,
-		}
-		if encoded, err := json.Marshal(userMeta); err == nil {
-			req.Metadata["user_id"] = string(encoded)
-		}
+		// Use the SAME shared builder + a 64-hex device id as the relay forward path
+		// (claude_fingerprint.go) so a channel test's metadata.user_id is byte-for-byte
+		// identical to real traffic. A Go map would sort keys alphabetically and the old
+		// 32-hex device id was the wrong length — both were non-CLI tells.
+		req.Metadata["user_id"] = transformermodel.BuildClaudeMetadataUserID(modelTestClaudeDeviceID(sessionID), sessionID)
 	}
 }
 
-func modelTestStableID(prefix string, value string) string {
-	sum := sha256.Sum256([]byte("model-test:" + prefix + ":" + strings.TrimSpace(value)))
-	return hex.EncodeToString(sum[:16])
+// modelTestClaudeDeviceID returns a stable 64-hex device id (full sha256) matching
+// the shape a genuine Claude Code install reports, so the channel-test fingerprint
+// is the same length as the relay path's claudeFingerprintDeviceID.
+func modelTestClaudeDeviceID(sessionID string) string {
+	sum := sha256.Sum256([]byte("model-test:claude-device:" + strings.TrimSpace(sessionID)))
+	return hex.EncodeToString(sum[:])
 }
 
 func codexModelTestInstallationID(request dbmodel.ModelTestRequest) string {

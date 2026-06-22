@@ -46,6 +46,53 @@ func AnthropicClaudeCodeBetas(wantsOneMillion bool) []string {
 	return result
 }
 
+// BuildClaudeCodeBetaOrder returns anthropic-beta values in the exact wire order a
+// genuine claude-cli sends: the canonical claude-code set is authoritative (with
+// context-1m-2025-08-07 in its real slot only when 1M is wanted), and any EXTRA
+// betas carried on the existing header or in transform options that are not part
+// of the canonical set are appended after, de-duplicated. context-1m is NEVER
+// emitted as a stray leading beta (a non-CLI tell). Both the relay forward path
+// and the channel/model test path MUST build the header through this single helper
+// so a channel test is byte-for-byte identical to real traffic — they previously
+// had divergent copies and the test left context-1m stuck at position 1.
+func BuildClaudeCodeBetaOrder(wantsOneMillion bool, existing []string, transformBetas []string) []string {
+	canonical := AnthropicClaudeCodeBetas(wantsOneMillion)
+	inCanonical := make(map[string]bool, len(canonical))
+	for _, b := range canonical {
+		inCanonical[strings.ToLower(strings.TrimSpace(b))] = true
+	}
+	result := make([]string, 0, len(canonical)+len(existing)+len(transformBetas))
+	result = append(result, canonical...)
+	seenExtra := make(map[string]bool)
+	addExtras := func(list []string) {
+		for _, b := range list {
+			b = strings.TrimSpace(b)
+			if b == "" || inCanonical[strings.ToLower(b)] || strings.EqualFold(b, AnthropicOneMillionBeta) {
+				continue
+			}
+			key := strings.ToLower(b)
+			if seenExtra[key] {
+				continue
+			}
+			seenExtra[key] = true
+			result = append(result, b)
+		}
+	}
+	addExtras(existing)
+	addExtras(transformBetas)
+	return result
+}
+
+// BuildClaudeMetadataUserID serialises metadata.user_id exactly as a real Claude
+// Code client does: compact (no spaces — AnyRouter rejects the spaced form) with
+// key order device_id, account_uuid, session_id. Both the relay forward path and
+// the channel/model test path build it through this one helper so the byte shape
+// is identical; a Go map marshalled to JSON sorts keys alphabetically, which is a
+// non-CLI tell. deviceID must be a 64-hex string like a genuine install reports.
+func BuildClaudeMetadataUserID(deviceID, sessionID string) string {
+	return `{"device_id":"` + deviceID + `","account_uuid":"","session_id":"` + sessionID + `"}`
+}
+
 // NormalizeAnthropicModelAlias maps client-facing Claude/Claude Code shortcuts
 // to the provider model id that should be sent upstream. In particular, current
 // AnyRouter exposes/logs claude-opus-4-8, while Claude Code users commonly pass
