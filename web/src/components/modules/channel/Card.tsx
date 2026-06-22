@@ -16,6 +16,7 @@ import { toast } from '@/components/common/Toast';
 import { useMemo, useState, type MouseEvent } from 'react';
 import { cn } from '@/lib/utils';
 import { isStreamRequiredModel } from '@/lib/model-aliases';
+import { useNavStore } from '@/components/modules/navbar/nav-store';
 import {
     getChannelEndpointFamily,
     getPrimaryChannelModel,
@@ -28,6 +29,7 @@ export function Card({ channel, stats, layout = 'list' }: { channel: Channel; st
     const enableChannel = useEnableChannel();
     const resetCircuit = useResetChannelCircuit();
     const channelTest = useModelTest();
+    const setActiveItem = useNavStore((state) => state.setActiveItem);
     const circuitLabel = channel.circuit_remaining_seconds > 0
         ? t('circuit.remaining', { seconds: channel.circuit_remaining_seconds })
         : t('circuit.open');
@@ -86,17 +88,23 @@ export function Card({ channel, stats, layout = 'list' }: { channel: Channel; st
                 endpoint: defaultModelTestEndpointForChannel(channel.type),
                 stream: forcedStreamTest ? true : streamTest,
                 timeout_seconds: channel.type === ChannelType.Anthropic ? 180 : 30,
+                // 管理员专用：测试结果一律写入日志，测完直接进日志页看完整记录
+                audit_log: true,
             },
             {
                 onSuccess: (data) => {
                     const result = data.results[0];
                     if (result?.success) {
-                        toast.success('渠道测试成功', { description: result.response_preview || 'OK' });
-                        return;
+                        toast.success('渠道测试成功，正在打开日志', { description: result.response_preview || 'OK' });
+                    } else {
+                        toast.error('渠道测试失败，正在打开日志', { description: result?.error || '无可用结果' });
                     }
-                    toast.error('渠道测试失败', { description: result?.error || '无可用结果' });
+                    setActiveItem('log');
                 },
-                onError: (error) => toast.error('渠道测试失败', { description: error.message }),
+                onError: (error) => {
+                    toast.error('渠道测试失败，正在打开日志', { description: error.message });
+                    setActiveItem('log');
+                },
             }
         );
     };

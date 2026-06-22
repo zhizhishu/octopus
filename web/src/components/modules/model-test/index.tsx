@@ -30,6 +30,7 @@ import {
 import { cn } from '@/lib/utils';
 import { expandOneMillionModelAliases, isStreamRequiredModel } from '@/lib/model-aliases';
 import { getSelectedChannelModels } from '../channel/channel-utils';
+import { useNavStore } from '@/components/modules/navbar/nav-store';
 
 const LEGACY_DEFAULT_PROMPT = 'Reply with exactly OK.';
 const AUTO_MATH_PROMPT_RE = /^请只回答算式结果，不要解释：\d{4} \+ \d{4} = \?$/;
@@ -259,13 +260,13 @@ export function ModelTest() {
     const { data: users = [] } = useUserList();
     const { data: apiKeys = [] } = useAPIKeyList();
     const testMutation = useModelTest();
+    const setActiveItem = useNavStore((state) => state.setActiveItem);
     const [singleModel, setSingleModel] = useState('');
     const [batchText, setBatchText] = useState('');
     const [accessPlanSlug, setAccessPlanSlug] = useState('');
     const [selectedChannelID, setSelectedChannelID] = useState<number | undefined>();
     const [selectedUserID, setSelectedUserID] = useState<number | undefined>();
     const [selectedAPIKeyID, setSelectedAPIKeyID] = useState<number | undefined>();
-    const [auditLog, setAuditLog] = useState(false);
     const [endpoint, setEndpoint] = useState<ModelTestEndpoint>('openai_responses');
     const [prompt, setPrompt] = useState(() => makeRandomMathPrompt());
     const [streamTest, setStreamTest] = useState(true);
@@ -394,13 +395,15 @@ export function ModelTest() {
                 timeout_seconds: timeoutSeconds,
                 user_id: selectedUserID,
                 api_key_id: effectiveSelectedAPIKeyID,
-                audit_log: auditLog,
+                // 管理员专用：测试结果一律写入日志，测完直接进日志页看完整记录
+                audit_log: true,
             },
             {
                 onSuccess: (data) => {
                     setResponse(data.results);
                     setSummary(data.summary);
-                    toast.success(`测试完成：${data.summary.success}/${data.summary.total} 成功`);
+                    toast.success(`测试完成：${data.summary.success}/${data.summary.total} 成功，正在打开日志`);
+                    setActiveItem('log');
                 },
                 onError: (error) => {
                     toast.error('模型测试失败', { description: apiErrorMessage(error) });
@@ -580,13 +583,6 @@ export function ModelTest() {
                                 </select>
                                 <span className="min-w-0 break-all text-xs text-muted-foreground">
                                     {ENDPOINT_OPTIONS.find((item) => item.value === endpoint)?.path}
-                                </span>
-                            </label>
-                            <label className="grid gap-2 text-sm">
-                                <span className="font-medium">审计日志</span>
-                                <span className="inline-flex h-9 items-center gap-2 rounded-xl border border-border bg-background px-3 text-sm text-foreground">
-                                    <Switch checked={auditLog} onCheckedChange={setAuditLog} />
-                                    <span className="text-xs text-muted-foreground">{auditLog ? '写入日志' : '不写入'}</span>
                                 </span>
                             </label>
                             <label className="grid gap-2 text-sm">
