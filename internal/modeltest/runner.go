@@ -631,6 +631,14 @@ func (r *modelRunner) tryChannel(ctx context.Context, channel *dbmodel.Channel, 
 
 func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermodel.Outbound, channel *dbmodel.Channel, key dbmodel.ChannelKey, upstreamModel string) (int, *transformermodel.InternalLLMResponse, error) {
 	internalRequest := r.internalRequest(upstreamModel)
+	// Mirror production relay (relay.go sets this from the same cloak switch): the
+	// synthetic Claude billing/agent-identity system blocks are injected only when the
+	// channel cloak applies (auto/always). Without this the test always injected them
+	// (zero-value false), so a cloak=never channel's test would send Claude identity the
+	// real relay would strip, and a cloaked channel's test must inject it (the block
+	// strict upstreams like Kiro/AnyRouter gate on) — so the test faithfully reflects
+	// exactly what the upstream receives in production.
+	internalRequest.TransformOptions.SuppressClaudeIdentity = !shouldApplyChannelCloak(channel.Cloak)
 	if channel.Type == outbound.OutboundTypeAnthropic {
 		if channel.AnthropicContext1M {
 			internalRequest.TransformOptions.AnthropicOneMillionBeta = true
