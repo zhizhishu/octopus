@@ -33,6 +33,12 @@ const (
 	SettingKeyClaudeHeaderStabilize     SettingKey = "claude_header_defaults_stabilize_device_profile"
 	SettingKeyClaudeCLIAutoCompact      SettingKey = "claude_cli_auto_compact"
 	SettingKeyClaudeCLIReasoningEffort  SettingKey = "claude_cli_reasoning_effort"
+	// SettingKeyFingerprintInstanceID is a per-deployment random seed (generated once,
+	// persisted) from which octopus derives a SINGLE upstream device fingerprint
+	// (claude device_id / codex installation id) for ALL relayed traffic — uniform
+	// across users/api-keys/upstreams so an upstream never sees multiple devices just
+	// because requests pass through octopus.
+	SettingKeyFingerprintInstanceID     SettingKey = "fingerprint_instance_id"
 	SettingKeyCodexHeaderUserAgent      SettingKey = "codex_header_defaults_user_agent"
 	SettingKeyCodexHeaderBetaFeatures   SettingKey = "codex_header_defaults_beta_features"
 	SettingKeyCodexFastMode             SettingKey = "codex_fast_mode"

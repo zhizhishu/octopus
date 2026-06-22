@@ -663,7 +663,7 @@ func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermod
 		}
 	}
 	if modelTestUsesCodexFingerprint(channel, r.request.Endpoint) {
-		prepareCodexModelTestRequest(internalRequest, channel.Type, r.request)
+		prepareCodexModelTestRequest(internalRequest, channel.Type)
 	}
 
 	outboundRequest, err := adapter.TransformRequest(ctx, internalRequest, modelTestOutboundBaseURL(channel), key.ChannelKey)
@@ -741,16 +741,20 @@ func (r *modelRunner) internalRequest(upstreamModel string) *transformermodel.In
 	if prompt == "" || prompt == defaultPromptSentinel {
 		prompt = nextDefaultModelTestPrompt()
 	}
-	maxTokens := int64(8)
 	stream := false
 	if r.request.Stream != nil {
 		stream = *r.request.Stream
 	}
-	temperature := 0.0
 
 	endpoint, _ := normalizeEndpoint(r.request.Endpoint)
+	// Anthropic test must mirror a genuine claude-cli request byte-shape, not a
+	// lightweight probe: 64000 max_tokens (a tiny 8 is a glaring non-CLI tell),
+	// streamed, and NO temperature field at all (real claude-cli omits it; sending
+	// temperature:0 is a tell). Non-Anthropic endpoints keep the light probe shape.
+	maxTokens := int64(8)
 	if endpoint.name == "anthropic_messages" {
 		stream = true
+		maxTokens = int64(64000)
 	}
 	internalRequest := &transformermodel.InternalLLMRequest{
 		Model: upstreamModel,
@@ -762,11 +766,18 @@ func (r *modelRunner) internalRequest(upstreamModel string) *transformermodel.In
 		}},
 		MaxTokens:    &maxTokens,
 		Stream:       &stream,
-		Temperature:  &temperature,
 		RawAPIFormat: endpoint.apiFormat,
 	}
-	if endpoint.name == "anthropic_messages" && (transformermodel.AnthropicModelWantsOneMillionBeta(upstreamModel) || transformermodel.AnthropicModelWantsOneMillionBeta(r.result.RequestModel)) {
-		internalRequest.TransformOptions.AnthropicOneMillionBeta = true
+	if endpoint.name == "anthropic_messages" {
+		if transformermodel.AnthropicModelWantsOneMillionBeta(upstreamModel) || transformermodel.AnthropicModelWantsOneMillionBeta(r.result.RequestModel) {
+			internalRequest.TransformOptions.AnthropicOneMillionBeta = true
+		} else {
+			// Genuine claude-cli always carries an explicit thinking object; on a plain
+			// (non-1M / non-adaptive) turn it is {"type":"disabled"}. Sending no thinking
+			// field at all is a non-CLI tell, so set it to match real traffic. (The 1M
+			// path sets adaptive thinking via prepareClaudeOneMillionModelTestShape.)
+			internalRequest.AnthropicThinking = json.RawMessage(`{"type":"disabled"}`)
+		}
 	}
 	return internalRequest
 }
@@ -955,7 +966,9 @@ func applyClaudeHeaderDefaults(req *http.Request, internalRequest *transformermo
 	setHeaderIfMissing(req.Header, "Anthropic-Version", "2023-06-01")
 	setHeaderIfMissing(req.Header, "User-Agent", settingString(dbmodel.SettingKeyClaudeHeaderUserAgent, defaultClaudeUserAgent))
 	setHeaderIfMissing(req.Header, "X-App", "cli")
-	setHeaderIfMissing(req.Header, "X-Client-Request-Id", uuid.NewString())
+	// NOTE: deliberately NOT setting X-Client-Request-Id — a genuine claude-cli does
+	// not send it and the relay forward path strips it (clientTraceHeaders). Sending
+	// it here was a test-vs-relay inconsistency and a non-CLI tell.
 	setHeaderIfMissing(req.Header, "X-Claude-Code-Session-Id", modelTestClaudeSessionID(internalRequest))
 	setHeaderIfMissing(req.Header, "X-Stainless-Lang", "js")
 	setHeaderIfMissing(req.Header, "X-Stainless-Retry-Count", "0")
@@ -1059,7 +1072,7 @@ func modelTestUsesCodexFingerprint(channel *dbmodel.Channel, endpointName string
 	}
 }
 
-func prepareCodexModelTestRequest(req *transformermodel.InternalLLMRequest, channelType outbound.OutboundType, request dbmodel.ModelTestRequest) {
+func prepareCodexModelTestRequest(req *transformermodel.InternalLLMRequest, channelType outbound.OutboundType) {
 	if req == nil {
 		return
 	}
@@ -1073,7 +1086,7 @@ func prepareCodexModelTestRequest(req *transformermodel.InternalLLMRequest, chan
 	}
 	if len(req.ClientMetadata) == 0 {
 		metadata := map[string]any{
-			"x-codex-installation-id": codexModelTestInstallationID(request),
+			"x-codex-installation-id": op.CodexInstallationID(),
 			"x-codex-window-id":       sessionID + ":0",
 			"x-codex-turn-metadata":   codexModelTestTurnMetadata(sessionID),
 		}
@@ -1119,28 +1132,11 @@ func prepareClaudeOneMillionModelTestShape(req *transformermodel.InternalLLMRequ
 		req.Metadata = map[string]string{}
 	}
 	if strings.TrimSpace(req.Metadata["user_id"]) == "" {
-		// Use the SAME shared builder + a 64-hex device id as the relay forward path
-		// (claude_fingerprint.go) so a channel test's metadata.user_id is byte-for-byte
-		// identical to real traffic. A Go map would sort keys alphabetically and the old
-		// 32-hex device id was the wrong length — both were non-CLI tells.
-		req.Metadata["user_id"] = transformermodel.BuildClaudeMetadataUserID(modelTestClaudeDeviceID(sessionID), sessionID)
+		// Same shared builder AND the same uniform per-instance device id as the relay
+		// forward path (op.ClaudeFingerprintDeviceID) so a channel test's metadata.user_id
+		// is byte-for-byte identical to real traffic — one device, not a per-test one.
+		req.Metadata["user_id"] = transformermodel.BuildClaudeMetadataUserID(op.ClaudeFingerprintDeviceID(), sessionID)
 	}
-}
-
-// modelTestClaudeDeviceID returns a stable 64-hex device id (full sha256) matching
-// the shape a genuine Claude Code install reports, so the channel-test fingerprint
-// is the same length as the relay path's claudeFingerprintDeviceID.
-func modelTestClaudeDeviceID(sessionID string) string {
-	sum := sha256.Sum256([]byte("model-test:claude-device:" + strings.TrimSpace(sessionID)))
-	return hex.EncodeToString(sum[:])
-}
-
-func codexModelTestInstallationID(request dbmodel.ModelTestRequest) string {
-	seed := fmt.Sprintf("user=%d|api_key=%d", request.UserID, request.APIKeyID)
-	if request.UserID == 0 && request.APIKeyID == 0 {
-		seed = "admin-model-test"
-	}
-	return uuid.NewSHA1(uuid.NameSpaceOID, []byte("octopus:codex:model-test-installation:"+seed)).String()
 }
 
 func prepareCodexModelTestShape(req *transformermodel.InternalLLMRequest) {

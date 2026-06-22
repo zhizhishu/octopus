@@ -261,12 +261,11 @@ func TestRunAppliesCodexDefaultsWhenResponsesUseChatChannel(t *testing.T) {
 }
 
 func TestPrepareCodexModelTestRequestUsesStableDeviceAcrossSessions(t *testing.T) {
-	request := dbmodel.ModelTestRequest{UserID: 42, APIKeyID: 77}
 	first := &transformermodel.InternalLLMRequest{Model: "gpt-5.5"}
 	second := &transformermodel.InternalLLMRequest{Model: "gpt-5.5"}
 
-	prepareCodexModelTestRequest(first, outbound.OutboundTypeOpenAIResponse, request)
-	prepareCodexModelTestRequest(second, outbound.OutboundTypeOpenAIResponse, request)
+	prepareCodexModelTestRequest(first, outbound.OutboundTypeOpenAIResponse)
+	prepareCodexModelTestRequest(second, outbound.OutboundTypeOpenAIResponse)
 
 	var firstMetadata map[string]string
 	var secondMetadata map[string]string
@@ -839,8 +838,11 @@ data: {"type":"message_stop"}
 	if sawMaxTokens != 64000 || !strings.Contains(sawThinking, `"adaptive"`) || !strings.Contains(sawContextManagement, "clear_thinking_20251015") {
 		t.Fatalf("expected Claude CLI-like 1M body, max=%v thinking=%s context=%s", sawMaxTokens, sawThinking, sawContextManagement)
 	}
-	if sawClientRequestID == "" {
-		t.Fatalf("expected claude client request id")
+	// Genuine claude-cli (2.1.168/2.1.178, captured on the wire) does NOT send
+	// X-Client-Request-Id, and the relay forward path strips it; the channel/model
+	// test must match — sending it was a non-CLI tell and a test-vs-relay drift.
+	if sawClientRequestID != "" {
+		t.Fatalf("test must NOT send X-Client-Request-Id (real claude-cli omits it; relay strips it), got %q", sawClientRequestID)
 	}
 	if !strings.Contains(sawSystem, "Claude Agent SDK") || !strings.Contains(sawMetadata, "session_id") {
 		t.Fatalf("expected Claude 1M model-test shape to include agent system and metadata, system=%s metadata=%s", sawSystem, sawMetadata)

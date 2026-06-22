@@ -495,11 +495,13 @@ func TestClaudeFingerprintSuppressedWhenCloakOff(t *testing.T) {
 	}
 }
 
-// TestClaudeHeaderDefaultsAdoptsInboundClientVersion pins that a genuine claude-cli
-// downstream client's reported version values (UA + X-Stainless-* version/os/arch) are
-// mirrored onto the upstream request instead of a single pinned version, so octopus
-// tracks the real client version. The canonical fixed headers (X-App etc.) stay put.
-func TestClaudeHeaderDefaultsAdoptsInboundClientVersion(t *testing.T) {
+// TestClaudeHeaderDefaultsUniformUAIgnoresInboundVersion pins the UNIFORM-UA
+// requirement: even when a genuine claude-cli downstream reports its OWN version
+// (UA + X-Stainless-* version/os/arch), octopus must NOT mirror it onto the upstream.
+// Every upstream sees ONE pinned static fingerprint, so traffic relayed through
+// octopus never looks like many different devices/versions. (This supersedes the
+// earlier per-request version adoption — see relay.inboundClaudeClientVersion.)
+func TestClaudeHeaderDefaultsUniformUAIgnoresInboundVersion(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
@@ -520,16 +522,20 @@ func TestClaudeHeaderDefaultsAdoptsInboundClientVersion(t *testing.T) {
 	up := httptest.NewRequest(http.MethodPost, "https://anyrouter.top/v1/messages", nil)
 	ra.copyHeaders(up)
 
-	want := map[string]string{
-		"User-Agent":                  "claude-cli/9.9.9 (external, sdk-cli)",
+	// Upstream must see the single pinned static UA, NOT the downstream's 9.9.9.
+	if got := up.Header.Get("User-Agent"); got != defaultClaudeUserAgent {
+		t.Fatalf("User-Agent = %q, want uniform static %q (must NOT adopt downstream version)", got, defaultClaudeUserAgent)
+	}
+	// None of the downstream-reported version values may leak onto the upstream.
+	leaks := map[string]string{
 		"X-Stainless-Package-Version": "1.2.3",
 		"X-Stainless-Runtime-Version": "v22.0.0",
 		"X-Stainless-OS":              "MacOS",
 		"X-Stainless-Arch":            "arm64",
 	}
-	for h, w := range want {
-		if got := up.Header.Get(h); got != w {
-			t.Fatalf("%s = %q, want adopted client value %q", h, got, w)
+	for h, downstream := range leaks {
+		if got := up.Header.Get(h); got == downstream {
+			t.Fatalf("%s = %q leaked the downstream value; must be uniform static across all traffic", h, got)
 		}
 	}
 	if up.Header.Get("X-App") != "cli" {

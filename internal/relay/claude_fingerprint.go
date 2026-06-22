@@ -1,11 +1,10 @@
 package relay
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"strings"
 
+	"github.com/bestruirui/octopus/internal/op"
 	"github.com/bestruirui/octopus/internal/transformer/model"
 	"github.com/bestruirui/octopus/internal/transformer/outbound"
 	"github.com/google/uuid"
@@ -39,17 +38,14 @@ func (ra *relayAttempt) ensureClaudeMetadataUserID() {
 	if strings.TrimSpace(ra.internalRequest.Metadata["user_id"]) != "" {
 		return
 	}
-	device := claudeFingerprintDeviceID(ra.userID, ra.apiKeyID)
+	// ONE uniform per-instance device id for ALL claude traffic — an upstream must not
+	// see a different device just because a different downstream user/api-key relayed
+	// through octopus (op.ClaudeFingerprintDeviceID). The session id still varies per
+	// conversation, exactly as a single real install reports many sessions.
+	device := op.ClaudeFingerprintDeviceID()
 	session := ra.claudeFingerprintSessionID()
 	// Shared builder (compact, golden key order) so relay == channel test byte-for-byte.
 	ra.internalRequest.Metadata["user_id"] = model.BuildClaudeMetadataUserID(device, session)
-}
-
-// claudeFingerprintDeviceID returns a stable 64-hex device id per user+api key,
-// matching the shape a real Claude Code install reports.
-func claudeFingerprintDeviceID(userID, apiKeyID int) string {
-	sum := sha256.Sum256([]byte(fmt.Sprintf("octopus:claude:device:%d:%d", userID, apiKeyID)))
-	return hex.EncodeToString(sum[:])
 }
 
 // claudeFingerprintSessionID returns the session UUID shared by BOTH the

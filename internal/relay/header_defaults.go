@@ -31,6 +31,15 @@ func (ra *relayAttempt) applyHeaderDefaults(req *http.Request) {
 		return
 	}
 	if !shouldApplyChannelCloak(ra.channel.Cloak) {
+		// cloak=never: don't dress as claude. But the downstream client's Anthropic-Beta
+		// (copied through by copyHeaders) would otherwise LEAK to the upstream — for a
+		// domestic Anthropic-compatible upstream (GLM/DeepSeek) that is a stray claude-code
+		// fingerprint we never intended to send. Strip it so the downstream's beta cannot
+		// pollute the upstream shape. (When cloak applies, applyClaudeHeaderDefaults rebuilds
+		// the canonical beta set instead.)
+		if ra.channel.Type == outbound.OutboundTypeAnthropic {
+			req.Header.Del("Anthropic-Beta")
+		}
 		return
 	}
 	switch ra.channel.Type {
@@ -73,22 +82,14 @@ type claudeClientVersion struct {
 }
 
 func (ra *relayAttempt) inboundClaudeClientVersion() claudeClientVersion {
-	if ra == nil || ra.c == nil || ra.c.Request == nil {
-		return claudeClientVersion{}
-	}
-	h := ra.c.Request.Header
-	ua := strings.TrimSpace(h.Get("User-Agent"))
-	// Only adopt from a genuine claude-cli UA (claude-cli/<version> ...).
-	if !strings.HasPrefix(strings.ToLower(ua), "claude-cli/") {
-		return claudeClientVersion{}
-	}
-	return claudeClientVersion{
-		UserAgent:      ua,
-		PackageVersion: strings.TrimSpace(h.Get("X-Stainless-Package-Version")),
-		RuntimeVersion: strings.TrimSpace(h.Get("X-Stainless-Runtime-Version")),
-		OS:             strings.TrimSpace(h.Get("X-Stainless-OS")),
-		Arch:           strings.TrimSpace(h.Get("X-Stainless-Arch")),
-	}
+	// UNIFORM-UA requirement: octopus must present the SAME claude-cli UA/version to
+	// upstreams for ALL traffic — an upstream must NOT see a different device/version
+	// just because a different downstream client relayed through octopus. We therefore
+	// deliberately do NOT mirror the downstream claude-cli's version here (this
+	// supersedes the earlier per-request version adoption). Returning an empty struct
+	// makes every applyClaudeHeaderDefaults call site fall through to the single
+	// configured static default, so all upstream traffic shares one fingerprint.
+	return claudeClientVersion{}
 }
 
 func firstNonEmptyHeader(client, fallback string) string {
