@@ -13,6 +13,7 @@ import (
 
 	dbmodel "github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/op"
+	"github.com/bestruirui/octopus/internal/utils/xredact"
 )
 
 const upstreamErrorBodyLimit = 16 * 1024
@@ -63,6 +64,37 @@ func (e *upstreamError) Strategy() string {
 
 func (e *upstreamError) Body() string {
 	return e.body
+}
+
+// DetailedMessage is the admin-facing audit message: the generic wrapper plus a
+// sanitized, length-limited extract of the upstream response body, so an
+// administrator reading the log can see exactly why the upstream rejected the
+// request (e.g. "only Claude Code clients", "model load reached limit") instead
+// of an opaque "service_busy". This is for the audit log / per-attempt record
+// ONLY — the API-client-facing surface stays redacted via relayErrorResponse.
+func (e *upstreamError) DetailedMessage() string {
+	if e == nil {
+		return ""
+	}
+	detail := upstreamBodySummary(e.body)
+	if detail == "" {
+		return e.message
+	}
+	return e.message + " upstream said: " + detail
+}
+
+// auditErrorMessage returns the message to persist in the admin audit log /
+// channel attempt for a failed relay. Upstream errors get their real upstream
+// reason folded in (admin-only); other errors return their plain message.
+func auditErrorMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	var upErr *upstreamError
+	if errors.As(err, &upErr) && upErr != nil {
+		return upErr.DetailedMessage()
+	}
+	return err.Error()
 }
 
 func upstreamErrorDetails(err error) (status int, code string, strategy string, ok bool) {
@@ -329,6 +361,59 @@ func stringValue(value any) string {
 		return strings.TrimSpace(s)
 	}
 	return ""
+}
+
+// extractUpstreamErrorMessage pulls the human-readable message out of a JSON
+// upstream error body, covering the shapes octopus actually sees in the wild:
+// {"error":{"message":...}}, {"message":...}, {"error":"...."} (string),
+// {"detail":...}.
+func extractUpstreamErrorMessage(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	var root any
+	if err := json.Unmarshal(body, &root); err != nil {
+		return ""
+	}
+	m, ok := root.(map[string]any)
+	if !ok {
+		return ""
+	}
+	if msg := stringValue(m["message"]); msg != "" {
+		return msg
+	}
+	switch e := m["error"].(type) {
+	case string:
+		if s := strings.TrimSpace(e); s != "" {
+			return s
+		}
+	case map[string]any:
+		if msg := stringValue(e["message"]); msg != "" {
+			return msg
+		}
+	}
+	return stringValue(m["detail"])
+}
+
+// upstreamBodySummary turns a raw upstream error body into a short, secret-free,
+// single-line reason fit for the admin audit log. Prefers the parsed message,
+// falls back to a trimmed raw snippet, redacts secrets, collapses whitespace and
+// caps length (by rune so multibyte text is never cut mid-character).
+func upstreamBodySummary(body string) string {
+	trimmed := strings.TrimSpace(body)
+	if trimmed == "" {
+		return ""
+	}
+	msg := extractUpstreamErrorMessage([]byte(trimmed))
+	if msg == "" {
+		msg = trimmed
+	}
+	msg = strings.Join(strings.Fields(xredact.Secrets(msg)), " ")
+	const maxRunes = 400
+	if r := []rune(msg); len(r) > maxRunes {
+		msg = string(r[:maxRunes]) + "…"
+	}
+	return msg
 }
 
 func normalizeErrorCode(code string) string {

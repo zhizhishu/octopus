@@ -236,7 +236,7 @@ runIterator:
 
 			recordStatusCode := attemptStatusCode(statusCode, fwdErr)
 			op.ChannelKeyRecordUse(usedKey, recordStatusCode, usedAt, 0)
-			span.End(model.AttemptFailed, recordStatusCode, fwdErr.Error())
+			span.End(model.AttemptFailed, recordStatusCode, auditErrorMessage(fwdErr))
 			breakerCounted := shouldRecordBreakerFailure(recordStatusCode, fwdErr)
 			if breakerCounted {
 				retryAfter, _ := retryAfterFromError(fwdErr)

@@ -427,6 +427,73 @@ func TestRelayErrorResponseRedactsLocalRouteDetail(t *testing.T) {
 	}
 }
 
+// The admin audit message must surface the REAL upstream reason (so an admin can
+// see "only Claude Code clients" / "model overloaded" instead of an opaque
+// service_busy), across the upstream error-body shapes octopus sees in the wild.
+func TestUpstreamErrorDetailedMessageSurfacesRealReason(t *testing.T) {
+	upErr := newUpstreamError(http.StatusServiceUnavailable, []byte(`{"error":{"message":"No available accounts: this group only allows Claude Code clients","type":"api_error"}}`))
+	detailed := upErr.DetailedMessage()
+	if !strings.Contains(detailed, "only allows Claude Code clients") {
+		t.Fatalf("admin detail must surface upstream reason, got %q", detailed)
+	}
+	if !strings.Contains(detailed, "octopus_upstream_unavailable") {
+		t.Fatalf("admin detail must keep the octopus wrapper, got %q", detailed)
+	}
+
+	cases := map[string]string{
+		`{"error":{"message":"当前模型 gpt-5.5 负载已经达到上限，请稍后重试","code":"get_channel_failed"}}`: "负载已经达到上限",
+		`{"error":"当前 API 不支持所选模型 gpt-5.5","type":"error"}`:                               "不支持所选模型",
+		`{"message":"Service Unavailable"}`: "Service Unavailable",
+	}
+	for body, want := range cases {
+		if got := upstreamBodySummary(body); !strings.Contains(got, want) {
+			t.Fatalf("body %q: expected reason %q, got %q", body, want, got)
+		}
+	}
+	if got := upstreamBodySummary("  plain text boom \n"); got != "plain text boom" {
+		t.Fatalf("non-JSON body should fall back to trimmed raw, got %q", got)
+	}
+}
+
+// Even in the admin audit, upstream-echoed credentials must be redacted.
+func TestUpstreamErrorDetailRedactsSecrets(t *testing.T) {
+	upErr := newUpstreamError(http.StatusUnauthorized, []byte(`{"error":{"message":"bad key sk-live-sensitive-1234 rejected"}}`))
+	detailed := upErr.DetailedMessage()
+	if strings.Contains(detailed, "sk-live-sensitive") {
+		t.Fatalf("admin detail must redact secrets, got %q", detailed)
+	}
+	if !strings.Contains(detailed, "[redacted]") {
+		t.Fatalf("expected redaction marker, got %q", detailed)
+	}
+}
+
+// The admin audit carries the real reason; the API-client response must not.
+func TestAuditErrorMessageDoesNotChangePublicResponse(t *testing.T) {
+	setupRelayErrorDB(t)
+	if err := op.SettingSetString(dbmodel.SettingKeyUpstreamErrorBodyMode, "redacted_upstream"); err != nil {
+		t.Fatalf("set body mode: %v", err)
+	}
+	if err := op.SettingSetString(dbmodel.SettingKeyUpstreamErrorPublicCode, "service_busy"); err != nil {
+		t.Fatalf("set public code: %v", err)
+	}
+	if err := op.SettingSetString(dbmodel.SettingKeyUpstreamErrorStatusPass, "false"); err != nil {
+		t.Fatalf("set passthrough: %v", err)
+	}
+	err := fmt.Errorf("forward: %w", newUpstreamError(http.StatusServiceUnavailable,
+		[]byte(`{"error":{"message":"No available accounts: this group only allows Claude Code clients"}}`)))
+
+	if audit := auditErrorMessage(err); !strings.Contains(audit, "only allows Claude Code clients") {
+		t.Fatalf("audit (admin) must carry the upstream reason, got %q", audit)
+	}
+	_, code, message := relayErrorResponse(err)
+	if code != "service_busy" {
+		t.Fatalf("expected public code service_busy, got %q", code)
+	}
+	if strings.Contains(message, "Claude Code clients") {
+		t.Fatalf("public message must hide the upstream reason, got %q", message)
+	}
+}
+
 func setupRelayErrorDB(t *testing.T) context.Context {
 	t.Helper()
 

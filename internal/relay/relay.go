@@ -294,7 +294,7 @@ func (ra *relayAttempt) attempt() attemptResult {
 	// ====== 失败 ======
 	recordStatusCode := attemptStatusCode(statusCode, fwdErr)
 	op.ChannelKeyRecordUse(ra.usedKey, recordStatusCode, usedAt, 0)
-	span.End(dbmodel.AttemptFailed, recordStatusCode, fwdErr.Error())
+	span.End(dbmodel.AttemptFailed, recordStatusCode, auditErrorMessage(fwdErr))
 
 	breakerCounted := shouldRecordBreakerFailure(recordStatusCode, fwdErr)
 	if breakerCounted {

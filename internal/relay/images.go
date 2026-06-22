@@ -251,7 +251,7 @@ runIterator:
 			// ====== 失败 ======
 			recordStatusCode := attemptStatusCode(statusCode, fwdErr)
 			op.ChannelKeyRecordUse(usedKey, recordStatusCode, usedAt, 0)
-			span.End(model.AttemptFailed, recordStatusCode, fwdErr.Error())
+			span.End(model.AttemptFailed, recordStatusCode, auditErrorMessage(fwdErr))
 
 			// Channel 维度统计
 			breakerCounted := shouldRecordBreakerFailure(recordStatusCode, fwdErr)
