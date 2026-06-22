@@ -9,6 +9,12 @@ import { githubDarkTheme } from '@uiw/react-json-view/githubDark';
 import { githubLightTheme } from '@uiw/react-json-view/githubLight';
 import { useTheme } from 'next-themes';
 import { getRelayLogSeverity, type RelayLog, type ChannelAttempt } from '@/api/endpoints/log';
+import {
+    getLogVerdict,
+    humanizeErrorCode,
+    humanizeUsageSource,
+    humanizeUsageReason,
+} from './humanize';
 import { getModelIcon } from '@/lib/model-icons';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
@@ -298,13 +304,6 @@ export function LogCard({ log }: { log: RelayLog }) {
     const upstreamPathTitle = upstreamPathLines.join('\n');
     const errorCode = log.error_code?.trim() ?? '';
     const errorStrategy = log.error_strategy?.trim() ?? '';
-    const errorMeta = [
-        log.error_status !== undefined && log.error_status !== null
-            ? { label: 'error_status', value: String(log.error_status) }
-            : null,
-        errorCode ? { label: 'error_code', value: errorCode } : null,
-        errorStrategy ? { label: 'error_strategy', value: errorStrategy } : null,
-    ].filter((item): item is { label: string; value: string } => item !== null);
 
     const severity = getRelayLogSeverity(log);
     const hasError = severity === 'error';
@@ -316,7 +315,28 @@ export function LogCard({ log }: { log: RelayLog }) {
     const usageMissingReason = log.usage_missing_reason?.trim() ?? '';
     const sessionSource = log.session_source?.trim() ?? '';
     const sessionKey = log.session_key?.trim() ?? '';
+
+    // 人话结论：直给「成没成、锅在谁」
+    const verdict = getLogVerdict(log, severity);
+    // 错误码翻人话（普通视图只显示这个，原始码进技术详情）
+    const humanErrorCode = humanizeErrorCode(errorCode);
+    const humanUsageSource = humanizeUsageSource(usageSource);
+    const humanUsageReason = humanizeUsageReason(usageMissingReason);
+    // 「技术详情」里给高级用户看的原始取值（默认收起）
+    const techMeta = [
+        log.error_status !== undefined && log.error_status !== null && log.error_status !== 0
+            ? { label: 'error_status', value: String(log.error_status) }
+            : null,
+        errorCode ? { label: 'error_code', value: errorCode } : null,
+        errorStrategy ? { label: 'error_strategy', value: errorStrategy } : null,
+        sessionSource ? { label: 'session_source', value: sessionSource } : null,
+        sessionKey ? { label: 'session_key', value: sessionKey } : null,
+        usageSource ? { label: 'usage_source', value: usageSource } : null,
+        usageMissingReason ? { label: 'usage_reason', value: usageMissingReason } : null,
+    ].filter((item): item is { label: string; value: string } => item !== null);
+
     const [isDiagnosticExpanded, setIsDiagnosticExpanded] = useState(false);
+    const [isTechExpanded, setIsTechExpanded] = useState(false);
     const statusLabel = hasError ? t('failedStatus') : hasPartialFailure ? t('warnStatus') : t('successStatus');
     const StatusIcon = hasError ? XCircle : hasPartialFailure ? AlertCircle : CheckCircle2;
     const statusToneClass = hasError
@@ -429,11 +449,14 @@ export function LogCard({ log }: { log: RelayLog }) {
                                     "overflow-hidden rounded-xl border p-2.5",
                                     hasError ? "border-destructive/20 bg-destructive/10" : "border-amber-500/20 bg-amber-500/10",
                                 )}>
-                                    {hasError ? (
-                                        <ErrorSafeText value={log.error || `${errorCode || 'upstream_error'} ${log.error_status ?? ''}`.trim()} className="line-clamp-2 text-xs" />
-                                    ) : (
-                                        <SafeText value="最终请求成功，但中间有上游失败尝试，点开详情可看具体渠道和 upstream path。" className="line-clamp-2 text-xs text-amber-700 dark:text-amber-300" />
-                                    )}
+                                    <SafeText
+                                        mode="wrap"
+                                        value={verdict.text}
+                                        className={cn(
+                                            "line-clamp-2 text-xs font-medium",
+                                            hasError ? "text-destructive" : "text-amber-700 dark:text-amber-300",
+                                        )}
+                                    />
                                 </div>
                             )}
                         </div>
@@ -490,6 +513,16 @@ export function LogCard({ log }: { log: RelayLog }) {
 
                         <MorphingDialogDescription className="flex-1 min-h-0">
                             <div className="flex flex-col min-h-0 h-full gap-4">
+                                <div className={cn(
+                                    "shrink-0 rounded-xl border px-3.5 py-2.5 text-sm font-medium",
+                                    verdict.kind === 'success'
+                                        ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                                        : verdict.kind === 'warn'
+                                            ? "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300"
+                                            : "border-destructive/30 bg-destructive/10 text-destructive",
+                                )}>
+                                    <SafeText mode="wrap" value={verdict.text} className="block" />
+                                </div>
                                 <div className="grid min-w-0 grid-cols-2 gap-2 md:grid-cols-6">
                                     <DetailTile icon={<Hash className="size-3.5" />} label={t('logId')}>
                                         <MonoSafeText mode="wrap" value={String(log.id)} className="block text-xs text-foreground" />
@@ -539,35 +572,25 @@ export function LogCard({ log }: { log: RelayLog }) {
                                             </div>
                                         </DetailTile>
                                     )}
-                                    {errorMeta.map((item) => (
-                                        <DetailTile key={item.label} icon={<AlertCircle className="size-3.5" />} label={item.label}>
-                                            <MonoSafeText mode="wrap" value={item.value} className="block text-xs text-destructive" />
+                                    {humanErrorCode && (
+                                        <DetailTile icon={<AlertCircle className="size-3.5" />} label="错误原因">
+                                            <SafeText mode="wrap" value={humanErrorCode} className="block text-xs font-semibold text-destructive" />
                                         </DetailTile>
-                                    ))}
+                                    )}
                                     <DetailTile icon={<RotateCw className="size-3.5" />} label={t('channelAttempts')}>
                                         <MonoSafeText mode="wrap" value={String(attemptCount)} className="block text-xs font-semibold text-foreground" />
                                     </DetailTile>
-                                    <DetailTile icon={<Pin className="size-3.5" />} label="sticky">
-                                        <MonoSafeText mode="wrap" value={log.route_sticky_hit ? 'hit' : 'miss'} className="block text-xs font-semibold text-foreground" />
+                                    <DetailTile icon={<Pin className="size-3.5" />} label="会话粘连">
+                                        <SafeText mode="wrap" value={log.route_sticky_hit ? '命中（沿用上次渠道）' : '未命中'} className="block text-xs font-semibold text-foreground" />
                                     </DetailTile>
-                                    {sessionSource && (
-                                        <DetailTile icon={<Hash className="size-3.5" />} label="session source">
-                                            <MonoSafeText mode="wrap" value={sessionSource} className="block text-xs text-foreground" />
+                                    {humanUsageSource && (
+                                        <DetailTile icon={<Cpu className="size-3.5" />} label="用量来源">
+                                            <SafeText mode="wrap" value={humanUsageSource} className="block text-xs font-semibold text-foreground" />
                                         </DetailTile>
                                     )}
-                                    {sessionKey && (
-                                        <DetailTile icon={<Hash className="size-3.5" />} label="session key">
-                                            <MonoSafeText mode="wrap" value={sessionKey} className="block text-xs text-foreground" />
-                                        </DetailTile>
-                                    )}
-                                    {usageSource && (
-                                        <DetailTile icon={<Cpu className="size-3.5" />} label="usage source">
-                                            <MonoSafeText mode="wrap" value={usageSource} className="block text-xs font-semibold text-foreground" />
-                                        </DetailTile>
-                                    )}
-                                    {usageMissingReason && (
-                                        <DetailTile icon={<AlertCircle className="size-3.5" />} label="usage reason">
-                                            <MonoSafeText mode="wrap" value={usageMissingReason} className="block text-xs text-amber-700 dark:text-amber-300" />
+                                    {humanUsageReason && (
+                                        <DetailTile icon={<AlertCircle className="size-3.5" />} label="无用量原因">
+                                            <SafeText mode="wrap" value={humanUsageReason} className="block text-xs text-amber-700 dark:text-amber-300" />
                                         </DetailTile>
                                     )}
                                     <DetailTile icon={<Percent className="size-3.5" />} label={t('cacheHit')}>
@@ -707,6 +730,44 @@ export function LogCard({ log }: { log: RelayLog }) {
                                                                 ))}
                                                             </div>
                                                         )}
+                                                    </div>
+                                                </motion.div>
+                                            )}
+                                        </AnimatePresence>
+                                    </div>
+                                )}
+                                {techMeta.length > 0 && (
+                                    <div className="shrink-0 rounded-lg border border-border/50 bg-muted/20 overflow-hidden">
+                                        <div
+                                            className="flex cursor-pointer select-none items-center gap-2 px-3 py-2.5 transition-colors hover:bg-muted/50"
+                                            onClick={() => setIsTechExpanded(!isTechExpanded)}
+                                        >
+                                            <AlertCircle className="size-4 text-muted-foreground" />
+                                            <span className="text-sm font-medium text-muted-foreground">技术详情（给技术同学排查用）</span>
+                                            <div className="ml-auto">
+                                                {isTechExpanded ? (
+                                                    <ChevronUp className="size-4 text-muted-foreground" />
+                                                ) : (
+                                                    <ChevronDown className="size-4 text-muted-foreground" />
+                                                )}
+                                            </div>
+                                        </div>
+                                        <AnimatePresence initial={false}>
+                                            {isTechExpanded && (
+                                                <motion.div
+                                                    initial={{ height: 0, opacity: 0 }}
+                                                    animate={{ height: "auto", opacity: 1 }}
+                                                    exit={{ height: 0, opacity: 0 }}
+                                                    transition={{ duration: 0.2, ease: "easeInOut" }}
+                                                    className="overflow-hidden"
+                                                >
+                                                    <div className="grid grid-cols-1 gap-2 p-2.5 sm:grid-cols-2">
+                                                        {techMeta.map((item) => (
+                                                            <div key={item.label} className="min-w-0 rounded-lg border border-border/60 bg-card/50 px-2.5 py-1.5">
+                                                                <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{item.label}</div>
+                                                                <MonoSafeText mode="wrap" value={item.value} className="mt-0.5 block text-[11px] text-foreground/80" />
+                                                            </div>
+                                                        ))}
                                                     </div>
                                                 </motion.div>
                                             )}
