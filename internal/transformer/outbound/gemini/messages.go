@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/bestruirui/octopus/internal/transformer/model"
+	"github.com/bestruirui/octopus/internal/utils/mime"
 	"github.com/bestruirui/octopus/internal/utils/xurl"
 	"github.com/samber/lo"
 )
@@ -162,61 +163,12 @@ func audioTypeToMimeType(format string) string {
 // fileUri with an empty mimeType. We only return a value for extensions we are
 // confident about; unknown extensions yield "" so callers can leave the field
 // empty rather than guessing.
+//
+// The branch table now lives in the shared, network-free mime helper so Gemini
+// and Anthropic infer consistently; this thin wrapper preserves the historic
+// call site and behavior (unknown -> "").
 func mimeFromURL(rawURL string) string {
-	if rawURL == "" {
-		return ""
-	}
-	// Strip query/fragment before inspecting the extension so things like
-	// "https://host/a.png?sig=..." still resolve.
-	path := rawURL
-	if i := strings.IndexAny(path, "?#"); i >= 0 {
-		path = path[:i]
-	}
-	dot := strings.LastIndex(path, ".")
-	if dot < 0 {
-		return ""
-	}
-	// Reject a "." that belongs to a host/path segment rather than a filename,
-	// e.g. "https://a.b/c" where the last dot precedes a slash.
-	if strings.ContainsAny(path[dot:], "/") {
-		return ""
-	}
-	switch strings.ToLower(path[dot+1:]) {
-	case "png":
-		return "image/png"
-	case "jpg", "jpeg":
-		return "image/jpeg"
-	case "webp":
-		return "image/webp"
-	case "gif":
-		return "image/gif"
-	case "heic":
-		return "image/heic"
-	case "heif":
-		return "image/heif"
-	case "bmp":
-		return "image/bmp"
-	case "pdf":
-		return "application/pdf"
-	case "mp4":
-		return "video/mp4"
-	case "mov":
-		return "video/quicktime"
-	case "webm":
-		return "video/webm"
-	case "mp3":
-		return "audio/mpeg"
-	case "wav":
-		return "audio/wav"
-	case "ogg":
-		return "audio/ogg"
-	case "flac":
-		return "audio/flac"
-	case "aac":
-		return "audio/aac"
-	default:
-		return ""
-	}
+	return mime.FromURL(rawURL)
 }
 
 func convertLLMToGeminiRequest(request *model.InternalLLMRequest) *model.GeminiGenerateContentRequest {

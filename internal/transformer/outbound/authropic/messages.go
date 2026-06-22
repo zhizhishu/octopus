@@ -14,6 +14,8 @@ import (
 
 	anthropicModel "github.com/bestruirui/octopus/internal/transformer/inbound/anthropic"
 	"github.com/bestruirui/octopus/internal/transformer/model"
+	"github.com/bestruirui/octopus/internal/utils/log"
+	"github.com/bestruirui/octopus/internal/utils/mime"
 	"github.com/bestruirui/octopus/internal/utils/xurl"
 )
 
@@ -794,6 +796,12 @@ func convertToolResultBlock(msg model.Message) anthropicModel.MessageContentBloc
 				if docBlock := convertFileToDocumentBlock(part); docBlock != nil {
 					blocks = append(blocks, *docBlock)
 				}
+			case "input_audio":
+				// Audio inside a tool_result has no Anthropic equivalent either;
+				// degrade to a visible placeholder instead of dropping it.
+				if audioBlock := convertAudioToPlaceholderBlock(part); audioBlock != nil {
+					blocks = append(blocks, *audioBlock)
+				}
 			}
 		}
 
@@ -950,6 +958,16 @@ func convertMultiplePartContent(msg model.Message) anthropicModel.MessageContent
 			if block := convertFileToDocumentBlock(part); block != nil {
 				blocks = append(blocks, *block)
 			}
+		case "input_audio":
+			// Anthropic's Messages API has no audio input block, so audio sent
+			// downstream over an Anthropic channel cannot be forwarded faithfully.
+			// Rather than silently dropping it (which loses the turn's intent and
+			// can desync a multimodal conversation), degrade to a visible text
+			// placeholder and log a warning so the loss is observable. This mirrors
+			// the sub2api "degrade, don't drop" philosophy.
+			if block := convertAudioToPlaceholderBlock(part); block != nil {
+				blocks = append(blocks, *block)
+			}
 		}
 	}
 
@@ -1036,9 +1054,15 @@ func convertFileToDocumentBlock(part model.MessageContentPart) *anthropicModel.M
 			}
 		}
 	case file.FileURL != "":
+		// Prefer an explicit MediaType; otherwise infer it (network-free) from the
+		// URL extension so the document block is not left with an empty media type.
+		mediaType := file.MediaType
+		if mediaType == "" {
+			mediaType = mime.FromURL(file.FileURL)
+		}
 		source = &anthropicModel.ImageSource{
 			Type:      "url",
-			MediaType: file.MediaType,
+			MediaType: mediaType,
 			URL:       file.FileURL,
 		}
 	case file.FileID != "":
@@ -1053,6 +1077,32 @@ func convertFileToDocumentBlock(part model.MessageContentPart) *anthropicModel.M
 	return &anthropicModel.MessageContentBlock{
 		Type:         "document",
 		Source:       source,
+		CacheControl: convertCacheControl(part.CacheControl),
+	}
+}
+
+// convertAudioToPlaceholderBlock turns an OpenAI-style input_audio part into a
+// visible text block, because the Anthropic Messages API has no audio input
+// block. The original behavior silently dropped audio (no case in the content
+// switch), which loses the conversation turn. Degrading to a labeled placeholder
+// keeps the loss observable to the model and downstream, and a warning is logged
+// so operators can see audio is being shed over an Anthropic channel. Returns
+// nil when there is no audio payload to describe.
+func convertAudioToPlaceholderBlock(part model.MessageContentPart) *anthropicModel.MessageContentBlock {
+	if part.Audio == nil {
+		return nil
+	}
+
+	format := strings.TrimSpace(part.Audio.Format)
+	if format == "" {
+		format = "unknown"
+	}
+	log.Warnf("anthropic outbound: audio input (format=%s) cannot be sent over an Anthropic channel; replaced with a text placeholder", format)
+
+	placeholder := fmt.Sprintf("[audio input (%s) omitted: the Anthropic Messages API does not accept audio]", format)
+	return &anthropicModel.MessageContentBlock{
+		Type:         "text",
+		Text:         &placeholder,
 		CacheControl: convertCacheControl(part.CacheControl),
 	}
 }
