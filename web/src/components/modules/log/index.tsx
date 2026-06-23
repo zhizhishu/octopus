@@ -2,8 +2,8 @@
 
 import { useCallback, useMemo, useState } from 'react';
 import { getRelayLogSeverity, type RelayLogSeverity, useExportLogs, useLogs } from '@/api/endpoints/log';
-import { LogCard } from './Item';
-import { AlertCircle, CheckCircle2, Circle, Download, Loader2, RefreshCw, Wifi, WifiOff } from 'lucide-react';
+import { LogCard, useSensitiveStore } from './Item';
+import { AlertCircle, CheckCircle2, ChevronDown, ChevronUp, Circle, Download, Eye, EyeOff, Loader2, RefreshCw, RotateCcw, Search, SlidersHorizontal, Wifi, WifiOff } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { VirtualizedGrid } from '@/components/common/VirtualizedGrid';
 import { PageWrapper } from '@/components/common/PageWrapper';
@@ -60,23 +60,39 @@ function endOfLocalDayUnix(value: string) {
 export function Log() {
     const t = useTranslations('log');
     const isAdmin = useAuthStore((state) => state.user?.role === 'admin');
+    const today = useMemo(() => localDateInput(new Date()), []);
+    // 已生效（真正喂给查询）的筛选条件。
     const [selectedUserID, setSelectedUserID] = useState<number | undefined>();
     const [selectedAPIKeyID, setSelectedAPIKeyID] = useState<number | undefined>();
     const [selectedEndpoint, setSelectedEndpoint] = useState('');
-    const [severityFilter, setSeverityFilter] = useState<LogSeverityFilter>('all');
-    const [autoRefresh, setAutoRefresh] = useState(false);
-    const today = useMemo(() => localDateInput(new Date()), []);
     const [startDate, setStartDate] = useState(today);
     const [endDate, setEndDate] = useState(today);
+    // 草稿（界面上正在改、还没点「搜索」）的筛选条件——改多项不会每改一次都打接口。
+    const [draftUserID, setDraftUserID] = useState<number | undefined>();
+    const [draftAPIKeyID, setDraftAPIKeyID] = useState<number | undefined>();
+    const [draftEndpoint, setDraftEndpoint] = useState('');
+    const [draftStartDate, setDraftStartDate] = useState(today);
+    const [draftEndDate, setDraftEndDate] = useState(today);
+    // 严重程度是对「已加载日志」的本地过滤，不是查询参数，所以保持即时生效。
+    const [severityFilter, setSeverityFilter] = useState<LogSeverityFilter>('all');
+    const [autoRefresh, setAutoRefresh] = useState(false);
+    const [advancedOpen, setAdvancedOpen] = useState(false);
+    const sensitiveVisible = useSensitiveStore((state) => state.sensitiveVisible);
+    const setSensitiveVisible = useSensitiveStore((state) => state.setSensitiveVisible);
     const { data: users = [] } = useUserList({ enabled: isAdmin });
     const { data: apiKeys = [] } = useAPIKeyList();
     const exportLogs = useExportLogs();
 
     const apiKeysForSelectedUser = useMemo(() => {
         return apiKeys
-            .filter((apiKey) => !selectedUserID || apiKey.user_id === selectedUserID)
+            .filter((apiKey) => !draftUserID || apiKey.user_id === draftUserID)
             .sort((a, b) => a.name.localeCompare(b.name));
-    }, [apiKeys, selectedUserID]);
+    }, [apiKeys, draftUserID]);
+
+    const draftAPIKey = useMemo(() => {
+        if (!draftAPIKeyID) return undefined;
+        return apiKeys.find((apiKey) => apiKey.id === draftAPIKeyID);
+    }, [apiKeys, draftAPIKeyID]);
 
     const selectedAPIKey = useMemo(() => {
         if (!selectedAPIKeyID) return undefined;
@@ -109,22 +125,56 @@ export function Log() {
         live: autoRefresh,
     });
 
-    const updateSelectedUser = (value: string) => {
+    const updateDraftUser = (value: string) => {
         const nextUserID = Number(value) || undefined;
-        setSelectedUserID(nextUserID);
-        if (selectedAPIKey && nextUserID && selectedAPIKey.user_id !== nextUserID) {
-            setSelectedAPIKeyID(undefined);
+        setDraftUserID(nextUserID);
+        if (draftAPIKey && nextUserID && draftAPIKey.user_id !== nextUserID) {
+            setDraftAPIKeyID(undefined);
         }
     };
 
-    const updateSelectedAPIKey = (value: string) => {
+    const updateDraftAPIKey = (value: string) => {
         const nextAPIKeyID = Number(value) || undefined;
-        setSelectedAPIKeyID(nextAPIKeyID);
+        setDraftAPIKeyID(nextAPIKeyID);
         const nextAPIKey = apiKeys.find((apiKey) => apiKey.id === nextAPIKeyID);
         if (nextAPIKey?.user_id) {
-            setSelectedUserID(nextAPIKey.user_id);
+            setDraftUserID(nextAPIKey.user_id);
         }
     };
+
+    // 把草稿条件一次性提交为生效条件（点「搜索」或在输入框回车时调用）。
+    const handleApply = useCallback(() => {
+        setSelectedUserID(draftUserID);
+        setSelectedAPIKeyID(draftAPIKeyID);
+        setSelectedEndpoint(draftEndpoint);
+        setStartDate(draftStartDate);
+        setEndDate(draftEndDate);
+    }, [draftUserID, draftAPIKeyID, draftEndpoint, draftStartDate, draftEndDate]);
+
+    // 草稿和生效条件都回到默认（今天、不限用户/Key/端点）。
+    const handleResetFilters = useCallback(() => {
+        setDraftUserID(undefined);
+        setDraftAPIKeyID(undefined);
+        setDraftEndpoint('');
+        setDraftStartDate(today);
+        setDraftEndDate(today);
+        setSelectedUserID(undefined);
+        setSelectedAPIKeyID(undefined);
+        setSelectedEndpoint('');
+        setStartDate(today);
+        setEndDate(today);
+    }, [today]);
+
+    // 草稿是否被改过（决定「搜索」是否高亮 + 是否显示「重置」）。
+    const draftDirty =
+        draftUserID !== selectedUserID ||
+        draftAPIKeyID !== selectedAPIKeyID ||
+        draftEndpoint !== selectedEndpoint ||
+        draftStartDate !== startDate ||
+        draftEndDate !== endDate;
+
+    // 高级筛选（用户 / API Key）里有几项在生效——给折叠按钮上挂计数。
+    const advancedActiveCount = (selectedUserID ? 1 : 0) + (effectiveSelectedAPIKeyID ? 1 : 0);
 
     const severityCounts = useMemo(() => {
         const counts: Record<LogSeverityFilter, number> = {
@@ -205,47 +255,11 @@ export function Log() {
         <PageWrapper className="box-border flex h-full min-h-0 flex-col gap-3 overflow-hidden rounded-t-3xl pb-[calc(6rem+env(safe-area-inset-bottom))] md:pb-4 [&>*]:min-h-0 [&>*:last-child]:flex [&>*:last-child]:flex-1">
             <div className="flex flex-none flex-col gap-2 rounded-lg border border-border bg-card px-3 py-2">
                 <div className="flex min-w-0 flex-wrap items-center gap-2">
-                    {isAdmin && (
-                        <label className="flex min-w-0 flex-wrap items-center gap-2">
-                            <span className="text-sm font-medium text-card-foreground">{t('list.userFilter')}</span>
-                            <select
-                                value={selectedUserID ?? ''}
-                                onChange={(event) => updateSelectedUser(event.target.value)}
-                                className="h-9 min-w-40 rounded-lg border border-input bg-background px-3 text-sm text-foreground"
-                            >
-                                <option value="">{t('list.allUsers')}</option>
-                                {users.map((user) => (
-                                    <option key={user.id} value={user.id}>
-                                        {user.username}
-                                    </option>
-                                ))}
-                            </select>
-                        </label>
-                    )}
-
-                    {isAdmin && (
-                        <label className="flex min-w-0 flex-wrap items-center gap-2">
-                            <span className="text-sm font-medium text-card-foreground">API Key</span>
-                            <select
-                                value={effectiveSelectedAPIKeyID ?? ''}
-                                onChange={(event) => updateSelectedAPIKey(event.target.value)}
-                                className="h-9 min-w-48 rounded-lg border border-input bg-background px-3 text-sm text-foreground"
-                            >
-                                <option value="">全部 API Key</option>
-                                {apiKeysForSelectedUser.map((apiKey) => (
-                                    <option key={apiKey.id} value={apiKey.id}>
-                                        {apiKey.name}{apiKey.user_name ? ` · ${apiKey.user_name}` : ''}
-                                    </option>
-                                ))}
-                            </select>
-                        </label>
-                    )}
-
                     <label className="flex min-w-0 flex-wrap items-center gap-2">
                         <span className="text-sm font-medium text-card-foreground">Endpoint</span>
                         <select
-                            value={selectedEndpoint}
-                            onChange={(event) => setSelectedEndpoint(event.target.value)}
+                            value={draftEndpoint}
+                            onChange={(event) => setDraftEndpoint(event.target.value)}
                             className="h-9 min-w-44 rounded-lg border border-input bg-background px-3 text-sm text-foreground"
                         >
                             {endpointFilters.map((endpoint) => (
@@ -260,18 +274,58 @@ export function Log() {
                         <span className="text-sm font-medium text-card-foreground">日期</span>
                         <input
                             type="date"
-                            value={startDate}
-                            onChange={(event) => setStartDate(event.target.value || today)}
+                            value={draftStartDate}
+                            onChange={(event) => setDraftStartDate(event.target.value || today)}
                             className="h-9 min-w-36 rounded-lg border border-input bg-background px-3 text-sm text-foreground"
                         />
                         <span className="text-xs text-muted-foreground">到</span>
                         <input
                             type="date"
-                            value={endDate}
-                            onChange={(event) => setEndDate(event.target.value || today)}
+                            value={draftEndDate}
+                            onChange={(event) => setDraftEndDate(event.target.value || today)}
                             className="h-9 min-w-36 rounded-lg border border-input bg-background px-3 text-sm text-foreground"
                         />
                     </label>
+
+                    {isAdmin && (
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setAdvancedOpen((open) => !open)}
+                            className="rounded-lg"
+                        >
+                            <SlidersHorizontal className="size-4" />
+                            <span>{t('list.advancedFilters')}</span>
+                            {advancedActiveCount > 0 && (
+                                <Badge variant="secondary" className="h-5 min-w-5 justify-center px-1 text-[10px]">
+                                    {advancedActiveCount}
+                                </Badge>
+                            )}
+                            {advancedOpen ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
+                        </Button>
+                    )}
+
+                    <Button
+                        variant="default"
+                        size="sm"
+                        onClick={handleApply}
+                        disabled={!draftDirty}
+                        className="rounded-lg"
+                    >
+                        <Search className="size-4" />
+                        <span>{t('list.search')}</span>
+                    </Button>
+                    {draftDirty && (
+                        <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={handleResetFilters}
+                            className="rounded-lg"
+                        >
+                            <RotateCcw className="size-4" />
+                            <span>{t('list.reset')}</span>
+                        </Button>
+                    )}
 
                     <div className="flex min-w-0 flex-wrap items-center gap-1 rounded-lg bg-muted/60 p-1">
                         {severityFilters.map((filter) => {
@@ -302,54 +356,101 @@ export function Log() {
 
                     <div className="ml-auto flex min-w-0 flex-wrap items-center gap-2">
                         <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={handleRefresh}
-                            disabled={isRefreshing || isLoading}
-                            className="rounded-lg"
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => setSensitiveVisible(!sensitiveVisible)}
+                            title={sensitiveVisible ? t('list.hideSensitive') : t('list.showSensitive')}
+                            aria-label={sensitiveVisible ? t('list.hideSensitive') : t('list.showSensitive')}
+                            className="rounded-lg text-muted-foreground"
                         >
-                            <RefreshCw className={cn('size-4', isRefreshing && 'animate-spin')} />
-                            {isRefreshing ? t('list.refreshing') : t('list.refresh')}
+                            {sensitiveVisible ? <Eye className="size-4" /> : <EyeOff className="size-4" />}
                         </Button>
                         <Button
-                            variant="outline"
-                            size="sm"
+                            variant="ghost"
+                            size="icon"
+                            onClick={handleRefresh}
+                            disabled={isRefreshing || isLoading}
+                            title={isRefreshing ? t('list.refreshing') : t('list.refresh')}
+                            aria-label={t('list.refresh')}
+                            className="rounded-lg text-muted-foreground"
+                        >
+                            <RefreshCw className={cn('size-4', isRefreshing && 'animate-spin')} />
+                        </Button>
+                        <Button
+                            variant="ghost"
+                            size="icon"
                             onClick={handleExport}
                             disabled={exportLogs.isPending}
-                            className="rounded-lg"
+                            title={t('list.export')}
+                            aria-label={t('list.export')}
+                            className="rounded-lg text-muted-foreground"
                         >
                             {exportLogs.isPending ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}
-                            导出
                         </Button>
-                        <label className="inline-flex h-9 items-center gap-2 rounded-lg border border-border bg-background px-2 text-xs text-muted-foreground">
-                            <Switch checked={autoRefresh} onCheckedChange={setAutoRefresh} />
-                            <span>{t('list.autoRefresh')}</span>
-                        </label>
-                        <Badge
-                            variant="outline"
-                            className={cn(
-                                'min-w-0 gap-1.5 rounded-lg px-2 py-1 text-xs',
-                                autoRefresh && isConnected
-                                    ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-                                    : autoRefresh && streamError
-                                        ? 'border-destructive/40 bg-destructive/10 text-destructive'
-                                        : 'border-border bg-muted/40 text-muted-foreground'
-                            )}
+                        {/* 自动刷新开关 + 连接状态合并成一个控件：label 文案/图标随连接态变，省掉独立徽章。 */}
+                        <label
+                            className="inline-flex h-9 items-center gap-2 rounded-lg border border-border bg-background px-2 text-xs text-muted-foreground"
                             title={streamError?.message}
                         >
-                            {autoRefresh && isConnected ? <Wifi className="size-3.5" /> : <WifiOff className="size-3.5" />}
-                            <span>
+                            <Switch checked={autoRefresh} onCheckedChange={setAutoRefresh} />
+                            <span
+                                className={cn(
+                                    'inline-flex items-center gap-1.5',
+                                    autoRefresh && isConnected
+                                        ? 'text-emerald-700 dark:text-emerald-300'
+                                        : autoRefresh && streamError
+                                            ? 'text-destructive'
+                                            : 'text-muted-foreground'
+                                )}
+                            >
+                                {autoRefresh && isConnected ? <Wifi className="size-3.5" /> : <WifiOff className="size-3.5" />}
                                 {autoRefresh
                                     ? isConnected
                                         ? t('list.liveOn')
                                         : streamError
                                             ? t('list.streamError')
                                             : t('list.liveConnecting')
-                                    : t('list.liveOff')}
+                                    : t('list.autoRefresh')}
                             </span>
-                        </Badge>
+                        </label>
                     </div>
                 </div>
+
+                {isAdmin && advancedOpen && (
+                    <div className="flex min-w-0 flex-wrap items-center gap-2 border-t border-border pt-2">
+                        <label className="flex min-w-0 flex-wrap items-center gap-2">
+                            <span className="text-sm font-medium text-card-foreground">{t('list.userFilter')}</span>
+                            <select
+                                value={draftUserID ?? ''}
+                                onChange={(event) => updateDraftUser(event.target.value)}
+                                className="h-9 min-w-40 rounded-lg border border-input bg-background px-3 text-sm text-foreground"
+                            >
+                                <option value="">{t('list.allUsers')}</option>
+                                {users.map((user) => (
+                                    <option key={user.id} value={user.id}>
+                                        {user.username}
+                                    </option>
+                                ))}
+                            </select>
+                        </label>
+
+                        <label className="flex min-w-0 flex-wrap items-center gap-2">
+                            <span className="text-sm font-medium text-card-foreground">API Key</span>
+                            <select
+                                value={draftAPIKeyID ?? ''}
+                                onChange={(event) => updateDraftAPIKey(event.target.value)}
+                                className="h-9 min-w-48 rounded-lg border border-input bg-background px-3 text-sm text-foreground"
+                            >
+                                <option value="">全部 API Key</option>
+                                {apiKeysForSelectedUser.map((apiKey) => (
+                                    <option key={apiKey.id} value={apiKey.id}>
+                                        {apiKey.name}{apiKey.user_name ? ` · ${apiKey.user_name}` : ''}
+                                    </option>
+                                ))}
+                            </select>
+                        </label>
+                    </div>
+                )}
                 <div className="text-xs text-muted-foreground">
                     {t('list.loadedCount', { count: logs.length })} · 时间按浏览器本地时区显示
                 </div>

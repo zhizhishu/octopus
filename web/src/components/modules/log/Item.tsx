@@ -8,12 +8,15 @@ import JsonView from '@uiw/react-json-view';
 import { githubDarkTheme } from '@uiw/react-json-view/githubDark';
 import { githubLightTheme } from '@uiw/react-json-view/githubLight';
 import { useTheme } from 'next-themes';
+import { create } from 'zustand';
 import { getRelayLogSeverity, type RelayLog, type ChannelAttempt } from '@/api/endpoints/log';
 import {
     getLogVerdict,
     humanizeErrorCode,
     humanizeUsageSource,
     humanizeUsageReason,
+    humanizeEndpoint,
+    isModelTestEndpoint,
 } from './humanize';
 import { getModelIcon } from '@/lib/model-icons';
 import { Badge } from '@/components/ui/badge';
@@ -32,6 +35,25 @@ import {
 } from '@/components/ui/morphing-dialog';
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from '@/components/animate-ui/components/animate/tooltip';
 import { useAuthStore } from '@/api/endpoints/user';
+
+/**
+ * 敏感信息（API Key 名等）打码开关。默认打码，点筛选栏的眼睛才显形——
+ * 截图/录屏给人看时不漏密钥名。state 放这里，筛选栏（index.tsx）控制开关。
+ */
+interface SensitiveState {
+    sensitiveVisible: boolean;
+    setSensitiveVisible: (visible: boolean) => void;
+}
+export const useSensitiveStore = create<SensitiveState>((set) => ({
+    sensitiveVisible: false,
+    setSensitiveVisible: (sensitiveVisible) => set({ sensitiveVisible }),
+}));
+
+/** 打码：不可见时返回 ••••，可见时原样。空值一律返回空串。 */
+function maskSensitive(value: string, visible: boolean): string {
+    if (!value) return '';
+    return visible ? value : '••••';
+}
 
 function formatTime(timestamp: number): string {
     const millis = timestamp > 1_000_000_000_000 ? timestamp : timestamp * 1000;
@@ -274,23 +296,29 @@ export function LogCard({ log }: { log: RelayLog }) {
         () => getModelIcon(log.actual_model_name),
         [log.actual_model_name]
     );
+    const sensitiveVisible = useSensitiveStore((state) => state.sensitiveVisible);
     const requestAPIKeyName = useMemo(() => log.request_api_key_name?.trim() ?? '', [log.request_api_key_name]);
     const requestEndpoint = useMemo(() => log.request_endpoint?.trim() ?? '', [log.request_endpoint]);
     const requestPath = useMemo(() => log.request_path?.trim() ?? '', [log.request_path]);
+    // 连通性测试日志：费用/缓存/token 这些对它全是噪音，按这个标记隐掉。
+    const isModelTest = isModelTestEndpoint(requestEndpoint) || isModelTestEndpoint(requestPath);
+    // 列表/详情头部那个徽章显示的是「人话」接口名，不再是裸 endpoint 码。
     const requestEndpointLabel = useMemo(
-        () => formatEndpointName(requestEndpoint || requestPath),
+        () => humanizeEndpoint(formatEndpointName(requestEndpoint || requestPath)) ?? '',
         [requestEndpoint, requestPath]
     );
+    // 详情里的接口信息：干净的「中文标签 + 纯值」，不再拼 `endpoint:`/`path:` 裸前缀。
     const endpointLines = useMemo(() => {
-        const lines: string[] = [];
-        if (requestEndpoint) lines.push(`endpoint: ${requestEndpoint}`);
-        if (requestPath && requestPath !== requestEndpoint) lines.push(`path: ${requestPath}`);
-        if (!lines.length && requestEndpointLabel) lines.push(requestEndpointLabel);
+        const lines: Array<{ label: string; value: string }> = [];
+        if (requestEndpoint) lines.push({ label: '接口类型', value: humanizeEndpoint(requestEndpoint) ?? requestEndpoint });
+        if (requestPath && requestPath !== requestEndpoint) lines.push({ label: '请求路径', value: requestPath });
+        if (!lines.length && requestEndpointLabel) lines.push({ label: '接口类型', value: requestEndpointLabel });
         return lines;
     }, [requestEndpoint, requestEndpointLabel, requestPath]);
-    const endpointTitle = endpointLines.join('\n') || requestEndpointLabel;
+    const endpointTitle = endpointLines.map((line) => `${line.label}：${line.value}`).join('\n') || requestEndpointLabel;
     const attempts = useMemo(() => log.attempts ?? [], [log.attempts]);
-    const upstreamPathLines = useMemo(() => {
+    // 上游路径：纯路径值，标签在外面单独给「上游路径」，不再拼 `upstream:` 前缀。
+    const upstreamPaths = useMemo(() => {
         const seen = new Set<string>();
         return attempts
             .map((attempt) => attempt.upstream_path?.trim() ?? '')
@@ -298,10 +326,9 @@ export function LogCard({ log }: { log: RelayLog }) {
                 if (!path || seen.has(path)) return false;
                 seen.add(path);
                 return true;
-            })
-            .map((path) => `upstream: ${path}`);
+            });
     }, [attempts]);
-    const upstreamPathTitle = upstreamPathLines.join('\n');
+    const upstreamPathTitle = upstreamPaths.length ? `上游路径：\n${upstreamPaths.join('\n')}` : '';
     const errorCode = log.error_code?.trim() ?? '';
     const errorStrategy = log.error_strategy?.trim() ?? '';
 
@@ -379,9 +406,9 @@ export function LogCard({ log }: { log: RelayLog }) {
                                         <MonoSafeText value={requestEndpointLabel} className="text-xs" />
                                     </Badge>
                                 )}
-                                {upstreamPathLines.length > 0 && (
+                                {upstreamPaths.length > 0 && (
                                     <Badge variant="outline" className="min-w-0 max-w-[14rem] shrink border-border/70 bg-muted/40 px-1.5 py-0 text-xs font-mono" title={upstreamPathTitle}>
-                                        <MonoSafeText value={upstreamPathLines[0]} className="text-xs" />
+                                        <MonoSafeText value={upstreamPaths[0]} className="text-xs" />
                                     </Badge>
                                 )}
                                 <SafeText value={log.request_model_name} className="font-semibold text-card-foreground" />
@@ -425,24 +452,32 @@ export function LogCard({ log }: { log: RelayLog }) {
                                     <Cpu className="size-3.5 shrink-0 text-muted-foreground" />
                                     <span className="min-w-0 truncate">{t('totalTime')} {formatDuration(log.use_time)}</span>
                                 </div>
-                                <div className="flex min-w-0 items-center gap-1.5">
-                                    <ArrowDownToLine className="size-3.5 shrink-0 text-muted-foreground" />
-                                    <span className="min-w-0 truncate">{t('input')} {log.input_tokens.toLocaleString()}</span>
-                                </div>
-                                <div className="flex min-w-0 items-center gap-1.5">
-                                    <Percent className="size-3.5 shrink-0 text-muted-foreground" />
-                                    <span className="min-w-0 truncate">{t('cacheHit')} {(log.cache_hit_tokens ?? 0).toLocaleString()} / {formatCacheRate(log.cache_hit_rate)}</span>
-                                </div>
-                                <div className="flex min-w-0 items-center gap-1.5">
-                                    <ArrowUpFromLine className="size-3.5 shrink-0 text-muted-foreground" />
-                                    <span className="min-w-0 truncate">{t('output')} {log.output_tokens.toLocaleString()}</span>
-                                </div>
-                                <div className="flex min-w-0 items-center gap-1.5">
-                                    <DollarSign className="size-3.5 shrink-0 text-emerald-500" />
-                                    <span className="shrink-0 whitespace-nowrap font-medium tabular-nums text-emerald-600 dark:text-emerald-400">
-                                        {t('cost')} {Number(log.cost).toFixed(6)}
-                                    </span>
-                                </div>
+                                {!isModelTest && (
+                                    <div className="flex min-w-0 items-center gap-1.5">
+                                        <ArrowDownToLine className="size-3.5 shrink-0 text-muted-foreground" />
+                                        <span className="min-w-0 truncate">{t('input')} {log.input_tokens.toLocaleString()}</span>
+                                    </div>
+                                )}
+                                {!isModelTest && (
+                                    <div className="flex min-w-0 items-center gap-1.5">
+                                        <Percent className="size-3.5 shrink-0 text-muted-foreground" />
+                                        <span className="min-w-0 truncate">{t('cacheHit')} {(log.cache_hit_tokens ?? 0).toLocaleString()} / {formatCacheRate(log.cache_hit_rate)}</span>
+                                    </div>
+                                )}
+                                {!isModelTest && (
+                                    <div className="flex min-w-0 items-center gap-1.5">
+                                        <ArrowUpFromLine className="size-3.5 shrink-0 text-muted-foreground" />
+                                        <span className="min-w-0 truncate">{t('output')} {log.output_tokens.toLocaleString()}</span>
+                                    </div>
+                                )}
+                                {!isModelTest && (
+                                    <div className="flex min-w-0 items-center gap-1.5">
+                                        <DollarSign className="size-3.5 shrink-0 text-emerald-500" />
+                                        <span className="shrink-0 whitespace-nowrap font-medium tabular-nums text-emerald-600 dark:text-emerald-400">
+                                            {t('cost')} {Number(log.cost).toFixed(6)}
+                                        </span>
+                                    </div>
+                                )}
                             </div>
                             {(hasError || hasPartialFailure) && (
                                 <div className={cn(
@@ -483,9 +518,9 @@ export function LogCard({ log }: { log: RelayLog }) {
                                     <MonoSafeText value={requestEndpointLabel} className="text-xs" />
                                 </Badge>
                             )}
-                            {upstreamPathLines.length > 0 && (
+                            {upstreamPaths.length > 0 && (
                                 <Badge variant="outline" className="min-w-0 max-w-[16rem] shrink border-border/70 bg-muted/40 px-2 py-0.5 text-xs font-mono" title={upstreamPathTitle}>
-                                    <MonoSafeText value={upstreamPathLines[0]} className="text-xs" />
+                                    <MonoSafeText value={upstreamPaths[0]} className="text-xs" />
                                 </Badge>
                             )}
                             <SafeText mode="wrap" value={log.request_model_name} className="font-semibold text-card-foreground" />
@@ -532,9 +567,9 @@ export function LogCard({ log }: { log: RelayLog }) {
                                             <div className="flex min-w-0 flex-col gap-1">
                                                 {endpointLines.map((line) => (
                                                     <MonoSafeText
-                                                        key={line}
+                                                        key={line.label}
                                                         mode="wrap"
-                                                        value={line}
+                                                        value={`${line.label}：${line.value}`}
                                                         className="block text-xs text-foreground"
                                                     />
                                                 ))}
@@ -543,7 +578,7 @@ export function LogCard({ log }: { log: RelayLog }) {
                                     )}
                                     {requestAPIKeyName && (
                                         <DetailTile icon={<KeyRound className="size-3.5" />} label="API Key">
-                                            <MonoSafeText mode="wrap" value={requestAPIKeyName} className="block text-xs text-foreground" />
+                                            <MonoSafeText mode="wrap" value={maskSensitive(requestAPIKeyName, sensitiveVisible)} className="block text-xs text-foreground" />
                                         </DetailTile>
                                     )}
                                     {log.request_ip && (
@@ -558,14 +593,14 @@ export function LogCard({ log }: { log: RelayLog }) {
                                             className={cn("block text-xs font-semibold", statusTextClass)}
                                         />
                                     </DetailTile>
-                                    {upstreamPathLines.length > 0 && (
-                                        <DetailTile icon={<ArrowRight className="size-3.5" />} label="upstream path">
+                                    {upstreamPaths.length > 0 && (
+                                        <DetailTile icon={<ArrowRight className="size-3.5" />} label="上游路径">
                                             <div className="flex min-w-0 flex-col gap-1">
-                                                {upstreamPathLines.map((line) => (
+                                                {upstreamPaths.map((path) => (
                                                     <MonoSafeText
-                                                        key={line}
+                                                        key={path}
                                                         mode="wrap"
-                                                        value={line}
+                                                        value={path}
                                                         className="block text-xs text-foreground"
                                                     />
                                                 ))}
@@ -583,22 +618,26 @@ export function LogCard({ log }: { log: RelayLog }) {
                                     <DetailTile icon={<Pin className="size-3.5" />} label="会话粘连">
                                         <SafeText mode="wrap" value={log.route_sticky_hit ? '命中（沿用上次渠道）' : '未命中'} className="block text-xs font-semibold text-foreground" />
                                     </DetailTile>
-                                    {humanUsageSource && (
+                                    {!isModelTest && humanUsageSource && (
                                         <DetailTile icon={<Cpu className="size-3.5" />} label="用量来源">
                                             <SafeText mode="wrap" value={humanUsageSource} className="block text-xs font-semibold text-foreground" />
                                         </DetailTile>
                                     )}
-                                    {humanUsageReason && (
+                                    {!isModelTest && humanUsageReason && (
                                         <DetailTile icon={<AlertCircle className="size-3.5" />} label="无用量原因">
                                             <SafeText mode="wrap" value={humanUsageReason} className="block text-xs text-amber-700 dark:text-amber-300" />
                                         </DetailTile>
                                     )}
-                                    <DetailTile icon={<Percent className="size-3.5" />} label={t('cacheHit')}>
-                                        <MonoSafeText mode="wrap" value={formatCacheRate(log.cache_hit_rate)} className="block text-xs font-semibold text-cyan-600 dark:text-cyan-400" />
-                                    </DetailTile>
-                                    <DetailTile icon={<DollarSign className="size-3.5" />} label={t('cost')}>
-                                        <MonoSafeText mode="wrap" value={Number(log.cost).toFixed(6)} className="block whitespace-nowrap text-xs font-semibold tabular-nums text-emerald-600 dark:text-emerald-400" />
-                                    </DetailTile>
+                                    {!isModelTest && (
+                                        <DetailTile icon={<Percent className="size-3.5" />} label={t('cacheHit')}>
+                                            <MonoSafeText mode="wrap" value={formatCacheRate(log.cache_hit_rate)} className="block text-xs font-semibold text-cyan-600 dark:text-cyan-400" />
+                                        </DetailTile>
+                                    )}
+                                    {!isModelTest && (
+                                        <DetailTile icon={<DollarSign className="size-3.5" />} label={t('cost')}>
+                                            <MonoSafeText mode="wrap" value={Number(log.cost).toFixed(6)} className="block whitespace-nowrap text-xs font-semibold tabular-nums text-emerald-600 dark:text-emerald-400" />
+                                        </DetailTile>
+                                    )}
                                 </div>
                                 {(hasError || hasPartialFailure || shouldShowAttempts) && (
                                     <div className={cn(
@@ -780,9 +819,11 @@ export function LogCard({ log }: { log: RelayLog }) {
                                             <div className="flex items-center gap-2 px-3 md:px-4 py-2.5 md:py-3 border-b border-border bg-muted/50 shrink-0">
                                                 <Send className="size-4 text-muted-foreground" />
                                                 <span className="text-sm font-medium text-card-foreground">{t('requestContent')}</span>
-                                                <Badge variant="secondary" className="ml-auto max-w-[55%] whitespace-normal text-left text-xs">
-                                                    {log.input_tokens.toLocaleString()} {t('tokens')} · {t('cacheHit')} {(log.cache_hit_tokens ?? 0).toLocaleString()}
-                                                </Badge>
+                                                {!isModelTest && (
+                                                    <Badge variant="secondary" className="ml-auto max-w-[55%] whitespace-normal text-left text-xs">
+                                                        {log.input_tokens.toLocaleString()} {t('tokens')} · {t('cacheHit')} {(log.cache_hit_tokens ?? 0).toLocaleString()}
+                                                    </Badge>
+                                                )}
                                             </div>
                                             <div className="flex-1 overflow-auto min-h-0">
                                                 <DeferredJsonContent content={log.request_content} fallbackText={t('noRequestContent')} />
@@ -792,9 +833,11 @@ export function LogCard({ log }: { log: RelayLog }) {
                                             <div className="flex items-center gap-2 px-3 md:px-4 py-2.5 md:py-3 border-b border-border bg-muted/50 shrink-0">
                                                 <MessageSquare className="size-4 text-muted-foreground" />
                                                 <span className="text-sm font-medium text-card-foreground">{t('responseContent')}</span>
-                                                <Badge variant="secondary" className="ml-auto max-w-[55%] whitespace-normal text-left text-xs">
-                                                    {log.output_tokens.toLocaleString()} {t('tokens')}
-                                                </Badge>
+                                                {!isModelTest && (
+                                                    <Badge variant="secondary" className="ml-auto max-w-[55%] whitespace-normal text-left text-xs">
+                                                        {log.output_tokens.toLocaleString()} {t('tokens')}
+                                                    </Badge>
+                                                )}
                                             </div>
                                             <div className="flex-1 overflow-auto min-h-0">
                                                 <DeferredJsonContent content={log.response_content} fallbackText={t('noResponseContent')} />
@@ -813,7 +856,7 @@ export function LogCard({ log }: { log: RelayLog }) {
                             {requestAPIKeyName && (
                                 <div className="flex min-w-0 items-center gap-1.5">
                                     <KeyRound className="size-3.5 shrink-0 text-muted-foreground" />
-                                    <MonoSafeText value={requestAPIKeyName} className="text-muted-foreground" />
+                                    <MonoSafeText value={maskSensitive(requestAPIKeyName, sensitiveVisible)} className="text-muted-foreground" />
                                 </div>
                             )}
                             <div className="flex items-center gap-1.5">
@@ -824,20 +867,24 @@ export function LogCard({ log }: { log: RelayLog }) {
                                 <Cpu className="size-3.5 text-muted-foreground" />
                                 <span className="min-w-0 break-words">{t('totalTime')}: {formatDuration(log.use_time)}</span>
                             </div>
-                            <div className="flex items-center gap-1.5">
-                                <Percent className="size-3.5 text-muted-foreground" />
-                                <span className="min-w-0 break-words">
-                                    {t('cacheHit')}: {(log.cache_hit_tokens ?? 0).toLocaleString()} / {formatCacheRate(log.cache_hit_rate)}
-                                    {(log.cache_write_tokens ?? 0) > 0 && ` · ${t('cacheWrite')}: ${log.cache_write_tokens.toLocaleString()}`}
-                                    {(log.cache_input_tokens ?? 0) > 0 && ` · ${t('cacheInput')}: ${log.cache_input_tokens.toLocaleString()}`}
-                                </span>
-                            </div>
-                            <div className="flex items-center gap-1.5">
-                                <DollarSign className="size-3.5 text-emerald-500" />
-                                <span className="whitespace-nowrap font-medium tabular-nums text-emerald-600 dark:text-emerald-400">
-                                    {t('cost')}: {Number(log.cost).toFixed(6)}
-                                </span>
-                            </div>
+                            {!isModelTest && (
+                                <div className="flex items-center gap-1.5">
+                                    <Percent className="size-3.5 text-muted-foreground" />
+                                    <span className="min-w-0 break-words">
+                                        {t('cacheHit')}: {(log.cache_hit_tokens ?? 0).toLocaleString()} / {formatCacheRate(log.cache_hit_rate)}
+                                        {(log.cache_write_tokens ?? 0) > 0 && ` · ${t('cacheWrite')}: ${log.cache_write_tokens.toLocaleString()}`}
+                                        {(log.cache_input_tokens ?? 0) > 0 && ` · ${t('cacheInput')}: ${log.cache_input_tokens.toLocaleString()}`}
+                                    </span>
+                                </div>
+                            )}
+                            {!isModelTest && (
+                                <div className="flex items-center gap-1.5">
+                                    <DollarSign className="size-3.5 text-emerald-500" />
+                                    <span className="whitespace-nowrap font-medium tabular-nums text-emerald-600 dark:text-emerald-400">
+                                        {t('cost')}: {Number(log.cost).toFixed(6)}
+                                    </span>
+                                </div>
+                            )}
                         </div>
                     </MorphingDialogContent>
                 </MorphingDialogContainer>

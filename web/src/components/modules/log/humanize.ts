@@ -42,6 +42,22 @@ const ERROR_CODE_LABELS: Record<string, string> = {
     // ---- 本地预校验（请求还没真正发出去）----
     client_empty_request: '客户端发来了空请求',
     cursor_empty_probe: 'Cursor 的空探测请求（正常现象）',
+
+    // ---- 上游供应商原样透出的码（上游 JSON 里的 code / type，开放集，只收高频）----
+    // 后端 internal/relay/upstream_error.go 会把上游返回的 error.code/type 原样塞进 error_code，
+    // 不在此表里的会走兜底美化，不再裸下划线糊脸。
+    get_channel_failed: '上游无可用渠道',
+    insufficient_quota: '上游额度不足',
+    rate_limit_exceeded: '上游限流（请求太频繁）',
+    invalid_request_error: '上游说请求格式有问题',
+    invalid_api_key: '上游密钥无效',
+    authentication_error: '上游认证失败',
+    permission_error: '上游无此权限',
+    model_not_found: '上游没有这个模型',
+    context_length_exceeded: '上下文太长超限',
+    overloaded_error: '上游过载',
+    server_error: '上游服务器出错',
+    billing_hard_limit_reached: '上游账户欠费/达上限',
 };
 
 /** usage_source -> 人话（用量数据从哪来的） */
@@ -66,29 +82,75 @@ const SESSION_SOURCE_LABELS: Record<string, string> = {
     'octopus:request_fingerprint': '按请求指纹自动识别',
 };
 
+/** endpoint / 接口码 -> 人话（请求走的是哪类接口） */
+const ENDPOINT_LABELS: Record<string, string> = {
+    // ---- 正常业务接口 ----
+    chat: '对话补全',
+    chat_completions: '对话补全',
+    responses: 'Responses 接口',
+    messages: 'Messages 接口',
+    gemini: 'Gemini 生成',
+    gemini_generate_content: 'Gemini 生成',
+    embeddings: '向量嵌入',
+    // ---- 连通性测试（model test）----
+    model_test: '连通性测试',
+    model_test_chat: '连通性测试（对话）',
+    model_test_responses: '连通性测试（Responses）',
+    model_test_anthropic_messages: '连通性测试（Messages）',
+    model_test_gemini: '连通性测试（Gemini）',
+};
+
 function lookup(map: Record<string, string>, raw: string | undefined): string | undefined {
     const key = raw?.trim();
     if (!key) return undefined;
     return map[key];
 }
 
-/** 错误码翻人话；查不到就原样返回（保证不漏信息）。 */
+/**
+ * 英文机器码（snake_case / kebab-case）退化成稍微像人话的样子：下划线/连字符换空格。
+ * 仅作兜底——查得到字典的永远优先用字典中文，不把生 `model_not_found` 直接糊脸。
+ */
+function prettifyRawCode(raw: string): string {
+    return raw.replace(/[_-]+/g, ' ').trim();
+}
+
+/** 是不是「连通性测试」类日志（model_test / model_test_xxx）。 */
+export function isModelTestEndpoint(endpoint: string | undefined): boolean {
+    return (endpoint?.trim() ?? '').startsWith('model_test');
+}
+
+/** endpoint 码翻人话；model_test 前缀统一归「连通性测试」，查不到就轻量美化。 */
+export function humanizeEndpoint(endpoint: string | undefined): string | undefined {
+    const key = endpoint?.trim();
+    if (!key) return undefined;
+    if (ENDPOINT_LABELS[key]) return ENDPOINT_LABELS[key];
+    if (key.startsWith('model_test')) return '连通性测试';
+    return prettifyRawCode(key);
+}
+
+/** 错误码翻人话；查不到就轻量美化（下划线换空格），不裸糊机器码。 */
 export function humanizeErrorCode(code: string | undefined): string | undefined {
     const key = code?.trim();
     if (!key) return undefined;
-    return ERROR_CODE_LABELS[key] ?? key;
+    return ERROR_CODE_LABELS[key] ?? prettifyRawCode(key);
 }
 
 export function humanizeUsageSource(source: string | undefined): string | undefined {
-    return lookup(USAGE_SOURCE_LABELS, source) ?? source?.trim() ?? undefined;
+    const raw = source?.trim();
+    if (!raw) return undefined;
+    return lookup(USAGE_SOURCE_LABELS, raw) ?? prettifyRawCode(raw);
 }
 
 export function humanizeUsageReason(reason: string | undefined): string | undefined {
-    return lookup(USAGE_REASON_LABELS, reason) ?? reason?.trim() ?? undefined;
+    const raw = reason?.trim();
+    if (!raw) return undefined;
+    return lookup(USAGE_REASON_LABELS, raw) ?? prettifyRawCode(raw);
 }
 
 export function humanizeSessionSource(source: string | undefined): string | undefined {
-    return lookup(SESSION_SOURCE_LABELS, source) ?? source?.trim() ?? undefined;
+    const raw = source?.trim();
+    if (!raw) return undefined;
+    return lookup(SESSION_SOURCE_LABELS, raw) ?? prettifyRawCode(raw);
 }
 
 /**
@@ -120,6 +182,14 @@ export function getLogVerdict(
         return {
             kind: 'warn',
             text: '⚠️ 最终成功，但中间有渠道尝试失败过（已自动重试到可用渠道）',
+        };
+    }
+
+    // 连通性测试（model test）失败：直给一句直白结论，不套上游/客户端那套话术。
+    if (isModelTestEndpoint(log.request_endpoint) || isModelTestEndpoint(log.request_path)) {
+        return {
+            kind: 'config',
+            text: '❌ 连通性测试失败：这个渠道 + 模型当前打不通，检查渠道密钥、模型名或上游是否正常。',
         };
     }
 
