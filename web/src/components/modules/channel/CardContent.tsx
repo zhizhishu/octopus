@@ -45,6 +45,7 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
         base_urls: channel.base_urls?.length ? channel.base_urls : [{ url: '', delay: 0 }],
         custom_header: channel.custom_header ?? [],
         cloak_mode: channel.cloak?.mode || 'auto',
+        cloak_profile_id: channel.cloak?.profile_id ?? 0,
         channel_proxy: channel.channel_proxy ?? '',
         param_override: channel.param_override ?? '',
         system_prompt_override: channel.system_prompt_override ?? '',
@@ -115,8 +116,10 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
 
         const nextCloakMode = formData.cloak_mode || 'auto';
         const curCloakMode = channel.cloak?.mode || 'auto';
-        if (nextCloakMode !== curCloakMode) {
-            req.cloak = { mode: nextCloakMode };
+        const nextCloakProfileID = formData.cloak_profile_id ?? 0;
+        const curCloakProfileID = channel.cloak?.profile_id ?? 0;
+        if (nextCloakMode !== curCloakMode || nextCloakProfileID !== curCloakProfileID) {
+            req.cloak = { mode: nextCloakMode, profile_id: nextCloakProfileID };
         }
 
         const nextChannelProxy = formData.channel_proxy.trim();

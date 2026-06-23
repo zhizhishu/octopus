@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/op"
 	"github.com/bestruirui/octopus/internal/transformer/inbound"
 	transformerModel "github.com/bestruirui/octopus/internal/transformer/model"
 	"github.com/bestruirui/octopus/internal/transformer/outbound"
@@ -93,10 +92,11 @@ func (ra *relayAttempt) defaultCodexSessionID() string {
 }
 
 func (ra *relayAttempt) defaultCodexInstallationID() string {
-	// ONE uniform per-instance codex installation id for ALL codex traffic — an upstream
-	// must not see a different install just because a different downstream user/api-key
-	// relayed through octopus. Shared with the channel/model test path (op.CodexInstallationID).
-	return op.CodexInstallationID()
+	// One uniform codex installation id per fingerprint: a channel with no profile
+	// uses the global per-instance install id (unchanged), a channel that selects a
+	// profile uses that profile's seed-derived id. Shared with the channel/model
+	// test path so a test is byte-for-byte identical to real traffic.
+	return ra.fingerprint().codexInstallationID()
 }
 
 func stableCodexUUID(kind, seed string) string {

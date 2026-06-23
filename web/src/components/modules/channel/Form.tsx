@@ -1,4 +1,5 @@
 import { AutoGroupType, ChannelType, defaultModelTestEndpointForChannel, type Channel, type PromptOverrideMode, useFetchModel, useTestChannelConfig } from '@/api/endpoints/channel';
+import { useFingerprintProfileList } from '@/api/endpoints/fingerprint-profile';
 import type { ModelTestResult } from '@/api/endpoints/model';
 import {
     Select,
@@ -128,6 +129,7 @@ export interface ChannelFormData {
     base_urls: Channel['base_urls'];
     custom_header: Channel['custom_header'];
     cloak_mode: string;
+    cloak_profile_id: number;
     channel_proxy: string;
     param_override: string;
     system_prompt_override: string;
@@ -265,6 +267,7 @@ export function ChannelForm({
 
     const fetchModel = useFetchModel();
     const channelTest = useTestChannelConfig();
+    const { data: fingerprintProfiles } = useFingerprintProfileList();
     const [channelTestResult, setChannelTestResult] = useState<ModelTestResult | null>(null);
     const [channelTestStream, setChannelTestStream] = useState(true);
 
@@ -357,7 +360,7 @@ export function ChannelForm({
         auto_sync: formData.auto_sync,
         auto_group: formData.auto_group,
         custom_header: formData.custom_header?.filter((header) => header.header_key.trim()) || [],
-        cloak: { mode: formData.cloak_mode || 'auto' },
+        cloak: { mode: formData.cloak_mode || 'auto', profile_id: formData.cloak_profile_id ?? 0 },
         channel_proxy: formData.channel_proxy?.trim() || null,
         openai_chat_path: formData.openai_chat_path.trim(),
         openai_models_path: formData.openai_models_path.trim(),
@@ -1064,6 +1067,29 @@ export function ChannelForm({
                                     </SelectContent>
                                 </Select>
                                 <p className="text-xs text-muted-foreground">{t('cloakModeHint')}</p>
+                            </div>
+
+                            <div className="space-y-2">
+                                <label htmlFor={`${idPrefix}-cloak-profile`} className="text-sm font-medium text-card-foreground">
+                                    {t('cloakProfile')}
+                                </label>
+                                <Select
+                                    value={String(formData.cloak_profile_id ?? 0)}
+                                    onValueChange={(value) => onFormDataChange({ ...formData, cloak_profile_id: Number(value) })}
+                                >
+                                    <SelectTrigger id={`${idPrefix}-cloak-profile`} className="rounded-xl w-full border border-border px-4 py-2 text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                                        <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent className="rounded-xl">
+                                        <SelectItem className="rounded-xl" value="0">{t('cloakProfileGlobal')}</SelectItem>
+                                        {(fingerprintProfiles ?? []).map((profile) => (
+                                            <SelectItem key={profile.id} className="rounded-xl" value={String(profile.id)}>
+                                                {profile.name}
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                                <p className="text-xs text-muted-foreground">{t('cloakProfileHint')}</p>
                             </div>
                         </div>
 

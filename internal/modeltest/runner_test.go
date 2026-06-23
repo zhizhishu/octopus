@@ -264,8 +264,10 @@ func TestPrepareCodexModelTestRequestUsesStableDeviceAcrossSessions(t *testing.T
 	first := &transformermodel.InternalLLMRequest{Model: "gpt-5.5"}
 	second := &transformermodel.InternalLLMRequest{Model: "gpt-5.5"}
 
-	prepareCodexModelTestRequest(first, outbound.OutboundTypeOpenAIResponse)
-	prepareCodexModelTestRequest(second, outbound.OutboundTypeOpenAIResponse)
+	// Zero-value fingerprint == global default (no profile selected), which is what
+	// this test asserts: one stable per-instance device id across sessions.
+	prepareCodexModelTestRequest(first, outbound.OutboundTypeOpenAIResponse, resolvedFingerprint{})
+	prepareCodexModelTestRequest(second, outbound.OutboundTypeOpenAIResponse, resolvedFingerprint{})
 
 	var firstMetadata map[string]string
 	var secondMetadata map[string]string
@@ -853,6 +855,88 @@ data: {"type":"message_stop"}
 	result := response.Results[0]
 	if !result.Success || result.ResponsePreview != "OK" || result.InputTokens != 3 || result.OutputTokens != 1 {
 		t.Fatalf("unexpected result: %#v", result)
+	}
+}
+
+// TestRunChannelFingerprintProfileSelectsDistinctIdentity proves the multi-profile
+// feature: a channel whose ChannelCloak.ProfileID points at a fingerprint profile
+// emits THAT profile's device identity (UA / X-Stainless-OS) on the wire instead of
+// the global default, so two channels behind different egress IPs present two distinct
+// real devices. (ProfileID=0 keeping the byte-for-byte global default is covered by
+// every other test here, which all run with no profile selected.)
+func TestRunChannelFingerprintProfileSelectsDistinctIdentity(t *testing.T) {
+	ctx := setupModelTestDB(t)
+
+	stabilize := true
+	profile := dbmodel.FingerprintProfile{
+		Name:            "linux-real-test",
+		Seed:            "profile2-distinct-seed-deadbeef0000000000000000000000000000",
+		ClaudeUserAgent: "claude-cli/2.1.186 (external, sdk-cli)",
+		ClaudeOS:        "Linux",
+		ClaudeArch:      "x64",
+		ClaudeStabilize: &stabilize,
+	}
+	if err := op.FingerprintProfileCreate(&profile, ctx); err != nil {
+		t.Fatalf("create fingerprint profile: %v", err)
+	}
+
+	var sawUserAgent, sawStainlessOS string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawUserAgent = r.Header.Get("User-Agent")
+		sawStainlessOS = r.Header.Get("X-Stainless-OS")
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`event: message_start
+data: {"type":"message_start","message":{"id":"m","type":"message","role":"assistant","model":"claude-opus-4-8","content":[],"usage":{"input_tokens":3,"output_tokens":0}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"OK"}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	channel := dbmodel.Channel{
+		Name:     "Claude-Profile2",
+		Type:     outbound.OutboundTypeAnthropic,
+		Enabled:  true,
+		Cloak:    dbmodel.ChannelCloak{ProfileID: profile.ID},
+		BaseUrls: []dbmodel.BaseUrl{{URL: upstream.URL}},
+		Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "anthropic-key"}},
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	group := dbmodel.Group{Name: "claude-opus-4-8", Mode: dbmodel.GroupModeFailover}
+	if err := op.GroupCreate(&group, ctx); err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	if err := op.GroupItemAdd(&dbmodel.GroupItem{
+		GroupID:   group.ID,
+		ChannelID: channel.ID,
+		ModelName: "claude-opus-4-8",
+		Priority:  1,
+		Weight:    1,
+	}, ctx); err != nil {
+		t.Fatalf("create group item: %v", err)
+	}
+
+	if _, err := Run(ctx, dbmodel.ModelTestRequest{
+		Model:    "claude-opus-4-8",
+		Endpoint: "anthropic_messages",
+	}); err != nil {
+		t.Fatalf("run model test: %v", err)
+	}
+	if sawUserAgent != "claude-cli/2.1.186 (external, sdk-cli)" {
+		t.Fatalf("expected profile2 UA on the wire, got %q", sawUserAgent)
+	}
+	if sawStainlessOS != "Linux" {
+		t.Fatalf("expected profile2 X-Stainless-OS=Linux, got %q", sawStainlessOS)
+	}
+	if sawUserAgent == defaultClaudeUserAgent {
+		t.Fatalf("profile2 UA must differ from the global default %q", defaultClaudeUserAgent)
 	}
 }
 

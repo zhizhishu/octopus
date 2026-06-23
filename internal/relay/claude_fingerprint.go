@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/bestruirui/octopus/internal/op"
 	"github.com/bestruirui/octopus/internal/transformer/model"
 	"github.com/bestruirui/octopus/internal/transformer/outbound"
 	"github.com/google/uuid"
@@ -38,11 +37,13 @@ func (ra *relayAttempt) ensureClaudeMetadataUserID() {
 	if strings.TrimSpace(ra.internalRequest.Metadata["user_id"]) != "" {
 		return
 	}
-	// ONE uniform per-instance device id for ALL claude traffic — an upstream must not
-	// see a different device just because a different downstream user/api-key relayed
-	// through octopus (op.ClaudeFingerprintDeviceID). The session id still varies per
-	// conversation, exactly as a single real install reports many sessions.
-	device := op.ClaudeFingerprintDeviceID()
+	// One uniform device id per fingerprint: a channel with no profile (ProfileID 0)
+	// uses the global per-instance device (unchanged from before), while a channel
+	// that selects a profile uses that profile's seed-derived device — so two
+	// channels behind different egress IPs look like two distinct installs rather
+	// than one. The session id still varies per conversation, exactly as a single
+	// real install reports many sessions.
+	device := ra.fingerprint().claudeDeviceID()
 	session := ra.claudeFingerprintSessionID()
 	// Shared builder (compact, golden key order) so relay == channel test byte-for-byte.
 	ra.internalRequest.Metadata["user_id"] = model.BuildClaudeMetadataUserID(device, session)

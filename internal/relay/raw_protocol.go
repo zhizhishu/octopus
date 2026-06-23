@@ -612,7 +612,7 @@ func rawProtocolAttempt(
 	}
 	copyHeadersToUpstream(req, c, channel, channelKey, contentType, stream)
 	if isResponsesCompactRawProtocol(options) {
-		applyCodexHeaderDefaults(req, rawProtocolCodexIdentity(jsonPayload, clientSessionKey))
+		applyCodexHeaderDefaultsWithFingerprint(req, rawProtocolCodexIdentity(jsonPayload, clientSessionKey), resolveFingerprintForChannel(channel))
 	}
 
 	httpClient, err := helper.ChannelHttpClient(channel)

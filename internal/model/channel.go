@@ -68,6 +68,13 @@ type CustomHeader struct {
 
 type ChannelCloak struct {
 	Mode string `json:"mode,omitempty"`
+	// ProfileID selects which fingerprint profile this channel cloaks as. 0 (the
+	// zero value every existing channel deserialises to) means "use the global
+	// default single fingerprint" — i.e. the per-instance seed + global header
+	// settings, byte-for-byte identical to the behaviour before profiles existed.
+	// A value > 0 points at a FingerprintProfile row so two channels (e.g. two
+	// upstream keys behind different egress IPs) can present distinct devices.
+	ProfileID int `json:"profile_id,omitempty"`
 }
 
 type ChannelKey struct {

@@ -323,6 +323,53 @@
             },
             "hint": "When a channel fails consecutively up to the threshold, circuit breaker trips. Cooldown grows exponentially up to the max cooldown"
         },
+        "fingerprintProfile": {
+            "title": "Fingerprint Profiles",
+            "description": "Prepare multiple independent device fingerprints for different channels, so upstream keys behind different egress IPs present distinct devices instead of sharing one global fingerprint. Leave any field empty to fall back to the global default.",
+            "add": "New",
+            "edit": "Edit",
+            "delete": "Delete",
+            "confirmDelete": "Confirm delete",
+            "cancel": "Cancel",
+            "save": "Save",
+            "empty": "No fingerprint profiles yet. Click New to add one. Channels can still choose \"Follow global default\".",
+            "createTitle": "New Fingerprint Profile",
+            "editTitle": "Edit Fingerprint Profile",
+            "dialogHint": "Leave any field empty to fall back to the matching global default; only fill in the fields you want to differ on.",
+            "nameRequired": "Please enter a profile name",
+            "followGlobal": "Follow global default",
+            "genericUAHint": "Unified User-Agent for non Claude/Codex channels (Gemini / Volcengine / plain OpenAI Chat), which emit no UA by default. Leave empty to keep current behaviour.",
+            "groups": {
+                "claude": "Claude Fingerprint",
+                "codex": "Codex Fingerprint"
+            },
+            "fields": {
+                "name": "Name",
+                "seed": "Seed",
+                "claudeUserAgent": "Claude User-Agent",
+                "claudePackageVersion": "Claude Package Version",
+                "claudeRuntimeVersion": "Claude Runtime Version",
+                "claudeOS": "Claude OS",
+                "claudeArch": "Claude Arch",
+                "claudeTimeout": "Claude Timeout",
+                "claudeStabilize": "Stabilize device profile",
+                "codexUserAgent": "Codex User-Agent",
+                "codexOriginator": "Codex Originator",
+                "codexBetaFeatures": "Codex Beta Features",
+                "genericUA": "Generic User-Agent"
+            },
+            "placeholders": {
+                "name": "A recognizable name, e.g. macOS Claude / Windows Node A",
+                "seed": "Leave empty to auto-generate a random seed on first save",
+                "followGlobal": "Empty = follow global default",
+                "genericUA": "Empty = keep current behaviour (no UA set)"
+            },
+            "stabilize": {
+                "follow": "Follow global",
+                "on": "On",
+                "off": "Off"
+            }
+        },
         "saved": "Saved",
         "backup": {
             "title": "Backup / Restore",
@@ -813,7 +860,10 @@
             "autoGroupRegex": "Regex",
             "matchRegex": "Match Regex",
             "matchRegexPlaceholder": "Optional: regex pattern to match request model names",
-            "remark": "Remark"
+            "remark": "Remark",
+            "cloakProfile": "Fingerprint Profile",
+            "cloakProfileGlobal": "Follow global default",
+            "cloakProfileHint": "Pick a dedicated device fingerprint (managed under Settings - Fingerprint Profiles). \"Follow global default\" reuses the global fingerprint settings without distinction."
         }
     }
 }

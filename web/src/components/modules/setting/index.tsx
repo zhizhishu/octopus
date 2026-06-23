@@ -3,6 +3,7 @@
 import { PageWrapper } from '@/components/common/PageWrapper';
 import { SettingAppearance } from './Appearance';
 import { SettingSystem } from './System';
+import { SettingFingerprintProfile } from './FingerprintProfile';
 import { SettingAccount } from './Account';
 import { SettingInfo } from './Info';
 import { SettingLLMSync } from './LLMSync';
@@ -26,6 +27,8 @@ export function Setting() {
                 </PageWrapper>
                 {/* 系统设置内容最多，单独横跨整行（左右两边） */}
                 <SettingSystem />
+                {/* 指纹 Profile 管理：字段多、配合 cloak.profile_id 选用，单独横跨整行 */}
+                <SettingFingerprintProfile />
             </div>
         </div>
     );

@@ -323,6 +323,53 @@
             },
             "hint": "當渠道連續失敗達到閾值後觸發熔斷，冷卻時間按指數退避增長，上限為最大冷卻時間"
         },
+        "fingerprintProfile": {
+            "title": "指紋 Profile 管理",
+            "description": "為不同渠道準備多套獨立裝置指紋，讓走不同出口 IP 的上游 key 呈現不同裝置，而不是共用全域唯一指紋。各欄位留空即回落全域預設。",
+            "add": "新建",
+            "edit": "編輯",
+            "delete": "刪除",
+            "confirmDelete": "確認刪除",
+            "cancel": "取消",
+            "save": "儲存",
+            "empty": "暫無指紋 Profile，點「新建」新增一套。渠道仍可選「跟隨全域預設」。",
+            "createTitle": "新建指紋 Profile",
+            "editTitle": "編輯指紋 Profile",
+            "dialogHint": "各欄位留空即回落對應的全域預設設定；只需填寫要區分的欄位。",
+            "nameRequired": "請填寫 Profile 名稱",
+            "followGlobal": "跟隨全域預設",
+            "genericUAHint": "統一 User-Agent，作用於非 Claude/Codex 渠道（Gemini / 火山引擎 / 普通 OpenAI Chat），這些渠道預設不帶 UA。留空即保持現狀。",
+            "groups": {
+                "claude": "Claude 指紋",
+                "codex": "Codex 指紋"
+            },
+            "fields": {
+                "name": "名稱",
+                "seed": "種子 Seed",
+                "claudeUserAgent": "Claude User-Agent",
+                "claudePackageVersion": "Claude Package Version",
+                "claudeRuntimeVersion": "Claude Runtime Version",
+                "claudeOS": "Claude OS",
+                "claudeArch": "Claude Arch",
+                "claudeTimeout": "Claude Timeout",
+                "claudeStabilize": "穩定裝置指紋",
+                "codexUserAgent": "Codex User-Agent",
+                "codexOriginator": "Codex Originator",
+                "codexBetaFeatures": "Codex Beta Features",
+                "genericUA": "通用 User-Agent"
+            },
+            "placeholders": {
+                "name": "便於辨認的名字，如 macOS Claude / Windows 節點 A",
+                "seed": "留空則後端首次儲存時自動產生隨機種子",
+                "followGlobal": "留空 = 跟隨全域預設",
+                "genericUA": "留空 = 保持現狀（不設定 UA）"
+            },
+            "stabilize": {
+                "follow": "跟隨全域",
+                "on": "開啟",
+                "off": "關閉"
+            }
+        },
         "saved": "已儲存",
         "backup": {
             "title": "備份 / 復原",
@@ -813,7 +860,10 @@
             "autoGroupRegex": "正規比對",
             "matchRegex": "匹配正規",
             "matchRegexPlaceholder": "可選：用於匹配請求模型名稱的正規表示式",
-            "remark": "備註"
+            "remark": "備註",
+            "cloakProfile": "指紋 Profile",
+            "cloakProfileGlobal": "跟隨全域預設",
+            "cloakProfileHint": "選用一組獨立的裝置指紋（在「設定 - 指紋 Profile 管理」裡維護）。「跟隨全域預設」即沿用全域指紋設定，不做區分。"
         }
     }
 }

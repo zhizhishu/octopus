@@ -639,6 +639,10 @@ func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermod
 	// strict upstreams like Kiro/AnyRouter gate on) — so the test faithfully reflects
 	// exactly what the upstream receives in production.
 	internalRequest.TransformOptions.SuppressClaudeIdentity = !shouldApplyChannelCloak(channel.Cloak)
+	// Resolve the channel's fingerprint profile once and feed it to every body-shape
+	// helper so the test's device_id / installation id match the relay forward path
+	// for this channel (test==real-traffic invariant).
+	fp := resolveFingerprint(channel)
 	if channel.Type == outbound.OutboundTypeAnthropic {
 		// Claude model -> Claude Code probe (tools). Gate on the model actually being a
 		// Claude model so a non-Claude model sharing an Anthropic channel is never
@@ -653,7 +657,7 @@ func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermod
 		if enabled, err := op.SettingGetBool(dbmodel.SettingKeyAnthropicAutoCacheControl); err == nil {
 			internalRequest.TransformOptions.AnthropicAutoCacheControl = enabled
 		}
-		prepareClaudeOneMillionModelTestShape(internalRequest, r.request)
+		prepareClaudeOneMillionModelTestShape(internalRequest, r.request, fp)
 		// The outbound for an Anthropic channel is ALWAYS a /v1/messages claude request,
 		// regardless of which inbound test endpoint (anthropic_messages / openai_responses /
 		// openai_chat) the UI picked. The claude-cli body shape was gated on the endpoint
@@ -664,7 +668,7 @@ func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermod
 		// "non-Claude", while the relay forward path (always the cli shape) passed (429).
 		// Pin the cli body shape by CHANNEL TYPE so the test == relay on every endpoint.
 		if shouldApplyChannelCloak(channel.Cloak) {
-			forceClaudeModelTestBodyShape(internalRequest, r.request)
+			forceClaudeModelTestBodyShape(internalRequest, r.request, fp)
 		}
 	}
 	if channel.Type == outbound.OutboundTypeOpenAIResponse {
@@ -675,7 +679,7 @@ func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermod
 		}
 	}
 	if modelTestUsesCodexFingerprint(channel, r.request.Endpoint) {
-		prepareCodexModelTestRequest(internalRequest, channel.Type)
+		prepareCodexModelTestRequest(internalRequest, channel.Type, fp)
 	}
 
 	outboundRequest, err := adapter.TransformRequest(ctx, internalRequest, modelTestOutboundBaseURL(channel), key.ChannelKey)
@@ -948,15 +952,25 @@ func applyHeaderDefaults(req *http.Request, channel *dbmodel.Channel, endpointNa
 	if !shouldApplyChannelCloak(channel.Cloak) {
 		return
 	}
+	// Resolve the channel's selected fingerprint profile so the test header set uses
+	// the SAME device/UA as the relay forward path would for this channel.
+	fp := resolveFingerprint(channel)
 	switch channel.Type {
 	case outbound.OutboundTypeAnthropic:
-		applyClaudeHeaderDefaults(req, internalRequest)
+		applyClaudeHeaderDefaults(req, internalRequest, fp)
 	case outbound.OutboundTypeOpenAIResponse:
-		applyCodexHeaderDefaults(req, internalRequest)
+		applyCodexHeaderDefaults(req, internalRequest, fp)
 	case outbound.OutboundTypeOpenAIChat, outbound.OutboundTypeCustomOpenAIChat:
 		endpoint, err := normalizeEndpoint(endpointName)
 		if err == nil && endpoint.name == "openai_responses" {
-			applyCodexHeaderDefaults(req, internalRequest)
+			applyCodexHeaderDefaults(req, internalRequest, fp)
+		} else if ua := fp.genericUA(); ua != "" {
+			// Mirror relay's non claude/codex default: a profile may pin a unified UA.
+			setHeaderIfMissing(req.Header, "User-Agent", ua)
+		}
+	default:
+		if ua := fp.genericUA(); ua != "" {
+			setHeaderIfMissing(req.Header, "User-Agent", ua)
 		}
 	}
 }
@@ -972,11 +986,11 @@ func shouldApplyChannelCloak(cloak dbmodel.ChannelCloak) bool {
 	}
 }
 
-func applyClaudeHeaderDefaults(req *http.Request, internalRequest *transformermodel.InternalLLMRequest) {
+func applyClaudeHeaderDefaults(req *http.Request, internalRequest *transformermodel.InternalLLMRequest, fp resolvedFingerprint) {
 	ensureClaudeBetaQuery(req)
 	setHeaderIfMissing(req.Header, "Anthropic-Dangerous-Direct-Browser-Access", "true")
 	setHeaderIfMissing(req.Header, "Anthropic-Version", "2023-06-01")
-	setHeaderIfMissing(req.Header, "User-Agent", settingString(dbmodel.SettingKeyClaudeHeaderUserAgent, defaultClaudeUserAgent))
+	setHeaderIfMissing(req.Header, "User-Agent", fp.claudeUserAgent())
 	setHeaderIfMissing(req.Header, "X-App", "cli")
 	// NOTE: deliberately NOT setting X-Client-Request-Id — a genuine claude-cli does
 	// not send it and the relay forward path strips it (clientTraceHeaders). Sending
@@ -985,12 +999,12 @@ func applyClaudeHeaderDefaults(req *http.Request, internalRequest *transformermo
 	setHeaderIfMissing(req.Header, "X-Stainless-Lang", "js")
 	setHeaderIfMissing(req.Header, "X-Stainless-Retry-Count", "0")
 	setHeaderIfMissing(req.Header, "X-Stainless-Runtime", "node")
-	setHeaderIfMissing(req.Header, "X-Stainless-Runtime-Version", settingString(dbmodel.SettingKeyClaudeHeaderRuntime, defaultClaudeRuntimeVersion))
-	setHeaderIfMissing(req.Header, "X-Stainless-Package-Version", settingString(dbmodel.SettingKeyClaudeHeaderPackage, defaultClaudePackageVersion))
-	setHeaderIfMissing(req.Header, "X-Stainless-Timeout", settingString(dbmodel.SettingKeyClaudeHeaderTimeout, defaultClaudeTimeout))
-	if settingBool(dbmodel.SettingKeyClaudeHeaderStabilize, true) {
-		setHeaderIfMissing(req.Header, "X-Stainless-OS", settingString(dbmodel.SettingKeyClaudeHeaderOS, defaultClaudeOS))
-		setHeaderIfMissing(req.Header, "X-Stainless-Arch", settingString(dbmodel.SettingKeyClaudeHeaderArch, defaultClaudeArch))
+	setHeaderIfMissing(req.Header, "X-Stainless-Runtime-Version", fp.claudeRuntimeVersion())
+	setHeaderIfMissing(req.Header, "X-Stainless-Package-Version", fp.claudePackageVersion())
+	setHeaderIfMissing(req.Header, "X-Stainless-Timeout", fp.claudeTimeout())
+	if fp.claudeStabilize() {
+		setHeaderIfMissing(req.Header, "X-Stainless-OS", fp.claudeOS())
+		setHeaderIfMissing(req.Header, "X-Stainless-Arch", fp.claudeArch())
 	}
 	// Build anthropic-beta via the SAME shared helper the relay forward path uses,
 	// so a channel/model test is byte-for-byte identical to real traffic (context-1m
@@ -1059,12 +1073,12 @@ func addAnthropicBetaHeader(headers http.Header, beta string) {
 	headers.Set("Anthropic-Beta", strings.Join(values, ","))
 }
 
-func applyCodexHeaderDefaults(req *http.Request, internalRequest *transformermodel.InternalLLMRequest) {
+func applyCodexHeaderDefaults(req *http.Request, internalRequest *transformermodel.InternalLLMRequest, fp resolvedFingerprint) {
 	setHeaderIfMissing(req.Header, "Connection", "Keep-Alive")
 	setHeaderIfMissing(req.Header, "Content-Type", "application/json")
-	setHeaderIfMissing(req.Header, "Originator", defaultCodexOriginator)
-	setHeaderIfMissing(req.Header, "User-Agent", settingString(dbmodel.SettingKeyCodexHeaderUserAgent, defaultCodexUserAgent))
-	setHeaderIfMissing(req.Header, "X-Codex-Beta-Features", settingString(dbmodel.SettingKeyCodexHeaderBetaFeatures, defaultCodexBetaFeatures))
+	setHeaderIfMissing(req.Header, "Originator", fp.codexOriginator())
+	setHeaderIfMissing(req.Header, "User-Agent", fp.codexUserAgent())
+	setHeaderIfMissing(req.Header, "X-Codex-Beta-Features", fp.codexBetaFeatures())
 	applyCodexSessionHeaderDefaults(req.Header, internalRequest)
 }
 
@@ -1084,7 +1098,7 @@ func modelTestUsesCodexFingerprint(channel *dbmodel.Channel, endpointName string
 	}
 }
 
-func prepareCodexModelTestRequest(req *transformermodel.InternalLLMRequest, channelType outbound.OutboundType) {
+func prepareCodexModelTestRequest(req *transformermodel.InternalLLMRequest, channelType outbound.OutboundType, fp resolvedFingerprint) {
 	if req == nil {
 		return
 	}
@@ -1098,7 +1112,7 @@ func prepareCodexModelTestRequest(req *transformermodel.InternalLLMRequest, chan
 	}
 	if len(req.ClientMetadata) == 0 {
 		metadata := map[string]any{
-			"x-codex-installation-id": op.CodexInstallationID(),
+			"x-codex-installation-id": fp.codexInstallationID(),
 			"x-codex-window-id":       sessionID + ":0",
 			"x-codex-turn-metadata":   codexModelTestTurnMetadata(sessionID),
 		}
@@ -1110,7 +1124,7 @@ func prepareCodexModelTestRequest(req *transformermodel.InternalLLMRequest, chan
 	prepareCodexModelTestShape(req)
 }
 
-func prepareClaudeOneMillionModelTestShape(req *transformermodel.InternalLLMRequest, request dbmodel.ModelTestRequest) {
+func prepareClaudeOneMillionModelTestShape(req *transformermodel.InternalLLMRequest, request dbmodel.ModelTestRequest, fp resolvedFingerprint) {
 	if req == nil || !transformermodel.AnthropicRequestWantsOneMillionBeta(req) {
 		return
 	}
@@ -1144,10 +1158,10 @@ func prepareClaudeOneMillionModelTestShape(req *transformermodel.InternalLLMRequ
 		req.Metadata = map[string]string{}
 	}
 	if strings.TrimSpace(req.Metadata["user_id"]) == "" {
-		// Same shared builder AND the same uniform per-instance device id as the relay
-		// forward path (op.ClaudeFingerprintDeviceID) so a channel test's metadata.user_id
+		// Same shared builder AND the same device id the relay forward path would use for
+		// THIS channel's profile (fp.claudeDeviceID) so a channel test's metadata.user_id
 		// is byte-for-byte identical to real traffic — one device, not a per-test one.
-		req.Metadata["user_id"] = transformermodel.BuildClaudeMetadataUserID(op.ClaudeFingerprintDeviceID(), sessionID)
+		req.Metadata["user_id"] = transformermodel.BuildClaudeMetadataUserID(fp.claudeDeviceID(), sessionID)
 	}
 }
 
@@ -1161,7 +1175,7 @@ func prepareClaudeOneMillionModelTestShape(req *transformermodel.InternalLLMRequ
 // client's native cli body) so a channel/model test is byte-shaped like real traffic
 // no matter which endpoint the UI selected. Gated on cloak by the caller, exactly like
 // the relay's own fingerprint injection.
-func forceClaudeModelTestBodyShape(req *transformermodel.InternalLLMRequest, request dbmodel.ModelTestRequest) {
+func forceClaudeModelTestBodyShape(req *transformermodel.InternalLLMRequest, request dbmodel.ModelTestRequest, fp resolvedFingerprint) {
 	if req == nil {
 		return
 	}
@@ -1187,10 +1201,10 @@ func forceClaudeModelTestBodyShape(req *transformermodel.InternalLLMRequest, req
 		req.Metadata = map[string]string{}
 	}
 	if strings.TrimSpace(req.Metadata["user_id"]) == "" {
-		// Same shared builder + uniform per-instance device id as the relay forward path
-		// (op.ClaudeFingerprintDeviceID / model.BuildClaudeMetadataUserID) so the test's
-		// metadata.user_id is byte-for-byte what real claude traffic sends.
-		req.Metadata["user_id"] = transformermodel.BuildClaudeMetadataUserID(op.ClaudeFingerprintDeviceID(), sessionID)
+		// Same shared builder + the device id the relay forward path would use for THIS
+		// channel's profile (fp.claudeDeviceID / model.BuildClaudeMetadataUserID) so the
+		// test's metadata.user_id is byte-for-byte what real claude traffic sends.
+		req.Metadata["user_id"] = transformermodel.BuildClaudeMetadataUserID(fp.claudeDeviceID(), sessionID)
 	}
 }
 

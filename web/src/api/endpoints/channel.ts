@@ -43,6 +43,8 @@ export type CustomHeader = {
 
 export type ChannelCloak = {
     mode?: 'auto' | 'always' | 'never' | string;
+    // 0 = 跟随全局默认指纹（现状）；>0 = 使用对应的指纹 Profile。
+    profile_id?: number;
 };
 
 export type ChannelKey = {
@@ -265,7 +267,7 @@ export function useChannelList(options?: { enabled?: boolean }) {
                 ...item,
                 base_urls: item.base_urls ?? [],
                 custom_header: item.custom_header ?? [],
-                cloak: item.cloak ?? { mode: 'auto' },
+                cloak: item.cloak ?? { mode: 'auto', profile_id: 0 },
                 keys: item.keys ?? [],
                 discovered_models: item.discovered_models ?? [],
                 selected_models: item.selected_models ?? [],

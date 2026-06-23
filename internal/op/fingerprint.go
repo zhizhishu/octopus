@@ -50,18 +50,42 @@ func FingerprintInstanceID() string {
 	return fingerprintInstanceID
 }
 
-// ClaudeFingerprintDeviceID returns the 64-hex device id a genuine Claude Code
-// install reports — stable per octopus instance, uniform for ALL claude traffic
-// regardless of the downstream user/api-key. Both the relay forward path and the
-// channel/model test path build it through this one helper.
+// ClaudeFingerprintDeviceID returns the 64-hex device id for the GLOBAL default
+// fingerprint — stable per octopus instance, uniform for ALL claude traffic that
+// does not select a profile. Equivalent to ClaudeFingerprintDeviceIDForSeed with
+// the per-instance seed, so the no-profile (ProfileID 0) path is byte-for-byte
+// unchanged from before profiles existed.
 func ClaudeFingerprintDeviceID() string {
-	sum := sha256.Sum256([]byte("octopus:claude:device:" + FingerprintInstanceID()))
+	return ClaudeFingerprintDeviceIDForSeed(FingerprintInstanceID())
+}
+
+// ClaudeFingerprintDeviceIDForSeed derives the 64-hex claude device id from an
+// arbitrary seed, so each fingerprint profile gets its own unrelated device id.
+// An empty seed falls back to the global per-instance seed (== global default).
+func ClaudeFingerprintDeviceIDForSeed(seed string) string {
+	seed = strings.TrimSpace(seed)
+	if seed == "" {
+		seed = FingerprintInstanceID()
+	}
+	sum := sha256.Sum256([]byte("octopus:claude:device:" + seed))
 	return hex.EncodeToString(sum[:])
 }
 
-// CodexInstallationID returns the codex installation UUID — stable per octopus
-// instance, uniform for ALL codex traffic. Both relay and the channel/model test
-// path build it through this one helper so they are identical.
+// CodexInstallationID returns the codex installation UUID for the GLOBAL default
+// fingerprint — stable per octopus instance, uniform for ALL codex traffic that
+// does not select a profile. Equivalent to CodexInstallationIDForSeed with the
+// per-instance seed, so the no-profile path is byte-for-byte unchanged.
 func CodexInstallationID() string {
-	return uuid.NewSHA1(uuid.NameSpaceOID, []byte("octopus:codex:installation:"+FingerprintInstanceID())).String()
+	return CodexInstallationIDForSeed(FingerprintInstanceID())
+}
+
+// CodexInstallationIDForSeed derives the codex installation UUID from an
+// arbitrary seed so each profile gets its own unrelated install id. An empty
+// seed falls back to the global per-instance seed (== global default).
+func CodexInstallationIDForSeed(seed string) string {
+	seed = strings.TrimSpace(seed)
+	if seed == "" {
+		seed = FingerprintInstanceID()
+	}
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte("octopus:codex:installation:"+seed)).String()
 }
