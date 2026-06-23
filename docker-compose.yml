@@ -1,6 +1,10 @@
 services:
   octopus:
     image: ghcr.io/zhizhishu/octopus:future
+    # `:future` is a moving tag; without this, `docker compose up -d` reuses the
+    # locally cached image and silently runs stale code even after a new image is
+    # pushed to GHCR. `always` forces a pull on every up so a redeploy is the latest.
+    pull_policy: always
     ports:
       - '5050:8080'
     volumes:
