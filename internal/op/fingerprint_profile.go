@@ -141,17 +141,19 @@ func fingerprintProfileRefreshCache(ctx context.Context) error {
 		return fmt.Errorf("failed to load fingerprint profiles: %w", err)
 	}
 	// One-time upgrade cleanup: an earlier build seeded a redundant "默认(Windows)"
-	// profile (all header fields empty + Seed = the per-instance seed) that is
-	// byte-for-byte identical to the dropdown's ProfileID=0 ("默认(Windows)") option,
-	// so the dropdown showed THREE entries for the two identities. Delete ONLY that
-	// exact auto-seeded row (the strict empty-field + instance-seed signature never
-	// matches a user-customised profile) so already-seeded deployments collapse to
-	// two. A channel that had selected it points at a now-missing id, which
-	// FingerprintProfileGet resolves to the global default — the SAME identity — so
-	// behaviour is byte-for-byte unchanged.
-	instanceSeed := FingerprintInstanceID()
+	// profile that is behaviourally identical to the dropdown's ProfileID=0
+	// ("默认(Windows)") option, so the dropdown showed THREE entries for the two
+	// identities the user wants. That auto-seeded row is uniquely identifiable by its
+	// name + EVERY header field empty (it only ever set Name + Seed). Match it
+	// SEED-AGNOSTICALLY (the per-instance seed is not reliably persisted, so a
+	// seed-equality test could miss it) and delete it, so already-seeded deployments
+	// collapse to two. An all-empty profile resolves to the global default regardless,
+	// and a channel that had selected it points at a now-missing id which
+	// FingerprintProfileGet also resolves to the global default — the SAME identity —
+	// so removing it never changes behaviour, even in the unlikely case a user
+	// hand-created an all-empty profile under this exact name.
 	for _, p := range profiles {
-		if p.Name == "默认(Windows)" && p.Seed == instanceSeed &&
+		if p.Name == "默认(Windows)" &&
 			p.ClaudeUserAgent == "" && p.ClaudePackageVersion == "" && p.ClaudeRuntimeVersion == "" &&
 			p.ClaudeOS == "" && p.ClaudeArch == "" && p.ClaudeTimeout == "" && p.ClaudeStabilize == nil &&
 			p.CodexUserAgent == "" && p.CodexOriginator == "" && p.CodexBetaFeatures == "" && p.GenericUA == "" {
