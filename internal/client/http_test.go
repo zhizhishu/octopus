@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"sync/atomic"
 	"testing"
@@ -64,13 +65,61 @@ func TestGetHTTPClientCustomProxyUsesSOCKS5Proxy(t *testing.T) {
 	}
 }
 
+func TestGetHTTPClientCustomProxyUsesSOCKS5ProxyWithAuth(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("via-socks5-auth-proxy"))
+	}))
+	t.Cleanup(target.Close)
+
+	const wantUser, wantPass = "alice", "s3cr3t"
+	proxyURL, proxyHits, authHits := startSOCKS5ProxyWithAuth(t, wantUser, wantPass)
+	// Embed credentials in the channel proxy URL the same way a user would.
+	authProxyURL := "socks5://" + wantUser + ":" + wantPass + "@" + proxyURL
+	client, err := GetHTTPClientCustomProxy(authProxyURL)
+	if err != nil {
+		t.Fatalf("GetHTTPClientCustomProxy: %v", err)
+	}
+	client.Timeout = 5 * time.Second
+
+	resp, err := client.Get(target.URL)
+	if err != nil {
+		t.Fatalf("GET through authenticated socks5 proxy: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "via-socks5-auth-proxy" {
+		t.Fatalf("unexpected socks auth result body=%q", string(body))
+	}
+	if atomic.LoadInt32(proxyHits) == 0 {
+		t.Fatalf("expected request to traverse socks5 proxy, hits=%d", atomic.LoadInt32(proxyHits))
+	}
+	if atomic.LoadInt32(authHits) == 0 {
+		t.Fatalf("expected username/password auth negotiation, authHits=%d", atomic.LoadInt32(authHits))
+	}
+}
+
 func startSOCKS5Proxy(t *testing.T) (string, *int32) {
+	t.Helper()
+	addr, hits, _ := startSOCKS5Server(t, "", "")
+	return "socks5://" + addr, hits
+}
+
+// startSOCKS5ProxyWithAuth starts a SOCKS5 server requiring RFC 1929
+// username/password auth. It returns the listener address, a counter for
+// proxied connections, and a counter for successful auth handshakes.
+func startSOCKS5ProxyWithAuth(t *testing.T, user, pass string) (string, *int32, *int32) {
+	t.Helper()
+	return startSOCKS5Server(t, user, pass)
+}
+
+func startSOCKS5Server(t *testing.T, user, pass string) (string, *int32, *int32) {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen socks5: %v", err)
 	}
 	var hits int32
+	var authHits int32
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -79,17 +128,17 @@ func startSOCKS5Proxy(t *testing.T) (string, *int32) {
 			if err != nil {
 				return
 			}
-			go handleSOCKS5Conn(t, conn, &hits)
+			go handleSOCKS5Conn(t, conn, &hits, &authHits, user, pass)
 		}
 	}()
 	t.Cleanup(func() {
 		_ = listener.Close()
 		<-done
 	})
-	return "socks5://" + listener.Addr().String(), &hits
+	return listener.Addr().String(), &hits, &authHits
 }
 
-func handleSOCKS5Conn(t *testing.T, conn net.Conn, hits *int32) {
+func handleSOCKS5Conn(t *testing.T, conn net.Conn, hits, authHits *int32, wantUser, wantPass string) {
 	t.Helper()
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
@@ -104,9 +153,27 @@ func handleSOCKS5Conn(t *testing.T, conn net.Conn, hits *int32) {
 		t.Errorf("read socks methods: %v", err)
 		return
 	}
-	if _, err := conn.Write([]byte{0x05, 0x00}); err != nil {
-		t.Errorf("write socks greeting response: %v", err)
-		return
+
+	requireAuth := wantUser != "" || wantPass != ""
+	if requireAuth {
+		if !slices.Contains(methods, byte(0x02)) { // username/password
+			t.Errorf("client did not offer username/password auth method: %#v", methods)
+			return
+		}
+		// Select username/password auth.
+		if _, err := conn.Write([]byte{0x05, 0x02}); err != nil {
+			t.Errorf("write socks auth method selection: %v", err)
+			return
+		}
+		if !negotiateSOCKS5Auth(t, conn, authHits, wantUser, wantPass) {
+			return
+		}
+	} else {
+		// No auth required.
+		if _, err := conn.Write([]byte{0x05, 0x00}); err != nil {
+			t.Errorf("write socks greeting response: %v", err)
+			return
+		}
 	}
 
 	reqHead := make([]byte, 4)
@@ -147,6 +214,53 @@ func handleSOCKS5Conn(t *testing.T, conn net.Conn, hits *int32) {
 		_ = upstream.Close()
 	}()
 	_, _ = io.Copy(conn, upstream)
+}
+
+// negotiateSOCKS5Auth performs the RFC 1929 username/password sub-negotiation
+// and reports whether the supplied credentials matched. On success it bumps
+// authHits so tests can assert the auth handshake actually happened.
+func negotiateSOCKS5Auth(t *testing.T, conn net.Conn, authHits *int32, wantUser, wantPass string) bool {
+	t.Helper()
+	ver := make([]byte, 1)
+	if _, err := io.ReadFull(conn, ver); err != nil {
+		t.Errorf("read socks auth version: %v", err)
+		return false
+	}
+	if ver[0] != 0x01 {
+		t.Errorf("unexpected socks auth version: %#v", ver)
+		return false
+	}
+	ulen := make([]byte, 1)
+	if _, err := io.ReadFull(conn, ulen); err != nil {
+		t.Errorf("read socks auth ulen: %v", err)
+		return false
+	}
+	uname := make([]byte, int(ulen[0]))
+	if _, err := io.ReadFull(conn, uname); err != nil {
+		t.Errorf("read socks auth uname: %v", err)
+		return false
+	}
+	plen := make([]byte, 1)
+	if _, err := io.ReadFull(conn, plen); err != nil {
+		t.Errorf("read socks auth plen: %v", err)
+		return false
+	}
+	passwd := make([]byte, int(plen[0]))
+	if _, err := io.ReadFull(conn, passwd); err != nil {
+		t.Errorf("read socks auth passwd: %v", err)
+		return false
+	}
+	if string(uname) != wantUser || string(passwd) != wantPass {
+		_, _ = conn.Write([]byte{0x01, 0x01}) // failure
+		t.Errorf("socks auth mismatch: got %q/%q", string(uname), string(passwd))
+		return false
+	}
+	if _, err := conn.Write([]byte{0x01, 0x00}); err != nil { // success
+		t.Errorf("write socks auth success: %v", err)
+		return false
+	}
+	atomic.AddInt32(authHits, 1)
+	return true
 }
 
 func readSOCKS5Host(conn net.Conn, atyp byte) (string, error) {
