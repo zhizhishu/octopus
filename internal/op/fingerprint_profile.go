@@ -140,6 +140,30 @@ func fingerprintProfileRefreshCache(ctx context.Context) error {
 	if err := db.GetDB().WithContext(ctx).Find(&profiles).Error; err != nil {
 		return fmt.Errorf("failed to load fingerprint profiles: %w", err)
 	}
+	// One-time upgrade cleanup: an earlier build seeded a redundant "默认(Windows)"
+	// profile (all header fields empty + Seed = the per-instance seed) that is
+	// byte-for-byte identical to the dropdown's ProfileID=0 ("默认(Windows)") option,
+	// so the dropdown showed THREE entries for the two identities. Delete ONLY that
+	// exact auto-seeded row (the strict empty-field + instance-seed signature never
+	// matches a user-customised profile) so already-seeded deployments collapse to
+	// two. A channel that had selected it points at a now-missing id, which
+	// FingerprintProfileGet resolves to the global default — the SAME identity — so
+	// behaviour is byte-for-byte unchanged.
+	instanceSeed := FingerprintInstanceID()
+	for _, p := range profiles {
+		if p.Name == "默认(Windows)" && p.Seed == instanceSeed &&
+			p.ClaudeUserAgent == "" && p.ClaudePackageVersion == "" && p.ClaudeRuntimeVersion == "" &&
+			p.ClaudeOS == "" && p.ClaudeArch == "" && p.ClaudeTimeout == "" && p.ClaudeStabilize == nil &&
+			p.CodexUserAgent == "" && p.CodexOriginator == "" && p.CodexBetaFeatures == "" && p.GenericUA == "" {
+			if err := db.GetDB().WithContext(ctx).Delete(&model.FingerprintProfile{}, p.ID).Error; err != nil {
+				return fmt.Errorf("failed to drop redundant default fingerprint profile: %w", err)
+			}
+		}
+	}
+	// Reload after cleanup so the seed-if-empty check and cache reflect the deletion.
+	if err := db.GetDB().WithContext(ctx).Find(&profiles).Error; err != nil {
+		return fmt.Errorf("failed to reload fingerprint profiles: %w", err)
+	}
 	// Seed ONE built-in profile ("Linux 真机") on first boot. The "default
 	// (Windows)" identity is NOT a row: the channel dropdown's ProfileID=0 option
 	// already IS that — it resolves to the per-instance seed + global header
