@@ -654,6 +654,18 @@ func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermod
 			internalRequest.TransformOptions.AnthropicAutoCacheControl = enabled
 		}
 		prepareClaudeOneMillionModelTestShape(internalRequest, r.request)
+		// The outbound for an Anthropic channel is ALWAYS a /v1/messages claude request,
+		// regardless of which inbound test endpoint (anthropic_messages / openai_responses /
+		// openai_chat) the UI picked. The claude-cli body shape was gated on the endpoint
+		// NAME (see internalRequest: max_tokens 64000 / streamed / thinking only for
+		// "anthropic_messages"), so the model-test page — whose default endpoint is
+		// openai_responses — emitted a degraded non-CLI body (max_tokens 8 / no thinking /
+		// stream=false) that strict Claude-Code-gating upstreams (Kiro/k40) reject as
+		// "non-Claude", while the relay forward path (always the cli shape) passed (429).
+		// Pin the cli body shape by CHANNEL TYPE so the test == relay on every endpoint.
+		if shouldApplyChannelCloak(channel.Cloak) {
+			forceClaudeModelTestBodyShape(internalRequest, r.request)
+		}
 	}
 	if channel.Type == outbound.OutboundTypeOpenAIResponse {
 		endpoint, _ := normalizeEndpoint(r.request.Endpoint)
@@ -1135,6 +1147,49 @@ func prepareClaudeOneMillionModelTestShape(req *transformermodel.InternalLLMRequ
 		// Same shared builder AND the same uniform per-instance device id as the relay
 		// forward path (op.ClaudeFingerprintDeviceID) so a channel test's metadata.user_id
 		// is byte-for-byte identical to real traffic — one device, not a per-test one.
+		req.Metadata["user_id"] = transformermodel.BuildClaudeMetadataUserID(op.ClaudeFingerprintDeviceID(), sessionID)
+	}
+}
+
+// forceClaudeModelTestBodyShape pins the genuine claude-cli body shape for a cloaked
+// Anthropic channel test irrespective of the inbound test endpoint: 64000 max_tokens
+// (a tiny 8 is a glaring non-CLI tell), streamed, an explicit thinking object, and a
+// body metadata.user_id. prepareClaudeOneMillionModelTestShape already sets
+// max_tokens/adaptive-thinking/metadata for 1M channels; this additionally pins stream
+// (the residual 1M divergence on non-anthropic endpoints) and covers plain (non-1M)
+// claude channels, mirroring the relay forward path (ensureClaudeMetadataUserID + the
+// client's native cli body) so a channel/model test is byte-shaped like real traffic
+// no matter which endpoint the UI selected. Gated on cloak by the caller, exactly like
+// the relay's own fingerprint injection.
+func forceClaudeModelTestBodyShape(req *transformermodel.InternalLLMRequest, request dbmodel.ModelTestRequest) {
+	if req == nil {
+		return
+	}
+	maxTokens := int64(64000)
+	req.MaxTokens = &maxTokens
+	stream := true
+	req.Stream = &stream
+	// Genuine claude-cli always carries an explicit thinking object; on a plain turn it
+	// is {"type":"disabled"}. The 1M path may already have set adaptive thinking
+	// (AdaptiveThinking), so only fill the default when neither is present.
+	if len(req.AnthropicThinking) == 0 && !req.AdaptiveThinking {
+		req.AnthropicThinking = json.RawMessage(`{"type":"disabled"}`)
+	}
+	sessionID := ""
+	if req.PromptCacheKey != nil {
+		sessionID = strings.TrimSpace(*req.PromptCacheKey)
+	}
+	if sessionID == "" {
+		sessionID = uuid.NewSHA1(uuid.NameSpaceOID, []byte("octopus:claude:model-test:"+fmt.Sprintf("user=%d|api_key=%d|model=%s", request.UserID, request.APIKeyID, req.Model))).String()
+		req.PromptCacheKey = &sessionID
+	}
+	if req.Metadata == nil {
+		req.Metadata = map[string]string{}
+	}
+	if strings.TrimSpace(req.Metadata["user_id"]) == "" {
+		// Same shared builder + uniform per-instance device id as the relay forward path
+		// (op.ClaudeFingerprintDeviceID / model.BuildClaudeMetadataUserID) so the test's
+		// metadata.user_id is byte-for-byte what real claude traffic sends.
 		req.Metadata["user_id"] = transformermodel.BuildClaudeMetadataUserID(op.ClaudeFingerprintDeviceID(), sessionID)
 	}
 }

@@ -856,6 +856,107 @@ data: {"type":"message_stop"}
 	}
 }
 
+// TestRunClaudeChannelKeepsCLIBodyShapeOnNonAnthropicEndpoint pins the fix for the
+// "渠道测试报错非Claude" bug: an Anthropic channel's outbound is ALWAYS a /v1/messages
+// claude request, so a connectivity test must send the genuine claude-cli body shape
+// (64000 max_tokens, streamed, explicit thinking, body metadata.user_id) even when the
+// inbound test endpoint is the model-test page default openai_responses — NOT a degraded
+// max_tokens=8 / no-thinking body that strict Claude-Code-gating upstreams (Kiro/k40)
+// reject as non-Claude while the relay forward path (always cli-shaped) passes. Uses a
+// plain (non-1M) claude model, the worst case, where the body would otherwise degrade.
+func TestRunClaudeChannelKeepsCLIBodyShapeOnNonAnthropicEndpoint(t *testing.T) {
+	ctx := setupModelTestDB(t)
+
+	var sawStream bool
+	var sawMaxTokens float64
+	var sawThinking string
+	var sawMetadata string
+	var sawSystem string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			t.Fatalf("expected Anthropic outbound /v1/messages, got %q", r.URL.Path)
+		}
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		sawStream, _ = payload["stream"].(bool)
+		sawMaxTokens, _ = payload["max_tokens"].(float64)
+		if b, err := json.Marshal(payload["thinking"]); err == nil {
+			sawThinking = string(b)
+		}
+		if b, err := json.Marshal(payload["metadata"]); err == nil {
+			sawMetadata = string(b)
+		}
+		if b, err := json.Marshal(payload["system"]); err == nil {
+			sawSystem = string(b)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`event: message_start
+data: {"type":"message_start","message":{"id":"msg_model_test","type":"message","role":"assistant","model":"claude-haiku-4-5","content":[],"usage":{"input_tokens":3,"output_tokens":0}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"OK"}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	channel := dbmodel.Channel{
+		Name:     "Claude-Plain",
+		Type:     outbound.OutboundTypeAnthropic,
+		Enabled:  true,
+		BaseUrls: []dbmodel.BaseUrl{{URL: upstream.URL}},
+		Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "anthropic-key"}},
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	group := dbmodel.Group{Name: "claude-haiku-4-5", Mode: dbmodel.GroupModeFailover}
+	if err := op.GroupCreate(&group, ctx); err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	if err := op.GroupItemAdd(&dbmodel.GroupItem{
+		GroupID:   group.ID,
+		ChannelID: channel.ID,
+		ModelName: "claude-haiku-4-5",
+		Priority:  1,
+		Weight:    1,
+	}, ctx); err != nil {
+		t.Fatalf("create group item: %v", err)
+	}
+
+	// Inbound endpoint = openai_responses (the model-test page default), NOT anthropic_messages.
+	response, err := Run(ctx, dbmodel.ModelTestRequest{
+		Model:    "claude-haiku-4-5",
+		Endpoint: "openai_responses",
+	})
+	if err != nil {
+		t.Fatalf("run model test: %v", err)
+	}
+	if !sawStream {
+		t.Fatalf("claude channel test must stream regardless of inbound endpoint")
+	}
+	if sawMaxTokens != 64000 {
+		t.Fatalf("expected cli max_tokens=64000 (not the degraded 8) on openai_responses endpoint, got %v", sawMaxTokens)
+	}
+	if !strings.Contains(sawThinking, "disabled") {
+		t.Fatalf("expected explicit thinking object on plain claude test, got %q", sawThinking)
+	}
+	if !strings.Contains(sawMetadata, "session_id") || !strings.Contains(sawMetadata, "device_id") {
+		t.Fatalf("expected body metadata.user_id (device_id+session_id) like the relay, got %q", sawMetadata)
+	}
+	if !strings.Contains(sawSystem, "Claude") {
+		t.Fatalf("expected claude identity system block (endpoint-independent), got %q", sawSystem)
+	}
+	if response.Summary.Success != 1 {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+}
+
 func TestRunAnthropicMessagesShortcutUsesCleanCapabilityModelGroup(t *testing.T) {
 	ctx := setupModelTestDB(t)
 
