@@ -1039,7 +1039,7 @@ func (ra *relayAttempt) applyTransformOptions() {
 
 	if openAIPromptCacheKeyChannel(ra.channel.Type) {
 		if enabled, err := op.SettingGetBool(dbmodel.SettingKeyOpenAIAutoPromptCacheKey); err == nil {
-			applyOpenAIAutoPromptCacheKey(ra.internalRequest, ra.channel.Type, ra.userID, ra.apiKeyID, ra.requestModel, enabled)
+			applyOpenAIAutoPromptCacheKey(ra.internalRequest, ra.channel.Type, ra.userID, ra.apiKeyID, ra.channel.Cloak.ProfileID, ra.requestModel, enabled)
 		}
 	}
 	ra.prepareCodexRequestFingerprint()

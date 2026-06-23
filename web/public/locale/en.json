@@ -332,12 +332,12 @@
             "confirmDelete": "Confirm delete",
             "cancel": "Cancel",
             "save": "Save",
-            "empty": "No fingerprint profiles yet. Click New to add one. Channels can still choose \"Follow global default\".",
+            "empty": "No fingerprint profiles yet. Click New to add one. Channels can still choose \"Default (Windows)\".",
             "createTitle": "New Fingerprint Profile",
             "editTitle": "Edit Fingerprint Profile",
             "dialogHint": "Leave any field empty to fall back to the matching global default; only fill in the fields you want to differ on.",
             "nameRequired": "Please enter a profile name",
-            "followGlobal": "Follow global default",
+            "followGlobal": "Default (Windows)",
             "genericUAHint": "Unified User-Agent for non Claude/Codex channels (Gemini / Volcengine / plain OpenAI Chat), which emit no UA by default. Leave empty to keep current behaviour.",
             "groups": {
                 "claude": "Claude Fingerprint",
@@ -862,8 +862,8 @@
             "matchRegexPlaceholder": "Optional: regex pattern to match request model names",
             "remark": "Remark",
             "cloakProfile": "Fingerprint Profile",
-            "cloakProfileGlobal": "Follow global default",
-            "cloakProfileHint": "Pick a dedicated device fingerprint (managed under Settings - Fingerprint Profiles). \"Follow global default\" reuses the global fingerprint settings without distinction."
+            "cloakProfileGlobal": "Default (Windows)",
+            "cloakProfileHint": "Pick a dedicated device fingerprint (managed under Settings - Fingerprint Profiles). \"Default (Windows)\" reuses the global fingerprint settings without distinction."
         }
     }
 }

@@ -1005,7 +1005,7 @@ export function ChannelForm({
             {showAdvanced && (
                 <AdvancedSettingsShell panel={isAdvancedPanel} title={t('advanced')}>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <div className="space-y-2">
+                            <div className="space-y-2 md:col-span-2">
                                 <label htmlFor={`${idPrefix}-auto-group`} className="text-sm font-medium text-card-foreground">
                                     {t('autoGroup')}
                                 </label>
@@ -1069,7 +1069,7 @@ export function ChannelForm({
                                 <p className="text-xs text-muted-foreground">{t('cloakModeHint')}</p>
                             </div>
 
-                            <div className="space-y-2">
+                            <div className="space-y-2 md:col-span-2">
                                 <label htmlFor={`${idPrefix}-cloak-profile`} className="text-sm font-medium text-card-foreground">
                                     {t('cloakProfile')}
                                 </label>
@@ -1251,10 +1251,10 @@ export function ChannelForm({
                         </div>
 
                         <div className="space-y-2">
-                            <label htmlFor={`${idPrefix}-system-prompt-override`} className="text-sm font-medium text-card-foreground">
-                                {t('promptOverride')}
-                            </label>
-                            <div className="grid gap-2 md:grid-cols-[180px_minmax(0,1fr)]">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                <label htmlFor={`${idPrefix}-system-prompt-override`} className="text-sm font-medium text-card-foreground">
+                                    {t('promptOverride')}
+                                </label>
                                 <select
                                     value={formData.prompt_override_mode}
                                     onChange={(e) => onFormDataChange({
@@ -1267,14 +1267,14 @@ export function ChannelForm({
                                     <option value="append_system">{t('promptAppend')}</option>
                                     <option value="replace_system">{t('promptReplace')}</option>
                                 </select>
-                                <textarea
-                                    id={`${idPrefix}-system-prompt-override`}
-                                    value={formData.system_prompt_override}
-                                    onChange={(e) => onFormDataChange({ ...formData, system_prompt_override: e.target.value })}
-                                    placeholder={t('promptOverridePlaceholder')}
-                                    className="min-h-28 w-full rounded-xl border border-border bg-background px-3 py-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                                />
                             </div>
+                            <textarea
+                                id={`${idPrefix}-system-prompt-override`}
+                                value={formData.system_prompt_override}
+                                onChange={(e) => onFormDataChange({ ...formData, system_prompt_override: e.target.value })}
+                                placeholder={t('promptOverridePlaceholder')}
+                                className="min-h-28 w-full rounded-xl border border-border bg-background px-3 py-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            />
                         </div>
                 </AdvancedSettingsShell>
             )}

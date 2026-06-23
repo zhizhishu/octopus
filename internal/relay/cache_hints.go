@@ -18,21 +18,21 @@ func openAIPromptCacheKeyChannel(channelType outbound.OutboundType) bool {
 		channelType == outbound.OutboundTypeCustomOpenAIChat
 }
 
-func applyOpenAIAutoPromptCacheKey(req *llmmodel.InternalLLMRequest, channelType outbound.OutboundType, userID, apiKeyID int, requestModel string, enabled bool) {
+func applyOpenAIAutoPromptCacheKey(req *llmmodel.InternalLLMRequest, channelType outbound.OutboundType, userID, apiKeyID, profileID int, requestModel string, enabled bool) {
 	if !enabled || req == nil || !openAIPromptCacheKeyChannel(channelType) || !req.IsChatRequest() {
 		return
 	}
 	if req.PromptCacheKey != nil && strings.TrimSpace(*req.PromptCacheKey) != "" {
 		return
 	}
-	key := deriveOpenAIAutoPromptCacheKey(req, userID, apiKeyID, requestModel)
+	key := deriveOpenAIAutoPromptCacheKey(req, userID, apiKeyID, profileID, requestModel)
 	if key == "" {
 		return
 	}
 	req.PromptCacheKey = &key
 }
 
-func deriveOpenAIAutoPromptCacheKey(req *llmmodel.InternalLLMRequest, userID, apiKeyID int, requestModel string) string {
+func deriveOpenAIAutoPromptCacheKey(req *llmmodel.InternalLLMRequest, userID, apiKeyID, profileID int, requestModel string) string {
 	if req == nil {
 		return ""
 	}
@@ -46,7 +46,7 @@ func deriveOpenAIAutoPromptCacheKey(req *llmmodel.InternalLLMRequest, userID, ap
 	}
 
 	parts := []string{
-		"ns=" + cacheHintNamespace(userID, apiKeyID),
+		"ns=" + cacheHintNamespace(userID, apiKeyID, profileID),
 		"model=" + strings.ToLower(modelName),
 	}
 	anchors := 0
@@ -93,14 +93,23 @@ func deriveOpenAIAutoPromptCacheKey(req *llmmodel.InternalLLMRequest, userID, ap
 	return fmt.Sprintf("%s%x", autoPromptCacheKeyPrefix, sum[:16])
 }
 
-func cacheHintNamespace(userID, apiKeyID int) string {
+func cacheHintNamespace(userID, apiKeyID, profileID int) string {
+	base := "anonymous"
 	if userID > 0 {
-		return fmt.Sprintf("user:%d", userID)
+		base = fmt.Sprintf("user:%d", userID)
+	} else if apiKeyID > 0 {
+		base = fmt.Sprintf("api_key:%d", apiKeyID)
 	}
-	if apiKeyID > 0 {
-		return fmt.Sprintf("api_key:%d", apiKeyID)
+	// Fold the channel's fingerprint profile into the namespace so two channels that
+	// present DIFFERENT device identities (different ProfileID) never share an auto
+	// prompt_cache_key. Otherwise a strict upstream seeing one cache key used by two
+	// "devices" could correlate them as the same real client — a fingerprint tell.
+	// ProfileID 0 (the global-default device) leaves the namespace byte-for-byte as
+	// before, so existing keys/behaviour are unchanged.
+	if profileID > 0 {
+		base += fmt.Sprintf("|fp:%d", profileID)
 	}
-	return "anonymous"
+	return base
 }
 
 func appendCacheHintJSONSeed(parts *[]string, label string, value any) bool {

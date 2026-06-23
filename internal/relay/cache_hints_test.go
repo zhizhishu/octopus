@@ -26,8 +26,8 @@ func TestApplyOpenAIAutoPromptCacheKeyStableAcrossLaterTurns(t *testing.T) {
 		},
 	}
 
-	applyOpenAIAutoPromptCacheKey(base, outbound.OutboundTypeOpenAIChat, 7, 11, "glm-5.1", true)
-	applyOpenAIAutoPromptCacheKey(extended, outbound.OutboundTypeOpenAIResponse, 7, 11, "glm-5.1", true)
+	applyOpenAIAutoPromptCacheKey(base, outbound.OutboundTypeOpenAIChat, 7, 11, 0, "glm-5.1", true)
+	applyOpenAIAutoPromptCacheKey(extended, outbound.OutboundTypeOpenAIResponse, 7, 11, 0, "glm-5.1", true)
 
 	if base.PromptCacheKey == nil || extended.PromptCacheKey == nil {
 		t.Fatalf("expected prompt cache keys to be injected")
@@ -50,7 +50,7 @@ func TestApplyOpenAIAutoPromptCacheKeyDoesNotOverwriteClientValue(t *testing.T) 
 		},
 	}
 
-	applyOpenAIAutoPromptCacheKey(req, outbound.OutboundTypeOpenAIChat, 7, 11, "gpt-5.4", true)
+	applyOpenAIAutoPromptCacheKey(req, outbound.OutboundTypeOpenAIChat, 7, 11, 0, "gpt-5.4", true)
 
 	if req.PromptCacheKey == nil || *req.PromptCacheKey != clientKey {
 		t.Fatalf("client prompt_cache_key should win, got %#v", req.PromptCacheKey)
@@ -65,7 +65,7 @@ func TestApplyOpenAIAutoPromptCacheKeySupportsCustomOpenAIChat(t *testing.T) {
 		},
 	}
 
-	applyOpenAIAutoPromptCacheKey(req, outbound.OutboundTypeCustomOpenAIChat, 7, 11, "glm-request", true)
+	applyOpenAIAutoPromptCacheKey(req, outbound.OutboundTypeCustomOpenAIChat, 7, 11, 0, "glm-request", true)
 
 	if req.PromptCacheKey == nil || !strings.HasPrefix(*req.PromptCacheKey, autoPromptCacheKeyPrefix) {
 		t.Fatalf("expected prompt cache key for custom OpenAI chat, got %#v", req.PromptCacheKey)
@@ -92,11 +92,22 @@ func TestApplyOpenAIAutoPromptCacheKeyIsolationInputs(t *testing.T) {
 		},
 	}
 
-	applyOpenAIAutoPromptCacheKey(reqA, outbound.OutboundTypeOpenAIChat, 7, 11, "glm-5.1", true)
-	applyOpenAIAutoPromptCacheKey(reqB, outbound.OutboundTypeOpenAIChat, 8, 11, "glm-5.1", true)
-	applyOpenAIAutoPromptCacheKey(reqC, outbound.OutboundTypeOpenAIChat, 7, 11, "glm-4.5", true)
+	reqD := &llmmodel.InternalLLMRequest{
+		Model: "upstream-gpt",
+		Messages: []llmmodel.Message{
+			{Role: "user", Content: textMessageContent("same first message")},
+		},
+	}
 
-	if reqA.PromptCacheKey == nil || reqB.PromptCacheKey == nil || reqC.PromptCacheKey == nil {
+	applyOpenAIAutoPromptCacheKey(reqA, outbound.OutboundTypeOpenAIChat, 7, 11, 0, "glm-5.1", true)
+	applyOpenAIAutoPromptCacheKey(reqB, outbound.OutboundTypeOpenAIChat, 8, 11, 0, "glm-5.1", true)
+	applyOpenAIAutoPromptCacheKey(reqC, outbound.OutboundTypeOpenAIChat, 7, 11, 0, "glm-4.5", true)
+	// reqD: identical user / api-key / model / content as reqA but a DIFFERENT
+	// fingerprint profile (ProfileID 2). It MUST get an isolated key, so two channels
+	// presenting different device identities never share one prompt_cache_key.
+	applyOpenAIAutoPromptCacheKey(reqD, outbound.OutboundTypeOpenAIChat, 7, 11, 2, "glm-5.1", true)
+
+	if reqA.PromptCacheKey == nil || reqB.PromptCacheKey == nil || reqC.PromptCacheKey == nil || reqD.PromptCacheKey == nil {
 		t.Fatalf("expected prompt cache keys to be injected")
 	}
 	if *reqA.PromptCacheKey == *reqB.PromptCacheKey {
@@ -104,6 +115,9 @@ func TestApplyOpenAIAutoPromptCacheKeyIsolationInputs(t *testing.T) {
 	}
 	if *reqA.PromptCacheKey == *reqC.PromptCacheKey {
 		t.Fatalf("different request models should get isolated cache keys")
+	}
+	if *reqA.PromptCacheKey == *reqD.PromptCacheKey {
+		t.Fatalf("different fingerprint profiles should get isolated cache keys")
 	}
 }
 
@@ -114,7 +128,7 @@ func TestApplyOpenAIAutoPromptCacheKeySkipsUnsafeCases(t *testing.T) {
 			{Role: "user", Content: textMessageContent("hello")},
 		},
 	}
-	applyOpenAIAutoPromptCacheKey(reqDisabled, outbound.OutboundTypeOpenAIChat, 7, 11, "gpt-5.4", false)
+	applyOpenAIAutoPromptCacheKey(reqDisabled, outbound.OutboundTypeOpenAIChat, 7, 11, 0, "gpt-5.4", false)
 	if reqDisabled.PromptCacheKey != nil {
 		t.Fatalf("disabled setting should skip injection")
 	}
@@ -125,7 +139,7 @@ func TestApplyOpenAIAutoPromptCacheKeySkipsUnsafeCases(t *testing.T) {
 			{Role: "user", Content: textMessageContent("hello")},
 		},
 	}
-	applyOpenAIAutoPromptCacheKey(reqAnthropic, outbound.OutboundTypeAnthropic, 7, 11, "claude", true)
+	applyOpenAIAutoPromptCacheKey(reqAnthropic, outbound.OutboundTypeAnthropic, 7, 11, 0, "claude", true)
 	if reqAnthropic.PromptCacheKey != nil {
 		t.Fatalf("non-OpenAI channel should skip injection")
 	}
@@ -136,7 +150,7 @@ func TestApplyOpenAIAutoPromptCacheKeySkipsUnsafeCases(t *testing.T) {
 			{Role: "assistant", Content: textMessageContent("hello")},
 		},
 	}
-	applyOpenAIAutoPromptCacheKey(reqWithoutAnchor, outbound.OutboundTypeOpenAIChat, 7, 11, "gpt-5.4", true)
+	applyOpenAIAutoPromptCacheKey(reqWithoutAnchor, outbound.OutboundTypeOpenAIChat, 7, 11, 0, "gpt-5.4", true)
 	if reqWithoutAnchor.PromptCacheKey != nil {
 		t.Fatalf("requests without stable prefix anchors should skip injection")
 	}

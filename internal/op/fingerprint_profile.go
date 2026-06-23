@@ -140,29 +140,25 @@ func fingerprintProfileRefreshCache(ctx context.Context) error {
 	if err := db.GetDB().WithContext(ctx).Find(&profiles).Error; err != nil {
 		return fmt.Errorf("failed to load fingerprint profiles: %w", err)
 	}
-	// Seed two built-in profiles on first boot so the deployment ships with two
-	// selectable device identities out of the box. We never overwrite an
-	// operator-edited deployment (only seed when the table is empty).
+	// Seed ONE built-in profile ("Linux 真机") on first boot. The "default
+	// (Windows)" identity is NOT a row: the channel dropdown's ProfileID=0 option
+	// already IS that — it resolves to the per-instance seed + global header
+	// settings, byte-for-byte the pre-profile behaviour. Seeding a redundant
+	// "default" row made the dropdown show THREE entries (跟随全局 + 默认 + Linux)
+	// for what the user wants as TWO identities, so we drop it. Result: the dropdown
+	// is "默认(Windows)" (=ProfileID 0) + "Linux 真机". Only seed when empty so an
+	// operator-edited deployment is never overwritten.
 	//
-	// profile1 "默认(Windows)": every header field empty (=> falls back to the
-	// global settings) and Seed = the global per-instance seed, so SELECTING it is
-	// byte-for-byte identical to a channel that selects no profile (ProfileID 0) —
-	// the backward-compatible default.
-	//
-	// profile2 "Linux 真机": the second, packet-captured identity (claude-cli
-	// 2.1.186 / codex_exec 0.142.0 on Linux/Debian). Its seed is DETERMINISTICALLY
-	// derived from the instance seed but DIFFERENT from profile1's, so the two
+	// "Linux 真机": the packet-captured second identity (claude-cli 2.1.186 /
+	// codex_exec 0.142.0 on Linux/Debian). Its seed is DETERMINISTICALLY derived
+	// from the instance seed but DIFFERENT from the global default's, so the two
 	// devices get unrelated, stable-across-restart device_id / installation ids
-	// that never collide. The claude anthropic-beta SET is intentionally not part
-	// of a profile — both profiles reuse BuildClaudeCodeBetaOrder's canonical order;
-	// only the version-bearing header strings differ.
+	// that never collide. The claude anthropic-beta SET is intentionally not part of
+	// a profile — both reuse BuildClaudeCodeBetaOrder's canonical order; only the
+	// version-bearing header strings differ.
 	if len(profiles) == 0 {
 		stabilize := true
 		presets := []*model.FingerprintProfile{
-			{
-				Name: "默认(Windows)",
-				Seed: FingerprintInstanceID(),
-			},
 			{
 				Name:                 "Linux 真机",
 				Seed:                 deriveProfileSeed(2),
