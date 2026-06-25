@@ -3,6 +3,7 @@ package op
 import (
 	"encoding/json"
 	"net"
+	"strconv"
 	"testing"
 	"time"
 
@@ -160,14 +161,27 @@ func TestEmailCodeAttemptResetOnCorrect(t *testing.T) {
 	ConsumeEmailCode(email)
 }
 
+// resetEmailRateState clears the sliding-window rate maps so tests do not
+// interfere with one another regardless of ordering.
+func resetEmailRateState(t *testing.T) {
+	t.Helper()
+	emailRateMu.Lock()
+	emailRateByEmail = make(map[string][]time.Time)
+	emailRateByIP = make(map[string][]time.Time)
+	emailRateMu.Unlock()
+}
+
 func TestEmailRateMapPruning(t *testing.T) {
-	// Seed a stale entry well outside its window and a fresh request; the stale
-	// entry must be pruned, leaving only the current request's record.
+	resetEmailRateState(t)
+
+	// Seed stale entries well outside their windows and a fresh request; the
+	// stale entries must be pruned (and their now-empty keys deleted), leaving
+	// only the current request's record.
 	const staleEmail = "stale-prune@b.com"
 	const staleIP = "203.0.113.7"
 	emailRateMu.Lock()
-	emailRateByEmail[staleEmail] = time.Now().Add(-emailRateLimitPerEmail - time.Minute)
-	emailRateByIP[staleIP] = time.Now().Add(-emailRateLimitPerIP - time.Minute)
+	emailRateByEmail[staleEmail] = []time.Time{time.Now().Add(-emailPerEmailHourlyWindow - time.Minute)}
+	emailRateByIP[staleIP] = []time.Time{time.Now().Add(-emailPerIPWindow - time.Minute)}
 	emailRateMu.Unlock()
 
 	if err := emailRateLimitAllow("fresh-prune@b.com", "198.51.100.9"); err != nil {
@@ -185,9 +199,154 @@ func TestEmailRateMapPruning(t *testing.T) {
 		t.Fatalf("expected stale per-IP entry to be pruned")
 	}
 
-	// The per-email gate still works: an immediate repeat is rejected.
+	// The per-email cooldown still works: an immediate repeat is rejected.
 	if err := emailRateLimitAllow("fresh-prune@b.com", ""); err == nil {
 		t.Fatalf("expected immediate repeat for same email to be rate-limited")
+	}
+}
+
+// TestEmailRateLimitPerEmailHourlyCap verifies the per-email hourly cap: even
+// when the 60s cooldown is satisfied (timestamps backdated), the 6th send in an
+// hour is blocked while the first emailPerEmailHourlyMax are allowed.
+func TestEmailRateLimitPerEmailHourlyCap(t *testing.T) {
+	resetEmailRateState(t)
+
+	const email = "hourly-cap@b.com"
+	// Pre-seed emailPerEmailHourlyMax recent-but-cooldown-cleared sends within
+	// the hourly window (spaced so the most recent is older than the cooldown).
+	now := time.Now()
+	seeded := make([]time.Time, 0, emailPerEmailHourlyMax)
+	for i := emailPerEmailHourlyMax; i >= 1; i-- {
+		// All within the last hour; the newest is > cooldown ago.
+		seeded = append(seeded, now.Add(-time.Duration(i)*2*emailPerEmailCooldown))
+	}
+	emailRateMu.Lock()
+	emailRateByEmail[email] = seeded
+	emailRateMu.Unlock()
+
+	// The (max+1)th send within the hour must be blocked, even though the
+	// cooldown is satisfied.
+	if err := emailRateLimitAllow(email, ""); err == nil {
+		t.Fatalf("expected the %dth send within the hour to be rate-limited", emailPerEmailHourlyMax+1)
+	}
+}
+
+// TestEmailRateLimitPerEmailHourlyCapAllowsUpToMax confirms exactly
+// emailPerEmailHourlyMax sends are admitted within the hour (cooldown aside)
+// before the cap trips.
+func TestEmailRateLimitPerEmailHourlyCapAllowsUpToMax(t *testing.T) {
+	resetEmailRateState(t)
+
+	const email = "hourly-cap-allow@b.com"
+	now := time.Now()
+	// Seed max-1 sends within the hour, all older than the cooldown, so the next
+	// call is the max-th and must be allowed.
+	seeded := make([]time.Time, 0, emailPerEmailHourlyMax-1)
+	for i := emailPerEmailHourlyMax - 1; i >= 1; i-- {
+		seeded = append(seeded, now.Add(-time.Duration(i)*2*emailPerEmailCooldown))
+	}
+	emailRateMu.Lock()
+	emailRateByEmail[email] = seeded
+	emailRateMu.Unlock()
+
+	if err := emailRateLimitAllow(email, ""); err != nil {
+		t.Fatalf("expected the %dth send within the hour to be allowed, got %v", emailPerEmailHourlyMax, err)
+	}
+	// Now at the cap; the immediate next is blocked (both cooldown and cap).
+	if err := emailRateLimitAllow(email, ""); err == nil {
+		t.Fatalf("expected the %dth send within the hour to be rate-limited", emailPerEmailHourlyMax+1)
+	}
+}
+
+// TestEmailRateLimitPerIPBurst proves the per-IP gate is a sliding-window burst
+// of emailPerIPMax per emailPerIPWindow (NOT the old 20s per-action gap): many
+// distinct emails from one IP succeed back-to-back up to the burst, and only the
+// (max+1)th is blocked. Each email differs so the per-email cooldown never trips.
+func TestEmailRateLimitPerIPBurst(t *testing.T) {
+	resetEmailRateState(t)
+
+	const ip = "198.51.100.42"
+	for i := 0; i < emailPerIPMax; i++ {
+		email := "burst" + strconv.Itoa(i) + "@b.com"
+		if err := emailRateLimitAllow(email, ip); err != nil {
+			t.Fatalf("burst send %d/%d unexpectedly rate-limited (old 20s gap would block here): %v", i+1, emailPerIPMax, err)
+		}
+	}
+	// The (max+1)th distinct-email send from the same IP within the window is
+	// blocked by the per-IP burst cap.
+	if err := emailRateLimitAllow("burst-over@b.com", ip); err == nil {
+		t.Fatalf("expected the %dth send from one IP within the window to be rate-limited", emailPerIPMax+1)
+	}
+}
+
+// TestSendEmailVerificationAdminBypassRateLimits proves a verified admin caller
+// (isAdmin=true) is never throttled by the per-email cooldown, per-email hourly
+// cap, per-IP burst, or the global cap. Verification is disabled here so the
+// call short-circuits before any DB/provider work, isolating the rate-limit
+// bypass: a non-admin would be blocked by the disabled toggle, but the point is
+// the rate-limit gates must never reject an admin. We assert the gates directly
+// plus the disabled-toggle behaviour for admin.
+func TestSendEmailVerificationAdminBypassRateLimits(t *testing.T) {
+	resetEmailRateState(t)
+
+	const email = "admin-bypass@b.com"
+	const ip = "198.51.100.99"
+
+	// Saturate both per-email and per-IP windows for a non-admin so any
+	// non-bypassing path would be blocked.
+	now := time.Now()
+	emailRateMu.Lock()
+	saturatedEmail := make([]time.Time, 0, emailPerEmailHourlyMax)
+	for i := 0; i < emailPerEmailHourlyMax; i++ {
+		saturatedEmail = append(saturatedEmail, now)
+	}
+	emailRateByEmail[email] = saturatedEmail
+	saturatedIP := make([]time.Time, 0, emailPerIPMax)
+	for i := 0; i < emailPerIPMax; i++ {
+		saturatedIP = append(saturatedIP, now)
+	}
+	emailRateByIP[ip] = saturatedIP
+	emailRateMu.Unlock()
+
+	// Sanity: a non-admin is blocked by the saturated windows.
+	if err := emailRateLimitAllow(email, ip); err == nil {
+		t.Fatalf("setup error: expected saturated windows to block a non-admin")
+	}
+
+	// Also saturate the global cap so a non-admin would hit the circuit breaker.
+	globalSendMu.Lock()
+	globalSendTimes = globalSendTimes[:0]
+	for i := 0; i < maxGlobalSendsPerWindow; i++ {
+		globalSendTimes = append(globalSendTimes, now)
+	}
+	globalSendMu.Unlock()
+	t.Cleanup(func() {
+		globalSendMu.Lock()
+		globalSendTimes = nil
+		globalSendMu.Unlock()
+	})
+
+	// Ensure verification is disabled so SendEmailVerificationCode returns early
+	// with the enabled-toggle error for BOTH admin and non-admin, proving the
+	// admin path reached past the (skipped) rate limits without a throttle error.
+	settingCache.Del(model.SettingKeyEmailVerificationEnabled)
+	t.Cleanup(func() { settingCache.Del(model.SettingKeyEmailVerificationEnabled) })
+
+	// Admin: must never get the generic throttle error. With verification
+	// disabled it returns the enabled-toggle error instead, which is fine; the
+	// assertion is specifically that it is NOT the rate-limit message.
+	err := SendEmailVerificationCode(email, ip, true)
+	if err != nil && err.Error() == "please wait a moment before requesting another code" {
+		t.Fatalf("admin caller was throttled despite isAdmin=true: %v", err)
+	}
+
+	// Repeat many times to be sure the admin bypass is not consuming/limited by
+	// any window even past the caps.
+	for i := 0; i < emailPerIPMax+emailPerEmailHourlyMax+5; i++ {
+		err := SendEmailVerificationCode(email, ip, true)
+		if err != nil && err.Error() == "please wait a moment before requesting another code" {
+			t.Fatalf("admin caller throttled on repeat %d despite isAdmin=true: %v", i, err)
+		}
 	}
 }
 

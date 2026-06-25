@@ -32,9 +32,22 @@ const emailCodeTTL = 10 * time.Minute
 // 6-digit code within its TTL.
 const maxEmailCodeAttempts = 5
 
+// Per-email limits are the primary, strict gate keyed by the normalized
+// address: at most one send per emailPerEmailCooldown AND at most
+// emailPerEmailHourlyMax sends within emailPerEmailHourlyWindow.
 const (
-	emailRateLimitPerEmail = 60 * time.Second
-	emailRateLimitPerIP    = 20 * time.Second
+	emailPerEmailCooldown     = 60 * time.Second
+	emailPerEmailHourlyMax    = 5
+	emailPerEmailHourlyWindow = time.Hour
+)
+
+// Per-IP is a relaxed secondary burst gate: a key may send up to emailPerIPMax
+// times within emailPerIPWindow. This is deliberately a sliding-window burst
+// (not a per-action gap) so that NAT/CGNAT/shared-IP users are not false-blocked
+// by a single neighbor's request.
+const (
+	emailPerIPWindow = 5 * time.Minute
+	emailPerIPMax    = 10
 )
 
 // maxGlobalSendsPerWindow bounds the total number of verification emails sent
@@ -58,8 +71,8 @@ var (
 
 var (
 	emailRateMu      sync.Mutex
-	emailRateByEmail = make(map[string]time.Time)
-	emailRateByIP    = make(map[string]time.Time)
+	emailRateByEmail = make(map[string][]time.Time)
+	emailRateByIP    = make(map[string][]time.Time)
 )
 
 var (
@@ -148,35 +161,71 @@ func validateEmail(email string) bool {
 	return true
 }
 
-// emailRateLimitAllow enforces a minimum gap between code requests per email and
-// per IP. It records the timestamps only when the request is allowed and
-// opportunistically prunes entries older than their window so the maps cannot
-// grow without bound.
+// pruneTimes returns the subset of times newer than window relative to now,
+// reusing the backing array so the slice cannot grow without bound.
+func pruneTimes(times []time.Time, now time.Time, window time.Duration) []time.Time {
+	kept := times[:0]
+	for _, t := range times {
+		if now.Sub(t) < window {
+			kept = append(kept, t)
+		}
+	}
+	return kept
+}
+
+// emailRateLimitAllow applies sliding-window rate limits to a code request. The
+// per-email gate is the primary, strict control: at most one send per
+// emailPerEmailCooldown AND at most emailPerEmailHourlyMax sends within
+// emailPerEmailHourlyWindow. The per-IP gate is a relaxed secondary burst (up to
+// emailPerIPMax sends per emailPerIPWindow) so shared/NAT/CGNAT IPs are not
+// false-blocked. Timestamps are recorded only when the request is admitted, and
+// stale entries are pruned (and emptied keys deleted) while the lock is held so
+// the maps cannot grow without bound.
 func emailRateLimitAllow(email, ip string) error {
 	emailRateMu.Lock()
 	defer emailRateMu.Unlock()
 	now := time.Now()
+
+	// Prune all keys to their respective windows so the maps stay bounded.
 	for k, v := range emailRateByEmail {
-		if now.Sub(v) >= emailRateLimitPerEmail {
+		pruned := pruneTimes(v, now, emailPerEmailHourlyWindow)
+		if len(pruned) == 0 {
 			delete(emailRateByEmail, k)
+		} else {
+			emailRateByEmail[k] = pruned
 		}
 	}
 	for k, v := range emailRateByIP {
-		if now.Sub(v) >= emailRateLimitPerIP {
+		pruned := pruneTimes(v, now, emailPerIPWindow)
+		if len(pruned) == 0 {
 			delete(emailRateByIP, k)
+		} else {
+			emailRateByIP[k] = pruned
 		}
 	}
-	if last, ok := emailRateByEmail[email]; ok && now.Sub(last) < emailRateLimitPerEmail {
-		return fmt.Errorf("please wait a moment before requesting another code")
-	}
-	if ip != "" {
-		if last, ok := emailRateByIP[ip]; ok && now.Sub(last) < emailRateLimitPerIP {
+
+	// Per-email (primary, strict): cooldown + hourly cap.
+	emailHits := emailRateByEmail[email]
+	if len(emailHits) > 0 {
+		if now.Sub(emailHits[len(emailHits)-1]) < emailPerEmailCooldown {
+			return fmt.Errorf("please wait a moment before requesting another code")
+		}
+		if len(emailHits) >= emailPerEmailHourlyMax {
 			return fmt.Errorf("please wait a moment before requesting another code")
 		}
 	}
-	emailRateByEmail[email] = now
+
+	// Per-IP (secondary, relaxed burst). Empty IP keys are not tracked.
 	if ip != "" {
-		emailRateByIP[ip] = now
+		if len(emailRateByIP[ip]) >= emailPerIPMax {
+			return fmt.Errorf("please wait a moment before requesting another code")
+		}
+	}
+
+	// Admit: record a slot in each applicable window.
+	emailRateByEmail[email] = append(emailHits, now)
+	if ip != "" {
+		emailRateByIP[ip] = append(emailRateByIP[ip], now)
 	}
 	return nil
 }
@@ -526,7 +575,12 @@ func UserEmailTaken(email string) (bool, error) {
 // WITHOUT sending an email or storing a code (the handler reports the same
 // generic "sent" message either way). Only the enabled-check and validation can
 // surface a distinguishable error, neither of which reveals account existence.
-func SendEmailVerificationCode(email, ip string) error {
+//
+// A verified admin caller (isAdmin) bypasses every rate limit (per-email,
+// per-IP, and the global cap); admins are never throttled. All other behaviour
+// (enabled toggle, validation, the silent-success enumeration fix, provider
+// config, store, send) is identical regardless of isAdmin.
+func SendEmailVerificationCode(email, ip string, isAdmin bool) error {
 	if !EmailVerificationEnabled() {
 		return fmt.Errorf("email verification is not enabled")
 	}
@@ -534,8 +588,10 @@ func SendEmailVerificationCode(email, ip string) error {
 	if !validateEmail(email) {
 		return fmt.Errorf("invalid email address")
 	}
-	if err := emailRateLimitAllow(email, ip); err != nil {
-		return err
+	if !isAdmin {
+		if err := emailRateLimitAllow(email, ip); err != nil {
+			return err
+		}
 	}
 	if taken, _ := UserEmailTaken(email); taken {
 		// Silently succeed: do not send or store a code, and do not consume the
@@ -543,8 +599,10 @@ func SendEmailVerificationCode(email, ip string) error {
 		// a fresh one to an unauthenticated caller.
 		return nil
 	}
-	if err := globalSendAllow(); err != nil {
-		return err
+	if !isAdmin {
+		if err := globalSendAllow(); err != nil {
+			return err
+		}
 	}
 
 	// Validate the chosen provider's configuration BEFORE storing a code so we

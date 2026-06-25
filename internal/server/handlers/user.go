@@ -3,6 +3,7 @@ package handlers
 import (
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/op"
@@ -139,7 +140,29 @@ func sendVerificationCode(c *gin.Context) {
 		resp.Error(c, http.StatusBadRequest, resp.ErrInvalidJSON)
 		return
 	}
-	if err := op.SendEmailVerificationCode(req.Email, c.ClientIP()); err != nil {
+
+	// Rate-limit IP key: the app sits behind Cloudflare, which sets
+	// CF-Connecting-IP to the real client IP and strips any client-supplied
+	// copy at the edge. Prefer it; fall back to gin's ClientIP otherwise. This
+	// is scoped to the rate-limit key only and does not change gin's global
+	// proxy/IP semantics (e.g. RegisterIP logging is unaffected).
+	ipKey := c.GetHeader("CF-Connecting-IP")
+	if ipKey == "" {
+		ipKey = c.ClientIP()
+	}
+
+	// This route has no Auth middleware, so verify any presented bearer token
+	// the same way Auth() does (cryptographic VerifyJWTToken) and only treat the
+	// caller as admin when the token verifies AND the user is an admin. No token,
+	// an invalid token, or a non-admin user all yield isAdmin = false.
+	isAdmin := false
+	if authz := c.GetHeader("Authorization"); strings.HasPrefix(authz, "Bearer ") {
+		if user, ok := auth.VerifyJWTToken(strings.TrimPrefix(authz, "Bearer ")); ok && user.IsAdmin() {
+			isAdmin = true
+		}
+	}
+
+	if err := op.SendEmailVerificationCode(req.Email, ipKey, isAdmin); err != nil {
 		resp.Error(c, http.StatusBadRequest, err.Error())
 		return
 	}
