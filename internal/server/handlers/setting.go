@@ -50,6 +50,9 @@ func getSettingList(c *gin.Context) {
 		if model.IsSecretSettingKey(settings[i].Key) && settings[i].Value != "" {
 			settings[i].Value = model.SettingSecretMaskValue
 		}
+		if settings[i].Key == model.SettingKeyProxyURL {
+			settings[i].Value = model.RedactProxyURLPassword(settings[i].Value)
+		}
 	}
 	resp.Success(c, settings)
 }
@@ -63,6 +66,12 @@ func setSetting(c *gin.Context) {
 	if model.IsSecretSettingKey(setting.Key) && setting.Value == model.SettingSecretMaskValue {
 		resp.Success(c, setting)
 		return
+	}
+	if setting.Key == model.SettingKeyProxyURL {
+		// Restore the real password when the admin saves a round-tripped
+		// (password-redacted) proxy URL, so editing host/user does not wipe it.
+		stored, _ := op.SettingGetString(model.SettingKeyProxyURL)
+		setting.Value = model.MergeProxyURLPassword(setting.Value, stored)
 	}
 	if err := setting.Validate(); err != nil {
 		resp.Error(c, http.StatusBadRequest, err.Error())

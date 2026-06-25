@@ -191,6 +191,79 @@ func IsSecretSettingKey(key SettingKey) bool {
 	return false
 }
 
+// ProxyURLPasswordMask is the placeholder substituted for the password
+// component of SettingKeyProxyURL in the settings API. Unlike a full secret,
+// the proxy URL is only partially redacted: scheme/host/port/path/user stay
+// visible so an admin can see and edit them, while the password is hidden.
+const ProxyURLPasswordMask = "***"
+
+// RedactProxyURLPassword returns raw with only the userinfo password component
+// replaced by ProxyURLPasswordMask, preserving scheme/host/port/path/query and
+// the username. If raw is empty, has no userinfo password, or fails to parse,
+// it is returned unchanged.
+func RedactProxyURLPassword(raw string) string {
+	if raw == "" {
+		return raw
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.User == nil {
+		return raw
+	}
+	if _, hasPassword := parsed.User.Password(); !hasPassword {
+		return raw
+	}
+	// url.URL.String() percent-encodes characters in the userinfo password
+	// (e.g. "***" becomes "%2A%2A%2A"). Rebuild the userinfo by hand off the
+	// authority-less URL string so the mask stays literal, preserving the
+	// (re-escaped) username plus scheme/host/port/path/query.
+	username := url.User(parsed.User.Username()).String()
+	parsed.User = nil
+	withoutUser := parsed.String()
+	scheme := parsed.Scheme + "://"
+	if !strings.HasPrefix(withoutUser, scheme) {
+		// Defensive: unexpected shape (e.g. opaque URL); fall back to the
+		// encoded-but-correct userinfo form rather than emit a malformed URL.
+		parsed.User = url.UserPassword(username, ProxyURLPasswordMask)
+		return parsed.String()
+	}
+	return scheme + username + ":" + ProxyURLPasswordMask + "@" + withoutUser[len(scheme):]
+}
+
+// MergeProxyURLPassword reconciles an incoming proxy URL (which may carry the
+// ProxyURLPasswordMask placeholder produced by RedactProxyURLPassword) with the
+// currently stored value so the admin can edit host/user/path without retyping
+// the password.
+//
+//   - If incoming's userinfo password is the placeholder and stored has a real
+//     password, incoming is returned with the stored password substituted back in.
+//   - If incoming's userinfo password is the placeholder but stored has no
+//     password (or fails to parse), the placeholder password is stripped from
+//     incoming (returned without a password).
+//   - Otherwise (incoming has a real password, no password, or fails to parse)
+//     incoming is returned unchanged.
+func MergeProxyURLPassword(incoming, stored string) string {
+	parsedIncoming, err := url.Parse(incoming)
+	if err != nil || parsedIncoming.User == nil {
+		return incoming
+	}
+	incomingPassword, hasIncomingPassword := parsedIncoming.User.Password()
+	if !hasIncomingPassword || incomingPassword != ProxyURLPasswordMask {
+		return incoming
+	}
+
+	username := parsedIncoming.User.Username()
+	if parsedStored, errStored := url.Parse(stored); errStored == nil && parsedStored.User != nil {
+		if storedPassword, hasStoredPassword := parsedStored.User.Password(); hasStoredPassword {
+			parsedIncoming.User = url.UserPassword(username, storedPassword)
+			return parsedIncoming.String()
+		}
+	}
+
+	// No real stored password to restore: drop the placeholder so it is never persisted.
+	parsedIncoming.User = url.User(username)
+	return parsedIncoming.String()
+}
+
 func (s *Setting) Validate() error {
 	switch s.Key {
 	case SettingKeyModelInfoUpdateInterval, SettingKeySyncLLMInterval, SettingKeyRelayLogKeepPeriod,

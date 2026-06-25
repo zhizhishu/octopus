@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/mail"
 	"net/smtp"
+	neturl "net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,14 +27,28 @@ import (
 
 const emailCodeTTL = 10 * time.Minute
 
+// maxEmailCodeAttempts caps the number of wrong guesses against a single issued
+// code before the entry is invalidated, defeating online brute force of the
+// 6-digit code within its TTL.
+const maxEmailCodeAttempts = 5
+
 const (
 	emailRateLimitPerEmail = 60 * time.Second
 	emailRateLimitPerIP    = 20 * time.Second
 )
 
+// maxGlobalSendsPerWindow bounds the total number of verification emails sent
+// across all callers within globalSendWindow, limiting email-bombing even when
+// the per-IP gate is bypassed via spoofing.
+const (
+	maxGlobalSendsPerWindow = 60
+	globalSendWindow        = 60 * time.Second
+)
+
 type emailCodeEntry struct {
 	code      string
 	expiresAt time.Time
+	attempts  int
 }
 
 var (
@@ -45,6 +60,11 @@ var (
 	emailRateMu      sync.Mutex
 	emailRateByEmail = make(map[string]time.Time)
 	emailRateByIP    = make(map[string]time.Time)
+)
+
+var (
+	globalSendMu    sync.Mutex
+	globalSendTimes []time.Time
 )
 
 // storeEmailCode records a verification code for the given email with a fixed
@@ -61,11 +81,14 @@ func storeEmailCode(email, code string) {
 	emailCodeStore[email] = emailCodeEntry{
 		code:      code,
 		expiresAt: now.Add(emailCodeTTL),
+		attempts:  0,
 	}
 }
 
 // VerifyEmailCode reports whether an unexpired stored code matches the supplied
-// code. It does not consume the code.
+// code. It does not consume the code. Each wrong guess increments a per-entry
+// attempt counter; once maxEmailCodeAttempts wrong guesses accumulate the entry
+// is invalidated, so an attacker cannot exhaust the 6-digit space online.
 func VerifyEmailCode(email, code string) bool {
 	emailCodeMu.Lock()
 	defer emailCodeMu.Unlock()
@@ -77,7 +100,16 @@ func VerifyEmailCode(email, code string) bool {
 		delete(emailCodeStore, email)
 		return false
 	}
-	return entry.code == code
+	if entry.code == code {
+		return true
+	}
+	entry.attempts++
+	if entry.attempts >= maxEmailCodeAttempts {
+		delete(emailCodeStore, email)
+		return false
+	}
+	emailCodeStore[email] = entry
+	return false
 }
 
 // ConsumeEmailCode removes any stored code for the given email.
@@ -117,11 +149,23 @@ func validateEmail(email string) bool {
 }
 
 // emailRateLimitAllow enforces a minimum gap between code requests per email and
-// per IP. It records the timestamps only when the request is allowed.
+// per IP. It records the timestamps only when the request is allowed and
+// opportunistically prunes entries older than their window so the maps cannot
+// grow without bound.
 func emailRateLimitAllow(email, ip string) error {
 	emailRateMu.Lock()
 	defer emailRateMu.Unlock()
 	now := time.Now()
+	for k, v := range emailRateByEmail {
+		if now.Sub(v) >= emailRateLimitPerEmail {
+			delete(emailRateByEmail, k)
+		}
+	}
+	for k, v := range emailRateByIP {
+		if now.Sub(v) >= emailRateLimitPerIP {
+			delete(emailRateByIP, k)
+		}
+	}
 	if last, ok := emailRateByEmail[email]; ok && now.Sub(last) < emailRateLimitPerEmail {
 		return fmt.Errorf("please wait a moment before requesting another code")
 	}
@@ -134,6 +178,30 @@ func emailRateLimitAllow(email, ip string) error {
 	if ip != "" {
 		emailRateByIP[ip] = now
 	}
+	return nil
+}
+
+// globalSendAllow enforces a global cap on the number of verification emails
+// sent within globalSendWindow, regardless of source IP. It prunes timestamps
+// older than the window and, when the request is admitted, records the send so
+// the budget reflects messages actually about to be delivered. Callers must
+// invoke it only once they have decided to send (e.g. after the taken-check
+// returns not-taken) so silently-skipped emails do not consume the budget.
+func globalSendAllow() error {
+	globalSendMu.Lock()
+	defer globalSendMu.Unlock()
+	now := time.Now()
+	kept := globalSendTimes[:0]
+	for _, t := range globalSendTimes {
+		if now.Sub(t) < globalSendWindow {
+			kept = append(kept, t)
+		}
+	}
+	globalSendTimes = kept
+	if len(globalSendTimes) >= maxGlobalSendsPerWindow {
+		return fmt.Errorf("please wait a moment before requesting another code")
+	}
+	globalSendTimes = append(globalSendTimes, now)
 	return nil
 }
 
@@ -223,6 +291,49 @@ func loadHTTPEmailConfig() (httpEmailConfig, error) {
 	}, nil
 }
 
+// isDisallowedEmailHostIP reports whether an IP is an SSRF-dangerous target for
+// the HTTP email provider. It rejects loopback, link-local (which covers the
+// 169.254.169.254 cloud metadata endpoint), unspecified, and multicast
+// addresses. Ordinary private LAN ranges (10/8, 172.16/12, 192.168/16) are
+// allowed on purpose so admins may self-host the provider on a LAN.
+func isDisallowedEmailHostIP(ip net.IP) bool {
+	return ip.IsLoopback() ||
+		ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() ||
+		ip.IsUnspecified() ||
+		ip.IsMulticast()
+}
+
+// checkEmailHTTPTarget resolves the host of the configured base URL and refuses
+// the most dangerous SSRF targets. It returns a generic error that never echoes
+// the resolved IP.
+func checkEmailHTTPTarget(baseURL string) error {
+	u, err := neturl.Parse(baseURL)
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("email http target is not allowed")
+	}
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("email http target is not allowed")
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if isDisallowedEmailHostIP(ip) {
+			return fmt.Errorf("email http target is not allowed")
+		}
+		return nil
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil || len(ips) == 0 {
+		return fmt.Errorf("email http target is not allowed")
+	}
+	for _, ip := range ips {
+		if isDisallowedEmailHostIP(ip) {
+			return fmt.Errorf("email http target is not allowed")
+		}
+	}
+	return nil
+}
+
 // buildHTTPEmailPayload renders the JSON body sent to the HTTP email provider.
 func buildHTTPEmailPayload(from, to, subject, html string) ([]byte, error) {
 	return json.Marshal(map[string]any{
@@ -242,16 +353,22 @@ var (
 	httpEmailClient     *http.Client
 )
 
+// noRedirect blocks all redirects so an open-redirect cannot bounce the request
+// (and its auth headers) to a different, attacker-chosen host.
+func noRedirect(_ *http.Request, _ []*http.Request) error {
+	return http.ErrUseLastResponse
+}
+
 func getHTTPEmailClient() *http.Client {
 	httpEmailClientOnce.Do(func() {
 		transport, ok := http.DefaultTransport.(*http.Transport)
 		if !ok {
-			httpEmailClient = &http.Client{}
+			httpEmailClient = &http.Client{CheckRedirect: noRedirect}
 			return
 		}
 		cloned := transport.Clone()
 		cloned.Proxy = nil
-		httpEmailClient = &http.Client{Transport: cloned}
+		httpEmailClient = &http.Client{Transport: cloned, CheckRedirect: noRedirect}
 	})
 	return httpEmailClient
 }
@@ -261,6 +378,10 @@ func getHTTPEmailClient() *http.Client {
 // and never includes auth header values or the full response body, to avoid
 // leaking credentials.
 func sendMailHTTP(cfg httpEmailConfig, to, subject, htmlBody string) error {
+	if err := checkEmailHTTPTarget(cfg.baseURL); err != nil {
+		return err
+	}
+
 	payload, err := buildHTTPEmailPayload(cfg.from, to, subject, htmlBody)
 	if err != nil {
 		return fmt.Errorf("email http provider rejected the message")
@@ -396,8 +517,15 @@ func UserEmailTaken(email string) (bool, error) {
 }
 
 // SendEmailVerificationCode generates, stores, and emails a verification code to
-// the supplied address, enforcing the enabled toggle, validation, uniqueness,
-// and rate limits.
+// the supplied address, enforcing the enabled toggle, validation, and rate
+// limits.
+//
+// To avoid an account-enumeration oracle, the endpoint behaves identically for
+// any syntactically valid address whether or not an account already exists: the
+// rate-limit check runs first, and an already-registered email returns nil
+// WITHOUT sending an email or storing a code (the handler reports the same
+// generic "sent" message either way). Only the enabled-check and validation can
+// surface a distinguishable error, neither of which reveals account existence.
 func SendEmailVerificationCode(email, ip string) error {
 	if !EmailVerificationEnabled() {
 		return fmt.Errorf("email verification is not enabled")
@@ -406,10 +534,16 @@ func SendEmailVerificationCode(email, ip string) error {
 	if !validateEmail(email) {
 		return fmt.Errorf("invalid email address")
 	}
-	if taken, _ := UserEmailTaken(email); taken {
-		return fmt.Errorf("email already registered")
-	}
 	if err := emailRateLimitAllow(email, ip); err != nil {
+		return err
+	}
+	if taken, _ := UserEmailTaken(email); taken {
+		// Silently succeed: do not send or store a code, and do not consume the
+		// global send budget, so a registered address is indistinguishable from
+		// a fresh one to an unauthenticated caller.
+		return nil
+	}
+	if err := globalSendAllow(); err != nil {
 		return err
 	}
 

@@ -2,6 +2,7 @@ package op
 
 import (
 	"encoding/json"
+	"net"
 	"testing"
 	"time"
 
@@ -100,6 +101,142 @@ func TestBuildHTTPEmailPayload(t *testing.T) {
 	}
 	if got["is_html"] != true {
 		t.Fatalf("is_html = %v, want true", got["is_html"])
+	}
+}
+
+func TestEmailCodeAttemptCap(t *testing.T) {
+	const email = "attempts@b.com"
+	storeEmailCode(email, "123456")
+
+	// A freshly stored code starts with zero attempts.
+	emailCodeMu.Lock()
+	if got := emailCodeStore[email].attempts; got != 0 {
+		emailCodeMu.Unlock()
+		t.Fatalf("expected freshly stored code to have 0 attempts, got %d", got)
+	}
+	emailCodeMu.Unlock()
+
+	// maxEmailCodeAttempts wrong guesses must invalidate the entry. The final
+	// guess (the one that reaches the cap) deletes the entry.
+	for i := 0; i < maxEmailCodeAttempts; i++ {
+		if VerifyEmailCode(email, "000000") {
+			t.Fatalf("wrong guess %d unexpectedly succeeded", i+1)
+		}
+	}
+
+	emailCodeMu.Lock()
+	_, ok := emailCodeStore[email]
+	emailCodeMu.Unlock()
+	if ok {
+		t.Fatalf("expected entry to be invalidated after %d wrong guesses", maxEmailCodeAttempts)
+	}
+
+	// Even the correct code now misses, because the entry is gone.
+	if VerifyEmailCode(email, "123456") {
+		t.Fatalf("expected correct code to miss after entry was invalidated")
+	}
+}
+
+func TestEmailCodeAttemptResetOnCorrect(t *testing.T) {
+	const email = "attempts-ok@b.com"
+	storeEmailCode(email, "123456")
+
+	// A few wrong guesses below the cap leave the entry intact.
+	for i := 0; i < maxEmailCodeAttempts-1; i++ {
+		if VerifyEmailCode(email, "000000") {
+			t.Fatalf("wrong guess %d unexpectedly succeeded", i+1)
+		}
+	}
+	// The correct code still verifies and does not consume the entry.
+	if !VerifyEmailCode(email, "123456") {
+		t.Fatalf("expected correct code to verify before the cap")
+	}
+	emailCodeMu.Lock()
+	_, ok := emailCodeStore[email]
+	emailCodeMu.Unlock()
+	if !ok {
+		t.Fatalf("expected entry to survive a correct verification (no consume)")
+	}
+	ConsumeEmailCode(email)
+}
+
+func TestEmailRateMapPruning(t *testing.T) {
+	// Seed a stale entry well outside its window and a fresh request; the stale
+	// entry must be pruned, leaving only the current request's record.
+	const staleEmail = "stale-prune@b.com"
+	const staleIP = "203.0.113.7"
+	emailRateMu.Lock()
+	emailRateByEmail[staleEmail] = time.Now().Add(-emailRateLimitPerEmail - time.Minute)
+	emailRateByIP[staleIP] = time.Now().Add(-emailRateLimitPerIP - time.Minute)
+	emailRateMu.Unlock()
+
+	if err := emailRateLimitAllow("fresh-prune@b.com", "198.51.100.9"); err != nil {
+		t.Fatalf("fresh request unexpectedly rate-limited: %v", err)
+	}
+
+	emailRateMu.Lock()
+	_, staleEmailKept := emailRateByEmail[staleEmail]
+	_, staleIPKept := emailRateByIP[staleIP]
+	emailRateMu.Unlock()
+	if staleEmailKept {
+		t.Fatalf("expected stale per-email entry to be pruned")
+	}
+	if staleIPKept {
+		t.Fatalf("expected stale per-IP entry to be pruned")
+	}
+
+	// The per-email gate still works: an immediate repeat is rejected.
+	if err := emailRateLimitAllow("fresh-prune@b.com", ""); err == nil {
+		t.Fatalf("expected immediate repeat for same email to be rate-limited")
+	}
+}
+
+func TestEmailSSRFHostCheck(t *testing.T) {
+	disallowed := []net.IP{
+		net.ParseIP("127.0.0.1"),       // loopback
+		net.ParseIP("::1"),             // loopback v6
+		net.ParseIP("169.254.169.254"), // link-local (cloud metadata)
+		net.ParseIP("fe80::1"),         // link-local v6
+		net.ParseIP("0.0.0.0"),         // unspecified
+		net.ParseIP("::"),              // unspecified v6
+		net.ParseIP("224.0.0.1"),       // multicast
+	}
+	for _, ip := range disallowed {
+		if !isDisallowedEmailHostIP(ip) {
+			t.Fatalf("expected %v to be disallowed", ip)
+		}
+	}
+
+	allowed := []net.IP{
+		net.ParseIP("8.8.8.8"),      // public
+		net.ParseIP("10.0.0.5"),     // private LAN 10/8
+		net.ParseIP("172.16.0.5"),   // private LAN 172.16/12
+		net.ParseIP("192.168.1.10"), // private LAN 192.168/16
+		net.ParseIP("2606:4700::1"), // public v6
+	}
+	for _, ip := range allowed {
+		if isDisallowedEmailHostIP(ip) {
+			t.Fatalf("expected %v to be allowed", ip)
+		}
+	}
+
+	// checkEmailHTTPTarget rejects loopback/metadata literals without DNS, and
+	// admits a public IP literal. Hostnames are not resolved here to keep the
+	// test network-free.
+	if err := checkEmailHTTPTarget("http://127.0.0.1:8080"); err == nil {
+		t.Fatalf("expected loopback base URL to be rejected")
+	}
+	if err := checkEmailHTTPTarget("http://169.254.169.254/latest/meta-data"); err == nil {
+		t.Fatalf("expected cloud-metadata base URL to be rejected")
+	}
+	if err := checkEmailHTTPTarget("https://8.8.8.8/admin"); err != nil {
+		t.Fatalf("expected public IP base URL to be allowed, got %v", err)
+	}
+	if err := checkEmailHTTPTarget("https://192.168.1.10:9000"); err != nil {
+		t.Fatalf("expected private-LAN IP base URL to be allowed, got %v", err)
+	}
+	if err := checkEmailHTTPTarget("::: not a url"); err == nil {
+		t.Fatalf("expected malformed base URL to be rejected")
 	}
 }
 

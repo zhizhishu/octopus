@@ -97,3 +97,69 @@ func TestProxyURLValidationAcceptsHTTPAndSOCKS(t *testing.T) {
 		})
 	}
 }
+
+func TestRedactProxyURLPassword(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "empty", raw: "", want: ""},
+		{name: "no credentials", raw: "http://proxy.example.com:8080", want: "http://proxy.example.com:8080"},
+		{name: "user only", raw: "http://user@proxy.example.com:8080", want: "http://user@proxy.example.com:8080"},
+		{name: "user and password", raw: "http://user:secret@proxy.example.com:8080", want: "http://user:***@proxy.example.com:8080"},
+		{name: "socks5 with password path query", raw: "socks5://u:p@10.0.0.1:1080/x?a=b", want: "socks5://u:***@10.0.0.1:1080/x?a=b"},
+		{name: "unparseable unchanged", raw: "://not a url", want: "://not a url"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := RedactProxyURLPassword(tt.raw); got != tt.want {
+				t.Fatalf("RedactProxyURLPassword(%q) = %q, want %q", tt.raw, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMergeProxyURLPassword(t *testing.T) {
+	tests := []struct {
+		name     string
+		incoming string
+		stored   string
+		want     string
+	}{
+		{name: "round-trip restores stored password", incoming: "http://user:***@proxy.example.com:8080", stored: "http://user:secret@proxy.example.com:8080", want: "http://user:secret@proxy.example.com:8080"},
+		{name: "edited host keeps stored password", incoming: "http://user:***@new.example.com:9090", stored: "http://user:secret@proxy.example.com:8080", want: "http://user:secret@new.example.com:9090"},
+		{name: "placeholder but stored has no password is stripped", incoming: "http://user:***@proxy.example.com:8080", stored: "http://user@proxy.example.com:8080", want: "http://user@proxy.example.com:8080"},
+		{name: "placeholder but stored empty is stripped", incoming: "http://user:***@proxy.example.com:8080", stored: "", want: "http://user@proxy.example.com:8080"},
+		{name: "real incoming password unchanged", incoming: "http://user:newsecret@proxy.example.com:8080", stored: "http://user:secret@proxy.example.com:8080", want: "http://user:newsecret@proxy.example.com:8080"},
+		{name: "no credentials unchanged", incoming: "http://proxy.example.com:8080", stored: "http://user:secret@proxy.example.com:8080", want: "http://proxy.example.com:8080"},
+		{name: "empty incoming unchanged", incoming: "", stored: "http://user:secret@proxy.example.com:8080", want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := MergeProxyURLPassword(tt.incoming, tt.stored); got != tt.want {
+				t.Fatalf("MergeProxyURLPassword(%q, %q) = %q, want %q", tt.incoming, tt.stored, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestProxyURLRedactMergeRoundTrip exercises the full settings-list -> save loop:
+// a stored URL with a password is redacted for display, and saving that redacted
+// value back restores the original password and still passes Validate().
+func TestProxyURLRedactMergeRoundTrip(t *testing.T) {
+	stored := "socks5://user:s3cr3t@10.0.0.1:1080"
+	redacted := RedactProxyURLPassword(stored)
+	if redacted == stored {
+		t.Fatalf("expected redaction to change the URL, got %q", redacted)
+	}
+	merged := MergeProxyURLPassword(redacted, stored)
+	if merged != stored {
+		t.Fatalf("round-trip MergeProxyURLPassword(%q, %q) = %q, want %q", redacted, stored, merged, stored)
+	}
+	if err := (&Setting{Key: SettingKeyProxyURL, Value: merged}).Validate(); err != nil {
+		t.Fatalf("merged value failed Validate: %v", err)
+	}
+}
