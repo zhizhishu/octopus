@@ -1,12 +1,17 @@
 package op
 
 import (
+	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
+	"net/http"
 	"net/mail"
 	"net/smtp"
 	"strconv"
@@ -176,6 +181,122 @@ func loadSMTPConfig() (smtpConfig, error) {
 	}, nil
 }
 
+// emailProvider returns the configured email transport, defaulting to "smtp"
+// when the setting is empty, unreadable, or anything other than "http".
+func emailProvider() string {
+	provider, err := SettingGetString(model.SettingKeyEmailProvider)
+	if err != nil {
+		return "smtp"
+	}
+	if strings.ToLower(strings.TrimSpace(provider)) == "http" {
+		return "http"
+	}
+	return "smtp"
+}
+
+type httpEmailConfig struct {
+	baseURL   string
+	from      string
+	adminAuth string
+	siteAuth  string
+}
+
+// loadHTTPEmailConfig reads the HTTP email provider settings from the cache.
+// baseURL and from are required; adminAuth/siteAuth may be empty for services
+// without authentication.
+func loadHTTPEmailConfig() (httpEmailConfig, error) {
+	baseURL, _ := SettingGetString(model.SettingKeyEmailHTTPBaseURL)
+	baseURL = strings.TrimSpace(baseURL)
+	from, _ := SettingGetString(model.SettingKeyEmailHTTPFrom)
+	from = strings.TrimSpace(from)
+	adminAuth, _ := SettingGetString(model.SettingKeyEmailHTTPAdminAuth)
+	siteAuth, _ := SettingGetString(model.SettingKeyEmailHTTPSiteAuth)
+
+	if baseURL == "" || from == "" {
+		return httpEmailConfig{}, fmt.Errorf("email service is not configured")
+	}
+	return httpEmailConfig{
+		baseURL:   baseURL,
+		from:      from,
+		adminAuth: adminAuth,
+		siteAuth:  siteAuth,
+	}, nil
+}
+
+// buildHTTPEmailPayload renders the JSON body sent to the HTTP email provider.
+func buildHTTPEmailPayload(from, to, subject, html string) ([]byte, error) {
+	return json.Marshal(map[string]any{
+		"from":    from,
+		"to_mail": to,
+		"subject": subject,
+		"content": html,
+		"is_html": true,
+	})
+}
+
+// httpEmailClient is a proxy-bypassing HTTP client for the email provider. It
+// mirrors client.GetHTTPClientSystemProxy(false) (proxy disabled) but is built
+// locally to avoid an import cycle (internal/client imports internal/op).
+var (
+	httpEmailClientOnce sync.Once
+	httpEmailClient     *http.Client
+)
+
+func getHTTPEmailClient() *http.Client {
+	httpEmailClientOnce.Do(func() {
+		transport, ok := http.DefaultTransport.(*http.Transport)
+		if !ok {
+			httpEmailClient = &http.Client{}
+			return
+		}
+		cloned := transport.Clone()
+		cloned.Proxy = nil
+		httpEmailClient = &http.Client{Transport: cloned}
+	})
+	return httpEmailClient
+}
+
+// sendMailHTTP delivers an HTML message via the HTTP email provider's
+// POST {base}/admin/send_mail endpoint. It returns a generic error on failure
+// and never includes auth header values or the full response body, to avoid
+// leaking credentials.
+func sendMailHTTP(cfg httpEmailConfig, to, subject, htmlBody string) error {
+	payload, err := buildHTTPEmailPayload(cfg.from, to, subject, htmlBody)
+	if err != nil {
+		return fmt.Errorf("email http provider rejected the message")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	url := strings.TrimRight(cfg.baseURL, "/") + "/admin/send_mail"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("email http provider rejected the message")
+	}
+	req.Header.Set("content-type", "application/json")
+	if cfg.adminAuth != "" {
+		req.Header.Set("x-admin-auth", cfg.adminAuth)
+	}
+	if cfg.siteAuth != "" {
+		req.Header.Set("x-custom-auth", cfg.siteAuth)
+	}
+
+	resp, err := getHTTPEmailClient().Do(req)
+	if err != nil {
+		log.Errorf("email http provider request failed: %v", err)
+		return fmt.Errorf("email http provider rejected the message")
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8*1024))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 || !strings.Contains(string(body), "sent") {
+		log.Errorf("email http provider rejected the message: status %d", resp.StatusCode)
+		return fmt.Errorf("email http provider rejected the message")
+	}
+	return nil
+}
+
 func encodeMIMEHeader(value string) string {
 	return "=?UTF-8?B?" + base64.StdEncoding.EncodeToString([]byte(value)) + "?="
 }
@@ -291,16 +412,34 @@ func SendEmailVerificationCode(email, ip string) error {
 	if err := emailRateLimitAllow(email, ip); err != nil {
 		return err
 	}
-	cfg, err := loadSMTPConfig()
-	if err != nil {
-		return err
+
+	// Validate the chosen provider's configuration BEFORE storing a code so we
+	// never persist a code for a misconfigured server.
+	provider := emailProvider()
+	var smtpCfg smtpConfig
+	var httpCfg httpEmailConfig
+	if provider == "http" {
+		var err error
+		httpCfg, err = loadHTTPEmailConfig()
+		if err != nil {
+			return err
+		}
+	} else {
+		var err error
+		smtpCfg, err = loadSMTPConfig()
+		if err != nil {
+			return err
+		}
 	}
+
 	code := generateEmailCode()
 	storeEmailCode(email, code)
 
-	fromName := strings.TrimSpace(cfg.fromName)
-	if fromName == "" {
-		fromName = "Octopus"
+	fromName := "Octopus"
+	if provider != "http" {
+		if name := strings.TrimSpace(smtpCfg.fromName); name != "" {
+			fromName = name
+		}
 	}
 	subject := fromName + " 邮箱验证码"
 	body := fmt.Sprintf(
@@ -311,8 +450,15 @@ func SendEmailVerificationCode(email, ip string) error {
 			"</div>",
 		code,
 	)
-	if err := sendMail(cfg, email, subject, body); err != nil {
-		log.Errorf("failed to send verification email: %v", err)
+
+	var sendErr error
+	if provider == "http" {
+		sendErr = sendMailHTTP(httpCfg, email, subject, body)
+	} else {
+		sendErr = sendMail(smtpCfg, email, subject, body)
+	}
+	if sendErr != nil {
+		log.Errorf("failed to send verification email: %v", sendErr)
 		return fmt.Errorf("failed to send verification email")
 	}
 	return nil

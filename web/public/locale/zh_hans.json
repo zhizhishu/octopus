@@ -308,7 +308,19 @@
             "fromName": "发件人名称",
             "fromNamePlaceholder": "Octopus",
             "ssl": "隐式 TLS（SSL）",
-            "sslHint": "端口 465 使用隐式 TLS 时开启；STARTTLS（如 587 端口）请关闭。"
+            "sslHint": "端口 465 使用隐式 TLS 时开启；STARTTLS（如 587 端口）请关闭。",
+            "provider": "发件方式",
+            "providerHint": "选择验证码的发送方式。HTTP API 适用于没有 SMTP 的自建服务（如 ClawEmail）。",
+            "providerSMTP": "SMTP",
+            "providerHTTP": "HTTP API",
+            "httpBaseUrl": "API 基础地址",
+            "httpBaseUrlPlaceholder": "https://your-service/ext",
+            "httpFrom": "发件人地址",
+            "httpFromPlaceholder": "agent@example.com",
+            "httpAdminAuth": "管理员鉴权令牌",
+            "httpAdminAuthPlaceholder": "管理员 API 令牌",
+            "httpSiteAuth": "站点鉴权令牌",
+            "httpSiteAuthPlaceholder": "站点 API 令牌"
         },
         "checkIn": {
             "title": "用户每日签到",

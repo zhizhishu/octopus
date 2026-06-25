@@ -308,7 +308,19 @@
             "fromName": "Sender name",
             "fromNamePlaceholder": "Octopus",
             "ssl": "Implicit TLS (SSL)",
-            "sslHint": "Enable for implicit TLS on port 465. Leave off for STARTTLS (e.g. port 587)."
+            "sslHint": "Enable for implicit TLS on port 465. Leave off for STARTTLS (e.g. port 587).",
+            "provider": "Mail provider",
+            "providerHint": "Choose how verification codes are sent. HTTP API suits self-hosted services without SMTP (e.g. ClawEmail).",
+            "providerSMTP": "SMTP",
+            "providerHTTP": "HTTP API",
+            "httpBaseUrl": "API base URL",
+            "httpBaseUrlPlaceholder": "https://your-service/ext",
+            "httpFrom": "Sender address",
+            "httpFromPlaceholder": "agent@example.com",
+            "httpAdminAuth": "Admin auth token",
+            "httpAdminAuthPlaceholder": "Admin API token",
+            "httpSiteAuth": "Site auth token",
+            "httpSiteAuthPlaceholder": "Site API token"
         },
         "checkIn": {
             "title": "User Daily Check-in",

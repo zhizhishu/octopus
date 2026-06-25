@@ -67,6 +67,11 @@ const (
 	SettingKeyEmailSMTPFrom             SettingKey = "email_smtp_from"
 	SettingKeyEmailSMTPFromName         SettingKey = "email_smtp_from_name"
 	SettingKeyEmailSMTPSSL              SettingKey = "email_smtp_ssl"
+	SettingKeyEmailProvider             SettingKey = "email_provider" // "smtp" | "http"
+	SettingKeyEmailHTTPBaseURL          SettingKey = "email_http_base_url"
+	SettingKeyEmailHTTPFrom             SettingKey = "email_http_from"
+	SettingKeyEmailHTTPAdminAuth        SettingKey = "email_http_admin_auth" // secret
+	SettingKeyEmailHTTPSiteAuth         SettingKey = "email_http_site_auth"  // secret
 )
 
 type Setting struct {
@@ -167,7 +172,23 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyEmailSMTPFrom, Value: ""},
 		{Key: SettingKeyEmailSMTPFromName, Value: "Octopus"},
 		{Key: SettingKeyEmailSMTPSSL, Value: "false"},
+		{Key: SettingKeyEmailProvider, Value: "smtp"},
+		{Key: SettingKeyEmailHTTPBaseURL, Value: ""},
+		{Key: SettingKeyEmailHTTPFrom, Value: ""},
+		{Key: SettingKeyEmailHTTPAdminAuth, Value: ""},
+		{Key: SettingKeyEmailHTTPSiteAuth, Value: ""},
 	}
+}
+
+// IsSecretSettingKey reports whether a setting holds a credential that must be
+// masked in the settings API and preserved (not overwritten) when the client
+// sends back the mask sentinel.
+func IsSecretSettingKey(key SettingKey) bool {
+	switch key {
+	case SettingKeyEmailSMTPPassword, SettingKeyEmailHTTPAdminAuth, SettingKeyEmailHTTPSiteAuth:
+		return true
+	}
+	return false
 }
 
 func (s *Setting) Validate() error {
@@ -199,9 +220,37 @@ func (s *Setting) Validate() error {
 			return fmt.Errorf("%s must be a port between 1 and 65535", s.Key)
 		}
 		return nil
-	case SettingKeyEmailSMTPHost, SettingKeyEmailSMTPUser, SettingKeyEmailSMTPFrom, SettingKeyEmailSMTPFromName:
+	case SettingKeyEmailSMTPHost, SettingKeyEmailSMTPUser, SettingKeyEmailSMTPFrom, SettingKeyEmailSMTPFromName,
+		SettingKeyEmailHTTPFrom:
 		if strings.ContainsAny(s.Value, "\r\n") {
 			return fmt.Errorf("%s must not contain newlines", s.Key)
+		}
+		return nil
+	case SettingKeyEmailHTTPAdminAuth, SettingKeyEmailHTTPSiteAuth:
+		if strings.ContainsAny(s.Value, "\r\n") {
+			return fmt.Errorf("%s must not contain newlines", s.Key)
+		}
+		return nil
+	case SettingKeyEmailProvider:
+		switch s.Value {
+		case "", "smtp", "http":
+			return nil
+		default:
+			return fmt.Errorf("%s must be smtp or http", s.Key)
+		}
+	case SettingKeyEmailHTTPBaseURL:
+		if s.Value == "" {
+			return nil
+		}
+		parsedURL, err := url.Parse(s.Value)
+		if err != nil {
+			return fmt.Errorf("%s is invalid: %w", s.Key, err)
+		}
+		if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+			return fmt.Errorf("%s scheme must be http or https", s.Key)
+		}
+		if parsedURL.Host == "" {
+			return fmt.Errorf("%s must have a host", s.Key)
 		}
 		return nil
 	case SettingKeyClaudeHeaderUserAgent, SettingKeyClaudeHeaderPackage, SettingKeyClaudeHeaderRuntime,

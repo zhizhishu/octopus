@@ -53,6 +53,7 @@ export const SettingKey = {
     PromptOverrideSystem: 'prompt_override_system',
     PromptOverrideMode: 'prompt_override_mode',
     EmailVerificationEnabled: 'email_verification_enabled',
+    EmailProvider: 'email_provider',
     EmailSMTPHost: 'email_smtp_host',
     EmailSMTPPort: 'email_smtp_port',
     EmailSMTPUser: 'email_smtp_user',
@@ -60,6 +61,10 @@ export const SettingKey = {
     EmailSMTPFrom: 'email_smtp_from',
     EmailSMTPFromName: 'email_smtp_from_name',
     EmailSMTPSSL: 'email_smtp_ssl',
+    EmailHTTPBaseURL: 'email_http_base_url',
+    EmailHTTPFrom: 'email_http_from',
+    EmailHTTPAdminAuth: 'email_http_admin_auth',
+    EmailHTTPSiteAuth: 'email_http_site_auth',
 } as const;
 
 /**

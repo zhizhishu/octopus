@@ -308,7 +308,19 @@
             "fromName": "寄件者名稱",
             "fromNamePlaceholder": "Octopus",
             "ssl": "隱式 TLS（SSL）",
-            "sslHint": "連接埠 465 使用隱式 TLS 時開啟；STARTTLS（如 587 連接埠）請關閉。"
+            "sslHint": "連接埠 465 使用隱式 TLS 時開啟；STARTTLS（如 587 連接埠）請關閉。",
+            "provider": "寄件方式",
+            "providerHint": "選擇驗證碼的傳送方式。HTTP API 適用於沒有 SMTP 的自建服務（如 ClawEmail）。",
+            "providerSMTP": "SMTP",
+            "providerHTTP": "HTTP API",
+            "httpBaseUrl": "API 基礎位址",
+            "httpBaseUrlPlaceholder": "https://your-service/ext",
+            "httpFrom": "寄件者地址",
+            "httpFromPlaceholder": "agent@example.com",
+            "httpAdminAuth": "管理員驗證權杖",
+            "httpAdminAuthPlaceholder": "管理員 API 權杖",
+            "httpSiteAuth": "站台驗證權杖",
+            "httpSiteAuthPlaceholder": "站台 API 權杖"
         },
         "checkIn": {
             "title": "使用者每日簽到",

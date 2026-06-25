@@ -82,6 +82,7 @@ export function SettingSystem() {
     const [checkInRewardMin, setCheckInRewardMin] = useState('100');
     const [checkInRewardMax, setCheckInRewardMax] = useState('200');
     const [emailVerificationEnabled, setEmailVerificationEnabled] = useState(false);
+    const [emailProvider, setEmailProvider] = useState('smtp');
     const [emailSMTPHost, setEmailSMTPHost] = useState('');
     const [emailSMTPPort, setEmailSMTPPort] = useState('587');
     const [emailSMTPUser, setEmailSMTPUser] = useState('');
@@ -89,6 +90,10 @@ export function SettingSystem() {
     const [emailSMTPFrom, setEmailSMTPFrom] = useState('');
     const [emailSMTPFromName, setEmailSMTPFromName] = useState('Octopus');
     const [emailSMTPSSL, setEmailSMTPSSL] = useState(false);
+    const [emailHTTPBaseURL, setEmailHTTPBaseURL] = useState('');
+    const [emailHTTPFrom, setEmailHTTPFrom] = useState('');
+    const [emailHTTPAdminAuth, setEmailHTTPAdminAuth] = useState('');
+    const [emailHTTPSiteAuth, setEmailHTTPSiteAuth] = useState('');
 
     const initialProxyUrl = useRef('');
     const initialStatsSaveInterval = useRef('');
@@ -121,6 +126,7 @@ export function SettingSystem() {
     const initialCheckInRewardMin = useRef('100');
     const initialCheckInRewardMax = useRef('200');
     const initialEmailVerificationEnabled = useRef(false);
+    const initialEmailProvider = useRef('smtp');
     const initialEmailSMTPHost = useRef('');
     const initialEmailSMTPPort = useRef('587');
     const initialEmailSMTPUser = useRef('');
@@ -128,6 +134,10 @@ export function SettingSystem() {
     const initialEmailSMTPFrom = useRef('');
     const initialEmailSMTPFromName = useRef('Octopus');
     const initialEmailSMTPSSL = useRef(false);
+    const initialEmailHTTPBaseURL = useRef('');
+    const initialEmailHTTPFrom = useRef('');
+    const initialEmailHTTPAdminAuth = useRef('');
+    const initialEmailHTTPSiteAuth = useRef('');
 
     useEffect(() => {
         if (settings) {
@@ -162,6 +172,7 @@ export function SettingSystem() {
             const checkInMin = settings.find(s => s.key === SettingKey.CheckInRewardMin);
             const checkInMax = settings.find(s => s.key === SettingKey.CheckInRewardMax);
             const emailVerification = settings.find(s => s.key === SettingKey.EmailVerificationEnabled);
+            const emailProviderSetting = settings.find(s => s.key === SettingKey.EmailProvider);
             const emailHost = settings.find(s => s.key === SettingKey.EmailSMTPHost);
             const emailPort = settings.find(s => s.key === SettingKey.EmailSMTPPort);
             const emailUser = settings.find(s => s.key === SettingKey.EmailSMTPUser);
@@ -169,6 +180,10 @@ export function SettingSystem() {
             const emailFrom = settings.find(s => s.key === SettingKey.EmailSMTPFrom);
             const emailFromName = settings.find(s => s.key === SettingKey.EmailSMTPFromName);
             const emailSSL = settings.find(s => s.key === SettingKey.EmailSMTPSSL);
+            const emailHTTPBase = settings.find(s => s.key === SettingKey.EmailHTTPBaseURL);
+            const emailHTTPFromSetting = settings.find(s => s.key === SettingKey.EmailHTTPFrom);
+            const emailHTTPAdmin = settings.find(s => s.key === SettingKey.EmailHTTPAdminAuth);
+            const emailHTTPSite = settings.find(s => s.key === SettingKey.EmailHTTPSiteAuth);
             if (proxy) {
                 queueMicrotask(() => setProxyUrl(proxy.value));
                 initialProxyUrl.current = proxy.value;
@@ -304,6 +319,11 @@ export function SettingSystem() {
                 queueMicrotask(() => setEmailVerificationEnabled(enabled));
                 initialEmailVerificationEnabled.current = enabled;
             }
+            if (emailProviderSetting) {
+                const provider = emailProviderSetting.value === 'http' ? 'http' : 'smtp';
+                queueMicrotask(() => setEmailProvider(provider));
+                initialEmailProvider.current = provider;
+            }
             if (emailHost) {
                 queueMicrotask(() => setEmailSMTPHost(emailHost.value));
                 initialEmailSMTPHost.current = emailHost.value;
@@ -332,6 +352,22 @@ export function SettingSystem() {
                 const enabled = emailSSL.value === 'true';
                 queueMicrotask(() => setEmailSMTPSSL(enabled));
                 initialEmailSMTPSSL.current = enabled;
+            }
+            if (emailHTTPBase) {
+                queueMicrotask(() => setEmailHTTPBaseURL(emailHTTPBase.value));
+                initialEmailHTTPBaseURL.current = emailHTTPBase.value;
+            }
+            if (emailHTTPFromSetting) {
+                queueMicrotask(() => setEmailHTTPFrom(emailHTTPFromSetting.value));
+                initialEmailHTTPFrom.current = emailHTTPFromSetting.value;
+            }
+            if (emailHTTPAdmin) {
+                queueMicrotask(() => setEmailHTTPAdminAuth(emailHTTPAdmin.value));
+                initialEmailHTTPAdminAuth.current = emailHTTPAdmin.value;
+            }
+            if (emailHTTPSite) {
+                queueMicrotask(() => setEmailHTTPSiteAuth(emailHTTPSite.value));
+                initialEmailHTTPSiteAuth.current = emailHTTPSite.value;
             }
         }
     }, [settings]);
@@ -380,6 +416,16 @@ export function SettingSystem() {
                     initialEmailSMTPFrom.current = value;
                 } else if (key === SettingKey.EmailSMTPFromName) {
                     initialEmailSMTPFromName.current = value;
+                } else if (key === SettingKey.EmailProvider) {
+                    initialEmailProvider.current = value;
+                } else if (key === SettingKey.EmailHTTPBaseURL) {
+                    initialEmailHTTPBaseURL.current = value;
+                } else if (key === SettingKey.EmailHTTPFrom) {
+                    initialEmailHTTPFrom.current = value;
+                } else if (key === SettingKey.EmailHTTPAdminAuth) {
+                    initialEmailHTTPAdminAuth.current = value;
+                } else if (key === SettingKey.EmailHTTPSiteAuth) {
+                    initialEmailHTTPSiteAuth.current = value;
                 } else if (key === SettingKey.ClaudeHeaderUserAgent) {
                     initialClaudeHeaderUserAgent.current = value;
                 } else if (key === SettingKey.ClaudeHeaderPackageVersion) {
@@ -1283,6 +1329,35 @@ export function SettingSystem() {
                         className="shrink-0"
                     />
                 </div>
+                <div className="grid gap-2 border-t border-border/60 pt-3 sm:grid-cols-[180px_minmax(0,1fr)] sm:items-center">
+                    <div className="flex min-w-0 items-center gap-2">
+                        <span className="min-w-0 text-sm font-medium">{t('emailVerification.provider')}</span>
+                        <TooltipProvider>
+                            <Tooltip>
+                                <TooltipTrigger asChild>
+                                    <HelpCircle className="size-4 text-muted-foreground cursor-help" />
+                                </TooltipTrigger>
+                                <TooltipContent className="max-w-xs">
+                                    {t('emailVerification.providerHint')}
+                                </TooltipContent>
+                            </Tooltip>
+                        </TooltipProvider>
+                    </div>
+                    <select
+                        value={emailProvider}
+                        onChange={(event) => {
+                            const value = event.target.value;
+                            setEmailProvider(value);
+                            handleSave(SettingKey.EmailProvider, value, initialEmailProvider.current);
+                        }}
+                        aria-label={t('emailVerification.provider')}
+                        className="h-9 w-full min-w-0 rounded-xl border border-input bg-background px-3 text-sm text-foreground"
+                    >
+                        <option value="smtp">{t('emailVerification.providerSMTP')}</option>
+                        <option value="http">{t('emailVerification.providerHTTP')}</option>
+                    </select>
+                </div>
+                {emailProvider === 'smtp' && (
                 <div className="grid gap-2 sm:grid-cols-2">
                     <Input
                         value={emailSMTPHost}
@@ -1361,6 +1436,8 @@ export function SettingSystem() {
                         className="rounded-xl"
                     />
                 </div>
+                )}
+                {emailProvider === 'smtp' && (
                 <div className="flex items-center justify-between gap-4 border-t border-border/60 pt-3">
                     <div className="flex min-w-0 items-center gap-3">
                         <span className="min-w-0 text-sm font-medium">{t('emailVerification.ssl')}</span>
@@ -1382,6 +1459,63 @@ export function SettingSystem() {
                         className="shrink-0"
                     />
                 </div>
+                )}
+                {emailProvider === 'http' && (
+                <div className="grid gap-2 sm:grid-cols-2">
+                    <Input
+                        value={emailHTTPBaseURL}
+                        onChange={(event) => setEmailHTTPBaseURL(event.target.value)}
+                        onBlur={() => handleSave(
+                            SettingKey.EmailHTTPBaseURL,
+                            emailHTTPBaseURL,
+                            initialEmailHTTPBaseURL.current
+                        )}
+                        placeholder={t('emailVerification.httpBaseUrlPlaceholder')}
+                        aria-label={t('emailVerification.httpBaseUrl')}
+                        className="rounded-xl"
+                    />
+                    <Input
+                        value={emailHTTPFrom}
+                        onChange={(event) => setEmailHTTPFrom(event.target.value)}
+                        onBlur={() => handleSave(
+                            SettingKey.EmailHTTPFrom,
+                            emailHTTPFrom,
+                            initialEmailHTTPFrom.current
+                        )}
+                        placeholder={t('emailVerification.httpFromPlaceholder')}
+                        aria-label={t('emailVerification.httpFrom')}
+                        className="rounded-xl"
+                    />
+                    <Input
+                        type="password"
+                        value={emailHTTPAdminAuth}
+                        onChange={(event) => setEmailHTTPAdminAuth(event.target.value)}
+                        onBlur={() => handleSave(
+                            SettingKey.EmailHTTPAdminAuth,
+                            emailHTTPAdminAuth,
+                            initialEmailHTTPAdminAuth.current
+                        )}
+                        placeholder={initialEmailHTTPAdminAuth.current === SECRET_MASK ? t('emailVerification.passwordKeptPlaceholder') : t('emailVerification.httpAdminAuthPlaceholder')}
+                        aria-label={t('emailVerification.httpAdminAuth')}
+                        autoComplete="new-password"
+                        className="rounded-xl"
+                    />
+                    <Input
+                        type="password"
+                        value={emailHTTPSiteAuth}
+                        onChange={(event) => setEmailHTTPSiteAuth(event.target.value)}
+                        onBlur={() => handleSave(
+                            SettingKey.EmailHTTPSiteAuth,
+                            emailHTTPSiteAuth,
+                            initialEmailHTTPSiteAuth.current
+                        )}
+                        placeholder={initialEmailHTTPSiteAuth.current === SECRET_MASK ? t('emailVerification.passwordKeptPlaceholder') : t('emailVerification.httpSiteAuthPlaceholder')}
+                        aria-label={t('emailVerification.httpSiteAuth')}
+                        autoComplete="new-password"
+                        className="rounded-xl"
+                    />
+                </div>
+                )}
             </div>
 
             {/* 每日签到 */}

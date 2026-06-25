@@ -47,7 +47,7 @@ func getSettingList(c *gin.Context) {
 		return
 	}
 	for i := range settings {
-		if settings[i].Key == model.SettingKeyEmailSMTPPassword && settings[i].Value != "" {
+		if model.IsSecretSettingKey(settings[i].Key) && settings[i].Value != "" {
 			settings[i].Value = model.SettingSecretMaskValue
 		}
 	}
@@ -60,7 +60,7 @@ func setSetting(c *gin.Context) {
 		resp.Error(c, http.StatusBadRequest, err.Error())
 		return
 	}
-	if setting.Key == model.SettingKeyEmailSMTPPassword && setting.Value == model.SettingSecretMaskValue {
+	if model.IsSecretSettingKey(setting.Key) && setting.Value == model.SettingSecretMaskValue {
 		resp.Success(c, setting)
 		return
 	}
