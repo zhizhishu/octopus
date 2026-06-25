@@ -141,15 +141,13 @@ func sendVerificationCode(c *gin.Context) {
 		return
 	}
 
-	// Rate-limit IP key: the app sits behind Cloudflare, which sets
-	// CF-Connecting-IP to the real client IP and strips any client-supplied
-	// copy at the edge. Prefer it; fall back to gin's ClientIP otherwise. This
-	// is scoped to the rate-limit key only and does not change gin's global
-	// proxy/IP semantics (e.g. RegisterIP logging is unaffected).
-	ipKey := c.GetHeader("CF-Connecting-IP")
-	if ipKey == "" {
-		ipKey = c.ClientIP()
-	}
+	// Rate-limit IP key: c.ClientIP() resolves the real client IP via the
+	// trusted-proxy config set in server startup (Cloudflare ranges +
+	// RemoteIPHeaders CF-Connecting-IP / X-Forwarded-For), so it is accurate
+	// behind Cloudflare and NOT spoofable from a non-Cloudflare source. Do not
+	// read the raw CF-Connecting-IP header here — that would bypass the trust
+	// check and let an attacker forge the rate-limit key.
+	ipKey := c.ClientIP()
 
 	// This route has no Auth middleware, so verify any presented bearer token
 	// the same way Auth() does (cryptographic VerifyJWTToken) and only treat the
