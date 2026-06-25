@@ -164,9 +164,14 @@ func UserRegistrationOptions() model.UserRegistrationOptions {
 	if err != nil {
 		open = false
 	}
+	emailVerification, err := SettingGetBool(model.SettingKeyEmailVerificationEnabled)
+	if err != nil {
+		emailVerification = false
+	}
 	return model.UserRegistrationOptions{
-		OpenRegistration: open,
-		InviteRequired:   !open,
+		OpenRegistration:         open,
+		InviteRequired:           !open,
+		EmailVerificationEnabled: emailVerification,
 	}
 }
 
@@ -186,15 +191,43 @@ func UserRegister(req model.UserRegister, registerIP string, ctx context.Context
 		return model.User{}, fmt.Errorf("invite code is required")
 	}
 
+	email := strings.TrimSpace(strings.ToLower(req.Email))
+	if options.EmailVerificationEnabled {
+		if email == "" {
+			return model.User{}, fmt.Errorf("email is required")
+		}
+		if !validateEmail(email) {
+			return model.User{}, fmt.Errorf("invalid email address")
+		}
+		code := strings.TrimSpace(req.VerificationCode)
+		if code == "" {
+			return model.User{}, fmt.Errorf("verification code is required")
+		}
+		if !VerifyEmailCode(email, code) {
+			return model.User{}, fmt.Errorf("invalid or expired verification code")
+		}
+	}
+
 	registerIP = normalizeRequestIP(registerIP)
 	var registeredUser model.User
 	err := db.GetDB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if email != "" {
+			var emailCount int64
+			if err := tx.Model(&model.User{}).Where("email = ?", email).Count(&emailCount).Error; err != nil {
+				return err
+			}
+			if emailCount > 0 {
+				return fmt.Errorf("email already registered")
+			}
+		}
 		user := model.User{
-			Username:   username,
-			Password:   password,
-			Role:       model.UserRoleUser,
-			Status:     model.UserStatusActive,
-			RegisterIP: registerIP,
+			Username:      username,
+			Password:      password,
+			Role:          model.UserRoleUser,
+			Status:        model.UserStatusActive,
+			RegisterIP:    registerIP,
+			Email:         email,
+			EmailVerified: options.EmailVerificationEnabled && email != "",
 		}
 		if err := user.HashPassword(); err != nil {
 			return err
@@ -220,6 +253,9 @@ func UserRegister(req model.UserRegister, registerIP string, ctx context.Context
 	}
 	userCache.Set(registeredUser.ID, registeredUser)
 	userNameIDMap.Set(normalizeUsername(registeredUser.Username), registeredUser.ID)
+	if options.EmailVerificationEnabled && email != "" {
+		ConsumeEmailCode(email)
+	}
 	if err := UserAccessPlanSet(registeredUser.ID, nil, 0, ctx); err != nil {
 		return model.User{}, err
 	}

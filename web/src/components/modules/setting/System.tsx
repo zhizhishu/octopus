@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
-import { Check, Clock, Fingerprint, Gift, Globe, HelpCircle, Loader2, Monitor, Pencil, Radio, Shield, UserPlus, X, Zap, AlertTriangle } from 'lucide-react';
+import { Check, Clock, Fingerprint, Gift, Globe, HelpCircle, Loader2, Mail, Monitor, Pencil, Radio, Shield, UserPlus, X, Zap, AlertTriangle } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
@@ -15,7 +15,7 @@ import {
     DialogTitle,
 } from '@/components/ui/dialog';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { useSettingList, useSetSetting, SettingKey } from '@/api/endpoints/setting';
+import { useSettingList, useSetSetting, SettingKey, SECRET_MASK } from '@/api/endpoints/setting';
 import { toast } from '@/components/common/Toast';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/animate-ui/components/animate/tooltip';
 
@@ -81,6 +81,14 @@ export function SettingSystem() {
     const [checkInRewardAmount, setCheckInRewardAmount] = useState('100');
     const [checkInRewardMin, setCheckInRewardMin] = useState('100');
     const [checkInRewardMax, setCheckInRewardMax] = useState('200');
+    const [emailVerificationEnabled, setEmailVerificationEnabled] = useState(false);
+    const [emailSMTPHost, setEmailSMTPHost] = useState('');
+    const [emailSMTPPort, setEmailSMTPPort] = useState('587');
+    const [emailSMTPUser, setEmailSMTPUser] = useState('');
+    const [emailSMTPPassword, setEmailSMTPPassword] = useState('');
+    const [emailSMTPFrom, setEmailSMTPFrom] = useState('');
+    const [emailSMTPFromName, setEmailSMTPFromName] = useState('Octopus');
+    const [emailSMTPSSL, setEmailSMTPSSL] = useState(false);
 
     const initialProxyUrl = useRef('');
     const initialStatsSaveInterval = useRef('');
@@ -112,6 +120,14 @@ export function SettingSystem() {
     const initialCheckInRewardAmount = useRef('100');
     const initialCheckInRewardMin = useRef('100');
     const initialCheckInRewardMax = useRef('200');
+    const initialEmailVerificationEnabled = useRef(false);
+    const initialEmailSMTPHost = useRef('');
+    const initialEmailSMTPPort = useRef('587');
+    const initialEmailSMTPUser = useRef('');
+    const initialEmailSMTPPassword = useRef('');
+    const initialEmailSMTPFrom = useRef('');
+    const initialEmailSMTPFromName = useRef('Octopus');
+    const initialEmailSMTPSSL = useRef(false);
 
     useEffect(() => {
         if (settings) {
@@ -145,6 +161,14 @@ export function SettingSystem() {
             const checkInAmount = settings.find(s => s.key === SettingKey.CheckInRewardAmount);
             const checkInMin = settings.find(s => s.key === SettingKey.CheckInRewardMin);
             const checkInMax = settings.find(s => s.key === SettingKey.CheckInRewardMax);
+            const emailVerification = settings.find(s => s.key === SettingKey.EmailVerificationEnabled);
+            const emailHost = settings.find(s => s.key === SettingKey.EmailSMTPHost);
+            const emailPort = settings.find(s => s.key === SettingKey.EmailSMTPPort);
+            const emailUser = settings.find(s => s.key === SettingKey.EmailSMTPUser);
+            const emailPassword = settings.find(s => s.key === SettingKey.EmailSMTPPassword);
+            const emailFrom = settings.find(s => s.key === SettingKey.EmailSMTPFrom);
+            const emailFromName = settings.find(s => s.key === SettingKey.EmailSMTPFromName);
+            const emailSSL = settings.find(s => s.key === SettingKey.EmailSMTPSSL);
             if (proxy) {
                 queueMicrotask(() => setProxyUrl(proxy.value));
                 initialProxyUrl.current = proxy.value;
@@ -275,6 +299,40 @@ export function SettingSystem() {
                 queueMicrotask(() => setCheckInRewardMax(checkInMax.value));
                 initialCheckInRewardMax.current = checkInMax.value;
             }
+            if (emailVerification) {
+                const enabled = emailVerification.value === 'true';
+                queueMicrotask(() => setEmailVerificationEnabled(enabled));
+                initialEmailVerificationEnabled.current = enabled;
+            }
+            if (emailHost) {
+                queueMicrotask(() => setEmailSMTPHost(emailHost.value));
+                initialEmailSMTPHost.current = emailHost.value;
+            }
+            if (emailPort) {
+                queueMicrotask(() => setEmailSMTPPort(emailPort.value || '587'));
+                initialEmailSMTPPort.current = emailPort.value || '587';
+            }
+            if (emailUser) {
+                queueMicrotask(() => setEmailSMTPUser(emailUser.value));
+                initialEmailSMTPUser.current = emailUser.value;
+            }
+            if (emailPassword) {
+                queueMicrotask(() => setEmailSMTPPassword(emailPassword.value));
+                initialEmailSMTPPassword.current = emailPassword.value;
+            }
+            if (emailFrom) {
+                queueMicrotask(() => setEmailSMTPFrom(emailFrom.value));
+                initialEmailSMTPFrom.current = emailFrom.value;
+            }
+            if (emailFromName) {
+                queueMicrotask(() => setEmailSMTPFromName(emailFromName.value || 'Octopus'));
+                initialEmailSMTPFromName.current = emailFromName.value || 'Octopus';
+            }
+            if (emailSSL) {
+                const enabled = emailSSL.value === 'true';
+                queueMicrotask(() => setEmailSMTPSSL(enabled));
+                initialEmailSMTPSSL.current = enabled;
+            }
         }
     }, [settings]);
 
@@ -310,6 +368,18 @@ export function SettingSystem() {
                     initialCheckInRewardMin.current = value;
                 } else if (key === SettingKey.CheckInRewardMax) {
                     initialCheckInRewardMax.current = value;
+                } else if (key === SettingKey.EmailSMTPHost) {
+                    initialEmailSMTPHost.current = value;
+                } else if (key === SettingKey.EmailSMTPPort) {
+                    initialEmailSMTPPort.current = value;
+                } else if (key === SettingKey.EmailSMTPUser) {
+                    initialEmailSMTPUser.current = value;
+                } else if (key === SettingKey.EmailSMTPPassword) {
+                    initialEmailSMTPPassword.current = value;
+                } else if (key === SettingKey.EmailSMTPFrom) {
+                    initialEmailSMTPFrom.current = value;
+                } else if (key === SettingKey.EmailSMTPFromName) {
+                    initialEmailSMTPFromName.current = value;
                 } else if (key === SettingKey.ClaudeHeaderUserAgent) {
                     initialClaudeHeaderUserAgent.current = value;
                 } else if (key === SettingKey.ClaudeHeaderPackageVersion) {
@@ -440,6 +510,30 @@ export function SettingSystem() {
             onSuccess: () => {
                 toast.success(t('saved'));
                 initialUserRegistrationEnabled.current = checked;
+            }
+        });
+    };
+
+    const handleEmailVerificationEnabledChange = (checked: boolean) => {
+        setEmailVerificationEnabled(checked);
+        if (checked === initialEmailVerificationEnabled.current) return;
+
+        setSetting.mutate({ key: SettingKey.EmailVerificationEnabled, value: checked ? 'true' : 'false' }, {
+            onSuccess: () => {
+                toast.success(t('saved'));
+                initialEmailVerificationEnabled.current = checked;
+            }
+        });
+    };
+
+    const handleEmailSMTPSSLChange = (checked: boolean) => {
+        setEmailSMTPSSL(checked);
+        if (checked === initialEmailSMTPSSL.current) return;
+
+        setSetting.mutate({ key: SettingKey.EmailSMTPSSL, value: checked ? 'true' : 'false' }, {
+            onSuccess: () => {
+                toast.success(t('saved'));
+                initialEmailSMTPSSL.current = checked;
             }
         });
     };
@@ -1163,6 +1257,131 @@ export function SettingSystem() {
                     aria-label={t('userRegistration.label')}
                     className="shrink-0"
                 />
+            </div>
+
+            {/* 注册邮箱验证 */}
+            <div className="grid gap-3 rounded-2xl border border-border/70 bg-muted/20 p-3">
+                <div className="flex items-center justify-between gap-4">
+                    <div className="flex min-w-0 items-center gap-3">
+                        <Mail className="h-5 w-5 shrink-0 text-muted-foreground" />
+                        <span className="min-w-0 text-sm font-medium">{t('emailVerification.title')}</span>
+                        <TooltipProvider>
+                            <Tooltip>
+                                <TooltipTrigger asChild>
+                                    <HelpCircle className="size-4 text-muted-foreground cursor-help" />
+                                </TooltipTrigger>
+                                <TooltipContent>
+                                    {t('emailVerification.hint')}
+                                </TooltipContent>
+                            </Tooltip>
+                        </TooltipProvider>
+                    </div>
+                    <Switch
+                        checked={emailVerificationEnabled}
+                        onCheckedChange={handleEmailVerificationEnabledChange}
+                        aria-label={t('emailVerification.enabled')}
+                        className="shrink-0"
+                    />
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                    <Input
+                        value={emailSMTPHost}
+                        onChange={(event) => setEmailSMTPHost(event.target.value)}
+                        onBlur={() => handleSave(
+                            SettingKey.EmailSMTPHost,
+                            emailSMTPHost,
+                            initialEmailSMTPHost.current
+                        )}
+                        placeholder={t('emailVerification.hostPlaceholder')}
+                        aria-label={t('emailVerification.host')}
+                        className="rounded-xl"
+                    />
+                    <Input
+                        type="number"
+                        min="0"
+                        value={emailSMTPPort}
+                        onChange={(event) => setEmailSMTPPort(event.target.value)}
+                        onBlur={() => handleSave(
+                            SettingKey.EmailSMTPPort,
+                            emailSMTPPort,
+                            initialEmailSMTPPort.current
+                        )}
+                        placeholder={t('emailVerification.portPlaceholder')}
+                        aria-label={t('emailVerification.port')}
+                        className="rounded-xl"
+                    />
+                    <Input
+                        value={emailSMTPUser}
+                        onChange={(event) => setEmailSMTPUser(event.target.value)}
+                        onBlur={() => handleSave(
+                            SettingKey.EmailSMTPUser,
+                            emailSMTPUser,
+                            initialEmailSMTPUser.current
+                        )}
+                        placeholder={t('emailVerification.userPlaceholder')}
+                        aria-label={t('emailVerification.user')}
+                        className="rounded-xl"
+                    />
+                    <Input
+                        type="password"
+                        value={emailSMTPPassword}
+                        onChange={(event) => setEmailSMTPPassword(event.target.value)}
+                        onBlur={() => handleSave(
+                            SettingKey.EmailSMTPPassword,
+                            emailSMTPPassword,
+                            initialEmailSMTPPassword.current
+                        )}
+                        placeholder={initialEmailSMTPPassword.current === SECRET_MASK ? t('emailVerification.passwordKeptPlaceholder') : t('emailVerification.passwordPlaceholder')}
+                        aria-label={t('emailVerification.password')}
+                        autoComplete="new-password"
+                        className="rounded-xl"
+                    />
+                    <Input
+                        value={emailSMTPFrom}
+                        onChange={(event) => setEmailSMTPFrom(event.target.value)}
+                        onBlur={() => handleSave(
+                            SettingKey.EmailSMTPFrom,
+                            emailSMTPFrom,
+                            initialEmailSMTPFrom.current
+                        )}
+                        placeholder={t('emailVerification.fromPlaceholder')}
+                        aria-label={t('emailVerification.from')}
+                        className="rounded-xl"
+                    />
+                    <Input
+                        value={emailSMTPFromName}
+                        onChange={(event) => setEmailSMTPFromName(event.target.value)}
+                        onBlur={() => handleSave(
+                            SettingKey.EmailSMTPFromName,
+                            emailSMTPFromName,
+                            initialEmailSMTPFromName.current
+                        )}
+                        placeholder={t('emailVerification.fromNamePlaceholder')}
+                        aria-label={t('emailVerification.fromName')}
+                        className="rounded-xl"
+                    />
+                </div>
+                <div className="flex items-center justify-between gap-4 border-t border-border/60 pt-3">
+                    <div className="flex min-w-0 items-center gap-3">
+                        <span className="min-w-0 text-sm font-medium">{t('emailVerification.ssl')}</span>
+                        <TooltipProvider>
+                            <Tooltip>
+                                <TooltipTrigger asChild>
+                                    <HelpCircle className="size-4 text-muted-foreground cursor-help" />
+                                </TooltipTrigger>
+                                <TooltipContent>
+                                    {t('emailVerification.sslHint')}
+                                </TooltipContent>
+                            </Tooltip>
+                        </TooltipProvider>
+                    </div>
+                    <Switch
+                        checked={emailSMTPSSL}
+                        onCheckedChange={handleEmailSMTPSSLChange}
+                        aria-label={t('emailVerification.ssl')}
+                        className="shrink-0"
+                    />
+                </div>
             </div>
 
             {/* 每日签到 */}

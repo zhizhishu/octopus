@@ -37,6 +37,8 @@ type User struct {
 	LastRelayIP     string     `json:"last_relay_ip,omitempty" gorm:"size:128"`
 	LastRelayAt     int64      `json:"last_relay_at" gorm:"default:0"`
 	Note            string     `json:"note,omitempty"`
+	Email           string     `json:"email,omitempty" gorm:"size:255;index"`
+	EmailVerified   bool       `json:"email_verified" gorm:"default:false"`
 	CreatedAt       int64      `json:"created_at" gorm:"autoCreateTime"`
 	UpdatedAt       int64      `json:"updated_at" gorm:"autoUpdateTime"`
 
@@ -77,15 +79,18 @@ type UserLogin struct {
 }
 
 type UserRegister struct {
-	Username   string `json:"username"`
-	Password   string `json:"password"`
-	InviteCode string `json:"invite_code"`
-	Expire     int    `json:"expire"`
+	Username         string `json:"username"`
+	Password         string `json:"password"`
+	InviteCode       string `json:"invite_code"`
+	Email            string `json:"email"`
+	VerificationCode string `json:"verification_code"`
+	Expire           int    `json:"expire"`
 }
 
 type UserRegistrationOptions struct {
-	OpenRegistration bool `json:"open_registration"`
-	InviteRequired   bool `json:"invite_required"`
+	OpenRegistration         bool `json:"open_registration"`
+	InviteRequired           bool `json:"invite_required"`
+	EmailVerificationEnabled bool `json:"email_verification_enabled"`
 }
 
 type UserChangePassword struct {
@@ -104,44 +109,44 @@ type UserLoginResponse struct {
 }
 
 type UserCreateRequest struct {
-	Username           string     `json:"username"`
-	Password           string     `json:"password"`
-	Role               UserRole   `json:"role"`
-	Status             UserStatus `json:"status"`
-	Balance            float64    `json:"balance"`
-	MonthlyLimit       float64    `json:"monthly_limit"`
-	MonthlyUsed        float64    `json:"monthly_used"`
-	MonthlyExpireAt    int64      `json:"monthly_expire_at"`
-	MonthlyResetAt     int64      `json:"monthly_reset_at"`
-	DailyLimit         *float64   `json:"daily_limit,omitempty"`
-	DailyQuota         *float64   `json:"daily_quota,omitempty"`
-	DailyUsed          *float64   `json:"daily_used,omitempty"`
-	MonthlyExpireAtISO string     `json:"monthly_expire_at_iso,omitempty"`
-	MonthlyResetAtISO  string     `json:"monthly_reset_at_iso,omitempty"`
-	NextResetAtISO     string     `json:"next_reset_at_iso,omitempty"`
-	Note               string     `json:"note"`
-	AccessPlanIDs      []int      `json:"access_plan_ids,omitempty"`
+	Username            string     `json:"username"`
+	Password            string     `json:"password"`
+	Role                UserRole   `json:"role"`
+	Status              UserStatus `json:"status"`
+	Balance             float64    `json:"balance"`
+	MonthlyLimit        float64    `json:"monthly_limit"`
+	MonthlyUsed         float64    `json:"monthly_used"`
+	MonthlyExpireAt     int64      `json:"monthly_expire_at"`
+	MonthlyResetAt      int64      `json:"monthly_reset_at"`
+	DailyLimit          *float64   `json:"daily_limit,omitempty"`
+	DailyQuota          *float64   `json:"daily_quota,omitempty"`
+	DailyUsed           *float64   `json:"daily_used,omitempty"`
+	MonthlyExpireAtISO  string     `json:"monthly_expire_at_iso,omitempty"`
+	MonthlyResetAtISO   string     `json:"monthly_reset_at_iso,omitempty"`
+	NextResetAtISO      string     `json:"next_reset_at_iso,omitempty"`
+	Note                string     `json:"note"`
+	AccessPlanIDs       []int      `json:"access_plan_ids,omitempty"`
 	DefaultAccessPlanID int        `json:"default_access_plan_id,omitempty"`
 }
 
 type UserUpdateRequest struct {
-	ID                 int        `json:"id"`
-	Username           string     `json:"username"`
-	Role               UserRole   `json:"role"`
-	Status             UserStatus `json:"status"`
-	Balance            float64    `json:"balance"`
-	MonthlyLimit       float64    `json:"monthly_limit"`
-	MonthlyUsed        float64    `json:"monthly_used"`
-	MonthlyExpireAt    int64      `json:"monthly_expire_at"`
-	MonthlyResetAt     int64      `json:"monthly_reset_at"`
-	DailyLimit         *float64   `json:"daily_limit,omitempty"`
-	DailyQuota         *float64   `json:"daily_quota,omitempty"`
-	DailyUsed          *float64   `json:"daily_used,omitempty"`
-	MonthlyExpireAtISO string     `json:"monthly_expire_at_iso,omitempty"`
-	MonthlyResetAtISO  string     `json:"monthly_reset_at_iso,omitempty"`
-	NextResetAtISO     string     `json:"next_reset_at_iso,omitempty"`
-	Note               string     `json:"note"`
-	AccessPlanIDs      []int      `json:"access_plan_ids,omitempty"`
+	ID                  int        `json:"id"`
+	Username            string     `json:"username"`
+	Role                UserRole   `json:"role"`
+	Status              UserStatus `json:"status"`
+	Balance             float64    `json:"balance"`
+	MonthlyLimit        float64    `json:"monthly_limit"`
+	MonthlyUsed         float64    `json:"monthly_used"`
+	MonthlyExpireAt     int64      `json:"monthly_expire_at"`
+	MonthlyResetAt      int64      `json:"monthly_reset_at"`
+	DailyLimit          *float64   `json:"daily_limit,omitempty"`
+	DailyQuota          *float64   `json:"daily_quota,omitempty"`
+	DailyUsed           *float64   `json:"daily_used,omitempty"`
+	MonthlyExpireAtISO  string     `json:"monthly_expire_at_iso,omitempty"`
+	MonthlyResetAtISO   string     `json:"monthly_reset_at_iso,omitempty"`
+	NextResetAtISO      string     `json:"next_reset_at_iso,omitempty"`
+	Note                string     `json:"note"`
+	AccessPlanIDs       []int      `json:"access_plan_ids,omitempty"`
 	DefaultAccessPlanID int        `json:"default_access_plan_id,omitempty"`
 }
 

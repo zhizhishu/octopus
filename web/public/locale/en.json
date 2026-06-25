@@ -23,6 +23,17 @@
             "loading": "Logging in...",
             "submit": "Login",
             "register": "Register"
+        },
+        "email": {
+            "label": "Email",
+            "placeholder": "Enter your email",
+            "sendCode": "Send code",
+            "countdown": "Resend in {seconds}s",
+            "codeLabel": "Verification code",
+            "codePlaceholder": "Enter the 6-digit code",
+            "emptyEmail": "Please enter your email first",
+            "codeSent": "Verification code sent. Please check your inbox.",
+            "sendFailed": "Failed to send verification code"
         }
     },
     "apiKeyDashboard": {
@@ -278,6 +289,26 @@
         "userRegistration": {
             "label": "Allow Direct Registration",
             "hint": "When disabled, new users must enter an invite code. When enabled, users can register directly; an invite code still grants its quota or monthly card."
+        },
+        "emailVerification": {
+            "title": "Email Verification on Registration",
+            "hint": "When enabled, public registration requires an email and a 6-digit code sent to it. Configure the SMTP sender below.",
+            "enabled": "Enable email verification",
+            "host": "SMTP host",
+            "hostPlaceholder": "e.g. smtp.example.com",
+            "port": "SMTP port",
+            "portPlaceholder": "587",
+            "user": "SMTP username",
+            "userPlaceholder": "SMTP login username",
+            "password": "SMTP password",
+            "passwordPlaceholder": "SMTP login password",
+            "passwordKeptPlaceholder": "Already set, leave blank to keep current",
+            "from": "Sender address",
+            "fromPlaceholder": "e.g. no-reply@example.com",
+            "fromName": "Sender name",
+            "fromNamePlaceholder": "Octopus",
+            "ssl": "Implicit TLS (SSL)",
+            "sslHint": "Enable for implicit TLS on port 465. Leave off for STARTTLS (e.g. port 587)."
         },
         "checkIn": {
             "title": "User Daily Check-in",

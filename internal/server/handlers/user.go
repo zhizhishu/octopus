@@ -29,6 +29,10 @@ func init() {
 		AddRoute(
 			router.NewRoute("/register", http.MethodPost).
 				Handle(register),
+		).
+		AddRoute(
+			router.NewRoute("/send-verification-code", http.MethodPost).
+				Handle(sendVerificationCode),
 		)
 
 	router.NewGroupRouter("/api/v1/user").
@@ -125,6 +129,21 @@ func register(c *gin.Context) {
 		return
 	}
 	resp.Success(c, model.UserLoginResponse{Token: token, ExpireAt: expire, User: model.NewUserResponse(user)})
+}
+
+func sendVerificationCode(c *gin.Context) {
+	var req struct {
+		Email string `json:"email"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		resp.Error(c, http.StatusBadRequest, resp.ErrInvalidJSON)
+		return
+	}
+	if err := op.SendEmailVerificationCode(req.Email, c.ClientIP()); err != nil {
+		resp.Error(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	resp.Success(c, "verification code sent")
 }
 
 func changePassword(c *gin.Context) {

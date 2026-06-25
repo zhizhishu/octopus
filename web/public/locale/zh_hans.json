@@ -23,6 +23,17 @@
             "loading": "登录中...",
             "submit": "登录",
             "register": "注册"
+        },
+        "email": {
+            "label": "邮箱",
+            "placeholder": "请输入邮箱",
+            "sendCode": "发送验证码",
+            "countdown": "{seconds} 秒后重发",
+            "codeLabel": "验证码",
+            "codePlaceholder": "请输入 6 位验证码",
+            "emptyEmail": "请先填写邮箱",
+            "codeSent": "验证码已发送，请查收邮箱。",
+            "sendFailed": "验证码发送失败"
         }
     },
     "apiKeyDashboard": {
@@ -278,6 +289,26 @@
         "userRegistration": {
             "label": "允许直接注册",
             "hint": "关闭时新用户必须填写邀请码；开启后可无邀请码注册，填写邀请码仍会发放对应额度或月卡。"
+        },
+        "emailVerification": {
+            "title": "注册邮箱验证",
+            "hint": "开启后，公开注册需填写邮箱并输入发送到该邮箱的 6 位验证码。请在下方配置 SMTP 发件信息。",
+            "enabled": "启用邮箱验证",
+            "host": "SMTP 服务器",
+            "hostPlaceholder": "例如 smtp.example.com",
+            "port": "SMTP 端口",
+            "portPlaceholder": "587",
+            "user": "SMTP 用户名",
+            "userPlaceholder": "SMTP 登录用户名",
+            "password": "SMTP 密码",
+            "passwordPlaceholder": "SMTP 登录密码",
+            "passwordKeptPlaceholder": "已设置，留空保持不变",
+            "from": "发件人地址",
+            "fromPlaceholder": "例如 no-reply@example.com",
+            "fromName": "发件人名称",
+            "fromNamePlaceholder": "Octopus",
+            "ssl": "隐式 TLS（SSL）",
+            "sslHint": "端口 465 使用隐式 TLS 时开启；STARTTLS（如 587 端口）请关闭。"
         },
         "checkIn": {
             "title": "用户每日签到",

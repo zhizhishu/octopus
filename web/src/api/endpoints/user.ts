@@ -19,6 +19,8 @@ export interface UserRegisterRequest {
     username: string;
     password: string;
     invite_code?: string;
+    email?: string;
+    verification_code?: string;
     expire: number;
 }
 
@@ -59,6 +61,7 @@ export interface User {
 export interface UserRegistrationOptions {
     open_registration: boolean;
     invite_required: boolean;
+    email_verification_enabled: boolean;
 }
 
 export type CheckInRewardMode = 'fixed' | 'random';
@@ -374,6 +377,17 @@ export function useRegister() {
         },
         onError: (error) => {
             logger.error('注册失败:', error);
+        },
+    });
+}
+
+export function useSendVerificationCode() {
+    return useMutation({
+        mutationFn: async (email: string) => {
+            return apiClient.post<string>('/api/v1/user/send-verification-code', { email });
+        },
+        onError: (error) => {
+            logger.error('发送验证码失败:', error);
         },
     });
 }

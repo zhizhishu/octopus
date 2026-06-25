@@ -46,6 +46,11 @@ func getSettingList(c *gin.Context) {
 		resp.Error(c, http.StatusInternalServerError, err.Error())
 		return
 	}
+	for i := range settings {
+		if settings[i].Key == model.SettingKeyEmailSMTPPassword && settings[i].Value != "" {
+			settings[i].Value = model.SettingSecretMaskValue
+		}
+	}
 	resp.Success(c, settings)
 }
 
@@ -53,6 +58,10 @@ func setSetting(c *gin.Context) {
 	var setting model.Setting
 	if err := c.ShouldBindJSON(&setting); err != nil {
 		resp.Error(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	if setting.Key == model.SettingKeyEmailSMTPPassword && setting.Value == model.SettingSecretMaskValue {
+		resp.Success(c, setting)
 		return
 	}
 	if err := setting.Validate(); err != nil {

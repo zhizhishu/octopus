@@ -59,12 +59,24 @@ const (
 	SettingKeyCheckInRewardAmount       SettingKey = "checkin_reward_amount"
 	SettingKeyCheckInRewardMin          SettingKey = "checkin_reward_min"
 	SettingKeyCheckInRewardMax          SettingKey = "checkin_reward_max"
+	SettingKeyEmailVerificationEnabled  SettingKey = "email_verification_enabled"
+	SettingKeyEmailSMTPHost             SettingKey = "email_smtp_host"
+	SettingKeyEmailSMTPPort             SettingKey = "email_smtp_port"
+	SettingKeyEmailSMTPUser             SettingKey = "email_smtp_user"
+	SettingKeyEmailSMTPPassword         SettingKey = "email_smtp_password"
+	SettingKeyEmailSMTPFrom             SettingKey = "email_smtp_from"
+	SettingKeyEmailSMTPFromName         SettingKey = "email_smtp_from_name"
+	SettingKeyEmailSMTPSSL              SettingKey = "email_smtp_ssl"
 )
 
 type Setting struct {
 	Key   SettingKey `json:"key" gorm:"primaryKey"`
 	Value string     `json:"value" gorm:"not null"`
 }
+
+// SettingSecretMaskValue is returned by the settings API in place of stored
+// secrets (e.g. SMTP password) and is treated as "keep existing" on write.
+const SettingSecretMaskValue = "__OCTOPUS_SECRET_KEPT__"
 
 const (
 	DefaultCodexHeaderUserAgent = "codex_exec/0.132.0 (Windows 10.0.26200; x86_64) unknown (codex_exec; 0.132.0)"
@@ -147,6 +159,14 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyCheckInRewardAmount, Value: "100"},
 		{Key: SettingKeyCheckInRewardMin, Value: "100"},
 		{Key: SettingKeyCheckInRewardMax, Value: "200"},
+		{Key: SettingKeyEmailVerificationEnabled, Value: "false"},
+		{Key: SettingKeyEmailSMTPHost, Value: ""},
+		{Key: SettingKeyEmailSMTPPort, Value: "587"},
+		{Key: SettingKeyEmailSMTPUser, Value: ""},
+		{Key: SettingKeyEmailSMTPPassword, Value: ""},
+		{Key: SettingKeyEmailSMTPFrom, Value: ""},
+		{Key: SettingKeyEmailSMTPFromName, Value: "Octopus"},
+		{Key: SettingKeyEmailSMTPSSL, Value: "false"},
 	}
 }
 
@@ -168,9 +188,20 @@ func (s *Setting) Validate() error {
 	case SettingKeyRelayLogKeepEnabled, SettingKeyAnthropicAutoCacheControl, SettingKeyOpenAIAutoPromptCacheKey,
 		SettingKeyClaudeHeaderStabilize, SettingKeyClaudeCLIAutoCompact, SettingKeyCodexFastMode,
 		SettingKeyUserRegistrationEnabled, SettingKeyUpstreamErrorStatusPass, SettingKeyCheckInEnabled,
-		SettingKeyDebugLoadBalancer:
+		SettingKeyDebugLoadBalancer, SettingKeyEmailVerificationEnabled, SettingKeyEmailSMTPSSL:
 		if s.Value != "true" && s.Value != "false" {
 			return fmt.Errorf("%s must be true or false", s.Key)
+		}
+		return nil
+	case SettingKeyEmailSMTPPort:
+		value, err := strconv.Atoi(s.Value)
+		if err != nil || value < 1 || value > 65535 {
+			return fmt.Errorf("%s must be a port between 1 and 65535", s.Key)
+		}
+		return nil
+	case SettingKeyEmailSMTPHost, SettingKeyEmailSMTPUser, SettingKeyEmailSMTPFrom, SettingKeyEmailSMTPFromName:
+		if strings.ContainsAny(s.Value, "\r\n") {
+			return fmt.Errorf("%s must not contain newlines", s.Key)
 		}
 		return nil
 	case SettingKeyClaudeHeaderUserAgent, SettingKeyClaudeHeaderPackage, SettingKeyClaudeHeaderRuntime,

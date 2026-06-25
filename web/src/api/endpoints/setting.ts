@@ -52,7 +52,21 @@ export const SettingKey = {
     CheckInRewardMax: 'checkin_reward_max',
     PromptOverrideSystem: 'prompt_override_system',
     PromptOverrideMode: 'prompt_override_mode',
+    EmailVerificationEnabled: 'email_verification_enabled',
+    EmailSMTPHost: 'email_smtp_host',
+    EmailSMTPPort: 'email_smtp_port',
+    EmailSMTPUser: 'email_smtp_user',
+    EmailSMTPPassword: 'email_smtp_password',
+    EmailSMTPFrom: 'email_smtp_from',
+    EmailSMTPFromName: 'email_smtp_from_name',
+    EmailSMTPSSL: 'email_smtp_ssl',
 } as const;
+
+/**
+ * 后端在已存储密码时返回该哨兵值（未存储则返回空字符串）。
+ * 保存时若回传该哨兵值，后端会保持原密码不变。
+ */
+export const SECRET_MASK = '__OCTOPUS_SECRET_KEPT__';
 
 /**
  * 获取 Setting 列表 Hook

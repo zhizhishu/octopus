@@ -1,13 +1,14 @@
 'use client';
 
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { motion } from "motion/react"
 import { useTranslations } from 'next-intl'
 import { Button } from "@/components/ui/button"
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
-import { useLogin, useRegister, useRegistrationOptions } from "@/api/endpoints/user"
+import { useLogin, useRegister, useRegistrationOptions, useSendVerificationCode } from "@/api/endpoints/user"
 import { useAPIKeyLogin } from "@/api/endpoints/apikey"
+import { toast } from "@/components/common/Toast"
 import Logo from "@/components/modules/logo"
 import { KeyRound, User, UserPlus } from "lucide-react"
 import {
@@ -28,13 +29,51 @@ export function LoginForm({ onLoginSuccess }: { onLoginSuccess?: () => void }) {
   const [username, setUsername] = useState("")
   const [password, setPassword] = useState("")
   const [inviteCode, setInviteCode] = useState("")
+  const [email, setEmail] = useState("")
+  const [verificationCode, setVerificationCode] = useState("")
+  const [countdown, setCountdown] = useState(0)
   const [apiKey, setApiKey] = useState("")
   const [error, setError] = useState<string | null>(null)
+  const countdownTimer = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const loginMutation = useLogin()
   const registerMutation = useRegister()
   const apiKeyLoginMutation = useAPIKeyLogin()
+  const sendCodeMutation = useSendVerificationCode()
   const { data: registrationOptions } = useRegistrationOptions()
+  const emailVerificationEnabled = registrationOptions?.email_verification_enabled ?? false
+
+  useEffect(() => {
+    return () => {
+      if (countdownTimer.current) clearInterval(countdownTimer.current)
+    }
+  }, [])
+
+  const handleSendCode = async () => {
+    const trimmedEmail = email.trim()
+    if (!trimmedEmail) {
+      toast.error(t('email.emptyEmail'))
+      return
+    }
+    try {
+      await sendCodeMutation.mutateAsync(trimmedEmail)
+      toast.success(t('email.codeSent'))
+      setCountdown(60)
+      if (countdownTimer.current) clearInterval(countdownTimer.current)
+      countdownTimer.current = setInterval(() => {
+        setCountdown((prev) => {
+          if (prev <= 1) {
+            if (countdownTimer.current) clearInterval(countdownTimer.current)
+            return 0
+          }
+          return prev - 1
+        })
+      }, 1000)
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : t('email.sendFailed')
+      toast.error(message)
+    }
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -52,6 +91,8 @@ export function LoginForm({ onLoginSuccess }: { onLoginSuccess?: () => void }) {
           username,
           password,
           invite_code: inviteCode.trim() || undefined,
+          email: emailVerificationEnabled ? email.trim() || undefined : undefined,
+          verification_code: emailVerificationEnabled ? verificationCode.trim() || undefined : undefined,
           expire: 86400,
         })
       } else {
@@ -173,6 +214,46 @@ export function LoginForm({ onLoginSuccess }: { onLoginSuccess?: () => void }) {
                     disabled={isPending}
                   />
                 </Field>
+                {emailVerificationEnabled && (
+                  <>
+                    <Field>
+                      <FieldLabel htmlFor="register-email">{t('email.label')}</FieldLabel>
+                      <div className="flex items-center gap-2">
+                        <Input
+                          id="register-email"
+                          type="email"
+                          placeholder={t('email.placeholder')}
+                          value={email}
+                          onChange={(e) => setEmail(e.target.value)}
+                          required={mode === 'register'}
+                          disabled={isPending}
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="shrink-0 whitespace-nowrap"
+                          onClick={handleSendCode}
+                          disabled={isPending || sendCodeMutation.isPending || countdown > 0}
+                        >
+                          {countdown > 0 ? t('email.countdown', { seconds: countdown }) : t('email.sendCode')}
+                        </Button>
+                      </div>
+                    </Field>
+                    <Field>
+                      <FieldLabel htmlFor="register-verification-code">{t('email.codeLabel')}</FieldLabel>
+                      <Input
+                        id="register-verification-code"
+                        type="text"
+                        inputMode="numeric"
+                        placeholder={t('email.codePlaceholder')}
+                        value={verificationCode}
+                        onChange={(e) => setVerificationCode(e.target.value)}
+                        required={mode === 'register'}
+                        disabled={isPending}
+                      />
+                    </Field>
+                  </>
+                )}
                 <Field>
                   <FieldLabel htmlFor="invite-code">{t('inviteCode')}</FieldLabel>
                   <Input

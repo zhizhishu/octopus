@@ -23,6 +23,17 @@
             "loading": "登入中...",
             "submit": "登入",
             "register": "註冊"
+        },
+        "email": {
+            "label": "電子郵件",
+            "placeholder": "請輸入電子郵件",
+            "sendCode": "傳送驗證碼",
+            "countdown": "{seconds} 秒後重新傳送",
+            "codeLabel": "驗證碼",
+            "codePlaceholder": "請輸入 6 位數驗證碼",
+            "emptyEmail": "請先填寫電子郵件",
+            "codeSent": "驗證碼已傳送，請查收信箱。",
+            "sendFailed": "驗證碼傳送失敗"
         }
     },
     "apiKeyDashboard": {
@@ -278,6 +289,26 @@
         "userRegistration": {
             "label": "允許直接註冊",
             "hint": "關閉時新使用者必須填寫邀請碼；開啟後可無邀請碼註冊，填寫邀請碼仍會發放對應額度或月卡。"
+        },
+        "emailVerification": {
+            "title": "註冊信箱驗證",
+            "hint": "開啟後，公開註冊需填寫電子郵件並輸入傳送到該信箱的 6 位數驗證碼。請於下方設定 SMTP 寄件資訊。",
+            "enabled": "啟用信箱驗證",
+            "host": "SMTP 伺服器",
+            "hostPlaceholder": "例如 smtp.example.com",
+            "port": "SMTP 連接埠",
+            "portPlaceholder": "587",
+            "user": "SMTP 使用者名稱",
+            "userPlaceholder": "SMTP 登入使用者名稱",
+            "password": "SMTP 密碼",
+            "passwordPlaceholder": "SMTP 登入密碼",
+            "passwordKeptPlaceholder": "已設定，留空保持不變",
+            "from": "寄件者地址",
+            "fromPlaceholder": "例如 no-reply@example.com",
+            "fromName": "寄件者名稱",
+            "fromNamePlaceholder": "Octopus",
+            "ssl": "隱式 TLS（SSL）",
+            "sslHint": "連接埠 465 使用隱式 TLS 時開啟；STARTTLS（如 587 連接埠）請關閉。"
         },
         "checkIn": {
             "title": "使用者每日簽到",
