@@ -126,6 +126,7 @@ export interface ChannelFormData {
     type: ChannelType;
     priority: number;
     max_concurrent: number;
+    rpm_limit: number;
     base_urls: Channel['base_urls'];
     custom_header: Channel['custom_header'];
     cloak_mode: string;
@@ -335,6 +336,7 @@ export function ChannelForm({
         enabled: formData.enabled,
         priority: formData.priority,
         max_concurrent: formData.max_concurrent,
+        rpm_limit: formData.rpm_limit,
         base_urls: formData.base_urls.map((item) => ({
             ...item,
             url: normalizeBaseUrlForChannelType(formData.type, item.url),
@@ -664,6 +666,26 @@ export function ChannelForm({
                         }}
                     />
                     <p className="text-xs text-muted-foreground">{t('maxConcurrentHint')}</p>
+                </div>
+
+                <div className="space-y-2">
+                    <label htmlFor={`${idPrefix}-rpm-limit`} className="text-sm font-medium text-card-foreground">
+                        {t('rpmLimit')}
+                    </label>
+                    <Input
+                        className='rounded-xl'
+                        id={`${idPrefix}-rpm-limit`}
+                        type="number"
+                        inputMode="numeric"
+                        min={0}
+                        step={1}
+                        value={String(formData.rpm_limit ?? 0)}
+                        onChange={(event) => {
+                            const n = Number.parseInt(event.target.value, 10);
+                            onFormDataChange({ ...formData, rpm_limit: Number.isFinite(n) && n > 0 ? n : 0 });
+                        }}
+                    />
+                    <p className="text-xs text-muted-foreground">{t('rpmLimitHint')}</p>
                 </div>
             </div>
 

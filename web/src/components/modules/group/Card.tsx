@@ -56,6 +56,8 @@ function EditDialogContent({ group, displayMembers, isSubmitting, onSubmit }: Ed
                         mode: group.mode,
                         first_token_time_out: group.first_token_time_out ?? 0,
                         session_keep_time: group.session_keep_time ?? 0,
+                        max_concurrent: group.max_concurrent ?? 0,
+                        rpm_limit: group.rpm_limit ?? 0,
                         members: displayMembers,
                     }}
                     submitText={t('detail.actions.save')}
@@ -289,12 +291,16 @@ export function GroupCard({ group }: { group: Group }) {
         const nextRegex = (values.match_regex ?? '').trim();
         const nextFirstTokenTimeOut = values.first_token_time_out ?? 0;
         const nextSessionKeepTime = values.session_keep_time ?? 0;
+        const nextMaxConcurrent = values.max_concurrent ?? 0;
+        const nextRpmLimit = values.rpm_limit ?? 0;
 
         if (nextName && nextName !== group.name) payload.name = nextName;
         if (values.mode !== group.mode) payload.mode = values.mode;
         if (nextRegex !== (group.match_regex ?? '')) payload.match_regex = nextRegex;
         if (nextFirstTokenTimeOut !== (group.first_token_time_out ?? 0)) payload.first_token_time_out = nextFirstTokenTimeOut;
         if (nextSessionKeepTime !== (group.session_keep_time ?? 0)) payload.session_keep_time = nextSessionKeepTime;
+        if (nextMaxConcurrent !== (group.max_concurrent ?? 0)) payload.max_concurrent = nextMaxConcurrent;
+        if (nextRpmLimit !== (group.rpm_limit ?? 0)) payload.rpm_limit = nextRpmLimit;
         if (items_to_add.length) payload.items_to_add = items_to_add;
         if (items_to_update.length) payload.items_to_update = items_to_update;
         if (items_to_delete.length) payload.items_to_delete = items_to_delete;
@@ -311,7 +317,7 @@ export function GroupCard({ group }: { group: Group }) {
             },
             onError,
         });
-    }, [group.first_token_time_out, group.session_keep_time, group.id, group.items, group.match_regex, group.mode, group.name, onSuccess, onError, updateGroup]);
+    }, [group.first_token_time_out, group.session_keep_time, group.max_concurrent, group.rpm_limit, group.id, group.items, group.match_regex, group.mode, group.name, onSuccess, onError, updateGroup]);
 
     return (
         <article

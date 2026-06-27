@@ -219,6 +219,14 @@ func GroupUpdate(req *model.GroupUpdateRequest, ctx context.Context) (*model.Gro
 		selectFields = append(selectFields, "session_keep_time")
 		updates.SessionKeepTime = *req.SessionKeepTime
 	}
+	if req.MaxConcurrent != nil {
+		selectFields = append(selectFields, "max_concurrent")
+		updates.MaxConcurrent = *req.MaxConcurrent
+	}
+	if req.RPMLimit != nil {
+		selectFields = append(selectFields, "rpm_limit")
+		updates.RPMLimit = *req.RPMLimit
+	}
 	if oldGroup.AutoCreated {
 		selectFields = append(selectFields, "auto_created")
 		updates.AutoCreated = false

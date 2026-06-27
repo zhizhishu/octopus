@@ -25,6 +25,7 @@ type Channel struct {
 	Enabled              bool                  `json:"enabled" gorm:"default:true"`
 	Priority             int                   `json:"priority" gorm:"default:0"`
 	MaxConcurrent        int                   `json:"max_concurrent" gorm:"default:0"` // 单渠道并发上限(在途+预约请求数), 0=不限. 达到上限后该渠道在选路中降档(让请求铺到其它渠道), 但不硬拉黑(无更优时仍可用)
+	RPMLimit             int                   `json:"rpm_limit" gorm:"default:0"`      // 单渠道每分钟请求上限(近60s在途/已发起的上游尝试数), 0=不限. 达到上限后该渠道在选路中降档(同 MaxConcurrent 的软降档语义, 让突发铺到其它渠道), 不硬拉黑
 	BaseUrls             []BaseUrl             `json:"base_urls" gorm:"serializer:json"`
 	Keys                 []ChannelKey          `json:"keys" gorm:"foreignKey:ChannelID"`
 	Model                string                `json:"model"`
@@ -103,6 +104,7 @@ type ChannelUpdateRequest struct {
 	Enabled              *bool                  `json:"enabled,omitempty"`
 	Priority             *int                   `json:"priority,omitempty"`
 	MaxConcurrent        *int                   `json:"max_concurrent,omitempty"`
+	RPMLimit             *int                   `json:"rpm_limit,omitempty"`
 	BaseUrls             *[]BaseUrl             `json:"base_urls,omitempty"`
 	Model                *string                `json:"model,omitempty"`
 	CustomModel          *string                `json:"custom_model,omitempty"`

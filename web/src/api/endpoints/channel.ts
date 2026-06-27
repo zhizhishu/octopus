@@ -68,6 +68,7 @@ export type Channel = {
     enabled: boolean;
     priority: number;
     max_concurrent: number;
+    rpm_limit: number;
     base_urls: BaseUrl[];
     keys: ChannelKey[];
     model: string;
@@ -112,6 +113,7 @@ export type CreateChannelRequest = {
     enabled?: boolean;
     priority?: number;
     max_concurrent?: number;
+    rpm_limit?: number;
     base_urls: BaseUrl[];
     keys: Array<Pick<ChannelKey, 'enabled' | 'channel_key' | 'remark'>>;
     model: string;
@@ -143,6 +145,7 @@ export type UpdateChannelRequest = {
     enabled?: boolean;
     priority?: number;
     max_concurrent?: number;
+    rpm_limit?: number;
     base_urls?: BaseUrl[];
     model?: string;
     custom_model?: string;
@@ -276,6 +279,7 @@ export function useChannelList(options?: { enabled?: boolean }) {
                 openai_models_path: item.openai_models_path ?? '',
                 priority: item.priority ?? 0,
                 max_concurrent: item.max_concurrent ?? 0,
+                rpm_limit: item.rpm_limit ?? 0,
                 circuit_tripped: item.circuit_tripped ?? false,
                 circuit_remaining_seconds: item.circuit_remaining_seconds ?? 0,
                 circuit_open_keys: item.circuit_open_keys ?? 0,

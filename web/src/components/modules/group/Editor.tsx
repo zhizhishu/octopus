@@ -25,6 +25,8 @@ export type GroupEditorValues = {
     mode: GroupMode;
     first_token_time_out: number;
     session_keep_time: number;
+    max_concurrent: number;
+    rpm_limit: number;
     members: SelectedMember[];
 };
 
@@ -258,6 +260,8 @@ export function GroupEditor({
     const [mode, setMode] = useState<GroupMode>(normalizeGroupMode((initial?.mode ?? GroupMode.RoundRobin) as GroupMode));
     const [firstTokenTimeOut, setFirstTokenTimeOut] = useState<number>(initial?.first_token_time_out ?? 0);
     const [sessionKeepTime, setSessionKeepTime] = useState<number>(initial?.session_keep_time ?? 0);
+    const [maxConcurrent, setMaxConcurrent] = useState<number>(initial?.max_concurrent ?? 0);
+    const [rpmLimit, setRpmLimit] = useState<number>(initial?.rpm_limit ?? 0);
     const [selectedMembers, setSelectedMembers] = useState<SelectedMember[]>(initial?.members ?? []);
     const [removingIds, setRemovingIds] = useState<Set<string>>(new Set());
 
@@ -331,6 +335,8 @@ export function GroupEditor({
             mode,
             first_token_time_out: firstTokenTimeOut,
             session_keep_time: sessionKeepTime,
+            max_concurrent: maxConcurrent,
+            rpm_limit: rpmLimit,
             members: visibleSelectedMembers,
         });
     };
@@ -429,6 +435,74 @@ export function GroupEditor({
                                     }
                                     const n = Number.parseInt(raw, 10);
                                     setSessionKeepTime(Number.isFinite(n) && n > 0 ? n : 0);
+                                }}
+                                className="rounded-xl"
+                            />
+                        </Field>
+
+                        <Field>
+                            <FieldLabel htmlFor="group-max-concurrent">
+                                {t('form.maxConcurrent')}
+                                <TooltipProvider>
+                                    <Tooltip>
+                                        <TooltipTrigger asChild>
+                                            <HelpCircle className="size-4 text-muted-foreground cursor-help" />
+                                        </TooltipTrigger>
+                                        <TooltipContent>
+                                            {t('form.maxConcurrentHint')}
+                                        </TooltipContent>
+                                    </Tooltip>
+                                </TooltipProvider>
+                            </FieldLabel>
+                            <Input
+                                id="group-max-concurrent"
+                                type="number"
+                                inputMode="numeric"
+                                min={0}
+                                step={1}
+                                value={String(maxConcurrent)}
+                                onChange={(e) => {
+                                    const raw = e.target.value;
+                                    if (raw.trim() === '') {
+                                        setMaxConcurrent(0);
+                                        return;
+                                    }
+                                    const n = Number.parseInt(raw, 10);
+                                    setMaxConcurrent(Number.isFinite(n) && n > 0 ? n : 0);
+                                }}
+                                className="rounded-xl"
+                            />
+                        </Field>
+
+                        <Field>
+                            <FieldLabel htmlFor="group-rpm-limit">
+                                {t('form.rpmLimit')}
+                                <TooltipProvider>
+                                    <Tooltip>
+                                        <TooltipTrigger asChild>
+                                            <HelpCircle className="size-4 text-muted-foreground cursor-help" />
+                                        </TooltipTrigger>
+                                        <TooltipContent>
+                                            {t('form.rpmLimitHint')}
+                                        </TooltipContent>
+                                    </Tooltip>
+                                </TooltipProvider>
+                            </FieldLabel>
+                            <Input
+                                id="group-rpm-limit"
+                                type="number"
+                                inputMode="numeric"
+                                min={0}
+                                step={1}
+                                value={String(rpmLimit)}
+                                onChange={(e) => {
+                                    const raw = e.target.value;
+                                    if (raw.trim() === '') {
+                                        setRpmLimit(0);
+                                        return;
+                                    }
+                                    const n = Number.parseInt(raw, 10);
+                                    setRpmLimit(Number.isFinite(n) && n > 0 ? n : 0);
                                 }}
                                 className="rounded-xl"
                             />

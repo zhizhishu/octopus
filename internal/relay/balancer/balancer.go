@@ -185,6 +185,11 @@ func spreadTier(item model.GroupItem) int {
 		// spreads to peers with spare capacity, but keep it usable as a last resort —
 		// consistent with never hard-blacking-out a route that still has a usable key.
 		return 2
+	case rt.RPMLimit > 0 && rt.RecentRequestCount >= int64(rt.RPMLimit):
+		// At its configured requests-per-minute cap: demote like the concurrency cap so
+		// a burst spreads to peers with spare RPM budget, but keep it usable as a last
+		// resort. Same never-blackout principle — the hard cap lives at the group level.
+		return 2
 	case rt.InFlight+rt.PendingSelections > 0:
 		return 1
 	default:

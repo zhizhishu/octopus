@@ -63,6 +63,41 @@ type runtimeEntry struct {
 	// balancer just picked but that have not yet entered BeginRuntimeAttempt.
 	selectionCount   int64
 	selectionResetAt time.Time
+
+	// reqWindow is a 60-bucket-per-second sliding-window counter of upstream
+	// attempts started on this channel/model, used to derive a recent
+	// requests-per-minute figure for the RPM soft-demote in spreadTier. reqBucketSec
+	// records which epoch-second each slot currently represents so a stale slot (from
+	// a previous minute) is treated as empty instead of double-counted. Channel-level
+	// only: BeginRuntimeAttempt records into the keyID=0 aggregate entry, so the
+	// figure is per (channel, model) — matching how MaxConcurrent/InFlight are scoped.
+	reqWindow    [60]int32
+	reqBucketSec [60]int64
+}
+
+// recordRequestLocked counts one upstream attempt into the trailing-60s window.
+// Caller must hold e.mu.
+func (e *runtimeEntry) recordRequestLocked(now time.Time) {
+	sec := now.Unix()
+	idx := sec % 60
+	if e.reqBucketSec[idx] != sec {
+		e.reqBucketSec[idx] = sec
+		e.reqWindow[idx] = 0
+	}
+	e.reqWindow[idx]++
+}
+
+// recentRequestCountLocked sums attempts started in the trailing 60 seconds.
+// Caller must hold e.mu.
+func (e *runtimeEntry) recentRequestCountLocked(now time.Time) int64 {
+	cutoff := now.Unix() - 59
+	var total int64
+	for i := 0; i < 60; i++ {
+		if e.reqBucketSec[i] >= cutoff {
+			total += int64(e.reqWindow[i])
+		}
+	}
+	return total
 }
 
 // AttemptRuntimeMetrics describes a completed upstream attempt for adaptive
@@ -135,15 +170,20 @@ func MarkRuntimeSelection(channelID int, modelName string) {
 // called once when the attempt finishes.
 func BeginRuntimeAttempt(channelID, keyID int, modelName string) func() {
 	entries := runtimeEntriesForAttempt(channelID, keyID, modelName)
+	now := time.Now()
 	for i, entry := range entries {
 		entry.mu.Lock()
 		entry.inFlight++
 		entry.attempts++
 		// entries[0] is the channel-level aggregate; the real attempt now owns this
 		// load, so consume one pending selection to avoid double-counting it as both
-		// a selection and an in-flight request.
-		if i == 0 && entry.selectionCount > 0 {
-			entry.selectionCount--
+		// a selection and an in-flight request. Record the per-minute window only on
+		// the channel-level aggregate so RecentRequestCount is per (channel, model).
+		if i == 0 {
+			if entry.selectionCount > 0 {
+				entry.selectionCount--
+			}
+			entry.recordRequestLocked(now)
 		}
 		entry.mu.Unlock()
 	}
@@ -339,6 +379,7 @@ func (e *runtimeEntry) snapshot() model.RoutingRuntimeStats {
 	latencyStale := e.latencyEWMAms > 0 && !e.latencySampleAt.IsZero() && time.Since(e.latencySampleAt) > latencyStalenessWindow
 	return model.RoutingRuntimeStats{
 		HasRuntime:          e.latencySamples > 0 || e.firstTokenSamples > 0 || e.throughputSamples > 0 || e.requestSuccess > 0 || e.requestFailed > 0 || e.inFlight > 0 || e.attempts > 0 || pendingSelections > 0,
+		RecentRequestCount:  e.recentRequestCountLocked(time.Now()),
 		LatencyEWMAms:       e.latencyEWMAms,
 		FirstTokenEWMAms:    e.firstTokenEWMAms,
 		ThroughputEWMA:      e.throughputEWMA,

@@ -300,6 +300,10 @@ func ChannelUpdate(req *model.ChannelUpdateRequest, ctx context.Context) (*model
 		selectFields = append(selectFields, "max_concurrent")
 		updates.MaxConcurrent = *req.MaxConcurrent
 	}
+	if req.RPMLimit != nil {
+		selectFields = append(selectFields, "rpm_limit")
+		updates.RPMLimit = *req.RPMLimit
+	}
 	if req.Proxy != nil {
 		selectFields = append(selectFields, "proxy")
 		updates.Proxy = *req.Proxy

@@ -47,9 +47,9 @@ export const CONTENT_MAP = ROUTES.reduce((acc, route) => {
     return acc;
 }, {} as Record<string, LazyComponent>);
 
-// 模型池(group)不再出现在导航：渠道模型会自动建同名 group 兜底，普通管理流程
-// 不需要手动模型池页。组件定义保留在 ROUTES 里以便兼容/直链，只是不进导航。
-export const ADMIN_ROUTE_IDS = ['home', 'user', 'key', 'channel', 'access-plan', 'model', 'model-test', 'migration', 'prompt', 'log', 'setting'] as const;
+// 模型池(group)重新进入导航：渠道模型仍会自动建同名 group 兜底，但分组级容量
+// 限制(并发上限 / RPM 上限，保护上游不被打满)需要在模型池页按组配置，所以恢复入口。
+export const ADMIN_ROUTE_IDS = ['home', 'user', 'key', 'channel', 'access-plan', 'group', 'model', 'model-test', 'migration', 'prompt', 'log', 'setting'] as const;
 export const USER_ROUTE_IDS = ['home', 'key', 'log'] as const;
 
 export function routeIdsForRole(role?: string | null) {

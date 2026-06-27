@@ -31,8 +31,10 @@ type Group struct {
 	Name              string      `json:"name" gorm:"unique;not null"`
 	Mode              GroupMode   `json:"mode" gorm:"not null"`
 	MatchRegex        string      `json:"match_regex"`
-	FirstTokenTimeOut int         `json:"first_token_time_out"` // 单个渠道首个Token响应超时时间(秒)
-	SessionKeepTime   int         `json:"session_keep_time"`    // 会话保持时间(秒) 0 为禁用
+	FirstTokenTimeOut int         `json:"first_token_time_out"`            // 单个渠道首个Token响应超时时间(秒)
+	SessionKeepTime   int         `json:"session_keep_time"`               // 会话保持时间(秒) 0 为禁用
+	MaxConcurrent     int         `json:"max_concurrent" gorm:"default:0"` // 分组级并发上限(整组在途请求数), 0=不限. 与渠道级软降档不同: 模型已路由到本组无处可铺, 到顶硬拒(429)以保护上游
+	RPMLimit          int         `json:"rpm_limit" gorm:"default:0"`      // 分组级每分钟请求上限(整组近60s请求数), 0=不限. 到顶硬拒(429), 保护上游不被打满
 	AutoCreated       bool        `json:"auto_created" gorm:"default:false"`
 	Items             []GroupItem `json:"items,omitempty" gorm:"foreignKey:GroupID"`
 }
@@ -72,7 +74,9 @@ type RoutingRuntimeStats struct {
 	CooldownRemainingMs  int64
 	AvailableKeyCount    int
 	HealthyKeyCount      int
-	MaxConcurrent        int // 渠道并发上限(0=不限)，由 enrichGroupForSmartRouting 从 Channel 配置填入，供 spreadTier 判定是否到顶降档
+	MaxConcurrent        int   // 渠道并发上限(0=不限)，由 enrichGroupForSmartRouting 从 Channel 配置填入，供 spreadTier 判定是否到顶降档
+	RPMLimit             int   // 渠道每分钟请求上限(0=不限)，由 enrichGroupForSmartRouting 从 Channel 配置填入，供 spreadTier 判定是否到顶降档
+	RecentRequestCount   int64 // 近60s滑动窗口内本渠道(channel+model)发起的上游尝试数，由 telemetry 快照填入，与 RPMLimit 比较
 	CircuitTripped       bool
 	CircuitOpenKeys      int
 	CircuitRemainingMs   int64
@@ -87,6 +91,8 @@ type GroupUpdateRequest struct {
 	MatchRegex        *string                  `json:"match_regex,omitempty"`          // 仅在匹配正则变更时发送
 	FirstTokenTimeOut *int                     `json:"first_token_time_out,omitempty"` // 仅在超时变更时发送(秒)
 	SessionKeepTime   *int                     `json:"session_keep_time,omitempty"`    // 仅在会话保持时间变更时发送(秒)
+	MaxConcurrent     *int                     `json:"max_concurrent,omitempty"`       // 分组级并发上限, 0=不限
+	RPMLimit          *int                     `json:"rpm_limit,omitempty"`            // 分组级每分钟请求上限, 0=不限
 	ItemsToAdd        []GroupItemAddRequest    `json:"items_to_add,omitempty"`         // 新增的 items
 	ItemsToUpdate     []GroupItemUpdateRequest `json:"items_to_update,omitempty"`      // 更新的 items (priority 变更)
 	ItemsToDelete     []int                    `json:"items_to_delete,omitempty"`      // 删除的 item IDs

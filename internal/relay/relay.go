@@ -16,6 +16,7 @@ import (
 	dbmodel "github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/op"
 	"github.com/bestruirui/octopus/internal/relay/balancer"
+	"github.com/bestruirui/octopus/internal/relay/grouplimit"
 	"github.com/bestruirui/octopus/internal/server/resp"
 	"github.com/bestruirui/octopus/internal/transformer/inbound"
 	"github.com/bestruirui/octopus/internal/transformer/model"
@@ -58,6 +59,18 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 	}
 	preferStreamRouting := internalRequestPrefersStream(internalRequest)
 	group := enrichGroupForSmartRouting(c.Request.Context(), routeResult.Group, preferStreamRouting)
+
+	// 分组级限流闸：模型已路由到本组、无处可铺，到顶硬拒(429)以保护上游不被打满。
+	// 渠道级 RPM/并发是软降档(把流量铺到别的渠道)，分组级则是整组吞吐的硬上限。
+	// gate 只管初始解析出的组；release 经 defer 在请求结束(任何退出路径)释放在途计数。
+	if group.MaxConcurrent > 0 || group.RPMLimit > 0 {
+		releaseGroupSlot, ok, reason := grouplimit.Acquire(group.ID, group.MaxConcurrent, group.RPMLimit)
+		if !ok {
+			resp.Error(c, http.StatusTooManyRequests, reason)
+			return
+		}
+		defer releaseGroupSlot()
+	}
 
 	// 创建迭代器（策略排序 + 粘性优先）
 	iter := balancer.NewIteratorWithSessionKey(group, apiKeyID, requestModel, clientSessionKey)

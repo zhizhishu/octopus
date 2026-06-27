@@ -23,15 +23,18 @@ func enrichGroupForSmartRouting(ctx context.Context, group dbmodel.Group, prefer
 	for i := range items {
 		var keys []dbmodel.ChannelKey
 		maxConcurrent := 0
+		rpmLimit := 0
 		channel, err := op.ChannelGet(items[i].ChannelID, ctx)
 		if err == nil && channel != nil {
 			items[i].ChannelPriority = channel.Priority
 			keys = channel.GetAvailableChannelKeys()
 			maxConcurrent = channel.MaxConcurrent
+			rpmLimit = channel.RPMLimit
 		}
 		items[i].ChannelStats = op.StatsChannelGet(items[i].ChannelID)
 		items[i].RoutingStats = balancer.SnapshotRoutingRuntime(items[i].ChannelID, items[i].ModelName, keys, stream)
 		items[i].RoutingStats.MaxConcurrent = maxConcurrent
+		items[i].RoutingStats.RPMLimit = rpmLimit
 	}
 	group.Items = items
 	return group
