@@ -1,4 +1,4 @@
-import { AutoGroupType, ChannelType, defaultModelTestEndpointForChannel, type Channel, type PromptOverrideMode, useFetchModel, useTestChannelConfig } from '@/api/endpoints/channel';
+import { AutoGroupType, ChannelType, KeySelectStrategy, defaultModelTestEndpointForChannel, type Channel, type PromptOverrideMode, useFetchModel, useTestChannelConfig } from '@/api/endpoints/channel';
 import { useFingerprintProfileList } from '@/api/endpoints/fingerprint-profile';
 import type { ModelTestResult } from '@/api/endpoints/model';
 import {
@@ -127,6 +127,7 @@ export interface ChannelFormData {
     priority: number;
     max_concurrent: number;
     rpm_limit: number;
+    key_select_strategy: KeySelectStrategy;
     base_urls: Channel['base_urls'];
     custom_header: Channel['custom_header'];
     cloak_mode: string;
@@ -686,6 +687,24 @@ export function ChannelForm({
                         }}
                     />
                     <p className="text-xs text-muted-foreground">{t('rpmLimitHint')}</p>
+                </div>
+
+                <div className="space-y-2">
+                    <label htmlFor={`${idPrefix}-key-select-strategy`} className="text-sm font-medium text-card-foreground">
+                        {t('keySelectStrategy')}
+                    </label>
+                    <Select
+                        value={String(formData.key_select_strategy ?? 0)}
+                        onValueChange={(value) => onFormDataChange({ ...formData, key_select_strategy: Number(value) as KeySelectStrategy })}
+                    >
+                        <SelectTrigger id={`${idPrefix}-key-select-strategy`} className="rounded-xl w-full border border-border px-4 py-2 text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                            <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent className='rounded-xl'>
+                            <SelectItem className='rounded-xl' value="0">{t('keySelectStrategyCostBalanced')}</SelectItem>
+                            <SelectItem className='rounded-xl' value="1">{t('keySelectStrategySticky')}</SelectItem>
+                        </SelectContent>
+                    </Select>
                 </div>
             </div>
 

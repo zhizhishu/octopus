@@ -115,3 +115,63 @@ func TestChannelGetAvailableChannelKeysNeverBlacksOutSingleKey(t *testing.T) {
 		t.Fatalf("a single cooled key must still be returned, got %#v", keys)
 	}
 }
+
+// 同 key 优先 (sticky): the same keys must order by ID (ignoring cost) under the
+// sticky strategy, but by cost under the default — proving the strategy switch works
+// and that the default behaviour is unchanged (backward compatible).
+func TestChannelGetAvailableChannelKeysStickyPrefersLowestID(t *testing.T) {
+	build := func(strategy KeySelectStrategy) Channel {
+		return Channel{
+			KeySelectStrategy: strategy,
+			Keys: []ChannelKey{
+				{ID: 1, Enabled: true, ChannelKey: "primary", TotalCost: 100},
+				{ID: 2, Enabled: true, ChannelKey: "cheaper", TotalCost: 1},
+				{ID: 3, Enabled: true, ChannelKey: "cheapest", TotalCost: 0},
+			},
+		}
+	}
+
+	sticky := build(KeySelectStrategySticky)
+	stickyKeys := sticky.GetAvailableChannelKeys()
+	wantSticky := []int{1, 2, 3}
+	if len(stickyKeys) != len(wantSticky) {
+		t.Fatalf("sticky: expected %d keys, got %d: %#v", len(wantSticky), len(stickyKeys), stickyKeys)
+	}
+	for i, want := range wantSticky {
+		if stickyKeys[i].ID != want {
+			t.Fatalf("sticky key %d: got id %d, want %d (must order by id, not cost)", i, stickyKeys[i].ID, want)
+		}
+	}
+	if first := sticky.GetChannelKey(); first.ID != 1 {
+		t.Fatalf("sticky: expected lowest-id key 1 first, got %#v", first)
+	}
+
+	balanced := build(KeySelectStrategyCostBalanced)
+	if first := balanced.GetChannelKey(); first.ID != 3 {
+		t.Fatalf("cost-balanced default: expected cheapest key 3 first, got %#v", first)
+	}
+}
+
+// Under sticky, when the primary (lowest-ID) key is cooling down it must yield to the
+// next-lowest healthy key (still by ID, NOT cost), and reclaim priority once it heals.
+func TestChannelGetAvailableChannelKeysStickyFallsThroughWhilePrimaryCools(t *testing.T) {
+	now := time.Now().Unix()
+	channel := Channel{
+		KeySelectStrategy: KeySelectStrategySticky,
+		Keys: []ChannelKey{
+			{ID: 1, Enabled: true, ChannelKey: "primary-429", StatusCode: 429, LastUseTimeStamp: now - 5, TotalCost: 0},
+			{ID: 2, Enabled: true, ChannelKey: "backup", StatusCode: 0, TotalCost: 50},
+			{ID: 3, Enabled: true, ChannelKey: "backup2", StatusCode: 0, TotalCost: 0},
+		},
+	}
+	keys := channel.GetAvailableChannelKeys()
+	wantIDs := []int{2, 3} // primary cooling → next-lowest healthy id first, cost ignored
+	if len(keys) != len(wantIDs) {
+		t.Fatalf("expected %d available keys while primary cools, got %d: %#v", len(wantIDs), len(keys), keys)
+	}
+	for i, want := range wantIDs {
+		if keys[i].ID != want {
+			t.Fatalf("sticky fallthrough key %d: got id %d, want %d", i, keys[i].ID, want)
+		}
+	}
+}

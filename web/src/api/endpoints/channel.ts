@@ -22,6 +22,14 @@ export enum ChannelType {
 }
 
 /**
+ * Key 选择策略枚举
+ */
+export enum KeySelectStrategy {
+    CostBalanced = 0, // 成本均衡（默认）
+    Sticky = 1,       // 同 key 优先
+}
+
+/**
  * 自动分组类型枚举
  */
 export enum AutoGroupType {
@@ -69,6 +77,7 @@ export type Channel = {
     priority: number;
     max_concurrent: number;
     rpm_limit: number;
+    key_select_strategy: KeySelectStrategy;
     base_urls: BaseUrl[];
     keys: ChannelKey[];
     model: string;
@@ -114,6 +123,7 @@ export type CreateChannelRequest = {
     priority?: number;
     max_concurrent?: number;
     rpm_limit?: number;
+    key_select_strategy?: KeySelectStrategy;
     base_urls: BaseUrl[];
     keys: Array<Pick<ChannelKey, 'enabled' | 'channel_key' | 'remark'>>;
     model: string;
@@ -146,6 +156,7 @@ export type UpdateChannelRequest = {
     priority?: number;
     max_concurrent?: number;
     rpm_limit?: number;
+    key_select_strategy?: KeySelectStrategy;
     base_urls?: BaseUrl[];
     model?: string;
     custom_model?: string;
@@ -280,6 +291,7 @@ export function useChannelList(options?: { enabled?: boolean }) {
                 priority: item.priority ?? 0,
                 max_concurrent: item.max_concurrent ?? 0,
                 rpm_limit: item.rpm_limit ?? 0,
+                key_select_strategy: item.key_select_strategy ?? 0,
                 circuit_tripped: item.circuit_tripped ?? false,
                 circuit_remaining_seconds: item.circuit_remaining_seconds ?? 0,
                 circuit_open_keys: item.circuit_open_keys ?? 0,

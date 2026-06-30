@@ -304,6 +304,10 @@ func ChannelUpdate(req *model.ChannelUpdateRequest, ctx context.Context) (*model
 		selectFields = append(selectFields, "rpm_limit")
 		updates.RPMLimit = *req.RPMLimit
 	}
+	if req.KeySelectStrategy != nil {
+		selectFields = append(selectFields, "key_select_strategy")
+		updates.KeySelectStrategy = *req.KeySelectStrategy
+	}
 	if req.Proxy != nil {
 		selectFields = append(selectFields, "proxy")
 		updates.Proxy = *req.Proxy

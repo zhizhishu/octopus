@@ -18,6 +18,24 @@ const (
 	AutoGroupTypeRegex AutoGroupType = 3 //正则匹配
 )
 
+// KeySelectStrategy controls the order in which a channel's available keys are tried.
+type KeySelectStrategy int
+
+const (
+	// KeySelectStrategyCostBalanced is the zero value (and historical default): among
+	// the available (enabled, not-cooling-down) keys, the one with the lowest
+	// accumulated TotalCost is tried first. Every channel that predates this field
+	// deserialises to 0 and behaves exactly as before.
+	KeySelectStrategyCostBalanced KeySelectStrategy = 0
+	// KeySelectStrategySticky ("同 key 优先") keeps hammering the SAME key — the
+	// lowest-ID enabled key — for as long as it is healthy, ignoring cost. The
+	// primary key only yields while it is cooling down / quarantined, and reclaims
+	// priority the moment it recovers. This maximises per-key prompt-cache affinity
+	// for upstreams (NVIDIA, Anthropic, …) that cache per key/account, where rotating
+	// keys would throw the cache away on every turn.
+	KeySelectStrategySticky KeySelectStrategy = 1
+)
+
 type Channel struct {
 	ID                   int                   `json:"id" gorm:"primaryKey"`
 	Name                 string                `json:"name" gorm:"unique;not null"`
@@ -26,6 +44,7 @@ type Channel struct {
 	Priority             int                   `json:"priority" gorm:"default:0"`
 	MaxConcurrent        int                   `json:"max_concurrent" gorm:"default:0"` // 单渠道并发上限(在途+预约请求数), 0=不限. 达到上限后该渠道在选路中降档(让请求铺到其它渠道), 但不硬拉黑(无更优时仍可用)
 	RPMLimit             int                   `json:"rpm_limit" gorm:"default:0"`      // 单渠道每分钟请求上限(近60s在途/已发起的上游尝试数), 0=不限. 达到上限后该渠道在选路中降档(同 MaxConcurrent 的软降档语义, 让突发铺到其它渠道), 不硬拉黑
+	KeySelectStrategy    KeySelectStrategy     `json:"key_select_strategy" gorm:"default:0"` // key 选取策略: 0=成本均衡(默认,按TotalCost升序) 1=同key优先(粘住最小ID的健康key,只在它冷却时让位、恢复即切回,最大化按key的prompt缓存命中)
 	BaseUrls             []BaseUrl             `json:"base_urls" gorm:"serializer:json"`
 	Keys                 []ChannelKey          `json:"keys" gorm:"foreignKey:ChannelID"`
 	Model                string                `json:"model"`
@@ -105,6 +124,7 @@ type ChannelUpdateRequest struct {
 	Priority             *int                   `json:"priority,omitempty"`
 	MaxConcurrent        *int                   `json:"max_concurrent,omitempty"`
 	RPMLimit             *int                   `json:"rpm_limit,omitempty"`
+	KeySelectStrategy    *KeySelectStrategy     `json:"key_select_strategy,omitempty"`
 	BaseUrls             *[]BaseUrl             `json:"base_urls,omitempty"`
 	Model                *string                `json:"model,omitempty"`
 	CustomModel          *string                `json:"custom_model,omitempty"`
@@ -288,8 +308,20 @@ func (c *Channel) GetAvailableChannelKeys() []ChannelKey {
 		keys = cooled
 	}
 
-	sort.SliceStable(keys, func(i, j int) bool {
-		return keys[i].TotalCost < keys[j].TotalCost
-	})
+	switch c.KeySelectStrategy {
+	case KeySelectStrategySticky:
+		// 同 key 优先: order by key ID so the same (lowest-ID) healthy key is always
+		// tried first regardless of cost. It only yields while cooling down (it then
+		// drops to the `cooled` bucket above and the next-lowest ID takes over) and
+		// reclaims priority the moment it self-heals — maximising prompt-cache affinity.
+		sort.SliceStable(keys, func(i, j int) bool {
+			return keys[i].ID < keys[j].ID
+		})
+	default:
+		// 成本均衡(默认/历史行为): spread load toward the least-used key by cost.
+		sort.SliceStable(keys, func(i, j int) bool {
+			return keys[i].TotalCost < keys[j].TotalCost
+		})
+	}
 	return keys
 }
