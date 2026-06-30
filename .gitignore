@@ -31,3 +31,16 @@ docs/*.md
 # fork 维护脚本（不上传）
 /scripts/sync-upstream-future.ps1
 /scripts/learning-audit-report.ps1
+
+# 本地测试密钥（用户 2026-06-23 授权：可放本地项目、做好分类，但绝不上传 github）
+# 统一落点 = .secrets/；下面是散落 key 文件的兜底模式，防漏网
+.secrets/
+*.key
+*.pem
+*-key.txt
+*_key.txt
+any-key.txt
+client-key.txt
+**/keys.json
+**/keys.env
+**/*credentials*.json
