@@ -36,14 +36,14 @@ const (
 	maxModels                              = 100
 	upstreamBodyLimit                      = 32 * 1024
 	defaultClaudeUserAgent                 = dbmodel.DefaultClaudeHeaderUserAgent
-	defaultClaudePackageVersion            = "0.94.0"
-	defaultClaudeRuntimeVersion            = "v24.3.0"
+	defaultClaudePackageVersion            = dbmodel.DefaultClaudeHeaderPackageVersion
+	defaultClaudeRuntimeVersion            = dbmodel.DefaultClaudeHeaderRuntimeVersion
 	defaultClaudeOS                        = "Windows"
 	defaultClaudeArch                      = "x64"
 	defaultClaudeTimeout                   = "600"
 	defaultClaudeOneMillionBeta            = transformermodel.AnthropicOneMillionBeta
 	defaultCodexUserAgent                  = dbmodel.DefaultCodexHeaderUserAgent
-	defaultCodexBetaFeatures               = "terminal_resize_reflow"
+	defaultCodexBetaFeatures               = dbmodel.DefaultCodexHeaderBetaFeatures
 	defaultCodexOriginator                 = "codex_exec"
 	defaultCodexInstructions               = "You are Codex, a coding agent based on GPT-5. You and the user share one workspace. Answer directly and do not call tools unless the user asks for workspace inspection or file changes."
 )
@@ -1081,7 +1081,7 @@ func applyCodexHeaderDefaults(req *http.Request, internalRequest *transformermod
 	setHeaderIfMissing(req.Header, "Originator", fp.codexOriginator())
 	setHeaderIfMissing(req.Header, "User-Agent", fp.codexUserAgent())
 	setHeaderIfMissing(req.Header, "X-Codex-Beta-Features", fp.codexBetaFeatures())
-	applyCodexSessionHeaderDefaults(req.Header, internalRequest)
+	applyCodexSessionHeaderDefaults(req.Header, internalRequest, fp.codexInstallationID())
 }
 
 func modelTestUsesCodexFingerprint(channel *dbmodel.Channel, endpointName string) bool {
@@ -1116,7 +1116,7 @@ func prepareCodexModelTestRequest(req *transformermodel.InternalLLMRequest, chan
 		metadata := map[string]any{
 			"x-codex-installation-id": fp.codexInstallationID(),
 			"x-codex-window-id":       sessionID + ":0",
-			"x-codex-turn-metadata":   codexModelTestTurnMetadata(sessionID),
+			"x-codex-turn-metadata":   codexModelTestTurnMetadata(sessionID, fp.codexInstallationID()),
 		}
 		req.ClientMetadata, _ = json.Marshal(metadata)
 	}
@@ -1321,7 +1321,7 @@ func synthesizeCodexModelTestInput(messages []transformermodel.Message) json.Raw
 	return raw
 }
 
-func applyCodexSessionHeaderDefaults(headers http.Header, req *transformermodel.InternalLLMRequest) {
+func applyCodexSessionHeaderDefaults(headers http.Header, req *transformermodel.InternalLLMRequest, installationID string) {
 	if headers == nil || req == nil || req.PromptCacheKey == nil {
 		return
 	}
@@ -1335,21 +1335,16 @@ func applyCodexSessionHeaderDefaults(headers http.Header, req *transformermodel.
 	setHeaderIfMissing(headers, "Thread-Id", sessionID)
 	setHeaderIfMissing(headers, "X-Client-Request-Id", sessionID)
 	setHeaderIfMissing(headers, "X-Codex-Window-Id", sessionID+":0")
-	setHeaderIfMissing(headers, "X-Codex-Turn-Metadata", codexModelTestTurnMetadata(sessionID))
+	setHeaderIfMissing(headers, "X-Codex-Turn-Metadata", codexModelTestTurnMetadata(sessionID, installationID))
 }
 
-func codexModelTestTurnMetadata(sessionID string) string {
-	metadata := map[string]any{
-		"session_id":              sessionID,
-		"thread_id":               sessionID,
-		"thread_source":           "user",
-		"turn_id":                 uuid.NewString(),
-		"workspaces":              map[string]any{},
-		"sandbox":                 "none",
-		"turn_started_at_unix_ms": time.Now().UnixMilli(),
-	}
-	out, _ := json.Marshal(metadata)
-	return string(out)
+func codexModelTestTurnMetadata(sessionID, installationID string) string {
+	// Same shared helper the relay forward path uses, so a channel test's codex
+	// turn-metadata is byte-shape-identical to real traffic (real serde key order, no
+	// workspaces for a synthesized identity).
+	return transformermodel.BuildCodexTurnMetadata(
+		installationID, sessionID, uuid.NewString(), transformermodel.CodexDefaultSandbox, time.Now().UnixMilli(),
+	)
 }
 
 func setHeaderIfMissing(headers http.Header, key, value string) {

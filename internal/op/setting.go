@@ -16,16 +16,22 @@ var settingLegacyDefaultUpgrades = map[model.SettingKey]map[string]string{
 	model.SettingKeyClaudeHeaderUserAgent: {
 		model.LegacyDefaultClaudeHeaderUserAgent2168: model.DefaultClaudeHeaderUserAgent,
 		model.LegacyDefaultClaudeHeaderUserAgent2126: model.DefaultClaudeHeaderUserAgent,
+		model.LegacyDefaultClaudeHeaderUserAgent2178: model.DefaultClaudeHeaderUserAgent,
 	},
 	model.SettingKeyClaudeHeaderPackage: {
 		model.LegacyDefaultClaudeHeaderPackage0810: model.DefaultClaudeHeaderPackageVersion,
 	},
+	model.SettingKeyClaudeHeaderRuntime: {
+		model.LegacyDefaultClaudeHeaderRuntimeV2430: model.DefaultClaudeHeaderRuntimeVersion,
+	},
 	model.SettingKeyCodexHeaderUserAgent: {
 		model.LegacyDefaultCodexHeaderUserAgent0133:      model.DefaultCodexHeaderUserAgent,
 		model.LegacyDefaultCodexHeaderUserAgentCliRs0114: model.DefaultCodexHeaderUserAgent,
+		model.LegacyDefaultCodexHeaderUserAgent0132:      model.DefaultCodexHeaderUserAgent,
 	},
 	model.SettingKeyCodexHeaderBetaFeatures: {
-		model.LegacyDefaultCodexHeaderBetaFeaturesMultiAgent: model.DefaultCodexHeaderBetaFeatures,
+		model.LegacyDefaultCodexHeaderBetaFeaturesMultiAgent:           model.DefaultCodexHeaderBetaFeatures,
+		model.LegacyDefaultCodexHeaderBetaFeaturesTerminalResizeReflow: model.DefaultCodexHeaderBetaFeatures,
 	},
 	model.SettingKeyRelayStreamDataTimeoutSec: {
 		model.LegacyDefaultRelayStreamDataIntervalTimeoutSeconds: model.DefaultRelayStreamDataIntervalTimeoutSeconds,

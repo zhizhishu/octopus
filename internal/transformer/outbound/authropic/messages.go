@@ -570,9 +570,8 @@ const claudeBillingHeaderPrefix = "x-anthropic-billing-header:"
 // guards against drift (this package cannot import internal/model: that would be an
 // import cycle, since internal/model already depends on this package).
 const (
-	ClaudeCLIVersion       = "2.1.178"
-	ClaudeCLIVersionSuffix = "a3f"
-	ClaudeCch              = "c68a9"
+	ClaudeCLIVersion       = "2.1.198"
+	ClaudeCLIVersionSuffix = "542"
 )
 
 // claudeBillingHeaderText returns the Claude CLI billing-header system block.
@@ -582,7 +581,7 @@ const (
 func claudeBillingHeaderText() string {
 	return claudeBillingHeaderPrefix +
 		" cc_version=" + ClaudeCLIVersion + "." + ClaudeCLIVersionSuffix +
-		"; cc_entrypoint=sdk-cli; cch=" + ClaudeCch + ";"
+		"; cc_entrypoint=sdk-cli;"
 }
 
 // claudeAgentIdentityText is the Claude Code agent-identity system block. Real

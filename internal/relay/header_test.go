@@ -368,7 +368,6 @@ func TestClaudeHeaderDefaultsUseCurrentCLIBetaShape(t *testing.T) {
 		"context-management-2025-06-27",
 		"thinking-token-count-2026-05-13",
 		"effort-2025-11-24",
-		"structured-outputs-2025-12-15",
 	} {
 		if !strings.Contains(beta, want) {
 			t.Fatalf("expected beta %q in %q", want, beta)
@@ -417,7 +416,7 @@ func TestCopyHeadersToUpstreamFiltersClientTimeoutHeaders(t *testing.T) {
 }
 
 // TestClaudeFingerprintSessionHeaderMatchesBodyUserID pins that the synthesized
-// Claude fingerprint matches the real claude-cli/2.1.178 wire shape: the upstream
+// Claude fingerprint matches the real claude-cli/2.1.198 wire shape: the upstream
 // User-Agent is the current CLI version, and the X-Claude-Code-Session-Id header is
 // a UUID equal to the session_id embedded in body metadata.user_id (real Claude Code
 // emits one UUID in both places — a 32-hex header that disagreed with the body was a

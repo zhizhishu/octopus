@@ -13,14 +13,14 @@ import (
 
 const (
 	defaultClaudeUserAgent      = dbmodel.DefaultClaudeHeaderUserAgent
-	defaultClaudePackageVersion = "0.94.0"
-	defaultClaudeRuntimeVersion = "v24.3.0"
+	defaultClaudePackageVersion = dbmodel.DefaultClaudeHeaderPackageVersion
+	defaultClaudeRuntimeVersion = dbmodel.DefaultClaudeHeaderRuntimeVersion
 	defaultClaudeOS             = "Windows"
 	defaultClaudeArch           = "x64"
 	defaultClaudeTimeout        = "600"
 	defaultClaudeOneMillionBeta = model.AnthropicOneMillionBeta
 	defaultCodexUserAgent       = dbmodel.DefaultCodexHeaderUserAgent
-	defaultCodexBetaFeatures    = "terminal_resize_reflow"
+	defaultCodexBetaFeatures    = dbmodel.DefaultCodexHeaderBetaFeatures
 	defaultCodexOriginator      = "codex_exec"
 )
 
@@ -221,7 +221,7 @@ func applyCodexHeaderDefaultsWithFingerprint(req *http.Request, internalRequest 
 	setHeaderIfMissing(req.Header, "Originator", fp.codexOriginator())
 	setHeaderIfMissing(req.Header, "User-Agent", fp.codexUserAgent())
 	setHeaderIfMissing(req.Header, "X-Codex-Beta-Features", fp.codexBetaFeatures())
-	applyCodexSessionHeaders(req.Header, internalRequest)
+	applyCodexSessionHeaders(req.Header, internalRequest, fp.codexInstallationID())
 }
 
 func setHeaderIfMissing(headers http.Header, key, value string) {

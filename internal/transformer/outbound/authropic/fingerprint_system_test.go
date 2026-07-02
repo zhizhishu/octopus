@@ -144,16 +144,13 @@ func TestSystemFingerprintSuppressedWhenCloakOff(t *testing.T) {
 }
 
 // TestClaudeBillingHeaderUsesNamedConstants pins that the billing header cc_version
-// and cch are rendered from the named fingerprint constants rather than a
-// re-introduced inline literal, so a version bump is a single-constant edit. The
-// cross-package guarantee that ClaudeCLIVersion equals the CLI user-agent version
-// lives in the relay package (this package cannot import internal/model: cycle).
+// is rendered from the named fingerprint constants rather than a re-introduced inline
+// literal, so a version bump is a single-constant edit. The cross-package guarantee
+// that ClaudeCLIVersion equals the CLI user-agent version lives in the relay package
+// (this package cannot import internal/model: cycle).
 func TestClaudeBillingHeaderUsesNamedConstants(t *testing.T) {
 	got := claudeBillingHeaderText()
 	if want := "cc_version=" + ClaudeCLIVersion + "." + ClaudeCLIVersionSuffix + ";"; !strings.Contains(got, want) {
-		t.Fatalf("billing header %q must carry %q", got, want)
-	}
-	if want := "cch=" + ClaudeCch + ";"; !strings.Contains(got, want) {
 		t.Fatalf("billing header %q must carry %q", got, want)
 	}
 }

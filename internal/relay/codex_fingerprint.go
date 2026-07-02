@@ -107,7 +107,7 @@ func stableCodexUUID(kind, seed string) string {
 	return uuid.NewSHA1(uuid.NameSpaceOID, []byte("octopus:codex:"+strings.TrimSpace(kind)+":"+seed)).String()
 }
 
-func applyCodexSessionHeaders(headers http.Header, req *transformerModel.InternalLLMRequest) {
+func applyCodexSessionHeaders(headers http.Header, req *transformerModel.InternalLLMRequest, installationID string) {
 	if headers == nil || req == nil {
 		return
 	}
@@ -121,7 +121,7 @@ func applyCodexSessionHeaders(headers http.Header, req *transformerModel.Interna
 	setHeaderIfMissing(headers, "Thread-Id", sessionID)
 	setHeaderIfMissing(headers, "X-Client-Request-Id", sessionID)
 	setHeaderIfMissing(headers, "X-Codex-Window-Id", sessionID+":0")
-	if turnMetadata := codexTurnMetadataFromRequest(req, sessionID); turnMetadata != "" {
+	if turnMetadata := codexTurnMetadataFromRequest(req, sessionID, installationID); turnMetadata != "" {
 		setHeaderIfMissing(headers, "X-Codex-Turn-Metadata", turnMetadata)
 	}
 }
@@ -157,12 +157,12 @@ func codexSessionIDFromRequest(req *transformerModel.InternalLLMRequest) string 
 	return ""
 }
 
-func codexTurnMetadataFromRequest(req *transformerModel.InternalLLMRequest, sessionID string) string {
+func codexTurnMetadataFromRequest(req *transformerModel.InternalLLMRequest, sessionID, installationID string) string {
 	metadata := decodeCodexClientMetadata(req.ClientMetadata)
 	if value := metadataStringValue(metadata, codexMetadataTurnMetadata); value != "" {
-		return ensureCodexTurnMetadata(value, sessionID)
+		return ensureCodexTurnMetadata(value, sessionID, installationID)
 	}
-	return synthesizeCodexTurnMetadata(sessionID)
+	return synthesizeCodexTurnMetadata(sessionID, installationID)
 }
 
 func ensureCodexClientMetadata(raw json.RawMessage, sessionID, installationID string) json.RawMessage {
@@ -176,7 +176,7 @@ func ensureCodexClientMetadata(raw json.RawMessage, sessionID, installationID st
 	if metadataStringValue(metadata, codexMetadataWindowID) == "" {
 		metadata[codexMetadataWindowID] = sessionID + ":0"
 	}
-	metadata[codexMetadataTurnMetadata] = ensureCodexTurnMetadata(metadataStringValue(metadata, codexMetadataTurnMetadata), sessionID)
+	metadata[codexMetadataTurnMetadata] = ensureCodexTurnMetadata(metadataStringValue(metadata, codexMetadataTurnMetadata), sessionID, installationID)
 
 	out, err := json.Marshal(metadata)
 	if err != nil {
@@ -185,54 +185,25 @@ func ensureCodexClientMetadata(raw json.RawMessage, sessionID, installationID st
 	return out
 }
 
-func ensureCodexTurnMetadata(raw string, sessionID string) string {
-	if strings.TrimSpace(raw) == "" {
-		return synthesizeCodexTurnMetadata(sessionID)
+func ensureCodexTurnMetadata(raw, sessionID, installationID string) string {
+	// A genuine codex client already sends a complete, correctly-ordered turn-metadata
+	// (real serde struct order, with real workspace git data when inside a repo). Preserve
+	// it byte-for-byte: decoding it into a Go map and re-marshalling would reorder the keys
+	// alphabetically — a non-codex tell — and could not reproduce the nested workspace data.
+	// Only synthesize when it is absent (a non-codex client being cloaked as codex), where
+	// there is no repo workspace so the canonical no-workspaces shape is authentic.
+	if trimmed := strings.TrimSpace(raw); trimmed != "" && json.Valid([]byte(trimmed)) {
+		return trimmed
 	}
-	turn := decodeCodexTurnMetadata(raw)
-	if turn == nil {
-		return synthesizeCodexTurnMetadata(sessionID)
-	}
-	if metadataStringValue(turn, "session_id") == "" {
-		turn["session_id"] = sessionID
-	}
-	if metadataStringValue(turn, "thread_id") == "" {
-		turn["thread_id"] = sessionID
-	}
-	if metadataStringValue(turn, "thread_source") == "" {
-		turn["thread_source"] = "user"
-	}
-	if metadataStringValue(turn, "turn_id") == "" {
-		turn["turn_id"] = uuid.NewString()
-	}
-	if _, ok := turn["workspaces"]; !ok {
-		turn["workspaces"] = map[string]any{}
-	}
-	if metadataStringValue(turn, "sandbox") == "" {
-		turn["sandbox"] = "none"
-	}
-	if _, ok := turn["turn_started_at_unix_ms"]; !ok {
-		turn["turn_started_at_unix_ms"] = time.Now().UnixMilli()
-	}
-	out, err := json.Marshal(turn)
-	if err != nil {
-		return raw
-	}
-	return string(out)
+	return synthesizeCodexTurnMetadata(sessionID, installationID)
 }
 
-func synthesizeCodexTurnMetadata(sessionID string) string {
-	turn := map[string]any{
-		"session_id":              sessionID,
-		"thread_id":               sessionID,
-		"thread_source":           "user",
-		"turn_id":                 uuid.NewString(),
-		"workspaces":              map[string]any{},
-		"sandbox":                 "none",
-		"turn_started_at_unix_ms": time.Now().UnixMilli(),
-	}
-	out, _ := json.Marshal(turn)
-	return string(out)
+func synthesizeCodexTurnMetadata(sessionID, installationID string) string {
+	// Hand-built in the real codex serde key order via the shared helper (a Go map would
+	// marshal alphabetically, a tell). No workspaces key: a cloaked client has no repo.
+	return transformerModel.BuildCodexTurnMetadata(
+		installationID, sessionID, uuid.NewString(), transformerModel.CodexDefaultSandbox, time.Now().UnixMilli(),
+	)
 }
 
 func decodeCodexClientMetadata(raw json.RawMessage) map[string]any {

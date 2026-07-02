@@ -4,11 +4,16 @@ import "strings"
 
 const AnthropicOneMillionBeta = "context-1m-2025-08-07"
 
-// Beta sets mirror the real Claude CLI (claude-cli/2.1.168) anthropic-beta header
-// captured in .codex-runtime/claude-cli-shape-capture/.../capture.summary.safe.json;
-// the order matches the wire exactly so AnyRouter shape checks see an authentic
-// Claude Code request. Do not drop thinking-token-count / mid-conversation-system:
-// the real CLI sends both.
+// Beta sets mirror the real Claude CLI (claude-cli/2.1.198) anthropic-beta header
+// captured on the wire from a genuine `claude -p` request (flagship model, e.g.
+// claude-opus-4-8 / claude-sonnet-5); the order matches the wire exactly so AnyRouter
+// shape checks see an authentic Claude Code request. 2.1.198 DROPPED advisor-tool and
+// structured-outputs from the declared set that 2.1.168 carried — sending either is a
+// stale-client tell — and no longer sends thinking-token-count/mid-conversation-system
+// as optional: the flagship set is these seven. NOTE: real 2.1.198 varies this set by
+// model (haiku/older-sonnet send a reduced set with claude-code-20250219 last); oct
+// serves the flagship shape for every model, which AnyRouter accepts (its shape check
+// is not per-model strict).
 var anthropicClaudeCodeBaseBetas = []string{
 	"claude-code-20250219",
 	"interleaved-thinking-2025-05-14",
@@ -16,24 +21,21 @@ var anthropicClaudeCodeBaseBetas = []string{
 	"context-management-2025-06-27",
 	"prompt-caching-scope-2026-01-05",
 	"mid-conversation-system-2026-04-07",
-	"advisor-tool-2026-03-01",
 	"effort-2025-11-24",
-	"structured-outputs-2025-12-15",
 }
 
-// One-million variant inserts context-1m-2025-08-07 in the same wire position the
-// real CLI uses (after mid-conversation-system, before advisor-tool).
+// One-million variant inserts context-1m-2025-08-07 in the exact wire position the real
+// 2.1.198 CLI uses: position 2, immediately after claude-code-20250219 (captured from a
+// genuine claude-opus-4-8[1m] request), NOT after mid-conversation-system as 2.1.168 did.
 var anthropicClaudeCodeOneMillionBetas = []string{
 	"claude-code-20250219",
+	AnthropicOneMillionBeta,
 	"interleaved-thinking-2025-05-14",
 	"thinking-token-count-2026-05-13",
 	"context-management-2025-06-27",
 	"prompt-caching-scope-2026-01-05",
 	"mid-conversation-system-2026-04-07",
-	AnthropicOneMillionBeta,
-	"advisor-tool-2026-03-01",
 	"effort-2025-11-24",
-	"structured-outputs-2025-12-15",
 }
 
 func AnthropicClaudeCodeBetas(wantsOneMillion bool) []string {

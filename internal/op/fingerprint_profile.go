@@ -166,6 +166,27 @@ func fingerprintProfileRefreshCache(ctx context.Context) error {
 	if err := db.GetDB().WithContext(ctx).Find(&profiles).Error; err != nil {
 		return fmt.Errorf("failed to reload fingerprint profiles: %w", err)
 	}
+	// One-time refresh of the seeded "Linux 真机" preset. An earlier build seeded it with an
+	// older captured identity (claude-cli/2.1.186 + codex_exec/0.142.0, node v24.3.0). If a
+	// deployment still carries EXACTLY that tuple (i.e. the operator never edited the preset),
+	// converge it to the current captured identity (2.1.198 / 0.142.5 / node v26.3.0) so live
+	// deployments pick up the refreshed fingerprint on restart without a manual UI edit. The
+	// full old tuple is matched, so an operator-customised preset never matches and is left
+	// untouched. Package/OS/Arch/Timeout/BetaFeatures are unchanged between the two captures.
+	for i := range profiles {
+		p := &profiles[i]
+		if p.Name == "Linux 真机" &&
+			p.ClaudeUserAgent == "claude-cli/2.1.186 (external, sdk-cli)" &&
+			p.ClaudeRuntimeVersion == "v24.3.0" &&
+			p.CodexUserAgent == "codex_exec/0.142.0 (Debian 12.0.0; x86_64) unknown (codex_exec; 0.142.0)" {
+			p.ClaudeUserAgent = "claude-cli/2.1.198 (external, sdk-cli)"
+			p.ClaudeRuntimeVersion = "v26.3.0"
+			p.CodexUserAgent = "codex_exec/0.142.5 (Debian 12.0.0; x86_64) unknown (codex_exec; 0.142.5)"
+			if err := db.GetDB().WithContext(ctx).Save(p).Error; err != nil {
+				return fmt.Errorf("failed to refresh Linux 真机 fingerprint profile: %w", err)
+			}
+		}
+	}
 	// Seed ONE built-in profile ("Linux 真机") on first boot. The "default
 	// (Windows)" identity is NOT a row: the channel dropdown's ProfileID=0 option
 	// already IS that — it resolves to the per-instance seed + global header
@@ -175,8 +196,8 @@ func fingerprintProfileRefreshCache(ctx context.Context) error {
 	// is "默认(Windows)" (=ProfileID 0) + "Linux 真机". Only seed when empty so an
 	// operator-edited deployment is never overwritten.
 	//
-	// "Linux 真机": the packet-captured second identity (claude-cli 2.1.186 /
-	// codex_exec 0.142.0 on Linux/Debian). Its seed is DETERMINISTICALLY derived
+	// "Linux 真机": the packet-captured second identity (claude-cli 2.1.198 /
+	// codex_exec 0.142.5 on Linux/Debian). Its seed is DETERMINISTICALLY derived
 	// from the instance seed but DIFFERENT from the global default's, so the two
 	// devices get unrelated, stable-across-restart device_id / installation ids
 	// that never collide. The claude anthropic-beta SET is intentionally not part of
@@ -188,14 +209,14 @@ func fingerprintProfileRefreshCache(ctx context.Context) error {
 			{
 				Name:                 "Linux 真机",
 				Seed:                 deriveProfileSeed(2),
-				ClaudeUserAgent:      "claude-cli/2.1.186 (external, sdk-cli)",
+				ClaudeUserAgent:      "claude-cli/2.1.198 (external, sdk-cli)",
 				ClaudePackageVersion: "0.94.0",
-				ClaudeRuntimeVersion: "v24.3.0",
+				ClaudeRuntimeVersion: "v26.3.0",
 				ClaudeOS:             "Linux",
 				ClaudeArch:           "x64",
 				ClaudeTimeout:        "600",
 				ClaudeStabilize:      &stabilize,
-				CodexUserAgent:       "codex_exec/0.142.0 (Debian 12.0.0; x86_64) unknown (codex_exec; 0.142.0)",
+				CodexUserAgent:       "codex_exec/0.142.5 (Debian 12.0.0; x86_64) unknown (codex_exec; 0.142.5)",
 				CodexOriginator:      "codex_exec",
 				CodexBetaFeatures:    "remote_compaction_v2",
 			},

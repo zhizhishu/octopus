@@ -86,13 +86,13 @@ type Setting struct {
 const SettingSecretMaskValue = "__OCTOPUS_SECRET_KEPT__"
 
 const (
-	DefaultCodexHeaderUserAgent = "codex_exec/0.132.0 (Windows 10.0.26200; x86_64) unknown (codex_exec; 0.132.0)"
+	DefaultCodexHeaderUserAgent = "codex_exec/0.142.5 (Windows 10.0.26200; x86_64) unknown (codex_exec; 0.142.5)"
 
 	// DefaultClaudeCLIVersion is the named Claude Code CLI version used to build the
 	// user-agent below. The Anthropic outbound billing-header cc_version carries the
 	// same version (authropic.ClaudeCLIVersion); TestClaudeFingerprintVersionConsistency
 	// asserts the two never drift apart.
-	DefaultClaudeCLIVersion = "2.1.178"
+	DefaultClaudeCLIVersion = "2.1.198"
 
 	// DefaultClaudeHeaderUserAgent is the locally packet-verified Claude Code CLI
 	// user-agent (claude-cli/<DefaultClaudeCLIVersion>).
@@ -118,9 +118,25 @@ const (
 	// legacy-upgrade map (single authority), not only via a read-time patch.
 	LegacyDefaultClaudeHeaderUserAgent2126 = "claude-cli/2.1.126 (external, claude-vscode, agent-sdk/0.2.126)"
 
+	// LegacyDefaultClaudeHeaderUserAgent2178 was the previous Claude header default
+	// (claude-cli/2.1.178). 2.1.198 superseded it (it dropped the billing cch field and
+	// the advisor-tool/structured-outputs betas); converge upgraded deployments to the
+	// current UA via the DB legacy-upgrade map.
+	LegacyDefaultClaudeHeaderUserAgent2178 = "claude-cli/2.1.178 (external, sdk-cli)"
+
 	// DefaultClaudeHeaderPackageVersion is the current X-Stainless-Package-Version
-	// default (the value seeded into SettingKeyClaudeHeaderPackage).
+	// default (the value seeded into SettingKeyClaudeHeaderPackage). Unchanged from the
+	// 2.1.178 wire: 2.1.198 still reports 0.94.0.
 	DefaultClaudeHeaderPackageVersion = "0.94.0"
+
+	// DefaultClaudeHeaderRuntimeVersion is the current X-Stainless-Runtime-Version default
+	// — the bundled node runtime a genuine claude-cli/2.1.198 reports on the wire.
+	DefaultClaudeHeaderRuntimeVersion = "v26.3.0"
+
+	// LegacyDefaultClaudeHeaderRuntimeV2430 was the X-Stainless-Runtime-Version paired with
+	// the 2.1.178 UA (node v24.3.0). 2.1.198 bundles node v26.3.0; converge upgraded
+	// deployments so the runtime version does not drift apart from the UA.
+	LegacyDefaultClaudeHeaderRuntimeV2430 = "v24.3.0"
 
 	// LegacyDefaultClaudeHeaderPackage0810 was the X-Stainless-Package-Version paired
 	// with the 2.1.126 UA above; migrate it to DefaultClaudeHeaderPackageVersion.
@@ -133,12 +149,22 @@ const (
 	// treat it as a product default so it converges to DefaultCodexHeaderUserAgent.
 	LegacyDefaultCodexHeaderUserAgentCliRs0114 = "codex_cli_rs/0.114.0 (Mac OS 14.2.0; x86_64) vscode/1.111.0"
 
-	// DefaultCodexHeaderBetaFeatures is the current Codex beta-feature header value.
-	DefaultCodexHeaderBetaFeatures = "terminal_resize_reflow"
+	// LegacyDefaultCodexHeaderUserAgent0132 was the previous Codex header default
+	// (codex_exec/0.132.0 on Windows). 0.142.5 superseded it; converge upgraded deployments.
+	LegacyDefaultCodexHeaderUserAgent0132 = "codex_exec/0.132.0 (Windows 10.0.26200; x86_64) unknown (codex_exec; 0.132.0)"
+
+	// DefaultCodexHeaderBetaFeatures is the current Codex beta-feature header value
+	// (codex_exec 0.142.5, packet-verified on the wire).
+	DefaultCodexHeaderBetaFeatures = "remote_compaction_v2"
 
 	// LegacyDefaultCodexHeaderBetaFeaturesMultiAgent was the Codex beta-feature
 	// default paired with the early macOS UA above; migrate it to the current value.
 	LegacyDefaultCodexHeaderBetaFeaturesMultiAgent = "multi_agent"
+
+	// LegacyDefaultCodexHeaderBetaFeaturesTerminalResizeReflow was the Codex beta-feature
+	// default paired with the codex_exec 0.132.0 UA; 0.142.5 replaced it with
+	// remote_compaction_v2. Converge upgraded deployments to the current value.
+	LegacyDefaultCodexHeaderBetaFeaturesTerminalResizeReflow = "terminal_resize_reflow"
 )
 
 func DefaultSettings() []Setting {
@@ -159,7 +185,7 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyResponsesSessionTTL, Value: "3600"},
 		{Key: SettingKeyClaudeHeaderUserAgent, Value: DefaultClaudeHeaderUserAgent},
 		{Key: SettingKeyClaudeHeaderPackage, Value: DefaultClaudeHeaderPackageVersion},
-		{Key: SettingKeyClaudeHeaderRuntime, Value: "v24.3.0"},
+		{Key: SettingKeyClaudeHeaderRuntime, Value: DefaultClaudeHeaderRuntimeVersion},
 		{Key: SettingKeyClaudeHeaderOS, Value: "Windows"},
 		{Key: SettingKeyClaudeHeaderArch, Value: "x64"},
 		{Key: SettingKeyClaudeHeaderTimeout, Value: "600"},
