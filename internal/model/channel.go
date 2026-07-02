@@ -246,16 +246,22 @@ func (c *Channel) GetChannelKey() ChannelKey {
 
 // ChannelKeyCooldown is how long a key is skipped after a 429, and
 // ChannelKeyTransientCooldown the (slightly shorter) skip for transient 5xx
-// (502/503/504/520/529). Both are deliberately short: relay-style upstreams
-// (e.g. anyrouter) return a bare 429/503 "Service Unavailable" for transient
-// backend overload — with no Retry-After — so a multi-minute bench would needlessly
-// shed a key that recovers in seconds and make "just retry" never succeed. A
-// genuine provider rate-limit ships a Retry-After, which the runtime telemetry path
-// honours and escalates over these floors (exponential backoff). Package defaults,
-// not wired to a setting.
+// (502/503/504/520/529). Both are deliberately short and aligned with the runtime
+// telemetry backoff base (429→5s, 5xx→3s): relay-style upstreams (e.g. anyrouter)
+// return a bare 429/503 "Service Unavailable" for transient backend overload — with
+// no Retry-After — that clears in seconds. On a single-key route these windows are
+// the ONLY thing between the client and the upstream, so a long bench (the old 60s)
+// turned one transient 429 into a wall of "no available channel" that outlasted a
+// CLI's own retry budget — the exact opposite of hitting anyrouter directly, where
+// the client just backs off a few seconds and gets straight back in. Keeping the
+// window at a few seconds lets the caller's native retry land right after it and
+// succeed like a direct connection, while a genuine sustained rate-limit still
+// escalates via the runtime telemetry path (exponential backoff, honoured
+// Retry-After) and the per-model circuit breaker. Package defaults, not wired to a
+// setting.
 var (
-	ChannelKeyCooldown          = 60 * time.Second
-	ChannelKeyTransientCooldown = 30 * time.Second
+	ChannelKeyCooldown          = 5 * time.Second
+	ChannelKeyTransientCooldown = 3 * time.Second
 	// ChannelKeyAuthErrorCooldown quarantines a key whose last upstream status was
 	// 401 (the key itself is invalid/revoked — affects every model, unlike a
 	// per-model rate-limit/circuit trip). It is long enough to stop burning requests

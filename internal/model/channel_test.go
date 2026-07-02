@@ -11,7 +11,7 @@ func TestChannelGetAvailableChannelKeysSkipsRecent429AndSortsByCost(t *testing.T
 	now := time.Now().Unix()
 	channel := Channel{
 		Keys: []ChannelKey{
-			{ID: 1, Enabled: true, ChannelKey: "recent-429", StatusCode: 429, LastUseTimeStamp: now - 30, TotalCost: 0},
+			{ID: 1, Enabled: true, ChannelKey: "recent-429", StatusCode: 429, LastUseTimeStamp: now - 2, TotalCost: 0},
 			{ID: 2, Enabled: true, ChannelKey: "higher-cost", TotalCost: 2},
 			{ID: 3, Enabled: true, ChannelKey: "lower-cost", TotalCost: 1},
 			{ID: 4, Enabled: false, ChannelKey: "disabled", TotalCost: 0},
@@ -79,13 +79,13 @@ func TestChannelGetAvailableChannelKeysCooldownIsStatusAware(t *testing.T) {
 	now := time.Now().Unix()
 	channel := Channel{
 		Keys: []ChannelKey{
-			// transient 5xx within the short (30s) window are skipped
-			{ID: 1, Enabled: true, ChannelKey: "recent-503", StatusCode: 503, LastUseTimeStamp: now - 10, TotalCost: 0},
-			{ID: 2, Enabled: true, ChannelKey: "recent-529", StatusCode: 529, LastUseTimeStamp: now - 10, TotalCost: 0},
-			// a transient 5xx older than 30s is back (the short window passed)
+			// transient 5xx within the short (3s) window are skipped
+			{ID: 1, Enabled: true, ChannelKey: "recent-503", StatusCode: 503, LastUseTimeStamp: now - 1, TotalCost: 0},
+			{ID: 2, Enabled: true, ChannelKey: "recent-529", StatusCode: 529, LastUseTimeStamp: now - 1, TotalCost: 0},
+			// a transient 5xx older than the 3s window is back (the short window passed)
 			{ID: 3, Enabled: true, ChannelKey: "expired-503", StatusCode: 503, LastUseTimeStamp: now - 60, TotalCost: 5},
-			// a recent 429 (within the 60s window) is skipped
-			{ID: 4, Enabled: true, ChannelKey: "recent-429", StatusCode: 429, LastUseTimeStamp: now - 30, TotalCost: 9},
+			// a recent 429 (within the 5s window) is skipped
+			{ID: 4, Enabled: true, ChannelKey: "recent-429", StatusCode: 429, LastUseTimeStamp: now - 2, TotalCost: 9},
 			{ID: 5, Enabled: true, ChannelKey: "fresh", StatusCode: 0, TotalCost: 1},
 		},
 	}
@@ -109,7 +109,7 @@ func TestChannelGetAvailableChannelKeysNeverBlacksOutSingleKey(t *testing.T) {
 	now := time.Now().Unix()
 	channel := Channel{
 		Keys: []ChannelKey{
-			{ID: 1, Enabled: true, ChannelKey: "only-key", StatusCode: 503, LastUseTimeStamp: now - 5, TotalCost: 0},
+			{ID: 1, Enabled: true, ChannelKey: "only-key", StatusCode: 503, LastUseTimeStamp: now - 1, TotalCost: 0},
 		},
 	}
 	keys := channel.GetAvailableChannelKeys()
@@ -161,7 +161,7 @@ func TestChannelGetAvailableChannelKeysStickyFallsThroughWhilePrimaryCools(t *te
 	channel := Channel{
 		KeySelectStrategy: KeySelectStrategySticky,
 		Keys: []ChannelKey{
-			{ID: 1, Enabled: true, ChannelKey: "primary-429", StatusCode: 429, LastUseTimeStamp: now - 5, TotalCost: 0},
+			{ID: 1, Enabled: true, ChannelKey: "primary-429", StatusCode: 429, LastUseTimeStamp: now - 2, TotalCost: 0},
 			{ID: 2, Enabled: true, ChannelKey: "backup", StatusCode: 0, TotalCost: 50},
 			{ID: 3, Enabled: true, ChannelKey: "backup2", StatusCode: 0, TotalCost: 0},
 		},
@@ -184,7 +184,7 @@ func singleCooledKeyChannel(id int) Channel {
 	return Channel{
 		ID: id,
 		Keys: []ChannelKey{
-			{ID: 1, Enabled: true, ChannelKey: "only-key", StatusCode: 503, LastUseTimeStamp: time.Now().Unix() - 5, TotalCost: 0},
+			{ID: 1, Enabled: true, ChannelKey: "only-key", StatusCode: 503, LastUseTimeStamp: time.Now().Unix() - 1, TotalCost: 0},
 		},
 	}
 }
