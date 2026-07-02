@@ -112,6 +112,62 @@ func TestSettingRefreshCacheUpgradesLegacyMacCodexDefaults(t *testing.T) {
 	}
 }
 
+// TestSettingRefreshCacheUpgradesLegacyClaudeUserAgentAndPackage pins F2: the legacy
+// claude UA 2.1.126 and package 0.81.0 now converge to the current default IN THE DB at
+// startup (single authority), not only via a relay read-time patch. This keeps the admin
+// settings display (SettingList / SettingGetString, which reads this cache) equal to what
+// is actually sent on the wire.
+func TestSettingRefreshCacheUpgradesLegacyClaudeUserAgentAndPackage(t *testing.T) {
+	ctx := setupSettingTest(t)
+
+	seed := []model.Setting{
+		{Key: model.SettingKeyClaudeHeaderUserAgent, Value: model.LegacyDefaultClaudeHeaderUserAgent2126},
+		{Key: model.SettingKeyClaudeHeaderPackage, Value: model.LegacyDefaultClaudeHeaderPackage0810},
+	}
+	for i := range seed {
+		if err := db.GetDB().WithContext(ctx).Create(&seed[i]).Error; err != nil {
+			t.Fatalf("seed %s: %v", seed[i].Key, err)
+		}
+	}
+
+	if err := settingRefreshCache(ctx); err != nil {
+		t.Fatalf("refresh setting cache: %v", err)
+	}
+
+	// Cache (== SettingList display == the value relay settingString reads) must show the
+	// converged current default.
+	ua, err := SettingGetString(model.SettingKeyClaudeHeaderUserAgent)
+	if err != nil {
+		t.Fatalf("get claude ua: %v", err)
+	}
+	if ua != model.DefaultClaudeHeaderUserAgent {
+		t.Fatalf("legacy claude UA must upgrade to %q, got %q", model.DefaultClaudeHeaderUserAgent, ua)
+	}
+	pkg, err := SettingGetString(model.SettingKeyClaudeHeaderPackage)
+	if err != nil {
+		t.Fatalf("get claude package: %v", err)
+	}
+	if pkg != model.DefaultClaudeHeaderPackageVersion {
+		t.Fatalf("legacy claude package must upgrade to %q, got %q", model.DefaultClaudeHeaderPackageVersion, pkg)
+	}
+
+	// The DB must be rewritten too (not just the cache), so a restart / SettingList never
+	// re-surfaces the legacy value.
+	var persistedUA, persistedPkg model.Setting
+	if err := db.GetDB().WithContext(ctx).First(&persistedUA, "key = ?", model.SettingKeyClaudeHeaderUserAgent).Error; err != nil {
+		t.Fatalf("load persisted claude ua: %v", err)
+	}
+	if persistedUA.Value != model.DefaultClaudeHeaderUserAgent {
+		t.Fatalf("persisted claude UA must be %q, got %q", model.DefaultClaudeHeaderUserAgent, persistedUA.Value)
+	}
+	if err := db.GetDB().WithContext(ctx).First(&persistedPkg, "key = ?", model.SettingKeyClaudeHeaderPackage).Error; err != nil {
+		t.Fatalf("load persisted claude package: %v", err)
+	}
+	if persistedPkg.Value != model.DefaultClaudeHeaderPackageVersion {
+		t.Fatalf("persisted claude package must be %q, got %q", model.DefaultClaudeHeaderPackageVersion, persistedPkg.Value)
+	}
+}
+
 func TestSettingRefreshCacheUpgradesLegacyStreamDataTimeoutDefault(t *testing.T) {
 	ctx := setupSettingTest(t)
 

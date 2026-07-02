@@ -112,6 +112,20 @@ const (
 	// so upgraded deployments converge to the current fingerprint without a manual edit.
 	LegacyDefaultClaudeHeaderUserAgent2168 = "claude-cli/2.1.168 (external, sdk-cli)"
 
+	// LegacyDefaultClaudeHeaderUserAgent2126 was an even older Claude header default
+	// (claude-cli/2.1.126, the claude-vscode agent-sdk build). Treat it as a product
+	// default so upgraded deployments converge to DefaultClaudeHeaderUserAgent via the DB
+	// legacy-upgrade map (single authority), not only via a read-time patch.
+	LegacyDefaultClaudeHeaderUserAgent2126 = "claude-cli/2.1.126 (external, claude-vscode, agent-sdk/0.2.126)"
+
+	// DefaultClaudeHeaderPackageVersion is the current X-Stainless-Package-Version
+	// default (the value seeded into SettingKeyClaudeHeaderPackage).
+	DefaultClaudeHeaderPackageVersion = "0.94.0"
+
+	// LegacyDefaultClaudeHeaderPackage0810 was the X-Stainless-Package-Version paired
+	// with the 2.1.126 UA above; migrate it to DefaultClaudeHeaderPackageVersion.
+	LegacyDefaultClaudeHeaderPackage0810 = "0.81.0"
+
 	// LegacyDefaultCodexHeaderUserAgentCliRs0114 was an early Codex header default
 	// (codex_cli_rs/0.114.0 on macOS) shipped before the locally packet-verified
 	// codex_exec Windows fingerprint. Deployments seeded with it stayed pinned to the
@@ -144,7 +158,7 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyRelayStreamDataTimeoutSec, Value: defaultRelayStreamDataIntervalTimeoutSeconds()},
 		{Key: SettingKeyResponsesSessionTTL, Value: "3600"},
 		{Key: SettingKeyClaudeHeaderUserAgent, Value: DefaultClaudeHeaderUserAgent},
-		{Key: SettingKeyClaudeHeaderPackage, Value: "0.94.0"},
+		{Key: SettingKeyClaudeHeaderPackage, Value: DefaultClaudeHeaderPackageVersion},
 		{Key: SettingKeyClaudeHeaderRuntime, Value: "v24.3.0"},
 		{Key: SettingKeyClaudeHeaderOS, Value: "Windows"},
 		{Key: SettingKeyClaudeHeaderArch, Value: "x64"},

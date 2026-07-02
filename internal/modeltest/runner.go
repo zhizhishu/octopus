@@ -1002,10 +1002,12 @@ func applyClaudeHeaderDefaults(req *http.Request, internalRequest *transformermo
 	setHeaderIfMissing(req.Header, "X-Stainless-Runtime-Version", fp.claudeRuntimeVersion())
 	setHeaderIfMissing(req.Header, "X-Stainless-Package-Version", fp.claudePackageVersion())
 	setHeaderIfMissing(req.Header, "X-Stainless-Timeout", fp.claudeTimeout())
-	if fp.claudeStabilize() {
-		setHeaderIfMissing(req.Header, "X-Stainless-OS", fp.claudeOS())
-		setHeaderIfMissing(req.Header, "X-Stainless-Arch", fp.claudeArch())
-	}
+	// Always emit X-Stainless-OS / X-Stainless-Arch so a channel/model test is
+	// byte-for-byte identical to the relay forward path, which now sends this pair
+	// unconditionally too. claudeStabilize() no longer gates this pair (kept only for
+	// backward compatibility). See relay.applyClaudeHeaderDefaults for the rationale.
+	setHeaderIfMissing(req.Header, "X-Stainless-OS", fp.claudeOS())
+	setHeaderIfMissing(req.Header, "X-Stainless-Arch", fp.claudeArch())
 	// Build anthropic-beta via the SAME shared helper the relay forward path uses,
 	// so a channel/model test is byte-for-byte identical to real traffic (context-1m
 	// in its real slot, not stuck at position 1). This previously prepended the
@@ -1379,6 +1381,12 @@ func settingString(key dbmodel.SettingKey, fallback string) string {
 	if value == "" {
 		return fallback
 	}
+	// KNOWN HARMLESS RESIDUE: these two legacy read-time overrides are now dead code —
+	// op.settingLegacyDefaultUpgrades converges 2.1.126 / 0.81.0 to the current default
+	// in the DB at startup, so the cache never holds them here. They are intentionally
+	// left in place (they read the SAME converged cache the relay path does, so the two
+	// paths cannot diverge). The relay copy of settingString dropped them; this copy is
+	// kept unchanged to keep the diff scoped.
 	if key == dbmodel.SettingKeyClaudeHeaderUserAgent && value == "claude-cli/2.1.126 (external, claude-vscode, agent-sdk/0.2.126)" {
 		return fallback
 	}

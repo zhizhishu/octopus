@@ -136,10 +136,20 @@ func (ra *relayAttempt) applyClaudeHeaderDefaults(req *http.Request) {
 	setHeaderIfMissing(req.Header, "X-Stainless-Runtime-Version", firstNonEmptyHeader(client.RuntimeVersion, fp.claudeRuntimeVersion()))
 	setHeaderIfMissing(req.Header, "X-Stainless-Package-Version", firstNonEmptyHeader(client.PackageVersion, fp.claudePackageVersion()))
 	setHeaderIfMissing(req.Header, "X-Stainless-Timeout", fp.claudeTimeout())
-	if fp.claudeStabilize() {
-		setHeaderIfMissing(req.Header, "X-Stainless-OS", firstNonEmptyHeader(client.OS, fp.claudeOS()))
-		setHeaderIfMissing(req.Header, "X-Stainless-Arch", firstNonEmptyHeader(client.Arch, fp.claudeArch()))
-	}
+	// Always emit X-Stainless-OS / X-Stainless-Arch. A genuine claude-cli sends both on
+	// every request, and the downstream client's own x-stainless-* were already stripped
+	// as hop-by-hop (shouldForwardClientHeader), so OMITTING them here is itself a
+	// non-CLI tell (a request missing two headers the real CLI always carries). The value
+	// reuses the SAME stable default pair the pinned fingerprint already presents
+	// (fp.claudeOS()/claudeArch() — Windows/x64 by default, profile/setting overridable),
+	// so this introduces no new fingerprint value.
+	// NB: claudeStabilize() (SettingKeyClaudeHeaderStabilize / profile.ClaudeStabilize) is
+	// now INERT for this pair — it no longer suppresses these two headers. The setting,
+	// the profile tri-state field, and the admin toggle are retained only for backward
+	// compatibility. The modeltest channel/test path (modeltest/runner.go) mirrors this
+	// unconditional emit so a channel test stays byte-for-byte identical to real traffic.
+	setHeaderIfMissing(req.Header, "X-Stainless-OS", firstNonEmptyHeader(client.OS, fp.claudeOS()))
+	setHeaderIfMissing(req.Header, "X-Stainless-Arch", firstNonEmptyHeader(client.Arch, fp.claudeArch()))
 	// REBUILD the anthropic-beta header so its ORDER exactly matches a genuine
 	// claude-cli request (context-1m in its real slot, never stuck at position 1 —
 	// a non-CLI tell). Built through the shared model.BuildClaudeCodeBetaOrder so the
@@ -222,6 +232,12 @@ func setHeaderIfMissing(headers http.Header, key, value string) {
 	headers.Set(key, value)
 }
 
+// settingString reads a header default from the settings cache, falling back to the
+// static default when unset/empty. Legacy default values (the old claude UA 2.1.126 /
+// package 0.81.0 / codex UA 0.133.0, etc.) are converged to the current default IN THE
+// DB at startup by op.settingLegacyDefaultUpgrades, so the cache never holds them by the
+// time this reads — no read-time legacy patching is needed. Keeping the convergence in
+// one place (the DB) makes the admin settings display equal to what is actually sent.
 func settingString(key dbmodel.SettingKey, fallback string) string {
 	value, err := op.SettingGetString(key)
 	if err != nil {
@@ -229,15 +245,6 @@ func settingString(key dbmodel.SettingKey, fallback string) string {
 	}
 	value = strings.TrimSpace(value)
 	if value == "" {
-		return fallback
-	}
-	if key == dbmodel.SettingKeyClaudeHeaderUserAgent && value == "claude-cli/2.1.126 (external, claude-vscode, agent-sdk/0.2.126)" {
-		return fallback
-	}
-	if key == dbmodel.SettingKeyClaudeHeaderPackage && value == "0.81.0" {
-		return fallback
-	}
-	if key == dbmodel.SettingKeyCodexHeaderUserAgent && value == dbmodel.LegacyDefaultCodexHeaderUserAgent0133 {
 		return fallback
 	}
 	return value

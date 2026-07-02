@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	dbmodel "github.com/bestruirui/octopus/internal/model"
+	"github.com/bestruirui/octopus/internal/op"
 	"github.com/bestruirui/octopus/internal/transformer/inbound"
 	transformermodel "github.com/bestruirui/octopus/internal/transformer/model"
 	"github.com/bestruirui/octopus/internal/transformer/outbound"
@@ -630,6 +631,45 @@ func TestClaudeHeaderDefaultsUsesStaticForNonCLIClient(t *testing.T) {
 	}
 	if got := up.Header.Get("X-Stainless-OS"); got != defaultClaudeOS {
 		t.Fatalf("non-CLI client must get the static pinned OS %q, got %q", defaultClaudeOS, got)
+	}
+}
+
+// TestClaudeHeaderDefaultsSendsStainlessOSArchWhenStabilizeOff pins F3: a genuine
+// claude-cli sends X-Stainless-OS and X-Stainless-Arch on EVERY request, and the
+// downstream client's own x-stainless-* are stripped hop-by-hop (shouldForwardClientHeader),
+// so octopus must re-emit the pair even when the (now backward-compat-only) stabilize
+// toggle is OFF. Previously stabilize=false dropped both headers entirely — a non-CLI
+// tell (a request missing two headers the real CLI always carries).
+func TestClaudeHeaderDefaultsSendsStainlessOSArchWhenStabilizeOff(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	setupRelayErrorDB(t) // sqlite + op cache (seeds the default header settings)
+	if err := op.SettingSetString(dbmodel.SettingKeyClaudeHeaderStabilize, "false"); err != nil {
+		t.Fatalf("set stabilize=false: %v", err)
+	}
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	ra := &relayAttempt{
+		relayRequest: &relayRequest{
+			c:               c,
+			inboundType:     inbound.InboundTypeAnthropic,
+			internalRequest: &transformermodel.InternalLLMRequest{Model: "claude-opus-4-8"},
+		},
+		channel: &dbmodel.Channel{Type: outbound.OutboundTypeAnthropic},
+	}
+	up := httptest.NewRequest(http.MethodPost, "https://anyrouter.top/v1/messages", nil)
+	ra.copyHeaders(up)
+
+	gotOS := up.Header.Get("X-Stainless-OS")
+	gotArch := up.Header.Get("X-Stainless-Arch")
+	if gotOS != defaultClaudeOS {
+		t.Fatalf("stabilize=false: X-Stainless-OS = %q, want default %q (must still be sent)", gotOS, defaultClaudeOS)
+	}
+	if gotArch != defaultClaudeArch {
+		t.Fatalf("stabilize=false: X-Stainless-Arch = %q, want default %q (must still be sent)", gotArch, defaultClaudeArch)
+	}
+	if gotOS == "" || gotArch == "" {
+		t.Fatalf("stabilize=false: X-Stainless-OS/Arch must be non-empty, got OS=%q Arch=%q", gotOS, gotArch)
 	}
 }
 

@@ -15,6 +15,10 @@ var settingCache = cache.New[model.SettingKey, string](16)
 var settingLegacyDefaultUpgrades = map[model.SettingKey]map[string]string{
 	model.SettingKeyClaudeHeaderUserAgent: {
 		model.LegacyDefaultClaudeHeaderUserAgent2168: model.DefaultClaudeHeaderUserAgent,
+		model.LegacyDefaultClaudeHeaderUserAgent2126: model.DefaultClaudeHeaderUserAgent,
+	},
+	model.SettingKeyClaudeHeaderPackage: {
+		model.LegacyDefaultClaudeHeaderPackage0810: model.DefaultClaudeHeaderPackageVersion,
 	},
 	model.SettingKeyCodexHeaderUserAgent: {
 		model.LegacyDefaultCodexHeaderUserAgent0133:      model.DefaultCodexHeaderUserAgent,
