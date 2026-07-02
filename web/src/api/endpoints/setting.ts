@@ -24,6 +24,7 @@ export const SettingKey = {
     RelayStreamKeepaliveIntervalSeconds: 'relay_stream_keepalive_interval_seconds',
     RelayStreamDataIntervalTimeoutSeconds: 'relay_stream_data_interval_timeout_seconds',
     ResponsesSessionTTLSeconds: 'responses_session_ttl_seconds',
+    SessionKeepTimeDefault: 'session_keep_time_default',
     ClaudeHeaderUserAgent: 'claude_header_defaults_user_agent',
     ClaudeHeaderPackageVersion: 'claude_header_defaults_package_version',
     ClaudeHeaderRuntimeVersion: 'claude_header_defaults_runtime_version',

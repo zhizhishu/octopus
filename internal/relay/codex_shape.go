@@ -216,10 +216,20 @@ func responsesInputRawLooksCodexShaped(raw json.RawMessage) bool {
 		return false
 	}
 	for _, item := range items {
-		if strings.TrimSpace(codexShapeStringValue(item["type"])) == "message" {
+		// Incremental tool/reasoning turns arrive as native Codex Responses
+		// items (function_call_output / function_call / reasoning) with no
+		// message item. The client already sent them in Codex shape, so pass
+		// them through untouched to keep reasoning/encrypted_content continuity
+		// and a stable prompt cache prefix. Re-synthesizing would drop the
+		// reasoning items and change the byte order, forcing the upstream to
+		// think from scratch and miss the prompt cache.
+		switch strings.TrimSpace(codexShapeStringValue(item["type"])) {
+		case "message":
 			if _, ok := item["content"]; ok {
 				return true
 			}
+		case "function_call_output", "function_call", "reasoning":
+			return true
 		}
 	}
 	return false

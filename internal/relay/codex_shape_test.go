@@ -148,6 +148,80 @@ func stringPtrForCodexShapeTest(value string) *string {
 	return &value
 }
 
+func TestResponsesInputRawLooksCodexShapedRecognizesReasoningToolTurn(t *testing.T) {
+	// Incremental tool turn: reasoning (carrying encrypted_content) plus a
+	// function_call_output, with no message item. This is exactly what the
+	// Codex client sends between tool calls and must be recognized as already
+	// Codex-shaped so it is forwarded untouched.
+	raw := json.RawMessage(`[{"type":"reasoning","encrypted_content":"BLOB","summary":[]},{"type":"function_call_output","call_id":"call_1","output":"hi"}]`)
+	if !responsesInputRawLooksCodexShaped(raw) {
+		t.Fatalf("expected native Codex reasoning/tool-output turn to be recognized as Codex-shaped")
+	}
+}
+
+func TestResponsesInputRawLooksCodexShapedRegression(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{"message with content still recognized", `[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]`, true},
+		{"standalone function_call recognized", `[{"type":"function_call","call_id":"call_1","name":"shell","arguments":"{}"}]`, true},
+		{"empty array still resynthesized", `[]`, false},
+		{"non-array text shorthand still resynthesized", `"Say OK only"`, false},
+		{"message without content still resynthesized", `[{"type":"message","role":"user"}]`, false},
+		{"unrecognized item only still resynthesized", `[{"type":"something_else"}]`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := responsesInputRawLooksCodexShaped(json.RawMessage(tc.raw)); got != tc.want {
+				t.Fatalf("responsesInputRawLooksCodexShaped(%s) = %v, want %v", tc.raw, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPrepareCodexRequestShapePreservesIncrementalReasoningToolInput(t *testing.T) {
+	callID := "call_1"
+	output := "hi"
+	req := &model.InternalLLMRequest{
+		Model:             "gpt-5.5",
+		RawAPIFormat:      model.APIFormatOpenAIResponse,
+		ResponsesInputRaw: json.RawMessage(`[{"type":"reasoning","encrypted_content":"BLOB","summary":[]},{"type":"function_call_output","call_id":"call_1","output":"hi"}]`),
+		Messages: []model.Message{{
+			Role:       "tool",
+			ToolCallID: &callID,
+			Content:    model.MessageContent{Content: &output},
+		}},
+	}
+	ra := &relayAttempt{
+		relayRequest: &relayRequest{
+			inboundType:     inbound.InboundTypeOpenAIResponse,
+			internalRequest: req,
+		},
+		channel: &dbmodel.Channel{Type: outbound.OutboundTypeOpenAIResponse},
+	}
+
+	ra.prepareCodexRequestShape()
+
+	// The native Codex reasoning + tool-output input must be forwarded
+	// untouched: re-synthesizing would drop reasoning/encrypted_content and
+	// change the byte order, breaking the upstream prompt cache prefix.
+	var items []map[string]any
+	if err := json.Unmarshal(req.ResponsesInputRaw, &items); err != nil {
+		t.Fatalf("expected input array, got %s: %v", string(req.ResponsesInputRaw), err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected 2 input items preserved, got %#v", items)
+	}
+	body := string(req.ResponsesInputRaw)
+	if !strings.Contains(body, `"reasoning"`) ||
+		!strings.Contains(body, `"encrypted_content"`) ||
+		!strings.Contains(body, "BLOB") {
+		t.Fatalf("expected reasoning/encrypted_content to be preserved, got %s", body)
+	}
+}
+
 func TestOpenAIChatCanRouteThroughCodexResponsesShape(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx := setupRelayErrorDB(t)

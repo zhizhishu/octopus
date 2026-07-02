@@ -47,6 +47,7 @@ export function SettingSystem() {
     const [streamKeepaliveInterval, setStreamKeepaliveInterval] = useState('15');
     const [streamDataTimeoutInterval, setStreamDataTimeoutInterval] = useState('900');
     const [responsesSessionTTL, setResponsesSessionTTL] = useState('3600');
+    const [sessionKeepTimeDefault, setSessionKeepTimeDefault] = useState('0');
     const [claudeHeaderUserAgent, setClaudeHeaderUserAgent] = useState('claude-cli/2.1.168 (external, sdk-cli)');
     const [claudeHeaderPackageVersion, setClaudeHeaderPackageVersion] = useState('0.94.0');
     const [claudeHeaderRuntimeVersion, setClaudeHeaderRuntimeVersion] = useState('v24.3.0');
@@ -103,6 +104,7 @@ export function SettingSystem() {
     const initialStreamKeepaliveInterval = useRef('15');
     const initialStreamDataTimeoutInterval = useRef('900');
     const initialResponsesSessionTTL = useRef('3600');
+    const initialSessionKeepTimeDefault = useRef('0');
     const initialClaudeHeaderUserAgent = useRef('claude-cli/2.1.168 (external, sdk-cli)');
     const initialClaudeHeaderPackageVersion = useRef('0.94.0');
     const initialClaudeHeaderRuntimeVersion = useRef('v24.3.0');
@@ -149,6 +151,7 @@ export function SettingSystem() {
             const keepalive = settings.find(s => s.key === SettingKey.RelayStreamKeepaliveIntervalSeconds);
             const dataTimeout = settings.find(s => s.key === SettingKey.RelayStreamDataIntervalTimeoutSeconds);
             const responsesTTL = settings.find(s => s.key === SettingKey.ResponsesSessionTTLSeconds);
+            const sessionKeepDefault = settings.find(s => s.key === SettingKey.SessionKeepTimeDefault);
             const claudeUA = settings.find(s => s.key === SettingKey.ClaudeHeaderUserAgent);
             const claudePackage = settings.find(s => s.key === SettingKey.ClaudeHeaderPackageVersion);
             const claudeRuntime = settings.find(s => s.key === SettingKey.ClaudeHeaderRuntimeVersion);
@@ -217,6 +220,10 @@ export function SettingSystem() {
             if (responsesTTL) {
                 queueMicrotask(() => setResponsesSessionTTL(responsesTTL.value || '3600'));
                 initialResponsesSessionTTL.current = responsesTTL.value || '3600';
+            }
+            if (sessionKeepDefault) {
+                queueMicrotask(() => setSessionKeepTimeDefault(sessionKeepDefault.value || '0'));
+                initialSessionKeepTimeDefault.current = sessionKeepDefault.value || '0';
             }
             if (claudeUA) {
                 queueMicrotask(() => setClaudeHeaderUserAgent(claudeUA.value));
@@ -388,6 +395,8 @@ export function SettingSystem() {
                     initialStreamDataTimeoutInterval.current = value;
                 } else if (key === SettingKey.ResponsesSessionTTLSeconds) {
                     initialResponsesSessionTTL.current = value;
+                } else if (key === SettingKey.SessionKeepTimeDefault) {
+                    initialSessionKeepTimeDefault.current = value;
                 } else if (key === SettingKey.CORSAllowOrigins) {
                     initialCorsAllowOrigins.current = value;
                 } else if (key === SettingKey.UpstreamErrorBodyMode) {
@@ -497,6 +506,23 @@ export function SettingSystem() {
             SettingKey.ResponsesSessionTTLSeconds,
             normalizedValue,
             initialResponsesSessionTTL.current
+        );
+    };
+
+    const handleSessionKeepTimeDefaultBlur = () => {
+        const rawValue = sessionKeepTimeDefault.trim();
+        const numericValue = Number(rawValue);
+        if (!rawValue || !Number.isInteger(numericValue) || numericValue < 0) {
+            setSessionKeepTimeDefault(initialSessionKeepTimeDefault.current || '0');
+            toast.error(t('sessionKeepTimeDefault.invalid'));
+            return;
+        }
+        const normalizedValue = String(numericValue);
+        setSessionKeepTimeDefault(normalizedValue);
+        handleSave(
+            SettingKey.SessionKeepTimeDefault,
+            normalizedValue,
+            initialSessionKeepTimeDefault.current
         );
     };
 
@@ -1277,6 +1303,47 @@ export function SettingSystem() {
                             className="w-24 rounded-xl sm:w-28"
                         />
                         <span className="min-w-0 text-xs text-muted-foreground">{t('responsesSessionTTL.seconds')}</span>
+                    </div>
+                </div>
+                <div className="flex flex-col gap-3 border-t border-border/60 pt-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="flex min-w-0 items-start gap-3">
+                        <Radio className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" />
+                        <div className="min-w-0 space-y-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                                <span className="text-sm font-medium">{t('sessionKeepTimeDefault.label')}</span>
+                                <span className="rounded-full bg-background px-2 py-0.5 text-[11px] text-muted-foreground">
+                                    {t('sessionKeepTimeDefault.defaultHint')}
+                                </span>
+                                <TooltipProvider>
+                                    <Tooltip>
+                                        <TooltipTrigger asChild>
+                                            <HelpCircle className="size-4 text-muted-foreground cursor-help" />
+                                        </TooltipTrigger>
+                                        <TooltipContent className="max-w-xs">
+                                            {t('sessionKeepTimeDefault.hint')}
+                                        </TooltipContent>
+                                    </Tooltip>
+                                </TooltipProvider>
+                            </div>
+                            <p className="text-xs leading-5 text-muted-foreground">
+                                {t('sessionKeepTimeDefault.description')}
+                            </p>
+                        </div>
+                    </div>
+                    <div className="flex w-full min-w-0 items-center gap-2 self-start sm:w-auto sm:shrink-0 sm:self-center">
+                        <Input
+                            type="number"
+                            min="0"
+                            step="1"
+                            inputMode="numeric"
+                            value={sessionKeepTimeDefault}
+                            onChange={(event) => setSessionKeepTimeDefault(event.target.value)}
+                            onBlur={handleSessionKeepTimeDefaultBlur}
+                            placeholder={t('sessionKeepTimeDefault.placeholder')}
+                            aria-label={t('sessionKeepTimeDefault.label')}
+                            className="w-24 rounded-xl sm:w-28"
+                        />
+                        <span className="min-w-0 text-xs text-muted-foreground">{t('sessionKeepTimeDefault.seconds')}</span>
                     </div>
                 </div>
             </div>

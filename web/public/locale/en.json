@@ -286,6 +286,15 @@
             "seconds": "sec",
             "invalid": "Responses session keep time must be 0 or a positive integer number of seconds"
         },
+        "sessionKeepTimeDefault": {
+            "label": "Global session-keep default",
+            "hint": "Fallback sticky window for groups whose own session-keep time is 0, so one client keeps hitting the same channel and key instead of scattering across upstreams and wasting prompt cache.",
+            "description": "Only a fallback: a group's own session-keep time still takes precedence. 0 disables the global default and keeps the legacy per-group-only behavior.",
+            "defaultHint": "Default 0 (off)",
+            "placeholder": "0",
+            "seconds": "sec",
+            "invalid": "Global session-keep default must be 0 or a positive integer number of seconds"
+        },
         "userRegistration": {
             "label": "Allow Direct Registration",
             "hint": "When disabled, new users must enter an invite code. When enabled, users can register directly; an invite code still grants its quota or monthly card."

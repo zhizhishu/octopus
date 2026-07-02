@@ -35,8 +35,15 @@ func NewIteratorWithSessionKey(group model.Group, apiKeyID int, requestModel, cl
 
 	stickyIdx := -1
 	stickyKeyID := 0
-	if group.SessionKeepTime > 0 {
-		stickyTTL := time.Duration(group.SessionKeepTime) * time.Second
+	// Effective sticky window: a group's own SessionKeepTime wins; when unset (<=0)
+	// fall back to the global session_keep_time_default so new/unconfigured groups can
+	// still stick without per-group setup. 0 on both = sticky off (legacy behavior).
+	keepTime := group.SessionKeepTime
+	if keepTime <= 0 {
+		keepTime = sessionKeepTimeDefault()
+	}
+	if keepTime > 0 {
+		stickyTTL := time.Duration(keepTime) * time.Second
 		if sticky := GetStickyWithSessionKey(apiKeyID, requestModel, clientSessionKey, stickyTTL); sticky != nil {
 			for i, item := range candidates {
 				if item.ChannelID == sticky.ChannelID {
