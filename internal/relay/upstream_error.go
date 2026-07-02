@@ -172,7 +172,14 @@ func attemptStatusCode(statusCode int, err error) int {
 
 func relayErrorResponse(err error) (status int, code string, message string) {
 	if status, code, _, ok := upstreamErrorDetails(err); ok && status >= 400 && status < 600 {
-		if !upstreamErrorStatusPassthrough() {
+		// A 429 rate-limit is a retryable signal the client MUST see to pace itself:
+		// claude-code / codex back off (respecting any Retry-After) and retry a 429 the
+		// same way they do hitting the upstream directly, and succeed once capacity frees.
+		// Masking it as a generic 502 hides that signal, so the client treats it as a hard
+		// server error and gives up early — the single biggest reason an agentic session
+		// stalls through octopus but not direct. Always surface a 429 as a 429 (body/code
+		// still redacted); other upstream statuses keep honouring the admin passthrough.
+		if status != http.StatusTooManyRequests && !upstreamErrorStatusPassthrough() {
 			status = http.StatusBadGateway
 		}
 		return status, upstreamErrorPublicCode(code), upstreamErrorUserMessage(err)

@@ -209,12 +209,44 @@ func TestRelayErrorResponseHidesRawStatusWhenPassthroughDisabled(t *testing.T) {
 		t.Fatalf("set public code: %v", err)
 	}
 
-	status, code, message := relayErrorResponse(newUpstreamError(http.StatusTooManyRequests, []byte(`{"error":{"code":"429","message":"cpu overloaded"}}`)))
+	// Use a non-429 upstream status: a 429 is always passed through (see
+	// TestRelayErrorResponseAlwaysPassesThrough429); every other status is still hidden
+	// behind a friendly 502 when passthrough is disabled.
+	status, code, message := relayErrorResponse(newUpstreamError(http.StatusInternalServerError, []byte(`{"error":{"code":"500","message":"cpu overloaded"}}`)))
 	if status != http.StatusBadGateway || code != "service_busy" {
 		t.Fatalf("expected friendly public status/code, got status=%d code=%q message=%q", status, code, message)
 	}
-	if strings.Contains(message, "429") || strings.Contains(message, "cpu overloaded") {
+	if strings.Contains(message, "500") || strings.Contains(message, "cpu overloaded") {
 		t.Fatalf("expected message to hide raw upstream details, got %q", message)
+	}
+}
+
+// A 429 rate-limit must always reach the client as a 429 — even with status
+// passthrough disabled — so the caller (claude-code / codex) backs off and retries
+// exactly as it would against the upstream directly, instead of treating a masked 502
+// as a hard failure and giving up mid-session. The body/code stay redacted.
+func TestRelayErrorResponseAlwaysPassesThrough429(t *testing.T) {
+	setupRelayErrorDB(t)
+
+	if err := op.SettingSetString(dbmodel.SettingKeyUpstreamErrorStatusPass, "false"); err != nil {
+		t.Fatalf("set status passthrough: %v", err)
+	}
+	if err := op.SettingSetString(dbmodel.SettingKeyUpstreamErrorBodyMode, "redacted_upstream"); err != nil {
+		t.Fatalf("set body mode: %v", err)
+	}
+	if err := op.SettingSetString(dbmodel.SettingKeyUpstreamErrorPublicCode, "service_busy"); err != nil {
+		t.Fatalf("set public code: %v", err)
+	}
+
+	status, code, message := relayErrorResponse(newUpstreamError(http.StatusTooManyRequests, []byte(`{"error":{"code":"429","message":"cpu overloaded"}}`)))
+	if status != http.StatusTooManyRequests {
+		t.Fatalf("a 429 must pass through as 429 even with passthrough disabled, got status=%d", status)
+	}
+	if code != "service_busy" {
+		t.Fatalf("429 public code should still be the redacted admin code, got %q", code)
+	}
+	if strings.Contains(message, "cpu overloaded") {
+		t.Fatalf("429 upstream body detail must stay redacted, got %q", message)
 	}
 }
 
