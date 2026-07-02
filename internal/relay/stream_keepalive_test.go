@@ -689,6 +689,160 @@ data: {"type":"message_stop"}
 	}
 }
 
+// TestAnthropicOneMillionPlainClientCloakOnEmitsCanonicalClaudeIdentity locks the
+// cloak=auto/always side of the F1 fix. After the relay-side identity injection was
+// deleted from prepareClaudeOneMillionPlainClientShape, the canonical cloak-gated paths
+// must still produce a genuine Claude shape for a plain (non-CLI) [1m] client:
+//   - the outbound system is EXACTLY [billing header, agent identity], the agent
+//     identity appearing once, right after the billing header. This proves the Anthropic
+//     transformer refills the identity block the relay no longer injects. If this
+//     assertion regresses, the relay-side deletion dropped identity and the fix must
+//     fall back to a cloak gate rather than a deletion.
+//   - metadata.user_id is the canonical compact form: 64-hex device_id, golden key order
+//     device_id/account_uuid/session_id (NOT the alphabetical map-marshal tell), and a
+//     body session_id equal to the X-Claude-Code-Session-Id header (one UUID in both
+//     places, like real Claude Code).
+func TestAnthropicOneMillionPlainClientCloakOnEmitsCanonicalClaudeIdentity(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayErrorDB(t)
+
+	const claudeAgentIdentity = "You are a Claude agent, built on Anthropic's Claude Agent SDK."
+	const billingHeaderPrefix = "x-anthropic-billing-header:"
+
+	var sawSystem []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	var sawMetadataUserID string
+	var sawClaudeSessionID string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawClaudeSessionID = r.Header.Get("X-Claude-Code-Session-Id")
+		var payload struct {
+			System   json.RawMessage `json:"system"`
+			Metadata struct {
+				UserID string `json:"user_id"`
+			} `json:"metadata"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode upstream request: %v", err)
+		}
+		sawMetadataUserID = payload.Metadata.UserID
+		if len(payload.System) > 0 {
+			if err := json.Unmarshal(payload.System, &sawSystem); err != nil {
+				t.Errorf("decode upstream system: %v (raw %s)", err, string(payload.System))
+			}
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`event: message_start
+data: {"type":"message_start","message":{"id":"msg_plain_1m_cloakon","type":"message","role":"assistant","model":"claude-opus-4-8[1m]","content":[],"usage":{"input_tokens":3,"output_tokens":0}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"OK"}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	channel := dbmodel.Channel{
+		Name:     "AnyRouter Claude 1M CloakOn",
+		Type:     outbound.OutboundTypeAnthropic,
+		Enabled:  true,
+		BaseUrls: []dbmodel.BaseUrl{{URL: upstream.URL}},
+		Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "anthropic-key"}},
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	group := dbmodel.Group{Name: "claude-opus-4-8[1m]", Mode: dbmodel.GroupModeFailover}
+	if err := op.GroupCreate(&group, ctx); err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	if err := op.GroupItemAdd(&dbmodel.GroupItem{
+		GroupID:   group.ID,
+		ChannelID: channel.ID,
+		ModelName: "claude-opus-4-8[1m]",
+		Priority:  1,
+		Weight:    1,
+	}, ctx); err != nil {
+		t.Fatalf("create group item: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{
+		"model":"claude-opus-4-8[1m]",
+		"max_tokens":128000,
+		"stream":true,
+		"messages":[{"role":"user","content":"ping"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	// Force a deterministic client session so the X-Claude-Code-Session-Id header and the
+	// body metadata.user_id.session_id derive from one seed (real Claude Code uses one
+	// UUID in both places), making the body==header assertion below stable.
+	req.Header.Set("X-Session-Id", "f1-cloak-on-session")
+	c.Request = req
+	c.Set("api_key_id", 0)
+	c.Set("user_id", 0)
+	c.Set("request_ip", "127.0.0.1")
+
+	Handler(inbound.InboundTypeAnthropic, c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected cloak-on [1m] stream to succeed, got %d body %s", rec.Code, rec.Body.String())
+	}
+
+	// System must be exactly [billing header, agent identity], identity once after billing.
+	if len(sawSystem) != 2 {
+		t.Fatalf("outbound system must be [billing, identity], got %d parts: %#v", len(sawSystem), sawSystem)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(sawSystem[0].Text), billingHeaderPrefix) {
+		t.Fatalf("system[0] must be the billing header (prefix %q), got %q", billingHeaderPrefix, sawSystem[0].Text)
+	}
+	if sawSystem[1].Text != claudeAgentIdentity {
+		t.Fatalf("system[1] must be the claude agent identity, got %q", sawSystem[1].Text)
+	}
+	identityCount := 0
+	for _, part := range sawSystem {
+		if strings.Contains(part.Text, "built on Anthropic's Claude Agent SDK") {
+			identityCount++
+		}
+	}
+	if identityCount != 1 {
+		t.Fatalf("claude agent identity must appear exactly once, got %d in %#v", identityCount, sawSystem)
+	}
+
+	// metadata.user_id must be the canonical compact form (not the alphabetical tell).
+	if sawMetadataUserID == "" {
+		t.Fatalf("cloak-on [1m] must inject metadata.user_id")
+	}
+	di := strings.Index(sawMetadataUserID, `"device_id"`)
+	ai := strings.Index(sawMetadataUserID, `"account_uuid"`)
+	si := strings.Index(sawMetadataUserID, `"session_id"`)
+	if !(di >= 0 && di < ai && ai < si) {
+		t.Fatalf("metadata.user_id key order must be device_id,account_uuid,session_id (canonical), got %q", sawMetadataUserID)
+	}
+	var meta struct {
+		DeviceID    string `json:"device_id"`
+		AccountUUID string `json:"account_uuid"`
+		SessionID   string `json:"session_id"`
+	}
+	if err := json.Unmarshal([]byte(sawMetadataUserID), &meta); err != nil {
+		t.Fatalf("metadata.user_id is not JSON: %q (%v)", sawMetadataUserID, err)
+	}
+	if len(meta.DeviceID) != 64 {
+		t.Fatalf("device_id must be 64-hex like real Claude Code, got %d chars: %q", len(meta.DeviceID), meta.DeviceID)
+	}
+	if meta.SessionID != sawClaudeSessionID {
+		t.Fatalf("body session_id %q must equal header X-Claude-Code-Session-Id %q", meta.SessionID, sawClaudeSessionID)
+	}
+}
+
 func TestAnthropicNativeClaudeOneMillionShapeIsNotSynthesized(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx := setupRelayErrorDB(t)

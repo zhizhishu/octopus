@@ -3,6 +3,7 @@ package model
 import (
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bestruirui/octopus/internal/transformer/outbound"
@@ -232,7 +233,11 @@ func (c *Channel) GetOpenAIChatBaseUrl() string {
 }
 
 func (c *Channel) GetChannelKey() ChannelKey {
-	keys := c.GetAvailableChannelKeys()
+	// Fetching a key to build an auth header (model sync/discovery) is not the
+	// concurrent-request hot path, so it must NOT consume a cooldown probe slot and
+	// keeps the historical unthrottled fallback (returns the cooling key if that is all
+	// there is) — no behaviour change for that path.
+	keys := c.availableChannelKeys(false)
 	if len(keys) == 0 {
 		return ChannelKey{}
 	}
@@ -258,7 +263,45 @@ var (
 	// and self-heals if the 401 was transient. Genuine 403/429/5xx stay on their own
 	// (shorter, per-model-circuit) paths; only a key-wide 401 lands here.
 	ChannelKeyAuthErrorCooldown = 15 * time.Minute
+	// ChannelKeyProbeInterval throttles the all-keys-cooling fallback in
+	// GetAvailableChannelKeys: while every enabled key of a channel is cooling down we
+	// still let ONE request through per this interval to probe the (single) key so the
+	// route self-heals, but make every other concurrent/rapid request fail over (or
+	// fail fast) instead of all slamming the just-failed key at once — each of those
+	// would otherwise pay a wasted upstream round-trip every turn (the cooldown was
+	// effectively toothless for single-key routes). Kept short so a recovered key is
+	// re-tried within ~1s; the circuit breaker and Retry-After remain the real recovery
+	// governors. Not wired to a setting (same as the cooldown knobs above).
+	ChannelKeyProbeInterval = 1 * time.Second
 )
+
+// cooldownProbeLastAdmit records, per channel ID, the last time GetAvailableChannelKeys
+// admitted a cooldown-fallback probe. cooldownProbeMu guards it so the check-and-record
+// is atomic: under a concurrent burst exactly one request per ChannelKeyProbeInterval is
+// admitted and the rest get an empty key set. The map is bounded by the number of
+// channels (a handful of time.Time entries) so it needs no eviction.
+var (
+	cooldownProbeMu        sync.Mutex
+	cooldownProbeLastAdmit = map[int]time.Time{}
+)
+
+// admitCooldownProbe reports whether GetAvailableChannelKeys may surface the cooling
+// fallback key for channelID right now, recording the admission when it returns true.
+// A channelID of 0 (an unpersisted channel, e.g. in unit tests) has no stable identity
+// to throttle on, so it is never throttled — preserving the "never fully black out a
+// single usable key" fallback.
+func admitCooldownProbe(channelID int, now time.Time) bool {
+	if channelID == 0 {
+		return true
+	}
+	cooldownProbeMu.Lock()
+	defer cooldownProbeMu.Unlock()
+	if last, ok := cooldownProbeLastAdmit[channelID]; ok && now.Sub(last) < ChannelKeyProbeInterval {
+		return false
+	}
+	cooldownProbeLastAdmit[channelID] = now
+	return true
+}
 
 // keyCooldownWindow returns how long a key whose last upstream status was code
 // should be skipped, and whether any cooldown applies. 429 and transient 5xx
@@ -279,7 +322,22 @@ func keyCooldownWindow(code int) (time.Duration, bool) {
 	return 0, false
 }
 
+// GetAvailableChannelKeys returns the keys the relay hot path may try for this channel,
+// in priority order. When every enabled key is cooling down it throttles the fallback
+// probe (see availableChannelKeys / ChannelKeyProbeInterval) so a burst of concurrent
+// requests does not all slam the just-failed key.
 func (c *Channel) GetAvailableChannelKeys() []ChannelKey {
+	return c.availableChannelKeys(true)
+}
+
+// availableChannelKeys computes the tryable keys. throttleFallback gates the
+// all-keys-cooling fallback: when true (the request hot path) at most one probe per
+// ChannelKeyProbeInterval is surfaced, so excess concurrent requests get an empty set
+// and fail over / fast instead of hammering the just-failed key; when false (auth-header
+// fetch) the fallback is unthrottled, preserving the historical never-black-out
+// behaviour. The throttle only ever engages on the fallback — as long as at least one
+// key is not cooling down, callers get the full ready set unchanged.
+func (c *Channel) availableChannelKeys(throttleFallback bool) []ChannelKey {
 	if c == nil || len(c.Keys) == 0 {
 		return nil
 	}
@@ -303,9 +361,15 @@ func (c *Channel) GetAvailableChannelKeys() []ChannelKey {
 	// Never black out a route that still has a usable key: if every enabled key is
 	// only cooling down, fall back to them so the circuit breaker and Retry-After
 	// remain the real recovery governors instead of returning "no available
-	// channel" for the whole window (critical for single-key routes).
+	// channel" for the whole window (critical for single-key routes). On the hot path
+	// this fallback is rate-limited (admitCooldownProbe): at most one probe per
+	// ChannelKeyProbeInterval, so a concurrent burst does not all re-hit the just-failed
+	// key (each paying a wasted round-trip). The && short-circuits so a probe slot is
+	// only consumed when there is actually a cooling key to fall back to.
 	if len(keys) == 0 {
-		keys = cooled
+		if len(cooled) > 0 && (!throttleFallback || admitCooldownProbe(c.ID, time.Now())) {
+			keys = cooled
+		}
 	}
 
 	switch c.KeySelectStrategy {

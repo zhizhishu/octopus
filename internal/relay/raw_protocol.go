@@ -346,11 +346,20 @@ func deriveRawProtocolClientSessionInfo(payload map[string]any) clientSessionInf
 			Source: "body:prompt_cache_key",
 		}
 	}
-	// Raw-body fingerprint fallback (mirrors deriveOctopusManagedClientSessionInfo):
-	// with no session identifier the balancer would otherwise pool every request from
-	// the same api-key+model into one sticky slot. Hashing the whole payload gives each
-	// distinct request its own slot instead — encoding/json sorts map keys, so the hash
-	// is stable across a request's retries. Only reached when nothing above matched.
+	// Stable prompt-anchor fallback (mirrors deriveOctopusManagedPromptAnchorSessionInfo):
+	// a bare client with no session identifier still keeps every turn of one conversation
+	// on the same sticky slot because the anchor — model + system/instructions + the first
+	// user message — does not change as the conversation's history (chat messages, or the
+	// responses input array) grows, while a different conversation anchors differently.
+	if info := deriveRawProtocolPromptAnchorSessionInfo(payload); info.Key != "" {
+		return info
+	}
+	// Raw-body fingerprint fallback (mirrors deriveOctopusManagedClientSessionInfo): with
+	// no session identifier AND no prompt anchor (single-shot endpoints such as rerank /
+	// moderations that carry no conversation) the balancer would otherwise pool every
+	// request from the same api-key+model into one sticky slot. Hashing the whole payload
+	// gives each distinct request its own slot instead — encoding/json sorts map keys, so
+	// the hash is stable across a request's retries. Only reached when nothing above matched.
 	if raw, err := json.Marshal(payload); err == nil && len(raw) > 0 {
 		sum := sha256.Sum256(raw)
 		return clientSessionInfo{
@@ -359,6 +368,164 @@ func deriveRawProtocolClientSessionInfo(payload map[string]any) clientSessionInf
 		}
 	}
 	return clientSessionInfo{}
+}
+
+// deriveRawProtocolPromptAnchorSessionInfo derives the bare-client sticky-session fallback
+// from a raw-protocol payload's STABLE prompt prefix — model plus the system/developer or
+// responses `instructions` plus the first user message — the same anchoring the managed
+// path (deriveOctopusManagedPromptAnchorSessionInfo) and cache_hints apply. It works
+// directly on the decoded map[string]any because the raw path never builds an
+// InternalLLMRequest, and it understands BOTH wire shapes: the chat schema (`messages`)
+// and the responses schema (`instructions` + `input`). Because the anchor does not grow
+// with the conversation, every turn of one conversation hashes to the same key (so the
+// bare client sticks to one channel/key) while a different conversation (different first
+// user) hashes differently. Returns an empty info when no anchor content is present (e.g.
+// rerank / moderations), so the caller falls back to the whole-payload fingerprint.
+func deriveRawProtocolPromptAnchorSessionInfo(payload map[string]any) clientSessionInfo {
+	if len(payload) == 0 {
+		return clientSessionInfo{}
+	}
+	parts := make([]string, 0, 4)
+	if modelName := strings.ToLower(rawProtocolStringValue(payload["model"])); modelName != "" {
+		parts = append(parts, "model="+modelName)
+	}
+	if appendRawProtocolPromptAnchorSeeds(&parts, payload) == 0 {
+		return clientSessionInfo{}
+	}
+	return clientSessionInfo{
+		Key:    hashRouteSessionKey("octopus-request", strings.Join(parts, "|")),
+		Source: "octopus:request_fingerprint",
+	}
+}
+
+// appendRawProtocolPromptAnchorSeeds appends the stable prompt-prefix anchor seeds — the
+// responses `instructions`, every chat system/developer message, and the first user
+// message of whichever schema the payload uses — to parts, returning how many anchor seeds
+// (excluding the model) were added.
+func appendRawProtocolPromptAnchorSeeds(parts *[]string, payload map[string]any) int {
+	if parts == nil || len(payload) == 0 {
+		return 0
+	}
+	added := 0
+	// Responses schema: the top-level instructions string is the system/developer prompt.
+	if seed := rawProtocolStringValue(payload["instructions"]); seed != "" {
+		*parts = append(*parts, "instructions="+seed)
+		added++
+	}
+	// Chat schema: messages array.
+	added += appendRawProtocolChatMessageSeeds(parts, payload["messages"])
+	// Responses schema: input (a plain user string, or an array of items).
+	added += appendRawProtocolResponsesInputSeeds(parts, payload["input"])
+	return added
+}
+
+func appendRawProtocolChatMessageSeeds(parts *[]string, value any) int {
+	items, ok := value.([]any)
+	if !ok {
+		return 0
+	}
+	added := 0
+	firstUserCaptured := false
+	for _, raw := range items {
+		msg, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		switch role := strings.ToLower(rawProtocolStringValue(msg["role"])); role {
+		case "system", "developer":
+			if seed := rawProtocolContentSeed(msg["content"]); seed != "" {
+				*parts = append(*parts, role+"="+seed)
+				added++
+			}
+		case "user":
+			if firstUserCaptured {
+				continue
+			}
+			if seed := rawProtocolContentSeed(msg["content"]); seed != "" {
+				*parts = append(*parts, "first_user="+seed)
+				added++
+				firstUserCaptured = true
+			}
+		}
+	}
+	return added
+}
+
+func appendRawProtocolResponsesInputSeeds(parts *[]string, value any) int {
+	switch typed := value.(type) {
+	case string:
+		// Responses `input` as a plain string is the sole user turn.
+		if seed := strings.TrimSpace(typed); seed != "" {
+			*parts = append(*parts, "first_user="+seed)
+			return 1
+		}
+		return 0
+	case []any:
+		added := 0
+		firstUserCaptured := false
+		for _, raw := range typed {
+			item, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			// Only plain message items carry an anchorable role + content; skip tool-call
+			// / reasoning / output items whose presence changes turn to turn.
+			itemType := strings.ToLower(rawProtocolStringValue(item["type"]))
+			if itemType != "" && itemType != "message" && itemType != "input_text" {
+				continue
+			}
+			seed := rawProtocolResponsesItemContentSeed(item)
+			if seed == "" {
+				continue
+			}
+			switch role := strings.ToLower(rawProtocolStringValue(item["role"])); role {
+			case "system", "developer":
+				*parts = append(*parts, role+"="+seed)
+				added++
+			case "user":
+				if firstUserCaptured {
+					continue
+				}
+				*parts = append(*parts, "first_user="+seed)
+				added++
+				firstUserCaptured = true
+			}
+		}
+		return added
+	default:
+		return 0
+	}
+}
+
+// rawProtocolResponsesItemContentSeed returns a stable seed for a responses input message
+// item, preferring its `content` (string or content-part array) and falling back to a
+// plain `text` field.
+func rawProtocolResponsesItemContentSeed(item map[string]any) string {
+	if _, ok := item["content"]; ok {
+		if seed := rawProtocolContentSeed(item["content"]); seed != "" {
+			return seed
+		}
+	}
+	return rawProtocolStringValue(item["text"])
+}
+
+// rawProtocolContentSeed turns a message content value into a stable string: a plain string
+// is trimmed, anything else (a multimodal content-part array/object) is marshalled back to
+// JSON — encoding/json sorts map keys, so the seed is deterministic across a conversation's
+// turns as long as the content itself does not change.
+func rawProtocolContentSeed(value any) string {
+	switch typed := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return strings.TrimSpace(typed)
+	default:
+		raw, err := json.Marshal(typed)
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(string(raw))
+	}
 }
 
 func rawProtocolPreviousResponseID(payload map[string]any) string {

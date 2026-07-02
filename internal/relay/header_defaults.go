@@ -1,8 +1,6 @@
 package relay
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"net/http"
 	"strings"
 
@@ -170,15 +168,6 @@ func ensureClaudeBetaQuery(req *http.Request) {
 		q.Set("beta", "true")
 		req.URL.RawQuery = q.Encode()
 	}
-}
-
-func hashClaudeSessionHeader(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return ""
-	}
-	sum := sha256.Sum256([]byte("claude-session:" + value))
-	return hex.EncodeToString(sum[:16])
 }
 
 func shouldEnableClaudeOneMillionBeta(internalRequest *model.InternalLLMRequest) bool {

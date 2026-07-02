@@ -1,6 +1,8 @@
 package model
 
 import (
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -175,3 +177,102 @@ func TestChannelGetAvailableChannelKeysStickyFallsThroughWhilePrimaryCools(t *te
 		}
 	}
 }
+
+// singleCooledKeyChannel builds a channel whose only enabled key is currently within a
+// transient (5xx) cooldown window — i.e. the all-keys-cooling fallback path.
+func singleCooledKeyChannel(id int) Channel {
+	return Channel{
+		ID: id,
+		Keys: []ChannelKey{
+			{ID: 1, Enabled: true, ChannelKey: "only-key", StatusCode: 503, LastUseTimeStamp: time.Now().Unix() - 5, TotalCost: 0},
+		},
+	}
+}
+
+// R3c: when every key of a (single-key) channel is cooling down, the fallback that
+// surfaces the just-failed key must be throttled to at most one probe per
+// ChannelKeyProbeInterval — a burst of rapid requests must NOT all get the cooling key
+// back and slam it. The first call probes; the immediately-following call gets nothing.
+func TestChannelGetAvailableChannelKeysThrottlesCooldownFallbackProbe(t *testing.T) {
+	defer restoreProbeInterval(ChannelKeyProbeInterval)
+	ChannelKeyProbeInterval = time.Hour // large so the 2nd call is unambiguously throttled
+	channel := singleCooledKeyChannel(990001)
+
+	first := channel.GetAvailableChannelKeys()
+	if len(first) != 1 || first[0].ID != 1 {
+		t.Fatalf("first probe must surface the single cooling key, got %#v", first)
+	}
+	second := channel.GetAvailableChannelKeys()
+	if len(second) != 0 {
+		t.Fatalf("a second probe within the interval must be throttled to empty, got %#v", second)
+	}
+}
+
+// After ChannelKeyProbeInterval elapses the route must re-admit a probe so a recovered
+// key self-heals quickly instead of staying dark for the whole cooldown.
+func TestChannelGetAvailableChannelKeysReadmitsProbeAfterInterval(t *testing.T) {
+	defer restoreProbeInterval(ChannelKeyProbeInterval)
+	ChannelKeyProbeInterval = 5 * time.Millisecond
+	channel := singleCooledKeyChannel(990002)
+
+	if first := channel.GetAvailableChannelKeys(); len(first) != 1 {
+		t.Fatalf("first probe must be admitted, got %#v", first)
+	}
+	time.Sleep(20 * time.Millisecond) // > interval
+	if again := channel.GetAvailableChannelKeys(); len(again) != 1 || again[0].ID != 1 {
+		t.Fatalf("probe must be re-admitted after the interval elapses, got %#v", again)
+	}
+}
+
+// GetChannelKey builds an auth header (model sync/discovery), not a hot-path request, so
+// it must bypass the probe throttle entirely: it always returns the cooling key and never
+// consumes a probe slot — no regression for that path even after a hot-path probe fired.
+func TestChannelGetChannelKeyBypassesCooldownProbeThrottle(t *testing.T) {
+	defer restoreProbeInterval(ChannelKeyProbeInterval)
+	ChannelKeyProbeInterval = time.Hour
+	channel := singleCooledKeyChannel(990003)
+
+	// Consume the single hot-path probe slot for this channel.
+	if got := channel.GetAvailableChannelKeys(); len(got) != 1 {
+		t.Fatalf("setup: hot-path probe should be admitted once, got %#v", got)
+	}
+	// GetChannelKey must still return the real cooling key on every call.
+	for i := 0; i < 3; i++ {
+		if k := channel.GetChannelKey(); k.ID != 1 || k.ChannelKey != "only-key" {
+			t.Fatalf("GetChannelKey call %d must bypass the throttle and return the cooling key, got %#v", i, k)
+		}
+	}
+}
+
+// The throttle must be concurrency-safe: under a burst of concurrent requests to a
+// single-key channel whose only key is cooling, exactly ONE must be admitted (the rest
+// get an empty set). Run under -race to prove the check-and-record is atomic.
+func TestChannelGetAvailableChannelKeysConcurrentCooldownProbeAdmitsOne(t *testing.T) {
+	defer restoreProbeInterval(ChannelKeyProbeInterval)
+	ChannelKeyProbeInterval = time.Hour
+	channel := singleCooledKeyChannel(990004)
+
+	const goroutines = 64
+	var admitted int64
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			<-start // release all at once to maximise contention
+			if len(channel.GetAvailableChannelKeys()) > 0 {
+				atomic.AddInt64(&admitted, 1)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if admitted != 1 {
+		t.Fatalf("exactly one concurrent probe must be admitted, got %d", admitted)
+	}
+}
+
+// restoreProbeInterval resets the package-level knob after a test that overrode it.
+func restoreProbeInterval(d time.Duration) { ChannelKeyProbeInterval = d }

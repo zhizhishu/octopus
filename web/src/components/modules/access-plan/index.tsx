@@ -1415,7 +1415,7 @@ function RouteTargetsEditor({
     };
 
     return (
-        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1">
+        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1 pb-24 md:pb-4">
             <div className="flex shrink-0 flex-col gap-2 rounded-2xl border border-border/70 bg-card/70 p-2 sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex min-w-0 items-center gap-2 px-1 text-xs text-muted-foreground">
                     <GitBranch className="size-4 shrink-0 text-primary" />
@@ -1636,7 +1636,7 @@ export function AccessPlan() {
     if (!isAdmin) return null;
 
     return (
-        <PageWrapper className="h-full min-h-0 rounded-t-3xl pb-24 md:pb-4">
+        <PageWrapper className="h-full min-h-0 rounded-t-3xl">
             <div className="flex h-full min-h-0 flex-col gap-3 overflow-hidden">
                 <div className="shrink-0 rounded-2xl border border-border/70 bg-card/70 p-2 shadow-sm">
                     <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">

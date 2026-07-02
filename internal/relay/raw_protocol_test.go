@@ -429,6 +429,118 @@ func TestDeriveRawProtocolClientSessionInfoFingerprintFallback(t *testing.T) {
 	}
 }
 
+// A bare responses client's sticky fallback must anchor on the STABLE prompt prefix so one
+// conversation keeps a single channel across turns even as its input array grows.
+func TestDeriveRawProtocolClientSessionInfoPromptAnchorStableAcrossTurns(t *testing.T) {
+	turn1 := deriveRawProtocolClientSessionInfo(map[string]any{
+		"model":        "gpt-5.5",
+		"instructions": "you are a helpful assistant",
+		"input": []any{
+			map[string]any{"role": "user", "content": "kick off the conversation"},
+		},
+	})
+	if turn1.Key == "" || turn1.Source != "octopus:request_fingerprint" {
+		t.Fatalf("expected prompt-anchor fingerprint, got %+v", turn1)
+	}
+	// Later turn: same instructions + same first user, but the input array has grown with
+	// the assistant reply and a brand-new follow-up user turn.
+	turn2 := deriveRawProtocolClientSessionInfo(map[string]any{
+		"model":        "gpt-5.5",
+		"instructions": "you are a helpful assistant",
+		"input": []any{
+			map[string]any{"role": "user", "content": "kick off the conversation"},
+			map[string]any{"role": "assistant", "content": "sure, how can I help?"},
+			map[string]any{"role": "user", "content": "a brand new follow-up question"},
+		},
+	})
+	if turn2.Key != turn1.Key {
+		t.Fatalf("prompt anchor must stay stable across turns, got %q vs %q", turn2.Key, turn1.Key)
+	}
+	// Multimodal first-user content (a content-part array) anchors stably too.
+	mm1 := deriveRawProtocolClientSessionInfo(map[string]any{
+		"model": "gpt-5.5",
+		"input": []any{
+			map[string]any{"role": "user", "content": []any{
+				map[string]any{"type": "input_text", "text": "look at this"},
+			}},
+		},
+	})
+	mm2 := deriveRawProtocolClientSessionInfo(map[string]any{
+		"model": "gpt-5.5",
+		"input": []any{
+			map[string]any{"role": "user", "content": []any{
+				map[string]any{"type": "input_text", "text": "look at this"},
+			}},
+			map[string]any{"type": "reasoning", "summary": "ignored"},
+			map[string]any{"role": "user", "content": "follow up"},
+		},
+	})
+	if mm1.Key == "" || mm2.Key != mm1.Key {
+		t.Fatalf("multimodal prompt anchor must stay stable across turns, got %q vs %q", mm2.Key, mm1.Key)
+	}
+}
+
+// Different conversations (different first-user message) — and the chat `messages` schema —
+// must anchor to their own sticky slots.
+func TestDeriveRawProtocolClientSessionInfoPromptAnchorIsolatesConversations(t *testing.T) {
+	base := deriveRawProtocolClientSessionInfo(map[string]any{
+		"model":        "gpt-5.5",
+		"instructions": "you are a helpful assistant",
+		"input":        []any{map[string]any{"role": "user", "content": "conversation A"}},
+	})
+	other := deriveRawProtocolClientSessionInfo(map[string]any{
+		"model":        "gpt-5.5",
+		"instructions": "you are a helpful assistant",
+		"input":        []any{map[string]any{"role": "user", "content": "conversation B"}},
+	})
+	if base.Key == "" || other.Key == "" {
+		t.Fatalf("expected both conversations to anchor, got %+v and %+v", base, other)
+	}
+	if base.Key == other.Key {
+		t.Fatalf("different first-user messages must anchor differently, both %q", base.Key)
+	}
+	// The chat schema (messages) anchors the same way.
+	chat := deriveRawProtocolClientSessionInfo(map[string]any{
+		"model": "gpt-5.5",
+		"messages": []any{
+			map[string]any{"role": "system", "content": "you are a helpful assistant"},
+			map[string]any{"role": "user", "content": "conversation A"},
+		},
+	})
+	if chat.Key == "" || chat.Source != "octopus:request_fingerprint" {
+		t.Fatalf("expected chat-schema prompt anchor, got %+v", chat)
+	}
+}
+
+// A single-shot payload with no prompt anchor (rerank: query + documents) must still fall
+// back to the whole-payload fingerprint so unrelated requests do not collapse into one slot.
+func TestDeriveRawProtocolClientSessionInfoWholePayloadFallbackWhenNoAnchor(t *testing.T) {
+	info := deriveRawProtocolClientSessionInfo(map[string]any{
+		"model":     "request-rerank",
+		"query":     "hello",
+		"documents": []any{"world"},
+	})
+	if info.Key == "" || info.Source != "octopus:request_fingerprint" {
+		t.Fatalf("expected whole-payload fingerprint fallback, got %+v", info)
+	}
+	same := deriveRawProtocolClientSessionInfo(map[string]any{
+		"model":     "request-rerank",
+		"query":     "hello",
+		"documents": []any{"world"},
+	})
+	if same.Key != info.Key {
+		t.Fatalf("whole-payload fallback must be stable for identical payloads, got %q vs %q", same.Key, info.Key)
+	}
+	other := deriveRawProtocolClientSessionInfo(map[string]any{
+		"model":     "request-rerank",
+		"query":     "different question",
+		"documents": []any{"world"},
+	})
+	if other.Key == info.Key {
+		t.Fatalf("distinct rerank payloads must fingerprint differently, both %q", info.Key)
+	}
+}
+
 func TestRawResponsesCompactStreamStopsAfterTerminalAndRecordsOwner(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx := setupRelayErrorDB(t)

@@ -510,6 +510,53 @@ func TestClaudeFingerprintSuppressedWhenCloakOff(t *testing.T) {
 	}
 }
 
+// TestClaudeOneMillionPlainClientCloakOffEmitsNoClaudeIdentity locks the F1 fix on the
+// cloak=never side: a plain (non-CLI) [1m] request routed to a cloak-off Anthropic
+// channel must carry NO Claude identity in the body. prepareClaudeOneMillionPlainClientShape
+// no longer synthesises metadata.user_id or the "You are a Claude agent" system block
+// itself — that was the F1 leak, an ungated (and malformed) re-implementation of the
+// cloak-gated canonical paths. With cloak off, ensureClaudeMetadataUserID stays a no-op,
+// so neither identity survives on the relay side. (The [1m] model still trips
+// AnthropicRequestWantsOneMillionBeta, so this exercises the real branch, not an early
+// return.)
+func TestClaudeOneMillionPlainClientCloakOffEmitsNoClaudeIdentity(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	userContent := "ping"
+	ra := &relayAttempt{
+		relayRequest: &relayRequest{
+			c:           c,
+			inboundType: inbound.InboundTypeAnthropic,
+			internalRequest: &transformermodel.InternalLLMRequest{
+				Model: "claude-opus-4-8[1m]",
+				Messages: []transformermodel.Message{{
+					Role:    "user",
+					Content: transformermodel.MessageContent{Content: &userContent},
+				}},
+			},
+		},
+		channel: &dbmodel.Channel{
+			Type:  outbound.OutboundTypeAnthropic,
+			Cloak: dbmodel.ChannelCloak{Mode: "never"},
+		},
+	}
+
+	// The two relay-side identity calls applyTransformOptions runs, in the same order.
+	ra.ensureClaudeMetadataUserID()
+	ra.prepareClaudeOneMillionPlainClientShape()
+
+	if got := ra.internalRequest.Metadata["user_id"]; got != "" {
+		t.Fatalf("cloak=never [1m] must not inject metadata.user_id, got %q", got)
+	}
+	for _, msg := range ra.internalRequest.Messages {
+		if msg.Content.Content != nil && strings.Contains(*msg.Content.Content, "built on Anthropic's Claude Agent SDK") {
+			t.Fatalf("cloak=never [1m] must not inject the Claude agent-identity system block (role %q)", msg.Role)
+		}
+	}
+}
+
 // TestClaudeHeaderDefaultsUniformUAIgnoresInboundVersion pins the UNIFORM-UA
 // requirement: even when a genuine claude-cli downstream reports its OWN version
 // (UA + X-Stainless-* version/os/arch), octopus must NOT mirror it onto the upstream.

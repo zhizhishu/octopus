@@ -24,7 +24,6 @@ import (
 	openaiOutbound "github.com/bestruirui/octopus/internal/transformer/outbound/openai"
 	"github.com/bestruirui/octopus/internal/utils/log"
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"github.com/tmaxmax/go-sse"
 )
 
@@ -1121,30 +1120,14 @@ func (ra *relayAttempt) prepareClaudeOneMillionPlainClientShape() {
 	if isNativeAnthropicClaudeShape(ra.internalRequest) {
 		return
 	}
+	// Only the functional 1M runtime shape (reasoning effort / auto-compact context
+	// management) belongs here. The Claude identity — metadata.user_id and the
+	// agent-identity system block — is injected exclusively by the cloak-gated paths
+	// (ensureClaudeMetadataUserID and the Anthropic outbound transformer's
+	// convertSystemPrompt), so it is suppressed correctly when cloak mode is "never".
+	// Re-synthesising identity here would both leak it under cloak=never and duplicate
+	// those canonical builders, so this path deliberately does not touch it.
 	applyClaudeOneMillionRuntimeShape(ra.internalRequest)
-	if !messagesContainSystemPrompt(ra.internalRequest.Messages) {
-		content := "You are a Claude agent, built on Anthropic's Claude Agent SDK."
-		ra.internalRequest.Messages = append([]model.Message{{
-			Role: "system",
-			Content: model.MessageContent{
-				Content: &content,
-			},
-		}}, ra.internalRequest.Messages...)
-	}
-	if ra.internalRequest.Metadata == nil {
-		ra.internalRequest.Metadata = map[string]string{}
-	}
-	if strings.TrimSpace(ra.internalRequest.Metadata["user_id"]) == "" {
-		sessionID := ra.claudeOneMillionSessionUUID()
-		userMeta := map[string]string{
-			"device_id":    hashClaudeSessionHeader("device:" + sessionID),
-			"account_uuid": "",
-			"session_id":   sessionID,
-		}
-		if encoded, err := json.Marshal(userMeta); err == nil {
-			ra.internalRequest.Metadata["user_id"] = string(encoded)
-		}
-	}
 }
 
 func isNativeAnthropicClaudeShape(req *model.InternalLLMRequest) bool {
@@ -1191,20 +1174,6 @@ func claudeCLIReasoningEffort() string {
 	default:
 		return ""
 	}
-}
-
-func (ra *relayAttempt) claudeOneMillionSessionUUID() string {
-	if ra == nil {
-		return uuid.NewString()
-	}
-	seed := strings.TrimSpace(ra.clientSessionKey)
-	if seed == "" && ra.internalRequest != nil && ra.internalRequest.PromptCacheKey != nil {
-		seed = strings.TrimSpace(*ra.internalRequest.PromptCacheKey)
-	}
-	if seed == "" {
-		seed = "octopus:" + fmt.Sprint(ra.userID) + ":" + fmt.Sprint(ra.apiKeyID) + ":" + strings.TrimSpace(ra.requestModel)
-	}
-	return uuid.NewSHA1(uuid.NameSpaceOID, []byte("octopus:claude-1m:"+seed)).String()
 }
 
 func messagesContainSystemPrompt(messages []model.Message) bool {
