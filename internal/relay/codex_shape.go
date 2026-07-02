@@ -73,7 +73,7 @@ func (ra *relayAttempt) applyPlainResponsesCodexHistoryForPreviousResponseID(pre
 	if responsesMessagesAlreadyCarryAssistantContext(req.Messages) {
 		return
 	}
-	history, ok := responsesSessionTranscript(previousResponseID)
+	history, ok := responsesSessionTranscript(previousResponseID, ra.apiKeyID, ra.userID)
 	if !ok || len(history) == 0 {
 		return
 	}

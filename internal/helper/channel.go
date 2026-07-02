@@ -18,12 +18,26 @@ func ChannelHttpClient(channel *model.Channel) (*http.Client, error) {
 		return nil, errors.New("channel is nil")
 	}
 	if !channel.Proxy {
+		// Opt-in uTLS (Chrome JA3) applies only to direct upstream calls; proxied
+		// channels keep the standard transport (uTLS-over-proxy is a follow-up). The
+		// setting is default-off and must pass anyrouter shape re-verification first.
+		if upstreamUTLSFingerprintEnabled() {
+			return client.GetHTTPClientUTLSDirect()
+		}
 		return client.GetHTTPClientSystemProxy(false)
 	} else if channel.ChannelProxy == nil || strings.TrimSpace(*channel.ChannelProxy) == "" {
 		return client.GetHTTPClientSystemProxy(true)
 	} else {
 		return client.GetHTTPClientCustomProxy(strings.TrimSpace(*channel.ChannelProxy))
 	}
+}
+
+func upstreamUTLSFingerprintEnabled() bool {
+	enabled, err := op.SettingGetBool(model.SettingKeyUpstreamUTLSFingerprint)
+	if err != nil {
+		return false
+	}
+	return enabled
 }
 
 func ChannelBaseUrlDelayUpdate(channel *model.Channel, ctx context.Context) {

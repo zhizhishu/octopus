@@ -44,6 +44,7 @@ func transformChatRequest(ctx context.Context, request *model.InternalLLMRequest
 	}
 
 	applyGLMThinking(request)
+	applyDeepSeekResponseFormat(request)
 
 	body, err := json.Marshal(request)
 	if err != nil {
@@ -86,6 +87,25 @@ var (
 	glmThinkingEnabled  = json.RawMessage(`{"type":"enabled"}`)
 	glmThinkingDisabled = json.RawMessage(`{"type":"disabled"}`)
 )
+
+// isDeepSeekModel reports whether the model name targets a DeepSeek model.
+// DeepSeek's chat API only accepts response_format type "json_object";
+// sending "json_schema" causes a 400 error.
+func isDeepSeekModel(model string) bool {
+	return strings.Contains(strings.ToLower(model), "deepseek")
+}
+
+// applyDeepSeekResponseFormat downgrades a json_schema response_format to
+// json_object for DeepSeek models, which do not support the json_schema type.
+// All other models and all other response_format types are left untouched.
+func applyDeepSeekResponseFormat(request *model.InternalLLMRequest) {
+	if request == nil || !isDeepSeekModel(request.Model) {
+		return
+	}
+	if request.ResponseFormat != nil && request.ResponseFormat.Type == "json_schema" {
+		request.ResponseFormat = &model.ResponseFormat{Type: "json_object"}
+	}
+}
 
 // isGLMModel reports whether the model name targets a GLM / z.ai model that
 // uses the thinking:{type} switch instead of reasoning_effort.

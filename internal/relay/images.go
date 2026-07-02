@@ -117,6 +117,11 @@ func ImagesHandler(endpoint string, c *gin.Context) {
 		return
 	}
 	group := enrichGroupForSmartRouting(ctx, routeResult.Group, stream)
+	// Image generation is stateless per request, so session stickiness is derived from
+	// explicit client session headers only. Unlike raw_protocol we intentionally do NOT
+	// add a raw-body fingerprint fallback here: a body hash would just give every
+	// one-shot image request its own throwaway sticky slot with no continuity benefit,
+	// so header-less image traffic keeps the api-key+model affinity (warmer channels).
 	clientSession := deriveClientSessionInfo(c.Request.Header, nil)
 	clientSessionKey := clientSession.Key
 

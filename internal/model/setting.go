@@ -22,6 +22,7 @@ const (
 	SettingKeyAnthropicAutoCacheControl SettingKey = "anthropic_auto_cache_control" // Anthropic 出站自动为稳定长前缀注入 cache_control
 	SettingKeyRelayStreamKeepaliveSec   SettingKey = "relay_stream_keepalive_interval_seconds"
 	SettingKeyOpenAIAutoPromptCacheKey  SettingKey = "openai_auto_prompt_cache_key"
+	SettingKeyUpstreamUTLSFingerprint   SettingKey = "upstream_utls_fingerprint" // 直连上游用 Chrome uTLS ClientHello (JA3); opt-in, 默认关, 启用前须过 anyrouter 复验
 	SettingKeyRelayStreamDataTimeoutSec SettingKey = "relay_stream_data_interval_timeout_seconds"
 	SettingKeyResponsesSessionTTL       SettingKey = "responses_session_ttl_seconds"
 	SettingKeyClaudeHeaderUserAgent     SettingKey = "claude_header_defaults_user_agent"
@@ -86,11 +87,15 @@ const SettingSecretMaskValue = "__OCTOPUS_SECRET_KEPT__"
 const (
 	DefaultCodexHeaderUserAgent = "codex_exec/0.132.0 (Windows 10.0.26200; x86_64) unknown (codex_exec; 0.132.0)"
 
+	// DefaultClaudeCLIVersion is the named Claude Code CLI version used to build the
+	// user-agent below. The Anthropic outbound billing-header cc_version carries the
+	// same version (authropic.ClaudeCLIVersion); TestClaudeFingerprintVersionConsistency
+	// asserts the two never drift apart.
+	DefaultClaudeCLIVersion = "2.1.178"
+
 	// DefaultClaudeHeaderUserAgent is the locally packet-verified Claude Code CLI
-	// user-agent (claude-cli/2.1.178). Keep it in lockstep with the billing-header
-	// cc_version in the Anthropic outbound transformer so the UA and the body billing
-	// block never disagree on the client version.
-	DefaultClaudeHeaderUserAgent = "claude-cli/2.1.178 (external, sdk-cli)"
+	// user-agent (claude-cli/<DefaultClaudeCLIVersion>).
+	DefaultClaudeHeaderUserAgent = "claude-cli/" + DefaultClaudeCLIVersion + " (external, sdk-cli)"
 
 	DefaultRelayStreamDataIntervalTimeoutSeconds       = "900"
 	LegacyDefaultRelayStreamDataIntervalTimeoutSeconds = "180"
@@ -134,6 +139,7 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyAnthropicAutoCacheControl, Value: "true"}, // 默认开启稳定前缀缓存断点，提升 provider 原生命中率
 		{Key: SettingKeyRelayStreamKeepaliveSec, Value: defaultRelayStreamKeepaliveIntervalSeconds()},
 		{Key: SettingKeyOpenAIAutoPromptCacheKey, Value: "true"},
+		{Key: SettingKeyUpstreamUTLSFingerprint, Value: "false"}, // 默认关：改 TLS 指纹影响所有上游，须先过 anyrouter 复验再开
 		{Key: SettingKeyRelayStreamDataTimeoutSec, Value: defaultRelayStreamDataIntervalTimeoutSeconds()},
 		{Key: SettingKeyResponsesSessionTTL, Value: "3600"},
 		{Key: SettingKeyClaudeHeaderUserAgent, Value: DefaultClaudeHeaderUserAgent},
@@ -282,7 +288,8 @@ func (s *Setting) Validate() error {
 	case SettingKeyRelayLogKeepEnabled, SettingKeyAnthropicAutoCacheControl, SettingKeyOpenAIAutoPromptCacheKey,
 		SettingKeyClaudeHeaderStabilize, SettingKeyClaudeCLIAutoCompact, SettingKeyCodexFastMode,
 		SettingKeyUserRegistrationEnabled, SettingKeyUpstreamErrorStatusPass, SettingKeyCheckInEnabled,
-		SettingKeyDebugLoadBalancer, SettingKeyEmailVerificationEnabled, SettingKeyEmailSMTPSSL:
+		SettingKeyDebugLoadBalancer, SettingKeyEmailVerificationEnabled, SettingKeyEmailSMTPSSL,
+		SettingKeyUpstreamUTLSFingerprint:
 		if s.Value != "true" && s.Value != "false" {
 			return fmt.Errorf("%s must be true or false", s.Key)
 		}

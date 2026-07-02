@@ -75,7 +75,7 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 	// 创建迭代器（策略排序 + 粘性优先）
 	iter := balancer.NewIteratorWithSessionKey(group, apiKeyID, requestModel, clientSessionKey)
 	iter.PrioritizeChannels(nativeProtocolChannelIDs(c.Request.Context(), inboundType, group.Items))
-	prioritizeResponsesSessionOwner(c.Request.Context(), iter, internalRequest)
+	prioritizeResponsesSessionOwner(c.Request.Context(), iter, internalRequest, apiKeyID, userID)
 	if iter.Len() == 0 {
 		resp.Error(c, http.StatusServiceUnavailable, "no available channel")
 		return
@@ -146,7 +146,7 @@ runIterator:
 			continue
 		}
 		preferredKeyID := 0
-		if ownerKeyID := previousResponsesOwnerKeyForChannel(c.Request.Context(), internalRequest, channel.ID); ownerKeyID > 0 {
+		if ownerKeyID := previousResponsesOwnerKeyForChannelOwned(c.Request.Context(), internalRequest, channel.ID, apiKeyID, userID); ownerKeyID > 0 {
 			preferredKeyID = ownerKeyID
 		} else if stickyKeyID := iter.StickyKeyIDForCurrentChannel(channel.ID); stickyKeyID > 0 {
 			preferredKeyID = stickyKeyID
@@ -243,7 +243,7 @@ runIterator:
 			fallbackGroup = enrichGroupForSmartRouting(c.Request.Context(), fallbackGroup, preferStreamRouting)
 			fallbackIter := balancer.NewIteratorWithSessionKey(fallbackGroup, apiKeyID, requestModel, clientSessionKey)
 			fallbackIter.PrioritizeChannels(nativeProtocolChannelIDs(c.Request.Context(), inboundType, fallbackGroup.Items))
-			prioritizeResponsesSessionOwner(c.Request.Context(), fallbackIter, internalRequest)
+			prioritizeResponsesSessionOwner(c.Request.Context(), fallbackIter, internalRequest, apiKeyID, userID)
 			if fallbackIter.Len() > 0 {
 				group = fallbackGroup
 				iter = fallbackIter
@@ -694,10 +694,14 @@ func isRetryableUpstreamStreamError(err error) bool {
 }
 
 func previousResponsesOwnerKeyForChannel(ctx context.Context, req *model.InternalLLMRequest, channelID int) int {
+	return previousResponsesOwnerKeyForChannelOwned(ctx, req, channelID, 0, 0)
+}
+
+func previousResponsesOwnerKeyForChannelOwned(ctx context.Context, req *model.InternalLLMRequest, channelID, reqTokenID, reqUserID int) int {
 	if req == nil || req.PreviousResponseID == nil {
 		return 0
 	}
-	return responsesOwnerKeyForChannel(ctx, *req.PreviousResponseID, channelID)
+	return responsesOwnerKeyForChannel(ctx, *req.PreviousResponseID, channelID, reqTokenID, reqUserID)
 }
 
 func prioritizeAvailableChannelKey(keys []dbmodel.ChannelKey, preferredID int) []dbmodel.ChannelKey {
@@ -871,7 +875,7 @@ func (ra *relayAttempt) responsesRequestSafeForSynthesizedCursorRecovery() bool 
 	if ra.internalRequest.PreviousResponseID == nil {
 		return false
 	}
-	history, ok := responsesSessionTranscript(*ra.internalRequest.PreviousResponseID)
+	history, ok := responsesSessionTranscript(*ra.internalRequest.PreviousResponseID, ra.apiKeyID, ra.userID)
 	return ok && len(history) > 0
 }
 
@@ -1052,7 +1056,11 @@ func (ra *relayAttempt) applyTransformOptions() {
 
 	if openAIPromptCacheKeyChannel(ra.channel.Type) {
 		if enabled, err := op.SettingGetBool(dbmodel.SettingKeyOpenAIAutoPromptCacheKey); err == nil {
-			applyOpenAIAutoPromptCacheKey(ra.internalRequest, ra.channel.Type, ra.userID, ra.apiKeyID, ra.channel.Cloak.ProfileID, ra.requestModel, enabled)
+			convRoot := ""
+			if ra.internalRequest != nil && ra.internalRequest.PreviousResponseID != nil {
+				convRoot = responsesConversationRootForRequest(ra.context(), *ra.internalRequest.PreviousResponseID, ra.apiKeyID, ra.userID)
+			}
+			applyOpenAIAutoPromptCacheKeyWithSession(ra.internalRequest, ra.channel.Type, ra.userID, ra.apiKeyID, ra.channel.Cloak.ProfileID, ra.requestModel, convRoot, enabled)
 		}
 	}
 	ra.prepareCodexRequestFingerprint()

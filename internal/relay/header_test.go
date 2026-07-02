@@ -11,9 +11,24 @@ import (
 	"github.com/bestruirui/octopus/internal/transformer/inbound"
 	transformermodel "github.com/bestruirui/octopus/internal/transformer/model"
 	"github.com/bestruirui/octopus/internal/transformer/outbound"
+	"github.com/bestruirui/octopus/internal/transformer/outbound/authropic"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
+
+// TestClaudeFingerprintVersionConsistency guards the single drift the two-place
+// Claude CLI version can suffer: the CLI user-agent (internal/model) and the
+// Anthropic outbound billing-header cc_version (…/outbound/authropic) are declared in
+// separate packages because an import cycle forbids sharing one const. This asserts
+// they always name the same version, so bumping one without the other fails CI.
+func TestClaudeFingerprintVersionConsistency(t *testing.T) {
+	if authropic.ClaudeCLIVersion != dbmodel.DefaultClaudeCLIVersion {
+		t.Fatalf("billing cc_version %q != user-agent version %q", authropic.ClaudeCLIVersion, dbmodel.DefaultClaudeCLIVersion)
+	}
+	if !strings.Contains(dbmodel.DefaultClaudeHeaderUserAgent, dbmodel.DefaultClaudeCLIVersion) {
+		t.Fatalf("user-agent %q must contain the named version %q", dbmodel.DefaultClaudeHeaderUserAgent, dbmodel.DefaultClaudeCLIVersion)
+	}
+}
 
 func TestShouldForwardClientHeaderFiltersTimeoutHeaders(t *testing.T) {
 	blocked := []string{

@@ -19,20 +19,30 @@ func openAIPromptCacheKeyChannel(channelType outbound.OutboundType) bool {
 }
 
 func applyOpenAIAutoPromptCacheKey(req *llmmodel.InternalLLMRequest, channelType outbound.OutboundType, userID, apiKeyID, profileID int, requestModel string, enabled bool) {
+	applyOpenAIAutoPromptCacheKeyWithSession(req, channelType, userID, apiKeyID, profileID, requestModel, "", enabled)
+}
+
+// applyOpenAIAutoPromptCacheKeyWithSession additionally anchors the derived key to
+// a stable conversation-root hash. When convRootKey is non-empty (a responses turn
+// that continues a prior, owned conversation) the key stays byte-for-byte stable
+// across every turn of that conversation — so the upstream prompt cache is reused
+// instead of missing on each turn's changing first-user message — while remaining
+// isolated per tenant via the api-key/user namespace.
+func applyOpenAIAutoPromptCacheKeyWithSession(req *llmmodel.InternalLLMRequest, channelType outbound.OutboundType, userID, apiKeyID, profileID int, requestModel, convRootKey string, enabled bool) {
 	if !enabled || req == nil || !openAIPromptCacheKeyChannel(channelType) || !req.IsChatRequest() {
 		return
 	}
 	if req.PromptCacheKey != nil && strings.TrimSpace(*req.PromptCacheKey) != "" {
 		return
 	}
-	key := deriveOpenAIAutoPromptCacheKey(req, userID, apiKeyID, profileID, requestModel)
+	key := deriveOpenAIAutoPromptCacheKey(req, userID, apiKeyID, profileID, requestModel, convRootKey)
 	if key == "" {
 		return
 	}
 	req.PromptCacheKey = &key
 }
 
-func deriveOpenAIAutoPromptCacheKey(req *llmmodel.InternalLLMRequest, userID, apiKeyID, profileID int, requestModel string) string {
+func deriveOpenAIAutoPromptCacheKey(req *llmmodel.InternalLLMRequest, userID, apiKeyID, profileID int, requestModel, convRootKey string) string {
 	if req == nil {
 		return ""
 	}
@@ -43,6 +53,20 @@ func deriveOpenAIAutoPromptCacheKey(req *llmmodel.InternalLLMRequest, userID, ap
 	}
 	if modelName == "" {
 		return ""
+	}
+
+	// A resolved conversation root is a fully stable per-conversation anchor: use it
+	// alone (plus namespace + model) so every turn of the same conversation hashes to
+	// the same key. Different conversations/tenants get different roots/namespaces and
+	// therefore different keys.
+	if strings.TrimSpace(convRootKey) != "" {
+		parts := []string{
+			"ns=" + cacheHintNamespace(userID, apiKeyID, profileID),
+			"model=" + strings.ToLower(modelName),
+			"conv_root=" + strings.TrimSpace(convRootKey),
+		}
+		sum := sha256.Sum256([]byte(strings.Join(parts, "|")))
+		return fmt.Sprintf("%s%x", autoPromptCacheKeyPrefix, sum[:16])
 	}
 
 	parts := []string{

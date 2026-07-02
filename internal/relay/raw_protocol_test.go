@@ -384,13 +384,13 @@ func TestRawResponsesCompactUnknownCursorNeedsTrustedClientSession(t *testing.T)
 		t.Fatalf("expected sticky candidate")
 	}
 
-	if shouldForwardRawProtocolResponsesCursor(context.Background(), iter, "resp_unknown_raw", 6, 7, "") {
+	if shouldForwardRawProtocolResponsesCursor(context.Background(), iter, "resp_unknown_raw", 6, 7, "", 0, 0) {
 		t.Fatalf("raw compact must not forward unknown cursor from legacy sticky alone")
 	}
-	if shouldForwardRawProtocolResponsesCursor(context.Background(), iter, "resp_unknown_raw", 6, 7, "body:previous_response_id") {
+	if shouldForwardRawProtocolResponsesCursor(context.Background(), iter, "resp_unknown_raw", 6, 7, "body:previous_response_id", 0, 0) {
 		t.Fatalf("raw compact must not trust previous_response_id fallback as ownership proof")
 	}
-	if !shouldForwardRawProtocolResponsesCursor(context.Background(), iter, "resp_unknown_raw", 6, 7, "header:Session_id") {
+	if !shouldForwardRawProtocolResponsesCursor(context.Background(), iter, "resp_unknown_raw", 6, 7, "header:Session_id", 0, 0) {
 		t.Fatalf("raw compact should forward unknown cursor when explicit client session sticky matches")
 	}
 }
@@ -405,6 +405,27 @@ func TestDeriveRawProtocolClientSessionInfoUsesCodexClientMetadata(t *testing.T)
 	want := hashRouteSessionKey("codex-session", "raw-codex-session")
 	if info.Key != want || info.Source != "body:client_metadata:x-codex-window-id" {
 		t.Fatalf("raw codex client metadata session = %+v, want key %q", info, want)
+	}
+}
+
+// P2 #3: a raw-protocol payload carrying no session identifier must fall back to a
+// stable per-request fingerprint instead of collapsing to the coarse api-key+model
+// sticky slot shared by every unrelated request.
+func TestDeriveRawProtocolClientSessionInfoFingerprintFallback(t *testing.T) {
+	payload := map[string]any{"model": "gpt-5.5", "input": "no session metadata here"}
+	info := deriveRawProtocolClientSessionInfo(payload)
+	if info.Key == "" || info.Source != "octopus:request_fingerprint" {
+		t.Fatalf("expected request-fingerprint fallback, got %+v", info)
+	}
+	// Stable for the same payload (so a request's retries stay on one channel)...
+	again := deriveRawProtocolClientSessionInfo(map[string]any{"model": "gpt-5.5", "input": "no session metadata here"})
+	if again.Key != info.Key {
+		t.Fatalf("fingerprint must be stable for identical payloads, got %q vs %q", again.Key, info.Key)
+	}
+	// ...and distinct for a different request.
+	other := deriveRawProtocolClientSessionInfo(map[string]any{"model": "gpt-5.5", "input": "an entirely different request"})
+	if other.Key == info.Key {
+		t.Fatalf("different payloads must produce different fingerprints, both %q", info.Key)
 	}
 }
 

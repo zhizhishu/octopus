@@ -3,6 +3,8 @@ package relay
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -123,7 +125,7 @@ func RawProtocolHandler(options RawProtocolOptions, c *gin.Context) {
 	compactPreviousResponseID := ""
 	if isResponsesCompactRawProtocol(options) {
 		compactPreviousResponseID = rawProtocolPreviousResponseID(jsonPayload)
-		prioritizeRawProtocolResponsesOwner(ctx, iter, compactPreviousResponseID)
+		prioritizeRawProtocolResponsesOwner(ctx, iter, compactPreviousResponseID, apiKeyID, userID)
 	}
 	if iter.Len() == 0 {
 		resp.Error(c, http.StatusServiceUnavailable, "no available channel")
@@ -175,7 +177,7 @@ runIterator:
 			continue
 		}
 		preferredKeyID := 0
-		if ownerKeyID := responsesOwnerKeyForChannel(ctx, compactPreviousResponseID, channel.ID); ownerKeyID > 0 {
+		if ownerKeyID := responsesOwnerKeyForChannel(ctx, compactPreviousResponseID, channel.ID, apiKeyID, userID); ownerKeyID > 0 {
 			preferredKeyID = ownerKeyID
 		} else if stickyKeyID := iter.StickyKeyIDForCurrentChannel(channel.ID); stickyKeyID > 0 {
 			preferredKeyID = stickyKeyID
@@ -194,7 +196,7 @@ runIterator:
 			span := iter.StartAttempt(channel.ID, usedKey.ID, channel.Name)
 			forwardCompactCursor := true
 			if isResponsesCompactRawProtocol(options) && strings.TrimSpace(compactPreviousResponseID) != "" {
-				forwardCompactCursor = shouldForwardRawProtocolResponsesCursor(ctx, iter, compactPreviousResponseID, channel.ID, usedKey.ID, clientSession.Source)
+				forwardCompactCursor = shouldForwardRawProtocolResponsesCursor(ctx, iter, compactPreviousResponseID, channel.ID, usedKey.ID, clientSession.Source, apiKeyID, userID)
 			}
 			statusCode, written, usage, upstreamCT, upstreamResponseID, fwdErr := func() (int, bool, *imagesUsage, string, string, error) {
 				finishRuntimeAttempt := balancer.BeginRuntimeAttempt(channel.ID, usedKey.ID, item.ModelName)
@@ -210,7 +212,11 @@ runIterator:
 				}
 				metrics.ResponseContent = buildRawProtocolResponseContent(options, stream, upstreamCT, usage)
 				if isResponsesCompactRawProtocol(options) && strings.TrimSpace(upstreamResponseID) != "" {
-					recordResponsesSessionWithContext(ctx, upstreamResponseID, channel.ID, usedKey.ID)
+					rootHash := responsesConversationRootForRequest(ctx, compactPreviousResponseID, apiKeyID, userID)
+					if rootHash == "" {
+						rootHash = op.ResponseSessionIDHash(strings.TrimSpace(upstreamResponseID))
+					}
+					recordResponsesSessionOwned(ctx, upstreamResponseID, channel.ID, usedKey.ID, apiKeyID, userID, rootHash)
 				}
 
 				costDelta := metrics.Stats.InputCost + metrics.Stats.OutputCost
@@ -278,7 +284,7 @@ runIterator:
 			fallbackGroup = enrichGroupForSmartRouting(ctx, fallbackGroup, stream)
 			fallbackIter := balancer.NewIteratorWithSessionKey(fallbackGroup, apiKeyID, requestModel, clientSessionKey)
 			if isResponsesCompactRawProtocol(options) {
-				prioritizeRawProtocolResponsesOwner(ctx, fallbackIter, compactPreviousResponseID)
+				prioritizeRawProtocolResponsesOwner(ctx, fallbackIter, compactPreviousResponseID, apiKeyID, userID)
 			}
 			if fallbackIter.Len() > 0 {
 				group = fallbackGroup
@@ -340,6 +346,18 @@ func deriveRawProtocolClientSessionInfo(payload map[string]any) clientSessionInf
 			Source: "body:prompt_cache_key",
 		}
 	}
+	// Raw-body fingerprint fallback (mirrors deriveOctopusManagedClientSessionInfo):
+	// with no session identifier the balancer would otherwise pool every request from
+	// the same api-key+model into one sticky slot. Hashing the whole payload gives each
+	// distinct request its own slot instead — encoding/json sorts map keys, so the hash
+	// is stable across a request's retries. Only reached when nothing above matched.
+	if raw, err := json.Marshal(payload); err == nil && len(raw) > 0 {
+		sum := sha256.Sum256(raw)
+		return clientSessionInfo{
+			Key:    hashRouteSessionKey("octopus-request", hex.EncodeToString(sum[:16])),
+			Source: "octopus:request_fingerprint",
+		}
+	}
 	return clientSessionInfo{}
 }
 
@@ -350,7 +368,7 @@ func rawProtocolPreviousResponseID(payload map[string]any) string {
 	return strings.TrimSpace(rawProtocolStringValue(payload["previous_response_id"]))
 }
 
-func prioritizeRawProtocolResponsesOwner(ctx context.Context, iter *balancer.Iterator, previousResponseID string) {
+func prioritizeRawProtocolResponsesOwner(ctx context.Context, iter *balancer.Iterator, previousResponseID string, reqTokenID, reqUserID int) {
 	if iter == nil || strings.TrimSpace(previousResponseID) == "" {
 		return
 	}
@@ -358,10 +376,14 @@ func prioritizeRawProtocolResponsesOwner(ctx context.Context, iter *balancer.Ite
 	if !ok {
 		return
 	}
+	// Do not steer routing toward the owner's channel for a borrowed cursor.
+	if !responsesSessionOwnerMatches(owner, reqTokenID, reqUserID) {
+		return
+	}
 	iter.PrioritizeChannels(map[int]bool{owner.channelID: true})
 }
 
-func shouldForwardRawProtocolResponsesCursor(ctx context.Context, iter *balancer.Iterator, previousResponseID string, channelID int, channelKeyID int, clientSessionSource string) bool {
+func shouldForwardRawProtocolResponsesCursor(ctx context.Context, iter *balancer.Iterator, previousResponseID string, channelID int, channelKeyID int, clientSessionSource string, reqTokenID, reqUserID int) bool {
 	if strings.TrimSpace(previousResponseID) == "" {
 		return true
 	}
@@ -370,6 +392,10 @@ func shouldForwardRawProtocolResponsesCursor(ctx context.Context, iter *balancer
 		return canTrustSessionSourceForUnknownResponsesCursor(clientSessionSource) &&
 			iter != nil &&
 			iter.IsStickyChannelKey(channelID, channelKeyID)
+	}
+	// A cursor owned by another tenant is never forwarded upstream (fail-closed).
+	if !responsesSessionOwnerMatches(owner, reqTokenID, reqUserID) {
+		return false
 	}
 	return owner.channelID == channelID && owner.channelKeyID == channelKeyID
 }

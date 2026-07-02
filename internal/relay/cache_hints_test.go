@@ -156,6 +156,53 @@ func TestApplyOpenAIAutoPromptCacheKeySkipsUnsafeCases(t *testing.T) {
 	}
 }
 
+func TestApplyOpenAIAutoPromptCacheKeyAnchorsToConversationRoot(t *testing.T) {
+	// Two responses turns of the SAME conversation carry different per-turn messages
+	// (the second only sends the new user turn), but share a conversation root — the
+	// key must stay stable so the upstream prompt cache is reused across turns.
+	turn1 := &llmmodel.InternalLLMRequest{
+		Model: "upstream-gpt",
+		Messages: []llmmodel.Message{
+			{Role: "user", Content: textMessageContent("kick off the conversation")},
+		},
+	}
+	turn2 := &llmmodel.InternalLLMRequest{
+		Model: "upstream-gpt",
+		Messages: []llmmodel.Message{
+			{Role: "user", Content: textMessageContent("a completely different follow-up turn")},
+		},
+	}
+	applyOpenAIAutoPromptCacheKeyWithSession(turn1, outbound.OutboundTypeOpenAIResponse, 7, 11, 0, "glm-5.1", "root-abc", true)
+	applyOpenAIAutoPromptCacheKeyWithSession(turn2, outbound.OutboundTypeOpenAIResponse, 7, 11, 0, "glm-5.1", "root-abc", true)
+	if turn1.PromptCacheKey == nil || turn2.PromptCacheKey == nil {
+		t.Fatalf("expected prompt cache keys to be injected")
+	}
+	if *turn1.PromptCacheKey != *turn2.PromptCacheKey {
+		t.Fatalf("same conversation root must produce a stable key, got %q and %q", *turn1.PromptCacheKey, *turn2.PromptCacheKey)
+	}
+
+	// Same conversation root but a DIFFERENT tenant (user) must not collide: the
+	// namespace still isolates the cache so one tenant can never hit another's cache.
+	otherTenant := &llmmodel.InternalLLMRequest{
+		Model:    "upstream-gpt",
+		Messages: []llmmodel.Message{{Role: "user", Content: textMessageContent("kick off the conversation")}},
+	}
+	applyOpenAIAutoPromptCacheKeyWithSession(otherTenant, outbound.OutboundTypeOpenAIResponse, 8, 11, 0, "glm-5.1", "root-abc", true)
+	if otherTenant.PromptCacheKey == nil || *otherTenant.PromptCacheKey == *turn1.PromptCacheKey {
+		t.Fatalf("same root under a different tenant must stay isolated, got %#v", otherTenant.PromptCacheKey)
+	}
+
+	// A different conversation (different root) must get a different key.
+	otherConversation := &llmmodel.InternalLLMRequest{
+		Model:    "upstream-gpt",
+		Messages: []llmmodel.Message{{Role: "user", Content: textMessageContent("kick off the conversation")}},
+	}
+	applyOpenAIAutoPromptCacheKeyWithSession(otherConversation, outbound.OutboundTypeOpenAIResponse, 7, 11, 0, "glm-5.1", "root-xyz", true)
+	if otherConversation.PromptCacheKey == nil || *otherConversation.PromptCacheKey == *turn1.PromptCacheKey {
+		t.Fatalf("different conversation roots must produce different keys, got %#v", otherConversation.PromptCacheKey)
+	}
+}
+
 func textMessageContent(value string) llmmodel.MessageContent {
 	return llmmodel.MessageContent{Content: &value}
 }

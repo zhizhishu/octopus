@@ -28,7 +28,14 @@ func ResponseSessionIDHash(responseID string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// ResponseSessionBind is the backward-compatible entry point (no owner identity /
+// conversation root). Prefer ResponseSessionBindOwned so the tenant that created
+// the response id is recorded for cross-tenant isolation.
 func ResponseSessionBind(ctx context.Context, responseID string, channelID, channelKeyID int, ttl time.Duration) error {
+	return ResponseSessionBindOwned(ctx, responseID, channelID, channelKeyID, 0, 0, "", ttl)
+}
+
+func ResponseSessionBindOwned(ctx context.Context, responseID string, channelID, channelKeyID, ownerTokenID, ownerUserID int, rootHash string, ttl time.Duration) error {
 	responseIDHash := ResponseSessionIDHash(responseID)
 	if responseIDHash == "" || channelID == 0 || channelKeyID == 0 {
 		return nil
@@ -49,6 +56,9 @@ func ResponseSessionBind(ctx context.Context, responseID string, channelID, chan
 		ResponseIDHash: responseIDHash,
 		ChannelID:      channelID,
 		ChannelKeyID:   channelKeyID,
+		OwnerTokenID:   ownerTokenID,
+		OwnerUserID:    ownerUserID,
+		RootHash:       rootHash,
 		ExpiresAt:      now.Add(ttl),
 	}
 	return conn.WithContext(ctx).Clauses(clause.OnConflict{
@@ -56,39 +66,42 @@ func ResponseSessionBind(ctx context.Context, responseID string, channelID, chan
 		DoUpdates: clause.AssignmentColumns([]string{
 			"channel_id",
 			"channel_key_id",
+			"owner_token_id",
+			"owner_user_id",
+			"root_hash",
 			"expires_at",
 			"updated_at",
 		}),
 	}).Create(&row).Error
 }
 
-func ResponseSessionOwner(ctx context.Context, responseID string) (channelID, channelKeyID int, expiresAt time.Time, ok bool, err error) {
+func ResponseSessionOwner(ctx context.Context, responseID string) (model.ResponseSession, bool, error) {
 	responseIDHash := ResponseSessionIDHash(responseID)
 	if responseIDHash == "" {
-		return 0, 0, time.Time{}, false, nil
+		return model.ResponseSession{}, false, nil
 	}
 	conn := db.GetDB()
 	if conn == nil {
-		return 0, 0, time.Time{}, false, nil
+		return model.ResponseSession{}, false, nil
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	now := time.Now()
 	var row model.ResponseSession
-	err = conn.WithContext(ctx).
+	err := conn.WithContext(ctx).
 		Where("response_id_hash = ? AND expires_at > ?", responseIDHash, now).
 		First(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return 0, 0, time.Time{}, false, nil
+		return model.ResponseSession{}, false, nil
 	}
 	if err != nil {
-		return 0, 0, time.Time{}, false, err
+		return model.ResponseSession{}, false, err
 	}
 	if row.ChannelID == 0 || row.ChannelKeyID == 0 {
-		return 0, 0, time.Time{}, false, nil
+		return model.ResponseSession{}, false, nil
 	}
-	return row.ChannelID, row.ChannelKeyID, row.ExpiresAt, true, nil
+	return row, true, nil
 }
 
 func maybePruneResponseSessions(ctx context.Context, conn *gorm.DB, now time.Time) {

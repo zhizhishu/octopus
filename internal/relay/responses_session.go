@@ -24,12 +24,17 @@ const responsesSessionPruneInterval = time.Minute
 type responsesSessionEntry struct {
 	channelID    int
 	channelKeyID int
+	ownerTokenID int
+	ownerUserID  int
+	rootHash     string
 	expiresAt    time.Time
 }
 
 type responsesSessionTranscriptEntry struct {
-	messages  []transformerModel.Message
-	expiresAt time.Time
+	messages     []transformerModel.Message
+	ownerTokenID int
+	ownerUserID  int
+	expiresAt    time.Time
 }
 
 var responsesSessionStore = struct {
@@ -52,7 +57,14 @@ func recordResponsesSession(responseID string, channelID, channelKeyID int) {
 	recordResponsesSessionWithContext(context.Background(), responseID, channelID, channelKeyID)
 }
 
+// recordResponsesSessionWithContext keeps the pre-isolation signature (no owner
+// identity / conversation root) so existing callers and tests are unaffected;
+// records written this way carry owner 0/0 and are treated as unrestricted.
 func recordResponsesSessionWithContext(ctx context.Context, responseID string, channelID, channelKeyID int) {
+	recordResponsesSessionOwned(ctx, responseID, channelID, channelKeyID, 0, 0, "")
+}
+
+func recordResponsesSessionOwned(ctx context.Context, responseID string, channelID, channelKeyID, ownerTokenID, ownerUserID int, rootHash string) {
 	_ = ctx // owner persistence must survive terminal-client disconnects; use a short background context below.
 	responseID = strings.TrimSpace(responseID)
 	if responseID == "" || channelID == 0 || channelKeyID == 0 {
@@ -65,13 +77,16 @@ func recordResponsesSessionWithContext(ctx context.Context, responseID string, c
 	responsesSessionStore.items[responseID] = responsesSessionEntry{
 		channelID:    channelID,
 		channelKeyID: channelKeyID,
+		ownerTokenID: ownerTokenID,
+		ownerUserID:  ownerUserID,
+		rootHash:     rootHash,
 		expiresAt:    now.Add(ttl),
 	}
 	responsesSessionStore.Unlock()
 
 	persistCtx, cancel := metricsPersistContext()
 	defer cancel()
-	if err := op.ResponseSessionBind(persistCtx, responseID, channelID, channelKeyID, ttl); err != nil {
+	if err := op.ResponseSessionBindOwned(persistCtx, responseID, channelID, channelKeyID, ownerTokenID, ownerUserID, rootHash, ttl); err != nil {
 		log.Warnf("failed to persist responses session owner: %v", err)
 	}
 }
@@ -97,7 +112,7 @@ func responsesSessionOwnerWithContext(ctx context.Context, responseID string) (r
 	}
 	responsesSessionStore.Unlock()
 
-	channelID, channelKeyID, expiresAt, ok, err := op.ResponseSessionOwner(ctx, responseID)
+	row, ok, err := op.ResponseSessionOwner(ctx, responseID)
 	if err != nil {
 		log.Warnf("failed to load responses session owner: %v", err)
 		return responsesSessionEntry{}, false
@@ -105,18 +120,57 @@ func responsesSessionOwnerWithContext(ctx context.Context, responseID string) (r
 	if !ok {
 		return responsesSessionEntry{}, false
 	}
-	if expiresAt.IsZero() || now.After(expiresAt) {
+	if row.ExpiresAt.IsZero() || now.After(row.ExpiresAt) {
 		return responsesSessionEntry{}, false
 	}
 	entry = responsesSessionEntry{
-		channelID:    channelID,
-		channelKeyID: channelKeyID,
-		expiresAt:    expiresAt,
+		channelID:    row.ChannelID,
+		channelKeyID: row.ChannelKeyID,
+		ownerTokenID: row.OwnerTokenID,
+		ownerUserID:  row.OwnerUserID,
+		rootHash:     row.RootHash,
+		expiresAt:    row.ExpiresAt,
 	}
 	responsesSessionStore.Lock()
 	responsesSessionStore.items[responseID] = entry
 	responsesSessionStore.Unlock()
 	return entry, true
+}
+
+// responsesSessionOwnerMatches reports whether reqTokenID/reqUserID may use a
+// response id owned by entry. Fail-closed: an owner with a recorded identity is
+// only matched by the same identity (token first, else user). An owner with no
+// recorded identity (0/0 — legacy rows written before isolation, or genuinely
+// tokenless traffic) is treated as unrestricted for backward compatibility;
+// such rows expire within the session TTL, after which every live row is bound.
+func responsesSessionOwnerMatches(entry responsesSessionEntry, reqTokenID, reqUserID int) bool {
+	if entry.ownerTokenID == 0 && entry.ownerUserID == 0 {
+		return true
+	}
+	if entry.ownerTokenID > 0 {
+		return entry.ownerTokenID == reqTokenID
+	}
+	return entry.ownerUserID == reqUserID
+}
+
+// responsesConversationRootForRequest returns the stable conversation-root hash
+// for a request that continues a prior response id, or "" when there is no
+// resolvable/owned prior turn. The root is identical for every turn of the same
+// conversation, giving a stable upstream prompt-cache anchor that is still
+// isolated per tenant (the cache key also folds in the api-key/user namespace).
+func responsesConversationRootForRequest(ctx context.Context, previousResponseID string, reqTokenID, reqUserID int) string {
+	previousResponseID = strings.TrimSpace(previousResponseID)
+	if previousResponseID == "" {
+		return ""
+	}
+	entry, ok := responsesSessionOwnerWithContext(ctx, previousResponseID)
+	if !ok || !responsesSessionOwnerMatches(entry, reqTokenID, reqUserID) {
+		return ""
+	}
+	if entry.rootHash != "" {
+		return entry.rootHash
+	}
+	return op.ResponseSessionIDHash(previousResponseID)
 }
 
 func clearResponsesSessionCacheForTest() {
@@ -158,7 +212,14 @@ func maybePruneResponsesSessionsLocked(now time.Time) {
 	pruneResponsesSessionsLocked(now)
 }
 
+// recordResponsesSessionTranscript keeps the pre-isolation signature (no owner);
+// transcripts written this way carry owner 0/0 and are readable by any requester
+// for backward compatibility.
 func recordResponsesSessionTranscript(responseID string, messages []transformerModel.Message) {
+	recordResponsesSessionTranscriptOwned(responseID, messages, 0, 0)
+}
+
+func recordResponsesSessionTranscriptOwned(responseID string, messages []transformerModel.Message, ownerTokenID, ownerUserID int) {
 	responseID = strings.TrimSpace(responseID)
 	messages = trimResponsesSessionTranscript(messages)
 	if responseID == "" || len(messages) == 0 {
@@ -168,13 +229,18 @@ func recordResponsesSessionTranscript(responseID string, messages []transformerM
 	responsesSessionTranscriptStore.Lock()
 	maybePruneResponsesSessionTranscriptsLocked(now)
 	responsesSessionTranscriptStore.items[responseID] = responsesSessionTranscriptEntry{
-		messages:  cloneResponsesSessionMessages(messages),
-		expiresAt: now.Add(currentResponsesSessionTTL()),
+		messages:     cloneResponsesSessionMessages(messages),
+		ownerTokenID: ownerTokenID,
+		ownerUserID:  ownerUserID,
+		expiresAt:    now.Add(currentResponsesSessionTTL()),
 	}
 	responsesSessionTranscriptStore.Unlock()
 }
 
-func responsesSessionTranscript(responseID string) ([]transformerModel.Message, bool) {
+// responsesSessionTranscript returns a stored transcript only when reqTokenID/
+// reqUserID own it (fail-closed via responsesSessionOwnerMatches). A transcript
+// owned by another tenant is never replayed into this request.
+func responsesSessionTranscript(responseID string, reqTokenID, reqUserID int) ([]transformerModel.Message, bool) {
 	responseID = strings.TrimSpace(responseID)
 	if responseID == "" {
 		return nil, false
@@ -185,6 +251,10 @@ func responsesSessionTranscript(responseID string) ([]transformerModel.Message, 
 	entry, ok := responsesSessionTranscriptStore.items[responseID]
 	if !ok || now.After(entry.expiresAt) {
 		delete(responsesSessionTranscriptStore.items, responseID)
+		responsesSessionTranscriptStore.Unlock()
+		return nil, false
+	}
+	if !responsesSessionOwnerMatches(responsesSessionEntry{ownerTokenID: entry.ownerTokenID, ownerUserID: entry.ownerUserID}, reqTokenID, reqUserID) {
 		responsesSessionTranscriptStore.Unlock()
 		return nil, false
 	}
@@ -313,7 +383,7 @@ func cloneResponseSessionMessageContent(content transformerModel.MessageContent)
 	return clone
 }
 
-func prioritizeResponsesSessionOwner(ctx context.Context, iter *balancer.Iterator, req *transformerModel.InternalLLMRequest) {
+func prioritizeResponsesSessionOwner(ctx context.Context, iter *balancer.Iterator, req *transformerModel.InternalLLMRequest, reqTokenID, reqUserID int) {
 	if iter == nil || req == nil || req.PreviousResponseID == nil {
 		return
 	}
@@ -321,15 +391,25 @@ func prioritizeResponsesSessionOwner(ctx context.Context, iter *balancer.Iterato
 	if !ok {
 		return
 	}
+	// Never steer routing toward another tenant's channel on the strength of a
+	// borrowed previous_response_id — that is what let a cross-tenant cursor pass
+	// the channel+key check downstream and replay the owner's history.
+	if !responsesSessionOwnerMatches(owner, reqTokenID, reqUserID) {
+		return
+	}
 	iter.PrioritizeChannels(map[int]bool{owner.channelID: true})
 }
 
-func responsesOwnerKeyForChannel(ctx context.Context, previousResponseID string, channelID int) int {
+func responsesOwnerKeyForChannel(ctx context.Context, previousResponseID string, channelID, reqTokenID, reqUserID int) int {
 	if strings.TrimSpace(previousResponseID) == "" || channelID == 0 {
 		return 0
 	}
 	owner, ok := responsesSessionOwnerWithContext(ctx, previousResponseID)
 	if !ok || owner.channelID != channelID {
+		return 0
+	}
+	// Only prefer the owner's key when the caller actually owns the cursor.
+	if !responsesSessionOwnerMatches(owner, reqTokenID, reqUserID) {
 		return 0
 	}
 	return owner.channelKeyID
@@ -348,6 +428,14 @@ func (ra *relayAttempt) prepareResponsesSessionCursor(outAdapter transformerMode
 		return
 	}
 	owner, ok := responsesSessionOwnerWithContext(ra.context(), *ra.internalRequest.PreviousResponseID)
+	if ok && !responsesSessionOwnerMatches(owner, ra.apiKeyID, ra.userID) {
+		// Foreign cursor: this response id belongs to another tenant. Fail closed —
+		// drop it outright and do NOT fall back to the sticky heuristic, so a
+		// borrowed previous_response_id can neither be forwarded upstream nor steer
+		// this request onto the owner's channel.
+		ra.internalRequest.PreviousResponseID = nil
+		return
+	}
 	if !ok {
 		// An unresolvable cursor under store=false (codex shape) can only yield an
 		// empty turn: the upstream never persisted it, so octopus bridges the prior
@@ -386,6 +474,9 @@ func (ra *relayAttempt) responsesEncryptedContentOwnerMatchesCurrentAttempt() bo
 	}
 	owner, ok := responsesSessionOwnerWithContext(ra.context(), *ra.internalRequest.PreviousResponseID)
 	if !ok {
+		return false
+	}
+	if !responsesSessionOwnerMatches(owner, ra.apiKeyID, ra.userID) {
 		return false
 	}
 	return ra.channel != nil && ra.channel.ID == owner.channelID && ra.usedKey.ID == owner.channelKeyID
@@ -503,9 +594,19 @@ func (ra *relayAttempt) recordResponsesSessionFromInbound(resp *transformerModel
 	if ra.channel == nil || ra.usedKey.ID == 0 {
 		return
 	}
-	recordResponsesSessionWithContext(ra.context(), resp.ID, ra.channel.ID, ra.usedKey.ID)
+	// Conversation root: inherit the prior turn's root when this request continues
+	// one the caller actually owns, otherwise this response id seeds a fresh root.
+	// The root is a per-conversation, per-tenant stable prompt-cache anchor.
+	rootHash := ""
+	if ra.internalRequest != nil && ra.internalRequest.PreviousResponseID != nil {
+		rootHash = responsesConversationRootForRequest(ra.context(), *ra.internalRequest.PreviousResponseID, ra.apiKeyID, ra.userID)
+	}
+	if rootHash == "" {
+		rootHash = op.ResponseSessionIDHash(strings.TrimSpace(resp.ID))
+	}
+	recordResponsesSessionOwned(ra.context(), resp.ID, ra.channel.ID, ra.usedKey.ID, ra.apiKeyID, ra.userID, rootHash)
 	if ra.shouldBridgeResponsesHistory() {
-		recordResponsesSessionTranscript(resp.ID, ra.responsesSessionTranscriptFromResponse(resp))
+		recordResponsesSessionTranscriptOwned(resp.ID, ra.responsesSessionTranscriptFromResponse(resp), ra.apiKeyID, ra.userID)
 	}
 }
 

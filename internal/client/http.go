@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
+	"time"
 
 	"github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/op"
@@ -17,8 +18,40 @@ var (
 	systemDirectClient *http.Client
 	systemProxyClient  *http.Client
 	systemProxyURL     string
+	utlsDirectClient   *http.Client
 	clientLock         sync.RWMutex
 )
+
+// GetHTTPClientUTLSDirect returns a cached http.Client whose HTTPS transport presents
+// a Chrome (uTLS) ClientHello for direct — no-proxy — upstream calls, so a strict
+// upstream cannot fingerprint octopus's stock Go TLS handshake. It is opt-in: callers
+// gate on SettingKeyUpstreamUTLSFingerprint and only reach here for no-proxy channels.
+// Must be verified against the real anyrouter passthrough before enabling (see the
+// utls transport doc comment).
+func GetHTTPClientUTLSDirect() (*http.Client, error) {
+	clientLock.RLock()
+	if utlsDirectClient != nil {
+		clientLock.RUnlock()
+		return utlsDirectClient, nil
+	}
+	clientLock.RUnlock()
+
+	clientLock.Lock()
+	defer clientLock.Unlock()
+	if utlsDirectClient != nil {
+		return utlsDirectClient, nil
+	}
+
+	fallback, err := clonedDefaultTransport()
+	if err != nil {
+		return nil, err
+	}
+	fallback.Proxy = nil
+
+	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+	utlsDirectClient = &http.Client{Transport: newUTLSRoundTripper(dialer.DialContext, fallback)}
+	return utlsDirectClient, nil
+}
 
 // GetHTTPClientSystemProxy returns a cached http.Client.
 // - useProxy=false: bypass proxy

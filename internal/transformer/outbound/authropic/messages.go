@@ -564,16 +564,25 @@ func resolveMaxTokens(req *model.InternalLLMRequest) int64 {
 
 const claudeBillingHeaderPrefix = "x-anthropic-billing-header:"
 
+// Named Claude CLI fingerprint constants observed on a genuine claude-cli request.
+// ClaudeCLIVersion is the client version and MUST equal the version in
+// model.DefaultClaudeHeaderUserAgent — TestClaudeFingerprintVersionConsistency
+// guards against drift (this package cannot import internal/model: that would be an
+// import cycle, since internal/model already depends on this package).
+const (
+	ClaudeCLIVersion       = "2.1.178"
+	ClaudeCLIVersionSuffix = "a3f"
+	ClaudeCch              = "c68a9"
+)
+
 // claudeBillingHeaderText returns the Claude CLI billing-header system block.
 // Real Claude Code requests carry this as the first system text block; upstream
 // relays (e.g. AnyRouter) use it to recognise a genuine Claude CLI client, so
 // omitting it gets the request risk-rejected (429/503 before the business layer).
 func claudeBillingHeaderText() string {
-	// cc_version is kept in lockstep with the Claude header User-Agent
-	// (model.DefaultClaudeHeaderUserAgent = claude-cli/2.1.178); the suffix and cch are
-	// the values observed on a genuine claude-cli/2.1.178 request, so a synthesized
-	// (non-CLI) request does not disagree with the UA on the client version.
-	return claudeBillingHeaderPrefix + " cc_version=2.1.178.a3f; cc_entrypoint=sdk-cli; cch=c68a9;"
+	return claudeBillingHeaderPrefix +
+		" cc_version=" + ClaudeCLIVersion + "." + ClaudeCLIVersionSuffix +
+		"; cc_entrypoint=sdk-cli; cch=" + ClaudeCch + ";"
 }
 
 // claudeAgentIdentityText is the Claude Code agent-identity system block. Real

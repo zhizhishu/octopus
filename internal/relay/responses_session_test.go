@@ -53,6 +53,104 @@ func TestPreviousResponsesOwnerKeyForChannel(t *testing.T) {
 	}
 }
 
+// P1: a cursor owned by another tenant must be dropped even when this attempt is
+// already pointed at the owner's channel+key (the exact shape that previously let
+// a borrowed previous_response_id pass the channel/key check and replay history).
+func TestPrepareResponsesSessionCursorDropsForeignTenant(t *testing.T) {
+	clearResponsesSessionCacheForTest()
+	previous := "resp_foreign_tenant"
+	recordResponsesSessionOwned(context.Background(), previous, 6, 7, 100, 0, "")
+
+	req := &transformerModel.InternalLLMRequest{PreviousResponseID: &previous}
+	ra := &relayAttempt{
+		relayRequest: &relayRequest{
+			inboundType:     inbound.InboundTypeOpenAIResponse,
+			internalRequest: req,
+			apiKeyID:        999, // different tenant than the owner (token 100)
+		},
+		channel: &dbmodel.Channel{ID: 6, Type: outbound.OutboundTypeOpenAIResponse},
+		usedKey: dbmodel.ChannelKey{ID: 7},
+	}
+
+	ra.prepareResponsesSessionCursor(&openaiOutbound.ResponseOutbound{})
+
+	if req.PreviousResponseID != nil {
+		t.Fatalf("foreign-tenant previous_response_id must be dropped, got %#v", *req.PreviousResponseID)
+	}
+}
+
+// P1: the owning tenant keeps its cursor.
+func TestPrepareResponsesSessionCursorKeepsMatchingTenant(t *testing.T) {
+	clearResponsesSessionCacheForTest()
+	previous := "resp_same_tenant"
+	recordResponsesSessionOwned(context.Background(), previous, 6, 7, 100, 0, "")
+
+	req := &transformerModel.InternalLLMRequest{PreviousResponseID: &previous}
+	ra := &relayAttempt{
+		relayRequest: &relayRequest{
+			inboundType:     inbound.InboundTypeOpenAIResponse,
+			internalRequest: req,
+			apiKeyID:        100, // matches the owner token
+		},
+		channel: &dbmodel.Channel{ID: 6, Type: outbound.OutboundTypeOpenAIResponse},
+		usedKey: dbmodel.ChannelKey{ID: 7},
+	}
+
+	ra.prepareResponsesSessionCursor(&openaiOutbound.ResponseOutbound{})
+
+	if req.PreviousResponseID == nil || *req.PreviousResponseID != previous {
+		t.Fatalf("owning tenant must keep previous_response_id, got %#v", req.PreviousResponseID)
+	}
+}
+
+// P1: stored transcripts are never replayed into a foreign tenant's request.
+func TestResponsesSessionTranscriptRejectsForeignTenant(t *testing.T) {
+	clearResponsesSessionCacheForTest()
+	previous := "resp_transcript_owner"
+	recordResponsesSessionTranscriptOwned(previous, []transformerModel.Message{
+		{Role: "user", Content: textMessageContent("owner secret prompt")},
+		{Role: "assistant", Content: textMessageContent("owner secret answer")},
+	}, 100, 0)
+
+	if _, ok := responsesSessionTranscript(previous, 999, 0); ok {
+		t.Fatalf("foreign tenant must not read another tenant's transcript")
+	}
+	history, ok := responsesSessionTranscript(previous, 100, 0)
+	if !ok || len(history) == 0 {
+		t.Fatalf("owning tenant must read its own transcript, ok=%v len=%d", ok, len(history))
+	}
+}
+
+// P1: the owner-key preference (raw-protocol sticky) is only honored for the owner.
+func TestResponsesOwnerKeyForChannelEnforcesIdentity(t *testing.T) {
+	clearResponsesSessionCacheForTest()
+	previous := "resp_owner_key_identity"
+	recordResponsesSessionOwned(context.Background(), previous, 6, 7, 100, 0, "")
+
+	if got := responsesOwnerKeyForChannel(context.Background(), previous, 6, 100, 0); got != 7 {
+		t.Fatalf("owner must get preferred key, got %d want 7", got)
+	}
+	if got := responsesOwnerKeyForChannel(context.Background(), previous, 6, 999, 0); got != 0 {
+		t.Fatalf("foreign tenant must not get owner key, got %d want 0", got)
+	}
+}
+
+// P1: legacy rows written before the owner columns existed (owner 0/0) stay
+// usable for backward compatibility until they expire within the session TTL.
+func TestResponsesSessionOwnerMatchesLegacyUnrestricted(t *testing.T) {
+	legacy := responsesSessionEntry{ownerTokenID: 0, ownerUserID: 0}
+	if !responsesSessionOwnerMatches(legacy, 123, 456) {
+		t.Fatalf("legacy owner-less record must be unrestricted")
+	}
+	owned := responsesSessionEntry{ownerTokenID: 100}
+	if responsesSessionOwnerMatches(owned, 999, 0) {
+		t.Fatalf("owned record must reject a mismatched token")
+	}
+	if !responsesSessionOwnerMatches(owned, 100, 0) {
+		t.Fatalf("owned record must accept the matching token")
+	}
+}
+
 func TestPrepareResponsesSessionCursorDropsCrossChannelOwner(t *testing.T) {
 	clearResponsesSessionCacheForTest()
 	previous := "resp_cross_channel"
