@@ -13,6 +13,10 @@ static/out/*
 # 参考项目（本地学习用，不上传）
 references/
 
+# 本地阶段性产物（测试脚本/报告/抓包/临时数据）——正规落点是容器层 ..\_artifacts\，
+# 仓内若出现（子智能体按 cwd 相对路径误落）一律忽略，防 git add -A 误提交
+_artifacts/
+
 # 本地 agent 工作笔记 / 记忆文件（仅本地使用，不上传 github）
 /AGENTS.md
 /LOG.md

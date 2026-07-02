@@ -245,14 +245,101 @@ func TestDeriveManagedClientSessionInfoAddsOctopusFallbacks(t *testing.T) {
 	}
 }
 
-func TestDeriveManagedClientSessionInfoRequestFingerprintIsOctopusOwned(t *testing.T) {
+func TestDeriveManagedClientSessionInfoPromptAnchorStableAcrossTurns(t *testing.T) {
+	// A bare client (no session header, no body.user / prompt_cache_key) sends a growing
+	// conversation. The stable prompt prefix (system + first user message) does not change
+	// as history grows, so the managed sticky-session key must stay identical across turns
+	// — otherwise the client can never stick to a channel/key.
+	turn1 := &model.InternalLLMRequest{
+		Model: "gpt-5.5",
+		Messages: []model.Message{
+			{Role: "system", Content: textMessageContent("You are helpful.")},
+			{Role: "user", Content: textMessageContent("Open the repo and inspect cache.")},
+		},
+	}
+	turn2 := &model.InternalLLMRequest{
+		Model: "gpt-5.5",
+		Messages: []model.Message{
+			{Role: "system", Content: textMessageContent("You are helpful.")},
+			{Role: "user", Content: textMessageContent("Open the repo and inspect cache.")},
+			{Role: "assistant", Content: textMessageContent("Done.")},
+			{Role: "user", Content: textMessageContent("Now improve it.")},
+		},
+	}
+
+	got1 := deriveManagedClientSessionInfo(nil, turn1)
+	got2 := deriveManagedClientSessionInfo(nil, turn2)
+	if got1.Key == "" || got2.Key == "" {
+		t.Fatalf("expected prompt-anchor keys, got %+v and %+v", got1, got2)
+	}
+	if got1.Key != got2.Key {
+		t.Fatalf("prompt anchor must stay stable across turns, got %q and %q", got1.Key, got2.Key)
+	}
+	if got1.Source != "octopus:request_fingerprint" {
+		t.Fatalf("unexpected source %q", got1.Source)
+	}
+}
+
+func TestDeriveManagedClientSessionInfoPromptAnchorIsolatesConversations(t *testing.T) {
+	// Two different conversations (different first user message) must hash to different
+	// keys, so distinct bare-client conversations never share one sticky slot.
+	convA := &model.InternalLLMRequest{
+		Model: "gpt-5.5",
+		Messages: []model.Message{
+			{Role: "system", Content: textMessageContent("You are helpful.")},
+			{Role: "user", Content: textMessageContent("Task A: inspect cache.")},
+		},
+	}
+	convB := &model.InternalLLMRequest{
+		Model: "gpt-5.5",
+		Messages: []model.Message{
+			{Role: "system", Content: textMessageContent("You are helpful.")},
+			{Role: "user", Content: textMessageContent("Task B: refactor router.")},
+		},
+	}
+
+	gotA := deriveManagedClientSessionInfo(nil, convA)
+	gotB := deriveManagedClientSessionInfo(nil, convB)
+	if gotA.Key == "" || gotB.Key == "" {
+		t.Fatalf("expected prompt-anchor keys, got %+v and %+v", gotA, gotB)
+	}
+	if gotA.Key == gotB.Key {
+		t.Fatalf("different conversations must produce different keys, both = %q", gotA.Key)
+	}
+}
+
+func TestDeriveManagedClientSessionInfoWithoutAnchorFallsThrough(t *testing.T) {
+	// No session identifier and no anchorable content (only an assistant message, no
+	// system/user prefix) → no sticky key, so the request falls back to the default
+	// api-key+model pooling instead of the old per-turn-changing RawRequest fingerprint.
 	req := &model.InternalLLMRequest{
-		RawRequest: []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"hi"}]}`),
-		Messages:   []model.Message{{Role: "user"}},
+		Model:      "gpt-5.5",
+		RawRequest: []byte(`{"model":"gpt-5.5","messages":[{"role":"assistant","content":"hi"}]}`),
+		Messages:   []model.Message{{Role: "assistant", Content: textMessageContent("hi")}},
 	}
 
 	got := deriveManagedClientSessionInfo(nil, req)
-	if got.Key == "" || got.Source != "octopus:request_fingerprint" {
-		t.Fatalf("expected octopus request fingerprint fallback, got %+v", got)
+	if got.Key != "" {
+		t.Fatalf("expected empty session info without anchorable content, got %+v", got)
+	}
+}
+
+func TestDeriveManagedClientSessionInfoExplicitSessionStillWins(t *testing.T) {
+	// An explicit session header must still take priority over the prompt-anchor fallback,
+	// even when anchorable messages are present.
+	headers := http.Header{}
+	headers.Set("X-Session-Id", "codex-session-9")
+	req := &model.InternalLLMRequest{
+		Model: "gpt-5.5",
+		Messages: []model.Message{
+			{Role: "system", Content: textMessageContent("You are helpful.")},
+			{Role: "user", Content: textMessageContent("hello")},
+		},
+	}
+
+	got := deriveManagedClientSessionInfo(headers, req)
+	want := hashRouteSessionKey("codex-session", "codex-session-9")
+	if got.Key != want || got.Source != "header:X-Session-Id" {
+		t.Fatalf("explicit session must win, got %+v want key %q", got, want)
 	}
 }

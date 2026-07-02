@@ -89,32 +89,47 @@ func deriveOpenAIAutoPromptCacheKey(req *llmmodel.InternalLLMRequest, userID, ap
 		anchors++
 	}
 
-	firstUserCaptured := false
-	for _, msg := range req.Messages {
-		role := strings.ToLower(strings.TrimSpace(msg.Role))
-		switch role {
-		case "system", "developer":
-			if seed := messageContentCacheSeed(msg.Content); seed != "" {
-				parts = append(parts, role+"="+seed)
-				anchors++
-			}
-		case "user":
-			if firstUserCaptured {
-				continue
-			}
-			if seed := messageContentCacheSeed(msg.Content); seed != "" {
-				parts = append(parts, "first_user="+seed)
-				anchors++
-				firstUserCaptured = true
-			}
-		}
-	}
+	anchors += appendPromptAnchorMessageSeeds(&parts, req)
 
 	if anchors == 0 {
 		return ""
 	}
 	sum := sha256.Sum256([]byte(strings.Join(parts, "|")))
 	return fmt.Sprintf("%s%x", autoPromptCacheKeyPrefix, sum[:16])
+}
+
+// appendPromptAnchorMessageSeeds appends the stable, conversation-root message anchors —
+// every system/developer message plus the first user message — to parts, returning how
+// many anchors were added. It is the shared anchoring used by BOTH the OpenAI auto
+// prompt_cache_key and the managed-client sticky-session fallback, so a bare client's
+// turns hash to the same value across one conversation (system + first_user stay fixed as
+// the history grows) yet differ across conversations (a different first_user changes it).
+func appendPromptAnchorMessageSeeds(parts *[]string, req *llmmodel.InternalLLMRequest) int {
+	if parts == nil || req == nil {
+		return 0
+	}
+	added := 0
+	firstUserCaptured := false
+	for _, msg := range req.Messages {
+		role := strings.ToLower(strings.TrimSpace(msg.Role))
+		switch role {
+		case "system", "developer":
+			if seed := messageContentCacheSeed(msg.Content); seed != "" {
+				*parts = append(*parts, role+"="+seed)
+				added++
+			}
+		case "user":
+			if firstUserCaptured {
+				continue
+			}
+			if seed := messageContentCacheSeed(msg.Content); seed != "" {
+				*parts = append(*parts, "first_user="+seed)
+				added++
+				firstUserCaptured = true
+			}
+		}
+	}
+	return added
 }
 
 func cacheHintNamespace(userID, apiKeyID, profileID int) string {

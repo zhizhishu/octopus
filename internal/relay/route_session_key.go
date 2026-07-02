@@ -1,7 +1,6 @@
 package relay
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -106,14 +105,42 @@ func deriveOctopusManagedClientSessionInfo(req *model.InternalLLMRequest) client
 			}
 		}
 	}
-	if len(req.RawRequest) > 0 {
-		sum := sha256.Sum256(bytes.TrimSpace(req.RawRequest))
-		return clientSessionInfo{
-			Key:    hashRouteSessionKey("octopus-request", hex.EncodeToString(sum[:16])),
-			Source: "octopus:request_fingerprint",
-		}
+	if info := deriveOctopusManagedPromptAnchorSessionInfo(req); info.Key != "" {
+		return info
 	}
 	return clientSessionInfo{}
+}
+
+// deriveOctopusManagedPromptAnchorSessionInfo derives the managed sticky-session fallback
+// key for a bare client (no session header, no body.user / prompt_cache_key / previous
+// response / safety identifier) from the request's STABLE prompt prefix — model plus the
+// system/developer messages plus the first user message — reusing the same anchoring that
+// cache_hints applies for the auto prompt_cache_key. Because that prefix does not change
+// as the conversation's history grows, every turn of one conversation hashes to the same
+// key (so the bare client sticks to one channel/key), while a different conversation
+// (different first_user) hashes differently (so tenants / conversations stay isolated).
+// The api-key + model namespace is layered on downstream by balancer.sessionKey, so it is
+// intentionally not repeated inside this hash.
+//
+// NOTE: the scope ("octopus-request") and Source ("octopus:request_fingerprint") strings
+// are kept for log/metrics continuity, but the hashed input is now this stable
+// prompt-prefix anchor — NOT a hash of the full RawRequest, which grew every turn and so
+// changed the sticky key on every turn (breaking cross-turn stickiness for bare clients).
+func deriveOctopusManagedPromptAnchorSessionInfo(req *model.InternalLLMRequest) clientSessionInfo {
+	if req == nil {
+		return clientSessionInfo{}
+	}
+	parts := make([]string, 0, 4)
+	if modelName := strings.ToLower(strings.TrimSpace(req.Model)); modelName != "" {
+		parts = append(parts, "model="+modelName)
+	}
+	if appendPromptAnchorMessageSeeds(&parts, req) == 0 {
+		return clientSessionInfo{}
+	}
+	return clientSessionInfo{
+		Key:    hashRouteSessionKey("octopus-request", strings.Join(parts, "|")),
+		Source: "octopus:request_fingerprint",
+	}
 }
 
 func deriveClientSessionKeyFromHeaders(headers http.Header) string {
