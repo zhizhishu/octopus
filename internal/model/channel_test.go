@@ -274,5 +274,31 @@ func TestChannelGetAvailableChannelKeysConcurrentCooldownProbeAdmitsOne(t *testi
 	}
 }
 
+// The relay's final-candidate last-resort path must surface a briefly-cooling sole key
+// even after the hot-path probe slot is spent, so a single-route client's retry reaches
+// the upstream instead of blacking out. GetAvailableChannelKeysLastResort bypasses the
+// throttle entirely (like the auth-header path) and always returns the cooling key.
+func TestChannelGetAvailableChannelKeysLastResortBypassesThrottle(t *testing.T) {
+	defer restoreProbeInterval(ChannelKeyProbeInterval)
+	ChannelKeyProbeInterval = time.Hour // any hot-path re-probe within the hour is throttled
+	channel := singleCooledKeyChannel(990005)
+
+	// Spend the single hot-path probe slot.
+	if got := channel.GetAvailableChannelKeys(); len(got) != 1 {
+		t.Fatalf("setup: hot-path probe should be admitted once, got %#v", got)
+	}
+	// Hot path is now throttled to empty...
+	if got := channel.GetAvailableChannelKeys(); len(got) != 0 {
+		t.Fatalf("hot path must be throttled to empty after the probe, got %#v", got)
+	}
+	// ...but the last-resort path still returns the cooling key on every call.
+	for i := 0; i < 3; i++ {
+		lr := channel.GetAvailableChannelKeysLastResort()
+		if len(lr) != 1 || lr[0].ID != 1 {
+			t.Fatalf("last-resort call %d must return the sole cooling key, got %#v", i, lr)
+		}
+	}
+}
+
 // restoreProbeInterval resets the package-level knob after a test that overrode it.
 func restoreProbeInterval(d time.Duration) { ChannelKeyProbeInterval = d }

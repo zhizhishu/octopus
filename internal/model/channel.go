@@ -336,6 +336,17 @@ func (c *Channel) GetAvailableChannelKeys() []ChannelKey {
 	return c.availableChannelKeys(true)
 }
 
+// GetAvailableChannelKeysLastResort returns the tryable keys WITHOUT the hot-path
+// probe throttle: when every enabled key is only briefly cooling, it still surfaces
+// them so the request reaches the upstream instead of the route blacking out. The
+// relay uses this only on the final candidate channel (no peer left to spill over to),
+// so a single-route client's retry behaves like a direct upstream connection — the
+// throttle still governs earlier candidates that DO have peers to spread onto. The
+// circuit breaker remains the real backstop against hammering a genuinely dead key.
+func (c *Channel) GetAvailableChannelKeysLastResort() []ChannelKey {
+	return c.availableChannelKeys(false)
+}
+
 // availableChannelKeys computes the tryable keys. throttleFallback gates the
 // all-keys-cooling fallback: when true (the request hot path) at most one probe per
 // ChannelKeyProbeInterval is surfaced, so excess concurrent requests get an empty set

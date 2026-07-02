@@ -141,8 +141,19 @@ runIterator:
 
 		availableKeys := channel.GetAvailableChannelKeys()
 		if len(availableKeys) == 0 {
-			iter.Skip(channel.ID, 0, channel.Name, "no available key")
-			continue
+			// On the final candidate channel there is no peer left to spill over to, so a
+			// hot-path throttle that held back a briefly-cooling key would black the route
+			// out — a synthetic "no available channel" that breaks a CLI's retry loop where
+			// hitting the upstream directly would just return a retryable 429. Fall back to
+			// the unthrottled key set so the request still reaches the upstream and the
+			// client sees the real 429/200. The circuit breaker stays the backstop.
+			if iter.Index() == iter.Len()-1 {
+				availableKeys = channel.GetAvailableChannelKeysLastResort()
+			}
+			if len(availableKeys) == 0 {
+				iter.Skip(channel.ID, 0, channel.Name, "no available key")
+				continue
+			}
 		}
 		preferredKeyID := 0
 		if ownerKeyID := previousResponsesOwnerKeyForChannelOwned(c.Request.Context(), internalRequest, channel.ID, apiKeyID, userID); ownerKeyID > 0 {
