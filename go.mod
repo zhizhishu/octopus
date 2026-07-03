@@ -3,15 +3,16 @@ module github.com/bestruirui/octopus
 go 1.24.4
 
 require (
-	github.com/andybalholm/brotli v1.0.6
+	github.com/andybalholm/brotli v1.1.1
+	github.com/bogdanfinn/fhttp v0.6.8
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/dlclark/regexp2 v1.11.5
-	github.com/klauspost/compress v1.17.4
 	github.com/gin-contrib/cors v1.7.6
 	github.com/gin-gonic/gin v1.11.0
 	github.com/glebarez/sqlite v1.11.0
 	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/google/uuid v1.6.0
+	github.com/klauspost/compress v1.17.11
 	github.com/refraction-networking/utls v1.8.2
 	github.com/samber/lo v1.52.0
 	github.com/spf13/cobra v1.10.2
@@ -28,6 +29,7 @@ require (
 
 require (
 	filippo.io/edwards25519 v1.1.0 // indirect
+	github.com/bogdanfinn/utls v1.7.7-barnius // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
 	github.com/bytedance/sonic v1.14.2 // indirect
 	github.com/bytedance/sonic/loader v0.4.0 // indirect
