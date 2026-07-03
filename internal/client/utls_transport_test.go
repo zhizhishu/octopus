@@ -138,13 +138,13 @@ func roundTripCaptureRegularOrder(t *testing.T, req *http.Request) []string {
 	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
 
-	select {
-	case order := <-orderCh:
-		return order
-	default:
-		t.Fatalf("server captured no HEADERS frame")
-		return nil
-	}
+	// The server sends the captured order BEFORE the response HEADERS, so by the time
+	// RoundTrip returns it is already on the channel — a blocking receive cannot hang.
+	order := <-orderCh
+	// Close the client conn so the server's read loop ends cleanly (it drains until
+	// the client disconnects rather than closing early and racing our in-flight writes).
+	_ = cc.Close()
+	return order
 }
 
 // h2CaptureServer accepts one connection and speaks just enough HTTP/2 to receive the
@@ -171,9 +171,12 @@ func h2CaptureServer(ln net.Listener, orderCh chan<- []string) {
 		return
 	}
 
+	responded := false
 	for {
 		f, err := fr.ReadFrame()
 		if err != nil {
+			// Client closed (or reset) — we are done. Do NOT close early ourselves,
+			// which would race the client's still-in-flight h2 writes on slower hosts.
 			return
 		}
 		switch mf := f.(type) {
@@ -182,6 +185,10 @@ func h2CaptureServer(ln net.Listener, orderCh chan<- []string) {
 				_ = fr.WriteSettingsAck()
 			}
 		case *http2.MetaHeadersFrame:
+			if responded {
+				continue
+			}
+			responded = true
 			order := make([]string, 0, len(mf.Fields))
 			for _, hf := range mf.Fields {
 				if !strings.HasPrefix(hf.Name, ":") {
@@ -198,7 +205,7 @@ func h2CaptureServer(ln net.Listener, orderCh chan<- []string) {
 				EndHeaders:    true,
 				EndStream:     true,
 			})
-			return
+			// keep serving (draining) until the client disconnects.
 		}
 	}
 }
