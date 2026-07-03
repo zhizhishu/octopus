@@ -150,15 +150,21 @@ func (ra *relayAttempt) applyClaudeHeaderDefaults(req *http.Request) {
 	// unconditional emit so a channel test stays byte-for-byte identical to real traffic.
 	setHeaderIfMissing(req.Header, "X-Stainless-OS", firstNonEmptyHeader(client.OS, fp.claudeOS()))
 	setHeaderIfMissing(req.Header, "X-Stainless-Arch", firstNonEmptyHeader(client.Arch, fp.claudeArch()))
-	// REBUILD the anthropic-beta header so its ORDER exactly matches a genuine
-	// claude-cli request (context-1m in its real slot, never stuck at position 1 —
-	// a non-CLI tell). Built through the shared model.BuildClaudeCodeBetaOrder so the
-	// relay forward path and the channel/model test path are byte-for-byte identical.
+	// Decide the anthropic-beta header. A genuine claude-cli downstream already sent its
+	// OWN anthropic-beta on the wire — copyHeaders forwards it onto this outbound request
+	// (Anthropic-Beta is not hop-by-hop), so req.Header carries the client's real value
+	// here. That set+order is the exact per-model, per-request-type shape AnyRouter
+	// shape-checks, and a 2026-07-02 wire A/B proved a fixed flagship 7-set on a haiku
+	// request is rejected. So PRESERVE a real client's beta verbatim; only synthesize the
+	// canonical claude-code order when no client beta is present (a non-claude downstream
+	// under cloak, or the synthetic channel/model test). BuildClaudeCodeBetaHeader makes
+	// that decision, and the channel/model test path calls the same helper so the two stay
+	// byte-for-byte identical.
 	var transformBetas []string
 	if ra != nil && ra.internalRequest != nil {
 		transformBetas = ra.internalRequest.TransformOptions.AnthropicBetas
 	}
-	betas := model.BuildClaudeCodeBetaOrder(
+	betas := model.BuildClaudeCodeBetaHeader(
 		shouldEnableClaudeOneMillionBeta(ra.internalRequest),
 		strings.Split(req.Header.Get("Anthropic-Beta"), ","),
 		transformBetas,

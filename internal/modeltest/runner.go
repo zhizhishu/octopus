@@ -1008,16 +1008,18 @@ func applyClaudeHeaderDefaults(req *http.Request, internalRequest *transformermo
 	// backward compatibility). See relay.applyClaudeHeaderDefaults for the rationale.
 	setHeaderIfMissing(req.Header, "X-Stainless-OS", fp.claudeOS())
 	setHeaderIfMissing(req.Header, "X-Stainless-Arch", fp.claudeArch())
-	// Build anthropic-beta via the SAME shared helper the relay forward path uses,
-	// so a channel/model test is byte-for-byte identical to real traffic (context-1m
-	// in its real slot, not stuck at position 1). This previously prepended the
-	// transform betas (a lone context-1m) before the canonical set — a divergent copy
-	// that let strict upstreams identify the test request as not-real claude-cli.
+	// Build anthropic-beta via the SAME shared helper the relay forward path uses, so a
+	// channel/model test is byte-for-byte identical to real traffic. The synthetic test
+	// request never carries a real downstream client's anthropic-beta (there is no
+	// copyHeaders step here), so BuildClaudeCodeBetaHeader always takes its canonical
+	// synthesis branch — folding any lone context-1m into its real slot, never leaving it
+	// stuck at position 1. The relay forward path, in contrast, has the client's real
+	// per-model beta on req.Header and the same helper preserves it verbatim.
 	var transformBetas []string
 	if internalRequest != nil {
 		transformBetas = internalRequest.TransformOptions.AnthropicBetas
 	}
-	betas := transformermodel.BuildClaudeCodeBetaOrder(
+	betas := transformermodel.BuildClaudeCodeBetaHeader(
 		shouldEnableClaudeOneMillionBeta(internalRequest),
 		strings.Split(req.Header.Get("Anthropic-Beta"), ","),
 		transformBetas,

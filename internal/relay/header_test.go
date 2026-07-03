@@ -715,3 +715,38 @@ func TestClaudeBetaHeaderMatchesGenuineCliOrder(t *testing.T) {
 		t.Fatalf("X-Client-Request-Id must be absent to match genuine claude-cli, got %q", got)
 	}
 }
+
+// TestClaudeBetaHeaderPreservesGenuineClientSet pins the 2026-07-02 fix: when a real
+// claude-cli downstream already sent its OWN anthropic-beta (forwarded onto the outbound
+// request by copyHeaders), the relay MUST preserve that set+order verbatim instead of
+// rebuilding it into the canonical flagship set. The genuine 2.1.198 haiku agentic set
+// carries advisor-tool, places claude-code-20250219 near the end, and omits
+// mid-conversation-system/effort — a fixed flagship 7-set here is the exact non-CLI tell
+// a wire A/B showed AnyRouter rejects on a haiku request.
+func TestClaudeBetaHeaderPreservesGenuineClientSet(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	ra := &relayAttempt{
+		relayRequest: &relayRequest{
+			c:               c,
+			inboundType:     inbound.InboundTypeAnthropic,
+			internalRequest: &transformermodel.InternalLLMRequest{Model: "claude-haiku-4-5-20251001"},
+		},
+		channel: &dbmodel.Channel{Type: outbound.OutboundTypeAnthropic},
+	}
+
+	// The genuine claude-cli 2.1.198 haiku agentic beta set, captured on the wire
+	// (order-sensitive: claude-code-20250219 is 5th, advisor-tool is present).
+	clientBeta := "interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,claude-code-20250219,advisor-tool-2026-03-01"
+	upstreamReq := httptest.NewRequest(http.MethodPost, "https://anyrouter.top/v1/messages", nil)
+	// Mirror the real wire condition: the client's own beta is already on the outbound
+	// request (copyHeaders forwards it there) before relay header defaults run.
+	upstreamReq.Header.Set("Anthropic-Beta", clientBeta)
+	ra.copyHeaders(upstreamReq)
+
+	if got := upstreamReq.Header.Get("Anthropic-Beta"); got != clientBeta {
+		t.Fatalf("genuine client beta must be preserved verbatim (not rebuilt):\n got=%q\nwant=%q", got, clientBeta)
+	}
+}

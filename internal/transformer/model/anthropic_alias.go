@@ -11,9 +11,13 @@ const AnthropicOneMillionBeta = "context-1m-2025-08-07"
 // structured-outputs from the declared set that 2.1.168 carried — sending either is a
 // stale-client tell — and no longer sends thinking-token-count/mid-conversation-system
 // as optional: the flagship set is these seven. NOTE: real 2.1.198 varies this set by
-// model (haiku/older-sonnet send a reduced set with claude-code-20250219 last); oct
-// serves the flagship shape for every model, which AnyRouter accepts (its shape check
-// is not per-model strict).
+// model AND request type (haiku/older-sonnet send a reduced set with claude-code-20250219
+// last; a title/structured-output probe drops claude-code and carries structured-outputs).
+// A 2026-07-02 wire A/B against AnyRouter DISPROVED the earlier assumption that its shape
+// check is not per-model strict: a fixed flagship 7-set on a haiku request is rejected.
+// So this canonical set is now used ONLY as the synthesis fallback for non-claude
+// downstreams / the channel test; a genuine claude-cli's own per-model beta is preserved
+// verbatim — see BuildClaudeCodeBetaHeader.
 var anthropicClaudeCodeBaseBetas = []string{
 	"claude-code-20250219",
 	"interleaved-thinking-2025-05-14",
@@ -82,6 +86,58 @@ func BuildClaudeCodeBetaOrder(wantsOneMillion bool, existing []string, transform
 	}
 	addExtras(existing)
 	addExtras(transformBetas)
+	return result
+}
+
+// BuildClaudeCodeBetaHeader decides how to present the outbound anthropic-beta
+// header. A genuine claude-cli DOWNSTREAM already sends its own anthropic-beta on
+// the wire (the relay forward path copies it onto the outbound request via
+// copyHeaders), and that set+order is the exact per-model, per-request-type shape
+// AnyRouter shape-checks: the real 2.1.198 CLI varies it by model AND request type
+// (a haiku agentic turn carries advisor-tool with claude-code-20250219 near the end;
+// a title/structured-output probe carries structured-outputs and no claude-code at
+// all). No STATIC canonical set can match that, so a wire A/B against AnyRouter showed
+// a fixed flagship 7-set on a haiku request is rejected while the real per-model beta
+// passes.
+//
+// Rule: if `existing` carries any beta OTHER THAN the auto-inserted context-1m marker,
+// it came from a real claude-cli downstream — PRESERVE it verbatim (order intact),
+// appending only unseen transformBetas at the tail. Otherwise (a non-claude downstream
+// under cloak, or the synthetic channel/model test, which never carries a client beta)
+// fall back to the canonical synthesis via BuildClaudeCodeBetaOrder. Both the relay
+// forward path and the channel/model test path route through this one helper so they
+// stay byte-for-byte identical.
+func BuildClaudeCodeBetaHeader(wantsOneMillion bool, existing []string, transformBetas []string) []string {
+	hasClientBeta := false
+	for _, b := range existing {
+		b = strings.TrimSpace(b)
+		if b == "" || strings.EqualFold(b, AnthropicOneMillionBeta) {
+			continue
+		}
+		hasClientBeta = true
+		break
+	}
+	if !hasClientBeta {
+		return BuildClaudeCodeBetaOrder(wantsOneMillion, existing, transformBetas)
+	}
+	result := make([]string, 0, len(existing)+len(transformBetas))
+	seen := make(map[string]bool)
+	add := func(list []string) {
+		for _, b := range list {
+			b = strings.TrimSpace(b)
+			if b == "" {
+				continue
+			}
+			key := strings.ToLower(b)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			result = append(result, b)
+		}
+	}
+	add(existing)
+	add(transformBetas)
 	return result
 }
 
