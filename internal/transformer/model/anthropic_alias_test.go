@@ -69,6 +69,63 @@ func TestAnthropicClaudeCodeBetasMirrorCurrentCLIShape(t *testing.T) {
 	}
 }
 
+func TestStripClaudeBetaFlags(t *testing.T) {
+	betas := []string{
+		"claude-code-20250219",
+		"interleaved-thinking-2025-05-14",
+		"prompt-caching-scope-2026-01-05",
+		"mid-conversation-system-2026-04-07",
+		"effort-2025-11-24",
+	}
+
+	// Empty stripCSV must return the input verbatim (default OFF = faithful passthrough).
+	if got := StripClaudeBetaFlags(betas, ""); !equalStrings(got, betas) {
+		t.Fatalf("empty stripCSV must return betas unchanged: got=%#v want=%#v", got, betas)
+	}
+	if got := StripClaudeBetaFlags(betas, "   "); !equalStrings(got, betas) {
+		t.Fatalf("whitespace-only stripCSV must return betas unchanged: got=%#v want=%#v", got, betas)
+	}
+
+	// Stripping the anyrouter-tripping flag removes exactly it and preserves the order
+	// of the rest.
+	got := StripClaudeBetaFlags(betas, "prompt-caching-scope-2026-01-05")
+	want := []string{
+		"claude-code-20250219",
+		"interleaved-thinking-2025-05-14",
+		"mid-conversation-system-2026-04-07",
+		"effort-2025-11-24",
+	}
+	if !equalStrings(got, want) {
+		t.Fatalf("strip prompt-caching-scope: got=%#v want=%#v", got, want)
+	}
+	if containsString(got, "prompt-caching-scope-2026-01-05") {
+		t.Fatalf("stripped flag must be gone: %#v", got)
+	}
+
+	// Multiple comma-separated flags with surrounding whitespace and an empty entry.
+	got = StripClaudeBetaFlags(betas, " prompt-caching-scope-2026-01-05 , ,effort-2025-11-24")
+	want = []string{
+		"claude-code-20250219",
+		"interleaved-thinking-2025-05-14",
+		"mid-conversation-system-2026-04-07",
+	}
+	if !equalStrings(got, want) {
+		t.Fatalf("strip multiple flags: got=%#v want=%#v", got, want)
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func containsString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {

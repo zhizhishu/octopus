@@ -253,6 +253,13 @@
             "medium": "Medium",
             "high": "High"
         },
+        "claudeBetaStripFlags": {
+            "label": "Claude Beta strip flags",
+            "defaultHint": "Empty = off",
+            "hint": "When empty, the downstream claude-cli's anthropic-beta is forwarded verbatim (default, zero behaviour change). Set a comma-separated list of beta flags to strip them from the outbound anthropic-beta — an escape hatch for when an upstream (e.g. anyrouter) throws a 520 on a specific flag, while the rest of the genuine shape is preserved.",
+            "description": "anyrouter escape hatch: comma-separated, empty = off. e.g. prompt-caching-scope-2026-01-05.",
+            "placeholder": "prompt-caching-scope-2026-01-05"
+        },
         "codexFastMode": {
             "label": "Codex fast mode",
             "hint": "Off by default; follows the client request. When on, adds text.verbosity=low and reasoning_effort=low only if the client omitted them — faster output but terser answers."

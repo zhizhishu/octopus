@@ -1024,6 +1024,10 @@ func applyClaudeHeaderDefaults(req *http.Request, internalRequest *transformermo
 		strings.Split(req.Header.Get("Anthropic-Beta"), ","),
 		transformBetas,
 	)
+	// Mirror the relay forward path's opt-in beta-strip escape hatch so a channel/model
+	// test stays byte-for-byte identical to real traffic. Reads the SAME setting via the
+	// modeltest settingString helper; default empty = no-op, so behaviour is unchanged.
+	betas = transformermodel.StripClaudeBetaFlags(betas, settingString(dbmodel.SettingKeyClaudeBetaStripFlags, ""))
 	req.Header.Del("Anthropic-Beta")
 	for _, beta := range betas {
 		addAnthropicBetaHeader(req.Header, beta)

@@ -34,6 +34,7 @@ export const SettingKey = {
     ClaudeHeaderStabilizeDeviceProfile: 'claude_header_defaults_stabilize_device_profile',
     ClaudeCLIAutoCompact: 'claude_cli_auto_compact',
     ClaudeCLIReasoningEffort: 'claude_cli_reasoning_effort',
+    ClaudeBetaStripFlags: 'claude_beta_strip_flags',
     CodexHeaderUserAgent: 'codex_header_defaults_user_agent',
     CodexHeaderBetaFeatures: 'codex_header_defaults_beta_features',
     CodexFastMode: 'codex_fast_mode',

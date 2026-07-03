@@ -141,6 +141,39 @@ func BuildClaudeCodeBetaHeader(wantsOneMillion bool, existing []string, transfor
 	return result
 }
 
+// StripClaudeBetaFlags removes the flags named in stripCSV (a comma-separated list)
+// from betas, preserving the order of the surviving entries. stripCSV entries are
+// trimmed of surrounding whitespace and empty entries are skipped; matching is exact
+// (case-sensitive, on the trimmed beta value). This backs the opt-in
+// SettingKeyClaudeBetaStripFlags escape hatch: when stripCSV is empty (the default),
+// betas is returned unchanged so the genuine claude-cli anthropic-beta is forwarded
+// verbatim. It is a pure function so both the relay forward path and the modeltest
+// mirror can call it and stay byte-for-byte identical.
+func StripClaudeBetaFlags(betas []string, stripCSV string) []string {
+	if strings.TrimSpace(stripCSV) == "" {
+		return betas
+	}
+	strip := make(map[string]bool)
+	for _, flag := range strings.Split(stripCSV, ",") {
+		flag = strings.TrimSpace(flag)
+		if flag == "" {
+			continue
+		}
+		strip[flag] = true
+	}
+	if len(strip) == 0 {
+		return betas
+	}
+	result := make([]string, 0, len(betas))
+	for _, beta := range betas {
+		if strip[strings.TrimSpace(beta)] {
+			continue
+		}
+		result = append(result, beta)
+	}
+	return result
+}
+
 // BuildClaudeMetadataUserID serialises metadata.user_id exactly as a real Claude
 // Code client does: compact (no spaces — AnyRouter rejects the spaced form) with
 // key order device_id, account_uuid, session_id. Both the relay forward path and

@@ -750,3 +750,56 @@ func TestClaudeBetaHeaderPreservesGenuineClientSet(t *testing.T) {
 		t.Fatalf("genuine client beta must be preserved verbatim (not rebuilt):\n got=%q\nwant=%q", got, clientBeta)
 	}
 }
+
+// TestClaudeBetaStripFlagsEscapeHatch pins the opt-in beta-strip escape hatch
+// (SettingKeyClaudeBetaStripFlags): with the default empty value the genuine client
+// beta is forwarded verbatim, and with a configured flag list those flags are removed
+// from the outbound anthropic-beta while every other flag survives in order. This is
+// the escape valve for anyrouter's intermittent 520 on prompt-caching-scope-2026-01-05.
+func TestClaudeBetaStripFlagsEscapeHatch(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	setupRelayErrorDB(t) // sqlite + op cache; seeds SettingKeyClaudeBetaStripFlags="" (OFF)
+
+	// The genuine claude-cli 2.1.198 haiku agentic beta set captured on the wire, which
+	// carries the anyrouter-tripping prompt-caching-scope-2026-01-05.
+	clientBeta := "interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,claude-code-20250219,advisor-tool-2026-03-01"
+
+	newAttempt := func() *relayAttempt {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+		return &relayAttempt{
+			relayRequest: &relayRequest{
+				c:               c,
+				inboundType:     inbound.InboundTypeAnthropic,
+				internalRequest: &transformermodel.InternalLLMRequest{Model: "claude-haiku-4-5-20251001"},
+			},
+			channel: &dbmodel.Channel{Type: outbound.OutboundTypeAnthropic},
+		}
+	}
+
+	// Default (empty setting) must forward the client beta verbatim — zero behaviour change.
+	reqDefault := httptest.NewRequest(http.MethodPost, "https://anyrouter.top/v1/messages", nil)
+	reqDefault.Header.Set("Anthropic-Beta", clientBeta)
+	newAttempt().copyHeaders(reqDefault)
+	if got := reqDefault.Header.Get("Anthropic-Beta"); got != clientBeta {
+		t.Fatalf("default (empty strip) must preserve beta verbatim:\n got=%q\nwant=%q", got, clientBeta)
+	}
+
+	// Configure the escape hatch to strip the tripping flag.
+	if err := op.SettingSetString(dbmodel.SettingKeyClaudeBetaStripFlags, "prompt-caching-scope-2026-01-05"); err != nil {
+		t.Fatalf("set claude_beta_strip_flags: %v", err)
+	}
+
+	reqStripped := httptest.NewRequest(http.MethodPost, "https://anyrouter.top/v1/messages", nil)
+	reqStripped.Header.Set("Anthropic-Beta", clientBeta)
+	newAttempt().copyHeaders(reqStripped)
+
+	wantStripped := "interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,claude-code-20250219,advisor-tool-2026-03-01"
+	got := reqStripped.Header.Get("Anthropic-Beta")
+	if strings.Contains(got, "prompt-caching-scope-2026-01-05") {
+		t.Fatalf("configured flag must be stripped from anthropic-beta: %q", got)
+	}
+	if got != wantStripped {
+		t.Fatalf("stripped anthropic-beta mismatch:\n got=%q\nwant=%q", got, wantStripped)
+	}
+}

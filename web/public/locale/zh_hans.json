@@ -253,6 +253,13 @@
             "medium": "中",
             "high": "高"
         },
+        "claudeBetaStripFlags": {
+            "label": "Claude Beta 剥离标记",
+            "defaultHint": "留空=关",
+            "hint": "留空时忠实透传客户端 claude-cli 的 anthropic-beta（默认，零行为变化）。填入逗号分隔的 beta 标记后，出站前会把这些标记从 anthropic-beta 中摘掉，用来在上游（如 anyrouter）因某个 flag 抽风触发 520 时逃生，同时保留其余标记的真实形状。",
+            "description": "anyrouter 抽风逃生：逗号分隔，默认空=关。例如 prompt-caching-scope-2026-01-05。",
+            "placeholder": "prompt-caching-scope-2026-01-05"
+        },
         "codexFastMode": {
             "label": "Codex fast 模式",
             "hint": "默认关闭，跟随客户端请求。开启后才会在客户端未传 text/reasoning 时补 text.verbosity=low 与 reasoning_effort=low，吐字更快但回答更简略。"

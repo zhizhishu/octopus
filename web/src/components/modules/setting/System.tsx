@@ -57,6 +57,7 @@ export function SettingSystem() {
     const [claudeHeaderStabilizeDeviceProfile, setClaudeHeaderStabilizeDeviceProfile] = useState(true);
     const [claudeCLIAutoCompact, setClaudeCLIAutoCompact] = useState(false);
     const [claudeCLIReasoningEffort, setClaudeCLIReasoningEffort] = useState('auto');
+    const [claudeBetaStripFlags, setClaudeBetaStripFlags] = useState('');
     const [codexHeaderUserAgent, setCodexHeaderUserAgent] = useState('codex_exec/0.132.0 (Windows 10.0.26200; x86_64) unknown (codex_exec; 0.132.0)');
     const [codexHeaderBetaFeatures, setCodexHeaderBetaFeatures] = useState('terminal_resize_reflow');
     const [codexFastMode, setCodexFastMode] = useState(false);
@@ -114,6 +115,7 @@ export function SettingSystem() {
     const initialClaudeHeaderStabilizeDeviceProfile = useRef(true);
     const initialClaudeCLIAutoCompact = useRef(false);
     const initialClaudeCLIReasoningEffort = useRef('auto');
+    const initialClaudeBetaStripFlags = useRef('');
     const initialCodexHeaderUserAgent = useRef('codex_exec/0.132.0 (Windows 10.0.26200; x86_64) unknown (codex_exec; 0.132.0)');
     const initialCodexHeaderBetaFeatures = useRef('terminal_resize_reflow');
     const initialCodexFastMode = useRef(false);
@@ -161,6 +163,7 @@ export function SettingSystem() {
             const claudeStabilize = settings.find(s => s.key === SettingKey.ClaudeHeaderStabilizeDeviceProfile);
             const claudeAutoCompact = settings.find(s => s.key === SettingKey.ClaudeCLIAutoCompact);
             const claudeReasoningEffort = settings.find(s => s.key === SettingKey.ClaudeCLIReasoningEffort);
+            const claudeBetaStrip = settings.find(s => s.key === SettingKey.ClaudeBetaStripFlags);
             const codexUA = settings.find(s => s.key === SettingKey.CodexHeaderUserAgent);
             const codexBetaFeatures = settings.find(s => s.key === SettingKey.CodexHeaderBetaFeatures);
             const codexFast = settings.find(s => s.key === SettingKey.CodexFastMode);
@@ -264,6 +267,10 @@ export function SettingSystem() {
                 const value = ['auto', 'off', 'low', 'medium', 'high'].includes(rawValue) ? rawValue : 'auto';
                 queueMicrotask(() => setClaudeCLIReasoningEffort(value));
                 initialClaudeCLIReasoningEffort.current = value;
+            }
+            if (claudeBetaStrip) {
+                queueMicrotask(() => setClaudeBetaStripFlags(claudeBetaStrip.value));
+                initialClaudeBetaStripFlags.current = claudeBetaStrip.value;
             }
             if (codexUA) {
                 queueMicrotask(() => setCodexHeaderUserAgent(codexUA.value));
@@ -449,6 +456,8 @@ export function SettingSystem() {
                     initialClaudeHeaderTimeout.current = value;
                 } else if (key === SettingKey.ClaudeCLIReasoningEffort) {
                     initialClaudeCLIReasoningEffort.current = value;
+                } else if (key === SettingKey.ClaudeBetaStripFlags) {
+                    initialClaudeBetaStripFlags.current = value;
                 } else if (key === SettingKey.CodexHeaderUserAgent) {
                     initialCodexHeaderUserAgent.current = value;
                 } else if (key === SettingKey.CodexHeaderBetaFeatures) {
@@ -1061,6 +1070,46 @@ export function SettingSystem() {
                         {t('headerDefaults.edit')}
                     </Button>
                 </div>
+            </div>
+
+            {/* Claude Beta 剥离标记（anyrouter 抽风逃生） */}
+            <div className="flex flex-col gap-3 rounded-2xl border border-border/70 bg-muted/20 p-3 sm:flex-row sm:items-start sm:justify-between">
+                <div className="flex min-w-0 items-start gap-3">
+                    <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" />
+                    <div className="min-w-0 space-y-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-sm font-medium">{t('claudeBetaStripFlags.label')}</span>
+                            <span className="rounded-full bg-background px-2 py-0.5 text-[11px] text-muted-foreground">
+                                {t('claudeBetaStripFlags.defaultHint')}
+                            </span>
+                            <TooltipProvider>
+                                <Tooltip>
+                                    <TooltipTrigger asChild>
+                                        <HelpCircle className="size-4 text-muted-foreground cursor-help" />
+                                    </TooltipTrigger>
+                                    <TooltipContent className="max-w-xs">
+                                        {t('claudeBetaStripFlags.hint')}
+                                    </TooltipContent>
+                                </Tooltip>
+                            </TooltipProvider>
+                        </div>
+                        <p className="text-xs leading-5 text-muted-foreground">
+                            {t('claudeBetaStripFlags.description')}
+                        </p>
+                    </div>
+                </div>
+                <Input
+                    value={claudeBetaStripFlags}
+                    onChange={(event) => setClaudeBetaStripFlags(event.target.value)}
+                    onBlur={() => handleSave(
+                        SettingKey.ClaudeBetaStripFlags,
+                        claudeBetaStripFlags,
+                        initialClaudeBetaStripFlags.current
+                    )}
+                    placeholder={t('claudeBetaStripFlags.placeholder')}
+                    aria-label={t('claudeBetaStripFlags.label')}
+                    className="w-full min-w-0 rounded-xl font-mono text-xs sm:w-80"
+                />
             </div>
 
             <Dialog open={editingHeaderProfile !== null} onOpenChange={(open) => {

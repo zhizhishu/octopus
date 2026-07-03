@@ -169,6 +169,11 @@ func (ra *relayAttempt) applyClaudeHeaderDefaults(req *http.Request) {
 		strings.Split(req.Header.Get("Anthropic-Beta"), ","),
 		transformBetas,
 	)
+	// Opt-in escape hatch: drop any beta flags an admin listed in
+	// SettingKeyClaudeBetaStripFlags (default empty = no-op = faithful passthrough).
+	// Lets a flag that trips an upstream — e.g. anyrouter's intermittent 520 on
+	// prompt-caching-scope-2026-01-05 — be removed without touching the rest of the shape.
+	betas = model.StripClaudeBetaFlags(betas, settingString(dbmodel.SettingKeyClaudeBetaStripFlags, ""))
 	req.Header.Del("Anthropic-Beta")
 	for _, beta := range betas {
 		addAnthropicBetaHeader(req.Header, beta)

@@ -34,6 +34,13 @@ const (
 	SettingKeyClaudeHeaderStabilize     SettingKey = "claude_header_defaults_stabilize_device_profile"
 	SettingKeyClaudeCLIAutoCompact      SettingKey = "claude_cli_auto_compact"
 	SettingKeyClaudeCLIReasoningEffort  SettingKey = "claude_cli_reasoning_effort"
+	// SettingKeyClaudeBetaStripFlags is an OPT-IN escape hatch (default empty = OFF).
+	// When empty, octopus faithfully forwards the downstream claude-cli's anthropic-beta
+	// verbatim (unchanged behaviour). When set to a comma-separated list of beta flags,
+	// those flags are stripped from the outbound anthropic-beta — used to drop a flag that
+	// trips an upstream (e.g. anyrouter's intermittent 520 on prompt-caching-scope-2026-01-05)
+	// without disturbing the rest of the genuine beta shape.
+	SettingKeyClaudeBetaStripFlags SettingKey = "claude_beta_strip_flags"
 	// SettingKeyFingerprintInstanceID is a per-deployment random seed (generated once,
 	// persisted) from which octopus derives a SINGLE upstream device fingerprint
 	// (claude device_id / codex installation id) for ALL relayed traffic — uniform
@@ -192,6 +199,7 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyClaudeHeaderStabilize, Value: "true"},
 		{Key: SettingKeyClaudeCLIAutoCompact, Value: "false"},
 		{Key: SettingKeyClaudeCLIReasoningEffort, Value: "auto"},
+		{Key: SettingKeyClaudeBetaStripFlags, Value: ""}, // 默认空=关：忠实透传 claude-cli 的 anthropic-beta；配置了才剥离指定 flag（anyrouter 抽风逃生）
 		{Key: SettingKeyCodexHeaderUserAgent, Value: DefaultCodexHeaderUserAgent},
 		{Key: SettingKeyCodexHeaderBetaFeatures, Value: DefaultCodexHeaderBetaFeatures},
 		{Key: SettingKeyCodexFastMode, Value: "false"},
@@ -378,7 +386,7 @@ func (s *Setting) Validate() error {
 		return nil
 	case SettingKeyClaudeHeaderUserAgent, SettingKeyClaudeHeaderPackage, SettingKeyClaudeHeaderRuntime,
 		SettingKeyClaudeHeaderOS, SettingKeyClaudeHeaderArch, SettingKeyClaudeHeaderTimeout,
-		SettingKeyCodexHeaderUserAgent, SettingKeyCodexHeaderBetaFeatures:
+		SettingKeyCodexHeaderUserAgent, SettingKeyCodexHeaderBetaFeatures, SettingKeyClaudeBetaStripFlags:
 		if strings.ContainsAny(s.Value, "\r\n") {
 			return fmt.Errorf("%s must not contain newlines", s.Key)
 		}
