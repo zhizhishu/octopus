@@ -1636,7 +1636,7 @@ export function AccessPlan() {
     if (!isAdmin) return null;
 
     return (
-        <PageWrapper className="h-full min-h-0 rounded-t-3xl">
+        <PageWrapper className="h-full min-h-0 rounded-t-3xl [&>*]:h-full [&>*]:min-h-0">
             <div className="flex h-full min-h-0 flex-col gap-3 overflow-hidden">
                 <div className="shrink-0 rounded-2xl border border-border/70 bg-card/70 p-2 shadow-sm">
                     <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
