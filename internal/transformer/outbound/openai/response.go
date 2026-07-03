@@ -53,6 +53,13 @@ func (o *ResponseOutbound) TransformRequest(ctx context.Context, request *model.
 	} else {
 		req.Header.Set("Accept", "application/json")
 	}
+	// The genuine Codex CLI (Rust/reqwest) sends NO Accept-Encoding header. Go's
+	// transport auto-injects "gzip" when it is absent, which is a fingerprint tell, so
+	// pin "identity" to suppress that auto-injection and keep the SSE/JSON reader on
+	// plain bytes. (Byte-exact omission of the header is handled by the fingerprint
+	// transport when the uTLS path is enabled; on the stock client identity is the
+	// closest achievable match.)
+	req.Header.Set("Accept-Encoding", "identity")
 	req.Header.Set("Authorization", "Bearer "+key)
 
 	targetURL, err := xurl.JoinOpenAIPath(baseUrl, "/v1/responses")

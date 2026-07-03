@@ -178,8 +178,8 @@ func TestMessageOutboundTransformRequestPreservesClaudeContextManagement(t *test
 	if err != nil {
 		t.Fatalf("read request body: %v", err)
 	}
-	if got := httpReq.Header.Get("Accept-Encoding"); got != "identity" {
-		t.Fatalf("streaming Anthropic request Accept-Encoding = %q, want identity", got)
+	if got := httpReq.Header.Get("Accept-Encoding"); got != "gzip, deflate, br, zstd" {
+		t.Fatalf("streaming Anthropic request Accept-Encoding = %q, want gzip, deflate, br, zstd", got)
 	}
 	beta := httpReq.Header.Get("Anthropic-Beta")
 	for _, want := range []string{"custom-beta-2026-06-08", transformerModel.AnthropicOneMillionBeta} {

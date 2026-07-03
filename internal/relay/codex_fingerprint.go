@@ -115,9 +115,11 @@ func applyCodexSessionHeaders(headers http.Header, req *transformerModel.Interna
 	if sessionID == "" {
 		return
 	}
-	setHeaderIfMissing(headers, "Session_id", sessionID)
+	// The genuine Codex CLI emits only Session-Id (hyphen). Session_id (underscore)
+	// and X-Session-Id are octopus-only extras that a real codex_exec never sends —
+	// a fingerprint tell — so they are not emitted. (Inbound session-key extraction
+	// still accepts all three variants from downstream clients; see route_session_key.)
 	setHeaderIfMissing(headers, "Session-Id", sessionID)
-	setHeaderIfMissing(headers, "X-Session-Id", sessionID)
 	setHeaderIfMissing(headers, "Thread-Id", sessionID)
 	setHeaderIfMissing(headers, "X-Client-Request-Id", sessionID)
 	setHeaderIfMissing(headers, "X-Codex-Window-Id", sessionID+":0")

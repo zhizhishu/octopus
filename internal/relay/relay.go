@@ -1260,6 +1260,12 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 		return fmt.Errorf("upstream returned non-SSE content-type %q for stream request: %s", ct, string(body))
 	}
 
+	// We advertise a real claude-cli Accept-Encoding, so decompress any upstream
+	// Content-Encoding before the SSE reader (no-op on the common identity path).
+	if err := unwrapResponseEncoding(response); err != nil {
+		return fmt.Errorf("failed to unwrap upstream response encoding: %w", err)
+	}
+
 	// 设置 SSE 响应头
 	ra.c.Header("Content-Type", "text/event-stream")
 	ra.c.Header("Cache-Control", "no-cache")
@@ -1580,6 +1586,12 @@ func (ra *relayAttempt) handleStreamResponseAsNonStream(ctx context.Context, res
 	if ct := response.Header.Get("Content-Type"); ct != "" && !strings.Contains(strings.ToLower(ct), "text/event-stream") {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 16*1024))
 		return fmt.Errorf("upstream returned non-SSE content-type %q for forced responses stream request: %s", ct, string(body))
+	}
+
+	// Decompress any upstream Content-Encoding before the SSE reader (see the
+	// stream handler above); no-op on the common identity path.
+	if err := unwrapResponseEncoding(response); err != nil {
+		return fmt.Errorf("failed to unwrap upstream response encoding: %w", err)
 	}
 
 	type sseReadResult struct {

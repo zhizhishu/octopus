@@ -1338,9 +1338,9 @@ func applyCodexSessionHeaderDefaults(headers http.Header, req *transformermodel.
 	if sessionID == "" {
 		return
 	}
-	setHeaderIfMissing(headers, "Session_id", sessionID)
+	// Mirror the relay codex fingerprint byte-for-byte: only Session-Id (hyphen) is
+	// genuine; Session_id (underscore) and X-Session-Id are dropped as octopus-only tells.
 	setHeaderIfMissing(headers, "Session-Id", sessionID)
-	setHeaderIfMissing(headers, "X-Session-Id", sessionID)
 	setHeaderIfMissing(headers, "Thread-Id", sessionID)
 	setHeaderIfMissing(headers, "X-Client-Request-Id", sessionID)
 	setHeaderIfMissing(headers, "X-Codex-Window-Id", sessionID+":0")

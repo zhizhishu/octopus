@@ -56,7 +56,14 @@ func (o *MessageOutbound) TransformRequest(ctx context.Context, request *model.I
 	req.Header.Set("Anthropic-Version", "2023-06-01")
 	applyAnthropicAuthHeaders(req, baseUrl, key)
 	if request.Stream != nil && *request.Stream {
-		req.Header.Set("Accept-Encoding", "identity")
+		// Advertise the same encoding preference as the genuine claude-cli 2.1.198
+		// (gzip, deflate, br, zstd) instead of "identity" — a self-declared claude-cli
+		// that refuses compression is a detectable tell. Because this header is set
+		// manually, Go's transport will NOT auto-decompress, so the relay unwraps any
+		// upstream Content-Encoding before the SSE reader (unwrapResponseEncoding).
+		// Anthropic does not compress text/event-stream bodies in practice, so the
+		// unwrap is a no-op on the common path.
+		req.Header.Set("Accept-Encoding", "gzip, deflate, br, zstd")
 	}
 	for _, beta := range request.TransformOptions.AnthropicBetas {
 		addAnthropicBetaHeader(req.Header, beta)

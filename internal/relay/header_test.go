@@ -203,8 +203,14 @@ func TestRelayCopyHeadersAppliesCodexSessionFingerprint(t *testing.T) {
 	if got := upstreamReq.Header.Get("Accept"); got != "text/event-stream" {
 		t.Fatalf("expected upstream SSE accept to survive client accept copy, got %q", got)
 	}
-	if got := upstreamReq.Header.Get("Session_id"); got != sessionID {
-		t.Fatalf("session header = %q, want %q", got, sessionID)
+	if got := upstreamReq.Header.Get("Session-Id"); got != sessionID {
+		t.Fatalf("Session-Id header = %q, want %q", got, sessionID)
+	}
+	if got := upstreamReq.Header.Get("Session_id"); got != "" {
+		t.Fatalf("Session_id (underscore) is an octopus-only tell and must not be emitted, got %q", got)
+	}
+	if got := upstreamReq.Header.Get("X-Session-Id"); got != "" {
+		t.Fatalf("X-Session-Id is an octopus-only tell and must not be emitted, got %q", got)
 	}
 	if got := upstreamReq.Header.Get("X-Codex-Window-Id"); got != sessionID+":0" {
 		t.Fatalf("window id = %q", got)

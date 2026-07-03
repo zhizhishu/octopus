@@ -200,7 +200,7 @@ func TestRawResponsesCompactAppliesCodexDefaultsForBackendAlias(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		saw.userAgent = r.Header.Get("User-Agent")
 		saw.originator = r.Header.Get("Originator")
-		saw.sessionID = r.Header.Get("Session_id")
+		saw.sessionID = r.Header.Get("Session-Id")
 		saw.trace = r.Header.Get("AH-Trace-Id")
 		saw.betaFeature = r.Header.Get("X-Codex-Beta-Features")
 		w.Header().Set("Content-Type", "application/json")
@@ -234,7 +234,7 @@ func TestRawResponsesCompactAppliesCodexDefaultsForBackendAlias(t *testing.T) {
 		t.Fatalf("expected Codex defaults, ua=%q originator=%q beta=%q", saw.userAgent, saw.originator, saw.betaFeature)
 	}
 	if saw.sessionID != "compact-session-1" {
-		t.Fatalf("expected compact prompt_cache_key to become Session_id, got %q", saw.sessionID)
+		t.Fatalf("expected compact prompt_cache_key to become Session-Id, got %q", saw.sessionID)
 	}
 	if saw.trace != "" {
 		t.Fatalf("client trace header leaked upstream: %q", saw.trace)

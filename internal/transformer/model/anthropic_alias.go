@@ -213,6 +213,16 @@ func BuildClaudeCodeBetaHeader(modelName string, wantsOneMillion bool, existing 
 	}
 	add(existing)
 	add(transformBetas)
+	// AnyRouter gates the flagship models (opus/fable/sonnet) behind context-1m and
+	// 400s a request that lacks it. A genuine claude-cli with 1M enabled carries
+	// context-1m in slot 2 (immediately after claude-code), so when 1M is wanted for a
+	// non-reduced model, insert it there: this both clears AnyRouter's 1M gate and
+	// matches what a real 1M-enabled CLI sends on the wire. Haiku (the reduced model)
+	// works without 1M and its captured shape carries none, so it is left untouched.
+	// insertOneMillionAfterClaudeCode is idempotent when context-1m is already present.
+	if wantsOneMillion && !isReducedBetaModel(modelName) {
+		result = insertOneMillionAfterClaudeCode(result)
+	}
 	return result
 }
 

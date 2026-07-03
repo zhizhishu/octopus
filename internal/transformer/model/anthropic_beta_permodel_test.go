@@ -53,6 +53,49 @@ func TestClientBetaPreservedRegardlessOfModel(t *testing.T) {
 	}
 }
 
+// A genuine claude-cli FLAGSHIP request (opus/fable) with 1M wanted must have
+// context-1m inserted into its preserved beta at slot 2 (immediately after
+// claude-code) so it clears AnyRouter's 1M gate while matching a real 1M-enabled
+// CLI. Haiku (the reduced model) is left verbatim with no context-1m.
+func TestClientBetaFlagshipGetsOneMillionHaikuDoesNot(t *testing.T) {
+	opusClient := []string{
+		"claude-code-20250219",
+		"interleaved-thinking-2025-05-14",
+		"thinking-token-count-2026-05-13",
+		"context-management-2025-06-27",
+		"prompt-caching-scope-2026-01-05",
+		"mid-conversation-system-2026-04-07",
+		"advisor-tool-2026-03-01",
+		"effort-2025-11-24",
+	}
+	wantOpus := []string{
+		"claude-code-20250219",
+		AnthropicOneMillionBeta,
+		"interleaved-thinking-2025-05-14",
+		"thinking-token-count-2026-05-13",
+		"context-management-2025-06-27",
+		"prompt-caching-scope-2026-01-05",
+		"mid-conversation-system-2026-04-07",
+		"advisor-tool-2026-03-01",
+		"effort-2025-11-24",
+	}
+	if got := BuildClaudeCodeBetaHeader("claude-opus-4-8", true, opusClient, nil); !reflect.DeepEqual(got, wantOpus) {
+		t.Fatalf("opus 1M beta mismatch:\n got=%v\nwant=%v", got, wantOpus)
+	}
+
+	haikuClient := []string{
+		"interleaved-thinking-2025-05-14",
+		"thinking-token-count-2026-05-13",
+		"context-management-2025-06-27",
+		"prompt-caching-scope-2026-01-05",
+		"claude-code-20250219",
+		"advisor-tool-2026-03-01",
+	}
+	if got := BuildClaudeCodeBetaHeader("claude-haiku-4-5-20251001", true, haikuClient, nil); !reflect.DeepEqual(got, haikuClient) {
+		t.Fatalf("haiku 1M reduced set must stay verbatim (no context-1m):\n got=%v\nwant=%v", got, haikuClient)
+	}
+}
+
 // Even a (practically unreachable) haiku[1m] synthesis must not leave context-1m at
 // position 1 and must include it exactly once.
 func TestSynthesizedHaikuOneMillionSlot(t *testing.T) {
