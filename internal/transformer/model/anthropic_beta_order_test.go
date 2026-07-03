@@ -12,7 +12,7 @@ import (
 // tell that let strict upstreams identify a channel test as not-real traffic.
 func TestBuildClaudeCodeBetaOrderMatchesCanonicalAndDropsStray1M(t *testing.T) {
 	existing := append([]string{AnthropicOneMillionBeta}, anthropicClaudeCodeBaseBetas...)
-	got := BuildClaudeCodeBetaOrder(true, existing, []string{AnthropicOneMillionBeta})
+	got := BuildClaudeCodeBetaOrder("", true, existing, []string{AnthropicOneMillionBeta})
 	want := AnthropicClaudeCodeBetas(true)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("1M beta order must equal canonical:\n got=%v\nwant=%v", got, want)
@@ -26,7 +26,7 @@ func TestBuildClaudeCodeBetaOrderMatchesCanonicalAndDropsStray1M(t *testing.T) {
 // after, de-duplicated; context-1m is never emitted via the extras path.
 func TestBuildClaudeCodeBetaOrderAppendsExtrasOnce(t *testing.T) {
 	existing := []string{"custom-beta-2025-01-01", "claude-code-20250219", "custom-beta-2025-01-01"}
-	got := BuildClaudeCodeBetaOrder(false, existing, []string{"another-extra-2025", AnthropicOneMillionBeta})
+	got := BuildClaudeCodeBetaOrder("", false, existing, []string{"another-extra-2025", AnthropicOneMillionBeta})
 	want := append(AnthropicClaudeCodeBetas(false), "custom-beta-2025-01-01", "another-extra-2025")
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("extras handling:\n got=%v\nwant=%v", got, want)
@@ -49,7 +49,7 @@ func TestBuildClaudeMetadataUserIDGoldenKeyOrder(t *testing.T) {
 // context-1m must never appear when 1M is not wanted, even if upstream/transform
 // betas carry it.
 func TestBuildClaudeCodeBetaOrderNo1MWhenNotWanted(t *testing.T) {
-	got := BuildClaudeCodeBetaOrder(false, []string{AnthropicOneMillionBeta}, []string{AnthropicOneMillionBeta})
+	got := BuildClaudeCodeBetaOrder("", false, []string{AnthropicOneMillionBeta}, []string{AnthropicOneMillionBeta})
 	for _, b := range got {
 		if strings.EqualFold(b, AnthropicOneMillionBeta) {
 			t.Fatalf("context-1m must not appear when 1M not wanted: %v", got)

@@ -161,10 +161,13 @@ func (ra *relayAttempt) applyClaudeHeaderDefaults(req *http.Request) {
 	// that decision, and the channel/model test path calls the same helper so the two stay
 	// byte-for-byte identical.
 	var transformBetas []string
+	betaModel := ""
 	if ra != nil && ra.internalRequest != nil {
 		transformBetas = ra.internalRequest.TransformOptions.AnthropicBetas
+		betaModel = ra.internalRequest.Model
 	}
 	betas := model.BuildClaudeCodeBetaHeader(
+		betaModel,
 		shouldEnableClaudeOneMillionBeta(ra.internalRequest),
 		strings.Split(req.Header.Get("Anthropic-Beta"), ","),
 		transformBetas,

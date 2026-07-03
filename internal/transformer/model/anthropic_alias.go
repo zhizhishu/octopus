@@ -42,6 +42,24 @@ var anthropicClaudeCodeOneMillionBetas = []string{
 	"effort-2025-11-24",
 }
 
+// Haiku (and any model the real 2.1.198 CLI sends a reduced anthropic-beta set for)
+// carries a DIFFERENT set than the flagship models, captured on the wire from a genuine
+// `claude -p` haiku agentic request (2026-07-02 wire A/B, _artifacts/wire-capture): it
+// drops mid-conversation-system/effort, KEEPS advisor-tool-2026-03-01, and moves
+// claude-code-20250219 toward the end. A fixed flagship 7-set on a haiku request was
+// rejected by AnyRouter's per-model shape check, so the synthesis fallback for a haiku
+// downstream must use THIS set. (A genuine claude-cli's own beta is still preserved
+// verbatim by BuildClaudeCodeBetaHeader upstream of this — this only backs the
+// non-claude / channel-test synthesis.)
+var anthropicClaudeCodeHaikuBetas = []string{
+	"interleaved-thinking-2025-05-14",
+	"thinking-token-count-2026-05-13",
+	"context-management-2025-06-27",
+	"prompt-caching-scope-2026-01-05",
+	"claude-code-20250219",
+	"advisor-tool-2026-03-01",
+}
+
 func AnthropicClaudeCodeBetas(wantsOneMillion bool) []string {
 	source := anthropicClaudeCodeBaseBetas
 	if wantsOneMillion {
@@ -50,6 +68,63 @@ func AnthropicClaudeCodeBetas(wantsOneMillion bool) []string {
 	result := make([]string, len(source))
 	copy(result, source)
 	return result
+}
+
+// isReducedBetaModel reports whether modelName is a Claude model the real 2.1.198 CLI
+// sends the REDUCED anthropic-beta set for (currently Haiku), matched on the id
+// containing "haiku" (case-insensitive). Flagship opus/sonnet/fable keep the full set.
+// Deliberately conservative: only "haiku" is confirmed by wire capture, so older-sonnet
+// is NOT matched here without its own capture.
+func isReducedBetaModel(modelName string) bool {
+	return strings.Contains(strings.ToLower(strings.TrimSpace(modelName)), "haiku")
+}
+
+// claudeCodeSynthesisBetas picks the canonical anthropic-beta base set to SYNTHESISE for
+// a downstream that did not send its own beta (a non-claude client under cloak, or the
+// channel/model test). Per-model: Haiku gets the reduced set, everything else the
+// flagship set. When 1M is wanted, context-1m-2025-08-07 is inserted in its real wire
+// slot (immediately after claude-code-20250219), never as a stray leading beta.
+func claudeCodeSynthesisBetas(modelName string, wantsOneMillion bool) []string {
+	if isReducedBetaModel(modelName) {
+		base := make([]string, len(anthropicClaudeCodeHaikuBetas))
+		copy(base, anthropicClaudeCodeHaikuBetas)
+		if wantsOneMillion {
+			return insertOneMillionAfterClaudeCode(base)
+		}
+		return base
+	}
+	return AnthropicClaudeCodeBetas(wantsOneMillion)
+}
+
+// insertOneMillionAfterClaudeCode returns betas with context-1m-2025-08-07 inserted
+// immediately after claude-code-20250219 (its genuine wire slot). If claude-code is
+// absent it goes after the first entry, never at position 1. If context-1m is already
+// present the input is returned unchanged.
+func insertOneMillionAfterClaudeCode(betas []string) []string {
+	for _, b := range betas {
+		if strings.EqualFold(strings.TrimSpace(b), AnthropicOneMillionBeta) {
+			return betas
+		}
+	}
+	out := make([]string, 0, len(betas)+1)
+	inserted := false
+	for _, b := range betas {
+		out = append(out, b)
+		if !inserted && strings.EqualFold(strings.TrimSpace(b), "claude-code-20250219") {
+			out = append(out, AnthropicOneMillionBeta)
+			inserted = true
+		}
+	}
+	if inserted {
+		return out
+	}
+	if len(out) == 0 {
+		return []string{AnthropicOneMillionBeta}
+	}
+	res := make([]string, 0, len(out)+1)
+	res = append(res, out[0], AnthropicOneMillionBeta)
+	res = append(res, out[1:]...)
+	return res
 }
 
 // BuildClaudeCodeBetaOrder returns anthropic-beta values in the exact wire order a
@@ -61,8 +136,8 @@ func AnthropicClaudeCodeBetas(wantsOneMillion bool) []string {
 // and the channel/model test path MUST build the header through this single helper
 // so a channel test is byte-for-byte identical to real traffic — they previously
 // had divergent copies and the test left context-1m stuck at position 1.
-func BuildClaudeCodeBetaOrder(wantsOneMillion bool, existing []string, transformBetas []string) []string {
-	canonical := AnthropicClaudeCodeBetas(wantsOneMillion)
+func BuildClaudeCodeBetaOrder(modelName string, wantsOneMillion bool, existing []string, transformBetas []string) []string {
+	canonical := claudeCodeSynthesisBetas(modelName, wantsOneMillion)
 	inCanonical := make(map[string]bool, len(canonical))
 	for _, b := range canonical {
 		inCanonical[strings.ToLower(strings.TrimSpace(b))] = true
@@ -107,7 +182,7 @@ func BuildClaudeCodeBetaOrder(wantsOneMillion bool, existing []string, transform
 // fall back to the canonical synthesis via BuildClaudeCodeBetaOrder. Both the relay
 // forward path and the channel/model test path route through this one helper so they
 // stay byte-for-byte identical.
-func BuildClaudeCodeBetaHeader(wantsOneMillion bool, existing []string, transformBetas []string) []string {
+func BuildClaudeCodeBetaHeader(modelName string, wantsOneMillion bool, existing []string, transformBetas []string) []string {
 	hasClientBeta := false
 	for _, b := range existing {
 		b = strings.TrimSpace(b)
@@ -118,7 +193,7 @@ func BuildClaudeCodeBetaHeader(wantsOneMillion bool, existing []string, transfor
 		break
 	}
 	if !hasClientBeta {
-		return BuildClaudeCodeBetaOrder(wantsOneMillion, existing, transformBetas)
+		return BuildClaudeCodeBetaOrder(modelName, wantsOneMillion, existing, transformBetas)
 	}
 	result := make([]string, 0, len(existing)+len(transformBetas))
 	seen := make(map[string]bool)

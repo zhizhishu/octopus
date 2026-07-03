@@ -1016,10 +1016,13 @@ func applyClaudeHeaderDefaults(req *http.Request, internalRequest *transformermo
 	// stuck at position 1. The relay forward path, in contrast, has the client's real
 	// per-model beta on req.Header and the same helper preserves it verbatim.
 	var transformBetas []string
+	betaModel := ""
 	if internalRequest != nil {
 		transformBetas = internalRequest.TransformOptions.AnthropicBetas
+		betaModel = internalRequest.Model
 	}
 	betas := transformermodel.BuildClaudeCodeBetaHeader(
+		betaModel,
 		shouldEnableClaudeOneMillionBeta(internalRequest),
 		strings.Split(req.Header.Get("Anthropic-Beta"), ","),
 		transformBetas,
