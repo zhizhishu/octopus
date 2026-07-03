@@ -308,6 +308,10 @@ func ChannelUpdate(req *model.ChannelUpdateRequest, ctx context.Context) (*model
 		selectFields = append(selectFields, "key_select_strategy")
 		updates.KeySelectStrategy = *req.KeySelectStrategy
 	}
+	if req.DisableCircuitBreaker != nil {
+		selectFields = append(selectFields, "disable_circuit_breaker")
+		updates.DisableCircuitBreaker = *req.DisableCircuitBreaker
+	}
 	if req.Proxy != nil {
 		selectFields = append(selectFields, "proxy")
 		updates.Proxy = *req.Proxy

@@ -128,6 +128,7 @@ export interface ChannelFormData {
     max_concurrent: number;
     rpm_limit: number;
     key_select_strategy: KeySelectStrategy;
+    disable_circuit_breaker: boolean;
     base_urls: Channel['base_urls'];
     custom_header: Channel['custom_header'];
     cloak_mode: string;
@@ -1131,6 +1132,25 @@ export function ChannelForm({
                                     </SelectContent>
                                 </Select>
                                 <p className="text-xs text-muted-foreground">{t('cloakProfileHint')}</p>
+                            </div>
+                        </div>
+
+                        <div className="rounded-xl border border-border bg-background/70 p-3">
+                            <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div className="min-w-0 space-y-1">
+                                    <div className="text-xs font-semibold text-card-foreground">{t('disableCircuitBreaker')}</div>
+                                    <p className="text-xs leading-relaxed text-muted-foreground">
+                                        {t('disableCircuitBreakerHint')}
+                                    </p>
+                                </div>
+                                <label className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-border bg-muted/30 px-2.5 py-1.5 text-xs text-muted-foreground">
+                                    <Switch
+                                        checked={formData.disable_circuit_breaker}
+                                        onCheckedChange={(checked) => onFormDataChange({ ...formData, disable_circuit_breaker: checked })}
+                                        aria-label={t('disableCircuitBreaker')}
+                                    />
+                                    <span>{formData.disable_circuit_breaker ? t('disableCircuitBreakerOn') : t('disableCircuitBreakerOff')}</span>
+                                </label>
                             </div>
                         </div>
 

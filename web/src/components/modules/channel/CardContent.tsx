@@ -43,6 +43,7 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
         max_concurrent: channel.max_concurrent ?? 0,
         rpm_limit: channel.rpm_limit ?? 0,
         key_select_strategy: channel.key_select_strategy ?? 0,
+        disable_circuit_breaker: channel.disable_circuit_breaker ?? false,
         enabled: channel.enabled,
         base_urls: channel.base_urls?.length ? channel.base_urls : [{ url: '', delay: 0 }],
         custom_header: channel.custom_header ?? [],
@@ -95,6 +96,7 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
         if ((formData.max_concurrent ?? 0) !== (channel.max_concurrent ?? 0)) req.max_concurrent = formData.max_concurrent ?? 0;
         if ((formData.rpm_limit ?? 0) !== (channel.rpm_limit ?? 0)) req.rpm_limit = formData.rpm_limit ?? 0;
         if ((formData.key_select_strategy ?? 0) !== (channel.key_select_strategy ?? 0)) req.key_select_strategy = formData.key_select_strategy ?? 0;
+        if ((formData.disable_circuit_breaker ?? false) !== (channel.disable_circuit_breaker ?? false)) req.disable_circuit_breaker = formData.disable_circuit_breaker ?? false;
         if (formData.enabled !== channel.enabled) req.enabled = formData.enabled;
         const normalizedBaseUrls = (formData.base_urls ?? []).filter((u) => u.url.trim()).map((u) => ({
             url: normalizeBaseUrlForChannelType(formData.type, u.url),

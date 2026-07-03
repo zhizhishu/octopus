@@ -78,6 +78,7 @@ export type Channel = {
     max_concurrent: number;
     rpm_limit: number;
     key_select_strategy: KeySelectStrategy;
+    disable_circuit_breaker: boolean;
     base_urls: BaseUrl[];
     keys: ChannelKey[];
     model: string;
@@ -124,6 +125,7 @@ export type CreateChannelRequest = {
     max_concurrent?: number;
     rpm_limit?: number;
     key_select_strategy?: KeySelectStrategy;
+    disable_circuit_breaker?: boolean;
     base_urls: BaseUrl[];
     keys: Array<Pick<ChannelKey, 'enabled' | 'channel_key' | 'remark'>>;
     model: string;
@@ -157,6 +159,7 @@ export type UpdateChannelRequest = {
     max_concurrent?: number;
     rpm_limit?: number;
     key_select_strategy?: KeySelectStrategy;
+    disable_circuit_breaker?: boolean;
     base_urls?: BaseUrl[];
     model?: string;
     custom_model?: string;
@@ -292,6 +295,7 @@ export function useChannelList(options?: { enabled?: boolean }) {
                 max_concurrent: item.max_concurrent ?? 0,
                 rpm_limit: item.rpm_limit ?? 0,
                 key_select_strategy: item.key_select_strategy ?? 0,
+                disable_circuit_breaker: item.disable_circuit_breaker ?? false,
                 circuit_tripped: item.circuit_tripped ?? false,
                 circuit_remaining_seconds: item.circuit_remaining_seconds ?? 0,
                 circuit_open_keys: item.circuit_open_keys ?? 0,

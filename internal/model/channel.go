@@ -38,37 +38,46 @@ const (
 )
 
 type Channel struct {
-	ID                   int                   `json:"id" gorm:"primaryKey"`
-	Name                 string                `json:"name" gorm:"unique;not null"`
-	Type                 outbound.OutboundType `json:"type"`
-	Enabled              bool                  `json:"enabled" gorm:"default:true"`
-	Priority             int                   `json:"priority" gorm:"default:0"`
-	MaxConcurrent        int                   `json:"max_concurrent" gorm:"default:0"` // 单渠道并发上限(在途+预约请求数), 0=不限. 达到上限后该渠道在选路中降档(让请求铺到其它渠道), 但不硬拉黑(无更优时仍可用)
-	RPMLimit             int                   `json:"rpm_limit" gorm:"default:0"`      // 单渠道每分钟请求上限(近60s在途/已发起的上游尝试数), 0=不限. 达到上限后该渠道在选路中降档(同 MaxConcurrent 的软降档语义, 让突发铺到其它渠道), 不硬拉黑
-	KeySelectStrategy    KeySelectStrategy     `json:"key_select_strategy" gorm:"default:0"` // key 选取策略: 0=成本均衡(默认,按TotalCost升序) 1=同key优先(粘住最小ID的健康key,只在它冷却时让位、恢复即切回,最大化按key的prompt缓存命中)
-	BaseUrls             []BaseUrl             `json:"base_urls" gorm:"serializer:json"`
-	Keys                 []ChannelKey          `json:"keys" gorm:"foreignKey:ChannelID"`
-	Model                string                `json:"model"`
-	CustomModel          string                `json:"custom_model"`
-	DiscoveredModels     []string              `json:"discovered_models" gorm:"serializer:json"`
-	SelectedModels       []string              `json:"selected_models" gorm:"serializer:json"`
-	AnthropicContext1M   bool                  `json:"anthropic_context_1m" gorm:"column:anthropic_context_1m;default:false"`
-	Proxy                bool                  `json:"proxy" gorm:"default:false"`
-	AutoSync             bool                  `json:"auto_sync" gorm:"default:false"`
-	AutoGroup            AutoGroupType         `json:"auto_group" gorm:"default:0"`
-	CustomHeader         []CustomHeader        `json:"custom_header" gorm:"serializer:json"`
-	Cloak                ChannelCloak          `json:"cloak" gorm:"serializer:json"`
-	ParamOverride        *string               `json:"param_override"`
-	SystemPromptOverride string                `json:"system_prompt_override"`
-	PromptOverrideMode   PromptOverrideMode    `json:"prompt_override_mode" gorm:"default:append_system"`
-	ChannelProxy         *string               `json:"channel_proxy"`
-	OpenAIChatPath       string                `json:"openai_chat_path"`
-	OpenAIModelsPath     string                `json:"openai_models_path"`
-	Stats                *StatsChannel         `json:"stats,omitempty" gorm:"foreignKey:ChannelID"`
-	MatchRegex           *string               `json:"match_regex"`
-	CircuitTripped       bool                  `json:"circuit_tripped" gorm:"-"`
-	CircuitRemainingSecs int                   `json:"circuit_remaining_seconds" gorm:"-"`
-	CircuitOpenKeys      int                   `json:"circuit_open_keys" gorm:"-"`
+	ID                int                   `json:"id" gorm:"primaryKey"`
+	Name              string                `json:"name" gorm:"unique;not null"`
+	Type              outbound.OutboundType `json:"type"`
+	Enabled           bool                  `json:"enabled" gorm:"default:true"`
+	Priority          int                   `json:"priority" gorm:"default:0"`
+	MaxConcurrent     int                   `json:"max_concurrent" gorm:"default:0"`      // 单渠道并发上限(在途+预约请求数), 0=不限. 达到上限后该渠道在选路中降档(让请求铺到其它渠道), 但不硬拉黑(无更优时仍可用)
+	RPMLimit          int                   `json:"rpm_limit" gorm:"default:0"`           // 单渠道每分钟请求上限(近60s在途/已发起的上游尝试数), 0=不限. 达到上限后该渠道在选路中降档(同 MaxConcurrent 的软降档语义, 让突发铺到其它渠道), 不硬拉黑
+	KeySelectStrategy KeySelectStrategy     `json:"key_select_strategy" gorm:"default:0"` // key 选取策略: 0=成本均衡(默认,按TotalCost升序) 1=同key优先(粘住最小ID的健康key,只在它冷却时让位、恢复即切回,最大化按key的prompt缓存命中)
+	// DisableCircuitBreaker turns this channel into a "no circuit breaker" pass-through:
+	// it forwards EVERY request to the upstream like a direct client — never
+	// short-circuited by the per-(channel,key,model) breaker, never benched by key
+	// cooldown/quarantine, and failures accumulate no breaker/soft-cool state. It hands
+	// the "retry to squeeze into upstream capacity" control back to the client (the exact
+	// reason a direct connection can claw into a busy anyrouter while octopus could not).
+	// The zero value (false) — every pre-existing channel — keeps the full breaker
+	// behaviour byte-for-byte, so this is opt-in and changes nothing by default.
+	DisableCircuitBreaker bool               `json:"disable_circuit_breaker" gorm:"default:false"`
+	BaseUrls              []BaseUrl          `json:"base_urls" gorm:"serializer:json"`
+	Keys                  []ChannelKey       `json:"keys" gorm:"foreignKey:ChannelID"`
+	Model                 string             `json:"model"`
+	CustomModel           string             `json:"custom_model"`
+	DiscoveredModels      []string           `json:"discovered_models" gorm:"serializer:json"`
+	SelectedModels        []string           `json:"selected_models" gorm:"serializer:json"`
+	AnthropicContext1M    bool               `json:"anthropic_context_1m" gorm:"column:anthropic_context_1m;default:false"`
+	Proxy                 bool               `json:"proxy" gorm:"default:false"`
+	AutoSync              bool               `json:"auto_sync" gorm:"default:false"`
+	AutoGroup             AutoGroupType      `json:"auto_group" gorm:"default:0"`
+	CustomHeader          []CustomHeader     `json:"custom_header" gorm:"serializer:json"`
+	Cloak                 ChannelCloak       `json:"cloak" gorm:"serializer:json"`
+	ParamOverride         *string            `json:"param_override"`
+	SystemPromptOverride  string             `json:"system_prompt_override"`
+	PromptOverrideMode    PromptOverrideMode `json:"prompt_override_mode" gorm:"default:append_system"`
+	ChannelProxy          *string            `json:"channel_proxy"`
+	OpenAIChatPath        string             `json:"openai_chat_path"`
+	OpenAIModelsPath      string             `json:"openai_models_path"`
+	Stats                 *StatsChannel      `json:"stats,omitempty" gorm:"foreignKey:ChannelID"`
+	MatchRegex            *string            `json:"match_regex"`
+	CircuitTripped        bool               `json:"circuit_tripped" gorm:"-"`
+	CircuitRemainingSecs  int                `json:"circuit_remaining_seconds" gorm:"-"`
+	CircuitOpenKeys       int                `json:"circuit_open_keys" gorm:"-"`
 }
 
 type ChannelCircuitStatus struct {
@@ -118,32 +127,33 @@ type ChannelKey struct {
 
 // ChannelUpdateRequest 渠道更新请求 - 仅包含变更的数据
 type ChannelUpdateRequest struct {
-	ID                   int                    `json:"id" binding:"required"`
-	Name                 *string                `json:"name,omitempty"`
-	Type                 *outbound.OutboundType `json:"type,omitempty"`
-	Enabled              *bool                  `json:"enabled,omitempty"`
-	Priority             *int                   `json:"priority,omitempty"`
-	MaxConcurrent        *int                   `json:"max_concurrent,omitempty"`
-	RPMLimit             *int                   `json:"rpm_limit,omitempty"`
-	KeySelectStrategy    *KeySelectStrategy     `json:"key_select_strategy,omitempty"`
-	BaseUrls             *[]BaseUrl             `json:"base_urls,omitempty"`
-	Model                *string                `json:"model,omitempty"`
-	CustomModel          *string                `json:"custom_model,omitempty"`
-	DiscoveredModels     *[]string              `json:"discovered_models,omitempty"`
-	SelectedModels       *[]string              `json:"selected_models,omitempty"`
-	AnthropicContext1M   *bool                  `json:"anthropic_context_1m,omitempty"`
-	Proxy                *bool                  `json:"proxy,omitempty"`
-	AutoSync             *bool                  `json:"auto_sync,omitempty"`
-	AutoGroup            *AutoGroupType         `json:"auto_group,omitempty"`
-	CustomHeader         *[]CustomHeader        `json:"custom_header,omitempty"`
-	Cloak                *ChannelCloak          `json:"cloak,omitempty"`
-	ChannelProxy         *string                `json:"channel_proxy,omitempty"`
-	ParamOverride        *string                `json:"param_override,omitempty"`
-	SystemPromptOverride *string                `json:"system_prompt_override,omitempty"`
-	PromptOverrideMode   *PromptOverrideMode    `json:"prompt_override_mode,omitempty"`
-	MatchRegex           *string                `json:"match_regex,omitempty"`
-	OpenAIChatPath       *string                `json:"openai_chat_path,omitempty"`
-	OpenAIModelsPath     *string                `json:"openai_models_path,omitempty"`
+	ID                    int                    `json:"id" binding:"required"`
+	Name                  *string                `json:"name,omitempty"`
+	Type                  *outbound.OutboundType `json:"type,omitempty"`
+	Enabled               *bool                  `json:"enabled,omitempty"`
+	Priority              *int                   `json:"priority,omitempty"`
+	MaxConcurrent         *int                   `json:"max_concurrent,omitempty"`
+	RPMLimit              *int                   `json:"rpm_limit,omitempty"`
+	KeySelectStrategy     *KeySelectStrategy     `json:"key_select_strategy,omitempty"`
+	DisableCircuitBreaker *bool                  `json:"disable_circuit_breaker,omitempty"`
+	BaseUrls              *[]BaseUrl             `json:"base_urls,omitempty"`
+	Model                 *string                `json:"model,omitempty"`
+	CustomModel           *string                `json:"custom_model,omitempty"`
+	DiscoveredModels      *[]string              `json:"discovered_models,omitempty"`
+	SelectedModels        *[]string              `json:"selected_models,omitempty"`
+	AnthropicContext1M    *bool                  `json:"anthropic_context_1m,omitempty"`
+	Proxy                 *bool                  `json:"proxy,omitempty"`
+	AutoSync              *bool                  `json:"auto_sync,omitempty"`
+	AutoGroup             *AutoGroupType         `json:"auto_group,omitempty"`
+	CustomHeader          *[]CustomHeader        `json:"custom_header,omitempty"`
+	Cloak                 *ChannelCloak          `json:"cloak,omitempty"`
+	ChannelProxy          *string                `json:"channel_proxy,omitempty"`
+	ParamOverride         *string                `json:"param_override,omitempty"`
+	SystemPromptOverride  *string                `json:"system_prompt_override,omitempty"`
+	PromptOverrideMode    *PromptOverrideMode    `json:"prompt_override_mode,omitempty"`
+	MatchRegex            *string                `json:"match_regex,omitempty"`
+	OpenAIChatPath        *string                `json:"openai_chat_path,omitempty"`
+	OpenAIModelsPath      *string                `json:"openai_models_path,omitempty"`
 
 	KeysToAdd    []ChannelKeyAddRequest    `json:"keys_to_add,omitempty"`
 	KeysToUpdate []ChannelKeyUpdateRequest `json:"keys_to_update,omitempty"`
@@ -389,12 +399,18 @@ func (c *Channel) availableChannelKeys(throttleFallback bool) []ChannelKey {
 		}
 	}
 
-	switch c.KeySelectStrategy {
+	sortChannelKeysByStrategy(keys, c.KeySelectStrategy)
+	return keys
+}
+
+// sortChannelKeysByStrategy orders keys in place per the channel's key-select strategy.
+// Shared by the cooldown-aware hot path (availableChannelKeys) and the cooldown-ignoring
+// GetAllEnabledChannelKeys so both honour "同 key 优先" vs "成本均衡" identically.
+func sortChannelKeysByStrategy(keys []ChannelKey, strategy KeySelectStrategy) {
+	switch strategy {
 	case KeySelectStrategySticky:
 		// 同 key 优先: order by key ID so the same (lowest-ID) healthy key is always
-		// tried first regardless of cost. It only yields while cooling down (it then
-		// drops to the `cooled` bucket above and the next-lowest ID takes over) and
-		// reclaims priority the moment it self-heals — maximising prompt-cache affinity.
+		// tried first regardless of cost — maximising prompt-cache affinity.
 		sort.SliceStable(keys, func(i, j int) bool {
 			return keys[i].ID < keys[j].ID
 		})
@@ -404,5 +420,26 @@ func (c *Channel) availableChannelKeys(throttleFallback bool) []ChannelKey {
 			return keys[i].TotalCost < keys[j].TotalCost
 		})
 	}
+}
+
+// GetAllEnabledChannelKeys returns every enabled, non-empty key in the channel's
+// configured select-strategy order, WITHOUT any cooldown/quarantine filtering or
+// fallback throttling. It backs the per-channel DisableCircuitBreaker mode: such a
+// channel forwards every request to the upstream exactly like a direct client, so a key
+// that just returned 429/5xx/401 must NOT be benched — the client's own retry keeps
+// hammering the upstream to claw back capacity. Regular channels never call this; they
+// stay on GetAvailableChannelKeys with its cooldown discipline.
+func (c *Channel) GetAllEnabledChannelKeys() []ChannelKey {
+	if c == nil || len(c.Keys) == 0 {
+		return nil
+	}
+	keys := make([]ChannelKey, 0, len(c.Keys))
+	for _, k := range c.Keys {
+		if !k.Enabled || k.ChannelKey == "" {
+			continue
+		}
+		keys = append(keys, k)
+	}
+	sortChannelKeysByStrategy(keys, c.KeySelectStrategy)
 	return keys
 }

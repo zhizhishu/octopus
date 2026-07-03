@@ -139,7 +139,15 @@ runIterator:
 			continue
 		}
 
-		availableKeys := channel.GetAvailableChannelKeys()
+		// A DisableCircuitBreaker channel forwards every request like a direct client:
+		// take ALL enabled keys ignoring cooldown/quarantine so a key that just returned
+		// 429/5xx/401 is never benched — the client keeps its retry claw on the upstream.
+		var availableKeys []dbmodel.ChannelKey
+		if channel.DisableCircuitBreaker {
+			availableKeys = channel.GetAllEnabledChannelKeys()
+		} else {
+			availableKeys = channel.GetAvailableChannelKeys()
+		}
 		if len(availableKeys) == 0 {
 			// On the final candidate channel there is no peer left to spill over to, so a
 			// hot-path throttle that held back a briefly-cooling key would black the route
@@ -147,7 +155,9 @@ runIterator:
 			// hitting the upstream directly would just return a retryable 429. Fall back to
 			// the unthrottled key set so the request still reaches the upstream and the
 			// client sees the real 429/200. The circuit breaker stays the backstop.
-			if iter.Index() == iter.Len()-1 {
+			// (A DisableCircuitBreaker channel already took every enabled key above, so it
+			// only lands here with genuinely no usable key — nothing left to fall back to.)
+			if !channel.DisableCircuitBreaker && iter.Index() == iter.Len()-1 {
 				availableKeys = channel.GetAvailableChannelKeysLastResort()
 			}
 			if len(availableKeys) == 0 {
@@ -192,8 +202,9 @@ runIterator:
 			metrics.SetPromptOverrideSnapshot(promptSnapshot)
 
 			// 熔断检查
+			// 无熔断渠道跳过短路: 每个请求都照常尝试转发上游(像直连一样)，永不被 503 circuit_open 挡回。
 			capabilityKey := routingCapabilityKey(internalRequest, channel)
-			if iter.SkipCircuitBreakScoped(channel.ID, usedKey.ID, channel.Name, requestEndpoint, capabilityKey) {
+			if !channel.DisableCircuitBreaker && iter.SkipCircuitBreakScoped(channel.ID, usedKey.ID, channel.Name, requestEndpoint, capabilityKey) {
 				continue
 			}
 
@@ -320,7 +331,14 @@ func (ra *relayAttempt) attempt() attemptResult {
 	span.End(dbmodel.AttemptFailed, recordStatusCode, auditErrorMessage(fwdErr))
 
 	breakerCounted := shouldRecordBreakerFailure(recordStatusCode, fwdErr)
-	if breakerCounted {
+	// A DisableCircuitBreaker channel never accumulates circuit/runtime failure state: a
+	// burst of upstream errors must neither trip its breaker nor soft-cool its keys
+	// (either would short-circuit later requests and defeat "forward every request like a
+	// direct client"). Cost tracking + 401 quarantine (ChannelKeyRecordUse above) and the
+	// failure stat below still run for operator visibility; only the health/routing
+	// governors are suppressed.
+	recordChannelHealth := breakerCounted && !ra.channel.DisableCircuitBreaker
+	if recordChannelHealth {
 		retryAfter, _ := retryAfterFromError(fwdErr)
 		balancer.RecordRuntimeFailure(ra.channel.ID, ra.usedKey.ID, ra.internalRequest.Model, recordStatusCode, span.Duration(), retryAfter)
 	}
@@ -334,7 +352,7 @@ func (ra *relayAttempt) attempt() attemptResult {
 
 	// 熔断器：记录失败
 	// Do not let downstream disconnects or caller-side timeouts poison channel health.
-	if breakerCounted {
+	if recordChannelHealth {
 		balancer.RecordFailureWithStatusScoped(ra.channel.ID, ra.usedKey.ID, ra.internalRequest.Model, ra.metrics.RequestEndpoint, ra.routingCapabilityKey(), recordStatusCode)
 		if ra.iter != nil && ra.iter.IsStickyChannel(ra.channel.ID) {
 			balancer.ClearStickyWithSessionKey(ra.apiKeyID, ra.requestModel, ra.clientSessionKey)
