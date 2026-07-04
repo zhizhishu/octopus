@@ -1234,6 +1234,22 @@ func (ra *relayAttempt) copyHeaders(outboundRequest *http.Request) {
 			outboundRequest.Header.Set(header.HeaderKey, header.HeaderValue)
 		}
 	}
+	// Re-assert the codex "no Accept-Encoding" fingerprint invariant AFTER CustomHeader.
+	// The request builder sets none and both transports run DisableCompression, so the
+	// ONLY way the header can reappear on the Responses path is an operator-configured
+	// per-channel CustomHeader (the shipped openaiPython preset even carries
+	// `Accept-Encoding: identity`). Strip it so a stray/preset override can't silently
+	// re-introduce exactly the tell the codex fix removed.
+	enforceCodexNoAcceptEncoding(ra.channel.Type, outboundRequest.Header)
+}
+
+// enforceCodexNoAcceptEncoding strips Accept-Encoding from a codex (OpenAI Responses)
+// outbound request. Genuine Codex CLI (reqwest) sends none; claude and other channel
+// types are left untouched (claude legitimately advertises `gzip, deflate, br, zstd`).
+func enforceCodexNoAcceptEncoding(channelType outbound.OutboundType, header http.Header) {
+	if channelType == outbound.OutboundTypeOpenAIResponse {
+		header.Del("Accept-Encoding")
+	}
 }
 
 // sendRequest 发送 HTTP 请求
