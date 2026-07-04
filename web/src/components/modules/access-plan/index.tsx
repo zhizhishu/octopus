@@ -904,6 +904,61 @@ function RouteFlowCanvas({
     const channelNameByID = useMemo(() => new Map(channels.map((channel) => [channel.id, channel.name])), [channels]);
     const visibleRows = rows;
 
+    // Grab-to-pan: hold and drag the canvas background to scroll on both axes.
+    const scrollBoxRef = useRef<HTMLDivElement>(null);
+    const panRef = useRef<{ startX: number; startY: number; startLeft: number; startTop: number; dragging: boolean } | null>(null);
+    const didDragRef = useRef(false);
+    const [isPanning, setIsPanning] = useState(false);
+
+    const handlePointerMove = (event: PointerEvent) => {
+        const pan = panRef.current;
+        const box = scrollBoxRef.current;
+        if (!pan || !box) return;
+        const dx = event.clientX - pan.startX;
+        const dy = event.clientY - pan.startY;
+        if (!pan.dragging) {
+            // Stay a plain click until movement crosses the 5px threshold.
+            if (Math.abs(dx) <= 5 && Math.abs(dy) <= 5) return;
+            pan.dragging = true;
+            didDragRef.current = true;
+            setIsPanning(true);
+        }
+        box.scrollLeft = pan.startLeft - dx;
+        box.scrollTop = pan.startTop - dy;
+    };
+
+    const handlePointerUp = () => {
+        window.removeEventListener('pointermove', handlePointerMove);
+        window.removeEventListener('pointerup', handlePointerUp);
+        panRef.current = null;
+        setIsPanning(false);
+    };
+
+    const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+        if (event.button !== 0) return;
+        const box = scrollBoxRef.current;
+        if (!box) return;
+        panRef.current = {
+            startX: event.clientX,
+            startY: event.clientY,
+            startLeft: box.scrollLeft,
+            startTop: box.scrollTop,
+            dragging: false,
+        };
+        didDragRef.current = false;
+        window.addEventListener('pointermove', handlePointerMove);
+        window.addEventListener('pointerup', handlePointerUp);
+    };
+
+    const handleClickCapture = (event: React.MouseEvent<HTMLDivElement>) => {
+        // Swallow the click that ends a real drag so cards/buttons don't fire.
+        if (didDragRef.current) {
+            event.preventDefault();
+            event.stopPropagation();
+            didDragRef.current = false;
+        }
+    };
+
     return (
         <section className="overflow-hidden rounded-2xl border border-border/70 bg-background/70">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/70 px-4 py-3">
@@ -936,7 +991,12 @@ function RouteFlowCanvas({
             {visibleRows.length === 0 ? (
                 <div className="px-4 py-8 text-center text-sm text-muted-foreground">{t('routes.canvasEmpty')}</div>
             ) : (
-                <div className="max-h-[520px] overflow-auto">
+                <div
+                    ref={scrollBoxRef}
+                    onPointerDown={handlePointerDown}
+                    onClickCapture={handleClickCapture}
+                    className={cn('h-[520px] overflow-auto cursor-grab active:cursor-grabbing', isPanning && 'select-none')}
+                >
                     <div className="relative min-w-[1120px] space-y-4 bg-[linear-gradient(90deg,rgba(125,125,125,0.13)_1px,transparent_1px),linear-gradient(0deg,rgba(125,125,125,0.10)_1px,transparent_1px)] bg-[length:32px_32px] p-5">
                         <div className="grid grid-cols-[210px_260px_minmax(0,1fr)] gap-8 text-[10px] font-black tracking-[0.18em] text-muted-foreground">
                             <span>方案</span>

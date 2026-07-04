@@ -25,46 +25,6 @@ import {
 import { cn } from '@/lib/utils';
 import { cleanOneMillionModelName, expandOneMillionModelAliases, isStreamRequiredModel } from '@/lib/model-aliases';
 
-type HeaderPresetKey = 'codex' | 'claude' | 'openaiPython';
-
-const HEADER_PRESETS: Record<HeaderPresetKey, Channel['custom_header']> = {
-    codex: [
-        { header_key: 'Connection', header_value: 'Keep-Alive' },
-        { header_key: 'Content-Type', header_value: 'application/json' },
-        { header_key: 'Originator', header_value: 'codex_exec' },
-        { header_key: 'User-Agent', header_value: 'codex_exec/0.132.0 (Windows 10.0.26200; x86_64) unknown (codex_exec; 0.132.0)' },
-        { header_key: 'X-Codex-Beta-Features', header_value: 'terminal_resize_reflow' },
-    ],
-    claude: [
-        { header_key: 'Anthropic-Dangerous-Direct-Browser-Access', header_value: 'true' },
-        { header_key: 'Anthropic-Version', header_value: '2023-06-01' },
-        { header_key: 'User-Agent', header_value: 'claude-cli/2.1.168 (external, sdk-cli)' },
-        { header_key: 'X-App', header_value: 'cli' },
-        { header_key: 'X-Stainless-Arch', header_value: 'x64' },
-        { header_key: 'X-Stainless-Lang', header_value: 'js' },
-        { header_key: 'X-Stainless-OS', header_value: 'Windows' },
-        { header_key: 'X-Stainless-Package-Version', header_value: '0.94.0' },
-        { header_key: 'X-Stainless-Retry-Count', header_value: '0' },
-        { header_key: 'X-Stainless-Runtime', header_value: 'node' },
-        { header_key: 'X-Stainless-Runtime-Version', header_value: 'v24.3.0' },
-        { header_key: 'X-Stainless-Timeout', header_value: '600' },
-    ],
-    openaiPython: [
-        { header_key: 'Accept', header_value: 'application/json' },
-        { header_key: 'Accept-Encoding', header_value: 'identity' },
-        { header_key: 'Content-Type', header_value: 'application/json' },
-        { header_key: 'User-Agent', header_value: 'OpenAI/Python 1.99.9' },
-        { header_key: 'X-Stainless-Lang', header_value: 'python' },
-        { header_key: 'X-Stainless-Package-Version', header_value: '1.99.9' },
-        { header_key: 'X-Stainless-OS', header_value: 'Windows' },
-        { header_key: 'X-Stainless-Arch', header_value: 'x64' },
-        { header_key: 'X-Stainless-Runtime', header_value: 'CPython' },
-        { header_key: 'X-Stainless-Runtime-Version', header_value: '3.12.0' },
-        { header_key: 'X-Stainless-Async', header_value: 'false' },
-        { header_key: 'X-Stainless-Retry-Count', header_value: '0' },
-        { header_key: 'X-Stainless-Timeout', header_value: '600' },
-    ],
-};
 
 function modelTestProxyLabel(result: Pick<ModelTestResult, 'proxy_used' | 'proxy_source' | 'proxy_scheme' | 'proxy_status'>) {
     if (!result.proxy_used) return 'direct';
@@ -541,22 +501,6 @@ export function ChannelForm({
             if (key) headers.push({ header_key: key, header_value: headerValue });
         }
         return headers;
-    };
-
-    const handleApplyHeaderPreset = (preset: HeaderPresetKey) => {
-        const next = new Map<string, Channel['custom_header'][number]>();
-        for (const header of formData.custom_header ?? []) {
-            const key = header.header_key.trim();
-            if (!key) continue;
-            next.set(key.toLowerCase(), { ...header, header_key: key });
-        }
-        for (const header of HEADER_PRESETS[preset]) {
-            next.set(header.header_key.toLowerCase(), { ...header });
-        }
-        onFormDataChange({
-            ...formData,
-            custom_header: Array.from(next.values()),
-        });
     };
 
     const handleImportHeaders = () => {
@@ -1193,33 +1137,6 @@ export function ChannelForm({
                                 <div className="flex flex-wrap items-center gap-1.5">
                                     <Button
                                         type="button"
-                                        variant="outline"
-                                        size="sm"
-                                        onClick={() => handleApplyHeaderPreset('codex')}
-                                        className="h-7 px-2 text-xs rounded-xl"
-                                    >
-                                        {t('headerPresetCodex')}
-                                    </Button>
-                                    <Button
-                                        type="button"
-                                        variant="outline"
-                                        size="sm"
-                                        onClick={() => handleApplyHeaderPreset('claude')}
-                                        className="h-7 px-2 text-xs rounded-xl"
-                                    >
-                                        {t('headerPresetClaude')}
-                                    </Button>
-                                    <Button
-                                        type="button"
-                                        variant="outline"
-                                        size="sm"
-                                        onClick={() => handleApplyHeaderPreset('openaiPython')}
-                                        className="h-7 px-2 text-xs rounded-xl"
-                                    >
-                                        {t('headerPresetOpenAI')}
-                                    </Button>
-                                    <Button
-                                        type="button"
                                         variant="ghost"
                                         size="sm"
                                         onClick={handleAddHeader}
@@ -1230,7 +1147,6 @@ export function ChannelForm({
                                     </Button>
                                 </div>
                             </div>
-                            <p className="text-xs text-muted-foreground">{t('headerPresetHint')}</p>
                             <div className="grid gap-2 rounded-xl border border-border/70 bg-muted/20 p-2.5">
                                 <textarea
                                     value={bulkHeaderText}
