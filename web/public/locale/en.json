@@ -320,6 +320,10 @@
             "spread": "Force spread",
             "fillFirst": "Force fill-first"
         },
+        "poolDefaults": {
+            "title": "Model pool global defaults",
+            "hint": "Pool-wide routing defaults applied to every group: the mode override forces one mode on all groups; the first-token and session-keep defaults only kick in when a group's own value is 0. A group's own configuration always takes precedence."
+        },
         "userRegistration": {
             "label": "Allow Direct Registration",
             "hint": "When disabled, new users must enter an invite code. When enabled, users can register directly; an invite code still grants its quota or monthly card."

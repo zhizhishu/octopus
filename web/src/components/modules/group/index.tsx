@@ -2,6 +2,7 @@
 
 import { useMemo } from 'react';
 import { GroupCard } from './Card';
+import { PoolGlobalDefaults } from './PoolDefaults';
 import { type Group as GroupType, useGroupList } from '@/api/endpoints/group';
 import { useModelChannelList } from '@/api/endpoints/model';
 import { useSearchStore, useToolbarViewOptionsStore } from '@/components/modules/toolbar';
@@ -50,12 +51,17 @@ export function Group() {
     }, [sortedGroups, searchTerm, filter, visibleModelKeys]);
 
     return (
-        <VirtualizedGrid
-            items={visibleGroups}
-            columns={{ default: 1, md: 2, lg: 3 }}
-            estimateItemHeight={520}
-            getItemKey={(group, index) => group.id ?? `group-${index}`}
-            renderItem={(group) => <GroupCard group={group} />}
-        />
+        <div className="flex h-full min-h-0 w-full flex-col gap-3">
+            <PoolGlobalDefaults />
+            <div className="min-h-0 flex-1">
+                <VirtualizedGrid
+                    items={visibleGroups}
+                    columns={{ default: 1, md: 2, lg: 3 }}
+                    estimateItemHeight={520}
+                    getItemKey={(group, index) => group.id ?? `group-${index}`}
+                    renderItem={(group) => <GroupCard group={group} />}
+                />
+            </div>
+        </div>
     );
 }
