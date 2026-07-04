@@ -291,3 +291,74 @@ func readSOCKS5Host(conn net.Conn, atyp byte) (string, error) {
 		return "", strconv.ErrSyntax
 	}
 }
+
+// TestNoProxyClientDoesNotAutoInjectAcceptEncoding proves the stock upstream transport
+// runs with DisableCompression: a request that omits Accept-Encoding reaches the server
+// with NO Accept-Encoding header. Without DisableCompression, Go silently adds
+// "gzip" — a fingerprint tell against a genuine codex CLI, which sends none.
+func TestNoProxyClientDoesNotAutoInjectAcceptEncoding(t *testing.T) {
+	var gotAE string
+	var hadAE bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAE = r.Header.Get("Accept-Encoding")
+		_, hadAE = r.Header["Accept-Encoding"]
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(srv.Close)
+
+	client, err := newHTTPClientNoProxy()
+	if err != nil {
+		t.Fatalf("newHTTPClientNoProxy: %v", err)
+	}
+	client.Timeout = 5 * time.Second
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.ReadAll(resp.Body)
+
+	if hadAE {
+		t.Fatalf("stock client auto-injected Accept-Encoding = %q; want absent (DisableCompression)", gotAE)
+	}
+}
+
+// TestNoProxyClientForwardsExplicitAcceptEncoding proves DisableCompression only
+// suppresses auto-injection: an explicitly set Accept-Encoding (the claude-cli value)
+// is still delivered verbatim, so the claude path is unaffected by the codex fix.
+func TestNoProxyClientForwardsExplicitAcceptEncoding(t *testing.T) {
+	const want = "gzip, deflate, br, zstd"
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("Accept-Encoding")
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(srv.Close)
+
+	client, err := newHTTPClientNoProxy()
+	if err != nil {
+		t.Fatalf("newHTTPClientNoProxy: %v", err)
+	}
+	client.Timeout = 5 * time.Second
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Accept-Encoding", want)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.ReadAll(resp.Body)
+
+	if got != want {
+		t.Fatalf("explicit Accept-Encoding = %q, want %q", got, want)
+	}
+}

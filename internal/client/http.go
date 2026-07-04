@@ -125,7 +125,16 @@ func clonedDefaultTransport() (*http.Transport, error) {
 	if !ok {
 		return nil, fmt.Errorf("default transport is not *http.Transport")
 	}
-	return transport.Clone(), nil
+	cloned := transport.Clone()
+	// Do not let Go auto-inject "Accept-Encoding: gzip" on requests that omit the
+	// header. The genuine codex CLI sends no Accept-Encoding, so its outbound request
+	// must carry none; Go would otherwise silently add gzip and re-introduce a
+	// fingerprint tell. With compression disabled, "header not set" means "header not
+	// on the wire". The claude path still sends its explicit gzip,deflate,br,zstd value,
+	// and the relay decompresses any upstream Content-Encoding itself
+	// (unwrapResponseEncoding), so responses are unaffected.
+	cloned.DisableCompression = true
+	return cloned, nil
 }
 
 func newHTTPClientNoProxy() (*http.Client, error) {

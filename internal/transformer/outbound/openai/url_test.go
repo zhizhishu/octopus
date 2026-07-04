@@ -102,6 +102,21 @@ func TestCustomChatOutboundTransformRequestPreservesFullChatEndpoint(t *testing.
 	}
 }
 
+// TestResponseOutboundTransformRequestOmitsAcceptEncoding locks the codex byte-exact
+// shape: the genuine codex CLI (Rust/reqwest) sends NO Accept-Encoding header, so
+// ResponseOutbound must not set one. Auto-injection of "gzip" / "gzip, deflate, br" is
+// suppressed at the transport layer (DisableCompression, see internal/client), so a
+// request that omits the header here reaches the wire with none.
+func TestResponseOutboundTransformRequestOmitsAcceptEncoding(t *testing.T) {
+	httpReq, err := (&ResponseOutbound{}).TransformRequest(context.Background(), testChatRequest(), "https://anyrouter.top", "test-key")
+	if err != nil {
+		t.Fatalf("TransformRequest returned error: %v", err)
+	}
+	if _, ok := httpReq.Header["Accept-Encoding"]; ok {
+		t.Fatalf("codex Responses request must not set Accept-Encoding, got %q", httpReq.Header.Get("Accept-Encoding"))
+	}
+}
+
 func TestResponseOutboundTransformRequestNormalizesOpenAIPath(t *testing.T) {
 	tests := []struct {
 		name    string

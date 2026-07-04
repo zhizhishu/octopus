@@ -172,7 +172,11 @@ func (t *utlsRoundTripper) h2ConnForHost(ctx context.Context, serverName, addr s
 		return nil, nil
 	}
 
-	h2 := &fhttp2.Transport{}
+	// DisableCompression: never auto-inject "accept-encoding: gzip, deflate, br" on
+	// requests that omit the header — real codex sends none, and the relay decompresses
+	// any upstream Content-Encoding itself (unwrapResponseEncoding). Claude still sends
+	// its explicit gzip,deflate,br,zstd value, so this only suppresses auto-injection.
+	h2 := &fhttp2.Transport{DisableCompression: true}
 	cc, err := h2.NewClientConn(uConn)
 	if err != nil {
 		_ = uConn.Close()

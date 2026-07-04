@@ -53,13 +53,13 @@ func (o *ResponseOutbound) TransformRequest(ctx context.Context, request *model.
 	} else {
 		req.Header.Set("Accept", "application/json")
 	}
-	// The genuine Codex CLI (Rust/reqwest) sends NO Accept-Encoding header. Go's
-	// transport auto-injects "gzip" when it is absent, which is a fingerprint tell, so
-	// pin "identity" to suppress that auto-injection and keep the SSE/JSON reader on
-	// plain bytes. (Byte-exact omission of the header is handled by the fingerprint
-	// transport when the uTLS path is enabled; on the stock client identity is the
-	// closest achievable match.)
-	req.Header.Set("Accept-Encoding", "identity")
+	// The genuine Codex CLI (Rust/reqwest) sends NO Accept-Encoding header at all, so
+	// octopus deliberately sets none here — a byte-for-byte match with real codex. Both
+	// upstream transports (stock net/http and the uTLS fhttp2 h2 transport) run with
+	// DisableCompression=true, so neither auto-injects "gzip" / "gzip, deflate, br" when
+	// the header is absent (that auto-injection would itself be a fingerprint tell). Any
+	// upstream Content-Encoding is decompressed by the relay's unwrapResponseEncoding, so
+	// omitting the request header never leaves the SSE/JSON reader on compressed bytes.
 	req.Header.Set("Authorization", "Bearer "+key)
 
 	targetURL, err := xurl.JoinOpenAIPath(baseUrl, "/v1/responses")
