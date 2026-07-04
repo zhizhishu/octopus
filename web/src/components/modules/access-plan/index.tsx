@@ -995,9 +995,14 @@ function RouteFlowCanvas({
                     ref={scrollBoxRef}
                     onPointerDown={handlePointerDown}
                     onClickCapture={handleClickCapture}
-                    className={cn('h-[520px] overflow-auto cursor-grab active:cursor-grabbing', isPanning && 'select-none')}
+                    // Height follows the viewport instead of a fixed 520px: on short windows the
+                    // canvas shrinks to stay fully on-screen (rows below the fold are reachable by
+                    // grab-pan / wheel), and on tall windows it grows to show more rows at once.
+                    className={cn('h-[clamp(300px,calc(100vh-360px),760px)] overflow-auto cursor-grab active:cursor-grabbing', isPanning && 'select-none')}
                 >
-                    <div className="relative min-w-[1120px] space-y-4 bg-[linear-gradient(90deg,rgba(125,125,125,0.13)_1px,transparent_1px),linear-gradient(0deg,rgba(125,125,125,0.10)_1px,transparent_1px)] bg-[length:32px_32px] p-5">
+                    {/* modest min-h keeps the grid canvas a real body even with one row,
+                        without forcing excess empty scroll space on top of real content. */}
+                    <div className="relative min-h-[300px] min-w-[1120px] space-y-4 bg-[linear-gradient(90deg,rgba(125,125,125,0.13)_1px,transparent_1px),linear-gradient(0deg,rgba(125,125,125,0.10)_1px,transparent_1px)] bg-[length:32px_32px] p-5">
                         <div className="grid grid-cols-[210px_260px_minmax(0,1fr)] gap-8 text-[10px] font-black tracking-[0.18em] text-muted-foreground">
                             <span>方案</span>
                             <span>原请求模型</span>
