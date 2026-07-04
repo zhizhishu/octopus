@@ -187,46 +187,77 @@ func fingerprintProfileRefreshCache(ctx context.Context) error {
 			}
 		}
 	}
-	// Seed ONE built-in profile ("Linux 真机") on first boot. The "default
-	// (Windows)" identity is NOT a row: the channel dropdown's ProfileID=0 option
-	// already IS that — it resolves to the per-instance seed + global header
-	// settings, byte-for-byte the pre-profile behaviour. Seeding a redundant
-	// "default" row made the dropdown show THREE entries (跟随全局 + 默认 + Linux)
-	// for what the user wants as TWO identities, so we drop it. Result: the dropdown
-	// is "默认(Windows)" (=ProfileID 0) + "Linux 真机". Only seed when empty so an
-	// operator-edited deployment is never overwritten.
-	//
-	// "Linux 真机": the packet-captured second identity (claude-cli 2.1.198 /
-	// codex_exec 0.142.5 on Linux/Debian). Its seed is DETERMINISTICALLY derived
-	// from the instance seed but DIFFERENT from the global default's, so the two
-	// devices get unrelated, stable-across-restart device_id / installation ids
-	// that never collide. The claude anthropic-beta SET is intentionally not part of
-	// a profile — both reuse BuildClaudeCodeBetaOrder's canonical order; only the
-	// version-bearing header strings differ.
-	if len(profiles) == 0 {
-		stabilize := true
-		presets := []*model.FingerprintProfile{
-			{
-				Name:                 "Linux 真机",
-				Seed:                 deriveProfileSeed(2),
-				ClaudeUserAgent:      "claude-cli/2.1.198 (external, sdk-cli)",
-				ClaudePackageVersion: "0.94.0",
-				ClaudeRuntimeVersion: "v26.3.0",
-				ClaudeOS:             "Linux",
-				ClaudeArch:           "x64",
-				ClaudeTimeout:        "600",
-				ClaudeStabilize:      &stabilize,
-				CodexUserAgent:       "codex_exec/0.142.5 (Debian 12.0.0; x86_64) unknown (codex_exec; 0.142.5)",
-				CodexOriginator:      "codex_exec",
-				CodexBetaFeatures:    "remote_compaction_v2",
-			},
-		}
-		for _, preset := range presets {
-			if err := db.GetDB().WithContext(ctx).Create(preset).Error; err != nil {
-				return fmt.Errorf("failed to seed fingerprint profile %q: %w", preset.Name, err)
+	// Note: "默认(Windows)" is intentionally NOT a row — the channel dropdown's
+	// ProfileID=0 option already IS that identity (per-instance seed + global header
+	// settings, byte-for-byte the pre-profile behaviour). An earlier build seeded a
+	// redundant all-empty "默认(Windows)" row (making the dropdown show THREE entries);
+	// the cleanup above drops it. Each built-in preset's seed is DETERMINISTICALLY
+	// derived from the instance seed but DIFFERENT from the global default's and from
+	// each other, so every device gets unrelated, stable-across-restart device_id /
+	// installation ids that never collide. The claude anthropic-beta SET is
+	// intentionally not part of any profile — every profile reuses
+	// BuildClaudeCodeBetaOrder's canonical order; only the version-bearing header
+	// strings + the device seed differ.
+	// TWO built-in Linux presets — two distinct devices that both track the
+	// captured-latest versions (bumped in the migration block above + these seed
+	// values on each release). Same claude/codex versions, DIFFERENT deterministic
+	// seeds (deriveProfileSeed 2 vs 3) => unrelated, stable device_id / installation
+	// ids, and a different Linux distro token in the codex UA (Debian vs Ubuntu) so
+	// they read as two separate machines. Assign each to a different channel /
+	// upstream key to keep two accounts uncorrelated. "默认(Windows)" stays a non-row
+	// (ProfileID 0). Seeding rule: a FRESH deployment (no profiles) gets both; a
+	// deployment that already has the 1st built-in ("Linux 真机") but not the 2nd gets
+	// the 2nd backfilled on restart; if an operator deleted the 1st we resurrect
+	// neither (respect the deletion); an operator-customised same-name profile is
+	// never overwritten.
+	stabilize := true
+	debian := &model.FingerprintProfile{
+		Name:                 "Linux 真机",
+		Seed:                 deriveProfileSeed(2),
+		ClaudeUserAgent:      "claude-cli/2.1.198 (external, sdk-cli)",
+		ClaudePackageVersion: "0.94.0",
+		ClaudeRuntimeVersion: "v26.3.0",
+		ClaudeOS:             "Linux",
+		ClaudeArch:           "x64",
+		ClaudeTimeout:        "600",
+		ClaudeStabilize:      &stabilize,
+		CodexUserAgent:       "codex_exec/0.142.5 (Debian 12.0.0; x86_64) unknown (codex_exec; 0.142.5)",
+		CodexOriginator:      "codex_exec",
+		CodexBetaFeatures:    "remote_compaction_v2",
+	}
+	ubuntu := &model.FingerprintProfile{
+		Name:                 "Linux 真机 2 (Ubuntu)",
+		Seed:                 deriveProfileSeed(3),
+		ClaudeUserAgent:      "claude-cli/2.1.198 (external, sdk-cli)",
+		ClaudePackageVersion: "0.94.0",
+		ClaudeRuntimeVersion: "v26.3.0",
+		ClaudeOS:             "Linux",
+		ClaudeArch:           "x64",
+		ClaudeTimeout:        "600",
+		ClaudeStabilize:      &stabilize,
+		CodexUserAgent:       "codex_exec/0.142.5 (Ubuntu 24.04.1; x86_64) unknown (codex_exec; 0.142.5)",
+		CodexOriginator:      "codex_exec",
+		CodexBetaFeatures:    "remote_compaction_v2",
+	}
+	hasProfileName := func(name string) bool {
+		for i := range profiles {
+			if profiles[i].Name == name {
+				return true
 			}
-			profiles = append(profiles, *preset)
 		}
+		return false
+	}
+	var toSeed []*model.FingerprintProfile
+	if len(profiles) == 0 {
+		toSeed = []*model.FingerprintProfile{debian, ubuntu}
+	} else if hasProfileName(debian.Name) && !hasProfileName(ubuntu.Name) {
+		toSeed = []*model.FingerprintProfile{ubuntu}
+	}
+	for _, preset := range toSeed {
+		if err := db.GetDB().WithContext(ctx).Create(preset).Error; err != nil {
+			return fmt.Errorf("failed to seed fingerprint profile %q: %w", preset.Name, err)
+		}
+		profiles = append(profiles, *preset)
 	}
 	snapshot := make(map[int]model.FingerprintProfile, len(profiles))
 	for _, p := range profiles {
