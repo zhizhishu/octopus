@@ -275,8 +275,12 @@ func mergeToolCall(toolCalls []model.ToolCall, delta model.ToolCall) []model.Too
 			if delta.Type != "" {
 				toolCalls[i].Type = delta.Type
 			}
-			if delta.Function.Name != "" {
-				toolCalls[i].Function.Name += delta.Function.Name
+			if delta.Function.Name != "" && toolCalls[i].Function.Name == "" {
+				// Tool call name is atomic, never a streamed fragment. Some
+				// upstream shapes repeat the full name on every chunk; take the
+				// first non-empty value and never concatenate (which would yield
+				// "get_weatherget_weather...").
+				toolCalls[i].Function.Name = delta.Function.Name
 			}
 			if delta.Function.Arguments != "" {
 				toolCalls[i].Function.Arguments += delta.Function.Arguments

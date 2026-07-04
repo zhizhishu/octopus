@@ -51,6 +51,11 @@ func TestResponseOutboundCarriesToolMetadataAcrossStreamEvents(t *testing.T) {
 	if added == nil || len(added.Choices) != 1 || added.Choices[0].Delta == nil || len(added.Choices[0].Delta.ToolCalls) != 1 {
 		t.Fatalf("expected tool-call metadata chunk, got %#v", added)
 	}
+	// The tool name is emitted exactly once, on this first (output_item.added)
+	// chunk — mirroring the genuine OpenAI Chat Completions streaming shape.
+	if got := added.Choices[0].Delta.ToolCalls[0].Function.Name; got != "lookup" {
+		t.Fatalf("expected added chunk to carry the tool name, got %q", got)
+	}
 
 	delta, err := outbound.TransformStream(context.Background(), []byte(`{
 		"type":"response.function_call_arguments.delta",
@@ -67,8 +72,11 @@ func TestResponseOutboundCarriesToolMetadataAcrossStreamEvents(t *testing.T) {
 	if toolCall.ID != "call_1" {
 		t.Fatalf("expected call_id from previous item, got %#v", toolCall)
 	}
-	if toolCall.Function.Name != "lookup" {
-		t.Fatalf("expected function name from previous item, got %#v", toolCall)
+	// The name must NOT be repeated on argument-delta chunks: it was already
+	// emitted on the added chunk. Repeating it makes downstream `name += delta`
+	// aggregators duplicate the name once per streamed chunk.
+	if toolCall.Function.Name != "" {
+		t.Fatalf("expected argument-delta chunk to omit the already-emitted tool name, got %q", toolCall.Function.Name)
 	}
 	if toolCall.Function.Arguments != `{"q"` {
 		t.Fatalf("expected argument delta, got %#v", toolCall)
@@ -120,8 +128,58 @@ func TestResponseOutboundMapsCodexNativeToolCallItems(t *testing.T) {
 		t.Fatalf("expected native tool-call done chunk, got %#v", done)
 	}
 	tool = done.Choices[0].Delta.ToolCalls[0]
-	if tool.ID != "call_shell" || tool.Function.Name != "local_shell" || !strings.Contains(tool.Function.Arguments, `"command":"pwd"`) {
-		t.Fatalf("unexpected native tool-call done chunk: %#v", tool)
+	// Name was already emitted on the added chunk above, so the done chunk must
+	// omit it (only the id and the argument payload are carried here).
+	if tool.ID != "call_shell" || tool.Function.Name != "" || !strings.Contains(tool.Function.Arguments, `"command":"pwd"`) {
+		t.Fatalf("expected native tool-call done chunk to omit the re-emitted name, got %#v", tool)
+	}
+}
+
+// TestResponseOutboundEmitsToolNameOnlyOncePerToolCall is the regression guard
+// for the streamed function-name duplication bug: a Responses upstream repeats
+// the full function name on every function_call_arguments.delta (and on
+// output_item.done). If octopus forwards that verbatim, downstream chat-style
+// aggregators (name += delta.Name) copy the name once per chunk, so longer
+// arguments (more chunks) yield more copies. The name must appear exactly once
+// across the whole stream regardless of how many argument chunks arrive.
+func TestResponseOutboundEmitsToolNameOnlyOncePerToolCall(t *testing.T) {
+	outbound := &ResponseOutbound{}
+	feed := func(payload string) *model.InternalLLMResponse {
+		resp, err := outbound.TransformStream(context.Background(), []byte(payload))
+		if err != nil {
+			t.Fatalf("TransformStream returned error for %s: %v", payload, err)
+		}
+		return resp
+	}
+
+	events := []string{
+		`{"type":"response.output_item.added","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"get_weather"}}`,
+		`{"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"loc"}`,
+		`{"type":"response.function_call_arguments.delta","output_index":0,"delta":"ation\":"}`,
+		`{"type":"response.function_call_arguments.delta","output_index":0,"delta":"\"SF\"}"}`,
+		`{"type":"response.output_item.done","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"get_weather","arguments":"{\"location\":\"SF\"}"}}`,
+	}
+
+	nameCount := 0
+	for _, ev := range events {
+		resp := feed(ev)
+		if resp == nil {
+			continue
+		}
+		for _, choice := range resp.Choices {
+			if choice.Delta == nil {
+				continue
+			}
+			for _, tc := range choice.Delta.ToolCalls {
+				if tc.Function.Name != "" {
+					nameCount++
+				}
+			}
+		}
+	}
+
+	if nameCount != 1 {
+		t.Fatalf("expected the tool name to be emitted exactly once across the stream, got %d occurrences", nameCount)
 	}
 }
 

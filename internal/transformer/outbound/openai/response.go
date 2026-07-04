@@ -22,10 +22,11 @@ type ResponseOutbound struct {
 	streamModel string
 	initialized bool
 
-	toolCallIDByOutputIndex   map[int]string
-	toolCallNameByOutputIndex map[int]string
-	toolCallArgsByOutputIndex map[int]string
-	hasToolCallStream         bool
+	toolCallIDByOutputIndex          map[int]string
+	toolCallNameByOutputIndex        map[int]string
+	toolCallNameEmittedByOutputIndex map[int]bool
+	toolCallArgsByOutputIndex        map[int]string
+	hasToolCallStream                bool
 }
 
 func (o *ResponseOutbound) TransformRequest(ctx context.Context, request *model.InternalLLMRequest, baseUrl, key string) (*http.Request, error) {
@@ -201,7 +202,7 @@ func (o *ResponseOutbound) TransformStream(ctx context.Context, eventData []byte
 							ID:    callID,
 							Type:  "function",
 							Function: model.FunctionCall{
-								Name:      name,
+								Name:      o.emitToolCallName(streamEvent.OutputIndex, name),
 								Arguments: streamEvent.Delta,
 							},
 						},
@@ -244,7 +245,7 @@ func (o *ResponseOutbound) TransformStream(ctx context.Context, eventData []byte
 								ID:    callID,
 								Type:  "function",
 								Function: model.FunctionCall{
-									Name:      o.toolCallNameByOutputIndex[streamEvent.OutputIndex],
+									Name:      o.emitToolCallName(streamEvent.OutputIndex, o.toolCallNameByOutputIndex[streamEvent.OutputIndex]),
 									Arguments: argsDelta,
 								},
 							},
@@ -341,9 +342,30 @@ func (o *ResponseOutbound) ensureToolCallState() {
 	if o.toolCallNameByOutputIndex == nil {
 		o.toolCallNameByOutputIndex = make(map[int]string)
 	}
+	if o.toolCallNameEmittedByOutputIndex == nil {
+		o.toolCallNameEmittedByOutputIndex = make(map[int]bool)
+	}
 	if o.toolCallArgsByOutputIndex == nil {
 		o.toolCallArgsByOutputIndex = make(map[int]string)
 	}
+}
+
+// emitToolCallName returns the tool call name only the first time it is emitted
+// for a given output index, and an empty string on every subsequent call.
+//
+// Upstream Responses streams repeat the full function name on every
+// response.function_call_arguments.delta event (and again on output_item.done).
+// Forwarding that verbatim makes downstream chat-style aggregators — which do
+// `name += delta.Name` — duplicate the name once per streamed chunk, so a long
+// argument payload (more chunks) yields more copies. The genuine OpenAI Chat
+// Completions streaming shape carries the tool name only on the first tool_call
+// delta, arguments incrementally afterwards; we mirror that shape here.
+func (o *ResponseOutbound) emitToolCallName(outputIndex int, name string) string {
+	if name == "" || o.toolCallNameEmittedByOutputIndex[outputIndex] {
+		return ""
+	}
+	o.toolCallNameEmittedByOutputIndex[outputIndex] = true
+	return name
 }
 
 // ResponsesRequest represents the OpenAI Responses API request format.
