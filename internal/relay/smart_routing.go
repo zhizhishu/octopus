@@ -9,6 +9,11 @@ import (
 )
 
 func enrichGroupForSmartRouting(ctx context.Context, group dbmodel.Group, preferStream ...bool) dbmodel.Group {
+	// Resolve fleet-wide routing overrides/defaults FIRST: a route_mode_override must
+	// be visible to the fill-first short-circuit below (a spread override still needs
+	// stats hydrated), and first_token_time_out_default must ride along on every
+	// routing path (this is the single funnel all relay entry points pass through).
+	group = applyGroupGlobalDefaults(group)
 	// Fill-first keeps a stable priority order and does not consult runtime
 	// capacity, so it needs no snapshot. Every other (spread/round-robin) mode is
 	// load-aware and must be hydrated with channel priority, stats, and runtime

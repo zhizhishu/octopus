@@ -48,6 +48,8 @@ export function SettingSystem() {
     const [streamDataTimeoutInterval, setStreamDataTimeoutInterval] = useState('900');
     const [responsesSessionTTL, setResponsesSessionTTL] = useState('3600');
     const [sessionKeepTimeDefault, setSessionKeepTimeDefault] = useState('0');
+    const [firstTokenTimeOutDefault, setFirstTokenTimeOutDefault] = useState('0');
+    const [routeModeOverride, setRouteModeOverride] = useState('');
     const [claudeHeaderUserAgent, setClaudeHeaderUserAgent] = useState('claude-cli/2.1.168 (external, sdk-cli)');
     const [claudeHeaderPackageVersion, setClaudeHeaderPackageVersion] = useState('0.94.0');
     const [claudeHeaderRuntimeVersion, setClaudeHeaderRuntimeVersion] = useState('v24.3.0');
@@ -106,6 +108,8 @@ export function SettingSystem() {
     const initialStreamDataTimeoutInterval = useRef('900');
     const initialResponsesSessionTTL = useRef('3600');
     const initialSessionKeepTimeDefault = useRef('0');
+    const initialFirstTokenTimeOutDefault = useRef('0');
+    const initialRouteModeOverride = useRef('');
     const initialClaudeHeaderUserAgent = useRef('claude-cli/2.1.168 (external, sdk-cli)');
     const initialClaudeHeaderPackageVersion = useRef('0.94.0');
     const initialClaudeHeaderRuntimeVersion = useRef('v24.3.0');
@@ -154,6 +158,8 @@ export function SettingSystem() {
             const dataTimeout = settings.find(s => s.key === SettingKey.RelayStreamDataIntervalTimeoutSeconds);
             const responsesTTL = settings.find(s => s.key === SettingKey.ResponsesSessionTTLSeconds);
             const sessionKeepDefault = settings.find(s => s.key === SettingKey.SessionKeepTimeDefault);
+            const firstTokenDefault = settings.find(s => s.key === SettingKey.FirstTokenTimeOutDefault);
+            const routeMode = settings.find(s => s.key === SettingKey.RouteModeOverride);
             const claudeUA = settings.find(s => s.key === SettingKey.ClaudeHeaderUserAgent);
             const claudePackage = settings.find(s => s.key === SettingKey.ClaudeHeaderPackageVersion);
             const claudeRuntime = settings.find(s => s.key === SettingKey.ClaudeHeaderRuntimeVersion);
@@ -227,6 +233,14 @@ export function SettingSystem() {
             if (sessionKeepDefault) {
                 queueMicrotask(() => setSessionKeepTimeDefault(sessionKeepDefault.value || '0'));
                 initialSessionKeepTimeDefault.current = sessionKeepDefault.value || '0';
+            }
+            if (firstTokenDefault) {
+                queueMicrotask(() => setFirstTokenTimeOutDefault(firstTokenDefault.value || '0'));
+                initialFirstTokenTimeOutDefault.current = firstTokenDefault.value || '0';
+            }
+            if (routeMode) {
+                queueMicrotask(() => setRouteModeOverride(routeMode.value || ''));
+                initialRouteModeOverride.current = routeMode.value || '';
             }
             if (claudeUA) {
                 queueMicrotask(() => setClaudeHeaderUserAgent(claudeUA.value));
@@ -404,6 +418,10 @@ export function SettingSystem() {
                     initialResponsesSessionTTL.current = value;
                 } else if (key === SettingKey.SessionKeepTimeDefault) {
                     initialSessionKeepTimeDefault.current = value;
+                } else if (key === SettingKey.FirstTokenTimeOutDefault) {
+                    initialFirstTokenTimeOutDefault.current = value;
+                } else if (key === SettingKey.RouteModeOverride) {
+                    initialRouteModeOverride.current = value;
                 } else if (key === SettingKey.CORSAllowOrigins) {
                     initialCorsAllowOrigins.current = value;
                 } else if (key === SettingKey.UpstreamErrorBodyMode) {
@@ -532,6 +550,23 @@ export function SettingSystem() {
             SettingKey.SessionKeepTimeDefault,
             normalizedValue,
             initialSessionKeepTimeDefault.current
+        );
+    };
+
+    const handleFirstTokenTimeOutDefaultBlur = () => {
+        const rawValue = firstTokenTimeOutDefault.trim();
+        const numericValue = Number(rawValue);
+        if (!rawValue || !Number.isInteger(numericValue) || numericValue < 0) {
+            setFirstTokenTimeOutDefault(initialFirstTokenTimeOutDefault.current || '0');
+            toast.error(t('firstTokenTimeOutDefault.invalid'));
+            return;
+        }
+        const normalizedValue = String(numericValue);
+        setFirstTokenTimeOutDefault(normalizedValue);
+        handleSave(
+            SettingKey.FirstTokenTimeOutDefault,
+            normalizedValue,
+            initialFirstTokenTimeOutDefault.current
         );
     };
 
@@ -1393,6 +1428,89 @@ export function SettingSystem() {
                             className="w-24 rounded-xl sm:w-28"
                         />
                         <span className="min-w-0 text-xs text-muted-foreground">{t('sessionKeepTimeDefault.seconds')}</span>
+                    </div>
+                </div>
+                <div className="flex flex-col gap-3 border-t border-border/60 pt-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="flex min-w-0 items-start gap-3">
+                        <Clock className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" />
+                        <div className="min-w-0 space-y-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                                <span className="text-sm font-medium">{t('firstTokenTimeOutDefault.label')}</span>
+                                <span className="rounded-full bg-background px-2 py-0.5 text-[11px] text-muted-foreground">
+                                    {t('firstTokenTimeOutDefault.defaultHint')}
+                                </span>
+                                <TooltipProvider>
+                                    <Tooltip>
+                                        <TooltipTrigger asChild>
+                                            <HelpCircle className="size-4 text-muted-foreground cursor-help" />
+                                        </TooltipTrigger>
+                                        <TooltipContent className="max-w-xs">
+                                            {t('firstTokenTimeOutDefault.hint')}
+                                        </TooltipContent>
+                                    </Tooltip>
+                                </TooltipProvider>
+                            </div>
+                            <p className="text-xs leading-5 text-muted-foreground">
+                                {t('firstTokenTimeOutDefault.description')}
+                            </p>
+                        </div>
+                    </div>
+                    <div className="flex w-full min-w-0 items-center gap-2 self-start sm:w-auto sm:shrink-0 sm:self-center">
+                        <Input
+                            type="number"
+                            min="0"
+                            step="1"
+                            inputMode="numeric"
+                            value={firstTokenTimeOutDefault}
+                            onChange={(event) => setFirstTokenTimeOutDefault(event.target.value)}
+                            onBlur={handleFirstTokenTimeOutDefaultBlur}
+                            placeholder={t('firstTokenTimeOutDefault.placeholder')}
+                            aria-label={t('firstTokenTimeOutDefault.label')}
+                            className="w-24 rounded-xl sm:w-28"
+                        />
+                        <span className="min-w-0 text-xs text-muted-foreground">{t('firstTokenTimeOutDefault.seconds')}</span>
+                    </div>
+                </div>
+                <div className="flex flex-col gap-3 border-t border-border/60 pt-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="flex min-w-0 items-start gap-3">
+                        <Zap className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" />
+                        <div className="min-w-0 space-y-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                                <span className="text-sm font-medium">{t('routeModeOverride.label')}</span>
+                                <span className="rounded-full bg-background px-2 py-0.5 text-[11px] text-muted-foreground">
+                                    {t('routeModeOverride.defaultHint')}
+                                </span>
+                                <TooltipProvider>
+                                    <Tooltip>
+                                        <TooltipTrigger asChild>
+                                            <HelpCircle className="size-4 text-muted-foreground cursor-help" />
+                                        </TooltipTrigger>
+                                        <TooltipContent className="max-w-xs">
+                                            {t('routeModeOverride.hint')}
+                                        </TooltipContent>
+                                    </Tooltip>
+                                </TooltipProvider>
+                            </div>
+                            <p className="text-xs leading-5 text-muted-foreground">
+                                {t('routeModeOverride.description')}
+                            </p>
+                        </div>
+                    </div>
+                    <div className="flex w-full min-w-0 items-center gap-2 self-start sm:w-auto sm:shrink-0 sm:self-center">
+                        <select
+                            value={routeModeOverride}
+                            onChange={(event) => {
+                                const value = event.target.value;
+                                setRouteModeOverride(value);
+                                handleSave(SettingKey.RouteModeOverride, value, initialRouteModeOverride.current);
+                            }}
+                            aria-label={t('routeModeOverride.label')}
+                            className="h-9 w-full min-w-0 rounded-xl border border-input bg-background px-3 text-sm text-foreground sm:w-40"
+                        >
+                            <option value="">{t('routeModeOverride.followGroup')}</option>
+                            <option value="spread">{t('routeModeOverride.spread')}</option>
+                            <option value="fill_first">{t('routeModeOverride.fillFirst')}</option>
+                        </select>
                     </div>
                 </div>
             </div>

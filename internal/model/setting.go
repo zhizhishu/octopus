@@ -57,6 +57,8 @@ const (
 	SettingKeyCircuitBreakerMaxCooldown SettingKey = "circuit_breaker_max_cooldown" // 熔断最大冷却时间（秒），指数退避上限
 	SettingKeyDebugLoadBalancer         SettingKey = "debug_load_balancer"          // 开启后每次选路打印候选排序决策(tier/rank/容量输入)，便于排障"为啥走这条/为啥慢"
 	SettingKeySessionKeepTimeDefault    SettingKey = "session_keep_time_default"    // 分组会话保持时间全局默认(秒)，分组级为0时回退用它，0=不启用全局粘性
+	SettingKeyFirstTokenTimeOutDefault  SettingKey = "first_token_time_out_default" // 分组首字超时全局默认(秒)，分组级为0时回退用它，0=不启用全局默认
+	SettingKeyRouteModeOverride         SettingKey = "route_mode_override"          // 路由模式全局覆盖: ""=跟随分组各自模式, "spread"=强制轮询, "fill_first"=强制优先填充
 	SettingKeyPromptOverrideSystem      SettingKey = "prompt_override_system"
 	SettingKeyPromptOverrideMode        SettingKey = "prompt_override_mode"
 	SettingKeyUpstreamErrorStatusPass   SettingKey = "upstream_error_status_passthrough"
@@ -209,6 +211,8 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyCircuitBreakerMaxCooldown, Value: "600"}, // 默认最大冷却600秒（10分钟）
 		{Key: SettingKeyDebugLoadBalancer, Value: "false"},       // 默认关闭选路决策日志
 		{Key: SettingKeySessionKeepTimeDefault, Value: "0"},      // 默认0=不启用全局粘性(向后兼容); 管理员设为如3600才全局开, 分组级 SessionKeepTime 仍优先
+		{Key: SettingKeyFirstTokenTimeOutDefault, Value: "0"},   // 默认0=不启用全局默认(向后兼容); 分组级 FirstTokenTimeOut 仍优先
+		{Key: SettingKeyRouteModeOverride, Value: ""},           // 默认空=跟随分组各自模式(向后兼容); 设为 spread/fill_first 则强制覆盖所有分组
 		{Key: SettingKeyPromptOverrideSystem, Value: ""},
 		{Key: SettingKeyPromptOverrideMode, Value: string(PromptOverrideModeAppendSystem)},
 		{Key: SettingKeyUpstreamErrorStatusPass, Value: "false"},
@@ -330,12 +334,19 @@ func (s *Setting) Validate() error {
 		}
 		return nil
 	case SettingKeyRelayStreamKeepaliveSec, SettingKeyRelayStreamDataTimeoutSec, SettingKeyResponsesSessionTTL,
-		SettingKeySessionKeepTimeDefault:
+		SettingKeySessionKeepTimeDefault, SettingKeyFirstTokenTimeOutDefault:
 		value, err := strconv.Atoi(s.Value)
 		if err != nil || value < 0 {
 			return fmt.Errorf("%s must be a non-negative integer", s.Key)
 		}
 		return nil
+	case SettingKeyRouteModeOverride:
+		switch strings.ToLower(strings.TrimSpace(s.Value)) {
+		case "", "spread", "fill_first":
+			return nil
+		default:
+			return fmt.Errorf("%s must be empty, spread, or fill_first", s.Key)
+		}
 	case SettingKeyRelayLogKeepEnabled, SettingKeyAnthropicAutoCacheControl, SettingKeyOpenAIAutoPromptCacheKey,
 		SettingKeyClaudeHeaderStabilize, SettingKeyClaudeCLIAutoCompact, SettingKeyCodexFastMode,
 		SettingKeyUserRegistrationEnabled, SettingKeyUpstreamErrorStatusPass, SettingKeyCheckInEnabled,

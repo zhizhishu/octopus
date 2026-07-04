@@ -302,6 +302,24 @@
             "seconds": "sec",
             "invalid": "Global session-keep default must be 0 or a positive integer number of seconds"
         },
+        "firstTokenTimeOutDefault": {
+            "label": "Global first-token timeout default",
+            "hint": "Fallback per-channel first-token timeout for groups whose own value is 0; if no first token arrives within this window the request switches to the next candidate channel. Streaming responses only.",
+            "description": "Only a fallback: a group's own first-token timeout still takes precedence. 0 disables the global default and keeps the legacy per-group-only behavior.",
+            "defaultHint": "Default 0 (off)",
+            "placeholder": "0",
+            "seconds": "sec",
+            "invalid": "Global first-token timeout default must be 0 or a positive integer number of seconds"
+        },
+        "routeModeOverride": {
+            "label": "Global route-mode override",
+            "hint": "Forces every group to use one routing mode, overriding each group's own choice. Spread = load-balance across same-priority channels; Fill-first = concentrate on the top healthy channel and only sink on failure for a better upstream cache hit rate.",
+            "description": "An override switch: choosing Spread or Fill-first replaces the mode each group picked. Follow group = no override, each group keeps its own configuration.",
+            "defaultHint": "Default: follow group",
+            "followGroup": "Follow group",
+            "spread": "Force spread",
+            "fillFirst": "Force fill-first"
+        },
         "userRegistration": {
             "label": "Allow Direct Registration",
             "hint": "When disabled, new users must enter an invite code. When enabled, users can register directly; an invite code still grants its quota or monthly card."

@@ -17,6 +17,10 @@ func TestRelayStreamKeepaliveIntervalValidation(t *testing.T) {
 		{name: "data timeout disabled", key: SettingKeyRelayStreamDataTimeoutSec, value: "0"},
 		{name: "data timeout negative", key: SettingKeyRelayStreamDataTimeoutSec, value: "-1", wantErr: true},
 		{name: "data timeout not integer", key: SettingKeyRelayStreamDataTimeoutSec, value: "1.5", wantErr: true},
+		{name: "first token default positive", key: SettingKeyFirstTokenTimeOutDefault, value: "30"},
+		{name: "first token default disabled", key: SettingKeyFirstTokenTimeOutDefault, value: "0"},
+		{name: "first token default negative", key: SettingKeyFirstTokenTimeOutDefault, value: "-1", wantErr: true},
+		{name: "first token default not integer", key: SettingKeyFirstTokenTimeOutDefault, value: "1.5", wantErr: true},
 	}
 
 	for _, tt := range tests {
@@ -60,6 +64,34 @@ func TestHeaderDefaultsValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := (&Setting{Key: tt.key, Value: tt.value}).Validate()
+			if tt.wantErr && err == nil {
+				t.Fatalf("expected validation error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected validation error: %v", err)
+			}
+		})
+	}
+}
+
+func TestRouteModeOverrideValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{name: "empty follows group", value: ""},
+		{name: "spread", value: "spread"},
+		{name: "fill_first", value: "fill_first"},
+		{name: "uppercase spread", value: "SPREAD"},
+		{name: "padded fill_first", value: "  fill_first  "},
+		{name: "unknown mode", value: "smart", wantErr: true},
+		{name: "legacy alias rejected", value: "round_robin", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := (&Setting{Key: SettingKeyRouteModeOverride, Value: tt.value}).Validate()
 			if tt.wantErr && err == nil {
 				t.Fatalf("expected validation error")
 			}
