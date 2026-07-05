@@ -151,6 +151,23 @@ const (
 	// with the 2.1.126 UA above; migrate it to DefaultClaudeHeaderPackageVersion.
 	LegacyDefaultClaudeHeaderPackage0810 = "0.81.0"
 
+	// DefaultClaudeHeaderOS is the X-Stainless-OS default (seeded into
+	// SettingKeyClaudeHeaderOS). Flipped Windows->Linux so the global-default machine is a
+	// coherent Linux box — matching the codex default (codex_cli_rs on Ubuntu) and the two
+	// built-in Linux real-machine profiles, so a channel with no pinned profile no longer
+	// presents a lone Windows fingerprint. The X-Stainless-OS value is not part of the
+	// header set/order an upstream shape-checks, and Linux claude-cli is already proven on
+	// anyrouter via the Linux profiles.
+	DefaultClaudeHeaderOS = "Linux"
+
+	// LegacyDefaultClaudeHeaderOSWindows was the previous X-Stainless-OS seed default.
+	// Deployments still holding the exact old seed value converge to DefaultClaudeHeaderOS
+	// via the DB at startup. Because "Windows" doubles as a value an admin could pick on
+	// purpose, this only auto-flips the untouched seed; any OTHER stored value (a custom
+	// edit) is preserved. If an admin re-selects Windows in the editor it will re-flip on
+	// next restart — remove this entry to make Windows sticky again.
+	LegacyDefaultClaudeHeaderOSWindows = "Windows"
+
 	// LegacyDefaultCodexHeaderUserAgentCliRs0114 was an early Codex header default
 	// (codex_cli_rs/0.114.0 on macOS) shipped before the locally packet-verified
 	// codex_exec Windows fingerprint. Deployments seeded with it stayed pinned to the
@@ -201,7 +218,7 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyClaudeHeaderUserAgent, Value: DefaultClaudeHeaderUserAgent},
 		{Key: SettingKeyClaudeHeaderPackage, Value: DefaultClaudeHeaderPackageVersion},
 		{Key: SettingKeyClaudeHeaderRuntime, Value: DefaultClaudeHeaderRuntimeVersion},
-		{Key: SettingKeyClaudeHeaderOS, Value: "Windows"},
+		{Key: SettingKeyClaudeHeaderOS, Value: DefaultClaudeHeaderOS},
 		{Key: SettingKeyClaudeHeaderArch, Value: "x64"},
 		{Key: SettingKeyClaudeHeaderTimeout, Value: "600"},
 		{Key: SettingKeyClaudeHeaderStabilize, Value: "true"},

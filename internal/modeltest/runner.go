@@ -38,7 +38,7 @@ const (
 	defaultClaudeUserAgent                 = dbmodel.DefaultClaudeHeaderUserAgent
 	defaultClaudePackageVersion            = dbmodel.DefaultClaudeHeaderPackageVersion
 	defaultClaudeRuntimeVersion            = dbmodel.DefaultClaudeHeaderRuntimeVersion
-	defaultClaudeOS                        = "Windows"
+	defaultClaudeOS                        = dbmodel.DefaultClaudeHeaderOS
 	defaultClaudeArch                      = "x64"
 	defaultClaudeTimeout                   = "600"
 	defaultClaudeOneMillionBeta            = transformermodel.AnthropicOneMillionBeta

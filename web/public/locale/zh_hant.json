@@ -413,12 +413,12 @@
             "confirmDelete": "確認刪除",
             "cancel": "取消",
             "save": "儲存",
-            "empty": "暫無指紋 Profile，點「新建」新增一套。渠道仍可選「預設(Windows)」。",
+            "empty": "暫無指紋 Profile，點「新建」新增一套。渠道仍可選「預設(Linux)」。",
             "createTitle": "新建指紋 Profile",
             "editTitle": "編輯指紋 Profile",
             "dialogHint": "各欄位留空即回落對應的全域預設設定；只需填寫要區分的欄位。",
             "nameRequired": "請填寫 Profile 名稱",
-            "followGlobal": "預設(Windows)",
+            "followGlobal": "預設(Linux)",
             "genericUAHint": "統一 User-Agent，作用於非 Claude/Codex 渠道（Gemini / 火山引擎 / 普通 OpenAI Chat），這些渠道預設不帶 UA。留空即保持現狀。",
             "groups": {
                 "claude": "Claude 指紋",
@@ -442,7 +442,7 @@
             "placeholders": {
                 "name": "便於辨認的名字，如 macOS Claude / Windows 節點 A",
                 "seed": "留空則後端首次儲存時自動產生隨機種子",
-                "followGlobal": "留空 = 預設(Windows)",
+                "followGlobal": "留空 = 預設(Linux)",
                 "genericUA": "留空 = 保持現狀（不設定 UA）"
             },
             "stabilize": {
@@ -956,8 +956,8 @@
             "matchRegexPlaceholder": "可選：用於匹配請求模型名稱的正規表示式",
             "remark": "備註",
             "cloakProfile": "指紋 Profile",
-            "cloakProfileGlobal": "預設(Windows)",
-            "cloakProfileHint": "選用一組獨立的裝置指紋（在「設定 - 指紋 Profile 管理」裡維護）。「預設(Windows)」即沿用全域指紋設定，不做區分。"
+            "cloakProfileGlobal": "預設(Linux)",
+            "cloakProfileHint": "選用一組獨立的裝置指紋（在「設定 - 指紋 Profile 管理」裡維護）。「預設(Linux)」即沿用全域指紋設定，不做區分。"
         }
     }
 }

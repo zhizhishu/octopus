@@ -24,6 +24,9 @@ var settingLegacyDefaultUpgrades = map[model.SettingKey]map[string]string{
 	model.SettingKeyClaudeHeaderRuntime: {
 		model.LegacyDefaultClaudeHeaderRuntimeV2430: model.DefaultClaudeHeaderRuntimeVersion,
 	},
+	model.SettingKeyClaudeHeaderOS: {
+		model.LegacyDefaultClaudeHeaderOSWindows: model.DefaultClaudeHeaderOS,
+	},
 	model.SettingKeyCodexHeaderUserAgent: {
 		model.LegacyDefaultCodexHeaderUserAgent0133:        model.DefaultCodexHeaderUserAgent,
 		model.LegacyDefaultCodexHeaderUserAgentCliRs0114:   model.DefaultCodexHeaderUserAgent,

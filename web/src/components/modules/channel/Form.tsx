@@ -1068,7 +1068,7 @@ export function ChannelForm({
                                     </SelectTrigger>
                                     <SelectContent className="rounded-xl">
                                         <SelectItem className="rounded-xl" value="0">{t('cloakProfileGlobal')}</SelectItem>
-                                        {(fingerprintProfiles ?? []).map((profile) => (
+                                        {[...(fingerprintProfiles ?? [])].sort((a, b) => a.id - b.id).map((profile) => (
                                             <SelectItem key={profile.id} className="rounded-xl" value={String(profile.id)}>
                                                 {profile.name}
                                             </SelectItem>

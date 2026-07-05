@@ -50,7 +50,7 @@ export function SettingSystem() {
     const [claudeHeaderUserAgent, setClaudeHeaderUserAgent] = useState('claude-cli/2.1.168 (external, sdk-cli)');
     const [claudeHeaderPackageVersion, setClaudeHeaderPackageVersion] = useState('0.94.0');
     const [claudeHeaderRuntimeVersion, setClaudeHeaderRuntimeVersion] = useState('v24.3.0');
-    const [claudeHeaderOS, setClaudeHeaderOS] = useState('Windows');
+    const [claudeHeaderOS, setClaudeHeaderOS] = useState('Linux');
     const [claudeHeaderArch, setClaudeHeaderArch] = useState('x64');
     const [claudeHeaderTimeout, setClaudeHeaderTimeout] = useState('600');
     const [claudeHeaderStabilizeDeviceProfile, setClaudeHeaderStabilizeDeviceProfile] = useState(true);
@@ -65,7 +65,7 @@ export function SettingSystem() {
         claudeUserAgent: 'claude-cli/2.1.168 (external, sdk-cli)',
         claudePackageVersion: '0.94.0',
         claudeRuntimeVersion: 'v24.3.0',
-        claudeOS: 'Windows',
+        claudeOS: 'Linux',
         claudeArch: 'x64',
         claudeTimeout: '600',
         claudeStabilizeDeviceProfile: true,
@@ -107,7 +107,7 @@ export function SettingSystem() {
     const initialClaudeHeaderUserAgent = useRef('claude-cli/2.1.168 (external, sdk-cli)');
     const initialClaudeHeaderPackageVersion = useRef('0.94.0');
     const initialClaudeHeaderRuntimeVersion = useRef('v24.3.0');
-    const initialClaudeHeaderOS = useRef('Windows');
+    const initialClaudeHeaderOS = useRef('Linux');
     const initialClaudeHeaderArch = useRef('x64');
     const initialClaudeHeaderTimeout = useRef('600');
     const initialClaudeHeaderStabilizeDeviceProfile = useRef(true);

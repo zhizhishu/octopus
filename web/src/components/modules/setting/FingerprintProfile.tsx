@@ -104,7 +104,7 @@ export function SettingFingerprintProfile() {
     const [draft, setDraft] = useState<ProfileDraft>(emptyDraft);
     const [confirmingDeleteID, setConfirmingDeleteID] = useState<number | null>(null);
 
-    const list = profiles ?? [];
+    const list = [...(profiles ?? [])].sort((a, b) => a.id - b.id);
     const isSaving = createProfile.isPending || updateProfile.isPending;
 
     const openCreate = () => {
