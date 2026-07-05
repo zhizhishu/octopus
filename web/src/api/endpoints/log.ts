@@ -319,11 +319,14 @@ export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?
 
     const refresh = useCallback(async () => {
         try {
-            await queryClient.resetQueries({ queryKey, exact: true });
+            // Keep already loaded pages visible while the server is rechecked.
+            // resetQueries drops the infinite-query page set back to page 1, which
+            // makes older loaded logs look as if they disappeared after refresh.
+            await logsQuery.refetch();
         } catch (e) {
             logger.error('刷新日志失败:', e);
         }
-    }, [queryClient, queryKey]);
+    }, [logsQuery]);
 
     useEffect(() => {
         let cancelled = false;

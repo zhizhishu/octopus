@@ -42,13 +42,31 @@ function localDateInput(date: Date) {
 }
 
 function startOfLocalDayUnix(value: string) {
+    if (!value) return undefined;
     const [year, month, day] = value.split('-').map(Number);
+    if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return undefined;
     return Math.floor(new Date(year, month - 1, day, 0, 0, 0, 0).getTime() / 1000);
 }
 
 function endOfLocalDayUnix(value: string) {
+    if (!value) return undefined;
     const [year, month, day] = value.split('-').map(Number);
+    if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return undefined;
     return Math.floor(new Date(year, month - 1, day, 23, 59, 59, 999).getTime() / 1000);
+}
+
+function resolveLogTimeRange(startDate: string, endDate: string) {
+    if (!startDate && !endDate) {
+        return { startTime: undefined, endTime: undefined };
+    }
+
+    const resolvedStartDate = startDate || endDate;
+    const resolvedEndDate = endDate || startDate;
+
+    return {
+        startTime: startOfLocalDayUnix(resolvedStartDate),
+        endTime: endOfLocalDayUnix(resolvedEndDate),
+    };
 }
 
 /**
@@ -60,19 +78,19 @@ function endOfLocalDayUnix(value: string) {
 export function Log() {
     const t = useTranslations('log');
     const isAdmin = useAuthStore((state) => state.user?.role === 'admin');
-    const today = useMemo(() => localDateInput(new Date()), []);
-    // 已生效（真正喂给查询）的筛选条件。
+    const todayLabel = useMemo(() => localDateInput(new Date()), []);
+    // 已生效（真正喂给查询）的筛选条件。日期默认留空，表示跨刷新/跨设备都从服务端读取全部历史。
     const [selectedUserID, setSelectedUserID] = useState<number | undefined>();
     const [selectedAPIKeyID, setSelectedAPIKeyID] = useState<number | undefined>();
     const [selectedEndpoint, setSelectedEndpoint] = useState('');
-    const [startDate, setStartDate] = useState(today);
-    const [endDate, setEndDate] = useState(today);
+    const [startDate, setStartDate] = useState('');
+    const [endDate, setEndDate] = useState('');
     // 草稿（界面上正在改、还没点「搜索」）的筛选条件——改多项不会每改一次都打接口。
     const [draftUserID, setDraftUserID] = useState<number | undefined>();
     const [draftAPIKeyID, setDraftAPIKeyID] = useState<number | undefined>();
     const [draftEndpoint, setDraftEndpoint] = useState('');
-    const [draftStartDate, setDraftStartDate] = useState(today);
-    const [draftEndDate, setDraftEndDate] = useState(today);
+    const [draftStartDate, setDraftStartDate] = useState('');
+    const [draftEndDate, setDraftEndDate] = useState('');
     // 严重程度是对「已加载日志」的本地过滤，不是查询参数，所以保持即时生效。
     const [severityFilter, setSeverityFilter] = useState<LogSeverityFilter>('all');
     const [autoRefresh, setAutoRefresh] = useState(false);
@@ -102,8 +120,7 @@ export function Log() {
     const effectiveSelectedAPIKeyID = selectedAPIKey && (!selectedUserID || selectedAPIKey.user_id === selectedUserID)
         ? selectedAPIKeyID
         : undefined;
-    const startTime = startOfLocalDayUnix(startDate);
-    const endTime = endOfLocalDayUnix(endDate);
+    const { startTime, endTime } = resolveLogTimeRange(startDate, endDate);
 
     const {
         logs,
@@ -151,19 +168,19 @@ export function Log() {
         setEndDate(draftEndDate);
     }, [draftUserID, draftAPIKeyID, draftEndpoint, draftStartDate, draftEndDate]);
 
-    // 草稿和生效条件都回到默认（今天、不限用户/Key/端点）。
+    // 草稿和生效条件都回到默认（全部历史、不限用户/Key/端点）。
     const handleResetFilters = useCallback(() => {
         setDraftUserID(undefined);
         setDraftAPIKeyID(undefined);
         setDraftEndpoint('');
-        setDraftStartDate(today);
-        setDraftEndDate(today);
+        setDraftStartDate('');
+        setDraftEndDate('');
         setSelectedUserID(undefined);
         setSelectedAPIKeyID(undefined);
         setSelectedEndpoint('');
-        setStartDate(today);
-        setEndDate(today);
-    }, [today]);
+        setStartDate('');
+        setEndDate('');
+    }, []);
 
     // 草稿是否被改过（决定「搜索」是否高亮 + 是否显示「重置」）。
     const draftDirty =
@@ -275,16 +292,20 @@ export function Log() {
                         <input
                             type="date"
                             value={draftStartDate}
-                            onChange={(event) => setDraftStartDate(event.target.value || today)}
+                            onChange={(event) => setDraftStartDate(event.target.value)}
+                            max={draftEndDate || todayLabel}
                             className="h-9 min-w-36 rounded-lg border border-input bg-background px-3 text-sm text-foreground"
                         />
                         <span className="text-xs text-muted-foreground">到</span>
                         <input
                             type="date"
                             value={draftEndDate}
-                            onChange={(event) => setDraftEndDate(event.target.value || today)}
+                            onChange={(event) => setDraftEndDate(event.target.value)}
+                            min={draftStartDate || undefined}
+                            max={todayLabel}
                             className="h-9 min-w-36 rounded-lg border border-input bg-background px-3 text-sm text-foreground"
                         />
+                        <span className="text-xs text-muted-foreground">留空=全部历史</span>
                     </label>
 
                     {isAdmin && (

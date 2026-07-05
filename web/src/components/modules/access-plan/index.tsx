@@ -960,7 +960,7 @@ function RouteFlowCanvas({
     };
 
     return (
-        <section className="overflow-hidden rounded-2xl border border-border/70 bg-background/70">
+        <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-border/70 bg-background/70">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/70 px-4 py-3">
                 <div className="min-w-0">
                     <div className="flex items-center gap-2 text-sm font-black">
@@ -995,14 +995,12 @@ function RouteFlowCanvas({
                     ref={scrollBoxRef}
                     onPointerDown={handlePointerDown}
                     onClickCapture={handleClickCapture}
-                    // Height follows the viewport instead of a fixed 520px: on short windows the
-                    // canvas shrinks to stay fully on-screen (rows below the fold are reachable by
-                    // grab-pan / wheel), and on tall windows it grows to show more rows at once.
-                    className={cn('h-[clamp(300px,calc(100vh-360px),760px)] overflow-auto cursor-grab active:cursor-grabbing', isPanning && 'select-none')}
+                    // Height follows the dynamic viewport, so mobile browser chrome and short
+                    // desktop windows do not hide the bottom rows behind the page shell.
+                    className={cn('min-h-0 flex-1 h-[clamp(260px,calc(100dvh-28rem),760px)] overflow-auto overscroll-contain cursor-grab active:cursor-grabbing sm:h-[clamp(300px,calc(100dvh-24rem),760px)]', isPanning && 'select-none')}
                 >
-                    {/* modest min-h keeps the grid canvas a real body even with one row,
-                        without forcing excess empty scroll space on top of real content. */}
-                    <div className="relative min-h-[300px] min-w-[1120px] space-y-4 bg-[linear-gradient(90deg,rgba(125,125,125,0.13)_1px,transparent_1px),linear-gradient(0deg,rgba(125,125,125,0.10)_1px,transparent_1px)] bg-[length:32px_32px] p-5">
+                    {/* Extra bottom padding gives the last channel card room above mobile nav / safe-area bars. */}
+                    <div className="relative min-h-[300px] min-w-[1120px] space-y-4 bg-[linear-gradient(90deg,rgba(125,125,125,0.13)_1px,transparent_1px),linear-gradient(0deg,rgba(125,125,125,0.10)_1px,transparent_1px)] bg-[length:32px_32px] px-5 pt-5 pb-[calc(6rem+env(safe-area-inset-bottom))] md:pb-8">
                         <div className="grid grid-cols-[210px_260px_minmax(0,1fr)] gap-8 text-[10px] font-black tracking-[0.18em] text-muted-foreground">
                             <span>方案</span>
                             <span>原请求模型</span>
