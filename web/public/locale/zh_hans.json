@@ -256,8 +256,8 @@
         "claudeBetaStripFlags": {
             "label": "Claude Beta 剥离标记",
             "defaultHint": "留空=关",
-            "hint": "留空时忠实透传客户端 claude-cli 的 anthropic-beta（默认，零行为变化）。填入逗号分隔的 beta 标记后，出站前会把这些标记从 anthropic-beta 中摘掉，用来在上游（如 anyrouter）因某个 flag 抽风触发 520 时逃生，同时保留其余标记的真实形状。",
-            "description": "anyrouter 抽风逃生：逗号分隔，默认空=关。例如 prompt-caching-scope-2026-01-05。",
+            "hint": "留空时忠实透传客户端 claude-cli 的 anthropic-beta（默认，零行为变化）。填入逗号分隔的 beta 标记后，出站前会把这些标记从 anthropic-beta 中摘掉，用来在上游因某个 flag 抽风触发 520 时逃生，同时保留其余标记的真实形状。",
+            "description": "上游抽风逃生：逗号分隔，默认空=关。例如 prompt-caching-scope-2026-01-05。",
             "placeholder": "prompt-caching-scope-2026-01-05"
         },
         "codexFastMode": {
@@ -413,12 +413,12 @@
             "confirmDelete": "确认删除",
             "cancel": "取消",
             "save": "保存",
-            "empty": "暂无指纹 Profile，点「新建」添加一套。渠道仍可选「默认(Linux)」。",
+            "empty": "暂无指纹 Profile，点「新建」添加一套。渠道仍可选「默认（跟随全局）」。",
             "createTitle": "新建指纹 Profile",
             "editTitle": "编辑指纹 Profile",
             "dialogHint": "各字段留空即回落对应的全局默认设置；只需填写要区分的字段。",
             "nameRequired": "请填写 Profile 名称",
-            "followGlobal": "默认(Linux)",
+            "followGlobal": "默认（跟随全局）",
             "genericUAHint": "统一 User-Agent，作用于非 Claude/Codex 渠道（Gemini / 火山引擎 / 普通 OpenAI Chat），这些渠道默认不带 UA。留空即保持现状。",
             "groups": {
                 "claude": "Claude 指纹",
@@ -442,7 +442,7 @@
             "placeholders": {
                 "name": "便于辨认的名字，如 macOS Claude / Windows 节点 A",
                 "seed": "留空则后端首次保存时自动生成随机种子",
-                "followGlobal": "留空 = 默认(Linux)",
+                "followGlobal": "留空 = 默认（跟随全局）",
                 "genericUA": "留空 = 保持现状（不设置 UA）"
             },
             "stabilize": {
@@ -889,7 +889,7 @@
             "keySelectStrategy": "Key 选择策略",
             "keySelectStrategyCostBalanced": "成本均衡（默认）",
             "keySelectStrategySticky": "同 key 优先",
-            "disableCircuitBreaker": "无熔断（anyrouter 挤容量用）",
+            "disableCircuitBreaker": "无熔断",
             "disableCircuitBreakerHint": "开启后本渠道像直连客户端一样：每个请求都照实转发上游，永不熔断/冷却拉黑，把“挤进容量”的重试权还给客户端。默认关闭＝完全保持现有行为、零变化。",
             "disableCircuitBreakerOn": "已开启（永不熔断）",
             "disableCircuitBreakerOff": "默认（保留熔断）",
@@ -956,8 +956,8 @@
             "matchRegexPlaceholder": "可选：用于匹配请求模型名称的正则表达式",
             "remark": "备注",
             "cloakProfile": "指纹 Profile",
-            "cloakProfileGlobal": "默认(Linux)",
-            "cloakProfileHint": "选用一组独立的设备指纹（在「设置 - 指纹 Profile 管理」里维护）。「默认(Linux)」即沿用全局指纹设置，不做区分。"
+            "cloakProfileGlobal": "默认（跟随全局）",
+            "cloakProfileHint": "选用一组独立的设备指纹（在「设置 - 指纹 Profile 管理」里维护）。「默认（跟随全局）」即沿用全局指纹设置，不做区分。"
         }
     }
 }

@@ -597,7 +597,7 @@ export function ModelTest() {
                                 </span>
                                 {forcedStreamHint ? (
                                     <span className="min-w-0 break-words text-xs text-primary">
-                                        gpt-5.5 / Claude 1M 这类模型会强制流式测试；这是 AnyRouter/CLIProxy 类模型的正确链路。
+                                        gpt-5.5 / Claude 1M 这类模型会强制流式测试；这是这类流式模型的正确链路。
                                     </span>
                                 ) : null}
                             </label>

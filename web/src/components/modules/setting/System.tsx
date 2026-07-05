@@ -1046,7 +1046,7 @@ export function SettingSystem() {
                 </div>
             </div>
 
-            {/* Claude Beta 剥离标记（anyrouter 抽风逃生） */}
+            {/* Claude Beta 剥离标记（上游抽风逃生） */}
             <div className="flex flex-col gap-3 rounded-2xl border border-border/70 bg-muted/20 p-3 sm:flex-row sm:items-start sm:justify-between">
                 <div className="flex min-w-0 items-start gap-3">
                     <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" />

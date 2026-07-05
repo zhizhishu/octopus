@@ -256,8 +256,8 @@
         "claudeBetaStripFlags": {
             "label": "Claude Beta strip flags",
             "defaultHint": "Empty = off",
-            "hint": "When empty, the downstream claude-cli's anthropic-beta is forwarded verbatim (default, zero behaviour change). Set a comma-separated list of beta flags to strip them from the outbound anthropic-beta — an escape hatch for when an upstream (e.g. anyrouter) throws a 520 on a specific flag, while the rest of the genuine shape is preserved.",
-            "description": "anyrouter escape hatch: comma-separated, empty = off. e.g. prompt-caching-scope-2026-01-05.",
+            "hint": "When empty, the downstream claude-cli's anthropic-beta is forwarded verbatim (default, zero behaviour change). Set a comma-separated list of beta flags to strip them from the outbound anthropic-beta — an escape hatch for when an upstream throws a 520 on a specific flag, while the rest of the genuine shape is preserved.",
+            "description": "Upstream escape hatch: comma-separated, empty = off. e.g. prompt-caching-scope-2026-01-05.",
             "placeholder": "prompt-caching-scope-2026-01-05"
         },
         "codexFastMode": {
@@ -413,12 +413,12 @@
             "confirmDelete": "Confirm delete",
             "cancel": "Cancel",
             "save": "Save",
-            "empty": "No fingerprint profiles yet. Click New to add one. Channels can still choose \"Default (Windows)\".",
+            "empty": "No fingerprint profiles yet. Click New to add one. Channels can still choose \"Default (follow global)\".",
             "createTitle": "New Fingerprint Profile",
             "editTitle": "Edit Fingerprint Profile",
             "dialogHint": "Leave any field empty to fall back to the matching global default; only fill in the fields you want to differ on.",
             "nameRequired": "Please enter a profile name",
-            "followGlobal": "Default (Windows)",
+            "followGlobal": "Default (follow global)",
             "genericUAHint": "Unified User-Agent for non Claude/Codex channels (Gemini / Volcengine / plain OpenAI Chat), which emit no UA by default. Leave empty to keep current behaviour.",
             "groups": {
                 "claude": "Claude Fingerprint",
@@ -889,7 +889,7 @@
             "keySelectStrategy": "Key Selection Strategy",
             "keySelectStrategyCostBalanced": "Cost-balanced (default)",
             "keySelectStrategySticky": "Sticky (same key first)",
-            "disableCircuitBreaker": "No circuit breaker (anyrouter capacity mode)",
+            "disableCircuitBreaker": "No circuit breaker",
             "disableCircuitBreakerHint": "When on, this channel behaves like a direct client: every request is forwarded upstream and never short-circuited or benched by the circuit breaker / key cooldown. It hands the \"retry to squeeze into upstream capacity\" control back to the client. Default off = existing behaviour, zero change.",
             "disableCircuitBreakerOn": "No breaker (always forward)",
             "disableCircuitBreakerOff": "Default (breaker on)",
@@ -956,8 +956,8 @@
             "matchRegexPlaceholder": "Optional: regex pattern to match request model names",
             "remark": "Remark",
             "cloakProfile": "Fingerprint Profile",
-            "cloakProfileGlobal": "Default (Windows)",
-            "cloakProfileHint": "Pick a dedicated device fingerprint (managed under Settings - Fingerprint Profiles). \"Default (Windows)\" reuses the global fingerprint settings without distinction."
+            "cloakProfileGlobal": "Default (follow global)",
+            "cloakProfileHint": "Pick a dedicated device fingerprint (managed under Settings - Fingerprint Profiles). \"Default (follow global)\" reuses the global fingerprint settings without distinction."
         }
     }
 }

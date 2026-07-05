@@ -25,7 +25,8 @@ func setupFingerprintProfileTest(t *testing.T) context.Context {
 
 // An earlier build seeded a redundant all-empty "默认(Windows)" profile that
 // duplicates the dropdown's ProfileID=0 option (so it showed THREE entries). The
-// refresh must drop that exact auto-seed on upgrade and keep the real "Linux 真机".
+// refresh must drop that exact auto-seed on upgrade, rename the legacy "Linux 真机"
+// preset to its clearer "Linux · Debian" name, and backfill the 2nd built-in.
 func TestFingerprintProfileRefreshDropsRedundantDefault(t *testing.T) {
 	ctx := setupFingerprintProfileTest(t)
 
@@ -51,9 +52,10 @@ func TestFingerprintProfileRefreshDropsRedundantDefault(t *testing.T) {
 	if err := db.GetDB().WithContext(ctx).Order("id").Find(&remaining).Error; err != nil {
 		t.Fatalf("reload profiles: %v", err)
 	}
-	// After cleanup the redundant all-empty 默认(Windows) is dropped and "Linux 真机" is
-	// kept; because the 2nd built-in ("Linux 真机 2 (Ubuntu)") is missing it is backfilled,
-	// so exactly the two built-in Linux identities remain.
+	// After cleanup the redundant all-empty 默认(Windows) is dropped; the legacy
+	// "Linux 真机" preset is renamed in place to "Linux · Debian"; and because the 2nd
+	// built-in ("Linux · Ubuntu") is missing it is backfilled, so exactly the two
+	// built-in Linux identities remain under their clearer names.
 	names := make(map[string]bool, len(remaining))
 	for _, p := range remaining {
 		names[p.Name] = true
@@ -61,8 +63,11 @@ func TestFingerprintProfileRefreshDropsRedundantDefault(t *testing.T) {
 	if names["默认(Windows)"] {
 		t.Fatalf("redundant all-empty 默认(Windows) must be dropped, got %+v", remaining)
 	}
-	if len(remaining) != 2 || !names["Linux 真机"] || !names["Linux 真机 2 (Ubuntu)"] {
-		t.Fatalf("expected 默认(Windows) dropped and both built-in Linux profiles present, got %d: %+v", len(remaining), remaining)
+	if names["Linux 真机"] || names["Linux 真机 2 (Ubuntu)"] {
+		t.Fatalf("legacy 真机 preset names must be renamed away, got %+v", remaining)
+	}
+	if len(remaining) != 2 || !names["Linux · Debian"] || !names["Linux · Ubuntu"] {
+		t.Fatalf("expected 默认(Windows) dropped and both built-in Linux profiles present under new names, got %d: %+v", len(remaining), remaining)
 	}
 }
 

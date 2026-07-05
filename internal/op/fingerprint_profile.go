@@ -224,21 +224,57 @@ func fingerprintProfileRefreshCache(ctx context.Context) error {
 	// intentionally not part of any profile — every profile reuses
 	// BuildClaudeCodeBetaOrder's canonical order; only the version-bearing header
 	// strings + the device seed differ.
+	// One-time rename of the two built-in Linux presets to clearer, unambiguous
+	// names. Earlier builds named them "Linux 真机" / "Linux 真机 2 (Ubuntu)"; the
+	// "真机" wording read like a third Linux profile sitting next to the dropdown's
+	// ProfileID=0 "follow global" entry and confused operators. Rename EXISTING rows
+	// in place so already-seeded deployments converge on restart. This MUST run
+	// before the hasProfileName seed check below — otherwise the renamed presets look
+	// "missing" and get re-seeded as duplicates. Only the exact old preset name is
+	// matched, and the rename is skipped if an operator already hand-created a row
+	// under the new name (never collide / clobber).
+	renamePresets := []struct{ from, to string }{
+		{"Linux 真机", "Linux · Debian"},
+		{"Linux 真机 2 (Ubuntu)", "Linux · Ubuntu"},
+	}
+	nameExists := func(name string) bool {
+		for i := range profiles {
+			if profiles[i].Name == name {
+				return true
+			}
+		}
+		return false
+	}
+	for _, rp := range renamePresets {
+		if nameExists(rp.to) {
+			continue
+		}
+		for i := range profiles {
+			p := &profiles[i]
+			if p.Name == rp.from {
+				p.Name = rp.to
+				if err := db.GetDB().WithContext(ctx).Model(&model.FingerprintProfile{}).
+					Where("id = ?", p.ID).Update("name", rp.to).Error; err != nil {
+					return fmt.Errorf("failed to rename fingerprint profile %q->%q: %w", rp.from, rp.to, err)
+				}
+			}
+		}
+	}
 	// TWO built-in Linux presets — two distinct devices that both track the
 	// captured-latest versions (bumped in the migration block above + these seed
 	// values on each release). Same claude/codex versions, DIFFERENT deterministic
 	// seeds (deriveProfileSeed 2 vs 3) => unrelated, stable device_id / installation
 	// ids, and a different Linux distro token in the codex UA (Debian vs Ubuntu) so
 	// they read as two separate machines. Assign each to a different channel /
-	// upstream key to keep two accounts uncorrelated. "默认(Windows)" stays a non-row
-	// (ProfileID 0). Seeding rule: a FRESH deployment (no profiles) gets both; a
-	// deployment that already has the 1st built-in ("Linux 真机") but not the 2nd gets
-	// the 2nd backfilled on restart; if an operator deleted the 1st we resurrect
-	// neither (respect the deletion); an operator-customised same-name profile is
-	// never overwritten.
+	// upstream key to keep two accounts uncorrelated. The ProfileID=0 "follow global"
+	// identity stays a non-row. Seeding rule: a FRESH deployment (no profiles) gets
+	// both; a deployment that already has the 1st built-in ("Linux · Debian") but not
+	// the 2nd gets the 2nd backfilled on restart; if an operator deleted the 1st we
+	// resurrect neither (respect the deletion); an operator-customised same-name
+	// profile is never overwritten.
 	stabilize := true
 	debian := &model.FingerprintProfile{
-		Name:                 "Linux 真机",
+		Name:                 "Linux · Debian",
 		Seed:                 deriveProfileSeed(2),
 		ClaudeUserAgent:      "claude-cli/2.1.198 (external, sdk-cli)",
 		ClaudePackageVersion: "0.94.0",
@@ -252,7 +288,7 @@ func fingerprintProfileRefreshCache(ctx context.Context) error {
 		CodexBetaFeatures:    "remote_compaction_v2",
 	}
 	ubuntu := &model.FingerprintProfile{
-		Name:                 "Linux 真机 2 (Ubuntu)",
+		Name:                 "Linux · Ubuntu",
 		Seed:                 deriveProfileSeed(3),
 		ClaudeUserAgent:      "claude-cli/2.1.198 (external, sdk-cli)",
 		ClaudePackageVersion: "0.94.0",
