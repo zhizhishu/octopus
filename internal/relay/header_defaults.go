@@ -21,7 +21,7 @@ const (
 	defaultClaudeOneMillionBeta = model.AnthropicOneMillionBeta
 	defaultCodexUserAgent       = dbmodel.DefaultCodexHeaderUserAgent
 	defaultCodexBetaFeatures    = dbmodel.DefaultCodexHeaderBetaFeatures
-	defaultCodexOriginator      = "codex_exec"
+	defaultCodexOriginator      = "codex_cli_rs"
 )
 
 func (ra *relayAttempt) applyHeaderDefaults(req *http.Request) {

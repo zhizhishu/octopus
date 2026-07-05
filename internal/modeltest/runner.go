@@ -44,7 +44,7 @@ const (
 	defaultClaudeOneMillionBeta            = transformermodel.AnthropicOneMillionBeta
 	defaultCodexUserAgent                  = dbmodel.DefaultCodexHeaderUserAgent
 	defaultCodexBetaFeatures               = dbmodel.DefaultCodexHeaderBetaFeatures
-	defaultCodexOriginator                 = "codex_exec"
+	defaultCodexOriginator                 = "codex_cli_rs"
 	defaultCodexInstructions               = "You are Codex, a coding agent based on GPT-5. You and the user share one workspace. Answer directly and do not call tools unless the user asks for workspace inspection or file changes."
 )
 

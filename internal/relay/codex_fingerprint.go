@@ -67,7 +67,7 @@ func (ra *relayAttempt) inboundLooksLikeCodexClient() bool {
 		return true
 	}
 	ua := strings.ToLower(headers.Get("User-Agent"))
-	return strings.Contains(ua, "codex_exec") || strings.Contains(ua, "codex-cli")
+	return strings.Contains(ua, "codex_exec") || strings.Contains(ua, "codex-cli") || strings.Contains(ua, "codex_cli")
 }
 
 func (ra *relayAttempt) defaultCodexSessionID() string {

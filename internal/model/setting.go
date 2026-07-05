@@ -95,7 +95,7 @@ type Setting struct {
 const SettingSecretMaskValue = "__OCTOPUS_SECRET_KEPT__"
 
 const (
-	DefaultCodexHeaderUserAgent = "codex_exec/0.142.5 (Windows 10.0.26200; x86_64) unknown (codex_exec; 0.142.5)"
+	DefaultCodexHeaderUserAgent = "codex_cli_rs/0.142.5 (Ubuntu 24.04.1; x86_64) unknown (codex_cli_rs; 0.142.5)"
 
 	// DefaultClaudeCLIVersion is the named Claude Code CLI version used to build the
 	// user-agent below. The Anthropic outbound billing-header cc_version carries the
@@ -162,6 +162,12 @@ const (
 	// (codex_exec/0.132.0 on Windows). 0.142.5 superseded it; converge upgraded deployments.
 	LegacyDefaultCodexHeaderUserAgent0132 = "codex_exec/0.132.0 (Windows 10.0.26200; x86_64) unknown (codex_exec; 0.132.0)"
 
+	// LegacyDefaultCodexHeaderUserAgentExec0142Win was the Codex header default before the
+	// switch to the interactive codex_cli_rs identity (codex_exec/0.142.5 on Windows). Treat
+	// it as a product default so upgraded deployments converge to the current codex_cli_rs
+	// default instead of staying pinned to the headless codex_exec UA.
+	LegacyDefaultCodexHeaderUserAgentExec0142Win = "codex_exec/0.142.5 (Windows 10.0.26200; x86_64) unknown (codex_exec; 0.142.5)"
+
 	// DefaultCodexHeaderBetaFeatures is the current Codex beta-feature header value
 	// (codex_exec 0.142.5, packet-verified on the wire).
 	DefaultCodexHeaderBetaFeatures = "remote_compaction_v2"
@@ -211,8 +217,8 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyCircuitBreakerMaxCooldown, Value: "600"}, // 默认最大冷却600秒（10分钟）
 		{Key: SettingKeyDebugLoadBalancer, Value: "false"},       // 默认关闭选路决策日志
 		{Key: SettingKeySessionKeepTimeDefault, Value: "0"},      // 默认0=不启用全局粘性(向后兼容); 管理员设为如3600才全局开, 分组级 SessionKeepTime 仍优先
-		{Key: SettingKeyFirstTokenTimeOutDefault, Value: "0"},   // 默认0=不启用全局默认(向后兼容); 分组级 FirstTokenTimeOut 仍优先
-		{Key: SettingKeyRouteModeOverride, Value: ""},           // 默认空=跟随分组各自模式(向后兼容); 设为 spread/fill_first 则强制覆盖所有分组
+		{Key: SettingKeyFirstTokenTimeOutDefault, Value: "0"},    // 默认0=不启用全局默认(向后兼容); 分组级 FirstTokenTimeOut 仍优先
+		{Key: SettingKeyRouteModeOverride, Value: ""},            // 默认空=跟随分组各自模式(向后兼容); 设为 spread/fill_first 则强制覆盖所有分组
 		{Key: SettingKeyPromptOverrideSystem, Value: ""},
 		{Key: SettingKeyPromptOverrideMode, Value: string(PromptOverrideModeAppendSystem)},
 		{Key: SettingKeyUpstreamErrorStatusPass, Value: "false"},

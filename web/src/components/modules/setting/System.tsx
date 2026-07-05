@@ -57,7 +57,7 @@ export function SettingSystem() {
     const [claudeCLIAutoCompact, setClaudeCLIAutoCompact] = useState(false);
     const [claudeCLIReasoningEffort, setClaudeCLIReasoningEffort] = useState('auto');
     const [claudeBetaStripFlags, setClaudeBetaStripFlags] = useState('');
-    const [codexHeaderUserAgent, setCodexHeaderUserAgent] = useState('codex_exec/0.132.0 (Windows 10.0.26200; x86_64) unknown (codex_exec; 0.132.0)');
+    const [codexHeaderUserAgent, setCodexHeaderUserAgent] = useState('codex_cli_rs/0.142.5 (Ubuntu 24.04.1; x86_64) unknown (codex_cli_rs; 0.142.5)');
     const [codexHeaderBetaFeatures, setCodexHeaderBetaFeatures] = useState('terminal_resize_reflow');
     const [codexFastMode, setCodexFastMode] = useState(false);
     const [editingHeaderProfile, setEditingHeaderProfile] = useState<HeaderProfile | null>(null);
@@ -69,7 +69,7 @@ export function SettingSystem() {
         claudeArch: 'x64',
         claudeTimeout: '600',
         claudeStabilizeDeviceProfile: true,
-        codexUserAgent: 'codex_exec/0.132.0 (Windows 10.0.26200; x86_64) unknown (codex_exec; 0.132.0)',
+        codexUserAgent: 'codex_cli_rs/0.142.5 (Ubuntu 24.04.1; x86_64) unknown (codex_cli_rs; 0.142.5)',
         codexBetaFeatures: 'terminal_resize_reflow',
     });
     const [userRegistrationEnabled, setUserRegistrationEnabled] = useState(false);
@@ -114,7 +114,7 @@ export function SettingSystem() {
     const initialClaudeCLIAutoCompact = useRef(false);
     const initialClaudeCLIReasoningEffort = useRef('auto');
     const initialClaudeBetaStripFlags = useRef('');
-    const initialCodexHeaderUserAgent = useRef('codex_exec/0.132.0 (Windows 10.0.26200; x86_64) unknown (codex_exec; 0.132.0)');
+    const initialCodexHeaderUserAgent = useRef('codex_cli_rs/0.142.5 (Ubuntu 24.04.1; x86_64) unknown (codex_cli_rs; 0.142.5)');
     const initialCodexHeaderBetaFeatures = useRef('terminal_resize_reflow');
     const initialCodexFastMode = useRef(false);
     const initialUserRegistrationEnabled = useRef(false);
@@ -697,7 +697,7 @@ export function SettingSystem() {
     const codexHeaderRows = useMemo(() => [
         { key: 'connection', label: 'Connection', value: 'Keep-Alive', editable: false },
         { key: 'contentType', label: 'Content-Type', value: 'application/json', editable: false },
-        { key: 'originator', label: 'Originator', value: 'codex_exec', editable: false },
+        { key: 'originator', label: 'Originator', value: 'codex_cli_rs', editable: false },
         { key: 'userAgent', label: 'User-Agent', value: codexHeaderUserAgent, editable: true },
         { key: 'betaFeatures', label: 'X-Codex-Beta-Features', value: codexHeaderBetaFeatures, editable: true },
     ], [codexHeaderBetaFeatures, codexHeaderUserAgent]);
@@ -1148,7 +1148,7 @@ export function SettingSystem() {
                                 {[
                                     { label: 'Connection', value: 'Keep-Alive', fixed: true },
                                     { label: 'Content-Type', value: 'application/json', fixed: true },
-                                    { label: 'Originator', value: 'codex_exec', fixed: true },
+                                    { label: 'Originator', value: 'codex_cli_rs', fixed: true },
                                     { label: 'User-Agent', value: headerDraft.codexUserAgent, onChange: (value: string) => setHeaderDraft((draft) => ({ ...draft, codexUserAgent: value })) },
                                     { label: 'X-Codex-Beta-Features', value: headerDraft.codexBetaFeatures, onChange: (value: string) => setHeaderDraft((draft) => ({ ...draft, codexBetaFeatures: value })) },
                                 ].map((header) => (

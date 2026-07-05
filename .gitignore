@@ -20,6 +20,9 @@ _artifacts/
 # 本地 agent 工作笔记 / 记忆文件（仅本地使用，不上传 github）
 /AGENTS.md
 /LOG.md
+/LOG.archive.md
+/LOG*.bak*
+/LOG.md.preview
 /PROJECT_CONTEXT.md
 /PROJECT_ID.md
 /PROJECT_MAP.md

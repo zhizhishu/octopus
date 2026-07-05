@@ -187,6 +187,32 @@ func fingerprintProfileRefreshCache(ctx context.Context) error {
 			}
 		}
 	}
+	// Converge the built-in Linux presets from the headless codex_exec identity to the
+	// interactive codex_cli_rs identity (UA + Originator). anyrouter accepts both, but some
+	// upstreams (e.g. muyuan.do) only admit the interactive codex_cli_rs; presenting cli_rs
+	// uniformly is the operator's chosen default. Only rows still carrying the EXACT seeded
+	// codex_exec/0.142.5 values are rewritten, so an operator-customised codex identity is
+	// never overwritten. Runs after the 0.142.0->0.142.5 refresh above so a stale deployment
+	// converges in a single restart.
+	for i := range profiles {
+		p := &profiles[i]
+		if p.CodexOriginator == "codex_exec" &&
+			p.CodexUserAgent == "codex_exec/0.142.5 (Debian 12.0.0; x86_64) unknown (codex_exec; 0.142.5)" {
+			p.CodexUserAgent = "codex_cli_rs/0.142.5 (Debian 12.0.0; x86_64) unknown (codex_cli_rs; 0.142.5)"
+			p.CodexOriginator = "codex_cli_rs"
+			if err := db.GetDB().WithContext(ctx).Save(p).Error; err != nil {
+				return fmt.Errorf("failed to migrate Debian codex identity to codex_cli_rs: %w", err)
+			}
+		}
+		if p.CodexOriginator == "codex_exec" &&
+			p.CodexUserAgent == "codex_exec/0.142.5 (Ubuntu 24.04.1; x86_64) unknown (codex_exec; 0.142.5)" {
+			p.CodexUserAgent = "codex_cli_rs/0.142.5 (Ubuntu 24.04.1; x86_64) unknown (codex_cli_rs; 0.142.5)"
+			p.CodexOriginator = "codex_cli_rs"
+			if err := db.GetDB().WithContext(ctx).Save(p).Error; err != nil {
+				return fmt.Errorf("failed to migrate Ubuntu codex identity to codex_cli_rs: %w", err)
+			}
+		}
+	}
 	// Note: "默认(Windows)" is intentionally NOT a row — the channel dropdown's
 	// ProfileID=0 option already IS that identity (per-instance seed + global header
 	// settings, byte-for-byte the pre-profile behaviour). An earlier build seeded a
@@ -221,8 +247,8 @@ func fingerprintProfileRefreshCache(ctx context.Context) error {
 		ClaudeArch:           "x64",
 		ClaudeTimeout:        "600",
 		ClaudeStabilize:      &stabilize,
-		CodexUserAgent:       "codex_exec/0.142.5 (Debian 12.0.0; x86_64) unknown (codex_exec; 0.142.5)",
-		CodexOriginator:      "codex_exec",
+		CodexUserAgent:       "codex_cli_rs/0.142.5 (Debian 12.0.0; x86_64) unknown (codex_cli_rs; 0.142.5)",
+		CodexOriginator:      "codex_cli_rs",
 		CodexBetaFeatures:    "remote_compaction_v2",
 	}
 	ubuntu := &model.FingerprintProfile{
@@ -235,8 +261,8 @@ func fingerprintProfileRefreshCache(ctx context.Context) error {
 		ClaudeArch:           "x64",
 		ClaudeTimeout:        "600",
 		ClaudeStabilize:      &stabilize,
-		CodexUserAgent:       "codex_exec/0.142.5 (Ubuntu 24.04.1; x86_64) unknown (codex_exec; 0.142.5)",
-		CodexOriginator:      "codex_exec",
+		CodexUserAgent:       "codex_cli_rs/0.142.5 (Ubuntu 24.04.1; x86_64) unknown (codex_cli_rs; 0.142.5)",
+		CodexOriginator:      "codex_cli_rs",
 		CodexBetaFeatures:    "remote_compaction_v2",
 	}
 	hasProfileName := func(name string) bool {

@@ -25,9 +25,10 @@ var settingLegacyDefaultUpgrades = map[model.SettingKey]map[string]string{
 		model.LegacyDefaultClaudeHeaderRuntimeV2430: model.DefaultClaudeHeaderRuntimeVersion,
 	},
 	model.SettingKeyCodexHeaderUserAgent: {
-		model.LegacyDefaultCodexHeaderUserAgent0133:      model.DefaultCodexHeaderUserAgent,
-		model.LegacyDefaultCodexHeaderUserAgentCliRs0114: model.DefaultCodexHeaderUserAgent,
-		model.LegacyDefaultCodexHeaderUserAgent0132:      model.DefaultCodexHeaderUserAgent,
+		model.LegacyDefaultCodexHeaderUserAgent0133:        model.DefaultCodexHeaderUserAgent,
+		model.LegacyDefaultCodexHeaderUserAgentCliRs0114:   model.DefaultCodexHeaderUserAgent,
+		model.LegacyDefaultCodexHeaderUserAgent0132:        model.DefaultCodexHeaderUserAgent,
+		model.LegacyDefaultCodexHeaderUserAgentExec0142Win: model.DefaultCodexHeaderUserAgent,
 	},
 	model.SettingKeyCodexHeaderBetaFeatures: {
 		model.LegacyDefaultCodexHeaderBetaFeaturesMultiAgent:           model.DefaultCodexHeaderBetaFeatures,

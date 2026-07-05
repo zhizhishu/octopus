@@ -1151,7 +1151,7 @@ export function ChannelForm({
                                 <textarea
                                     value={bulkHeaderText}
                                     onChange={(event) => setBulkHeaderText(event.target.value)}
-                                    placeholder={'headers:\n  User-Agent: ${UA}\n  X-Codex-Beta-Features: terminal_resize_reflow\n-H "Originator: codex_exec"'}
+                                    placeholder={'headers:\n  User-Agent: ${UA}\n  X-Codex-Beta-Features: terminal_resize_reflow\n-H "Originator: codex_cli_rs"'}
                                     className="min-h-24 rounded-lg border border-input bg-background px-3 py-2 font-mono text-xs text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                                 />
                                 <div className="flex justify-end">
