@@ -112,14 +112,14 @@ func (b *Random) Candidates(items []model.GroupItem) []model.GroupItem {
 	return result
 }
 
-// Failover 故障转移：按优先级排序
+// Failover 故障转移：按优先级排序（渠道优先级为主键，条目优先级为次级）
 type Failover struct{}
 
 func (b *Failover) Candidates(items []model.GroupItem) []model.GroupItem {
 	if len(items) == 0 {
 		return nil
 	}
-	return sortByPriority(items)
+	return sortByRoutingPriority(items)
 }
 
 // Spread 轮询：同一优先级内 round-robin 均摊，并按“容量/健康硬分层 + 容量感知评分”
@@ -145,8 +145,9 @@ func (b *Spread) Candidates(items []model.GroupItem) []model.GroupItem {
 	// 同评分档的候选保持 round-robin 顺序，从而真正轮转、不 collapse。
 	sort.SliceStable(rotated, func(i, j int) bool {
 		left, right := rotated[i], rotated[j]
-		if left.Priority != right.Priority {
-			return left.Priority < right.Priority
+		// 渠道优先级(主) > 条目优先级(次) 都是硬边界；两者都相等才谈健康/容量分层与评分。
+		if c := comparePriority(left, right); c != 0 {
+			return c < 0
 		}
 		if lt, rtier := spreadTier(left), spreadTier(right); lt != rtier {
 			return lt < rtier
@@ -575,6 +576,47 @@ func sortByPriority(items []model.GroupItem) []model.GroupItem {
 	copy(sorted, items)
 	sort.Slice(sorted, func(i, j int) bool {
 		return sorted[i].Priority < sorted[j].Priority
+	})
+	return sorted
+}
+
+// comparePriority is the production routing-priority ordering shared by Failover and
+// Spread: the per-channel「渠道优先级」(ChannelPriority) is the PRIMARY hard boundary
+// (smaller = selected first), and the per-item pool priority (Priority) is the
+// SECONDARY tie-break. Returns -1 if a ranks ahead of b, +1 if behind, 0 if tied on
+// both. ChannelPriority defaults to 0, so a deployment that never set a channel
+// priority leaves every candidate tied on the primary key and falls through to the
+// pre-existing per-item priority order — zero behaviour change until an operator sets
+// a channel priority, at which point it overrides the item priority.
+func comparePriority(a, b model.GroupItem) int {
+	if a.ChannelPriority != b.ChannelPriority {
+		if a.ChannelPriority < b.ChannelPriority {
+			return -1
+		}
+		return 1
+	}
+	if a.Priority != b.Priority {
+		if a.Priority < b.Priority {
+			return -1
+		}
+		return 1
+	}
+	return 0
+}
+
+// sortByRoutingPriority orders candidates for the fill-first (Failover) strategy by
+// comparePriority (channel priority primary, item priority secondary), with ChannelID
+// as a final deterministic tie-break so fill-first concentrates on the SAME channel
+// across restarts when several share the same priority — instead of a nondeterministic
+// sort.Slice order.
+func sortByRoutingPriority(items []model.GroupItem) []model.GroupItem {
+	sorted := make([]model.GroupItem, len(items))
+	copy(sorted, items)
+	sort.Slice(sorted, func(i, j int) bool {
+		if c := comparePriority(sorted[i], sorted[j]); c != 0 {
+			return c < 0
+		}
+		return sorted[i].ChannelID < sorted[j].ChannelID
 	})
 	return sorted
 }
