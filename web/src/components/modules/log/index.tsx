@@ -16,6 +16,7 @@ import { cn } from '@/lib/utils';
 import { toast } from '@/components/common/Toast';
 
 type LogSeverityFilter = RelayLogSeverity | 'all';
+type LogDateRangeShortcut = 'today' | 'last7Days' | 'lastMonth' | 'all';
 
 const severityFilters: Array<{ id: LogSeverityFilter; icon: typeof Circle; className: string }> = [
     { id: 'all', icon: Circle, className: 'text-muted-foreground' },
@@ -36,23 +37,71 @@ const endpointFilters = [
     { value: 'model_test_gemini', label: 'model test gemini' },
 ] as const;
 
+const dateRangeShortcuts: Array<{ id: LogDateRangeShortcut; label: string }> = [
+    { id: 'today', label: '今天' },
+    { id: 'last7Days', label: '7天' },
+    { id: 'lastMonth', label: '1个月' },
+    { id: 'all', label: '全部' },
+];
+
 function localDateInput(date: Date) {
     const pad = (n: number) => String(n).padStart(2, '0');
     return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
-function startOfLocalDayUnix(value: string) {
+function parseLocalDateInput(value: string) {
     if (!value) return undefined;
     const [year, month, day] = value.split('-').map(Number);
     if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return undefined;
-    return Math.floor(new Date(year, month - 1, day, 0, 0, 0, 0).getTime() / 1000);
+    return new Date(year, month - 1, day);
+}
+
+function addLocalDays(date: Date, days: number) {
+    const nextDate = new Date(date);
+    nextDate.setDate(nextDate.getDate() + days);
+    return nextDate;
+}
+
+function addLocalMonths(date: Date, months: number) {
+    const nextDate = new Date(date);
+    const originalDay = nextDate.getDate();
+    nextDate.setDate(1);
+    nextDate.setMonth(nextDate.getMonth() + months);
+    const lastDayOfTargetMonth = new Date(nextDate.getFullYear(), nextDate.getMonth() + 1, 0).getDate();
+    nextDate.setDate(Math.min(originalDay, lastDayOfTargetMonth));
+    return nextDate;
+}
+
+function resolveDateRangeShortcut(shortcut: LogDateRangeShortcut, todayLabel: string) {
+    const todayDate = parseLocalDateInput(todayLabel) ?? new Date();
+
+    if (shortcut === 'all') {
+        return { startDate: '', endDate: '' };
+    }
+
+    if (shortcut === 'last7Days') {
+        return { startDate: localDateInput(addLocalDays(todayDate, -6)), endDate: todayLabel };
+    }
+
+    if (shortcut === 'lastMonth') {
+        return { startDate: localDateInput(addLocalMonths(todayDate, -1)), endDate: todayLabel };
+    }
+
+    return { startDate: todayLabel, endDate: todayLabel };
+}
+
+function startOfLocalDayUnix(value: string) {
+    const date = parseLocalDateInput(value);
+    if (!date) return undefined;
+    date.setHours(0, 0, 0, 0);
+    return Math.floor(date.getTime() / 1000);
 }
 
 function endOfLocalDayUnix(value: string) {
-    if (!value) return undefined;
-    const [year, month, day] = value.split('-').map(Number);
-    if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return undefined;
-    return Math.floor(new Date(year, month - 1, day, 23, 59, 59, 999).getTime() / 1000);
+    const date = parseLocalDateInput(value);
+    if (!date) return undefined;
+    date.setHours(23, 59, 59, 999);
+    return Math.floor(date.getTime() / 1000);
 }
 
 function resolveLogTimeRange(startDate: string, endDate: string) {
@@ -79,18 +128,18 @@ export function Log() {
     const t = useTranslations('log');
     const isAdmin = useAuthStore((state) => state.user?.role === 'admin');
     const todayLabel = useMemo(() => localDateInput(new Date()), []);
-    // 已生效（真正喂给查询）的筛选条件。日期默认留空，表示跨刷新/跨设备都从服务端读取全部历史。
+    // 已生效（真正喂给查询）的筛选条件。日期默认按浏览器本地时区取今天，界面更清爽。
     const [selectedUserID, setSelectedUserID] = useState<number | undefined>();
     const [selectedAPIKeyID, setSelectedAPIKeyID] = useState<number | undefined>();
     const [selectedEndpoint, setSelectedEndpoint] = useState('');
-    const [startDate, setStartDate] = useState('');
-    const [endDate, setEndDate] = useState('');
+    const [startDate, setStartDate] = useState(todayLabel);
+    const [endDate, setEndDate] = useState(todayLabel);
     // 草稿（界面上正在改、还没点「搜索」）的筛选条件——改多项不会每改一次都打接口。
     const [draftUserID, setDraftUserID] = useState<number | undefined>();
     const [draftAPIKeyID, setDraftAPIKeyID] = useState<number | undefined>();
     const [draftEndpoint, setDraftEndpoint] = useState('');
-    const [draftStartDate, setDraftStartDate] = useState('');
-    const [draftEndDate, setDraftEndDate] = useState('');
+    const [draftStartDate, setDraftStartDate] = useState(todayLabel);
+    const [draftEndDate, setDraftEndDate] = useState(todayLabel);
     // 严重程度是对「已加载日志」的本地过滤，不是查询参数，所以保持即时生效。
     const [severityFilter, setSeverityFilter] = useState<LogSeverityFilter>('all');
     const [autoRefresh, setAutoRefresh] = useState(false);
@@ -159,6 +208,14 @@ export function Log() {
         }
     };
 
+    const applyDateRangeShortcut = useCallback((shortcut: LogDateRangeShortcut) => {
+        const nextRange = resolveDateRangeShortcut(shortcut, todayLabel);
+        setDraftStartDate(nextRange.startDate);
+        setDraftEndDate(nextRange.endDate);
+        setStartDate(nextRange.startDate);
+        setEndDate(nextRange.endDate);
+    }, [todayLabel]);
+
     // 把草稿条件一次性提交为生效条件（点「搜索」或在输入框回车时调用）。
     const handleApply = useCallback(() => {
         setSelectedUserID(draftUserID);
@@ -168,19 +225,19 @@ export function Log() {
         setEndDate(draftEndDate);
     }, [draftUserID, draftAPIKeyID, draftEndpoint, draftStartDate, draftEndDate]);
 
-    // 草稿和生效条件都回到默认（全部历史、不限用户/Key/端点）。
+    // 草稿和生效条件都回到默认（今天、不限用户/Key/端点）。
     const handleResetFilters = useCallback(() => {
         setDraftUserID(undefined);
         setDraftAPIKeyID(undefined);
         setDraftEndpoint('');
-        setDraftStartDate('');
-        setDraftEndDate('');
+        setDraftStartDate(todayLabel);
+        setDraftEndDate(todayLabel);
         setSelectedUserID(undefined);
         setSelectedAPIKeyID(undefined);
         setSelectedEndpoint('');
-        setStartDate('');
-        setEndDate('');
-    }, []);
+        setStartDate(todayLabel);
+        setEndDate(todayLabel);
+    }, [todayLabel]);
 
     // 草稿是否被改过（决定「搜索」是否高亮 + 是否显示「重置」）。
     const draftDirty =
@@ -189,6 +246,13 @@ export function Log() {
         draftEndpoint !== selectedEndpoint ||
         draftStartDate !== startDate ||
         draftEndDate !== endDate;
+
+    const activeDateShortcut = useMemo(() => {
+        return dateRangeShortcuts.find((shortcut) => {
+            const shortcutRange = resolveDateRangeShortcut(shortcut.id, todayLabel);
+            return shortcutRange.startDate === startDate && shortcutRange.endDate === endDate;
+        })?.id;
+    }, [endDate, startDate, todayLabel]);
 
     // 高级筛选（用户 / API Key）里有几项在生效——给折叠按钮上挂计数。
     const advancedActiveCount = (selectedUserID ? 1 : 0) + (effectiveSelectedAPIKeyID ? 1 : 0);
@@ -305,8 +369,29 @@ export function Log() {
                             max={todayLabel}
                             className="h-9 min-w-36 rounded-lg border border-input bg-background px-3 text-sm text-foreground"
                         />
-                        <span className="text-xs text-muted-foreground">留空=全部历史</span>
                     </label>
+
+                    <div className="flex min-w-0 flex-wrap items-center gap-1 rounded-lg bg-muted/60 p-1">
+                        {dateRangeShortcuts.map((shortcut) => {
+                            const active = activeDateShortcut === shortcut.id;
+
+                            return (
+                                <button
+                                    key={shortcut.id}
+                                    type="button"
+                                    onClick={() => applyDateRangeShortcut(shortcut.id)}
+                                    className={cn(
+                                        'inline-flex h-8 items-center rounded-lg px-2.5 text-xs font-medium transition-colors',
+                                        active
+                                            ? 'bg-background text-foreground shadow-sm'
+                                            : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'
+                                    )}
+                                >
+                                    {shortcut.label}
+                                </button>
+                            );
+                        })}
+                    </div>
 
                     {isAdmin && (
                         <Button
