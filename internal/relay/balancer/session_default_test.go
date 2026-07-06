@@ -52,8 +52,11 @@ func TestZeroSessionKeepTimeDefaultKeepsLegacyBehavior(t *testing.T) {
 	group := model.Group{
 		SessionKeepTime: 0,
 		Items: []model.GroupItem{
-			{ChannelID: 1, ModelName: "gpt-5.5", Priority: 1, Weight: 1},
-			{ChannelID: 2, ModelName: "gpt-5.5", Priority: 2, Weight: 1},
+			// channel 1 holds the top ChannelPriority so the non-sticky fallback
+			// deterministically leads with it: spread now buckets/rotates by
+			// ChannelPriority, not the per-item drag order.
+			{ChannelID: 1, ModelName: "gpt-5.5", Priority: 1, Weight: 1, ChannelPriority: 0},
+			{ChannelID: 2, ModelName: "gpt-5.5", Priority: 2, Weight: 1, ChannelPriority: 1},
 		},
 	}
 	SetStickyWithSessionKey(9, "gpt-5.5", "session:legacy", 2, 22)
@@ -85,8 +88,10 @@ func TestGroupSessionKeepTimeOverridesGlobalDefault(t *testing.T) {
 	group := model.Group{
 		SessionKeepTime: 1, // explicit group window: takes precedence over the global default
 		Items: []model.GroupItem{
-			{ChannelID: 1, ModelName: "gpt-5.5", Priority: 1, Weight: 1},
-			{ChannelID: 2, ModelName: "gpt-5.5", Priority: 2, Weight: 1},
+			// channel 1 holds the top ChannelPriority so the post-expiry fallback
+			// deterministically leads with it (spread buckets by ChannelPriority).
+			{ChannelID: 1, ModelName: "gpt-5.5", Priority: 1, Weight: 1, ChannelPriority: 0},
+			{ChannelID: 2, ModelName: "gpt-5.5", Priority: 2, Weight: 1, ChannelPriority: 1},
 		},
 	}
 	// Backdate the sticky entry beyond the 1s group window but well within 3600s.

@@ -25,22 +25,6 @@ func TestSpreadRotatesEquallyHealthyChannels(t *testing.T) {
 	}
 }
 
-// Priority is always a hard boundary; spread only balances inside a bucket.
-func TestSpreadKeepsPriorityHardBoundary(t *testing.T) {
-	roundRobinCounters = sync.Map{}
-	ResetRuntimeTelemetry()
-
-	items := []model.GroupItem{
-		{ChannelID: 10, ModelName: "m", Priority: 2, Weight: 1},
-		{ChannelID: 1, ModelName: "m", Priority: 1, Weight: 1},
-	}
-	for i := 0; i < 6; i++ {
-		if got := (&Spread{}).Candidates(items)[0].ChannelID; got != 1 {
-			t.Fatalf("priority 1 must stay ahead of priority 2, got %d", got)
-		}
-	}
-}
-
 // A busy channel (in-flight + selection load) is demoted within its priority
 // bucket so spread sends new turns to the idle peer.
 func TestSpreadDeprioritizesBusyChannel(t *testing.T) {

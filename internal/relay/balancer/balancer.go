@@ -122,32 +122,37 @@ func (b *Failover) Candidates(items []model.GroupItem) []model.GroupItem {
 	return sortByRoutingPriority(items)
 }
 
-// Spread 轮询：同一优先级内 round-robin 均摊，并按“容量/健康硬分层 + 容量感知评分”
-// 把不健康、过载或明显更慢的候选稳定地排到同优先级桶的后面。
+// Spread 轮询/负载均衡：同一「渠道优先级」(ChannelPriority) 内 round-robin 均摊，并按
+// “容量/健康硬分层 + 容量感知评分”把不健康、过载或明显更慢的候选稳定地排到同优先级桶后面。
+//
+// 关键：轮询模式里「条目优先级」(Priority，实为 UI 拖拽序号，每条目递增唯一) 不是硬边界，
+// 只有 ChannelPriority 是。否则条目序号一唯一(拖拽 / 自动加渠道后必然如此)就把下面的
+// spreadTier/spreadRank 整段短路，退化成纯拖拽顺序、永不轮转、永不避慢——这正是“轮询不
+// 轮询、慢渠道不降档”的根因。要按固定顺序堆叠请改用 fill-first(Failover) 模式。
 //
 // 设计借鉴 axonhub 的 composite 评分，但刻意“内敛”，避免它最怕的 collapse：
-//   - priority 永远是硬边界；
+//   - ChannelPriority 永远是硬边界；
 //   - spreadTier 仍是粗粒度硬分层（无可用 key / 熔断 / 冷却 / 忙 / 闲），等价于
 //     axonhub 用大额负分把饱和渠道“踢出但保留为末位 failover”；
-//   - 在同一 (priority, tier) 桶内再用 spreadRank 这个“粗粒度评分”按近期负载、连续
-//     失败、延迟/首 token 做二次排序——但只用粗分档，所以延迟相近的候选仍维持
-//     round-robin 顺序而真正轮转。这正是 axonhub「轮转预算 > 延迟预算，最快单点不会
-//     永远赢」的精神：延迟只在“明显更慢”时把某个渠道降档，绝不让单点 collapse。
+//   - 在同一 (ChannelPriority, tier) 桶内再用 spreadRank 这个“粗粒度评分”按近期负载、连续
+//     失败、延迟/首 token 做二次排序——但只用粗分档，所以延迟相近的候选仍维持 round-robin
+//     顺序而真正轮转。这正是 axonhub「轮转预算 > 延迟预算，最快单点不会永远赢」的精神：
+//     延迟只在“明显更慢”时把某个渠道降档，绝不让单点 collapse。
 type Spread struct{}
 
 func (b *Spread) Candidates(items []model.GroupItem) []model.GroupItem {
 	if len(items) == 0 {
 		return nil
 	}
-	// round-robin 预排：priority 分桶 + 桶内轮转，既是均摊基线，也是同档候选的轮转来源。
-	rotated := (&RoundRobin{}).Candidates(items)
-	// 稳定排序：priority（硬边界）> 健康/容量分层 > 容量感知评分。同优先级、同健康层、
-	// 同评分档的候选保持 round-robin 顺序，从而真正轮转、不 collapse。
+	// round-robin 预排：按 ChannelPriority 分桶 + 桶内轮转(而非按条目 Priority)，既是均摊基线，
+	// 也是同档候选的轮转来源。轮询模式下条目拖拽序不是路由边界，只有 ChannelPriority 分层。
+	rotated := rotateByChannelPriority(items)
+	// 稳定排序：ChannelPriority(唯一硬边界) > 健康/容量分层 > 容量感知评分。同渠道优先级、
+	// 同健康层、同评分档的候选保持 round-robin 顺序，从而真正轮转、不 collapse。
 	sort.SliceStable(rotated, func(i, j int) bool {
 		left, right := rotated[i], rotated[j]
-		// 渠道优先级(主) > 条目优先级(次) 都是硬边界；两者都相等才谈健康/容量分层与评分。
-		if c := comparePriority(left, right); c != 0 {
-			return c < 0
+		if left.ChannelPriority != right.ChannelPriority {
+			return left.ChannelPriority < right.ChannelPriority
 		}
 		if lt, rtier := spreadTier(left), spreadTier(right); lt != rtier {
 			return lt < rtier
@@ -155,6 +160,53 @@ func (b *Spread) Candidates(items []model.GroupItem) []model.GroupItem {
 		return spreadRank(left) < spreadRank(right)
 	})
 	return rotated
+}
+
+// rotateByChannelPriority 与 RoundRobin.Candidates 同构，但按 ChannelPriority 分桶而非
+// Priority——轮询(Spread)模式下 Priority(拖拽序)不是路由边界，只有 ChannelPriority 分层。
+// 复用 roundRobinCounterForItems：其 signature 只看 (channelID, modelName) 成员，一个成员
+// 恒落在唯一一个桶，所以计数器在按 ChannelPriority 分桶时同样稳定、不会被优先级调整重置。
+func rotateByChannelPriority(items []model.GroupItem) []model.GroupItem {
+	buckets := channelPriorityBuckets(items)
+	result := make([]model.GroupItem, 0, len(items))
+	for _, bucket := range buckets {
+		n := len(bucket)
+		if n == 0 {
+			continue
+		}
+		idx := int((atomic.AddUint64(roundRobinCounterForItems(bucket), 1) - 1) % uint64(n))
+		for i := 0; i < n; i++ {
+			result = append(result, bucket[(idx+i)%n])
+		}
+	}
+	return result
+}
+
+// channelPriorityBuckets 按 ChannelPriority 升序分桶(与 priorityBuckets 同构，键换成
+// ChannelPriority)。同一 ChannelPriority 的候选归入同一桶，交给上层轮转/评分。
+func channelPriorityBuckets(items []model.GroupItem) [][]model.GroupItem {
+	if len(items) == 0 {
+		return nil
+	}
+	sorted := make([]model.GroupItem, len(items))
+	copy(sorted, items)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].ChannelPriority < sorted[j].ChannelPriority
+	})
+	buckets := make([][]model.GroupItem, 0, len(sorted))
+	for _, item := range sorted {
+		if len(buckets) == 0 {
+			buckets = append(buckets, []model.GroupItem{item})
+			continue
+		}
+		last := len(buckets) - 1
+		if buckets[last][0].ChannelPriority == item.ChannelPriority {
+			buckets[last] = append(buckets[last], item)
+			continue
+		}
+		buckets = append(buckets, []model.GroupItem{item})
+	}
+	return buckets
 }
 
 // spreadTier buckets a candidate by health/capacity for the spread strategy:
