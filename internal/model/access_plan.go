@@ -36,6 +36,12 @@ type AccessPlan struct {
 	BillingProfileID     int                `json:"billing_profile_id" gorm:"index"`
 	SystemPromptOverride string             `json:"system_prompt_override"`
 	PromptOverrideMode   PromptOverrideMode `json:"prompt_override_mode" gorm:"default:append_system"`
+	// AutoSyncChannels, when true, makes a newly enabled/synced channel automatically
+	// join this plan's routes for the models it already serves — incremental ADD only,
+	// never a destructive delete-rebuild that would clobber hand-tuned priorities.
+	// Default false keeps the plan a strict allow-list (operators can still exclude a
+	// channel from a model by leaving this off and curating targets manually).
+	AutoSyncChannels bool `json:"auto_sync_channels" gorm:"default:false"`
 
 	RouteProfile   *AccessRouteProfile   `json:"route_profile,omitempty" gorm:"foreignKey:RouteProfileID"`
 	BillingProfile *AccessBillingProfile `json:"billing_profile,omitempty" gorm:"foreignKey:BillingProfileID"`

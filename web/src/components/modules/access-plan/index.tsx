@@ -79,6 +79,8 @@ const ACCESS_PLAN_TEXT = {
         slug: '调用代号',
         enabled: '启用',
         defaultPlan: '默认方案',
+        autoSyncChannels: '跟随渠道自动同步',
+        autoSyncChannelsHint: '新启用或同步的渠道自动加入本方案已有模型的路由，不用手动重建；关闭则保持严格白名单',
     },
     billing: {
         title: '计费倍率',
@@ -547,6 +549,7 @@ function PlanBasicsEditor({ plan }: { plan: AccessPlan }) {
     const [slug, setSlug] = useState(plan.slug);
     const [enabled, setEnabled] = useState(plan.enabled);
     const [isDefault, setIsDefault] = useState(plan.is_default);
+    const [autoSyncChannels, setAutoSyncChannels] = useState(plan.auto_sync_channels ?? false);
     const [confirmDelete, setConfirmDelete] = useState(false);
 
     const save = () => {
@@ -557,6 +560,7 @@ function PlanBasicsEditor({ plan }: { plan: AccessPlan }) {
                 slug: normalizeSlug(slug),
                 enabled,
                 is_default: isDefault,
+                auto_sync_channels: autoSyncChannels,
                 system_prompt_override: plan.system_prompt_override ?? '',
                 prompt_override_mode: plan.prompt_override_mode ?? 'append_system',
             },
@@ -651,6 +655,13 @@ function PlanBasicsEditor({ plan }: { plan: AccessPlan }) {
                     <label className="flex items-center justify-between gap-3 rounded-2xl border border-border/70 bg-muted/20 px-3 py-2 text-sm">
                         <span>{t('basic.defaultPlan')}</span>
                         <Switch checked={isDefault} onCheckedChange={setIsDefault} />
+                    </label>
+                    <label className="flex items-center justify-between gap-3 rounded-2xl border border-border/70 bg-muted/20 px-3 py-2 text-sm md:col-span-2">
+                        <span className="grid gap-0.5">
+                            <span>{t('basic.autoSyncChannels')}</span>
+                            <span className="text-xs text-muted-foreground">{t('basic.autoSyncChannelsHint')}</span>
+                        </span>
+                        <Switch checked={autoSyncChannels} onCheckedChange={setAutoSyncChannels} />
                     </label>
                 </div>
 

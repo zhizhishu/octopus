@@ -201,7 +201,23 @@ func scheduleChannelPostProcess(channels []model.Channel) {
 			helper.ChannelEnsureModelGroups(channel, ctx)
 			helper.ChannelAutoGroup(channel, ctx)
 		}
+		if err := op.AccessPlanSyncEnabledChannels(ctx); err != nil {
+			log.Warnf("auto-sync access plan channels after channel change: %v", err)
+		}
 	}(copied)
+}
+
+// scheduleAccessPlanChannelSync runs the incremental access-plan channel sync in the
+// background so channel enable/sync returns immediately. Plans with auto-sync off are a
+// no-op and the op-layer function is idempotent, so this stays cheap.
+func scheduleAccessPlanChannelSync() {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		if err := op.AccessPlanSyncEnabledChannels(ctx); err != nil {
+			log.Warnf("auto-sync access plan channels: %v", err)
+		}
+	}()
 }
 
 func sameStringSlice(left []string, right []string) bool {
@@ -228,6 +244,12 @@ func enableChannel(c *gin.Context) {
 	if err := op.ChannelEnabled(request.ID, request.Enabled, c.Request.Context()); err != nil {
 		resp.Error(c, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if request.Enabled {
+		// A newly enabled channel should join any auto-sync access plan's routes for the
+		// models it serves, without a manual rebuild. Disable needs no sync — routing
+		// already skips disabled channels dynamically.
+		scheduleAccessPlanChannelSync()
 	}
 	resp.Success(c, nil)
 }
@@ -297,6 +319,7 @@ func testChannel(c *gin.Context) {
 
 func syncChannel(c *gin.Context) {
 	task.SyncModelsTask()
+	scheduleAccessPlanChannelSync()
 	resp.Success(c, nil)
 }
 

@@ -36,6 +36,7 @@ export interface AccessPlan {
     display_name: string;
     enabled: boolean;
     is_default: boolean;
+    auto_sync_channels?: boolean;
     default_multiplier: number;
     system_prompt_override?: string;
     prompt_override_mode?: PromptOverrideMode;
@@ -63,6 +64,7 @@ export type CreateAccessPlanRequest = {
 export type UpdateAccessPlanRequest = Partial<Omit<CreateAccessPlanRequest, 'slug'>> & {
     id: number;
     slug?: string;
+    auto_sync_channels?: boolean;
     system_prompt_override?: string;
     prompt_override_mode?: PromptOverrideMode;
 };

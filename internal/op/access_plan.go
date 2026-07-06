@@ -441,6 +441,93 @@ func AccessPlanGroupForModel(plan *model.AccessPlan, requestModel string, ctx co
 	return model.Group{}, nil, false, nil
 }
 
+// AccessPlanSyncEnabledChannels appends missing channel targets to every enabled access
+// plan that opted into AutoSyncChannels. For each existing route rule (request model), any
+// currently-enabled channel that serves that model but is not yet a target gets one
+// appended (priority = current max + 1, weight 1, enabled). It ADDS only — never deletes,
+// reorders, or rebuilds — so hand-tuned priorities/weights survive and plans that did NOT
+// opt in stay strict allow-lists. New request models (no rule yet) are left to the group
+// fallback, not force-created here. Idempotent: safe to call after any channel
+// enable / sync / create.
+func AccessPlanSyncEnabledChannels(ctx context.Context) error {
+	if err := ensureAccessPlanCache(ctx); err != nil {
+		return err
+	}
+
+	type enabledChannel struct {
+		id     int
+		models map[string]struct{}
+	}
+	var channels []enabledChannel
+	for _, ch := range channelCache.GetAll() {
+		if !ch.Enabled {
+			continue
+		}
+		served := make(map[string]struct{})
+		for _, name := range model.ChannelSelectedModelNames(ch) {
+			if clean := strings.ToLower(model.CleanOneMillionCapabilityModelName(name)); clean != "" {
+				served[clean] = struct{}{}
+			}
+		}
+		if len(served) > 0 {
+			channels = append(channels, enabledChannel{id: ch.ID, models: served})
+		}
+	}
+	if len(channels) == 0 {
+		return nil
+	}
+
+	changed := false
+	for _, plan := range accessPlanCache.GetAll() {
+		if !plan.AutoSyncChannels || plan.RouteProfile == nil {
+			continue
+		}
+		for _, rule := range plan.RouteProfile.Rules {
+			ruleModel := strings.ToLower(model.CleanOneMillionCapabilityModelName(rule.RequestModel))
+			if ruleModel == "" {
+				continue
+			}
+			existing := make(map[int]struct{}, len(rule.Targets))
+			maxPriority := 0
+			for _, t := range rule.Targets {
+				existing[t.ChannelID] = struct{}{}
+				if t.Priority > maxPriority {
+					maxPriority = t.Priority
+				}
+			}
+			for _, ch := range channels {
+				if _, serves := ch.models[ruleModel]; !serves {
+					continue
+				}
+				if _, already := existing[ch.id]; already {
+					continue
+				}
+				maxPriority++
+				target := model.AccessRouteTarget{
+					RouteRuleID:   rule.ID,
+					ChannelID:     ch.id,
+					UpstreamModel: model.CleanOneMillionCapabilityModelName(rule.RequestModel),
+					Priority:      maxPriority,
+					Weight:        1,
+					Enabled:       true,
+				}
+				if err := db.GetDB().WithContext(ctx).Create(&target).Error; err != nil {
+					// Best-effort: a unique-constraint race just means it already exists;
+					// skip it and keep syncing the rest.
+					continue
+				}
+				existing[ch.id] = struct{}{}
+				changed = true
+			}
+		}
+	}
+
+	if changed {
+		return accessPlanRefreshCache(ctx)
+	}
+	return nil
+}
+
 func AccessPlanRouteModels(ctx context.Context) ([]string, error) {
 	if err := ensureAccessPlanCache(ctx); err != nil {
 		return nil, err
