@@ -677,7 +677,9 @@
             "submitting": "Creating..."
         },
         "card": {
-            "empty": "No rules"
+            "empty": "No rules",
+            "memberPriorityTooltip": "In-group priority (drag to reorder)",
+            "channelPriorityTooltip": "Channel priority"
         },
         "detail": {
             "actions": {

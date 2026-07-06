@@ -5,6 +5,7 @@ import { Check, ChevronDownIcon, HelpCircle, Plus, RefreshCw, Search, Trash2 } f
 import { useTranslations } from 'next-intl';
 import * as AccordionPrimitive from '@radix-ui/react-accordion';
 import { useModelChannelList, type LLMChannel } from '@/api/endpoints/model';
+import { useChannelList } from '@/api/endpoints/channel';
 import { Button } from '@/components/ui/button';
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
@@ -181,6 +182,7 @@ function SortSection({
     removingIds,
     showWeight,
     onClear,
+    channelPriorityById,
 }: {
     members: SelectedMember[];
     onReorder: (members: SelectedMember[]) => void;
@@ -189,6 +191,7 @@ function SortSection({
     removingIds: Set<string>;
     showWeight: boolean;
     onClear: () => void;
+    channelPriorityById?: Map<number, number>;
 }) {
     const t = useTranslations('group');
 
@@ -229,6 +232,7 @@ function SortSection({
                     removingIds={removingIds}
                     showWeight={showWeight}
                     showConfirmDelete={false}
+                    channelPriorityById={channelPriorityById}
                 />
             </div>
         </div>
@@ -252,8 +256,15 @@ export function GroupEditor({
 }) {
     const t = useTranslations('group');
     const { data: modelChannels = [] } = useModelChannelList();
+    const { data: channelRows = [] } = useChannelList();
     const selectableModelChannels = useMemo(() => activeModelChannels(modelChannels), [modelChannels]);
     const activeModelKeys = useMemo(() => activeModelChannelKeySet(modelChannels), [modelChannels]);
+    // channel_id -> 渠道优先级(Channel.Priority)，供成员行展示每个渠道自身的 P 值。
+    const channelPriorityById = useMemo(() => {
+        const map = new Map<number, number>();
+        channelRows.forEach(({ raw }) => map.set(raw.id, raw.priority));
+        return map;
+    }, [channelRows]);
 
     const [groupName, setGroupName] = useState(initial?.name ?? '');
     const [matchRegex, setMatchRegex] = useState(initial?.match_regex ?? '');
@@ -543,6 +554,7 @@ export function GroupEditor({
                                     removingIds={removingIds}
                                     showWeight={false}
                                     onClear={handleClearMembers}
+                                    channelPriorityById={channelPriorityById}
                                 />
                         </div>
                     </div>

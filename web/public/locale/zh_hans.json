@@ -677,7 +677,9 @@
             "submitting": "创建中..."
         },
         "card": {
-            "empty": "暂无规则"
+            "empty": "暂无规则",
+            "memberPriorityTooltip": "组内优先级（拖拽调整）",
+            "channelPriorityTooltip": "渠道优先级"
         },
         "detail": {
             "actions": {

@@ -5,6 +5,7 @@ import { Trash2, X, Pencil, RefreshCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { type Group, useDeleteGroup, useUpdateGroup } from '@/api/endpoints/group';
 import { useModelChannelList } from '@/api/endpoints/model';
+import { useChannelList } from '@/api/endpoints/channel';
 import { useTranslations } from 'next-intl';
 import { cn } from '@/lib/utils';
 import { toast } from '@/components/common/Toast';
@@ -76,8 +77,15 @@ export function GroupCard({ group }: { group: Group }) {
     const updateGroup = useUpdateGroup();
     const deleteGroup = useDeleteGroup();
     const { data: modelChannels = [] } = useModelChannelList();
+    const { data: channelRows = [] } = useChannelList();
     const visibleModelChannels = useMemo(() => activeModelChannels(modelChannels), [modelChannels]);
     const visibleModelKeys = useMemo(() => activeModelChannelKeySet(modelChannels), [modelChannels]);
+    // channel_id -> 渠道优先级(Channel.Priority)，供成员行展示每个渠道自身的 P 值。
+    const channelPriorityById = useMemo(() => {
+        const map = new Map<number, number>();
+        channelRows.forEach(({ raw }) => map.set(raw.id, raw.priority));
+        return map;
+    }, [channelRows]);
 
     const [confirmDelete, setConfirmDelete] = useState(false);
     const [members, setMembers] = useState<SelectedMember[]>([]);
@@ -463,6 +471,7 @@ export function GroupCard({ group }: { group: Group }) {
                     autoScrollOnAdd={false}
                     showWeight={false}
                     layoutScope={`card-${group.id ?? 'unknown'}`}
+                    channelPriorityById={channelPriorityById}
                 />
             </section>
         </article >

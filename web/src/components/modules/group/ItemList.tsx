@@ -42,6 +42,7 @@ function MemberItem({
     onWeightChange,
     isRemoving,
     index,
+    channelPriority,
     showWeight = false,
     showConfirmDelete = true,
     layoutScope,
@@ -52,11 +53,14 @@ function MemberItem({
     onWeightChange?: (id: string, weight: number) => void;
     isRemoving?: boolean;
     index: number;
+    /** 该渠道自身的「渠道优先级」(Channel.Priority)，与组内序号区分开。未知时不显示。 */
+    channelPriority?: number;
     showWeight?: boolean;
     showConfirmDelete?: boolean;
     layoutScope?: string;
     dnd: MemberItemDnd;
 }) {
+    const t = useTranslations('group');
     const { Avatar: ModelAvatar } = getModelIcon(member.name);
     const [confirmDelete, setConfirmDelete] = useState(false);
     const isDisabled = member.enabled === false;
@@ -83,12 +87,17 @@ function MemberItem({
                 isRemoving && 'opacity-0',
                 isDisabled && 'opacity-60 grayscale'
             )}>
-                <span className={cn(
-                    'size-[18px] rounded-md text-[10px] font-bold grid place-items-center shrink-0',
-                    isDisabled ? 'bg-muted text-muted-foreground' : 'bg-primary/10 text-primary'
-                )}>
-                    {index + 1}
-                </span>
+                <Tooltip side="top" sideOffset={10} align="start">
+                    <TooltipTrigger asChild>
+                        <span className={cn(
+                            'size-[18px] rounded-md text-[10px] font-bold grid place-items-center shrink-0 cursor-help',
+                            isDisabled ? 'bg-muted text-muted-foreground' : 'bg-primary/10 text-primary'
+                        )}>
+                            {index + 1}
+                        </span>
+                    </TooltipTrigger>
+                    <TooltipContent>{t('card.memberPriorityTooltip')}</TooltipContent>
+                </Tooltip>
 
                 <div
                     className={cn(
@@ -117,7 +126,19 @@ function MemberItem({
                         </TooltipTrigger>
                         <TooltipContent key={member.name}>{member.name}</TooltipContent>
                     </Tooltip>
-                    <span className="text-[10px] text-muted-foreground truncate leading-tight">{member.channel_name}</span>
+                    <div className="flex items-center gap-1 min-w-0 leading-tight">
+                        <span className="text-[10px] text-muted-foreground truncate">{member.channel_name}</span>
+                        {channelPriority !== undefined && (
+                            <Tooltip side="top" sideOffset={10} align="start">
+                                <TooltipTrigger asChild>
+                                    <span className="shrink-0 rounded bg-muted/70 px-1 text-[10px] font-medium text-muted-foreground cursor-help">
+                                        P{channelPriority}
+                                    </span>
+                                </TooltipTrigger>
+                                <TooltipContent>{t('card.channelPriorityTooltip')}</TooltipContent>
+                            </Tooltip>
+                        )}
+                    </div>
                 </div>
 
                 {showWeight && (
@@ -207,6 +228,11 @@ export interface MemberListProps {
      */
     showConfirmDelete?: boolean;
     layoutScope?: string;
+    /**
+     * 渠道 id → 渠道优先级(Channel.Priority) 的映射。用于在每行展示该渠道自身的 P 值，
+     * 与组内拖拽序号区分。缺失时该行不显示渠道优先级。
+     */
+    channelPriorityById?: Map<number, number>;
 }
 
 export function MemberList({
@@ -222,6 +248,7 @@ export function MemberList({
     showWeight = false,
     showConfirmDelete = true,
     layoutScope: externalLayoutScope,
+    channelPriorityById,
 }: MemberListProps) {
     const internalLayoutScope = useId();
     const layoutScope = externalLayoutScope ?? internalLayoutScope;
@@ -322,6 +349,7 @@ export function MemberList({
                                                 onWeightChange={onWeightChange}
                                                 isRemoving={removingIds.has(member.id)}
                                                 index={index}
+                                                channelPriority={channelPriorityById?.get(member.channel_id)}
                                                 showWeight={showWeight}
                                                 showConfirmDelete={showConfirmDelete}
                                                 layoutScope={layoutScope}

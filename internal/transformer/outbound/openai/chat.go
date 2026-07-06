@@ -45,7 +45,7 @@ func transformChatRequest(ctx context.Context, request *model.InternalLLMRequest
 
 	applyGLMThinking(request)
 	applyDeepSeekResponseFormat(request)
-	applyDeepSeekParamCompat(request)
+	applyThirdPartyChatParamCompat(request, baseUrl)
 
 	body, err := json.Marshal(request)
 	if err != nil {
@@ -108,24 +108,40 @@ func applyDeepSeekResponseFormat(request *model.InternalLLMRequest) {
 	}
 }
 
-// applyDeepSeekParamCompat strips OpenAI Responses / newer-Chat-Completions
-// parameters that a Responses-shaped client (e.g. Cursor) carries but which
-// DeepSeek's chat/completions endpoint rejects with a 400
-// "Unsupported parameter(s): ..." — and normalises a malformed tool_choice that
-// DeepSeek's strict deserializer refuses with
-// "did not match any variant of untagged enum ChatCompletionToolChoiceOption".
-// Only DeepSeek models are touched; OpenAI-official upstreams keep these fields.
-// Mirrors the sub2api reference's cursorResponsesUnsupportedFields handling.
-func applyDeepSeekParamCompat(request *model.InternalLLMRequest) {
-	if request == nil || !isDeepSeekModel(request.Model) {
+// isOpenAIOfficialChatBase reports whether the chat upstream is the genuine
+// OpenAI API. Unlike third-party OpenAI-compatible upstreams, api.openai.com
+// does accept the newer Chat / Responses residue params (prompt_cache_key,
+// safety_identifier, ...), so they are kept only for the official endpoint.
+func isOpenAIOfficialChatBase(baseUrl string) bool {
+	return strings.Contains(strings.ToLower(baseUrl), "api.openai.com")
+}
+
+// applyThirdPartyChatParamCompat makes a chat/completions request safe for a
+// third-party OpenAI-compatible upstream. A Responses-shaped client (e.g.
+// Cursor) carries OpenAI-only params (prompt_cache_key / prompt_cache_retention
+// / safety_identifier / store) and sometimes a malformed tool_choice; every
+// third-party upstream we forward to over chat/completions (DeepSeek, GLM, Qwen,
+// MiniMax, Kimi, Grok, ...) 400s on them ("Unsupported parameter(s): ..." or
+// "did not match any variant of untagged enum ChatCompletionToolChoiceOption").
+// We strip the residue params for every non-official chat upstream (OpenAI's own
+// models are served over the Responses endpoint, not this path) and always
+// normalise a malformed tool_choice. Keyed on the upstream, not a per-model
+// allowlist, so a newly-added provider is covered automatically.
+func applyThirdPartyChatParamCompat(request *model.InternalLLMRequest, baseUrl string) {
+	if request == nil {
 		return
 	}
-	// Responses / newer params DeepSeek's chat endpoint does not accept.
+	// A malformed tool_choice is useless to any upstream — always normalise it.
+	sanitizeToolChoiceForStrictUpstream(request)
+	// The residue params are OpenAI-only; keep them for genuine api.openai.com,
+	// strip them for every third-party OpenAI-compatible chat upstream.
+	if isOpenAIOfficialChatBase(baseUrl) {
+		return
+	}
 	request.Store = nil
 	request.PromptCacheKey = nil
 	request.PromptCacheRetention = nil
 	request.SafetyIdentifier = nil
-	sanitizeToolChoiceForStrictUpstream(request)
 }
 
 // sanitizeToolChoiceForStrictUpstream drops a tool_choice value that would

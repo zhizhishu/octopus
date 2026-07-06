@@ -677,7 +677,9 @@
             "submitting": "建立中..."
         },
         "card": {
-            "empty": "暫無規則"
+            "empty": "暫無規則",
+            "memberPriorityTooltip": "組內優先級（拖曳調整）",
+            "channelPriorityTooltip": "渠道優先級"
         },
         "detail": {
             "actions": {
