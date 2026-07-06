@@ -126,7 +126,8 @@ func ImagesHandler(endpoint string, c *gin.Context) {
 	clientSessionKey := clientSession.Key
 
 	// 创建迭代器（策略排序 + 粘性优先）
-	iter := balancer.NewIteratorWithSessionKey(group, apiKeyID, requestModel, clientSessionKey)
+	stickyEnabled := routeStickyEnabled(group.Mode, clientSession.Source)
+	iter := balancer.NewIteratorWithSession(group, apiKeyID, requestModel, clientSessionKey, stickyEnabled)
 	if iter.Len() == 0 {
 		resp.Error(c, http.StatusServiceUnavailable, "no available channel")
 		return
@@ -247,7 +248,9 @@ runIterator:
 				// 熔断器：记录成功
 				balancer.RecordSuccess(channel.ID, usedKey.ID, item.ModelName)
 				// 会话保持：更新粘性记录
-				balancer.SetStickyWithSessionKey(apiKeyID, requestModel, clientSessionKey, channel.ID, usedKey.ID)
+				if stickyEnabled {
+					balancer.SetStickyWithSessionKey(apiKeyID, requestModel, clientSessionKey, channel.ID, usedKey.ID)
+				}
 
 				metrics.Save(ctx, true, nil, append(allAttempts, iter.Attempts()...))
 				return
@@ -296,7 +299,8 @@ runIterator:
 			lastErr = err
 		} else {
 			fallbackGroup = enrichGroupForSmartRouting(ctx, fallbackGroup, stream)
-			fallbackIter := balancer.NewIteratorWithSessionKey(fallbackGroup, apiKeyID, requestModel, clientSessionKey)
+			stickyEnabled = routeStickyEnabled(fallbackGroup.Mode, clientSession.Source)
+			fallbackIter := balancer.NewIteratorWithSession(fallbackGroup, apiKeyID, requestModel, clientSessionKey, stickyEnabled)
 			if fallbackIter.Len() > 0 {
 				group = fallbackGroup
 				iter = fallbackIter

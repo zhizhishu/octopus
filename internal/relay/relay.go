@@ -71,8 +71,11 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		defer releaseGroupSlot()
 	}
 
-	// 创建迭代器（策略排序 + 粘性优先）
-	iter := balancer.NewIteratorWithSessionKey(group, apiKeyID, requestModel, clientSessionKey)
+	// 创建迭代器（策略排序 + 粘性优先）。stickyEnabled 按「分组模式 + 会话来源」分级：
+	// 轮询/负载均衡模式下纯优化型会话(prompt_cache_key / oct 自造指纹)不 sticky、走真轮询，
+	// previous_response_id / 线程会话等需正确性的来源仍 sticky。填充优先模式全程 sticky。
+	stickyEnabled := routeStickyEnabled(group.Mode, clientSession.Source)
+	iter := balancer.NewIteratorWithSession(group, apiKeyID, requestModel, clientSessionKey, stickyEnabled)
 	iter.PrioritizeChannels(nativeProtocolChannelIDs(c.Request.Context(), inboundType, group.Items))
 	prioritizeResponsesSessionOwner(c.Request.Context(), iter, internalRequest, apiKeyID, userID)
 	if iter.Len() == 0 {
@@ -100,6 +103,7 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		requestModel:        requestModel,
 		clientSessionKey:    clientSessionKey,
 		clientSessionSource: clientSession.Source,
+		stickyEnabled:       stickyEnabled,
 		iter:                iter,
 	}
 
@@ -272,12 +276,14 @@ runIterator:
 			lastErr = err
 		} else {
 			fallbackGroup = enrichGroupForSmartRouting(c.Request.Context(), fallbackGroup, preferStreamRouting)
-			fallbackIter := balancer.NewIteratorWithSessionKey(fallbackGroup, apiKeyID, requestModel, clientSessionKey)
+			fallbackSticky := routeStickyEnabled(fallbackGroup.Mode, clientSession.Source)
+			fallbackIter := balancer.NewIteratorWithSession(fallbackGroup, apiKeyID, requestModel, clientSessionKey, fallbackSticky)
 			fallbackIter.PrioritizeChannels(nativeProtocolChannelIDs(c.Request.Context(), inboundType, fallbackGroup.Items))
 			prioritizeResponsesSessionOwner(c.Request.Context(), fallbackIter, internalRequest, apiKeyID, userID)
 			if fallbackIter.Len() > 0 {
 				group = fallbackGroup
 				iter = fallbackIter
+				req.stickyEnabled = fallbackSticky
 				internalRequest.Model = requestModel
 				goto runIterator
 			}
@@ -327,8 +333,10 @@ func (ra *relayAttempt) attempt() attemptResult {
 
 		// 熔断器：记录成功
 		balancer.RecordSuccessScoped(ra.channel.ID, ra.usedKey.ID, ra.internalRequest.Model, ra.metrics.RequestEndpoint, ra.routingCapabilityKey())
-		// 会话保持：更新粘性记录
-		balancer.SetStickyWithSessionKey(ra.apiKeyID, ra.requestModel, ra.clientSessionKey, ra.channel.ID, ra.usedKey.ID)
+		// 会话保持：更新粘性记录（仅当该请求参与 sticky；轮询模式纯优化型会话不写，保证轮转）
+		if ra.stickyEnabled {
+			balancer.SetStickyWithSessionKey(ra.apiKeyID, ra.requestModel, ra.clientSessionKey, ra.channel.ID, ra.usedKey.ID)
+		}
 
 		ra.metrics.ParamOverride = paramOverrideValue(ra.channel.ParamOverride)
 

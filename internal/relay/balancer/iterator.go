@@ -27,9 +27,20 @@ func NewIterator(group model.Group, apiKeyID int, requestModel string) *Iterator
 	return NewIteratorWithSessionKey(group, apiKeyID, requestModel, "")
 }
 
-// NewIteratorWithSessionKey 创建带客户端会话作用域的负载均衡迭代器。
+// NewIteratorWithSessionKey 创建带客户端会话作用域的负载均衡迭代器（默认启用会话粘性）。
 // 当 clientSessionKey 为空时保持原来的 apiKeyID+requestModel 粘性行为。
 func NewIteratorWithSessionKey(group model.Group, apiKeyID int, requestModel, clientSessionKey string) *Iterator {
+	return NewIteratorWithSession(group, apiKeyID, requestModel, clientSessionKey, true)
+}
+
+// NewIteratorWithSession 同上，但可显式控制会话粘性。stickyEnabled=false 时完全跳过粘性
+// （既不查 sticky，也不把任何渠道提到队首），让候选保持负载均衡器排好的轮转顺序。
+// 轮询/负载均衡模式下，对"换渠道只丢 prompt-cache 命中、不破坏正确性"的会话来源
+// （prompt_cache_key / oct 自造指纹 / user / safety-identifier）应传 false，否则 sticky 会
+// 把同一会话永远钉在最初那个渠道、使轮询形同虚设（真机日志实测同会话 100% 粘同渠道）。
+// 需要跨轮正确性的来源（previous_response_id / thread / trace / codex session）仍传 true。
+// clientSessionKey 始终照传（指纹合成与日志复用它），stickyEnabled 只决定它是否参与选路。
+func NewIteratorWithSession(group model.Group, apiKeyID int, requestModel, clientSessionKey string, stickyEnabled bool) *Iterator {
 	b := GetBalancer(group.Mode)
 	candidates := b.Candidates(group.Items)
 
@@ -42,7 +53,7 @@ func NewIteratorWithSessionKey(group model.Group, apiKeyID int, requestModel, cl
 	if keepTime <= 0 {
 		keepTime = sessionKeepTimeDefault()
 	}
-	if keepTime > 0 {
+	if stickyEnabled && keepTime > 0 {
 		stickyTTL := time.Duration(keepTime) * time.Second
 		if sticky := GetStickyWithSessionKey(apiKeyID, requestModel, clientSessionKey, stickyTTL); sticky != nil {
 			for i, item := range candidates {

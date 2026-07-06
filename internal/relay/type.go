@@ -118,6 +118,7 @@ type relayRequest struct {
 	requestModel        string
 	clientSessionKey    string
 	clientSessionSource string
+	stickyEnabled       bool
 	iter                *balancer.Iterator
 }
 

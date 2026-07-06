@@ -121,7 +121,8 @@ func RawProtocolHandler(options RawProtocolOptions, c *gin.Context) {
 	}
 	clientSessionKey := clientSession.Key
 
-	iter := balancer.NewIteratorWithSessionKey(group, apiKeyID, requestModel, clientSessionKey)
+	stickyEnabled := routeStickyEnabled(group.Mode, clientSession.Source)
+	iter := balancer.NewIteratorWithSession(group, apiKeyID, requestModel, clientSessionKey, stickyEnabled)
 	compactPreviousResponseID := ""
 	if isResponsesCompactRawProtocol(options) {
 		compactPreviousResponseID = rawProtocolPreviousResponseID(jsonPayload)
@@ -234,7 +235,9 @@ runIterator:
 					RequestSuccess: 1,
 				})
 				balancer.RecordSuccess(channel.ID, usedKey.ID, item.ModelName)
-				balancer.SetStickyWithSessionKey(apiKeyID, requestModel, clientSessionKey, channel.ID, usedKey.ID)
+				if stickyEnabled {
+					balancer.SetStickyWithSessionKey(apiKeyID, requestModel, clientSessionKey, channel.ID, usedKey.ID)
+				}
 
 				metrics.Save(ctx, true, nil, append(allAttempts, iter.Attempts()...))
 				return
@@ -282,7 +285,8 @@ runIterator:
 			lastErr = err
 		} else {
 			fallbackGroup = enrichGroupForSmartRouting(ctx, fallbackGroup, stream)
-			fallbackIter := balancer.NewIteratorWithSessionKey(fallbackGroup, apiKeyID, requestModel, clientSessionKey)
+			stickyEnabled = routeStickyEnabled(fallbackGroup.Mode, clientSession.Source)
+			fallbackIter := balancer.NewIteratorWithSession(fallbackGroup, apiKeyID, requestModel, clientSessionKey, stickyEnabled)
 			if isResponsesCompactRawProtocol(options) {
 				prioritizeRawProtocolResponsesOwner(ctx, fallbackIter, compactPreviousResponseID, apiKeyID, userID)
 			}
