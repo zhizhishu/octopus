@@ -45,6 +45,7 @@ func transformChatRequest(ctx context.Context, request *model.InternalLLMRequest
 
 	applyGLMThinking(request)
 	applyDeepSeekResponseFormat(request)
+	applyDeepSeekParamCompat(request)
 
 	body, err := json.Marshal(request)
 	if err != nil {
@@ -105,6 +106,51 @@ func applyDeepSeekResponseFormat(request *model.InternalLLMRequest) {
 	if request.ResponseFormat != nil && request.ResponseFormat.Type == "json_schema" {
 		request.ResponseFormat = &model.ResponseFormat{Type: "json_object"}
 	}
+}
+
+// applyDeepSeekParamCompat strips OpenAI Responses / newer-Chat-Completions
+// parameters that a Responses-shaped client (e.g. Cursor) carries but which
+// DeepSeek's chat/completions endpoint rejects with a 400
+// "Unsupported parameter(s): ..." — and normalises a malformed tool_choice that
+// DeepSeek's strict deserializer refuses with
+// "did not match any variant of untagged enum ChatCompletionToolChoiceOption".
+// Only DeepSeek models are touched; OpenAI-official upstreams keep these fields.
+// Mirrors the sub2api reference's cursorResponsesUnsupportedFields handling.
+func applyDeepSeekParamCompat(request *model.InternalLLMRequest) {
+	if request == nil || !isDeepSeekModel(request.Model) {
+		return
+	}
+	// Responses / newer params DeepSeek's chat endpoint does not accept.
+	request.Store = nil
+	request.PromptCacheKey = nil
+	request.PromptCacheRetention = nil
+	request.SafetyIdentifier = nil
+	sanitizeToolChoiceForStrictUpstream(request)
+}
+
+// sanitizeToolChoiceForStrictUpstream drops a tool_choice value that would
+// marshal to something a strict OpenAI-compatible upstream (DeepSeek) rejects:
+// an empty ToolChoice (marshals to null), a named choice whose type is not
+// "function", or a named function whose name is empty. A dropped tool_choice
+// lets the upstream fall back to its default (auto), which is the safe behaviour.
+func sanitizeToolChoiceForStrictUpstream(request *model.InternalLLMRequest) {
+	tc := request.ToolChoice
+	if tc == nil {
+		return
+	}
+	// Valid form 1: a string mode ("none" / "auto" / "required").
+	if tc.ToolChoice != nil {
+		return
+	}
+	// Valid form 2: a named function choice with a non-empty function name.
+	if tc.NamedToolChoice != nil &&
+		tc.NamedToolChoice.Type == "function" &&
+		tc.NamedToolChoice.Function.Name != "" {
+		return
+	}
+	// Anything else (empty object -> null, non-function type, empty name) is
+	// invalid for the strict upstream; drop it so the request still goes through.
+	request.ToolChoice = nil
 }
 
 // isGLMModel reports whether the model name targets a GLM / z.ai model that
