@@ -147,17 +147,18 @@ func (b *Spread) Candidates(items []model.GroupItem) []model.GroupItem {
 	// round-robin 预排：按 ChannelPriority 分桶 + 桶内轮转(而非按条目 Priority)，既是均摊基线，
 	// 也是同档候选的轮转来源。轮询模式下条目拖拽序不是路由边界，只有 ChannelPriority 分层。
 	rotated := rotateByChannelPriority(items)
-	// 稳定排序：ChannelPriority(唯一硬边界) > 健康/容量分层 > 容量感知评分。同渠道优先级、
-	// 同健康层、同评分档的候选保持 round-robin 顺序，从而真正轮转、不 collapse。
+	// 稳定排序：ChannelPriority(唯一硬边界) > 健康/容量分层。同 ChannelPriority、同健康层的
+	// 候选保持 round-robin 预排序，从而真正轮转——轮询的语义就是“同优先级渠道都能用上”。
+	// ⚠️刻意不再按 spreadRank(延迟)细排：延迟略低的渠道会每轮抢到队首、把轮询 collapse 成
+	// “只打最快那一个”，这正是“优先级一样不切渠道 / 渠道用不上”的真因。延迟只是快慢、不是
+	// “不行”；只有 spreadTier 里真正不行的(无 key/熔断/冷却/连续失败/满载)才降级、被轮转跳过。
+	// spreadRank/延迟感知仅保留给 DecisionTrace 调试输出，不再驱动选路。
 	sort.SliceStable(rotated, func(i, j int) bool {
 		left, right := rotated[i], rotated[j]
 		if left.ChannelPriority != right.ChannelPriority {
 			return left.ChannelPriority < right.ChannelPriority
 		}
-		if lt, rtier := spreadTier(left), spreadTier(right); lt != rtier {
-			return lt < rtier
-		}
-		return spreadRank(left) < spreadRank(right)
+		return spreadTier(left) < spreadTier(right)
 	})
 	return rotated
 }
@@ -209,11 +210,19 @@ func channelPriorityBuckets(items []model.GroupItem) [][]model.GroupItem {
 	return buckets
 }
 
+// spreadFailureDemoteThreshold: 连续失败达到此数就把渠道降级(等同软冷却)，让轮询跳过它、
+// 优先同级健康渠道，直到它恢复。以前这条降级藏在 spreadRank(延迟评分)里，去掉延迟细排后
+// 移进 spreadTier，保证“当前渠道不行(在失败)就切走”仍然成立——这正是用户要的语义。
+const spreadFailureDemoteThreshold = 3
+
 // spreadTier buckets a candidate by health/capacity for the spread strategy:
-// idle-healthy first, then busy, then soft-cooldown, then circuit-unavailable,
-// then channels with no usable key at all. It deliberately ignores
-// latency/throughput/success so equally healthy channels keep their round-robin
-// turn instead of all collapsing onto one.
+// idle/busy-but-healthy first (they share a tier so round-robin rotates over ALL
+// usable channels), then soft-cooldown / recently-failing / capped, then
+// circuit-unavailable, then channels with no usable key at all. It deliberately
+// ignores latency/throughput so equally-servable channels keep their round-robin
+// turn instead of collapsing onto the fastest one — “slow” is not “broken”. A
+// channel only sinks when it genuinely can’t serve well: no key, tripped circuit,
+// cooling down, at a hard cap, or on a run of consecutive failures.
 //
 // A channel whose snapshot reports zero available (enabled) keys cannot serve the
 // request — the iterator will skip it for lack of a key. Sinking it behind every
@@ -232,6 +241,10 @@ func spreadTier(item model.GroupItem) int {
 	case rt.CircuitTripped:
 		return 3
 	case rt.CooldownRemainingMs > 0:
+		return 2
+	case rt.ConsecutiveFailures >= spreadFailureDemoteThreshold:
+		// 近期连续失败但还没触发冷却/熔断：正在“不行”，降级(与软冷却同档)，让轮询把它
+		// 跳过、优先同级健康渠道，直到它恢复。慢≠不行，但连续失败=不行。
 		return 2
 	case rt.MaxConcurrent > 0 && rt.InFlight+rt.PendingSelections >= int64(rt.MaxConcurrent):
 		// At its configured concurrency cap: demote (like a soft cooldown) so a burst

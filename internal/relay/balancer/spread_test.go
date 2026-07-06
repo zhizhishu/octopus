@@ -139,9 +139,13 @@ func TestRecordRuntimeFailureBoundsTransientRetryAfter(t *testing.T) {
 	}
 }
 
-// Within one health tier, a distinctly slower channel is demoted so spread sends
-// new turns to the faster peer (latency-awareness — the axonhub-inspired upgrade).
-func TestSpreadPrefersFasterChannelWithinTier(t *testing.T) {
+// Round-robin semantics: two servable same-priority channels must rotate even when
+// one is much slower. "Slow" is not "broken" — spread's whole point is to use every
+// usable channel, so a lower-latency peer must NOT capture every turn. Letting the
+// faster channel win every turn is exactly the collapse users hit as "优先级一样不切
+// 渠道 / 渠道用不上". A genuinely failing/unusable channel is what gets demoted (see
+// TestSpreadDemotesRecentlyFailingChannel), not a merely slower one.
+func TestSpreadRotatesDespiteLatencyGap(t *testing.T) {
 	roundRobinCounters = sync.Map{}
 	ResetRuntimeTelemetry()
 
@@ -149,10 +153,10 @@ func TestSpreadPrefersFasterChannelWithinTier(t *testing.T) {
 		{ChannelID: 1, ModelName: "m", Priority: 1, Weight: 1, RoutingStats: model.RoutingRuntimeStats{AvailableKeyCount: 1, HealthyKeyCount: 1, LatencyEWMAms: 5000}},
 		{ChannelID: 2, ModelName: "m", Priority: 1, Weight: 1, RoutingStats: model.RoutingRuntimeStats{AvailableKeyCount: 1, HealthyKeyCount: 1, LatencyEWMAms: 300}},
 	}
-	for i := 0; i < 6; i++ {
-		if got := (&Spread{}).Candidates(items)[0].ChannelID; got != 2 {
-			t.Fatalf("distinctly faster channel should lead its tier, got %d", got)
-		}
+	first := (&Spread{}).Candidates(items)[0].ChannelID
+	second := (&Spread{}).Candidates(items)[0].ChannelID
+	if first == second {
+		t.Fatalf("servable channels must rotate regardless of latency gap, got %d then %d", first, second)
 	}
 }
 
@@ -192,9 +196,12 @@ func TestSpreadDemotesRecentlyFailingChannel(t *testing.T) {
 	}
 }
 
-// Among busy (same-tier) channels, the lighter-loaded one leads so a burst keeps
-// spreading toward the least-loaded peer.
-func TestSpreadPrefersLessLoadedBusyChannel(t *testing.T) {
+// Two busy (same-tier) channels rotate instead of one capturing every turn: raw
+// in-flight load no longer reorders within a tier. Both being in-flight (but under
+// any hard cap) puts them in the same spread tier, so round-robin keeps spreading
+// across both. A channel only sinks when it hits its MaxConcurrent/RPM cap (tier
+// demotion), not merely because it carries more in-flight requests than a peer.
+func TestSpreadRotatesAcrossBusyPeers(t *testing.T) {
 	roundRobinCounters = sync.Map{}
 	ResetRuntimeTelemetry()
 
@@ -202,18 +209,18 @@ func TestSpreadPrefersLessLoadedBusyChannel(t *testing.T) {
 		{ChannelID: 1, ModelName: "m", Priority: 1, Weight: 1, RoutingStats: model.RoutingRuntimeStats{AvailableKeyCount: 1, HealthyKeyCount: 1, InFlight: 6}},
 		{ChannelID: 2, ModelName: "m", Priority: 1, Weight: 1, RoutingStats: model.RoutingRuntimeStats{AvailableKeyCount: 1, HealthyKeyCount: 1, InFlight: 1}},
 	}
-	for i := 0; i < 6; i++ {
-		if got := (&Spread{}).Candidates(items)[0].ChannelID; got != 2 {
-			t.Fatalf("less-loaded busy channel should lead, got %d", got)
-		}
+	first := (&Spread{}).Candidates(items)[0].ChannelID
+	second := (&Spread{}).Candidates(items)[0].ChannelID
+	if first == second {
+		t.Fatalf("busy same-tier peers must rotate, got %d then %d", first, second)
 	}
 }
 
-// Self-heal: a slow latency sample that has gone stale (no fresh attempt within
-// latencyStalenessWindow) must be treated as unobserved, so the demoted channel
-// re-enters rotation and gets re-probed instead of being pinned behind a fast peer
-// forever. Contrast with TestSpreadPrefersFasterChannelWithinTier, where the same
-// 5000ms sample is fresh and DOES pin the channel.
+// Latency never pins a channel in spread mode (routing ignores spreadRank), so a
+// slow channel — stale sample or fresh — keeps its round-robin turn and gets
+// re-probed instead of being starved behind a faster peer. (Latency only feeds the
+// DecisionTrace debug output now; see TestSpreadRotatesDespiteLatencyGap for the
+// fresh-sample counterpart.)
 func TestSpreadReprobesStaleSlowChannel(t *testing.T) {
 	roundRobinCounters = sync.Map{}
 	ResetRuntimeTelemetry()
@@ -229,10 +236,10 @@ func TestSpreadReprobesStaleSlowChannel(t *testing.T) {
 	}
 }
 
-// Streaming turns rank on first-token latency, not overall latency: channel 1 has
-// great overall latency but a terrible first token, channel 2 is the opposite, so a
-// streaming request must lead with channel 2.
-func TestSpreadPrefersLowerFirstTokenWhenStreaming(t *testing.T) {
+// Streaming turns also rotate across servable peers regardless of first-token
+// latency — first-token speed feeds the DecisionTrace debug output, not the routing
+// order. Both channels are servable and same-tier, so spread keeps rotating.
+func TestSpreadRotatesStreamingDespiteFirstTokenGap(t *testing.T) {
 	roundRobinCounters = sync.Map{}
 	ResetRuntimeTelemetry()
 
@@ -240,10 +247,10 @@ func TestSpreadPrefersLowerFirstTokenWhenStreaming(t *testing.T) {
 		{ChannelID: 1, ModelName: "m", Priority: 1, Weight: 1, RoutingStats: model.RoutingRuntimeStats{PreferStream: true, AvailableKeyCount: 1, HealthyKeyCount: 1, LatencyEWMAms: 100, FirstTokenEWMAms: 5000}},
 		{ChannelID: 2, ModelName: "m", Priority: 1, Weight: 1, RoutingStats: model.RoutingRuntimeStats{PreferStream: true, AvailableKeyCount: 1, HealthyKeyCount: 1, LatencyEWMAms: 9000, FirstTokenEWMAms: 200}},
 	}
-	for i := 0; i < 6; i++ {
-		if got := (&Spread{}).Candidates(items)[0].ChannelID; got != 2 {
-			t.Fatalf("streaming should prefer the lower first-token channel, got %d", got)
-		}
+	first := (&Spread{}).Candidates(items)[0].ChannelID
+	second := (&Spread{}).Candidates(items)[0].ChannelID
+	if first == second {
+		t.Fatalf("streaming servable peers must rotate regardless of first-token gap, got %d then %d", first, second)
 	}
 }
 

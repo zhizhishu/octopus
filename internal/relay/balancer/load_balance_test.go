@@ -7,26 +7,30 @@ import (
 	"github.com/bestruirui/octopus/internal/model"
 )
 
-// After the fix, Spread (轮询) IS the load-balancing mode: within one
-// ChannelPriority the per-item Priority (UI drag order, always unique) is NOT a
-// hard boundary, so a distinctly slower channel is demoted by spreadRank even
-// though its drag order puts it first. Before the fix, the unique drag order
-// short-circuited spreadTier/spreadRank and pinned the first-dragged channel —
-// the "轮询不轮询、慢渠道不降档" bug this change fixes.
-func TestSpreadDemotesSlowChannelDespiteDragOrder(t *testing.T) {
+// Spread (轮询) IS the load-balancing mode: within one ChannelPriority the per-item
+// Priority (UI drag order) is NOT a hard boundary, so candidates rotate turn by turn
+// across ALL servable channels. Crucially, a merely-slower channel is NOT demoted —
+// "slow" is not "broken"; latency no longer reorders the rotation. Both a fast and a
+// slow servable peer must each get turns (轮询的语义=渠道都用上). Only genuinely
+// failing/unusable channels sink (see TestSpreadDemotesRecentlyFailingChannel). This
+// guards against the "轮询不轮询 / 优先级一样不切渠道" collapse where the marginally
+// faster channel captured every turn.
+func TestSpreadRotatesAcrossLatencyAndDragOrder(t *testing.T) {
 	roundRobinCounters = sync.Map{}
 	ResetRuntimeTelemetry()
 
 	items := []model.GroupItem{
-		// Same ChannelPriority; channel 1's drag order (Priority 1) is "first",
-		// but it is distinctly slower (5000ms vs 300ms).
+		// Same ChannelPriority; channel 1's drag order (Priority 1) is "first" and it
+		// is much slower (5000ms vs 300ms) — it must still share the rotation.
 		{ChannelID: 1, ModelName: "m", Priority: 1, Weight: 1, ChannelPriority: 0, RoutingStats: model.RoutingRuntimeStats{AvailableKeyCount: 1, HealthyKeyCount: 1, LatencyEWMAms: 5000}},
 		{ChannelID: 2, ModelName: "m", Priority: 2, Weight: 1, ChannelPriority: 0, RoutingStats: model.RoutingRuntimeStats{AvailableKeyCount: 1, HealthyKeyCount: 1, LatencyEWMAms: 300}},
 	}
+	seen := map[int]int{}
 	for i := 0; i < 6; i++ {
-		if got := (&Spread{}).Candidates(items)[0].ChannelID; got != 2 {
-			t.Fatalf("spread must demote the slow channel regardless of drag order, got %d", got)
-		}
+		seen[(&Spread{}).Candidates(items)[0].ChannelID]++
+	}
+	if seen[1] == 0 || seen[2] == 0 {
+		t.Fatalf("both servable channels must get turns regardless of latency/drag order, got %v", seen)
 	}
 }
 

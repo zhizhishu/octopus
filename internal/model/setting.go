@@ -212,7 +212,7 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyCORSAllowOrigins, Value: ""},              // CORS 默认不允许跨域，设置为 "*" 才允许所有来源
 		{Key: SettingKeyModelInfoUpdateInterval, Value: "24"},     // 默认24小时更新一次模型信息
 		{Key: SettingKeySyncLLMInterval, Value: "24"},             // 默认24小时同步一次LLM
-		{Key: SettingKeyRelayLogKeepPeriod, Value: "7"},           // 默认日志保存7天
+		{Key: SettingKeyRelayLogKeepPeriod, Value: "30"},          // 默认日志保存30天(与日志页“1个月”快捷范围对齐；旧版7天会让“1个月”只查到7天)
 		{Key: SettingKeyRelayLogKeepEnabled, Value: "true"},       // 默认保留历史日志
 		{Key: SettingKeyRelayLogMaxStorageGB, Value: "0"},         // 默认不按容量裁剪，避免升级后意外删除日志
 		{Key: SettingKeyAnthropicAutoCacheControl, Value: "true"}, // 默认开启稳定前缀缓存断点，提升 provider 原生命中率

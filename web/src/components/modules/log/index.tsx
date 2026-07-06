@@ -3,7 +3,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import { getRelayLogSeverity, type RelayLogSeverity, useExportLogs, useLogs } from '@/api/endpoints/log';
 import { LogCard, useSensitiveStore } from './Item';
-import { AlertCircle, CheckCircle2, ChevronDown, ChevronUp, Circle, Download, Eye, EyeOff, Loader2, RefreshCw, RotateCcw, Search, SlidersHorizontal, Wifi, WifiOff } from 'lucide-react';
+import { AlertCircle, AlertTriangle, CheckCircle2, ChevronDown, ChevronUp, Circle, Download, Eye, EyeOff, Loader2, RefreshCw, RotateCcw, Search, SlidersHorizontal, Wifi, WifiOff } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { VirtualizedGrid } from '@/components/common/VirtualizedGrid';
 import { PageWrapper } from '@/components/common/PageWrapper';
@@ -14,6 +14,7 @@ import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
 import { cn } from '@/lib/utils';
 import { toast } from '@/components/common/Toast';
+import { useSettingList, useSetSetting, SettingKey } from '@/api/endpoints/setting';
 
 type LogSeverityFilter = RelayLogSeverity | 'all';
 type LogDateRangeShortcut = 'today' | 'last7Days' | 'lastMonth' | 'all';
@@ -149,6 +150,20 @@ export function Log() {
     const { data: users = [] } = useUserList({ enabled: isAdmin });
     const { data: apiKeys = [] } = useAPIKeyList();
     const exportLogs = useExportLogs();
+    // 历史日志持久化状态：关闭时后端只留最近 ~100 条内存记录、重启即失，按日期查历史必然是空的。
+    // 日志页过去对此零提示（静默显示内存缓存），用户会误以为“日志功能坏了”。这里显式暴露 + 一键开启。
+    const { data: settings } = useSettingList({ enabled: isAdmin });
+    const setSetting = useSetSetting();
+    const persistenceOff = isAdmin && (settings?.some((s) => s.key === SettingKey.RelayLogKeepEnabled && s.value === 'false') ?? false);
+    const handleEnablePersistence = useCallback(() => {
+        setSetting.mutate(
+            { key: SettingKey.RelayLogKeepEnabled, value: 'true' },
+            {
+                onSuccess: () => toast.success('已开启历史日志持久化，此后新日志会写入数据库、可按日期回查'),
+                onError: (e) => toast.error(e instanceof Error ? e.message : String(e)),
+            }
+        );
+    }, [setSetting]);
 
     const apiKeysForSelectedUser = useMemo(() => {
         return apiKeys
@@ -182,7 +197,7 @@ export function Log() {
         loadMore,
         refresh,
     } = useLogs({
-        pageSize: 10,
+        pageSize: 20,
         userID: selectedUserID,
         apiKeyID: effectiveSelectedAPIKeyID,
         endpoint: selectedEndpoint || undefined,
@@ -334,6 +349,25 @@ export function Log() {
 
     return (
         <PageWrapper className="box-border flex h-full min-h-0 flex-col gap-3 overflow-hidden rounded-t-3xl pb-[calc(6rem+env(safe-area-inset-bottom))] md:pb-4 [&>*]:min-h-0 [&>*:last-child]:flex [&>*:last-child]:flex-1">
+            {persistenceOff && (
+                <div className="flex flex-none flex-col gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-sm sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex items-start gap-2 text-amber-700 dark:text-amber-300">
+                        <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+                        <span>
+                            历史日志持久化<b className="font-semibold">未开启</b>：当前只显示最近内存记录（约 100 条，重启即丢），按日期查历史会是空的。
+                        </span>
+                    </div>
+                    <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={handleEnablePersistence}
+                        disabled={setSetting.isPending}
+                        className="shrink-0 rounded-lg border-amber-500/50 text-amber-700 hover:bg-amber-500/10 dark:text-amber-300"
+                    >
+                        {setSetting.isPending ? '开启中…' : '开启持久化'}
+                    </Button>
+                </div>
+            )}
             <div className="flex flex-none flex-col gap-2 rounded-lg border border-border bg-card px-3 py-2">
                 <div className="flex min-w-0 flex-wrap items-center gap-2">
                     <label className="flex min-w-0 flex-wrap items-center gap-2">
