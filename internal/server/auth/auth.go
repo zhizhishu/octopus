@@ -1,9 +1,13 @@
 package auth
 
 import (
+	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"fmt"
 	"math/big"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/bestruirui/octopus/internal/conf"
@@ -74,6 +78,44 @@ func VerifyJWTToken(token string) (model.User, bool) {
 
 func userTokenSecret(user model.User) string {
 	return user.Username + user.Password
+}
+
+// adminAccessTokenMinLen refuses a configured token shorter than this so a stray or
+// weak value cannot silently become an admin bypass.
+const adminAccessTokenMinLen = 24
+
+// VerifyAdminAccessToken validates a long-lived admin access token — an alternative
+// to a login JWT for automation/CLI. On a match it returns the real default admin
+// user so downstream handlers see a genuine user ID (not a synthetic one). The token
+// comes from SettingKeyAdminToken, falling back to the <APP>_ADMIN_TOKEN env var so a
+// fresh public-repo deployment can inject it without hardcoding. Security invariants:
+//   - empty configured token = feature DISABLED, never a backdoor;
+//   - a token shorter than adminAccessTokenMinLen is refused;
+//   - constant-time comparison avoids leaking the token via timing.
+func VerifyAdminAccessToken(token string) (model.User, bool) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return model.User{}, false
+	}
+	configured, err := op.SettingGetString(model.SettingKeyAdminToken)
+	if err != nil {
+		configured = ""
+	}
+	configured = strings.TrimSpace(configured)
+	if configured == "" {
+		configured = strings.TrimSpace(os.Getenv(strings.ToUpper(conf.APP_NAME) + "_ADMIN_TOKEN"))
+	}
+	if len(configured) < adminAccessTokenMinLen {
+		return model.User{}, false
+	}
+	if subtle.ConstantTimeCompare([]byte(token), []byte(configured)) != 1 {
+		return model.User{}, false
+	}
+	admin, err := op.UserDefaultAdmin(context.Background())
+	if err != nil {
+		return model.User{}, false
+	}
+	return admin, true
 }
 
 func GenerateAPIKey() string {

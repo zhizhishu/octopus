@@ -21,8 +21,17 @@ func Auth() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
-		user, ok := auth.VerifyJWTToken(strings.TrimPrefix(token, "Bearer "))
+		bearer := strings.TrimPrefix(token, "Bearer ")
+		user, ok := auth.VerifyJWTToken(bearer)
 		if !ok {
+			// Long-lived admin access token fallback for automation/CLI that cannot hold
+			// a short-lived login JWT. Only matches a non-empty configured token (empty =
+			// disabled, never a backdoor); see auth.VerifyAdminAccessToken.
+			if admin, matched := auth.VerifyAdminAccessToken(bearer); matched {
+				SetCurrentUser(c, admin)
+				c.Next()
+				return
+			}
 			resp.Error(c, http.StatusUnauthorized, resp.ErrUnauthorized)
 			c.Abort()
 			return

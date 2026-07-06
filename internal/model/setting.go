@@ -83,6 +83,12 @@ const (
 	SettingKeyEmailHTTPFrom             SettingKey = "email_http_from"
 	SettingKeyEmailHTTPAdminAuth        SettingKey = "email_http_admin_auth" // secret
 	SettingKeyEmailHTTPSiteAuth         SettingKey = "email_http_site_auth"  // secret
+	// SettingKeyAdminToken is an OPTIONAL long-lived admin access token for
+	// automation/CLI that cannot hold a short-lived login JWT. Empty (default) =
+	// disabled; when set it grants full admin via the Auth() middleware fallback.
+	// Stored masked (secret) and injectable from the <APP>_ADMIN_TOKEN env at runtime
+	// so a public-repo deployment never hardcodes it.
+	SettingKeyAdminToken SettingKey = "admin_access_token" // secret
 )
 
 type Setting struct {
@@ -260,6 +266,7 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyEmailHTTPFrom, Value: ""},
 		{Key: SettingKeyEmailHTTPAdminAuth, Value: ""},
 		{Key: SettingKeyEmailHTTPSiteAuth, Value: ""},
+		{Key: SettingKeyAdminToken, Value: ""},
 	}
 }
 
@@ -268,7 +275,7 @@ func DefaultSettings() []Setting {
 // sends back the mask sentinel.
 func IsSecretSettingKey(key SettingKey) bool {
 	switch key {
-	case SettingKeyEmailSMTPPassword, SettingKeyEmailHTTPAdminAuth, SettingKeyEmailHTTPSiteAuth:
+	case SettingKeyEmailSMTPPassword, SettingKeyEmailHTTPAdminAuth, SettingKeyEmailHTTPSiteAuth, SettingKeyAdminToken:
 		return true
 	}
 	return false
