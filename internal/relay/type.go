@@ -138,4 +138,5 @@ type attemptResult struct {
 	Err        error // 失败时的错误
 	StatusCode int   // upstream status for retry decisions
 	Retryable  bool  // 上游空流等瞬态失败且未写入下游，可安全重试
+	Fatal      bool  // 上下文超长等确定性错误：换任何渠道/key 都会同样失败，停止遍历
 }

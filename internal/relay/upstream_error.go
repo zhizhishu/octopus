@@ -172,6 +172,13 @@ func attemptStatusCode(statusCode int, err error) int {
 
 func relayErrorResponse(err error) (status int, code string, message string) {
 	if status, code, _, ok := upstreamErrorDetails(err); ok && status >= 400 && status < 600 {
+		// A context-window overflow is a deterministic client error: no channel will
+		// accept the oversized prompt, so surface a clean 400 the client can act on
+		// (shorten the input) instead of masking it as a generic 502. The failover /
+		// breaker short-circuits live in the relay loop; this only shapes the response.
+		if isContextWindowError(err) {
+			return http.StatusBadRequest, "context_length_exceeded", contextWindowUserMessage(err)
+		}
 		// A 429 rate-limit is a retryable signal the client MUST see to pace itself:
 		// claude-code / codex back off (respecting any Retry-After) and retry a 429 the
 		// same way they do hitting the upstream directly, and succeed once capacity frees.
@@ -453,6 +460,96 @@ func upstreamErrorCode(statusCode int) string {
 	default:
 		return "octopus_upstream_non_2xx"
 	}
+}
+
+// matchContextWindowText reports whether text (already lowercased and trimmed)
+// describes a context-window / token-limit exceeded error. It covers every
+// upstream octopus actually proxies:
+//   - OpenAI / DeepSeek / GLM: code "context_length_exceeded" / "context_too_large",
+//     or message "maximum context length ...";
+//   - native Anthropic (octopus keeps claude's shape): "prompt is too long: 201015
+//     tokens > 200000 maximum" — note this contains NEITHER "context window" NOR
+//     "context length", so it needs its own signal or the主力 claude is missed;
+//   - Gemini: "The input token count (X) exceeds the maximum number of tokens ...".
+//
+// Kept deliberately specific (strong code signals first, then message phrases that
+// pair a context/token noun with an "exceeded" verb) so an ordinary 400 that merely
+// mentions "context" is not misclassified.
+func matchContextWindowText(lower string) bool {
+	if lower == "" {
+		return false
+	}
+	// OpenAI / DeepSeek / GLM strong signals (code field or canonical message).
+	if strings.Contains(lower, "context_length_exceeded") || strings.Contains(lower, "context_too_large") {
+		return true
+	}
+	if strings.Contains(lower, "maximum context length") || strings.Contains(lower, "max context length") {
+		return true
+	}
+	// Native Anthropic canonical phrase.
+	if strings.Contains(lower, "prompt is too long") {
+		return true
+	}
+	hasExceeded := strings.Contains(lower, "exceed") ||
+		strings.Contains(lower, "too large") ||
+		strings.Contains(lower, "too long")
+	if !hasExceeded {
+		return false
+	}
+	if strings.Contains(lower, "context window") || strings.Contains(lower, "context length") {
+		return true
+	}
+	// Gemini token-count phrasing.
+	if strings.Contains(lower, "input token count") || strings.Contains(lower, "number of tokens") {
+		return true
+	}
+	// Generic: an explicit token-limit phrasing that also mentions context.
+	return strings.Contains(lower, "token limit") && strings.Contains(lower, "context")
+}
+
+// isContextWindowError reports whether err is an upstream 400 caused by the request
+// exceeding the model's context-window / token limit. Such errors are deterministic:
+// no other channel or key will accept the same oversized payload, so callers skip
+// cross-channel failover and circuit-breaker accounting and surface the 400 to the
+// client instead of masking it as a 502. Gated on statusCode==400 so a 5xx/429 body
+// that happens to contain "context" is never misread.
+func isContextWindowError(err error) bool {
+	var upErr *upstreamError
+	if !errors.As(err, &upErr) || upErr == nil {
+		return false
+	}
+	if upErr.statusCode != http.StatusBadRequest {
+		return false
+	}
+	body := []byte(upErr.body)
+	for _, candidate := range []string{
+		extractUpstreamErrorMessage(body),
+		extractUpstreamErrorCode(body),
+		upErr.body,
+	} {
+		if matchContextWindowText(strings.ToLower(strings.TrimSpace(candidate))) {
+			return true
+		}
+	}
+	return false
+}
+
+// contextWindowUserMessage is the client-facing message for a context-window
+// overflow. It honours the admin status-passthrough toggle like other upstream
+// errors: when passthrough is on, the real upstream reason (e.g. Anthropic's
+// "prompt is too long: 201015 tokens > 200000 maximum") is forwarded so the caller
+// sees the exact limit; otherwise a clean generic that still tells the caller what
+// to do, with no channel/secret detail leaked.
+func contextWindowUserMessage(err error) string {
+	if upstreamErrorStatusPassthrough() {
+		var upErr *upstreamError
+		if errors.As(err, &upErr) && upErr != nil {
+			if msg := extractUpstreamErrorMessage([]byte(upErr.body)); msg != "" {
+				return msg
+			}
+		}
+	}
+	return "prompt is too long: the request exceeds this model's context window; reduce the input and retry"
 }
 
 // parseRetryAfter parses an HTTP Retry-After header value, which is either

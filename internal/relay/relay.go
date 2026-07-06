@@ -107,6 +107,7 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		lastErr          error
 		allAttempts      []dbmodel.ChannelAttempt
 		triedReturnGroup bool
+		contextWindowErr error // 命中上下文超长: 停止跨渠道遍历、也不再试 fallback group
 	)
 
 runIterator:
@@ -247,15 +248,24 @@ runIterator:
 				return
 			}
 			lastErr = result.Err
+			if result.Fatal {
+				// Context-window overflow: no other channel/key will accept the same
+				// oversized payload — stop iterating and return the 400 as-is.
+				contextWindowErr = result.Err
+				break
+			}
 			if !result.Retryable && !shouldTryNextChannelKey(result.StatusCode) {
 				break
 			}
+		}
+		if contextWindowErr != nil {
+			break
 		}
 	}
 
 	// 所有通道都失败
 	allAttempts = append(allAttempts, iter.Attempts()...)
-	if shouldReturnToOriginalGroup(routeResult, triedReturnGroup) {
+	if contextWindowErr == nil && shouldReturnToOriginalGroup(routeResult, triedReturnGroup) {
 		triedReturnGroup = true
 		fallbackGroup, err := op.GroupGetEnabledMap(requestModel, c.Request.Context())
 		if err != nil {
@@ -384,6 +394,7 @@ func (ra *relayAttempt) attempt() attemptResult {
 		Err:        fmt.Errorf("channel %s failed: %w", ra.channel.Name, fwdErr),
 		StatusCode: recordStatusCode,
 		Retryable:  !written && isRetryableUpstreamStreamError(fwdErr),
+		Fatal:      isContextWindowError(fwdErr),
 	}
 }
 
@@ -765,6 +776,12 @@ func shouldRecordBreakerFailure(_ int, err error) bool {
 		// so counting each retry toward the breaker / runtime health would trip a
 		// healthy channel ~3x sooner and skew capacity ranking. Let the retry +
 		// final request error surface it instead of poisoning channel health.
+		return false
+	}
+	if isContextWindowError(err) {
+		// Deterministic client error (prompt exceeds the model's context window):
+		// counting it would trip the channel's breaker on perfectly healthy capacity
+		// and block later well-sized requests. Never charge it to channel health.
 		return false
 	}
 	return true
