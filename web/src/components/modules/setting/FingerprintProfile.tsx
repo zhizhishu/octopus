@@ -204,7 +204,7 @@ export function SettingFingerprintProfile() {
                 </div>
             ) : (
                 <div className="grid gap-2.5">
-                    {list.map((profile) => (
+                    {list.map((profile, index) => (
                         <div
                             key={profile.id}
                             className="grid min-w-0 gap-2 rounded-2xl border border-border/70 bg-muted/20 p-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
@@ -212,7 +212,7 @@ export function SettingFingerprintProfile() {
                             <div className="min-w-0 space-y-1">
                                 <div className="flex flex-wrap items-center gap-2">
                                     <span className="truncate text-sm font-semibold text-card-foreground">{profile.name}</span>
-                                    <span className="rounded-full bg-background px-2 py-0.5 text-[11px] text-muted-foreground">#{profile.id}</span>
+                                    <span className="rounded-full bg-background px-2 py-0.5 text-[11px] text-muted-foreground">#{index + 1}</span>
                                 </div>
                                 <div className="grid gap-0.5 text-[11px] leading-5 text-muted-foreground">
                                     <div className="min-w-0 truncate">

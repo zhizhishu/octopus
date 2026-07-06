@@ -5,6 +5,7 @@ import { SettingAppearance } from './Appearance';
 import { SettingSystem } from './System';
 import { SettingFingerprintProfile } from './FingerprintProfile';
 import { SettingAccount } from './Account';
+import { SettingAccessToken } from './AccessToken';
 import { SettingInfo } from './Info';
 import { SettingLLMSync } from './LLMSync';
 import { SettingLog } from './Log';
@@ -22,6 +23,7 @@ export function Setting() {
                     <SettingAppearance key="setting-appearance" />
                     <SettingCircuitBreaker key="setting-circuit-breaker" />
                     <SettingAccount key="setting-account" />
+                    <SettingAccessToken key="setting-access-token" />
                     <SettingBackup key="setting-backup" />
                     <SettingLLMSync key="setting-llmsync" />
                 </PageWrapper>

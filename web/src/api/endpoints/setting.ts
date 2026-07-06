@@ -69,6 +69,7 @@ export const SettingKey = {
     EmailHTTPFrom: 'email_http_from',
     EmailHTTPAdminAuth: 'email_http_admin_auth',
     EmailHTTPSiteAuth: 'email_http_site_auth',
+    AdminAccessToken: 'admin_access_token',
 } as const;
 
 /**
