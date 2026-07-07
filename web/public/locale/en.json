@@ -274,6 +274,15 @@
             "seconds": "sec",
             "invalid": "Keepalive interval must be 0 or a positive integer number of seconds"
         },
+        "firstByteKeepalive": {
+            "label": "First-byte keepalive delay",
+            "hint": "When a streaming request waits longer than this many seconds for the upstream first byte, octopus injects a keepalive comment downstream to prevent idle-connection cuts by a front-end reverse proxy. Only enable when you cannot adjust the reverse proxy's idle timeout.",
+            "description": "Injects downstream keepalive while waiting for the upstream first byte, preventing front reverse proxies from closing the apparently idle connection.",
+            "disabledHint": "0 = off (default)",
+            "placeholder": "0",
+            "seconds": "sec",
+            "invalid": "First-byte keepalive delay must be 0 or a positive integer number of seconds"
+        },
         "streamDataTimeout": {
             "label": "Upstream stream idle timeout",
             "hint": "Stops an active streaming request when the upstream provider sends no SSE event for the configured number of seconds. Upstream ping events count as activity.",
