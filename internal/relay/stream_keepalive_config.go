@@ -40,6 +40,18 @@ func defaultStreamDataIntervalTimeout() time.Duration {
 	return envStreamSecondsDuration("RELAY_STREAM_DATA_INTERVAL_TIMEOUT_SECONDS", defaultStreamDataIntervalTimeoutSeconds)
 }
 
+func currentFirstByteKeepaliveDelay() time.Duration {
+	seconds, err := op.SettingGetInt(dbmodel.SettingKeyFirstByteKeepaliveDelaySeconds)
+	if err == nil {
+		return streamSecondsDuration(seconds)
+	}
+	return defaultFirstByteKeepaliveDelay()
+}
+
+func defaultFirstByteKeepaliveDelay() time.Duration {
+	return envStreamSecondsDuration("RELAY_FIRST_BYTE_KEEPALIVE_DELAY_SECONDS", 0)
+}
+
 func envStreamSecondsDuration(suffix string, fallbackSeconds int) time.Duration {
 	raw := strings.TrimSpace(os.Getenv(strings.ToUpper(conf.APP_NAME) + "_" + suffix))
 	if raw == "" {

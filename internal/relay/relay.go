@@ -10,6 +10,7 @@ import (
 	"maps"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bestruirui/octopus/internal/helper"
@@ -584,7 +585,20 @@ retryWithAdapter:
 	ra.copyHeaders(outboundRequest)
 
 	// 发送请求
+	// keepalive 注入的是 SSE 心跳，只有【下游客户端】收流式时才可注入（否则污染非流式响应）。
+	// 下游是否流式取决于客户端原始请求 originalStream，而非上游 force* 标志：
+	// force*StreamUpstream 为真但客户端要非流式时走 handleStreamResponseAsNonStream（下游非流式），
+	// 绝不能注入；originalStream 同时覆盖 handleStreamResponse 与 forceNonStreamUpstream
+	// （非流上游→SSE 下游重放）两条真正的下游流式路径。
+	willStream := originalStream != nil && *originalStream
+	var stopFirstByteKeepalive func()
+	if willStream {
+		stopFirstByteKeepalive = ra.startFirstByteKeepalive(ctx)
+	}
 	response, err := ra.sendRequest(outboundRequest)
+	if stopFirstByteKeepalive != nil {
+		stopFirstByteKeepalive()
+	}
 	if err != nil {
 		return 0, fmt.Errorf("failed to send request: %w", err)
 	}
@@ -2188,6 +2202,67 @@ func (ra *relayAttempt) streamKeepaliveData() []byte {
 		return []byte("event: ping\ndata: {\"type\":\"ping\"}\n\n")
 	}
 	return []byte(":\n\n")
+}
+
+// startFirstByteKeepalive 在等待上游首字节期间，向下游注入心跳防前置反代空闲掐断。
+// 返回的 stop 函数会停止注入并等待注入 goroutine 完全退出（保证之后主写入不与它并发）。
+// delay<=0 或 interval<=0 时为 no-op。
+func (ra *relayAttempt) startFirstByteKeepalive(ctx context.Context) func() {
+	delay := currentFirstByteKeepaliveDelay()
+	if delay <= 0 {
+		return func() {}
+	}
+	interval := currentStreamKeepaliveInterval()
+	if interval <= 0 {
+		return func() {}
+	}
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-done:
+			return
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			ra.prewarmMu.Lock()
+			if ra.prewarmStopped {
+				ra.prewarmMu.Unlock()
+				return
+			}
+			_, werr := ra.c.Writer.Write(ra.streamKeepaliveData())
+			ra.c.Writer.Flush()
+			ra.prewarmMu.Unlock()
+			if werr != nil {
+				return
+			}
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			ra.prewarmMu.Lock()
+			ra.prewarmStopped = true
+			ra.prewarmMu.Unlock()
+			close(done)
+			wg.Wait()
+		})
+	}
 }
 
 // handleResponse 处理非流式响应

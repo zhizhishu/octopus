@@ -4,6 +4,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/bestruirui/octopus/internal/conf"
 	dbmodel "github.com/bestruirui/octopus/internal/model"
@@ -130,6 +131,11 @@ type relayAttempt struct {
 	channel              *dbmodel.Channel
 	usedKey              dbmodel.ChannelKey
 	firstTokenTimeOutSec int
+
+	// prewarmMu/prewarmStopped guard the first-byte keepalive goroutine so the
+	// injected heartbeat writes and the main response writes never race.
+	prewarmMu      sync.Mutex
+	prewarmStopped bool
 }
 
 // attemptResult 封装单次尝试的结果

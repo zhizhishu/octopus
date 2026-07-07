@@ -58,31 +58,39 @@ const (
 	SettingKeyDebugLoadBalancer         SettingKey = "debug_load_balancer"          // 开启后每次选路打印候选排序决策(tier/rank/容量输入)，便于排障"为啥走这条/为啥慢"
 	SettingKeySessionKeepTimeDefault    SettingKey = "session_keep_time_default"    // 分组会话保持时间全局默认(秒)，分组级为0时回退用它，0=不启用全局粘性
 	SettingKeyFirstTokenTimeOutDefault  SettingKey = "first_token_time_out_default" // 分组首字超时全局默认(秒)，分组级为0时回退用它，0=不启用全局默认
-	SettingKeyRouteModeOverride         SettingKey = "route_mode_override"          // 路由模式全局覆盖: ""=跟随分组各自模式, "spread"=强制轮询, "fill_first"=强制优先填充
-	SettingKeyPromptOverrideSystem      SettingKey = "prompt_override_system"
-	SettingKeyPromptOverrideMode        SettingKey = "prompt_override_mode"
-	SettingKeyUpstreamErrorStatusPass   SettingKey = "upstream_error_status_passthrough"
-	SettingKeyUpstreamErrorBodyMode     SettingKey = "upstream_error_body_mode"
-	SettingKeyUpstreamErrorCustom       SettingKey = "upstream_error_custom_message"
-	SettingKeyUpstreamErrorPublicCode   SettingKey = "upstream_error_public_code"
-	SettingKeyCheckInEnabled            SettingKey = "checkin_enabled"
-	SettingKeyCheckInRewardMode         SettingKey = "checkin_reward_mode"
-	SettingKeyCheckInRewardAmount       SettingKey = "checkin_reward_amount"
-	SettingKeyCheckInRewardMin          SettingKey = "checkin_reward_min"
-	SettingKeyCheckInRewardMax          SettingKey = "checkin_reward_max"
-	SettingKeyEmailVerificationEnabled  SettingKey = "email_verification_enabled"
-	SettingKeyEmailSMTPHost             SettingKey = "email_smtp_host"
-	SettingKeyEmailSMTPPort             SettingKey = "email_smtp_port"
-	SettingKeyEmailSMTPUser             SettingKey = "email_smtp_user"
-	SettingKeyEmailSMTPPassword         SettingKey = "email_smtp_password"
-	SettingKeyEmailSMTPFrom             SettingKey = "email_smtp_from"
-	SettingKeyEmailSMTPFromName         SettingKey = "email_smtp_from_name"
-	SettingKeyEmailSMTPSSL              SettingKey = "email_smtp_ssl"
-	SettingKeyEmailProvider             SettingKey = "email_provider" // "smtp" | "http"
-	SettingKeyEmailHTTPBaseURL          SettingKey = "email_http_base_url"
-	SettingKeyEmailHTTPFrom             SettingKey = "email_http_from"
-	SettingKeyEmailHTTPAdminAuth        SettingKey = "email_http_admin_auth" // secret
-	SettingKeyEmailHTTPSiteAuth         SettingKey = "email_http_site_auth"  // secret
+	// SettingKeyFirstByteKeepaliveDelaySeconds is an OPT-IN feature (default "0" = OFF).
+	// When >0, stream requests that have not yet received the first upstream response byte
+	// will start injecting keepalive heartbeats to the downstream client after this many
+	// seconds, continuing every relay_stream_keepalive_interval_seconds until the upstream
+	// response headers arrive. This prevents front-end reverse proxies from dropping the
+	// idle downstream connection during long upstream TTFB. Default 0 = completely off;
+	// behaviour is byte-identical to before when disabled.
+	SettingKeyFirstByteKeepaliveDelaySeconds SettingKey = "first_byte_keepalive_delay_seconds"
+	SettingKeyRouteModeOverride              SettingKey = "route_mode_override" // 路由模式全局覆盖: ""=跟随分组各自模式, "spread"=强制轮询, "fill_first"=强制优先填充
+	SettingKeyPromptOverrideSystem           SettingKey = "prompt_override_system"
+	SettingKeyPromptOverrideMode             SettingKey = "prompt_override_mode"
+	SettingKeyUpstreamErrorStatusPass        SettingKey = "upstream_error_status_passthrough"
+	SettingKeyUpstreamErrorBodyMode          SettingKey = "upstream_error_body_mode"
+	SettingKeyUpstreamErrorCustom            SettingKey = "upstream_error_custom_message"
+	SettingKeyUpstreamErrorPublicCode        SettingKey = "upstream_error_public_code"
+	SettingKeyCheckInEnabled                 SettingKey = "checkin_enabled"
+	SettingKeyCheckInRewardMode              SettingKey = "checkin_reward_mode"
+	SettingKeyCheckInRewardAmount            SettingKey = "checkin_reward_amount"
+	SettingKeyCheckInRewardMin               SettingKey = "checkin_reward_min"
+	SettingKeyCheckInRewardMax               SettingKey = "checkin_reward_max"
+	SettingKeyEmailVerificationEnabled       SettingKey = "email_verification_enabled"
+	SettingKeyEmailSMTPHost                  SettingKey = "email_smtp_host"
+	SettingKeyEmailSMTPPort                  SettingKey = "email_smtp_port"
+	SettingKeyEmailSMTPUser                  SettingKey = "email_smtp_user"
+	SettingKeyEmailSMTPPassword              SettingKey = "email_smtp_password"
+	SettingKeyEmailSMTPFrom                  SettingKey = "email_smtp_from"
+	SettingKeyEmailSMTPFromName              SettingKey = "email_smtp_from_name"
+	SettingKeyEmailSMTPSSL                   SettingKey = "email_smtp_ssl"
+	SettingKeyEmailProvider                  SettingKey = "email_provider" // "smtp" | "http"
+	SettingKeyEmailHTTPBaseURL               SettingKey = "email_http_base_url"
+	SettingKeyEmailHTTPFrom                  SettingKey = "email_http_from"
+	SettingKeyEmailHTTPAdminAuth             SettingKey = "email_http_admin_auth" // secret
+	SettingKeyEmailHTTPSiteAuth              SettingKey = "email_http_site_auth"  // secret
 	// SettingKeyAdminToken is an OPTIONAL long-lived admin access token for
 	// automation/CLI that cannot hold a short-lived login JWT. Empty (default) =
 	// disabled; when set it grants full admin via the Auth() middleware fallback.
@@ -234,14 +242,15 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyCodexHeaderUserAgent, Value: DefaultCodexHeaderUserAgent},
 		{Key: SettingKeyCodexHeaderBetaFeatures, Value: DefaultCodexHeaderBetaFeatures},
 		{Key: SettingKeyCodexFastMode, Value: "false"},
-		{Key: SettingKeyUserRegistrationEnabled, Value: "false"}, // 默认只允许邀请码注册
-		{Key: SettingKeyCircuitBreakerThreshold, Value: "10"},    // 默认连续失败10次触发熔断
-		{Key: SettingKeyCircuitBreakerCooldown, Value: "30"},     // 默认基础冷却30秒
-		{Key: SettingKeyCircuitBreakerMaxCooldown, Value: "600"}, // 默认最大冷却600秒（10分钟）
-		{Key: SettingKeyDebugLoadBalancer, Value: "false"},       // 默认关闭选路决策日志
-		{Key: SettingKeySessionKeepTimeDefault, Value: "0"},      // 默认0=不启用全局粘性(向后兼容); 管理员设为如3600才全局开, 分组级 SessionKeepTime 仍优先
-		{Key: SettingKeyFirstTokenTimeOutDefault, Value: "0"},    // 默认0=不启用全局默认(向后兼容); 分组级 FirstTokenTimeOut 仍优先
-		{Key: SettingKeyRouteModeOverride, Value: ""},            // 默认空=跟随分组各自模式(向后兼容); 设为 spread/fill_first 则强制覆盖所有分组
+		{Key: SettingKeyUserRegistrationEnabled, Value: "false"},    // 默认只允许邀请码注册
+		{Key: SettingKeyCircuitBreakerThreshold, Value: "10"},       // 默认连续失败10次触发熔断
+		{Key: SettingKeyCircuitBreakerCooldown, Value: "30"},        // 默认基础冷却30秒
+		{Key: SettingKeyCircuitBreakerMaxCooldown, Value: "600"},    // 默认最大冷却600秒（10分钟）
+		{Key: SettingKeyDebugLoadBalancer, Value: "false"},          // 默认关闭选路决策日志
+		{Key: SettingKeySessionKeepTimeDefault, Value: "0"},         // 默认0=不启用全局粘性(向后兼容); 管理员设为如3600才全局开, 分组级 SessionKeepTime 仍优先
+		{Key: SettingKeyFirstTokenTimeOutDefault, Value: "0"},       // 默认0=不启用全局默认(向后兼容); 分组级 FirstTokenTimeOut 仍优先
+		{Key: SettingKeyFirstByteKeepaliveDelaySeconds, Value: "0"}, // 默认0=关闭: 等首字节期间不注入下游心跳; >0=延迟多少秒后开始注入(防前置反代空闲掐断)
+		{Key: SettingKeyRouteModeOverride, Value: ""},               // 默认空=跟随分组各自模式(向后兼容); 设为 spread/fill_first 则强制覆盖所有分组
 		{Key: SettingKeyPromptOverrideSystem, Value: ""},
 		{Key: SettingKeyPromptOverrideMode, Value: string(PromptOverrideModeAppendSystem)},
 		{Key: SettingKeyUpstreamErrorStatusPass, Value: "false"},
@@ -364,7 +373,7 @@ func (s *Setting) Validate() error {
 		}
 		return nil
 	case SettingKeyRelayStreamKeepaliveSec, SettingKeyRelayStreamDataTimeoutSec, SettingKeyResponsesSessionTTL,
-		SettingKeySessionKeepTimeDefault, SettingKeyFirstTokenTimeOutDefault:
+		SettingKeySessionKeepTimeDefault, SettingKeyFirstTokenTimeOutDefault, SettingKeyFirstByteKeepaliveDelaySeconds:
 		value, err := strconv.Atoi(s.Value)
 		if err != nil || value < 0 {
 			return fmt.Errorf("%s must be a non-negative integer", s.Key)
