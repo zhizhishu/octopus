@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { FileSpreadsheet, Loader2, Upload } from 'lucide-react';
+import { ChevronDown, FileSpreadsheet, HelpCircle, Loader2, Upload } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
@@ -19,6 +19,7 @@ export function ChannelImportCSV() {
     const [file, setFile] = useState<File | null>(null);
     const [replaceKey, setReplaceKey] = useState(false);
     const [result, setResult] = useState<ChannelCSVImportResult | null>(null);
+    const [showHelp, setShowHelp] = useState(false);
 
     const handleImport = async () => {
         if (!file) {
@@ -45,24 +46,44 @@ export function ChannelImportCSV() {
                     <FileSpreadsheet className="size-5" />
                 </div>
                 <div className="min-w-0 flex-1">
+                    {/* Title + help toggle */}
                     <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div>
-                            <h3 className="text-sm font-semibold text-card-foreground">CSV 批量导入渠道</h3>
-                            <p className="mt-1 text-xs text-muted-foreground">
-                                每行一个渠道：type,name,baseURL,apiKey,supportedModels,defaultTestModel；多个模型用 | 分隔。CSV 里的 supportedModels 会作为已启用模型写入；后续同步发现只进候选，不会自动扩权。
-                            </p>
-                        </div>
-                        <Button
+                        <h3 className="text-sm font-semibold text-card-foreground">CSV 批量导入渠道</h3>
+                        <button
                             type="button"
-                            variant="outline"
-                            size="sm"
-                            onClick={() => navigator.clipboard?.writeText(SAMPLE_CSV).then(() => toast.success('示例 CSV 已复制'))}
+                            onClick={() => setShowHelp(!showHelp)}
+                            className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
                         >
-                            复制示例
-                        </Button>
+                            <HelpCircle className="size-3" />
+                            <span>说明</span>
+                            <ChevronDown className={cn('size-3 transition-transform duration-200', showHelp && 'rotate-180')} />
+                        </button>
                     </div>
 
-                    <div className="mt-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
+                    {/* Collapsible help section */}
+                    {showHelp && (
+                        <div className="mt-2 rounded-xl border border-border/60 bg-muted/20 p-3 space-y-2">
+                            <p className="text-xs leading-relaxed text-muted-foreground">
+                                每行一个渠道：type,name,baseURL,apiKey,supportedModels,defaultTestModel；多个模型用 | 分隔。CSV 里的 supportedModels 会作为已启用模型写入；后续同步发现只进候选，不会自动扩权。
+                            </p>
+                            <div className="flex justify-end">
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => navigator.clipboard?.writeText(SAMPLE_CSV).then(() => toast.success('示例 CSV 已复制'))}
+                                >
+                                    复制示例
+                                </Button>
+                            </div>
+                            <p className="text-xs leading-relaxed text-muted-foreground">
+                                导入完成后只基于已启用模型刷新价格占位与模型池；自动同步拿到的新模型会留在候选区，管理员手动选择后才可进入方案和路由。
+                            </p>
+                        </div>
+                    )}
+
+                    {/* Always-visible operations */}
+                    <div className="mt-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
                         <Input
                             ref={inputRef}
                             type="file"
@@ -82,9 +103,6 @@ export function ChannelImportCSV() {
                         <Switch checked={replaceKey} onCheckedChange={setReplaceKey} />
                         替换同名渠道旧 key（默认关闭，避免把线上 key 一键扫没）
                     </label>
-                    <p className="mt-2 text-xs text-muted-foreground">
-                        导入完成后只基于已启用模型刷新价格占位与模型池；自动同步拿到的新模型会留在候选区，管理员手动选择后才可进入方案和路由。
-                    </p>
 
                     {result && (
                         <div className="mt-4 rounded-xl border bg-background/60 p-3 text-xs">

@@ -227,6 +227,7 @@ export function ChannelForm({
     const [fetchedModels, setFetchedModels] = useState<string[]>(() => expandOneMillionModelAliases(formData.discovered_models ?? []));
     const inputRef = useRef<HTMLInputElement>(null);
     const [bulkHeaderText, setBulkHeaderText] = useState('');
+    const [modelFilter, setModelFilter] = useState('');
 
     const fetchModel = useFetchModel();
     const channelTest = useTestChannelConfig();
@@ -383,6 +384,10 @@ export function ChannelForm({
 
     const selectedModelSet = new Set([...autoModels, ...customModels]);
     const unselectedFetchedModels = fetchedModels.filter((model) => !selectedModelSet.has(model));
+    const visibleFetchedModels = modelFilter.trim()
+        ? fetchedModels.filter((m) => m.toLowerCase().includes(modelFilter.trim().toLowerCase()))
+        : fetchedModels;
+    const visibleUnselectedFetchedModels = visibleFetchedModels.filter((m) => !selectedModelSet.has(m));
 
     const handleSelectFetchedModel = (model: string) => {
         if (selectedModelSet.has(model)) return;
@@ -390,8 +395,8 @@ export function ChannelForm({
     };
 
     const handleSelectAllFetchedModels = () => {
-        if (unselectedFetchedModels.length === 0) return;
-        updateModels([...autoModels, ...unselectedFetchedModels], customModels);
+        if (visibleUnselectedFetchedModels.length === 0) return;
+        updateModels([...autoModels, ...visibleUnselectedFetchedModels], customModels);
     };
 
     const handleRemoveAutoModel = (model: string) => {
@@ -407,6 +412,55 @@ export function ChannelForm({
             e.preventDefault();
             if (inputValue.trim()) handleAddModel(inputValue);
         }
+    };
+
+    const parseBulkKeys = (value: string): string[] => {
+        const trimmed = value.trim();
+        if (!trimmed) return [];
+        if (trimmed.startsWith('[')) {
+            try {
+                const arr = JSON.parse(trimmed) as unknown;
+                if (Array.isArray(arr)) {
+                    const result = (arr as unknown[]).map((k) => String(k).trim()).filter(Boolean);
+                    if (result.length > 0) return [...new Set(result)];
+                }
+            } catch { /* fall through */ }
+        }
+        return [...new Set(trimmed.split(/[\r\n,]+/).map((s) => s.trim()).filter(Boolean))];
+    };
+
+    const handleKeyPaste = (idx: number, e: React.ClipboardEvent<HTMLInputElement>) => {
+        const text = e.clipboardData.getData('text');
+        const parsed = parseBulkKeys(text);
+        if (parsed.length <= 1) return; // single key — let browser handle natively
+        e.preventDefault();
+        const currentKeys = formData.keys;
+        const existingSet = new Set(currentKeys.map((k) => k.channel_key.trim()).filter(Boolean));
+        const slotIsEmpty = !currentKeys[idx]?.channel_key.trim();
+        let nextKeys: ChannelKeyFormItem[];
+        if (slotIsEmpty) {
+            const extra = parsed
+                .slice(1)
+                .filter((k) => !existingSet.has(k))
+                .map((k): ChannelKeyFormItem => ({ enabled: true, channel_key: k }));
+            nextKeys = [
+                ...currentKeys.slice(0, idx),
+                { ...currentKeys[idx], channel_key: parsed[0] },
+                ...currentKeys.slice(idx + 1),
+                ...extra,
+            ];
+        } else {
+            const extra = parsed
+                .filter((k) => !existingSet.has(k))
+                .map((k): ChannelKeyFormItem => ({ enabled: true, channel_key: k }));
+            nextKeys = [
+                ...currentKeys.slice(0, idx + 1),
+                ...extra,
+                ...currentKeys.slice(idx + 1),
+            ];
+        }
+        onFormDataChange({ ...formData, keys: nextKeys });
+        toast.success(`已粘贴 ${parsed.length} 个 key`);
     };
 
     const handleAddKey = () => {
@@ -726,6 +780,7 @@ export function ChannelForm({
                                 type="text"
                                 value={k.channel_key}
                                 onChange={(e) => handleUpdateKey(idx, { channel_key: e.target.value })}
+                                onPaste={(e) => handleKeyPaste(idx, e)}
                                 placeholder={t('apiKey')}
                                 required={idx === 0}
                                 className="col-span-3 min-w-0 rounded-xl sm:col-span-1"
@@ -755,6 +810,7 @@ export function ChannelForm({
                         </div>
                     ))}
                 </div>
+                <p className="text-xs text-muted-foreground">{t('apiKeyBulkHint')}</p>
             </div>
 
             <div className={cn("space-y-2", primaryColumnClass)}>
@@ -839,7 +895,7 @@ export function ChannelForm({
                                     variant="ghost"
                                     size="sm"
                                     onClick={handleSelectAllFetchedModels}
-                                    disabled={unselectedFetchedModels.length === 0}
+                                    disabled={visibleUnselectedFetchedModels.length === 0}
                                     className="h-6 px-2 text-xs text-muted-foreground/60 hover:text-muted-foreground hover:bg-transparent disabled:opacity-40"
                                 >
                                     {t('modelSelectAll')}
@@ -855,8 +911,15 @@ export function ChannelForm({
                                 </Button>
                             </div>
                         </div>
+                        <Input
+                            type="text"
+                            value={modelFilter}
+                            onChange={(e) => setModelFilter(e.target.value)}
+                            placeholder={t('modelFilterPlaceholder')}
+                            className="mb-2 h-7 rounded-lg px-2.5 text-xs"
+                        />
                         <div className="flex max-h-36 min-w-0 flex-wrap gap-1.5 overflow-y-auto pr-1">
-                            {fetchedModels.map((model) => {
+                            {visibleFetchedModels.map((model) => {
                                 const selected = selectedModelSet.has(model);
                                 return (
                                     <button
