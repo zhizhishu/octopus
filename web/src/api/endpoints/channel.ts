@@ -98,6 +98,7 @@ export type Channel = {
     openai_chat_path: string;
     openai_models_path: string;
     match_regex?: string | null;
+    model_mapping?: Record<string, string>;
     stats: StatsChannel;
     circuit_tripped: boolean;
     circuit_remaining_seconds: number;
@@ -145,6 +146,7 @@ export type CreateChannelRequest = {
     system_prompt_override?: string | null;
     prompt_override_mode?: PromptOverrideMode | null;
     match_regex?: string | null;
+    model_mapping?: Record<string, string>;
 };
 
 /**
@@ -178,6 +180,7 @@ export type UpdateChannelRequest = {
     system_prompt_override?: string | null;
     prompt_override_mode?: PromptOverrideMode | null;
     match_regex?: string | null;
+    model_mapping?: Record<string, string>;
     // keys diff
     keys_to_add?: Array<Pick<ChannelKey, 'enabled' | 'channel_key' | 'remark'>>;
     keys_to_update?: Array<{ id: number; enabled?: boolean; channel_key?: string; remark?: string }>;
@@ -221,6 +224,7 @@ export type ChannelTestConfig = {
     system_prompt_override?: string | null;
     prompt_override_mode?: PromptOverrideMode | null;
     match_regex?: string | null;
+    model_mapping?: Record<string, string>;
 };
 
 export type ChannelTestRequest = {
@@ -434,6 +438,10 @@ export function useEnableChannel() {
             queryClient.invalidateQueries({ queryKey: ['channels', 'list'] });
             queryClient.invalidateQueries({ queryKey: ['models', 'channel'] });
             queryClient.invalidateQueries({ queryKey: ['models', 'list'] });
+            // The server reconciles AutoSyncChannels plan targets on every enable/disable.
+            // Invalidate so the access-plan page reflects the updated route targets
+            // automatically without requiring a manual rebuild click.
+            queryClient.invalidateQueries({ queryKey: ['access-plans', 'list'] });
         },
         onError: (error) => {
             logger.error('渠道状态更新失败:', error);
@@ -511,6 +519,23 @@ export function useTestChannelConfig() {
         },
         onError: (error) => {
             logger.error('渠道测试失败:', error);
+        },
+    });
+}
+
+export type ProxyTestResult = {
+    ok: boolean;
+    delay_ms: number;
+    message: string;
+};
+
+export function useTestChannelProxy() {
+    return useMutation({
+        mutationFn: async (data: { channel_proxy: string; base_url: string }) => {
+            return apiClient.post<ProxyTestResult>('/api/v1/channel/test-proxy', data);
+        },
+        onError: (error) => {
+            logger.error('代理延迟测试失败:', error);
         },
     });
 }

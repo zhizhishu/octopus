@@ -429,6 +429,11 @@ export function LogCard({ log }: { log: RelayLog }) {
                                     </Badge>
                                 )}
                                 <SafeText value={log.actual_model_name} className="text-muted-foreground" />
+                                {log.is_stream !== undefined && (
+                                    <Badge variant="outline" className="shrink-0 border-border/60 bg-muted/30 px-1.5 py-0 text-xs">
+                                        {log.is_stream ? t('stream') : t('nonStream')}
+                                    </Badge>
+                                )}
                                 {log.attempts?.some(a => a.sticky) && (
                                     <Pin className="size-3.5 shrink-0 text-amber-500" />
                                 )}
@@ -541,6 +546,11 @@ export function LogCard({ log }: { log: RelayLog }) {
                                 </Badge>
                             )}
                             <SafeText mode="wrap" value={log.actual_model_name} className="text-muted-foreground" />
+                            {log.is_stream !== undefined && (
+                                <Badge variant="outline" className="shrink-0 border-border/60 bg-muted/30 px-1.5 py-0 text-xs">
+                                    {log.is_stream ? t('stream') : t('nonStream')}
+                                </Badge>
+                            )}
                             {log.attempts?.some(a => a.sticky) && (
                                 <Pin className="size-3.5 shrink-0 text-amber-500" />
                             )}

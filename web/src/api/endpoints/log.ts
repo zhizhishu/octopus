@@ -62,6 +62,7 @@ export interface RelayLog {
     session_key?: string;
     session_source?: string;
     route_sticky_hit?: boolean;
+    is_stream?: boolean;
     usage_source?: string;
     usage_missing_reason?: string;
 }

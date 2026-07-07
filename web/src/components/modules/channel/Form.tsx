@@ -1,4 +1,4 @@
-import { AutoGroupType, ChannelType, KeySelectStrategy, defaultModelTestEndpointForChannel, type Channel, type PromptOverrideMode, useFetchModel, useTestChannelConfig } from '@/api/endpoints/channel';
+import { AutoGroupType, ChannelType, KeySelectStrategy, defaultModelTestEndpointForChannel, type Channel, type PromptOverrideMode, useFetchModel, useTestChannelConfig, useTestChannelProxy, type ProxyTestResult } from '@/api/endpoints/channel';
 import { useFingerprintProfileList } from '@/api/endpoints/fingerprint-profile';
 import type { ModelTestResult } from '@/api/endpoints/model';
 import {
@@ -15,7 +15,7 @@ import { Badge } from '@/components/ui/badge';
 import { toast } from '@/components/common/Toast';
 import { useTranslations } from 'next-intl';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { Loader2, Play, RefreshCw, X, Plus } from 'lucide-react';
+import { Loader2, Play, RefreshCw, X, Plus, Timer } from 'lucide-react';
 import {
     Accordion,
     AccordionContent,
@@ -110,6 +110,7 @@ export interface ChannelFormData {
     match_regex: string;
     openai_chat_path: string;
     openai_models_path: string;
+    model_mapping?: Record<string, string>;
 }
 
 export interface ChannelFormProps {
@@ -228,9 +229,14 @@ export function ChannelForm({
     const inputRef = useRef<HTMLInputElement>(null);
     const [bulkHeaderText, setBulkHeaderText] = useState('');
     const [modelFilter, setModelFilter] = useState('');
+    const [mappingRows, setMappingRows] = useState<Array<{ client: string; upstream: string }>>(() =>
+        Object.entries(formData.model_mapping ?? {}).map(([client, upstream]) => ({ client, upstream }))
+    );
+    const [proxyTestResult, setProxyTestResult] = useState<ProxyTestResult | null>(null);
 
     const fetchModel = useFetchModel();
     const channelTest = useTestChannelConfig();
+    const testChannelProxy = useTestChannelProxy();
     const { data: fingerprintProfiles } = useFingerprintProfileList();
     const [channelTestResult, setChannelTestResult] = useState<ModelTestResult | null>(null);
     const [channelTestStream, setChannelTestStream] = useState(true);
@@ -575,6 +581,29 @@ export function ChannelForm({
         onFormDataChange({ ...formData, custom_header: Array.from(next.values()) });
         setBulkHeaderText('');
         toast.success(`已导入 ${imported.length} 个 Header`);
+    };
+
+    const updateMappingRows = (rows: Array<{ client: string; upstream: string }>) => {
+        setMappingRows(rows);
+        const mapping: Record<string, string> = {};
+        for (const { client, upstream } of rows) {
+            const k = client.trim();
+            if (k) mapping[k] = upstream;
+        }
+        onFormDataChange({ ...formData, model_mapping: Object.keys(mapping).length > 0 ? mapping : undefined });
+    };
+
+    const handleTestProxy = () => {
+        const proxyVal = formData.channel_proxy?.trim();
+        if (!proxyVal) return;
+        setProxyTestResult(null);
+        testChannelProxy.mutate(
+            { channel_proxy: proxyVal, base_url: formData.base_urls?.[0]?.url?.trim() || '' },
+            {
+                onSuccess: (data) => setProxyTestResult(data),
+                onError: (error) => setProxyTestResult({ ok: false, delay_ms: 0, message: error.message }),
+            }
+        );
     };
 
     const isAdvancedPanel = advancedMode === 'panel';
@@ -997,6 +1026,76 @@ export function ChannelForm({
                     </div>
                 </div>
 
+                <Accordion type="single" collapsible className="w-full rounded-xl border border-border/60 bg-muted/20">
+                    <AccordionItem value="mapping" className="border-none">
+                        <AccordionTrigger className="rounded-xl px-3 py-2.5 text-xs font-medium text-card-foreground transition-colors hover:bg-muted/30 hover:no-underline">
+                            <span className="flex items-center gap-1.5">
+                                {t('modelMapping')}
+                                {Object.keys(formData.model_mapping ?? {}).length > 0 && (
+                                    <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">
+                                        {Object.keys(formData.model_mapping ?? {}).length}
+                                    </span>
+                                )}
+                            </span>
+                        </AccordionTrigger>
+                        <AccordionContent className="border-t border-border/60 px-3 pb-3 pt-3">
+                            <p className="mb-3 text-xs text-muted-foreground">{t('modelMappingHint')}</p>
+                            <div className="space-y-2">
+                                {mappingRows.map((row, idx) => (
+                                    <div key={idx} className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)_auto] items-center gap-2">
+                                        <Input
+                                            type="text"
+                                            value={row.client}
+                                            onChange={(e) => {
+                                                const next = [...mappingRows];
+                                                next[idx] = { ...next[idx], client: e.target.value };
+                                                updateMappingRows(next);
+                                            }}
+                                            placeholder={t('modelMappingClientName')}
+                                            className="h-7 rounded-lg px-2.5 text-xs"
+                                        />
+                                        <span className="shrink-0 text-xs text-muted-foreground">→</span>
+                                        <Input
+                                            type="text"
+                                            value={row.upstream}
+                                            onChange={(e) => {
+                                                const next = [...mappingRows];
+                                                next[idx] = { ...next[idx], upstream: e.target.value };
+                                                updateMappingRows(next);
+                                            }}
+                                            placeholder={t('modelMappingUpstreamName')}
+                                            className="h-7 rounded-lg px-2.5 text-xs"
+                                        />
+                                        <Button
+                                            type="button"
+                                            variant="ghost"
+                                            size="sm"
+                                            onClick={() => updateMappingRows(mappingRows.filter((_, i) => i !== idx))}
+                                            className="h-7 w-7 p-0 rounded-lg text-muted-foreground hover:text-destructive hover:bg-transparent"
+                                            title="Remove"
+                                        >
+                                            <X className="h-3.5 w-3.5" />
+                                        </Button>
+                                    </div>
+                                ))}
+                                {mappingRows.length === 0 && (
+                                    <div className="py-1 text-xs text-muted-foreground">{t('modelMappingEmpty')}</div>
+                                )}
+                            </div>
+                            <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => updateMappingRows([...mappingRows, { client: '', upstream: '' }])}
+                                className="mt-2 h-7 px-2 text-xs text-muted-foreground/70 hover:text-muted-foreground hover:bg-transparent"
+                            >
+                                <Plus className="h-3 w-3 mr-1" />
+                                {t('modelMappingAdd')}
+                            </Button>
+                        </AccordionContent>
+                    </AccordionItem>
+                </Accordion>
+
                 {formData.type === ChannelType.Anthropic && (
                     <div className="rounded-xl border border-border bg-background/70 p-3">
                         <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1087,15 +1186,46 @@ export function ChannelForm({
                                         <span className="min-w-0 text-sm text-card-foreground">{t('proxy')}</span>
                                     </label>
                                 </div>
-                                <Input
-                                    id={`${idPrefix}-channel-proxy`}
-                                    type="text"
-                                    value={formData.channel_proxy}
-                                    onChange={(e) => onFormDataChange({ ...formData, channel_proxy: e.target.value })}
-                                    placeholder={t('channelProxyPlaceholder')}
-                                    disabled={!formData.proxy}
-                                    className="rounded-xl disabled:cursor-not-allowed disabled:opacity-50"
-                                />
+                                <div className="flex items-center gap-2">
+                                    <Input
+                                        id={`${idPrefix}-channel-proxy`}
+                                        type="text"
+                                        value={formData.channel_proxy}
+                                        onChange={(e) => {
+                                            onFormDataChange({ ...formData, channel_proxy: e.target.value });
+                                            setProxyTestResult(null);
+                                        }}
+                                        placeholder={t('channelProxyPlaceholder')}
+                                        disabled={!formData.proxy}
+                                        className="flex-1 rounded-xl disabled:cursor-not-allowed disabled:opacity-50"
+                                    />
+                                    <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="sm"
+                                        onClick={handleTestProxy}
+                                        disabled={!formData.proxy || !formData.channel_proxy?.trim() || testChannelProxy.isPending}
+                                        title={!formData.channel_proxy?.trim() ? t('proxyTestDisabled') : t('proxyTest')}
+                                        className="h-9 shrink-0 px-2.5 rounded-xl text-muted-foreground hover:text-foreground disabled:opacity-40 hover:bg-transparent"
+                                    >
+                                        {testChannelProxy.isPending
+                                            ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                            : <Timer className="h-3.5 w-3.5" />}
+                                        <span className="ml-1.5 text-xs">{t('proxyTest')}</span>
+                                    </Button>
+                                </div>
+                                {proxyTestResult && (
+                                    <p className={cn(
+                                        'text-xs',
+                                        proxyTestResult.ok
+                                            ? 'text-emerald-600 dark:text-emerald-400'
+                                            : 'text-destructive'
+                                    )}>
+                                        {proxyTestResult.ok
+                                            ? `✓ ${proxyTestResult.delay_ms}ms`
+                                            : `✗ ${proxyTestResult.message}`}
+                                    </p>
+                                )}
                             </div>
 
                             <div className="space-y-2">
