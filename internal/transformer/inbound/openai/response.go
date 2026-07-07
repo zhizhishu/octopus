@@ -1094,6 +1094,14 @@ func (t *ResponsesToolChoice) UnmarshalJSON(data []byte) error {
 	raw := append(json.RawMessage(nil), data...)
 	var mode string
 	if err := json.Unmarshal(data, &mode); err == nil {
+		if mode == "" {
+			// JSON null (json.Unmarshal leaves the string zero-valued and returns
+			// no error) or an explicit empty string is NOT a usable tool_choice
+			// mode. Leaving Mode nil lets the outbound omit tool_choice entirely so
+			// strict upstreams (e.g. deepseek's serde) don't reject `"tool_choice": ""`.
+			t.Raw = raw
+			return nil
+		}
 		t.Mode = &mode
 		t.Raw = raw
 		return nil

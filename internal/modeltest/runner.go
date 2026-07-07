@@ -736,7 +736,7 @@ func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermod
 	if parsed == nil || !parsed.IsChatResponse() {
 		return response.StatusCode, parsed, fmt.Errorf("upstream returned no chat choices")
 	}
-	if responsePreview(parsed) == "" {
+	if responsePreview(parsed) == "" && !parsedHasReasoningContent(parsed) {
 		return response.StatusCode, parsed, fmt.Errorf("upstream returned empty response text")
 	}
 	return response.StatusCode, parsed, nil
@@ -771,6 +771,11 @@ func (r *modelRunner) internalRequest(upstreamModel string) *transformermodel.In
 	if endpoint.name == "anthropic_messages" {
 		stream = true
 		maxTokens = int64(64000)
+	} else if isLikelyThinkingModel(upstreamModel) {
+		// Thinking/reasoning models burn through a tiny 8-token probe on reasoning
+		// tokens before producing any content, causing a false "empty response" error.
+		// Use a larger budget so content tokens can appear within the probe window.
+		maxTokens = int64(256)
 	}
 	internalRequest := &transformermodel.InternalLLMRequest{
 		Model: upstreamModel,
@@ -1480,6 +1485,7 @@ func transformModelTestStream(ctx context.Context, adapter transformermodel.Outb
 	}
 
 	var text strings.Builder
+	var reasoning strings.Builder
 	var usage *transformermodel.Usage
 	readCfg := &sse.ReadConfig{MaxEventSize: 1024 * 1024}
 	for ev, err := range sse.Read(response.Body, readCfg) {
@@ -1501,10 +1507,16 @@ func transformModelTestStream(ctx context.Context, adapter transformermodel.Outb
 				if content := messageText(choice.Message); content != "" {
 					text.WriteString(content)
 				}
+				if rc := choice.Message.GetReasoningContent(); rc != "" {
+					reasoning.WriteString(rc)
+				}
 			}
 			if choice.Delta != nil {
 				if content := messageText(choice.Delta); content != "" {
 					text.WriteString(content)
+				}
+				if rc := choice.Delta.GetReasoningContent(); rc != "" {
+					reasoning.WriteString(rc)
 				}
 			}
 		}
@@ -1514,7 +1526,10 @@ func transformModelTestStream(ctx context.Context, adapter transformermodel.Outb
 	}
 
 	content := strings.TrimSpace(text.String())
-	if content == "" {
+	// Thinking/reasoning models (e.g. deepseek-reasoner, sensenova) emit reasoning
+	// tokens first and may exhaust a tiny max_tokens probe before reaching the final
+	// content. Accept the response as valid if either content or reasoning is non-empty.
+	if content == "" && strings.TrimSpace(reasoning.String()) == "" {
 		return nil, fmt.Errorf("upstream stream returned empty response text")
 	}
 	message := &transformermodel.Message{
@@ -1653,6 +1668,38 @@ func stringify(value any) string {
 	default:
 		return ""
 	}
+}
+
+// isLikelyThinkingModel returns true when the model name suggests it is a
+// reasoning/thinking model that emits a reasoning preamble before content.
+// These models need a larger max_tokens probe to avoid exhausting the token
+// budget on reasoning tokens before any content token is produced.
+func isLikelyThinkingModel(model string) bool {
+	lower := strings.ToLower(model)
+	for _, kw := range []string{"think", "reasoner", "reasoning", "-r1", "glm", "sensenova", "qwen"} {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// parsedHasReasoningContent returns true when any choice in the response
+// carries non-empty reasoning/thinking content, regardless of whether the
+// regular text content is empty.
+func parsedHasReasoningContent(response *transformermodel.InternalLLMResponse) bool {
+	if response == nil {
+		return false
+	}
+	for _, choice := range response.Choices {
+		if choice.Message != nil && choice.Message.GetReasoningContent() != "" {
+			return true
+		}
+		if choice.Delta != nil && choice.Delta.GetReasoningContent() != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func responsePreview(response *transformermodel.InternalLLMResponse) string {

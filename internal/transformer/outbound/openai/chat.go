@@ -154,8 +154,16 @@ func sanitizeToolChoiceForStrictUpstream(request *model.InternalLLMRequest) {
 	if tc == nil {
 		return
 	}
-	// Valid form 1: a string mode ("none" / "auto" / "required").
+	// Valid form 1: a string mode ("none" / "auto" / "required"). Only these three
+	// are legal variants for a strict upstream. An empty or non-standard string
+	// (notably "" synthesized from a client's `tool_choice: null`) must be dropped,
+	// not forwarded verbatim — deepseek's serde rejects `"tool_choice": ""` with 400.
 	if tc.ToolChoice != nil {
+		switch strings.ToLower(*tc.ToolChoice) {
+		case "none", "auto", "required":
+			return
+		}
+		request.ToolChoice = nil
 		return
 	}
 	// Valid form 2: a named function choice with a non-empty function name.
