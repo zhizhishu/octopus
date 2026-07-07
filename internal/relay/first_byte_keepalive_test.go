@@ -24,12 +24,13 @@ func TestCurrentFirstByteKeepaliveDelayDefault(t *testing.T) {
 	}
 }
 
-// TestCurrentFirstByteKeepaliveDelayEnvOverride verifies that the env variable
-// overrides the fallback when the DB is unavailable.
+// TestCurrentFirstByteKeepaliveDelayEnvOverride verifies the env var is parsed by
+// the fallback. currentFirstByteKeepaliveDelay() reads the DB first (DefaultSettings
+// seeds this key), so env only applies via the fallback when the DB row is absent;
+// we exercise that fallback directly to stay independent of DB seeding/test order.
 func TestCurrentFirstByteKeepaliveDelayEnvOverride(t *testing.T) {
 	t.Setenv("OCTOPUS_RELAY_FIRST_BYTE_KEEPALIVE_DELAY_SECONDS", "7")
-	got := currentFirstByteKeepaliveDelay()
-	if got != 7*time.Second {
+	if got := defaultFirstByteKeepaliveDelay(); got != 7*time.Second {
 		t.Fatalf("expected env-override first-byte keepalive delay 7s, got %s", got)
 	}
 }

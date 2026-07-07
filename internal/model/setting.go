@@ -242,15 +242,15 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyCodexHeaderUserAgent, Value: DefaultCodexHeaderUserAgent},
 		{Key: SettingKeyCodexHeaderBetaFeatures, Value: DefaultCodexHeaderBetaFeatures},
 		{Key: SettingKeyCodexFastMode, Value: "false"},
-		{Key: SettingKeyUserRegistrationEnabled, Value: "false"},    // 默认只允许邀请码注册
-		{Key: SettingKeyCircuitBreakerThreshold, Value: "10"},       // 默认连续失败10次触发熔断
-		{Key: SettingKeyCircuitBreakerCooldown, Value: "30"},        // 默认基础冷却30秒
-		{Key: SettingKeyCircuitBreakerMaxCooldown, Value: "600"},    // 默认最大冷却600秒（10分钟）
-		{Key: SettingKeyDebugLoadBalancer, Value: "false"},          // 默认关闭选路决策日志
-		{Key: SettingKeySessionKeepTimeDefault, Value: "0"},         // 默认0=不启用全局粘性(向后兼容); 管理员设为如3600才全局开, 分组级 SessionKeepTime 仍优先
-		{Key: SettingKeyFirstTokenTimeOutDefault, Value: "0"},       // 默认0=不启用全局默认(向后兼容); 分组级 FirstTokenTimeOut 仍优先
-		{Key: SettingKeyFirstByteKeepaliveDelaySeconds, Value: "0"}, // 默认0=关闭: 等首字节期间不注入下游心跳; >0=延迟多少秒后开始注入(防前置反代空闲掐断)
-		{Key: SettingKeyRouteModeOverride, Value: ""},               // 默认空=跟随分组各自模式(向后兼容); 设为 spread/fill_first 则强制覆盖所有分组
+		{Key: SettingKeyUserRegistrationEnabled, Value: "false"},                                        // 默认只允许邀请码注册
+		{Key: SettingKeyCircuitBreakerThreshold, Value: "10"},                                           // 默认连续失败10次触发熔断
+		{Key: SettingKeyCircuitBreakerCooldown, Value: "30"},                                            // 默认基础冷却30秒
+		{Key: SettingKeyCircuitBreakerMaxCooldown, Value: "600"},                                        // 默认最大冷却600秒（10分钟）
+		{Key: SettingKeyDebugLoadBalancer, Value: "false"},                                              // 默认关闭选路决策日志
+		{Key: SettingKeySessionKeepTimeDefault, Value: "0"},                                             // 默认0=不启用全局粘性(向后兼容); 管理员设为如3600才全局开, 分组级 SessionKeepTime 仍优先
+		{Key: SettingKeyFirstTokenTimeOutDefault, Value: "0"},                                           // 默认0=不启用全局默认(向后兼容); 分组级 FirstTokenTimeOut 仍优先
+		{Key: SettingKeyFirstByteKeepaliveDelaySeconds, Value: defaultFirstByteKeepaliveDelaySeconds()}, // 默认0=关闭: 等首字节期间不注入下游心跳; >0=延迟多少秒后开始注入(防前置反代空闲掐断)
+		{Key: SettingKeyRouteModeOverride, Value: ""},                                                   // 默认空=跟随分组各自模式(向后兼容); 设为 spread/fill_first 则强制覆盖所有分组
 		{Key: SettingKeyPromptOverrideSystem, Value: ""},
 		{Key: SettingKeyPromptOverrideMode, Value: string(PromptOverrideModeAppendSystem)},
 		{Key: SettingKeyUpstreamErrorStatusPass, Value: "false"},
@@ -522,6 +522,21 @@ func defaultRelayStreamKeepaliveIntervalSeconds() string {
 	value, err := strconv.Atoi(raw)
 	if err != nil {
 		return "15"
+	}
+	if value < 0 {
+		return "0"
+	}
+	return strconv.Itoa(value)
+}
+
+func defaultFirstByteKeepaliveDelaySeconds() string {
+	raw := strings.TrimSpace(os.Getenv("OCTOPUS_RELAY_FIRST_BYTE_KEEPALIVE_DELAY_SECONDS"))
+	if raw == "" {
+		return "0"
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return "0"
 	}
 	if value < 0 {
 		return "0"
