@@ -41,7 +41,7 @@ type modelHealthModelAccumulator struct {
 }
 
 func ModelHourlyHealth(ctx context.Context) (model.ModelHealthResponse, error) {
-	now := time.Now()
+	now := statsNow()
 	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	end := start.Add(24 * time.Hour)
 	date := start.Format("20060102")

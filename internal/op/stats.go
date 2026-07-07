@@ -115,7 +115,7 @@ func persistStatsSnapshots(
 		return result.Error
 	}
 
-	todayDate := time.Now().Format("20060102")
+	todayDate := statsNow().Format("20060102")
 	hourlyStats := make([]model.StatsHourly, 0, 24)
 	for hour := 0; hour < 24; hour++ {
 		if hourlyAll[hour].Date == todayDate {
@@ -217,7 +217,7 @@ func statsSaveDBWithDailyOverride(ctx context.Context, dailyOverride model.Stats
 }
 
 func StatsDailyUpdate(ctx context.Context, metrics model.StatsMetrics) error {
-	today := time.Now().Format("20060102")
+	today := statsNow().Format("20060102")
 
 	statsDailyCacheLock.Lock()
 	if statsDailyCache.Date == today {
@@ -318,9 +318,9 @@ func remarkStatsDirty(channelIDs []int, modelIDs []int, apiKeyIDs []int) {
 }
 
 func StatsHourlyUpdate(metrics model.StatsMetrics) error {
-	now := time.Now()
+	now := statsNow()
 	nowHour := now.Hour()
-	todayDate := time.Now().Format("20060102")
+	todayDate := now.Format("20060102")
 
 	statsHourlyCacheLock.Lock()
 	defer statsHourlyCacheLock.Unlock()
@@ -440,9 +440,9 @@ func StatsAPIKeyList() []model.StatsAPIKey {
 }
 
 func StatsHourlyGet() []model.StatsHourly {
-	now := time.Now()
+	now := statsNow()
 	currentHour := now.Hour()
-	todayDate := time.Now().Format("20060102")
+	todayDate := now.Format("20060102")
 
 	statsHourlyCacheLock.RLock()
 	defer statsHourlyCacheLock.RUnlock()
@@ -474,7 +474,7 @@ func StatsGetDaily(ctx context.Context) ([]model.StatsDaily, error) {
 
 func statsRefreshCache(ctx context.Context) error {
 	dbConn := db.GetDB().WithContext(ctx)
-	today := time.Now().Format("20060102")
+	today := statsNow().Format("20060102")
 
 	var loadedDaily model.StatsDaily
 	result := dbConn.Last(&loadedDaily)

@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type SettingKey string
@@ -14,6 +15,7 @@ type SettingKey string
 const (
 	SettingKeyProxyURL                  SettingKey = "proxy_url"
 	SettingKeyStatsSaveInterval         SettingKey = "stats_save_interval"          // 将统计信息写入数据库的周期(分钟)
+	SettingKeyStatsTimezone             SettingKey = "stats_timezone"               // 统计"当天/小时"按此 IANA 时区(如 America/Los_Angeles)划分自然日; 空=跟随容器本地时区(向后兼容)。修复容器时区领先用户时区时"今天"统计被提前清零
 	SettingKeyModelInfoUpdateInterval   SettingKey = "model_info_update_interval"   // 模型信息更新间隔(小时)
 	SettingKeySyncLLMInterval           SettingKey = "sync_llm_interval"            // LLM 同步间隔(小时)
 	SettingKeyRelayLogKeepPeriod        SettingKey = "relay_log_keep_period"        // 日志保存时间范围(天)
@@ -217,6 +219,7 @@ func DefaultSettings() []Setting {
 	return []Setting{
 		{Key: SettingKeyProxyURL, Value: ""},
 		{Key: SettingKeyStatsSaveInterval, Value: "10"},           // 默认10分钟保存一次统计信息
+		{Key: SettingKeyStatsTimezone, Value: ""},                 // 空=跟随容器本地时区(向后兼容); 设 IANA 名(如 America/Los_Angeles)则统计按该时区划分自然日, 修复"服务器跨天导致今天统计清零"
 		{Key: SettingKeyCORSAllowOrigins, Value: ""},              // CORS 默认不允许跨域，设置为 "*" 才允许所有来源
 		{Key: SettingKeyModelInfoUpdateInterval, Value: "24"},     // 默认24小时更新一次模型信息
 		{Key: SettingKeySyncLLMInterval, Value: "24"},             // 默认24小时同步一次LLM
@@ -507,6 +510,15 @@ func (s *Setting) Validate() error {
 		}
 		if parsedURL.Host == "" {
 			return fmt.Errorf("proxy URL must have a host")
+		}
+		return nil
+	case SettingKeyStatsTimezone:
+		trimmed := strings.TrimSpace(s.Value)
+		if trimmed == "" {
+			return nil
+		}
+		if _, err := time.LoadLocation(trimmed); err != nil {
+			return fmt.Errorf("%s must be empty or a valid IANA timezone (e.g. America/Los_Angeles): %w", s.Key, err)
 		}
 		return nil
 	}
