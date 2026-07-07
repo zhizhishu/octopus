@@ -626,3 +626,108 @@ func assertOutputIndexAgrees(t *testing.T, seen map[string]int, itemID string, o
 	}
 	seen[itemID] = outputIndex
 }
+
+// TestResponseInboundInjectsReasoningIntoToolCallMessage verifies that a
+// reasoning item immediately preceding a function_call item in the Responses
+// input is injected as ReasoningContent onto the same assistant tool-call
+// message rather than emitted as a separate predecessor assistant message.
+//
+// DeepSeek V4 requires reasoning_content on the same assistant message as
+// tool_calls; splitting them causes a 400 on every multi-turn tool-call
+// continuation.
+func TestResponseInboundInjectsReasoningIntoToolCallMessage(t *testing.T) {
+	req, err := (&ResponseInbound{}).TransformRequest(context.Background(), []byte(`{
+		"model":"deepseek-reasoner",
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"whats the weather?"}]},
+			{"type":"reasoning","summary":[{"type":"summary_text","text":"I should call get_weather"}]},
+			{"type":"function_call","call_id":"call_1","name":"get_weather","arguments":"{\"city\":\"Beijing\"}"},
+			{"type":"function_call_output","call_id":"call_1","output":"sunny 25C"}
+		]
+	}`))
+	if err != nil {
+		t.Fatalf("TransformRequest returned error: %v", err)
+	}
+
+	// Expect 3 messages: user, assistant(reasoning+tool_calls), tool
+	if len(req.Messages) != 3 {
+		var roles []string
+		for _, m := range req.Messages {
+			roles = append(roles, m.Role)
+		}
+		t.Fatalf("expected 3 messages (user, assistant, tool), got %d with roles %v", len(req.Messages), roles)
+	}
+
+	user := req.Messages[0]
+	if user.Role != "user" {
+		t.Fatalf("expected first message to be user, got %q", user.Role)
+	}
+
+	assistant := req.Messages[1]
+	if assistant.Role != "assistant" {
+		t.Fatalf("expected second message to be assistant, got %q", assistant.Role)
+	}
+	if len(assistant.ToolCalls) != 1 {
+		t.Fatalf("expected assistant message to have 1 tool call, got %d", len(assistant.ToolCalls))
+	}
+	if got := assistant.ToolCalls[0]; got.ID != "call_1" || got.Function.Name != "get_weather" {
+		t.Fatalf("unexpected tool call: %#v", got)
+	}
+	if got := assistant.GetReasoningContent(); got != "I should call get_weather" {
+		t.Fatalf("expected reasoning_content on assistant tool-call message, got %q", got)
+	}
+
+	tool := req.Messages[2]
+	if tool.Role != "tool" || tool.ToolCallID == nil || *tool.ToolCallID != "call_1" {
+		t.Fatalf("unexpected tool output message: %#v", tool)
+	}
+	if tool.Content.Content == nil || *tool.Content.Content != "sunny 25C" {
+		t.Fatalf("expected tool output content %q, got %#v", "sunny 25C", tool.Content)
+	}
+}
+
+// TestResponseInboundReasoningBeforeTextFlushesStandalone verifies that a
+// reasoning item preceding a plain text assistant response is still emitted as
+// a standalone assistant message (preserving backward-compatible behaviour for
+// non-tool-call turns).
+func TestResponseInboundReasoningBeforeTextFlushesStandalone(t *testing.T) {
+	req, err := (&ResponseInbound{}).TransformRequest(context.Background(), []byte(`{
+		"model":"deepseek-reasoner",
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]},
+			{"type":"reasoning","summary":[{"type":"summary_text","text":"just a greeting"}]},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hi there"}]}
+		]
+	}`))
+	if err != nil {
+		t.Fatalf("TransformRequest returned error: %v", err)
+	}
+
+	// Expect 3 messages: user, standalone-reasoning assistant, text assistant
+	if len(req.Messages) != 3 {
+		var roles []string
+		for _, m := range req.Messages {
+			roles = append(roles, m.Role)
+		}
+		t.Fatalf("expected 3 messages, got %d with roles %v", len(req.Messages), roles)
+	}
+
+	reasoning := req.Messages[1]
+	if reasoning.Role != "assistant" {
+		t.Fatalf("expected standalone reasoning message to be assistant, got %q", reasoning.Role)
+	}
+	if reasoning.GetReasoningContent() != "just a greeting" {
+		t.Fatalf("expected standalone reasoning content, got %q", reasoning.GetReasoningContent())
+	}
+	if len(reasoning.ToolCalls) != 0 {
+		t.Fatalf("standalone reasoning message must not have tool calls, got %d", len(reasoning.ToolCalls))
+	}
+
+	text := req.Messages[2]
+	if text.Role != "assistant" {
+		t.Fatalf("expected text message to be assistant, got %q", text.Role)
+	}
+	if text.Content.Content == nil || *text.Content.Content != "hi there" {
+		t.Fatalf("expected text content, got %#v", text.Content)
+	}
+}

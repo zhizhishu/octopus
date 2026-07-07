@@ -1397,9 +1397,85 @@ func convertInputToMessages(input *ResponsesInput) ([]model.Message, error) {
 		}, nil
 	}
 
-	// Array of items
+	// Array of items.
+	//
+	// pendingReasoningText and pendingReasoningSignature hold the content from a
+	// reasoning item until we know what follows it.  DeepSeek V4 requires that the
+	// reasoning_content which produced a tool call lives on the SAME assistant
+	// message as that tool call; sending them as two separate consecutive assistant
+	// messages causes a 400 on the second multi-turn request.
+	//
+	// Strategy:
+	//   reasoning item      → save text/signature, do NOT emit yet.
+	//   function_call item  → create the tool-call assistant message and inject the
+	//                         saved reasoning text into its ReasoningContent (if it
+	//                         is not already set); clear pending state.
+	//   any other item      → flush any saved reasoning as a standalone assistant
+	//                         message first (preserves existing behaviour for turns
+	//                         where reasoning precedes a plain text response).
 	messages := make([]model.Message, 0, len(input.Items))
+	var pendingReasoningText string
+	var pendingReasoningSignature string
+
+	flushPendingReasoning := func() {
+		if pendingReasoningText == "" && pendingReasoningSignature == "" {
+			return
+		}
+		msg := model.Message{Role: "assistant"}
+		if pendingReasoningText != "" {
+			msg.ReasoningContent = lo.ToPtr(pendingReasoningText)
+		}
+		if pendingReasoningSignature != "" {
+			msg.ReasoningSignature = lo.ToPtr(pendingReasoningSignature)
+		}
+		messages = append(messages, msg)
+		pendingReasoningText = ""
+		pendingReasoningSignature = ""
+	}
+
 	for _, item := range input.Items {
+		if item.Type == "reasoning" {
+			// Accumulate summary text.  Overwriting any prior value is intentional:
+			// a new reasoning item in the same turn replaces the old one (this
+			// should not happen in practice but guards against malformed histories).
+			var sb strings.Builder
+			for _, summary := range item.Summary {
+				sb.WriteString(summary.Text)
+			}
+			if sb.Len() > 0 {
+				pendingReasoningText = sb.String()
+			}
+			if item.EncryptedContent != nil && *item.EncryptedContent != "" {
+				pendingReasoningSignature = *item.EncryptedContent
+			}
+			// Do not emit a message yet; wait to see what follows.
+			continue
+		}
+
+		if isResponsesToolCallItemType(item.Type) {
+			msg, err := convertItemToMessage(&item)
+			if err != nil {
+				return nil, err
+			}
+			if msg != nil {
+				// Inject the pending reasoning onto this tool-call assistant message.
+				// Only inject when the message carries no reasoning already so the
+				// function stays idempotent if the caller sets it elsewhere.
+				if pendingReasoningText != "" && msg.GetReasoningContent() == "" {
+					msg.ReasoningContent = lo.ToPtr(pendingReasoningText)
+				}
+				messages = append(messages, *msg)
+			}
+			pendingReasoningText = ""
+			pendingReasoningSignature = ""
+			continue
+		}
+
+		// Non-reasoning, non-tool-call item: flush any pending reasoning as a
+		// standalone assistant message first.  This preserves the pre-existing
+		// behaviour for turns where a reasoning item precedes a plain text response.
+		flushPendingReasoning()
+
 		msg, err := convertItemToMessage(&item)
 		if err != nil {
 			return nil, err
@@ -1408,6 +1484,10 @@ func convertInputToMessages(input *ResponsesInput) ([]model.Message, error) {
 			messages = append(messages, *msg)
 		}
 	}
+
+	// Flush any reasoning item that was the last in the array (e.g., a
+	// reasoning-only response with no following text or tool call).
+	flushPendingReasoning()
 
 	return messages, nil
 }
