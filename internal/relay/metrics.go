@@ -393,6 +393,7 @@ func (m *RelayMetrics) saveLog(ctx context.Context, err error, duration time.Dur
 		SessionKey:            m.SessionKey,
 		SessionSource:         m.SessionSource,
 		RouteStickyHit:        routeStickyHit(attempts),
+		IsStream:              m.InternalRequest != nil && m.InternalRequest.Stream != nil && *m.InternalRequest.Stream,
 		PromptOverrideMode:    string(m.PromptSnapshot.Mode),
 		PromptOverrideSources: append([]string(nil), m.PromptSnapshot.Sources...),
 	}

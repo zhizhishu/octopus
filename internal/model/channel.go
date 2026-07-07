@@ -61,6 +61,7 @@ type Channel struct {
 	CustomModel           string             `json:"custom_model"`
 	DiscoveredModels      []string           `json:"discovered_models" gorm:"serializer:json"`
 	SelectedModels        []string           `json:"selected_models" gorm:"serializer:json"`
+	ModelMapping          map[string]string  `json:"model_mapping" gorm:"serializer:json"`
 	AnthropicContext1M    bool               `json:"anthropic_context_1m" gorm:"column:anthropic_context_1m;default:false"`
 	Proxy                 bool               `json:"proxy" gorm:"default:false"`
 	AutoSync              bool               `json:"auto_sync" gorm:"default:false"`
@@ -152,6 +153,7 @@ type ChannelUpdateRequest struct {
 	SystemPromptOverride  *string                `json:"system_prompt_override,omitempty"`
 	PromptOverrideMode    *PromptOverrideMode    `json:"prompt_override_mode,omitempty"`
 	MatchRegex            *string                `json:"match_regex,omitempty"`
+	ModelMapping          *map[string]string     `json:"model_mapping,omitempty"`
 	OpenAIChatPath        *string                `json:"openai_chat_path,omitempty"`
 	OpenAIModelsPath      *string                `json:"openai_models_path,omitempty"`
 

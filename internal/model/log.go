@@ -85,6 +85,7 @@ type RelayLog struct {
 	SessionKey            string           `json:"session_key,omitempty" gorm:"size:96;index"`
 	SessionSource         string           `json:"session_source,omitempty" gorm:"size:64"`
 	RouteStickyHit        bool             `json:"route_sticky_hit,omitempty"`
+	IsStream              bool             `json:"is_stream"`
 	UsageSource           string           `json:"usage_source,omitempty" gorm:"size:64"`
 	UsageMissingReason    string           `json:"usage_missing_reason,omitempty" gorm:"size:128"`
 	AccessPlanID          int              `json:"access_plan_id"`
@@ -137,6 +138,7 @@ type RelayLogUserSummary struct {
 	SessionKey         string  `json:"session_key,omitempty"`
 	SessionSource      string  `json:"session_source,omitempty"`
 	RouteStickyHit     bool    `json:"route_sticky_hit,omitempty"`
+	IsStream           bool    `json:"is_stream,omitempty"`
 	UsageSource        string  `json:"usage_source,omitempty"`
 	UsageMissingReason string  `json:"usage_missing_reason,omitempty"`
 	AccessPlanSlug     string  `json:"access_plan_slug"`

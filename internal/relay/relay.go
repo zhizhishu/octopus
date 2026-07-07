@@ -1113,7 +1113,25 @@ func isOpenAIResponsesEndpointUnsupportedError(statusCode int, body string) bool
 	}
 }
 
+// applyModelMapping remaps ra.internalRequest.Model from the client-visible name
+// to the upstream-expected name using the channel's model_mapping table.
+// The original client name is always preserved in ra.requestModel (set before
+// the first channel attempt and never modified). ra.modelMapped is set so that
+// response transformers can restore the client-visible name in the reply.
+func (ra *relayAttempt) applyModelMapping() {
+	if ra.channel == nil || len(ra.channel.ModelMapping) == 0 {
+		return
+	}
+	upstreamModel, ok := ra.channel.ModelMapping[ra.internalRequest.Model]
+	if !ok || upstreamModel == "" {
+		return
+	}
+	ra.internalRequest.Model = upstreamModel
+	ra.modelMapped = true
+}
+
 func (ra *relayAttempt) applyTransformOptions() {
+	ra.applyModelMapping()
 	ra.internalRequest.TransformOptions.AnthropicAutoCacheControl = false
 	// Channel cloak mode "never" disables Claude identity simulation end to end:
 	// header defaults are already gated by shouldApplyChannelCloak; this flag carries
@@ -1780,6 +1798,11 @@ func (ra *relayAttempt) handleNonStreamResponseAsStream(ctx context.Context, res
 		log.Warnf("failed to transform fallback non-stream response: %v", err)
 		return fmt.Errorf("failed to transform fallback non-stream response: %w", err)
 	}
+	// When model_mapping remapped the request model, restore the client-visible name
+	// before converting the non-stream response to SSE chunks.
+	if ra.modelMapped && internalResponse != nil {
+		internalResponse.Model = ra.requestModel
+	}
 
 	ra.c.Header("Content-Type", "text/event-stream")
 	ra.c.Header("Cache-Control", "no-cache")
@@ -2004,6 +2027,11 @@ func (ra *relayAttempt) transformStreamChunk(ctx context.Context, data string, o
 	}
 	if internalStream == nil {
 		return nil, nil, nil
+	}
+	// When model_mapping remapped the request model, restore the client-visible name
+	// in the response chunk so the upstream name is never leaked to the client.
+	if ra.modelMapped && internalStream.Model != "" {
+		internalStream.Model = ra.requestModel
 	}
 
 	inStream, err := ra.inAdapter.TransformStream(ctx, internalStream)
@@ -2272,6 +2300,11 @@ func (ra *relayAttempt) handleResponse(ctx context.Context, response *http.Respo
 	if err != nil {
 		log.Warnf("failed to transform response: %v", err)
 		return fmt.Errorf("failed to transform outbound response: %w", err)
+	}
+	// When model_mapping remapped the request model, restore the client-visible name
+	// so the upstream name is never leaked to the client.
+	if ra.modelMapped && internalResponse != nil {
+		internalResponse.Model = ra.requestModel
 	}
 
 	inResponse, err := ra.inAdapter.TransformResponse(ctx, internalResponse)

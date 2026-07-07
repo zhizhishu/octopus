@@ -441,24 +441,31 @@ func AccessPlanGroupForModel(plan *model.AccessPlan, requestModel string, ctx co
 	return model.Group{}, nil, false, nil
 }
 
-// AccessPlanSyncEnabledChannels appends missing channel targets to every enabled access
-// plan that opted into AutoSyncChannels. For each existing route rule (request model), any
-// currently-enabled channel that serves that model but is not yet a target gets one
-// appended (priority = current max + 1, weight 1, enabled). It ADDS only — never deletes,
-// reorders, or rebuilds — so hand-tuned priorities/weights survive and plans that did NOT
-// opt in stay strict allow-lists. New request models (no rule yet) are left to the group
-// fallback, not force-created here. Idempotent: safe to call after any channel
-// enable / sync / create.
+// AccessPlanSyncEnabledChannels reconciles channel targets for every access plan that
+// opted into AutoSyncChannels. For each existing route rule (request model) it:
+//
+//   - ADDS: any currently-enabled channel that serves that model but is not yet a
+//     target (priority = current max + 1, weight 1, enabled). Hand-tuned
+//     priorities/weights of surviving targets are not touched.
+//   - REMOVES: any existing target whose channel is no longer enabled or no longer
+//     serves the rule's model, so a disabled channel is automatically evicted without
+//     requiring a manual rebuild.
+//
+// Plans that did NOT opt in (AutoSyncChannels=false) are never touched — they remain
+// strict allow-lists. New request models (no rule yet) are left to the group fallback,
+// not force-created here. Idempotent: safe to call after any channel enable/disable /
+// sync / create.
 func AccessPlanSyncEnabledChannels(ctx context.Context) error {
 	if err := ensureAccessPlanCache(ctx); err != nil {
 		return err
 	}
 
+	// Build a map: channelID → set of cleaned model names it serves (enabled channels only).
 	type enabledChannel struct {
 		id     int
 		models map[string]struct{}
 	}
-	var channels []enabledChannel
+	enabledByID := make(map[int]enabledChannel)
 	for _, ch := range channelCache.GetAll() {
 		if !ch.Enabled {
 			continue
@@ -470,14 +477,14 @@ func AccessPlanSyncEnabledChannels(ctx context.Context) error {
 			}
 		}
 		if len(served) > 0 {
-			channels = append(channels, enabledChannel{id: ch.ID, models: served})
+			enabledByID[ch.ID] = enabledChannel{id: ch.ID, models: served}
 		}
 	}
-	if len(channels) == 0 {
-		return nil
-	}
+	// NOTE: we intentionally do NOT early-return when enabledByID is empty — we still
+	// need to evict stale targets from AutoSyncChannels plans if every channel was disabled.
 
 	changed := false
+	gormDB := db.GetDB().WithContext(ctx)
 	for _, plan := range accessPlanCache.GetAll() {
 		if !plan.AutoSyncChannels || plan.RouteProfile == nil {
 			continue
@@ -487,6 +494,29 @@ func AccessPlanSyncEnabledChannels(ctx context.Context) error {
 			if ruleModel == "" {
 				continue
 			}
+
+			// --- REMOVE: targets whose channel is disabled or no longer serves this model ---
+			for _, t := range rule.Targets {
+				ec, enabled := enabledByID[t.ChannelID]
+				if !enabled {
+					// Channel disabled or deleted — evict.
+					if err := gormDB.Delete(&model.AccessRouteTarget{}, t.ID).Error; err != nil {
+						// Best-effort: log-worthy but non-fatal; keep processing.
+						continue
+					}
+					changed = true
+					continue
+				}
+				if _, serves := ec.models[ruleModel]; !serves {
+					// Channel enabled but no longer serves this rule's model — evict.
+					if err := gormDB.Delete(&model.AccessRouteTarget{}, t.ID).Error; err != nil {
+						continue
+					}
+					changed = true
+				}
+			}
+
+			// --- ADD: enabled channels that serve this model but are not yet targets ---
 			existing := make(map[int]struct{}, len(rule.Targets))
 			maxPriority := 0
 			for _, t := range rule.Targets {
@@ -495,7 +525,7 @@ func AccessPlanSyncEnabledChannels(ctx context.Context) error {
 					maxPriority = t.Priority
 				}
 			}
-			for _, ch := range channels {
+			for _, ch := range enabledByID {
 				if _, serves := ch.models[ruleModel]; !serves {
 					continue
 				}
@@ -511,7 +541,7 @@ func AccessPlanSyncEnabledChannels(ctx context.Context) error {
 					Weight:        1,
 					Enabled:       true,
 				}
-				if err := db.GetDB().WithContext(ctx).Create(&target).Error; err != nil {
+				if err := gormDB.Create(&target).Error; err != nil {
 					// Best-effort: a unique-constraint race just means it already exists;
 					// skip it and keep syncing the rest.
 					continue

@@ -132,6 +132,12 @@ type relayAttempt struct {
 	usedKey              dbmodel.ChannelKey
 	firstTokenTimeOutSec int
 
+	// modelMapped is set to true by applyModelMapping when channel.ModelMapping
+	// translated internalRequest.Model to an upstream name. Response transformers
+	// use this flag to restore the original client-visible name (ra.requestModel)
+	// in the model field returned to the client.
+	modelMapped bool
+
 	// prewarmMu/prewarmStopped guard the first-byte keepalive goroutine so the
 	// injected heartbeat writes and the main response writes never race.
 	prewarmMu      sync.Mutex

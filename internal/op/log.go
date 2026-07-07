@@ -641,6 +641,7 @@ func RelayLogUserSummary(relayLog model.RelayLog) model.RelayLogUserSummary {
 		SessionKey:         relayLog.SessionKey,
 		SessionSource:      relayLog.SessionSource,
 		RouteStickyHit:     relayLog.RouteStickyHit,
+		IsStream:           relayLog.IsStream,
 		UsageSource:        relayLog.UsageSource,
 		UsageMissingReason: relayLog.UsageMissingReason,
 		AccessPlanSlug:     relayLog.AccessPlanSlug,

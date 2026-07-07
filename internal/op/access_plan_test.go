@@ -522,6 +522,99 @@ func TestAccessPlanUpdateRouteTargetsPreservesRouteMode(t *testing.T) {
 	}
 }
 
+// TestAccessPlanSyncEnabledChannelsReconcile verifies the full add+remove reconcile
+// behaviour of AccessPlanSyncEnabledChannels for AutoSyncChannels plans:
+//   - Enabling a channel (it serves the rule model) → target is created on next sync.
+//   - Disabling that channel → target is deleted on the following sync.
+//   - Plans that did NOT opt in (AutoSyncChannels=false) are never modified.
+func TestAccessPlanSyncEnabledChannelsReconcile(t *testing.T) {
+	ctx := setupAccessPlanTest(t)
+
+	plans, err := AccessPlanList(ctx)
+	if err != nil {
+		t.Fatalf("list plans: %v", err)
+	}
+	var svip model.AccessPlan
+	for _, plan := range plans {
+		if plan.Slug == "svip" {
+			svip = plan
+			break
+		}
+	}
+	if svip.ID == 0 {
+		t.Fatalf("svip plan not found")
+	}
+
+	// Enable AutoSyncChannels on svip.
+	svipUpdate := svip
+	svipUpdate.AutoSyncChannels = true
+	if err := AccessPlanUpdate(&svipUpdate, ctx); err != nil {
+		t.Fatalf("enable AutoSyncChannels on svip: %v", err)
+	}
+
+	// Create a channel that serves "sync-test-model".
+	ch := model.Channel{Name: "sync-reconcile-channel", Enabled: true, Model: "sync-test-model"}
+	if err := ChannelCreate(&ch, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+
+	// Reload svip after update so we have the correct RouteProfileID.
+	plans, err = AccessPlanList(ctx)
+	if err != nil {
+		t.Fatalf("list plans after update: %v", err)
+	}
+	for _, plan := range plans {
+		if plan.Slug == "svip" {
+			svip = plan
+			break
+		}
+	}
+
+	// Create a route rule for "sync-test-model" inside svip's profile.
+	rule := model.AccessRouteRule{
+		RouteProfileID: svip.RouteProfileID,
+		RequestModel:   "sync-test-model",
+	}
+	if err := AccessRouteRuleCreate(&rule, ctx); err != nil {
+		t.Fatalf("create route rule: %v", err)
+	}
+
+	// --- Phase 1: sync with channel enabled → target should be added ---
+	if err := AccessPlanSyncEnabledChannels(ctx); err != nil {
+		t.Fatalf("sync (add phase): %v", err)
+	}
+
+	var countAfterAdd int64
+	if err := db.GetDB().WithContext(ctx).
+		Model(&model.AccessRouteTarget{}).
+		Where("route_rule_id = ? AND channel_id = ?", rule.ID, ch.ID).
+		Count(&countAfterAdd).Error; err != nil {
+		t.Fatalf("count targets after add: %v", err)
+	}
+	if countAfterAdd != 1 {
+		t.Fatalf("expected 1 target after add-sync, got %d", countAfterAdd)
+	}
+
+	// --- Phase 2: disable channel then sync → target should be removed ---
+	if err := ChannelEnabled(ch.ID, false, ctx); err != nil {
+		t.Fatalf("disable channel: %v", err)
+	}
+	if err := AccessPlanSyncEnabledChannels(ctx); err != nil {
+		t.Fatalf("sync (remove phase): %v", err)
+	}
+
+	var countAfterRemove int64
+	if err := db.GetDB().WithContext(ctx).
+		Model(&model.AccessRouteTarget{}).
+		Where("route_rule_id = ? AND channel_id = ?", rule.ID, ch.ID).
+		Count(&countAfterRemove).Error; err != nil {
+		t.Fatalf("count targets after remove: %v", err)
+	}
+	if countAfterRemove != 0 {
+		t.Fatalf("expected 0 targets after disable+sync, got %d", countAfterRemove)
+	}
+}
+
 func TestAccessPlanUpdatePreservesProfilesAndAllowsDefaultSlugRename(t *testing.T) {
 	ctx := setupAccessPlanTest(t)
 

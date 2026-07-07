@@ -352,6 +352,10 @@ func ChannelUpdate(req *model.ChannelUpdateRequest, ctx context.Context) (*model
 		selectFields = append(selectFields, "match_regex")
 		updates.MatchRegex = req.MatchRegex
 	}
+	if req.ModelMapping != nil {
+		selectFields = append(selectFields, "model_mapping")
+		updates.ModelMapping = *req.ModelMapping
+	}
 	if req.OpenAIChatPath != nil {
 		selectFields = append(selectFields, "open_ai_chat_path")
 		updates.OpenAIChatPath = *req.OpenAIChatPath

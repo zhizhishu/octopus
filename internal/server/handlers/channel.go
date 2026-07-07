@@ -58,6 +58,10 @@ func init() {
 		AddRoute(
 			router.NewRoute("/test", http.MethodPost).
 				Handle(testChannel),
+		).
+		AddRoute(
+			router.NewRoute("/test-proxy", http.MethodPost).
+				Handle(testChannelProxy),
 		)
 	router.NewGroupRouter("/api/v1/channel").
 		Use(middleware.Auth()).
@@ -245,12 +249,10 @@ func enableChannel(c *gin.Context) {
 		resp.Error(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if request.Enabled {
-		// A newly enabled channel should join any auto-sync access plan's routes for the
-		// models it serves, without a manual rebuild. Disable needs no sync — routing
-		// already skips disabled channels dynamically.
-		scheduleAccessPlanChannelSync()
-	}
+	// Always reconcile: enabling adds the channel to AutoSyncChannels plan routes;
+	// disabling removes it via the reconcile delete pass so targets are evicted
+	// automatically without requiring a manual rebuild.
+	scheduleAccessPlanChannelSync()
 	resp.Success(c, nil)
 }
 
@@ -326,4 +328,45 @@ func syncChannel(c *gin.Context) {
 func getLastSyncTime(c *gin.Context) {
 	time := task.GetLastSyncModelsTime()
 	resp.Success(c, time)
+}
+
+// testChannelProxy tests TCP/HTTP reachability of base_url through the given
+// socks5 or http proxy string, returning ok=true and delay_ms on success.
+func testChannelProxy(c *gin.Context) {
+	var req struct {
+		ChannelProxy string `json:"channel_proxy"`
+		BaseURL      string `json:"base_url"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		resp.Error(c, http.StatusBadRequest, resp.ErrInvalidJSON)
+		return
+	}
+	proxyStr := strings.TrimSpace(req.ChannelProxy)
+	baseURL := strings.TrimSpace(req.BaseURL)
+	if proxyStr == "" || baseURL == "" {
+		resp.Error(c, http.StatusBadRequest, "channel_proxy and base_url are required")
+		return
+	}
+
+	ch := &model.Channel{
+		Proxy:        true,
+		ChannelProxy: &proxyStr,
+		BaseUrls:     []model.BaseUrl{{URL: baseURL}},
+	}
+
+	type proxyTestResult struct {
+		OK      bool   `json:"ok"`
+		DelayMs int64  `json:"delay_ms"`
+		Message string `json:"message"`
+	}
+
+	start := time.Now()
+	_, _, err := helper.CheckChannelProxyConnectivity(c.Request.Context(), ch)
+	delayMs := time.Since(start).Milliseconds()
+
+	if err != nil {
+		resp.Success(c, proxyTestResult{OK: false, DelayMs: delayMs, Message: err.Error()})
+		return
+	}
+	resp.Success(c, proxyTestResult{OK: true, DelayMs: delayMs, Message: ""})
 }
