@@ -107,8 +107,13 @@ func geminiGetModel(c *gin.Context) {
 }
 
 func newGeminiModel(id string) geminiModel {
+	// Emit the bare model id (no Google-style "models/" prefix). Octopus routes on
+	// the bare name, and clients like Cherry Studio build requests as
+	// /v1beta/models/{name}: a "models/"-prefixed name would double the segment
+	// (/v1beta/models/models/<id>:...) and 404. parseGeminiModelAction still strips a
+	// stray leading "models/" defensively for clients that add it themselves.
 	return geminiModel{
-		Name:        "models/" + id,
+		Name:        id,
 		DisplayName: id,
 		SupportedGenerationMethods: []string{
 			"generateContent",
