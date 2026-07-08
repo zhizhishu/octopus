@@ -15,7 +15,7 @@ import { Badge } from '@/components/ui/badge';
 import { toast } from '@/components/common/Toast';
 import { useTranslations } from 'next-intl';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { Loader2, Play, RefreshCw, X, Plus, Timer } from 'lucide-react';
+import { Loader2, Play, RefreshCw, X, Plus, Timer, Fingerprint } from 'lucide-react';
 import {
     Accordion,
     AccordionContent,
@@ -1156,11 +1156,11 @@ export function ChannelForm({
 
             {showAdvanced && (
                 <AdvancedSettingsShell panel={isAdvancedPanel} title={t('advanced')}>
-                        {/* Single column: proxy / client-fingerprint / fingerprint-profile each
-                            take a full row so the long channel_proxy URL has room and the blocks
-                            read top-to-bottom instead of cramming two per row. */}
-                        <div className="grid grid-cols-1 gap-4">
-                            <div className="space-y-2 md:col-span-2">
+                        {/* Vertical stack: auto-group and proxy each take a full row; the two
+                            fingerprint controls (mode + profile) are grouped into one titled card
+                            below so they read as one coherent section, not two floating selects. */}
+                        <div className="space-y-4">
+                            <div className="space-y-2">
                                 <label htmlFor={`${idPrefix}-auto-group`} className="text-sm font-medium text-card-foreground">
                                     {t('autoGroup')}
                                 </label>
@@ -1235,47 +1235,56 @@ export function ChannelForm({
                                 )}
                             </div>
 
-                            <div className="space-y-2">
-                                <label htmlFor={`${idPrefix}-cloak-mode`} className="text-sm font-medium text-card-foreground">
-                                    {t('cloakMode')}
-                                </label>
-                                <Select
-                                    value={formData.cloak_mode || 'auto'}
-                                    onValueChange={(value) => onFormDataChange({ ...formData, cloak_mode: value })}
-                                >
-                                    <SelectTrigger id={`${idPrefix}-cloak-mode`} className="rounded-xl w-full border border-border px-4 py-2 text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                                        <SelectValue />
-                                    </SelectTrigger>
-                                    <SelectContent className="rounded-xl">
-                                        <SelectItem className="rounded-xl" value="auto">{t('cloakModeAuto')}</SelectItem>
-                                        <SelectItem className="rounded-xl" value="always">{t('cloakModeAlways')}</SelectItem>
-                                        <SelectItem className="rounded-xl" value="never">{t('cloakModeNever')}</SelectItem>
-                                    </SelectContent>
-                                </Select>
-                                <p className="text-xs text-muted-foreground">{t('cloakModeHint')}</p>
-                            </div>
-
-                            <div className="space-y-2 md:col-span-2">
-                                <label htmlFor={`${idPrefix}-cloak-profile`} className="text-sm font-medium text-card-foreground">
-                                    {t('cloakProfile')}
-                                </label>
-                                <Select
-                                    value={String(formData.cloak_profile_id ?? 0)}
-                                    onValueChange={(value) => onFormDataChange({ ...formData, cloak_profile_id: Number(value) })}
-                                >
-                                    <SelectTrigger id={`${idPrefix}-cloak-profile`} className="rounded-xl w-full border border-border px-4 py-2 text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                                        <SelectValue />
-                                    </SelectTrigger>
-                                    <SelectContent className="rounded-xl">
-                                        <SelectItem className="rounded-xl" value="0">{t('cloakProfileGlobal')}</SelectItem>
-                                        {[...(fingerprintProfiles ?? [])].sort((a, b) => a.id - b.id).map((profile) => (
-                                            <SelectItem key={profile.id} className="rounded-xl" value={String(profile.id)}>
-                                                {profile.name}
-                                            </SelectItem>
-                                        ))}
-                                    </SelectContent>
-                                </Select>
-                                <p className="text-xs text-muted-foreground">{t('cloakProfileHint')}</p>
+                            {/* Client-fingerprint group: mode + profile under one titled card so the
+                                section reads as one coherent unit instead of two stray selects. */}
+                            <div className="space-y-3 rounded-xl border border-border bg-background/50 p-4">
+                                <div className="flex items-center gap-2">
+                                    <Fingerprint className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+                                    <span className="text-sm font-medium text-card-foreground">{t('cloakMode')}</span>
+                                </div>
+                                <p className="text-xs leading-relaxed text-muted-foreground">{t('cloakModeHint')}</p>
+                                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                                    <div className="space-y-1.5">
+                                        <label htmlFor={`${idPrefix}-cloak-mode`} className="text-xs font-medium text-muted-foreground">
+                                            {t('cloakModeField')}
+                                        </label>
+                                        <Select
+                                            value={formData.cloak_mode || 'auto'}
+                                            onValueChange={(value) => onFormDataChange({ ...formData, cloak_mode: value })}
+                                        >
+                                            <SelectTrigger id={`${idPrefix}-cloak-mode`} className="rounded-xl w-full border border-border px-4 py-2 text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                                                <SelectValue />
+                                            </SelectTrigger>
+                                            <SelectContent className="rounded-xl">
+                                                <SelectItem className="rounded-xl" value="auto">{t('cloakModeAuto')}</SelectItem>
+                                                <SelectItem className="rounded-xl" value="always">{t('cloakModeAlways')}</SelectItem>
+                                                <SelectItem className="rounded-xl" value="never">{t('cloakModeNever')}</SelectItem>
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                    <div className="space-y-1.5">
+                                        <label htmlFor={`${idPrefix}-cloak-profile`} className="text-xs font-medium text-muted-foreground">
+                                            {t('cloakProfile')}
+                                        </label>
+                                        <Select
+                                            value={String(formData.cloak_profile_id ?? 0)}
+                                            onValueChange={(value) => onFormDataChange({ ...formData, cloak_profile_id: Number(value) })}
+                                        >
+                                            <SelectTrigger id={`${idPrefix}-cloak-profile`} className="rounded-xl w-full border border-border px-4 py-2 text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                                                <SelectValue />
+                                            </SelectTrigger>
+                                            <SelectContent className="rounded-xl">
+                                                <SelectItem className="rounded-xl" value="0">{t('cloakProfileGlobal')}</SelectItem>
+                                                {[...(fingerprintProfiles ?? [])].sort((a, b) => a.id - b.id).map((profile) => (
+                                                    <SelectItem key={profile.id} className="rounded-xl" value={String(profile.id)}>
+                                                        {profile.name}
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                </div>
+                                <p className="text-xs leading-relaxed text-muted-foreground">{t('cloakProfileHint')}</p>
                             </div>
                         </div>
 
@@ -1415,15 +1424,34 @@ export function ChannelForm({
                         </div>
 
                         <div className="space-y-2">
-                            <label htmlFor={`${idPrefix}-param-override`} className="text-sm font-medium text-card-foreground">
-                                {t('paramOverride')}
-                            </label>
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                <label htmlFor={`${idPrefix}-param-override`} className="text-sm font-medium text-card-foreground">
+                                    {t('paramOverride')}
+                                </label>
+                                <span className="text-xs text-muted-foreground">{t('paramOverrideHint')}</span>
+                            </div>
                             <textarea
                                 id={`${idPrefix}-param-override`}
                                 value={formData.param_override}
                                 onChange={(e) => onFormDataChange({ ...formData, param_override: e.target.value })}
+                                onBlur={(e) => {
+                                    // Pretty-print valid JSON on blur (2-space indent). Leave the text
+                                    // untouched when it is empty or not valid JSON so a half-typed value
+                                    // is never destroyed.
+                                    const raw = e.target.value.trim();
+                                    if (!raw) return;
+                                    try {
+                                        const formatted = JSON.stringify(JSON.parse(raw), null, 2);
+                                        if (formatted !== formData.param_override) {
+                                            onFormDataChange({ ...formData, param_override: formatted });
+                                        }
+                                    } catch {
+                                        /* not valid JSON yet — keep the raw text for further editing */
+                                    }
+                                }}
                                 placeholder={t('paramOverridePlaceholder')}
-                                className="min-h-28 w-full rounded-xl border border-border bg-background px-3 py-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                spellCheck={false}
+                                className="min-h-28 w-full rounded-xl border border-border bg-background px-3 py-2 font-mono text-xs leading-relaxed text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                             />
                         </div>
 
