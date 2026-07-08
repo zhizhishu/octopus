@@ -200,6 +200,12 @@ runIterator:
 		internalRequest.Model = item.ModelName
 
 		for keyIndex, usedKey := range availableKeys {
+			// Reset the route model before each key attempt: applyModelMapping mutates
+			// internalRequest.Model to the mapped upstream name during the prior attempt,
+			// so without this a second key would see the already-mapped name, miss the
+			// mapping, leave modelMapped=false, and skip the client-name restore — leaking
+			// the upstream model name to the client.
+			internalRequest.Model = item.ModelName
 			internalRequest.Messages = append([]model.Message(nil), baseMessages...)
 			promptSnapshot := applyPromptOverrides(internalRequest, routeResult.AccessPlan, routeResult.AccessRouteRule, channel)
 			if len(promptSnapshot.Sources) > 0 {

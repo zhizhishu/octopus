@@ -1560,6 +1560,13 @@ func transformModelTestStream(ctx context.Context, adapter transformermodel.Outb
 			Content: &content,
 		},
 	}
+	// Carry the accumulated reasoning onto the synthesized message so a reasoning-only
+	// stream (a thinking model that emitted reasoning but no final content within the
+	// probe window) is accepted by the caller's parsedHasReasoningContent check instead
+	// of being judged an empty response.
+	if reasoningContent := strings.TrimSpace(reasoning.String()); reasoningContent != "" {
+		message.SetReasoningContent(reasoningContent)
+	}
 	finishReason := "stop"
 	return &transformermodel.InternalLLMResponse{
 		Choices: []transformermodel.Choice{{

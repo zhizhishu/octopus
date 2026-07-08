@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/bestruirui/octopus/internal/transformer/model"
@@ -113,6 +114,14 @@ func applyDeepSeekResponseFormat(request *model.InternalLLMRequest) {
 // does accept the newer Chat / Responses residue params (prompt_cache_key,
 // safety_identifier, ...), so they are kept only for the official endpoint.
 func isOpenAIOfficialChatBase(baseUrl string) bool {
+	// Match on the parsed host, not a raw substring: a third-party base like
+	// https://api.openai.com.proxy.example/v1 or https://gw/api.openai.com/v1 must NOT
+	// be treated as official (which would skip residue stripping and 400 the upstream).
+	if parsed, err := url.Parse(baseUrl); err == nil {
+		if host := strings.ToLower(parsed.Hostname()); host != "" {
+			return host == "api.openai.com" || strings.HasSuffix(host, ".api.openai.com")
+		}
+	}
 	return strings.Contains(strings.ToLower(baseUrl), "api.openai.com")
 }
 
@@ -159,8 +168,11 @@ func sanitizeToolChoiceForStrictUpstream(request *model.InternalLLMRequest) {
 	// (notably "" synthesized from a client's `tool_choice: null`) must be dropped,
 	// not forwarded verbatim — deepseek's serde rejects `"tool_choice": ""` with 400.
 	if tc.ToolChoice != nil {
-		switch strings.ToLower(*tc.ToolChoice) {
+		switch normalized := strings.ToLower(*tc.ToolChoice); normalized {
 		case "none", "auto", "required":
+			// Normalise to the exact lowercase enum value — a strict upstream (deepseek)
+			// can 400 on "AUTO"/"Required" even though the mode is legal.
+			*tc.ToolChoice = normalized
 			return
 		}
 		request.ToolChoice = nil

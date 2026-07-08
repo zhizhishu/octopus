@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/samber/lo"
@@ -694,8 +695,16 @@ func (i *ResponseInbound) closeCurrentOutputItem() [][]byte {
 		events = append(events, i.closeReasoningItem()...)
 	}
 
-	// Close any open tool call items
-	for idx, tc := range i.toolCalls {
+	// Close any open tool call items in deterministic ascending index order — map
+	// iteration order is random and would scramble the parallel tool_call output ordering
+	// in the terminal response.completed.output array.
+	toolCallIndexes := make([]int, 0, len(i.toolCalls))
+	for idx := range i.toolCalls {
+		toolCallIndexes = append(toolCallIndexes, idx)
+	}
+	sort.Ints(toolCallIndexes)
+	for _, idx := range toolCallIndexes {
+		tc := i.toolCalls[idx]
 		if i.toolCallItemStarted[idx] {
 			itemID := tc.ID
 			if itemID == "" {
@@ -1508,6 +1517,12 @@ func convertInputToMessages(input *ResponsesInput) ([]model.Message, error) {
 					// function stays idempotent if the caller sets it elsewhere.
 					if pendingReasoningText != "" && msg.GetReasoningContent() == "" {
 						msg.ReasoningContent = lo.ToPtr(pendingReasoningText)
+					}
+					// Carry the reasoning signature too — the standalone-flush path and
+					// convertItemToMessage both set it, so dropping it only here loses the
+					// encrypted-reasoning signature on a reasoning->tool_call turn.
+					if pendingReasoningSignature != "" && msg.ReasoningSignature == nil {
+						msg.ReasoningSignature = lo.ToPtr(pendingReasoningSignature)
 					}
 					messages = append(messages, *msg)
 					lastToolCallMsgIdx = len(messages) - 1
