@@ -1152,7 +1152,10 @@ export function ChannelForm({
 
             {showAdvanced && (
                 <AdvancedSettingsShell panel={isAdvancedPanel} title={t('advanced')}>
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {/* Single column: proxy / client-fingerprint / fingerprint-profile each
+                            take a full row so the long channel_proxy URL has room and the blocks
+                            read top-to-bottom instead of cramming two per row. */}
+                        <div className="grid grid-cols-1 gap-4">
                             <div className="space-y-2 md:col-span-2">
                                 <label htmlFor={`${idPrefix}-auto-group`} className="text-sm font-medium text-card-foreground">
                                     {t('autoGroup')}
