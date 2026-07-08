@@ -974,7 +974,7 @@
             "cloakProfileGlobal": "預設（跟隨全域）",
             "cloakProfileHint": "選用一組獨立的裝置指紋（在「設定 - 指紋 Profile 管理」裡維護）。「預設（跟隨全域）」即沿用全域指紋設定，不做區分。",
             "modelMapping": "模型映射",
-            "modelMappingHint": "客戶端用左邊的名字，轉發上游時改成右邊的真實名（解決 NVIDIA/OpenRouter 等帶前綴模型）。",
+            "modelMappingHint": "客戶端用左邊的名字，轉發上游時改成右邊的真實名。",
             "modelMappingClientName": "客戶端名",
             "modelMappingUpstreamName": "上游真實名",
             "modelMappingAdd": "新增映射",

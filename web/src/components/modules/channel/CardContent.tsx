@@ -75,6 +75,10 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
         match_regex: channel.match_regex ?? '',
         openai_chat_path: channel.openai_chat_path ?? '',
         openai_models_path: channel.openai_models_path ?? '',
+        // Load the saved mapping into the edit form so reopening a channel SHOWS the
+        // mapping the user saved (previously omitted here, so the rows always rendered
+        // empty on open — "点了保存 点开看不到").
+        model_mapping: channel.model_mapping,
     });
     const t = useTranslations('channel.detail');
 
@@ -168,6 +172,13 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
         const curOpenAIModelsPath = channel.openai_models_path ?? '';
         if (nextOpenAIModelsPath !== curOpenAIModelsPath) {
             req.openai_models_path = nextOpenAIModelsPath;
+        }
+
+        // Send the model-mapping table when it changed (add / edit / clear). An empty
+        // object is the explicit "clear" signal the backend maps to no mapping. Without
+        // this the edit form never persisted mapping changes.
+        if (JSON.stringify(formData.model_mapping ?? {}) !== JSON.stringify(channel.model_mapping ?? {})) {
+            req.model_mapping = formData.model_mapping ?? {};
         }
 
         const originalKeys = channel.keys;

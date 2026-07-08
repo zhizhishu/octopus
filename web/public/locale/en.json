@@ -974,7 +974,7 @@
             "cloakProfileGlobal": "Default (follow global)",
             "cloakProfileHint": "Pick a dedicated device fingerprint (managed under Settings - Fingerprint Profiles). \"Default (follow global)\" reuses the global fingerprint settings without distinction.",
             "modelMapping": "Model Mapping",
-            "modelMappingHint": "Left = client-facing name, right = upstream's real model name (for NVIDIA/OpenRouter prefixed models, etc.).",
+            "modelMappingHint": "Left = client-facing name, right = upstream's real model name.",
             "modelMappingClientName": "Client name",
             "modelMappingUpstreamName": "Upstream name",
             "modelMappingAdd": "Add mapping",

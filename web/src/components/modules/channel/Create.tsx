@@ -90,6 +90,9 @@ export function CreateDialogContent() {
                 system_prompt_override: systemPromptOverride,
                 prompt_override_mode: formData.prompt_override_mode,
                 match_regex: formData.match_regex.trim(),
+                // Persist the model-mapping table on create — without this the mapping the
+                // user typed in the form was silently dropped and never saved.
+                model_mapping: formData.model_mapping,
             },
             {
                 onSuccess: () => {
