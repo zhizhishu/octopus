@@ -1198,10 +1198,18 @@ data: {"type":"message_start","message":{"id":"msg_timeout","type":"message","ro
 	if elapsed := time.Since(startedAt); elapsed > 3*time.Second {
 		t.Fatalf("expected silent upstream to be stopped quickly, elapsed %s", elapsed)
 	}
-	if !strings.Contains(rec.Body.String(), "message_start") {
-		t.Fatalf("expected initial stream data before timeout, got %s", rec.Body.String())
+	// Deferred commit buffers the message_start opener until real content arrives, so
+	// a silent-after-opener upstream commits nothing downstream. With keepalive
+	// disabled here, the data-interval timeout surfaces as a clean HTTP 504 (which is
+	// retryable and would fail over to another channel) instead of a committed but
+	// dead SSE stream. The buffered opener must NOT leak into the body.
+	if rec.Code != http.StatusGatewayTimeout {
+		t.Fatalf("expected 504 gateway timeout for silent-after-opener upstream, got %d body %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "event: error") || !strings.Contains(rec.Body.String(), "upstream stream failed before terminal event") {
-		t.Fatalf("expected explicit Anthropic error event after timeout, got %s", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "octopus_upstream_stream_timeout") {
+		t.Fatalf("expected stream-timeout error code, got %s", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "message_start") {
+		t.Fatalf("deferred-commit opener must not leak before content, got %s", rec.Body.String())
 	}
 }
