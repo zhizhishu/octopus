@@ -806,6 +806,18 @@ func shouldRecordBreakerFailure(_ int, err error) bool {
 		// and block later well-sized requests. Never charge it to channel health.
 		return false
 	}
+	if isRequestInvalidUpstreamError(err) {
+		// Deterministic request-shape rejection (invalid_request_error /
+		// INVALID_ARGUMENT / FAILED_PRECONDITION / body-deserialize failure): the
+		// upstream refused THIS request's shape, not because the channel is unhealthy.
+		// Charging it to the breaker benches a perfectly good channel for a
+		// client/gateway-shape mismatch and shrinks the failover pool — exactly how a
+		// strict channel (ele-deepseek) got benched by a malformed parallel-tool-call
+		// request, starving the round-robin that should have routed around it. Failover
+		// still tries a more lenient channel; the strict one stays available for
+		// well-formed requests. Mirrors CLIProxyAPI's isRequestInvalidError.
+		return false
+	}
 	return true
 }
 

@@ -534,6 +534,68 @@ func isContextWindowError(err error) bool {
 	return false
 }
 
+// isRequestInvalidUpstreamError reports whether an upstream rejection is a
+// deterministic REQUEST-shape error — the upstream refused THIS request's body —
+// as opposed to a channel-health failure. A strict OpenAI-compatible gateway
+// (e.g. DeepSeek via ele-deepseek) answers a malformed body with a 400/422 whose
+// payload carries invalid_request_error / INVALID_ARGUMENT / FAILED_PRECONDITION,
+// or a raw serde "failed to deserialize the JSON body ... did not match any
+// variant" message. Such a rejection is deterministic for that request shape and
+// says nothing about the channel's health, so it must never be charged to the
+// channel circuit breaker: doing so benches a perfectly good channel for a
+// client/gateway-shape mismatch and shrinks the very failover pool that should
+// route around it. Mirrors CLIProxyAPI's isRequestInvalidError.
+//
+// A context-window overflow is a request-shape 400 too, but keeps its own
+// isContextWindowError predicate (distinct client-facing message); this one
+// covers the general malformed-body case.
+func isRequestInvalidUpstreamError(err error) bool {
+	var upErr *upstreamError
+	if !errors.As(err, &upErr) || upErr == nil {
+		return false
+	}
+	if upErr.statusCode != http.StatusBadRequest && upErr.statusCode != http.StatusUnprocessableEntity {
+		return false
+	}
+	body := []byte(upErr.body)
+	for _, candidate := range []string{
+		extractUpstreamErrorMessage(body),
+		extractUpstreamErrorCode(body),
+		upErr.body,
+	} {
+		if matchRequestInvalidText(strings.ToLower(strings.TrimSpace(candidate))) {
+			return true
+		}
+	}
+	return false
+}
+
+// matchRequestInvalidText detects the canonical "the request body is malformed"
+// markers emitted by OpenAI / DeepSeek / Gemini-compatible upstreams. Kept narrow
+// so a channel-side failure that merely happens to carry a 4xx (an opaque gateway
+// error with no such marker) still counts toward channel health.
+func matchRequestInvalidText(lower string) bool {
+	if lower == "" {
+		return false
+	}
+	switch {
+	case strings.Contains(lower, "invalid_request_error"):
+		return true
+	case strings.Contains(lower, "invalid_argument"):
+		return true
+	case strings.Contains(lower, "failed_precondition"):
+		return true
+	case strings.Contains(lower, "failed to deserialize"):
+		// Strict Rust async-openai gateways (ele-deepseek/elysiver) reject a
+		// malformed body with "Failed to deserialize the JSON body ...".
+		return true
+	case strings.Contains(lower, "did not match any variant"):
+		// serde untagged-enum error (e.g. ChatCompletionToolChoiceOption).
+		return true
+	}
+	return false
+}
+
 // contextWindowUserMessage is the client-facing message for a context-window
 // overflow. It honours the admin status-passthrough toggle like other upstream
 // errors: when passthrough is on, the real upstream reason (e.g. Anthropic's
