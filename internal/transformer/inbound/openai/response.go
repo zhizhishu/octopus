@@ -44,6 +44,15 @@ type ResponseInbound struct {
 	toolCallItemStarted map[int]bool
 	toolCallOutputIndex map[int]int
 
+	// Finalized output items (message / reasoning / function_call / image),
+	// accumulated as each response.output_item.done is emitted, so the terminal
+	// response.completed event can carry the full output array. The OpenAI Responses
+	// API requires response.completed.response.output to hold the final items; SDK
+	// clients (and Cherry Studio) read it to get the result. Streaming used to send
+	// output:[] there, so those clients saw zero function_calls and stopped after a
+	// tool call instead of executing it.
+	completedItems []ResponsesItem
+
 	// Usage tracking
 	usage *model.Usage
 
@@ -207,7 +216,7 @@ func (i *ResponseInbound) TransformStream(ctx context.Context, stream *model.Int
 			Model:     i.model,
 			CreatedAt: i.createdAt,
 			Status:    &status,
-			Output:    []ResponsesItem{},
+			Output:    i.finalOutputItems(),
 			Usage:     convertUsageToResponses(i.usage),
 		}
 
@@ -247,7 +256,7 @@ func (i *ResponseInbound) completeResponseEvents() [][]byte {
 		Model:     i.model,
 		CreatedAt: i.createdAt,
 		Status:    &status,
-		Output:    []ResponsesItem{},
+		Output:    i.finalOutputItems(),
 		Usage:     convertUsageToResponses(i.completionUsage()),
 	}
 
@@ -257,6 +266,16 @@ func (i *ResponseInbound) completeResponseEvents() [][]byte {
 	}))
 
 	return events
+}
+
+// finalOutputItems returns the accumulated finalized output items for the terminal
+// response.completed event, or an empty (non-nil) slice so it serializes as [] not
+// null when there is genuinely no output.
+func (i *ResponseInbound) finalOutputItems() []ResponsesItem {
+	if len(i.completedItems) == 0 {
+		return []ResponsesItem{}
+	}
+	return i.completedItems
 }
 
 func (i *ResponseInbound) terminalStatusAndEvent() (string, string) {
@@ -290,6 +309,15 @@ func bytesJoin(parts [][]byte) []byte {
 func (i *ResponseInbound) enqueueEvent(ev *ResponsesStreamEvent) []byte {
 	ev.SequenceNumber = i.sequenceNumber
 	i.sequenceNumber++
+
+	// Single choke point: every finalized output item (message/reasoning/function_call
+	// /image) flows through a response.output_item.done event. Capture it so the
+	// terminal response.completed carries the full output array instead of []. Without
+	// this, a client that reconstructs the result from response.completed.output sees
+	// no function_calls and stops after the first tool call.
+	if ev.Type == "response.output_item.done" && ev.Item != nil {
+		i.completedItems = append(i.completedItems, *ev.Item)
+	}
 
 	data, err := json.Marshal(ev)
 	if err != nil {
