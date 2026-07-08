@@ -230,6 +230,126 @@ func TestHandlerRetriesNextChannelAfterResponsesPreludeOnlyStream(t *testing.T) 
 	}
 }
 
+// TestHandlerFailsOverAfterAnthropicMessageStartOnlyStream reproduces the exact
+// deepseek网页桥 symptom from the capture: an upstream opens the SSE stream, emits
+// only the non-meaningful opener (message_start + ping), then dies before any
+// content. Deferred commit keeps that opener buffered (client sees only ignorable
+// comment heartbeats), so the relay must fail over to a healthy channel instead of
+// committing the empty opener and death-gripping the broken upstream. Before the
+// fix the message_start was flushed immediately (Writer.Written()==true), which
+// disabled both transient retry and cross-channel failover.
+func TestHandlerFailsOverAfterAnthropicMessageStartOnlyStream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayKeyRetryDB(t)
+
+	deadHits := 0
+	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		deadHits++
+		w.Header().Set("Content-Type", "text/event-stream")
+		// Opener only, then the connection ends — no content_block_delta, no message_stop.
+		_, _ = w.Write([]byte(`event: message_start
+data: {"type":"message_start","message":{"id":"msg_shell_dead","type":"message","role":"assistant","model":"claude-up","content":[],"usage":{"input_tokens":5,"output_tokens":0}}}
+
+event: ping
+data: {"type":"ping"}
+
+`))
+	}))
+	t.Cleanup(dead.Close)
+
+	healthyHit := false
+	healthy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		healthyHit = true
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`event: message_start
+data: {"type":"message_start","message":{"id":"msg_healthy","type":"message","role":"assistant","model":"claude-up","content":[],"usage":{"input_tokens":5,"output_tokens":0}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`))
+	}))
+	t.Cleanup(healthy.Close)
+
+	deadChannel := dbmodel.Channel{
+		Name:     "message-start-then-dead",
+		Type:     outbound.OutboundTypeAnthropic,
+		Enabled:  true,
+		BaseUrls: []dbmodel.BaseUrl{{URL: dead.URL}},
+		Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "dead-key"}},
+	}
+	if err := op.ChannelCreate(&deadChannel, ctx); err != nil {
+		t.Fatalf("create dead channel: %v", err)
+	}
+	healthyChannel := dbmodel.Channel{
+		Name:     "anthropic-healthy",
+		Type:     outbound.OutboundTypeAnthropic,
+		Enabled:  true,
+		BaseUrls: []dbmodel.BaseUrl{{URL: healthy.URL}},
+		Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "healthy-key"}},
+	}
+	if err := op.ChannelCreate(&healthyChannel, ctx); err != nil {
+		t.Fatalf("create healthy channel: %v", err)
+	}
+	group := dbmodel.Group{Name: "claude-req", Mode: dbmodel.GroupModeFailover}
+	if err := op.GroupCreate(&group, ctx); err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	for _, item := range []dbmodel.GroupItem{
+		{GroupID: group.ID, ChannelID: deadChannel.ID, ModelName: "claude-up", Priority: 1, Weight: 1},
+		{GroupID: group.ID, ChannelID: healthyChannel.ID, ModelName: "claude-up", Priority: 2, Weight: 1},
+	} {
+		if err := op.GroupItemAdd(&item, ctx); err != nil {
+			t.Fatalf("create group item: %v", err)
+		}
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{
+		"model":"claude-req",
+		"max_tokens":16,
+		"stream":true,
+		"messages":[{"role":"user","content":"hi"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+	c.Set("api_key_id", 0)
+	c.Set("user_id", 0)
+	c.Set("request_ip", "127.0.0.1")
+
+	Handler(inbound.InboundTypeAnthropic, c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected failover to healthy channel to succeed, got status %d body %s", rec.Code, rec.Body.String())
+	}
+	if deadHits == 0 || !healthyHit {
+		t.Fatalf("expected both channels attempted, deadHits=%d healthyHit=%t", deadHits, healthyHit)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "msg_shell_dead") {
+		t.Fatalf("dead channel's buffered opener leaked into downstream body: %s", body)
+	}
+	if !strings.Contains(body, `"text":"ok"`) && !strings.Contains(body, `"text_delta","text":"ok"`) {
+		t.Fatalf("expected healthy channel content in downstream body, got %s", body)
+	}
+	if !strings.Contains(body, "message_stop") {
+		t.Fatalf("expected healthy channel message_stop, got %s", body)
+	}
+}
+
 func setupRelayKeyRetryDB(t *testing.T) context.Context {
 	t.Helper()
 

@@ -25,17 +25,22 @@ func TestAnthropicStreamForwardsPingKeepalive(t *testing.T) {
 			t.Errorf("unexpected upstream path: %q", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
+		// The upstream ping sits AFTER the first content delta on purpose: with
+		// deferred commit, message_start is buffered until real content arrives, so a
+		// ping that precedes content is downgraded to an ignorable ":\n\n" comment
+		// (an "event: ping" is illegal before message_start). Once content commits, the
+		// native Anthropic ping is forwarded as-is — that is what this test guards.
 		_, _ = w.Write([]byte(`event: message_start
 data: {"type":"message_start","message":{"id":"msg_keepalive","type":"message","role":"assistant","model":"claude-upstream","content":[],"usage":{"input_tokens":3,"output_tokens":0}}}
-
-event: ping
-data: {"type":"ping"}
 
 event: content_block_start
 data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
 
 event: content_block_delta
 data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}
+
+event: ping
+data: {"type":"ping"}
 
 event: content_block_stop
 data: {"type":"content_block_stop","index":0}

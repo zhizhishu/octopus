@@ -115,6 +115,46 @@ func writeAnthropicErrorSSE(c *gin.Context, errorType string, message string) bo
 	return true
 }
 
+type chatStreamErrorBody struct {
+	Error struct {
+		Message string `json:"message"`
+		Type    string `json:"type"`
+		Code    string `json:"code,omitempty"`
+	} `json:"error"`
+}
+
+// writeChatErrorSSE emits an OpenAI chat-completions-style error onto an already
+// committed SSE stream (used when comment heartbeats committed HTTP 200 during
+// failover and every channel then failed). It closes with the [DONE] sentinel.
+func writeChatErrorSSE(c *gin.Context, code string, message string) bool {
+	if c == nil || c.Writer == nil {
+		return false
+	}
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		return false
+	}
+	message = strings.TrimSpace(message)
+	if message == "" {
+		message = "upstream stream failed"
+	}
+	body := chatStreamErrorBody{}
+	body.Error.Message = message
+	body.Error.Type = "upstream_error"
+	body.Error.Code = strings.TrimSpace(code)
+	payload, err := json.Marshal(body)
+	if err != nil {
+		_ = c.Error(err)
+		return true
+	}
+	if _, err := fmt.Fprintf(c.Writer, "data: %s\n\ndata: [DONE]\n\n", payload); err != nil {
+		_ = c.Error(err)
+		return true
+	}
+	flusher.Flush()
+	return true
+}
+
 func isResponsesInboundPath(path string) bool {
 	path = strings.TrimRight(strings.TrimSpace(path), "/")
 	if path == "" {

@@ -57,6 +57,26 @@ func TestShouldForwardClientHeaderFiltersTimeoutHeaders(t *testing.T) {
 	}
 }
 
+// TestShouldForwardClientHeaderBlocksDownstreamAuthHeaders guards that every
+// protocol's downstream auth header (the client's Octopus key) is stripped
+// hop-by-hop and never forwarded upstream. x-goog-api-key (Gemini) was missing
+// from the block-list, leaking the client's Octopus key to the upstream and
+// overriding the channel key on header-preferring providers -> 401
+// octopus_upstream_auth_failed, while chat (authorization) and anthropic
+// (x-api-key) were already blocked.
+func TestShouldForwardClientHeaderBlocksDownstreamAuthHeaders(t *testing.T) {
+	for _, key := range []string{
+		"Authorization",   // openai/chat downstream key
+		"X-Api-Key",       // anthropic downstream key
+		"x-goog-api-key",  // gemini downstream key
+		"X-Goog-Api-Key",  // case-insensitive
+	} {
+		if shouldForwardClientHeader(key) {
+			t.Fatalf("expected downstream auth header %q to be filtered, not forwarded upstream", key)
+		}
+	}
+}
+
 func TestRelayCopyHeadersAppliesClaudeDefaultsAndAllowsCustomOverride(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())

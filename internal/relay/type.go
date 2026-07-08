@@ -30,8 +30,15 @@ func init() {
 
 // hopByHopHeaders 定义不应转发的 HTTP 头
 var hopByHopHeaders = map[string]bool{
-	"authorization":       true,
-	"x-api-key":           true,
+	"authorization": true,
+	"x-api-key":     true,
+	// x-goog-api-key is the Gemini-native downstream auth header (the client's
+	// Octopus key). Like authorization / x-api-key it must never be forwarded
+	// upstream: the Gemini outbound adapter authenticates with the channel key via
+	// the ?key= query param, so a leaked x-goog-api-key both exposes the client's
+	// Octopus key to the upstream AND overrides the channel key on providers that
+	// prefer the header — which returned 401 octopus_upstream_auth_failed.
+	"x-goog-api-key":      true,
 	"x-octopus-plan":      true,
 	"x-octopus-group":     true,
 	"connection":          true,
@@ -142,6 +149,17 @@ type relayAttempt struct {
 	// injected heartbeat writes and the main response writes never race.
 	prewarmMu      sync.Mutex
 	prewarmStopped bool
+
+	// wroteMeaningfulDownstream flips true the moment the first chunk carrying real
+	// content (text / reasoning / tool_calls / images / completion usage) is flushed
+	// to the client. Until then the stream opener (message_start / response.created /
+	// a bare role delta) is buffered, not written, and only SSE comment heartbeats go
+	// out — none of which commit a message envelope. That lets a pre-content upstream
+	// failure (opened stream then died before any content) still fail over to another
+	// channel instead of stranding the client on a committed-but-empty 200 stream.
+	// The whole-stream failover gate keys off THIS flag, not ra.c.Writer.Written(),
+	// because comment heartbeats make Written() true without committing any content.
+	wroteMeaningfulDownstream bool
 }
 
 // attemptResult 封装单次尝试的结果

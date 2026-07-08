@@ -297,6 +297,22 @@ runIterator:
 	}
 	metrics.Save(c.Request.Context(), false, finalErr, allAttempts)
 	status, code, message := relayErrorResponse(finalErr)
+	if c.Writer.Written() {
+		// Deferred-commit kept the stream warm with SSE comment heartbeats while we
+		// failed over across every channel, so HTTP 200 is already committed and no
+		// content ever reached the client. Deliver the failure as an in-band SSE error
+		// event for the client's inbound protocol — resp.ErrorWithCode cannot set a
+		// status on an already-committed response and would splice JSON into the stream.
+		switch inboundType {
+		case inbound.InboundTypeOpenAIResponse:
+			writeResponsesFailedSSE(c, requestModel, code, message)
+		case inbound.InboundTypeAnthropic:
+			writeAnthropicErrorSSE(c, "api_error", message)
+		default:
+			writeChatErrorSSE(c, code, message)
+		}
+		return
+	}
 	resp.ErrorWithCode(c, status, code, message)
 }
 
@@ -383,8 +399,14 @@ func (ra *relayAttempt) attempt() attemptResult {
 
 	ra.metrics.ParamOverride = paramOverrideValue(ra.channel.ParamOverride)
 
-	written := ra.c.Writer.Written()
-	if written {
+	// committed reflects whether real content already reached the client. It gates
+	// whole-stream failover, NOT ra.c.Writer.Written(): the deferred-commit path may
+	// have flushed only ignorable SSE comment heartbeats (Written()==true) while the
+	// message envelope was still buffered — that stream can still fail over cleanly.
+	// Only once meaningful content is flushed do we lose the ability to switch
+	// channels and must instead surface the failure as an in-band error event.
+	committed := ra.wroteMeaningfulDownstream
+	if committed {
 		switch ra.inboundType {
 		case inbound.InboundTypeOpenAIResponse:
 			if message := responsesStreamFailureMessage(fwdErr); message != "" {
@@ -399,10 +421,10 @@ func (ra *relayAttempt) attempt() attemptResult {
 	}
 	return attemptResult{
 		Success:    false,
-		Written:    written,
+		Written:    committed,
 		Err:        fmt.Errorf("channel %s failed: %w", ra.channel.Name, fwdErr),
 		StatusCode: recordStatusCode,
-		Retryable:  !written && isRetryableUpstreamStreamError(fwdErr),
+		Retryable:  !committed && isRetryableUpstreamStreamError(fwdErr),
 		Fatal:      isContextWindowError(fwdErr),
 	}
 }
@@ -1463,26 +1485,36 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 		return nil
 	}
 
+	// pendingPrelude buffers the non-meaningful stream opener (message_start /
+	// response.created / a bare role delta) until the first chunk with real content
+	// arrives. commitPendingPrelude flushes it ahead of that content and marks the
+	// stream committed. Withholding it keeps ra.wroteMeaningfulDownstream false so a
+	// pre-content upstream death can still fail over — the client has seen only
+	// ignorable SSE comment heartbeats, never a committed envelope.
+	var pendingPrelude []byte
+	commitPendingPrelude := func() error {
+		if ra.wroteMeaningfulDownstream {
+			return nil
+		}
+		if len(pendingPrelude) > 0 {
+			if err := writeStreamData(pendingPrelude); err != nil {
+				return err
+			}
+			pendingPrelude = nil
+		}
+		ra.wroteMeaningfulDownstream = true
+		return nil
+	}
+
 	if data, err := ra.streamPreludeData(ctx, outAdapter); err != nil {
 		return err
 	} else if len(data) > 0 {
-		if err := writeStreamData(data); err != nil {
-			return err
-		}
-		if firstToken {
-			ra.setFirstTokenTime(time.Now())
-			firstToken = false
-			if firstTokenTimer != nil {
-				if !firstTokenTimer.Stop() {
-					select {
-					case <-firstTokenTimer.C:
-					default:
-					}
-				}
-				firstTokenTimer = nil
-				firstTokenC = nil
-			}
-		}
+		// Buffer the synthesized responses-over-chat opener (response.created) rather
+		// than flushing it, so it takes part in deferred commit like any other opener.
+		// Deliberately do NOT arm/cancel the first-token timer here: the opener is not
+		// real content, so the slow-first-token channel switch must stay armed until an
+		// actual content chunk arrives.
+		pendingPrelude = append(pendingPrelude, data...)
 	}
 
 	for {
@@ -1521,6 +1553,12 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 				log.Infof("stream end")
 				if !seenMeaningfulChunk && !sawUpstreamCompletion {
 					return errors.New("upstream stream ended without internal response")
+				}
+				// A genuine completion (terminal event / [DONE] / upstream-completed
+				// seen): flush any buffered opener so the client still gets a valid —
+				// if empty — turn before we finish.
+				if err := commitPendingPrelude(); err != nil {
+					return err
 				}
 				if !streamDoneSeen && ra.shouldSynthesizeStreamDone() {
 					data, err := ra.synthesizeStreamDone(ctx)
@@ -1568,7 +1606,8 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 			}
 
 			data, internalStream, err := ra.transformStreamChunk(ctx, r.data, outAdapter)
-			if internalStream != nil && internalStream.Object != "[DONE]" && internalStreamHasMeaningfulResponse(internalStream) {
+			meaningfulNow := internalStream != nil && internalStream.Object != "[DONE]" && internalStreamHasMeaningfulResponse(internalStream)
+			if meaningfulNow {
 				seenMeaningfulChunk = true
 			}
 			if err != nil {
@@ -1586,12 +1625,32 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 					}
 				}
 				if isTerminalEvent && seenMeaningfulChunk {
+					if writeErr := commitPendingPrelude(); writeErr != nil {
+						return writeErr
+					}
 					if writeErr := writeSynthesizedDone(); writeErr != nil {
 						return writeErr
 					}
 					return nil
 				}
 				continue
+			}
+			// Deferred commit: before the first real-content chunk, buffer the opener
+			// (message_start / response.created / bare role delta) instead of flushing
+			// it, and leave the first-token timer armed. Only ignorable comment
+			// heartbeats have reached the client, so a pre-content upstream death still
+			// fails over. Once content arrives, flush the buffered opener ahead of it and
+			// mark the stream committed — later failures then surface to the client.
+			if !ra.wroteMeaningfulDownstream && !meaningfulNow {
+				pendingPrelude = append(pendingPrelude, data...)
+				continue
+			}
+			if err := commitPendingPrelude(); err != nil {
+				if streamTerminalSeen() && isClientAbortError(err) {
+					log.Infof("client disconnected while writing buffered stream opener; treating stream as completed")
+					return nil
+				}
+				return err
 			}
 			if firstToken {
 				ra.setFirstTokenTime(time.Now())
@@ -2238,7 +2297,16 @@ func isStreamKeepaliveEvent(eventType string, data string) bool {
 }
 
 func (ra *relayAttempt) streamKeepaliveData() []byte {
-	if ra != nil && ra.inboundType == inbound.InboundTypeAnthropic {
+	// Before the first meaningful chunk is committed downstream, keep the connection
+	// warm with an SSE comment (":\n\n") for EVERY inbound protocol. A comment is
+	// ignored by every SSE client and commits nothing, so a pre-content upstream
+	// failure can still fail over. An Anthropic "event: ping" would be a real event
+	// that must follow message_start — emitting it before commit would both violate
+	// the protocol ordering and count as a committed envelope.
+	if ra == nil || !ra.wroteMeaningfulDownstream {
+		return []byte(":\n\n")
+	}
+	if ra.inboundType == inbound.InboundTypeAnthropic {
 		return []byte("event: ping\ndata: {\"type\":\"ping\"}\n\n")
 	}
 	return []byte(":\n\n")

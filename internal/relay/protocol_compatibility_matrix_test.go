@@ -170,8 +170,16 @@ func TestProtocolCompatibilityMatrix(t *testing.T) {
 					t.Fatalf("content_block_stop should not be treated as keepalive")
 				}
 				anthropicAttempt := &relayAttempt{relayRequest: &relayRequest{inboundType: inbound.InboundTypeAnthropic}}
+				// Before any content commits, every protocol keeps warm with an ignorable
+				// SSE comment: an "event: ping" is illegal before message_start and would
+				// count as a committed envelope, defeating pre-content failover.
+				if got := string(anthropicAttempt.streamKeepaliveData()); got != ":\n\n" {
+					t.Fatalf("expected pre-commit SSE comment keepalive for Anthropic, got %q", got)
+				}
+				// Once real content has been flushed, Anthropic keepalives become native pings.
+				anthropicAttempt.wroteMeaningfulDownstream = true
 				if got := string(anthropicAttempt.streamKeepaliveData()); !strings.Contains(got, "event: ping") || !strings.Contains(got, `"type":"ping"`) {
-					t.Fatalf("expected Anthropic keepalive ping, got %q", got)
+					t.Fatalf("expected Anthropic keepalive ping after commit, got %q", got)
 				}
 				openAIAttempt := &relayAttempt{relayRequest: &relayRequest{inboundType: inbound.InboundTypeOpenAIChat}}
 				if got := string(openAIAttempt.streamKeepaliveData()); got != ":\n\n" {
