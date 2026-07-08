@@ -1,9 +1,9 @@
 'use client';
 
 import { useCallback, useMemo, useState } from 'react';
-import { getRelayLogSeverity, type RelayLogSeverity, useExportLogs, useLogs } from '@/api/endpoints/log';
+import { getRelayLogSeverity, type RelayLogSeverity, useExportLogs, useLogCount, useLogs } from '@/api/endpoints/log';
 import { LogCard, useSensitiveStore } from './Item';
-import { AlertCircle, AlertTriangle, CheckCircle2, ChevronDown, ChevronUp, Circle, Download, Eye, EyeOff, Loader2, RefreshCw, RotateCcw, Search, SlidersHorizontal, Wifi, WifiOff } from 'lucide-react';
+import { AlertCircle, AlertTriangle, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Circle, Download, Eye, EyeOff, Loader2, RefreshCw, RotateCcw, Search, SlidersHorizontal, Wifi, WifiOff } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { VirtualizedGrid } from '@/components/common/VirtualizedGrid';
 import { PageWrapper } from '@/components/common/PageWrapper';
@@ -145,6 +145,9 @@ export function Log() {
     const [severityFilter, setSeverityFilter] = useState<LogSeverityFilter>('all');
     const [autoRefresh, setAutoRefresh] = useState(false);
     const [advancedOpen, setAdvancedOpen] = useState(false);
+    // 分页状态：当前页（从 1 开始）+ 跳页输入框草稿值。自动刷新时禁用分页，回退无限滚动。
+    const [currentPage, setCurrentPage] = useState(1);
+    const [pageJumpInput, setPageJumpInput] = useState('');
     const sensitiveVisible = useSensitiveStore((state) => state.sensitiveVisible);
     const setSensitiveVisible = useSensitiveStore((state) => state.setSensitiveVisible);
     const { data: users = [] } = useUserList({ enabled: isAdmin });
@@ -186,6 +189,17 @@ export function Log() {
         : undefined;
     const { startTime, endTime } = resolveLogTimeRange(startDate, endDate);
 
+    // 日志总数（用于分页计算）。与列表查询共享相同过滤参数，不含 page/page_size。
+    const { data: logCount } = useLogCount({
+        userID: selectedUserID,
+        apiKeyID: effectiveSelectedAPIKeyID,
+        endpoint: selectedEndpoint || undefined,
+        startTime,
+        endTime,
+    });
+    const LOG_PAGE_SIZE = 20;
+    const totalPages = Math.max(1, Math.ceil((logCount ?? 0) / LOG_PAGE_SIZE));
+
     const {
         logs,
         hasMore,
@@ -197,7 +211,9 @@ export function Log() {
         loadMore,
         refresh,
     } = useLogs({
-        pageSize: 20,
+        pageSize: LOG_PAGE_SIZE,
+        // 自动刷新时退回无限滚动（page=undefined），静态浏览时按 currentPage 拉取单页。
+        page: autoRefresh ? undefined : currentPage,
         userID: selectedUserID,
         apiKeyID: effectiveSelectedAPIKeyID,
         endpoint: selectedEndpoint || undefined,
@@ -229,6 +245,7 @@ export function Log() {
         setDraftEndDate(nextRange.endDate);
         setStartDate(nextRange.startDate);
         setEndDate(nextRange.endDate);
+        setCurrentPage(1);
     }, [todayLabel]);
 
     // 把草稿条件一次性提交为生效条件（点「搜索」或在输入框回车时调用）。
@@ -238,6 +255,7 @@ export function Log() {
         setSelectedEndpoint(draftEndpoint);
         setStartDate(draftStartDate);
         setEndDate(draftEndDate);
+        setCurrentPage(1);
     }, [draftUserID, draftAPIKeyID, draftEndpoint, draftStartDate, draftEndDate]);
 
     // 草稿和生效条件都回到默认（今天、不限用户/Key/端点）。
@@ -252,6 +270,7 @@ export function Log() {
         setSelectedEndpoint('');
         setStartDate(todayLabel);
         setEndDate(todayLabel);
+        setCurrentPage(1);
     }, [todayLabel]);
 
     // 草稿是否被改过（决定「搜索」是否高亮 + 是否显示「重置」）。
@@ -338,6 +357,8 @@ export function Log() {
             );
         }
         if (!hasMore && logs.length > 0) {
+            // 分页模式下无需"已全部加载"提示，由分页控件承担导航职责。
+            if (!autoRefresh) return null;
             return (
                 <div className="flex justify-center py-4">
                     <span className="text-sm text-muted-foreground">{t('list.noMore')}</span>
@@ -345,7 +366,7 @@ export function Log() {
             );
         }
         return null;
-    }, [filteredLogs.length, hasMore, isLoading, isLoadingMore, loadMore, logs.length, t]);
+    }, [autoRefresh, filteredLogs.length, hasMore, isLoading, isLoadingMore, loadMore, logs.length, t]);
 
     return (
         <PageWrapper className="box-border flex h-full min-h-0 flex-col gap-3 overflow-hidden rounded-t-3xl pb-[calc(6rem+env(safe-area-inset-bottom))] md:pb-4 [&>*]:min-h-0 [&>*:last-child]:flex [&>*:last-child]:flex-1">
@@ -591,8 +612,58 @@ export function Log() {
                         </label>
                     </div>
                 )}
-                <div className="text-xs text-muted-foreground">
-                    {t('list.loadedCount', { count: logs.length })} · 时间按浏览器本地时区显示
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-muted-foreground">
+                    {!autoRefresh && logCount !== undefined
+                        ? <span>共 {logCount.toLocaleString()} 条</span>
+                        : <span>{t('list.loadedCount', { count: logs.length })}</span>}
+                    <span>时间按浏览器本地时区显示</span>
+                    {!autoRefresh && logCount !== undefined && totalPages > 1 && (
+                        <div className="flex items-center gap-1">
+                            <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                                disabled={currentPage <= 1 || isLoading}
+                                className="h-6 w-6 rounded-md"
+                                aria-label="上一页"
+                            >
+                                <ChevronLeft className="size-3" />
+                            </Button>
+                            <span className="tabular-nums">第 {currentPage} / {totalPages} 页</span>
+                            <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                                disabled={currentPage >= totalPages || isLoading}
+                                className="h-6 w-6 rounded-md"
+                                aria-label="下一页"
+                            >
+                                <ChevronRight className="size-3" />
+                            </Button>
+                            <label className="flex items-center gap-1">
+                                <span>跳至</span>
+                                <input
+                                    type="number"
+                                    min={1}
+                                    max={totalPages}
+                                    value={pageJumpInput}
+                                    onChange={(e) => setPageJumpInput(e.target.value)}
+                                    onKeyDown={(e) => {
+                                        if (e.key !== 'Enter') return;
+                                        const p = parseInt(pageJumpInput, 10);
+                                        if (Number.isFinite(p) && p >= 1 && p <= totalPages) {
+                                            setCurrentPage(p);
+                                        }
+                                        setPageJumpInput('');
+                                    }}
+                                    onBlur={() => setPageJumpInput('')}
+                                    placeholder={String(currentPage)}
+                                    className="h-6 w-10 rounded-md border border-input bg-background px-1.5 text-center text-xs text-foreground [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                                />
+                                <span>页</span>
+                            </label>
+                        </div>
+                    )}
                 </div>
             </div>
             <div className="min-h-0 flex-1">

@@ -556,8 +556,8 @@ export function LogCard({ log }: { log: RelayLog }) {
                             )}
                         </MorphingDialogTitle>
 
-                        <MorphingDialogDescription className="flex-1 min-h-0">
-                            <div className="flex flex-col min-h-0 h-full gap-4">
+                        <MorphingDialogDescription className="flex-1 min-h-0 overflow-y-auto md:overflow-hidden">
+                            <div className="flex flex-col gap-4 md:min-h-0 md:h-full">
                                 <div className={cn(
                                     "shrink-0 rounded-xl border px-3.5 py-2.5 text-sm font-medium",
                                     verdict.kind === 'success'
@@ -651,7 +651,7 @@ export function LogCard({ log }: { log: RelayLog }) {
                                 </div>
                                 {(hasError || hasPartialFailure || shouldShowAttempts) && (
                                     <div className={cn(
-                                        "flex-initial min-h-0 flex flex-col rounded-lg border overflow-hidden max-h-[40%]",
+                                        "flex-initial min-h-0 flex flex-col rounded-lg border overflow-hidden max-h-64 md:max-h-[40%]",
                                         hasError
                                             ? "bg-destructive/5 border-destructive/20"
                                             : hasPartialFailure
@@ -823,7 +823,8 @@ export function LogCard({ log }: { log: RelayLog }) {
                                         </AnimatePresence>
                                     </div>
                                 )}
-                                <div className="flex-1 min-h-0 overflow-y-auto pr-1 md:overflow-hidden md:pr-0">
+                                {/* 移动端：外层 description 已 overflow-y-auto，此区域自然高度不约束；桌面端：flex-1 撑满剩余空间 */}
+                                <div className="overflow-hidden md:flex-1 md:min-h-0">
                                     <div className="grid grid-cols-1 gap-4 pb-2 md:h-full md:min-h-0 md:grid-cols-2 md:pb-0">
                                         <div className="flex min-h-[18rem] flex-col overflow-hidden rounded-lg border border-border bg-muted/30 md:min-h-0">
                                             <div className="flex items-center gap-2 px-3 md:px-4 py-2.5 md:py-3 border-b border-border bg-muted/50 shrink-0">

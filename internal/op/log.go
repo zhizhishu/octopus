@@ -496,6 +496,45 @@ func RelayLogList(ctx context.Context, startTime, endTime *int, page, pageSize i
 	return result, nil
 }
 
+func RelayLogCount(ctx context.Context, startTime, endTime *int, scope *model.RelayLogScope) (int64, error) {
+	enabled, err := SettingGetBool(model.SettingKeyRelayLogKeepEnabled)
+	if err != nil {
+		return 0, err
+	}
+
+	hasTimeFilter := startTime != nil && endTime != nil
+
+	if enabled {
+		query := db.GetDB().WithContext(ctx).Model(&model.RelayLog{})
+		if hasTimeFilter {
+			query = query.Where("time >= ? AND time <= ?", *startTime, *endTime)
+		}
+		query = relayLogApplyScope(query, scope)
+
+		var total int64
+		if err := query.Count(&total).Error; err != nil {
+			return 0, err
+		}
+		return total, nil
+	}
+
+	relayLogCacheLock.Lock()
+	defer relayLogCacheLock.Unlock()
+
+	var total int64
+	for _, log := range relayLogCache {
+		if !relayLogMatchScope(log, scope) {
+			continue
+		}
+		if hasTimeFilter && (log.Time < int64(*startTime) || log.Time > int64(*endTime)) {
+			continue
+		}
+		total++
+	}
+
+	return total, nil
+}
+
 func relayLogDedupe(logs []model.RelayLog) []model.RelayLog {
 	if len(logs) < 2 {
 		return logs

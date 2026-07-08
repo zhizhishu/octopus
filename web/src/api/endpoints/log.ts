@@ -229,26 +229,66 @@ const logsInfiniteQueryKey = (
     apiKeyID?: number,
     endpoint?: string,
     startTime?: number,
+    endTime?: number,
+    page?: number
+) => ['logs', 'infinite', pageSize, userID ?? 0, apiKeyID ?? 0, endpoint ?? '', startTime ?? 0, endTime ?? 0, page ?? -1] as const;
+
+const logCountQueryKey = (
+    userID?: number,
+    apiKeyID?: number,
+    endpoint?: string,
+    startTime?: number,
     endTime?: number
-) => ['logs', 'infinite', pageSize, userID ?? 0, apiKeyID ?? 0, endpoint ?? '', startTime ?? 0, endTime ?? 0] as const;
+) => ['logs', 'count', userID ?? 0, apiKeyID ?? 0, endpoint ?? '', startTime ?? 0, endTime ?? 0] as const;
 const LOG_STREAM_RECONNECT_BASE_MS = 1000;
 const LOG_STREAM_RECONNECT_MAX_MS = 15000;
 
 /**
+ * 日志总数 Hook
+ * 接受与 useLogs 相同的过滤参数（不含 page/page_size），返回符合条件的日志总数。
+ */
+export function useLogCount(options: {
+    userID?: number;
+    apiKeyID?: number;
+    endpoint?: string;
+    startTime?: number;
+    endTime?: number;
+} = {}) {
+    const { userID, apiKeyID, endpoint, startTime, endTime } = options;
+    return useQuery({
+        queryKey: logCountQueryKey(userID, apiKeyID, endpoint, startTime, endTime),
+        queryFn: async () => {
+            const params = new URLSearchParams();
+            appendOptionalParam(params, 'user_id', userID);
+            appendOptionalParam(params, 'api_key_id', apiKeyID);
+            appendOptionalParam(params, 'endpoint', endpoint);
+            appendOptionalParam(params, 'start_time', startTime);
+            appendOptionalParam(params, 'end_time', endTime);
+            const result = await apiClient.get<{ total: number }>(`/api/v1/log/count?${params.toString()}`);
+            return result.total;
+        },
+        staleTime: 0,
+        refetchOnMount: 'always',
+    });
+}
+
+/**
  * 日志管理 Hook
  * 整合初始加载、SSE 实时推送、滚动加载更多
- * 
+ *
+ * @param options.page - 指定后进入分页模式：只拉该页数据，不自动加载下一页。
+ *                       未指定（或 live=true）时保持无限滚动行为。
  * @example
  * const { logs, isConnected, hasMore, isLoadingMore, loadMore, clear } = useLogs();
- * 
+ *
  * // logs 自动包含历史日志和实时日志，按时间倒序
  * logs.forEach(log => console.log(log.request_model_name));
- * 
+ *
  * // 滚动到底部时加载更多
  * if (hasMore && !isLoadingMore) loadMore();
  */
-export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?: number; endpoint?: string; startTime?: number; endTime?: number; live?: boolean } = {}) {
-    const { pageSize = 20, userID, apiKeyID, endpoint, startTime, endTime, live = false } = options;
+export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?: number; endpoint?: string; startTime?: number; endTime?: number; live?: boolean; page?: number } = {}) {
+    const { pageSize = 20, userID, apiKeyID, endpoint, startTime, endTime, live = false, page } = options;
 
     const [isConnected, setIsConnected] = useState(false);
     const [error, setError] = useState<Error | null>(null);
@@ -259,13 +299,13 @@ export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?
 
     const queryClient = useQueryClient();
     const queryKey = useMemo(
-        () => logsInfiniteQueryKey(pageSize, userID, apiKeyID, endpoint, startTime, endTime),
-        [apiKeyID, endpoint, endTime, pageSize, startTime, userID]
+        () => logsInfiniteQueryKey(pageSize, userID, apiKeyID, endpoint, startTime, endTime, page),
+        [apiKeyID, endpoint, endTime, page, pageSize, startTime, userID]
     );
 
     const logsQuery = useInfiniteQuery({
         queryKey,
-        initialPageParam: 1,
+        initialPageParam: page ?? 1,
         queryFn: async ({ pageParam }) => {
             const params = new URLSearchParams();
             params.set('page', String(pageParam));
@@ -279,6 +319,8 @@ export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?
             return result ?? [];
         },
         getNextPageParam: (lastPage, allPages) => {
+            // In paginated mode (explicit page), never auto-fetch additional pages.
+            if (page !== undefined) return undefined;
             if (!lastPage || lastPage.length < pageSize) return undefined;
             return allPages.length + 1;
         },

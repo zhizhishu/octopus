@@ -27,6 +27,10 @@ func init() {
 				Handle(listLog),
 		).
 		AddRoute(
+			router.NewRoute("/count", http.MethodGet).
+				Handle(countLog),
+		).
+		AddRoute(
 			router.NewRoute("/export", http.MethodGet).
 				Handle(exportLog),
 		).
@@ -98,6 +102,37 @@ func listLog(c *gin.Context) {
 	}
 
 	resp.Success(c, logs)
+}
+
+func countLog(c *gin.Context) {
+	startTime, endTime, err := parseLogTimeRange(c)
+	if err != nil {
+		resp.Error(c, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	scope := logScopeFromContext(c)
+	if endpoint := strings.TrimSpace(c.Query("endpoint")); endpoint != "" {
+		scope.Endpoint = endpoint
+	}
+	if middleware.CurrentUserIsAdmin(c) {
+		var err error
+		scope, err = logScopeFromAdminQuery(c, scope)
+		if err != nil {
+			resp.Error(c, http.StatusBadRequest, resp.ErrInvalidParam)
+			return
+		}
+	} else {
+		scope.Redact = false
+	}
+
+	total, err := op.RelayLogCount(c.Request.Context(), startTime, endTime, &scope)
+	if err != nil {
+		resp.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	resp.Success(c, gin.H{"total": total})
 }
 
 func exportLog(c *gin.Context) {
