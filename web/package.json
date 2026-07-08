@@ -10,6 +10,7 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@dagrejs/dagre": "^3.0.0",
     "@floating-ui/react": "^0.27.16",
     "@hello-pangea/dnd": "^18.0.1",
     "@lobehub/icons": "^2.48.0",
@@ -27,6 +28,7 @@
     "@tanstack/react-virtual": "^3.13.19",
     "@uidotdev/usehooks": "^2.4.1",
     "@uiw/react-json-view": "2.0.0-alpha.39",
+    "@xyflow/react": "^12.11.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "date-fns": "^4.1.0",

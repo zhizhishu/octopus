@@ -1,15 +1,17 @@
 'use client';
 
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
     BadgeDollarSign,
     Check,
+    EyeOff,
     GitBranch,
     Loader2,
     PencilLine,
     Plus,
     RefreshCcw,
     Save,
+    Search,
     ShieldCheck,
     Trash2,
 } from 'lucide-react';
@@ -47,6 +49,25 @@ import { SearchableSelect } from '@/components/ui/searchable-select';
 import { Switch } from '@/components/ui/switch';
 import { cn } from '@/lib/utils';
 import { cleanOneMillionModelName } from '@/lib/model-aliases';
+import {
+    ReactFlow,
+    ReactFlowProvider,
+    Background,
+    BackgroundVariant,
+    Controls,
+    MiniMap,
+    Handle,
+    Position,
+    useNodesState,
+    useEdgesState,
+    useReactFlow,
+    type Node,
+    type Edge,
+    type NodeProps,
+    type NodeTypes,
+} from '@xyflow/react';
+import '@xyflow/react/dist/style.css';
+import Dagre from '@dagrejs/dagre';
 
 const DEFAULT_PLAN_TEMPLATES = [
     { slug: 'vip', display_name: 'VIP' },
@@ -293,6 +314,37 @@ function groupedRouteTargets(targets: AccessPlanRouteTarget[]) {
 }
 
 type RouteTargetGroup = ReturnType<typeof groupedRouteTargets>[number];
+
+// ── 模型家族分类：把 request_model 名归到一个厂商家族，用于画布泳道分组 ──
+type ModelFamilyKey =
+    | 'claude' | 'openai' | 'gemini' | 'deepseek'
+    | 'glm' | 'qwen' | 'kimi' | 'grok' | 'other';
+
+// 完整静态 class 字符串——严禁改成模板拼接 `bg-${c}-500`，Tailwind 会 purge 掉动态类导致线上掉色。
+const FAMILY_STYLES: Record<ModelFamilyKey, { label: string; dot: string; ring: string; soft: string; text: string }> = {
+    claude:   { label: 'Claude',      dot: 'bg-orange-500',  ring: 'border-orange-500/30',  soft: 'bg-orange-500/[0.07]',  text: 'text-orange-600 dark:text-orange-300' },
+    openai:   { label: 'OpenAI',      dot: 'bg-teal-500',    ring: 'border-teal-500/30',    soft: 'bg-teal-500/[0.07]',    text: 'text-teal-600 dark:text-teal-300' },
+    gemini:   { label: 'Gemini',      dot: 'bg-sky-500',     ring: 'border-sky-500/30',     soft: 'bg-sky-500/[0.07]',     text: 'text-sky-600 dark:text-sky-300' },
+    deepseek: { label: 'DeepSeek',    dot: 'bg-indigo-500',  ring: 'border-indigo-500/30',  soft: 'bg-indigo-500/[0.07]',  text: 'text-indigo-600 dark:text-indigo-300' },
+    glm:      { label: 'GLM · 智谱',  dot: 'bg-violet-500',  ring: 'border-violet-500/30',  soft: 'bg-violet-500/[0.07]',  text: 'text-violet-600 dark:text-violet-300' },
+    qwen:     { label: 'Qwen · 通义', dot: 'bg-rose-500',    ring: 'border-rose-500/30',    soft: 'bg-rose-500/[0.07]',    text: 'text-rose-600 dark:text-rose-300' },
+    kimi:     { label: 'Kimi',        dot: 'bg-fuchsia-500', ring: 'border-fuchsia-500/30', soft: 'bg-fuchsia-500/[0.07]', text: 'text-fuchsia-600 dark:text-fuchsia-300' },
+    grok:     { label: 'Grok',        dot: 'bg-zinc-500',    ring: 'border-zinc-500/30',    soft: 'bg-zinc-500/[0.07]',    text: 'text-zinc-600 dark:text-zinc-300' },
+    other:    { label: '其他',        dot: 'bg-slate-500',   ring: 'border-slate-500/30',   soft: 'bg-slate-500/[0.07]',   text: 'text-slate-600 dark:text-slate-300' },
+};
+
+function modelFamilyKey(rawName: string): ModelFamilyKey {
+    const n = cleanOneMillionModelName(rawName).toLowerCase();
+    if (/^(claude|anthropic)/.test(n)) return 'claude';
+    if (/^(gpt|o1|o3|o4|chatgpt|openai|text-|davinci)/.test(n)) return 'openai';
+    if (/(^gemini|^google|palm|bison)/.test(n)) return 'gemini';
+    if (/deepseek/.test(n)) return 'deepseek';
+    if (/(glm|zhipu|zai|chatglm|z-ai)/.test(n)) return 'glm';
+    if (/(qwen|qwq|tongyi|通义)/.test(n)) return 'qwen';
+    if (/(kimi|moonshot)/.test(n)) return 'kimi';
+    if (/grok/.test(n)) return 'grok';
+    return 'other';
+}
 
 type RouteChannelModel = { channel_id: number; name: string; enabled?: boolean };
 
@@ -894,15 +946,225 @@ function BillingRulesEditor({
     );
 }
 
-function RouteFlowCanvas({
-    plan,
-    rows,
-    channels,
-    onRebuildRequest,
-    onEditRequest,
-    isRebuilding,
-    onOpenJson,
-}: {
+// == React Flow 无限画布：节点/连线绑接口，缩放·平移·折行都自动跟手，彻底告别手写 SVG 飘线 ==
+
+// minimap 用的家族色（与 FAMILY_STYLES 的 tailwind -500 色一一对应；canvas 不吃 tailwind 类，必须给 hex）
+const FAMILY_HEX: Record<ModelFamilyKey, string> = {
+    claude: '#f97316', openai: '#14b8a6', gemini: '#0ea5e9', deepseek: '#6366f1',
+    glm: '#8b5cf6', qwen: '#f43f5e', kimi: '#d946ef', grok: '#71717a', other: '#64748b',
+};
+
+// dagre 布局用的固定节点尺寸（与卡片视觉宽度对齐，布局稳定不抖）
+const NODE_SIZE = {
+    plan: { w: 208, h: 96 },
+    request: { w: 248, h: 132 },
+    target: { w: 300, h: 132 },
+} as const;
+
+type PlanNodeData = { slug: string; name: string; multiplier: number };
+type RequestNodeData = {
+    requestModel: string;
+    family: ModelFamilyKey;
+    canRebuild: boolean;
+    isRebuilding: boolean;
+    onEdit: () => void;
+    onRebuild: () => void;
+};
+type TargetNodeData = {
+    channelName: string;
+    channelId: number;
+    priority: number;
+    weight: number;
+    upstreamModel: string;
+    hideUpstream: boolean;
+    enabled: boolean;
+    fallback: string;
+    multiplier: number | string;
+    billingSource: string;
+};
+
+type PlanFlowNode = Node<PlanNodeData, 'plan'>;
+type RequestFlowNode = Node<RequestNodeData, 'request'>;
+type TargetFlowNode = Node<TargetNodeData, 'target'>;
+type FlowNode = PlanFlowNode | RequestFlowNode | TargetFlowNode;
+
+function PlanFlowCard({ data }: NodeProps<PlanFlowNode>) {
+    return (
+        <div className="rounded-2xl border border-primary/25 bg-primary/10 p-3 shadow-sm" style={{ width: NODE_SIZE.plan.w }}>
+            <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-primary">{data.slug}</div>
+            <div className="mt-1 truncate text-sm font-black text-foreground">{data.name}</div>
+            <div className="mt-2 text-xs text-muted-foreground">默认倍率 {data.multiplier}x</div>
+            <Handle type="source" position={Position.Right} className="!size-2 !border-2 !border-background !bg-primary" />
+        </div>
+    );
+}
+
+function RequestFlowCard({ data }: NodeProps<RequestFlowNode>) {
+    const s = FAMILY_STYLES[data.family];
+    return (
+        <div className={cn('rounded-2xl border p-3 shadow-sm', s.ring, s.soft)} style={{ width: NODE_SIZE.request.w }}>
+            <Handle type="target" position={Position.Left} className="!size-2 !border-2 !border-background !bg-muted-foreground" />
+            <div className={cn('flex items-center gap-1.5 text-[10px] font-bold tracking-[0.16em]', s.text)}>
+                <span className={cn('size-2 rounded-full', s.dot)} />
+                原请求模型
+            </div>
+            <div className="mt-1 break-all font-mono text-sm font-black text-foreground">{data.requestModel}</div>
+            <div className="mt-3 flex gap-2">
+                <Button type="button" variant="outline" size="sm" className="nodrag h-7 rounded-lg px-2 text-xs" onClick={data.onEdit}>
+                    <PencilLine className="size-3" />{accessPlanText('routes.quickEdit')}
+                </Button>
+                <Button
+                    type="button" variant="outline" size="sm" className="nodrag h-7 rounded-lg px-2 text-xs"
+                    disabled={data.isRebuilding || !data.canRebuild} onClick={data.onRebuild}
+                >
+                    {data.isRebuilding ? <Loader2 className="size-3 animate-spin" /> : <RefreshCcw className="size-3" />}
+                    {accessPlanText('routes.rebuildRequest')}
+                </Button>
+            </div>
+            <Handle type="source" position={Position.Right} className="!size-2 !border-2 !border-background !bg-primary" />
+        </div>
+    );
+}
+
+function TargetFlowCard({ data }: NodeProps<TargetFlowNode>) {
+    return (
+        <div
+            className={cn('rounded-2xl border bg-card/90 p-3 shadow-sm', data.enabled ? 'border-emerald-500/30' : 'border-border opacity-70')}
+            style={{ width: NODE_SIZE.target.w }}
+        >
+            <Handle type="target" position={Position.Left} className="!size-2 !border-2 !border-background !bg-emerald-500" />
+            <div className="flex min-w-0 items-center gap-2">
+                <span className={cn('size-2 rounded-full', data.enabled ? 'bg-emerald-500' : 'bg-muted-foreground')} />
+                <span className="truncate text-sm font-bold text-foreground">{data.channelName}</span>
+            </div>
+            <div className="mt-1 text-xs text-muted-foreground">#{data.channelId} · P{data.priority}</div>
+            <div className="mt-2 text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">{accessPlanText('routes.upstreamTarget')}</div>
+            <div className="mt-1 break-all font-mono text-xs font-semibold text-foreground">
+                {data.hideUpstream
+                    ? <span className="tracking-[0.3em] text-muted-foreground/70">••••••</span>
+                    : data.upstreamModel}
+            </div>
+            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                <span><span className="font-bold text-foreground">W{data.weight}</span> · {data.fallback}</span>
+                <span><span className="font-bold text-foreground">{data.multiplier}x</span> · {data.billingSource}</span>
+            </div>
+        </div>
+    );
+}
+
+const flowNodeTypes: NodeTypes = {
+    plan: PlanFlowCard,
+    request: RequestFlowCard,
+    target: TargetFlowCard,
+};
+
+function miniMapNodeColor(node: Node): string {
+    if (node.type === 'plan') return '#3b82f6';
+    if (node.type === 'request') {
+        const fam = (node.data as Partial<RequestNodeData>).family;
+        return fam ? FAMILY_HEX[fam] : '#64748b';
+    }
+    const enabled = (node.data as Partial<TargetNodeData>).enabled;
+    return enabled ? '#22c55e' : '#94a3b8';
+}
+
+// dagre 左->右自动布局：把节点排开、算好坐标写回（连线由 React Flow 绑接口自动跟随，无需手算）
+function layoutFlowElements(nodes: FlowNode[], edges: Edge[]): FlowNode[] {
+    const g = new Dagre.graphlib.Graph().setDefaultEdgeLabel(() => ({}));
+    g.setGraph({ rankdir: 'LR', nodesep: 22, ranksep: 96 });
+    edges.forEach((edge) => g.setEdge(edge.source, edge.target));
+    nodes.forEach((node) => {
+        const size = NODE_SIZE[node.type];
+        g.setNode(node.id, { width: size.w, height: size.h });
+    });
+    Dagre.layout(g);
+    return nodes.map((node) => {
+        const size = NODE_SIZE[node.type];
+        const p = g.node(node.id);
+        // dagre 给的是节点中心；React Flow 的 position 是左上角，减半宽半高
+        return { ...node, position: { x: p.x - size.w / 2, y: p.y - size.h / 2 } };
+    });
+}
+
+// 把 方案 -> 请求模型 -> 渠道·发送模型 映射成三种节点 + 连线
+function buildRouteFlow(
+    plan: AccessPlan,
+    rows: RouteTargetGroup[],
+    channelNameByID: Map<number, string>,
+    hideUpstream: boolean,
+    isRebuilding: boolean,
+    onEditRequest: (requestModel: string) => void,
+    onRebuildRequest: (requestModel: string) => void,
+): { nodes: FlowNode[]; edges: Edge[] } {
+    const nodes: FlowNode[] = [];
+    const edges: Edge[] = [];
+    const planId = 'plan';
+    nodes.push({
+        id: planId,
+        type: 'plan',
+        position: { x: 0, y: 0 },
+        data: { slug: plan.slug, name: plan.display_name || plan.slug, multiplier: plan.default_multiplier ?? 1 },
+    });
+    rows.forEach((row, rowIndex) => {
+        const family = modelFamilyKey(row.requestModel);
+        const reqId = `req:${row.requestKey || rowIndex}`;
+        nodes.push({
+            id: reqId,
+            type: 'request',
+            position: { x: 0, y: 0 },
+            data: {
+                requestModel: cleanOneMillionModelName(row.requestModel),
+                family,
+                canRebuild: row.requestKey.length > 0,
+                isRebuilding,
+                onEdit: () => onEditRequest(row.requestKey ? row.requestModel : ''),
+                onRebuild: () => onRebuildRequest(row.requestModel),
+            },
+        });
+        edges.push({
+            id: `edge:${planId}:${reqId}`,
+            source: planId,
+            target: reqId,
+            type: 'smoothstep',
+            style: { stroke: 'var(--primary)', strokeWidth: 1.8 },
+        });
+        row.targets.forEach((target, targetIndex) => {
+            const tgtId = `tgt:${reqId}:${target.id ?? targetIndex}`;
+            const channelName = channelNameByID.get(target.channel_id) ?? accessPlanText('routes.missingChannel', { id: target.channel_id });
+            const billing = effectiveMultiplier(plan, billingModelName(target));
+            nodes.push({
+                id: tgtId,
+                type: 'target',
+                position: { x: 0, y: 0 },
+                data: {
+                    channelName,
+                    channelId: target.channel_id,
+                    priority: target.priority || targetIndex + 1,
+                    weight: target.weight || 1,
+                    upstreamModel: cleanOneMillionModelName(target.upstream_model || accessPlanText('routes.unset')),
+                    hideUpstream,
+                    enabled: target.enabled,
+                    fallback: fallbackModeLabel(target.fallback_mode),
+                    multiplier: billing.multiplier,
+                    billingSource: billingSourceLabel(target.billing_model_source),
+                },
+            });
+            edges.push({
+                id: `edge:${reqId}:${tgtId}`,
+                source: reqId,
+                target: tgtId,
+                type: 'smoothstep',
+                animated: target.enabled,
+                style: target.enabled
+                    ? { stroke: '#22c55e', strokeWidth: 1.8 }
+                    : { stroke: '#9ca3af', strokeWidth: 1.4, strokeDasharray: '6 4' },
+            });
+        });
+    });
+    return { nodes: layoutFlowElements(nodes, edges), edges };
+}
+
+type RouteFlowCanvasProps = {
     plan: AccessPlan;
     rows: RouteTargetGroup[];
     channels: Array<{ id: number; name: string; enabled: boolean }>;
@@ -910,65 +1172,49 @@ function RouteFlowCanvas({
     onEditRequest: (requestModel: string) => void;
     isRebuilding: boolean;
     onOpenJson?: () => void;
-}) {
+    hideUpstream: boolean;
+    onToggleHideUpstream: (v: boolean) => void;
+};
+
+function RouteFlowCanvasInner({
+    plan, rows, channels, onRebuildRequest, onEditRequest, isRebuilding, onOpenJson, hideUpstream, onToggleHideUpstream,
+}: RouteFlowCanvasProps) {
     const t = accessPlanText;
     const channelNameByID = useMemo(() => new Map(channels.map((channel) => [channel.id, channel.name])), [channels]);
-    const visibleRows = rows;
+    const { fitView } = useReactFlow();
 
-    // Grab-to-pan: hold and drag the canvas background to scroll on both axes.
-    const scrollBoxRef = useRef<HTMLDivElement>(null);
-    const panRef = useRef<{ startX: number; startY: number; startLeft: number; startTop: number; dragging: boolean } | null>(null);
-    const didDragRef = useRef(false);
-    const [isPanning, setIsPanning] = useState(false);
+    const [query, setQuery] = useState('');
+    const q = query.trim().toLowerCase();
+    const filteredRows = useMemo(() => {
+        if (!q) return rows;
+        return rows
+            .map((row): RouteTargetGroup | null => {
+                if (row.requestModel.toLowerCase().includes(q)) return row;
+                const targets = row.targets.filter((tgt) => {
+                    const chName = (channelNameByID.get(tgt.channel_id) ?? '').toLowerCase();
+                    return chName.includes(q) || (tgt.upstream_model ?? '').toLowerCase().includes(q);
+                });
+                return targets.length ? { ...row, targets } : null;
+            })
+            .filter((row): row is RouteTargetGroup => row !== null);
+    }, [rows, q, channelNameByID]);
 
-    const handlePointerMove = (event: PointerEvent) => {
-        const pan = panRef.current;
-        const box = scrollBoxRef.current;
-        if (!pan || !box) return;
-        const dx = event.clientX - pan.startX;
-        const dy = event.clientY - pan.startY;
-        if (!pan.dragging) {
-            // Stay a plain click until movement crosses the 5px threshold.
-            if (Math.abs(dx) <= 5 && Math.abs(dy) <= 5) return;
-            pan.dragging = true;
-            didDragRef.current = true;
-            setIsPanning(true);
-        }
-        box.scrollLeft = pan.startLeft - dx;
-        box.scrollTop = pan.startTop - dy;
-    };
+    const flow = useMemo(
+        () => buildRouteFlow(plan, filteredRows, channelNameByID, hideUpstream, isRebuilding, onEditRequest, onRebuildRequest),
+        [plan, filteredRows, channelNameByID, hideUpstream, isRebuilding, onEditRequest, onRebuildRequest],
+    );
 
-    const handlePointerUp = () => {
-        window.removeEventListener('pointermove', handlePointerMove);
-        window.removeEventListener('pointerup', handlePointerUp);
-        panRef.current = null;
-        setIsPanning(false);
-    };
+    const [nodes, setNodes, onNodesChange] = useNodesState<FlowNode>(flow.nodes);
+    const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>(flow.edges);
 
-    const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
-        if (event.button !== 0) return;
-        const box = scrollBoxRef.current;
-        if (!box) return;
-        panRef.current = {
-            startX: event.clientX,
-            startY: event.clientY,
-            startLeft: box.scrollLeft,
-            startTop: box.scrollTop,
-            dragging: false,
-        };
-        didDragRef.current = false;
-        window.addEventListener('pointermove', handlePointerMove);
-        window.addEventListener('pointerup', handlePointerUp);
-    };
+    useEffect(() => {
+        setNodes(flow.nodes);
+        setEdges(flow.edges);
+        const raf = requestAnimationFrame(() => fitView({ padding: 0.18, duration: 220 }));
+        return () => cancelAnimationFrame(raf);
+    }, [flow, setNodes, setEdges, fitView]);
 
-    const handleClickCapture = (event: React.MouseEvent<HTMLDivElement>) => {
-        // Swallow the click that ends a real drag so cards/buttons don't fire.
-        if (didDragRef.current) {
-            event.preventDefault();
-            event.stopPropagation();
-            didDragRef.current = false;
-        }
-    };
+    const targetCount = filteredRows.reduce((sum, row) => sum + row.targets.length, 0);
 
     return (
         <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-border/70 bg-background/70">
@@ -993,110 +1239,62 @@ function RouteFlowCanvas({
                     </div>
                     <p className="mt-1 text-xs text-muted-foreground">{t('routes.canvasHint')}</p>
                 </div>
-                <div className="flex flex-wrap gap-2 text-[11px] text-muted-foreground">
+                <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                    <div className="relative">
+                        <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                        <input
+                            value={query}
+                            onChange={(event) => setQuery(event.target.value)}
+                            placeholder="搜模型 / 渠道 / 上游…"
+                            className="h-7 w-48 rounded-full border border-border/70 bg-background/60 pl-7 pr-2 text-xs text-foreground outline-none focus:border-primary/50"
+                        />
+                    </div>
+                    <label className="flex cursor-pointer items-center gap-1.5 rounded-full border border-border/70 px-2 py-0.5">
+                        <Switch checked={hideUpstream} onCheckedChange={onToggleHideUpstream} className="scale-75" />
+                        <EyeOff className="size-3" />
+                        <span>隐藏上游名</span>
+                    </label>
                     <Badge variant="secondary" className="rounded-full">{planTitle(plan)}</Badge>
-                    <Badge variant="outline" className="rounded-full">{t('routes.targetCount', { count: rows.reduce((sum, row) => sum + row.targets.length, 0) })}</Badge>
+                    <Badge variant="outline" className="rounded-full">{t('routes.targetCount', { count: targetCount })}</Badge>
                 </div>
             </div>
 
-            {visibleRows.length === 0 ? (
-                <div className="px-4 py-8 text-center text-sm text-muted-foreground">{t('routes.canvasEmpty')}</div>
+            {filteredRows.length === 0 ? (
+                <div className="px-4 py-8 text-center text-sm text-muted-foreground">
+                    {rows.length === 0 ? t('routes.canvasEmpty') : `没有匹配「${query.trim()}」的模型或渠道`}
+                </div>
             ) : (
-                <div
-                    ref={scrollBoxRef}
-                    onPointerDown={handlePointerDown}
-                    onClickCapture={handleClickCapture}
-                    // Height follows the dynamic viewport, so mobile browser chrome and short
-                    // desktop windows do not hide the bottom rows behind the page shell.
-                    className={cn('min-h-0 flex-1 h-[clamp(260px,calc(100dvh-28rem),760px)] overflow-auto overscroll-contain cursor-grab active:cursor-grabbing sm:h-[clamp(300px,calc(100dvh-24rem),760px)]', isPanning && 'select-none')}
-                >
-                    {/* Extra bottom padding gives the last channel card room above mobile nav / safe-area bars. */}
-                    <div className="relative min-h-[300px] min-w-[1120px] space-y-4 bg-[linear-gradient(90deg,rgba(125,125,125,0.13)_1px,transparent_1px),linear-gradient(0deg,rgba(125,125,125,0.10)_1px,transparent_1px)] bg-[length:32px_32px] px-5 pt-5 pb-[calc(6rem+env(safe-area-inset-bottom))] md:pb-8">
-                        <div className="grid grid-cols-[210px_260px_minmax(0,1fr)] gap-8 text-[10px] font-black tracking-[0.18em] text-muted-foreground">
-                            <span>方案</span>
-                            <span>原请求模型</span>
-                            <span>替换为：渠道 · 发送模型</span>
-                        </div>
-                        {visibleRows.map((row, rowIndex) => (
-                            <div key={row.requestKey || `route-row-${rowIndex}`} className="grid grid-cols-[210px_260px_minmax(0,1fr)] items-center gap-8">
-                                <div className="rounded-2xl border border-primary/25 bg-primary/10 p-3 shadow-sm">
-                                    <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-primary">{plan.slug}</div>
-                                    <div className="mt-1 truncate text-sm font-black text-foreground">{plan.display_name || plan.slug}</div>
-                                    <div className="mt-2 text-xs text-muted-foreground">默认倍率 {plan.default_multiplier ?? 1}x</div>
-                                </div>
-
-                                <div className="relative rounded-2xl border border-amber-500/25 bg-amber-500/10 p-3 shadow-sm">
-                                    <div className="absolute -left-8 top-1/2 h-px w-8 bg-primary/35" />
-                                    <div className="absolute -right-8 top-1/2 h-px w-8 bg-amber-500/35" />
-                                    <div className="text-[10px] font-bold tracking-[0.16em] text-amber-600 dark:text-amber-300">原请求模型</div>
-                                    <div className="mt-1 break-all font-mono text-sm font-black text-foreground">{cleanOneMillionModelName(row.requestModel)}</div>
-                                    <div className="mt-3 flex gap-2">
-                                        <Button
-                                            type="button"
-                                            variant="outline"
-                                            size="sm"
-                                            className="h-7 rounded-lg px-2 text-xs"
-                                            onClick={() => onEditRequest(row.requestKey ? row.requestModel : '')}
-                                        >
-                                            <PencilLine className="size-3" />
-                                            {t('routes.quickEdit')}
-                                        </Button>
-                                        <Button
-                                            type="button"
-                                            variant="outline"
-                                            size="sm"
-                                            className="h-7 rounded-lg px-2 text-xs"
-                                            disabled={isRebuilding || row.requestKey.length === 0}
-                                            onClick={() => onRebuildRequest(row.requestModel)}
-                                        >
-                                            {isRebuilding ? <Loader2 className="size-3 animate-spin" /> : <RefreshCcw className="size-3" />}
-                                            {t('routes.rebuildRequest')}
-                                        </Button>
-                                    </div>
-                                </div>
-
-                                <div className="grid min-w-0 gap-3">
-                                    {row.targets.map((target, targetIndex) => {
-                                        const channelName = channelNameByID.get(target.channel_id) ?? t('routes.missingChannel', { id: target.channel_id });
-                                        const billing = effectiveMultiplier(plan, billingModelName(target));
-                                        return (
-                                            <div
-                                                key={`${target.id ?? 'local'}-${row.requestKey}-${targetIndex}`}
-                                                className={cn(
-                                                    'relative grid min-w-0 grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)_100px_130px] items-center gap-3 rounded-2xl border bg-card/90 p-3 shadow-sm',
-                                                    target.enabled ? 'border-emerald-500/25' : 'border-border opacity-65'
-                                                )}
-                                            >
-                                                <div className="absolute -left-8 top-1/2 h-px w-8 bg-amber-500/35" />
-                                                <div className="min-w-0">
-                                                    <div className="flex min-w-0 items-center gap-2">
-                                                        <span className={cn('size-2 rounded-full', target.enabled ? 'bg-emerald-500' : 'bg-muted-foreground')} />
-                                                        <span className="truncate text-sm font-bold text-foreground">{channelName}</span>
-                                                    </div>
-                                                    <div className="mt-1 text-xs text-muted-foreground">#{target.channel_id} · P{target.priority || targetIndex + 1}</div>
-                                                </div>
-                                                <div className="min-w-0">
-                                                    <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">{t('routes.upstreamTarget')}</div>
-                                                    <div className="mt-1 break-all font-mono text-xs font-semibold text-foreground">{cleanOneMillionModelName(target.upstream_model || t('routes.unset'))}</div>
-                                                </div>
-                                                <div className="text-xs text-muted-foreground">
-                                                    <div className="font-bold text-foreground">W{target.weight || 1}</div>
-                                                    <div>{fallbackModeLabel(target.fallback_mode)}</div>
-                                                </div>
-                                                <div className="text-xs text-muted-foreground">
-                                                    <div className="font-bold text-foreground">{billing.multiplier}x</div>
-                                                    <div className="truncate">{billingSourceLabel(target.billing_model_source)}</div>
-                                                </div>
-                                            </div>
-                                        );
-                                    })}
-                                </div>
-                            </div>
-                        ))}
-                    </div>
+                <div className="min-h-0 flex-1 h-[clamp(320px,calc(100dvh-26rem),820px)]">
+                    <ReactFlow<FlowNode, Edge>
+                        nodes={nodes}
+                        edges={edges}
+                        onNodesChange={onNodesChange}
+                        onEdgesChange={onEdgesChange}
+                        nodeTypes={flowNodeTypes}
+                        colorMode="system"
+                        fitView
+                        fitViewOptions={{ padding: 0.18 }}
+                        minZoom={0.15}
+                        maxZoom={1.6}
+                        nodesConnectable={false}
+                        edgesFocusable={false}
+                        proOptions={{ hideAttribution: true }}
+                    >
+                        <Background variant={BackgroundVariant.Dots} gap={26} size={1} />
+                        <MiniMap pannable zoomable nodeColor={miniMapNodeColor} nodeStrokeWidth={2} />
+                        <Controls showInteractive={false} />
+                    </ReactFlow>
                 </div>
             )}
         </section>
+    );
+}
+
+function RouteFlowCanvas(props: RouteFlowCanvasProps) {
+    return (
+        <ReactFlowProvider>
+            <RouteFlowCanvasInner {...props} />
+        </ReactFlowProvider>
     );
 }
 
@@ -1308,6 +1506,11 @@ function RouteTargetsEditor({
     const [targets, setTargets] = useState<AccessPlanRouteTarget[]>(() => plan.route_targets.map(cleanRouteTargetModels));
     const [jsonText, setJsonText] = useState('');
     const [editingRequestModel, setEditingRequestModel] = useState<string | null>(null);
+    const [hideUpstream, setHideUpstream] = useState(() =>
+        typeof window !== 'undefined' && window.localStorage.getItem('octopus.access-plan.hideUpstream') === '1');
+    useEffect(() => {
+        if (typeof window !== 'undefined') window.localStorage.setItem('octopus.access-plan.hideUpstream', hideUpstream ? '1' : '0');
+    }, [hideUpstream]);
     const requestModelListId = `access-plan-request-models-${plan.id}`;
     const channelModelIndex = useMemo(
         () => buildChannelModelIndex(channelModels, channelModelsReady),
@@ -1537,6 +1740,8 @@ function RouteTargetsEditor({
                 onEditRequest={setEditingRequestModel}
                 isRebuilding={updateRoutes.isPending}
                 onOpenJson={openJson}
+                hideUpstream={hideUpstream}
+                onToggleHideUpstream={setHideUpstream}
             />
 
             <details ref={advancedRef} className="shrink-0 rounded-2xl border border-border/70 bg-card/70">
