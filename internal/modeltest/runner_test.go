@@ -338,6 +338,49 @@ func TestRunHonorsExplicitStreamMode(t *testing.T) {
 	}
 }
 
+func TestRunOpenAIChatStreamsByDefault(t *testing.T) {
+	ctx := setupModelTestDB(t)
+
+	var seenStream atomic.Value
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		seenStream.Store(payload["stream"] == true)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"created\":123,\"model\":\"glm-5.2\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"OK\"},\"finish_reason\":null}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"created\":123,\"model\":\"glm-5.2\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":1,\"total_tokens\":3}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	t.Cleanup(upstream.Close)
+
+	// No Stream field set: the openai_chat probe must default to streaming so a thinking
+	// model (glm/deepseek) that emits a long reasoning preamble streams its first content
+	// instead of buffering the whole blob server-side and blowing the connectivity timeout.
+	response, err := RunChannel(ctx, dbmodel.Channel{
+		Name:    "default-stream-channel",
+		Type:    outbound.OutboundTypeOpenAIChat,
+		Enabled: false,
+		BaseUrls: []dbmodel.BaseUrl{{
+			URL: upstream.URL,
+		}},
+		Keys: []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "test-key"}},
+	}, dbmodel.ModelTestRequest{
+		Model:    "glm-5.2",
+		Endpoint: "openai_chat",
+	})
+	if err != nil {
+		t.Fatalf("run model test: %v", err)
+	}
+	if response.Summary.Success != 1 || response.Results[0].ResponsePreview != "OK" {
+		t.Fatalf("unexpected default-stream response: %#v", response)
+	}
+	if got, _ := seenStream.Load().(bool); !got {
+		t.Fatalf("expected openai_chat model test to default to stream=true")
+	}
+}
+
 func TestRunChannelUsesUnsavedConfig(t *testing.T) {
 	ctx := setupModelTestDB(t)
 
