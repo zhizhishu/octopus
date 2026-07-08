@@ -6,7 +6,7 @@ import {
 } from '@/components/ui/morphing-dialog';
 import { Activity, AlertTriangle, CheckCircle2, DollarSign, FlaskConical, Key, Layers, Loader2, MessageSquare, Play, RotateCcw, XCircle, Server } from 'lucide-react';
 import { type StatsMetricsFormatted } from '@/api/endpoints/stats';
-import { ChannelType, defaultModelTestEndpointForChannel, type Channel, useEnableChannel, useResetChannelCircuit } from '@/api/endpoints/channel';
+import { defaultModelTestEndpointForChannel, type Channel, useEnableChannel, useResetChannelCircuit } from '@/api/endpoints/channel';
 import { useModelTest } from '@/api/endpoints/model';
 import { CardContent } from './CardContent';
 import { useTranslations } from 'next-intl';
@@ -15,7 +15,7 @@ import { Switch } from '@/components/ui/switch';
 import { toast } from '@/components/common/Toast';
 import { useMemo, useState, type MouseEvent } from 'react';
 import { cn } from '@/lib/utils';
-import { isStreamRequiredModel } from '@/lib/model-aliases';
+import { shouldForceTestStream } from '@/lib/model-aliases';
 import { useNavStore } from '@/components/modules/navbar/nav-store';
 import {
     getChannelEndpointFamily,
@@ -40,9 +40,11 @@ export function Card({ channel, stats, layout = 'list' }: { channel: Channel; st
     const [testModel, setTestModel] = useState(firstModel);
     const [streamTest, setStreamTest] = useState(true);
     const effectiveTestModel = testModels.includes(testModel) ? testModel : firstModel;
-    const forcedStreamTest = channel.type === ChannelType.OpenAIResponse
-        || (channel.type === ChannelType.Anthropic && !!channel.anthropic_context_1m)
-        || isStreamRequiredModel(effectiveTestModel);
+    const forcedStreamTest = shouldForceTestStream({
+        models: effectiveTestModel,
+        endpoint: defaultModelTestEndpointForChannel(channel.type),
+        anthropicContext1M: channel.anthropic_context_1m,
+    });
     const enabledKeyCount = channel.keys.filter((item) => item.enabled).length;
     const isGridLayout = layout === 'grid';
     const family = getChannelEndpointFamily(channel);
@@ -87,7 +89,7 @@ export function Card({ channel, stats, layout = 'list' }: { channel: Channel; st
                 channel_id: channel.id,
                 endpoint: defaultModelTestEndpointForChannel(channel.type),
                 stream: forcedStreamTest ? true : streamTest,
-                timeout_seconds: channel.type === ChannelType.Anthropic ? 180 : 30,
+                timeout_seconds: 180,
                 // 管理员专用：测试结果一律写入日志，测完直接进日志页看完整记录
                 audit_log: true,
             },

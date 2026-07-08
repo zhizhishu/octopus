@@ -28,7 +28,7 @@ import {
     TableRow,
 } from '@/components/ui/table';
 import { cn } from '@/lib/utils';
-import { expandOneMillionModelAliases, isStreamRequiredModel } from '@/lib/model-aliases';
+import { expandOneMillionModelAliases, isStreamRequiredModel, shouldForceTestStream } from '@/lib/model-aliases';
 import { getSelectedChannelModels } from '../channel/channel-utils';
 import { useNavStore } from '@/components/modules/navbar/nav-store';
 
@@ -376,11 +376,11 @@ export function ModelTest() {
             return;
         }
 
-        const forcedStream = modelsToTest.some(isStreamRequiredModel) || (
-            endpoint === 'openai_responses' && selectedChannel?.type === ChannelType.OpenAIResponse
-        ) || (
-            endpoint === 'anthropic_messages' && selectedChannel?.type === ChannelType.Anthropic && !!selectedChannel?.anthropic_context_1m
-        );
+        const forcedStream = shouldForceTestStream({
+            models: modelsToTest,
+            endpoint,
+            anthropicContext1M: selectedChannel?.anthropic_context_1m,
+        });
 
         const effectivePrompt = shouldAutoRotatePrompt(prompt) ? makeRandomMathPrompt() : prompt;
         if (effectivePrompt !== prompt) {

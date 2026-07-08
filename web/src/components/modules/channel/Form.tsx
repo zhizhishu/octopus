@@ -23,7 +23,7 @@ import {
     AccordionTrigger,
 } from "@/components/ui/accordion";
 import { cn } from '@/lib/utils';
-import { cleanOneMillionModelName, expandOneMillionModelAliases, isStreamRequiredModel } from '@/lib/model-aliases';
+import { cleanOneMillionModelName, expandOneMillionModelAliases, shouldForceTestStream } from '@/lib/model-aliases';
 
 
 function modelTestProxyLabel(result: Pick<ModelTestResult, 'proxy_used' | 'proxy_source' | 'proxy_scheme' | 'proxy_status'>) {
@@ -295,9 +295,11 @@ export function ChannelForm({
     };
 
     const testModel = inputValue.trim() || autoModels[0] || customModels[0] || '';
-    const channelTestForcedStream = formData.type === ChannelType.OpenAIResponse
-        || (formData.type === ChannelType.Anthropic && formData.anthropic_context_1m)
-        || isStreamRequiredModel(testModel);
+    const channelTestForcedStream = shouldForceTestStream({
+        models: testModel,
+        endpoint: defaultModelTestEndpointForChannel(formData.type),
+        anthropicContext1M: formData.anthropic_context_1m,
+    });
 
     const buildChannelTestConfig = () => ({
         name: formData.name.trim() || 'current channel',
