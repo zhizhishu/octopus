@@ -1416,6 +1416,14 @@ func convertInputToMessages(input *ResponsesInput) ([]model.Message, error) {
 	messages := make([]model.Message, 0, len(input.Items))
 	var pendingReasoningText string
 	var pendingReasoningSignature string
+	// lastToolCallMsgIdx points at the assistant message currently accumulating a
+	// run of parallel tool calls, or -1 when the previous item was not a tool call.
+	// Consecutive function_call items in the Responses input belong to the SAME
+	// assistant turn (parallel calls) and MUST be merged into one assistant
+	// message's tool_calls array. Emitting one assistant message per call produces
+	// an assistant→assistant→tool→tool sequence that strict OpenAI-compatible
+	// upstreams (DeepSeek) reject with a misleading deserialize error.
+	lastToolCallMsgIdx := -1
 
 	flushPendingReasoning := func() {
 		if pendingReasoningText == "" && pendingReasoningSignature == "" {
@@ -1448,6 +1456,9 @@ func convertInputToMessages(input *ResponsesInput) ([]model.Message, error) {
 			if item.EncryptedContent != nil && *item.EncryptedContent != "" {
 				pendingReasoningSignature = *item.EncryptedContent
 			}
+			// A reasoning item marks the start of a new assistant turn (it precedes
+			// the tool calls it produced), so it closes any open parallel-call run.
+			lastToolCallMsgIdx = -1
 			// Do not emit a message yet; wait to see what follows.
 			continue
 		}
@@ -1458,22 +1469,31 @@ func convertInputToMessages(input *ResponsesInput) ([]model.Message, error) {
 				return nil, err
 			}
 			if msg != nil {
-				// Inject the pending reasoning onto this tool-call assistant message.
-				// Only inject when the message carries no reasoning already so the
-				// function stays idempotent if the caller sets it elsewhere.
-				if pendingReasoningText != "" && msg.GetReasoningContent() == "" {
-					msg.ReasoningContent = lo.ToPtr(pendingReasoningText)
+				if lastToolCallMsgIdx >= 0 && len(msg.ToolCalls) > 0 {
+					// Parallel tool call in the SAME assistant turn: append it to the
+					// open assistant message's tool_calls array instead of emitting a
+					// second assistant message.
+					messages[lastToolCallMsgIdx].ToolCalls = append(messages[lastToolCallMsgIdx].ToolCalls, msg.ToolCalls...)
+				} else {
+					// Inject the pending reasoning onto this tool-call assistant message.
+					// Only inject when the message carries no reasoning already so the
+					// function stays idempotent if the caller sets it elsewhere.
+					if pendingReasoningText != "" && msg.GetReasoningContent() == "" {
+						msg.ReasoningContent = lo.ToPtr(pendingReasoningText)
+					}
+					messages = append(messages, *msg)
+					lastToolCallMsgIdx = len(messages) - 1
 				}
-				messages = append(messages, *msg)
 			}
 			pendingReasoningText = ""
 			pendingReasoningSignature = ""
 			continue
 		}
 
-		// Non-reasoning, non-tool-call item: flush any pending reasoning as a
-		// standalone assistant message first.  This preserves the pre-existing
-		// behaviour for turns where a reasoning item precedes a plain text response.
+		// Any other item (message, tool output, ...) ends the parallel tool-call
+		// run and flushes pending reasoning as a standalone assistant message,
+		// preserving prior behaviour for turns where reasoning precedes plain text.
+		lastToolCallMsgIdx = -1
 		flushPendingReasoning()
 
 		msg, err := convertItemToMessage(&item)
