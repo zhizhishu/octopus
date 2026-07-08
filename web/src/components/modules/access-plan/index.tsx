@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
     BadgeDollarSign,
     Check,
@@ -56,6 +56,7 @@ import {
     BackgroundVariant,
     Controls,
     MiniMap,
+    Panel,
     Handle,
     Position,
     useNodesState,
@@ -67,7 +68,6 @@ import {
     type NodeTypes,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import Dagre from '@dagrejs/dagre';
 
 const DEFAULT_PLAN_TEMPLATES = [
     { slug: 'vip', display_name: 'VIP' },
@@ -946,20 +946,51 @@ function BillingRulesEditor({
     );
 }
 
-// == React Flow 无限画布：节点/连线绑接口，缩放·平移·折行都自动跟手，彻底告别手写 SVG 飘线 ==
+// == React Flow 无限画布：手动三列定位 + 家族彩色带（复刻旧样式）+ 缩放/平移/小地图，连线绑接口永不飘 ==
 
-// minimap 用的家族色（与 FAMILY_STYLES 的 tailwind -500 色一一对应；canvas 不吃 tailwind 类，必须给 hex）
+const FAMILY_ORDER: ModelFamilyKey[] = [
+    'claude', 'openai', 'gemini', 'deepseek', 'glm', 'qwen', 'kimi', 'grok', 'other',
+];
+
+// minimap 用家族色（与 FAMILY_STYLES 的 tailwind -500 对应；canvas 不吃 tailwind 类，必须给 hex）
 const FAMILY_HEX: Record<ModelFamilyKey, string> = {
     claude: '#f97316', openai: '#14b8a6', gemini: '#0ea5e9', deepseek: '#6366f1',
     glm: '#8b5cf6', qwen: '#f43f5e', kimi: '#d946ef', grok: '#71717a', other: '#64748b',
 };
 
-// dagre 布局用的固定节点尺寸（与卡片视觉宽度对齐，布局稳定不抖）
-const NODE_SIZE = {
-    plan: { w: 208, h: 96 },
-    request: { w: 248, h: 132 },
-    target: { w: 300, h: 132 },
-} as const;
+type RouteFamilyGroup = { key: ModelFamilyKey; label: string; rows: RouteTargetGroup[]; targetTotal: number };
+
+function groupRowsByFamily(rows: RouteTargetGroup[]): RouteFamilyGroup[] {
+    const map = new Map<ModelFamilyKey, RouteTargetGroup[]>();
+    for (const row of rows) {
+        const key = modelFamilyKey(row.requestModel);
+        const bucket = map.get(key) ?? [];
+        bucket.push(row);
+        map.set(key, bucket);
+    }
+    return FAMILY_ORDER
+        .filter((key) => map.has(key))
+        .map((key) => {
+            const groupRows = map.get(key)!;
+            return { key, label: FAMILY_STYLES[key].label, rows: groupRows, targetTotal: groupRows.reduce((sum, r) => sum + r.targets.length, 0) };
+        });
+}
+
+// —— 手动布局尺寸/坐标（复刻旧版三列对齐）——
+const PLAN_W = 200, PLAN_H = 92;
+const REQ_W = 244, REQ_H = 84;
+const TGT_W = 430, TGT_H = 68;
+const PLAN_X = 0;
+const BAND_X = 300;
+const BAND_PAD = 16;
+const BAND_HEADER_H = 40;
+const REQ_X = BAND_X + BAND_PAD;
+const TGT_X = REQ_X + REQ_W + 76;
+const BAND_W = (TGT_X + TGT_W + BAND_PAD) - BAND_X;
+const ROW_GAP = 16;
+const TGT_GAP = 10;
+const FAMILY_GAP = 26;
+const TOP_PAD = 8;
 
 type PlanNodeData = { slug: string; name: string; multiplier: number };
 type RequestNodeData = {
@@ -974,6 +1005,7 @@ type TargetNodeData = {
     channelName: string;
     channelId: number;
     priority: number;
+    showPriority: boolean;
     weight: number;
     upstreamModel: string;
     hideUpstream: boolean;
@@ -982,15 +1014,17 @@ type TargetNodeData = {
     multiplier: number | string;
     billingSource: string;
 };
+type FamilyBandData = { family: ModelFamilyKey; label: string; modelCount: number; targetCount: number; width: number; height: number };
 
 type PlanFlowNode = Node<PlanNodeData, 'plan'>;
 type RequestFlowNode = Node<RequestNodeData, 'request'>;
 type TargetFlowNode = Node<TargetNodeData, 'target'>;
-type FlowNode = PlanFlowNode | RequestFlowNode | TargetFlowNode;
+type FamilyBandFlowNode = Node<FamilyBandData, 'familyBand'>;
+type FlowNode = PlanFlowNode | RequestFlowNode | TargetFlowNode | FamilyBandFlowNode;
 
 function PlanFlowCard({ data }: NodeProps<PlanFlowNode>) {
     return (
-        <div className="rounded-2xl border border-primary/25 bg-primary/10 p-3 shadow-sm" style={{ width: NODE_SIZE.plan.w }}>
+        <div className="rounded-2xl border border-primary/25 bg-primary/10 p-3 shadow-sm" style={{ width: PLAN_W }}>
             <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-primary">{data.slug}</div>
             <div className="mt-1 truncate text-sm font-black text-foreground">{data.name}</div>
             <div className="mt-2 text-xs text-muted-foreground">默认倍率 {data.multiplier}x</div>
@@ -1000,28 +1034,26 @@ function PlanFlowCard({ data }: NodeProps<PlanFlowNode>) {
 }
 
 function RequestFlowCard({ data }: NodeProps<RequestFlowNode>) {
-    const s = FAMILY_STYLES[data.family];
     return (
-        <div className={cn('rounded-2xl border p-3 shadow-sm', s.ring, s.soft)} style={{ width: NODE_SIZE.request.w }}>
-            <Handle type="target" position={Position.Left} className="!size-2 !border-2 !border-background !bg-muted-foreground" />
-            <div className={cn('flex items-center gap-1.5 text-[10px] font-bold tracking-[0.16em]', s.text)}>
-                <span className={cn('size-2 rounded-full', s.dot)} />
-                原请求模型
-            </div>
-            <div className="mt-1 break-all font-mono text-sm font-black text-foreground">{data.requestModel}</div>
-            <div className="mt-3 flex gap-2">
-                <Button type="button" variant="outline" size="sm" className="nodrag h-7 rounded-lg px-2 text-xs" onClick={data.onEdit}>
+        <div className="rounded-2xl border border-amber-500/25 bg-amber-500/10 px-3 py-2.5 shadow-sm" style={{ width: REQ_W }}>
+            <Handle type="target" position={Position.Left} className="!size-2 !border-2 !border-background !bg-amber-500" />
+            <div className="flex items-center justify-between gap-2">
+                <span className="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.16em] text-amber-600 dark:text-amber-300">
+                    <span className="size-1.5 rounded-full bg-amber-500" />
+                    原请求模型
+                </span>
+                <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="nodrag h-6 gap-1 rounded-lg border-amber-500/30 bg-transparent px-2 text-[11px] text-amber-700 hover:bg-amber-500/15 dark:text-amber-200"
+                    onClick={data.onEdit}
+                >
                     <PencilLine className="size-3" />{accessPlanText('routes.quickEdit')}
                 </Button>
-                <Button
-                    type="button" variant="outline" size="sm" className="nodrag h-7 rounded-lg px-2 text-xs"
-                    disabled={data.isRebuilding || !data.canRebuild} onClick={data.onRebuild}
-                >
-                    {data.isRebuilding ? <Loader2 className="size-3 animate-spin" /> : <RefreshCcw className="size-3" />}
-                    {accessPlanText('routes.rebuildRequest')}
-                </Button>
             </div>
-            <Handle type="source" position={Position.Right} className="!size-2 !border-2 !border-background !bg-primary" />
+            <div className="mt-1.5 break-all font-mono text-[13px] font-black leading-snug text-foreground line-clamp-2">{data.requestModel}</div>
+            <Handle type="source" position={Position.Right} className="!size-2 !border-2 !border-background !bg-amber-500" />
         </div>
     );
 }
@@ -1029,24 +1061,44 @@ function RequestFlowCard({ data }: NodeProps<RequestFlowNode>) {
 function TargetFlowCard({ data }: NodeProps<TargetFlowNode>) {
     return (
         <div
-            className={cn('rounded-2xl border bg-card/90 p-3 shadow-sm', data.enabled ? 'border-emerald-500/30' : 'border-border opacity-70')}
-            style={{ width: NODE_SIZE.target.w }}
+            className={cn('grid grid-cols-[minmax(84px,1.1fr)_minmax(96px,1.4fr)_auto_auto] items-center gap-3 rounded-2xl border bg-card/90 px-3 py-2 shadow-sm', data.enabled ? 'border-emerald-500/25' : 'border-border opacity-65')}
+            style={{ width: TGT_W }}
         >
             <Handle type="target" position={Position.Left} className="!size-2 !border-2 !border-background !bg-emerald-500" />
-            <div className="flex min-w-0 items-center gap-2">
-                <span className={cn('size-2 rounded-full', data.enabled ? 'bg-emerald-500' : 'bg-muted-foreground')} />
-                <span className="truncate text-sm font-bold text-foreground">{data.channelName}</span>
+            <div className="min-w-0">
+                <div className="flex min-w-0 items-center gap-1.5">
+                    <span className={cn('size-2 shrink-0 rounded-full', data.enabled ? 'bg-emerald-500' : 'bg-muted-foreground')} />
+                    <span className="truncate text-sm font-bold text-foreground">{data.channelName}</span>
+                </div>
+                <div className="mt-0.5 text-[10px] text-muted-foreground">#{data.channelId} · {data.showPriority ? `P${data.priority}` : '并列'}</div>
             </div>
-            <div className="mt-1 text-xs text-muted-foreground">#{data.channelId} · P{data.priority}</div>
-            <div className="mt-2 text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">{accessPlanText('routes.upstreamTarget')}</div>
-            <div className="mt-1 break-all font-mono text-xs font-semibold text-foreground">
-                {data.hideUpstream
-                    ? <span className="tracking-[0.3em] text-muted-foreground/70">••••••</span>
-                    : data.upstreamModel}
+            <div className="min-w-0">
+                <div className="text-[9px] font-bold uppercase tracking-[0.14em] text-muted-foreground">{accessPlanText('routes.upstreamTarget')}</div>
+                <div className="mt-0.5 truncate font-mono text-xs font-semibold text-foreground">
+                    {data.hideUpstream ? <span className="tracking-[0.3em] text-muted-foreground/70">••••••</span> : data.upstreamModel}
+                </div>
             </div>
-            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-                <span><span className="font-bold text-foreground">W{data.weight}</span> · {data.fallback}</span>
-                <span><span className="font-bold text-foreground">{data.multiplier}x</span> · {data.billingSource}</span>
+            <div className="text-xs text-muted-foreground">
+                <div className="font-bold text-foreground">W{data.weight}</div>
+                <div className="text-[10px]">{data.fallback}</div>
+            </div>
+            <div className="text-xs text-muted-foreground">
+                <div className="font-bold text-foreground">{data.multiplier}x</div>
+                <div className="truncate text-[10px]">{data.billingSource}</div>
+            </div>
+        </div>
+    );
+}
+
+function FamilyBandCard({ data }: NodeProps<FamilyBandFlowNode>) {
+    const s = FAMILY_STYLES[data.family];
+    return (
+        <div className={cn('rounded-2xl border', s.ring, s.soft)} style={{ width: data.width, height: data.height }}>
+            <div className="flex items-center gap-2.5 px-4 py-2.5">
+                <span className={cn('size-2.5 shrink-0 rounded-full', s.dot)} />
+                <span className={cn('text-sm font-black', s.text)}>{data.label}</span>
+                <Badge variant="secondary" className="rounded-full">{data.modelCount} 模型</Badge>
+                <Badge variant="outline" className="rounded-full">{data.targetCount} 映射</Badge>
             </div>
         </div>
     );
@@ -1056,37 +1108,28 @@ const flowNodeTypes: NodeTypes = {
     plan: PlanFlowCard,
     request: RequestFlowCard,
     target: TargetFlowCard,
+    familyBand: FamilyBandCard,
 };
 
 function miniMapNodeColor(node: Node): string {
+    if (node.type === 'familyBand') return 'transparent';
     if (node.type === 'plan') return '#3b82f6';
     if (node.type === 'request') {
         const fam = (node.data as Partial<RequestNodeData>).family;
-        return fam ? FAMILY_HEX[fam] : '#64748b';
+        return fam ? FAMILY_HEX[fam] : '#f59e0b';
     }
     const enabled = (node.data as Partial<TargetNodeData>).enabled;
-    return enabled ? '#22c55e' : '#94a3b8';
+    return enabled ? '#10b981' : '#94a3b8';
 }
 
-// dagre 左->右自动布局：把节点排开、算好坐标写回（连线由 React Flow 绑接口自动跟随，无需手算）
-function layoutFlowElements(nodes: FlowNode[], edges: Edge[]): FlowNode[] {
-    const g = new Dagre.graphlib.Graph().setDefaultEdgeLabel(() => ({}));
-    g.setGraph({ rankdir: 'LR', nodesep: 22, ranksep: 96 });
-    edges.forEach((edge) => g.setEdge(edge.source, edge.target));
-    nodes.forEach((node) => {
-        const size = NODE_SIZE[node.type];
-        g.setNode(node.id, { width: size.w, height: size.h });
-    });
-    Dagre.layout(g);
-    return nodes.map((node) => {
-        const size = NODE_SIZE[node.type];
-        const p = g.node(node.id);
-        // dagre 给的是节点中心；React Flow 的 position 是左上角，减半宽半高
-        return { ...node, position: { x: p.x - size.w / 2, y: p.y - size.h / 2 } };
-    });
+function flowNodeSize(node: FlowNode): { w: number; h: number } {
+    if (node.type === 'plan') return { w: PLAN_W, h: PLAN_H };
+    if (node.type === 'request') return { w: REQ_W, h: REQ_H };
+    if (node.type === 'target') return { w: TGT_W, h: TGT_H };
+    return { w: node.data.width, h: node.data.height };
 }
 
-// 把 方案 -> 请求模型 -> 渠道·发送模型 映射成三种节点 + 连线
+// 手动三列布局：方案(左) → 家族彩色带(内含 请求列 + 目标列对齐)；连线由 React Flow 绑接口自动跟随
 function buildRouteFlow(
     plan: AccessPlan,
     rows: RouteTargetGroup[],
@@ -1099,69 +1142,99 @@ function buildRouteFlow(
     const nodes: FlowNode[] = [];
     const edges: Edge[] = [];
     const planId = 'plan';
-    nodes.push({
-        id: planId,
-        type: 'plan',
-        position: { x: 0, y: 0 },
-        data: { slug: plan.slug, name: plan.display_name || plan.slug, multiplier: plan.default_multiplier ?? 1 },
-    });
-    rows.forEach((row, rowIndex) => {
-        const family = modelFamilyKey(row.requestModel);
-        const reqId = `req:${row.requestKey || rowIndex}`;
-        nodes.push({
-            id: reqId,
-            type: 'request',
-            position: { x: 0, y: 0 },
-            data: {
-                requestModel: cleanOneMillionModelName(row.requestModel),
-                family,
-                canRebuild: row.requestKey.length > 0,
-                isRebuilding,
-                onEdit: () => onEditRequest(row.requestKey ? row.requestModel : ''),
-                onRebuild: () => onRebuildRequest(row.requestModel),
-            },
-        });
-        edges.push({
-            id: `edge:${planId}:${reqId}`,
-            source: planId,
-            target: reqId,
-            type: 'smoothstep',
-            style: { stroke: 'var(--primary)', strokeWidth: 1.8 },
-        });
-        row.targets.forEach((target, targetIndex) => {
-            const tgtId = `tgt:${reqId}:${target.id ?? targetIndex}`;
-            const channelName = channelNameByID.get(target.channel_id) ?? accessPlanText('routes.missingChannel', { id: target.channel_id });
-            const billing = effectiveMultiplier(plan, billingModelName(target));
+    const groups = groupRowsByFamily(rows);
+    let y = TOP_PAD;
+
+    for (const group of groups) {
+        const bandTop = y;
+        let rowY = bandTop + BAND_HEADER_H + BAND_PAD;
+        for (const row of group.rows) {
+            const reqId = `req:${row.requestKey || row.requestModel}`;
+            const nT = row.targets.length;
+            const targetsH = nT > 0 ? nT * TGT_H + (nT - 1) * TGT_GAP : TGT_H;
+            const rowH = Math.max(REQ_H, targetsH);
             nodes.push({
-                id: tgtId,
-                type: 'target',
-                position: { x: 0, y: 0 },
+                id: reqId,
+                type: 'request',
+                position: { x: REQ_X, y: rowY + (rowH - REQ_H) / 2 },
+                zIndex: 1,
                 data: {
-                    channelName,
-                    channelId: target.channel_id,
-                    priority: target.priority || targetIndex + 1,
-                    weight: target.weight || 1,
-                    upstreamModel: cleanOneMillionModelName(target.upstream_model || accessPlanText('routes.unset')),
-                    hideUpstream,
-                    enabled: target.enabled,
-                    fallback: fallbackModeLabel(target.fallback_mode),
-                    multiplier: billing.multiplier,
-                    billingSource: billingSourceLabel(target.billing_model_source),
+                    requestModel: cleanOneMillionModelName(row.requestModel),
+                    family: modelFamilyKey(row.requestModel),
+                    canRebuild: row.requestKey.length > 0,
+                    isRebuilding,
+                    onEdit: () => onEditRequest(row.requestKey ? row.requestModel : ''),
+                    onRebuild: () => onRebuildRequest(row.requestModel),
                 },
             });
             edges.push({
-                id: `edge:${reqId}:${tgtId}`,
-                source: reqId,
-                target: tgtId,
-                type: 'smoothstep',
-                animated: target.enabled,
-                style: target.enabled
-                    ? { stroke: '#22c55e', strokeWidth: 1.8 }
-                    : { stroke: '#9ca3af', strokeWidth: 1.4, strokeDasharray: '6 4' },
+                id: `edge:${planId}:${reqId}`,
+                source: planId,
+                target: reqId,
+                type: 'default',
+                style: { stroke: 'var(--primary)', strokeWidth: 1.5, strokeOpacity: 0.5 },
             });
+            const prioritySet = new Set(row.targets.map((tgt) => tgt.priority || 0));
+            const showPriority = prioritySet.size > 1;
+            const startY = rowY + (rowH - targetsH) / 2;
+            row.targets.forEach((target, targetIndex) => {
+                const tgtId = `tgt:${reqId}:${target.id ?? targetIndex}`;
+                const channelName = channelNameByID.get(target.channel_id) ?? accessPlanText('routes.missingChannel', { id: target.channel_id });
+                const billing = effectiveMultiplier(plan, billingModelName(target));
+                nodes.push({
+                    id: tgtId,
+                    type: 'target',
+                    position: { x: TGT_X, y: startY + targetIndex * (TGT_H + TGT_GAP) },
+                    zIndex: 1,
+                    data: {
+                        channelName,
+                        channelId: target.channel_id,
+                        priority: target.priority || 0,
+                        showPriority,
+                        weight: target.weight || 1,
+                        upstreamModel: cleanOneMillionModelName(target.upstream_model || accessPlanText('routes.unset')),
+                        hideUpstream,
+                        enabled: target.enabled,
+                        fallback: fallbackModeLabel(target.fallback_mode),
+                        multiplier: billing.multiplier,
+                        billingSource: billingSourceLabel(target.billing_model_source),
+                    },
+                });
+                edges.push({
+                    id: `edge:${reqId}:${tgtId}`,
+                    source: reqId,
+                    target: tgtId,
+                    type: 'default',
+                    style: target.enabled
+                        ? { stroke: '#f59e0b', strokeWidth: 1.5, strokeOpacity: 0.5 }
+                        : { stroke: '#f59e0b', strokeWidth: 1.5, strokeOpacity: 0.25, strokeDasharray: '4 4' },
+                });
+            });
+            rowY += rowH + ROW_GAP;
+        }
+        const bandHeight = (rowY - ROW_GAP) - bandTop + BAND_PAD;
+        nodes.push({
+            id: `band:${group.key}`,
+            type: 'familyBand',
+            position: { x: BAND_X, y: bandTop },
+            zIndex: 0,
+            selectable: false,
+            draggable: false,
+            data: { family: group.key, label: group.label, modelCount: group.rows.length, targetCount: group.targetTotal, width: BAND_W, height: bandHeight },
         });
+        y = (rowY - ROW_GAP) + FAMILY_GAP;
+    }
+
+    const totalHeight = Math.max(PLAN_H, (y - FAMILY_GAP) - TOP_PAD);
+    nodes.push({
+        id: planId,
+        type: 'plan',
+        position: { x: PLAN_X, y: TOP_PAD + (totalHeight - PLAN_H) / 2 },
+        zIndex: 1,
+        data: { slug: plan.slug, name: plan.display_name || plan.slug, multiplier: plan.default_multiplier ?? 1 },
     });
-    return { nodes: layoutFlowElements(nodes, edges), edges };
+
+    return { nodes, edges };
 }
 
 type RouteFlowCanvasProps = {
@@ -1181,7 +1254,7 @@ function RouteFlowCanvasInner({
 }: RouteFlowCanvasProps) {
     const t = accessPlanText;
     const channelNameByID = useMemo(() => new Map(channels.map((channel) => [channel.id, channel.name])), [channels]);
-    const { fitView } = useReactFlow();
+    const { fitView, setCenter } = useReactFlow();
 
     const [query, setQuery] = useState('');
     const q = query.trim().toLowerCase();
@@ -1210,9 +1283,24 @@ function RouteFlowCanvasInner({
     useEffect(() => {
         setNodes(flow.nodes);
         setEdges(flow.edges);
-        const raf = requestAnimationFrame(() => fitView({ padding: 0.18, duration: 220 }));
+        const raf = requestAnimationFrame(() => fitView({ padding: 0.14, maxZoom: 1, duration: 220 }));
         return () => cancelAnimationFrame(raf);
     }, [flow, setNodes, setEdges, fitView]);
+
+    const showAll = useCallback(() => fitView({ padding: 0.12, duration: 400 }), [fitView]);
+
+    const focusReadable = useCallback(() => {
+        if (nodes.length === 0) return;
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const node of nodes) {
+            const { w, h } = flowNodeSize(node);
+            minX = Math.min(minX, node.position.x);
+            minY = Math.min(minY, node.position.y);
+            maxX = Math.max(maxX, node.position.x + w);
+            maxY = Math.max(maxY, node.position.y + h);
+        }
+        setCenter((minX + maxX) / 2, (minY + maxY) / 2, { zoom: 0.85, duration: 400 });
+    }, [nodes, setCenter]);
 
     const targetCount = filteredRows.reduce((sum, row) => sum + row.targets.length, 0);
 
@@ -1246,7 +1334,7 @@ function RouteFlowCanvasInner({
                             value={query}
                             onChange={(event) => setQuery(event.target.value)}
                             placeholder="搜模型 / 渠道 / 上游…"
-                            className="h-7 w-48 rounded-full border border-border/70 bg-background/60 pl-7 pr-2 text-xs text-foreground outline-none focus:border-primary/50"
+                            className="h-7 w-40 rounded-full border border-border/70 bg-background/60 pl-7 pr-2 text-xs text-foreground outline-none focus:border-primary/50 sm:w-48"
                         />
                     </div>
                     <label className="flex cursor-pointer items-center gap-1.5 rounded-full border border-border/70 px-2 py-0.5">
@@ -1264,7 +1352,7 @@ function RouteFlowCanvasInner({
                     {rows.length === 0 ? t('routes.canvasEmpty') : `没有匹配「${query.trim()}」的模型或渠道`}
                 </div>
             ) : (
-                <div className="min-h-0 flex-1 h-[clamp(320px,calc(100dvh-26rem),820px)]">
+                <div className="min-h-0 flex-1 h-[clamp(300px,calc(100dvh-26rem),820px)] sm:h-[clamp(340px,calc(100dvh-22rem),860px)]">
                     <ReactFlow<FlowNode, Edge>
                         nodes={nodes}
                         edges={edges}
@@ -1273,16 +1361,35 @@ function RouteFlowCanvasInner({
                         nodeTypes={flowNodeTypes}
                         colorMode="system"
                         fitView
-                        fitViewOptions={{ padding: 0.18 }}
+                        fitViewOptions={{ padding: 0.14, maxZoom: 1 }}
                         minZoom={0.15}
-                        maxZoom={1.6}
+                        maxZoom={1.8}
+                        nodesDraggable={false}
                         nodesConnectable={false}
+                        elementsSelectable={false}
                         edgesFocusable={false}
+                        zoomOnDoubleClick={false}
                         proOptions={{ hideAttribution: true }}
                     >
-                        <Background variant={BackgroundVariant.Dots} gap={26} size={1} />
-                        <MiniMap pannable zoomable nodeColor={miniMapNodeColor} nodeStrokeWidth={2} />
+                        <Background variant={BackgroundVariant.Dots} gap={32} size={1} />
+                        <MiniMap pannable zoomable onClick={(_event, position) => setCenter(position.x, position.y, { zoom: 1, duration: 400 })} nodeColor={miniMapNodeColor} nodeStrokeWidth={2} className="!hidden sm:!block" />
                         <Controls showInteractive={false} />
+                        <Panel position="top-right" className="flex gap-1.5">
+                            <button
+                                type="button"
+                                onClick={showAll}
+                                className="rounded-full border border-border/70 bg-background/85 px-2.5 py-1 text-[11px] font-medium text-foreground shadow-sm backdrop-blur hover:bg-muted"
+                            >
+                                显示全部
+                            </button>
+                            <button
+                                type="button"
+                                onClick={focusReadable}
+                                className="rounded-full border border-border/70 bg-background/85 px-2.5 py-1 text-[11px] font-medium text-foreground shadow-sm backdrop-blur hover:bg-muted"
+                            >
+                                看得清
+                            </button>
+                        </Panel>
                     </ReactFlow>
                 </div>
             )}
