@@ -42,11 +42,15 @@ const ENDPOINT_OPTIONS = [
 ] as const;
 type ModelTestEndpoint = (typeof ENDPOINT_OPTIONS)[number]['value'];
 
+// 180s for every endpoint (was 30 for chat/responses/gemini): a thinking model
+// (glm-5.2 / deepseek-reasoner) emits a long reasoning preamble before any content
+// token, so a 30s probe died as "context deadline exceeded" on a working channel.
+// Kept in sync with the channel-form test and the backend default (all 180s).
 const DEFAULT_TIMEOUT_BY_ENDPOINT: Record<ModelTestEndpoint, number> = {
-    openai_chat: 30,
-    openai_responses: 30,
+    openai_chat: 180,
+    openai_responses: 180,
     anthropic_messages: 180,
-    gemini_generate_content: 30,
+    gemini_generate_content: 180,
 };
 const MAX_TIMEOUT_SECONDS = 300;
 

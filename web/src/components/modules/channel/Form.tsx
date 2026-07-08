@@ -353,7 +353,11 @@ export function ChannelForm({
                 endpoint: defaultModelTestEndpointForChannel(formData.type),
                 prompt: 'Reply with exactly OK.',
                 stream: channelTestForcedStream ? true : channelTestStream,
-                timeout_seconds: formData.type === ChannelType.Anthropic ? 180 : 30,
+                // 180s for every channel type, matching the model-test page and the
+                // backend default. A thinking model (glm-5.2 / deepseek-reasoner) emits a
+                // long reasoning preamble before any content, so a 30s probe died as
+                // "context deadline exceeded" on a channel that actually works.
+                timeout_seconds: 180,
             },
             {
                 onSuccess: (data) => {

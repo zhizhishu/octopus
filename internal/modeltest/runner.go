@@ -29,12 +29,14 @@ import (
 
 const (
 	defaultPromptSentinel = "Reply with exactly OK."
-	// 60s (was 30s): a thinking/reasoning model (glm-5.2 "战损版" / deepseek-reasoner)
-	// spends its first many seconds emitting a reasoning preamble before any content
-	// token, so a 30s connectivity probe routinely died as "context deadline exceeded
-	// 30.00s" on a channel that actually works. 60s gives real headroom while staying
-	// well under maxTimeoutSeconds. Anthropic keeps its own 180s (below).
-	defaultTimeoutSeconds                  = 60
+	// 180s for every endpoint (was 30s): a thinking/reasoning model (glm-5.2 "战损版" /
+	// deepseek-reasoner) spends its first many seconds emitting a reasoning preamble
+	// before any content token, so a 30s connectivity probe routinely died as "context
+	// deadline exceeded 30.00s" on a channel that actually works. Unified with the
+	// Anthropic default (both 180s) so a channel/model test never times out on a slow
+	// first token regardless of endpoint, while staying under maxTimeoutSeconds. Only the
+	// connectivity test uses this; real relay requests are governed by the client context.
+	defaultTimeoutSeconds                  = 180
 	defaultAnthropicMessagesTimeoutSeconds = 180
 	maxTimeoutSeconds                      = 300
 	maxConcurrency                         = 20
@@ -783,18 +785,18 @@ func (r *modelRunner) internalRequest(upstreamModel string) *transformermodel.In
 		// Use a larger budget so content tokens can appear within the probe window.
 		maxTokens = int64(256)
 	}
-	// Streaming-first for the OpenAI chat probe (unless the caller pinned Stream
-	// explicitly). Real relay traffic to these channels streams, and a non-streaming
-	// probe forces a thinking model (glm/deepseek/...) to buffer its entire
-	// reasoning+content server-side before returning one JSON blob — which routinely
-	// blows the connectivity timeout as "context deadline exceeded". Streaming lets the
-	// first content token arrive incrementally (transformModelTestStream accepts
-	// reasoning-only too) and mirrors production. If an upstream ignores the flag and
-	// answers with plain JSON, transformModelTestStream falls back to a normal parse, so
-	// this is safe. Anthropic already streams above; openai_responses is forced to stream
-	// on a responses channel in testChannelKey; Gemini's test URL is pinned to
-	// :generateContent so it stays non-streaming.
-	if !streamExplicit && endpoint.name == "openai_chat" {
+	// Streaming-first for EVERY probe endpoint (chat / responses / claude / gemini)
+	// unless the caller pinned Stream explicitly. Real relay traffic to these channels
+	// streams, and a non-streaming probe forces a thinking model (glm/deepseek/...) to
+	// buffer its entire reasoning+content server-side before returning one JSON blob —
+	// which routinely blows the connectivity timeout as "context deadline exceeded".
+	// Streaming lets the first content token arrive incrementally (transformModelTestStream
+	// accepts reasoning-only too) and mirrors production. Safe on every endpoint: the
+	// Gemini outbound flips to :streamGenerateContent + alt=sse when Stream is set, and if
+	// any upstream ignores the flag and answers with plain JSON, transformModelTestStream
+	// falls back to a normal parse. (Anthropic also sets stream=true above for its body
+	// shape; openai_responses is additionally force-streamed on a responses channel.)
+	if !streamExplicit {
 		stream = true
 	}
 	internalRequest := &transformermodel.InternalLLMRequest{
