@@ -54,6 +54,17 @@ func init() {
 		)
 }
 
+// severityFromQuery reads the optional ?severity= filter and validates it against
+// the three known buckets; anything else (incl. empty) means "all severities".
+func severityFromQuery(c *gin.Context) string {
+	switch s := strings.ToLower(strings.TrimSpace(c.Query("severity"))); s {
+	case "success", "warn", "error":
+		return s
+	default:
+		return ""
+	}
+}
+
 func listLog(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
@@ -85,6 +96,7 @@ func listLog(c *gin.Context) {
 	} else {
 		scope.Redact = false
 	}
+	scope.Severity = severityFromQuery(c)
 
 	logs, err := op.RelayLogList(c.Request.Context(), startTime, endTime, page, pageSize, &scope)
 	if err != nil {
@@ -126,13 +138,13 @@ func countLog(c *gin.Context) {
 		scope.Redact = false
 	}
 
-	total, err := op.RelayLogCount(c.Request.Context(), startTime, endTime, &scope)
+	counts, err := op.RelayLogSeverityCounts(c.Request.Context(), startTime, endTime, &scope)
 	if err != nil {
 		resp.Error(c, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	resp.Success(c, gin.H{"total": total})
+	resp.Success(c, counts)
 }
 
 func exportLog(c *gin.Context) {

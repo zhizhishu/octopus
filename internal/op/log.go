@@ -535,6 +535,38 @@ func RelayLogCount(ctx context.Context, startTime, endTime *int, scope *model.Re
 	return total, nil
 }
 
+// RelayLogSeverityCounts returns the total plus per-severity counts for the given
+// filters, so the client can render accurate global badges (成功 / Warn / Error)
+// independent of the current page. It reuses RelayLogCount per severity (so both
+// the DB and the in-memory cache paths, and the persistence toggle, stay covered);
+// every log classifies into exactly one severity, hence total is their sum.
+func RelayLogSeverityCounts(ctx context.Context, startTime, endTime *int, scope *model.RelayLogScope) (model.RelayLogSeverityCounts, error) {
+	base := model.RelayLogScope{}
+	if scope != nil {
+		base = *scope
+	}
+
+	var counts model.RelayLogSeverityCounts
+	for _, severity := range []string{"success", "warn", "error"} {
+		scoped := base
+		scoped.Severity = severity
+		count, err := RelayLogCount(ctx, startTime, endTime, &scoped)
+		if err != nil {
+			return model.RelayLogSeverityCounts{}, err
+		}
+		switch severity {
+		case "success":
+			counts.Success = count
+		case "warn":
+			counts.Warn = count
+		case "error":
+			counts.Error = count
+		}
+	}
+	counts.Total = counts.Success + counts.Warn + counts.Error
+	return counts, nil
+}
+
 func relayLogDedupe(logs []model.RelayLog) []model.RelayLog {
 	if len(logs) < 2 {
 		return logs
@@ -689,6 +721,40 @@ func RelayLogUserSummary(relayLog model.RelayLog) model.RelayLogUserSummary {
 	}
 }
 
+// relayLogErrorSQLCond is the SQL predicate for an "error" severity log. It is
+// kept in lockstep with relayLogIsError (Go) and getRelayLogSeverity (web) so the
+// server-side severity filter, the severity counts, and the client badges never
+// diverge. A request "failed" when it carries an error message/code or a >=400
+// upstream status.
+// COALESCE guards against nullable columns: NOT (NULL OR ...) is NULL, which would
+// silently drop such rows from the warn/success filters and undercount them.
+const relayLogErrorSQLCond = "(COALESCE(error,'') <> '' OR COALESCE(error_code,'') <> '' OR COALESCE(error_status,0) >= 400)"
+
+// relayLogIsError reports whether a log counts as an error (the request failed).
+func relayLogIsError(relayLog model.RelayLog) bool {
+	return strings.TrimSpace(relayLog.Error) != "" ||
+		strings.TrimSpace(relayLog.ErrorCode) != "" ||
+		relayLog.ErrorStatus >= 400
+}
+
+// relayLogSeverityValue classifies a log as "error" / "warn" / "success".
+//   - error:   the request failed.
+//   - warn:    it ultimately succeeded but took more than one channel attempt
+//     (a retry/failover happened — TotalAttempts is written as len(attempts)).
+//   - success: first-attempt success.
+//
+// Mirror of the web getRelayLogSeverity rule so client display and server filter
+// agree. Every log maps to exactly one bucket, so the three counts sum to total.
+func relayLogSeverityValue(relayLog model.RelayLog) string {
+	if relayLogIsError(relayLog) {
+		return "error"
+	}
+	if relayLog.TotalAttempts > 1 {
+		return "warn"
+	}
+	return "success"
+}
+
 func relayLogMatchScope(relayLog model.RelayLog, scope *model.RelayLogScope) bool {
 	if scope == nil {
 		return true
@@ -700,6 +766,9 @@ func relayLogMatchScope(relayLog model.RelayLog, scope *model.RelayLogScope) boo
 		return false
 	}
 	if scope.Endpoint != "" && relayLog.RequestEndpoint != scope.Endpoint {
+		return false
+	}
+	if scope.Severity != "" && relayLogSeverityValue(relayLog) != scope.Severity {
 		return false
 	}
 	return true
@@ -717,6 +786,14 @@ func relayLogApplyScope(query *gorm.DB, scope *model.RelayLogScope) *gorm.DB {
 	}
 	if scope.Endpoint != "" {
 		query = query.Where("request_endpoint = ?", scope.Endpoint)
+	}
+	switch scope.Severity {
+	case "error":
+		query = query.Where(relayLogErrorSQLCond)
+	case "warn":
+		query = query.Where("NOT " + relayLogErrorSQLCond + " AND COALESCE(total_attempts,0) > 1")
+	case "success":
+		query = query.Where("NOT " + relayLogErrorSQLCond + " AND COALESCE(total_attempts,0) <= 1")
 	}
 	return query
 }

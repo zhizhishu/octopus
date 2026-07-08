@@ -75,7 +75,13 @@ export interface RelayLogStorage {
 
 export type RelayLogSeverity = 'success' | 'warn' | 'error';
 
-const WARNING_ATTEMPT_STATUSES: AttemptStatus[] = ['failed', 'circuit_break', 'skipped'];
+/** 全量严重程度计数（后端 /log/count 返回），用于日志页徽章显示真实总数而非当前页。 */
+export interface RelayLogSeverityCounts {
+    total: number;
+    success: number;
+    warn: number;
+    error: number;
+}
 
 export function getRelayLogSeverity(log: RelayLog): RelayLogSeverity {
     const hasError =
@@ -85,11 +91,11 @@ export function getRelayLogSeverity(log: RelayLog): RelayLogSeverity {
 
     if (hasError) return 'error';
 
-    const attempts = log.attempts ?? [];
-    const attemptCount = log.total_attempts ?? attempts.length;
-    const hasWarningAttempt = attempts.some((attempt) => WARNING_ATTEMPT_STATUSES.includes(attempt.status));
-
-    if (hasWarningAttempt || attemptCount > 1) return 'warn';
+    // Warn == the request ultimately succeeded but took more than one channel
+    // attempt (a retry/failover). Mirrors the server relayLogSeverityValue rule so
+    // a client-side filter never hides a row the server returned for that severity.
+    const attemptCount = log.total_attempts ?? log.attempts?.length ?? 0;
+    if (attemptCount > 1) return 'warn';
     return 'success';
 }
 
@@ -104,6 +110,7 @@ export interface LogListParams {
     user_id?: number;
     api_key_id?: number;
     endpoint?: string;
+    severity?: string;
 }
 
 export interface LogExportParams {
@@ -230,8 +237,9 @@ const logsInfiniteQueryKey = (
     endpoint?: string,
     startTime?: number,
     endTime?: number,
-    page?: number
-) => ['logs', 'infinite', pageSize, userID ?? 0, apiKeyID ?? 0, endpoint ?? '', startTime ?? 0, endTime ?? 0, page ?? -1] as const;
+    page?: number,
+    severity?: string
+) => ['logs', 'infinite', pageSize, userID ?? 0, apiKeyID ?? 0, endpoint ?? '', startTime ?? 0, endTime ?? 0, page ?? -1, severity ?? ''] as const;
 
 const logCountQueryKey = (
     userID?: number,
@@ -244,10 +252,11 @@ const LOG_STREAM_RECONNECT_BASE_MS = 1000;
 const LOG_STREAM_RECONNECT_MAX_MS = 15000;
 
 /**
- * 日志总数 Hook
- * 接受与 useLogs 相同的过滤参数（不含 page/page_size），返回符合条件的日志总数。
+ * 日志严重程度计数 Hook
+ * 接受与 useLogs 相同的过滤参数（不含 page/page_size/severity），返回符合条件的
+ * 全量总数 + 成功/警告/错误各自的总数，供日志页徽章与分页页数使用（不受当前页限制）。
  */
-export function useLogCount(options: {
+export function useLogSeverityCounts(options: {
     userID?: number;
     apiKeyID?: number;
     endpoint?: string;
@@ -264,8 +273,7 @@ export function useLogCount(options: {
             appendOptionalParam(params, 'endpoint', endpoint);
             appendOptionalParam(params, 'start_time', startTime);
             appendOptionalParam(params, 'end_time', endTime);
-            const result = await apiClient.get<{ total: number }>(`/api/v1/log/count?${params.toString()}`);
-            return result.total;
+            return apiClient.get<RelayLogSeverityCounts>(`/api/v1/log/count?${params.toString()}`);
         },
         staleTime: 0,
         refetchOnMount: 'always',
@@ -287,8 +295,8 @@ export function useLogCount(options: {
  * // 滚动到底部时加载更多
  * if (hasMore && !isLoadingMore) loadMore();
  */
-export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?: number; endpoint?: string; startTime?: number; endTime?: number; live?: boolean; page?: number } = {}) {
-    const { pageSize = 20, userID, apiKeyID, endpoint, startTime, endTime, live = false, page } = options;
+export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?: number; endpoint?: string; startTime?: number; endTime?: number; live?: boolean; page?: number; severity?: string } = {}) {
+    const { pageSize = 20, userID, apiKeyID, endpoint, startTime, endTime, live = false, page, severity } = options;
 
     const [isConnected, setIsConnected] = useState(false);
     const [error, setError] = useState<Error | null>(null);
@@ -299,8 +307,8 @@ export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?
 
     const queryClient = useQueryClient();
     const queryKey = useMemo(
-        () => logsInfiniteQueryKey(pageSize, userID, apiKeyID, endpoint, startTime, endTime, page),
-        [apiKeyID, endpoint, endTime, page, pageSize, startTime, userID]
+        () => logsInfiniteQueryKey(pageSize, userID, apiKeyID, endpoint, startTime, endTime, page, severity),
+        [apiKeyID, endpoint, endTime, page, pageSize, severity, startTime, userID]
     );
 
     const logsQuery = useInfiniteQuery({
@@ -315,6 +323,7 @@ export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?
             appendOptionalParam(params, 'endpoint', endpoint);
             appendOptionalParam(params, 'start_time', startTime);
             appendOptionalParam(params, 'end_time', endTime);
+            appendOptionalParam(params, 'severity', severity);
             const result = await apiClient.get<RelayLog[] | null>(`/api/v1/log/list?${params.toString()}`);
             return result ?? [];
         },
@@ -446,6 +455,10 @@ export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?
 
                 eventSource.onmessage = (event) => {
                     try {
+                        // Live tail only makes sense on the newest page. When the user has
+                        // paged into history (page > 1), never inject a brand-new log into
+                        // that page's cache — it would jam the newest record onto an old page.
+                        if (page !== undefined && page !== 1) return;
                         const log: RelayLog = JSON.parse(event.data);
                         if (!logMatchesTimeRange(log, startTime, endTime)) return;
                         queryClient.setQueryData(
@@ -499,7 +512,7 @@ export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?
             reconnectAttemptRef.current = 0;
             setIsConnected(false);
         };
-    }, [apiKeyID, endpoint, live, pageSize, queryClient, queryKey, startTime, endTime, userID]);
+    }, [apiKeyID, endpoint, live, page, pageSize, queryClient, queryKey, startTime, endTime, userID]);
 
     const clear = useCallback(() => {
         queryClient.removeQueries({ queryKey, exact: true });

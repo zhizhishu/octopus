@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useMemo, useState } from 'react';
-import { getRelayLogSeverity, type RelayLogSeverity, useExportLogs, useLogCount, useLogs } from '@/api/endpoints/log';
+import { getRelayLogSeverity, type RelayLogSeverity, useExportLogs, useLogSeverityCounts, useLogs } from '@/api/endpoints/log';
 import { LogCard, useSensitiveStore } from './Item';
 import { AlertCircle, AlertTriangle, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Circle, Download, Eye, EyeOff, Loader2, RefreshCw, RotateCcw, Search, SlidersHorizontal, Wifi, WifiOff } from 'lucide-react';
 import { useTranslations } from 'next-intl';
@@ -189,8 +189,9 @@ export function Log() {
         : undefined;
     const { startTime, endTime } = resolveLogTimeRange(startDate, endDate);
 
-    // 日志总数（用于分页计算）。与列表查询共享相同过滤参数，不含 page/page_size。
-    const { data: logCount } = useLogCount({
+    // 全量严重程度计数（成功/警告/错误 + 总数）。与列表查询共享过滤参数，不含
+    // page/page_size/severity，所以徽章数字与分页页数都是"全量"、不受当前页限制。
+    const { data: severityCounts } = useLogSeverityCounts({
         userID: selectedUserID,
         apiKeyID: effectiveSelectedAPIKeyID,
         endpoint: selectedEndpoint || undefined,
@@ -198,7 +199,11 @@ export function Log() {
         endTime,
     });
     const LOG_PAGE_SIZE = 20;
-    const totalPages = Math.max(1, Math.ceil((logCount ?? 0) / LOG_PAGE_SIZE));
+    // 当前生效筛选下的总条数：全部→total，否则取该严重程度的计数。分页页数据此算。
+    const activeTotal = severityFilter === 'all'
+        ? (severityCounts?.total ?? 0)
+        : (severityCounts?.[severityFilter] ?? 0);
+    const totalPages = Math.max(1, Math.ceil(activeTotal / LOG_PAGE_SIZE));
 
     const {
         logs,
@@ -212,14 +217,17 @@ export function Log() {
         refresh,
     } = useLogs({
         pageSize: LOG_PAGE_SIZE,
-        // 自动刷新时退回无限滚动（page=undefined），静态浏览时按 currentPage 拉取单页。
-        page: autoRefresh ? undefined : currentPage,
+        // 始终分页；实时刷新只是往第 1 页实时插入新日志，分页导航永远保留。
+        page: currentPage,
+        // 严重程度改为服务端过滤：翻页/总数都对得上，不再是"只筛当前页"。
+        severity: severityFilter === 'all' ? undefined : severityFilter,
         userID: selectedUserID,
         apiKeyID: effectiveSelectedAPIKeyID,
         endpoint: selectedEndpoint || undefined,
         startTime,
         endTime,
-        live: autoRefresh,
+        // 实时刷新只在第 1 页（最新）生效；翻到历史页自然暂停，回第 1 页恢复。
+        live: autoRefresh && currentPage === 1,
     });
 
     const updateDraftUser = (value: string) => {
@@ -291,21 +299,13 @@ export function Log() {
     // 高级筛选（用户 / API Key）里有几项在生效——给折叠按钮上挂计数。
     const advancedActiveCount = (selectedUserID ? 1 : 0) + (effectiveSelectedAPIKeyID ? 1 : 0);
 
-    const severityCounts = useMemo(() => {
-        const counts: Record<LogSeverityFilter, number> = {
-            all: logs.length,
-            success: 0,
-            warn: 0,
-            error: 0,
-        };
+    // 徽章数字：全部→total，其余取对应严重程度的全量计数（后端返回，非当前页）。
+    const badgeCount = useCallback((id: LogSeverityFilter): number | undefined => {
+        if (!severityCounts) return undefined;
+        return id === 'all' ? severityCounts.total : severityCounts[id];
+    }, [severityCounts]);
 
-        for (const log of logs) {
-            counts[getRelayLogSeverity(log)] += 1;
-        }
-
-        return counts;
-    }, [logs]);
-
+    // 服务端已按 severity 过滤；这里再做一遍本地过滤仅作实时插入时的显示兜底。
     const filteredLogs = useMemo(() => {
         if (severityFilter === 'all') return logs;
         return logs.filter((log) => getRelayLogSeverity(log) === severityFilter);
@@ -356,17 +356,9 @@ export function Log() {
                 </div>
             );
         }
-        if (!hasMore && logs.length > 0) {
-            // 分页模式下无需"已全部加载"提示，由分页控件承担导航职责。
-            if (!autoRefresh) return null;
-            return (
-                <div className="flex justify-center py-4">
-                    <span className="text-sm text-muted-foreground">{t('list.noMore')}</span>
-                </div>
-            );
-        }
+        // 始终分页：导航交给分页控件；实时模式下也不显示"已全部加载"（还有新日志会来）。
         return null;
-    }, [autoRefresh, filteredLogs.length, hasMore, isLoading, isLoadingMore, loadMore, logs.length, t]);
+    }, [filteredLogs.length, hasMore, isLoading, isLoadingMore, loadMore, logs.length, t]);
 
     return (
         <PageWrapper className="box-border flex h-full min-h-0 flex-col gap-3 overflow-hidden rounded-t-3xl pb-[calc(6rem+env(safe-area-inset-bottom))] md:pb-4 [&>*]:min-h-0 [&>*:last-child]:flex [&>*:last-child]:flex-1">
@@ -497,7 +489,7 @@ export function Log() {
                                 <button
                                     key={filter.id}
                                     type="button"
-                                    onClick={() => setSeverityFilter(filter.id)}
+                                    onClick={() => { setSeverityFilter(filter.id); setCurrentPage(1); }}
                                     className={cn(
                                         'inline-flex h-8 min-w-0 items-center gap-1.5 rounded-lg px-2 text-xs font-medium transition-colors',
                                         active
@@ -508,7 +500,7 @@ export function Log() {
                                     <Icon className={cn('size-3.5 shrink-0', filter.className)} />
                                     <span>{t(`list.filters.${filter.id}`)}</span>
                                     <Badge variant="secondary" className="h-5 min-w-5 justify-center px-1 text-[10px]">
-                                        {severityCounts[filter.id]}
+                                        {badgeCount(filter.id)?.toLocaleString() ?? '—'}
                                     </Badge>
                                 </button>
                             );
@@ -553,7 +545,7 @@ export function Log() {
                             className="inline-flex h-9 items-center gap-2 rounded-lg border border-border bg-background px-2 text-xs text-muted-foreground"
                             title={streamError?.message}
                         >
-                            <Switch checked={autoRefresh} onCheckedChange={setAutoRefresh} />
+                            <Switch checked={autoRefresh} onCheckedChange={(v) => { setAutoRefresh(v); if (v) setCurrentPage(1); }} />
                             <span
                                 className={cn(
                                     'inline-flex items-center gap-1.5',
@@ -613,11 +605,12 @@ export function Log() {
                     </div>
                 )}
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-muted-foreground">
-                    {!autoRefresh && logCount !== undefined
-                        ? <span>共 {logCount.toLocaleString()} 条</span>
+                    {severityCounts !== undefined
+                        ? <span>共 {activeTotal.toLocaleString()} 条{severityFilter !== 'all' ? `（${t(`list.filters.${severityFilter}`)}）` : ''}</span>
                         : <span>{t('list.loadedCount', { count: logs.length })}</span>}
                     <span>时间按浏览器本地时区显示</span>
-                    {!autoRefresh && logCount !== undefined && totalPages > 1 && (
+                    {autoRefresh && currentPage === 1 && <span className="text-emerald-700 dark:text-emerald-300">实时插入中</span>}
+                    {totalPages > 1 && (
                         <div className="flex items-center gap-1">
                             <Button
                                 variant="ghost"

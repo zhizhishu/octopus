@@ -156,5 +156,18 @@ type RelayLogScope struct {
 	UserID   int
 	APIKeyID int
 	Endpoint string
+	// Severity narrows to a single severity bucket: "success" | "warn" | "error".
+	// Empty means all. Kept in lockstep with the SQL / Go / web severity rules.
+	Severity string
 	Redact   bool
+}
+
+// RelayLogSeverityCounts is the global severity breakdown for the current filter,
+// used to render the log page's 全部 / 成功 / Warn / Error badges with real totals
+// (not just the current page). Total == Success + Warn + Error.
+type RelayLogSeverityCounts struct {
+	Total   int64 `json:"total"`
+	Success int64 `json:"success"`
+	Warn    int64 `json:"warn"`
+	Error   int64 `json:"error"`
 }
