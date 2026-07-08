@@ -170,6 +170,13 @@ func parseGeminiModelAction(raw string) (modelName string, stream bool, ok bool)
 		return "", false, false
 	}
 	modelName = strings.TrimSpace(raw[:idx])
+	// A Gemini-native client that picked a model from GET /v1beta/models sends it back
+	// WITH the "models/" prefix (that list is emitted Google-style as "models/<id>"),
+	// producing /v1beta/models/models/<id>:action here so modelName keeps a redundant
+	// "models/" prefix. Strip it so routing matches the bare model name Octopus stores
+	// internally (mirrors internal/helper/fetch.go, which strips "models/" when it
+	// ingests an upstream Gemini model list). Bare names pass through unchanged.
+	modelName = strings.TrimPrefix(modelName, "models/")
 	action := strings.TrimSpace(raw[idx+1:])
 
 	switch action {

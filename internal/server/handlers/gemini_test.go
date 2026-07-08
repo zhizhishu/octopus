@@ -13,6 +13,12 @@ func TestParseGeminiModelAction(t *testing.T) {
 		{name: "generate", raw: "/gemini-2.5-flash:generateContent", wantModel: "gemini-2.5-flash", wantOK: true},
 		{name: "stream", raw: "/gemini-2.5-flash:streamGenerateContent", wantModel: "gemini-2.5-flash", wantStream: true, wantOK: true},
 		{name: "publisher model", raw: "/publishers/google/models/gemini-pro:generateContent", wantModel: "publishers/google/models/gemini-pro", wantOK: true},
+		// A client that echoes the Google-style "models/<id>" name from GET
+		// /v1beta/models doubles the prefix here; the redundant leading "models/" must
+		// be stripped so routing matches the bare model name (mid-path "models/" as in
+		// the publisher case above stays intact).
+		{name: "redundant models prefix stream", raw: "/models/gemini-3.1-pro:streamGenerateContent", wantModel: "gemini-3.1-pro", wantStream: true, wantOK: true},
+		{name: "redundant models prefix generate", raw: "/models/gemini-3.1-pro:generateContent", wantModel: "gemini-3.1-pro", wantOK: true},
 		{name: "missing action", raw: "/gemini-2.5-flash", wantOK: false},
 		{name: "unknown action", raw: "/gemini-2.5-flash:countTokens", wantOK: false},
 	}
