@@ -49,7 +49,15 @@ func currentFirstByteKeepaliveDelay() time.Duration {
 }
 
 func defaultFirstByteKeepaliveDelay() time.Duration {
-	return envStreamSecondsDuration("RELAY_FIRST_BYTE_KEEPALIVE_DELAY_SECONDS", 0)
+	// Default ON at 20s. Only upstreams slower than this to their first byte get
+	// pre-content SSE comment heartbeats (":\n\n"), which keeps a downstream client
+	// (e.g. Cursor's ~60s idle timeout) connected through a slow-first-token upstream
+	// instead of the client aborting at 60s and masking the real result. Fast upstreams
+	// (<20s to first byte) are completely unaffected — the heartbeat goroutine never
+	// fires. Downstream-only and ignorable: it never touches the codex/claude/gemini
+	// upstream fingerprint. Override via OCTOPUS_RELAY_FIRST_BYTE_KEEPALIVE_DELAY_SECONDS
+	// or the runtime setting (set to 0 to disable).
+	return envStreamSecondsDuration("RELAY_FIRST_BYTE_KEEPALIVE_DELAY_SECONDS", 20)
 }
 
 func envStreamSecondsDuration(suffix string, fallbackSeconds int) time.Duration {

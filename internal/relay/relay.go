@@ -2322,6 +2322,16 @@ func (ra *relayAttempt) streamKeepaliveData() []byte {
 	return []byte(":\n\n")
 }
 
+// setDownstreamSSEHeaders stages the text/event-stream + anti-buffering response
+// headers on the downstream writer. Safe to call more than once: gin just overwrites
+// the staged values, and it becomes a no-op once the response head is committed.
+func (ra *relayAttempt) setDownstreamSSEHeaders() {
+	ra.c.Header("Content-Type", "text/event-stream")
+	ra.c.Header("Cache-Control", "no-cache")
+	ra.c.Header("Connection", "keep-alive")
+	ra.c.Header("X-Accel-Buffering", "no")
+}
+
 // startFirstByteKeepalive 在等待上游首字节期间，向下游注入心跳防前置反代空闲掐断。
 // 返回的 stop 函数会停止注入并等待注入 goroutine 完全退出（保证之后主写入不与它并发）。
 // delay<=0 或 interval<=0 时为 no-op。
@@ -2348,6 +2358,17 @@ func (ra *relayAttempt) startFirstByteKeepalive(ctx context.Context) func() {
 			return
 		case <-timer.C:
 		}
+		// Commit the SSE / anti-buffering headers before the first heartbeat byte: the
+		// first Write flushes the response head, and without X-Accel-Buffering:no a front
+		// proxy (nginx/OpenResty) would buffer these pre-content heartbeats so the client
+		// still sees nothing. handleStreamResponse re-sets the same headers (idempotent)
+		// once the upstream response arrives. Guarded by prewarmMu so it is ordered before
+		// the writes and never races the main goroutine (which only runs after stop()).
+		ra.prewarmMu.Lock()
+		if !ra.prewarmStopped {
+			ra.setDownstreamSSEHeaders()
+		}
+		ra.prewarmMu.Unlock()
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {

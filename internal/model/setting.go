@@ -60,13 +60,16 @@ const (
 	SettingKeyDebugLoadBalancer         SettingKey = "debug_load_balancer"          // 开启后每次选路打印候选排序决策(tier/rank/容量输入)，便于排障"为啥走这条/为啥慢"
 	SettingKeySessionKeepTimeDefault    SettingKey = "session_keep_time_default"    // 分组会话保持时间全局默认(秒)，分组级为0时回退用它，0=不启用全局粘性
 	SettingKeyFirstTokenTimeOutDefault  SettingKey = "first_token_time_out_default" // 分组首字超时全局默认(秒)，分组级为0时回退用它，0=不启用全局默认
-	// SettingKeyFirstByteKeepaliveDelaySeconds is an OPT-IN feature (default "0" = OFF).
-	// When >0, stream requests that have not yet received the first upstream response byte
-	// will start injecting keepalive heartbeats to the downstream client after this many
+	// SettingKeyFirstByteKeepaliveDelaySeconds defaults to "20" (ON). When >0, stream
+	// requests that have not yet received the first upstream response byte start injecting
+	// ignorable SSE comment heartbeats (":\n\n") to the downstream client after this many
 	// seconds, continuing every relay_stream_keepalive_interval_seconds until the upstream
-	// response headers arrive. This prevents front-end reverse proxies from dropping the
-	// idle downstream connection during long upstream TTFB. Default 0 = completely off;
-	// behaviour is byte-identical to before when disabled.
+	// response headers arrive. This keeps a downstream client (e.g. Cursor's ~60s idle
+	// timeout) connected through a slow-first-token upstream, and stops a front-end reverse
+	// proxy from dropping the idle connection during long upstream TTFB. Fast upstreams
+	// (<delay to first byte) never trigger it, so their behaviour is byte-identical. It is
+	// downstream-only and never touches the codex/claude/gemini upstream fingerprint. Set
+	// to "0" to disable entirely.
 	SettingKeyFirstByteKeepaliveDelaySeconds SettingKey = "first_byte_keepalive_delay_seconds"
 	SettingKeyRouteModeOverride              SettingKey = "route_mode_override" // 路由模式全局覆盖: ""=跟随分组各自模式, "spread"=强制轮询, "fill_first"=强制优先填充
 	SettingKeyPromptOverrideSystem           SettingKey = "prompt_override_system"
@@ -252,7 +255,7 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyDebugLoadBalancer, Value: "false"},                                              // 默认关闭选路决策日志
 		{Key: SettingKeySessionKeepTimeDefault, Value: "0"},                                             // 默认0=不启用全局粘性(向后兼容); 管理员设为如3600才全局开, 分组级 SessionKeepTime 仍优先
 		{Key: SettingKeyFirstTokenTimeOutDefault, Value: "0"},                                           // 默认0=不启用全局默认(向后兼容); 分组级 FirstTokenTimeOut 仍优先
-		{Key: SettingKeyFirstByteKeepaliveDelaySeconds, Value: defaultFirstByteKeepaliveDelaySeconds()}, // 默认0=关闭: 等首字节期间不注入下游心跳; >0=延迟多少秒后开始注入(防前置反代空闲掐断)
+		{Key: SettingKeyFirstByteKeepaliveDelaySeconds, Value: defaultFirstByteKeepaliveDelaySeconds()}, // 默认20=开启: 上游首字节>20s才向下游注入SSE心跳(防前置反代/客户端60s空闲掐断); 0=关闭
 		{Key: SettingKeyRouteModeOverride, Value: ""},                                                   // 默认空=跟随分组各自模式(向后兼容); 设为 spread/fill_first 则强制覆盖所有分组
 		{Key: SettingKeyPromptOverrideSystem, Value: ""},
 		{Key: SettingKeyPromptOverrideMode, Value: string(PromptOverrideModeAppendSystem)},
@@ -544,14 +547,14 @@ func defaultRelayStreamKeepaliveIntervalSeconds() string {
 func defaultFirstByteKeepaliveDelaySeconds() string {
 	raw := strings.TrimSpace(os.Getenv("OCTOPUS_RELAY_FIRST_BYTE_KEEPALIVE_DELAY_SECONDS"))
 	if raw == "" {
-		return "0"
+		return "20"
 	}
 	value, err := strconv.Atoi(raw)
 	if err != nil {
-		return "0"
+		return "20"
 	}
 	if value < 0 {
-		return "0"
+		return "20"
 	}
 	return strconv.Itoa(value)
 }

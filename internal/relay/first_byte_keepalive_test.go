@@ -14,13 +14,14 @@ import (
 )
 
 // TestCurrentFirstByteKeepaliveDelayDefault verifies that when no env var is set
-// and the DB has no override, currentFirstByteKeepaliveDelay() returns 0 (disabled).
+// and the DB has no override, currentFirstByteKeepaliveDelay() falls back to the
+// built-in default of 20s (pre-first-byte heartbeats ON for slow upstreams).
 func TestCurrentFirstByteKeepaliveDelayDefault(t *testing.T) {
 	t.Setenv("OCTOPUS_RELAY_FIRST_BYTE_KEEPALIVE_DELAY_SECONDS", "")
-	// No DB: op.SettingGetInt will error, falling back to env (empty → 0).
+	// No DB: op.SettingGetInt will error, falling back to env (empty → built-in default).
 	got := currentFirstByteKeepaliveDelay()
-	if got != 0 {
-		t.Fatalf("expected default first-byte keepalive delay 0 (disabled), got %s", got)
+	if got != 20*time.Second {
+		t.Fatalf("expected default first-byte keepalive delay 20s, got %s", got)
 	}
 }
 
