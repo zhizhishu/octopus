@@ -460,10 +460,14 @@ func AccessPlanSyncEnabledChannels(ctx context.Context) error {
 		return err
 	}
 
-	// Build a map: channelID → set of cleaned model names it serves (enabled channels only).
+	// Build a map: channelID → the models it serves (enabled channels only). Each entry
+	// maps a cleaned+lowercased client-facing model name to the upstream model name this
+	// channel actually sends on the wire. For plainly-selected models the two are equal;
+	// for channel model_mapping entries the key is the client-facing alias and the value
+	// is the mapped upstream name.
 	type enabledChannel struct {
 		id     int
-		models map[string]struct{}
+		models map[string]string
 	}
 	allChannels := channelCache.GetAll()
 	// Fail-safe: an empty channel cache almost certainly means it isn't loaded yet
@@ -478,11 +482,27 @@ func AccessPlanSyncEnabledChannels(ctx context.Context) error {
 		if !ch.Enabled {
 			continue
 		}
-		served := make(map[string]struct{})
+		served := make(map[string]string)
 		for _, name := range model.ChannelSelectedModelNames(ch) {
-			if clean := strings.ToLower(model.CleanOneMillionCapabilityModelName(name)); clean != "" {
-				served[clean] = struct{}{}
+			clean := model.CleanOneMillionCapabilityModelName(name)
+			if key := strings.ToLower(clean); key != "" {
+				served[key] = clean // identity: client name == upstream name
 			}
+		}
+		// Honor the channel's model_mapping: each mapping key is an additional
+		// client-facing model this channel serves, rewritten to the mapped upstream
+		// name on the wire. This is what lets a mapped channel (e.g. NVIDIA whose
+		// upstream name is "deepseek-ai/deepseek-v4-pro") join the pool's canonical
+		// "deepseek-v4-pro" route on the canvas/plan instead of sitting alone under
+		// its ugly upstream alias.
+		for clientName, upstreamName := range ch.ModelMapping {
+			clientClean := model.CleanOneMillionCapabilityModelName(clientName)
+			upstreamClean := model.CleanOneMillionCapabilityModelName(upstreamName)
+			key := strings.ToLower(clientClean)
+			if key == "" || upstreamClean == "" {
+				continue
+			}
+			served[key] = upstreamClean // mapping wins: it defines the intended upstream
 		}
 		if len(served) > 0 {
 			enabledByID[ch.ID] = enabledChannel{id: ch.ID, models: served}
@@ -534,17 +554,24 @@ func AccessPlanSyncEnabledChannels(ctx context.Context) error {
 				}
 			}
 			for _, ch := range enabledByID {
-				if _, serves := ch.models[ruleModel]; !serves {
+				upstream, serves := ch.models[ruleModel]
+				if !serves {
 					continue
 				}
 				if _, already := existing[ch.id]; already {
 					continue
 				}
+				// Default to the rule's own model name (preserving its exact casing as
+				// before); only a genuine model_mapping entry overrides the upstream name.
+				upstreamModel := model.CleanOneMillionCapabilityModelName(rule.RequestModel)
+				if upstream != "" && !strings.EqualFold(upstream, ruleModel) {
+					upstreamModel = upstream
+				}
 				maxPriority++
 				target := model.AccessRouteTarget{
 					RouteRuleID:   rule.ID,
 					ChannelID:     ch.id,
-					UpstreamModel: model.CleanOneMillionCapabilityModelName(rule.RequestModel),
+					UpstreamModel: upstreamModel,
 					Priority:      maxPriority,
 					Weight:        1,
 					Enabled:       true,

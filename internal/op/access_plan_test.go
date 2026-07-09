@@ -615,6 +615,84 @@ func TestAccessPlanSyncEnabledChannelsReconcile(t *testing.T) {
 	}
 }
 
+// TestAccessPlanSyncHonorsChannelModelMapping verifies that a channel whose
+// selected_models only carry the ugly upstream name (e.g. NVIDIA's
+// "deepseek-ai/deepseek-v4-pro") still joins the pool's canonical route
+// ("deepseek-v4-pro") when it declares a model_mapping alias, and that the
+// synced target sends the mapped upstream name on the wire.
+func TestAccessPlanSyncHonorsChannelModelMapping(t *testing.T) {
+	ctx := setupAccessPlanTest(t)
+
+	plans, err := AccessPlanList(ctx)
+	if err != nil {
+		t.Fatalf("list plans: %v", err)
+	}
+	var svip model.AccessPlan
+	for _, plan := range plans {
+		if plan.Slug == "svip" {
+			svip = plan
+			break
+		}
+	}
+	if svip.ID == 0 {
+		t.Fatalf("svip plan not found")
+	}
+
+	svipUpdate := svip
+	svipUpdate.AutoSyncChannels = true
+	if err := AccessPlanUpdate(&svipUpdate, ctx); err != nil {
+		t.Fatalf("enable AutoSyncChannels on svip: %v", err)
+	}
+
+	// The channel serves only the upstream alias in selected_models, but maps the
+	// canonical pool name to it via model_mapping (client "pool-alias" → upstream
+	// "upstream-real-model").
+	ch := model.Channel{
+		Name:         "sync-mapping-channel",
+		Enabled:      true,
+		Model:        "upstream-real-model",
+		ModelMapping: map[string]string{"pool-alias": "upstream-real-model"},
+	}
+	if err := ChannelCreate(&ch, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+
+	plans, err = AccessPlanList(ctx)
+	if err != nil {
+		t.Fatalf("list plans after update: %v", err)
+	}
+	for _, plan := range plans {
+		if plan.Slug == "svip" {
+			svip = plan
+			break
+		}
+	}
+
+	// A rule for the canonical pool name that the channel does NOT list in
+	// selected_models — only its model_mapping key matches.
+	rule := model.AccessRouteRule{
+		RouteProfileID: svip.RouteProfileID,
+		RequestModel:   "pool-alias",
+	}
+	if err := AccessRouteRuleCreate(&rule, ctx); err != nil {
+		t.Fatalf("create route rule: %v", err)
+	}
+
+	if err := AccessPlanSyncEnabledChannels(ctx); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	var target model.AccessRouteTarget
+	if err := db.GetDB().WithContext(ctx).
+		Where("route_rule_id = ? AND channel_id = ?", rule.ID, ch.ID).
+		First(&target).Error; err != nil {
+		t.Fatalf("expected mapping-aware target to be synced, got: %v", err)
+	}
+	if target.UpstreamModel != "upstream-real-model" {
+		t.Fatalf("expected target upstream 'upstream-real-model' (mapped), got %q", target.UpstreamModel)
+	}
+}
+
 func TestAccessPlanUpdatePreservesProfilesAndAllowsDefaultSlugRename(t *testing.T) {
 	ctx := setupAccessPlanTest(t)
 
