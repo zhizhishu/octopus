@@ -997,14 +997,21 @@ func applyHeaderDefaults(req *http.Request, channel *dbmodel.Channel, endpointNa
 		endpoint, err := normalizeEndpoint(endpointName)
 		if err == nil && endpoint.name == "openai_responses" {
 			applyCodexHeaderDefaults(req, internalRequest, fp)
-		} else if ua := fp.genericUA(); ua != "" {
-			// Mirror relay's non claude/codex default: a profile may pin a unified UA.
+		} else {
+			// Mirror relay's non claude/codex default: profile GenericUA wins, else
+			// fall back to model.DefaultGenericUA (never leak Go-http-client).
+			ua := fp.genericUA()
+			if ua == "" {
+				ua = dbmodel.DefaultGenericUA
+			}
 			setHeaderIfMissing(req.Header, "User-Agent", ua)
 		}
 	default:
-		if ua := fp.genericUA(); ua != "" {
-			setHeaderIfMissing(req.Header, "User-Agent", ua)
+		ua := fp.genericUA()
+		if ua == "" {
+			ua = dbmodel.DefaultGenericUA
 		}
+		setHeaderIfMissing(req.Header, "User-Agent", ua)
 	}
 }
 

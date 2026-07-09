@@ -278,11 +278,34 @@ func TestRelayCopyHeadersDoesNotApplyCodexDefaultsToChatChannel(t *testing.T) {
 
 	ra.copyHeaders(upstreamReq)
 
-	if got := upstreamReq.Header.Get("User-Agent"); got != "" {
-		t.Fatalf("openai chat default user-agent = %q, want empty", got)
+	// A non claude/codex channel gets the generic fallback UA (not Go-http-client),
+	// but NO codex fingerprint headers.
+	if got := upstreamReq.Header.Get("User-Agent"); got != dbmodel.DefaultGenericUA {
+		t.Fatalf("openai chat user-agent = %q, want DefaultGenericUA", got)
 	}
 	if got := upstreamReq.Header.Get("X-Codex-Beta-Features"); got != "" {
 		t.Fatalf("openai chat beta features = %q, want empty", got)
+	}
+}
+
+// TestRelayCopyHeadersAppliesGenericUAToGeminiChannel verifies a non claude/codex
+// channel (Gemini) with no profile gets the built-in DefaultGenericUA fallback instead
+// of leaking Go's "Go-http-client/1.1".
+func TestRelayCopyHeadersAppliesGenericUAToGeminiChannel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1beta/models/x:generateContent", nil)
+
+	upstreamReq := httptest.NewRequest(http.MethodPost, "https://upstream.example/v1beta/models/x:generateContent", nil)
+	ra := &relayAttempt{
+		relayRequest: &relayRequest{c: c, inboundType: inbound.InboundTypeOpenAIChat},
+		channel:      &dbmodel.Channel{Type: outbound.OutboundTypeGemini},
+	}
+
+	ra.copyHeaders(upstreamReq)
+
+	if got := upstreamReq.Header.Get("User-Agent"); got != dbmodel.DefaultGenericUA {
+		t.Fatalf("gemini channel user-agent = %q, want DefaultGenericUA", got)
 	}
 }
 

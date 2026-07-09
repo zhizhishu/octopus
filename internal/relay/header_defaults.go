@@ -60,14 +60,17 @@ func (ra *relayAttempt) applyHeaderDefaults(req *http.Request) {
 	}
 }
 
-// applyGenericHeaderDefaults sets the profile's unified User-Agent on channels
-// that have no claude/codex fingerprint. It only acts when the selected profile
-// provides a non-empty GenericUA, so the default (no profile) behaviour — no UA
-// override on these channels — is unchanged.
+// applyGenericHeaderDefaults sets a unified User-Agent on channels that have no
+// claude/codex fingerprint (Gemini / Volcengine / plain OpenAI-chat). The selected
+// profile's GenericUA wins; when it is empty we fall back to model.DefaultGenericUA
+// so these channels present a stable Linux desktop identity instead of leaking Go's
+// "Go-http-client/1.1". Never touches claude/codex channels (different switch arms).
 func (ra *relayAttempt) applyGenericHeaderDefaults(req *http.Request) {
-	if ua := ra.fingerprint().genericUA(); ua != "" {
-		setHeaderIfMissing(req.Header, "User-Agent", ua)
+	ua := ra.fingerprint().genericUA()
+	if ua == "" {
+		ua = dbmodel.DefaultGenericUA
 	}
+	setHeaderIfMissing(req.Header, "User-Agent", ua)
 }
 
 func shouldApplyChannelCloak(cloak dbmodel.ChannelCloak) bool {
