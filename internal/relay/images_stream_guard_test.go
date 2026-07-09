@@ -111,8 +111,10 @@ func TestProxySSEKeepaliveInjectedWhenUpstreamIdle(t *testing.T) {
 	go func() {
 		// 首事件。
 		_, _ = io.WriteString(pw, "data: {\"type\":\"image_generation.partial\"}\n\n")
-		// 安静一段时间（> 心跳间隔），让 keepalive ticker 注入心跳。
-		time.Sleep(1500 * time.Millisecond)
+		// 安静一段时间（远大于 1s 心跳间隔），给 keepalive ticker 多次触发机会——
+		// 旧值 1500ms 仅留 0.5s 余量，满负载(本地/CI)下 goroutine 调度一飘就错过、
+		// 偶发 flaky。3.5s 让心跳有 ~3 次机会，即便调度延迟 1-2s 仍稳。
+		time.Sleep(3500 * time.Millisecond)
 		// 终止事件并关闭上游，正常结束。
 		_, _ = io.WriteString(pw, "data: {\"type\":\"image_generation.completed\"}\n\n")
 		_ = pw.Close()
