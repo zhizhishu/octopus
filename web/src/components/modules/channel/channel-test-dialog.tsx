@@ -1,0 +1,265 @@
+'use client';
+
+// 渠道内测试对话框（学 new-api）：多选端点 + 流/非流开关 + 模型多选批量测试，
+// 复用 /api/v1/model/test 与统一的 shouldForceTestStream + 180s。替代原独立「模型测试」页。
+import { useMemo, useState } from 'react';
+import { CheckCircle2, Loader2, Play, XCircle } from 'lucide-react';
+import { defaultModelTestEndpointForChannel, type Channel } from '@/api/endpoints/channel';
+import { useModelTest } from '@/api/endpoints/model';
+import type { ApiError } from '@/api/types';
+import { toast } from '@/components/common/Toast';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Switch } from '@/components/ui/switch';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import {
+    Table,
+    TableBody,
+    TableCell,
+    TableHead,
+    TableHeader,
+    TableRow,
+} from '@/components/ui/table';
+import { cn } from '@/lib/utils';
+import { DEFAULT_MODEL_TEST_TIMEOUT_SECONDS, cleanOneMillionModelName, makeModelTestPrompt, shouldForceTestStream } from '@/lib/model-aliases';
+import { getSelectedChannelModels } from './channel-utils';
+
+const TEST_ENDPOINTS = [
+    { value: 'openai_chat', label: 'Chat' },
+    { value: 'openai_responses', label: 'Responses' },
+    { value: 'anthropic_messages', label: 'Claude' },
+    { value: 'gemini_generate_content', label: 'Gemini' },
+] as const;
+type TestEndpoint = (typeof TEST_ENDPOINTS)[number]['value'];
+const ENDPOINT_LABEL: Record<TestEndpoint, string> = {
+    openai_chat: 'Chat', openai_responses: 'Responses', anthropic_messages: 'Claude', gemini_generate_content: 'Gemini',
+};
+
+type CellStatus = 'testing' | 'success' | 'error';
+type CellResult = { status: CellStatus; ms?: number; error?: string };
+
+const pillClass = (selected: boolean) =>
+    cn(
+        'nodrag rounded-full border px-2.5 py-1 text-xs font-medium transition-colors',
+        selected
+            ? 'border-primary/50 bg-primary/15 text-primary'
+            : 'border-border/70 bg-background/60 text-muted-foreground hover:bg-muted',
+    );
+
+function apiErrorMessage(error: unknown): string | undefined {
+    return (error as ApiError | undefined)?.message;
+}
+
+export function ChannelTestDialog({
+    channel,
+    open,
+    onOpenChange,
+}: {
+    channel: Channel;
+    open: boolean;
+    onOpenChange: (open: boolean) => void;
+}) {
+    const modelTest = useModelTest();
+    const allModels = useMemo(() => getSelectedChannelModels(channel), [channel]);
+    const defaultEndpoint = defaultModelTestEndpointForChannel(channel.type) as TestEndpoint;
+
+    const [endpoints, setEndpoints] = useState<Set<TestEndpoint>>(() => new Set<TestEndpoint>([defaultEndpoint]));
+    const [models, setModels] = useState<Set<string>>(() => new Set(allModels.slice(0, 1)));
+    const [streamTest, setStreamTest] = useState(true);
+    const [filter, setFilter] = useState('');
+    const [results, setResults] = useState<Record<string, CellResult>>({});
+    const [testing, setTesting] = useState(false);
+
+    const filteredModels = useMemo(() => {
+        const q = filter.trim().toLowerCase();
+        return q ? allModels.filter((m) => m.toLowerCase().includes(q)) : allModels;
+    }, [allModels, filter]);
+
+    const allFilteredSelected = filteredModels.length > 0 && filteredModels.every((m) => models.has(m));
+    const cellKey = (endpoint: TestEndpoint, model: string) => `${endpoint}|${model}`;
+
+    const toggleEndpoint = (endpoint: TestEndpoint) =>
+        setEndpoints((prev) => {
+            const next = new Set(prev);
+            if (next.has(endpoint)) next.delete(endpoint); else next.add(endpoint);
+            return next;
+        });
+    const toggleModel = (model: string) =>
+        setModels((prev) => {
+            const next = new Set(prev);
+            if (next.has(model)) next.delete(model); else next.add(model);
+            return next;
+        });
+    const toggleAllModels = () =>
+        setModels((prev) => {
+            const next = new Set(prev);
+            if (allFilteredSelected) filteredModels.forEach((m) => next.delete(m));
+            else filteredModels.forEach((m) => next.add(m));
+            return next;
+        });
+
+    const runTest = async () => {
+        const eps = [...endpoints];
+        const mods = [...models];
+        if (eps.length === 0 || mods.length === 0) {
+            toast.error('请至少选一个端点和一个模型');
+            return;
+        }
+        setTesting(true);
+        const prompt = makeModelTestPrompt();
+        setResults(() => {
+            const next: Record<string, CellResult> = {};
+            for (const e of eps) for (const m of mods) next[cellKey(e, m)] = { status: 'testing' };
+            return next;
+        });
+        try {
+            for (const endpoint of eps) {
+                const forced = shouldForceTestStream({ models: mods, endpoint, anthropicContext1M: channel.anthropic_context_1m });
+                try {
+                    const data = await modelTest.mutateAsync({
+                        models: mods,
+                        channel_id: channel.id,
+                        endpoint,
+                        prompt,
+                        stream: forced ? true : streamTest,
+                        timeout_seconds: DEFAULT_MODEL_TEST_TIMEOUT_SECONDS,
+                        audit_log: true,
+                    });
+                    setResults((prev) => {
+                        const next = { ...prev };
+                        for (const r of data.results) {
+                            const key = cellKey(endpoint, r.request_model || r.model);
+                            next[key] = r.success
+                                ? { status: 'success', ms: r.duration_ms }
+                                : { status: 'error', error: r.error };
+                        }
+                        for (const m of mods) {
+                            const key = cellKey(endpoint, m);
+                            if (!next[key] || next[key].status === 'testing') next[key] = { status: 'error', error: '无结果' };
+                        }
+                        return next;
+                    });
+                } catch (error: unknown) {
+                    setResults((prev) => {
+                        const next = { ...prev };
+                        for (const m of mods) next[cellKey(endpoint, m)] = { status: 'error', error: apiErrorMessage(error) || '测试失败' };
+                        return next;
+                    });
+                }
+            }
+            toast.success('测试完成，详情见下表（也已写入日志）');
+        } finally {
+            setTesting(false);
+        }
+    };
+
+    const resultRows = useMemo(() => {
+        const rows: Array<{ endpoint: TestEndpoint; model: string; result: CellResult }> = [];
+        for (const e of TEST_ENDPOINTS) {
+            if (!endpoints.has(e.value)) continue;
+            for (const m of models) {
+                const result = results[cellKey(e.value, m)];
+                if (result) rows.push({ endpoint: e.value, model: m, result });
+            }
+        }
+        return rows;
+    }, [endpoints, models, results]);
+
+    return (
+        <Dialog open={open} onOpenChange={onOpenChange}>
+            <DialogContent className="max-h-[90vh] w-[calc(100vw-1rem)] max-w-2xl overflow-hidden rounded-3xl p-0">
+                <DialogHeader className="border-b border-border/70 px-5 py-4">
+                    <DialogTitle className="flex min-w-0 items-center gap-2">
+                        <span className="shrink-0">测试渠道</span>
+                        <span className="min-w-0 truncate font-mono text-sm text-muted-foreground">#{channel.id} · {channel.name}</span>
+                    </DialogTitle>
+                </DialogHeader>
+
+                <div className="max-h-[74vh] space-y-4 overflow-y-auto px-5 py-4">
+                    {/* 端点多选 */}
+                    <div className="space-y-1.5">
+                        <div className="text-xs font-bold tracking-[0.14em] text-muted-foreground">测试端点（多选）</div>
+                        <div className="flex flex-wrap gap-2">
+                            {TEST_ENDPOINTS.map((e) => (
+                                <button key={e.value} type="button" className={pillClass(endpoints.has(e.value))} onClick={() => toggleEndpoint(e.value)}>
+                                    {e.label}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+
+                    {/* 流/非流 */}
+                    <label className="flex cursor-pointer items-center gap-2 text-sm">
+                        <Switch checked={streamTest} onCheckedChange={setStreamTest} className="scale-90" />
+                        <span>流式优先</span>
+                        <span className="text-xs text-muted-foreground">（Claude / Responses / [1m] / gpt-5.5 等强制流，此开关对它们无效）</span>
+                    </label>
+
+                    {/* 模型多选 */}
+                    <div className="space-y-1.5">
+                        <div className="flex items-center justify-between gap-2">
+                            <span className="text-xs font-bold tracking-[0.14em] text-muted-foreground">模型（{models.size}/{allModels.length}）</span>
+                            <Button type="button" variant="outline" size="sm" className="h-6 rounded-lg px-2 text-xs" onClick={toggleAllModels} disabled={filteredModels.length === 0}>
+                                {allFilteredSelected ? '全不选' : '全选'}
+                            </Button>
+                        </div>
+                        <Input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="过滤模型…" className="h-8 text-xs" />
+                        <div className="flex max-h-40 flex-wrap gap-1.5 overflow-y-auto rounded-xl border border-border/60 bg-muted/10 p-2">
+                            {filteredModels.length === 0 ? (
+                                <span className="p-2 text-xs text-muted-foreground">该渠道没有可测模型</span>
+                            ) : (
+                                filteredModels.map((m) => (
+                                    <button key={m} type="button" className={pillClass(models.has(m))} onClick={() => toggleModel(m)}>
+                                        {cleanOneMillionModelName(m)}
+                                    </button>
+                                ))
+                            )}
+                        </div>
+                    </div>
+
+                    {/* 运行 */}
+                    <Button type="button" className="w-full rounded-xl" onClick={runTest} disabled={testing || endpoints.size === 0 || models.size === 0}>
+                        {testing ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
+                        测试选中（{endpoints.size} 端点 × {models.size} 模型）
+                    </Button>
+
+                    {/* 结果 */}
+                    {resultRows.length > 0 && (
+                        <div className="overflow-hidden rounded-xl border border-border/60">
+                            <Table>
+                                <TableHeader>
+                                    <TableRow>
+                                        <TableHead className="w-24">端点</TableHead>
+                                        <TableHead>模型</TableHead>
+                                        <TableHead className="w-20">状态</TableHead>
+                                        <TableHead>结果</TableHead>
+                                    </TableRow>
+                                </TableHeader>
+                                <TableBody>
+                                    {resultRows.map(({ endpoint, model, result }) => (
+                                        <TableRow key={`${endpoint}|${model}`}>
+                                            <TableCell className="text-xs text-muted-foreground">{ENDPOINT_LABEL[endpoint]}</TableCell>
+                                            <TableCell className="max-w-[10rem] truncate font-mono text-xs">{cleanOneMillionModelName(model)}</TableCell>
+                                            <TableCell>
+                                                {result.status === 'testing' ? (
+                                                    <span className="inline-flex items-center gap-1 text-xs text-muted-foreground"><Loader2 className="size-3 animate-spin" />测试中</span>
+                                                ) : result.status === 'success' ? (
+                                                    <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-600 dark:text-emerald-400"><CheckCircle2 className="size-3" />成功</span>
+                                                ) : (
+                                                    <span className="inline-flex items-center gap-1 text-xs font-semibold text-destructive"><XCircle className="size-3" />失败</span>
+                                                )}
+                                            </TableCell>
+                                            <TableCell className="max-w-[14rem] truncate text-xs text-muted-foreground" title={result.error}>
+                                                {result.status === 'success' ? `${result.ms ?? '-'} ms` : (result.error || '-')}
+                                            </TableCell>
+                                        </TableRow>
+                                    ))}
+                                </TableBody>
+                            </Table>
+                        </div>
+                    )}
+                </div>
+            </DialogContent>
+        </Dialog>
+    );
+}

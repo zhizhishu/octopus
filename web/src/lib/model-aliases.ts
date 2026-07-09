@@ -25,6 +25,14 @@ export function shouldForceTestStream(args: {
     return false;
 }
 
+/** 模型/渠道测试统一默认 prompt——四位数加法（沿用原模型测试页），只回答结果不解释，
+ *  快速判通道是否真能出正文；每次测试现随机一道，避免上游缓存命中。 */
+export function makeModelTestPrompt(): string {
+    const left = 1000 + Math.floor(Math.random() * 9000);
+    const right = 1000 + Math.floor(Math.random() * 9000);
+    return `请只回答算式结果，不要解释：${left} + ${right} = ?`;
+}
+
 export function cleanOneMillionModelName(model: string) {
     const trimmed = model.trim();
     const value = trimmed.toLowerCase();

@@ -1,7 +1,7 @@
 import { lazyWithPreload } from './lazy-with-preload';
 import { lazy, ComponentType } from 'react';
 import type { LucideIcon } from 'lucide-react';
-import { BadgeDollarSign, Home, Radio, FolderTree, Settings, Logs, KeyRound, Users, GitBranch, MessageSquareText, FlaskConical, Database } from 'lucide-react';
+import { BadgeDollarSign, Home, Radio, FolderTree, Settings, Logs, KeyRound, Users, GitBranch, MessageSquareText, Database } from 'lucide-react';
 
 export type LazyComponent = ReturnType<typeof lazy> & {
     preload: () => Promise<{ default: ComponentType<Record<string, never>> }>
@@ -17,7 +17,6 @@ export interface RouteConfig {
 const Home_Module = lazyWithPreload(() => import('@/components/modules/home').then(m => ({ default: m.Home })));
 const Channel_Module = lazyWithPreload(() => import('@/components/modules/channel').then(m => ({ default: m.Channel })));
 const Model_Module = lazyWithPreload(() => import('@/components/modules/model').then(m => ({ default: m.Model })));
-const ModelTest_Module = lazyWithPreload(() => import('@/components/modules/model-test').then(m => ({ default: m.ModelTest })));
 const Migration_Module = lazyWithPreload(() => import('@/components/modules/migration').then(m => ({ default: m.Migration })));
 const Group_Module = lazyWithPreload(() => import('@/components/modules/group').then(m => ({ default: m.Group })));
 const AccessPlan_Module = lazyWithPreload(() => import('@/components/modules/access-plan').then(m => ({ default: m.AccessPlan })));
@@ -35,7 +34,6 @@ export const ROUTES: RouteConfig[] = [
     { id: 'access-plan', label: 'Plans', icon: GitBranch, component: AccessPlan_Module },
     { id: 'group', label: 'Model Pool', icon: FolderTree, component: Group_Module },
     { id: 'model', label: 'Model', icon: BadgeDollarSign, component: Model_Module },
-    { id: 'model-test', label: 'Model Test', icon: FlaskConical, component: ModelTest_Module },
     { id: 'migration', label: 'Migration', icon: Database, component: Migration_Module },
     { id: 'prompt', label: 'Prompt', icon: MessageSquareText, component: Prompt_Module },
     { id: 'log', label: 'Log', icon: Logs, component: Log_Module },
@@ -49,7 +47,7 @@ export const CONTENT_MAP = ROUTES.reduce((acc, route) => {
 
 // 模型池(group)重新进入导航：渠道模型仍会自动建同名 group 兜底，但分组级容量
 // 限制(并发上限 / RPM 上限，保护上游不被打满)需要在模型池页按组配置，所以恢复入口。
-export const ADMIN_ROUTE_IDS = ['home', 'user', 'key', 'channel', 'access-plan', 'group', 'model', 'model-test', 'migration', 'prompt', 'log', 'setting'] as const;
+export const ADMIN_ROUTE_IDS = ['home', 'user', 'key', 'channel', 'access-plan', 'group', 'model', 'migration', 'prompt', 'log', 'setting'] as const;
 export const USER_ROUTE_IDS = ['home', 'key', 'log'] as const;
 
 export function routeIdsForRole(role?: string | null) {

@@ -6,17 +6,15 @@ import {
 } from '@/components/ui/morphing-dialog';
 import { Activity, AlertTriangle, CheckCircle2, DollarSign, FlaskConical, Key, Layers, Loader2, MessageSquare, Play, RotateCcw, XCircle, Server } from 'lucide-react';
 import { type StatsMetricsFormatted } from '@/api/endpoints/stats';
-import { defaultModelTestEndpointForChannel, type Channel, useEnableChannel, useResetChannelCircuit } from '@/api/endpoints/channel';
-import { useModelTest } from '@/api/endpoints/model';
+import { type Channel, useEnableChannel, useResetChannelCircuit } from '@/api/endpoints/channel';
 import { CardContent } from './CardContent';
 import { useTranslations } from 'next-intl';
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/animate-ui/components/animate/tooltip';
-import { Switch } from '@/components/ui/switch';
 import { toast } from '@/components/common/Toast';
+import { Switch } from '@/components/ui/switch';
 import { useMemo, useState, type MouseEvent } from 'react';
 import { cn } from '@/lib/utils';
-import { shouldForceTestStream } from '@/lib/model-aliases';
-import { useNavStore } from '@/components/modules/navbar/nav-store';
+import { ChannelTestDialog } from './channel-test-dialog';
 import {
     getChannelEndpointFamily,
     getPrimaryChannelModel,
@@ -28,8 +26,7 @@ export function Card({ channel, stats, layout = 'list' }: { channel: Channel; st
     const tMetrics = useTranslations('channel.detail.metrics');
     const enableChannel = useEnableChannel();
     const resetCircuit = useResetChannelCircuit();
-    const channelTest = useModelTest();
-    const setActiveItem = useNavStore((state) => state.setActiveItem);
+    const [testDialogOpen, setTestDialogOpen] = useState(false);
     const circuitLabel = channel.circuit_remaining_seconds > 0
         ? t('circuit.remaining', { seconds: channel.circuit_remaining_seconds })
         : t('circuit.open');
@@ -38,13 +35,7 @@ export function Card({ channel, stats, layout = 'list' }: { channel: Channel; st
     const modelCount = testModels.length;
     const firstModel = testModels[0] || '';
     const [testModel, setTestModel] = useState(firstModel);
-    const [streamTest, setStreamTest] = useState(true);
     const effectiveTestModel = testModels.includes(testModel) ? testModel : firstModel;
-    const forcedStreamTest = shouldForceTestStream({
-        models: effectiveTestModel,
-        endpoint: defaultModelTestEndpointForChannel(channel.type),
-        anthropicContext1M: channel.anthropic_context_1m,
-    });
     const enabledKeyCount = channel.keys.filter((item) => item.enabled).length;
     const isGridLayout = layout === 'grid';
     const family = getChannelEndpointFamily(channel);
@@ -75,41 +66,6 @@ export function Card({ channel, stats, layout = 'list' }: { channel: Channel; st
         );
     };
 
-    const handleTestChannel = (event: MouseEvent<HTMLButtonElement>) => {
-        event.preventDefault();
-        event.stopPropagation();
-        const selectedModel = effectiveTestModel;
-        if (!selectedModel) {
-            toast.error('请先给渠道配置模型');
-            return;
-        }
-        channelTest.mutate(
-            {
-                model: selectedModel,
-                channel_id: channel.id,
-                endpoint: defaultModelTestEndpointForChannel(channel.type),
-                stream: forcedStreamTest ? true : streamTest,
-                timeout_seconds: 180,
-                // 管理员专用：测试结果一律写入日志，测完直接进日志页看完整记录
-                audit_log: true,
-            },
-            {
-                onSuccess: (data) => {
-                    const result = data.results[0];
-                    if (result?.success) {
-                        toast.success('渠道测试成功，正在打开日志', { description: result.response_preview || 'OK' });
-                    } else {
-                        toast.error('渠道测试失败，正在打开日志', { description: result?.error || '无可用结果' });
-                    }
-                    setActiveItem('log');
-                },
-                onError: (error) => {
-                    toast.error('渠道测试失败，正在打开日志', { description: error.message });
-                    setActiveItem('log');
-                },
-            }
-        );
-    };
 
     return (
         <MorphingDialog>
@@ -237,37 +193,17 @@ export function Card({ channel, stats, layout = 'list' }: { channel: Channel; st
                                 <button
                                     type="button"
                                     className="inline-flex h-8 max-w-full items-center gap-1 overflow-hidden rounded-lg border border-border px-2 text-xs font-medium leading-none text-muted-foreground hover:bg-accent hover:text-accent-foreground disabled:opacity-50"
-                                    onClick={handleTestChannel}
-                                    disabled={channelTest.isPending || !firstModel}
+                                    onClick={(event) => { event.preventDefault(); event.stopPropagation(); setTestDialogOpen(true); }}
+                                    disabled={!firstModel}
                                     aria-label="测试模型"
                                 >
-                                    {channelTest.isPending ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
+                                    <Play className="size-3.5" />
                                     <span className="min-w-0 truncate">测试</span>
                                 </button>
                             </TooltipTrigger>
                             <TooltipContent>{effectiveTestModel ? `测试 ${effectiveTestModel}` : '请先配置模型'}</TooltipContent>
                         </Tooltip>
-                        <Tooltip side="top" sideOffset={10} align="center">
-                            <TooltipTrigger asChild>
-                                <label
-                                    className={cn(
-                                        'inline-flex h-8 max-w-full items-center gap-1 overflow-hidden rounded-lg border border-border bg-background px-2 text-xs leading-none text-muted-foreground',
-                                        forcedStreamTest && 'border-primary/30 bg-primary/5 text-foreground'
-                                    )}
-                                >
-                                    <Switch
-                                        checked={forcedStreamTest || streamTest}
-                                        onCheckedChange={setStreamTest}
-                                        disabled={forcedStreamTest}
-                                        aria-label="渠道测试流式模式"
-                                    />
-                                    <span className="min-w-0 truncate">{forcedStreamTest || streamTest ? '流式' : '非流'}</span>
-                                </label>
-                            </TooltipTrigger>
-                            <TooltipContent>
-                                {forcedStreamTest ? '该模型必须走流式测试，Octopus 会自动切到正确链路，避免误判。' : '默认流式；需要排查兼容性时可手动切非流。'}
-                            </TooltipContent>
-                        </Tooltip>
+                        <ChannelTestDialog channel={channel} open={testDialogOpen} onOpenChange={setTestDialogOpen} />
                         {channel.circuit_tripped && (
                             <Tooltip side="top" sideOffset={10} align="center">
                                 <TooltipTrigger asChild>
