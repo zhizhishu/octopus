@@ -845,10 +845,13 @@ func rawProtocolAttempt(
 	// so a pre-content upstream failure below can still fail over (see the `written`-gated
 	// guards in the caller).
 	var stopFirstByteKeepalive func()
-	// Only for genuinely SSE downstream: exclude BinaryResponse protocols (e.g.
-	// /audio/speech) so a ":\n\n" heartbeat can never be injected into a non-SSE
-	// (binary/audio) stream if such a request ever arrives with stream=true.
-	if stream && !options.BinaryResponse {
+	// Scope the keepalive to responses-family SSE streaming ONLY:
+	//   - !BinaryResponse: never inject ":\n\n" into a non-SSE (audio/binary) body.
+	//   - isResponsesInboundPath: keep the "committed but only comments" state to the one
+	//     protocol whose all-channels-failed path emits an in-band SSE error
+	//     (writeResponsesFailedSSE). A committed non-responses stream (e.g. /v1/completions)
+	//     would otherwise be left with only comments + EOF and no error event.
+	if stream && !options.BinaryResponse && isResponsesInboundPath(c.Request.URL.Path) {
 		stopFirstByteKeepalive = startDownstreamFirstByteKeepalive(ctx, c)
 	}
 	respUp, err := helper.DoPreserveMethodRedirect(httpClient, req)
@@ -874,7 +877,14 @@ func rawProtocolAttempt(
 			CaptureResponsesID:      isResponsesCompactRawProtocol(options),
 			StopOnResponsesTerminal: isResponsesCompactRawProtocol(options),
 		})
-		return respUp.StatusCode, w, u, upstreamCT, responseID, err
+		// Report "committed" for failover suppression only when REAL upstream content was
+		// forwarded (first token seen — set at the first upstream data line, never by a
+		// keepalive comment). proxySSEWithOptions returns c.Writer.Written() (=> w), which a
+		// pre-first-byte keepalive comment already set WITHOUT any real content; treating that
+		// as committed would wrongly skip failover to the next channel on a slow-then-empty
+		// upstream (2xx SSE that stalls/EOFs before the first token).
+		committed := w && metrics != nil && !metrics.FirstToken.IsZero()
+		return respUp.StatusCode, committed, u, upstreamCT, responseID, err
 	}
 	if options.BinaryResponse {
 		if metrics != nil {
