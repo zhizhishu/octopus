@@ -845,7 +845,10 @@ func rawProtocolAttempt(
 	// so a pre-content upstream failure below can still fail over (see the `written`-gated
 	// guards in the caller).
 	var stopFirstByteKeepalive func()
-	if stream {
+	// Only for genuinely SSE downstream: exclude BinaryResponse protocols (e.g.
+	// /audio/speech) so a ":\n\n" heartbeat can never be injected into a non-SSE
+	// (binary/audio) stream if such a request ever arrives with stream=true.
+	if stream && !options.BinaryResponse {
 		stopFirstByteKeepalive = startDownstreamFirstByteKeepalive(ctx, c)
 	}
 	respUp, err := helper.DoPreserveMethodRedirect(httpClient, req)
