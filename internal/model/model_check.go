@@ -46,6 +46,7 @@ type ModelTestResult struct {
 	RequestEndpoint   string           `json:"request_endpoint,omitempty"`
 	RequestPath       string           `json:"request_path,omitempty"`
 	UpstreamPath      string           `json:"upstream_path,omitempty"`
+	IsStream          bool             `json:"is_stream"`
 	RouteUsed         bool             `json:"route_used"`
 	RouteFallbackUsed bool             `json:"route_fallback_used,omitempty"`
 	GroupName         string           `json:"group_name,omitempty"`

@@ -21,7 +21,7 @@ import {
     TableRow,
 } from '@/components/ui/table';
 import { cn } from '@/lib/utils';
-import { DEFAULT_MODEL_TEST_TIMEOUT_SECONDS, cleanOneMillionModelName, makeModelTestPrompt, shouldForceTestStream } from '@/lib/model-aliases';
+import { DEFAULT_MODEL_TEST_TIMEOUT_SECONDS, cleanOneMillionModelName, makeModelTestPrompt } from '@/lib/model-aliases';
 import { getSelectedChannelModels } from './channel-utils';
 
 const TEST_ENDPOINTS = [
@@ -114,14 +114,13 @@ export function ChannelTestDialog({
         });
         try {
             for (const endpoint of eps) {
-                const forced = shouldForceTestStream({ models: mods, endpoint, anthropicContext1M: channel.anthropic_context_1m });
                 try {
                     const data = await modelTest.mutateAsync({
                         models: mods,
                         channel_id: channel.id,
                         endpoint,
                         prompt,
-                        stream: forced ? true : streamTest,
+                        stream: streamTest,
                         timeout_seconds: DEFAULT_MODEL_TEST_TIMEOUT_SECONDS,
                         audit_log: true,
                     });
@@ -192,7 +191,7 @@ export function ChannelTestDialog({
                     <label className="flex cursor-pointer items-center gap-2 text-sm">
                         <Switch checked={streamTest} onCheckedChange={setStreamTest} className="scale-90" />
                         <span>流式优先</span>
-                        <span className="text-xs text-muted-foreground">（Claude / Responses / [1m] / gpt-5.5 等强制流，此开关对它们无效）</span>
+                        <span className="text-xs text-muted-foreground">（4 端点都真开真关；关掉后思考模型可能因非流超时，日志会如实标注）</span>
                     </label>
 
                     {/* 模型多选 */}

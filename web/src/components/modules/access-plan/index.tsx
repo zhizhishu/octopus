@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
     BadgeDollarSign,
     Check,
-    EyeOff,
     GitBranch,
     Loader2,
     PencilLine,
@@ -1008,7 +1007,6 @@ type TargetNodeData = {
     showPriority: boolean;
     weight: number;
     upstreamModel: string;
-    hideUpstream: boolean;
     enabled: boolean;
     fallback: string;
     multiplier: number | string;
@@ -1076,7 +1074,7 @@ function TargetFlowCard({ data }: NodeProps<TargetFlowNode>) {
             <div className="min-w-0">
                 <div className="text-[9px] font-bold uppercase tracking-[0.14em] text-muted-foreground">{accessPlanText('routes.upstreamTarget')}</div>
                 <div className="mt-0.5 truncate font-mono text-xs font-semibold text-foreground">
-                    {data.hideUpstream ? <span className="tracking-[0.3em] text-muted-foreground/70">••••••</span> : data.upstreamModel}
+                    {data.upstreamModel}
                 </div>
             </div>
             <div className="text-xs text-muted-foreground">
@@ -1135,7 +1133,6 @@ function buildRouteFlow(
     plan: AccessPlan,
     rows: RouteTargetGroup[],
     channelNameByID: Map<number, string>,
-    hideUpstream: boolean,
     isRebuilding: boolean,
     onEditRequest: (requestModel: string) => void,
     onRebuildRequest: (requestModel: string) => void,
@@ -1194,7 +1191,6 @@ function buildRouteFlow(
                         showPriority,
                         weight: target.weight || 1,
                         upstreamModel: cleanOneMillionModelName(target.upstream_model || accessPlanText('routes.unset')),
-                        hideUpstream,
                         enabled: target.enabled,
                         fallback: fallbackModeLabel(target.fallback_mode),
                         multiplier: billing.multiplier,
@@ -1246,12 +1242,10 @@ type RouteFlowCanvasProps = {
     onEditRequest: (requestModel: string) => void;
     isRebuilding: boolean;
     onOpenJson?: () => void;
-    hideUpstream: boolean;
-    onToggleHideUpstream: (v: boolean) => void;
 };
 
 function RouteFlowCanvasInner({
-    plan, rows, channels, onRebuildRequest, onEditRequest, isRebuilding, onOpenJson, hideUpstream, onToggleHideUpstream,
+    plan, rows, channels, onRebuildRequest, onEditRequest, isRebuilding, onOpenJson,
 }: RouteFlowCanvasProps) {
     const t = accessPlanText;
     const channelNameByID = useMemo(() => new Map(channels.map((channel) => [channel.id, channel.name])), [channels]);
@@ -1274,8 +1268,8 @@ function RouteFlowCanvasInner({
     }, [rows, q, channelNameByID]);
 
     const flow = useMemo(
-        () => buildRouteFlow(plan, filteredRows, channelNameByID, hideUpstream, isRebuilding, onEditRequest, onRebuildRequest),
-        [plan, filteredRows, channelNameByID, hideUpstream, isRebuilding, onEditRequest, onRebuildRequest],
+        () => buildRouteFlow(plan, filteredRows, channelNameByID, isRebuilding, onEditRequest, onRebuildRequest),
+        [plan, filteredRows, channelNameByID, isRebuilding, onEditRequest, onRebuildRequest],
     );
 
     const [nodes, setNodes, onNodesChange] = useNodesState<FlowNode>(flow.nodes);
@@ -1338,11 +1332,6 @@ function RouteFlowCanvasInner({
                             className="h-7 w-40 rounded-full border border-border/70 bg-background/60 pl-7 pr-2 text-xs text-foreground outline-none focus:border-primary/50 sm:w-48"
                         />
                     </div>
-                    <label className="flex cursor-pointer items-center gap-1.5 rounded-full border border-border/70 px-2 py-0.5">
-                        <Switch checked={hideUpstream} onCheckedChange={onToggleHideUpstream} className="scale-75" />
-                        <EyeOff className="size-3" />
-                        <span>隐藏上游名</span>
-                    </label>
                     <Badge variant="secondary" className="rounded-full">{planTitle(plan)}</Badge>
                     <Badge variant="outline" className="rounded-full">{t('routes.targetCount', { count: targetCount })}</Badge>
                 </div>
@@ -1614,11 +1603,6 @@ function RouteTargetsEditor({
     const [targets, setTargets] = useState<AccessPlanRouteTarget[]>(() => plan.route_targets.map(cleanRouteTargetModels));
     const [jsonText, setJsonText] = useState('');
     const [editingRequestModel, setEditingRequestModel] = useState<string | null>(null);
-    const [hideUpstream, setHideUpstream] = useState(() =>
-        typeof window !== 'undefined' && window.localStorage.getItem('octopus.access-plan.hideUpstream') === '1');
-    useEffect(() => {
-        if (typeof window !== 'undefined') window.localStorage.setItem('octopus.access-plan.hideUpstream', hideUpstream ? '1' : '0');
-    }, [hideUpstream]);
     const requestModelListId = `access-plan-request-models-${plan.id}`;
     const channelModelIndex = useMemo(
         () => buildChannelModelIndex(channelModels, channelModelsReady),
@@ -1848,8 +1832,6 @@ function RouteTargetsEditor({
                 onEditRequest={setEditingRequestModel}
                 isRebuilding={updateRoutes.isPending}
                 onOpenJson={openJson}
-                hideUpstream={hideUpstream}
-                onToggleHideUpstream={setHideUpstream}
             />
 
             <details ref={advancedRef} className="shrink-0 rounded-2xl border border-border/70 bg-card/70">

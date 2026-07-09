@@ -242,6 +242,7 @@ func addAuditLog(ctx context.Context, req dbmodel.ModelTestRequest, result dbmod
 		InputTokens:       int(result.InputTokens),
 		OutputTokens:      int(result.OutputTokens),
 		UseTime:           result.DurationMs,
+		IsStream:          result.IsStream,
 		Cost:              0,
 		RequestContent:    string(requestContent),
 		ResponseContent:   string(responseContent),
@@ -680,7 +681,8 @@ func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermod
 	}
 	if channel.Type == outbound.OutboundTypeOpenAIResponse {
 		endpoint, _ := normalizeEndpoint(r.request.Endpoint)
-		if endpoint.name == "openai_responses" {
+		// 测试页"真开真关"：调用方显式给了 stream 就听它的，只有没给才默认强制流。
+		if endpoint.name == "openai_responses" && r.request.Stream == nil {
 			stream := true
 			internalRequest.Stream = &stream
 		}
@@ -699,6 +701,7 @@ func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermod
 			r.result.UpstreamPath = outboundRequest.URL.Path
 		}
 	}
+	r.result.IsStream = internalRequest.Stream != nil && *internalRequest.Stream
 	applyHeaderDefaults(outboundRequest, channel, r.request.Endpoint, internalRequest)
 	applyCustomHeaders(outboundRequest, channel.CustomHeader)
 	if err := applyParamOverride(outboundRequest, channel.ParamOverride); err != nil {
@@ -777,7 +780,10 @@ func (r *modelRunner) internalRequest(upstreamModel string) *transformermodel.In
 	// temperature:0 is a tell). Non-Anthropic endpoints keep the light probe shape.
 	maxTokens := int64(8)
 	if endpoint.name == "anthropic_messages" {
-		stream = true
+		// 测试页"真开真关"：显式给了 stream 就听它的；但 claude-cli body shape(64000) 始终保留。
+		if !streamExplicit {
+			stream = true
+		}
 		maxTokens = int64(64000)
 	} else if isLikelyThinkingModel(upstreamModel) {
 		// Thinking/reasoning models burn through a tiny 8-token probe on reasoning
