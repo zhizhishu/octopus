@@ -1007,7 +1007,7 @@ function RequestFlowCard({ data }: NodeProps<RequestFlowNode>) {
                     type="button"
                     variant="outline"
                     size="sm"
-                    className="nodrag nopan h-6 gap-1 rounded-lg border-amber-500/30 bg-transparent px-2 text-[11px] text-amber-700 hover:bg-amber-500/15 dark:text-amber-200"
+                    className="nodrag nopan pointer-events-auto h-6 gap-1 rounded-lg border-amber-500/30 bg-transparent px-2 text-[11px] text-amber-700 hover:bg-amber-500/15 dark:text-amber-200"
                     onClick={data.onEdit}
                     onPointerDown={(event) => event.stopPropagation()}
                 >
