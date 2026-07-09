@@ -6,6 +6,8 @@ import {
     Check,
     GitBranch,
     Loader2,
+    Maximize2,
+    Minimize2,
     PencilLine,
     Plus,
     RefreshCcw,
@@ -54,6 +56,7 @@ import {
     Background,
     BackgroundVariant,
     Controls,
+    ControlButton,
     MiniMap,
     Panel,
     Handle,
@@ -1304,6 +1307,20 @@ function RouteFlowCanvasInner({
     const channelNameByID = useMemo(() => new Map(channels.map((channel) => [channel.id, channel.name])), [channels]);
     const { fitView, setCenter } = useReactFlow();
 
+    const [canvasFullscreen, setCanvasFullscreen] = useState(false);
+
+    useEffect(() => {
+        if (!canvasFullscreen) return;
+        const handler = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') {
+                setCanvasFullscreen(false);
+                requestAnimationFrame(() => fitView({ padding: 0.14, maxZoom: 1, duration: 220 }));
+            }
+        };
+        window.addEventListener('keydown', handler);
+        return () => window.removeEventListener('keydown', handler);
+    }, [canvasFullscreen, fitView]);
+
     const [query, setQuery] = useState('');
     const q = query.trim().toLowerCase();
     const filteredRows = useMemo(() => {
@@ -1404,7 +1421,12 @@ function RouteFlowCanvasInner({
                     {rows.length === 0 ? t('routes.canvasEmpty') : `没有匹配「${query.trim()}」的模型或渠道`}
                 </div>
             ) : (
-                <div className="min-h-0 flex-1 h-[clamp(300px,calc(100dvh-26rem),820px)] sm:h-[clamp(340px,calc(100dvh-22rem),860px)]">
+                <div className={cn(
+                    canvasFullscreen
+                        ? 'fixed inset-0 z-50 h-[100dvh] w-screen bg-background p-2 sm:p-4'
+                        : 'min-h-0 flex-1 h-[clamp(300px,calc(100dvh-26rem),820px)] sm:h-[clamp(340px,calc(100dvh-22rem),860px)]',
+                    'transition-[height]',
+                )}>
                     <ReactFlow<FlowNode, Edge>
                         nodes={nodes}
                         edges={edges}
@@ -1425,7 +1447,20 @@ function RouteFlowCanvasInner({
                     >
                         <Background variant={BackgroundVariant.Dots} gap={32} size={1} />
                         <MiniMap pannable zoomable onClick={(_event, position) => setCenter(position.x, position.y, { zoom: 1, duration: 400 })} nodeColor={miniMapNodeColor} nodeStrokeWidth={2} className="!hidden sm:!block" />
-                        <Controls showInteractive={false} />
+                        <Controls showInteractive={false} showFitView={false}>
+                            <ControlButton
+                                onClick={() => {
+                                    setCanvasFullscreen((v) => !v);
+                                    requestAnimationFrame(() => fitView({ padding: 0.14, maxZoom: 1, duration: 220 }));
+                                }}
+                                title={canvasFullscreen ? '退出全屏（Esc）' : '清屏（全屏画布）'}
+                                aria-label={canvasFullscreen ? '退出全屏（Esc）' : '清屏（全屏画布）'}
+                            >
+                                {canvasFullscreen
+                                    ? <Minimize2 style={{ width: 14, height: 14 }} />
+                                    : <Maximize2 style={{ width: 14, height: 14 }} />}
+                            </ControlButton>
+                        </Controls>
                         <Panel position="top-right" className="flex gap-1.5">
                             <button
                                 type="button"
