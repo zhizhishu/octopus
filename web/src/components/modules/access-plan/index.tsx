@@ -1013,12 +1013,22 @@ type TargetNodeData = {
     billingSource: string;
 };
 type FamilyBandData = { family: ModelFamilyKey; label: string; modelCount: number; targetCount: number; width: number; height: number };
+// 渠道级 model_mapping：客户端请求 fromModel 这个名，发上游时改成 toModel 这个名（与方案路由无关，只读展示）
+type ChannelModelMapping = { channelId: number; channelName: string; fromModel: string; toModel: string };
+type MapFromNodeData = { fromModel: string };
+type MapToNodeData = { channelName: string; channelId: number; toModel: string };
+type ChannelMapBandData = { label: string; count: number; width: number; height: number };
 
 type PlanFlowNode = Node<PlanNodeData, 'plan'>;
 type RequestFlowNode = Node<RequestNodeData, 'request'>;
 type TargetFlowNode = Node<TargetNodeData, 'target'>;
 type FamilyBandFlowNode = Node<FamilyBandData, 'familyBand'>;
-type FlowNode = PlanFlowNode | RequestFlowNode | TargetFlowNode | FamilyBandFlowNode;
+type MapFromFlowNode = Node<MapFromNodeData, 'mapFrom'>;
+type MapToFlowNode = Node<MapToNodeData, 'mapTo'>;
+type ChannelMapBandFlowNode = Node<ChannelMapBandData, 'channelMapBand'>;
+type FlowNode =
+    | PlanFlowNode | RequestFlowNode | TargetFlowNode | FamilyBandFlowNode
+    | MapFromFlowNode | MapToFlowNode | ChannelMapBandFlowNode;
 
 function PlanFlowCard({ data }: NodeProps<PlanFlowNode>) {
     return (
@@ -1103,28 +1113,79 @@ function FamilyBandCard({ data }: NodeProps<FamilyBandFlowNode>) {
     );
 }
 
+// 渠道映射：左卡（客户端请求名，复用琥珀请求卡风格，只读无编辑按钮）
+function MapFromCard({ data }: NodeProps<MapFromFlowNode>) {
+    return (
+        <div className="rounded-2xl border border-amber-500/25 bg-amber-500/10 px-3 py-2.5 shadow-sm" style={{ width: REQ_W }}>
+            <div className="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.16em] text-amber-600 dark:text-amber-300">
+                <span className="size-1.5 rounded-full bg-amber-500" />
+                客户端请求名
+            </div>
+            <div className="mt-1.5 break-all font-mono text-[13px] font-black leading-snug text-foreground line-clamp-2">{data.fromModel}</div>
+            <Handle type="source" position={Position.Right} className="!size-2 !border-2 !border-background !bg-amber-500" />
+        </div>
+    );
+}
+
+// 渠道映射：右卡（#渠道 · 上游名，复用目标卡风格）
+function MapToCard({ data }: NodeProps<MapToFlowNode>) {
+    return (
+        <div className="grid grid-cols-[minmax(84px,1.1fr)_minmax(96px,1.6fr)] items-center gap-3 rounded-2xl border border-emerald-500/25 bg-card/90 px-3 py-2 shadow-sm" style={{ width: TGT_W }}>
+            <Handle type="target" position={Position.Left} className="!size-2 !border-2 !border-background !bg-emerald-500" />
+            <div className="min-w-0">
+                <div className="flex min-w-0 items-center gap-1.5">
+                    <span className="size-2 shrink-0 rounded-full bg-emerald-500" />
+                    <span className="truncate text-sm font-bold text-foreground">{data.channelName}</span>
+                </div>
+                <div className="mt-0.5 text-[10px] text-muted-foreground">#{data.channelId}</div>
+            </div>
+            <div className="min-w-0">
+                <div className="text-[9px] font-bold uppercase tracking-[0.14em] text-muted-foreground">发送上游名</div>
+                <div className="mt-0.5 truncate font-mono text-xs font-semibold text-foreground">{data.toModel}</div>
+            </div>
+        </div>
+    );
+}
+
+// 渠道映射家族带（独立于方案路由带，青色区分）
+function ChannelMapBandCard({ data }: NodeProps<ChannelMapBandFlowNode>) {
+    return (
+        <div className="rounded-2xl border border-cyan-500/30 bg-cyan-500/[0.07]" style={{ width: data.width, height: data.height }}>
+            <div className="flex items-center gap-2.5 px-4 py-2.5">
+                <span className="size-2.5 shrink-0 rounded-full bg-cyan-500" />
+                <span className="text-sm font-black text-cyan-600 dark:text-cyan-300">{data.label}</span>
+                <Badge variant="secondary" className="rounded-full">{data.count} 映射</Badge>
+            </div>
+        </div>
+    );
+}
+
 const flowNodeTypes: NodeTypes = {
     plan: PlanFlowCard,
     request: RequestFlowCard,
     target: TargetFlowCard,
     familyBand: FamilyBandCard,
+    mapFrom: MapFromCard,
+    mapTo: MapToCard,
+    channelMapBand: ChannelMapBandCard,
 };
 
 function miniMapNodeColor(node: Node): string {
-    if (node.type === 'familyBand') return 'transparent';
+    if (node.type === 'familyBand' || node.type === 'channelMapBand') return 'transparent';
     if (node.type === 'plan') return '#3b82f6';
-    if (node.type === 'request') {
+    if (node.type === 'request' || node.type === 'mapFrom') {
         const fam = (node.data as Partial<RequestNodeData>).family;
         return fam ? FAMILY_HEX[fam] : '#f59e0b';
     }
+    if (node.type === 'mapTo') return '#10b981';
     const enabled = (node.data as Partial<TargetNodeData>).enabled;
     return enabled ? '#10b981' : '#94a3b8';
 }
 
 function flowNodeSize(node: FlowNode): { w: number; h: number } {
     if (node.type === 'plan') return { w: PLAN_W, h: PLAN_H };
-    if (node.type === 'request') return { w: REQ_W, h: REQ_H };
-    if (node.type === 'target') return { w: TGT_W, h: TGT_H };
+    if (node.type === 'request' || node.type === 'mapFrom') return { w: REQ_W, h: REQ_H };
+    if (node.type === 'target' || node.type === 'mapTo') return { w: TGT_W, h: TGT_H };
     return { w: node.data.width, h: node.data.height };
 }
 
@@ -1136,6 +1197,7 @@ function buildRouteFlow(
     isRebuilding: boolean,
     onEditRequest: (requestModel: string) => void,
     onRebuildRequest: (requestModel: string) => void,
+    channelMappings: ChannelModelMapping[] = [],
 ): { nodes: FlowNode[]; edges: Edge[] } {
     const nodes: FlowNode[] = [];
     const edges: Edge[] = [];
@@ -1231,6 +1293,50 @@ function buildRouteFlow(
         data: { slug: plan.slug, name: plan.display_name || plan.slug, multiplier: plan.default_multiplier ?? 1 },
     });
 
+    // ── 渠道模型映射带：追加在方案路由家族带之后，独立不连方案节点（只读展示）──
+    // 上面的 totalHeight / 方案节点定位只依赖路由家族带，本段纯追加、不回改任何路由布局。
+    if (channelMappings.length > 0) {
+        const bandTop = y; // y 已在最后一条家族带底部下方留了 FAMILY_GAP（无家族带时为 TOP_PAD）
+        let rowY = bandTop + BAND_HEADER_H + BAND_PAD;
+        const rowH = Math.max(REQ_H, TGT_H);
+        for (const mapping of channelMappings) {
+            const fromId = `map-from:${mapping.channelId}:${mapping.fromModel}`;
+            const toId = `map-to:${mapping.channelId}:${mapping.fromModel}`;
+            nodes.push({
+                id: fromId,
+                type: 'mapFrom',
+                position: { x: REQ_X, y: rowY + (rowH - REQ_H) / 2 },
+                zIndex: 1,
+                data: { fromModel: mapping.fromModel },
+            });
+            nodes.push({
+                id: toId,
+                type: 'mapTo',
+                position: { x: TGT_X, y: rowY + (rowH - TGT_H) / 2 },
+                zIndex: 1,
+                data: { channelName: mapping.channelName, channelId: mapping.channelId, toModel: mapping.toModel },
+            });
+            edges.push({
+                id: `edge:${fromId}:${toId}`,
+                source: fromId,
+                target: toId,
+                type: 'default',
+                style: { stroke: '#06b6d4', strokeWidth: 1.5, strokeOpacity: 0.5 },
+            });
+            rowY += rowH + ROW_GAP;
+        }
+        const bandHeight = (rowY - ROW_GAP) - bandTop + BAND_PAD;
+        nodes.push({
+            id: 'band:channel-mapping',
+            type: 'channelMapBand',
+            position: { x: BAND_X, y: bandTop },
+            zIndex: 0,
+            selectable: false,
+            draggable: false,
+            data: { label: '渠道模型映射（发送改名）', count: channelMappings.length, width: BAND_W, height: bandHeight },
+        });
+    }
+
     return { nodes, edges };
 }
 
@@ -1238,6 +1344,7 @@ type RouteFlowCanvasProps = {
     plan: AccessPlan;
     rows: RouteTargetGroup[];
     channels: Array<{ id: number; name: string; enabled: boolean }>;
+    channelMappings: ChannelModelMapping[];
     onRebuildRequest: (requestModel: string) => void;
     onEditRequest: (requestModel: string) => void;
     isRebuilding: boolean;
@@ -1245,7 +1352,7 @@ type RouteFlowCanvasProps = {
 };
 
 function RouteFlowCanvasInner({
-    plan, rows, channels, onRebuildRequest, onEditRequest, isRebuilding, onOpenJson,
+    plan, rows, channels, channelMappings, onRebuildRequest, onEditRequest, isRebuilding, onOpenJson,
 }: RouteFlowCanvasProps) {
     const t = accessPlanText;
     const channelNameByID = useMemo(() => new Map(channels.map((channel) => [channel.id, channel.name])), [channels]);
@@ -1267,9 +1374,18 @@ function RouteFlowCanvasInner({
             .filter((row): row is RouteTargetGroup => row !== null);
     }, [rows, q, channelNameByID]);
 
+    const filteredMappings = useMemo(() => {
+        if (!q) return channelMappings;
+        return channelMappings.filter((mapping) => (
+            mapping.fromModel.toLowerCase().includes(q)
+            || mapping.toModel.toLowerCase().includes(q)
+            || mapping.channelName.toLowerCase().includes(q)
+        ));
+    }, [channelMappings, q]);
+
     const flow = useMemo(
-        () => buildRouteFlow(plan, filteredRows, channelNameByID, isRebuilding, onEditRequest, onRebuildRequest),
-        [plan, filteredRows, channelNameByID, isRebuilding, onEditRequest, onRebuildRequest],
+        () => buildRouteFlow(plan, filteredRows, channelNameByID, isRebuilding, onEditRequest, onRebuildRequest, filteredMappings),
+        [plan, filteredRows, channelNameByID, isRebuilding, onEditRequest, onRebuildRequest, filteredMappings],
     );
 
     const [nodes, setNodes, onNodesChange] = useNodesState<FlowNode>(flow.nodes);
@@ -1588,12 +1704,14 @@ function RouteTargetEditorCard({
 function RouteTargetsEditor({
     plan,
     channels,
+    channelMappings,
     modelNames,
     channelModels,
     channelModelsReady,
 }: {
     plan: AccessPlan;
     channels: Array<{ id: number; name: string; enabled: boolean }>;
+    channelMappings: ChannelModelMapping[];
     modelNames: string[];
     channelModels: RouteChannelModel[];
     channelModelsReady: boolean;
@@ -1828,6 +1946,7 @@ function RouteTargetsEditor({
                 plan={plan}
                 rows={canvasRows}
                 channels={channels}
+                channelMappings={channelMappings}
                 onRebuildRequest={rebuildRequest}
                 onEditRequest={setEditingRequestModel}
                 isRebuilding={updateRoutes.isPending}
@@ -1997,6 +2116,24 @@ export function AccessPlan() {
     const channels = useMemo(() => (
         channelData.map((channel) => ({ id: channel.raw.id, name: channel.raw.name, enabled: channel.raw.enabled }))
     ), [channelData]);
+    // 从各渠道非空 model_mapping 合成"客户端名→上游名"的只读映射行（供画布底部映射带展示）
+    const channelMappings = useMemo<ChannelModelMapping[]>(() => {
+        const out: ChannelModelMapping[] = [];
+        for (const channel of channelData) {
+            const mapping = channel.raw.model_mapping;
+            if (!mapping) continue;
+            for (const [fromModel, toModel] of Object.entries(mapping)) {
+                const from = fromModel.trim();
+                const to = (toModel ?? '').trim();
+                if (!from || !to) continue;
+                out.push({ channelId: channel.raw.id, channelName: channel.raw.name, fromModel: from, toModel: to });
+            }
+        }
+        return out.sort((a, b) => {
+            const byFrom = a.fromModel.localeCompare(b.fromModel);
+            return byFrom !== 0 ? byFrom : a.channelId - b.channelId;
+        });
+    }, [channelData]);
     const modelNames = useMemo(() => (
         Array.from(new Set(modelData.map((model) => cleanOneMillionModelName(model.name)).filter(Boolean)))
             .sort((a, b) => a.localeCompare(b))
@@ -2068,6 +2205,7 @@ export function AccessPlan() {
                         key={`routes-${selectedPlan.id}-${selectedPlan.updated_at ?? 0}`}
                         plan={selectedPlan}
                         channels={channels}
+                        channelMappings={channelMappings}
                         modelNames={modelNames}
                         channelModels={channelModels}
                         channelModelsReady={channelModelsReady}
