@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, useState, useEffect, type ReactNode } from 'react';
-import { Clock, Cpu, Zap, AlertCircle, ArrowDownToLine, ArrowUpFromLine, DollarSign, ArrowRight, ArrowDown, Send, MessageSquare, Loader2, RotateCw, ChevronDown, ChevronUp, Pin, KeyRound, Percent, CheckCircle2, XCircle, Eye, Hash, MapPin } from 'lucide-react';
+import { Clock, Cpu, Zap, AlertCircle, ArrowDownToLine, ArrowUpFromLine, DollarSign, ArrowRight, ArrowDown, Send, MessageSquare, Loader2, RotateCw, ChevronDown, ChevronUp, Pin, KeyRound, Percent, CheckCircle2, XCircle, Eye, Hash, MapPin, type LucideIcon } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { motion, AnimatePresence } from 'motion/react';
 import JsonView from '@uiw/react-json-view';
@@ -179,6 +179,113 @@ function RetryBadgeWithTooltip({ channelName, brandColor, attempts }: RetryBadge
                 ))}
             </TooltipContent>
         </Tooltip >
+    );
+}
+
+interface LogRouteHeaderProps {
+    variant: 'card' | 'detail';
+    log: RelayLog;
+    attempts: ChannelAttempt[];
+    brandColor: string;
+    hasMultipleAttempts: boolean;
+    StatusIcon: LucideIcon;
+    statusLabel: string;
+    statusToneClass: string;
+    requestEndpointLabel: string;
+    endpointTitle: string;
+    upstreamPaths: string[];
+    upstreamPathTitle: string;
+}
+
+/**
+ * 日志「路由头部」：状态 / 接口 / 上游路径徽标 → request_model_name → 渠道（多尝试展开
+ * RetryBadgeWithTooltip，否则渠道 Badge）→ actual_model_name → 可能的 stream / sticky 徽标。
+ * 卡片列表头部与详情弹窗标题渲染同一套元素，只差尺寸与换行，用 variant 收敛：
+ * card 紧凑不换行（SafeText 默认 truncate），detail 标题区可换行（mode="wrap"）。
+ * 返回 Fragment，外层容器与各自独有元素（卡片的「点开详情」、详情的头像）留在调用点。
+ */
+function LogRouteHeader({
+    variant,
+    log,
+    attempts,
+    brandColor,
+    hasMultipleAttempts,
+    StatusIcon,
+    statusLabel,
+    statusToneClass,
+    requestEndpointLabel,
+    endpointTitle,
+    upstreamPaths,
+    upstreamPathTitle,
+}: LogRouteHeaderProps) {
+    const t = useTranslations('log.card');
+    const isCard = variant === 'card';
+    const textMode = isCard ? undefined : 'wrap';
+
+    return (
+        <>
+            <Badge
+                variant="secondary"
+                className={cn(
+                    "gap-1 border-0 text-xs",
+                    isCard ? "shrink-0 px-1.5 py-0" : "px-2 py-0.5",
+                    statusToneClass
+                )}
+            >
+                <StatusIcon className={isCard ? "size-3" : "size-3.5"} />
+                {statusLabel}
+            </Badge>
+            {requestEndpointLabel && (
+                <Badge
+                    variant="outline"
+                    className={cn(
+                        "min-w-0 shrink border-border/70 bg-muted/40 text-xs font-mono",
+                        isCard ? "max-w-[14rem] px-1.5 py-0" : "max-w-[16rem] px-2 py-0.5"
+                    )}
+                    title={endpointTitle}
+                >
+                    <MonoSafeText value={requestEndpointLabel} className="text-xs" />
+                </Badge>
+            )}
+            {upstreamPaths.length > 0 && (
+                <Badge
+                    variant="outline"
+                    className={cn(
+                        "min-w-0 shrink border-border/70 bg-muted/40 text-xs font-mono",
+                        isCard ? "max-w-[14rem] px-1.5 py-0" : "max-w-[16rem] px-2 py-0.5"
+                    )}
+                    title={upstreamPathTitle}
+                >
+                    <MonoSafeText value={upstreamPaths[0]} className="text-xs" />
+                </Badge>
+            )}
+            <SafeText mode={textMode} value={log.request_model_name} className="font-semibold text-card-foreground" />
+            <ArrowRight className={cn("size-3.5 text-muted-foreground/50", isCard && "shrink-0")} />
+            {hasMultipleAttempts ? (
+                <RetryBadgeWithTooltip
+                    channelName={log.channel_name}
+                    brandColor={brandColor}
+                    attempts={attempts}
+                />
+            ) : (
+                <Badge
+                    variant="secondary"
+                    className="min-w-0 max-w-[12rem] px-1.5 py-0 text-xs"
+                    style={{ backgroundColor: `${brandColor}15`, color: brandColor }}
+                >
+                    <SafeText value={log.channel_name} className="text-xs" />
+                </Badge>
+            )}
+            <SafeText mode={textMode} value={log.actual_model_name} className="text-muted-foreground" />
+            {log.is_stream !== undefined && (
+                <Badge variant="outline" className="shrink-0 border-border/60 bg-muted/30 px-1.5 py-0 text-xs">
+                    {log.is_stream ? t('stream') : t('nonStream')}
+                </Badge>
+            )}
+            {log.attempts?.some(a => a.sticky) && (
+                <Pin className="size-3.5 shrink-0 text-amber-500" />
+            )}
+        </>
     );
 }
 
@@ -391,52 +498,20 @@ export function LogCard({ log }: { log: RelayLog }) {
                         <ModelAvatar size={40} />
                         <div className="min-w-0 flex flex-col gap-3">
                             <div className="flex min-w-0 flex-wrap items-center gap-2 text-sm">
-                                <Badge
-                                    variant="secondary"
-                                    className={cn(
-                                        "shrink-0 gap-1 border-0 px-1.5 py-0 text-xs",
-                                        statusToneClass
-                                    )}
-                                >
-                                    <StatusIcon className="size-3" />
-                                    {statusLabel}
-                                </Badge>
-                                {requestEndpointLabel && (
-                                    <Badge variant="outline" className="min-w-0 max-w-[14rem] shrink border-border/70 bg-muted/40 px-1.5 py-0 text-xs font-mono" title={endpointTitle}>
-                                        <MonoSafeText value={requestEndpointLabel} className="text-xs" />
-                                    </Badge>
-                                )}
-                                {upstreamPaths.length > 0 && (
-                                    <Badge variant="outline" className="min-w-0 max-w-[14rem] shrink border-border/70 bg-muted/40 px-1.5 py-0 text-xs font-mono" title={upstreamPathTitle}>
-                                        <MonoSafeText value={upstreamPaths[0]} className="text-xs" />
-                                    </Badge>
-                                )}
-                                <SafeText value={log.request_model_name} className="font-semibold text-card-foreground" />
-                                <ArrowRight className="size-3.5 shrink-0 text-muted-foreground/50" />
-                                {hasMultipleAttempts ? (
-                                    <RetryBadgeWithTooltip
-                                        channelName={log.channel_name}
-                                        brandColor={brandColor}
-                                        attempts={attempts}
-                                    />
-                                ) : (
-                                    <Badge
-                                        variant="secondary"
-                                        className="min-w-0 max-w-[12rem] px-1.5 py-0 text-xs"
-                                        style={{ backgroundColor: `${brandColor}15`, color: brandColor }}
-                                    >
-                                        <SafeText value={log.channel_name} className="text-xs" />
-                                    </Badge>
-                                )}
-                                <SafeText value={log.actual_model_name} className="text-muted-foreground" />
-                                {log.is_stream !== undefined && (
-                                    <Badge variant="outline" className="shrink-0 border-border/60 bg-muted/30 px-1.5 py-0 text-xs">
-                                        {log.is_stream ? t('stream') : t('nonStream')}
-                                    </Badge>
-                                )}
-                                {log.attempts?.some(a => a.sticky) && (
-                                    <Pin className="size-3.5 shrink-0 text-amber-500" />
-                                )}
+                                <LogRouteHeader
+                                    variant="card"
+                                    log={log}
+                                    attempts={attempts}
+                                    brandColor={brandColor}
+                                    hasMultipleAttempts={hasMultipleAttempts}
+                                    StatusIcon={StatusIcon}
+                                    statusLabel={statusLabel}
+                                    statusToneClass={statusToneClass}
+                                    requestEndpointLabel={requestEndpointLabel}
+                                    endpointTitle={endpointTitle}
+                                    upstreamPaths={upstreamPaths}
+                                    upstreamPathTitle={upstreamPathTitle}
+                                />
                                 {canViewDetails && (
                                     <span className="ml-auto hidden shrink-0 items-center gap-1 text-xs text-muted-foreground md:flex">
                                         <Eye className="size-3.5" />
@@ -508,52 +583,20 @@ export function LogCard({ log }: { log: RelayLog }) {
                         <MorphingDialogClose className="top-4 right-5 text-muted-foreground hover:text-foreground transition-colors" />
                         <MorphingDialogTitle className="mb-3 flex min-w-0 flex-wrap items-center gap-2 pr-9 text-sm">
                             <ModelAvatar size={28} />
-                            <Badge
-                                variant="secondary"
-                                className={cn(
-                                    "gap-1 border-0 px-2 py-0.5 text-xs",
-                                    statusToneClass
-                                )}
-                            >
-                                <StatusIcon className="size-3.5" />
-                                {statusLabel}
-                            </Badge>
-                            {requestEndpointLabel && (
-                                <Badge variant="outline" className="min-w-0 max-w-[16rem] shrink border-border/70 bg-muted/40 px-2 py-0.5 text-xs font-mono" title={endpointTitle}>
-                                    <MonoSafeText value={requestEndpointLabel} className="text-xs" />
-                                </Badge>
-                            )}
-                            {upstreamPaths.length > 0 && (
-                                <Badge variant="outline" className="min-w-0 max-w-[16rem] shrink border-border/70 bg-muted/40 px-2 py-0.5 text-xs font-mono" title={upstreamPathTitle}>
-                                    <MonoSafeText value={upstreamPaths[0]} className="text-xs" />
-                                </Badge>
-                            )}
-                            <SafeText mode="wrap" value={log.request_model_name} className="font-semibold text-card-foreground" />
-                            <ArrowRight className="size-3.5 text-muted-foreground/50" />
-                            {hasMultipleAttempts ? (
-                                <RetryBadgeWithTooltip
-                                    channelName={log.channel_name}
-                                    brandColor={brandColor}
-                                    attempts={attempts}
-                                />
-                            ) : (
-                                <Badge
-                                    variant="secondary"
-                                    className="min-w-0 max-w-[12rem] px-1.5 py-0 text-xs"
-                                    style={{ backgroundColor: `${brandColor}15`, color: brandColor }}
-                                >
-                                    <SafeText value={log.channel_name} className="text-xs" />
-                                </Badge>
-                            )}
-                            <SafeText mode="wrap" value={log.actual_model_name} className="text-muted-foreground" />
-                            {log.is_stream !== undefined && (
-                                <Badge variant="outline" className="shrink-0 border-border/60 bg-muted/30 px-1.5 py-0 text-xs">
-                                    {log.is_stream ? t('stream') : t('nonStream')}
-                                </Badge>
-                            )}
-                            {log.attempts?.some(a => a.sticky) && (
-                                <Pin className="size-3.5 shrink-0 text-amber-500" />
-                            )}
+                            <LogRouteHeader
+                                variant="detail"
+                                log={log}
+                                attempts={attempts}
+                                brandColor={brandColor}
+                                hasMultipleAttempts={hasMultipleAttempts}
+                                StatusIcon={StatusIcon}
+                                statusLabel={statusLabel}
+                                statusToneClass={statusToneClass}
+                                requestEndpointLabel={requestEndpointLabel}
+                                endpointTitle={endpointTitle}
+                                upstreamPaths={upstreamPaths}
+                                upstreamPathTitle={upstreamPathTitle}
+                            />
                         </MorphingDialogTitle>
 
                         <MorphingDialogDescription className="flex-1 min-h-0 overflow-y-auto md:overflow-hidden">
