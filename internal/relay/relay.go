@@ -2100,11 +2100,6 @@ func isImagePart(part model.MessageContentPart) bool {
 	}
 }
 
-func (ra *relayAttempt) transformStreamData(ctx context.Context, data string, outAdapter model.Outbound) ([]byte, error) {
-	out, _, err := ra.transformStreamChunk(ctx, data, outAdapter)
-	return out, err
-}
-
 func (ra *relayAttempt) transformStreamChunk(ctx context.Context, data string, outAdapter model.Outbound) ([]byte, *model.InternalLLMResponse, error) {
 	internalStream, err := outAdapter.TransformStream(ctx, []byte(data))
 	if err != nil {

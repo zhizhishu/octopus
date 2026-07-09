@@ -27,7 +27,26 @@ func (o *CustomChatOutbound) TransformRequest(ctx context.Context, request *mode
 }
 
 func transformChatRequest(ctx context.Context, request *model.InternalLLMRequest, baseUrl, key string, customEndpoint bool) (*http.Request, error) {
+	// ClearHelpFields strips internal-only helper fields, but it also wipes each message's
+	// reasoning_content/signature — which DeepSeek V4 REQUIRES on the tool-call assistant
+	// message for multi-turn (inbound/openai/response.go injects it there). Preserve message
+	// reasoning across the clear; only the chat request body is affected (other outbounds and
+	// the response path keep the unchanged ClearHelpFields behaviour).
+	savedReasoning := make([]*string, len(request.Messages))
+	savedReasoningSig := make([]*string, len(request.Messages))
+	for i := range request.Messages {
+		savedReasoning[i] = request.Messages[i].ReasoningContent
+		savedReasoningSig[i] = request.Messages[i].ReasoningSignature
+	}
 	request.ClearHelpFields()
+	for i := range request.Messages {
+		if request.Messages[i].ReasoningContent == nil {
+			request.Messages[i].ReasoningContent = savedReasoning[i]
+		}
+		if request.Messages[i].ReasoningSignature == nil {
+			request.Messages[i].ReasoningSignature = savedReasoningSig[i]
+		}
+	}
 
 	// Convert developer role to system role for compatibility
 	for i := range request.Messages {
