@@ -432,9 +432,20 @@ func AccessPlanGroupForModel(plan *model.AccessPlan, requestModel string, ctx co
 		if len(items) == 0 {
 			return model.Group{}, &ruleCopy, false, nil
 		}
+		// The access-plan rule's own Mode is not surfaced in any UI and defaults to
+		// fill-first (GroupModeFailover), which made the model pool's group Mode a DEAD
+		// CONFIG for access-plan traffic: setting a pool to round-robin had no effect
+		// because access-plan routing used ruleCopy.Mode, not the group's Mode. Let the
+		// model's own group Mode (the one the user sets in the model pool) drive routing
+		// instead, so the pool's mode is authoritative end-to-end. Fall back to the rule
+		// Mode only when the model genuinely has no group.
+		mode := ruleCopy.Mode
+		if grp, gerr := GroupGetEnabledMap(requestModel, ctx); gerr == nil && grp.Mode != 0 {
+			mode = grp.Mode
+		}
 		return model.Group{
 			Name:  model.CleanOneMillionCapabilityModelName(requestModel),
-			Mode:  ruleCopy.Mode,
+			Mode:  mode,
 			Items: items,
 		}, &ruleCopy, true, nil
 	}
