@@ -523,13 +523,7 @@ retryWithAdapter:
 	}
 	forceResponsesStreamUpstream := ra.shouldForceOpenAIResponsesStreamUpstream(outAdapter) && !forceNonStreamUpstream
 	forceAnthropicStreamUpstream := ra.shouldForceAnthropicStreamUpstream() && !forceNonStreamUpstream
-	// gemini / openai-chat 也"优先流式"(仿 responses/anthropic)：真实客户端流/非流都合法、无 CLI 指纹，
-	// 强制上游流式只为吃满流式保活(避 60s 前置反代 idle 掐) + 下游要非流时聚合回非流。
-	// codex/claude 的 fingerprint 分流(header_defaults 按 channel.Type/inbound)不受影响。
-	forceGeminiStreamUpstream := ra.shouldForceGeminiStreamUpstream() && !forceNonStreamUpstream
-	forceOpenAIChatStreamUpstream := ra.shouldForceOpenAIChatStreamUpstream() && !forceNonStreamUpstream
-	forceStreamUpstream := forceResponsesStreamUpstream || forceAnthropicStreamUpstream || forceGeminiStreamUpstream || forceOpenAIChatStreamUpstream
-	if forceStreamUpstream {
+	if forceResponsesStreamUpstream || forceAnthropicStreamUpstream {
 		stream := true
 		ra.internalRequest.Stream = &stream
 	} else if forceNonStreamUpstream {
@@ -664,11 +658,11 @@ retryWithAdapter:
 			log.Infof("openai responses upstream rejected encrypted reasoning content on channel %s; retrying same key once without encrypted content", ra.channel.Name)
 			goto retryWithAdapter
 		}
-		if !streamAsNonStreamTried && ra.shouldFallbackForcedStreamToNonStream(response.StatusCode) {
+		if !streamAsNonStreamTried && ra.shouldFallbackAnthropicStreamToNonStream(response.StatusCode) {
 			streamAsNonStreamTried = true
 			forceNonStreamUpstream = true
 			_ = response.Body.Close()
-			log.Infof("forced stream upstream returned status %d on channel %s; retrying same key as non-stream and re-emitting SSE", response.StatusCode, ra.channel.Name)
+			log.Infof("anthropic stream upstream returned status %d on channel %s; retrying same key as non-stream and re-emitting SSE", response.StatusCode, ra.channel.Name)
 			goto retryWithAdapter
 		}
 		if !fallbackTried && ra.shouldFallbackOpenAIResponsesToChat(response.StatusCode, upErr) {
@@ -692,13 +686,13 @@ retryWithAdapter:
 		}
 		return response.StatusCode, nil
 	}
-	if forceStreamUpstream && (originalStream == nil || !*originalStream) {
+	if (forceResponsesStreamUpstream || forceAnthropicStreamUpstream) && (originalStream == nil || !*originalStream) {
 		if err := ra.handleStreamResponseAsNonStream(ctx, response, outAdapter); err != nil {
 			return response.StatusCode, err
 		}
 		return response.StatusCode, nil
 	}
-	if forceStreamUpstream || (ra.internalRequest.Stream != nil && *ra.internalRequest.Stream) {
+	if forceResponsesStreamUpstream || forceAnthropicStreamUpstream || (ra.internalRequest.Stream != nil && *ra.internalRequest.Stream) {
 		if err := ra.handleStreamResponse(ctx, response, outAdapter); err != nil {
 			return response.StatusCode, err
 		}
@@ -855,18 +849,11 @@ func shouldRecordBreakerFailure(_ int, err error) bool {
 	return true
 }
 
-func (ra *relayAttempt) shouldFallbackForcedStreamToNonStream(statusCode int) bool {
+func (ra *relayAttempt) shouldFallbackAnthropicStreamToNonStream(statusCode int) bool {
 	if ra == nil || ra.internalRequest == nil {
 		return false
 	}
-	if ra.channel == nil {
-		return false
-	}
-	// 只对 octopus 会"优先流式"的渠道类型做 stream→非流 兜底(anthropic/gemini/openai-chat)；
-	// 且仅当本次上游确实在走流式(下游客户端要流式)时才切非流重放 SSE。
-	switch ra.channel.Type {
-	case outbound.OutboundTypeAnthropic, outbound.OutboundTypeGemini, outbound.OutboundTypeOpenAIChat, outbound.OutboundTypeCustomOpenAIChat:
-	default:
+	if ra.channel == nil || ra.channel.Type != outbound.OutboundTypeAnthropic {
 		return false
 	}
 	if ra.internalRequest.Stream == nil || !*ra.internalRequest.Stream {
@@ -884,7 +871,7 @@ func (ra *relayAttempt) shouldPreferAnthropicNonStreamUpstream() bool {
 	// Prefer the real client streaming shape first. CPA/CLIProxyAPI 1M routes can
 	// take longer than common 60s reverse-proxy idle limits before a non-stream
 	// response returns headers, which looks like "context canceled" downstream.
-	// Keep the compatibility retry in shouldFallbackForcedStreamToNonStream
+	// Keep the compatibility retry in shouldFallbackAnthropicStreamToNonStream
 	// for upstreams that explicitly reject stream requests.
 	return false
 }
@@ -918,38 +905,6 @@ func (ra *relayAttempt) shouldForceAnthropicStreamUpstream() bool {
 		return false
 	}
 	return shouldApplyChannelCloak(ra.channel.Cloak)
-}
-
-// shouldForceGeminiStreamUpstream forces a streaming upstream request for Gemini
-// channels. Gemini carries no CLI fingerprint, so this is not a shape concern; it
-// only makes the upstream call flip generateContent -> streamGenerateContent so
-// octopus can keep the connection warm (avoiding ~60s reverse-proxy idle cuts) and
-// aggregate the SSE back for non-stream clients. Gated on cloak so cloak=off opts out.
-func (ra *relayAttempt) shouldForceGeminiStreamUpstream() bool {
-	if ra == nil || ra.channel == nil {
-		return false
-	}
-	if ra.channel.Type != outbound.OutboundTypeGemini {
-		return false
-	}
-	return shouldApplyChannelCloak(ra.channel.Cloak)
-}
-
-// shouldForceOpenAIChatStreamUpstream forces a streaming upstream request for plain
-// OpenAI-chat (and custom OpenAI-chat) channels. Same rationale as Gemini: no CLI
-// fingerprint, streaming just keeps the connection warm and is aggregated back for
-// non-stream clients. Gated on channel type + cloak; the responses->chat compatibility
-// fallback keeps channel.Type == OpenAIResponse, so it is unaffected here.
-func (ra *relayAttempt) shouldForceOpenAIChatStreamUpstream() bool {
-	if ra == nil || ra.channel == nil {
-		return false
-	}
-	switch ra.channel.Type {
-	case outbound.OutboundTypeOpenAIChat, outbound.OutboundTypeCustomOpenAIChat:
-		return shouldApplyChannelCloak(ra.channel.Cloak)
-	default:
-		return false
-	}
 }
 
 func (ra *relayAttempt) shouldRecoverOpenAIResponsesInvalidEncryptedContent(statusCode int, err error) bool {
