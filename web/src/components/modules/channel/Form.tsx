@@ -223,7 +223,6 @@ export function ChannelForm({
         .map(cleanOneMillionModelName)
         .filter(Boolean);
     const autoModels = selectedModels;
-    const customModels: string[] = [];
     const [inputValue, setInputValue] = useState('');
     const [fetchedModels, setFetchedModels] = useState<string[]>(() => expandOneMillionModelAliases(formData.discovered_models ?? []));
     const inputRef = useRef<HTMLInputElement>(null);
@@ -244,8 +243,8 @@ export function ChannelForm({
     const effectiveKey =
         formData.keys.find((k) => k.enabled && k.channel_key.trim())?.channel_key.trim() || '';
 
-    const updateModels = (nextAuto: string[], nextCustom: string[]) => {
-        const selected_models = [...nextAuto, ...nextCustom]
+    const updateModels = (nextModels: string[]) => {
+        const selected_models = nextModels
             .map(cleanOneMillionModelName)
             .filter(Boolean);
         const model = selected_models.join(',');
@@ -294,7 +293,7 @@ export function ChannelForm({
         );
     };
 
-    const testModel = inputValue.trim() || autoModels[0] || customModels[0] || '';
+    const testModel = inputValue.trim() || autoModels[0] || '';
     const channelTestForcedStream = shouldForceTestStream({
         models: testModel,
         endpoint: defaultModelTestEndpointForChannel(formData.type),
@@ -388,13 +387,13 @@ export function ChannelForm({
 
     const handleAddModel = (model: string) => {
         const trimmedModel = cleanOneMillionModelName(model);
-        if (trimmedModel && !customModels.includes(trimmedModel) && !autoModels.includes(trimmedModel)) {
-            updateModels(autoModels, [...customModels, trimmedModel]);
+        if (trimmedModel && !autoModels.includes(trimmedModel)) {
+            updateModels([...autoModels, trimmedModel]);
         }
         setInputValue('');
     };
 
-    const selectedModelSet = new Set([...autoModels, ...customModels]);
+    const selectedModelSet = new Set(autoModels);
     const visibleFetchedModels = modelFilter.trim()
         ? fetchedModels.filter((m) => m.toLowerCase().includes(modelFilter.trim().toLowerCase()))
         : fetchedModels;
@@ -402,20 +401,16 @@ export function ChannelForm({
 
     const handleSelectFetchedModel = (model: string) => {
         if (selectedModelSet.has(model)) return;
-        updateModels([...autoModels, model], customModels);
+        updateModels([...autoModels, model]);
     };
 
     const handleSelectAllFetchedModels = () => {
         if (visibleUnselectedFetchedModels.length === 0) return;
-        updateModels([...autoModels, ...visibleUnselectedFetchedModels], customModels);
+        updateModels([...autoModels, ...visibleUnselectedFetchedModels]);
     };
 
     const handleRemoveAutoModel = (model: string) => {
-        updateModels(autoModels.filter(m => m !== model), customModels);
-    };
-
-    const handleRemoveCustomModel = (model: string) => {
-        updateModels(autoModels, customModels.filter(m => m !== model));
+        updateModels(autoModels.filter(m => m !== model));
     };
 
     const handleInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -902,7 +897,7 @@ export function ChannelForm({
                         placeholder="可手输模型，例如 claude-fable-5 / claude-opus-4-8 / gpt-5.5"
                         className="pr-10 rounded-xl"
                     />
-                    {inputValue.trim() && !customModels.includes(inputValue.trim()) && !autoModels.includes(inputValue.trim()) && (
+                    {inputValue.trim() && !autoModels.includes(inputValue.trim()) && (
                         <Button
                             type="button"
                             variant="ghost"
@@ -978,15 +973,15 @@ export function ChannelForm({
                 <div className="space-y-2">
                     <div className="flex items-center justify-between">
                         <label className="text-xs font-medium text-card-foreground">
-                            已启用模型 {(autoModels.length + customModels.length) > 0 && `(${autoModels.length + customModels.length})`}
+                            已启用模型 {autoModels.length > 0 && `(${autoModels.length})`}
                         </label>
-                        {(autoModels.length + customModels.length) > 0 && (
+                        {autoModels.length > 0 && (
                             <Button
                                 type="button"
                                 variant="ghost"
                                 size="sm"
                                 onClick={() => {
-                                    updateModels([], []);
+                                    updateModels([]);
                                 }}
                                 className="h-6 px-2 text-xs text-muted-foreground/50 hover:text-muted-foreground hover:bg-transparent"
                             >
@@ -995,7 +990,7 @@ export function ChannelForm({
                         )}
                     </div>
                     <div className="rounded-xl border border-border bg-muted/30 p-2.5 max-h-40 min-h-12 overflow-y-auto">
-                        {(autoModels.length + customModels.length) > 0 ? (
+                        {autoModels.length > 0 ? (
                             <div className="flex min-w-0 flex-wrap gap-1.5">
                                 {autoModels.map((model) => (
                                     <Badge key={model} variant="secondary" className="max-w-full bg-muted hover:bg-muted/80">
@@ -1003,18 +998,6 @@ export function ChannelForm({
                                         <button
                                             type="button"
                                             onClick={() => handleRemoveAutoModel(model)}
-                                            className="ml-1 shrink-0 rounded-sm opacity-70 hover:opacity-100 focus:outline-none focus:ring-1 focus:ring-ring"
-                                        >
-                                            <X className="h-3 w-3" />
-                                        </button>
-                                    </Badge>
-                                ))}
-                                {customModels.map((model) => (
-                                    <Badge key={model} className="max-w-full bg-primary hover:bg-primary/90">
-                                        <span className="min-w-0 truncate" title={model}>{model}</span>
-                                        <button
-                                            type="button"
-                                            onClick={() => handleRemoveCustomModel(model)}
                                             className="ml-1 shrink-0 rounded-sm opacity-70 hover:opacity-100 focus:outline-none focus:ring-1 focus:ring-ring"
                                         >
                                             <X className="h-3 w-3" />

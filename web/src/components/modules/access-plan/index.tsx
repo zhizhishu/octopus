@@ -144,9 +144,7 @@ const ACCESS_PLAN_TEXT = {
         groupRouteHint: '用户扣费按“用户计费”列计算，实际请求会发送到下方渠道与模型。流式响应一旦写出，就不会中途硬切。',
         rebuild: '重建映射',
         rebuildGroup: '重建当前方案映射',
-        rebuildRequest: '刷新此模型映射',
         rebuildHint: '按当前渠道模型重建本方案映射，已消失的上游模型会被移除。',
-        rebuildRequestHint: '只按当前请求模型重建映射目标，不影响其他请求模型。',
         quickEdit: '编辑',
         quickEditTitle: '编辑模型映射',
         quickEditDescription: '直接编辑当前请求模型要走的渠道、发送模型、计费方式和提示词，不用滑到下方长列表。',
@@ -428,48 +426,6 @@ function rebuildRouteTargetsFromChannelModels(channelModels: RouteChannelModel[]
                 fallback_mode: previous?.fallback_mode ?? 'return_group',
                 system_prompt_override: previous?.system_prompt_override ?? '',
                 prompt_override_mode: previous?.prompt_override_mode ?? 'append_system',
-            } satisfies AccessPlanRouteTarget;
-        });
-}
-
-function rebuildRouteTargetsForRequestModel(
-    requestModel: string,
-    channelModels: RouteChannelModel[],
-    currentTargets: AccessPlanRouteTarget[]
-) {
-    const normalizedRequestModel = requestModel.trim().toLowerCase();
-    if (!normalizedRequestModel) return [];
-
-    const sameRequestTargets = currentTargets.filter((target) => (
-        cleanOneMillionModelName(target.request_model).toLowerCase() === normalizedRequestModel
-    ));
-    const existingByChannelModel = new Map<string, AccessPlanRouteTarget>();
-    sameRequestTargets.forEach((target) => {
-        existingByChannelModel.set(channelModelKey(target.channel_id, cleanOneMillionModelName(target.upstream_model)), target);
-    });
-
-    return [...channelModels]
-        .filter((model) => (
-            model.enabled !== false &&
-            cleanOneMillionModelName(model.name).toLowerCase() === normalizedRequestModel
-        ))
-        .sort((a, b) => a.channel_id - b.channel_id)
-        .map((model, index) => {
-            const upstreamModel = cleanOneMillionModelName(model.name);
-            const previous = existingByChannelModel.get(channelModelKey(model.channel_id, upstreamModel));
-
-            return {
-                request_model: requestModel.trim(),
-                channel_id: model.channel_id,
-                upstream_model: upstreamModel,
-                priority: previous?.priority ?? index + 1,
-                weight: previous?.weight ?? 1,
-                enabled: previous?.enabled ?? true,
-                billing_model_source: previous?.billing_model_source ?? sameRequestTargets[0]?.billing_model_source ?? 'request_model',
-                billing_model_override: previous?.billing_model_override ?? sameRequestTargets[0]?.billing_model_override,
-                fallback_mode: previous?.fallback_mode ?? sameRequestTargets[0]?.fallback_mode ?? 'return_group',
-                system_prompt_override: previous?.system_prompt_override ?? sameRequestTargets[0]?.system_prompt_override ?? '',
-                prompt_override_mode: previous?.prompt_override_mode ?? sameRequestTargets[0]?.prompt_override_mode ?? 'append_system',
             } satisfies AccessPlanRouteTarget;
         });
 }
@@ -995,10 +951,7 @@ type PlanNodeData = { slug: string; name: string; multiplier: number };
 type RequestNodeData = {
     requestModel: string;
     family: ModelFamilyKey;
-    canRebuild: boolean;
-    isRebuilding: boolean;
     onEdit: () => void;
-    onRebuild: () => void;
 };
 type TargetNodeData = {
     channelName: string;
@@ -1194,9 +1147,7 @@ function buildRouteFlow(
     plan: AccessPlan,
     rows: RouteTargetGroup[],
     channelNameByID: Map<number, string>,
-    isRebuilding: boolean,
     onEditRequest: (requestModel: string) => void,
-    onRebuildRequest: (requestModel: string) => void,
     channelMappings: ChannelModelMapping[] = [],
 ): { nodes: FlowNode[]; edges: Edge[] } {
     const nodes: FlowNode[] = [];
@@ -1221,10 +1172,7 @@ function buildRouteFlow(
                 data: {
                     requestModel: cleanOneMillionModelName(row.requestModel),
                     family: modelFamilyKey(row.requestModel),
-                    canRebuild: row.requestKey.length > 0,
-                    isRebuilding,
                     onEdit: () => onEditRequest(row.requestKey ? row.requestModel : ''),
-                    onRebuild: () => onRebuildRequest(row.requestModel),
                 },
             });
             edges.push({
@@ -1345,14 +1293,12 @@ type RouteFlowCanvasProps = {
     rows: RouteTargetGroup[];
     channels: Array<{ id: number; name: string; enabled: boolean }>;
     channelMappings: ChannelModelMapping[];
-    onRebuildRequest: (requestModel: string) => void;
     onEditRequest: (requestModel: string) => void;
-    isRebuilding: boolean;
     onOpenJson?: () => void;
 };
 
 function RouteFlowCanvasInner({
-    plan, rows, channels, channelMappings, onRebuildRequest, onEditRequest, isRebuilding, onOpenJson,
+    plan, rows, channels, channelMappings, onEditRequest, onOpenJson,
 }: RouteFlowCanvasProps) {
     const t = accessPlanText;
     const channelNameByID = useMemo(() => new Map(channels.map((channel) => [channel.id, channel.name])), [channels]);
@@ -1384,8 +1330,8 @@ function RouteFlowCanvasInner({
     }, [channelMappings, q]);
 
     const flow = useMemo(
-        () => buildRouteFlow(plan, filteredRows, channelNameByID, isRebuilding, onEditRequest, onRebuildRequest, filteredMappings),
-        [plan, filteredRows, channelNameByID, isRebuilding, onEditRequest, onRebuildRequest, filteredMappings],
+        () => buildRouteFlow(plan, filteredRows, channelNameByID, onEditRequest, filteredMappings),
+        [plan, filteredRows, channelNameByID, onEditRequest, filteredMappings],
     );
 
     const [nodes, setNodes, onNodesChange] = useNodesState<FlowNode>(flow.nodes);
@@ -1833,23 +1779,6 @@ function RouteTargetsEditor({
         saveTargets(rebuilt, t('toast.routesRebuilt'));
     };
 
-    const rebuildRequest = (requestModel: string) => {
-        const rebuilt = rebuildRouteTargetsForRequestModel(requestModel, channelModels, editableTargets);
-        if (rebuilt.length === 0) {
-            toast.error(t('toast.routesRebuildEmpty'));
-            return;
-        }
-
-        const requestKey = cleanOneMillionModelName(requestModel).toLowerCase();
-        const nextTargets = [
-            ...editableTargets.filter((target) => cleanOneMillionModelName(target.request_model).toLowerCase() !== requestKey),
-            ...rebuilt,
-        ];
-        setTargets(nextTargets);
-        saveTargets(nextTargets, t('toast.routesRebuilt'));
-    };
-
-
     const fillJSON = () => {
         setJsonText(JSON.stringify(editableTargets.map((target) => ({
             request_model: cleanOneMillionModelName(target.request_model),
@@ -1947,9 +1876,7 @@ function RouteTargetsEditor({
                 rows={canvasRows}
                 channels={channels}
                 channelMappings={channelMappings}
-                onRebuildRequest={rebuildRequest}
                 onEditRequest={setEditingRequestModel}
-                isRebuilding={updateRoutes.isPending}
                 onOpenJson={openJson}
             />
 

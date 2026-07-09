@@ -4,7 +4,7 @@ import {
     MorphingDialogContainer,
     MorphingDialogContent,
 } from '@/components/ui/morphing-dialog';
-import { Activity, AlertTriangle, CheckCircle2, DollarSign, FlaskConical, Key, Layers, Loader2, MessageSquare, Play, RotateCcw, XCircle, Server } from 'lucide-react';
+import { Activity, AlertTriangle, CheckCircle2, DollarSign, Key, Layers, Loader2, MessageSquare, Play, RotateCcw, XCircle, Server } from 'lucide-react';
 import { type StatsMetricsFormatted } from '@/api/endpoints/stats';
 import { type Channel, useEnableChannel, useResetChannelCircuit } from '@/api/endpoints/channel';
 import { CardContent } from './CardContent';
@@ -34,8 +34,6 @@ export function Card({ channel, stats, layout = 'list' }: { channel: Channel; st
     const testModels = useMemo(() => getSelectedChannelModels(channel), [channel]);
     const modelCount = testModels.length;
     const firstModel = testModels[0] || '';
-    const [testModel, setTestModel] = useState(firstModel);
-    const effectiveTestModel = testModels.includes(testModel) ? testModel : firstModel;
     const enabledKeyCount = channel.keys.filter((item) => item.enabled).length;
     const isGridLayout = layout === 'grid';
     const family = getChannelEndpointFamily(channel);
@@ -164,30 +162,6 @@ export function Card({ channel, stats, layout = 'list' }: { channel: Channel; st
                         onClick={(event) => event.stopPropagation()}
                         onPointerDown={(event) => event.stopPropagation()}
                     >
-                        {isGridLayout && (
-                            <div className="flex min-w-[10rem] max-w-full flex-1 items-center gap-2 rounded-lg border border-border bg-background px-2 py-1.5">
-                                <FlaskConical className="size-3.5 shrink-0 text-primary" />
-                                <div className="min-w-0 flex-1">
-                                    <p className="text-[10px] font-medium leading-none text-muted-foreground">测试模型</p>
-                                    {testModels.length > 1 ? (
-                                        <select
-                                            value={effectiveTestModel}
-                                            onChange={(event) => setTestModel(event.target.value)}
-                                            aria-label="选择测试模型"
-                                            className="mt-1 h-6 w-full min-w-0 truncate rounded-md border border-border bg-background px-1.5 text-xs text-foreground"
-                                        >
-                                            {testModels.map((model) => (
-                                                <option key={model} value={model}>{model}</option>
-                                            ))}
-                                        </select>
-                                    ) : (
-                                        <p className="mt-1 truncate text-xs font-semibold text-foreground">
-                                            {effectiveTestModel || '未配置模型'}
-                                        </p>
-                                    )}
-                                </div>
-                            </div>
-                        )}
                         <Tooltip side="top" sideOffset={10} align="center">
                             <TooltipTrigger asChild>
                                 <button
@@ -201,7 +175,7 @@ export function Card({ channel, stats, layout = 'list' }: { channel: Channel; st
                                     <span className="min-w-0 truncate">测试</span>
                                 </button>
                             </TooltipTrigger>
-                            <TooltipContent>{effectiveTestModel ? `测试 ${effectiveTestModel}` : '请先配置模型'}</TooltipContent>
+                            <TooltipContent>{firstModel ? `测试 ${firstModel}` : '请先配置模型'}</TooltipContent>
                         </Tooltip>
                         <ChannelTestDialog channel={channel} open={testDialogOpen} onOpenChange={setTestDialogOpen} />
                         {channel.circuit_tripped && (
