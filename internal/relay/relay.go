@@ -450,8 +450,17 @@ func parseRequest(inboundType inbound.InboundType, c *gin.Context) (*model.Inter
 		return nil, nil, err
 	}
 
-	// Pass through the original query parameters
-	internalRequest.Query = c.Request.URL.Query()
+	// Pass through the original query parameters, but strip the client's auth params
+	// (?key=/?api_key=/... = the client's Octopus key) so they never leak to the
+	// upstream provider; provider-specific switches (beta/alt/...) are preserved.
+	clientQuery := c.Request.URL.Query()
+	for qk := range clientQuery {
+		switch strings.ToLower(strings.TrimSpace(qk)) {
+		case "key", "api_key", "apikey", "access_token":
+			clientQuery.Del(qk)
+		}
+	}
+	internalRequest.Query = clientQuery
 	internalRequest.RawRequest = append([]byte(nil), body...)
 
 	if err := internalRequest.Validate(); err == nil && requestHasNoEffectiveInput(internalRequest) {

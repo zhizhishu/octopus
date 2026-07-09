@@ -2121,10 +2121,10 @@ export function AccessPlan() {
         const out: ChannelModelMapping[] = [];
         for (const channel of channelData) {
             const mapping = channel.raw.model_mapping;
-            if (!mapping) continue;
+            if (!mapping || typeof mapping !== 'object' || Array.isArray(mapping)) continue;
             for (const [fromModel, toModel] of Object.entries(mapping)) {
-                const from = fromModel.trim();
-                const to = (toModel ?? '').trim();
+                const from = typeof fromModel === 'string' ? fromModel.trim() : '';
+                const to = typeof toModel === 'string' ? toModel.trim() : '';
                 if (!from || !to) continue;
                 out.push({ channelId: channel.raw.id, channelName: channel.raw.name, fromModel: from, toModel: to });
             }

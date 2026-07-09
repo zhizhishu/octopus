@@ -465,8 +465,16 @@ func AccessPlanSyncEnabledChannels(ctx context.Context) error {
 		id     int
 		models map[string]struct{}
 	}
+	allChannels := channelCache.GetAll()
+	// Fail-safe: an empty channel cache almost certainly means it isn't loaded yet
+	// (a real deployment always has channels). Evicting every AutoSync target on a
+	// cache miss would nuke all routes; a genuine "all channels disabled" state still
+	// has entries here (just none enabled), so it is unaffected by this guard.
+	if len(allChannels) == 0 {
+		return nil
+	}
 	enabledByID := make(map[int]enabledChannel)
-	for _, ch := range channelCache.GetAll() {
+	for _, ch := range allChannels {
 		if !ch.Enabled {
 			continue
 		}

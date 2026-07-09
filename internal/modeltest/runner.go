@@ -1225,8 +1225,11 @@ func forceClaudeModelTestBodyShape(req *transformermodel.InternalLLMRequest, req
 	}
 	maxTokens := int64(64000)
 	req.MaxTokens = &maxTokens
-	stream := true
-	req.Stream = &stream
+	// 测试页"真开真关"：调用方显式给了 stream 就听它的，只有没给才默认强制流(claude-cli 恒流的 shape)。
+	if request.Stream == nil {
+		stream := true
+		req.Stream = &stream
+	}
 	// Genuine claude-cli always carries an explicit thinking object; on a plain turn it
 	// is {"type":"disabled"}. The 1M path may already have set adaptive thinking
 	// (AdaptiveThinking), so only fill the default when neither is present.
