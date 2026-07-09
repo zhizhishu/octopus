@@ -461,13 +461,17 @@ func AccessPlanSyncEnabledChannels(ctx context.Context) error {
 	}
 
 	// Build a map: channelID → the models it serves (enabled channels only). Each entry
-	// maps a cleaned+lowercased client-facing model name to the upstream model name this
-	// channel actually sends on the wire. For plainly-selected models the two are equal;
-	// for channel model_mapping entries the key is the client-facing alias and the value
-	// is the mapped upstream name.
+	// maps a cleaned+lowercased client-facing model name to how the channel serves it:
+	// the upstream model name sent on the wire, plus whether it came from an explicit
+	// model_mapping (authoritative for the upstream name) or a plainly-selected model
+	// (identity — client name == upstream name).
+	type servedModel struct {
+		upstream string
+		mapped   bool
+	}
 	type enabledChannel struct {
 		id     int
-		models map[string]string
+		models map[string]servedModel
 	}
 	allChannels := channelCache.GetAll()
 	// Fail-safe: an empty channel cache almost certainly means it isn't loaded yet
@@ -482,11 +486,13 @@ func AccessPlanSyncEnabledChannels(ctx context.Context) error {
 		if !ch.Enabled {
 			continue
 		}
-		served := make(map[string]string)
+		served := make(map[string]servedModel)
+		selectedSet := make(map[string]struct{})
 		for _, name := range model.ChannelSelectedModelNames(ch) {
 			clean := model.CleanOneMillionCapabilityModelName(name)
 			if key := strings.ToLower(clean); key != "" {
-				served[key] = clean // identity: client name == upstream name
+				served[key] = servedModel{upstream: clean} // identity: client name == upstream name
+				selectedSet[key] = struct{}{}
 			}
 		}
 		// Honor the channel's model_mapping: each mapping key is an additional
@@ -502,7 +508,14 @@ func AccessPlanSyncEnabledChannels(ctx context.Context) error {
 			if key == "" || upstreamClean == "" {
 				continue
 			}
-			served[key] = upstreamClean // mapping wins: it defines the intended upstream
+			// Only expose the alias when the channel actually serves the mapped upstream
+			// model (it must be a selected model). accessRouteTargetAvailable validates a
+			// target's UpstreamModel against selected_models, so aliasing to an unselected
+			// upstream would only sync a target that route selection immediately drops.
+			if _, servesUpstream := selectedSet[strings.ToLower(upstreamClean)]; !servesUpstream {
+				continue
+			}
+			served[key] = servedModel{upstream: upstreamClean, mapped: true} // mapping wins
 		}
 		if len(served) > 0 {
 			enabledByID[ch.ID] = enabledChannel{id: ch.ID, models: served}
@@ -554,18 +567,19 @@ func AccessPlanSyncEnabledChannels(ctx context.Context) error {
 				}
 			}
 			for _, ch := range enabledByID {
-				upstream, serves := ch.models[ruleModel]
+				sm, serves := ch.models[ruleModel]
 				if !serves {
 					continue
 				}
 				if _, already := existing[ch.id]; already {
 					continue
 				}
-				// Default to the rule's own model name (preserving its exact casing as
-				// before); only a genuine model_mapping entry overrides the upstream name.
+				// A plainly-selected model keeps the rule's own casing exactly as before;
+				// an explicit model_mapping is authoritative for the upstream name (even a
+				// case-only remap).
 				upstreamModel := model.CleanOneMillionCapabilityModelName(rule.RequestModel)
-				if upstream != "" && !strings.EqualFold(upstream, ruleModel) {
-					upstreamModel = upstream
+				if sm.mapped {
+					upstreamModel = sm.upstream
 				}
 				maxPriority++
 				target := model.AccessRouteTarget{

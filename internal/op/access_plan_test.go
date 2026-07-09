@@ -693,6 +693,81 @@ func TestAccessPlanSyncHonorsChannelModelMapping(t *testing.T) {
 	}
 }
 
+// TestAccessPlanSyncSkipsMappingToUnselectedUpstream verifies that a model_mapping
+// whose upstream target is NOT one of the channel's selected models is NOT synced as a
+// route target. accessRouteTargetAvailable validates a target's UpstreamModel against
+// selected_models, so such an alias would only leave a dead target row that never routes.
+func TestAccessPlanSyncSkipsMappingToUnselectedUpstream(t *testing.T) {
+	ctx := setupAccessPlanTest(t)
+
+	plans, err := AccessPlanList(ctx)
+	if err != nil {
+		t.Fatalf("list plans: %v", err)
+	}
+	var svip model.AccessPlan
+	for _, plan := range plans {
+		if plan.Slug == "svip" {
+			svip = plan
+			break
+		}
+	}
+	if svip.ID == 0 {
+		t.Fatalf("svip plan not found")
+	}
+
+	svipUpdate := svip
+	svipUpdate.AutoSyncChannels = true
+	if err := AccessPlanUpdate(&svipUpdate, ctx); err != nil {
+		t.Fatalf("enable AutoSyncChannels on svip: %v", err)
+	}
+
+	// The channel serves only "real-a", but maps "alias-x" → "not-selected", an upstream
+	// the channel does not actually serve.
+	ch := model.Channel{
+		Name:         "sync-bad-mapping-channel",
+		Enabled:      true,
+		Model:        "real-a",
+		ModelMapping: map[string]string{"alias-x": "not-selected"},
+	}
+	if err := ChannelCreate(&ch, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+
+	plans, err = AccessPlanList(ctx)
+	if err != nil {
+		t.Fatalf("list plans after update: %v", err)
+	}
+	for _, plan := range plans {
+		if plan.Slug == "svip" {
+			svip = plan
+			break
+		}
+	}
+
+	rule := model.AccessRouteRule{
+		RouteProfileID: svip.RouteProfileID,
+		RequestModel:   "alias-x",
+	}
+	if err := AccessRouteRuleCreate(&rule, ctx); err != nil {
+		t.Fatalf("create route rule: %v", err)
+	}
+
+	if err := AccessPlanSyncEnabledChannels(ctx); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	var count int64
+	if err := db.GetDB().WithContext(ctx).
+		Model(&model.AccessRouteTarget{}).
+		Where("route_rule_id = ? AND channel_id = ?", rule.ID, ch.ID).
+		Count(&count).Error; err != nil {
+		t.Fatalf("count targets: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected 0 targets for a mapping to an unselected upstream, got %d", count)
+	}
+}
+
 func TestAccessPlanUpdatePreservesProfilesAndAllowsDefaultSlugRename(t *testing.T) {
 	ctx := setupAccessPlanTest(t)
 

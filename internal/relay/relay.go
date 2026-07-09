@@ -2344,6 +2344,14 @@ func (ra *relayAttempt) startFirstByteKeepalive(ctx context.Context) func() {
 	if interval <= 0 {
 		return func() {}
 	}
+	// Reset the stop flag so a second call within the same relayAttempt re-arms the
+	// heartbeat — a goto retryWithAdapter fallback (Responses→Chat, cursor/encrypted
+	// -content recovery, Anthropic stream→non-stream) re-sends upstream and its slow
+	// first byte should be covered too. The prior stop() already joined its goroutine
+	// via wg.Wait(), so nothing races this reset.
+	ra.prewarmMu.Lock()
+	ra.prewarmStopped = false
+	ra.prewarmMu.Unlock()
 	done := make(chan struct{})
 	var wg sync.WaitGroup
 	wg.Add(1)
