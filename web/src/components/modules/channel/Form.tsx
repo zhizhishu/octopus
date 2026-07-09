@@ -395,7 +395,6 @@ export function ChannelForm({
     };
 
     const selectedModelSet = new Set([...autoModels, ...customModels]);
-    const unselectedFetchedModels = fetchedModels.filter((model) => !selectedModelSet.has(model));
     const visibleFetchedModels = modelFilter.trim()
         ? fetchedModels.filter((m) => m.toLowerCase().includes(modelFilter.trim().toLowerCase()))
         : fetchedModels;
@@ -614,7 +613,6 @@ export function ChannelForm({
 
     const isAdvancedPanel = advancedMode === 'panel';
     const showAdvanced = !isAdvancedPanel || advancedOpen;
-    const primaryColumnClass = '';
 
     return (
         <form
@@ -626,7 +624,7 @@ export function ChannelForm({
                     : "space-y-4"
             )}
         >
-            <div className={cn("grid grid-cols-1 md:grid-cols-2 gap-4", primaryColumnClass)}>
+            <div className={cn("grid grid-cols-1 md:grid-cols-2 gap-4")}>
                 <div className="space-y-2">
                     <label htmlFor={`${idPrefix}-name`} className="text-sm font-medium text-card-foreground">
                         {t('name')}
@@ -742,7 +740,7 @@ export function ChannelForm({
                 </div>
             </div>
 
-            <div className={cn("space-y-2", primaryColumnClass)}>
+            <div className={cn("space-y-2")}>
                 <div className="flex items-center justify-between">
                     <label className="text-sm font-medium text-card-foreground">
                         {t('baseUrls')} {formData.base_urls.length > 0 ? `(${formData.base_urls.length})` : ''}
@@ -792,7 +790,7 @@ export function ChannelForm({
                 </div>
             </div>
 
-            <div className={cn("space-y-2", primaryColumnClass)}>
+            <div className={cn("space-y-2")}>
                 <div className="flex items-center justify-between">
                     <label className="text-sm font-medium text-card-foreground">
                         {t('apiKey')} {formData.keys.length > 0 ? `(${formData.keys.length})` : ''}
@@ -848,7 +846,7 @@ export function ChannelForm({
                 <p className="text-xs text-muted-foreground">{t('apiKeyBulkHint')}</p>
             </div>
 
-            <div className={cn("space-y-2", primaryColumnClass)}>
+            <div className={cn("space-y-2")}>
                 <div className="flex items-center justify-between">
                     <label className="text-sm font-medium text-card-foreground">{t('model')}</label>
                     <div className="flex items-center gap-1">
@@ -1486,7 +1484,7 @@ export function ChannelForm({
                 </AdvancedSettingsShell>
             )}
 
-            <div className={cn("flex flex-wrap items-center justify-between gap-4 p-4 rounded-xl bg-muted/20 border border-border/50", primaryColumnClass)}>
+            <div className={cn("flex flex-wrap items-center justify-between gap-4 p-4 rounded-xl bg-muted/20 border border-border/50")}>
                 <label className="flex items-center gap-2 cursor-pointer">
                     <Switch
                         checked={formData.enabled}
@@ -1508,7 +1506,7 @@ export function ChannelForm({
                 </div>
             </div>
 
-            <div className={cn(`flex flex-col gap-3 pt-2 ${onCancel ? 'sm:flex-row' : ''}`, primaryColumnClass)}>
+            <div className={cn(`flex flex-col gap-3 pt-2 ${onCancel ? 'sm:flex-row' : ''}`)}>
                 {onCancel && cancelText && (
                     <Button
                         type="button"
