@@ -29,7 +29,9 @@ import {
     useUpdateAccessPlanRouteTargets,
 } from '@/api/endpoints/access-plan';
 import { useChannelList } from '@/api/endpoints/channel';
+import { GroupMode, useGroupList } from '@/api/endpoints/group';
 import { useModelChannelList, useModelList } from '@/api/endpoints/model';
+import { MODE_LABELS, normalizeKey } from '@/components/modules/group/utils';
 import { useAuthStore } from '@/api/endpoints/user';
 import { PageWrapper } from '@/components/common/PageWrapper';
 import { toast } from '@/components/common/Toast';
@@ -132,6 +134,8 @@ const ACCESS_PLAN_TEXT = {
         jsonPlaceholder: '[\n  {\n    "request_model": "claude-fable-5",\n    "channel_id": 1,\n    "upstream_model": "claude-fable-5",\n    "priority": 1,\n    "weight": 1,\n    "enabled": true\n  }\n]',
         targetCount: '映射 {count} 条',
         requestModel: '原请求模型',
+        modeSpread: '轮询',
+        modeFillFirst: '填充优先',
         upstreamModel: '发送模型',
         priority: '优先级',
         weight: '同级轮询权重',
@@ -954,6 +958,7 @@ type PlanNodeData = { slug: string; name: string; multiplier: number };
 type RequestNodeData = {
     requestModel: string;
     family: ModelFamilyKey;
+    mode?: GroupMode;
     onEdit: () => void;
 };
 type TargetNodeData = {
@@ -998,6 +1003,11 @@ function PlanFlowCard({ data }: NodeProps<PlanFlowNode>) {
 }
 
 function RequestFlowCard({ data }: NodeProps<RequestFlowNode>) {
+    const modeLabel = data.mode !== undefined
+        ? (MODE_LABELS[data.mode] === 'spread'
+            ? accessPlanText('routes.modeSpread')
+            : accessPlanText('routes.modeFillFirst'))
+        : null;
     return (
         <div className="rounded-2xl border border-amber-500/25 bg-amber-500/10 px-3 py-2.5 shadow-sm" style={{ width: REQ_W }}>
             <Handle type="target" position={Position.Left} className="!size-2 !border-2 !border-background !bg-amber-500" />
@@ -1005,6 +1015,11 @@ function RequestFlowCard({ data }: NodeProps<RequestFlowNode>) {
                 <span className="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.16em] text-amber-600 dark:text-amber-300">
                     <span className="size-1.5 rounded-full bg-amber-500" />
                     原请求模型
+                    {modeLabel !== null && (
+                        <span className="ml-0.5 rounded-full bg-muted/60 px-1.5 py-px font-normal normal-case tracking-normal text-muted-foreground">
+                            {modeLabel}
+                        </span>
+                    )}
                 </span>
                 <Button
                     type="button"
@@ -1152,6 +1167,7 @@ function buildRouteFlow(
     channelNameByID: Map<number, string>,
     onEditRequest: (requestModel: string) => void,
     channelMappings: ChannelModelMapping[] = [],
+    groupModeByName: Map<string, GroupMode> = new Map(),
 ): { nodes: FlowNode[]; edges: Edge[] } {
     const nodes: FlowNode[] = [];
     const edges: Edge[] = [];
@@ -1175,6 +1191,7 @@ function buildRouteFlow(
                 data: {
                     requestModel: cleanOneMillionModelName(row.requestModel),
                     family: modelFamilyKey(row.requestModel),
+                    mode: groupModeByName.get(normalizeKey(row.requestModel)),
                     onEdit: () => onEditRequest(row.requestKey ? row.requestModel : ''),
                 },
             });
@@ -1306,6 +1323,14 @@ function RouteFlowCanvasInner({
     const t = accessPlanText;
     const channelNameByID = useMemo(() => new Map(channels.map((channel) => [channel.id, channel.name])), [channels]);
     const { fitView, setCenter } = useReactFlow();
+    const { data: groups = [] } = useGroupList();
+    const groupModeByName = useMemo<Map<string, GroupMode>>(() => {
+        const map = new Map<string, GroupMode>();
+        for (const g of groups) {
+            map.set(normalizeKey(g.name), g.mode);
+        }
+        return map;
+    }, [groups]);
 
     const [canvasFullscreen, setCanvasFullscreen] = useState(false);
 
@@ -1347,8 +1372,8 @@ function RouteFlowCanvasInner({
     }, [channelMappings, q]);
 
     const flow = useMemo(
-        () => buildRouteFlow(plan, filteredRows, channelNameByID, onEditRequest, filteredMappings),
-        [plan, filteredRows, channelNameByID, onEditRequest, filteredMappings],
+        () => buildRouteFlow(plan, filteredRows, channelNameByID, onEditRequest, filteredMappings, groupModeByName),
+        [plan, filteredRows, channelNameByID, onEditRequest, filteredMappings, groupModeByName],
     );
 
     const [nodes, setNodes, onNodesChange] = useNodesState<FlowNode>(flow.nodes);
