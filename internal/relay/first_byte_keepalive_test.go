@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -165,5 +166,57 @@ func TestStartFirstByteKeepaliveWritesAfterDelay(t *testing.T) {
 	if rec.Body.Len() != bytesAfterFirstWrite {
 		t.Fatalf("expected no more writes after stop, body grew from %d to %d bytes",
 			bytesAfterFirstWrite, rec.Body.Len())
+	}
+}
+
+// TestStartDownstreamFirstByteKeepaliveWritesCommentAndHeaders verifies the context-only
+// keepalive used by the codex raw path: after the delay it commits the SSE / anti-buffering
+// headers and writes an ignorable ":\n\n" comment, and stop() halts it cleanly.
+func TestStartDownstreamFirstByteKeepaliveWritesCommentAndHeaders(t *testing.T) {
+	// Set via the DB so it wins over any leftover cache/env from sibling tests.
+	setupRelayErrorDB(t)
+	if err := op.SettingSetString(dbmodel.SettingKeyFirstByteKeepaliveDelaySeconds, "1"); err != nil {
+		t.Fatalf("set delay: %v", err)
+	}
+	if err := op.SettingSetString(dbmodel.SettingKeyRelayStreamKeepaliveSec, "1"); err != nil {
+		t.Fatalf("set interval: %v", err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	stop := startDownstreamFirstByteKeepalive(context.Background(), c)
+	// Sleep past the 1s delay so exactly one heartbeat fires, then stop.
+	time.Sleep(1300 * time.Millisecond)
+	stop()
+
+	if body := rec.Body.String(); !strings.Contains(body, ":\n\n") {
+		t.Fatalf("expected injected SSE comment keepalive, got %q", body)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "text/event-stream") {
+		t.Fatalf("expected text/event-stream content-type committed before heartbeat, got %q", ct)
+	}
+	if got := rec.Header().Get("X-Accel-Buffering"); got != "no" {
+		t.Fatalf("expected X-Accel-Buffering: no (front proxy must not buffer heartbeats), got %q", got)
+	}
+}
+
+// TestStartDownstreamFirstByteKeepaliveNoOpWhenDelayZero verifies delay=0 disables it
+// (byte-identical to before) — nothing is written and no headers are committed.
+func TestStartDownstreamFirstByteKeepaliveNoOpWhenDelayZero(t *testing.T) {
+	t.Setenv("OCTOPUS_RELAY_FIRST_BYTE_KEEPALIVE_DELAY_SECONDS", "0")
+
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	stop := startDownstreamFirstByteKeepalive(context.Background(), c)
+	stop()
+
+	if rec.Body.Len() != 0 {
+		t.Fatalf("expected no bytes when delay=0, got %d: %q", rec.Body.Len(), rec.Body.String())
 	}
 }

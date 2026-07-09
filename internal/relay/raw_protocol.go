@@ -260,7 +260,13 @@ runIterator:
 				balancer.RecordFailureWithStatus(channel.ID, usedKey.ID, item.ModelName, recordStatusCode)
 			}
 
-			if written || c.Writer.Written() {
+			// Gate on `written` (this attempt actually streamed real content), NOT
+			// c.Writer.Written(): a pre-first-byte keepalive may have flushed only ignorable
+			// ":\n\n" comments (Written()==true) without committing any real content, and
+			// those must not block failover to the next channel/key — the any channel relies
+			// on retrying through its bad windows. The exhausted-all-channels path below
+			// handles the "committed only comments, then every channel failed" case.
+			if written {
 				if isResponsesInboundPath(c.Request.URL.Path) {
 					if message := responsesStreamFailureMessage(fwdErr); message != "" {
 						writeResponsesFailedSSE(c, requestModel, "upstream_error", message)
@@ -304,6 +310,20 @@ runIterator:
 	}
 	metrics.Save(ctx, false, finalErr, allAttempts)
 	status, code, message := relayErrorResponse(finalErr)
+	if c.Writer.Written() {
+		// A pre-first-byte keepalive committed the SSE stream (only ignorable ":\n\n"
+		// comments, never real content) while we failed over across every channel. The
+		// status line is locked, so resp.ErrorWithCode cannot set a status and would splice
+		// JSON into the stream; deliver the failure as an in-band SSE error event instead.
+		if isResponsesInboundPath(c.Request.URL.Path) {
+			if m := responsesStreamFailureMessage(finalErr); m != "" {
+				writeResponsesFailedSSE(c, requestModel, code, m)
+			} else {
+				writeResponsesFailedSSE(c, requestModel, code, message)
+			}
+		}
+		return
+	}
 	resp.ErrorWithCode(c, status, code, message)
 }
 
@@ -817,7 +837,21 @@ func rawProtocolAttempt(
 		return 0, false, nil, "", "", err
 	}
 
+	// Keep a streaming downstream client alive while this attempt waits for the upstream
+	// first byte: the codex /responses raw path has no relayAttempt, so use the context-only
+	// keepalive. It only writes ignorable ":\n\n" comments downstream (never touches the
+	// upstream request/fingerprint), and stop() joins the goroutine before proxySSEWithOptions
+	// starts writing, so there is no race on c.Writer. Comments do not commit real content,
+	// so a pre-content upstream failure below can still fail over (see the `written`-gated
+	// guards in the caller).
+	var stopFirstByteKeepalive func()
+	if stream {
+		stopFirstByteKeepalive = startDownstreamFirstByteKeepalive(ctx, c)
+	}
 	respUp, err := helper.DoPreserveMethodRedirect(httpClient, req)
+	if stopFirstByteKeepalive != nil {
+		stopFirstByteKeepalive()
+	}
 	if err != nil {
 		return 0, false, nil, "", "", fmt.Errorf("failed to send request: %w", err)
 	}

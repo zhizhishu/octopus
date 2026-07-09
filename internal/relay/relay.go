@@ -2322,14 +2322,97 @@ func (ra *relayAttempt) streamKeepaliveData() []byte {
 	return []byte(":\n\n")
 }
 
-// setDownstreamSSEHeaders stages the text/event-stream + anti-buffering response
+// setDownstreamSSEHeadersCtx stages the text/event-stream + anti-buffering response
 // headers on the downstream writer. Safe to call more than once: gin just overwrites
 // the staged values, and it becomes a no-op once the response head is committed.
-func (ra *relayAttempt) setDownstreamSSEHeaders() {
-	ra.c.Header("Content-Type", "text/event-stream")
-	ra.c.Header("Cache-Control", "no-cache")
-	ra.c.Header("Connection", "keep-alive")
-	ra.c.Header("X-Accel-Buffering", "no")
+func setDownstreamSSEHeadersCtx(c *gin.Context) {
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+}
+
+func (ra *relayAttempt) setDownstreamSSEHeaders() { setDownstreamSSEHeadersCtx(ra.c) }
+
+// startDownstreamFirstByteKeepalive is the context-only sibling of
+// (*relayAttempt).startFirstByteKeepalive for the raw-protocol streaming path
+// (codex /responses etc.), which has no relayAttempt. It injects ignorable SSE comment
+// heartbeats (":\n\n") to the downstream client while a streaming request waits for its
+// first upstream byte, so a slow-first-token upstream does not trip the client's idle
+// timeout. It commits the SSE / anti-buffering headers before the first heartbeat so a
+// front proxy does not buffer them. The returned stop() halts injection and waits
+// (WaitGroup) for the goroutine to exit, so the caller's later writes to c.Writer never
+// race it. Downstream-only: it never touches the upstream request, so it cannot affect
+// the codex/claude/gemini upstream fingerprint, and it only ever writes ignorable
+// comments (never a committed envelope), so a pre-content upstream failure can still fail
+// over. delay<=0 or interval<=0 is a no-op.
+func startDownstreamFirstByteKeepalive(ctx context.Context, c *gin.Context) func() {
+	delay := currentFirstByteKeepaliveDelay()
+	if delay <= 0 {
+		return func() {}
+	}
+	interval := currentStreamKeepaliveInterval()
+	if interval <= 0 {
+		return func() {}
+	}
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	stopped := false
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-done:
+			return
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		headersSet := false
+		for {
+			mu.Lock()
+			if stopped {
+				mu.Unlock()
+				return
+			}
+			if !headersSet {
+				// Commit the anti-buffering headers before the first heartbeat byte so a
+				// front proxy (nginx/OpenResty) forwards the pre-content heartbeats instead
+				// of buffering them. proxySSEWithOptions re-sets the same headers later
+				// (idempotent, no-op once committed).
+				setDownstreamSSEHeadersCtx(c)
+				headersSet = true
+			}
+			_, werr := c.Writer.Write([]byte(":\n\n"))
+			c.Writer.Flush()
+			mu.Unlock()
+			if werr != nil {
+				return
+			}
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			mu.Lock()
+			stopped = true
+			mu.Unlock()
+			close(done)
+			wg.Wait()
+		})
+	}
 }
 
 // startFirstByteKeepalive 在等待上游首字节期间，向下游注入心跳防前置反代空闲掐断。
