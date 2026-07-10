@@ -174,6 +174,19 @@ func GroupGetEnabledMap(name string, ctx context.Context) (model.Group, error) {
 
 func GroupCreate(group *model.Group, ctx context.Context) error {
 	group.Name = model.CleanOneMillionCapabilityModelName(group.Name)
+	if group.Name == "" {
+		return fmt.Errorf("group name is required")
+	}
+	// 应用层查重：groups.name 的数据库唯一索引可能因历史重复暂未建立(见 migrate 008),
+	// 且 MySQL 过滤索引不可用时全靠此处兜底。主动挡住重名、返回友好错误,
+	// 而不是像旧版那样静默插入一个重复分组(路由会“看命中哪个池”)。
+	var count int64
+	if err := db.GetDB().WithContext(ctx).Model(&model.Group{}).Where("name = ?", group.Name).Count(&count).Error; err != nil {
+		return err
+	}
+	if count > 0 {
+		return fmt.Errorf("group name %q already exists", group.Name)
+	}
 	if err := db.GetDB().WithContext(ctx).Create(group).Error; err != nil {
 		return err
 	}

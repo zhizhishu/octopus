@@ -110,6 +110,15 @@ func DBImportIncremental(ctx context.Context, dump *model.DBDump) (*model.DBImpo
 		} else {
 			res.RowsAffected["channel_keys"] = n
 		}
+		// 备份里的历史名可能带 [1m] 等后缀变体：入库前统一归一，否则同一显示名的
+		// “换马甲”行(DB 原始名不同、运行期折叠成同名)会绕过 groups.name 唯一约束，
+		// 变成又一个重复分组(见 GroupCreate / migrate 008)。
+		for i := range dump.Groups {
+			dump.Groups[i].Name = model.CleanOneMillionCapabilityModelName(dump.Groups[i].Name)
+		}
+		for i := range dump.GroupItems {
+			dump.GroupItems[i].ModelName = model.CleanOneMillionCapabilityModelName(dump.GroupItems[i].ModelName)
+		}
 		if n, err := createDoNothing(tx, dump.Groups); err != nil {
 			return fmt.Errorf("import groups: %w", err)
 		} else {
