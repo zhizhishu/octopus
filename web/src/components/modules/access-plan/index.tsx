@@ -1334,17 +1334,33 @@ function RouteFlowCanvasInner({
 
     const [canvasFullscreen, setCanvasFullscreen] = useState(false);
 
+    // 全屏/清屏切换后容器尺寸变了要重新自适应。ReactFlow 靠 ResizeObserver 异步拿新尺寸，
+    // 单个 rAF 会读到旧尺寸导致 fitView 对不齐，故用双 rAF 等布局与观察器都落定后再 fit。
+    const fitSoon = useCallback(() => {
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+            fitView({ padding: 0.14, maxZoom: 1, duration: 220 });
+        }));
+    }, [fitView]);
+
+    // Esc 退出全屏（只在全屏态挂键盘监听）
     useEffect(() => {
         if (!canvasFullscreen) return;
         const handler = (event: KeyboardEvent) => {
-            if (event.key === 'Escape') {
-                setCanvasFullscreen(false);
-                requestAnimationFrame(() => fitView({ padding: 0.14, maxZoom: 1, duration: 220 }));
-            }
+            if (event.key === 'Escape') setCanvasFullscreen(false);
         };
         window.addEventListener('keydown', handler);
         return () => window.removeEventListener('keydown', handler);
-    }, [canvasFullscreen, fitView]);
+    }, [canvasFullscreen]);
+
+    // 全屏态切换后重新 fit（跳过挂载首帧，挂载时 ReactFlow 自带 fitView）
+    const fullscreenReady = useRef(false);
+    useEffect(() => {
+        if (!fullscreenReady.current) {
+            fullscreenReady.current = true;
+            return;
+        }
+        fitSoon();
+    }, [canvasFullscreen, fitSoon]);
 
     const [query, setQuery] = useState('');
     const q = query.trim().toLowerCase();
@@ -1474,10 +1490,7 @@ function RouteFlowCanvasInner({
                         <MiniMap pannable zoomable onClick={(_event, position) => setCenter(position.x, position.y, { zoom: 1, duration: 400 })} nodeColor={miniMapNodeColor} nodeStrokeWidth={2} className="!hidden sm:!block" />
                         <Controls showInteractive={false} showFitView={false}>
                             <ControlButton
-                                onClick={() => {
-                                    setCanvasFullscreen((v) => !v);
-                                    requestAnimationFrame(() => fitView({ padding: 0.14, maxZoom: 1, duration: 220 }));
-                                }}
+                                onClick={() => setCanvasFullscreen((v) => !v)}
                                 title={canvasFullscreen ? '退出全屏（Esc）' : '清屏（全屏画布）'}
                                 aria-label={canvasFullscreen ? '退出全屏（Esc）' : '清屏（全屏画布）'}
                             >
