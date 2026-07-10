@@ -602,7 +602,7 @@ retryWithAdapter:
 				log.Warnf("failed to unmarshal param_override: %v, skipping", err)
 				restoreBody()
 			} else {
-				maps.Copy(bodyMap, override)
+				applyParamOverrideMap(bodyMap, override)
 				modifiedBody, err := json.Marshal(bodyMap)
 				if err != nil {
 					log.Warnf("failed to marshal modified body: %v, skipping param_override", err)
@@ -711,6 +711,24 @@ retryWithAdapter:
 		return response.StatusCode, err
 	}
 	return response.StatusCode, nil
+}
+
+// applyParamOverrideMap 把渠道 param_override 合并进出站请求体：
+//   - 非 null 值：覆盖/新增该键（原有语义，等价于 maps.Copy）。
+//   - null 值：删除该键，用于剥离某些上游渠道不支持的参数。
+//
+// 例如某些第三方 /responses 中转不认 max_output_tokens，配
+// {"max_output_tokens": null} 即可在发出前把该字段整个删掉，而不是发一个
+// 显式 null（后者对拒绝该参数存在的上游仍会 400）。对齐参考项目 new-api
+// param_override 的 delete 操作语义。
+func applyParamOverrideMap(body, override map[string]any) {
+	for k, v := range override {
+		if v == nil {
+			delete(body, k)
+		} else {
+			body[k] = v
+		}
+	}
 }
 
 func cloneInternalRequestForRetry(req *model.InternalLLMRequest) *model.InternalLLMRequest {
