@@ -184,6 +184,48 @@ export function normalizeBaseUrlForChannelType(type: ChannelType, value: string)
     }
 }
 
+// param_override 是新手最容易填错的字段（常把左边「参数覆盖：」标题一起粘进来，
+// 得到非法 JSON、后端静默跳过 → 参数根本没生效）。inspectParamOverride 实时判断
+// 输入是「空 / 合法对象 / 不是对象 / 非法 JSON」，供 UI 给出小白能看懂的反馈。
+export type ParamOverrideState =
+    | { kind: 'empty' }
+    | { kind: 'valid'; count: number; keys: string }
+    | { kind: 'notObject' }
+    | { kind: 'invalid'; reason: string };
+
+export function inspectParamOverride(raw: string): ParamOverrideState {
+    const s = raw.trim();
+    if (!s) return { kind: 'empty' };
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(s);
+    } catch (e) {
+        return { kind: 'invalid', reason: e instanceof Error ? e.message : String(e) };
+    }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        return { kind: 'notObject' };
+    }
+    const keys = Object.keys(parsed as Record<string, unknown>);
+    return { kind: 'valid', count: keys.length, keys: keys.join(', ') };
+}
+
+// tidyParamOverride：一键整理。剥掉第一个花括号/中括号之前的杂质（如误粘的
+// 「参数覆盖：」标题文字），再美化成 2 空格缩进。整理不出合法 JSON 时返回 null，
+// 由调用方提示用户，绝不吞掉或破坏用户正在编辑的原文。
+export function tidyParamOverride(raw: string): string | null {
+    let s = raw.trim();
+    if (!s) return '';
+    if (s[0] !== '{' && s[0] !== '[') {
+        const marks = [s.indexOf('{'), s.indexOf('[')].filter((i) => i >= 0);
+        if (marks.length) s = s.slice(Math.min(...marks));
+    }
+    try {
+        return JSON.stringify(JSON.parse(s), null, 2);
+    } catch {
+        return null;
+    }
+}
+
 export function ChannelForm({
     formData,
     onFormDataChange,
@@ -1411,7 +1453,26 @@ export function ChannelForm({
                                 <label htmlFor={`${idPrefix}-param-override`} className="text-sm font-medium text-card-foreground">
                                     {t('paramOverride')}
                                 </label>
-                                <span className="text-xs text-muted-foreground">{t('paramOverrideHint')}</span>
+                                <div className="flex items-center gap-2">
+                                    <span className="text-xs text-muted-foreground">{t('paramOverrideHint')}</span>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            const tidied = tidyParamOverride(formData.param_override);
+                                            if (tidied === null) {
+                                                toast.error(t('paramOverrideTidyFail'));
+                                                return;
+                                            }
+                                            if (tidied !== formData.param_override) {
+                                                onFormDataChange({ ...formData, param_override: tidied });
+                                            }
+                                        }}
+                                        disabled={!formData.param_override.trim()}
+                                        className="rounded-lg border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
+                                    >
+                                        {t('paramOverrideTidy')}
+                                    </button>
+                                </div>
                             </div>
                             <textarea
                                 id={`${idPrefix}-param-override`}
@@ -1436,6 +1497,25 @@ export function ChannelForm({
                                 spellCheck={false}
                                 className="min-h-28 w-full rounded-xl border border-border bg-background px-3 py-2 font-mono text-xs leading-relaxed text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                             />
+                            {(() => {
+                                // 实时告诉小白：填的值到底会不会生效，错在哪、怎么改。
+                                const st = inspectParamOverride(formData.param_override);
+                                if (st.kind === 'empty') {
+                                    return <p className="text-xs text-muted-foreground">{t('paramOverrideStateEmpty')}</p>;
+                                }
+                                if (st.kind === 'valid') {
+                                    return <p className="text-xs text-emerald-600 dark:text-emerald-400">{t('paramOverrideStateValid', { count: st.count, keys: st.keys })}</p>;
+                                }
+                                if (st.kind === 'notObject') {
+                                    return <p className="text-xs text-red-600 dark:text-red-400">{t('paramOverrideStateNotObject')}</p>;
+                                }
+                                return (
+                                    <div className="space-y-0.5">
+                                        <p className="text-xs text-red-600 dark:text-red-400">{t('paramOverrideStateInvalid', { reason: st.reason })}</p>
+                                        <p className="text-xs text-muted-foreground">{t('paramOverrideStateInvalidTip')}</p>
+                                    </div>
+                                );
+                            })()}
                         </div>
 
                         <div className="space-y-2">
