@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
-import { Trash2, X, Pencil, RefreshCw } from 'lucide-react';
+import { Trash2, X, Pencil, RefreshCw, AlertTriangle } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { type Group, useDeleteGroup, useUpdateGroup } from '@/api/endpoints/group';
 import { useModelChannelList } from '@/api/endpoints/model';
@@ -15,7 +15,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/animate-ui
 import type { SelectedMember } from './ItemList';
 import { MemberList } from './ItemList';
 import { GroupEditor, type GroupEditorValues } from './Editor';
-import { activeModelChannelKeySet, activeModelChannels, buildChannelNameByModelKey, matchGroupModelChannels, memberKey, modelChannelKey, MODE_LABELS } from './utils';
+import { activeModelChannelKeySet, activeModelChannels, buildChannelNameByModelKey, matchGroupModelChannels, memberKey, modelChannelKey, MODE_LABELS, RAW_MODE_LABELS, isFoldedMode } from './utils';
 import { SELECTABLE_GROUP_MODES, normalizeGroupMode, type GroupUpdateRequest } from '@/api/endpoints/group';
 import {
     MorphingDialog,
@@ -72,7 +72,7 @@ function EditDialogContent({ group, displayMembers, isSubmitting, onSubmit }: Ed
     );
 }
 
-export function GroupCard({ group }: { group: Group }) {
+export function GroupCard({ group, duplicateCount = 1 }: { group: Group; duplicateCount?: number }) {
     const t = useTranslations('group');
     const updateGroup = useUpdateGroup();
     const deleteGroup = useDeleteGroup();
@@ -350,6 +350,11 @@ export function GroupCard({ group }: { group: Group }) {
                             <SafeText value={group.name} mode="wrap" className="max-w-64" />
                         </TooltipContent>
                     </Tooltip>
+                    {duplicateCount > 1 && (
+                        <span className="mt-1 inline-flex w-fit items-center gap-1 rounded-full bg-destructive/10 px-2 py-0.5 text-[11px] font-semibold text-destructive ring-1 ring-destructive/25">
+                            <AlertTriangle className="size-3" /> 同名 ×{duplicateCount}
+                        </span>
+                    )}
                 </div>
 
                 <div className="flex items-center gap-1 shrink-0">
@@ -452,6 +457,12 @@ export function GroupCard({ group }: { group: Group }) {
                     </button>
                 ))}
             </div>
+            {isFoldedMode(group.mode) && (
+                <div className="-mt-1.5 mb-2 flex items-center gap-1 text-[11px] text-amber-600 dark:text-amber-400">
+                    <AlertTriangle className="size-3 shrink-0" />
+                    <span>实际是「{RAW_MODE_LABELS[group.mode]}」模式，界面按“轮询”折叠显示</span>
+                </div>
+            )}
 
             <section
                 className={cn(
