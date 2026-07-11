@@ -249,7 +249,7 @@ export function ChannelTestDialog({
                                                 )}
                                             </TableCell>
                                             <TableCell className="max-w-[14rem] truncate text-xs text-muted-foreground" title={result.error}>
-                                                {result.status === 'success' ? `${result.ms ?? '-'} ms` : (result.error || '-')}
+                                                {result.status === 'success' ? (result.ms != null ? `${(result.ms / 1000).toFixed(2)}s` : '-') : (result.error || '-')}
                                             </TableCell>
                                         </TableRow>
                                     ))}

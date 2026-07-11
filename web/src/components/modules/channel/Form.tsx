@@ -279,6 +279,11 @@ export function ChannelForm({
     const channelTest = useTestChannelConfig();
     const testChannelProxy = useTestChannelProxy();
     const { data: fingerprintProfiles } = useFingerprintProfileList();
+    const sortedFingerprintProfiles = [...(fingerprintProfiles ?? [])].sort((a, b) => a.id - b.id);
+    // "跟随全局" (id 0) was removed as an option; any legacy 0 falls back to the first
+    // preset (Debian) so the Select never renders blank. Live channels are migrated off 0.
+    const fallbackProfileId = sortedFingerprintProfiles[0]?.id ?? 0;
+    const resolvedProfileId = (formData.cloak_profile_id ?? 0) > 0 ? (formData.cloak_profile_id ?? 0) : fallbackProfileId;
     const [channelTestResult, setChannelTestResult] = useState<ModelTestResult | null>(null);
     const [channelTestStream, setChannelTestStream] = useState(true);
 
@@ -1151,7 +1156,7 @@ export function ChannelForm({
                         <div className="flex min-w-0 flex-wrap items-center gap-2">
                             <span className="font-medium">{channelTestResult.success ? '测试成功' : '测试失败'}</span>
                             {channelTestResult.status_code ? <span>HTTP {channelTestResult.status_code}</span> : null}
-                            {channelTestResult.duration_ms ? <span>{channelTestResult.duration_ms}ms</span> : null}
+                            {channelTestResult.duration_ms ? <span>{(channelTestResult.duration_ms / 1000).toFixed(2)}s</span> : null}
                             <span
                                 className={cn(
                                     'rounded-md border px-1.5 py-0.5 font-mono text-[10px]',
@@ -1292,15 +1297,14 @@ export function ChannelForm({
                                             {t('cloakProfile')}
                                         </label>
                                         <Select
-                                            value={String(formData.cloak_profile_id ?? 0)}
+                                            value={String(resolvedProfileId)}
                                             onValueChange={(value) => onFormDataChange({ ...formData, cloak_profile_id: Number(value) })}
                                         >
                                             <SelectTrigger id={`${idPrefix}-cloak-profile`} className="rounded-xl w-full border border-border px-4 py-2 text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
                                                 <SelectValue />
                                             </SelectTrigger>
                                             <SelectContent className="rounded-xl">
-                                                <SelectItem className="rounded-xl" value="0">{t('cloakProfileGlobal')}</SelectItem>
-                                                {[...(fingerprintProfiles ?? [])].sort((a, b) => a.id - b.id).map((profile) => (
+                                                {sortedFingerprintProfiles.map((profile) => (
                                                     <SelectItem key={profile.id} className="rounded-xl" value={String(profile.id)}>
                                                         {profile.name}
                                                     </SelectItem>

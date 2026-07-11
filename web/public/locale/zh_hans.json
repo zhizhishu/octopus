@@ -983,7 +983,7 @@
             "remark": "备注",
             "cloakProfile": "指纹 Profile",
             "cloakProfileGlobal": "默认（跟随全局）",
-            "cloakProfileHint": "选用一组独立的设备指纹（在「设置 - 指纹 Profile 管理」里维护）。「默认（跟随全局）」即沿用全局指纹设置，不做区分。",
+            "cloakProfileHint": "选用一组独立的设备指纹（在「设置 - 指纹 Profile 管理」里维护），让走不同出口 key 的渠道呈现不同设备。",
             "modelMapping": "模型映射",
             "modelMappingHint": "客户端用左边的名字，转发上游时改成右边的真实名。",
             "modelMappingClientName": "客户端名",
