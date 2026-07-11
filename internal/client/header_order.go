@@ -34,12 +34,16 @@ var claudeCanonicalHeaderOrder = []string{
 	"accept-encoding",
 }
 
-// codexCanonicalHeaderOrder is the exact regular-header order a genuine
-// codex_exec 0.142.5 emits, captured on the wire (2026-07-03).
+// codexCanonicalHeaderOrder is the exact regular-header order a genuine codex
+// 0.144.1 emits on /backend-api/codex/responses, packet-verified on the wire
+// (2026-07-10). 0.144.x added x-openai-internal-codex-responses-lite at position
+// 4; the set/order is identical across the codex_exec / codex-tui / codex_cli_rs
+// identities (only the originator header + UA product token differ between them).
 var codexCanonicalHeaderOrder = []string{
 	"x-codex-beta-features",
 	"x-codex-window-id",
 	"x-codex-turn-metadata",
+	"x-openai-internal-codex-responses-lite",
 	"x-client-request-id",
 	"session-id",
 	"thread-id",

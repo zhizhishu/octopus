@@ -114,7 +114,13 @@ type Setting struct {
 const SettingSecretMaskValue = "__OCTOPUS_SECRET_KEPT__"
 
 const (
-	DefaultCodexHeaderUserAgent = "codex_cli_rs/0.142.5 (Ubuntu 24.04.1; x86_64) unknown (codex_cli_rs; 0.142.5)"
+	// DefaultCodexHeaderUserAgent: a clean, self-consistent codex_cli_rs identity on a Linux
+	// box. Packet-verified 2026-07-10 against real codex 0.144.1 on /backend-api/codex/responses:
+	// a genuine codex_cli_rs client carries codex_cli_rs in BOTH the leading token and the
+	// trailing (codex_cli_rs; <ver>) — the asymmetric (codex_exec) trailing produced by forcing
+	// CODEX_INTERNAL_ORIGINATOR_OVERRIDE is a "ran exec + overrode originator" tell, not this.
+	// Only the version advanced 0.142.5 -> 0.144.1; the header set/order was otherwise unchanged.
+	DefaultCodexHeaderUserAgent = "codex_cli_rs/0.144.1 (Ubuntu 24.04.1; x86_64) unknown (codex_cli_rs; 0.144.1)"
 
 	// DefaultClaudeCLIVersion is the named Claude Code CLI version used to build the
 	// user-agent below. The Anthropic outbound billing-header cc_version carries the
@@ -203,6 +209,11 @@ const (
 	// it as a product default so upgraded deployments converge to the current codex_cli_rs
 	// default instead of staying pinned to the headless codex_exec UA.
 	LegacyDefaultCodexHeaderUserAgentExec0142Win = "codex_exec/0.142.5 (Windows 10.0.26200; x86_64) unknown (codex_exec; 0.142.5)"
+
+	// LegacyDefaultCodexHeaderUserAgentCliRs0142 was the codex_cli_rs default before the
+	// 0.144.1 version bump (2026-07-10). Kept so already-seeded deployments converge to the
+	// current default on restart via op.settingLegacyDefaultUpgrades.
+	LegacyDefaultCodexHeaderUserAgentCliRs0142 = "codex_cli_rs/0.142.5 (Ubuntu 24.04.1; x86_64) unknown (codex_cli_rs; 0.142.5)"
 
 	// DefaultCodexHeaderBetaFeatures is the current Codex beta-feature header value
 	// (codex_exec 0.142.5, packet-verified on the wire).

@@ -1130,6 +1130,9 @@ func applyCodexHeaderDefaults(req *http.Request, internalRequest *transformermod
 	setHeaderIfMissing(req.Header, "Originator", fp.codexOriginator())
 	setHeaderIfMissing(req.Header, "User-Agent", fp.codexUserAgent())
 	setHeaderIfMissing(req.Header, "X-Codex-Beta-Features", fp.codexBetaFeatures())
+	// Mirror the relay codex fingerprint byte-for-byte (applyCodexHeaderDefaultsWithFingerprint):
+	// codex 0.144.x always sends this static header on /responses (packet-verified 2026-07-10).
+	setHeaderIfMissing(req.Header, "X-Openai-Internal-Codex-Responses-Lite", "true")
 	applyCodexSessionHeaderDefaults(req.Header, internalRequest, fp.codexInstallationID())
 }
 

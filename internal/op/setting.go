@@ -32,6 +32,7 @@ var settingLegacyDefaultUpgrades = map[model.SettingKey]map[string]string{
 		model.LegacyDefaultCodexHeaderUserAgentCliRs0114:   model.DefaultCodexHeaderUserAgent,
 		model.LegacyDefaultCodexHeaderUserAgent0132:        model.DefaultCodexHeaderUserAgent,
 		model.LegacyDefaultCodexHeaderUserAgentExec0142Win: model.DefaultCodexHeaderUserAgent,
+		model.LegacyDefaultCodexHeaderUserAgentCliRs0142:   model.DefaultCodexHeaderUserAgent,
 	},
 	model.SettingKeyCodexHeaderBetaFeatures: {
 		model.LegacyDefaultCodexHeaderBetaFeaturesMultiAgent:           model.DefaultCodexHeaderBetaFeatures,

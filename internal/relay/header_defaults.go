@@ -238,6 +238,9 @@ func applyCodexHeaderDefaultsWithFingerprint(req *http.Request, internalRequest 
 	setHeaderIfMissing(req.Header, "Originator", fp.codexOriginator())
 	setHeaderIfMissing(req.Header, "User-Agent", fp.codexUserAgent())
 	setHeaderIfMissing(req.Header, "X-Codex-Beta-Features", fp.codexBetaFeatures())
+	// codex 0.144.x always emits this static header on /responses (packet-verified 2026-07-10);
+	// wire position (4th, after x-codex-turn-metadata) is driven by codexCanonicalHeaderOrder.
+	setHeaderIfMissing(req.Header, "X-Openai-Internal-Codex-Responses-Lite", "true")
 	applyCodexSessionHeaders(req.Header, internalRequest, fp.codexInstallationID())
 }
 
