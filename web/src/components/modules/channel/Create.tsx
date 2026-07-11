@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
     MorphingDialogClose,
     MorphingDialogTitle,
@@ -6,6 +6,7 @@ import {
     useMorphingDialog,
 } from '@/components/ui/morphing-dialog';
 import { useCreateChannel, ChannelType, AutoGroupType } from '@/api/endpoints/channel';
+import { useFingerprintProfileList } from '@/api/endpoints/fingerprint-profile';
 import { useTranslations } from 'next-intl';
 import { ChannelForm, normalizeBaseUrlForChannelType, type ChannelFormData } from './Form';
 import { ChannelImportCSV } from './ImportCSV';
@@ -13,6 +14,13 @@ import { ChannelImportCSV } from './ImportCSV';
 export function CreateDialogContent() {
     const { setIsOpen } = useMorphingDialog();
     const createChannel = useCreateChannel();
+    const { data: fingerprintProfiles } = useFingerprintProfileList();
+    // NEW channels default their client-fingerprint profile to the built-in
+    // "Linux · Debian" preset. Resolve it by NAME (not a hard-coded id) so it stays
+    // correct across backend id migrations; fall back to 0 (跟随全局) whenever the
+    // preset isn't loaded/found yet, so we never point the form at a non-existent id.
+    const debianProfileId = fingerprintProfiles?.find((p) => p.name === 'Linux · Debian')?.id ?? 0;
+    const appliedDebianDefault = useRef(false);
     const [formData, setFormData] = useState<ChannelFormData>({
         name: '',
         type: ChannelType.OpenAIChat,
@@ -44,6 +52,18 @@ export function CreateDialogContent() {
         openai_models_path: '',
     });
     const t = useTranslations('channel.create');
+
+    // Once the profile list resolves, upgrade the create form from 跟随全局 (0) to the
+    // Debian preset — but only while the field is still pristine (0), so we never
+    // clobber a selection the user already made in-progress. Runs once per mount
+    // (ref-guarded), and the create dialog remounts on every open. Edit forms live in
+    // CardContent.tsx and are unaffected by this.
+    useEffect(() => {
+        if (appliedDebianDefault.current) return;
+        if (debianProfileId === 0) return;
+        appliedDebianDefault.current = true;
+        setFormData((prev) => (prev.cloak_profile_id === 0 ? { ...prev, cloak_profile_id: debianProfileId } : prev));
+    }, [debianProfileId]);
 
     const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
         event.preventDefault();

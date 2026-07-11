@@ -139,12 +139,13 @@ export function useModelList() {
  * 
  * channelModels?.forEach(item => console.log(item.name, item.channel_name));
  */
-export function useModelChannelList() {
+export function useModelChannelList(options: { enabled?: boolean } = {}) {
     return useQuery({
         queryKey: ['models', 'channel'],
         queryFn: async () => {
             return apiClient.get<LLMChannel[]>('/api/v1/model/channel');
         },
+        enabled: options.enabled ?? true,
         refetchInterval: 30000,
         refetchOnMount: 'always',
     });

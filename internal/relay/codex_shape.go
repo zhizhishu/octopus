@@ -28,6 +28,7 @@ func (ra *relayAttempt) prepareCodexRequestShape() {
 		req.Store = &store
 	}
 	applyCodexFastMode(req)
+	normalizeCodexReasoningEffort(req)
 	if len(req.ResponsesInputRaw) == 0 || !responsesInputRawLooksCodexShaped(req.ResponsesInputRaw) {
 		if raw := synthesizeCodexResponsesInputRaw(req.Messages); len(raw) > 0 {
 			req.ResponsesInputRaw = raw
@@ -45,6 +46,48 @@ func applyCodexFastMode(req *transformerModel.InternalLLMRequest) {
 	if strings.TrimSpace(req.ReasoningEffort) == "" {
 		req.ReasoningEffort = "low"
 	}
+}
+
+// normalizeCodexReasoningEffort keeps oct's faithful passthrough for every
+// reasoning effort except the single case that would 400 the upstream: a client
+// sending "max" to a non-GPT-5.6 codex model (e.g. gpt-5.5), which rejects it.
+// GPT-5.6 models (sol/terra/luna) accept "max" and keep it; every other effort
+// value (none/minimal/low/medium/high/xhigh/…) passes through unchanged.
+//
+// This mirrors sub2api's normalizeOpenAIReasoningEffortForModel for the max→xhigh
+// remap only, without its aggressive "drop unknown efforts" behaviour. It is a
+// shape-SAFE body change: it only rewrites the request body's reasoning.effort,
+// never any TLS/header fingerprint. The GPT-5.6 check keys on req.Model, which at
+// this point is the effective upstream model (applyModelMapping has already run).
+func normalizeCodexReasoningEffort(req *transformerModel.InternalLLMRequest) {
+	if req == nil {
+		return
+	}
+	if !strings.EqualFold(strings.TrimSpace(req.ReasoningEffort), "max") {
+		return
+	}
+	if isGPT56Model(req.Model) {
+		return
+	}
+	req.ReasoningEffort = "xhigh"
+}
+
+// isGPT56Model reports whether model refers to the GPT-5.6 family (gpt-5.6,
+// gpt-5.6-sol/terra/luna, …). It mirrors sub2api's isOpenAIGPT56Model semantics:
+// case-insensitive, tolerant of a leading provider/path prefix (e.g.
+// "openai/gpt-5.6-terra") and of date/effort suffixes (e.g.
+// "gpt-5.6-terra-2026-07-09"). A leading path/vendor segment is stripped the same
+// way transformer/model.IsImagenModel does so "openai/gpt-5.6" and "models/gpt-5.6"
+// match like a bare "gpt-5.6".
+func isGPT56Model(model string) bool {
+	name := strings.ToLower(strings.TrimSpace(model))
+	if name == "" {
+		return false
+	}
+	if idx := strings.LastIndex(name, "/"); idx >= 0 {
+		name = name[idx+1:]
+	}
+	return strings.HasPrefix(name, "gpt-5.6")
 }
 
 func (ra *relayAttempt) bridgePlainResponsesCodexHistory() {

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import { useTranslations } from 'next-intl';
-import { KeyRound, Plus, Loader, Trash2, Check, X, Info, CalendarDays, Pencil, Maximize2, BookOpen, Terminal } from 'lucide-react';
+import { KeyRound, Plus, Loader, Trash2, Check, X, Info, CalendarDays, Pencil, Maximize2, BookOpen, Terminal, Search } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Input } from '@/components/ui/input';
 import { Calendar } from '@/components/ui/calendar';
@@ -34,6 +34,8 @@ import {
 } from '@/api/endpoints/apikey';
 import { useAccessPlanList } from '@/api/endpoints/access-plan';
 import { useGroupList } from '@/api/endpoints/group';
+import { useModelChannelList } from '@/api/endpoints/model';
+import { activeModelChannelKeySet, modelChannelKey } from '@/components/modules/group/utils';
 import { useStatsAPIKey } from '@/api/endpoints/stats';
 import { useAuthStore, useUserList } from '@/api/endpoints/user';
 import { cn } from '@/lib/utils';
@@ -224,6 +226,7 @@ function APIKeyForm({ apiKey, isPending, submitLabel, onSubmit, onClose }: APIKe
     const isAdmin = useAuthStore((state) => state.user?.role === 'admin');
     const currentUserID = useAuthStore((state) => state.user?.id);
     const { data: groups = [] } = useGroupList({ enabled: isAdmin });
+    const { data: modelChannels } = useModelChannelList({ enabled: isAdmin });
     const { data: users = [] } = useUserList({ enabled: isAdmin });
     const { data: accessPlans = [] } = useAccessPlanList({ enabled: isAdmin });
 
@@ -252,10 +255,30 @@ function APIKeyForm({ apiKey, isPending, submitLabel, onSubmit, onClose }: APIKe
     });
     const [expireOpen, setExpireOpen] = useState(false);
 
+    const [modelSearch, setModelSearch] = useState('');
+
+    // 仅暴露「当前有存活渠道在服务」的模型池：复用 group 模块的 served-only 逻辑，
+    // 过滤掉所有渠道都被禁用/删除、实际无渠道可路由的幽灵模型（group 卡片同样视其为空池）。
     const availableModels = useMemo(() => {
-        const names = groups.map((g) => g.name).filter(Boolean);
+        // 与 group 卡片一致：加载中(undefined)时不收窄，加载完成后按存活渠道键集判断。
+        const activeKeys = modelChannels ? activeModelChannelKeySet(modelChannels) : undefined;
+        const isServed = (items: NonNullable<typeof groups[number]['items']>) => {
+            if (!activeKeys) return items.length > 0;
+            return items.some((item) => activeKeys.has(modelChannelKey(item.channel_id, item.model_name)));
+        };
+        const names = groups
+            .filter((g) => isServed(g.items ?? []))
+            .map((g) => g.name)
+            .filter(Boolean);
         return Array.from(new Set(names)).sort((a, b) => a.localeCompare(b));
-    }, [groups]);
+    }, [groups, modelChannels]);
+
+    // 搜索只过滤展示的复选框；全选/清空仍作用于完整列表，保持与既有标签语义一致。
+    const filteredModels = useMemo(() => {
+        const term = modelSearch.trim().toLowerCase();
+        if (!term) return availableModels;
+        return availableModels.filter((m) => m.toLowerCase().includes(term));
+    }, [availableModels, modelSearch]);
 
     const expireDate = parseExpireDate(form.expire_at);
     const neverExpire = !form.expire_at;
@@ -509,14 +532,31 @@ function APIKeyForm({ apiKey, isPending, submitLabel, onSubmit, onClose }: APIKe
                         </div>
                     )}
                 </div>
+                {availableModels.length > 0 && (
+                    <div className="relative">
+                        <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                        <Input
+                            type="text"
+                            value={modelSearch}
+                            onChange={(e) => setModelSearch(e.target.value)}
+                            placeholder={t('apiKey.form.searchModels')}
+                            disabled={isPending}
+                            className="h-8 rounded-xl pl-8 text-xs"
+                        />
+                    </div>
+                )}
                 <div className="max-h-40 overflow-auto rounded-xl p-2">
                     {availableModels.length === 0 ? (
                         <div className="text-xs text-muted-foreground py-2 text-center">
                             {t('apiKey.form.noModels')}
                         </div>
+                    ) : filteredModels.length === 0 ? (
+                        <div className="text-xs text-muted-foreground py-2 text-center">
+                            {t('apiKey.form.noMatchedModels')}
+                        </div>
                     ) : (
                         <div className="flex flex-wrap gap-2">
-                            {availableModels.map((m) => {
+                            {filteredModels.map((m) => {
                                 const checked = hasModel(form.supported_models, m);
                                 return (
                                     <button

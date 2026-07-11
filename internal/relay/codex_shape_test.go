@@ -148,6 +148,31 @@ func stringPtrForCodexShapeTest(value string) *string {
 	return &value
 }
 
+func TestNormalizeCodexReasoningEffort(t *testing.T) {
+	cases := []struct {
+		name   string
+		effort string
+		model  string
+		want   string
+	}{
+		{"max on gpt-5.6 stays max", "max", "gpt-5.6-sol", "max"},
+		{"max on gpt-5.5 becomes xhigh", "max", "gpt-5.5", "xhigh"},
+		{"max on prefixed dated gpt-5.6 stays max", "max", "openai/gpt-5.6-terra-2026-07-09", "max"},
+		{"high on gpt-5.5 passes through", "high", "gpt-5.5", "high"},
+		{"empty effort untouched", "", "gpt-5.5", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &model.InternalLLMRequest{Model: tc.model, ReasoningEffort: tc.effort}
+			normalizeCodexReasoningEffort(req)
+			if req.ReasoningEffort != tc.want {
+				t.Fatalf("normalizeCodexReasoningEffort(effort=%q, model=%q) = %q, want %q",
+					tc.effort, tc.model, req.ReasoningEffort, tc.want)
+			}
+		})
+	}
+}
+
 func TestResponsesInputRawLooksCodexShapedRecognizesReasoningToolTurn(t *testing.T) {
 	// Incremental tool turn: reasoning (carrying encrypted_content) plus a
 	// function_call_output, with no message item. This is exactly what the

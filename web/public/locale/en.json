@@ -525,6 +525,8 @@
                 "modelsHint": "Leave empty for unlimited models; select models or use Select all for stricter control.",
                 "selectAllModels": "Select all",
                 "unlimitedModels": "Unlimited",
+                "searchModels": "Search models",
+                "noMatchedModels": "No matching models",
                 "accessPlans": "Plans",
                 "noAccessPlans": "No plans available",
                 "defaultAccessPlan": "Default Plan",

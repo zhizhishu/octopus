@@ -525,6 +525,8 @@
                 "modelsHint": "留空表示不限制模型；需要精确控制时可手动勾选或全选。",
                 "selectAllModels": "全选",
                 "unlimitedModels": "不限",
+                "searchModels": "搜索模型",
+                "noMatchedModels": "没有匹配的模型",
                 "accessPlans": "可用方案",
                 "noAccessPlans": "暂无可选方案",
                 "defaultAccessPlan": "默认方案",

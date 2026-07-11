@@ -227,6 +227,11 @@ export function SettingFingerprintProfile() {
                                         {' / '}
                                         {profile.claude_arch || t('fingerprintProfile.followGlobal')}
                                     </div>
+                                    <div className="min-w-0 truncate">
+                                        <span className="font-mono">{t('fingerprintProfile.fields.codexUserAgent')}</span>
+                                        {': '}
+                                        {profile.codex_user_agent || t('fingerprintProfile.followGlobal')}
+                                    </div>
                                 </div>
                             </div>
                             <div className="flex shrink-0 items-center gap-1.5 justify-self-end">

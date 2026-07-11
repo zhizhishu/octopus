@@ -213,6 +213,28 @@ func fingerprintProfileRefreshCache(ctx context.Context) error {
 			}
 		}
 	}
+	// Bump the two built-in Linux presets' codex_cli_rs UA from 0.142.5 to the current
+	// captured 0.144.1 (packet-verified 2026-07-10; only the version advanced, the
+	// header set/order is unchanged — mirrors DefaultCodexHeaderUserAgent's bump in
+	// model/setting.go). Runs AFTER the codex_exec->codex_cli_rs convergence above, so a
+	// row that just converged to cli_rs/0.142.5 is bumped to 0.144.1 in the SAME restart.
+	// Only rows carrying the EXACT old seeded UA are rewritten, so an operator-customised
+	// codex UA never matches and is left untouched.
+	for i := range profiles {
+		p := &profiles[i]
+		if p.CodexUserAgent == "codex_cli_rs/0.142.5 (Debian 12.0.0; x86_64) unknown (codex_cli_rs; 0.142.5)" {
+			p.CodexUserAgent = "codex_cli_rs/0.144.1 (Debian 12.0.0; x86_64) unknown (codex_cli_rs; 0.144.1)"
+			if err := db.GetDB().WithContext(ctx).Save(p).Error; err != nil {
+				return fmt.Errorf("failed to bump Debian codex UA to 0.144.1: %w", err)
+			}
+		}
+		if p.CodexUserAgent == "codex_cli_rs/0.142.5 (Ubuntu 24.04.1; x86_64) unknown (codex_cli_rs; 0.142.5)" {
+			p.CodexUserAgent = "codex_cli_rs/0.144.1 (Ubuntu 24.04.1; x86_64) unknown (codex_cli_rs; 0.144.1)"
+			if err := db.GetDB().WithContext(ctx).Save(p).Error; err != nil {
+				return fmt.Errorf("failed to bump Ubuntu codex UA to 0.144.1: %w", err)
+			}
+		}
+	}
 	// Note: "默认(Windows)" is intentionally NOT a row — the channel dropdown's
 	// ProfileID=0 option already IS that identity (per-instance seed + global header
 	// settings, byte-for-byte the pre-profile behaviour). An earlier build seeded a
@@ -283,7 +305,7 @@ func fingerprintProfileRefreshCache(ctx context.Context) error {
 		ClaudeArch:           "x64",
 		ClaudeTimeout:        "600",
 		ClaudeStabilize:      &stabilize,
-		CodexUserAgent:       "codex_cli_rs/0.142.5 (Debian 12.0.0; x86_64) unknown (codex_cli_rs; 0.142.5)",
+		CodexUserAgent:       "codex_cli_rs/0.144.1 (Debian 12.0.0; x86_64) unknown (codex_cli_rs; 0.144.1)",
 		CodexOriginator:      "codex_cli_rs",
 		CodexBetaFeatures:    "remote_compaction_v2",
 	}
@@ -297,7 +319,7 @@ func fingerprintProfileRefreshCache(ctx context.Context) error {
 		ClaudeArch:           "x64",
 		ClaudeTimeout:        "600",
 		ClaudeStabilize:      &stabilize,
-		CodexUserAgent:       "codex_cli_rs/0.142.5 (Ubuntu 24.04.1; x86_64) unknown (codex_cli_rs; 0.142.5)",
+		CodexUserAgent:       "codex_cli_rs/0.144.1 (Ubuntu 24.04.1; x86_64) unknown (codex_cli_rs; 0.144.1)",
 		CodexOriginator:      "codex_cli_rs",
 		CodexBetaFeatures:    "remote_compaction_v2",
 	}
