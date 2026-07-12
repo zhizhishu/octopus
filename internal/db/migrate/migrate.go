@@ -11,6 +11,13 @@ import (
 type Migration struct {
 	Version int
 	Up      func(db *gorm.DB) error
+	// AlwaysRun re-executes this migration on every startup even after it was recorded
+	// successful. Use ONLY for idempotent reconcilers whose work can't always finish in a
+	// single pass (e.g. a unique index that can't be created while duplicate rows still
+	// exist and must be retried once an operator cleans them). Up MUST be idempotent and
+	// MUST return nil — not an error — when it intentionally can't finish yet, so a
+	// transient skip never aborts startup.
+	AlwaysRun bool
 }
 
 type MigrationRecordStatus int
@@ -94,8 +101,8 @@ func runMigrationsWithRecord(db *gorm.DB, migrations []Migration) error {
 			return fmt.Errorf("migration %d has nil Up", m.Version)
 		}
 
-		// 已成功则跳过
-		if st, ok := statusByVersion[m.Version]; ok && st == MigrationRecordStatusSuccess {
+		// 已成功则跳过（AlwaysRun 的幂等 reconciler 例外：每次启动都重跑，直到真正完成）
+		if st, ok := statusByVersion[m.Version]; ok && st == MigrationRecordStatusSuccess && !m.AlwaysRun {
 			continue
 		}
 

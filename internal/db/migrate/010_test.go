@@ -100,3 +100,28 @@ func TestMigrateChannelsFollowGlobalToDebianSkipsWhenPresetAbsent(t *testing.T) 
 		t.Fatalf("channel repointed despite absent Debian preset: profile_id = %d, want 0", ch.Cloak.ProfileID)
 	}
 }
+
+// TestMigrateChannelsFollowGlobalToDebianLegacyDebianName resolves the Debian preset by its
+// LEGACY name ("Linux 真机") — the pre-rename direct-upgrade case, since op.InitCache's
+// rename runs after this migration — and still repoints the follow-global channel at it.
+func TestMigrateChannelsFollowGlobalToDebianLegacyDebianName(t *testing.T) {
+	gdb := newRenumberTestDB(t)
+
+	if err := gdb.Create(&model.FingerprintProfile{ID: 1, Name: "Linux 真机"}).Error; err != nil {
+		t.Fatalf("seed legacy debian: %v", err)
+	}
+	if err := gdb.Create(&model.Channel{Name: "follow-auto", Cloak: model.ChannelCloak{Mode: "auto", ProfileID: 0}}).Error; err != nil {
+		t.Fatalf("seed channel: %v", err)
+	}
+
+	if err := migrateChannelsFollowGlobalToDebian(gdb); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	var ch model.Channel
+	if err := gdb.Where("name = ?", "follow-auto").First(&ch).Error; err != nil {
+		t.Fatalf("load channel: %v", err)
+	}
+	if ch.Cloak.ProfileID != 1 {
+		t.Fatalf("channel profile_id = %d, want 1 (migrated to legacy-named Debian preset)", ch.Cloak.ProfileID)
+	}
+}

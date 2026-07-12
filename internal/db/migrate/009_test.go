@@ -151,3 +151,49 @@ func TestMigrateRenumberBuiltinFingerprintProfilesNoOpWhenAlreadyPacked(t *testi
 	}
 	assertRenumbered(t, gdb, "already-packed")
 }
+
+// TestMigrateRenumberBuiltinFingerprintProfilesLegacyNames covers a DIRECT upgrade from a
+// build that predates the "Linux 真机" → "Linux · Debian" rename (which lives in
+// op.InitCache, AFTER this migration): the presets still carry their OLD names at 2/4 when
+// 009 runs. It must still match them by legacy name, renumber to 1/2, and remap the channel
+// cloak reference — so it does not silently no-op and get recorded done over a bad state.
+func TestMigrateRenumberBuiltinFingerprintProfilesLegacyNames(t *testing.T) {
+	gdb := newRenumberTestDB(t)
+
+	if err := gdb.Create(&model.FingerprintProfile{ID: 2, Name: "Linux 真机"}).Error; err != nil {
+		t.Fatalf("seed legacy debian: %v", err)
+	}
+	if err := gdb.Create(&model.FingerprintProfile{ID: 4, Name: "Linux 真机 2 (Ubuntu)"}).Error; err != nil {
+		t.Fatalf("seed legacy ubuntu: %v", err)
+	}
+	if err := gdb.Create(&model.Channel{Name: "pins-legacy-debian", Cloak: model.ChannelCloak{Mode: "auto", ProfileID: 2}}).Error; err != nil {
+		t.Fatalf("seed channel: %v", err)
+	}
+
+	if err := migrateRenumberBuiltinFingerprintProfiles(gdb); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	var profiles []model.FingerprintProfile
+	if err := gdb.Order("id").Find(&profiles).Error; err != nil {
+		t.Fatalf("reload profiles: %v", err)
+	}
+	byName := map[string]model.FingerprintProfile{}
+	for _, p := range profiles {
+		byName[p.Name] = p
+	}
+	// 009 renumbers but does NOT rename — the presets keep their legacy names, now at 1/2.
+	if got := byName["Linux 真机"].ID; got != 1 {
+		t.Fatalf("legacy Debian id = %d, want 1 (%+v)", got, profiles)
+	}
+	if got := byName["Linux 真机 2 (Ubuntu)"].ID; got != 2 {
+		t.Fatalf("legacy Ubuntu id = %d, want 2 (%+v)", got, profiles)
+	}
+	var ch model.Channel
+	if err := gdb.Where("name = ?", "pins-legacy-debian").First(&ch).Error; err != nil {
+		t.Fatalf("load channel: %v", err)
+	}
+	if ch.Cloak.ProfileID != 1 || ch.Cloak.Mode != "auto" {
+		t.Fatalf("channel cloak = %+v, want {Mode:auto ProfileID:1}", ch.Cloak)
+	}
+}

@@ -12,6 +12,11 @@ func init() {
 	RegisterAfterAutoMigration(Migration{
 		Version: 8,
 		Up:      migrateAddUniqueGroupNameIndex,
+		// Re-run on every startup: while duplicate names still exist the index can't be
+		// created, so this must retry once an operator merges/renames them. A one-shot
+		// record would strand it as "done" forever and never build the index. The body is
+		// idempotent (dup pre-check + HasIndex guard).
+		AlwaysRun: true,
 	})
 }
 
@@ -63,12 +68,17 @@ func migrateAddUniqueGroupNameIndex(db *gorm.DB) error {
 		seen[name] = struct{}{}
 	}
 
+	// Idempotent across the AlwaysRun re-executions: once the index exists this is a no-op,
+	// so even MySQL's non-"IF NOT EXISTS" create is never re-issued against an existing one.
+	if db.Migrator().HasIndex(&model.Group{}, "uniq_groups_name") {
+		return nil
+	}
+
 	switch db.Dialector.Name() {
 	case "sqlite", "postgres":
 		return db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_groups_name ON "groups" (name)`).Error
 	case "mysql":
-		// MySQL doesn't support CREATE INDEX IF NOT EXISTS; the migration record
-		// guarantees this runs at most once, so a plain create is safe.
+		// Guarded by HasIndex above, so a plain create (MySQL lacks IF NOT EXISTS) is safe.
 		return db.Exec("CREATE UNIQUE INDEX uniq_groups_name ON `groups` (name)").Error
 	default:
 		log.Warnf("unsupported dialect %q: skipping unique group name index", db.Dialector.Name())

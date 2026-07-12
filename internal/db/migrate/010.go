@@ -48,15 +48,17 @@ func migrateChannelsFollowGlobalToDebian(db *gorm.DB) error {
 		return nil
 	}
 
-	// Resolve the Debian preset by name. If it is absent there is nothing safe to point
-	// follow-global channels at, so skip rather than migrate onto a missing profile.
+	// Resolve the Debian preset by name — new OR legacy (op.InitCache's rename runs after
+	// this migration, so a pre-rename upgrade still has the old name here). If it is absent
+	// there is nothing safe to point follow-global channels at, so skip rather than migrate
+	// onto a missing profile.
 	var debian model.FingerprintProfile
-	if err := db.Where("name = ?", builtinDebianProfileName).First(&debian).Error; err != nil {
+	if err := db.Where("name IN ?", builtinDebianProfileNames).First(&debian).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			log.Warnf("follow-global channel migration: %q preset absent; skipping", builtinDebianProfileName)
+			log.Warnf("follow-global channel migration: Debian preset (any of %v) absent; skipping", builtinDebianProfileNames)
 			return nil
 		}
-		return fmt.Errorf("failed to load %q preset: %w", builtinDebianProfileName, err)
+		return fmt.Errorf("failed to load Debian preset: %w", err)
 	}
 	if debian.ID <= 0 {
 		log.Warnf("follow-global channel migration: %q preset has non-positive id %d; skipping", builtinDebianProfileName, debian.ID)
