@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bestruirui/octopus/internal/helper"
@@ -127,6 +128,12 @@ func updateChannel(c *gin.Context) {
 	stats := op.StatsChannelGet(channel.ID)
 	channel.Stats = &stats
 	scheduleChannelPostProcess([]model.Channel{*channel})
+	// An enable/disable toggled through the edit form must reconcile access-plan routes
+	// promptly, not only at the tail of post-process (which can wait on model fetch). The
+	// sync is idempotent + mutex-serialized, so this extra call is a cheap safety net.
+	if req.Enabled != nil {
+		scheduleAccessPlanChannelSync()
+	}
 	resp.Success(c, channel)
 }
 
@@ -205,22 +212,33 @@ func scheduleChannelPostProcess(channels []model.Channel) {
 			helper.ChannelEnsureModelGroups(channel, ctx)
 			helper.ChannelAutoGroup(channel, ctx)
 		}
-		if err := op.AccessPlanSyncEnabledChannels(ctx); err != nil {
-			log.Warnf("auto-sync access plan channels after channel change: %v", err)
-		}
+		runAccessPlanChannelSync(ctx)
 	}(copied)
 }
 
+// accessPlanSyncMu serializes access-plan reconciliation so overlapping syncs (rapid
+// channel enable/disable/delete bursts plus the post-process tail) can't interleave their
+// route-target writes.
+var accessPlanSyncMu sync.Mutex
+
+// runAccessPlanChannelSync executes one incremental access-plan reconciliation under the
+// package mutex. Plans with auto-sync off are a no-op and the op-layer function is
+// idempotent, so this stays cheap.
+func runAccessPlanChannelSync(ctx context.Context) {
+	accessPlanSyncMu.Lock()
+	defer accessPlanSyncMu.Unlock()
+	if err := op.AccessPlanSyncEnabledChannels(ctx); err != nil {
+		log.Warnf("auto-sync access plan channels: %v", err)
+	}
+}
+
 // scheduleAccessPlanChannelSync runs the incremental access-plan channel sync in the
-// background so channel enable/sync returns immediately. Plans with auto-sync off are a
-// no-op and the op-layer function is idempotent, so this stays cheap.
+// background so channel enable/disable/sync/delete returns immediately.
 func scheduleAccessPlanChannelSync() {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		if err := op.AccessPlanSyncEnabledChannels(ctx); err != nil {
-			log.Warnf("auto-sync access plan channels: %v", err)
-		}
+		runAccessPlanChannelSync(ctx)
 	}()
 }
 
@@ -283,6 +301,9 @@ func deleteChannel(c *gin.Context) {
 		resp.Error(c, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// ChannelDel removed the row + its channel-cache entry; reconcile so AutoSyncChannels
+	// plans evict the deleted channel's route targets without a manual rebuild.
+	scheduleAccessPlanChannelSync()
 	resp.Success(c, nil)
 }
 func fetchModel(c *gin.Context) {

@@ -280,10 +280,28 @@ export function ChannelForm({
     const testChannelProxy = useTestChannelProxy();
     const { data: fingerprintProfiles } = useFingerprintProfileList();
     const sortedFingerprintProfiles = [...(fingerprintProfiles ?? [])].sort((a, b) => a.id - b.id);
-    // "跟随全局" (id 0) was removed as an option; any legacy 0 falls back to the first
-    // preset (Debian) so the Select never renders blank. Live channels are migrated off 0.
+    // "跟随全局" (id 0) was removed as an option. A stored id that isn't a live preset — a
+    // legacy 0, or a dangling id whose profile was deleted — falls back to the first preset
+    // (Debian) so the Select never renders blank. `fallbackProfileId` is 0 only until the
+    // profile list loads.
     const fallbackProfileId = sortedFingerprintProfiles[0]?.id ?? 0;
-    const resolvedProfileId = (formData.cloak_profile_id ?? 0) > 0 ? (formData.cloak_profile_id ?? 0) : fallbackProfileId;
+    const currentProfileId = formData.cloak_profile_id ?? 0;
+    const resolvedProfileId = sortedFingerprintProfiles.some((p) => p.id === currentProfileId) ? currentProfileId : fallbackProfileId;
+    // Write the resolved fallback back into the form once the profile list has loaded, so a
+    // save can't silently submit the stale 0/dangling id while the Select shows Debian.
+    // Ref-guarded to run once per mount and only when the stored id is genuinely invalid, so
+    // it never clobbers a valid in-progress selection (valid channels stay pristine).
+    const appliedProfileFallback = useRef(false);
+    useEffect(() => {
+        if (appliedProfileFallback.current) return;
+        if (sortedFingerprintProfiles.length === 0) return;
+        appliedProfileFallback.current = true;
+        const stored = formData.cloak_profile_id ?? 0;
+        const valid = sortedFingerprintProfiles.some((p) => p.id === stored);
+        if (!valid && fallbackProfileId > 0) {
+            onFormDataChange({ ...formData, cloak_profile_id: fallbackProfileId });
+        }
+    }, [sortedFingerprintProfiles, fallbackProfileId, formData, onFormDataChange]);
     const [channelTestResult, setChannelTestResult] = useState<ModelTestResult | null>(null);
     const [channelTestStream, setChannelTestStream] = useState(true);
 

@@ -156,8 +156,11 @@ func TestNormalizeCodexReasoningEffort(t *testing.T) {
 		want   string
 	}{
 		{"max on gpt-5.6 stays max", "max", "gpt-5.6-sol", "max"},
+		{"max on bare gpt-5.6 stays max", "max", "gpt-5.6", "max"},
 		{"max on gpt-5.5 becomes xhigh", "max", "gpt-5.5", "xhigh"},
 		{"max on prefixed dated gpt-5.6 stays max", "max", "openai/gpt-5.6-terra-2026-07-09", "max"},
+		{"max on gpt-5.60 (not 5.6 family) becomes xhigh", "max", "gpt-5.60", "xhigh"},
+		{"max on gpt-5.6foo (not 5.6 family) becomes xhigh", "max", "gpt-5.6foo", "xhigh"},
 		{"high on gpt-5.5 passes through", "high", "gpt-5.5", "high"},
 		{"empty effort untouched", "", "gpt-5.5", ""},
 	}
@@ -643,6 +646,11 @@ func assertCodexUpstreamRequest(t *testing.T, path string, headers http.Header, 
 	}
 	if got := headers.Get("X-Codex-Beta-Features"); got != defaultCodexBetaFeatures {
 		t.Fatalf("codex beta features = %q, want %q", got, defaultCodexBetaFeatures)
+	}
+	// codex 0.144.x always emits this static header on /responses (packet-verified); assert
+	// the exact "true" so a dropped injection or a value flip is caught as a shape drift.
+	if got := headers.Get("X-Openai-Internal-Codex-Responses-Lite"); got != "true" {
+		t.Fatalf("codex responses-lite header = %q, want %q", got, "true")
 	}
 	if got := headers.Get("Accept"); !strings.Contains(got, "text/event-stream") {
 		t.Fatalf("expected upstream SSE Accept header, got %q", got)

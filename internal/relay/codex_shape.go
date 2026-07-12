@@ -87,7 +87,9 @@ func isGPT56Model(model string) bool {
 	if idx := strings.LastIndex(name, "/"); idx >= 0 {
 		name = name[idx+1:]
 	}
-	return strings.HasPrefix(name, "gpt-5.6")
+	// Require an exact "gpt-5.6" or a "gpt-5.6-<suffix>" (variant/date/effort) so adjacent
+	// names like "gpt-5.60" or "gpt-5.6foo" are NOT mistaken for the 5.6 family.
+	return name == "gpt-5.6" || strings.HasPrefix(name, "gpt-5.6-")
 }
 
 func (ra *relayAttempt) bridgePlainResponsesCodexHistory() {

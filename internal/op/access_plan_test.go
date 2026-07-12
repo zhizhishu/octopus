@@ -615,6 +615,102 @@ func TestAccessPlanSyncEnabledChannelsReconcile(t *testing.T) {
 	}
 }
 
+// TestAccessPlanSyncEvictsDeletedChannel verifies that once a channel is deleted, the
+// next AccessPlanSyncEnabledChannels pass drops its route targets. This is the reconcile
+// the delete handler now schedules, closing the "deleted channel lingers until manual
+// rebuild" gap.
+func TestAccessPlanSyncEvictsDeletedChannel(t *testing.T) {
+	ctx := setupAccessPlanTest(t)
+
+	plans, err := AccessPlanList(ctx)
+	if err != nil {
+		t.Fatalf("list plans: %v", err)
+	}
+	var svip model.AccessPlan
+	for _, plan := range plans {
+		if plan.Slug == "svip" {
+			svip = plan
+			break
+		}
+	}
+	if svip.ID == 0 {
+		t.Fatalf("svip plan not found")
+	}
+
+	svipUpdate := svip
+	svipUpdate.AutoSyncChannels = true
+	if err := AccessPlanUpdate(&svipUpdate, ctx); err != nil {
+		t.Fatalf("enable AutoSyncChannels on svip: %v", err)
+	}
+
+	// A second channel keeps channelCache non-empty after the delete below, so the sync's
+	// "empty cache == not loaded yet" fail-safe (which returns early to avoid nuking every
+	// route on a cache miss) doesn't short-circuit the eviction. A real deployment always
+	// has other channels, so this only matters for the minimal test fixture. It serves an
+	// unrelated model, so it never becomes a target for the "del-test-model" rule.
+	keepAlive := model.Channel{Name: "sync-delete-keepalive", Enabled: true, Model: "keepalive-model"}
+	if err := ChannelCreate(&keepAlive, ctx); err != nil {
+		t.Fatalf("create keepalive channel: %v", err)
+	}
+
+	ch := model.Channel{Name: "sync-delete-channel", Enabled: true, Model: "del-test-model"}
+	if err := ChannelCreate(&ch, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+
+	plans, err = AccessPlanList(ctx)
+	if err != nil {
+		t.Fatalf("list plans after update: %v", err)
+	}
+	for _, plan := range plans {
+		if plan.Slug == "svip" {
+			svip = plan
+			break
+		}
+	}
+
+	rule := model.AccessRouteRule{
+		RouteProfileID: svip.RouteProfileID,
+		RequestModel:   "del-test-model",
+	}
+	if err := AccessRouteRuleCreate(&rule, ctx); err != nil {
+		t.Fatalf("create route rule: %v", err)
+	}
+
+	// --- Phase 1: sync with channel enabled → target should be added ---
+	if err := AccessPlanSyncEnabledChannels(ctx); err != nil {
+		t.Fatalf("sync (add phase): %v", err)
+	}
+	var countAfterAdd int64
+	if err := db.GetDB().WithContext(ctx).
+		Model(&model.AccessRouteTarget{}).
+		Where("route_rule_id = ? AND channel_id = ?", rule.ID, ch.ID).
+		Count(&countAfterAdd).Error; err != nil {
+		t.Fatalf("count targets after add: %v", err)
+	}
+	if countAfterAdd != 1 {
+		t.Fatalf("expected 1 target after add-sync, got %d", countAfterAdd)
+	}
+
+	// --- Phase 2: delete channel then sync → target should be evicted ---
+	if err := ChannelDel(ch.ID, ctx); err != nil {
+		t.Fatalf("delete channel: %v", err)
+	}
+	if err := AccessPlanSyncEnabledChannels(ctx); err != nil {
+		t.Fatalf("sync (evict phase): %v", err)
+	}
+	var countAfterDelete int64
+	if err := db.GetDB().WithContext(ctx).
+		Model(&model.AccessRouteTarget{}).
+		Where("channel_id = ?", ch.ID).
+		Count(&countAfterDelete).Error; err != nil {
+		t.Fatalf("count targets after delete: %v", err)
+	}
+	if countAfterDelete != 0 {
+		t.Fatalf("expected 0 targets after delete+sync, got %d", countAfterDelete)
+	}
+}
+
 // TestAccessPlanSyncHonorsChannelModelMapping verifies that a channel whose
 // selected_models only carry the ugly upstream name (e.g. NVIDIA's
 // "deepseek-ai/deepseek-v4-pro") still joins the pool's canonical route

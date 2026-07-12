@@ -384,6 +384,10 @@ export function useUpdateChannel() {
             logger.log('渠道更新成功:', data);
             queryClient.invalidateQueries({ queryKey: ['channels', 'list'] });
             queryClient.invalidateQueries({ queryKey: ['models', 'channel'] });
+            queryClient.invalidateQueries({ queryKey: ['models', 'list'] });
+            // A disable/enable (or model change) reconciles access-plan routes on the
+            // backend; refresh the plan view so the canvas drops the evicted targets.
+            queryClient.invalidateQueries({ queryKey: ['access-plans', 'list'] });
         },
         onError: (error) => {
             logger.error('渠道更新失败:', error);
@@ -410,6 +414,10 @@ export function useDeleteChannel() {
             logger.log('渠道删除成功');
             queryClient.invalidateQueries({ queryKey: ['channels', 'list'] });
             queryClient.invalidateQueries({ queryKey: ['models', 'channel'] });
+            queryClient.invalidateQueries({ queryKey: ['models', 'list'] });
+            // The delete handler reconciles access-plan routes on the backend; refresh the
+            // plan view so the canvas drops the deleted channel's targets automatically.
+            queryClient.invalidateQueries({ queryKey: ['access-plans', 'list'] });
         },
         onError: (error) => {
             logger.error('渠道删除失败:', error);
