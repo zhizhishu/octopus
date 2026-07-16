@@ -350,6 +350,19 @@ func (o *ResponseOutbound) ensureToolCallState() {
 	}
 }
 
+// ToolCallArgumentsSeen reports whether any function-call arguments have already
+// been accumulated for the given output index from response.function_call_arguments.delta
+// chunks. The relay uses this to tell a real tool-call terminal (arguments captured)
+// from a premature output_item.done marker that arrives with empty arguments before the
+// upstream streams them — treating the latter as terminal would cut the stream and hand
+// the client a tool call with empty arguments it cannot execute.
+func (o *ResponseOutbound) ToolCallArgumentsSeen(outputIndex int) bool {
+	if o == nil || o.toolCallArgsByOutputIndex == nil {
+		return false
+	}
+	return strings.TrimSpace(o.toolCallArgsByOutputIndex[outputIndex]) != ""
+}
+
 // emitToolCallName returns the tool call name only the first time it is emitted
 // for a given output index, and an empty string on every subsequent call.
 //
