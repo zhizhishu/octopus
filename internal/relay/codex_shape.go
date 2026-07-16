@@ -48,28 +48,37 @@ func applyCodexFastMode(req *transformerModel.InternalLLMRequest) {
 	}
 }
 
-// normalizeCodexReasoningEffort keeps oct's faithful passthrough for every
-// reasoning effort except the single case that would 400 the upstream: a client
-// sending "max" to a non-GPT-5.6 codex model (e.g. gpt-5.5), which rejects it.
-// GPT-5.6 models (sol/terra/luna) accept "max" and keep it; every other effort
-// value (none/minimal/low/medium/high/xhigh/…) passes through unchanged.
+// normalizeCodexReasoningEffort adjusts the request body's reasoning.effort for two
+// codex-specific mismatches. It is a shape-SAFE body change (only reasoning.effort,
+// never any TLS/header fingerprint); the GPT-5.6 check keys on req.Model, which at this
+// point is the effective upstream model (applyModelMapping has already run).
 //
-// This mirrors sub2api's normalizeOpenAIReasoningEffortForModel for the max→xhigh
-// remap only, without its aggressive "drop unknown efforts" behaviour. It is a
-// shape-SAFE body change: it only rewrites the request body's reasoning.effort,
-// never any TLS/header fingerprint. The GPT-5.6 check keys on req.Model, which at
-// this point is the effective upstream model (applyModelMapping has already run).
+//  1. GPT-5.6 family (sol/terra/luna): codex 0.144.x does NOT recognise these model names
+//     as reasoning models, so its default request carries a near-zero effort (none/low, or
+//     empty which oct's fast-mode default turns into low) and the model barely thinks — the
+//     reported "5.6 won't think" symptom. These ARE reasoning models, so an under-specified
+//     effort is lifted to "high". A client that deliberately chose medium/high/xhigh/max is
+//     respected, and "max" (which these models accept, unlike 5.5) is kept.
+//  2. Non-5.6 codex models reject "max" (400), so only that single value is remapped to
+//     "xhigh". Every other effort passes through faithfully.
+//
+// Mirrors sub2api's normalizeOpenAIReasoningEffortForModel spirit without its aggressive
+// "drop unknown efforts" behaviour.
 func normalizeCodexReasoningEffort(req *transformerModel.InternalLLMRequest) {
 	if req == nil {
 		return
 	}
-	if !strings.EqualFold(strings.TrimSpace(req.ReasoningEffort), "max") {
-		return
-	}
+	effort := strings.ToLower(strings.TrimSpace(req.ReasoningEffort))
 	if isGPT56Model(req.Model) {
+		switch effort {
+		case "", "none", "minimal", "low":
+			req.ReasoningEffort = "high"
+		}
 		return
 	}
-	req.ReasoningEffort = "xhigh"
+	if effort == "max" {
+		req.ReasoningEffort = "xhigh"
+	}
 }
 
 // isGPT56Model reports whether model refers to the GPT-5.6 family (gpt-5.6,
