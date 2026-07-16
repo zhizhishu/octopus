@@ -2516,6 +2516,13 @@ func (ra *relayAttempt) startFirstByteKeepalive(ctx context.Context) func() {
 // handleResponse 处理非流式响应
 func (ra *relayAttempt) handleResponse(ctx context.Context, response *http.Response, outAdapter model.Outbound) error {
 	limitUpstreamResponseBody(response)
+	// Decompress any upstream Content-Encoding before the outbound parses the body. The
+	// claude/anthropic outbound advertises gzip,deflate,br,zstd and the shared transport has
+	// DisableCompression=true, so Go does not auto-decompress here (unlike the streaming path,
+	// which already calls unwrapResponseEncoding). No-ops on identity/absent/unknown encoding.
+	if err := unwrapResponseEncoding(response); err != nil {
+		return fmt.Errorf("failed to unwrap upstream response encoding: %w", err)
+	}
 	internalResponse, err := outAdapter.TransformResponse(ctx, response)
 	if err != nil {
 		log.Warnf("failed to transform response: %v", err)

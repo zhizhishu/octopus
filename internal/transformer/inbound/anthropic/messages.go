@@ -26,7 +26,11 @@ type MessagesInbound struct {
 	contentIndex              int64
 	stopReason                *string
 	toolCallIndices           map[int]bool // Track which tool call indices we've seen
-	inputToken                int64
+	// toolCallBlockIndex maps an upstream tool_call index to the Anthropic content-block index
+	// its tool_use occupies, so interleaved/parallel argument deltas are routed to the correct
+	// block instead of the latest one.
+	toolCallBlockIndex map[int]int64
+	inputToken         int64
 
 	// Stream chunks storage for aggregation
 	streamChunks []*model.InternalLLMResponse
@@ -902,14 +906,19 @@ func (i *MessagesInbound) TransformStream(ctx context.Context, stream *model.Int
 			if i.toolCallIndices == nil {
 				i.toolCallIndices = make(map[int]bool)
 			}
+			if i.toolCallBlockIndex == nil {
+				i.toolCallBlockIndex = make(map[int]int64)
+			}
 
 			for _, deltaToolCall := range choice.Delta.ToolCalls {
 				toolCallIndex := deltaToolCall.Index
 
 				// Initialize tool call if it doesn't exist
 				if !i.toolCallIndices[toolCallIndex] {
-					// Start a new tool use block, we should stop the previous tool use block
-					if toolCallIndex > 0 {
+					// Start a new tool use block; close the previous tool block only if one is
+					// actually open (guard avoids a spurious content_block_stop when the first
+					// tool fragment carries a non-zero index).
+					if toolCallIndex > 0 && i.hasToolContentStarted {
 						stopEvent := StreamEvent{
 							Type:  "content_block_stop",
 							Index: &i.contentIndex,
@@ -925,6 +934,9 @@ func (i *MessagesInbound) TransformStream(ctx context.Context, stream *model.Int
 
 					i.toolCallIndices[toolCallIndex] = true
 					i.hasToolContentStarted = true
+					// Remember which Anthropic block index this tool_call index owns, so its
+					// later argument deltas (which may interleave with other indices) go here.
+					i.toolCallBlockIndex[toolCallIndex] = i.contentIndex
 
 					startEvent := StreamEvent{
 						Type:  "content_block_start",
@@ -959,10 +971,12 @@ func (i *MessagesInbound) TransformStream(ctx context.Context, stream *model.Int
 						events = append(events, formatSSEEvent("content_block_delta", data))
 					}
 				} else {
-					// Generate content_block_delta for input_json_delta
+					// Generate content_block_delta for input_json_delta, routed to the block this
+					// tool_call index owns (not the latest) so interleaved args don't cross-contaminate.
+					blockIdx := i.toolCallBlockIndex[toolCallIndex]
 					deltaEvent := StreamEvent{
 						Type:  "content_block_delta",
-						Index: &i.contentIndex,
+						Index: &blockIdx,
 						Delta: &StreamDelta{
 							Type:        lo.ToPtr("input_json_delta"),
 							PartialJSON: &deltaToolCall.Function.Arguments,
