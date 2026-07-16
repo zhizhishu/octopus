@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -288,6 +289,32 @@ func TestRelayErrorDetailsClassifiesClientAbort(t *testing.T) {
 	}
 	if shouldRecordBreakerFailure(0, err) {
 		t.Fatalf("client abort must not count against circuit breaker")
+	}
+}
+
+func TestRelayErrorResponseClassifiesEmptyUpstreamStream(t *testing.T) {
+	// Every channel opened an SSE stream then ended it without content. The client
+	// must see a distinct, actionable code instead of the opaque generic all-failed,
+	// and the message must explain the likely cause (oversized/overloaded) so the
+	// caller shortens the request rather than blindly retrying the same payload.
+	cases := []error{
+		errors.New("upstream stream ended without internal response"),
+		fmt.Errorf("channel maomao failed: %w", errors.New("upstream stream ended without internal response")),
+	}
+	for _, err := range cases {
+		status, code, message := relayErrorResponse(err)
+		if status != http.StatusBadGateway {
+			t.Fatalf("empty-stream status = %d, want 502 (err=%v)", status, err)
+		}
+		if code != "octopus_upstream_empty_response" {
+			t.Fatalf("empty-stream code = %q, want octopus_upstream_empty_response (err=%v)", code, err)
+		}
+		if code == "octopus_all_channels_failed" || strings.Contains(message, "service temporarily unavailable") {
+			t.Fatalf("empty-stream response must not fall back to the opaque generic (err=%v): code=%q msg=%q", err, code, message)
+		}
+		if !strings.Contains(message, "empty response") {
+			t.Fatalf("empty-stream message should explain the cause, got %q", message)
+		}
 	}
 }
 

@@ -206,6 +206,16 @@ func relayErrorResponse(err error) (status int, code string, message string) {
 		}
 		return status, code, "request canceled by client"
 	}
+	// Every eligible channel opened an SSE stream but ended it without producing any
+	// content (no error event either — see ChatOutbound.TransformStream, which surfaces
+	// any upstream `{"error":...}` as a real error). This is the "upstream returned
+	// empty" case, typically an oversized request the providers cannot handle or an
+	// overloaded provider that stalls then closes. Surface a distinct, actionable code
+	// instead of the opaque generic so the client knows to shorten the request rather
+	// than blindly retry the same oversized payload.
+	if isRetryableUpstreamStreamError(err) {
+		return http.StatusBadGateway, "octopus_upstream_empty_response", localErrorPublicMessage("all upstream providers returned an empty response — the request may be too large for this model's providers, or they are overloaded; try a shorter request or a different model")
+	}
 	return http.StatusBadGateway, "octopus_all_channels_failed", localErrorPublicMessage("service temporarily unavailable, please retry")
 }
 
