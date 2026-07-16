@@ -462,13 +462,26 @@ func (ra *relayAttempt) prepareResponsesEncryptedContent(outAdapter transformerM
 		stripResponsesEncryptedContent(ra.internalRequest)
 		return
 	}
-	if ra.responsesEncryptedContentOwnerMatchesCurrentAttempt() {
-		return
+	// Under store=false the encrypted reasoning item is the official channel for carrying
+	// reasoning context across turns (matches how sub2api / CLIProxyAPI handle it): a
+	// reasoning model needs the prior turn's encrypted reasoning replayed to continue a
+	// tool loop. Preserve it by default so the reasoning→tool-call loop keeps going instead
+	// of the model restarting with a plain-text answer (the "stopped calling tools"
+	// symptom). Only strip when we can PROVE the encrypted reasoning belongs to a different
+	// tenant/channel/key than this attempt; an unprovable mismatch is still caught by the
+	// upstream "invalid encrypted content" 400, which drives the strip-and-retry recovery.
+	if ra.responsesEncryptedContentOwnerIsForeign() {
+		stripResponsesEncryptedContent(ra.internalRequest)
 	}
-	stripResponsesEncryptedContent(ra.internalRequest)
 }
 
-func (ra *relayAttempt) responsesEncryptedContentOwnerMatchesCurrentAttempt() bool {
+// responsesEncryptedContentOwnerIsForeign reports whether the request's
+// previous_response_id maps to a RECORDED owner that is a different tenant, channel, or
+// key than the current attempt. Unknown ownership — no previous_response_id, or an
+// unrecorded id (e.g. codex under store=false, which never sends one) — is treated as NOT
+// foreign, so the encrypted reasoning is preserved by default. A real mismatch we cannot
+// prove up front is still caught by the upstream invalid-encrypted-content 400 recovery.
+func (ra *relayAttempt) responsesEncryptedContentOwnerIsForeign() bool {
 	if ra == nil || ra.internalRequest == nil || ra.internalRequest.PreviousResponseID == nil {
 		return false
 	}
@@ -477,9 +490,9 @@ func (ra *relayAttempt) responsesEncryptedContentOwnerMatchesCurrentAttempt() bo
 		return false
 	}
 	if !responsesSessionOwnerMatches(owner, ra.apiKeyID, ra.userID) {
-		return false
+		return true
 	}
-	return ra.channel != nil && ra.channel.ID == owner.channelID && ra.usedKey.ID == owner.channelKeyID
+	return ra.channel == nil || ra.channel.ID != owner.channelID || ra.usedKey.ID != owner.channelKeyID
 }
 
 func (ra *relayAttempt) canTrustStickyForUnknownResponsesCursor() bool {

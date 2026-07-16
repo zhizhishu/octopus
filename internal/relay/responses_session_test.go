@@ -522,7 +522,11 @@ func TestPrepareResponsesEncryptedContentStripsCrossChannel(t *testing.T) {
 	}
 }
 
-func TestPrepareResponsesEncryptedContentStripsUnknownStickyKey(t *testing.T) {
+// Option B (default-preserve): an unknown-owner encrypted reasoning item under store=false
+// is the multi-turn continuity channel and is PRESERVED by default; only a proven foreign
+// owner is stripped. (Was TestPrepareResponsesEncryptedContentStripsUnknownStickyKey, which
+// asserted the old strip-when-unsure default.)
+func TestPrepareResponsesEncryptedContentPreservesUnknownOwner(t *testing.T) {
 	clearResponsesSessionCacheForTest()
 	encrypted := "gAAAAABsticky"
 	group := dbmodel.Group{
@@ -556,12 +560,65 @@ func TestPrepareResponsesEncryptedContentStripsUnknownStickyKey(t *testing.T) {
 
 	ra.prepareResponsesEncryptedContent(&openaiOutbound.ResponseOutbound{})
 
-	if req.Messages[0].ReasoningSignature != nil {
-		t.Fatalf("expected unknown sticky encrypted content to be stripped, got %#v", req.Messages[0].ReasoningSignature)
+	if req.Messages[0].ReasoningSignature == nil || *req.Messages[0].ReasoningSignature != encrypted {
+		t.Fatalf("expected unknown-owner encrypted content to be preserved (store=false continuity), got %#v", req.Messages[0].ReasoningSignature)
 	}
 }
 
-func TestPrepareResponsesSessionDropsOldStickyCursorAndStripsUnknownEncryptedRawInput(t *testing.T) {
+// Codex-shaped clients run with store=false and never send a previous_response_id, so
+// the owner-match check can never succeed for them. When the turn is pinned to the same
+// channel+key through a correctness-critical sticky source, the encrypted reasoning was
+// produced by that very account and must be preserved so the reasoning→tool-call loop can
+// continue instead of restarting with a plain-text answer (the "stopped calling tools"
+// symptom). This mirrors TestPrepareResponsesSessionCursorKeepsUnknownStickyKeyCursorWithTrustedClientSession.
+func TestPrepareResponsesEncryptedContentKeepsUnknownStickyKeyWithTrustedClientSession(t *testing.T) {
+	clearResponsesSessionCacheForTest()
+	encrypted := "gAAAAABtrustedsticky"
+	group := dbmodel.Group{
+		SessionKeepTime: 300,
+		Items: []dbmodel.GroupItem{{
+			ChannelID: 6,
+			ModelName: "gpt-5.5",
+			Priority:  1,
+			Weight:    1,
+		}},
+	}
+	balancer.SetSticky(1, "gpt-5.5", 6, 7)
+	req := &transformerModel.InternalLLMRequest{
+		Messages: []transformerModel.Message{{
+			Role:               "assistant",
+			ReasoningSignature: &encrypted,
+		}},
+		ResponsesInputRaw: []byte(`[{"type":"reasoning","encrypted_content":"gAAAAABtrustedsticky"},{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}]`),
+	}
+	ra := &relayAttempt{
+		relayRequest: &relayRequest{
+			inboundType:         inbound.InboundTypeOpenAIResponse,
+			internalRequest:     req,
+			iter:                balancer.NewIterator(group, 1, "gpt-5.5"),
+			clientSessionSource: "header:Session_id",
+		},
+		channel: &dbmodel.Channel{ID: 6, Type: outbound.OutboundTypeOpenAIResponse},
+		usedKey: dbmodel.ChannelKey{ID: 7},
+	}
+	if !ra.iter.Next() {
+		t.Fatalf("expected sticky candidate")
+	}
+
+	ra.prepareResponsesEncryptedContent(&openaiOutbound.ResponseOutbound{})
+
+	if req.Messages[0].ReasoningSignature == nil || *req.Messages[0].ReasoningSignature != encrypted {
+		t.Fatalf("expected trusted sticky channel key to preserve codex encrypted reasoning, got %#v", req.Messages[0].ReasoningSignature)
+	}
+	if !strings.Contains(string(req.ResponsesInputRaw), `gAAAAABtrustedsticky`) {
+		t.Fatalf("expected trusted sticky raw encrypted content to be preserved, got %s", string(req.ResponsesInputRaw))
+	}
+}
+
+// Option B: the unknown-owner cursor is still dropped, but the encrypted reasoning is now
+// PRESERVED by default (previously stripped). A real account mismatch is caught by the
+// upstream invalid-encrypted-content 400 recovery.
+func TestPrepareResponsesSessionDropsOldStickyCursorButPreservesEncryptedRawInput(t *testing.T) {
 	clearResponsesSessionCacheForTest()
 	previous := "resp_old_codex_unknown_owner"
 	group := dbmodel.Group{
@@ -597,19 +654,25 @@ func TestPrepareResponsesSessionDropsOldStickyCursorAndStripsUnknownEncryptedRaw
 	if req.PreviousResponseID != nil {
 		t.Fatalf("expected old sticky cursor without explicit client session to be dropped, got %#v", *req.PreviousResponseID)
 	}
-	if strings.Contains(string(req.ResponsesInputRaw), `gAAAAABold`) {
-		t.Fatalf("expected unknown-owner encrypted content to be stripped, got %s", string(req.ResponsesInputRaw))
+	if !strings.Contains(string(req.ResponsesInputRaw), `gAAAAABold`) {
+		t.Fatalf("expected unknown-owner encrypted content to be preserved (store=false continuity), got %s", string(req.ResponsesInputRaw))
 	}
 	if !strings.Contains(string(req.ResponsesInputRaw), `"continue old conversation"`) {
 		t.Fatalf("expected native responses input shape to be preserved, got %s", string(req.ResponsesInputRaw))
 	}
 }
 
-func TestPrepareResponsesEncryptedContentStripsRawInput(t *testing.T) {
+// Option B still strips when the prior response is a PROVEN foreign owner (recorded on a
+// different channel/key). This keeps coverage of the raw-input strip mechanism: the reasoning
+// item's encrypted_content is removed while message content and non-reasoning fields survive.
+func TestPrepareResponsesEncryptedContentStripsForeignOwnerRawInput(t *testing.T) {
 	clearResponsesSessionCacheForTest()
 	encrypted := "gAAAAABraw"
+	previous := "resp_foreign_raw"
+	recordResponsesSession(previous, 6, 7) // owner = channel 6 / key 7
 	req := &transformerModel.InternalLLMRequest{
-		ResponsesInputRaw: []byte(`[{"type":"reasoning","encrypted_content":"gAAAAABraw"},{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}],"encrypted_content":"leave-message-alone"}]`),
+		PreviousResponseID: &previous,
+		ResponsesInputRaw:  []byte(`[{"type":"reasoning","encrypted_content":"gAAAAABraw"},{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}],"encrypted_content":"leave-message-alone"}]`),
 		Messages: []transformerModel.Message{{
 			Role:               "assistant",
 			ReasoningSignature: &encrypted,
@@ -620,8 +683,8 @@ func TestPrepareResponsesEncryptedContentStripsRawInput(t *testing.T) {
 			inboundType:     inbound.InboundTypeOpenAIResponse,
 			internalRequest: req,
 		},
-		channel: &dbmodel.Channel{ID: 6, Type: outbound.OutboundTypeOpenAIResponse},
-		usedKey: dbmodel.ChannelKey{ID: 7},
+		channel: &dbmodel.Channel{ID: 8, Type: outbound.OutboundTypeOpenAIResponse}, // different channel → foreign owner
+		usedKey: dbmodel.ChannelKey{ID: 9},
 	}
 
 	ra.prepareResponsesEncryptedContent(&openaiOutbound.ResponseOutbound{})
