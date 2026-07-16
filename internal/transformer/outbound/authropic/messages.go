@@ -853,8 +853,13 @@ func convertAssistantMessage(msg model.Message) []anthropicModel.MessageParam {
 func convertAssistantWithToolCalls(msg model.Message) []anthropicModel.MessageParam {
 	var blocks []anthropicModel.MessageContentBlock
 
-	// Add thinking block if present
-	if msg.ReasoningContent != nil && *msg.ReasoningContent != "" {
+	// Add thinking block only when it carries a signature. Anthropic 400s on a thinking block
+	// without a valid signature, so a reasoning block that lost its signature crossing a
+	// protocol boundary (codex Responses -> Anthropic multi-turn, where claude's
+	// thinking.signature was never surfaced back as reasoning.encrypted_content) must be
+	// dropped rather than sent unsigned. A genuine claude->claude turn always carries the
+	// signature, so this is a no-op there. Mirrors CLIProxyAPI (drops on an empty signature).
+	if msg.ReasoningContent != nil && *msg.ReasoningContent != "" && anthropicThinkingSignaturePresent(msg.ReasoningSignature) {
 		blocks = append(blocks, anthropicModel.MessageContentBlock{
 			Type:      "thinking",
 			Thinking:  msg.ReasoningContent,
@@ -929,10 +934,20 @@ func hasThinkingContent(msg model.Message) bool {
 	return msg.ReasoningContent != nil && *msg.ReasoningContent != ""
 }
 
+// anthropicThinkingSignaturePresent reports whether a captured reasoning signature can be
+// replayed as an Anthropic thinking-block signature. Anthropic rejects (400) a thinking block
+// whose signature is absent, so an unsigned reasoning block must be dropped rather than
+// emitted. Mirrors CLIProxyAPI convertResponsesReasoningToClaudeThinking.
+func anthropicThinkingSignaturePresent(sig *string) bool {
+	return sig != nil && strings.TrimSpace(*sig) != ""
+}
+
 func buildMultipleContentWithThinking(msg model.Message) anthropicModel.MessageContent {
 	var blocks []anthropicModel.MessageContentBlock
 
-	if msg.ReasoningContent != nil && *msg.ReasoningContent != "" {
+	// Drop an unsigned thinking block (see anthropicThinkingSignaturePresent). The text block
+	// below is always appended, so the assistant message is never left empty.
+	if msg.ReasoningContent != nil && *msg.ReasoningContent != "" && anthropicThinkingSignaturePresent(msg.ReasoningSignature) {
 		blocks = append(blocks, anthropicModel.MessageContentBlock{
 			Type:      "thinking",
 			Thinking:  msg.ReasoningContent,

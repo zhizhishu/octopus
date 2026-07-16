@@ -31,6 +31,125 @@ func TestClaudeFingerprintVersionConsistency(t *testing.T) {
 	}
 }
 
+// TestApplyHeaderDefaultsStripsCodexClientHeadersOnAnthropicOutbound pins the fix:
+// a codex CLI downstream's 5 client headers (Originator / X-Codex-Beta-Features /
+// X-Codex-Turn-Metadata / X-Codex-Window-Id / X-Openai-Internal-Codex-Responses-Lite)
+// ride onto the outbound request via copyHeaders (they are not hop-by-hop), but a
+// genuine claude-cli never emits them. On an Anthropic (cloak-applying) channel they
+// must be deleted so the request is not dressed as BOTH claude-cli and codex — a
+// contradictory fingerprint. The canonical claude defaults must still be present.
+func TestApplyHeaderDefaultsStripsCodexClientHeadersOnAnthropicOutbound(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	upstreamReq := httptest.NewRequest(http.MethodPost, "https://anyrouter.top/v1/messages", nil)
+	// The codex downstream's client headers, already forwarded onto the outbound request.
+	codexHeaders := []string{
+		"Originator",
+		"X-Codex-Beta-Features",
+		"X-Codex-Turn-Metadata",
+		"X-Codex-Window-Id",
+		"X-Openai-Internal-Codex-Responses-Lite",
+	}
+	for _, h := range codexHeaders {
+		upstreamReq.Header.Set(h, "codex-value")
+	}
+
+	ra := &relayAttempt{
+		relayRequest: &relayRequest{
+			c:               c,
+			inboundType:     inbound.InboundTypeOpenAIResponse, // codex client -> claude model = the codex->claude path
+			internalRequest: &transformermodel.InternalLLMRequest{Model: "claude-opus-4-8"},
+		},
+		channel: &dbmodel.Channel{Type: outbound.OutboundTypeAnthropic},
+	}
+
+	ra.copyHeaders(upstreamReq)
+
+	// (a) all 5 codex headers gone.
+	for _, h := range codexHeaders {
+		if got := upstreamReq.Header.Get(h); got != "" {
+			t.Fatalf("codex client header %q must be stripped on an Anthropic outbound, got %q", h, got)
+		}
+	}
+
+	// (b) canonical claude defaults (applyClaudeHeaderDefaults) still present.
+	if got := upstreamReq.Header.Get("User-Agent"); got != defaultClaudeUserAgent {
+		t.Fatalf("claude default user-agent = %q, want %q", got, defaultClaudeUserAgent)
+	}
+	if got := upstreamReq.Header.Get("Anthropic-Version"); got != "2023-06-01" {
+		t.Fatalf("anthropic-version = %q, want 2023-06-01", got)
+	}
+	if got := upstreamReq.Header.Get("X-App"); got != "cli" {
+		t.Fatalf("x-app = %q, want cli", got)
+	}
+	if got := upstreamReq.Header.Get("X-Stainless-Lang"); got != "js" {
+		t.Fatalf("x-stainless-lang = %q, want js", got)
+	}
+	if got := upstreamReq.Header.Get("X-Stainless-Package-Version"); got != defaultClaudePackageVersion {
+		t.Fatalf("x-stainless-package-version = %q, want %q", got, defaultClaudePackageVersion)
+	}
+	if got := upstreamReq.Header.Get("X-Stainless-OS"); got != defaultClaudeOS {
+		t.Fatalf("x-stainless-os = %q, want %q", got, defaultClaudeOS)
+	}
+}
+
+// TestApplyHeaderDefaultsKeepsOriginatorForNonCodexToAnthropic guards the reviewer-flagged
+// regression: "Originator" is a generic header name, not codex-only, so a non-codex client
+// (claude/chat -> claude) must keep it. The strip is gated on a codex (Responses) inbound.
+func TestApplyHeaderDefaultsKeepsOriginatorForNonCodexToAnthropic(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	upstreamReq := httptest.NewRequest(http.MethodPost, "https://anyrouter.top/v1/messages", nil)
+	upstreamReq.Header.Set("Originator", "internal-audit-agent")
+
+	ra := &relayAttempt{
+		relayRequest: &relayRequest{
+			c:               c,
+			inboundType:     inbound.InboundTypeAnthropic, // genuine claude client, not codex
+			internalRequest: &transformermodel.InternalLLMRequest{Model: "claude-opus-4-8"},
+		},
+		channel: &dbmodel.Channel{Type: outbound.OutboundTypeAnthropic},
+	}
+
+	ra.copyHeaders(upstreamReq)
+
+	if got := upstreamReq.Header.Get("Originator"); got != "internal-audit-agent" {
+		t.Fatalf("non-codex Originator must be preserved on a claude->claude request, got %q", got)
+	}
+}
+
+// TestApplyHeaderDefaultsKeepsCodexClientHeadersOnCodexOutbound is the negative case:
+// on an OpenAIResponse (codex) channel the codex client headers are legitimate and
+// must be KEPT — stripCodexClientHeaders runs only for Anthropic outbounds. Distinctive
+// preset values (setHeaderIfMissing preserves them) prove they were not deleted.
+func TestApplyHeaderDefaultsKeepsCodexClientHeadersOnCodexOutbound(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	upstreamReq := httptest.NewRequest(http.MethodPost, "https://upstream.example/v1/responses", nil)
+	upstreamReq.Header.Set("Originator", "my-codex-originator")
+	upstreamReq.Header.Set("X-Codex-Beta-Features", "my-codex-beta")
+
+	ra := &relayAttempt{
+		relayRequest: &relayRequest{c: c, inboundType: inbound.InboundTypeOpenAIResponse},
+		channel:      &dbmodel.Channel{Type: outbound.OutboundTypeOpenAIResponse},
+	}
+
+	ra.copyHeaders(upstreamReq)
+
+	if got := upstreamReq.Header.Get("Originator"); got != "my-codex-originator" {
+		t.Fatalf("codex channel must keep Originator, got %q", got)
+	}
+	if got := upstreamReq.Header.Get("X-Codex-Beta-Features"); got != "my-codex-beta" {
+		t.Fatalf("codex channel must keep X-Codex-Beta-Features, got %q", got)
+	}
+}
+
 func TestShouldForwardClientHeaderFiltersTimeoutHeaders(t *testing.T) {
 	blocked := []string{
 		"X-Stainless-Timeout",

@@ -28,6 +28,15 @@ func (ra *relayAttempt) applyHeaderDefaults(req *http.Request) {
 	if ra == nil || req == nil || ra.channel == nil {
 		return
 	}
+	// Only on the codex (Responses inbound) -> claude (Anthropic outbound) path, strip the
+	// codex / OpenAI-Responses-specific client headers a codex downstream forwarded through
+	// copyHeaders. A genuine claude-cli never emits these, so carrying them upstream dresses
+	// one request as BOTH claude-cli and codex — a contradictory fingerprint. Gated on the
+	// codex inbound so a non-codex client's own header (notably the generic "Originator") is
+	// never removed from a chat->claude / claude->claude request.
+	if ra.channel.Type == outbound.OutboundTypeAnthropic && ra.inboundType == inbound.InboundTypeOpenAIResponse {
+		stripCodexClientHeaders(req.Header)
+	}
 	if !shouldApplyChannelCloak(ra.channel.Cloak) {
 		// cloak=never: don't dress as claude. But the downstream client's Anthropic-Beta
 		// (copied through by copyHeaders) would otherwise LEAK to the upstream — for a
@@ -71,6 +80,18 @@ func (ra *relayAttempt) applyGenericHeaderDefaults(req *http.Request) {
 		ua = dbmodel.DefaultGenericUA
 	}
 	setHeaderIfMissing(req.Header, "User-Agent", ua)
+}
+
+// stripCodexClientHeaders removes the codex / OpenAI-Responses-specific request headers a
+// codex CLI downstream sends. They are not hop-by-hop, so copyHeaders forwards them; on an
+// Anthropic outbound they must be deleted because a genuine claude-cli never emits them.
+// Additive to shouldForwardClientHeader, which already drops the session/trace variants.
+func stripCodexClientHeaders(header http.Header) {
+	header.Del("Originator")
+	header.Del("X-Codex-Beta-Features")
+	header.Del("X-Codex-Turn-Metadata")
+	header.Del("X-Codex-Window-Id")
+	header.Del("X-Openai-Internal-Codex-Responses-Lite")
 }
 
 func shouldApplyChannelCloak(cloak dbmodel.ChannelCloak) bool {

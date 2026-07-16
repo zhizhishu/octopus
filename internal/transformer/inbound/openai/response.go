@@ -39,6 +39,11 @@ type ResponseInbound struct {
 	// Content accumulation
 	accumulatedText      strings.Builder
 	accumulatedReasoning strings.Builder
+	// reasoningSignature holds claude's thinking.signature (delivered by the anthropic outbound
+	// as a signature_delta -> Delta.ReasoningSignature chunk) so closeReasoningItem can surface
+	// it back to the codex client as reasoning.encrypted_content, letting the next turn replay it
+	// upstream. Empty when the upstream sent no signature.
+	reasoningSignature string
 
 	// Tool call tracking
 	toolCalls           map[int]*model.ToolCall
@@ -176,6 +181,13 @@ func (i *ResponseInbound) TransformStream(ctx context.Context, stream *model.Int
 		if choice.Delta != nil {
 			if reasoning := choice.Delta.GetReasoningContent(); reasoning != "" {
 				events = append(events, i.handleReasoningContent(lo.ToPtr(reasoning))...)
+			}
+			// Capture claude's thinking signature (arrives in its own anthropic signature_delta
+			// chunk, after the reasoning text) so closeReasoningItem can emit it as
+			// reasoning.encrypted_content. Without this the signature is lost and the next codex
+			// turn sends an unsigned thinking block Anthropic 400s on.
+			if choice.Delta.ReasoningSignature != nil && *choice.Delta.ReasoningSignature != "" {
+				i.reasoningSignature = *choice.Delta.ReasoningSignature
 			}
 		}
 
@@ -597,6 +609,11 @@ func (i *ResponseInbound) closeReasoningItem() [][]byte {
 			Text: fullReasoning,
 		}},
 	}
+	// Round-trip claude's captured signature as reasoning.encrypted_content so the codex client
+	// can replay it next turn. enqueueEvent also copies this item into response.completed.output.
+	if i.reasoningSignature != "" {
+		item.EncryptedContent = lo.ToPtr(i.reasoningSignature)
+	}
 
 	events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
 		Type:        "response.output_item.done",
@@ -606,6 +623,7 @@ func (i *ResponseInbound) closeReasoningItem() [][]byte {
 
 	i.outputIndex++
 	i.accumulatedReasoning.Reset()
+	i.reasoningSignature = ""
 
 	return events
 }
@@ -1848,7 +1866,7 @@ func convertToResponsesAPIResponse(resp *model.InternalLLMResponse) *ResponsesRe
 
 		// Handle reasoning content
 		if message.ReasoningContent != nil && *message.ReasoningContent != "" {
-			result.Output = append(result.Output, ResponsesItem{
+			reasoningItem := ResponsesItem{
 				ID:     generateItemID(),
 				Type:   "reasoning",
 				Status: lo.ToPtr("completed"),
@@ -1858,7 +1876,13 @@ func convertToResponsesAPIResponse(resp *model.InternalLLMResponse) *ResponsesRe
 						Text: *message.ReasoningContent,
 					},
 				},
-			})
+			}
+			// Round-trip claude's thinking.signature as reasoning.encrypted_content so codex can
+			// replay it next turn (prevents the unsigned-thinking-block 400 on the following turn).
+			if message.ReasoningSignature != nil && *message.ReasoningSignature != "" {
+				reasoningItem.EncryptedContent = message.ReasoningSignature
+			}
+			result.Output = append(result.Output, reasoningItem)
 		}
 
 		// Handle tool calls
