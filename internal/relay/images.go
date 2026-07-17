@@ -651,6 +651,9 @@ func (m *imagesRelayMetrics) saveLog(ctx context.Context, err error, duration ti
 	if apiKey, getErr := op.APIKeyGet(m.APIKeyID, ctx); getErr == nil {
 		relayLog.RequestAPIKeyName = apiKey.Name
 	}
+	if user, getErr := op.UserGet(m.UserID); getErr == nil {
+		relayLog.UserName = user.Username
+	}
 
 	// 首字时间
 	if !m.FirstToken.IsZero() {

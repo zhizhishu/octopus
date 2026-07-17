@@ -96,6 +96,9 @@ func saveClientValidationRelayLog(ctx context.Context, c *gin.Context, inboundTy
 	if apiKey, getErr := op.APIKeyGet(relayLog.APIKeyID, ctx); getErr == nil {
 		relayLog.RequestAPIKeyName = apiKey.Name
 	}
+	if user, getErr := op.UserGet(relayLog.UserID); getErr == nil {
+		relayLog.UserName = user.Username
+	}
 
 	if logErr := op.RelayLogAdd(ctx, relayLog); logErr != nil {
 		log.Warnf("failed to save client validation relay log: %v", logErr)
@@ -224,6 +227,9 @@ func saveCursorEmptyProbeRelayLog(ctx context.Context, c *gin.Context, req *tran
 	}
 	if apiKey, getErr := op.APIKeyGet(relayLog.APIKeyID, ctx); getErr == nil {
 		relayLog.RequestAPIKeyName = apiKey.Name
+	}
+	if user, getErr := op.UserGet(relayLog.UserID); getErr == nil {
+		relayLog.UserName = user.Username
 	}
 
 	if logErr := op.RelayLogAdd(ctx, relayLog); logErr != nil {

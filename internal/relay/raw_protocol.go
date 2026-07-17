@@ -1163,6 +1163,9 @@ func (m *rawProtocolRelayMetrics) saveLog(ctx context.Context, err error, durati
 	if apiKey, getErr := op.APIKeyGet(m.APIKeyID, ctx); getErr == nil {
 		relayLog.RequestAPIKeyName = apiKey.Name
 	}
+	if user, getErr := op.UserGet(m.UserID); getErr == nil {
+		relayLog.UserName = user.Username
+	}
 	if !m.FirstToken.IsZero() {
 		relayLog.Ftut = int(m.FirstToken.Sub(m.StartTime).Milliseconds())
 	}

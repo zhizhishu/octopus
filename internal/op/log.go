@@ -125,6 +125,16 @@ func relayLogFlushToDB(ctx context.Context) error {
 
 	result := db.GetDB().WithContext(ctx).Create(&batch)
 	if result.Error != nil {
+		// flush 失败也把这批从缓存排空: 否则一个坏行(如超长字段撞 varchar 上限)会让之后
+		// 每次 flush 都带着它重试、永久失败, 而 enabled 分支无淘汰 → 缓存无上限增长。
+		// 丢掉这一批(含可能是暂时性 DB 抖动的正常行), 换取落库不被单条坏行永久卡死。
+		relayLogCacheLock.Lock()
+		if len(relayLogCache) >= flushedUpto {
+			relayLogCache = relayLogCache[flushedUpto:]
+		} else {
+			relayLogCache = relayLogCache[:0]
+		}
+		relayLogCacheLock.Unlock()
 		return result.Error
 	}
 

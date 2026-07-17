@@ -257,6 +257,9 @@ func addAuditLog(ctx context.Context, req dbmodel.ModelTestRequest, result dbmod
 		AccessPlanName:    result.AccessPlanName,
 		BillingModel:      result.RequestModel,
 	}
+	if user, getErr := op.UserGet(userID); getErr == nil {
+		relayLog.UserName = user.Username
+	}
 	return op.RelayLogAdd(ctx, relayLog)
 }
 
