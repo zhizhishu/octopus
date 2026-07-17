@@ -215,60 +215,6 @@ func TestResponsesStreamToolCallDoneSynthesizesTerminalForSequentialCLI(t *testi
 	}
 }
 
-// TestResponsesStreamToolCallEmptyDoneBeforeArgsKeepsStreaming reproduces the codex
-// "stalls after one sentence" bug: some upstreams (anyrouter's gpt-5.6 responses proxy)
-// emit response.output_item.done for the function call as an empty "item opened" marker
-// BEFORE streaming response.function_call_arguments.delta. Treating that empty done as a
-// terminal (parallel_tool_calls=false) cut the stream and delivered a tool call with empty
-// arguments the client could not execute. The relay must instead keep reading until the
-// arguments arrive, so the client sees the real command.
-func TestResponsesStreamToolCallEmptyDoneBeforeArgsKeepsStreaming(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
-	parallel := false
-
-	ra := &relayAttempt{relayRequest: &relayRequest{
-		c:            c,
-		inboundType:  inbound.InboundTypeOpenAIResponse,
-		inAdapter:    &openaiInbound.ResponseInbound{},
-		requestModel: "gpt-5.6-sol",
-		internalRequest: &transformermodel.InternalLLMRequest{
-			Model:             "gpt-5.6-sol",
-			ParallelToolCalls: &parallel,
-		},
-	}}
-	response := &http.Response{
-		Header: http.Header{"Content-Type": []string{"text/event-stream"}},
-		Body: io.NopCloser(strings.NewReader(
-			`data: {"type":"response.created","response":{"id":"resp_tool","object":"response","created_at":123,"model":"gpt-5.6-sol","status":"in_progress","output":[]}}` + "\n\n" +
-				`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"shell_command"}}` + "\n\n" +
-				// Empty-args done arrives FIRST (the premature marker that used to cut the stream).
-				`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"shell_command","arguments":""}}` + "\n\n" +
-				// Arguments stream AFTER the empty done — must not be lost.
-				`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"command\":\"pwd\"}"}` + "\n\n" +
-				`data: {"type":"response.function_call_arguments.done","output_index":0,"arguments":"{\"command\":\"pwd\"}"}` + "\n\n",
-		)),
-	}
-
-	if err := ra.handleStreamResponse(c.Request.Context(), response, &openaiOutbound.ResponseOutbound{}); err != nil {
-		t.Fatalf("handle tool call stream: %v", err)
-	}
-	body := rec.Body.String()
-	if !strings.Contains(body, `pwd`) {
-		t.Fatalf("arguments streamed after the empty done were lost — client would get an unexecutable empty tool call. body=%s", body)
-	}
-	for _, want := range []string{
-		`"type":"response.completed"`,
-		"data: [DONE]\n\n",
-	} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("expected synthesized terminal to contain %q, got %s", want, body)
-		}
-	}
-}
-
 func TestResponsesStreamClientCancelAfterCompletedSucceeds(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()

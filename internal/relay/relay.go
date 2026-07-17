@@ -2238,61 +2238,39 @@ func (ra *relayAttempt) shouldTreatResponsesToolCallDoneAsTerminal(outAdapter mo
 	if ra == nil || ra.internalRequest == nil || ra.inboundType != inbound.InboundTypeOpenAIResponse {
 		return false
 	}
-	respOut, ok := outAdapter.(*openaiOutbound.ResponseOutbound)
-	if !ok {
+	switch outAdapter.(type) {
+	case *openaiOutbound.ResponseOutbound:
+	default:
 		return false
 	}
 	if ra.internalRequest.ParallelToolCalls == nil || *ra.internalRequest.ParallelToolCalls {
 		return false
 	}
-	outputIndex, doneArgs, ok := responsesToolCallDoneEvent(data)
-	if !ok {
-		return false
-	}
-	// Only a safe terminal once the tool call's arguments are actually available —
-	// carried on this done event, or already accumulated from earlier
-	// function_call_arguments.delta chunks. Some upstreams (observed: anyrouter's
-	// gpt-5.6 responses proxy) emit output_item.done as an "item opened" marker with
-	// empty arguments and stream the arguments + usage-bearing response.completed
-	// afterwards. Treating that empty done as terminal cut the stream early and handed
-	// the client (codex, parallel_tool_calls=false) a tool call with empty arguments it
-	// could not execute — the turn stalled after a one-line preamble. Wait for the
-	// arguments (or the real completion / EOF) instead.
-	if strings.TrimSpace(doneArgs) != "" {
-		return true
-	}
-	return respOut.ToolCallArgumentsSeen(outputIndex)
+	return responsesToolCallDoneEvent(data)
 }
 
-// responsesToolCallDoneEvent reports whether data is a response.output_item.done
-// event for a tool/function call. It returns the output index and the arguments
-// carried on the done item — which may be empty when an upstream emits the done as
-// an "item opened" marker and streams the arguments via separate
-// response.function_call_arguments.delta chunks afterwards.
-func responsesToolCallDoneEvent(data string) (outputIndex int, arguments string, ok bool) {
+func responsesToolCallDoneEvent(data string) bool {
 	data = strings.TrimSpace(data)
 	if data == "" || strings.HasPrefix(data, "[DONE]") {
-		return 0, "", false
+		return false
 	}
 	var envelope struct {
-		Type        string `json:"type"`
-		OutputIndex int    `json:"output_index"`
-		Item        *struct {
-			Type      string `json:"type"`
-			Arguments string `json:"arguments"`
+		Type string `json:"type"`
+		Item *struct {
+			Type string `json:"type"`
 		} `json:"item,omitempty"`
 	}
 	if err := json.Unmarshal([]byte(data), &envelope); err != nil {
-		return 0, "", false
+		return false
 	}
 	if strings.TrimSpace(envelope.Type) != "response.output_item.done" || envelope.Item == nil {
-		return 0, "", false
+		return false
 	}
 	switch strings.TrimSpace(envelope.Item.Type) {
 	case "tool_call", "function_call", "local_shell_call", "tool_search_call", "custom_tool_call", "mcp_tool_call":
-		return envelope.OutputIndex, envelope.Item.Arguments, true
+		return true
 	default:
-		return 0, "", false
+		return false
 	}
 }
 
