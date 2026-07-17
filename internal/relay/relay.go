@@ -251,10 +251,14 @@ runIterator:
 				result = ra.attempt()
 			}
 			if result.Success {
+				// 成功的这一次尝试所用的 Key 即最终 Key, 回填其备注供日志展示。
+				metrics.ChannelKeyRemark = usedKey.Remark
 				metrics.Save(c.Request.Context(), true, nil, append(allAttempts, iter.Attempts()...))
 				return
 			}
 			if result.Written {
+				// 已向下游提交(不可再故障转移), 记录已提交这次尝试所用 Key 的备注。
+				metrics.ChannelKeyRemark = usedKey.Remark
 				metrics.Save(c.Request.Context(), false, result.Err, append(allAttempts, iter.Attempts()...))
 				return
 			}

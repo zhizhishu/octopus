@@ -40,6 +40,10 @@ type RelayMetrics struct {
 	SessionKey    string
 	SessionSource string
 
+	// ChannelKeyRemark 记录最终(成功/已提交)尝试所用渠道 Key 的备注, 仅供日志展示。
+	// 重试会切换 Key, 因此由 relay 在成功/已写出下游的那一刻回填最终 Key 的备注。
+	ChannelKeyRemark string
+
 	// 参数覆盖
 	ParamOverride   string
 	AccessPlan      *model.AccessPlan
@@ -386,6 +390,7 @@ func (m *RelayMetrics) saveLog(ctx context.Context, err error, duration time.Dur
 		RequestModelName:      m.RequestModel,
 		ChannelName:           channelName,
 		ChannelId:             channelID,
+		ChannelKeyRemark:      m.ChannelKeyRemark,
 		ActualModelName:       actualModel,
 		UseTime:               int(duration.Milliseconds()),
 		Attempts:              attempts,
@@ -399,8 +404,18 @@ func (m *RelayMetrics) saveLog(ctx context.Context, err error, duration time.Dur
 	}
 	applyBillingSnapshotToRelayLog(&relayLog, billingSnapshot)
 
+	// 推理强度: InternalRequest 是与转发链共享的指针, 此处读到的是经 gpt-5.6 自动抬升等
+	// 归一化后的有效值(见 transformer/model/model.go:ReasoningEffort)。
+	if m.InternalRequest != nil {
+		relayLog.ReasoningEffort = m.InternalRequest.ReasoningEffort
+	}
+
 	if apiKey, getErr := op.APIKeyGet(m.APIKeyID, ctx); getErr == nil {
 		relayLog.RequestAPIKeyName = apiKey.Name
+	}
+	// 用户名: 与 APIKeyGet 同样按 id 反查, 命中失败则留空(不阻断日志写入)。
+	if user, getErr := op.UserGet(m.UserID); getErr == nil {
+		relayLog.UserName = user.Username
 	}
 
 	// 首字时间

@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, useState, useEffect, type ReactNode } from 'react';
-import { Clock, Cpu, Zap, AlertCircle, ArrowDownToLine, ArrowUpFromLine, DollarSign, ArrowRight, ArrowDown, Send, MessageSquare, Loader2, RotateCw, ChevronDown, ChevronUp, Pin, KeyRound, Percent, CheckCircle2, XCircle, Eye, Hash, MapPin, type LucideIcon } from 'lucide-react';
+import { Clock, Cpu, Zap, AlertCircle, ArrowDownToLine, ArrowUpFromLine, DollarSign, ArrowRight, ArrowDown, Send, MessageSquare, Loader2, RotateCw, ChevronDown, ChevronUp, Pin, KeyRound, Percent, CheckCircle2, XCircle, Eye, Hash, MapPin, User, type LucideIcon } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { motion, AnimatePresence } from 'motion/react';
 import JsonView from '@uiw/react-json-view';
@@ -404,6 +404,9 @@ export function LogCard({ log }: { log: RelayLog }) {
     );
     const sensitiveVisible = useSensitiveStore((state) => state.sensitiveVisible);
     const requestAPIKeyName = useMemo(() => log.request_api_key_name?.trim() ?? '', [log.request_api_key_name]);
+    const userName = useMemo(() => log.user_name?.trim() ?? '', [log.user_name]);
+    const reasoningEffort = useMemo(() => log.reasoning_effort?.trim() ?? '', [log.reasoning_effort]);
+    const channelKeyRemark = useMemo(() => log.channel_key_remark?.trim() ?? '', [log.channel_key_remark]);
     const requestEndpoint = useMemo(() => log.request_endpoint?.trim() ?? '', [log.request_endpoint]);
     const requestPath = useMemo(() => log.request_path?.trim() ?? '', [log.request_path]);
     // 连通性测试日志：费用/缓存/token 这些对它全是噪音，按这个标记隐掉。
@@ -631,6 +634,21 @@ export function LogCard({ log }: { log: RelayLog }) {
                                     {requestAPIKeyName && (
                                         <DetailTile icon={<KeyRound className="size-3.5" />} label="API Key">
                                             <MonoSafeText mode="wrap" value={maskSensitive(requestAPIKeyName, sensitiveVisible)} className="block text-xs text-foreground" />
+                                        </DetailTile>
+                                    )}
+                                    {userName && (
+                                        <DetailTile icon={<User className="size-3.5" />} label={t('userName')}>
+                                            <SafeText mode="wrap" value={userName} className="block text-xs text-foreground" />
+                                        </DetailTile>
+                                    )}
+                                    {channelKeyRemark && (
+                                        <DetailTile icon={<KeyRound className="size-3.5" />} label={t('channelKey')}>
+                                            <MonoSafeText mode="wrap" value={maskSensitive(channelKeyRemark, sensitiveVisible)} className="block text-xs text-foreground" />
+                                        </DetailTile>
+                                    )}
+                                    {reasoningEffort && (
+                                        <DetailTile icon={<Zap className="size-3.5" />} label={t('reasoningEffort')}>
+                                            <SafeText mode="wrap" value={reasoningEffort} className="block text-xs font-semibold text-foreground" />
                                         </DetailTile>
                                     )}
                                     {log.request_ip && (

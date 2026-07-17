@@ -39,8 +39,11 @@ export interface RelayLog {
     request_path?: string;       // original inbound path
     request_model_name: string;  // 请求模型名称
     request_api_key_name?: string; // 请求使用的 API Key 名称
+    user_name?: string;          // 发起请求的用户名, 仅管理员日志返回
+    reasoning_effort?: string;   // 生效的推理/思考强度(经 gpt-5.6 自动抬升后的最终值)
     channel: number;             // 实际使用的渠道ID
     channel_name: string;        // 渠道名称
+    channel_key_remark?: string; // 实际使用的渠道 Key 的备注名
     actual_model_name: string;   // 实际使用模型名称
     input_tokens: number;        // 输入Token
     output_tokens: number;       // 输出Token

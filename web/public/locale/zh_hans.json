@@ -831,7 +831,10 @@
             "endpoint": "端点",
             "channelAttempts": "渠道尝试",
             "stream": "流式",
-            "nonStream": "非流式"
+            "nonStream": "非流式",
+            "reasoningEffort": "推理强度",
+            "userName": "用户",
+            "channelKey": "渠道密钥"
         }
     },
     "channel": {
@@ -914,6 +917,9 @@
             "advanced": "高级设置",
             "apiKey": "API Key",
             "apiKeyBulkHint": "每行一个 key，或粘贴 JSON 数组",
+            "bulkAddKey": "批量粘贴",
+            "bulkAddKeyPlaceholder": "每行一个 key，或用逗号/JSON 数组",
+            "bulkAddKeySubmit": "全部添加",
             "customHeader": "自定义 Header",
             "customHeaderKey": "Header Key",
             "customHeaderValue": "Header Value",

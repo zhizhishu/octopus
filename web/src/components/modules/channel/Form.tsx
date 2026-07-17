@@ -269,6 +269,8 @@ export function ChannelForm({
     const [fetchedModels, setFetchedModels] = useState<string[]>(() => expandOneMillionModelAliases(formData.discovered_models ?? []));
     const inputRef = useRef<HTMLInputElement>(null);
     const [bulkHeaderText, setBulkHeaderText] = useState('');
+    const [bulkKeyText, setBulkKeyText] = useState('');
+    const [showBulkKey, setShowBulkKey] = useState(false);
     const [modelFilter, setModelFilter] = useState('');
     const [mappingRows, setMappingRows] = useState<Array<{ client: string; upstream: string }>>(() =>
         Object.entries(formData.model_mapping ?? {}).map(([client, upstream]) => ({ client, upstream }))
@@ -532,6 +534,39 @@ export function ChannelForm({
         }
         onFormDataChange({ ...formData, keys: nextKeys });
         toast.success(`已粘贴 ${parsed.length} 个 key`);
+    };
+
+    // 批量粘贴入口：把 textarea 里的多行/逗号/JSON 数组一次性拆成多条 key，
+    // 复用 handleKeyPaste 的合并语义（对已有非空 key 去重、enabled=true、优先填掉末尾空行）。
+    const handleBulkAddKeys = () => {
+        const parsed = parseBulkKeys(bulkKeyText);
+        if (parsed.length === 0) return;
+        const currentKeys = formData.keys ?? [];
+        const existingSet = new Set(currentKeys.map((k) => k.channel_key.trim()).filter(Boolean));
+        const additions = parsed.filter((k) => !existingSet.has(k));
+        if (additions.length === 0) {
+            setBulkKeyText('');
+            return;
+        }
+        const lastIdx = currentKeys.length - 1;
+        const lastIsEmpty = lastIdx >= 0 && !currentKeys[lastIdx].channel_key.trim();
+        let nextKeys: ChannelKeyFormItem[];
+        if (lastIsEmpty) {
+            const [first, ...rest] = additions;
+            nextKeys = [
+                ...currentKeys.slice(0, lastIdx),
+                { ...currentKeys[lastIdx], channel_key: first },
+                ...rest.map((k): ChannelKeyFormItem => ({ enabled: true, channel_key: k })),
+            ];
+        } else {
+            nextKeys = [
+                ...currentKeys,
+                ...additions.map((k): ChannelKeyFormItem => ({ enabled: true, channel_key: k })),
+            ];
+        }
+        onFormDataChange({ ...formData, keys: nextKeys });
+        setBulkKeyText('');
+        toast.success(`已添加 ${additions.length} 个 key`);
     };
 
     const handleAddKey = () => {
@@ -855,17 +890,51 @@ export function ChannelForm({
                     <label className="text-sm font-medium text-card-foreground">
                         {t('apiKey')} {formData.keys.length > 0 ? `(${formData.keys.length})` : ''}
                     </label>
-                    <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        onClick={handleAddKey}
-                        className="h-6 px-2 text-xs text-muted-foreground/70 hover:text-muted-foreground hover:bg-transparent"
-                    >
-                        <Plus className="h-3 w-3 mr-1" />
-                        {t('add')}
-                    </Button>
+                    <div className="flex items-center gap-1">
+                        <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setShowBulkKey((v) => !v)}
+                            className="h-6 px-2 text-xs text-muted-foreground/70 hover:text-muted-foreground hover:bg-transparent"
+                        >
+                            {t('bulkAddKey')}
+                        </Button>
+                        <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={handleAddKey}
+                            className="h-6 px-2 text-xs text-muted-foreground/70 hover:text-muted-foreground hover:bg-transparent"
+                        >
+                            <Plus className="h-3 w-3 mr-1" />
+                            {t('add')}
+                        </Button>
+                    </div>
                 </div>
+                {showBulkKey && (
+                    <div className="space-y-2 rounded-xl border border-border bg-background/40 p-2">
+                        <textarea
+                            value={bulkKeyText}
+                            onChange={(e) => setBulkKeyText(e.target.value)}
+                            placeholder={t('bulkAddKeyPlaceholder')}
+                            spellCheck={false}
+                            className="min-h-20 w-full rounded-xl border border-border bg-background px-3 py-2 font-mono text-xs leading-relaxed text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        />
+                        <div className="flex justify-end">
+                            <Button
+                                type="button"
+                                variant="secondary"
+                                size="sm"
+                                onClick={handleBulkAddKeys}
+                                disabled={!bulkKeyText.trim()}
+                                className="h-7 rounded-xl px-3 text-xs"
+                            >
+                                {t('bulkAddKeySubmit')}
+                            </Button>
+                        </div>
+                    </div>
+                )}
                 <div className="space-y-2">
                     {(formData.keys ?? []).map((k, idx) => (
                         <div key={k.id ?? `new-${idx}`} className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(7rem,10rem)_auto_auto]">

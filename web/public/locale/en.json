@@ -831,7 +831,10 @@
             "endpoint": "Endpoint",
             "channelAttempts": "Channel Attempts",
             "stream": "Stream",
-            "nonStream": "Non-stream"
+            "nonStream": "Non-stream",
+            "reasoningEffort": "Reasoning Effort",
+            "userName": "User",
+            "channelKey": "Channel Key"
         }
     },
     "channel": {
@@ -914,6 +917,9 @@
             "advanced": "Advanced Settings",
             "apiKey": "API Key",
             "apiKeyBulkHint": "One key per line, or paste a JSON array",
+            "bulkAddKey": "Bulk paste",
+            "bulkAddKeyPlaceholder": "One key per line, or comma-separated / a JSON array",
+            "bulkAddKeySubmit": "Add all",
             "customHeader": "Custom Headers",
             "customHeaderKey": "Header Key",
             "customHeaderValue": "Header Value",

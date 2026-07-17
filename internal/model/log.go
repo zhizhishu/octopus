@@ -60,8 +60,11 @@ type RelayLog struct {
 	RequestPath           string           `json:"request_path" gorm:"size:256"`
 	RequestModelName      string           `json:"request_model_name"`
 	RequestAPIKeyName     string           `json:"request_api_key_name"`
+	UserName              string           `json:"user_name"`
+	ReasoningEffort       string           `json:"reasoning_effort" gorm:"size:32"`
 	ChannelId             int              `json:"channel"`
 	ChannelName           string           `json:"channel_name"`
+	ChannelKeyRemark      string           `json:"channel_key_remark"`
 	ActualModelName       string           `json:"actual_model_name"`
 	InputTokens           int              `json:"input_tokens"`
 	OutputTokens          int              `json:"output_tokens"`
