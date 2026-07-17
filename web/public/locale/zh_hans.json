@@ -834,7 +834,7 @@
             "nonStream": "非流式",
             "reasoningEffort": "推理强度",
             "userName": "用户",
-            "channelKey": "渠道密钥"
+            "channelKey": "渠道 Key 备注"
         }
     },
     "channel": {
@@ -920,6 +920,9 @@
             "bulkAddKey": "批量粘贴",
             "bulkAddKeyPlaceholder": "每行一个 key，或用逗号/JSON 数组",
             "bulkAddKeySubmit": "全部添加",
+            "bulkAddKeyInvalid": "输入无效：不是合法的 key JSON 数组",
+            "bulkAddKeyAllDup": "粘贴的 key 都已存在",
+            "bulkAddKeyAdded": "已添加 {count} 个 key",
             "customHeader": "自定义 Header",
             "customHeaderKey": "Header Key",
             "customHeaderValue": "Header Value",

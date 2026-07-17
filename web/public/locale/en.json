@@ -834,7 +834,7 @@
             "nonStream": "Non-stream",
             "reasoningEffort": "Reasoning Effort",
             "userName": "User",
-            "channelKey": "Channel Key"
+            "channelKey": "Key Remark"
         }
     },
     "channel": {
@@ -920,6 +920,9 @@
             "bulkAddKey": "Bulk paste",
             "bulkAddKeyPlaceholder": "One key per line, or comma-separated / a JSON array",
             "bulkAddKeySubmit": "Add all",
+            "bulkAddKeyInvalid": "Invalid input: not a valid JSON array of keys",
+            "bulkAddKeyAllDup": "All pasted keys already exist",
+            "bulkAddKeyAdded": "Added {count} key(s)",
             "customHeader": "Custom Headers",
             "customHeaderKey": "Header Key",
             "customHeaderValue": "Header Value",

@@ -115,7 +115,7 @@ export interface ChannelFormData {
 
 export interface ChannelFormProps {
     formData: ChannelFormData;
-    onFormDataChange: (data: ChannelFormData) => void;
+    onFormDataChange: (data: ChannelFormData | ((prev: ChannelFormData) => ChannelFormData)) => void;
     onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
     isPending: boolean;
     submitText: string;
@@ -344,11 +344,13 @@ export function ChannelForm({
                     if (data && data.length > 0) {
                         const nextFetched = expandOneMillionModelAliases(data.map((m) => m.trim()).filter(Boolean));
                         setFetchedModels(nextFetched);
-                        onFormDataChange({ ...formData, discovered_models: nextFetched });
+                        // 函数式更新：合并进最新 state，避免异步回调用渲染期的 stale formData
+                        // 覆盖掉这期间用户的并发编辑（如批量粘贴新加的 key）。
+                        onFormDataChange((prev) => ({ ...prev, discovered_models: nextFetched }));
                         toast.success(t('modelRefreshSuccess'));
                     } else {
                         setFetchedModels([]);
-                        onFormDataChange({ ...formData, discovered_models: [] });
+                        onFormDataChange((prev) => ({ ...prev, discovered_models: [] }));
                         toast.warning(t('modelRefreshEmpty'));
                     }
                 },
@@ -487,75 +489,100 @@ export function ChannelForm({
         }
     };
 
-    const parseBulkKeys = (value: string): string[] => {
-        const trimmed = value.trim();
-        if (!trimmed) return [];
+    // 把用户输入解析成一组 key。返回 { keys, invalid }：
+    // - 看起来像 JSON 数组([ 开头)就按 JSON 严格解析，只收其中的字符串元素，
+    //   绝不退回分隔符切分（否则 `["sk-a",]`、`[]`、含 null/对象的数组会被切成垃圾 key）；
+    //   解析失败或不是数组 → invalid=true，交由调用方报错、不静默生成垃圾。
+    // - 否则按换行/逗号切分。零宽字符 JS 的 trim() 去不掉，这里显式剥掉。
+    const parseBulkKeys = (value: string): { keys: string[]; invalid: boolean } => {
+        const clean = (s: string) => s.replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
+        const trimmed = clean(value);
+        if (!trimmed) return { keys: [], invalid: false };
         if (trimmed.startsWith('[')) {
             try {
                 const arr = JSON.parse(trimmed) as unknown;
                 if (Array.isArray(arr)) {
-                    const result = (arr as unknown[]).map((k) => String(k).trim()).filter(Boolean);
-                    if (result.length > 0) return [...new Set(result)];
+                    const keys = [...new Set(
+                        (arr as unknown[])
+                            .filter((k): k is string => typeof k === 'string')
+                            .map(clean)
+                            .filter(Boolean),
+                    )];
+                    return { keys, invalid: false };
                 }
-            } catch { /* fall through */ }
+                return { keys: [], invalid: true }; // 合法 JSON 但不是数组
+            } catch {
+                return { keys: [], invalid: true }; // 看着像 JSON 数组但格式错误
+            }
         }
-        return [...new Set(trimmed.split(/[\r\n,]+/).map((s) => s.trim()).filter(Boolean))];
+        return { keys: [...new Set(trimmed.split(/[\r\n,]+/).map(clean).filter(Boolean))], invalid: false };
     };
 
     const handleKeyPaste = (idx: number, e: React.ClipboardEvent<HTMLInputElement>) => {
         const text = e.clipboardData.getData('text');
-        const parsed = parseBulkKeys(text);
+        const { keys: parsed, invalid } = parseBulkKeys(text);
+        if (invalid) {
+            e.preventDefault();
+            toast.error(t('bulkAddKeyInvalid'));
+            return;
+        }
         if (parsed.length <= 1) return; // single key — let browser handle natively
         e.preventDefault();
         const currentKeys = formData.keys;
         const existingSet = new Set(currentKeys.map((k) => k.channel_key.trim()).filter(Boolean));
+        const additions = parsed.filter((k) => !existingSet.has(k));
+        if (additions.length === 0) {
+            toast.error(t('bulkAddKeyAllDup'));
+            return;
+        }
         const slotIsEmpty = !currentKeys[idx]?.channel_key.trim();
+        const [first, ...rest] = additions;
         let nextKeys: ChannelKeyFormItem[];
         if (slotIsEmpty) {
-            const extra = parsed
-                .slice(1)
-                .filter((k) => !existingSet.has(k))
-                .map((k): ChannelKeyFormItem => ({ enabled: true, channel_key: k }));
             nextKeys = [
                 ...currentKeys.slice(0, idx),
-                { ...currentKeys[idx], channel_key: parsed[0] },
+                { enabled: true, channel_key: first },
                 ...currentKeys.slice(idx + 1),
-                ...extra,
+                ...rest.map((k): ChannelKeyFormItem => ({ enabled: true, channel_key: k })),
             ];
         } else {
-            const extra = parsed
-                .filter((k) => !existingSet.has(k))
-                .map((k): ChannelKeyFormItem => ({ enabled: true, channel_key: k }));
             nextKeys = [
                 ...currentKeys.slice(0, idx + 1),
-                ...extra,
+                ...additions.map((k): ChannelKeyFormItem => ({ enabled: true, channel_key: k })),
                 ...currentKeys.slice(idx + 1),
             ];
         }
         onFormDataChange({ ...formData, keys: nextKeys });
-        toast.success(`已粘贴 ${parsed.length} 个 key`);
+        toast.success(t('bulkAddKeyAdded', { count: additions.length }));
     };
 
     // 批量粘贴入口：把 textarea 里的多行/逗号/JSON 数组一次性拆成多条 key，
     // 复用 handleKeyPaste 的合并语义（对已有非空 key 去重、enabled=true、优先填掉末尾空行）。
     const handleBulkAddKeys = () => {
-        const parsed = parseBulkKeys(bulkKeyText);
+        const { keys: parsed, invalid } = parseBulkKeys(bulkKeyText);
+        if (invalid) {
+            toast.error(t('bulkAddKeyInvalid'));
+            return;
+        }
         if (parsed.length === 0) return;
         const currentKeys = formData.keys ?? [];
         const existingSet = new Set(currentKeys.map((k) => k.channel_key.trim()).filter(Boolean));
         const additions = parsed.filter((k) => !existingSet.has(k));
         if (additions.length === 0) {
+            toast.error(t('bulkAddKeyAllDup'));
             setBulkKeyText('');
             return;
         }
         const lastIdx = currentKeys.length - 1;
         const lastIsEmpty = lastIdx >= 0 && !currentKeys[lastIdx].channel_key.trim();
+        const [first, ...rest] = additions;
         let nextKeys: ChannelKeyFormItem[];
         if (lastIsEmpty) {
-            const [first, ...rest] = additions;
+            // 用全新对象填掉末尾空行，不 spread 旧空行的 enabled/id/remark
+            // （否则一个被禁用或残留 id 的空行会让首个导入 key 继承错误状态）。
             nextKeys = [
                 ...currentKeys.slice(0, lastIdx),
-                { ...currentKeys[lastIdx], channel_key: first },
+                { enabled: true, channel_key: first },
                 ...rest.map((k): ChannelKeyFormItem => ({ enabled: true, channel_key: k })),
             ];
         } else {
@@ -566,7 +593,7 @@ export function ChannelForm({
         }
         onFormDataChange({ ...formData, keys: nextKeys });
         setBulkKeyText('');
-        toast.success(`已添加 ${additions.length} 个 key`);
+        toast.success(t('bulkAddKeyAdded', { count: additions.length }));
     };
 
     const handleAddKey = () => {

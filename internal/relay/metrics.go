@@ -405,9 +405,16 @@ func (m *RelayMetrics) saveLog(ctx context.Context, err error, duration time.Dur
 	applyBillingSnapshotToRelayLog(&relayLog, billingSnapshot)
 
 	// 推理强度: InternalRequest 是与转发链共享的指针, 此处读到的是经 gpt-5.6 自动抬升等
-	// 归一化后的有效值(见 transformer/model/model.go:ReasoningEffort)。
+	// 归一化后的有效值(见 transformer/model/model.go:ReasoningEffort)。reasoning_effort 是
+	// 客户端自由透传字段(Validate 不校验), 必须按列宽 size:32 截断——否则一个超长值会让
+	// PG/MySQL 批量 INSERT 失败, 而 flush 失败的坏行不排空, 会卡死整个 relay 日志落库批次。
+	// 纯审计快照, 截断无害; 已知 effort(high/low/max/…) 远短于 32。
 	if m.InternalRequest != nil {
-		relayLog.ReasoningEffort = m.InternalRequest.ReasoningEffort
+		effort := m.InternalRequest.ReasoningEffort
+		if r := []rune(effort); len(r) > 32 {
+			effort = string(r[:32])
+		}
+		relayLog.ReasoningEffort = effort
 	}
 
 	if apiKey, getErr := op.APIKeyGet(m.APIKeyID, ctx); getErr == nil {
