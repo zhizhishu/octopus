@@ -26,7 +26,13 @@ type ResponseOutbound struct {
 	toolCallNameByOutputIndex        map[int]string
 	toolCallNameEmittedByOutputIndex map[int]bool
 	toolCallArgsByOutputIndex        map[int]string
-	hasToolCallStream                bool
+	// toolCallIsCustomByOutputIndex marks an output index whose tool call is a
+	// Responses custom_tool_call (freeform-grammar tool). Its payload arrives as
+	// `input` (via custom_tool_call_input.delta/.done and the item's `input`
+	// field) instead of `arguments`, and it must be re-emitted downstream as a
+	// custom_tool_call, so we carry the marker through model.ToolCall.Type.
+	toolCallIsCustomByOutputIndex map[int]bool
+	hasToolCallStream             bool
 }
 
 func (o *ResponseOutbound) TransformRequest(ctx context.Context, request *model.InternalLLMRequest, baseUrl, key string) (*http.Request, error) {
@@ -211,9 +217,102 @@ func (o *ResponseOutbound) TransformStream(ctx context.Context, eventData []byte
 			},
 		}
 
+	case "response.custom_tool_call_input.delta":
+		// Responses custom (freeform-grammar) tools stream their payload here, in
+		// `input`, instead of via response.function_call_arguments.delta. The item
+		// was announced by an earlier output_item.added (call_id/name captured
+		// there); mirror the function_call_arguments.delta handling for callID/name
+		// resolution and name-once behavior, but tag the tool call as custom.
+		o.hasToolCallStream = true
+		o.toolCallIsCustomByOutputIndex[streamEvent.OutputIndex] = true
+		callID := o.toolCallIDByOutputIndex[streamEvent.OutputIndex]
+		if callID == "" {
+			callID = streamEvent.CallID
+		}
+		if callID == "" && streamEvent.ItemID != nil {
+			callID = *streamEvent.ItemID
+		}
+		name := o.toolCallNameByOutputIndex[streamEvent.OutputIndex]
+		if name == "" {
+			name = streamEvent.Name
+		}
+		o.toolCallArgsByOutputIndex[streamEvent.OutputIndex] += streamEvent.Delta
+
+		resp.Choices = []model.Choice{
+			{
+				Index: 0,
+				Delta: &model.Message{
+					Role: "assistant",
+					ToolCalls: []model.ToolCall{
+						{
+							Index: streamEvent.OutputIndex,
+							ID:    callID,
+							Type:  model.ToolCallTypeCustom,
+							Function: model.FunctionCall{
+								Name:      o.emitToolCallName(streamEvent.OutputIndex, name),
+								Arguments: streamEvent.Delta,
+							},
+						},
+					},
+				},
+			},
+		}
+
+	case "response.custom_tool_call_input.done":
+		// Terminal input for a custom tool call. The full text is in `input`; emit
+		// only the suffix not already streamed by the delta events (return nil when
+		// nothing new), then record the full input as the accumulated value.
+		o.hasToolCallStream = true
+		o.toolCallIsCustomByOutputIndex[streamEvent.OutputIndex] = true
+		callID := o.toolCallIDByOutputIndex[streamEvent.OutputIndex]
+		if callID == "" {
+			callID = streamEvent.CallID
+		}
+		if callID == "" && streamEvent.ItemID != nil {
+			callID = *streamEvent.ItemID
+		}
+		name := o.toolCallNameByOutputIndex[streamEvent.OutputIndex]
+		if name == "" {
+			name = streamEvent.Name
+		}
+		previous := o.toolCallArgsByOutputIndex[streamEvent.OutputIndex]
+		argsDelta := ""
+		if strings.HasPrefix(streamEvent.Input, previous) {
+			argsDelta = streamEvent.Input[len(previous):]
+		} else {
+			argsDelta = streamEvent.Input
+		}
+		o.toolCallArgsByOutputIndex[streamEvent.OutputIndex] = streamEvent.Input
+		if argsDelta == "" {
+			return nil, nil
+		}
+		resp.Choices = []model.Choice{
+			{
+				Index: 0,
+				Delta: &model.Message{
+					Role: "assistant",
+					ToolCalls: []model.ToolCall{
+						{
+							Index: streamEvent.OutputIndex,
+							ID:    callID,
+							Type:  model.ToolCallTypeCustom,
+							Function: model.FunctionCall{
+								Name:      o.emitToolCallName(streamEvent.OutputIndex, name),
+								Arguments: argsDelta,
+							},
+						},
+					},
+				},
+			},
+		}
+
 	case "response.output_item.added", "response.output_item.done":
 		if streamEvent.Item != nil && isResponsesToolCallItemType(streamEvent.Item.Type) {
 			o.hasToolCallStream = true
+			isCustom := isResponsesCustomToolCallItemType(streamEvent.Item.Type)
+			if isCustom {
+				o.toolCallIsCustomByOutputIndex[streamEvent.OutputIndex] = true
+			}
 			callID := streamEvent.Item.CallID
 			if callID == "" {
 				callID = streamEvent.Item.ID
@@ -224,15 +323,22 @@ func (o *ResponseOutbound) TransformStream(ctx context.Context, eventData []byte
 			if name := responsesToolCallName(streamEvent.Item); name != "" {
 				o.toolCallNameByOutputIndex[streamEvent.OutputIndex] = name
 			}
+			// A custom_tool_call carries its freeform payload in `input`; a normal
+			// function/tool call carries JSON in `arguments`. Treat whichever the
+			// item type uses as the tool-call arguments.
+			fullValue := streamEvent.Item.Arguments
+			if isCustom {
+				fullValue = streamEvent.Item.Input
+			}
 			argsDelta := ""
-			if streamEvent.Type == "response.output_item.done" && streamEvent.Item.Arguments != "" {
+			if streamEvent.Type == "response.output_item.done" && fullValue != "" {
 				previous := o.toolCallArgsByOutputIndex[streamEvent.OutputIndex]
-				if strings.HasPrefix(streamEvent.Item.Arguments, previous) {
-					argsDelta = streamEvent.Item.Arguments[len(previous):]
+				if strings.HasPrefix(fullValue, previous) {
+					argsDelta = fullValue[len(previous):]
 				} else {
-					argsDelta = streamEvent.Item.Arguments
+					argsDelta = fullValue
 				}
-				o.toolCallArgsByOutputIndex[streamEvent.OutputIndex] = streamEvent.Item.Arguments
+				o.toolCallArgsByOutputIndex[streamEvent.OutputIndex] = fullValue
 			}
 			resp.Choices = []model.Choice{
 				{
@@ -243,7 +349,7 @@ func (o *ResponseOutbound) TransformStream(ctx context.Context, eventData []byte
 							{
 								Index: streamEvent.OutputIndex,
 								ID:    callID,
-								Type:  "function",
+								Type:  o.toolCallType(streamEvent.OutputIndex),
 								Function: model.FunctionCall{
 									Name:      o.emitToolCallName(streamEvent.OutputIndex, o.toolCallNameByOutputIndex[streamEvent.OutputIndex]),
 									Arguments: argsDelta,
@@ -348,6 +454,19 @@ func (o *ResponseOutbound) ensureToolCallState() {
 	if o.toolCallArgsByOutputIndex == nil {
 		o.toolCallArgsByOutputIndex = make(map[int]string)
 	}
+	if o.toolCallIsCustomByOutputIndex == nil {
+		o.toolCallIsCustomByOutputIndex = make(map[int]bool)
+	}
+}
+
+// toolCallType reports the model.ToolCall.Type to emit for a given output index:
+// "custom" for a Responses custom_tool_call, "function" otherwise. Keeping this
+// in one place means every emitted chunk for the same output index agrees.
+func (o *ResponseOutbound) toolCallType(outputIndex int) string {
+	if o.toolCallIsCustomByOutputIndex[outputIndex] {
+		return model.ToolCallTypeCustom
+	}
+	return "function"
 }
 
 // emitToolCallName returns the tool call name only the first time it is emitted
@@ -452,6 +571,9 @@ type ResponsesItem struct {
 	Name      string `json:"name,omitempty"`
 	Arguments string `json:"arguments,omitempty"`
 	Action    string `json:"action,omitempty"`
+	// Input carries a custom_tool_call's freeform payload (the item's `input`
+	// field), which is used instead of Arguments for Responses custom tools.
+	Input string `json:"input,omitempty"`
 
 	// Function call output
 	Output *ResponsesInput `json:"output,omitempty"`
@@ -542,6 +664,12 @@ func isResponsesToolCallItemType(typ string) bool {
 	default:
 		return false
 	}
+}
+
+// isResponsesCustomToolCallItemType reports whether an item type is the Responses
+// custom_tool_call (freeform-grammar) tool, whose payload lives in `input`.
+func isResponsesCustomToolCallItemType(typ string) bool {
+	return strings.TrimSpace(typ) == "custom_tool_call"
 }
 
 func responsesToolCallName(item *ResponsesItem) string {
@@ -739,9 +867,14 @@ type ResponsesStreamEvent struct {
 	Name           string             `json:"name,omitempty"`
 	CallID         string             `json:"call_id,omitempty"`
 	Arguments      string             `json:"arguments,omitempty"`
-	SummaryIndex   *int               `json:"summary_index,omitempty"`
-	Code           string             `json:"code,omitempty"`
-	Message        string             `json:"message,omitempty"`
+	// Input carries the top-level `input` of a
+	// response.custom_tool_call_input.done event (the full freeform tool input).
+	// It is a plain JSON string, so unlike Arguments/Delta it needs no
+	// object-or-string tolerance in UnmarshalJSON.
+	Input        string `json:"input,omitempty"`
+	SummaryIndex *int   `json:"summary_index,omitempty"`
+	Code         string `json:"code,omitempty"`
+	Message      string `json:"message,omitempty"`
 }
 
 // UnmarshalJSON tolerates upstreams that send the top-level `arguments`/`delta`
@@ -1299,6 +1432,18 @@ func convertToLLMResponseFromResponses(resp *ResponsesResponse) *model.InternalL
 				Function: model.FunctionCall{
 					Name:      outputItem.Name,
 					Arguments: outputItem.Arguments,
+				},
+			})
+		case "custom_tool_call":
+			// A custom (freeform) tool call keeps its input in `input`, and must be
+			// re-emitted downstream as a custom_tool_call, so mark it as custom and
+			// carry the freeform input as the tool-call arguments.
+			toolCalls = append(toolCalls, model.ToolCall{
+				ID:   outputItem.CallID,
+				Type: model.ToolCallTypeCustom,
+				Function: model.FunctionCall{
+					Name:      outputItem.Name,
+					Arguments: outputItem.Input,
 				},
 			})
 		case "reasoning":

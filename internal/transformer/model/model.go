@@ -1182,11 +1182,22 @@ type FunctionCall struct {
 	Arguments string `json:"arguments"`
 }
 
+// ToolCallTypeCustom marks an internal tool call that originated as an OpenAI
+// Responses "custom tool call" (a freeform-grammar tool). Unlike a normal
+// function call, its Function.Arguments holds the tool's freeform `input` text
+// (e.g. code), NOT a JSON arguments object, so downstream Responses transformers
+// must re-emit it as a custom_tool_call item (carrying `input`) rather than a
+// function_call. Normal function calls keep Type "function", so this marker is
+// the single signal that lets the outbound→internal→inbound round-trip preserve
+// the custom-tool-call nature.
+const ToolCallTypeCustom = "custom"
+
 // ToolCall represents a tool call in the response.
 type ToolCall struct {
 	ID string `json:"id,omitempty"`
 
-	// The type of the tool. Currently, only `function` is supported.
+	// The type of the tool. Usually `function`; `custom` (ToolCallTypeCustom)
+	// marks an OpenAI Responses custom (freeform) tool call.
 	Type string `json:"type,omitempty"`
 
 	Function FunctionCall `json:"function"`

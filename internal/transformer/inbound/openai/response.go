@@ -530,12 +530,29 @@ func (i *ResponseInbound) handleToolCalls(toolCalls []model.ToolCall) [][]byte {
 				itemID = generateItemID()
 			}
 
-			item := &ResponsesItem{
-				ID:     itemID,
-				Type:   "function_call",
-				Status: lo.ToPtr("in_progress"),
-				CallID: tc.ID,
-				Name:   tc.Function.Name,
+			// A custom (freeform) tool call must be re-announced as a
+			// custom_tool_call item carrying `input`, not a function_call carrying
+			// `arguments`; the codex client registered a custom tool and rejects a
+			// function_call in its place. Normal function calls keep the original
+			// function_call shape.
+			var item *ResponsesItem
+			if tc.Type == model.ToolCallTypeCustom {
+				item = &ResponsesItem{
+					ID:     itemID,
+					Type:   "custom_tool_call",
+					Status: lo.ToPtr("in_progress"),
+					CallID: tc.ID,
+					Name:   tc.Function.Name,
+					Input:  lo.ToPtr(""),
+				}
+			} else {
+				item = &ResponsesItem{
+					ID:     itemID,
+					Type:   "function_call",
+					Status: lo.ToPtr("in_progress"),
+					CallID: tc.ID,
+					Name:   tc.Function.Name,
+				}
 			}
 
 			events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
@@ -550,23 +567,32 @@ func (i *ResponseInbound) handleToolCalls(toolCalls []model.ToolCall) [][]byte {
 			i.outputIndex++
 		}
 
-		// Accumulate arguments
+		// Accumulate arguments (custom tool calls carry their freeform input here too)
 		i.toolCalls[toolCallIndex].Function.Arguments += tc.Function.Arguments
 
-		// Emit function_call_arguments.delta
+		// Emit the incremental input/arguments delta
 		if tc.Function.Arguments != "" {
 			itemID := i.toolCalls[toolCallIndex].ID
 			if itemID == "" {
 				itemID = i.currentItemID
 			}
 
-			events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
-				Type:         "response.function_call_arguments.delta",
-				ItemID:       &itemID,
-				OutputIndex:  lo.ToPtr(i.toolCallOutputIndex[toolCallIndex]),
-				ContentIndex: lo.ToPtr(0),
-				Delta:        tc.Function.Arguments,
-			}))
+			if i.toolCalls[toolCallIndex].Type == model.ToolCallTypeCustom {
+				events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
+					Type:        "response.custom_tool_call_input.delta",
+					ItemID:      &itemID,
+					OutputIndex: lo.ToPtr(i.toolCallOutputIndex[toolCallIndex]),
+					Delta:       tc.Function.Arguments,
+				}))
+			} else {
+				events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
+					Type:         "response.function_call_arguments.delta",
+					ItemID:       &itemID,
+					OutputIndex:  lo.ToPtr(i.toolCallOutputIndex[toolCallIndex]),
+					ContentIndex: lo.ToPtr(0),
+					Delta:        tc.Function.Arguments,
+				}))
+			}
 		}
 	}
 
@@ -729,8 +755,41 @@ func (i *ResponseInbound) closeCurrentOutputItem() [][]byte {
 				itemID = i.currentItemID
 			}
 
-			// Emit function_call_arguments.done
 			toolCallOutputIdx := i.toolCallOutputIndex[idx]
+
+			if tc.Type == model.ToolCallTypeCustom {
+				// Custom (freeform) tool call: terminate with
+				// custom_tool_call_input.done + a custom_tool_call output item whose
+				// `input` holds the full freeform payload, so the codex client sees
+				// exactly the custom-tool shape it registered.
+				input := tc.Function.Arguments
+				events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
+					Type:        "response.custom_tool_call_input.done",
+					ItemID:      &itemID,
+					OutputIndex: &toolCallOutputIdx,
+					Input:       input,
+				}))
+
+				item := ResponsesItem{
+					ID:     itemID,
+					Type:   "custom_tool_call",
+					Status: lo.ToPtr("completed"),
+					CallID: tc.ID,
+					Name:   tc.Function.Name,
+					Input:  &input,
+				}
+
+				events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
+					Type:        "response.output_item.done",
+					OutputIndex: &toolCallOutputIdx,
+					Item:        &item,
+				}))
+
+				i.toolCallItemStarted[idx] = false
+				continue
+			}
+
+			// Emit function_call_arguments.done
 			events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
 				Type:        "response.function_call_arguments.done",
 				ItemID:      &itemID,
@@ -986,6 +1045,11 @@ type ResponsesItem struct {
 	CallID    string `json:"call_id,omitempty"`
 	Name      string `json:"name,omitempty"`
 	Arguments string `json:"arguments,omitempty"`
+	// Input carries a custom_tool_call's freeform payload. It is a pointer so an
+	// explicit empty string ("input":"") can be emitted on the in-progress
+	// output_item.added event, matching the genuine upstream shape, while
+	// function_call items (nil) omit the field entirely.
+	Input *string `json:"input,omitempty"`
 
 	// Function call output
 	Output *ResponsesInput `json:"output,omitempty"`
@@ -1277,8 +1341,11 @@ type ResponsesStreamEvent struct {
 	Name           string                `json:"name,omitempty"`
 	CallID         string                `json:"call_id,omitempty"`
 	Arguments      string                `json:"arguments,omitempty"`
-	SummaryIndex   *int                  `json:"summary_index,omitempty"`
-	Part           *ResponsesContentPart `json:"part,omitempty"`
+	// Input carries the full freeform tool input on a
+	// response.custom_tool_call_input.done event.
+	Input        string                `json:"input,omitempty"`
+	SummaryIndex *int                  `json:"summary_index,omitempty"`
+	Part         *ResponsesContentPart `json:"part,omitempty"`
 }
 
 type ResponsesContentPart struct {
@@ -1888,6 +1955,22 @@ func convertToResponsesAPIResponse(resp *model.InternalLLMResponse) *ResponsesRe
 		// Handle tool calls
 		if len(message.ToolCalls) > 0 {
 			for _, toolCall := range message.ToolCalls {
+				if toolCall.Type == model.ToolCallTypeCustom {
+					// Custom (freeform) tool call: re-emit as a custom_tool_call
+					// carrying `input`, so a codex client that registered a custom
+					// tool receives the shape it expects (a function_call with the
+					// freeform text as JSON arguments would be rejected).
+					input := toolCall.Function.Arguments
+					result.Output = append(result.Output, ResponsesItem{
+						ID:     toolCall.ID,
+						Type:   "custom_tool_call",
+						CallID: toolCall.ID,
+						Name:   toolCall.Function.Name,
+						Input:  &input,
+						Status: lo.ToPtr("completed"),
+					})
+					continue
+				}
 				result.Output = append(result.Output, ResponsesItem{
 					ID:        toolCall.ID,
 					Type:      "function_call",
