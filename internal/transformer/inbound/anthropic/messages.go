@@ -666,6 +666,41 @@ func (i *MessagesInbound) TransformStream(ctx context.Context, stream *model.Int
 			}
 			return joinSSEEvents(events), nil
 		}
+		// Abnormal end: the message envelope was opened and content streamed, but the
+		// upstream never delivered a finish_reason (a weak model running away to
+		// max_tokens, or a truncated/cut upstream stream). Without a terminal here the
+		// anthropic stream is left open (dangling content_block, no message_delta /
+		// message_stop) and strict clients (Claude Code) reject the turn as truncated.
+		// Mirror the finish path: close the open content block, synthesize a stop_reason,
+		// then emit message_delta + message_stop. Only this abnormal case is affected;
+		// the clean paths above/return-nil below are byte-for-byte unchanged.
+		if i.hasStarted && !i.messageStopped {
+			var events [][]byte
+			if i.hasTextContentStarted || i.hasThinkingContentStarted || i.hasToolContentStarted {
+				i.hasTextContentStarted = false
+				i.hasThinkingContentStarted = false
+				i.hasToolContentStarted = false
+				stopEvent := StreamEvent{
+					Type:  "content_block_stop",
+					Index: &i.contentIndex,
+				}
+				data, err := json.Marshal(stopEvent)
+				if err != nil {
+					return nil, fmt.Errorf("failed to marshal content_block_stop event: %w", err)
+				}
+				events = append(events, formatSSEEvent("content_block_stop", data))
+			}
+			if i.stopReason == nil {
+				stopReason := "max_tokens"
+				i.stopReason = &stopReason
+			}
+			finalEvents, err := i.finalizeMessageEvents(nil)
+			if err != nil {
+				return nil, err
+			}
+			events = append(events, finalEvents...)
+			return joinSSEEvents(events), nil
+		}
 		return nil, nil
 	}
 
