@@ -211,61 +211,6 @@ func (o *ResponseOutbound) TransformStream(ctx context.Context, eventData []byte
 			},
 		}
 
-	case "response.function_call_arguments.done":
-		// Some upstreams (observed: anyrouter's gpt-5.6 responses proxy, esp. at low
-		// reasoning effort) deliver the COMPLETE tool-call arguments in a single
-		// function_call_arguments.done event instead of streaming them as
-		// function_call_arguments.delta chunks, and leave the following
-		// output_item.done's item arguments empty. Without handling this event the
-		// arguments were dropped entirely: codex received a function call with empty
-		// arguments it could not execute and stalled after its spoken preamble
-		// ("I'll check the current directory now." then stop). Emit only the suffix
-		// not already streamed so arguments are neither dropped nor duplicated when
-		// deltas also arrived.
-		if streamEvent.Arguments == "" {
-			return nil, nil
-		}
-		o.hasToolCallStream = true
-		callID := o.toolCallIDByOutputIndex[streamEvent.OutputIndex]
-		if callID == "" {
-			callID = streamEvent.CallID
-		}
-		if callID == "" && streamEvent.ItemID != nil {
-			callID = *streamEvent.ItemID
-		}
-		previous := o.toolCallArgsByOutputIndex[streamEvent.OutputIndex]
-		argsDelta := streamEvent.Arguments
-		if strings.HasPrefix(streamEvent.Arguments, previous) {
-			argsDelta = streamEvent.Arguments[len(previous):]
-		}
-		o.toolCallArgsByOutputIndex[streamEvent.OutputIndex] = streamEvent.Arguments
-		if argsDelta == "" {
-			return nil, nil
-		}
-		name := o.toolCallNameByOutputIndex[streamEvent.OutputIndex]
-		if name == "" {
-			name = streamEvent.Name
-		}
-		resp.Choices = []model.Choice{
-			{
-				Index: 0,
-				Delta: &model.Message{
-					Role: "assistant",
-					ToolCalls: []model.ToolCall{
-						{
-							Index: streamEvent.OutputIndex,
-							ID:    callID,
-							Type:  "function",
-							Function: model.FunctionCall{
-								Name:      o.emitToolCallName(streamEvent.OutputIndex, name),
-								Arguments: argsDelta,
-							},
-						},
-					},
-				},
-			},
-		}
-
 	case "response.output_item.added", "response.output_item.done":
 		if streamEvent.Item != nil && isResponsesToolCallItemType(streamEvent.Item.Type) {
 			o.hasToolCallStream = true
