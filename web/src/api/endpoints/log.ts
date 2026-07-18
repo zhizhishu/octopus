@@ -114,6 +114,7 @@ export interface LogListParams {
     api_key_id?: number;
     endpoint?: string;
     severity?: string;
+    retried?: boolean;
 }
 
 export interface LogExportParams {
@@ -241,16 +242,18 @@ const logsInfiniteQueryKey = (
     startTime?: number,
     endTime?: number,
     page?: number,
-    severity?: string
-) => ['logs', 'infinite', pageSize, userID ?? 0, apiKeyID ?? 0, endpoint ?? '', startTime ?? 0, endTime ?? 0, page ?? -1, severity ?? ''] as const;
+    severity?: string,
+    retried?: boolean
+) => ['logs', 'infinite', pageSize, userID ?? 0, apiKeyID ?? 0, endpoint ?? '', startTime ?? 0, endTime ?? 0, page ?? -1, severity ?? '', retried ? 1 : 0] as const;
 
 const logCountQueryKey = (
     userID?: number,
     apiKeyID?: number,
     endpoint?: string,
     startTime?: number,
-    endTime?: number
-) => ['logs', 'count', userID ?? 0, apiKeyID ?? 0, endpoint ?? '', startTime ?? 0, endTime ?? 0] as const;
+    endTime?: number,
+    retried?: boolean
+) => ['logs', 'count', userID ?? 0, apiKeyID ?? 0, endpoint ?? '', startTime ?? 0, endTime ?? 0, retried ? 1 : 0] as const;
 const LOG_STREAM_RECONNECT_BASE_MS = 1000;
 const LOG_STREAM_RECONNECT_MAX_MS = 15000;
 
@@ -265,10 +268,12 @@ export function useLogSeverityCounts(options: {
     endpoint?: string;
     startTime?: number;
     endTime?: number;
+    retried?: boolean;
+    enabled?: boolean;
 } = {}) {
-    const { userID, apiKeyID, endpoint, startTime, endTime } = options;
+    const { userID, apiKeyID, endpoint, startTime, endTime, retried, enabled = true } = options;
     return useQuery({
-        queryKey: logCountQueryKey(userID, apiKeyID, endpoint, startTime, endTime),
+        queryKey: logCountQueryKey(userID, apiKeyID, endpoint, startTime, endTime, retried),
         queryFn: async () => {
             const params = new URLSearchParams();
             appendOptionalParam(params, 'user_id', userID);
@@ -276,8 +281,10 @@ export function useLogSeverityCounts(options: {
             appendOptionalParam(params, 'endpoint', endpoint);
             appendOptionalParam(params, 'start_time', startTime);
             appendOptionalParam(params, 'end_time', endTime);
+            if (retried) params.set('retried', '1');
             return apiClient.get<RelayLogSeverityCounts>(`/api/v1/log/count?${params.toString()}`);
         },
+        enabled,
         staleTime: 0,
         refetchOnMount: 'always',
     });
@@ -298,8 +305,8 @@ export function useLogSeverityCounts(options: {
  * // 滚动到底部时加载更多
  * if (hasMore && !isLoadingMore) loadMore();
  */
-export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?: number; endpoint?: string; startTime?: number; endTime?: number; live?: boolean; page?: number; severity?: string } = {}) {
-    const { pageSize = 20, userID, apiKeyID, endpoint, startTime, endTime, live = false, page, severity } = options;
+export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?: number; endpoint?: string; startTime?: number; endTime?: number; live?: boolean; page?: number; severity?: string; retried?: boolean } = {}) {
+    const { pageSize = 20, userID, apiKeyID, endpoint, startTime, endTime, live = false, page, severity, retried } = options;
 
     const [isConnected, setIsConnected] = useState(false);
     const [error, setError] = useState<Error | null>(null);
@@ -310,8 +317,8 @@ export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?
 
     const queryClient = useQueryClient();
     const queryKey = useMemo(
-        () => logsInfiniteQueryKey(pageSize, userID, apiKeyID, endpoint, startTime, endTime, page, severity),
-        [apiKeyID, endpoint, endTime, page, pageSize, severity, startTime, userID]
+        () => logsInfiniteQueryKey(pageSize, userID, apiKeyID, endpoint, startTime, endTime, page, severity, retried),
+        [apiKeyID, endpoint, endTime, page, pageSize, retried, severity, startTime, userID]
     );
 
     const logsQuery = useInfiniteQuery({
@@ -327,6 +334,7 @@ export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?
             appendOptionalParam(params, 'start_time', startTime);
             appendOptionalParam(params, 'end_time', endTime);
             appendOptionalParam(params, 'severity', severity);
+            if (retried) params.set('retried', '1');
             const result = await apiClient.get<RelayLog[] | null>(`/api/v1/log/list?${params.toString()}`);
             return result ?? [];
         },

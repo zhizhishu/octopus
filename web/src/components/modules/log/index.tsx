@@ -3,7 +3,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import { getRelayLogSeverity, type RelayLogSeverity, useExportLogs, useLogSeverityCounts, useLogs } from '@/api/endpoints/log';
 import { LogCard, useSensitiveStore } from './Item';
-import { AlertCircle, AlertTriangle, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Circle, Download, Eye, EyeOff, Loader2, RefreshCw, RotateCcw, Search, SlidersHorizontal, Wifi, WifiOff } from 'lucide-react';
+import { AlertCircle, AlertTriangle, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Circle, Download, Eye, EyeOff, Loader2, RefreshCw, RotateCcw, RotateCw, ScrollText, SlidersHorizontal, Wifi, WifiOff, X } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { VirtualizedGrid } from '@/components/common/VirtualizedGrid';
 import { PageWrapper } from '@/components/common/PageWrapper';
@@ -119,6 +119,23 @@ function resolveLogTimeRange(startDate: string, endDate: string) {
     };
 }
 
+/** 生效筛选的可删除小药丸：点 × 清掉这一维筛选，让「现在到底在看什么」一目了然。 */
+function FilterPill({ label, onClear }: { label: string; onClear: () => void }) {
+    return (
+        <span className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 py-0.5 pl-2.5 pr-1 text-xs font-medium text-primary">
+            <span className="max-w-[14rem] truncate">{label}</span>
+            <button
+                type="button"
+                onClick={onClear}
+                aria-label="清除该筛选"
+                className="grid size-4 place-items-center rounded-full text-primary/70 transition-colors hover:bg-primary/20 hover:text-primary"
+            >
+                <X className="size-3" />
+            </button>
+        </span>
+    );
+}
+
 /**
  * 日志页面组件
  * - 初始加载 pageSize 条历史日志
@@ -129,20 +146,19 @@ export function Log() {
     const t = useTranslations('log');
     const isAdmin = useAuthStore((state) => state.user?.role === 'admin');
     const todayLabel = useMemo(() => localDateInput(new Date()), []);
-    // 已生效（真正喂给查询）的筛选条件。日期默认按浏览器本地时区取今天，界面更清爽。
+    // 默认区间放宽到「近 7 天」而非「今天」：日志常是前一两天产生的，默认只查今天会让页面一开屏就空、
+    // 显得「筛选无效」。近 7 天在「够聚焦」和「开屏能看到东西」之间取平衡。
+    const defaultRange = useMemo(() => resolveDateRangeShortcut('last7Days', todayLabel), [todayLabel]);
+    // 所有筛选都「即选即生效」——改了立刻查，不再需要点「搜索」。这正是过去让人觉得「筛选无效」的
+    // 另一半原因：改了接口下拉/用户/Key 却要再点搜索才生效，看起来像没反应。
     const [selectedUserID, setSelectedUserID] = useState<number | undefined>();
     const [selectedAPIKeyID, setSelectedAPIKeyID] = useState<number | undefined>();
     const [selectedEndpoint, setSelectedEndpoint] = useState('');
-    const [startDate, setStartDate] = useState(todayLabel);
-    const [endDate, setEndDate] = useState(todayLabel);
-    // 草稿（界面上正在改、还没点「搜索」）的筛选条件——改多项不会每改一次都打接口。
-    const [draftUserID, setDraftUserID] = useState<number | undefined>();
-    const [draftAPIKeyID, setDraftAPIKeyID] = useState<number | undefined>();
-    const [draftEndpoint, setDraftEndpoint] = useState('');
-    const [draftStartDate, setDraftStartDate] = useState(todayLabel);
-    const [draftEndDate, setDraftEndDate] = useState(todayLabel);
-    // 严重程度是对「已加载日志」的本地过滤，不是查询参数，所以保持即时生效。
+    const [startDate, setStartDate] = useState(defaultRange.startDate);
+    const [endDate, setEndDate] = useState(defaultRange.endDate);
+    // 严重程度 + 「只看有重试」都是服务端过滤，翻页/总数都对得上。
     const [severityFilter, setSeverityFilter] = useState<LogSeverityFilter>('all');
+    const [retriedOnly, setRetriedOnly] = useState(false);
     const [autoRefresh, setAutoRefresh] = useState(false);
     const [advancedOpen, setAdvancedOpen] = useState(false);
     // 分页状态：当前页（从 1 开始）+ 跳页输入框草稿值。自动刷新时禁用分页，回退无限滚动。
@@ -170,14 +186,9 @@ export function Log() {
 
     const apiKeysForSelectedUser = useMemo(() => {
         return apiKeys
-            .filter((apiKey) => !draftUserID || apiKey.user_id === draftUserID)
+            .filter((apiKey) => !selectedUserID || apiKey.user_id === selectedUserID)
             .sort((a, b) => a.name.localeCompare(b.name));
-    }, [apiKeys, draftUserID]);
-
-    const draftAPIKey = useMemo(() => {
-        if (!draftAPIKeyID) return undefined;
-        return apiKeys.find((apiKey) => apiKey.id === draftAPIKeyID);
-    }, [apiKeys, draftAPIKeyID]);
+    }, [apiKeys, selectedUserID]);
 
     const selectedAPIKey = useMemo(() => {
         if (!selectedAPIKeyID) return undefined;
@@ -197,6 +208,7 @@ export function Log() {
         endpoint: selectedEndpoint || undefined,
         startTime,
         endTime,
+        retried: retriedOnly,
     });
     const LOG_PAGE_SIZE = 20;
     // 当前生效筛选下的总条数：全部→total，否则取该严重程度的计数。分页页数据此算。
@@ -226,68 +238,79 @@ export function Log() {
         endpoint: selectedEndpoint || undefined,
         startTime,
         endTime,
+        retried: retriedOnly,
         // 实时刷新只在第 1 页（最新）生效；翻到历史页自然暂停，回第 1 页恢复。
         live: autoRefresh && currentPage === 1,
     });
 
-    const updateDraftUser = (value: string) => {
+    const handleSelectUser = (value: string) => {
         const nextUserID = Number(value) || undefined;
-        setDraftUserID(nextUserID);
-        if (draftAPIKey && nextUserID && draftAPIKey.user_id !== nextUserID) {
-            setDraftAPIKeyID(undefined);
+        setSelectedUserID(nextUserID);
+        // 换了用户但当前选中的 Key 不属于他 → 清掉 Key，避免矛盾筛选。
+        if (selectedAPIKey && nextUserID && selectedAPIKey.user_id !== nextUserID) {
+            setSelectedAPIKeyID(undefined);
         }
+        setCurrentPage(1);
     };
 
-    const updateDraftAPIKey = (value: string) => {
+    const handleSelectAPIKey = (value: string) => {
         const nextAPIKeyID = Number(value) || undefined;
-        setDraftAPIKeyID(nextAPIKeyID);
+        setSelectedAPIKeyID(nextAPIKeyID);
         const nextAPIKey = apiKeys.find((apiKey) => apiKey.id === nextAPIKeyID);
-        if (nextAPIKey?.user_id) {
-            setDraftUserID(nextAPIKey.user_id);
-        }
+        if (nextAPIKey?.user_id) setSelectedUserID(nextAPIKey.user_id);
+        setCurrentPage(1);
     };
+
+    const handleSelectEndpoint = (value: string) => {
+        setSelectedEndpoint(value);
+        setCurrentPage(1);
+    };
+
+    const handleStartDate = (value: string) => { setStartDate(value); setCurrentPage(1); };
+    const handleEndDate = (value: string) => { setEndDate(value); setCurrentPage(1); };
 
     const applyDateRangeShortcut = useCallback((shortcut: LogDateRangeShortcut) => {
         const nextRange = resolveDateRangeShortcut(shortcut, todayLabel);
-        setDraftStartDate(nextRange.startDate);
-        setDraftEndDate(nextRange.endDate);
         setStartDate(nextRange.startDate);
         setEndDate(nextRange.endDate);
         setCurrentPage(1);
     }, [todayLabel]);
 
-    // 把草稿条件一次性提交为生效条件（点「搜索」或在输入框回车时调用）。
-    const handleApply = useCallback(() => {
-        setSelectedUserID(draftUserID);
-        setSelectedAPIKeyID(draftAPIKeyID);
-        setSelectedEndpoint(draftEndpoint);
-        setStartDate(draftStartDate);
-        setEndDate(draftEndDate);
-        setCurrentPage(1);
-    }, [draftUserID, draftAPIKeyID, draftEndpoint, draftStartDate, draftEndDate]);
-
-    // 草稿和生效条件都回到默认（今天、不限用户/Key/端点）。
+    // 所有筛选一键回默认（近 7 天、不限用户/Key/端点、全部状态、不限重试）。
     const handleResetFilters = useCallback(() => {
-        setDraftUserID(undefined);
-        setDraftAPIKeyID(undefined);
-        setDraftEndpoint('');
-        setDraftStartDate(todayLabel);
-        setDraftEndDate(todayLabel);
         setSelectedUserID(undefined);
         setSelectedAPIKeyID(undefined);
         setSelectedEndpoint('');
-        setStartDate(todayLabel);
-        setEndDate(todayLabel);
+        setSeverityFilter('all');
+        setRetriedOnly(false);
+        setStartDate(defaultRange.startDate);
+        setEndDate(defaultRange.endDate);
         setCurrentPage(1);
-    }, [todayLabel]);
+    }, [defaultRange]);
 
-    // 草稿是否被改过（决定「搜索」是否高亮 + 是否显示「重置」）。
-    const draftDirty =
-        draftUserID !== selectedUserID ||
-        draftAPIKeyID !== selectedAPIKeyID ||
-        draftEndpoint !== selectedEndpoint ||
-        draftStartDate !== startDate ||
-        draftEndDate !== endDate;
+    const isDefaultRange = startDate === defaultRange.startDate && endDate === defaultRange.endDate;
+    // 有任何非默认筛选在生效（决定是否显示「重置」+ 空状态提示是否算「被筛掉」）。
+    const hasActiveFilter =
+        !!selectedEndpoint ||
+        !!selectedUserID ||
+        !!effectiveSelectedAPIKeyID ||
+        severityFilter !== 'all' ||
+        retriedOnly ||
+        !isDefaultRange;
+
+    // 「生效筛选」药丸：把当前每一维筛选摊开成一个可一键删除的小标签，让人清楚现在到底在看什么。
+    const activePills: Array<{ key: string; label: string; onClear: () => void }> = [];
+    if (!startDate && !endDate) {
+        activePills.push({ key: 'alldate', label: '全部日期', onClear: () => { setStartDate(defaultRange.startDate); setEndDate(defaultRange.endDate); setCurrentPage(1); } });
+    } else if (!isDefaultRange) {
+        const dl = startDate && endDate ? (startDate === endDate ? startDate : `${startDate} ~ ${endDate}`) : (startDate || endDate);
+        activePills.push({ key: 'date', label: `日期 ${dl}`, onClear: () => { setStartDate(defaultRange.startDate); setEndDate(defaultRange.endDate); setCurrentPage(1); } });
+    }
+    if (selectedEndpoint) activePills.push({ key: 'ep', label: `接口 ${selectedEndpoint}`, onClear: () => { setSelectedEndpoint(''); setCurrentPage(1); } });
+    if (severityFilter !== 'all') activePills.push({ key: 'sev', label: `状态 ${t(`list.filters.${severityFilter}`)}`, onClear: () => { setSeverityFilter('all'); setCurrentPage(1); } });
+    if (retriedOnly) activePills.push({ key: 'retry', label: t('list.retriedOnly'), onClear: () => { setRetriedOnly(false); setCurrentPage(1); } });
+    if (selectedUserID) activePills.push({ key: 'user', label: `用户 ${users.find((u) => u.id === selectedUserID)?.username ?? selectedUserID}`, onClear: () => { setSelectedUserID(undefined); setCurrentPage(1); } });
+    if (effectiveSelectedAPIKeyID) activePills.push({ key: 'key', label: `Key ${selectedAPIKey?.name ?? effectiveSelectedAPIKeyID}`, onClear: () => { setSelectedAPIKeyID(undefined); setCurrentPage(1); } });
 
     const activeDateShortcut = useMemo(() => {
         return dateRangeShortcuts.find((shortcut) => {
@@ -310,6 +333,17 @@ export function Log() {
         if (severityFilter === 'all') return logs;
         return logs.filter((log) => getRelayLogSeverity(log) === severityFilter);
     }, [logs, severityFilter]);
+
+    // 空状态智能提示的依据：列表真空时，查一下「不限日期」下总共有多少历史，
+    // 好把「不是坏了、是被日期/筛选挡住了」说破。仅在真的空时才发这个请求。
+    const listIsEmpty = !isLoading && filteredLogs.length === 0;
+    const { data: allTimeCounts } = useLogSeverityCounts({
+        userID: selectedUserID,
+        apiKeyID: effectiveSelectedAPIKeyID,
+        endpoint: selectedEndpoint || undefined,
+        retried: retriedOnly,
+        enabled: listIsEmpty,
+    });
 
     const canLoadMore = hasMore && !isLoading && !isLoadingMore && logs.length > 0;
     const handleReachEnd = useCallback(() => {
@@ -344,12 +378,37 @@ export function Log() {
             );
         }
         if (filteredLogs.length === 0) {
-            const message = logs.length === 0 ? t('list.empty') : t('list.emptyFiltered');
+            const historyTotal = allTimeCounts?.total ?? 0;
+            // 当前范围空、但不限日期时其实有货 → 说破「被日期/筛选挡住了」并给一键放开。
+            const hiddenByFilter = historyTotal > 0;
             return (
-                <div className="flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-border bg-card/50 px-4 py-8 text-center">
-                    <span className="text-sm text-muted-foreground">{message}</span>
+                <div className="flex flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-border bg-card/50 px-4 py-10 text-center">
+                    <ScrollText className="size-8 text-muted-foreground/40" />
+                    <div className="space-y-1">
+                        <p className="text-sm font-medium text-foreground">
+                            {hiddenByFilter ? '当前筛选条件下暂无日志' : '还没有任何日志'}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                            {hiddenByFilter
+                                ? `不是坏了 —— 共有 ${historyTotal.toLocaleString()} 条记录，只是不在当前范围。`
+                                : '有请求经过时会自动出现在这里。'}
+                        </p>
+                    </div>
+                    {hiddenByFilter && (
+                        <div className="flex flex-wrap items-center justify-center gap-2">
+                            <Button variant="default" size="sm" className="rounded-lg" onClick={() => { setStartDate(''); setEndDate(''); setCurrentPage(1); }}>
+                                查看全部
+                            </Button>
+                            {hasActiveFilter && (
+                                <Button variant="outline" size="sm" className="rounded-lg" onClick={handleResetFilters}>
+                                    <RotateCcw className="size-4" />
+                                    重置筛选
+                                </Button>
+                            )}
+                        </div>
+                    )}
                     {hasMore && (
-                        <Button variant="outline" size="sm" onClick={() => void loadMore()}>
+                        <Button variant="ghost" size="sm" onClick={() => void loadMore()}>
                             {t('list.loadMoreForFilter')}
                         </Button>
                     )}
@@ -358,7 +417,7 @@ export function Log() {
         }
         // 始终分页：导航交给分页控件；实时模式下也不显示"已全部加载"（还有新日志会来）。
         return null;
-    }, [filteredLogs.length, hasMore, isLoading, isLoadingMore, loadMore, logs.length, t]);
+    }, [allTimeCounts?.total, filteredLogs.length, hasActiveFilter, hasMore, handleResetFilters, isLoading, isLoadingMore, loadMore, t]);
 
     return (
         <PageWrapper className="box-border flex h-full min-h-0 flex-col gap-3 overflow-hidden rounded-t-3xl pb-[calc(6rem+env(safe-area-inset-bottom))] md:pb-4 [&>*]:min-h-0 [&>*:last-child]:flex [&>*:last-child]:flex-1">
@@ -386,8 +445,8 @@ export function Log() {
                     <label className="flex min-w-0 flex-wrap items-center gap-2">
                         <span className="text-sm font-medium text-card-foreground">Endpoint</span>
                         <select
-                            value={draftEndpoint}
-                            onChange={(event) => setDraftEndpoint(event.target.value)}
+                            value={selectedEndpoint}
+                            onChange={(event) => handleSelectEndpoint(event.target.value)}
                             className="h-9 min-w-44 rounded-lg border border-input bg-background px-3 text-sm text-foreground"
                         >
                             {endpointFilters.map((endpoint) => (
@@ -402,17 +461,17 @@ export function Log() {
                         <span className="text-sm font-medium text-card-foreground">日期</span>
                         <input
                             type="date"
-                            value={draftStartDate}
-                            onChange={(event) => setDraftStartDate(event.target.value)}
-                            max={draftEndDate || todayLabel}
+                            value={startDate}
+                            onChange={(event) => handleStartDate(event.target.value)}
+                            max={endDate || todayLabel}
                             className="h-9 min-w-36 rounded-lg border border-input bg-background px-3 text-sm text-foreground"
                         />
                         <span className="text-xs text-muted-foreground">到</span>
                         <input
                             type="date"
-                            value={draftEndDate}
-                            onChange={(event) => setDraftEndDate(event.target.value)}
-                            min={draftStartDate || undefined}
+                            value={endDate}
+                            onChange={(event) => handleEndDate(event.target.value)}
+                            min={startDate || undefined}
                             max={todayLabel}
                             className="h-9 min-w-36 rounded-lg border border-input bg-background px-3 text-sm text-foreground"
                         />
@@ -458,17 +517,7 @@ export function Log() {
                         </Button>
                     )}
 
-                    <Button
-                        variant="default"
-                        size="sm"
-                        onClick={handleApply}
-                        disabled={!draftDirty}
-                        className="rounded-lg"
-                    >
-                        <Search className="size-4" />
-                        <span>{t('list.search')}</span>
-                    </Button>
-                    {draftDirty && (
+                    {hasActiveFilter && (
                         <Button
                             variant="ghost"
                             size="sm"
@@ -506,6 +555,22 @@ export function Log() {
                             );
                         })}
                     </div>
+
+                    {/* 排障向快捷筛选：只看发生过重试 / 换渠道的请求（抖动渠道一眼揪出）。 */}
+                    <button
+                        type="button"
+                        onClick={() => { setRetriedOnly((v) => !v); setCurrentPage(1); }}
+                        title="只看发生过重试 / 换渠道的请求"
+                        className={cn(
+                            'inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition-colors',
+                            retriedOnly
+                                ? 'border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+                                : 'border-border bg-background text-muted-foreground hover:text-foreground'
+                        )}
+                    >
+                        <RotateCw className="size-3.5" />
+                        <span>{t('list.retriedOnly')}</span>
+                    </button>
 
                     <div className="ml-auto flex min-w-0 flex-wrap items-center gap-2">
                         <Button
@@ -574,8 +639,8 @@ export function Log() {
                         <label className="flex min-w-0 flex-wrap items-center gap-2">
                             <span className="text-sm font-medium text-card-foreground">{t('list.userFilter')}</span>
                             <select
-                                value={draftUserID ?? ''}
-                                onChange={(event) => updateDraftUser(event.target.value)}
+                                value={selectedUserID ?? ''}
+                                onChange={(event) => handleSelectUser(event.target.value)}
                                 className="h-9 min-w-40 rounded-lg border border-input bg-background px-3 text-sm text-foreground"
                             >
                                 <option value="">{t('list.allUsers')}</option>
@@ -590,8 +655,8 @@ export function Log() {
                         <label className="flex min-w-0 flex-wrap items-center gap-2">
                             <span className="text-sm font-medium text-card-foreground">API Key</span>
                             <select
-                                value={draftAPIKeyID ?? ''}
-                                onChange={(event) => updateDraftAPIKey(event.target.value)}
+                                value={selectedAPIKeyID ?? ''}
+                                onChange={(event) => handleSelectAPIKey(event.target.value)}
                                 className="h-9 min-w-48 rounded-lg border border-input bg-background px-3 text-sm text-foreground"
                             >
                                 <option value="">全部 API Key</option>
@@ -602,6 +667,14 @@ export function Log() {
                                 ))}
                             </select>
                         </label>
+                    </div>
+                )}
+                {activePills.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-1.5 border-t border-border/60 pt-2">
+                        <span className="text-xs text-muted-foreground">生效筛选</span>
+                        {activePills.map((pill) => (
+                            <FilterPill key={pill.key} label={pill.label} onClear={pill.onClear} />
+                        ))}
                     </div>
                 )}
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-muted-foreground">

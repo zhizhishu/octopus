@@ -162,7 +162,11 @@ type RelayLogScope struct {
 	// Severity narrows to a single severity bucket: "success" | "warn" | "error".
 	// Empty means all. Kept in lockstep with the SQL / Go / web severity rules.
 	Severity string
-	Redact   bool
+	// RetriedOnly narrows to requests that took more than one channel attempt
+	// (a retry / failover happened), regardless of final outcome — spans both the
+	// "warn" bucket (recovered) and multi-attempt errors. Orthogonal to Severity.
+	RetriedOnly bool
+	Redact      bool
 }
 
 // RelayLogSeverityCounts is the global severity breakdown for the current filter,

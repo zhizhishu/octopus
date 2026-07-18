@@ -781,6 +781,9 @@ func relayLogMatchScope(relayLog model.RelayLog, scope *model.RelayLogScope) boo
 	if scope.Severity != "" && relayLogSeverityValue(relayLog) != scope.Severity {
 		return false
 	}
+	if scope.RetriedOnly && relayLog.TotalAttempts <= 1 {
+		return false
+	}
 	return true
 }
 
@@ -804,6 +807,9 @@ func relayLogApplyScope(query *gorm.DB, scope *model.RelayLogScope) *gorm.DB {
 		query = query.Where("NOT " + relayLogErrorSQLCond + " AND COALESCE(total_attempts,0) > 1")
 	case "success":
 		query = query.Where("NOT " + relayLogErrorSQLCond + " AND COALESCE(total_attempts,0) <= 1")
+	}
+	if scope.RetriedOnly {
+		query = query.Where("COALESCE(total_attempts,0) > 1")
 	}
 	return query
 }

@@ -65,6 +65,17 @@ func severityFromQuery(c *gin.Context) string {
 	}
 }
 
+// retriedFromQuery reads the optional ?retried= flag ("1"/"true") that narrows to
+// requests which took more than one channel attempt (a retry / failover happened).
+func retriedFromQuery(c *gin.Context) bool {
+	switch strings.ToLower(strings.TrimSpace(c.Query("retried"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
 func listLog(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
@@ -97,6 +108,7 @@ func listLog(c *gin.Context) {
 		scope.Redact = false
 	}
 	scope.Severity = severityFromQuery(c)
+	scope.RetriedOnly = retriedFromQuery(c)
 
 	logs, err := op.RelayLogList(c.Request.Context(), startTime, endTime, page, pageSize, &scope)
 	if err != nil {
@@ -137,6 +149,8 @@ func countLog(c *gin.Context) {
 	} else {
 		scope.Redact = false
 	}
+
+	scope.RetriedOnly = retriedFromQuery(c)
 
 	counts, err := op.RelayLogSeverityCounts(c.Request.Context(), startTime, endTime, &scope)
 	if err != nil {

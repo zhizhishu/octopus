@@ -777,6 +777,7 @@
             "advancedFilters": "進階篩選",
             "search": "搜尋",
             "reset": "重設",
+            "retriedOnly": "有重試",
             "export": "匯出日誌",
             "showSensitive": "顯示敏感資訊",
             "hideSensitive": "隱藏敏感資訊",

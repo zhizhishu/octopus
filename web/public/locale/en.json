@@ -777,6 +777,7 @@
             "advancedFilters": "Advanced filters",
             "search": "Search",
             "reset": "Reset",
+            "retriedOnly": "Retried",
             "export": "Export logs",
             "showSensitive": "Show sensitive info",
             "hideSensitive": "Hide sensitive info",

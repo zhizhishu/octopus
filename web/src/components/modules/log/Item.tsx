@@ -77,6 +77,31 @@ function formatDuration(ms: number): string {
     return `${(ms / 1000).toFixed(2)}s`;
 }
 
+/** 延迟档位配色：好=绿、偏慢=琥珀、慢=红。首字与总耗时阈值不同。 */
+function latencyColor(ms: number, goodMax: number, warnMax: number): string {
+    if (!Number.isFinite(ms) || ms <= 0) return 'bg-muted-foreground/30';
+    if (ms <= goodMax) return 'bg-emerald-500';
+    if (ms <= warnMax) return 'bg-amber-500';
+    return 'bg-destructive';
+}
+
+/**
+ * 延迟健康度色条：左半段=首字延迟档，右半段=总耗时档。扫一眼就知道这条请求快不快，
+ * 不用点开详情。抄自 sub2api 的做法（PROJECT 参考调研）。
+ */
+function LatencyBar({ ftut, useTime }: { ftut: number; useTime: number }) {
+    return (
+        <span
+            className="inline-flex h-1.5 w-12 shrink-0 overflow-hidden rounded-full bg-muted align-middle"
+            title={`首字 ${formatDuration(ftut)} · 总耗时 ${formatDuration(useTime)}`}
+            aria-hidden
+        >
+            <span className={cn('h-full w-1/2', latencyColor(ftut, 1500, 4000))} />
+            <span className={cn('h-full w-1/2', latencyColor(useTime, 5000, 15000))} />
+        </span>
+    );
+}
+
 function formatCacheRate(rate: number | undefined): string {
     return `${((rate ?? 0) * 100).toFixed((rate ?? 0) > 0 && (rate ?? 0) < 0.01 ? 2 : 1)}%`;
 }
@@ -492,10 +517,22 @@ export function LogCard({ log }: { log: RelayLog }) {
                 <MorphingDialogTrigger
                     disabled={!canViewDetails}
                     className={cn(
-                        "rounded-lg border bg-card w-full text-left",
-                        hasError ? "border-destructive/40" : hasPartialFailure ? "border-amber-500/40" : "border-border",
+                        "relative w-full overflow-hidden rounded-lg border bg-card text-left",
+                        hasError
+                            ? "border-destructive/40 bg-destructive/[0.05]"
+                            : hasPartialFailure
+                                ? "border-amber-500/40 bg-amber-500/[0.05]"
+                                : "border-border",
                     )}
                 >
+                    {/* 左侧状态色条：失败/重试的行一眼可辨（抄自 new-api 的整行 tint 思路）。 */}
+                    <span
+                        aria-hidden
+                        className={cn(
+                            "absolute inset-y-0 left-0 w-1",
+                            hasError ? "bg-destructive" : hasPartialFailure ? "bg-amber-500" : "bg-emerald-500/50",
+                        )}
+                    />
                     <div className={cn("p-4 grid grid-cols-[auto_1fr] gap-4", hasError ? "items-start" : "items-center")}>
                         <ModelAvatar size={40} />
                         <div className="min-w-0 flex flex-col gap-3">
@@ -525,6 +562,9 @@ export function LogCard({ log }: { log: RelayLog }) {
                                 <div className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
                                     <Clock className="size-3.5 shrink-0 text-muted-foreground" />
                                     <span>{formatTime(log.time)}</span>
+                                </div>
+                                <div className="flex shrink-0 items-center gap-1.5">
+                                    <LatencyBar ftut={log.ftut} useTime={log.use_time} />
                                 </div>
                                 <div className="flex min-w-0 items-center gap-1.5">
                                     <Zap className="size-3.5 shrink-0 text-muted-foreground" />
