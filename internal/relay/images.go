@@ -895,6 +895,13 @@ func imagesAttempt(
 			jsonPayload = normalizeGrokImagesPayload(jsonPayload)
 			stream = false
 		}
+		if isAgnesImagesModel(actualModel) {
+			// Agnes is an OpenAI /v1/images/generations variant that expects
+			// response_format/image nested inside extra_body. Reshape a standard
+			// inbound payload in place; other fields (size/ratio/n/…) are left as
+			// the caller sent them. Streaming is untouched.
+			normalizeAgnesImagesPayload(jsonPayload)
+		}
 		jsonPayload["model"] = actualModel
 		b, err := json.Marshal(jsonPayload)
 		if err != nil {

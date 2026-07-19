@@ -835,7 +835,8 @@
             "nonStream": "非流式",
             "reasoningEffort": "推理强度",
             "userName": "用户",
-            "channelKey": "渠道 Key 备注"
+            "channelKey": "渠道 Key 备注",
+            "thinking": "思考"
         }
     },
     "channel": {

@@ -835,7 +835,8 @@
             "nonStream": "非串流",
             "reasoningEffort": "推理強度",
             "userName": "使用者",
-            "channelKey": "渠道 Key 備註"
+            "channelKey": "渠道 Key 備註",
+            "thinking": "思考"
         }
     },
     "channel": {

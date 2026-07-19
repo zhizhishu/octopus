@@ -388,3 +388,47 @@ func normalizeGrokImagesPayload(payload map[string]any) map[string]any {
 	}
 	return normalized
 }
+
+// isAgnesImagesModel reports whether the model targets Agnes's image endpoint
+// (agnes-image-2.0-flash / agnes-image-2.1-flash). Agnes upstream is an OpenAI
+// /v1/images/generations variant that requires "response_format" and "image" to
+// be nested inside an "extra_body" object rather than sitting at the top level.
+func isAgnesImagesModel(modelName string) bool {
+	modelName = strings.ToLower(strings.TrimSpace(modelName))
+	return strings.HasPrefix(modelName, "agnes-image-2")
+}
+
+// normalizeAgnesImagesPayload reshapes a standard OpenAI /v1/images/generations
+// payload into Agnes's variant, in place: top-level "response_format" and
+// "image" are moved into an "extra_body" object (created if missing or if the
+// existing value is not an object), while any pre-existing extra_body keys are
+// preserved and every other field is left untouched. It is idempotent — once
+// the fields are already nested (top-level absent) it is a no-op.
+func normalizeAgnesImagesPayload(payload map[string]any) {
+	if payload == nil {
+		return
+	}
+	var pending map[string]any
+	for _, key := range []string{"response_format", "image"} {
+		value, ok := payload[key]
+		if !ok {
+			continue
+		}
+		if pending == nil {
+			pending = make(map[string]any, 2)
+		}
+		pending[key] = value
+		delete(payload, key)
+	}
+	if pending == nil {
+		return
+	}
+	extraBody, _ := payload["extra_body"].(map[string]any)
+	if extraBody == nil {
+		extraBody = make(map[string]any, len(pending))
+	}
+	for key, value := range pending {
+		extraBody[key] = value
+	}
+	payload["extra_body"] = extraBody
+}

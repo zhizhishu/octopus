@@ -469,7 +469,8 @@ func relayLogMatchesScope(log model.RelayLog, scope *model.RelayLogScope) bool {
 	if scope.APIKeyID > 0 && log.APIKeyID != scope.APIKeyID {
 		return false
 	}
-	if scope.Endpoint != "" && log.RequestEndpoint != scope.Endpoint {
+	if scope.Endpoint != "" && log.RequestEndpoint != scope.Endpoint && !strings.HasPrefix(log.RequestEndpoint, scope.Endpoint+"_") {
+		// Family match, kept in sync with op.relayLogEndpointMatches / relayLogApplyScope.
 		return false
 	}
 	return true

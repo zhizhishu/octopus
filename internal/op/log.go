@@ -775,7 +775,7 @@ func relayLogMatchScope(relayLog model.RelayLog, scope *model.RelayLogScope) boo
 	if scope.APIKeyID > 0 && relayLog.APIKeyID != scope.APIKeyID {
 		return false
 	}
-	if scope.Endpoint != "" && relayLog.RequestEndpoint != scope.Endpoint {
+	if scope.Endpoint != "" && !relayLogEndpointMatches(relayLog.RequestEndpoint, scope.Endpoint) {
 		return false
 	}
 	if scope.Severity != "" && relayLogSeverityValue(relayLog) != scope.Severity {
@@ -785,6 +785,22 @@ func relayLogMatchScope(relayLog model.RelayLog, scope *model.RelayLogScope) boo
 		return false
 	}
 	return true
+}
+
+// relayLogEndpointMatches reports whether a stored request_endpoint belongs to
+// the requested endpoint family: an exact match, or a "<family>_<variant>" form.
+// The relay stores variant endpoints as "<family>_<sub>" (e.g. gemini →
+// gemini_generate_content / gemini_stream_generate_content, images →
+// images_generations, videos → videos_poll), so the log filter matches by
+// family rather than requiring the caller to know every stored variant.
+func relayLogEndpointMatches(stored, filter string) bool {
+	return stored == filter || strings.HasPrefix(stored, filter+"_")
+}
+
+// escapeLogEndpointLike escapes LIKE metacharacters so an endpoint family prefix
+// is matched literally (backslash is declared as the ESCAPE char in the query).
+func escapeLogEndpointLike(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
 }
 
 func relayLogApplyScope(query *gorm.DB, scope *model.RelayLogScope) *gorm.DB {
@@ -798,7 +814,11 @@ func relayLogApplyScope(query *gorm.DB, scope *model.RelayLogScope) *gorm.DB {
 		query = query.Where("api_key_id = ?", scope.APIKeyID)
 	}
 	if scope.Endpoint != "" {
-		query = query.Where("request_endpoint = ?", scope.Endpoint)
+		// Family match: exact, or "<family>_<variant>" (e.g. filter "gemini"
+		// also catches "gemini_generate_content"; "images" catches
+		// "images_generations"; "videos" catches "videos_poll"). Kept in sync
+		// with relayLogEndpointMatches (memory path) and the SSE tail path.
+		query = query.Where("request_endpoint = ? OR request_endpoint LIKE ? ESCAPE '\\'", scope.Endpoint, escapeLogEndpointLike(scope.Endpoint)+`\_%`)
 	}
 	switch scope.Severity {
 	case "error":

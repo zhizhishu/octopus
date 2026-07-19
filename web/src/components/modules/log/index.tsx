@@ -26,12 +26,23 @@ const severityFilters: Array<{ id: LogSeverityFilter; icon: typeof Circle; class
     { id: 'error', icon: AlertCircle, className: 'text-destructive' },
 ];
 
+// value = endpoint family prefix; backend matches by family (exact or
+// "<value>_<variant>"), so e.g. 'gemini' catches gemini_generate_content /
+// gemini_stream_generate_content, 'images' catches images_generations, etc.
 const endpointFilters = [
     { value: '', label: '全部端点' },
     { value: 'chat', label: 'chat' },
     { value: 'responses', label: 'responses' },
     { value: 'messages', label: 'messages' },
     { value: 'gemini', label: 'gemini' },
+    { value: 'embeddings', label: 'embeddings' },
+    { value: 'images', label: 'images' },
+    { value: 'audio', label: 'audio' },
+    { value: 'videos', label: 'videos' },
+    { value: 'completions', label: 'completions' },
+    { value: 'edits', label: 'edits' },
+    { value: 'moderations', label: 'moderations' },
+    { value: 'rerank', label: 'rerank' },
     { value: 'model_test_chat', label: 'model test chat' },
     { value: 'model_test_responses', label: 'model test responses' },
     { value: 'model_test_anthropic_messages', label: 'model test messages' },

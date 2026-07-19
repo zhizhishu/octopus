@@ -325,6 +325,12 @@ func imagesGenerationPayloadFromInternalRequest(req *transformerModel.InternalLL
 	if outputFormat == "" {
 		outputFormat = "png"
 	}
+	if isAgnesImagesModel(req.Model) {
+		// Emit Agnes-shaped bodies for the chat/responses→images bridge too:
+		// nest response_format/image under extra_body. No-op for non-Agnes and
+		// when neither field is present, so non-Agnes output stays byte-identical.
+		normalizeAgnesImagesPayload(payload)
+	}
 	return payload, outputFormat, nil
 }
 

@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, useState, useEffect, type ReactNode } from 'react';
-import { Clock, Cpu, Zap, AlertCircle, ArrowDownToLine, ArrowUpFromLine, DollarSign, ArrowRight, ArrowDown, Send, MessageSquare, Loader2, RotateCw, ChevronDown, ChevronUp, Pin, KeyRound, Percent, CheckCircle2, XCircle, Eye, Hash, MapPin, User, type LucideIcon } from 'lucide-react';
+import { Brain, Clock, Cpu, Zap, AlertCircle, ArrowDownToLine, ArrowUpFromLine, DollarSign, ArrowRight, ArrowDown, Send, MessageSquare, Loader2, RotateCw, ChevronDown, ChevronUp, Pin, KeyRound, Percent, CheckCircle2, XCircle, Eye, Hash, MapPin, User, type LucideIcon } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { motion, AnimatePresence } from 'motion/react';
 import JsonView from '@uiw/react-json-view';
@@ -598,6 +598,18 @@ export function LogCard({ log }: { log: RelayLog }) {
                                         <span className="shrink-0 whitespace-nowrap font-medium tabular-nums text-emerald-600 dark:text-emerald-400">
                                             {t('cost')} {Number(log.cost).toFixed(6)}
                                         </span>
+                                    </div>
+                                )}
+                                {reasoningEffort && (
+                                    <div className="flex shrink-0 items-center gap-1.5">
+                                        <Brain className="size-3.5 shrink-0 text-muted-foreground" />
+                                        <span className="min-w-0 truncate">{t('thinking')} · {reasoningEffort}</span>
+                                    </div>
+                                )}
+                                {requestAPIKeyName && (
+                                    <div className="flex shrink-0 items-center gap-1.5">
+                                        <KeyRound className="size-3.5 shrink-0 text-muted-foreground" />
+                                        <MonoSafeText value={maskSensitive(requestAPIKeyName, sensitiveVisible)} className="min-w-0 truncate" />
                                     </div>
                                 )}
                             </div>

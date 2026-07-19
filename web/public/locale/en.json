@@ -835,7 +835,8 @@
             "nonStream": "Non-stream",
             "reasoningEffort": "Reasoning Effort",
             "userName": "User",
-            "channelKey": "Key Remark"
+            "channelKey": "Key Remark",
+            "thinking": "Thinking"
         }
     },
     "channel": {
