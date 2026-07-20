@@ -112,40 +112,49 @@ export function ChannelTestDialog({
             for (const e of eps) for (const m of mods) next[cellKey(e, m)] = { status: 'testing' };
             return next;
         });
-        try {
-            for (const endpoint of eps) {
-                try {
-                    const data = await modelTest.mutateAsync({
-                        models: mods,
-                        channel_id: channel.id,
-                        endpoint,
-                        prompt,
-                        stream: streamTest,
-                        timeout_seconds: DEFAULT_MODEL_TEST_TIMEOUT_SECONDS,
-                        audit_log: true,
-                    });
-                    setResults((prev) => {
-                        const next = { ...prev };
-                        for (const r of data.results) {
-                            const key = cellKey(endpoint, r.request_model || r.model);
-                            next[key] = r.success
-                                ? { status: 'success', ms: r.duration_ms }
-                                : { status: 'error', error: r.error };
-                        }
-                        for (const m of mods) {
-                            const key = cellKey(endpoint, m);
-                            if (!next[key] || next[key].status === 'testing') next[key] = { status: 'error', error: '无结果' };
-                        }
-                        return next;
-                    });
-                } catch (error: unknown) {
-                    setResults((prev) => {
-                        const next = { ...prev };
-                        for (const m of mods) next[cellKey(endpoint, m)] = { status: 'error', error: apiErrorMessage(error) || '测试失败' };
-                        return next;
-                    });
-                }
+        // 每个「端点 × 模型」各发一个独立请求，谁先测完谁先填那一格——不再一次性
+        // 传整批模型等齐，慢模型不会再卡住快模型（后端不变，单模型请求即可）。
+        const jobs: Array<() => Promise<void>> = [];
+        for (const endpoint of eps) {
+            for (const model of mods) {
+                jobs.push(async () => {
+                    try {
+                        const data = await modelTest.mutateAsync({
+                            models: [model],
+                            channel_id: channel.id,
+                            endpoint,
+                            prompt,
+                            stream: streamTest,
+                            timeout_seconds: DEFAULT_MODEL_TEST_TIMEOUT_SECONDS,
+                            audit_log: true,
+                        });
+                        const r = data.results?.[0];
+                        setResults((prev) => ({
+                            ...prev,
+                            [cellKey(endpoint, model)]: r
+                                ? (r.success ? { status: 'success', ms: r.duration_ms } : { status: 'error', error: r.error })
+                                : { status: 'error', error: '无结果' },
+                        }));
+                    } catch (error: unknown) {
+                        setResults((prev) => ({
+                            ...prev,
+                            [cellKey(endpoint, model)]: { status: 'error', error: apiErrorMessage(error) || '测试失败' },
+                        }));
+                    }
+                });
             }
+        }
+        // 限并发，避免一次性把上游打爆
+        const LIMIT = 6;
+        let cursor = 0;
+        const workers = Array.from({ length: Math.min(LIMIT, jobs.length) }, async () => {
+            while (cursor < jobs.length) {
+                const mine = cursor++;
+                await jobs[mine]();
+            }
+        });
+        try {
+            await Promise.all(workers);
             toast.success('测试完成，详情见下表（也已写入日志）');
         } finally {
             setTesting(false);
