@@ -163,16 +163,16 @@ func TestNormalizeCodexReasoningEffort(t *testing.T) {
 		{"max on gpt-5.6foo (not 5.6 family) becomes xhigh", "max", "gpt-5.6foo", "xhigh"},
 		{"high on gpt-5.5 passes through", "high", "gpt-5.5", "high"},
 		{"empty effort untouched", "", "gpt-5.5", ""},
-		// GPT-5.6: codex under-specifies the effort (none/low/empty) because it does not
-		// recognise the model name, so oct lifts it to "high"; a deliberate level is respected.
-		{"none on gpt-5.6 becomes high", "none", "gpt-5.6-sol", "high"},
-		{"low on gpt-5.6 becomes high", "low", "gpt-5.6-sol", "high"},
-		{"empty on gpt-5.6 becomes high", "", "gpt-5.6-sol", "high"},
-		{"minimal on gpt-5.6 becomes high", "minimal", "gpt-5.6-terra", "high"},
+		// GPT-5.6: faithful passthrough of any explicit level the client chose; only a
+		// completely unspecified (empty) effort defaults to "high" so an omitted field still reasons.
+		{"none on gpt-5.6 passes through", "none", "gpt-5.6-sol", "none"},
+		{"low on gpt-5.6 passes through", "low", "gpt-5.6-sol", "low"},
+		{"empty on gpt-5.6 defaults to high", "", "gpt-5.6-sol", "high"},
+		{"minimal on gpt-5.6 passes through", "minimal", "gpt-5.6-terra", "minimal"},
 		{"medium on gpt-5.6 preserved", "medium", "gpt-5.6-sol", "medium"},
 		{"high on gpt-5.6 preserved", "high", "gpt-5.6-sol", "high"},
 		{"xhigh on gpt-5.6 preserved", "xhigh", "gpt-5.6-sol", "xhigh"},
-		{"low on gpt-5.5 passes through (only 5.6 is lifted)", "low", "gpt-5.5", "low"},
+		{"low on gpt-5.5 passes through (only 5.6 defaults)", "low", "gpt-5.5", "low"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

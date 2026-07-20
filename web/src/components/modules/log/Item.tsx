@@ -77,29 +77,16 @@ function formatDuration(ms: number): string {
     return `${(ms / 1000).toFixed(2)}s`;
 }
 
-/** 延迟档位配色：好=绿、偏慢=琥珀、慢=红。首字与总耗时阈值不同。 */
-function latencyColor(ms: number, goodMax: number, warnMax: number): string {
-    if (!Number.isFinite(ms) || ms <= 0) return 'bg-muted-foreground/30';
-    if (ms <= goodMax) return 'bg-emerald-500';
-    if (ms <= warnMax) return 'bg-amber-500';
-    return 'bg-destructive';
-}
-
 /**
- * 延迟健康度色条：左半段=首字延迟档，右半段=总耗时档。扫一眼就知道这条请求快不快，
- * 不用点开详情。抄自 sub2api 的做法（PROJECT 参考调研）。
+ * 延迟档位 → 文字/图标语义色（快=绿、偏慢=琥珀、慢=红）。首字与总耗时阈值不同。
+ * 直接把健康度染在「首字 / 总耗时」这两个数字上，一眼知快慢——取代原来那条没标签、
+ * 谁都看不懂的双色 LatencyBar（左右半段各代表一个延迟档，语义太隐晦、又与右边数字重复）。
  */
-function LatencyBar({ ftut, useTime }: { ftut: number; useTime: number }) {
-    return (
-        <span
-            className="inline-flex h-1.5 w-12 shrink-0 overflow-hidden rounded-full bg-muted align-middle"
-            title={`首字 ${formatDuration(ftut)} · 总耗时 ${formatDuration(useTime)}`}
-            aria-hidden
-        >
-            <span className={cn('h-full w-1/2', latencyColor(ftut, 1500, 4000))} />
-            <span className={cn('h-full w-1/2', latencyColor(useTime, 5000, 15000))} />
-        </span>
-    );
+function latencyTextColor(ms: number, goodMax: number, warnMax: number): string {
+    if (!Number.isFinite(ms) || ms <= 0) return 'text-muted-foreground';
+    if (ms <= goodMax) return 'text-emerald-600 dark:text-emerald-400';
+    if (ms <= warnMax) return 'text-amber-600 dark:text-amber-400';
+    return 'text-destructive';
 }
 
 function formatCacheRate(rate: number | undefined): string {
@@ -563,15 +550,12 @@ export function LogCard({ log }: { log: RelayLog }) {
                                     <Clock className="size-3.5 shrink-0 text-muted-foreground" />
                                     <span>{formatTime(log.time)}</span>
                                 </div>
-                                <div className="flex shrink-0 items-center gap-1.5">
-                                    <LatencyBar ftut={log.ftut} useTime={log.use_time} />
-                                </div>
-                                <div className="flex min-w-0 items-center gap-1.5">
-                                    <Zap className="size-3.5 shrink-0 text-muted-foreground" />
+                                <div className={cn("flex min-w-0 items-center gap-1.5 font-medium", latencyTextColor(log.ftut, 1500, 4000))}>
+                                    <Zap className="size-3.5 shrink-0" />
                                     <span className="min-w-0 truncate">{t('firstToken')} {formatDuration(log.ftut)}</span>
                                 </div>
-                                <div className="flex min-w-0 items-center gap-1.5">
-                                    <Cpu className="size-3.5 shrink-0 text-muted-foreground" />
+                                <div className={cn("flex min-w-0 items-center gap-1.5 font-medium", latencyTextColor(log.use_time, 5000, 15000))}>
+                                    <Cpu className="size-3.5 shrink-0" />
                                     <span className="min-w-0 truncate">{t('totalTime')} {formatDuration(log.use_time)}</span>
                                 </div>
                                 {!isModelTest && (

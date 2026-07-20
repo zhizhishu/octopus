@@ -53,12 +53,13 @@ func applyCodexFastMode(req *transformerModel.InternalLLMRequest) {
 // never any TLS/header fingerprint); the GPT-5.6 check keys on req.Model, which at this
 // point is the effective upstream model (applyModelMapping has already run).
 //
-//  1. GPT-5.6 family (sol/terra/luna): codex 0.144.x does NOT recognise these model names
-//     as reasoning models, so its default request carries a near-zero effort (none/low, or
-//     empty which oct's fast-mode default turns into low) and the model barely thinks — the
-//     reported "5.6 won't think" symptom. These ARE reasoning models, so an under-specified
-//     effort is lifted to "high". A client that deliberately chose medium/high/xhigh/max is
-//     respected, and "max" (which these models accept, unlike 5.5) is kept.
+//  1. GPT-5.6 family (sol/terra/luna): faithful passthrough of whatever effort the client
+//     EXPLICITLY chose (none/minimal/low/medium/high/xhigh/max — including "max", which these
+//     models accept unlike 5.5). Only a COMPLETELY UNSPECIFIED (empty) effort defaults to
+//     "high", so a codex client that omits reasoning.effort for the (to it) unknown 5.6 model
+//     still reasons instead of barely thinking — while a client that deliberately picked a
+//     level owns it. (Previously none/minimal/low were also force-lifted to high; that
+//     overrode a deliberate low, so it was narrowed to the empty case only.)
 //  2. Non-5.6 codex models reject "max" (400), so only that single value is remapped to
 //     "xhigh". Every other effort passes through faithfully.
 //
@@ -70,8 +71,7 @@ func normalizeCodexReasoningEffort(req *transformerModel.InternalLLMRequest) {
 	}
 	effort := strings.ToLower(strings.TrimSpace(req.ReasoningEffort))
 	if isGPT56Model(req.Model) {
-		switch effort {
-		case "", "none", "minimal", "low":
+		if effort == "" {
 			req.ReasoningEffort = "high"
 		}
 		return
