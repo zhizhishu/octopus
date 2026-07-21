@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/bestruirui/octopus/internal/model"
@@ -51,6 +52,10 @@ func init() {
 		AddRoute(
 			router.NewRoute("/test", http.MethodPost).
 				Handle(testLLM),
+		).
+		AddRoute(
+			router.NewRoute("/test-identity", http.MethodGet).
+				Handle(testIdentityLLM),
 		)
 	router.NewGroupRouter("/v1").
 		Use(middleware.APIKeyAuth()).
@@ -269,4 +274,23 @@ func testLLM(c *gin.Context) {
 		return
 	}
 	resp.Success(c, result)
+}
+
+// testIdentityLLM returns the per-endpoint upstream identity (shape + UA) a
+// channel test will present, resolved from the channel's fingerprint profile.
+// Read-only: powers the test dialog's identity readout so the operator sees which
+// CLI shape each endpoint simulates. It never overrides the channel's profile —
+// the test always uses the channel's real identity (test==real-traffic invariant).
+func testIdentityLLM(c *gin.Context) {
+	channelID, err := strconv.Atoi(strings.TrimSpace(c.Query("channel_id")))
+	if err != nil || channelID <= 0 {
+		resp.Error(c, http.StatusBadRequest, "invalid channel_id")
+		return
+	}
+	channel, err := op.ChannelGet(channelID, c.Request.Context())
+	if err != nil {
+		resp.Error(c, http.StatusNotFound, "channel not found")
+		return
+	}
+	resp.Success(c, modeltest.ResolveChannelTestIdentity(channel))
 }

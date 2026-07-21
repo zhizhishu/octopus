@@ -170,6 +170,7 @@ export function Log() {
     // 严重程度 + 「只看有重试」都是服务端过滤，翻页/总数都对得上。
     const [severityFilter, setSeverityFilter] = useState<LogSeverityFilter>('all');
     const [retriedOnly, setRetriedOnly] = useState(false);
+    const [hideModelTest, setHideModelTest] = useState(false);
     const [autoRefresh, setAutoRefresh] = useState(false);
     const [advancedOpen, setAdvancedOpen] = useState(false);
     // 分页状态：当前页（从 1 开始）+ 跳页输入框草稿值。自动刷新时禁用分页，回退无限滚动。
@@ -220,6 +221,7 @@ export function Log() {
         startTime,
         endTime,
         retried: retriedOnly,
+        hideModelTest,
     });
     const LOG_PAGE_SIZE = 20;
     // 当前生效筛选下的总条数：全部→total，否则取该严重程度的计数。分页页数据此算。
@@ -250,6 +252,7 @@ export function Log() {
         startTime,
         endTime,
         retried: retriedOnly,
+        hideModelTest,
         // 实时刷新只在第 1 页（最新）生效；翻到历史页自然暂停，回第 1 页恢复。
         live: autoRefresh && currentPage === 1,
     });
@@ -294,6 +297,7 @@ export function Log() {
         setSelectedEndpoint('');
         setSeverityFilter('all');
         setRetriedOnly(false);
+        setHideModelTest(false);
         setStartDate(defaultRange.startDate);
         setEndDate(defaultRange.endDate);
         setCurrentPage(1);
@@ -307,6 +311,7 @@ export function Log() {
         !!effectiveSelectedAPIKeyID ||
         severityFilter !== 'all' ||
         retriedOnly ||
+        hideModelTest ||
         !isDefaultRange;
 
     // 「生效筛选」药丸：把当前每一维筛选摊开成一个可一键删除的小标签，让人清楚现在到底在看什么。
@@ -320,6 +325,7 @@ export function Log() {
     if (selectedEndpoint) activePills.push({ key: 'ep', label: `接口 ${selectedEndpoint}`, onClear: () => { setSelectedEndpoint(''); setCurrentPage(1); } });
     if (severityFilter !== 'all') activePills.push({ key: 'sev', label: `状态 ${t(`list.filters.${severityFilter}`)}`, onClear: () => { setSeverityFilter('all'); setCurrentPage(1); } });
     if (retriedOnly) activePills.push({ key: 'retry', label: t('list.retriedOnly'), onClear: () => { setRetriedOnly(false); setCurrentPage(1); } });
+    if (hideModelTest) activePills.push({ key: 'hidetest', label: '隐藏渠道测试探针', onClear: () => { setHideModelTest(false); setCurrentPage(1); } });
     if (selectedUserID) activePills.push({ key: 'user', label: `用户 ${users.find((u) => u.id === selectedUserID)?.username ?? selectedUserID}`, onClear: () => { setSelectedUserID(undefined); setCurrentPage(1); } });
     if (effectiveSelectedAPIKeyID) activePills.push({ key: 'key', label: `Key ${selectedAPIKey?.name ?? effectiveSelectedAPIKeyID}`, onClear: () => { setSelectedAPIKeyID(undefined); setCurrentPage(1); } });
 
@@ -353,6 +359,7 @@ export function Log() {
         apiKeyID: effectiveSelectedAPIKeyID,
         endpoint: selectedEndpoint || undefined,
         retried: retriedOnly,
+        hideModelTest,
         enabled: listIsEmpty,
     });
 
@@ -581,6 +588,22 @@ export function Log() {
                     >
                         <RotateCw className="size-3.5" />
                         <span>{t('list.retriedOnly')}</span>
+                    </button>
+
+                    {/* 隐藏渠道测试探针（model_test）：容量坏窗口 / 压测时探针失败会刷屏，藏掉只看真实业务。 */}
+                    <button
+                        type="button"
+                        onClick={() => { setHideModelTest((v) => !v); setCurrentPage(1); }}
+                        title="隐藏渠道测试探针（model_test），只看真实业务流量"
+                        className={cn(
+                            'inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition-colors',
+                            hideModelTest
+                                ? 'border-primary/50 bg-primary/10 text-primary'
+                                : 'border-border bg-background text-muted-foreground hover:text-foreground'
+                        )}
+                    >
+                        <EyeOff className="size-3.5" />
+                        <span>隐藏测试探针</span>
                     </button>
 
                     <div className="ml-auto flex min-w-0 flex-wrap items-center gap-2">

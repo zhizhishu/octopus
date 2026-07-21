@@ -3,9 +3,9 @@
 // 渠道内测试对话框（学 new-api）：多选端点 + 流/非流开关 + 模型多选批量测试，
 // 复用 /api/v1/model/test 与统一的 shouldForceTestStream + 180s。替代原独立「模型测试」页。
 import { useMemo, useState } from 'react';
-import { CheckCircle2, Loader2, Play, XCircle } from 'lucide-react';
+import { CheckCircle2, Fingerprint, Loader2, Lock, Play, RotateCw, XCircle } from 'lucide-react';
 import { defaultModelTestEndpointForChannel, type Channel } from '@/api/endpoints/channel';
-import { useModelTest } from '@/api/endpoints/model';
+import { useChannelTestIdentity, useModelTest, type EndpointIdentity } from '@/api/endpoints/model';
 import type { ApiError } from '@/api/types';
 import { toast } from '@/components/common/Toast';
 import { Button } from '@/components/ui/button';
@@ -37,6 +37,34 @@ const ENDPOINT_LABEL: Record<TestEndpoint, string> = {
 
 type CellStatus = 'testing' | 'success' | 'error';
 type CellResult = { status: CellStatus; ms?: number; error?: string };
+// 重复次数 > 1 时的逐格汇总（治日志刷屏：不逐条落库、对话框看统计）
+type CellSummary = { total: number; done: number; ok: number; capacity: number; timeout: number; other: number; msSum: number };
+
+const MAX_REPEAT = 500;
+
+// 端点自动模拟的 shape（与后端 runner 的端点→shape 映射一致；测试永远用渠道真实 profile）
+const ENDPOINT_IDENTITY: Record<TestEndpoint, 'codex' | 'claude' | 'generic'> = {
+    openai_chat: 'generic',
+    openai_responses: 'codex',
+    anthropic_messages: 'claude',
+    gemini_generate_content: 'generic',
+};
+const SHAPE_LABEL: Record<'codex' | 'claude' | 'generic', string> = {
+    codex: 'codex CLI', claude: 'claude CLI', generic: '通用 UA',
+};
+const SHAPE_CLASS: Record<'codex' | 'claude' | 'generic', string> = {
+    codex: 'bg-primary/15 text-primary',
+    claude: 'bg-amber-500/15 text-amber-600 dark:text-amber-400',
+    generic: 'bg-muted text-muted-foreground',
+};
+
+// 失败归类，供汇总模式统计（容量满是 anyrouter 坏窗口特征，单列出来）
+function classifyError(err?: string): 'capacity' | 'timeout' | 'other' {
+    const e = err || '';
+    if (/负载已(经)?达到?上限|已达上限|capacity|rate.?limit|429|529/i.test(e)) return 'capacity';
+    if (/超时|timed?\s?out|timeout|deadline/i.test(e)) return 'timeout';
+    return 'other';
+}
 
 const pillClass = (selected: boolean) =>
     cn(
@@ -68,7 +96,10 @@ export function ChannelTestDialog({
     const [streamTest, setStreamTest] = useState(true);
     const [filter, setFilter] = useState('');
     const [results, setResults] = useState<Record<string, CellResult>>({});
+    const [summaries, setSummaries] = useState<Record<string, CellSummary>>({});
+    const [repeat, setRepeat] = useState(1);
     const [testing, setTesting] = useState(false);
+    const identityQuery = useChannelTestIdentity(channel.id, open);
 
     const filteredModels = useMemo(() => {
         const q = filter.trim().toLowerCase();
@@ -105,19 +136,45 @@ export function ChannelTestDialog({
             toast.error('请至少选一个端点和一个模型');
             return;
         }
+        const times = Math.max(1, Math.min(Math.floor(repeat) || 1, MAX_REPEAT));
+        const summaryMode = times > 1;
         setTesting(true);
         const prompt = makeModelTestPrompt();
-        setResults(() => {
-            const next: Record<string, CellResult> = {};
-            for (const e of eps) for (const m of mods) next[cellKey(e, m)] = { status: 'testing' };
-            return next;
-        });
-        // 每个「端点 × 模型」各发一个独立请求，谁先测完谁先填那一格——不再一次性
-        // 传整批模型等齐，慢模型不会再卡住快模型（后端不变，单模型请求即可）。
+
+        if (summaryMode) {
+            // 汇总模式：探针不逐条落审计日志（audit_log:false，治刷屏），对话框看成功率 + 失败分类。
+            setResults({});
+            setSummaries(() => {
+                const next: Record<string, CellSummary> = {};
+                for (const e of eps) for (const m of mods)
+                    next[cellKey(e, m)] = { total: times, done: 0, ok: 0, capacity: 0, timeout: 0, other: 0, msSum: 0 };
+                return next;
+            });
+        } else {
+            setSummaries({});
+            setResults(() => {
+                const next: Record<string, CellResult> = {};
+                for (const e of eps) for (const m of mods) next[cellKey(e, m)] = { status: 'testing' };
+                return next;
+            });
+        }
+
+        // 每个「端点 × 模型」各发一个独立单模型请求（重复模式下发 times 次），谁先测完谁先填
+        // 那一格；慢模型不卡快模型。后端逐模型 fan-out，故上游请求数 = E×M×times。
+        const bump = (endpoint: TestEndpoint, model: string, ok: boolean, ms: number, err?: string) =>
+            setSummaries((prev) => {
+                const cur = prev[cellKey(endpoint, model)];
+                if (!cur) return prev;
+                const c: CellSummary = { ...cur, done: cur.done + 1 };
+                if (ok) { c.ok += 1; c.msSum += ms || 0; }
+                else { c[classifyError(err)] += 1; }
+                return { ...prev, [cellKey(endpoint, model)]: c };
+            });
+
         const jobs: Array<() => Promise<void>> = [];
         for (const endpoint of eps) {
             for (const model of mods) {
-                jobs.push(async () => {
+                const runOnce = async () => {
                     try {
                         const data = await modelTest.mutateAsync({
                             models: [model],
@@ -126,24 +183,29 @@ export function ChannelTestDialog({
                             prompt,
                             stream: streamTest,
                             timeout_seconds: DEFAULT_MODEL_TEST_TIMEOUT_SECONDS,
-                            audit_log: true,
+                            audit_log: !summaryMode,
                         });
                         const r = data.results?.[0];
-                        setResults((prev) => ({
-                            ...prev,
-                            [cellKey(endpoint, model)]: r
-                                ? (r.success ? { status: 'success', ms: r.duration_ms } : { status: 'error', error: r.error })
-                                : { status: 'error', error: '无结果' },
-                        }));
+                        if (summaryMode) {
+                            bump(endpoint, model, !!r?.success, r?.duration_ms || 0, r?.error);
+                        } else {
+                            setResults((prev) => ({
+                                ...prev,
+                                [cellKey(endpoint, model)]: r
+                                    ? (r.success ? { status: 'success', ms: r.duration_ms } : { status: 'error', error: r.error })
+                                    : { status: 'error', error: '无结果' },
+                            }));
+                        }
                     } catch (error: unknown) {
-                        setResults((prev) => ({
-                            ...prev,
-                            [cellKey(endpoint, model)]: { status: 'error', error: apiErrorMessage(error) || '测试失败' },
-                        }));
+                        const msg = apiErrorMessage(error) || '测试失败';
+                        if (summaryMode) bump(endpoint, model, false, 0, msg);
+                        else setResults((prev) => ({ ...prev, [cellKey(endpoint, model)]: { status: 'error', error: msg } }));
                     }
-                });
+                };
+                for (let i = 0; i < times; i++) jobs.push(runOnce);
             }
         }
+
         // 限并发，避免一次性把上游打爆
         const LIMIT = 6;
         let cursor = 0;
@@ -155,7 +217,7 @@ export function ChannelTestDialog({
         });
         try {
             await Promise.all(workers);
-            toast.success('测试完成，详情见下表（也已写入日志）');
+            toast.success(summaryMode ? `测试完成 · ${times} 轮，见下方汇总` : '测试完成，详情见下表（也已写入日志）');
         } finally {
             setTesting(false);
         }
@@ -172,6 +234,25 @@ export function ChannelTestDialog({
         }
         return rows;
     }, [endpoints, models, results]);
+
+    const summaryRows = useMemo(() => {
+        const rows: Array<{ endpoint: TestEndpoint; model: string; s: CellSummary }> = [];
+        for (const e of TEST_ENDPOINTS) {
+            if (!endpoints.has(e.value)) continue;
+            for (const m of models) {
+                const s = summaries[cellKey(e.value, m)];
+                if (s) rows.push({ endpoint: e.value, model: m, s });
+            }
+        }
+        return rows;
+    }, [endpoints, models, summaries]);
+
+    const identity = identityQuery.data;
+    const selectedShapes = useMemo(() => {
+        const kinds = new Set<'codex' | 'claude' | 'generic'>();
+        for (const e of endpoints) kinds.add(ENDPOINT_IDENTITY[e]);
+        return kinds;
+    }, [endpoints]);
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
@@ -195,6 +276,44 @@ export function ChannelTestDialog({
                             ))}
                         </div>
                     </div>
+
+                    {/* 身份 / Shape（只读，端点自动配 shape · 用渠道真实 profile 不可覆盖） */}
+                    {endpoints.size > 0 && (
+                        <div className="space-y-1.5">
+                            <div className="flex flex-wrap items-center gap-2 text-xs font-bold tracking-[0.14em] text-muted-foreground">
+                                <Fingerprint className="size-3.5" />身份 / SHAPE
+                                <span className="inline-flex items-center gap-1 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium tracking-normal text-muted-foreground">
+                                    <Lock className="size-2.5" />渠道真实 profile · 不可覆盖
+                                </span>
+                            </div>
+                            <div className="space-y-1 rounded-xl border border-border/60 bg-muted/10 p-2.5">
+                                {identityQuery.isLoading ? (
+                                    <span className="text-xs text-muted-foreground">解析身份中…</span>
+                                ) : identity ? (
+                                    <>
+                                        {(['codex', 'claude', 'generic'] as const)
+                                            .filter((k) => selectedShapes.has(k))
+                                            .map((k) => {
+                                                const ep: EndpointIdentity = identity[k];
+                                                return (
+                                                    <div key={k} className="flex items-center gap-2">
+                                                        <span className={cn('shrink-0 rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold', SHAPE_CLASS[k])}>{SHAPE_LABEL[k]}</span>
+                                                        <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-muted-foreground" title={ep.detail ? `${ep.user_agent}\n${ep.detail}` : ep.user_agent}>
+                                                            {ep.user_agent || '(默认)'}
+                                                        </span>
+                                                    </div>
+                                                );
+                                            })}
+                                        <div className="pt-0.5 text-[10.5px] text-muted-foreground">
+                                            按端点自动取{identity.profile_name ? <> profile <span className="font-mono text-foreground">{identity.profile_name}</span></> : ' 全局默认身份'}的对应字段 · 与真实流量一字节一致
+                                        </div>
+                                    </>
+                                ) : (
+                                    <span className="text-xs text-muted-foreground">身份解析失败，测试仍按渠道真实 profile 进行</span>
+                                )}
+                            </div>
+                        </div>
+                    )}
 
                     {/* 流/非流 */}
                     <label className="flex cursor-pointer items-center gap-2 text-sm">
@@ -225,11 +344,80 @@ export function ChannelTestDialog({
                         </div>
                     </div>
 
+                    {/* 重复次数 */}
+                    <div className="flex flex-wrap items-center gap-2 text-sm">
+                        <RotateCw className="size-4 shrink-0 text-muted-foreground" />
+                        <span className="shrink-0 text-xs font-medium">重复次数</span>
+                        <Input
+                            type="number"
+                            min={1}
+                            max={MAX_REPEAT}
+                            value={repeat}
+                            onChange={(event) => setRepeat(Math.max(1, Math.min(MAX_REPEAT, Math.floor(Number(event.target.value)) || 1)))}
+                            className="h-8 w-20 text-center text-xs"
+                        />
+                        <span className="text-xs text-muted-foreground">
+                            {repeat > 1 ? `汇总模式：跑 ${repeat} 轮 · 不逐条写日志 · 看成功率` : `默认 1 次（照常写日志）· 填 99 做容量/稳定性压测`}
+                        </span>
+                    </div>
+
                     {/* 运行 */}
                     <Button type="button" className="w-full rounded-xl" onClick={runTest} disabled={testing || endpoints.size === 0 || models.size === 0}>
                         {testing ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
-                        测试选中（{endpoints.size} 端点 × {models.size} 模型）
+                        测试选中（{endpoints.size} 端点 × {models.size} 模型{repeat > 1 ? ` × ${repeat} 轮` : ''}）
                     </Button>
+
+                    {/* 汇总结果（重复次数 > 1） */}
+                    {summaryRows.length > 0 && (
+                        <div className="overflow-hidden rounded-xl border border-border/60">
+                            <Table>
+                                <TableHeader>
+                                    <TableRow>
+                                        <TableHead className="w-24">端点</TableHead>
+                                        <TableHead>模型</TableHead>
+                                        <TableHead className="w-28">成功率</TableHead>
+                                        <TableHead>失败分类</TableHead>
+                                    </TableRow>
+                                </TableHeader>
+                                <TableBody>
+                                    {summaryRows.map(({ endpoint, model, s }) => {
+                                        const rate = s.total > 0 ? Math.round((s.ok / s.total) * 100) : 0;
+                                        const avg = s.ok > 0 ? (s.msSum / s.ok / 1000).toFixed(2) : null;
+                                        const rateColor = rate >= 90 ? 'text-emerald-600 dark:text-emerald-400' : rate >= 50 ? 'text-amber-600 dark:text-amber-400' : 'text-destructive';
+                                        const barColor = rate >= 90 ? 'bg-emerald-500' : rate >= 50 ? 'bg-amber-500' : 'bg-destructive';
+                                        return (
+                                            <TableRow key={`sum|${endpoint}|${model}`}>
+                                                <TableCell className="text-xs text-muted-foreground">{ENDPOINT_LABEL[endpoint]}</TableCell>
+                                                <TableCell className="max-w-[10rem] truncate font-mono text-xs">{cleanOneMillionModelName(model)}</TableCell>
+                                                <TableCell>
+                                                    <div className="flex items-center gap-1.5">
+                                                        <span className={cn('text-xs font-semibold', rateColor)}>{s.ok}/{s.total}</span>
+                                                        {avg && <span className="text-[10px] text-muted-foreground">·{avg}s</span>}
+                                                    </div>
+                                                    <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-muted">
+                                                        <div className={cn('h-full transition-all', barColor)} style={{ width: `${rate}%` }} />
+                                                    </div>
+                                                </TableCell>
+                                                <TableCell className="text-xs text-muted-foreground">
+                                                    {s.done < s.total ? (
+                                                        <span className="inline-flex items-center gap-1"><Loader2 className="size-3 animate-spin" />{s.done}/{s.total}</span>
+                                                    ) : (s.capacity + s.timeout + s.other) === 0 ? (
+                                                        <span className="font-semibold text-emerald-600 dark:text-emerald-400">全通过</span>
+                                                    ) : (
+                                                        <span className="space-x-2">
+                                                            {s.capacity > 0 && <span className="text-amber-600 dark:text-amber-400">容量满 {s.capacity}</span>}
+                                                            {s.timeout > 0 && <span className="text-destructive">超时 {s.timeout}</span>}
+                                                            {s.other > 0 && <span>其它 {s.other}</span>}
+                                                        </span>
+                                                    )}
+                                                </TableCell>
+                                            </TableRow>
+                                        );
+                                    })}
+                                </TableBody>
+                            </Table>
+                        </div>
+                    )}
 
                     {/* 结果 */}
                     {resultRows.length > 0 && (

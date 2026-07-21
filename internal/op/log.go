@@ -784,6 +784,9 @@ func relayLogMatchScope(relayLog model.RelayLog, scope *model.RelayLogScope) boo
 	if scope.RetriedOnly && relayLog.TotalAttempts <= 1 {
 		return false
 	}
+	if scope.HideModelTest && strings.HasPrefix(relayLog.RequestEndpoint, "model_test") {
+		return false
+	}
 	return true
 }
 
@@ -830,6 +833,11 @@ func relayLogApplyScope(query *gorm.DB, scope *model.RelayLogScope) *gorm.DB {
 	}
 	if scope.RetriedOnly {
 		query = query.Where("COALESCE(total_attempts,0) > 1")
+	}
+	if scope.HideModelTest {
+		// Exclude channel-test probe endpoints ("model_test", "model_test_responses", …).
+		// The underscore is escaped so it matches literally, not as a LIKE wildcard.
+		query = query.Where(`request_endpoint NOT LIKE ? ESCAPE '\'`, `model\_test%`)
 	}
 	return query
 }

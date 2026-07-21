@@ -115,6 +115,7 @@ export interface LogListParams {
     endpoint?: string;
     severity?: string;
     retried?: boolean;
+    hide_model_test?: boolean;
 }
 
 export interface LogExportParams {
@@ -243,8 +244,9 @@ const logsInfiniteQueryKey = (
     endTime?: number,
     page?: number,
     severity?: string,
-    retried?: boolean
-) => ['logs', 'infinite', pageSize, userID ?? 0, apiKeyID ?? 0, endpoint ?? '', startTime ?? 0, endTime ?? 0, page ?? -1, severity ?? '', retried ? 1 : 0] as const;
+    retried?: boolean,
+    hideModelTest?: boolean
+) => ['logs', 'infinite', pageSize, userID ?? 0, apiKeyID ?? 0, endpoint ?? '', startTime ?? 0, endTime ?? 0, page ?? -1, severity ?? '', retried ? 1 : 0, hideModelTest ? 1 : 0] as const;
 
 const logCountQueryKey = (
     userID?: number,
@@ -252,8 +254,9 @@ const logCountQueryKey = (
     endpoint?: string,
     startTime?: number,
     endTime?: number,
-    retried?: boolean
-) => ['logs', 'count', userID ?? 0, apiKeyID ?? 0, endpoint ?? '', startTime ?? 0, endTime ?? 0, retried ? 1 : 0] as const;
+    retried?: boolean,
+    hideModelTest?: boolean
+) => ['logs', 'count', userID ?? 0, apiKeyID ?? 0, endpoint ?? '', startTime ?? 0, endTime ?? 0, retried ? 1 : 0, hideModelTest ? 1 : 0] as const;
 const LOG_STREAM_RECONNECT_BASE_MS = 1000;
 const LOG_STREAM_RECONNECT_MAX_MS = 15000;
 
@@ -269,11 +272,12 @@ export function useLogSeverityCounts(options: {
     startTime?: number;
     endTime?: number;
     retried?: boolean;
+    hideModelTest?: boolean;
     enabled?: boolean;
 } = {}) {
-    const { userID, apiKeyID, endpoint, startTime, endTime, retried, enabled = true } = options;
+    const { userID, apiKeyID, endpoint, startTime, endTime, retried, hideModelTest, enabled = true } = options;
     return useQuery({
-        queryKey: logCountQueryKey(userID, apiKeyID, endpoint, startTime, endTime, retried),
+        queryKey: logCountQueryKey(userID, apiKeyID, endpoint, startTime, endTime, retried, hideModelTest),
         queryFn: async () => {
             const params = new URLSearchParams();
             appendOptionalParam(params, 'user_id', userID);
@@ -282,6 +286,7 @@ export function useLogSeverityCounts(options: {
             appendOptionalParam(params, 'start_time', startTime);
             appendOptionalParam(params, 'end_time', endTime);
             if (retried) params.set('retried', '1');
+            if (hideModelTest) params.set('hide_model_test', '1');
             return apiClient.get<RelayLogSeverityCounts>(`/api/v1/log/count?${params.toString()}`);
         },
         enabled,
@@ -305,8 +310,8 @@ export function useLogSeverityCounts(options: {
  * // 滚动到底部时加载更多
  * if (hasMore && !isLoadingMore) loadMore();
  */
-export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?: number; endpoint?: string; startTime?: number; endTime?: number; live?: boolean; page?: number; severity?: string; retried?: boolean } = {}) {
-    const { pageSize = 20, userID, apiKeyID, endpoint, startTime, endTime, live = false, page, severity, retried } = options;
+export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?: number; endpoint?: string; startTime?: number; endTime?: number; live?: boolean; page?: number; severity?: string; retried?: boolean; hideModelTest?: boolean } = {}) {
+    const { pageSize = 20, userID, apiKeyID, endpoint, startTime, endTime, live = false, page, severity, retried, hideModelTest } = options;
 
     const [isConnected, setIsConnected] = useState(false);
     const [error, setError] = useState<Error | null>(null);
@@ -317,8 +322,8 @@ export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?
 
     const queryClient = useQueryClient();
     const queryKey = useMemo(
-        () => logsInfiniteQueryKey(pageSize, userID, apiKeyID, endpoint, startTime, endTime, page, severity, retried),
-        [apiKeyID, endpoint, endTime, page, pageSize, retried, severity, startTime, userID]
+        () => logsInfiniteQueryKey(pageSize, userID, apiKeyID, endpoint, startTime, endTime, page, severity, retried, hideModelTest),
+        [apiKeyID, endpoint, endTime, hideModelTest, page, pageSize, retried, severity, startTime, userID]
     );
 
     const logsQuery = useInfiniteQuery({
@@ -335,6 +340,7 @@ export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?
             appendOptionalParam(params, 'end_time', endTime);
             appendOptionalParam(params, 'severity', severity);
             if (retried) params.set('retried', '1');
+            if (hideModelTest) params.set('hide_model_test', '1');
             const result = await apiClient.get<RelayLog[] | null>(`/api/v1/log/list?${params.toString()}`);
             return result ?? [];
         },

@@ -106,6 +106,36 @@ export interface ModelTestResponse {
     results: ModelTestResult[];
 }
 
+/** 某端点将呈现的上游身份（shape + UA），只读，与真实测试一字节一致 */
+export interface EndpointIdentity {
+    shape: 'codex' | 'claude' | 'generic';
+    user_agent: string;
+    detail?: string;
+}
+
+/** 渠道测试的逐端点身份，来自渠道的 fingerprint profile（测试永远用渠道真实 profile） */
+export interface ChannelTestIdentity {
+    profile_id: number;
+    profile_name?: string;
+    codex: EndpointIdentity;   // Responses 端点
+    claude: EndpointIdentity;  // Claude 端点
+    generic: EndpointIdentity; // Chat / Gemini 端点
+}
+
+/**
+ * 获取渠道测试将呈现的身份（每端点 shape + UA）。只读、只用渠道真实 profile。
+ */
+export function useChannelTestIdentity(channelId: number | undefined, enabled: boolean) {
+    return useQuery({
+        queryKey: ['model', 'test-identity', channelId],
+        queryFn: async () => {
+            return apiClient.get<ChannelTestIdentity>(`/api/v1/model/test-identity?channel_id=${channelId}`);
+        },
+        enabled: enabled && !!channelId && channelId > 0,
+        staleTime: 60_000,
+    });
+}
+
 /**
  * 获取 LLM 模型列表 Hook
  * 

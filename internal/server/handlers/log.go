@@ -76,6 +76,18 @@ func retriedFromQuery(c *gin.Context) bool {
 	}
 }
 
+// hideModelTestFromQuery reads the optional ?hide_model_test= flag ("1"/"true")
+// that excludes channel-test probe rows (endpoint "model_test*") from the list,
+// so repeat/capacity test bursts don't drown out real traffic.
+func hideModelTestFromQuery(c *gin.Context) bool {
+	switch strings.ToLower(strings.TrimSpace(c.Query("hide_model_test"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
 func listLog(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
@@ -109,6 +121,7 @@ func listLog(c *gin.Context) {
 	}
 	scope.Severity = severityFromQuery(c)
 	scope.RetriedOnly = retriedFromQuery(c)
+	scope.HideModelTest = hideModelTestFromQuery(c)
 
 	logs, err := op.RelayLogList(c.Request.Context(), startTime, endTime, page, pageSize, &scope)
 	if err != nil {
@@ -151,6 +164,7 @@ func countLog(c *gin.Context) {
 	}
 
 	scope.RetriedOnly = retriedFromQuery(c)
+	scope.HideModelTest = hideModelTestFromQuery(c)
 
 	counts, err := op.RelayLogSeverityCounts(c.Request.Context(), startTime, endTime, &scope)
 	if err != nil {

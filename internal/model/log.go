@@ -166,7 +166,12 @@ type RelayLogScope struct {
 	// (a retry / failover happened), regardless of final outcome — spans both the
 	// "warn" bucket (recovered) and multi-attempt errors. Orthogonal to Severity.
 	RetriedOnly bool
-	Redact      bool
+	// HideModelTest, when true, excludes channel-test probe rows (request_endpoint
+	// "model_test*") from the list. A repeat/stress test — or an upstream capacity
+	// bad-window — can emit many test-probe failures; this filter keeps them from
+	// drowning out real traffic in the log view. Orthogonal to every other field.
+	HideModelTest bool
+	Redact        bool
 }
 
 // RelayLogSeverityCounts is the global severity breakdown for the current filter,
