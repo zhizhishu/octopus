@@ -97,7 +97,10 @@ export function ChannelTestDialog({
     const [filter, setFilter] = useState('');
     const [results, setResults] = useState<Record<string, CellResult>>({});
     const [summaries, setSummaries] = useState<Record<string, CellSummary>>({});
-    const [repeat, setRepeat] = useState(1);
+    // 输入用字符串态，允许编辑中清空/半截；repeat 是派生的钳位值（供逻辑/展示用）。
+    // 直接对数字态 value 钳位会在清空那一刻把 99 吃回 1（用户实测到的坑）。
+    const [repeatInput, setRepeatInput] = useState('1');
+    const repeat = Math.max(1, Math.min(MAX_REPEAT, Math.floor(Number(repeatInput)) || 1));
     const [testing, setTesting] = useState(false);
     const identityQuery = useChannelTestIdentity(channel.id, open);
 
@@ -352,8 +355,9 @@ export function ChannelTestDialog({
                             type="number"
                             min={1}
                             max={MAX_REPEAT}
-                            value={repeat}
-                            onChange={(event) => setRepeat(Math.max(1, Math.min(MAX_REPEAT, Math.floor(Number(event.target.value)) || 1)))}
+                            value={repeatInput}
+                            onChange={(event) => setRepeatInput(event.target.value)}
+                            onBlur={() => setRepeatInput(String(repeat))}
                             className="h-8 w-20 text-center text-xs"
                         />
                         <span className="text-xs text-muted-foreground">
@@ -416,6 +420,11 @@ export function ChannelTestDialog({
                                     })}
                                 </TableBody>
                             </Table>
+                            {summaryRows.some((r) => r.s.capacity > 0) && (
+                                <div className="border-t border-border/50 px-3 py-2 text-[10.5px] leading-relaxed text-muted-foreground">
+                                    「容量满」= 上游满载拒绝（如 anyrouter 坏窗口）。<b className="text-foreground">这是真实的失败次数、非假数据、也不是渠道故障</b>，稍后重试即可。
+                                </div>
+                            )}
                         </div>
                     )}
 
