@@ -538,17 +538,45 @@ func normalizeHeadersForCompare(values []model.CustomHeader) []model.CustomHeade
 }
 
 func channelDeletedModelNames(oldChannel model.Channel, req *model.ChannelUpdateRequest) []string {
-	if req == nil || (req.Model == nil && req.CustomModel == nil && req.SelectedModels == nil) {
+	if req == nil || (req.Model == nil && req.CustomModel == nil && req.SelectedModels == nil && req.ModelMapping == nil) {
 		return nil
 	}
 
-	oldModels := model.ChannelSelectedModelNames(oldChannel)
-	newModels := channelSelectionAfterLegacyUpdate(oldChannel, req)
+	// Reconcile the FULL set of routable pool names a channel registers — its selected
+	// models PLUS every model_mapping alias KEY — so removing a mapping alias (or the
+	// selected model it mapped from) evicts the now-stale pool item. This mirrors
+	// helper.ChannelEnsureModelGroups, which registers both; without the mapping side a
+	// removed alias would linger as a pool member that still routes to this channel yet
+	// no longer gets rewritten to the upstream name (a stale route). Also react to a
+	// mapping-only update (req.ModelMapping != nil) which the old guard ignored.
+	oldModels := channelRoutablePoolNames(model.ChannelSelectedModelNames(oldChannel), oldChannel.ModelMapping)
+
+	newSelected := channelSelectionAfterLegacyUpdate(oldChannel, req)
 	if req.SelectedModels != nil {
-		newModels = model.NormalizeChannelModelNames(*req.SelectedModels)
+		newSelected = model.NormalizeChannelModelNames(*req.SelectedModels)
 	}
+	newMapping := oldChannel.ModelMapping
+	if req.ModelMapping != nil {
+		newMapping = *req.ModelMapping
+	}
+	newModels := channelRoutablePoolNames(newSelected, newMapping)
+
 	deletedModels, _ := diff.Diff(oldModels, newModels)
 	return deletedModels
+}
+
+// channelRoutablePoolNames returns the pool names a channel registers: its selected
+// models plus every model_mapping alias KEY (cleaned + case-insensitively deduped),
+// matching helper.ChannelEnsureModelGroups so the add and remove sides stay symmetric.
+func channelRoutablePoolNames(selected []string, mapping map[string]string) []string {
+	names := make([]string, 0, len(selected)+len(mapping))
+	names = append(names, selected...)
+	for clientName := range mapping {
+		if clean := model.CleanOneMillionCapabilityModelName(clientName); clean != "" {
+			names = append(names, clean)
+		}
+	}
+	return model.NormalizeChannelModelNames(names)
 }
 
 func ChannelEnabled(id int, enabled bool, ctx context.Context) error {

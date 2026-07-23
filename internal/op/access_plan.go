@@ -464,8 +464,10 @@ func AccessPlanGroupForModel(plan *model.AccessPlan, requestModel string, ctx co
 // opted into AutoSyncChannels. For each existing route rule (request model) it:
 //
 //   - ADDS: any currently-enabled channel that serves that model but is not yet a
-//     target (priority = current max + 1, weight 1, enabled). Hand-tuned
-//     priorities/weights of surviving targets are not touched.
+//     target (priority mirrors the channel's own Priority — so equal-priority channels
+//     stay genuinely parallel under Spread and the value stops churning on every
+//     re-sync; weight 1, enabled). Hand-tuned priorities/weights of surviving targets
+//     are not touched.
 //   - REMOVES: any existing target whose channel is no longer enabled or no longer
 //     serves the rule's model, so a disabled channel is automatically evicted without
 //     requiring a manual rebuild.

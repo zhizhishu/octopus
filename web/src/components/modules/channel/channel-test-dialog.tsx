@@ -444,7 +444,7 @@ export function ChannelTestDialog({
                                     {resultRows.map(({ endpoint, model, result }) => (
                                         <TableRow key={`${endpoint}|${model}`}>
                                             <TableCell className="text-xs text-muted-foreground">{ENDPOINT_LABEL[endpoint]}</TableCell>
-                                            <TableCell className="max-w-[10rem] truncate font-mono text-xs">{cleanOneMillionModelName(model)}</TableCell>
+                                            <TableCell className="max-w-[15rem] break-all align-top font-mono text-xs">{cleanOneMillionModelName(model)}</TableCell>
                                             <TableCell>
                                                 {result.status === 'testing' ? (
                                                     <span className="inline-flex items-center gap-1 text-xs text-muted-foreground"><Loader2 className="size-3 animate-spin" />测试中</span>
