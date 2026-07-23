@@ -100,8 +100,14 @@ func TestAccessPlanDefaultsAndAPIKeySelection(t *testing.T) {
 	}, ctx); err != nil {
 		t.Fatalf("disable second bound plan: %v", err)
 	}
-	if _, err := AccessPlanSelect(apiKey.ID, "", ctx); err == nil {
-		t.Fatalf("expected disabled bound plan to block default selection")
+	// Disabling every bound plan must NOT brick the key: with no explicit header it now
+	// falls back to the enabled default plan / pool (matching an unbound key) instead of
+	// hard-failing every request — the fix for "Cursor lists models but every call 403s"
+	// after a plan is disabled. The header-scoped bypass below still stays rejected.
+	if fallback, err := AccessPlanSelect(apiKey.ID, "", ctx); err != nil {
+		t.Fatalf("expected disabled bound plans to fall back to default, got error: %v", err)
+	} else if fallback == nil {
+		t.Fatalf("expected a default fallback plan when all bound plans are disabled, got nil")
 	}
 	if _, err := AccessPlanSelect(apiKey.ID, "ssvip", ctx); err == nil {
 		t.Fatalf("expected disabled bound plan to block header bypass")

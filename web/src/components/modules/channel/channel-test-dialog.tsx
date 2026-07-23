@@ -259,7 +259,7 @@ export function ChannelTestDialog({
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent className="max-h-[90vh] w-[calc(100vw-1rem)] max-w-2xl overflow-hidden rounded-3xl p-0">
+            <DialogContent className="max-h-[90vh] w-[calc(100vw-1rem)] max-w-3xl overflow-hidden rounded-3xl p-0">
                 <DialogHeader className="border-b border-border/70 px-5 py-4">
                     <DialogTitle className="flex min-w-0 items-center gap-2">
                         <span className="shrink-0">测试渠道</span>
@@ -392,7 +392,7 @@ export function ChannelTestDialog({
                                         return (
                                             <TableRow key={`sum|${endpoint}|${model}`}>
                                                 <TableCell className="text-xs text-muted-foreground">{ENDPOINT_LABEL[endpoint]}</TableCell>
-                                                <TableCell className="max-w-[10rem] truncate font-mono text-xs">{cleanOneMillionModelName(model)}</TableCell>
+                                                <TableCell className="max-w-[15rem] break-all align-top font-mono text-xs">{cleanOneMillionModelName(model)}</TableCell>
                                                 <TableCell>
                                                     <div className="flex items-center gap-1.5">
                                                         <span className={cn('text-xs font-semibold', rateColor)}>{s.ok}/{s.total}</span>
@@ -454,7 +454,7 @@ export function ChannelTestDialog({
                                                     <span className="inline-flex items-center gap-1 text-xs font-semibold text-destructive"><XCircle className="size-3" />失败</span>
                                                 )}
                                             </TableCell>
-                                            <TableCell className="max-w-[14rem] truncate text-xs text-muted-foreground" title={result.error}>
+                                            <TableCell className="whitespace-pre-wrap break-words align-top text-xs text-muted-foreground" title={result.error}>
                                                 {result.status === 'success' ? (result.ms != null ? `${(result.ms / 1000).toFixed(2)}s` : '-') : (result.error || '-')}
                                             </TableCell>
                                         </TableRow>

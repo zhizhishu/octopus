@@ -385,8 +385,16 @@ func AccessPlanSelect(apiKeyID int, headerPlan string, ctx context.Context) (*mo
 		return copyAccessPlan(plan), nil
 	}
 
+	// A key whose bound plans are ALL disabled must not have every request hard-fail:
+	// that bricks the key (e.g. Cursor shows the full model list but every call 403s)
+	// the moment an admin disables the one plan it was bound to. Treat it like an
+	// unbound key and fall back to the default plan / model pool — matching the
+	// /v1/models LIST path (accessPlansForAPIKeyRoutes returns no-plan → pool). This
+	// keeps disabling a single plan from taking a key bound to it fully offline; an
+	// explicit header-requested plan (handled above) still errors, since that is a
+	// deliberate ask for a specific unavailable plan.
 	if hasBindings && len(bindings) == 0 {
-		return nil, fmt.Errorf("no access plan is available for this API key")
+		return accessPlanDefault(ctx)
 	}
 	if len(bindings) > 0 {
 		sort.Slice(bindings, func(i, j int) bool {
@@ -481,8 +489,9 @@ func AccessPlanSyncEnabledChannels(ctx context.Context) error {
 		mapped   bool
 	}
 	type enabledChannel struct {
-		id     int
-		models map[string]servedModel
+		id       int
+		priority int
+		models   map[string]servedModel
 	}
 	allChannels := channelCache.GetAll()
 	// Fail-safe: an empty channel cache almost certainly means it isn't loaded yet
@@ -529,7 +538,7 @@ func AccessPlanSyncEnabledChannels(ctx context.Context) error {
 			served[key] = servedModel{upstream: upstreamClean, mapped: true} // mapping wins
 		}
 		if len(served) > 0 {
-			enabledByID[ch.ID] = enabledChannel{id: ch.ID, models: served}
+			enabledByID[ch.ID] = enabledChannel{id: ch.ID, priority: ch.Priority, models: served}
 		}
 	}
 	// NOTE: we intentionally do NOT early-return when enabledByID is empty — we still
@@ -570,19 +579,32 @@ func AccessPlanSyncEnabledChannels(ctx context.Context) error {
 
 			// --- ADD: enabled channels that serve this model but are not yet targets ---
 			existing := make(map[int]struct{}, len(rule.Targets))
-			maxPriority := 0
 			for _, t := range rule.Targets {
 				existing[t.ChannelID] = struct{}{}
-				if t.Priority > maxPriority {
-					maxPriority = t.Priority
-				}
 			}
-			for _, ch := range enabledByID {
-				sm, serves := ch.models[ruleModel]
+			// Deterministic order + STABLE per-target priority. Previously each newly
+			// auto-synced target got a distinct, monotonically-increasing priority
+			// (max+1, max+2, …) in Go-map (random) iteration order, so every re-sync /
+			// channel toggle / post-deploy re-save churned the canvas priorities and
+			// manufactured artificial fill-first tiers that quietly defeated round-robin.
+			// A synced target's priority now mirrors its CHANNEL's own Priority (the same
+			// value that buckets Spread/round-robin at routing time), so equal-priority
+			// channels stay genuinely parallel ("并列"), the layout stops reshuffling on
+			// every deploy, and the priority the operator sees matches what routing uses.
+			// Hand-tuned priorities of surviving targets are never touched (they are not in
+			// this ADD path).
+			addIDs := make([]int, 0, len(enabledByID))
+			for id := range enabledByID {
+				addIDs = append(addIDs, id)
+			}
+			sort.Ints(addIDs)
+			for _, chID := range addIDs {
+				ec := enabledByID[chID]
+				sm, serves := ec.models[ruleModel]
 				if !serves {
 					continue
 				}
-				if _, already := existing[ch.id]; already {
+				if _, already := existing[ec.id]; already {
 					continue
 				}
 				// A plainly-selected model keeps the rule's own casing exactly as before;
@@ -592,12 +614,11 @@ func AccessPlanSyncEnabledChannels(ctx context.Context) error {
 				if sm.mapped {
 					upstreamModel = sm.upstream
 				}
-				maxPriority++
 				target := model.AccessRouteTarget{
 					RouteRuleID:   rule.ID,
-					ChannelID:     ch.id,
+					ChannelID:     ec.id,
 					UpstreamModel: upstreamModel,
-					Priority:      maxPriority,
+					Priority:      ec.priority,
 					Weight:        1,
 					Enabled:       true,
 				}
@@ -606,7 +627,7 @@ func AccessPlanSyncEnabledChannels(ctx context.Context) error {
 					// skip it and keep syncing the rest.
 					continue
 				}
-				existing[ch.id] = struct{}{}
+				existing[ec.id] = struct{}{}
 				changed = true
 			}
 		}

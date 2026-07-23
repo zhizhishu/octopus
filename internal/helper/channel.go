@@ -156,6 +156,21 @@ func ChannelEnsureModelGroups(channel *model.Channel, ctx context.Context) {
 		return
 	}
 	modelNames := model.ChannelSelectedModelNames(*channel)
+	// Also register every model_mapping alias (the client-facing KEY) as a routable
+	// pool. Previously a mapping was only a post-routing rename: "glm-5.2" →
+	// "z-ai/glm-5.2" made the request forward as z-ai/glm-5.2 ONLY if the caller could
+	// already route "glm-5.2" — but the alias itself was never a routable name, so
+	// calling "glm-5.2" 404'd ("model not found") before the rename ever ran, and the
+	// only workaround was to ALSO hand-add the alias to selected_models. Registering
+	// the alias as its own pool (item ModelName = the alias) makes it directly callable;
+	// at request time the channel's model_mapping still rewrites it to the upstream name
+	// on the wire (applyModelMapping), identical to a mapped selected model. The admin
+	// explicitly configured the mapping, so this exposes nothing beyond their intent.
+	for clientName := range channel.ModelMapping {
+		if clean := model.CleanOneMillionCapabilityModelName(clientName); clean != "" {
+			modelNames = append(modelNames, clean)
+		}
+	}
 	if len(modelNames) == 0 {
 		return
 	}
