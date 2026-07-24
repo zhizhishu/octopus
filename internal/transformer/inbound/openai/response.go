@@ -526,7 +526,7 @@ func (i *ResponseInbound) handleToolCalls(toolCalls []model.ToolCall) [][]byte {
 			// client drops. Mirrors sub2api, which likewise generates one id and
 			// reuses it for both fields.
 			callID := tc.ID
-			if callID == "" {
+			if strings.TrimSpace(callID) == "" {
 				callID = generateItemID()
 			}
 
@@ -1967,6 +1967,14 @@ func convertToResponsesAPIResponse(resp *model.InternalLLMResponse) *ResponsesRe
 		// Handle tool calls
 		if len(message.ToolCalls) > 0 {
 			for _, toolCall := range message.ToolCalls {
+				// Synthesize a stable id when the upstream tool call carries none and
+				// use it for both the item id and call_id — mirrors the streaming path
+				// (handleToolCalls). An empty call_id can never be paired with its
+				// function_call_output on the next turn.
+				callID := toolCall.ID
+				if strings.TrimSpace(callID) == "" {
+					callID = generateItemID()
+				}
 				if toolCall.Type == model.ToolCallTypeCustom {
 					// Custom (freeform) tool call: re-emit as a custom_tool_call
 					// carrying `input`, so a codex client that registered a custom
@@ -1974,9 +1982,9 @@ func convertToResponsesAPIResponse(resp *model.InternalLLMResponse) *ResponsesRe
 					// freeform text as JSON arguments would be rejected).
 					input := toolCall.Function.Arguments
 					result.Output = append(result.Output, ResponsesItem{
-						ID:     toolCall.ID,
+						ID:     callID,
 						Type:   "custom_tool_call",
-						CallID: toolCall.ID,
+						CallID: callID,
 						Name:   toolCall.Function.Name,
 						Input:  &input,
 						Status: lo.ToPtr("completed"),
@@ -1984,9 +1992,9 @@ func convertToResponsesAPIResponse(resp *model.InternalLLMResponse) *ResponsesRe
 					continue
 				}
 				result.Output = append(result.Output, ResponsesItem{
-					ID:        toolCall.ID,
+					ID:        callID,
 					Type:      "function_call",
-					CallID:    toolCall.ID,
+					CallID:    callID,
 					Name:      toolCall.Function.Name,
 					Arguments: toolCall.Function.Arguments,
 					Status:    lo.ToPtr("completed"),

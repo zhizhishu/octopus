@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -433,5 +434,58 @@ func TestResponseInboundEmptyIDToolThenTextNeverOrphans(t *testing.T) {
 	}
 	if messageDones != 1 {
 		t.Fatalf("expected the message item to finalize once, got %d", messageDones)
+	}
+}
+
+// TestResponseInboundNonStreamEmptyIDToolCallSynthesizesID guards the non-stream
+// sibling of the empty-id fix: convertToResponsesAPIResponse must synthesize an id
+// for a tool call whose upstream id is empty and use the same non-empty value for
+// both the item id and call_id, so the codex client can pair the tool result on
+// the next turn (an empty call_id can never be matched).
+func TestResponseInboundNonStreamEmptyIDToolCallSynthesizesID(t *testing.T) {
+	resp := &model.InternalLLMResponse{
+		ID:     "resp_emptyid",
+		Object: "chat.completion",
+		Model:  "glm-4.6",
+		Choices: []model.Choice{{
+			Index: 0,
+			Message: &model.Message{
+				Role: "assistant",
+				ToolCalls: []model.ToolCall{{
+					Index:    0,
+					ID:       "",
+					Type:     "function",
+					Function: model.FunctionCall{Name: "list_dir", Arguments: `{"path":"."}`},
+				}},
+			},
+			FinishReason: ptr("tool_calls"),
+		}},
+	}
+
+	body, err := (&ResponseInbound{}).TransformResponse(context.Background(), resp)
+	if err != nil {
+		t.Fatalf("TransformResponse: %v", err)
+	}
+
+	var out ResponsesResponse
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatalf("decode responses response %q: %v", string(body), err)
+	}
+
+	var fc *ResponsesItem
+	for i := range out.Output {
+		if out.Output[i].Type == "function_call" {
+			fc = &out.Output[i]
+			break
+		}
+	}
+	if fc == nil {
+		t.Fatalf("expected a function_call output item, got %s", string(body))
+	}
+	if strings.TrimSpace(fc.ID) == "" {
+		t.Fatalf("function_call item id must be synthesized non-empty, got %q (body: %s)", fc.ID, string(body))
+	}
+	if fc.CallID != fc.ID {
+		t.Fatalf("call_id (%q) must equal the item id (%q) so the tool result pairs next turn", fc.CallID, fc.ID)
 	}
 }
