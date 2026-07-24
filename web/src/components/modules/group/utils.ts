@@ -1,31 +1,12 @@
 import type { LLMChannel } from '@/api/endpoints/model';
 import { GroupMode } from '@/api/endpoints/group';
 
-// Every legacy mode value folds onto the two product-facing labels so historical
-// groups (random/weighted/smart) still render as the spread/round-robin mode.
+// 两种对外调度模式，均做容量感知。已废弃的 random/weighted/smart 值已删除
+// (migrate/012 把库里存量老值归一到 spread)，界面不再有需要点名的“折叠模式”。
 export const MODE_LABELS: Record<GroupMode, string> = {
     [GroupMode.RoundRobin]: 'spread',
-    [GroupMode.Random]: 'spread',
     [GroupMode.Failover]: 'fillFirst',
-    [GroupMode.Weighted]: 'spread',
-    [GroupMode.Smart]: 'spread',
 } as const;
-
-// 真实模式中文名（诊断用）：与 MODE_LABELS 的对外折叠不同，这里保留每种模式的真身，
-// 只在界面把 random/weighted/smart 折叠成「轮询」而掩盖真身时用来点出实际调度方式。
-export const RAW_MODE_LABELS: Record<GroupMode, string> = {
-    [GroupMode.RoundRobin]: '轮询',
-    [GroupMode.Random]: '随机',
-    [GroupMode.Failover]: '填充优先',
-    [GroupMode.Weighted]: '加权',
-    [GroupMode.Smart]: '智能',
-} as const;
-
-// 折叠模式：对外显示成「轮询」但真身并非 RoundRobin（random/weighted/smart）。
-// 命中即说明界面掩盖了真实调度方式，需要额外点名提示。
-export function isFoldedMode(mode: GroupMode): boolean {
-    return mode !== GroupMode.RoundRobin && mode !== GroupMode.Failover;
-}
 
 export function normalizeKey(value: string) {
     return value.trim().toLowerCase();

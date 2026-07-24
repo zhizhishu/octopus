@@ -292,10 +292,8 @@ Groups aggregate multiple channels into a unified external model name.
 
 | Mode | Description |
 |------|-------------|
-| 🔄 **Round Robin** | Cycles through channels sequentially for each request |
-| 🎲 **Random** | Randomly selects an available channel for each request |
-| 🛡️ **Failover** | Prioritizes high-priority channels, switches to lower priority only on failure |
-| ⚖️ **Weighted** | Distributes requests based on configured channel weights |
+| 🔀 **Spread** | Capacity-aware load-balancing across same-priority channels (priority stays a hard boundary) |
+| 🛡️ **Fill First** | Concentrates traffic on the top healthy channel for best upstream prompt-cache hits; sinks to the next only on trip / cooldown / rate-limit |
 
 > 💡 **Example**: Create a group named `gpt-4o`, add multiple providers' GPT-4o channels to it, then access all channels via a unified `model: gpt-4o`.
 

@@ -551,7 +551,7 @@ func (r *modelRunner) applyRouteMetadata(selection routeSelection) {
 }
 
 func (r *modelRunner) trySelection(ctx context.Context, selection routeSelection) bool {
-	group := enrichTestGroupForSmartRouting(ctx, selection.group)
+	group := selection.group
 	candidates := balancer.GetBalancer(group.Mode).Candidates(group.Items)
 	if len(candidates) == 0 {
 		r.recordAttempt(0, 0, "", "", "", dbmodel.AttemptSkipped, 0, 0, "no route candidates")
@@ -569,23 +569,6 @@ func (r *modelRunner) trySelection(ctx context.Context, selection routeSelection
 		}
 	}
 	return false
-}
-
-func enrichTestGroupForSmartRouting(ctx context.Context, group dbmodel.Group) dbmodel.Group {
-	if group.Mode != dbmodel.GroupModeSmart || len(group.Items) == 0 {
-		return group
-	}
-	items := make([]dbmodel.GroupItem, len(group.Items))
-	copy(items, group.Items)
-	for i := range items {
-		channel, err := op.ChannelGet(items[i].ChannelID, ctx)
-		if err == nil && channel != nil {
-			items[i].ChannelPriority = channel.Priority
-		}
-		items[i].ChannelStats = op.StatsChannelGet(items[i].ChannelID)
-	}
-	group.Items = items
-	return group
 }
 
 func (r *modelRunner) tryChannel(ctx context.Context, channel *dbmodel.Channel, upstreamModel string, respectEnabled bool) bool {

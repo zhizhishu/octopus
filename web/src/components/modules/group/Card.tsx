@@ -15,7 +15,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/animate-ui
 import type { SelectedMember } from './ItemList';
 import { MemberList } from './ItemList';
 import { GroupEditor, type GroupEditorValues } from './Editor';
-import { activeModelChannelKeySet, activeModelChannels, buildChannelNameByModelKey, matchGroupModelChannels, memberKey, modelChannelKey, MODE_LABELS, RAW_MODE_LABELS, isFoldedMode } from './utils';
+import { activeModelChannelKeySet, activeModelChannels, buildChannelNameByModelKey, matchGroupModelChannels, memberKey, modelChannelKey, MODE_LABELS } from './utils';
 import { SELECTABLE_GROUP_MODES, normalizeGroupMode, type GroupUpdateRequest } from '@/api/endpoints/group';
 import {
     MorphingDialog,
@@ -457,12 +457,6 @@ export function GroupCard({ group, duplicateCount = 1 }: { group: Group; duplica
                     </button>
                 ))}
             </div>
-            {isFoldedMode(group.mode) && (
-                <div className="-mt-1.5 mb-2 flex items-center gap-1 text-[11px] text-amber-600 dark:text-amber-400">
-                    <AlertTriangle className="size-3 shrink-0" />
-                    <span>实际是「{RAW_MODE_LABELS[group.mode]}」模式，界面按“轮询”折叠显示</span>
-                </div>
-            )}
 
             <section
                 className={cn(

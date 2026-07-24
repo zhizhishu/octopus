@@ -36,12 +36,6 @@ func TestRouteStickyEnabled(t *testing.T) {
 		{"rr_meta_session", dbmodel.GroupModeRoundRobin, "metadata:user_id:claude-session", true},
 		{"rr_client_meta", dbmodel.GroupModeRoundRobin, "client_metadata:session_id", true},
 		{"rr_anthropic_session", dbmodel.GroupModeRoundRobin, "metadata:user_id", true},
-
-		// 其它负载均衡模式(smart/weighted/random)与轮询同语义。
-		{"smart_promptcache", dbmodel.GroupModeSmart, "body:prompt_cache_key", false},
-		{"smart_prev", dbmodel.GroupModeSmart, "body:previous_response_id", true},
-		{"weighted_fingerprint", dbmodel.GroupModeWeighted, "octopus:request_fingerprint", false},
-		{"random_prev", dbmodel.GroupModeRandom, "body:previous_response_id", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

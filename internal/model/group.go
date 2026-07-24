@@ -3,18 +3,15 @@ package model
 type GroupMode int
 
 const (
-	GroupModeRoundRobin GroupMode = 1 // 轮询：依次循环选择渠道
-	GroupModeRandom     GroupMode = 2 // 随机：每次随机选择一个渠道
-	GroupModeFailover   GroupMode = 3 // 故障转移：按优先级选择，失败时降级到下一个
-	GroupModeWeighted   GroupMode = 4 // 加权分配：按优权重分配流量
-	GroupModeSmart      GroupMode = 5 // 智能评分：综合优先级、权重、成功率、失败率和等待时间排序
+	GroupModeRoundRobin GroupMode = 1 // 轮询/均摊(对外 Spread)：同优先级容量感知均摊
+	GroupModeFailover   GroupMode = 3 // 故障转移(对外 FillFirst)：按优先级选择，失败时降级到下一个
 )
 
-// Product-facing modes. The UI now exposes only these two, and both are
-// capacity-aware (recent health, in-flight + selection reservations, latency,
-// throughput, circuit/cooldown). Legacy stored values (random/weighted/smart)
-// fold into spread/round-robin inside GetBalancer, so existing groups keep
-// working without a data migration.
+// Product-facing modes. The UI exposes only these two, and both are capacity-aware
+// (recent health, in-flight + selection reservations, latency, throughput,
+// circuit/cooldown). The retired random(2)/weighted(4)/smart(5) modes were removed;
+// GetBalancer still folds any unknown value into Spread as a safety net, and
+// migrate/012 rewrites any stored legacy value to spread so the DB only holds these two.
 const (
 	// GroupModeFillFirst keeps a stable priority order so traffic stays
 	// concentrated on the top healthy channel (best upstream prompt-cache hit

@@ -493,7 +493,7 @@ func TestAccessPlanUpdateRouteTargetsPreservesRouteMode(t *testing.T) {
 	}
 	if _, err := AccessPlanUpdateRouteTargets(vip.ID, []model.AccessRouteTarget{{
 		RequestModel:  "mode-request",
-		Mode:          model.GroupModeWeighted,
+		Mode:          model.GroupModeFillFirst,
 		ChannelID:     channel.ID,
 		UpstreamModel: "upstream-one",
 		Enabled:       true,
@@ -511,7 +511,7 @@ func TestAccessPlanUpdateRouteTargetsPreservesRouteMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update route without mode: %v", err)
 	}
-	if len(updated.RouteTargets) != 1 || updated.RouteTargets[0].Mode != model.GroupModeWeighted {
+	if len(updated.RouteTargets) != 1 || updated.RouteTargets[0].Mode != model.GroupModeFillFirst {
 		t.Fatalf("expected route mode to be preserved in flattened targets, got %#v", updated.RouteTargets)
 	}
 
@@ -523,7 +523,7 @@ func TestAccessPlanUpdateRouteTargetsPreservesRouteMode(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("expected route group, ok=%v err=%v", ok, err)
 	}
-	if group.Mode != model.GroupModeWeighted {
+	if group.Mode != model.GroupModeFillFirst {
 		t.Fatalf("expected weighted route mode, got %d", group.Mode)
 	}
 }
