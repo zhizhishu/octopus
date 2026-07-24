@@ -669,3 +669,51 @@ func TestResponseInboundToolFragmentAfterFinishDoesNotOrphan(t *testing.T) {
 		t.Fatalf("expected exactly 1 finalized function_call item, got %d", toolDones)
 	}
 }
+
+// TestResponseInboundContentAfterDoneWithoutFinishDoesNotOrphan guards the [DONE]-
+// without-finish_reason path: when the stream ends with [DONE] but never sent a
+// finish_reason, completeResponseEvents finalizes every open item and emits
+// response.completed but does not set hasFinished. A stray content fragment arriving
+// after that must still be ignored (gated on responseCompleted) rather than emitting a
+// delta against the now-finalized item or opening a new item past response.completed.
+func TestResponseInboundContentAfterDoneWithoutFinishDoesNotOrphan(t *testing.T) {
+	inbound := &ResponseInbound{}
+	base := func() *model.InternalLLMResponse {
+		return &model.InternalLLMResponse{ID: "chatcmpl_postdone", Model: "glm-4.6", Object: "chat.completion.chunk", Created: 1}
+	}
+	toolChunk := func(tcs ...model.ToolCall) *model.InternalLLMResponse {
+		c := base()
+		c.Choices = []model.Choice{{Index: 0, Delta: &model.Message{Role: "assistant", ToolCalls: tcs}}}
+		return c
+	}
+	tc := func(index int, id, name, args string) model.ToolCall {
+		return model.ToolCall{Index: index, ID: id, Type: "function", Function: model.FunctionCall{Name: name, Arguments: args}}
+	}
+	var raw strings.Builder
+	feed := func(s *model.InternalLLMResponse) {
+		out, err := inbound.TransformStream(context.Background(), s)
+		if err != nil {
+			t.Fatalf("TransformStream: %v", err)
+		}
+		raw.WriteString(string(out))
+	}
+
+	// Tool opens, then [DONE] with NO finish_reason, then a stray tool fragment.
+	feed(toolChunk(tc(0, "call_a", "exec", `{"x":`)))
+	done, _ := inbound.TransformStream(context.Background(), &model.InternalLLMResponse{Object: "[DONE]"})
+	raw.WriteString(string(done))
+	feed(toolChunk(tc(0, "", "", `1}`)))
+
+	events := parseResponsesStreamEvents(t, raw.String())
+	assertResponsesStreamItemLifecycle(t, events)
+
+	var toolDones int
+	for _, ev := range events {
+		if ev.Type == "response.output_item.done" && ev.Item != nil && ev.Item.Type == "function_call" {
+			toolDones++
+		}
+	}
+	if toolDones != 1 {
+		t.Fatalf("expected exactly 1 finalized function_call item, got %d", toolDones)
+	}
+}

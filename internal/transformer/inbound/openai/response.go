@@ -209,13 +209,15 @@ func (i *ResponseInbound) TransformStream(ctx context.Context, stream *model.Int
 	if len(stream.Choices) > 0 {
 		choice := stream.Choices[0]
 
-		// Ignore any content that arrives AFTER the finish boundary already finalized
-		// every open item: a late reasoning/text/tool fragment (some upstreams emit a
-		// stray fragment past finish_reason) would emit a delta against an item that
-		// closeAllOpenItems already sent output_item.done for — a "delta without an
-		// active item". The model signalled completion; the terminal response.completed
-		// / usage handling below still runs.
-		if !i.hasFinished {
+		// Ignore any content that arrives AFTER the response was already terminated —
+		// either by finish_reason (hasFinished) or by a [DONE] that synthesized the
+		// terminal event without ever seeing a finish_reason (responseCompleted). Both
+		// paths already finalized every open item via closeAllOpenItems, so a late
+		// reasoning/text/tool fragment (some upstreams emit a stray fragment past the
+		// end) would emit a delta against an already-done item — a "delta without an
+		// active item" — or open a brand-new item after response.completed. The terminal
+		// response.completed / usage handling below still runs.
+		if !i.hasFinished && !i.responseCompleted {
 			// Handle reasoning content delta.
 			// Use GetReasoningContent so upstreams that emit the `reasoning` field
 			// (OpenRouter/Ollama ...) instead of `reasoning_content` are not dropped.
