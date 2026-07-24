@@ -617,7 +617,7 @@ data: {"type":"message_stop"}
 	t.Cleanup(upstream.Close)
 
 	channel := dbmodel.Channel{
-		Name:    "AnyRouter Claude 1M",
+		Name:    "the relay Claude 1M",
 		Type:    outbound.OutboundTypeAnthropic,
 		Enabled: true,
 		BaseUrls: []dbmodel.BaseUrl{{
@@ -755,7 +755,7 @@ data: {"type":"message_stop"}
 	t.Cleanup(upstream.Close)
 
 	channel := dbmodel.Channel{
-		Name:     "AnyRouter Claude 1M CloakOn",
+		Name:     "the relay Claude 1M CloakOn",
 		Type:     outbound.OutboundTypeAnthropic,
 		Enabled:  true,
 		BaseUrls: []dbmodel.BaseUrl{{URL: upstream.URL}},
@@ -899,7 +899,7 @@ data: {"type":"message_stop"}
 	t.Cleanup(upstream.Close)
 
 	channel := dbmodel.Channel{
-		Name:               "AnyRouter Claude native 1M",
+		Name:               "the relay Claude native 1M",
 		Type:               outbound.OutboundTypeAnthropic,
 		Enabled:            true,
 		AnthropicContext1M: true,
@@ -1018,7 +1018,7 @@ data: {"type":"message_stop"}
 	defer upstream.Close()
 
 	channel := dbmodel.Channel{
-		Name:    "AnyRouter Claude 4-8",
+		Name:    "the relay Claude 4-8",
 		Type:    outbound.OutboundTypeAnthropic,
 		Enabled: true,
 		BaseUrls: []dbmodel.BaseUrl{{

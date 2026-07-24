@@ -26,7 +26,7 @@ var (
 // a Chrome (uTLS) ClientHello for direct — no-proxy — upstream calls, so a strict
 // upstream cannot fingerprint octopus's stock Go TLS handshake. It is opt-in: callers
 // gate on SettingKeyUpstreamUTLSFingerprint and only reach here for no-proxy channels.
-// Must be verified against the real anyrouter passthrough before enabling (see the
+// Must be verified against the real the relay passthrough before enabling (see the
 // utls transport doc comment).
 func GetHTTPClientUTLSDirect() (*http.Client, error) {
 	clientLock.RLock()

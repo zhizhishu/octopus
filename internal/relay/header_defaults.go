@@ -110,7 +110,7 @@ func shouldApplyChannelCloak(cloak dbmodel.ChannelCloak) bool {
 // (hop-by-hop) and re-emits its own; pinning a single hard-coded version across ALL
 // traffic is itself a weak tell and goes stale as clients upgrade. When the inbound
 // IS a genuine claude-cli, we mirror its real version values instead — the canonical
-// header SET + ORDER (the part AnyRouter shape-checks) is unchanged, only the version
+// header SET + ORDER (the part the relay shape-checks) is unchanged, only the version
 // strings track the real client. Non-claude clients yield an empty struct, so the
 // static settings (prior behaviour) apply byte-for-byte.
 type claudeClientVersion struct {
@@ -152,7 +152,7 @@ func (ra *relayAttempt) applyClaudeHeaderDefaults(req *http.Request) {
 	setHeaderIfMissing(req.Header, "X-App", "cli")
 	// NB: genuine claude-cli (2.1.168 and 2.1.178, captured on the wire) does NOT
 	// send X-Client-Request-Id, so we must not synthesize one — an extra header the
-	// real CLI never emits is a detectable non-CLI tell to AnyRouter's shape check.
+	// real CLI never emits is a detectable non-CLI tell to the relay's shape check.
 	setHeaderIfMissing(req.Header, "X-Claude-Code-Session-Id", ra.claudeFingerprintSessionID())
 	setHeaderIfMissing(req.Header, "X-Stainless-Lang", "js")
 	setHeaderIfMissing(req.Header, "X-Stainless-Retry-Count", "0")
@@ -177,7 +177,7 @@ func (ra *relayAttempt) applyClaudeHeaderDefaults(req *http.Request) {
 	// Decide the anthropic-beta header. A genuine claude-cli downstream already sent its
 	// OWN anthropic-beta on the wire — copyHeaders forwards it onto this outbound request
 	// (Anthropic-Beta is not hop-by-hop), so req.Header carries the client's real value
-	// here. That set+order is the exact per-model, per-request-type shape AnyRouter
+	// here. That set+order is the exact per-model, per-request-type shape the relay
 	// shape-checks, and a 2026-07-02 wire A/B proved a fixed flagship 7-set on a haiku
 	// request is rejected. So PRESERVE a real client's beta verbatim; only synthesize the
 	// canonical claude-code order when no client beta is present (a non-claude downstream
@@ -198,7 +198,7 @@ func (ra *relayAttempt) applyClaudeHeaderDefaults(req *http.Request) {
 	)
 	// Opt-in escape hatch: drop any beta flags an admin listed in
 	// SettingKeyClaudeBetaStripFlags (default empty = no-op = faithful passthrough).
-	// Lets a flag that trips an upstream — e.g. anyrouter's intermittent 520 on
+	// Lets a flag that trips an upstream — e.g. the relay's intermittent 520 on
 	// prompt-caching-scope-2026-01-05 — be removed without touching the rest of the shape.
 	betas = model.StripClaudeBetaFlags(betas, settingString(dbmodel.SettingKeyClaudeBetaStripFlags, ""))
 	req.Header.Del("Anthropic-Beta")

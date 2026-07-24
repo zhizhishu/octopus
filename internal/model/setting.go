@@ -24,7 +24,7 @@ const (
 	SettingKeyAnthropicAutoCacheControl SettingKey = "anthropic_auto_cache_control" // Anthropic 出站自动为稳定长前缀注入 cache_control
 	SettingKeyRelayStreamKeepaliveSec   SettingKey = "relay_stream_keepalive_interval_seconds"
 	SettingKeyOpenAIAutoPromptCacheKey  SettingKey = "openai_auto_prompt_cache_key"
-	SettingKeyUpstreamUTLSFingerprint   SettingKey = "upstream_utls_fingerprint" // 直连上游用 Chrome uTLS ClientHello (JA3); opt-in, 默认关, 启用前须过 anyrouter 复验
+	SettingKeyUpstreamUTLSFingerprint   SettingKey = "upstream_utls_fingerprint" // 直连上游用 Chrome uTLS ClientHello (JA3); opt-in, 默认关, 启用前须过 the relay 复验
 	SettingKeyRelayStreamDataTimeoutSec SettingKey = "relay_stream_data_interval_timeout_seconds"
 	SettingKeyResponsesSessionTTL       SettingKey = "responses_session_ttl_seconds"
 	SettingKeyClaudeHeaderUserAgent     SettingKey = "claude_header_defaults_user_agent"
@@ -40,7 +40,7 @@ const (
 	// When empty, octopus faithfully forwards the downstream claude-cli's anthropic-beta
 	// verbatim (unchanged behaviour). When set to a comma-separated list of beta flags,
 	// those flags are stripped from the outbound anthropic-beta — used to drop a flag that
-	// trips an upstream (e.g. anyrouter's intermittent 520 on prompt-caching-scope-2026-01-05)
+	// trips an upstream (e.g. the relay's intermittent 520 on prompt-caching-scope-2026-01-05)
 	// without disturbing the rest of the genuine beta shape.
 	SettingKeyClaudeBetaStripFlags SettingKey = "claude_beta_strip_flags"
 	// SettingKeyFingerprintInstanceID is a per-deployment random seed (generated once,
@@ -182,7 +182,7 @@ const (
 	// built-in Linux real-machine profiles, so a channel with no pinned profile no longer
 	// presents a lone Windows fingerprint. The X-Stainless-OS value is not part of the
 	// header set/order an upstream shape-checks, and Linux claude-cli is already proven on
-	// anyrouter via the Linux profiles.
+	// the relay via the Linux profiles.
 	DefaultClaudeHeaderOS = "Linux"
 
 	// LegacyDefaultClaudeHeaderOSWindows was the previous X-Stainless-OS seed default.
@@ -243,7 +243,7 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyAnthropicAutoCacheControl, Value: "true"}, // 默认开启稳定前缀缓存断点，提升 provider 原生命中率
 		{Key: SettingKeyRelayStreamKeepaliveSec, Value: defaultRelayStreamKeepaliveIntervalSeconds()},
 		{Key: SettingKeyOpenAIAutoPromptCacheKey, Value: "true"},
-		{Key: SettingKeyUpstreamUTLSFingerprint, Value: "false"}, // 默认关：改 TLS 指纹影响所有上游，须先过 anyrouter 复验再开
+		{Key: SettingKeyUpstreamUTLSFingerprint, Value: "false"}, // 默认关：改 TLS 指纹影响所有上游，须先过 the relay 复验再开
 		{Key: SettingKeyRelayStreamDataTimeoutSec, Value: defaultRelayStreamDataIntervalTimeoutSeconds()},
 		{Key: SettingKeyResponsesSessionTTL, Value: "3600"},
 		{Key: SettingKeyClaudeHeaderUserAgent, Value: DefaultClaudeHeaderUserAgent},
@@ -255,7 +255,7 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyClaudeHeaderStabilize, Value: "true"},
 		{Key: SettingKeyClaudeCLIAutoCompact, Value: "false"},
 		{Key: SettingKeyClaudeCLIReasoningEffort, Value: "auto"},
-		{Key: SettingKeyClaudeBetaStripFlags, Value: ""}, // 默认空=关：忠实透传 claude-cli 的 anthropic-beta；配置了才剥离指定 flag（anyrouter 抽风逃生）
+		{Key: SettingKeyClaudeBetaStripFlags, Value: ""}, // 默认空=关：忠实透传 claude-cli 的 anthropic-beta；配置了才剥离指定 flag（the relay 抽风逃生）
 		{Key: SettingKeyCodexHeaderUserAgent, Value: DefaultCodexHeaderUserAgent},
 		{Key: SettingKeyCodexHeaderBetaFeatures, Value: DefaultCodexHeaderBetaFeatures},
 		{Key: SettingKeyCodexFastMode, Value: "false"},

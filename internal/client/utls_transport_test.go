@@ -70,8 +70,8 @@ func TestUTLSEmitsCanonicalHeaderOrder(t *testing.T) {
 		path string
 		want []string
 	}{
-		{"claude/messages", "https://anyrouter.top/v1/messages?beta=true", claudeCanonicalHeaderOrder},
-		{"codex/responses", "https://anyrouter.top/v1/responses", codexCanonicalHeaderOrder},
+		{"claude/messages", "https://upstream.example/v1/messages?beta=true", claudeCanonicalHeaderOrder},
+		{"codex/responses", "https://upstream.example/v1/responses", codexCanonicalHeaderOrder},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

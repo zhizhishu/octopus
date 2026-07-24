@@ -43,7 +43,7 @@ func TestApplyHeaderDefaultsStripsCodexClientHeadersOnAnthropicOutbound(t *testi
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 
-	upstreamReq := httptest.NewRequest(http.MethodPost, "https://anyrouter.top/v1/messages", nil)
+	upstreamReq := httptest.NewRequest(http.MethodPost, "https://upstream.example/v1/messages", nil)
 	// The codex downstream's client headers, already forwarded onto the outbound request.
 	codexHeaders := []string{
 		"Originator",
@@ -103,7 +103,7 @@ func TestApplyHeaderDefaultsKeepsOriginatorForNonCodexToAnthropic(t *testing.T) 
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 
-	upstreamReq := httptest.NewRequest(http.MethodPost, "https://anyrouter.top/v1/messages", nil)
+	upstreamReq := httptest.NewRequest(http.MethodPost, "https://upstream.example/v1/messages", nil)
 	upstreamReq.Header.Set("Originator", "internal-audit-agent")
 
 	ra := &relayAttempt{
@@ -185,10 +185,10 @@ func TestShouldForwardClientHeaderFiltersTimeoutHeaders(t *testing.T) {
 // (x-api-key) were already blocked.
 func TestShouldForwardClientHeaderBlocksDownstreamAuthHeaders(t *testing.T) {
 	for _, key := range []string{
-		"Authorization",   // openai/chat downstream key
-		"X-Api-Key",       // anthropic downstream key
-		"x-goog-api-key",  // gemini downstream key
-		"X-Goog-Api-Key",  // case-insensitive
+		"Authorization",  // openai/chat downstream key
+		"X-Api-Key",      // anthropic downstream key
+		"x-goog-api-key", // gemini downstream key
+		"X-Goog-Api-Key", // case-insensitive
 	} {
 		if shouldForwardClientHeader(key) {
 			t.Fatalf("expected downstream auth header %q to be filtered, not forwarded upstream", key)
@@ -520,7 +520,7 @@ func TestClaudeHeaderDefaultsUseCurrentCLIBetaShape(t *testing.T) {
 		channel: &dbmodel.Channel{Type: outbound.OutboundTypeAnthropic},
 	}
 
-	upstreamReq := httptest.NewRequest(http.MethodPost, "https://anyrouter.top/v1/messages", nil)
+	upstreamReq := httptest.NewRequest(http.MethodPost, "https://upstream.example/v1/messages", nil)
 	ra.copyHeaders(upstreamReq)
 
 	if got := upstreamReq.URL.Query().Get("beta"); got != "true" {
@@ -608,7 +608,7 @@ func TestClaudeFingerprintSessionHeaderMatchesBodyUserID(t *testing.T) {
 	}
 
 	ra.ensureClaudeMetadataUserID()
-	upstreamReq := httptest.NewRequest(http.MethodPost, "https://anyrouter.top/v1/messages", nil)
+	upstreamReq := httptest.NewRequest(http.MethodPost, "https://upstream.example/v1/messages", nil)
 	ra.copyHeaders(upstreamReq)
 
 	if got := upstreamReq.Header.Get("User-Agent"); got != dbmodel.DefaultClaudeHeaderUserAgent {
@@ -749,7 +749,7 @@ func TestClaudeHeaderDefaultsUniformUAIgnoresInboundVersion(t *testing.T) {
 		},
 		channel: &dbmodel.Channel{Type: outbound.OutboundTypeAnthropic},
 	}
-	up := httptest.NewRequest(http.MethodPost, "https://anyrouter.top/v1/messages", nil)
+	up := httptest.NewRequest(http.MethodPost, "https://upstream.example/v1/messages", nil)
 	ra.copyHeaders(up)
 
 	// Upstream must see the single pinned static UA, NOT the downstream's 9.9.9.
@@ -790,7 +790,7 @@ func TestClaudeHeaderDefaultsUsesStaticForNonCLIClient(t *testing.T) {
 		},
 		channel: &dbmodel.Channel{Type: outbound.OutboundTypeAnthropic},
 	}
-	up := httptest.NewRequest(http.MethodPost, "https://anyrouter.top/v1/messages", nil)
+	up := httptest.NewRequest(http.MethodPost, "https://upstream.example/v1/messages", nil)
 	ra.copyHeaders(up)
 
 	if got := up.Header.Get("User-Agent"); got != dbmodel.DefaultClaudeHeaderUserAgent {
@@ -824,7 +824,7 @@ func TestClaudeHeaderDefaultsSendsStainlessOSArchWhenStabilizeOff(t *testing.T) 
 		},
 		channel: &dbmodel.Channel{Type: outbound.OutboundTypeAnthropic},
 	}
-	up := httptest.NewRequest(http.MethodPost, "https://anyrouter.top/v1/messages", nil)
+	up := httptest.NewRequest(http.MethodPost, "https://upstream.example/v1/messages", nil)
 	ra.copyHeaders(up)
 
 	gotOS := up.Header.Get("X-Stainless-OS")
@@ -844,7 +844,7 @@ func TestClaudeHeaderDefaultsSendsStainlessOSArchWhenStabilizeOff(t *testing.T) 
 // header is emitted in the EXACT order a genuine claude-cli request uses — in
 // particular context-1m-2025-08-07 sits in its real position (7th, after
 // mid-conversation-system), NOT prepended. Regression guard: a transform-injected
-// 1m beta must not reorder the canonical set (AnyRouter shape checks can key on beta
+// 1m beta must not reorder the canonical set (the relay shape checks can key on beta
 // order/set). Also pins that X-Client-Request-Id stays absent (genuine cli omits it).
 func TestClaudeBetaHeaderMatchesGenuineCliOrder(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -864,7 +864,7 @@ func TestClaudeBetaHeaderMatchesGenuineCliOrder(t *testing.T) {
 		channel: &dbmodel.Channel{Type: outbound.OutboundTypeAnthropic},
 	}
 
-	upstreamReq := httptest.NewRequest(http.MethodPost, "https://anyrouter.top/v1/messages", nil)
+	upstreamReq := httptest.NewRequest(http.MethodPost, "https://upstream.example/v1/messages", nil)
 	// Reproduce the real wire condition: the outbound transformer already appended a
 	// lone context-1m beta to the request before relay header defaults run. The
 	// rebuild must override this so 1m does NOT stay stuck at position 1.
@@ -890,7 +890,7 @@ func TestClaudeBetaHeaderMatchesGenuineCliOrder(t *testing.T) {
 // rebuilding it into the canonical flagship set. The genuine 2.1.198 haiku agentic set
 // carries advisor-tool, places claude-code-20250219 near the end, and omits
 // mid-conversation-system/effort — a fixed flagship 7-set here is the exact non-CLI tell
-// a wire A/B showed AnyRouter rejects on a haiku request.
+// a wire A/B showed the relay rejects on a haiku request.
 func TestClaudeBetaHeaderPreservesGenuineClientSet(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -908,7 +908,7 @@ func TestClaudeBetaHeaderPreservesGenuineClientSet(t *testing.T) {
 	// The genuine claude-cli 2.1.198 haiku agentic beta set, captured on the wire
 	// (order-sensitive: claude-code-20250219 is 5th, advisor-tool is present).
 	clientBeta := "interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,claude-code-20250219,advisor-tool-2026-03-01"
-	upstreamReq := httptest.NewRequest(http.MethodPost, "https://anyrouter.top/v1/messages", nil)
+	upstreamReq := httptest.NewRequest(http.MethodPost, "https://upstream.example/v1/messages", nil)
 	// Mirror the real wire condition: the client's own beta is already on the outbound
 	// request (copyHeaders forwards it there) before relay header defaults run.
 	upstreamReq.Header.Set("Anthropic-Beta", clientBeta)
@@ -923,13 +923,13 @@ func TestClaudeBetaHeaderPreservesGenuineClientSet(t *testing.T) {
 // (SettingKeyClaudeBetaStripFlags): with the default empty value the genuine client
 // beta is forwarded verbatim, and with a configured flag list those flags are removed
 // from the outbound anthropic-beta while every other flag survives in order. This is
-// the escape valve for anyrouter's intermittent 520 on prompt-caching-scope-2026-01-05.
+// the escape valve for the relay's intermittent 520 on prompt-caching-scope-2026-01-05.
 func TestClaudeBetaStripFlagsEscapeHatch(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	setupRelayErrorDB(t) // sqlite + op cache; seeds SettingKeyClaudeBetaStripFlags="" (OFF)
 
 	// The genuine claude-cli 2.1.198 haiku agentic beta set captured on the wire, which
-	// carries the anyrouter-tripping prompt-caching-scope-2026-01-05.
+	// carries the the relay-tripping prompt-caching-scope-2026-01-05.
 	clientBeta := "interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,claude-code-20250219,advisor-tool-2026-03-01"
 
 	newAttempt := func() *relayAttempt {
@@ -946,7 +946,7 @@ func TestClaudeBetaStripFlagsEscapeHatch(t *testing.T) {
 	}
 
 	// Default (empty setting) must forward the client beta verbatim — zero behaviour change.
-	reqDefault := httptest.NewRequest(http.MethodPost, "https://anyrouter.top/v1/messages", nil)
+	reqDefault := httptest.NewRequest(http.MethodPost, "https://upstream.example/v1/messages", nil)
 	reqDefault.Header.Set("Anthropic-Beta", clientBeta)
 	newAttempt().copyHeaders(reqDefault)
 	if got := reqDefault.Header.Get("Anthropic-Beta"); got != clientBeta {
@@ -958,7 +958,7 @@ func TestClaudeBetaStripFlagsEscapeHatch(t *testing.T) {
 		t.Fatalf("set claude_beta_strip_flags: %v", err)
 	}
 
-	reqStripped := httptest.NewRequest(http.MethodPost, "https://anyrouter.top/v1/messages", nil)
+	reqStripped := httptest.NewRequest(http.MethodPost, "https://upstream.example/v1/messages", nil)
 	reqStripped.Header.Set("Anthropic-Beta", clientBeta)
 	newAttempt().copyHeaders(reqStripped)
 

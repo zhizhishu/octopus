@@ -279,7 +279,7 @@ func TestSpreadLatencyBandBoundaries(t *testing.T) {
 // A bare 429 / transient 5xx soft-cooldown starts at a few seconds and doubles per
 // consecutive failure, capped — so a transient "backend busy" recovers fast while a
 // persistently failing key still backs off. Guards the fix for relay upstreams (e.g.
-// anyrouter) that 429/503 when overloaded without a Retry-After.
+// the relay) that 429/503 when overloaded without a Retry-After.
 func TestRuntimeCooldownExponentialBackoff(t *testing.T) {
 	cases := []struct {
 		status int

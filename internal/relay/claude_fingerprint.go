@@ -10,7 +10,7 @@ import (
 )
 
 // ensureClaudeMetadataUserID injects a Claude-Code-shaped metadata.user_id when the
-// client did not send one. Relays such as AnyRouter route Anthropic requests to
+// client did not send one. Relays such as the relay route Anthropic requests to
 // their serving pool only when they carry a genuine Claude Code fingerprint: a
 // metadata.user_id holding a 64-hex device_id plus a session UUID, serialised as
 // COMPACT JSON (a spaced form, or a missing/short id, is risk-rejected 429/503 before
@@ -27,7 +27,7 @@ func (ra *relayAttempt) ensureClaudeMetadataUserID() {
 	}
 	// Respect the channel cloak switch: mode "never" disables the Claude fingerprint,
 	// so a domestic Anthropic-compatible upstream (GLM/DeepSeek) gets no synthetic
-	// metadata.user_id. auto/always keep it (anyrouter requires it for non-CLI clients).
+	// metadata.user_id. auto/always keep it (the relay requires it for non-CLI clients).
 	if !shouldApplyChannelCloak(ra.channel.Cloak) {
 		return
 	}

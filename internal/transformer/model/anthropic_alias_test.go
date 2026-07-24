@@ -86,7 +86,7 @@ func TestStripClaudeBetaFlags(t *testing.T) {
 		t.Fatalf("whitespace-only stripCSV must return betas unchanged: got=%#v want=%#v", got, betas)
 	}
 
-	// Stripping the anyrouter-tripping flag removes exactly it and preserves the order
+	// Stripping the the relay-tripping flag removes exactly it and preserves the order
 	// of the rest.
 	got := StripClaudeBetaFlags(betas, "prompt-caching-scope-2026-01-05")
 	want := []string{

@@ -9,7 +9,7 @@ import (
 
 // TestShouldForceAnthropicStreamUpstream pins the gate that makes octopus stream to
 // the upstream for Claude-Code-cloaked Anthropic channels (so non-stream clients are
-// served by aggregating the SSE back). AnyRouter and similar relays refuse non-stream
+// served by aggregating the SSE back). the relay and similar relays refuse non-stream
 // requests on gated models, so this must stay on by default for Anthropic channels
 // and only opt out when cloak is explicitly disabled.
 func TestShouldForceAnthropicStreamUpstream(t *testing.T) {

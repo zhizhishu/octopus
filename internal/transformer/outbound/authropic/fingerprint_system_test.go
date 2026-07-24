@@ -19,7 +19,7 @@ func sysMsg(text string) model.Message {
 // (billing header + agent identity) is injected as the first two system blocks for
 // every client system shape — absent, single string, and multi-block array — and
 // that a genuine Claude Code request (already carrying both) passes through without
-// double injection. AnyRouter risk-rejects any Anthropic request whose system lacks
+// double injection. the relay risk-rejects any Anthropic request whose system lacks
 // the genuine agent identity, so a gap here silently breaks non-CLI clients.
 func TestSystemFingerprintInjectionVariants(t *testing.T) {
 	billing := claudeBillingHeaderText()

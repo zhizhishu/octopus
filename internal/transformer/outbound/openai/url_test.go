@@ -108,7 +108,7 @@ func TestCustomChatOutboundTransformRequestPreservesFullChatEndpoint(t *testing.
 // suppressed at the transport layer (DisableCompression, see internal/client), so a
 // request that omits the header here reaches the wire with none.
 func TestResponseOutboundTransformRequestOmitsAcceptEncoding(t *testing.T) {
-	httpReq, err := (&ResponseOutbound{}).TransformRequest(context.Background(), testChatRequest(), "https://anyrouter.top", "test-key")
+	httpReq, err := (&ResponseOutbound{}).TransformRequest(context.Background(), testChatRequest(), "https://upstream.example", "test-key")
 	if err != nil {
 		t.Fatalf("TransformRequest returned error: %v", err)
 	}

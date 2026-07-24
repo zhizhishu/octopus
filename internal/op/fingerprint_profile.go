@@ -188,7 +188,7 @@ func fingerprintProfileRefreshCache(ctx context.Context) error {
 		}
 	}
 	// Converge the built-in Linux presets from the headless codex_exec identity to the
-	// interactive codex_cli_rs identity (UA + Originator). anyrouter accepts both, but some
+	// interactive codex_cli_rs identity (UA + Originator). the relay accepts both, but some
 	// upstreams (e.g. muyuan.do) only admit the interactive codex_cli_rs; presenting cli_rs
 	// uniformly is the operator's chosen default. Only rows still carrying the EXACT seeded
 	// codex_exec/0.142.5 values are rewritten, so an operator-customised codex identity is

@@ -922,7 +922,7 @@ func (ra *relayAttempt) shouldForceOpenAIResponsesStreamUpstream(outAdapter mode
 // shouldForceAnthropicStreamUpstream forces a streaming upstream request for
 // Claude-Code-cloaked Anthropic channels even when the client asked for a
 // non-stream response. Real Claude Code always streams, and some relays (e.g.
-// AnyRouter) refuse non-stream requests on gated models (opus) outright — a
+// the relay) refuse non-stream requests on gated models (opus) outright — a
 // non-stream upstream call is risk-rejected before the business layer. octopus
 // streams upstream to stay claude-code-shaped, then aggregates the SSE back into a
 // single non-stream JSON response for the client (handleStreamResponseAsNonStream),

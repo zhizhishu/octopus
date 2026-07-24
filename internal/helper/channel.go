@@ -20,7 +20,7 @@ func ChannelHttpClient(channel *model.Channel) (*http.Client, error) {
 	if !channel.Proxy {
 		// Opt-in uTLS (Chrome JA3) applies only to direct upstream calls; proxied
 		// channels keep the standard transport (uTLS-over-proxy is a follow-up). The
-		// setting is default-off and must pass anyrouter shape re-verification first.
+		// setting is default-off and must pass the relay shape re-verification first.
 		if upstreamUTLSFingerprintEnabled() {
 			return client.GetHTTPClientUTLSDirect()
 		}

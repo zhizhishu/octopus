@@ -16,7 +16,7 @@ import (
 //
 // octopus advertises the genuine claude-cli Accept-Encoding (gzip, deflate, br,
 // zstd). Because that request header is set manually, Go's http.Transport does NOT
-// auto-decompress the response, so the relay must. In practice Anthropic/AnyRouter
+// auto-decompress the response, so the relay must. In practice Anthropic/the relay
 // do not compress text/event-stream bodies, so this is a safety net that no-ops on
 // the common (absent / identity) path; it exists so a compression-enabling upstream
 // cannot break the SSE parser.

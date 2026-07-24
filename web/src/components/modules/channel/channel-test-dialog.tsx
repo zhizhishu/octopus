@@ -38,7 +38,7 @@ const ENDPOINT_LABEL: Record<TestEndpoint, string> = {
 type CellStatus = 'testing' | 'success' | 'error';
 type CellResult = { status: CellStatus; ms?: number; error?: string };
 // 重复次数 > 1 时的逐格汇总（治日志刷屏：不逐条落库、对话框看统计）
-type CellSummary = { total: number; done: number; ok: number; capacity: number; timeout: number; other: number; msSum: number; sampleError?: string };
+type CellSummary = { total: number; done: number; ok: number; capacity: number; timeout: number; other: number; msSum: number; capacityError?: string; timeoutError?: string; otherError?: string };
 
 const MAX_REPEAT = 500;
 
@@ -58,12 +58,17 @@ const SHAPE_CLASS: Record<'codex' | 'claude' | 'generic', string> = {
     generic: 'bg-muted text-muted-foreground',
 };
 
-// 失败归类，供汇总模式统计（容量满是 anyrouter 坏窗口特征，单列出来）
+// 失败归类，供汇总模式统计（容量满是上游坏窗口特征，单列出来）
 function classifyError(err?: string): 'capacity' | 'timeout' | 'other' {
     const e = err || '';
     if (/负载已(经)?达到?上限|已达上限|capacity|rate.?limit|429|529/i.test(e)) return 'capacity';
     if (/超时|timed?\s?out|timeout|deadline/i.test(e)) return 'timeout';
     return 'other';
+}
+
+// 兜底脱敏：上游报错原文万一带出上游马甲域名/名字，抹成「上游」，绝不让上游身份泄漏到页面。
+function redactUpstreamIdentity(text: string): string {
+    return text.replace(/anyrouter(\.top)?/gi, '上游');
 }
 
 const pillClass = (selected: boolean) =>
@@ -184,9 +189,15 @@ export function ChannelTestDialog({
                 const c: CellSummary = { ...cur, done: cur.done + 1 };
                 if (ok) { c.ok += 1; c.msSum += ms || 0; }
                 else {
-                    c[classifyError(err)] += 1;
-                    // 留一条报错原文给汇总模式看（治"只看到计数、看不到到底错在哪"）。
-                    if (err && err.trim()) c.sampleError = err.trim();
+                    const kind = classifyError(err);
+                    c[kind] += 1;
+                    // 每类各留一条报错原文（治"只看到计数、看不到 76 满 / 23 其它各错在哪"）。
+                    const clean = err && err.trim() ? redactUpstreamIdentity(err.trim()) : '';
+                    if (clean) {
+                        if (kind === 'capacity' && !c.capacityError) c.capacityError = clean;
+                        else if (kind === 'timeout' && !c.timeoutError) c.timeoutError = clean;
+                        else if (kind === 'other' && !c.otherError) c.otherError = clean;
+                    }
                 }
                 return { ...prev, [cellKey(endpoint, model)]: c };
             });
@@ -440,15 +451,29 @@ export function ChannelTestDialog({
                                                     ) : (s.capacity + s.timeout + s.other) === 0 ? (
                                                         <span className="font-semibold text-emerald-600 dark:text-emerald-400">全通过</span>
                                                     ) : (
-                                                        <div className="space-y-1">
-                                                            <div className="space-x-2">
-                                                                {s.capacity > 0 && <span className="text-amber-600 dark:text-amber-400">容量满 {s.capacity}</span>}
-                                                                {s.timeout > 0 && <span className="text-destructive">超时 {s.timeout}</span>}
-                                                                {s.other > 0 && <span>其它 {s.other}</span>}
-                                                            </div>
-                                                            {s.sampleError && (
-                                                                <div className="whitespace-pre-wrap break-words text-[10.5px] leading-snug text-muted-foreground/80" title={s.sampleError}>
-                                                                    {s.sampleError}
+                                                        <div className="space-y-1.5">
+                                                            {s.capacity > 0 && (
+                                                                <div>
+                                                                    <span className="text-amber-600 dark:text-amber-400">容量满 {s.capacity}</span>
+                                                                    {s.capacityError && (
+                                                                        <div className="mt-0.5 whitespace-pre-wrap break-words text-[10.5px] leading-snug text-muted-foreground/80" title={s.capacityError}>{s.capacityError}</div>
+                                                                    )}
+                                                                </div>
+                                                            )}
+                                                            {s.timeout > 0 && (
+                                                                <div>
+                                                                    <span className="text-destructive">超时 {s.timeout}</span>
+                                                                    {s.timeoutError && (
+                                                                        <div className="mt-0.5 whitespace-pre-wrap break-words text-[10.5px] leading-snug text-muted-foreground/80" title={s.timeoutError}>{s.timeoutError}</div>
+                                                                    )}
+                                                                </div>
+                                                            )}
+                                                            {s.other > 0 && (
+                                                                <div>
+                                                                    <span>其它 {s.other}</span>
+                                                                    {s.otherError && (
+                                                                        <div className="mt-0.5 whitespace-pre-wrap break-words text-[10.5px] leading-snug text-muted-foreground/80" title={s.otherError}>{s.otherError}</div>
+                                                                    )}
                                                                 </div>
                                                             )}
                                                         </div>
@@ -461,7 +486,7 @@ export function ChannelTestDialog({
                             </Table>
                             {summaryRows.some((r) => r.s.capacity > 0) && (
                                 <div className="border-t border-border/50 px-3 py-2 text-[10.5px] leading-relaxed text-muted-foreground">
-                                    「容量满」= 上游满载拒绝（如 anyrouter 坏窗口）。<b className="text-foreground">这是真实的失败次数、非假数据、也不是渠道故障</b>，稍后重试即可。
+                                    「容量满」= 上游满载拒绝（上游坏窗口）。<b className="text-foreground">这是真实的失败次数、非假数据、也不是渠道故障</b>，稍后重试即可。
                                 </div>
                             )}
                         </div>

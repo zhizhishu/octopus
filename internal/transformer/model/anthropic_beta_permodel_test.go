@@ -9,7 +9,7 @@ import (
 // A haiku downstream that does NOT carry its own beta must SYNTHESISE the reduced
 // per-model set (claude-code near the end, advisor-tool present, no
 // mid-conversation-system / effort), NOT the flagship 7-set — a fixed flagship set on a
-// haiku request is a per-model tell AnyRouter rejects (2026-07-02 wire A/B).
+// haiku request is a per-model tell the relay rejects (2026-07-02 wire A/B).
 func TestSynthesizedBetaIsPerModelHaiku(t *testing.T) {
 	got := BuildClaudeCodeBetaHeader("claude-haiku-4-5-20251001", false, nil, nil)
 	want := []string{
@@ -55,7 +55,7 @@ func TestClientBetaPreservedRegardlessOfModel(t *testing.T) {
 
 // A genuine claude-cli FLAGSHIP request (opus/fable) with 1M wanted must have
 // context-1m inserted into its preserved beta at slot 2 (immediately after
-// claude-code) so it clears AnyRouter's 1M gate while matching a real 1M-enabled
+// claude-code) so it clears the relay's 1M gate while matching a real 1M-enabled
 // CLI. Haiku (the reduced model) is left verbatim with no context-1m.
 func TestClientBetaFlagshipGetsOneMillionHaikuDoesNot(t *testing.T) {
 	opusClient := []string{

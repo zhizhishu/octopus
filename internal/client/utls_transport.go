@@ -22,9 +22,9 @@ import (
 // transport).
 //
 // This is opt-in and default-off: presenting a browser JA3 + fixed h2 order changes
-// how EVERY upstream sees octopus, so it MUST be verified against the real anyrouter
+// how EVERY upstream sees octopus, so it MUST be verified against the real the relay
 // passthrough (a genuine claude/codex CLI routed through octopus) before being
-// enabled in production — see docs/anyrouter-shape-test-sop.md.
+// enabled in production — see docs/upstream-shape-test-sop.md.
 type utlsRoundTripper struct {
 	// dialContext dials the raw TCP connection (honouring any configured proxy).
 	dialContext func(ctx context.Context, network, addr string) (net.Conn, error)

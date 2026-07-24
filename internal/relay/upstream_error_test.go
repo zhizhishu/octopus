@@ -461,14 +461,14 @@ func TestRelayErrorResponseRedactsLocalRouteDetail(t *testing.T) {
 		status:   http.StatusServiceUnavailable,
 		code:     "octopus_channel_circuit_open",
 		strategy: "local_route_selection;reason=circuit_break;upstream_forwarded=false",
-		message:  "no available channel: tmp-anyrouter-claude-no1m (circuit breaker tripped, remaining cooldown: 30s)",
+		message:  "no available channel: tmp-relay-claude-no1m (circuit breaker tripped, remaining cooldown: 30s)",
 	}
 
 	status, code, message := relayErrorResponse(leaky)
 	if status != http.StatusServiceUnavailable || code != "octopus_channel_circuit_open" {
 		t.Fatalf("status/code must be preserved: %d %q", status, code)
 	}
-	for _, leak := range []string{"tmp-anyrouter", "circuit", "cooldown", "no available channel"} {
+	for _, leak := range []string{"tmp-relay", "circuit", "cooldown", "no available channel"} {
 		if strings.Contains(strings.ToLower(message), strings.ToLower(leak)) {
 			t.Fatalf("user-facing message leaked internal route detail %q: %q", leak, message)
 		}

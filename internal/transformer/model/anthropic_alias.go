@@ -6,14 +6,14 @@ const AnthropicOneMillionBeta = "context-1m-2025-08-07"
 
 // Beta sets mirror the real Claude CLI (claude-cli/2.1.198) anthropic-beta header
 // captured on the wire from a genuine `claude -p` request (flagship model, e.g.
-// claude-opus-4-8 / claude-sonnet-5); the order matches the wire exactly so AnyRouter
+// claude-opus-4-8 / claude-sonnet-5); the order matches the wire exactly so the relay
 // shape checks see an authentic Claude Code request. 2.1.198 DROPPED advisor-tool and
 // structured-outputs from the declared set that 2.1.168 carried — sending either is a
 // stale-client tell — and no longer sends thinking-token-count/mid-conversation-system
 // as optional: the flagship set is these seven. NOTE: real 2.1.198 varies this set by
 // model AND request type (haiku/older-sonnet send a reduced set with claude-code-20250219
 // last; a title/structured-output probe drops claude-code and carries structured-outputs).
-// A 2026-07-02 wire A/B against AnyRouter DISPROVED the earlier assumption that its shape
+// A 2026-07-02 wire A/B against the relay DISPROVED the earlier assumption that its shape
 // check is not per-model strict: a fixed flagship 7-set on a haiku request is rejected.
 // So this canonical set is now used ONLY as the synthesis fallback for non-claude
 // downstreams / the channel test; a genuine claude-cli's own per-model beta is preserved
@@ -47,7 +47,7 @@ var anthropicClaudeCodeOneMillionBetas = []string{
 // `claude -p` haiku agentic request (2026-07-02 wire A/B, _artifacts/wire-capture): it
 // drops mid-conversation-system/effort, KEEPS advisor-tool-2026-03-01, and moves
 // claude-code-20250219 toward the end. A fixed flagship 7-set on a haiku request was
-// rejected by AnyRouter's per-model shape check, so the synthesis fallback for a haiku
+// rejected by the relay's per-model shape check, so the synthesis fallback for a haiku
 // downstream must use THIS set. (A genuine claude-cli's own beta is still preserved
 // verbatim by BuildClaudeCodeBetaHeader upstream of this — this only backs the
 // non-claude / channel-test synthesis.)
@@ -168,10 +168,10 @@ func BuildClaudeCodeBetaOrder(modelName string, wantsOneMillion bool, existing [
 // header. A genuine claude-cli DOWNSTREAM already sends its own anthropic-beta on
 // the wire (the relay forward path copies it onto the outbound request via
 // copyHeaders), and that set+order is the exact per-model, per-request-type shape
-// AnyRouter shape-checks: the real 2.1.198 CLI varies it by model AND request type
+// the relay shape-checks: the real 2.1.198 CLI varies it by model AND request type
 // (a haiku agentic turn carries advisor-tool with claude-code-20250219 near the end;
 // a title/structured-output probe carries structured-outputs and no claude-code at
-// all). No STATIC canonical set can match that, so a wire A/B against AnyRouter showed
+// all). No STATIC canonical set can match that, so a wire A/B against the relay showed
 // a fixed flagship 7-set on a haiku request is rejected while the real per-model beta
 // passes.
 //
@@ -213,10 +213,10 @@ func BuildClaudeCodeBetaHeader(modelName string, wantsOneMillion bool, existing 
 	}
 	add(existing)
 	add(transformBetas)
-	// AnyRouter gates the flagship models (opus/fable/sonnet) behind context-1m and
+	// the relay gates the flagship models (opus/fable/sonnet) behind context-1m and
 	// 400s a request that lacks it. A genuine claude-cli with 1M enabled carries
 	// context-1m in slot 2 (immediately after claude-code), so when 1M is wanted for a
-	// non-reduced model, insert it there: this both clears AnyRouter's 1M gate and
+	// non-reduced model, insert it there: this both clears the relay's 1M gate and
 	// matches what a real 1M-enabled CLI sends on the wire. Haiku (the reduced model)
 	// works without 1M and its captured shape carries none, so it is left untouched.
 	// insertOneMillionAfterClaudeCode is idempotent when context-1m is already present.
@@ -260,7 +260,7 @@ func StripClaudeBetaFlags(betas []string, stripCSV string) []string {
 }
 
 // BuildClaudeMetadataUserID serialises metadata.user_id exactly as a real Claude
-// Code client does: compact (no spaces — AnyRouter rejects the spaced form) with
+// Code client does: compact (no spaces — the relay rejects the spaced form) with
 // key order device_id, account_uuid, session_id. Both the relay forward path and
 // the channel/model test path build it through this one helper so the byte shape
 // is identical; a Go map marshalled to JSON sorts keys alphabetically, which is a
@@ -271,7 +271,7 @@ func BuildClaudeMetadataUserID(deviceID, sessionID string) string {
 
 // NormalizeAnthropicModelAlias maps client-facing Claude/Claude Code shortcuts
 // to the provider model id that should be sent upstream. In particular, current
-// AnyRouter exposes/logs claude-opus-4-8, while Claude Code users commonly pass
+// the relay exposes/logs claude-opus-4-8, while Claude Code users commonly pass
 // opus[1m] and older configs may still point at claude-opus-4-7.
 func NormalizeAnthropicModelAlias(modelName string) string {
 	trimmed := strings.TrimSpace(modelName)

@@ -583,7 +583,7 @@ const (
 
 // claudeBillingHeaderText returns the Claude CLI billing-header system block.
 // Real Claude Code requests carry this as the first system text block; upstream
-// relays (e.g. AnyRouter) use it to recognise a genuine Claude CLI client, so
+// relays (e.g. the relay) use it to recognise a genuine Claude CLI client, so
 // omitting it gets the request risk-rejected (429/503 before the business layer).
 func claudeBillingHeaderText() string {
 	return claudeBillingHeaderPrefix +
@@ -593,7 +593,7 @@ func claudeBillingHeaderText() string {
 
 // claudeAgentIdentityText is the Claude Code agent-identity system block. Real
 // Claude Code sends it as the second system block (after the billing header).
-// Upstream relays (e.g. AnyRouter) route by it: a request whose system carries the
+// Upstream relays (e.g. the relay) route by it: a request whose system carries the
 // billing header but NOT this genuine agent identity is risk-rejected (429/503)
 // before the business layer, so non-CLI clients get it injected to reach the
 // serving pool while real CLI requests pass through unchanged.
@@ -627,7 +627,7 @@ func convertSystemPrompt(req *model.InternalLLMRequest) *anthropicModel.SystemPr
 
 	// Cloak disabled (channel cloak mode "never"): do not synthesize the Claude CLI
 	// billing-header / agent-identity blocks. Pass the client's own system blocks
-	// through untouched so non-anyrouter Anthropic-compatible upstreams (e.g. domestic
+	// through untouched so non-the relay Anthropic-compatible upstreams (e.g. domestic
 	// GLM/DeepSeek anthropic endpoints) never receive injected Claude identity. A
 	// genuine Claude CLI client's own billing/identity blocks (sent as system messages)
 	// still flow through here; only octopus's synthetic injection is skipped.

@@ -51,7 +51,7 @@ type Channel struct {
 	// short-circuited by the per-(channel,key,model) breaker, never benched by key
 	// cooldown/quarantine, and failures accumulate no breaker/soft-cool state. It hands
 	// the "retry to squeeze into upstream capacity" control back to the client (the exact
-	// reason a direct connection can claw into a busy anyrouter while octopus could not).
+	// reason a direct connection can claw into a busy the relay while octopus could not).
 	// The zero value (false) — every pre-existing channel — keeps the full breaker
 	// behaviour byte-for-byte, so this is opt-in and changes nothing by default.
 	DisableCircuitBreaker bool               `json:"disable_circuit_breaker" gorm:"default:false"`
@@ -259,12 +259,12 @@ func (c *Channel) GetChannelKey() ChannelKey {
 // ChannelKeyCooldown is how long a key is skipped after a 429, and
 // ChannelKeyTransientCooldown the (slightly shorter) skip for transient 5xx
 // (502/503/504/520/529). Both are deliberately short and aligned with the runtime
-// telemetry backoff base (429→5s, 5xx→3s): relay-style upstreams (e.g. anyrouter)
+// telemetry backoff base (429→5s, 5xx→3s): relay-style upstreams (e.g. the relay)
 // return a bare 429/503 "Service Unavailable" for transient backend overload — with
 // no Retry-After — that clears in seconds. On a single-key route these windows are
 // the ONLY thing between the client and the upstream, so a long bench (the old 60s)
 // turned one transient 429 into a wall of "no available channel" that outlasted a
-// CLI's own retry budget — the exact opposite of hitting anyrouter directly, where
+// CLI's own retry budget — the exact opposite of hitting the relay directly, where
 // the client just backs off a few seconds and gets straight back in. Keeping the
 // window at a few seconds lets the caller's native retry land right after it and
 // succeed like a direct connection, while a genuine sustained rate-limit still

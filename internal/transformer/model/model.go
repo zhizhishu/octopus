@@ -559,7 +559,7 @@ type TransformOptions struct {
 	// domestic GLM/DeepSeek Anthropic-compatible upstream that must not receive
 	// injected Claude identity. Default false preserves the cloak behaviour, so
 	// auto/always channels (and non-relay callers) keep the genuine-CLI shape that
-	// AnyRouter requires. A genuine client's own system blocks always pass through.
+	// the relay requires. A genuine client's own system blocks always pass through.
 	SuppressClaudeIdentity bool `json:"-"`
 }
 

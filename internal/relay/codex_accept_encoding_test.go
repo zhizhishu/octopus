@@ -10,7 +10,7 @@ import (
 // TestEnforceCodexNoAcceptEncodingStripsResponsesOverride locks the fingerprint
 // invariant that a codex (OpenAI Responses) outbound never carries Accept-Encoding,
 // even when an operator CustomHeader / the shipped openaiPython preset tried to set
-// `Accept-Encoding: identity`. Without the guard that value would reach anyrouter and
+// `Accept-Encoding: identity`. Without the guard that value would reach the relay and
 // re-introduce exactly the tell the codex fix removed.
 func TestEnforceCodexNoAcceptEncodingStripsResponsesOverride(t *testing.T) {
 	h := http.Header{}

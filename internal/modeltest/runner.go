@@ -647,7 +647,7 @@ func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermod
 	// channel cloak applies (auto/always). Without this the test always injected them
 	// (zero-value false), so a cloak=never channel's test would send Claude identity the
 	// real relay would strip, and a cloaked channel's test must inject it (the block
-	// strict upstreams like Kiro/AnyRouter gate on) — so the test faithfully reflects
+	// strict upstreams like Kiro/the relay gate on) — so the test faithfully reflects
 	// exactly what the upstream receives in production.
 	internalRequest.TransformOptions.SuppressClaudeIdentity = !shouldApplyChannelCloak(channel.Cloak)
 	// Resolve the channel's fingerprint profile once and feed it to every body-shape
@@ -686,7 +686,7 @@ func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermod
 		// Shape lock: a real codex client ALWAYS streams to the upstream, and the relay
 		// forces a streaming upstream for every codex (Responses) channel regardless of
 		// what the client asked (relay.shouldForceOpenAIResponsesStreamUpstream). A
-		// non-stream request to a codex upstream is off-shape and strict relays (AnyRouter)
+		// non-stream request to a codex upstream is off-shape and strict relays (the relay)
 		// risk-reject it. Mirror the relay so a channel test is byte-shaped like real codex
 		// traffic — the stream toggle must not be able to send a non-stream request to a
 		// codex upstream (the UI locks the switch for codex channels accordingly).
@@ -1243,7 +1243,7 @@ func forceClaudeModelTestBodyShape(req *transformermodel.InternalLLMRequest, req
 	req.MaxTokens = &maxTokens
 	// Shape lock: a real claude-cli ALWAYS streams, and the relay forces a streaming
 	// upstream for cloaked Anthropic channels regardless of the client's stream flag
-	// (relay.shouldForceAnthropicStreamUpstream) — strict relays (AnyRouter) risk-reject a
+	// (relay.shouldForceAnthropicStreamUpstream) — strict relays (the relay) risk-reject a
 	// non-stream request on gated models (opus). This helper is already gated on cloak by
 	// the caller, so mirror the relay unconditionally here (the UI locks the stream switch
 	// for cloaked claude channels accordingly).

@@ -170,7 +170,7 @@ func TestMessageOutboundTransformRequestPreservesClaudeContextManagement(t *test
 		}},
 	}
 
-	httpReq, err := (&MessageOutbound{}).TransformRequest(context.Background(), req, "https://anyrouter.top", "test-key")
+	httpReq, err := (&MessageOutbound{}).TransformRequest(context.Background(), req, "https://upstream.example", "test-key")
 	if err != nil {
 		t.Fatalf("TransformRequest returned error: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestMessageOutboundTransformRequestPreservesNativeClaudeTitleShape(t *testi
 		}},
 	}
 
-	httpReq, err := (&MessageOutbound{}).TransformRequest(context.Background(), req, "https://anyrouter.top", "test-key")
+	httpReq, err := (&MessageOutbound{}).TransformRequest(context.Background(), req, "https://upstream.example", "test-key")
 	if err != nil {
 		t.Fatalf("TransformRequest returned error: %v", err)
 	}
@@ -279,7 +279,7 @@ func TestMessageOutboundTransformRequestMapsOpusOneMillionShortcut(t *testing.T)
 		}},
 	}
 
-	httpReq, err := (&MessageOutbound{}).TransformRequest(context.Background(), req, "https://anyrouter.top", "test-key")
+	httpReq, err := (&MessageOutbound{}).TransformRequest(context.Background(), req, "https://upstream.example", "test-key")
 	if err != nil {
 		t.Fatalf("TransformRequest returned error: %v", err)
 	}
@@ -315,7 +315,7 @@ func TestMessageOutboundTransformRequestAuthHeadersByHost(t *testing.T) {
 		t.Fatalf("official authorization should be empty, got %q", got)
 	}
 
-	routerReq, err := (&MessageOutbound{}).TransformRequest(context.Background(), req, "https://anyrouter.top", "test-key")
+	routerReq, err := (&MessageOutbound{}).TransformRequest(context.Background(), req, "https://upstream.example", "test-key")
 	if err != nil {
 		t.Fatalf("router TransformRequest returned error: %v", err)
 	}
