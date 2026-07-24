@@ -683,12 +683,15 @@ func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermod
 		}
 	}
 	if channel.Type == outbound.OutboundTypeOpenAIResponse {
-		endpoint, _ := normalizeEndpoint(r.request.Endpoint)
-		// 测试页"真开真关"：调用方显式给了 stream 就听它的，只有没给才默认强制流。
-		if endpoint.name == "openai_responses" && r.request.Stream == nil {
-			stream := true
-			internalRequest.Stream = &stream
-		}
+		// Shape lock: a real codex client ALWAYS streams to the upstream, and the relay
+		// forces a streaming upstream for every codex (Responses) channel regardless of
+		// what the client asked (relay.shouldForceOpenAIResponsesStreamUpstream). A
+		// non-stream request to a codex upstream is off-shape and strict relays (AnyRouter)
+		// risk-reject it. Mirror the relay so a channel test is byte-shaped like real codex
+		// traffic — the stream toggle must not be able to send a non-stream request to a
+		// codex upstream (the UI locks the switch for codex channels accordingly).
+		stream := true
+		internalRequest.Stream = &stream
 	}
 	if modelTestUsesCodexFingerprint(channel, r.request.Endpoint) {
 		prepareCodexModelTestRequest(internalRequest, channel.Type, fp)
@@ -1238,11 +1241,14 @@ func forceClaudeModelTestBodyShape(req *transformermodel.InternalLLMRequest, req
 	}
 	maxTokens := int64(64000)
 	req.MaxTokens = &maxTokens
-	// 测试页"真开真关"：调用方显式给了 stream 就听它的，只有没给才默认强制流(claude-cli 恒流的 shape)。
-	if request.Stream == nil {
-		stream := true
-		req.Stream = &stream
-	}
+	// Shape lock: a real claude-cli ALWAYS streams, and the relay forces a streaming
+	// upstream for cloaked Anthropic channels regardless of the client's stream flag
+	// (relay.shouldForceAnthropicStreamUpstream) — strict relays (AnyRouter) risk-reject a
+	// non-stream request on gated models (opus). This helper is already gated on cloak by
+	// the caller, so mirror the relay unconditionally here (the UI locks the stream switch
+	// for cloaked claude channels accordingly).
+	stream := true
+	req.Stream = &stream
 	// Genuine claude-cli always carries an explicit thinking object; on a plain turn it
 	// is {"type":"disabled"}. The 1M path may already have set adaptive thinking
 	// (AdaptiveThinking), so only fill the default when neither is present.
@@ -1645,7 +1651,7 @@ func summarizeNonJSONErrorBody(body []byte) string {
 		}
 		return "upstream returned HTML error page"
 	}
-	return xredact.Secrets(trimPreview(text))
+	return xredact.Secrets(trimErrorText(text))
 }
 
 func firstBetween(value, start, end string) string {
@@ -1794,4 +1800,16 @@ func trimPreview(value string) string {
 		return value
 	}
 	return value[:240] + "..."
+}
+
+// trimErrorText keeps far more than trimPreview's 240 chars: a truncated error is
+// worse than useless when diagnosing a channel ("报错不全"). Success previews stay
+// short (trimPreview); only the error-body summary uses this wider cap.
+func trimErrorText(value string) string {
+	value = strings.TrimSpace(value)
+	const maxErrLen = 1500
+	if len(value) <= maxErrLen {
+		return value
+	}
+	return value[:maxErrLen] + "..."
 }

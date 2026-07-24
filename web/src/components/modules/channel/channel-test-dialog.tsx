@@ -4,7 +4,7 @@
 // 复用 /api/v1/model/test 与统一的 shouldForceTestStream + 180s。替代原独立「模型测试」页。
 import { useMemo, useState } from 'react';
 import { CheckCircle2, Fingerprint, Loader2, Lock, Play, RotateCw, XCircle } from 'lucide-react';
-import { defaultModelTestEndpointForChannel, type Channel } from '@/api/endpoints/channel';
+import { ChannelType, defaultModelTestEndpointForChannel, type Channel } from '@/api/endpoints/channel';
 import { useChannelTestIdentity, useModelTest, type EndpointIdentity } from '@/api/endpoints/model';
 import type { ApiError } from '@/api/types';
 import { toast } from '@/components/common/Toast';
@@ -38,7 +38,7 @@ const ENDPOINT_LABEL: Record<TestEndpoint, string> = {
 type CellStatus = 'testing' | 'success' | 'error';
 type CellResult = { status: CellStatus; ms?: number; error?: string };
 // 重复次数 > 1 时的逐格汇总（治日志刷屏：不逐条落库、对话框看统计）
-type CellSummary = { total: number; done: number; ok: number; capacity: number; timeout: number; other: number; msSum: number };
+type CellSummary = { total: number; done: number; ok: number; capacity: number; timeout: number; other: number; msSum: number; sampleError?: string };
 
 const MAX_REPEAT = 500;
 
@@ -78,6 +78,12 @@ function apiErrorMessage(error: unknown): string | undefined {
     return (error as ApiError | undefined)?.message;
 }
 
+// Mirror backend shouldApplyChannelCloak: cloak applies unless explicitly turned off.
+function channelCloakApplies(mode?: string): boolean {
+    const m = (mode ?? 'auto').toLowerCase().trim();
+    return !(m === 'never' || m === 'off' || m === 'false' || m === 'disabled');
+}
+
 export function ChannelTestDialog({
     channel,
     open,
@@ -90,6 +96,13 @@ export function ChannelTestDialog({
     const modelTest = useModelTest();
     const allModels = useMemo(() => getSelectedChannelModels(channel), [channel]);
     const defaultEndpoint = defaultModelTestEndpointForChannel(channel.type) as TestEndpoint;
+    // Shape lock: codex(Responses) always streams; cloaked claude(Anthropic) always
+    // streams — mirrors the relay's forced streaming upstream (shouldForce*StreamUpstream).
+    // Real codex/claude never send a non-stream request, so the toggle is locked ON for
+    // these channels (a non-stream probe would be off-shape and strict relays reject it).
+    const streamShapeLocked =
+        channel.type === ChannelType.OpenAIResponse ||
+        (channel.type === ChannelType.Anthropic && channelCloakApplies(channel.cloak?.mode));
 
     const [endpoints, setEndpoints] = useState<Set<TestEndpoint>>(() => new Set<TestEndpoint>([defaultEndpoint]));
     const [models, setModels] = useState<Set<string>>(() => new Set(allModels.slice(0, 1)));
@@ -170,7 +183,11 @@ export function ChannelTestDialog({
                 if (!cur) return prev;
                 const c: CellSummary = { ...cur, done: cur.done + 1 };
                 if (ok) { c.ok += 1; c.msSum += ms || 0; }
-                else { c[classifyError(err)] += 1; }
+                else {
+                    c[classifyError(err)] += 1;
+                    // 留一条报错原文给汇总模式看（治"只看到计数、看不到到底错在哪"）。
+                    if (err && err.trim()) c.sampleError = err.trim();
+                }
                 return { ...prev, [cellKey(endpoint, model)]: c };
             });
 
@@ -184,7 +201,7 @@ export function ChannelTestDialog({
                             channel_id: channel.id,
                             endpoint,
                             prompt,
-                            stream: streamTest,
+                            stream: streamShapeLocked ? true : streamTest,
                             timeout_seconds: DEFAULT_MODEL_TEST_TIMEOUT_SECONDS,
                             audit_log: !summaryMode,
                         });
@@ -209,13 +226,17 @@ export function ChannelTestDialog({
             }
         }
 
-        // 限并发，避免一次性把上游打爆
-        const LIMIT = 6;
+        // 低并发 2 路 + 随机间隔：像真人一发一发挤进去，别像扫描器一次性把上游打爆。
+        const LIMIT = 2;
+        const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+        const paceMs = () => 250 + Math.floor(Math.random() * 450); // 250–700ms 抖动
         let cursor = 0;
-        const workers = Array.from({ length: Math.min(LIMIT, jobs.length) }, async () => {
+        const workers = Array.from({ length: Math.min(LIMIT, jobs.length) }, async (_v, workerIndex) => {
+            await sleep(workerIndex * paceMs()); // 两路错峰起步，不在同一瞬间齐发
             while (cursor < jobs.length) {
                 const mine = cursor++;
                 await jobs[mine]();
+                if (cursor < jobs.length) await sleep(paceMs()); // 每发之间留间隔
             }
         });
         try {
@@ -319,10 +340,21 @@ export function ChannelTestDialog({
                     )}
 
                     {/* 流/非流 */}
-                    <label className="flex cursor-pointer items-center gap-2 text-sm">
-                        <Switch checked={streamTest} onCheckedChange={setStreamTest} className="scale-90" />
+                    <label className={cn('flex items-center gap-2 text-sm', streamShapeLocked ? 'cursor-not-allowed' : 'cursor-pointer')}>
+                        <Switch
+                            checked={streamShapeLocked || streamTest}
+                            onCheckedChange={setStreamTest}
+                            disabled={streamShapeLocked}
+                            className="scale-90"
+                        />
                         <span>流式优先</span>
-                        <span className="text-xs text-muted-foreground">（4 端点都真开真关；关掉后思考模型可能因非流超时，日志会如实标注）</span>
+                        {streamShapeLocked ? (
+                            <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                                <Lock className="size-3" />codex / claude 恒流式（shape · 与真实流量一致，不可关）
+                            </span>
+                        ) : (
+                            <span className="text-xs text-muted-foreground">（chat / gemini 真开真关；关掉后思考模型可能因非流超时，日志会如实标注）</span>
+                        )}
                     </label>
 
                     {/* 模型多选 */}
@@ -402,17 +434,24 @@ export function ChannelTestDialog({
                                                         <div className={cn('h-full transition-all', barColor)} style={{ width: `${rate}%` }} />
                                                     </div>
                                                 </TableCell>
-                                                <TableCell className="text-xs text-muted-foreground">
+                                                <TableCell className="align-top text-xs text-muted-foreground">
                                                     {s.done < s.total ? (
                                                         <span className="inline-flex items-center gap-1"><Loader2 className="size-3 animate-spin" />{s.done}/{s.total}</span>
                                                     ) : (s.capacity + s.timeout + s.other) === 0 ? (
                                                         <span className="font-semibold text-emerald-600 dark:text-emerald-400">全通过</span>
                                                     ) : (
-                                                        <span className="space-x-2">
-                                                            {s.capacity > 0 && <span className="text-amber-600 dark:text-amber-400">容量满 {s.capacity}</span>}
-                                                            {s.timeout > 0 && <span className="text-destructive">超时 {s.timeout}</span>}
-                                                            {s.other > 0 && <span>其它 {s.other}</span>}
-                                                        </span>
+                                                        <div className="space-y-1">
+                                                            <div className="space-x-2">
+                                                                {s.capacity > 0 && <span className="text-amber-600 dark:text-amber-400">容量满 {s.capacity}</span>}
+                                                                {s.timeout > 0 && <span className="text-destructive">超时 {s.timeout}</span>}
+                                                                {s.other > 0 && <span>其它 {s.other}</span>}
+                                                            </div>
+                                                            {s.sampleError && (
+                                                                <div className="whitespace-pre-wrap break-words text-[10.5px] leading-snug text-muted-foreground/80" title={s.sampleError}>
+                                                                    {s.sampleError}
+                                                                </div>
+                                                            )}
+                                                        </div>
                                                     )}
                                                 </TableCell>
                                             </TableRow>

@@ -208,6 +208,50 @@ func TestRunCanTestSavedChannelDirectlyWithoutGroup(t *testing.T) {
 	}
 }
 
+// A codex (Responses) channel test must force a streaming upstream even when the
+// caller explicitly asks for stream=false — real codex always streams and the relay
+// force-streams codex upstreams, so the test must too (shape lock). Guards the fix for
+// the "真开真关" toggle that could otherwise send an off-shape non-stream request.
+func TestModelTestForcesStreamForCodexEvenWhenClientAsksNonStream(t *testing.T) {
+	ctx := setupModelTestDB(t)
+
+	var seenStream atomic.Value
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		seenStream.Store(payload["stream"] == true)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"OK\"}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":123,\"model\":\"gpt-5.6-sol\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":2,\"output_tokens\":1,\"total_tokens\":3}}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	t.Cleanup(upstream.Close)
+
+	channel := dbmodel.Channel{
+		Name:     "codex-shape-lock",
+		Type:     outbound.OutboundTypeOpenAIResponse,
+		Enabled:  false,
+		BaseUrls: []dbmodel.BaseUrl{{URL: upstream.URL}},
+		Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "test-key"}},
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+
+	noStream := false
+	if _, err := Run(ctx, dbmodel.ModelTestRequest{
+		Model:     "gpt-5.6-sol",
+		ChannelID: channel.ID,
+		Endpoint:  "openai_responses",
+		Stream:    &noStream,
+	}); err != nil {
+		t.Fatalf("run model test: %v", err)
+	}
+	if got, _ := seenStream.Load().(bool); !got {
+		t.Fatal("codex channel test must force stream=true upstream even when client asks stream=false (shape lock)")
+	}
+}
+
 func TestRunAppliesCodexDefaultsWhenResponsesUseChatChannel(t *testing.T) {
 	ctx := setupModelTestDB(t)
 
