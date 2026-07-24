@@ -489,3 +489,62 @@ func TestResponseInboundNonStreamEmptyIDToolCallSynthesizesID(t *testing.T) {
 		t.Fatalf("call_id (%q) must equal the item id (%q) so the tool result pairs next turn", fc.CallID, fc.ID)
 	}
 }
+
+// TestResponseInboundToolCallNameBackfilledFromLaterFrame guards R3's impactful
+// part: an upstream that streams a tool call's real name in a LATER frame (the
+// first fragment's name is empty) must still finalize the function_call with that
+// name, so the codex client can dispatch it. Mirrors chat.go mergeToolCall — first
+// non-empty name, never concatenated. The streamed item id is announced once and
+// cannot change, so only the name (carried on the finalizing output_item.done) is
+// backfilled.
+func TestResponseInboundToolCallNameBackfilledFromLaterFrame(t *testing.T) {
+	inbound := &ResponseInbound{}
+	base := func() *model.InternalLLMResponse {
+		return &model.InternalLLMResponse{ID: "chatcmpl_latename", Model: "glm-4.6", Object: "chat.completion.chunk", Created: 1}
+	}
+	toolChunk := func(tcs ...model.ToolCall) *model.InternalLLMResponse {
+		c := base()
+		c.Choices = []model.Choice{{Index: 0, Delta: &model.Message{Role: "assistant", ToolCalls: tcs}}}
+		return c
+	}
+	tc := func(index int, id, name, args string) model.ToolCall {
+		return model.ToolCall{Index: index, ID: id, Type: "function", Function: model.FunctionCall{Name: name, Arguments: args}}
+	}
+	var raw strings.Builder
+	feed := func(s *model.InternalLLMResponse) {
+		out, err := inbound.TransformStream(context.Background(), s)
+		if err != nil {
+			t.Fatalf("TransformStream: %v", err)
+		}
+		raw.WriteString(string(out))
+	}
+
+	// Frame 1 carries the id but an empty name; the real name arrives in frame 2.
+	feed(toolChunk(tc(0, "call_x", "", `{"city":`)))
+	feed(toolChunk(tc(0, "", "get_weather", `"paris"}`)))
+
+	finishReason := "tool_calls"
+	fin := base()
+	fin.Choices = []model.Choice{{Index: 0, FinishReason: &finishReason}}
+	feed(fin)
+
+	done, _ := inbound.TransformStream(context.Background(), &model.InternalLLMResponse{Object: "[DONE]"})
+	raw.WriteString(string(done))
+
+	events := parseResponsesStreamEvents(t, raw.String())
+	assertResponsesStreamItemLifecycle(t, events)
+
+	var name, args string
+	for _, ev := range events {
+		if ev.Type == "response.output_item.done" && ev.Item != nil && ev.Item.Type == "function_call" {
+			name = ev.Item.Name
+			args = ev.Item.Arguments
+		}
+	}
+	if name != "get_weather" {
+		t.Fatalf("tool name must be backfilled from the later frame, got %q", name)
+	}
+	if args != `{"city":"paris"}` {
+		t.Fatalf("tool arguments corrupted, got %q", args)
+	}
+}

@@ -579,6 +579,17 @@ func (i *ResponseInbound) handleToolCalls(toolCalls []model.ToolCall) [][]byte {
 			i.outputIndex++
 		}
 
+		// Backfill the tool name from a later frame when the first fragment carried
+		// none (some upstreams stream the id first and the name in a following
+		// chunk). Take the first non-empty value and never concatenate — a name is
+		// atomic, not a streamed fragment. Mirrors chat.go mergeToolCall. The
+		// streamed item id was already announced and cannot change, so only the name
+		// (read from the finalizing output_item.done) is backfilled; the codex client
+		// needs it to dispatch the call.
+		if tc.Function.Name != "" && i.toolCalls[toolCallIndex].Function.Name == "" {
+			i.toolCalls[toolCallIndex].Function.Name = tc.Function.Name
+		}
+
 		// Accumulate arguments (custom tool calls carry their freeform input here too)
 		i.toolCalls[toolCallIndex].Function.Arguments += tc.Function.Arguments
 
