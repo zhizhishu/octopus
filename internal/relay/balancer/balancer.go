@@ -30,8 +30,9 @@ type Balancer interface {
 //     same-priority channels using recent health, in-flight + selection
 //     reservations, latency and throughput, with priority still a hard boundary.
 //
-// Legacy stored values (random / weighted / smart) fold into the spread strategy
-// so existing groups keep working without a data migration.
+// The retired random / weighted / smart values were removed; any unknown/legacy value
+// still folds into the spread strategy here as a safety net, and migrate/012 normalizes
+// stored group modes to the two canonical values so the DB stays clean.
 func GetBalancer(mode model.GroupMode) Balancer {
 	switch mode {
 	case model.GroupModeFillFirst:

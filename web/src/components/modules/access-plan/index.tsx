@@ -29,7 +29,7 @@ import {
     useUpdateAccessPlanRouteTargets,
 } from '@/api/endpoints/access-plan';
 import { useChannelList } from '@/api/endpoints/channel';
-import { GroupMode, useGroupList } from '@/api/endpoints/group';
+import { GroupMode, normalizeGroupMode, useGroupList } from '@/api/endpoints/group';
 import { useModelChannelList, useModelList } from '@/api/endpoints/model';
 import { MODE_LABELS, normalizeKey } from '@/components/modules/group/utils';
 import { useAuthStore } from '@/api/endpoints/user';
@@ -1004,7 +1004,7 @@ function PlanFlowCard({ data }: NodeProps<PlanFlowNode>) {
 
 function RequestFlowCard({ data }: NodeProps<RequestFlowNode>) {
     const modeLabel = data.mode !== undefined
-        ? (MODE_LABELS[data.mode] === 'spread'
+        ? (MODE_LABELS[normalizeGroupMode(data.mode)] === 'spread'
             ? accessPlanText('routes.modeSpread')
             : accessPlanText('routes.modeFillFirst'))
         : null;

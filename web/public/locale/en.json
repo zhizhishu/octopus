@@ -726,11 +726,6 @@
             "selectModel": "Model"
         },
         "mode": {
-            "roundRobin": "Round Robin",
-            "random": "Random",
-            "failover": "Failover",
-            "weighted": "Weighted",
-            "smart": "Smart",
             "spread": "Round Robin",
             "fillFirst": "Fill First"
         },

@@ -24,8 +24,8 @@ export enum GroupMode {
 
 /**
  * 产品对外只暴露两种调度模式，二者都做容量感知（实时健康 / 在飞 + 选中占位 /
- * 延迟 / 熔断冷却）。旧的随机/加权/智能值在后端折叠进“轮询”，前端按同样规则归类
- * 显示，无需数据迁移。
+ * 延迟 / 熔断冷却）。已废弃的随机/加权/智能枚举已删除；后端 migrate/012 把库里存量
+ * 老值归一到 spread，normalizeGroupMode 仍对任意值兜底到这两种之一。
  */
 export const GroupModeSpread = GroupMode.RoundRobin; // 轮询：同优先级容量感知均摊
 export const GroupModeFillFirst = GroupMode.Failover; // 优先填充：集中高优先级健康渠道，缓存友好
