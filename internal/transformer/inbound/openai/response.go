@@ -515,9 +515,24 @@ func (i *ResponseInbound) handleToolCalls(toolCalls []model.ToolCall) [][]byte {
 
 		// Initialize tool call tracking if needed
 		if _, ok := i.toolCalls[toolCallIndex]; !ok {
+			// Resolve the id ONCE and store it back on the tracked call so the
+			// call_id and the output item id are the same non-empty value. Some
+			// OpenAI-compatible upstreams stream a tool call whose first fragment
+			// carries an empty id; generating an id but leaving toolCalls[idx].ID
+			// empty made the later argument-delta and the finalizing *.done fall
+			// through to the shared currentItemID, which a sibling tool (or a
+			// following message) has since overwritten — mis-binding the delta/done
+			// to another item's id, i.e. a "delta without an active item" the codex
+			// client drops. Mirrors sub2api, which likewise generates one id and
+			// reuses it for both fields.
+			callID := tc.ID
+			if callID == "" {
+				callID = generateItemID()
+			}
+
 			i.toolCalls[toolCallIndex] = &model.ToolCall{
 				Index: toolCallIndex,
-				ID:    tc.ID,
+				ID:    callID,
 				Type:  tc.Type,
 				Function: model.FunctionCall{
 					Name:      tc.Function.Name,
@@ -525,10 +540,7 @@ func (i *ResponseInbound) handleToolCalls(toolCalls []model.ToolCall) [][]byte {
 				},
 			}
 
-			itemID := tc.ID
-			if itemID == "" {
-				itemID = generateItemID()
-			}
+			itemID := callID
 
 			// A custom (freeform) tool call must be re-announced as a
 			// custom_tool_call item carrying `input`, not a function_call carrying
@@ -541,7 +553,7 @@ func (i *ResponseInbound) handleToolCalls(toolCalls []model.ToolCall) [][]byte {
 					ID:     itemID,
 					Type:   "custom_tool_call",
 					Status: lo.ToPtr("in_progress"),
-					CallID: tc.ID,
+					CallID: callID,
 					Name:   tc.Function.Name,
 					Input:  lo.ToPtr(""),
 				}
@@ -550,7 +562,7 @@ func (i *ResponseInbound) handleToolCalls(toolCalls []model.ToolCall) [][]byte {
 					ID:     itemID,
 					Type:   "function_call",
 					Status: lo.ToPtr("in_progress"),
-					CallID: tc.ID,
+					CallID: callID,
 					Name:   tc.Function.Name,
 				}
 			}

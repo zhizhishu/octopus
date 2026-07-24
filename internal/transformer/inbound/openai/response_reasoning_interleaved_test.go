@@ -1,0 +1,437 @@
+package openai
+
+import (
+	"context"
+	"strings"
+	"testing"
+
+	"github.com/bestruirui/octopus/internal/transformer/model"
+)
+
+// assertResponsesStreamItemLifecycle replays decoded Responses stream events and
+// fails on the "reasoning delta without an active item" family of defects: a
+// reasoning / message / tool sub-event (summary_part.added, *_text.delta,
+// *.done, content_part.added, function_call_arguments.delta, ...) that references
+// an item which is NOT currently open — either never announced by
+// response.output_item.added, or already finalized by response.output_item.done.
+// It also fails if an item is opened twice, or is left unfinalized at stream end.
+//
+// A codex client silently drops (or wedges on) a delta whose item is not active,
+// so holding this invariant across interleaved reasoning/tool turns is exactly
+// what keeps a long multi-turn tool session from breaking. This is the machine
+// check that lets us close the #3 reasoning open item with evidence instead of a
+// flaky live capture.
+func assertResponsesStreamItemLifecycle(t *testing.T, events []ResponsesStreamEvent) {
+	t.Helper()
+	open := map[string]string{} // item_id -> type, currently open (added, not yet done)
+	done := map[string]bool{}   // item_id -> finalized
+
+	requireActive := func(evType, itemID string) {
+		if itemID == "" {
+			t.Fatalf("%s carries an empty item_id", evType)
+		}
+		if done[itemID] {
+			t.Fatalf("%s references item %q after it was finalized (delta without an active item)", evType, itemID)
+		}
+		if _, ok := open[itemID]; !ok {
+			t.Fatalf("%s references item %q that was never opened via output_item.added (delta without an active item)", evType, itemID)
+		}
+	}
+
+	for _, ev := range events {
+		switch ev.Type {
+		case "response.output_item.added":
+			if ev.Item == nil || ev.Item.ID == "" {
+				t.Fatalf("output_item.added missing item/id: %#v", ev)
+			}
+			if _, ok := open[ev.Item.ID]; ok {
+				t.Fatalf("output_item.added re-opens still-open item %q", ev.Item.ID)
+			}
+			if done[ev.Item.ID] {
+				t.Fatalf("output_item.added re-opens already-finalized item %q", ev.Item.ID)
+			}
+			open[ev.Item.ID] = ev.Item.Type
+		case "response.output_item.done":
+			if ev.Item == nil || ev.Item.ID == "" {
+				t.Fatalf("output_item.done missing item/id: %#v", ev)
+			}
+			if _, ok := open[ev.Item.ID]; !ok {
+				t.Fatalf("output_item.done finalizes item %q that is not open", ev.Item.ID)
+			}
+			delete(open, ev.Item.ID)
+			done[ev.Item.ID] = true
+		case "response.reasoning_summary_part.added",
+			"response.reasoning_summary_text.delta",
+			"response.reasoning_summary_text.done",
+			"response.reasoning_summary_part.done",
+			"response.content_part.added",
+			"response.content_part.done",
+			"response.output_text.delta",
+			"response.output_text.done",
+			"response.function_call_arguments.delta",
+			"response.function_call_arguments.done",
+			"response.custom_tool_call_input.delta",
+			"response.custom_tool_call_input.done":
+			if ev.ItemID == nil {
+				t.Fatalf("%s missing item_id: %#v", ev.Type, ev)
+			}
+			requireActive(ev.Type, *ev.ItemID)
+		}
+	}
+
+	for id, typ := range open {
+		t.Fatalf("item %q (type %s) was opened but never finalized by output_item.done", id, typ)
+	}
+}
+
+// TestResponseInboundInterleavedReasoningToolNeverOrphansItems reproduces the
+// codex→claude multi-turn tool scenario #3 flagged: claude interleaves extended
+// thinking with tool calls (think → tool → think → tool) inside one streamed
+// response, each thinking block ending with its own signature_delta. Every
+// reasoning/tool item must open before its deltas and finalize before the next
+// item opens, each reasoning item must round-trip its OWN signature as
+// encrypted_content (not a leaked/shared one), and no delta may reference an
+// inactive item.
+func TestResponseInboundInterleavedReasoningToolNeverOrphansItems(t *testing.T) {
+	inbound := &ResponseInbound{}
+
+	base := func() *model.InternalLLMResponse {
+		return &model.InternalLLMResponse{
+			ID:      "chatcmpl_interleave",
+			Model:   "claude-opus-4-8",
+			Object:  "chat.completion.chunk",
+			Created: 123,
+		}
+	}
+	reasoning := func(text string) *model.InternalLLMResponse {
+		c := base()
+		c.Choices = []model.Choice{{Index: 0, Delta: &model.Message{Role: "assistant", ReasoningContent: ptr(text)}}}
+		return c
+	}
+	signature := func(sig string) *model.InternalLLMResponse {
+		c := base()
+		c.Choices = []model.Choice{{Index: 0, Delta: &model.Message{Role: "assistant", ReasoningSignature: ptr(sig)}}}
+		return c
+	}
+	toolCall := func(index int, id, name, args string) *model.InternalLLMResponse {
+		c := base()
+		c.Choices = []model.Choice{{Index: 0, Delta: &model.Message{Role: "assistant", ToolCalls: []model.ToolCall{{
+			Index:    index,
+			ID:       id,
+			Type:     "function",
+			Function: model.FunctionCall{Name: name, Arguments: args},
+		}}}}}
+		return c
+	}
+
+	var raw strings.Builder
+	feed := func(stream *model.InternalLLMResponse) {
+		out, err := inbound.TransformStream(context.Background(), stream)
+		if err != nil {
+			t.Fatalf("TransformStream: %v", err)
+		}
+		raw.WriteString(string(out))
+	}
+
+	// think1 (+sig1) -> tool A -> think2 (+sig2) -> tool B -> finish(tool_calls)
+	feed(reasoning("let me inspect the repo"))
+	feed(signature("sig-alpha"))
+	feed(toolCall(0, "call_a", "list_dir", `{"path":"."}`))
+	feed(reasoning("now read the entry file"))
+	feed(signature("sig-beta"))
+	feed(toolCall(1, "call_b", "read_file", `{"path":"main.go"}`))
+
+	finishReason := "tool_calls"
+	fin := base()
+	fin.Choices = []model.Choice{{Index: 0, FinishReason: &finishReason}}
+	feed(fin)
+
+	done, err := inbound.TransformStream(context.Background(), &model.InternalLLMResponse{Object: "[DONE]"})
+	if err != nil {
+		t.Fatalf("TransformStream [DONE]: %v", err)
+	}
+	raw.WriteString(string(done))
+
+	events := parseResponsesStreamEvents(t, raw.String())
+
+	// Core invariant: no reasoning/tool delta without an active item.
+	assertResponsesStreamItemLifecycle(t, events)
+
+	// Non-vacuous guard: the stream must actually carry the interleaved shape, not
+	// be silently empty (which would satisfy the lifecycle check for the wrong
+	// reason).
+	var reasoningDeltas, reasoningDones, toolDones int
+	var reasoningSigs []string
+	for _, ev := range events {
+		switch ev.Type {
+		case "response.reasoning_summary_text.delta":
+			reasoningDeltas++
+		case "response.output_item.done":
+			if ev.Item == nil {
+				continue
+			}
+			switch ev.Item.Type {
+			case "reasoning":
+				reasoningDones++
+				sig := ""
+				if ev.Item.EncryptedContent != nil {
+					sig = *ev.Item.EncryptedContent
+				}
+				reasoningSigs = append(reasoningSigs, sig)
+			case "function_call":
+				toolDones++
+			}
+		}
+	}
+	if reasoningDeltas != 2 {
+		t.Fatalf("expected 2 reasoning deltas (one per thinking block), got %d", reasoningDeltas)
+	}
+	if reasoningDones != 2 {
+		t.Fatalf("expected 2 finalized reasoning items, got %d", reasoningDones)
+	}
+	if toolDones != 2 {
+		t.Fatalf("expected 2 finalized function_call items, got %d", toolDones)
+	}
+	// Each reasoning item round-trips its OWN signature — not a shared/leaked one.
+	if len(reasoningSigs) != 2 || reasoningSigs[0] != "sig-alpha" || reasoningSigs[1] != "sig-beta" {
+		t.Fatalf("reasoning items must each carry their own encrypted_content, got %#v", reasoningSigs)
+	}
+}
+
+// TestResponseInboundReasoningAfterTextNeverOrphansItems covers an upstream that
+// toggles text and reasoning (some non-claude reasoners emit answer, then more
+// thinking, then answer). The message item must close before the new reasoning
+// item opens, and neither may emit a delta after being finalized.
+func TestResponseInboundReasoningAfterTextNeverOrphansItems(t *testing.T) {
+	inbound := &ResponseInbound{}
+	base := func() *model.InternalLLMResponse {
+		return &model.InternalLLMResponse{ID: "chatcmpl_toggle", Model: "glm-4.6", Object: "chat.completion.chunk", Created: 1}
+	}
+	text := func(s string) *model.InternalLLMResponse {
+		c := base()
+		c.Choices = []model.Choice{{Index: 0, Delta: &model.Message{Role: "assistant", Content: model.MessageContent{Content: ptr(s)}}}}
+		return c
+	}
+	reasoning := func(s string) *model.InternalLLMResponse {
+		c := base()
+		c.Choices = []model.Choice{{Index: 0, Delta: &model.Message{Role: "assistant", ReasoningContent: ptr(s)}}}
+		return c
+	}
+	var raw strings.Builder
+	feed := func(stream *model.InternalLLMResponse) {
+		out, err := inbound.TransformStream(context.Background(), stream)
+		if err != nil {
+			t.Fatalf("TransformStream: %v", err)
+		}
+		raw.WriteString(string(out))
+	}
+
+	feed(reasoning("first thought"))
+	feed(text("partial answer "))
+	feed(reasoning("second thought"))
+	feed(text("final answer"))
+
+	finishReason := "stop"
+	fin := base()
+	fin.Choices = []model.Choice{{Index: 0, FinishReason: &finishReason}}
+	feed(fin)
+
+	done, _ := inbound.TransformStream(context.Background(), &model.InternalLLMResponse{Object: "[DONE]"})
+	raw.WriteString(string(done))
+
+	events := parseResponsesStreamEvents(t, raw.String())
+	assertResponsesStreamItemLifecycle(t, events)
+
+	var textDeltas int
+	for _, ev := range events {
+		if ev.Type == "response.output_text.delta" {
+			textDeltas++
+		}
+	}
+	if textDeltas != 2 {
+		t.Fatalf("expected 2 text deltas, got %d", textDeltas)
+	}
+}
+
+// TestResponseInboundReasoningOnlyFinalizesItem covers a reasoning-only stream
+// (thinking with no following text or tool call, e.g. a turn that ends right
+// after thinking). The reasoning item opened for the deltas must be finalized at
+// the finish boundary, never left dangling.
+func TestResponseInboundReasoningOnlyFinalizesItem(t *testing.T) {
+	inbound := &ResponseInbound{}
+	base := func() *model.InternalLLMResponse {
+		return &model.InternalLLMResponse{ID: "chatcmpl_ro", Model: "claude-opus-4-8", Object: "chat.completion.chunk", Created: 1}
+	}
+	var raw strings.Builder
+	feed := func(s *model.InternalLLMResponse) {
+		out, err := inbound.TransformStream(context.Background(), s)
+		if err != nil {
+			t.Fatalf("TransformStream: %v", err)
+		}
+		raw.WriteString(string(out))
+	}
+
+	c1 := base()
+	c1.Choices = []model.Choice{{Index: 0, Delta: &model.Message{Role: "assistant", ReasoningContent: ptr("only thinking")}}}
+	feed(c1)
+
+	finishReason := "stop"
+	fin := base()
+	fin.Choices = []model.Choice{{Index: 0, FinishReason: &finishReason}}
+	feed(fin)
+
+	done, _ := inbound.TransformStream(context.Background(), &model.InternalLLMResponse{Object: "[DONE]"})
+	raw.WriteString(string(done))
+
+	events := parseResponsesStreamEvents(t, raw.String())
+	assertResponsesStreamItemLifecycle(t, events)
+
+	var reasoningDones int
+	for _, ev := range events {
+		if ev.Type == "response.output_item.done" && ev.Item != nil && ev.Item.Type == "reasoning" {
+			reasoningDones++
+		}
+	}
+	if reasoningDones != 1 {
+		t.Fatalf("expected the reasoning-only item to be finalized once, got %d", reasoningDones)
+	}
+}
+
+// TestResponseInboundEmptyIDParallelToolCallsNeverOrphan covers upstreams that
+// stream a tool call whose FIRST fragment carries an empty id (some
+// OpenAI-compatible upstreams send arguments before, or without, an id). Two
+// such parallel calls must each finalize as their OWN distinct item. Before the
+// fix the generated id lived only in the shared currentItemID, so the second
+// tool overwrote the first's fallback id: the first tool's delta/done mis-bound
+// to the second's (already-finalized) id — a "delta without an active item" —
+// and the first item was left orphaned.
+func TestResponseInboundEmptyIDParallelToolCallsNeverOrphan(t *testing.T) {
+	inbound := &ResponseInbound{}
+	base := func() *model.InternalLLMResponse {
+		return &model.InternalLLMResponse{ID: "chatcmpl_emptyid", Model: "glm-4.6", Object: "chat.completion.chunk", Created: 1}
+	}
+	toolChunk := func(tcs ...model.ToolCall) *model.InternalLLMResponse {
+		c := base()
+		c.Choices = []model.Choice{{Index: 0, Delta: &model.Message{Role: "assistant", ToolCalls: tcs}}}
+		return c
+	}
+	tc := func(index int, id, name, args string) model.ToolCall {
+		return model.ToolCall{Index: index, ID: id, Type: "function", Function: model.FunctionCall{Name: name, Arguments: args}}
+	}
+	var raw strings.Builder
+	feed := func(s *model.InternalLLMResponse) {
+		out, err := inbound.TransformStream(context.Background(), s)
+		if err != nil {
+			t.Fatalf("TransformStream: %v", err)
+		}
+		raw.WriteString(string(out))
+	}
+
+	// Both tools' first appearance carries an empty id; argument fragments interleave.
+	feed(toolChunk(tc(0, "", "list_dir", `{"path":`)))
+	feed(toolChunk(tc(1, "", "read_file", `{"path":`)))
+	feed(toolChunk(tc(0, "", "", `"."}`)))
+	feed(toolChunk(tc(1, "", "", `"main.go"}`)))
+
+	finishReason := "tool_calls"
+	fin := base()
+	fin.Choices = []model.Choice{{Index: 0, FinishReason: &finishReason}}
+	feed(fin)
+
+	done, _ := inbound.TransformStream(context.Background(), &model.InternalLLMResponse{Object: "[DONE]"})
+	raw.WriteString(string(done))
+
+	events := parseResponsesStreamEvents(t, raw.String())
+	assertResponsesStreamItemLifecycle(t, events)
+
+	// Two distinct tool items must finalize, each with its full arguments intact.
+	itemOutputIndex := map[string]int{}
+	finalArgs := map[string]string{}
+	toolDones := 0
+	for _, ev := range events {
+		switch ev.Type {
+		case "response.output_item.added", "response.output_item.done":
+			if ev.Item == nil || ev.Item.Type != "function_call" {
+				continue
+			}
+			if ev.OutputIndex != nil {
+				assertOutputIndexAgrees(t, itemOutputIndex, ev.Item.ID, *ev.OutputIndex)
+			}
+			if ev.Type == "response.output_item.done" {
+				toolDones++
+				finalArgs[ev.Item.ID] = ev.Item.Arguments
+			}
+		}
+	}
+	if toolDones != 2 {
+		t.Fatalf("expected 2 finalized function_call items, got %d", toolDones)
+	}
+	if len(finalArgs) != 2 {
+		t.Fatalf("expected 2 distinct finalized tool item ids, got %d: %#v", len(finalArgs), finalArgs)
+	}
+	for id, args := range finalArgs {
+		if args != `{"path":"."}` && args != `{"path":"main.go"}` {
+			t.Fatalf("tool item %q finalized with corrupted arguments %q", id, args)
+		}
+	}
+}
+
+// TestResponseInboundEmptyIDToolThenTextNeverOrphans covers an empty-id tool call
+// followed by a text delta. handleTextContent closes an open reasoning item but
+// NOT an open tool item, so the tool's only correct id lived in currentItemID —
+// which the message item then overwrote. At finish the tool's *.done bound to the
+// already-finalized message id (without an active item), orphaning the tool.
+func TestResponseInboundEmptyIDToolThenTextNeverOrphans(t *testing.T) {
+	inbound := &ResponseInbound{}
+	base := func() *model.InternalLLMResponse {
+		return &model.InternalLLMResponse{ID: "chatcmpl_emptyid_text", Model: "glm-4.6", Object: "chat.completion.chunk", Created: 1}
+	}
+	var raw strings.Builder
+	feed := func(s *model.InternalLLMResponse) {
+		out, err := inbound.TransformStream(context.Background(), s)
+		if err != nil {
+			t.Fatalf("TransformStream: %v", err)
+		}
+		raw.WriteString(string(out))
+	}
+
+	toolChunk := base()
+	toolChunk.Choices = []model.Choice{{Index: 0, Delta: &model.Message{Role: "assistant", ToolCalls: []model.ToolCall{{
+		Index: 0, ID: "", Type: "function", Function: model.FunctionCall{Name: "shell", Arguments: `{"cmd":"ls"}`},
+	}}}}}
+	feed(toolChunk)
+
+	textChunk := base()
+	textChunk.Choices = []model.Choice{{Index: 0, Delta: &model.Message{Role: "assistant", Content: model.MessageContent{Content: ptr("done looking")}}}}
+	feed(textChunk)
+
+	finishReason := "tool_calls"
+	fin := base()
+	fin.Choices = []model.Choice{{Index: 0, FinishReason: &finishReason}}
+	feed(fin)
+
+	done, _ := inbound.TransformStream(context.Background(), &model.InternalLLMResponse{Object: "[DONE]"})
+	raw.WriteString(string(done))
+
+	events := parseResponsesStreamEvents(t, raw.String())
+	assertResponsesStreamItemLifecycle(t, events)
+
+	toolDones, messageDones := 0, 0
+	for _, ev := range events {
+		if ev.Type != "response.output_item.done" || ev.Item == nil {
+			continue
+		}
+		switch ev.Item.Type {
+		case "function_call":
+			toolDones++
+		case "message":
+			messageDones++
+		}
+	}
+	if toolDones != 1 {
+		t.Fatalf("expected the tool item to finalize exactly once as its own item, got %d", toolDones)
+	}
+	if messageDones != 1 {
+		t.Fatalf("expected the message item to finalize once, got %d", messageDones)
+	}
+}
