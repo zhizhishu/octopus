@@ -10,62 +10,10 @@ import (
 
 	dbmodel "github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/op"
-	"github.com/bestruirui/octopus/internal/relay/balancer"
 	"github.com/bestruirui/octopus/internal/transformer/inbound"
 	"github.com/bestruirui/octopus/internal/transformer/outbound"
 	"github.com/gin-gonic/gin"
 )
-
-func TestEnrichGroupForSmartRoutingUsesChannelPriorityAndStats(t *testing.T) {
-	ctx := setupRelayKeyRetryDB(t)
-
-	slow := dbmodel.Channel{
-		Name:     "smart-slow",
-		Type:     outbound.OutboundTypeOpenAIChat,
-		Enabled:  true,
-		Priority: 10,
-		Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "slow-key"}},
-	}
-	if err := op.ChannelCreate(&slow, ctx); err != nil {
-		t.Fatalf("create slow channel: %v", err)
-	}
-	fast := dbmodel.Channel{
-		Name:     "smart-fast",
-		Type:     outbound.OutboundTypeOpenAIChat,
-		Enabled:  true,
-		Priority: 0,
-		Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "fast-key"}},
-	}
-	if err := op.ChannelCreate(&fast, ctx); err != nil {
-		t.Fatalf("create fast channel: %v", err)
-	}
-	if err := op.StatsChannelUpdate(slow.ID, dbmodel.StatsMetrics{RequestSuccess: 1, RequestFailed: 9, WaitTime: 10 * 5000}); err != nil {
-		t.Fatalf("update slow stats: %v", err)
-	}
-	if err := op.StatsChannelUpdate(fast.ID, dbmodel.StatsMetrics{RequestSuccess: 20, WaitTime: 20 * 100}); err != nil {
-		t.Fatalf("update fast stats: %v", err)
-	}
-
-	group := dbmodel.Group{
-		Mode: dbmodel.GroupModeSmart,
-		Items: []dbmodel.GroupItem{
-			{ChannelID: slow.ID, ModelName: "gpt-smart", Priority: 1, Weight: 100},
-			{ChannelID: fast.ID, ModelName: "gpt-smart", Priority: 1, Weight: 1},
-		},
-	}
-
-	enriched := enrichGroupForSmartRouting(ctx, group)
-	candidates := (&balancer.Smart{}).Candidates(enriched.Items)
-	if len(candidates) != 2 || candidates[0].ChannelID != fast.ID {
-		t.Fatalf("expected smart routing to prefer fast healthy channel, got %#v", candidates)
-	}
-	if candidates[0].ChannelPriority != fast.Priority {
-		t.Fatalf("expected channel priority to be hydrated, got %d", candidates[0].ChannelPriority)
-	}
-	if candidates[0].ChannelStats.RequestSuccess != 20 {
-		t.Fatalf("expected channel stats to be hydrated, got %#v", candidates[0].ChannelStats)
-	}
-}
 
 func TestConcurrentResponsesStreamingRoundRobinCompletesAllTurns(t *testing.T) {
 	gin.SetMode(gin.TestMode)

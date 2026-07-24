@@ -1231,6 +1231,9 @@ func (ra *relayAttempt) applyTransformOptions() {
 	// previous_response_id, which Anthropic does not support. Replay the prior
 	// turn's history into messages so multi-turn conversations continue.
 	ra.bridgeResponsesHistoryForAnthropic()
+	// A codex CLI continuation omits its tools (relying on previous_response_id);
+	// Anthropic is stateless, so restore the codex tool set or the agent stalls.
+	ra.restoreCodexToolsForAnthropic()
 
 	if ra.channel.AnthropicContext1M {
 		ra.internalRequest.TransformOptions.AnthropicOneMillionBeta = true

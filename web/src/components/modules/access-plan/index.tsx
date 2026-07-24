@@ -1202,8 +1202,13 @@ function buildRouteFlow(
                 type: 'default',
                 style: { stroke: 'var(--primary)', strokeWidth: 1.5, strokeOpacity: 0.5 },
             });
+            // 优先级只在「优先填充(Failover)」模式下才是真正的选路顺序；轮询(Spread)模式里它
+            // 只是拖拽序号、不参与路由（见 balancer.go Spread 语义：只有 ChannelPriority 是硬边界），
+            // 故一律并列显示，别把死数字画成假分档（存量老渠道序号各异 → 画布误显 P1-P4 的根因）。
+            const rowMode = groupModeByName.get(normalizeKey(row.requestModel));
+            const isFillFirstMode = rowMode !== undefined && MODE_LABELS[rowMode] === 'fillFirst';
             const prioritySet = new Set(row.targets.map((tgt) => tgt.priority || 0));
-            const showPriority = prioritySet.size > 1;
+            const showPriority = isFillFirstMode && prioritySet.size > 1;
             const startY = rowY + (rowH - targetsH) / 2;
             row.targets.forEach((target, targetIndex) => {
                 const tgtId = `tgt:${reqId}:${target.id ?? targetIndex}`;

@@ -667,6 +667,48 @@ func (ra *relayAttempt) bridgeResponsesHistoryForAnthropic() {
 	ra.applyPlainResponsesCodexHistoryForPreviousResponseID(*req.PreviousResponseID)
 }
 
+// restoreCodexToolsForAnthropic re-attaches the codex tool set when a codex CLI
+// continuation reaches an Anthropic channel with no tools. The codex CLI omits the
+// `tools` array on continuation turns (it relies on previous_response_id, which a
+// real codex upstream would remember); Anthropic is stateless, so without this the
+// mapped Claude model loses its tools mid-conversation and stops calling them — it
+// narrates ("let me look at ...") instead of acting and the agent stalls. This
+// mirrors ensureCodexAgentContext's tool restoration on the codex→codex path
+// (prepareCodexRequestShape, which never runs for a non-Responses upstream), but is
+// scoped to codex clients only so a non-codex responses client (e.g. Cursor)
+// targeting Anthropic is left untouched — its tools differ from the codex set.
+func (ra *relayAttempt) restoreCodexToolsForAnthropic() {
+	if ra == nil || ra.internalRequest == nil || ra.channel == nil {
+		return
+	}
+	if ra.inboundType != inbound.InboundTypeOpenAIResponse || ra.channel.Type != outbound.OutboundTypeAnthropic {
+		return
+	}
+	if !ra.inboundLooksLikeCodexClient() {
+		return
+	}
+	req := ra.internalRequest
+	if len(req.Tools) > 0 || len(req.ResponsesToolsRaw) > 0 {
+		return
+	}
+	// Only a continuation drops tools — previous_response_id is set, or a prior
+	// turn's tool output is already replayed into messages. A genuine first turn
+	// carries its own tools, so leave a real no-tools request alone.
+	if (req.PreviousResponseID == nil || strings.TrimSpace(*req.PreviousResponseID) == "") &&
+		!responsesMessagesContainToolOutput(req.Messages) {
+		return
+	}
+	req.Tools = defaultCodexTools()
+	if req.ToolChoice == nil {
+		choice := "auto"
+		req.ToolChoice = &transformerModel.ToolChoice{ToolChoice: &choice}
+	}
+	if req.ParallelToolCalls == nil {
+		parallel := false
+		req.ParallelToolCalls = &parallel
+	}
+}
+
 func (ra *relayAttempt) shouldBridgePlainResponsesCodexHistory() bool {
 	return ra != nil &&
 		ra.internalRequest != nil &&

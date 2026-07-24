@@ -71,15 +71,6 @@ func ChannelProxyInfoFor(channel *model.Channel) (ChannelProxyInfo, error) {
 	}, nil
 }
 
-// ChannelProxyDescription returns a redacted, user-facing proxy description.
-func ChannelProxyDescription(channel *model.Channel) (string, error) {
-	info, err := ChannelProxyInfoFor(channel)
-	if err != nil {
-		return "", err
-	}
-	return info.Description, nil
-}
-
 // CheckChannelProxyConnectivity verifies that the configured HTTP/SOCKS proxy
 // can establish a request to the channel base URL. Any HTTP status from the
 // target counts as connectivity success; provider/API validity is tested by the

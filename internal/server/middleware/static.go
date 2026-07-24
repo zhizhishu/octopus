@@ -29,7 +29,16 @@ func static(urlPrefix string, fileSystem http.FileSystem) gin.HandlerFunc {
 			return
 		}
 		if _, err := fileSystem.Open(c.Request.URL.Path); err == nil {
-			c.Header("Cache-Control", "public, max-age=31536000, immutable")
+			// 内容哈希过的构建产物（Next.js `/_next/static/*`）文件名随每次构建变，
+			// 可安全长缓存 immutable；其余（index.html / HTML / 未哈希资源）必须
+			// no-cache 每次重验——否则浏览器把 index.html 也当 immutable 死缓存一年、
+			// 一直加载旧 bundle，部署后“拉了也不生效”（配 http.FileServer 的
+			// ETag/If-Modified-Since 走 304，重验开销极小）。
+			if strings.HasPrefix(c.Request.URL.Path, "/_next/static/") {
+				c.Header("Cache-Control", "public, max-age=31536000, immutable")
+			} else {
+				c.Header("Cache-Control", "no-cache")
+			}
 			fileserver.ServeHTTP(c.Writer, c.Request)
 			c.Abort()
 		}
