@@ -17,12 +17,9 @@ import (
 // ResponseInbound implements the Inbound interface for OpenAI Responses API.
 type ResponseInbound struct {
 	// State tracking
-	hasResponseCreated      bool
-	hasMessageItemStarted   bool
-	hasReasoningItemStarted bool
-	hasContentPartStarted   bool
-	hasFinished             bool
-	responseCompleted       bool
+	hasResponseCreated bool
+	hasFinished        bool
+	responseCompleted  bool
 
 	// Response metadata
 	responseID   string
@@ -30,34 +27,60 @@ type ResponseInbound struct {
 	createdAt    int64
 	finishReason string
 
-	// Content tracking
-	outputIndex    int
-	contentIndex   int
 	sequenceNumber int
-	currentItemID  string
 
-	// Content accumulation
-	accumulatedText      strings.Builder
+	// Per-type output-item slots. Each content type (reasoning / message / tool)
+	// owns its OWN item id + output_index and finalizes independently: there is no
+	// shared "current item" a later type could clobber, and opening one type never
+	// force-closes an unrelated type. Mirrors new-api's ChatToResponsesStreamState
+	// and sub2api's ChatCompletionsToResponsesStreamState, both immune to the "delta
+	// without an active item" family (empty tool id; reasoning interleaved with a
+	// still-open tool). reasoning/message re-open per contiguous run (a claude turn
+	// interleaves several thinking blocks, each carrying its own signature); parallel
+	// tool items stay open together and all close at the finish boundary.
+	//
+	// nextOutputIndex hands out sequential output_index values in the order items are
+	// first opened (see allocOutputIndex).
+	nextOutputIndex int
+
+	// reasoning slot — empty id means no reasoning item is currently open.
+	reasoningItemID      string
+	reasoningOutputIdx   int
 	accumulatedReasoning strings.Builder
 	// reasoningSignature holds claude's thinking.signature (delivered by the anthropic outbound
 	// as a signature_delta -> Delta.ReasoningSignature chunk) so closeReasoningItem can surface
 	// it back to the codex client as reasoning.encrypted_content, letting the next turn replay it
-	// upstream. Empty when the upstream sent no signature.
+	// upstream. Empty when the upstream sent no signature. Reset per reasoning item so each
+	// interleaved thinking block round-trips its OWN signature, never a leaked sibling one.
 	reasoningSignature string
 
-	// Tool call tracking
+	// message slot — empty id means no message item is currently open.
+	messageItemID    string
+	messageOutputIdx int
+	contentPartOpen  bool
+	accumulatedText  strings.Builder
+
+	// Tool call slots. toolCallItemID is the streaming lifecycle handle: announced
+	// once on output_item.added, immutable, referenced by every delta/done. The
+	// call_id (the semantic identity the codex client pairs the tool result on next
+	// turn) is tracked separately on toolCalls[idx].ID, so a real upstream id arriving
+	// in a LATER frame updates the pairing key without invalidating the already
+	// announced item id. Mirrors sub2api's split of ToolItemIDs vs ToolCalls[idx].ID.
 	toolCalls           map[int]*model.ToolCall
 	toolCallItemStarted map[int]bool
+	toolCallItemID      map[int]string
 	toolCallOutputIndex map[int]int
 
-	// Finalized output items (message / reasoning / function_call / image),
-	// accumulated as each response.output_item.done is emitted, so the terminal
-	// response.completed event can carry the full output array. The OpenAI Responses
-	// API requires response.completed.response.output to hold the final items; SDK
-	// clients (and Cherry Studio) read it to get the result. Streaming used to send
-	// output:[] there, so those clients saw zero function_calls and stopped after a
-	// tool call instead of executing it.
-	completedItems []ResponsesItem
+	// Finalized output items keyed by output_index, captured as each
+	// response.output_item.done is emitted, so the terminal response.completed event
+	// can carry the full output array. The OpenAI Responses API requires
+	// response.completed.response.output to hold the final items; SDK clients (and
+	// Cherry Studio) read it to get the result. Streaming used to send output:[]
+	// there, so those clients saw zero function_calls and stopped after a tool call
+	// instead of executing it. Keyed (not appended) because items now finalize out of
+	// index order — a message can close at the finish boundary after a later reasoning
+	// item already closed — and finalOutputItems must emit them in output_index order.
+	completedItems map[int]ResponsesItem
 
 	// Usage tracking
 	usage *model.Usage
@@ -66,6 +89,15 @@ type ResponseInbound struct {
 	streamChunks []*model.InternalLLMResponse
 	// storedResponse stores the non-stream response
 	storedResponse *model.InternalLLMResponse
+}
+
+// allocOutputIndex returns the next output_index and records that an item claimed
+// it, so slots opened in interleaved order still get monotonically increasing,
+// non-colliding indexes.
+func (i *ResponseInbound) allocOutputIndex() int {
+	idx := i.nextOutputIndex
+	i.nextOutputIndex++
+	return idx
 }
 
 func (i *ResponseInbound) TransformRequest(ctx context.Context, body []byte) (*model.InternalLLMRequest, error) {
@@ -127,7 +159,9 @@ func (i *ResponseInbound) TransformStream(ctx context.Context, stream *model.Int
 	if i.toolCalls == nil {
 		i.toolCalls = make(map[int]*model.ToolCall)
 		i.toolCallItemStarted = make(map[int]bool)
+		i.toolCallItemID = make(map[int]string)
 		i.toolCallOutputIndex = make(map[int]int)
+		i.completedItems = make(map[int]ResponsesItem)
 	}
 
 	// Update metadata from chunk
@@ -175,35 +209,46 @@ func (i *ResponseInbound) TransformStream(ctx context.Context, stream *model.Int
 	if len(stream.Choices) > 0 {
 		choice := stream.Choices[0]
 
-		// Handle reasoning content delta.
-		// Use GetReasoningContent so upstreams that emit the `reasoning` field
-		// (OpenRouter/Ollama ...) instead of `reasoning_content` are not dropped.
-		if choice.Delta != nil {
-			if reasoning := choice.Delta.GetReasoningContent(); reasoning != "" {
-				events = append(events, i.handleReasoningContent(lo.ToPtr(reasoning))...)
+		// Ignore any content that arrives AFTER the finish boundary already finalized
+		// every open item: a late reasoning/text/tool fragment (some upstreams emit a
+		// stray fragment past finish_reason) would emit a delta against an item that
+		// closeAllOpenItems already sent output_item.done for — a "delta without an
+		// active item". The model signalled completion; the terminal response.completed
+		// / usage handling below still runs.
+		if !i.hasFinished {
+			// Handle reasoning content delta.
+			// Use GetReasoningContent so upstreams that emit the `reasoning` field
+			// (OpenRouter/Ollama ...) instead of `reasoning_content` are not dropped.
+			if choice.Delta != nil {
+				if reasoning := choice.Delta.GetReasoningContent(); reasoning != "" {
+					events = append(events, i.handleReasoningContent(lo.ToPtr(reasoning))...)
+				}
+				// Capture claude's thinking signature (arrives in its own anthropic signature_delta
+				// chunk, after the reasoning text) so closeReasoningItem can emit it as
+				// reasoning.encrypted_content. Without this the signature is lost and the next codex
+				// turn sends an unsigned thinking block Anthropic 400s on. Gate on an OPEN reasoning
+				// item: a signature arriving after the run already closed has no item to belong to and
+				// would otherwise leak onto the NEXT reasoning item's encrypted_content, breaking the
+				// "each thinking block round-trips its OWN signature" guarantee.
+				if i.reasoningItemID != "" && choice.Delta.ReasoningSignature != nil && *choice.Delta.ReasoningSignature != "" {
+					i.reasoningSignature = *choice.Delta.ReasoningSignature
+				}
 			}
-			// Capture claude's thinking signature (arrives in its own anthropic signature_delta
-			// chunk, after the reasoning text) so closeReasoningItem can emit it as
-			// reasoning.encrypted_content. Without this the signature is lost and the next codex
-			// turn sends an unsigned thinking block Anthropic 400s on.
-			if choice.Delta.ReasoningSignature != nil && *choice.Delta.ReasoningSignature != "" {
-				i.reasoningSignature = *choice.Delta.ReasoningSignature
+
+			// Handle text content delta
+			if choice.Delta != nil && choice.Delta.Content.Content != nil && *choice.Delta.Content.Content != "" {
+				events = append(events, i.handleTextContent(choice.Delta.Content.Content)...)
 			}
-		}
 
-		// Handle text content delta
-		if choice.Delta != nil && choice.Delta.Content.Content != nil && *choice.Delta.Content.Content != "" {
-			events = append(events, i.handleTextContent(choice.Delta.Content.Content)...)
-		}
+			// Handle image content delta produced by canonical Images API bridging.
+			if choice.Delta != nil && len(choice.Delta.Content.MultipleContent) > 0 {
+				events = append(events, i.handleImageContent(choice.Delta.Content.MultipleContent)...)
+			}
 
-		// Handle image content delta produced by canonical Images API bridging.
-		if choice.Delta != nil && len(choice.Delta.Content.MultipleContent) > 0 {
-			events = append(events, i.handleImageContent(choice.Delta.Content.MultipleContent)...)
-		}
-
-		// Handle tool calls
-		if choice.Delta != nil && len(choice.Delta.ToolCalls) > 0 {
-			events = append(events, i.handleToolCalls(choice.Delta.ToolCalls)...)
+			// Handle tool calls
+			if choice.Delta != nil && len(choice.Delta.ToolCalls) > 0 {
+				events = append(events, i.handleToolCalls(choice.Delta.ToolCalls)...)
+			}
 		}
 
 		// Handle finish reason
@@ -211,9 +256,9 @@ func (i *ResponseInbound) TransformStream(ctx context.Context, stream *model.Int
 			i.hasFinished = true
 			i.finishReason = strings.TrimSpace(*choice.FinishReason)
 
-			// Close any open content parts and output items
-			events = append(events, i.closeCurrentContentPart()...)
-			events = append(events, i.closeCurrentOutputItem()...)
+			// Finalize every still-open item (reasoning / message / parallel tools)
+			// at the finish boundary — the unified "close at the end".
+			events = append(events, i.closeAllOpenItems()...)
 		}
 	}
 
@@ -260,7 +305,7 @@ func (i *ResponseInbound) completeResponseEvents() [][]byte {
 	}
 
 	i.responseCompleted = true
-	events := i.closeCurrentOutputItem()
+	events := i.closeAllOpenItems()
 
 	status, eventType := i.terminalStatusAndEvent()
 	response := &ResponsesResponse{
@@ -281,14 +326,25 @@ func (i *ResponseInbound) completeResponseEvents() [][]byte {
 	return events
 }
 
-// finalOutputItems returns the accumulated finalized output items for the terminal
-// response.completed event, or an empty (non-nil) slice so it serializes as [] not
-// null when there is genuinely no output.
+// finalOutputItems returns the finalized output items for the terminal
+// response.completed event in output_index order, or an empty (non-nil) slice so
+// it serializes as [] not null when there is genuinely no output. Items are keyed
+// by output_index because they no longer finalize in index order (a message can
+// close at the finish boundary after a later reasoning item already closed).
 func (i *ResponseInbound) finalOutputItems() []ResponsesItem {
 	if len(i.completedItems) == 0 {
 		return []ResponsesItem{}
 	}
-	return i.completedItems
+	indexes := make([]int, 0, len(i.completedItems))
+	for idx := range i.completedItems {
+		indexes = append(indexes, idx)
+	}
+	sort.Ints(indexes)
+	items := make([]ResponsesItem, 0, len(indexes))
+	for _, idx := range indexes {
+		items = append(items, i.completedItems[idx])
+	}
+	return items
 }
 
 func (i *ResponseInbound) terminalStatusAndEvent() (string, string) {
@@ -324,12 +380,16 @@ func (i *ResponseInbound) enqueueEvent(ev *ResponsesStreamEvent) []byte {
 	i.sequenceNumber++
 
 	// Single choke point: every finalized output item (message/reasoning/function_call
-	// /image) flows through a response.output_item.done event. Capture it so the
-	// terminal response.completed carries the full output array instead of []. Without
-	// this, a client that reconstructs the result from response.completed.output sees
-	// no function_calls and stops after the first tool call.
-	if ev.Type == "response.output_item.done" && ev.Item != nil {
-		i.completedItems = append(i.completedItems, *ev.Item)
+	// /image) flows through a response.output_item.done event. Capture it keyed by its
+	// output_index so the terminal response.completed carries the full output array (in
+	// index order) instead of []. Without this, a client that reconstructs the result
+	// from response.completed.output sees no function_calls and stops after the first
+	// tool call.
+	if ev.Type == "response.output_item.done" && ev.Item != nil && ev.OutputIndex != nil {
+		if i.completedItems == nil {
+			i.completedItems = make(map[int]ResponsesItem)
+		}
+		i.completedItems[*ev.OutputIndex] = *ev.Item
 	}
 
 	data, err := json.Marshal(ev)
@@ -343,16 +403,18 @@ func (i *ResponseInbound) enqueueEvent(ev *ResponsesStreamEvent) []byte {
 func (i *ResponseInbound) handleReasoningContent(content *string) [][]byte {
 	var events [][]byte
 
-	// Start reasoning output item if not started
-	if !i.hasReasoningItemStarted {
-		// Close any previous output item
-		events = append(events, i.closeCurrentOutputItem()...)
-
-		i.hasReasoningItemStarted = true
-		i.currentItemID = generateItemID()
+	// Open a fresh reasoning item for this contiguous thinking run if one is not
+	// already open. A new run (after an intervening message/tool closed the previous
+	// reasoning item) gets its OWN item id + output_index, so its deltas, its summary,
+	// and its own thinking signature never bind to a sibling. Opening reasoning never
+	// closes the message item or any tool item.
+	if i.reasoningItemID == "" {
+		i.reasoningItemID = generateItemID()
+		i.reasoningOutputIdx = i.allocOutputIndex()
+		itemID := i.reasoningItemID
 
 		item := &ResponsesItem{
-			ID:      i.currentItemID,
+			ID:      itemID,
 			Type:    "reasoning",
 			Status:  lo.ToPtr("in_progress"),
 			Summary: []ResponsesReasoningSummary{},
@@ -360,15 +422,15 @@ func (i *ResponseInbound) handleReasoningContent(content *string) [][]byte {
 
 		events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
 			Type:        "response.output_item.added",
-			OutputIndex: lo.ToPtr(i.outputIndex),
+			OutputIndex: lo.ToPtr(i.reasoningOutputIdx),
 			Item:        item,
 		}))
 
 		// Emit reasoning_summary_part.added
 		events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
 			Type:         "response.reasoning_summary_part.added",
-			ItemID:       &i.currentItemID,
-			OutputIndex:  lo.ToPtr(i.outputIndex),
+			ItemID:       &itemID,
+			OutputIndex:  lo.ToPtr(i.reasoningOutputIdx),
 			SummaryIndex: lo.ToPtr(0),
 			Part:         &ResponsesContentPart{Type: "summary_text"},
 		}))
@@ -378,10 +440,11 @@ func (i *ResponseInbound) handleReasoningContent(content *string) [][]byte {
 	i.accumulatedReasoning.WriteString(*content)
 
 	// Emit reasoning_summary_text.delta
+	itemID := i.reasoningItemID
 	events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
 		Type:         "response.reasoning_summary_text.delta",
-		ItemID:       &i.currentItemID,
-		OutputIndex:  lo.ToPtr(i.outputIndex),
+		ItemID:       &itemID,
+		OutputIndex:  lo.ToPtr(i.reasoningOutputIdx),
 		SummaryIndex: lo.ToPtr(0),
 		Delta:        *content,
 	}))
@@ -392,21 +455,22 @@ func (i *ResponseInbound) handleReasoningContent(content *string) [][]byte {
 func (i *ResponseInbound) handleTextContent(content *string) [][]byte {
 	var events [][]byte
 
-	// Close reasoning item if it was started
-	if i.hasReasoningItemStarted {
-		events = append(events, i.closeReasoningItem()...)
-	}
+	// Text closes an open reasoning item (the thinking run ended) but leaves any open
+	// tool item untouched. It then ensures a message item and its output_text content
+	// part are open.
+	events = append(events, i.closeReasoningItem()...)
 
 	// Start message output item if not started
-	if !i.hasMessageItemStarted {
-		i.hasMessageItemStarted = true
-		i.currentItemID = generateItemID()
+	if i.messageItemID == "" {
+		i.messageItemID = generateItemID()
+		i.messageOutputIdx = i.allocOutputIndex()
+		itemID := i.messageItemID
 
 		events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
 			Type:        "response.output_item.added",
-			OutputIndex: lo.ToPtr(i.outputIndex),
+			OutputIndex: lo.ToPtr(i.messageOutputIdx),
 			Item: &ResponsesItem{
-				ID:      i.currentItemID,
+				ID:      itemID,
 				Type:    "message",
 				Status:  lo.ToPtr("in_progress"),
 				Role:    "assistant",
@@ -416,14 +480,15 @@ func (i *ResponseInbound) handleTextContent(content *string) [][]byte {
 	}
 
 	// Start content part if not started
-	if !i.hasContentPartStarted {
-		i.hasContentPartStarted = true
+	if !i.contentPartOpen {
+		i.contentPartOpen = true
+		itemID := i.messageItemID
 
 		events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
 			Type:         "response.content_part.added",
-			ItemID:       &i.currentItemID,
-			OutputIndex:  lo.ToPtr(i.outputIndex),
-			ContentIndex: &i.contentIndex,
+			ItemID:       &itemID,
+			OutputIndex:  lo.ToPtr(i.messageOutputIdx),
+			ContentIndex: lo.ToPtr(0),
 			Part: &ResponsesContentPart{
 				Type: "output_text",
 				Text: lo.ToPtr(""),
@@ -435,11 +500,12 @@ func (i *ResponseInbound) handleTextContent(content *string) [][]byte {
 	i.accumulatedText.WriteString(*content)
 
 	// Emit output_text.delta
+	itemID := i.messageItemID
 	events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
 		Type:         "response.output_text.delta",
-		ItemID:       &i.currentItemID,
-		OutputIndex:  lo.ToPtr(i.outputIndex),
-		ContentIndex: &i.contentIndex,
+		ItemID:       &itemID,
+		OutputIndex:  lo.ToPtr(i.messageOutputIdx),
+		ContentIndex: lo.ToPtr(0),
 		Delta:        *content,
 	}))
 
@@ -458,10 +524,14 @@ func (i *ResponseInbound) handleImageContent(parts []model.MessageContentPart) [
 			continue
 		}
 
-		events = append(events, i.closeCurrentContentPart()...)
-		events = append(events, i.closeCurrentOutputItem()...)
+		// An image item is emitted whole (added + done together). Close the
+		// sequential reasoning/message lane first so it lands in output order; open
+		// tool items stay open and finalize at the stream boundary.
+		events = append(events, i.closeReasoningItem()...)
+		events = append(events, i.closeMessageItem()...)
 
 		itemID := generateItemID()
+		outputIdx := i.allocOutputIndex()
 		added := &ResponsesItem{
 			ID:     itemID,
 			Type:   "image_generation_call",
@@ -469,7 +539,7 @@ func (i *ResponseInbound) handleImageContent(parts []model.MessageContentPart) [
 		}
 		events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
 			Type:        "response.output_item.added",
-			OutputIndex: lo.ToPtr(i.outputIndex),
+			OutputIndex: lo.ToPtr(outputIdx),
 			Item:        added,
 		}))
 
@@ -481,10 +551,9 @@ func (i *ResponseInbound) handleImageContent(parts []model.MessageContentPart) [
 		}
 		events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
 			Type:        "response.output_item.done",
-			OutputIndex: lo.ToPtr(i.outputIndex),
+			OutputIndex: lo.ToPtr(outputIdx),
 			Item:        done,
 		}))
-		i.outputIndex++
 	}
 
 	return events
@@ -493,40 +562,27 @@ func (i *ResponseInbound) handleImageContent(parts []model.MessageContentPart) [
 func (i *ResponseInbound) handleToolCalls(toolCalls []model.ToolCall) [][]byte {
 	var events [][]byte
 
-	// Close message item if it was started
-	if i.hasMessageItemStarted {
-		events = append(events, i.closeMessageItem()...)
-	}
-
-	// Close reasoning item if it was started
-	if i.hasReasoningItemStarted {
-		events = append(events, i.closeReasoningItem()...)
-	}
-
-	// Close any still-open message content part once, before opening any tool
-	// item. Sibling tool-call items must stay OPEN here: parallel/interleaved
-	// tool calls each finalize together at the finish_reason path and on [DONE]
-	// via closeCurrentOutputItem(). Finalizing a sibling here would truncate its
-	// arguments and emit a wrong output_index.
-	events = append(events, i.closeCurrentContentPart()...)
+	// A tool call closes an open reasoning item (its thinking run ended). It does
+	// NOT close the message item or any sibling tool item: parallel/interleaved tool
+	// calls stay open and all finalize together at the finish boundary, and an open
+	// message finalizes there too. Force-closing a sibling here would truncate its
+	// arguments; force-closing a still-incomplete tool when reasoning interleaves (R1)
+	// would orphan its later argument deltas — the very bug this refactor kills.
+	events = append(events, i.closeReasoningItem()...)
 
 	for _, tc := range toolCalls {
 		toolCallIndex := tc.Index
 
 		// Initialize tool call tracking if needed
 		if _, ok := i.toolCalls[toolCallIndex]; !ok {
-			// Resolve the id ONCE and store it back on the tracked call so the
-			// call_id and the output item id are the same non-empty value. Some
-			// OpenAI-compatible upstreams stream a tool call whose first fragment
-			// carries an empty id; generating an id but leaving toolCalls[idx].ID
-			// empty made the later argument-delta and the finalizing *.done fall
-			// through to the shared currentItemID, which a sibling tool (or a
-			// following message) has since overwritten — mis-binding the delta/done
-			// to another item's id, i.e. a "delta without an active item" the codex
-			// client drops. Mirrors sub2api, which likewise generates one id and
-			// reuses it for both fields.
-			callID := tc.ID
-			if strings.TrimSpace(callID) == "" {
+			// call_id (semantic identity) = the upstream tool id, or a synthesized one
+			// when the first fragment carries none (some OpenAI-compatible upstreams
+			// stream arguments before, or without, an id). It is stored back so a later
+			// argument-delta and the finalizing *.done reuse the same non-empty value
+			// the codex client pairs the tool result on next turn — an empty call_id
+			// can never be matched.
+			callID := strings.TrimSpace(tc.ID)
+			if callID == "" {
 				callID = generateItemID()
 			}
 
@@ -540,7 +596,18 @@ func (i *ResponseInbound) handleToolCalls(toolCalls []model.ToolCall) [][]byte {
 				},
 			}
 
+			// The streaming item id (lifecycle handle) is announced once here and is
+			// immutable: every delta/done references it. It starts equal to the initial
+			// call_id — reusing the real upstream id when present (oct's item-id-equals-
+			// call-id contract, which real upstreams and the tool_use tests rely on),
+			// or the synthesized id when the first fragment carried none. Tracking it
+			// separately from toolCalls[idx].ID (the call_id / pairing key) is what lets
+			// a real id arriving in a LATER frame update only call_id, without
+			// invalidating this already-announced, already-referenced item id.
 			itemID := callID
+			i.toolCallItemID[toolCallIndex] = itemID
+			i.toolCallOutputIndex[toolCallIndex] = i.allocOutputIndex()
+			i.toolCallItemStarted[toolCallIndex] = true
 
 			// A custom (freeform) tool call must be re-announced as a
 			// custom_tool_call item carrying `input`, not a function_call carrying
@@ -569,23 +636,23 @@ func (i *ResponseInbound) handleToolCalls(toolCalls []model.ToolCall) [][]byte {
 
 			events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
 				Type:        "response.output_item.added",
-				OutputIndex: lo.ToPtr(i.outputIndex),
+				OutputIndex: lo.ToPtr(i.toolCallOutputIndex[toolCallIndex]),
 				Item:        item,
 			}))
+		}
 
-			i.toolCallItemStarted[toolCallIndex] = true
-			i.toolCallOutputIndex[toolCallIndex] = i.outputIndex
-			i.currentItemID = itemID
-			i.outputIndex++
+		// Backfill the call_id (pairing key) from a later frame that carries the real
+		// upstream id when the first fragment's was empty (a synthesized id was
+		// announced, but the next turn's tool result must reference the real one). The
+		// already-announced item id (lifecycle handle) never changes. Mirrors sub2api.
+		if realID := strings.TrimSpace(tc.ID); realID != "" {
+			i.toolCalls[toolCallIndex].ID = realID
 		}
 
 		// Backfill the tool name from a later frame when the first fragment carried
-		// none (some upstreams stream the id first and the name in a following
-		// chunk). Take the first non-empty value and never concatenate — a name is
-		// atomic, not a streamed fragment. Mirrors chat.go mergeToolCall. The
-		// streamed item id was already announced and cannot change, so only the name
-		// (read from the finalizing output_item.done) is backfilled; the codex client
-		// needs it to dispatch the call.
+		// none (some upstreams stream the id first and the name in a following chunk).
+		// Take the first non-empty value and never concatenate — a name is atomic, not
+		// a streamed fragment. Mirrors chat.go mergeToolCall.
 		if tc.Function.Name != "" && i.toolCalls[toolCallIndex].Function.Name == "" {
 			i.toolCalls[toolCallIndex].Function.Name = tc.Function.Name
 		}
@@ -593,25 +660,23 @@ func (i *ResponseInbound) handleToolCalls(toolCalls []model.ToolCall) [][]byte {
 		// Accumulate arguments (custom tool calls carry their freeform input here too)
 		i.toolCalls[toolCallIndex].Function.Arguments += tc.Function.Arguments
 
-		// Emit the incremental input/arguments delta
+		// Emit the incremental input/arguments delta against this tool's own item id.
 		if tc.Function.Arguments != "" {
-			itemID := i.toolCalls[toolCallIndex].ID
-			if itemID == "" {
-				itemID = i.currentItemID
-			}
+			itemID := i.toolCallItemID[toolCallIndex]
+			outputIdx := i.toolCallOutputIndex[toolCallIndex]
 
 			if i.toolCalls[toolCallIndex].Type == model.ToolCallTypeCustom {
 				events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
 					Type:        "response.custom_tool_call_input.delta",
 					ItemID:      &itemID,
-					OutputIndex: lo.ToPtr(i.toolCallOutputIndex[toolCallIndex]),
+					OutputIndex: lo.ToPtr(outputIdx),
 					Delta:       tc.Function.Arguments,
 				}))
 			} else {
 				events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
 					Type:         "response.function_call_arguments.delta",
 					ItemID:       &itemID,
-					OutputIndex:  lo.ToPtr(i.toolCallOutputIndex[toolCallIndex]),
+					OutputIndex:  lo.ToPtr(outputIdx),
 					ContentIndex: lo.ToPtr(0),
 					Delta:        tc.Function.Arguments,
 				}))
@@ -623,19 +688,20 @@ func (i *ResponseInbound) handleToolCalls(toolCalls []model.ToolCall) [][]byte {
 }
 
 func (i *ResponseInbound) closeReasoningItem() [][]byte {
-	if !i.hasReasoningItemStarted {
+	if i.reasoningItemID == "" {
 		return nil
 	}
 
 	var events [][]byte
-	i.hasReasoningItemStarted = false
+	itemID := i.reasoningItemID
+	outputIdx := i.reasoningOutputIdx
 	fullReasoning := i.accumulatedReasoning.String()
 
 	// Emit reasoning_summary_text.done
 	events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
 		Type:         "response.reasoning_summary_text.done",
-		ItemID:       &i.currentItemID,
-		OutputIndex:  lo.ToPtr(i.outputIndex),
+		ItemID:       &itemID,
+		OutputIndex:  lo.ToPtr(outputIdx),
 		SummaryIndex: lo.ToPtr(0),
 		Text:         fullReasoning,
 	}))
@@ -643,15 +709,15 @@ func (i *ResponseInbound) closeReasoningItem() [][]byte {
 	// Emit reasoning_summary_part.done
 	events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
 		Type:         "response.reasoning_summary_part.done",
-		ItemID:       &i.currentItemID,
-		OutputIndex:  lo.ToPtr(i.outputIndex),
+		ItemID:       &itemID,
+		OutputIndex:  lo.ToPtr(outputIdx),
 		SummaryIndex: lo.ToPtr(0),
 		Part:         &ResponsesContentPart{Type: "summary_text", Text: &fullReasoning},
 	}))
 
 	// Emit output_item.done
 	item := ResponsesItem{
-		ID:   i.currentItemID,
+		ID:   itemID,
 		Type: "reasoning",
 		Summary: []ResponsesReasoningSummary{{
 			Type: "summary_text",
@@ -666,11 +732,13 @@ func (i *ResponseInbound) closeReasoningItem() [][]byte {
 
 	events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
 		Type:        "response.output_item.done",
-		OutputIndex: lo.ToPtr(i.outputIndex),
+		OutputIndex: lo.ToPtr(outputIdx),
 		Item:        &item,
 	}))
 
-	i.outputIndex++
+	// Clear the slot so the next contiguous thinking run opens a fresh reasoning
+	// item with its own id + signature.
+	i.reasoningItemID = ""
 	i.accumulatedReasoning.Reset()
 	i.reasoningSignature = ""
 
@@ -678,20 +746,22 @@ func (i *ResponseInbound) closeReasoningItem() [][]byte {
 }
 
 func (i *ResponseInbound) closeMessageItem() [][]byte {
-	if !i.hasMessageItemStarted {
+	if i.messageItemID == "" {
 		return nil
 	}
 
 	var events [][]byte
-	i.hasMessageItemStarted = false
-	fullText := i.accumulatedText.String()
+	itemID := i.messageItemID
+	outputIdx := i.messageOutputIdx
 
-	// Close content part first
-	events = append(events, i.closeCurrentContentPart()...)
+	// Close content part first (references the still-open message item id).
+	events = append(events, i.closeContentPart()...)
+
+	fullText := i.accumulatedText.String()
 
 	// Emit output_item.done
 	item := ResponsesItem{
-		ID:     i.currentItemID,
+		ID:     itemID,
 		Type:   "message",
 		Status: lo.ToPtr("completed"),
 		Role:   "assistant",
@@ -705,41 +775,43 @@ func (i *ResponseInbound) closeMessageItem() [][]byte {
 
 	events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
 		Type:        "response.output_item.done",
-		OutputIndex: lo.ToPtr(i.outputIndex),
+		OutputIndex: lo.ToPtr(outputIdx),
 		Item:        &item,
 	}))
 
-	i.outputIndex++
-	i.contentIndex = 0
+	// Clear the slot so a later contiguous text run opens a fresh message item.
+	i.messageItemID = ""
 	i.accumulatedText.Reset()
 
 	return events
 }
 
-func (i *ResponseInbound) closeCurrentContentPart() [][]byte {
-	if !i.hasContentPartStarted {
+func (i *ResponseInbound) closeContentPart() [][]byte {
+	if !i.contentPartOpen {
 		return nil
 	}
 
 	var events [][]byte
-	i.hasContentPartStarted = false
+	i.contentPartOpen = false
+	itemID := i.messageItemID
+	outputIdx := i.messageOutputIdx
 	fullText := i.accumulatedText.String()
 
 	// Emit output_text.done
 	events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
 		Type:         "response.output_text.done",
-		ItemID:       &i.currentItemID,
-		OutputIndex:  lo.ToPtr(i.outputIndex),
-		ContentIndex: &i.contentIndex,
+		ItemID:       &itemID,
+		OutputIndex:  lo.ToPtr(outputIdx),
+		ContentIndex: lo.ToPtr(0),
 		Text:         fullText,
 	}))
 
 	// Emit content_part.done
 	events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
 		Type:         "response.content_part.done",
-		ItemID:       &i.currentItemID,
-		OutputIndex:  lo.ToPtr(i.outputIndex),
-		ContentIndex: &i.contentIndex,
+		ItemID:       &itemID,
+		OutputIndex:  lo.ToPtr(outputIdx),
+		ContentIndex: lo.ToPtr(0),
 		Part: &ResponsesContentPart{
 			Type: "output_text",
 			Text: lo.ToPtr(fullText),
@@ -749,97 +821,101 @@ func (i *ResponseInbound) closeCurrentContentPart() [][]byte {
 	return events
 }
 
-func (i *ResponseInbound) closeCurrentOutputItem() [][]byte {
+// closeAllOpenItems finalizes every still-open slot at the stream boundary
+// (finish_reason and [DONE]): the sequential reasoning/message lane first, then
+// every open tool item in deterministic ascending index order — map iteration is
+// random and would scramble the parallel tool_call ordering in the terminal
+// response.completed.output. Idempotent: each close guards on its slot, so calling
+// it again after the finish path already ran is a no-op.
+func (i *ResponseInbound) closeAllOpenItems() [][]byte {
 	var events [][]byte
 
-	// Close message item if open
-	if i.hasMessageItemStarted {
-		events = append(events, i.closeMessageItem()...)
-	}
+	events = append(events, i.closeReasoningItem()...)
+	events = append(events, i.closeMessageItem()...)
 
-	// Close reasoning item if open
-	if i.hasReasoningItemStarted {
-		events = append(events, i.closeReasoningItem()...)
-	}
-
-	// Close any open tool call items in deterministic ascending index order — map
-	// iteration order is random and would scramble the parallel tool_call output ordering
-	// in the terminal response.completed.output array.
 	toolCallIndexes := make([]int, 0, len(i.toolCalls))
 	for idx := range i.toolCalls {
 		toolCallIndexes = append(toolCallIndexes, idx)
 	}
 	sort.Ints(toolCallIndexes)
 	for _, idx := range toolCallIndexes {
-		tc := i.toolCalls[idx]
-		if i.toolCallItemStarted[idx] {
-			itemID := tc.ID
-			if itemID == "" {
-				itemID = i.currentItemID
-			}
-
-			toolCallOutputIdx := i.toolCallOutputIndex[idx]
-
-			if tc.Type == model.ToolCallTypeCustom {
-				// Custom (freeform) tool call: terminate with
-				// custom_tool_call_input.done + a custom_tool_call output item whose
-				// `input` holds the full freeform payload, so the codex client sees
-				// exactly the custom-tool shape it registered.
-				input := tc.Function.Arguments
-				events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
-					Type:        "response.custom_tool_call_input.done",
-					ItemID:      &itemID,
-					OutputIndex: &toolCallOutputIdx,
-					Input:       input,
-				}))
-
-				item := ResponsesItem{
-					ID:     itemID,
-					Type:   "custom_tool_call",
-					Status: lo.ToPtr("completed"),
-					CallID: tc.ID,
-					Name:   tc.Function.Name,
-					Input:  &input,
-				}
-
-				events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
-					Type:        "response.output_item.done",
-					OutputIndex: &toolCallOutputIdx,
-					Item:        &item,
-				}))
-
-				i.toolCallItemStarted[idx] = false
-				continue
-			}
-
-			// Emit function_call_arguments.done
-			events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
-				Type:        "response.function_call_arguments.done",
-				ItemID:      &itemID,
-				OutputIndex: &toolCallOutputIdx,
-				Arguments:   tc.Function.Arguments,
-			}))
-
-			// Emit output_item.done
-			item := ResponsesItem{
-				ID:        itemID,
-				Type:      "function_call",
-				Status:    lo.ToPtr("completed"),
-				CallID:    tc.ID,
-				Name:      tc.Function.Name,
-				Arguments: tc.Function.Arguments,
-			}
-
-			events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
-				Type:        "response.output_item.done",
-				OutputIndex: &toolCallOutputIdx,
-				Item:        &item,
-			}))
-
-			i.toolCallItemStarted[idx] = false
-		}
+		events = append(events, i.closeToolItem(idx)...)
 	}
 
+	return events
+}
+
+// closeToolItem finalizes one open tool call item. The output item id is the
+// streaming lifecycle handle (toolCallItemID); call_id is the semantic pairing key
+// (toolCalls[idx].ID) — the two are emitted as distinct fields so a late upstream id
+// reaches the client as call_id without ever changing the announced item id.
+func (i *ResponseInbound) closeToolItem(idx int) [][]byte {
+	if !i.toolCallItemStarted[idx] {
+		return nil
+	}
+
+	var events [][]byte
+	tc := i.toolCalls[idx]
+	itemID := i.toolCallItemID[idx]
+	outputIdx := i.toolCallOutputIndex[idx]
+
+	if tc.Type == model.ToolCallTypeCustom {
+		// Custom (freeform) tool call: terminate with custom_tool_call_input.done +
+		// a custom_tool_call output item whose `input` holds the full freeform
+		// payload, so the codex client sees exactly the custom-tool shape it
+		// registered.
+		input := tc.Function.Arguments
+		events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
+			Type:        "response.custom_tool_call_input.done",
+			ItemID:      &itemID,
+			OutputIndex: lo.ToPtr(outputIdx),
+			Input:       input,
+		}))
+
+		item := ResponsesItem{
+			ID:     itemID,
+			Type:   "custom_tool_call",
+			Status: lo.ToPtr("completed"),
+			CallID: tc.ID,
+			Name:   tc.Function.Name,
+			Input:  &input,
+		}
+
+		events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
+			Type:        "response.output_item.done",
+			OutputIndex: lo.ToPtr(outputIdx),
+			Item:        &item,
+		}))
+
+		i.toolCallItemStarted[idx] = false
+		return events
+	}
+
+	// Emit function_call_arguments.done
+	events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
+		Type:        "response.function_call_arguments.done",
+		ItemID:      &itemID,
+		OutputIndex: lo.ToPtr(outputIdx),
+		Arguments:   tc.Function.Arguments,
+	}))
+
+	// Emit output_item.done
+	item := ResponsesItem{
+		ID:        itemID,
+		Type:      "function_call",
+		Status:    lo.ToPtr("completed"),
+		CallID:    tc.ID,
+		Name:      tc.Function.Name,
+		Arguments: tc.Function.Arguments,
+	}
+
+	events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
+		Type:        "response.output_item.done",
+		OutputIndex: lo.ToPtr(outputIdx),
+		Item:        &item,
+	}))
+
+	i.toolCallItemStarted[idx] = false
 	return events
 }
 

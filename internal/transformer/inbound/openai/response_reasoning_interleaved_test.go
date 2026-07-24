@@ -548,3 +548,124 @@ func TestResponseInboundToolCallNameBackfilledFromLaterFrame(t *testing.T) {
 		t.Fatalf("tool arguments corrupted, got %q", args)
 	}
 }
+
+// TestResponseInboundLateSignatureDoesNotLeakToNextReasoning guards against a thinking
+// signature that arrives AFTER its reasoning run already closed (an abnormal upstream
+// ordering — the signature lands after the text/tool that ended the block) being
+// captured and leaked onto the NEXT reasoning item's encrypted_content. A reasoning
+// item may only round-trip a signature that arrived while it was the open item; the
+// per-type-slot refactor otherwise reopened a fresh reasoning item carrying a stale
+// signature that belonged to the previous run.
+func TestResponseInboundLateSignatureDoesNotLeakToNextReasoning(t *testing.T) {
+	inbound := &ResponseInbound{}
+	base := func() *model.InternalLLMResponse {
+		return &model.InternalLLMResponse{ID: "chatcmpl_latesig", Model: "claude-opus-4-8", Object: "chat.completion.chunk", Created: 1}
+	}
+	reasoning := func(s string) *model.InternalLLMResponse {
+		c := base()
+		c.Choices = []model.Choice{{Index: 0, Delta: &model.Message{Role: "assistant", ReasoningContent: ptr(s)}}}
+		return c
+	}
+	text := func(s string) *model.InternalLLMResponse {
+		c := base()
+		c.Choices = []model.Choice{{Index: 0, Delta: &model.Message{Role: "assistant", Content: model.MessageContent{Content: ptr(s)}}}}
+		return c
+	}
+	signature := func(sig string) *model.InternalLLMResponse {
+		c := base()
+		c.Choices = []model.Choice{{Index: 0, Delta: &model.Message{Role: "assistant", ReasoningSignature: ptr(sig)}}}
+		return c
+	}
+	var raw strings.Builder
+	feed := func(s *model.InternalLLMResponse) {
+		out, err := inbound.TransformStream(context.Background(), s)
+		if err != nil {
+			t.Fatalf("TransformStream: %v", err)
+		}
+		raw.WriteString(string(out))
+	}
+
+	// R1 -> text (closes R1, signature still empty) -> stale signature (no open
+	// reasoning) -> R2 -> finish. The stale signature must not attach to R2.
+	feed(reasoning("block one"))
+	feed(text("answer one"))
+	feed(signature("sig-for-block-one"))
+	feed(reasoning("block two"))
+
+	finishReason := "stop"
+	fin := base()
+	fin.Choices = []model.Choice{{Index: 0, FinishReason: &finishReason}}
+	feed(fin)
+
+	done, _ := inbound.TransformStream(context.Background(), &model.InternalLLMResponse{Object: "[DONE]"})
+	raw.WriteString(string(done))
+
+	events := parseResponsesStreamEvents(t, raw.String())
+	assertResponsesStreamItemLifecycle(t, events)
+
+	var reasoningDones int
+	for _, ev := range events {
+		if ev.Type == "response.output_item.done" && ev.Item != nil && ev.Item.Type == "reasoning" {
+			reasoningDones++
+			if ev.Item.EncryptedContent != nil && *ev.Item.EncryptedContent == "sig-for-block-one" {
+				t.Fatalf("reasoning item leaked a signature that arrived after its run closed: %q", *ev.Item.EncryptedContent)
+			}
+		}
+	}
+	if reasoningDones != 2 {
+		t.Fatalf("expected 2 finalized reasoning items, got %d", reasoningDones)
+	}
+}
+
+// TestResponseInboundToolFragmentAfterFinishDoesNotOrphan guards against a tool-call
+// argument fragment arriving AFTER finish_reason already finalized the tool item: it
+// must not emit a function_call_arguments.delta against the now-closed item (a "delta
+// without an active item"). Content past the finish boundary is ignored.
+func TestResponseInboundToolFragmentAfterFinishDoesNotOrphan(t *testing.T) {
+	inbound := &ResponseInbound{}
+	base := func() *model.InternalLLMResponse {
+		return &model.InternalLLMResponse{ID: "chatcmpl_postfinish", Model: "glm-4.6", Object: "chat.completion.chunk", Created: 1}
+	}
+	toolChunk := func(tcs ...model.ToolCall) *model.InternalLLMResponse {
+		c := base()
+		c.Choices = []model.Choice{{Index: 0, Delta: &model.Message{Role: "assistant", ToolCalls: tcs}}}
+		return c
+	}
+	tc := func(index int, id, name, args string) model.ToolCall {
+		return model.ToolCall{Index: index, ID: id, Type: "function", Function: model.FunctionCall{Name: name, Arguments: args}}
+	}
+	var raw strings.Builder
+	feed := func(s *model.InternalLLMResponse) {
+		out, err := inbound.TransformStream(context.Background(), s)
+		if err != nil {
+			t.Fatalf("TransformStream: %v", err)
+		}
+		raw.WriteString(string(out))
+	}
+
+	feed(toolChunk(tc(0, "call_a", "exec", `{"cmd":`)))
+
+	finishReason := "tool_calls"
+	fin := base()
+	fin.Choices = []model.Choice{{Index: 0, FinishReason: &finishReason}}
+	feed(fin)
+
+	// Stray fragment after the finish boundary — must be ignored, not orphaned.
+	feed(toolChunk(tc(0, "", "", `"ls"}`)))
+
+	done, _ := inbound.TransformStream(context.Background(), &model.InternalLLMResponse{Object: "[DONE]"})
+	raw.WriteString(string(done))
+
+	events := parseResponsesStreamEvents(t, raw.String())
+	assertResponsesStreamItemLifecycle(t, events)
+
+	var toolDones int
+	for _, ev := range events {
+		if ev.Type == "response.output_item.done" && ev.Item != nil && ev.Item.Type == "function_call" {
+			toolDones++
+		}
+	}
+	if toolDones != 1 {
+		t.Fatalf("expected exactly 1 finalized function_call item, got %d", toolDones)
+	}
+}
