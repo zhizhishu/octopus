@@ -223,7 +223,7 @@ export function ChannelTestDialog({
                             setResults((prev) => ({
                                 ...prev,
                                 [cellKey(endpoint, model)]: r
-                                    ? (r.success ? { status: 'success', ms: r.duration_ms } : { status: 'error', error: r.error })
+                                    ? (r.success ? { status: 'success', ms: r.duration_ms } : { status: 'error', error: r.error ? redactUpstreamIdentity(r.error) : r.error })
                                     : { status: 'error', error: '无结果' },
                             }));
                         }

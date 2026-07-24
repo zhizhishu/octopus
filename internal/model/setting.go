@@ -58,6 +58,7 @@ const (
 	SettingKeyCircuitBreakerCooldown    SettingKey = "circuit_breaker_cooldown"     // 熔断基础冷却时间（秒）
 	SettingKeyCircuitBreakerMaxCooldown SettingKey = "circuit_breaker_max_cooldown" // 熔断最大冷却时间（秒），指数退避上限
 	SettingKeyDebugLoadBalancer         SettingKey = "debug_load_balancer"          // 开启后每次选路打印候选排序决策(tier/rank/容量输入)，便于排障"为啥走这条/为啥慢"
+	SettingKeyDiagnosticMode            SettingKey = "diagnostic_mode"              // 开启后每次请求额外打印各阶段耗时(等响应头/首字/生成)与逐次尝试原因，便于排障"卡在哪一层"；默认关
 	SettingKeySessionKeepTimeDefault    SettingKey = "session_keep_time_default"    // 分组会话保持时间全局默认(秒)，分组级为0时回退用它，0=不启用全局粘性
 	SettingKeyFirstTokenTimeOutDefault  SettingKey = "first_token_time_out_default" // 分组首字超时全局默认(秒)，分组级为0时回退用它，0=不启用全局默认
 	// SettingKeyFirstByteKeepaliveDelaySeconds defaults to "20" (ON). When >0, stream
@@ -264,6 +265,7 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyCircuitBreakerCooldown, Value: "30"},                                            // 默认基础冷却30秒
 		{Key: SettingKeyCircuitBreakerMaxCooldown, Value: "600"},                                        // 默认最大冷却600秒（10分钟）
 		{Key: SettingKeyDebugLoadBalancer, Value: "false"},                                              // 默认关闭选路决策日志
+		{Key: SettingKeyDiagnosticMode, Value: "false"},                                                 // 默认关闭诊断模式(各阶段耗时+逐次尝试日志)
 		{Key: SettingKeySessionKeepTimeDefault, Value: "0"},                                             // 默认0=不启用全局粘性(向后兼容); 管理员设为如3600才全局开, 分组级 SessionKeepTime 仍优先
 		{Key: SettingKeyFirstTokenTimeOutDefault, Value: "0"},                                           // 默认0=不启用全局默认(向后兼容); 分组级 FirstTokenTimeOut 仍优先
 		{Key: SettingKeyFirstByteKeepaliveDelaySeconds, Value: defaultFirstByteKeepaliveDelaySeconds()}, // 默认20=开启: 上游首字节>20s才向下游注入SSE心跳(防前置反代/客户端60s空闲掐断); 0=关闭
@@ -407,7 +409,7 @@ func (s *Setting) Validate() error {
 		SettingKeyClaudeHeaderStabilize, SettingKeyClaudeCLIAutoCompact, SettingKeyCodexFastMode,
 		SettingKeyUserRegistrationEnabled, SettingKeyUpstreamErrorStatusPass, SettingKeyCheckInEnabled,
 		SettingKeyDebugLoadBalancer, SettingKeyEmailVerificationEnabled, SettingKeyEmailSMTPSSL,
-		SettingKeyUpstreamUTLSFingerprint:
+		SettingKeyUpstreamUTLSFingerprint, SettingKeyDiagnosticMode:
 		if s.Value != "true" && s.Value != "false" {
 			return fmt.Errorf("%s must be true or false", s.Key)
 		}

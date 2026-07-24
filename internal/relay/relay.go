@@ -636,12 +636,20 @@ retryWithAdapter:
 	if willStream {
 		stopFirstByteKeepalive = ra.startFirstByteKeepalive(ctx)
 	}
+	// 诊断计时(仅 diagnostic_mode 消费, time.Now 成本可忽略): 记录发出上游请求 / 收到响应头
+	// 的时刻。二者之差即"等响应头"(首包)耗时——现有 metrics 缺这段, 首包卡死时只有它能定位。
+	if ra.metrics != nil {
+		ra.metrics.RequestSentTime = time.Now()
+	}
 	response, err := ra.sendRequest(outboundRequest)
 	if stopFirstByteKeepalive != nil {
 		stopFirstByteKeepalive()
 	}
 	if err != nil {
 		return 0, fmt.Errorf("failed to send request: %w", err)
+	}
+	if ra.metrics != nil {
+		ra.metrics.ResponseHeaderTime = time.Now()
 	}
 	defer response.Body.Close()
 

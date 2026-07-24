@@ -30,6 +30,12 @@ type RelayMetrics struct {
 	// 首 Token 时间
 	FirstTokenTime time.Time
 
+	// 诊断(仅 diagnostic_mode 消费): 发出上游请求 / 收到上游响应头 的时刻(仅最终尝试)。
+	// ResponseHeaderTime-RequestSentTime = "等响应头"(首包)耗时——现有 metrics 缺这段,
+	// 首包卡死(上游连上却不发头)时只有它能把"卡在哪一层"照出来。
+	RequestSentTime    time.Time
+	ResponseHeaderTime time.Time
+
 	// 请求和响应内容
 	InternalRequest  *transformerModel.InternalLLMRequest
 	InternalResponse *transformerModel.InternalLLMResponse
@@ -294,7 +300,48 @@ func (m *RelayMetrics) Save(ctx context.Context, success bool, err error, attemp
 		m.Stats.InputCost, m.Stats.OutputCost, m.Stats.InputCost+m.Stats.OutputCost,
 		len(attempts), errorStatus, errorCode, errorStrategy)
 
+	m.logDiagnostics(success, duration, attempts, channelID, channelName)
+
 	m.saveLog(persistCtx, err, duration, attempts, channelID, channelName)
+}
+
+// logDiagnostics 在 diagnostic_mode 开启时额外打印一行各阶段耗时 + 逐次尝试原因,
+// 便于排障"卡在哪一层"(等响应头/首字/生成)。关闭时的每请求成本仅一次(带缓存的)设置读取,
+// 与 debug_load_balancer 同源。所有字段皆为内部计时/下游日志, 不触上游出站字节(shape 安全)。
+// header_wait / first_token / gen_start 为 -1 表示该阶段未测到(如请求在拿到响应头前就失败)。
+func (m *RelayMetrics) logDiagnostics(success bool, duration time.Duration, attempts []model.ChannelAttempt, channelID int, channelName string) {
+	enabled, err := op.SettingGetBool(model.SettingKeyDiagnosticMode)
+	if err != nil || !enabled {
+		return
+	}
+
+	headerWaitMs := int64(-1)
+	if !m.RequestSentTime.IsZero() && !m.ResponseHeaderTime.IsZero() {
+		headerWaitMs = m.ResponseHeaderTime.Sub(m.RequestSentTime).Milliseconds()
+	}
+	firstTokenMs := int64(-1)
+	if !m.FirstTokenTime.IsZero() {
+		firstTokenMs = m.FirstTokenTime.Sub(m.StartTime).Milliseconds()
+	}
+	genStartMs := int64(-1)
+	if !m.FirstTokenTime.IsZero() && !m.ResponseHeaderTime.IsZero() {
+		genStartMs = m.FirstTokenTime.Sub(m.ResponseHeaderTime).Milliseconds()
+	}
+
+	var b strings.Builder
+	for i, a := range attempts {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		fmt.Fprintf(&b, "#%d:ch%d(%s)/%s/%dms", a.AttemptNum, a.ChannelID, a.ChannelName, a.Status, a.Duration)
+		if msg := strings.TrimSpace(a.Msg); msg != "" {
+			fmt.Fprintf(&b, "[%s]", msg)
+		}
+	}
+
+	log.Infof("[diag] model=%s channel=%d(%s) success=%t total=%dms header_wait=%dms first_token=%dms gen_start=%dms attempts=%d | %s",
+		m.RequestModel, channelID, channelName, success, duration.Milliseconds(),
+		headerWaitMs, firstTokenMs, genStartMs, len(attempts), b.String())
 }
 
 func metricsPersistContext() (context.Context, context.CancelFunc) {
