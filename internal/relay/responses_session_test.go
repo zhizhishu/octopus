@@ -110,7 +110,7 @@ func TestResponsesSessionTranscriptRejectsForeignTenant(t *testing.T) {
 	recordResponsesSessionTranscriptOwned(previous, []transformerModel.Message{
 		{Role: "user", Content: textMessageContent("owner secret prompt")},
 		{Role: "assistant", Content: textMessageContent("owner secret answer")},
-	}, 100, 0)
+	}, nil, 100, 0)
 
 	if _, ok := responsesSessionTranscript(previous, 999, 0); ok {
 		t.Fatalf("foreign tenant must not read another tenant's transcript")

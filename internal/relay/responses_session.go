@@ -32,6 +32,7 @@ type responsesSessionEntry struct {
 
 type responsesSessionTranscriptEntry struct {
 	messages     []transformerModel.Message
+	tools        []transformerModel.Tool
 	ownerTokenID int
 	ownerUserID  int
 	expiresAt    time.Time
@@ -216,10 +217,10 @@ func maybePruneResponsesSessionsLocked(now time.Time) {
 // transcripts written this way carry owner 0/0 and are readable by any requester
 // for backward compatibility.
 func recordResponsesSessionTranscript(responseID string, messages []transformerModel.Message) {
-	recordResponsesSessionTranscriptOwned(responseID, messages, 0, 0)
+	recordResponsesSessionTranscriptOwned(responseID, messages, nil, 0, 0)
 }
 
-func recordResponsesSessionTranscriptOwned(responseID string, messages []transformerModel.Message, ownerTokenID, ownerUserID int) {
+func recordResponsesSessionTranscriptOwned(responseID string, messages []transformerModel.Message, tools []transformerModel.Tool, ownerTokenID, ownerUserID int) {
 	responseID = strings.TrimSpace(responseID)
 	messages = trimResponsesSessionTranscript(messages)
 	if responseID == "" || len(messages) == 0 {
@@ -230,11 +231,45 @@ func recordResponsesSessionTranscriptOwned(responseID string, messages []transfo
 	maybePruneResponsesSessionTranscriptsLocked(now)
 	responsesSessionTranscriptStore.items[responseID] = responsesSessionTranscriptEntry{
 		messages:     cloneResponsesSessionMessages(messages),
+		tools:        cloneResponsesSessionTools(tools),
 		ownerTokenID: ownerTokenID,
 		ownerUserID:  ownerUserID,
 		expiresAt:    now.Add(currentResponsesSessionTTL()),
 	}
 	responsesSessionTranscriptStore.Unlock()
+}
+
+func cloneResponsesSessionTools(tools []transformerModel.Tool) []transformerModel.Tool {
+	if len(tools) == 0 {
+		return nil
+	}
+	return append([]transformerModel.Tool(nil), tools...)
+}
+
+// responsesSessionTranscriptTools returns the tools stored with a transcript,
+// owner-checked exactly like responsesSessionTranscript. It lets a codex client
+// that continues via previous_response_id against a STATELESS Anthropic upstream
+// recover the real tool set it declared on the turn that created that id — the
+// upstream never saw those tools and codex omits them on continuation.
+func responsesSessionTranscriptTools(responseID string, reqTokenID, reqUserID int) ([]transformerModel.Tool, bool) {
+	responseID = strings.TrimSpace(responseID)
+	if responseID == "" {
+		return nil, false
+	}
+	now := time.Now()
+	responsesSessionTranscriptStore.Lock()
+	entry, ok := responsesSessionTranscriptStore.items[responseID]
+	if !ok || now.After(entry.expiresAt) {
+		responsesSessionTranscriptStore.Unlock()
+		return nil, false
+	}
+	if !responsesSessionOwnerMatches(responsesSessionEntry{ownerTokenID: entry.ownerTokenID, ownerUserID: entry.ownerUserID}, reqTokenID, reqUserID) {
+		responsesSessionTranscriptStore.Unlock()
+		return nil, false
+	}
+	out := cloneResponsesSessionTools(entry.tools)
+	responsesSessionTranscriptStore.Unlock()
+	return out, len(out) > 0
 }
 
 // responsesSessionTranscript returns a stored transcript only when reqTokenID/
@@ -619,7 +654,7 @@ func (ra *relayAttempt) recordResponsesSessionFromInbound(resp *transformerModel
 	}
 	recordResponsesSessionOwned(ra.context(), resp.ID, ra.channel.ID, ra.usedKey.ID, ra.apiKeyID, ra.userID, rootHash)
 	if ra.shouldBridgeResponsesHistory() {
-		recordResponsesSessionTranscriptOwned(resp.ID, ra.responsesSessionTranscriptFromResponse(resp), ra.apiKeyID, ra.userID)
+		recordResponsesSessionTranscriptOwned(resp.ID, ra.responsesSessionTranscriptFromResponse(resp), cloneResponsesSessionTools(ra.internalRequest.Tools), ra.apiKeyID, ra.userID)
 	}
 }
 
@@ -691,21 +726,22 @@ func (ra *relayAttempt) restoreCodexToolsForAnthropic() {
 	if len(req.Tools) > 0 || len(req.ResponsesToolsRaw) > 0 {
 		return
 	}
-	// Only a continuation drops tools — previous_response_id is set, or a prior
-	// turn's tool output is already replayed into messages. A genuine first turn
-	// carries its own tools, so leave a real no-tools request alone.
-	if (req.PreviousResponseID == nil || strings.TrimSpace(*req.PreviousResponseID) == "") &&
-		!responsesMessagesContainToolOutput(req.Messages) {
+	if req.PreviousResponseID == nil || strings.TrimSpace(*req.PreviousResponseID) == "" {
 		return
 	}
-	req.Tools = defaultCodexTools()
+	// Restore the client's REAL tools stored on the turn that created
+	// previous_response_id — NOT a hardcoded default set, whose names (e.g.
+	// shell_command) may not match this codex version's real tool (shell /
+	// exec_command / local_shell). If the session is gone, leave tools empty
+	// rather than inject a wrong-named default the client's model cannot map.
+	restored, ok := responsesSessionTranscriptTools(strings.TrimSpace(*req.PreviousResponseID), ra.apiKeyID, ra.userID)
+	if !ok || len(restored) == 0 {
+		return
+	}
+	req.Tools = restored
 	if req.ToolChoice == nil {
 		choice := "auto"
 		req.ToolChoice = &transformerModel.ToolChoice{ToolChoice: &choice}
-	}
-	if req.ParallelToolCalls == nil {
-		parallel := false
-		req.ParallelToolCalls = &parallel
 	}
 }
 

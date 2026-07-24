@@ -34,59 +34,58 @@ func newCodexAnthropicAttempt(t *testing.T, req *model.InternalLLMRequest, codex
 	}
 }
 
+func strPtrRT(s string) *string { return &s }
+
+// storeSessionTools records a transcript + tools under responseID with owner 0/0,
+// matching the test relayAttempt's default apiKeyID/userID (readable by anyone).
+func storeSessionTools(responseID string, tools []model.Tool) {
+	msgs := []model.Message{{Role: "user", Content: model.MessageContent{Content: strPtrRT("hi")}}}
+	recordResponsesSessionTranscriptOwned(responseID, msgs, tools, 0, 0)
+}
+
 // A codex continuation (previous_response_id set, tools omitted) mapped to Anthropic
-// must get the codex tool set restored, else the Claude model loses its tools
-// mid-conversation and stalls ("stopped calling tools").
-func TestRestoreCodexToolsForAnthropicOnContinuation(t *testing.T) {
-	prev := "resp_prev_1"
+// must recover the client's REAL tools from the session — not a hardcoded default —
+// else the mapped Claude model loses its tools mid-conversation and stalls.
+func TestRestoreCodexToolsForAnthropicRestoresSessionTools(t *testing.T) {
+	prev := "resp_prev_sess_restore"
+	storeSessionTools(prev, []model.Tool{{Type: "function", Function: model.Function{Name: "shell"}}})
 	req := &model.InternalLLMRequest{PreviousResponseID: &prev}
 	ra := newCodexAnthropicAttempt(t, req, true)
 	ra.restoreCodexToolsForAnthropic()
-	if len(req.Tools) == 0 {
-		t.Fatalf("codex continuation to Anthropic must restore tools, got none")
+	if len(req.Tools) != 1 || req.Tools[0].Function.Name != "shell" {
+		t.Fatalf("expected client's real session tool 'shell' restored, got %#v", req.Tools)
 	}
 	if req.ToolChoice == nil {
-		t.Fatalf("tool_choice should default to auto when tools are restored")
+		t.Fatalf("tool_choice should default to auto when tools restored")
 	}
 }
 
-// A continuation whose prior tool output is already replayed into messages (role=tool)
-// but carries no tools and no previous_response_id must also get tools restored.
-func TestRestoreCodexToolsForAnthropicOnToolOutputHistory(t *testing.T) {
-	req := &model.InternalLLMRequest{Messages: []model.Message{{Role: "tool"}}}
-	ra := newCodexAnthropicAttempt(t, req, true)
-	ra.restoreCodexToolsForAnthropic()
-	if len(req.Tools) == 0 {
-		t.Fatalf("codex continuation with tool history must restore tools, got none")
-	}
-}
-
-// A non-codex responses client (e.g. Cursor) must NOT get the codex tool set injected;
-// its tools differ, so silently attaching codex tools would be wrong.
+// A non-codex responses client (e.g. Cursor) must not trigger the codex restore path.
 func TestRestoreCodexToolsForAnthropicSkipsNonCodexClient(t *testing.T) {
-	prev := "resp_prev_1"
+	prev := "resp_prev_sess_noncodex"
+	storeSessionTools(prev, []model.Tool{{Type: "function", Function: model.Function{Name: "shell"}}})
 	req := &model.InternalLLMRequest{PreviousResponseID: &prev}
 	ra := newCodexAnthropicAttempt(t, req, false)
 	ra.restoreCodexToolsForAnthropic()
 	if len(req.Tools) != 0 {
-		t.Fatalf("non-codex responses client must not get codex tools, got %d", len(req.Tools))
+		t.Fatalf("non-codex client must not restore codex session tools, got %d", len(req.Tools))
 	}
 }
 
-// A genuine first turn (no previous_response_id, no tool history) that legitimately
-// carries no tools must be left alone — do not fabricate tools.
+// A genuine first turn (no previous_response_id) is left alone.
 func TestRestoreCodexToolsForAnthropicSkipsFirstTurn(t *testing.T) {
 	req := &model.InternalLLMRequest{}
 	ra := newCodexAnthropicAttempt(t, req, true)
 	ra.restoreCodexToolsForAnthropic()
 	if len(req.Tools) != 0 {
-		t.Fatalf("genuine no-tools first turn must not be fabricated, got %d", len(req.Tools))
+		t.Fatalf("no-previous-id first turn must not be touched, got %d", len(req.Tools))
 	}
 }
 
-// A continuation that DID resend its tools must keep them, never be overwritten.
+// A continuation that DID resend its tools keeps them, never overwritten.
 func TestRestoreCodexToolsForAnthropicKeepsExistingTools(t *testing.T) {
-	prev := "resp_prev_1"
+	prev := "resp_prev_sess_existing"
+	storeSessionTools(prev, []model.Tool{{Type: "function", Function: model.Function{Name: "shell"}}})
 	req := &model.InternalLLMRequest{
 		PreviousResponseID: &prev,
 		Tools:              []model.Tool{{Type: "function", Function: model.Function{Name: "my_tool"}}},
@@ -95,5 +94,17 @@ func TestRestoreCodexToolsForAnthropicKeepsExistingTools(t *testing.T) {
 	ra.restoreCodexToolsForAnthropic()
 	if len(req.Tools) != 1 || req.Tools[0].Function.Name != "my_tool" {
 		t.Fatalf("existing tools must be preserved, got %#v", req.Tools)
+	}
+}
+
+// A continuation whose session is gone (expired / never stored) must NOT get a
+// wrong-named default injected — leave tools empty (the old defaultCodexTools bug).
+func TestRestoreCodexToolsForAnthropicSkipsWhenNoSession(t *testing.T) {
+	prev := "resp_prev_sess_absent_never_stored"
+	req := &model.InternalLLMRequest{PreviousResponseID: &prev}
+	ra := newCodexAnthropicAttempt(t, req, true)
+	ra.restoreCodexToolsForAnthropic()
+	if len(req.Tools) != 0 {
+		t.Fatalf("missing session must not inject default tools, got %#v", req.Tools)
 	}
 }

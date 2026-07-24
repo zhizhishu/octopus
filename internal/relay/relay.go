@@ -1230,10 +1230,12 @@ func (ra *relayAttempt) applyTransformOptions() {
 	// Plain responses clients (e.g. Cursor) targeting a Claude channel rely on
 	// previous_response_id, which Anthropic does not support. Replay the prior
 	// turn's history into messages so multi-turn conversations continue.
-	ra.bridgeResponsesHistoryForAnthropic()
-	// A codex CLI continuation omits its tools (relying on previous_response_id);
-	// Anthropic is stateless, so restore the codex tool set or the agent stalls.
+	// Restore the codex client's real tools from the session BEFORE the history
+	// bridge clears previous_response_id (the session is keyed by it); otherwise a
+	// codex continuation reaches the stateless Anthropic upstream with no tools and
+	// the mapped Claude model stalls (narrates instead of calling tools).
 	ra.restoreCodexToolsForAnthropic()
+	ra.bridgeResponsesHistoryForAnthropic()
 
 	if ra.channel.AnthropicContext1M {
 		ra.internalRequest.TransformOptions.AnthropicOneMillionBeta = true
