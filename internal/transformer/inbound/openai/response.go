@@ -564,13 +564,19 @@ func (i *ResponseInbound) handleImageContent(parts []model.MessageContentPart) [
 func (i *ResponseInbound) handleToolCalls(toolCalls []model.ToolCall) [][]byte {
 	var events [][]byte
 
-	// A tool call closes an open reasoning item (its thinking run ended). It does
-	// NOT close the message item or any sibling tool item: parallel/interleaved tool
-	// calls stay open and all finalize together at the finish boundary, and an open
-	// message finalizes there too. Force-closing a sibling here would truncate its
-	// arguments; force-closing a still-incomplete tool when reasoning interleaves (R1)
-	// would orphan its later argument deltas — the very bug this refactor kills.
+	// A tool call closes an open reasoning item AND an open message item before the
+	// function_call item is announced. The Responses stream is sequential: the message's
+	// output_item.done must be emitted before the next output_item.added, or a codex
+	// client's item state machine errors ("... without active item"). This mirrors the
+	// ordering every reference Responses emitter uses — CLIProxyAPI finalizes the message
+	// "to match Codex expected ordering" / "Responses streaming requires message done
+	// events before the next output_item.added". Text arriving after a tool simply opens
+	// a fresh message item. It still does NOT force-close a sibling tool item: parallel
+	// tool calls stay open and finalize together at the finish boundary — force-closing a
+	// still-incomplete tool when reasoning interleaves (R1) would orphan its later
+	// argument deltas, the very bug this refactor kills.
 	events = append(events, i.closeReasoningItem()...)
+	events = append(events, i.closeMessageItem()...)
 
 	for _, tc := range toolCalls {
 		toolCallIndex := tc.Index
