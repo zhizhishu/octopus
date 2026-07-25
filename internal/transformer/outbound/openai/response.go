@@ -1266,6 +1266,21 @@ func convertAssistantMessageToResponses(msg model.Message) []ResponsesItem {
 
 	// Handle tool calls
 	for _, tc := range msg.ToolCalls {
+		// A custom (freeform) tool call must be re-emitted as a custom_tool_call
+		// carrying its freeform payload in `input`, not a function_call carrying
+		// `arguments`; the internal marker (model.ToolCallTypeCustom) is the only
+		// signal that survives, and a codex upstream that registered a custom tool
+		// rejects a function_call in its place. Mirror the response-reading path
+		// (the custom_tool_call case in convertToLLMResponseFromResponses).
+		if tc.Type == model.ToolCallTypeCustom {
+			items = append(items, ResponsesItem{
+				Type:   "custom_tool_call",
+				CallID: tc.ID,
+				Name:   tc.Function.Name,
+				Input:  tc.Function.Arguments,
+			})
+			continue
+		}
 		items = append(items, ResponsesItem{
 			Type:      "function_call",
 			CallID:    tc.ID,

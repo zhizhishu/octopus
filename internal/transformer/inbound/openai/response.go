@@ -1827,18 +1827,30 @@ func convertItemToMessage(item *ResponsesItem) (*model.Message, error) {
 		if name == "" {
 			name = strings.TrimSuffix(strings.TrimSpace(item.Type), "_call")
 		}
-		return &model.Message{
-			Role: "assistant",
-			ToolCalls: []model.ToolCall{
-				{
-					ID:   callID,
-					Type: "function",
-					Function: model.FunctionCall{
-						Name:      name,
-						Arguments: lo.FromPtr(item.Arguments),
-					},
-				},
+		toolCall := model.ToolCall{
+			ID:   callID,
+			Type: "function",
+			Function: model.FunctionCall{
+				Name:      name,
+				Arguments: lo.FromPtr(item.Arguments),
 			},
+		}
+		// A custom (freeform) tool call carries its payload in `input`, not
+		// `arguments`, and must keep its custom nature so the outbound side
+		// re-emits a custom_tool_call rather than a function_call — a codex
+		// client that registered a custom tool rejects a function_call in its
+		// place, and on multi-turn the freeform payload would otherwise be
+		// dropped. Mirror the client-facing emit path (the custom branches in
+		// handleToolCalls / closeToolItem / convertToResponsesAPIResponse).
+		if item.Type == "custom_tool_call" {
+			toolCall.Type = model.ToolCallTypeCustom
+			if item.Input != nil {
+				toolCall.Function.Arguments = lo.FromPtr(item.Input)
+			}
+		}
+		return &model.Message{
+			Role:      "assistant",
+			ToolCalls: []model.ToolCall{toolCall},
 		}, nil
 
 	case isResponsesToolOutputItemType(item.Type):
