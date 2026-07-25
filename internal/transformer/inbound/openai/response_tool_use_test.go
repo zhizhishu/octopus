@@ -591,7 +591,7 @@ func TestResponseInboundKeepsInterleavedParallelToolCallsIntact(t *testing.T) {
 			}
 			assertOutputIndexAgrees(t, itemOutputIndex, ev.Item.ID, *ev.OutputIndex)
 			if ev.Type == "response.output_item.done" {
-				finalArgs[ev.Item.ID] = ev.Item.Arguments
+				finalArgs[ev.Item.ID] = derefString(ev.Item.Arguments)
 			}
 		case "response.function_call_arguments.delta":
 			if ev.ItemID == nil || ev.OutputIndex == nil {

@@ -627,12 +627,16 @@ func (i *ResponseInbound) handleToolCalls(toolCalls []model.ToolCall) [][]byte {
 					Input:  lo.ToPtr(""),
 				}
 			} else {
+				// arguments is an explicit empty string on the in-progress added
+				// event — the genuine OpenAI Responses shape (sub2api emits it too).
+				// The real value is streamed via *.delta and finalized on *.done.
 				item = &ResponsesItem{
-					ID:     itemID,
-					Type:   "function_call",
-					Status: lo.ToPtr("in_progress"),
-					CallID: callID,
-					Name:   tc.Function.Name,
+					ID:        itemID,
+					Type:      "function_call",
+					Status:    lo.ToPtr("in_progress"),
+					CallID:    callID,
+					Name:      tc.Function.Name,
+					Arguments: lo.ToPtr(""),
 				}
 			}
 
@@ -893,12 +897,13 @@ func (i *ResponseInbound) closeToolItem(idx int) [][]byte {
 		return events
 	}
 
-	// Emit function_call_arguments.done
+	// Emit function_call_arguments.done. Empty upstream arguments are normalized to
+	// "{}" so the codex client's json.Unmarshal never fails (mirrors sub2api).
 	events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
 		Type:        "response.function_call_arguments.done",
 		ItemID:      &itemID,
 		OutputIndex: lo.ToPtr(outputIdx),
-		Arguments:   tc.Function.Arguments,
+		Arguments:   normalizeToolArguments(tc.Function.Arguments),
 	}))
 
 	// Emit output_item.done
@@ -908,7 +913,7 @@ func (i *ResponseInbound) closeToolItem(idx int) [][]byte {
 		Status:    lo.ToPtr("completed"),
 		CallID:    tc.ID,
 		Name:      tc.Function.Name,
-		Arguments: tc.Function.Arguments,
+		Arguments: lo.ToPtr(normalizeToolArguments(tc.Function.Arguments)),
 	}
 
 	events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
@@ -919,6 +924,19 @@ func (i *ResponseInbound) closeToolItem(idx int) [][]byte {
 
 	i.toolCallItemStarted[idx] = false
 	return events
+}
+
+// normalizeToolArguments returns a valid-JSON arguments string for a function_call
+// output item. An empty upstream arguments string is normalized to "{}" so a codex
+// client's json.Unmarshal on it never fails — mirroring sub2api's
+// chatcompletions_to_responses (args == "" → "{}"). A non-empty value passes through
+// byte-for-byte; real tool arguments are never rewritten. Only function_call items use
+// this — a custom_tool_call carries its freeform payload in Input, where "" is valid.
+func normalizeToolArguments(args string) string {
+	if args == "" {
+		return "{}"
+	}
+	return args
 }
 
 // GetInternalResponse returns the complete internal response for logging, statistics, etc.
@@ -1143,9 +1161,17 @@ type ResponsesItem struct {
 	Annotations *[]ResponsesAnnotation `json:"annotations,omitempty"`
 
 	// Function call fields
-	CallID    string `json:"call_id,omitempty"`
-	Name      string `json:"name,omitempty"`
-	Arguments string `json:"arguments,omitempty"`
+	CallID string `json:"call_id,omitempty"`
+	Name   string `json:"name,omitempty"`
+	// Arguments is a pointer for the same reason Input is (below): a function_call's
+	// in-progress output_item.added event must carry an explicit empty string
+	// ("arguments":""), the genuine OpenAI Responses shape — sub2api's passthrough
+	// relay confirms real upstream emits it — and omitempty on a bare string would
+	// drop it. A nil pointer still omits the field, so message/reasoning items that
+	// never set it stay byte-for-byte unchanged. Finalized function_call values are
+	// normalized to valid JSON ("{}" when empty) via normalizeToolArguments so a
+	// codex client's json.Unmarshal never fails.
+	Arguments *string `json:"arguments,omitempty"`
 	// Input carries a custom_tool_call's freeform payload. It is a pointer so an
 	// explicit empty string ("input":"") can be emitted on the in-progress
 	// output_item.added event, matching the genuine upstream shape, while
@@ -1430,18 +1456,18 @@ func (c *ResponsesErrorCode) UnmarshalJSON(data []byte) error {
 }
 
 type ResponsesStreamEvent struct {
-	Type           string                `json:"type"`
-	SequenceNumber int                   `json:"sequence_number"`
-	Response       *ResponsesResponse    `json:"response,omitempty"`
-	OutputIndex    *int                  `json:"output_index,omitempty"`
-	Item           *ResponsesItem        `json:"item,omitempty"`
-	ItemID         *string               `json:"item_id,omitempty"`
-	ContentIndex   *int                  `json:"content_index,omitempty"`
-	Delta          string                `json:"delta,omitempty"`
-	Text           string                `json:"text,omitempty"`
-	Name           string                `json:"name,omitempty"`
-	CallID         string                `json:"call_id,omitempty"`
-	Arguments      string                `json:"arguments,omitempty"`
+	Type           string             `json:"type"`
+	SequenceNumber int                `json:"sequence_number"`
+	Response       *ResponsesResponse `json:"response,omitempty"`
+	OutputIndex    *int               `json:"output_index,omitempty"`
+	Item           *ResponsesItem     `json:"item,omitempty"`
+	ItemID         *string            `json:"item_id,omitempty"`
+	ContentIndex   *int               `json:"content_index,omitempty"`
+	Delta          string             `json:"delta,omitempty"`
+	Text           string             `json:"text,omitempty"`
+	Name           string             `json:"name,omitempty"`
+	CallID         string             `json:"call_id,omitempty"`
+	Arguments      string             `json:"arguments,omitempty"`
 	// Input carries the full freeform tool input on a
 	// response.custom_tool_call_input.done event.
 	Input        string                `json:"input,omitempty"`
@@ -1809,7 +1835,7 @@ func convertItemToMessage(item *ResponsesItem) (*model.Message, error) {
 					Type: "function",
 					Function: model.FunctionCall{
 						Name:      name,
-						Arguments: item.Arguments,
+						Arguments: lo.FromPtr(item.Arguments),
 					},
 				},
 			},
@@ -2085,7 +2111,7 @@ func convertToResponsesAPIResponse(resp *model.InternalLLMResponse) *ResponsesRe
 					Type:      "function_call",
 					CallID:    callID,
 					Name:      toolCall.Function.Name,
-					Arguments: toolCall.Function.Arguments,
+					Arguments: lo.ToPtr(normalizeToolArguments(toolCall.Function.Arguments)),
 					Status:    lo.ToPtr("completed"),
 				})
 			}

@@ -360,7 +360,7 @@ func TestResponseInboundEmptyIDParallelToolCallsNeverOrphan(t *testing.T) {
 			}
 			if ev.Type == "response.output_item.done" {
 				toolDones++
-				finalArgs[ev.Item.ID] = ev.Item.Arguments
+				finalArgs[ev.Item.ID] = derefString(ev.Item.Arguments)
 			}
 		}
 	}
@@ -538,7 +538,7 @@ func TestResponseInboundToolCallNameBackfilledFromLaterFrame(t *testing.T) {
 	for _, ev := range events {
 		if ev.Type == "response.output_item.done" && ev.Item != nil && ev.Item.Type == "function_call" {
 			name = ev.Item.Name
-			args = ev.Item.Arguments
+			args = derefString(ev.Item.Arguments)
 		}
 	}
 	if name != "get_weather" {
