@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/samber/lo"
@@ -778,10 +779,50 @@ func findUserMessageByIndex(allMessages []model.Message, messageIndex int) *mode
 	return nil
 }
 
+// claudeToolIDSanitizer matches any character not allowed in a Claude
+// tool_use.id / tool_result.tool_use_id (Claude requires ^[a-zA-Z0-9_-]+$).
+var claudeToolIDSanitizer = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
+
+// sanitizeClaudeToolID replaces characters a non-compliant upstream may put in a
+// tool id (e.g. '/', '.', ':') with '_', so Claude does not reject the request.
+// The mapping is deterministic, so a tool_use.id and its paired
+// tool_result.tool_use_id — both derived from the same original id — stay equal
+// and the pairing is preserved. Empty ids are left as-is (a synthetic replacement
+// would risk mismatching the pair), mirroring CLIProxyAPI's SanitizeClaudeToolID.
+func sanitizeClaudeToolID(id string) string {
+	if id == "" {
+		return ""
+	}
+	return claudeToolIDSanitizer.ReplaceAllString(id, "_")
+}
+
+func sanitizeClaudeToolIDPtr(id *string) *string {
+	if id == nil {
+		return nil
+	}
+	s := sanitizeClaudeToolID(*id)
+	return &s
+}
+
+// toolUseInput returns a valid Claude tool_use.input. Claude requires input to be
+// a JSON object, so arguments are used verbatim only when they are a valid JSON
+// object; empty, syntactically invalid, or non-object arguments (including a codex
+// freeform/custom tool's non-JSON payload) collapse to "{}" instead of being sent
+// as-is and rejected — the same guard the reference relays use (CLIProxyAPI checks
+// gjson.Valid && IsObject, axonhub SafeJSONRawMessage).
+func toolUseInput(arguments string) json.RawMessage {
+	if arguments != "" && json.Valid([]byte(arguments)) {
+		if trimmed := strings.TrimSpace(arguments); len(trimmed) > 0 && trimmed[0] == '{' {
+			return json.RawMessage(arguments)
+		}
+	}
+	return json.RawMessage("{}")
+}
+
 func convertToolResultBlock(msg model.Message) anthropicModel.MessageContentBlock {
 	block := anthropicModel.MessageContentBlock{
 		Type:         "tool_result",
-		ToolUseID:    msg.ToolCallID,
+		ToolUseID:    sanitizeClaudeToolIDPtr(msg.ToolCallID),
 		CacheControl: convertCacheControl(msg.CacheControl),
 		IsError:      msg.ToolCallIsError,
 	}
@@ -888,17 +929,11 @@ func convertAssistantWithToolCalls(msg model.Message) []anthropicModel.MessagePa
 
 	// Add tool calls
 	for _, toolCall := range msg.ToolCalls {
-		input := json.RawMessage("{}")
-		if toolCall.Function.Arguments != "" {
-			if json.Valid([]byte(toolCall.Function.Arguments)) {
-				input = json.RawMessage(toolCall.Function.Arguments)
-			}
-		}
 		blocks = append(blocks, anthropicModel.MessageContentBlock{
 			Type:         "tool_use",
-			ID:           toolCall.ID,
+			ID:           sanitizeClaudeToolID(toolCall.ID),
 			Name:         &toolCall.Function.Name,
-			Input:        input,
+			Input:        toolUseInput(toolCall.Function.Arguments),
 			CacheControl: convertCacheControl(toolCall.CacheControl),
 		})
 	}
@@ -1003,17 +1038,11 @@ func convertMultiplePartContent(msg model.Message) anthropicModel.MessageContent
 
 	// Add tool calls if present
 	for _, toolCall := range msg.ToolCalls {
-		input := json.RawMessage("{}")
-		if toolCall.Function.Arguments != "" {
-			if json.Valid([]byte(toolCall.Function.Arguments)) {
-				input = json.RawMessage(toolCall.Function.Arguments)
-			}
-		}
 		blocks = append(blocks, anthropicModel.MessageContentBlock{
 			Type:         "tool_use",
-			ID:           toolCall.ID,
+			ID:           sanitizeClaudeToolID(toolCall.ID),
 			Name:         &toolCall.Function.Name,
-			Input:        input,
+			Input:        toolUseInput(toolCall.Function.Arguments),
 			CacheControl: convertCacheControl(toolCall.CacheControl),
 		})
 	}

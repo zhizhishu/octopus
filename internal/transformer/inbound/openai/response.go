@@ -927,13 +927,19 @@ func (i *ResponseInbound) closeToolItem(idx int) [][]byte {
 }
 
 // normalizeToolArguments returns a valid-JSON arguments string for a function_call
-// output item. An empty upstream arguments string is normalized to "{}" so a codex
-// client's json.Unmarshal on it never fails — mirroring sub2api's
-// chatcompletions_to_responses (args == "" → "{}"). A non-empty value passes through
-// byte-for-byte; real tool arguments are never rewritten. Only function_call items use
-// this — a custom_tool_call carries its freeform payload in Input, where "" is valid.
+// output item, so a codex client's json.Unmarshal on it never fails. An empty
+// upstream arguments string is normalized to "{}" (mirroring sub2api's
+// chatcompletions_to_responses, args == "" → "{}"); a non-empty but syntactically
+// invalid value (a truncated/garbled upstream chunk) also collapses to "{}", the
+// same defensive fallback the reference relays use (CLIProxyAPI FixJSON+gjson.Valid,
+// axonhub SafeJSONRawMessage, new-api). Any valid JSON passes through byte-for-byte —
+// real tool arguments are never rewritten. Only function_call items use this; a
+// custom_tool_call carries its freeform (non-JSON) payload in Input, where it is valid.
 func normalizeToolArguments(args string) string {
 	if args == "" {
+		return "{}"
+	}
+	if !json.Valid([]byte(args)) {
 		return "{}"
 	}
 	return args
