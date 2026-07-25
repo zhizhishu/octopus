@@ -415,11 +415,17 @@ func (i *ResponseInbound) handleReasoningContent(content *string) [][]byte {
 		i.reasoningOutputIdx = i.allocOutputIndex()
 		itemID := i.reasoningItemID
 
+		// encrypted_content is emitted as an explicit "" on the in-progress added
+		// event (the signature arrives later via signature_delta and is surfaced on
+		// output_item.done). A real OpenAI reasoning item and the reference relays
+		// (CLIProxyAPI) always carry encrypted_content on the reasoning item; a codex
+		// client uses it, together with the summary array, to register the item.
 		item := &ResponsesItem{
-			ID:      itemID,
-			Type:    "reasoning",
-			Status:  lo.ToPtr("in_progress"),
-			Summary: []ResponsesReasoningSummary{},
+			ID:               itemID,
+			Type:             "reasoning",
+			Status:           lo.ToPtr("in_progress"),
+			Summary:          []ResponsesReasoningSummary{},
+			EncryptedContent: lo.ToPtr(""),
 		}
 
 		events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
@@ -428,13 +434,14 @@ func (i *ResponseInbound) handleReasoningContent(content *string) [][]byte {
 			Item:        item,
 		}))
 
-		// Emit reasoning_summary_part.added
+		// Emit reasoning_summary_part.added (with an explicit empty text, matching the
+		// genuine OpenAI shape and CLIProxyAPI, so the client opens summary part 0).
 		events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
 			Type:         "response.reasoning_summary_part.added",
 			ItemID:       &itemID,
 			OutputIndex:  lo.ToPtr(i.reasoningOutputIdx),
 			SummaryIndex: lo.ToPtr(0),
-			Part:         &ResponsesContentPart{Type: "summary_text"},
+			Part:         &ResponsesContentPart{Type: "summary_text", Text: lo.ToPtr("")},
 		}))
 	}
 
@@ -1203,6 +1210,32 @@ type ResponsesItem struct {
 	// Reasoning fields
 	Summary          []ResponsesReasoningSummary `json:"summary,omitempty"`
 	EncryptedContent *string                     `json:"encrypted_content,omitempty"`
+}
+
+// MarshalJSON guarantees a reasoning item always carries a "summary" array, even
+// when empty. A codex client allocates the summary container from the
+// output_item.added(reasoning) event; if omitempty drops an empty summary, the
+// following response.reasoning_summary_part.added / reasoning_summary_text.delta
+// reference a summary slot the client never created and it errors ("...
+// without active item"). Real OpenAI and the reference relays (CLIProxyAPI) always
+// emit "summary":[] on the reasoning item. Other item types are unaffected.
+func (item ResponsesItem) MarshalJSON() ([]byte, error) {
+	type alias ResponsesItem
+	data, err := json.Marshal(alias(item))
+	if err != nil {
+		return nil, err
+	}
+	if item.Type != "reasoning" || len(item.Summary) != 0 {
+		return data, nil
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, err
+	}
+	if _, exists := m["summary"]; !exists {
+		m["summary"] = json.RawMessage("[]")
+	}
+	return json.Marshal(m)
 }
 
 func (item *ResponsesItem) UnmarshalJSON(data []byte) error {
