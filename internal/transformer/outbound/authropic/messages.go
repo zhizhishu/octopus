@@ -666,16 +666,85 @@ func convertSystemPrompt(req *model.InternalLLMRequest) *anthropicModel.SystemPr
 	}
 }
 
+// filterOutResponsesCustomTools removes OpenAI Responses custom (freeform) tool
+// calls — and the tool_result messages paired to them — from the history before
+// it is encoded for a Claude upstream. Anthropic has no freeform-tool concept:
+// tool_use.input must be a JSON object, so a custom tool's freeform payload
+// cannot be represented. Rather than send Claude a tool_use with an empty "{}"
+// input (which makes the model "forget" the call and can desync tool_use /
+// tool_result pairing into a 400), the custom call and its result are dropped
+// together. Standard function tool calls are untouched. Mirrors axonhub's
+// FilterOutResponseCustomToolMessages.
+func filterOutResponsesCustomTools(messages []model.Message) []model.Message {
+	removed := make(map[string]struct{})
+	filtered := make([]model.Message, 0, len(messages))
+
+	for _, msg := range messages {
+		// Drop a tool result whose paired call was a stripped custom tool.
+		if msg.Role == "tool" && msg.ToolCallID != nil {
+			if _, ok := removed[*msg.ToolCallID]; ok {
+				continue
+			}
+		}
+
+		if len(msg.ToolCalls) == 0 {
+			filtered = append(filtered, msg)
+			continue
+		}
+
+		kept := make([]model.ToolCall, 0, len(msg.ToolCalls))
+		for _, tc := range msg.ToolCalls {
+			if tc.Type == model.ToolCallTypeCustom {
+				if tc.ID != "" {
+					removed[tc.ID] = struct{}{}
+				}
+				continue
+			}
+			kept = append(kept, tc)
+		}
+
+		cloned := msg
+		cloned.ToolCalls = kept
+		// Drop an assistant turn that carried nothing but the stripped custom
+		// tool call, so we don't encode an empty message.
+		if isEmptyAfterCustomToolFilter(cloned) {
+			continue
+		}
+		filtered = append(filtered, cloned)
+	}
+
+	return filtered
+}
+
+func isEmptyAfterCustomToolFilter(msg model.Message) bool {
+	if len(msg.ToolCalls) > 0 {
+		return false
+	}
+	if msg.Content.Content != nil && *msg.Content.Content != "" {
+		return false
+	}
+	if len(msg.Content.MultipleContent) > 0 {
+		return false
+	}
+	if msg.Refusal != "" || msg.ToolCallID != nil || msg.FunctionCall != nil ||
+		msg.ReasoningContent != nil || msg.Reasoning != nil || msg.ReasoningSignature != nil ||
+		msg.Audio != nil || len(msg.Images) > 0 {
+		return false
+	}
+	return true
+}
+
 func convertMessages(req *model.InternalLLMRequest) []anthropicModel.MessageParam {
-	messages := make([]anthropicModel.MessageParam, 0, len(req.Messages))
+	filteredMessages := filterOutResponsesCustomTools(req.Messages)
+	messages := make([]anthropicModel.MessageParam, 0, len(filteredMessages))
 	processedIndexes := make(map[int]bool)
 
-	for _, msg := range req.Messages {
+	for _, msg := range filteredMessages {
 		if msg.Role == "system" {
 			continue
 		}
 
-		converted := convertSingleMessage(msg, req.Messages, processedIndexes)
+		converted := convertSingleMessage(msg, filteredMessages, processedIndexes)
 		for _, convertedMsg := range converted {
 			// Anthropic API 要求消息角色必须交替出现（user/assistant/user/assistant）。
 			// 当 OpenAI 格式的多个连续 tool 消息被各自转换为独立的 user 消息时，
