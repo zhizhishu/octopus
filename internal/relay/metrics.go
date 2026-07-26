@@ -564,19 +564,24 @@ func (m *RelayMetrics) saveLog(ctx context.Context, err error, duration time.Dur
 		relayLog.Ftut = int(m.FirstTokenTime.Sub(m.StartTime).Milliseconds())
 	}
 
-	// Usage
+	// Usage. Token/cost fields come from m.Stats, which holds either the real
+	// upstream usage or the local estimate (see SetInternalResponse). This keeps the
+	// logged tokens consistent with the cost/billing that m.Stats also feeds — a
+	// locally-estimated usage would otherwise log 0 tokens while the cost reflected
+	// the estimate. usage_missing_reason (from resp.Usage) still flags that the count
+	// is estimated, not upstream-authoritative. The detailed cache-creation breakdown
+	// is only available from the raw upstream usage.
 	relayLog.UsageSource, relayLog.UsageMissingReason = usageAuditFromInternalResponse(m.InternalResponse, err)
+	relayLog.InputTokens = int(m.Stats.InputToken)
+	relayLog.OutputTokens = int(m.Stats.OutputToken)
+	relayLog.CacheHitTokens = int(m.Stats.CacheHitToken)
+	relayLog.CacheWriteTokens = int(m.Stats.CacheWriteToken)
+	relayLog.CacheInputTokens = int(m.Stats.CacheInputToken)
+	relayLog.CacheHitRate = cacheHitRate(m.Stats.CacheHitToken, m.Stats.CacheInputToken)
+	relayLog.Cost = m.Stats.InputCost + m.Stats.OutputCost
 	if m.InternalResponse != nil && m.InternalResponse.Usage != nil {
-		relayLog.InputTokens = int(m.InternalResponse.Usage.PromptTokens)
-		relayLog.OutputTokens = int(m.InternalResponse.Usage.CompletionTokens)
-		cacheHit, cacheWrite, cacheInput := usageCacheStats(m.InternalResponse.Usage)
-		relayLog.CacheHitTokens = int(cacheHit)
-		relayLog.CacheWriteTokens = int(cacheWrite)
 		relayLog.CacheWrite5mTokens = int(m.InternalResponse.Usage.CacheCreation5mInputTokens)
 		relayLog.CacheWrite1hTokens = int(m.InternalResponse.Usage.CacheCreation1hInputTokens)
-		relayLog.CacheInputTokens = int(cacheInput)
-		relayLog.CacheHitRate = cacheHitRate(cacheHit, cacheInput)
-		relayLog.Cost = m.Stats.InputCost + m.Stats.OutputCost
 	}
 
 	// 请求内容

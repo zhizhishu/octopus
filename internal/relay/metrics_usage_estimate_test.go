@@ -56,6 +56,28 @@ func TestSetInternalResponseNoEstimateWhenEmpty(t *testing.T) {
 	}
 }
 
+// TestSetInternalResponseEstimatesOnZeroCompletion covers the main Gemini-style
+// case: usage IS present but reports zero completion tokens while content was
+// delivered — completion is estimated locally, and an already-present prompt count
+// is preserved (not re-estimated).
+func TestSetInternalResponseEstimatesOnZeroCompletion(t *testing.T) {
+	m := NewRelayMetrics(0, 0, "", "gpt-4", nil)
+	resp := &transformerModel.InternalLLMResponse{
+		Usage: &transformerModel.Usage{PromptTokens: 5, CompletionTokens: 0},
+		Choices: []transformerModel.Choice{{
+			Index:   0,
+			Message: &transformerModel.Message{Role: "assistant", Content: transformerModel.MessageContent{Content: estTestPtr("A reasonably long completion that clearly carries more than zero tokens of content.")}},
+		}},
+	}
+	m.SetInternalResponse(resp, "gpt-4")
+	if m.Stats.OutputToken == 0 {
+		t.Error("zero-completion-with-content should be estimated (>0)")
+	}
+	if m.Stats.InputToken != 5 {
+		t.Errorf("existing prompt tokens should be preserved (5), got %d", m.Stats.InputToken)
+	}
+}
+
 // TestSetInternalResponseKeepsUpstreamUsage verifies a real upstream usage is used
 // verbatim (estimate does not override a non-zero completion count).
 func TestSetInternalResponseKeepsUpstreamUsage(t *testing.T) {

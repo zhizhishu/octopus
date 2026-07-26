@@ -69,11 +69,13 @@ function classifyError(err?: string): 'capacity' | 'timeout' | 'other' {
 // 兜底脱敏：上游报错原文万一带出上游身份（URL / 域名 / IP），一律抹成「上游」，绝不让上游身份泄漏到页面。
 // 通用规则（不硬编码任何单一上游马甲名，公开仓也不留马甲字面量）：先抹整条 URL，再抹裸域名（含端口），再抹 IPv4。
 function redactUpstreamIdentity(text: string): string {
+    // 常见代码/文件扩展名：错误串里的 `config.json` / `node.js` / `main.go` 不是上游域名，别误抹。
+    const FILE_EXT = 'js|mjs|cjs|jsx|ts|tsx|go|py|rs|rb|php|java|kt|c|h|cc|cpp|hpp|cs|swift|json|ya?ml|toml|ini|env|md|txt|csv|log|html?|css|scss|sh|bash|zsh|sql|proto|lock|png|jpe?g|gif|svg|webp|ico|pdf|zip|tar|gz|exe|dll|so|dylib|bin|db|sqlite';
     return text
-        // 整条 URL（http/https）
+        // 整条 URL（http/https）——最明确的泄漏向量
         .replace(/https?:\/\/[^\s"'）)\]]+/gi, '上游')
-        // 裸域名 host（两段以上、末段 2+ 字母 TLD，允许可选 :端口）
-        .replace(/\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}(?::\d{2,5})?\b/gi, '上游')
+        // 裸域名 host（两段以上、末段 2+ 字母 TLD、可选 :端口）；末段是常见文件扩展名的排除掉
+        .replace(new RegExp(`\\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\.)+(?!(?:${FILE_EXT})\\b)[a-z]{2,}(?::\\d{2,5})?\\b`, 'gi'), '上游')
         // IPv4（含可选端口）
         .replace(/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d{2,5})?\b/g, '上游');
 }
