@@ -681,38 +681,27 @@ func filterOutResponsesCustomTools(messages []model.Message) []model.Message {
 	// (out-of-order / dirty history) is still recognized as an orphan and dropped,
 	// instead of being encoded for Claude without a matching tool_use (which the
 	// API rejects with a 400). A single forward pass could not see the later call.
+	// Only non-empty ids are tracked — an id-less custom call cannot be paired to a
+	// specific result, so we do not blanket-drop every id-less tool_result (that
+	// would delete legitimate ones); this mirrors axonhub's FilterOutResponse-
+	// CustomToolMessages, which likewise matches only by concrete id.
 	removed := make(map[string]struct{})
-	hadIDlessCustom := false
 	for _, msg := range messages {
 		for _, tc := range msg.ToolCalls {
-			if tc.Type == model.ToolCallTypeCustom {
-				if tc.ID != "" {
-					removed[tc.ID] = struct{}{}
-				} else {
-					hadIDlessCustom = true
-				}
+			if tc.Type == model.ToolCallTypeCustom && tc.ID != "" {
+				removed[tc.ID] = struct{}{}
 			}
 		}
 	}
-	if len(removed) == 0 && !hadIDlessCustom {
+	if len(removed) == 0 {
 		return messages
 	}
 
 	// Pass 2: drop the custom tool calls and their paired tool_results.
 	filtered := make([]model.Message, 0, len(messages))
 	for _, msg := range messages {
-		if msg.Role == "tool" {
-			id := ""
-			if msg.ToolCallID != nil {
-				id = *msg.ToolCallID
-			}
-			if id != "" {
-				if _, ok := removed[id]; ok {
-					continue
-				}
-			} else if hadIDlessCustom {
-				// A tool_result with no id can only pair with an id-less custom call;
-				// drop it so we never emit an unpaired tool_result to Claude.
+		if msg.Role == "tool" && msg.ToolCallID != nil {
+			if _, ok := removed[*msg.ToolCallID]; ok {
 				continue
 			}
 		}
