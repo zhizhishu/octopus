@@ -47,6 +47,11 @@ type RelayMetrics struct {
 	SessionKey    string
 	SessionSource string
 
+	// usageEstimated is true when Stats' token/cost figures were counted locally
+	// because the upstream omitted usage (see SetInternalResponse). saveLog surfaces
+	// this as usage_source=local_estimate so the numbers read as an estimate.
+	usageEstimated bool
+
 	// ChannelKeyRemark 记录最终(成功/已提交)尝试所用渠道 Key 的备注, 仅供日志展示。
 	// 重试会切换 Key, 因此由 relay 在成功/已写出下游的那一刻回填最终 Key 的备注。
 	ChannelKeyRemark string
@@ -122,6 +127,7 @@ func (m *RelayMetrics) SetInternalResponse(resp *transformerModel.InternalLLMRes
 				estimated.PromptTokens = int64(estimatePromptTokens(m.InternalRequest, actualModel))
 			}
 			usage = estimated
+			m.usageEstimated = true
 		}
 	}
 
@@ -572,6 +578,11 @@ func (m *RelayMetrics) saveLog(ctx context.Context, err error, duration time.Dur
 	// is estimated, not upstream-authoritative. The detailed cache-creation breakdown
 	// is only available from the raw upstream usage.
 	relayLog.UsageSource, relayLog.UsageMissingReason = usageAuditFromInternalResponse(m.InternalResponse, err)
+	if m.usageEstimated {
+		// Tokens/cost were counted locally because the upstream omitted usage; mark the
+		// source as an estimate (keep the missing reason to say why it was estimated).
+		relayLog.UsageSource = model.RelayLogUsageSourceLocalEstimate
+	}
 	relayLog.InputTokens = int(m.Stats.InputToken)
 	relayLog.OutputTokens = int(m.Stats.OutputToken)
 	relayLog.CacheHitTokens = int(m.Stats.CacheHitToken)

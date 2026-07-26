@@ -21,6 +21,10 @@ const (
 	RelayLogUsageSourceUpstream        = "upstream_usage"
 	RelayLogUsageSourceNoUsage         = "no_usage"
 	RelayLogUsageSourceLocalValidation = "local_validation"
+	// RelayLogUsageSourceLocalEstimate marks a log whose token/cost figures were
+	// counted locally (via the tokenizer) because the upstream omitted usage — the
+	// numbers are an estimate, not upstream-authoritative.
+	RelayLogUsageSourceLocalEstimate = "local_estimate"
 
 	RelayLogUsageMissingReasonClientAborted        = "client_aborted"
 	RelayLogUsageMissingReasonNoInternalResponse   = "no_internal_response"

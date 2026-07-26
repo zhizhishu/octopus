@@ -65,6 +65,7 @@ const USAGE_SOURCE_LABELS: Record<string, string> = {
     upstream_usage: '上游回报',
     no_usage: '无用量',
     local_validation: '本地校验',
+    local_estimate: '本地估算',
 };
 
 /** usage_missing_reason -> 人话（为什么没有用量数据） */

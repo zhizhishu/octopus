@@ -41,6 +41,9 @@ func TestSetInternalResponseEstimatesUsageWhenUpstreamOmitsIt(t *testing.T) {
 	if resp.Usage != nil {
 		t.Errorf("resp.Usage must stay nil so the usage-missing flag is preserved, got %+v", resp.Usage)
 	}
+	if !m.usageEstimated {
+		t.Error("usageEstimated must be set so the log marks source=local_estimate")
+	}
 }
 
 // TestSetInternalResponseNoEstimateWhenEmpty verifies an empty response (no
@@ -92,5 +95,8 @@ func TestSetInternalResponseKeepsUpstreamUsage(t *testing.T) {
 	m.SetInternalResponse(resp, "gpt-4")
 	if m.Stats.OutputToken != 22 || m.Stats.InputToken != 11 {
 		t.Errorf("real upstream usage must be used verbatim, got in=%d out=%d", m.Stats.InputToken, m.Stats.OutputToken)
+	}
+	if m.usageEstimated {
+		t.Error("usageEstimated must be false when real upstream usage is present")
 	}
 }
