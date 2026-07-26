@@ -85,7 +85,23 @@ func GetLastUpdateTime() time.Time {
 }
 
 func GetLLMPrice(modelName string) *model.LLMPrice {
-	modelName = strings.ToLower(modelName)
+	name := strings.ToLower(strings.TrimSpace(modelName))
+	if p := lookupLLMPrice(name); p != nil {
+		return p
+	}
+	// Fallback: some upstreams report a vendor-prefixed model name (e.g.
+	// "openai/gpt-x", "vendor:gpt-x") that isn't in the price table under its full
+	// form. Retry with the last "/" or ":" segment so billing isn't silently zeroed
+	// just because the upstream full name doesn't match the catalog key verbatim.
+	if i := strings.LastIndexAny(name, "/:"); i >= 0 && i+1 < len(name) {
+		if p := lookupLLMPrice(name[i+1:]); p != nil {
+			return p
+		}
+	}
+	return nil
+}
+
+func lookupLLMPrice(modelName string) *model.LLMPrice {
 	price, err := op.LLMGet(modelName)
 	if err == nil {
 		return &price

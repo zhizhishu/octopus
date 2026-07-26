@@ -66,9 +66,16 @@ function classifyError(err?: string): 'capacity' | 'timeout' | 'other' {
     return 'other';
 }
 
-// 兜底脱敏：上游报错原文万一带出上游马甲域名/名字，抹成「上游」，绝不让上游身份泄漏到页面。
+// 兜底脱敏：上游报错原文万一带出上游身份（URL / 域名 / IP），一律抹成「上游」，绝不让上游身份泄漏到页面。
+// 通用规则（不硬编码任何单一上游马甲名，公开仓也不留马甲字面量）：先抹整条 URL，再抹裸域名（含端口），再抹 IPv4。
 function redactUpstreamIdentity(text: string): string {
-    return text.replace(/anyrouter(\.top)?/gi, '上游');
+    return text
+        // 整条 URL（http/https）
+        .replace(/https?:\/\/[^\s"'）)\]]+/gi, '上游')
+        // 裸域名 host（两段以上、末段 2+ 字母 TLD，允许可选 :端口）
+        .replace(/\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}(?::\d{2,5})?\b/gi, '上游')
+        // IPv4（含可选端口）
+        .replace(/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d{2,5})?\b/g, '上游');
 }
 
 const pillClass = (selected: boolean) =>

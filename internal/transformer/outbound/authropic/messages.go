@@ -676,13 +676,43 @@ func convertSystemPrompt(req *model.InternalLLMRequest) *anthropicModel.SystemPr
 // together. Standard function tool calls are untouched. Mirrors axonhub's
 // FilterOutResponseCustomToolMessages.
 func filterOutResponsesCustomTools(messages []model.Message) []model.Message {
+	// Pass 1: collect every custom tool call id up front. Collecting before we
+	// filter means a tool_result that appears BEFORE its custom tool call
+	// (out-of-order / dirty history) is still recognized as an orphan and dropped,
+	// instead of being encoded for Claude without a matching tool_use (which the
+	// API rejects with a 400). A single forward pass could not see the later call.
 	removed := make(map[string]struct{})
-	filtered := make([]model.Message, 0, len(messages))
-
+	hadIDlessCustom := false
 	for _, msg := range messages {
-		// Drop a tool result whose paired call was a stripped custom tool.
-		if msg.Role == "tool" && msg.ToolCallID != nil {
-			if _, ok := removed[*msg.ToolCallID]; ok {
+		for _, tc := range msg.ToolCalls {
+			if tc.Type == model.ToolCallTypeCustom {
+				if tc.ID != "" {
+					removed[tc.ID] = struct{}{}
+				} else {
+					hadIDlessCustom = true
+				}
+			}
+		}
+	}
+	if len(removed) == 0 && !hadIDlessCustom {
+		return messages
+	}
+
+	// Pass 2: drop the custom tool calls and their paired tool_results.
+	filtered := make([]model.Message, 0, len(messages))
+	for _, msg := range messages {
+		if msg.Role == "tool" {
+			id := ""
+			if msg.ToolCallID != nil {
+				id = *msg.ToolCallID
+			}
+			if id != "" {
+				if _, ok := removed[id]; ok {
+					continue
+				}
+			} else if hadIDlessCustom {
+				// A tool_result with no id can only pair with an id-less custom call;
+				// drop it so we never emit an unpaired tool_result to Claude.
 				continue
 			}
 		}
@@ -695,9 +725,6 @@ func filterOutResponsesCustomTools(messages []model.Message) []model.Message {
 		kept := make([]model.ToolCall, 0, len(msg.ToolCalls))
 		for _, tc := range msg.ToolCalls {
 			if tc.Type == model.ToolCallTypeCustom {
-				if tc.ID != "" {
-					removed[tc.ID] = struct{}{}
-				}
 				continue
 			}
 			kept = append(kept, tc)

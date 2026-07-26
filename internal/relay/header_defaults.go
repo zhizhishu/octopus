@@ -94,6 +94,16 @@ func stripCodexClientHeaders(header http.Header) {
 	header.Del("X-Openai-Internal-Codex-Responses-Lite")
 }
 
+// shouldApplyChannelCloak reports whether a channel's cloak (identity/fingerprint
+// synthesis) is applied.
+//
+// NOTE on "auto": by design "auto" is treated identically to "always" — the cloak
+// is ALWAYS applied, there is no client-aware detection (real CLI passthrough vs
+// non-CLI synthesis). This is intentional under the UNIFORM-UA policy: the upstream
+// must only ever see one uniform device/identity, never a per-client one. Some
+// reference relays (e.g. CLIProxyAPI) make "auto" client-aware; octopus deliberately
+// does not, to avoid leaking a per-client UA/identity upstream. Only "never" (and its
+// aliases) disables the cloak.
 func shouldApplyChannelCloak(cloak dbmodel.ChannelCloak) bool {
 	switch strings.ToLower(strings.TrimSpace(cloak.Mode)) {
 	case "", "auto", "always":

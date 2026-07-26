@@ -51,6 +51,31 @@ func TestFilterOutResponsesCustomTools(t *testing.T) {
 	}
 }
 
+// TestFilterOutResponsesCustomToolsReverseOrder verifies the two-pass filter also
+// drops an orphan tool_result that appears BEFORE its custom tool call in a
+// dirty/out-of-order history — a single forward pass would keep the result (it
+// hadn't seen the call yet) and emit an unpaired tool_result that Claude 400s.
+func TestFilterOutResponsesCustomToolsReverseOrder(t *testing.T) {
+	messages := []model.Message{
+		// tool_result comes FIRST (reversed), before the custom call that owns it.
+		{Role: "tool", ToolCallID: lo.ToPtr("c_rev"), Content: model.MessageContent{Content: lo.ToPtr("out")}},
+		{Role: "assistant", ToolCalls: []model.ToolCall{{ID: "c_rev", Type: model.ToolCallTypeCustom, Function: model.FunctionCall{Name: "exec", Arguments: "code"}}}},
+		{Role: "user", Content: model.MessageContent{Content: lo.ToPtr("next")}},
+	}
+	out := filterOutResponsesCustomTools(messages)
+	for _, m := range out {
+		if m.Role == "tool" {
+			t.Errorf("orphan tool_result (result-before-call) must be dropped, got %+v", m)
+		}
+		if m.Role == "assistant" {
+			t.Errorf("custom-only assistant must be dropped, got %+v", m)
+		}
+	}
+	if len(out) != 1 || out[0].Role != "user" {
+		t.Errorf("expected only the user message to remain, got %d", len(out))
+	}
+}
+
 // TestFilterOutResponsesCustomToolsDropsEmptyAssistant verifies that an assistant
 // turn that carried only a custom tool call (no text) is dropped entirely, along
 // with its orphaned result, rather than encoded as an empty message.
