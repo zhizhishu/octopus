@@ -199,6 +199,7 @@ runIterator:
 				iter.Index()+1, iter.Len(), keyIndex+1, len(availableKeys), iter.IsSticky(), stream)
 
 			span := iter.StartAttempt(channel.ID, usedKey.ID, channel.Name)
+			recordAttemptProxy(span, channel)
 
 			// 尝试一次转发
 			var (

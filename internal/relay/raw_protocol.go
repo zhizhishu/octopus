@@ -195,6 +195,7 @@ runIterator:
 				iter.Index()+1, iter.Len(), keyIndex+1, len(availableKeys), iter.IsSticky(), stream)
 
 			span := iter.StartAttempt(channel.ID, usedKey.ID, channel.Name)
+			recordAttemptProxy(span, channel)
 			forwardCompactCursor := true
 			if isResponsesCompactRawProtocol(options) && strings.TrimSpace(compactPreviousResponseID) != "" {
 				forwardCompactCursor = shouldForwardRawProtocolResponsesCursor(ctx, iter, compactPreviousResponseID, channel.ID, usedKey.ID, clientSession.Source, apiKeyID, userID)

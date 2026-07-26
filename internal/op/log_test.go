@@ -136,7 +136,7 @@ func TestRelayLogListScopesAndRedactsUserLogs(t *testing.T) {
 			RequestModelName:      "claude-opus-4-7[1m]",
 			RequestAPIKeyName:     "user-key",
 			ChannelId:             4,
-			ChannelName:           "Claude-CPA",
+			ChannelName:           "Claude-Relay-1",
 			ActualModelName:       "claude-opus-4-7[1m]",
 			InputTokens:           10,
 			OutputTokens:          2,
@@ -204,9 +204,11 @@ func TestRelayLogListScopesAndRedactsUserLogs(t *testing.T) {
 		t.Fatalf("expected request ip to be redacted, got %q", result[0].RequestIP)
 	}
 	summary := RelayLogUserSummary(result[0])
-	if summary.RequestModelName != "claude-opus-4-7[1m]" || summary.ChannelName != "Claude-CPA" || summary.InputTokens != 10 || summary.CacheHitTokens != 3 {
+	if summary.RequestModelName != "claude-opus-4-7[1m]" || summary.InputTokens != 10 || summary.CacheHitTokens != 3 {
 		t.Fatalf("expected user summary to preserve safe usage fields: %#v", summary)
 	}
+	// The channel identity must NOT survive into a user-facing summary (a user must
+	// not learn which upstream channel served them); the field is removed entirely.
 	if summary.ErrorCode != "service_busy" || summary.ErrorStatus != 503 {
 		t.Fatalf("expected user summary to preserve safe error status/code: %#v", summary)
 	}
@@ -215,7 +217,7 @@ func TestRelayLogListScopesAndRedactsUserLogs(t *testing.T) {
 	}
 
 	publicSummary := RelayLogUserSummary(logs[0])
-	if publicSummary.ChannelName != "Claude-CPA" || publicSummary.BillingModel != "claude-opus-4-7[1m]" {
+	if publicSummary.BillingModel != "claude-opus-4-7[1m]" {
 		t.Fatalf("expected public summary to preserve safe audit fields: %#v", publicSummary)
 	}
 }

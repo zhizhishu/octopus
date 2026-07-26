@@ -2,7 +2,10 @@ package server
 
 import (
 	"fmt"
+	"net"
 	"net/http"
+	"os"
+	"strings"
 
 	"github.com/bestruirui/octopus/internal/conf"
 	"github.com/bestruirui/octopus/internal/relay/bodycache"
@@ -34,6 +37,46 @@ var cloudflareTrustedProxies = []string{
 	"2405:8100::/32", "2a06:98c0::/29", "2c0f:f248::/32",
 }
 
+// trustedProxiesEnv is the env var (OCTOPUS_TRUSTED_PROXIES) for additional
+// trusted proxy IPs/CIDRs, comma-separated. It exists because the built-in list
+// only covers Cloudflare: a deployment sitting behind a LOCAL reverse proxy
+// (nginx/caddy in Docker, or the Docker port-forward gateway) would otherwise
+// have that proxy's address untrusted, so gin ignores its X-Forwarded-For and
+// c.ClientIP() collapses to the proxy/gateway IP (e.g. 172.24.0.1) — losing the
+// real client IP for both audit logs and per-IP rate limiting. Set this to the
+// reverse proxy's address or subnet (e.g. "172.16.0.0/12,10.0.0.0/8" for Docker
+// bridge networks) so the real client IP is honored. Left unset, behavior is
+// unchanged (Cloudflare-only), so it is safe by default and never widens trust
+// implicitly.
+const trustedProxiesEnv = "OCTOPUS_TRUSTED_PROXIES"
+
+// buildTrustedProxies returns the Cloudflare ranges plus any valid extra entries
+// from OCTOPUS_TRUSTED_PROXIES. Each extra entry must be a bare IP or a CIDR;
+// invalid ones are skipped with a warning rather than failing startup.
+func buildTrustedProxies() []string {
+	proxies := append([]string(nil), cloudflareTrustedProxies...)
+	raw := strings.TrimSpace(os.Getenv(trustedProxiesEnv))
+	if raw == "" {
+		return proxies
+	}
+	for _, part := range strings.Split(raw, ",") {
+		entry := strings.TrimSpace(part)
+		if entry == "" {
+			continue
+		}
+		if _, _, err := net.ParseCIDR(entry); err == nil {
+			proxies = append(proxies, entry)
+			continue
+		}
+		if ip := net.ParseIP(entry); ip != nil {
+			proxies = append(proxies, entry)
+			continue
+		}
+		log.Warnf("ignoring invalid %s entry %q (want an IP or CIDR)", trustedProxiesEnv, entry)
+	}
+	return proxies
+}
+
 func Start() error {
 	if conf.IsDebug() {
 		gin.SetMode(gin.DebugMode)
@@ -53,7 +96,7 @@ func Start() error {
 	// CF-Connecting-IP (then X-Forwarded-For), so c.ClientIP() is accurate and
 	// non-spoofable behind Cloudflare. gin's default trusts ALL proxies, which
 	// makes X-Forwarded-For client-forgeable; this replaces that.
-	if err := r.SetTrustedProxies(cloudflareTrustedProxies); err != nil {
+	if err := r.SetTrustedProxies(buildTrustedProxies()); err != nil {
 		log.Warnf("failed to set trusted proxies: %v", err)
 	}
 	r.RemoteIPHeaders = []string{"CF-Connecting-IP", "X-Forwarded-For"}

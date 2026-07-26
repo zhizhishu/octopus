@@ -326,10 +326,33 @@ runIterator:
 	resp.ErrorWithCode(c, status, code, message)
 }
 
+// recordAttemptProxy annotates a forwarding attempt with the egress route it used
+// (direct, or a specific proxy incl. its scheme + host). The proxy metadata is
+// app-layer channel config, not an outbound byte, so this never touches the
+// upstream request's TLS/header shape. Only real forward attempts carry a route.
+func recordAttemptProxy(span *balancer.AttemptSpan, channel *dbmodel.Channel) {
+	if span == nil || channel == nil {
+		return
+	}
+	if !channel.Proxy {
+		span.SetProxy(false, "", "", "")
+		return
+	}
+	info, err := helper.ChannelProxyInfoFor(channel)
+	if err != nil {
+		// Proxy configured but its URL is unusable — still record that a proxy was
+		// intended so the log never mislabels this attempt as a direct route.
+		span.SetProxy(true, info.Source, info.Scheme, info.Host)
+		return
+	}
+	span.SetProxy(info.Used, info.Source, info.Scheme, info.Host)
+}
+
 // attempt 统一管理一次通道尝试的完整生命周期
 func (ra *relayAttempt) attempt() attemptResult {
 	span := ra.iter.StartAttempt(ra.channel.ID, ra.usedKey.ID, ra.channel.Name)
 	span.SetRouteScope(ra.metrics.RequestEndpoint, ra.routingCapabilityKey())
+	recordAttemptProxy(span, ra.channel)
 	finishRuntimeAttempt := balancer.BeginRuntimeAttempt(ra.channel.ID, ra.usedKey.ID, ra.internalRequest.Model)
 	defer finishRuntimeAttempt()
 

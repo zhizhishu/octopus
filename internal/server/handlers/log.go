@@ -117,7 +117,10 @@ func listLog(c *gin.Context) {
 			return
 		}
 	} else {
-		scope.Redact = false
+		// Defense in depth: non-admins are already reduced to RelayLogUserSummary
+		// below, but keep the scope redacted too so the rows loaded from the store
+		// carry no IP/content/attempts even if the summary step is ever bypassed.
+		scope.Redact = true
 	}
 	scope.Severity = severityFromQuery(c)
 	scope.RetriedOnly = retriedFromQuery(c)

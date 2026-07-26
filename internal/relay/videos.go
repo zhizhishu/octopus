@@ -128,6 +128,7 @@ func VideosHandler(c *gin.Context) {
 				requestModel, channel.Name, item.ModelName, iter.Index()+1, iter.Len(), keyIndex+1, len(availableKeys))
 
 			span := iter.StartAttempt(channel.ID, usedKey.ID, channel.Name)
+			recordAttemptProxy(span, channel)
 			statusCode, body, upstreamCT, fwdErr := func() (int, []byte, string, error) {
 				finish := balancer.BeginRuntimeAttempt(channel.ID, usedKey.ID, item.ModelName)
 				defer finish()

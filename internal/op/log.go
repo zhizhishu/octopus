@@ -696,16 +696,18 @@ func RelayLogRedact(relayLog model.RelayLog) model.RelayLog {
 
 func RelayLogUserSummary(relayLog model.RelayLog) model.RelayLogUserSummary {
 	return model.RelayLogUserSummary{
-		ID:                 relayLog.ID,
-		UserID:             relayLog.UserID,
-		APIKeyID:           relayLog.APIKeyID,
-		Time:               relayLog.Time,
-		RequestEndpoint:    relayLog.RequestEndpoint,
-		RequestPath:        relayLog.RequestPath,
-		RequestModelName:   relayLog.RequestModelName,
-		RequestAPIKeyName:  relayLog.RequestAPIKeyName,
-		ChannelId:          relayLog.ChannelId,
-		ChannelName:        relayLog.ChannelName,
+		ID:                relayLog.ID,
+		UserID:            relayLog.UserID,
+		APIKeyID:          relayLog.APIKeyID,
+		Time:              relayLog.Time,
+		RequestEndpoint:   relayLog.RequestEndpoint,
+		RequestPath:       relayLog.RequestPath,
+		RequestModelName:  relayLog.RequestModelName,
+		RequestAPIKeyName: relayLog.RequestAPIKeyName,
+		// ChannelId / ChannelName are intentionally NOT copied: a normal user's log
+		// view must not reveal which upstream channel served the request (the channel
+		// label can carry the upstream's identity). Users see the model names
+		// (request/actual) instead; admins keep the full RelayLog with channel info.
 		ActualModelName:    relayLog.ActualModelName,
 		InputTokens:        relayLog.InputTokens,
 		OutputTokens:       relayLog.OutputTokens,

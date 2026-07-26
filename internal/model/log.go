@@ -119,16 +119,16 @@ type RelayLog struct {
 }
 
 type RelayLogUserSummary struct {
-	ID                 int64   `json:"id"`
-	UserID             int     `json:"user_id"`
-	APIKeyID           int     `json:"api_key_id"`
-	Time               int64   `json:"time"`
-	RequestEndpoint    string  `json:"request_endpoint"`
-	RequestPath        string  `json:"request_path"`
-	RequestModelName   string  `json:"request_model_name"`
-	RequestAPIKeyName  string  `json:"request_api_key_name"`
-	ChannelId          int     `json:"channel"`
-	ChannelName        string  `json:"channel_name"`
+	ID                int64  `json:"id"`
+	UserID            int    `json:"user_id"`
+	APIKeyID          int    `json:"api_key_id"`
+	Time              int64  `json:"time"`
+	RequestEndpoint   string `json:"request_endpoint"`
+	RequestPath       string `json:"request_path"`
+	RequestModelName  string `json:"request_model_name"`
+	RequestAPIKeyName string `json:"request_api_key_name"`
+	// Channel identity is deliberately omitted from the user-facing summary so a
+	// normal user cannot see which upstream channel served them (only the model).
 	ActualModelName    string  `json:"actual_model_name"`
 	InputTokens        int     `json:"input_tokens"`
 	OutputTokens       int     `json:"output_tokens"`

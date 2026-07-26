@@ -267,6 +267,22 @@ type AttemptSpan struct {
 	ended     bool
 }
 
+// SetProxy records the egress route this forwarding attempt took: whether a proxy
+// was used and, if so, its source (channel-specific vs system), scheme (http/socks5)
+// and target host. The balancer stays free of settings/op imports, so the relay
+// layer — which holds the channel's proxy config — computes these and sets them
+// here. Only real forward attempts (StartAttempt) carry a route; skipped/circuit-
+// broken attempts never leave the box, so they keep an empty (direct) route.
+func (s *AttemptSpan) SetProxy(used bool, source, scheme, target string) {
+	if s == nil {
+		return
+	}
+	s.attempt.ProxyUsed = used
+	s.attempt.ProxySource = source
+	s.attempt.ProxyScheme = scheme
+	s.attempt.ProxyTarget = target
+}
+
 // End 结束尝试：设置状态，自动计算耗时，追加到 Iterator
 func (s *AttemptSpan) End(status model.AttemptStatus, statusCode int, msg string) {
 	if s.ended {

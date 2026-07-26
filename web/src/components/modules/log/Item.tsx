@@ -124,6 +124,24 @@ function formatEndpointName(endpoint: string | undefined): string {
 const LARGE_JSON_CHAR_LIMIT = 20000;
 const LARGE_JSON_COLLAPSE_DEPTH = 2;
 
+/** IPv4 vs IPv6 tag for a downstream request IP (IPv6 literals contain ':'). */
+function ipFamilyLabel(ip: string): string {
+    return ip.includes(':') ? 'IPv6' : 'IPv4';
+}
+
+/**
+ * 该次转发尝试的出站路由（管理员核对走了直连还是哪个代理）：直连 → 'direct'；
+ * 经代理 → 'proxy · socks5 host:port'。代理再跳上游那一跳的真实出口 IP 对本服务
+ * 不可见，故只记连到的代理地址（含 SOCKS）。
+ */
+function attemptRouteLabel(a: Pick<ChannelAttempt, 'proxy_used' | 'proxy_scheme' | 'proxy_target'>): string {
+    if (!a.proxy_used) return 'direct';
+    const parts: string[] = [];
+    if (a.proxy_scheme) parts.push(a.proxy_scheme);
+    if (a.proxy_target) parts.push(a.proxy_target);
+    return parts.length ? `proxy · ${parts.join(' ')}` : 'proxy';
+}
+
 interface RetryBadgeWithTooltipProps {
     channelName: string;
     brandColor: string;
@@ -196,6 +214,13 @@ function RetryBadgeWithTooltip({ channelName, brandColor, attempts }: RetryBadge
                                             mode="wrap"
                                             value={attempt.upstream_path}
                                             className="text-[10px] text-muted-foreground"
+                                        />
+                                    )}
+                                    {attempt.proxy_used && (
+                                        <MonoSafeText
+                                            mode="wrap"
+                                            value={attemptRouteLabel(attempt)}
+                                            className="text-[10px] text-amber-600 dark:text-amber-400"
                                         />
                                     )}
                                 </div>
@@ -293,21 +318,28 @@ function LogRouteHeader({
                 </Badge>
             )}
             <SafeText mode={textMode} value={log.request_model_name} className="font-semibold text-card-foreground" />
-            <ArrowRight className={cn("size-3.5 text-muted-foreground/50", isCard && "shrink-0")} />
-            {hasMultipleAttempts ? (
-                <RetryBadgeWithTooltip
-                    channelName={log.channel_name}
-                    brandColor={brandColor}
-                    attempts={attempts}
-                />
-            ) : (
-                <Badge
-                    variant="secondary"
-                    className="min-w-0 max-w-[12rem] px-1.5 py-0 text-xs"
-                    style={{ backgroundColor: `${brandColor}15`, color: brandColor }}
-                >
-                    <SafeText value={log.channel_name} className="text-xs" />
-                </Badge>
+            {/* Channel identity is admin-only: a normal user's log carries no
+                channel_name (see RelayLogUserSummary), so the header degrades to
+                request model → actual model without ever revealing the upstream. */}
+            {log.channel_name && (
+                <>
+                    <ArrowRight className={cn("size-3.5 text-muted-foreground/50", isCard && "shrink-0")} />
+                    {hasMultipleAttempts ? (
+                        <RetryBadgeWithTooltip
+                            channelName={log.channel_name}
+                            brandColor={brandColor}
+                            attempts={attempts}
+                        />
+                    ) : (
+                        <Badge
+                            variant="secondary"
+                            className="min-w-0 max-w-[12rem] px-1.5 py-0 text-xs"
+                            style={{ backgroundColor: `${brandColor}15`, color: brandColor }}
+                        >
+                            <SafeText value={log.channel_name} className="text-xs" />
+                        </Badge>
+                    )}
+                </>
             )}
             <SafeText mode={textMode} value={log.actual_model_name} className="text-muted-foreground" />
             {log.is_stream !== undefined && (
@@ -711,9 +743,29 @@ export function LogCard({ log }: { log: RelayLog }) {
                                     )}
                                     {log.request_ip && (
                                         <DetailTile icon={<MapPin className="size-3.5" />} label={t('requestIP')}>
-                                            <MonoSafeText mode="wrap" value={log.request_ip} className="block text-xs text-foreground" />
+                                            <div className="flex items-center gap-1.5">
+                                                <MonoSafeText mode="wrap" value={log.request_ip} className="block text-xs text-foreground" />
+                                                <Badge variant="outline" className="shrink-0 border-border/60 px-1 py-0 text-[10px] text-muted-foreground">
+                                                    {ipFamilyLabel(log.request_ip)}
+                                                </Badge>
+                                            </div>
                                         </DetailTile>
                                     )}
+                                    {(() => {
+                                        // 出站路由（管理员）：走直连还是哪个代理。取"最终尝试"(最后成功、
+                                        // 否则最后一次)的路由，与顶部结果所反映的渠道一致。用户日志无 attempts，
+                                        // 自然不显示。
+                                        if (attempts.length === 0) return null;
+                                        let finalIdx = attempts.length - 1;
+                                        for (let i = attempts.length - 1; i >= 0; i--) {
+                                            if (attempts[i].status === 'success') { finalIdx = i; break; }
+                                        }
+                                        return (
+                                            <DetailTile icon={<ArrowUpFromLine className="size-3.5" />} label="出站路由">
+                                                <MonoSafeText mode="wrap" value={attemptRouteLabel(attempts[finalIdx])} className="block text-xs text-foreground" />
+                                            </DetailTile>
+                                        );
+                                    })()}
                                     <DetailTile icon={<StatusIcon className="size-3.5" />} label={t('auditStatus')}>
                                         <SafeText
                                             mode="wrap"

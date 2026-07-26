@@ -23,6 +23,10 @@ export interface ChannelAttempt {
     status: AttemptStatus;
     duration: number;       // 耗时(毫秒)
     sticky?: boolean;
+    proxy_used?: boolean;   // 该次尝试是否经代理出站
+    proxy_source?: string;  // 代理来源: channel / system
+    proxy_scheme?: string;  // 代理协议: http / socks5
+    proxy_target?: string;  // 代理地址(host:port), 含 SOCKS
     msg?: string;
 }
 
