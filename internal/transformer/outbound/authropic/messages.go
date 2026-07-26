@@ -681,19 +681,29 @@ func filterOutResponsesCustomTools(messages []model.Message) []model.Message {
 	// (out-of-order / dirty history) is still recognized as an orphan and dropped,
 	// instead of being encoded for Claude without a matching tool_use (which the
 	// API rejects with a 400). A single forward pass could not see the later call.
-	// Only non-empty ids are tracked — an id-less custom call cannot be paired to a
-	// specific result, so we do not blanket-drop every id-less tool_result (that
-	// would delete legitimate ones); this mirrors axonhub's FilterOutResponse-
-	// CustomToolMessages, which likewise matches only by concrete id.
+	//
+	// Non-empty ids go into `removed` for precise pairing. An id-less custom call is
+	// tracked separately (hasIDlessCustom): Pass 2 strips EVERY custom tool_use,
+	// including id-less ones, so an id-less custom call would otherwise leave its
+	// id-less tool_result behind as an orphan → Claude 400. Blanket-dropping id-less
+	// tool_results in that case is safe because a legitimate function tool_result
+	// always carries a concrete id (both the OpenAI and internal models assign one);
+	// an id-less tool_result can only be the paired result of an id-less custom call.
+	// (axonhub matches by concrete id only and thus leaves this orphan; oct does not.)
 	removed := make(map[string]struct{})
+	hasIDlessCustom := false
 	for _, msg := range messages {
 		for _, tc := range msg.ToolCalls {
-			if tc.Type == model.ToolCallTypeCustom && tc.ID != "" {
-				removed[tc.ID] = struct{}{}
+			if tc.Type == model.ToolCallTypeCustom {
+				if tc.ID != "" {
+					removed[tc.ID] = struct{}{}
+				} else {
+					hasIDlessCustom = true
+				}
 			}
 		}
 	}
-	if len(removed) == 0 {
+	if len(removed) == 0 && !hasIDlessCustom {
 		return messages
 	}
 
@@ -701,7 +711,13 @@ func filterOutResponsesCustomTools(messages []model.Message) []model.Message {
 	filtered := make([]model.Message, 0, len(messages))
 	for _, msg := range messages {
 		if msg.Role == "tool" && msg.ToolCallID != nil {
-			if _, ok := removed[*msg.ToolCallID]; ok {
+			id := *msg.ToolCallID
+			if id != "" {
+				if _, ok := removed[id]; ok {
+					continue
+				}
+			} else if hasIDlessCustom {
+				// Orphan-avoidance for the id-less custom call stripped below.
 				continue
 			}
 		}

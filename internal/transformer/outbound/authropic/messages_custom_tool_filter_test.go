@@ -76,6 +76,40 @@ func TestFilterOutResponsesCustomToolsReverseOrder(t *testing.T) {
 	}
 }
 
+// TestFilterOutResponsesCustomToolsIDlessCustomLeavesNoOrphan reproduces the case
+// an adversarial review flagged: a history mixing a normal-id custom call (so the
+// filter does not early-return) with an id-less custom call. Pass 2 strips EVERY
+// custom tool_use, including the id-less one, so its id-less tool_result must also
+// be dropped — otherwise it survives as an orphan tool_result and Claude 400s.
+func TestFilterOutResponsesCustomToolsIDlessCustomLeavesNoOrphan(t *testing.T) {
+	messages := []model.Message{
+		{
+			Role: "assistant",
+			ToolCalls: []model.ToolCall{
+				{ID: "c_ok", Type: model.ToolCallTypeCustom, Function: model.FunctionCall{Name: "exec", Arguments: "x=1"}},
+				{ID: "", Type: model.ToolCallTypeCustom, Function: model.FunctionCall{Name: "exec2", Arguments: "y=2"}},
+			},
+		},
+		{Role: "tool", ToolCallID: lo.ToPtr("c_ok"), Content: model.MessageContent{Content: lo.ToPtr("ok")}},
+		{Role: "tool", ToolCallID: lo.ToPtr(""), Content: model.MessageContent{Content: lo.ToPtr("orphan")}},
+		{Role: "user", Content: model.MessageContent{Content: lo.ToPtr("next")}},
+	}
+
+	out := filterOutResponsesCustomTools(messages)
+
+	for _, m := range out {
+		if m.Role == "tool" {
+			t.Errorf("no tool_result may survive (both custom calls stripped), got orphan %+v", m)
+		}
+		if m.Role == "assistant" {
+			t.Errorf("custom-only assistant turn must be dropped, got %+v", m)
+		}
+	}
+	if len(out) != 1 || out[0].Role != "user" {
+		t.Errorf("expected only the user message to remain, got %d", len(out))
+	}
+}
+
 // TestFilterOutResponsesCustomToolsDropsEmptyAssistant verifies that an assistant
 // turn that carried only a custom tool call (no text) is dropped entirely, along
 // with its orphaned result, rather than encoded as an empty message.
