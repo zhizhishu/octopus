@@ -13,6 +13,7 @@ import (
 	"github.com/bestruirui/octopus/internal/price"
 	transformerModel "github.com/bestruirui/octopus/internal/transformer/model"
 	"github.com/bestruirui/octopus/internal/utils/log"
+	"github.com/bestruirui/octopus/internal/utils/tokenizer"
 )
 
 const metricsPersistTimeout = 30 * time.Second
@@ -98,11 +99,36 @@ func (m *RelayMetrics) SetInternalResponse(resp *transformerModel.InternalLLMRes
 	m.InternalResponse = resp
 	m.ActualModel = actualModel
 
-	if resp == nil || resp.Usage == nil {
+	if resp == nil {
 		return
 	}
 
 	usage := resp.Usage
+	// Local usage estimate. When the upstream omits usage entirely, or reports zero
+	// completion tokens on a response that actually delivered content, count the
+	// tokens locally via the tokenizer so a successful response is not logged/billed
+	// as 0 tokens — mirroring new-api's patchGeminiZeroCompletionUsage (local
+	// ResponseText2Usage). The estimate is applied only to the local Stats/billing
+	// used for logging; resp.Usage is left untouched so usageAuditFromInternalResponse
+	// still flags usage_missing_reason (the count is estimated, not upstream-authoritative).
+	if usage == nil || usage.CompletionTokens == 0 {
+		if est := estimateCompletionTokens(resp, actualModel); est > 0 {
+			estimated := &transformerModel.Usage{}
+			if usage != nil {
+				*estimated = *usage
+			}
+			estimated.CompletionTokens = int64(est)
+			if estimated.PromptTokens == 0 && m.InternalRequest != nil {
+				estimated.PromptTokens = int64(estimatePromptTokens(m.InternalRequest, actualModel))
+			}
+			usage = estimated
+		}
+	}
+
+	if usage == nil {
+		return
+	}
+
 	m.Stats.InputToken = usage.PromptTokens
 	m.Stats.OutputToken = usage.CompletionTokens
 	m.Stats.CacheHitToken, m.Stats.CacheWriteToken, m.Stats.CacheInputToken = usageCacheStats(usage)
@@ -115,6 +141,67 @@ func (m *RelayMetrics) SetInternalResponse(resp *transformerModel.InternalLLMRes
 	m.BillingSnapshot = m.buildBillingSnapshot(actualModel, usage)
 	m.Stats.InputCost = m.BillingSnapshot.FinalInputCost + m.BillingSnapshot.FinalCacheReadCost + m.BillingSnapshot.FinalCacheWriteCost
 	m.Stats.OutputCost = m.BillingSnapshot.FinalOutputCost
+}
+
+// estimateCompletionTokens counts the tokens of a response's assistant output
+// (text + reasoning + tool-call arguments) via the local tokenizer, used only as a
+// fallback when the upstream did not report completion tokens.
+func estimateCompletionTokens(resp *transformerModel.InternalLLMResponse, model string) int {
+	if resp == nil {
+		return 0
+	}
+	var b strings.Builder
+	for _, ch := range resp.Choices {
+		if ch.Message != nil {
+			writeMessageTextForEstimate(&b, ch.Message)
+		}
+	}
+	if b.Len() == 0 {
+		return 0
+	}
+	return tokenizer.CountTokens(b.String(), model)
+}
+
+// estimatePromptTokens counts the tokens of a request's messages via the local
+// tokenizer, used only when the upstream reported no prompt tokens alongside a
+// locally-estimated completion.
+func estimatePromptTokens(req *transformerModel.InternalLLMRequest, model string) int {
+	if req == nil {
+		return 0
+	}
+	var b strings.Builder
+	for i := range req.Messages {
+		writeMessageTextForEstimate(&b, &req.Messages[i])
+	}
+	if b.Len() == 0 {
+		return 0
+	}
+	return tokenizer.CountTokens(b.String(), model)
+}
+
+func writeMessageTextForEstimate(b *strings.Builder, msg *transformerModel.Message) {
+	if msg == nil {
+		return
+	}
+	if msg.Content.Content != nil {
+		b.WriteString(*msg.Content.Content)
+		b.WriteByte('\n')
+	}
+	for _, p := range msg.Content.MultipleContent {
+		if p.Text != nil {
+			b.WriteString(*p.Text)
+			b.WriteByte('\n')
+		}
+	}
+	if rc := msg.GetReasoningContent(); rc != "" {
+		b.WriteString(rc)
+		b.WriteByte('\n')
+	}
+	for _, tc := range msg.ToolCalls {
+		b.WriteString(tc.Function.Name)
+		b.WriteString(tc.Function.Arguments)
+		b.WriteByte('\n')
+	}
 }
 
 func (m *RelayMetrics) currentBillingSnapshot(actualModel string) model.AccessPlanBillingSnapshot {

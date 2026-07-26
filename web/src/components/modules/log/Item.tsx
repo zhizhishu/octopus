@@ -146,48 +146,70 @@ function RetryBadgeWithTooltip({ channelName, brandColor, attempts }: RetryBadge
                 </Badge>
             </TooltipTrigger>
             <TooltipContent className="flex w-[min(20rem,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] flex-col gap-1 rounded-lg border bg-card p-2 shadow-sm">
-                {attempts.map((attempt, idx) => (
-                    <div key={idx} className="flex flex-col w-full">
-                        <div className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-muted/50 transition-colors">
-                            <Badge
-                                className={cn(
-                                    "h-5 shrink-0 px-1.5 text-[10px] font-bold uppercase shadow-none border-0",
-                                    attempt.status === 'success'
-                                        ? "bg-primary/15 text-primary"
-                                        : "bg-destructive/15 text-destructive"
-                                )}
-                            >
-                                {formatAttemptStatus(attempt.status, t('success'), t('failed'))}
-                            </Badge>
-                            <div className="flex min-w-0 flex-col flex-1">
-                                <SafeText
-                                    mode="wrap"
-                                    value={attempt.channel_name}
-                                    className="text-xs font-semibold text-foreground"
-                                />
-                                <MonoSafeText
-                                    mode="wrap"
-                                    value={`${attempt.model_name} - ${formatDuration(attempt.duration)}`}
-                                    className="text-[10px] text-muted-foreground"
-                                />
-                                {attempt.upstream_path && (
+                {(() => {
+                    // The "final" attempt = the last successful one, else the last attempt —
+                    // it is what the top-level channel/result reflects (mirrors the server's
+                    // finalChannel). Highlight it and number every attempt so the tooltip
+                    // reads as one request's failover trail (#1 → #2 → … → final), not as
+                    // several unrelated logs sharing a page.
+                    let finalIdx = attempts.length - 1;
+                    for (let i = attempts.length - 1; i >= 0; i--) {
+                        if (attempts[i].status === 'success') {
+                            finalIdx = i;
+                            break;
+                        }
+                    }
+                    return attempts.map((attempt, idx) => (
+                        <div key={idx} className="flex flex-col w-full">
+                            <div className={cn(
+                                "flex items-center gap-2 rounded-md px-2 py-1.5 transition-colors",
+                                idx === finalIdx
+                                    ? "bg-muted/60 ring-1 ring-primary/40"
+                                    : "hover:bg-muted/50"
+                            )}>
+                                <span className="shrink-0 font-mono text-[10px] text-muted-foreground/70">
+                                    #{idx + 1}
+                                </span>
+                                <Badge
+                                    className={cn(
+                                        "h-5 shrink-0 px-1.5 text-[10px] font-bold uppercase shadow-none border-0",
+                                        attempt.status === 'success'
+                                            ? "bg-primary/15 text-primary"
+                                            : "bg-destructive/15 text-destructive"
+                                    )}
+                                >
+                                    {formatAttemptStatus(attempt.status, t('success'), t('failed'))}
+                                </Badge>
+                                <div className="flex min-w-0 flex-col flex-1">
+                                    <SafeText
+                                        mode="wrap"
+                                        value={attempt.channel_name}
+                                        className="text-xs font-semibold text-foreground"
+                                    />
                                     <MonoSafeText
                                         mode="wrap"
-                                        value={attempt.upstream_path}
+                                        value={`${attempt.model_name} - ${formatDuration(attempt.duration)}`}
                                         className="text-[10px] text-muted-foreground"
                                     />
-                                )}
-                            </div>
-                        </div>
-                        {
-                            idx < attempts.length - 1 && (
-                                <div className="flex justify-center py-0.5">
-                                    <ArrowDown className="size-3 text-muted-foreground/30" />
+                                    {attempt.upstream_path && (
+                                        <MonoSafeText
+                                            mode="wrap"
+                                            value={attempt.upstream_path}
+                                            className="text-[10px] text-muted-foreground"
+                                        />
+                                    )}
                                 </div>
-                            )
-                        }
-                    </div>
-                ))}
+                            </div>
+                            {
+                                idx < attempts.length - 1 && (
+                                    <div className="flex justify-center py-0.5">
+                                        <ArrowDown className="size-3 text-muted-foreground/30" />
+                                    </div>
+                                )
+                            }
+                        </div>
+                    ));
+                })()}
             </TooltipContent>
         </Tooltip >
     );
