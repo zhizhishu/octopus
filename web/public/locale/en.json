@@ -211,6 +211,11 @@
             "label": "Proxy URL",
             "placeholder": "Enter proxy URL"
         },
+        "trustedProxies": {
+            "label": "Trusted proxies",
+            "placeholder": "e.g. 172.16.0.0/12,10.0.0.0/8",
+            "description": "Empty trusts only Cloudflare. Behind a local reverse proxy / Docker, set the proxy's subnet so logs and rate limiting use the real client IP"
+        },
         "statsSaveInterval": {
             "label": "Stats Save Interval",
             "placeholder": "Enter interval in minutes"

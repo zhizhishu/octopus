@@ -39,6 +39,7 @@ export function SettingSystem() {
     const setSetting = useSetSetting();
 
     const [proxyUrl, setProxyUrl] = useState('');
+    const [trustedProxies, setTrustedProxies] = useState('');
     const [statsSaveInterval, setStatsSaveInterval] = useState('');
     const [corsAllowOrigins, setCorsAllowOrigins] = useState('');
     const [corsInputValue, setCorsInputValue] = useState('');
@@ -98,6 +99,7 @@ export function SettingSystem() {
     const [emailHTTPSiteAuth, setEmailHTTPSiteAuth] = useState('');
 
     const initialProxyUrl = useRef('');
+    const initialTrustedProxies = useRef('');
     const initialStatsSaveInterval = useRef('');
     const initialCorsAllowOrigins = useRef('');
     const initialAnthropicAutoCacheControl = useRef(true);
@@ -146,6 +148,7 @@ export function SettingSystem() {
     useEffect(() => {
         if (settings) {
             const proxy = settings.find(s => s.key === SettingKey.ProxyURL);
+            const trustedProxiesSetting = settings.find(s => s.key === SettingKey.TrustedProxies);
             const interval = settings.find(s => s.key === SettingKey.StatsSaveInterval);
             const cors = settings.find(s => s.key === SettingKey.CORSAllowOrigins);
             const autoCache = settings.find(s => s.key === SettingKey.AnthropicAutoCacheControl);
@@ -193,6 +196,10 @@ export function SettingSystem() {
             if (proxy) {
                 queueMicrotask(() => setProxyUrl(proxy.value));
                 initialProxyUrl.current = proxy.value;
+            }
+            if (trustedProxiesSetting) {
+                queueMicrotask(() => setTrustedProxies(trustedProxiesSetting.value));
+                initialTrustedProxies.current = trustedProxiesSetting.value;
             }
             if (interval) {
                 queueMicrotask(() => setStatsSaveInterval(interval.value));
@@ -394,6 +401,8 @@ export function SettingSystem() {
                 toast.success(t('saved'));
                 if (key === SettingKey.ProxyURL) {
                     initialProxyUrl.current = value;
+                } else if (key === SettingKey.TrustedProxies) {
+                    initialTrustedProxies.current = value;
                 } else if (key === SettingKey.StatsSaveInterval) {
                     initialStatsSaveInterval.current = value;
                 } else if (key === SettingKey.RelayStreamKeepaliveIntervalSeconds) {
@@ -873,6 +882,24 @@ export function SettingSystem() {
                     onChange={(e) => setProxyUrl(e.target.value)}
                     onBlur={() => handleSave('proxy_url', proxyUrl, initialProxyUrl.current)}
                     placeholder={t('proxyUrl.placeholder')}
+                    className="w-full rounded-xl sm:w-48"
+                />
+            </div>
+
+            {/* 可信反代网段（决定日志/限流用的真实客户端 IP） */}
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div className="flex min-w-0 items-start gap-3">
+                    <Shield className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" />
+                    <div className="flex min-w-0 flex-col">
+                        <span className="min-w-0 text-sm font-medium">{t('trustedProxies.label')}</span>
+                        <span className="text-xs text-muted-foreground">{t('trustedProxies.description')}</span>
+                    </div>
+                </div>
+                <Input
+                    value={trustedProxies}
+                    onChange={(e) => setTrustedProxies(e.target.value)}
+                    onBlur={() => handleSave('trusted_proxies', trustedProxies, initialTrustedProxies.current)}
+                    placeholder={t('trustedProxies.placeholder')}
                     className="w-full rounded-xl sm:w-48"
                 />
             </div>

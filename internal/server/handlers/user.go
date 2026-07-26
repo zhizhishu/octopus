@@ -119,7 +119,7 @@ func register(c *gin.Context) {
 		resp.Error(c, http.StatusBadRequest, resp.ErrInvalidJSON)
 		return
 	}
-	user, err := op.UserRegister(userRegister, c.ClientIP(), c.Request.Context())
+	user, err := op.UserRegister(userRegister, middleware.ResolveClientIP(c), c.Request.Context())
 	if err != nil {
 		resp.Error(c, http.StatusBadRequest, err.Error())
 		return
@@ -141,13 +141,13 @@ func sendVerificationCode(c *gin.Context) {
 		return
 	}
 
-	// Rate-limit IP key: c.ClientIP() resolves the real client IP via the
-	// trusted-proxy config set in server startup (Cloudflare ranges +
-	// RemoteIPHeaders CF-Connecting-IP / X-Forwarded-For), so it is accurate
-	// behind Cloudflare and NOT spoofable from a non-Cloudflare source. Do not
-	// read the raw CF-Connecting-IP header here — that would bypass the trust
+	// Rate-limit IP key: middleware.ResolveClientIP resolves the real client IP via
+	// the trusted-proxy set (Cloudflare ranges + OCTOPUS_TRUSTED_PROXIES + the
+	// trusted_proxies setting) and CF-Connecting-IP / X-Forwarded-For, so it is
+	// accurate behind a trusted proxy and NOT spoofable from an untrusted peer. Do
+	// not read the raw CF-Connecting-IP header here — that would bypass the trust
 	// check and let an attacker forge the rate-limit key.
-	ipKey := c.ClientIP()
+	ipKey := middleware.ResolveClientIP(c)
 
 	// This route has no Auth middleware, so verify any presented bearer token
 	// the same way Auth() does (cryptographic VerifyJWTToken) and only treat the

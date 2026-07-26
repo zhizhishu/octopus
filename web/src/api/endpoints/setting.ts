@@ -13,6 +13,7 @@ export interface Setting {
 
 export const SettingKey = {
     ProxyURL: 'proxy_url',
+    TrustedProxies: 'trusted_proxies',
     StatsSaveInterval: 'stats_save_interval',
     ModelInfoUpdateInterval: 'model_info_update_interval',
     SyncLLMInterval: 'sync_llm_interval',

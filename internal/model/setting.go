@@ -3,6 +3,7 @@ package model
 import (
 	"fmt"
 	"math"
+	"net"
 	"net/url"
 	"os"
 	"strconv"
@@ -14,6 +15,7 @@ type SettingKey string
 
 const (
 	SettingKeyProxyURL                  SettingKey = "proxy_url"
+	SettingKeyTrustedProxies            SettingKey = "trusted_proxies"              // 逗号分隔的可信反代 IP/CIDR; 命中时才认其 X-Forwarded-For/CF-Connecting-IP 解析真实客户端 IP。空=仅信内置 Cloudflare 段(安全默认)
 	SettingKeyStatsSaveInterval         SettingKey = "stats_save_interval"          // 将统计信息写入数据库的周期(分钟)
 	SettingKeyStatsTimezone             SettingKey = "stats_timezone"               // 统计"当天/小时"按此 IANA 时区(如 America/Los_Angeles)划分自然日; 空=跟随容器本地时区(向后兼容)。修复容器时区领先用户时区时"今天"统计被提前清零
 	SettingKeyModelInfoUpdateInterval   SettingKey = "model_info_update_interval"   // 模型信息更新间隔(小时)
@@ -233,6 +235,7 @@ const (
 func DefaultSettings() []Setting {
 	return []Setting{
 		{Key: SettingKeyProxyURL, Value: ""},
+		{Key: SettingKeyTrustedProxies, Value: ""},                // 空=仅信内置 Cloudflare 段; 本地反代部署填反代所在网段(如 172.16.0.0/12)后真实客户端 IP 才会被记录
 		{Key: SettingKeyStatsSaveInterval, Value: "10"},           // 默认10分钟保存一次统计信息
 		{Key: SettingKeyStatsTimezone, Value: ""},                 // 空=跟随容器本地时区(向后兼容); 设 IANA 名(如 America/Los_Angeles)则统计按该时区划分自然日, 修复"服务器跨天导致今天统计清零"
 		{Key: SettingKeyCORSAllowOrigins, Value: ""},              // CORS 默认不允许跨域，设置为 "*" 才允许所有来源
@@ -535,6 +538,21 @@ func (s *Setting) Validate() error {
 		}
 		if _, err := time.LoadLocation(trimmed); err != nil {
 			return fmt.Errorf("%s must be empty or a valid IANA timezone (e.g. America/Los_Angeles): %w", s.Key, err)
+		}
+		return nil
+	case SettingKeyTrustedProxies:
+		for _, part := range strings.Split(s.Value, ",") {
+			entry := strings.TrimSpace(part)
+			if entry == "" {
+				continue
+			}
+			if _, _, err := net.ParseCIDR(entry); err == nil {
+				continue
+			}
+			if net.ParseIP(entry) != nil {
+				continue
+			}
+			return fmt.Errorf("trusted proxies entry %q must be an IP or CIDR (e.g. 172.16.0.0/12 or 10.0.0.1)", entry)
 		}
 		return nil
 	}

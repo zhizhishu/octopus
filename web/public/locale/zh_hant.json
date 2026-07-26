@@ -211,6 +211,11 @@
             "label": "代理位址",
             "placeholder": "請輸入代理位址"
         },
+        "trustedProxies": {
+            "label": "可信反代網段",
+            "placeholder": "如 172.16.0.0/12,10.0.0.0/8",
+            "description": "留空只信 Cloudflare。本地反代/Docker 部署填反代所在網段後，日誌與限流才會記錄真實訪客 IP"
+        },
         "statsSaveInterval": {
             "label": "統計保存週期（分鐘）",
             "placeholder": "請輸入週期（分鐘）"

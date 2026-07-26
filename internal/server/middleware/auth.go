@@ -132,7 +132,7 @@ func APIKeyAuth() gin.HandlerFunc {
 		c.Set("supported_models", apiKeyObj.SupportedModels)
 		c.Set("api_key_id", apiKeyObj.ID)
 		c.Set("user_id", owner.ID)
-		c.Set("request_ip", c.ClientIP())
+		c.Set("request_ip", ResolveClientIP(c))
 		SetCurrentUser(c, owner)
 		c.Next()
 	}
