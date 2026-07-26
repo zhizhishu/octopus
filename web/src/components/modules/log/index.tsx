@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useMemo, useState } from 'react';
-import { getRelayLogSeverity, type RelayLogSeverity, useExportLogs, useLogSeverityCounts, useLogs } from '@/api/endpoints/log';
+import { getRelayLogSeverity, type RelayLog, type RelayLogSeverity, useExportLogs, useLogSeverityCounts, useLogs } from '@/api/endpoints/log';
 import { LogCard, useSensitiveStore } from './Item';
 import { AlertCircle, AlertTriangle, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Circle, Download, Eye, EyeOff, Loader2, RefreshCw, RotateCcw, RotateCw, ScrollText, SlidersHorizontal, Wifi, WifiOff, X } from 'lucide-react';
 import { useTranslations } from 'next-intl';
@@ -145,6 +145,83 @@ function FilterPill({ label, onClear }: { label: string; onClear: () => void }) 
             </button>
         </span>
     );
+}
+
+/** 列表里的一行：一条真实日志，或一条多渠道请求拆出来的其中一次尝试。 */
+interface LogRow {
+    key: string;
+    log: RelayLog;
+}
+
+/**
+ * 把「一条重试过多个渠道的请求」在日志列表里拆成分开的行。
+ *
+ * 后端一条请求只记一条日志，多次渠道尝试塞在 attempts[] 里（默认只在悬停里露出来，
+ * 看着就像「同一个渠道」）。这里把真正试过的每一次尝试摊成独立一行——失败的渠道各占
+ * 一行、最终成功的渠道占一行，各显示自己的渠道名与结果，一眼看清走了哪些不同渠道。
+ *
+ * - 只摊「真的试过」的尝试（success / failed）；skipped / circuit_break 这类没真正打出去的
+ *   不单独成行，免得刷屏。真实尝试 ≤1 的日志原样保留一行。
+ * - 费用 / token / 请求响应体属于整条请求，只挂在「最终计费」的那次尝试上；失败尝试清零，
+ *   各自显示自己的失败原因。
+ * - 纯展示层拆分，不改后端、不改计费、不改总条数统计。
+ */
+function expandLogRows(logs: RelayLog[]): LogRow[] {
+    const rows: LogRow[] = [];
+    for (const log of logs) {
+        const realAttempts = (log.attempts ?? []).filter(
+            (attempt) => attempt.status === 'success' || attempt.status === 'failed'
+        );
+        if (realAttempts.length <= 1) {
+            rows.push({ key: `log-${log.id}`, log });
+            continue;
+        }
+        // 最终尝试 = 最后一次成功；全失败则取最后一次。它承载整条请求的费用/用量/请求响应体，
+        // 并在整条请求失败时沿用请求级错误码，让「锅在谁」结论准确。
+        let finalIdx = realAttempts.length - 1;
+        for (let i = realAttempts.length - 1; i >= 0; i--) {
+            if (realAttempts[i].status === 'success') {
+                finalIdx = i;
+                break;
+            }
+        }
+        realAttempts.forEach((attempt, idx) => {
+            const isFinal = idx === finalIdx;
+            const isSuccess = attempt.status === 'success';
+            const failText = attempt.msg?.trim() || (isFinal ? log.error?.trim() : '') || '该渠道此次尝试失败';
+            rows.push({
+                key: `log-${log.id}-a${attempt.attempt_num || idx + 1}`,
+                log: {
+                    ...log,
+                    channel: attempt.channel_id,
+                    channel_name: attempt.channel_name,
+                    actual_model_name: attempt.model_name || log.actual_model_name,
+                    use_time: attempt.duration || 0,
+                    // 拆成单渠道呈现：去掉重试徽标，只留这一次尝试。
+                    attempts: [attempt],
+                    total_attempts: 1,
+                    // 费用/用量只挂最终计费那次；失败尝试一律清零。
+                    input_tokens: isFinal ? log.input_tokens : 0,
+                    output_tokens: isFinal ? log.output_tokens : 0,
+                    cache_hit_tokens: isFinal ? log.cache_hit_tokens : 0,
+                    cache_write_tokens: isFinal ? log.cache_write_tokens : 0,
+                    cache_input_tokens: isFinal ? log.cache_input_tokens : 0,
+                    cache_hit_rate: isFinal ? log.cache_hit_rate : 0,
+                    cost: isFinal ? log.cost : 0,
+                    ftut: isFinal ? log.ftut : 0,
+                    // 成功行清掉错误；失败行显示这次尝试自己的失败原因（保证被判为失败、标红）。
+                    error: isSuccess ? undefined : failText,
+                    error_code: isSuccess ? undefined : (isFinal ? log.error_code : undefined),
+                    error_status: isSuccess ? undefined : (isFinal ? log.error_status : undefined),
+                    error_strategy: isSuccess ? undefined : (isFinal ? log.error_strategy : undefined),
+                    // 请求/响应体属于最终计费那次尝试。
+                    request_content: isFinal ? log.request_content : undefined,
+                    response_content: isFinal ? log.response_content : undefined,
+                },
+            });
+        });
+    }
+    return rows;
 }
 
 /**
@@ -350,6 +427,9 @@ export function Log() {
         if (severityFilter === 'all') return logs;
         return logs.filter((log) => getRelayLogSeverity(log) === severityFilter);
     }, [logs, severityFilter]);
+
+    // 展示行：把重试过多个渠道的请求摊成分开的行（每个真实尝试一行），其余原样一行。
+    const displayRows = useMemo(() => expandLogRows(filteredLogs), [filteredLogs]);
 
     // 空状态智能提示的依据：列表真空时，查一下「不限日期」下总共有多少历史，
     // 好把「不是坏了、是被日期/筛选挡住了」说破。仅在真的空时才发这个请求。
@@ -768,13 +848,13 @@ export function Log() {
             </div>
             <div className="min-h-0 flex-1">
                 <VirtualizedGrid
-                    items={filteredLogs}
+                    items={displayRows}
                     layout="list"
                     columns={{ default: 1 }}
                     estimateItemHeight={80}
                     overscan={8}
-                    getItemKey={(log) => `log-${log.id}`}
-                    renderItem={(log) => <LogCard log={log} />}
+                    getItemKey={(row) => row.key}
+                    renderItem={(row) => <LogCard log={row.log} />}
                     footer={footer}
                     onReachEnd={handleReachEnd}
                     reachEndEnabled={canLoadMore}
