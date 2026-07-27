@@ -59,7 +59,7 @@ type RelayLog struct {
 	UserID                int              `json:"user_id" gorm:"index;default:0"`
 	APIKeyID              int              `json:"api_key_id" gorm:"index;default:0"`
 	RequestIP             string           `json:"request_ip,omitempty" gorm:"size:128;index"`
-	Time                  int64            `json:"time"`
+	Time                  int64            `json:"time" gorm:"index"`
 	RequestEndpoint       string           `json:"request_endpoint" gorm:"size:64;index"`
 	RequestPath           string           `json:"request_path" gorm:"size:256"`
 	RequestModelName      string           `json:"request_model_name"`
