@@ -18,7 +18,16 @@ var db *gorm.DB
 
 func InitDB(dbType, dsn string, debug bool) error {
 	var err error
-	gormConfig := gorm.Config{Logger: logger.Discard}
+	// SkipDefaultTransaction: GORM otherwise wraps every single Create/Update/Delete in
+	// its own BEGIN...COMMIT. On SQLite (single-writer) with a large connection pool this
+	// makes concurrent per-request writes (relay log / stats / ip / usage / session) all
+	// issue BEGIN at once, which collides as "cannot start a transaction within a
+	// transaction" and holds the write lock long enough to cascade into database-is-locked
+	// (SQLITE_BUSY) across every log/stats write AND the log-list reads. Single statements
+	// are already atomic, so the wrapper buys nothing here; skipping it turns each write
+	// into one short bare statement. Explicit Transaction()/Begin() calls (admin CRUD) keep
+	// their own transactions and are unaffected. Harmless for MySQL/Postgres.
+	gormConfig := gorm.Config{Logger: logger.Discard, SkipDefaultTransaction: true}
 	if debug {
 		gormConfig.Logger = logger.Default.LogMode(logger.Info)
 	}
