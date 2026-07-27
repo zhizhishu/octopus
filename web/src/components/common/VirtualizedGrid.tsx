@@ -21,6 +21,13 @@ const BREAKPOINTS = {
 type Breakpoint = keyof typeof BREAKPOINTS;
 type ResponsiveColumns = Partial<Record<Breakpoint | 'default', number>>;
 
+// 列表元素数 ≤ 此阈值时改为「平铺渲染」，绕开虚拟化。
+// 原因：变高行 + 列表实时增删（日志 SSE 往头部插入、翻页刷新）会让 @tanstack/react-virtual
+// 的「按 key 测量缓存」残留旧 key 的测量项，getVirtualItems() 返回重复 index 的虚拟行，
+// 两套行被绝对定位叠在一起 → 表现为「文字重叠 / 看着像乱码」。日志/渠道等页每页仅几十条，
+// 平铺渲染零测量、绝不重叠；虚拟化只在真·大列表（> 阈值）时启用。
+const NON_VIRTUAL_MAX = 80;
+
 interface VirtualizedGridProps<T> {
     items: T[];
     layout?: 'grid' | 'list';
@@ -146,6 +153,52 @@ export function VirtualizedGrid<T>({
         reachEndTriggeredRef.current = true;
         onReachEnd();
     }, [onReachEnd, reachEndEnabled, itemRowCount, reachEndOffset, virtualRows]);
+
+    // 小列表走平铺渲染（见 NON_VIRTUAL_MAX 注释）：彻底避开虚拟化的测量-缓存腐坏，绝不重叠。
+    const shouldVirtualize = items.length > NON_VIRTUAL_MAX;
+
+    // 平铺模式下用滚动位置近似触发「到底加载更多」，行为对齐虚拟模式的 onReachEnd。
+    const handlePlainScroll = useCallback(() => {
+        const el = containerRef.current;
+        if (!el || !onReachEnd || !reachEndEnabled) return;
+        const remaining = el.scrollHeight - el.scrollTop - el.clientHeight;
+        if (remaining <= Math.max(1, reachEndOffset) * estimateItemHeight) {
+            if (reachEndTriggeredRef.current) return;
+            reachEndTriggeredRef.current = true;
+            onReachEnd();
+        } else {
+            reachEndTriggeredRef.current = false;
+        }
+    }, [onReachEnd, reachEndEnabled, reachEndOffset, estimateItemHeight]);
+
+    if (!shouldVirtualize) {
+        return (
+            <div className="relative h-full min-h-0 w-full">
+                <div
+                    ref={containerRef}
+                    onScroll={handlePlainScroll}
+                    className="relative h-full w-full overflow-y-auto overscroll-contain rounded-t-3xl"
+                >
+                    {items.length > 0 && (
+                        <div
+                            className="grid"
+                            style={{
+                                gridTemplateColumns: `repeat(${columnCount}, minmax(0, 1fr))`,
+                                gap: `${gap}px`,
+                            }}
+                        >
+                            {items.map((item, index) => (
+                                <div key={String(getItemKey(item, index))} className="min-w-0">
+                                    {renderItem(item, index)}
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                    {footer}
+                </div>
+            </div>
+        );
+    }
 
     return (
         <div className="relative h-full min-h-0 w-full">
