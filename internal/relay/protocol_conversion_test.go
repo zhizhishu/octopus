@@ -300,6 +300,7 @@ func TestOpenAIResponsesFallsBackToChatForCompatibleUpstream(t *testing.T) {
 		Name:    "GPT-CPA",
 		Type:    outbound.OutboundTypeOpenAIResponse,
 		Enabled: true,
+		Cloak:   dbmodel.ChannelCloak{Mode: "never"},
 		BaseUrls: []dbmodel.BaseUrl{{
 			URL: upstream.URL,
 		}},
@@ -426,6 +427,7 @@ func TestOpenAIResponsesFallsBackToChatForCompatibleUpstream503(t *testing.T) {
 		Name:    "muyuan-like-response",
 		Type:    outbound.OutboundTypeOpenAIResponse,
 		Enabled: true,
+		Cloak:   dbmodel.ChannelCloak{Mode: "never"},
 		BaseUrls: []dbmodel.BaseUrl{{
 			URL: upstream.URL,
 		}},
@@ -509,6 +511,7 @@ func TestOpenAIResponsesChatFallbackSynthesizesDoneOnUpstreamEOF(t *testing.T) {
 		Name:    "muyuan-like-eof",
 		Type:    outbound.OutboundTypeOpenAIResponse,
 		Enabled: true,
+		Cloak:   dbmodel.ChannelCloak{Mode: "never"},
 		BaseUrls: []dbmodel.BaseUrl{{
 			URL: upstream.URL,
 		}},
@@ -796,13 +799,60 @@ func TestOpenAIResponsesFallbackRejectsNonTextInputs(t *testing.T) {
 	}
 }
 
+// newResponsesFallbackAttempt builds an attempt against a PLAIN, non-codex
+// (cloak=never) responses-compatible upstream — the only kind for which the
+// responses→chat fallback is valid. Codex-cloaked upstreams are covered by
+// newCodexResponsesFallbackAttempt and must never fall back.
 func newResponsesFallbackAttempt(req *transformerModel.InternalLLMRequest) *relayAttempt {
 	return &relayAttempt{
 		relayRequest: &relayRequest{
 			inboundType:     inbound.InboundTypeOpenAIResponse,
 			internalRequest: req,
 		},
-		channel: &dbmodel.Channel{Type: outbound.OutboundTypeOpenAIResponse},
+		channel: &dbmodel.Channel{Type: outbound.OutboundTypeOpenAIResponse, Cloak: dbmodel.ChannelCloak{Mode: "never"}},
+	}
+}
+
+// newCodexResponsesFallbackAttempt builds an attempt against a codex-cloaked
+// responses upstream (auto cloak). Such an upstream only speaks the Responses
+// protocol and 403s on /v1/chat/completions, so the fallback must never fire.
+func newCodexResponsesFallbackAttempt(req *transformerModel.InternalLLMRequest) *relayAttempt {
+	return &relayAttempt{
+		relayRequest: &relayRequest{
+			inboundType:     inbound.InboundTypeOpenAIResponse,
+			internalRequest: req,
+		},
+		channel: &dbmodel.Channel{Type: outbound.OutboundTypeOpenAIResponse, Cloak: dbmodel.ChannelCloak{Mode: "auto"}},
+	}
+}
+
+// TestOpenAIResponsesCodexChannelNeverFallsBackToChat locks in the A1 guard: a
+// codex-cloaked responses upstream must NOT downgrade to /v1/chat/completions for
+// ANY error that would trip the fallback on a plain proxy — because real codex
+// endpoints reject chat with 403 "codex clients may only use the OpenAI Responses
+// protocol at /v1/responses". The balancer should fail over instead.
+func TestOpenAIResponsesCodexChannelNeverFallsBackToChat(t *testing.T) {
+	ra := newCodexResponsesFallbackAttempt(&transformerModel.InternalLLMRequest{
+		Messages: []transformerModel.Message{{
+			Role:    "user",
+			Content: transformerModel.MessageContent{Content: strPtr("ping")},
+		}},
+	})
+
+	cases := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"explicit endpoint unsupported", http.StatusBadRequest, `{"error":{"message":"responses endpoint is not supported by this compatible upstream","code":"invalid_request_error"}}`},
+		{"plain route 404", http.StatusNotFound, `404 page not found`},
+		{"transient 503", http.StatusServiceUnavailable, `{"error":{"message":"upstream responses proxy unavailable","code":"service_unavailable"}}`},
+		{"proxy-compat 403", http.StatusForbidden, `{"error":{"message":"Insufficient account balance","type":"bad_response_status_code","code":"bad_response_status_code"}}`},
+	}
+	for _, tc := range cases {
+		if ra.shouldFallbackOpenAIResponsesToChat(tc.status, newUpstreamError(tc.status, []byte(tc.body))) {
+			t.Fatalf("codex responses channel must not fall back to chat for %s (status %d)", tc.name, tc.status)
+		}
 	}
 }
 

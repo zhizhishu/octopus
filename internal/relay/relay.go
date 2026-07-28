@@ -1093,6 +1093,16 @@ func (ra *relayAttempt) shouldFallbackOpenAIResponsesToChat(statusCode int, err 
 	if ra.inboundType != inbound.InboundTypeOpenAIResponse || ra.channel.Type != outbound.OutboundTypeOpenAIResponse {
 		return false
 	}
+	// A codex-cloaked responses upstream is a genuine codex / OpenAI Responses
+	// endpoint: it only accepts /v1/responses and rejects /v1/chat/completions with
+	// 403 "codex clients may only use the OpenAI Responses protocol at /v1/responses".
+	// Downgrading it to chat can never succeed — it only turns a transient
+	// responses-side error (e.g. a 502/503 hiccup) into a hard 403 — so never fall
+	// back for codex channels; let the balancer fail over to the next channel
+	// instead. Plain (cloak=never) responses-compatible proxies still fall back.
+	if ra.shouldUseCodexFingerprint() {
+		return false
+	}
 	if !ra.responsesRequestSafeForChatFallback() {
 		return false
 	}
