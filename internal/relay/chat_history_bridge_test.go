@@ -1,10 +1,17 @@
 package relay
 
 import (
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 
+	"github.com/gin-gonic/gin"
+
 	dbmodel "github.com/bestruirui/octopus/internal/model"
+	"github.com/bestruirui/octopus/internal/op"
 	"github.com/bestruirui/octopus/internal/transformer/inbound"
 	model "github.com/bestruirui/octopus/internal/transformer/model"
 	"github.com/bestruirui/octopus/internal/transformer/outbound"
@@ -141,5 +148,112 @@ func TestShouldBridgeResponsesHistoryEnabledForChatChannel(t *testing.T) {
 		if !ra.shouldBridgeResponsesHistory() {
 			t.Fatalf("chat channel type %v must record responses transcripts for later rebuild", ct)
 		}
+	}
+}
+
+// Regression guard for the shared-request PreviousResponseID leak: the first chat
+// attempt inlines the prior turn's history and clears previous_response_id on the
+// SHARED internalRequest; a failover attempt must rebuild the full history again,
+// not silently forward only the incremental turn. Before the per-attempt reset in
+// forward()'s outer loop, the second attempt saw a nil previous_response_id, skipped
+// the bridge, and sent 1 message instead of the full history.
+func TestOpenAIResponsesChatHistoryRebuildSurvivesFailover(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayErrorDB(t)
+	clearResponsesSessionCacheForTest()
+
+	previous := "resp_failover_parent"
+	recordResponsesSessionTranscript(previous, []model.Message{
+		{Role: "user", Content: model.MessageContent{Content: strPtr("first question")}},
+		{Role: "assistant", Content: model.MessageContent{Content: strPtr("first answer")}},
+	})
+
+	var (
+		mu     sync.Mutex
+		calls  int
+		okMsgs int
+	)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		mu.Lock()
+		calls++
+		n := calls
+		mu.Unlock()
+		if n == 1 {
+			// First attempt fails so the balancer fails over to the second channel.
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":{"message":"upstream temporarily unavailable"}}`))
+			return
+		}
+		var body model.InternalLLMRequest
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		okMsgs = len(body.Messages)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-failover-ok","object":"chat.completion","created":1,"model":"gpt-5.5","choices":[{"index":0,"message":{"role":"assistant","content":"ok after failover"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	mkChannel := func(name string) dbmodel.Channel {
+		return dbmodel.Channel{
+			Name:     name,
+			Type:     outbound.OutboundTypeOpenAIChat,
+			Enabled:  true,
+			Cloak:    dbmodel.ChannelCloak{Mode: "never"},
+			BaseUrls: []dbmodel.BaseUrl{{URL: upstream.URL}},
+			Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "k"}},
+		}
+	}
+	ch1 := mkChannel("chat-failover-first")
+	ch2 := mkChannel("chat-failover-second")
+	if err := op.ChannelCreate(&ch1, ctx); err != nil {
+		t.Fatalf("create ch1: %v", err)
+	}
+	if err := op.ChannelCreate(&ch2, ctx); err != nil {
+		t.Fatalf("create ch2: %v", err)
+	}
+	group := dbmodel.Group{Name: "failover-chat", Mode: dbmodel.GroupModeFailover}
+	if err := op.GroupCreate(&group, ctx); err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	for i, ch := range []dbmodel.Channel{ch1, ch2} {
+		if err := op.GroupItemAdd(&dbmodel.GroupItem{GroupID: group.ID, ChannelID: ch.ID, ModelName: "gpt-5.5", Priority: i + 1, Weight: 1}, ctx); err != nil {
+			t.Fatalf("group item: %v", err)
+		}
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{
+		"model":"failover-chat",
+		"input":"next question",
+		"previous_response_id":"resp_failover_parent"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+	c.Set("api_key_id", 0)
+	c.Set("user_id", 0)
+	c.Set("request_ip", "127.0.0.1")
+
+	Handler(inbound.InboundTypeOpenAIResponse, c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected success after failover, got %d body %s", rec.Code, rec.Body.String())
+	}
+	mu.Lock()
+	got, total := okMsgs, calls
+	mu.Unlock()
+	if total < 2 {
+		t.Fatalf("expected a failover (>=2 upstream calls), got %d", total)
+	}
+	// rebuilt history (user + assistant) + increment (user) = 3 messages. Before the fix
+	// the failover attempt saw a nil previous_response_id and forwarded only the 1 increment.
+	if got < 3 {
+		t.Fatalf("failover attempt must carry the rebuilt history, got %d messages (want >=3)", got)
 	}
 }

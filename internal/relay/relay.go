@@ -91,6 +91,14 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 	metrics.SetAccessPlan(routeResult.AccessPlan, routeResult.AccessRouteRule, routeResult.AccessRouteUsed)
 	metrics.SetClientSession(clientSession)
 	baseMessages := append([]model.Message(nil), internalRequest.Messages...)
+	// The responses history bridges (chat / Anthropic) and codex shape clear
+	// PreviousResponseID / ResponsesInputRaw on the SHARED internalRequest once they
+	// inline a prior turn's history. Capture the client's originals so every
+	// retry/failover attempt is rebuilt from the real request rather than a
+	// context-stripped one — without this, a 2nd attempt sees a nil previous_response_id,
+	// skips the bridge entirely, and silently forwards only the incremental turn.
+	basePreviousResponseID := internalRequest.PreviousResponseID
+	baseResponsesInputRaw := cloneRawJSONMessage(internalRequest.ResponsesInputRaw)
 
 	// 请求级上下文
 	req := &relayRequest{
@@ -207,6 +215,8 @@ runIterator:
 			// the upstream model name to the client.
 			internalRequest.Model = item.ModelName
 			internalRequest.Messages = append([]model.Message(nil), baseMessages...)
+			internalRequest.PreviousResponseID = basePreviousResponseID
+			internalRequest.ResponsesInputRaw = cloneRawJSONMessage(baseResponsesInputRaw)
 			promptSnapshot := applyPromptOverrides(internalRequest, routeResult.AccessPlan, routeResult.AccessRouteRule, channel)
 			if len(promptSnapshot.Sources) > 0 {
 				clearResponsesRawPromptShape(internalRequest)
@@ -238,6 +248,8 @@ runIterator:
 				log.Warnf("retrying transient empty upstream stream on channel %s key %d (try %d/%d): %v",
 					channel.Name, usedKey.ID, transientTry+1, maxTransientStreamRetries, result.Err)
 				internalRequest.Messages = append([]model.Message(nil), baseMessages...)
+				internalRequest.PreviousResponseID = basePreviousResponseID
+				internalRequest.ResponsesInputRaw = cloneRawJSONMessage(baseResponsesInputRaw)
 				if snap := applyPromptOverrides(internalRequest, routeResult.AccessPlan, routeResult.AccessRouteRule, channel); len(snap.Sources) > 0 {
 					clearResponsesRawPromptShape(internalRequest)
 				}
