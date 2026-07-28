@@ -520,7 +520,12 @@ func parseRequest(inboundType inbound.InboundType, c *gin.Context) (*model.Inter
 func (ra *relayAttempt) forward(span *balancer.AttemptSpan) (int, error) {
 	ctx := ra.c.Request.Context()
 	originalInternalRequest := cloneInternalRequestForRetry(ra.internalRequest)
-	ra.applyTransformOptions()
+	// A responses request bound for a chat channel that carries an unresolvable
+	// previous_response_id is refused here (invalid_request_error) rather than
+	// forwarded with its context silently stripped; see bridgeResponsesHistoryForChat.
+	if err := ra.applyTransformOptions(); err != nil {
+		return http.StatusBadRequest, err
+	}
 
 	outAdapter := ra.outAdapter
 	fallbackTried := false
@@ -1242,7 +1247,7 @@ func (ra *relayAttempt) applyModelMapping() {
 	ra.modelMapped = true
 }
 
-func (ra *relayAttempt) applyTransformOptions() {
+func (ra *relayAttempt) applyTransformOptions() error {
 	ra.applyModelMapping()
 	ra.internalRequest.TransformOptions.AnthropicAutoCacheControl = false
 	// Channel cloak mode "never" disables Claude identity simulation end to end:
@@ -1264,8 +1269,19 @@ func (ra *relayAttempt) applyTransformOptions() {
 	ra.prepareCodexRequestShape()
 	ra.ensureClaudeMetadataUserID()
 
+	// Plain responses clients targeting a CHAT channel rely on previous_response_id,
+	// which chat/completions does not support and no chat upstream persists. Rebuild
+	// the prior turn's history from the local transcript store; if it can't be honored
+	// bridgeResponsesHistoryForChat returns a deterministic invalid_request error so
+	// the caller fails loudly instead of forwarding a context-stripped turn.
+	if openAIChatOutboundChannel(ra.channel.Type) {
+		if err := ra.bridgeResponsesHistoryForChat(); err != nil {
+			return err
+		}
+	}
+
 	if ra.channel.Type != outbound.OutboundTypeAnthropic {
-		return
+		return nil
 	}
 
 	// Plain responses clients (e.g. Cursor) targeting a Claude channel rely on
@@ -1285,9 +1301,10 @@ func (ra *relayAttempt) applyTransformOptions() {
 
 	enabled, err := op.SettingGetBool(dbmodel.SettingKeyAnthropicAutoCacheControl)
 	if err != nil {
-		return
+		return nil
 	}
 	ra.internalRequest.TransformOptions.AnthropicAutoCacheControl = enabled
+	return nil
 }
 
 func (ra *relayAttempt) routingCapabilityKey() string {

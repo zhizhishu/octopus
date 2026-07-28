@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -674,6 +675,11 @@ func (ra *relayAttempt) shouldBridgeResponsesHistory() bool {
 	switch ra.channel.Type {
 	case outbound.OutboundTypeAnthropic:
 		return true
+	case outbound.OutboundTypeOpenAIChat, outbound.OutboundTypeCustomOpenAIChat:
+		// Chat/completions upstreams keep no server-side response state, so record
+		// the transcript locally: the next previous_response_id turn is rebuilt from
+		// it by bridgeResponsesHistoryForChat (mirrors the Anthropic bridge above).
+		return true
 	case outbound.OutboundTypeOpenAIResponse:
 		return ra.shouldBridgePlainResponsesCodexHistory()
 	default:
@@ -700,6 +706,63 @@ func (ra *relayAttempt) bridgeResponsesHistoryForAnthropic() {
 		return
 	}
 	ra.applyPlainResponsesCodexHistoryForPreviousResponseID(*req.PreviousResponseID)
+}
+
+// openAIChatOutboundChannel reports whether the channel down-converts to the OpenAI
+// /v1/chat/completions wire protocol (plain or custom). Such upstreams keep no
+// server-side response state and the wire format has no previous_response_id field.
+func openAIChatOutboundChannel(channelType outbound.OutboundType) bool {
+	return channelType == outbound.OutboundTypeOpenAIChat ||
+		channelType == outbound.OutboundTypeCustomOpenAIChat
+}
+
+// bridgeResponsesHistoryForChat replays a prior responses turn's history into the
+// outgoing messages when a plain responses client (relying on previous_response_id)
+// targets a CHAT channel. A chat/completions upstream keeps no server-side state and
+// the wire protocol has no previous_response_id field, so without this the next turn
+// would reach the upstream carrying ONLY the incremental input and silently lose all
+// prior context — the upstream would still answer 200, masking the loss.
+//
+// When the transcript is unavailable (unknown/expired id we never stored, and the
+// client did not carry the history itself), the request is refused with a
+// deterministic invalid_request_error instead of forwarding a context-stripped turn
+// — mirroring new-api's stateful-field rejection and CLIProxyAPI's
+// previous_response_not_found classification. That 400 is a request-shape rejection,
+// so shouldRecordBreakerFailure never charges it to the channel breaker, and the
+// caller's own error handling reacts instead of receiving a false success.
+//
+// Tool-output continuations are left untouched (mirrors bridgeResponsesHistoryForAnthropic):
+// they cannot be safely reconstructed from a stored transcript.
+func (ra *relayAttempt) bridgeResponsesHistoryForChat() error {
+	if ra == nil || ra.internalRequest == nil || ra.channel == nil {
+		return nil
+	}
+	if ra.inboundType != inbound.InboundTypeOpenAIResponse || !openAIChatOutboundChannel(ra.channel.Type) {
+		return nil
+	}
+	req := ra.internalRequest
+	if req.PreviousResponseID == nil || strings.TrimSpace(*req.PreviousResponseID) == "" {
+		// No stateful chaining requested (e.g. full-replay tier1 clients that carry the
+		// whole conversation every turn): nothing to rebuild and nothing at risk.
+		return nil
+	}
+	if responsesMessagesContainToolOutput(req.Messages) {
+		return nil
+	}
+	if responsesMessagesAlreadyCarryAssistantContext(req.Messages) {
+		// The client already sent the assistant history in this request, so there is
+		// nothing to restore and no context is lost.
+		return nil
+	}
+	previousResponseID := strings.TrimSpace(*req.PreviousResponseID)
+	history, ok := responsesSessionTranscript(previousResponseID, ra.apiKeyID, ra.userID)
+	if !ok || len(history) == 0 {
+		return newUpstreamError(http.StatusBadRequest, []byte(`{"error":{"type":"invalid_request_error","message":"previous_response_id cannot be continued on this channel: no server-side response state is available and no stored transcript matched. Resend the full conversation in input instead of relying on previous_response_id."}}`))
+	}
+	req.Messages = appendPlainResponsesHistory(history, req.Messages)
+	req.PreviousResponseID = nil
+	req.ResponsesInputRaw = nil
+	return nil
 }
 
 // restoreCodexToolsForAnthropic re-attaches the codex tool set when a codex CLI
