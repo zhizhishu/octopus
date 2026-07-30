@@ -16,6 +16,40 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// A client that explicitly set store=true on a codex-shaped responses channel is incompatible
+// with the reasoning.encrypted_content include the shape adds (store=true + that include makes
+// the genuine upstream 500 once real reasoning is produced). prepareCodexRequestShape must
+// coerce store back to false, not honor the incoherent store=true.
+func TestPrepareCodexRequestShapeForcesStoreFalseOverExplicitTrue(t *testing.T) {
+	content := "Say OK only"
+	storeTrue := true
+	req := &model.InternalLLMRequest{
+		Model:        "gpt-5.6-sol",
+		RawAPIFormat: model.APIFormatOpenAIResponse,
+		Store:        &storeTrue,
+		Messages: []model.Message{{
+			Role:    "user",
+			Content: model.MessageContent{Content: &content},
+		}},
+	}
+	ra := &relayAttempt{
+		relayRequest: &relayRequest{
+			inboundType:     inbound.InboundTypeOpenAIResponse,
+			internalRequest: req,
+		},
+		channel: &dbmodel.Channel{Type: outbound.OutboundTypeOpenAIResponse},
+	}
+
+	ra.prepareCodexRequestShape()
+
+	if req.Store == nil || *req.Store {
+		t.Fatalf("codex shape must coerce an explicit store=true back to false (encrypted_content include requires store=false), got %#v", req.Store)
+	}
+	if !containsString(req.Include, "reasoning.encrypted_content") {
+		t.Fatalf("expected reasoning encrypted content include, got %#v", req.Include)
+	}
+}
+
 func TestPrepareCodexRequestShapeSynthesizesPlainResponsesInput(t *testing.T) {
 	content := "Say OK only"
 	req := &model.InternalLLMRequest{

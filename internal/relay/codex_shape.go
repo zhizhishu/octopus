@@ -23,10 +23,15 @@ func (ra *relayAttempt) prepareCodexRequestShape() {
 	addCodexResponsesInclude(req)
 	ra.bridgePlainResponsesCodexHistory()
 	ensureCodexAgentContext(req)
-	if req.Store == nil {
-		store := false
-		req.Store = &store
-	}
+	// Codex shape requires store=false: the reasoning.encrypted_content include added above is
+	// the store=false stateless-reasoning channel, and combining it with store=true makes the
+	// genuine upstream 500 once real reasoning is produced (empirically confirmed; a trivial
+	// no-reasoning turn slips through, a substantive one does not). Force store=false even when
+	// the client explicitly set store=true — mirrors sub2api's applyCodexOAuthTransform, which
+	// overwrites an incoherent store=true rather than forwarding it. Real codex clients already
+	// run store=false, so this only coerces the incoherent store=true case.
+	store := false
+	req.Store = &store
 	applyCodexFastMode(req)
 	normalizeCodexReasoningEffort(req)
 	if len(req.ResponsesInputRaw) == 0 || !responsesInputRawLooksCodexShaped(req.ResponsesInputRaw) {
