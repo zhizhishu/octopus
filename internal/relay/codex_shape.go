@@ -221,6 +221,7 @@ func normalizeChatToolCallPairing(messages []transformerModel.Message) []transfo
 					continue
 				}
 				if _, ok := replies[id]; ok {
+					tc.ID = id // canonicalize to the trimmed id so the emitted call matches its reply exactly
 					kept = append(kept, tc)
 				}
 			}
@@ -237,7 +238,12 @@ func normalizeChatToolCallPairing(messages []transformerModel.Message) []transfo
 			m.ToolCalls = kept
 			out = append(out, m)
 			for _, tc := range kept {
-				out = append(out, replies[strings.TrimSpace(tc.ID)])
+				// kept ids are already trimmed; canonicalize the reply's tool_call_id to the
+				// same value so a whitespace-padded input can't leave the wire pair mismatched.
+				reply := replies[tc.ID]
+				canonicalID := tc.ID
+				reply.ToolCallID = &canonicalID
+				out = append(out, reply)
 			}
 		default:
 			out = append(out, m)

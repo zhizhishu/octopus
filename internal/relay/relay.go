@@ -742,6 +742,11 @@ retryWithAdapter:
 				outAdapter = chatAdapter
 				ra.internalRequest = cloneInternalRequestForRetry(originalInternalRequest)
 				_ = response.Body.Close()
+				// The pre-transform clone above dropped the channel's model mapping; re-apply
+				// it so the downgraded chat wire carries the upstream model name, not the
+				// client-visible one. (Auto prompt_cache_key is not re-applied here — a known
+				// perf-only gap on this fallback path, not a correctness one.)
+				ra.applyModelMapping()
 				// The downgrade forwards over chat/completions, which keeps no server-side
 				// response state. Run the chat history bridge on the swapped wire so a
 				// previous_response_id turn is rebuilt from the local transcript (or refused

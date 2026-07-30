@@ -318,6 +318,14 @@ func TestNormalizeChatToolCallPairingTrimsCallID(t *testing.T) {
 	if len(out) != 2 || out[0].Role != "assistant" || len(out[0].ToolCalls) != 1 || out[1].Role != "tool" {
 		t.Fatalf("a whitespace-padded call_id must still pair (trim on both sides), got %#v", out)
 	}
+	// The emitted ids on BOTH sides must be the canonical trimmed value so a strict upstream
+	// never sees an assistant tool_call id that differs from its tool reply id.
+	if out[0].ToolCalls[0].ID != "call_a" {
+		t.Fatalf("emitted assistant tool_call id must be canonicalized (trimmed), got %q", out[0].ToolCalls[0].ID)
+	}
+	if out[1].ToolCallID == nil || *out[1].ToolCallID != "call_a" {
+		t.Fatalf("emitted tool reply id must equal the (trimmed) assistant id, got %v", out[1].ToolCallID)
+	}
 }
 
 // Store side: chat channels must record responses transcripts so a later

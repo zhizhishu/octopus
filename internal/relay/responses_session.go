@@ -690,7 +690,14 @@ func (ra *relayAttempt) shouldBridgeResponsesHistory() bool {
 		// it by bridgeResponsesHistoryForChat (mirrors the Anthropic bridge above).
 		return true
 	case outbound.OutboundTypeOpenAIResponse:
-		return ra.shouldBridgePlainResponsesCodexHistory()
+		// Store the transcript for any plain responses client (NOT the codex CLI, which
+		// replays its own history against a stateful codex upstream). It feeds the codex
+		// history bridge and — crucially — lets bridgeResponsesHistoryForChat rebuild the
+		// conversation if this responses upstream flakes and the request is downgraded to
+		// chat/completions (which keeps no server-side state). The codex-fingerprint-only
+		// store (shouldBridgePlainResponsesCodexHistory) was mutually exclusive with
+		// fallback-eligibility, so a downgraded turn could never find a transcript.
+		return !ra.inboundLooksLikeCodexClient()
 	default:
 		return false
 	}
