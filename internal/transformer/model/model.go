@@ -1164,10 +1164,13 @@ func (t Tool) MarshalJSON() ([]byte, error) {
 
 // Function represents a function definition.
 type Function struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	Parameters  json.RawMessage `json:"parameters"`
-	Strict      *bool           `json:"strict,omitempty"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	// omitempty so a parameterless tool serializes without a key instead of
+	// "parameters":null, which strict OpenAI-compatible upstreams reject. A tool
+	// that carries a real schema is unaffected (non-empty RawMessage is kept).
+	Parameters json.RawMessage `json:"parameters,omitempty"`
+	Strict     *bool           `json:"strict,omitempty"`
 }
 
 // FunctionCall represents a function call (deprecated).

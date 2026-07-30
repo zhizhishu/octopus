@@ -48,14 +48,33 @@ func transformChatRequest(ctx context.Context, request *model.InternalLLMRequest
 		}
 	}
 
-	// Convert developer role to system role for compatibility
-	for i := range request.Messages {
-		if request.Messages[i].Role == "developer" {
-			request.Messages[i].Role = "system"
+	// o-series / gpt-5 chat models need a different body shape than the rest of
+	// the OpenAI Chat Completions surface (max_completion_tokens, no temperature,
+	// and system->developer for most of them). Apply that rewrite first so the
+	// generic developer->system demotion below does NOT run on these models.
+	if isOpenAIReasoningChatModel(request.Model) && isOpenAIOfficialChatBase(baseUrl) {
+		// Only the genuine OpenAI chat base is known to require the o/gpt-5 body shape
+		// (max_completion_tokens, no temperature, first system->developer). A third-party
+		// OpenAI-compatible provider that happens to serve a gpt-5-/o-named model may still
+		// expect max_tokens/temperature/system, so route it through the generic demotion
+		// path below to avoid a regression. (oct serves genuine OpenAI over /responses, so
+		// this chat path is a safety net for the rare official-chat case.)
+		applyOpenAIReasoningChatCompat(request)
+	} else {
+		// Convert developer role to system role for compatibility with
+		// non-reasoning OpenAI-compatible chat upstreams that reject "developer".
+		for i := range request.Messages {
+			if request.Messages[i].Role == "developer" {
+				request.Messages[i].Role = "system"
+			}
 		}
 	}
 
-	if request.Stream != nil && *request.Stream {
+	// Force stream_options.include_usage only for the genuine OpenAI chat base.
+	// Third-party OpenAI-compatible upstreams often 400 on unknown/unsupported
+	// stream_options, so leave client-provided values alone there (and do not
+	// inject one when the client omitted it).
+	if request.Stream != nil && *request.Stream && isOpenAIOfficialChatBase(baseUrl) {
 		if request.StreamOptions == nil {
 			request.StreamOptions = &model.StreamOptions{IncludeUsage: true}
 		} else if !request.StreamOptions.IncludeUsage {
@@ -114,6 +133,80 @@ var (
 // sending "json_schema" causes a 400 error.
 func isDeepSeekModel(model string) bool {
 	return strings.Contains(strings.ToLower(model), "deepseek")
+}
+
+// isOpenAIReasoningChatModel reports whether the model name targets an OpenAI
+// o-series or gpt-5 family chat model that rejects max_tokens / temperature
+// (and, for most of them, expects the first system message as role=developer).
+// Matching is prefix-based on the bare model id so date suffixes and provider
+// prefixes still classify correctly (e.g. "o3-2025-04-16", "openai/gpt-5-mini").
+func isOpenAIReasoningChatModel(name string) bool {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	if lower == "" {
+		return false
+	}
+	// Strip a common "org/" provider prefix so "openai/o3-mini" still matches.
+	if i := strings.LastIndex(lower, "/"); i >= 0 && i+1 < len(lower) {
+		lower = lower[i+1:]
+	}
+	switch {
+	case strings.HasPrefix(lower, "o1"),
+		strings.HasPrefix(lower, "o3"),
+		strings.HasPrefix(lower, "o4"),
+		strings.HasPrefix(lower, "gpt-5"):
+		return true
+	default:
+		return false
+	}
+}
+
+// openAIReasoningUsesDeveloperRole reports whether the reasoning chat model
+// expects the first system message promoted to role=developer. Early o1-mini
+// and o1-preview still use system; later o-series and gpt-5 use developer.
+func openAIReasoningUsesDeveloperRole(name string) bool {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	if i := strings.LastIndex(lower, "/"); i >= 0 && i+1 < len(lower) {
+		lower = lower[i+1:]
+	}
+	// o1-mini / o1-preview (and dated variants) keep the system role.
+	if strings.HasPrefix(lower, "o1-mini") || strings.HasPrefix(lower, "o1-preview") {
+		return false
+	}
+	return isOpenAIReasoningChatModel(name)
+}
+
+// applyOpenAIReasoningChatCompat rewrites a chat/completions body for o-series
+// and gpt-5 models: max_tokens -> max_completion_tokens, drop temperature, and
+// (when supported) promote the first system message to developer. Body-only;
+// does not touch request headers or fingerprint.
+func applyOpenAIReasoningChatCompat(request *model.InternalLLMRequest) {
+	if request == nil {
+		return
+	}
+	// max_tokens is rejected by o/gpt-5 chat models; migrate it onto
+	// max_completion_tokens when the latter is unset so the client's limit is
+	// preserved. If both are set, prefer the modern field and drop max_tokens.
+	if request.MaxTokens != nil {
+		if request.MaxCompletionTokens == nil {
+			request.MaxCompletionTokens = request.MaxTokens
+		}
+		request.MaxTokens = nil
+	}
+	// Temperature is unsupported on these models and must not be forwarded.
+	request.Temperature = nil
+
+	if !openAIReasoningUsesDeveloperRole(request.Model) {
+		return
+	}
+	// Promote only the first system message to developer (the canonical
+	// instruction slot). Leave subsequent system messages untouched so mixed
+	// multi-system histories stay stable.
+	for i := range request.Messages {
+		if request.Messages[i].Role == "system" {
+			request.Messages[i].Role = "developer"
+			break
+		}
+	}
 }
 
 // applyDeepSeekResponseFormat downgrades a json_schema response_format to
