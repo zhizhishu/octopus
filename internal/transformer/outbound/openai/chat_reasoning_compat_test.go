@@ -40,6 +40,54 @@ func TestApplyOpenAIReasoningChatCompatMaxTokensAndTemperature(t *testing.T) {
 	}
 }
 
+// TestGPT5ChatKeepsSamplingParamsOnOfficialBase pins FIX E end-to-end: on the genuine
+// OpenAI base a gpt-5-chat model keeps temperature and max_tokens (no reasoning rewrite),
+// while a genuine reasoning model (gpt-5) still migrates max_tokens -> max_completion_tokens
+// and drops temperature.
+func TestGPT5ChatKeepsSamplingParamsOnOfficialBase(t *testing.T) {
+	maxTokens := int64(100)
+	temp := 0.7
+	user := "hi"
+	build := func(modelName string) *model.InternalLLMRequest {
+		m := maxTokens
+		tp := temp
+		return &model.InternalLLMRequest{
+			Model:       modelName,
+			MaxTokens:   &m,
+			Temperature: &tp,
+			Messages:    []model.Message{{Role: "user", Content: model.MessageContent{Content: &user}}},
+		}
+	}
+
+	for _, modelName := range []string{"gpt-5-chat", "gpt-5-chat-latest", "gpt-5.1-chat-latest"} {
+		t.Run(modelName+"_keeps_sampling", func(t *testing.T) {
+			payload := chatBodyWithBase(t, build(modelName), "https://api.openai.com/v1")
+			if v, ok := payload["temperature"].(float64); !ok || v != temp {
+				t.Fatalf("%s must keep temperature, body=%v", modelName, payload)
+			}
+			if v, ok := payload["max_tokens"].(float64); !ok || int64(v) != maxTokens {
+				t.Fatalf("%s must keep max_tokens, body=%v", modelName, payload)
+			}
+			if _, ok := payload["max_completion_tokens"]; ok {
+				t.Fatalf("%s must not convert to max_completion_tokens, body=%v", modelName, payload)
+			}
+		})
+	}
+
+	t.Run("gpt-5_still_rewritten", func(t *testing.T) {
+		payload := chatBodyWithBase(t, build("gpt-5"), "https://api.openai.com/v1")
+		if _, ok := payload["temperature"]; ok {
+			t.Fatalf("gpt-5 must drop temperature, body=%v", payload)
+		}
+		if _, ok := payload["max_tokens"]; ok {
+			t.Fatalf("gpt-5 must migrate off max_tokens, body=%v", payload)
+		}
+		if v, ok := payload["max_completion_tokens"].(float64); !ok || int64(v) != maxTokens {
+			t.Fatalf("gpt-5 must use max_completion_tokens, body=%v", payload)
+		}
+	})
+}
+
 func TestApplyOpenAIReasoningChatCompatSystemToDeveloper(t *testing.T) {
 	sys := "instructions"
 	user := "hi"
@@ -167,7 +215,9 @@ func TestStreamOptionsIncludeUsageOnlyForcedForOfficialOpenAI(t *testing.T) {
 func TestIsOpenAIReasoningChatModelHelpers(t *testing.T) {
 	// Unit-level classification guards so the transform gate stays stable.
 	yes := []string{"o1", "o1-mini", "o3-mini", "o4-mini-2025-04-16", "gpt-5", "gpt-5-mini", "openai/gpt-5-pro"}
-	no := []string{"gpt-4o", "gpt-4.1", "deepseek-chat", "glm-4.6", "", "claude-sonnet-4"}
+	// FIX E: the gpt-5-chat family are non-reasoning chat models and must classify as NO.
+	no := []string{"gpt-4o", "gpt-4.1", "deepseek-chat", "glm-4.6", "", "claude-sonnet-4",
+		"gpt-5-chat", "gpt-5-chat-latest", "gpt-5.1-chat-latest", "openai/gpt-5-chat-latest"}
 	for _, m := range yes {
 		if !isOpenAIReasoningChatModel(m) {
 			t.Errorf("expected reasoning chat model: %q", m)

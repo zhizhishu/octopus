@@ -819,11 +819,14 @@ func mustJSONQuote(value string) string {
 // bridged/rebuilt turn keeps encrypted reasoning continuity.
 func TestCodexAssistantItemsEmitsEncryptedReasoningBeforeMessage(t *testing.T) {
 	encrypted := "gAAAAABbridged-sig"
+	// Only an OpenAI-encrypted-tagged signature is re-emitted (as the raw blob); a
+	// bare/foreign one is dropped (see TestCodexAssistantItemsDropsForeignReasoning).
+	tagged := model.TagOpenAIEncryptedContent(encrypted)
 	text := "continue"
 	summary := "prior thought"
 	items := codexAssistantItems(model.Message{
 		Role:               "assistant",
-		ReasoningSignature: &encrypted,
+		ReasoningSignature: &tagged,
 		ReasoningContent:   &summary,
 		Content:            model.MessageContent{Content: &text},
 		ToolCalls: []model.ToolCall{{
@@ -861,9 +864,10 @@ func TestCodexAssistantItemsEmitsEncryptedReasoningBeforeMessage(t *testing.T) {
 // reasoning item with summary:[] so the wire shape matches store=false continuity.
 func TestCodexAssistantItemsEncryptedOnlyBackfillsEmptySummary(t *testing.T) {
 	encrypted := "gAAAAABsig-only"
+	tagged := model.TagOpenAIEncryptedContent(encrypted)
 	items := codexAssistantItems(model.Message{
 		Role:               "assistant",
-		ReasoningSignature: &encrypted,
+		ReasoningSignature: &tagged,
 	})
 	if len(items) != 1 {
 		t.Fatalf("expected a single reasoning item, got %#v", items)
@@ -877,6 +881,37 @@ func TestCodexAssistantItemsEncryptedOnlyBackfillsEmptySummary(t *testing.T) {
 	summaryVal, ok := items[0]["summary"].([]map[string]any)
 	if !ok || len(summaryVal) != 0 {
 		t.Fatalf("expected empty summary:[] backfill, got %#v", items[0]["summary"])
+	}
+}
+
+// TestCodexAssistantItemsDropsForeignReasoning pins FIX A6: a foreign
+// provider-tagged signature (Anthropic redacted, Gemini thoughtSignature) must NOT
+// become an OpenAI encrypted_content reasoning item, or the codex upstream rejects the
+// cross-protocol blob. Only an OpenAI-encrypted-tagged signature emits a reasoning item.
+func TestCodexAssistantItemsDropsForeignReasoning(t *testing.T) {
+	text := "continue"
+	cases := []struct {
+		name string
+		sig  string
+	}{
+		{"redacted_tagged", model.EncodeRedactedThinkingSignature("REDACTED_BLOB")},
+		{"gemini_tagged", model.TagGeminiThoughtSignature("gemini-sig")},
+		{"bare_untagged", "bare-thinking-sig"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sig := tc.sig
+			items := codexAssistantItems(model.Message{
+				Role:               "assistant",
+				ReasoningSignature: &sig,
+				Content:            model.MessageContent{Content: &text},
+			})
+			for _, item := range items {
+				if typ, _ := item["type"].(string); typ == "reasoning" {
+					t.Fatalf("foreign signature %q must not emit a reasoning item, got %#v", tc.name, items)
+				}
+			}
+		})
 	}
 }
 

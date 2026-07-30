@@ -425,21 +425,23 @@ func codexAssistantItems(msg transformerModel.Message) []map[string]any {
 	// the encrypted blob, strip any id, and backfill summary:[] (empty when no
 	// summary text is available). Without this, resynthesis drops the signature and
 	// the upstream has to re-think from scratch / rejects unsigned continuity.
-	if msg.ReasoningSignature != nil {
-		if sig := strings.TrimSpace(*msg.ReasoningSignature); sig != "" {
-			reasoningItem := map[string]any{
-				"type":              "reasoning",
-				"encrypted_content": sig,
-				"summary":           []map[string]any{},
-			}
-			if text := strings.TrimSpace(msg.GetReasoningContent()); text != "" {
-				reasoningItem["summary"] = []map[string]any{{
-					"type": "summary_text",
-					"text": text,
-				}}
-			}
-			items = append(items, reasoningItem)
+	// Emit the reasoning item ONLY for an OpenAI-encrypted-tagged signature, using the
+	// raw (untagged) blob as encrypted_content. A foreign/untagged signature (Gemini
+	// thoughtSignature, Anthropic thinking/redacted, DeepSeek bare) must NOT become an
+	// OpenAI encrypted_content, or the upstream rejects the cross-protocol blob.
+	if raw, ok := transformerModel.OpenAIEncryptedContent(msg.ReasoningSignature); ok {
+		reasoningItem := map[string]any{
+			"type":              "reasoning",
+			"encrypted_content": raw,
+			"summary":           []map[string]any{},
 		}
+		if text := strings.TrimSpace(msg.GetReasoningContent()); text != "" {
+			reasoningItem["summary"] = []map[string]any{{
+				"type": "summary_text",
+				"text": text,
+			}}
+		}
+		items = append(items, reasoningItem)
 	}
 	if text := strings.TrimSpace(messageTextContent(msg.Content)); text != "" {
 		items = append(items, map[string]any{

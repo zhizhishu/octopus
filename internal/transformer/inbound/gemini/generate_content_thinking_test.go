@@ -67,8 +67,10 @@ func TestGeminiInboundFunctionCallThoughtSignaturePreserved(t *testing.T) {
 	if len(msg.ToolCalls) != 1 || msg.ToolCalls[0].Function.Name != "lookup" {
 		t.Fatalf("expected one lookup tool call, got %#v", msg.ToolCalls)
 	}
-	if msg.ReasoningSignature == nil || *msg.ReasoningSignature != "sig-abc-123" {
-		t.Fatalf("expected thoughtSignature preserved on ReasoningSignature, got %#v", msg.ReasoningSignature)
+	// The thoughtSignature is preserved Gemini-tagged so a cross-protocol replay
+	// cannot emit it as another provider's signature; it decodes back to the raw.
+	if raw, ok := model.GeminiThoughtSignature(msg.ReasoningSignature); !ok || raw != "sig-abc-123" {
+		t.Fatalf("expected Gemini-tagged thoughtSignature decoding to raw, got %#v", msg.ReasoningSignature)
 	}
 }
 

@@ -3,6 +3,8 @@ package openai
 import (
 	"context"
 	"testing"
+
+	"github.com/bestruirui/octopus/internal/transformer/model"
 )
 
 // TestConvertToLLMResponseFromResponsesCapturesEncryptedContent pins the
@@ -42,8 +44,10 @@ func TestConvertToLLMResponseFromResponsesCapturesEncryptedContent(t *testing.T)
 	if msg.ReasoningContent == nil || *msg.ReasoningContent != summary {
 		t.Fatalf("expected reasoning summary %q, got %#v", summary, msg.ReasoningContent)
 	}
-	if msg.ReasoningSignature == nil || *msg.ReasoningSignature != encrypted {
-		t.Fatalf("expected reasoning signature %q, got %#v", encrypted, msg.ReasoningSignature)
+	// The encrypted_content is captured OpenAI-tagged so a cross-protocol replay
+	// cannot emit it as another provider's signature; it decodes back to the raw.
+	if raw, ok := model.OpenAIEncryptedContent(msg.ReasoningSignature); !ok || raw != encrypted {
+		t.Fatalf("expected OpenAI-tagged reasoning signature decoding to %q, got %#v", encrypted, msg.ReasoningSignature)
 	}
 }
 
@@ -64,10 +68,14 @@ func TestResponseOutboundStreamLiftsReasoningEncryptedContent(t *testing.T) {
 		t.Fatalf("expected a reasoning delta, got %#v", resp)
 	}
 	delta := resp.Choices[0].Delta
-	if delta.ReasoningSignature == nil || *delta.ReasoningSignature != encrypted {
-		t.Fatalf("expected ReasoningSignature %q, got %#v", encrypted, delta.ReasoningSignature)
+	// The done branch lifts ONLY the encrypted_content (OpenAI-tagged); it decodes
+	// back to the raw blob.
+	if raw, ok := model.OpenAIEncryptedContent(delta.ReasoningSignature); !ok || raw != encrypted {
+		t.Fatalf("expected OpenAI-tagged ReasoningSignature decoding to %q, got %#v", encrypted, delta.ReasoningSignature)
 	}
-	if delta.ReasoningContent == nil || *delta.ReasoningContent != "thinking" {
-		t.Fatalf("expected ReasoningContent %q, got %#v", "thinking", delta.ReasoningContent)
+	// The item.summary text must NOT be emitted here: it is already streamed via
+	// response.reasoning_summary_text.delta, so lifting it again double-counts it.
+	if delta.ReasoningContent != nil {
+		t.Fatalf("expected no summary ReasoningContent in the done branch, got %#v", delta.ReasoningContent)
 	}
 }

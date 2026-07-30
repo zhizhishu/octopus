@@ -44,10 +44,10 @@ func TestRedactedThinkingInboundPreservesData(t *testing.T) {
 		t.Fatalf("no assistant message parsed, got %#v", req.Messages)
 	}
 
-	if !IsRedactedThinkingSignature(assistant.ReasoningSignature) {
+	if !transformerModel.IsRedactedThinkingSignature(assistant.ReasoningSignature) {
 		t.Fatalf("assistant ReasoningSignature is not redacted-marked: %#v", assistant.ReasoningSignature)
 	}
-	data, ok := DecodeRedactedThinkingSignature(*assistant.ReasoningSignature)
+	data, ok := transformerModel.DecodeRedactedThinkingSignature(*assistant.ReasoningSignature)
 	if !ok {
 		t.Fatalf("DecodeRedactedThinkingSignature failed for %q", *assistant.ReasoningSignature)
 	}

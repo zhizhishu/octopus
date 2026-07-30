@@ -3,7 +3,6 @@ package authropic
 import (
 	"testing"
 
-	anthropicModel "github.com/bestruirui/octopus/internal/transformer/inbound/anthropic"
 	"github.com/bestruirui/octopus/internal/transformer/model"
 )
 
@@ -52,7 +51,7 @@ func TestConvertMultiplePartContentPrependsSignedThinking(t *testing.T) {
 // upstream on the next turn.
 func TestConvertMultiplePartContentPrependsRedactedThinking(t *testing.T) {
 	const blob = "REDACTED_BLOB_ABC=="
-	sig := anthropicModel.EncodeRedactedThinkingSignature(blob)
+	sig := model.EncodeRedactedThinkingSignature(blob)
 	msg := model.Message{
 		Role:               "assistant",
 		ReasoningSignature: &sig,

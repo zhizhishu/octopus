@@ -432,6 +432,9 @@ func stringPtr(value string) *string {
 
 func TestConvertToResponsesRequestPreservesReasoningEncryptedContent(t *testing.T) {
 	encrypted := "gAAAAABencrypted"
+	// A same-protocol Responses history carries the encrypted_content source-tagged; the
+	// outbound must strip the tag and emit the raw blob (a bare/foreign one is not emitted).
+	tagged := model.TagOpenAIEncryptedContent(encrypted)
 	reasoning := "kept summary"
 	content := "continue"
 	req := &model.InternalLLMRequest{
@@ -440,7 +443,7 @@ func TestConvertToResponsesRequestPreservesReasoningEncryptedContent(t *testing.
 		Messages: []model.Message{{
 			Role:               "assistant",
 			ReasoningContent:   &reasoning,
-			ReasoningSignature: &encrypted,
+			ReasoningSignature: &tagged,
 		}, {
 			Role:    "user",
 			Content: model.MessageContent{Content: &content},

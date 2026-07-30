@@ -362,21 +362,19 @@ func (o *ResponseOutbound) TransformStream(ctx context.Context, eventData []byte
 		} else if streamEvent.Type == "response.output_item.done" &&
 			streamEvent.Item != nil &&
 			strings.TrimSpace(streamEvent.Item.Type) == "reasoning" {
-			// Lift reasoning.encrypted_content into ReasoningSignature so a
-			// subsequent turn (or bridge) can replay the encrypted blob. Non-tool
-			// output_item.done used to return nil, so the signature was dropped.
+			// Lift ONLY reasoning.encrypted_content into ReasoningSignature (tagged as
+			// OpenAI-sourced) so a subsequent turn (or bridge) can replay the encrypted
+			// blob; non-tool output_item.done used to return nil, dropping the signature.
+			// The item.summary text is deliberately NOT surfaced here: it was already
+			// streamed via response.reasoning_summary_text.delta, so lifting it again
+			// double-counts the summary in the aggregated reasoning content.
 			delta := &model.Message{Role: "assistant"}
 			if streamEvent.Item.EncryptedContent != nil {
 				if sig := strings.TrimSpace(*streamEvent.Item.EncryptedContent); sig != "" {
-					delta.ReasoningSignature = lo.ToPtr(sig)
+					delta.ReasoningSignature = lo.ToPtr(model.TagOpenAIEncryptedContent(sig))
 				}
 			}
-			// Also surface any remaining summary text that was not already
-			// streamed via response.reasoning_summary_text.delta.
-			if text := responsesReasoningSummaryText(streamEvent.Item.Summary); text != "" {
-				delta.ReasoningContent = lo.ToPtr(text)
-			}
-			if delta.ReasoningSignature == nil && delta.ReasoningContent == nil {
+			if delta.ReasoningSignature == nil {
 				return nil, nil
 			}
 			resp.Choices = []model.Choice{{
@@ -720,18 +718,6 @@ func responsesToolCallName(item *ResponsesItem) string {
 	default:
 		return strings.TrimSuffix(typ, "_call")
 	}
-}
-
-// responsesReasoningSummaryText concatenates summary_text parts from a reasoning item.
-func responsesReasoningSummaryText(summaries []ResponsesReasoningSummary) string {
-	if len(summaries) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	for _, summary := range summaries {
-		b.WriteString(summary.Text)
-	}
-	return b.String()
 }
 
 type ResponsesReasoningSummary struct {
@@ -1278,10 +1264,16 @@ func convertAudioToInputAudio(p model.MessageContentPart) *ResponsesItem {
 func convertAssistantMessageToResponses(msg model.Message) []ResponsesItem {
 	var items []ResponsesItem
 
-	if msg.ReasoningSignature != nil && strings.TrimSpace(*msg.ReasoningSignature) != "" {
+	// Only emit reasoning.encrypted_content when the signature is an OpenAI-encrypted one
+	// this path owns (strip the source tag). A foreign/untagged blob (Gemini thoughtSignature,
+	// Anthropic thinking/redacted, or an internal tag) must never be sent as encrypted_content
+	// — the upstream would reject it — so it degrades to a summary-only reasoning item instead.
+	// Mirrors codexAssistantItems' gate.
+	if raw, ok := model.OpenAIEncryptedContent(msg.ReasoningSignature); ok && strings.TrimSpace(raw) != "" {
+		encrypted := raw
 		item := ResponsesItem{
 			Type:             "reasoning",
-			EncryptedContent: msg.ReasoningSignature,
+			EncryptedContent: &encrypted,
 		}
 		if text := strings.TrimSpace(msg.GetReasoningContent()); text != "" {
 			item.Summary = []ResponsesReasoningSummary{{
@@ -1502,11 +1494,13 @@ func convertToLLMResponseFromResponses(resp *ResponsesResponse) *model.InternalL
 			for _, summary := range outputItem.Summary {
 				reasoningContent.WriteString(summary.Text)
 			}
-			// Capture reasoning.encrypted_content so a bridged next turn can
-			// replay the encrypted blob via Message.ReasoningSignature.
+			// Capture reasoning.encrypted_content (tagged as OpenAI-sourced) so a
+			// bridged next turn can replay the encrypted blob via
+			// Message.ReasoningSignature, and a cross-protocol replay never emits it as
+			// another provider's signature.
 			if outputItem.EncryptedContent != nil {
 				if sig := strings.TrimSpace(*outputItem.EncryptedContent); sig != "" {
-					reasoningSignature = sig
+					reasoningSignature = model.TagOpenAIEncryptedContent(sig)
 				}
 			}
 		case "image_generation_call":

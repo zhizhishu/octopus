@@ -288,7 +288,7 @@ func (o *MessageOutbound) TransformStream(ctx context.Context, eventData []byte)
 							Index: 0,
 							Delta: &model.Message{
 								Role:               "assistant",
-								ReasoningSignature: lo.ToPtr(anthropicModel.EncodeRedactedThinkingSignature(data)),
+								ReasoningSignature: lo.ToPtr(model.EncodeRedactedThinkingSignature(data)),
 							},
 						},
 					}
@@ -1072,7 +1072,7 @@ func buildMessageContent(msg model.Message) anthropicModel.MessageContent {
 		// Route to the block builder when there is cache_control, normal thinking,
 		// or a redacted_thinking payload to replay; otherwise the redacted block
 		// (which carries no ReasoningContent) would be dropped on this path.
-		if msg.CacheControl != nil || hasThinkingContent(msg) || anthropicModel.IsRedactedThinkingSignature(msg.ReasoningSignature) {
+		if msg.CacheControl != nil || hasThinkingContent(msg) || model.IsRedactedThinkingSignature(msg.ReasoningSignature) {
 			return buildMultipleContentWithThinking(msg)
 		}
 		return anthropicModel.MessageContent{Content: msg.Content.Content}
@@ -1108,9 +1108,15 @@ func anthropicThinkingSignaturePresent(sig *string) bool {
 // replayable (no reasoning, or an unsigned thinking block that Anthropic would
 // reject — see anthropicThinkingSignaturePresent).
 func leadingReasoningBlock(msg model.Message) (anthropicModel.MessageContentBlock, bool) {
-	if anthropicModel.IsRedactedThinkingSignature(msg.ReasoningSignature) {
-		data, _ := anthropicModel.DecodeRedactedThinkingSignature(*msg.ReasoningSignature)
+	if model.IsRedactedThinkingSignature(msg.ReasoningSignature) {
+		data, _ := model.DecodeRedactedThinkingSignature(*msg.ReasoningSignature)
 		return anthropicModel.MessageContentBlock{Type: "redacted_thinking", Data: data}, true
+	}
+	// A foreign provider tag (Gemini thoughtSignature / OpenAI encrypted_content) is
+	// not a valid Anthropic thinking signature; never replay it as one — Anthropic
+	// would 400 the opaque cross-protocol blob.
+	if model.HasProviderReasoningTag(msg.ReasoningSignature) {
+		return anthropicModel.MessageContentBlock{}, false
 	}
 	if msg.ReasoningContent != nil && *msg.ReasoningContent != "" && anthropicThinkingSignaturePresent(msg.ReasoningSignature) {
 		return anthropicModel.MessageContentBlock{
@@ -1457,7 +1463,7 @@ func convertToLLMResponse(resp *anthropicModel.Message) *model.InternalLLMRespon
 			// can be replayed on the next turn. redacted_thinking blocks carry no
 			// visible thinking text, so only the signature slot is populated.
 			if block.Data != "" {
-				thinkingSignature = lo.ToPtr(anthropicModel.EncodeRedactedThinkingSignature(block.Data))
+				thinkingSignature = lo.ToPtr(model.EncodeRedactedThinkingSignature(block.Data))
 			}
 		}
 	}

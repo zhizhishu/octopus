@@ -46,6 +46,13 @@ func transformChatRequest(ctx context.Context, request *model.InternalLLMRequest
 		if request.Messages[i].ReasoningSignature == nil {
 			request.Messages[i].ReasoningSignature = savedReasoningSig[i]
 		}
+		// A provider-tagged signature (Anthropic redacted, Gemini thoughtSignature,
+		// OpenAI encrypted_content) is a foreign opaque blob that must never be
+		// serialized as a chat "reasoning_signature". Drop it; a bare untagged
+		// signature (DeepSeek V4 / Anthropic thinking) is preserved as before.
+		if model.HasProviderReasoningTag(request.Messages[i].ReasoningSignature) {
+			request.Messages[i].ReasoningSignature = nil
+		}
 	}
 
 	// o-series / gpt-5 chat models need a different body shape than the rest of
@@ -148,6 +155,12 @@ func isOpenAIReasoningChatModel(name string) bool {
 	// Strip a common "org/" provider prefix so "openai/o3-mini" still matches.
 	if i := strings.LastIndex(lower, "/"); i >= 0 && i+1 < len(lower) {
 		lower = lower[i+1:]
+	}
+	// The gpt-5-chat family ("gpt-5-chat", "gpt-5-chat-latest", "gpt-5.1-chat-latest")
+	// are non-reasoning chat models that DO accept temperature / max_tokens, so they
+	// must not be classified as reasoning models. Exclude any "-chat" model.
+	if strings.Contains(lower, "-chat") {
+		return false
 	}
 	switch {
 	case strings.HasPrefix(lower, "o1"),

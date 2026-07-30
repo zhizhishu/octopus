@@ -242,7 +242,9 @@ func convertGeminiContent(content *model.GeminiContent, contentIndex int, callID
 			// Preserve functionCall thoughtSignature on the message so multi-turn
 			// function-calling history can re-emit it on the outbound path.
 			if part.ThoughtSignature != "" {
-				sig := part.ThoughtSignature
+				// Tag as Gemini-sourced so a cross-protocol replay (routed to a non-Gemini
+				// upstream) never emits this opaque blob as that provider's signature.
+				sig := model.TagGeminiThoughtSignature(part.ThoughtSignature)
 				msg.ReasoningSignature = &sig
 			}
 		}

@@ -139,6 +139,19 @@ func reasoningToThinkingBudget(effort string) int32 {
 	}
 }
 
+// geminiThinkingLevel returns the effort only when it is a valid Gemini
+// thinkingLevel enum (low/medium/high, case-insensitive); any other effort
+// (minimal/none/xhigh/max/…) yields "" so an invalid enum is never sent (the
+// ThinkingLevel field is omitempty, so an empty value is simply dropped).
+func geminiThinkingLevel(effort string) string {
+	switch level := strings.ToLower(strings.TrimSpace(effort)); level {
+	case "low", "medium", "high":
+		return level
+	default:
+		return ""
+	}
+}
+
 func audioTypeToMimeType(format string) string {
 	switch format {
 	case "wav":
@@ -216,6 +229,15 @@ func convertLLMToGeminiRequest(request *model.InternalLLMRequest) *model.GeminiG
 			content := &model.GeminiContent{
 				Role:  "model",
 				Parts: []*model.GeminiPart{},
+			}
+			// Re-emit reasoning as a leading thought part (mirrors the inbound
+			// thought->ReasoningContent map) so a thought-only assistant turn is not
+			// dropped on replay. It must precede the text / functionCall parts.
+			if reasoning := msg.GetReasoningContent(); reasoning != "" {
+				content.Parts = append(content.Parts, &model.GeminiPart{
+					Text:    reasoning,
+					Thought: true,
+				})
 			}
 			// Handle text content
 			if msg.Content.Content != nil && *msg.Content.Content != "" {
@@ -295,7 +317,7 @@ func convertLLMToGeminiRequest(request *model.InternalLLMRequest) *model.GeminiG
 		config.ThinkingConfig = &model.GeminiThinkingConfig{
 			ThinkingBudget:  &budget,
 			IncludeThoughts: includeThoughtsFromRequest(request),
-			ThinkingLevel:   request.ReasoningEffort,
+			ThinkingLevel:   geminiThinkingLevel(request.ReasoningEffort),
 		}
 		hasConfig = true
 	} else if request.ReasoningEffort != "" {
@@ -304,7 +326,7 @@ func convertLLMToGeminiRequest(request *model.InternalLLMRequest) *model.GeminiG
 		config.ThinkingConfig = &model.GeminiThinkingConfig{
 			ThinkingBudget:  &budget,
 			IncludeThoughts: includeThoughtsFromRequest(request),
-			ThinkingLevel:   request.ReasoningEffort,
+			ThinkingLevel:   geminiThinkingLevel(request.ReasoningEffort),
 		}
 		hasConfig = true
 	}
@@ -816,8 +838,15 @@ func cleanGeminiSchema(schema map[string]any) {
 // thoughtSignature when present, else the documented skip sentinel (which was the prior
 // unconditional default) so replayed functionCalls still pass Gemini's signature check.
 func thoughtSignatureForMessage(msg *model.Message) string {
-	if msg != nil && msg.ReasoningSignature != nil && *msg.ReasoningSignature != "" {
-		return *msg.ReasoningSignature
+	// Only a Gemini-tagged signature can be re-emitted as a thoughtSignature. A
+	// foreign / untagged / redacted signature falls back to the skip sentinel so a
+	// cross-protocol blob is never presented as a Gemini thoughtSignature. With more
+	// than one functionCall the single message-level signature cannot be attributed
+	// to a specific parallel call, so always use the sentinel.
+	if msg != nil && len(msg.ToolCalls) <= 1 {
+		if raw, ok := model.GeminiThoughtSignature(msg.ReasoningSignature); ok {
+			return raw
+		}
 	}
 	return "skip_thought_signature_validator"
 }
