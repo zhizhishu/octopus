@@ -173,6 +173,78 @@ func appendPlainResponsesHistory(history, current []transformerModel.Message) []
 	return out
 }
 
+// normalizeChatToolCallPairing enforces the tool-call invariant the OpenAI Chat
+// Completions schema requires (and strict upstreams like DeepSeek / Grok reject when
+// violated): an assistant message with tool_calls must be immediately followed by one
+// tool message per tool_call_id, in order, with nothing in between. Ported from sub2api's
+// normalizeChatMessages (backend/internal/pkg/apicompat) so a rebuilt responses→chat
+// history can never present an unanswered tool_call or an orphan tool reply upstream.
+//
+// It re-emits each assistant's ANSWERED tool_calls directly followed by their replies (in
+// call order); unanswered tool_calls are dropped (an assistant then left with no tool_calls
+// and no text content is dropped); orphan tool replies (a tool_call_id no assistant
+// announced) are dropped; a bare tool message with no tool_call_id is a direct chat
+// passthrough kept in place; any message that landed between an assistant's tool_calls and
+// its replies is re-emitted in its natural position but never between them.
+func normalizeChatToolCallPairing(messages []transformerModel.Message) []transformerModel.Message {
+	toolReplyID := func(m transformerModel.Message) string {
+		if !strings.EqualFold(strings.TrimSpace(m.Role), "tool") || m.ToolCallID == nil {
+			return ""
+		}
+		return strings.TrimSpace(*m.ToolCallID)
+	}
+
+	// Index every tool reply by its tool_call_id (last wins on duplicates).
+	replies := make(map[string]transformerModel.Message)
+	for _, m := range messages {
+		if id := toolReplyID(m); id != "" {
+			replies[id] = m
+		}
+	}
+
+	out := make([]transformerModel.Message, 0, len(messages))
+	for _, m := range messages {
+		switch {
+		case strings.EqualFold(strings.TrimSpace(m.Role), "tool"):
+			// Bare tool message (no id): direct passthrough. A reply whose id an
+			// assistant announces is emitted right after that assistant (skip the
+			// standalone occurrence); any other tool reply is an orphan and is dropped.
+			if toolReplyID(m) == "" {
+				out = append(out, m)
+			}
+			continue
+		case len(m.ToolCalls) > 0:
+			kept := make([]transformerModel.ToolCall, 0, len(m.ToolCalls))
+			for _, tc := range m.ToolCalls {
+				if strings.TrimSpace(tc.ID) == "" {
+					continue
+				}
+				if _, ok := replies[tc.ID]; ok {
+					kept = append(kept, tc)
+				}
+			}
+			if len(kept) == 0 {
+				// No answered tool_calls left: keep as a plain message if it still has
+				// text content, otherwise drop it entirely.
+				if strings.TrimSpace(messageTextContent(m.Content)) == "" {
+					continue
+				}
+				m.ToolCalls = nil
+				out = append(out, m)
+				continue
+			}
+			m.ToolCalls = kept
+			out = append(out, m)
+			for _, tc := range kept {
+				out = append(out, replies[tc.ID])
+			}
+		default:
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
 func ensureCodexAgentContext(req *transformerModel.InternalLLMRequest) {
 	if req == nil {
 		return

@@ -766,7 +766,10 @@ func (ra *relayAttempt) bridgeResponsesHistoryForChat() error {
 	if !ok || len(history) == 0 {
 		return newUpstreamError(http.StatusBadRequest, []byte(`{"error":{"type":"invalid_request_error","message":"previous_response_id cannot be continued on this channel: no server-side response state is available and no stored transcript matched. Resend the full conversation in input instead of relying on previous_response_id."}}`))
 	}
-	req.Messages = appendPlainResponsesHistory(history, req.Messages)
+	// Rebuild the full prior history, then enforce the chat tool-call pairing invariant so
+	// a rebuilt turn can never hand the upstream a dangling tool_call or an orphan reply
+	// (e.g. a parallel tool_call whose sibling output arrives on a later turn).
+	req.Messages = normalizeChatToolCallPairing(appendPlainResponsesHistory(history, req.Messages))
 	req.PreviousResponseID = nil
 	req.ResponsesInputRaw = nil
 	return nil

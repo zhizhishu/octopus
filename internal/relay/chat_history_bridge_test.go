@@ -217,6 +217,85 @@ func TestBridgeResponsesHistoryForChatToolOutputMissingTranscriptRejects(t *test
 	}
 }
 
+// The parallel-tool-call edge the reference projects (sub2api normalizeChatMessages /
+// CLIProxyAPI dedupe) guard against: the prior turn issued TWO parallel tool_calls but the
+// client answers only one this turn (holding the sibling for a later turn). Without the
+// pairing guardrail the rebuilt history would hand the upstream an assistant with a dangling
+// tool_call, which strict chat upstreams (DeepSeek/Grok) reject. The unanswered call must be
+// dropped so every assistant tool_call is immediately followed by its matching reply.
+func TestBridgeResponsesHistoryForChatDropsUnansweredParallelToolCall(t *testing.T) {
+	clearResponsesSessionCacheForTest()
+	previous := "resp_parallel_parent"
+	recordResponsesSessionTranscript(previous, []model.Message{
+		{Role: "user", Content: model.MessageContent{Content: strPtr("read alpha and beta")}},
+		{Role: "assistant", ToolCalls: []model.ToolCall{
+			{ID: "call_a", Type: "function", Function: model.FunctionCall{Name: "read_file", Arguments: `{"path":"alpha.py"}`}},
+			{ID: "call_b", Type: "function", Function: model.FunctionCall{Name: "read_file", Arguments: `{"path":"beta.py"}`}},
+		}},
+	})
+	req := &model.InternalLLMRequest{
+		Model:              "grok-4.5",
+		RawAPIFormat:       model.APIFormatOpenAIResponse,
+		PreviousResponseID: &previous,
+		Messages: []model.Message{
+			{Role: "tool", ToolCallID: strPtr("call_a"), Content: model.MessageContent{Content: strPtr("print('alpha')")}},
+		},
+	}
+	ra := newChatResponsesAttempt(req, outbound.OutboundTypeOpenAIChat)
+
+	if err := ra.bridgeResponsesHistoryForChat(); err != nil {
+		t.Fatalf("rebuild must succeed, got error: %v", err)
+	}
+	if len(req.Messages) != 3 {
+		t.Fatalf("expected [user, assistant(call_a), tool(call_a)] = 3 messages, got %d: %#v", len(req.Messages), req.Messages)
+	}
+	asst := req.Messages[1]
+	if asst.Role != "assistant" || len(asst.ToolCalls) != 1 || asst.ToolCalls[0].ID != "call_a" {
+		t.Fatalf("assistant must retain only the answered call_a (unanswered call_b dropped), got %#v", asst.ToolCalls)
+	}
+	// Invariant: every surviving assistant tool_call is immediately followed by its reply.
+	for i, m := range req.Messages {
+		if m.Role != "assistant" {
+			continue
+		}
+		for j, tc := range m.ToolCalls {
+			k := i + 1 + j
+			if k >= len(req.Messages) || req.Messages[k].Role != "tool" || req.Messages[k].ToolCallID == nil || *req.Messages[k].ToolCallID != tc.ID {
+				t.Fatalf("tool_call %q is not immediately followed by its matching reply", tc.ID)
+			}
+		}
+	}
+}
+
+// Unit cover for the ported guardrail: unanswered tool_calls dropped, orphan replies
+// dropped, matched replies pulled up to sit right after their assistant, plain messages
+// (system/user) untouched.
+func TestNormalizeChatToolCallPairing(t *testing.T) {
+	msgs := []model.Message{
+		{Role: "system", Content: model.MessageContent{Content: strPtr("sys")}},
+		{Role: "user", Content: model.MessageContent{Content: strPtr("q")}},
+		{Role: "assistant", ToolCalls: []model.ToolCall{
+			{ID: "c1", Function: model.FunctionCall{Name: "f"}},
+			{ID: "c2", Function: model.FunctionCall{Name: "g"}}, // unanswered -> dropped
+		}},
+		{Role: "tool", ToolCallID: strPtr("c1"), Content: model.MessageContent{Content: strPtr("r1")}},
+		{Role: "tool", ToolCallID: strPtr("orphan"), Content: model.MessageContent{Content: strPtr("no owner")}}, // orphan -> dropped
+	}
+	out := normalizeChatToolCallPairing(msgs)
+	if len(out) != 4 {
+		t.Fatalf("expected [system, user, assistant(c1), tool(c1)] = 4, got %d: %#v", len(out), out)
+	}
+	if out[0].Role != "system" || out[1].Role != "user" {
+		t.Fatalf("plain messages must be preserved in order, got %q,%q", out[0].Role, out[1].Role)
+	}
+	if out[2].Role != "assistant" || len(out[2].ToolCalls) != 1 || out[2].ToolCalls[0].ID != "c1" {
+		t.Fatalf("unanswered c2 must be dropped, got %#v", out[2].ToolCalls)
+	}
+	if out[3].Role != "tool" || out[3].ToolCallID == nil || *out[3].ToolCallID != "c1" {
+		t.Fatalf("c1 reply must immediately follow its assistant, got %#v", out[3])
+	}
+}
+
 // Store side: chat channels must record responses transcripts so a later
 // previous_response_id turn can be rebuilt.
 func TestShouldBridgeResponsesHistoryEnabledForChatChannel(t *testing.T) {
