@@ -191,7 +191,18 @@ func convertGeminiContent(content *model.GeminiContent, contentIndex int, callID
 		}
 		if part.Text != "" {
 			text := part.Text
-			parts = append(parts, model.MessageContentPart{Type: "text", Text: &text})
+			// Thought parts carry model reasoning and must not be folded into
+			// plain user/assistant text; map them onto ReasoningContent so
+			// multi-turn history can round-trip thinking separately.
+			if part.Thought {
+				if msg.ReasoningContent == nil {
+					msg.ReasoningContent = &text
+				} else {
+					*msg.ReasoningContent += text
+				}
+			} else {
+				parts = append(parts, model.MessageContentPart{Type: "text", Text: &text})
+			}
 		}
 		if part.InlineData != nil {
 			parts = append(parts, convertGeminiInlineData(part.InlineData))
@@ -228,6 +239,12 @@ func convertGeminiContent(content *model.GeminiContent, contentIndex int, callID
 					Arguments: string(args),
 				},
 			})
+			// Preserve functionCall thoughtSignature on the message so multi-turn
+			// function-calling history can re-emit it on the outbound path.
+			if part.ThoughtSignature != "" {
+				sig := part.ThoughtSignature
+				msg.ReasoningSignature = &sig
+			}
 		}
 		if part.FunctionResponse != nil {
 			response, _ := json.Marshal(part.FunctionResponse.Response)
@@ -256,7 +273,9 @@ func convertGeminiContent(content *model.GeminiContent, contentIndex int, callID
 		msg.Content = model.MessageContent{MultipleContent: parts}
 	}
 
-	if msg.Content.Content == nil && len(msg.Content.MultipleContent) == 0 && len(msg.ToolCalls) == 0 {
+	// Keep messages that only carry reasoning or tool calls; empty after stripping
+	// thought-only history would otherwise drop the assistant turn.
+	if msg.Content.Content == nil && len(msg.Content.MultipleContent) == 0 && len(msg.ToolCalls) == 0 && msg.GetReasoningContent() == "" {
 		return toolMessages
 	}
 	return append([]model.Message{msg}, toolMessages...)
@@ -298,11 +317,22 @@ func applyGeminiGenerationConfig(req *model.InternalLLMRequest, cfg *model.Gemin
 	if len(cfg.StopSequences) > 0 {
 		req.Stop = &model.Stop{MultipleStop: append([]string(nil), cfg.StopSequences...)}
 	}
-	switch cfg.ResponseMimeType {
-	case "application/json":
-		req.ResponseFormat = &model.ResponseFormat{Type: "json_object"}
-	case "text/plain":
-		req.ResponseFormat = &model.ResponseFormat{Type: "text"}
+	// Prefer structured responseSchema over a bare application/json mime type so
+	// the schema is not downgraded to json_object and can be re-emitted outbound.
+	if cfg.ResponseSchema != nil {
+		if schemaBytes, err := json.Marshal(cfg.ResponseSchema); err == nil {
+			req.ResponseFormat = &model.ResponseFormat{
+				Type:       "json_schema",
+				JSONSchema: schemaBytes,
+			}
+		}
+	} else {
+		switch cfg.ResponseMimeType {
+		case "application/json":
+			req.ResponseFormat = &model.ResponseFormat{Type: "json_object"}
+		case "text/plain":
+			req.ResponseFormat = &model.ResponseFormat{Type: "text"}
+		}
 	}
 	if len(cfg.ResponseModalities) > 0 {
 		req.Modalities = make([]string, 0, len(cfg.ResponseModalities))
@@ -310,9 +340,25 @@ func applyGeminiGenerationConfig(req *model.InternalLLMRequest, cfg *model.Gemin
 			req.Modalities = append(req.Modalities, strings.ToLower(modality))
 		}
 	}
-	if cfg.ThinkingConfig != nil && cfg.ThinkingConfig.ThinkingBudget != nil {
-		budget := int64(*cfg.ThinkingConfig.ThinkingBudget)
-		req.ReasoningBudget = &budget
+	if cfg.ThinkingConfig != nil {
+		if cfg.ThinkingConfig.ThinkingBudget != nil {
+			budget := int64(*cfg.ThinkingConfig.ThinkingBudget)
+			req.ReasoningBudget = &budget
+		}
+		// thinkingLevel (e.g. low/medium/high) maps onto the shared effort field.
+		if level := strings.TrimSpace(cfg.ThinkingConfig.ThinkingLevel); level != "" {
+			req.ReasoningEffort = strings.ToLower(level)
+		}
+		// Preserve includeThoughts for the outbound rebuild via metadata so the
+		// original value is re-emitted even when only a budget/level is set.
+		if req.TransformerMetadata == nil {
+			req.TransformerMetadata = map[string]string{}
+		}
+		if cfg.ThinkingConfig.IncludeThoughts {
+			req.TransformerMetadata["gemini_include_thoughts"] = "true"
+		} else {
+			req.TransformerMetadata["gemini_include_thoughts"] = "false"
+		}
 	}
 }
 

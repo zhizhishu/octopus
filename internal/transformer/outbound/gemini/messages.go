@@ -241,7 +241,7 @@ func convertLLMToGeminiRequest(request *model.InternalLLMRequest) *model.GeminiG
 							Name: toolCall.Function.Name,
 							Args: args,
 						},
-						ThoughtSignature: "skip_thought_signature_validator",
+						ThoughtSignature: thoughtSignatureForMessage(&msg),
 					})
 				}
 			}
@@ -294,7 +294,8 @@ func convertLLMToGeminiRequest(request *model.InternalLLMRequest) *model.GeminiG
 		budget := int32(*request.ReasoningBudget)
 		config.ThinkingConfig = &model.GeminiThinkingConfig{
 			ThinkingBudget:  &budget,
-			IncludeThoughts: true,
+			IncludeThoughts: includeThoughtsFromRequest(request),
+			ThinkingLevel:   request.ReasoningEffort,
 		}
 		hasConfig = true
 	} else if request.ReasoningEffort != "" {
@@ -302,7 +303,8 @@ func convertLLMToGeminiRequest(request *model.InternalLLMRequest) *model.GeminiG
 
 		config.ThinkingConfig = &model.GeminiThinkingConfig{
 			ThinkingBudget:  &budget,
-			IncludeThoughts: true,
+			IncludeThoughts: includeThoughtsFromRequest(request),
+			ThinkingLevel:   request.ReasoningEffort,
 		}
 		hasConfig = true
 	}
@@ -808,6 +810,28 @@ func cleanGeminiSchema(schema map[string]any) {
 		visited: map[uintptr]struct{}{},
 	}
 	t.transform(schema)
+}
+
+// thoughtSignatureForMessage returns the assistant message's round-tripped Gemini
+// thoughtSignature when present, else the documented skip sentinel (which was the prior
+// unconditional default) so replayed functionCalls still pass Gemini's signature check.
+func thoughtSignatureForMessage(msg *model.Message) string {
+	if msg != nil && msg.ReasoningSignature != nil && *msg.ReasoningSignature != "" {
+		return *msg.ReasoningSignature
+	}
+	return "skip_thought_signature_validator"
+}
+
+// includeThoughtsFromRequest recovers the client's Gemini includeThoughts intent captured
+// on inbound (TransformerMetadata), defaulting to true when thinking is requested but no
+// explicit value was carried (matches the prior unconditional IncludeThoughts:true).
+func includeThoughtsFromRequest(request *model.InternalLLMRequest) bool {
+	if request != nil && request.TransformerMetadata != nil {
+		if v, ok := request.TransformerMetadata["gemini_include_thoughts"]; ok {
+			return v == "true"
+		}
+	}
+	return true
 }
 
 func convertResponseFormatSchemaToGemini(raw json.RawMessage) *model.GeminiSchema {
