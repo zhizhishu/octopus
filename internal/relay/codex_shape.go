@@ -216,10 +216,11 @@ func normalizeChatToolCallPairing(messages []transformerModel.Message) []transfo
 		case len(m.ToolCalls) > 0:
 			kept := make([]transformerModel.ToolCall, 0, len(m.ToolCalls))
 			for _, tc := range m.ToolCalls {
-				if strings.TrimSpace(tc.ID) == "" {
+				id := strings.TrimSpace(tc.ID)
+				if id == "" {
 					continue
 				}
-				if _, ok := replies[tc.ID]; ok {
+				if _, ok := replies[id]; ok {
 					kept = append(kept, tc)
 				}
 			}
@@ -236,7 +237,7 @@ func normalizeChatToolCallPairing(messages []transformerModel.Message) []transfo
 			m.ToolCalls = kept
 			out = append(out, m)
 			for _, tc := range kept {
-				out = append(out, replies[tc.ID])
+				out = append(out, replies[strings.TrimSpace(tc.ID)])
 			}
 		default:
 			out = append(out, m)

@@ -531,6 +531,7 @@ func parseRequest(inboundType inbound.InboundType, c *gin.Context) (*model.Inter
 // forward 转发请求到上游服务
 func (ra *relayAttempt) forward(span *balancer.AttemptSpan) (int, error) {
 	ctx := ra.c.Request.Context()
+	ra.responsesDowngradedToChat = false
 	originalInternalRequest := cloneInternalRequestForRetry(ra.internalRequest)
 	// A responses request bound for a chat channel that carries an unresolvable
 	// previous_response_id is refused here (invalid_request_error) rather than
@@ -594,6 +595,14 @@ retryWithAdapter:
 			}
 			span.SetUpstreamPath(strings.Join(upstreamPaths, " -> "))
 		})
+	}
+
+	// A rebuilt responses->chat history is stored un-normalized (pending tool_calls kept for
+	// future turns); enforce the chat tool-call pairing invariant here, on the wire copy only.
+	// originalMessages (captured above) is restored after TransformRequest, so the re-recorded
+	// transcript keeps the full history.
+	if ra.chatHistoryRebuilt {
+		ra.internalRequest.Messages = normalizeChatToolCallPairing(ra.internalRequest.Messages)
 	}
 
 	// 构建出站请求
@@ -733,6 +742,14 @@ retryWithAdapter:
 				outAdapter = chatAdapter
 				ra.internalRequest = cloneInternalRequestForRetry(originalInternalRequest)
 				_ = response.Body.Close()
+				// The downgrade forwards over chat/completions, which keeps no server-side
+				// response state. Run the chat history bridge on the swapped wire so a
+				// previous_response_id turn is rebuilt from the local transcript (or refused
+				// with invalid_request_error) instead of silently forwarded context-stripped.
+				ra.responsesDowngradedToChat = true
+				if bridgeErr := ra.bridgeResponsesHistoryForChat(); bridgeErr != nil {
+					return http.StatusBadRequest, bridgeErr
+				}
 				log.Infof("openai responses upstream returned compatibility status %d on channel %s; retrying same key via chat completions", response.StatusCode, ra.channel.Name)
 				goto retryWithAdapter
 			}

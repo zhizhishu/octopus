@@ -184,6 +184,9 @@ func TestBridgeResponsesHistoryForChatRebuildsToolOutputContinuation(t *testing.
 	if last.Role != "tool" || last.ToolCallID == nil || *last.ToolCallID != "call_alpha" {
 		t.Fatalf("the tool output must trail the rebuilt history with its call_id intact, got role=%q id=%v", last.Role, last.ToolCallID)
 	}
+	if !ra.chatHistoryRebuilt || ra.chatHistoryRebuiltPreviousResponseID == nil {
+		t.Fatalf("bridge must mark chatHistoryRebuilt and stash previous_response_id for conversation-root inheritance")
+	}
 }
 
 // Safety property: a tool-output continuation whose transcript is gone must fail LOUD
@@ -217,13 +220,13 @@ func TestBridgeResponsesHistoryForChatToolOutputMissingTranscriptRejects(t *test
 	}
 }
 
-// The parallel-tool-call edge the reference projects (sub2api normalizeChatMessages /
-// CLIProxyAPI dedupe) guard against: the prior turn issued TWO parallel tool_calls but the
-// client answers only one this turn (holding the sibling for a later turn). Without the
-// pairing guardrail the rebuilt history would hand the upstream an assistant with a dangling
-// tool_call, which strict chat upstreams (DeepSeek/Grok) reject. The unanswered call must be
-// dropped so every assistant tool_call is immediately followed by its matching reply.
-func TestBridgeResponsesHistoryForChatDropsUnansweredParallelToolCall(t *testing.T) {
+// Finding-1 fix (from the grok/gpt adversarial audit): the bridge stores the rebuilt history
+// UN-normalized so a still-pending parallel tool_call survives for a LATER turn to answer;
+// the pairing invariant is enforced only on the wire copy at send time (forward). If the
+// bridge had normalized in place (the old behavior), the dropped call_b would be re-recorded
+// missing and could never be paired when its output finally arrives. Also covers the finding-6
+// conversation-root stash.
+func TestBridgeResponsesHistoryForChatKeepsFullHistoryNormalizesForWire(t *testing.T) {
 	clearResponsesSessionCacheForTest()
 	previous := "resp_parallel_parent"
 	recordResponsesSessionTranscript(previous, []model.Message{
@@ -246,24 +249,31 @@ func TestBridgeResponsesHistoryForChatDropsUnansweredParallelToolCall(t *testing
 	if err := ra.bridgeResponsesHistoryForChat(); err != nil {
 		t.Fatalf("rebuild must succeed, got error: %v", err)
 	}
+	// STORED history keeps BOTH parallel calls (call_b still pending, answerable next turn).
 	if len(req.Messages) != 3 {
-		t.Fatalf("expected [user, assistant(call_a), tool(call_a)] = 3 messages, got %d: %#v", len(req.Messages), req.Messages)
+		t.Fatalf("expected [user, assistant(call_a,call_b), tool(call_a)] = 3 stored, got %d: %#v", len(req.Messages), req.Messages)
 	}
-	asst := req.Messages[1]
-	if asst.Role != "assistant" || len(asst.ToolCalls) != 1 || asst.ToolCalls[0].ID != "call_a" {
-		t.Fatalf("assistant must retain only the answered call_a (unanswered call_b dropped), got %#v", asst.ToolCalls)
+	if asst := req.Messages[1]; asst.Role != "assistant" || len(asst.ToolCalls) != 2 {
+		t.Fatalf("stored history must retain BOTH parallel tool_calls un-normalized, got %#v", req.Messages[1].ToolCalls)
 	}
-	// Invariant: every surviving assistant tool_call is immediately followed by its reply.
-	for i, m := range req.Messages {
-		if m.Role != "assistant" {
-			continue
-		}
-		for j, tc := range m.ToolCalls {
-			k := i + 1 + j
-			if k >= len(req.Messages) || req.Messages[k].Role != "tool" || req.Messages[k].ToolCallID == nil || *req.Messages[k].ToolCallID != tc.ID {
-				t.Fatalf("tool_call %q is not immediately followed by its matching reply", tc.ID)
-			}
-		}
+	if !ra.chatHistoryRebuilt {
+		t.Fatalf("chatHistoryRebuilt must be set so forward() normalizes the wire copy")
+	}
+	if ra.chatHistoryRebuiltPreviousResponseID == nil || *ra.chatHistoryRebuiltPreviousResponseID != previous {
+		t.Fatalf("previous_response_id must be stashed for conversation-root inheritance, got %#v", ra.chatHistoryRebuiltPreviousResponseID)
+	}
+
+	// WIRE copy (what forward() sends) drops the still-unanswered call_b so the upstream never
+	// sees a dangling tool_call, while the stored history above kept it for the next turn.
+	wire := normalizeChatToolCallPairing(req.Messages)
+	if len(wire) != 3 {
+		t.Fatalf("expected wire [user, assistant(call_a), tool(call_a)] = 3, got %d: %#v", len(wire), wire)
+	}
+	if asst := wire[1]; asst.Role != "assistant" || len(asst.ToolCalls) != 1 || asst.ToolCalls[0].ID != "call_a" {
+		t.Fatalf("wire assistant must carry only the answered call_a, got %#v", wire[1].ToolCalls)
+	}
+	if last := wire[2]; last.Role != "tool" || last.ToolCallID == nil || *last.ToolCallID != "call_a" {
+		t.Fatalf("wire tool reply must trail with call_a, got role=%q id=%v", last.Role, last.ToolCallID)
 	}
 }
 
@@ -293,6 +303,20 @@ func TestNormalizeChatToolCallPairing(t *testing.T) {
 	}
 	if out[3].Role != "tool" || out[3].ToolCallID == nil || *out[3].ToolCallID != "c1" {
 		t.Fatalf("c1 reply must immediately follow its assistant, got %#v", out[3])
+	}
+}
+
+// Finding-4 fix: the tool_call_id is trimmed on BOTH the reply-index side and the assistant
+// keep-check side, so a whitespace-padded id still pairs instead of dropping the whole
+// tool exchange.
+func TestNormalizeChatToolCallPairingTrimsCallID(t *testing.T) {
+	msgs := []model.Message{
+		{Role: "assistant", ToolCalls: []model.ToolCall{{ID: "call_a ", Function: model.FunctionCall{Name: "f"}}}}, // trailing space
+		{Role: "tool", ToolCallID: strPtr("call_a"), Content: model.MessageContent{Content: strPtr("ok")}},
+	}
+	out := normalizeChatToolCallPairing(msgs)
+	if len(out) != 2 || out[0].Role != "assistant" || len(out[0].ToolCalls) != 1 || out[1].Role != "tool" {
+		t.Fatalf("a whitespace-padded call_id must still pair (trim on both sides), got %#v", out)
 	}
 }
 

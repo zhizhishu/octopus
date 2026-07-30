@@ -160,6 +160,25 @@ type relayAttempt struct {
 	// The whole-stream failover gate keys off THIS flag, not ra.c.Writer.Written(),
 	// because comment heartbeats make Written() true without committing any content.
 	wroteMeaningfulDownstream bool
+
+	// chatHistoryRebuilt marks that bridgeResponsesHistoryForChat rebuilt the prior turn's
+	// history into internalRequest.Messages this attempt. The STORED transcript is left
+	// un-normalized (every announced tool_call kept, so a later turn can still pair a
+	// still-pending parallel call); the chat tool-call pairing invariant is enforced only on
+	// the wire copy at send time in forward(). Reset at the start of every bridge run.
+	chatHistoryRebuilt bool
+
+	// chatHistoryRebuiltPreviousResponseID preserves the previous_response_id the chat
+	// history bridge cleared (the chat wire must never carry it). recordResponsesSessionFromInbound
+	// uses it so a rebuilt chat turn's re-recorded session inherits the prior turn's
+	// conversation-root (prompt-cache anchor) instead of minting a fresh root every turn.
+	chatHistoryRebuiltPreviousResponseID *string
+
+	// responsesDowngradedToChat is set when the responses->chat compatibility fallback
+	// swapped the outbound to chat/completions. It lets bridgeResponsesHistoryForChat run on
+	// that downgraded wire (which keeps no server-side response state) so a previous_response_id
+	// turn is rebuilt-or-loudly-rejected instead of forwarded context-stripped under a 200.
+	responsesDowngradedToChat bool
 }
 
 // attemptResult 封装单次尝试的结果

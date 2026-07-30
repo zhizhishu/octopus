@@ -647,8 +647,17 @@ func (ra *relayAttempt) recordResponsesSessionFromInbound(resp *transformerModel
 	// one the caller actually owns, otherwise this response id seeds a fresh root.
 	// The root is a per-conversation, per-tenant stable prompt-cache anchor.
 	rootHash := ""
-	if ra.internalRequest != nil && ra.internalRequest.PreviousResponseID != nil {
-		rootHash = responsesConversationRootForRequest(ra.context(), *ra.internalRequest.PreviousResponseID, ra.apiKeyID, ra.userID)
+	if ra.internalRequest != nil {
+		// Prefer the live previous_response_id; fall back to the id the chat history bridge
+		// cleared (it strips it from the chat wire) so a rebuilt chat turn still inherits the
+		// prior turn's conversation-root instead of minting a fresh prompt-cache anchor.
+		prevForRoot := ra.internalRequest.PreviousResponseID
+		if prevForRoot == nil {
+			prevForRoot = ra.chatHistoryRebuiltPreviousResponseID
+		}
+		if prevForRoot != nil {
+			rootHash = responsesConversationRootForRequest(ra.context(), *prevForRoot, ra.apiKeyID, ra.userID)
+		}
 	}
 	if rootHash == "" {
 		rootHash = op.ResponseSessionIDHash(strings.TrimSpace(resp.ID))
@@ -744,7 +753,12 @@ func (ra *relayAttempt) bridgeResponsesHistoryForChat() error {
 	if ra == nil || ra.internalRequest == nil || ra.channel == nil {
 		return nil
 	}
-	if ra.inboundType != inbound.InboundTypeOpenAIResponse || !openAIChatOutboundChannel(ra.channel.Type) {
+	ra.chatHistoryRebuilt = false
+	ra.chatHistoryRebuiltPreviousResponseID = nil
+	// Runs for a native chat channel, or for a responses channel that the compatibility
+	// fallback downgraded onto the chat/completions wire (responsesDowngradedToChat).
+	if ra.inboundType != inbound.InboundTypeOpenAIResponse ||
+		(!openAIChatOutboundChannel(ra.channel.Type) && !ra.responsesDowngradedToChat) {
 		return nil
 	}
 	req := ra.internalRequest
@@ -766,10 +780,17 @@ func (ra *relayAttempt) bridgeResponsesHistoryForChat() error {
 	if !ok || len(history) == 0 {
 		return newUpstreamError(http.StatusBadRequest, []byte(`{"error":{"type":"invalid_request_error","message":"previous_response_id cannot be continued on this channel: no server-side response state is available and no stored transcript matched. Resend the full conversation in input instead of relying on previous_response_id."}}`))
 	}
-	// Rebuild the full prior history, then enforce the chat tool-call pairing invariant so
-	// a rebuilt turn can never hand the upstream a dangling tool_call or an orphan reply
-	// (e.g. a parallel tool_call whose sibling output arrives on a later turn).
-	req.Messages = normalizeChatToolCallPairing(appendPlainResponsesHistory(history, req.Messages))
+	// Rebuild the FULL prior history and store it un-normalized: keeping every announced
+	// tool_call lets a later turn that answers a still-pending parallel call pair it. The
+	// chat tool-call pairing invariant is enforced only on the wire copy at send time
+	// (forward -> normalizeChatToolCallPairing), never on the stored transcript.
+	req.Messages = appendPlainResponsesHistory(history, req.Messages)
+	// Preserve the conversation-root anchor across the previous_response_id clear below so the
+	// re-recorded session inherits the prior turn's prompt-cache root instead of minting a
+	// fresh one every turn (see recordResponsesSessionFromInbound).
+	stashedPrevID := previousResponseID
+	ra.chatHistoryRebuiltPreviousResponseID = &stashedPrevID
+	ra.chatHistoryRebuilt = true
 	req.PreviousResponseID = nil
 	req.ResponsesInputRaw = nil
 	return nil
