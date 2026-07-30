@@ -359,6 +359,30 @@ func (o *ResponseOutbound) TransformStream(ctx context.Context, eventData []byte
 					},
 				},
 			}
+		} else if streamEvent.Type == "response.output_item.done" &&
+			streamEvent.Item != nil &&
+			strings.TrimSpace(streamEvent.Item.Type) == "reasoning" {
+			// Lift reasoning.encrypted_content into ReasoningSignature so a
+			// subsequent turn (or bridge) can replay the encrypted blob. Non-tool
+			// output_item.done used to return nil, so the signature was dropped.
+			delta := &model.Message{Role: "assistant"}
+			if streamEvent.Item.EncryptedContent != nil {
+				if sig := strings.TrimSpace(*streamEvent.Item.EncryptedContent); sig != "" {
+					delta.ReasoningSignature = lo.ToPtr(sig)
+				}
+			}
+			// Also surface any remaining summary text that was not already
+			// streamed via response.reasoning_summary_text.delta.
+			if text := responsesReasoningSummaryText(streamEvent.Item.Summary); text != "" {
+				delta.ReasoningContent = lo.ToPtr(text)
+			}
+			if delta.ReasoningSignature == nil && delta.ReasoningContent == nil {
+				return nil, nil
+			}
+			resp.Choices = []model.Choice{{
+				Index: 0,
+				Delta: delta,
+			}}
 		} else {
 			return nil, nil
 		}
@@ -696,6 +720,18 @@ func responsesToolCallName(item *ResponsesItem) string {
 	default:
 		return strings.TrimSuffix(typ, "_call")
 	}
+}
+
+// responsesReasoningSummaryText concatenates summary_text parts from a reasoning item.
+func responsesReasoningSummaryText(summaries []ResponsesReasoningSummary) string {
+	if len(summaries) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, summary := range summaries {
+		b.WriteString(summary.Text)
+	}
+	return b.String()
 }
 
 type ResponsesReasoningSummary struct {
@@ -1420,10 +1456,11 @@ func convertToLLMResponseFromResponses(resp *ResponsesResponse) *model.InternalL
 	}
 
 	var (
-		contentParts     []model.MessageContentPart
-		textContent      strings.Builder
-		reasoningContent strings.Builder
-		toolCalls        []model.ToolCall
+		contentParts       []model.MessageContentPart
+		textContent        strings.Builder
+		reasoningContent   strings.Builder
+		reasoningSignature string
+		toolCalls          []model.ToolCall
 	)
 
 	for _, outputItem := range resp.Output {
@@ -1465,6 +1502,13 @@ func convertToLLMResponseFromResponses(resp *ResponsesResponse) *model.InternalL
 			for _, summary := range outputItem.Summary {
 				reasoningContent.WriteString(summary.Text)
 			}
+			// Capture reasoning.encrypted_content so a bridged next turn can
+			// replay the encrypted blob via Message.ReasoningSignature.
+			if outputItem.EncryptedContent != nil {
+				if sig := strings.TrimSpace(*outputItem.EncryptedContent); sig != "" {
+					reasoningSignature = sig
+				}
+			}
 		case "image_generation_call":
 			if outputItem.Result != nil && *outputItem.Result != "" {
 				outputFormat := "png"
@@ -1492,6 +1536,9 @@ func convertToLLMResponseFromResponses(resp *ResponsesResponse) *model.InternalL
 	// Set reasoning content if present
 	if reasoningContent.Len() > 0 {
 		choice.Message.ReasoningContent = lo.ToPtr(reasoningContent.String())
+	}
+	if reasoningSignature != "" {
+		choice.Message.ReasoningSignature = lo.ToPtr(reasoningSignature)
 	}
 
 	// Set message content

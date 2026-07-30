@@ -418,7 +418,29 @@ func codexUserMessageItem(msg transformerModel.Message) map[string]any {
 }
 
 func codexAssistantItems(msg transformerModel.Message) []map[string]any {
-	items := make([]map[string]any, 0, len(msg.ToolCalls)+1)
+	items := make([]map[string]any, 0, len(msg.ToolCalls)+2)
+	// When re-synthesizing a bridged/rebuilt assistant turn that carries encrypted
+	// reasoning, emit the reasoning item first so the next Responses request keeps
+	// encrypted_content continuity. Mirror the outbound Responses converter: keep
+	// the encrypted blob, strip any id, and backfill summary:[] (empty when no
+	// summary text is available). Without this, resynthesis drops the signature and
+	// the upstream has to re-think from scratch / rejects unsigned continuity.
+	if msg.ReasoningSignature != nil {
+		if sig := strings.TrimSpace(*msg.ReasoningSignature); sig != "" {
+			reasoningItem := map[string]any{
+				"type":              "reasoning",
+				"encrypted_content": sig,
+				"summary":           []map[string]any{},
+			}
+			if text := strings.TrimSpace(msg.GetReasoningContent()); text != "" {
+				reasoningItem["summary"] = []map[string]any{{
+					"type": "summary_text",
+					"text": text,
+				}}
+			}
+			items = append(items, reasoningItem)
+		}
+	}
 	if text := strings.TrimSpace(messageTextContent(msg.Content)); text != "" {
 		items = append(items, map[string]any{
 			"type":   "message",

@@ -813,6 +813,73 @@ func mustJSONQuote(value string) string {
 	return string(data)
 }
 
+// TestCodexAssistantItemsEmitsEncryptedReasoningBeforeMessage pins the
+// resynthesis path: an assistant message carrying ReasoningSignature must
+// produce a leading {type:"reasoning", encrypted_content, summary:[]} item so a
+// bridged/rebuilt turn keeps encrypted reasoning continuity.
+func TestCodexAssistantItemsEmitsEncryptedReasoningBeforeMessage(t *testing.T) {
+	encrypted := "gAAAAABbridged-sig"
+	text := "continue"
+	summary := "prior thought"
+	items := codexAssistantItems(model.Message{
+		Role:               "assistant",
+		ReasoningSignature: &encrypted,
+		ReasoningContent:   &summary,
+		Content:            model.MessageContent{Content: &text},
+		ToolCalls: []model.ToolCall{{
+			ID:   "call_1",
+			Type: "function",
+			Function: model.FunctionCall{
+				Name:      "shell",
+				Arguments: `{"cmd":"ls"}`,
+			},
+		}},
+	})
+	if len(items) < 3 {
+		t.Fatalf("expected reasoning + message + function_call items, got %#v", items)
+	}
+	if typ, _ := items[0]["type"].(string); typ != "reasoning" {
+		t.Fatalf("expected first item type=reasoning, got %#v", items[0])
+	}
+	if sig, _ := items[0]["encrypted_content"].(string); sig != encrypted {
+		t.Fatalf("expected encrypted_content %q, got %#v", encrypted, items[0]["encrypted_content"])
+	}
+	summaryVal, ok := items[0]["summary"].([]map[string]any)
+	if !ok || len(summaryVal) != 1 {
+		t.Fatalf("expected non-empty summary from reasoning content, got %#v", items[0]["summary"])
+	}
+	if typ, _ := items[1]["type"].(string); typ != "message" {
+		t.Fatalf("expected second item type=message, got %#v", items[1])
+	}
+	if typ, _ := items[2]["type"].(string); typ != "function_call" {
+		t.Fatalf("expected third item type=function_call, got %#v", items[2])
+	}
+}
+
+// TestCodexAssistantItemsEncryptedOnlyBackfillsEmptySummary covers the case
+// where only the encrypted blob is available (no summary text): still emit the
+// reasoning item with summary:[] so the wire shape matches store=false continuity.
+func TestCodexAssistantItemsEncryptedOnlyBackfillsEmptySummary(t *testing.T) {
+	encrypted := "gAAAAABsig-only"
+	items := codexAssistantItems(model.Message{
+		Role:               "assistant",
+		ReasoningSignature: &encrypted,
+	})
+	if len(items) != 1 {
+		t.Fatalf("expected a single reasoning item, got %#v", items)
+	}
+	if typ, _ := items[0]["type"].(string); typ != "reasoning" {
+		t.Fatalf("expected type=reasoning, got %#v", items[0])
+	}
+	if sig, _ := items[0]["encrypted_content"].(string); sig != encrypted {
+		t.Fatalf("expected encrypted_content %q, got %#v", encrypted, items[0]["encrypted_content"])
+	}
+	summaryVal, ok := items[0]["summary"].([]map[string]any)
+	if !ok || len(summaryVal) != 0 {
+		t.Fatalf("expected empty summary:[] backfill, got %#v", items[0]["summary"])
+	}
+}
+
 func containsString(items []string, want string) bool {
 	for _, item := range items {
 		if item == want {
