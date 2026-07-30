@@ -13,6 +13,33 @@ import (
 	"github.com/samber/lo"
 )
 
+// redactedThinkingSignaturePrefix marks a Message.ReasoningSignature that carries
+// an Anthropic redacted_thinking block's opaque data (not a normal thinking
+// signature). Outbound re-emits the prefix-stripped payload as type
+// "redacted_thinking" so the next turn can replay it without a new model field.
+const redactedThinkingSignaturePrefix = "redacted_thinking:"
+
+// EncodeRedactedThinkingSignature packs redacted_thinking data into the existing
+// ReasoningSignature field with a clear marker so it can be distinguished from a
+// real thinking.signature on the outbound path.
+func EncodeRedactedThinkingSignature(data string) string {
+	return redactedThinkingSignaturePrefix + data
+}
+
+// DecodeRedactedThinkingSignature returns the redacted payload when sig was
+// produced by EncodeRedactedThinkingSignature.
+func DecodeRedactedThinkingSignature(sig string) (string, bool) {
+	if !strings.HasPrefix(sig, redactedThinkingSignaturePrefix) {
+		return "", false
+	}
+	return strings.TrimPrefix(sig, redactedThinkingSignaturePrefix), true
+}
+
+// IsRedactedThinkingSignature reports whether sig carries redacted_thinking data.
+func IsRedactedThinkingSignature(sig *string) bool {
+	return sig != nil && strings.HasPrefix(*sig, redactedThinkingSignaturePrefix)
+}
+
 type MessagesInbound struct {
 	// Stream state tracking
 	hasStarted                bool
@@ -159,7 +186,13 @@ func (i *MessagesInbound) TransformRequest(ctx context.Context, body []byte) (*m
 						hasContent = true
 					}
 				case "redacted_thinking":
-					if strings.TrimSpace(block.Data) != "" {
+					// Preserve the opaque redacted_thinking payload onto the assistant
+					// message's ReasoningSignature (marker-encoded) instead of dropping
+					// it, so the next turn can replay it as a redacted_thinking block.
+					// Anthropic 400s a thinking+tool continuation whose prior
+					// redacted_thinking block is not echoed back with its data.
+					if data := strings.TrimSpace(block.Data); data != "" {
+						reasoningSignature = EncodeRedactedThinkingSignature(data)
 						hasContent = true
 					}
 				case "text":

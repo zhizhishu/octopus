@@ -277,6 +277,24 @@ func (o *MessageOutbound) TransformStream(ctx context.Context, eventData []byte)
 						},
 					},
 				}
+			case "redacted_thinking":
+				// A redacted_thinking block carries its opaque payload inline on the
+				// start event (no deltas follow). Surface it into the internal model
+				// via ReasoningSignature with the redacted marker — instead of
+				// dropping it — so the payload can be replayed on the next turn.
+				if data := strings.TrimSpace(streamEvent.ContentBlock.Data); data != "" {
+					resp.Choices = []model.Choice{
+						{
+							Index: 0,
+							Delta: &model.Message{
+								Role:               "assistant",
+								ReasoningSignature: lo.ToPtr(anthropicModel.EncodeRedactedThinkingSignature(data)),
+							},
+						},
+					}
+				} else {
+					return nil, nil
+				}
 			case "text", "thinking":
 				// These are handled in content_block_delta
 				return nil, nil
@@ -995,18 +1013,17 @@ func convertAssistantMessage(msg model.Message) []anthropicModel.MessageParam {
 func convertAssistantWithToolCalls(msg model.Message) []anthropicModel.MessageParam {
 	var blocks []anthropicModel.MessageContentBlock
 
-	// Add thinking block only when it carries a signature. Anthropic 400s on a thinking block
-	// without a valid signature, so a reasoning block that lost its signature crossing a
-	// protocol boundary (codex Responses -> Anthropic multi-turn, where claude's
-	// thinking.signature was never surfaced back as reasoning.encrypted_content) must be
-	// dropped rather than sent unsigned. A genuine claude->claude turn always carries the
-	// signature, so this is a no-op there. Mirrors CLIProxyAPI (drops on an empty signature).
-	if msg.ReasoningContent != nil && *msg.ReasoningContent != "" && anthropicThinkingSignaturePresent(msg.ReasoningSignature) {
-		blocks = append(blocks, anthropicModel.MessageContentBlock{
-			Type:      "thinking",
-			Thinking:  msg.ReasoningContent,
-			Signature: msg.ReasoningSignature,
-		})
+	// Prepend the replayed reasoning block. A redacted-marked signature becomes a
+	// redacted_thinking block (echoing the opaque payload); a normal reasoning
+	// block becomes a signed thinking block. A thinking block without a valid
+	// signature is dropped: Anthropic 400s on it, and a reasoning block that lost
+	// its signature crossing a protocol boundary (codex Responses -> Anthropic
+	// multi-turn, where claude's thinking.signature was never surfaced back as
+	// reasoning.encrypted_content) must not be sent unsigned. A genuine
+	// claude->claude turn always carries the signature, so this is a no-op there.
+	// Mirrors CLIProxyAPI (drops on an empty signature).
+	if block, ok := leadingReasoningBlock(msg); ok {
+		blocks = append(blocks, block)
 	}
 
 	// Add text content if present
@@ -1052,7 +1069,10 @@ func convertAssistantWithToolCalls(msg model.Message) []anthropicModel.MessagePa
 func buildMessageContent(msg model.Message) anthropicModel.MessageContent {
 	// Handle simple string content
 	if msg.Content.Content != nil {
-		if msg.CacheControl != nil || hasThinkingContent(msg) {
+		// Route to the block builder when there is cache_control, normal thinking,
+		// or a redacted_thinking payload to replay; otherwise the redacted block
+		// (which carries no ReasoningContent) would be dropped on this path.
+		if msg.CacheControl != nil || hasThinkingContent(msg) || anthropicModel.IsRedactedThinkingSignature(msg.ReasoningSignature) {
 			return buildMultipleContentWithThinking(msg)
 		}
 		return anthropicModel.MessageContent{Content: msg.Content.Content}
@@ -1078,17 +1098,38 @@ func anthropicThinkingSignaturePresent(sig *string) bool {
 	return sig != nil && strings.TrimSpace(*sig) != ""
 }
 
-func buildMultipleContentWithThinking(msg model.Message) anthropicModel.MessageContent {
-	var blocks []anthropicModel.MessageContentBlock
-
-	// Drop an unsigned thinking block (see anthropicThinkingSignaturePresent). The text block
-	// below is always appended, so the assistant message is never left empty.
+// leadingReasoningBlock returns the reasoning block that must be replayed at the
+// head of a re-emitted assistant message, if any. A redacted-marked
+// ReasoningSignature is replayed as a redacted_thinking block (echoing the
+// opaque payload); a normal reasoning block is replayed as a signed thinking
+// block. Anthropic 400s a thinking+tool continuation when a prior thinking /
+// redacted_thinking block is not echoed back with its signature / data, so this
+// keeps multi-turn thinking loops intact. Returns ok=false when there is nothing
+// replayable (no reasoning, or an unsigned thinking block that Anthropic would
+// reject — see anthropicThinkingSignaturePresent).
+func leadingReasoningBlock(msg model.Message) (anthropicModel.MessageContentBlock, bool) {
+	if anthropicModel.IsRedactedThinkingSignature(msg.ReasoningSignature) {
+		data, _ := anthropicModel.DecodeRedactedThinkingSignature(*msg.ReasoningSignature)
+		return anthropicModel.MessageContentBlock{Type: "redacted_thinking", Data: data}, true
+	}
 	if msg.ReasoningContent != nil && *msg.ReasoningContent != "" && anthropicThinkingSignaturePresent(msg.ReasoningSignature) {
-		blocks = append(blocks, anthropicModel.MessageContentBlock{
+		return anthropicModel.MessageContentBlock{
 			Type:      "thinking",
 			Thinking:  msg.ReasoningContent,
 			Signature: msg.ReasoningSignature,
-		})
+		}, true
+	}
+	return anthropicModel.MessageContentBlock{}, false
+}
+
+func buildMultipleContentWithThinking(msg model.Message) anthropicModel.MessageContent {
+	var blocks []anthropicModel.MessageContentBlock
+
+	// Prepend the replayed reasoning block (signed thinking or redacted_thinking);
+	// an unsigned thinking block is dropped (see leadingReasoningBlock). The text
+	// block below is always appended, so the assistant message is never left empty.
+	if block, ok := leadingReasoningBlock(msg); ok {
+		blocks = append(blocks, block)
 	}
 
 	blocks = append(blocks, anthropicModel.MessageContentBlock{
@@ -1101,7 +1142,15 @@ func buildMultipleContentWithThinking(msg model.Message) anthropicModel.MessageC
 }
 
 func convertMultiplePartContent(msg model.Message) anthropicModel.MessageContent {
-	blocks := make([]anthropicModel.MessageContentBlock, 0, len(msg.Content.MultipleContent))
+	blocks := make([]anthropicModel.MessageContentBlock, 0, len(msg.Content.MultipleContent)+1)
+
+	// Prepend the replayed reasoning block (signed thinking or redacted_thinking)
+	// so a multipart assistant turn (e.g. text + image) keeps its
+	// thinking-continuity metadata. Without this the thinking block was silently
+	// dropped here, and Anthropic 400s the next thinking+tool turn.
+	if block, ok := leadingReasoningBlock(msg); ok {
+		blocks = append(blocks, block)
+	}
 
 	for _, part := range msg.Content.MultipleContent {
 		switch part.Type {
@@ -1402,6 +1451,14 @@ func convertToLLMResponse(resp *anthropicModel.Message) *model.InternalLLMRespon
 				thinkingText = block.Thinking
 			}
 			thinkingSignature = block.Signature
+		case "redacted_thinking":
+			// Surface the opaque redacted_thinking payload into the internal model
+			// via ReasoningSignature (marker-encoded) instead of dropping it, so it
+			// can be replayed on the next turn. redacted_thinking blocks carry no
+			// visible thinking text, so only the signature slot is populated.
+			if block.Data != "" {
+				thinkingSignature = lo.ToPtr(anthropicModel.EncodeRedactedThinkingSignature(block.Data))
+			}
 		}
 	}
 
