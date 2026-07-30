@@ -139,6 +139,84 @@ func TestBridgeResponsesHistoryForChatSkipsWhenClientCarriesHistory(t *testing.T
 	}
 }
 
+// The grok/codex agentic case: after its first tool call a codex-style client sends ONLY
+// the function_call_output (role "tool") every turn and relies on previous_response_id for
+// the rest. The bridge must rebuild the prior turn — including the assistant message that
+// issued the matching tool_call — so the upstream sees a coherent
+// [user, assistant(tool_call), tool(output)] sequence instead of an orphan result. This is
+// the exact turn shape the old responsesMessagesContainToolOutput skip silently forwarded
+// context-free (a 200 with total history loss).
+func TestBridgeResponsesHistoryForChatRebuildsToolOutputContinuation(t *testing.T) {
+	clearResponsesSessionCacheForTest()
+	previous := "resp_toolcall_parent"
+	recordResponsesSessionTranscript(previous, []model.Message{
+		{Role: "user", Content: model.MessageContent{Content: strPtr("read alpha.py")}},
+		{Role: "assistant", ToolCalls: []model.ToolCall{{
+			ID:       "call_alpha",
+			Type:     "function",
+			Function: model.FunctionCall{Name: "read_file", Arguments: `{"path":"alpha.py"}`},
+		}}},
+	})
+	req := &model.InternalLLMRequest{
+		Model:              "grok-4.5",
+		RawAPIFormat:       model.APIFormatOpenAIResponse,
+		PreviousResponseID: &previous,
+		Messages: []model.Message{
+			{Role: "tool", ToolCallID: strPtr("call_alpha"), Content: model.MessageContent{Content: strPtr("print('alpha')")}},
+		},
+	}
+	ra := newChatResponsesAttempt(req, outbound.OutboundTypeOpenAIChat)
+
+	if err := ra.bridgeResponsesHistoryForChat(); err != nil {
+		t.Fatalf("tool-output continuation must rebuild, got error: %v", err)
+	}
+	if req.PreviousResponseID != nil {
+		t.Fatalf("previous_response_id must be cleared after rebuild, got %#v", req.PreviousResponseID)
+	}
+	if len(req.Messages) != 3 {
+		t.Fatalf("expected rebuilt [user, assistant(tool_call), tool(output)] = 3 messages, got %d", len(req.Messages))
+	}
+	assistant := req.Messages[1]
+	if len(assistant.ToolCalls) != 1 || assistant.ToolCalls[0].ID != "call_alpha" {
+		t.Fatalf("rebuilt history must retain the assistant tool_call the output answers, got %#v", assistant.ToolCalls)
+	}
+	last := req.Messages[2]
+	if last.Role != "tool" || last.ToolCallID == nil || *last.ToolCallID != "call_alpha" {
+		t.Fatalf("the tool output must trail the rebuilt history with its call_id intact, got role=%q id=%v", last.Role, last.ToolCallID)
+	}
+}
+
+// Safety property: a tool-output continuation whose transcript is gone must fail LOUD
+// (deterministic invalid_request_error, not charged to the breaker) rather than silently
+// forwarding an orphan tool result — the silent-200 context loss this bridge exists to stop.
+func TestBridgeResponsesHistoryForChatToolOutputMissingTranscriptRejects(t *testing.T) {
+	clearResponsesSessionCacheForTest()
+	missing := "resp_toolcall_gone"
+	req := &model.InternalLLMRequest{
+		Model:              "grok-4.5",
+		RawAPIFormat:       model.APIFormatOpenAIResponse,
+		PreviousResponseID: &missing,
+		Messages: []model.Message{
+			{Role: "tool", ToolCallID: strPtr("call_x"), Content: model.MessageContent{Content: strPtr("orphan result")}},
+		},
+	}
+	ra := newChatResponsesAttempt(req, outbound.OutboundTypeOpenAIChat)
+
+	err := ra.bridgeResponsesHistoryForChat()
+	if err == nil {
+		t.Fatalf("a tool-output continuation with no transcript must not silently forward; expected an error")
+	}
+	if !isRequestInvalidUpstreamError(err) {
+		t.Fatalf("rejection must classify as request-invalid, got %v", err)
+	}
+	if shouldRecordBreakerFailure(http.StatusBadRequest, err) {
+		t.Fatalf("a request-shape rejection must not charge the circuit breaker")
+	}
+	if req.PreviousResponseID == nil {
+		t.Fatalf("a rejected request must be left untouched (previous_response_id preserved)")
+	}
+}
+
 // Store side: chat channels must record responses transcripts so a later
 // previous_response_id turn can be rebuilt.
 func TestShouldBridgeResponsesHistoryEnabledForChatChannel(t *testing.T) {

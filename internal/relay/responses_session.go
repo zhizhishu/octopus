@@ -731,8 +731,15 @@ func openAIChatOutboundChannel(channelType outbound.OutboundType) bool {
 // so shouldRecordBreakerFailure never charges it to the channel breaker, and the
 // caller's own error handling reacts instead of receiving a false success.
 //
-// Tool-output continuations are left untouched (mirrors bridgeResponsesHistoryForAnthropic):
-// they cannot be safely reconstructed from a stored transcript.
+// Tool-output continuations ARE rebuilt here (unlike bridgeResponsesHistoryForAnthropic):
+// a codex-style agent on a chat channel sends only the function_call_output increment
+// (role "tool") on every turn after its first tool call and relies on previous_response_id
+// for the rest, so skipping these turns would silently forward a bare tool result with no
+// context — total history loss behind a 200. The stored transcript retains the assistant
+// message that issued the matching tool_call (messageHasNoReplayableContent keeps tool-call
+// -only messages, cloneResponseSessionMessage preserves ToolCalls/ToolCallID, and the trim
+// drops from the front so the prior turn's trailing assistant tool_call survives), so the
+// rebuilt [..., assistant(tool_call), tool(output)] sequence stays coherent and call_ids line up.
 func (ra *relayAttempt) bridgeResponsesHistoryForChat() error {
 	if ra == nil || ra.internalRequest == nil || ra.channel == nil {
 		return nil
@@ -746,12 +753,12 @@ func (ra *relayAttempt) bridgeResponsesHistoryForChat() error {
 		// whole conversation every turn): nothing to rebuild and nothing at risk.
 		return nil
 	}
-	if responsesMessagesContainToolOutput(req.Messages) {
-		return nil
-	}
 	if responsesMessagesAlreadyCarryAssistantContext(req.Messages) {
-		// The client already sent the assistant history in this request, so there is
-		// nothing to restore and no context is lost.
+		// The client already sent the assistant history in this request (full-replay
+		// clients, including ones that inline their own tool-call/tool-result turns), so
+		// there is nothing to restore and no context is lost. Pure sticky increments —
+		// including a lone function_call_output (role "tool") — carry no assistant turn
+		// and fall through to the transcript rebuild below.
 		return nil
 	}
 	previousResponseID := strings.TrimSpace(*req.PreviousResponseID)
