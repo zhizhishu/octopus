@@ -151,41 +151,70 @@ func (ra *relayAttempt) applyPlainResponsesCodexHistoryForPreviousResponseID(pre
 		return
 	}
 	req.Messages = appendPlainResponsesHistory(history, req.Messages)
-	req.Messages = dropOrphanToolOutputs(req.Messages)
+	req.Messages = dropUnpairedToolItems(req.Messages)
 	req.PreviousResponseID = nil
 	req.ResponsesInputRaw = nil
 }
 
-// dropOrphanToolOutputs removes tool replies whose tool_call_id no assistant in the same message
-// list announced. The stored transcript is trimmed from the FRONT
-// (trimResponsesSessionTranscript: maxResponsesSessionTranscriptMessages / char cap), which can
-// drop an old assistant(tool_call) while its tool(output) survives; replaying that bare output to
-// a store=false responses or a stateless Anthropic upstream is rejected with "No tool call found
-// for function call output with call_id ...". This is the codex/Anthropic-path equivalent of the
-// orphan-reply drop normalizeChatToolCallPairing already applies on the chat wire (which the codex
-// history bridge does not run through). Only ORPHAN OUTPUTS are dropped — an unanswered tool_call
-// (the reverse direction, tolerated as a trailing item) and a bare tool message with no
-// tool_call_id are left intact.
-func dropOrphanToolOutputs(messages []transformerModel.Message) []transformerModel.Message {
-	announced := make(map[string]struct{})
+// dropUnpairedToolItems removes tool items that cannot be paired within the rebuilt message list.
+// The stored transcript is trimmed from the FRONT (trimResponsesSessionTranscript:
+// maxResponsesSessionTranscriptMessages / char cap), which can split an old
+// [assistant(tool_call), tool(output)] pair; and the codex/Anthropic history bridge does not run
+// through normalizeChatToolCallPairing. So this applies the BOTH-DIRECTION pruning that sub2api's
+// normalizeChatMessages / normalizeAnthropicToolPairing and CLIProxyAPI's repairResponsesToolCallsArray
+// apply once previous_response_id is dropped and there is no server-side state to resolve a missing half:
+//   - an ORPHAN OUTPUT — a tool reply whose tool_call_id no assistant announced — is dropped; the
+//     store=false responses upstream rejects it ("No tool call found for function call output with
+//     call_id ..."); and
+//   - an UNANSWERED CALL — an assistant tool_call that no tool reply answers — is pruned; a stateless
+//     Anthropic upstream rejects a tool_use that has no matching tool_result. An assistant left with
+//     neither a kept tool_call nor any text is dropped entirely.
+//
+// Bare tool messages (no tool_call_id) and non-tool messages pass through, and message ORDER is
+// preserved (this filters; it does not re-pair/reorder like normalizeChatToolCallPairing).
+func dropUnpairedToolItems(messages []transformerModel.Message) []transformerModel.Message {
+	announced := make(map[string]struct{}) // tool_call ids an assistant issued
+	answered := make(map[string]struct{})  // tool_call_ids a tool reply answered
 	for _, msg := range messages {
 		for _, tc := range msg.ToolCalls {
 			if id := strings.TrimSpace(tc.ID); id != "" {
 				announced[id] = struct{}{}
 			}
 		}
+		if strings.EqualFold(strings.TrimSpace(msg.Role), "tool") && msg.ToolCallID != nil {
+			if id := strings.TrimSpace(*msg.ToolCallID); id != "" {
+				answered[id] = struct{}{}
+			}
+		}
 	}
 	out := make([]transformerModel.Message, 0, len(messages))
 	for _, msg := range messages {
-		// A tool reply carrying a tool_call_id that no assistant announced is an orphan whose
-		// function_call was trimmed off the front of the transcript; drop it. A bare tool message
-		// with no tool_call_id has nothing to pair against and is left as a passthrough.
 		if strings.EqualFold(strings.TrimSpace(msg.Role), "tool") && msg.ToolCallID != nil {
 			if id := strings.TrimSpace(*msg.ToolCallID); id != "" {
 				if _, ok := announced[id]; !ok {
-					continue
+					continue // orphan tool output — its function_call was trimmed away; drop it
 				}
 			}
+			out = append(out, msg)
+			continue
+		}
+		if len(msg.ToolCalls) > 0 {
+			kept := make([]transformerModel.ToolCall, 0, len(msg.ToolCalls))
+			for _, tc := range msg.ToolCalls {
+				id := strings.TrimSpace(tc.ID)
+				if id == "" {
+					continue // an id-less call can never be answered by tool_call_id; drop it
+				}
+				if _, ok := answered[id]; ok {
+					kept = append(kept, tc)
+				}
+			}
+			if len(kept) == 0 && strings.TrimSpace(messageTextContent(msg.Content)) == "" {
+				continue // assistant left with no answered tool_call and no text — drop it
+			}
+			msg.ToolCalls = kept
+			out = append(out, msg)
+			continue
 		}
 		out = append(out, msg)
 	}

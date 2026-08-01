@@ -278,16 +278,18 @@ func TestSynthesizedCodexToolOutputCursorCanRecoverWithTranscript(t *testing.T) 
 	}
 }
 
-// TestDropOrphanToolOutputs covers the front-trim orphan guard: a tool reply whose matching
-// assistant(tool_call) was trimmed off the front of the transcript must be dropped (it would make
-// the store=false responses / stateless Anthropic upstream reject the turn with "No tool call found
-// for function call output ..."), while a paired reply, an unanswered tool_call, and a bare
-// (id-less) tool message are all left intact.
-func TestDropOrphanToolOutputs(t *testing.T) {
+// TestDropUnpairedToolItems covers the both-direction pairing guard applied after a codex/Anthropic
+// transcript rebuild (mirrors sub2api normalizeAnthropicToolPairing / CLIProxyAPI
+// repairResponsesToolCallsArray): an ORPHAN OUTPUT (tool reply whose assistant tool_call was trimmed
+// off the front) is dropped, and an UNANSWERED CALL (assistant tool_call with no reply) is pruned —
+// an assistant left with neither a kept call nor text is dropped entirely. Paired items, a bare
+// id-less tool message, and plain messages survive.
+func TestDropUnpairedToolItems(t *testing.T) {
 	sp := stringPtrForCodexShapeTest
-	callX := "call_X" // properly paired with an assistant tool_call
-	callY := "call_Y" // orphan: its assistant(tool_call) was trimmed away
-	callZ := "call_Z" // unanswered tool_call (reverse direction) — must NOT be dropped
+	callX := "call_X" // answered → kept
+	callY := "call_Y" // orphan output → dropped
+	callZ := "call_Z" // unanswered call on an assistant that also has callX → callZ pruned, assistant survives
+	callW := "call_W" // unanswered call, sole content of its assistant → whole assistant dropped
 	msgs := []model.Message{
 		{Role: "user", Content: model.MessageContent{Content: sp("hi")}},
 		{Role: "tool", ToolCallID: &callY, Content: model.MessageContent{Content: sp("orphan result")}},
@@ -296,13 +298,17 @@ func TestDropOrphanToolOutputs(t *testing.T) {
 			{ID: callZ, Type: "function", Function: model.FunctionCall{Name: "g", Arguments: "{}"}},
 		}},
 		{Role: "tool", ToolCallID: &callX, Content: model.MessageContent{Content: sp("real result")}},
+		{Role: "assistant", ToolCalls: []model.ToolCall{
+			{ID: callW, Type: "function", Function: model.FunctionCall{Name: "h", Arguments: "{}"}},
+		}},
 		{Role: "tool", Content: model.MessageContent{Content: sp("bare tool, no id")}}, // ToolCallID nil
 	}
 
-	out := dropOrphanToolOutputs(msgs)
+	out := dropUnpairedToolItems(msgs)
 
 	var sawY, sawX, sawUser, sawBare bool
-	assistantHasZ := false
+	var assistants int
+	var survivorHasX, survivorHasZ, survivorHasW bool
 	for _, m := range out {
 		switch {
 		case m.Role == "tool" && m.ToolCallID != nil && *m.ToolCallID == callY:
@@ -313,11 +319,16 @@ func TestDropOrphanToolOutputs(t *testing.T) {
 			sawBare = true
 		case m.Role == "user":
 			sawUser = true
-		}
-		if m.Role == "assistant" {
+		case m.Role == "assistant":
+			assistants++
 			for _, tc := range m.ToolCalls {
-				if tc.ID == callZ {
-					assistantHasZ = true
+				switch tc.ID {
+				case callX:
+					survivorHasX = true
+				case callZ:
+					survivorHasZ = true
+				case callW:
+					survivorHasW = true
 				}
 			}
 		}
@@ -325,14 +336,17 @@ func TestDropOrphanToolOutputs(t *testing.T) {
 	if sawY {
 		t.Fatalf("expected orphan tool output %s to be dropped, got %#v", callY, out)
 	}
-	if !sawX {
-		t.Fatalf("expected the paired tool output %s to survive, got %#v", callX, out)
+	if !sawX || !sawUser || !sawBare {
+		t.Fatalf("expected paired output %s + user + bare id-less tool to survive, got %#v", callX, out)
 	}
-	if !sawUser || !sawBare {
-		t.Fatalf("expected the user message and the bare (id-less) tool message to survive, got %#v", out)
+	if !survivorHasX {
+		t.Fatalf("expected the assistant announcing answered call %s to survive with it, got %#v", callX, out)
 	}
-	if !assistantHasZ {
-		t.Fatalf("expected the unanswered tool_call %s to be left intact (only orphan OUTPUTS are dropped), got %#v", callZ, out)
+	if survivorHasZ {
+		t.Fatalf("expected unanswered call %s pruned from its assistant, got %#v", callZ, out)
+	}
+	if survivorHasW || assistants != 1 {
+		t.Fatalf("expected the callW-only assistant dropped entirely (exactly 1 assistant survives), got %d: %#v", assistants, out)
 	}
 }
 
