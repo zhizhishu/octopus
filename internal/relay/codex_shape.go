@@ -106,14 +106,28 @@ func isGPT56Model(model string) bool {
 	return name == "gpt-5.6" || strings.HasPrefix(name, "gpt-5.6-")
 }
 
+// bridgePlainResponsesCodexHistory rebuilds the full input from octopus's stored transcript
+// for a plain responses client that continues via previous_response_id on a codex-fingerprint
+// responses channel. Such a channel is forced store=false (prepareCodexRequestShape), so the
+// upstream keeps NO server-side state and previous_response_id alone cannot recover the prior
+// turn — the input must carry the whole conversation.
+//
+// Tool-output continuations ARE rebuilt (a codex-style agent sends only the function_call_output
+// increment after its first tool call). Without the rebuild, forcing store=false left a bare
+// function_call_output whose matching function_call lived only in the now-discarded server state,
+// so the upstream rejected the turn with "No tool call found for function call output with
+// call_id ...". The stored transcript retains the assistant message that issued the matching
+// tool_call, so the rebuilt [..., assistant(tool_call), tool(output)] resynthesizes to a paired
+// function_call + function_call_output (synthesizeCodexResponsesInputRaw) and previous_response_id
+// is dropped — mirroring bridgeResponsesHistoryForChat and CLIProxyAPI's full-input rebuild.
+// applyPlainResponsesCodexHistoryForPreviousResponseID leaves the request untouched when the
+// current turn already carries assistant context or the transcript is unavailable (no worse than
+// forwarding it as-is).
 func (ra *relayAttempt) bridgePlainResponsesCodexHistory() {
 	if ra == nil || ra.internalRequest == nil || !ra.shouldBridgePlainResponsesCodexHistory() {
 		return
 	}
 	req := ra.internalRequest
-	if responsesMessagesContainToolOutput(req.Messages) {
-		return
-	}
 	if req.PreviousResponseID == nil || strings.TrimSpace(*req.PreviousResponseID) == "" {
 		return
 	}
@@ -137,8 +151,45 @@ func (ra *relayAttempt) applyPlainResponsesCodexHistoryForPreviousResponseID(pre
 		return
 	}
 	req.Messages = appendPlainResponsesHistory(history, req.Messages)
+	req.Messages = dropOrphanToolOutputs(req.Messages)
 	req.PreviousResponseID = nil
 	req.ResponsesInputRaw = nil
+}
+
+// dropOrphanToolOutputs removes tool replies whose tool_call_id no assistant in the same message
+// list announced. The stored transcript is trimmed from the FRONT
+// (trimResponsesSessionTranscript: maxResponsesSessionTranscriptMessages / char cap), which can
+// drop an old assistant(tool_call) while its tool(output) survives; replaying that bare output to
+// a store=false responses or a stateless Anthropic upstream is rejected with "No tool call found
+// for function call output with call_id ...". This is the codex/Anthropic-path equivalent of the
+// orphan-reply drop normalizeChatToolCallPairing already applies on the chat wire (which the codex
+// history bridge does not run through). Only ORPHAN OUTPUTS are dropped — an unanswered tool_call
+// (the reverse direction, tolerated as a trailing item) and a bare tool message with no
+// tool_call_id are left intact.
+func dropOrphanToolOutputs(messages []transformerModel.Message) []transformerModel.Message {
+	announced := make(map[string]struct{})
+	for _, msg := range messages {
+		for _, tc := range msg.ToolCalls {
+			if id := strings.TrimSpace(tc.ID); id != "" {
+				announced[id] = struct{}{}
+			}
+		}
+	}
+	out := make([]transformerModel.Message, 0, len(messages))
+	for _, msg := range messages {
+		// A tool reply carrying a tool_call_id that no assistant announced is an orphan whose
+		// function_call was trimmed off the front of the transcript; drop it. A bare tool message
+		// with no tool_call_id has nothing to pair against and is left as a passthrough.
+		if strings.EqualFold(strings.TrimSpace(msg.Role), "tool") && msg.ToolCallID != nil {
+			if id := strings.TrimSpace(*msg.ToolCallID); id != "" {
+				if _, ok := announced[id]; !ok {
+					continue
+				}
+			}
+		}
+		out = append(out, msg)
+	}
+	return out
 }
 
 func responsesMessagesContainToolOutput(messages []transformerModel.Message) bool {
@@ -150,9 +201,21 @@ func responsesMessagesContainToolOutput(messages []transformerModel.Message) boo
 	return false
 }
 
+// responsesMessagesAlreadyCarryAssistantContext reports whether the current turn already replays
+// real assistant conversation context, in which case the transcript rebuild is skipped (the client
+// carried the history itself). A REASONING-ONLY assistant (no text, no tool_calls) does NOT count:
+// it is the encrypted_content reasoning item octopus surfaces to the client, flushed back into a
+// standalone assistant by the inbound converter. A client that echoes it ahead of its
+// function_call_output increment ([reasoning, function_call_output]) would otherwise trip this gate,
+// skip the rebuild, and ship a bare function_call_output that the store=false upstream rejects with
+// "No tool call found for function call output ...". Only assistant TEXT or TOOL_CALLS short-circuit
+// the rebuild.
 func responsesMessagesAlreadyCarryAssistantContext(messages []transformerModel.Message) bool {
 	for _, msg := range messages {
-		if strings.EqualFold(strings.TrimSpace(msg.Role), "assistant") {
+		if !strings.EqualFold(strings.TrimSpace(msg.Role), "assistant") {
+			continue
+		}
+		if strings.TrimSpace(messageTextContent(msg.Content)) != "" || len(msg.ToolCalls) > 0 {
 			return true
 		}
 	}

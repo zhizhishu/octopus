@@ -722,3 +722,66 @@ func setupResponsesSessionDB(t *testing.T) {
 		t.Fatalf("init cache: %v", err)
 	}
 }
+
+// TestBridgeResponsesHistoryForAnthropicRebuildsToolOutputContinuation verifies the Anthropic
+// history bridge PROACTIVELY rebuilds a tool-output continuation. Anthropic has no server-side
+// response state at all, so a bare function_call_output increment (relying only on
+// previous_response_id) would lose all prior context and orphan the tool result. The bridge used
+// to bail on any tool output; it now rebuilds from the stored transcript so the assistant's
+// tool_call is paired with the incoming tool result and previous_response_id is dropped.
+func TestBridgeResponsesHistoryForAnthropicRebuildsToolOutputContinuation(t *testing.T) {
+	clearResponsesSessionCacheForTest()
+	previous := "resp_anthropic_tool_parent"
+	callID := "call_anthropic_1"
+	recordResponsesSessionTranscript(previous, []transformerModel.Message{{
+		Role: "assistant",
+		ToolCalls: []transformerModel.ToolCall{{
+			ID:   callID,
+			Type: "function",
+			Function: transformerModel.FunctionCall{
+				Name:      "get_weather",
+				Arguments: `{"city":"SF"}`,
+			},
+		}},
+	}})
+	output := "sunny"
+	req := &transformerModel.InternalLLMRequest{
+		Model:              "claude-sonnet-4",
+		RawAPIFormat:       transformerModel.APIFormatOpenAIResponse,
+		PreviousResponseID: &previous,
+		Messages: []transformerModel.Message{{
+			Role:       "tool",
+			ToolCallID: &callID,
+			Content:    transformerModel.MessageContent{Content: &output},
+		}},
+	}
+	ra := &relayAttempt{
+		relayRequest: &relayRequest{
+			inboundType:     inbound.InboundTypeOpenAIResponse,
+			internalRequest: req,
+		},
+		channel: &dbmodel.Channel{Type: outbound.OutboundTypeAnthropic},
+	}
+
+	ra.bridgeResponsesHistoryForAnthropic()
+
+	if req.PreviousResponseID != nil {
+		t.Fatalf("tool output continuation must drop previous_response_id after rebuild, got %#v", req.PreviousResponseID)
+	}
+	var assistantHasCall, toolPresent bool
+	for _, m := range req.Messages {
+		if strings.EqualFold(m.Role, "assistant") {
+			for _, tc := range m.ToolCalls {
+				if tc.ID == callID {
+					assistantHasCall = true
+				}
+			}
+		}
+		if strings.EqualFold(m.Role, "tool") && m.ToolCallID != nil && *m.ToolCallID == callID {
+			toolPresent = true
+		}
+	}
+	if !assistantHasCall || !toolPresent {
+		t.Fatalf("expected rebuilt history to pair assistant(tool_call:%s) with tool(output), got %#v", callID, req.Messages)
+	}
+}

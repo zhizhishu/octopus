@@ -89,15 +89,31 @@ func TestPrepareCodexRequestShapeSynthesizesPlainResponsesInput(t *testing.T) {
 	assertCodexInputRaw(t, req.ResponsesInputRaw, "Say OK only")
 }
 
-func TestPrepareCodexRequestShapeKeepsToolOutputCursor(t *testing.T) {
+// TestPrepareCodexRequestShapeRebuildsToolOutputContinuation verifies that a tool-output
+// continuation on a codex-fingerprint responses channel (forced store=false) is rebuilt from the
+// stored transcript into a full, self-contained input: previous_response_id is dropped and the
+// synthesized input carries the assistant's function_call PAIRED with the incoming
+// function_call_output. Before the fix the bridge bailed on any tool output and forwarded a bare
+// function_call_output, which the store=false upstream rejected with
+// "No tool call found for function call output with call_id ...". Default Codex tools/tool_choice
+// are still never injected onto a tool-output turn.
+func TestPrepareCodexRequestShapeRebuildsToolOutputContinuation(t *testing.T) {
 	clearResponsesSessionCacheForTest()
 	previous := "resp_tool_parent"
-	prior := "prior tool call"
-	recordResponsesSessionTranscript(previous, []model.Message{{
-		Role:    "assistant",
-		Content: model.MessageContent{Content: &prior},
-	}})
 	callID := "call_1"
+	// The stored transcript retains the assistant turn that ISSUED the matching tool_call, so the
+	// rebuild can pair it with the incoming function_call_output (the real sticky flow).
+	recordResponsesSessionTranscript(previous, []model.Message{{
+		Role: "assistant",
+		ToolCalls: []model.ToolCall{{
+			ID:   callID,
+			Type: "function",
+			Function: model.FunctionCall{
+				Name:      "shell_command",
+				Arguments: `{"command":"ls"}`,
+			},
+		}},
+	}})
 	output := "tool result text"
 	req := &model.InternalLLMRequest{
 		Model:              "gpt-5.5",
@@ -120,15 +136,99 @@ func TestPrepareCodexRequestShapeKeepsToolOutputCursor(t *testing.T) {
 
 	ra.prepareCodexRequestShape()
 
-	if req.PreviousResponseID == nil || *req.PreviousResponseID != previous {
-		t.Fatalf("tool output continuation must keep previous_response_id, got %#v", req.PreviousResponseID)
+	if req.PreviousResponseID != nil {
+		t.Fatalf("tool output continuation must drop previous_response_id after rebuild, got %#v", req.PreviousResponseID)
 	}
-	if !strings.Contains(string(req.ResponsesInputRaw), `"function_call_output"`) ||
-		!strings.Contains(string(req.ResponsesInputRaw), `"output":"tool result text"`) {
-		t.Fatalf("expected tool output input shape to be preserved/synthesized, got %s", string(req.ResponsesInputRaw))
+	var items []map[string]any
+	if err := json.Unmarshal(req.ResponsesInputRaw, &items); err != nil {
+		t.Fatalf("rebuilt responses input not valid JSON: %v raw=%s", err, string(req.ResponsesInputRaw))
+	}
+	var pairedCall, pairedOutput bool
+	for _, item := range items {
+		switch item["type"] {
+		case "function_call":
+			if item["call_id"] == callID {
+				pairedCall = true
+			}
+		case "function_call_output":
+			if item["call_id"] == callID {
+				pairedOutput = true
+			}
+		}
+	}
+	if !pairedCall || !pairedOutput {
+		t.Fatalf("expected paired function_call + function_call_output for %s (no dangling output), got %s", callID, string(req.ResponsesInputRaw))
 	}
 	if len(req.Tools) != 0 || req.ToolChoice != nil {
 		t.Fatalf("tool output continuation must not inject default Codex tools/tool_choice, tools=%#v choice=%#v", req.Tools, req.ToolChoice)
+	}
+}
+
+// TestBridgeRebuildsReasoningPrefixedToolOutputIncrement covers the reasoning-gate fix: a client
+// that echoes the encrypted reasoning item (flushed to a reasoning-only assistant) ahead of its
+// function_call_output increment must STILL trigger the transcript rebuild. Before the fix
+// responsesMessagesAlreadyCarryAssistantContext saw the reasoning-only assistant, declared context
+// already present, skipped the rebuild, and shipped a bare function_call_output → store=false 400.
+func TestBridgeRebuildsReasoningPrefixedToolOutputIncrement(t *testing.T) {
+	clearResponsesSessionCacheForTest()
+	previous := "resp_reasoning_tool_parent"
+	callID := "call_reasoning_1"
+	recordResponsesSessionTranscript(previous, []model.Message{{
+		Role: "assistant",
+		ToolCalls: []model.ToolCall{{
+			ID:   callID,
+			Type: "function",
+			Function: model.FunctionCall{
+				Name:      "f",
+				Arguments: "{}",
+			},
+		}},
+	}})
+	reasoning := "prior encrypted reasoning"
+	output := "tool result"
+	req := &model.InternalLLMRequest{
+		Model:              "gpt-5.6-sol",
+		RawAPIFormat:       model.APIFormatOpenAIResponse,
+		PreviousResponseID: &previous,
+		// The client echoes the reasoning item (a reasoning-only assistant, no text/tool_calls)
+		// ahead of the function_call_output increment — this used to trip the assistant-context gate.
+		Messages: []model.Message{
+			{Role: "assistant", ReasoningContent: &reasoning},
+			{Role: "tool", ToolCallID: &callID, Content: model.MessageContent{Content: &output}},
+		},
+	}
+	ra := &relayAttempt{
+		relayRequest: &relayRequest{
+			inboundType:     inbound.InboundTypeOpenAIResponse,
+			internalRequest: req,
+		},
+		channel: &dbmodel.Channel{Type: outbound.OutboundTypeOpenAIResponse},
+	}
+
+	ra.prepareCodexRequestShape()
+
+	if req.PreviousResponseID != nil {
+		t.Fatalf("reasoning-prefixed tool-output increment must still rebuild (drop previous_response_id), got %#v", req.PreviousResponseID)
+	}
+	var items []map[string]any
+	if err := json.Unmarshal(req.ResponsesInputRaw, &items); err != nil {
+		t.Fatalf("rebuilt input not valid JSON: %v raw=%s", err, string(req.ResponsesInputRaw))
+	}
+	var pairedCall, pairedOutput bool
+	for _, item := range items {
+		switch item["type"] {
+		case "function_call":
+			if item["call_id"] == callID {
+				pairedCall = true
+			}
+		case "function_call_output":
+			if item["call_id"] == callID {
+				pairedOutput = true
+			}
+		}
+	}
+	if !pairedCall || !pairedOutput {
+		t.Fatalf("expected paired function_call + function_call_output for %s after rebuild, got %s", callID, string(req.ResponsesInputRaw))
 	}
 }
 
@@ -175,6 +275,64 @@ func TestSynthesizedCodexToolOutputCursorCanRecoverWithTranscript(t *testing.T) 
 		len(ra.internalRequest.Messages[0].ToolCalls) != 1 ||
 		ra.internalRequest.Messages[1].Role != "tool" {
 		t.Fatalf("expected assistant tool call plus tool output replay, got %#v", ra.internalRequest.Messages)
+	}
+}
+
+// TestDropOrphanToolOutputs covers the front-trim orphan guard: a tool reply whose matching
+// assistant(tool_call) was trimmed off the front of the transcript must be dropped (it would make
+// the store=false responses / stateless Anthropic upstream reject the turn with "No tool call found
+// for function call output ..."), while a paired reply, an unanswered tool_call, and a bare
+// (id-less) tool message are all left intact.
+func TestDropOrphanToolOutputs(t *testing.T) {
+	sp := stringPtrForCodexShapeTest
+	callX := "call_X" // properly paired with an assistant tool_call
+	callY := "call_Y" // orphan: its assistant(tool_call) was trimmed away
+	callZ := "call_Z" // unanswered tool_call (reverse direction) — must NOT be dropped
+	msgs := []model.Message{
+		{Role: "user", Content: model.MessageContent{Content: sp("hi")}},
+		{Role: "tool", ToolCallID: &callY, Content: model.MessageContent{Content: sp("orphan result")}},
+		{Role: "assistant", ToolCalls: []model.ToolCall{
+			{ID: callX, Type: "function", Function: model.FunctionCall{Name: "f", Arguments: "{}"}},
+			{ID: callZ, Type: "function", Function: model.FunctionCall{Name: "g", Arguments: "{}"}},
+		}},
+		{Role: "tool", ToolCallID: &callX, Content: model.MessageContent{Content: sp("real result")}},
+		{Role: "tool", Content: model.MessageContent{Content: sp("bare tool, no id")}}, // ToolCallID nil
+	}
+
+	out := dropOrphanToolOutputs(msgs)
+
+	var sawY, sawX, sawUser, sawBare bool
+	assistantHasZ := false
+	for _, m := range out {
+		switch {
+		case m.Role == "tool" && m.ToolCallID != nil && *m.ToolCallID == callY:
+			sawY = true
+		case m.Role == "tool" && m.ToolCallID != nil && *m.ToolCallID == callX:
+			sawX = true
+		case m.Role == "tool" && m.ToolCallID == nil:
+			sawBare = true
+		case m.Role == "user":
+			sawUser = true
+		}
+		if m.Role == "assistant" {
+			for _, tc := range m.ToolCalls {
+				if tc.ID == callZ {
+					assistantHasZ = true
+				}
+			}
+		}
+	}
+	if sawY {
+		t.Fatalf("expected orphan tool output %s to be dropped, got %#v", callY, out)
+	}
+	if !sawX {
+		t.Fatalf("expected the paired tool output %s to survive, got %#v", callX, out)
+	}
+	if !sawUser || !sawBare {
+		t.Fatalf("expected the user message and the bare (id-less) tool message to survive, got %#v", out)
+	}
+	if !assistantHasZ {
+		t.Fatalf("expected the unanswered tool_call %s to be left intact (only orphan OUTPUTS are dropped), got %#v", callZ, out)
 	}
 }
 

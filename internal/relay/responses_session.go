@@ -707,6 +707,16 @@ func (ra *relayAttempt) shouldBridgeResponsesHistory() bool {
 // into the outgoing messages when a plain responses client (e.g. Cursor) targets
 // an Anthropic channel. Anthropic has no previous_response_id, so without this
 // the next turn would lose all prior context.
+//
+// Tool-output continuations ARE rebuilt (a codex-style agent sends only the
+// function_call_output increment after its first tool call). The stored transcript retains the
+// assistant turn that issued the matching tool_call, so the rebuilt
+// [..., assistant(tool_call), tool(output)] converts to a paired tool_use + tool_result for the
+// Anthropic upstream — mirroring bridgePlainResponsesCodexHistory and bridgeResponsesHistoryForChat.
+// Without the rebuild, a stateless Anthropic upstream (which has no server-side response state at
+// all) would receive only the bare tool result, losing all prior context and orphaning the result.
+// applyPlainResponsesCodexHistoryForPreviousResponseID leaves the request untouched when the current
+// turn already carries assistant context or the transcript is unavailable (no worse than before).
 func (ra *relayAttempt) bridgeResponsesHistoryForAnthropic() {
 	if ra == nil || ra.internalRequest == nil || ra.channel == nil {
 		return
@@ -716,9 +726,6 @@ func (ra *relayAttempt) bridgeResponsesHistoryForAnthropic() {
 	}
 	req := ra.internalRequest
 	if req.PreviousResponseID == nil || strings.TrimSpace(*req.PreviousResponseID) == "" {
-		return
-	}
-	if responsesMessagesContainToolOutput(req.Messages) {
 		return
 	}
 	ra.applyPlainResponsesCodexHistoryForPreviousResponseID(*req.PreviousResponseID)
