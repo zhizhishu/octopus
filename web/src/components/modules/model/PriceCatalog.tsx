@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { useSettingList, useSetSetting, SettingKey } from '@/api/endpoints/setting';
 import { useUpdateModelPrice, useLastUpdateTime } from '@/api/endpoints/model';
 import { toast } from '@/components/common/Toast';
+import { MobileFilterCollapse } from '@/components/common/MobileFilterCollapse';
 
 export function ModelPriceCatalog() {
     const t = useTranslations('setting');
@@ -64,9 +65,18 @@ export function ModelPriceCatalog() {
 
     return (
         <section className="rounded-3xl border border-border bg-card p-4 sm:p-6">
+            <MobileFilterCollapse
+                layout="plain"
+                label={t('llmPrice.title')}
+                trailing={
+                    <span className="ml-auto min-w-0 truncate text-xs text-muted-foreground">
+                        {lastUpdateQuery.isFetching ? t('llmPrice.checking') : formatLastUpdateTime(lastUpdateTime)}
+                    </span>
+                }
+            >
             <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div className="min-w-0">
-                    <h2 className="flex min-w-0 items-center gap-2 text-lg font-bold text-card-foreground">
+                    <h2 className="flex min-w-0 items-center gap-2 text-lg font-bold text-card-foreground max-sm:hidden">
                         <DollarSign className="h-5 w-5 shrink-0" />
                         <span className="min-w-0 break-words">{t('llmPrice.title')}</span>
                     </h2>
@@ -147,6 +157,7 @@ export function ModelPriceCatalog() {
                     )}
                 </Button>
             </div>
+            </MobileFilterCollapse>
         </section>
     );
 }

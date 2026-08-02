@@ -7,6 +7,7 @@ import { AlertCircle, AlertTriangle, CheckCircle2, ChevronDown, ChevronLeft, Che
 import { useTranslations } from 'next-intl';
 import { VirtualizedGrid } from '@/components/common/VirtualizedGrid';
 import { PageWrapper } from '@/components/common/PageWrapper';
+import { MobileFilterCollapse } from '@/components/common/MobileFilterCollapse';
 import { useAPIKeyList } from '@/api/endpoints/apikey';
 import { useAuthStore, useUserList } from '@/api/endpoints/user';
 import { Button } from '@/components/ui/button';
@@ -539,6 +540,23 @@ export function Log() {
                 </div>
             )}
             <div className="flex flex-none flex-col gap-2 rounded-lg border border-border bg-card px-3 py-2">
+                <MobileFilterCollapse
+                    label="筛选"
+                    activeCount={activePills.length}
+                    trailing={
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={handleRefresh}
+                            disabled={isRefreshing || isLoading}
+                            title={isRefreshing ? t('list.refreshing') : t('list.refresh')}
+                            aria-label={t('list.refresh')}
+                            className="ml-auto rounded-lg text-muted-foreground"
+                        >
+                            <RefreshCw className={cn('size-4', isRefreshing && 'animate-spin')} />
+                        </Button>
+                    }
+                >
                 <div className="flex min-w-0 flex-wrap items-center gap-2">
                     <label className="flex min-w-0 flex-wrap items-center gap-2">
                         <span className="text-sm font-medium text-card-foreground">Endpoint</span>
@@ -704,7 +722,7 @@ export function Log() {
                             disabled={isRefreshing || isLoading}
                             title={isRefreshing ? t('list.refreshing') : t('list.refresh')}
                             aria-label={t('list.refresh')}
-                            className="rounded-lg text-muted-foreground"
+                            className="rounded-lg text-muted-foreground max-sm:hidden"
                         >
                             <RefreshCw className={cn('size-4', isRefreshing && 'animate-spin')} />
                         </Button>
@@ -783,6 +801,7 @@ export function Log() {
                         </label>
                     </div>
                 )}
+                </MobileFilterCollapse>
                 {activePills.length > 0 && (
                     <div className="flex flex-wrap items-center gap-1.5 border-t border-border/60 pt-2">
                         <span className="text-xs text-muted-foreground">生效筛选</span>

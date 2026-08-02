@@ -1445,16 +1445,16 @@ function RouteFlowCanvasInner({
                             </Button>
                         ) : null}
                     </div>
-                    <p className="mt-1 text-xs text-muted-foreground">{t('routes.canvasHint')}</p>
+                    <p className="mt-1 hidden text-xs text-muted-foreground sm:block">{t('routes.canvasHint')}</p>
                 </div>
-                <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
-                    <div className="relative">
+                <div className="flex w-full flex-wrap items-center gap-2 text-[11px] text-muted-foreground sm:w-auto">
+                    <div className="relative min-w-0 flex-1 sm:flex-none">
                         <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
                         <input
                             value={query}
                             onChange={(event) => setQuery(event.target.value)}
                             placeholder="搜模型 / 渠道 / 上游…"
-                            className="h-7 w-40 rounded-full border border-border/70 bg-background/60 pl-7 pr-2 text-xs text-foreground outline-none focus:border-primary/50 sm:w-48"
+                            className="h-7 w-full rounded-full border border-border/70 bg-background/60 pl-7 pr-2 text-xs text-foreground outline-none focus:border-primary/50 sm:w-48"
                         />
                     </div>
                     <Badge variant="secondary" className="rounded-full">{planTitle(plan)}</Badge>
@@ -1470,7 +1470,7 @@ function RouteFlowCanvasInner({
                 <div className={cn(
                     canvasFullscreen
                         ? 'fixed inset-0 z-50 h-[100dvh] w-screen bg-background p-2 sm:p-4'
-                        : 'min-h-0 flex-1 h-[clamp(300px,calc(100dvh-26rem),820px)] sm:h-[clamp(340px,calc(100dvh-22rem),860px)]',
+                        : 'min-h-0 flex-1 h-[clamp(320px,calc(100dvh-22rem),820px)] sm:h-[clamp(340px,calc(100dvh-22rem),860px)]',
                     'transition-[height]',
                 )}>
                     <ReactFlow<FlowNode, Edge>
@@ -1911,7 +1911,7 @@ function RouteTargetsEditor({
     return (
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1 pb-24 md:pb-4">
             <div className="flex shrink-0 flex-col gap-2 rounded-2xl border border-border/70 bg-card/70 p-2 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex min-w-0 items-center gap-2 px-1 text-xs text-muted-foreground">
+                <div className="hidden min-w-0 items-center gap-2 px-1 text-xs text-muted-foreground sm:flex">
                     <GitBranch className="size-4 shrink-0 text-primary" />
                     <span className="min-w-0 truncate">{t('routes.canvasTitle')}</span>
                     <Badge variant="outline" className="rounded-full">{t('routes.targetCount', { count: editableTargets.length })}</Badge>
@@ -2168,7 +2168,7 @@ export function AccessPlan() {
                                 className="h-9 min-w-0 max-w-full flex-1 sm:max-w-[22rem]"
                             />
                             {selectedPlan ? (
-                                <div className="flex min-w-0 flex-wrap gap-1.5">
+                                <div className="hidden min-w-0 flex-wrap gap-1.5 sm:flex">
                                     {selectedPlan.is_default && <Badge className="rounded-full">{t('status.default')}</Badge>}
                                     <Badge variant={selectedPlan.enabled ? 'secondary' : 'outline'} className="rounded-full">
                                         {selectedPlan.enabled ? t('status.enabled') : t('status.disabled')}
