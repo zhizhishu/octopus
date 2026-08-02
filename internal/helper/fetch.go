@@ -232,7 +232,17 @@ func fetchAnthropicModels(client *http.Client, ctx context.Context, request mode
 		defer resp.Body.Close()
 
 		if err := ensureFetchModelsOK(resp); err != nil {
-			return nil, err
+			if len(allModels) == 0 {
+				// Some Anthropic-compatible upstreams (new-api-style proxies) reject
+				// the native Anthropic model-list auth (X-Api-Key) and only serve an
+				// OpenAI-style /v1/models behind Bearer auth, returning 401
+				// "no token provided". Fall back to the OpenAI-style listing (same
+				// fallback as the empty-result case below) instead of surfacing the
+				// auth error. Real Anthropic upstreams accept X-Api-Key and never
+				// reach this branch.
+				return fetchOpenAIModels(client, ctx, request)
+			}
+			break
 		}
 
 		var result model.AnthropicModelList
