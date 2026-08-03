@@ -122,14 +122,16 @@ const (
 	// a genuine codex_cli_rs client carries codex_cli_rs in BOTH the leading token and the
 	// trailing (codex_cli_rs; <ver>) — the asymmetric (codex_exec) trailing produced by forcing
 	// CODEX_INTERNAL_ORIGINATOR_OVERRIDE is a "ran exec + overrode originator" tell, not this.
-	// Only the version advanced 0.142.5 -> 0.144.1; the header set/order was otherwise unchanged.
-	DefaultCodexHeaderUserAgent = "codex_cli_rs/0.144.1 (Ubuntu 24.04.1; x86_64) unknown (codex_cli_rs; 0.144.1)"
+	// The version advanced 0.142.5 -> 0.144.1 -> 0.145.0; the header set/order was otherwise
+	// unchanged. 0.145.0 matches the current codex CLI release (0.145.x, verified locally) and
+	// stays within the codex_cli_rs family + above the sub2api-observed upstream floor 0.144.0.
+	DefaultCodexHeaderUserAgent = "codex_cli_rs/0.145.0 (Ubuntu 24.04.1; x86_64) unknown (codex_cli_rs; 0.145.0)"
 
 	// DefaultClaudeCLIVersion is the named Claude Code CLI version used to build the
 	// user-agent below. The Anthropic outbound billing-header cc_version carries the
 	// same version (authropic.ClaudeCLIVersion); TestClaudeFingerprintVersionConsistency
 	// asserts the two never drift apart.
-	DefaultClaudeCLIVersion = "2.1.198"
+	DefaultClaudeCLIVersion = "2.1.212"
 
 	// DefaultClaudeHeaderUserAgent is the locally packet-verified Claude Code CLI
 	// user-agent (claude-cli/<DefaultClaudeCLIVersion>).
@@ -160,6 +162,11 @@ const (
 	// the advisor-tool/structured-outputs betas); converge upgraded deployments to the
 	// current UA via the DB legacy-upgrade map.
 	LegacyDefaultClaudeHeaderUserAgent2178 = "claude-cli/2.1.178 (external, sdk-cli)"
+
+	// LegacyDefaultClaudeHeaderUserAgent2198 was the previous Claude header default
+	// (claude-cli/2.1.198). 2.1.212 superseded it; converge upgraded deployments to the
+	// current UA via op.settingLegacyDefaultUpgrades so the seeded value never lags.
+	LegacyDefaultClaudeHeaderUserAgent2198 = "claude-cli/2.1.198 (external, sdk-cli)"
 
 	// DefaultClaudeHeaderPackageVersion is the current X-Stainless-Package-Version
 	// default (the value seeded into SettingKeyClaudeHeaderPackage). Unchanged from the
@@ -212,6 +219,10 @@ const (
 	// it as a product default so upgraded deployments converge to the current codex_cli_rs
 	// default instead of staying pinned to the headless codex_exec UA.
 	LegacyDefaultCodexHeaderUserAgentExec0142Win = "codex_exec/0.142.5 (Windows 10.0.26200; x86_64) unknown (codex_exec; 0.142.5)"
+
+	// LegacyDefaultCodexHeaderUserAgentCliRs0144 was the previous codex_cli_rs default
+	// (0.144.1). 0.145.0 superseded it; converge upgraded deployments via the DB map.
+	LegacyDefaultCodexHeaderUserAgentCliRs0144 = "codex_cli_rs/0.144.1 (Ubuntu 24.04.1; x86_64) unknown (codex_cli_rs; 0.144.1)"
 
 	// LegacyDefaultCodexHeaderUserAgentCliRs0142 was the codex_cli_rs default before the
 	// 0.144.1 version bump (2026-07-10). Kept so already-seeded deployments converge to the

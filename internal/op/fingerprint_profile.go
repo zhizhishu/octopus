@@ -235,6 +235,34 @@ func fingerprintProfileRefreshCache(ctx context.Context) error {
 			}
 		}
 	}
+	// Chain the built-in Linux presets forward to the CURRENT captured identities:
+	// codex_cli_rs 0.144.1 -> 0.145.0 and claude-cli 2.1.198 -> 2.1.212 (mirrors
+	// DefaultCodexHeaderUserAgent / DefaultClaudeCLIVersion in model/setting.go). Runs AFTER the
+	// 0.142.5->0.144.1 bump so a row converges across releases in one restart. Only rows carrying
+	// the EXACT old seeded string are rewritten (operator-customised UAs never match). Without
+	// this, a channel pinned to a built-in profile keeps shipping the old codex UA AND an old
+	// claude UA next to the new 2.1.212 billing cc_version = a contradictory fingerprint.
+	for i := range profiles {
+		p := &profiles[i]
+		bumped := false
+		if p.CodexUserAgent == "codex_cli_rs/0.144.1 (Debian 12.0.0; x86_64) unknown (codex_cli_rs; 0.144.1)" {
+			p.CodexUserAgent = "codex_cli_rs/0.145.0 (Debian 12.0.0; x86_64) unknown (codex_cli_rs; 0.145.0)"
+			bumped = true
+		}
+		if p.CodexUserAgent == "codex_cli_rs/0.144.1 (Ubuntu 24.04.1; x86_64) unknown (codex_cli_rs; 0.144.1)" {
+			p.CodexUserAgent = "codex_cli_rs/0.145.0 (Ubuntu 24.04.1; x86_64) unknown (codex_cli_rs; 0.145.0)"
+			bumped = true
+		}
+		if p.ClaudeUserAgent == "claude-cli/2.1.198 (external, sdk-cli)" {
+			p.ClaudeUserAgent = "claude-cli/2.1.212 (external, sdk-cli)"
+			bumped = true
+		}
+		if bumped {
+			if err := db.GetDB().WithContext(ctx).Save(p).Error; err != nil {
+				return fmt.Errorf("failed to bump built-in profile %q to current CLI identity: %w", p.Name, err)
+			}
+		}
+	}
 	// Note: "默认(Windows)" is intentionally NOT a row — the channel dropdown's
 	// ProfileID=0 option already IS that identity (per-instance seed + global header
 	// settings, byte-for-byte the pre-profile behaviour). An earlier build seeded a
@@ -298,28 +326,28 @@ func fingerprintProfileRefreshCache(ctx context.Context) error {
 	debian := &model.FingerprintProfile{
 		Name:                 "Linux · Debian",
 		Seed:                 deriveProfileSeed(2),
-		ClaudeUserAgent:      "claude-cli/2.1.198 (external, sdk-cli)",
+		ClaudeUserAgent:      "claude-cli/2.1.212 (external, sdk-cli)",
 		ClaudePackageVersion: "0.94.0",
 		ClaudeRuntimeVersion: "v26.3.0",
 		ClaudeOS:             "Linux",
 		ClaudeArch:           "x64",
 		ClaudeTimeout:        "600",
 		ClaudeStabilize:      &stabilize,
-		CodexUserAgent:       "codex_cli_rs/0.144.1 (Debian 12.0.0; x86_64) unknown (codex_cli_rs; 0.144.1)",
+		CodexUserAgent:       "codex_cli_rs/0.145.0 (Debian 12.0.0; x86_64) unknown (codex_cli_rs; 0.145.0)",
 		CodexOriginator:      "codex_cli_rs",
 		CodexBetaFeatures:    "remote_compaction_v2",
 	}
 	ubuntu := &model.FingerprintProfile{
 		Name:                 "Linux · Ubuntu",
 		Seed:                 deriveProfileSeed(3),
-		ClaudeUserAgent:      "claude-cli/2.1.198 (external, sdk-cli)",
+		ClaudeUserAgent:      "claude-cli/2.1.212 (external, sdk-cli)",
 		ClaudePackageVersion: "0.94.0",
 		ClaudeRuntimeVersion: "v26.3.0",
 		ClaudeOS:             "Linux",
 		ClaudeArch:           "x64",
 		ClaudeTimeout:        "600",
 		ClaudeStabilize:      &stabilize,
-		CodexUserAgent:       "codex_cli_rs/0.144.1 (Ubuntu 24.04.1; x86_64) unknown (codex_cli_rs; 0.144.1)",
+		CodexUserAgent:       "codex_cli_rs/0.145.0 (Ubuntu 24.04.1; x86_64) unknown (codex_cli_rs; 0.145.0)",
 		CodexOriginator:      "codex_cli_rs",
 		CodexBetaFeatures:    "remote_compaction_v2",
 	}

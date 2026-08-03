@@ -596,7 +596,7 @@ const claudeBillingHeaderPrefix = "x-anthropic-billing-header:"
 // guards against drift (this package cannot import internal/model: that would be an
 // import cycle, since internal/model already depends on this package).
 const (
-	ClaudeCLIVersion       = "2.1.198"
+	ClaudeCLIVersion       = "2.1.212"
 	ClaudeCLIVersionSuffix = "542"
 )
 

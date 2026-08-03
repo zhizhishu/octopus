@@ -17,6 +17,7 @@ var settingLegacyDefaultUpgrades = map[model.SettingKey]map[string]string{
 		model.LegacyDefaultClaudeHeaderUserAgent2168: model.DefaultClaudeHeaderUserAgent,
 		model.LegacyDefaultClaudeHeaderUserAgent2126: model.DefaultClaudeHeaderUserAgent,
 		model.LegacyDefaultClaudeHeaderUserAgent2178: model.DefaultClaudeHeaderUserAgent,
+		model.LegacyDefaultClaudeHeaderUserAgent2198: model.DefaultClaudeHeaderUserAgent,
 	},
 	model.SettingKeyClaudeHeaderPackage: {
 		model.LegacyDefaultClaudeHeaderPackage0810: model.DefaultClaudeHeaderPackageVersion,
@@ -33,6 +34,7 @@ var settingLegacyDefaultUpgrades = map[model.SettingKey]map[string]string{
 		model.LegacyDefaultCodexHeaderUserAgent0132:        model.DefaultCodexHeaderUserAgent,
 		model.LegacyDefaultCodexHeaderUserAgentExec0142Win: model.DefaultCodexHeaderUserAgent,
 		model.LegacyDefaultCodexHeaderUserAgentCliRs0142:   model.DefaultCodexHeaderUserAgent,
+		model.LegacyDefaultCodexHeaderUserAgentCliRs0144:   model.DefaultCodexHeaderUserAgent,
 	},
 	model.SettingKeyCodexHeaderBetaFeatures: {
 		model.LegacyDefaultCodexHeaderBetaFeaturesMultiAgent:           model.DefaultCodexHeaderBetaFeatures,
