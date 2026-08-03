@@ -23,11 +23,17 @@ func (ra *relayAttempt) prepareCodexRequestShape() {
 	addCodexResponsesInclude(req)
 	ra.bridgePlainResponsesCodexHistory()
 	// A genuine codex client sends a Responses-shaped `input` that already carries its own
-	// developer/system instructions and tool declarations inline. Detect that here (AFTER any
-	// history bridge, which clears ResponsesInputRaw) so neither the agent-context injection
-	// below nor the outbound transformer's Messages-derived hoist DUPLICATES them on the wire.
+	// developer/system instructions and tool declarations inline (SELF-CONTAINED). Detect that
+	// here (AFTER any history bridge, which clears ResponsesInputRaw). codexRawInput alone only
+	// means the body is a codex-shaped array — NOT enough to skip the default-agent injection,
+	// because a bare Responses request (a lone user message, no instructions) is also codex-shaped
+	// yet still needs ensureCodexAgentContext to supply the default codex identity + tools. Gate the
+	// skip/suppress on codexSelfContained = codexRawInput AND the input actually carries an
+	// instruction (developer/system message, via req.Messages) — only THEN would injecting a default
+	// agent context or hoisting a Messages-derived copy DUPLICATE what the input already has.
 	codexRawInput := len(req.ResponsesInputRaw) > 0 && responsesInputRawLooksCodexShaped(req.ResponsesInputRaw)
-	if !codexRawInput {
+	codexSelfContained := codexRawInput && messagesContainInstruction(req.Messages)
+	if !codexSelfContained {
 		ensureCodexAgentContext(req)
 	}
 	// Codex shape requires store=false: the reasoning.encrypted_content include added above is
@@ -41,7 +47,7 @@ func (ra *relayAttempt) prepareCodexRequestShape() {
 	req.Store = &store
 	applyCodexFastMode(req)
 	normalizeCodexReasoningEffort(req)
-	if codexRawInput {
+	if codexSelfContained {
 		// The raw codex input already carries its developer/system instructions and tools; stop
 		// the outbound transformer from also hoisting a Messages-derived top-level `instructions`
 		// and `tools` copy (see suppressCodexHoistedContext). Otherwise a genuine codex request
@@ -49,11 +55,15 @@ func (ra *relayAttempt) prepareCodexRequestShape() {
 		// divergence AND pure extra input tokens that slow the first token and make the
 		// capacity-limited upstream likelier to reject with a 500.
 		suppressCodexHoistedContext(req)
-	} else if raw := synthesizeCodexResponsesInputRaw(req.Messages); len(raw) > 0 {
-		// Non-codex-shaped (empty or a chat→codex request): synthesize a codex-shaped input from
+	} else if !codexRawInput {
+		// No usable codex-shaped raw input (empty, or a chat→codex request): synthesize one from
 		// the messages, exactly as before. Here the hoisted top-level instructions ARE wanted,
-		// since the synthesized input deliberately omits system/developer messages.
-		req.ResponsesInputRaw = raw
+		// since the synthesized input deliberately omits system/developer messages. (A bare-but-
+		// codex-shaped raw input is instead kept as-is; the ensureCodexAgentContext defaults
+		// injected above are hoisted to top-level for it — matching pre-fix behavior.)
+		if raw := synthesizeCodexResponsesInputRaw(req.Messages); len(raw) > 0 {
+			req.ResponsesInputRaw = raw
+		}
 	}
 }
 
@@ -70,10 +80,23 @@ func suppressCodexHoistedContext(req *transformerModel.InternalLLMRequest) {
 	if req == nil {
 		return
 	}
-	empty := ""
-	req.ResponsesInstructions = &empty
-	req.Tools = nil
-	req.ResponsesToolsRaw = nil
+	// Suppress ONLY the Messages-derived top-level hoist (the duplicate), never a field the
+	// client explicitly sent at the top level:
+	//   - instructions: ConvertToResponsesRequest hoists from req.Messages, and
+	//     applyRawResponsesRequestFields overrides it only when req.ResponsesInstructions != nil.
+	//     So force "" (→ omitempty drops it) ONLY when the client sent no explicit top-level
+	//     instructions; if it did (non-nil), that is not a duplicate — keep it.
+	if req.ResponsesInstructions == nil {
+		empty := ""
+		req.ResponsesInstructions = &empty
+	}
+	//   - tools: the transformer emits req.Tools as top-level tools only when the client sent no
+	//     raw tools (ResponsesToolsRaw). Clear the inbound/Messages-derived req.Tools in that
+	//     case (a genuine codex request carries its tools inline in the raw input); leave an
+	//     explicit client-sent ResponsesToolsRaw untouched.
+	if len(req.ResponsesToolsRaw) == 0 {
+		req.Tools = nil
+	}
 }
 
 func applyCodexFastMode(req *transformerModel.InternalLLMRequest) {
@@ -493,7 +516,16 @@ func responsesInputRawLooksCodexShaped(raw json.RawMessage) bool {
 			if _, ok := item["content"]; ok {
 				return true
 			}
-		case "function_call_output", "function_call", "reasoning":
+		case "function_call_output", "function_call", "reasoning",
+			// Native codex tool-call / tool-output increments — kept in lockstep with the inbound
+			// parser's isResponsesToolCallItemType / isResponsesToolOutputItemType
+			// (transformer/inbound/openai/response.go). A genuine codex custom/mcp/tool-search/
+			// local-shell continuation whose raw input is only one of these increments must be
+			// recognized as codex-shaped and passed through untouched: resynthesis rewrites it into
+			// a generic function_call/function_call_output and loses the byte fidelity the upstream
+			// requires for custom/mcp tool history.
+			"tool_call", "local_shell_call", "tool_search_call", "custom_tool_call", "mcp_tool_call",
+			"tool_search_output", "custom_tool_call_output", "mcp_tool_call_output":
 			return true
 		}
 	}
