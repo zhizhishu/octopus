@@ -24,6 +24,12 @@ const relayLogMaxSize = 20
 const relayLogMaxSizeNoDB = 100 // 当不保存到数据库时，允许更大的缓存用于实时查询
 const bytesPerGB = 1024 * 1024 * 1024
 
+// relayLogTwoPhaseMaxIDs bounds the id list of the two-phase severity-filtered read so the
+// id IN(...) fetch stays well under SQLite's bound-parameter cap (999 on old builds, 32766 on
+// 3.32+). Interactive log pages are small (page_size<=100 + in-memory cache); larger limits
+// (export / deep pages) fall back to the single-query path.
+const relayLogTwoPhaseMaxIDs = 900
+
 var relayLogCache = make([]model.RelayLog, 0, relayLogMaxSize)
 var relayLogCacheLock sync.Mutex
 
@@ -473,11 +479,52 @@ func RelayLogList(ctx context.Context, startTime, endTime *int, page, pageSize i
 			}
 			query = relayLogApplyScope(query, scope)
 
-			var dbLogs []model.RelayLog
-			if err := query.Order("time DESC, id DESC").Limit(dbLimit).Find(&dbLogs).Error; err != nil {
-				return nil, err
+			if dbLimit <= relayLogTwoPhaseMaxIDs {
+				// Two-phase read for interactive pages: first pluck ONLY the ids that match the
+				// filter (ORDER+LIMIT), then fetch the full rows for just those ids. A
+				// severity-filtered list (WHERE on the non-indexed error/total_attempts predicate)
+				// walks past many non-matching rows to collect a page; doing that walk with
+				// SELECT * pulls each walked row's large request_content/response_content (overflow
+				// pages) off disk — the cause of the ~64s severity=success page. Plucking id only
+				// skips those overflow reads during the walk; the full-row fetch touches just the
+				// matching rows. Order is reapplied by the caller's stable sort below, so the id-IN
+				// fetch need not preserve it. Guarded by relayLogTwoPhaseMaxIDs so the IN(...) list
+				// never approaches SQLite's bound-parameter cap.
+				// Phase 1 (pluck ids) + phase 2 (fetch rows) run in ONE read transaction so they
+				// see a single consistent snapshot; without it a concurrent delete between them
+				// could underfill the page (and make an export loop mistake the short page for EOF).
+				txErr := db.GetDB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+					idQuery := tx.Model(&model.RelayLog{})
+					if hasTimeFilter {
+						idQuery = idQuery.Where("time >= ? AND time <= ?", *startTime, *endTime)
+					}
+					idQuery = relayLogApplyScope(idQuery, scope)
+					var ids []int64
+					if err := idQuery.Order("time DESC, id DESC").Limit(dbLimit).Pluck("id", &ids).Error; err != nil {
+						return err
+					}
+					if len(ids) > 0 {
+						var dbLogs []model.RelayLog
+						if err := tx.Where("id IN ?", ids).Find(&dbLogs).Error; err != nil {
+							return err
+						}
+						result = append(result, dbLogs...)
+					}
+					return nil
+				})
+				if txErr != nil {
+					return nil, txErr
+				}
+			} else {
+				// Large limits (export / deep pages) would make the id IN(...) list exceed
+				// SQLite's parameter cap; keep the original single-query path (export streams
+				// everything and is not the interactive-page latency case the two-phase targets).
+				var dbLogs []model.RelayLog
+				if err := query.Order("time DESC, id DESC").Limit(dbLimit).Find(&dbLogs).Error; err != nil {
+					return nil, err
+				}
+				result = append(result, dbLogs...)
 			}
-			result = append(result, dbLogs...)
 		}
 	}
 
