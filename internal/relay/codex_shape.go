@@ -22,7 +22,14 @@ func (ra *relayAttempt) prepareCodexRequestShape() {
 	req := ra.internalRequest
 	addCodexResponsesInclude(req)
 	ra.bridgePlainResponsesCodexHistory()
-	ensureCodexAgentContext(req)
+	// A genuine codex client sends a Responses-shaped `input` that already carries its own
+	// developer/system instructions and tool declarations inline. Detect that here (AFTER any
+	// history bridge, which clears ResponsesInputRaw) so neither the agent-context injection
+	// below nor the outbound transformer's Messages-derived hoist DUPLICATES them on the wire.
+	codexRawInput := len(req.ResponsesInputRaw) > 0 && responsesInputRawLooksCodexShaped(req.ResponsesInputRaw)
+	if !codexRawInput {
+		ensureCodexAgentContext(req)
+	}
 	// Codex shape requires store=false: the reasoning.encrypted_content include added above is
 	// the store=false stateless-reasoning channel, and combining it with store=true makes the
 	// genuine upstream 500 once real reasoning is produced (empirically confirmed; a trivial
@@ -34,11 +41,39 @@ func (ra *relayAttempt) prepareCodexRequestShape() {
 	req.Store = &store
 	applyCodexFastMode(req)
 	normalizeCodexReasoningEffort(req)
-	if len(req.ResponsesInputRaw) == 0 || !responsesInputRawLooksCodexShaped(req.ResponsesInputRaw) {
-		if raw := synthesizeCodexResponsesInputRaw(req.Messages); len(raw) > 0 {
-			req.ResponsesInputRaw = raw
-		}
+	if codexRawInput {
+		// The raw codex input already carries its developer/system instructions and tools; stop
+		// the outbound transformer from also hoisting a Messages-derived top-level `instructions`
+		// and `tools` copy (see suppressCodexHoistedContext). Otherwise a genuine codex request
+		// goes upstream ~+27KB heavier than the real CLI sends — a byte-level fingerprint
+		// divergence AND pure extra input tokens that slow the first token and make the
+		// capacity-limited upstream likelier to reject with a 500.
+		suppressCodexHoistedContext(req)
+	} else if raw := synthesizeCodexResponsesInputRaw(req.Messages); len(raw) > 0 {
+		// Non-codex-shaped (empty or a chat→codex request): synthesize a codex-shaped input from
+		// the messages, exactly as before. Here the hoisted top-level instructions ARE wanted,
+		// since the synthesized input deliberately omits system/developer messages.
+		req.ResponsesInputRaw = raw
 	}
+}
+
+// suppressCodexHoistedContext stops the outbound Responses transformer from emitting a top-level
+// `instructions` or `tools` for a genuine codex request whose raw Responses `input` already carries
+// its developer/system instructions and tool declarations inline. ConvertToResponsesRequest builds
+// Instructions from req.Messages and Tools from req.Tools, and only an explicit req.ResponsesInstructions
+// / ResponsesToolsRaw overrides them — so a codex client (which sends neither top-level field, keeping
+// both inside `input`) would otherwise get a Messages-derived DUPLICATE hoisted onto the wire. That is a
+// byte-level divergence from the real codex CLI and ~+27KB of redundant system-prompt + tool tokens.
+// tool_choice / parallel_tool_calls are intentionally left untouched: the genuine codex CLI does send
+// those two top-level, so this only strips the duplicated instructions/tools.
+func suppressCodexHoistedContext(req *transformerModel.InternalLLMRequest) {
+	if req == nil {
+		return
+	}
+	empty := ""
+	req.ResponsesInstructions = &empty
+	req.Tools = nil
+	req.ResponsesToolsRaw = nil
 }
 
 func applyCodexFastMode(req *transformerModel.InternalLLMRequest) {
