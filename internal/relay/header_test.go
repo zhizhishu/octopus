@@ -122,11 +122,13 @@ func TestApplyHeaderDefaultsKeepsOriginatorForNonCodexToAnthropic(t *testing.T) 
 	}
 }
 
-// TestApplyHeaderDefaultsKeepsCodexClientHeadersOnCodexOutbound is the negative case:
-// on an OpenAIResponse (codex) channel the codex client headers are legitimate and
-// must be KEPT — stripCodexClientHeaders runs only for Anthropic outbounds. Distinctive
-// preset values (setHeaderIfMissing preserves them) prove they were not deleted.
-func TestApplyHeaderDefaultsKeepsCodexClientHeadersOnCodexOutbound(t *testing.T) {
+// TestApplyHeaderDefaultsCodexOutboundNormalizesOriginatorKeepsBeta covers the codex
+// (OpenAIResponse) outbound: codex client headers are NOT stripped (stripCodexClientHeaders
+// runs only for Anthropic outbounds), so X-Codex-Beta-Features is kept as sent — BUT
+// Originator (and User-Agent) are FORCE-normalized to the resolved codex_cli_rs fingerprint so
+// originator↔UA always pair for the upstream (sub2api #3901: a mismatch is rejected). A
+// leaked-through arbitrary Originator is overwritten by codex_cli_rs, not preserved.
+func TestApplyHeaderDefaultsCodexOutboundNormalizesOriginatorKeepsBeta(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
@@ -142,8 +144,10 @@ func TestApplyHeaderDefaultsKeepsCodexClientHeadersOnCodexOutbound(t *testing.T)
 
 	ra.copyHeaders(upstreamReq)
 
-	if got := upstreamReq.Header.Get("Originator"); got != "my-codex-originator" {
-		t.Fatalf("codex channel must keep Originator, got %q", got)
+	// Originator is force-normalized to the codex_cli_rs fingerprint (overriding the leaked
+	// "my-codex-originator") so it pairs with the codex_cli_rs User-Agent (sub2api #3901).
+	if got := upstreamReq.Header.Get("Originator"); got != defaultCodexOriginator {
+		t.Fatalf("codex Originator must be force-normalized to %q, got %q", defaultCodexOriginator, got)
 	}
 	if got := upstreamReq.Header.Get("X-Codex-Beta-Features"); got != "my-codex-beta" {
 		t.Fatalf("codex channel must keep X-Codex-Beta-Features, got %q", got)

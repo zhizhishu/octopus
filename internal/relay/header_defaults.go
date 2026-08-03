@@ -266,8 +266,16 @@ func (ra *relayAttempt) applyCodexHeaderDefaults(req *http.Request, internalRequ
 func applyCodexHeaderDefaultsWithFingerprint(req *http.Request, internalRequest *model.InternalLLMRequest, fp resolvedFingerprint) {
 	setHeaderIfMissing(req.Header, "Connection", "Keep-Alive")
 	setHeaderIfMissing(req.Header, "Content-Type", "application/json")
-	setHeaderIfMissing(req.Header, "Originator", fp.codexOriginator())
-	setHeaderIfMissing(req.Header, "User-Agent", fp.codexUserAgent())
+	// FORCE the codex identity (Originator + UA) to a self-consistent codex_cli_rs pair,
+	// OVERRIDING whatever a downstream client leaked through. sub2api/new-api-style upstreams
+	// require the originator to pair with the User-Agent's leading token (both codex_cli_rs)
+	// and only accept the codex_cli_rs client — a mismatch (e.g. a leaked codex_exec originator
+	// against oct's codex_cli_rs UA) is rejected (sub2api issue #3901: originator↔UA-first-token
+	// must pair + version≥0.144.0). setHeaderIfMissing let a copied-through client Originator
+	// survive while the UA fell back to oct's default, producing exactly that mismatch on the
+	// wire. Both come from the resolved fingerprint so a selected profile still overrides them.
+	setHeaderForce(req.Header, "Originator", fp.codexOriginator())
+	setHeaderForce(req.Header, "User-Agent", fp.codexUserAgent())
 	setHeaderIfMissing(req.Header, "X-Codex-Beta-Features", fp.codexBetaFeatures())
 	// codex 0.144.x always emits this static header on /responses (packet-verified 2026-07-10);
 	// wire position (4th, after x-codex-turn-metadata) is driven by codexCanonicalHeaderOrder.
@@ -281,6 +289,15 @@ func setHeaderIfMissing(headers http.Header, key, value string) {
 		return
 	}
 	headers.Set(key, value)
+}
+
+// setHeaderForce sets the header from a non-empty value, OVERWRITING any existing (e.g. a
+// downstream client's leaked-through value). Used for codex Originator/User-Agent where a
+// self-consistent codex_cli_rs pair must reach the upstream regardless of what the caller sent.
+func setHeaderForce(headers http.Header, key, value string) {
+	if value = strings.TrimSpace(value); value != "" {
+		headers.Set(key, value)
+	}
 }
 
 // settingString reads a header default from the settings cache, falling back to the
