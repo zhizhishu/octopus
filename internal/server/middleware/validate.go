@@ -17,8 +17,9 @@ func RequireJSON() gin.HandlerFunc {
 			return
 		}
 
-		contentType := c.GetHeader("Content-Type")
-		if !strings.Contains(contentType, "application/json") {
+		contentType := strings.ToLower(c.GetHeader("Content-Type"))
+		if strings.Contains(contentType, "multipart/") ||
+			strings.Contains(contentType, "application/x-www-form-urlencoded") {
 			resp.Error(c, http.StatusUnsupportedMediaType, resp.ErrInvalidJSON)
 			c.Abort()
 			return
