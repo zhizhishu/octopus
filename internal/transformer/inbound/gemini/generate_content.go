@@ -104,6 +104,13 @@ func (i *GenerateContentInbound) GetInternalResponse(ctx context.Context) (*mode
 	}
 
 	choices := map[int]*model.Choice{}
+	// Streamed text is buffered per choice index instead of grown with `*p += frag`:
+	// that re-allocates and copies the whole accumulated prefix on every chunk, so a
+	// long response costs O(total²). Materialized once after the loop below.
+	contentBuf := make(map[int]*strings.Builder)
+	reasoningBuf := make(map[int]*strings.Builder)
+	// Tool-call argument fragments, buffered as choice index -> tool call index.
+	toolArgsBuf := make(map[int]map[int]*strings.Builder)
 	for _, chunk := range i.streamChunks {
 		if chunk.ID != "" {
 			result.ID = chunk.ID
@@ -125,13 +132,15 @@ func (i *GenerateContentInbound) GetInternalResponse(ctx context.Context) (*mode
 				choices[choice.Index] = existing
 			}
 			if choice.Delta != nil {
-				mergeDeltaIntoMessage(existing.Message, choice.Delta)
+				mergeDeltaIntoMessage(existing.Message, choice.Delta, choice.Index, contentBuf, reasoningBuf, toolArgsBuf)
 			}
 			if choice.FinishReason != nil {
 				existing.FinishReason = choice.FinishReason
 			}
 		}
 	}
+
+	materializeStreamText(choices, contentBuf, reasoningBuf, toolArgsBuf)
 
 	for idx := 0; idx < len(choices); idx++ {
 		if choice := choices[idx]; choice != nil {
@@ -184,6 +193,11 @@ func convertGeminiContent(content *model.GeminiContent, contentIndex int, callID
 	msg := model.Message{Role: role}
 	var parts []model.MessageContentPart
 	var toolMessages []model.Message
+	// Thought text is buffered instead of grown with `*msg.ReasoningContent += text`:
+	// appending through the pointer re-copies the whole accumulated prefix on every
+	// thought part. Materialized once after the loop.
+	var reasoningBuf strings.Builder
+	sawThought := false
 
 	for partIndex, part := range content.Parts {
 		if part == nil {
@@ -195,11 +209,8 @@ func convertGeminiContent(content *model.GeminiContent, contentIndex int, callID
 			// plain user/assistant text; map them onto ReasoningContent so
 			// multi-turn history can round-trip thinking separately.
 			if part.Thought {
-				if msg.ReasoningContent == nil {
-					msg.ReasoningContent = &text
-				} else {
-					*msg.ReasoningContent += text
-				}
+				reasoningBuf.WriteString(text)
+				sawThought = true
 			} else {
 				parts = append(parts, model.MessageContentPart{Type: "text", Text: &text})
 			}
@@ -267,6 +278,14 @@ func convertGeminiContent(content *model.GeminiContent, contentIndex int, callID
 				},
 			})
 		}
+	}
+
+	// Materialize buffered thought text; only when a thought part was actually seen,
+	// so a thought-free message keeps the nil ReasoningContent it had before (the
+	// GetReasoningContent()=="" keep/drop check below depends on that).
+	if sawThought {
+		reasoning := reasoningBuf.String()
+		msg.ReasoningContent = &reasoning
 	}
 
 	if len(parts) == 1 && parts[0].Type == "text" {
@@ -545,27 +564,75 @@ func joinGeminiText(parts []*model.GeminiPart) string {
 	return strings.Join(texts, "\n")
 }
 
-func mergeDeltaIntoMessage(dst *model.Message, delta *model.Message) {
+// mergeDeltaIntoMessage folds one stream delta into the aggregated message. Text,
+// reasoning and tool-call argument fragments go into the per-index builders instead
+// of `+=` through pointers (which re-copies the whole accumulated prefix on every
+// chunk); materializeStreamText writes them back after the aggregation loop.
+func mergeDeltaIntoMessage(dst *model.Message, delta *model.Message, choiceIndex int, contentBuf, reasoningBuf map[int]*strings.Builder, toolArgsBuf map[int]map[int]*strings.Builder) {
 	if delta.Role != "" {
 		dst.Role = delta.Role
 	}
 	if delta.Content.Content != nil {
-		if dst.Content.Content == nil {
-			dst.Content.Content = new(string)
-		}
-		*dst.Content.Content += *delta.Content.Content
+		streamTextBuffer(contentBuf, choiceIndex).WriteString(*delta.Content.Content)
 	}
 	if len(delta.Content.MultipleContent) > 0 {
 		dst.Content.MultipleContent = append(dst.Content.MultipleContent, delta.Content.MultipleContent...)
 	}
-	if delta.GetReasoningContent() != "" {
-		if dst.ReasoningContent == nil {
-			dst.ReasoningContent = new(string)
-		}
-		*dst.ReasoningContent += delta.GetReasoningContent()
+	if reasoning := delta.GetReasoningContent(); reasoning != "" {
+		streamTextBuffer(reasoningBuf, choiceIndex).WriteString(reasoning)
 	}
 	for _, toolCall := range delta.ToolCalls {
+		if toolCall.Function.Arguments != "" {
+			byToolIndex, ok := toolArgsBuf[choiceIndex]
+			if !ok {
+				byToolIndex = make(map[int]*strings.Builder)
+				toolArgsBuf[choiceIndex] = byToolIndex
+			}
+			streamTextBuffer(byToolIndex, toolCall.Index).WriteString(toolCall.Function.Arguments)
+			toolCall.Function.Arguments = ""
+		}
 		dst.ToolCalls = mergeToolCall(dst.ToolCalls, toolCall)
+	}
+}
+
+// streamTextBuffer returns the accumulation buffer for one index, creating it on
+// first use. Presence in the map is what marks "this index received a fragment",
+// which is how the aggregation keeps the nil-vs-empty distinction the previous
+// pointer-append form had.
+func streamTextBuffer(buffers map[int]*strings.Builder, index int) *strings.Builder {
+	if buffer, ok := buffers[index]; ok {
+		return buffer
+	}
+	buffer := &strings.Builder{}
+	buffers[index] = buffer
+	return buffer
+}
+
+// materializeStreamText writes the buffered fragments back onto the aggregated
+// choices. Only indexes that actually received a fragment are written, so a
+// choice that never carried content/reasoning keeps the nil pointer it had
+// before, and one that carried an empty fragment still gets a non-nil empty
+// value — exactly what the old `new(string)` + `+=` form produced.
+func materializeStreamText(
+	choicesMap map[int]*model.Choice,
+	contentBuf map[int]*strings.Builder,
+	reasoningBuf map[int]*strings.Builder,
+	toolArgsBuf map[int]map[int]*strings.Builder,
+) {
+	for idx, choice := range choicesMap {
+		if buffer, ok := contentBuf[idx]; ok {
+			content := buffer.String()
+			choice.Message.Content.Content = &content
+		}
+		if buffer, ok := reasoningBuf[idx]; ok {
+			reasoning := buffer.String()
+			choice.Message.ReasoningContent = &reasoning
+		}
+		for k := range choice.Message.ToolCalls {
+			if buffer, ok := toolArgsBuf[idx][choice.Message.ToolCalls[k].Index]; ok {
+				choice.Message.ToolCalls[k].Function.Arguments = buffer.String()
+			}
+		}
 	}
 }
 
