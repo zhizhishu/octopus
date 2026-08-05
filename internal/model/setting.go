@@ -74,7 +74,8 @@ const (
 	// downstream-only and never touches the codex/claude/gemini upstream fingerprint. Set
 	// to "0" to disable entirely.
 	SettingKeyFirstByteKeepaliveDelaySeconds SettingKey = "first_byte_keepalive_delay_seconds"
-	SettingKeyRouteModeOverride              SettingKey = "route_mode_override" // 路由模式全局覆盖: ""=跟随分组各自模式, "spread"=强制轮询, "fill_first"=强制优先填充
+	SettingKeyRouteModeOverride              SettingKey = "route_mode_override"      // 路由模式全局覆盖: ""=跟随分组各自模式, "spread"=强制轮询, "fill_first"=强制优先填充
+	SettingKeyRouteStickyCacheFirst          SettingKey = "route_sticky_cache_first" // 轮询类分组里纯优化型会话(prompt_cache_key/user/safety_identifier/oct 自造指纹)的粘性取舍: false=分摊优先(默认, 不粘、真轮转), true=缓存优先(非空来源也粘, 换上游 prompt-cache 命中)。语义详见 internal/relay/route_sticky.go
 	SettingKeyPromptOverrideSystem           SettingKey = "prompt_override_system"
 	SettingKeyPromptOverrideMode             SettingKey = "prompt_override_mode"
 	SettingKeyUpstreamErrorStatusPass        SettingKey = "upstream_error_status_passthrough"
@@ -284,6 +285,7 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyFirstTokenTimeOutDefault, Value: "0"},                                           // 默认0=不启用全局默认(向后兼容); 分组级 FirstTokenTimeOut 仍优先
 		{Key: SettingKeyFirstByteKeepaliveDelaySeconds, Value: defaultFirstByteKeepaliveDelaySeconds()}, // 默认20=开启: 上游首字节>20s才向下游注入SSE心跳(防前置反代/客户端60s空闲掐断); 0=关闭
 		{Key: SettingKeyRouteModeOverride, Value: ""},                                                   // 默认空=跟随分组各自模式(向后兼容); 设为 spread/fill_first 则强制覆盖所有分组
+		{Key: SettingKeyRouteStickyCacheFirst, Value: "false"},                                          // 默认 false=分摊优先(现行为不变); 设 true 切「缓存优先」: 轮询分组里非空的纯优化型会话也保留粘性
 		{Key: SettingKeyPromptOverrideSystem, Value: ""},
 		{Key: SettingKeyPromptOverrideMode, Value: string(PromptOverrideModeAppendSystem)},
 		{Key: SettingKeyUpstreamErrorStatusPass, Value: "false"},
@@ -423,7 +425,7 @@ func (s *Setting) Validate() error {
 		SettingKeyClaudeHeaderStabilize, SettingKeyClaudeCLIAutoCompact, SettingKeyCodexFastMode,
 		SettingKeyUserRegistrationEnabled, SettingKeyUpstreamErrorStatusPass, SettingKeyCheckInEnabled,
 		SettingKeyDebugLoadBalancer, SettingKeyEmailVerificationEnabled, SettingKeyEmailSMTPSSL,
-		SettingKeyUpstreamUTLSFingerprint, SettingKeyDiagnosticMode:
+		SettingKeyUpstreamUTLSFingerprint, SettingKeyDiagnosticMode, SettingKeyRouteStickyCacheFirst:
 		if s.Value != "true" && s.Value != "false" {
 			return fmt.Errorf("%s must be true or false", s.Key)
 		}

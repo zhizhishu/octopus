@@ -17,12 +17,34 @@ import dbmodel "github.com/bestruirui/octopus/internal/model"
 //     （prompt_cache_key、oct 自造 request_fingerprint、user、safety_identifier）放开，
 //     让请求真正在同优先级渠道间轮转分摊。
 //
+// 上面「放开纯优化型来源」是一次刻意的**分摊优先**权衡：宁可丢 prompt-cache 命中，也要让轮询
+// 真的轮起来。但这个取舍不是所有部署都想要——渠道少、上游按 cache 计价的部署更想要命中率。
+// 故加 route_sticky_cache_first 全局开关（默认 false=上面的分级原样不动）：
+//   - false（默认，缓存优先关）：行为与开关引入前逐位一致。
+//   - true（缓存优先开）：轮询等模式下，**非空**的纯优化型会话来源也保留 sticky，同会话钉住同一
+//     渠道换 cache 命中；**空**来源（拿不到任何会话键，粘性桶会被无关请求共用）依旧不 sticky。
+//
+// 开关只上移「哪些请求算一个会话」的门槛，FillFirst 与正确性关键来源两条路径完全不受影响。
 // 只影响选路，不改任何出站字节/头/指纹（shape 零回归）。
 func routeStickyEnabled(mode dbmodel.GroupMode, sessionSource string) bool {
 	if mode == dbmodel.GroupModeFillFirst {
 		return true
 	}
-	return isCorrectnessCriticalSessionSource(sessionSource)
+	if isCorrectnessCriticalSessionSource(sessionSource) {
+		return true
+	}
+	// 走到这里=纯优化型来源。空来源没有会话可言，任何档位都不粘（也省掉一次设置读）。
+	if sessionSource == "" {
+		return false
+	}
+	return routeStickyCacheFirstEnabled()
+}
+
+// routeStickyCacheFirstEnabled 读「缓存优先」全局开关。settingBool 底下是 op 的设置内存缓存
+// （非 DB 往返），与本包其它热路径读设置的写法一致，每请求一次内存读可承受；读不到（缓存未初始化
+// / 值非法）一律回落 false=保持现行分摊优先。
+func routeStickyCacheFirstEnabled() bool {
+	return settingBool(dbmodel.SettingKeyRouteStickyCacheFirst, false)
 }
 
 // isCorrectnessCriticalSessionSource 报告某个会话来源是否「换渠道会破坏正确性」。
