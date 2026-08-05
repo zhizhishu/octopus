@@ -67,3 +67,27 @@ func ClearStickyWithSessionKey(apiKeyID int, requestModel, clientSessionKey stri
 	key := sessionKey(apiKeyID, requestModel, clientSessionKey)
 	globalSession.Delete(key)
 }
+
+// SweepExpired removes sticky entries not refreshed within olderThan and returns how many
+// were dropped. GetSticky enforces the real per-call ttl on READ, but its lazy Delete only
+// fires for a key that is looked up again — a conversation that simply ends is never looked
+// up, so its entry lives in globalSession for the whole process lifetime. This periodic
+// sweep reclaims those. olderThan must be a GENEROUS upper bound on any configured
+// session-keep time; an entry wrongly swept just means the next request for that
+// conversation re-picks a channel (harmless), so the bound is deliberately loose.
+func SweepExpired(olderThan time.Duration) int {
+	if olderThan <= 0 {
+		return 0
+	}
+	cutoff := time.Now().Add(-olderThan)
+	removed := 0
+	globalSession.Range(func(k, v any) bool {
+		entry, ok := v.(*SessionEntry)
+		if !ok || entry.Timestamp.Before(cutoff) {
+			globalSession.Delete(k)
+			removed++
+		}
+		return true
+	})
+	return removed
+}

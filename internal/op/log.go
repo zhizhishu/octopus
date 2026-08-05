@@ -80,6 +80,7 @@ type relayLogStreamTokenScope struct {
 	StartTime    int
 	EndTime      int
 	HasTimeRange bool
+	createdAt    time.Time
 }
 
 var relayLogStreamTokens = make(map[string]relayLogStreamTokenScope)
@@ -95,7 +96,7 @@ func RelayLogStreamTokenCreateWithTimeRange(scope model.RelayLogScope, isAdmin b
 		return "", err
 	}
 	token := hex.EncodeToString(bytes)
-	tokenScope := relayLogStreamTokenScope{UserID: scope.UserID, APIKeyID: scope.APIKeyID, Endpoint: scope.Endpoint, IsAdmin: isAdmin}
+	tokenScope := relayLogStreamTokenScope{UserID: scope.UserID, APIKeyID: scope.APIKeyID, Endpoint: scope.Endpoint, IsAdmin: isAdmin, createdAt: time.Now()}
 	if startTime != nil && endTime != nil {
 		tokenScope.StartTime = *startTime
 		tokenScope.EndTime = *endTime
@@ -120,6 +121,28 @@ func RelayLogStreamTokenRevoke(token string) {
 	relayLogStreamTokensLock.Lock()
 	delete(relayLogStreamTokens, token)
 	relayLogStreamTokensLock.Unlock()
+}
+
+// RelayLogStreamTokenSweep drops stream tokens minted more than olderThan ago and returns
+// how many were removed. Tokens are single-use (revoked on consume), but one created and
+// never consumed — the admin opened the log page then closed it before the SSE connected —
+// otherwise lingers forever. A minted token is meant to be redeemed within seconds, so a
+// generous sweep age reclaims only genuinely-dead tokens.
+func RelayLogStreamTokenSweep(olderThan time.Duration) int {
+	if olderThan <= 0 {
+		return 0
+	}
+	cutoff := time.Now().Add(-olderThan)
+	relayLogStreamTokensLock.Lock()
+	removed := 0
+	for token, scope := range relayLogStreamTokens {
+		if scope.createdAt.Before(cutoff) {
+			delete(relayLogStreamTokens, token)
+			removed++
+		}
+	}
+	relayLogStreamTokensLock.Unlock()
+	return removed
 }
 
 func RelayLogSubscribe() chan model.RelayLog {

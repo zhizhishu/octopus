@@ -7,18 +7,21 @@ import (
 	"github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/op"
 	"github.com/bestruirui/octopus/internal/price"
+	"github.com/bestruirui/octopus/internal/relay"
+	"github.com/bestruirui/octopus/internal/relay/balancer"
 	"github.com/bestruirui/octopus/internal/utils/log"
 )
 
 const (
-	TaskPriceUpdate     = "price_update"
-	TaskStatsSave       = "stats_save"
-	TaskRelayLogSave    = "relay_log_save"
-	TaskUserRelayIPSave = "user_relay_ip_save"
-	TaskChannelKeySave  = "channel_key_save"
-	TaskSyncLLM         = "sync_llm"
-	TaskCleanLLM        = "clean_llm"
-	TaskBaseUrlDelay    = "base_url_delay"
+	TaskPriceUpdate      = "price_update"
+	TaskStatsSave        = "stats_save"
+	TaskRelayLogSave     = "relay_log_save"
+	TaskUserRelayIPSave  = "user_relay_ip_save"
+	TaskChannelKeySave   = "channel_key_save"
+	TaskMaintenanceSweep = "maintenance_sweep"
+	TaskSyncLLM          = "sync_llm"
+	TaskCleanLLM         = "clean_llm"
+	TaskBaseUrlDelay     = "base_url_delay"
 )
 
 func Init() {
@@ -41,6 +44,21 @@ func Init() {
 		if err := op.ChannelKeySaveDB(ctx); err != nil {
 			log.Warnf("channel key save db task failed: %v", err)
 		}
+	})
+
+	// 周期内存/DB 维护清扫: 把几处"只惰性清、静默期不清"的表定期收一遍——粘性会话(惰性删只在
+	// 命中时触发)、responses-session/transcript(仅 record 时剪)、日志流令牌(创建后未消费无 TTL),
+	// 以及 response-session 过期绑定的 DB 剪枝(原内联在请求路径且吞错误)。只删确实过期/够旧的项、
+	// 不动活数据。放在设置读取之前, 同样避免那处 early-return 把它跳过。
+	Register(TaskMaintenanceSweep, 5*time.Minute, false, func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := op.ResponseSessionPruneExpired(ctx); err != nil {
+			log.Warnf("response session prune failed: %v", err)
+		}
+		balancer.SweepExpired(24 * time.Hour)
+		relay.PruneResponsesSessionsExpired()
+		op.RelayLogStreamTokenSweep(time.Hour)
 	})
 
 	priceUpdateIntervalHours, err := op.SettingGetInt(model.SettingKeyModelInfoUpdateInterval)

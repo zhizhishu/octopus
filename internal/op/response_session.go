@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/bestruirui/octopus/internal/db"
@@ -14,10 +13,6 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
-
-const responseSessionPruneInterval = time.Minute
-
-var responseSessionLastPruneUnix atomic.Int64
 
 func ResponseSessionIDHash(responseID string) string {
 	responseID = strings.TrimSpace(responseID)
@@ -51,7 +46,6 @@ func ResponseSessionBindOwned(ctx context.Context, responseID string, channelID,
 		ctx = context.Background()
 	}
 	now := time.Now()
-	maybePruneResponseSessions(ctx, conn, now)
 	row := model.ResponseSession{
 		ResponseIDHash: responseIDHash,
 		ChannelID:      channelID,
@@ -104,13 +98,19 @@ func ResponseSessionOwner(ctx context.Context, responseID string) (model.Respons
 	return row, true, nil
 }
 
-func maybePruneResponseSessions(ctx context.Context, conn *gorm.DB, now time.Time) {
-	last := responseSessionLastPruneUnix.Load()
-	if last != 0 && now.Sub(time.Unix(last, 0)) < responseSessionPruneInterval {
-		return
+// ResponseSessionPruneExpired deletes response-session bindings past their TTL. Driven by a
+// periodic task (see task.Init) instead of inline on the bind path, where the DELETE stalled
+// whichever request happened to cross the throttle window and — worse — its error was
+// swallowed, so a permanently failing prune (locked DB) grew the table invisibly.
+// ResponseSessionOwner already filters expired rows on read, so read correctness never
+// depended on this running promptly.
+func ResponseSessionPruneExpired(ctx context.Context) error {
+	conn := db.GetDB()
+	if conn == nil {
+		return nil
 	}
-	if !responseSessionLastPruneUnix.CompareAndSwap(last, now.Unix()) {
-		return
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	_ = conn.WithContext(ctx).Where("expires_at <= ?", now).Delete(&model.ResponseSession{}).Error
+	return conn.WithContext(ctx).Where("expires_at <= ?", time.Now()).Delete(&model.ResponseSession{}).Error
 }

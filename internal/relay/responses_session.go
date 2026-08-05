@@ -214,6 +214,28 @@ func maybePruneResponsesSessionsLocked(now time.Time) {
 	pruneResponsesSessionsLocked(now)
 }
 
+// PruneResponsesSessionsExpired drops expired session + transcript entries. Exposed for a
+// periodic task so entries are reclaimed during quiet periods too: the in-line maybePrune*
+// only fires on a record call, so a burst of codex traffic followed by silence would keep
+// expired entries (each holding up to ~120KB of transcript) resident until the next request.
+// Only past-TTL entries are removed — live transcripts a continuation still needs are kept —
+// so this is memory hygiene with no behaviour change.
+func PruneResponsesSessionsExpired() {
+	now := time.Now()
+	responsesSessionStore.Lock()
+	pruneResponsesSessionsLocked(now)
+	responsesSessionStore.Unlock()
+
+	responsesSessionTranscriptStore.Lock()
+	for responseID, entry := range responsesSessionTranscriptStore.items {
+		if now.After(entry.expiresAt) {
+			delete(responsesSessionTranscriptStore.items, responseID)
+		}
+	}
+	responsesSessionTranscriptStore.lastPruneAt = now
+	responsesSessionTranscriptStore.Unlock()
+}
+
 // recordResponsesSessionTranscript keeps the pre-isolation signature (no owner);
 // transcripts written this way carry owner 0/0 and are readable by any requester
 // for backward compatibility.

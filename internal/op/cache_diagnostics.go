@@ -120,17 +120,20 @@ func cacheDiagnosticLogs(ctx context.Context) ([]model.RelayLog, error) {
 		return nil, err
 	}
 
-	seen := make(map[int64]struct{}, len(dbLogs))
-	logs := make([]model.RelayLog, 0, len(dbLogs)+len(relayLogCache))
-	for _, relayLog := range dbLogs {
-		seen[relayLog.ID] = struct{}{}
-		logs = append(logs, relayLog)
-	}
-
+	// Snapshot the in-memory cache under the lock BEFORE sizing logs, so the capacity hint
+	// reads the local copy's length instead of len(relayLogCache) unlocked (a data race the
+	// background flusher now makes reachable — it reassigns the slice header off-request).
 	relayLogCacheLock.Lock()
 	cachedLogs := make([]model.RelayLog, len(relayLogCache))
 	copy(cachedLogs, relayLogCache)
 	relayLogCacheLock.Unlock()
+
+	seen := make(map[int64]struct{}, len(dbLogs))
+	logs := make([]model.RelayLog, 0, len(dbLogs)+len(cachedLogs))
+	for _, relayLog := range dbLogs {
+		seen[relayLog.ID] = struct{}{}
+		logs = append(logs, relayLog)
+	}
 	for _, relayLog := range cachedLogs {
 		if _, ok := seen[relayLog.ID]; ok {
 			continue
