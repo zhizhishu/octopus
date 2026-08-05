@@ -47,6 +47,17 @@ func (ra *relayAttempt) applyHeaderDefaults(req *http.Request) {
 		if ra.channel.Type == outbound.OutboundTypeAnthropic {
 			req.Header.Del("Anthropic-Beta")
 		}
+		// cloak governs ONLY the claude/codex CLI-identity synthesis. A generic (non-CLI)
+		// channel still needs the unified non-CLI UA even when cloak is off — otherwise it
+		// leaks Go's default "Go-http-client/1.1". The two CLI-synthesis types
+		// (Anthropic / OpenAIResponse) are deliberately left bare under cloak=off; every
+		// other type (Gemini/Volcengine/plain OpenAI-chat) gets the generic UA.
+		switch ra.channel.Type {
+		case outbound.OutboundTypeAnthropic, outbound.OutboundTypeOpenAIResponse:
+			// CLI-synthesis types: cloak off = intentionally no synthesized identity.
+		default:
+			ra.applyGenericHeaderDefaults(req)
+		}
 		return
 	}
 	switch ra.channel.Type {

@@ -336,6 +336,7 @@ func fingerprintProfileRefreshCache(ctx context.Context) error {
 		CodexUserAgent:       "codex_cli_rs/0.145.0 (Debian 12.0.0; x86_64) unknown (codex_cli_rs; 0.145.0)",
 		CodexOriginator:      "codex_cli_rs",
 		CodexBetaFeatures:    "remote_compaction_v2",
+		GenericUA:            model.DefaultGenericUA,
 	}
 	ubuntu := &model.FingerprintProfile{
 		Name:                 "Linux · Ubuntu",
@@ -350,6 +351,7 @@ func fingerprintProfileRefreshCache(ctx context.Context) error {
 		CodexUserAgent:       "codex_cli_rs/0.145.0 (Ubuntu 24.04.1; x86_64) unknown (codex_cli_rs; 0.145.0)",
 		CodexOriginator:      "codex_cli_rs",
 		CodexBetaFeatures:    "remote_compaction_v2",
+		GenericUA:            model.GenericUAUbuntu,
 	}
 	hasProfileName := func(name string) bool {
 		for i := range profiles {
@@ -370,6 +372,29 @@ func fingerprintProfileRefreshCache(ctx context.Context) error {
 			return fmt.Errorf("failed to seed fingerprint profile %q: %w", preset.Name, err)
 		}
 		profiles = append(profiles, *preset)
+	}
+	// Backfill GenericUA on the two built-in presets for deployments seeded before that
+	// field carried a value: older rows have it empty, so every non-CLI channel fell back
+	// to the single DefaultGenericUA regardless of which preset it picked — the two
+	// profiles were indistinguishable for non-CLI UA. Reuse the seed structs' values so
+	// there is ONE source of truth, match by the built-in names (rename above already ran),
+	// and fill ONLY when empty so an operator-customised GenericUA is never overwritten.
+	// Rows just seeded above already carry GenericUA and are skipped by the empty guard.
+	genericUAByName := map[string]string{debian.Name: debian.GenericUA, ubuntu.Name: ubuntu.GenericUA}
+	for i := range profiles {
+		p := &profiles[i]
+		if p.GenericUA != "" {
+			continue
+		}
+		ua, ok := genericUAByName[p.Name]
+		if !ok || ua == "" {
+			continue
+		}
+		p.GenericUA = ua
+		if err := db.GetDB().WithContext(ctx).Model(&model.FingerprintProfile{}).
+			Where("id = ?", p.ID).Update("generic_ua", ua).Error; err != nil {
+			return fmt.Errorf("failed to backfill generic UA for built-in profile %q: %w", p.Name, err)
+		}
 	}
 	snapshot := make(map[int]model.FingerprintProfile, len(profiles))
 	for _, p := range profiles {

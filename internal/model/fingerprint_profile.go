@@ -47,10 +47,22 @@ type FingerprintProfile struct {
 // DefaultGenericUA is the built-in fallback User-Agent for non claude/codex channels
 // (Gemini / Volcengine / plain OpenAI-chat) when no profile pins a GenericUA. Without
 // it Go's transport emits "Go-http-client/1.1", which flags the caller as a bot/proxy.
-// A stable, ordinary Chrome-on-Linux (Ubuntu/Debian, X11 x86_64) desktop UA blends in
-// instead. It is downstream-of-nothing: these channels are NOT claude/codex, so this
-// never touches the codex/claude CLI fingerprint.
+// A stable, ordinary Chrome-on-Linux (X11 x86_64) desktop UA blends in instead. It is
+// downstream-of-nothing: these channels are NOT claude/codex, so this never touches the
+// codex/claude CLI fingerprint.
+//
+// This is ALSO the "Linux · Debian" built-in profile's generic UA and the value a
+// ProfileID=0 ("follow global") channel resolves to — so Debian and the global default
+// present ONE identical non-CLI UA (Debian is the default preset new channels get).
 const DefaultGenericUA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
+// GenericUAUbuntu is the "Linux · Ubuntu" built-in profile's generic UA — the second,
+// selectable non-CLI identity. It is a different, equally ordinary Linux client (Firefox
+// on X11 x86_64) so the two built-in profiles read as two UNCORRELATED machines on
+// non-CLI channels too, mirroring their already-distinct codex distro token and device
+// seed. Picking the Ubuntu profile on a channel's advanced settings switches its non-CLI
+// UA to this; it likewise never touches any claude/codex CLI fingerprint.
+const GenericUAUbuntu = "Mozilla/5.0 (X11; Linux x86_64; rv:133.0) Gecko/20100101 Firefox/133.0"
 
 // FingerprintProfileUpdateRequest carries a partial update — only non-nil fields
 // are applied, mirroring ChannelUpdateRequest's pointer-field convention.

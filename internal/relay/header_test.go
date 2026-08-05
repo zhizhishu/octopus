@@ -1052,3 +1052,30 @@ func TestCopyHeadersToUpstreamOperatorCustomUAWins(t *testing.T) {
 		t.Fatalf("expected operator CustomHeader UA to win, got %q", got)
 	}
 }
+
+// TestRelayCopyHeadersAppliesGenericUAWhenCloakNeverOnGeminiChannel pins the cloak=off
+// leak fix: cloak governs only the claude/codex CLI synthesis, so a generic (non-CLI)
+// channel must STILL get the unified non-CLI UA under cloak=never instead of leaking
+// Go's default http-client UA. The two CLI-synthesis types stay bare (covered by
+// TestRelayCopyHeadersSkipsDefaultsWhenCloakNever, a codex channel).
+func TestRelayCopyHeadersAppliesGenericUAWhenCloakNeverOnGeminiChannel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini-2.5-pro:generateContent", nil)
+	c.Request.Header.Set("User-Agent", "some-downstream-client/1.0")
+
+	upstreamReq := httptest.NewRequest(http.MethodPost, "https://upstream.example/v1beta/models/gemini-2.5-pro:generateContent", nil)
+	ra := &relayAttempt{
+		relayRequest: &relayRequest{c: c, inboundType: inbound.InboundTypeGemini},
+		channel: &dbmodel.Channel{
+			Type:  outbound.OutboundTypeGemini,
+			Cloak: dbmodel.ChannelCloak{Mode: "never"},
+		},
+	}
+
+	ra.copyHeaders(upstreamReq)
+
+	if got := upstreamReq.Header.Get("User-Agent"); got != dbmodel.DefaultGenericUA {
+		t.Fatalf("gemini cloak=never user-agent = %q, want unified DefaultGenericUA (not Go default / downstream leak)", got)
+	}
+}
