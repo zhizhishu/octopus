@@ -136,6 +136,15 @@ func shouldForwardClientHeader(key string) bool {
 	if strings.HasPrefix(lower, "x-stainless-") {
 		return false
 	}
+	// Browser client-hint / fetch-metadata headers (sec-ch-ua, sec-ch-ua-platform,
+	// sec-fetch-mode, ...). A genuine CLI/SDK (claude-cli, codex_cli_rs) never emits these;
+	// a browser-origin downstream (an immersive-translation extension, a web tool, Cursor's
+	// fetch) does. Forwarding them upstream both leaks the real client's browser environment
+	// AND dresses a synthesized-CLI request with browser-only headers the shape imitation
+	// never intends — so strip them on every path, same as the other client-identity families.
+	if strings.HasPrefix(lower, "sec-ch-") || strings.HasPrefix(lower, "sec-fetch-") {
+		return false
+	}
 	return true
 }
 

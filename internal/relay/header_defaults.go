@@ -38,26 +38,24 @@ func (ra *relayAttempt) applyHeaderDefaults(req *http.Request) {
 		stripCodexClientHeaders(req.Header)
 	}
 	if !shouldApplyChannelCloak(ra.channel.Cloak) {
-		// cloak=never: don't dress as claude. But the downstream client's Anthropic-Beta
-		// (copied through by copyHeaders) would otherwise LEAK to the upstream — for a
-		// domestic Anthropic-compatible upstream (GLM/DeepSeek) that is a stray claude-code
-		// fingerprint we never intended to send. Strip it so the downstream's beta cannot
-		// pollute the upstream shape. (When cloak applies, applyClaudeHeaderDefaults rebuilds
-		// the canonical beta set instead.)
-		if ra.channel.Type == outbound.OutboundTypeAnthropic {
-			req.Header.Del("Anthropic-Beta")
-		}
-		// cloak governs ONLY the claude/codex CLI-identity synthesis. A generic (non-CLI)
-		// channel still needs the unified non-CLI UA even when cloak is off — otherwise it
-		// leaks Go's default "Go-http-client/1.1". The two CLI-synthesis types
-		// (Anthropic / OpenAIResponse) are deliberately left bare under cloak=off; every
-		// other type (Gemini/Volcengine/plain OpenAI-chat) gets the generic UA.
+		// Shape OFF (cloak=never): do NOT synthesize the claude/codex CLI identity. But
+		// "no CLI" must resolve to a CLEAN GENERIC identity, never a bare/leaky one:
+		//   1. Strip the CLI-specific headers a downstream CLI client leaked through
+		//      copyHeaders — Anthropic-Beta on the claude path, Originator/X-Codex-* on the
+		//      codex path. On a plain Anthropic/OpenAI-compatible upstream (GLM/DeepSeek)
+		//      those are a stray CLI fingerprint the operator explicitly opted out of.
+		//   2. Apply the unified generic UA on EVERY type — including the two CLI-capable
+		//      ones. Leaving them bare emitted Go's default "Go-http-client/1.1", which flags
+		//      the caller as a bot/script; the operator picked "no shape", not "no identity".
+		//      The generic UA follows the selected profile (Debian Chrome / Ubuntu Firefox),
+		//      falling back to DefaultGenericUA.
 		switch ra.channel.Type {
-		case outbound.OutboundTypeAnthropic, outbound.OutboundTypeOpenAIResponse:
-			// CLI-synthesis types: cloak off = intentionally no synthesized identity.
-		default:
-			ra.applyGenericHeaderDefaults(req)
+		case outbound.OutboundTypeAnthropic:
+			req.Header.Del("Anthropic-Beta")
+		case outbound.OutboundTypeOpenAIResponse:
+			stripCodexClientHeaders(req.Header)
 		}
+		ra.applyGenericHeaderDefaults(req)
 		return
 	}
 	switch ra.channel.Type {

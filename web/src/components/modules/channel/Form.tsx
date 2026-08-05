@@ -1392,19 +1392,15 @@ export function ChannelForm({
                                         <label htmlFor={`${idPrefix}-cloak-mode`} className="text-xs font-medium text-muted-foreground">
                                             {t('cloakModeField')}
                                         </label>
-                                        <Select
-                                            value={formData.cloak_mode || 'auto'}
-                                            onValueChange={(value) => onFormDataChange({ ...formData, cloak_mode: value })}
-                                        >
-                                            <SelectTrigger id={`${idPrefix}-cloak-mode`} className="rounded-xl w-full border border-border px-4 py-2 text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                                                <SelectValue />
-                                            </SelectTrigger>
-                                            <SelectContent className="rounded-xl">
-                                                <SelectItem className="rounded-xl" value="auto">{t('cloakModeAuto')}</SelectItem>
-                                                <SelectItem className="rounded-xl" value="always">{t('cloakModeAlways')}</SelectItem>
-                                                <SelectItem className="rounded-xl" value="never">{t('cloakModeNever')}</SelectItem>
-                                            </SelectContent>
-                                        </Select>
+                                        <label className="flex h-10 w-full cursor-pointer items-center gap-2.5 rounded-xl border border-border bg-background px-4 text-sm text-foreground">
+                                            <Switch
+                                                id={`${idPrefix}-cloak-mode`}
+                                                checked={(formData.cloak_mode || 'auto') !== 'never'}
+                                                onCheckedChange={(checked) => onFormDataChange({ ...formData, cloak_mode: checked ? 'auto' : 'never' })}
+                                                aria-label={t('cloakModeField')}
+                                            />
+                                            <span>{(formData.cloak_mode || 'auto') !== 'never' ? t('cloakModeOn') : t('cloakModeOff')}</span>
+                                        </label>
                                     </div>
                                     <div className="space-y-1.5">
                                         <label htmlFor={`${idPrefix}-cloak-profile`} className="text-xs font-medium text-muted-foreground">

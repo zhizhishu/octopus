@@ -363,11 +363,17 @@ func TestRelayCopyHeadersAppliesCodexSessionFingerprint(t *testing.T) {
 	}
 }
 
-func TestRelayCopyHeadersSkipsDefaultsWhenCloakNever(t *testing.T) {
+// TestRelayCopyHeadersCloakNeverAppliesGenericUANotCodex pins shape-OFF on a codex
+// (OpenAIResponse) channel: the codex CLI identity is NOT synthesized (no codex UA /
+// beta), the downstream client's leaked User-Agent + Originator are stripped, and the
+// request gets the unified generic UA (DefaultGenericUA with no profile) instead of going
+// bare as Go's "Go-http-client/1.1". Shape off means "no CLI", not "no identity".
+func TestRelayCopyHeadersCloakNeverAppliesGenericUANotCodex(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 	c.Request.Header.Set("User-Agent", "filtered-codex")
+	c.Request.Header.Set("Originator", "codex_exec")
 
 	upstreamReq := httptest.NewRequest(http.MethodPost, "https://upstream.example/v1/responses", nil)
 	ra := &relayAttempt{
@@ -380,11 +386,17 @@ func TestRelayCopyHeadersSkipsDefaultsWhenCloakNever(t *testing.T) {
 
 	ra.copyHeaders(upstreamReq)
 
-	if got := upstreamReq.Header.Get("User-Agent"); got != "" {
-		t.Fatalf("cloak=never user-agent = %q, want empty", got)
+	// Generic UA — NOT the downstream's leaked UA, and NOT bare Go-http-client.
+	if got := upstreamReq.Header.Get("User-Agent"); got != dbmodel.DefaultGenericUA {
+		t.Fatalf("cloak=never codex user-agent = %q, want DefaultGenericUA (no CLI, but not bare)", got)
 	}
+	// No codex fingerprint synthesized.
 	if got := upstreamReq.Header.Get("X-Codex-Beta-Features"); got != "" {
-		t.Fatalf("cloak=never beta features = %q, want empty", got)
+		t.Fatalf("cloak=never beta features = %q, want empty (no codex synthesis)", got)
+	}
+	// The downstream's leaked codex Originator is stripped under shape-off, not forwarded.
+	if got := upstreamReq.Header.Get("Originator"); got != "" {
+		t.Fatalf("cloak=never Originator = %q, want empty (codex client headers stripped)", got)
 	}
 }
 
@@ -1056,8 +1068,9 @@ func TestCopyHeadersToUpstreamOperatorCustomUAWins(t *testing.T) {
 // TestRelayCopyHeadersAppliesGenericUAWhenCloakNeverOnGeminiChannel pins the cloak=off
 // leak fix: cloak governs only the claude/codex CLI synthesis, so a generic (non-CLI)
 // channel must STILL get the unified non-CLI UA under cloak=never instead of leaking
-// Go's default http-client UA. The two CLI-synthesis types stay bare (covered by
-// TestRelayCopyHeadersSkipsDefaultsWhenCloakNever, a codex channel).
+// Go's default http-client UA. The two CLI-capable types (Anthropic/OpenAIResponse) also
+// get the generic UA under cloak=never now — no CLI synthesis, but a clean identity rather
+// than bare (covered by TestRelayCopyHeadersCloakNeverAppliesGenericUANotCodex).
 func TestRelayCopyHeadersAppliesGenericUAWhenCloakNeverOnGeminiChannel(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
