@@ -19,6 +19,13 @@ var (
 	systemProxyClient  *http.Client
 	systemProxyURL     string
 	utlsDirectClient   *http.Client
+	// customProxyClients caches one client (hence one transport, hence one idle
+	// connection pool) per channel proxy URL. Keyed by the raw URL string, mirroring
+	// the systemProxyURL equality check: a different URL is a different client, an
+	// edited URL simply stops being looked up. There is no eviction — channel proxy
+	// URLs are a bounded admin config field, so the map tops out at the number of
+	// distinct configured proxies.
+	customProxyClients = make(map[string]*http.Client)
 	clientLock         sync.RWMutex
 )
 
@@ -111,13 +118,38 @@ func GetHTTPClientSystemProxy(useProxy bool) (*http.Client, error) {
 	return systemDirectClient, nil
 }
 
-// GetHTTPClientCustomProxy returns a NEW http.Client every time (no reuse).
+// GetHTTPClientCustomProxy returns a cached http.Client per proxy URL. Building a
+// fresh client per call also built a fresh transport, so every request through a
+// channel proxy started from an empty connection pool and paid a full TCP+TLS
+// handshake; callers with the same URL now share one transport and reuse its idle
+// connections.
 // proxyURL supports: http, https, socks, socks5
 func GetHTTPClientCustomProxy(proxyURL string) (*http.Client, error) {
 	if proxyURL == "" {
 		return nil, fmt.Errorf("proxy url is empty")
 	}
-	return newHTTPClientCustomProxy(proxyURL)
+
+	clientLock.RLock()
+	if cached, ok := customProxyClients[proxyURL]; ok {
+		clientLock.RUnlock()
+		return cached, nil
+	}
+	clientLock.RUnlock()
+
+	clientLock.Lock()
+	defer clientLock.Unlock()
+
+	// Re-check after acquiring write lock.
+	if cached, ok := customProxyClients[proxyURL]; ok {
+		return cached, nil
+	}
+
+	client, err := newHTTPClientCustomProxy(proxyURL)
+	if err != nil {
+		return nil, err
+	}
+	customProxyClients[proxyURL] = client
+	return client, nil
 }
 
 func clonedDefaultTransport() (*http.Transport, error) {
@@ -134,6 +166,13 @@ func clonedDefaultTransport() (*http.Transport, error) {
 	// and the relay decompresses any upstream Content-Encoding itself
 	// (unwrapResponseEncoding), so responses are unaffected.
 	cloned.DisableCompression = true
+	// Go's default MaxIdleConnsPerHost is 2: beyond two concurrent in-flight requests
+	// to one host, every extra connection is closed instead of parked, so the next
+	// request re-does TCP+TLS. octopus is the opposite of the browser workload that
+	// default assumes — many concurrent requests to a handful of upstream hosts — so
+	// keep a real per-host pool. Pool sizing only; nothing here touches the handshake
+	// or any header, so the outbound fingerprint is unchanged.
+	cloned.MaxIdleConnsPerHost = 32
 	return cloned, nil
 }
 

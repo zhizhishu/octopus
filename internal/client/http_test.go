@@ -1,12 +1,14 @@
 package client
 
 import (
+	"crypto/tls"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"slices"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -360,5 +362,138 @@ func TestNoProxyClientForwardsExplicitAcceptEncoding(t *testing.T) {
 
 	if got != want {
 		t.Fatalf("explicit Accept-Encoding = %q, want %q", got, want)
+	}
+}
+
+// TestGetHTTPClientCustomProxyCachesPerURL proves the per-URL cache: the same proxy
+// URL hands back the identical *http.Client (so its transport keeps its idle
+// connections instead of re-handshaking per request), and a different URL gets its
+// own client. The URLs are never dialed — construction alone is what is under test.
+func TestGetHTTPClientCustomProxyCachesPerURL(t *testing.T) {
+	const proxyA = "http://127.0.0.1:19181"
+	const proxyB = "socks5://127.0.0.1:19182"
+
+	first, err := GetHTTPClientCustomProxy(proxyA)
+	if err != nil {
+		t.Fatalf("GetHTTPClientCustomProxy(A): %v", err)
+	}
+	second, err := GetHTTPClientCustomProxy(proxyA)
+	if err != nil {
+		t.Fatalf("GetHTTPClientCustomProxy(A) again: %v", err)
+	}
+	if first != second {
+		t.Fatalf("same proxy url returned different clients: %p vs %p", first, second)
+	}
+
+	other, err := GetHTTPClientCustomProxy(proxyB)
+	if err != nil {
+		t.Fatalf("GetHTTPClientCustomProxy(B): %v", err)
+	}
+	if other == first {
+		t.Fatalf("different proxy urls shared one client: %p", other)
+	}
+}
+
+// TestGetHTTPClientCustomProxyConcurrentSameURL asserts the cache is safe under
+// concurrent first-use and that the double-checked lock never lets two clients for
+// one URL escape. Run with -race.
+func TestGetHTTPClientCustomProxyConcurrentSameURL(t *testing.T) {
+	const proxyURL = "http://127.0.0.1:19183"
+
+	const goroutines = 32
+	clients := make([]*http.Client, goroutines)
+	errs := make([]error, goroutines)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := range goroutines {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-start
+			clients[idx], errs[idx] = GetHTTPClientCustomProxy(proxyURL)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("goroutine %d: GetHTTPClientCustomProxy: %v", i, err)
+		}
+	}
+	for i, c := range clients {
+		if c != clients[0] {
+			t.Fatalf("goroutine %d got client %p, want the shared %p", i, c, clients[0])
+		}
+	}
+}
+
+// TestClonedDefaultTransportPoolsIdleConnsPerHost pins the connection-pool sizing:
+// Go's default of 2 idle conns per host starves octopus's many-requests-to-one-host
+// workload into repeated TCP+TLS handshakes.
+func TestClonedDefaultTransportPoolsIdleConnsPerHost(t *testing.T) {
+	transport, err := clonedDefaultTransport()
+	if err != nil {
+		t.Fatalf("clonedDefaultTransport: %v", err)
+	}
+	if transport.MaxIdleConnsPerHost != 32 {
+		t.Fatalf("MaxIdleConnsPerHost = %d, want 32", transport.MaxIdleConnsPerHost)
+	}
+}
+
+// TestClonedDefaultTransportLeavesTLSConfigUntouched guards the outbound fingerprint:
+// every handshake-visible knob must still read exactly what http.DefaultTransport
+// carries. A session cache, a cipher or curve list, a min/max version or an ALPN edit
+// slipped in here would change the ClientHello octopus presents upstream, so this
+// compares field by field rather than asserting a nil config (DefaultTransport does
+// not necessarily hold a nil TLSClientConfig by the time a test runs).
+func TestClonedDefaultTransportLeavesTLSConfigUntouched(t *testing.T) {
+	stock, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		t.Fatalf("http.DefaultTransport is not *http.Transport")
+	}
+	stockTLS := stock.TLSClientConfig
+	if stockTLS == nil {
+		stockTLS = &tls.Config{}
+	}
+
+	transport, err := clonedDefaultTransport()
+	if err != nil {
+		t.Fatalf("clonedDefaultTransport: %v", err)
+	}
+	clonedTLS := transport.TLSClientConfig
+	if clonedTLS == nil {
+		clonedTLS = &tls.Config{}
+	}
+	t.Logf("stock TLSClientConfig=%v cloned TLSClientConfig=%v", stock.TLSClientConfig != nil, transport.TLSClientConfig != nil)
+
+	if (clonedTLS.ClientSessionCache != nil) != (stockTLS.ClientSessionCache != nil) {
+		t.Fatalf("ClientSessionCache presence = %v, want stock %v (session resumption changes the handshake)",
+			clonedTLS.ClientSessionCache != nil, stockTLS.ClientSessionCache != nil)
+	}
+	if clonedTLS.MinVersion != stockTLS.MinVersion || clonedTLS.MaxVersion != stockTLS.MaxVersion {
+		t.Fatalf("TLS version range = [%#x,%#x], want stock [%#x,%#x]",
+			clonedTLS.MinVersion, clonedTLS.MaxVersion, stockTLS.MinVersion, stockTLS.MaxVersion)
+	}
+	if !slices.Equal(clonedTLS.CipherSuites, stockTLS.CipherSuites) {
+		t.Fatalf("CipherSuites = %v, want stock %v", clonedTLS.CipherSuites, stockTLS.CipherSuites)
+	}
+	if !slices.Equal(clonedTLS.CurvePreferences, stockTLS.CurvePreferences) {
+		t.Fatalf("CurvePreferences = %v, want stock %v", clonedTLS.CurvePreferences, stockTLS.CurvePreferences)
+	}
+	if !slices.Equal(clonedTLS.NextProtos, stockTLS.NextProtos) {
+		t.Fatalf("NextProtos (ALPN) = %v, want stock %v", clonedTLS.NextProtos, stockTLS.NextProtos)
+	}
+	if clonedTLS.InsecureSkipVerify != stockTLS.InsecureSkipVerify {
+		t.Fatalf("InsecureSkipVerify = %v, want stock %v", clonedTLS.InsecureSkipVerify, stockTLS.InsecureSkipVerify)
+	}
+	if clonedTLS.Renegotiation != stockTLS.Renegotiation {
+		t.Fatalf("Renegotiation = %v, want stock %v", clonedTLS.Renegotiation, stockTLS.Renegotiation)
+	}
+	if transport.TLSHandshakeTimeout != stock.TLSHandshakeTimeout {
+		t.Fatalf("TLSHandshakeTimeout = %v, want stock %v", transport.TLSHandshakeTimeout, stock.TLSHandshakeTimeout)
+	}
+	if transport.ForceAttemptHTTP2 != stock.ForceAttemptHTTP2 {
+		t.Fatalf("ForceAttemptHTTP2 = %v, want stock %v", transport.ForceAttemptHTTP2, stock.ForceAttemptHTTP2)
 	}
 }
