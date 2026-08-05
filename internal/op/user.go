@@ -38,6 +38,27 @@ type userRelayIPRecord struct {
 var userRelayIPPending = make(map[int]userRelayIPRecord)
 var userRelayIPPendingLock sync.Mutex
 
+// userLocks serialises the per-user read-modify-write of the cached User — balance /
+// monthly_used in UserRecordUsage, last_relay_ip/at in UserRecordRelayIP. Without it two
+// concurrent completions for the SAME user both read the old cached struct and the second
+// userCache.Set clobbers the first's deduction: a lost update that systematically
+// undercharges, and a relay-IP Set that rolls the cached balance back to a pre-deduction
+// value the next quota check then trusts. A fixed shard array bounds memory; the same user
+// always hashes to one lock, different users only contend on hash collision (rare, benign).
+// This keeps the exact maxFloat(...) floor semantics and stays cross-DB — no dialect-specific
+// atomic SQL (SQLite max() vs MySQL/Postgres GREATEST()).
+const userLockShards = 256
+
+var userLocks [userLockShards]sync.Mutex
+
+func lockUser(userID int) *sync.Mutex {
+	idx := userID % userLockShards
+	if idx < 0 {
+		idx += userLockShards
+	}
+	return &userLocks[idx]
+}
+
 func UserInit() error {
 	ctx := context.Background()
 	conn := db.GetDB().WithContext(ctx)
@@ -528,6 +549,12 @@ func UserRecordUsage(userID int, cost float64, ctx context.Context) error {
 	if cost <= 0 {
 		return nil
 	}
+	// Serialise this user's read-modify-write so concurrent completions cannot lose a
+	// deduction (see userLocks). Held across the DB write on purpose — the read and the
+	// write must be one atomic step for this user; other users run in parallel (other shard).
+	mu := lockUser(userID)
+	mu.Lock()
+	defer mu.Unlock()
 	user, err := UserGet(userID)
 	if err != nil {
 		return err
@@ -566,6 +593,12 @@ func UserRecordRelayIP(userID int, requestIP string, relayAt int64, ctx context.
 	if relayAt <= 0 {
 		relayAt = time.Now().Unix()
 	}
+	// Same per-user lock as UserRecordUsage: read the latest cached user and write back only
+	// the relay-IP fields under it, so this can never overwrite a concurrent balance
+	// deduction with a pre-deduction snapshot of the struct.
+	mu := lockUser(userID)
+	mu.Lock()
+	defer mu.Unlock()
 	user, err := UserGet(userID)
 	if err != nil {
 		return err
