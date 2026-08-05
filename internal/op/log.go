@@ -24,6 +24,25 @@ const relayLogMaxSize = 20
 const relayLogMaxSizeNoDB = 100 // 当不保存到数据库时，允许更大的缓存用于实时查询
 const bytesPerGB = 1024 * 1024 * 1024
 
+// relayLogPendingMaxSize 是“保存到数据库”时待落库队列的上限。落库改成后台批量刷之后，
+// 请求路径只往内存里塞，DB 卡死/变慢时队列会一直涨——封顶后丢最旧的并计数告警，
+// 保证内存不被完整请求/响应 body 撑爆(宁可丢审计日志, 也不能拖垮转发)。
+const relayLogPendingMaxSize = 500
+
+// relayLogFlushBatchSize 是唤醒后台 flusher 的批量阈值；攒不够则由 relayLogFlushInterval
+// 定时兜底，二者取先。
+const relayLogFlushBatchSize = relayLogMaxSize
+
+// relayLogFlushInterval 是后台 flusher 的定时兜底间隔(低流量时日志最多晚这么久落库)。
+const relayLogFlushInterval = time.Second
+
+// relayLogFlushTimeout 是单次后台批量落库的超时。
+const relayLogFlushTimeout = 30 * time.Second
+
+// relayLogDropWarnInterval 限制“落库跟不上、丢最旧”的告警频率：卡死时每请求都会丢一条，
+// 不限频会把日志刷爆。
+const relayLogDropWarnInterval = 10 * time.Second
+
 // relayLogTwoPhaseMaxIDs bounds the id list of the two-phase severity-filtered read so the
 // id IN(...) fetch stays well under SQLite's bound-parameter cap (999 on old builds, 32766 on
 // 3.32+). Interactive log pages are small (page_size<=100 + in-memory cache); larger limits
@@ -34,6 +53,20 @@ var relayLogCache = make([]model.RelayLog, 0, relayLogMaxSize)
 var relayLogCacheLock sync.Mutex
 
 var relayLogFlushLock sync.Mutex
+
+// relayLogFlushSignal 把“攒够一批了”从请求路径通知给后台 flusher。容量 1 + 非阻塞 send：
+// 已有待处理信号时直接丢弃本次通知(flusher 醒来会把当时的整批一起刷)，
+// 请求路径永远不会因为落库而阻塞。
+var relayLogFlushSignal = make(chan struct{}, 1)
+
+// relayLogFlusherOnce 保证后台 flusher 只启动一次：首次需要落库的写入时惰性启动，
+// 未开启持久化的部署(以及单测)不会凭空多一个常驻协程。
+var relayLogFlusherOnce sync.Once
+
+// relayLogPendingDropped / relayLogDropWarnAt 由 relayLogCacheLock 保护：
+// 累计丢弃条数与上次告警时间。
+var relayLogPendingDropped int64
+var relayLogDropWarnAt time.Time
 
 var relayLogSubscribers = make(map[chan model.RelayLog]struct{})
 var relayLogSubscribersLock sync.RWMutex
@@ -126,68 +159,155 @@ func relayLogFlushToDB(ctx context.Context) error {
 	}
 	batch := make([]model.RelayLog, len(relayLogCache))
 	copy(batch, relayLogCache)
-	flushedUpto := len(batch)
 	relayLogCacheLock.Unlock()
 
 	result := db.GetDB().WithContext(ctx).Create(&batch)
 	if result.Error != nil {
 		// flush 失败也把这批从缓存排空: 否则一个坏行(如超长字段撞 varchar 上限)会让之后
-		// 每次 flush 都带着它重试、永久失败, 而 enabled 分支无淘汰 → 缓存无上限增长。
+		// 每次 flush 都带着它重试、永久失败, 而 enabled 分支的封顶淘汰会替它丢掉更新的日志。
 		// 丢掉这一批(含可能是暂时性 DB 抖动的正常行), 换取落库不被单条坏行永久卡死。
-		relayLogCacheLock.Lock()
-		if len(relayLogCache) >= flushedUpto {
-			relayLogCache = relayLogCache[flushedUpto:]
-		} else {
-			relayLogCache = relayLogCache[:0]
-		}
-		relayLogCacheLock.Unlock()
+		relayLogRemoveFlushed(batch)
 		return result.Error
 	}
 
-	relayLogCacheLock.Lock()
-	if len(relayLogCache) >= flushedUpto {
-		relayLogCache = relayLogCache[flushedUpto:]
-	} else {
-		relayLogCache = relayLogCache[:0]
-	}
-	if len(relayLogCache) == 0 {
-		relayLogCache = make([]model.RelayLog, 0, relayLogMaxSize)
-	}
-	relayLogCacheLock.Unlock()
-
+	relayLogRemoveFlushed(batch)
 	return nil
 }
 
+// relayLogRemoveFlushed 把已落库(或已放弃)的这一批按 ID 从待落库队列里删掉。
+// 不按位置裁剪(旧写法是 relayLogCache[flushedUpto:]): flush 在途期间 relayLogCacheLock
+// 是放开的, 队头可能被封顶淘汰或 RelayLogClear 削掉, 按位置裁就会误删还没落库的新日志。
+// 顺带重建底层数组, 让已落库日志的 Request/ResponseContent 能被回收。
+func relayLogRemoveFlushed(batch []model.RelayLog) {
+	flushed := make(map[int64]struct{}, len(batch))
+	for _, relayLog := range batch {
+		flushed[relayLog.ID] = struct{}{}
+	}
+
+	relayLogCacheLock.Lock()
+	defer relayLogCacheLock.Unlock()
+	if len(relayLogCache) == 0 {
+		return
+	}
+	capHint := len(relayLogCache) - len(flushed)
+	if capHint < relayLogMaxSize {
+		capHint = relayLogMaxSize
+	}
+	remaining := make([]model.RelayLog, 0, capHint)
+	for _, relayLog := range relayLogCache {
+		if _, ok := flushed[relayLog.ID]; ok {
+			continue
+		}
+		remaining = append(remaining, relayLog)
+	}
+	relayLogCache = remaining
+}
+
+// relayLogFlushNotify 非阻塞地唤醒后台 flusher(见 relayLogFlushSignal)。
+func relayLogFlushNotify() {
+	select {
+	case relayLogFlushSignal <- struct{}{}:
+	default:
+	}
+}
+
+// relayLogFlusherStart 惰性启动后台落库协程(整个进程只启一次)。
+func relayLogFlusherStart() {
+	relayLogFlusherOnce.Do(func() {
+		go relayLogFlushLoop()
+	})
+}
+
+// relayLogFlushLoop 是常态下唯一的落库者: 被批量阈值信号唤醒, 或每 relayLogFlushInterval
+// 定时兜底刷一次(二者取先), 把“每请求一次同步 INSERT”合并成批量写, 请求路径不再等 DB。
+// 用自己的 context: 请求侧的 ctx 会随请求结束被取消, 不能拿来做后台落库。
+func relayLogFlushLoop() {
+	ticker := time.NewTicker(relayLogFlushInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-relayLogFlushSignal:
+		case <-ticker.C:
+		}
+
+		// 期间可能被关掉持久化: 关掉后就不再落库(与 RelayLogSaveDBTask 同一判据),
+		// 缓存交给 RelayLogSaveDBTask 的“不保存”分支按 relayLogMaxSizeNoDB 裁剪。
+		enabled, err := SettingGetBool(model.SettingKeyRelayLogKeepEnabled)
+		if err != nil || !enabled {
+			continue
+		}
+
+		flushCtx, cancel := context.WithTimeout(context.Background(), relayLogFlushTimeout)
+		err = relayLogFlushToDB(flushCtx)
+		cancel()
+		if err != nil {
+			log.Warnf("relay log async flush failed: %v", err)
+		}
+	}
+}
+
+// relayLogAddPending 把日志放进待落库队列, 必要时唤醒后台 flusher。
+// 队列封顶后丢最旧的: DB 卡死时请求还在源源不断地来, 不淘汰就是无上限吃内存。
+func relayLogAddPending(relayLog model.RelayLog) {
+	relayLogFlusherStart()
+
+	relayLogCacheLock.Lock()
+	relayLogCache = append(relayLogCache, relayLog)
+	dropped := 0
+	warn := false
+	if len(relayLogCache) > relayLogPendingMaxSize {
+		dropped = len(relayLogCache) - relayLogPendingMaxSize
+		// 重建底层数组而不是 reslice, 避免数组继续引用被丢日志的 Request/ResponseContent
+		newCache := make([]model.RelayLog, relayLogPendingMaxSize, relayLogPendingMaxSize+relayLogMaxSize)
+		copy(newCache, relayLogCache[dropped:])
+		relayLogCache = newCache
+		relayLogPendingDropped += int64(dropped)
+		if time.Since(relayLogDropWarnAt) >= relayLogDropWarnInterval {
+			relayLogDropWarnAt = time.Now()
+			warn = true
+		}
+	}
+	pending := len(relayLogCache)
+	totalDropped := relayLogPendingDropped
+	relayLogCacheLock.Unlock()
+
+	if warn {
+		log.Warnf("relay log flush is falling behind: dropped %d oldest cached logs (pending cap %d, dropped total %d)", dropped, relayLogPendingMaxSize, totalDropped)
+	}
+	if pending >= relayLogFlushBatchSize {
+		relayLogFlushNotify()
+	}
+}
+
+// RelayLogAdd 记录一条中继日志。开启持久化时只入内存队列 + 唤醒后台 flusher 批量落库,
+// 请求路径上不再有同步 INSERT(整条请求/响应 body 的写入曾把 DB 锁串在转发路径上)。
+// ctx 保留是为了调用方签名不变: 落库由后台协程用自己的 context 做, 不能用会被取消的请求 ctx。
 func RelayLogAdd(ctx context.Context, relayLog model.RelayLog) error {
 	enabled, err := SettingGetBool(model.SettingKeyRelayLogKeepEnabled)
 	if err != nil {
 		return err
-	}
-	maxSize := relayLogMaxSize
-	if !enabled {
-		maxSize = relayLogMaxSizeNoDB
 	}
 	relayLog.ID = snowflake.GenerateID()
 	if relayLog.Time <= 0 {
 		relayLog.Time = time.Now().Unix()
 	}
 
-	relayLogCacheLock.Lock()
-	relayLogCache = append(relayLogCache, relayLog)
 	if enabled {
-		relayLogCacheLock.Unlock()
-		if err := relayLogFlushToDB(ctx); err != nil {
-			return err
-		}
+		relayLogAddPending(relayLog)
+		// 实时推送保持在 Add 当下就发, 不等落库(日志页/SSE 尾随看到的仍是即时的)
 		go notifySubscribers(relayLog)
 		return nil
 	}
-	if len(relayLogCache) >= maxSize {
+
+	relayLogCacheLock.Lock()
+	relayLogCache = append(relayLogCache, relayLog)
+	if len(relayLogCache) >= relayLogMaxSizeNoDB {
 		// 如果未启用日志保存，移除最旧的日志，保留最新的日志用于实时查询
 		// 重建底层数组而不是 reslice，避免数组持续引用旧日志的 Request/ResponseContent 导致内存无法回收
-		keepSize := maxSize / 2
+		keepSize := relayLogMaxSizeNoDB / 2
 		if len(relayLogCache) > keepSize {
-			newCache := make([]model.RelayLog, keepSize, maxSize)
+			newCache := make([]model.RelayLog, keepSize, relayLogMaxSizeNoDB)
 			copy(newCache, relayLogCache[len(relayLogCache)-keepSize:])
 			relayLogCache = newCache
 		}

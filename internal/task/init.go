@@ -11,12 +11,13 @@ import (
 )
 
 const (
-	TaskPriceUpdate  = "price_update"
-	TaskStatsSave    = "stats_save"
-	TaskRelayLogSave = "relay_log_save"
-	TaskSyncLLM      = "sync_llm"
-	TaskCleanLLM     = "clean_llm"
-	TaskBaseUrlDelay = "base_url_delay"
+	TaskPriceUpdate     = "price_update"
+	TaskStatsSave       = "stats_save"
+	TaskRelayLogSave    = "relay_log_save"
+	TaskUserRelayIPSave = "user_relay_ip_save"
+	TaskSyncLLM         = "sync_llm"
+	TaskCleanLLM        = "clean_llm"
+	TaskBaseUrlDelay    = "base_url_delay"
 )
 
 func Init() {
@@ -35,6 +36,11 @@ func Init() {
 
 	// 注册基础URL延迟任务
 	Register(TaskBaseUrlDelay, 1*time.Hour, true, ChannelBaseUrlDelayTask)
+
+	// 注册 relay IP 审计落库任务: UserRecordRelayIP 只更新内存(转发路径上不再每请求写 users),
+	// last_relay_ip/at 由本任务批量补齐。注册特意放在依赖设置读取的任务之前——那些任务读设置
+	// 失败会直接 return, 排在后面就会让这条审计彻底不落库。
+	Register(TaskUserRelayIPSave, 1*time.Minute, false, op.UserRelayIPSaveDBTask)
 
 	// 注册LLM同步任务
 	syncLLMIntervalHours, err := op.SettingGetInt(model.SettingKeySyncLLMInterval)

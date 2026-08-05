@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bestruirui/octopus/internal/db"
@@ -20,6 +21,22 @@ import (
 
 var userCache = cache.New[int, model.User](8)
 var userNameIDMap = cache.New[string, int](8)
+
+// userRelayIPSaveTimeout 是一轮 relay IP 审计批量落库的超时。
+const userRelayIPSaveTimeout = 30 * time.Second
+
+// userRelayIPRecord 是一条待落库的 relay IP 审计(同一用户只留最后一次)。
+type userRelayIPRecord struct {
+	ip      string
+	relayAt int64
+}
+
+// userRelayIPPending 暂存待落库的 relay IP 审计。last_relay_ip/at 是纯审计字段,
+// 每请求一次同步 UPDATE users 等于把一次 DB 写钉死在转发路径上; 改成内存即时更新
+// (读接口走 userCache, 看到的仍是最新值) + 周期任务批量补齐 DB(见 UserRelayIPSaveDBTask)。
+// 计费相关的 UserRecordUsage(月卡/余额)不走这条路, 仍然同步扣减、额度判断零滞后。
+var userRelayIPPending = make(map[int]userRelayIPRecord)
+var userRelayIPPendingLock sync.Mutex
 
 func UserInit() error {
 	ctx := context.Background()
@@ -538,6 +555,9 @@ func UserRecordUsage(userID int, cost float64, ctx context.Context) error {
 	return nil
 }
 
+// UserRecordRelayIP 记录用户最近一次中继的 IP 与时间。只更新内存缓存 + 挂进待落库表,
+// DB 由 UserRelayIPSaveDBTask 周期批量补齐(转发路径上不再每请求同步 UPDATE users)。
+// ctx 保留是为了调用方签名不变。
 func UserRecordRelayIP(userID int, requestIP string, relayAt int64, ctx context.Context) error {
 	requestIP = normalizeRequestIP(requestIP)
 	if userID <= 0 || requestIP == "" {
@@ -552,14 +572,47 @@ func UserRecordRelayIP(userID int, requestIP string, relayAt int64, ctx context.
 	}
 	user.LastRelayIP = requestIP
 	user.LastRelayAt = relayAt
-	if err := db.GetDB().WithContext(ctx).Model(&model.User{}).Where("id = ?", user.ID).Updates(map[string]any{
-		"last_relay_ip": user.LastRelayIP,
-		"last_relay_at": user.LastRelayAt,
-	}).Error; err != nil {
-		return fmt.Errorf("failed to record relay ip: %w", err)
-	}
 	userCache.Set(user.ID, user)
+
+	userRelayIPPendingLock.Lock()
+	userRelayIPPending[user.ID] = userRelayIPRecord{ip: requestIP, relayAt: relayAt}
+	userRelayIPPendingLock.Unlock()
 	return nil
+}
+
+// UserRelayIPSaveDB 把待落库的 relay IP 审计批量写入数据库(每个用户只写最后一次)。
+// 目前由周期任务 UserRelayIPSaveDBTask 驱动。
+func UserRelayIPSaveDB(ctx context.Context) error {
+	userRelayIPPendingLock.Lock()
+	if len(userRelayIPPending) == 0 {
+		userRelayIPPendingLock.Unlock()
+		return nil
+	}
+	pending := userRelayIPPending
+	userRelayIPPending = make(map[int]userRelayIPRecord, len(pending))
+	userRelayIPPendingLock.Unlock()
+
+	var firstErr error
+	for userID, record := range pending {
+		// 写失败不回队: 与中继日志 flush 的坏行丢弃同理, 免得一条写不进去的记录(如用户已删)
+		// 让之后每轮都重试失败; 内存里的 userCache 仍然是最新值。
+		if err := db.GetDB().WithContext(ctx).Model(&model.User{}).Where("id = ?", userID).Updates(map[string]any{
+			"last_relay_ip": record.ip,
+			"last_relay_at": record.relayAt,
+		}).Error; err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("failed to record relay ip: %w", err)
+		}
+	}
+	return firstErr
+}
+
+// UserRelayIPSaveDBTask 是周期任务入口(签名对齐 StatsSaveDBTask)。
+func UserRelayIPSaveDBTask() {
+	ctx, cancel := context.WithTimeout(context.Background(), userRelayIPSaveTimeout)
+	defer cancel()
+	if err := UserRelayIPSaveDB(ctx); err != nil {
+		log.Warnf("user relay ip save db error: %v", err)
+	}
 }
 
 func UserApplyBalance(userID int, amount float64, ctx context.Context) (model.User, error) {

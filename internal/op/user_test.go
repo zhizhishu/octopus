@@ -111,6 +111,63 @@ func TestUserRegisterOpenRegistrationAndRelayIP(t *testing.T) {
 	}
 }
 
+// relay IP 审计改成异步: UserRecordRelayIP 只更新内存缓存(读接口立刻看到新值),
+// DB 由 UserRelayIPSaveDB 批量补齐, 转发路径上不再每请求 UPDATE users。
+func TestUserRecordRelayIPDefersDatabaseWrite(t *testing.T) {
+	ctx := setupUserTest(t)
+
+	userRelayIPPendingLock.Lock()
+	userRelayIPPending = make(map[int]userRelayIPRecord)
+	userRelayIPPendingLock.Unlock()
+
+	user, err := UserCreate(model.UserCreateRequest{
+		Username: "relay-ip-async",
+		Password: "secret",
+		Role:     model.UserRoleUser,
+		Status:   model.UserStatusActive,
+	}, ctx)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	if err := UserRecordRelayIP(user.ID, "203.0.113.77", 20260804, ctx); err != nil {
+		t.Fatalf("record relay ip: %v", err)
+	}
+
+	cached, err := UserGet(user.ID)
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	if cached.LastRelayIP != "203.0.113.77" || cached.LastRelayAt != 20260804 {
+		t.Fatalf("expected cached user to carry the fresh relay ip, got ip=%q at=%d", cached.LastRelayIP, cached.LastRelayAt)
+	}
+
+	var stored model.User
+	if err := db.GetDB().WithContext(ctx).Where("id = ?", user.ID).First(&stored).Error; err != nil {
+		t.Fatalf("load user row: %v", err)
+	}
+	if stored.LastRelayIP != "" || stored.LastRelayAt != 0 {
+		t.Fatalf("expected no synchronous db write, got ip=%q at=%d", stored.LastRelayIP, stored.LastRelayAt)
+	}
+
+	if err := UserRelayIPSaveDB(ctx); err != nil {
+		t.Fatalf("save relay ip: %v", err)
+	}
+	if err := db.GetDB().WithContext(ctx).Where("id = ?", user.ID).First(&stored).Error; err != nil {
+		t.Fatalf("reload user row: %v", err)
+	}
+	if stored.LastRelayIP != "203.0.113.77" || stored.LastRelayAt != 20260804 {
+		t.Fatalf("expected batched relay ip to land in db, got ip=%q at=%d", stored.LastRelayIP, stored.LastRelayAt)
+	}
+
+	userRelayIPPendingLock.Lock()
+	remaining := len(userRelayIPPending)
+	userRelayIPPendingLock.Unlock()
+	if remaining != 0 {
+		t.Fatalf("expected pending relay ip queue drained, got %d", remaining)
+	}
+}
+
 func TestUserCheckInFixedReward(t *testing.T) {
 	ctx := setupUserTest(t)
 	user, err := UserCreate(model.UserCreateRequest{

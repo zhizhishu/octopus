@@ -376,6 +376,9 @@ func (m *RelayMetrics) Save(ctx context.Context, success bool, err error, attemp
 	op.StatsDailyUpdate(persistCtx, globalStats)
 	op.StatsAPIKeyUpdate(m.APIKeyID, globalStats)
 	op.StatsChannelUpdate(channelID, globalStats)
+	// 落库分工: UserRecordRelayIP 是纯审计字段, 只写内存 + 周期任务批量补 DB;
+	// UserRecordUsage 是计费(月卡/余额), 必须留在同步路径上扣减——额度判断零滞后,
+	// 不能等批刷(用户定)。saveLog 里的中继日志同样已改成后台批量落库。
 	if err := op.UserRecordRelayIP(m.UserID, m.RequestIP, m.StartTime.Unix(), persistCtx); err != nil {
 		log.Warnf("failed to record user relay ip: %v", err)
 	}

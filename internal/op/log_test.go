@@ -3,6 +3,7 @@ package op
 import (
 	"context"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,12 @@ import (
 	"github.com/bestruirui/octopus/internal/db"
 	"github.com/bestruirui/octopus/internal/model"
 )
+
+func init() {
+	// 单测里不启后台 flusher: 落库时机由用例显式调用 relayLogFlushToDB / RelayLogSaveDBTask
+	// 决定(否则定时刷会在用例之间乱动共享的 relayLogCache, 还可能在 t.TempDir 的库关掉后再写)。
+	relayLogFlusherOnce.Do(func() {})
+}
 
 func setupRelayLogTest(t *testing.T) context.Context {
 	t.Helper()
@@ -244,6 +251,164 @@ func TestRelayLogListSinceReturnsScopedLogsOldestFirst(t *testing.T) {
 	}
 	if result[0].ID != 7003 || result[1].ID != 7004 {
 		t.Fatalf("expected replay logs oldest first after since id, got %#v", result)
+	}
+}
+
+func relayLogCacheLen() int {
+	relayLogCacheLock.Lock()
+	defer relayLogCacheLock.Unlock()
+	return len(relayLogCache)
+}
+
+func relayLogDBCount(t *testing.T, ctx context.Context) int64 {
+	t.Helper()
+	var count int64
+	if err := db.GetDB().WithContext(ctx).Model(&model.RelayLog{}).Count(&count).Error; err != nil {
+		t.Fatalf("count db logs: %v", err)
+	}
+	return count
+}
+
+// 开启持久化时, RelayLogAdd 只入内存待落库队列(请求路径上没有同步 INSERT),
+// 真正的落库由后台 flusher / 周期任务做。
+func TestRelayLogAddQueuesInsteadOfWritingSynchronously(t *testing.T) {
+	ctx := setupRelayLogTest(t)
+
+	if err := SettingSetString(model.SettingKeyRelayLogKeepEnabled, "true"); err != nil {
+		t.Fatalf("enable relay log persistence: %v", err)
+	}
+
+	if err := RelayLogAdd(ctx, model.RelayLog{RequestModelName: "async-queued"}); err != nil {
+		t.Fatalf("add relay log: %v", err)
+	}
+	if got := relayLogDBCount(t, ctx); got != 0 {
+		t.Fatalf("expected no synchronous db write from RelayLogAdd, got %d rows", got)
+	}
+	if got := relayLogCacheLen(); got != 1 {
+		t.Fatalf("expected one pending cached log, got %d", got)
+	}
+
+	// 未落库也要能被日志页读到(缓存 + DB 合并读)
+	logs, err := RelayLogList(ctx, nil, nil, 1, 10, nil)
+	if err != nil {
+		t.Fatalf("list relay logs: %v", err)
+	}
+	if len(logs) != 1 || logs[0].RequestModelName != "async-queued" {
+		t.Fatalf("expected pending log to be visible before flush, got %#v", logs)
+	}
+
+	if err := relayLogFlushToDB(ctx); err != nil {
+		t.Fatalf("flush relay logs: %v", err)
+	}
+	if got := relayLogDBCount(t, ctx); got != 1 {
+		t.Fatalf("expected one row after flush, got %d", got)
+	}
+	if got := relayLogCacheLen(); got != 0 {
+		t.Fatalf("expected pending queue drained after flush, got %d", got)
+	}
+}
+
+// 攒够 relayLogFlushBatchSize 就唤醒后台 flusher(信号非阻塞、容量 1)。
+func TestRelayLogAddSignalsFlusherOnBatchThreshold(t *testing.T) {
+	ctx := setupRelayLogTest(t)
+
+	if err := SettingSetString(model.SettingKeyRelayLogKeepEnabled, "true"); err != nil {
+		t.Fatalf("enable relay log persistence: %v", err)
+	}
+	select { // 清掉之前用例可能留下的信号
+	case <-relayLogFlushSignal:
+	default:
+	}
+
+	for i := 0; i < relayLogFlushBatchSize-1; i++ {
+		if err := RelayLogAdd(ctx, model.RelayLog{RequestModelName: "batch-" + strconv.Itoa(i)}); err != nil {
+			t.Fatalf("add relay log %d: %v", i, err)
+		}
+	}
+	if len(relayLogFlushSignal) != 0 {
+		t.Fatalf("expected no flush signal below batch threshold")
+	}
+
+	if err := RelayLogAdd(ctx, model.RelayLog{RequestModelName: "batch-threshold"}); err != nil {
+		t.Fatalf("add threshold relay log: %v", err)
+	}
+	if len(relayLogFlushSignal) != 1 {
+		t.Fatalf("expected a flush signal once the batch threshold is reached")
+	}
+
+	select { // 归位, 不留给后面的用例
+	case <-relayLogFlushSignal:
+	default:
+	}
+}
+
+// DB 卡住(这里用“不刷”模拟)时待落库队列封顶, 丢最旧的并计数, 内存不无限涨。
+func TestRelayLogPendingQueueCapsAndDropsOldest(t *testing.T) {
+	ctx := setupRelayLogTest(t)
+
+	if err := SettingSetString(model.SettingKeyRelayLogKeepEnabled, "true"); err != nil {
+		t.Fatalf("enable relay log persistence: %v", err)
+	}
+	relayLogCacheLock.Lock()
+	droppedBefore := relayLogPendingDropped
+	relayLogCacheLock.Unlock()
+
+	overflow := 2
+	for i := 0; i < relayLogPendingMaxSize+overflow; i++ {
+		if err := RelayLogAdd(ctx, model.RelayLog{RequestModelName: "pending-" + strconv.Itoa(i)}); err != nil {
+			t.Fatalf("add relay log %d: %v", i, err)
+		}
+	}
+
+	relayLogCacheLock.Lock()
+	cached := len(relayLogCache)
+	oldest := relayLogCache[0].RequestModelName
+	droppedAfter := relayLogPendingDropped
+	relayLogCacheLock.Unlock()
+
+	if cached != relayLogPendingMaxSize {
+		t.Fatalf("expected pending queue capped at %d, got %d", relayLogPendingMaxSize, cached)
+	}
+	if droppedAfter-droppedBefore != int64(overflow) {
+		t.Fatalf("expected %d dropped logs counted, got %d", overflow, droppedAfter-droppedBefore)
+	}
+	if oldest != "pending-"+strconv.Itoa(overflow) {
+		t.Fatalf("expected the oldest logs to be dropped first, oldest kept is %q", oldest)
+	}
+
+	relayLogCacheLock.Lock()
+	relayLogCache = make([]model.RelayLog, 0, relayLogMaxSize)
+	relayLogCacheLock.Unlock()
+}
+
+// 落库完成后只移除“这一批”(按 ID), 不按位置裁剪: flush 在途期间队头可能被封顶淘汰或
+// RelayLogClear 削掉, 按位置裁会误删还没落库的新日志。
+func TestRelayLogRemoveFlushedKeepsUnflushedEntries(t *testing.T) {
+	setupRelayLogTest(t)
+
+	flushedBatch := []model.RelayLog{
+		{ID: 6001, Time: 6001, RequestModelName: "already-dropped-head"},
+		{ID: 6002, Time: 6002, RequestModelName: "flushed"},
+	}
+
+	relayLogCacheLock.Lock()
+	// 队头 6001 在 flush 在途时已被削掉, 队尾 6003 是 flush 之后新写入的
+	relayLogCache = append(relayLogCache[:0],
+		model.RelayLog{ID: 6002, Time: 6002, RequestModelName: "flushed"},
+		model.RelayLog{ID: 6003, Time: 6003, RequestModelName: "added-during-flush"},
+	)
+	relayLogCacheLock.Unlock()
+
+	relayLogRemoveFlushed(flushedBatch)
+
+	relayLogCacheLock.Lock()
+	remaining := make([]model.RelayLog, len(relayLogCache))
+	copy(remaining, relayLogCache)
+	relayLogCache = make([]model.RelayLog, 0, relayLogMaxSize)
+	relayLogCacheLock.Unlock()
+
+	if len(remaining) != 1 || remaining[0].ID != 6003 {
+		t.Fatalf("expected only the not-yet-flushed log to remain, got %#v", remaining)
 	}
 }
 

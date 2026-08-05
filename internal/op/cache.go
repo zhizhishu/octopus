@@ -53,5 +53,10 @@ func SaveCache() error {
 	if err := RelayLogSaveDBTask(ctx); err != nil {
 		return err
 	}
+	// relay IP 审计改成周期批量落库后(见 UserRecordRelayIP), 优雅退出时把待落库的
+	// last_relay_ip/at 余量刷进 DB, 否则最多丢一个周期(1 分钟)的审计更新。
+	if err := UserRelayIPSaveDB(ctx); err != nil {
+		return err
+	}
 	return nil
 }
