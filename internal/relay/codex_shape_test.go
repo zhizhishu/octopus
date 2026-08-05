@@ -466,6 +466,94 @@ func TestPrepareCodexRequestShapePreservesIncrementalReasoningToolInput(t *testi
 	}
 }
 
+// TestPrepareCodexRequestShapeSelfContainedContinuationSuppressesHoist 钉死真 codex 续接轮的
+// self-contained 行为：input 自带 developer/system 指令 + 工具输出增量（真 codex store=false 全量
+// 回放的形状，实抓包证据见 _references axonhub reasoning.request.json）时，必须走 suppress 分支——
+// 不注入默认 agent 上下文、不把 Messages 派生的 instructions/tools 重复 hoist 到顶层（+27KB 病灶）。
+// 此前该行为只是 correct-by-construction：改 inbound 的 instructions→system 映射或
+// messagesContainInstruction 会静默破坏而无测试报红，故补此回归。
+func TestPrepareCodexRequestShapeSelfContainedContinuationSuppressesHoist(t *testing.T) {
+	callID := "call_1"
+	output := "ok"
+	instr := "You are a coding agent operating in this workspace."
+	rawInput := `[{"type":"message","role":"developer","content":[{"type":"input_text","text":"You are a coding agent operating in this workspace."}]},{"type":"function_call_output","call_id":"call_1","output":"ok"}]`
+	req := &model.InternalLLMRequest{
+		Model:             "gpt-5.5",
+		RawAPIFormat:      model.APIFormatOpenAIResponse,
+		ResponsesInputRaw: json.RawMessage(rawInput),
+		Messages: []model.Message{
+			{
+				// inbound 把 input 里的 developer 指令归一成 system 消息（或顶层 instructions
+				// 前插 system）——self-contained 判定依赖的就是这条。
+				Role:    "system",
+				Content: model.MessageContent{Content: &instr},
+			},
+			{
+				Role:       "tool",
+				ToolCallID: &callID,
+				Content:    model.MessageContent{Content: &output},
+			},
+		},
+	}
+	ra := &relayAttempt{
+		relayRequest: &relayRequest{
+			inboundType:     inbound.InboundTypeOpenAIResponse,
+			internalRequest: req,
+		},
+		channel: &dbmodel.Channel{Type: outbound.OutboundTypeOpenAIResponse},
+	}
+
+	ra.prepareCodexRequestShape()
+
+	// self-contained 轮绝不能注入默认 codex 身份（那是 !codexSelfContained 分支的事）。
+	for i, msg := range req.Messages {
+		if msg.Content.Content != nil && strings.Contains(*msg.Content.Content, "You are Codex, a coding agent based on GPT-5") {
+			t.Fatalf("default codex agent context must NOT be injected on a self-contained turn; found at Messages[%d]", i)
+		}
+	}
+	// suppress 必须生效：客户端没发顶层 instructions（ResponsesInstructions 原为 nil）→ 强制 ""
+	// 让 omitempty 丢弃，阻止 Messages 派生的顶层 instructions 重复 hoist。
+	if req.ResponsesInstructions == nil || *req.ResponsesInstructions != "" {
+		got := "<nil>"
+		if req.ResponsesInstructions != nil {
+			got = *req.ResponsesInstructions
+		}
+		t.Fatalf("expected suppressed (empty) top-level instructions on self-contained turn, got %q", got)
+	}
+	// 同理 tools：无客户端顶层 tools（ResponsesToolsRaw 空）时 Messages 派生的 req.Tools 必须清空。
+	if req.Tools != nil {
+		t.Fatalf("expected Messages-derived tools cleared on self-contained turn, got %#v", req.Tools)
+	}
+	// input 原字节零改写（前缀缓存/指纹都指着它）。
+	if string(req.ResponsesInputRaw) != rawInput {
+		t.Fatalf("expected raw input preserved byte-for-byte, got %s", string(req.ResponsesInputRaw))
+	}
+
+	// 变体：客户端显式发了顶层 instructions（非 Messages 派生的 hoist）→ 不是重复，绝不能被抹掉。
+	explicit := "client sent this top-level"
+	req2 := &model.InternalLLMRequest{
+		Model:                 "gpt-5.5",
+		RawAPIFormat:          model.APIFormatOpenAIResponse,
+		ResponsesInputRaw:     json.RawMessage(rawInput),
+		ResponsesInstructions: &explicit,
+		Messages: []model.Message{
+			{Role: "system", Content: model.MessageContent{Content: &instr}},
+			{Role: "tool", ToolCallID: &callID, Content: model.MessageContent{Content: &output}},
+		},
+	}
+	ra2 := &relayAttempt{
+		relayRequest: &relayRequest{
+			inboundType:     inbound.InboundTypeOpenAIResponse,
+			internalRequest: req2,
+		},
+		channel: &dbmodel.Channel{Type: outbound.OutboundTypeOpenAIResponse},
+	}
+	ra2.prepareCodexRequestShape()
+	if req2.ResponsesInstructions == nil || *req2.ResponsesInstructions != explicit {
+		t.Fatalf("client-sent top-level instructions must be preserved, got %#v", req2.ResponsesInstructions)
+	}
+}
+
 func TestOpenAIChatCanRouteThroughCodexResponsesShape(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx := setupRelayErrorDB(t)
