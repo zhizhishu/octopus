@@ -27,7 +27,14 @@ func InitDB(dbType, dsn string, debug bool) error {
 	// are already atomic, so the wrapper buys nothing here; skipping it turns each write
 	// into one short bare statement. Explicit Transaction()/Begin() calls (admin CRUD) keep
 	// their own transactions and are unaffected. Harmless for MySQL/Postgres.
-	gormConfig := gorm.Config{Logger: logger.Discard, SkipDefaultTransaction: true}
+	// CreateBatchSize caps how many rows GORM binds per INSERT on a batch Create. The
+	// async relay-log flusher can hand Create() the whole pending queue (up to 500 rows);
+	// RelayLog has ~60 columns, so an unbounded batch would bind ~30k parameters — perilously
+	// close to SQLite's default 32766 bound-variable cap, i.e. one poison-scale flush away
+	// from every full-queue write failing with "too many SQL variables" exactly when the DB
+	// is already behind. Splitting at 100 rows/statement keeps every INSERT well under the cap
+	// (and under MySQL's max_allowed_packet) with no behaviour change to callers.
+	gormConfig := gorm.Config{Logger: logger.Discard, SkipDefaultTransaction: true, CreateBatchSize: 100}
 	if debug {
 		gormConfig.Logger = logger.Default.LogMode(logger.Info)
 	}
@@ -105,15 +112,31 @@ func InitDB(dbType, dsn string, debug bool) error {
 }
 
 func initSQLite(path string, config *gorm.Config) (*gorm.DB, error) {
+	// The driver is glebarez/sqlite (modernc, pure-Go), NOT mattn/go-sqlite3. modernc only
+	// honours the "_pragma=name(value)" DSN dialect — it silently ignores the mattn-style
+	// "_journal_mode=WAL" / "_synchronous=NORMAL" keys (url.ParseQuery keeps them but the
+	// driver's applyQueryParams only reads q["_pragma"]). This file used the mattn dialect,
+	// so for a long time ONLY busy_timeout was actually in effect (the driver hard-codes that
+	// one default) and WAL was NEVER on — the DB ran in rollback-journal mode where a writer
+	// blocks every reader and vice-versa, serialising the whole request hot path. Switch to
+	// the dialect the driver reads. (internal/migration/newapi already used the correct form.)
+	//
+	//   journal_mode(WAL): readers stop blocking the writer — the point of this fix.
+	//   synchronous(NORMAL): safe under WAL, far fewer fsyncs than the FULL default.
+	//   busy_timeout / cache_size / mmap_size: same intent as before, now actually applied.
+	//
+	// Deliberately NOT set: foreign_keys. This DB has run with FK enforcement OFF since day
+	// one; turning it ON here could start rejecting writes against any pre-existing orphaned
+	// row — a behaviour change unrelated to the perf fix, so it stays a separate, testable
+	// decision. auto_vacuum / locking_mode dropped too: a DSN pragma cannot change auto_vacuum
+	// without a full VACUUM, and locking_mode NORMAL is already the default (EXCLUSIVE would
+	// defeat WAL's multi-reader benefit).
 	params := []string{
-		"_journal_mode=WAL",
-		"_synchronous=NORMAL",
-		"_cache_size=10000",
-		"_busy_timeout=5000",
-		"_foreign_keys=ON",
-		"_auto_vacuum=INCREMENTAL",
-		"_mmap_size=268435456",
-		"_locking_mode=NORMAL",
+		"_pragma=journal_mode(WAL)",
+		"_pragma=synchronous(NORMAL)",
+		"_pragma=busy_timeout(5000)",
+		"_pragma=cache_size(10000)",
+		"_pragma=mmap_size(268435456)",
 	}
 	return gorm.Open(sqlite.Open(path+"?"+strings.Join(params, "&")), config)
 }
