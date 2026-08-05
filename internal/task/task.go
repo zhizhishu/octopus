@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/bestruirui/octopus/internal/utils/log"
+	"github.com/bestruirui/octopus/internal/utils/safe"
 )
 
 type taskEntry struct {
@@ -81,7 +82,7 @@ func Update(name string, interval time.Duration) {
 func RUN() {
 	tasksMu.RLock()
 	for _, entry := range tasks {
-		go runTask(entry)
+		safe.SafeGo("task-loop:"+entry.name, func() { runTask(entry) })
 	}
 	tasksMu.RUnlock()
 
@@ -92,7 +93,7 @@ func RUN() {
 func runTask(entry *taskEntry) {
 	// 根据配置决定是否在启动时立即执行
 	if entry.runOnStart {
-		go entry.fn()
+		safe.SafeGo("task:"+entry.name, entry.fn)
 	}
 
 	entry.ticker = time.NewTicker(entry.interval)
@@ -101,7 +102,7 @@ func runTask(entry *taskEntry) {
 	for {
 		select {
 		case <-entry.ticker.C:
-			go entry.fn()
+			safe.SafeGo("task:"+entry.name, entry.fn)
 		case newInterval := <-entry.updateCh:
 			entry.ticker.Stop()
 			entry.interval = newInterval

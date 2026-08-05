@@ -25,6 +25,7 @@ import (
 	"github.com/bestruirui/octopus/internal/server/resp"
 	"github.com/bestruirui/octopus/internal/transformer/outbound"
 	"github.com/bestruirui/octopus/internal/utils/log"
+	"github.com/bestruirui/octopus/internal/utils/safe"
 	"github.com/bestruirui/octopus/internal/utils/xurl"
 	"github.com/gin-gonic/gin"
 )
@@ -862,7 +863,7 @@ func imagesAttempt(
 		contentType = mw.FormDataContentType()
 		bodyReader = pr
 
-		go func() {
+		safe.SafeGo("images-multipart-writer", func() {
 			src, err := bc.NewReader()
 			if err != nil {
 				_ = pw.CloseWithError(err)
@@ -880,7 +881,7 @@ func imagesAttempt(
 				return
 			}
 			_ = pw.Close()
-		}()
+		})
 	} else {
 		// JSON：仅改写 model 字段，其余保持不变
 		// 注意：每次尝试都重新 marshal 生成 body，确保可重试重建
@@ -1111,7 +1112,7 @@ func proxySSEWithOptions(ctx context.Context, c *gin.Context, respUp *http.Respo
 	}
 
 	results := make(chan lineResult, 1)
-	go func() {
+	safe.SafeGo("images-sse-reader", func() {
 		defer close(results)
 		br := bufio.NewReaderSize(respUp.Body, 64*1024)
 		for {
@@ -1126,7 +1127,7 @@ func proxySSEWithOptions(ctx context.Context, c *gin.Context, respUp *http.Respo
 			}
 			results <- lineResult{line: line}
 		}
-	}()
+	})
 
 	var firstTokenTimer *time.Timer
 	var firstTokenC <-chan time.Time

@@ -19,6 +19,7 @@ import (
 	"github.com/bestruirui/octopus/internal/server/router"
 	"github.com/bestruirui/octopus/internal/task"
 	"github.com/bestruirui/octopus/internal/utils/log"
+	"github.com/bestruirui/octopus/internal/utils/safe"
 	"github.com/bestruirui/octopus/internal/utils/xstrings"
 	"github.com/gin-gonic/gin"
 )
@@ -182,7 +183,8 @@ func scheduleChannelPostProcess(channels []model.Channel) {
 		return
 	}
 	copied := append([]model.Channel(nil), channels...)
-	go func(channels []model.Channel) {
+	safe.SafeGo("channel-post-process", func() {
+		channels := copied
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
 		for idx := range channels {
@@ -213,7 +215,7 @@ func scheduleChannelPostProcess(channels []model.Channel) {
 			helper.ChannelAutoGroup(channel, ctx)
 		}
 		runAccessPlanChannelSync(ctx)
-	}(copied)
+	})
 }
 
 // accessPlanSyncMu serializes access-plan reconciliation so overlapping syncs (rapid
@@ -235,11 +237,11 @@ func runAccessPlanChannelSync(ctx context.Context) {
 // scheduleAccessPlanChannelSync runs the incremental access-plan channel sync in the
 // background so channel enable/disable/sync/delete returns immediately.
 func scheduleAccessPlanChannelSync() {
-	go func() {
+	safe.SafeGo("access-plan-sync", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		runAccessPlanChannelSync(ctx)
-	}()
+	})
 }
 
 func sameStringSlice(left []string, right []string) bool {

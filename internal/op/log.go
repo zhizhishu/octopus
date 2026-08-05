@@ -16,6 +16,7 @@ import (
 	"github.com/bestruirui/octopus/internal/db"
 	"github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/utils/log"
+	"github.com/bestruirui/octopus/internal/utils/safe"
 	"github.com/bestruirui/octopus/internal/utils/snowflake"
 	"gorm.io/gorm"
 )
@@ -219,7 +220,7 @@ func relayLogFlushNotify() {
 // flusher 起来后一并批量落库; 测试则显式调 relayLogFlushToDB 驱动落库时机。
 func RelayLogFlusherStart() {
 	relayLogFlusherOnce.Do(func() {
-		go relayLogFlushLoop()
+		safe.SafeGo("relay-log-flush-loop", relayLogFlushLoop)
 	})
 }
 
@@ -300,7 +301,7 @@ func RelayLogAdd(ctx context.Context, relayLog model.RelayLog) error {
 	if enabled {
 		relayLogAddPending(relayLog)
 		// 实时推送保持在 Add 当下就发, 不等落库(日志页/SSE 尾随看到的仍是即时的)
-		go notifySubscribers(relayLog)
+		safe.SafeGo("relay-log-notify", func() { notifySubscribers(relayLog) })
 		return nil
 	}
 
@@ -317,7 +318,7 @@ func RelayLogAdd(ctx context.Context, relayLog model.RelayLog) error {
 		}
 	}
 	relayLogCacheLock.Unlock()
-	go notifySubscribers(relayLog)
+	safe.SafeGo("relay-log-notify", func() { notifySubscribers(relayLog) })
 	return nil
 }
 

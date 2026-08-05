@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bestruirui/octopus/internal/utils/safe"
 	"gorm.io/gorm"
 )
 
@@ -175,7 +176,7 @@ func (m *JobManager) Start(req JobStartRequest, targetDB *gorm.DB) (JobSnapshot,
 	m.order = append(m.order, job.id)
 	m.pruneLocked()
 
-	go m.run(ctx, job.id, targetDB)
+	safe.SafeGo("newapi-migration-job", func() { m.run(ctx, job.id, targetDB) })
 
 	return job.snapshot(), nil
 }

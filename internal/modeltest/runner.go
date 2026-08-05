@@ -22,6 +22,7 @@ import (
 	transformermodel "github.com/bestruirui/octopus/internal/transformer/model"
 	"github.com/bestruirui/octopus/internal/transformer/outbound"
 	"github.com/bestruirui/octopus/internal/utils/log"
+	"github.com/bestruirui/octopus/internal/utils/safe"
 	"github.com/bestruirui/octopus/internal/utils/xredact"
 	"github.com/google/uuid"
 	"github.com/tmaxmax/go-sse"
@@ -126,12 +127,12 @@ func run(ctx context.Context, req dbmodel.ModelTestRequest, directChannel *dbmod
 
 	for worker := 0; worker < concurrency; worker++ {
 		wg.Add(1)
-		go func() {
+		safe.SafeGo("modeltest-worker", func() {
 			defer wg.Done()
 			for index := range jobs {
 				results[index] = runOne(ctx, req, models[index], identity, directChannel)
 			}
-		}()
+		})
 	}
 
 	for index := range models {

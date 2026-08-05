@@ -24,6 +24,7 @@ import (
 	"github.com/bestruirui/octopus/internal/transformer/outbound"
 	openaiOutbound "github.com/bestruirui/octopus/internal/transformer/outbound/openai"
 	"github.com/bestruirui/octopus/internal/utils/log"
+	"github.com/bestruirui/octopus/internal/utils/safe"
 	"github.com/gin-gonic/gin"
 	"github.com/tmaxmax/go-sse"
 )
@@ -1521,7 +1522,7 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 		err       error
 	}
 	results := make(chan sseReadResult, 1)
-	go func() {
+	safe.SafeGo("relay-sse-reader", func() {
 		defer close(results)
 		readCfg := &sse.ReadConfig{MaxEventSize: maxSSEEventSize}
 		for ev, err := range sse.Read(response.Body, readCfg) {
@@ -1531,7 +1532,7 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 			}
 			results <- sseReadResult{eventType: ev.Type, data: ev.Data}
 		}
-	}()
+	})
 
 	var firstTokenTimer *time.Timer
 	var firstTokenC <-chan time.Time
@@ -1883,7 +1884,7 @@ func (ra *relayAttempt) handleStreamResponseAsNonStream(ctx context.Context, res
 		err  error
 	}
 	results := make(chan sseReadResult, 1)
-	go func() {
+	safe.SafeGo("relay-sse-reader-nonstream", func() {
 		defer close(results)
 		readCfg := &sse.ReadConfig{MaxEventSize: maxSSEEventSize}
 		for ev, err := range sse.Read(response.Body, readCfg) {
@@ -1893,7 +1894,7 @@ func (ra *relayAttempt) handleStreamResponseAsNonStream(ctx context.Context, res
 			}
 			results <- sseReadResult{data: ev.Data}
 		}
-	}()
+	})
 
 	// No downstream client stream here, so we only guard against a stalled or
 	// ping-only upstream with the same idle cutoff handleStreamResponse uses.
@@ -2505,7 +2506,7 @@ func startDownstreamFirstByteKeepalive(ctx context.Context, c *gin.Context) func
 	var mu sync.Mutex
 	stopped := false
 	wg.Add(1)
-	go func() {
+	safe.SafeGo("first-byte-keepalive-raw", func() {
 		defer wg.Done()
 		timer := time.NewTimer(delay)
 		defer timer.Stop()
@@ -2547,7 +2548,7 @@ func startDownstreamFirstByteKeepalive(ctx context.Context, c *gin.Context) func
 			case <-ticker.C:
 			}
 		}
-	}()
+	})
 	var once sync.Once
 	return func() {
 		once.Do(func() {
@@ -2583,7 +2584,7 @@ func (ra *relayAttempt) startFirstByteKeepalive(ctx context.Context) func() {
 	done := make(chan struct{})
 	var wg sync.WaitGroup
 	wg.Add(1)
-	go func() {
+	safe.SafeGo("first-byte-keepalive", func() {
 		defer wg.Done()
 		timer := time.NewTimer(delay)
 		defer timer.Stop()
@@ -2627,7 +2628,7 @@ func (ra *relayAttempt) startFirstByteKeepalive(ctx context.Context) func() {
 			case <-ticker.C:
 			}
 		}
-	}()
+	})
 	var once sync.Once
 	return func() {
 		once.Do(func() {

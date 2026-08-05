@@ -26,6 +26,7 @@ import (
 	transformerModel "github.com/bestruirui/octopus/internal/transformer/model"
 	"github.com/bestruirui/octopus/internal/transformer/outbound"
 	"github.com/bestruirui/octopus/internal/utils/log"
+	"github.com/bestruirui/octopus/internal/utils/safe"
 	"github.com/bestruirui/octopus/internal/utils/xurl"
 	"github.com/gin-gonic/gin"
 )
@@ -786,7 +787,7 @@ func rawProtocolAttempt(
 		contentType = mw.FormDataContentType()
 		bodyReader = pr
 
-		go func() {
+		safe.SafeGo("raw-multipart-writer", func() {
 			src, err := bc.NewReader()
 			if err != nil {
 				_ = pw.CloseWithError(err)
@@ -803,7 +804,7 @@ func rawProtocolAttempt(
 				return
 			}
 			_ = pw.Close()
-		}()
+		})
 	} else {
 		if jsonPayload == nil {
 			return 0, false, nil, "", "", errors.New("nil json payload")

@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"github.com/bestruirui/octopus/internal/utils/log"
+	"github.com/bestruirui/octopus/internal/utils/safe"
 	"github.com/bestruirui/octopus/internal/utils/shutdown"
 )
 
@@ -45,7 +46,7 @@ func UpdateCore() error {
 	}
 
 	log.Infof("update core success")
-	go restartExecutable(execPath)
+	safe.SafeGo("update-restart", func() { restartExecutable(execPath) })
 	return nil
 }
 
