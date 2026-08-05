@@ -1112,6 +1112,11 @@ func proxySSEWithOptions(ctx context.Context, c *gin.Context, respUp *http.Respo
 	}
 
 	results := make(chan lineResult, 1)
+	// done lets a reader parked on the cap-1 send exit when this consumer returns early
+	// (first-token / idle timeout, client disconnect) instead of leaking for the process
+	// lifetime — same guard as handleStreamResponse's SSE reader.
+	done := make(chan struct{})
+	defer close(done)
 	safe.SafeGo("images-sse-reader", func() {
 		defer close(results)
 		br := bufio.NewReaderSize(respUp.Body, 64*1024)
@@ -1119,13 +1124,23 @@ func proxySSEWithOptions(ctx context.Context, c *gin.Context, respUp *http.Respo
 			line, err := readLineLimited(br, maxSSEEventSize)
 			if err != nil {
 				if errors.Is(err, io.EOF) {
-					results <- lineResult{eof: true}
+					select {
+					case results <- lineResult{eof: true}:
+					case <-done:
+					}
 					return
 				}
-				results <- lineResult{err: err}
+				select {
+				case results <- lineResult{err: err}:
+				case <-done:
+				}
 				return
 			}
-			results <- lineResult{line: line}
+			select {
+			case results <- lineResult{line: line}:
+			case <-done:
+				return
+			}
 		}
 	})
 

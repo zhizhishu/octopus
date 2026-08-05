@@ -475,10 +475,24 @@ func (ra *relayAttempt) attempt() attemptResult {
 	}
 }
 
+// maxClientRequestBodyBytes caps the client request body on the chat/messages/responses
+// path. A single authenticated tenant could otherwise io.ReadAll a multi-GB upload and
+// balloon gateway memory (the image/video generation paths already spill to disk via
+// bodycache). 512 MiB is far beyond any real text + inline-media request on these endpoints
+// — even a heavy multimodal vision request with many base64 images — so it only trips on
+// pathological payloads.
+const maxClientRequestBodyBytes = 512 << 20
+
 // parseRequest 解析并验证入站请求
 func parseRequest(inboundType inbound.InboundType, c *gin.Context) (*model.InternalLLMRequest, model.Inbound, error) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxClientRequestBodyBytes)
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			resp.Error(c, http.StatusRequestEntityTooLarge, "request body too large")
+			return nil, nil, err
+		}
 		resp.Error(c, http.StatusInternalServerError, err.Error())
 		return nil, nil, err
 	}
@@ -1522,15 +1536,30 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 		err       error
 	}
 	results := make(chan sseReadResult, 1)
+	// done is closed when this handler returns on ANY path (first-token / data-interval
+	// timeout, client disconnect via ctx, a transform/write error, or normal stream end).
+	// The reader's channel sends select on it, so a reader parked on `results <- ...` after
+	// the consumer already left — an early timeout/disconnect that never drains the cap-1
+	// channel — unblocks and exits instead of leaking a goroutine (and its buffered event)
+	// for the process lifetime.
+	done := make(chan struct{})
+	defer close(done)
 	safe.SafeGo("relay-sse-reader", func() {
 		defer close(results)
 		readCfg := &sse.ReadConfig{MaxEventSize: maxSSEEventSize}
 		for ev, err := range sse.Read(response.Body, readCfg) {
 			if err != nil {
-				results <- sseReadResult{err: err}
+				select {
+				case results <- sseReadResult{err: err}:
+				case <-done:
+				}
 				return
 			}
-			results <- sseReadResult{eventType: ev.Type, data: ev.Data}
+			select {
+			case results <- sseReadResult{eventType: ev.Type, data: ev.Data}:
+			case <-done:
+				return
+			}
 		}
 	})
 
@@ -1884,15 +1913,26 @@ func (ra *relayAttempt) handleStreamResponseAsNonStream(ctx context.Context, res
 		err  error
 	}
 	results := make(chan sseReadResult, 1)
+	// See handleStreamResponse: done lets a reader parked on the cap-1 send exit when this
+	// consumer returns early (idle-timeout / error) instead of leaking for the process life.
+	done := make(chan struct{})
+	defer close(done)
 	safe.SafeGo("relay-sse-reader-nonstream", func() {
 		defer close(results)
 		readCfg := &sse.ReadConfig{MaxEventSize: maxSSEEventSize}
 		for ev, err := range sse.Read(response.Body, readCfg) {
 			if err != nil {
-				results <- sseReadResult{err: err}
+				select {
+				case results <- sseReadResult{err: err}:
+				case <-done:
+				}
 				return
 			}
-			results <- sseReadResult{data: ev.Data}
+			select {
+			case results <- sseReadResult{data: ev.Data}:
+			case <-done:
+				return
+			}
 		}
 	})
 
