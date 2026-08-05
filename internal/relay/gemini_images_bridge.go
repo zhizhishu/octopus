@@ -97,6 +97,8 @@ func geminiImagesAttempt(
 	for _, h := range channel.CustomHeader {
 		req.Header.Set(h.HeaderKey, h.HeaderValue)
 	}
+	// Own request (no copyHeadersToUpstream): apply the unified non-CLI UA here too.
+	setHeaderIfMissing(req.Header, "User-Agent", genericUAForChannel(channel))
 
 	httpClient, err := helper.ChannelHttpClient(channel)
 	if err != nil {

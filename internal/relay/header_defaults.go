@@ -75,11 +75,21 @@ func (ra *relayAttempt) applyHeaderDefaults(req *http.Request) {
 // so these channels present a stable Linux desktop identity instead of leaking Go's
 // "Go-http-client/1.1". Never touches claude/codex channels (different switch arms).
 func (ra *relayAttempt) applyGenericHeaderDefaults(req *http.Request) {
-	ua := ra.fingerprint().genericUA()
-	if ua == "" {
-		ua = dbmodel.DefaultGenericUA
+	setHeaderIfMissing(req.Header, "User-Agent", genericUAForChannel(ra.channel))
+}
+
+// genericUAForChannel resolves the unified non-CLI User-Agent for a channel: the
+// selected fingerprint profile's GenericUA (that is the "two UA profiles to pick
+// from" — a channel picks a profile, the profile pins its UA), falling back to the
+// built-in DefaultGenericUA when the profile leaves it empty or no profile is set.
+// Channel-based (not relayAttempt-based) on purpose so the raw-protocol and image
+// bridge paths — which have no relayAttempt — resolve the SAME unified UA as the
+// main relay path, instead of leaking Go's default http client UA.
+func genericUAForChannel(channel *dbmodel.Channel) string {
+	if ua := resolveFingerprintForChannel(channel).genericUA(); ua != "" {
+		return ua
 	}
-	setHeaderIfMissing(req.Header, "User-Agent", ua)
+	return dbmodel.DefaultGenericUA
 }
 
 // stripCodexClientHeaders removes the codex / OpenAI-Responses-specific request headers a

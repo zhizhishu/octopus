@@ -162,6 +162,9 @@ func (ra *relayAttempt) forwardGeminiImageGenerationViaImages(ctx context.Contex
 	for _, h := range ra.channel.CustomHeader {
 		req.Header.Set(h.HeaderKey, h.HeaderValue)
 	}
+	// This gemini-image bridge builds its own request (no copyHeadersToUpstream),
+	// so apply the unified non-CLI UA here too instead of Go's default client UA.
+	setHeaderIfMissing(req.Header, "User-Agent", genericUAForChannel(ra.channel))
 	if spanPath != nil && req.URL != nil {
 		if path := req.URL.EscapedPath(); path != "" {
 			spanPath(path)

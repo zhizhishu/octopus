@@ -95,6 +95,27 @@ var clientTraceHeaders = map[string]bool{
 	"x-trace-id":          true,
 }
 
+// clientIdentityHeaders carry the DOWNSTREAM client's self-identity — its app
+// name, the referring app/site, the browser origin. Octopus does not synthesize
+// these; forwarding them upstream leaks who the real client is. On the
+// claude/codex paths, where the outbound is a synthesized CLI fingerprint, a
+// stray X-Title / HTTP-Referer / Origin also contradicts that shape (a genuine
+// CLI never sends them), so this doubles as fingerprint hygiene, not only a
+// privacy strip. Filtered on EVERY path (both copyHeaders and
+// copyHeadersToUpstream run shouldForwardClientHeader). An operator that a
+// specific upstream genuinely needs one for can re-add it via the channel
+// CustomHeader (applied after this filter). Octopus still READS these off the
+// INBOUND request for Cursor-probe detection (client_validation /
+// cursor_openai_probe read c.Request.Header directly), which is unaffected.
+var clientIdentityHeaders = map[string]bool{
+	"x-title":       true,
+	"http-referer":  true,
+	"referer":       true,
+	"origin":        true,
+	"x-client-name": true,
+	"x-client-app":  true,
+}
+
 func shouldForwardClientHeader(key string) bool {
 	lower := strings.ToLower(strings.TrimSpace(key))
 	if lower == "" {
@@ -107,6 +128,9 @@ func shouldForwardClientHeader(key string) bool {
 		return false
 	}
 	if clientTraceHeaders[lower] {
+		return false
+	}
+	if clientIdentityHeaders[lower] {
 		return false
 	}
 	if strings.HasPrefix(lower, "x-stainless-") {

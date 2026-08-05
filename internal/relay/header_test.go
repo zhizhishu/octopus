@@ -570,8 +570,10 @@ func TestCopyHeadersToUpstreamFiltersClientTimeoutHeaders(t *testing.T) {
 	if got := upstreamReq.Header.Get("X-Stainless-Lang"); got != "" {
 		t.Fatalf("expected client x-stainless-lang to be filtered, got %q", got)
 	}
-	if got := upstreamReq.Header.Get("User-Agent"); got != "" {
-		t.Fatalf("expected client user-agent to be filtered, got %q", got)
+	// The downstream client UA is stripped hop-by-hop; the raw path now applies the
+	// unified non-CLI UA in its place (previously it went out as Go's default UA).
+	if got := upstreamReq.Header.Get("User-Agent"); got != dbmodel.DefaultGenericUA {
+		t.Fatalf("expected unified non-CLI user-agent %q, got %q", dbmodel.DefaultGenericUA, got)
 	}
 	if got := upstreamReq.Header.Get("AH-Thread-Id"); got != "" {
 		t.Fatalf("expected client ah-thread-id to be filtered, got %q", got)
@@ -973,5 +975,80 @@ func TestClaudeBetaStripFlagsEscapeHatch(t *testing.T) {
 	}
 	if got != wantStripped {
 		t.Fatalf("stripped anthropic-beta mismatch:\n got=%q\nwant=%q", got, wantStripped)
+	}
+}
+
+// TestShouldForwardClientHeaderBlocksClientIdentityHeaders pins that the
+// downstream client's self-identity headers (app name / referring app-site /
+// origin) are filtered on every outbound path — leaking them upstream exposes
+// who the real client is, and on the claude/codex paths contradicts the
+// synthesized CLI fingerprint (a genuine CLI never sends X-Title / HTTP-Referer).
+func TestShouldForwardClientHeaderBlocksClientIdentityHeaders(t *testing.T) {
+	for _, key := range []string{
+		"X-Title",
+		"HTTP-Referer",
+		"Referer",
+		"Origin",
+		"X-Client-Name",
+		"X-Client-App",
+		"x-title",      // case-insensitive
+		"http-referer", // case-insensitive
+	} {
+		if shouldForwardClientHeader(key) {
+			t.Fatalf("expected client identity header %q to be filtered, not forwarded upstream", key)
+		}
+	}
+	// Non-identity custom headers must still forward (we filter identity, not all X-*).
+	for _, key := range []string{"X-Custom-Business", "X-Region"} {
+		if !shouldForwardClientHeader(key) {
+			t.Fatalf("expected non-identity header %q to still forward, got filtered", key)
+		}
+	}
+}
+
+// TestCopyHeadersToUpstreamAppliesUnifiedUAAndStripsIdentity pins both fixes on
+// the raw/bridge path: the downstream client identity headers are stripped, and
+// the unified non-CLI UA (profile GenericUA or DefaultGenericUA) is applied in
+// place of Go's default http-client UA.
+func TestCopyHeadersToUpstreamAppliesUnifiedUAAndStripsIdentity(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+	c.Request.Header.Set("User-Agent", "cursor/1.0")
+	c.Request.Header.Set("X-Title", "cursor")
+	c.Request.Header.Set("HTTP-Referer", "https://cursor.example")
+	c.Request.Header.Set("Origin", "https://cursor.example")
+	c.Request.Header.Set("X-Client-Name", "cursor")
+	c.Request.Header.Set("X-Region", "eu") // non-identity, must survive
+
+	upstreamReq := httptest.NewRequest(http.MethodPost, "https://upstream.example/v1/images/generations", nil)
+	copyHeadersToUpstream(upstreamReq, c, &dbmodel.Channel{}, "upstream-key", "application/json", false)
+
+	for _, h := range []string{"X-Title", "HTTP-Referer", "Origin", "X-Client-Name"} {
+		if got := upstreamReq.Header.Get(h); got != "" {
+			t.Fatalf("expected client identity header %q stripped upstream, got %q", h, got)
+		}
+	}
+	if got := upstreamReq.Header.Get("User-Agent"); got != dbmodel.DefaultGenericUA {
+		t.Fatalf("expected unified non-CLI user-agent %q, got %q", dbmodel.DefaultGenericUA, got)
+	}
+	if got := upstreamReq.Header.Get("X-Region"); got != "eu" {
+		t.Fatalf("expected non-identity header X-Region to survive, got %q", got)
+	}
+}
+
+// TestCopyHeadersToUpstreamOperatorCustomUAWins pins that an operator-configured
+// CustomHeader User-Agent still overrides the unified default (IfMissing order).
+func TestCopyHeadersToUpstreamOperatorCustomUAWins(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/rerank", nil)
+
+	upstreamReq := httptest.NewRequest(http.MethodPost, "https://upstream.example/v1/rerank", nil)
+	channel := &dbmodel.Channel{CustomHeader: []dbmodel.CustomHeader{{HeaderKey: "User-Agent", HeaderValue: "operator-pinned/9"}}}
+	copyHeadersToUpstream(upstreamReq, c, channel, "upstream-key", "application/json", false)
+
+	if got := upstreamReq.Header.Get("User-Agent"); got != "operator-pinned/9" {
+		t.Fatalf("expected operator CustomHeader UA to win, got %q", got)
 	}
 }

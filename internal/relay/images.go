@@ -984,6 +984,12 @@ func copyHeadersToUpstream(req *http.Request, c *gin.Context, channel *model.Cha
 			req.Header.Set(h.HeaderKey, h.HeaderValue)
 		}
 	}
+	// The raw/image/video paths have no applyHeaderDefaults, so without this they
+	// went out with Go's default http-client UA (a "this is a Go relay" tell).
+	// Apply the same unified non-CLI UA the main relay path uses. IfMissing: an
+	// operator CustomHeader UA (set just above) wins, and on the /responses/compact
+	// codex sub-path the caller force-overrides this with the codex UA afterwards.
+	setHeaderIfMissing(req.Header, "User-Agent", genericUAForChannel(channel))
 }
 
 func copyMultipartReplaceModel(src io.Reader, boundary string, dst *multipart.Writer, newModel string) error {
