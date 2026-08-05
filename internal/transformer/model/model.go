@@ -318,7 +318,7 @@ func (r *InternalLLMRequest) Validate() error {
 
 	// 验证 embedding 请求
 	if isEmbeddingRequest {
-		if r.EmbeddingInput.Single == nil && len(r.EmbeddingInput.Multiple) == 0 {
+		if r.EmbeddingInput.Single == nil && len(r.EmbeddingInput.Multiple) == 0 && len(r.EmbeddingInput.Raw) == 0 {
 			return errors.New("input cannot be empty")
 		}
 	}
@@ -1293,6 +1293,13 @@ type ImageGeneration struct {
 type EmbeddingInput struct {
 	Single   *string
 	Multiple []string
+	// Raw preserves input shapes beyond the two string forms — the OpenAI spec also
+	// allows pre-tokenized input (an int array, or an array of int arrays), which
+	// tiktoken-based RAG stacks do send. Rejecting them here used to surface as an
+	// HTTP 500 to the client; reference gateways (new-api) simply pass unrecognized
+	// input through and let the upstream judge. Kept as the original bytes so the
+	// outbound rebuild is byte-faithful.
+	Raw json.RawMessage
 }
 
 func (i EmbeddingInput) MarshalJSON() ([]byte, error) {
@@ -1302,6 +1309,10 @@ func (i EmbeddingInput) MarshalJSON() ([]byte, error) {
 
 	if len(i.Multiple) > 0 {
 		return json.Marshal(i.Multiple)
+	}
+
+	if len(i.Raw) > 0 {
+		return i.Raw, nil
 	}
 
 	return []byte("null"), nil
@@ -1324,7 +1335,10 @@ func (i *EmbeddingInput) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 
-	return errors.New("invalid input type")
+	// Token arrays ([1,2,3] / [[1,2],[3,4]]) and any future shape: keep the raw
+	// bytes and forward verbatim; the upstream is the authority on validity.
+	i.Raw = append(json.RawMessage(nil), data...)
+	return nil
 }
 
 // EmbeddingObject represents a single embedding object in the response.

@@ -253,3 +253,59 @@ func TestInternalLLMResponse_IsEmbeddingResponse(t *testing.T) {
 func strPtr(s string) *string {
 	return &s
 }
+
+// TestEmbeddingInput_TokenArrayPassthrough 钉死预分词 input 的原样透传：OpenAI 规范允许
+// input 发 token 数组([1,2,3])或二维 token 数组([[1,2],[3,4]])，tiktoken 预分词的客户端
+// 真会发。曾经这两种形态被 UnmarshalJSON 拒成 invalid input type→客户端收 500；现在
+// 保留原字节透传、由上游裁决（对齐参考网关的透传哲学）。
+func TestEmbeddingInput_TokenArrayPassthrough(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{"token array", `[1,2,3]`},
+		{"2d token array", `[[1,2],[3,4]]`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var input EmbeddingInput
+			if err := json.Unmarshal([]byte(tt.raw), &input); err != nil {
+				t.Fatalf("token-array input must not be rejected, got: %v", err)
+			}
+			if input.Single != nil || len(input.Multiple) > 0 {
+				t.Fatalf("token-array input must land in Raw, got %#v", input)
+			}
+			out, err := json.Marshal(input)
+			if err != nil {
+				t.Fatalf("failed to marshal: %v", err)
+			}
+			// 逐字节 round-trip：出站重建的 input 必须与客户端原文一致。
+			if string(out) != tt.raw {
+				t.Fatalf("expected byte-faithful round-trip %s, got %s", tt.raw, string(out))
+			}
+
+			// Validate 必须接受 Raw 形态的 input。
+			req := InternalLLMRequest{Model: "text-embedding-3-small", EmbeddingInput: &input}
+			if err := req.Validate(); err != nil {
+				t.Fatalf("Validate must accept raw token-array input, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestEmbeddingInput_NullKeepsLegacyBehavior 钉住 input:null 的既有行为不被本次透传
+// 改动挪动：json.Unmarshal 把 null 解进 string 是无错误 no-op，所以 null 一直落成
+// Single=""（历史如此，本次修改前后一致），不会进 Raw、也不会被 Validate 拒。
+func TestEmbeddingInput_NullKeepsLegacyBehavior(t *testing.T) {
+	var input EmbeddingInput
+	if err := json.Unmarshal([]byte(`null`), &input); err != nil {
+		t.Fatalf("null unmarshal path changed unexpectedly: %v", err)
+	}
+	if input.Single == nil || *input.Single != "" {
+		t.Fatalf("null must keep landing as empty-string Single (legacy), got %#v", input)
+	}
+	if len(input.Raw) != 0 {
+		t.Fatalf("null must not land in Raw, got %s", string(input.Raw))
+	}
+}
