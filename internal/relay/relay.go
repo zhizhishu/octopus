@@ -1710,18 +1710,24 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 				return fmt.Errorf("failed to read stream event: %w", r.err)
 			}
 			resetDataTimeout()
-			eventType := responsesStreamEventType(r.data)
+			// Classify the event once: the terminal / tool-call-done / completed /
+			// [DONE] / keepalive checks below all used to JSON-decode this same
+			// payload again just to read its "type", so every event was parsed three
+			// to four times. transformStreamChunk still does the one full decode that
+			// actually builds the forwarded chunk.
+			eventClass := classifyStreamEvent(r.data)
+			eventType := eventClass.eventType
 			if eventType == "response.completed" {
 				upstreamResponsesCompletedSeen = true
 			}
-			isTerminalEvent := upstreamStreamTerminalEvent(r.eventType, r.data)
-			if !isTerminalEvent && ra.shouldTreatResponsesToolCallDoneAsTerminal(outAdapter, r.data) {
+			isTerminalEvent := eventClass.isTerminal(r.eventType)
+			if !isTerminalEvent && ra.shouldTreatResponsesToolCallDoneAsTerminal(outAdapter, eventClass) {
 				isTerminalEvent = true
 			}
 			if isTerminalEvent {
 				upstreamTerminalSeen = true
 			}
-			if upstreamStreamCompletedEvent(r.eventType, r.data) {
+			if eventClass.isCompleted(r.eventType) {
 				sawUpstreamCompletion = true
 			}
 			if requireResponsesCompleted && responsesStreamEventIsPrelude(eventType) {
@@ -1731,7 +1737,7 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 				}
 				continue
 			}
-			isDoneEvent := strings.HasPrefix(strings.TrimSpace(r.data), "[DONE]")
+			isDoneEvent := eventClass.isDone
 			if isDoneEvent {
 				streamDoneSeen = true
 				if !seenMeaningfulChunk && !sawUpstreamCompletion {
@@ -1753,7 +1759,7 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 				}
 			}
 			if len(data) == 0 {
-				if isStreamKeepaliveEvent(r.eventType, r.data) {
+				if eventClass.isKeepalive(r.eventType) {
 					if writeErr := writeStreamData(ra.streamKeepaliveData()); writeErr != nil {
 						return writeErr
 					}
@@ -1942,17 +1948,21 @@ readLoop:
 				return fmt.Errorf("failed to read stream event: %w", r.err)
 			}
 			resetDataTimeout()
-			eventType := responsesStreamEventType(r.data)
+			// Same single classification parse as the streaming loop above: the
+			// prelude / completed / tool-call-done / [DONE] checks share one decode
+			// instead of re-parsing the payload for each of them.
+			eventClass := classifyStreamEvent(r.data)
+			eventType := eventClass.eventType
 			if requireResponsesCompleted && responsesStreamEventIsPrelude(eventType) {
 				if _, err := outAdapter.TransformStream(ctx, []byte(r.data)); err != nil {
 					return fmt.Errorf("failed to transform responses stream prelude: %w", err)
 				}
 				continue
 			}
-			if upstreamStreamCompletedEvent(eventType, r.data) || ra.shouldTreatResponsesToolCallDoneAsTerminal(outAdapter, r.data) {
+			if eventClass.isCompleted(eventType) || ra.shouldTreatResponsesToolCallDoneAsTerminal(outAdapter, eventClass) {
 				sawUpstreamCompletion = true
 			}
-			isDoneEvent := strings.HasPrefix(strings.TrimSpace(r.data), "[DONE]")
+			isDoneEvent := eventClass.isDone
 			if isDoneEvent {
 				streamDoneSeen = true
 				if !seenMeaningfulChunk && !sawUpstreamCompletion {
@@ -2321,21 +2331,46 @@ func messageHasMeaningfulResponse(msg *model.Message) bool {
 	return false
 }
 
-func responsesStreamEventType(data string) string {
-	data = strings.TrimSpace(data)
-	if data == "" || strings.HasPrefix(data, "[DONE]") {
-		return ""
+// streamEventClass is the one lightweight parse of an SSE payload that the
+// stream loops' dispatch checks share. Each check used to decode the same event
+// itself just to read its "type", so a single chunk was JSON-parsed three to
+// four times per iteration; classifyStreamEvent does it once and every check
+// below reads the cached fields.
+type streamEventClass struct {
+	// eventType is the payload's top-level "type", trimmed. Empty when the
+	// payload is not a JSON object or is the [DONE] sentinel.
+	eventType string
+	// itemType is the payload's nested "item"."type", trimmed. Empty when absent.
+	itemType string
+	// isDone marks the "[DONE]" sentinel, which is never JSON.
+	isDone bool
+}
+
+func classifyStreamEvent(data string) streamEventClass {
+	trimmed := strings.TrimSpace(data)
+	if trimmed == "" {
+		return streamEventClass{}
+	}
+	if strings.HasPrefix(trimmed, "[DONE]") {
+		return streamEventClass{isDone: true}
 	}
 	var envelope struct {
 		Type string `json:"type"`
+		Item *struct {
+			Type string `json:"type"`
+		} `json:"item,omitempty"`
 	}
-	if err := json.Unmarshal([]byte(data), &envelope); err != nil {
-		return ""
+	if err := json.Unmarshal([]byte(trimmed), &envelope); err != nil {
+		return streamEventClass{}
 	}
-	return strings.TrimSpace(envelope.Type)
+	class := streamEventClass{eventType: strings.TrimSpace(envelope.Type)}
+	if envelope.Item != nil {
+		class.itemType = strings.TrimSpace(envelope.Item.Type)
+	}
+	return class
 }
 
-func (ra *relayAttempt) shouldTreatResponsesToolCallDoneAsTerminal(outAdapter model.Outbound, data string) bool {
+func (ra *relayAttempt) shouldTreatResponsesToolCallDoneAsTerminal(outAdapter model.Outbound, class streamEventClass) bool {
 	if ra == nil || ra.internalRequest == nil || ra.inboundType != inbound.InboundTypeOpenAIResponse {
 		return false
 	}
@@ -2347,27 +2382,15 @@ func (ra *relayAttempt) shouldTreatResponsesToolCallDoneAsTerminal(outAdapter mo
 	if ra.internalRequest.ParallelToolCalls == nil || *ra.internalRequest.ParallelToolCalls {
 		return false
 	}
-	return responsesToolCallDoneEvent(data)
+	return class.isToolCallDone()
 }
 
-func responsesToolCallDoneEvent(data string) bool {
-	data = strings.TrimSpace(data)
-	if data == "" || strings.HasPrefix(data, "[DONE]") {
+// isToolCallDone reports a responses tool-call finalization event.
+func (c streamEventClass) isToolCallDone() bool {
+	if c.isDone || c.eventType != "response.output_item.done" {
 		return false
 	}
-	var envelope struct {
-		Type string `json:"type"`
-		Item *struct {
-			Type string `json:"type"`
-		} `json:"item,omitempty"`
-	}
-	if err := json.Unmarshal([]byte(data), &envelope); err != nil {
-		return false
-	}
-	if strings.TrimSpace(envelope.Type) != "response.output_item.done" || envelope.Item == nil {
-		return false
-	}
-	switch strings.TrimSpace(envelope.Item.Type) {
+	switch c.itemType {
 	case "tool_call", "function_call", "local_shell_call", "tool_search_call", "custom_tool_call", "mcp_tool_call":
 		return true
 	default:
@@ -2375,15 +2398,18 @@ func responsesToolCallDoneEvent(data string) bool {
 	}
 }
 
-func upstreamStreamTerminalEvent(eventType string, data string) bool {
-	if strings.HasPrefix(strings.TrimSpace(data), "[DONE]") {
+// isTerminal reports the upstream stream's terminal boundary: the [DONE]
+// sentinel, or a terminal type carried by either the SSE event name or the
+// payload itself.
+func (c streamEventClass) isTerminal(sseEventType string) bool {
+	if c.isDone {
 		return true
 	}
-	switch strings.TrimSpace(eventType) {
+	switch strings.TrimSpace(sseEventType) {
 	case "message_stop", "response.completed":
 		return true
 	}
-	switch responsesStreamEventType(data) {
+	switch c.eventType {
 	case "message_stop", "response.completed":
 		return true
 	default:
@@ -2391,20 +2417,20 @@ func upstreamStreamTerminalEvent(eventType string, data string) bool {
 	}
 }
 
-// upstreamStreamCompletedEvent reports a REAL terminal completion from the
-// upstream (message_stop / response.completed), excluding the [DONE] sentinel.
+// isCompleted reports a REAL terminal completion from the upstream
+// (message_stop / response.completed), excluding the [DONE] sentinel.
 // [DONE] only marks the SSE channel closing, not a successful completion, so it
 // must not be treated as "the model completed" when deciding whether an
 // otherwise content-less stream is a legitimate empty completion vs a dropped one.
-func upstreamStreamCompletedEvent(eventType string, data string) bool {
-	if strings.HasPrefix(strings.TrimSpace(data), "[DONE]") {
+func (c streamEventClass) isCompleted(sseEventType string) bool {
+	if c.isDone {
 		return false
 	}
-	switch strings.TrimSpace(eventType) {
+	switch strings.TrimSpace(sseEventType) {
 	case "message_stop", "response.completed":
 		return true
 	}
-	switch responsesStreamEventType(data) {
+	switch c.eventType {
 	case "message_stop", "response.completed":
 		return true
 	default:
@@ -2412,17 +2438,17 @@ func upstreamStreamCompletedEvent(eventType string, data string) bool {
 	}
 }
 
-func isStreamKeepaliveEvent(eventType string, data string) bool {
-	if strings.EqualFold(strings.TrimSpace(eventType), "ping") {
+func (c streamEventClass) isKeepalive(sseEventType string) bool {
+	if strings.EqualFold(strings.TrimSpace(sseEventType), "ping") {
 		return true
 	}
-	var envelope struct {
-		Type string `json:"type"`
-	}
-	if err := json.Unmarshal([]byte(data), &envelope); err != nil {
-		return false
-	}
-	return strings.EqualFold(strings.TrimSpace(envelope.Type), "ping")
+	return strings.EqualFold(c.eventType, "ping")
+}
+
+// isStreamKeepaliveEvent keeps the raw-payload form for callers that have not
+// already classified the event.
+func isStreamKeepaliveEvent(eventType string, data string) bool {
+	return classifyStreamEvent(data).isKeepalive(eventType)
 }
 
 func (ra *relayAttempt) streamKeepaliveData() []byte {

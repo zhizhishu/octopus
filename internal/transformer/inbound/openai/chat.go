@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/bestruirui/octopus/internal/transformer/model"
 )
@@ -158,6 +159,14 @@ func (i *ChatInbound) GetInternalResponse(ctx context.Context) (*model.InternalL
 	// Aggregate choices by index
 	choicesMap := make(map[int]*model.Choice)
 
+	// Streamed text is buffered per choice index instead of grown with `*p += frag`:
+	// that re-allocates and copies the whole accumulated prefix on every chunk, so a
+	// long response costs O(total²). Materialized once after the loop below.
+	contentBuf := make(map[int]*strings.Builder)
+	reasoningBuf := make(map[int]*strings.Builder)
+	// Tool-call argument fragments, buffered as choice index -> tool call index.
+	toolArgsBuf := make(map[int]map[int]*strings.Builder)
+
 	for _, chunk := range i.streamChunks {
 		// Update ID and Model if they appear in later chunks (some providers send these later)
 		if chunk.ID != "" {
@@ -193,10 +202,7 @@ func (i *ChatInbound) GetInternalResponse(ctx context.Context) (*model.InternalL
 
 				// Append content (handle both string content and multipart content)
 				if delta.Content.Content != nil {
-					if existingChoice.Message.Content.Content == nil {
-						existingChoice.Message.Content.Content = new(string)
-					}
-					*existingChoice.Message.Content.Content += *delta.Content.Content
+					streamTextBuffer(contentBuf, choice.Index).WriteString(*delta.Content.Content)
 				}
 
 				// Append multipart content (for images, audio, etc.)
@@ -216,15 +222,24 @@ func (i *ChatInbound) GetInternalResponse(ctx context.Context) (*model.InternalL
 				}
 
 				// Append reasoning content (supports both reasoning_content and reasoning fields)
-				if delta.GetReasoningContent() != "" {
-					if existingChoice.Message.ReasoningContent == nil {
-						existingChoice.Message.ReasoningContent = new(string)
-					}
-					*existingChoice.Message.ReasoningContent += delta.GetReasoningContent()
+				if reasoning := delta.GetReasoningContent(); reasoning != "" {
+					streamTextBuffer(reasoningBuf, choice.Index).WriteString(reasoning)
 				}
 
-				// Aggregate tool calls
+				// Aggregate tool calls. Argument fragments are buffered per tool index
+				// and written back after the loop for the same reason as the text
+				// above: mergeToolCall's `Arguments += frag` re-copies the whole
+				// accumulated payload on every fragment.
 				for _, toolCall := range delta.ToolCalls {
+					if toolCall.Function.Arguments != "" {
+						byToolIndex, ok := toolArgsBuf[choice.Index]
+						if !ok {
+							byToolIndex = make(map[int]*strings.Builder)
+							toolArgsBuf[choice.Index] = byToolIndex
+						}
+						streamTextBuffer(byToolIndex, toolCall.Index).WriteString(toolCall.Function.Arguments)
+						toolCall.Function.Arguments = ""
+					}
 					existingChoice.Message.ToolCalls = mergeToolCall(existingChoice.Message.ToolCalls, toolCall)
 				}
 
@@ -249,6 +264,8 @@ func (i *ChatInbound) GetInternalResponse(ctx context.Context) (*model.InternalL
 		}
 	}
 
+	materializeStreamText(choicesMap, contentBuf, reasoningBuf, toolArgsBuf)
+
 	// Convert map to slice, sorted by index
 	result.Choices = make([]model.Choice, 0, len(choicesMap))
 	for idx := 0; idx < len(choicesMap); idx++ {
@@ -261,6 +278,47 @@ func (i *ChatInbound) GetInternalResponse(ctx context.Context) (*model.InternalL
 	i.streamChunks = nil
 
 	return result, nil
+}
+
+// streamTextBuffer returns the accumulation buffer for one index, creating it on
+// first use. Presence in the map is what marks "this index received a fragment",
+// which is how the aggregation keeps the nil-vs-empty distinction the previous
+// pointer-append form had.
+func streamTextBuffer(buffers map[int]*strings.Builder, index int) *strings.Builder {
+	if buffer, ok := buffers[index]; ok {
+		return buffer
+	}
+	buffer := &strings.Builder{}
+	buffers[index] = buffer
+	return buffer
+}
+
+// materializeStreamText writes the buffered fragments back onto the aggregated
+// choices. Only indexes that actually received a fragment are written, so a
+// choice that never carried content/reasoning keeps the nil pointer it had
+// before, and one that carried an empty fragment still gets a non-nil empty
+// value — exactly what the old `new(string)` + `+=` form produced.
+func materializeStreamText(
+	choicesMap map[int]*model.Choice,
+	contentBuf map[int]*strings.Builder,
+	reasoningBuf map[int]*strings.Builder,
+	toolArgsBuf map[int]map[int]*strings.Builder,
+) {
+	for idx, choice := range choicesMap {
+		if buffer, ok := contentBuf[idx]; ok {
+			content := buffer.String()
+			choice.Message.Content.Content = &content
+		}
+		if buffer, ok := reasoningBuf[idx]; ok {
+			reasoning := buffer.String()
+			choice.Message.ReasoningContent = &reasoning
+		}
+		for k := range choice.Message.ToolCalls {
+			if buffer, ok := toolArgsBuf[idx][choice.Message.ToolCalls[k].Index]; ok {
+				choice.Message.ToolCalls[k].Function.Arguments = buffer.String()
+			}
+		}
+	}
 }
 
 // mergeToolCall merges a tool call delta into the existing tool calls slice

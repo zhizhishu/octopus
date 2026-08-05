@@ -70,6 +70,12 @@ type ResponseInbound struct {
 	toolCallItemStarted map[int]bool
 	toolCallItemID      map[int]string
 	toolCallOutputIndex map[int]int
+	// toolCallArgs buffers each tool call's streamed argument fragments. Growing
+	// toolCalls[idx].Function.Arguments with `+=` re-copies the whole accumulated
+	// payload on every fragment (O(total²) for a large tool call); the builder
+	// appends, and Function.Arguments is refreshed from it so every reader still
+	// sees the same complete string.
+	toolCallArgs map[int]*strings.Builder
 
 	// Finalized output items keyed by output_index, captured as each
 	// response.output_item.done is emitted, so the terminal response.completed event
@@ -161,6 +167,7 @@ func (i *ResponseInbound) TransformStream(ctx context.Context, stream *model.Int
 		i.toolCallItemStarted = make(map[int]bool)
 		i.toolCallItemID = make(map[int]string)
 		i.toolCallOutputIndex = make(map[int]int)
+		i.toolCallArgs = make(map[int]*strings.Builder)
 		i.completedItems = make(map[int]ResponsesItem)
 	}
 
@@ -676,8 +683,15 @@ func (i *ResponseInbound) handleToolCalls(toolCalls []model.ToolCall) [][]byte {
 			i.toolCalls[toolCallIndex].Function.Name = tc.Function.Name
 		}
 
-		// Accumulate arguments (custom tool calls carry their freeform input here too)
-		i.toolCalls[toolCallIndex].Function.Arguments += tc.Function.Arguments
+		// Accumulate arguments (custom tool calls carry their freeform input here too).
+		// Buffered instead of `+=` so a long argument stream is not re-copied per
+		// fragment; Function.Arguments is refreshed from the buffer on every write, so
+		// closeToolItem and the aggregation read the same value as before.
+		if tc.Function.Arguments != "" {
+			buffer := streamTextBuffer(i.toolCallArgs, toolCallIndex)
+			buffer.WriteString(tc.Function.Arguments)
+			i.toolCalls[toolCallIndex].Function.Arguments = buffer.String()
+		}
 
 		// Emit the incremental input/arguments delta against this tool's own item id.
 		if tc.Function.Arguments != "" {
@@ -986,6 +1000,14 @@ func (i *ResponseInbound) GetInternalResponse(ctx context.Context) (*model.Inter
 	// Aggregate choices by index
 	choicesMap := make(map[int]*model.Choice)
 
+	// Streamed text is buffered per choice index instead of grown with `*p += frag`:
+	// that re-allocates and copies the whole accumulated prefix on every chunk, so a
+	// long response costs O(total²). Materialized once after the loop below.
+	contentBuf := make(map[int]*strings.Builder)
+	reasoningBuf := make(map[int]*strings.Builder)
+	// Tool-call argument fragments, buffered as choice index -> tool call index.
+	toolArgsBuf := make(map[int]map[int]*strings.Builder)
+
 	for _, chunk := range i.streamChunks {
 		// Update ID and Model if they appear in later chunks
 		if chunk.ID != "" {
@@ -1021,10 +1043,7 @@ func (i *ResponseInbound) GetInternalResponse(ctx context.Context) (*model.Inter
 
 				// Append content
 				if delta.Content.Content != nil {
-					if existingChoice.Message.Content.Content == nil {
-						existingChoice.Message.Content.Content = new(string)
-					}
-					*existingChoice.Message.Content.Content += *delta.Content.Content
+					streamTextBuffer(contentBuf, choice.Index).WriteString(*delta.Content.Content)
 				}
 				if len(delta.Content.MultipleContent) > 0 {
 					existingChoice.Message.Content.MultipleContent = append(
@@ -1035,14 +1054,23 @@ func (i *ResponseInbound) GetInternalResponse(ctx context.Context) (*model.Inter
 
 				// Append reasoning content
 				if delta.ReasoningContent != nil {
-					if existingChoice.Message.ReasoningContent == nil {
-						existingChoice.Message.ReasoningContent = new(string)
-					}
-					*existingChoice.Message.ReasoningContent += *delta.ReasoningContent
+					streamTextBuffer(reasoningBuf, choice.Index).WriteString(*delta.ReasoningContent)
 				}
 
-				// Aggregate tool calls
+				// Aggregate tool calls. Argument fragments are buffered per tool index
+				// and written back after the loop for the same reason as the text
+				// above: mergeToolCall's `Arguments += frag` re-copies the whole
+				// accumulated payload on every fragment.
 				for _, toolCall := range delta.ToolCalls {
+					if toolCall.Function.Arguments != "" {
+						byToolIndex, ok := toolArgsBuf[choice.Index]
+						if !ok {
+							byToolIndex = make(map[int]*strings.Builder)
+							toolArgsBuf[choice.Index] = byToolIndex
+						}
+						streamTextBuffer(byToolIndex, toolCall.Index).WriteString(toolCall.Function.Arguments)
+						toolCall.Function.Arguments = ""
+					}
 					existingChoice.Message.ToolCalls = mergeToolCall(existingChoice.Message.ToolCalls, toolCall)
 				}
 
@@ -1082,6 +1110,8 @@ func (i *ResponseInbound) GetInternalResponse(ctx context.Context) (*model.Inter
 	if strings.TrimSpace(i.responseID) != "" {
 		result.ID = i.responseID
 	}
+
+	materializeStreamText(choicesMap, contentBuf, reasoningBuf, toolArgsBuf)
 
 	// Convert map to slice, sorted by index
 	result.Choices = make([]model.Choice, 0, len(choicesMap))
