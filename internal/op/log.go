@@ -211,8 +211,13 @@ func relayLogFlushNotify() {
 	}
 }
 
-// relayLogFlusherStart 惰性启动后台落库协程(整个进程只启一次)。
-func relayLogFlusherStart() {
+// RelayLogFlusherStart 启动后台落库协程(整个进程只启一次), 由启动流程 task.Init 显式调用。
+// 刻意不做"首次写入时惰性启动": 一个进程级常驻协程要是从任意 RelayLogAdd 偷偷冒出来,
+// 测试二进制里(每个用例各开各的临时 DB)就会出现无人拥有生命周期的后台写库者, 撞别的
+// 用例的 DB(readonly/no such table 噪音)甚至在 TempDir 清理瞬间写 WAL 让目录删不掉——
+// CI 已实翻过一次。生产路径 cmd/start.go 必经 task.Init, 启动窗口内先入队的日志等
+// flusher 起来后一并批量落库; 测试则显式调 relayLogFlushToDB 驱动落库时机。
+func RelayLogFlusherStart() {
 	relayLogFlusherOnce.Do(func() {
 		go relayLogFlushLoop()
 	})
@@ -247,11 +252,10 @@ func relayLogFlushLoop() {
 	}
 }
 
-// relayLogAddPending 把日志放进待落库队列, 必要时唤醒后台 flusher。
+// relayLogAddPending 把日志放进待落库队列, 必要时唤醒后台 flusher(由 task.Init 经
+// RelayLogFlusherStart 启动, 这里绝不偷偷拉起协程——见该函数注释)。
 // 队列封顶后丢最旧的: DB 卡死时请求还在源源不断地来, 不淘汰就是无上限吃内存。
 func relayLogAddPending(relayLog model.RelayLog) {
-	relayLogFlusherStart()
-
 	relayLogCacheLock.Lock()
 	relayLogCache = append(relayLogCache, relayLog)
 	dropped := 0

@@ -42,6 +42,10 @@ func Init() {
 	// 失败会直接 return, 排在后面就会让这条审计彻底不落库。
 	Register(TaskUserRelayIPSave, 1*time.Minute, false, op.UserRelayIPSaveDBTask)
 
+	// 启动中继日志后台落库协程。显式从这里起而不是 RelayLogAdd 里惰性起——生产必经此路,
+	// 而测试二进制绝不该有无人管生命周期的后台写库者(会撞各用例的临时 DB, CI 实翻过)。
+	op.RelayLogFlusherStart()
+
 	// 注册LLM同步任务
 	syncLLMIntervalHours, err := op.SettingGetInt(model.SettingKeySyncLLMInterval)
 	if err != nil {
