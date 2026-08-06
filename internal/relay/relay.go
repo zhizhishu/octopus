@@ -321,11 +321,17 @@ runIterator:
 	metrics.Save(c.Request.Context(), false, finalErr, allAttempts)
 	status, code, message := relayErrorResponse(finalErr)
 	if c.Writer.Written() {
-		// Deferred-commit kept the stream warm with SSE comment heartbeats while we
-		// failed over across every channel, so HTTP 200 is already committed and no
-		// content ever reached the client. Deliver the failure as an in-band SSE error
-		// event for the client's inbound protocol — resp.ErrorWithCode cannot set a
-		// status on an already-committed response and would splice JSON into the stream.
+		// Deferred-commit kept the stream warm with heartbeats while we failed over
+		// across every channel, so HTTP 200 is already committed and no content ever
+		// reached the client. resp.ErrorWithCode cannot set a status on an
+		// already-committed response, so deliver the failure in-band.
+		if req.wroteNonStreamJSONKeepalive {
+			// application/json head was committed by blank-line keepalives: append a JSON
+			// error body (valid after the leading insignificant whitespace) rather than
+			// splicing an SSE event into a JSON stream.
+			writeNonStreamJSONError(c, code, message)
+			return
+		}
 		switch inboundType {
 		case inbound.InboundTypeOpenAIResponse:
 			writeResponsesFailedSSE(c, requestModel, code, message)
@@ -337,6 +343,19 @@ runIterator:
 		return
 	}
 	resp.ErrorWithCode(c, status, code, message)
+}
+
+// writeNonStreamJSONError appends a JSON error body to a non-stream (application/json)
+// response whose head was already committed by blank-line keepalives. Written after the
+// leading insignificant whitespace, the whole body stays valid JSON, so the client parses
+// a normal error object instead of choking on a spliced SSE event.
+func writeNonStreamJSONError(c *gin.Context, code, message string) {
+	payload, err := json.Marshal(gin.H{"error": gin.H{"message": message, "type": "upstream_error", "code": code}})
+	if err != nil {
+		payload = []byte(`{"error":{"message":"upstream error","type":"upstream_error"}}`)
+	}
+	_, _ = c.Writer.Write(payload)
+	c.Writer.Flush()
 }
 
 // recordAttemptProxy annotates a forwarding attempt with the egress route it used
@@ -1976,6 +1995,32 @@ func (ra *relayAttempt) handleStreamResponseAsNonStream(ctx context.Context, res
 		}
 		dataTimeoutTimer.Reset(dataIntervalTimeout)
 	}
+	disarmFirstToken := func() {
+		if firstTokenTimer != nil {
+			if !firstTokenTimer.Stop() {
+				select {
+				case <-firstTokenTimer.C:
+				default:
+				}
+			}
+			firstTokenTimer = nil
+			firstTokenC = nil
+		}
+	}
+
+	// Keep the non-stream client (and any idle-timeout reverse proxy in front of it)
+	// warm while a slow/reasoning upstream buffers, mirroring CLIProxyAPI's blank-line
+	// keepalive. A "\n" is JSON insignificant whitespace, so it never corrupts the
+	// aggregated body; it commits the response head but NOT wroteMeaningfulDownstream,
+	// so failover across channels stays possible (see the all-channels-failed path).
+	ra.c.Header("Content-Type", "application/json")
+	var keepaliveC <-chan time.Time
+	var keepaliveTicker *time.Ticker
+	if keepaliveInterval := currentStreamKeepaliveInterval(); keepaliveInterval > 0 {
+		keepaliveTicker = time.NewTicker(keepaliveInterval)
+		keepaliveC = keepaliveTicker.C
+		defer keepaliveTicker.Stop()
+	}
 
 	streamDoneSeen := false
 	seenMeaningfulChunk := false
@@ -2003,6 +2048,15 @@ readLoop:
 				strategy: "stream_data_interval_timeout;upstream_forwarded=true",
 				message:  fmt.Sprintf("upstream stream timed out waiting for SSE event (%s)", dataIntervalTimeout),
 			}
+		case <-keepaliveC:
+			// Blank-line heartbeat: JSON insignificant whitespace that keeps the client
+			// connection warm without committing content, so failover stays possible.
+			if _, werr := ra.c.Writer.Write([]byte("\n")); werr != nil {
+				_ = response.Body.Close()
+				return fmt.Errorf("client disconnected during forced responses stream keepalive: %w", werr)
+			}
+			ra.c.Writer.Flush()
+			ra.wroteNonStreamJSONKeepalive = true
 		case r, ok := <-results:
 			if !ok {
 				break readLoop
@@ -2024,6 +2078,10 @@ readLoop:
 			}
 			if eventClass.isCompleted(eventType) || ra.shouldTreatResponsesToolCallDoneAsTerminal(outAdapter, eventClass) {
 				sawUpstreamCompletion = true
+				// A terminal completion ends the turn even with zero output tokens, so
+				// stop the first-token guard: a prompt empty-but-legitimate finish must
+				// not be misreported as a first-token timeout.
+				disarmFirstToken()
 			}
 			isDoneEvent := eventClass.isDone
 			if isDoneEvent {
@@ -2045,16 +2103,7 @@ readLoop:
 					}
 					// First real token arrived: disarm the first-token guard so a
 					// slow-but-progressing upstream is never cut mid-generation.
-					if firstTokenTimer != nil {
-						if !firstTokenTimer.Stop() {
-							select {
-							case <-firstTokenTimer.C:
-							default:
-							}
-						}
-						firstTokenTimer = nil
-						firstTokenC = nil
-					}
+					disarmFirstToken()
 				}
 			}
 		}
@@ -2079,7 +2128,17 @@ readLoop:
 	if err != nil {
 		return fmt.Errorf("failed to transform forced responses stream: %w", err)
 	}
-	ra.c.Data(http.StatusOK, "application/json", inResponse)
+	ra.wroteMeaningfulDownstream = true
+	if ra.wroteNonStreamJSONKeepalive {
+		// Response head already committed by blank-line keepalives; append the aggregated
+		// JSON body — valid JSON after the leading insignificant whitespace.
+		if _, werr := ra.c.Writer.Write(inResponse); werr != nil {
+			return fmt.Errorf("failed to write aggregated forced responses body: %w", werr)
+		}
+		ra.c.Writer.Flush()
+	} else {
+		ra.c.Data(http.StatusOK, "application/json", inResponse)
+	}
 	return nil
 }
 

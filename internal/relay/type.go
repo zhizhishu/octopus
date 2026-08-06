@@ -161,6 +161,16 @@ type relayRequest struct {
 	clientSessionSource string
 	stickyEnabled       bool
 	iter                *balancer.Iterator
+
+	// wroteNonStreamJSONKeepalive flips true once handleStreamResponseAsNonStream has
+	// flushed a blank-line keepalive ("\n", valid JSON insignificant whitespace) to a
+	// non-stream client while waiting for a slow/reasoning upstream. Like the SSE comment
+	// heartbeats it commits the response head (Written()==true) but NOT
+	// wroteMeaningfulDownstream, so failover stays possible. It lives on relayRequest
+	// (not relayAttempt) so it persists across channel attempts: the all-channels-failed
+	// path uses it to deliver a JSON error body instead of splicing an SSE error into a
+	// Content-Type: application/json stream.
+	wroteNonStreamJSONKeepalive bool
 }
 
 // relayAttempt 尝试级上下文

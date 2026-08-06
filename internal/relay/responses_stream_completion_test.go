@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -419,5 +420,64 @@ func TestForcedResponsesNonStreamFirstTokenTimeout(t *testing.T) {
 	}
 	if body := rec.Body.String(); body != "" {
 		t.Fatalf("forced non-stream aggregation should not write downstream data, got %q", body)
+	}
+}
+
+// TestForcedResponsesNonStreamKeepaliveThenAggregates verifies the blank-line keepalive:
+// while a slow upstream buffers (reasoning), the aggregate path must flush "\n" heartbeats
+// to keep the non-stream client alive, then still emit one valid JSON body. The leading
+// newlines are JSON insignificant whitespace, so the whole response stays parseable.
+func TestForcedResponsesNonStreamKeepaliveThenAggregates(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	setupRelayErrorDB(t)
+	if err := op.SettingSetString(dbmodel.SettingKeyRelayStreamKeepaliveSec, "1"); err != nil {
+		t.Fatalf("set keepalive setting: %v", err)
+	}
+	// Generous idle cutoff so only the keepalive (not the data timeout) acts here.
+	if err := op.SettingSetString(dbmodel.SettingKeyRelayStreamDataTimeoutSec, "30"); err != nil {
+		t.Fatalf("set stream data timeout setting: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	ra := &relayAttempt{relayRequest: &relayRequest{
+		c:            c,
+		inboundType:  inbound.InboundTypeOpenAIResponse,
+		inAdapter:    &openaiInbound.ResponseInbound{},
+		requestModel: "gpt-5.5",
+	}}
+	pr, pw := io.Pipe()
+	defer pr.Close()
+	response := &http.Response{
+		Header: http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:   pr,
+	}
+
+	// Prelude arrives fast, then the upstream "reasons" silently past the 1s keepalive
+	// before finally producing content — exactly the buffered-reasoning shape.
+	go func() {
+		_, _ = io.WriteString(pw, `data: {"type":"response.created","response":{"id":"resp_1","object":"response","created_at":123,"model":"gpt-5.5","status":"in_progress","output":[]}}`+"\n\n")
+		time.Sleep(1500 * time.Millisecond)
+		_, _ = io.WriteString(pw, `data: {"type":"response.output_text.delta","delta":"OK"}`+"\n\n")
+		_, _ = io.WriteString(pw, `data: {"type":"response.completed","response":{"id":"resp_1","object":"response","created_at":123,"model":"gpt-5.5","status":"completed","output":[{"id":"msg_1","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"OK"}]}],"usage":{"input_tokens":2,"input_tokens_details":{"cached_tokens":0},"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":3}}}`+"\n\n")
+		_, _ = io.WriteString(pw, `data: [DONE]`+"\n\n")
+		_ = pw.Close()
+	}()
+
+	if err := ra.handleStreamResponseAsNonStream(c.Request.Context(), response, &openaiOutbound.ResponseOutbound{}); err != nil {
+		t.Fatalf("handle forced non-stream aggregation with keepalive: %v", err)
+	}
+	body := rec.Body.String()
+	if !strings.HasPrefix(body, "\n") {
+		t.Fatalf("expected a leading blank-line keepalive before the JSON body, got %q", body[:min(20, len(body))])
+	}
+	if !strings.Contains(body, `"object":"response"`) {
+		t.Fatalf("expected aggregated responses JSON body, got %q", body)
+	}
+	// The whole response (leading newlines + JSON) must still parse as valid JSON.
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		t.Fatalf("keepalive-prefixed body is not valid JSON: %v (body=%q)", err, body)
 	}
 }
