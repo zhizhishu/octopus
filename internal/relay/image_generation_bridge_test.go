@@ -379,12 +379,14 @@ func TestChatImageBridgeThreadsN(t *testing.T) {
 	ctx := setupRelayErrorDB(t)
 	var (
 		mu      sync.Mutex
+		gotPath string
 		gotBody map[string]any
 	)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		mu.Lock()
+		gotPath = r.URL.Path
 		gotBody = body
 		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
@@ -410,8 +412,12 @@ func TestChatImageBridgeThreadsN(t *testing.T) {
 		t.Fatalf("expected chat image bridge to succeed, got %d body %s", rec.Code, rec.Body.String())
 	}
 	mu.Lock()
-	body := gotBody
+	path, body := gotPath, gotBody
 	mu.Unlock()
+	// Must exercise the images bridge, not ordinary chat forwarding (which would also carry n).
+	if path != "/v1/images/generations" {
+		t.Fatalf("expected canonical images path, got %q", path)
+	}
 	if body["n"] != float64(3) {
 		t.Fatalf("expected upstream image payload n=3, got %#v (full %#v)", body["n"], body)
 	}
@@ -423,6 +429,10 @@ func TestChatImageBridgeThreadsN(t *testing.T) {
 func TestResponsesImageBridgeDownloadsURLToBase64(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx := setupRelayErrorDB(t)
+	// The mock image server runs on loopback, which the SSRF guard blocks in production;
+	// allow it for the duration of this download-success test.
+	allowPrivateImageDownloadHosts = true
+	t.Cleanup(func() { allowPrivateImageDownloadHosts = false })
 	imgBytes := []byte("PNG-BYTES-abc123")
 	imgServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/png")
@@ -458,6 +468,43 @@ func TestResponsesImageBridgeDownloadsURLToBase64(t *testing.T) {
 	}
 	if strings.Contains(body, imgServer.URL) {
 		t.Fatalf("responses result should carry base64 bytes, not a raw URL: %s", body)
+	}
+}
+
+// TestResponsesImageBridgeBlocksPrivateImageURL guards the SSRF fix: a URL pointing at a
+// private/loopback address must NOT be fetched, so its contents cannot be exfiltrated to the
+// client. The guard defaults to blocking (allowPrivateImageDownloadHosts stays false here).
+func TestResponsesImageBridgeBlocksPrivateImageURL(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayErrorDB(t)
+	secret := "SECRET-INTERNAL-METADATA"
+	internal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte(secret))
+	}))
+	t.Cleanup(internal.Close)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"created":1,"data":[{"url":"` + internal.URL + `/secret.png"}]}`))
+	}))
+	t.Cleanup(upstream.Close)
+	createImageBridgeGroup(t, ctx, upstream.URL, "gpt-image-2", "gpt-image-2", outbound.OutboundTypeOpenAIChat)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-image-2","input":"a fish"}`))
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+	c.Set("api_key_id", 0)
+	c.Set("user_id", 0)
+	c.Set("request_ip", "127.0.0.1")
+	Handler(inbound.InboundTypeOpenAIResponse, c)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected responses image bridge to succeed (best-effort), got %d body %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, secret) || strings.Contains(body, base64.StdEncoding.EncodeToString([]byte(secret))) {
+		t.Fatalf("SSRF guard failed: internal loopback content leaked into response: %s", body)
 	}
 }
 

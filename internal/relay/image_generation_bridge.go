@@ -8,8 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/bestruirui/octopus/internal/helper"
@@ -330,16 +333,66 @@ func (ra *relayAttempt) ensureResponsesImageResultsBase64(ctx context.Context, r
 	return nil
 }
 
+// allowPrivateImageDownloadHosts is a test-only hook. Production keeps it false so the SSRF
+// guard blocks private/loopback/link-local destinations; tests that serve images from an
+// httptest server (127.0.0.1) flip it true for the duration of the test.
+var allowPrivateImageDownloadHosts = false
+
+// imageDownloadClient fetches upstream-provided image URLs to satisfy a Responses base64
+// result. The URL is controlled by the (only semi-trusted) upstream, so the dialer refuses
+// to connect to any non-public address — a returned metadata/internal URL (169.254.169.254,
+// 127.0.0.1, 10.x, …) cannot be turned into an SSRF probe or exfiltrated to the client.
+// Redirects run through the same Control and are capped. It deliberately does NOT use the
+// channel proxy: image URLs are public CDNs, and a fixed public-only egress is the safe path.
+var imageDownloadClient = &http.Client{
+	Timeout: 30 * time.Second,
+	CheckRedirect: func(_ *http.Request, via []*http.Request) error {
+		if len(via) >= 5 {
+			return errors.New("too many redirects")
+		}
+		return nil
+	},
+	Transport: &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:   10 * time.Second,
+			KeepAlive: 10 * time.Second,
+			Control: func(_, address string, _ syscall.RawConn) error {
+				host, _, err := net.SplitHostPort(address)
+				if err != nil {
+					return err
+				}
+				ip := net.ParseIP(host)
+				if ip == nil {
+					return fmt.Errorf("refusing to fetch image from unresolved address %s", host)
+				}
+				if allowPrivateImageDownloadHosts {
+					return nil
+				}
+				if ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() ||
+					ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() {
+					return fmt.Errorf("refusing to fetch image from non-public address %s", host)
+				}
+				return nil
+			},
+		}).DialContext,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 20 * time.Second,
+	},
+}
+
 func (ra *relayAttempt) downloadImageToBase64DataURL(ctx context.Context, rawURL string) (string, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return "", err
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", fmt.Errorf("refusing to fetch image from non-http(s) scheme %q", parsed.Scheme)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return "", err
 	}
-	httpClient, err := helper.ChannelHttpClient(ra.channel)
-	if err != nil {
-		return "", err
-	}
-	resp, err := httpClient.Do(req)
+	resp, err := imageDownloadClient.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -417,12 +470,6 @@ func imagesGenerationPayloadFromInternalRequest(req *transformerModel.InternalLL
 		}
 		if value := strings.TrimSpace(tool.Size); value != "" {
 			payload["size"] = value
-		}
-		if value := strings.TrimSpace(tool.ResponseFormat); value != "" {
-			payload["response_format"] = value
-		}
-		if value := strings.TrimSpace(tool.Style); value != "" {
-			payload["style"] = value
 		}
 		if tool.Watermark {
 			payload["watermark"] = tool.Watermark

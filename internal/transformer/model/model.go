@@ -1283,10 +1283,6 @@ type ImageGeneration struct {
 	Quality string `json:"quality,omitempty"`
 	// One of 256x256, 512x512, or 1024x1024. Default: 1024x1024.
 	Size string `json:"size,omitempty"`
-	// The format the generated images are returned in: url or b64_json.
-	ResponseFormat string `json:"response_format,omitempty"`
-	// dall-e-3 style: vivid or natural.
-	Style string `json:"style,omitempty"`
 
 	// Whether to add a watermark to the generated image. Default: false.
 	// It only works for the models support watermark, it will be ignored otherwise.

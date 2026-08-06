@@ -87,16 +87,15 @@ func normalizeOpenAIChatToolMessages(request *model.InternalLLMRequest) {
 	}
 }
 
-// flattenImageContentToMarkdown rewrites an assistant message whose content is an
-// image_url multipart array (produced by the image-generation bridge) into a plain
-// string carrying a Markdown image, mirroring new-api's chat image rendering. A chat
-// client's assistant `content` is typed as a string, so an array would leave standard
-// clients showing a blank turn; a Markdown ![image](...) renders everywhere and keeps
-// the data-URL/URL intact. No-op unless the message actually carries an image part, so
-// ordinary text responses serialize byte-identically.
-func flattenImageContentToMarkdown(msg *model.Message) {
+// markdownContentForImageMessage renders an assistant message whose content is an image_url
+// multipart array (produced by the image-generation bridge) as a plain string carrying a
+// Markdown image, mirroring new-api. A chat client's assistant `content` is typed as a
+// string, so an array leaves standard clients showing a blank turn; ![image](...) renders
+// everywhere. Returns ("", false) unless the message actually carries an image part, so
+// ordinary text/tool responses are left untouched (and never copied).
+func markdownContentForImageMessage(msg *model.Message) (string, bool) {
 	if msg == nil || len(msg.Content.MultipleContent) == 0 {
-		return
+		return "", false
 	}
 	hasImage := false
 	var b strings.Builder
@@ -125,23 +124,59 @@ func flattenImageContentToMarkdown(msg *model.Message) {
 		}
 	}
 	if !hasImage {
-		return
+		return "", false
 	}
-	s := b.String()
-	msg.Content.Content = &s
-	msg.Content.MultipleContent = nil
+	return b.String(), true
+}
+
+// chatResponseWithMarkdownImages returns a view of the response where any assistant image_url
+// content is flattened to a Markdown string for the chat wire format. It does NOT mutate the
+// input (or i.storedResponse / streamChunks), so the internal response keeps its image_url
+// parts — the token estimator ignores those, whereas a flattened base64 data-URL would be
+// counted as text tokens and overcharge. Returns the input unchanged (no copy) when there is
+// no image content, so ordinary responses pay nothing.
+func chatResponseWithMarkdownImages(resp *model.InternalLLMResponse) *model.InternalLLMResponse {
+	if resp == nil {
+		return resp
+	}
+	needsCopy := false
+	for i := range resp.Choices {
+		if _, ok := markdownContentForImageMessage(resp.Choices[i].Message); ok {
+			needsCopy = true
+			break
+		}
+		if _, ok := markdownContentForImageMessage(resp.Choices[i].Delta); ok {
+			needsCopy = true
+			break
+		}
+	}
+	if !needsCopy {
+		return resp
+	}
+	out := *resp
+	out.Choices = make([]model.Choice, len(resp.Choices))
+	copy(out.Choices, resp.Choices)
+	for i := range out.Choices {
+		if md, ok := markdownContentForImageMessage(out.Choices[i].Message); ok {
+			m := *out.Choices[i].Message
+			m.Content = model.MessageContent{Content: &md}
+			out.Choices[i].Message = &m
+		}
+		if md, ok := markdownContentForImageMessage(out.Choices[i].Delta); ok {
+			d := *out.Choices[i].Delta
+			d.Content = model.MessageContent{Content: &md}
+			out.Choices[i].Delta = &d
+		}
+	}
+	return &out
 }
 
 func (i *ChatInbound) TransformResponse(ctx context.Context, response *model.InternalLLMResponse) ([]byte, error) {
-	// Store the response for later retrieval
+	// Store the (unflattened) response for later retrieval / billing.
 	i.storedResponse = response
 
-	// Render any bridged image_url content as a Markdown image string for chat clients.
-	for idx := range response.Choices {
-		flattenImageContentToMarkdown(response.Choices[idx].Message)
-	}
-
-	body, err := json.Marshal(response)
+	// Marshal a view with any bridged image_url content rendered as a Markdown image string.
+	body, err := json.Marshal(chatResponseWithMarkdownImages(response))
 	if err != nil {
 		return nil, err
 	}
@@ -153,31 +188,29 @@ func (i *ChatInbound) TransformStream(ctx context.Context, stream *model.Interna
 		return []byte("data: [DONE]\n\n"), nil
 	}
 
-	// Store the chunk for aggregation
+	// Store the (unflattened) chunk for aggregation
 	i.streamChunks = append(i.streamChunks, stream)
 
-	// Render any bridged image_url delta as a Markdown image string for chat clients.
-	for idx := range stream.Choices {
-		flattenImageContentToMarkdown(stream.Choices[idx].Delta)
-	}
+	// Non-mutating Markdown view of any bridged image_url delta for chat clients.
+	wire := chatResponseWithMarkdownImages(stream)
 
 	var body []byte
 	var err error
 
 	// Handle the case where choices are empty but we need them to be present as an empty array
 	// This is to satisfy some clients (like Cherry Studio) that require choices field to be present
-	if len(stream.Choices) == 0 && stream.Object == "chat.completion.chunk" {
+	if len(wire.Choices) == 0 && wire.Object == "chat.completion.chunk" {
 		type Alias model.InternalLLMResponse
 		aux := &struct {
 			*Alias
 			Choices []model.Choice `json:"choices"`
 		}{
-			Alias:   (*Alias)(stream),
+			Alias:   (*Alias)(wire),
 			Choices: []model.Choice{},
 		}
 		body, err = json.Marshal(aux)
 	} else {
-		body, err = json.Marshal(stream)
+		body, err = json.Marshal(wire)
 	}
 
 	if err != nil {
