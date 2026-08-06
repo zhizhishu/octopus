@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -160,10 +161,14 @@ func TestChatImageModelBridgesToImagesEndpoint(t *testing.T) {
 		t.Fatalf("expected chat image bridge to succeed, got %d body %s", rec.Code, rec.Body.String())
 	}
 	bodyText := rec.Body.String()
+	// A chat client's assistant content is a string: the image is rendered as a Markdown
+	// image (like new-api), not an image_url multipart array standard clients can't parse.
 	if !strings.Contains(bodyText, `"object":"chat.completion"`) ||
-		!strings.Contains(bodyText, `"type":"image_url"`) ||
-		!strings.Contains(bodyText, `data:image/png;base64,Y2hhdC1pbWc=`) {
-		t.Fatalf("expected chat-shaped image result, got %s", bodyText)
+		!strings.Contains(bodyText, `![image](data:image/png;base64,Y2hhdC1pbWc=)`) {
+		t.Fatalf("expected chat markdown image result, got %s", bodyText)
+	}
+	if strings.Contains(bodyText, `"type":"image_url"`) {
+		t.Fatalf("chat image result should be a Markdown string, not an image_url array: %s", bodyText)
 	}
 
 	mu.Lock()
@@ -367,6 +372,95 @@ func TestResponsesGrokImageGenerationBridgeSanitizesPayload(t *testing.T) {
 	}
 }
 
+// TestChatImageBridgeThreadsN guards that a client's image count survives to the upstream
+// /v1/images/generations request instead of always being dropped to 1.
+func TestChatImageBridgeThreadsN(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayErrorDB(t)
+	var (
+		mu      sync.Mutex
+		gotBody map[string]any
+	)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		gotBody = body
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"created":1,"data":[{"b64_json":"aW1n"}]}`))
+	}))
+	t.Cleanup(upstream.Close)
+	createImageBridgeGroup(t, ctx, upstream.URL, "gpt-image-2", "gpt-image-2", outbound.OutboundTypeOpenAIChat)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+		"model":"gpt-image-2",
+		"messages":[{"role":"user","content":"three crabs"}],
+		"n":3
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+	c.Set("api_key_id", 0)
+	c.Set("user_id", 0)
+	c.Set("request_ip", "127.0.0.1")
+	Handler(inbound.InboundTypeOpenAIChat, c)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected chat image bridge to succeed, got %d body %s", rec.Code, rec.Body.String())
+	}
+	mu.Lock()
+	body := gotBody
+	mu.Unlock()
+	if body["n"] != float64(3) {
+		t.Fatalf("expected upstream image payload n=3, got %#v (full %#v)", body["n"], body)
+	}
+}
+
+// TestResponsesImageBridgeDownloadsURLToBase64 guards that a URL-returning image upstream
+// is fetched and re-encoded to base64 for a Responses image_generation_call.result (which
+// must be base64 bytes, not a URL).
+func TestResponsesImageBridgeDownloadsURLToBase64(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayErrorDB(t)
+	imgBytes := []byte("PNG-BYTES-abc123")
+	imgServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(imgBytes)
+	}))
+	t.Cleanup(imgServer.Close)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"created":1,"data":[{"url":"` + imgServer.URL + `/pic.png"}]}`))
+	}))
+	t.Cleanup(upstream.Close)
+	createImageBridgeGroup(t, ctx, upstream.URL, "gpt-image-2", "gpt-image-2", outbound.OutboundTypeOpenAIChat)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{
+		"model":"gpt-image-2",
+		"input":"a fish"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+	c.Set("api_key_id", 0)
+	c.Set("user_id", 0)
+	c.Set("request_ip", "127.0.0.1")
+	Handler(inbound.InboundTypeOpenAIResponse, c)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected responses image bridge to succeed, got %d body %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	wantB64 := base64.StdEncoding.EncodeToString(imgBytes)
+	if !strings.Contains(body, `"type":"image_generation_call"`) || !strings.Contains(body, wantB64) {
+		t.Fatalf("expected downloaded base64 result %q in responses body, got %s", wantB64, body)
+	}
+	if strings.Contains(body, imgServer.URL) {
+		t.Fatalf("responses result should carry base64 bytes, not a raw URL: %s", body)
+	}
+}
+
 func TestChatAndResponsesGeminiImagenRoutesToPredict(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx := setupRelayErrorDB(t)
@@ -551,11 +645,15 @@ func TestChatImageModelStreamBridgesToSSE(t *testing.T) {
 		t.Fatalf("expected SSE content type, got %q", rec.Header().Get("Content-Type"))
 	}
 	bodyText := rec.Body.String()
+	// Streamed chat image is a Markdown image string in delta.content (like new-api), not
+	// an image_url multipart array.
 	if !strings.Contains(bodyText, `"object":"chat.completion.chunk"`) ||
-		!strings.Contains(bodyText, `"type":"image_url"`) ||
-		!strings.Contains(bodyText, `data:image/png;base64,Y2hhdC1zdHJlYW0taW1n`) ||
+		!strings.Contains(bodyText, `![image](data:image/png;base64,Y2hhdC1zdHJlYW0taW1n)`) ||
 		!strings.Contains(bodyText, `data: [DONE]`) {
-		t.Fatalf("expected chat SSE image chunks, got %s", bodyText)
+		t.Fatalf("expected chat SSE markdown image chunks, got %s", bodyText)
+	}
+	if strings.Contains(bodyText, `"type":"image_url"`) {
+		t.Fatalf("streamed chat image should be a Markdown string, not an image_url array: %s", bodyText)
 	}
 }
 

@@ -73,11 +73,12 @@ type InternalLLMRequest struct {
 	// [o-series models](https://platform.openai.com/docs/guides/reasoning).
 	MaxTokens *int64 `json:"max_tokens,omitempty"`
 
-	// How many chat completion choices to generate for each input message. Note that
-	// you will be charged based on the number of generated tokens across all of the
-	// choices. Keep `n` as `1` to minimize costs.
-	// NOTE: Not supported, always 1.
-	// N *int64 `json:"n,omitempty"`
+	// How many chat completion choices / images to generate. Billing is usage-token based
+	// (buildBillingSnapshot), so cost scales with the upstream usage returned for all
+	// choices/images — no separate n multiplier needed. Forwarded to chat and threaded
+	// into the /v1/images/generations bridge payload; mirrors new-api, which carries a
+	// general top-level n.
+	N *int64 `json:"n,omitempty"`
 
 	// Number between -2.0 and 2.0. Positive values penalize new tokens based on
 	// whether they appear in the text so far, increasing the model's likelihood to
@@ -1282,6 +1283,10 @@ type ImageGeneration struct {
 	Quality string `json:"quality,omitempty"`
 	// One of 256x256, 512x512, or 1024x1024. Default: 1024x1024.
 	Size string `json:"size,omitempty"`
+	// The format the generated images are returned in: url or b64_json.
+	ResponseFormat string `json:"response_format,omitempty"`
+	// dall-e-3 style: vivid or natural.
+	Style string `json:"style,omitempty"`
 
 	// Whether to add a watermark to the generated image. Default: false.
 	// It only works for the models support watermark, it will be ignored otherwise.

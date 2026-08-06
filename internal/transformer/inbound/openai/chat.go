@@ -87,9 +87,59 @@ func normalizeOpenAIChatToolMessages(request *model.InternalLLMRequest) {
 	}
 }
 
+// flattenImageContentToMarkdown rewrites an assistant message whose content is an
+// image_url multipart array (produced by the image-generation bridge) into a plain
+// string carrying a Markdown image, mirroring new-api's chat image rendering. A chat
+// client's assistant `content` is typed as a string, so an array would leave standard
+// clients showing a blank turn; a Markdown ![image](...) renders everywhere and keeps
+// the data-URL/URL intact. No-op unless the message actually carries an image part, so
+// ordinary text responses serialize byte-identically.
+func flattenImageContentToMarkdown(msg *model.Message) {
+	if msg == nil || len(msg.Content.MultipleContent) == 0 {
+		return
+	}
+	hasImage := false
+	var b strings.Builder
+	if msg.Content.Content != nil && *msg.Content.Content != "" {
+		b.WriteString(*msg.Content.Content)
+	}
+	for _, part := range msg.Content.MultipleContent {
+		switch part.Type {
+		case "text", "input_text", "output_text":
+			if part.Text != nil && *part.Text != "" {
+				if b.Len() > 0 {
+					b.WriteString("\n")
+				}
+				b.WriteString(*part.Text)
+			}
+		case "image_url":
+			if part.ImageURL != nil && strings.TrimSpace(part.ImageURL.URL) != "" {
+				hasImage = true
+				if b.Len() > 0 {
+					b.WriteString("\n")
+				}
+				b.WriteString("![image](")
+				b.WriteString(part.ImageURL.URL)
+				b.WriteString(")")
+			}
+		}
+	}
+	if !hasImage {
+		return
+	}
+	s := b.String()
+	msg.Content.Content = &s
+	msg.Content.MultipleContent = nil
+}
+
 func (i *ChatInbound) TransformResponse(ctx context.Context, response *model.InternalLLMResponse) ([]byte, error) {
 	// Store the response for later retrieval
 	i.storedResponse = response
+
+	// Render any bridged image_url content as a Markdown image string for chat clients.
+	for idx := range response.Choices {
+		flattenImageContentToMarkdown(response.Choices[idx].Message)
+	}
 
 	body, err := json.Marshal(response)
 	if err != nil {
@@ -105,6 +155,11 @@ func (i *ChatInbound) TransformStream(ctx context.Context, stream *model.Interna
 
 	// Store the chunk for aggregation
 	i.streamChunks = append(i.streamChunks, stream)
+
+	// Render any bridged image_url delta as a Markdown image string for chat clients.
+	for idx := range stream.Choices {
+		flattenImageContentToMarkdown(stream.Choices[idx].Delta)
+	}
 
 	var body []byte
 	var err error

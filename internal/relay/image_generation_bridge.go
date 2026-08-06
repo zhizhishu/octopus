@@ -3,6 +3,7 @@ package relay
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,11 +13,19 @@ import (
 	"time"
 
 	"github.com/bestruirui/octopus/internal/helper"
+	"github.com/bestruirui/octopus/internal/utils/log"
+
+	"github.com/bestruirui/octopus/internal/transformer/inbound"
 	transformerModel "github.com/bestruirui/octopus/internal/transformer/model"
 	"github.com/bestruirui/octopus/internal/transformer/outbound"
 	"github.com/bestruirui/octopus/internal/utils/xurl"
 	"github.com/google/uuid"
 )
+
+// maxImageGenerationN caps the bridged /v1/images/generations count so a pathological or
+// wrapped n cannot fan out (mirrors new-api's MaxImageN guard). The upstream still enforces
+// its own per-model limit (e.g. gpt-image/dall-e-3 only allow 1).
+const maxImageGenerationN = 10
 
 type imagesGenerationAPIResponse struct {
 	Created int64                   `json:"created"`
@@ -125,6 +134,9 @@ func (ra *relayAttempt) forwardImageGenerationViaImages(ctx context.Context, spa
 	if err != nil {
 		return respUp.StatusCode, err
 	}
+	if err := ra.ensureResponsesImageResultsBase64(ctx, internalResponse); err != nil {
+		return respUp.StatusCode, err
+	}
 	if wantsStream {
 		if err := ra.writeImageGenerationBridgeStream(ctx, internalResponse); err != nil {
 			return respUp.StatusCode, err
@@ -192,6 +204,9 @@ func (ra *relayAttempt) forwardGeminiImageGenerationViaImages(ctx context.Contex
 	}
 	internalResponse, err := internalResponseFromImagesGenerationAPI(imageResp, ra.requestModel, actualModel, outputFormat)
 	if err != nil {
+		return respUp.StatusCode, err
+	}
+	if err := ra.ensureResponsesImageResultsBase64(ctx, internalResponse); err != nil {
 		return respUp.StatusCode, err
 	}
 	if wantsStream {
@@ -274,6 +289,81 @@ func (ra *relayAttempt) writeImageGenerationBridgeStream(ctx context.Context, re
 	return nil
 }
 
+// maxDownloadedImageBytes bounds an image fetched to satisfy a Responses base64 result.
+const maxDownloadedImageBytes = 32 << 20
+
+// ensureResponsesImageResultsBase64 makes a Responses image_generation_call.result valid:
+// that field is base64 image bytes, so when the upstream returned a plain URL (some image
+// providers only return URLs) and the downstream client speaks the Responses protocol, the
+// URL is fetched and re-encoded as a data URL (ExtractBase64FromDataURL then yields base64).
+// b64 upstreams already carry a data URL and are skipped, so gpt-image-2 pays nothing. Chat
+// downstreams keep the URL (rendered as a Markdown link), so this only runs for Responses.
+func (ra *relayAttempt) ensureResponsesImageResultsBase64(ctx context.Context, response *transformerModel.InternalLLMResponse) error {
+	if response == nil || ra.inboundType != inbound.InboundTypeOpenAIResponse {
+		return nil
+	}
+	for ci := range response.Choices {
+		msg := response.Choices[ci].Message
+		if msg == nil {
+			continue
+		}
+		for pi := range msg.Content.MultipleContent {
+			part := &msg.Content.MultipleContent[pi]
+			if part.Type != "image_url" || part.ImageURL == nil {
+				continue
+			}
+			u := strings.TrimSpace(part.ImageURL.URL)
+			if u == "" || strings.HasPrefix(u, "data:") {
+				continue
+			}
+			dataURL, err := ra.downloadImageToBase64DataURL(ctx, u)
+			if err != nil {
+				// Best-effort: a fetch failure must not fail an upstream generation that
+				// already succeeded. Leave the URL (no worse than before) — the Responses
+				// result is then a URL rather than base64, which the client can still fetch.
+				log.Warnf("image bridge: could not fetch %s for base64 responses result, leaving URL: %v", u, err)
+				continue
+			}
+			part.ImageURL.URL = dataURL
+		}
+	}
+	return nil
+}
+
+func (ra *relayAttempt) downloadImageToBase64DataURL(ctx context.Context, rawURL string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return "", err
+	}
+	httpClient, err := helper.ChannelHttpClient(ra.channel)
+	if err != nil {
+		return "", err
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("image download returned HTTP %d", resp.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxDownloadedImageBytes))
+	if err != nil {
+		return "", err
+	}
+	if len(data) == 0 {
+		return "", errors.New("image download returned an empty body")
+	}
+	mime := strings.TrimSpace(resp.Header.Get("Content-Type"))
+	if idx := strings.IndexByte(mime, ';'); idx >= 0 {
+		mime = strings.TrimSpace(mime[:idx])
+	}
+	if !strings.HasPrefix(mime, "image/") {
+		mime = "image/png"
+	}
+	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data), nil
+}
+
 func imagesGenerationPayloadFromInternalRequest(req *transformerModel.InternalLLMRequest) (map[string]any, string, error) {
 	if req == nil {
 		return nil, "", errors.New("request is nil")
@@ -288,6 +378,13 @@ func imagesGenerationPayloadFromInternalRequest(req *transformerModel.InternalLL
 	}
 	if req.User != nil && strings.TrimSpace(*req.User) != "" {
 		payload["user"] = *req.User
+	}
+	// Thread the requested image count so a client asking for n images gets n instead of
+	// always 1. Billing is usage-token based, so cost scales with the upstream usage the
+	// n images produce — no separate n multiplier. Clamp to a sane ceiling so a pathological
+	// n cannot fan out; the upstream still enforces its own per-model limit.
+	if req.N != nil && *req.N > 0 {
+		payload["n"] = min(*req.N, maxImageGenerationN)
 	}
 
 	tool := firstImageGenerationTool(req.Tools)
@@ -320,6 +417,12 @@ func imagesGenerationPayloadFromInternalRequest(req *transformerModel.InternalLL
 		}
 		if value := strings.TrimSpace(tool.Size); value != "" {
 			payload["size"] = value
+		}
+		if value := strings.TrimSpace(tool.ResponseFormat); value != "" {
+			payload["response_format"] = value
+		}
+		if value := strings.TrimSpace(tool.Style); value != "" {
+			payload["style"] = value
 		}
 		if tool.Watermark {
 			payload["watermark"] = tool.Watermark
