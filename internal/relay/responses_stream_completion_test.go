@@ -354,3 +354,70 @@ func TestForcedResponsesNonStreamCompletedAggregates(t *testing.T) {
 		t.Fatalf("expected aggregated responses JSON body, got %q", body)
 	}
 }
+
+// TestForcedResponsesNonStreamFirstTokenTimeout guards the non-stream aggregate
+// path's first-token cutoff. The production hang was a ping-only upstream that
+// never sends a meaningful token: every prelude/ping resets the idle timer, so
+// the idle cutoff never fires and the request stalls until the client's own
+// deadline. The first-token guard must catch it even while the idle timer keeps
+// being reset.
+func TestForcedResponsesNonStreamFirstTokenTimeout(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	setupRelayErrorDB(t)
+	// Idle cutoff stays generous and is reset by every prelude below, exactly like
+	// a ping-only upstream, so only the first-token guard can end this stall.
+	if err := op.SettingSetString(dbmodel.SettingKeyRelayStreamDataTimeoutSec, "30"); err != nil {
+		t.Fatalf("set stream data timeout setting: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	ra := &relayAttempt{
+		relayRequest: &relayRequest{
+			c:            c,
+			inboundType:  inbound.InboundTypeOpenAIResponse,
+			inAdapter:    &openaiInbound.ResponseInbound{},
+			requestModel: "gpt-5.5",
+		},
+		firstTokenTimeOutSec: 1,
+	}
+	pr, pw := io.Pipe()
+	defer pr.Close()
+	defer pw.Close()
+	response := &http.Response{
+		Header: http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:   pr,
+	}
+
+	// Emit a prelude-only event repeatedly (never a meaningful token) so the idle
+	// timer is reset on every tick; the first-token guard must still fire.
+	stop := make(chan struct{})
+	go func() {
+		prelude := `data: {"type":"response.created","response":{"id":"resp_1","object":"response","created_at":123,"model":"gpt-5.5","status":"in_progress","output":[]}}` + "\n\n"
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if _, err := io.WriteString(pw, prelude); err != nil {
+				return
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+	}()
+
+	startedAt := time.Now()
+	err := ra.handleStreamResponseAsNonStream(c.Request.Context(), response, &openaiOutbound.ResponseOutbound{})
+	close(stop)
+	if elapsed := time.Since(startedAt); elapsed > 3*time.Second {
+		t.Fatalf("expected first-token timeout to cut the stall quickly, elapsed %s", elapsed)
+	}
+	if err == nil || !strings.Contains(err.Error(), "first token timeout") {
+		t.Fatalf("expected first token timeout error, got %v", err)
+	}
+	if body := rec.Body.String(); body != "" {
+		t.Fatalf("forced non-stream aggregation should not write downstream data, got %q", body)
+	}
+}

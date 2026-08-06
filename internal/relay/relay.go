@@ -1936,7 +1936,25 @@ func (ra *relayAttempt) handleStreamResponseAsNonStream(ctx context.Context, res
 		}
 	})
 
-	// No downstream client stream here, so we only guard against a stalled or
+	// A stalled or empty upstream must not hang a non-stream client until its own
+	// deadline: mirror handleStreamResponse's first-token guard so we fail fast
+	// (and let the balancer switch channels) when no meaningful token arrives.
+	// Heartbeats / prelude events do NOT reset this — only a real token disarms it
+	// below — so a ping-only stall is caught here rather than slipping past the
+	// idle timeout, which every event (pings included) resets.
+	var firstTokenTimer *time.Timer
+	var firstTokenC <-chan time.Time
+	if ra.firstTokenTimeOutSec > 0 {
+		firstTokenTimer = time.NewTimer(time.Duration(ra.firstTokenTimeOutSec) * time.Second)
+		firstTokenC = firstTokenTimer.C
+		defer func() {
+			if firstTokenTimer != nil {
+				firstTokenTimer.Stop()
+			}
+		}()
+	}
+
+	// No downstream client stream here, so we also guard against a stalled or
 	// ping-only upstream with the same idle cutoff handleStreamResponse uses.
 	var dataTimeoutC <-chan time.Time
 	var dataTimeoutTimer *time.Timer
@@ -1972,6 +1990,10 @@ readLoop:
 				return fmt.Errorf("client disconnected during forced responses stream: %w", err)
 			}
 			return errors.New("client disconnected during forced responses stream")
+		case <-firstTokenC:
+			log.Warnf("first token timeout (%ds), switching channel", ra.firstTokenTimeOutSec)
+			_ = response.Body.Close()
+			return fmt.Errorf("first token timeout (%ds)", ra.firstTokenTimeOutSec)
 		case <-dataTimeoutC:
 			log.Warnf("forced responses stream data interval timeout (%s), closing upstream stream", dataIntervalTimeout)
 			_ = response.Body.Close()
@@ -2016,9 +2038,23 @@ readLoop:
 				return err
 			}
 			if internalStream != nil && internalStream.Object != "[DONE]" && internalStreamHasMeaningfulResponse(internalStream) {
-				seenMeaningfulChunk = true
-				if ra.metrics != nil && ra.metrics.FirstTokenTime.IsZero() {
-					ra.setFirstTokenTime(time.Now())
+				if !seenMeaningfulChunk {
+					seenMeaningfulChunk = true
+					if ra.metrics != nil && ra.metrics.FirstTokenTime.IsZero() {
+						ra.setFirstTokenTime(time.Now())
+					}
+					// First real token arrived: disarm the first-token guard so a
+					// slow-but-progressing upstream is never cut mid-generation.
+					if firstTokenTimer != nil {
+						if !firstTokenTimer.Stop() {
+							select {
+							case <-firstTokenTimer.C:
+							default:
+							}
+						}
+						firstTokenTimer = nil
+						firstTokenC = nil
+					}
 				}
 			}
 		}
