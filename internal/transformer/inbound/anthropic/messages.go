@@ -42,6 +42,17 @@ type MessagesInbound struct {
 	storedResponse *model.InternalLLMResponse
 }
 
+// ResetStreamAggregation drops all per-response streaming/aggregation state so this
+// adapter can transform a fresh upstream attempt without leaking the previous one's
+// chunks. The forced non-stream aggregate path shares one inbound adapter across every
+// channel/key retry; a failed attempt that produced partial content would otherwise be
+// concatenated into the successful failover attempt's aggregated body. The zero value
+// equals a freshly constructed &MessagesInbound{} and TransformRequest keeps no
+// request-level state on the adapter, so resetting to zero is a complete, safe restart.
+func (i *MessagesInbound) ResetStreamAggregation() {
+	*i = MessagesInbound{}
+}
+
 func (i *MessagesInbound) TransformRequest(ctx context.Context, body []byte) (*model.InternalLLMRequest, error) {
 	var anthropicReq MessageRequest
 	if err := json.Unmarshal(body, &anthropicReq); err != nil {

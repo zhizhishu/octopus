@@ -2008,12 +2008,25 @@ func (ra *relayAttempt) handleStreamResponseAsNonStream(ctx context.Context, res
 		}
 	}
 
+	// The inbound adapter is shared across every channel/key retry (relayRequest.inAdapter)
+	// and accumulates stream chunks until a successful GetInternalResponse clears them, so
+	// a failed attempt that produced partial content would leak into the successful
+	// failover attempt's aggregated body ("OLDNEW"). The keepalive below keeps the client
+	// alive long enough for failover to actually land, making that leakage reachable — so
+	// reset the adapter's stream state before transforming this attempt's chunks.
+	if r, ok := ra.inAdapter.(interface{ ResetStreamAggregation() }); ok {
+		r.ResetStreamAggregation()
+	}
+
 	// Keep the non-stream client (and any idle-timeout reverse proxy in front of it)
 	// warm while a slow/reasoning upstream buffers, mirroring CLIProxyAPI's blank-line
 	// keepalive. A "\n" is JSON insignificant whitespace, so it never corrupts the
 	// aggregated body; it commits the response head but NOT wroteMeaningfulDownstream,
 	// so failover across channels stays possible (see the all-channels-failed path).
+	// X-Accel-Buffering: no tells an nginx/1Panel front proxy not to buffer the
+	// heartbeats, so they actually reach the client instead of being held back.
 	ra.c.Header("Content-Type", "application/json")
+	ra.c.Header("X-Accel-Buffering", "no")
 	var keepaliveC <-chan time.Time
 	var keepaliveTicker *time.Ticker
 	if keepaliveInterval := currentStreamKeepaliveInterval(); keepaliveInterval > 0 {
@@ -2051,12 +2064,15 @@ readLoop:
 		case <-keepaliveC:
 			// Blank-line heartbeat: JSON insignificant whitespace that keeps the client
 			// connection warm without committing content, so failover stays possible.
+			// Mark JSON-committed BEFORE the write: a Write that commits the response head
+			// then returns a partial-write error would otherwise leave the
+			// all-channels-failed path splicing an SSE error into this JSON stream.
+			ra.wroteNonStreamJSONKeepalive = true
 			if _, werr := ra.c.Writer.Write([]byte("\n")); werr != nil {
 				_ = response.Body.Close()
 				return fmt.Errorf("client disconnected during forced responses stream keepalive: %w", werr)
 			}
 			ra.c.Writer.Flush()
-			ra.wroteNonStreamJSONKeepalive = true
 		case r, ok := <-results:
 			if !ok {
 				break readLoop
@@ -2105,6 +2121,13 @@ readLoop:
 					// slow-but-progressing upstream is never cut mid-generation.
 					disarmFirstToken()
 				}
+			}
+			// A terminal completion carries the full response; stop reading once we have
+			// it instead of blocking on a [DONE]/EOF the upstream may never send — that
+			// would hang until the idle timeout, and the completion already disarmed the
+			// first-token guard. The post-loop path synthesizes the missing [DONE].
+			if sawUpstreamCompletion {
+				break readLoop
 			}
 		}
 	}

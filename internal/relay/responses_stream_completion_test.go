@@ -481,3 +481,61 @@ func TestForcedResponsesNonStreamKeepaliveThenAggregates(t *testing.T) {
 		t.Fatalf("keepalive-prefixed body is not valid JSON: %v (body=%q)", err, body)
 	}
 }
+
+// TestForcedResponsesNonStreamResetsAdapterBetweenAttempts guards the shared-inAdapter
+// contamination: a failed attempt that produced partial content must not leak into a
+// later attempt's aggregated body. handleStreamResponseAsNonStream resets the adapter on
+// entry, so running it twice on the same relayAttempt (a channel/key retry reusing
+// relayRequest.inAdapter) yields only the second attempt's content.
+func TestForcedResponsesNonStreamResetsAdapterBetweenAttempts(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	ra := &relayAttempt{relayRequest: &relayRequest{
+		c:            c,
+		inboundType:  inbound.InboundTypeOpenAIResponse,
+		inAdapter:    &openaiInbound.ResponseInbound{},
+		requestModel: "gpt-5.5",
+	}}
+
+	// Attempt 1: emit partial content "OLD", then fail the stream read (no completion),
+	// leaving "OLD" accumulated in the shared adapter.
+	pr1, pw1 := io.Pipe()
+	resp1 := &http.Response{
+		Header: http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:   pr1,
+	}
+	go func() {
+		_, _ = io.WriteString(pw1, `data: {"type":"response.created","response":{"id":"resp_A","object":"response","created_at":1,"model":"gpt-5.5","status":"in_progress","output":[]}}`+"\n\n")
+		_, _ = io.WriteString(pw1, `data: {"type":"response.output_text.delta","delta":"OLD-LEAKED-TEXT"}`+"\n\n")
+		_ = pw1.CloseWithError(errors.New("upstream boom"))
+	}()
+	if err := ra.handleStreamResponseAsNonStream(c.Request.Context(), resp1, &openaiOutbound.ResponseOutbound{}); err == nil {
+		t.Fatalf("attempt 1 was expected to fail on the stream read error")
+	}
+
+	// Attempt 2 on the SAME relayAttempt: clean stream producing "NEW".
+	rec2 := httptest.NewRecorder()
+	ra.c, _ = gin.CreateTestContext(rec2)
+	ra.c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	resp2 := &http.Response{
+		Header: http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body: io.NopCloser(strings.NewReader(
+			`data: {"type":"response.created","response":{"id":"resp_B","object":"response","created_at":2,"model":"gpt-5.5","status":"in_progress","output":[]}}` + "\n\n" +
+				`data: {"type":"response.output_text.delta","delta":"NEW"}` + "\n\n" +
+				`data: {"type":"response.completed","response":{"id":"resp_B","object":"response","created_at":2,"model":"gpt-5.5","status":"completed","output":[{"id":"msg_1","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"NEW"}]}],"usage":{"input_tokens":1,"input_tokens_details":{"cached_tokens":0},"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":2}}}` + "\n\n" +
+				`data: [DONE]` + "\n\n",
+		)),
+	}
+	if err := ra.handleStreamResponseAsNonStream(ra.c.Request.Context(), resp2, &openaiOutbound.ResponseOutbound{}); err != nil {
+		t.Fatalf("attempt 2 aggregation failed: %v", err)
+	}
+	body := rec2.Body.String()
+	if strings.Contains(body, "OLD-LEAKED-TEXT") {
+		t.Fatalf("failed attempt's content leaked into the successful body: %q", body)
+	}
+	if !strings.Contains(body, "NEW") {
+		t.Fatalf("expected the second attempt's content in the aggregated body, got %q", body)
+	}
+}
