@@ -1,10 +1,59 @@
 package price
 
 import (
+	"context"
+	"path/filepath"
 	"testing"
 
+	"github.com/bestruirui/octopus/internal/db"
 	"github.com/bestruirui/octopus/internal/model"
+	"github.com/bestruirui/octopus/internal/op"
 )
+
+// TestGetLLMPriceZeroDBEntryFallsThroughToCatalog guards the shadow fix: a zero-price
+// placeholder LLMInfo row (auto-created when a model is added to a channel) must NOT hide
+// the models.dev catalog price, or the model bills at 0 forever. A non-zero DB row (a real
+// manual override) still wins.
+func TestGetLLMPriceZeroDBEntryFallsThroughToCatalog(t *testing.T) {
+	dir := t.TempDir()
+	if err := db.InitDB("sqlite", filepath.Join(dir, "octopus.db"), false); err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+	// Close the DB before t.TempDir's cleanup runs (LIFO), so Windows can unlink the file.
+	t.Cleanup(func() {
+		if sqlDB, err := db.GetDB().DB(); err == nil {
+			_ = sqlDB.Close()
+		}
+	})
+	ctx := context.Background()
+
+	llmPriceLock.Lock()
+	llmPrice["gpt-shadow-test"] = model.LLMPrice{Input: 5, Output: 30, CacheRead: 0.5, CacheWrite: 6.25}
+	llmPrice["gpt-override-test"] = model.LLMPrice{Input: 5, Output: 30}
+	llmPriceLock.Unlock()
+	defer func() {
+		llmPriceLock.Lock()
+		delete(llmPrice, "gpt-shadow-test")
+		delete(llmPrice, "gpt-override-test")
+		llmPriceLock.Unlock()
+	}()
+
+	// Zero placeholder DB row must fall through to the catalog price.
+	if err := op.LLMCreate(model.LLMInfo{Name: "gpt-shadow-test"}, ctx); err != nil {
+		t.Fatalf("create zero placeholder: %v", err)
+	}
+	if got := GetLLMPrice("gpt-shadow-test"); got == nil || got.Output != 30 {
+		t.Fatalf("expected catalog price (output 30) to win over the zero placeholder, got %+v", got)
+	}
+
+	// A real non-zero DB override still wins over the catalog.
+	if err := op.LLMCreate(model.LLMInfo{Name: "gpt-override-test", LLMPrice: model.LLMPrice{Input: 2, Output: 12}}, ctx); err != nil {
+		t.Fatalf("create override: %v", err)
+	}
+	if got := GetLLMPrice("gpt-override-test"); got == nil || got.Output != 12 {
+		t.Fatalf("expected DB override (output 12) to win over the catalog, got %+v", got)
+	}
+}
 
 // TestGetLLMPriceVendorPrefixFallback verifies billing is not silently zeroed when
 // the upstream reports a vendor-prefixed model name: an exact miss retries with the

@@ -9,6 +9,14 @@ type LLMPrice struct {
 	CacheWrite float64 `json:"cache_write"`
 }
 
+// IsZero reports whether the price carries no billable rate at all. A zero LLMInfo row is a
+// placeholder (created when a model is added before it had a catalog price), not a deliberate
+// free price, so callers use this to fall through to the models.dev catalog instead of
+// billing the model at 0 forever.
+func (p LLMPrice) IsZero() bool {
+	return p.Input == 0 && p.Output == 0 && p.CacheRead == 0 && p.CacheWrite == 0
+}
+
 type LLMInfo struct {
 	Name string `json:"name" gorm:"primaryKey;not null"`
 	LLMPrice

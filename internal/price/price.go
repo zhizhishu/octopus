@@ -102,8 +102,12 @@ func GetLLMPrice(modelName string) *model.LLMPrice {
 }
 
 func lookupLLMPrice(modelName string) *model.LLMPrice {
-	price, err := op.LLMGet(modelName)
-	if err == nil {
+	// A DB row (manual override) wins ONLY when it carries a real price. A zero placeholder
+	// row — auto-created when a model is added to a channel before it had a catalog price —
+	// must NOT shadow the models.dev catalog, or the model bills at 0 forever even though
+	// models.dev now prices it (e.g. gpt-5.6-sol). A deliberate free model would also have no
+	// catalog entry, so it still resolves to nil/0 below.
+	if price, err := op.LLMGet(modelName); err == nil && !price.IsZero() {
 		return &price
 	}
 	llmPriceLock.RLock()
