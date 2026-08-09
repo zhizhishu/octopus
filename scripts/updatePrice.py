@@ -151,8 +151,10 @@ def main():
     raw_price = fetch_price_data()
     
     entries = []
+    seen_keys: set[str] = set()
+    dup_count = 0
     model_count = 0
-    
+
     for provider in PROVIDERS:
         if provider not in raw_price:
             print(f"  Provider '{provider}' not found, skipping...")
@@ -168,10 +170,16 @@ def main():
             if not model_id:
                 continue
             
-            # 添加原始模型
-            entries.append(generate_entry(model_id, cost))
-            provider_count += 1
-            
+            # 添加原始模型 (跨全表去重: models.dev 会把同一别名/模型放在多个 provider 下
+            # (如 glm-5.2 同时挂 zhipuai 和 z-ai)，全吐出会生成重复 Go map key → 编译失败。
+            # 首次出现的保留，后续同 key 跳过。)
+            if model_id in seen_keys:
+                dup_count += 1
+            else:
+                seen_keys.add(model_id)
+                entries.append(generate_entry(model_id, cost))
+                provider_count += 1
+
             # 收集所有别名
             aliases = []
             
@@ -182,9 +190,15 @@ def main():
             if model_id in MODEL_ALIASES:
                 aliases.extend(MODEL_ALIASES[model_id])
             
-            # 添加别名 (去重)
+            # 添加别名 (别名集合内 set 去重 + 跨全表 seen_keys 去重)
             for alias in set(aliases):
-                entries.append(generate_entry(alias.lower(), cost))
+                alias_key = alias.lower()
+                if not alias_key or alias_key in seen_keys:
+                    if alias_key:
+                        dup_count += 1
+                    continue
+                seen_keys.add(alias_key)
+                entries.append(generate_entry(alias_key, cost))
                 provider_count += 1
             
         print(f"  {provider}: {provider_count} models")
@@ -202,6 +216,8 @@ def main():
     output_path = script_dir.parent / "internal" / "price" / "presets.go"
     
     output_path.write_text(content, encoding="utf-8")
+    if dup_count:
+        print(f"  Skipped {dup_count} duplicate model/alias keys (kept first occurrence)")
     print(f"\nGenerated {output_path} with {model_count} models")
 
 
