@@ -109,6 +109,38 @@ func TestPrepareCodexRequestShapeKeepsExplicitReasoningSummary(t *testing.T) {
 	}
 }
 
+// Real codex never emits a summary-only reasoning object. For a non-reasoning model on a
+// codex-fingerprint channel where no effort is present (normalizeCodexReasoningEffort only
+// fills effort for the gpt-5.6 family), the summary default must be skipped so no bare
+// reasoning:{summary} materializes on the wire.
+func TestPrepareCodexRequestShapeSkipsSummaryWhenNoEffort(t *testing.T) {
+	content := "Say OK only"
+	req := &model.InternalLLMRequest{
+		Model:        "gpt-4o",
+		RawAPIFormat: model.APIFormatOpenAIResponse,
+		Messages: []model.Message{{
+			Role:    "user",
+			Content: model.MessageContent{Content: &content},
+		}},
+	}
+	ra := &relayAttempt{
+		relayRequest: &relayRequest{
+			inboundType:     inbound.InboundTypeOpenAIResponse,
+			internalRequest: req,
+		},
+		channel: &dbmodel.Channel{Type: outbound.OutboundTypeOpenAIResponse},
+	}
+
+	ra.prepareCodexRequestShape()
+
+	if req.ReasoningEffort != "" {
+		t.Fatalf("precondition: non-5.6 model with no effort should keep empty effort, got %q", req.ReasoningEffort)
+	}
+	if req.ReasoningSummary != "" {
+		t.Fatalf("expected no summary default without an effort (avoid summary-only reasoning object), got %q", req.ReasoningSummary)
+	}
+}
+
 func TestPrepareCodexRequestShapeSynthesizesPlainResponsesInput(t *testing.T) {
 	content := "Say OK only"
 	req := &model.InternalLLMRequest{

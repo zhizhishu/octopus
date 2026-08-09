@@ -142,6 +142,14 @@ func ensureCodexReasoningSummary(req *transformerModel.InternalLLMRequest) {
 	if req == nil {
 		return
 	}
+	// Real codex always sends effort+summary together. Only default summary when an
+	// effort is present (runs after normalizeCodexReasoningEffort, which fills effort for
+	// the gpt-5.6 family) so we never materialize a summary-only reasoning object — a
+	// shape the real CLI never produces and that a non-reasoning model's upstream could
+	// 400 on.
+	if strings.TrimSpace(req.ReasoningEffort) == "" {
+		return
+	}
 	if strings.TrimSpace(req.ReasoningSummary) == "" {
 		req.ReasoningSummary = "auto"
 	}
