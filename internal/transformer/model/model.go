@@ -188,6 +188,15 @@ type InternalLLMRequest struct {
 	// Controls effort on reasoning for reasoning models. It can be set to "low", "medium", or "high".
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 
+	// ReasoningSummary carries the client's reasoning.summary preference (e.g. "auto",
+	// "concise", "detailed"). A genuine codex CLI always sends reasoning.summary="auto"
+	// alongside the effort; that field is what makes a Responses upstream emit
+	// response.reasoning_summary_text.delta events *during* a long reasoning turn. Without
+	// it the upstream reasons silently and a long max-effort turn streams nothing to the
+	// client until the final message (perceived as a hang). Help field: only the Responses
+	// outbound projects it back onto reasoning.summary; other outbounds ignore it.
+	ReasoningSummary string `json:"-"`
+
 	// Reasoning budget for reasoning models.
 	// Help fields， will not be sent to the llm service.
 	ReasoningBudget *int64 `json:"-"`

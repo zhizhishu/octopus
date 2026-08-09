@@ -1476,6 +1476,7 @@ type ResponsesTextFormat struct {
 
 type ResponsesReasoning struct {
 	Effort    string `json:"effort,omitempty"`
+	Summary   string `json:"summary,omitempty"`
 	MaxTokens *int64 `json:"max_tokens,omitempty"`
 }
 
@@ -1613,6 +1614,12 @@ func convertToInternalRequest(req *ResponsesRequest) (*model.InternalLLMRequest,
 	if req.Reasoning != nil {
 		if req.Reasoning.Effort != "" {
 			chatReq.ReasoningEffort = req.Reasoning.Effort
+		}
+		// Preserve the client's reasoning.summary (a genuine codex CLI sends "auto") so the
+		// Responses outbound can forward it verbatim; dropping it makes the upstream reason
+		// silently and long turns stream nothing until the end (looks like a hang).
+		if req.Reasoning.Summary != "" {
+			chatReq.ReasoningSummary = req.Reasoning.Summary
 		}
 		if req.Reasoning.MaxTokens != nil {
 			chatReq.ReasoningBudget = req.Reasoning.MaxTokens

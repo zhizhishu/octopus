@@ -47,6 +47,7 @@ func (ra *relayAttempt) prepareCodexRequestShape() {
 	req.Store = &store
 	applyCodexFastMode(req)
 	normalizeCodexReasoningEffort(req)
+	ensureCodexReasoningSummary(req)
 	if codexSelfContained {
 		// The raw codex input already carries its developer/system instructions and tools; stop
 		// the outbound transformer from also hoisting a Messages-derived top-level `instructions`
@@ -128,6 +129,24 @@ func applyCodexFastMode(req *transformerModel.InternalLLMRequest) {
 //
 // Mirrors sub2api's normalizeOpenAIReasoningEffortForModel spirit without its aggressive
 // "drop unknown efforts" behaviour.
+// ensureCodexReasoningSummary guarantees the codex-faithful reasoning.summary="auto".
+// A genuine codex CLI always sends reasoning:{effort,summary:"auto"} — the summary field is
+// what makes a Responses upstream emit response.reasoning_summary_text.delta events *during*
+// a long reasoning turn. When it is missing (a chat->codex request, or a codex client that
+// left it empty) the upstream reasons silently, so a max-effort turn over a large context
+// streams NOTHING to the client for the whole 60-1200s reasoning window — perceived as a
+// hang. Only fill the default when the client left it empty; a client that explicitly chose
+// a summary level owns it. Shape-SAFE body change (reasoning.summary only), and it moves the
+// codex outbound CLOSER to the real CLI shape (which always carries summary="auto").
+func ensureCodexReasoningSummary(req *transformerModel.InternalLLMRequest) {
+	if req == nil {
+		return
+	}
+	if strings.TrimSpace(req.ReasoningSummary) == "" {
+		req.ReasoningSummary = "auto"
+	}
+}
+
 func normalizeCodexReasoningEffort(req *transformerModel.InternalLLMRequest) {
 	if req == nil {
 		return

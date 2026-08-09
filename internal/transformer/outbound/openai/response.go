@@ -806,7 +806,8 @@ type ResponsesTextFormat struct {
 }
 
 type ResponsesReasoning struct {
-	Effort string `json:"effort,omitempty"`
+	Effort  string `json:"effort,omitempty"`
+	Summary string `json:"summary,omitempty"`
 }
 
 // ResponsesResponse represents the OpenAI Responses API response format.
@@ -1052,10 +1053,13 @@ func ConvertToResponsesRequest(req *model.InternalLLMRequest) *ResponsesRequest 
 		}
 	}
 
-	// Convert reasoning
-	if req.ReasoningEffort != "" || req.ReasoningBudget != nil {
+	// Convert reasoning. Summary is carried through faithfully (a genuine codex CLI always
+	// sends reasoning.summary="auto"); without it the upstream withholds reasoning-summary
+	// stream events and a long reasoning turn streams nothing until the final message.
+	if req.ReasoningEffort != "" || req.ReasoningSummary != "" || req.ReasoningBudget != nil {
 		result.Reasoning = &ResponsesReasoning{
-			Effort: req.ReasoningEffort,
+			Effort:  req.ReasoningEffort,
+			Summary: req.ReasoningSummary,
 		}
 	}
 

@@ -50,6 +50,65 @@ func TestPrepareCodexRequestShapeForcesStoreFalseOverExplicitTrue(t *testing.T) 
 	}
 }
 
+// A genuine codex CLI always sends reasoning:{effort,summary:"auto"}; the summary field is
+// what makes a Responses upstream stream reasoning-summary deltas *during* a long reasoning
+// turn. oct historically dropped it (the reasoning struct had no summary field), so a
+// max-effort turn over a large context streamed nothing to the client until the final
+// message and looked frozen. prepareCodexRequestShape must default reasoning.summary="auto"
+// when the client left it empty.
+func TestPrepareCodexRequestShapeDefaultsReasoningSummaryAuto(t *testing.T) {
+	content := "Say OK only"
+	req := &model.InternalLLMRequest{
+		Model:        "gpt-5.6-sol",
+		RawAPIFormat: model.APIFormatOpenAIResponse,
+		Messages: []model.Message{{
+			Role:    "user",
+			Content: model.MessageContent{Content: &content},
+		}},
+	}
+	ra := &relayAttempt{
+		relayRequest: &relayRequest{
+			inboundType:     inbound.InboundTypeOpenAIResponse,
+			internalRequest: req,
+		},
+		channel: &dbmodel.Channel{Type: outbound.OutboundTypeOpenAIResponse},
+	}
+
+	ra.prepareCodexRequestShape()
+
+	if req.ReasoningSummary != "auto" {
+		t.Fatalf("expected codex shape to default reasoning.summary=auto, got %q", req.ReasoningSummary)
+	}
+}
+
+// A client that explicitly picked a reasoning.summary level owns it; the codex default must
+// never overwrite an explicit choice.
+func TestPrepareCodexRequestShapeKeepsExplicitReasoningSummary(t *testing.T) {
+	content := "Say OK only"
+	req := &model.InternalLLMRequest{
+		Model:            "gpt-5.6-sol",
+		RawAPIFormat:     model.APIFormatOpenAIResponse,
+		ReasoningSummary: "detailed",
+		Messages: []model.Message{{
+			Role:    "user",
+			Content: model.MessageContent{Content: &content},
+		}},
+	}
+	ra := &relayAttempt{
+		relayRequest: &relayRequest{
+			inboundType:     inbound.InboundTypeOpenAIResponse,
+			internalRequest: req,
+		},
+		channel: &dbmodel.Channel{Type: outbound.OutboundTypeOpenAIResponse},
+	}
+
+	ra.prepareCodexRequestShape()
+
+	if req.ReasoningSummary != "detailed" {
+		t.Fatalf("expected explicit reasoning.summary to be preserved, got %q", req.ReasoningSummary)
+	}
+}
+
 func TestPrepareCodexRequestShapeSynthesizesPlainResponsesInput(t *testing.T) {
 	content := "Say OK only"
 	req := &model.InternalLLMRequest{
