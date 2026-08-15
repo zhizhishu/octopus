@@ -15,6 +15,7 @@ import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
 import { cn } from '@/lib/utils';
 import { toast } from '@/components/common/Toast';
+import { TooltipProvider } from '@/components/animate-ui/components/animate/tooltip';
 import { useSettingList, useSetSetting, SettingKey } from '@/api/endpoints/setting';
 
 type LogSeverityFilter = RelayLogSeverity | 'all';
@@ -468,6 +469,9 @@ export function Log() {
         );
     }, [effectiveSelectedAPIKeyID, endTime, exportLogs, selectedEndpoint, selectedUserID, startTime]);
 
+    const renderLogCard = useCallback((row: LogRow) => <LogCard log={row.log} />, []);
+    const getLogRowKey = useCallback((row: LogRow) => row.key, []);
+
     const footer = useMemo(() => {
         if (isLoading || isLoadingMore) {
             return (
@@ -866,19 +870,21 @@ export function Log() {
                 </div>
             </div>
             <div className="min-h-0 flex-1">
+                <TooltipProvider>
                 <VirtualizedGrid
                     items={displayRows}
                     layout="list"
                     columns={{ default: 1 }}
                     estimateItemHeight={80}
                     overscan={8}
-                    getItemKey={(row) => row.key}
-                    renderItem={(row) => <LogCard log={row.log} />}
+                    getItemKey={getLogRowKey}
+                    renderItem={renderLogCard}
                     footer={footer}
                     onReachEnd={handleReachEnd}
                     reachEndEnabled={canLoadMore}
                     reachEndOffset={2}
                 />
+                </TooltipProvider>
             </div>
         </PageWrapper>
     );

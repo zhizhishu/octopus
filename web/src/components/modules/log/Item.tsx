@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState, useEffect, type ReactNode } from 'react';
+import React, { useMemo, useState, useEffect, useCallback, type ReactNode } from 'react';
 import { Brain, Clock, Cpu, Zap, AlertCircle, ArrowDownToLine, ArrowUpFromLine, DollarSign, ArrowRight, ArrowDown, Send, MessageSquare, Loader2, RotateCw, ChevronDown, ChevronUp, Pin, KeyRound, Percent, CheckCircle2, XCircle, Eye, Hash, MapPin, User, type LucideIcon } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { motion, AnimatePresence } from 'motion/react';
@@ -461,7 +461,7 @@ function DeferredJsonContent({ content, fallbackText }: { content: string | unde
     );
 }
 
-export function LogCard({ log }: { log: RelayLog }) {
+export const LogCard = React.memo(function LogCard({ log }: { log: RelayLog }) {
     const t = useTranslations('log.card');
     const canViewDetails = useAuthStore((state) => state.user?.role === 'admin');
     const { Avatar: ModelAvatar, color: brandColor } = useMemo(
@@ -553,7 +553,6 @@ export function LogCard({ log }: { log: RelayLog }) {
             : "text-emerald-600 dark:text-emerald-400";
 
     return (
-        <TooltipProvider>
             <MorphingDialog>
                 <MorphingDialogTrigger
                     disabled={!canViewDetails}
@@ -1080,6 +1079,5 @@ export function LogCard({ log }: { log: RelayLog }) {
                     </MorphingDialogContent>
                 </MorphingDialogContainer>
             </MorphingDialog>
-        </TooltipProvider>
     );
-}
+}, (prevProps, nextProps) => prevProps.log.id === nextProps.log.id && prevProps.log.time === nextProps.log.time);
