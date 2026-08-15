@@ -1076,7 +1076,14 @@ func applyRawResponsesRequestFields(req *model.InternalLLMRequest, result *Respo
 		result.Instructions = *req.ResponsesInstructions
 	}
 	if len(req.ResponsesInputRaw) > 0 {
-		result.Input = ResponsesInput{Raw: cloneRawMessage(req.ResponsesInputRaw)}
+		// Drop ids octopus itself poisoned older histories with (legacy "item_" prefix):
+		// strict upstreams 400 on a replayed input item whose id has the wrong per-type
+		// prefix. Valid ids (msg_/fc_/rs_/ig_, i.e. all genuine-backend ids) are untouched.
+		inputRaw := cloneRawMessage(req.ResponsesInputRaw)
+		if sanitized, changed := sanitizeResponsesInputItemIDsRaw(inputRaw); changed {
+			inputRaw = sanitized
+		}
+		result.Input = ResponsesInput{Raw: inputRaw}
 	}
 	if len(req.ResponsesToolsRaw) > 0 {
 		result.Tools = make([]ResponsesTool, 0, len(req.ResponsesToolsRaw))

@@ -25,6 +25,7 @@ import (
 	"github.com/bestruirui/octopus/internal/server/resp"
 	transformerModel "github.com/bestruirui/octopus/internal/transformer/model"
 	"github.com/bestruirui/octopus/internal/transformer/outbound"
+	openaiOutbound "github.com/bestruirui/octopus/internal/transformer/outbound/openai"
 	"github.com/bestruirui/octopus/internal/utils/log"
 	"github.com/bestruirui/octopus/internal/utils/safe"
 	"github.com/bestruirui/octopus/internal/utils/xurl"
@@ -561,6 +562,33 @@ func rawProtocolPreviousResponseID(payload map[string]any) string {
 	return strings.TrimSpace(rawProtocolStringValue(payload["previous_response_id"]))
 }
 
+// sanitizeRawResponsesPayloadInputItemIDs applies the same history repair as the
+// transformed path (openai.ShouldDropResponsesInputItemID) to the raw
+// /responses/compact passthrough payload: input items whose replayed id violates
+// the per-type official prefix (octopus-legacy "item_" ids) lose the id field so a
+// strict upstream does not 400 the whole request. The payload is mutated in place;
+// valid ids and unconstrained item types are untouched.
+func sanitizeRawResponsesPayloadInputItemIDs(payload map[string]any) {
+	if len(payload) == 0 {
+		return
+	}
+	inputItems, ok := payload["input"].([]any)
+	if !ok {
+		return
+	}
+	for _, rawItem := range inputItems {
+		itemObject, ok := rawItem.(map[string]any)
+		if !ok {
+			continue
+		}
+		itemType, _ := itemObject["type"].(string)
+		itemID, _ := itemObject["id"].(string)
+		if openaiOutbound.ShouldDropResponsesInputItemID(itemType, itemID) {
+			delete(itemObject, "id")
+		}
+	}
+}
+
 func prioritizeRawProtocolResponsesOwner(ctx context.Context, iter *balancer.Iterator, previousResponseID string, reqTokenID, reqUserID int) {
 	if iter == nil || strings.TrimSpace(previousResponseID) == "" {
 		return
@@ -816,6 +844,9 @@ func rawProtocolAttempt(
 		attemptPayload["model"] = actualModel
 		if isResponsesCompactRawProtocol(options) && !forwardCompactCursor {
 			delete(attemptPayload, "previous_response_id")
+		}
+		if isResponsesCompactRawProtocol(options) {
+			sanitizeRawResponsesPayloadInputItemIDs(attemptPayload)
 		}
 		b, err := json.Marshal(attemptPayload)
 		if err != nil {

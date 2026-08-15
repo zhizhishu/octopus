@@ -430,7 +430,7 @@ func (i *ResponseInbound) handleReasoningContent(content *string) [][]byte {
 	// and its own thinking signature never bind to a sibling. Opening reasoning never
 	// closes the message item or any tool item.
 	if i.reasoningItemID == "" {
-		i.reasoningItemID = generateItemID()
+		i.reasoningItemID = generateReasoningItemID()
 		i.reasoningOutputIdx = i.allocOutputIndex()
 		itemID := i.reasoningItemID
 
@@ -490,7 +490,7 @@ func (i *ResponseInbound) handleTextContent(content *string) [][]byte {
 
 	// Start message output item if not started
 	if i.messageItemID == "" {
-		i.messageItemID = generateItemID()
+		i.messageItemID = generateMessageItemID()
 		i.messageOutputIdx = i.allocOutputIndex()
 		itemID := i.messageItemID
 
@@ -558,7 +558,7 @@ func (i *ResponseInbound) handleImageContent(parts []model.MessageContentPart) [
 		events = append(events, i.closeReasoningItem()...)
 		events = append(events, i.closeMessageItem()...)
 
-		itemID := generateItemID()
+		itemID := generateImageGenerationItemID()
 		outputIdx := i.allocOutputIndex()
 		added := &ResponsesItem{
 			ID:     itemID,
@@ -617,7 +617,7 @@ func (i *ResponseInbound) handleToolCalls(toolCalls []model.ToolCall) [][]byte {
 			// can never be matched.
 			callID := strings.TrimSpace(tc.ID)
 			if callID == "" {
-				callID = generateItemID()
+				callID = generateFunctionCallItemID()
 			}
 
 			i.toolCalls[toolCallIndex] = &model.ToolCall{
@@ -2167,7 +2167,7 @@ func convertToResponsesAPIResponse(resp *model.InternalLLMResponse) *ResponsesRe
 		// Handle reasoning content
 		if message.ReasoningContent != nil && *message.ReasoningContent != "" {
 			reasoningItem := ResponsesItem{
-				ID:     generateItemID(),
+				ID:     generateReasoningItemID(),
 				Type:   "reasoning",
 				Status: lo.ToPtr("completed"),
 				Summary: []ResponsesReasoningSummary{
@@ -2194,7 +2194,7 @@ func convertToResponsesAPIResponse(resp *model.InternalLLMResponse) *ResponsesRe
 				// function_call_output on the next turn.
 				callID := toolCall.ID
 				if strings.TrimSpace(callID) == "" {
-					callID = generateItemID()
+					callID = generateFunctionCallItemID()
 				}
 				if toolCall.Type == model.ToolCallTypeCustom {
 					// Custom (freeform) tool call: re-emit as a custom_tool_call
@@ -2227,7 +2227,7 @@ func convertToResponsesAPIResponse(resp *model.InternalLLMResponse) *ResponsesRe
 		if message.Content.Content != nil && *message.Content.Content != "" {
 			text := *message.Content.Content
 			result.Output = append(result.Output, ResponsesItem{
-				ID:   generateItemID(),
+				ID:   generateMessageItemID(),
 				Type: "message",
 				Role: "assistant",
 				Content: &ResponsesInput{
@@ -2258,7 +2258,7 @@ func convertToResponsesAPIResponse(resp *model.InternalLLMResponse) *ResponsesRe
 				case "image_url":
 					if part.ImageURL != nil {
 						result.Output = append(result.Output, ResponsesItem{
-							ID:     generateItemID(),
+							ID:     generateImageGenerationItemID(),
 							Type:   "image_generation_call",
 							Role:   "assistant",
 							Result: lo.ToPtr(xurl.ExtractBase64FromDataURL(part.ImageURL.URL)),
@@ -2270,7 +2270,7 @@ func convertToResponsesAPIResponse(resp *model.InternalLLMResponse) *ResponsesRe
 
 			if len(contentItems) > 0 {
 				result.Output = append(result.Output, ResponsesItem{
-					ID:      generateItemID(),
+					ID:      generateMessageItemID(),
 					Type:    "message",
 					Role:    "assistant",
 					Content: &ResponsesInput{Items: contentItems},
@@ -2299,7 +2299,7 @@ func convertToResponsesAPIResponse(resp *model.InternalLLMResponse) *ResponsesRe
 		emptyText := ""
 		result.Output = []ResponsesItem{
 			{
-				ID:   generateItemID(),
+				ID:   generateMessageItemID(),
 				Type: "message",
 				Role: "assistant",
 				Content: &ResponsesInput{
@@ -2353,8 +2353,24 @@ func convertUsageToResponses(usage *model.Usage) *ResponsesUsage {
 	return result
 }
 
-func generateItemID() string {
-	return fmt.Sprintf("item_%s", lo.RandomString(16, lo.AlphanumericCharset))
+// Official Responses API id prefixes per item type. A codex/Responses client echoes
+// these ids back in the next request's input history, and strict upstreams validate
+// the prefix per type (400 "Invalid 'input[N].id' ... Expected an ID that begins with
+// 'msg'"). So mint what the real backend mints: msg_ / rs_ / fc_ / ig_.
+func generateMessageItemID() string {
+	return fmt.Sprintf("msg_%s", lo.RandomString(16, lo.AlphanumericCharset))
+}
+
+func generateReasoningItemID() string {
+	return fmt.Sprintf("rs_%s", lo.RandomString(16, lo.AlphanumericCharset))
+}
+
+func generateFunctionCallItemID() string {
+	return fmt.Sprintf("fc_%s", lo.RandomString(16, lo.AlphanumericCharset))
+}
+
+func generateImageGenerationItemID() string {
+	return fmt.Sprintf("ig_%s", lo.RandomString(16, lo.AlphanumericCharset))
 }
 
 func generateResponseID() string {
