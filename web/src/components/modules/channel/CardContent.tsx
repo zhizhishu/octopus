@@ -251,7 +251,10 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
                 <Tabs value={currentView}>
                     <TabsContents>
                         <TabsContent value="viewing" >
-                            <div className="max-h-[60vh] overflow-y-auto space-y-4 sm:space-y-5">
+                            {/* 单一滚动源：外层弹窗（Card.tsx max-h-[92vh] overflow-y-auto）负责滚，
+                                这里不再嵌套 max-h-[60vh] 滚动区——旧版里外两条滚动条叠着滚，
+                                内层还会把底部的模型列表/操作按钮裁在看不见的地方。 */}
+                            <div className="space-y-4 sm:space-y-5">
                                 <dl className="grid gap-3 grid-cols-1 sm:grid-cols-3">
                                     <div className="rounded-lg border border-border bg-muted/20 p-3 sm:p-4">
                                         <dt className="flex items-center gap-2 mb-2 text-xs font-medium text-muted-foreground">

@@ -218,7 +218,14 @@ function TabsContents({
     const container = containerRef.current;
     if (!pane || !container) return 0;
 
-    const base = pane.getBoundingClientRect().height || 0;
+    // offsetHeight, NOT getBoundingClientRect(): this container lives inside
+    // morphing dialogs whose open/close runs a scale transform. A bounding rect
+    // measured mid-transform returns the scaled-down height, and since transforms
+    // never fire ResizeObserver there is no later correction — the container then
+    // sticks at the shrunken height and clips the pane's bottom (the "dialog
+    // content cut off" bug). offsetHeight reads layout height, immune to
+    // transforms.
+    const base = pane.offsetHeight || 0;
 
     const cs = getComputedStyle(container);
     const isBorderBox = cs.boxSizing === 'border-box';
@@ -292,7 +299,13 @@ function TabsContents({
             ref={(el) => {
               itemRefs.current[index] = el;
             }}
-            className="w-full shrink-0 px-2 h-full"
+            // No h-full here: a full-height pane resolves its height against the
+            // container's ANIMATED inline height, so measure() reads back the stale
+            // container height instead of the pane's natural content height — tab
+            // switches then never resize and taller panes (e.g. the channel edit
+            // form) get clipped at the previous pane's height with no way to
+            // scroll. Natural height keeps the measurement honest.
+            className="w-full shrink-0 px-2"
           >
             {child}
           </div>

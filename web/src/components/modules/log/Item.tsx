@@ -671,7 +671,7 @@ export function LogCard({ log }: { log: RelayLog }) {
                 </MorphingDialogTrigger>
 
                 <MorphingDialogContainer>
-                    <MorphingDialogContent className="relative flex h-[calc(100dvh-1rem)] w-[calc(100vw-1rem)] max-w-[calc(100vw-1rem)] flex-col overflow-hidden rounded-lg bg-card px-4 py-4 text-card-foreground md:w-[80vw] md:max-w-6xl md:px-6">
+                    <MorphingDialogContent className="relative flex h-[calc(100dvh-1rem)] w-[calc(100vw-1rem)] max-w-[calc(100vw-1rem)] flex-col overflow-hidden rounded-3xl bg-card px-4 py-4 text-card-foreground md:w-[80vw] md:max-w-6xl md:px-6">
                         <MorphingDialogClose className="top-4 right-5 text-muted-foreground hover:text-foreground transition-colors" />
                         <MorphingDialogTitle className="mb-3 flex min-w-0 flex-wrap items-center gap-2 pr-9 text-sm">
                             <ModelAvatar size={28} />
@@ -691,8 +691,15 @@ export function LogCard({ log }: { log: RelayLog }) {
                             />
                         </MorphingDialogTitle>
 
-                        <MorphingDialogDescription className="flex-1 min-h-0 overflow-y-auto md:overflow-hidden">
-                            <div className="flex flex-col gap-4 md:min-h-0 md:h-full">
+                        <MorphingDialogDescription className="flex-1 min-h-0 overflow-y-auto">
+                            {/* 单一滚动源=本层。正常情况内部 min-h-full + flex-1 布局撑满、不出滚动条；
+                                当徽标行/诊断区把纵向空间挤爆时（多行 tiles、展开的错误详情），内容
+                                自然下沉超高 → 这里滚动，而不是像旧版 md:overflow-hidden 那样把
+                                请求/响应面板和底部信息硬裁掉看不到。 */}
+                            {/* md:min-h-full（而非 h-full）：内容装得下时撑满弹窗（flex-1 面板占满剩余高度），
+                                装不下时容器随内容长高 → 外层 description 出滚动条。旧版 h-full 把容器高度
+                                钉死，纵向不够时 flex 只会把请求/响应面板压到 0 高，底部内容"被遮住"且无法滚动。 */}
+                            <div className="flex flex-col gap-4 md:min-h-full">
                                 <div className={cn(
                                     "shrink-0 rounded-xl border px-3.5 py-2.5 text-sm font-medium",
                                     verdict.kind === 'success'
@@ -993,8 +1000,11 @@ export function LogCard({ log }: { log: RelayLog }) {
                                         </AnimatePresence>
                                     </div>
                                 )}
-                                {/* 移动端：外层 description 已 overflow-y-auto，此区域自然高度不约束；桌面端：flex-1 撑满剩余空间 */}
-                                <div className="overflow-hidden md:flex-1 md:min-h-0">
+                                {/* 移动端：外层 description 已 overflow-y-auto，此区域自然高度不约束；
+                                    桌面端 flex-[1_1_55dvh]：空间富余时从 55dvh 基准长高填满剩余（同旧 flex-1 观感），
+                                    上方内容挤压时最多缩到 20rem 保底——请求/响应面板永远保有可用高度做内部滚动，
+                                    再挤就由外层 description 滚动兜底，不再出现被压成 0 高 / 底部裁掉。 */}
+                                <div className="overflow-hidden md:flex-[1_1_55dvh] md:min-h-[20rem]">
                                     <div className="grid grid-cols-1 gap-4 pb-2 md:h-full md:min-h-0 md:grid-cols-2 md:pb-0">
                                         <div className="flex min-h-[18rem] flex-col overflow-hidden rounded-lg border border-border bg-muted/30 md:min-h-0">
                                             <div className="flex items-center gap-2 px-3 md:px-4 py-2.5 md:py-3 border-b border-border bg-muted/50 shrink-0">
