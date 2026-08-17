@@ -229,6 +229,30 @@ func TestChatOutboundToolStreamingProjectionDoesNotMutateRetryRequest(t *testing
 	}
 }
 
+func TestChatOutboundGLMThinkingProjectionDoesNotMutateRetryRequest(t *testing.T) {
+	// GLM projects reasoning_effort onto Thinking for the attempt body only.
+	// A later non-GLM failover must not inherit that provider-specific field.
+	request := &model.InternalLLMRequest{
+		Model:           "glm-5.2",
+		ReasoningEffort: "high",
+		Messages:        userMessages(),
+	}
+
+	firstPayload := chatRequestBody(t, request)
+	if typ, ok := thinkingType(t, firstPayload); !ok || typ != "enabled" {
+		t.Fatalf("expected GLM attempt to project thinking=enabled, got %q ok=%t (%#v)", typ, ok, firstPayload)
+	}
+	if request.Thinking != nil {
+		t.Fatalf("GLM thinking projection leaked into the shared retry request: %#v", request.Thinking)
+	}
+
+	request.Model = "deepseek-chat"
+	secondPayload := chatRequestBody(t, request)
+	if _, present := secondPayload["thinking"]; present {
+		t.Fatalf("thinking leaked from the GLM attempt into a non-GLM retry: %#v", secondPayload)
+	}
+}
+
 func TestChatOutboundNonGLMAttemptPreservesExplicitValueForLaterGLMRetry(t *testing.T) {
 	stream := true
 	toolStream := false

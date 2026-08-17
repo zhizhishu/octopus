@@ -1212,7 +1212,12 @@ func (i *ResponseInbound) GetInternalResponse(ctx context.Context) (*model.Inter
 
 // formatSSEData formats data as SSE data line
 func formatSSEData(data []byte) []byte {
-	return []byte(fmt.Sprintf("data: %s\n\n", string(data)))
+	// Avoid fmt.Sprintf + intermediate string on every stream delta; wire bytes stay identical.
+	out := make([]byte, 0, 6+len(data)+2)
+	out = append(out, "data: "...)
+	out = append(out, data...)
+	out = append(out, '\n', '\n')
+	return out
 }
 
 // Request types

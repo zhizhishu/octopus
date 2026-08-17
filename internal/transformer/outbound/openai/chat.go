@@ -28,10 +28,12 @@ func (o *CustomChatOutbound) TransformRequest(ctx context.Context, request *mode
 
 func transformChatRequest(ctx context.Context, request *model.InternalLLMRequest, baseUrl, key string, customEndpoint bool) (*http.Request, error) {
 	originalToolStream := request.ToolStream
+	originalThinking := request.Thinking
 	defer func() {
 		// The relay reuses one request across channel/key attempts. Keep this
 		// provider-specific projection scoped to the body built for this attempt.
 		request.ToolStream = originalToolStream
+		request.Thinking = originalThinking
 	}()
 
 	// ClearHelpFields strips internal-only helper fields, but it also wipes each message's
