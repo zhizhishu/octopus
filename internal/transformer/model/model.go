@@ -227,6 +227,9 @@ type InternalLLMRequest struct {
 
 	Stream        *bool          `json:"stream,omitempty"`
 	StreamOptions *StreamOptions `json:"stream_options,omitempty"`
+	// ToolStream enables provider-side streaming of function-call arguments.
+	// GLM 4.6+ requires this separate switch in addition to stream=true.
+	ToolStream *bool `json:"tool_stream,omitempty"`
 
 	// Static predicted output content, such as the content of a text file that is
 	// being regenerated.

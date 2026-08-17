@@ -31,6 +31,22 @@ func TestResponseInboundAcceptsChatStyleToolChoice(t *testing.T) {
 	}
 }
 
+func TestResponseInboundPreservesExplicitToolStreaming(t *testing.T) {
+	req, err := (&ResponseInbound{}).TransformRequest(context.Background(), []byte(`{
+		"model":"glm-5.2",
+		"input":"inspect the repository",
+		"stream":true,
+		"tool_stream":false,
+		"tools":[{"type":"function","name":"ReadFile","parameters":{"type":"object"}}]
+	}`))
+	if err != nil {
+		t.Fatalf("TransformRequest returned error: %v", err)
+	}
+	if req.ToolStream == nil || *req.ToolStream {
+		t.Fatalf("expected explicit tool_stream=false to survive Responses conversion, got %#v", req.ToolStream)
+	}
+}
+
 func TestResponseInboundKeepsMissingFunctionCallOutput(t *testing.T) {
 	req, err := (&ResponseInbound{}).TransformRequest(context.Background(), []byte(`{
 		"model":"gpt-4o",

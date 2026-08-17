@@ -232,6 +232,10 @@ function asPositiveInt(value: string, fallback: number) {
     return Number.isFinite(next) && next > 0 ? next : fallback;
 }
 
+function asRouteWeight(value: string) {
+    return Math.min(asPositiveInt(value, 1), 1000);
+}
+
 function normalizeSlug(value: string) {
     return value.trim().toLowerCase().replace(/\s+/g, '-');
 }
@@ -1651,7 +1655,7 @@ function RouteTargetEditorCard({
                 </div>
             </div>
 
-            {/* 高级（可选）：同优先级轮询、失败兜底、系统提示词覆盖 —— 默认折叠，主行只保留"请求模型→渠道·发送模型" */}
+            {/* 高级（可选）：优先级、轮询权重、失败兜底、系统提示词覆盖 —— 默认折叠 */}
             <details className="mt-2 min-w-0 rounded-xl border border-border/60 bg-background/40">
                 <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-2.5 py-2 text-xs font-medium text-foreground [&::-webkit-details-marker]:hidden">
                     <span className="min-w-0 truncate">{t('routes.advancedTitle')}</span>
@@ -1677,9 +1681,10 @@ function RouteTargetEditorCard({
                             <Input
                                 type="number"
                                 min={1}
+								max={1000}
                                 step={1}
                                 value={target.weight}
-                                onChange={(event) => updateTarget(index, { weight: asPositiveInt(event.target.value, 1) })}
+                                onChange={(event) => updateTarget(index, { weight: asRouteWeight(event.target.value) })}
                                 aria-label={t('routes.weight')}
                                 placeholder={t('routes.weight')}
                                 className="h-9 rounded-xl"

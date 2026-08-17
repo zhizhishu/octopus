@@ -162,3 +162,143 @@ func TestChatOutboundNonGLMNeverInjectsThinking(t *testing.T) {
 		}
 	}
 }
+
+func TestChatOutboundGLMEnablesToolStreamingForStreamedTools(t *testing.T) {
+	stream := true
+	payload := chatRequestBody(t, &model.InternalLLMRequest{
+		Model:    "glm-5.2",
+		Stream:   &stream,
+		Messages: userMessages(),
+		Tools: []model.Tool{{
+			Type: "function",
+			Function: model.Function{
+				Name:       "ReadFile",
+				Parameters: json.RawMessage(`{"type":"object"}`),
+			},
+		}},
+	})
+
+	if enabled, ok := payload["tool_stream"].(bool); !ok || !enabled {
+		t.Fatalf("expected tool_stream=true for a streamed GLM tool request, got %#v", payload["tool_stream"])
+	}
+}
+
+func TestChatOutboundGLMRespectsExplicitToolStreamingValue(t *testing.T) {
+	stream := true
+	toolStream := false
+	payload := chatRequestBody(t, &model.InternalLLMRequest{
+		Model:      "glm-5.2",
+		Stream:     &stream,
+		ToolStream: &toolStream,
+		Messages:   userMessages(),
+		Tools: []model.Tool{{
+			Type:     "function",
+			Function: model.Function{Name: "ReadFile"},
+		}},
+	})
+
+	if enabled, ok := payload["tool_stream"].(bool); !ok || enabled {
+		t.Fatalf("expected explicit tool_stream=false to be preserved, got %#v", payload["tool_stream"])
+	}
+}
+
+func TestChatOutboundToolStreamingProjectionDoesNotMutateRetryRequest(t *testing.T) {
+	stream := true
+	request := &model.InternalLLMRequest{
+		Model:    "glm-5.2",
+		Stream:   &stream,
+		Messages: userMessages(),
+		Tools: []model.Tool{{
+			Type:     "function",
+			Function: model.Function{Name: "ReadFile"},
+		}},
+	}
+
+	firstPayload := chatRequestBody(t, request)
+	if enabled, ok := firstPayload["tool_stream"].(bool); !ok || !enabled {
+		t.Fatalf("expected GLM attempt to enable tool streaming, got %#v", firstPayload["tool_stream"])
+	}
+	if request.ToolStream != nil {
+		t.Fatalf("GLM projection leaked into the shared retry request: %#v", request.ToolStream)
+	}
+
+	request.Model = "deepseek-chat"
+	secondPayload := chatRequestBody(t, request)
+	if _, present := secondPayload["tool_stream"]; present {
+		t.Fatalf("tool_stream leaked from the GLM attempt into a non-GLM retry: %#v", secondPayload)
+	}
+}
+
+func TestChatOutboundNonGLMAttemptPreservesExplicitValueForLaterGLMRetry(t *testing.T) {
+	stream := true
+	toolStream := false
+	request := &model.InternalLLMRequest{
+		Model:      "deepseek-chat",
+		Stream:     &stream,
+		ToolStream: &toolStream,
+		Messages:   userMessages(),
+		Tools: []model.Tool{{
+			Type:     "function",
+			Function: model.Function{Name: "ReadFile"},
+		}},
+	}
+
+	firstPayload := chatRequestBody(t, request)
+	if _, present := firstPayload["tool_stream"]; present {
+		t.Fatalf("non-GLM attempt must not receive tool_stream: %#v", firstPayload)
+	}
+	if request.ToolStream == nil || *request.ToolStream {
+		t.Fatalf("non-GLM attempt lost the client's explicit false value: %#v", request.ToolStream)
+	}
+
+	request.Model = "glm-5.2"
+	secondPayload := chatRequestBody(t, request)
+	if enabled, ok := secondPayload["tool_stream"].(bool); !ok || enabled {
+		t.Fatalf("later GLM retry must preserve explicit tool_stream=false, got %#v", secondPayload["tool_stream"])
+	}
+}
+
+func TestChatOutboundToolStreamingCompatibilityIsGLMOnly(t *testing.T) {
+	stream := true
+	toolStream := true
+	for _, testCase := range []struct {
+		modelName      string
+		expectInjected bool
+	}{
+		{modelName: "glm-4.5", expectInjected: false},
+		{modelName: "glm-4.6", expectInjected: true},
+		{modelName: "glm-4.6-air", expectInjected: true},
+		{modelName: "glm-4.7", expectInjected: true},
+		{modelName: "glm-4.7-flash", expectInjected: true},
+		{modelName: "glm-5", expectInjected: true},
+		{modelName: "glm-5.2", expectInjected: true},
+		{modelName: "glm-5-air", expectInjected: true},
+		{modelName: "vendor/glm-5.2", expectInjected: true},
+		{modelName: "glm-4.60", expectInjected: false},
+		{modelName: "glm-4.6xxxx", expectInjected: false},
+		{modelName: "glm-50", expectInjected: false},
+		{modelName: "glm-5x", expectInjected: false},
+		{modelName: "deepseek-chat", expectInjected: false},
+	} {
+		t.Run(testCase.modelName, func(t *testing.T) {
+			request := &model.InternalLLMRequest{
+				Model:    testCase.modelName,
+				Stream:   &stream,
+				Messages: userMessages(),
+				Tools: []model.Tool{{
+					Type:     "function",
+					Function: model.Function{Name: "ReadFile"},
+				}},
+			}
+			if testCase.modelName == "deepseek-chat" {
+				request.ToolStream = &toolStream
+			}
+
+			payload := chatRequestBody(t, request)
+			_, present := payload["tool_stream"]
+			if present != testCase.expectInjected {
+				t.Fatalf("tool_stream presence=%t, want %t: %#v", present, testCase.expectInjected, payload)
+			}
+		})
+	}
+}

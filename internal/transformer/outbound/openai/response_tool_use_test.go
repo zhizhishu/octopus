@@ -247,6 +247,107 @@ func TestResponseOutboundCompletedEventAcceptsTopLevelUsageAliases(t *testing.T)
 	}
 }
 
+func TestResponseOutboundCompletedEventRecoversTerminalOnlyOutput(t *testing.T) {
+	outbound := &ResponseOutbound{}
+	resp, err := outbound.TransformStream(context.Background(), []byte(`{
+		"type":"response.completed",
+		"response":{
+			"id":"resp_terminal_only",
+			"object":"response",
+			"model":"compatible-model",
+			"status":"completed",
+			"output":[
+				{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"terminal text"}]},
+				{"id":"fc_1","type":"function_call","call_id":"call_1","name":"lookup","arguments":"{\"q\":\"octopus\"}"}
+			]
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("TransformStream response.completed returned error: %v", err)
+	}
+	if resp == nil || len(resp.Choices) != 1 || resp.Choices[0].Delta == nil {
+		t.Fatalf("expected terminal output recovery delta, got %#v", resp)
+	}
+	delta := resp.Choices[0].Delta
+	if delta.Content.Content == nil || *delta.Content.Content != "terminal text" {
+		t.Fatalf("expected terminal-only text recovery, got %#v", delta.Content)
+	}
+	if len(delta.ToolCalls) != 1 || delta.ToolCalls[0].ID != "call_1" || delta.ToolCalls[0].Function.Name != "lookup" {
+		t.Fatalf("expected terminal-only tool recovery, got %#v", delta.ToolCalls)
+	}
+	if resp.Choices[0].FinishReason == nil || *resp.Choices[0].FinishReason != "tool_calls" {
+		t.Fatalf("expected tool_calls finish reason, got %#v", resp.Choices[0].FinishReason)
+	}
+}
+
+func TestResponseOutboundCompletedEventDoesNotDuplicateStreamedTextOrTools(t *testing.T) {
+	outbound := &ResponseOutbound{}
+	for _, event := range []string{
+		`{"type":"response.output_text.delta","output_index":0,"delta":"already streamed"}`,
+		`{"type":"response.output_item.added","output_index":1,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"lookup"}}`,
+		`{"type":"response.function_call_arguments.delta","output_index":1,"delta":"{}"}`,
+	} {
+		if _, err := outbound.TransformStream(context.Background(), []byte(event)); err != nil {
+			t.Fatalf("TransformStream prelude returned error: %v", err)
+		}
+	}
+	resp, err := outbound.TransformStream(context.Background(), []byte(`{
+		"type":"response.completed",
+		"response":{
+			"id":"resp_no_duplicate",
+			"model":"compatible-model",
+			"status":"completed",
+			"output":[
+				{"type":"message","role":"assistant","content":[{"type":"output_text","text":"already streamed"}]},
+				{"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{}"}
+			]
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("TransformStream response.completed returned error: %v", err)
+	}
+	if resp == nil || len(resp.Choices) != 1 {
+		t.Fatalf("expected finish response, got %#v", resp)
+	}
+	if resp.Choices[0].Delta != nil {
+		t.Fatalf("expected terminal snapshot not to duplicate streamed content, got %#v", resp.Choices[0].Delta)
+	}
+}
+
+func TestResponseOutboundCompletedEventRecoversMissingToolArgumentSuffix(t *testing.T) {
+	outbound := &ResponseOutbound{}
+	for _, event := range []string{
+		`{"type":"response.output_item.added","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"lookup"}}`,
+		`{"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"q\""}`,
+	} {
+		if _, err := outbound.TransformStream(context.Background(), []byte(event)); err != nil {
+			t.Fatalf("TransformStream prelude returned error: %v", err)
+		}
+	}
+	resp, err := outbound.TransformStream(context.Background(), []byte(`{
+		"type":"response.completed",
+		"response":{
+			"id":"resp_suffix",
+			"model":"compatible-model",
+			"status":"completed",
+			"output":[{"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{\"q\":\"octopus\"}"}]
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("TransformStream response.completed returned error: %v", err)
+	}
+	if resp == nil || len(resp.Choices) != 1 || resp.Choices[0].Delta == nil || len(resp.Choices[0].Delta.ToolCalls) != 1 {
+		t.Fatalf("expected missing argument suffix recovery, got %#v", resp)
+	}
+	toolCall := resp.Choices[0].Delta.ToolCalls[0]
+	if toolCall.Function.Name != "" {
+		t.Fatalf("terminal suffix must not repeat streamed tool name, got %q", toolCall.Function.Name)
+	}
+	if toolCall.Function.Arguments != `:"octopus"}` {
+		t.Fatalf("unexpected terminal argument suffix: %q", toolCall.Function.Arguments)
+	}
+}
+
 func TestResponseOutboundIncompleteEventMapsToLengthFinish(t *testing.T) {
 	outbound := &ResponseOutbound{}
 	resp, err := outbound.TransformStream(context.Background(), []byte(`{

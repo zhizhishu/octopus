@@ -70,6 +70,15 @@ type ResponseInbound struct {
 	toolCallItemStarted map[int]bool
 	toolCallItemID      map[int]string
 	toolCallOutputIndex map[int]int
+	// One synthesized id per deprecated function_call stream. The emitted SSE,
+	// terminal item, and aggregated transcript must all share the same pairing id.
+	legacyFunctionCallIDByChoice map[int]string
+	// modernToolCallSeenByChoice records that a choice already received native
+	// tool_calls (or a same-chunk modern+legacy pair). A later pure legacy
+	// function_call on that choice must only be stripped — re-injecting at
+	// index 0 would clobber the modern call id and concatenate arguments into
+	// invalid JSON across stream chunks.
+	modernToolCallSeenByChoice map[int]bool
 	// toolCallArgs buffers each tool call's streamed argument fragments. Growing
 	// toolCalls[idx].Function.Arguments with `+=` re-copies the whole accumulated
 	// payload on every fragment (O(total²) for a large tool call); the builder
@@ -146,7 +155,12 @@ func (i *ResponseInbound) TransformResponse(ctx context.Context, response *model
 		response.ID = i.responseID
 	}
 
-	// Store the response for later retrieval
+	for choiceIndex := range response.Choices {
+		choice := &response.Choices[choiceIndex]
+		i.normalizeLegacyFunctionCallForResponses(choice.Message, choice.Index)
+		i.normalizeLegacyFunctionCallForResponses(choice.Delta, choice.Index)
+	}
+	// Store the normalized response for later retrieval and billing.
 	i.storedResponse = response
 
 	// Convert to Responses API format
@@ -168,7 +182,16 @@ func (i *ResponseInbound) TransformStream(ctx context.Context, stream *model.Int
 		return bytesJoin(events), nil
 	}
 
-	// Store the chunk for aggregation
+	// Upgrade deprecated Chat function_call on every choice before storage so
+	// multi-choice aggregation cannot lose legacy tool calls that the SSE
+	// path (choice 0 only) never emits as lifecycle events.
+	for choiceIndex := range stream.Choices {
+		choice := &stream.Choices[choiceIndex]
+		i.normalizeLegacyFunctionCallForResponses(choice.Delta, choice.Index)
+		i.normalizeLegacyFunctionCallForResponses(choice.Message, choice.Index)
+	}
+
+	// Store the normalized chunk for aggregation
 	i.streamChunks = append(i.streamChunks, stream)
 
 	var events [][]byte
@@ -318,6 +341,54 @@ func (i *ResponseInbound) TransformStream(ctx context.Context, stream *model.Int
 	}
 
 	return result, nil
+}
+
+// normalizeLegacyFunctionCallForResponses upgrades the deprecated Chat
+// function_call field only at the Responses compatibility boundary. Chat
+// clients continue to receive the upstream shape unchanged, while Cursor and
+// other Responses clients get the function_call lifecycle events they expect.
+func (i *ResponseInbound) normalizeLegacyFunctionCallForResponses(message *model.Message, choiceIndex int) {
+	if message == nil {
+		return
+	}
+	// Native tool_calls win for this choice for the rest of the stream. Mark
+	// before looking at function_call so a same-chunk modern+legacy pair still
+	// keeps the modern tool and strips the deprecated field.
+	if len(message.ToolCalls) > 0 {
+		if i.modernToolCallSeenByChoice == nil {
+			i.modernToolCallSeenByChoice = make(map[int]bool)
+		}
+		i.modernToolCallSeenByChoice[choiceIndex] = true
+	}
+	if message.FunctionCall == nil {
+		return
+	}
+	if len(message.ToolCalls) > 0 || i.modernToolCallSeenByChoice[choiceIndex] {
+		// Modern tools already present (this chunk or an earlier one): drop the
+		// deprecated field without synthesizing a competing index-0 tool call.
+		message.FunctionCall = nil
+		return
+	}
+	// Pure legacy stream (possibly multi-chunk argument fragments): upgrade in
+	// place and reuse one synthesized call_id for the whole choice.
+	if i.legacyFunctionCallIDByChoice == nil {
+		i.legacyFunctionCallIDByChoice = make(map[int]string)
+	}
+	callID := i.legacyFunctionCallIDByChoice[choiceIndex]
+	if callID == "" {
+		callID = generateFunctionCallItemID()
+		i.legacyFunctionCallIDByChoice[choiceIndex] = callID
+	}
+	message.ToolCalls = []model.ToolCall{{
+		Index: 0,
+		ID:    callID,
+		Type:  "function",
+		Function: model.FunctionCall{
+			Name:      message.FunctionCall.Name,
+			Arguments: message.FunctionCall.Arguments,
+		},
+	}}
+	message.FunctionCall = nil
 }
 
 func (i *ResponseInbound) completeResponseEvents() [][]byte {
@@ -1154,6 +1225,7 @@ type ResponsesRequest struct {
 	ToolChoice           *ResponsesToolChoice  `json:"tool_choice,omitempty"`
 	ParallelToolCalls    *bool                 `json:"parallel_tool_calls,omitempty"`
 	Stream               *bool                 `json:"stream,omitempty"`
+	ToolStream           *bool                 `json:"tool_stream,omitempty"`
 	Text                 *ResponsesTextOptions `json:"text,omitempty"`
 	Store                *bool                 `json:"store,omitempty"`
 	ServiceTier          *string               `json:"service_tier,omitempty"`
@@ -1588,6 +1660,7 @@ func convertToInternalRequest(req *ResponsesRequest) (*model.InternalLLMRequest,
 		MaxCompletionTokens:  req.MaxOutputTokens,
 		TopLogprobs:          req.TopLogprobs,
 		ParallelToolCalls:    req.ParallelToolCalls,
+		ToolStream:           req.ToolStream,
 		RawAPIFormat:         model.APIFormatOpenAIResponse,
 		TransformerMetadata:  map[string]string{},
 		Include:              append([]string(nil), req.Include...),

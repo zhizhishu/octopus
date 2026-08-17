@@ -12,6 +12,7 @@ import (
 // instead of collapsing onto the lowest channel ID like a "pick best" strategy.
 func TestSpreadRotatesEquallyHealthyChannels(t *testing.T) {
 	roundRobinCounters = sync.Map{}
+	smoothWeightedStates = sync.Map{}
 	ResetRuntimeTelemetry()
 
 	items := []model.GroupItem{
@@ -22,6 +23,81 @@ func TestSpreadRotatesEquallyHealthyChannels(t *testing.T) {
 	second := (&Spread{}).Candidates(items)[0].ChannelID
 	if first == second {
 		t.Fatalf("equally healthy channels should rotate, got %d then %d", first, second)
+	}
+}
+
+func TestSpreadUsesSmoothWeightedRoundRobinWithinHealthyPeers(t *testing.T) {
+	roundRobinCounters = sync.Map{}
+	smoothWeightedStates = sync.Map{}
+	ResetRuntimeTelemetry()
+
+	items := []model.GroupItem{
+		{ChannelID: 1, ModelName: "m", Priority: 1, Weight: 3, RoutingWeight: 3, RoutingStats: model.RoutingRuntimeStats{AvailableKeyCount: 1, HealthyKeyCount: 1}},
+		{ChannelID: 2, ModelName: "m", Priority: 2, Weight: 1, RoutingWeight: 1, RoutingStats: model.RoutingRuntimeStats{AvailableKeyCount: 1, HealthyKeyCount: 1}},
+	}
+	selectionCounts := map[int]int{}
+	for selectionIndex := 0; selectionIndex < 40; selectionIndex++ {
+		selectionCounts[(&Spread{}).Candidates(items)[0].ChannelID]++
+	}
+	if selectionCounts[1] != 30 || selectionCounts[2] != 10 {
+		t.Fatalf("expected smooth 3:1 weighted distribution, got %#v", selectionCounts)
+	}
+}
+
+func TestSpreadIgnoresRetiredStoredGroupWeightWithoutRoutingWeight(t *testing.T) {
+	roundRobinCounters = sync.Map{}
+	smoothWeightedStates = sync.Map{}
+	ResetRuntimeTelemetry()
+
+	items := []model.GroupItem{
+		{ChannelID: 1, ModelName: "m", Weight: 100},
+		{ChannelID: 2, ModelName: "m", Weight: 1},
+	}
+	selectionCounts := map[int]int{}
+	for selectionIndex := 0; selectionIndex < 20; selectionIndex++ {
+		selectionCounts[(&Spread{}).Candidates(items)[0].ChannelID]++
+	}
+	if selectionCounts[1] != 10 || selectionCounts[2] != 10 {
+		t.Fatalf("retired model-pool weights must not change routing, got %#v", selectionCounts)
+	}
+}
+
+func TestSpreadWeightNeverOverridesHealthTier(t *testing.T) {
+	roundRobinCounters = sync.Map{}
+	smoothWeightedStates = sync.Map{}
+	ResetRuntimeTelemetry()
+
+	items := []model.GroupItem{
+		{ChannelID: 1, ModelName: "m", Priority: 1, Weight: 100, RoutingWeight: 100, RoutingStats: model.RoutingRuntimeStats{AvailableKeyCount: 0, HealthyKeyCount: 0}},
+		{ChannelID: 2, ModelName: "m", Priority: 2, Weight: 1, RoutingWeight: 1, RoutingStats: model.RoutingRuntimeStats{AvailableKeyCount: 1, HealthyKeyCount: 1}},
+	}
+	for selectionIndex := 0; selectionIndex < 10; selectionIndex++ {
+		if selectedChannelID := (&Spread{}).Candidates(items)[0].ChannelID; selectedChannelID != 2 {
+			t.Fatalf("healthy channel must outrank unavailable high-weight peer, got %d", selectedChannelID)
+		}
+	}
+}
+
+func TestSpreadWeightChangeResetsSmoothWeightedState(t *testing.T) {
+	roundRobinCounters = sync.Map{}
+	smoothWeightedStates = sync.Map{}
+	ResetRuntimeTelemetry()
+
+	items := []model.GroupItem{
+		{ChannelID: 1, ModelName: "m", Weight: 3, RoutingWeight: 3},
+		{ChannelID: 2, ModelName: "m", Weight: 1, RoutingWeight: 1},
+	}
+	for selectionIndex := 0; selectionIndex < 4; selectionIndex++ {
+		_ = (&Spread{}).Candidates(items)
+	}
+	items[0].Weight = 1
+	items[0].RoutingWeight = 1
+	selectionCounts := map[int]int{}
+	for selectionIndex := 0; selectionIndex < 10; selectionIndex++ {
+		selectionCounts[(&Spread{}).Candidates(items)[0].ChannelID]++
+	}
+	if selectionCounts[1] != 5 || selectionCounts[2] != 5 {
+		t.Fatalf("expected equal rotation after weight reset, got %#v", selectionCounts)
 	}
 }
 

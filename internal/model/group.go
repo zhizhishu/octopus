@@ -43,6 +43,7 @@ type GroupItem struct {
 	ModelName            string                   `json:"model_name" gorm:"not null;index:idx_group_channel_model,unique"`
 	Priority             int                      `json:"priority"`
 	Weight               int                      `json:"weight"`
+	RoutingWeight        int                      `json:"-" gorm:"-"`
 	ChannelPriority      int                      `json:"channel_priority,omitempty" gorm:"-"`
 	ChannelStats         StatsChannel             `json:"channel_stats,omitempty" gorm:"-"`
 	RoutingStats         RoutingRuntimeStats      `json:"-" gorm:"-"`

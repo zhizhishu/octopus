@@ -433,6 +433,7 @@ func AccessPlanGroupForModel(plan *model.AccessPlan, requestModel string, ctx co
 				ModelName:            model.CleanOneMillionCapabilityModelName(target.UpstreamModel),
 				Priority:             target.Priority,
 				Weight:               target.Weight,
+				RoutingWeight:        target.Weight,
 				BillingModelSource:   ruleCopy.BillingModelSource,
 				BillingModelOverride: ruleCopy.BillingModelOverride,
 			})
@@ -1678,6 +1679,8 @@ func normalizeAccessRouteTarget(target *model.AccessRouteTarget) {
 	target.SystemPromptOverride = strings.TrimSpace(target.SystemPromptOverride)
 	if target.Weight <= 0 {
 		target.Weight = 1
+	} else if target.Weight > 1000 {
+		target.Weight = 1000
 	}
 	target.PromptOverrideMode = normalizePromptOverrideMode(target.PromptOverrideMode)
 }

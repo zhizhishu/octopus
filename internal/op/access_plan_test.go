@@ -231,6 +231,75 @@ func TestAccessPlanRouteBuildsGroupTargets(t *testing.T) {
 	}
 }
 
+func TestAccessPlanGroupForModelInjectsRoutingWeight(t *testing.T) {
+	ctx := setupAccessPlanTest(t)
+
+	plans, err := AccessPlanList(ctx)
+	if err != nil {
+		t.Fatalf("list plans: %v", err)
+	}
+	var svip model.AccessPlan
+	for _, plan := range plans {
+		if plan.Slug == "svip" {
+			svip = plan
+			break
+		}
+	}
+	if svip.ID == 0 {
+		t.Fatalf("svip plan not found")
+	}
+
+	channelA := model.Channel{Name: "weight-route-a", Enabled: true, Model: "upstream-a"}
+	if err := ChannelCreate(&channelA, ctx); err != nil {
+		t.Fatalf("create channel a: %v", err)
+	}
+	channelB := model.Channel{Name: "weight-route-b", Enabled: true, Model: "upstream-b"}
+	if err := ChannelCreate(&channelB, ctx); err != nil {
+		t.Fatalf("create channel b: %v", err)
+	}
+
+	rule := model.AccessRouteRule{
+		RouteProfileID:     svip.RouteProfileID,
+		RequestModel:       "weighted-request",
+		BillingModelSource: model.AccessBillingModelSourceUpstream,
+		FallbackMode:       model.AccessRouteFallbackGroup,
+	}
+	if err := AccessRouteRuleCreate(&rule, ctx); err != nil {
+		t.Fatalf("create route rule: %v", err)
+	}
+	for _, target := range []model.AccessRouteTarget{
+		{RouteRuleID: rule.ID, ChannelID: channelA.ID, UpstreamModel: "upstream-a", Priority: 1, Weight: 3, Enabled: true},
+		{RouteRuleID: rule.ID, ChannelID: channelB.ID, UpstreamModel: "upstream-b", Priority: 1, Weight: 1, Enabled: true},
+	} {
+		targetCopy := target
+		if err := AccessRouteTargetCreate(&targetCopy, ctx); err != nil {
+			t.Fatalf("create route target: %v", err)
+		}
+	}
+
+	plan, err := AccessPlanSelect(0, "svip", ctx)
+	if err != nil {
+		t.Fatalf("select svip: %v", err)
+	}
+	group, _, ok, err := AccessPlanGroupForModel(plan, "weighted-request", ctx)
+	if err != nil || !ok {
+		t.Fatalf("group for model: ok=%v err=%v", ok, err)
+	}
+	if len(group.Items) != 2 {
+		t.Fatalf("expected two route targets, got %#v", group.Items)
+	}
+	byChannelID := map[int]model.GroupItem{}
+	for _, item := range group.Items {
+		byChannelID[item.ChannelID] = item
+	}
+	if byChannelID[channelA.ID].RoutingWeight != 3 || byChannelID[channelA.ID].Weight != 3 {
+		t.Fatalf("channel A must carry access-plan weight into RoutingWeight: %#v", byChannelID[channelA.ID])
+	}
+	if byChannelID[channelB.ID].RoutingWeight != 1 || byChannelID[channelB.ID].Weight != 1 {
+		t.Fatalf("channel B must carry access-plan weight into RoutingWeight: %#v", byChannelID[channelB.ID])
+	}
+}
+
 func TestAccessPlanRouteModelsHideStaleChannelModels(t *testing.T) {
 	ctx := setupAccessPlanTest(t)
 

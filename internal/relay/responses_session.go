@@ -260,6 +260,20 @@ func recordResponsesSessionTranscriptOwned(responseID string, messages []transfo
 		expiresAt:    now.Add(currentResponsesSessionTTL()),
 	}
 	responsesSessionTranscriptStore.Unlock()
+
+	persistCtx, cancel := metricsPersistContext()
+	defer cancel()
+	if err := op.ResponseSessionBindTranscript(
+		persistCtx,
+		responseID,
+		messages,
+		tools,
+		ownerTokenID,
+		ownerUserID,
+		currentResponsesSessionTTL(),
+	); err != nil {
+		log.Warnf("failed to persist responses session transcript: %v", err)
+	}
 }
 
 func cloneResponsesSessionTools(tools []transformerModel.Tool) []transformerModel.Tool {
@@ -284,7 +298,11 @@ func responsesSessionTranscriptTools(responseID string, reqTokenID, reqUserID in
 	entry, ok := responsesSessionTranscriptStore.items[responseID]
 	if !ok || now.After(entry.expiresAt) {
 		responsesSessionTranscriptStore.Unlock()
-		return nil, false
+		entry, ok = loadResponsesSessionTranscriptFromPersistentStore(responseID, reqTokenID, reqUserID)
+		if !ok {
+			return nil, false
+		}
+		return cloneResponsesSessionTools(entry.tools), len(entry.tools) > 0
 	}
 	if !responsesSessionOwnerMatches(responsesSessionEntry{ownerTokenID: entry.ownerTokenID, ownerUserID: entry.ownerUserID}, reqTokenID, reqUserID) {
 		responsesSessionTranscriptStore.Unlock()
@@ -310,7 +328,11 @@ func responsesSessionTranscript(responseID string, reqTokenID, reqUserID int) ([
 	if !ok || now.After(entry.expiresAt) {
 		delete(responsesSessionTranscriptStore.items, responseID)
 		responsesSessionTranscriptStore.Unlock()
-		return nil, false
+		entry, ok = loadResponsesSessionTranscriptFromPersistentStore(responseID, reqTokenID, reqUserID)
+		if !ok {
+			return nil, false
+		}
+		return cloneResponsesSessionMessages(entry.messages), len(entry.messages) > 0
 	}
 	if !responsesSessionOwnerMatches(responsesSessionEntry{ownerTokenID: entry.ownerTokenID, ownerUserID: entry.ownerUserID}, reqTokenID, reqUserID) {
 		responsesSessionTranscriptStore.Unlock()
@@ -319,6 +341,31 @@ func responsesSessionTranscript(responseID string, reqTokenID, reqUserID int) ([
 	out := cloneResponsesSessionMessages(entry.messages)
 	responsesSessionTranscriptStore.Unlock()
 	return out, len(out) > 0
+}
+
+func loadResponsesSessionTranscriptFromPersistentStore(responseID string, reqTokenID, reqUserID int) (responsesSessionTranscriptEntry, bool) {
+	persisted, ok, err := op.ResponseSessionTranscriptOwned(context.Background(), responseID, reqTokenID, reqUserID)
+	if err != nil {
+		log.Warnf("failed to load responses session transcript: %v", err)
+		return responsesSessionTranscriptEntry{}, false
+	}
+	if !ok || len(persisted.Messages) == 0 {
+		return responsesSessionTranscriptEntry{}, false
+	}
+	entry := responsesSessionTranscriptEntry{
+		messages:     trimResponsesSessionTranscript(persisted.Messages),
+		tools:        cloneResponsesSessionTools(persisted.Tools),
+		ownerTokenID: reqTokenID,
+		ownerUserID:  reqUserID,
+		expiresAt:    time.Now().Add(currentResponsesSessionTTL()),
+	}
+	if len(entry.messages) == 0 {
+		return responsesSessionTranscriptEntry{}, false
+	}
+	responsesSessionTranscriptStore.Lock()
+	responsesSessionTranscriptStore.items[responseID] = entry
+	responsesSessionTranscriptStore.Unlock()
+	return entry, true
 }
 
 func pruneResponsesSessionTranscriptsLocked(now time.Time) {

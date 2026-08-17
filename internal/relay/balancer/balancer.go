@@ -12,6 +12,14 @@ import (
 
 var roundRobinCounters sync.Map // key: candidate signature -> *uint64
 
+type smoothWeightedState struct {
+	mu              sync.Mutex
+	memberSignature string
+	currentWeights  []int64
+}
+
+var smoothWeightedStates sync.Map // key: candidate membership -> *smoothWeightedState
+
 // Balancer 根据负载均衡模式选择通道
 type Balancer interface {
 	// Candidates 返回按策略排序的候选列表
@@ -100,43 +108,108 @@ func (b *Spread) Candidates(items []model.GroupItem) []model.GroupItem {
 	if len(items) == 0 {
 		return nil
 	}
-	// round-robin 预排：按 ChannelPriority 分桶 + 桶内轮转(而非按条目 Priority)，既是均摊基线，
-	// 也是同档候选的轮转来源。轮询模式下条目拖拽序不是路由边界，只有 ChannelPriority 分层。
-	rotated := rotateByChannelPriority(items)
-	// 稳定排序：ChannelPriority(唯一硬边界) > 健康/容量分层。同 ChannelPriority、同健康层的
-	// 候选保持 round-robin 预排序，从而真正轮转——轮询的语义就是“同优先级渠道都能用上”。
-	// ⚠️刻意不再按 spreadRank(延迟)细排：延迟略低的渠道会每轮抢到队首、把轮询 collapse 成
-	// “只打最快那一个”，这正是“优先级一样不切渠道 / 渠道用不上”的真因。延迟只是快慢、不是
-	// “不行”；只有 spreadTier 里真正不行的(无 key/熔断/冷却/连续失败/满载)才降级、被轮转跳过。
-	// spreadRank/延迟感知仅保留给 DecisionTrace 调试输出，不再驱动选路。
-	sort.SliceStable(rotated, func(i, j int) bool {
-		left, right := rotated[i], rotated[j]
-		if left.ChannelPriority != right.ChannelPriority {
-			return left.ChannelPriority < right.ChannelPriority
-		}
-		return spreadTier(left) < spreadTier(right)
-	})
-	return rotated
+	return rotateByChannelPriorityAndHealth(items)
 }
 
-// rotateByChannelPriority 与 RoundRobin.Candidates 同构，但按 ChannelPriority 分桶而非
-// Priority——轮询(Spread)模式下 Priority(拖拽序)不是路由边界，只有 ChannelPriority 分层。
-// 复用 roundRobinCounterForItems：其 signature 只看 (channelID, modelName) 成员，一个成员
-// 恒落在唯一一个桶，所以计数器在按 ChannelPriority 分桶时同样稳定、不会被优先级调整重置。
-func rotateByChannelPriority(items []model.GroupItem) []model.GroupItem {
-	buckets := channelPriorityBuckets(items)
+// rotateByChannelPriorityAndHealth applies both routing hard boundaries before
+// rotating: ChannelPriority first, then health/capacity tier. Weight therefore
+// controls only truly peer candidates and cannot let an unhealthy channel consume
+// a healthy peer's weighted turn.
+func rotateByChannelPriorityAndHealth(items []model.GroupItem) []model.GroupItem {
+	priorityBuckets := channelPriorityBuckets(items)
 	result := make([]model.GroupItem, 0, len(items))
-	for _, bucket := range buckets {
-		n := len(bucket)
-		if n == 0 {
-			continue
-		}
-		idx := int((atomic.AddUint64(roundRobinCounterForItems(bucket), 1) - 1) % uint64(n))
-		for i := 0; i < n; i++ {
-			result = append(result, bucket[(idx+i)%n])
+	for _, priorityBucket := range priorityBuckets {
+		sort.SliceStable(priorityBucket, func(leftIndex, rightIndex int) bool {
+			return spreadTier(priorityBucket[leftIndex]) < spreadTier(priorityBucket[rightIndex])
+		})
+		for bucketStart := 0; bucketStart < len(priorityBucket); {
+			bucketTier := spreadTier(priorityBucket[bucketStart])
+			bucketEnd := bucketStart + 1
+			for bucketEnd < len(priorityBucket) && spreadTier(priorityBucket[bucketEnd]) == bucketTier {
+				bucketEnd++
+			}
+			result = append(result, rotateSpreadPeers(priorityBucket[bucketStart:bucketEnd])...)
+			bucketStart = bucketEnd
 		}
 	}
 	return result
+}
+
+func rotateSpreadPeers(items []model.GroupItem) []model.GroupItem {
+	if len(items) <= 1 {
+		return append([]model.GroupItem(nil), items...)
+	}
+	selectedIndex := nextSpreadIndex(items)
+	rotated := make([]model.GroupItem, 0, len(items))
+	for itemOffset := 0; itemOffset < len(items); itemOffset++ {
+		rotated = append(rotated, items[(selectedIndex+itemOffset)%len(items)])
+	}
+	return rotated
+}
+
+// nextSpreadIndex uses ordinary round-robin for equal weights and smooth
+// weighted round-robin when an operator explicitly gives a peer more capacity.
+// The smooth algorithm avoids long bursts (for example ten consecutive turns on
+// a weight-10 channel) while preserving the configured long-run ratio.
+func nextSpreadIndex(items []model.GroupItem) int {
+	if len(items) <= 1 {
+		return 0
+	}
+	hasCustomWeight := false
+	for _, item := range items {
+		if item.RoutingWeight > 1 {
+			hasCustomWeight = true
+			break
+		}
+	}
+	if !hasCustomWeight {
+		return int((atomic.AddUint64(roundRobinCounterForItems(items), 1) - 1) % uint64(len(items)))
+	}
+
+	stateKey := roundRobinSignature(items)
+	stateValue, _ := smoothWeightedStates.LoadOrStore(stateKey, &smoothWeightedState{})
+	state := stateValue.(*smoothWeightedState)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	memberSignature := weightedMemberSignature(items)
+	if state.memberSignature != memberSignature || len(state.currentWeights) != len(items) {
+		state.memberSignature = memberSignature
+		state.currentWeights = make([]int64, len(items))
+	}
+
+	selectedIndex := 0
+	var totalWeight int64
+	for itemIndex, item := range items {
+		weight := int64(item.RoutingWeight)
+		if weight < 1 {
+			weight = 1
+		}
+		state.currentWeights[itemIndex] += weight
+		totalWeight += weight
+		if state.currentWeights[itemIndex] > state.currentWeights[selectedIndex] {
+			selectedIndex = itemIndex
+		}
+	}
+	state.currentWeights[selectedIndex] -= totalWeight
+	return selectedIndex
+}
+
+func weightedMemberSignature(items []model.GroupItem) string {
+	var builder strings.Builder
+	for _, item := range items {
+		weight := item.RoutingWeight
+		if weight < 1 {
+			weight = 1
+		}
+		builder.WriteString(strconv.Itoa(item.ChannelID))
+		builder.WriteByte(':')
+		builder.WriteString(item.ModelName)
+		builder.WriteByte(':')
+		builder.WriteString(strconv.Itoa(weight))
+		builder.WriteByte('|')
+	}
+	return builder.String()
 }
 
 // channelPriorityBuckets 按 ChannelPriority 升序分桶(与 priorityBuckets 同构，键换成

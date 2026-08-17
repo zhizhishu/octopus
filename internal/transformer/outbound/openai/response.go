@@ -33,6 +33,9 @@ type ResponseOutbound struct {
 	// custom_tool_call, so we carry the marker through model.ToolCall.Type.
 	toolCallIsCustomByOutputIndex map[int]bool
 	hasToolCallStream             bool
+	hasTextStream                 bool
+	hasReasoningStream            bool
+	hasReasoningSignatureStream   bool
 }
 
 func (o *ResponseOutbound) TransformRequest(ctx context.Context, request *model.InternalLLMRequest, baseUrl, key string) (*http.Request, error) {
@@ -170,6 +173,9 @@ func (o *ResponseOutbound) TransformStream(ctx context.Context, eventData []byte
 		}
 
 	case "response.output_text.delta":
+		if streamEvent.Delta != "" {
+			o.hasTextStream = true
+		}
 		resp.Choices = []model.Choice{
 			{
 				Index: 0,
@@ -377,6 +383,7 @@ func (o *ResponseOutbound) TransformStream(ctx context.Context, eventData []byte
 			if delta.ReasoningSignature == nil {
 				return nil, nil
 			}
+			o.hasReasoningSignatureStream = true
 			resp.Choices = []model.Choice{{
 				Index: 0,
 				Delta: delta,
@@ -386,6 +393,9 @@ func (o *ResponseOutbound) TransformStream(ctx context.Context, eventData []byte
 		}
 
 	case "response.reasoning_summary_text.delta":
+		if streamEvent.Delta != "" {
+			o.hasReasoningStream = true
+		}
 		resp.Choices = []model.Choice{
 			{
 				Index: 0,
@@ -407,11 +417,15 @@ func (o *ResponseOutbound) TransformStream(ctx context.Context, eventData []byte
 				o.streamModel = streamEvent.Response.Model
 				resp.Model = o.streamModel
 			}
+			terminalChoice := o.terminalOutputChoice(streamEvent.Response)
 			var finishReason *string
 			if streamEvent.Response.Status != nil {
 				switch *streamEvent.Response.Status {
 				case "completed":
-					if o.hasToolCallStream {
+					terminalHasToolCalls := terminalChoice != nil &&
+						terminalChoice.Message != nil &&
+						len(terminalChoice.Message.ToolCalls) > 0
+					if o.hasToolCallStream || terminalHasToolCalls {
 						finishReason = lo.ToPtr("tool_calls")
 					} else {
 						finishReason = lo.ToPtr("stop")
@@ -422,12 +436,15 @@ func (o *ResponseOutbound) TransformStream(ctx context.Context, eventData []byte
 					finishReason = lo.ToPtr("error")
 				}
 			}
-			resp.Choices = []model.Choice{
-				{
-					Index:        0,
-					FinishReason: finishReason,
-				},
+			choice := model.Choice{Index: 0, FinishReason: finishReason}
+			// Some compatible Responses providers omit output_item/text delta events
+			// and put the complete result only in response.completed.response.output.
+			// Recover only categories not already streamed so the terminal snapshot
+			// fills gaps without duplicating standard incremental streams.
+			if terminalChoice != nil {
+				choice.Delta = terminalChoice.Message
 			}
+			resp.Choices = []model.Choice{choice}
 			if streamEvent.Response.Usage != nil {
 				usage = streamEvent.Response.Usage
 			}
@@ -461,6 +478,102 @@ func (o *ResponseOutbound) TransformStream(ctx context.Context, eventData []byte
 	}
 
 	return resp, nil
+}
+
+func (o *ResponseOutbound) terminalOutputChoice(response *ResponsesResponse) *model.Choice {
+	if response == nil || len(response.Output) == 0 {
+		return nil
+	}
+	converted := convertToLLMResponseFromResponses(response)
+	if converted == nil || len(converted.Choices) == 0 || converted.Choices[0].Message == nil {
+		return nil
+	}
+	message := cloneTerminalOutputMessage(converted.Choices[0].Message)
+	if o.hasTextStream {
+		message.Content = model.MessageContent{}
+	}
+	if o.hasReasoningStream {
+		message.ReasoningContent = nil
+	}
+	if o.hasReasoningSignatureStream {
+		message.ReasoningSignature = nil
+	}
+	message.ToolCalls = o.terminalToolCallDeltas(response.Output)
+	if terminalOutputMessageIsEmpty(message) {
+		return nil
+	}
+	return &model.Choice{Index: 0, Message: message}
+}
+
+func (o *ResponseOutbound) terminalToolCallDeltas(outputItems []ResponsesItem) []model.ToolCall {
+	toolCalls := make([]model.ToolCall, 0)
+	for outputIndex, outputItem := range outputItems {
+		if !isResponsesToolCallItemType(outputItem.Type) {
+			continue
+		}
+		isCustom := isResponsesCustomToolCallItemType(outputItem.Type)
+		if isCustom {
+			o.toolCallIsCustomByOutputIndex[outputIndex] = true
+		}
+		callID := outputItem.CallID
+		if callID == "" {
+			callID = outputItem.ID
+		}
+		name := responsesToolCallName(&outputItem)
+		fullArguments := outputItem.Arguments
+		if isCustom {
+			fullArguments = outputItem.Input
+		}
+		previousArguments := o.toolCallArgsByOutputIndex[outputIndex]
+		argumentsDelta := ""
+		switch {
+		case strings.HasPrefix(fullArguments, previousArguments):
+			argumentsDelta = fullArguments[len(previousArguments):]
+		case fullArguments != previousArguments:
+			argumentsDelta = fullArguments
+		}
+		wasPreviouslyEmitted := o.toolCallIDByOutputIndex[outputIndex] != "" ||
+			o.toolCallNameEmittedByOutputIndex[outputIndex] ||
+			previousArguments != ""
+		emittedName := o.emitToolCallName(outputIndex, name)
+		if wasPreviouslyEmitted && emittedName == "" && argumentsDelta == "" {
+			continue
+		}
+		o.toolCallIDByOutputIndex[outputIndex] = callID
+		o.toolCallNameByOutputIndex[outputIndex] = name
+		o.toolCallArgsByOutputIndex[outputIndex] = fullArguments
+		toolCalls = append(toolCalls, model.ToolCall{
+			Index: outputIndex,
+			ID:    callID,
+			Type:  o.toolCallType(outputIndex),
+			Function: model.FunctionCall{
+				Name:      emittedName,
+				Arguments: argumentsDelta,
+			},
+		})
+	}
+	return toolCalls
+}
+
+func cloneTerminalOutputMessage(message *model.Message) *model.Message {
+	if message == nil {
+		return nil
+	}
+	clone := *message
+	clone.ToolCalls = append([]model.ToolCall(nil), message.ToolCalls...)
+	clone.Content.MultipleContent = append([]model.MessageContentPart(nil), message.Content.MultipleContent...)
+	return &clone
+}
+
+func terminalOutputMessageIsEmpty(message *model.Message) bool {
+	if message == nil {
+		return true
+	}
+	return message.Content.Content == nil &&
+		len(message.Content.MultipleContent) == 0 &&
+		message.ReasoningContent == nil &&
+		message.ReasoningSignature == nil &&
+		len(message.ToolCalls) == 0
 }
 
 func (o *ResponseOutbound) ensureToolCallState() {

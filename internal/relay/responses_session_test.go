@@ -349,6 +349,84 @@ func TestResponsesSessionOwnerFallsBackToPersistentStore(t *testing.T) {
 	}
 }
 
+func TestResponsesSessionTranscriptFallsBackToPersistentStore(t *testing.T) {
+	setupResponsesSessionDB(t)
+	clearResponsesSessionCacheForTest()
+
+	previous := "resp_persisted_transcript"
+	ownerTokenID := 101
+	recordResponsesSessionOwned(context.Background(), previous, 11, 12, ownerTokenID, 0, "")
+	recordResponsesSessionTranscriptOwned(previous, []transformerModel.Message{
+		{Role: "user", Content: textMessageContent("remember this")},
+		{Role: "assistant", Content: textMessageContent("remembered")},
+	}, []transformerModel.Tool{{
+		Type: "function",
+		Function: transformerModel.Function{
+			Name: "lookup",
+		},
+	}}, ownerTokenID, 0)
+	clearResponsesSessionCacheForTest()
+
+	history, ok := responsesSessionTranscript(previous, ownerTokenID, 0)
+	if !ok || len(history) != 2 {
+		t.Fatalf("expected persisted transcript after memory reset, ok=%v history=%#v", ok, history)
+	}
+	tools, ok := responsesSessionTranscriptTools(previous, ownerTokenID, 0)
+	if !ok || len(tools) != 1 || tools[0].Function.Name != "lookup" {
+		t.Fatalf("expected persisted tools after memory reset, ok=%v tools=%#v", ok, tools)
+	}
+	if _, ok := responsesSessionTranscript(previous, 999, 0); ok {
+		t.Fatalf("foreign tenant must not load persisted transcript")
+	}
+}
+
+func TestResponsesSessionOwnerRebindPreservesSameOwnerTranscript(t *testing.T) {
+	setupResponsesSessionDB(t)
+	clearResponsesSessionCacheForTest()
+
+	previous := "resp_rebind_same_owner"
+	ownerTokenID := 202
+	recordResponsesSessionOwned(context.Background(), previous, 11, 12, ownerTokenID, 0, "root-a")
+	recordResponsesSessionTranscriptOwned(previous, []transformerModel.Message{
+		{Role: "user", Content: textMessageContent("keep me")},
+	}, nil, ownerTokenID, 0)
+
+	// Same owner rebinds channel/key/root; transcript must survive.
+	recordResponsesSessionOwned(context.Background(), previous, 13, 14, ownerTokenID, 0, "root-b")
+	clearResponsesSessionCacheForTest()
+
+	owner, ok := responsesSessionOwner(previous)
+	if !ok || owner.channelID != 13 || owner.channelKeyID != 14 {
+		t.Fatalf("expected rebound owner channel/key, got ok=%v owner=%#v", ok, owner)
+	}
+	history, ok := responsesSessionTranscript(previous, ownerTokenID, 0)
+	if !ok || len(history) != 1 || history[0].Role != "user" {
+		t.Fatalf("same-owner rebind must keep transcript, ok=%v history=%#v", ok, history)
+	}
+}
+
+func TestResponsesSessionOwnerRebindClearsTranscriptOnOwnerChange(t *testing.T) {
+	setupResponsesSessionDB(t)
+	clearResponsesSessionCacheForTest()
+
+	previous := "resp_rebind_owner_change"
+	recordResponsesSessionOwned(context.Background(), previous, 11, 12, 301, 0, "root-a")
+	recordResponsesSessionTranscriptOwned(previous, []transformerModel.Message{
+		{Role: "user", Content: textMessageContent("secret history")},
+	}, nil, 301, 0)
+
+	// Different owner takes over the response id hash — transcript must be wiped.
+	recordResponsesSessionOwned(context.Background(), previous, 11, 12, 302, 0, "root-b")
+	clearResponsesSessionCacheForTest()
+
+	if history, ok := responsesSessionTranscript(previous, 301, 0); ok || len(history) > 0 {
+		t.Fatalf("previous owner must lose transcript after owner change, ok=%v history=%#v", ok, history)
+	}
+	if history, ok := responsesSessionTranscript(previous, 302, 0); ok || len(history) > 0 {
+		t.Fatalf("new owner must not inherit previous transcript, ok=%v history=%#v", ok, history)
+	}
+}
+
 func TestResponsesSessionOwnerIgnoresExpiredPersistentStore(t *testing.T) {
 	setupResponsesSessionDB(t)
 	clearResponsesSessionCacheForTest()

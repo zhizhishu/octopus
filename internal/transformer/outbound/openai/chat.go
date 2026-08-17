@@ -27,6 +27,13 @@ func (o *CustomChatOutbound) TransformRequest(ctx context.Context, request *mode
 }
 
 func transformChatRequest(ctx context.Context, request *model.InternalLLMRequest, baseUrl, key string, customEndpoint bool) (*http.Request, error) {
+	originalToolStream := request.ToolStream
+	defer func() {
+		// The relay reuses one request across channel/key attempts. Keep this
+		// provider-specific projection scoped to the body built for this attempt.
+		request.ToolStream = originalToolStream
+	}()
+
 	// ClearHelpFields strips internal-only helper fields, but it also wipes each message's
 	// reasoning_content/signature — which DeepSeek V4 REQUIRES on the tool-call assistant
 	// message for multi-turn (inbound/openai/response.go injects it there). Preserve message
@@ -90,6 +97,7 @@ func transformChatRequest(ctx context.Context, request *model.InternalLLMRequest
 	}
 
 	applyGLMThinking(request)
+	applyGLMToolStreaming(request)
 	applyDeepSeekResponseFormat(request)
 	applyThirdPartyChatParamCompat(request, baseUrl)
 
@@ -350,6 +358,52 @@ func applyGLMThinking(request *model.InternalLLMRequest) {
 		// No explicit reasoning intent: leave the request untouched instead of
 		// force-injecting a thinking field on ordinary GLM requests.
 	}
+}
+
+// applyGLMToolStreaming enables GLM's separate function-call streaming switch.
+// Z.AI keeps tool_stream disabled by default even when stream=true, so a Cursor
+// Responses request can otherwise receive text while the call arguments remain
+// buffered and never reach the client as incremental tool_calls. Preserve an
+// explicit client value; only supply the compatibility default when tools exist.
+func applyGLMToolStreaming(request *model.InternalLLMRequest) {
+	if request == nil {
+		return
+	}
+	if !supportsGLMToolStreaming(request.Model) {
+		// tool_stream is a GLM extension. Do not leak a client-supplied value to
+		// unrelated OpenAI-compatible providers that may reject unknown fields.
+		request.ToolStream = nil
+		return
+	}
+	if request.ToolStream != nil {
+		return
+	}
+	if request.Stream == nil || !*request.Stream || len(request.Tools) == 0 {
+		return
+	}
+
+	toolStreamingEnabled := true
+	request.ToolStream = &toolStreamingEnabled
+}
+
+func supportsGLMToolStreaming(modelName string) bool {
+	normalizedName := strings.ToLower(strings.TrimSpace(modelName))
+	if separatorIndex := strings.LastIndex(normalizedName, "/"); separatorIndex >= 0 {
+		normalizedName = normalizedName[separatorIndex+1:]
+	}
+	return modelMatchesVersionFamily(normalizedName, "glm-4.6", "-") ||
+		modelMatchesVersionFamily(normalizedName, "glm-4.7", "-") ||
+		modelMatchesVersionFamily(normalizedName, "glm-5", ".-")
+}
+
+func modelMatchesVersionFamily(modelName, familyName, allowedSuffixDelimiters string) bool {
+	if modelName == familyName {
+		return true
+	}
+	if !strings.HasPrefix(modelName, familyName) || len(modelName) == len(familyName) {
+		return false
+	}
+	return strings.ContainsRune(allowedSuffixDelimiters, rune(modelName[len(familyName)]))
 }
 
 // glmWantsThinking reports an explicit request to enable reasoning.
