@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
     BadgeDollarSign,
     Check,
@@ -963,7 +963,9 @@ type RequestNodeData = {
     requestModel: string;
     family: ModelFamilyKey;
     mode?: GroupMode;
-    onEdit: () => void;
+    /** Stable edit target; shared callback avoids per-node closures that bust memo on pan/zoom. */
+    editTarget: string;
+    onEditRequest: (requestModel: string) => void;
 };
 type TargetNodeData = {
     channelName: string;
@@ -995,25 +997,25 @@ type FlowNode =
     | PlanFlowNode | RequestFlowNode | TargetFlowNode | FamilyBandFlowNode
     | MapFromFlowNode | MapToFlowNode | ChannelMapBandFlowNode;
 
-function PlanFlowCard({ data }: NodeProps<PlanFlowNode>) {
+const PlanFlowCard = memo(function PlanFlowCard({ data }: NodeProps<PlanFlowNode>) {
     return (
-        <div className="rounded-2xl border border-primary/25 bg-primary/10 p-3 shadow-sm" style={{ width: PLAN_W }}>
+        <div className="rounded-2xl border border-primary/25 bg-primary/10 p-3" style={{ width: PLAN_W, height: PLAN_H }}>
             <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-primary">{data.slug}</div>
             <div className="mt-1 truncate text-sm font-black text-foreground">{data.name}</div>
             <div className="mt-2 text-xs text-muted-foreground">默认倍率 {data.multiplier}x</div>
             <Handle type="source" position={Position.Right} className="!size-2 !border-2 !border-background !bg-primary" />
         </div>
     );
-}
+});
 
-function RequestFlowCard({ data }: NodeProps<RequestFlowNode>) {
+const RequestFlowCard = memo(function RequestFlowCard({ data }: NodeProps<RequestFlowNode>) {
     const modeLabel = data.mode !== undefined
         ? (MODE_LABELS[normalizeGroupMode(data.mode)] === 'spread'
             ? accessPlanText('routes.modeSpread')
             : accessPlanText('routes.modeFillFirst'))
         : null;
     return (
-        <div className="rounded-2xl border border-amber-500/25 bg-amber-500/10 px-3 py-2.5 shadow-sm" style={{ width: REQ_W }}>
+        <div className="rounded-2xl border border-amber-500/25 bg-amber-500/10 px-3 py-2.5" style={{ width: REQ_W, height: REQ_H }}>
             <Handle type="target" position={Position.Left} className="!size-2 !border-2 !border-background !bg-amber-500" />
             <div className="flex items-center justify-between gap-2">
                 <span className="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.16em] text-amber-600 dark:text-amber-300">
@@ -1030,7 +1032,7 @@ function RequestFlowCard({ data }: NodeProps<RequestFlowNode>) {
                     variant="outline"
                     size="sm"
                     className="nodrag nopan pointer-events-auto h-6 gap-1 rounded-lg border-amber-500/30 bg-transparent px-2 text-[11px] text-amber-700 hover:bg-amber-500/15 dark:text-amber-200"
-                    onClick={data.onEdit}
+                    onClick={() => data.onEditRequest(data.editTarget)}
                     onPointerDown={(event) => event.stopPropagation()}
                 >
                     <PencilLine className="size-3" />{accessPlanText('routes.quickEdit')}
@@ -1040,13 +1042,13 @@ function RequestFlowCard({ data }: NodeProps<RequestFlowNode>) {
             <Handle type="source" position={Position.Right} className="!size-2 !border-2 !border-background !bg-amber-500" />
         </div>
     );
-}
+});
 
-function TargetFlowCard({ data }: NodeProps<TargetFlowNode>) {
+const TargetFlowCard = memo(function TargetFlowCard({ data }: NodeProps<TargetFlowNode>) {
     return (
         <div
-            className={cn('grid grid-cols-[minmax(84px,1.1fr)_minmax(96px,1.4fr)_auto_auto] items-center gap-3 rounded-2xl border bg-card/90 px-3 py-2 shadow-sm', data.enabled ? 'border-emerald-500/25' : 'border-border opacity-65')}
-            style={{ width: TGT_W }}
+            className={cn('grid grid-cols-[minmax(84px,1.1fr)_minmax(96px,1.4fr)_auto_auto] items-center gap-3 rounded-2xl border bg-card/90 px-3 py-2', data.enabled ? 'border-emerald-500/25' : 'border-border opacity-65')}
+            style={{ width: TGT_W, height: TGT_H }}
         >
             <Handle type="target" position={Position.Left} className="!size-2 !border-2 !border-background !bg-emerald-500" />
             <div className="min-w-0">
@@ -1072,9 +1074,9 @@ function TargetFlowCard({ data }: NodeProps<TargetFlowNode>) {
             </div>
         </div>
     );
-}
+});
 
-function FamilyBandCard({ data }: NodeProps<FamilyBandFlowNode>) {
+const FamilyBandCard = memo(function FamilyBandCard({ data }: NodeProps<FamilyBandFlowNode>) {
     const s = FAMILY_STYLES[data.family];
     return (
         <div className={cn('rounded-2xl border', s.ring, s.soft)} style={{ width: data.width, height: data.height }}>
@@ -1086,12 +1088,12 @@ function FamilyBandCard({ data }: NodeProps<FamilyBandFlowNode>) {
             </div>
         </div>
     );
-}
+});
 
 // 渠道映射：左卡（客户端请求名，复用琥珀请求卡风格，只读无编辑按钮）
-function MapFromCard({ data }: NodeProps<MapFromFlowNode>) {
+const MapFromCard = memo(function MapFromCard({ data }: NodeProps<MapFromFlowNode>) {
     return (
-        <div className="rounded-2xl border border-amber-500/25 bg-amber-500/10 px-3 py-2.5 shadow-sm" style={{ width: REQ_W }}>
+        <div className="rounded-2xl border border-amber-500/25 bg-amber-500/10 px-3 py-2.5" style={{ width: REQ_W, height: REQ_H }}>
             <div className="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.16em] text-amber-600 dark:text-amber-300">
                 <span className="size-1.5 rounded-full bg-amber-500" />
                 客户端请求名
@@ -1100,12 +1102,12 @@ function MapFromCard({ data }: NodeProps<MapFromFlowNode>) {
             <Handle type="source" position={Position.Right} className="!size-2 !border-2 !border-background !bg-amber-500" />
         </div>
     );
-}
+});
 
 // 渠道映射：右卡（#渠道 · 上游名，复用目标卡风格）
-function MapToCard({ data }: NodeProps<MapToFlowNode>) {
+const MapToCard = memo(function MapToCard({ data }: NodeProps<MapToFlowNode>) {
     return (
-        <div className="grid grid-cols-[minmax(84px,1.1fr)_minmax(96px,1.6fr)] items-center gap-3 rounded-2xl border border-emerald-500/25 bg-card/90 px-3 py-2 shadow-sm" style={{ width: TGT_W }}>
+        <div className="grid grid-cols-[minmax(84px,1.1fr)_minmax(96px,1.6fr)] items-center gap-3 rounded-2xl border border-emerald-500/25 bg-card/90 px-3 py-2" style={{ width: TGT_W, height: TGT_H }}>
             <Handle type="target" position={Position.Left} className="!size-2 !border-2 !border-background !bg-emerald-500" />
             <div className="min-w-0">
                 <div className="flex min-w-0 items-center gap-1.5">
@@ -1120,10 +1122,10 @@ function MapToCard({ data }: NodeProps<MapToFlowNode>) {
             </div>
         </div>
     );
-}
+});
 
 // 渠道映射家族带（独立于方案路由带，青色区分）
-function ChannelMapBandCard({ data }: NodeProps<ChannelMapBandFlowNode>) {
+const ChannelMapBandCard = memo(function ChannelMapBandCard({ data }: NodeProps<ChannelMapBandFlowNode>) {
     return (
         <div className="rounded-2xl border border-cyan-500/30 bg-cyan-500/[0.07]" style={{ width: data.width, height: data.height }}>
             <div className="flex items-center gap-2.5 px-4 py-2.5">
@@ -1133,8 +1135,10 @@ function ChannelMapBandCard({ data }: NodeProps<ChannelMapBandFlowNode>) {
             </div>
         </div>
     );
-}
+});
 
+// Stable identity is required: React Flow re-renders visible nodes on pan/zoom.
+// If nodeTypes is recreated each render, every custom node remounts and the canvas stutters.
 const flowNodeTypes: NodeTypes = {
     plan: PlanFlowCard,
     request: RequestFlowCard,
@@ -1196,8 +1200,12 @@ function buildRouteFlow(
                     requestModel: cleanOneMillionModelName(row.requestModel),
                     family: modelFamilyKey(row.requestModel),
                     mode: groupModeByName.get(normalizeKey(row.requestModel)),
-                    onEdit: () => onEditRequest(row.requestKey ? row.requestModel : ''),
+                    // Stable scalar + shared callback: avoid per-row arrow functions so memoized nodes skip re-render on pan/zoom.
+                    editTarget: row.requestKey ? row.requestModel : '',
+                    onEditRequest,
                 },
+                width: REQ_W,
+                height: REQ_H,
             });
             edges.push({
                 id: `edge:${planId}:${reqId}`,
@@ -1223,6 +1231,8 @@ function buildRouteFlow(
                     type: 'target',
                     position: { x: TGT_X, y: startY + targetIndex * (TGT_H + TGT_GAP) },
                     zIndex: 1,
+                    width: TGT_W,
+                    height: TGT_H,
                     data: {
                         channelName,
                         channelId: target.channel_id,
@@ -1256,6 +1266,8 @@ function buildRouteFlow(
             zIndex: 0,
             selectable: false,
             draggable: false,
+            width: BAND_W,
+            height: bandHeight,
             data: { family: group.key, label: group.label, modelCount: group.rows.length, targetCount: group.targetTotal, width: BAND_W, height: bandHeight },
         });
         y = (rowY - ROW_GAP) + FAMILY_GAP;
@@ -1267,6 +1279,8 @@ function buildRouteFlow(
         type: 'plan',
         position: { x: PLAN_X, y: TOP_PAD + (totalHeight - PLAN_H) / 2 },
         zIndex: 1,
+        width: PLAN_W,
+        height: PLAN_H,
         data: { slug: plan.slug, name: plan.display_name || plan.slug, multiplier: plan.default_multiplier ?? 1 },
     });
 
@@ -1284,6 +1298,8 @@ function buildRouteFlow(
                 type: 'mapFrom',
                 position: { x: REQ_X, y: rowY + (rowH - REQ_H) / 2 },
                 zIndex: 1,
+                width: REQ_W,
+                height: REQ_H,
                 data: { fromModel: mapping.fromModel },
             });
             nodes.push({
@@ -1291,6 +1307,8 @@ function buildRouteFlow(
                 type: 'mapTo',
                 position: { x: TGT_X, y: rowY + (rowH - TGT_H) / 2 },
                 zIndex: 1,
+                width: TGT_W,
+                height: TGT_H,
                 data: { channelName: mapping.channelName, channelId: mapping.channelId, toModel: mapping.toModel },
             });
             edges.push({
@@ -1310,6 +1328,8 @@ function buildRouteFlow(
             zIndex: 0,
             selectable: false,
             draggable: false,
+            width: BAND_W,
+            height: bandHeight,
             data: { label: '渠道模型映射（发送改名）', count: channelMappings.length, width: BAND_W, height: bandHeight },
         });
     }
@@ -1475,7 +1495,7 @@ function RouteFlowCanvasInner({
                     canvasFullscreen
                         ? 'fixed inset-0 z-50 h-[100dvh] w-screen bg-background p-2 sm:p-4'
                         : 'min-h-0 flex-1 h-[clamp(320px,calc(100dvh-22rem),820px)] sm:h-[clamp(340px,calc(100dvh-22rem),860px)]',
-                    'transition-[height]',
+                    // Avoid height CSS transition fighting ReactFlow ResizeObserver during fullscreen.
                 )}>
                     <ReactFlow<FlowNode, Edge>
                         nodes={nodes}
@@ -1492,11 +1512,25 @@ function RouteFlowCanvasInner({
                         nodesConnectable={false}
                         elementsSelectable={false}
                         edgesFocusable={false}
+                        nodesFocusable={false}
                         zoomOnDoubleClick={false}
+                        // Cull offscreen custom nodes during pan/zoom; measured width/height make culling reliable.
+                        onlyRenderVisibleElements
+                        // Default bezier edges re-layout paths every frame while zooming; straight edges stay cheap.
+                        defaultEdgeOptions={{ type: 'straight' }}
+                        elevateNodesOnSelect={false}
                         proOptions={{ hideAttribution: true }}
                     >
-                        <Background variant={BackgroundVariant.Dots} gap={32} size={1} />
-                        <MiniMap pannable zoomable onClick={(_event, position) => setCenter(position.x, position.y, { zoom: 1, duration: 400 })} nodeColor={miniMapNodeColor} nodeStrokeWidth={2} className="!hidden sm:!block" />
+                        {/* Larger gap + smaller dots = less paint work under continuous pan/zoom. */}
+                        <Background variant={BackgroundVariant.Dots} gap={40} size={0.8} color="var(--border)" />
+                        <MiniMap
+                            pannable
+                            zoomable
+                            onClick={(_event, position) => setCenter(position.x, position.y, { zoom: 1, duration: 400 })}
+                            nodeColor={miniMapNodeColor}
+                            nodeStrokeWidth={2}
+                            className="!hidden sm:!block !opacity-90"
+                        />
                         <Controls showInteractive={false} showFitView={false}>
                             <ControlButton
                                 onClick={() => setCanvasFullscreen((v) => !v)}
