@@ -89,3 +89,37 @@ func TestGetLLMPriceVendorPrefixFallback(t *testing.T) {
 		}
 	}
 }
+
+// TestGetLLMPriceCatalogCoversGrokDeepSeekGeminiFamilies locks the 2026 catalog
+// refresh: current frontier ids (and common client rewrites) must remain billable,
+// and soft-merged legacy names that models.dev dropped must not fall to zero.
+func TestGetLLMPriceCatalogCoversGrokDeepSeekGeminiFamilies(t *testing.T) {
+	cases := map[string]struct {
+		wantInput  float64
+		wantOutput float64
+	}{
+		"grok-4.6":                    {wantInput: 2, wantOutput: 6},
+		"grok-4-6":                    {wantInput: 2, wantOutput: 6},
+		"x-ai/grok-4.6":               {wantInput: 2, wantOutput: 6},
+		"grok-4.5":                    {wantInput: 2, wantOutput: 6},
+		"deepseek-v4-flash":           {wantInput: 0.14, wantOutput: 0.28},
+		"deepseek-v4-pro":             {wantInput: 0.435, wantOutput: 0.87},
+		"deepseek-ai/deepseek-v4-pro": {wantInput: 0.435, wantOutput: 0.87},
+		"gemini-3.1-pro-preview":      {wantInput: 2, wantOutput: 12},
+		"gemini-3-flash-preview":      {wantInput: 0.5, wantOutput: 3},
+		"gemini-3.5-flash":            {wantInput: 1.5, wantOutput: 9},
+		// Soft-merge retains still-live legacy names after models.dev drops them.
+		"grok-4": {wantInput: 3, wantOutput: 15},
+		"grok-3": {wantInput: 3, wantOutput: 15},
+	}
+	for modelName, want := range cases {
+		got := GetLLMPrice(modelName)
+		if got == nil {
+			t.Fatalf("expected catalog price for %q, got nil", modelName)
+		}
+		if got.Input != want.wantInput || got.Output != want.wantOutput {
+			t.Fatalf("%s price = input %v output %v, want input %v output %v",
+				modelName, got.Input, got.Output, want.wantInput, want.wantOutput)
+		}
+	}
+}

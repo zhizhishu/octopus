@@ -27,7 +27,12 @@ PROVIDERS = [
 
 # 其他模型别名映射 (非 Claude)
 MODEL_ALIASES: dict[str, list[str]] = {
-    # 在这里添加其他模型的别名
+    # Clients / routers sometimes rewrite dotted versions to hyphenated ids.
+    "grok-4.6": ["grok-4-6"],
+    "grok-4.5": ["grok-4-5"],
+    "grok-4.3": ["grok-4-3"],
+    "deepseek-v4-flash": ["deepseek-ai/deepseek-v4-flash"],
+    "deepseek-v4-pro": ["deepseek-ai/deepseek-v4-pro"],
 }
 
 PRESETS_GO_TEMPLATE = '''package price
@@ -136,6 +141,22 @@ def generate_claude_aliases(model_id: str) -> list[str]:
     return aliases
 
 
+def generate_dotted_version_aliases(model_id: str) -> list[str]:
+    """Map dotted version tokens to hyphenated forms clients often send.
+
+    Examples:
+      grok-4.6 -> grok-4-6
+      gemini-3.1-pro-preview -> gemini-3-1-pro-preview
+      claude-opus-4.6 -> claude-opus-4-6 (in addition to Claude-specific aliases)
+    """
+    if "." not in model_id:
+        return []
+    hyphenated = model_id.replace(".", "-")
+    if hyphenated == model_id:
+        return []
+    return [hyphenated]
+
+
 def generate_entry(model_id: str, cost: dict) -> str:
     """生成单个模型的 Go map entry"""
     input_price = format_price(cost.get("input"))
@@ -146,14 +167,40 @@ def generate_entry(model_id: str, cost: dict) -> str:
     return f'\t"{model_id}": {{Input: {input_price}, Output: {output_price}, CacheRead: {cache_read}, CacheWrite: {cache_write}}},'
 
 
+def parse_existing_presets(path: Path) -> dict[str, dict[str, float | None]]:
+    """Load previous presets.go entries so catalog removals do not zero-bill live models."""
+    if not path.exists():
+        return {}
+    text = path.read_text(encoding="utf-8")
+    pattern = re.compile(
+        r'"([^"]+)":\s*\{Input:\s*([0-9.]+),\s*Output:\s*([0-9.]+),\s*'
+        r"CacheRead:\s*([0-9.]+),\s*CacheWrite:\s*([0-9.]+)\}"
+    )
+    existing: dict[str, dict[str, float | None]] = {}
+    for match in pattern.finditer(text):
+        model_id = match.group(1).lower()
+        existing[model_id] = {
+            "input": float(match.group(2)),
+            "output": float(match.group(3)),
+            "cache_read": float(match.group(4)),
+            "cache_write": float(match.group(5)),
+        }
+    return existing
+
+
 def main():
     print(f"Fetching price data from {LLM_PRICE_URL}...")
     raw_price = fetch_price_data()
+
+    script_dir = Path(__file__).parent
+    output_path = script_dir.parent / "internal" / "price" / "presets.go"
+    legacy_prices = parse_existing_presets(output_path)
     
     entries = []
     seen_keys: set[str] = set()
     dup_count = 0
     model_count = 0
+    retained_legacy_count = 0
 
     for provider in PROVIDERS:
         if provider not in raw_price:
@@ -185,8 +232,11 @@ def main():
             
             # 1. Claude 模型自动生成别名
             aliases.extend(generate_claude_aliases(model_id))
+
+            # 2. Dotted version tokens often arrive hyphenated from clients/routers.
+            aliases.extend(generate_dotted_version_aliases(model_id))
             
-            # 2. 静态别名映射
+            # 3. 静态别名映射
             if model_id in MODEL_ALIASES:
                 aliases.extend(MODEL_ALIASES[model_id])
             
@@ -203,6 +253,20 @@ def main():
             
         print(f"  {provider}: {provider_count} models")
         model_count += provider_count
+
+    # Soft-merge: models.dev frequently drops still-live model ids when a family
+    # is rebranded (e.g. grok-4 -> grok-4.6). Keep the previous entry so billing
+    # does not silently fall to zero for channels still pointing at the old name.
+    # Fresh catalog values always win for keys still present above.
+    for model_id, cost in sorted(legacy_prices.items()):
+        if model_id in seen_keys:
+            continue
+        seen_keys.add(model_id)
+        entries.append(generate_entry(model_id, cost))
+        retained_legacy_count += 1
+        model_count += 1
+    if retained_legacy_count:
+        print(f"  Retained {retained_legacy_count} legacy model keys not present in current models.dev catalog")
     
     # 生成 Go 文件内容
     update_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -212,9 +276,6 @@ def main():
     )
     
     # 写入文件
-    script_dir = Path(__file__).parent
-    output_path = script_dir.parent / "internal" / "price" / "presets.go"
-    
     output_path.write_text(content, encoding="utf-8")
     if dup_count:
         print(f"  Skipped {dup_count} duplicate model/alias keys (kept first occurrence)")
@@ -223,4 +284,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
