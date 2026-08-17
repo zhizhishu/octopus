@@ -1324,6 +1324,15 @@ func (ra *relayAttempt) applyTransformOptions() error {
 	// synthetic billing-header / agent-identity system blocks too.
 	ra.internalRequest.TransformOptions.SuppressClaudeIdentity = !shouldApplyChannelCloak(ra.channel.Cloak)
 
+	// Channel-level opt-in: fold empty-content reasoning into content on the chat
+	// inbound wire (new-api thinking_to_content). Default false = no behaviour change.
+	ra.internalRequest.TransformOptions.ThinkingToContent = ra.channel.ThinkingToContent
+	// TransformRequest runs before channel selection, so the inbound adapter may
+	// have captured ThinkingToContent=false. Push the live channel flag now.
+	if setter, ok := ra.inAdapter.(interface{ SetThinkingToContent(bool) }); ok {
+		setter.SetThinkingToContent(ra.channel.ThinkingToContent)
+	}
+
 	if openAIPromptCacheKeyChannel(ra.channel.Type) {
 		if enabled, err := op.SettingGetBool(dbmodel.SettingKeyOpenAIAutoPromptCacheKey); err == nil {
 			convRoot := ""

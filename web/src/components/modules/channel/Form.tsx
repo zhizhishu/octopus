@@ -103,6 +103,7 @@ export interface ChannelFormData {
     discovered_models: string[];
     selected_models: string[];
     anthropic_context_1m: boolean;
+    thinking_to_content: boolean;
     enabled: boolean;
     proxy: boolean;
     auto_sync: boolean;
@@ -1264,6 +1265,25 @@ export function ChannelForm({
                         </div>
                     </div>
                 )}
+
+                <div className="rounded-xl border border-border bg-background/70 p-3">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="min-w-0 space-y-1">
+                            <div className="text-xs font-semibold text-card-foreground">思考内容并入正文</div>
+                            <p className="text-xs leading-relaxed text-muted-foreground">
+                                对齐 new-api 的 thinking_to_content。开启后，当上游只填 reasoning_content、content 为空时（常见于 GLM 开 thinking 且 max_tokens 偏小），把思考链折叠进 content，方便只渲染正文的客户端。默认关闭，不改出站指纹。
+                            </p>
+                        </div>
+                        <label className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-border bg-muted/30 px-2.5 py-1.5 text-xs text-muted-foreground">
+                            <Switch
+                                checked={formData.thinking_to_content}
+                                onCheckedChange={(checked) => onFormDataChange({ ...formData, thinking_to_content: checked })}
+                                aria-label="启用思考内容并入正文"
+                            />
+                            <span>{formData.thinking_to_content ? '已启用' : '未启用'}</span>
+                        </label>
+                    </div>
+                </div>
 
                 {channelTestResult && (
                     <div className={`rounded-xl border p-2.5 text-xs ${channelTestResult.success ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'border-destructive/30 bg-destructive/10 text-destructive'}`}>

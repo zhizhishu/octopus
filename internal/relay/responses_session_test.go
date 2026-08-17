@@ -59,7 +59,7 @@ func TestPreviousResponsesOwnerKeyForChannel(t *testing.T) {
 func TestPrepareResponsesSessionCursorDropsForeignTenant(t *testing.T) {
 	clearResponsesSessionCacheForTest()
 	previous := "resp_foreign_tenant"
-	recordResponsesSessionOwned(context.Background(), previous, 6, 7, 100, 0, "")
+	recordResponsesSessionOwned(context.Background(), previous, 6, 7, 100, 0, "", "")
 
 	req := &transformerModel.InternalLLMRequest{PreviousResponseID: &previous}
 	ra := &relayAttempt{
@@ -83,7 +83,7 @@ func TestPrepareResponsesSessionCursorDropsForeignTenant(t *testing.T) {
 func TestPrepareResponsesSessionCursorKeepsMatchingTenant(t *testing.T) {
 	clearResponsesSessionCacheForTest()
 	previous := "resp_same_tenant"
-	recordResponsesSessionOwned(context.Background(), previous, 6, 7, 100, 0, "")
+	recordResponsesSessionOwned(context.Background(), previous, 6, 7, 100, 0, "", "")
 
 	req := &transformerModel.InternalLLMRequest{PreviousResponseID: &previous}
 	ra := &relayAttempt{
@@ -125,7 +125,7 @@ func TestResponsesSessionTranscriptRejectsForeignTenant(t *testing.T) {
 func TestResponsesOwnerKeyForChannelEnforcesIdentity(t *testing.T) {
 	clearResponsesSessionCacheForTest()
 	previous := "resp_owner_key_identity"
-	recordResponsesSessionOwned(context.Background(), previous, 6, 7, 100, 0, "")
+	recordResponsesSessionOwned(context.Background(), previous, 6, 7, 100, 0, "", "")
 
 	if got := responsesOwnerKeyForChannel(context.Background(), previous, 6, 100, 0); got != 7 {
 		t.Fatalf("owner must get preferred key, got %d want 7", got)
@@ -355,7 +355,7 @@ func TestResponsesSessionTranscriptFallsBackToPersistentStore(t *testing.T) {
 
 	previous := "resp_persisted_transcript"
 	ownerTokenID := 101
-	recordResponsesSessionOwned(context.Background(), previous, 11, 12, ownerTokenID, 0, "")
+	recordResponsesSessionOwned(context.Background(), previous, 11, 12, ownerTokenID, 0, "", "")
 	recordResponsesSessionTranscriptOwned(previous, []transformerModel.Message{
 		{Role: "user", Content: textMessageContent("remember this")},
 		{Role: "assistant", Content: textMessageContent("remembered")},
@@ -386,13 +386,13 @@ func TestResponsesSessionOwnerRebindPreservesSameOwnerTranscript(t *testing.T) {
 
 	previous := "resp_rebind_same_owner"
 	ownerTokenID := 202
-	recordResponsesSessionOwned(context.Background(), previous, 11, 12, ownerTokenID, 0, "root-a")
+	recordResponsesSessionOwned(context.Background(), previous, 11, 12, ownerTokenID, 0, "root-a", "")
 	recordResponsesSessionTranscriptOwned(previous, []transformerModel.Message{
 		{Role: "user", Content: textMessageContent("keep me")},
 	}, nil, ownerTokenID, 0)
 
 	// Same owner rebinds channel/key/root; transcript must survive.
-	recordResponsesSessionOwned(context.Background(), previous, 13, 14, ownerTokenID, 0, "root-b")
+	recordResponsesSessionOwned(context.Background(), previous, 13, 14, ownerTokenID, 0, "root-b", "")
 	clearResponsesSessionCacheForTest()
 
 	owner, ok := responsesSessionOwner(previous)
@@ -410,13 +410,13 @@ func TestResponsesSessionOwnerRebindClearsTranscriptOnOwnerChange(t *testing.T) 
 	clearResponsesSessionCacheForTest()
 
 	previous := "resp_rebind_owner_change"
-	recordResponsesSessionOwned(context.Background(), previous, 11, 12, 301, 0, "root-a")
+	recordResponsesSessionOwned(context.Background(), previous, 11, 12, 301, 0, "root-a", "")
 	recordResponsesSessionTranscriptOwned(previous, []transformerModel.Message{
 		{Role: "user", Content: textMessageContent("secret history")},
 	}, nil, 301, 0)
 
 	// Different owner takes over the response id hash — transcript must be wiped.
-	recordResponsesSessionOwned(context.Background(), previous, 11, 12, 302, 0, "root-b")
+	recordResponsesSessionOwned(context.Background(), previous, 11, 12, 302, 0, "root-b", "")
 	clearResponsesSessionCacheForTest()
 
 	if history, ok := responsesSessionTranscript(previous, 301, 0); ok || len(history) > 0 {

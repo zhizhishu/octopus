@@ -220,7 +220,7 @@ runIterator:
 					if rootHash == "" {
 						rootHash = op.ResponseSessionIDHash(strings.TrimSpace(upstreamResponseID))
 					}
-					recordResponsesSessionOwned(ctx, upstreamResponseID, channel.ID, usedKey.ID, apiKeyID, userID, rootHash)
+					recordResponsesSessionOwned(ctx, upstreamResponseID, channel.ID, usedKey.ID, apiKeyID, userID, rootHash, responseSessionSourceResponses)
 				}
 
 				costDelta := metrics.Stats.InputCost + metrics.Stats.OutputCost

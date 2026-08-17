@@ -69,6 +69,7 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
         discovered_models: channel.discovered_models ?? [],
         selected_models: channel.selected_models ?? [],
         anthropic_context_1m: channel.anthropic_context_1m ?? false,
+        thinking_to_content: channel.thinking_to_content ?? false,
         proxy: channel.proxy,
         auto_sync: channel.auto_sync,
         auto_group: channel.auto_group,
@@ -114,6 +115,7 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
         if (JSON.stringify(formData.selected_models ?? []) !== JSON.stringify(channel.selected_models ?? [])) req.selected_models = formData.selected_models;
         if (JSON.stringify(formData.discovered_models ?? []) !== JSON.stringify(channel.discovered_models ?? [])) req.discovered_models = formData.discovered_models;
         if (formData.anthropic_context_1m !== (channel.anthropic_context_1m ?? false)) req.anthropic_context_1m = formData.anthropic_context_1m;
+        if (formData.thinking_to_content !== (channel.thinking_to_content ?? false)) req.thinking_to_content = formData.thinking_to_content;
         if (formData.proxy !== channel.proxy) req.proxy = formData.proxy;
         if (formData.auto_sync !== channel.auto_sync) req.auto_sync = formData.auto_sync;
         if (formData.auto_group !== channel.auto_group) req.auto_group = formData.auto_group;

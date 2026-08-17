@@ -34,10 +34,10 @@ func ResponseSessionIDHash(responseID string) string {
 // conversation root). Prefer ResponseSessionBindOwned so the tenant that created
 // the response id is recorded for cross-tenant isolation.
 func ResponseSessionBind(ctx context.Context, responseID string, channelID, channelKeyID int, ttl time.Duration) error {
-	return ResponseSessionBindOwned(ctx, responseID, channelID, channelKeyID, 0, 0, "", ttl)
+	return ResponseSessionBindOwned(ctx, responseID, channelID, channelKeyID, 0, 0, "", "", ttl)
 }
 
-func ResponseSessionBindOwned(ctx context.Context, responseID string, channelID, channelKeyID, ownerTokenID, ownerUserID int, rootHash string, ttl time.Duration) error {
+func ResponseSessionBindOwned(ctx context.Context, responseID string, channelID, channelKeyID, ownerTokenID, ownerUserID int, rootHash, source string, ttl time.Duration) error {
 	responseIDHash := ResponseSessionIDHash(responseID)
 	if responseIDHash == "" || channelID == 0 || channelKeyID == 0 {
 		return nil
@@ -53,6 +53,7 @@ func ResponseSessionBindOwned(ctx context.Context, responseID string, channelID,
 		ctx = context.Background()
 	}
 	now := time.Now()
+	source = strings.TrimSpace(source)
 	row := model.ResponseSession{
 		ResponseIDHash: responseIDHash,
 		ChannelID:      channelID,
@@ -60,6 +61,7 @@ func ResponseSessionBindOwned(ctx context.Context, responseID string, channelID,
 		OwnerTokenID:   ownerTokenID,
 		OwnerUserID:    ownerUserID,
 		RootHash:       rootHash,
+		Source:         source,
 		ExpiresAt:      now.Add(ttl),
 	}
 	return conn.WithContext(ctx).Clauses(clause.OnConflict{
@@ -70,6 +72,7 @@ func ResponseSessionBindOwned(ctx context.Context, responseID string, channelID,
 			"owner_token_id": row.OwnerTokenID,
 			"owner_user_id":  row.OwnerUserID,
 			"root_hash":      row.RootHash,
+			"source":         row.Source,
 			"transcript_json": gorm.Expr(
 				"CASE WHEN owner_token_id = ? AND owner_user_id = ? THEN transcript_json ELSE '' END",
 				row.OwnerTokenID,

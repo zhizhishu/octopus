@@ -68,6 +68,12 @@ type Channel struct {
 	AutoGroup             AutoGroupType      `json:"auto_group" gorm:"default:0"`
 	CustomHeader          []CustomHeader     `json:"custom_header" gorm:"serializer:json"`
 	Cloak                 ChannelCloak       `json:"cloak" gorm:"serializer:json"`
+	// ThinkingToContent (opt-in, default false) mirrors new-api's thinking_to_content:
+	// when the upstream only fills reasoning_content and leaves content empty (common
+	// on GLM with thinking + small max_tokens), fold reasoning into content so chat
+	// clients that only render message.content still see a reply. Shape-safe: only
+	// rewrites the application-layer body returned to the client, never outbound TLS.
+	ThinkingToContent    bool               `json:"thinking_to_content" gorm:"default:false"`
 	ParamOverride         *string            `json:"param_override"`
 	SystemPromptOverride  string             `json:"system_prompt_override"`
 	PromptOverrideMode    PromptOverrideMode `json:"prompt_override_mode" gorm:"default:append_system"`
@@ -143,6 +149,7 @@ type ChannelUpdateRequest struct {
 	DiscoveredModels      *[]string              `json:"discovered_models,omitempty"`
 	SelectedModels        *[]string              `json:"selected_models,omitempty"`
 	AnthropicContext1M    *bool                  `json:"anthropic_context_1m,omitempty"`
+	ThinkingToContent     *bool                  `json:"thinking_to_content,omitempty"`
 	Proxy                 *bool                  `json:"proxy,omitempty"`
 	AutoSync              *bool                  `json:"auto_sync,omitempty"`
 	AutoGroup             *AutoGroupType         `json:"auto_group,omitempty"`

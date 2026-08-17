@@ -14,6 +14,16 @@ type ChatInbound struct {
 	streamChunks []*model.InternalLLMResponse
 	// storedResponse stores the non-stream response
 	storedResponse *model.InternalLLMResponse
+	// thinkingToContent mirrors new-api's thinking_to_content (channel opt-in).
+	// When true, reasoning_content is folded into message.content so clients that
+	// only render content still see a reply when the upstream fills only reasoning
+	// (common on GLM with thinking + small max_tokens).
+	thinkingToContent bool
+	// streamThinkingOpen tracks whether the stream path has already opened a
+	// <think> block for a given choice index (new-api ThinkingContentInfo).
+	streamThinkingOpen map[int]bool
+	// streamThinkingClosed tracks whether the </think> close tag was sent for a choice.
+	streamThinkingClosed map[int]bool
 }
 
 func (i *ChatInbound) TransformRequest(ctx context.Context, body []byte) (*model.InternalLLMRequest, error) {
@@ -23,7 +33,19 @@ func (i *ChatInbound) TransformRequest(ctx context.Context, body []byte) (*model
 	}
 	request.RawAPIFormat = model.APIFormatOpenAIChatCompletion
 	normalizeOpenAIChatToolMessages(&request)
+	// Capture the channel opt-in before the request is handed to relay; relay
+	// re-sets TransformOptions.ThinkingToContent from the channel each attempt.
+	i.thinkingToContent = request.TransformOptions.ThinkingToContent
 	return &request, nil
+}
+
+// SetThinkingToContent lets the relay push the channel flag onto a shared inbound
+// adapter after applyTransformOptions (TransformRequest runs before channel pick).
+func (i *ChatInbound) SetThinkingToContent(enabled bool) {
+	if i == nil {
+		return
+	}
+	i.thinkingToContent = enabled
 }
 
 func normalizeOpenAIChatToolMessages(request *model.InternalLLMRequest) {
@@ -175,8 +197,12 @@ func (i *ChatInbound) TransformResponse(ctx context.Context, response *model.Int
 	// Store the (unflattened) response for later retrieval / billing.
 	i.storedResponse = response
 
-	// Marshal a view with any bridged image_url content rendered as a Markdown image string.
-	body, err := json.Marshal(chatResponseWithMarkdownImages(response))
+	// Wire view: Markdown-flatten image_url parts, then optionally fold empty
+	// content + reasoning into content (thinking_to_content). Neither mutates
+	// the stored internal response used for billing / session transcript.
+	wire := chatResponseWithMarkdownImages(response)
+	wire = applyThinkingToContentNonStream(wire, i != nil && i.thinkingToContent)
+	body, err := json.Marshal(wire)
 	if err != nil {
 		return nil, err
 	}
@@ -193,6 +219,9 @@ func (i *ChatInbound) TransformStream(ctx context.Context, stream *model.Interna
 
 	// Non-mutating Markdown view of any bridged image_url delta for chat clients.
 	wire := chatResponseWithMarkdownImages(stream)
+	if i != nil && i.thinkingToContent {
+		wire = applyThinkingToContentStream(wire, i)
+	}
 
 	var body []byte
 	var err error
@@ -437,4 +466,149 @@ func mergeToolCall(toolCalls []model.ToolCall, delta model.ToolCall) []model.Too
 
 	// New tool call, add it
 	return append(toolCalls, delta)
+}
+
+// applyThinkingToContentNonStream folds reasoning into content when the channel
+// has thinking_to_content enabled and the assistant message has no visible text.
+// Matches new-api's non-stream intent: clients that only render content still
+// see a reply when the upstream only filled reasoning (GLM thinking + small max_tokens).
+// Does not mutate the input when disabled or when content is already non-empty.
+func applyThinkingToContentNonStream(resp *model.InternalLLMResponse, enabled bool) *model.InternalLLMResponse {
+	if !enabled || resp == nil || len(resp.Choices) == 0 {
+		return resp
+	}
+	needsCopy := false
+	for i := range resp.Choices {
+		msg := resp.Choices[i].Message
+		if msg == nil {
+			continue
+		}
+		if messageHasVisibleText(msg) {
+			continue
+		}
+		if strings.TrimSpace(msg.GetReasoningContent()) == "" {
+			continue
+		}
+		needsCopy = true
+		break
+	}
+	if !needsCopy {
+		return resp
+	}
+	out := *resp
+	out.Choices = make([]model.Choice, len(resp.Choices))
+	copy(out.Choices, resp.Choices)
+	for i := range out.Choices {
+		msg := out.Choices[i].Message
+		if msg == nil || messageHasVisibleText(msg) {
+			continue
+		}
+		reasoning := strings.TrimSpace(msg.GetReasoningContent())
+		if reasoning == "" {
+			continue
+		}
+		// new-api wraps with <think>…</think> so clients that strip think tags
+		// can still separate "reasoning" from "answer" when both later appear.
+		folded := "<think>\n" + reasoning + "\n</think>\n"
+		copied := *msg
+		copied.Content = model.MessageContent{Content: &folded}
+		// Keep reasoning_content for clients that render both columns.
+		out.Choices[i].Message = &copied
+	}
+	return &out
+}
+
+// applyThinkingToContentStream rewrites a stream chunk's reasoning delta into
+// content deltas with <think> open/close tags (new-api sendStreamData).
+// Mutates a shallow copy of the chunk; the original streamChunks entry is untouched.
+func applyThinkingToContentStream(chunk *model.InternalLLMResponse, inbound *ChatInbound) *model.InternalLLMResponse {
+	if chunk == nil || inbound == nil || !inbound.thinkingToContent || len(chunk.Choices) == 0 {
+		return chunk
+	}
+	if inbound.streamThinkingOpen == nil {
+		inbound.streamThinkingOpen = make(map[int]bool)
+	}
+	if inbound.streamThinkingClosed == nil {
+		inbound.streamThinkingClosed = make(map[int]bool)
+	}
+
+	out := *chunk
+	out.Choices = make([]model.Choice, len(chunk.Choices))
+	copy(out.Choices, chunk.Choices)
+
+	for i := range out.Choices {
+		delta := out.Choices[i].Delta
+		if delta == nil {
+			continue
+		}
+		idx := out.Choices[i].Index
+		reasoning := delta.GetReasoningContent()
+		contentText := ""
+		if delta.Content.Content != nil {
+			contentText = *delta.Content.Content
+		}
+		hasContent := strings.TrimSpace(contentText) != ""
+		hasReasoning := reasoning != ""
+
+		if hasReasoning && !inbound.streamThinkingOpen[idx] {
+			// First thinking chunk: open <think> and put reasoning into content.
+			copied := *delta
+			opened := "<think>\n" + reasoning
+			copied.Content = model.MessageContent{Content: &opened}
+			copied.ReasoningContent = nil
+			copied.Reasoning = nil
+			out.Choices[i].Delta = &copied
+			inbound.streamThinkingOpen[idx] = true
+			continue
+		}
+
+		if hasContent && inbound.streamThinkingOpen[idx] && !inbound.streamThinkingClosed[idx] {
+			// Transition: close </think> then emit real content on a subsequent
+			// chunk would require multi-event emission; new-api sends a separate
+			// event. We prefix the content chunk with the close tag in one delta.
+			copied := *delta
+			closed := "\n</think>\n" + contentText
+			copied.Content = model.MessageContent{Content: &closed}
+			copied.ReasoningContent = nil
+			copied.Reasoning = nil
+			out.Choices[i].Delta = &copied
+			inbound.streamThinkingClosed[idx] = true
+			continue
+		}
+
+		if hasReasoning {
+			// Subsequent thinking: move into content, clear reasoning fields.
+			copied := *delta
+			copied.Content = model.MessageContent{Content: &reasoning}
+			copied.ReasoningContent = nil
+			copied.Reasoning = nil
+			out.Choices[i].Delta = &copied
+			continue
+		}
+
+		// No reasoning/content transition: leave as-is (but strip empty reasoning noise).
+		if !hasReasoning && !hasContent {
+			copied := *delta
+			copied.ReasoningContent = nil
+			copied.Reasoning = nil
+			out.Choices[i].Delta = &copied
+		}
+	}
+	return &out
+}
+
+func messageHasVisibleText(msg *model.Message) bool {
+	if msg == nil {
+		return false
+	}
+	if msg.Content.Content != nil && strings.TrimSpace(*msg.Content.Content) != "" {
+		return true
+	}
+	for _, part := range msg.Content.MultipleContent {
+		if (part.Type == "text" || part.Type == "input_text" || part.Type == "output_text") &&
+			part.Text != nil && strings.TrimSpace(*part.Text) != "" {
+			return true
+		}
+	}
+	return false
 }

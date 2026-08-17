@@ -15,6 +15,12 @@ import "time"
 // RootHash is sha256 of the conversation root response id (stable across every
 // turn of the same responses conversation) so an upstream prompt cache can be
 // keyed to the conversation rather than to a per-turn message hash.
+//
+// Source marks how the session id was minted:
+//   - "responses" (or empty/legacy): a real OpenAI Responses id that may be
+//     forwarded as previous_response_id to a stateful responses upstream
+//   - "chat": a local id from /v1/chat/completions — never a real Responses
+//     store id; the next turn must rebuild from TranscriptJSON instead
 type ResponseSession struct {
 	ResponseIDHash string    `json:"response_id_hash" gorm:"primaryKey;size:64"`
 	ChannelID      int       `json:"channel_id" gorm:"index;not null"`
@@ -22,6 +28,7 @@ type ResponseSession struct {
 	OwnerTokenID   int       `json:"owner_token_id" gorm:"index;not null;default:0"`
 	OwnerUserID    int       `json:"owner_user_id" gorm:"index;not null;default:0"`
 	RootHash       string    `json:"root_hash" gorm:"size:64;not null;default:''"`
+	Source         string    `json:"source" gorm:"size:16;not null;default:''"`
 	TranscriptJSON string    `json:"-" gorm:"type:text"`
 	ToolsJSON      string    `json:"-" gorm:"type:text"`
 	ExpiresAt      time.Time `json:"expires_at" gorm:"index;not null"`

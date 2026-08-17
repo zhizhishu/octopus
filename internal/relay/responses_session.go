@@ -22,12 +22,22 @@ import (
 const defaultResponsesSessionTTL = time.Hour
 const responsesSessionPruneInterval = time.Minute
 
+// Session source tags: a chat-minted id is never a real OpenAI Responses store
+// id and must not be forwarded as previous_response_id to a stateful upstream.
+// Cursor (and similar clients) can still reuse that id across /v1/chat and
+// /v1/responses; octopus rebuilds history from the stored transcript instead.
+const (
+	responseSessionSourceResponses = "responses"
+	responseSessionSourceChat      = "chat"
+)
+
 type responsesSessionEntry struct {
 	channelID    int
 	channelKeyID int
 	ownerTokenID int
 	ownerUserID  int
 	rootHash     string
+	source       string
 	expiresAt    time.Time
 }
 
@@ -63,14 +73,18 @@ func recordResponsesSession(responseID string, channelID, channelKeyID int) {
 // identity / conversation root) so existing callers and tests are unaffected;
 // records written this way carry owner 0/0 and are treated as unrestricted.
 func recordResponsesSessionWithContext(ctx context.Context, responseID string, channelID, channelKeyID int) {
-	recordResponsesSessionOwned(ctx, responseID, channelID, channelKeyID, 0, 0, "")
+	recordResponsesSessionOwned(ctx, responseID, channelID, channelKeyID, 0, 0, "", responseSessionSourceResponses)
 }
 
-func recordResponsesSessionOwned(ctx context.Context, responseID string, channelID, channelKeyID, ownerTokenID, ownerUserID int, rootHash string) {
+func recordResponsesSessionOwned(ctx context.Context, responseID string, channelID, channelKeyID, ownerTokenID, ownerUserID int, rootHash, source string) {
 	_ = ctx // owner persistence must survive terminal-client disconnects; use a short background context below.
 	responseID = strings.TrimSpace(responseID)
 	if responseID == "" || channelID == 0 || channelKeyID == 0 {
 		return
+	}
+	source = strings.TrimSpace(source)
+	if source == "" {
+		source = responseSessionSourceResponses
 	}
 	ttl := currentResponsesSessionTTL()
 	now := time.Now()
@@ -82,13 +96,14 @@ func recordResponsesSessionOwned(ctx context.Context, responseID string, channel
 		ownerTokenID: ownerTokenID,
 		ownerUserID:  ownerUserID,
 		rootHash:     rootHash,
+		source:       source,
 		expiresAt:    now.Add(ttl),
 	}
 	responsesSessionStore.Unlock()
 
 	persistCtx, cancel := metricsPersistContext()
 	defer cancel()
-	if err := op.ResponseSessionBindOwned(persistCtx, responseID, channelID, channelKeyID, ownerTokenID, ownerUserID, rootHash, ttl); err != nil {
+	if err := op.ResponseSessionBindOwned(persistCtx, responseID, channelID, channelKeyID, ownerTokenID, ownerUserID, rootHash, source, ttl); err != nil {
 		log.Warnf("failed to persist responses session owner: %v", err)
 	}
 }
@@ -131,6 +146,7 @@ func responsesSessionOwnerWithContext(ctx context.Context, responseID string) (r
 		ownerTokenID: row.OwnerTokenID,
 		ownerUserID:  row.OwnerUserID,
 		rootHash:     row.RootHash,
+		source:       row.Source,
 		expiresAt:    row.ExpiresAt,
 	}
 	responsesSessionStore.Lock()
@@ -528,6 +544,12 @@ func (ra *relayAttempt) prepareResponsesSessionCursor(outAdapter transformerMode
 		ra.internalRequest.PreviousResponseID = nil
 		return
 	}
+	// Chat-minted ids are local conversation cursors only. Rebuild the prior
+	// history into messages (if we have a transcript) and never forward the id
+	// to a stateful responses upstream — it is not a real store id.
+	if ra.rebuildHistoryForChatSourcedPreviousResponseID() {
+		return
+	}
 	if !outboundSupportsResponsesSessionCursor(outAdapter) {
 		ra.internalRequest.PreviousResponseID = nil
 		return
@@ -706,7 +728,13 @@ func outboundSupportsResponsesSessionCursor(outAdapter transformerModel.Outbound
 }
 
 func (ra *relayAttempt) recordResponsesSessionFromInbound(resp *transformerModel.InternalLLMResponse) {
-	if ra == nil || resp == nil || ra.inboundType != inbound.InboundTypeOpenAIResponse {
+	if ra == nil || resp == nil {
+		return
+	}
+	if ra.inboundType != inbound.InboundTypeOpenAIResponse {
+		// Chat inbound is handled separately so a later /v1/responses turn can
+		// continue the same conversation without a real Responses store id.
+		ra.recordChatSessionFromInbound(resp)
 		return
 	}
 	if ra.channel == nil || ra.usedKey.ID == 0 {
@@ -731,10 +759,77 @@ func (ra *relayAttempt) recordResponsesSessionFromInbound(resp *transformerModel
 	if rootHash == "" {
 		rootHash = op.ResponseSessionIDHash(strings.TrimSpace(resp.ID))
 	}
-	recordResponsesSessionOwned(ra.context(), resp.ID, ra.channel.ID, ra.usedKey.ID, ra.apiKeyID, ra.userID, rootHash)
+	recordResponsesSessionOwned(ra.context(), resp.ID, ra.channel.ID, ra.usedKey.ID, ra.apiKeyID, ra.userID, rootHash, responseSessionSourceResponses)
 	if ra.shouldBridgeResponsesHistory() {
 		recordResponsesSessionTranscriptOwned(resp.ID, ra.responsesSessionTranscriptFromResponse(resp), cloneResponsesSessionTools(ra.internalRequest.Tools), ra.apiKeyID, ra.userID)
 	}
+}
+
+// recordChatSessionFromInbound persists a /v1/chat/completions completion id as a
+// local conversation cursor (source=chat) plus the full request+assistant transcript.
+// Cursor may later send that id as previous_response_id on /v1/responses; octopus
+// must rebuild history from the transcript and MUST NOT forward the id upstream
+// (it is not a real Responses store id).
+func (ra *relayAttempt) recordChatSessionFromInbound(resp *transformerModel.InternalLLMResponse) {
+	if ra == nil || resp == nil || ra.inboundType != inbound.InboundTypeOpenAIChat {
+		return
+	}
+	if ra.channel == nil || ra.usedKey.ID == 0 {
+		return
+	}
+	responseID := strings.TrimSpace(resp.ID)
+	if responseID == "" {
+		return
+	}
+	rootHash := op.ResponseSessionIDHash(responseID)
+	recordResponsesSessionOwned(ra.context(), responseID, ra.channel.ID, ra.usedKey.ID, ra.apiKeyID, ra.userID, rootHash, responseSessionSourceChat)
+	recordResponsesSessionTranscriptOwned(
+		responseID,
+		ra.responsesSessionTranscriptFromResponse(resp),
+		cloneResponsesSessionTools(ra.internalRequest.Tools),
+		ra.apiKeyID,
+		ra.userID,
+	)
+}
+
+// rebuildHistoryForChatSourcedPreviousResponseID detects a previous_response_id
+// that was minted by /v1/chat/completions (source=chat). Those ids are never real
+// OpenAI Responses store ids, so:
+//  1. rebuild the full prior history from the local transcript into messages
+//  2. drop previous_response_id so it is not forwarded upstream
+// Returns true when the cursor was chat-sourced (handled, caller must not keep it).
+func (ra *relayAttempt) rebuildHistoryForChatSourcedPreviousResponseID() bool {
+	if ra == nil || ra.internalRequest == nil || ra.internalRequest.PreviousResponseID == nil {
+		return false
+	}
+	previousResponseID := strings.TrimSpace(*ra.internalRequest.PreviousResponseID)
+	if previousResponseID == "" {
+		return false
+	}
+	owner, ok := responsesSessionOwnerWithContext(ra.context(), previousResponseID)
+	if !ok || !responsesSessionOwnerMatches(owner, ra.apiKeyID, ra.userID) {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(owner.source), responseSessionSourceChat) {
+		return false
+	}
+	req := ra.internalRequest
+	if !responsesMessagesAlreadyCarryAssistantContext(req.Messages) {
+		if history, hasHistory := responsesSessionTranscript(previousResponseID, ra.apiKeyID, ra.userID); hasHistory && len(history) > 0 {
+			req.Messages = appendPlainResponsesHistory(history, req.Messages)
+			req.Messages = dropUnpairedToolItems(req.Messages)
+			// Stash so the re-recorded session inherits the conversation root and
+			// forward() can normalize tool-call pairing on the wire copy only.
+			stashedPrevID := previousResponseID
+			ra.chatHistoryRebuiltPreviousResponseID = &stashedPrevID
+			ra.chatHistoryRebuilt = true
+		}
+	}
+	// Always drop the chat-minted cursor: even without a transcript, forwarding it
+	// to a stateful responses upstream yields a hard 400 (not a real store id).
+	req.PreviousResponseID = nil
+	req.ResponsesInputRaw = nil
+	return true
 }
 
 // shouldBridgeResponsesHistory reports whether octopus itself must persist and

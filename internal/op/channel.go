@@ -296,6 +296,10 @@ func ChannelUpdate(req *model.ChannelUpdateRequest, ctx context.Context) (*model
 		selectFields = append(selectFields, "anthropic_context_1m")
 		updates.AnthropicContext1M = true
 	}
+	if req.ThinkingToContent != nil {
+		selectFields = append(selectFields, "thinking_to_content")
+		updates.ThinkingToContent = *req.ThinkingToContent
+	}
 	if req.MaxConcurrent != nil {
 		selectFields = append(selectFields, "max_concurrent")
 		updates.MaxConcurrent = *req.MaxConcurrent
