@@ -33,7 +33,7 @@ export function NavBar({ activeItem: controlledActiveItem, setActiveItem: contro
                 className={cn(
                     "fixed bottom-[calc(1rem+env(safe-area-inset-bottom))] left-1/2 flex max-w-[calc(100vw-1rem)] -translate-x-1/2 items-center gap-1 overflow-x-auto p-2",
                     "md:sticky md:top-30 md:left-auto md:bottom-auto md:max-w-none md:translate-x-0 md:flex-col md:items-stretch md:gap-2 md:overflow-visible md:p-3",
-                    "bg-sidebar text-sidebar-foreground border border-sidebar-border rounded-3xl",
+                    "bg-sidebar/95 text-sidebar-foreground border border-sidebar-border rounded-3xl backdrop-blur-xl supports-[backdrop-filter]:bg-sidebar/80",
                     "custom-shadow"
                 )}
                 variants={ENTRANCE_VARIANTS.navbar}

@@ -195,6 +195,16 @@ export function VirtualizedGrid<T>({
                         </div>
                     )}
                     {footer}
+                    {/*
+                      Mobile bottom nav is position:fixed and does not reserve flow space.
+                      Padding must live *inside* this scrollport so the last rows can scroll
+                      clear of the pill nav + home-indicator safe area. Outer PageWrapper
+                      padding is clipped by overflow-hidden and never helps the scroller.
+                    */}
+                    <div
+                        aria-hidden
+                        className="pointer-events-none h-[calc(5.75rem+env(safe-area-inset-bottom,0px))] shrink-0 md:h-4"
+                    />
                 </div>
             </div>
         );
@@ -207,7 +217,12 @@ export function VirtualizedGrid<T>({
                 className="relative h-full w-full overflow-y-auto overscroll-contain rounded-t-3xl"
             >
                 {rowCount === 0 ? null : (
-                    <div className="relative w-full" style={{ height: `${rowVirtualizer.getTotalSize()}px` }}>
+                    <div
+                        className="relative w-full"
+                        style={{
+                            height: `${rowVirtualizer.getTotalSize()}px`,
+                        }}
+                    >
                         {virtualRows.map((virtualRow) => {
                             if (hasFooterRow && virtualRow.index === itemRowCount) {
                                 return (
@@ -262,6 +277,11 @@ export function VirtualizedGrid<T>({
                         })}
                     </div>
                 )}
+                {/* Same mobile-nav clearance as the non-virtual path (see comment there). */}
+                <div
+                    aria-hidden
+                    className="pointer-events-none h-[calc(5.75rem+env(safe-area-inset-bottom,0px))] shrink-0 md:h-4"
+                />
             </div>
         </div>
     );

@@ -523,7 +523,10 @@ export function Log() {
     }, [allTimeCounts?.total, filteredLogs.length, hasActiveFilter, hasMore, handleResetFilters, isLoading, isLoadingMore, loadMore, t]);
 
     return (
-        <PageWrapper className="box-border flex h-full min-h-0 flex-col gap-3 overflow-hidden rounded-t-3xl pb-[calc(6rem+env(safe-area-inset-bottom))] md:pb-4 [&>*]:min-h-0 [&>*:last-child]:flex [&>*:last-child]:flex-1">
+        // Bottom clearance for the fixed mobile nav lives inside VirtualizedGrid's
+        // scroller (not here). Outer pb on an overflow-hidden flex shell only shrinks
+        // the viewport or gets clipped — last log cards still sit under the nav pill.
+        <PageWrapper className="box-border flex h-full min-h-0 flex-col gap-3 overflow-hidden rounded-t-3xl [&>*]:min-h-0 [&>*:last-child]:flex [&>*:last-child]:min-h-0 [&>*:last-child]:flex-1 [&>*:last-child]:flex-col">
             {persistenceOff && (
                 <div className="flex flex-none flex-col gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-sm sm:flex-row sm:items-center sm:justify-between">
                     <div className="flex items-start gap-2 text-amber-700 dark:text-amber-300">
