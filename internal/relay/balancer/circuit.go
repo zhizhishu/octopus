@@ -98,10 +98,20 @@ func getCooldownForPolicy(tripCount int, policy circuitFailurePolicy) time.Durat
 	}
 	maxCooldown, err := op.SettingGetInt(model.SettingKeyCircuitBreakerMaxCooldown)
 	if err != nil || maxCooldown <= 0 {
-		maxCooldown = 600
+		// 120s (was 600): exponential backoff still works, but a flaky key
+		// cannot black out a channel/model for ten minutes. sub2api uses ~10min
+		// only for account-level 529 overload quarantine, not per-request breaker.
+		maxCooldown = 120
 	}
 	if policy.cooldownMaxCeil > 0 && maxCooldown > policy.cooldownMaxCeil {
 		maxCooldown = policy.cooldownMaxCeil
+	}
+	// Absolute safety cap even if an admin set an extreme max in settings.
+	// Soft runtime cooldown already tops out at 2 minutes; hard breaker should
+	// not outlive that by an order of magnitude.
+	const absoluteMaxCooldownSeconds = 180
+	if maxCooldown > absoluteMaxCooldownSeconds {
+		maxCooldown = absoluteMaxCooldownSeconds
 	}
 
 	// 指数退避：baseCooldown * 2^(tripCount-1)
@@ -134,6 +144,15 @@ func failurePolicyForStatusAndCapability(statusCode int, modelName, capability s
 		policy.cooldownBaseCeil = 30
 		policy.cooldownMaxCeil = 30
 		policy.reason = "transient_upstream"
+	case http.StatusUnauthorized, http.StatusForbidden:
+		// Auth / model-permission blips (common on multi-key GLM pools: one key
+		// 403 "no access to model", another key succeeds). Do not escalate to
+		// multi-minute open; short cool-down is enough for key rotation.
+		// Threshold stays at the global default (no floor raise) so a truly dead
+		// key still trips after consecutive failures, but cooldown stays short.
+		policy.cooldownBaseCeil = 15
+		policy.cooldownMaxCeil = 30
+		policy.reason = "auth_or_permission"
 	}
 	if (strings.Contains(normalizedModel, "claude") && strings.Contains(normalizedModel, "[1m]")) ||
 		strings.Contains(normalizedCapability, "anthropic_context_1m") {

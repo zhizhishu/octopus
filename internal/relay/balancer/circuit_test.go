@@ -43,6 +43,28 @@ func TestTransientFailuresUseGentlerBreakerPolicy(t *testing.T) {
 	}
 }
 
+func TestAuthFailuresUseShortCooldownCap(t *testing.T) {
+	policy := failurePolicyForStatus(http.StatusForbidden, "glm-5.2")
+	if policy.reason != "auth_or_permission" {
+		t.Fatalf("expected auth_or_permission policy, got %#v", policy)
+	}
+	if policy.cooldownBaseCeil != 15 || policy.cooldownMaxCeil != 30 {
+		t.Fatalf("auth cooldown caps should be base<=15 max<=30, got %#v", policy)
+	}
+	// Even with high tripCount, auth must not open for minutes.
+	if got := getCooldownForPolicy(8, policy); got > 30*time.Second {
+		t.Fatalf("auth cooldown at tripCount=8 must stay <=30s, got %s", got)
+	}
+}
+
+func TestAbsoluteMaxCooldownCapsExtremeSettings(t *testing.T) {
+	// Simulate unset/default path: no policy ceil, default max was historically 600s.
+	// Absolute safety cap must keep multi-trip backoff under 3 minutes.
+	if got := getCooldownForPolicy(20, circuitFailurePolicy{}); got > 180*time.Second {
+		t.Fatalf("absolute max cooldown must be <=180s, got %s", got)
+	}
+}
+
 func TestClaudeOneMillionPolicyAppliesWithoutStatus(t *testing.T) {
 	policy := failurePolicyForStatus(0, "claude-opus-4-7[1m]")
 	if policy.thresholdFloor != 10 || policy.cooldownBaseCeil != 30 || policy.cooldownMaxCeil != 30 {

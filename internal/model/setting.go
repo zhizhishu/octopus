@@ -278,7 +278,7 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyUserRegistrationEnabled, Value: "false"},                                        // 默认只允许邀请码注册
 		{Key: SettingKeyCircuitBreakerThreshold, Value: "10"},                                           // 默认连续失败10次触发熔断
 		{Key: SettingKeyCircuitBreakerCooldown, Value: "30"},                                            // 默认基础冷却30秒
-		{Key: SettingKeyCircuitBreakerMaxCooldown, Value: "600"},                                        // 默认最大冷却600秒（10分钟）
+		{Key: SettingKeyCircuitBreakerMaxCooldown, Value: "120"},                                        // 默认最大冷却120秒（指数退避上限；旧 600s 过长会把偶发 403 渠道黑很久）
 		{Key: SettingKeyDebugLoadBalancer, Value: "false"},                                              // 默认关闭选路决策日志
 		{Key: SettingKeyDiagnosticMode, Value: "false"},                                                 // 默认关闭诊断模式(各阶段耗时+逐次尝试日志)
 		{Key: SettingKeySessionKeepTimeDefault, Value: "0"},                                             // 默认0=不启用全局粘性(向后兼容); 管理员设为如3600才全局开, 分组级 SessionKeepTime 仍优先
