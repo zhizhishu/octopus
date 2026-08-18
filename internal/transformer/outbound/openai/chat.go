@@ -30,12 +30,16 @@ func transformChatRequest(ctx context.Context, request *model.InternalLLMRequest
 	originalToolStream := request.ToolStream
 	originalThinking := request.Thinking
 	originalReasoningEffort := request.ReasoningEffort
+	originalMaxTokens := request.MaxTokens
+	originalMaxCompletionTokens := request.MaxCompletionTokens
 	defer func() {
 		// The relay reuses one request across channel/key attempts. Keep this
 		// provider-specific projection scoped to the body built for this attempt.
 		request.ToolStream = originalToolStream
 		request.Thinking = originalThinking
 		request.ReasoningEffort = originalReasoningEffort
+		request.MaxTokens = originalMaxTokens
+		request.MaxCompletionTokens = originalMaxCompletionTokens
 	}()
 
 	// ClearHelpFields strips internal-only helper fields, but it also wipes each message's
@@ -104,6 +108,7 @@ func transformChatRequest(ctx context.Context, request *model.InternalLLMRequest
 	applyGLMToolStreaming(request)
 	applyDeepSeekResponseFormat(request)
 	applyThirdPartyChatParamCompat(request, baseUrl)
+	applyGLMChatTokenFieldCompat(request)
 
 	body, err := json.Marshal(request)
 	if err != nil {
@@ -288,6 +293,9 @@ func applyThirdPartyChatParamCompat(request *model.InternalLLMRequest, baseUrl s
 	request.PromptCacheKey = nil
 	request.PromptCacheRetention = nil
 	request.SafetyIdentifier = nil
+	// service_tier is OpenAI Responses residue; vercel AI Gateway / z.ai chat 400
+	// on unknown top-level fields (live log id 1787047851119 carried service_tier).
+	request.ServiceTier = nil
 }
 
 // sanitizeToolChoiceForStrictUpstream drops a tool_choice value that would
@@ -415,6 +423,21 @@ func modelMatchesVersionFamily(modelName, familyName, allowedSuffixDelimiters st
 	return strings.ContainsRune(allowedSuffixDelimiters, rune(modelName[len(familyName)]))
 }
 
+// applyGLMChatTokenFieldCompat remaps OpenAI-only max_completion_tokens onto
+// max_tokens for GLM chat upstreams. Cursor Responses clients populate
+// MaxCompletionTokens; vercel/z.ai chat rejects the modern field name.
+func applyGLMChatTokenFieldCompat(request *model.InternalLLMRequest) {
+	if request == nil || !isGLMModel(request.Model) {
+		return
+	}
+	if request.MaxCompletionTokens != nil {
+		if request.MaxTokens == nil {
+			request.MaxTokens = request.MaxCompletionTokens
+		}
+		request.MaxCompletionTokens = nil
+	}
+}
+
 // glmWantsThinking reports an explicit request to enable reasoning.
 func glmWantsThinking(request *model.InternalLLMRequest) bool {
 	if request.AdaptiveThinking {
@@ -424,7 +447,9 @@ func glmWantsThinking(request *model.InternalLLMRequest) bool {
 		return true
 	}
 	switch strings.ToLower(request.ReasoningEffort) {
-	case "low", "medium", "high":
+	case "low", "medium", "high", "xhigh", "max":
+		// Cursor / OpenAI Responses often send xhigh|max; GLM only understands
+		// thinking:{type}, so treat these as an explicit enable intent.
 		return true
 	}
 	return false

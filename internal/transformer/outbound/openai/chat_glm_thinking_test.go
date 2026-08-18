@@ -368,3 +368,45 @@ func TestChatOutboundGLMReasoningEffortProjectionDoesNotMutateRetryRequest(t *te
 		t.Fatalf("GLM projection must restore ReasoningEffort on shared retry request, got %q", request.ReasoningEffort)
 	}
 }
+
+func TestChatOutboundGLMXHighMapsToThinkingAndDropsEffort(t *testing.T) {
+	payload := chatRequestBody(t, &model.InternalLLMRequest{
+		Model:           "glm-5.2",
+		ReasoningEffort: "xhigh",
+		Messages:        userMessages(),
+	})
+	if _, ok := payload["reasoning_effort"]; ok {
+		t.Fatalf("xhigh must not leak as reasoning_effort: %#v", payload)
+	}
+	typ, ok := thinkingType(t, payload)
+	if !ok || typ != "enabled" {
+		t.Fatalf("xhigh must project thinking=enabled, got %q ok=%t (%#v)", typ, ok, payload)
+	}
+}
+
+func TestChatOutboundThirdPartyStripsServiceTier(t *testing.T) {
+	tier := "priority"
+	payload := chatRequestBody(t, &model.InternalLLMRequest{
+		Model:       "glm-5.2",
+		ServiceTier: &tier,
+		Messages:    userMessages(),
+	})
+	if _, ok := payload["service_tier"]; ok {
+		t.Fatalf("third-party chat must strip service_tier: %#v", payload)
+	}
+}
+
+func TestChatOutboundGLMRemapsMaxCompletionTokens(t *testing.T) {
+	n := int64(4096)
+	payload := chatRequestBody(t, &model.InternalLLMRequest{
+		Model:               "glm-5.2",
+		MaxCompletionTokens: &n,
+		Messages:            userMessages(),
+	})
+	if _, ok := payload["max_completion_tokens"]; ok {
+		t.Fatalf("GLM chat must not send max_completion_tokens: %#v", payload)
+	}
+	if got, ok := payload["max_tokens"].(float64); !ok || int64(got) != 4096 {
+		t.Fatalf("expected max_tokens=4096, got %#v", payload["max_tokens"])
+	}
+}
