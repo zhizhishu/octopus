@@ -770,6 +770,13 @@ func (ra *relayAttempt) recordResponsesSessionFromInbound(resp *transformerModel
 // Cursor may later send that id as previous_response_id on /v1/responses; octopus
 // must rebuild history from the transcript and MUST NOT forward the id upstream
 // (it is not a real Responses store id).
+
+func looksLikeChatCompletionID(id string) bool {
+	id = strings.TrimSpace(id)
+	lower := strings.ToLower(id)
+	return strings.HasPrefix(lower, "chatcmpl-") || strings.HasPrefix(lower, "chatcmpl_")
+}
+
 func (ra *relayAttempt) recordChatSessionFromInbound(resp *transformerModel.InternalLLMResponse) {
 	if ra == nil || resp == nil || ra.inboundType != inbound.InboundTypeOpenAIChat {
 		return
@@ -797,6 +804,7 @@ func (ra *relayAttempt) recordChatSessionFromInbound(resp *transformerModel.Inte
 // OpenAI Responses store ids, so:
 //  1. rebuild the full prior history from the local transcript into messages
 //  2. drop previous_response_id so it is not forwarded upstream
+//
 // Returns true when the cursor was chat-sourced (handled, caller must not keep it).
 func (ra *relayAttempt) rebuildHistoryForChatSourcedPreviousResponseID() bool {
 	if ra == nil || ra.internalRequest == nil || ra.internalRequest.PreviousResponseID == nil {
@@ -810,7 +818,13 @@ func (ra *relayAttempt) rebuildHistoryForChatSourcedPreviousResponseID() bool {
 	if !ok || !responsesSessionOwnerMatches(owner, ra.apiKeyID, ra.userID) {
 		return false
 	}
-	if !strings.EqualFold(strings.TrimSpace(owner.source), responseSessionSourceChat) {
+	source := strings.TrimSpace(owner.source)
+	// Pre-f902fed rows have source="" (column default). A chatcmpl_* id with a
+	// local transcript is still a chat-minted cursor and must never be forwarded
+	// to a stateful responses upstream.
+	isChatSourced := strings.EqualFold(source, responseSessionSourceChat) ||
+		(source == "" && looksLikeChatCompletionID(previousResponseID))
+	if !isChatSourced {
 		return false
 	}
 	req := ra.internalRequest

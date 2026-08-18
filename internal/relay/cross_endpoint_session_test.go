@@ -98,3 +98,86 @@ func TestChatToResponsesCrossEndpointRebuildsFromChatSourcedCursor(t *testing.T)
 		}
 	}
 }
+
+// Pre-f902fed DB rows keep source="" after AutoMigrate. A chatcmpl_* id with a
+// local transcript must still rebuild history instead of being forwarded upstream.
+func TestEmptySourceChatCompletionIDStillRebuilds(t *testing.T) {
+	clearResponsesSessionCacheForTest()
+
+	chatID := "chatcmpl-legacy-empty-source"
+	chatReq := &transformerModel.InternalLLMRequest{
+		Model: "glm-5.2",
+		Messages: []transformerModel.Message{
+			{Role: "user", Content: transformerModel.MessageContent{Content: strPtr("Remember LEGACY42.")}},
+		},
+	}
+	chatRA := &relayAttempt{
+		relayRequest: &relayRequest{
+			inboundType:     inbound.InboundTypeOpenAIChat,
+			internalRequest: chatReq,
+			apiKeyID:        9,
+			userID:          3,
+		},
+		channel: &dbmodel.Channel{ID: 5, Type: outbound.OutboundTypeOpenAIChat},
+		usedKey: dbmodel.ChannelKey{ID: 6},
+	}
+	chatRA.recordChatSessionFromInbound(&transformerModel.InternalLLMResponse{
+		ID: chatID,
+		Choices: []transformerModel.Choice{{
+			Message: &transformerModel.Message{
+				Role:    "assistant",
+				Content: transformerModel.MessageContent{Content: strPtr("noted")},
+			},
+		}},
+	})
+
+	// Simulate a pre-migration row: source column empty, transcript still present.
+	// recordResponsesSessionOwned("") defaults empty source to "responses", so poke
+	// the in-memory store directly (matches AutoMigrate backfill of old rows).
+	responsesSessionStore.Lock()
+	entry, ok := responsesSessionStore.items[chatID]
+	if !ok {
+		responsesSessionStore.Unlock()
+		t.Fatalf("expected session owner in memory")
+	}
+	entry.source = ""
+	responsesSessionStore.items[chatID] = entry
+	responsesSessionStore.Unlock()
+	if hist, has := responsesSessionTranscript(chatID, 9, 3); !has || len(hist) < 2 {
+		t.Fatalf("transcript missing after source wipe: %#v", hist)
+	}
+
+	respReq := &transformerModel.InternalLLMRequest{
+		Model:              "glm-5.2",
+		PreviousResponseID: &chatID,
+		Messages: []transformerModel.Message{
+			{Role: "user", Content: transformerModel.MessageContent{Content: strPtr("What did I say?")}},
+		},
+	}
+	respRA := &relayAttempt{
+		relayRequest: &relayRequest{
+			inboundType:     inbound.InboundTypeOpenAIResponse,
+			internalRequest: respReq,
+			apiKeyID:        9,
+			userID:          3,
+		},
+		channel: &dbmodel.Channel{ID: 5, Type: outbound.OutboundTypeOpenAIChat},
+		usedKey: dbmodel.ChannelKey{ID: 6},
+	}
+	respRA.prepareResponsesSessionCursor(&openaiOutbound.ResponseOutbound{})
+	if respReq.PreviousResponseID != nil {
+		t.Fatalf("empty-source chatcmpl id must be dropped, got %#v", *respReq.PreviousResponseID)
+	}
+	if !respRA.chatHistoryRebuilt {
+		t.Fatalf("empty-source chatcmpl id must rebuild history")
+	}
+	joined := ""
+	for _, msg := range respReq.Messages {
+		if msg.Content.Content != nil {
+			joined += *msg.Content.Content + " "
+		}
+	}
+	if !strings.Contains(joined, "LEGACY42") {
+		t.Fatalf("rebuilt history missing LEGACY42, got %q", joined)
+	}
+}

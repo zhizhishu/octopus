@@ -326,3 +326,45 @@ func TestChatOutboundToolStreamingCompatibilityIsGLMOnly(t *testing.T) {
 		})
 	}
 }
+
+func TestChatOutboundGLMDropsReasoningEffortAfterThinkingProjection(t *testing.T) {
+	payload := chatRequestBody(t, &model.InternalLLMRequest{
+		Model:           "glm-5.2",
+		ReasoningEffort: "high",
+		Messages:        userMessages(),
+	})
+
+	if _, ok := payload["reasoning_effort"]; ok {
+		t.Fatalf("GLM body must not dual-send reasoning_effort after thinking projection: %#v", payload)
+	}
+	typ, ok := thinkingType(t, payload)
+	if !ok || typ != "enabled" {
+		t.Fatalf("expected thinking=enabled after projection, got %q ok=%t (%#v)", typ, ok, payload)
+	}
+}
+
+func TestChatOutboundGLMDropsReasoningEffortWhenClientSuppliesThinking(t *testing.T) {
+	payload := chatRequestBody(t, &model.InternalLLMRequest{
+		Model:           "glm-5.2",
+		ReasoningEffort: "high",
+		Thinking:        json.RawMessage(`{"type":"enabled"}`),
+		Messages:        userMessages(),
+	})
+
+	if _, ok := payload["reasoning_effort"]; ok {
+		t.Fatalf("GLM body must drop reasoning_effort even when client thinking is preserved: %#v", payload)
+	}
+}
+
+func TestChatOutboundGLMReasoningEffortProjectionDoesNotMutateRetryRequest(t *testing.T) {
+	request := &model.InternalLLMRequest{
+		Model:           "glm-5.2",
+		ReasoningEffort: "high",
+		Messages:        userMessages(),
+	}
+
+	_ = chatRequestBody(t, request)
+	if request.ReasoningEffort != "high" {
+		t.Fatalf("GLM projection must restore ReasoningEffort on shared retry request, got %q", request.ReasoningEffort)
+	}
+}

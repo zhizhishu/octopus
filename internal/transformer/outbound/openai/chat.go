@@ -29,11 +29,13 @@ func (o *CustomChatOutbound) TransformRequest(ctx context.Context, request *mode
 func transformChatRequest(ctx context.Context, request *model.InternalLLMRequest, baseUrl, key string, customEndpoint bool) (*http.Request, error) {
 	originalToolStream := request.ToolStream
 	originalThinking := request.Thinking
+	originalReasoningEffort := request.ReasoningEffort
 	defer func() {
 		// The relay reuses one request across channel/key attempts. Keep this
 		// provider-specific projection scoped to the body built for this attempt.
 		request.ToolStream = originalToolStream
 		request.Thinking = originalThinking
+		request.ReasoningEffort = originalReasoningEffort
 	}()
 
 	// ClearHelpFields strips internal-only helper fields, but it also wipes each message's
@@ -347,19 +349,24 @@ func applyGLMThinking(request *model.InternalLLMRequest) {
 	}
 
 	// Respect a client-provided thinking payload (direct passthrough).
-	if rawJSONPresent(request.Thinking) {
-		return
+	if !rawJSONPresent(request.Thinking) {
+		switch {
+		case glmWantsThinking(request):
+			request.Thinking = append(json.RawMessage(nil), glmThinkingEnabled...)
+		case glmDisablesThinking(request):
+			request.Thinking = append(json.RawMessage(nil), glmThinkingDisabled...)
+		default:
+			// No explicit reasoning intent: leave the request untouched instead of
+			// force-injecting a thinking field on ordinary GLM requests.
+		}
 	}
 
-	switch {
-	case glmWantsThinking(request):
-		request.Thinking = append(json.RawMessage(nil), glmThinkingEnabled...)
-	case glmDisablesThinking(request):
-		request.Thinking = append(json.RawMessage(nil), glmThinkingDisabled...)
-	default:
-		// No explicit reasoning intent: leave the request untouched instead of
-		// force-injecting a thinking field on ordinary GLM requests.
-	}
+	// GLM consumes thinking:{type}, not OpenAI reasoning_effort. Always drop
+	// ReasoningEffort for GLM models so a strict OpenAI-compatible upstream
+	// (vercel AI Gateway / z.ai chat) does not 400 on an unknown dual field.
+	// Cursor Anthropic (/v1/messages) and Responses clients both land here with
+	// ReasoningEffort set from thinking/reasoning blocks.
+	request.ReasoningEffort = ""
 }
 
 // applyGLMToolStreaming enables GLM's separate function-call streaming switch.
