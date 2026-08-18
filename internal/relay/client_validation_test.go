@@ -166,12 +166,16 @@ func TestHandlerInterceptsEmptyClientRequestsWithoutStats(t *testing.T) {
 			if got.UsageSource != dbmodel.RelayLogUsageSourceLocalValidation || got.UsageMissingReason != dbmodel.RelayLogUsageMissingReasonLocalValidation {
 				t.Fatalf("unexpected validation usage audit: source=%q reason=%q", got.UsageSource, got.UsageMissingReason)
 			}
-			if tt.wantBodySignal != "" && !strings.Contains(got.RequestContent, tt.wantBodySignal) {
-				t.Fatalf("expected request content to preserve %s, got %s", tt.wantBodySignal, got.RequestContent)
+			detail, detailErr := op.RelayLogGetByID(ctx, got.ID, nil)
+			if detailErr != nil {
+				t.Fatalf("get validation log detail: %v", detailErr)
 			}
-			if !strings.Contains(got.ResponseContent, `"upstream_forwarded":false`) ||
-				!strings.Contains(got.ResponseContent, `"stats_counted":false`) {
-				t.Fatalf("expected local validation response content, got %s", got.ResponseContent)
+			if tt.wantBodySignal != "" && !strings.Contains(detail.RequestContent, tt.wantBodySignal) {
+				t.Fatalf("expected request content to preserve %s, got %s", tt.wantBodySignal, detail.RequestContent)
+			}
+			if !strings.Contains(detail.ResponseContent, `"upstream_forwarded":false`) ||
+				!strings.Contains(detail.ResponseContent, `"stats_counted":false`) {
+				t.Fatalf("expected local validation response content, got %s", detail.ResponseContent)
 			}
 
 			var totalCount int64
@@ -241,10 +245,14 @@ func TestHandlerSatisfiesCursorAnthropicEmptyProbeLocally(t *testing.T) {
 	if got.UsageSource != dbmodel.RelayLogUsageSourceLocalValidation || got.UsageMissingReason != dbmodel.RelayLogUsageMissingReasonLocalValidation {
 		t.Fatalf("unexpected cursor usage audit: source=%q reason=%q", got.UsageSource, got.UsageMissingReason)
 	}
-	if !strings.Contains(got.ResponseContent, `"compatibility":"cursor_empty_anthropic_probe"`) ||
-		!strings.Contains(got.ResponseContent, `"upstream_forwarded":false`) ||
-		!strings.Contains(got.ResponseContent, `"stats_counted":false`) {
-		t.Fatalf("expected cursor local validation response content, got %s", got.ResponseContent)
+	detail, detailErr := op.RelayLogGetByID(ctx, got.ID, nil)
+	if detailErr != nil {
+		t.Fatalf("get cursor probe log detail: %v", detailErr)
+	}
+	if !strings.Contains(detail.ResponseContent, `"compatibility":"cursor_empty_anthropic_probe"`) ||
+		!strings.Contains(detail.ResponseContent, `"upstream_forwarded":false`) ||
+		!strings.Contains(detail.ResponseContent, `"stats_counted":false`) {
+		t.Fatalf("expected cursor local validation response content, got %s", detail.ResponseContent)
 	}
 
 	var totalCount int64

@@ -721,8 +721,12 @@ func TestRawProtocolHandlerRewritesMultipartModel(t *testing.T) {
 	if len(logs) == 0 {
 		t.Fatalf("expected relay log")
 	}
-	if !strings.Contains(logs[0].RequestContent, "multipart request content omitted") || strings.Contains(logs[0].RequestContent, "voice-bytes") {
-		t.Fatalf("multipart request log should omit file content, got %s", logs[0].RequestContent)
+	detail, detailErr := op.RelayLogGetByID(ctx, logs[0].ID, nil)
+	if detailErr != nil {
+		t.Fatalf("get multipart log detail: %v", detailErr)
+	}
+	if !strings.Contains(detail.RequestContent, "multipart request content omitted") || strings.Contains(detail.RequestContent, "voice-bytes") {
+		t.Fatalf("multipart request log should omit file content, got %s", detail.RequestContent)
 	}
 	if logs[0].InputTokens != 3 || logs[0].OutputTokens != 1 {
 		t.Fatalf("unexpected usage log: input=%d output=%d", logs[0].InputTokens, logs[0].OutputTokens)
