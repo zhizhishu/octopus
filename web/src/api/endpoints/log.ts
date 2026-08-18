@@ -109,6 +109,12 @@ export function getRelayLogSeverity(log: RelayLog): RelayLogSeverity {
 /**
  * 日志列表查询参数
  */
+
+/** Admin detail dialog: fetch one log including request/response bodies. */
+export async function fetchLogById(id: number): Promise<RelayLog> {
+    return apiClient.get<RelayLog>(`/api/v1/log/${id}`);
+}
+
 export interface LogListParams {
     page?: number;
     page_size?: number;

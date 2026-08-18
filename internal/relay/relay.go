@@ -500,7 +500,10 @@ func (ra *relayAttempt) attempt() attemptResult {
 // bodycache). 512 MiB is far beyond any real text + inline-media request on these endpoints
 // — even a heavy multimodal vision request with many base64 images — so it only trips on
 // pathological payloads.
-const maxClientRequestBodyBytes = 512 << 20
+// Aligned with new-api MAX_REQUEST_BODY_MB default (128): reject oversized client
+// bodies early instead of accepting up to 512 MiB and letting a strict upstream
+// (vercel AI Gateway) 413 after the proxy already paid the parse/memory cost.
+const maxClientRequestBodyBytes = 128 << 20
 
 // parseRequest 解析并验证入站请求
 func parseRequest(inboundType inbound.InboundType, c *gin.Context) (*model.InternalLLMRequest, model.Inbound, error) {

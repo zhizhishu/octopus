@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -14,6 +15,7 @@ import (
 	"github.com/bestruirui/octopus/internal/server/resp"
 	"github.com/bestruirui/octopus/internal/server/router"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 const relayLogStreamHeartbeatInterval = 15 * time.Second
@@ -45,6 +47,10 @@ func init() {
 		AddRoute(
 			router.NewRoute("/stream-token", http.MethodGet).
 				Handle(getStreamToken),
+		).
+		AddRoute(
+			router.NewRoute("/:id", http.MethodGet).
+				Handle(getLog),
 		)
 
 	router.NewGroupRouter("/api/v1/log").
@@ -297,6 +303,39 @@ func clearLog(c *gin.Context) {
 	resp.Success(c, nil)
 }
 
+func getLog(c *gin.Context) {
+	id, err := strconv.ParseInt(strings.TrimSpace(c.Param("id")), 10, 64)
+	if err != nil || id <= 0 {
+		resp.Error(c, http.StatusBadRequest, resp.ErrInvalidParam)
+		return
+	}
+	scope := logScopeFromContext(c)
+	if middleware.CurrentUserIsAdmin(c) {
+		var scopeErr error
+		scope, scopeErr = logScopeFromAdminQuery(c, scope)
+		if scopeErr != nil {
+			resp.Error(c, http.StatusBadRequest, resp.ErrInvalidParam)
+			return
+		}
+	} else {
+		scope.Redact = true
+	}
+	item, err := op.RelayLogGetByID(c.Request.Context(), id, &scope)
+	if err != nil {
+		if err == gorm.ErrRecordNotFound || errors.Is(err, gorm.ErrRecordNotFound) {
+			resp.Error(c, http.StatusNotFound, "log not found")
+			return
+		}
+		resp.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !middleware.CurrentUserIsAdmin(c) {
+		resp.Success(c, op.RelayLogUserSummary(*item))
+		return
+	}
+	resp.Success(c, item)
+}
+
 func getLogStorage(c *gin.Context) {
 	scope := logScopeFromContext(c)
 	if middleware.CurrentUserIsAdmin(c) {
@@ -424,6 +463,9 @@ func writeScopedLogStreamData(c *gin.Context, log model.RelayLog, redact bool) b
 	var payload any = log
 	if redact {
 		payload = op.RelayLogUserSummary(log)
+	} else {
+		// Live stream should stay light; detail dialog loads bodies on demand.
+		payload = op.RelayLogOmitContent(log)
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {

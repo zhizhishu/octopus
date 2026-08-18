@@ -474,3 +474,45 @@ func TestRelayLogListPaginatesAfterMergingCacheAndDB(t *testing.T) {
 		t.Fatalf("expected same second page after cache clears, got %#v", result)
 	}
 }
+
+func TestRelayLogListOmitsContentBodies(t *testing.T) {
+	ctx := setupRelayLogTest(t)
+	if err := SettingSetString(model.SettingKeyRelayLogKeepEnabled, "true"); err != nil {
+		t.Fatalf("enable keep: %v", err)
+	}
+
+	big := strings.Repeat("X", 20000)
+	item := model.RelayLog{
+		ID:               91001,
+		Time:             time.Now().Unix(),
+		RequestEndpoint:  "responses",
+		RequestModelName: "glm-5.2",
+		ActualModelName:  "glm-5.2",
+		RequestContent:   big,
+		ResponseContent:  big,
+	}
+	if err := RelayLogAdd(ctx, item); err != nil {
+		t.Fatalf("add log: %v", err)
+	}
+	if err := relayLogFlushToDB(ctx); err != nil {
+		t.Fatalf("flush log: %v", err)
+	}
+
+	logs, err := RelayLogList(ctx, nil, nil, 1, 10, nil)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(logs) == 0 {
+		t.Fatalf("expected logs")
+	}
+	if logs[0].RequestContent != "" || logs[0].ResponseContent != "" {
+		t.Fatalf("list must omit bodies, got req=%d resp=%d", len(logs[0].RequestContent), len(logs[0].ResponseContent))
+	}
+	detail, err := RelayLogGetByID(ctx, logs[0].ID, nil)
+	if err != nil {
+		t.Fatalf("get detail: %v", err)
+	}
+	if detail.RequestContent != big || detail.ResponseContent != big {
+		t.Fatalf("detail must keep bodies")
+	}
+}

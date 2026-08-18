@@ -653,7 +653,7 @@ func RelayLogList(ctx context.Context, startTime, endTime *int, page, pageSize i
 					}
 					if len(ids) > 0 {
 						var dbLogs []model.RelayLog
-						if err := tx.Where("id IN ?", ids).Find(&dbLogs).Error; err != nil {
+						if err := tx.Where("id IN ?", ids).Omit("request_content", "response_content").Find(&dbLogs).Error; err != nil {
 							return err
 						}
 						result = append(result, dbLogs...)
@@ -668,7 +668,7 @@ func RelayLogList(ctx context.Context, startTime, endTime *int, page, pageSize i
 				// SQLite's parameter cap; keep the original single-query path (export streams
 				// everything and is not the interactive-page latency case the two-phase targets).
 				var dbLogs []model.RelayLog
-				if err := query.Order("time DESC, id DESC").Limit(dbLimit).Find(&dbLogs).Error; err != nil {
+				if err := query.Order("time DESC, id DESC").Limit(dbLimit).Omit("request_content", "response_content").Find(&dbLogs).Error; err != nil {
 					return nil, err
 				}
 				result = append(result, dbLogs...)
@@ -691,6 +691,9 @@ func RelayLogList(ctx context.Context, startTime, endTime *int, page, pageSize i
 			end = len(result)
 		}
 		result = result[offset:end]
+	}
+	for i := range result {
+		result[i] = RelayLogOmitContent(result[i])
 	}
 	if scope != nil && scope.Redact {
 		for i := range result {
@@ -834,7 +837,7 @@ func RelayLogListSinceRange(ctx context.Context, sinceID int64, limit int, scope
 		query = relayLogApplyScope(query, scope)
 
 		var dbLogs []model.RelayLog
-		if err := query.Order("id ASC").Limit(limit + len(result)).Find(&dbLogs).Error; err != nil {
+		if err := query.Order("id ASC").Limit(limit+len(result)).Omit("request_content", "response_content").Find(&dbLogs).Error; err != nil {
 			return nil, err
 		}
 		result = append(result, dbLogs...)
@@ -846,6 +849,9 @@ func RelayLogListSinceRange(ctx context.Context, sinceID int64, limit int, scope
 	})
 	if len(result) > limit {
 		result = result[:limit]
+	}
+	for i := range result {
+		result[i] = RelayLogOmitContent(result[i])
 	}
 	if scope != nil && scope.Redact {
 		for i := range result {
@@ -887,6 +893,47 @@ func RelayLogRedact(relayLog model.RelayLog) model.RelayLog {
 		relayLog.Error = "[redacted]"
 	}
 	return relayLog
+}
+
+// RelayLogOmitContent clears bulky request/response bodies for list/stream
+// payloads. Interactive pages only need metadata; full bodies load via
+// RelayLogGetByID when an admin opens a detail dialog.
+func RelayLogOmitContent(relayLog model.RelayLog) model.RelayLog {
+	relayLog.RequestContent = ""
+	relayLog.ResponseContent = ""
+	return relayLog
+}
+
+// RelayLogGetByID loads one relay log by id for the admin detail dialog.
+func RelayLogGetByID(ctx context.Context, id int64, scope *model.RelayLogScope) (*model.RelayLog, error) {
+	if id == 0 {
+		return nil, gorm.ErrRecordNotFound
+	}
+	relayLogCacheLock.Lock()
+	for i := range relayLogCache {
+		if relayLogCache[i].ID == id {
+			item := relayLogCache[i]
+			relayLogCacheLock.Unlock()
+			if !relayLogMatchScope(item, scope) {
+				return nil, gorm.ErrRecordNotFound
+			}
+			if scope != nil && scope.Redact {
+				item = RelayLogRedact(item)
+			}
+			return &item, nil
+		}
+	}
+	relayLogCacheLock.Unlock()
+	var item model.RelayLog
+	query := db.GetDB().WithContext(ctx).Where("id = ?", id)
+	query = relayLogApplyScope(query, scope)
+	if err := query.First(&item).Error; err != nil {
+		return nil, err
+	}
+	if scope != nil && scope.Redact {
+		item = RelayLogRedact(item)
+	}
+	return &item, nil
 }
 
 func RelayLogUserSummary(relayLog model.RelayLog) model.RelayLogUserSummary {

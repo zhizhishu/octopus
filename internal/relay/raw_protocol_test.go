@@ -878,8 +878,13 @@ func TestImagesHandlerRewritesModelAndLogsUsage(t *testing.T) {
 	if logs[0].RequestEndpoint != "images_generations" || logs[0].RequestPath != "/v1/images/generations" {
 		t.Fatalf("unexpected image log endpoint: endpoint=%q path=%q", logs[0].RequestEndpoint, logs[0].RequestPath)
 	}
-	if !strings.Contains(logs[0].ResponseContent, "image data omitted") {
-		t.Fatalf("expected image response content to omit image data, got %s", logs[0].ResponseContent)
+	// List path intentionally omits bodies; detail fetch keeps the redacted image note.
+	detail, err := op.RelayLogGetByID(ctx, logs[0].ID, nil)
+	if err != nil {
+		t.Fatalf("get relay log detail: %v", err)
+	}
+	if !strings.Contains(detail.ResponseContent, "image data omitted") {
+		t.Fatalf("expected image response content to omit image data, got %s", detail.ResponseContent)
 	}
 }
 

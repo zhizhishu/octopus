@@ -9,7 +9,7 @@ import { githubDarkTheme } from '@uiw/react-json-view/githubDark';
 import { githubLightTheme } from '@uiw/react-json-view/githubLight';
 import { useTheme } from 'next-themes';
 import { create } from 'zustand';
-import { getRelayLogSeverity, type RelayLog, type ChannelAttempt } from '@/api/endpoints/log';
+import { fetchLogById, getRelayLogSeverity, type RelayLog, type ChannelAttempt } from '@/api/endpoints/log';
 import {
     getLogVerdict,
     humanizeErrorCode,
@@ -458,6 +458,102 @@ function DeferredJsonContent({ content, fallbackText }: { content: string | unde
                 </motion.pre>
             )}
         </AnimatePresence>
+    );
+}
+
+
+function LazyLogBodies({ logId, fallbackRequest, fallbackResponse, requestLabel, responseLabel, tokensLabel, cacheHitLabel, noRequestText, noResponseText, inputTokens, outputTokens, cacheHitTokens, isModelTest }: {
+    logId: number;
+    fallbackRequest?: string;
+    fallbackResponse?: string;
+    requestLabel: string;
+    responseLabel: string;
+    tokensLabel: string;
+    cacheHitLabel: string;
+    noRequestText: string;
+    noResponseText: string;
+    inputTokens: number;
+    outputTokens: number;
+    cacheHitTokens: number;
+    isModelTest: boolean;
+}) {
+    const { isOpen } = useMorphingDialog();
+    const [requestContent, setRequestContent] = useState<string | undefined>(fallbackRequest);
+    const [responseContent, setResponseContent] = useState<string | undefined>(fallbackResponse);
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    const loadedRef = React.useRef(false);
+
+    useEffect(() => {
+        if (!isOpen || loadedRef.current) return;
+        // List rows intentionally omit bodies; fetch full detail once per open.
+        if ((requestContent && requestContent.length > 0) || (responseContent && responseContent.length > 0)) {
+            loadedRef.current = true;
+            return;
+        }
+        let cancelled = false;
+        setLoading(true);
+        setError(null);
+        fetchLogById(logId)
+            .then((full) => {
+                if (cancelled) return;
+                setRequestContent(full.request_content);
+                setResponseContent(full.response_content);
+                loadedRef.current = true;
+            })
+            .catch((err: unknown) => {
+                if (cancelled) return;
+                setError(err instanceof Error ? err.message : String(err));
+            })
+            .finally(() => {
+                if (!cancelled) setLoading(false);
+            });
+        return () => { cancelled = true; };
+    }, [isOpen, logId, requestContent, responseContent]);
+
+    return (
+        <div className="grid grid-cols-1 gap-4 pb-2 md:h-full md:min-h-0 md:grid-cols-2 md:pb-0">
+            <div className="flex min-h-[18rem] flex-col overflow-hidden rounded-lg border border-border bg-muted/30 md:min-h-0">
+                <div className="flex items-center gap-2 px-3 md:px-4 py-2.5 md:py-3 border-b border-border bg-muted/50 shrink-0">
+                    <Send className="size-4 text-muted-foreground" />
+                    <span className="text-sm font-medium text-card-foreground">{requestLabel}</span>
+                    {!isModelTest && (
+                        <Badge variant="secondary" className="ml-auto max-w-[55%] whitespace-normal text-left text-xs">
+                            {inputTokens.toLocaleString()} {tokensLabel} · {cacheHitLabel} {cacheHitTokens.toLocaleString()}
+                        </Badge>
+                    )}
+                </div>
+                <div className="flex-1 overflow-auto min-h-0">
+                    {loading ? (
+                        <div className="flex items-center gap-2 p-4 text-xs text-muted-foreground"><Loader2 className="size-3.5 animate-spin" />Loading…</div>
+                    ) : error ? (
+                        <div className="p-4 text-xs text-destructive">{error}</div>
+                    ) : (
+                        <DeferredJsonContent content={requestContent} fallbackText={noRequestText} />
+                    )}
+                </div>
+            </div>
+            <div className="flex min-h-[18rem] flex-col overflow-hidden rounded-lg border border-border bg-muted/30 md:min-h-0">
+                <div className="flex items-center gap-2 px-3 md:px-4 py-2.5 md:py-3 border-b border-border bg-muted/50 shrink-0">
+                    <MessageSquare className="size-4 text-muted-foreground" />
+                    <span className="text-sm font-medium text-card-foreground">{responseLabel}</span>
+                    {!isModelTest && (
+                        <Badge variant="secondary" className="ml-auto max-w-[55%] whitespace-normal text-left text-xs">
+                            {outputTokens.toLocaleString()} {tokensLabel}
+                        </Badge>
+                    )}
+                </div>
+                <div className="flex-1 overflow-auto min-h-0">
+                    {loading ? (
+                        <div className="flex items-center gap-2 p-4 text-xs text-muted-foreground"><Loader2 className="size-3.5 animate-spin" />Loading…</div>
+                    ) : error ? (
+                        <div className="p-4 text-xs text-destructive">{error}</div>
+                    ) : (
+                        <DeferredJsonContent content={responseContent} fallbackText={noResponseText} />
+                    )}
+                </div>
+            </div>
+        </div>
     );
 }
 
@@ -1004,36 +1100,21 @@ export const LogCard = React.memo(function LogCard({ log }: { log: RelayLog }) {
                                     上方内容挤压时最多缩到 20rem 保底——请求/响应面板永远保有可用高度做内部滚动，
                                     再挤就由外层 description 滚动兜底，不再出现被压成 0 高 / 底部裁掉。 */}
                                 <div className="overflow-hidden md:flex-[1_1_55dvh] md:min-h-[20rem]">
-                                    <div className="grid grid-cols-1 gap-4 pb-2 md:h-full md:min-h-0 md:grid-cols-2 md:pb-0">
-                                        <div className="flex min-h-[18rem] flex-col overflow-hidden rounded-lg border border-border bg-muted/30 md:min-h-0">
-                                            <div className="flex items-center gap-2 px-3 md:px-4 py-2.5 md:py-3 border-b border-border bg-muted/50 shrink-0">
-                                                <Send className="size-4 text-muted-foreground" />
-                                                <span className="text-sm font-medium text-card-foreground">{t('requestContent')}</span>
-                                                {!isModelTest && (
-                                                    <Badge variant="secondary" className="ml-auto max-w-[55%] whitespace-normal text-left text-xs">
-                                                        {log.input_tokens.toLocaleString()} {t('tokens')} · {t('cacheHit')} {(log.cache_hit_tokens ?? 0).toLocaleString()}
-                                                    </Badge>
-                                                )}
-                                            </div>
-                                            <div className="flex-1 overflow-auto min-h-0">
-                                                <DeferredJsonContent content={log.request_content} fallbackText={t('noRequestContent')} />
-                                            </div>
-                                        </div>
-                                        <div className="flex min-h-[18rem] flex-col overflow-hidden rounded-lg border border-border bg-muted/30 md:min-h-0">
-                                            <div className="flex items-center gap-2 px-3 md:px-4 py-2.5 md:py-3 border-b border-border bg-muted/50 shrink-0">
-                                                <MessageSquare className="size-4 text-muted-foreground" />
-                                                <span className="text-sm font-medium text-card-foreground">{t('responseContent')}</span>
-                                                {!isModelTest && (
-                                                    <Badge variant="secondary" className="ml-auto max-w-[55%] whitespace-normal text-left text-xs">
-                                                        {log.output_tokens.toLocaleString()} {t('tokens')}
-                                                    </Badge>
-                                                )}
-                                            </div>
-                                            <div className="flex-1 overflow-auto min-h-0">
-                                                <DeferredJsonContent content={log.response_content} fallbackText={t('noResponseContent')} />
-                                            </div>
-                                        </div>
-                                    </div>
+                                    <LazyLogBodies
+                                        logId={log.id}
+                                        fallbackRequest={log.request_content}
+                                        fallbackResponse={log.response_content}
+                                        requestLabel={t('requestContent')}
+                                        responseLabel={t('responseContent')}
+                                        tokensLabel={t('tokens')}
+                                        cacheHitLabel={t('cacheHit')}
+                                        noRequestText={t('noRequestContent')}
+                                        noResponseText={t('noResponseContent')}
+                                        inputTokens={log.input_tokens}
+                                        outputTokens={log.output_tokens}
+                                        cacheHitTokens={log.cache_hit_tokens ?? 0}
+                                        isModelTest={isModelTest}
+                                    />
                                 </div>
                             </div>
                         </MorphingDialogDescription>
