@@ -692,14 +692,23 @@ func convertGeminiToLLMResponse(geminiResp *model.GeminiGenerateContentResponse,
 			var textParts []string
 			var contentParts []model.MessageContentPart
 			var toolCalls []model.ToolCall
+			// P0-1: a single Gemini candidate can carry multiple thought:true parts
+			// (thinking-chain segments). The prior `reasoningContent == nil` guard
+			// kept only the first segment and dropped the rest, leaking as a
+			// truncated reasoningContent. Accumulate every thought Text in order
+			// via a strings.Builder and assign once after the loop.
+			var reasoningContentBuilder strings.Builder
+			var hasReasoning bool
 			var reasoningContent *string
 			var hasInlineData bool
 
 			for _, part := range candidate.Content.Parts {
 				if part.Thought {
-					// Handle thinking/reasoning content
-					if part.Text != "" && reasoningContent == nil {
-						reasoningContent = &part.Text
+					// Handle thinking/reasoning content: append every thought part;
+					// do NOT gate on a nil pointer (that drops all but the first).
+					if part.Text != "" {
+						reasoningContentBuilder.WriteString(part.Text)
+						hasReasoning = true
 					}
 				} else if part.Text != "" {
 					textParts = append(textParts, part.Text)
@@ -740,6 +749,12 @@ func convertGeminiToLLMResponse(geminiResp *model.GeminiGenerateContentResponse,
 					}
 					toolCalls = append(toolCalls, toolCall)
 				}
+			}
+
+			// P0-1: materialize accumulated thoughts once after the loop.
+			if hasReasoning {
+				s := reasoningContentBuilder.String()
+				reasoningContent = &s
 			}
 
 			// Set content - use MultipleContent if we have inline data (images)

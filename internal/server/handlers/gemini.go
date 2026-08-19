@@ -4,7 +4,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/op"
 	"github.com/bestruirui/octopus/internal/relay"
 	"github.com/bestruirui/octopus/internal/server/middleware"
@@ -143,9 +142,10 @@ func geminiAllowedModels(c *gin.Context) (models []string, ok bool) {
 			return lo.Contains(supportedModels, m)
 		})
 	}
-	if endpointFamily := c.GetString("endpoint_family"); endpointFamily != "" {
-		models = op.FilterModelNamesForEndpointFamily(c.Request.Context(), models, model.APIKeyEndpointFamily(endpointFamily))
-	}
+	// Deliberately NOT filtered by channel type / endpoint family, matching
+	// the OpenAI /v1/models and Anthropic inbound list behavior (see
+	// model.go getModelList). Octopus routes cross-protocol, so a Gemini
+	// inbound key must see chat/anthropic/custom channels' models too.
 	return models, true
 }
 
