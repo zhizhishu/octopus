@@ -65,8 +65,23 @@ func transformChatRequest(ctx context.Context, request *model.InternalLLMRequest
 		// OpenAI encrypted_content) is a foreign opaque blob that must never be
 		// serialized as a chat "reasoning_signature". Drop it; a bare untagged
 		// signature (DeepSeek V4 / Anthropic thinking) is preserved as before.
+		//
+		// Bug B "gemini cross-protocol history bridge" alignment with reference projects
+		// (CLIProxyAPI openai_claude_request.go:367-377 / new-api oai_chat/to_gemini_chat_req.go /
+		// sub2api chatcompletions_to_responses.go:108-118): none of the three unconditionally
+		// serializes a cross-protocol reasoning block — each gates it on signature
+		// compatibility or folds it to plain text. When the signature carries a foreign
+		// provider tag, the ReasoningContent next to it was produced by a different upstream
+		// (gemini thought, anthropic thinking, openai encrypted reasoning) and is opaque to
+		// the current chat upstream. Emitting it as a "reasoning_content" field confuses
+		// strict OpenAI-compatible providers (vercel/z.ai/GLM 400 on unknown field, or the
+		// model mis-attributes it as live reasoning). DeepSeek V4 keeps its own
+		// reasoning_content because DeepSeek signs it with a bare (untagged) signature, so
+		// the HasProviderReasoningTag gate leaves it untouched. The gate is computed ONCE on
+		// the live signature so a single test decides both fields atomically.
 		if model.HasProviderReasoningTag(request.Messages[i].ReasoningSignature) {
 			request.Messages[i].ReasoningSignature = nil
+			request.Messages[i].ReasoningContent = nil
 		}
 	}
 
