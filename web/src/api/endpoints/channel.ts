@@ -361,6 +361,91 @@ export function useCreateChannel() {
 }
 
 /**
+ * 复制渠道 Hook
+ *
+ * 客户端组装克隆 payload, 调用现有 POST /api/v1/channel/create, 后端零改动。
+ * name 自动加 _copy / _copy_2 / _copy_3 后缀避免撞库; enabled 默认 false, 让用户审核后再启用。
+ *
+ * @example
+ * const copyChannel = useCopyChannel();
+ *
+ * copyChannel.mutate(sourceChannel, {
+ *   onSuccess: ({ newName }) => toast.success(`已复制为 ${newName}`),
+ *   onError: () => toast.error('复制失败'),
+ * });
+ */
+export function useCopyChannel() {
+    const queryClient = useQueryClient();
+
+    return useMutation({
+        mutationFn: async (source: Channel): Promise<{ server: ChannelServer; newName: string }> => {
+            // useChannelList 缓存的形状是 Array<{ raw: Channel, formatted: StatsMetricsFormatted }>,
+            // 不是裸 ChannelServer[], 所以这里要按 raw.name 取。
+            const cached = queryClient.getQueryData<Array<{ raw: Channel }>>(['channels', 'list']) ?? [];
+            const existingNames = new Set(cached.map((item) => item.raw.name));
+
+            // name 撞库: _copy -> _copy_2 -> _copy_3 ...
+            let newName = `${source.name}_copy`;
+            let counter = 2;
+            while (existingNames.has(newName)) {
+                newName = `${source.name}_copy_${counter++}`;
+            }
+
+            const clone: CreateChannelRequest = {
+                name: newName,
+                type: source.type,
+                enabled: false, // 用户明确要求默认禁用, 避免误启用克隆出来的渠道
+                priority: source.priority,
+                max_concurrent: source.max_concurrent,
+                rpm_limit: source.rpm_limit,
+                key_select_strategy: source.key_select_strategy,
+                disable_circuit_breaker: source.disable_circuit_breaker,
+                base_urls: (source.base_urls ?? []).map((u) => ({ url: u.url, delay: u.delay })),
+                keys: (source.keys ?? [])
+                    .filter((k) => k.channel_key) // 跳过空 key, 不带 id/status_code/last_use_time_stamp/total_cost 等运行时字段
+                    .map((k) => ({
+                        enabled: k.enabled,
+                        channel_key: k.channel_key,
+                        remark: k.remark ?? '',
+                    })),
+                model: source.model,
+                custom_model: source.custom_model,
+                discovered_models: [...(source.discovered_models ?? [])],
+                selected_models: [...(source.selected_models ?? [])],
+                anthropic_context_1m: source.anthropic_context_1m,
+                thinking_to_content: source.thinking_to_content,
+                proxy: source.proxy,
+                auto_sync: source.auto_sync,
+                auto_group: source.auto_group,
+                custom_header: (source.custom_header ?? []).map((h) => ({ ...h })),
+                cloak: source.cloak ? { ...source.cloak } : undefined,
+                channel_proxy: source.channel_proxy,
+                openai_chat_path: source.openai_chat_path,
+                openai_models_path: source.openai_models_path,
+                param_override: source.param_override,
+                system_prompt_override: source.system_prompt_override,
+                prompt_override_mode: source.prompt_override_mode,
+                match_regex: source.match_regex,
+                model_mapping: source.model_mapping ? { ...source.model_mapping } : undefined,
+            };
+
+            const server = await apiClient.post<ChannelServer>('/api/v1/channel/create', clone);
+            return { server, newName };
+        },
+        onSuccess: ({ server }) => {
+            logger.log('渠道复制成功:', server);
+            queryClient.invalidateQueries({ queryKey: ['channels', 'list'] });
+            queryClient.invalidateQueries({ queryKey: ['models', 'list'] });
+            queryClient.invalidateQueries({ queryKey: ['models', 'channel'] });
+            queryClient.invalidateQueries({ queryKey: ['access-plans', 'list'] });
+        },
+        onError: (error) => {
+            logger.error('渠道复制失败:', error);
+        },
+    });
+}
+
+/**
  * 更新渠道 Hook
  * 
  * @example

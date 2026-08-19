@@ -843,6 +843,10 @@
         "card": {
             "requestCount": "Requests",
             "totalCost": "Total Cost",
+            "copy": "Copy",
+            "copyTooltip": "Clone all configuration of this channel; name gets a _copy suffix and is disabled by default",
+            "copySuccess": "Copied as {name}",
+            "copyFailed": "Copy failed",
             "circuit": {
                 "open": "Circuit open",
                 "remaining": "Circuit {seconds}s",

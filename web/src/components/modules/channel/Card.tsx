@@ -4,9 +4,9 @@ import {
     MorphingDialogContainer,
     MorphingDialogContent,
 } from '@/components/ui/morphing-dialog';
-import { Activity, AlertTriangle, CheckCircle2, DollarSign, Key, Layers, Loader2, MessageSquare, Play, RotateCcw, XCircle, Server } from 'lucide-react';
+import { Activity, AlertTriangle, CheckCircle2, Copy, DollarSign, Key, Layers, Loader2, MessageSquare, Play, RotateCcw, XCircle, Server } from 'lucide-react';
 import { type StatsMetricsFormatted } from '@/api/endpoints/stats';
-import { type Channel, useEnableChannel, useResetChannelCircuit } from '@/api/endpoints/channel';
+import { type Channel, useCopyChannel, useEnableChannel, useResetChannelCircuit } from '@/api/endpoints/channel';
 import { CardContent } from './CardContent';
 import { useTranslations } from 'next-intl';
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/animate-ui/components/animate/tooltip';
@@ -25,6 +25,7 @@ export function Card({ channel, stats, layout = 'list' }: { channel: Channel; st
     const t = useTranslations('channel.card');
     const tMetrics = useTranslations('channel.detail.metrics');
     const enableChannel = useEnableChannel();
+    const copyChannel = useCopyChannel();
     const resetCircuit = useResetChannelCircuit();
     const [testDialogOpen, setTestDialogOpen] = useState(false);
     const circuitLabel = channel.circuit_remaining_seconds > 0
@@ -50,6 +51,19 @@ export function Card({ channel, stats, layout = 'list' }: { channel: Channel; st
                 },
             }
         );
+    };
+
+    const handleCopyChannel = (event: MouseEvent<HTMLButtonElement>) => {
+        event.preventDefault();
+        event.stopPropagation();
+        copyChannel.mutate(channel, {
+            onSuccess: ({ newName }) => {
+                toast.success(t('copySuccess', { name: newName }));
+            },
+            onError: (error) => {
+                toast.error(error?.message || t('copyFailed'));
+            },
+        });
     };
 
     const handleResetCircuit = (event: MouseEvent<HTMLButtonElement>) => {
@@ -184,6 +198,21 @@ export function Card({ channel, stats, layout = 'list' }: { channel: Channel; st
                             <TooltipContent>{firstModel ? `测试 ${firstModel}` : '请先配置模型'}</TooltipContent>
                         </Tooltip>
                         <ChannelTestDialog channel={channel} open={testDialogOpen} onOpenChange={setTestDialogOpen} />
+                        <Tooltip side="top" sideOffset={10} align="center">
+                            <TooltipTrigger asChild>
+                                <button
+                                    type="button"
+                                    className="inline-flex h-8 max-w-full items-center gap-1 overflow-hidden rounded-lg border border-border px-2 text-xs font-medium leading-none text-muted-foreground hover:bg-accent hover:text-accent-foreground disabled:opacity-50"
+                                    onClick={handleCopyChannel}
+                                    disabled={copyChannel.isPending}
+                                    aria-label={t('copy')}
+                                >
+                                    <Copy className="size-3.5" />
+                                    <span className="min-w-0 truncate">{t('copy')}</span>
+                                </button>
+                            </TooltipTrigger>
+                            <TooltipContent>{t('copyTooltip')}</TooltipContent>
+                        </Tooltip>
                         {channel.circuit_tripped && (
                             <Tooltip side="top" sideOffset={10} align="center">
                                 <TooltipTrigger asChild>

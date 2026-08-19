@@ -843,6 +843,10 @@
         "card": {
             "requestCount": "请求次数",
             "totalCost": "总成本",
+            "copy": "复制",
+            "copyTooltip": "克隆本渠道全部配置，name 加 _copy 后缀且默认禁用",
+            "copySuccess": "已复制为 {name}",
+            "copyFailed": "复制失败",
             "circuit": {
                 "open": "熔断中",
                 "remaining": "熔断 {seconds}s",
