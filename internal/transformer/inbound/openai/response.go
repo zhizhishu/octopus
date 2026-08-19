@@ -104,6 +104,15 @@ type ResponseInbound struct {
 	streamChunks []*model.InternalLLMResponse
 	// storedResponse stores the non-stream response
 	storedResponse *model.InternalLLMResponse
+
+	// clientToolTypeByToolName maps an inbound request's tool name to its original
+	// OpenAI Responses "type" (e.g. "mcp_tool_call"). The chat upstream only
+	// understands type=function, so mcp_tool_call tool definitions are flattened to a
+	// function tool for chat completions (see convertToolsToInternal). On the way
+	// back, a chat tool_call whose function.name appears here MUST be re-emitted as an
+	// mcp_tool_call item, not a generic function_call — the codex/cursor client
+	// routes the call by item.type to its MCP handler. Populated in TransformRequest.
+	clientToolTypeByToolName map[string]string
 }
 
 // ResetStreamAggregation drops all per-response streaming/aggregation state so this
@@ -137,6 +146,14 @@ func (i *ResponseInbound) TransformRequest(ctx context.Context, body []byte) (*m
 		return nil, fmt.Errorf("model is required")
 	}
 
+	// Record each tool's original Responses "type" (e.g. "mcp_tool_call") by
+	// tool name so the response side (handleToolCalls) can re-emit an
+	// mcp_tool_call item instead of a generic function_call when the chat upstream
+	// (which only knows type=function) calls that tool. Populated only for tool
+	// types that need to be round-tripped; bare function tool definitions carry no
+	// entry (default = function_call behaviour).
+	i.clientToolTypeByToolName = buildClientToolTypeByToolName(req.Tools)
+
 	return convertToInternalRequest(&req)
 }
 
@@ -159,6 +176,21 @@ func (i *ResponseInbound) TransformResponse(ctx context.Context, response *model
 		choice := &response.Choices[choiceIndex]
 		i.normalizeLegacyFunctionCallForResponses(choice.Message, choice.Index)
 		i.normalizeLegacyFunctionCallForResponses(choice.Delta, choice.Index)
+		// Re-mark chat tool_calls whose original inbound Responses type was
+		// mcp_tool_call (flattened to type=function on the chat upstream). Without
+		// this, the non-stream convertToResponsesAPIResponse below would emit a
+		// generic function_call item the codex / cursor client cannot route to its
+		// MCP handler. Mirrors the streaming handleToolCalls path.
+		if choice.Message != nil {
+			for toolCallIdx := range choice.Message.ToolCalls {
+				i.normalizeClientToolCallType(&choice.Message.ToolCalls[toolCallIdx])
+			}
+		}
+		if choice.Delta != nil {
+			for toolCallIdx := range choice.Delta.ToolCalls {
+				i.normalizeClientToolCallType(&choice.Delta.ToolCalls[toolCallIdx])
+			}
+		}
 	}
 	// Store the normalized response for later retrieval and billing.
 	i.storedResponse = response
@@ -676,6 +708,12 @@ func (i *ResponseInbound) handleToolCalls(toolCalls []model.ToolCall) [][]byte {
 	events = append(events, i.closeMessageItem()...)
 
 	for _, tc := range toolCalls {
+		// Re-mark a tool call whose original inbound Responses type was mcp_tool_call
+		// (flattened to a chat type=function on the upstream). The chat upstream only
+		// knows type=function, so without this lookup the response side could not tell
+		// an MCP tool call from a generic function_call and would emit a function_call
+		// item the codex / cursor client cannot route to its MCP handler. Default = no-op.
+		i.normalizeClientToolCallType(&tc)
 		toolCallIndex := tc.Index
 
 		// Initialize tool call tracking if needed
@@ -745,6 +783,12 @@ func (i *ResponseInbound) handleToolCalls(toolCalls []model.ToolCall) [][]byte {
 			i.toolCalls[toolCallIndex].Function.Name = tc.Function.Name
 			nameBackfilled = true
 		}
+		// Apply the client-tool-type normalization to the stored slot too: when the
+		// first fragment carried no name, normalizeClientToolCallType above could not
+		// resolve the type (it looked up by name). Now that the name has arrived, the
+		// stored slot must be re-typed from function→mcp_tool_call so announceToolItem /
+		// finalizeToolItem emit the right item.type. Idempotent on the stored slot.
+		i.normalizeClientToolCallType(i.toolCalls[toolCallIndex])
 
 		// Now that the name has arrived (this frame or earlier), announce the deferred
 		// output_item.added the first fragment held back, and replay the argument
@@ -1052,6 +1096,41 @@ func (i *ResponseInbound) finalizeToolItem(idx int) [][]byte {
 		return events
 	}
 
+	if tc.Type == model.ToolCallTypeMCP {
+		// MCP tool call: same JSON-arguments shape as a function_call (CallID / Name /
+		// Arguments), but item.type MUST be "mcp_tool_call" so the codex / cursor
+		// client routes the call to its MCP handler instead of treating it as a generic
+		// function_call. Per the spec the streaming delta event name can stay
+		// "response.function_call_arguments.delta" — only item.type must be mcp_tool_call.
+		events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
+			Type:        "response.function_call_arguments.done",
+			ItemID:      &itemID,
+			OutputIndex: lo.ToPtr(outputIdx),
+			CallID:      tc.ID,
+			Name:        tc.Function.Name,
+			Arguments:   normalizeToolArguments(tc.Function.Arguments),
+		}))
+
+		mcpItem := ResponsesItem{
+			ID:        itemID,
+			Type:      "mcp_tool_call",
+			Status:    lo.ToPtr("completed"),
+			CallID:    tc.ID,
+			Name:      tc.Function.Name,
+			Arguments: lo.ToPtr(normalizeToolArguments(tc.Function.Arguments)),
+		}
+
+		events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
+			Type:        "response.output_item.done",
+			OutputIndex: lo.ToPtr(outputIdx),
+			Item:        &mcpItem,
+		}))
+
+		i.toolCallItemStarted[idx] = false
+		delete(i.toolCalls, idx)
+		return events
+	}
+
 	// Emit function_call_arguments.done. Empty upstream arguments are normalized to
 	// "{}" so the codex client's json.Unmarshal never fails (mirrors sub2api).
 	// Carry Name + CallID so SDK clients (cursor / Cherry Studio) that read the
@@ -1106,7 +1185,8 @@ func (i *ResponseInbound) announceToolItem(toolCallIndex int) [][]byte {
 	outputIdx := i.toolCallOutputIndex[toolCallIndex]
 
 	var item *ResponsesItem
-	if tc.Type == model.ToolCallTypeCustom {
+	switch tc.Type {
+	case model.ToolCallTypeCustom:
 		item = &ResponsesItem{
 			ID:     itemID,
 			Type:   "custom_tool_call",
@@ -1115,7 +1195,22 @@ func (i *ResponseInbound) announceToolItem(toolCallIndex int) [][]byte {
 			Name:   tc.Function.Name,
 			Input:  lo.ToPtr(""),
 		}
-	} else {
+	case model.ToolCallTypeMCP:
+		// An MCP tool call shares the function_call item shape (call_id / name /
+		// arguments as a JSON string); only item.type differs. The codex / cursor
+		// client routes the call by item.type to its MCP handler instead of treating
+		// it as a generic function_call. Same explicit empty "arguments" pattern as a
+		// function_call in-progress added event — real value streams via *.delta and
+		// finalizes on *.done.
+		item = &ResponsesItem{
+			ID:        itemID,
+			Type:      "mcp_tool_call",
+			Status:    lo.ToPtr("in_progress"),
+			CallID:    tc.ID,
+			Name:      tc.Function.Name,
+			Arguments: lo.ToPtr(""),
+		}
+	default:
 		// arguments is an explicit empty string on the in-progress added event — the
 		// genuine OpenAI Responses shape (sub2api emits it too). The real value is
 		// streamed via *.delta and finalized on *.done.
@@ -1152,6 +1247,30 @@ func normalizeToolArguments(args string) string {
 		return "{}"
 	}
 	return args
+}
+
+// normalizeClientToolCallType re-marks a chat upstream tool call whose original inbound
+// Responses type was mcp_tool_call (flattened to type=function on the chat side). It
+// looks up the tool name in clientToolTypeByToolName (populated by TransformRequest
+// from the inbound request's tools) and, on a hit, sets tc.Type to ToolCallTypeMCP so
+// announceToolItem / finalizeToolItem emit an mcp_tool_call item instead of a generic
+// function_call. Tools whose request side was type=function (the default) are left
+// untouched. Idempotent: an already-MCP-typed tc (e.g. when the upstream chat tool call
+// arrived pre-typed) is left as MCP.
+func (i *ResponseInbound) normalizeClientToolCallType(tc *model.ToolCall) {
+	if tc == nil {
+		return
+	}
+	if tc.Type == model.ToolCallTypeMCP {
+		return
+	}
+	name := strings.TrimSpace(tc.Function.Name)
+	if name == "" || len(i.clientToolTypeByToolName) == 0 {
+		return
+	}
+	if original, ok := i.clientToolTypeByToolName[name]; ok && original == "mcp_tool_call" {
+		tc.Type = model.ToolCallTypeMCP
+	}
 }
 
 // GetInternalResponse returns the complete internal response for logging, statistics, etc.
@@ -2119,6 +2238,13 @@ func convertItemToMessage(item *ResponsesItem) (*model.Message, error) {
 				toolCall.Function.Arguments = lo.FromPtr(item.Input)
 			}
 		}
+		// An mcp_tool_call input item has the same shape as a function_call (CallID / Name /
+		// JSON-string Arguments). Mark it as ToolCallTypeMCP so the outbound→internal→inbound
+		// round-trip can re-emit an mcp_tool_call (not a generic function_call) — the codex /
+		// cursor client routes the call by item.type to its MCP handler. P1-6 minimal slice.
+		if item.Type == "mcp_tool_call" {
+			toolCall.Type = model.ToolCallTypeMCP
+		}
 		return &model.Message{
 			Role:      "assistant",
 			ToolCalls: []model.ToolCall{toolCall},
@@ -2277,7 +2403,7 @@ func convertToolsToInternal(tools []ResponsesTool) ([]model.Tool, error) {
 
 	for _, tool := range tools {
 		switch tool.Type {
-		case "function":
+		case "function", "mcp_tool_call":
 			params, err := json.Marshal(tool.Parameters)
 			if err != nil {
 				return nil, fmt.Errorf("failed to marshal function parameters: %w", err)
@@ -2313,6 +2439,29 @@ func convertToolsToInternal(tools []ResponsesTool) ([]model.Tool, error) {
 	}
 
 	return result, nil
+}
+
+// buildClientToolTypeByToolName records the original OpenAI Responses "type" of every
+// inbound request tool whose type needs to be round-tripped through the chat upstream
+// (which only knows type=function) and re-emitted on the Responses side under its
+// original type. Currently only "mcp_tool_call" is tracked here; tools of type
+// "function" / "image_generation" / etc. are NOT recorded (they fall back to the
+// default function_call behaviour on the response side).
+func buildClientToolTypeByToolName(tools []ResponsesTool) map[string]string {
+	if len(tools) == 0 {
+		return nil
+	}
+	result := make(map[string]string, len(tools))
+	for _, tool := range tools {
+		switch tool.Type {
+		case "mcp_tool_call":
+			result[tool.Name] = tool.Type
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
 }
 
 func convertToResponsesAPIResponse(resp *model.InternalLLMResponse) *ResponsesResponse {
@@ -2386,6 +2535,20 @@ func convertToResponsesAPIResponse(resp *model.InternalLLMResponse) *ResponsesRe
 						Name:   toolCall.Function.Name,
 						Input:  &input,
 						Status: lo.ToPtr("completed"),
+					})
+					continue
+				}
+				if toolCall.Type == model.ToolCallTypeMCP {
+					// MCP tool call: same JSON-arguments shape as a function_call (CallID / Name /
+					// Arguments) but item.type MUST be "mcp_tool_call" so the codex / cursor client
+					// routes the call to its MCP handler instead of treating it as a generic function_call.
+					result.Output = append(result.Output, ResponsesItem{
+						ID:        callID,
+						Type:      "mcp_tool_call",
+						CallID:    callID,
+						Name:      toolCall.Function.Name,
+						Arguments: lo.ToPtr(normalizeToolArguments(toolCall.Function.Arguments)),
+						Status:    lo.ToPtr("completed"),
 					})
 					continue
 				}

@@ -1215,6 +1215,14 @@ type FunctionCall struct {
 // the custom-tool-call nature.
 const ToolCallTypeCustom = "custom"
 
+// ToolCallTypeMCP marks an internal tool call that originated as an OpenAI
+// Responses "mcp_tool_call" (an MCP server tool invocation). On the chat
+// upstream it is sent as a normal function tool (chat completions only
+// understand type=function), but on the Responses side it MUST be re-emitted
+// as an mcp_tool_call item so the codex/cursor client can route it to its MCP
+// handler instead of treating it as a generic function_call.
+const ToolCallTypeMCP = "mcp_tool_call"
+
 // ToolCall represents a tool call in the response.
 type ToolCall struct {
 	ID string `json:"id,omitempty"`

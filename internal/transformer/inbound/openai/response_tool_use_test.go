@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/samber/lo"
+
 	"github.com/bestruirui/octopus/internal/transformer/model"
 )
 
@@ -965,5 +967,297 @@ func TestResponseInboundDeferredAnnouncementWhenNameArrivesLate(t *testing.T) {
 	}
 	if !foundFunctionCall {
 		t.Fatalf("response.completed.output must contain the AskQuestion function_call (call_x), got %#v", completed.Response.Output)
+	}
+}
+
+// TestResponseInboundMCPToolCallEmittedAsMCPItem guards the P1-6 minimal slice for
+// mcp_tool_call. cursor / codex register an MCP server tool with type=mcp_tool_call
+// in the request's tools array; the chat upstream only understands type=function,
+// so octopus flattens that tool to a chat function tool (convertToolsToInternal) and
+// records the original type by name (clientToolTypeByToolName) in TransformRequest.
+// When the upstream chat tool_call comes back with that name, octopus must re-emit a
+// Responses mcp_tool_call item (NOT a generic function_call) so the codex / cursor
+// client can route the call to its MCP handler.
+func TestResponseInboundMCPToolCallEmittedAsMCPItem(t *testing.T) {
+	inbound := &ResponseInbound{}
+
+	// Step 1: TransformRequest populates clientToolTypeByToolName from a request
+	// whose tools array declares an mcp_tool_call tool. The chat upstream sees
+	// this as a normal type=function tool (convertToolsToInternal), but the
+	// original type is recorded so the response side can re-type the call.
+	req, err := inbound.TransformRequest(context.Background(), []byte(`{
+		"model":"gpt-5.5",
+		"input":"call the MCP tool",
+		"tools":[
+			{"type":"mcp_tool_call","name":"mcp_tool_1","description":"an MCP tool","parameters":{"type":"object","properties":{"x":{"type":"string"}},"required":["x"]}},
+			{"type":"function","name":"plain_func","parameters":{"type":"object"}}
+		]
+	}`))
+	if err != nil {
+		t.Fatalf("TransformRequest returned error: %v", err)
+	}
+	if len(req.Tools) != 2 {
+		t.Fatalf("expected both tools to survive conversion, got %d", len(req.Tools))
+	}
+	for _, tool := range req.Tools {
+		if tool.Type != "function" {
+			t.Fatalf("expected mcp_tool_call to be flattened to type=function for chat upstream, got tool type %q (name=%q)", tool.Type, tool.Function.Name)
+		}
+	}
+	if got := inbound.clientToolTypeByToolName["mcp_tool_1"]; got != "mcp_tool_call" {
+		t.Fatalf("expected clientToolTypeByToolName[mcp_tool_1]=mcp_tool_call, got %q", got)
+	}
+	if _, present := inbound.clientToolTypeByToolName["plain_func"]; present {
+		t.Fatalf("plain function tools must NOT be recorded in clientToolTypeByToolName")
+	}
+
+	// Step 2: stream a chat tool_call whose function.name is mcp_tool_1. The
+	// response side must re-emit it as an mcp_tool_call item, NOT a function_call.
+	base := func() *model.InternalLLMResponse {
+		return &model.InternalLLMResponse{ID: "chatcmpl_mcp", Model: "gpt-5.5", Object: "chat.completion.chunk", Created: 1}
+	}
+	toolChunk := func(tcs ...model.ToolCall) *model.InternalLLMResponse {
+		c := base()
+		c.Choices = []model.Choice{{Index: 0, Delta: &model.Message{Role: "assistant", ToolCalls: tcs}}}
+		return c
+	}
+	tc := func(index int, id, name, args string) model.ToolCall {
+		return model.ToolCall{Index: index, ID: id, Type: "function", Function: model.FunctionCall{Name: name, Arguments: args}}
+	}
+
+	var raw strings.Builder
+	feed := func(stream *model.InternalLLMResponse) {
+		out, err := inbound.TransformStream(context.Background(), stream)
+		if err != nil {
+			t.Fatalf("TransformStream returned error: %v", err)
+		}
+		raw.Write(out)
+	}
+
+	// Chunk 1: id + name + partial args arrive together (eager-announce path).
+	feed(toolChunk(tc(0, "call_mcp_1", "mcp_tool_1", `{"x":`)))
+	// Chunk 2: rest of the arguments.
+	feed(toolChunk(tc(0, "", "", `"hi"}`)))
+
+	// Chunk 3: finish_reason. closeToolItem finalizes the mcp_tool_call.
+	finishReason := "tool_calls"
+	fin := base()
+	fin.Choices = []model.Choice{{Index: 0, FinishReason: &finishReason}}
+	feed(fin)
+
+	// Chunk 4: [DONE]. The inbound synthesizes response.completed with the
+	// finalized output (completedItems captured via output_item.done).
+	doneOut, err := inbound.TransformStream(context.Background(), &model.InternalLLMResponse{Object: "[DONE]"})
+	if err != nil {
+		t.Fatalf("TransformStream done chunk returned error: %v", err)
+	}
+	raw.Write(doneOut)
+
+	events := parseResponsesStreamEvents(t, raw.String())
+
+	// Core lifecycle invariant: no delta/done against an unannounced or finalized item.
+	assertResponsesStreamItemLifecycle(t, events)
+
+	// Locate the (single) mcp_tool_call output_item.added event. There must be NO
+	// function_call item for the mcp_tool_call (it MUST be re-typed).
+	addedIdx := -1
+	for i, ev := range events {
+		if ev.Type == "response.output_item.added" && ev.Item != nil {
+			switch ev.Item.Type {
+			case "mcp_tool_call":
+				if addedIdx != -1 {
+					t.Fatalf("output_item.added for mcp_tool_call must fire exactly once, saw a second at index %d", i)
+				}
+				if ev.Item.CallID != "call_mcp_1" {
+					t.Fatalf("mcp_tool_call added event call_id must be call_mcp_1, got %q", ev.Item.CallID)
+				}
+				if ev.Item.Name != "mcp_tool_1" {
+					t.Fatalf("mcp_tool_call added event name must be mcp_tool_1, got %q", ev.Item.Name)
+				}
+				addedIdx = i
+			case "function_call":
+				t.Fatalf("MCP tool call must NOT be emitted as a function_call item, but saw function_call at event index %d (name=%q)", i, ev.Item.Name)
+			}
+		}
+	}
+	if addedIdx == -1 {
+		t.Fatalf("expected output_item.added for mcp_tool_call, events: %#v", events)
+	}
+	if addedItem := events[addedIdx].Item; addedItem.Status == nil || *addedItem.Status != "in_progress" {
+		t.Fatalf("mcp_tool_call added event status must be in_progress, got %#v", addedItem.Status)
+	}
+
+	// Locate the (single) mcp_tool_call output_item.done event and verify the
+	// full arguments string survived.
+	var doneItem *ResponsesItem
+	argsDoneIdx := -1
+	itemDoneIdx := -1
+	for i := addedIdx + 1; i < len(events); i++ {
+		switch events[i].Type {
+		case "response.function_call_arguments.done":
+			if argsDoneIdx == -1 {
+				argsDoneIdx = i
+				if events[i].Name != "mcp_tool_1" {
+					t.Fatalf("function_call_arguments.done name must be mcp_tool_1, got %q", events[i].Name)
+				}
+				if events[i].CallID != "call_mcp_1" {
+					t.Fatalf("function_call_arguments.done call_id must be call_mcp_1, got %q", events[i].CallID)
+				}
+				if events[i].Arguments != `{"x":"hi"}` {
+					t.Fatalf("function_call_arguments.done arguments must be %q, got %q", `{"x":"hi"}`, events[i].Arguments)
+				}
+			}
+		case "response.output_item.done":
+			if events[i].Item != nil && events[i].Item.Type == "mcp_tool_call" && itemDoneIdx == -1 {
+				itemDoneIdx = i
+				doneItem = events[i].Item
+			}
+		}
+	}
+	if argsDoneIdx == -1 {
+		t.Fatalf("expected function_call_arguments.done event for the mcp_tool_call")
+	}
+	if itemDoneIdx == -1 {
+		t.Fatalf("expected output_item.done event for the mcp_tool_call")
+	}
+	if argsDoneIdx >= itemDoneIdx {
+		t.Fatalf("function_call_arguments.done (idx %d) must come before output_item.done (idx %d)", argsDoneIdx, itemDoneIdx)
+	}
+	if doneItem == nil {
+		t.Fatalf("expected non-nil mcp_tool_call done item")
+	}
+	if doneItem.CallID != "call_mcp_1" || doneItem.Name != "mcp_tool_1" {
+		t.Fatalf("mcp_tool_call done item must carry call_id+name, got CallID=%q Name=%q", doneItem.CallID, doneItem.Name)
+	}
+	if derefString(doneItem.Arguments) != `{"x":"hi"}` {
+		t.Fatalf("mcp_tool_call done item arguments must be %q, got %q", `{"x":"hi"}`, derefString(doneItem.Arguments))
+	}
+	if doneItem.Status == nil || *doneItem.Status != "completed" {
+		t.Fatalf("mcp_tool_call done item status must be completed, got %#v", doneItem.Status)
+	}
+
+	// response.completed.output must carry this mcp_tool_call so a codex client
+	// that reconstructs the result from the terminal event sees the call.
+	var completed *ResponsesStreamEvent
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type == "response.completed" {
+			completed = &events[i]
+			break
+		}
+	}
+	if completed == nil || completed.Response == nil {
+		t.Fatalf("expected response.completed event with a response payload, events: %#v", events)
+	}
+	var foundMCPItem bool
+	for _, item := range completed.Response.Output {
+		if item.Type != "mcp_tool_call" {
+			continue
+		}
+		if item.Name != "mcp_tool_1" || item.CallID != "call_mcp_1" {
+			continue
+		}
+		foundMCPItem = true
+		if derefString(item.Arguments) != `{"x":"hi"}` {
+			t.Fatalf("response.completed.output mcp_tool_call arguments must be %q, got %q", `{"x":"hi"}`, derefString(item.Arguments))
+		}
+	}
+	if !foundMCPItem {
+		t.Fatalf("response.completed.output must contain the mcp_tool_call (mcp_tool_1 / call_mcp_1), got %#v", completed.Response.Output)
+	}
+}
+
+// TestResponseInboundMCPToolCallNonStreamEmittedAsMCPItem covers the non-streaming
+// path: TransformResponse must convert the chat tool_call into a Responses
+// mcp_tool_call item (not a function_call) when the request declared the tool
+// with type=mcp_tool_call.
+func TestResponseInboundMCPToolCallNonStreamEmittedAsMCPItem(t *testing.T) {
+	inbound := &ResponseInbound{}
+	if _, err := inbound.TransformRequest(context.Background(), []byte(`{
+		"model":"gpt-5.5",
+		"input":"call the MCP tool",
+		"tools":[{"type":"mcp_tool_call","name":"mcp_tool_1","parameters":{"type":"object"}}]
+	}`)); err != nil {
+		t.Fatalf("TransformRequest returned error: %v", err)
+	}
+
+	args := `{"x":"hello"}`
+	resp := &model.InternalLLMResponse{
+		ID:      "chatcmpl_nonstream",
+		Model:   "gpt-5.5",
+		Object:  "chat.completion",
+		Created: 1,
+		Choices: []model.Choice{{
+			Index:        0,
+			FinishReason: lo.ToPtr("tool_calls"),
+			Message: &model.Message{
+				Role: "assistant",
+				ToolCalls: []model.ToolCall{{
+					ID:       "call_nonstream",
+					Type:     "function",
+					Index:    0,
+					Function: model.FunctionCall{Name: "mcp_tool_1", Arguments: args},
+				}},
+			},
+		}},
+	}
+	body, err := inbound.TransformResponse(context.Background(), resp)
+	if err != nil {
+		t.Fatalf("TransformResponse returned error: %v", err)
+	}
+	got := string(body)
+
+	// The response MUST contain an mcp_tool_call output item, NOT a function_call.
+	if !strings.Contains(got, `"type":"mcp_tool_call"`) {
+		t.Fatalf("non-stream response must contain a mcp_tool_call output item, got %s", got)
+	}
+	if strings.Contains(got, `"type":"function_call"`) {
+		t.Fatalf("non-stream response must NOT contain a function_call item for an MCP tool, got %s", got)
+	}
+	if !strings.Contains(got, `"name":"mcp_tool_1"`) {
+		t.Fatalf("non-stream response must carry the tool name mcp_tool_1, got %s", got)
+	}
+	if !strings.Contains(got, `"call_id":"call_nonstream"`) {
+		t.Fatalf("non-stream response must carry the call_id call_nonstream, got %s", got)
+	}
+	if !strings.Contains(got, `"arguments":"{\"x\":\"hello\"}"`) {
+		t.Fatalf("non-stream response must carry the normalized JSON arguments, got %s", got)
+	}
+}
+
+// TestResponseInboundMCPToolCallRoundTripsThroughInputItem guards the inbound
+// side: a request whose input array contains an mcp_tool_call item from a
+// previous turn must convert to an internal ToolCall tagged with
+// ToolCallTypeMCP so the outbound->internal->inbound round-trip preserves the MCP
+// nature (otherwise the next response would emit a generic function_call).
+func TestResponseInboundMCPToolCallRoundTripsThroughInputItem(t *testing.T) {
+	req, err := (&ResponseInbound{}).TransformRequest(context.Background(), []byte(`{
+		"model":"gpt-5.5",
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"prev turn had an mcp call"}]},
+			{"type":"mcp_tool_call","call_id":"call_prev","name":"mcp_tool_1","arguments":"{\"x\":\"y\"}"},
+			{"type":"mcp_tool_call_output","call_id":"call_prev","name":"mcp_tool_1","output":"ok"}
+		]
+	}`))
+	if err != nil {
+		t.Fatalf("TransformRequest returned error: %v", err)
+	}
+	// Expect 3 messages: user, assistant(mcp tool call), tool(output).
+	if len(req.Messages) != 3 {
+		var roles []string
+		for _, m := range req.Messages {
+			roles = append(roles, m.Role)
+		}
+		t.Fatalf("expected 3 messages, got %d with roles %v", len(req.Messages), roles)
+	}
+	assistant := req.Messages[1]
+	if assistant.Role != "assistant" || len(assistant.ToolCalls) != 1 {
+		t.Fatalf("expected assistant message with 1 tool call, got %#v", assistant)
+	}
+	got := assistant.ToolCalls[0]
+	if got.Type != model.ToolCallTypeMCP {
+		t.Fatalf("expected ToolCallTypeMCP, got %q", got.Type)
+	}
+	if got.ID != "call_prev" || got.Function.Name != "mcp_tool_1" || got.Function.Arguments != `{"x":"y"}` {
+		t.Fatalf("unexpected tool call payload: %#v", got)
 	}
 }
