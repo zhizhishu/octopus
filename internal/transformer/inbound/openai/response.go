@@ -712,42 +712,20 @@ func (i *ResponseInbound) handleToolCalls(toolCalls []model.ToolCall) [][]byte {
 			itemID := callID
 			i.toolCallItemID[toolCallIndex] = itemID
 			i.toolCallOutputIndex[toolCallIndex] = i.allocOutputIndex()
-			i.toolCallItemStarted[toolCallIndex] = true
+			// Defer the output_item.added announcement when the upstream sent the tool
+			// id first but the function name is still empty (some OpenAI-compatible
+			// upstreams split the id and name across two stream chunks). Announcing an
+			// item with an empty name now would force a cursor / codex SDK that routes
+			// tool calls by name (AskQuestion / Cherry Studio) to drop the call: the name
+			// field is omitempty so the event loses it entirely, and a later *.done can
+			// not retroactively re-add it. Mirrors sub2api's announceChatToolItem: keep
+			// the slot half-open, let the name-backfill below announce once it arrives,
+			// and let closeToolItem force-announce if a name never arrives.
+			i.toolCallItemStarted[toolCallIndex] = tc.Function.Name != ""
 
-			// A custom (freeform) tool call must be re-announced as a
-			// custom_tool_call item carrying `input`, not a function_call carrying
-			// `arguments`; the codex client registered a custom tool and rejects a
-			// function_call in its place. Normal function calls keep the original
-			// function_call shape.
-			var item *ResponsesItem
-			if tc.Type == model.ToolCallTypeCustom {
-				item = &ResponsesItem{
-					ID:     itemID,
-					Type:   "custom_tool_call",
-					Status: lo.ToPtr("in_progress"),
-					CallID: callID,
-					Name:   tc.Function.Name,
-					Input:  lo.ToPtr(""),
-				}
-			} else {
-				// arguments is an explicit empty string on the in-progress added
-				// event — the genuine OpenAI Responses shape (sub2api emits it too).
-				// The real value is streamed via *.delta and finalized on *.done.
-				item = &ResponsesItem{
-					ID:        itemID,
-					Type:      "function_call",
-					Status:    lo.ToPtr("in_progress"),
-					CallID:    callID,
-					Name:      tc.Function.Name,
-					Arguments: lo.ToPtr(""),
-				}
+			if i.toolCallItemStarted[toolCallIndex] {
+				events = append(events, i.announceToolItem(toolCallIndex)...)
 			}
-
-			events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
-				Type:        "response.output_item.added",
-				OutputIndex: lo.ToPtr(i.toolCallOutputIndex[toolCallIndex]),
-				Item:        item,
-			}))
 		}
 
 		// Backfill the call_id (pairing key) from a later frame that carries the real
@@ -762,8 +740,41 @@ func (i *ResponseInbound) handleToolCalls(toolCalls []model.ToolCall) [][]byte {
 		// none (some upstreams stream the id first and the name in a following chunk).
 		// Take the first non-empty value and never concatenate — a name is atomic, not
 		// a streamed fragment. Mirrors chat.go mergeToolCall.
+		nameBackfilled := false
 		if tc.Function.Name != "" && i.toolCalls[toolCallIndex].Function.Name == "" {
 			i.toolCalls[toolCallIndex].Function.Name = tc.Function.Name
+			nameBackfilled = true
+		}
+
+		// Now that the name has arrived (this frame or earlier), announce the deferred
+		// output_item.added the first fragment held back, and replay the argument
+		// deltas that accumulated while the announcement was pending so the codex
+		// client receives them in the correct lifecycle order (added → delta → done)
+		// instead of as orphan deltas against an unannounced item. Mirrors sub2api's
+		// announceChatToolItem, which emits a held-then-released delta on late announce.
+		if nameBackfilled && !i.toolCallItemStarted[toolCallIndex] {
+			events = append(events, i.announceToolItem(toolCallIndex)...)
+			i.toolCallItemStarted[toolCallIndex] = true
+			if accumulated := i.toolCalls[toolCallIndex].Function.Arguments; accumulated != "" {
+				itemID := i.toolCallItemID[toolCallIndex]
+				outputIdx := i.toolCallOutputIndex[toolCallIndex]
+				if i.toolCalls[toolCallIndex].Type == model.ToolCallTypeCustom {
+					events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
+						Type:        "response.custom_tool_call_input.delta",
+						ItemID:      &itemID,
+						OutputIndex: lo.ToPtr(outputIdx),
+						Delta:       accumulated,
+					}))
+				} else {
+					events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
+						Type:         "response.function_call_arguments.delta",
+						ItemID:       &itemID,
+						OutputIndex:  lo.ToPtr(outputIdx),
+						ContentIndex: lo.ToPtr(0),
+						Delta:        accumulated,
+					}))
+				}
+			}
 		}
 
 		// Accumulate arguments (custom tool calls carry their freeform input here too).
@@ -777,7 +788,11 @@ func (i *ResponseInbound) handleToolCalls(toolCalls []model.ToolCall) [][]byte {
 		}
 
 		// Emit the incremental input/arguments delta against this tool's own item id.
-		if tc.Function.Arguments != "" {
+		// Skip when the item is still pending announcement (name not yet arrived): the
+		// delta would arrive before output_item.added, an "orphan delta without an
+		// active item" the codex SDK rejects. The deferred announcement path above
+		// replays this accumulated delta in lifecycle order once the name arrives.
+		if tc.Function.Arguments != "" && i.toolCallItemStarted[toolCallIndex] {
 			itemID := i.toolCallItemID[toolCallIndex]
 			outputIdx := i.toolCallOutputIndex[toolCallIndex]
 
@@ -966,6 +981,29 @@ func (i *ResponseInbound) closeAllOpenItems() [][]byte {
 // (toolCalls[idx].ID) — the two are emitted as distinct fields so a late upstream id
 // reaches the client as call_id without ever changing the announced item id.
 func (i *ResponseInbound) closeToolItem(idx int) [][]byte {
+	if _, ok := i.toolCalls[idx]; !ok {
+		return nil
+	}
+
+	// Force-announce a tool call whose output_item.added was deferred because the
+	// upstream streamed the id first and the name never arrived: emit it now (with
+	// the empty name the upstream left us) so closeToolItem has an item to finalize
+	// and the codex client pairs the call_id on next turn. Mirrors sub2api's
+	// announceChatToolItem force=true fallback in closeChatToolItems.
+	if !i.toolCallItemStarted[idx] {
+		defer func() { i.toolCallItemStarted[idx] = true }()
+		events := i.announceToolItem(idx)
+		remaining := i.finalizeToolItem(idx)
+		return append(events, remaining...)
+	}
+
+	return i.finalizeToolItem(idx)
+}
+
+// finalizeToolItem emits the terminal *.done events for a tool call whose
+// output_item.added has already been announced. It is the original tail of
+// closeToolItem, factored out so the deferred-announcement fallback can reuse it.
+func (i *ResponseInbound) finalizeToolItem(idx int) [][]byte {
 	if !i.toolCallItemStarted[idx] {
 		return nil
 	}
@@ -985,6 +1023,8 @@ func (i *ResponseInbound) closeToolItem(idx int) [][]byte {
 			Type:        "response.custom_tool_call_input.done",
 			ItemID:      &itemID,
 			OutputIndex: lo.ToPtr(outputIdx),
+			CallID:      tc.ID,
+			Name:        tc.Function.Name,
 			Input:       input,
 		}))
 
@@ -1004,15 +1044,25 @@ func (i *ResponseInbound) closeToolItem(idx int) [][]byte {
 		}))
 
 		i.toolCallItemStarted[idx] = false
+		// Drop the slot entirely so a second closeAllOpenItems pass (finish_reason +
+		// re-enter closeToolItem, mistake the still-present
+		// slot for a deferred-announce fallback, and re-emit output_item.added against
+		// an already-finalized item. Same fix as the function_call tail above.
+		delete(i.toolCalls, idx)
 		return events
 	}
 
 	// Emit function_call_arguments.done. Empty upstream arguments are normalized to
 	// "{}" so the codex client's json.Unmarshal never fails (mirrors sub2api).
+	// Carry Name + CallID so SDK clients (cursor / Cherry Studio) that read the
+	// function name from the done event - not just from output_item.added - can
+	// route the call without a second lookup. Mirrors sub2api closeChatToolItems.
 	events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
 		Type:        "response.function_call_arguments.done",
 		ItemID:      &itemID,
 		OutputIndex: lo.ToPtr(outputIdx),
+		CallID:      tc.ID,
+		Name:        tc.Function.Name,
 		Arguments:   normalizeToolArguments(tc.Function.Arguments),
 	}))
 
@@ -1033,7 +1083,56 @@ func (i *ResponseInbound) closeToolItem(idx int) [][]byte {
 	}))
 
 	i.toolCallItemStarted[idx] = false
+	// Drop the slot entirely so a second closeAllOpenItems pass (finish_reason +
+	// [DONE] both run it) cannot re-enter closeToolItem, mistake the still-present
+	// slot for a deferred-announce fallback, and re-emit output_item.added against an
+	// already-finalized item ("re-opens already-finalized item"). Mirrors sub2api's
+	// finalize-once contract.
+	delete(i.toolCalls, idx)
 	return events
+}
+
+// announceToolItem emits response.output_item.added for a tool call slot, using the
+// current toolCalls[idx].Function.Name (which may have been backfilled from a later
+// frame). It is the single place that constructs an in-progress Responses item for a
+// tool call, used both by the eager path (name arrived in the first chunk) and by
+// the deferred path (name arrived in a later chunk, replayed after announcement).
+func (i *ResponseInbound) announceToolItem(toolCallIndex int) [][]byte {
+	if _, ok := i.toolCalls[toolCallIndex]; !ok {
+		return nil
+	}
+	tc := i.toolCalls[toolCallIndex]
+	itemID := i.toolCallItemID[toolCallIndex]
+	outputIdx := i.toolCallOutputIndex[toolCallIndex]
+
+	var item *ResponsesItem
+	if tc.Type == model.ToolCallTypeCustom {
+		item = &ResponsesItem{
+			ID:     itemID,
+			Type:   "custom_tool_call",
+			Status: lo.ToPtr("in_progress"),
+			CallID: tc.ID,
+			Name:   tc.Function.Name,
+			Input:  lo.ToPtr(""),
+		}
+	} else {
+		// arguments is an explicit empty string on the in-progress added event — the
+		// genuine OpenAI Responses shape (sub2api emits it too). The real value is
+		// streamed via *.delta and finalized on *.done.
+		item = &ResponsesItem{
+			ID:        itemID,
+			Type:      "function_call",
+			Status:    lo.ToPtr("in_progress"),
+			CallID:    tc.ID,
+			Name:      tc.Function.Name,
+			Arguments: lo.ToPtr(""),
+		}
+	}
+	return [][]byte{i.enqueueEvent(&ResponsesStreamEvent{
+		Type:        "response.output_item.added",
+		OutputIndex: lo.ToPtr(outputIdx),
+		Item:        item,
+	})}
 }
 
 // normalizeToolArguments returns a valid-JSON arguments string for a function_call

@@ -747,3 +747,223 @@ func TestResponseInboundReasoningBeforeTextFlushesStandalone(t *testing.T) {
 		t.Fatalf("expected text content, got %#v", text.Content)
 	}
 }
+
+// TestResponseInboundDeferredAnnouncementWhenNameArrivesLate guards the P1-4
+// "deferred announcement" fix in handleToolCalls. Some OpenAI-compatible upstreams
+// split a tool call's id and function name across two stream chunks: the first
+// chunk carries the id (call_x) but an empty function.name and a partial arguments
+// fragment; the real name arrives in the second chunk together with the rest of
+// the arguments.
+//
+// Before the fix octopus announced output_item.added eagerly on the first chunk
+// with an empty name (the name field is omitempty, so the event lost it entirely)
+// and a later *.done could not retroactively re-add it; a cursor / codex SDK that
+// routes tool calls by name (AskQuestion / Cherry Studio) then dropped the call.
+//
+// The fix holds back output_item.added until the name arrives, then announces the
+// item with the real name and replays the arguments that accumulated during the
+// pending window so the codex client sees the correct lifecycle order
+// (added -> delta -> done) instead of orphan deltas against an unannounced item.
+//
+// This test is the dedicated coverage for that deferred-announcement path. The
+// existing TestResponseInboundToolCallNameBackfilledFromLaterFrame covers name
+// backfill but exercises the OLD eager-announce behavior (added is emitted on the
+// first chunk carrying the empty name); it does NOT cover the hold-back.
+func TestResponseInboundDeferredAnnouncementWhenNameArrivesLate(t *testing.T) {
+	inbound := &ResponseInbound{}
+	base := func() *model.InternalLLMResponse {
+		return &model.InternalLLMResponse{ID: "chatcmpl_deferred", Model: "glm-4.6", Object: "chat.completion.chunk", Created: 1}
+	}
+	toolChunk := func(tcs ...model.ToolCall) *model.InternalLLMResponse {
+		c := base()
+		c.Choices = []model.Choice{{Index: 0, Delta: &model.Message{Role: "assistant", ToolCalls: tcs}}}
+		return c
+	}
+	tc := func(index int, id, name, args string) model.ToolCall {
+		return model.ToolCall{Index: index, ID: id, Type: "function", Function: model.FunctionCall{Name: name, Arguments: args}}
+	}
+
+	// ---- Chunk 1: id present, name empty, partial arguments. The deferred path
+	// must NOT emit output_item.added here. ----
+	out1, err := inbound.TransformStream(context.Background(),
+		toolChunk(tc(0, "call_x", "", `{"q":`)))
+	if err != nil {
+		t.Fatalf("TransformStream chunk1 returned error: %v", err)
+	}
+	eventsAfterChunk1 := parseResponsesStreamEvents(t, string(out1))
+	for _, ev := range eventsAfterChunk1 {
+		if ev.Type == "response.output_item.added" {
+			t.Fatalf("first chunk (empty name) must NOT announce output_item.added (deferred announcement), got: %#v", ev)
+		}
+		// No arguments delta may sneak out either, or it would be an orphan delta
+		// against an item the client never saw announced.
+		if ev.Type == "response.function_call_arguments.delta" {
+			t.Fatalf("first chunk (deferred announcement) must NOT emit arguments delta before output_item.added, got: %#v", ev)
+		}
+	}
+
+	// ---- Chunk 2: real name arrives, plus the rest of the arguments. Now the
+	// deferred announcement fires: output_item.added (with the real name) plus a
+	// replay of the arguments accumulated during the pending window, then the
+	// current chunk's arguments flow as a normal incremental delta. ----
+	out2, err := inbound.TransformStream(context.Background(),
+		toolChunk(tc(0, "", "AskQuestion", `"a?"}`)))
+	if err != nil {
+		t.Fatalf("TransformStream chunk2 returned error: %v", err)
+	}
+
+	// ---- Chunk 3: finish_reason. closeToolItem finalizes the function_call. ----
+	finishReason := "tool_calls"
+	fin := base()
+	fin.Choices = []model.Choice{{Index: 0, FinishReason: &finishReason}}
+	out3, err := inbound.TransformStream(context.Background(), fin)
+	if err != nil {
+		t.Fatalf("TransformStream finish chunk returned error: %v", err)
+	}
+
+	// ---- Chunk The inbound synthesizes response.completed
+	// with the finalized output (completedItems captured via output_item.done). ----
+	doneOut, err := inbound.TransformStream(context.Background(), &model.InternalLLMResponse{Object: "[DONE]"})
+	if err != nil {
+		t.Fatalf("TransformStream done chunk returned error: %v", err)
+	}
+
+	var raw strings.Builder
+	raw.Write(out1)
+	raw.Write(out2)
+	raw.Write(out3)
+	raw.Write(doneOut)
+
+	events := parseResponsesStreamEvents(t, raw.String())
+	// Core lifecycle invariant: no delta/done against an unannounced or finalized item.
+	assertResponsesStreamItemLifecycle(t, events)
+
+	// Locate the (single) function_call output_item.added event.
+	addedIdx := -1
+	for i, ev := range events {
+		if ev.Type == "response.output_item.added" && ev.Item != nil && ev.Item.Type == "function_call" {
+			if addedIdx != -1 {
+				t.Fatalf("output_item.added for the function_call must fire exactly once, saw a second at index %d", i)
+			}
+			addedIdx = i
+		}
+	}
+	if addedIdx == -1 {
+		t.Fatalf("expected output_item.added for function_call after the name arrived, events: %#v", events)
+	}
+
+	// Assertion 2: the announced item carries the real name (not the empty placeholder).
+	addedItem := events[addedIdx].Item
+	if addedItem.Name != "AskQuestion" {
+		t.Fatalf("output_item.added item.name must be %q (backfilled from the second chunk), got %q", "AskQuestion", addedItem.Name)
+	}
+	// call_id is the upstream pairing key; the announced item must already carry it
+	// so the codex client can pair the tool result on the next turn.
+	if addedItem.CallID != "call_x" {
+		t.Fatalf("output_item.added call_id must be %q, got %q", "call_x", addedItem.CallID)
+	}
+
+	// Assertion 3: output_item.added is immediately followed by a
+	// function_call_arguments.delta carrying the arguments that accumulated during
+	// the deferred window. The current chunk's arguments then flow as a normal
+	// incremental delta right after. Together they reconstruct the full arguments
+	// string `{"q":"a?"}`.
+	if addedIdx+1 >= len(events) {
+		t.Fatalf("expected function_call_arguments.delta immediately after output_item.added, got end of stream")
+	}
+	replayEv := events[addedIdx+1]
+	if replayEv.Type != "response.function_call_arguments.delta" {
+		t.Fatalf("expected function_call_arguments.delta immediately after output_item.added, got %q at index %d", replayEv.Type, addedIdx+1)
+	}
+	// The deferred window accumulated ONLY chunk 1's arguments (`{"q":`); chunk 2's
+	// arguments had not been accumulated yet when the replay fired.
+	if replayEv.Delta != `{"q":` {
+		t.Fatalf("replayed delta (deferred accumulation from chunk 1) must be %q, got %q", `{"q":`, replayEv.Delta)
+	}
+	if replayEv.ItemID == nil || *replayEv.ItemID != "call_x" {
+		t.Fatalf("replayed delta must reference the announced item id %q, got %#v", "call_x", replayEv.ItemID)
+	}
+	// The current chunk's arguments then arrive as a normal incremental delta, so
+	// the two deltas concatenate to the full arguments string.
+	if addedIdx+2 >= len(events) || events[addedIdx+2].Type != "response.function_call_arguments.delta" {
+		t.Fatalf("expected a second function_call_arguments.delta (chunk 2 incremental) after the replay, got %+v", events[addedIdx+2:])
+	} else {
+		incrementalEv := events[addedIdx+2]
+		if incrementalEv.Delta != `"a?"}` {
+			t.Fatalf("incremental delta (chunk 2) must be %q, got %q", `"a?"}`, incrementalEv.Delta)
+		}
+		// Sanity: the two deltas reconstruct the full, valid arguments JSON.
+		if got := replayEv.Delta + incrementalEv.Delta; got != `{"q":"a?"}` {
+			t.Fatalf("replay + incremental deltas must reconstruct the full arguments %q, got %q", `{"q":"a?"}`, got)
+		}
+	}
+
+	// Assertion 4: after the deltas, function_call_arguments.done precedes
+	// output_item.done in the correct lifecycle order.
+	argsDoneIdx, itemDoneIdx := -1, -1
+	for i := addedIdx + 1; i < len(events); i++ {
+		switch events[i].Type {
+		case "response.function_call_arguments.done":
+			if argsDoneIdx == -1 {
+				argsDoneIdx = i
+			}
+		case "response.output_item.done":
+			if events[i].Item != nil && events[i].Item.Type == "function_call" && itemDoneIdx == -1 {
+				itemDoneIdx = i
+			}
+		}
+	}
+	if argsDoneIdx == -1 {
+		t.Fatalf("expected function_call_arguments.done event after the deltas")
+	}
+	if itemDoneIdx == -1 {
+		t.Fatalf("expected output_item.done event for the function_call")
+	}
+	if argsDoneIdx >= itemDoneIdx {
+		t.Fatalf("function_call_arguments.done (idx %d) must come before output_item.done (idx %d)", argsDoneIdx, itemDoneIdx)
+	}
+
+	// Assertion 5 (P1-5): function_call_arguments.done carries name + call_id so
+	// SDK clients (cursor / Cherry Studio) that route by the done event's name
+	// (not just output_item.added) can dispatch the call without a second lookup.
+	argsDone := events[argsDoneIdx]
+	if argsDone.Name != "AskQuestion" {
+		t.Fatalf("function_call_arguments.done name must be %q, got %q", "AskQuestion", argsDone.Name)
+	}
+	if argsDone.CallID != "call_x" {
+		t.Fatalf("function_call_arguments.done call_id must be %q, got %q", "call_x", argsDone.CallID)
+	}
+	if argsDone.Arguments != `{"q":"a?"}` {
+		t.Fatalf("function_call_arguments.done arguments must be the normalized full JSON %q, got %q", `{"q":"a?"}`, argsDone.Arguments)
+	}
+
+	// Assertion 6: response.completed.response.output carries this function_call,
+	// so a codex client that reconstructs the result from the terminal event sees
+	// the call (an empty output array here made Cherry Studio stop after step 1).
+	var completed *ResponsesStreamEvent
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type == "response.completed" {
+			completed = &events[i]
+			break
+		}
+	}
+	if completed == nil || completed.Response == nil {
+		t.Fatalf("expected response.completed event with a response payload, events: %#v", events)
+	}
+	var foundFunctionCall bool
+	for _, item := range completed.Response.Output {
+		if item.Type != "function_call" {
+			continue
+		}
+		if item.Name != "AskQuestion" || item.CallID != "call_x" {
+			continue
+		}
+		foundFunctionCall = true
+		if derefString(item.Arguments) != `{"q":"a?"}` {
+			t.Fatalf("response.completed.output function_call arguments must be %q, got %q", `{"q":"a?"}`, derefString(item.Arguments))
+		}
+	}
+	if !foundFunctionCall {
+		t.Fatalf("response.completed.output must contain the AskQuestion function_call (call_x), got %#v", completed.Response.Output)
+	}
+}
