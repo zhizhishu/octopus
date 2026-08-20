@@ -1355,6 +1355,7 @@ func (ra *relayAttempt) applyTransformOptions() error {
 	// bridgeResponsesHistoryForChat returns a deterministic invalid_request error so
 	// the caller fails loudly instead of forwarding a context-stripped turn.
 	if openAIChatOutboundChannel(ra.channel.Type) {
+		ra.restoreCodexToolsForAnthropic()
 		if err := ra.bridgeResponsesHistoryForChat(); err != nil {
 			return err
 		}

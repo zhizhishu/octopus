@@ -433,6 +433,9 @@ func messageHasNoReplayableContent(msg transformerModel.Message) bool {
 	if strings.TrimSpace(messageTextContent(msg.Content)) != "" {
 		return false
 	}
+	if msg.ReasoningContent != nil && strings.TrimSpace(*msg.ReasoningContent) != "" {
+		return false
+	}
 	return len(msg.ToolCalls) == 0 && msg.ToolCallID == nil
 }
 
