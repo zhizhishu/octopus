@@ -801,9 +801,11 @@ func convertMessages(req *model.InternalLLMRequest) []anthropicModel.MessagePara
 			// 会产生连续的同角色消息，需要合并以避免 "Improperly formed request" 错误。
 			if n := len(messages); n > 0 && messages[n-1].Role == convertedMsg.Role {
 				last := &messages[n-1]
-				last.Content = anthropicModel.MessageContent{
-					MultipleContent: append(contentToBlocks(last.Content), contentToBlocks(convertedMsg.Content)...),
+				mergedBlocks := append(contentToBlocks(last.Content), contentToBlocks(convertedMsg.Content)...)
+				if convertedMsg.Role == "assistant" {
+					mergedBlocks = reorderAssistantBlocks(mergedBlocks)
 				}
+				last.Content = anthropicModel.MessageContent{MultipleContent: mergedBlocks}
 			} else {
 				messages = append(messages, convertedMsg)
 			}
@@ -823,6 +825,63 @@ func contentToBlocks(c anthropicModel.MessageContent) []anthropicModel.MessageCo
 		return []anthropicModel.MessageContentBlock{{Type: "text", Text: c.Content}}
 	}
 	return nil
+}
+
+// anthropicAssistantBlockRank groups an assistant content block into the ordering
+// class Anthropic requires: thinking / redacted_thinking must lead, plain content
+// (text, image, ...) follows, and every tool_use must trail. Anthropic rejects an
+// assistant message whose content array puts text after tool_use with
+// "assistant message N contains text after tool_use".
+func anthropicAssistantBlockRank(block anthropicModel.MessageContentBlock) int {
+	switch block.Type {
+	case "thinking", "redacted_thinking":
+		return 0
+	case "tool_use", "server_tool_use":
+		return 2
+	default:
+		return 1
+	}
+}
+
+// reorderAssistantBlocks restores the Anthropic-required block order for a merged
+// assistant message while keeping each class internally stable.
+//
+// Merging is what makes this necessary: the Responses inbound splits one upstream
+// turn into several assistant messages (a function_call item and a message item
+// each become their own message), and convertMessages concatenates consecutive
+// same-role messages to satisfy Anthropic's role-alternation rule. Concatenating
+// [text, tool_use] with [text] yields [text, tool_use, text], which Anthropic
+// rejects. Mirrors the reordering CLIProxyAPI applies for the same upstream
+// constraint (antigravity_claude_request.go: thinking first, content next,
+// function calls last).
+func reorderAssistantBlocks(blocks []anthropicModel.MessageContentBlock) []anthropicModel.MessageContentBlock {
+	if len(blocks) < 2 {
+		return blocks
+	}
+
+	needsReorder := false
+	previousRank := anthropicAssistantBlockRank(blocks[0])
+	for _, block := range blocks[1:] {
+		rank := anthropicAssistantBlockRank(block)
+		if rank < previousRank {
+			needsReorder = true
+			break
+		}
+		previousRank = rank
+	}
+	if !needsReorder {
+		return blocks
+	}
+
+	reordered := make([]anthropicModel.MessageContentBlock, 0, len(blocks))
+	for targetRank := 0; targetRank <= 2; targetRank++ {
+		for _, block := range blocks {
+			if anthropicAssistantBlockRank(block) == targetRank {
+				reordered = append(reordered, block)
+			}
+		}
+	}
+	return reordered
 }
 
 func convertSingleMessage(msg model.Message, allMessages []model.Message, processedIndexes map[int]bool) []anthropicModel.MessageParam {
