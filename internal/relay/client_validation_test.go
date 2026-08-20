@@ -126,18 +126,33 @@ func TestHandlerInterceptsEmptyClientRequestsWithoutStats(t *testing.T) {
 			if rec.Code != http.StatusBadRequest {
 				t.Fatalf("expected local 400, got %d body %s", rec.Code, rec.Body.String())
 			}
-			var body struct {
-				ErrorCode string `json:"error_code"`
-				Message   string `json:"message"`
-			}
-			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			var rawBody map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &rawBody); err != nil {
 				t.Fatalf("decode response: %v", err)
 			}
-			if body.ErrorCode != clientEmptyRequestCode {
-				t.Fatalf("expected %s, got %q body %s", clientEmptyRequestCode, body.ErrorCode, rec.Body.String())
+			var gotCode, gotMsg string
+			if errObj, ok := rawBody["error"].(map[string]any); ok {
+				// OpenAI error envelope {"error":{"message":..,"code":..}} (used for responses inbound)
+				if c, ok := errObj["code"].(string); ok {
+					gotCode = c
+				}
+				if m, ok := errObj["message"].(string); ok {
+					gotMsg = m
+				}
+			} else {
+				// Octopus-internal ResponseStruct {code, error_code, message} (used for chat/anthropic/gemini)
+				if c, ok := rawBody["error_code"].(string); ok {
+					gotCode = c
+				}
+				if m, ok := rawBody["message"].(string); ok {
+					gotMsg = m
+				}
 			}
-			if !strings.Contains(strings.ToLower(body.Message), "empty request") {
-				t.Fatalf("expected empty request message, got %q", body.Message)
+			if gotCode != clientEmptyRequestCode {
+				t.Fatalf("expected %s, got %q body %s", clientEmptyRequestCode, gotCode, rec.Body.String())
+			}
+			if !strings.Contains(strings.ToLower(gotMsg), "empty request") {
+				t.Fatalf("expected empty request message, got %q", gotMsg)
 			}
 
 			logs, err := op.RelayLogList(ctx, nil, nil, 1, 10, nil)
