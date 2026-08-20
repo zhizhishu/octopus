@@ -862,8 +862,8 @@ func (ra *relayAttempt) shouldBridgeResponsesHistory() bool {
 	switch ra.channel.Type {
 	case outbound.OutboundTypeAnthropic:
 		return true
-	case outbound.OutboundTypeOpenAIChat, outbound.OutboundTypeCustomOpenAIChat:
-		// Chat/completions upstreams keep no server-side response state, so record
+	case outbound.OutboundTypeOpenAIChat, outbound.OutboundTypeCustomOpenAIChat, outbound.OutboundTypeGemini:
+		// Chat/completions and Gemini upstreams keep no server-side response state, so record
 		// the transcript locally: the next previous_response_id turn is rebuilt from
 		// it by bridgeResponsesHistoryForChat (mirrors the Anthropic bridge above).
 		return true
@@ -914,7 +914,8 @@ func (ra *relayAttempt) bridgeResponsesHistoryForAnthropic() {
 // server-side response state and the wire format has no previous_response_id field.
 func openAIChatOutboundChannel(channelType outbound.OutboundType) bool {
 	return channelType == outbound.OutboundTypeOpenAIChat ||
-		channelType == outbound.OutboundTypeCustomOpenAIChat
+		channelType == outbound.OutboundTypeCustomOpenAIChat ||
+		channelType == outbound.OutboundTypeGemini
 }
 
 // bridgeResponsesHistoryForChat replays a prior responses turn's history into the

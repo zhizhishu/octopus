@@ -270,9 +270,15 @@ func convertLLMToGeminiRequest(request *model.InternalLLMRequest) *model.GeminiG
 			geminiReq.Contents = append(geminiReq.Contents, content)
 
 		case "tool":
-			// Tool result
+			// Tool result: merge consecutive tool outputs into a single user content block with multiple functionResponse parts
 			content := convertLLMToolResultToGeminiContent(&msg, toolCallNamesByID)
-			geminiReq.Contents = append(geminiReq.Contents, content)
+			if len(geminiReq.Contents) > 0 && geminiReq.Contents[len(geminiReq.Contents)-1].Role == "user" &&
+				len(geminiReq.Contents[len(geminiReq.Contents)-1].Parts) > 0 &&
+				geminiReq.Contents[len(geminiReq.Contents)-1].Parts[0].FunctionResponse != nil {
+				geminiReq.Contents[len(geminiReq.Contents)-1].Parts = append(geminiReq.Contents[len(geminiReq.Contents)-1].Parts, content.Parts...)
+			} else {
+				geminiReq.Contents = append(geminiReq.Contents, content)
+			}
 		}
 	}
 
