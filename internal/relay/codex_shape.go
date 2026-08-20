@@ -378,9 +378,20 @@ func normalizeChatToolCallPairing(messages []transformerModel.Message) []transfo
 
 	// Index every tool reply by its tool_call_id (last wins on duplicates).
 	replies := make(map[string]transformerModel.Message)
+	var singleReplyID string
+	replyCount := 0
 	for _, m := range messages {
 		if id := toolReplyID(m); id != "" {
 			replies[id] = m
+			singleReplyID = id
+			replyCount++
+		}
+	}
+
+	totalToolCalls := 0
+	for _, m := range messages {
+		if strings.EqualFold(strings.TrimSpace(m.Role), "assistant") {
+			totalToolCalls += len(m.ToolCalls)
 		}
 	}
 
@@ -399,11 +410,20 @@ func normalizeChatToolCallPairing(messages []transformerModel.Message) []transfo
 			kept := make([]transformerModel.ToolCall, 0, len(m.ToolCalls))
 			for _, tc := range m.ToolCalls {
 				id := strings.TrimSpace(tc.ID)
+				if id == "" && replyCount == 1 && totalToolCalls == 1 {
+					id = singleReplyID
+				}
 				if id == "" {
 					continue
 				}
 				if _, ok := replies[id]; ok {
 					tc.ID = id // canonicalize to the trimmed id so the emitted call matches its reply exactly
+					kept = append(kept, tc)
+				} else if replyCount == 1 && totalToolCalls == 1 {
+					matchedReply := replies[singleReplyID]
+					delete(replies, singleReplyID)
+					tc.ID = id
+					replies[id] = matchedReply
 					kept = append(kept, tc)
 				}
 			}

@@ -108,7 +108,7 @@ func TestGeminiAllowedModelsReturnsAllChannelTypes(t *testing.T) {
 	// "model-on-gemini" for endpoint_family=gemini.
 	for _, ef := range []string{string(model.APIKeyEndpointFamilyGemini), ""} {
 		ids := listIDs(ef)
-		for _, want := range []string{"model-on-gemini", "model-on-chat", "model-on-anthropic"} {
+		for _, want := range []string{"models/model-on-gemini", "models/model-on-chat", "models/model-on-anthropic"} {
 			if !slices.Contains(ids, want) {
 				t.Fatalf("endpoint_family %q must list %q across all channel types, got %v", ef, want, ids)
 			}

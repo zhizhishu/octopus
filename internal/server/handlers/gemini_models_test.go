@@ -32,10 +32,8 @@ func TestParseGeminiModelGet(t *testing.T) {
 
 func TestNewGeminiModel(t *testing.T) {
 	m := newGeminiModel("gemini-2.5-flash")
-	// Bare name, no "models/" prefix: Octopus routes on the bare id and clients build
-	// /v1beta/models/{name}, so a prefixed name would double the path segment.
-	if m.Name != "gemini-2.5-flash" {
-		t.Fatalf("name: got %q want gemini-2.5-flash", m.Name)
+	if m.Name != "models/gemini-2.5-flash" {
+		t.Fatalf("name: got %q want models/gemini-2.5-flash", m.Name)
 	}
 	if m.DisplayName != "gemini-2.5-flash" {
 		t.Fatalf("displayName: got %q", m.DisplayName)
@@ -111,7 +109,7 @@ func TestGeminiListModelsResponseShape(t *testing.T) {
 	if len(decoded.Models) != 2 {
 		t.Fatalf("models count: got %d want 2", len(decoded.Models))
 	}
-	if decoded.Models[0].Name != "gemini-2.5-flash" {
+	if decoded.Models[0].Name != "models/gemini-2.5-flash" {
 		t.Fatalf("first name: got %q", decoded.Models[0].Name)
 	}
 	if len(decoded.Models[0].SupportedGenerationMethods) != 2 {

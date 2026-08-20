@@ -293,6 +293,11 @@ func isOpenAIOfficialChatBase(baseUrl string) bool {
 // models are served over the Responses endpoint, not this path) and always
 // normalise a malformed tool_choice. Keyed on the upstream, not a per-model
 // allowlist, so a newly-added provider is covered automatically.
+func isDeepSeekReasonerModel(model string) bool {
+	lower := strings.ToLower(strings.TrimSpace(model))
+	return strings.Contains(lower, "deepseek-reasoner") || strings.Contains(lower, "deepseek-r1")
+}
+
 func applyThirdPartyChatParamCompat(request *model.InternalLLMRequest, baseUrl string) {
 	if request == nil {
 		return
@@ -311,6 +316,59 @@ func applyThirdPartyChatParamCompat(request *model.InternalLLMRequest, baseUrl s
 	// service_tier is OpenAI Responses residue; vercel AI Gateway / z.ai chat 400
 	// on unknown top-level fields (live log id 1787047851119 carried service_tier).
 	request.ServiceTier = nil
+
+	// DeepSeek-Reasoner rejects sampling parameters (temperature, top_p, penalties).
+	if isDeepSeekReasonerModel(request.Model) {
+		request.Temperature = nil
+		request.TopP = nil
+		request.PresencePenalty = nil
+		request.FrequencyPenalty = nil
+	}
+
+	// Clean up consecutive same-role messages for strict OpenAI-compatible upstreams (DeepSeek/Qwen).
+	if len(request.Messages) > 1 {
+		request.Messages = mergeConsecutiveSameRoleChatMessages(request.Messages)
+	}
+}
+
+func mergeConsecutiveSameRoleChatMessages(messages []model.Message) []model.Message {
+	if len(messages) <= 1 {
+		return messages
+	}
+	merged := make([]model.Message, 0, len(messages))
+	for _, m := range messages {
+		if len(merged) == 0 {
+			merged = append(merged, m)
+			continue
+		}
+		prev := &merged[len(merged)-1]
+		if strings.EqualFold(strings.TrimSpace(prev.Role), "assistant") &&
+			strings.EqualFold(strings.TrimSpace(m.Role), "assistant") {
+			// Merge consecutive assistant messages (e.g. one has reasoning, one has text/tool_calls)
+			if m.ReasoningContent != nil && *m.ReasoningContent != "" {
+				if prev.ReasoningContent == nil || *prev.ReasoningContent == "" {
+					prev.ReasoningContent = m.ReasoningContent
+				} else {
+					combined := *prev.ReasoningContent + "\n" + *m.ReasoningContent
+					prev.ReasoningContent = &combined
+				}
+			}
+			if m.Content.Content != nil && *m.Content.Content != "" {
+				if prev.Content.Content == nil || *prev.Content.Content == "" {
+					prev.Content.Content = m.Content.Content
+				} else {
+					combined := *prev.Content.Content + "\n" + *m.Content.Content
+					prev.Content.Content = &combined
+				}
+			}
+			if len(m.ToolCalls) > 0 {
+				prev.ToolCalls = append(prev.ToolCalls, m.ToolCalls...)
+			}
+			continue
+		}
+		merged = append(merged, m)
+	}
+	return merged
 }
 
 // sanitizeToolChoiceForStrictUpstream drops a tool_choice value that would
