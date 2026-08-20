@@ -39,7 +39,7 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 	supportedModels := c.GetString("supported_models")
 	anthropicAliases := prepareAnthropicModelCompatibility(inboundType, internalRequest)
 	if !isSupportedRequestModel(supportedModels, internalRequest.Model, anthropicAliases) {
-		resp.Error(c, http.StatusBadRequest, "model not supported")
+		writeRelayErrorPreStream(c, inboundType, http.StatusBadRequest, "invalid_request_error", "model_not_supported", "model not supported")
 		return
 	}
 
@@ -55,7 +55,7 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		if message == "" && err != nil {
 			message = err.Error()
 		}
-		resp.Error(c, status, message)
+		writeRelayErrorPreStream(c, inboundType, status, "api_error", "", message)
 		return
 	}
 	preferStreamRouting := internalRequestPrefersStream(internalRequest)
@@ -81,7 +81,7 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 	iter.PrioritizeChannels(nativeProtocolChannelIDs(c.Request.Context(), inboundType, group.Items))
 	prioritizeResponsesSessionOwner(c.Request.Context(), iter, internalRequest, apiKeyID, userID)
 	if iter.Len() == 0 {
-		resp.Error(c, http.StatusServiceUnavailable, "no available channel")
+		writeRelayErrorPreStream(c, inboundType, http.StatusServiceUnavailable, "api_error", "no_available_channel", "no available channel")
 		return
 	}
 
@@ -342,7 +342,7 @@ runIterator:
 		}
 		return
 	}
-	resp.ErrorWithCode(c, status, code, message)
+	writeRelayErrorPreStream(c, inboundType, status, "api_error", code, message)
 }
 
 // writeNonStreamJSONError appends a JSON error body to a non-stream (application/json)
@@ -548,7 +548,7 @@ func parseRequest(inboundType inbound.InboundType, c *gin.Context) (*model.Inter
 			return nil, nil, err
 		}
 		saveClientValidationRelayLog(c.Request.Context(), c, inboundType, internalRequest, body, err)
-		resp.ErrorWithCode(c, http.StatusBadRequest, clientValidationErrorCode(err), clientValidationErrorMessage(err))
+		writeRelayErrorPreStream(c, inboundType, http.StatusBadRequest, "invalid_request_error", clientValidationErrorCode(err), clientValidationErrorMessage(err))
 		return nil, nil, err
 	} else if err != nil {
 		if maybeHandleCursorEmptyAnthropicProbe(c, inboundType, internalRequest, body, err) {
@@ -558,7 +558,7 @@ func parseRequest(inboundType inbound.InboundType, c *gin.Context) (*model.Inter
 			return nil, nil, err
 		}
 		saveClientValidationRelayLog(c.Request.Context(), c, inboundType, internalRequest, body, err)
-		resp.ErrorWithCode(c, http.StatusBadRequest, clientValidationErrorCode(err), clientValidationErrorMessage(err))
+		writeRelayErrorPreStream(c, inboundType, http.StatusBadRequest, "invalid_request_error", clientValidationErrorCode(err), clientValidationErrorMessage(err))
 		return nil, nil, err
 	}
 

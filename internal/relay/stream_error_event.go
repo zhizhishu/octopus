@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bestruirui/octopus/internal/server/resp"
+	"github.com/bestruirui/octopus/internal/transformer/inbound"
 	"github.com/gin-gonic/gin"
 )
 
@@ -188,4 +190,31 @@ func anthropicStreamFailureMessage(err error) string {
 		return ""
 	}
 	return "upstream stream failed before terminal event"
+}
+
+// writeRelayErrorPreStream writes a pre-stream error in the inbound-aware envelope.
+//
+// On the /v1/responses path, octopus's internal ResponseStruct {code,error_code,message}
+// is NOT what cursor's responses parser expects — it sees an unknown shape and surfaces
+// "OpenAI Responses API failed: unknown error" to the user. Mirror new-api's types.NewAPIError
+// contract: ALWAYS emit the OpenAI shape {"error":{"message":..,"type":..,"code":..}} to
+// OpenAI-protocol inbound. Chat / Anthropic inbound keep their existing octopus-internal
+// / Anthropic error shapes; only the responses inbound changes here.
+//
+// This is the pre-stream (no SSE prelude committed) branch counterpart of the post-stream
+// switch in relay.go (writeResponsesFailedSSE / writeChatErrorSSE / writeAnthropicErrorSSE):
+// here c.Writer.Written() is false and we deliver the error as a normal JSON HTTP response.
+// Once any meaningful bytes are flushed (heartbeats or prelude), the post-stream switch
+// takes over and writes the error in-band on the SSE stream.
+func writeRelayErrorPreStream(c *gin.Context, inboundType inbound.InboundType, httpStatus int, errType string, errCode string, message string) {
+	switch inboundType {
+	case inbound.InboundTypeOpenAIResponse:
+		resp.OpenAIError(c, httpStatus, errType, errCode, message)
+	default:
+		if errCode == "" {
+			resp.Error(c, httpStatus, message)
+		} else {
+			resp.ErrorWithCode(c, httpStatus, errCode, message)
+		}
+	}
 }
