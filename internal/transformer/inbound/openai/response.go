@@ -60,6 +60,13 @@ type ResponseInbound struct {
 	contentPartOpen  bool
 	accumulatedText  strings.Builder
 
+	// glmInlineBuffer holds a GLM text run that is turning into inline tool call
+	// markup. GLM upstreams emit tool calls as literal text markup split across
+	// stream chunks, so the run must be withheld until the markup closes — streaming
+	// each fragment would leak "<tool_" to the client and leave nothing to parse.
+	// Only ever non-empty for GLM models (see modelUsesGLMInlineToolCalls).
+	glmInlineBuffer strings.Builder
+
 	// Tool call slots. toolCallItemID is the streaming lifecycle handle: announced
 	// once on output_item.added, immutable, referenced by every delta/done. The
 	// call_id (the semantic identity the codex client pairs the tool result on next
@@ -584,6 +591,117 @@ func (i *ResponseInbound) handleReasoningContent(content *string) [][]byte {
 }
 
 func (i *ResponseInbound) handleTextContent(content *string) [][]byte {
+	// A GLM upstream may emit a tool call as literal markup inside this text. Buffer
+	// the run until the markup closes, then replay it as a real function_call instead
+	// of streaming tag soup to the client. Every other model keeps byte-for-byte
+	// passthrough — the gate is the model name.
+	if modelUsesGLMInlineToolCalls(i.model) {
+		if flushed, handled := i.bufferGLMInlineToolCallText(*content); handled {
+			return flushed
+		}
+	}
+
+	return i.emitTextContent(*content)
+}
+
+// bufferGLMInlineToolCallText holds back a GLM text run that is turning into inline
+// tool call markup, and replays it once the markup closes.
+//
+// Returns handled=true when the fragment was consumed by this path (either buffered
+// with nothing to emit yet, or flushed as recovered tool calls plus cleaned text);
+// handled=false means the fragment carries no markup and must follow the normal
+// passthrough path. Buffering is required because the markup is split across stream
+// chunks: emitting each fragment as it arrives would leak "<tool_" to the client and
+// leave nothing to parse.
+func (i *ResponseInbound) bufferGLMInlineToolCallText(content string) ([][]byte, bool) {
+	if i.glmInlineBuffer.Len() == 0 && !glmInlineToolCallMarkerPresent(content) {
+		return nil, false
+	}
+
+	i.glmInlineBuffer.WriteString(content)
+	buffered := i.glmInlineBuffer.String()
+
+	// Give up waiting once the withheld run grows past the ceiling: an upstream that
+	// opened a marker and never closes it must not be allowed to starve the client of
+	// output indefinitely. Release what we have as plain text.
+	if i.glmInlineBuffer.Len() > maxGLMInlineBufferBytes && !glmInlineToolCallComplete(buffered) {
+		i.glmInlineBuffer.Reset()
+		return i.emitTextContent(buffered), true
+	}
+
+	// Keep waiting while the markup is still open: a half-received block cannot be
+	// parsed, and its fragments must not reach the client.
+	if !glmInlineToolCallComplete(buffered) {
+		return nil, true
+	}
+
+	i.glmInlineBuffer.Reset()
+	return i.flushGLMInlineToolCallText(buffered), true
+}
+
+// flushGLMInlineToolCallText converts a buffered run into the events it should have
+// produced: the surviving prose as normal text deltas, then each recovered call as a
+// real function_call item.
+func (i *ResponseInbound) flushGLMInlineToolCallText(buffered string) [][]byte {
+	recoveredToolCalls, cleanedText := parseGLMInlineToolCalls(buffered)
+
+	var events [][]byte
+	if cleanedText != "" {
+		events = append(events, i.emitTextContent(cleanedText)...)
+	}
+
+	if len(recoveredToolCalls) == 0 {
+		return events
+	}
+
+	// Route the recovered calls through handleToolCalls so they take the exact same
+	// lifecycle as a native tool_call: item announcement, argument deltas and the
+	// finish-boundary close all stay in one place.
+	toolCalls := make([]model.ToolCall, 0, len(recoveredToolCalls))
+	for _, recovered := range recoveredToolCalls {
+		toolCalls = append(toolCalls, model.ToolCall{
+			Index: i.nextGLMInlineToolCallIndex(),
+			ID:    generateFunctionCallItemID(),
+			Type:  "function",
+			Function: model.FunctionCall{
+				Name:      recovered.Name,
+				Arguments: recovered.Arguments,
+			},
+		})
+	}
+
+	return append(events, i.handleToolCalls(toolCalls)...)
+}
+
+// nextGLMInlineToolCallIndex allocates a tool call index that cannot collide with an
+// index the upstream already used for a native tool_call in the same response.
+func (i *ResponseInbound) nextGLMInlineToolCallIndex() int {
+	nextIndex := len(i.toolCalls)
+	for {
+		if _, taken := i.toolCalls[nextIndex]; !taken {
+			return nextIndex
+		}
+		nextIndex++
+	}
+}
+
+// flushPendingGLMInlineToolCallText drains whatever is still buffered at the stream
+// boundary. An upstream that never closes its markup would otherwise silently swallow
+// the tail of the answer, which is worse than showing the raw markup.
+func (i *ResponseInbound) flushPendingGLMInlineToolCallText() [][]byte {
+	if i.glmInlineBuffer.Len() == 0 {
+		return nil
+	}
+	buffered := i.glmInlineBuffer.String()
+	i.glmInlineBuffer.Reset()
+
+	if !glmInlineToolCallComplete(buffered) {
+		return i.emitTextContent(buffered)
+	}
+	return i.flushGLMInlineToolCallText(buffered)
+}
+
+func (i *ResponseInbound) emitTextContent(content string) [][]byte {
 	var events [][]byte
 
 	// Text closes an open reasoning item (the thinking run ended) but leaves any open
@@ -628,7 +746,7 @@ func (i *ResponseInbound) handleTextContent(content *string) [][]byte {
 	}
 
 	// Accumulate text content
-	i.accumulatedText.WriteString(*content)
+	i.accumulatedText.WriteString(content)
 
 	// Emit output_text.delta
 	itemID := i.messageItemID
@@ -637,7 +755,7 @@ func (i *ResponseInbound) handleTextContent(content *string) [][]byte {
 		ItemID:       &itemID,
 		OutputIndex:  lo.ToPtr(i.messageOutputIdx),
 		ContentIndex: lo.ToPtr(0),
-		Delta:        *content,
+		Delta:        content,
 	}))
 
 	return events
@@ -1004,6 +1122,11 @@ func (i *ResponseInbound) closeContentPart() [][]byte {
 // it again after the finish path already ran is a no-op.
 func (i *ResponseInbound) closeAllOpenItems() [][]byte {
 	var events [][]byte
+
+	// Drain any withheld GLM inline markup first: its recovered tool calls must be
+	// announced before the tool items below are finalized, and any unterminated
+	// markup must still reach the client rather than being swallowed.
+	events = append(events, i.flushPendingGLMInlineToolCallText()...)
 
 	events = append(events, i.closeReasoningItem()...)
 	events = append(events, i.closeMessageItem()...)
