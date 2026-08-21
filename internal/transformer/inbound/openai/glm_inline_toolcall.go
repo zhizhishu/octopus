@@ -42,13 +42,9 @@ var (
 // buffered instead of being streamed out, so partial markers count as present.
 var glmInlineToolCallMarkers = []string{
 	"<tool_call>",
-	"</tool_call>",
-	"<arg_key>",
-	"</arg_key>",
-	"<arg_value>",
-	"</arg_value>",
+	"<tool_call",
 	"[TOOL_REQUEST]",
-	"[END_TOOL_REQUEST]",
+	"[TOOL_REQUEST",
 }
 
 // emptyJSONObject is the fallback for any arguments payload that cannot be
