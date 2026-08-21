@@ -1343,13 +1343,33 @@ func (i *ResponseInbound) announceToolItem(toolCallIndex int) [][]byte {
 // real tool arguments are never rewritten. Only function_call items use this; a
 // custom_tool_call carries its freeform (non-JSON) payload in Input, where it is valid.
 func normalizeToolArguments(args string) string {
-	if args == "" {
+	trimmed := strings.TrimSpace(args)
+	if trimmed == "" {
 		return "{}"
 	}
-	if !json.Valid([]byte(args)) {
-		return "{}"
+	if json.Valid([]byte(trimmed)) {
+		return trimmed
 	}
-	return args
+	// Recover conjoined JSON like {"cmd":"a"}{"cmd":"b"} produced by duplicated upstream streaming chunks
+	if recovered, ok := extractValidJSONFromConjoined(trimmed); ok {
+		return recovered
+	}
+	return "{}"
+}
+
+func extractValidJSONFromConjoined(s string) (string, bool) {
+	// If the string contains conjoined objects "}{", try splitting and taking the last valid object
+	if idx := strings.LastIndex(s, "}{"); idx >= 0 {
+		candidate := s[idx+1:]
+		if json.Valid([]byte(candidate)) {
+			return candidate, true
+		}
+		candidateFirst := s[:idx+1]
+		if json.Valid([]byte(candidateFirst)) {
+			return candidateFirst, true
+		}
+	}
+	return "", false
 }
 
 // normalizeClientToolCallType re-marks a chat upstream tool call whose original inbound
