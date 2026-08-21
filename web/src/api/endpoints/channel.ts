@@ -379,10 +379,16 @@ export function useCopyChannel() {
 
     return useMutation({
         mutationFn: async (source: Channel): Promise<{ server: ChannelServer; newName: string }> => {
-            // useChannelList 缓存的形状是 Array<{ raw: Channel, formatted: StatsMetricsFormatted }>,
-            // 不是裸 ChannelServer[], 所以这里要按 raw.name 取。
-            const cached = queryClient.getQueryData<Array<{ raw: Channel }>>(['channels', 'list']) ?? [];
-            const existingNames = new Set(cached.map((item) => item.raw.name));
+            const cached = queryClient.getQueryData<any>(['channels', 'list']);
+            const existingNames = new Set<string>();
+            if (Array.isArray(cached)) {
+                cached.forEach((item) => {
+                    const name = item?.raw?.name ?? item?.name;
+                    if (name) {
+                        existingNames.add(name);
+                    }
+                });
+            }
 
             // name 撞库: _copy -> _copy_2 -> _copy_3 ...
             let newName = `${source.name}_copy`;

@@ -12,6 +12,7 @@ import (
 
 	"github.com/bestruirui/octopus/internal/transformer/model"
 	"github.com/bestruirui/octopus/internal/utils/xurl"
+	"github.com/samber/lo"
 )
 
 type ChatOutbound struct{}
@@ -82,6 +83,16 @@ func transformChatRequest(ctx context.Context, request *model.InternalLLMRequest
 		if model.HasProviderReasoningTag(request.Messages[i].ReasoningSignature) {
 			request.Messages[i].ReasoningSignature = nil
 			request.Messages[i].ReasoningContent = nil
+		}
+
+		// Ensure assistant messages with tool calls have a safe empty string content
+		// rather than being omitted entirely if reasoning was stripped, satisfying
+		// third-party chat proxies (antigravity/gemini/qwen).
+		if strings.EqualFold(strings.TrimSpace(request.Messages[i].Role), "assistant") &&
+			len(request.Messages[i].ToolCalls) > 0 &&
+			request.Messages[i].Content.Content == nil &&
+			len(request.Messages[i].Content.MultipleContent) == 0 {
+			request.Messages[i].Content.Content = lo.ToPtr("")
 		}
 	}
 
