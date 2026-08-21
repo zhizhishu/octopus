@@ -1518,8 +1518,13 @@ func (i *ResponseInbound) GetInternalResponse(ctx context.Context) (*model.Inter
 	materializeStreamText(choicesMap, contentBuf, reasoningBuf, toolArgsBuf)
 
 	// Convert map to slice, sorted by index
+	keys := make([]int, 0, len(choicesMap))
+	for k := range choicesMap {
+		keys = append(keys, k)
+	}
+	sort.Ints(keys)
 	result.Choices = make([]model.Choice, 0, len(choicesMap))
-	for idx := 0; idx < len(choicesMap); idx++ {
+	for _, idx := range keys {
 		if choice, exists := choicesMap[idx]; exists {
 			result.Choices = append(result.Choices, *choice)
 		}
