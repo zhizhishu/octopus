@@ -290,57 +290,37 @@ func (i *ResponseInbound) TransformStream(ctx context.Context, stream *model.Int
 	if len(stream.Choices) > 0 {
 		choice := stream.Choices[0]
 
-		// Ignore any content that arrives AFTER the response was already terminated —
-		// either by finish_reason (hasFinished) or by a [DONE] that synthesized the
-		// terminal event without ever seeing a finish_reason (responseCompleted). Both
-		// paths already finalized every open item via closeAllOpenItems, so a late
-		// reasoning/text/tool fragment (some upstreams emit a stray fragment past the
-		// end) would emit a delta against an already-done item — a "delta without an
-		// active item" — or open a brand-new item after response.completed. The terminal
-		// response.completed / usage handling below still runs.
-		if !i.hasFinished && !i.responseCompleted {
+		if !i.responseCompleted {
 			// Handle reasoning content delta.
-			// Use GetReasoningContent so upstreams that emit the `reasoning` field
-			// (OpenRouter/Ollama ...) instead of `reasoning_content` are not dropped.
-			if choice.Delta != nil {
+			if choice.Delta != nil && !i.hasFinished {
 				if reasoning := choice.Delta.GetReasoningContent(); reasoning != "" {
 					events = append(events, i.handleReasoningContent(lo.ToPtr(reasoning))...)
 				}
-				// Capture claude's thinking signature (arrives in its own anthropic signature_delta
-				// chunk, after the reasoning text) so closeReasoningItem can emit it as
-				// reasoning.encrypted_content. Without this the signature is lost and the next codex
-				// turn sends an unsigned thinking block Anthropic 400s on. Gate on an OPEN reasoning
-				// item: a signature arriving after the run already closed has no item to belong to and
-				// would otherwise leak onto the NEXT reasoning item's encrypted_content, breaking the
-				// "each thinking block round-trips its OWN signature" guarantee.
 				if i.reasoningItemID != "" && choice.Delta.ReasoningSignature != nil && *choice.Delta.ReasoningSignature != "" {
 					i.reasoningSignature = *choice.Delta.ReasoningSignature
 				}
 			}
 
-			// Handle text content delta
+			// Handle text content delta: always process text delta before closing items, and allow trailing text fragments
 			if choice.Delta != nil && choice.Delta.Content.Content != nil && *choice.Delta.Content.Content != "" {
 				events = append(events, i.handleTextContent(choice.Delta.Content.Content)...)
 			}
 
 			// Handle image content delta produced by canonical Images API bridging.
-			if choice.Delta != nil && len(choice.Delta.Content.MultipleContent) > 0 {
+			if choice.Delta != nil && len(choice.Delta.Content.MultipleContent) > 0 && !i.hasFinished {
 				events = append(events, i.handleImageContent(choice.Delta.Content.MultipleContent)...)
 			}
 
-			// Handle tool calls
-			if choice.Delta != nil && len(choice.Delta.ToolCalls) > 0 {
+			// Handle tool calls: only before finish_reason has closed the tool run.
+			if choice.Delta != nil && len(choice.Delta.ToolCalls) > 0 && !i.hasFinished {
 				events = append(events, i.handleToolCalls(choice.Delta.ToolCalls)...)
 			}
 		}
 
-		// Handle finish reason
+		// Handle finish reason: close open items at finish boundary
 		if choice.FinishReason != nil && !i.hasFinished {
 			i.hasFinished = true
 			i.finishReason = strings.TrimSpace(*choice.FinishReason)
-
-			// Finalize every still-open item (reasoning / message / parallel tools)
-			// at the finish boundary — the unified "close at the end".
 			events = append(events, i.closeAllOpenItems()...)
 		}
 	}
