@@ -317,8 +317,8 @@ func applyThirdPartyChatParamCompat(request *model.InternalLLMRequest, baseUrl s
 	// on unknown top-level fields (live log id 1787047851119 carried service_tier).
 	request.ServiceTier = nil
 
-	// DeepSeek-Reasoner rejects sampling parameters (temperature, top_p, penalties).
-	if isDeepSeekReasonerModel(request.Model) {
+	// Reasoning models (o1, o3, o4, gpt-5, deepseek-reasoner/r1) reject sampling parameters.
+	if isOpenAIReasoningChatModel(request.Model) || isDeepSeekReasonerModel(request.Model) {
 		request.Temperature = nil
 		request.TopP = nil
 		request.PresencePenalty = nil
@@ -363,6 +363,22 @@ func mergeConsecutiveSameRoleChatMessages(messages []model.Message) []model.Mess
 			}
 			if len(m.ToolCalls) > 0 {
 				prev.ToolCalls = append(prev.ToolCalls, m.ToolCalls...)
+			}
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(prev.Role), "user") &&
+			strings.EqualFold(strings.TrimSpace(m.Role), "user") {
+			// Merge consecutive user messages
+			if m.Content.Content != nil && *m.Content.Content != "" {
+				if prev.Content.Content == nil || *prev.Content.Content == "" {
+					prev.Content.Content = m.Content.Content
+				} else {
+					combined := *prev.Content.Content + "\n" + *m.Content.Content
+					prev.Content.Content = &combined
+				}
+			}
+			if len(m.Content.MultipleContent) > 0 {
+				prev.Content.MultipleContent = append(prev.Content.MultipleContent, m.Content.MultipleContent...)
 			}
 			continue
 		}

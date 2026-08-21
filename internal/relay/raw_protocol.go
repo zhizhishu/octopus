@@ -680,7 +680,11 @@ func rawProtocolJSONValue(value any) json.RawMessage {
 
 func isOpenAIWireChannelType(channelType outbound.OutboundType) bool {
 	switch channelType {
-	case outbound.OutboundTypeOpenAIChat, outbound.OutboundTypeOpenAIResponse, outbound.OutboundTypeOpenAIEmbedding:
+	case outbound.OutboundTypeOpenAIChat,
+		outbound.OutboundTypeCustomOpenAIChat,
+		outbound.OutboundTypeOpenAIResponse,
+		outbound.OutboundTypeOpenAIEmbedding,
+		outbound.OutboundTypeVolcengine:
 		return true
 	default:
 		return false

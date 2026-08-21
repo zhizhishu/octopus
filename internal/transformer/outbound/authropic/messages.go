@@ -468,6 +468,13 @@ func convertToAnthropicRequest(req *model.InternalLLMRequest) *anthropicModel.Me
 		applyAutomaticCacheControl(result)
 	}
 
+	// When thinking is enabled, Anthropic rejects custom temperature / top_p with
+	// 400 "temperature cannot be specified when thinking is enabled".
+	if result.Thinking != nil && (result.Thinking.Type == "enabled" || result.Thinking.Type == "adaptive") {
+		result.Temperature = nil
+		result.TopP = nil
+	}
+
 	return result
 }
 
@@ -1118,6 +1125,8 @@ func convertAssistantWithToolCalls(msg model.Message) []anthropicModel.MessagePa
 	if len(blocks) == 0 {
 		return nil
 	}
+
+	blocks = reorderAssistantBlocks(blocks)
 
 	return []anthropicModel.MessageParam{{
 		Role:    "assistant",
