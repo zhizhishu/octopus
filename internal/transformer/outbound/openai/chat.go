@@ -295,7 +295,10 @@ func isOpenAIOfficialChatBase(baseUrl string) bool {
 // allowlist, so a newly-added provider is covered automatically.
 func isDeepSeekReasonerModel(model string) bool {
 	lower := strings.ToLower(strings.TrimSpace(model))
-	return strings.Contains(lower, "deepseek-reasoner") || strings.Contains(lower, "deepseek-r1")
+	return strings.Contains(lower, "deepseek-reasoner") ||
+		strings.Contains(lower, "deepseek-r1") ||
+		strings.Contains(lower, "deepseek-v4-reasoner") ||
+		(strings.Contains(lower, "deepseek-v4") && strings.Contains(lower, "thinking"))
 }
 
 func applyThirdPartyChatParamCompat(request *model.InternalLLMRequest, baseUrl string) {
