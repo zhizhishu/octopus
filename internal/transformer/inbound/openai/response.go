@@ -1690,15 +1690,22 @@ func (item ResponsesItem) MarshalJSON() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if item.Type != "reasoning" || len(item.Summary) != 0 {
+	if item.Type != "reasoning" && item.Type != "message" {
 		return data, nil
 	}
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(data, &m); err != nil {
 		return nil, err
 	}
-	if _, exists := m["summary"]; !exists {
-		m["summary"] = json.RawMessage("[]")
+	if item.Type == "reasoning" {
+		if _, exists := m["summary"]; !exists {
+			m["summary"] = json.RawMessage("[]")
+		}
+	}
+	if item.Type == "message" {
+		if _, exists := m["content"]; !exists {
+			m["content"] = json.RawMessage("[]")
+		}
 	}
 	return json.Marshal(m)
 }
