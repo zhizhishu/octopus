@@ -5,6 +5,7 @@ import (
 
 	transformermodel "github.com/bestruirui/octopus/internal/transformer/model"
 	"github.com/bestruirui/octopus/internal/transformer/outbound"
+	dbmodel "github.com/bestruirui/octopus/internal/model"
 )
 
 // resolvedFingerprint with no profile returns the global setting value for every getter,
@@ -117,5 +118,95 @@ func TestPrepareCodexModelTestSkipsReasoningForNonOpenAIResponseChannel(t *testi
 	// OpenAIResponse gate in prepareCodexModelTestShape.
 	if req.ReasoningEffort != "minimal" {
 		t.Fatalf("expected no effort remap on a non-codex channel, got %q", req.ReasoningEffort)
+	}
+}
+
+// modelTestUsesCodexFingerprint gates whether runOne calls prepareCodexModelTestRequest
+// (which sets reasoning.context=all_turns + normalizes effort). The gate MUST agree with
+// applyHeaderDefaults about whether the Lite header will be added — otherwise the
+// header goes out without its paired body field and the upstream 400s with the same
+// `requires reasoning.context to be all_turns` the relay path used to 400 on.
+//
+// The web UI's "channel test" button defaults to the openai_chat endpoint, NOT
+// openai_responses. applyHeaderDefaults adds the Lite header to a type=1 codex channel
+// regardless of endpoint, so modelTestUsesCodexFingerprint must return true for a
+// type=1 channel on every endpoint too. (Chat/CustomChat outbound types only get the
+// Lite header on openai_responses, so they keep the endpoint gate.)
+
+func TestModelTestUsesCodexFingerprintCodexChannelOnAnyEndpoint(t *testing.T) {
+	// ch1=GPT-CPA-生图 (type=1, cloak mode="" treated as auto) reproducibly 400ed on
+	// the web "channel test" button because the UI defaulted to openai_chat and the
+	// gate returned false, so reasoning.context was never set even though the Lite
+	// header was added. This test pins the fix: type=1 + cloak auto + openai_chat =>
+	// true (and the same for openai_responses / anthropic_messages / empty).
+	cases := []struct {
+		name     string
+		endpoint string
+	}{
+		{"openai_chat_default", "openai_chat"},
+		{"openai_responses", "openai_responses"},
+		{"anthropic_messages", "anthropic_messages"},
+		{"empty_endpoint", ""},
+	}
+	ch := &dbmodel.Channel{
+		Type:  outbound.OutboundTypeOpenAIResponse,
+		Cloak: dbmodel.ChannelCloak{Mode: "", ProfileID: 1}, // mirrors production ch1
+	}
+	for _, c := range cases {
+		if got := modelTestUsesCodexFingerprint(ch, c.endpoint); !got {
+			t.Fatalf("type=1 codex channel must use codex fingerprint on endpoint %q, got false", c.endpoint)
+		}
+	}
+}
+
+func TestModelTestUsesCodexFingerprintChatChannelOnlyOnResponsesEndpoint(t *testing.T) {
+	// A type=0/Custom OpenAIChat channel only gets the Lite header on the
+	// openai_responses endpoint (applyHeaderDefaults gates it that way), so the gate
+	// must agree: true on openai_responses, false on openai_chat / anthropic_messages.
+	ch := &dbmodel.Channel{
+		Type:  outbound.OutboundTypeOpenAIChat,
+		Cloak: dbmodel.ChannelCloak{Mode: "auto"},
+	}
+	if got := modelTestUsesCodexFingerprint(ch, "openai_responses"); !got {
+		t.Fatalf("type=0 chat channel on openai_responses endpoint must use codex fingerprint, got false")
+	}
+	if got := modelTestUsesCodexFingerprint(ch, "openai_chat"); got {
+		t.Fatalf("type=0 chat channel on openai_chat endpoint must NOT use codex fingerprint, got true")
+	}
+	if got := modelTestUsesCodexFingerprint(ch, "anthropic_messages"); got {
+		t.Fatalf("type=0 chat channel on anthropic_messages endpoint must NOT use codex fingerprint, got true")
+	}
+}
+
+func TestModelTestUsesCodexFingerprintSkipsWhenCloakNever(t *testing.T) {
+	// cloak=never means applyHeaderDefaults returns early without adding the Lite
+	// header, so the gate MUST also return false on every endpoint to avoid sending
+	// reasoning.context without the paired header (the inverse mismatch).
+	ch := &dbmodel.Channel{
+		Type:  outbound.OutboundTypeOpenAIResponse,
+		Cloak: dbmodel.ChannelCloak{Mode: "never"},
+	}
+	if got := modelTestUsesCodexFingerprint(ch, "openai_responses"); got {
+		t.Fatalf("cloak=never codex channel must NOT use codex fingerprint on openai_responses, got true")
+	}
+	if got := modelTestUsesCodexFingerprint(ch, "openai_chat"); got {
+		t.Fatalf("cloak=never codex channel must NOT use codex fingerprint on openai_chat, got true")
+	}
+}
+
+func TestModelTestUsesCodexFingerprintSkipsNonCodexChannelTypes(t *testing.T) {
+	// A Gemini or Anthropic channel never gets the codex Lite header, so the gate
+	// must return false on every endpoint regardless of cloak mode.
+	for _, chType := range []outbound.OutboundType{
+		outbound.OutboundTypeAnthropic,
+		outbound.OutboundTypeGemini,
+	} {
+		ch := &dbmodel.Channel{Type: chType, Cloak: dbmodel.ChannelCloak{Mode: "auto"}}
+		if got := modelTestUsesCodexFingerprint(ch, "openai_responses"); got {
+			t.Fatalf("channel type %d must NOT use codex fingerprint on openai_responses, got true", chType)
+		}
+		if got := modelTestUsesCodexFingerprint(ch, "openai_chat"); got {
+			t.Fatalf("channel type %d must NOT use codex fingerprint on openai_chat, got true", chType)
+		}
 	}
 }

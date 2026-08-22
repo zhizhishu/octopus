@@ -1131,12 +1131,24 @@ func modelTestUsesCodexFingerprint(channel *dbmodel.Channel, endpointName string
 	if channel == nil || !shouldApplyChannelCloak(channel.Cloak) {
 		return false
 	}
+	// A genuine codex outbound (OutboundTypeOpenAIResponse, type=1) ALWAYS gets the
+	// X-Openai-Internal-Codex-Responses-Lite header injected by applyHeaderDefaults
+	// regardless of the inbound test endpoint (the UI's "channel test" button defaults
+	// to openai_chat, not openai_responses). The paired reasoning.context=all_turns
+	// field must therefore be set on every endpoint too — otherwise the Lite header
+	// is sent without its body-field pair and the upstream 400s with the same
+	// `requires reasoning.context to be all_turns` the relay path used to 400 on.
+	// The chat/custom-chat outbound types below only get the Lite header on the
+	// openai_responses endpoint, so they keep the endpoint gate.
+	if channel.Type == outbound.OutboundTypeOpenAIResponse {
+		return true
+	}
 	endpoint, err := normalizeEndpoint(endpointName)
 	if err != nil || endpoint.name != "openai_responses" {
 		return false
 	}
 	switch channel.Type {
-	case outbound.OutboundTypeOpenAIResponse, outbound.OutboundTypeOpenAIChat, outbound.OutboundTypeCustomOpenAIChat:
+	case outbound.OutboundTypeOpenAIChat, outbound.OutboundTypeCustomOpenAIChat:
 		return true
 	default:
 		return false
