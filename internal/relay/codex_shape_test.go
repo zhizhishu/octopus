@@ -460,12 +460,11 @@ func TestNormalizeCodexReasoningEffort(t *testing.T) {
 		{"max on gpt-5.6foo (not 5.6 family) becomes xhigh", "max", "gpt-5.6foo", "xhigh"},
 		{"high on gpt-5.5 passes through", "high", "gpt-5.5", "high"},
 		{"empty effort untouched", "", "gpt-5.5", ""},
-		// GPT-5.6: faithful passthrough of any explicit level the client chose; only a
-		// completely unspecified (empty) effort defaults to "high" so an omitted field still reasons.
-		{"none on gpt-5.6 passes through", "none", "gpt-5.6-sol", "none"},
+		// GPT-5.6: effort in allow set is preserved; empty defaults to high; not in allow set (e.g. none/minimal/invalid) remaps to low.
+		{"none on gpt-5.6 remaps to low", "none", "gpt-5.6-sol", "low"},
 		{"low on gpt-5.6 passes through", "low", "gpt-5.6-sol", "low"},
 		{"empty on gpt-5.6 defaults to high", "", "gpt-5.6-sol", "high"},
-		{"minimal on gpt-5.6 passes through", "minimal", "gpt-5.6-terra", "minimal"},
+		{"minimal on gpt-5.6 remaps to low", "minimal", "gpt-5.6-terra", "low"},
 		{"medium on gpt-5.6 preserved", "medium", "gpt-5.6-sol", "medium"},
 		{"high on gpt-5.6 preserved", "high", "gpt-5.6-sol", "high"},
 		{"xhigh on gpt-5.6 preserved", "xhigh", "gpt-5.6-sol", "xhigh"},

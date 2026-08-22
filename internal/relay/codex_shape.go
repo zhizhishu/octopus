@@ -118,13 +118,9 @@ func applyCodexFastMode(req *transformerModel.InternalLLMRequest) {
 // never any TLS/header fingerprint); the GPT-5.6 check keys on req.Model, which at this
 // point is the effective upstream model (applyModelMapping has already run).
 //
-//  1. GPT-5.6 family (sol/terra/luna): faithful passthrough of whatever effort the client
-//     EXPLICITLY chose (none/minimal/low/medium/high/xhigh/max — including "max", which these
-//     models accept unlike 5.5). Only a COMPLETELY UNSPECIFIED (empty) effort defaults to
-//     "high", so a codex client that omits reasoning.effort for the (to it) unknown 5.6 model
-//     still reasons instead of barely thinking — while a client that deliberately picked a
-//     level owns it. (Previously none/minimal/low were also force-lifted to high; that
-//     overrode a deliberate low, so it was narrowed to the empty case only.)
+//  1. GPT-5.6 family (sol/terra/luna): effort in the allowed set (low/medium/high/xhigh/max)
+//     is preserved faithfully. An unspecified (empty) effort defaults to "high", while any effort
+//     outside the allowed set (e.g. none/minimal/unknown) is remapped to "low" to avoid upstream 400 errors.
 //  2. Non-5.6 codex models reject "max" (400), so only that single value is remapped to
 //     "xhigh". Every other effort passes through faithfully.
 //
@@ -194,6 +190,14 @@ func ensureCodexReasoningContext(req *transformerModel.InternalLLMRequest) {
 	req.ReasoningContext = codexReasoningContextAllTurns
 }
 
+var gpt56CodexEffortAllowSet = map[string]bool{
+	"low":    true,
+	"medium": true,
+	"high":   true,
+	"xhigh":  true,
+	"max":    true,
+}
+
 func normalizeCodexReasoningEffort(req *transformerModel.InternalLLMRequest) {
 	if req == nil {
 		return
@@ -202,6 +206,11 @@ func normalizeCodexReasoningEffort(req *transformerModel.InternalLLMRequest) {
 	if isGPT56Model(req.Model) {
 		if effort == "" {
 			req.ReasoningEffort = "high"
+			return
+		}
+		if !gpt56CodexEffortAllowSet[effort] {
+			req.ReasoningEffort = "low"
+			return
 		}
 		return
 	}
