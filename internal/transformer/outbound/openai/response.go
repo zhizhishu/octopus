@@ -921,6 +921,13 @@ type ResponsesTextFormat struct {
 type ResponsesReasoning struct {
 	Effort  string `json:"effort,omitempty"`
 	Summary string `json:"summary,omitempty"`
+	// Context carries reasoning.context. The upstream rejects any request that
+	// sends X-OpenAI-Internal-Codex-Responses-Lite: true without context="all_turns"
+	// (400: `requires reasoning.context to be all_turns`). oct synthesizes that header
+	// itself for every codex outbound, so the paired field is filled in by the codex
+	// shaper (ensureCodexReasoningContext) rather than here — leaving non-codex
+	// Responses channels byte-for-byte unchanged.
+	Context string `json:"context,omitempty"`
 }
 
 // ResponsesResponse represents the OpenAI Responses API response format.
@@ -1169,10 +1176,14 @@ func ConvertToResponsesRequest(req *model.InternalLLMRequest) *ResponsesRequest 
 	// Convert reasoning. Summary is carried through faithfully (a genuine codex CLI always
 	// sends reasoning.summary="auto"); without it the upstream withholds reasoning-summary
 	// stream events and a long reasoning turn streams nothing until the final message.
-	if req.ReasoningEffort != "" || req.ReasoningSummary != "" || req.ReasoningBudget != nil {
+	// Context must also materialize a reasoning object ON ITS OWN: the upstream ties
+	// reasoning.context="all_turns" to the codex Lite header rather than to reasoning being
+	// requested, so a codex turn with no effort/summary at all still has to carry it.
+	if req.ReasoningEffort != "" || req.ReasoningSummary != "" || req.ReasoningContext != "" || req.ReasoningBudget != nil {
 		result.Reasoning = &ResponsesReasoning{
 			Effort:  req.ReasoningEffort,
 			Summary: req.ReasoningSummary,
+			Context: req.ReasoningContext,
 		}
 	}
 

@@ -197,6 +197,15 @@ type InternalLLMRequest struct {
 	// outbound projects it back onto reasoning.summary; other outbounds ignore it.
 	ReasoningSummary string `json:"-"`
 
+	// ReasoningContext carries the client's reasoning.context preference. The upstream
+	// requires context="all_turns" on any request bearing the header
+	// X-OpenAI-Internal-Codex-Responses-Lite: true, which oct synthesizes for every codex
+	// outbound — so the codex shaper (ensureCodexReasoningContext) fills this in when the
+	// client left it empty, keeping header and body consistent. An explicit client value is
+	// never overwritten. Help field: only the Responses outbound projects it back onto
+	// reasoning.context; other outbounds ignore it.
+	ReasoningContext string `json:"-"`
+
 	// Reasoning budget for reasoning models.
 	// Help fields， will not be sent to the llm service.
 	ReasoningBudget *int64 `json:"-"`

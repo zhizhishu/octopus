@@ -48,6 +48,7 @@ func (ra *relayAttempt) prepareCodexRequestShape() {
 	applyCodexFastMode(req)
 	normalizeCodexReasoningEffort(req)
 	ensureCodexReasoningSummary(req)
+	ensureCodexReasoningContext(req)
 	if codexSelfContained {
 		// The raw codex input already carries its developer/system instructions and tools; stop
 		// the outbound transformer from also hoisting a Messages-derived top-level `instructions`
@@ -153,6 +154,44 @@ func ensureCodexReasoningSummary(req *transformerModel.InternalLLMRequest) {
 	if strings.TrimSpace(req.ReasoningSummary) == "" {
 		req.ReasoningSummary = "auto"
 	}
+}
+
+// codexReasoningContextAllTurns is the only reasoning.context value the upstream accepts
+// alongside the X-OpenAI-Internal-Codex-Responses-Lite header oct always sends on codex.
+const codexReasoningContextAllTurns = "all_turns"
+
+// ensureCodexReasoningContext guarantees reasoning.context="all_turns" on the codex path.
+//
+// The upstream added a hard pairing rule: a request carrying
+// X-OpenAI-Internal-Codex-Responses-Lite: true MUST also carry reasoning.context="all_turns",
+// else it is rejected outright:
+//
+//	400 X-OpenAI-Internal-Codex-Responses-Lite requires `reasoning.context` to be `all_turns`.
+//
+// applyCodexHeaderDefaultsWithFingerprint synthesizes that header for EVERY codex outbound
+// (oct adds it itself; it is not forwarded from the client), so oct owns the paired body
+// field too — filling it here keeps header and body consistent instead of shipping a
+// self-contradictory request. That makes this a shape-SAFE change that moves the outbound
+// CLOSER to the real codex CLI, exactly like ensureCodexReasoningSummary above.
+//
+// Deliberately NOT done in ConvertToResponsesRequest: that transformer also serves plain
+// (non-codex) Responses channels, which never get the Lite header and whose upstreams may
+// reject the unknown field. Living in the codex shaper keeps every other channel's bytes
+// untouched.
+//
+// Unlike the summary default this must NOT be gated on a non-empty effort: the rule is tied
+// to the header, not to reasoning being requested, so a request with no reasoning at all
+// still needs the field and materializes a context-only reasoning object.
+func ensureCodexReasoningContext(req *transformerModel.InternalLLMRequest) {
+	if req == nil {
+		return
+	}
+	// A client that explicitly chose a context owns it — never overwrite (a genuine codex
+	// CLI sends this itself, and echoing its value back is what keeps us faithful).
+	if strings.TrimSpace(req.ReasoningContext) != "" {
+		return
+	}
+	req.ReasoningContext = codexReasoningContextAllTurns
 }
 
 func normalizeCodexReasoningEffort(req *transformerModel.InternalLLMRequest) {

@@ -1979,8 +1979,12 @@ type ResponsesTextFormat struct {
 }
 
 type ResponsesReasoning struct {
-	Effort    string `json:"effort,omitempty"`
-	Summary   string `json:"summary,omitempty"`
+	Effort  string `json:"effort,omitempty"`
+	Summary string `json:"summary,omitempty"`
+	// Context is the client's reasoning.context. A genuine codex CLI sends "all_turns";
+	// capturing it lets the codex shaper leave an explicit client value untouched instead
+	// of overwriting it with its own default.
+	Context   string `json:"context,omitempty"`
 	MaxTokens *int64 `json:"max_tokens,omitempty"`
 }
 
@@ -2125,6 +2129,11 @@ func convertToInternalRequest(req *ResponsesRequest) (*model.InternalLLMRequest,
 		// silently and long turns stream nothing until the end (looks like a hang).
 		if req.Reasoning.Summary != "" {
 			chatReq.ReasoningSummary = req.Reasoning.Summary
+		}
+		// Preserve an explicitly chosen reasoning.context so the codex shaper forwards the
+		// client's own value instead of substituting its default.
+		if req.Reasoning.Context != "" {
+			chatReq.ReasoningContext = req.Reasoning.Context
 		}
 		if req.Reasoning.MaxTokens != nil {
 			chatReq.ReasoningBudget = req.Reasoning.MaxTokens
