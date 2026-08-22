@@ -107,6 +107,17 @@ type ResponseInbound struct {
 	// Usage tracking
 	usage *model.Usage
 
+	// sawContentAfterFinish records that a text / reasoning / tool delta arrived in a
+	// chunk at or after the one that first carried a finish_reason. Some upstreams
+	// (observed on the antigravity-backed gemini-3.7-flash channel) stamp EVERY
+	// streamed chunk with finish_reason="stop" AND a rolling usage block, rather than
+	// only the terminal one. Treating that first chunk as the end of the response
+	// completes the stream after a handful of characters and silently drops every
+	// later chunk, which downstream looks like "the model only answered a few words".
+	// Once this is set, the terminal response event is withheld until the transport
+	// really ends ([DONE] / TransformStreamEnd), so the remaining content still flows.
+	sawContentAfterFinish bool
+
 	// Stream chunks storage for aggregation
 	streamChunks []*model.InternalLLMResponse
 	// storedResponse stores the non-stream response
@@ -290,9 +301,19 @@ func (i *ResponseInbound) TransformStream(ctx context.Context, stream *model.Int
 	if len(stream.Choices) > 0 {
 		choice := stream.Choices[0]
 
+		// An upstream that stamps finish_reason on every chunk keeps sending real
+		// content after the first "finish". Such content rides along in the SAME
+		// chunk as the finish marker, so it is still part of the run and must be
+		// forwarded. A fragment that arrives in a LATER chunk with no finish marker
+		// of its own is a stray leftover past a genuine finish boundary and stays
+		// blocked, which is what keeps orphaned tool fragments out.
+		chunkCarriesContent := chunkCarriesGeneratedContent(choice)
+		contentIsStillInsideRun := !i.hasFinished ||
+			(chunkCarriesContent && choice.FinishReason != nil)
+
 		if !i.responseCompleted {
 			// Handle reasoning content delta.
-			if choice.Delta != nil && !i.hasFinished {
+			if choice.Delta != nil && contentIsStillInsideRun {
 				if reasoning := choice.Delta.GetReasoningContent(); reasoning != "" {
 					events = append(events, i.handleReasoningContent(lo.ToPtr(reasoning))...)
 				}
@@ -307,26 +328,44 @@ func (i *ResponseInbound) TransformStream(ctx context.Context, stream *model.Int
 			}
 
 			// Handle image content delta produced by canonical Images API bridging.
-			if choice.Delta != nil && len(choice.Delta.Content.MultipleContent) > 0 && !i.hasFinished {
+			if choice.Delta != nil && len(choice.Delta.Content.MultipleContent) > 0 && contentIsStillInsideRun {
 				events = append(events, i.handleImageContent(choice.Delta.Content.MultipleContent)...)
 			}
 
-			// Handle tool calls: only before finish_reason has closed the tool run.
-			if choice.Delta != nil && len(choice.Delta.ToolCalls) > 0 && !i.hasFinished {
+			// Handle tool calls: only while the run is still open. A stray fragment
+			// arriving after a genuine finish boundary would otherwise re-open a tool
+			// item that nothing ever finalizes.
+			if choice.Delta != nil && len(choice.Delta.ToolCalls) > 0 && contentIsStillInsideRun {
 				events = append(events, i.handleToolCalls(choice.Delta.ToolCalls)...)
 			}
 		}
 
-		// Handle finish reason: close open items at finish boundary
+		// Handle finish reason: close open items at the finish boundary.
+		//
+		// Closing is skipped when content rode along in this very chunk: upstreams
+		// that repeat finish_reason on every chunk would otherwise close the message
+		// item after its first fragment and complete the response there, truncating
+		// the answer to a handful of characters. Those streams finalize on [DONE]
+		// instead, via completeResponseEvents.
 		if choice.FinishReason != nil && !i.hasFinished {
 			i.hasFinished = true
 			i.finishReason = strings.TrimSpace(*choice.FinishReason)
-			events = append(events, i.closeAllOpenItems()...)
+			if chunkCarriesContent {
+				i.sawContentAfterFinish = true
+			} else {
+				events = append(events, i.closeAllOpenItems()...)
+			}
 		}
 	}
 
-	// Handle final usage chunk and complete response
-	if stream.Usage != nil && i.hasFinished && !i.responseCompleted {
+	// Handle final usage chunk and complete response.
+	//
+	// Withheld while sawContentAfterFinish is set: on upstreams that stamp every
+	// chunk with finish_reason plus a rolling usage block, completing here would mark
+	// the response done on the first fragment, and the `!i.responseCompleted` guard
+	// above would then discard every later chunk. Those streams are finalized from
+	// completeResponseEvents when the transport actually ends.
+	if stream.Usage != nil && i.hasFinished && !i.responseCompleted && !i.sawContentAfterFinish {
 		i.responseCompleted = true
 		i.usage = stream.Usage
 
@@ -408,6 +447,41 @@ func (i *ResponseInbound) normalizeLegacyFunctionCallForResponses(message *model
 		},
 	}}
 	message.FunctionCall = nil
+}
+
+// chunkCarriesGeneratedContent reports whether a streamed choice carries any model
+// output — text, reasoning, image parts, or tool call fragments.
+//
+// It exists to tell two upstream shapes apart that are otherwise identical at the
+// finish boundary:
+//
+//   - A well-behaved upstream sends its finish_reason on a terminal chunk whose delta
+//     is empty. That chunk genuinely ends the response and open items close there.
+//   - Some upstreams (the antigravity-backed gemini-3.7-flash channel is the one that
+//     surfaced this) stamp finish_reason="stop" and a rolling usage block on EVERY
+//     chunk, including the first one that also carries real text. Closing the response
+//     on that chunk truncates the answer to its first fragment.
+//
+// Content riding along with the finish marker means the run has not necessarily ended,
+// so finalization is deferred to the real end of transport.
+func chunkCarriesGeneratedContent(choice model.Choice) bool {
+	delta := choice.Delta
+	if delta == nil {
+		return false
+	}
+	if delta.Content.Content != nil && *delta.Content.Content != "" {
+		return true
+	}
+	if len(delta.Content.MultipleContent) > 0 {
+		return true
+	}
+	if len(delta.ToolCalls) > 0 {
+		return true
+	}
+	if delta.GetReasoningContent() != "" {
+		return true
+	}
+	return false
 }
 
 func (i *ResponseInbound) completeResponseEvents() [][]byte {
