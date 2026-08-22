@@ -804,3 +804,23 @@ func codexShapeStringValue(value any) string {
 		return ""
 	}
 }
+
+// EnsureCodexReasoningContext is the exported wrapper around ensureCodexReasoningContext
+// for callers outside the relay package (notably internal/modeltest). The modeltest path
+// also synthesizes X-OpenAI-Internal-Codex-Responses-Lite via applyCodexHeaderDefaults,
+// so it MUST run the same context normalization the relay forward path runs, or the
+// upstream rejects its probe with the same
+// `requires reasoning.context to be all_turns` 400 the relay path used to 400 on.
+// See prepareCodexModelTestShape in internal/modeltest/runner.go.
+func EnsureCodexReasoningContext(req *transformerModel.InternalLLMRequest) {
+	ensureCodexReasoningContext(req)
+}
+
+// NormalizeCodexReasoningEffort is the exported wrapper around
+// normalizeCodexReasoningEffort for callers outside the relay package (notably
+// internal/modeltest). Same reasoning as EnsureCodexReasoningContext: the modeltest
+// path also injects the Lite header, so the upstream applies the same effort rule
+// and would 400 with `level "minimal" not supported` without this remap.
+func NormalizeCodexReasoningEffort(req *transformerModel.InternalLLMRequest) {
+	normalizeCodexReasoningEffort(req)
+}

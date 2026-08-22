@@ -18,6 +18,7 @@ import (
 	"github.com/bestruirui/octopus/internal/helper"
 	dbmodel "github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/op"
+	"github.com/bestruirui/octopus/internal/relay"
 	"github.com/bestruirui/octopus/internal/relay/balancer"
 	transformermodel "github.com/bestruirui/octopus/internal/transformer/model"
 	"github.com/bestruirui/octopus/internal/transformer/outbound"
@@ -1289,6 +1290,17 @@ func prepareCodexModelTestShape(req *transformermodel.InternalLLMRequest) {
 	if len(req.ResponsesInputRaw) == 0 {
 		req.ResponsesInputRaw = synthesizeCodexModelTestInput(req.Messages)
 	}
+	// Run the SAME codex reasoning normalization the relay forward path runs. The modeltest
+	// path also injects X-Openai-Internal-Codex-Responses-Lite via applyCodexHeaderDefaults
+	// (runner.go applyHeaderDefaults case OutboundTypeOpenAIResponse), so the upstream
+	// applies the same body-field pairing rule and would otherwise 400 the probe with the
+	// same `requires reasoning.context to be all_turns` / `level "minimal" not supported`
+	// the relay path used to 400 on. Without this the web "channel test" button 400s even
+	// when the real relay path is fixed. Placed AFTER the FastMode default above so it
+	// never gets overwritten, and after input synthesis so a synthesized input cannot
+	// accidentally clear what these set.
+	relay.NormalizeCodexReasoningEffort(req)
+	relay.EnsureCodexReasoningContext(req)
 }
 
 func addCodexModelTestInclude(req *transformermodel.InternalLLMRequest) {
