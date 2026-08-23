@@ -210,3 +210,72 @@ func TestModelTestUsesCodexFingerprintSkipsNonCodexChannelTypes(t *testing.T) {
 		}
 	}
 }
+
+// The upstream added a third hard pairing rule to the same Lite header: a request carrying
+// X-OpenAI-Internal-Codex-Responses-Lite: true MUST also set parallel_tool_calls=false,
+// else it is rejected outright:
+//
+//	400 X-OpenAI-Internal-Codex-Responses-Lite requires `parallel_tool_calls` to be false.
+//
+// The modeltest path synthesizes the Lite header via applyCodexHeaderDefaults for every
+// type=1 codex channel on every endpoint (see modelTestUsesCodexFingerprint above), so the
+// paired body field MUST be set too. prepareCodexModelTestShape injects default tools +
+// tool_choice="auto" — without the shared shaper, omitempty would drop parallel_tool_calls
+// and the web "channel test" button 400s the same way the relay path used to 400 on a
+// missing reasoning.context. These tests lock the Ponytail seam: one shared helper
+// (relay.EnsureCodexParallelToolCalls), called by both paths, no duplicated wheel.
+
+func TestPrepareCodexModelTestDefaultsParallelToolCallsFalse(t *testing.T) {
+	req := &transformermodel.InternalLLMRequest{
+		Model: "gpt-5.6-sol",
+	}
+	prepareCodexModelTestRequest(req, outbound.OutboundTypeOpenAIResponse, zeroFP())
+	if req.ParallelToolCalls == nil || *req.ParallelToolCalls != false {
+		t.Fatalf("expected parallel_tool_calls to default to false on default modeltest probe, got %#v", req.ParallelToolCalls)
+	}
+}
+
+// A client that explicitly sent parallel_tool_calls=true under the Lite header MUST be
+// coerced to false by the shared shaper — the upstream demands a single hard value.
+func TestPrepareCodexModelTestOverridesExplicitTrueParallelToolCalls(t *testing.T) {
+	trueVal := true
+	req := &transformermodel.InternalLLMRequest{
+		Model:             "gpt-5.6-sol",
+		ParallelToolCalls: &trueVal,
+	}
+	prepareCodexModelTestRequest(req, outbound.OutboundTypeOpenAIResponse, zeroFP())
+	if req.ParallelToolCalls == nil || *req.ParallelToolCalls != false {
+		t.Fatalf("expected explicit true to be coerced to false, got %#v", req.ParallelToolCalls)
+	}
+}
+
+// A genuine codex CLI already sends parallel_tool_calls=false; echoing that back is what
+// keeps octopus faithful, so an explicit client false MUST survive untouched.
+func TestPrepareCodexModelTestPreservesExplicitFalseParallelToolCalls(t *testing.T) {
+	falseVal := false
+	req := &transformermodel.InternalLLMRequest{
+		Model:             "gpt-5.6-sol",
+		ParallelToolCalls: &falseVal,
+	}
+	prepareCodexModelTestRequest(req, outbound.OutboundTypeOpenAIResponse, zeroFP())
+	if req.ParallelToolCalls == nil || *req.ParallelToolCalls != false {
+		t.Fatalf("expected explicit false to survive, got %#v", req.ParallelToolCalls)
+	}
+}
+
+// Sanity-check the wiring through the channel type branch: a NON-OpenAIResponse channel
+// type returns early from prepareCodexModelTestRequest after the metadata setup, so
+// parallel_tool_calls normalization must NOT have run. (The header apply is also gated on
+// the channel type via applyHeaderDefaults, so this is consistent: no Lite header on a
+// non-codex channel => no parallel_tool_calls injection either.)
+func TestPrepareCodexModelTestSkipsParallelToolCallsForNonOpenAIResponseChannel(t *testing.T) {
+	trueVal := true
+	req := &transformermodel.InternalLLMRequest{
+		Model:             "gpt-5.6-sol",
+		ParallelToolCalls: &trueVal,
+	}
+	prepareCodexModelTestRequest(req, outbound.OutboundTypeOpenAIChat, zeroFP())
+	if req.ParallelToolCalls == nil || *req.ParallelToolCalls != true {
+		t.Fatalf("expected explicit true to survive on a non-codex channel, got %#v", req.ParallelToolCalls)
+	}
+}

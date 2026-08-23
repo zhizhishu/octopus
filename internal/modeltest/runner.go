@@ -1169,6 +1169,14 @@ func prepareCodexModelTestShape(req *transformermodel.InternalLLMRequest) {
 	// accidentally clear what these set.
 	relay.NormalizeCodexReasoningEffort(req)
 	relay.EnsureCodexReasoningContext(req)
+	// parallel_tool_calls MUST be forced to false too: the upstream added a third
+	// hard pairing rule to the same Lite header, rejecting any request that omits
+	// it or sends true with `requires parallel_tool_calls to be false`. The default
+	// tools injected above plus tool_choice="auto" mean omitempty would otherwise
+	// drop the field and the probe 400s the same way the relay path used to 400 on
+	// before the fix. Run the SAME shared shaper (Ponytail: one canonical seam, no
+	// duplicated wheel here) — never hand-roll a second copy.
+	relay.EnsureCodexParallelToolCalls(req)
 }
 
 func addCodexModelTestInclude(req *transformermodel.InternalLLMRequest) {

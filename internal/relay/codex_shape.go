@@ -49,6 +49,7 @@ func (ra *relayAttempt) prepareCodexRequestShape() {
 	normalizeCodexReasoningEffort(req)
 	ensureCodexReasoningSummary(req)
 	ensureCodexReasoningContext(req)
+	ensureCodexParallelToolCalls(req)
 	if codexSelfContained {
 		// The raw codex input already carries its developer/system instructions and tools; stop
 		// the outbound transformer from also hoisting a Messages-derived top-level `instructions`
@@ -76,8 +77,10 @@ func (ra *relayAttempt) prepareCodexRequestShape() {
 // / ResponsesToolsRaw overrides them — so a codex client (which sends neither top-level field, keeping
 // both inside `input`) would otherwise get a Messages-derived DUPLICATE hoisted onto the wire. That is a
 // byte-level divergence from the real codex CLI and ~+27KB of redundant system-prompt + tool tokens.
-// tool_choice / parallel_tool_calls are intentionally left untouched: the genuine codex CLI does send
-// those two top-level, so this only strips the duplicated instructions/tools.
+// tool_choice is intentionally left untouched (the genuine codex CLI does send it top-level);
+// parallel_tool_calls IS forced to false by ensureCodexParallelToolCalls (the upstream hard-pairs
+// it to the Lite header oct synthesizes). This function only strips the duplicated
+// instructions/tools — it never touches either of those two.
 func suppressCodexHoistedContext(req *transformerModel.InternalLLMRequest) {
 	if req == nil {
 		return
@@ -188,6 +191,50 @@ func ensureCodexReasoningContext(req *transformerModel.InternalLLMRequest) {
 		return
 	}
 	req.ReasoningContext = codexReasoningContextAllTurns
+}
+
+// ensureCodexParallelToolCalls forces parallel_tool_calls=false on the codex path.
+//
+// The upstream added a hard pairing rule: a request carrying
+// X-OpenAI-Internal-Codex-Responses-Lite: true MUST also set parallel_tool_calls=false,
+// else it is rejected outright:
+//
+//	400 X-OpenAI-Internal-Codex-Responses-Lite requires `parallel_tool_calls` to be false.
+//
+// applyCodexHeaderDefaultsWithFingerprint synthesizes that header for EVERY codex
+// outbound (oct adds it itself; it is not forwarded from the client), so oct owns the
+// paired body field too — filling it here keeps header and body consistent instead of
+// shipping a self-contradictory request. That makes this a shape-SAFE change that moves
+// the outbound CLOSER to the real codex CLI, exactly like ensureCodexReasoningContext.
+//
+// Unlike reasoning.context (which accepts only "all_turns" but still lets a genuine
+// codex CLI's explicit value pass through), the upstream here demands a single hard
+// value — false — so an explicit client `true` MUST be overridden to false, exactly
+// like normalizeCodexReasoningEffort overrides unsupported effort values. A genuine
+// codex CLI already sends parallel_tool_calls=false, so this only coerces the
+// incoherent true/empty case.
+//
+// This MUST run AFTER ensureCodexAgentContext so it has the final word on the field:
+// ensureCodexAgentContext only sets false when nil + tools present + no raw tools,
+// leaving an explicit client `true` OR a no-tools request still 400ing. Placed
+// alongside ensureCodexReasoningContext it keeps every Lite-header pairing rule in
+// one shaper (Ponytail: one canonical seam, no duplicated wheel in modeltest).
+//
+// Deliberately NOT done in ConvertToResponsesRequest: that transformer also serves
+// plain (non-codex) Responses channels, which never get the Lite header and whose
+// upstreams may handle the field differently. Living in the codex shaper keeps every
+// other channel's bytes untouched.
+func ensureCodexParallelToolCalls(req *transformerModel.InternalLLMRequest) {
+	if req == nil {
+		return
+	}
+	// An explicit false is what we want — keep it (no-op).
+	if req.ParallelToolCalls != nil && !*req.ParallelToolCalls {
+		return
+	}
+	// nil (omitempty would drop it -> 400) OR explicit true (upstream rejects it) -> force false.
+	falseVal := false
+	req.ParallelToolCalls = &falseVal
 }
 
 var gpt56CodexEffortAllowSet = map[string]bool{
@@ -823,4 +870,15 @@ func EnsureCodexReasoningContext(req *transformerModel.InternalLLMRequest) {
 // and would 400 with `level "minimal" not supported` without this remap.
 func NormalizeCodexReasoningEffort(req *transformerModel.InternalLLMRequest) {
 	normalizeCodexReasoningEffort(req)
+}
+
+// EnsureCodexParallelToolCalls is the exported wrapper around
+// ensureCodexParallelToolCalls for callers outside the relay package (notably
+// internal/modeltest). Same reasoning as EnsureCodexReasoningContext: the modeltest
+// path also injects the Lite header, so the upstream applies the same hard pairing
+// rule and would 400 the probe with the same
+// `requires parallel_tool_calls to be false` 400 the relay path used to 400 on.
+// See prepareCodexModelTestShape in internal/modeltest/runner.go.
+func EnsureCodexParallelToolCalls(req *transformerModel.InternalLLMRequest) {
+	ensureCodexParallelToolCalls(req)
 }
