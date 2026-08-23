@@ -96,7 +96,7 @@ func (ra *relayAttempt) defaultCodexInstallationID() string {
 	// uses the global per-instance install id (unchanged), a channel that selects a
 	// profile uses that profile's seed-derived id. Shared with the channel/model
 	// test path so a test is byte-for-byte identical to real traffic.
-	return ra.fingerprint().codexInstallationID()
+	return ra.fingerprint().CodexInstallationID()
 }
 
 func stableCodexUUID(kind, seed string) string {

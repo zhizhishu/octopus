@@ -30,7 +30,7 @@ type ChannelTestIdentity struct {
 func ResolveChannelTestIdentity(channel *dbmodel.Channel) ChannelTestIdentity {
 	fp := resolveFingerprint(channel)
 
-	generic := fp.genericUA()
+	generic := fp.GenericUA()
 	if generic == "" {
 		generic = dbmodel.DefaultGenericUA
 	}
@@ -38,22 +38,22 @@ func ResolveChannelTestIdentity(channel *dbmodel.Channel) ChannelTestIdentity {
 	id := ChannelTestIdentity{
 		Codex: EndpointIdentity{
 			Shape:     "codex",
-			UserAgent: fp.codexUserAgent(),
-			Detail:    "originator " + fp.codexOriginator(),
+			UserAgent: fp.CodexUserAgent(),
+			Detail:    "originator " + fp.CodexOriginator(),
 		},
 		Claude: EndpointIdentity{
 			Shape:     "claude",
-			UserAgent: fp.claudeUserAgent(),
-			Detail:    fp.claudeOS() + "·" + fp.claudeArch() + "·" + fp.claudePackageVersion(),
+			UserAgent: fp.ClaudeUserAgent(),
+			Detail:    fp.ClaudeOS() + "·" + fp.ClaudeArch() + "·" + fp.ClaudePackageVersion(),
 		},
 		Generic: EndpointIdentity{
 			Shape:     "generic",
 			UserAgent: generic,
 		},
 	}
-	if fp.hasProfile {
-		id.ProfileID = fp.profile.ID
-		id.ProfileName = fp.profile.Name
+	if fp.HasProfile() {
+		id.ProfileID = fp.ProfileID()
+		id.ProfileName = fp.ProfileName()
 	}
 	return id
 }

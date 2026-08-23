@@ -1,10 +1,7 @@
 package modeltest
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +17,7 @@ import (
 	"github.com/bestruirui/octopus/internal/op"
 	"github.com/bestruirui/octopus/internal/relay"
 	"github.com/bestruirui/octopus/internal/relay/balancer"
+	"github.com/bestruirui/octopus/internal/transformer/inbound"
 	transformermodel "github.com/bestruirui/octopus/internal/transformer/model"
 	"github.com/bestruirui/octopus/internal/transformer/outbound"
 	"github.com/bestruirui/octopus/internal/utils/log"
@@ -62,6 +60,7 @@ var defaultPromptCounter uint64
 type testEndpoint struct {
 	name      string
 	apiFormat transformermodel.APIFormat
+	inbound   inbound.InboundType
 	path      func(string) string
 }
 
@@ -448,24 +447,28 @@ func normalizeEndpoint(value string) (testEndpoint, error) {
 		return testEndpoint{
 			name:      "openai_chat",
 			apiFormat: transformermodel.APIFormatOpenAIChatCompletion,
+			inbound:   inbound.InboundTypeOpenAIChat,
 			path:      func(string) string { return "/v1/chat/completions" },
 		}, nil
 	case "openai_responses", "responses":
 		return testEndpoint{
 			name:      "openai_responses",
 			apiFormat: transformermodel.APIFormatOpenAIResponse,
+			inbound:   inbound.InboundTypeOpenAIResponse,
 			path:      func(string) string { return "/v1/responses" },
 		}, nil
 	case "anthropic_messages", "messages", "claude":
 		return testEndpoint{
 			name:      "anthropic_messages",
 			apiFormat: transformermodel.APIFormatAnthropicMessage,
+			inbound:   inbound.InboundTypeAnthropic,
 			path:      func(string) string { return "/v1/messages" },
 		}, nil
 	case "gemini_generate_content", "gemini":
 		return testEndpoint{
 			name:      "gemini_generate_content",
 			apiFormat: transformermodel.APIFormatGeminiContents,
+			inbound:   inbound.InboundTypeGemini,
 			path: func(modelName string) string {
 				return fmt.Sprintf("/v1beta/models/%s:generateContent", modelName)
 			},
@@ -693,9 +696,17 @@ func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermod
 		}
 	}
 	r.result.IsStream = internalRequest.Stream != nil && *internalRequest.Stream
-	applyHeaderDefaults(outboundRequest, channel, r.request.Endpoint, internalRequest)
-	applyCustomHeaders(outboundRequest, channel.CustomHeader)
-	if err := applyParamOverride(outboundRequest, channel.ParamOverride); err != nil {
+	endpoint, err := normalizeEndpoint(r.request.Endpoint)
+	if err != nil {
+		return 0, nil, err
+	}
+	relay.ApplyChannelWireHeaders(outboundRequest, relay.ChannelWireHeaderOptions{
+		Channel:         channel,
+		InboundType:     endpoint.inbound,
+		InternalRequest: internalRequest,
+		ClaudeSessionID: modelTestClaudeSessionID(internalRequest),
+	})
+	if err := relay.ApplyParamOverride(outboundRequest, channel.ParamOverride); err != nil {
 		return 0, nil, err
 	}
 
@@ -959,172 +970,17 @@ func (r *modelRunner) recordAttempt(channelID, keyID int, channelName, modelName
 	}
 }
 
-func applyCustomHeaders(req *http.Request, headers []dbmodel.CustomHeader) {
-	for _, header := range headers {
-		key := strings.TrimSpace(header.HeaderKey)
-		if key == "" {
-			continue
-		}
-		req.Header.Set(key, header.HeaderValue)
-	}
-}
-
-func applyHeaderDefaults(req *http.Request, channel *dbmodel.Channel, endpointName string, internalRequest *transformermodel.InternalLLMRequest) {
-	if req == nil || channel == nil {
-		return
-	}
-	if !shouldApplyChannelCloak(channel.Cloak) {
-		return
-	}
-	// Resolve the channel's selected fingerprint profile so the test header set uses
-	// the SAME device/UA as the relay forward path would for this channel.
-	fp := resolveFingerprint(channel)
-	switch channel.Type {
-	case outbound.OutboundTypeAnthropic:
-		applyClaudeHeaderDefaults(req, internalRequest, fp)
-	case outbound.OutboundTypeOpenAIResponse:
-		applyCodexHeaderDefaults(req, internalRequest, fp)
-	case outbound.OutboundTypeOpenAIChat, outbound.OutboundTypeCustomOpenAIChat:
-		endpoint, err := normalizeEndpoint(endpointName)
-		if err == nil && endpoint.name == "openai_responses" {
-			applyCodexHeaderDefaults(req, internalRequest, fp)
-		} else {
-			// Mirror relay's non claude/codex default: profile GenericUA wins, else
-			// fall back to model.DefaultGenericUA (never leak Go-http-client).
-			ua := fp.genericUA()
-			if ua == "" {
-				ua = dbmodel.DefaultGenericUA
-			}
-			setHeaderIfMissing(req.Header, "User-Agent", ua)
-		}
-	default:
-		ua := fp.genericUA()
-		if ua == "" {
-			ua = dbmodel.DefaultGenericUA
-		}
-		setHeaderIfMissing(req.Header, "User-Agent", ua)
-	}
-}
-
 func shouldApplyChannelCloak(cloak dbmodel.ChannelCloak) bool {
-	switch strings.ToLower(strings.TrimSpace(cloak.Mode)) {
-	case "", "auto", "always":
-		return true
-	case "never", "off", "false", "disabled":
-		return false
-	default:
-		return true
-	}
-}
-
-func applyClaudeHeaderDefaults(req *http.Request, internalRequest *transformermodel.InternalLLMRequest, fp resolvedFingerprint) {
-	ensureClaudeBetaQuery(req)
-	setHeaderIfMissing(req.Header, "Anthropic-Dangerous-Direct-Browser-Access", "true")
-	setHeaderIfMissing(req.Header, "Anthropic-Version", "2023-06-01")
-	setHeaderIfMissing(req.Header, "User-Agent", fp.claudeUserAgent())
-	setHeaderIfMissing(req.Header, "X-App", "cli")
-	// NOTE: deliberately NOT setting X-Client-Request-Id — a genuine claude-cli does
-	// not send it and the relay forward path strips it (clientTraceHeaders). Sending
-	// it here was a test-vs-relay inconsistency and a non-CLI tell.
-	setHeaderIfMissing(req.Header, "X-Claude-Code-Session-Id", modelTestClaudeSessionID(internalRequest))
-	setHeaderIfMissing(req.Header, "X-Stainless-Lang", "js")
-	setHeaderIfMissing(req.Header, "X-Stainless-Retry-Count", "0")
-	setHeaderIfMissing(req.Header, "X-Stainless-Runtime", "node")
-	setHeaderIfMissing(req.Header, "X-Stainless-Runtime-Version", fp.claudeRuntimeVersion())
-	setHeaderIfMissing(req.Header, "X-Stainless-Package-Version", fp.claudePackageVersion())
-	setHeaderIfMissing(req.Header, "X-Stainless-Timeout", fp.claudeTimeout())
-	// Always emit X-Stainless-OS / X-Stainless-Arch so a channel/model test is
-	// byte-for-byte identical to the relay forward path, which now sends this pair
-	// unconditionally too. claudeStabilize() no longer gates this pair (kept only for
-	// backward compatibility). See relay.applyClaudeHeaderDefaults for the rationale.
-	setHeaderIfMissing(req.Header, "X-Stainless-OS", fp.claudeOS())
-	setHeaderIfMissing(req.Header, "X-Stainless-Arch", fp.claudeArch())
-	// Build anthropic-beta via the SAME shared helper the relay forward path uses, so a
-	// channel/model test is byte-for-byte identical to real traffic. The synthetic test
-	// request never carries a real downstream client's anthropic-beta (there is no
-	// copyHeaders step here), so BuildClaudeCodeBetaHeader always takes its canonical
-	// synthesis branch — folding any lone context-1m into its real slot, never leaving it
-	// stuck at position 1. The relay forward path, in contrast, has the client's real
-	// per-model beta on req.Header and the same helper preserves it verbatim.
-	var transformBetas []string
-	betaModel := ""
-	if internalRequest != nil {
-		transformBetas = internalRequest.TransformOptions.AnthropicBetas
-		betaModel = internalRequest.Model
-	}
-	betas := transformermodel.BuildClaudeCodeBetaHeader(
-		betaModel,
-		shouldEnableClaudeOneMillionBeta(internalRequest),
-		strings.Split(req.Header.Get("Anthropic-Beta"), ","),
-		transformBetas,
-	)
-	// Mirror the relay forward path's opt-in beta-strip escape hatch so a channel/model
-	// test stays byte-for-byte identical to real traffic. Reads the SAME setting via the
-	// modeltest settingString helper; default empty = no-op, so behaviour is unchanged.
-	betas = transformermodel.StripClaudeBetaFlags(betas, settingString(dbmodel.SettingKeyClaudeBetaStripFlags, ""))
-	req.Header.Del("Anthropic-Beta")
-	for _, beta := range betas {
-		addAnthropicBetaHeader(req.Header, beta)
-	}
-}
-
-func ensureClaudeBetaQuery(req *http.Request) {
-	if req == nil || req.URL == nil {
-		return
-	}
-	q := req.URL.Query()
-	if strings.TrimSpace(q.Get("beta")) == "" {
-		q.Set("beta", "true")
-		req.URL.RawQuery = q.Encode()
-	}
+	return relay.ShouldApplyChannelCloak(cloak)
 }
 
 func modelTestClaudeSessionID(internalRequest *transformermodel.InternalLLMRequest) string {
 	if internalRequest != nil && internalRequest.PromptCacheKey != nil {
 		if value := strings.TrimSpace(*internalRequest.PromptCacheKey); value != "" {
-			sum := sha256.Sum256([]byte("model-test-claude-session:" + value))
-			return hex.EncodeToString(sum[:16])
+			return value
 		}
 	}
 	return uuid.NewString()
-}
-
-func shouldEnableClaudeOneMillionBeta(internalRequest *transformermodel.InternalLLMRequest) bool {
-	return transformermodel.AnthropicRequestWantsOneMillionBeta(internalRequest)
-}
-
-func addAnthropicBetaHeader(headers http.Header, beta string) {
-	beta = strings.TrimSpace(beta)
-	if beta == "" {
-		return
-	}
-	existing := strings.Split(headers.Get("Anthropic-Beta"), ",")
-	seen := map[string]bool{}
-	values := make([]string, 0, len(existing)+1)
-	for _, item := range existing {
-		item = strings.TrimSpace(item)
-		if item == "" || seen[strings.ToLower(item)] {
-			continue
-		}
-		seen[strings.ToLower(item)] = true
-		values = append(values, item)
-	}
-	if !seen[strings.ToLower(beta)] {
-		values = append(values, beta)
-	}
-	headers.Set("Anthropic-Beta", strings.Join(values, ","))
-}
-
-func applyCodexHeaderDefaults(req *http.Request, internalRequest *transformermodel.InternalLLMRequest, fp resolvedFingerprint) {
-	setHeaderIfMissing(req.Header, "Connection", "Keep-Alive")
-	setHeaderIfMissing(req.Header, "Content-Type", "application/json")
-	setHeaderIfMissing(req.Header, "Originator", fp.codexOriginator())
-	setHeaderIfMissing(req.Header, "User-Agent", fp.codexUserAgent())
-	setHeaderIfMissing(req.Header, "X-Codex-Beta-Features", fp.codexBetaFeatures())
-	// Mirror the relay codex fingerprint byte-for-byte (applyCodexHeaderDefaultsWithFingerprint):
-	// codex 0.144.x always sends this static header on /responses (packet-verified 2026-07-10).
-	setHeaderIfMissing(req.Header, "X-Openai-Internal-Codex-Responses-Lite", "true")
-	applyCodexSessionHeaderDefaults(req.Header, internalRequest, fp.codexInstallationID())
 }
 
 func modelTestUsesCodexFingerprint(channel *dbmodel.Channel, endpointName string) bool {
@@ -1169,9 +1025,9 @@ func prepareCodexModelTestRequest(req *transformermodel.InternalLLMRequest, chan
 	}
 	if len(req.ClientMetadata) == 0 {
 		metadata := map[string]any{
-			"x-codex-installation-id": fp.codexInstallationID(),
+			"x-codex-installation-id": fp.CodexInstallationID(),
 			"x-codex-window-id":       sessionID + ":0",
-			"x-codex-turn-metadata":   codexModelTestTurnMetadata(sessionID, fp.codexInstallationID()),
+			"x-codex-turn-metadata":   codexModelTestTurnMetadata(sessionID, fp.CodexInstallationID()),
 		}
 		req.ClientMetadata, _ = json.Marshal(metadata)
 	}
@@ -1218,7 +1074,7 @@ func prepareClaudeOneMillionModelTestShape(req *transformermodel.InternalLLMRequ
 		// Same shared builder AND the same device id the relay forward path would use for
 		// THIS channel's profile (fp.claudeDeviceID) so a channel test's metadata.user_id
 		// is byte-for-byte identical to real traffic — one device, not a per-test one.
-		req.Metadata["user_id"] = transformermodel.BuildClaudeMetadataUserID(fp.claudeDeviceID(), sessionID)
+		req.Metadata["user_id"] = transformermodel.BuildClaudeMetadataUserID(fp.ClaudeDeviceID(), sessionID)
 	}
 }
 
@@ -1267,7 +1123,7 @@ func forceClaudeModelTestBodyShape(req *transformermodel.InternalLLMRequest, req
 		// Same shared builder + the device id the relay forward path would use for THIS
 		// channel's profile (fp.claudeDeviceID / model.BuildClaudeMetadataUserID) so the
 		// test's metadata.user_id is byte-for-byte what real claude traffic sends.
-		req.Metadata["user_id"] = transformermodel.BuildClaudeMetadataUserID(fp.claudeDeviceID(), sessionID)
+		req.Metadata["user_id"] = transformermodel.BuildClaudeMetadataUserID(fp.ClaudeDeviceID(), sessionID)
 	}
 }
 
@@ -1393,23 +1249,6 @@ func synthesizeCodexModelTestInput(messages []transformermodel.Message) json.Raw
 	return raw
 }
 
-func applyCodexSessionHeaderDefaults(headers http.Header, req *transformermodel.InternalLLMRequest, installationID string) {
-	if headers == nil || req == nil || req.PromptCacheKey == nil {
-		return
-	}
-	sessionID := strings.TrimSpace(*req.PromptCacheKey)
-	if sessionID == "" {
-		return
-	}
-	// Mirror the relay codex fingerprint byte-for-byte: only Session-Id (hyphen) is
-	// genuine; Session_id (underscore) and X-Session-Id are dropped as octopus-only tells.
-	setHeaderIfMissing(headers, "Session-Id", sessionID)
-	setHeaderIfMissing(headers, "Thread-Id", sessionID)
-	setHeaderIfMissing(headers, "X-Client-Request-Id", sessionID)
-	setHeaderIfMissing(headers, "X-Codex-Window-Id", sessionID+":0")
-	setHeaderIfMissing(headers, "X-Codex-Turn-Metadata", codexModelTestTurnMetadata(sessionID, installationID))
-}
-
 func codexModelTestTurnMetadata(sessionID, installationID string) string {
 	// Same shared helper the relay forward path uses, so a channel test's codex
 	// turn-metadata is byte-shape-identical to real traffic (real serde key order, no
@@ -1417,14 +1256,6 @@ func codexModelTestTurnMetadata(sessionID, installationID string) string {
 	return transformermodel.BuildCodexTurnMetadata(
 		installationID, sessionID, uuid.NewString(), transformermodel.CodexDefaultSandbox, time.Now().UnixMilli(),
 	)
-}
-
-func setHeaderIfMissing(headers http.Header, key, value string) {
-	value = strings.TrimSpace(value)
-	if value == "" || headers.Get(key) != "" {
-		return
-	}
-	headers.Set(key, value)
 }
 
 func claudeCLIReasoningEffort() string {
@@ -1469,45 +1300,6 @@ func settingBool(key dbmodel.SettingKey, fallback bool) bool {
 		return fallback
 	}
 	return value
-}
-
-func applyParamOverride(req *http.Request, override *string) error {
-	if override == nil || strings.TrimSpace(*override) == "" || req.Body == nil {
-		return nil
-	}
-
-	body, err := io.ReadAll(req.Body)
-	if err != nil {
-		return fmt.Errorf("read request body for param_override: %w", err)
-	}
-	restore := func(data []byte) {
-		req.Body = io.NopCloser(bytes.NewReader(data))
-		req.GetBody = func() (io.ReadCloser, error) {
-			return io.NopCloser(bytes.NewReader(data)), nil
-		}
-		req.ContentLength = int64(len(data))
-	}
-
-	var bodyMap map[string]any
-	if err := json.Unmarshal(body, &bodyMap); err != nil {
-		restore(body)
-		return nil
-	}
-	var overrideMap map[string]any
-	if err := json.Unmarshal([]byte(*override), &overrideMap); err != nil {
-		restore(body)
-		return nil
-	}
-	for key, value := range overrideMap {
-		bodyMap[key] = value
-	}
-	updated, err := json.Marshal(bodyMap)
-	if err != nil {
-		restore(body)
-		return nil
-	}
-	restore(updated)
-	return nil
 }
 
 func upstreamErrorSummary(body []byte) (string, string) {

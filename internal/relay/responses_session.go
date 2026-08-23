@@ -992,21 +992,24 @@ func (ra *relayAttempt) bridgeResponsesHistoryForChat() error {
 	return nil
 }
 
-// restoreCodexToolsForAnthropic re-attaches the codex tool set when a codex CLI
-// continuation reaches an Anthropic channel with no tools. The codex CLI omits the
-// `tools` array on continuation turns (it relies on previous_response_id, which a
-// real codex upstream would remember); Anthropic is stateless, so without this the
-// mapped Claude model loses its tools mid-conversation and stops calling them — it
-// narrates ("let me look at ...") instead of acting and the agent stalls. This
+// restoreCodexToolsForStatelessOutbound re-attaches the codex tool set when a
+// codex CLI continuation reaches a stateless Anthropic or chat-compatible channel
+// with no tools. The codex CLI omits the `tools` array on continuation turns (it
+// relies on previous_response_id, which a real codex upstream would remember);
+// without this, the mapped model loses its tools mid-conversation and stops calling
+// them — it narrates ("let me look at ...") instead of acting and the agent stalls.
+// This
 // mirrors ensureCodexAgentContext's tool restoration on the codex→codex path
 // (prepareCodexRequestShape, which never runs for a non-Responses upstream), but is
 // scoped to codex clients only so a non-codex responses client (e.g. Cursor)
 // targeting Anthropic is left untouched — its tools differ from the codex set.
-func (ra *relayAttempt) restoreCodexToolsForAnthropic() {
+func (ra *relayAttempt) restoreCodexToolsForStatelessOutbound() {
 	if ra == nil || ra.internalRequest == nil || ra.channel == nil {
 		return
 	}
-	if ra.inboundType != inbound.InboundTypeOpenAIResponse || ra.channel.Type != outbound.OutboundTypeAnthropic {
+	isStatelessOutbound := ra.channel.Type == outbound.OutboundTypeAnthropic ||
+		openAIChatOutboundChannel(ra.channel.Type)
+	if ra.inboundType != inbound.InboundTypeOpenAIResponse || !isStatelessOutbound {
 		return
 	}
 	if !ra.inboundLooksLikeCodexClient() {

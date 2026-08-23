@@ -43,7 +43,7 @@ func (ra *relayAttempt) ensureClaudeMetadataUserID() {
 	// channels behind different egress IPs look like two distinct installs rather
 	// than one. The session id still varies per conversation, exactly as a single
 	// real install reports many sessions.
-	device := ra.fingerprint().claudeDeviceID()
+	device := ra.fingerprint().ClaudeDeviceID()
 	session := ra.claudeFingerprintSessionID()
 	// Shared builder (compact, golden key order) so relay == channel test byte-for-byte.
 	ra.internalRequest.Metadata["user_id"] = model.BuildClaudeMetadataUserID(device, session)

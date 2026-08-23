@@ -256,19 +256,6 @@ export type ChannelCSVImportResult = {
     rows: ChannelCSVImportRowResult[];
 };
 
-export function defaultModelTestEndpointForChannel(type: ChannelType) {
-    switch (type) {
-        case ChannelType.OpenAIResponse:
-            return 'openai_responses';
-        case ChannelType.Anthropic:
-            return 'anthropic_messages';
-        case ChannelType.Gemini:
-            return 'gemini_generate_content';
-        default:
-            return 'openai_chat';
-    }
-}
-
 /**
  * 获取渠道列表 Hook
  * 

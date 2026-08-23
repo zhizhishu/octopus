@@ -1,10 +1,10 @@
 'use client';
 
 // 渠道内测试对话框（学 new-api）：多选端点 + 流/非流开关 + 模型多选批量测试，
-// 复用 /api/v1/model/test 与统一的 shouldForceTestStream + 180s。替代原独立「模型测试」页。
+// 复用 /api/v1/model/test 与统一的 shouldForceChannelTestStream + 180s。替代原独立「模型测试」页。
 import { useMemo, useState } from 'react';
 import { CheckCircle2, Fingerprint, Loader2, Lock, Play, RotateCw, XCircle } from 'lucide-react';
-import { ChannelType, defaultModelTestEndpointForChannel, type Channel } from '@/api/endpoints/channel';
+import type { Channel } from '@/api/endpoints/channel';
 import { useChannelTestIdentity, useModelTest, type EndpointIdentity } from '@/api/endpoints/model';
 import type { ApiError } from '@/api/types';
 import { toast } from '@/components/common/Toast';
@@ -21,19 +21,17 @@ import {
     TableRow,
 } from '@/components/ui/table';
 import { cn } from '@/lib/utils';
-import { DEFAULT_MODEL_TEST_TIMEOUT_SECONDS, cleanOneMillionModelName, makeModelTestPrompt } from '@/lib/model-aliases';
+import { cleanOneMillionModelName } from '@/lib/model-aliases';
+import {
+    DEFAULT_MODEL_TEST_TIMEOUT_SECONDS,
+    MODEL_TEST_ENDPOINTS,
+    MODEL_TEST_ENDPOINT_LABELS,
+    defaultModelTestEndpointForChannel,
+    makeModelTestPrompt,
+    shouldForceChannelTestStream,
+    type ModelTestEndpoint,
+} from '@/lib/channel-test';
 import { getSelectedChannelModels } from './channel-utils';
-
-const TEST_ENDPOINTS = [
-    { value: 'openai_chat', label: 'Chat' },
-    { value: 'openai_responses', label: 'Responses' },
-    { value: 'anthropic_messages', label: 'Claude' },
-    { value: 'gemini_generate_content', label: 'Gemini' },
-] as const;
-type TestEndpoint = (typeof TEST_ENDPOINTS)[number]['value'];
-const ENDPOINT_LABEL: Record<TestEndpoint, string> = {
-    openai_chat: 'Chat', openai_responses: 'Responses', anthropic_messages: 'Claude', gemini_generate_content: 'Gemini',
-};
 
 type CellStatus = 'testing' | 'success' | 'error';
 type CellResult = { status: CellStatus; ms?: number; error?: string };
@@ -43,7 +41,7 @@ type CellSummary = { total: number; done: number; ok: number; capacity: number; 
 const MAX_REPEAT = 500;
 
 // 端点自动模拟的 shape（与后端 runner 的端点→shape 映射一致；测试永远用渠道真实 profile）
-const ENDPOINT_IDENTITY: Record<TestEndpoint, 'codex' | 'claude' | 'generic'> = {
+const ENDPOINT_IDENTITY: Record<ModelTestEndpoint, 'codex' | 'claude' | 'generic'> = {
     openai_chat: 'generic',
     openai_responses: 'codex',
     anthropic_messages: 'claude',
@@ -92,12 +90,6 @@ function apiErrorMessage(error: unknown): string | undefined {
     return (error as ApiError | undefined)?.message;
 }
 
-// Mirror backend shouldApplyChannelCloak: cloak applies unless explicitly turned off.
-function channelCloakApplies(mode?: string): boolean {
-    const m = (mode ?? 'auto').toLowerCase().trim();
-    return !(m === 'never' || m === 'off' || m === 'false' || m === 'disabled');
-}
-
 export function ChannelTestDialog({
     channel,
     open,
@@ -109,16 +101,9 @@ export function ChannelTestDialog({
 }) {
     const modelTest = useModelTest();
     const allModels = useMemo(() => getSelectedChannelModels(channel), [channel]);
-    const defaultEndpoint = defaultModelTestEndpointForChannel(channel.type) as TestEndpoint;
-    // Shape lock: codex(Responses) always streams; cloaked claude(Anthropic) always
-    // streams — mirrors the relay's forced streaming upstream (shouldForce*StreamUpstream).
-    // Real codex/claude never send a non-stream request, so the toggle is locked ON for
-    // these channels (a non-stream probe would be off-shape and strict relays reject it).
-    const streamShapeLocked =
-        channel.type === ChannelType.OpenAIResponse ||
-        (channel.type === ChannelType.Anthropic && channelCloakApplies(channel.cloak?.mode));
+    const defaultEndpoint = defaultModelTestEndpointForChannel(channel.type);
 
-    const [endpoints, setEndpoints] = useState<Set<TestEndpoint>>(() => new Set<TestEndpoint>([defaultEndpoint]));
+    const [endpoints, setEndpoints] = useState<Set<ModelTestEndpoint>>(() => new Set<ModelTestEndpoint>([defaultEndpoint]));
     const [models, setModels] = useState<Set<string>>(() => new Set(allModels.slice(0, 1)));
     const [streamTest, setStreamTest] = useState(true);
     const [filter, setFilter] = useState('');
@@ -131,15 +116,44 @@ export function ChannelTestDialog({
     const [testing, setTesting] = useState(false);
     const identityQuery = useChannelTestIdentity(channel.id, open);
 
+    // Shape / Stream lock: 对当前选中的 models + endpoints + 渠道配置调用 SSOT
+    const streamShapeLocked = useMemo(() => {
+        const selectedModelList = Array.from(models);
+        // 如果已选端点中有任何一个端点触发强制流式，或渠道级别触发强制流式，则强制流式
+        if (
+            shouldForceChannelTestStream({
+                channelType: channel.type,
+                cloakMode: channel.cloak?.mode,
+                anthropicContext1M: channel.anthropic_context_1m,
+            })
+        ) {
+            return true;
+        }
+        for (const ep of endpoints) {
+            if (
+                shouldForceChannelTestStream({
+                    models: selectedModelList,
+                    endpoint: ep,
+                    anthropicContext1M: channel.anthropic_context_1m,
+                    channelType: channel.type,
+                    cloakMode: channel.cloak?.mode,
+                })
+            ) {
+                return true;
+            }
+        }
+        return false;
+    }, [channel.type, channel.cloak?.mode, channel.anthropic_context_1m, models, endpoints]);
+
     const filteredModels = useMemo(() => {
         const q = filter.trim().toLowerCase();
         return q ? allModels.filter((m) => m.toLowerCase().includes(q)) : allModels;
     }, [allModels, filter]);
 
     const allFilteredSelected = filteredModels.length > 0 && filteredModels.every((m) => models.has(m));
-    const cellKey = (endpoint: TestEndpoint, model: string) => `${endpoint}|${model}`;
+    const cellKey = (endpoint: ModelTestEndpoint, model: string) => `${endpoint}|${model}`;
 
-    const toggleEndpoint = (endpoint: TestEndpoint) =>
+    const toggleEndpoint = (endpoint: ModelTestEndpoint) =>
         setEndpoints((prev) => {
             const next = new Set(prev);
             if (next.has(endpoint)) next.delete(endpoint); else next.add(endpoint);
@@ -191,7 +205,7 @@ export function ChannelTestDialog({
 
         // 每个「端点 × 模型」各发一个独立单模型请求（重复模式下发 times 次），谁先测完谁先填
         // 那一格；慢模型不卡快模型。后端逐模型 fan-out，故上游请求数 = E×M×times。
-        const bump = (endpoint: TestEndpoint, model: string, ok: boolean, ms: number, err?: string) =>
+        const bump = (endpoint: ModelTestEndpoint, model: string, ok: boolean, ms: number, err?: string) =>
             setSummaries((prev) => {
                 const cur = prev[cellKey(endpoint, model)];
                 if (!cur) return prev;
@@ -268,8 +282,8 @@ export function ChannelTestDialog({
     };
 
     const resultRows = useMemo(() => {
-        const rows: Array<{ endpoint: TestEndpoint; model: string; result: CellResult }> = [];
-        for (const e of TEST_ENDPOINTS) {
+        const rows: Array<{ endpoint: ModelTestEndpoint; model: string; result: CellResult }> = [];
+        for (const e of MODEL_TEST_ENDPOINTS) {
             if (!endpoints.has(e.value)) continue;
             for (const m of models) {
                 const result = results[cellKey(e.value, m)];
@@ -280,8 +294,8 @@ export function ChannelTestDialog({
     }, [endpoints, models, results]);
 
     const summaryRows = useMemo(() => {
-        const rows: Array<{ endpoint: TestEndpoint; model: string; s: CellSummary }> = [];
-        for (const e of TEST_ENDPOINTS) {
+        const rows: Array<{ endpoint: ModelTestEndpoint; model: string; s: CellSummary }> = [];
+        for (const e of MODEL_TEST_ENDPOINTS) {
             if (!endpoints.has(e.value)) continue;
             for (const m of models) {
                 const s = summaries[cellKey(e.value, m)];
@@ -313,7 +327,7 @@ export function ChannelTestDialog({
                     <div className="space-y-1.5">
                         <div className="text-xs font-bold tracking-[0.14em] text-muted-foreground">测试端点（多选）</div>
                         <div className="flex flex-wrap gap-2">
-                            {TEST_ENDPOINTS.map((e) => (
+                            {MODEL_TEST_ENDPOINTS.map((e) => (
                                 <button key={e.value} type="button" className={pillClass(endpoints.has(e.value))} onClick={() => toggleEndpoint(e.value)}>
                                     {e.label}
                                 </button>
@@ -443,7 +457,7 @@ export function ChannelTestDialog({
                                         const barColor = rate >= 90 ? 'bg-emerald-500' : rate >= 50 ? 'bg-amber-500' : 'bg-destructive';
                                         return (
                                             <TableRow key={`sum|${endpoint}|${model}`}>
-                                                <TableCell className="text-xs text-muted-foreground">{ENDPOINT_LABEL[endpoint]}</TableCell>
+                                                <TableCell className="text-xs text-muted-foreground">{MODEL_TEST_ENDPOINT_LABELS[endpoint]}</TableCell>
                                                 <TableCell className="max-w-[15rem] break-all align-top font-mono text-xs">{cleanOneMillionModelName(model)}</TableCell>
                                                 <TableCell>
                                                     <div className="flex items-center gap-1.5">
@@ -516,7 +530,7 @@ export function ChannelTestDialog({
                                 <TableBody>
                                     {resultRows.map(({ endpoint, model, result }) => (
                                         <TableRow key={`${endpoint}|${model}`}>
-                                            <TableCell className="text-xs text-muted-foreground">{ENDPOINT_LABEL[endpoint]}</TableCell>
+                                            <TableCell className="text-xs text-muted-foreground">{MODEL_TEST_ENDPOINT_LABELS[endpoint]}</TableCell>
                                             <TableCell className="max-w-[15rem] break-all align-top font-mono text-xs">{cleanOneMillionModelName(model)}</TableCell>
                                             <TableCell>
                                                 {result.status === 'testing' ? (

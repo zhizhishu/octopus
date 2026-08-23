@@ -668,44 +668,9 @@ retryWithAdapter:
 		span.SetUpstreamPath(strings.Join(upstreamPaths, " -> "))
 	}
 
-	// 应用 ParamOverride 到请求体
-	if ra.channel.ParamOverride != nil && *ra.channel.ParamOverride != "" {
-		body, err := io.ReadAll(outboundRequest.Body)
-		if err != nil {
-			return 0, fmt.Errorf("failed to read body: %w", err)
-		}
-		restoreBody := func() {
-			outboundRequest.Body = io.NopCloser(bytes.NewBuffer(body))
-			outboundRequest.GetBody = func() (io.ReadCloser, error) {
-				return io.NopCloser(bytes.NewReader(body)), nil
-			}
-			outboundRequest.ContentLength = int64(len(body))
-		}
-
-		var bodyMap map[string]any
-		if err := json.Unmarshal(body, &bodyMap); err != nil {
-			log.Warnf("failed to unmarshal request body: %v, skipping param_override", err)
-			restoreBody()
-		} else {
-			var override map[string]any
-			if err := json.Unmarshal([]byte(*ra.channel.ParamOverride), &override); err != nil {
-				log.Warnf("failed to unmarshal param_override: %v, skipping", err)
-				restoreBody()
-			} else {
-				applyParamOverrideMap(bodyMap, override)
-				modifiedBody, err := json.Marshal(bodyMap)
-				if err != nil {
-					log.Warnf("failed to marshal modified body: %v, skipping param_override", err)
-					restoreBody()
-				} else {
-					outboundRequest.Body = io.NopCloser(bytes.NewBuffer(modifiedBody))
-					outboundRequest.GetBody = func() (io.ReadCloser, error) {
-						return io.NopCloser(bytes.NewReader(modifiedBody)), nil
-					}
-					outboundRequest.ContentLength = int64(len(modifiedBody))
-				}
-			}
-		}
+	// Apply the same body override contract used by synthetic channel tests.
+	if err := ApplyParamOverride(outboundRequest, ra.channel.ParamOverride); err != nil {
+		return 0, err
 	}
 
 	// 复制请求头
@@ -822,6 +787,50 @@ retryWithAdapter:
 		return response.StatusCode, err
 	}
 	return response.StatusCode, nil
+}
+
+// ApplyParamOverride applies a channel's top-level JSON body overrides while
+// preserving the original request when either JSON document is invalid. A null
+// override removes the key, matching the production relay contract.
+func ApplyParamOverride(req *http.Request, overrideJSON *string) error {
+	if req == nil || req.Body == nil || overrideJSON == nil || strings.TrimSpace(*overrideJSON) == "" {
+		return nil
+	}
+
+	originalBody, err := io.ReadAll(req.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read request body for param_override: %w", err)
+	}
+	restoreBody := func(body []byte) {
+		req.Body = io.NopCloser(bytes.NewReader(body))
+		req.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(body)), nil
+		}
+		req.ContentLength = int64(len(body))
+	}
+
+	var bodyMap map[string]any
+	if err := json.Unmarshal(originalBody, &bodyMap); err != nil {
+		log.Warnf("failed to unmarshal request body: %v, skipping param_override", err)
+		restoreBody(originalBody)
+		return nil
+	}
+	var overrideMap map[string]any
+	if err := json.Unmarshal([]byte(*overrideJSON), &overrideMap); err != nil {
+		log.Warnf("failed to unmarshal param_override: %v, skipping", err)
+		restoreBody(originalBody)
+		return nil
+	}
+
+	applyParamOverrideMap(bodyMap, overrideMap)
+	modifiedBody, err := json.Marshal(bodyMap)
+	if err != nil {
+		log.Warnf("failed to marshal modified body: %v, skipping param_override", err)
+		restoreBody(originalBody)
+		return nil
+	}
+	restoreBody(modifiedBody)
+	return nil
 }
 
 // applyParamOverrideMap 把渠道 param_override 合并进出站请求体：
@@ -1355,7 +1364,7 @@ func (ra *relayAttempt) applyTransformOptions() error {
 	// bridgeResponsesHistoryForChat returns a deterministic invalid_request error so
 	// the caller fails loudly instead of forwarding a context-stripped turn.
 	if openAIChatOutboundChannel(ra.channel.Type) {
-		ra.restoreCodexToolsForAnthropic()
+		ra.restoreCodexToolsForStatelessOutbound()
 		if err := ra.bridgeResponsesHistoryForChat(); err != nil {
 			return err
 		}
@@ -1372,7 +1381,7 @@ func (ra *relayAttempt) applyTransformOptions() error {
 	// bridge clears previous_response_id (the session is keyed by it); otherwise a
 	// codex continuation reaches the stateless Anthropic upstream with no tools and
 	// the mapped Claude model stalls (narrates instead of calling tools).
-	ra.restoreCodexToolsForAnthropic()
+	ra.restoreCodexToolsForStatelessOutbound()
 	ra.bridgeResponsesHistoryForAnthropic()
 
 	if ra.channel.AnthropicContext1M {
@@ -1501,18 +1510,6 @@ func (ra *relayAttempt) copyHeaders(outboundRequest *http.Request) {
 		}
 	}
 	ra.applyHeaderDefaults(outboundRequest)
-	if len(ra.channel.CustomHeader) > 0 {
-		for _, header := range ra.channel.CustomHeader {
-			outboundRequest.Header.Set(header.HeaderKey, header.HeaderValue)
-		}
-	}
-	// Re-assert the codex "no Accept-Encoding" fingerprint invariant AFTER CustomHeader.
-	// The request builder sets none and both transports run DisableCompression, so the
-	// ONLY way the header can reappear on the Responses path is an operator-configured
-	// per-channel CustomHeader (the shipped openaiPython preset even carries
-	// `Accept-Encoding: identity`). Strip it so a stray/preset override can't silently
-	// re-introduce exactly the tell the codex fix removed.
-	enforceCodexNoAcceptEncoding(ra.channel.Type, outboundRequest.Header)
 }
 
 // enforceCodexNoAcceptEncoding strips Accept-Encoding from a codex (OpenAI Responses)

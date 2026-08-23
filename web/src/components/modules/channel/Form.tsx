@@ -1,4 +1,4 @@
-import { AutoGroupType, ChannelType, KeySelectStrategy, defaultModelTestEndpointForChannel, type Channel, type PromptOverrideMode, useFetchModel, useTestChannelConfig, useTestChannelProxy, type ProxyTestResult } from '@/api/endpoints/channel';
+import { AutoGroupType, ChannelType, KeySelectStrategy, type Channel, type PromptOverrideMode, useFetchModel, useTestChannelConfig, useTestChannelProxy, type ProxyTestResult } from '@/api/endpoints/channel';
 import { useFingerprintProfileList } from '@/api/endpoints/fingerprint-profile';
 import type { ModelTestResult } from '@/api/endpoints/model';
 import {
@@ -23,7 +23,13 @@ import {
     AccordionTrigger,
 } from "@/components/ui/accordion";
 import { cn } from '@/lib/utils';
-import { cleanOneMillionModelName, expandOneMillionModelAliases, shouldForceTestStream } from '@/lib/model-aliases';
+import { cleanOneMillionModelName, expandOneMillionModelAliases } from '@/lib/model-aliases';
+import {
+    DEFAULT_MODEL_TEST_TIMEOUT_SECONDS,
+    defaultModelTestEndpointForChannel,
+    makeModelTestPrompt,
+    shouldForceChannelTestStream,
+} from '@/lib/channel-test';
 
 
 function modelTestProxyLabel(result: Pick<ModelTestResult, 'proxy_used' | 'proxy_source' | 'proxy_scheme' | 'proxy_status'>) {
@@ -364,10 +370,12 @@ export function ChannelForm({
     };
 
     const testModel = inputValue.trim() || autoModels[0] || '';
-    const channelTestForcedStream = shouldForceTestStream({
+    const channelTestForcedStream = shouldForceChannelTestStream({
         models: testModel,
         endpoint: defaultModelTestEndpointForChannel(formData.type),
+        channelType: formData.type,
         anthropicContext1M: formData.anthropic_context_1m,
+        cloakMode: formData.cloak_mode,
     });
 
     const buildChannelTestConfig = () => ({
@@ -422,13 +430,9 @@ export function ChannelForm({
                 channel: buildChannelTestConfig(),
                 model: testModel,
                 endpoint: defaultModelTestEndpointForChannel(formData.type),
-                prompt: 'Reply with exactly OK.',
+                prompt: makeModelTestPrompt(),
                 stream: channelTestForcedStream ? true : channelTestStream,
-                // 180s for every channel type, matching the model-test page and the
-                // backend default. A thinking model (glm-5.2 / deepseek-reasoner) emits a
-                // long reasoning preamble before any content, so a 30s probe died as
-                // "context deadline exceeded" on a channel that actually works.
-                timeout_seconds: 180,
+                timeout_seconds: DEFAULT_MODEL_TEST_TIMEOUT_SECONDS,
             },
             {
                 onSuccess: (data) => {

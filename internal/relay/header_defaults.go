@@ -24,20 +24,79 @@ const (
 	defaultCodexOriginator      = "codex_cli_rs"
 )
 
+// ChannelWireHeaderOptions contains the request context needed to apply the
+// same upstream header contract from both production relay traffic and
+// synthetic channel tests.
+type ChannelWireHeaderOptions struct {
+	Channel         *dbmodel.Channel
+	InboundType     inbound.InboundType
+	InternalRequest *model.InternalLLMRequest
+	ClaudeSessionID string
+}
+
+// ApplyChannelWireHeaders applies protocol defaults, operator custom headers,
+// and the invariants that must win after custom overrides. Keeping this order in
+// one function prevents model tests from drifting away from production traffic.
+func ApplyChannelWireHeaders(req *http.Request, options ChannelWireHeaderOptions) {
+	if req == nil || options.Channel == nil {
+		return
+	}
+
+	applyChannelWireHeaderDefaults(req, options)
+	for _, customHeader := range options.Channel.CustomHeader {
+		headerName := strings.TrimSpace(customHeader.HeaderKey)
+		if headerName == "" {
+			continue
+		}
+		req.Header.Set(headerName, customHeader.HeaderValue)
+	}
+
+	if !shouldApplyChannelCloak(options.Channel.Cloak) {
+		switch options.Channel.Type {
+		case outbound.OutboundTypeAnthropic:
+			req.Header.Del("Anthropic-Beta")
+		case outbound.OutboundTypeOpenAIResponse:
+			stripCodexClientHeaders(req.Header)
+		}
+		setHeaderForce(req.Header, "User-Agent", genericUAForChannel(options.Channel))
+	}
+
+	// Originator and User-Agent are one Codex identity pair. An operator header
+	// may customize either value, but must not split the pair seen upstream.
+	if shouldUseCodexHeaderDefaults(options.Channel, options.InboundType) {
+		fingerprint := resolveFingerprintForChannel(options.Channel)
+		setHeaderForce(req.Header, "Originator", fingerprint.CodexOriginator())
+		setHeaderForce(req.Header, "User-Agent", fingerprint.CodexUserAgent())
+	}
+	// Genuine Codex CLI sends no Accept-Encoding. Re-assert this after custom
+	// headers because a channel preset can otherwise add it back.
+	enforceCodexNoAcceptEncoding(options.Channel.Type, req.Header)
+}
+
 func (ra *relayAttempt) applyHeaderDefaults(req *http.Request) {
 	if ra == nil || req == nil || ra.channel == nil {
 		return
 	}
+	ApplyChannelWireHeaders(req, ChannelWireHeaderOptions{
+		Channel:         ra.channel,
+		InboundType:     ra.inboundType,
+		InternalRequest: ra.internalRequest,
+		ClaudeSessionID: ra.claudeFingerprintSessionID(),
+	})
+}
+
+func applyChannelWireHeaderDefaults(req *http.Request, options ChannelWireHeaderOptions) {
+	channel := options.Channel
 	// Only on the codex (Responses inbound) -> claude (Anthropic outbound) path, strip the
 	// codex / OpenAI-Responses-specific client headers a codex downstream forwarded through
 	// copyHeaders. A genuine claude-cli never emits these, so carrying them upstream dresses
 	// one request as BOTH claude-cli and codex — a contradictory fingerprint. Gated on the
 	// codex inbound so a non-codex client's own header (notably the generic "Originator") is
 	// never removed from a chat->claude / claude->claude request.
-	if ra.channel.Type == outbound.OutboundTypeAnthropic && ra.inboundType == inbound.InboundTypeOpenAIResponse {
+	if channel.Type == outbound.OutboundTypeAnthropic && options.InboundType == inbound.InboundTypeOpenAIResponse {
 		stripCodexClientHeaders(req.Header)
 	}
-	if !shouldApplyChannelCloak(ra.channel.Cloak) {
+	if !shouldApplyChannelCloak(channel.Cloak) {
 		// Shape OFF (cloak=never): do NOT synthesize the claude/codex CLI identity. But
 		// "no CLI" must resolve to a CLEAN GENERIC identity, never a bare/leaky one:
 		//   1. Strip the CLI-specific headers a downstream CLI client leaked through
@@ -49,33 +108,45 @@ func (ra *relayAttempt) applyHeaderDefaults(req *http.Request) {
 		//      the caller as a bot/script; the operator picked "no shape", not "no identity".
 		//      The generic UA follows the selected profile (Debian Chrome / Ubuntu Firefox),
 		//      falling back to DefaultGenericUA.
-		switch ra.channel.Type {
+		switch channel.Type {
 		case outbound.OutboundTypeAnthropic:
 			req.Header.Del("Anthropic-Beta")
 		case outbound.OutboundTypeOpenAIResponse:
 			stripCodexClientHeaders(req.Header)
 		}
-		ra.applyGenericHeaderDefaults(req)
+		applyGenericHeaderDefaultsForChannel(req, channel)
 		return
 	}
-	switch ra.channel.Type {
+	fingerprint := resolveFingerprintForChannel(channel)
+	switch channel.Type {
 	case outbound.OutboundTypeAnthropic:
-		ra.applyClaudeHeaderDefaults(req)
+		applyClaudeHeaderDefaultsWithFingerprint(req, options.InternalRequest, fingerprint, options.ClaudeSessionID)
 	case outbound.OutboundTypeOpenAIResponse:
-		ra.applyCodexHeaderDefaults(req, ra.internalRequest)
+		applyCodexHeaderDefaultsWithFingerprint(req, options.InternalRequest, fingerprint)
 	case outbound.OutboundTypeOpenAIChat, outbound.OutboundTypeCustomOpenAIChat:
-		if ra.inboundType == inbound.InboundTypeOpenAIResponse {
-			ra.applyCodexHeaderDefaults(req, ra.internalRequest)
+		if options.InboundType == inbound.InboundTypeOpenAIResponse {
+			applyCodexHeaderDefaultsWithFingerprint(req, options.InternalRequest, fingerprint)
 		} else {
-			ra.applyGenericHeaderDefaults(req)
+			applyGenericHeaderDefaultsForChannel(req, channel)
 		}
 	default:
 		// Non claude/codex channels (Gemini/Volcengine/plain OpenAI-chat) get no
 		// fingerprint UA today. A selected profile may pin a unified GenericUA so
 		// these channels present a consistent client identity too; with no profile
 		// (or an empty GenericUA) this is a no-op, preserving current behaviour.
-		ra.applyGenericHeaderDefaults(req)
+		applyGenericHeaderDefaultsForChannel(req, channel)
 	}
+}
+
+func shouldUseCodexHeaderDefaults(channel *dbmodel.Channel, inboundType inbound.InboundType) bool {
+	if channel == nil || !shouldApplyChannelCloak(channel.Cloak) {
+		return false
+	}
+	if channel.Type == outbound.OutboundTypeOpenAIResponse {
+		return true
+	}
+	return inboundType == inbound.InboundTypeOpenAIResponse &&
+		(channel.Type == outbound.OutboundTypeOpenAIChat || channel.Type == outbound.OutboundTypeCustomOpenAIChat)
 }
 
 // applyGenericHeaderDefaults sets a unified User-Agent on channels that have no
@@ -84,7 +155,11 @@ func (ra *relayAttempt) applyHeaderDefaults(req *http.Request) {
 // so these channels present a stable Linux desktop identity instead of leaking Go's
 // "Go-http-client/1.1". Never touches claude/codex channels (different switch arms).
 func (ra *relayAttempt) applyGenericHeaderDefaults(req *http.Request) {
-	setHeaderIfMissing(req.Header, "User-Agent", genericUAForChannel(ra.channel))
+	applyGenericHeaderDefaultsForChannel(req, ra.channel)
+}
+
+func applyGenericHeaderDefaultsForChannel(req *http.Request, channel *dbmodel.Channel) {
+	setHeaderIfMissing(req.Header, "User-Agent", genericUAForChannel(channel))
 }
 
 // genericUAForChannel resolves the unified non-CLI User-Agent for a channel: the
@@ -95,7 +170,7 @@ func (ra *relayAttempt) applyGenericHeaderDefaults(req *http.Request) {
 // bridge paths — which have no relayAttempt — resolve the SAME unified UA as the
 // main relay path, instead of leaking Go's default http client UA.
 func genericUAForChannel(channel *dbmodel.Channel) string {
-	if ua := resolveFingerprintForChannel(channel).genericUA(); ua != "" {
+	if ua := resolveFingerprintForChannel(channel).GenericUA(); ua != "" {
 		return ua
 	}
 	return dbmodel.DefaultGenericUA
@@ -134,75 +209,50 @@ func shouldApplyChannelCloak(cloak dbmodel.ChannelCloak) bool {
 	}
 }
 
-// claudeClientVersion holds the version-bearing headers a genuine claude-cli
-// DOWNSTREAM client reported. octopus strips the client's User-Agent / X-Stainless-*
-// (hop-by-hop) and re-emits its own; pinning a single hard-coded version across ALL
-// traffic is itself a weak tell and goes stale as clients upgrade. When the inbound
-// IS a genuine claude-cli, we mirror its real version values instead — the canonical
-// header SET + ORDER (the part the relay shape-checks) is unchanged, only the version
-// strings track the real client. Non-claude clients yield an empty struct, so the
-// static settings (prior behaviour) apply byte-for-byte.
-type claudeClientVersion struct {
-	UserAgent      string
-	PackageVersion string
-	RuntimeVersion string
-	OS             string
-	Arch           string
-}
-
-func (ra *relayAttempt) inboundClaudeClientVersion() claudeClientVersion {
-	// UNIFORM-UA requirement: octopus must present the SAME claude-cli UA/version to
-	// upstreams for ALL traffic — an upstream must NOT see a different device/version
-	// just because a different downstream client relayed through octopus. We therefore
-	// deliberately do NOT mirror the downstream claude-cli's version here (this
-	// supersedes the earlier per-request version adoption). Returning an empty struct
-	// makes every applyClaudeHeaderDefaults call site fall through to the single
-	// configured static default, so all upstream traffic shares one fingerprint.
-	return claudeClientVersion{}
-}
-
-func firstNonEmptyHeader(client, fallback string) string {
-	if strings.TrimSpace(client) != "" {
-		return client
-	}
-	return fallback
+// ShouldApplyChannelCloak exposes the relay's single cloak-mode policy to thin
+// adapters such as modeltest without requiring them to duplicate its aliases.
+func ShouldApplyChannelCloak(cloak dbmodel.ChannelCloak) bool {
+	return shouldApplyChannelCloak(cloak)
 }
 
 func (ra *relayAttempt) applyClaudeHeaderDefaults(req *http.Request) {
-	client := ra.inboundClaudeClientVersion()
 	// fp resolves the channel's selected fingerprint profile; with no profile every
 	// getter returns exactly the global setting value, so this is byte-for-byte the
 	// prior behaviour. A selected profile overrides only the fields it sets.
 	fp := ra.fingerprint()
+	applyClaudeHeaderDefaultsWithFingerprint(req, ra.internalRequest, fp, ra.claudeFingerprintSessionID())
+}
+
+func applyClaudeHeaderDefaultsWithFingerprint(req *http.Request, internalRequest *model.InternalLLMRequest, fp resolvedFingerprint, sessionID string) {
 	ensureClaudeBetaQuery(req)
 	setHeaderIfMissing(req.Header, "Anthropic-Dangerous-Direct-Browser-Access", "true")
 	setHeaderIfMissing(req.Header, "Anthropic-Version", "2023-06-01")
-	setHeaderIfMissing(req.Header, "User-Agent", firstNonEmptyHeader(client.UserAgent, fp.claudeUserAgent()))
+	setHeaderIfMissing(req.Header, "User-Agent", fp.ClaudeUserAgent())
 	setHeaderIfMissing(req.Header, "X-App", "cli")
 	// NB: genuine claude-cli (2.1.168 and 2.1.178, captured on the wire) does NOT
 	// send X-Client-Request-Id, so we must not synthesize one — an extra header the
 	// real CLI never emits is a detectable non-CLI tell to the relay's shape check.
-	setHeaderIfMissing(req.Header, "X-Claude-Code-Session-Id", ra.claudeFingerprintSessionID())
+	setHeaderIfMissing(req.Header, "X-Claude-Code-Session-Id", sessionID)
 	setHeaderIfMissing(req.Header, "X-Stainless-Lang", "js")
 	setHeaderIfMissing(req.Header, "X-Stainless-Retry-Count", "0")
 	setHeaderIfMissing(req.Header, "X-Stainless-Runtime", "node")
-	setHeaderIfMissing(req.Header, "X-Stainless-Runtime-Version", firstNonEmptyHeader(client.RuntimeVersion, fp.claudeRuntimeVersion()))
-	setHeaderIfMissing(req.Header, "X-Stainless-Package-Version", firstNonEmptyHeader(client.PackageVersion, fp.claudePackageVersion()))
-	setHeaderIfMissing(req.Header, "X-Stainless-Timeout", fp.claudeTimeout())
+	setHeaderIfMissing(req.Header, "X-Stainless-Runtime-Version", fp.ClaudeRuntimeVersion())
+	setHeaderIfMissing(req.Header, "X-Stainless-Package-Version", fp.ClaudePackageVersion())
+	setHeaderIfMissing(req.Header, "X-Stainless-Timeout", fp.ClaudeTimeout())
 	// Always emit X-Stainless-OS / X-Stainless-Arch. A genuine claude-cli sends both on
 	// every request, and the downstream client's own x-stainless-* were already stripped
 	// as hop-by-hop (shouldForwardClientHeader), so OMITTING them here is itself a
 	// non-CLI tell (a request missing two headers the real CLI always carries). The value
 	// reuses the SAME stable default pair the pinned fingerprint already presents
-	// (fp.claudeOS()/claudeArch() — Windows/x64 by default, profile/setting overridable),
+	// (fp.ClaudeOS()/ClaudeArch() — Windows/x64 by default, profile/setting overridable),
 	// so this introduces no new fingerprint value.
 	// NB: claudeStabilize() (SettingKeyClaudeHeaderStabilize / profile.ClaudeStabilize) is
 	// now INERT for this pair — it no longer suppresses these two headers. The setting,
 	// the profile tri-state field, and the admin toggle are retained only for backward
 	// compatibility. The modeltest channel/test path (modeltest/runner.go) mirrors this
 	// unconditional emit so a channel test stays byte-for-byte identical to real traffic.
-	setHeaderIfMissing(req.Header, "X-Stainless-OS", firstNonEmptyHeader(client.OS, fp.claudeOS()))
-	setHeaderIfMissing(req.Header, "X-Stainless-Arch", firstNonEmptyHeader(client.Arch, fp.claudeArch()))
+	setHeaderIfMissing(req.Header, "X-Stainless-OS", fp.ClaudeOS())
+	setHeaderIfMissing(req.Header, "X-Stainless-Arch", fp.ClaudeArch())
 	// Decide the anthropic-beta header. A genuine claude-cli downstream already sent its
 	// OWN anthropic-beta on the wire — copyHeaders forwards it onto this outbound request
 	// (Anthropic-Beta is not hop-by-hop), so req.Header carries the client's real value
@@ -215,13 +265,13 @@ func (ra *relayAttempt) applyClaudeHeaderDefaults(req *http.Request) {
 	// byte-for-byte identical.
 	var transformBetas []string
 	betaModel := ""
-	if ra != nil && ra.internalRequest != nil {
-		transformBetas = ra.internalRequest.TransformOptions.AnthropicBetas
-		betaModel = ra.internalRequest.Model
+	if internalRequest != nil {
+		transformBetas = internalRequest.TransformOptions.AnthropicBetas
+		betaModel = internalRequest.Model
 	}
 	betas := model.BuildClaudeCodeBetaHeader(
 		betaModel,
-		shouldEnableClaudeOneMillionBeta(ra.internalRequest),
+		shouldEnableClaudeOneMillionBeta(internalRequest),
 		strings.Split(req.Header.Get("Anthropic-Beta"), ","),
 		transformBetas,
 	)
@@ -293,13 +343,13 @@ func applyCodexHeaderDefaultsWithFingerprint(req *http.Request, internalRequest 
 	// must pair + version≥0.144.0). setHeaderIfMissing let a copied-through client Originator
 	// survive while the UA fell back to oct's default, producing exactly that mismatch on the
 	// wire. Both come from the resolved fingerprint so a selected profile still overrides them.
-	setHeaderForce(req.Header, "Originator", fp.codexOriginator())
-	setHeaderForce(req.Header, "User-Agent", fp.codexUserAgent())
-	setHeaderIfMissing(req.Header, "X-Codex-Beta-Features", fp.codexBetaFeatures())
+	setHeaderForce(req.Header, "Originator", fp.CodexOriginator())
+	setHeaderForce(req.Header, "User-Agent", fp.CodexUserAgent())
+	setHeaderIfMissing(req.Header, "X-Codex-Beta-Features", fp.CodexBetaFeatures())
 	// codex 0.144.x always emits this static header on /responses (packet-verified 2026-07-10);
 	// wire position (4th, after x-codex-turn-metadata) is driven by codexCanonicalHeaderOrder.
 	setHeaderIfMissing(req.Header, "X-Openai-Internal-Codex-Responses-Lite", "true")
-	applyCodexSessionHeaders(req.Header, internalRequest, fp.codexInstallationID())
+	applyCodexSessionHeaders(req.Header, internalRequest, fp.CodexInstallationID())
 }
 
 func setHeaderIfMissing(headers http.Header, key, value string) {

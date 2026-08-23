@@ -1,9 +1,12 @@
-﻿package relay
+package relay
 
 import (
 	"testing"
 
+	dbmodel "github.com/bestruirui/octopus/internal/model"
+	"github.com/bestruirui/octopus/internal/transformer/inbound"
 	transformerModel "github.com/bestruirui/octopus/internal/transformer/model"
+	"github.com/bestruirui/octopus/internal/transformer/outbound"
 )
 
 // normalizeCodexReasoningEffort remaps an unsupported reasoning.effort on the GPT-5.6 family
@@ -157,4 +160,33 @@ func TestNormalizeCodexReasoningEffortUnknownEffortGPT56RemapsToLow(t *testing.T
 
 func TestNormalizeCodexReasoningEffortNilNoop(t *testing.T) {
 	normalizeCodexReasoningEffort(nil)
+}
+
+func TestPrepareCodexRequestShapeMinimalReasoningEffortGPT56RemapsToLow(t *testing.T) {
+	content := "hello"
+	req := &transformerModel.InternalLLMRequest{
+		Model:           "gpt-5.6-sol",
+		RawAPIFormat:    transformerModel.APIFormatOpenAIResponse,
+		ReasoningEffort: "minimal",
+		Messages: []transformerModel.Message{{
+			Role:    "user",
+			Content: transformerModel.MessageContent{Content: &content},
+		}},
+	}
+	ra := &relayAttempt{
+		relayRequest: &relayRequest{
+			inboundType:     inbound.InboundTypeOpenAIResponse,
+			internalRequest: req,
+		},
+		channel: &dbmodel.Channel{Type: outbound.OutboundTypeOpenAIResponse},
+	}
+
+	ra.prepareCodexRequestShape()
+
+	if req.ReasoningEffort != "low" {
+		t.Fatalf("expected reasoning.effort on gpt-5.6 to remap to low, got %q", req.ReasoningEffort)
+	}
+	if req.ReasoningContext != "all_turns" {
+		t.Fatalf("expected reasoning.context to default to all_turns, got %q", req.ReasoningContext)
+	}
 }
