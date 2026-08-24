@@ -922,6 +922,11 @@ func shouldTryNextChannelKey(statusCode int) bool {
 // turn instead of failing it outright when there is no redundant channel.
 const maxTransientStreamRetries = 2
 
+// toolCallCompletionGracePeriod preserves the compatibility fallback for providers
+// that never send response.completed, while allowing conforming providers to deliver
+// the terminal usage event that follows response.output_item.done.
+const toolCallCompletionGracePeriod = time.Second
+
 // isRetryableUpstreamStreamError reports whether a forward failure is the
 // transient "upstream opened a stream then ended it empty" case, which is safe
 // to retry as long as nothing has been written downstream.
@@ -1632,6 +1637,42 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 		}
 		dataTimeoutTimer.Reset(dataIntervalTimeout)
 	}
+	// A few Responses-compatible providers omit response.completed after a sequential
+	// tool call, so the relay historically treated output_item.done as a terminal
+	// fallback. Give a conforming provider a short chance to send response.completed
+	// first: that event carries authoritative usage, including cached_tokens. Returning
+	// immediately at output_item.done silently discarded that usage after Codex requests
+	// began consistently setting parallel_tool_calls=false.
+	var toolCallCompletionTimer *time.Timer
+	var toolCallCompletionC <-chan time.Time
+	armToolCallCompletionFallback := func() {
+		if toolCallCompletionTimer == nil {
+			toolCallCompletionTimer = time.NewTimer(toolCallCompletionGracePeriod)
+			toolCallCompletionC = toolCallCompletionTimer.C
+			return
+		}
+		if !toolCallCompletionTimer.Stop() {
+			select {
+			case <-toolCallCompletionTimer.C:
+			default:
+			}
+		}
+		toolCallCompletionTimer.Reset(toolCallCompletionGracePeriod)
+		toolCallCompletionC = toolCallCompletionTimer.C
+	}
+	disarmToolCallCompletionFallback := func() {
+		if toolCallCompletionTimer == nil {
+			return
+		}
+		if !toolCallCompletionTimer.Stop() {
+			select {
+			case <-toolCallCompletionTimer.C:
+			default:
+			}
+		}
+		toolCallCompletionC = nil
+	}
+	defer disarmToolCallCompletionFallback()
 	lastWriteAt := time.Now()
 	streamDoneSeen := false
 	upstreamResponsesCompletedSeen := false
@@ -1741,6 +1782,17 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 				strategy: "stream_data_interval_timeout;upstream_forwarded=true",
 				message:  fmt.Sprintf("upstream stream timed out waiting for SSE event (%s)", dataIntervalTimeout),
 			}
+		case <-toolCallCompletionC:
+			if !seenMeaningfulChunk {
+				return errors.New("upstream stream ended without internal response")
+			}
+			if err := commitPendingPrelude(); err != nil {
+				return err
+			}
+			if err := writeSynthesizedDone(); err != nil {
+				return err
+			}
+			return nil
 		case r, ok := <-results:
 			if !ok {
 				log.Infof("stream end")
@@ -1780,8 +1832,10 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 				upstreamResponsesCompletedSeen = true
 			}
 			isTerminalEvent := eventClass.isTerminal(r.eventType)
-			if !isTerminalEvent && ra.shouldTreatResponsesToolCallDoneAsTerminal(outAdapter, eventClass) {
-				isTerminalEvent = true
+			if isTerminalEvent {
+				disarmToolCallCompletionFallback()
+			} else if ra.shouldTreatResponsesToolCallDoneAsTerminal(outAdapter, eventClass) {
+				armToolCallCompletionFallback()
 			}
 			if isTerminalEvent {
 				upstreamTerminalSeen = true
@@ -2017,6 +2071,36 @@ func (ra *relayAttempt) handleStreamResponseAsNonStream(ctx context.Context, res
 			firstTokenC = nil
 		}
 	}
+	var toolCallCompletionTimer *time.Timer
+	var toolCallCompletionC <-chan time.Time
+	armToolCallCompletionFallback := func() {
+		if toolCallCompletionTimer == nil {
+			toolCallCompletionTimer = time.NewTimer(toolCallCompletionGracePeriod)
+			toolCallCompletionC = toolCallCompletionTimer.C
+			return
+		}
+		if !toolCallCompletionTimer.Stop() {
+			select {
+			case <-toolCallCompletionTimer.C:
+			default:
+			}
+		}
+		toolCallCompletionTimer.Reset(toolCallCompletionGracePeriod)
+		toolCallCompletionC = toolCallCompletionTimer.C
+	}
+	disarmToolCallCompletionFallback := func() {
+		if toolCallCompletionTimer == nil {
+			return
+		}
+		if !toolCallCompletionTimer.Stop() {
+			select {
+			case <-toolCallCompletionTimer.C:
+			default:
+			}
+		}
+		toolCallCompletionC = nil
+	}
+	defer disarmToolCallCompletionFallback()
 
 	// The inbound adapter is shared across every channel/key retry (relayRequest.inAdapter)
 	// and accumulates stream chunks until a successful GetInternalResponse clears them, so
@@ -2071,6 +2155,9 @@ readLoop:
 				strategy: "stream_data_interval_timeout;upstream_forwarded=true",
 				message:  fmt.Sprintf("upstream stream timed out waiting for SSE event (%s)", dataIntervalTimeout),
 			}
+		case <-toolCallCompletionC:
+			sawUpstreamCompletion = true
+			break readLoop
 		case <-keepaliveC:
 			// Blank-line heartbeat: JSON insignificant whitespace that keeps the client
 			// connection warm without committing content, so failover stays possible.
@@ -2102,11 +2189,17 @@ readLoop:
 				}
 				continue
 			}
-			if eventClass.isCompleted(eventType) || ra.shouldTreatResponsesToolCallDoneAsTerminal(outAdapter, eventClass) {
+			if eventClass.isCompleted(eventType) {
 				sawUpstreamCompletion = true
+				disarmToolCallCompletionFallback()
 				// A terminal completion ends the turn even with zero output tokens, so
 				// stop the first-token guard: a prompt empty-but-legitimate finish must
 				// not be misreported as a first-token timeout.
+				disarmFirstToken()
+			} else if ra.shouldTreatResponsesToolCallDoneAsTerminal(outAdapter, eventClass) {
+				// Preserve the old compatibility fallback, but wait briefly for the
+				// authoritative response.completed event and its usage payload.
+				armToolCallCompletionFallback()
 				disarmFirstToken()
 			}
 			isDoneEvent := eventClass.isDone

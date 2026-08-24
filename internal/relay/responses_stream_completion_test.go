@@ -216,6 +216,54 @@ func TestResponsesStreamToolCallDoneSynthesizesTerminalForSequentialCLI(t *testi
 	}
 }
 
+func TestResponsesStreamToolCallDoneWaitsForCompletedUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ginContext, _ := gin.CreateTestContext(recorder)
+	ginContext.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	parallelToolCalls := false
+	responseInbound := &openaiInbound.ResponseInbound{}
+
+	relayAttempt := &relayAttempt{relayRequest: &relayRequest{
+		c:            ginContext,
+		inboundType:  inbound.InboundTypeOpenAIResponse,
+		inAdapter:    responseInbound,
+		requestModel: "gpt-5.6-sol",
+		internalRequest: &transformermodel.InternalLLMRequest{
+			Model:             "gpt-5.6-sol",
+			ParallelToolCalls: &parallelToolCalls,
+		},
+	}}
+	response := &http.Response{
+		Header: http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body: io.NopCloser(strings.NewReader(
+			`data: {"type":"response.created","response":{"id":"resp_tool_usage","object":"response","created_at":123,"model":"gpt-5.6-sol","status":"in_progress","output":[]}}` + "\n\n" +
+				`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"shell_command"}}` + "\n\n" +
+				`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"command\":\"pwd\"}"}` + "\n\n" +
+				`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"shell_command","arguments":"{\"command\":\"pwd\"}"}}` + "\n\n" +
+				`data: {"type":"response.completed","response":{"id":"resp_tool_usage","object":"response","created_at":123,"model":"gpt-5.6-sol","status":"completed","output":[],"usage":{"input_tokens":128,"input_tokens_details":{"cached_tokens":96},"output_tokens":8,"output_tokens_details":{"reasoning_tokens":2},"total_tokens":136}}}` + "\n\n" +
+				`data: [DONE]` + "\n\n",
+		)),
+	}
+
+	if err := relayAttempt.handleStreamResponse(ginContext.Request.Context(), response, &openaiOutbound.ResponseOutbound{}); err != nil {
+		t.Fatalf("handle tool call stream with completed usage: %v", err)
+	}
+	internalResponse, err := responseInbound.GetInternalResponse(ginContext.Request.Context())
+	if err != nil {
+		t.Fatalf("aggregate tool call stream: %v", err)
+	}
+	if internalResponse == nil || internalResponse.Usage == nil {
+		t.Fatalf("expected response.completed usage to survive tool-call finalization, got %#v", internalResponse)
+	}
+	if internalResponse.Usage.PromptTokensDetails == nil || internalResponse.Usage.PromptTokensDetails.CachedTokens != 96 {
+		t.Fatalf("expected cached_tokens=96 from response.completed, got %#v", internalResponse.Usage.PromptTokensDetails)
+	}
+	if body := recorder.Body.String(); !strings.Contains(body, `"type":"response.completed"`) {
+		t.Fatalf("expected upstream response.completed to reach the client, got %q", body)
+	}
+}
+
 func TestResponsesStreamClientCancelAfterCompletedSucceeds(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
@@ -353,6 +401,56 @@ func TestForcedResponsesNonStreamCompletedAggregates(t *testing.T) {
 	}
 	if body := rec.Body.String(); !strings.Contains(body, `"object":"response"`) {
 		t.Fatalf("expected aggregated responses JSON body, got %q", body)
+	}
+}
+
+func TestForcedResponsesNonStreamToolCallDoneWaitsForCompletedUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ginContext, _ := gin.CreateTestContext(recorder)
+	ginContext.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	parallelToolCalls := false
+
+	relayAttempt := &relayAttempt{relayRequest: &relayRequest{
+		c:            ginContext,
+		inboundType:  inbound.InboundTypeOpenAIResponse,
+		inAdapter:    &openaiInbound.ResponseInbound{},
+		requestModel: "gpt-5.6-sol",
+		internalRequest: &transformermodel.InternalLLMRequest{
+			Model:             "gpt-5.6-sol",
+			ParallelToolCalls: &parallelToolCalls,
+		},
+	}}
+	response := &http.Response{
+		Header: http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body: io.NopCloser(strings.NewReader(
+			`data: {"type":"response.created","response":{"id":"resp_nonstream_tool_usage","object":"response","created_at":123,"model":"gpt-5.6-sol","status":"in_progress","output":[]}}` + "\n\n" +
+				`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"shell_command"}}` + "\n\n" +
+				`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"command\":\"pwd\"}"}` + "\n\n" +
+				`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"shell_command","arguments":"{\"command\":\"pwd\"}"}}` + "\n\n" +
+				`data: {"type":"response.completed","response":{"id":"resp_nonstream_tool_usage","object":"response","created_at":123,"model":"gpt-5.6-sol","status":"completed","output":[],"usage":{"input_tokens":128,"input_tokens_details":{"cached_tokens":96},"output_tokens":8,"output_tokens_details":{"reasoning_tokens":2},"total_tokens":136}}}` + "\n\n" +
+				`data: [DONE]` + "\n\n",
+		)),
+	}
+
+	if err := relayAttempt.handleStreamResponseAsNonStream(ginContext.Request.Context(), response, &openaiOutbound.ResponseOutbound{}); err != nil {
+		t.Fatalf("handle forced non-stream tool call with completed usage: %v", err)
+	}
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200 aggregated response, got %d", recorder.Code)
+	}
+	var responsesBody struct {
+		Usage struct {
+			InputTokensDetails struct {
+				CachedTokens int64 `json:"cached_tokens"`
+			} `json:"input_tokens_details"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &responsesBody); err != nil {
+		t.Fatalf("decode aggregated responses body: %v; body=%q", err, recorder.Body.String())
+	}
+	if responsesBody.Usage.InputTokensDetails.CachedTokens != 96 {
+		t.Fatalf("expected cached_tokens=96 in aggregated response, got %d", responsesBody.Usage.InputTokensDetails.CachedTokens)
 	}
 }
 
