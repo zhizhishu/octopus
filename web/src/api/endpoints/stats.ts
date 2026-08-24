@@ -264,6 +264,7 @@ export function useStatsDaily() {
             date: item.date,
         })),
         refetchInterval: 3600000, // 1 小时
+        refetchOnWindowFocus: 'always',
         refetchOnMount: 'always',
     });
 }
@@ -282,6 +283,7 @@ export function useStatsHourly() {
             date: item.date,
         })),
         refetchInterval: 10000,// 10 秒
+        refetchOnWindowFocus: 'always',
         refetchOnMount: 'always',
     });
 }
@@ -294,6 +296,7 @@ export function useStatsTotal() {
         },
         select: formatStatsMetrics,
         refetchInterval: 10000,// 10 秒
+        refetchOnWindowFocus: 'always',
         refetchOnMount: 'always',
     });
 }
@@ -305,6 +308,7 @@ export function useModelHealth() {
             return apiClient.get<ModelHealthResponse>('/api/v1/stats/model-health');
         },
         refetchInterval: 10000,
+        refetchOnWindowFocus: 'always',
         refetchOnMount: 'always',
     });
 }
@@ -340,6 +344,7 @@ export function useStatsModelRank() {
             };
         }),
         refetchInterval: 30000,
+        refetchOnWindowFocus: 'always',
         refetchOnMount: 'always',
     });
 }
