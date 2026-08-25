@@ -366,6 +366,9 @@ func getStreamToken(c *gin.Context) {
 			return
 		}
 	}
+	scope.Severity = severityFromQuery(c)
+	scope.RetriedOnly = retriedFromQuery(c)
+	scope.HideModelTest = hideModelTestFromQuery(c)
 	token, err := op.RelayLogStreamTokenCreateWithTimeRange(scope, middleware.CurrentUserIsAdmin(c), startTime, endTime)
 	if err != nil {
 		resp.Error(c, http.StatusInternalServerError, err.Error())
@@ -401,6 +404,9 @@ func streamLog(c *gin.Context) {
 	}
 
 	scope := model.RelayLogScope{UserID: tokenScope.UserID, APIKeyID: tokenScope.APIKeyID, Endpoint: tokenScope.Endpoint, Redact: !tokenScope.IsAdmin}
+	scope.Severity = tokenScope.Severity
+	scope.RetriedOnly = tokenScope.RetriedOnly
+	scope.HideModelTest = tokenScope.HideModelTest
 	var startTime, endTime *int
 	if tokenScope.HasTimeRange {
 		startTime = &tokenScope.StartTime
@@ -530,6 +536,15 @@ func relayLogMatchesScope(log model.RelayLog, scope *model.RelayLogScope) bool {
 	}
 	if scope.Endpoint != "" && log.RequestEndpoint != scope.Endpoint && !strings.HasPrefix(log.RequestEndpoint, scope.Endpoint+"_") {
 		// Family match, kept in sync with op.relayLogEndpointMatches / relayLogApplyScope.
+		return false
+	}
+	if scope.Severity != "" && op.RelayLogSeverityValue(log) != scope.Severity {
+		return false
+	}
+	if scope.RetriedOnly && log.TotalAttempts <= 1 {
+		return false
+	}
+	if scope.HideModelTest && strings.HasPrefix(log.RequestEndpoint, "model_test") {
 		return false
 	}
 	return true

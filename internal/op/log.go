@@ -73,14 +73,17 @@ var relayLogSubscribers = make(map[chan model.RelayLog]struct{})
 var relayLogSubscribersLock sync.RWMutex
 
 type relayLogStreamTokenScope struct {
-	UserID       int
-	APIKeyID     int
-	Endpoint     string
-	IsAdmin      bool
-	StartTime    int
-	EndTime      int
-	HasTimeRange bool
-	createdAt    time.Time
+	UserID        int
+	APIKeyID      int
+	Endpoint      string
+	Severity      string
+	RetriedOnly   bool
+	HideModelTest bool
+	IsAdmin       bool
+	StartTime     int
+	EndTime       int
+	HasTimeRange  bool
+	createdAt     time.Time
 }
 
 var relayLogStreamTokens = make(map[string]relayLogStreamTokenScope)
@@ -96,7 +99,16 @@ func RelayLogStreamTokenCreateWithTimeRange(scope model.RelayLogScope, isAdmin b
 		return "", err
 	}
 	token := hex.EncodeToString(bytes)
-	tokenScope := relayLogStreamTokenScope{UserID: scope.UserID, APIKeyID: scope.APIKeyID, Endpoint: scope.Endpoint, IsAdmin: isAdmin, createdAt: time.Now()}
+	tokenScope := relayLogStreamTokenScope{
+		UserID:        scope.UserID,
+		APIKeyID:      scope.APIKeyID,
+		Endpoint:      scope.Endpoint,
+		Severity:      scope.Severity,
+		RetriedOnly:   scope.RetriedOnly,
+		HideModelTest: scope.HideModelTest,
+		IsAdmin:       isAdmin,
+		createdAt:     time.Now(),
+	}
 	if startTime != nil && endTime != nil {
 		tokenScope.StartTime = *startTime
 		tokenScope.EndTime = *endTime
@@ -325,6 +337,7 @@ func RelayLogAdd(ctx context.Context, relayLog model.RelayLog) error {
 		relayLogAddPending(relayLog)
 		// 实时推送保持在 Add 当下就发, 不等落库(日志页/SSE 尾随看到的仍是即时的)
 		safe.SafeGo("relay-log-notify", func() { notifySubscribers(relayLog) })
+		invalidateModelTelemetryCache()
 		return nil
 	}
 
@@ -342,6 +355,7 @@ func RelayLogAdd(ctx context.Context, relayLog model.RelayLog) error {
 	}
 	relayLogCacheLock.Unlock()
 	safe.SafeGo("relay-log-notify", func() { notifySubscribers(relayLog) })
+	invalidateModelTelemetryCache()
 	return nil
 }
 
@@ -881,7 +895,11 @@ func RelayLogClear(ctx context.Context, scope *model.RelayLogScope) error {
 	if scope == nil || (scope.UserID == 0 && scope.APIKeyID == 0) {
 		query = query.Where("1 = 1")
 	}
-	return query.Delete(&model.RelayLog{}).Error
+	if err := query.Delete(&model.RelayLog{}).Error; err != nil {
+		return err
+	}
+	invalidateModelTelemetryCache()
+	return nil
 }
 
 func RelayLogRedact(relayLog model.RelayLog) model.RelayLog {
@@ -1007,6 +1025,13 @@ func relayLogSeverityValue(relayLog model.RelayLog) string {
 		return "warn"
 	}
 	return "success"
+}
+
+// RelayLogSeverityValue is the shared success/warn/error bucket used by list,
+// count, cache, and the live SSE tail so a streamed row cannot bypass the
+// filter the page asked for.
+func RelayLogSeverityValue(relayLog model.RelayLog) string {
+	return relayLogSeverityValue(relayLog)
 }
 
 func relayLogMatchScope(relayLog model.RelayLog, scope *model.RelayLogScope) bool {

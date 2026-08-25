@@ -426,9 +426,26 @@ export function Log() {
 
     // 服务端已按 severity 过滤；这里再做一遍本地过滤仅作实时插入时的显示兜底。
     const filteredLogs = useMemo(() => {
-        if (severityFilter === 'all') return logs;
-        return logs.filter((log) => getRelayLogSeverity(log) === severityFilter);
-    }, [logs, severityFilter]);
+        return logs.filter((log) => {
+            if (selectedEndpoint) {
+                const stored = log.request_endpoint?.trim() ?? '';
+                if (stored !== selectedEndpoint && !stored.startsWith(`${selectedEndpoint}_`)) {
+                    return false;
+                }
+            }
+            if (severityFilter !== 'all' && getRelayLogSeverity(log) !== severityFilter) {
+                return false;
+            }
+            if (retriedOnly) {
+                const attemptCount = log.total_attempts ?? log.attempts?.length ?? 0;
+                if (attemptCount <= 1) return false;
+            }
+            if (hideModelTest && (log.request_endpoint?.trim() ?? '').startsWith('model_test')) {
+                return false;
+            }
+            return true;
+        });
+    }, [hideModelTest, logs, retriedOnly, selectedEndpoint, severityFilter]);
 
     // 展示行：把重试过多个渠道的请求摊成分开的行（每个真实尝试一行），其余原样一行。
     const displayRows = useMemo(() => expandLogRows(filteredLogs), [filteredLogs]);

@@ -46,6 +46,12 @@ func ModelHourlyHealth(ctx context.Context) (model.ModelHealthResponse, error) {
 	end := start.Add(24 * time.Hour)
 	date := start.Format("20060102")
 
+	return modelHealthCache.getOrCompute(date, modelHealthCacheTTL, func() (model.ModelHealthResponse, error) {
+		return computeModelHourlyHealth(ctx, start, end, date)
+	})
+}
+
+func computeModelHourlyHealth(ctx context.Context, start, end time.Time, date string) (model.ModelHealthResponse, error) {
 	logs, err := modelHealthLogs(ctx, start.Unix(), end.Unix())
 	if err != nil {
 		return model.ModelHealthResponse{}, err

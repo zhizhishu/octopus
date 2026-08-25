@@ -37,6 +37,7 @@ func setupRelayLogTest(t *testing.T) context.Context {
 	if err := RelayLogClear(ctx, nil); err != nil {
 		t.Fatalf("clear logs: %v", err)
 	}
+	invalidateModelTelemetryCache()
 	return ctx
 }
 

@@ -62,7 +62,7 @@ function metricLine(model: ModelHealthModel, t: ReturnType<typeof useTranslation
 }
 
 export function ModelHealth() {
-    const { data } = useModelHealth();
+    const { data, isPending, isError } = useModelHealth();
     const t = useTranslations('home.modelHealth');
     const [expanded, setExpanded] = useState<Record<string, boolean>>({
         OpenAI: true,
@@ -80,10 +80,18 @@ export function ModelHealth() {
     } | null>(null);
 
     const providers = useMemo(() => data?.providers ?? [], [data]);
+    const hasModels = providers.some((provider) => provider.models.length > 0);
 
     return (
         <div className="rounded-3xl bg-card border-card-border border p-4 text-card-foreground custom-shadow">
             <h3 className="font-semibold text-base mb-3">{t('title')}</h3>
+            {isPending ? (
+                <p className="text-sm text-muted-foreground">{t('loading')}</p>
+            ) : isError ? (
+                <p className="text-sm text-muted-foreground">{t('loadFailed')}</p>
+            ) : !hasModels ? (
+                <p className="text-sm text-muted-foreground">{t('noData')}</p>
+            ) : (
             <div className="space-y-3">
                 {providers.map((provider) => {
                     const isExpanded = expanded[provider.provider] ?? true;
@@ -176,6 +184,7 @@ export function ModelHealth() {
                     );
                 })}
             </div>
+            )}
 
             {tooltip && typeof document !== 'undefined' && createPortal(
                 (() => {

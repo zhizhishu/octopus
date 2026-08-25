@@ -165,6 +165,27 @@ function logMatchesTimeRange(log: RelayLog, startTime?: number, endTime?: number
     return log.time >= startTime && log.time <= endTime;
 }
 
+function logMatchesLiveFilters(
+    log: RelayLog,
+    options: { endpoint?: string; severity?: string; retried?: boolean; hideModelTest?: boolean }
+) {
+    if (options.endpoint) {
+        const stored = log.request_endpoint?.trim() ?? '';
+        if (stored !== options.endpoint && !stored.startsWith(`${options.endpoint}_`)) {
+            return false;
+        }
+    }
+    if (options.severity && getRelayLogSeverity(log) !== options.severity) return false;
+    if (options.retried) {
+        const attemptCount = log.total_attempts ?? log.attempts?.length ?? 0;
+        if (attemptCount <= 1) return false;
+    }
+    if (options.hideModelTest && (log.request_endpoint?.trim() ?? '').startsWith('model_test')) {
+        return false;
+    }
+    return true;
+}
+
 function compareRelayLogsDesc(a: RelayLog, b: RelayLog) {
     if (a.time !== b.time) return b.time - a.time;
     return b.id - a.id;
@@ -459,6 +480,9 @@ export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?
                 appendOptionalParam(params, 'endpoint', endpoint);
                 appendOptionalParam(params, 'start_time', startTime);
                 appendOptionalParam(params, 'end_time', endTime);
+                appendOptionalParam(params, 'severity', severity);
+                if (retried) params.set('retried', '1');
+                if (hideModelTest) params.set('hide_model_test', '1');
                 const suffix = params.toString() ? `?${params.toString()}` : '';
                 const { token } = await apiClient.get<{ token: string }>(`/api/v1/log/stream-token${suffix}`);
                 if (cancelled) return;
@@ -488,6 +512,7 @@ export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?
                         if (page !== undefined && page !== 1) return;
                         const log: RelayLog = JSON.parse(event.data);
                         if (!logMatchesTimeRange(log, startTime, endTime)) return;
+                        if (!logMatchesLiveFilters(log, { endpoint, severity, retried, hideModelTest })) return;
                         queryClient.setQueryData(
                             queryKey,
                             (old: InfiniteData<RelayLog[], number> | undefined) => {
@@ -539,7 +564,7 @@ export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?
             reconnectAttemptRef.current = 0;
             setIsConnected(false);
         };
-    }, [apiKeyID, endpoint, live, page, pageSize, queryClient, queryKey, startTime, endTime, userID]);
+    }, [apiKeyID, endpoint, hideModelTest, live, page, pageSize, queryClient, queryKey, retried, severity, startTime, endTime, userID]);
 
     const clear = useCallback(() => {
         queryClient.removeQueries({ queryKey, exact: true });

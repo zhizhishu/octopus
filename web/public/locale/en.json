@@ -162,6 +162,8 @@
             "title": "Model Health",
             "models": "models",
             "noData": "No model requests",
+            "loading": "Loading model health…",
+            "loadFailed": "Model health is temporarily unavailable",
             "requestCount": "Requests",
             "successFailed": "Success / Failed",
             "firstTokenP90": "TTFT P90",
@@ -176,6 +178,8 @@
             "sortByCount": "Count",
             "sortByTokens": "Tokens",
             "noData": "No ranking data",
+            "loading": "Loading ranking…",
+            "loadFailed": "Ranking is temporarily unavailable",
             "successRate": "Success Rate"
         },
         "checkIn": {

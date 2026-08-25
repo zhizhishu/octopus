@@ -35,6 +35,12 @@ type modelRankAccumulator struct {
 }
 
 func ModelRequestRank(ctx context.Context) ([]model.ModelRankItem, error) {
+	return modelRankCache.getOrCompute("all", modelRankCacheTTL, func() ([]model.ModelRankItem, error) {
+		return computeModelRequestRank(ctx)
+	})
+}
+
+func computeModelRequestRank(ctx context.Context) ([]model.ModelRankItem, error) {
 	logs, err := modelRankLogs(ctx)
 	if err != nil {
 		return nil, err

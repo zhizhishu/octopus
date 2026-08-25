@@ -8,7 +8,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContents, TabsContent } from '@/compon
 import { useHomeViewStore, type RankSortMode } from '@/components/modules/home/store';
 
 export function Rank() {
-    const { data: modelRankData } = useStatsModelRank();
+    const { data: modelRankData, isPending, isError } = useStatsModelRank();
     const t = useTranslations('home.rank');
     const rankSortMode = useHomeViewStore((state) => state.rankSortMode);
     const setRankSortMode = useHomeViewStore((state) => state.setRankSortMode);
@@ -29,6 +29,20 @@ export function Rank() {
     }, [modelRankData]);
 
     const renderList = (models: StatsModelRankFormatted[], mode: RankSortMode) => {
+        if (isPending) {
+            return (
+                <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
+                    <p className="text-sm">{t('loading')}</p>
+                </div>
+            );
+        }
+        if (isError) {
+            return (
+                <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
+                    <p className="text-sm">{t('loadFailed')}</p>
+                </div>
+            );
+        }
         if (models.length === 0) {
             return (
                 <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">

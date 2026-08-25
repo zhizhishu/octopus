@@ -162,6 +162,8 @@
             "title": "模型健康",
             "models": "个模型",
             "noData": "暂无模型请求",
+            "loading": "模型健康加载中…",
+            "loadFailed": "模型健康暂时读不出来",
             "requestCount": "请求次数",
             "successFailed": "成功 / 失败",
             "firstTokenP90": "首字延迟P90",
@@ -176,6 +178,8 @@
             "sortByCount": "次数",
             "sortByTokens": "Tokens",
             "noData": "暂无排行数据",
+            "loading": "排行榜加载中…",
+            "loadFailed": "排行榜暂时读不出来",
             "successRate": "成功率"
         },
         "checkIn": {
