@@ -29,38 +29,37 @@ type ttlValue[T any] struct {
 }
 
 func (cache *ttlValue[T]) getOrCompute(key string, ttl time.Duration, compute func() (T, error)) (T, error) {
-	cache.mu.Lock()
-	if cache.ready && cache.err == nil && cache.key == key && time.Since(cache.storedAt) < ttl {
-		value := cache.value
-		cache.mu.Unlock()
-		return value, nil
-	}
-	if cache.computing {
-		wait := cache.wait
-		cache.mu.Unlock()
-		<-wait
+	for {
 		cache.mu.Lock()
-		value, err := cache.value, cache.err
+		if cache.ready && cache.err == nil && cache.key == key && time.Since(cache.storedAt) < ttl {
+			value := cache.value
+			cache.mu.Unlock()
+			return value, nil
+		}
+		if cache.computing {
+			wait := cache.wait
+			cache.mu.Unlock()
+			<-wait
+			continue
+		}
+		wait := make(chan struct{})
+		cache.wait = wait
+		cache.computing = true
+		cache.mu.Unlock()
+
+		value, err := compute()
+
+		cache.mu.Lock()
+		cache.value = value
+		cache.err = err
+		cache.key = key
+		cache.storedAt = time.Now()
+		cache.ready = err == nil
+		cache.computing = false
+		close(wait)
 		cache.mu.Unlock()
 		return value, err
 	}
-	wait := make(chan struct{})
-	cache.wait = wait
-	cache.computing = true
-	cache.mu.Unlock()
-
-	value, err := compute()
-
-	cache.mu.Lock()
-	cache.value = value
-	cache.err = err
-	cache.key = key
-	cache.storedAt = time.Now()
-	cache.ready = err == nil
-	cache.computing = false
-	close(wait)
-	cache.mu.Unlock()
-	return value, err
 }
 
 func (cache *ttlValue[T]) invalidate() {

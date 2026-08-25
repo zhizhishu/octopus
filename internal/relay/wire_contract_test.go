@@ -84,28 +84,43 @@ func TestApplyChannelWireHeadersCloakNeverUsesGenericIdentity(t *testing.T) {
 }
 
 func TestApplyChannelWireHeadersDropsLiteForGPT55AfterCustomHeaders(t *testing.T) {
-	request, err := http.NewRequest(http.MethodPost, "https://example.com/v1/responses", nil)
-	if err != nil {
-		t.Fatalf("create request: %v", err)
+	cases := []struct {
+		model string
+		want  string
+	}{
+		{model: "gpt-5.5", want: ""},
+		{model: "gpt-5.5-pro", want: ""},
+		{model: "gpt-5.6-sol", want: "true"},
 	}
-	request.Header.Set("X-Openai-Internal-Codex-Responses-Lite", "true")
-	channel := &dbmodel.Channel{
-		Type: outbound.OutboundTypeOpenAIResponse,
-		CustomHeader: []dbmodel.CustomHeader{
-			{HeaderKey: "X-Openai-Internal-Codex-Responses-Lite", HeaderValue: "true"},
-		},
-	}
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			request, err := http.NewRequest(http.MethodPost, "https://example.com/v1/responses", nil)
+			if err != nil {
+				t.Fatalf("create request: %v", err)
+			}
+			request.Header.Set("X-Openai-Internal-Codex-Responses-Lite", "true")
+			channel := &dbmodel.Channel{
+				Type: outbound.OutboundTypeOpenAIResponse,
+				CustomHeader: []dbmodel.CustomHeader{
+					{HeaderKey: "X-Openai-Internal-Codex-Responses-Lite", HeaderValue: "true"},
+				},
+			}
 
-	ApplyChannelWireHeaders(request, ChannelWireHeaderOptions{
-		Channel:     channel,
-		InboundType: inbound.InboundTypeOpenAIResponse,
-		InternalRequest: &transformermodel.InternalLLMRequest{
-			Model: "gpt-5.5",
-		},
-	})
+			ApplyChannelWireHeaders(request, ChannelWireHeaderOptions{
+				Channel:     channel,
+				InboundType: inbound.InboundTypeOpenAIResponse,
+				InternalRequest: &transformermodel.InternalLLMRequest{
+					Model: tc.model,
+				},
+			})
 
-	if got := request.Header.Get("X-Openai-Internal-Codex-Responses-Lite"); got != "" {
-		t.Fatalf("gpt-5.5 must not send the incompatible Lite header, got %q", got)
+			if got := request.Header.Get("X-Openai-Internal-Codex-Responses-Lite"); got != tc.want {
+				if tc.want == "" {
+					t.Fatalf("%s must not send the incompatible Lite header, got %q", tc.model, got)
+				}
+				t.Fatalf("%s Lite header = %q, want %q", tc.model, got, tc.want)
+			}
+		})
 	}
 }
 

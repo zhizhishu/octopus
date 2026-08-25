@@ -8,7 +8,11 @@ import (
 	"github.com/bestruirui/octopus/internal/model"
 )
 
-func TestModelRequestRankCacheInvalidatesOnRelayLogAdd(t *testing.T) {
+// The telemetry cache is deliberately TTL-bounded: RelayLogAdd does NOT invalidate
+// it (per-add invalidation defeated the cache entirely under sustained traffic).
+// A fresh rank is served stale until the TTL lapses or an explicit invalidation
+// (RelayLogClear / manual) drops it. This test locks that contract.
+func TestModelRequestRankCacheIsTTLBoundedNotPerAddInvalidated(t *testing.T) {
 	ctx := setupRelayLogTest(t)
 	now := time.Now().Unix()
 
@@ -45,13 +49,25 @@ func TestModelRequestRankCacheInvalidatesOnRelayLogAdd(t *testing.T) {
 		t.Fatalf("add relay log: %v", err)
 	}
 
+	// Within the TTL window the cached rank stays stale on purpose.
 	second, err := ModelRequestRank(ctx)
 	if err != nil {
 		t.Fatalf("second rank: %v", err)
 	}
 	got = findModelRankItem(t, second, "cached-model")
+	if got.RequestCount != 1 {
+		t.Fatalf("expected TTL-bounded cache to serve the stale rank after add, got %#v", got)
+	}
+
+	// An explicit invalidation must drop the entry so the next call recomputes.
+	invalidateModelTelemetryCache()
+	third, err := ModelRequestRank(ctx)
+	if err != nil {
+		t.Fatalf("third rank: %v", err)
+	}
+	got = findModelRankItem(t, third, "cached-model")
 	if got.RequestCount != 2 {
-		t.Fatalf("expected cache to invalidate after RelayLogAdd, got %#v", got)
+		t.Fatalf("expected explicit invalidation to force a recompute, got %#v", got)
 	}
 }
 

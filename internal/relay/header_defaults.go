@@ -351,13 +351,31 @@ func applyCodexHeaderDefaultsWithFingerprint(req *http.Request, internalRequest 
 	applyCodexSessionHeaders(req.Header, internalRequest, fp.CodexInstallationID())
 }
 
+// Models that reject or must avoid the Lite route upstream. The gpt-5.5 base
+// slug is confirmed by a live 400 ("This model is not supported when using
+// X-OpenAI-Internal-Codex-Responses-Lite"); the pro variants are family
+// inference, not yet live-probed. Note sub2api's own no-Lite list targets
+// gpt-5.6-* for custom-key providers (openai_codex_models_service.go) — a
+// different concern, but a hint that Lite eligibility is per-model and shifts;
+// revisit if a 5.6 model ever 400s on Lite. Mapping-renamed models never reach
+// this check, so only unmapped client names land here.
+var codexResponsesLiteDeniedModels = map[string]struct{}{
+	"gpt-5.5":     {},
+	"gpt-5.5-pro": {},
+	"gpt-5-5-pro": {},
+}
+
 func applyCodexResponsesLiteHeader(headers http.Header, internalRequest *model.InternalLLMRequest) {
-	// gpt-5.5 currently rejects the Lite route before inference. Delete rather than merely
-	// omit so a downstream client or operator custom header cannot add the incompatible
-	// capability back after Octopus has selected the actual upstream model.
-	if internalRequest != nil && strings.EqualFold(strings.TrimSpace(internalRequest.Model), "gpt-5.5") {
-		headers.Del("X-Openai-Internal-Codex-Responses-Lite")
-		return
+	// The gpt-5.5 family denylist rejects the Lite route before inference. Delete
+	// rather than merely omit so a downstream client or operator custom header
+	// cannot add the incompatible capability back after Octopus has selected the
+	// actual upstream model.
+	if internalRequest != nil {
+		modelName := strings.ToLower(strings.TrimSpace(internalRequest.Model))
+		if _, denied := codexResponsesLiteDeniedModels[modelName]; denied {
+			headers.Del("X-Openai-Internal-Codex-Responses-Lite")
+			return
+		}
 	}
 
 	// Codex 0.144.x emits this header for Lite-capable models. Unknown models retain the
