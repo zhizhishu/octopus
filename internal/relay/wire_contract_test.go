@@ -32,6 +32,7 @@ func TestApplyChannelWireHeadersReassertsCodexPairAfterCustomHeaders(t *testing.
 		Channel:     channel,
 		InboundType: inbound.InboundTypeOpenAIResponse,
 		InternalRequest: &transformermodel.InternalLLMRequest{
+			Model:          "gpt-5.6-sol",
 			PromptCacheKey: &promptCacheKey,
 		},
 	})
@@ -82,6 +83,32 @@ func TestApplyChannelWireHeadersCloakNeverUsesGenericIdentity(t *testing.T) {
 	}
 }
 
+func TestApplyChannelWireHeadersDropsLiteForGPT55AfterCustomHeaders(t *testing.T) {
+	request, err := http.NewRequest(http.MethodPost, "https://example.com/v1/responses", nil)
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	request.Header.Set("X-Openai-Internal-Codex-Responses-Lite", "true")
+	channel := &dbmodel.Channel{
+		Type: outbound.OutboundTypeOpenAIResponse,
+		CustomHeader: []dbmodel.CustomHeader{
+			{HeaderKey: "X-Openai-Internal-Codex-Responses-Lite", HeaderValue: "true"},
+		},
+	}
+
+	ApplyChannelWireHeaders(request, ChannelWireHeaderOptions{
+		Channel:     channel,
+		InboundType: inbound.InboundTypeOpenAIResponse,
+		InternalRequest: &transformermodel.InternalLLMRequest{
+			Model: "gpt-5.5",
+		},
+	})
+
+	if got := request.Header.Get("X-Openai-Internal-Codex-Responses-Lite"); got != "" {
+		t.Fatalf("gpt-5.5 must not send the incompatible Lite header, got %q", got)
+	}
+}
+
 func TestApplyParamOverrideUsesRelayNullDeletionSemantics(t *testing.T) {
 	requestBody := `{"model":"gpt-5.6-sol","temperature":0.7,"store":true}`
 	request, err := http.NewRequest(http.MethodPost, "https://example.com/v1/responses", strings.NewReader(requestBody))
@@ -111,4 +138,3 @@ func TestApplyParamOverrideUsesRelayNullDeletionSemantics(t *testing.T) {
 		t.Fatalf("unrelated model changed to %#v", got)
 	}
 }
-

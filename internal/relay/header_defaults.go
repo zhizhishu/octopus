@@ -67,6 +67,7 @@ func ApplyChannelWireHeaders(req *http.Request, options ChannelWireHeaderOptions
 		fingerprint := resolveFingerprintForChannel(options.Channel)
 		setHeaderForce(req.Header, "Originator", fingerprint.CodexOriginator())
 		setHeaderForce(req.Header, "User-Agent", fingerprint.CodexUserAgent())
+		applyCodexResponsesLiteHeader(req.Header, options.InternalRequest)
 	}
 	// Genuine Codex CLI sends no Accept-Encoding. Re-assert this after custom
 	// headers because a channel preset can otherwise add it back.
@@ -346,10 +347,22 @@ func applyCodexHeaderDefaultsWithFingerprint(req *http.Request, internalRequest 
 	setHeaderForce(req.Header, "Originator", fp.CodexOriginator())
 	setHeaderForce(req.Header, "User-Agent", fp.CodexUserAgent())
 	setHeaderIfMissing(req.Header, "X-Codex-Beta-Features", fp.CodexBetaFeatures())
-	// codex 0.144.x always emits this static header on /responses (packet-verified 2026-07-10);
-	// wire position (4th, after x-codex-turn-metadata) is driven by codexCanonicalHeaderOrder.
-	setHeaderIfMissing(req.Header, "X-Openai-Internal-Codex-Responses-Lite", "true")
+	applyCodexResponsesLiteHeader(req.Header, internalRequest)
 	applyCodexSessionHeaders(req.Header, internalRequest, fp.CodexInstallationID())
+}
+
+func applyCodexResponsesLiteHeader(headers http.Header, internalRequest *model.InternalLLMRequest) {
+	// gpt-5.5 currently rejects the Lite route before inference. Delete rather than merely
+	// omit so a downstream client or operator custom header cannot add the incompatible
+	// capability back after Octopus has selected the actual upstream model.
+	if internalRequest != nil && strings.EqualFold(strings.TrimSpace(internalRequest.Model), "gpt-5.5") {
+		headers.Del("X-Openai-Internal-Codex-Responses-Lite")
+		return
+	}
+
+	// Codex 0.144.x emits this header for Lite-capable models. Unknown models retain the
+	// established wire contract; only an upstream-confirmed incompatibility is denied.
+	setHeaderIfMissing(headers, "X-Openai-Internal-Codex-Responses-Lite", "true")
 }
 
 func setHeaderIfMissing(headers http.Header, key, value string) {

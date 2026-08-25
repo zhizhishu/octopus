@@ -647,8 +647,8 @@ func rawProtocolStringValue(value any) string {
 	}
 }
 
-func rawProtocolCodexIdentity(payload map[string]any, clientSessionKey string) *transformerModel.InternalLLMRequest {
-	req := &transformerModel.InternalLLMRequest{}
+func rawProtocolCodexIdentity(payload map[string]any, clientSessionKey, actualModel string) *transformerModel.InternalLLMRequest {
+	req := &transformerModel.InternalLLMRequest{Model: actualModel}
 	sessionID := strings.TrimSpace(rawProtocolStringValue(payload["prompt_cache_key"]))
 	if sessionID == "" {
 		sessionID = strings.TrimSpace(clientSessionKey)
@@ -866,7 +866,7 @@ func rawProtocolAttempt(
 	}
 	copyHeadersToUpstream(req, c, channel, channelKey, contentType, stream)
 	if isResponsesCompactRawProtocol(options) {
-		applyCodexHeaderDefaultsWithFingerprint(req, rawProtocolCodexIdentity(jsonPayload, clientSessionKey), resolveFingerprintForChannel(channel))
+		applyCodexHeaderDefaultsWithFingerprint(req, rawProtocolCodexIdentity(jsonPayload, clientSessionKey, actualModel), resolveFingerprintForChannel(channel))
 	}
 
 	httpClient, err := helper.ChannelHttpClient(channel)
