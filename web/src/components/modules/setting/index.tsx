@@ -1,5 +1,8 @@
 'use client';
 
+import { useEffect, useRef, useState } from 'react';
+import { useTranslations } from 'next-intl';
+import { Zap } from 'lucide-react';
 import { PageWrapper } from '@/components/common/PageWrapper';
 import { SettingAppearance } from './Appearance';
 import { SettingSystem } from './System';
@@ -11,6 +14,61 @@ import { SettingLLMSync } from './LLMSync';
 import { SettingLog } from './Log';
 import { SettingBackup } from './Backup';
 import { SettingCircuitBreaker } from './CircuitBreaker';
+import { useSettingList, useSetSetting, SettingKey } from '@/api/endpoints/setting';
+import { toast } from '@/components/common/Toast';
+
+function SettingRouteModeOverride() {
+    const t = useTranslations('setting');
+    const { data: settings } = useSettingList();
+    const setSetting = useSetSetting();
+    const [routeMode, setRouteMode] = useState('');
+    const initialRouteMode = useRef('');
+
+    useEffect(() => {
+        if (settings) {
+            const rm = settings.find((s) => s.key === SettingKey.RouteModeOverride);
+            if (rm) {
+                queueMicrotask(() => setRouteMode(rm.value || ''));
+                initialRouteMode.current = rm.value || '';
+            }
+        }
+    }, [settings]);
+
+    const handleSave = (value: string) => {
+        if (value === initialRouteMode.current) return;
+        setSetting.mutate({ key: SettingKey.RouteModeOverride, value }, {
+            onSuccess: () => {
+                toast.success(t('saved'));
+                initialRouteMode.current = value;
+            }
+        });
+    };
+
+    return (
+        <div className="rounded-3xl border border-border bg-card p-6">
+            <div className="flex items-center justify-between gap-4">
+                <div className="flex min-w-0 items-center gap-3">
+                    <Zap className="h-5 w-5 shrink-0 text-muted-foreground" />
+                    <span className="min-w-0 text-sm font-medium">{t('routeModeOverride.label')}</span>
+                </div>
+                <select
+                    value={routeMode}
+                    onChange={(event) => {
+                        const value = event.target.value;
+                        setRouteMode(value);
+                        handleSave(value);
+                    }}
+                    aria-label={t('routeModeOverride.label')}
+                    className="h-9 w-48 shrink-0 rounded-xl border border-input bg-background px-3 text-sm text-foreground"
+                >
+                    <option value="">{t('routeModeOverride.followGroup')}</option>
+                    <option value="spread">{t('routeModeOverride.spread')}</option>
+                    <option value="fill_first">{t('routeModeOverride.fillFirst')}</option>
+                </select>
+            </div>
+        </div>
+    );
+}
 
 export function Setting() {
     return (
@@ -27,6 +85,7 @@ export function Setting() {
                     <SettingBackup key="setting-backup" />
                     <SettingLLMSync key="setting-llmsync" />
                 </PageWrapper>
+                <SettingRouteModeOverride />
                 {/* 系统设置内容最多，单独横跨整行（左右两边） */}
                 <SettingSystem />
                 {/* 指纹 Profile 管理：字段多、配合 cloak.profile_id 选用，单独横跨整行 */}

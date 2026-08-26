@@ -9,6 +9,7 @@ import { useChannelList } from '@/api/endpoints/channel';
 import { Button } from '@/components/ui/button';
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
+import { Switch } from '@/components/ui/switch';
 import { Accordion, AccordionContent, AccordionItem } from '@/components/ui/accordion';
 import { cn } from '@/lib/utils';
 import { getModelIcon } from '@/lib/model-icons';
@@ -24,6 +25,7 @@ export type GroupEditorValues = {
     name: string;
     match_regex: string;
     mode: GroupMode;
+    mode_locked: boolean;
     first_token_time_out: number;
     session_keep_time: number;
     max_concurrent: number;
@@ -269,6 +271,7 @@ export function GroupEditor({
     const [groupName, setGroupName] = useState(initial?.name ?? '');
     const [matchRegex, setMatchRegex] = useState(initial?.match_regex ?? '');
     const [mode, setMode] = useState<GroupMode>(normalizeGroupMode((initial?.mode ?? GroupMode.RoundRobin) as GroupMode));
+    const [modeLocked, setModeLocked] = useState<boolean>(initial?.mode_locked ?? false);
     const [firstTokenTimeOut, setFirstTokenTimeOut] = useState<number>(initial?.first_token_time_out ?? 0);
     const [sessionKeepTime, setSessionKeepTime] = useState<number>(initial?.session_keep_time ?? 0);
     const [maxConcurrent, setMaxConcurrent] = useState<number>(initial?.max_concurrent ?? 0);
@@ -344,6 +347,7 @@ export function GroupEditor({
             name: groupName,
             match_regex: regexKey,
             mode,
+            mode_locked: modeLocked,
             first_token_time_out: firstTokenTimeOut,
             session_keep_time: sessionKeepTime,
             max_concurrent: maxConcurrent,
@@ -521,20 +525,40 @@ export function GroupEditor({
                     </div>
 
                     {/* Mode */}
-                    <div className="flex gap-1">
-                        {SELECTABLE_GROUP_MODES.map((m) => (
-                            <button
-                                key={m}
-                                type="button"
-                                onClick={() => setMode(m)}
-                                className={cn(
-                                    'flex-1 py-1 text-xs rounded-lg transition-colors',
-                                    mode === m ? 'bg-primary text-primary-foreground' : 'bg-muted hover:bg-muted/80'
-                                )}
-                            >
-                                {t(`mode.${MODE_LABELS[m]}`)}
-                            </button>
-                        ))}
+                    <div className="flex items-center gap-2">
+                        <div className="flex flex-1 gap-1">
+                            {SELECTABLE_GROUP_MODES.map((m) => (
+                                <button
+                                    key={m}
+                                    type="button"
+                                    onClick={() => setMode(m)}
+                                    className={cn(
+                                        'flex-1 py-1 text-xs rounded-lg transition-colors',
+                                        mode === m ? 'bg-primary text-primary-foreground' : 'bg-muted hover:bg-muted/80'
+                                    )}
+                                >
+                                    {t(`mode.${MODE_LABELS[m]}`)}
+                                </button>
+                            ))}
+                        </div>
+                        <div className="flex shrink-0 items-center gap-2">
+                            <span className="text-xs font-medium text-foreground">{t('form.modeLocked')}</span>
+                            <Switch
+                                checked={modeLocked}
+                                onCheckedChange={setModeLocked}
+                                aria-label={t('form.modeLocked')}
+                            />
+                            <TooltipProvider>
+                                <Tooltip>
+                                    <TooltipTrigger asChild>
+                                        <HelpCircle className="size-4 text-muted-foreground cursor-help" />
+                                    </TooltipTrigger>
+                                    <TooltipContent>
+                                        {t('form.modeLockedHint')}
+                                    </TooltipContent>
+                                </Tooltip>
+                            </TooltipProvider>
+                        </div>
                     </div>
 
                     <div className="min-h-0">

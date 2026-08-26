@@ -45,6 +45,7 @@ export interface Group {
     id?: number;
     name: string;
     mode: GroupMode;
+    mode_locked?: boolean;               // true=本组模式独立于全局 route_mode_override
     match_regex: string;
     first_token_time_out?: number;
     session_keep_time?: number;
@@ -79,6 +80,7 @@ export interface GroupUpdateRequest {
     id: number;
     name?: string;                        // 仅在名称变更时发送
     mode?: GroupMode;                     // 仅在模式变更时发送
+    mode_locked?: boolean;                // 仅在锁定标记变更时发送; true=本组模式独立于全局 route_mode_override
     match_regex?: string;                 // 仅在匹配正则变更时发送
     first_token_time_out?: number;        // 仅在超时变更时发送
     session_keep_time?: number;           // 仅在会话保持时间变更时发送
@@ -224,4 +226,3 @@ export function useDeleteGroup() {
 //         },
 //     });
 // }
-

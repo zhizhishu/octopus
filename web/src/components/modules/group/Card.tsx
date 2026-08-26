@@ -55,6 +55,7 @@ function EditDialogContent({ group, displayMembers, isSubmitting, onSubmit }: Ed
                         name: group.name,
                         match_regex: group.match_regex ?? '',
                         mode: group.mode,
+                        mode_locked: group.mode_locked ?? false,
                         first_token_time_out: group.first_token_time_out ?? 0,
                         session_keep_time: group.session_keep_time ?? 0,
                         max_concurrent: group.max_concurrent ?? 0,
@@ -304,6 +305,7 @@ export function GroupCard({ group, duplicateCount = 1 }: { group: Group; duplica
 
         if (nextName && nextName !== group.name) payload.name = nextName;
         if (values.mode !== group.mode) payload.mode = values.mode;
+        if (values.mode_locked !== (group.mode_locked ?? false)) payload.mode_locked = values.mode_locked;
         if (nextRegex !== (group.match_regex ?? '')) payload.match_regex = nextRegex;
         if (nextFirstTokenTimeOut !== (group.first_token_time_out ?? 0)) payload.first_token_time_out = nextFirstTokenTimeOut;
         if (nextSessionKeepTime !== (group.session_keep_time ?? 0)) payload.session_keep_time = nextSessionKeepTime;
@@ -325,7 +327,7 @@ export function GroupCard({ group, duplicateCount = 1 }: { group: Group; duplica
             },
             onError,
         });
-    }, [group.first_token_time_out, group.session_keep_time, group.max_concurrent, group.rpm_limit, group.id, group.items, group.match_regex, group.mode, group.name, onSuccess, onError, updateGroup]);
+    }, [group.first_token_time_out, group.session_keep_time, group.max_concurrent, group.rpm_limit, group.id, group.items, group.match_regex, group.mode, group.mode_locked, group.name, onSuccess, onError, updateGroup]);
 
     return (
         <article

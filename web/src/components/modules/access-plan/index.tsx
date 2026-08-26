@@ -232,6 +232,11 @@ function asPositiveInt(value: string, fallback: number) {
     return Number.isFinite(next) && next > 0 ? next : fallback;
 }
 
+function clampRoutePriority(value: number) {
+    if (!Number.isFinite(value)) return 0;
+    return Math.min(9, Math.max(0, Math.trunc(value)));
+}
+
 function asRouteWeight(value: string) {
     return Math.min(asPositiveInt(value, 1), 1000);
 }
@@ -970,14 +975,17 @@ type RequestNodeData = {
 type TargetNodeData = {
     channelName: string;
     channelId: number;
+    targetId?: number;
     priority: number;
     showPriority: boolean;
+    fillFirst: boolean;
     weight: number;
     upstreamModel: string;
     enabled: boolean;
     fallback: string;
     multiplier: number | string;
     billingSource: string;
+    onPriorityChange?: (targetId: number, priority: number) => void;
 };
 type FamilyBandData = { family: ModelFamilyKey; label: string; modelCount: number; targetCount: number; width: number; height: number };
 // 渠道级 model_mapping：客户端请求 fromModel 这个名，发上游时改成 toModel 这个名（与方案路由无关，只读展示）
@@ -1045,6 +1053,16 @@ const RequestFlowCard = memo(function RequestFlowCard({ data }: NodeProps<Reques
 });
 
 const TargetFlowCard = memo(function TargetFlowCard({ data }: NodeProps<TargetFlowNode>) {
+    const priority = clampRoutePriority(data.priority);
+    const bumpPriority = (delta: number) => {
+        if (!data.targetId || !data.onPriorityChange) return;
+        const next = clampRoutePriority(priority + delta);
+        if (next === priority) return;
+        data.onPriorityChange(data.targetId, next);
+    };
+    const priorityTitle = data.fillFirst
+        ? accessPlanText('routes.priority')
+        : '并列显示不参与路由';
     return (
         <div
             className={cn('grid grid-cols-[minmax(84px,1.1fr)_minmax(96px,1.4fr)_auto_auto] items-center gap-3 rounded-2xl border bg-card/90 px-3 py-2', data.enabled ? 'border-emerald-500/25' : 'border-border opacity-65')}
@@ -1056,7 +1074,45 @@ const TargetFlowCard = memo(function TargetFlowCard({ data }: NodeProps<TargetFl
                     <span className={cn('size-2 shrink-0 rounded-full', data.enabled ? 'bg-emerald-500' : 'bg-muted-foreground')} />
                     <span className="truncate text-sm font-bold text-foreground">{data.channelName}</span>
                 </div>
-                <div className="mt-0.5 text-[10px] text-muted-foreground">#{data.channelId} · {data.showPriority ? `P${data.priority}` : '并列'}</div>
+                <div className="mt-0.5 flex min-w-0 items-center gap-1 text-[10px] text-muted-foreground" title={priorityTitle}>
+                    <span className="shrink-0">#{data.channelId}</span>
+                    <span className="shrink-0">·</span>
+                    {data.fillFirst ? (
+                        <span className="shrink-0">{data.showPriority ? `P${priority}` : accessPlanText('routes.priority')}</span>
+                    ) : (
+                        <span className="shrink-0">并列</span>
+                    )}
+                    <div
+                        className="nodrag nopan pointer-events-auto ml-0.5 inline-flex shrink-0 items-center gap-0.5"
+                        onPointerDown={(event) => event.stopPropagation()}
+                    >
+                        <button
+                            type="button"
+                            className="flex size-4 items-center justify-center rounded border border-border/70 bg-background leading-none text-foreground hover:bg-muted disabled:opacity-40"
+                            disabled={!data.targetId || priority <= 0}
+                            aria-label={`${accessPlanText('routes.priority')} -`}
+                            onClick={(event) => {
+                                event.stopPropagation();
+                                bumpPriority(-1);
+                            }}
+                        >
+                            −
+                        </button>
+                        <span className="min-w-3.5 text-center font-semibold text-foreground">{priority}</span>
+                        <button
+                            type="button"
+                            className="flex size-4 items-center justify-center rounded border border-border/70 bg-background leading-none text-foreground hover:bg-muted disabled:opacity-40"
+                            disabled={!data.targetId || priority >= 9}
+                            aria-label={`${accessPlanText('routes.priority')} +`}
+                            onClick={(event) => {
+                                event.stopPropagation();
+                                bumpPriority(1);
+                            }}
+                        >
+                            +
+                        </button>
+                    </div>
+                </div>
             </div>
             <div className="min-w-0">
                 <div className="text-[9px] font-bold uppercase tracking-[0.14em] text-muted-foreground">{accessPlanText('routes.upstreamTarget')}</div>
@@ -1176,6 +1232,7 @@ function buildRouteFlow(
     onEditRequest: (requestModel: string) => void,
     channelMappings: ChannelModelMapping[] = [],
     groupModeByName: Map<string, GroupMode> = new Map(),
+    onPriorityChange?: (targetId: number, priority: number) => void,
 ): { nodes: FlowNode[]; edges: Edge[] } {
     const nodes: FlowNode[] = [];
     const edges: Edge[] = [];
@@ -1236,14 +1293,17 @@ function buildRouteFlow(
                     data: {
                         channelName,
                         channelId: target.channel_id,
-                        priority: target.priority || 0,
+                        targetId: target.id,
+                        priority: clampRoutePriority(target.priority || 0),
                         showPriority,
+                        fillFirst: isFillFirstMode,
                         weight: target.weight || 1,
                         upstreamModel: cleanOneMillionModelName(target.upstream_model || accessPlanText('routes.unset')),
                         enabled: target.enabled,
                         fallback: fallbackModeLabel(target.fallback_mode),
                         multiplier: billing.multiplier,
                         billingSource: billingSourceLabel(target.billing_model_source),
+                        onPriorityChange,
                     },
                 });
                 edges.push({
@@ -1343,11 +1403,12 @@ type RouteFlowCanvasProps = {
     channels: Array<{ id: number; name: string; enabled: boolean }>;
     channelMappings: ChannelModelMapping[];
     onEditRequest: (requestModel: string) => void;
+    onPriorityChange?: (targetId: number, priority: number) => void;
     onOpenJson?: () => void;
 };
 
 function RouteFlowCanvasInner({
-    plan, rows, channels, channelMappings, onEditRequest, onOpenJson,
+    plan, rows, channels, channelMappings, onEditRequest, onPriorityChange, onOpenJson,
 }: RouteFlowCanvasProps) {
     const t = accessPlanText;
     const channelNameByID = useMemo(() => new Map(channels.map((channel) => [channel.id, channel.name])), [channels]);
@@ -1416,20 +1477,40 @@ function RouteFlowCanvasInner({
         ));
     }, [channelMappings, q]);
 
+    const lastFitSignature = useRef('');
+    const patchTargetPriority = useRef<(targetId: number, priority: number) => void>(() => {});
+
+    const applyPriorityChange = useCallback((targetId: number, nextPriority: number) => {
+        const priority = clampRoutePriority(nextPriority);
+        patchTargetPriority.current(targetId, priority);
+        onPriorityChange?.(targetId, priority);
+    }, [onPriorityChange]);
+
     const flow = useMemo(
-        () => buildRouteFlow(plan, filteredRows, channelNameByID, onEditRequest, filteredMappings, groupModeByName),
-        [plan, filteredRows, channelNameByID, onEditRequest, filteredMappings, groupModeByName],
+        () => buildRouteFlow(plan, filteredRows, channelNameByID, onEditRequest, filteredMappings, groupModeByName, applyPriorityChange),
+        [plan, filteredRows, channelNameByID, onEditRequest, filteredMappings, groupModeByName, applyPriorityChange],
     );
 
     const [nodes, setNodes, onNodesChange] = useNodesState<FlowNode>(flow.nodes);
     const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>(flow.edges);
+    patchTargetPriority.current = (targetId, priority) => {
+        setNodes((current) => current.map((node) => {
+            if (node.type !== 'target') return node;
+            const data = node.data as TargetNodeData;
+            if (data.targetId !== targetId || data.priority === priority) return node;
+            return { ...node, data: { ...data, priority } };
+        }));
+    };
 
     useEffect(() => {
         setNodes(flow.nodes);
         setEdges(flow.edges);
+        const signature = `${filteredRows.map((row) => `${row.requestKey}:${row.targets.length}`).join('|')}|${filteredMappings.length}|${q}`;
+        if (signature === lastFitSignature.current) return;
+        lastFitSignature.current = signature;
         const raf = requestAnimationFrame(() => fitView({ padding: 0.14, maxZoom: 1, duration: 220 }));
         return () => cancelAnimationFrame(raf);
-    }, [flow, setNodes, setEdges, fitView]);
+    }, [flow, setNodes, setEdges, fitView, filteredRows, filteredMappings.length, q]);
 
     const showAll = useCallback(() => fitView({ padding: 0.12, duration: 400 }), [fitView]);
 
@@ -1852,7 +1933,8 @@ function RouteTargetsEditor({
     const saveTargets = (
         nextTargets: AccessPlanRouteTarget[],
         successMessage = t('toast.routesUpdated'),
-        onSuccess?: () => void
+        onSuccess?: () => void,
+        restoreOnError?: AccessPlanRouteTarget[],
     ) => {
         updateRoutes.mutate(
             {
@@ -1861,7 +1943,7 @@ function RouteTargetsEditor({
                     ...target,
                     request_model: cleanOneMillionModelName(target.request_model),
                     upstream_model: cleanOneMillionModelName(target.upstream_model),
-                    priority: target.priority || index + 1,
+                    priority: Number.isFinite(target.priority) ? clampRoutePriority(target.priority) : clampRoutePriority(index + 1),
                     weight: target.weight || 1,
                     enabled: target.enabled,
                     billing_model_source: target.billing_model_source ?? 'request_model',
@@ -1878,11 +1960,37 @@ function RouteTargetsEditor({
                     onSuccess?.();
                 },
                 onError: (error) => {
+                    if (restoreOnError) setTargets(restoreOnError);
                     toast.error(t('toast.routesUpdateFailed'), { description: apiErrorMessage(error) });
                 },
             }
         );
     };
+
+    const saveTargetsRef = useRef(saveTargets);
+    saveTargetsRef.current = saveTargets;
+    const channelModelIndexRef = useRef(channelModelIndex);
+    channelModelIndexRef.current = channelModelIndex;
+    const targetsRef = useRef(targets);
+    targetsRef.current = targets;
+
+    const changeCanvasPriority = useCallback((targetId: number, nextPriorityRaw: number) => {
+        const nextPriority = clampRoutePriority(nextPriorityRaw);
+        const current = targetsRef.current;
+        const index = current.findIndex((target) => target.id === targetId);
+        if (index < 0) return;
+        if (clampRoutePriority(current[index].priority) === nextPriority) return;
+        const next = current.map((target, currentIndex) => (
+            currentIndex === index ? { ...target, priority: nextPriority } : target
+        ));
+        setTargets(next);
+        saveTargetsRef.current(
+            activeRouteTargets(next, channelModelIndexRef.current),
+            t('toast.routesUpdated'),
+            undefined,
+            current,
+        );
+    }, [t]);
 
     const save = (onSuccess?: () => void) => saveTargets(editableTargets, t('toast.routesUpdated'), onSuccess);
 
@@ -1901,7 +2009,7 @@ function RouteTargetsEditor({
             request_model: cleanOneMillionModelName(target.request_model),
             channel_id: target.channel_id,
             upstream_model: cleanOneMillionModelName(target.upstream_model),
-            priority: target.priority || 1,
+            priority: clampRoutePriority(target.priority ?? 1),
             weight: target.weight || 1,
             enabled: target.enabled,
             billing_model_source: target.billing_model_source ?? 'request_model',
@@ -1994,6 +2102,7 @@ function RouteTargetsEditor({
                 channels={channels}
                 channelMappings={channelMappings}
                 onEditRequest={setEditingRequestModel}
+                onPriorityChange={changeCanvasPriority}
                 onOpenJson={openJson}
             />
 

@@ -44,22 +44,51 @@ function modelTestProxyLabel(result: Pick<ModelTestResult, 'proxy_used' | 'proxy
 function AdvancedSettingsShell({
     panel,
     title,
+    onClose,
     children,
 }: {
     panel: boolean;
     title: string;
+    onClose?: () => void;
     children: ReactNode;
 }) {
+    // Escape closes the advanced panel; capture phase so inner inputs stop seeing it first.
+    useEffect(() => {
+        if (!panel || !onClose) return;
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (event.key !== 'Escape') return;
+            event.preventDefault();
+            event.stopPropagation();
+            onClose();
+        };
+        document.addEventListener('keydown', onKeyDown, true);
+        return () => document.removeEventListener('keydown', onKeyDown, true);
+    }, [panel, onClose]);
+
     if (panel) {
         return (
-            <aside className="absolute right-0 top-0 z-10 w-full max-w-[min(26rem,100%)] rounded-xl border bg-card max-h-[72vh] overflow-y-auto shadow-lg animate-in fade-in slide-in-from-right-3">
-                <div className="space-y-4 p-4">
-                    <div className="border-b pb-3 text-sm font-medium text-card-foreground">
-                        {title}
+            <>
+                {onClose && (
+                    <div
+                        className="fixed inset-0 z-10 bg-black/40 animate-in fade-in sm:hidden"
+                        onClick={onClose}
+                        aria-hidden="true"
+                    />
+                )}
+                {/* Mobile: full-width bottom sheet with tap-outside dismiss; desktop keeps
+                    the original right-side 26rem sheet untouched. */}
+                <aside
+                    className="fixed inset-x-0 bottom-0 z-20 w-full max-h-[85vh] overflow-y-auto rounded-t-xl border bg-card shadow-lg animate-in fade-in slide-in-from-bottom-3 sm:absolute sm:inset-x-auto sm:bottom-auto sm:right-0 sm:top-0 sm:z-10 sm:max-h-[72vh] sm:max-w-[min(26rem,100%)] sm:rounded-xl sm:border sm:slide-in-from-bottom-0 sm:slide-in-from-right-3"
+                    onClick={(event) => event.stopPropagation()}
+                >
+                    <div className="space-y-4 p-4">
+                        <div className="border-b pb-3 text-sm font-medium text-card-foreground">
+                            {title}
+                        </div>
+                        {children}
                     </div>
-                    {children}
-                </div>
-            </aside>
+                </aside>
+            </>
         );
     }
 
@@ -1323,7 +1352,7 @@ export function ChannelForm({
             </div>
 
             {showAdvanced && (
-                <AdvancedSettingsShell panel={isAdvancedPanel} title={t('advanced')}>
+                <AdvancedSettingsShell panel={isAdvancedPanel} title={t('advanced')} onClose={onCancel}>
                         {/* Vertical stack: auto-group and proxy each take a full row; the two
                             fingerprint controls (mode + profile) are grouped into one titled card
                             below so they read as one coherent section, not two floating selects. */}

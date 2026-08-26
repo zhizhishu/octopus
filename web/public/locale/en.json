@@ -330,13 +330,13 @@
             "invalid": "Global first-token timeout default must be 0 or a positive integer number of seconds"
         },
         "routeModeOverride": {
-            "label": "Global route-mode override",
+            "label": "Global route-mode default",
             "hint": "Forces every group to use one routing mode, overriding each group's own choice. Spread = load-balance across same-priority channels; Fill-first = concentrate on the top healthy channel and only sink on failure for a better upstream cache hit rate.",
             "description": "An override switch: choosing Spread or Fill-first replaces the mode each group picked. Follow group = no override, each group keeps its own configuration.",
             "defaultHint": "Default: follow group",
-            "followGroup": "Follow group",
-            "spread": "Force spread",
-            "fillFirst": "Force fill-first"
+            "followGroup": "Follow group settings",
+            "spread": "Global round robin",
+            "fillFirst": "Global fill first"
         },
         "poolDefaults": {
             "title": "Model pool global defaults",
@@ -725,6 +725,8 @@
             "maxConcurrentHint": "Hard cap on concurrent in-flight requests for the whole group (0 = unlimited). The model is already routed here with nowhere to spread, so requests over the cap return 429 to protect the upstream.",
             "rpmLimit": "Group max RPM",
             "rpmLimitHint": "Hard cap on requests per minute for the whole group (0 = unlimited). Requests over the cap return 429 so the upstream is not maxed out.",
+            "modeLocked": "Lock route mode",
+            "modeLockedHint": "Independent of the global default",
             "items": "Selected Models",
             "addItem": "Add Model",
             "autoAdd": "Auto Add",
