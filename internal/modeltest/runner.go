@@ -129,6 +129,14 @@ func run(ctx context.Context, req dbmodel.ModelTestRequest, directChannel *dbmod
 	jobs := make(chan int)
 	var wg sync.WaitGroup
 
+	// Quota-windowed relays (e.g. entry-per-N-minutes free tiers) hand out very few
+	// concurrent slots. Launching every probe of a wave at the same instant makes
+	// them fight for one slot: some return empty streams, others burn the window so
+	// REAL traffic right after the test gets 429'd ("tests became inaccurate" reports).
+	// A short stagger between launches keeps the fan-out fast while landing probes
+	// on distinct instants.
+	const launchStagger = 750 * time.Millisecond
+
 	for worker := 0; worker < concurrency; worker++ {
 		wg.Add(1)
 		safe.SafeGo("modeltest-worker", func() {
@@ -140,6 +148,12 @@ func run(ctx context.Context, req dbmodel.ModelTestRequest, directChannel *dbmod
 	}
 
 	for index := range models {
+		if index > 0 {
+			select {
+			case <-ctx.Done():
+			case <-time.After(launchStagger):
+			}
+		}
 		jobs <- index
 	}
 	close(jobs)
@@ -1392,7 +1406,7 @@ func transformModelTestStream(ctx context.Context, adapter transformermodel.Outb
 	// tokens first and may exhaust a tiny max_tokens probe before reaching the final
 	// content. Accept the response as valid if either content or reasoning is non-empty.
 	if content == "" && strings.TrimSpace(reasoning.String()) == "" {
-		return nil, fmt.Errorf("upstream stream returned empty response text")
+		return nil, fmt.Errorf("upstream stream ended without any content (often a shared-quota upstream rejecting overlapping probes; try again solo)")
 	}
 	message := &transformermodel.Message{
 		Role: "assistant",
