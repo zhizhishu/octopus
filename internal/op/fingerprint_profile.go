@@ -135,12 +135,14 @@ func FingerprintProfileDelete(id int, ctx context.Context) error {
 	return nil
 }
 
-// Canonical names of the two built-in Linux presets. A row carrying one of these
-// names is SYSTEM-MANAGED: fingerprintProfileRefreshCache forces its identity back
-// to builtinLinuxPresets() on every boot.
+// Canonical names of the built-in presets. A row carrying one of these names is
+// SYSTEM-MANAGED: fingerprintProfileRefreshCache forces its identity back to
+// builtinLinuxPresets() on every boot. Later presets (Ubuntu, macOS) are
+// backfilled when Debian is still present; deleting Debian resurrects none.
 const (
 	builtinDebianPresetName = "Linux · Debian"
 	builtinUbuntuPresetName = "Linux · Ubuntu"
+	builtinMacOSPresetName  = "macOS · Chrome"
 )
 
 // builtinPresetLegacyNames maps a built-in preset's canonical name to the earlier
@@ -153,21 +155,21 @@ var builtinPresetLegacyNames = map[string][]string{
 	builtinUbuntuPresetName: {"Linux 真机 2 (Ubuntu)"},
 }
 
-// builtinLinuxPresets returns the two built-in Linux presets in their CURRENT
-// canonical form. This is the SINGLE source of truth for EVERY field of both
-// presets: it seeds a fresh deployment AND force-converges an existing built-in row
+// builtinLinuxPresets returns the built-in presets in their CURRENT canonical
+// form. This is the SINGLE source of truth for EVERY field of each preset:
+// it seeds a fresh deployment AND force-converges an existing built-in row
 // (see fingerprintProfileRefreshCache). Bumping a captured CLI identity = editing
 // the strings here; every deployment picks it up on its next restart, with no
 // per-version migration bolted on.
 //
 // TWO presets = two distinct devices that both track the captured-latest versions.
 // Same claude/codex versions, DIFFERENT deterministic seeds (deriveProfileSeed 2 vs
-// 3) => unrelated, stable device_id / installation ids, and a different Linux distro
-// token in the codex UA (Debian vs Ubuntu) so they read as two separate machines.
-// Assign each to a different channel / upstream key to keep two accounts
-// uncorrelated. The claude anthropic-beta SET is intentionally NOT part of any
-// profile — every profile reuses BuildClaudeCodeBetaOrder's canonical order; only
-// the version-bearing header strings + the device seed differ.
+// 3 vs 4) => unrelated, stable device_id / installation ids, and a different OS
+// token in the generic UA / claude OS / codex UA so they read as separate machines.
+// Assign each to a different channel / upstream key to keep accounts uncorrelated.
+// The claude anthropic-beta SET is intentionally NOT part of any profile — every
+// profile reuses BuildClaudeCodeBetaOrder's canonical order; only the
+// version-bearing header strings + the device seed differ.
 func builtinLinuxPresets() []*model.FingerprintProfile {
 	// Each preset gets its OWN *bool, so copying a preset onto a row never makes two
 	// rows alias one shared value.
@@ -202,6 +204,21 @@ func builtinLinuxPresets() []*model.FingerprintProfile {
 			CodexOriginator:      "codex_cli_rs",
 			CodexBetaFeatures:    "remote_compaction_v2",
 			GenericUA:            model.GenericUAUbuntu,
+		},
+		{
+			Name:                 builtinMacOSPresetName,
+			Seed:                 deriveProfileSeed(4),
+			ClaudeUserAgent:      "claude-cli/2.1.212 (external, sdk-cli)",
+			ClaudePackageVersion: "0.94.0",
+			ClaudeRuntimeVersion: "v26.3.0",
+			ClaudeOS:             "MacOS",
+			ClaudeArch:           "x64",
+			ClaudeTimeout:        "600",
+			ClaudeStabilize:      stabilize(),
+			CodexUserAgent:       "codex_cli_rs/0.145.0 (macOS 10.15.7; x86_64) unknown (codex_cli_rs; 0.145.0)",
+			CodexOriginator:      "codex_cli_rs",
+			CodexBetaFeatures:    "remote_compaction_v2",
+			GenericUA:            model.GenericUAMacOS,
 		},
 	}
 }

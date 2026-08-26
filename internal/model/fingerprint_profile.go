@@ -64,6 +64,13 @@ const DefaultGenericUA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KH
 // UA to this; it likewise never touches any claude/codex CLI fingerprint.
 const GenericUAUbuntu = "Mozilla/5.0 (X11; Linux x86_64; rv:133.0) Gecko/20100101 Firefox/133.0"
 
+// GenericUAMacOS is the "macOS · Chrome" built-in profile's generic UA — a third,
+// selectable non-CLI identity for operators whose real machine is a Mac. The string
+// is a captured Chrome-on-macOS desktop UA (Intel Mac OS X 10_15_7 / Chrome 131);
+// AppleWebKit/Chrome/Safari tokens stay as Chrome reports them. Like the two Linux
+// presets it never touches any claude/codex CLI fingerprint.
+const GenericUAMacOS = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
 // FingerprintProfileUpdateRequest carries a partial update — only non-nil fields
 // are applied, mirroring ChannelUpdateRequest's pointer-field convention.
 type FingerprintProfileUpdateRequest struct {

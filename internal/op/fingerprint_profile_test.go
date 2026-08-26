@@ -175,6 +175,13 @@ func TestFingerprintProfileSeedsCanonicalBuiltins(t *testing.T) {
 	if ubuntu.GenericUA != model.GenericUAUbuntu {
 		t.Fatalf("Ubuntu preset GenericUA = %q, want GenericUAUbuntu %q", ubuntu.GenericUA, model.GenericUAUbuntu)
 	}
+	macos := byName[builtinMacOSPresetName]
+	if macos.GenericUA != model.GenericUAMacOS {
+		t.Fatalf("macOS preset GenericUA = %q, want GenericUAMacOS %q", macos.GenericUA, model.GenericUAMacOS)
+	}
+	if macos.ClaudeOS != "MacOS" {
+		t.Fatalf("macOS preset ClaudeOS = %q, want MacOS", macos.ClaudeOS)
+	}
 	if debian.GenericUA == ubuntu.GenericUA {
 		t.Fatalf("the two presets must carry DISTINCT generic UAs, both = %q", debian.GenericUA)
 	}
@@ -183,6 +190,12 @@ func TestFingerprintProfileSeedsCanonicalBuiltins(t *testing.T) {
 	}
 	if debian.CodexUserAgent == ubuntu.CodexUserAgent {
 		t.Fatalf("the two presets must carry DISTINCT codex UAs (distro token), both = %q", debian.CodexUserAgent)
+	}
+	if macos.GenericUA == debian.GenericUA || macos.GenericUA == ubuntu.GenericUA {
+		t.Fatalf("macOS generic UA must be distinct from both Linux presets")
+	}
+	if macos.Seed == debian.Seed || macos.Seed == ubuntu.Seed {
+		t.Fatalf("macOS device seed must be distinct from both Linux presets")
 	}
 }
 
@@ -250,6 +263,51 @@ func TestFingerprintProfileConvergesLegacyBuiltinInOneStep(t *testing.T) {
 	// The 2nd built-in is backfilled next to it.
 	if _, ok := byName[builtinUbuntuPresetName]; !ok {
 		t.Fatalf("2nd built-in must be backfilled, got %+v", byName)
+	}
+	if _, ok := byName[builtinMacOSPresetName]; !ok {
+		t.Fatalf("3rd built-in (macOS · Chrome) must be backfilled, got %+v", byName)
+	}
+}
+
+// TestFingerprintProfileBackfillsMacOSWhenLinuxPresetsExist pins the live upgrade
+// path: a deployment that already has Debian + Ubuntu (today's production shape)
+// picks up macOS · Chrome on the next restart without touching the existing rows.
+func TestFingerprintProfileBackfillsMacOSWhenLinuxPresetsExist(t *testing.T) {
+	ctx := setupFingerprintProfileTest(t)
+
+	presets := builtinLinuxPresets()
+	debian := *presets[0]
+	ubuntu := *presets[1]
+	debian.Seed = "keep-debian-seed"
+	ubuntu.Seed = "keep-ubuntu-seed"
+	if err := db.GetDB().WithContext(ctx).Create(&debian).Error; err != nil {
+		t.Fatalf("seed debian: %v", err)
+	}
+	if err := db.GetDB().WithContext(ctx).Create(&ubuntu).Error; err != nil {
+		t.Fatalf("seed ubuntu: %v", err)
+	}
+
+	if err := fingerprintProfileRefreshCache(ctx); err != nil {
+		t.Fatalf("refresh fingerprint cache: %v", err)
+	}
+
+	byName := loadFingerprintProfilesByName(t, ctx)
+	if len(byName) != 3 {
+		t.Fatalf("expected Debian+Ubuntu kept and macOS backfilled, got %d: %+v", len(byName), byName)
+	}
+	if byName[builtinDebianPresetName].Seed != "keep-debian-seed" {
+		t.Fatalf("existing Debian seed must be preserved")
+	}
+	if byName[builtinUbuntuPresetName].Seed != "keep-ubuntu-seed" {
+		t.Fatalf("existing Ubuntu seed must be preserved")
+	}
+	got, ok := byName[builtinMacOSPresetName]
+	if !ok {
+		t.Fatalf("macOS · Chrome must be backfilled, got %+v", byName)
+	}
+	assertConvergedTo(t, got, presets[2])
+	if got.GenericUA != model.GenericUAMacOS {
+		t.Fatalf("macOS generic UA = %q, want %q", got.GenericUA, model.GenericUAMacOS)
 	}
 }
 

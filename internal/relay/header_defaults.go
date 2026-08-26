@@ -107,8 +107,8 @@ func applyChannelWireHeaderDefaults(req *http.Request, options ChannelWireHeader
 		//   2. Apply the unified generic UA on EVERY type — including the two CLI-capable
 		//      ones. Leaving them bare emitted Go's default "Go-http-client/1.1", which flags
 		//      the caller as a bot/script; the operator picked "no shape", not "no identity".
-		//      The generic UA follows the selected profile (Debian Chrome / Ubuntu Firefox),
-		//      falling back to DefaultGenericUA.
+		//      The generic UA follows the selected profile (Debian Chrome / Ubuntu
+		//      Firefox / macOS Chrome), falling back to DefaultGenericUA.
 		switch channel.Type {
 		case outbound.OutboundTypeAnthropic:
 			req.Header.Del("Anthropic-Beta")
