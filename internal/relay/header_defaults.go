@@ -370,17 +370,25 @@ func applyCodexResponsesLiteHeader(headers http.Header, internalRequest *model.I
 	// rather than merely omit so a downstream client or operator custom header
 	// cannot add the incompatible capability back after Octopus has selected the
 	// actual upstream model.
-	if internalRequest != nil {
-		modelName := strings.ToLower(strings.TrimSpace(internalRequest.Model))
-		if _, denied := codexResponsesLiteDeniedModels[modelName]; denied {
-			headers.Del("X-Openai-Internal-Codex-Responses-Lite")
-			return
-		}
+	if internalRequest != nil && !codexResponsesLiteApplies(internalRequest.Model) {
+		headers.Del("X-Openai-Internal-Codex-Responses-Lite")
+		return
 	}
 
 	// Codex 0.144.x emits this header for Lite-capable models. Unknown models retain the
 	// established wire contract; only an upstream-confirmed incompatibility is denied.
 	setHeaderIfMissing(headers, "X-Openai-Internal-Codex-Responses-Lite", "true")
+}
+
+// codexResponsesLiteApplies reports whether the Lite capability header will be on the
+// wire for this model. The codex shaper gates the body-side pairing fields
+// (reasoning.context=all_turns, parallel_tool_calls=false) on the SAME decision, so a
+// denylisted model never ships headless pairing constraints the header no longer justifies.
+// One seam here; no duplicated list in the shaper.
+func codexResponsesLiteApplies(modelName string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(modelName))
+	_, denied := codexResponsesLiteDeniedModels[normalized]
+	return !denied
 }
 
 func setHeaderIfMissing(headers http.Header, key, value string) {

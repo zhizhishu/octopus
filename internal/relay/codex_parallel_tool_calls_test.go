@@ -33,6 +33,30 @@ func TestEnsureCodexParallelToolCallsDefaultsFalseWhenNil(t *testing.T) {
 	}
 }
 
+// Ghost-pairing guard: a denylisted model (gpt-5.5 family) gets NO Lite header on the
+// wire, so there is no pairing rule to satisfy. An unset field must stay unset (no
+// headless coercion) and an explicit true stays the client's own choice.
+func TestEnsureCodexParallelToolCallsSkipsLiteDeniedModels(t *testing.T) {
+	trueVal := true
+	nilModelReq := &transformerModel.InternalLLMRequest{
+		Model: "gpt-5.5",
+	}
+	explicitTrueReq := &transformerModel.InternalLLMRequest{
+		Model:             "gpt-5.5",
+		ParallelToolCalls: &trueVal,
+	}
+
+	ensureCodexParallelToolCalls(nilModelReq)
+	ensureCodexParallelToolCalls(explicitTrueReq)
+
+	if nilModelReq.ParallelToolCalls != nil {
+		t.Fatalf("expected parallel_tool_calls to stay unset for a Lite-denied model, got %#v", nilModelReq.ParallelToolCalls)
+	}
+	if explicitTrueReq.ParallelToolCalls == nil || !*explicitTrueReq.ParallelToolCalls {
+		t.Fatalf("expected explicit client true to survive for a Lite-denied model, got %#v", explicitTrueReq.ParallelToolCalls)
+	}
+}
+
 // A request that explicitly sent parallel_tool_calls=true MUST be coerced to false,
 // mirroring normalizeCodexReasoningEffort's override of unsupported effort values.
 // The upstream demands a single hard value; an explicit client true is incoherent under

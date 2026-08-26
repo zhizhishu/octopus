@@ -76,6 +76,22 @@ func TestEnsureCodexReasoningContextNilRequestIsNoop(t *testing.T) {
 	ensureCodexReasoningContext(nil)
 }
 
+// Ghost-pairing guard: a denylisted model (gpt-5.5 family) gets NO Lite header on the
+// wire (applyCodexResponsesLiteHeader deletes it), so the body-side pairing field must
+// not be forced either — a headless constraint has no justification and may itself be
+// rejected by the upstream.
+func TestEnsureCodexReasoningContextSkipsLiteDeniedModels(t *testing.T) {
+	req := &transformerModel.InternalLLMRequest{
+		Model: "gpt-5.5",
+	}
+
+	ensureCodexReasoningContext(req)
+
+	if req.ReasoningContext != "" {
+		t.Fatalf("expected no forced reasoning.context for a Lite-denied model, got %q", req.ReasoningContext)
+	}
+}
+
 // End-to-end through the real codex shaper (not just the helper in isolation): a codex
 // Responses request must come out of prepareCodexRequestShape carrying the context, since
 // that same path is what makes applyCodexHeaderDefaults stamp the Lite header. Header and

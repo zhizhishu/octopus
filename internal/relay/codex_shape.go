@@ -167,7 +167,7 @@ const codexReasoningContextAllTurns = "all_turns"
 //
 //	400 X-OpenAI-Internal-Codex-Responses-Lite requires `reasoning.context` to be `all_turns`.
 //
-// applyCodexHeaderDefaultsWithFingerprint synthesizes that header for EVERY codex outbound
+// applyCodexHeaderDefaultsWithFingerprint synthesizes that header for every codex outbound
 // (oct adds it itself; it is not forwarded from the client), so oct owns the paired body
 // field too — filling it here keeps header and body consistent instead of shipping a
 // self-contradictory request. That makes this a shape-SAFE change that moves the outbound
@@ -183,6 +183,14 @@ const codexReasoningContextAllTurns = "all_turns"
 // still needs the field and materializes a context-only reasoning object.
 func ensureCodexReasoningContext(req *transformerModel.InternalLLMRequest) {
 	if req == nil {
+		return
+	}
+	// Ghost-pairing guard: this field exists ONLY to satisfy the Lite-header pairing
+	// rule. A denylisted model (gpt-5.5 family) gets no Lite header on the wire, so
+	// forcing its pairing field would ship a headless constraint with no justification.
+	// Header and body consult one shared decision (codexResponsesLiteApplies) so they
+	// can never disagree about whether the pairing rule is in effect.
+	if !codexResponsesLiteApplies(req.Model) {
 		return
 	}
 	// A client that explicitly chose a context owns it — never overwrite (a genuine codex
@@ -201,7 +209,7 @@ func ensureCodexReasoningContext(req *transformerModel.InternalLLMRequest) {
 //
 //	400 X-OpenAI-Internal-Codex-Responses-Lite requires `parallel_tool_calls` to be false.
 //
-// applyCodexHeaderDefaultsWithFingerprint synthesizes that header for EVERY codex
+// applyCodexHeaderDefaultsWithFingerprint synthesizes that header for every codex
 // outbound (oct adds it itself; it is not forwarded from the client), so oct owns the
 // paired body field too — filling it here keeps header and body consistent instead of
 // shipping a self-contradictory request. That makes this a shape-SAFE change that moves
@@ -226,6 +234,12 @@ func ensureCodexReasoningContext(req *transformerModel.InternalLLMRequest) {
 // other channel's bytes untouched.
 func ensureCodexParallelToolCalls(req *transformerModel.InternalLLMRequest) {
 	if req == nil {
+		return
+	}
+	// Ghost-pairing guard, mirroring ensureCodexReasoningContext: without the Lite
+	// header there is no pairing rule, so an unset field stays unset and a client's
+	// explicit true stays true instead of being coerced by a rule that does not apply.
+	if !codexResponsesLiteApplies(req.Model) {
 		return
 	}
 	// An explicit false is what we want — keep it (no-op).

@@ -1,4 +1,4 @@
-﻿package modeltest
+package modeltest
 
 import (
 	"testing"
@@ -67,11 +67,11 @@ func TestPrepareCodexModelTestPreservesExplicitHighEffortForGPT56(t *testing.T) 
 }
 
 func TestPrepareCodexModelTestContextStillInjectedForNon56Model(t *testing.T) {
-	// A non-5.6 codex model: effort "minimal" is NOT remapped (5.5 does not have the
-	// gpt-5.6 allow-set restriction), but context is STILL injected because the Lite
-	// header is added to EVERY codex outbound, not just gpt-5.6.
+	// A non-5.6 codex model outside the Lite denylist: effort "minimal" is NOT remapped
+	// (only gpt-5.6 has the allow-set restriction), and context is STILL injected because
+	// the Lite header ships for every non-denied codex outbound.
 	req := &transformermodel.InternalLLMRequest{
-		Model:            "gpt-5.5",
+		Model:            "gpt-4.1-mini",
 		ReasoningEffort:  "minimal",
 		ReasoningContext: "",
 	}
@@ -79,8 +79,23 @@ func TestPrepareCodexModelTestContextStillInjectedForNon56Model(t *testing.T) {
 	if req.ReasoningEffort != "minimal" {
 		t.Fatalf("expected non-5.6 model to leave minimal effort untouched, got %q", req.ReasoningEffort)
 	}
-	if req.ReasoningContext != "all_turns" {
-		t.Fatalf("expected reasoning.context=all_turns even on non-5.6 codex channel, got %q", req.ReasoningContext)
+}
+
+func TestPrepareCodexModelTestSkipsPairingFieldsForDeniedModel(t *testing.T) {
+	// Ghost-pairing guard on the modeltest path: gpt-5.5 is Lite-denied, so it gets NO
+	// Lite header on the wire and must NOT receive the pairing-only reasoning.context
+	// default either. Its explicit minimal effort also passes through untouched.
+	req := &transformermodel.InternalLLMRequest{
+		Model:            "gpt-5.5",
+		ReasoningEffort:  "minimal",
+		ReasoningContext: "",
+	}
+	prepareCodexModelTestRequest(req, outbound.OutboundTypeOpenAIResponse, zeroFP())
+	if req.ReasoningEffort != "minimal" {
+		t.Fatalf("expected denied model to leave minimal effort untouched, got %q", req.ReasoningEffort)
+	}
+	if req.ReasoningContext != "" {
+		t.Fatalf("expected denied model to skip reasoning.context injection, got %q", req.ReasoningContext)
 	}
 }
 
