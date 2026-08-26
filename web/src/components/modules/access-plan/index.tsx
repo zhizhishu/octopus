@@ -29,7 +29,7 @@ import {
     useUpdateAccessPlanRouteTargets,
 } from '@/api/endpoints/access-plan';
 import { useChannelList } from '@/api/endpoints/channel';
-import { GroupMode, normalizeGroupMode, useGroupList } from '@/api/endpoints/group';
+import { GroupMode, normalizeGroupMode, useGroupList, type Group } from '@/api/endpoints/group';
 import { useModelChannelList, useModelList } from '@/api/endpoints/model';
 import { MODE_LABELS, normalizeKey } from '@/components/modules/group/utils';
 import { useAuthStore } from '@/api/endpoints/user';
@@ -236,6 +236,8 @@ function clampRoutePriority(value: number) {
     if (!Number.isFinite(value)) return 0;
     return Math.min(9, Math.max(0, Math.trunc(value)));
 }
+
+const EMPTY_GROUPS: Group[] = [];
 
 function asRouteWeight(value: string) {
     return Math.min(asPositiveInt(value, 1), 1000);
@@ -1413,7 +1415,7 @@ function RouteFlowCanvasInner({
     const t = accessPlanText;
     const channelNameByID = useMemo(() => new Map(channels.map((channel) => [channel.id, channel.name])), [channels]);
     const { fitView, setCenter } = useReactFlow();
-    const { data: groups = [] } = useGroupList();
+    const { data: groups = EMPTY_GROUPS } = useGroupList();
     const groupModeByName = useMemo<Map<string, GroupMode>>(() => {
         const map = new Map<string, GroupMode>();
         for (const g of groups) {
@@ -1479,12 +1481,14 @@ function RouteFlowCanvasInner({
 
     const lastFitSignature = useRef('');
     const patchTargetPriority = useRef<(targetId: number, priority: number) => void>(() => {});
+    const onPriorityChangeRef = useRef(onPriorityChange);
+    onPriorityChangeRef.current = onPriorityChange;
 
     const applyPriorityChange = useCallback((targetId: number, nextPriority: number) => {
         const priority = clampRoutePriority(nextPriority);
         patchTargetPriority.current(targetId, priority);
-        onPriorityChange?.(targetId, priority);
-    }, [onPriorityChange]);
+        onPriorityChangeRef.current?.(targetId, priority);
+    }, []);
 
     const flow = useMemo(
         () => buildRouteFlow(plan, filteredRows, channelNameByID, onEditRequest, filteredMappings, groupModeByName, applyPriorityChange),

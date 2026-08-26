@@ -28,7 +28,7 @@ function SettingRouteModeOverride() {
         if (settings) {
             const rm = settings.find((s) => s.key === SettingKey.RouteModeOverride);
             if (rm) {
-                queueMicrotask(() => setRouteMode(rm.value || ''));
+                setRouteMode(rm.value || '');
                 initialRouteMode.current = rm.value || '';
             }
         }
