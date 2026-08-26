@@ -1357,8 +1357,8 @@ func TestRunBatchHonorsConcurrency(t *testing.T) {
 				break
 			}
 		}
-		// Outlast the launcher's stagger interval so the staggered probes still
-		// overlap in-flight — mirrors a real (slow) upstream rather than an instant one.
+		// Hold each probe in-flight long enough that the fan-out actually overlaps,
+		// mirroring a real (slow) upstream rather than an instant one.
 		time.Sleep(1200 * time.Millisecond)
 		atomic.AddInt64(&current, -1)
 

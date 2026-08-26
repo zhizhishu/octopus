@@ -42,18 +42,26 @@ const (
 	maxConcurrency                         = 20
 	defaultTestConcurrency                 = 4
 	maxModels                              = 100
-	upstreamBodyLimit                      = 32 * 1024
-	defaultClaudeUserAgent                 = dbmodel.DefaultClaudeHeaderUserAgent
-	defaultClaudePackageVersion            = dbmodel.DefaultClaudeHeaderPackageVersion
-	defaultClaudeRuntimeVersion            = dbmodel.DefaultClaudeHeaderRuntimeVersion
-	defaultClaudeOS                        = dbmodel.DefaultClaudeHeaderOS
-	defaultClaudeArch                      = "x64"
-	defaultClaudeTimeout                   = "600"
-	defaultClaudeOneMillionBeta            = transformermodel.AnthropicOneMillionBeta
-	defaultCodexUserAgent                  = dbmodel.DefaultCodexHeaderUserAgent
-	defaultCodexBetaFeatures               = dbmodel.DefaultCodexHeaderBetaFeatures
-	defaultCodexOriginator                 = "codex_cli_rs"
-	defaultCodexInstructions               = "You are Codex, a coding agent based on GPT-5. You and the user share one workspace. Answer directly and do not call tools unless the user asks for workspace inspection or file changes."
+	// Probe token budgets. Non-Anthropic endpoints send a flat 256: enough room for a
+	// reasoning model to finish its preamble and still emit a content token, without
+	// needing to guess from the model NAME whether it thinks (vanity/mapped names made
+	// that guess wrong — see the maxTokens comment in buildInternalRequest).
+	// Anthropic mirrors real claude-cli's 64000 instead, since a tiny probe budget is
+	// itself a non-CLI tell on that wire.
+	defaultProbeMaxTokens       = 256
+	anthropicProbeMaxTokens     = 64000
+	upstreamBodyLimit           = 32 * 1024
+	defaultClaudeUserAgent      = dbmodel.DefaultClaudeHeaderUserAgent
+	defaultClaudePackageVersion = dbmodel.DefaultClaudeHeaderPackageVersion
+	defaultClaudeRuntimeVersion = dbmodel.DefaultClaudeHeaderRuntimeVersion
+	defaultClaudeOS             = dbmodel.DefaultClaudeHeaderOS
+	defaultClaudeArch           = "x64"
+	defaultClaudeTimeout        = "600"
+	defaultClaudeOneMillionBeta = transformermodel.AnthropicOneMillionBeta
+	defaultCodexUserAgent       = dbmodel.DefaultCodexHeaderUserAgent
+	defaultCodexBetaFeatures    = dbmodel.DefaultCodexHeaderBetaFeatures
+	defaultCodexOriginator      = "codex_cli_rs"
+	defaultCodexInstructions    = "You are Codex, a coding agent based on GPT-5. You and the user share one workspace. Answer directly and do not call tools unless the user asks for workspace inspection or file changes."
 )
 
 var defaultPromptCounter uint64
@@ -129,14 +137,6 @@ func run(ctx context.Context, req dbmodel.ModelTestRequest, directChannel *dbmod
 	jobs := make(chan int)
 	var wg sync.WaitGroup
 
-	// Quota-windowed relays (e.g. entry-per-N-minutes free tiers) hand out very few
-	// concurrent slots. Launching every probe of a wave at the same instant makes
-	// them fight for one slot: some return empty streams, others burn the window so
-	// REAL traffic right after the test gets 429'd ("tests became inaccurate" reports).
-	// A short stagger between launches keeps the fan-out fast while landing probes
-	// on distinct instants.
-	const launchStagger = 750 * time.Millisecond
-
 	for worker := 0; worker < concurrency; worker++ {
 		wg.Add(1)
 		safe.SafeGo("modeltest-worker", func() {
@@ -148,12 +148,6 @@ func run(ctx context.Context, req dbmodel.ModelTestRequest, directChannel *dbmod
 	}
 
 	for index := range models {
-		if index > 0 {
-			select {
-			case <-ctx.Done():
-			case <-time.After(launchStagger):
-			}
-		}
 		jobs <- index
 	}
 	close(jobs)
@@ -767,7 +761,11 @@ func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermod
 		return response.StatusCode, parsed, fmt.Errorf("upstream returned no chat choices")
 	}
 	if responsePreview(parsed) == "" && !parsedHasReasoningContent(parsed) {
-		return response.StatusCode, parsed, fmt.Errorf("upstream returned empty response text")
+		// Non-streaming twin of the check in transformModelTestStream: the upstream
+		// answered successfully but carried no text. Keep both messages aligned so the
+		// same real cause (usually a max_tokens stop before the first content token)
+		// doesn't read as two unrelated failures in the UI.
+		return response.StatusCode, parsed, fmt.Errorf("upstream returned a response without any content or reasoning text")
 	}
 	return response.StatusCode, parsed, nil
 }
@@ -797,19 +795,23 @@ func (r *modelRunner) internalRequest(upstreamModel string) *transformermodel.In
 	// Anthropic test must mirror a genuine claude-cli request byte-shape, not a
 	// lightweight probe: 64000 max_tokens (a tiny 8 is a glaring non-CLI tell),
 	// streamed, and NO temperature field at all (real claude-cli omits it; sending
-	// temperature:0 is a tell). Non-Anthropic endpoints keep the light probe shape.
-	maxTokens := int64(8)
+	// temperature:0 is a tell).
+	//
+	// Every other endpoint gets a flat 256-token budget. It used to be 8, widened to
+	// 256 only for models whose NAME matched a thinking-model keyword list — but a
+	// channel's model name is arbitrary (ModelMapping routes vanity names like
+	// "stealth/ox-alpha" to a reasoning upstream), so the list silently missed them
+	// and they burned the 8-token budget on reasoning before emitting any content.
+	// That surfaced as a bogus "upstream stream ended without any content". A name
+	// can't tell us whether a model thinks; giving every probe enough room can. The
+	// probe prompt is one arithmetic question, so 256 costs nothing measurable.
+	maxTokens := int64(defaultProbeMaxTokens)
 	if endpoint.name == "anthropic_messages" {
 		// 测试页"真开真关"：显式给了 stream 就听它的；但 claude-cli body shape(64000) 始终保留。
 		if !streamExplicit {
 			stream = true
 		}
-		maxTokens = int64(64000)
-	} else if isLikelyThinkingModel(upstreamModel) {
-		// Thinking/reasoning models burn through a tiny 8-token probe on reasoning
-		// tokens before producing any content, causing a false "empty response" error.
-		// Use a larger budget so content tokens can appear within the probe window.
-		maxTokens = int64(256)
+		maxTokens = int64(anthropicProbeMaxTokens)
 	}
 	// Streaming-first for EVERY probe endpoint (chat / responses / claude / gemini)
 	// unless the caller pinned Stream explicitly. Real relay traffic to these channels
@@ -1402,11 +1404,15 @@ func transformModelTestStream(ctx context.Context, adapter transformermodel.Outb
 	}
 
 	content := strings.TrimSpace(text.String())
-	// Thinking/reasoning models (e.g. deepseek-reasoner, sensenova) emit reasoning
-	// tokens first and may exhaust a tiny max_tokens probe before reaching the final
-	// content. Accept the response as valid if either content or reasoning is non-empty.
+	// Thinking/reasoning models emit reasoning tokens first and may exhaust the
+	// max_tokens probe before reaching the final content. Accept the response as
+	// valid if either content or reasoning is non-empty.
 	if content == "" && strings.TrimSpace(reasoning.String()) == "" {
-		return nil, fmt.Errorf("upstream stream ended without any content (often a shared-quota upstream rejecting overlapping probes; try again solo)")
+		// The stream ran to its terminal event (a mid-stream disconnect surfaces as a
+		// read error above), so the upstream completed normally and simply produced no
+		// text. Report exactly that and don't guess at a cause: the usual reason is the
+		// model stopping on max_tokens before its first content token.
+		return nil, fmt.Errorf("upstream completed the stream without producing any content or reasoning text")
 	}
 	message := &transformermodel.Message{
 		Role: "assistant",
@@ -1551,20 +1557,6 @@ func stringify(value any) string {
 	default:
 		return ""
 	}
-}
-
-// isLikelyThinkingModel returns true when the model name suggests it is a
-// reasoning/thinking model that emits a reasoning preamble before content.
-// These models need a larger max_tokens probe to avoid exhausting the token
-// budget on reasoning tokens before any content token is produced.
-func isLikelyThinkingModel(model string) bool {
-	lower := strings.ToLower(model)
-	for _, kw := range []string{"think", "reasoner", "reasoning", "-r1", "glm", "sensenova", "qwen"} {
-		if strings.Contains(lower, kw) {
-			return true
-		}
-	}
-	return false
 }
 
 // parsedHasReasoningContent returns true when any choice in the response
