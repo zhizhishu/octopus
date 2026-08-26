@@ -1569,7 +1569,10 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 		data      string
 		err       error
 	}
-	results := make(chan sseReadResult, 1)
+	// A small buffer lets the reader prefetch upcoming SSE events while this consumer
+	// transforms/writes the current one, smoothing inter-token jitter; done-select in
+	// the reader keeps early exits leak-free regardless of buffer size.
+	results := make(chan sseReadResult, 8)
 	// done is closed when this handler returns on ANY path (first-token / data-interval
 	// timeout, client disconnect via ctx, a transform/write error, or normal stream end).
 	// The reader's channel sends select on it, so a reader parked on `results <- ...` after
@@ -1995,8 +1998,9 @@ func (ra *relayAttempt) handleStreamResponseAsNonStream(ctx context.Context, res
 		data string
 		err  error
 	}
-	results := make(chan sseReadResult, 1)
-	// See handleStreamResponse: done lets a reader parked on the cap-1 send exit when this
+	// Same prefetch rationale as handleStreamResponse's cap-8 results channel.
+	results := make(chan sseReadResult, 8)
+	// See handleStreamResponse: done lets a reader parked on a full-buffer send exit when this
 	// consumer returns early (idle-timeout / error) instead of leaking for the process life.
 	done := make(chan struct{})
 	defer close(done)
