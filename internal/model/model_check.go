@@ -22,6 +22,10 @@ type ChannelTestRequest struct {
 	Prompt         string  `json:"prompt,omitempty"`
 	Stream         *bool   `json:"stream,omitempty"`
 	TimeoutSeconds int     `json:"timeout_seconds,omitempty"`
+	// Concurrency bounds the parallel per-model workers for a multi-model channel
+	// test. Zero means "runner default" (the runner applies its own sane default);
+	// it is NOT interpreted as sequential.
+	Concurrency int `json:"concurrency,omitempty"`
 }
 
 type ModelTestSummary struct {

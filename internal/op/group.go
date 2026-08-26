@@ -220,6 +220,10 @@ func GroupUpdate(req *model.GroupUpdateRequest, ctx context.Context) (*model.Gro
 		selectFields = append(selectFields, "mode")
 		updates.Mode = *req.Mode
 	}
+	if req.ModeLocked != nil {
+		selectFields = append(selectFields, "mode_locked")
+		updates.ModeLocked = *req.ModeLocked
+	}
 	if req.MatchRegex != nil {
 		selectFields = append(selectFields, "match_regex")
 		updates.MatchRegex = *req.MatchRegex

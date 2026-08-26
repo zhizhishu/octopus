@@ -27,6 +27,11 @@ type Group struct {
 	ID                int         `json:"id" gorm:"primaryKey"`
 	Name              string      `json:"name" gorm:"unique;not null"`
 	Mode              GroupMode   `json:"mode" gorm:"not null"`
+	// ModeLocked records that an admin explicitly chose this group's Mode (via the
+	// group editor / access-plan canvas). A locked group keeps its own mode even when
+	// the fleet-wide route_mode_override setting is set; unlocked groups follow the
+	// global default: "unless the canvas changed it, the global setting wins".
+	ModeLocked        bool        `json:"mode_locked" gorm:"not null;default:false"`
 	MatchRegex        string      `json:"match_regex"`
 	FirstTokenTimeOut int         `json:"first_token_time_out"`            // 单个渠道首个Token响应超时时间(秒)
 	SessionKeepTime   int         `json:"session_keep_time"`               // 会话保持时间(秒) 0 为禁用
@@ -86,6 +91,7 @@ type GroupUpdateRequest struct {
 	ID                int                      `json:"id" binding:"required"`
 	Name              *string                  `json:"name,omitempty"`                 // 仅在名称变更时发送
 	Mode              *GroupMode               `json:"mode,omitempty"`                 // 仅在模式变更时发送
+	ModeLocked        *bool                    `json:"mode_locked,omitempty"`          // 仅在锁定标记变更时发送; true=本组模式独立于全局 route_mode_override
 	MatchRegex        *string                  `json:"match_regex,omitempty"`          // 仅在匹配正则变更时发送
 	FirstTokenTimeOut *int                     `json:"first_token_time_out,omitempty"` // 仅在超时变更时发送(秒)
 	SessionKeepTime   *int                     `json:"session_keep_time,omitempty"`    // 仅在会话保持时间变更时发送(秒)

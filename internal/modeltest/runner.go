@@ -40,6 +40,7 @@ const (
 	defaultAnthropicMessagesTimeoutSeconds = 180
 	maxTimeoutSeconds                      = 300
 	maxConcurrency                         = 20
+	defaultTestConcurrency                 = 4
 	maxModels                              = 100
 	upstreamBodyLimit                      = 32 * 1024
 	defaultClaudeUserAgent                 = dbmodel.DefaultClaudeHeaderUserAgent
@@ -111,7 +112,10 @@ func run(ctx context.Context, req dbmodel.ModelTestRequest, directChannel *dbmod
 
 	concurrency := req.Concurrency
 	if concurrency <= 0 {
-		concurrency = 1
+		// Multi-model channel tests used to default to 1 (fully sequential), which made
+		// a Claude channel with dozens of models take minutes. Default to a small bounded
+		// fan-out instead; callers can still pin it via req.Concurrency (capped below).
+		concurrency = defaultTestConcurrency
 	}
 	if concurrency > maxConcurrency {
 		concurrency = maxConcurrency

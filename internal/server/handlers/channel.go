@@ -334,6 +334,7 @@ func testChannel(c *gin.Context) {
 		Prompt:         request.Prompt,
 		Stream:         request.Stream,
 		TimeoutSeconds: request.TimeoutSeconds,
+		Concurrency:    request.Concurrency,
 	})
 	if err != nil {
 		resp.Error(c, http.StatusBadRequest, err.Error())

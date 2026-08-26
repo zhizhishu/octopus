@@ -260,8 +260,9 @@ export function ChannelTestDialog({
             }
         }
 
-        // 低并发 2 路 + 随机间隔：像真人一发一发挤进去，别像扫描器一次性把上游打爆。
-        const LIMIT = 2;
+        // 低并发 4 路 + 随机间隔：像真人一发一发挤进去，别像扫描器一次性把上游打爆。
+        // 曾经只有 2 路，Claude 这类慢模型多选时整轮要等 ⌈N/2⌉×单发时长，太磨人。
+        const LIMIT = 4;
         const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
         const paceMs = () => 250 + Math.floor(Math.random() * 450); // 250–700ms 抖动
         let cursor = 0;
