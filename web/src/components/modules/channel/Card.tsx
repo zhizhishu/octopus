@@ -188,14 +188,13 @@ export function Card({ channel, stats, layout = 'list' }: { channel: Channel; st
                                     type="button"
                                     className="inline-flex h-8 max-w-full items-center gap-1 overflow-hidden rounded-lg border border-border px-2 text-xs font-medium leading-none text-muted-foreground hover:bg-accent hover:text-accent-foreground disabled:opacity-50"
                                     onClick={(event) => { event.preventDefault(); event.stopPropagation(); setTestDialogOpen(true); }}
-                                    disabled={!firstModel}
                                     aria-label="测试模型"
                                 >
                                     <Play className="size-3.5" />
                                     <span className="min-w-0 truncate">测试</span>
                                 </button>
                             </TooltipTrigger>
-                            <TooltipContent>{firstModel ? `测试 ${firstModel}` : '请先配置模型'}</TooltipContent>
+                            <TooltipContent>{firstModel ? `测试 ${firstModel}` : '打开测试面板（该渠道当前没有已选模型）'}</TooltipContent>
                         </Tooltip>
                         <ChannelTestDialog channel={channel} open={testDialogOpen} onOpenChange={setTestDialogOpen} />
                         <Tooltip side="top" sideOffset={10} align="center">
