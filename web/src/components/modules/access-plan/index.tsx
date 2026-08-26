@@ -239,10 +239,6 @@ function clampRoutePriority(value: number) {
 
 const EMPTY_GROUPS: Group[] = [];
 
-function asRouteWeight(value: string) {
-    return Math.min(asPositiveInt(value, 1), 1000);
-}
-
 function normalizeSlug(value: string) {
     return value.trim().toLowerCase().replace(/\s+/g, '-');
 }
@@ -437,7 +433,7 @@ function rebuildRouteTargetsFromChannelModels(channelModels: RouteChannelModel[]
                 channel_id: model.channel_id,
                 upstream_model: requestModel,
                 priority: previous?.priority ?? nextPriority,
-                weight: previous?.weight ?? 1,
+                weight: 1,
                 enabled: previous?.enabled ?? true,
                 billing_model_source: previous?.billing_model_source ?? 'request_model',
                 billing_model_override: previous?.billing_model_override,
@@ -978,10 +974,10 @@ type TargetNodeData = {
     channelName: string;
     channelId: number;
     targetId?: number;
+    laneId: string;
     priority: number;
     showPriority: boolean;
     fillFirst: boolean;
-    weight: number;
     upstreamModel: string;
     enabled: boolean;
     fallback: string;
@@ -1067,7 +1063,7 @@ const TargetFlowCard = memo(function TargetFlowCard({ data }: NodeProps<TargetFl
         : '并列显示不参与路由';
     return (
         <div
-            className={cn('grid grid-cols-[minmax(84px,1.1fr)_minmax(96px,1.4fr)_auto_auto] items-center gap-3 rounded-2xl border bg-card/90 px-3 py-2', data.enabled ? 'border-emerald-500/25' : 'border-border opacity-65')}
+            className={cn('grid grid-cols-[minmax(84px,1.1fr)_minmax(96px,1.4fr)_auto] items-center gap-3 rounded-2xl border bg-card/90 px-3 py-2', data.enabled ? 'border-emerald-500/25' : 'border-border opacity-65')}
             style={{ width: TGT_W, height: TGT_H }}
         >
             <Handle type="target" position={Position.Left} className="!size-2 !border-2 !border-background !bg-emerald-500" />
@@ -1091,11 +1087,11 @@ const TargetFlowCard = memo(function TargetFlowCard({ data }: NodeProps<TargetFl
                         <button
                             type="button"
                             className="flex size-4 items-center justify-center rounded border border-border/70 bg-background leading-none text-foreground hover:bg-muted disabled:opacity-40"
-                            disabled={!data.targetId || priority <= 0}
-                            aria-label={`${accessPlanText('routes.priority')} -`}
+                            disabled={!data.targetId || priority >= 9}
+                            aria-label={`${accessPlanText('routes.priority')} demote`}
                             onClick={(event) => {
                                 event.stopPropagation();
-                                bumpPriority(-1);
+                                bumpPriority(1);
                             }}
                         >
                             −
@@ -1104,11 +1100,11 @@ const TargetFlowCard = memo(function TargetFlowCard({ data }: NodeProps<TargetFl
                         <button
                             type="button"
                             className="flex size-4 items-center justify-center rounded border border-border/70 bg-background leading-none text-foreground hover:bg-muted disabled:opacity-40"
-                            disabled={!data.targetId || priority >= 9}
-                            aria-label={`${accessPlanText('routes.priority')} +`}
+                            disabled={!data.targetId || priority <= 0}
+                            aria-label={`${accessPlanText('routes.priority')} promote`}
                             onClick={(event) => {
                                 event.stopPropagation();
-                                bumpPriority(1);
+                                bumpPriority(-1);
                             }}
                         >
                             +
@@ -1123,12 +1119,9 @@ const TargetFlowCard = memo(function TargetFlowCard({ data }: NodeProps<TargetFl
                 </div>
             </div>
             <div className="text-xs text-muted-foreground">
-                <div className="font-bold text-foreground">W{data.weight}</div>
-                <div className="text-[10px]">{data.fallback}</div>
-            </div>
-            <div className="text-xs text-muted-foreground">
                 <div className="font-bold text-foreground">{data.multiplier}x</div>
                 <div className="truncate text-[10px]">{data.billingSource}</div>
+                <div className="truncate text-[10px]">{data.fallback}</div>
             </div>
         </div>
     );
@@ -1296,10 +1289,10 @@ function buildRouteFlow(
                         channelName,
                         channelId: target.channel_id,
                         targetId: target.id,
+                        laneId: reqId,
                         priority: clampRoutePriority(target.priority || 0),
                         showPriority,
                         fillFirst: isFillFirstMode,
-                        weight: target.weight || 1,
                         upstreamModel: cleanOneMillionModelName(target.upstream_model || accessPlanText('routes.unset')),
                         enabled: target.enabled,
                         fallback: fallbackModeLabel(target.fallback_mode),
@@ -1498,12 +1491,35 @@ function RouteFlowCanvasInner({
     const [nodes, setNodes, onNodesChange] = useNodesState<FlowNode>(flow.nodes);
     const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>(flow.edges);
     patchTargetPriority.current = (targetId, priority) => {
-        setNodes((current) => current.map((node) => {
-            if (node.type !== 'target') return node;
-            const data = node.data as TargetNodeData;
-            if (data.targetId !== targetId || data.priority === priority) return node;
-            return { ...node, data: { ...data, priority } };
-        }));
+        setNodes((current) => {
+            let laneId: string | undefined;
+            const withPriority = current.map((node) => {
+                if (node.type !== 'target') return node;
+                const data = node.data as TargetNodeData;
+                if (data.targetId !== targetId || data.priority === priority) return node;
+                laneId = data.laneId;
+                return { ...node, data: { ...data, priority } };
+            });
+            if (!laneId) return withPriority;
+
+            const lane = withPriority.filter((node) => (
+                node.type === 'target' && (node.data as TargetNodeData).laneId === laneId
+            ));
+            if (lane.length === 0) return withPriority;
+
+            const sorted = [...lane].sort((a, b) => {
+                const left = a.data as TargetNodeData;
+                const right = b.data as TargetNodeData;
+                const byPriority = left.priority - right.priority;
+                return byPriority !== 0 ? byPriority : left.channelId - right.channelId;
+            });
+            const topY = Math.min(...lane.map((node) => node.position.y));
+            const moved = new Map(sorted.map((node, index) => [
+                node.id,
+                { ...node, position: { ...node.position, y: topY + index * (TGT_H + TGT_GAP) } },
+            ]));
+            return withPriority.map((node) => moved.get(node.id) ?? node);
+        });
     };
 
     useEffect(() => {
@@ -1774,38 +1790,25 @@ function RouteTargetEditorCard({
                 </div>
             </div>
 
-            {/* 高级（可选）：优先级、轮询权重、失败兜底、系统提示词覆盖 —— 默认折叠 */}
+            {/* 高级（可选）：优先级、失败兜底、系统提示词覆盖 —— 默认折叠 */}
             <details className="mt-2 min-w-0 rounded-xl border border-border/60 bg-background/40">
                 <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-2.5 py-2 text-xs font-medium text-foreground [&::-webkit-details-marker]:hidden">
                     <span className="min-w-0 truncate">{t('routes.advancedTitle')}</span>
                     <span className="min-w-0 truncate text-[11px] font-normal text-muted-foreground">{t('routes.advancedHint')}</span>
                 </summary>
                 <div className="grid min-w-0 gap-2 border-t border-border/60 p-2.5">
-                    <div className="grid min-w-0 gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(150px,1fr)]">
+                    <div className="grid min-w-0 gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(150px,1fr)]">
                         <label className="grid min-w-0 gap-1 text-xs text-muted-foreground">
                             {t('routes.priority')}
                             <Input
                                 type="number"
-                                min={1}
+                                min={0}
+                                max={9}
                                 step={1}
                                 value={target.priority}
-                                onChange={(event) => updateTarget(index, { priority: asPositiveInt(event.target.value, 1) })}
+                                onChange={(event) => updateTarget(index, { priority: clampRoutePriority(asNumber(event.target.value, target.priority)) })}
                                 aria-label={t('routes.priority')}
                                 placeholder={t('routes.priority')}
-                                className="h-9 rounded-xl"
-                            />
-                        </label>
-                        <label className="grid min-w-0 gap-1 text-xs text-muted-foreground">
-                            {t('routes.weight')}
-                            <Input
-                                type="number"
-                                min={1}
-								max={1000}
-                                step={1}
-                                value={target.weight}
-                                onChange={(event) => updateTarget(index, { weight: asRouteWeight(event.target.value) })}
-                                aria-label={t('routes.weight')}
-                                placeholder={t('routes.weight')}
                                 className="h-9 rounded-xl"
                             />
                         </label>
@@ -1948,7 +1951,7 @@ function RouteTargetsEditor({
                     request_model: cleanOneMillionModelName(target.request_model),
                     upstream_model: cleanOneMillionModelName(target.upstream_model),
                     priority: Number.isFinite(target.priority) ? clampRoutePriority(target.priority) : clampRoutePriority(index + 1),
-                    weight: target.weight || 1,
+                    weight: 1,
                     enabled: target.enabled,
                     billing_model_source: target.billing_model_source ?? 'request_model',
                     billing_model_override: cleanOneMillionModelName(target.billing_model_override ?? '') || undefined,
@@ -2014,7 +2017,7 @@ function RouteTargetsEditor({
             channel_id: target.channel_id,
             upstream_model: cleanOneMillionModelName(target.upstream_model),
             priority: clampRoutePriority(target.priority ?? 1),
-            weight: target.weight || 1,
+            weight: 1,
             enabled: target.enabled,
             billing_model_source: target.billing_model_source ?? 'request_model',
             billing_model_override: cleanOneMillionModelName(target.billing_model_override ?? ''),
@@ -2043,8 +2046,8 @@ function RouteTargetsEditor({
                 request_model: cleanOneMillionModelName(String(target.request_model ?? '')),
                 channel_id: Number(target.channel_id ?? 0),
                 upstream_model: cleanOneMillionModelName(String(target.upstream_model ?? '')),
-                priority: asPositiveInt(String(target.priority ?? index + 1), index + 1),
-                weight: asPositiveInt(String(target.weight ?? 1), 1),
+                priority: clampRoutePriority(Number(target.priority ?? index + 1)),
+                weight: 1,
                 enabled: target.enabled ?? true,
                 billing_model_source: target.billing_model_source ?? 'request_model',
                 billing_model_override: cleanOneMillionModelName(target.billing_model_override ?? '') || undefined,

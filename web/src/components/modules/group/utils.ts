@@ -16,6 +16,11 @@ export function modelChannelKey(channelId: number, modelName: string) {
     return `${channelId}-${modelName}`;
 }
 
+export function compareByPriorityThenChannelId<T extends { priority?: number; channel_id: number }>(a: T, b: T) {
+    const byPriority = (a.priority || 0) - (b.priority || 0);
+    return byPriority !== 0 ? byPriority : (a.channel_id || 0) - (b.channel_id || 0);
+}
+
 export function memberKey(member: Pick<LLMChannel, 'channel_id' | 'name'>) {
     return modelChannelKey(member.channel_id, member.name);
 }

@@ -5,7 +5,6 @@ import { Check, ChevronDownIcon, HelpCircle, Plus, RefreshCw, Search, Trash2 } f
 import { useTranslations } from 'next-intl';
 import * as AccordionPrimitive from '@radix-ui/react-accordion';
 import { useModelChannelList, type LLMChannel } from '@/api/endpoints/model';
-import { useChannelList } from '@/api/endpoints/channel';
 import { Button } from '@/components/ui/button';
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
@@ -16,7 +15,7 @@ import { getModelIcon } from '@/lib/model-icons';
 import { GroupMode, SELECTABLE_GROUP_MODES, normalizeGroupMode } from '@/api/endpoints/group';
 import type { SelectedMember } from './ItemList';
 import { MemberList } from './ItemList';
-import { activeModelChannelKeySet, activeModelChannels, matchGroupModelChannels, memberKey, normalizeKey, MODE_LABELS } from './utils';
+import { activeModelChannelKeySet, activeModelChannels, compareByPriorityThenChannelId, matchGroupModelChannels, memberKey, normalizeKey, MODE_LABELS } from './utils';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/animate-ui/components/animate/tooltip';
 
 
@@ -180,20 +179,14 @@ function SortSection({
     members,
     onReorder,
     onRemove,
-    onWeightChange,
     removingIds,
-    showWeight,
     onClear,
-    channelPriorityById,
 }: {
     members: SelectedMember[];
     onReorder: (members: SelectedMember[]) => void;
     onRemove: (id: string) => void;
-    onWeightChange: (id: string, weight: number) => void;
     removingIds: Set<string>;
-    showWeight: boolean;
     onClear: () => void;
-    channelPriorityById?: Map<number, number>;
 }) {
     const t = useTranslations('group');
 
@@ -230,11 +223,8 @@ function SortSection({
                     members={members}
                     onReorder={onReorder}
                     onRemove={onRemove}
-                    onWeightChange={onWeightChange}
                     removingIds={removingIds}
-                    showWeight={showWeight}
                     showConfirmDelete={false}
-                    channelPriorityById={channelPriorityById}
                 />
             </div>
         </div>
@@ -258,15 +248,8 @@ export function GroupEditor({
 }) {
     const t = useTranslations('group');
     const { data: modelChannels = [] } = useModelChannelList();
-    const { data: channelRows = [] } = useChannelList();
     const selectableModelChannels = useMemo(() => activeModelChannels(modelChannels), [modelChannels]);
     const activeModelKeys = useMemo(() => activeModelChannelKeySet(modelChannels), [modelChannels]);
-    // channel_id -> 渠道优先级(Channel.Priority)，供成员行展示每个渠道自身的 P 值。
-    const channelPriorityById = useMemo(() => {
-        const map = new Map<number, number>();
-        channelRows.forEach(({ raw }) => map.set(raw.id, raw.priority));
-        return map;
-    }, [channelRows]);
 
     const [groupName, setGroupName] = useState(initial?.name ?? '');
     const [matchRegex, setMatchRegex] = useState(initial?.match_regex ?? '');
@@ -288,7 +271,7 @@ export function GroupEditor({
     );
 
     const visibleSelectedMembers = useMemo(
-        () => selectedMembers.filter((member) => activeModelKeys.has(member.id)),
+        () => selectedMembers.filter((member) => activeModelKeys.has(member.id)).sort(compareByPriorityThenChannelId),
         [selectedMembers, activeModelKeys]
     );
 
@@ -296,7 +279,8 @@ export function GroupEditor({
         const key = memberKey(channel);
         setSelectedMembers((prev) => {
             if (prev.some((m) => m.id === key)) return prev;
-            return [...prev, { ...channel, id: key, weight: 1 }];
+            const nextPriority = prev.reduce((max, member) => Math.max(max, member.priority ?? 0), 0) + 1;
+            return [...prev, { ...channel, id: key, priority: nextPriority, weight: 1 }];
         });
     }, []);
 
@@ -308,21 +292,22 @@ export function GroupEditor({
         if (matchedModelChannels.length === 0) return;
         setSelectedMembers((prev) => {
             const existing = new Map(prev.map((m) => [m.id, m]));
-            return matchedModelChannels.map((mc) => {
+            return matchedModelChannels.map((mc, index) => {
                 const key = memberKey(mc);
                 const old = existing.get(key);
                 return {
                     ...mc,
                     id: key,
                     item_id: old?.item_id,
-                    weight: old?.weight ?? 1,
+                    priority: old?.priority ?? index + 1,
+                    weight: 1,
                 };
-            });
+            }).sort(compareByPriorityThenChannelId);
         });
     }, [matchedModelChannels]);
 
-    const handleWeightChange = useCallback((id: string, weight: number) => {
-        setSelectedMembers((prev) => prev.map((m) => m.id === id ? { ...m, weight } : m));
+    const handleReorder = useCallback((nextMembers: SelectedMember[]) => {
+        setSelectedMembers(nextMembers.map((member, index) => ({ ...member, priority: index + 1, weight: 1 })));
     }, []);
 
     const handleRemoveMember = useCallback((id: string) => {
@@ -572,13 +557,10 @@ export function GroupEditor({
                             />
                                 <SortSection
                                     members={visibleSelectedMembers}
-                                    onReorder={setSelectedMembers}
+                                    onReorder={handleReorder}
                                     onRemove={handleRemoveMember}
-                                    onWeightChange={handleWeightChange}
                                     removingIds={removingIds}
-                                    showWeight={false}
                                     onClear={handleClearMembers}
-                                    channelPriorityById={channelPriorityById}
                                 />
                         </div>
                     </div>

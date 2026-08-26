@@ -5,7 +5,6 @@ import { Trash2, X, Pencil, RefreshCw, AlertTriangle } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { type Group, useDeleteGroup, useUpdateGroup } from '@/api/endpoints/group';
 import { useModelChannelList } from '@/api/endpoints/model';
-import { useChannelList } from '@/api/endpoints/channel';
 import { useTranslations } from 'next-intl';
 import { cn } from '@/lib/utils';
 import { toast } from '@/components/common/Toast';
@@ -15,7 +14,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/animate-ui
 import type { SelectedMember } from './ItemList';
 import { MemberList } from './ItemList';
 import { GroupEditor, type GroupEditorValues } from './Editor';
-import { activeModelChannelKeySet, activeModelChannels, buildChannelNameByModelKey, matchGroupModelChannels, memberKey, modelChannelKey, MODE_LABELS } from './utils';
+import { activeModelChannelKeySet, activeModelChannels, buildChannelNameByModelKey, compareByPriorityThenChannelId, matchGroupModelChannels, memberKey, modelChannelKey, MODE_LABELS } from './utils';
 import { SELECTABLE_GROUP_MODES, normalizeGroupMode, type GroupUpdateRequest } from '@/api/endpoints/group';
 import {
     MorphingDialog,
@@ -78,28 +77,19 @@ export function GroupCard({ group, duplicateCount = 1 }: { group: Group; duplica
     const updateGroup = useUpdateGroup();
     const deleteGroup = useDeleteGroup();
     const { data: modelChannels = [] } = useModelChannelList();
-    const { data: channelRows = [] } = useChannelList();
     const visibleModelChannels = useMemo(() => activeModelChannels(modelChannels), [modelChannels]);
     const visibleModelKeys = useMemo(() => activeModelChannelKeySet(modelChannels), [modelChannels]);
-    // channel_id -> 渠道优先级(Channel.Priority)，供成员行展示每个渠道自身的 P 值。
-    const channelPriorityById = useMemo(() => {
-        const map = new Map<number, number>();
-        channelRows.forEach(({ raw }) => map.set(raw.id, raw.priority));
-        return map;
-    }, [channelRows]);
 
     const [confirmDelete, setConfirmDelete] = useState(false);
     const [members, setMembers] = useState<SelectedMember[]>([]);
     const [isRefreshingMatched, setIsRefreshingMatched] = useState(false);
     const isDragging = useRef(false);
-    const weightTimerRef = useRef<NodeJS.Timeout | null>(null);
-    const membersRef = useRef<SelectedMember[]>([]);
 
     const channelNameByKey = useMemo(() => buildChannelNameByModelKey(modelChannels), [modelChannels]);
     const rawItemCount = group.items?.length ?? 0;
     const displayMembers = useMemo((): SelectedMember[] =>
         [...(group.items || [])]
-            .sort((a, b) => a.priority - b.priority)
+            .sort(compareByPriorityThenChannelId)
             .filter((item) => visibleModelKeys.has(modelChannelKey(item.channel_id, item.model_name)))
             .map((item) => ({
                 id: modelChannelKey(item.channel_id, item.model_name),
@@ -108,7 +98,8 @@ export function GroupCard({ group, duplicateCount = 1 }: { group: Group; duplica
                 channel_id: item.channel_id,
                 channel_name: channelNameByKey.get(modelChannelKey(item.channel_id, item.model_name)) ?? `Channel ${item.channel_id}`,
                 item_id: item.id,
-                weight: item.weight,
+                priority: item.priority,
+                weight: 1,
             })),
         [group.items, channelNameByKey, visibleModelKeys]
     );
@@ -124,18 +115,10 @@ export function GroupCard({ group, duplicateCount = 1 }: { group: Group; duplica
 
     useEffect(() => {
         if (isDragging.current) return;
-        // Local members are a drag/weight-edit buffer; sync it from the server snapshot when idle.
+        // Local members are a drag buffer; sync it from the server snapshot when idle.
         // eslint-disable-next-line react-hooks/set-state-in-effect
         setMembers([...displayMembers]);
     }, [displayMembers]);
-
-    useEffect(() => {
-        membersRef.current = members;
-    }, [members]);
-
-    useEffect(() => {
-        return () => { if (weightTimerRef.current) clearTimeout(weightTimerRef.current); };
-    }, []);
 
     const onSuccess = useCallback(() => toast.success(t('toast.updated')), [t]);
     const onError = useCallback((error: Error) => toast.error(t('toast.updateFailed'), { description: error.message }), [t]);
@@ -159,6 +142,10 @@ export function GroupCard({ group, duplicateCount = 1 }: { group: Group; duplica
     const handleDragStart = useCallback(() => { isDragging.current = true; }, []);
     const handleDragFinish = useCallback(() => { isDragging.current = false; }, []);
 
+    const handleReorder = useCallback((nextMembers: SelectedMember[]) => {
+        setMembers(nextMembers.map((member, index) => ({ ...member, priority: index + 1, weight: 1 })));
+    }, []);
+
     const handleDropReorder = useCallback((nextMembers: SelectedMember[]) => {
         const itemsToUpdate = nextMembers
             .map((m, i) => ({ member: m, newPriority: i + 1 }))
@@ -167,7 +154,7 @@ export function GroupCard({ group, duplicateCount = 1 }: { group: Group; duplica
                 const origPriority = priorityByItemId.get(member.item_id);
                 return origPriority !== undefined && origPriority !== newPriority;
             })
-            .map(({ member, newPriority }) => ({ id: member.item_id!, priority: newPriority, weight: member.weight ?? 1 }));
+            .map(({ member, newPriority }) => ({ id: member.item_id!, priority: newPriority, weight: 1 }));
         if (itemsToUpdate.length > 0) updateGroup.mutate({ id: group.id!, items_to_update: itemsToUpdate }, { onSuccess, onError });
     }, [group.id, priorityByItemId, updateGroup, onSuccess, onError]);
 
@@ -175,21 +162,6 @@ export function GroupCard({ group, duplicateCount = 1 }: { group: Group; duplica
         const member = members.find((m) => m.id === id);
         if (member?.item_id !== undefined) updateGroup.mutate({ id: group.id!, items_to_delete: [member.item_id] }, { onSuccess, onError });
     }, [members, group.id, updateGroup, onSuccess, onError]);
-
-    const handleWeightChange = useCallback((id: string, weight: number) => {
-        setMembers((prev) => prev.map((m) => m.id === id ? { ...m, weight } : m));
-        if (weightTimerRef.current) clearTimeout(weightTimerRef.current);
-        weightTimerRef.current = setTimeout(() => {
-            const member = membersRef.current.find((m) => m.id === id);
-            if (!member?.item_id) return;
-            const priority = priorityByItemId.get(member.item_id);
-            if (!priority) return;
-            updateGroup.mutate(
-                { id: group.id!, items_to_update: [{ id: member.item_id, priority, weight }] },
-                { onSuccess, onError }
-            );
-        }, 500);
-    }, [group.id, priorityByItemId, updateGroup, onSuccess, onError]);
 
     const handleRefreshMatchedRoutes = useCallback(() => {
         if (!group.id) return;
@@ -199,13 +171,12 @@ export function GroupCard({ group, duplicateCount = 1 }: { group: Group; duplica
         }
         if (matchedModelChannels.length === 0) return;
 
-        const originalItems = [...(group.items || [])].sort((a, b) => a.priority - b.priority);
-        const originalByKey = new Map<string, { id?: number; priority: number; weight: number }>();
+        const originalItems = [...(group.items || [])].sort(compareByPriorityThenChannelId);
+        const originalByKey = new Map<string, { id?: number; priority: number }>();
         originalItems.forEach((item) => {
             originalByKey.set(modelChannelKey(item.channel_id, item.model_name), {
                 id: item.id,
                 priority: item.priority,
-                weight: item.weight,
             });
         });
 
@@ -230,9 +201,8 @@ export function GroupCard({ group, duplicateCount = 1 }: { group: Group; duplica
             .map(({ mc, priority }) => {
                 const original = originalByKey.get(memberKey(mc));
                 if (!original?.id) return null;
-                const weight = original.weight || 1;
-                if (original.priority === priority && original.weight === weight) return null;
-                return { id: original.id, priority, weight };
+                if (original.priority === priority) return null;
+                return { id: original.id, priority, weight: 1 };
             })
             .filter((item): item is { id: number; priority: number; weight: number } => item !== null);
 
@@ -257,13 +227,13 @@ export function GroupCard({ group, duplicateCount = 1 }: { group: Group; duplica
     const handleSubmitEdit = useCallback((values: GroupEditorValues, onDone?: () => void) => {
         if (!group.id) return;
 
-        const originalItems = [...(group.items || [])].sort((a, b) => a.priority - b.priority);
-        const originalById = new Map<number, { priority: number; weight: number }>();
+        const originalItems = [...(group.items || [])].sort(compareByPriorityThenChannelId);
+        const originalById = new Map<number, { priority: number }>();
         const originalIds = new Set<number>();
         originalItems.forEach((it) => {
             if (typeof it.id === 'number') {
                 originalIds.add(it.id);
-                originalById.set(it.id, { priority: it.priority, weight: it.weight });
+                originalById.set(it.id, { priority: it.priority });
             }
         });
 
@@ -279,7 +249,7 @@ export function GroupCard({ group, duplicateCount = 1 }: { group: Group; duplica
                 channel_id: m.channel_id,
                 model_name: m.name,
                 priority,
-                weight: m.weight ?? 1,
+                weight: 1,
             }));
 
         const items_to_update = values.members
@@ -288,10 +258,9 @@ export function GroupCard({ group, duplicateCount = 1 }: { group: Group; duplica
             .map(({ m, priority }) => {
                 const id = m.item_id!;
                 const orig = originalById.get(id);
-                const weight = m.weight ?? 1;
                 if (!orig) return null;
-                if (orig.priority === priority && orig.weight === weight) return null;
-                return { id, priority, weight };
+                if (orig.priority === priority) return null;
+                return { id, priority, weight: 1 };
             })
             .filter((x): x is { id: number; priority: number; weight: number } => x !== null);
 
@@ -427,7 +396,7 @@ export function GroupCard({ group, duplicateCount = 1 }: { group: Group; duplica
                             <button type="button" onClick={() => setConfirmDelete(false)} className="flex h-7 w-7 items-center justify-center rounded-lg bg-destructive-foreground/20 text-destructive-foreground transition-all hover:bg-destructive-foreground/30 active:scale-95">
                                 <X className="size-4" />
                             </button>
-                            <button type="button" onClick={() => group.id && deleteGroup.mutate(group.id, { onSuccess: () => toast.success(t('toast.deleted')) })} disabled={deleteGroup.isPending} className="flex-1 h-7 flex items-center justify-center gap-2 rounded-lg bg-destructive-foreground text-destructive text-sm font-semibold transition-all hover:bg-destructive-foreground/90 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed">
+                            <button type="button" onClick={() => group.id && deleteGroup.mutate(group.id, { onSuccess: () => toast.success(t('toast.deleted')) })} disabled={deleteGroup.isPending} className="flex-1 h-7 flex items-center justify-center gap-2 rounded-lg bg-destructive-foreground text-destructive text-sm font-semibold transition-all hover:bg-destructive-foreground/90 active:scale-[0.98]">
                                 <Trash2 className="size-3.5" />
                                 {t('detail.actions.confirmDelete')}
                             </button>
@@ -469,16 +438,13 @@ export function GroupCard({ group, duplicateCount = 1 }: { group: Group; duplica
             >
                 <MemberList
                     members={members}
-                    onReorder={setMembers}
+                    onReorder={handleReorder}
                     onRemove={handleRemoveMember}
-                    onWeightChange={handleWeightChange}
                     onDragStart={handleDragStart}
                     onDrop={handleDropReorder}
                     onDragFinish={handleDragFinish}
                     autoScrollOnAdd={false}
-                    showWeight={false}
                     layoutScope={`card-${group.id ?? 'unknown'}`}
-                    channelPriorityById={channelPriorityById}
                 />
             </section>
         </article >

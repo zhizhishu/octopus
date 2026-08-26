@@ -19,6 +19,7 @@ import { useTranslations } from 'next-intl';
 export interface SelectedMember extends LLMChannel {
     id: string;
     item_id?: number;
+    priority?: number;
     weight?: number;
 }
 
@@ -39,23 +40,16 @@ type MemberItemDnd = {
 function MemberItem({
     member,
     onRemove,
-    onWeightChange,
     isRemoving,
     index,
-    channelPriority,
-    showWeight = false,
     showConfirmDelete = true,
     layoutScope,
     dnd,
 }: {
     member: SelectedMember;
     onRemove: (id: string) => void;
-    onWeightChange?: (id: string, weight: number) => void;
     isRemoving?: boolean;
     index: number;
-    /** 该渠道自身的「渠道优先级」(Channel.Priority)，与组内序号区分开。未知时不显示。 */
-    channelPriority?: number;
-    showWeight?: boolean;
     showConfirmDelete?: boolean;
     layoutScope?: string;
     dnd: MemberItemDnd;
@@ -64,6 +58,7 @@ function MemberItem({
     const { Avatar: ModelAvatar } = getModelIcon(member.name);
     const [confirmDelete, setConfirmDelete] = useState(false);
     const isDisabled = member.enabled === false;
+    const priority = member.priority ?? index;
 
     return (
         <div
@@ -90,10 +85,10 @@ function MemberItem({
                 <Tooltip side="top" sideOffset={10} align="start">
                     <TooltipTrigger asChild>
                         <span className={cn(
-                            'size-[18px] rounded-md text-[10px] font-bold grid place-items-center shrink-0 cursor-help',
+                            'h-[18px] min-w-[18px] rounded-md px-1 text-[10px] font-bold grid place-items-center shrink-0 cursor-help',
                             isDisabled ? 'bg-muted text-muted-foreground' : 'bg-primary/10 text-primary'
                         )}>
-                            {index + 1}
+                            P{priority}
                         </span>
                     </TooltipTrigger>
                     <TooltipContent>{t('card.memberPriorityTooltip')}</TooltipContent>
@@ -127,32 +122,9 @@ function MemberItem({
                         <TooltipContent key={member.name}>{member.name}</TooltipContent>
                     </Tooltip>
                     <div className="flex items-center gap-1 min-w-0 leading-tight">
-                        <span className="text-[10px] text-muted-foreground truncate">{member.channel_name}</span>
-                        {channelPriority !== undefined && (
-                            <Tooltip side="top" sideOffset={10} align="start">
-                                <TooltipTrigger asChild>
-                                    <span className="shrink-0 rounded bg-muted/70 px-1 text-[10px] font-medium text-muted-foreground cursor-help">
-                                        P{channelPriority}
-                                    </span>
-                                </TooltipTrigger>
-                                <TooltipContent>{t('card.channelPriorityTooltip')}</TooltipContent>
-                            </Tooltip>
-                        )}
+                        <span className="text-[10px] text-muted-foreground truncate">#{member.channel_id} · {member.channel_name}</span>
                     </div>
                 </div>
-
-                {showWeight && (
-                    <input
-                        type="number"
-                        min={1}
-                        value={member.weight ?? 1}
-                        onChange={(e) => onWeightChange?.(member.id, Math.max(1, parseInt(e.target.value) || 1))}
-                        className={cn(
-                            'w-11 h-6 text-xs text-center rounded border border-border bg-muted/50 focus:outline-none focus:ring-1 focus:ring-primary',
-                            isDisabled && 'text-muted-foreground'
-                        )}
-                    />
-                )}
 
                 {(!showConfirmDelete || !confirmDelete) && (
                     <motion.button
@@ -202,7 +174,6 @@ export interface MemberListProps {
     members: SelectedMember[];
     onReorder: (members: SelectedMember[]) => void;
     onRemove: (id: string) => void;
-    onWeightChange?: (id: string, weight: number) => void;
     /**
      * When true, auto-scroll the list to bottom when a *new visible* member appears
      * (i.e. a new member id is added). Useful in "editor" flows. Defaults to true.
@@ -220,7 +191,6 @@ export interface MemberListProps {
      */
     onDragFinish?: () => void;
     removingIds?: Set<string>;
-    showWeight?: boolean;
     /**
      * When true, show a confirmation overlay before removing an item.
      * When false, clicking the delete button removes the item immediately.
@@ -228,27 +198,19 @@ export interface MemberListProps {
      */
     showConfirmDelete?: boolean;
     layoutScope?: string;
-    /**
-     * 渠道 id → 渠道优先级(Channel.Priority) 的映射。用于在每行展示该渠道自身的 P 值，
-     * 与组内拖拽序号区分。缺失时该行不显示渠道优先级。
-     */
-    channelPriorityById?: Map<number, number>;
 }
 
 export function MemberList({
     members,
     onReorder,
     onRemove,
-    onWeightChange,
     autoScrollOnAdd = true,
     onDragStart,
     onDrop,
     onDragFinish,
     removingIds = new Set(),
-    showWeight = false,
     showConfirmDelete = true,
     layoutScope: externalLayoutScope,
-    channelPriorityById,
 }: MemberListProps) {
     const internalLayoutScope = useId();
     const layoutScope = externalLayoutScope ?? internalLayoutScope;
@@ -346,11 +308,8 @@ export function MemberList({
                                             <MemberItem
                                                 member={member}
                                                 onRemove={onRemove}
-                                                onWeightChange={onWeightChange}
                                                 isRemoving={removingIds.has(member.id)}
                                                 index={index}
-                                                channelPriority={channelPriorityById?.get(member.channel_id)}
-                                                showWeight={showWeight}
                                                 showConfirmDelete={showConfirmDelete}
                                                 layoutScope={layoutScope}
                                                 dnd={{

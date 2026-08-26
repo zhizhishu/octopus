@@ -44,7 +44,7 @@ export function CreateDialogContent() {
                             channel_id: member.channel_id,
                             model_name: member.name,
                             priority: index + 1,
-                            weight: member.weight ?? 1,
+                            weight: 1,
                         }));
 
                         createGroup.mutate(
