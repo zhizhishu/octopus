@@ -91,8 +91,9 @@ func TestFingerprintProfileRefreshDropsRedundantDefault(t *testing.T) {
 
 	// After cleanup the redundant all-empty 默认(Windows) is dropped; the legacy
 	// "Linux 真机" preset converges in place to "Linux · Debian"; and because the 2nd
-	// built-in ("Linux · Ubuntu") is missing it is backfilled, so exactly the two
-	// built-in Linux identities remain under their canonical names.
+	// built-in ("Linux · Ubuntu") is missing it is backfilled, and so is the 3rd
+	// ("macOS · Chrome"), so exactly the three built-in identities remain under
+	// their canonical names.
 	byName := loadFingerprintProfilesByName(t, ctx)
 	if _, ok := byName["默认(Windows)"]; ok {
 		t.Fatalf("redundant all-empty 默认(Windows) must be dropped, got %+v", byName)
@@ -141,7 +142,7 @@ func TestFingerprintProfileRefreshKeepsCustomizedProfileNamedDefault(t *testing.
 }
 
 // TestFingerprintProfileSeedsCanonicalBuiltins pins the FRESH-deploy path: an empty DB
-// gets exactly the two built-in Linux presets, every field straight from
+// gets exactly the three built-in presets, every field straight from
 // builtinLinuxPresets() (the single source of truth), with DISTINCT generic (non-CLI)
 // User-Agents and DISTINCT device seeds — so picking a preset really does change both
 // the non-CLI UA and the derived device_id, instead of the two reading as one machine.
