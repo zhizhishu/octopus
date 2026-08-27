@@ -118,11 +118,16 @@ func transformChatRequest(ctx context.Context, request *model.InternalLLMRequest
 		}
 	}
 
-	// Force stream_options.include_usage only for the genuine OpenAI chat base.
-	// Third-party OpenAI-compatible upstreams often 400 on unknown/unsupported
-	// stream_options, so leave client-provided values alone there (and do not
-	// inject one when the client omitted it).
-	if request.Stream != nil && *request.Stream && isOpenAIOfficialChatBase(baseUrl) {
+	// Force stream_options.include_usage on every streaming OpenAI-compatible chat
+	// request. Providers such as NVIDIA NIM (vLLM), DeepSeek, GLM and Qwen only
+	// attach the aggregate usage (cached tokens included) to a trailing chunk when
+	// include_usage is requested; without it the stream ends usage-less and the
+	// request is logged local_estimate/upstream_usage_missing with cache_hit 0.
+	// new-api and sub2api force the same switch for the same reason. ponytail: an
+	// upstream that 400s on stream_options simply loses this attempt and is skipped
+	// by channel failover; if one ever bites, add a per-channel opt-out rather than
+	// a host allowlist.
+	if request.Stream != nil && *request.Stream {
 		if request.StreamOptions == nil {
 			request.StreamOptions = &model.StreamOptions{IncludeUsage: true}
 		} else if !request.StreamOptions.IncludeUsage {

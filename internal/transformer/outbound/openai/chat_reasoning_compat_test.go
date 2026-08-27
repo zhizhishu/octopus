@@ -157,7 +157,7 @@ func TestNonReasoningChatStillDemotesDeveloperToSystem(t *testing.T) {
 	}
 }
 
-func TestStreamOptionsIncludeUsageOnlyForcedForOfficialOpenAI(t *testing.T) {
+func TestStreamOptionsIncludeUsageForcedForAllOpenAIChatStreams(t *testing.T) {
 	stream := true
 	user := "hi"
 	baseReq := func() *model.InternalLLMRequest {
@@ -170,45 +170,31 @@ func TestStreamOptionsIncludeUsageOnlyForcedForOfficialOpenAI(t *testing.T) {
 		}
 	}
 
-	// Genuine OpenAI base: inject stream_options.include_usage when missing.
-	official := chatBodyWithBase(t, baseReq(), "https://api.openai.com/v1")
-	so, ok := official["stream_options"].(map[string]any)
-	if !ok {
-		t.Fatalf("official base must inject stream_options, body=%v", official)
-	}
-	if so["include_usage"] != true {
-		t.Fatalf("official base must force include_usage=true, got %#v", so)
+	// Every streaming OpenAI-compatible chat base (official and third-party) must
+	// force stream_options.include_usage=true so the upstream attaches aggregate
+	// usage (cached tokens included) to a trailing chunk instead of ending the
+	// stream usage-less.
+	for _, base := range []string{
+		"https://api.openai.com/v1",
+		"https://third-party.example/v1",
+		"https://compat.proxy.example/v1",
+	} {
+		body := chatBodyWithBase(t, baseReq(), base)
+		so, ok := body["stream_options"].(map[string]any)
+		if !ok || so["include_usage"] != true {
+			t.Fatalf("streaming chat via %s must force stream_options.include_usage=true, body=%v", base, body)
+		}
 	}
 
-	// Official base also upgrades a client-provided stream_options with include_usage=false.
+	// A client-provided stream_options with include_usage=false is still upgraded
+	// so upstream usage is never silently lost.
 	falseUsage := &model.StreamOptions{IncludeUsage: false}
 	reqUpgrade := baseReq()
 	reqUpgrade.StreamOptions = falseUsage
-	upgraded := chatBodyWithBase(t, reqUpgrade, "https://api.openai.com/v1")
+	upgraded := chatBodyWithBase(t, reqUpgrade, "https://third-party.example/v1")
 	so2, ok := upgraded["stream_options"].(map[string]any)
 	if !ok || so2["include_usage"] != true {
-		t.Fatalf("official base must force include_usage=true on client false, got %#v", upgraded["stream_options"])
-	}
-
-	// Third-party OpenAI-compatible base: do NOT force inject stream_options.
-	third := chatBodyWithBase(t, baseReq(), "https://third-party.example/v1")
-	if _, ok := third["stream_options"]; ok {
-		t.Fatalf("third-party base must not inject stream_options, body=%v", third)
-	}
-
-	// Third-party base: respect client-provided stream_options as-is (no force true).
-	clientSO := &model.StreamOptions{IncludeUsage: false}
-	reqClient := baseReq()
-	reqClient.StreamOptions = clientSO
-	thirdClient := chatBodyWithBase(t, reqClient, "https://compat.proxy.example/v1")
-	so3, ok := thirdClient["stream_options"].(map[string]any)
-	if !ok {
-		// include_usage=false with omitempty may drop the whole object; either absence
-		// or an object that does not force true is acceptable. Force-true is the bug.
-		return
-	}
-	if so3["include_usage"] == true {
-		t.Fatalf("third-party base must not force include_usage=true, got %#v", so3)
+		t.Fatalf("client include_usage=false must be upgraded to true, got %#v", upgraded["stream_options"])
 	}
 }
 
