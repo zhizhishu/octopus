@@ -591,6 +591,7 @@ func TestResponseInboundKeepsInterleavedParallelToolCallsIntact(t *testing.T) {
 	// Reconstruct the final arguments from the terminal *.done events and verify
 	// neither tool's arguments were truncated.
 	finalArgs := map[string]string{}
+	callIDByItemID := map[string]string{}
 	itemOutputIndex := map[string]int{}
 	for _, ev := range events {
 		switch ev.Type {
@@ -607,6 +608,7 @@ func TestResponseInboundKeepsInterleavedParallelToolCallsIntact(t *testing.T) {
 			if ev.OutputIndex == nil {
 				t.Fatalf("function_call %s missing output_index: %#v", ev.Type, ev)
 			}
+			callIDByItemID[ev.Item.ID] = ev.Item.CallID
 			assertOutputIndexAgrees(t, itemOutputIndex, ev.Item.ID, *ev.OutputIndex)
 			if ev.Type == "response.output_item.done" {
 				finalArgs[ev.Item.ID] = derefString(ev.Item.Arguments)
@@ -619,16 +621,33 @@ func TestResponseInboundKeepsInterleavedParallelToolCallsIntact(t *testing.T) {
 		}
 	}
 
-	if got := finalArgs["call_alpha"]; got != `{"city":"paris"}` {
+	finalArgsByCallID := map[string]string{}
+	for itemID, callID := range callIDByItemID {
+		finalArgsByCallID[callID] = finalArgs[itemID]
+	}
+
+	if got := finalArgsByCallID["call_alpha"]; got != `{"city":"paris"}` {
 		t.Fatalf("first tool call arguments truncated/corrupted: got %q", got)
 	}
-	if got := finalArgs["call_beta"]; got != `{"zone":"utc"}` {
+	if got := finalArgsByCallID["call_beta"]; got != `{"zone":"utc"}` {
 		t.Fatalf("second tool call arguments truncated/corrupted: got %q", got)
 	}
 
 	// The two parallel tool items must occupy distinct, stable output indices.
-	if itemOutputIndex["call_alpha"] == itemOutputIndex["call_beta"] {
-		t.Fatalf("parallel tool calls collided on output_index %d", itemOutputIndex["call_alpha"])
+	var alphaItemID, betaItemID string
+	for itemID, callID := range callIDByItemID {
+		switch callID {
+		case "call_alpha":
+			alphaItemID = itemID
+		case "call_beta":
+			betaItemID = itemID
+		}
+	}
+	if alphaItemID == "" || betaItemID == "" {
+		t.Fatalf("missing call_id to item_id mapping: %#v", callIDByItemID)
+	}
+	if itemOutputIndex[alphaItemID] == itemOutputIndex[betaItemID] {
+		t.Fatalf("parallel tool calls collided on output_index %d", itemOutputIndex[alphaItemID])
 	}
 }
 
@@ -882,8 +901,8 @@ func TestResponseInboundDeferredAnnouncementWhenNameArrivesLate(t *testing.T) {
 	if replayEv.Delta != `{"q":` {
 		t.Fatalf("replayed delta (deferred accumulation from chunk 1) must be %q, got %q", `{"q":`, replayEv.Delta)
 	}
-	if replayEv.ItemID == nil || *replayEv.ItemID != "call_x" {
-		t.Fatalf("replayed delta must reference the announced item id %q, got %#v", "call_x", replayEv.ItemID)
+	if replayEv.ItemID == nil || *replayEv.ItemID != addedItem.ID {
+		t.Fatalf("replayed delta must reference the announced item id %q, got %#v", addedItem.ID, replayEv.ItemID)
 	}
 	// The current chunk's arguments then arrive as a normal incremental delta, so
 	// the two deltas concatenate to the full arguments string.

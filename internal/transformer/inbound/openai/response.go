@@ -434,7 +434,7 @@ func (i *ResponseInbound) normalizeLegacyFunctionCallForResponses(message *model
 	}
 	callID := i.legacyFunctionCallIDByChoice[choiceIndex]
 	if callID == "" {
-		callID = generateFunctionCallItemID()
+		callID = generateToolCallID()
 		i.legacyFunctionCallIDByChoice[choiceIndex] = callID
 	}
 	message.ToolCalls = []model.ToolCall{{
@@ -715,7 +715,7 @@ func (i *ResponseInbound) flushGLMInlineToolCallText(buffered string) [][]byte {
 	for _, recovered := range recoveredToolCalls {
 		toolCalls = append(toolCalls, model.ToolCall{
 			Index: i.nextGLMInlineToolCallIndex(),
-			ID:    generateFunctionCallItemID(),
+			ID:    generateToolCallID(),
 			Type:  "function",
 			Function: model.FunctionCall{
 				Name:      recovered.Name,
@@ -890,16 +890,16 @@ func (i *ResponseInbound) handleToolCalls(toolCalls []model.ToolCall) [][]byte {
 
 		// Initialize tool call tracking if needed
 		if _, ok := i.toolCalls[toolCallIndex]; !ok {
-			// call_id (semantic identity) = the upstream tool id, or a synthesized one
-			// when the first fragment carries none (some OpenAI-compatible upstreams
-			// stream arguments before, or without, an id). It is stored back so a later
-			// argument-delta and the finalizing *.done reuse the same non-empty value
-			// the codex client pairs the tool result on next turn — an empty call_id
-			// can never be matched.
+			// item id (Responses lifecycle handle) and call_id (semantic tool-result
+			// pairing key) are separate wire fields. A function_call output item should
+			// carry an fc_* item id, while call_id keeps the upstream call_* id (or a
+			// synthesized call_* value when the upstream omitted one). Reusing fc_* as
+			// call_id made synthesized calls look unlike real Responses traffic.
 			callID := strings.TrimSpace(tc.ID)
 			if callID == "" {
-				callID = generateFunctionCallItemID()
+				callID = generateToolCallID()
 			}
+			itemID := generateFunctionCallItemID()
 
 			i.toolCalls[toolCallIndex] = &model.ToolCall{
 				Index: toolCallIndex,
@@ -912,14 +912,10 @@ func (i *ResponseInbound) handleToolCalls(toolCalls []model.ToolCall) [][]byte {
 			}
 
 			// The streaming item id (lifecycle handle) is announced once here and is
-			// immutable: every delta/done references it. It starts equal to the initial
-			// call_id — reusing the real upstream id when present (oct's item-id-equals-
-			// call-id contract, which real upstreams and the tool_use tests rely on),
-			// or the synthesized id when the first fragment carried none. Tracking it
-			// separately from toolCalls[idx].ID (the call_id / pairing key) is what lets
-			// a real id arriving in a LATER frame update only call_id, without
-			// invalidating this already-announced, already-referenced item id.
-			itemID := callID
+			// immutable: every delta/done references it. Tracking it separately from
+			// toolCalls[idx].ID (the call_id / pairing key) is what lets a real id
+			// arriving in a LATER frame update only call_id, without invalidating this
+			// already-announced, already-referenced item id.
 			i.toolCallItemID[toolCallIndex] = itemID
 			i.toolCallOutputIndex[toolCallIndex] = i.allocOutputIndex()
 			// Defer the output_item.added announcement when the upstream sent the tool
@@ -2732,14 +2728,14 @@ func convertToResponsesAPIResponse(resp *model.InternalLLMResponse) *ResponsesRe
 		// Handle tool calls
 		if len(message.ToolCalls) > 0 {
 			for _, toolCall := range message.ToolCalls {
-				// Synthesize a stable id when the upstream tool call carries none and
-				// use it for both the item id and call_id — mirrors the streaming path
-				// (handleToolCalls). An empty call_id can never be paired with its
-				// function_call_output on the next turn.
-				callID := toolCall.ID
+				// Synthesize a stable call_id when the upstream tool call carries none.
+				// The Responses output item gets its own fc_* lifecycle id; call_id is
+				// the key the client pairs with function_call_output on the next turn.
+				callID := strings.TrimSpace(toolCall.ID)
 				if strings.TrimSpace(callID) == "" {
-					callID = generateFunctionCallItemID()
+					callID = generateToolCallID()
 				}
+				itemID := generateFunctionCallItemID()
 				if toolCall.Type == model.ToolCallTypeCustom {
 					// Custom (freeform) tool call: re-emit as a custom_tool_call
 					// carrying `input`, so a codex client that registered a custom
@@ -2747,7 +2743,7 @@ func convertToResponsesAPIResponse(resp *model.InternalLLMResponse) *ResponsesRe
 					// freeform text as JSON arguments would be rejected).
 					input := toolCall.Function.Arguments
 					result.Output = append(result.Output, ResponsesItem{
-						ID:     callID,
+						ID:     itemID,
 						Type:   "custom_tool_call",
 						CallID: callID,
 						Name:   toolCall.Function.Name,
@@ -2761,7 +2757,7 @@ func convertToResponsesAPIResponse(resp *model.InternalLLMResponse) *ResponsesRe
 					// Arguments) but item.type MUST be "mcp_tool_call" so the codex / cursor client
 					// routes the call to its MCP handler instead of treating it as a generic function_call.
 					result.Output = append(result.Output, ResponsesItem{
-						ID:        callID,
+						ID:        itemID,
 						Type:      "mcp_tool_call",
 						CallID:    callID,
 						Name:      toolCall.Function.Name,
@@ -2771,7 +2767,7 @@ func convertToResponsesAPIResponse(resp *model.InternalLLMResponse) *ResponsesRe
 					continue
 				}
 				result.Output = append(result.Output, ResponsesItem{
-					ID:        callID,
+					ID:        itemID,
 					Type:      "function_call",
 					CallID:    callID,
 					Name:      toolCall.Function.Name,
@@ -2925,6 +2921,10 @@ func generateReasoningItemID() string {
 
 func generateFunctionCallItemID() string {
 	return fmt.Sprintf("fc_%s", lo.RandomString(16, lo.AlphanumericCharset))
+}
+
+func generateToolCallID() string {
+	return fmt.Sprintf("call_%s", lo.RandomString(16, lo.AlphanumericCharset))
 }
 
 func generateImageGenerationItemID() string {

@@ -93,6 +93,24 @@ func TestSanitizeResponsesInputItemIDsNoOpKeepsBytes(t *testing.T) {
 	}
 }
 
+func TestSanitizeResponsesInputItemIDsRequiresUnderscorePrefix(t *testing.T) {
+	cases := []struct {
+		itemType string
+		id       string
+	}{
+		{itemType: "message", id: "msgInvalid"},
+		{itemType: "function_call", id: "fcInvalid"},
+		{itemType: "custom_tool_call", id: "ctcInvalid"},
+		{itemType: "reasoning", id: "rsInvalid"},
+		{itemType: "image_generation_call", id: "igInvalid"},
+	}
+	for _, item := range cases {
+		if !ShouldDropResponsesInputItemID(item.itemType, item.id) {
+			t.Errorf("ShouldDropResponsesInputItemID(%q, %q) = false, want true", item.itemType, item.id)
+		}
+	}
+}
+
 // TestSanitizeResponsesInputItemIDsIgnoresNonArrayInput pins that the text
 // shorthand (`"input": "just a prompt"`) and other non-array shapes are untouched.
 func TestSanitizeResponsesInputItemIDsIgnoresNonArrayInput(t *testing.T) {

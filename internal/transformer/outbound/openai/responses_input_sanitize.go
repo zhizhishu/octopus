@@ -81,18 +81,22 @@ func ShouldDropResponsesInputItemID(itemType, id string) bool {
 	}
 	switch itemType {
 	case "message":
-		return !strings.HasPrefix(id, "msg")
+		return !hasResponsesIDPrefix(id, "msg_")
 	case "function_call":
-		return !strings.HasPrefix(id, "fc")
+		return !hasResponsesIDPrefix(id, "fc_")
 	case "custom_tool_call":
 		// Real OpenAI mints ctc_ for custom tool call items; fc is accepted too since
 		// octopus (and sub2api) key both tool-call families to the fc prefix.
-		return !strings.HasPrefix(id, "fc") && !strings.HasPrefix(id, "ctc")
+		return !hasResponsesIDPrefix(id, "fc_") && !hasResponsesIDPrefix(id, "ctc_")
 	case "reasoning":
-		return !strings.HasPrefix(id, "rs")
+		return !hasResponsesIDPrefix(id, "rs_")
 	case "image_generation_call":
-		return !strings.HasPrefix(id, "ig")
+		return !hasResponsesIDPrefix(id, "ig_")
 	default:
 		return false
 	}
+}
+
+func hasResponsesIDPrefix(id string, prefix string) bool {
+	return strings.HasPrefix(strings.TrimSpace(id), prefix)
 }

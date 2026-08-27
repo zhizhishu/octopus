@@ -438,10 +438,10 @@ func TestResponseInboundEmptyIDToolThenTextNeverOrphans(t *testing.T) {
 }
 
 // TestResponseInboundNonStreamEmptyIDToolCallSynthesizesID guards the non-stream
-// sibling of the empty-id fix: convertToResponsesAPIResponse must synthesize an id
-// for a tool call whose upstream id is empty and use the same non-empty value for
-// both the item id and call_id, so the codex client can pair the tool result on
-// the next turn (an empty call_id can never be matched).
+// sibling of the empty-id fix: convertToResponsesAPIResponse must synthesize both
+// the Responses item id and the tool-result pairing call_id for a tool call whose
+// upstream id is empty. The item id follows the Responses function_call item shape
+// (fc_*), while call_id follows the tool-result pairing shape (call_*).
 func TestResponseInboundNonStreamEmptyIDToolCallSynthesizesID(t *testing.T) {
 	resp := &model.InternalLLMResponse{
 		ID:     "resp_emptyid",
@@ -485,8 +485,14 @@ func TestResponseInboundNonStreamEmptyIDToolCallSynthesizesID(t *testing.T) {
 	if strings.TrimSpace(fc.ID) == "" {
 		t.Fatalf("function_call item id must be synthesized non-empty, got %q (body: %s)", fc.ID, string(body))
 	}
-	if fc.CallID != fc.ID {
-		t.Fatalf("call_id (%q) must equal the item id (%q) so the tool result pairs next turn", fc.CallID, fc.ID)
+	if !strings.HasPrefix(fc.ID, "fc_") {
+		t.Fatalf("function_call item id must use the Responses fc_ prefix, got %q", fc.ID)
+	}
+	if !strings.HasPrefix(fc.CallID, "call_") {
+		t.Fatalf("function_call call_id must use the tool pairing call_ prefix, got %q", fc.CallID)
+	}
+	if fc.CallID == fc.ID {
+		t.Fatalf("call_id (%q) must be distinct from item id (%q)", fc.CallID, fc.ID)
 	}
 }
 
