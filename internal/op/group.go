@@ -656,3 +656,89 @@ func groupRefreshCacheByIDs(ids []int, ctx context.Context) error {
 	}
 	return nil
 }
+
+// SyncGroupItemsPriorityFromTargets 把方案画布的候选顺序回写到模型池：同名 group
+// （group.name == requestModel）的 group_items 按画布 target 的 priority 顺序重排，
+// 画布未覆盖的条目按原相对顺序排到画布顺序之后。这是 best-effort：找不到同名 group
+// 直接跳过；请求命中方案时走 route targets，未命中时（兜底）走 group_items，两者顺序
+// 一致才能保证「画布调了顺序、模型池也跟着变」。
+func SyncGroupItemsPriorityFromTargets(ctx context.Context, requestModel string, targets []model.AccessRouteTarget) error {
+	if len(targets) == 0 {
+		return nil
+	}
+	ordered := append([]model.AccessRouteTarget(nil), targets...)
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].Priority != ordered[j].Priority {
+			return ordered[i].Priority < ordered[j].Priority
+		}
+		return ordered[i].ChannelID < ordered[j].ChannelID
+	})
+
+	cleanName := strings.ToLower(model.CleanOneMillionCapabilityModelName(requestModel))
+	var groups []model.Group
+	if err := db.GetDB().WithContext(ctx).Where("LOWER(name) = ?", cleanName).Find(&groups).Error; err != nil {
+		return err
+	}
+	for _, group := range groups {
+		if err := syncGroupItemsOrder(ctx, group.ID, ordered); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func syncGroupItemsOrder(ctx context.Context, groupID int, ordered []model.AccessRouteTarget) error {
+	rank := make(map[string]int, len(ordered))
+	for i, target := range ordered {
+		rank[groupItemMatchKey(target.ChannelID, target.UpstreamModel)] = i + 1
+	}
+
+	var items []model.GroupItem
+	if err := db.GetDB().WithContext(ctx).Where("group_id = ?", groupID).Order("priority ASC").Find(&items).Error; err != nil {
+		return err
+	}
+	if len(items) == 0 {
+		return nil
+	}
+
+	// 匹配画布的按画布顺序取 1..N；未匹配的按原相对顺序排到画布之后。
+	tail := len(ordered)
+	want := make(map[int]int, len(items))
+	for _, item := range items {
+		if r, ok := rank[groupItemMatchKey(item.ChannelID, item.ModelName)]; ok {
+			want[item.ID] = r
+		} else {
+			tail++
+			want[item.ID] = tail
+		}
+	}
+
+	changed := make(map[int]int)
+	for _, item := range items {
+		if want[item.ID] != item.Priority {
+			changed[item.ID] = want[item.ID]
+		}
+	}
+	if len(changed) == 0 {
+		return nil
+	}
+
+	priorityCase := "CASE id"
+	ids := make([]int, 0, len(changed))
+	for id, priority := range changed {
+		ids = append(ids, id)
+		priorityCase += fmt.Sprintf(" WHEN %d THEN %d", id, priority)
+	}
+	priorityCase += " END"
+
+	if err := db.GetDB().WithContext(ctx).Model(&model.GroupItem{}).
+		Where("id IN ? AND group_id = ?", ids, groupID).
+		Update("priority", gorm.Expr(priorityCase)).Error; err != nil {
+		return err
+	}
+	return groupRefreshCacheByID(groupID, ctx)
+}
+
+func groupItemMatchKey(channelID int, upstreamModel string) string {
+	return fmt.Sprintf("%d:%s", channelID, strings.ToLower(model.CleanOneMillionCapabilityModelName(upstreamModel)))
+}

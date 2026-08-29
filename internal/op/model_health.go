@@ -154,10 +154,10 @@ func modelHealthLogs(ctx context.Context, start, end int64) ([]model.RelayLog, e
 }
 
 func modelHealthModelName(relayLog model.RelayLog) string {
-	if name := strings.TrimSpace(relayLog.ActualModelName); name != "" {
+	if name := strings.TrimSpace(relayLog.RequestModelName); name != "" {
 		return name
 	}
-	if name := strings.TrimSpace(relayLog.RequestModelName); name != "" {
+	if name := strings.TrimSpace(relayLog.ActualModelName); name != "" {
 		return name
 	}
 	return "unknown"

@@ -1465,6 +1465,21 @@ func rawJSONPresentRelay(raw json.RawMessage) bool {
 	return trimmed != "" && trimmed != "null"
 }
 
+// isBenignUpstreamStreamEnd 判断上游 SSE 流读取错误是否属于「自然断流」：上游没发
+// data:[DONE] / 完整事件边界就关闭连接（go-sse 报 io.ErrUnexpectedEOF，错误串为
+// "go-sse: unexpected end of input"）。这类算正常结束而非协议错误，应按流结束收尾，
+// 而不是当失败刷 error 日志、触发换渠道。
+func isBenignUpstreamStreamEnd(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	normalized := strings.ToLower(err.Error())
+	return strings.Contains(normalized, "unexpected end of input") || strings.Contains(normalized, "eof")
+}
+
 func applyClaudeOneMillionRuntimeShape(req *model.InternalLLMRequest) {
 	if req == nil {
 		return
@@ -1820,6 +1835,28 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 				return nil
 			}
 			if r.err != nil {
+				// go-sse 在上游没发 data:[DONE] / 完整事件边界就断开时返回
+				// io.ErrUnexpectedEOF（错误串 "unexpected end of input"）。这是「流自然
+				// 结束」而非协议错误：已提交过内容就按正常结束收尾（补 [DONE]），别再
+				// 弹 error、也别触发换渠道——否则下游会误以为上游失败而中止。
+				if isBenignUpstreamStreamEnd(r.err) {
+					if seenMeaningfulChunk || sawUpstreamCompletion {
+						if err := commitPendingPrelude(); err != nil {
+							return err
+						}
+						if !streamDoneSeen && ra.shouldSynthesizeStreamDone() {
+							data, err := ra.synthesizeStreamDone(ctx)
+							if err != nil {
+								return err
+							}
+							if err := writeStreamData(data); err != nil {
+								return err
+							}
+						}
+						return nil
+					}
+					return errors.New("upstream stream ended without internal response")
+				}
 				log.Warnf("failed to read event: %v", r.err)
 				return fmt.Errorf("failed to read stream event: %w", r.err)
 			}

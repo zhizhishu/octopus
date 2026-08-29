@@ -9,6 +9,7 @@ import (
 	"github.com/bestruirui/octopus/internal/db"
 	"github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/utils/cache"
+	"github.com/bestruirui/octopus/internal/utils/log"
 )
 
 var accessPlanCache = cache.New[int, model.AccessPlan](16)
@@ -1080,6 +1081,14 @@ func AccessPlanUpdateRouteTargets(accessPlanID int, targets []model.AccessRouteT
 		return model.AccessPlan{}, err
 	}
 	if err := accessPlanRefreshCache(ctx); err != nil {
+	// 画布调了候选顺序 → 同步到模型池同名 group 的 group_items（best-effort，
+	// 失败只记日志、不阻断方案保存；否则画布和模型池的顺序会各走各的）。
+	for _, key := range order {
+		bucket := buckets[key]
+		if err := SyncGroupItemsPriorityFromTargets(ctx, bucket.rule.RequestModel, bucket.targets); err != nil {
+			log.Warnf("failed to sync model pool priority for %s: %v", bucket.rule.RequestModel, err)
+		}
+	}
 		return model.AccessPlan{}, err
 	}
 	return accessPlanGetCached(accessPlanID, ctx)
