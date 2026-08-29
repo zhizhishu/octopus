@@ -323,6 +323,8 @@ export function useLogSeverityCounts(options: {
         enabled,
         staleTime: 0,
         refetchOnMount: 'always',
+        // SSE 只推日志列表、不推计数；计数每 3 秒轻量重取，让总数/徽章/分页页数不陈旧。
+        refetchInterval: 3000,
     });
 }
 
@@ -383,6 +385,9 @@ export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?
         },
         staleTime: 0,
         refetchOnMount: 'always',
+        // 非实时(SSE)模式：每 3 秒轻量重取第 1 页，让新日志不必手动刷新即可出现。
+        // live=true 时由 EventSource 推流接管，此处关闭轮询避免重复拉取。
+        refetchInterval: live ? false : 3000,
     });
 
     const logs = useMemo(() => {

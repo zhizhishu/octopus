@@ -556,6 +556,7 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
                                 cancelText={t('actions.cancel')}
                                 idPrefix="channel"
                                 advancedMode="panel"
+                                onAdvancedClose={() => setAdvancedOpen(false)}
                                 advancedOpen={advancedOpen}
                             />
                         </TabsContent>

@@ -15,6 +15,7 @@ import { Badge } from '@/components/ui/badge';
 import { toast } from '@/components/common/Toast';
 import { useTranslations } from 'next-intl';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { Loader2, Play, RefreshCw, X, Plus, Timer, Fingerprint } from 'lucide-react';
 import {
     Accordion,
@@ -66,7 +67,8 @@ function AdvancedSettingsShell({
     }, [panel, onClose]);
 
     if (panel) {
-        return (
+        if (typeof document === 'undefined') return null;
+        return createPortal(
             <>
                 {onClose && (
                     <div
@@ -88,7 +90,8 @@ function AdvancedSettingsShell({
                         {children}
                     </div>
                 </aside>
-            </>
+            </>,
+            document.body
         );
     }
 
@@ -161,6 +164,7 @@ export interface ChannelFormProps {
     idPrefix?: string;
     advancedMode?: 'accordion' | 'panel';
     advancedOpen?: boolean;
+    onAdvancedClose?: () => void;
 }
 
 const CHANNEL_BASE_URL_SUFFIXES: Partial<Record<ChannelType, string[]>> = {
@@ -274,6 +278,7 @@ export function ChannelForm({
     idPrefix = 'channel',
     advancedMode = 'accordion',
     advancedOpen = false,
+    onAdvancedClose,
 }: ChannelFormProps) {
     const t = useTranslations('channel.form');
 
@@ -1352,7 +1357,7 @@ export function ChannelForm({
             </div>
 
             {showAdvanced && (
-                <AdvancedSettingsShell panel={isAdvancedPanel} title={t('advanced')} onClose={onCancel}>
+                <AdvancedSettingsShell panel={isAdvancedPanel} title={t('advanced')} onClose={onAdvancedClose ?? onCancel}>
                         {/* Vertical stack: auto-group and proxy each take a full row; the two
                             fingerprint controls (mode + profile) are grouped into one titled card
                             below so they read as one coherent section, not two floating selects. */}

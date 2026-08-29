@@ -330,13 +330,13 @@
             "invalid": "Global first-token timeout default must be 0 or a positive integer number of seconds"
         },
         "routeModeOverride": {
-            "label": "Global route-mode default",
+            "label": "Global route-mode override",
             "hint": "Forces every group to use one routing mode, overriding each group's own choice. Spread = load-balance across same-priority channels; Fill-first = concentrate on the top healthy channel and only sink on failure for a better upstream cache hit rate.",
             "description": "An override switch: choosing Spread or Fill-first replaces the mode each group picked. Follow group = no override, each group keeps its own configuration.",
             "defaultHint": "Default: follow group",
-            "followGroup": "Follow group settings",
-            "spread": "Global round robin",
-            "fillFirst": "Global fill first"
+            "followGroup": "Follow group",
+            "spread": "Force spread",
+            "fillFirst": "Force fill-first"
         },
         "poolDefaults": {
             "title": "Model pool global defaults",

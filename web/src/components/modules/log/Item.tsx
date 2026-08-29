@@ -19,6 +19,7 @@ import {
     isModelTestEndpoint,
 } from './humanize';
 import { getModelIcon } from '@/lib/model-icons';
+import { marketModelName } from '@/lib/model-aliases';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import { CopyIconButton } from '@/components/common/CopyButton';
@@ -206,7 +207,7 @@ function RetryBadgeWithTooltip({ channelName, brandColor, attempts }: RetryBadge
                                     />
                                     <MonoSafeText
                                         mode="wrap"
-                                        value={`${attempt.model_name} - ${formatDuration(attempt.duration)}`}
+                                        value={`${marketModelName(attempt.model_name)} - ${formatDuration(attempt.duration)}`}
                                         className="text-[10px] text-muted-foreground"
                                     />
                                     {attempt.upstream_path && (
@@ -279,6 +280,8 @@ function LogRouteHeader({
     const t = useTranslations('log.card');
     const isCard = variant === 'card';
     const textMode = isCard ? undefined : 'wrap';
+    const requestModelDisplayName = marketModelName(log.request_model_name) || log.request_model_name;
+    const actualModelDisplayName = marketModelName(log.actual_model_name) || log.actual_model_name;
 
     return (
         <>
@@ -317,7 +320,12 @@ function LogRouteHeader({
                     <MonoSafeText value={upstreamPaths[0]} className="text-xs" />
                 </Badge>
             )}
-            <SafeText mode={textMode} value={log.request_model_name} className="font-semibold text-card-foreground" />
+            <SafeText
+                mode={textMode}
+                value={requestModelDisplayName}
+                title={requestModelDisplayName === log.request_model_name ? undefined : log.request_model_name}
+                className="font-semibold text-card-foreground"
+            />
             {/* Channel identity is admin-only: a normal user's log carries no
                 channel_name (see RelayLogUserSummary), so the header degrades to
                 request model → actual model without ever revealing the upstream. */}
@@ -341,7 +349,12 @@ function LogRouteHeader({
                     )}
                 </>
             )}
-            <SafeText mode={textMode} value={log.actual_model_name} className="text-muted-foreground" />
+            <SafeText
+                mode={textMode}
+                value={actualModelDisplayName}
+                title={actualModelDisplayName === log.actual_model_name ? undefined : log.actual_model_name}
+                className="text-muted-foreground"
+            />
             {log.is_stream !== undefined && (
                 <Badge variant="outline" className="shrink-0 border-border/60 bg-muted/30 px-1.5 py-0 text-xs">
                     {log.is_stream ? t('stream') : t('nonStream')}
@@ -1029,7 +1042,7 @@ export const LogCard = React.memo(function LogCard({ log }: { log: RelayLog }) {
                                                                             />
                                                                             <MonoSafeText
                                                                                 mode="wrap"
-                                                                                value={attempt.model_name}
+                                                                                value={marketModelName(attempt.model_name)}
                                                                                 className="text-[11px] text-muted-foreground sm:flex-1"
                                                                             />
                                                                             {attempt.upstream_path && (

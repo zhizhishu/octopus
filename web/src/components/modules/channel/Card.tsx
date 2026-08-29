@@ -83,7 +83,7 @@ export function Card({ channel, stats, layout = 'list' }: { channel: Channel; st
         <MorphingDialog>
             <MorphingDialogTrigger className="w-full">
                 <article className={cn(
-                    'rounded-lg border bg-card text-card-foreground transition-colors hover:bg-muted/30',
+                    'max-w-full overflow-hidden rounded-lg border bg-card text-card-foreground transition-colors hover:bg-muted/30',
                     channel.circuit_tripped ? 'border-destructive/70' : 'border-border',
                     isGridLayout
                         ? 'flex min-h-[232px] flex-col gap-3 p-4'
@@ -117,7 +117,7 @@ export function Card({ channel, stats, layout = 'list' }: { channel: Channel; st
 
                     <dl className={cn(
                         'grid min-w-0 gap-2',
-                        isGridLayout ? 'grid-cols-2' : 'grid-cols-3 lg:grid-cols-6'
+                        isGridLayout ? 'grid-cols-2' : 'grid-cols-2 sm:grid-cols-3 lg:grid-cols-6'
                     )}>
                         <div className="min-w-0">
                             <dt className="flex items-center gap-1 text-[11px] text-muted-foreground">

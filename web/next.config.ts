@@ -8,4 +8,3 @@ const createNextConfig = (phase: string): NextConfig => ({
 });
 
 export default createNextConfig;
-

@@ -12,6 +12,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '@/lib/utils';
 import { getModelIcon } from '@/lib/model-icons';
+import { marketModelName } from '@/lib/model-aliases';
 import type { LLMChannel } from '@/api/endpoints/model';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/animate-ui/components/animate/tooltip';
 import { useTranslations } from 'next-intl';
@@ -88,7 +89,7 @@ function MemberItem({
                             'h-[18px] min-w-[18px] rounded-md px-1 text-[10px] font-bold grid place-items-center shrink-0 cursor-help',
                             isDisabled ? 'bg-muted text-muted-foreground' : 'bg-primary/10 text-primary'
                         )}>
-                            P{priority}
+                            {priority}
                         </span>
                     </TooltipTrigger>
                     <TooltipContent>{t('card.memberPriorityTooltip')}</TooltipContent>
@@ -117,7 +118,7 @@ function MemberItem({
                             'text-xs font-medium truncate leading-tight',
                             isDisabled && 'text-muted-foreground'
                         )}>
-                            {member.name}
+                            {marketModelName(member.name)}
                         </TooltipTrigger>
                         <TooltipContent key={member.name}>{member.name}</TooltipContent>
                     </Tooltip>

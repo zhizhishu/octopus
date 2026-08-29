@@ -132,7 +132,7 @@ export function useChannelTestIdentity(channelId: number | undefined, enabled: b
             return apiClient.get<ChannelTestIdentity>(`/api/v1/model/test-identity?channel_id=${channelId}`);
         },
         enabled: enabled && !!channelId && channelId > 0,
-        staleTime: 60_000,
+        staleTime: 30_000,
     });
 }
 
@@ -153,7 +153,7 @@ export function useModelList() {
         queryFn: async () => {
             return apiClient.get<LLMInfo[]>('/api/v1/model/list');
         },
-        refetchInterval: 30000,
+        refetchInterval: 15000,
         refetchOnMount: 'always',
     });
 }
@@ -176,7 +176,7 @@ export function useModelChannelList(options: { enabled?: boolean } = {}) {
             return apiClient.get<LLMChannel[]>('/api/v1/model/channel');
         },
         enabled: options.enabled ?? true,
-        refetchInterval: 30000,
+        refetchInterval: 15000,
         refetchOnMount: 'always',
     });
 }
@@ -321,6 +321,6 @@ export function useLastUpdateTime() {
         queryFn: async () => {
             return apiClient.get<string>('/api/v1/model/last-update-time');
         },
-        refetchInterval: 30000,
+        refetchInterval: 15000,
     });
 }

@@ -841,7 +841,7 @@ export function Log() {
                     <span>时间按浏览器本地时区显示</span>
                     {autoRefresh && currentPage === 1 && <span className="text-emerald-700 dark:text-emerald-300">实时插入中</span>}
                     {totalPages > 1 && (
-                        <div className="flex items-center gap-1">
+                        <div className="hidden items-center gap-1 sm:flex">
                             <Button
                                 variant="ghost"
                                 size="icon"
@@ -888,6 +888,31 @@ export function Log() {
                         </div>
                     )}
                 </div>
+                {totalPages > 1 && (
+                    <div className="flex items-center gap-2 border-t border-border/60 pt-2 sm:hidden">
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                            disabled={currentPage <= 1 || isLoading}
+                            className="h-9 flex-1 rounded-lg"
+                        >
+                            <ChevronLeft className="size-4" />
+                            <span>上一页</span>
+                        </Button>
+                        <span className="shrink-0 text-xs tabular-nums text-muted-foreground">第 {currentPage} / {totalPages} 页</span>
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                            disabled={currentPage >= totalPages || isLoading}
+                            className="h-9 flex-1 rounded-lg"
+                        >
+                            <span>下一页</span>
+                            <ChevronRight className="size-4" />
+                        </Button>
+                    </div>
+                )}
             </div>
             <div className="min-h-0 flex-1">
                 <TooltipProvider>

@@ -69,7 +69,8 @@ const MODEL_ICON_PATTERNS: ModelIconConfig[] = [
     // Alibaba - Qwen series
     { prefixes: ['qwen', 'qwq', 'alibaba'], Avatar: Qwen.Avatar, color: '#6B4EFF' },
     // Zhipu - GLM series
-    { prefixes: ['glm', 'chatglm', 'zhipu', 'z-ai'], Avatar: Zhipu.Avatar, color: '#3C5BFC' },
+    // Ox Alpha（牛来）匿名马甲真身是 GLM-5.3-Flash / 智谱，归 Zhipu 标
+    { prefixes: ['glm', 'chatglm', 'zhipu', 'z-ai', 'ox-', 'ox_', 'oxalpha', 'niulai', '牛来'], Avatar: Zhipu.Avatar, color: '#3C5BFC' },
     // MiniMax series
     { prefixes: ['minimax', 'abab'], Avatar: Minimax.Avatar, color: '#1A1A2E' },
     // Moonshot/Kimi series
@@ -137,4 +138,3 @@ export function getModelIcon(modelName: string): { Avatar: AvatarComponent; colo
     }
     return DEFAULT_CONFIG;
 }
-

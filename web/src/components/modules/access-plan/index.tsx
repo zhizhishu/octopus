@@ -2,6 +2,8 @@
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+    ArrowUp,
+    ArrowUpToLine,
     BadgeDollarSign,
     Check,
     GitBranch,
@@ -51,7 +53,8 @@ import { Input } from '@/components/ui/input';
 import { SearchableSelect } from '@/components/ui/searchable-select';
 import { Switch } from '@/components/ui/switch';
 import { cn } from '@/lib/utils';
-import { cleanOneMillionModelName } from '@/lib/model-aliases';
+import { cleanOneMillionModelName, marketModelName } from '@/lib/model-aliases';
+import { getModelIcon } from '@/lib/model-icons';
 import {
     ReactFlow,
     ReactFlowProvider,
@@ -142,8 +145,8 @@ const ACCESS_PLAN_TEXT = {
         noChannels: '暂无渠道',
         missingChannel: '渠道 #{id} 已不存在',
         empty: '暂无映射目标',
-        canvasTitle: '无限画布视图',
-        canvasHint: '每行＝一条替换规则：原请求模型 → 改走某个渠道、用该渠道上的发送模型；横向看完整链路。',
+        canvasTitle: '模型顺序',
+        canvasHint: '谁在上面谁先用；模型池只决定轮询还是优先填充。',
         canvasEmpty: '暂无可视化链路，先重建映射或添加目标。',
         targetSummary: '候选渠道 / 发送模型',
         setupTitle: '调用前先确认模型池 / 方案',
@@ -157,7 +160,7 @@ const ACCESS_PLAN_TEXT = {
         quickEditDescription: '直接编辑当前请求模型要走的渠道、发送模型、计费方式和提示词，不用滑到下方长列表。',
         targetMore: '+{count} 个目标',
         close: '关闭',
-        hiddenStale: '已隐藏 {count} 个已消失的发送模型，保存或重建后会清理。',
+        hiddenStale: '发现 {count} 个已失效映射，画布已标出；点“重建”才会清理。',
         fallback: '备用处理',
         billingModel: '用户计费',
         multiplier: '倍率',
@@ -179,7 +182,7 @@ const ACCESS_PLAN_TEXT = {
         promptReplace: '替换 system',
         promptPlaceholder: '可选：仅此请求模型映射生效的 system 提示词',
         advancedTitle: '高级（可选）',
-        advancedHint: '优先级、同级轮询、失败兜底、系统提示词',
+        advancedHint: '失败兜底、系统提示词',
     },
     actions: {
         save: '保存',
@@ -359,6 +362,8 @@ function modelFamilyKey(rawName: string): ModelFamilyKey {
 
 type RouteChannelModel = { channel_id: number; name: string; enabled?: boolean };
 
+type UnroutedChannelModel = RouteChannelModel & { clean_name: string };
+
 function cleanRouteTargetModels(target: AccessPlanRouteTarget): AccessPlanRouteTarget {
     return {
         ...target,
@@ -401,6 +406,81 @@ function isPersistedStaleTarget(target: AccessPlanRouteTarget, index: ReturnType
 
 function activeRouteTargets(targets: AccessPlanRouteTarget[], index: ReturnType<typeof buildChannelModelIndex>) {
     return targets.filter((target) => !isPersistedStaleTarget(target, index));
+}
+
+function moveRouteTargetToTop(targets: AccessPlanRouteTarget[], targetIndex: number) {
+    const selectedTarget = targets[targetIndex];
+    if (!selectedTarget) return targets;
+
+    const requestKey = cleanOneMillionModelName(selectedTarget.request_model).toLowerCase();
+    const peers = targets
+        .map((target, index) => ({ target, index }))
+        .filter((item) => cleanOneMillionModelName(item.target.request_model).toLowerCase() === requestKey)
+        .sort((a, b) => (
+            (a.target.priority || 0) - (b.target.priority || 0)
+            || (a.target.channel_id || 0) - (b.target.channel_id || 0)
+            || a.index - b.index
+        ));
+    const ordered = [
+        { target: selectedTarget, index: targetIndex },
+        ...peers.filter((item) => item.index !== targetIndex),
+    ];
+
+    return targets.map((target, index) => {
+        const position = ordered.findIndex((item) => item.index === index);
+        return position >= 0 ? { ...target, priority: clampRoutePriority(position) } : target;
+    });
+}
+
+// 上移一位：同一请求模型组内，把点中的候选与它前一个互换，其余 priority 顺延。
+// 这是新手最直观的「谁在上面谁先用」手势：点一下往上一格，连点几下就到顶。
+function moveRouteTargetUpOne(targets: AccessPlanRouteTarget[], targetIndex: number) {
+    const selectedTarget = targets[targetIndex];
+    if (!selectedTarget) return targets;
+
+    const requestKey = cleanOneMillionModelName(selectedTarget.request_model).toLowerCase();
+    const peers = targets
+        .map((target, index) => ({ target, index }))
+        .filter((item) => cleanOneMillionModelName(item.target.request_model).toLowerCase() === requestKey)
+        .sort((a, b) => (
+            (a.target.priority || 0) - (b.target.priority || 0)
+            || (a.target.channel_id || 0) - (b.target.channel_id || 0)
+            || a.index - b.index
+        ));
+    const position = peers.findIndex((item) => item.index === targetIndex);
+    if (position <= 0) return targets;
+
+    const ordered = [...peers];
+    [ordered[position - 1], ordered[position]] = [ordered[position], ordered[position - 1]];
+
+    return targets.map((target, index) => {
+        const nextPosition = ordered.findIndex((item) => item.index === index);
+        return nextPosition >= 0 ? { ...target, priority: clampRoutePriority(nextPosition) } : target;
+    });
+}
+
+function unroutedChannelModels(channelModels: RouteChannelModel[], targets: AccessPlanRouteTarget[]) {
+    const routedKeys = new Set<string>();
+    targets.forEach((target) => {
+        routedKeys.add(channelModelKey(target.channel_id, cleanOneMillionModelName(target.upstream_model)));
+    });
+
+    const seen = new Set<string>();
+    return channelModels
+        .filter((model) => model.enabled !== false)
+        .map((model): UnroutedChannelModel | null => {
+            const cleanName = cleanOneMillionModelName(model.name);
+            if (!cleanName) return null;
+            const key = channelModelKey(model.channel_id, cleanName);
+            if (seen.has(key) || routedKeys.has(key)) return null;
+            seen.add(key);
+            return { ...model, clean_name: cleanName };
+        })
+        .filter((model): model is UnroutedChannelModel => model !== null)
+        .sort((a, b) => {
+            const byName = a.clean_name.localeCompare(b.clean_name);
+            return byName !== 0 ? byName : a.channel_id - b.channel_id;
+        });
 }
 
 function rebuildRouteTargetsFromChannelModels(channelModels: RouteChannelModel[], currentTargets: AccessPlanRouteTarget[]) {
@@ -874,13 +954,20 @@ function BillingRulesEditor({
                         key={`${rule.id ?? 'new'}-${index}`}
                         className="grid gap-2 rounded-2xl border border-border bg-muted/20 p-3 md:grid-cols-[1fr_120px_auto_auto] md:items-center"
                     >
-                        <Input
-                            value={rule.model_name}
-                            list={modelListId}
-                            onChange={(event) => updateRule(index, { model_name: event.target.value })}
-                            placeholder={t('billing.modelName')}
-                            className="rounded-xl"
-                        />
+                        <div className="grid min-w-0 gap-1">
+                            <Input
+                                value={rule.model_name}
+                                list={modelListId}
+                                onChange={(event) => updateRule(index, { model_name: event.target.value })}
+                                placeholder={t('billing.modelName')}
+                                className="rounded-xl"
+                            />
+                            {rule.model_name.trim() && marketModelName(rule.model_name) !== rule.model_name.trim() && (
+                                <div className="truncate text-[11px] text-muted-foreground" title={rule.model_name.trim()}>
+                                    {marketModelName(rule.model_name)}
+                                </div>
+                            )}
+                        </div>
                         <Input
                             type="number"
                             step="0.01"
@@ -1397,17 +1484,24 @@ type RouteFlowCanvasProps = {
     rows: RouteTargetGroup[];
     channels: Array<{ id: number; name: string; enabled: boolean }>;
     channelMappings: ChannelModelMapping[];
+    modelNames: string[];
+    channelModels: RouteChannelModel[];
+    channelModelsReady: boolean;
+    unroutedModels: UnroutedChannelModel[];
     onEditRequest: (requestModel: string) => void;
     onPriorityChange?: (targetId: number, priority: number) => void;
+    onMoveToTop?: (targetId: number) => void;
+    onMoveUpOne?: (targetId: number) => void;
+    onAddUnroutedModel?: (model: UnroutedChannelModel) => void;
     onOpenJson?: () => void;
 };
 
 function RouteFlowCanvasInner({
-    plan, rows, channels, channelMappings, onEditRequest, onPriorityChange, onOpenJson,
+    plan, rows, channels, channelMappings, modelNames, channelModels, channelModelsReady, unroutedModels, onEditRequest, onPriorityChange, onMoveToTop, onMoveUpOne, onAddUnroutedModel, onOpenJson,
 }: RouteFlowCanvasProps) {
     const t = accessPlanText;
     const channelNameByID = useMemo(() => new Map(channels.map((channel) => [channel.id, channel.name])), [channels]);
-    const { fitView, setCenter } = useReactFlow();
+    const channelModelIndex = useMemo(() => buildChannelModelIndex(channelModels, channelModelsReady), [channelModels, channelModelsReady]);
     const { data: groups = EMPTY_GROUPS } = useGroupList();
     const groupModeByName = useMemo<Map<string, GroupMode>>(() => {
         const map = new Map<string, GroupMode>();
@@ -1416,36 +1510,6 @@ function RouteFlowCanvasInner({
         }
         return map;
     }, [groups]);
-
-    const [canvasFullscreen, setCanvasFullscreen] = useState(false);
-
-    // 全屏/清屏切换后容器尺寸变了要重新自适应。ReactFlow 靠 ResizeObserver 异步拿新尺寸，
-    // 单个 rAF 会读到旧尺寸导致 fitView 对不齐，故用双 rAF 等布局与观察器都落定后再 fit。
-    const fitSoon = useCallback(() => {
-        requestAnimationFrame(() => requestAnimationFrame(() => {
-            fitView({ padding: 0.14, maxZoom: 1, duration: 220 });
-        }));
-    }, [fitView]);
-
-    // Esc 退出全屏（只在全屏态挂键盘监听）
-    useEffect(() => {
-        if (!canvasFullscreen) return;
-        const handler = (event: KeyboardEvent) => {
-            if (event.key === 'Escape') setCanvasFullscreen(false);
-        };
-        window.addEventListener('keydown', handler);
-        return () => window.removeEventListener('keydown', handler);
-    }, [canvasFullscreen]);
-
-    // 全屏态切换后重新 fit（跳过挂载首帧，挂载时 ReactFlow 自带 fitView）
-    const fullscreenReady = useRef(false);
-    useEffect(() => {
-        if (!fullscreenReady.current) {
-            fullscreenReady.current = true;
-            return;
-        }
-        fitSoon();
-    }, [canvasFullscreen, fitSoon]);
 
     const [query, setQuery] = useState('');
     const q = query.trim().toLowerCase();
@@ -1472,82 +1536,49 @@ function RouteFlowCanvasInner({
         ));
     }, [channelMappings, q]);
 
-    const lastFitSignature = useRef('');
-    const patchTargetPriority = useRef<(targetId: number, priority: number) => void>(() => {});
-    const onPriorityChangeRef = useRef(onPriorityChange);
-    onPriorityChangeRef.current = onPriorityChange;
-
-    const applyPriorityChange = useCallback((targetId: number, nextPriority: number) => {
-        const priority = clampRoutePriority(nextPriority);
-        patchTargetPriority.current(targetId, priority);
-        onPriorityChangeRef.current?.(targetId, priority);
-    }, []);
-
-    const flow = useMemo(
-        () => buildRouteFlow(plan, filteredRows, channelNameByID, onEditRequest, filteredMappings, groupModeByName, applyPriorityChange),
-        [plan, filteredRows, channelNameByID, onEditRequest, filteredMappings, groupModeByName, applyPriorityChange],
-    );
-
-    const [nodes, setNodes, onNodesChange] = useNodesState<FlowNode>(flow.nodes);
-    const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>(flow.edges);
-    patchTargetPriority.current = (targetId, priority) => {
-        setNodes((current) => {
-            let laneId: string | undefined;
-            const withPriority = current.map((node) => {
-                if (node.type !== 'target') return node;
-                const data = node.data as TargetNodeData;
-                if (data.targetId !== targetId || data.priority === priority) return node;
-                laneId = data.laneId;
-                return { ...node, data: { ...data, priority } };
+    // 画布只渲染「已路由」的模型；搜索时把渠道模型池里命中但未路由的模型也捞出来，
+    // 免得搜 deepseek 时误以为系统里没有——其实是没路由进本方案。
+    const routedModelNames = useMemo(() => {
+        const names = new Set<string>();
+        rows.forEach((row) => {
+            names.add(row.requestModel.toLowerCase());
+            row.targets.forEach((target) => {
+                if (target.upstream_model) names.add(target.upstream_model.toLowerCase());
             });
-            if (!laneId) return withPriority;
-
-            const lane = withPriority.filter((node) => (
-                node.type === 'target' && (node.data as TargetNodeData).laneId === laneId
-            ));
-            if (lane.length === 0) return withPriority;
-
-            const sorted = [...lane].sort((a, b) => {
-                const left = a.data as TargetNodeData;
-                const right = b.data as TargetNodeData;
-                const byPriority = left.priority - right.priority;
-                return byPriority !== 0 ? byPriority : left.channelId - right.channelId;
-            });
-            const topY = Math.min(...lane.map((node) => node.position.y));
-            const moved = new Map(sorted.map((node, index) => [
-                node.id,
-                { ...node, position: { ...node.position, y: topY + index * (TGT_H + TGT_GAP) } },
-            ]));
-            return withPriority.map((node) => moved.get(node.id) ?? node);
         });
-    };
+        channelMappings.forEach((mapping) => {
+            names.add(mapping.fromModel.toLowerCase());
+            names.add(mapping.toModel.toLowerCase());
+        });
+        return names;
+    }, [rows, channelMappings]);
 
-    useEffect(() => {
-        setNodes(flow.nodes);
-        setEdges(flow.edges);
-        const signature = `${filteredRows.map((row) => `${row.requestKey}:${row.targets.length}`).join('|')}|${filteredMappings.length}|${q}`;
-        if (signature === lastFitSignature.current) return;
-        lastFitSignature.current = signature;
-        const raf = requestAnimationFrame(() => fitView({ padding: 0.14, maxZoom: 1, duration: 220 }));
-        return () => cancelAnimationFrame(raf);
-    }, [flow, setNodes, setEdges, fitView, filteredRows, filteredMappings.length, q]);
-
-    const showAll = useCallback(() => fitView({ padding: 0.12, duration: 400 }), [fitView]);
-
-    const focusReadable = useCallback(() => {
-        if (nodes.length === 0) return;
-        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-        for (const node of nodes) {
-            const { w, h } = flowNodeSize(node);
-            minX = Math.min(minX, node.position.x);
-            minY = Math.min(minY, node.position.y);
-            maxX = Math.max(maxX, node.position.x + w);
-            maxY = Math.max(maxY, node.position.y + h);
+    const matchedPoolModels = useMemo(() => {
+        if (!q) return [];
+        const seen = new Set<string>();
+        const hits: string[] = [];
+        const candidates = [...modelNames, ...channelModels.map((model) => model.name)];
+        for (const raw of candidates) {
+            const name = cleanOneMillionModelName(raw);
+            const key = name.toLowerCase();
+            if (!key || seen.has(key)) continue;
+            seen.add(key);
+            if (key.includes(q) && !routedModelNames.has(key)) hits.push(name);
         }
-        setCenter((minX + maxX) / 2, (minY + maxY) / 2, { zoom: 0.85, duration: 400 });
-    }, [nodes, setCenter]);
+        return hits.sort((a, b) => a.localeCompare(b));
+    }, [q, modelNames, channelModels, routedModelNames]);
 
-    const targetCount = filteredRows.reduce((sum, row) => sum + row.targets.length, 0);
+    const filteredUnroutedModels = useMemo(() => {
+        const matches = !q ? unroutedModels : unroutedModels.filter((model) => (
+            model.clean_name.toLowerCase().includes(q)
+            || (channelNameByID.get(model.channel_id) ?? '').toLowerCase().includes(q)
+        ));
+        // ponytail: cap beginner canvas overflow at 40; add pagination if admins manage hundreds of unrouted models.
+        return matches.slice(0, 40);
+    }, [unroutedModels, q, channelNameByID]);
+
+    const targetCount = rows.reduce((sum, row) => sum + row.targets.length, 0);
+    const hasCanvasContent = filteredRows.length > 0 || filteredUnroutedModels.length > 0 || filteredMappings.length > 0;
 
     return (
         <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-border/70 bg-background/70">
@@ -1556,7 +1587,6 @@ function RouteFlowCanvasInner({
                     <div className="flex items-center gap-2 text-sm font-black">
                         <GitBranch className="size-4 text-primary" />
                         <span>{t('routes.canvasTitle')}</span>
-                        <Badge variant="outline" className="rounded-full">∞ canvas</Badge>
                         {onOpenJson ? (
                             <Button
                                 type="button"
@@ -1587,79 +1617,183 @@ function RouteFlowCanvasInner({
                 </div>
             </div>
 
-            {filteredRows.length === 0 ? (
+            {!hasCanvasContent ? (
                 <div className="px-4 py-8 text-center text-sm text-muted-foreground">
-                    {rows.length === 0 ? t('routes.canvasEmpty') : `没有匹配「${query.trim()}」的模型或渠道`}
+                    {matchedPoolModels.length > 0 ? (
+                        <div className="mx-auto max-w-md space-y-3 text-left">
+                            <p className="text-center">模型池里有「{query.trim()}」，但还没路由到本方案：</p>
+                            <div className="flex flex-wrap justify-center gap-1.5">
+                                {matchedPoolModels.map((name) => (
+                                    <Badge key={name} variant="outline" className="rounded-full font-mono">{name}</Badge>
+                                ))}
+                            </div>
+                            <p className="text-center text-xs">点上方「重建分组」把它们路由进来，或手动添加路线。</p>
+                        </div>
+                    ) : rows.length === 0 ? (
+                        t('routes.canvasEmpty')
+                    ) : (
+                        `没有匹配「${query.trim()}」的模型或渠道`
+                    )}
                 </div>
             ) : (
-                <div className={cn(
-                    canvasFullscreen
-                        ? 'fixed inset-0 z-50 h-[100dvh] w-screen bg-background p-2 sm:p-4'
-                        : 'min-h-0 flex-1 h-[clamp(320px,calc(100dvh-22rem),820px)] sm:h-[clamp(340px,calc(100dvh-22rem),860px)]',
-                    // Avoid height CSS transition fighting ReactFlow ResizeObserver during fullscreen.
-                )}>
-                    <ReactFlow<FlowNode, Edge>
-                        nodes={nodes}
-                        edges={edges}
-                        onNodesChange={onNodesChange}
-                        onEdgesChange={onEdgesChange}
-                        nodeTypes={flowNodeTypes}
-                        colorMode="system"
-                        fitView
-                        fitViewOptions={{ padding: 0.14, maxZoom: 1 }}
-                        minZoom={0.15}
-                        maxZoom={1.8}
-                        nodesDraggable={false}
-                        nodesConnectable={false}
-                        elementsSelectable={false}
-                        edgesFocusable={false}
-                        nodesFocusable={false}
-                        zoomOnDoubleClick={false}
-                        // Cull offscreen custom nodes during pan/zoom; measured width/height make culling reliable.
-                        onlyRenderVisibleElements
-                        // Default bezier edges re-layout paths every frame while zooming; straight edges stay cheap.
-                        defaultEdgeOptions={{ type: 'straight' }}
-                        elevateNodesOnSelect={false}
-                        proOptions={{ hideAttribution: true }}
-                    >
-                        {/* Larger gap + smaller dots = less paint work under continuous pan/zoom. */}
-                        <Background variant={BackgroundVariant.Dots} gap={40} size={0.8} color="var(--border)" />
-                        <MiniMap
-                            pannable
-                            zoomable
-                            onClick={(_event, position) => setCenter(position.x, position.y, { zoom: 1, duration: 400 })}
-                            nodeColor={miniMapNodeColor}
-                            nodeStrokeWidth={2}
-                            className="!hidden sm:!block !opacity-90"
-                        />
-                        <Controls showInteractive={false} showFitView={false}>
-                            <ControlButton
-                                onClick={() => setCanvasFullscreen((v) => !v)}
-                                title={canvasFullscreen ? '退出全屏（Esc）' : '清屏（全屏画布）'}
-                                aria-label={canvasFullscreen ? '退出全屏（Esc）' : '清屏（全屏画布）'}
-                            >
-                                {canvasFullscreen
-                                    ? <Minimize2 style={{ width: 14, height: 14 }} />
-                                    : <Maximize2 style={{ width: 14, height: 14 }} />}
-                            </ControlButton>
-                        </Controls>
-                        <Panel position="top-right" className="flex gap-1.5">
-                            <button
-                                type="button"
-                                onClick={showAll}
-                                className="rounded-full border border-border/70 bg-background/85 px-2.5 py-1 text-[11px] font-medium text-foreground shadow-sm backdrop-blur hover:bg-muted"
-                            >
-                                显示全部
-                            </button>
-                            <button
-                                type="button"
-                                onClick={focusReadable}
-                                className="rounded-full border border-border/70 bg-background/85 px-2.5 py-1 text-[11px] font-medium text-foreground shadow-sm backdrop-blur hover:bg-muted"
-                            >
-                                看得清
-                            </button>
-                        </Panel>
-                    </ReactFlow>
+                <div className="min-h-0 flex-1 overflow-y-auto p-3 sm:p-4">
+                    <div className="space-y-3">
+                        {filteredRows.map((row) => {
+                            const rowMode = groupModeByName.get(normalizeKey(row.requestModel));
+                            const isFillFirstMode = rowMode !== undefined && MODE_LABELS[rowMode] === 'fillFirst';
+                            const requestModelDisplayName = marketModelName(row.requestModel) || row.requestModel;
+                            const { Avatar: RequestAvatar } = getModelIcon(row.requestModel);
+                            const showRawRequestModel = requestModelDisplayName !== row.requestModel;
+
+                            return (
+                                <div key={row.requestKey || row.requestModel} className="rounded-2xl border border-border/70 bg-card/40">
+                                    <div className="flex items-center justify-between gap-3 border-b border-border/60 px-4 py-2.5">
+                                        <div className="flex min-w-0 items-center gap-2">
+                                            <RequestAvatar size={16} />
+                                            <div className="min-w-0">
+                                                <div className="truncate text-sm font-bold text-foreground" title={row.requestModel}>{requestModelDisplayName}</div>
+                                                {showRawRequestModel && (
+                                                    <div className="truncate font-mono text-[11px] text-muted-foreground">{row.requestModel}</div>
+                                                )}
+                                            </div>
+                                            <Badge variant="outline" className="rounded-full text-[11px]">
+                                                {isFillFirstMode ? '优先填充' : '全局轮询'}
+                                            </Badge>
+                                        </div>
+                                        <Button
+                                            type="button"
+                                            variant="outline"
+                                            size="sm"
+                                            className="h-7 gap-1 rounded-lg text-xs"
+                                            onClick={() => onEditRequest(row.requestKey ? row.requestModel : '')}
+                                        >
+                                            <PencilLine className="size-3" />
+                                            <span>{accessPlanText('routes.quickEdit')}</span>
+                                        </Button>
+                                    </div>
+                                    <div className="divide-y divide-border/50">
+                                        {row.targets.map((target, targetIndex) => {
+                                            const priority = clampRoutePriority(target.priority || 0);
+                                            const isStale = isPersistedStaleTarget(target, channelModelIndex);
+                                            const upstreamModel = cleanOneMillionModelName(target.upstream_model || accessPlanText('routes.unset'));
+                                            const upstreamDisplayName = marketModelName(upstreamModel) || upstreamModel;
+                                            const { Avatar: UpstreamAvatar } = getModelIcon(upstreamModel);
+                                            return (
+                                                <div
+                                                    key={target.id || targetIndex}
+                                                    className={cn('flex items-center gap-3 px-4 py-2.5', (!target.enabled || isStale) && 'opacity-55')}
+                                                >
+                                                    <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                                                        <div className="flex items-center gap-1.5 font-semibold text-foreground">
+                                                            <span className={cn('size-1.5 shrink-0 rounded-full', target.enabled ? 'bg-emerald-500' : 'bg-muted-foreground')} />
+                                                            <span className="truncate">
+                                                                {channelNameByID.get(target.channel_id) ?? accessPlanText('routes.missingChannel', { id: target.channel_id })}
+                                                            </span>
+                                                            <span className="text-[11px] font-normal text-muted-foreground">#{target.channel_id}</span>
+                                                        </div>
+                                                        <div className="flex items-center gap-1.5 text-muted-foreground">
+                                                            <span className="text-foreground/40">→</span>
+                                                            <UpstreamAvatar size={14} />
+                                                            <span className="font-medium text-foreground" title={upstreamModel}>
+                                                                {upstreamDisplayName}
+                                                            </span>
+                                                        </div>
+                                                        {isStale && (
+                                                            <Badge variant="outline" className="h-5 gap-1 border-amber-500/40 px-1.5 text-[10px] font-normal text-amber-600 dark:text-amber-300">
+                                                                已失效
+                                                            </Badge>
+                                                        )}
+                                                    </div>
+                                                    <div className="flex shrink-0 items-center gap-1.5">
+                                                        <span className="min-w-4 text-center font-mono text-xs font-semibold tabular-nums text-foreground">
+                                                            {priority + 1}
+                                                        </span>
+                                                        <button
+                                                            type="button"
+                                                            className="flex h-7 items-center gap-1 rounded-lg border border-border/70 bg-background px-2 text-xs text-foreground hover:bg-muted disabled:opacity-40"
+                                                            disabled={!target.id || isStale || priority <= 0}
+                                                            onClick={() => onMoveUpOne?.(target.id!)}
+                                                            aria-label="上移一位"
+                                                            title="往上挪一位：点一下，这个模型就排到它上面那个的前面"
+                                                        >
+                                                            <ArrowUp className="size-3.5" />
+                                                            <span>上移</span>
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            className="flex h-7 items-center gap-1 rounded-lg border border-border/70 bg-background px-2 text-xs text-foreground hover:bg-muted disabled:opacity-40"
+                                                            disabled={!target.id || isStale || priority <= 0}
+                                                            onClick={() => onMoveToTop?.(target.id!)}
+                                                            aria-label="移到最上（最优先使用）"
+                                                            title="谁在上面谁先用：点一下，这个模型就排到最上面"
+                                                        >
+                                                            <ArrowUpToLine className="size-3.5" />
+                                                            <span>到顶</span>
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            );
+                        })}
+
+                        {filteredUnroutedModels.length > 0 && (
+                            <div className="rounded-2xl border border-dashed border-primary/30 bg-primary/[0.03]">
+                                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-primary/15 px-4 py-2.5">
+                                    <div className="min-w-0">
+                                        <div className="text-xs font-bold text-foreground">模型池里还有未加入当前方案的模型</div>
+                                        <div className="mt-0.5 text-[11px] text-muted-foreground">新的渠道模型会先出现在这里，点「加入」后才参与当前方案路由。</div>
+                                    </div>
+                                    <Badge variant="outline" className="rounded-full text-[10px]">{unroutedModels.length}</Badge>
+                                </div>
+                                <div className="divide-y divide-primary/10">
+                                    {filteredUnroutedModels.map((model) => (
+                                        <div key={channelModelKey(model.channel_id, model.clean_name)} className="flex items-center justify-between gap-3 px-4 py-2.5 text-xs">
+                                            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1">
+                                                <span className="truncate font-semibold text-foreground" title={model.clean_name}>{marketModelName(model.clean_name) || model.clean_name}</span>
+                                                <span className="truncate text-muted-foreground">{channelNameByID.get(model.channel_id) ?? accessPlanText('routes.missingChannel', { id: model.channel_id })}</span>
+                                                <span className="text-[11px] text-muted-foreground">#{model.channel_id}</span>
+                                            </div>
+                                            <Button
+                                                type="button"
+                                                variant="outline"
+                                                size="sm"
+                                                className="h-7 shrink-0 rounded-lg text-xs"
+                                                onClick={() => onAddUnroutedModel?.(model)}
+                                                disabled={!onAddUnroutedModel}
+                                            >
+                                                加入
+                                            </Button>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        {filteredMappings.length > 0 && (
+                            <div className="rounded-2xl border border-border/70 bg-card/40">
+                                <div className="flex items-center gap-2 border-b border-border/60 px-4 py-2.5">
+                                    <span className="text-xs font-bold text-foreground">渠道级模型映射</span>
+                                    <Badge variant="outline" className="rounded-full text-[10px]">{filteredMappings.length}</Badge>
+                                </div>
+                                <div className="divide-y divide-border/50">
+                                    {filteredMappings.map((m, idx) => (
+                                        <div key={`${m.channelId}-${m.fromModel}-${m.toModel}-${idx}`} className="flex items-center justify-between gap-3 px-4 py-2 text-xs">
+                                            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2 font-mono">
+                                                <span className="font-semibold text-foreground">{m.fromModel}</span>
+                                                <span className="text-muted-foreground">→</span>
+                                                <span className="text-muted-foreground">{m.channelName} (#{m.channelId})</span>
+                                                <span className="text-muted-foreground">→</span>
+                                                <span className="font-semibold text-foreground">{m.toModel}</span>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                    </div>
                 </div>
             )}
         </section>
@@ -1684,6 +1818,7 @@ function RouteTargetEditorCard({
     modelsForChannel,
     updateTarget,
     removeTarget,
+    moveTargetToTop,
     compact = false,
     idPrefix = 'access-plan-upstream-models',
     lockRequestModel = false,
@@ -1697,6 +1832,7 @@ function RouteTargetEditorCard({
     modelsForChannel: (channelId: number) => string[];
     updateTarget: (index: number, patch: Partial<AccessPlanRouteTarget>) => void;
     removeTarget: (index: number) => void;
+    moveTargetToTop?: (index: number) => void;
     compact?: boolean;
     idPrefix?: string;
     lockRequestModel?: boolean;
@@ -1779,6 +1915,18 @@ function RouteTargetEditorCard({
                     </label>
                     <Button
                         type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-8 shrink-0 gap-1 rounded-xl text-xs"
+                        disabled={!moveTargetToTop || cleanOneMillionModelName(target.request_model).length === 0 || clampRoutePriority(target.priority) <= 0}
+                        onClick={() => moveTargetToTop?.(index)}
+                        title="谁在上面谁先用：点一下，这个模型就排到最上面"
+                    >
+                        <ArrowUpToLine className="size-3.5" />
+                        加一到顶
+                    </Button>
+                    <Button
+                        type="button"
                         variant="ghost"
                         size="icon"
                         className="shrink-0 rounded-xl text-muted-foreground hover:text-destructive"
@@ -1790,28 +1938,14 @@ function RouteTargetEditorCard({
                 </div>
             </div>
 
-            {/* 高级（可选）：优先级、失败兜底、系统提示词覆盖 —— 默认折叠 */}
+            {/* 高级（可选）：失败兜底、系统提示词覆盖 —— 默认折叠 */}
             <details className="mt-2 min-w-0 rounded-xl border border-border/60 bg-background/40">
                 <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-2.5 py-2 text-xs font-medium text-foreground [&::-webkit-details-marker]:hidden">
                     <span className="min-w-0 truncate">{t('routes.advancedTitle')}</span>
                     <span className="min-w-0 truncate text-[11px] font-normal text-muted-foreground">{t('routes.advancedHint')}</span>
                 </summary>
                 <div className="grid min-w-0 gap-2 border-t border-border/60 p-2.5">
-                    <div className="grid min-w-0 gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(150px,1fr)]">
-                        <label className="grid min-w-0 gap-1 text-xs text-muted-foreground">
-                            {t('routes.priority')}
-                            <Input
-                                type="number"
-                                min={0}
-                                max={9}
-                                step={1}
-                                value={target.priority}
-                                onChange={(event) => updateTarget(index, { priority: clampRoutePriority(asNumber(event.target.value, target.priority)) })}
-                                aria-label={t('routes.priority')}
-                                placeholder={t('routes.priority')}
-                                className="h-9 rounded-xl"
-                            />
-                        </label>
+                    <div className="grid min-w-0 gap-2 sm:grid-cols-[minmax(150px,1fr)]">
                         <label className="grid min-w-0 gap-1 text-xs text-muted-foreground">
                             {t('routes.fallback')}
                             <select
@@ -1878,7 +2012,9 @@ function RouteTargetsEditor({
         [channelModels, channelModelsReady]
     );
     const editableTargets = useMemo(() => activeRouteTargets(targets, channelModelIndex), [targets, channelModelIndex]);
-    const canvasRows = useMemo(() => groupedRouteTargets(editableTargets), [editableTargets]);
+    // 画布展示全部映射（含已失效的），失效项在渲染层打「已失效」标，不再静默隐藏。
+    const canvasRows = useMemo(() => groupedRouteTargets(targets), [targets]);
+    const unroutedModels = useMemo(() => unroutedChannelModels(channelModels, targets), [channelModels, targets]);
     const staleTargetCount = targets.length - editableTargets.length;
     const editingRequestKey = editingRequestModel ? cleanOneMillionModelName(editingRequestModel).toLowerCase() : '';
     const editingTargets = useMemo(() => (
@@ -1927,7 +2063,11 @@ function RouteTargetsEditor({
         setTargets((current) => current.filter((_, currentIndex) => currentIndex !== index));
     };
 
-    const invalid = editableTargets.some((target) => (
+    // save() submits the full `targets` array, so validation must cover the same
+    // set -- editableTargets already filters out stale targets, which would let a
+    // stale target with malformed fields (channel_id<=0 / empty request_model) slip
+    // past the frontend gate and fail with a backend 400.
+    const invalid = targets.some((target) => (
         target.request_model.trim().length === 0 ||
         target.channel_id <= 0 ||
         target.upstream_model.trim().length === 0 ||
@@ -1992,14 +2132,72 @@ function RouteTargetsEditor({
         ));
         setTargets(next);
         saveTargetsRef.current(
-            activeRouteTargets(next, channelModelIndexRef.current),
+            next,
             t('toast.routesUpdated'),
             undefined,
             current,
         );
     }, [t]);
 
-    const save = (onSuccess?: () => void) => saveTargets(editableTargets, t('toast.routesUpdated'), onSuccess);
+    // 「加一到顶」：把点中的候选提到同一请求模型的最前（优先级 0），其余顺延。
+    // 优先级同时被 failover(优先填充) 与 spread(轮询) 两个 balancer 消费，所以这里
+    // 只改顺序，两种模式的实际先后都会跟着变。
+    const moveCanvasTargetToTop = useCallback((targetId: number) => {
+        const current = targetsRef.current;
+        const index = current.findIndex((target) => target.id === targetId);
+        if (index < 0) return;
+        const next = moveRouteTargetToTop(current, index);
+        setTargets(next);
+        saveTargetsRef.current(
+            next,
+            t('toast.routesUpdated'),
+            undefined,
+            current,
+        );
+    }, [t]);
+
+    const moveCanvasTargetUpOne = useCallback((targetId: number) => {
+        const current = targetsRef.current;
+        const index = current.findIndex((target) => target.id === targetId);
+        if (index < 0) return;
+        const next = moveRouteTargetUpOne(current, index);
+        setTargets(next);
+        saveTargetsRef.current(next, t('toast.routesUpdated'), undefined, current);
+    }, [t]);
+
+    const moveEditorTargetToTop = useCallback((targetIndex: number) => {
+        const current = targetsRef.current;
+        const next = moveRouteTargetToTop(current, targetIndex);
+        setTargets(next);
+        saveTargetsRef.current(next, t('toast.routesUpdated'), undefined, current);
+    }, [t]);
+
+    const addUnroutedModel = useCallback((model: UnroutedChannelModel) => {
+        const current = targetsRef.current;
+        const requestKey = model.clean_name.toLowerCase();
+        const nextPriority = current
+            .filter((target) => cleanOneMillionModelName(target.request_model).toLowerCase() === requestKey)
+            .reduce((maxPriority, target) => Math.max(maxPriority, clampRoutePriority(target.priority)), -1) + 1;
+        const next = [
+            ...current,
+            {
+                request_model: model.clean_name,
+                channel_id: model.channel_id,
+                upstream_model: model.clean_name,
+                priority: clampRoutePriority(nextPriority),
+                weight: 1,
+                enabled: true,
+                billing_model_source: 'request_model',
+                fallback_mode: 'return_group',
+                system_prompt_override: '',
+                prompt_override_mode: 'append_system',
+            } satisfies AccessPlanRouteTarget,
+        ];
+        setTargets(next);
+        saveTargetsRef.current(next, t('toast.routesUpdated'), undefined, current);
+    }, [t]);
+
+    const save = (onSuccess?: () => void) => saveTargets(targets, t('toast.routesUpdated'), onSuccess);
 
     const rebuild = () => {
         const rebuilt = rebuildRouteTargetsFromChannelModels(channelModels, editableTargets);
@@ -2012,7 +2210,7 @@ function RouteTargetsEditor({
     };
 
     const fillJSON = () => {
-        setJsonText(JSON.stringify(editableTargets.map((target) => ({
+        setJsonText(JSON.stringify(targets.map((target) => ({
             request_model: cleanOneMillionModelName(target.request_model),
             channel_id: target.channel_id,
             upstream_model: cleanOneMillionModelName(target.upstream_model),
@@ -2108,8 +2306,15 @@ function RouteTargetsEditor({
                 rows={canvasRows}
                 channels={channels}
                 channelMappings={channelMappings}
+                modelNames={modelNames}
+                channelModels={channelModels}
+                channelModelsReady={channelModelsReady}
+                unroutedModels={unroutedModels}
                 onEditRequest={setEditingRequestModel}
                 onPriorityChange={changeCanvasPriority}
+                onMoveToTop={moveCanvasTargetToTop}
+                onMoveUpOne={moveCanvasTargetUpOne}
+                onAddUnroutedModel={addUnroutedModel}
                 onOpenJson={openJson}
             />
 
@@ -2183,6 +2388,7 @@ function RouteTargetsEditor({
                                     modelsForChannel={modelsForChannel}
                                     updateTarget={updateTarget}
                                     removeTarget={removeTarget}
+                                    moveTargetToTop={moveEditorTargetToTop}
                                     compact
                                     idPrefix="access-plan-upstream-dialog"
                                     lockRequestModel

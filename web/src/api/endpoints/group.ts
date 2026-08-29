@@ -109,7 +109,7 @@ export function useGroupList(options: { enabled?: boolean } = {}) {
             return apiClient.get<Group[]>('/api/v1/group/list');
         },
         enabled: options.enabled ?? true,
-        refetchInterval: 30000,
+        refetchInterval: 15000,
         refetchOnMount: 'always',
     });
 }
