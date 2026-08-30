@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/bestruirui/octopus/internal/transformer/model"
@@ -309,8 +310,22 @@ func isOpenAIOfficialChatBase(baseUrl string) bool {
 // models are served over the Responses endpoint, not this path) and always
 // normalise a malformed tool_choice. Keyed on the upstream, not a per-model
 // allowlist, so a newly-added provider is covered automatically.
+var deepseekRSeriesRegex = regexp.MustCompile(`(?i)deepseek-r\d+`)
+
 func isDeepSeekReasonerModel(model string) bool {
 	lower := strings.ToLower(strings.TrimSpace(model))
+	if lower == "" {
+		return false
+	}
+	if strings.Contains(lower, "reasoner") {
+		return true
+	}
+	if deepseekRSeriesRegex.MatchString(lower) {
+		return true
+	}
+	if strings.Contains(lower, "thinking") && strings.Contains(lower, "deepseek") {
+		return true
+	}
 	return strings.Contains(lower, "deepseek-reasoner") ||
 		strings.Contains(lower, "deepseek-r1") ||
 		strings.Contains(lower, "deepseek-v4-reasoner") ||
@@ -335,6 +350,9 @@ func applyThirdPartyChatParamCompat(request *model.InternalLLMRequest, baseUrl s
 	// service_tier is OpenAI Responses residue; vercel AI Gateway / z.ai chat 400
 	// on unknown top-level fields (live log id 1787047851119 carried service_tier).
 	request.ServiceTier = nil
+	// reasoning_effort is OpenAI Responses residue; strict third-party upstreams
+	// (DeepSeek serde) 400 on unknown or unaccepted parameters.
+	request.ReasoningEffort = ""
 
 	// Reasoning models (o1, o3, o4, gpt-5, deepseek-reasoner/r1) reject sampling parameters.
 	if isOpenAIReasoningChatModel(request.Model) || isDeepSeekReasonerModel(request.Model) {

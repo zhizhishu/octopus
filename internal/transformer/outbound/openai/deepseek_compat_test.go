@@ -13,33 +13,39 @@ func TestDeepSeekReasonerSamplingParamsStripped(t *testing.T) {
 	presence := 0.5
 	frequency := 0.5
 
-	req := &model.InternalLLMRequest{
-		Model:            "deepseek-reasoner",
-		Temperature:      &temp,
-		TopP:             &topP,
-		PresencePenalty:  &presence,
-		FrequencyPenalty: &frequency,
-		Messages: []model.Message{
-			{
-				Role:    "user",
-				Content: model.MessageContent{Content: lo.ToPtr("hello")},
+	for _, modelName := range []string{"deepseek-reasoner", "deepseek-r1", "deepseek-r2", "deepseek-v5-reasoner", "deepseek-reasoner-v2", "deepseek-v4-thinking"} {
+		req := &model.InternalLLMRequest{
+			Model:            modelName,
+			Temperature:      &temp,
+			TopP:             &topP,
+			PresencePenalty:  &presence,
+			FrequencyPenalty: &frequency,
+			ReasoningEffort:  "high",
+			Messages: []model.Message{
+				{
+					Role:    "user",
+					Content: model.MessageContent{Content: lo.ToPtr("hello")},
+				},
 			},
-		},
-	}
+		}
 
-	applyThirdPartyChatParamCompat(req, "https://api.deepseek.com")
+		applyThirdPartyChatParamCompat(req, "https://api.deepseek.com")
 
-	if req.Temperature != nil {
-		t.Fatalf("expected Temperature to be nil, got %v", *req.Temperature)
-	}
-	if req.TopP != nil {
-		t.Fatalf("expected TopP to be nil, got %v", *req.TopP)
-	}
-	if req.PresencePenalty != nil {
-		t.Fatalf("expected PresencePenalty to be nil, got %v", *req.PresencePenalty)
-	}
-	if req.FrequencyPenalty != nil {
-		t.Fatalf("expected FrequencyPenalty to be nil, got %v", *req.FrequencyPenalty)
+		if req.Temperature != nil {
+			t.Fatalf("[%s] expected Temperature to be nil, got %v", modelName, *req.Temperature)
+		}
+		if req.TopP != nil {
+			t.Fatalf("[%s] expected TopP to be nil, got %v", modelName, *req.TopP)
+		}
+		if req.PresencePenalty != nil {
+			t.Fatalf("[%s] expected PresencePenalty to be nil, got %v", modelName, *req.PresencePenalty)
+		}
+		if req.FrequencyPenalty != nil {
+			t.Fatalf("[%s] expected FrequencyPenalty to be nil, got %v", modelName, *req.FrequencyPenalty)
+		}
+		if req.ReasoningEffort != "" {
+			t.Fatalf("[%s] expected ReasoningEffort to be empty, got %q", modelName, req.ReasoningEffort)
+		}
 	}
 }
 

@@ -350,7 +350,11 @@ func runOne(parent context.Context, req dbmodel.ModelTestRequest, modelName stri
 
 	started := time.Now()
 	if directChannel != nil {
-		if runner.tryChannel(ctx, directChannel, modelName, false) {
+		upstreamModel := modelName
+		if mapped, ok := directChannel.ModelMapping[upstreamModel]; ok && mapped != "" {
+			upstreamModel = mapped
+		}
+		if runner.tryChannel(ctx, directChannel, upstreamModel, false) {
 			runner.result.DurationMs = int(time.Since(started).Milliseconds())
 			return runner.result
 		}
@@ -368,7 +372,11 @@ func runOne(parent context.Context, req dbmodel.ModelTestRequest, modelName stri
 			runner.result.DurationMs = int(time.Since(started).Milliseconds())
 			return runner.result
 		}
-		if runner.tryChannel(ctx, channel, modelName, false) {
+		upstreamModel := modelName
+		if mapped, ok := channel.ModelMapping[upstreamModel]; ok && mapped != "" {
+			upstreamModel = mapped
+		}
+		if runner.tryChannel(ctx, channel, upstreamModel, false) {
 			runner.result.DurationMs = int(time.Since(started).Milliseconds())
 			return runner.result
 		}
@@ -554,7 +562,7 @@ func modelTestRouteCandidates(requestModel string) []string {
 func shouldFallbackToGroup(selection routeSelection) bool {
 	return selection.routeUsed &&
 		selection.rule != nil &&
-		selection.rule.FallbackMode == dbmodel.AccessRouteFallbackReturnGroup
+		selection.rule.FallbackMode != dbmodel.AccessRouteFallbackNone
 }
 
 func (r *modelRunner) applyRouteMetadata(selection routeSelection) {
@@ -581,7 +589,11 @@ func (r *modelRunner) trySelection(ctx context.Context, selection routeSelection
 			r.recordAttempt(item.ChannelID, 0, fmt.Sprintf("channel_%d", item.ChannelID), item.ModelName, "", dbmodel.AttemptSkipped, 0, 0, err.Error())
 			continue
 		}
-		if r.tryChannel(ctx, channel, item.ModelName, true) {
+		modelName := item.ModelName
+		if mapped, ok := channel.ModelMapping[modelName]; ok && mapped != "" {
+			modelName = mapped
+		}
+		if r.tryChannel(ctx, channel, modelName, true) {
 			return true
 		}
 	}

@@ -65,7 +65,6 @@
         "home": "Home",
         "user": "Users",
         "channel": "Channel",
-        "group": "Model Pool",
         "access-plan": "Plans",
         "key": "API Key",
         "model": "Price",
@@ -94,11 +93,6 @@
                     "all": "All channels",
                     "enabled": "Enabled only",
                     "disabled": "Disabled only"
-                },
-                "group": {
-                    "all": "All model pools",
-                    "withMembers": "With models",
-                    "empty": "Empty model pools"
                 },
                 "model": {
                     "all": "All models",
@@ -681,66 +675,6 @@
             "clearSuccess": "Logs cleared",
             "clearFailed": "Failed to clear logs"
         }
-    },
-    "group": {
-        "toast": {
-            "created": "Created successfully",
-            "createFailed": "Create failed",
-            "updated": "Updated successfully",
-            "updateFailed": "Update failed",
-            "deleted": "Deleted successfully",
-            "autoAddFailed": "Auto add failed"
-        },
-        "create": {
-            "title": "Create Model Pool",
-            "submit": "Create",
-            "submitting": "Creating..."
-        },
-        "card": {
-            "empty": "No rules",
-            "memberPriorityTooltip": "In-group priority (drag to reorder)",
-            "channelPriorityTooltip": "Channel priority"
-        },
-        "detail": {
-            "actions": {
-                "edit": "Edit",
-                "cancel": "Cancel",
-                "save": "Save",
-                "copyName": "Copy Name",
-                "delete": "Delete",
-                "confirmDelete": "Confirm Delete",
-                "refreshMatched": "Refresh matched models"
-            }
-        },
-        "form": {
-            "name": "Model Pool Name",
-            "matchRegex": "Match Regex",
-            "matchRegexPlaceholder": "Leave empty to use default fuzzy match by model pool name",
-            "matchRegexInvalid": "Invalid regex",
-            "firstTokenTimeOut": "First Token Timeout",
-            "firstTokenTimeOutHint": "Unit: seconds, only effective for streaming response, 0 = no limit",
-            "sessionKeepTime": "Session Keep Time",
-            "sessionKeepTimeHint": "Unit: seconds, keeps using the same channel within a session, 0 = disabled",
-            "maxConcurrent": "Group max concurrent",
-            "maxConcurrentHint": "Hard cap on concurrent in-flight requests for the whole group (0 = unlimited). The model is already routed here with nowhere to spread, so requests over the cap return 429 to protect the upstream.",
-            "rpmLimit": "Group max RPM",
-            "rpmLimitHint": "Hard cap on requests per minute for the whole group (0 = unlimited). Requests over the cap return 429 so the upstream is not maxed out.",
-            "modeLocked": "Lock route mode",
-            "modeLockedHint": "Independent of the global default",
-            "items": "Selected Models",
-            "addItem": "Add Model",
-            "autoAdd": "Auto Add",
-            "refreshMatched": "Refresh Match",
-            "refreshMatchedHint": "Rebuild the selected models from the model pool name or match regex",
-            "clear": "Clear",
-            "selectChannel": "Channel",
-            "selectModel": "Model"
-        },
-        "mode": {
-            "spread": "Round Robin",
-            "fillFirst": "Fill First"
-        },
-        "empty": "No model pools yet, click the button above to create one"
     },
     "model": {
         "create": {

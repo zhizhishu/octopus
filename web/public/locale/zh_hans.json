@@ -65,7 +65,6 @@
         "home": "主页",
         "user": "用户",
         "channel": "渠道",
-        "group": "模型池",
         "access-plan": "方案",
         "key": "API Key",
         "model": "价格",
@@ -94,11 +93,6 @@
                     "all": "全部渠道",
                     "enabled": "仅启用",
                     "disabled": "仅禁用"
-                },
-                "group": {
-                    "all": "全部模型池",
-                    "withMembers": "有模型",
-                    "empty": "空模型池"
                 },
                 "model": {
                     "all": "全部模型",
@@ -681,66 +675,6 @@
             "clearSuccess": "日志已清空",
             "clearFailed": "清空失败"
         }
-    },
-    "group": {
-        "toast": {
-            "created": "创建成功",
-            "createFailed": "创建失败",
-            "updated": "更新成功",
-            "updateFailed": "更新失败",
-            "deleted": "删除成功",
-            "autoAddFailed": "自动添加失败"
-        },
-        "create": {
-            "title": "创建模型池",
-            "submit": "创建",
-            "submitting": "创建中..."
-        },
-        "card": {
-            "empty": "暂无规则",
-            "memberPriorityTooltip": "组内优先级（拖拽调整）",
-            "channelPriorityTooltip": "渠道优先级"
-        },
-        "detail": {
-            "actions": {
-                "edit": "编辑",
-                "cancel": "取消",
-                "save": "保存",
-                "copyName": "复制名称",
-                "delete": "删除",
-                "confirmDelete": "确认删除",
-                "refreshMatched": "刷新匹配模型"
-            }
-        },
-        "form": {
-            "name": "模型池名称",
-            "matchRegex": "匹配正则",
-            "matchRegexPlaceholder": "留空则默认按模型池名称模糊匹配",
-            "matchRegexInvalid": "正则无效",
-            "firstTokenTimeOut": "首字超时",
-            "firstTokenTimeOutHint": "单位秒，仅流式响应起效，0 表示不限制",
-            "sessionKeepTime": "会话保持",
-            "sessionKeepTimeHint": "单位秒，会话期间保持使用同一渠道，0 表示禁用",
-            "maxConcurrent": "分组并发上限",
-            "maxConcurrentHint": "整组在途请求数硬上限（0=不限）。模型已路由到本组、无处可铺，超上限直接返回 429，保护上游不被打满。",
-            "rpmLimit": "分组 RPM 上限",
-            "rpmLimitHint": "整组每分钟请求数硬上限（0=不限）。超上限直接返回 429，避免把上游打满。",
-            "modeLocked": "锁定路由模式",
-            "modeLockedHint": "独立于全局默认",
-            "items": "已选模型",
-            "addItem": "添加模型",
-            "autoAdd": "自动添加",
-            "refreshMatched": "刷新匹配",
-            "refreshMatchedHint": "按模型池名称或匹配正则重建当前已选模型",
-            "clear": "清空",
-            "selectChannel": "渠道",
-            "selectModel": "模型"
-        },
-        "mode": {
-            "spread": "轮询",
-            "fillFirst": "优先填充"
-        },
-        "empty": "暂无模型池，点击左上角按钮创建"
     },
     "model": {
         "create": {

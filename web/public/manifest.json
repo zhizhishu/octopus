@@ -90,18 +90,6 @@
           "type": "image/png"
         }
       ]
-    },
-    {
-      "name": "模型池管理",
-      "short_name": "模型池",
-      "url": "./",
-      "icons": [
-        {
-          "src": "./web-app-manifest-192x192.png",
-          "sizes": "192x192",
-          "type": "image/png"
-        }
-      ]
     }
   ]
 }

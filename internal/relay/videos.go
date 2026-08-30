@@ -85,10 +85,12 @@ func VideosHandler(c *gin.Context) {
 	metrics.RequestContent = buildRawProtocolRequestContent(false, bc, payload, "videos")
 
 	var (
-		lastErr     error
-		allAttempts []model.ChannelAttempt
+		lastErr          error
+		allAttempts      []model.ChannelAttempt
+		triedReturnGroup bool
 	)
 
+runIterator:
 	for iter.Next() {
 		select {
 		case <-ctx.Done():
@@ -189,6 +191,22 @@ func VideosHandler(c *gin.Context) {
 	}
 
 	allAttempts = append(allAttempts, iter.Attempts()...)
+	if shouldReturnToOriginalGroup(routeResult, triedReturnGroup) {
+		triedReturnGroup = true
+		fallbackGroup, err := op.GroupGetEnabledMap(requestModel, ctx)
+		if err != nil {
+			lastErr = err
+		} else {
+			fallbackGroup = enrichGroupForSmartRouting(ctx, fallbackGroup, false)
+			fallbackIter := balancer.NewIteratorWithSession(fallbackGroup, apiKeyID, requestModel, "", false)
+			if fallbackIter.Len() > 0 {
+				group = fallbackGroup
+				iter = fallbackIter
+				goto runIterator
+			}
+		}
+	}
+
 	finalErr := lastErr
 	if finalErr == nil {
 		finalErr = routeSelectionErrorFromAttempts(allAttempts)
