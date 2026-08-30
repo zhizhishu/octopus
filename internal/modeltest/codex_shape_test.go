@@ -99,18 +99,17 @@ func TestPrepareCodexModelTestSkipsPairingFieldsForDeniedModel(t *testing.T) {
 	}
 }
 
-func TestPrepareCodexModelTestPreservesExplicitClientContext(t *testing.T) {
-	// A genuine codex CLI sends its own reasoning.context; echoing that back is what
-	// keeps octopus faithful, so an explicit client value must NEVER be overwritten by
-	// the codex shaper's default.
+func TestPrepareCodexModelTestOverridesIncompatibleClientContext(t *testing.T) {
+	// Lite's hard pairing rule requires all_turns regardless of the downstream client's
+	// preference; forwarding another value would be rejected before inference.
 	req := &transformermodel.InternalLLMRequest{
 		Model:            "gpt-5.6-sol",
 		ReasoningEffort:  "high",
 		ReasoningContext: "client_chosen",
 	}
 	prepareCodexModelTestRequest(req, outbound.OutboundTypeOpenAIResponse, zeroFP())
-	if req.ReasoningContext != "client_chosen" {
-		t.Fatalf("expected explicit client reasoning.context to survive, got %q", req.ReasoningContext)
+	if req.ReasoningContext != "all_turns" {
+		t.Fatalf("expected Lite-compatible reasoning.context, got %q", req.ReasoningContext)
 	}
 }
 

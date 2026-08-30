@@ -1514,6 +1514,8 @@ type RouteFlowCanvasProps = {
     onModeChange?: (rowTargets: AccessPlanRouteTarget[], mode: 1 | 3) => void;
 };
 
+type RouteViewMode = 'all' | 'channel' | 'mapping';
+
 function RouteFlowCanvasInner({
     plan, rows, channels, channelMappings, modelNames, channelModels, channelModelsReady, unroutedModels, onEditRequest, onPriorityChange, onMoveToTop, onMoveUpOne, onAddUnroutedModel, onOpenJson, onModeChange,
 }: RouteFlowCanvasProps) {
@@ -1521,30 +1523,69 @@ function RouteFlowCanvasInner({
     const channelNameByID = useMemo(() => new Map(channels.map((channel) => [channel.id, channel.name])), [channels]);
     const channelModelIndex = useMemo(() => buildChannelModelIndex(channelModels, channelModelsReady), [channelModels, channelModelsReady]);
 
+    const [viewMode, setViewMode] = useState<RouteViewMode>('all');
+    const [selectedChannelId, setSelectedChannelId] = useState<string>('');
+    const [selectedMappingModel, setSelectedMappingModel] = useState<string>('');
     const [query, setQuery] = useState('');
     const q = query.trim().toLowerCase();
+
+    const mappingModelOptions = useMemo(() => {
+        const set = new Set<string>();
+        rows.forEach((r) => set.add(r.requestModel));
+        channelMappings.forEach((m) => set.add(m.fromModel));
+        return Array.from(set).sort((a, b) => a.localeCompare(b));
+    }, [rows, channelMappings]);
+
     const filteredRows = useMemo(() => {
-        if (!q) return rows;
+        const channelFilterId = viewMode === 'channel' && selectedChannelId ? Number(selectedChannelId) : null;
+        const modelFilter = viewMode === 'mapping' && selectedMappingModel ? selectedMappingModel.toLowerCase() : null;
+
         return rows
             .map((row): RouteTargetGroup | null => {
-                if (row.requestModel.toLowerCase().includes(q)) return row;
-                const targets = row.targets.filter((tgt) => {
+                if (modelFilter && row.requestModel.toLowerCase() !== modelFilter) {
+                    return null;
+                }
+                let targets = row.targets;
+                if (channelFilterId !== null) {
+                    targets = targets.filter((tgt) => tgt.channel_id === channelFilterId);
+                }
+                if (!targets.length) return null;
+
+                if (!q) {
+                    return { ...row, targets };
+                }
+
+                if (row.requestModel.toLowerCase().includes(q)) {
+                    return { ...row, targets };
+                }
+                const matchedTargets = targets.filter((tgt) => {
                     const chName = (channelNameByID.get(tgt.channel_id) ?? '').toLowerCase();
                     return chName.includes(q) || (tgt.upstream_model ?? '').toLowerCase().includes(q);
                 });
-                return targets.length ? { ...row, targets } : null;
+                return matchedTargets.length ? { ...row, targets: matchedTargets } : null;
             })
             .filter((row): row is RouteTargetGroup => row !== null);
-    }, [rows, q, channelNameByID]);
+    }, [rows, q, channelNameByID, viewMode, selectedChannelId, selectedMappingModel]);
 
     const filteredMappings = useMemo(() => {
-        if (!q) return channelMappings;
-        return channelMappings.filter((mapping) => (
-            mapping.fromModel.toLowerCase().includes(q)
-            || mapping.toModel.toLowerCase().includes(q)
-            || mapping.channelName.toLowerCase().includes(q)
-        ));
-    }, [channelMappings, q]);
+        const channelFilterId = viewMode === 'channel' && selectedChannelId ? Number(selectedChannelId) : null;
+        const modelFilter = viewMode === 'mapping' && selectedMappingModel ? selectedMappingModel.toLowerCase() : null;
+
+        return channelMappings.filter((mapping) => {
+            if (channelFilterId !== null && mapping.channelId !== channelFilterId) {
+                return false;
+            }
+            if (modelFilter && mapping.fromModel.toLowerCase() !== modelFilter) {
+                return false;
+            }
+            if (!q) return true;
+            return (
+                mapping.fromModel.toLowerCase().includes(q)
+                || mapping.toModel.toLowerCase().includes(q)
+                || mapping.channelName.toLowerCase().includes(q)
+            );
+        });
+    }, [channelMappings, q, viewMode, selectedChannelId, selectedMappingModel]);
 
     // 画布只渲染「已路由」的模型；搜索时把渠道模型池里命中但未路由的模型也捞出来，
     // 免得搜 deepseek 时误以为系统里没有——其实是没路由进本方案。
@@ -1579,13 +1620,25 @@ function RouteFlowCanvasInner({
     }, [q, modelNames, channelModels, routedModelNames]);
 
     const filteredUnroutedModels = useMemo(() => {
-        const matches = !q ? unroutedModels : unroutedModels.filter((model) => (
-            model.clean_name.toLowerCase().includes(q)
-            || (channelNameByID.get(model.channel_id) ?? '').toLowerCase().includes(q)
-        ));
+        const channelFilterId = viewMode === 'channel' && selectedChannelId ? Number(selectedChannelId) : null;
+        const modelFilter = viewMode === 'mapping' && selectedMappingModel ? selectedMappingModel.toLowerCase() : null;
+
+        const matches = unroutedModels.filter((model) => {
+            if (channelFilterId !== null && model.channel_id !== channelFilterId) {
+                return false;
+            }
+            if (modelFilter && model.clean_name.toLowerCase() !== modelFilter) {
+                return false;
+            }
+            if (!q) return true;
+            return (
+                model.clean_name.toLowerCase().includes(q)
+                || (channelNameByID.get(model.channel_id) ?? '').toLowerCase().includes(q)
+            );
+        });
         // ponytail: cap beginner canvas overflow at 40; add pagination if admins manage hundreds of unrouted models.
         return matches.slice(0, 40);
-    }, [unroutedModels, q, channelNameByID]);
+    }, [unroutedModels, q, channelNameByID, viewMode, selectedChannelId, selectedMappingModel]);
 
     const targetCount = rows.reduce((sum, row) => sum + row.targets.length, 0);
     const hasCanvasContent = filteredRows.length > 0 || filteredUnroutedModels.length > 0 || filteredMappings.length > 0;
@@ -1613,6 +1666,71 @@ function RouteFlowCanvasInner({
                     <p className="mt-1 hidden text-xs text-muted-foreground sm:block">{t('routes.canvasHint')}</p>
                 </div>
                 <div className="flex w-full flex-wrap items-center gap-2 text-[11px] text-muted-foreground sm:w-auto">
+                    <div className="inline-flex items-center rounded-full border border-border/70 bg-background/60 p-0.5 text-xs">
+                        <button
+                            type="button"
+                            className={cn(
+                                'h-6 rounded-full px-2.5 text-xs font-medium transition-colors',
+                                viewMode === 'all' ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+                            )}
+                            onClick={() => setViewMode('all')}
+                        >
+                            全部
+                        </button>
+                        <button
+                            type="button"
+                            className={cn(
+                                'h-6 rounded-full px-2.5 text-xs font-medium transition-colors',
+                                viewMode === 'channel' ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+                            )}
+                            onClick={() => setViewMode('channel')}
+                        >
+                            按渠道
+                        </button>
+                        <button
+                            type="button"
+                            className={cn(
+                                'h-6 rounded-full px-2.5 text-xs font-medium transition-colors',
+                                viewMode === 'mapping' ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+                            )}
+                            onClick={() => setViewMode('mapping')}
+                        >
+                            按映射
+                        </button>
+                    </div>
+
+                    {viewMode === 'channel' && (
+                        <select
+                            value={selectedChannelId}
+                            onChange={(e) => setSelectedChannelId(e.target.value)}
+                            aria-label="筛选渠道"
+                            className="h-7 rounded-full border border-border/70 bg-background/60 px-2.5 text-xs text-foreground outline-none focus:border-primary/50 max-w-[160px]"
+                        >
+                            <option value="">全部渠道</option>
+                            {channels.map((ch) => (
+                                <option key={ch.id} value={String(ch.id)}>
+                                    #{ch.id} {ch.name}
+                                </option>
+                            ))}
+                        </select>
+                    )}
+
+                    {viewMode === 'mapping' && (
+                        <select
+                            value={selectedMappingModel}
+                            onChange={(e) => setSelectedMappingModel(e.target.value)}
+                            aria-label="筛选映射模型"
+                            className="h-7 rounded-full border border-border/70 bg-background/60 px-2.5 text-xs text-foreground outline-none focus:border-primary/50 max-w-[160px]"
+                        >
+                            <option value="">全部请求模型</option>
+                            {mappingModelOptions.map((model) => (
+                                <option key={model} value={model}>
+                                    {model}
+                                </option>
+                            ))}
+                        </select>
+                    )}
+
                     <div className="relative min-w-0 flex-1 sm:flex-none">
                         <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
                         <input
@@ -1642,7 +1760,7 @@ function RouteFlowCanvasInner({
                     ) : rows.length === 0 ? (
                         t('routes.canvasEmpty')
                     ) : (
-                        `没有匹配「${query.trim()}」的模型或渠道`
+                        `没有匹配当前筛选条件的模型或渠道`
                     )}
                 </div>
             ) : (
@@ -1727,9 +1845,31 @@ function RouteFlowCanvasInner({
                                                         )}
                                                     </div>
                                                     <div className="flex shrink-0 items-center gap-1.5">
-                                                        <span className="min-w-4 text-center font-mono text-xs font-semibold tabular-nums text-foreground">
-                                                            {priority + 1}
-                                                        </span>
+                                                        <div className="inline-flex items-center gap-0.5">
+                                                            <button
+                                                                type="button"
+                                                                className="flex size-5 items-center justify-center rounded border border-border/70 bg-background text-xs font-semibold leading-none text-foreground hover:bg-muted disabled:opacity-40"
+                                                                disabled={!target.id || isStale || priority >= 9}
+                                                                aria-label="降低优先级"
+                                                                title="降低优先级（+1）"
+                                                                onClick={() => target.id && onPriorityChange?.(target.id, clampRoutePriority(priority + 1))}
+                                                            >
+                                                                −
+                                                            </button>
+                                                            <span className="min-w-4 text-center font-mono text-xs font-semibold tabular-nums text-foreground">
+                                                                {priority + 1}
+                                                            </span>
+                                                            <button
+                                                                type="button"
+                                                                className="flex size-5 items-center justify-center rounded border border-border/70 bg-background text-xs font-semibold leading-none text-foreground hover:bg-muted disabled:opacity-40"
+                                                                disabled={!target.id || isStale || priority <= 0}
+                                                                aria-label="提高优先级"
+                                                                title="提高优先级（-1）"
+                                                                onClick={() => target.id && onPriorityChange?.(target.id, clampRoutePriority(priority - 1))}
+                                                            >
+                                                                +
+                                                            </button>
+                                                        </div>
                                                         <button
                                                             type="button"
                                                             className="flex h-7 items-center gap-1 rounded-lg border border-border/70 bg-background px-2 text-xs text-foreground hover:bg-muted disabled:opacity-40"

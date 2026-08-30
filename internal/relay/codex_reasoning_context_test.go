@@ -56,9 +56,9 @@ func TestEnsureCodexReasoningContextAppliesWithoutAnyReasoning(t *testing.T) {
 	}
 }
 
-// A genuine codex CLI sends reasoning.context itself; echoing its value back is what
-// keeps oct faithful, so an explicit client value is never overwritten.
-func TestEnsureCodexReasoningContextKeepsExplicitClientValue(t *testing.T) {
+// Lite's upstream contract is stricter than a client preference. Once the header is
+// present, an explicit incompatible value must be corrected or the request 400s.
+func TestEnsureCodexReasoningContextOverridesIncompatibleClientValue(t *testing.T) {
 	req := &transformerModel.InternalLLMRequest{
 		Model:            "gpt-5.6-sol",
 		ReasoningEffort:  "high",
@@ -67,8 +67,8 @@ func TestEnsureCodexReasoningContextKeepsExplicitClientValue(t *testing.T) {
 
 	ensureCodexReasoningContext(req)
 
-	if req.ReasoningContext != "client_chosen" {
-		t.Fatalf("expected explicit client reasoning.context to survive, got %q", req.ReasoningContext)
+	if req.ReasoningContext != "all_turns" {
+		t.Fatalf("expected Lite-compatible reasoning.context, got %q", req.ReasoningContext)
 	}
 }
 

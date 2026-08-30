@@ -34,17 +34,23 @@ export function SettingLog() {
     const [enabled, setEnabled] = useState(true);
     const [keepPeriod, setKeepPeriod] = useState('7');
     const [maxStorageGB, setMaxStorageGB] = useState('0');
+    const [interventionEnabled, setInterventionEnabled] = useState(false);
+    const [interventionTimeout, setInterventionTimeout] = useState('1800');
     const [isClearing, setIsClearing] = useState(false);
 
     const initialEnabled = useRef(true);
     const initialKeepPeriod = useRef('7');
     const initialMaxStorageGB = useRef('0');
+    const initialInterventionEnabled = useRef(false);
+    const initialInterventionTimeout = useRef('1800');
 
     useEffect(() => {
         if (settings) {
             const enabledSetting = settings.find(s => s.key === SettingKey.RelayLogKeepEnabled);
             const periodSetting = settings.find(s => s.key === SettingKey.RelayLogKeepPeriod);
             const maxStorageSetting = settings.find(s => s.key === SettingKey.RelayLogMaxStorageGB);
+            const interventionEnabledSetting = settings.find(s => s.key === SettingKey.RelayInterventionEnabled);
+            const interventionTimeoutSetting = settings.find(s => s.key === SettingKey.RelayInterventionTimeoutSeconds);
             if (enabledSetting) {
                 const isEnabled = enabledSetting.value === 'true';
                 queueMicrotask(() => setEnabled(isEnabled));
@@ -57,6 +63,15 @@ export function SettingLog() {
             if (maxStorageSetting) {
                 queueMicrotask(() => setMaxStorageGB(maxStorageSetting.value));
                 initialMaxStorageGB.current = maxStorageSetting.value;
+            }
+            if (interventionEnabledSetting) {
+                const isInterventionEnabled = interventionEnabledSetting.value === 'true';
+                queueMicrotask(() => setInterventionEnabled(isInterventionEnabled));
+                initialInterventionEnabled.current = isInterventionEnabled;
+            }
+            if (interventionTimeoutSetting) {
+                queueMicrotask(() => setInterventionTimeout(interventionTimeoutSetting.value));
+                initialInterventionTimeout.current = interventionTimeoutSetting.value;
             }
         }
     }, [settings]);
@@ -97,6 +112,33 @@ export function SettingLog() {
                 onSuccess: () => {
                     toast.success(t('saved'));
                     initialMaxStorageGB.current = maxStorageGB;
+                }
+            }
+        );
+    };
+
+    const handleInterventionEnabledChange = (checked: boolean) => {
+        setInterventionEnabled(checked);
+        setSetting.mutate(
+            { key: SettingKey.RelayInterventionEnabled, value: checked ? 'true' : 'false' },
+            {
+                onSuccess: () => {
+                    toast.success(t('saved'));
+                    initialInterventionEnabled.current = checked;
+                }
+            }
+        );
+    };
+
+    const handleInterventionTimeoutSave = () => {
+        if (interventionTimeout === initialInterventionTimeout.current) return;
+
+        setSetting.mutate(
+            { key: SettingKey.RelayInterventionTimeoutSeconds, value: interventionTimeout },
+            {
+                onSuccess: () => {
+                    toast.success(t('saved'));
+                    initialInterventionTimeout.current = interventionTimeout;
                 }
             }
         );
@@ -189,6 +231,32 @@ export function SettingLog() {
                 </div>
             </div>
 
+            {/* 上游错误人工接管 */}
+            <div className="space-y-3 rounded-2xl border border-amber-500/30 bg-amber-500/5 p-4">
+                <div className="flex items-center justify-between gap-4">
+                    <div className="flex flex-col gap-1">
+                        <span className="text-sm font-medium">上游错误人工接管</span>
+                        <span className="text-xs text-muted-foreground">开启后，流式请求在所有自动渠道失败时会保持客户端连接，日志页可手动选择渠道重试。</span>
+                    </div>
+                    <Switch
+                        checked={interventionEnabled}
+                        onCheckedChange={handleInterventionEnabledChange}
+                    />
+                </div>
+                <div className="flex items-center justify-between gap-4">
+                    <span className="text-sm font-medium">接管等待上限（秒）</span>
+                    <Input
+                        type="number"
+                        min="1"
+                        value={interventionTimeout}
+                        onChange={(e) => setInterventionTimeout(e.target.value)}
+                        onBlur={handleInterventionTimeoutSave}
+                        className="w-48 rounded-xl"
+                        disabled={!interventionEnabled}
+                    />
+                </div>
+            </div>
+
             {/* 清空历史日志 */}
             <div className="flex items-center justify-between gap-4">
                 <div className="flex items-center gap-3">
@@ -208,4 +276,3 @@ export function SettingLog() {
         </div>
     );
 }
-

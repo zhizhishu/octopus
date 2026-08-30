@@ -9,6 +9,8 @@ import { VirtualizedGrid } from '@/components/common/VirtualizedGrid';
 import { PageWrapper } from '@/components/common/PageWrapper';
 import { MobileFilterCollapse } from '@/components/common/MobileFilterCollapse';
 import { useAPIKeyList } from '@/api/endpoints/apikey';
+import { useChannelList } from '@/api/endpoints/channel';
+import { useAbortIntervention, useInterventionList, useRetryIntervention, type InterventionSnapshot } from '@/api/endpoints/intervention';
 import { useAuthStore, useUserList } from '@/api/endpoints/user';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -224,6 +226,166 @@ function expandLogRows(logs: RelayLog[]): LogRow[] {
         });
     }
     return rows;
+}
+
+type InterventionDraft = {
+    channelID: string;
+    keyID: string;
+    modelName: string;
+};
+
+function PendingInterventionsPanel({ isAdmin }: { isAdmin: boolean }) {
+    const { data: interventions = [] } = useInterventionList({ enabled: isAdmin });
+    const { data: channelRows = [] } = useChannelList({ enabled: isAdmin && interventions.length > 0 });
+    const retryIntervention = useRetryIntervention();
+    const abortIntervention = useAbortIntervention();
+    const [drafts, setDrafts] = useState<Record<string, InterventionDraft>>({});
+
+    const enabledChannels = useMemo(
+        () => channelRows.map((row) => row.raw).filter((channel) => channel.enabled),
+        [channelRows]
+    );
+
+    if (!isAdmin || interventions.length === 0) {
+        return null;
+    }
+
+    const updateDraft = (id: string, patch: Partial<InterventionDraft>) => {
+        setDrafts((previousDrafts) => {
+            const currentDraft = previousDrafts[id] ?? { channelID: '', keyID: '', modelName: '' };
+            return { ...previousDrafts, [id]: { ...currentDraft, ...patch } };
+        });
+    };
+
+    const retryHeldRequest = (intervention: InterventionSnapshot) => {
+        const draft = drafts[intervention.id];
+        const channelID = Number(draft?.channelID);
+        if (!Number.isFinite(channelID) || channelID <= 0) {
+            toast.error('先选一个要重试的渠道');
+            return;
+        }
+        const keyID = Number(draft?.keyID);
+        retryIntervention.mutate(
+            {
+                id: intervention.id,
+                request: {
+                    channel_id: channelID,
+                    key_id: Number.isFinite(keyID) && keyID > 0 ? keyID : undefined,
+                    model_name: draft?.modelName.trim() || undefined,
+                },
+            },
+            {
+                onSuccess: () => toast.success('已放行人工重试'),
+                onError: (error) => toast.error('人工重试失败', { description: error instanceof Error ? error.message : String(error) }),
+            }
+        );
+    };
+
+    const abortHeldRequest = (intervention: InterventionSnapshot) => {
+        abortIntervention.mutate(intervention.id, {
+            onSuccess: () => toast.success('已结束挂起请求'),
+            onError: (error) => toast.error('结束挂起请求失败', { description: error instanceof Error ? error.message : String(error) }),
+        });
+    };
+
+    return (
+        <div className="flex flex-none flex-col gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-sm">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-amber-800 dark:text-amber-200">
+                    <AlertTriangle className="size-4 shrink-0" />
+                    <span className="font-semibold">人工接管中：{interventions.length} 个请求正在等你选渠道</span>
+                </div>
+                <span className="text-xs text-amber-700/80 dark:text-amber-300/80">客户端连接保持中，选中渠道后会继续把成功响应写回原请求。</span>
+            </div>
+            <div className="grid gap-2 lg:grid-cols-2">
+                {interventions.map((intervention) => {
+                    const draft = drafts[intervention.id] ?? { channelID: '', keyID: '', modelName: '' };
+                    const selectedChannelID = Number(draft.channelID);
+                    const selectedChannel = enabledChannels.find((channel) => channel.id === selectedChannelID);
+                    const enabledKeys = selectedChannel?.keys?.filter((key) => key.enabled) ?? [];
+                    const lastAttempts = intervention.attempts.slice(-3);
+
+                    return (
+                        <div key={intervention.id} className="rounded-lg border border-amber-500/30 bg-background/80 p-2 shadow-sm">
+                            <div className="flex flex-wrap items-start justify-between gap-2">
+                                <div className="min-w-0 space-y-1">
+                                    <div className="flex flex-wrap items-center gap-1.5">
+                                        <Badge variant="secondary" className="bg-amber-500/15 text-amber-700 dark:text-amber-300">{intervention.endpoint || 'relay'}</Badge>
+                                        <span className="font-mono text-xs text-muted-foreground">{intervention.id}</span>
+                                    </div>
+                                    <p className="text-sm font-medium text-foreground">模型：{intervention.request_model || 'unknown'}</p>
+                                    <p className="line-clamp-2 text-xs text-destructive">{intervention.last_error || '上游全失败，等待人工选择渠道'}</p>
+                                </div>
+                                <span className="shrink-0 rounded-full bg-amber-500/15 px-2 py-0.5 text-xs text-amber-700 dark:text-amber-300">
+                                    等待 {intervention.waiting_for}
+                                </span>
+                            </div>
+                            {lastAttempts.length > 0 && (
+                                <div className="mt-2 flex flex-wrap gap-1.5">
+                                    {lastAttempts.map((attempt, index) => (
+                                        <span key={`${attempt.channel_id}-${attempt.attempt_num || index}`} className="rounded-full border border-border/70 bg-muted/40 px-2 py-0.5 text-[11px] text-muted-foreground">
+                                            #{attempt.attempt_num || index + 1} {attempt.channel_name || `ch${attempt.channel_id}`} · {attempt.status}
+                                        </span>
+                                    ))}
+                                </div>
+                            )}
+                            <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
+                                <select
+                                    value={draft.channelID}
+                                    onChange={(event) => updateDraft(intervention.id, { channelID: event.target.value, keyID: '' })}
+                                    className="h-9 min-w-0 rounded-lg border border-input bg-background px-2 text-xs text-foreground"
+                                >
+                                    <option value="">选择重试渠道</option>
+                                    {enabledChannels.map((channel) => (
+                                        <option key={channel.id} value={channel.id}>{channel.name}</option>
+                                    ))}
+                                </select>
+                                <select
+                                    value={draft.keyID}
+                                    onChange={(event) => updateDraft(intervention.id, { keyID: event.target.value })}
+                                    className="h-9 min-w-0 rounded-lg border border-input bg-background px-2 text-xs text-foreground"
+                                    disabled={!selectedChannel}
+                                >
+                                    <option value="">自动选 Key</option>
+                                    {enabledKeys.map((key) => (
+                                        <option key={key.id} value={key.id}>{key.remark || `Key #${key.id}`}</option>
+                                    ))}
+                                </select>
+                                <input
+                                    value={draft.modelName}
+                                    onChange={(event) => updateDraft(intervention.id, { modelName: event.target.value })}
+                                    placeholder={`模型覆盖（默认 ${intervention.request_model || '原模型'}）`}
+                                    className="h-9 min-w-0 rounded-lg border border-input bg-background px-2 text-xs text-foreground sm:col-span-2"
+                                />
+                            </div>
+                            <div className="mt-2 flex justify-end gap-2">
+                                <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="rounded-lg"
+                                    disabled={abortIntervention.isPending}
+                                    onClick={() => abortHeldRequest(intervention)}
+                                >
+                                    <X className="size-4" />
+                                    放弃
+                                </Button>
+                                <Button
+                                    variant="default"
+                                    size="sm"
+                                    className="rounded-lg"
+                                    disabled={retryIntervention.isPending}
+                                    onClick={() => retryHeldRequest(intervention)}
+                                >
+                                    {retryIntervention.isPending ? <Loader2 className="size-4 animate-spin" /> : <RotateCw className="size-4" />}
+                                    重试这个渠道
+                                </Button>
+                            </div>
+                        </div>
+                    );
+                })}
+            </div>
+        </div>
+    );
 }
 
 /**
@@ -570,6 +732,7 @@ export function Log() {
                     </Button>
                 </div>
             )}
+            <PendingInterventionsPanel isAdmin={isAdmin} />
             <div className="flex flex-none flex-col gap-2 rounded-lg border border-border bg-card px-3 py-2">
                 <MobileFilterCollapse
                     label="筛选"

@@ -1476,18 +1476,18 @@ export function ChannelForm({
                         <div className="rounded-xl border border-border bg-background/70 p-3">
                             <div className="flex flex-wrap items-start justify-between gap-3">
                                 <div className="min-w-0 space-y-1">
-                                    <div className="text-xs font-semibold text-card-foreground">{t('disableCircuitBreaker')}</div>
+                                    <div className="text-xs font-semibold text-card-foreground">抢占模式（快速重试）</div>
                                     <p className="text-xs leading-relaxed text-muted-foreground">
-                                        {t('disableCircuitBreakerHint')}
+                                        适合抢容量/频繁 429 渠道，忽略熔断和 Key 冷却并快速轮询启用 Key；不是并发重复请求，不会破坏协议 shape；可能增加上游请求压力。
                                     </p>
                                 </div>
                                 <label className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-border bg-muted/30 px-2.5 py-1.5 text-xs text-muted-foreground">
                                     <Switch
                                         checked={formData.disable_circuit_breaker}
                                         onCheckedChange={(checked) => onFormDataChange({ ...formData, disable_circuit_breaker: checked })}
-                                        aria-label={t('disableCircuitBreaker')}
+                                        aria-label="抢占模式（快速重试）"
                                     />
-                                    <span>{formData.disable_circuit_breaker ? t('disableCircuitBreakerOn') : t('disableCircuitBreakerOff')}</span>
+                                    <span>{formData.disable_circuit_breaker ? '已开启' : '默认关闭'}</span>
                                 </label>
                             </div>
                         </div>

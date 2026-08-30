@@ -74,14 +74,26 @@ const (
 	// downstream-only and never touches the codex/claude/gemini upstream fingerprint. Set
 	// to "0" to disable entirely.
 	SettingKeyFirstByteKeepaliveDelaySeconds SettingKey = "first_byte_keepalive_delay_seconds"
-	SettingKeyRouteModeOverride              SettingKey = "route_mode_override"      // 路由模式全局覆盖: ""=跟随分组各自模式, "spread"=强制轮询, "fill_first"=强制优先填充
-	SettingKeyRouteStickyCacheFirst          SettingKey = "route_sticky_cache_first" // 轮询类分组里纯优化型会话(prompt_cache_key/user/safety_identifier/oct 自造指纹)的粘性取舍: false=分摊优先(默认, 不粘、真轮转), true=缓存优先(非空来源也粘, 换上游 prompt-cache 命中)。语义详见 internal/relay/route_sticky.go
-	SettingKeyPromptOverrideSystem           SettingKey = "prompt_override_system"
-	SettingKeyPromptOverrideMode             SettingKey = "prompt_override_mode"
-	SettingKeyUpstreamErrorStatusPass        SettingKey = "upstream_error_status_passthrough"
-	SettingKeyUpstreamErrorBodyMode          SettingKey = "upstream_error_body_mode"
-	SettingKeyUpstreamErrorCustom            SettingKey = "upstream_error_custom_message"
-	SettingKeyUpstreamErrorPublicCode        SettingKey = "upstream_error_public_code"
+	// SettingKeyRelayInterventionEnabled defaults to "false". When on, a request whose
+	// upstream attempts have all failed is held open instead of returning the error: the
+	// failure surfaces on the log page, where an operator picks a working channel and the
+	// relay retries against it, then streams the result to the client. A CLI
+	// (codex/cursor/claude code) that receives an upstream error ends its turn and must be
+	// told to continue; holding the connection keeps it in "working" instead. Off by
+	// default because a held request pins a connection until someone resolves it.
+	SettingKeyRelayInterventionEnabled SettingKey = "relay_intervention_enabled"
+	// SettingKeyRelayInterventionTimeoutSec bounds that hold: once it elapses with nobody
+	// resolving the request, the original upstream error goes to the client after all.
+	SettingKeyRelayInterventionTimeoutSec SettingKey = "relay_intervention_timeout_seconds"
+
+	SettingKeyRouteModeOverride       SettingKey = "route_mode_override"      // 路由模式全局覆盖: ""=跟随分组各自模式, "spread"=强制轮询, "fill_first"=强制优先填充
+	SettingKeyRouteStickyCacheFirst   SettingKey = "route_sticky_cache_first" // 轮询类分组里纯优化型会话(prompt_cache_key/user/safety_identifier/oct 自造指纹)的粘性取舍: false=分摊优先(默认, 不粘、真轮转), true=缓存优先(非空来源也粘, 换上游 prompt-cache 命中)。语义详见 internal/relay/route_sticky.go
+	SettingKeyPromptOverrideSystem    SettingKey = "prompt_override_system"
+	SettingKeyPromptOverrideMode      SettingKey = "prompt_override_mode"
+	SettingKeyUpstreamErrorStatusPass SettingKey = "upstream_error_status_passthrough"
+	SettingKeyUpstreamErrorBodyMode   SettingKey = "upstream_error_body_mode"
+	SettingKeyUpstreamErrorCustom     SettingKey = "upstream_error_custom_message"
+	SettingKeyUpstreamErrorPublicCode SettingKey = "upstream_error_public_code"
 	SettingKeyCheckInEnabled                 SettingKey = "checkin_enabled"
 	SettingKeyCheckInRewardMode              SettingKey = "checkin_reward_mode"
 	SettingKeyCheckInRewardAmount            SettingKey = "checkin_reward_amount"
@@ -284,6 +296,8 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeySessionKeepTimeDefault, Value: "0"},                                             // 默认0=不启用全局粘性(向后兼容); 管理员设为如3600才全局开, 分组级 SessionKeepTime 仍优先
 		{Key: SettingKeyFirstTokenTimeOutDefault, Value: "0"},                                           // 默认0=不启用全局默认(向后兼容); 分组级 FirstTokenTimeOut 仍优先
 		{Key: SettingKeyFirstByteKeepaliveDelaySeconds, Value: defaultFirstByteKeepaliveDelaySeconds()}, // 默认20=开启: 上游首字节>20s才向下游注入SSE心跳(防前置反代/客户端60s空闲掐断); 0=关闭
+		{Key: SettingKeyRelayInterventionEnabled, Value: "false"},                                     // 默认关: 开启后上游全失败的请求会挂起等人工在日志页选渠道重试, 而不是把错误返回给客户端
+		{Key: SettingKeyRelayInterventionTimeoutSec, Value: "1800"},                                   // 挂起等待上限(秒), 超时后原错误照常返回客户端
 		{Key: SettingKeyRouteModeOverride, Value: ""},                                                   // 默认空=跟随分组各自模式(向后兼容); 设为 spread/fill_first 则强制覆盖所有分组
 		{Key: SettingKeyRouteStickyCacheFirst, Value: "false"},                                          // 默认 false=分摊优先(现行为不变); 设 true 切「缓存优先」: 轮询分组里非空的纯优化型会话也保留粘性
 		{Key: SettingKeyPromptOverrideSystem, Value: ""},

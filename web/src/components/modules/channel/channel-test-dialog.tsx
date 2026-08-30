@@ -2,7 +2,7 @@
 
 // 渠道内测试对话框（学 new-api）：多选端点 + 流/非流开关 + 模型多选批量测试，
 // 复用 /api/v1/model/test 与统一的 shouldForceChannelTestStream + 180s。替代原独立「模型测试」页。
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { CheckCircle2, Fingerprint, Loader2, Lock, Play, RotateCw, XCircle } from 'lucide-react';
 import type { Channel } from '@/api/endpoints/channel';
 import { useChannelTestIdentity, useModelTest, type EndpointIdentity } from '@/api/endpoints/model';
@@ -115,6 +115,64 @@ export function ChannelTestDialog({
     const repeat = Math.max(1, Math.min(MAX_REPEAT, Math.floor(Number(repeatInput)) || 1));
     const [testing, setTesting] = useState(false);
     const identityQuery = useChannelTestIdentity(channel.id, open);
+
+    const modelsSignature = `${channel.id}:${allModels.join('\0')}`;
+
+    // The dialog stays mounted per channel card, so `models` keeps whatever was selected
+    // the first time it initialised. After an edit removes models from the channel, that
+    // stale selection would still be listed (and tested) here. Re-sync whenever the dialog
+    // opens or the channel's model list changes: drop names the channel no longer offers,
+    // fall back to the first available model if nothing valid is left, and clean up stale
+    // entries from filter, results, and summaries.
+    useEffect(() => {
+        if (!open) {
+            return;
+        }
+        const availableModels = new Set(allModels);
+        setModels((previouslySelected) => {
+            const stillValid = new Set([...previouslySelected].filter((name) => availableModels.has(name)));
+            const next = stillValid.size > 0 ? stillValid : new Set(allModels.slice(0, 1));
+            if (next.size === previouslySelected.size && [...next].every((m) => previouslySelected.has(m))) {
+                return previouslySelected;
+            }
+            return next;
+        });
+        setFilter((prevFilter) => {
+            const trimmed = prevFilter.trim().toLowerCase();
+            if (trimmed && !allModels.some((m) => m.toLowerCase().includes(trimmed))) {
+                return '';
+            }
+            return prevFilter;
+        });
+        setResults((prev) => {
+            let changed = false;
+            const next: Record<string, CellResult> = {};
+            for (const [k, v] of Object.entries(prev)) {
+                const sepIndex = k.indexOf('|');
+                const modelName = sepIndex >= 0 ? k.slice(sepIndex + 1) : k;
+                if (availableModels.has(modelName)) {
+                    next[k] = v;
+                } else {
+                    changed = true;
+                }
+            }
+            return changed ? next : prev;
+        });
+        setSummaries((prev) => {
+            let changed = false;
+            const next: Record<string, CellSummary> = {};
+            for (const [k, v] of Object.entries(prev)) {
+                const sepIndex = k.indexOf('|');
+                const modelName = sepIndex >= 0 ? k.slice(sepIndex + 1) : k;
+                if (availableModels.has(modelName)) {
+                    next[k] = v;
+                } else {
+                    changed = true;
+                }
+            }
+            return changed ? next : prev;
+        });
+    }, [open, modelsSignature]); // eslint-disable-line react-hooks/exhaustive-deps
 
     // Shape / Stream lock: 对当前选中的 models + endpoints + 渠道配置调用 SSOT
     const streamShapeLocked = useMemo(() => {

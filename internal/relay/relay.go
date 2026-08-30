@@ -17,7 +17,6 @@ import (
 	dbmodel "github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/op"
 	"github.com/bestruirui/octopus/internal/relay/balancer"
-	"github.com/bestruirui/octopus/internal/relay/grouplimit"
 	"github.com/bestruirui/octopus/internal/server/resp"
 	"github.com/bestruirui/octopus/internal/transformer/inbound"
 	"github.com/bestruirui/octopus/internal/transformer/model"
@@ -28,6 +27,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/tmaxmax/go-sse"
 )
+
+const maxRelayInterventionRounds = 8
 
 // Handler 处理入站请求并转发到上游服务
 func Handler(inboundType inbound.InboundType, c *gin.Context) {
@@ -60,18 +61,6 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 	}
 	preferStreamRouting := internalRequestPrefersStream(internalRequest)
 	group := enrichGroupForSmartRouting(c.Request.Context(), routeResult.Group, preferStreamRouting)
-
-	// 分组级限流闸：模型已路由到本组、无处可铺，到顶硬拒(429)以保护上游不被打满。
-	// 渠道级 RPM/并发是软降档(把流量铺到别的渠道)，分组级则是整组吞吐的硬上限。
-	// gate 只管初始解析出的组；release 经 defer 在请求结束(任何退出路径)释放在途计数。
-	if group.MaxConcurrent > 0 || group.RPMLimit > 0 {
-		releaseGroupSlot, ok, reason := grouplimit.Acquire(group.ID, group.MaxConcurrent, group.RPMLimit)
-		if !ok {
-			resp.Error(c, http.StatusTooManyRequests, reason)
-			return
-		}
-		defer releaseGroupSlot()
-	}
 
 	// 创建迭代器（策略排序 + 粘性优先）。stickyEnabled 按「分组模式 + 会话来源」分级：
 	// 轮询/负载均衡模式下纯优化型会话(prompt_cache_key / oct 自造指纹)不 sticky、走真轮询，
@@ -118,10 +107,11 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 	}
 
 	var (
-		lastErr          error
-		allAttempts      []dbmodel.ChannelAttempt
-		triedReturnGroup bool
-		contextWindowErr error // 命中上下文超长: 停止跨渠道遍历、也不再试 fallback group
+		lastErr            error
+		allAttempts        []dbmodel.ChannelAttempt
+		triedReturnGroup   bool
+		interventionRounds int
+		contextWindowErr   error // 命中上下文超长: 停止跨渠道遍历、也不再试 fallback group
 	)
 
 runIterator:
@@ -158,10 +148,24 @@ runIterator:
 		// take ALL enabled keys ignoring cooldown/quarantine so a key that just returned
 		// 429/5xx/401 is never benched — the client keeps its retry claw on the upstream.
 		var availableKeys []dbmodel.ChannelKey
-		if channel.DisableCircuitBreaker {
+		if req.interventionKeyID > 0 {
+			// Manual intervention is an explicit operator choice: try that enabled key even
+			// if the automatic health filters would still keep it cooling down.
+			availableKeys = channel.GetAllEnabledChannelKeys()
+		} else if channel.DisableCircuitBreaker {
 			availableKeys = channel.GetAllEnabledChannelKeys()
 		} else {
 			availableKeys = channel.GetAvailableChannelKeys()
+		}
+		if req.interventionKeyID > 0 {
+			selectedKeys := make([]dbmodel.ChannelKey, 0, 1)
+			for _, candidateKey := range availableKeys {
+				if candidateKey.ID == req.interventionKeyID {
+					selectedKeys = append(selectedKeys, candidateKey)
+					break
+				}
+			}
+			availableKeys = selectedKeys
 		}
 		if len(availableKeys) == 0 {
 			// On the final candidate channel there is no peer left to spill over to, so a
@@ -172,7 +176,7 @@ runIterator:
 			// client sees the real 429/200. The circuit breaker stays the backstop.
 			// (A DisableCircuitBreaker channel already took every enabled key above, so it
 			// only lands here with genuinely no usable key — nothing left to fall back to.)
-			if !channel.DisableCircuitBreaker && iter.Index() == iter.Len()-1 {
+			if req.interventionKeyID == 0 && !channel.DisableCircuitBreaker && iter.Index() == iter.Len()-1 {
 				availableKeys = channel.GetAvailableChannelKeysLastResort()
 			}
 			if len(availableKeys) == 0 {
@@ -278,6 +282,7 @@ runIterator:
 				return
 			}
 			if result.Written {
+				req.wroteBusinessData = true
 				// 已向下游提交(不可再故障转移), 记录已提交这次尝试所用 Key 的备注。
 				metrics.ChannelKeyRemark = usedKey.Remark
 				metrics.Save(c.Request.Context(), false, result.Err, append(allAttempts, iter.Attempts()...))
@@ -321,8 +326,36 @@ runIterator:
 			}
 		}
 	}
-
 	finalErr := lastErr
+	if finalErr == nil {
+		finalErr = routeSelectionErrorFromAttempts(allAttempts)
+	}
+	if shouldHoldForOperator(req, interventionRounds, contextWindowErr, finalErr) {
+		interventionRounds++
+
+		stopInterventionKeepalive := startDownstreamFirstByteKeepalive(c.Request.Context(), c)
+		resolution, ok := holdForOperator(c.Request.Context(), requestEndpoint, requestModel, allAttempts, finalErr)
+		stopInterventionKeepalive()
+		if ok {
+			req.interventionKeyID = resolution.KeyID
+			interventionGroup := singleChannelGroup(resolution, requestModel)
+			interventionGroup = enrichGroupForSmartRouting(c.Request.Context(), interventionGroup, preferStreamRouting)
+			interventionIter := balancer.NewIteratorWithSession(interventionGroup, apiKeyID, requestModel, "", false)
+			interventionIter.PrioritizeChannels(nativeProtocolChannelIDs(c.Request.Context(), inboundType, interventionGroup.Items))
+			if interventionIter.Len() > 0 {
+				group = interventionGroup
+				iter = interventionIter
+				req.stickyEnabled = false
+				internalRequest.Model = requestModel
+				internalRequest.Messages = append([]model.Message(nil), baseMessages...)
+				internalRequest.PreviousResponseID = basePreviousResponseID
+				internalRequest.ResponsesInputRaw = cloneRawJSONMessage(baseResponsesInputRaw)
+				goto runIterator
+			}
+		}
+	}
+
+	finalErr = lastErr
 	if finalErr == nil {
 		finalErr = routeSelectionErrorFromAttempts(allAttempts)
 	}

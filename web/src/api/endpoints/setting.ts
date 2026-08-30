@@ -25,6 +25,8 @@ export const SettingKey = {
     RelayStreamKeepaliveIntervalSeconds: 'relay_stream_keepalive_interval_seconds',
     RelayStreamDataIntervalTimeoutSeconds: 'relay_stream_data_interval_timeout_seconds',
     FirstByteKeepaliveDelaySeconds: 'first_byte_keepalive_delay_seconds',
+    RelayInterventionEnabled: 'relay_intervention_enabled',
+    RelayInterventionTimeoutSeconds: 'relay_intervention_timeout_seconds',
     ResponsesSessionTTLSeconds: 'responses_session_ttl_seconds',
     SessionKeepTimeDefault: 'session_keep_time_default',
     FirstTokenTimeOutDefault: 'first_token_time_out_default',
@@ -266,4 +268,3 @@ export function useImportDB() {
         },
     });
 }
-

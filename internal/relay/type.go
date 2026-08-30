@@ -161,6 +161,13 @@ type relayRequest struct {
 	clientSessionSource string
 	stickyEnabled       bool
 	iter                *balancer.Iterator
+	interventionKeyID   int
+
+	// wroteBusinessData flips true once real business data (text/tool_call/reasoning/usage
+	// content payload) has been written/committed downstream. When wroteBusinessData is true,
+	// the request cannot be held for manual intervention (or failover) because partial
+	// business response has already been delivered to the client.
+	wroteBusinessData bool
 
 	// wroteNonStreamJSONKeepalive flips true once handleStreamResponseAsNonStream has
 	// flushed a blank-line keepalive ("\n", valid JSON insignificant whitespace) to a

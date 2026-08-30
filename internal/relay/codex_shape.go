@@ -193,11 +193,9 @@ func ensureCodexReasoningContext(req *transformerModel.InternalLLMRequest) {
 	if !codexResponsesLiteApplies(req.Model) {
 		return
 	}
-	// A client that explicitly chose a context owns it — never overwrite (a genuine codex
-	// CLI sends this itself, and echoing its value back is what keeps us faithful).
-	if strings.TrimSpace(req.ReasoningContext) != "" {
-		return
-	}
+	// Lite makes this a hard wire-contract value, not a client preference. Preserving an
+	// explicit non-all_turns value while still emitting the Lite header produces the exact
+	// upstream 400 this helper exists to prevent.
 	req.ReasoningContext = codexReasoningContextAllTurns
 }
 
