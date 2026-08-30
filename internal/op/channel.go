@@ -11,7 +11,6 @@ import (
 	"github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/transformer/outbound"
 	"github.com/bestruirui/octopus/internal/utils/cache"
-	"github.com/bestruirui/octopus/internal/utils/diff"
 	"github.com/bestruirui/octopus/internal/utils/log"
 	"github.com/bestruirui/octopus/internal/utils/xstrings"
 )
@@ -225,7 +224,6 @@ func ChannelUpdate(req *model.ChannelUpdateRequest, ctx context.Context) (*model
 	if !ok {
 		return nil, fmt.Errorf("channel not found")
 	}
-	deletedModelNames := channelDeletedModelNames(oldChannel, req)
 	resetRuntimeStats := channelRuntimeIdentityChanged(oldChannel, req)
 
 	tx := db.GetDB().WithContext(ctx).Begin()
@@ -323,10 +321,6 @@ func ChannelUpdate(req *model.ChannelUpdateRequest, ctx context.Context) (*model
 	if req.AutoSync != nil {
 		selectFields = append(selectFields, "auto_sync")
 		updates.AutoSync = *req.AutoSync
-	}
-	if req.AutoGroup != nil {
-		selectFields = append(selectFields, "auto_group")
-		updates.AutoGroup = *req.AutoGroup
 	}
 	if req.CustomHeader != nil {
 		selectFields = append(selectFields, "custom_header")
@@ -452,19 +446,6 @@ func ChannelUpdate(req *model.ChannelUpdateRequest, ctx context.Context) (*model
 		resetStatsChannelCache(req.ID)
 	}
 
-	if len(deletedModelNames) > 0 {
-		keys := make([]model.GroupIDAndLLMName, 0, len(deletedModelNames))
-		for _, modelName := range deletedModelNames {
-			keys = append(keys, model.GroupIDAndLLMName{
-				ChannelID: req.ID,
-				ModelName: modelName,
-			})
-		}
-		if err := GroupItemBatchDelByChannelAndModels(keys, ctx); err != nil {
-			log.Warnf("failed to delete group items for removed channel models (channel=%d): %v", req.ID, err)
-		}
-	}
-
 	// 刷新缓存并返回最新数据
 	if err := channelRefreshCacheByID(req.ID, ctx); err != nil {
 		return nil, err
@@ -541,48 +522,6 @@ func normalizeHeadersForCompare(values []model.CustomHeader) []model.CustomHeade
 	return normalized
 }
 
-func channelDeletedModelNames(oldChannel model.Channel, req *model.ChannelUpdateRequest) []string {
-	if req == nil || (req.Model == nil && req.CustomModel == nil && req.SelectedModels == nil && req.ModelMapping == nil) {
-		return nil
-	}
-
-	// Reconcile the FULL set of routable pool names a channel registers — its selected
-	// models PLUS every model_mapping alias KEY — so removing a mapping alias (or the
-	// selected model it mapped from) evicts the now-stale pool item. This mirrors
-	// helper.ChannelEnsureModelGroups, which registers both; without the mapping side a
-	// removed alias would linger as a pool member that still routes to this channel yet
-	// no longer gets rewritten to the upstream name (a stale route). Also react to a
-	// mapping-only update (req.ModelMapping != nil) which the old guard ignored.
-	oldModels := channelRoutablePoolNames(model.ChannelSelectedModelNames(oldChannel), oldChannel.ModelMapping)
-
-	newSelected := channelSelectionAfterLegacyUpdate(oldChannel, req)
-	if req.SelectedModels != nil {
-		newSelected = model.NormalizeChannelModelNames(*req.SelectedModels)
-	}
-	newMapping := oldChannel.ModelMapping
-	if req.ModelMapping != nil {
-		newMapping = *req.ModelMapping
-	}
-	newModels := channelRoutablePoolNames(newSelected, newMapping)
-
-	deletedModels, _ := diff.Diff(oldModels, newModels)
-	return deletedModels
-}
-
-// channelRoutablePoolNames returns the pool names a channel registers: its selected
-// models plus every model_mapping alias KEY (cleaned + case-insensitively deduped),
-// matching helper.ChannelEnsureModelGroups so the add and remove sides stay symmetric.
-func channelRoutablePoolNames(selected []string, mapping map[string]string) []string {
-	names := make([]string, 0, len(selected)+len(mapping))
-	names = append(names, selected...)
-	for clientName := range mapping {
-		if clean := model.CleanOneMillionCapabilityModelName(clientName); clean != "" {
-			names = append(names, clean)
-		}
-	}
-	return model.NormalizeChannelModelNames(names)
-}
-
 func ChannelEnabled(id int, enabled bool, ctx context.Context) error {
 	oldChannel, ok := channelCache.Get(id)
 	if !ok {
@@ -609,25 +548,6 @@ func ChannelDel(id int, ctx context.Context) error {
 			tx.Rollback()
 		}
 	}()
-
-	// 获取所有受影响的 GroupID，用于刷新缓存
-	var affectedGroupIDs []int
-	if err := tx.Model(&model.GroupItem{}).
-		Where("channel_id = ?", id).
-		Pluck("group_id", &affectedGroupIDs).Error; err != nil {
-		tx.Rollback()
-		return fmt.Errorf("failed to get affected groups: %w", err)
-	}
-
-	// 删除所有引用该渠道的 GroupItem
-	if err := tx.Where("channel_id = ?", id).Delete(&model.GroupItem{}).Error; err != nil {
-		tx.Rollback()
-		return fmt.Errorf("failed to delete group items: %w", err)
-	}
-	if err := deleteEmptyAutoCreatedGroups(tx, affectedGroupIDs, ctx); err != nil {
-		tx.Rollback()
-		return fmt.Errorf("failed to delete empty auto-created groups: %w", err)
-	}
 
 	// 删除渠道 keys
 	if err := tx.Where("channel_id = ?", id).Delete(&model.ChannelKey{}).Error; err != nil {
@@ -659,12 +579,6 @@ func ChannelDel(id int, ctx context.Context) error {
 		}
 	}
 	StatsChannelDel(id)
-
-	if len(affectedGroupIDs) > 0 {
-		if err := groupRefreshCache(ctx); err != nil {
-			log.Warnf("failed to refresh group cache after channel delete: %v", err)
-		}
-	}
 
 	return nil
 }

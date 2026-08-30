@@ -124,6 +124,7 @@ export interface LogListParams {
     api_key_id?: number;
     endpoint?: string;
     severity?: string;
+    search?: string;
     retried?: boolean;
     hide_model_test?: boolean;
 }
@@ -167,7 +168,7 @@ function logMatchesTimeRange(log: RelayLog, startTime?: number, endTime?: number
 
 function logMatchesLiveFilters(
     log: RelayLog,
-    options: { endpoint?: string; severity?: string; retried?: boolean; hideModelTest?: boolean }
+    options: { endpoint?: string; severity?: string; search?: string; retried?: boolean; hideModelTest?: boolean }
 ) {
     if (options.endpoint) {
         const stored = log.request_endpoint?.trim() ?? '';
@@ -182,6 +183,18 @@ function logMatchesLiveFilters(
     }
     if (options.hideModelTest && (log.request_endpoint?.trim() ?? '').startsWith('model_test')) {
         return false;
+    }
+    if (options.search) {
+        const q = options.search.trim().toLowerCase();
+        if (q) {
+            const userName = (log.user_name ?? '').toLowerCase();
+            const apiKeyName = (log.request_api_key_name ?? '').toLowerCase();
+            const error = (log.error ?? '').toLowerCase();
+            const errorCode = (log.error_code ?? '').toLowerCase();
+            if (!userName.includes(q) && !apiKeyName.includes(q) && !error.includes(q) && !errorCode.includes(q)) {
+                return false;
+            }
+        }
     }
     return true;
 }
@@ -276,8 +289,9 @@ const logsInfiniteQueryKey = (
     page?: number,
     severity?: string,
     retried?: boolean,
-    hideModelTest?: boolean
-) => ['logs', 'infinite', pageSize, userID ?? 0, apiKeyID ?? 0, endpoint ?? '', startTime ?? 0, endTime ?? 0, page ?? -1, severity ?? '', retried ? 1 : 0, hideModelTest ? 1 : 0] as const;
+    hideModelTest?: boolean,
+    search?: string
+) => ['logs', 'infinite', pageSize, userID ?? 0, apiKeyID ?? 0, endpoint ?? '', startTime ?? 0, endTime ?? 0, page ?? -1, severity ?? '', retried ? 1 : 0, hideModelTest ? 1 : 0, search ?? ''] as const;
 
 const logCountQueryKey = (
     userID?: number,
@@ -286,8 +300,9 @@ const logCountQueryKey = (
     startTime?: number,
     endTime?: number,
     retried?: boolean,
-    hideModelTest?: boolean
-) => ['logs', 'count', userID ?? 0, apiKeyID ?? 0, endpoint ?? '', startTime ?? 0, endTime ?? 0, retried ? 1 : 0, hideModelTest ? 1 : 0] as const;
+    hideModelTest?: boolean,
+    search?: string
+) => ['logs', 'count', userID ?? 0, apiKeyID ?? 0, endpoint ?? '', startTime ?? 0, endTime ?? 0, retried ? 1 : 0, hideModelTest ? 1 : 0, search ?? ''] as const;
 const LOG_STREAM_RECONNECT_BASE_MS = 1000;
 const LOG_STREAM_RECONNECT_MAX_MS = 15000;
 
@@ -304,11 +319,12 @@ export function useLogSeverityCounts(options: {
     endTime?: number;
     retried?: boolean;
     hideModelTest?: boolean;
+    search?: string;
     enabled?: boolean;
 } = {}) {
-    const { userID, apiKeyID, endpoint, startTime, endTime, retried, hideModelTest, enabled = true } = options;
+    const { userID, apiKeyID, endpoint, startTime, endTime, retried, hideModelTest, search, enabled = true } = options;
     return useQuery({
-        queryKey: logCountQueryKey(userID, apiKeyID, endpoint, startTime, endTime, retried, hideModelTest),
+        queryKey: logCountQueryKey(userID, apiKeyID, endpoint, startTime, endTime, retried, hideModelTest, search),
         queryFn: async () => {
             const params = new URLSearchParams();
             appendOptionalParam(params, 'user_id', userID);
@@ -316,6 +332,7 @@ export function useLogSeverityCounts(options: {
             appendOptionalParam(params, 'endpoint', endpoint);
             appendOptionalParam(params, 'start_time', startTime);
             appendOptionalParam(params, 'end_time', endTime);
+            appendOptionalParam(params, 'search', search);
             if (retried) params.set('retried', '1');
             if (hideModelTest) params.set('hide_model_test', '1');
             return apiClient.get<RelayLogSeverityCounts>(`/api/v1/log/count?${params.toString()}`);
@@ -343,8 +360,8 @@ export function useLogSeverityCounts(options: {
  * // 滚动到底部时加载更多
  * if (hasMore && !isLoadingMore) loadMore();
  */
-export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?: number; endpoint?: string; startTime?: number; endTime?: number; live?: boolean; page?: number; severity?: string; retried?: boolean; hideModelTest?: boolean } = {}) {
-    const { pageSize = 20, userID, apiKeyID, endpoint, startTime, endTime, live = false, page, severity, retried, hideModelTest } = options;
+export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?: number; endpoint?: string; startTime?: number; endTime?: number; live?: boolean; page?: number; severity?: string; search?: string; retried?: boolean; hideModelTest?: boolean } = {}) {
+    const { pageSize = 20, userID, apiKeyID, endpoint, startTime, endTime, live = false, page, severity, search, retried, hideModelTest } = options;
 
     const [isConnected, setIsConnected] = useState(false);
     const [error, setError] = useState<Error | null>(null);
@@ -355,8 +372,8 @@ export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?
 
     const queryClient = useQueryClient();
     const queryKey = useMemo(
-        () => logsInfiniteQueryKey(pageSize, userID, apiKeyID, endpoint, startTime, endTime, page, severity, retried, hideModelTest),
-        [apiKeyID, endpoint, endTime, hideModelTest, page, pageSize, retried, severity, startTime, userID]
+        () => logsInfiniteQueryKey(pageSize, userID, apiKeyID, endpoint, startTime, endTime, page, severity, retried, hideModelTest, search),
+        [apiKeyID, endpoint, endTime, hideModelTest, page, pageSize, retried, search, severity, startTime, userID]
     );
 
     const logsQuery = useInfiniteQuery({
@@ -372,6 +389,7 @@ export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?
             appendOptionalParam(params, 'start_time', startTime);
             appendOptionalParam(params, 'end_time', endTime);
             appendOptionalParam(params, 'severity', severity);
+            appendOptionalParam(params, 'search', search);
             if (retried) params.set('retried', '1');
             if (hideModelTest) params.set('hide_model_test', '1');
             const result = await apiClient.get<RelayLog[] | null>(`/api/v1/log/list?${params.toString()}`);
@@ -486,6 +504,7 @@ export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?
                 appendOptionalParam(params, 'start_time', startTime);
                 appendOptionalParam(params, 'end_time', endTime);
                 appendOptionalParam(params, 'severity', severity);
+                appendOptionalParam(params, 'search', search);
                 if (retried) params.set('retried', '1');
                 if (hideModelTest) params.set('hide_model_test', '1');
                 const suffix = params.toString() ? `?${params.toString()}` : '';
@@ -517,7 +536,7 @@ export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?
                         if (page !== undefined && page !== 1) return;
                         const log: RelayLog = JSON.parse(event.data);
                         if (!logMatchesTimeRange(log, startTime, endTime)) return;
-                        if (!logMatchesLiveFilters(log, { endpoint, severity, retried, hideModelTest })) return;
+                        if (!logMatchesLiveFilters(log, { endpoint, severity, search, retried, hideModelTest })) return;
                         queryClient.setQueryData(
                             queryKey,
                             (old: InfiniteData<RelayLog[], number> | undefined) => {

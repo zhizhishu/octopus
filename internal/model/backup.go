@@ -13,8 +13,6 @@ type DBDump struct {
 	Users       []User       `json:"users,omitempty"`
 	Channels    []Channel    `json:"channels,omitempty"`
 	ChannelKeys []ChannelKey `json:"channel_keys,omitempty"`
-	Groups      []Group      `json:"groups,omitempty"`
-	GroupItems  []GroupItem  `json:"group_items,omitempty"`
 	LLMInfos    []LLMInfo    `json:"llm_infos,omitempty"`
 	APIKeys     []APIKey     `json:"api_keys,omitempty"`
 	RedeemCodes []RedeemCode `json:"redeem_codes,omitempty"`

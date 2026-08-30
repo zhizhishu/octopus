@@ -48,9 +48,9 @@ func TestModelRouteDispatch(t *testing.T) {
 	}
 }
 
-// TestGetModelReturnsObjectForSupportedModel seeds an enabled channel + group so
-// the API key's allowed model set contains "gpt-test", then verifies the single
-// model endpoint returns the OpenAI-format object for that id.
+// TestGetModelReturnsObjectForSupportedModel seeds an enabled channel selecting
+// "gpt-test" so the API key's allowed model set contains it, then verifies the
+// single model endpoint returns the OpenAI-format object for that id.
 func TestGetModelReturnsObjectForSupportedModel(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx := setupModelGetDB(t)
@@ -158,19 +158,9 @@ func TestModelListShowsModelsAcrossChannelTypes(t *testing.T) {
 	user := createModelGetUser(t, ctx)
 	apiKey := createModelGetAPIKey(t, ctx, user)
 
-	channel := model.Channel{Name: "anthropic-ch", Enabled: true, Type: outbound.OutboundTypeAnthropic}
+	channel := model.Channel{Name: "anthropic-ch", Enabled: true, Type: outbound.OutboundTypeAnthropic, Model: "claude-opus-4-8"}
 	if err := op.ChannelCreate(&channel, ctx); err != nil {
 		t.Fatalf("create channel: %v", err)
-	}
-	group := model.Group{
-		Name: "claude-opus-4-8",
-		Mode: model.GroupModeFailover,
-		Items: []model.GroupItem{
-			{ChannelID: channel.ID, ModelName: "claude-opus-4-8"},
-		},
-	}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
 	}
 
 	listIDs := func(requestType string) []string {
@@ -253,25 +243,16 @@ func createModelGetAPIKey(t *testing.T, ctx context.Context, user model.User) mo
 }
 
 // seedModel makes modelName appear in the API key's allowed model set by
-// creating an enabled channel and a group (named after the model) with one item
-// referencing that channel. This mirrors how GET /v1/models derives its list.
+// creating an enabled channel that selects that model. This mirrors how
+// GET /v1/models derives its list.
 func seedModel(t *testing.T, ctx context.Context, modelName string) {
 	t.Helper()
 	channel := model.Channel{
 		Name:    "test-channel",
 		Enabled: true,
+		Model:   modelName,
 	}
 	if err := op.ChannelCreate(&channel, ctx); err != nil {
 		t.Fatalf("create channel: %v", err)
-	}
-	group := model.Group{
-		Name: modelName,
-		Mode: model.GroupModeFailover,
-		Items: []model.GroupItem{
-			{ChannelID: channel.ID, ModelName: modelName},
-		},
-	}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
 	}
 }

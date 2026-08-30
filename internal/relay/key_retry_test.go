@@ -61,6 +61,11 @@ func TestHandlerRetriesNextChannelKeyAfter429(t *testing.T) {
 		Name:    "multi-key-429",
 		Type:    outbound.OutboundTypeOpenAIChat,
 		Enabled: true,
+		Model:   "upstream-model",
+		ModelMapping: map[string]string{
+			"request-model": "upstream-model",
+		},
+		Priority: 1,
 		BaseUrls: []dbmodel.BaseUrl{{
 			URL: upstream.URL,
 		}},
@@ -71,22 +76,6 @@ func TestHandlerRetriesNextChannelKeyAfter429(t *testing.T) {
 	}
 	if err := op.ChannelCreate(&channel, ctx); err != nil {
 		t.Fatalf("create channel: %v", err)
-	}
-	group := dbmodel.Group{
-		Name: "request-model",
-		Mode: dbmodel.GroupModeRoundRobin,
-	}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	if err := op.GroupItemAdd(&dbmodel.GroupItem{
-		GroupID:   group.ID,
-		ChannelID: channel.ID,
-		ModelName: "upstream-model",
-		Priority:  1,
-		Weight:    1,
-	}, ctx); err != nil {
-		t.Fatalf("create group item: %v", err)
 	}
 
 	rec := httptest.NewRecorder()
@@ -164,9 +153,11 @@ func TestHandlerRetriesNextChannelAfterResponsesPreludeOnlyStream(t *testing.T) 
 	t.Cleanup(second.Close)
 
 	firstChannel := dbmodel.Channel{
-		Name:    "prelude-only",
-		Type:    outbound.OutboundTypeOpenAIResponse,
-		Enabled: true,
+		Name:     "prelude-only",
+		Type:     outbound.OutboundTypeOpenAIResponse,
+		Enabled:  true,
+		Model:    "gpt-5.5",
+		Priority: 1,
 		BaseUrls: []dbmodel.BaseUrl{{
 			URL: first.URL,
 		}},
@@ -176,9 +167,11 @@ func TestHandlerRetriesNextChannelAfterResponsesPreludeOnlyStream(t *testing.T) 
 		t.Fatalf("create first channel: %v", err)
 	}
 	secondChannel := dbmodel.Channel{
-		Name:    "responses-ok",
-		Type:    outbound.OutboundTypeOpenAIResponse,
-		Enabled: true,
+		Name:     "responses-ok",
+		Type:     outbound.OutboundTypeOpenAIResponse,
+		Enabled:  true,
+		Model:    "gpt-5.5",
+		Priority: 2,
 		BaseUrls: []dbmodel.BaseUrl{{
 			URL: second.URL,
 		}},
@@ -186,18 +179,6 @@ func TestHandlerRetriesNextChannelAfterResponsesPreludeOnlyStream(t *testing.T) 
 	}
 	if err := op.ChannelCreate(&secondChannel, ctx); err != nil {
 		t.Fatalf("create second channel: %v", err)
-	}
-	group := dbmodel.Group{Name: "gpt-5.5", Mode: dbmodel.GroupModeFailover}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	for _, item := range []dbmodel.GroupItem{
-		{GroupID: group.ID, ChannelID: firstChannel.ID, ModelName: "gpt-5.5", Priority: 1, Weight: 1},
-		{GroupID: group.ID, ChannelID: secondChannel.ID, ModelName: "gpt-5.5", Priority: 2, Weight: 1},
-	} {
-		if err := op.GroupItemAdd(&item, ctx); err != nil {
-			t.Fatalf("create group item: %v", err)
-		}
 	}
 
 	rec := httptest.NewRecorder()
@@ -287,6 +268,11 @@ data: {"type":"message_stop"}
 		Name:     "message-start-then-dead",
 		Type:     outbound.OutboundTypeAnthropic,
 		Enabled:  true,
+		Model:    "claude-up",
+		ModelMapping: map[string]string{
+			"claude-req": "claude-up",
+		},
+		Priority: 1,
 		BaseUrls: []dbmodel.BaseUrl{{URL: dead.URL}},
 		Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "dead-key"}},
 	}
@@ -297,23 +283,16 @@ data: {"type":"message_stop"}
 		Name:     "anthropic-healthy",
 		Type:     outbound.OutboundTypeAnthropic,
 		Enabled:  true,
+		Model:    "claude-up",
+		ModelMapping: map[string]string{
+			"claude-req": "claude-up",
+		},
+		Priority: 2,
 		BaseUrls: []dbmodel.BaseUrl{{URL: healthy.URL}},
 		Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "healthy-key"}},
 	}
 	if err := op.ChannelCreate(&healthyChannel, ctx); err != nil {
 		t.Fatalf("create healthy channel: %v", err)
-	}
-	group := dbmodel.Group{Name: "claude-req", Mode: dbmodel.GroupModeFailover}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	for _, item := range []dbmodel.GroupItem{
-		{GroupID: group.ID, ChannelID: deadChannel.ID, ModelName: "claude-up", Priority: 1, Weight: 1},
-		{GroupID: group.ID, ChannelID: healthyChannel.ID, ModelName: "claude-up", Priority: 2, Weight: 1},
-	} {
-		if err := op.GroupItemAdd(&item, ctx); err != nil {
-			t.Fatalf("create group item: %v", err)
-		}
 	}
 
 	rec := httptest.NewRecorder()

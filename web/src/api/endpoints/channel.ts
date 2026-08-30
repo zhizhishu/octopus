@@ -29,16 +29,6 @@ export enum KeySelectStrategy {
     Sticky = 1,       // 同 key 优先
 }
 
-/**
- * 自动分组类型枚举
- */
-export enum AutoGroupType {
-    None = 0,   // 不自动分组
-    Fuzzy = 1,  // 模糊匹配
-    Exact = 2,  // 准确匹配
-    Regex = 3,  // 正则匹配
-}
-
 export type BaseUrl = {
     url: string;
     delay: number;
@@ -89,7 +79,6 @@ export type Channel = {
     thinking_to_content: boolean;
     proxy: boolean;
     auto_sync: boolean;
-    auto_group: AutoGroupType;
     custom_header: CustomHeader[];
     cloak: ChannelCloak;
     param_override?: string | null;
@@ -138,7 +127,6 @@ export type CreateChannelRequest = {
     thinking_to_content?: boolean;
     proxy?: boolean;
     auto_sync?: boolean;
-    auto_group?: AutoGroupType;
     custom_header?: CustomHeader[];
     cloak?: ChannelCloak;
     channel_proxy?: string | null;
@@ -173,7 +161,6 @@ export type UpdateChannelRequest = {
     thinking_to_content?: boolean;
     proxy?: boolean;
     auto_sync?: boolean;
-    auto_group?: AutoGroupType;
     custom_header?: CustomHeader[];
     cloak?: ChannelCloak;
     channel_proxy?: string | null;
@@ -217,7 +204,6 @@ export type ChannelTestConfig = {
     anthropic_context_1m?: boolean;
     proxy?: boolean;
     auto_sync?: boolean;
-    auto_group?: AutoGroupType;
     custom_header?: CustomHeader[];
     cloak?: ChannelCloak;
     channel_proxy?: string | null;
@@ -409,7 +395,6 @@ export function useCopyChannel() {
                 thinking_to_content: source.thinking_to_content,
                 proxy: source.proxy,
                 auto_sync: source.auto_sync,
-                auto_group: source.auto_group,
                 custom_header: (source.custom_header ?? []).map((h) => ({ ...h })),
                 cloak: source.cloak ? { ...source.cloak } : undefined,
                 channel_proxy: source.channel_proxy,

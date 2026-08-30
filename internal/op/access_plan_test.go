@@ -25,9 +25,6 @@ func setupAccessPlanTest(t *testing.T) context.Context {
 	if err := channelRefreshCache(ctx); err != nil {
 		t.Fatalf("refresh channel cache: %v", err)
 	}
-	if err := groupRefreshCache(ctx); err != nil {
-		t.Fatalf("refresh group cache: %v", err)
-	}
 	if err := accessPlanRefreshCache(ctx); err != nil {
 		t.Fatalf("refresh access plan cache: %v", err)
 	}
@@ -1012,4 +1009,13 @@ func TestAccessPlanUpdatePreservesProfilesAndAllowsDefaultSlugRename(t *testing.
 	if len(renamed.RouteTargets) != 1 || renamed.RouteTargets[0].RequestModel != "request-before-rename" {
 		t.Fatalf("route targets were not preserved: %#v", renamed.RouteTargets)
 	}
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }

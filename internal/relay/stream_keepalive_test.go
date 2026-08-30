@@ -59,6 +59,11 @@ data: {"type":"message_stop"}
 		Name:    "anthropic-ping-upstream",
 		Type:    outbound.OutboundTypeAnthropic,
 		Enabled: true,
+		Model:   "claude-upstream",
+		ModelMapping: map[string]string{
+			"claude-request": "claude-upstream",
+		},
+		Priority: 1,
 		BaseUrls: []dbmodel.BaseUrl{{
 			URL: upstream.URL,
 		}},
@@ -66,19 +71,6 @@ data: {"type":"message_stop"}
 	}
 	if err := op.ChannelCreate(&channel, ctx); err != nil {
 		t.Fatalf("create channel: %v", err)
-	}
-	group := dbmodel.Group{Name: "claude-request", Mode: dbmodel.GroupModeFailover}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	if err := op.GroupItemAdd(&dbmodel.GroupItem{
-		GroupID:   group.ID,
-		ChannelID: channel.ID,
-		ModelName: "claude-upstream",
-		Priority:  1,
-		Weight:    1,
-	}, ctx); err != nil {
-		t.Fatalf("create group item: %v", err)
 	}
 
 	rec := httptest.NewRecorder()
@@ -152,6 +144,11 @@ data: {"type":"message_stop"}
 		Name:    "anthropic-terminal-ping-upstream",
 		Type:    outbound.OutboundTypeAnthropic,
 		Enabled: true,
+		Model:   "claude-upstream",
+		ModelMapping: map[string]string{
+			"claude-terminal-ping-request": "claude-upstream",
+		},
+		Priority: 1,
 		BaseUrls: []dbmodel.BaseUrl{{
 			URL: upstream.URL,
 		}},
@@ -159,19 +156,6 @@ data: {"type":"message_stop"}
 	}
 	if err := op.ChannelCreate(&channel, ctx); err != nil {
 		t.Fatalf("create channel: %v", err)
-	}
-	group := dbmodel.Group{Name: "claude-terminal-ping-request", Mode: dbmodel.GroupModeFailover}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	if err := op.GroupItemAdd(&dbmodel.GroupItem{
-		GroupID:   group.ID,
-		ChannelID: channel.ID,
-		ModelName: "claude-upstream",
-		Priority:  1,
-		Weight:    1,
-	}, ctx); err != nil {
-		t.Fatalf("create group item: %v", err)
 	}
 
 	rec := httptest.NewRecorder()
@@ -251,6 +235,11 @@ func TestAnthropicStreamFallsBackToNonStreamUpstream(t *testing.T) {
 		Name:    "anthropic-stream-fallback-upstream",
 		Type:    outbound.OutboundTypeAnthropic,
 		Enabled: true,
+		Model:   "claude-upstream",
+		ModelMapping: map[string]string{
+			"claude-fallback-request": "claude-upstream",
+		},
+		Priority: 1,
 		BaseUrls: []dbmodel.BaseUrl{{
 			URL: upstream.URL,
 		}},
@@ -258,19 +247,6 @@ func TestAnthropicStreamFallsBackToNonStreamUpstream(t *testing.T) {
 	}
 	if err := op.ChannelCreate(&channel, ctx); err != nil {
 		t.Fatalf("create channel: %v", err)
-	}
-	group := dbmodel.Group{Name: "claude-fallback-request", Mode: dbmodel.GroupModeFailover}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	if err := op.GroupItemAdd(&dbmodel.GroupItem{
-		GroupID:   group.ID,
-		ChannelID: channel.ID,
-		ModelName: "claude-upstream",
-		Priority:  1,
-		Weight:    1,
-	}, ctx); err != nil {
-		t.Fatalf("create group item: %v", err)
 	}
 
 	rec := httptest.NewRecorder()
@@ -323,6 +299,11 @@ data: {"type":"error","error":{"type":"overloaded_error","message":"busy"}}
 		Name:    "Claude-Error-Stream",
 		Type:    outbound.OutboundTypeAnthropic,
 		Enabled: true,
+		Model:   "claude-opus-4-8",
+		ModelMapping: map[string]string{
+			"claude-error": "claude-opus-4-8",
+		},
+		Priority: 1,
 		BaseUrls: []dbmodel.BaseUrl{{
 			URL: upstream.URL,
 		}},
@@ -330,19 +311,6 @@ data: {"type":"error","error":{"type":"overloaded_error","message":"busy"}}
 	}
 	if err := op.ChannelCreate(&channel, ctx); err != nil {
 		t.Fatalf("create channel: %v", err)
-	}
-	group := dbmodel.Group{Name: "claude-error", Mode: dbmodel.GroupModeFailover}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	if err := op.GroupItemAdd(&dbmodel.GroupItem{
-		GroupID:   group.ID,
-		ChannelID: channel.ID,
-		ModelName: "claude-opus-4-8",
-		Priority:  1,
-		Weight:    1,
-	}, ctx); err != nil {
-		t.Fatalf("create group item: %v", err)
 	}
 
 	rec := httptest.NewRecorder()
@@ -392,6 +360,11 @@ data: {"type":"error","error":{"type":"overloaded_error","message":"busy after p
 		Name:    "Claude-Error-After-Content",
 		Type:    outbound.OutboundTypeAnthropic,
 		Enabled: true,
+		Model:   "claude-opus-4-8",
+		ModelMapping: map[string]string{
+			"claude-error-after-content": "claude-opus-4-8",
+		},
+		Priority: 1,
 		BaseUrls: []dbmodel.BaseUrl{{
 			URL: upstream.URL,
 		}},
@@ -399,19 +372,6 @@ data: {"type":"error","error":{"type":"overloaded_error","message":"busy after p
 	}
 	if err := op.ChannelCreate(&channel, ctx); err != nil {
 		t.Fatalf("create channel: %v", err)
-	}
-	group := dbmodel.Group{Name: "claude-error-after-content", Mode: dbmodel.GroupModeFailover}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	if err := op.GroupItemAdd(&dbmodel.GroupItem{
-		GroupID:   group.ID,
-		ChannelID: channel.ID,
-		ModelName: "claude-opus-4-8",
-		Priority:  1,
-		Weight:    1,
-	}, ctx); err != nil {
-		t.Fatalf("create group item: %v", err)
 	}
 
 	rec := httptest.NewRecorder()
@@ -489,6 +449,7 @@ data: {"type":"message_stop"}
 		Name:    "Claude-CPA",
 		Type:    outbound.OutboundTypeAnthropic,
 		Enabled: true,
+		Model:   "claude-opus-4-7[1m]",
 		BaseUrls: []dbmodel.BaseUrl{{
 			URL: upstream.URL,
 		}},
@@ -496,19 +457,6 @@ data: {"type":"message_stop"}
 	}
 	if err := op.ChannelCreate(&channel, ctx); err != nil {
 		t.Fatalf("create channel: %v", err)
-	}
-	group := dbmodel.Group{Name: "claude-opus-4-7[1m]", Mode: dbmodel.GroupModeFailover}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	if err := op.GroupItemAdd(&dbmodel.GroupItem{
-		GroupID:   group.ID,
-		ChannelID: channel.ID,
-		ModelName: "claude-opus-4-7[1m]",
-		Priority:  1,
-		Weight:    1,
-	}, ctx); err != nil {
-		t.Fatalf("create group item: %v", err)
 	}
 
 	rec := httptest.NewRecorder()
@@ -620,6 +568,7 @@ data: {"type":"message_stop"}
 		Name:    "the relay Claude 1M",
 		Type:    outbound.OutboundTypeAnthropic,
 		Enabled: true,
+		Model:   "claude-opus-4-8[1m]",
 		BaseUrls: []dbmodel.BaseUrl{{
 			URL: upstream.URL,
 		}},
@@ -627,19 +576,6 @@ data: {"type":"message_stop"}
 	}
 	if err := op.ChannelCreate(&channel, ctx); err != nil {
 		t.Fatalf("create channel: %v", err)
-	}
-	group := dbmodel.Group{Name: "claude-opus-4-8[1m]", Mode: dbmodel.GroupModeFailover}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	if err := op.GroupItemAdd(&dbmodel.GroupItem{
-		GroupID:   group.ID,
-		ChannelID: channel.ID,
-		ModelName: "claude-opus-4-8[1m]",
-		Priority:  1,
-		Weight:    1,
-	}, ctx); err != nil {
-		t.Fatalf("create group item: %v", err)
 	}
 
 	rec := httptest.NewRecorder()
@@ -758,24 +694,12 @@ data: {"type":"message_stop"}
 		Name:     "the relay Claude 1M CloakOn",
 		Type:     outbound.OutboundTypeAnthropic,
 		Enabled:  true,
+		Model:    "claude-opus-4-8[1m]",
 		BaseUrls: []dbmodel.BaseUrl{{URL: upstream.URL}},
 		Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "anthropic-key"}},
 	}
 	if err := op.ChannelCreate(&channel, ctx); err != nil {
 		t.Fatalf("create channel: %v", err)
-	}
-	group := dbmodel.Group{Name: "claude-opus-4-8[1m]", Mode: dbmodel.GroupModeFailover}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	if err := op.GroupItemAdd(&dbmodel.GroupItem{
-		GroupID:   group.ID,
-		ChannelID: channel.ID,
-		ModelName: "claude-opus-4-8[1m]",
-		Priority:  1,
-		Weight:    1,
-	}, ctx); err != nil {
-		t.Fatalf("create group item: %v", err)
 	}
 
 	rec := httptest.NewRecorder()
@@ -903,25 +827,13 @@ data: {"type":"message_stop"}
 		Type:               outbound.OutboundTypeAnthropic,
 		Enabled:            true,
 		AnthropicContext1M: true,
+		Model:              "claude-opus-4-8",
 		BaseUrls:           []dbmodel.BaseUrl{{URL: upstream.URL}},
 		Keys:               []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "anthropic-key"}},
 		SelectedModels:     []string{"claude-opus-4-8"},
 	}
 	if err := op.ChannelCreate(&channel, ctx); err != nil {
 		t.Fatalf("create channel: %v", err)
-	}
-	group := dbmodel.Group{Name: "claude-opus-4-8", Mode: dbmodel.GroupModeFailover}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	if err := op.GroupItemAdd(&dbmodel.GroupItem{
-		GroupID:   group.ID,
-		ChannelID: channel.ID,
-		ModelName: "claude-opus-4-8",
-		Priority:  1,
-		Weight:    1,
-	}, ctx); err != nil {
-		t.Fatalf("create group item: %v", err)
 	}
 
 	rec := httptest.NewRecorder()
@@ -1021,6 +933,7 @@ data: {"type":"message_stop"}
 		Name:    "the relay Claude 4-8",
 		Type:    outbound.OutboundTypeAnthropic,
 		Enabled: true,
+		Model:   "claude-opus-4-8",
 		BaseUrls: []dbmodel.BaseUrl{{
 			URL: upstream.URL,
 		}},
@@ -1028,19 +941,6 @@ data: {"type":"message_stop"}
 	}
 	if err := op.ChannelCreate(&channel, ctx); err != nil {
 		t.Fatalf("create channel: %v", err)
-	}
-	group := dbmodel.Group{Name: "claude-opus-4-8", Mode: dbmodel.GroupModeFailover}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	if err := op.GroupItemAdd(&dbmodel.GroupItem{
-		GroupID:   group.ID,
-		ChannelID: channel.ID,
-		ModelName: "claude-opus-4-8",
-		Priority:  1,
-		Weight:    1,
-	}, ctx); err != nil {
-		t.Fatalf("create group item: %v", err)
 	}
 
 	rec := httptest.NewRecorder()
@@ -1157,6 +1057,11 @@ data: {"type":"message_start","message":{"id":"msg_timeout","type":"message","ro
 		Name:    "silent-anthropic-upstream",
 		Type:    outbound.OutboundTypeAnthropic,
 		Enabled: true,
+		Model:   "claude-upstream",
+		ModelMapping: map[string]string{
+			"claude-timeout-request": "claude-upstream",
+		},
+		Priority: 1,
 		BaseUrls: []dbmodel.BaseUrl{{
 			URL: upstream.URL,
 		}},
@@ -1164,19 +1069,6 @@ data: {"type":"message_start","message":{"id":"msg_timeout","type":"message","ro
 	}
 	if err := op.ChannelCreate(&channel, ctx); err != nil {
 		t.Fatalf("create channel: %v", err)
-	}
-	group := dbmodel.Group{Name: "claude-timeout-request", Mode: dbmodel.GroupModeFailover}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	if err := op.GroupItemAdd(&dbmodel.GroupItem{
-		GroupID:   group.ID,
-		ChannelID: channel.ID,
-		ModelName: "claude-upstream",
-		Priority:  1,
-		Weight:    1,
-	}, ctx); err != nil {
-		t.Fatalf("create group item: %v", err)
 	}
 
 	rec := httptest.NewRecorder()

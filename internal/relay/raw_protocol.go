@@ -174,6 +174,15 @@ runIterator:
 			continue
 		}
 
+		// The fallback group keeps the client-facing alias on the candidate so the chat
+		// path's applyModelMapping can rewrite it; this handler forwards item.ModelName
+		// directly, so rewrite it (and the candidate used by the breaker check) to the
+		// upstream model now.
+		if mapped, ok := channel.ModelMapping[item.ModelName]; ok && mapped != "" {
+			item.ModelName = mapped
+			iter.RemapCurrentModel(mapped)
+		}
+
 		availableKeys := channel.GetAvailableChannelKeys()
 		if len(availableKeys) == 0 {
 			iter.Skip(channel.ID, 0, channel.Name, "no available key")

@@ -179,21 +179,6 @@ export function AppContainer() {
                             );
                             break;
                         }
-                        case 'group': {
-                            prefetches.push(
-                                queryClient.prefetchQuery({
-                                    queryKey: ['groups', 'list'],
-                                    queryFn: async () => apiClient.get('/api/v1/group/list'),
-                                })
-                            );
-                            prefetches.push(
-                                queryClient.prefetchQuery({
-                                    queryKey: ['models', 'channel'],
-                                    queryFn: async () => apiClient.get('/api/v1/model/channel'),
-                                })
-                            );
-                            break;
-                        }
                         case 'access-plan': {
                             prefetches.push(
                                 queryClient.prefetchQuery({

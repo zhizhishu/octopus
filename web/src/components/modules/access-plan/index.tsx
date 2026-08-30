@@ -31,9 +31,8 @@ import {
     useUpdateAccessPlanRouteTargets,
 } from '@/api/endpoints/access-plan';
 import { useChannelList } from '@/api/endpoints/channel';
-import { GroupMode, normalizeGroupMode, useGroupList, type Group } from '@/api/endpoints/group';
 import { useModelChannelList, useModelList } from '@/api/endpoints/model';
-import { MODE_LABELS, normalizeKey } from '@/components/modules/group/utils';
+import { SettingKey, useSetSetting, useSettingList } from '@/api/endpoints/setting';
 import { useAuthStore } from '@/api/endpoints/user';
 import { PageWrapper } from '@/components/common/PageWrapper';
 import { toast } from '@/components/common/Toast';
@@ -240,7 +239,26 @@ function clampRoutePriority(value: number) {
     return Math.min(9, Math.max(0, Math.trunc(value)));
 }
 
-const EMPTY_GROUPS: Group[] = [];
+/**
+ * 分流模式（后端契约）：规则对象上的 mode 是 JSON number，
+ * 1 = spread 轮询（均摊），3 = fill_first 优先填充（默认）。其他/缺省值一律视为 fill_first。
+ */
+function isSpreadMode(mode: number | undefined | null): boolean {
+    return Number(mode) === 1;
+}
+
+/** 把 mode 归一到合法值：1 或 3（默认 3）。 */
+function normalizeRouteMode(mode: number | undefined | null): 1 | 3 {
+    return isSpreadMode(mode) ? 1 : 3;
+}
+
+/** 全局默认分流模式（setting route_mode_override）的可选值。 */
+type RouteModeOverrideChoice = '' | 'spread' | 'fill_first';
+const ROUTE_MODE_OVERRIDE_CHOICES: Array<{ value: RouteModeOverrideChoice; label: string }> = [
+    { value: '', label: '跟随各规则' },
+    { value: 'spread', label: '全局轮询' },
+    { value: 'fill_first', label: '全局优先填充' },
+];
 
 function normalizeSlug(value: string) {
     return value.trim().toLowerCase().replace(/\s+/g, '-');
@@ -517,6 +535,7 @@ function rebuildRouteTargetsFromChannelModels(channelModels: RouteChannelModel[]
                 enabled: previous?.enabled ?? true,
                 billing_model_source: previous?.billing_model_source ?? 'request_model',
                 billing_model_override: previous?.billing_model_override,
+                mode: previous?.mode,
                 fallback_mode: previous?.fallback_mode ?? 'return_group',
                 system_prompt_override: previous?.system_prompt_override ?? '',
                 prompt_override_mode: previous?.prompt_override_mode ?? 'append_system',
@@ -1052,7 +1071,7 @@ type PlanNodeData = { slug: string; name: string; multiplier: number };
 type RequestNodeData = {
     requestModel: string;
     family: ModelFamilyKey;
-    mode?: GroupMode;
+    mode?: number;
     /** Stable edit target; shared callback avoids per-node closures that bust memo on pan/zoom. */
     editTarget: string;
     onEditRequest: (requestModel: string) => void;
@@ -1103,7 +1122,7 @@ const PlanFlowCard = memo(function PlanFlowCard({ data }: NodeProps<PlanFlowNode
 
 const RequestFlowCard = memo(function RequestFlowCard({ data }: NodeProps<RequestFlowNode>) {
     const modeLabel = data.mode !== undefined
-        ? (MODE_LABELS[normalizeGroupMode(data.mode)] === 'spread'
+        ? (isSpreadMode(data.mode)
             ? accessPlanText('routes.modeSpread')
             : accessPlanText('routes.modeFillFirst'))
         : null;
@@ -1313,7 +1332,6 @@ function buildRouteFlow(
     channelNameByID: Map<number, string>,
     onEditRequest: (requestModel: string) => void,
     channelMappings: ChannelModelMapping[] = [],
-    groupModeByName: Map<string, GroupMode> = new Map(),
     onPriorityChange?: (targetId: number, priority: number) => void,
 ): { nodes: FlowNode[]; edges: Edge[] } {
     const nodes: FlowNode[] = [];
@@ -1338,7 +1356,7 @@ function buildRouteFlow(
                 data: {
                     requestModel: cleanOneMillionModelName(row.requestModel),
                     family: modelFamilyKey(row.requestModel),
-                    mode: groupModeByName.get(normalizeKey(row.requestModel)),
+                    mode: row.targets[0]?.mode,
                     // Stable scalar + shared callback: avoid per-row arrow functions so memoized nodes skip re-render on pan/zoom.
                     editTarget: row.requestKey ? row.requestModel : '',
                     onEditRequest,
@@ -1356,8 +1374,7 @@ function buildRouteFlow(
             // 优先级只在「优先填充(Failover)」模式下才是真正的选路顺序；轮询(Spread)模式里它
             // 只是拖拽序号、不参与路由（见 balancer.go Spread 语义：只有 ChannelPriority 是硬边界），
             // 故一律并列显示，别把死数字画成假分档（存量老渠道序号各异 → 画布误显 P1-P4 的根因）。
-            const rowMode = groupModeByName.get(normalizeKey(row.requestModel));
-            const isFillFirstMode = rowMode !== undefined && MODE_LABELS[rowMode] === 'fillFirst';
+            const isFillFirstMode = !isSpreadMode(row.targets[0]?.mode);
             const prioritySet = new Set(row.targets.map((tgt) => tgt.priority || 0));
             const showPriority = isFillFirstMode && prioritySet.size > 1;
             const startY = rowY + (rowH - targetsH) / 2;
@@ -1494,22 +1511,15 @@ type RouteFlowCanvasProps = {
     onMoveUpOne?: (targetId: number) => void;
     onAddUnroutedModel?: (model: UnroutedChannelModel) => void;
     onOpenJson?: () => void;
+    onModeChange?: (rowTargets: AccessPlanRouteTarget[], mode: 1 | 3) => void;
 };
 
 function RouteFlowCanvasInner({
-    plan, rows, channels, channelMappings, modelNames, channelModels, channelModelsReady, unroutedModels, onEditRequest, onPriorityChange, onMoveToTop, onMoveUpOne, onAddUnroutedModel, onOpenJson,
+    plan, rows, channels, channelMappings, modelNames, channelModels, channelModelsReady, unroutedModels, onEditRequest, onPriorityChange, onMoveToTop, onMoveUpOne, onAddUnroutedModel, onOpenJson, onModeChange,
 }: RouteFlowCanvasProps) {
     const t = accessPlanText;
     const channelNameByID = useMemo(() => new Map(channels.map((channel) => [channel.id, channel.name])), [channels]);
     const channelModelIndex = useMemo(() => buildChannelModelIndex(channelModels, channelModelsReady), [channelModels, channelModelsReady]);
-    const { data: groups = EMPTY_GROUPS } = useGroupList();
-    const groupModeByName = useMemo<Map<string, GroupMode>>(() => {
-        const map = new Map<string, GroupMode>();
-        for (const g of groups) {
-            map.set(normalizeKey(g.name), g.mode);
-        }
-        return map;
-    }, [groups]);
 
     const [query, setQuery] = useState('');
     const q = query.trim().toLowerCase();
@@ -1639,8 +1649,8 @@ function RouteFlowCanvasInner({
                 <div className="min-h-0 flex-1 overflow-y-auto p-3 sm:p-4">
                     <div className="space-y-3">
                         {filteredRows.map((row) => {
-                            const rowMode = groupModeByName.get(normalizeKey(row.requestModel));
-                            const isFillFirstMode = rowMode !== undefined && MODE_LABELS[rowMode] === 'fillFirst';
+                            // 规则自身存的 mode：1=轮询/spread，3=优先填充/fill_first；缺省或其它值一律视为优先填充。
+                            const isRowFillFirst = !isSpreadMode(row.targets[0]?.mode);
                             const requestModelDisplayName = marketModelName(row.requestModel) || row.requestModel;
                             const { Avatar: RequestAvatar } = getModelIcon(row.requestModel);
                             const showRawRequestModel = requestModelDisplayName !== row.requestModel;
@@ -1657,8 +1667,20 @@ function RouteFlowCanvasInner({
                                                 )}
                                             </div>
                                             <Badge variant="outline" className="rounded-full text-[11px]">
-                                                {isFillFirstMode ? '优先填充' : '全局轮询'}
+                                                {isRowFillFirst ? '优先填充' : '轮询'}
                                             </Badge>
+                                            {onModeChange && (
+                                                <select
+                                                    value={isRowFillFirst ? 3 : 1}
+                                                    onChange={(event) => onModeChange(row.targets, Number(event.target.value) as 1 | 3)}
+                                                    aria-label={`分流模式：${row.requestModel}`}
+                                                    title="分流模式：轮询=同一请求模型的候选均摊流量；优先填充=先集中打满高优先级候选"
+                                                    className="h-6 shrink-0 rounded-full border border-border/70 bg-background/60 px-2 text-[11px] text-foreground outline-none focus:border-primary/50"
+                                                >
+                                                    <option value={1}>轮询</option>
+                                                    <option value={3}>优先填充</option>
+                                                </select>
+                                            )}
                                         </div>
                                         <Button
                                             type="button"
@@ -1947,6 +1969,20 @@ function RouteTargetEditorCard({
                 <div className="grid min-w-0 gap-2 border-t border-border/60 p-2.5">
                     <div className="grid min-w-0 gap-2 sm:grid-cols-[minmax(150px,1fr)]">
                         <label className="grid min-w-0 gap-1 text-xs text-muted-foreground">
+                            分流模式
+                            <select
+                                value={normalizeRouteMode(target.mode)}
+                                onChange={(event) => updateTarget(index, { mode: Number(event.target.value) as 1 | 3 })}
+                                aria-label="分流模式"
+                                className="h-9 w-full min-w-0 rounded-xl border border-input bg-background px-3 text-sm text-foreground"
+                            >
+                                <option value={1}>轮询（spread / 均摊）</option>
+                                <option value={3}>优先填充（fill_first / 默认）</option>
+                            </select>
+                        </label>
+                    </div>
+                    <div className="grid min-w-0 gap-2 sm:grid-cols-[minmax(150px,1fr)]">
+                        <label className="grid min-w-0 gap-1 text-xs text-muted-foreground">
                             {t('routes.fallback')}
                             <select
                                 value={target.fallback_mode === 'failover' ? 'return_group' : target.fallback_mode ?? 'return_group'}
@@ -2045,6 +2081,7 @@ function RouteTargetsEditor({
                 weight: 1,
                 enabled: true,
                 billing_model_source: 'request_model',
+                mode: 3,
                 fallback_mode: 'return_group',
                 system_prompt_override: '',
                 prompt_override_mode: 'append_system',
@@ -2054,9 +2091,24 @@ function RouteTargetsEditor({
     };
 
     const updateTarget = (index: number, patch: Partial<AccessPlanRouteTarget>) => {
-        setTargets((current) => current.map((target, currentIndex) => (
-            currentIndex === index ? { ...target, ...patch } : target
-        )));
+        setTargets((current) => {
+            const next = current.map((target, currentIndex) => (
+                currentIndex === index ? { ...target, ...patch } : target
+            ));
+            // mode 挂在规则（request_model 级）上：改了某条 target 的分流模式，
+            // 同一请求模型的其他 target 一起同步，避免保存时规则内 mode 打架。
+            if (patch.mode !== undefined) {
+                const requestKey = cleanOneMillionModelName(next[index]?.request_model ?? '').toLowerCase();
+                if (requestKey) {
+                    return next.map((target) => (
+                        cleanOneMillionModelName(target.request_model).toLowerCase() === requestKey
+                            ? { ...target, mode: patch.mode }
+                            : target
+                    ));
+                }
+            }
+            return next;
+        });
     };
 
     const removeTarget = (index: number) => {
@@ -2095,6 +2147,8 @@ function RouteTargetsEditor({
                     enabled: target.enabled,
                     billing_model_source: target.billing_model_source ?? 'request_model',
                     billing_model_override: cleanOneMillionModelName(target.billing_model_override ?? '') || undefined,
+                    // 分流模式跟随每条规则（同 request_model 的所有 target 带同一个值），后端按规则落库。
+                    mode: isSpreadMode(target.mode) ? 1 : 3,
                     fallback_mode: target.fallback_mode ?? 'return_group',
                     system_prompt_override: target.system_prompt_override?.trim() || undefined,
                     prompt_override_mode: target.prompt_override_mode ?? 'append_system',
@@ -2188,6 +2242,7 @@ function RouteTargetsEditor({
                 weight: 1,
                 enabled: true,
                 billing_model_source: 'request_model',
+                mode: 3,
                 fallback_mode: 'return_group',
                 system_prompt_override: '',
                 prompt_override_mode: 'append_system',
@@ -2198,6 +2253,20 @@ function RouteTargetsEditor({
     }, [t]);
 
     const save = (onSuccess?: () => void) => saveTargets(targets, t('toast.routesUpdated'), onSuccess);
+
+    // 画布行内「分流模式」下拉：同一条规则（request_model）的所有 target 一起改，
+    // 后端按 request_model 聚成规则、取该组的 mode 落库（见 op.AccessPlanUpdateRouteTargets）。
+    const updateRowMode = useCallback((rowTargets: AccessPlanRouteTarget[], mode: 1 | 3) => {
+        const keys = new Set(rowTargets.map((target) => target.id).filter((id): id is number => typeof id === 'number'));
+        const current = targetsRef.current;
+        const next = current.map((target) => (
+            (typeof target.id === 'number' && keys.has(target.id)) || rowTargets.includes(target)
+                ? { ...target, mode }
+                : target
+        ));
+        setTargets(next);
+        saveTargetsRef.current(next, t('toast.routesUpdated'), undefined, current);
+    }, [t]);
 
     const rebuild = () => {
         const rebuilt = rebuildRouteTargetsFromChannelModels(channelModels, editableTargets);
@@ -2219,6 +2288,7 @@ function RouteTargetsEditor({
             enabled: target.enabled,
             billing_model_source: target.billing_model_source ?? 'request_model',
             billing_model_override: cleanOneMillionModelName(target.billing_model_override ?? ''),
+            mode: isSpreadMode(target.mode) ? 1 : 3,
             fallback_mode: target.fallback_mode ?? 'return_group',
             prompt_override_mode: target.prompt_override_mode ?? 'append_system',
             system_prompt_override: target.system_prompt_override ?? '',
@@ -2249,6 +2319,7 @@ function RouteTargetsEditor({
                 enabled: target.enabled ?? true,
                 billing_model_source: target.billing_model_source ?? 'request_model',
                 billing_model_override: cleanOneMillionModelName(target.billing_model_override ?? '') || undefined,
+                mode: Number(target.mode) === 1 ? 1 : 3,
                 fallback_mode: target.fallback_mode ?? 'return_group',
                 system_prompt_override: target.system_prompt_override?.trim() || undefined,
                 prompt_override_mode: target.prompt_override_mode ?? 'append_system',
@@ -2316,6 +2387,7 @@ function RouteTargetsEditor({
                 onMoveUpOne={moveCanvasTargetUpOne}
                 onAddUnroutedModel={addUnroutedModel}
                 onOpenJson={openJson}
+                onModeChange={updateRowMode}
             />
 
             <details ref={advancedRef} className="shrink-0 rounded-2xl border border-border/70 bg-card/70">
@@ -2419,6 +2491,60 @@ function RouteTargetsEditor({
                 {modelNames.map((model) => <option key={model} value={model} />)}
             </datalist>
         </div>
+    );
+}
+
+/**
+ * 「全局默认模式」下拉：读写通用 setting route_mode_override。
+ * '' = 跟随各规则（无全局覆盖）；'spread' = 全局轮询；'fill_first' = 全局优先填充。
+ * 走现有 setting 的 GET（/setting/list）与写接口（/setting/set）。
+ */
+function GlobalRouteModeSelect({ className }: { className?: string }) {
+    const { data: settings } = useSettingList();
+    const setSetting = useSetSetting();
+    const [value, setValue] = useState<RouteModeOverrideChoice>('');
+    const savedRef = useRef<RouteModeOverrideChoice>('');
+
+    useEffect(() => {
+        if (!settings) return;
+        const found = settings.find((setting) => setting.key === SettingKey.RouteModeOverride);
+        const raw = (found?.value ?? '') as RouteModeOverrideChoice;
+        const next = ROUTE_MODE_OVERRIDE_CHOICES.some((choice) => choice.value === raw) ? raw : '';
+        setValue(next);
+        savedRef.current = next;
+    }, [settings]);
+
+    return (
+        <label className={cn('flex min-w-0 items-center gap-2 text-xs text-muted-foreground', className)}>
+            <span className="shrink-0 whitespace-nowrap">全局默认模式</span>
+            <select
+                value={value}
+                onChange={(event) => {
+                    const next = event.target.value as RouteModeOverrideChoice;
+                    setValue(next);
+                    setSetting.mutate(
+                        { key: SettingKey.RouteModeOverride, value: next },
+                        {
+                            onSuccess: () => {
+                                savedRef.current = next;
+                                toast.success('全局默认模式已保存');
+                            },
+                            onError: (error) => {
+                                setValue(savedRef.current);
+                                toast.error('全局默认模式保存失败', { description: apiErrorMessage(error) });
+                            },
+                        },
+                    );
+                }}
+                aria-label="全局默认模式"
+                title="全局默认分流模式：跟随各规则=不覆盖；全局轮询/全局优先填充=强制覆盖所有未锁定的分流规则"
+                className="h-8 min-w-0 rounded-full border border-border/70 bg-background/60 px-2.5 text-xs text-foreground outline-none focus:border-primary/50"
+            >
+                {ROUTE_MODE_OVERRIDE_CHOICES.map((choice) => (
+                    <option key={choice.value} value={choice.value}>{choice.label}</option>
+                ))}
+            </select>
+        </label>
     );
 }
 
@@ -2542,6 +2668,7 @@ export function AccessPlan() {
                         </div>
 
                         <div className="flex min-w-0 flex-wrap items-center gap-2 lg:justify-end">
+                            <GlobalRouteModeSelect />
                             <CreatePlanPanel plans={orderedPlans} onCreated={setSelectedId} />
                             {selectedPlan ? (
                                 <PlanSettingsDialog

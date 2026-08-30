@@ -113,6 +113,10 @@ func VideosHandler(c *gin.Context) {
 			iter.Skip(channel.ID, 0, channel.Name, fmt.Sprintf("unsupported channel type for video: %d", channel.Type))
 			continue
 		}
+		if mapped, ok := channel.ModelMapping[item.ModelName]; ok && mapped != "" {
+			item.ModelName = mapped
+			iter.RemapCurrentModel(mapped)
+		}
 		availableKeys := channel.GetAvailableChannelKeys()
 		if len(availableKeys) == 0 {
 			iter.Skip(channel.ID, 0, channel.Name, "no available key")

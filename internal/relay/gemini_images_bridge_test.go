@@ -213,26 +213,15 @@ func createRawImagesGroupWithType(t *testing.T, ctx context.Context, upstreamURL
 		BaseUrls: []dbmodel.BaseUrl{{
 			URL: upstreamURL,
 		}},
-		Keys: []dbmodel.ChannelKey{{Enabled: true, ChannelKey: key}},
+		Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: key}},
+		Model:    upstreamModel,
+		Priority: 1,
+	}
+	if requestModel != upstreamModel {
+		channel.ModelMapping = map[string]string{requestModel: upstreamModel}
 	}
 	if err := op.ChannelCreate(&channel, ctx); err != nil {
 		t.Fatalf("create channel: %v", err)
-	}
-	group := dbmodel.Group{
-		Name: requestModel,
-		Mode: dbmodel.GroupModeFailover,
-	}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	if err := op.GroupItemAdd(&dbmodel.GroupItem{
-		GroupID:   group.ID,
-		ChannelID: channel.ID,
-		ModelName: upstreamModel,
-		Priority:  1,
-		Weight:    1,
-	}, ctx); err != nil {
-		t.Fatalf("create group item: %v", err)
 	}
 	return channel
 }

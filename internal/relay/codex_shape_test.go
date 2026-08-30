@@ -679,23 +679,13 @@ func TestOpenAIChatCanRouteThroughCodexResponsesShape(t *testing.T) {
 		BaseUrls: []dbmodel.BaseUrl{{
 			URL: upstream.URL,
 		}},
-		Keys: []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "responses-key"}},
+		Keys:         []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "responses-key"}},
+		Model:        "mapped-gpt-5.5",
+		ModelMapping: map[string]string{"gpt-5.5": "mapped-gpt-5.5"},
+		Priority:     1,
 	}
 	if err := op.ChannelCreate(&channel, ctx); err != nil {
 		t.Fatalf("create channel: %v", err)
-	}
-	group := dbmodel.Group{Name: "gpt-5.5", Mode: dbmodel.GroupModeFailover}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	if err := op.GroupItemAdd(&dbmodel.GroupItem{
-		GroupID:   group.ID,
-		ChannelID: channel.ID,
-		ModelName: "mapped-gpt-5.5",
-		Priority:  1,
-		Weight:    1,
-	}, ctx); err != nil {
-		t.Fatalf("create group item: %v", err)
 	}
 
 	rec := httptest.NewRecorder()
@@ -759,23 +749,13 @@ func TestPlainResponsesRoutesThroughCodexShape(t *testing.T) {
 		BaseUrls: []dbmodel.BaseUrl{{
 			URL: upstream.URL,
 		}},
-		Keys: []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "responses-key"}},
+		Keys:         []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "responses-key"}},
+		Model:        "mapped-gpt-5.5",
+		ModelMapping: map[string]string{"plain-gpt-5.5": "mapped-gpt-5.5"},
+		Priority:     1,
 	}
 	if err := op.ChannelCreate(&channel, ctx); err != nil {
 		t.Fatalf("create channel: %v", err)
-	}
-	group := dbmodel.Group{Name: "plain-gpt-5.5", Mode: dbmodel.GroupModeFailover}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	if err := op.GroupItemAdd(&dbmodel.GroupItem{
-		GroupID:   group.ID,
-		ChannelID: channel.ID,
-		ModelName: "mapped-gpt-5.5",
-		Priority:  1,
-		Weight:    1,
-	}, ctx); err != nil {
-		t.Fatalf("create group item: %v", err)
 	}
 
 	rec := httptest.NewRecorder()
@@ -838,7 +818,10 @@ func TestPlainResponsesCodexShapeRetriesWithoutCursorOnGeneric400(t *testing.T) 
 		BaseUrls: []dbmodel.BaseUrl{{
 			URL: upstream.URL,
 		}},
-		Keys: []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "responses-key"}},
+		Keys:         []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "responses-key"}},
+		Model:        "mapped-gpt-5.5",
+		ModelMapping: map[string]string{"plain-gpt-5.5-cursor": "mapped-gpt-5.5"},
+		Priority:     1,
 	}
 	if err := op.ChannelCreate(&channel, ctx); err != nil {
 		t.Fatalf("create channel: %v", err)
@@ -847,19 +830,6 @@ func TestPlainResponsesCodexShapeRetriesWithoutCursorOnGeneric400(t *testing.T) 
 		t.Fatalf("expected channel key id to be populated, got %#v", channel.Keys)
 	}
 	recordResponsesSessionWithContext(ctx, "resp_plain_prev", channel.ID, channel.Keys[0].ID)
-	group := dbmodel.Group{Name: "plain-gpt-5.5-cursor", Mode: dbmodel.GroupModeFailover}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	if err := op.GroupItemAdd(&dbmodel.GroupItem{
-		GroupID:   group.ID,
-		ChannelID: channel.ID,
-		ModelName: "mapped-gpt-5.5",
-		Priority:  1,
-		Weight:    1,
-	}, ctx); err != nil {
-		t.Fatalf("create group item: %v", err)
-	}
 
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -930,23 +900,13 @@ func TestPlainResponsesCodexShapeReplaysTranscriptForPreviousResponseID(t *testi
 		BaseUrls: []dbmodel.BaseUrl{{
 			URL: upstream.URL,
 		}},
-		Keys: []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "responses-key"}},
+		Keys:         []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "responses-key"}},
+		Model:        "mapped-gpt-5.5",
+		ModelMapping: map[string]string{"plain-gpt-5.5-history": "mapped-gpt-5.5"},
+		Priority:     1,
 	}
 	if err := op.ChannelCreate(&channel, ctx); err != nil {
 		t.Fatalf("create channel: %v", err)
-	}
-	group := dbmodel.Group{Name: "plain-gpt-5.5-history", Mode: dbmodel.GroupModeFailover}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	if err := op.GroupItemAdd(&dbmodel.GroupItem{
-		GroupID:   group.ID,
-		ChannelID: channel.ID,
-		ModelName: "mapped-gpt-5.5",
-		Priority:  1,
-		Weight:    1,
-	}, ctx); err != nil {
-		t.Fatalf("create group item: %v", err)
 	}
 
 	first := httptest.NewRecorder()

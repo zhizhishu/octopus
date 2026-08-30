@@ -23,9 +23,6 @@ func InitCache() error {
 	if err := fingerprintProfileRefreshCache(ctx); err != nil {
 		return fmt.Errorf("fingerprint profile refresh cache error: %v", err)
 	}
-	if err := groupRefreshCache(ctx); err != nil {
-		return fmt.Errorf("group refresh cache error: %v", err)
-	}
 	if err := accessPlanRefreshCache(ctx); err != nil {
 		return fmt.Errorf("access plan refresh cache error: %v", err)
 	}

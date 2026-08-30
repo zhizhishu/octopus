@@ -25,9 +25,6 @@ func setupChannelImportTest(t *testing.T) context.Context {
 	if err := channelRefreshCache(ctx); err != nil {
 		t.Fatalf("refresh channel cache: %v", err)
 	}
-	if err := groupRefreshCache(ctx); err != nil {
-		t.Fatalf("refresh group cache: %v", err)
-	}
 	if err := accessPlanRefreshCache(ctx); err != nil {
 		t.Fatalf("refresh access plan cache: %v", err)
 	}
@@ -66,8 +63,8 @@ deepseek_anthropic,DeepSeek Anthropic,https://api.deepseek.com/anthropic/v1/mess
 	}
 	assertChannelModels(t, byName["OpenAI GPT"].SelectedModels, []string{"gpt-3.5-turbo", "gpt-4"})
 	assertChannelModels(t, byName["OpenAI GPT"].DiscoveredModels, nil)
-	if got := byName["OpenAI GPT"]; got.AutoSync || got.AutoGroup != model.AutoGroupTypeNone {
-		t.Fatalf("imported channels should not auto-sync upstream models the operator did not pick, got auto_sync=%v auto_group=%v", got.AutoSync, got.AutoGroup)
+	if got := byName["OpenAI GPT"]; got.AutoSync {
+		t.Fatalf("imported channels should not auto-sync upstream models the operator did not pick, got auto_sync=%v", got.AutoSync)
 	}
 	if got := byName["Anthropic Claude"]; got.Type != outbound.OutboundTypeAnthropic || got.BaseUrls[0].URL != "https://api.anthropic.com" {
 		t.Fatalf("unexpected anthropic channel: %+v", got)

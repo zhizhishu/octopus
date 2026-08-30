@@ -261,29 +261,8 @@ func TestRawResponsesCompactPrioritizesKnownResponseOwnerChannelKey(t *testing.T
 	}))
 	t.Cleanup(ownerUpstream.Close)
 
-	firstChannel := createRawProtocolChannel(t, ctx, "first-compact-channel", firstUpstream.URL, []string{"first-key"})
-	ownerChannel := createRawProtocolChannel(t, ctx, "owner-compact-channel", ownerUpstream.URL, []string{"wrong-owner-key", "actual-owner-key"})
-	group := dbmodel.Group{Name: "request-compact-owner", Mode: dbmodel.GroupModeFailover}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	for _, item := range []struct {
-		channelID int
-		modelName string
-	}{
-		{firstChannel.ID, "upstream-first"},
-		{ownerChannel.ID, "upstream-owner"},
-	} {
-		if err := op.GroupItemAdd(&dbmodel.GroupItem{
-			GroupID:   group.ID,
-			ChannelID: item.channelID,
-			ModelName: item.modelName,
-			Priority:  1,
-			Weight:    1,
-		}, ctx); err != nil {
-			t.Fatalf("create group item: %v", err)
-		}
-	}
+	_ = createRawProtocolChannelWithModel(t, ctx, "first-compact-channel", firstUpstream.URL, []string{"first-key"}, "upstream-first", map[string]string{"request-compact-owner": "upstream-first"})
+	ownerChannel := createRawProtocolChannelWithModel(t, ctx, "owner-compact-channel", ownerUpstream.URL, []string{"wrong-owner-key", "actual-owner-key"}, "upstream-owner", map[string]string{"request-compact-owner": "upstream-owner"})
 	ownerChannelPtr, err := op.ChannelGet(ownerChannel.ID, ctx)
 	if err != nil {
 		t.Fatalf("reload owner channel: %v", err)
@@ -894,22 +873,47 @@ func TestImagesHandlerRewritesModelAndLogsUsage(t *testing.T) {
 
 func createRawProtocolGroup(t *testing.T, ctx context.Context, upstreamURL string, requestModel string, upstreamModel string, key string) dbmodel.Channel {
 	t.Helper()
-	channel := createRawProtocolChannel(t, ctx, requestModel+"-channel", upstreamURL, []string{key})
-	group := dbmodel.Group{
-		Name: requestModel,
-		Mode: dbmodel.GroupModeFailover,
+	channelKeys := []dbmodel.ChannelKey{{Enabled: true, ChannelKey: key}}
+	channel := dbmodel.Channel{
+		Name:    requestModel + "-channel",
+		Type:    outbound.OutboundTypeOpenAIChat,
+		Enabled: true,
+		BaseUrls: []dbmodel.BaseUrl{{
+			URL: upstreamURL,
+		}},
+		Keys:     channelKeys,
+		Model:    upstreamModel,
+		Priority: 1,
 	}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
+	if requestModel != upstreamModel {
+		channel.ModelMapping = map[string]string{requestModel: upstreamModel}
 	}
-	if err := op.GroupItemAdd(&dbmodel.GroupItem{
-		GroupID:   group.ID,
-		ChannelID: channel.ID,
-		ModelName: upstreamModel,
-		Priority:  1,
-		Weight:    1,
-	}, ctx); err != nil {
-		t.Fatalf("create group item: %v", err)
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	return channel
+}
+
+func createRawProtocolChannelWithModel(t *testing.T, ctx context.Context, name string, upstreamURL string, keys []string, upstreamModel string, mapping map[string]string) dbmodel.Channel {
+	t.Helper()
+	channelKeys := make([]dbmodel.ChannelKey, 0, len(keys))
+	for _, key := range keys {
+		channelKeys = append(channelKeys, dbmodel.ChannelKey{Enabled: true, ChannelKey: key})
+	}
+	channel := dbmodel.Channel{
+		Name:    name,
+		Type:    outbound.OutboundTypeOpenAIChat,
+		Enabled: true,
+		BaseUrls: []dbmodel.BaseUrl{{
+			URL: upstreamURL,
+		}},
+		Keys:         channelKeys,
+		Model:        upstreamModel,
+		ModelMapping: mapping,
+		Priority:     1,
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
 	}
 	return channel
 }

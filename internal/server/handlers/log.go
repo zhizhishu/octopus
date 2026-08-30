@@ -131,6 +131,7 @@ func listLog(c *gin.Context) {
 	scope.Severity = severityFromQuery(c)
 	scope.RetriedOnly = retriedFromQuery(c)
 	scope.HideModelTest = hideModelTestFromQuery(c)
+	scope.Search = strings.TrimSpace(c.Query("search"))
 
 	logs, err := op.RelayLogList(c.Request.Context(), startTime, endTime, page, pageSize, &scope)
 	if err != nil {
@@ -174,6 +175,7 @@ func countLog(c *gin.Context) {
 
 	scope.RetriedOnly = retriedFromQuery(c)
 	scope.HideModelTest = hideModelTestFromQuery(c)
+	scope.Search = strings.TrimSpace(c.Query("search"))
 
 	counts, err := op.RelayLogSeverityCounts(c.Request.Context(), startTime, endTime, &scope)
 	if err != nil {
@@ -405,6 +407,7 @@ func streamLog(c *gin.Context) {
 
 	scope := model.RelayLogScope{UserID: tokenScope.UserID, APIKeyID: tokenScope.APIKeyID, Endpoint: tokenScope.Endpoint, Redact: !tokenScope.IsAdmin}
 	scope.Severity = tokenScope.Severity
+	scope.Search = tokenScope.Search
 	scope.RetriedOnly = tokenScope.RetriedOnly
 	scope.HideModelTest = tokenScope.HideModelTest
 	var startTime, endTime *int
@@ -546,6 +549,17 @@ func relayLogMatchesScope(log model.RelayLog, scope *model.RelayLogScope) bool {
 	}
 	if scope.HideModelTest && strings.HasPrefix(log.RequestEndpoint, "model_test") {
 		return false
+	}
+	if scope.Search != "" {
+		q := strings.ToLower(strings.TrimSpace(scope.Search))
+		if q != "" {
+			if !strings.Contains(strings.ToLower(log.UserName), q) &&
+				!strings.Contains(strings.ToLower(log.RequestAPIKeyName), q) &&
+				!strings.Contains(strings.ToLower(log.Error), q) &&
+				!strings.Contains(strings.ToLower(log.ErrorCode), q) {
+				return false
+			}
+		}
 	}
 	return true
 }

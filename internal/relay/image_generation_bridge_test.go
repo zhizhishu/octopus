@@ -752,22 +752,14 @@ func createImageBridgeGroup(t *testing.T, ctx context.Context, baseURL, requestM
 		BaseUrls: []dbmodel.BaseUrl{{
 			URL: baseURL,
 		}},
-		Keys: []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "image-key"}},
+		Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "image-key"}},
+		Model:    actualModel,
+		Priority: 1,
+	}
+	if requestModel != actualModel {
+		channel.ModelMapping = map[string]string{requestModel: actualModel}
 	}
 	if err := op.ChannelCreate(&channel, ctx); err != nil {
 		t.Fatalf("create channel: %v", err)
-	}
-	group := dbmodel.Group{Name: requestModel, Mode: dbmodel.GroupModeFailover}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	if err := op.GroupItemAdd(&dbmodel.GroupItem{
-		GroupID:   group.ID,
-		ChannelID: channel.ID,
-		ModelName: actualModel,
-		Priority:  1,
-		Weight:    1,
-	}, ctx); err != nil {
-		t.Fatalf("create group item: %v", err)
 	}
 }

@@ -208,6 +208,14 @@ runIterator:
 		// 设置实际模型
 		internalRequest.Model = item.ModelName
 
+		// The breaker check below keys on the candidate's model name while attempt()
+		// records failures under the mapped upstream name. Remap the candidate so the
+		// check and the record share one key; otherwise the breaker never trips for a
+		// channel whose upstream model differs from the client alias.
+		if mapped, ok := channel.ModelMapping[internalRequest.Model]; ok && mapped != "" {
+			iter.RemapCurrentModel(mapped)
+		}
+
 		for keyIndex, usedKey := range availableKeys {
 			// Reset the route model before each key attempt: applyModelMapping mutates
 			// internalRequest.Model to the mapped upstream name during the prior attempt,

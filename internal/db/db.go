@@ -73,8 +73,6 @@ func InitDB(dbType, dsn string, debug bool) error {
 		&model.Channel{},
 		&model.ChannelKey{},
 		&model.FingerprintProfile{},
-		&model.Group{},
-		&model.GroupItem{},
 		&model.AccessRouteProfile{},
 		&model.AccessRouteRule{},
 		&model.AccessRouteTarget{},

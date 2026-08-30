@@ -1,4 +1,4 @@
-import { AutoGroupType, ChannelType, KeySelectStrategy, type Channel, type PromptOverrideMode, useFetchModel, useTestChannelConfig, useTestChannelProxy, type ProxyTestResult } from '@/api/endpoints/channel';
+import { ChannelType, KeySelectStrategy, type Channel, type PromptOverrideMode, useFetchModel, useTestChannelConfig, useTestChannelProxy, type ProxyTestResult } from '@/api/endpoints/channel';
 import { useFingerprintProfileList } from '@/api/endpoints/fingerprint-profile';
 import type { ModelTestResult } from '@/api/endpoints/model';
 import {
@@ -84,8 +84,18 @@ function AdvancedSettingsShell({
                     onClick={(event) => event.stopPropagation()}
                 >
                     <div className="space-y-4 p-4">
-                        <div className="border-b pb-3 text-sm font-medium text-card-foreground">
-                            {title}
+                        <div className="flex items-center justify-between border-b pb-3 text-sm font-medium text-card-foreground">
+                            <span>{title}</span>
+                            {onClose && (
+                                <button
+                                    type="button"
+                                    onClick={onClose}
+                                    className="rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                                    aria-label="Close"
+                                >
+                                    <X className="size-4" />
+                                </button>
+                            )}
                         </div>
                         {children}
                     </div>
@@ -145,7 +155,6 @@ export interface ChannelFormData {
     enabled: boolean;
     proxy: boolean;
     auto_sync: boolean;
-    auto_group: AutoGroupType;
     match_regex: string;
     openai_chat_path: string;
     openai_models_path: string;
@@ -442,7 +451,6 @@ export function ChannelForm({
         anthropic_context_1m: formData.anthropic_context_1m,
         proxy: formData.proxy,
         auto_sync: formData.auto_sync,
-        auto_group: formData.auto_group,
         custom_header: formData.custom_header?.filter((header) => header.header_key.trim()) || [],
         cloak: { mode: formData.cloak_mode || 'auto', profile_id: formData.cloak_profile_id ?? 0 },
         channel_proxy: formData.channel_proxy?.trim() || null,
@@ -1358,30 +1366,10 @@ export function ChannelForm({
 
             {showAdvanced && (
                 <AdvancedSettingsShell panel={isAdvancedPanel} title={t('advanced')} onClose={onAdvancedClose ?? onCancel}>
-                        {/* Vertical stack: auto-group and proxy each take a full row; the two
-                            fingerprint controls (mode + profile) are grouped into one titled card
-                            below so they read as one coherent section, not two floating selects. */}
+                        {/* Vertical stack: proxy takes a full row; the two fingerprint controls
+                            (mode + profile) are grouped into one titled card below so they read
+                            as one coherent section, not two floating selects. */}
                         <div className="space-y-4">
-                            <div className="space-y-2">
-                                <label htmlFor={`${idPrefix}-auto-group`} className="text-sm font-medium text-card-foreground">
-                                    {t('autoGroup')}
-                                </label>
-                                <Select
-                                    value={String(formData.auto_group)}
-                                    onValueChange={(value) => onFormDataChange({ ...formData, auto_group: Number(value) as AutoGroupType })}
-                                >
-                                    <SelectTrigger id={`${idPrefix}-auto-group`} className="rounded-xl w-full border border-border px-4 py-2 text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                                        <SelectValue />
-                                    </SelectTrigger>
-                                    <SelectContent className='rounded-xl'>
-                                        <SelectItem className='rounded-xl' value={String(AutoGroupType.Fuzzy)}>{t('autoGroupFuzzy')}</SelectItem>
-                                        <SelectItem className='rounded-xl' value={String(AutoGroupType.Exact)}>{t('autoGroupExact')}</SelectItem>
-                                        <SelectItem className='rounded-xl' value={String(AutoGroupType.Regex)}>{t('autoGroupRegex')}</SelectItem>
-                                        <SelectItem className='rounded-xl' value={String(AutoGroupType.None)}>{t('autoGroupNone')}</SelectItem>
-                                    </SelectContent>
-                                </Select>
-                            </div>
-
                             <div className="space-y-2">
                                 <div className="flex flex-wrap items-center justify-between gap-2">
                                     <label htmlFor={`${idPrefix}-channel-proxy`} className="text-sm font-medium text-card-foreground">
@@ -1741,7 +1729,7 @@ export function ChannelForm({
                 </div>
             </div>
 
-            <div className={cn(`flex flex-col gap-3 pt-2 ${onCancel ? 'sm:flex-row' : ''}`)}>
+            <div className={cn(`sticky bottom-0 z-10 -mx-1 -mb-2 mt-4 flex flex-col gap-3 border-t border-border/60 bg-card/95 px-1 py-3 backdrop-blur-sm sm:-mx-1 sm:px-1 ${onCancel ? 'sm:flex-row' : ''}`)}>
                 {onCancel && cancelText && (
                     <Button
                         type="button"

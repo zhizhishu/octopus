@@ -708,6 +708,8 @@ func TestRunRespectsAPIKeySupportedModels(t *testing.T) {
 	t.Cleanup(upstream.Close)
 
 	channel := dbmodel.Channel{
+		Model:    "blocked-model",
+		Priority: 1,
 		Name:    "supported-model-channel",
 		Type:    outbound.OutboundTypeOpenAIChat,
 		Enabled: true,
@@ -718,14 +720,6 @@ func TestRunRespectsAPIKeySupportedModels(t *testing.T) {
 	}
 	if err := op.ChannelCreate(&channel, ctx); err != nil {
 		t.Fatalf("create channel: %v", err)
-	}
-	group := dbmodel.Group{
-		Name:  "blocked-model",
-		Mode:  dbmodel.GroupModeFailover,
-		Items: []dbmodel.GroupItem{{ChannelID: channel.ID, ModelName: "blocked-model", Priority: 1, Weight: 1}},
-	}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
 	}
 	user, err := op.UserCreate(dbmodel.UserCreateRequest{
 		Username: "supported-model-user",
@@ -878,6 +872,8 @@ data: {"type":"message_stop"}
 	t.Cleanup(upstream.Close)
 
 	channel := dbmodel.Channel{
+		Model:    "claude-opus-4-7[1m]",
+		Priority: 1,
 		Name:    "Claude-CPA",
 		Type:    outbound.OutboundTypeAnthropic,
 		Enabled: true,
@@ -888,19 +884,6 @@ data: {"type":"message_stop"}
 	}
 	if err := op.ChannelCreate(&channel, ctx); err != nil {
 		t.Fatalf("create channel: %v", err)
-	}
-	group := dbmodel.Group{Name: "claude-opus-4-7[1m]", Mode: dbmodel.GroupModeFailover}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	if err := op.GroupItemAdd(&dbmodel.GroupItem{
-		GroupID:   group.ID,
-		ChannelID: channel.ID,
-		ModelName: "claude-opus-4-7[1m]",
-		Priority:  1,
-		Weight:    1,
-	}, ctx); err != nil {
-		t.Fatalf("create group item: %v", err)
 	}
 
 	response, err := Run(ctx, dbmodel.ModelTestRequest{
@@ -986,6 +969,8 @@ data: {"type":"message_stop"}
 	t.Cleanup(upstream.Close)
 
 	channel := dbmodel.Channel{
+		Model:    "claude-opus-4-8",
+		Priority: 1,
 		Name:     "Claude-Profile2",
 		Type:     outbound.OutboundTypeAnthropic,
 		Enabled:  true,
@@ -995,19 +980,6 @@ data: {"type":"message_stop"}
 	}
 	if err := op.ChannelCreate(&channel, ctx); err != nil {
 		t.Fatalf("create channel: %v", err)
-	}
-	group := dbmodel.Group{Name: "claude-opus-4-8", Mode: dbmodel.GroupModeFailover}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	if err := op.GroupItemAdd(&dbmodel.GroupItem{
-		GroupID:   group.ID,
-		ChannelID: channel.ID,
-		ModelName: "claude-opus-4-8",
-		Priority:  1,
-		Weight:    1,
-	}, ctx); err != nil {
-		t.Fatalf("create group item: %v", err)
 	}
 
 	if _, err := Run(ctx, dbmodel.ModelTestRequest{
@@ -1077,6 +1049,8 @@ data: {"type":"message_stop"}
 	t.Cleanup(upstream.Close)
 
 	channel := dbmodel.Channel{
+		Model:    "claude-haiku-4-5",
+		Priority: 1,
 		Name:     "Claude-Plain",
 		Type:     outbound.OutboundTypeAnthropic,
 		Enabled:  true,
@@ -1085,19 +1059,6 @@ data: {"type":"message_stop"}
 	}
 	if err := op.ChannelCreate(&channel, ctx); err != nil {
 		t.Fatalf("create channel: %v", err)
-	}
-	group := dbmodel.Group{Name: "claude-haiku-4-5", Mode: dbmodel.GroupModeFailover}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	if err := op.GroupItemAdd(&dbmodel.GroupItem{
-		GroupID:   group.ID,
-		ChannelID: channel.ID,
-		ModelName: "claude-haiku-4-5",
-		Priority:  1,
-		Weight:    1,
-	}, ctx); err != nil {
-		t.Fatalf("create group item: %v", err)
 	}
 
 	// Inbound endpoint = openai_responses (the model-test page default), NOT anthropic_messages.
@@ -1158,6 +1119,8 @@ data: {"type":"message_stop"}
 	t.Cleanup(upstream.Close)
 
 	channel := dbmodel.Channel{
+		Model:    "claude-opus-4-8[1m]",
+		Priority: 1,
 		Name:    "Claude-Full-1M",
 		Type:    outbound.OutboundTypeAnthropic,
 		Enabled: true,
@@ -1168,19 +1131,6 @@ data: {"type":"message_stop"}
 	}
 	if err := op.ChannelCreate(&channel, ctx); err != nil {
 		t.Fatalf("create channel: %v", err)
-	}
-	group := dbmodel.Group{Name: "claude-opus-4-8[1m]", Mode: dbmodel.GroupModeFailover}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	if err := op.GroupItemAdd(&dbmodel.GroupItem{
-		GroupID:   group.ID,
-		ChannelID: channel.ID,
-		ModelName: "claude-opus-4-8[1m]",
-		Priority:  1,
-		Weight:    1,
-	}, ctx); err != nil {
-		t.Fatalf("create group item: %v", err)
 	}
 
 	response, err := Run(ctx, dbmodel.ModelTestRequest{
@@ -1244,6 +1194,8 @@ data: {"type":"message_stop"}
 	t.Cleanup(upstream.Close)
 
 	channel := dbmodel.Channel{
+		Model:    "claude-opus-4-8[1m]",
+		Priority: 1,
 		Name:    "Claude-CPA-Terminal",
 		Type:    outbound.OutboundTypeAnthropic,
 		Enabled: true,
@@ -1254,19 +1206,6 @@ data: {"type":"message_stop"}
 	}
 	if err := op.ChannelCreate(&channel, ctx); err != nil {
 		t.Fatalf("create channel: %v", err)
-	}
-	group := dbmodel.Group{Name: "claude-opus-4-8[1m]", Mode: dbmodel.GroupModeFailover}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	if err := op.GroupItemAdd(&dbmodel.GroupItem{
-		GroupID:   group.ID,
-		ChannelID: channel.ID,
-		ModelName: "claude-opus-4-8[1m]",
-		Priority:  1,
-		Weight:    1,
-	}, ctx); err != nil {
-		t.Fatalf("create group item: %v", err)
 	}
 
 	started := time.Now()
@@ -1375,6 +1314,8 @@ func TestRunBatchHonorsConcurrency(t *testing.T) {
 	t.Cleanup(upstream.Close)
 
 	channel := dbmodel.Channel{
+		Model:    "model-a,model-b,model-c",
+		Priority: 1,
 		Name:    "batch-test-channel",
 		Type:    outbound.OutboundTypeOpenAIChat,
 		Enabled: true,
@@ -1388,21 +1329,6 @@ func TestRunBatchHonorsConcurrency(t *testing.T) {
 	}
 
 	models := []string{"model-a", "model-b", "model-c"}
-	for _, name := range models {
-		group := dbmodel.Group{Name: name, Mode: dbmodel.GroupModeRoundRobin}
-		if err := op.GroupCreate(&group, ctx); err != nil {
-			t.Fatalf("create group %s: %v", name, err)
-		}
-		if err := op.GroupItemAdd(&dbmodel.GroupItem{
-			GroupID:   group.ID,
-			ChannelID: channel.ID,
-			ModelName: name,
-			Priority:  1,
-			Weight:    1,
-		}, ctx); err != nil {
-			t.Fatalf("create group item %s: %v", name, err)
-		}
-	}
 
 	response, err := Run(ctx, dbmodel.ModelTestRequest{
 		Models:      models,

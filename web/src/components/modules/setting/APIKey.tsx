@@ -33,9 +33,7 @@ import {
     type APIKey,
 } from '@/api/endpoints/apikey';
 import { useAccessPlanList } from '@/api/endpoints/access-plan';
-import { useGroupList } from '@/api/endpoints/group';
 import { useModelChannelList } from '@/api/endpoints/model';
-import { activeModelChannelKeySet, modelChannelKey } from '@/components/modules/group/utils';
 import { useStatsAPIKey } from '@/api/endpoints/stats';
 import { useAuthStore, useUserList } from '@/api/endpoints/user';
 import { cn } from '@/lib/utils';
@@ -225,7 +223,6 @@ function APIKeyForm({ apiKey, isPending, submitLabel, onSubmit, onClose }: APIKe
     const t = useTranslations('setting');
     const isAdmin = useAuthStore((state) => state.user?.role === 'admin');
     const currentUserID = useAuthStore((state) => state.user?.id);
-    const { data: groups = [] } = useGroupList({ enabled: isAdmin });
     const { data: modelChannels } = useModelChannelList({ enabled: isAdmin });
     const { data: users = [] } = useUserList({ enabled: isAdmin });
     const { data: accessPlans = [] } = useAccessPlanList({ enabled: isAdmin });
@@ -257,21 +254,15 @@ function APIKeyForm({ apiKey, isPending, submitLabel, onSubmit, onClose }: APIKe
 
     const [modelSearch, setModelSearch] = useState('');
 
-    // 仅暴露「当前有存活渠道在服务」的模型池：复用 group 模块的 served-only 逻辑，
-    // 过滤掉所有渠道都被禁用/删除、实际无渠道可路由的幽灵模型（group 卡片同样视其为空池）。
+    // 仅暴露「当前有存活渠道在服务」的模型（渠道模型即对外可见模型名），过滤掉所有
+    // 渠道都被禁用/删除、实际无渠道可路由的幽灵模型。
     const availableModels = useMemo(() => {
-        // 与 group 卡片一致：加载中(undefined)时不收窄，加载完成后按存活渠道键集判断。
-        const activeKeys = modelChannels ? activeModelChannelKeySet(modelChannels) : undefined;
-        const isServed = (items: NonNullable<typeof groups[number]['items']>) => {
-            if (!activeKeys) return items.length > 0;
-            return items.some((item) => activeKeys.has(modelChannelKey(item.channel_id, item.model_name)));
-        };
-        const names = groups
-            .filter((g) => isServed(g.items ?? []))
-            .map((g) => g.name)
-            .filter(Boolean);
-        return Array.from(new Set(names)).sort((a, b) => a.localeCompare(b));
-    }, [groups, modelChannels]);
+        const served = new Set<string>();
+        for (const mc of modelChannels ?? []) {
+            if (mc.enabled && mc.name) served.add(mc.name);
+        }
+        return Array.from(served).sort((a, b) => a.localeCompare(b));
+    }, [modelChannels]);
 
     // 搜索只过滤展示的复选框；全选/清空仍作用于完整列表，保持与既有标签语义一致。
     const filteredModels = useMemo(() => {

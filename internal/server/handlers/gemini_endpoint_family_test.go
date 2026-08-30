@@ -59,22 +59,9 @@ func TestGeminiAllowedModelsReturnsAllChannelTypes(t *testing.T) {
 	}
 
 	for _, s := range seeds {
-		channel := model.Channel{Name: s.name, Enabled: true, Type: s.obType}
+		channel := model.Channel{Name: s.name, Enabled: true, Type: s.obType, Model: s.modelName}
 		if err := op.ChannelCreate(&channel, ctx); err != nil {
 			t.Fatalf("create channel %s: %v", s.name, err)
-		}
-		// Group name == model name so GroupListModelForAPIKeyPlan surfaces the
-		// model name (it dedups on group name). One item, one channel — the
-		// model is exclusively on this channel type.
-		group := model.Group{
-			Name: s.modelName,
-			Mode: model.GroupModeFailover,
-			Items: []model.GroupItem{
-				{ChannelID: channel.ID, ModelName: s.modelName},
-			},
-		}
-		if err := op.GroupCreate(&group, ctx); err != nil {
-			t.Fatalf("create group %s: %v", s.modelName, err)
 		}
 	}
 

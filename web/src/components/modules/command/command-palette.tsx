@@ -80,17 +80,47 @@ export function CommandPalette() {
     }, [setActiveItem, setSearchTerm, setOpen]);
 
     const entries = React.useMemo<CommandEntry[]>(() => {
+        const pageAliases: Record<string, string[]> = {
+            home: ['主页', '首页', 'home', 'dashboard', 'stats'],
+            user: ['用户', '用户管理', 'user', 'users'],
+            key: ['api key', '密钥', 'key', 'token', 'apikey'],
+            channel: ['渠道', '渠道管理', 'channel', 'channels', 'provider'],
+            'access-plan': ['方案', '访问方案', 'access plan', 'plan', 'plans', 'rate limit'],
+            model: ['价格', '模型价格', '模型', '价格表', 'model', 'models', 'price', 'pricing'],
+            'model-test': ['测试', '模型测试', '连通性测试', 'model test', 'test', 'probe'],
+            migration: ['迁移', '导入导出', 'migration', 'import', 'export', 'backup'],
+            prompt: ['提示词', '提示词管理', 'prompt', 'prompts'],
+            log: ['日志', '请求日志', 'log', 'logs'],
+            setting: ['设置', '系统设置', 'setting', 'settings', 'config'],
+        };
+
         const pages = routesForRole(role).map((route) => {
             const Icon = route.icon;
+            const routeAliases = pageAliases[route.id] || [];
             return {
                 key: `page:${route.id}`,
                 group: '页面',
                 label: t(route.id),
-                keywords: `${route.id} ${route.label} ${t(route.id)}`,
+                keywords: `${route.id} ${route.label} ${t(route.id)} ${routeAliases.join(' ')}`,
                 icon: <Icon className="size-4" />,
                 onSelect: () => goPage(route.id as NavItem),
             };
         });
+
+        // If the user searches for model test, provide direct navigation to channel page
+        const functionalShortcuts: CommandEntry[] = role === 'admin'
+            ? [
+                {
+                    key: 'shortcut:model-test',
+                    group: '功能',
+                    label: '模型测试（渠道内测试）',
+                    keywords: 'model test 模型测试 连通性测试 test 测试 渠道测试 channel test',
+                    icon: <Search className="size-4" />,
+                    onSelect: () => goPage('channel'),
+                },
+            ]
+            : [];
+
         const channelEntries: CommandEntry[] = role === 'admin'
             ? channels.map((channel) => ({
                 key: `channel:${channel.raw.id}`,
@@ -100,7 +130,7 @@ export function CommandPalette() {
                 onSelect: () => goChannel(channel.raw.name),
             }))
             : [];
-        return [...pages, ...channelEntries];
+        return [...pages, ...functionalShortcuts, ...channelEntries];
     }, [role, channels, t, goPage, goChannel]);
 
     const filtered = React.useMemo(() => {

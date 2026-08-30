@@ -1353,10 +1353,27 @@ func upstreamErrorSummary(body []byte) (string, string) {
 	}
 }
 
+// isBenignUpstreamStreamEnd 判断上游 SSE 流读取错误是否属于「自然断流」：上游没发
+// data:[DONE] / 完整事件边界就关闭连接（go-sse 报 io.ErrUnexpectedEOF，错误串为
+// "go-sse: unexpected end of input"）。这类算正常结束而非协议错误，应按流结束收尾，
+// 而不是当硬错误上报、触发换渠道。与 relay.isBenignUpstreamStreamEnd 语义一致（该函数
+// 未导出，模型测试包不宜 import relay，故本地复制一份）。
+func isBenignUpstreamStreamEnd(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	normalized := strings.ToLower(err.Error())
+	return strings.Contains(normalized, "unexpected end of input") || strings.Contains(normalized, "eof")
+}
+
 func transformModelTestStream(ctx context.Context, adapter transformermodel.Outbound, response *http.Response) (*transformermodel.InternalLLMResponse, error) {
 	if response == nil || response.Body == nil {
 		return nil, fmt.Errorf("response is nil")
 	}
+
 	contentType := strings.ToLower(response.Header.Get("Content-Type"))
 	if !strings.Contains(contentType, "text/event-stream") {
 		return adapter.TransformResponse(ctx, response)
@@ -1368,6 +1385,15 @@ func transformModelTestStream(ctx context.Context, adapter transformermodel.Outb
 	readCfg := &sse.ReadConfig{MaxEventSize: 1024 * 1024}
 	for ev, err := range sse.Read(response.Body, readCfg) {
 		if err != nil {
+			// Upstream may close the connection without a data:[DONE] / terminal event
+			// (go-sse surfaces this as io.ErrUnexpectedEOF, "go-sse: unexpected end of
+			// input"). Treat that natural stream end as a normal finish so the probe
+			// verdict below falls through to the content/reasoning check instead of
+			// being reported as a hard error and flipping the channel. Mirrors
+			// relay.isBenignUpstreamStreamEnd (unexported there, so copied locally).
+			if isBenignUpstreamStreamEnd(err) {
+				break
+			}
 			return nil, err
 		}
 		streamResp, err := adapter.TransformStream(ctx, []byte(ev.Data))

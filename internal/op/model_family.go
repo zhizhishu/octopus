@@ -26,19 +26,18 @@ func FilterModelNamesForEndpointFamily(ctx context.Context, names []string, fami
 	}
 
 	visible := make(map[string]struct{}, len(names))
-	for _, group := range groupCache.GetAll() {
-		if _, ok := allowed[strings.ToLower(strings.TrimSpace(group.Name))]; !ok {
-			continue
-		}
-		for _, item := range group.Items {
-			channel, ok := channelCache.Get(item.ChannelID)
-			if !ok || !channel.Enabled {
+	// With the model pool gone, a request model is visible in an endpoint family when
+	// some enabled channel serves it (selected or via model_mapping alias) on that
+	// family's channel type.
+	for requested := range allowed {
+		for _, channel := range channelCache.GetAll() {
+			if !channel.Enabled || !channelServesModel(channel, requested) {
 				continue
 			}
 			if !channelTypeMatchesEndpointFamily(channel.Type, normalizedFamily) {
 				continue
 			}
-			visible[strings.ToLower(strings.TrimSpace(group.Name))] = struct{}{}
+			visible[requested] = struct{}{}
 			break
 		}
 	}

@@ -388,32 +388,26 @@ func TestOpenAIResponsesChatHistoryRebuildSurvivesFailover(t *testing.T) {
 	}))
 	t.Cleanup(upstream.Close)
 
-	mkChannel := func(name string) dbmodel.Channel {
+	mkChannel := func(name string, priority int) dbmodel.Channel {
 		return dbmodel.Channel{
-			Name:     name,
-			Type:     outbound.OutboundTypeOpenAIChat,
-			Enabled:  true,
-			Cloak:    dbmodel.ChannelCloak{Mode: "never"},
-			BaseUrls: []dbmodel.BaseUrl{{URL: upstream.URL}},
-			Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "k"}},
+			Name:         name,
+			Type:         outbound.OutboundTypeOpenAIChat,
+			Enabled:      true,
+			Cloak:        dbmodel.ChannelCloak{Mode: "never"},
+			BaseUrls:     []dbmodel.BaseUrl{{URL: upstream.URL}},
+			Keys:         []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "k"}},
+			Model:        "gpt-5.5",
+			ModelMapping: map[string]string{"failover-chat": "gpt-5.5"},
+			Priority:     priority,
 		}
 	}
-	ch1 := mkChannel("chat-failover-first")
-	ch2 := mkChannel("chat-failover-second")
+	ch1 := mkChannel("chat-failover-first", 1)
+	ch2 := mkChannel("chat-failover-second", 2)
 	if err := op.ChannelCreate(&ch1, ctx); err != nil {
 		t.Fatalf("create ch1: %v", err)
 	}
 	if err := op.ChannelCreate(&ch2, ctx); err != nil {
 		t.Fatalf("create ch2: %v", err)
-	}
-	group := dbmodel.Group{Name: "failover-chat", Mode: dbmodel.GroupModeFailover}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	for i, ch := range []dbmodel.Channel{ch1, ch2} {
-		if err := op.GroupItemAdd(&dbmodel.GroupItem{GroupID: group.ID, ChannelID: ch.ID, ModelName: "gpt-5.5", Priority: i + 1, Weight: 1}, ctx); err != nil {
-			t.Fatalf("group item: %v", err)
-		}
 	}
 
 	rec := httptest.NewRecorder()

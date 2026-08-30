@@ -211,8 +211,6 @@ func scheduleChannelPostProcess(channels []model.Channel) {
 			modelArray := model.ChannelSelectedModelNames(*channel)
 			helper.LLMPriceAddToDB(modelArray, ctx)
 			helper.ChannelBaseUrlDelayUpdate(channel, ctx)
-			helper.ChannelEnsureModelGroups(channel, ctx)
-			helper.ChannelAutoGroup(channel, ctx)
 		}
 		runAccessPlanChannelSync(ctx)
 	})

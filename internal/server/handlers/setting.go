@@ -179,8 +179,6 @@ func decodeDBDump(body []byte, dump *model.DBDump) error {
 
 	if dump.Version == 0 &&
 		len(dump.Channels) == 0 &&
-		len(dump.Groups) == 0 &&
-		len(dump.GroupItems) == 0 &&
 		len(dump.Settings) == 0 &&
 		len(dump.APIKeys) == 0 &&
 		len(dump.LLMInfos) == 0 &&

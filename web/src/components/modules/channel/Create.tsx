@@ -5,7 +5,7 @@ import {
     MorphingDialogDescription,
     useMorphingDialog,
 } from '@/components/ui/morphing-dialog';
-import { useCreateChannel, ChannelType, AutoGroupType } from '@/api/endpoints/channel';
+import { useCreateChannel, ChannelType } from '@/api/endpoints/channel';
 import { useFingerprintProfileList } from '@/api/endpoints/fingerprint-profile';
 import { useTranslations } from 'next-intl';
 import { ChannelForm, normalizeBaseUrlForChannelType, type ChannelFormData } from './Form';
@@ -45,7 +45,6 @@ export function CreateDialogContent() {
         anthropic_context_1m: false,
         thinking_to_content: false,
         auto_sync: false,
-        auto_group: AutoGroupType.None,
         enabled: true,
         proxy: false,
         match_regex: '',
@@ -102,7 +101,6 @@ export function CreateDialogContent() {
                 thinking_to_content: formData.thinking_to_content,
                 proxy: formData.proxy,
                 auto_sync: formData.auto_sync,
-                auto_group: formData.auto_group,
                 custom_header: normalizedHeaders,
                 cloak: { mode: formData.cloak_mode || 'auto', profile_id: formData.cloak_profile_id ?? 0 },
                 channel_proxy: channelProxy,
@@ -142,7 +140,6 @@ export function CreateDialogContent() {
                         anthropic_context_1m: false,
                         thinking_to_content: false,
                         auto_sync: false,
-                        auto_group: AutoGroupType.None,
                         enabled: true,
                         proxy: false,
                         match_regex: '',

@@ -76,11 +76,6 @@ func SyncModelsTask() {
 			groupingChannel = *updatedChannel
 		}
 
-		// 自动分组
-		if len(model.ChannelSelectedModelNames(groupingChannel)) > 0 {
-			helper.ChannelEnsureModelGroups(&groupingChannel, ctx)
-			helper.ChannelAutoGroup(&groupingChannel, ctx)
-		}
 		for _, m := range model.ChannelSelectedModelNames(groupingChannel) {
 			addTotalModel(m)
 		}

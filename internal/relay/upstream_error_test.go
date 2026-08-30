@@ -40,6 +40,11 @@ func TestHandlerPassesThroughUpstreamStatusWithSanitizedError(t *testing.T) {
 		Name:    "sanitized-error-channel",
 		Type:    outbound.OutboundTypeOpenAIChat,
 		Enabled: true,
+		Model:   "upstream-model",
+		ModelMapping: map[string]string{
+			"request-model": "upstream-model",
+		},
+		Priority: 1,
 		BaseUrls: []dbmodel.BaseUrl{{
 			URL: upstream.URL,
 		}},
@@ -47,19 +52,6 @@ func TestHandlerPassesThroughUpstreamStatusWithSanitizedError(t *testing.T) {
 	}
 	if err := op.ChannelCreate(&channel, ctx); err != nil {
 		t.Fatalf("create channel: %v", err)
-	}
-	group := dbmodel.Group{Name: "request-model", Mode: dbmodel.GroupModeFailover}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	if err := op.GroupItemAdd(&dbmodel.GroupItem{
-		GroupID:   group.ID,
-		ChannelID: channel.ID,
-		ModelName: "upstream-model",
-		Priority:  1,
-		Weight:    1,
-	}, ctx); err != nil {
-		t.Fatalf("create group item: %v", err)
 	}
 
 	rec := httptest.NewRecorder()
@@ -137,6 +129,11 @@ func TestHandlerUsesCustomUpstreamErrorMessage(t *testing.T) {
 		Name:    "custom-error-channel",
 		Type:    outbound.OutboundTypeOpenAIChat,
 		Enabled: true,
+		Model:   "upstream-model",
+		ModelMapping: map[string]string{
+			"custom-error-model": "upstream-model",
+		},
+		Priority: 1,
 		BaseUrls: []dbmodel.BaseUrl{{
 			URL: upstream.URL,
 		}},
@@ -144,19 +141,6 @@ func TestHandlerUsesCustomUpstreamErrorMessage(t *testing.T) {
 	}
 	if err := op.ChannelCreate(&channel, ctx); err != nil {
 		t.Fatalf("create channel: %v", err)
-	}
-	group := dbmodel.Group{Name: "custom-error-model", Mode: dbmodel.GroupModeFailover}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	if err := op.GroupItemAdd(&dbmodel.GroupItem{
-		GroupID:   group.ID,
-		ChannelID: channel.ID,
-		ModelName: "upstream-model",
-		Priority:  1,
-		Weight:    1,
-	}, ctx); err != nil {
-		t.Fatalf("create group item: %v", err)
 	}
 
 	rec := httptest.NewRecorder()
@@ -360,6 +344,10 @@ func TestHandlerReturnsToOriginalGroupAfterRouteFailure(t *testing.T) {
 		Type:    outbound.OutboundTypeOpenAIChat,
 		Enabled: true,
 		Model:   "original-upstream",
+		ModelMapping: map[string]string{
+			"return-group-model": "original-upstream",
+		},
+		Priority: 1,
 		BaseUrls: []dbmodel.BaseUrl{{
 			URL: fallbackUpstream.URL,
 		}},
@@ -367,20 +355,6 @@ func TestHandlerReturnsToOriginalGroupAfterRouteFailure(t *testing.T) {
 	}
 	if err := op.ChannelCreate(&fallbackChannel, ctx); err != nil {
 		t.Fatalf("create fallback channel: %v", err)
-	}
-
-	group := dbmodel.Group{Name: "return-group-model", Mode: dbmodel.GroupModeFailover}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	if err := op.GroupItemAdd(&dbmodel.GroupItem{
-		GroupID:   group.ID,
-		ChannelID: fallbackChannel.ID,
-		ModelName: "original-upstream",
-		Priority:  1,
-		Weight:    1,
-	}, ctx); err != nil {
-		t.Fatalf("create group item: %v", err)
 	}
 
 	plans, err := op.AccessPlanList(ctx)

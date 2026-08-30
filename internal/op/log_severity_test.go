@@ -83,4 +83,38 @@ func TestRelayLogSeverityCountsSQL(t *testing.T) {
 			t.Errorf("warn list contained non-warn log id=%d", l.ID)
 		}
 	}
+
+	// Fuzzy search filter tests (user_name, request_api_key_name, error, error_code).
+	searchLogs := []model.RelayLog{
+		{ID: 6001, Time: 6001, RequestModelName: "m", UserName: "AliceAdmin", RequestAPIKeyName: "key-1", Error: "Connection timeout"},
+		{ID: 6002, Time: 6002, RequestModelName: "m", UserName: "BobUser", RequestAPIKeyName: "SecretProdKey", ErrorCode: "rate_limit_exceeded"},
+		{ID: 6003, Time: 6003, RequestModelName: "m", UserName: "Charlie", RequestAPIKeyName: "dev-key", Error: "all upstream failed: dial tcp timeout"},
+	}
+	if err := db.GetDB().WithContext(ctx).Create(&searchLogs).Error; err != nil {
+		t.Fatalf("create search logs: %v", err)
+	}
+
+	// Search by user_name substring (case-insensitive)
+	found, err := RelayLogList(ctx, nil, nil, 1, 20, &model.RelayLogScope{Search: "alice"})
+	if err != nil || len(found) != 1 || found[0].ID != 6001 {
+		t.Errorf("search alice: got %v (len %d), want id 6001", found, len(found))
+	}
+
+	// Search by request_api_key_name substring (case-insensitive)
+	found, err = RelayLogList(ctx, nil, nil, 1, 20, &model.RelayLogScope{Search: "prodkey"})
+	if err != nil || len(found) != 1 || found[0].ID != 6002 {
+		t.Errorf("search prodkey: got %v (len %d), want id 6002", found, len(found))
+	}
+
+	// Search by error substring (case-insensitive)
+	found, err = RelayLogList(ctx, nil, nil, 1, 20, &model.RelayLogScope{Search: "TIMEOUT"})
+	if err != nil || len(found) != 2 {
+		t.Errorf("search TIMEOUT: got %d rows, want 2 (6001 and 6003)", len(found))
+	}
+
+	// Search by error_code substring
+	found, err = RelayLogList(ctx, nil, nil, 1, 20, &model.RelayLogScope{Search: "rate_limit"})
+	if err != nil || len(found) != 1 || found[0].ID != 6002 {
+		t.Errorf("search rate_limit: got %v (len %d), want id 6002", found, len(found))
+	}
 }

@@ -149,6 +149,22 @@ func (it *Iterator) Item() model.GroupItem {
 	return it.candidates[it.index]
 }
 
+// RemapCurrentModel rewrites the current candidate's model name in place. The relay
+// layer calls this when a channel's model_mapping rewrites the client-facing alias to
+// the upstream model, so the circuit-breaker check (which reads the candidate's model
+// name) agrees with the attempt records (which use the mapped upstream name). Without
+// it the breaker is checked under the alias but recorded under the upstream name and
+// therefore never trips.
+func (it *Iterator) RemapCurrentModel(modelName string) {
+	if it == nil || modelName == "" {
+		return
+	}
+	if it.index < 0 || it.index >= len(it.candidates) {
+		return
+	}
+	it.candidates[it.index].ModelName = modelName
+}
+
 // IsSticky 当前候选是否为粘性通道
 func (it *Iterator) IsSticky() bool {
 	return it.stickyIdx >= 0 && it.index == it.stickyIdx

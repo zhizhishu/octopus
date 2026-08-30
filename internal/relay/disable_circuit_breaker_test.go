@@ -61,6 +61,9 @@ func TestHandlerDisableCircuitBreakerBypassesShortCircuit(t *testing.T) {
 			DisableCircuitBreaker: disableCircuitBreaker,
 			BaseUrls:              []dbmodel.BaseUrl{{URL: upstream.URL}},
 			Keys:                  []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "the-key"}},
+			Model:                 "upstream-model",
+			ModelMapping:          map[string]string{"request-model": "upstream-model"},
+			Priority:              1,
 		}
 		if err := op.ChannelCreate(&channel, ctx); err != nil {
 			t.Fatalf("create channel: %v", err)
@@ -68,20 +71,6 @@ func TestHandlerDisableCircuitBreakerBypassesShortCircuit(t *testing.T) {
 		// The breaker store is a package global keyed by channel ID; clear any leftover
 		// state (e.g. a channel ID reused across tests) so this channel starts closed.
 		balancer.ResetChannel(channel.ID)
-
-		group := dbmodel.Group{Name: "request-model", Mode: dbmodel.GroupModeFailover}
-		if err := op.GroupCreate(&group, ctx); err != nil {
-			t.Fatalf("create group: %v", err)
-		}
-		if err := op.GroupItemAdd(&dbmodel.GroupItem{
-			GroupID:   group.ID,
-			ChannelID: channel.ID,
-			ModelName: "upstream-model",
-			Priority:  1,
-			Weight:    1,
-		}, ctx); err != nil {
-			t.Fatalf("create group item: %v", err)
-		}
 
 		doRequest := func() (int, string) {
 			rec := httptest.NewRecorder()

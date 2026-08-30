@@ -178,6 +178,14 @@ runIterator:
 			continue
 		}
 
+		// The fallback group keeps the client-facing alias on the candidate; this handler
+		// forwards item.ModelName (and keys the breaker/metrics) directly, so rewrite it to
+		// the upstream model now so Grok/Gemini detection and usage logs see the real model.
+		if mapped, ok := channel.ModelMapping[item.ModelName]; ok && mapped != "" {
+			item.ModelName = mapped
+			iter.RemapCurrentModel(mapped)
+		}
+
 		availableKeys := channel.GetAvailableChannelKeys()
 		if len(availableKeys) == 0 {
 			iter.Skip(channel.ID, 0, channel.Name, "no available key")

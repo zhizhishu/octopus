@@ -1,9 +1,9 @@
 'use client';
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useDeferredValue, useMemo, useState } from 'react';
 import { getRelayLogSeverity, type RelayLog, type RelayLogSeverity, useExportLogs, useLogSeverityCounts, useLogs } from '@/api/endpoints/log';
 import { LogCard, useSensitiveStore } from './Item';
-import { AlertCircle, AlertTriangle, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Circle, Download, Eye, EyeOff, Loader2, RefreshCw, RotateCcw, RotateCw, ScrollText, SlidersHorizontal, Wifi, WifiOff, X } from 'lucide-react';
+import { AlertCircle, AlertTriangle, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Circle, Download, Eye, EyeOff, Loader2, RefreshCw, RotateCcw, RotateCw, ScrollText, Search, SlidersHorizontal, Wifi, WifiOff, X } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { VirtualizedGrid } from '@/components/common/VirtualizedGrid';
 import { PageWrapper } from '@/components/common/PageWrapper';
@@ -250,6 +250,8 @@ export function Log() {
     const [severityFilter, setSeverityFilter] = useState<LogSeverityFilter>('all');
     const [retriedOnly, setRetriedOnly] = useState(false);
     const [hideModelTest, setHideModelTest] = useState(false);
+    const [searchKeyword, setSearchKeyword] = useState('');
+    const deferredSearch = useDeferredValue(searchKeyword.trim());
     const [autoRefresh, setAutoRefresh] = useState(false);
     const [advancedOpen, setAdvancedOpen] = useState(false);
     // 分页状态：当前页（从 1 开始）+ 跳页输入框草稿值。自动刷新时禁用分页，回退无限滚动。
@@ -301,6 +303,7 @@ export function Log() {
         endTime,
         retried: retriedOnly,
         hideModelTest,
+        search: deferredSearch || undefined,
     });
     const LOG_PAGE_SIZE = 20;
     // 当前生效筛选下的总条数：全部→total，否则取该严重程度的计数。分页页数据此算。
@@ -332,6 +335,7 @@ export function Log() {
         endTime,
         retried: retriedOnly,
         hideModelTest,
+        search: deferredSearch || undefined,
         // 实时刷新只在第 1 页（最新）生效；翻到历史页自然暂停，回第 1 页恢复。
         live: autoRefresh && currentPage === 1,
     });
@@ -369,7 +373,7 @@ export function Log() {
         setCurrentPage(1);
     }, [todayLabel]);
 
-    // 所有筛选一键回默认（近 7 天、不限用户/Key/端点、全部状态、不限重试）。
+    // 所有筛选一键回默认（近 7 天、不限用户/Key/端点、全部状态、不限重试、清空搜索）。
     const handleResetFilters = useCallback(() => {
         setSelectedUserID(undefined);
         setSelectedAPIKeyID(undefined);
@@ -377,6 +381,7 @@ export function Log() {
         setSeverityFilter('all');
         setRetriedOnly(false);
         setHideModelTest(false);
+        setSearchKeyword('');
         setStartDate(defaultRange.startDate);
         setEndDate(defaultRange.endDate);
         setCurrentPage(1);
@@ -391,6 +396,7 @@ export function Log() {
         severityFilter !== 'all' ||
         retriedOnly ||
         hideModelTest ||
+        !!searchKeyword.trim() ||
         !isDefaultRange;
 
     // 「生效筛选」药丸：把当前每一维筛选摊开成一个可一键删除的小标签，让人清楚现在到底在看什么。
@@ -401,6 +407,7 @@ export function Log() {
         const dl = startDate && endDate ? (startDate === endDate ? startDate : `${startDate} ~ ${endDate}`) : (startDate || endDate);
         activePills.push({ key: 'date', label: `日期 ${dl}`, onClear: () => { setStartDate(defaultRange.startDate); setEndDate(defaultRange.endDate); setCurrentPage(1); } });
     }
+    if (searchKeyword.trim()) activePills.push({ key: 'search', label: `搜索 "${searchKeyword.trim()}"`, onClear: () => { setSearchKeyword(''); setCurrentPage(1); } });
     if (selectedEndpoint) activePills.push({ key: 'ep', label: `接口 ${selectedEndpoint}`, onClear: () => { setSelectedEndpoint(''); setCurrentPage(1); } });
     if (severityFilter !== 'all') activePills.push({ key: 'sev', label: `状态 ${t(`list.filters.${severityFilter}`)}`, onClear: () => { setSeverityFilter('all'); setCurrentPage(1); } });
     if (retriedOnly) activePills.push({ key: 'retry', label: t('list.retriedOnly'), onClear: () => { setRetriedOnly(false); setCurrentPage(1); } });
@@ -582,6 +589,27 @@ export function Log() {
                     }
                 >
                 <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    <label className="relative flex min-w-0 items-center">
+                        <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                        <input
+                            type="text"
+                            value={searchKeyword}
+                            onChange={(e) => { setSearchKeyword(e.target.value); setCurrentPage(1); }}
+                            placeholder="搜索用户 / Key / 错误…"
+                            className="h-9 w-44 rounded-lg border border-input bg-background pl-8 pr-7 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring sm:w-56"
+                        />
+                        {searchKeyword && (
+                            <button
+                                type="button"
+                                onClick={() => { setSearchKeyword(''); setCurrentPage(1); }}
+                                aria-label="清空搜索"
+                                className="absolute right-2 top-1/2 grid size-4 -translate-y-1/2 place-items-center rounded-full text-muted-foreground transition-colors hover:text-foreground"
+                            >
+                                <X className="size-3" />
+                            </button>
+                        )}
+                    </label>
+
                     <label className="flex min-w-0 flex-wrap items-center gap-2">
                         <span className="text-sm font-medium text-card-foreground">Endpoint</span>
                         <select

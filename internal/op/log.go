@@ -77,6 +77,7 @@ type relayLogStreamTokenScope struct {
 	APIKeyID      int
 	Endpoint      string
 	Severity      string
+	Search        string
 	RetriedOnly   bool
 	HideModelTest bool
 	IsAdmin       bool
@@ -104,6 +105,7 @@ func RelayLogStreamTokenCreateWithTimeRange(scope model.RelayLogScope, isAdmin b
 		APIKeyID:      scope.APIKeyID,
 		Endpoint:      scope.Endpoint,
 		Severity:      scope.Severity,
+		Search:        scope.Search,
 		RetriedOnly:   scope.RetriedOnly,
 		HideModelTest: scope.HideModelTest,
 		IsAdmin:       isAdmin,
@@ -1056,7 +1058,30 @@ func relayLogMatchScope(relayLog model.RelayLog, scope *model.RelayLogScope) boo
 	if scope.HideModelTest && strings.HasPrefix(relayLog.RequestEndpoint, "model_test") {
 		return false
 	}
+	if scope.Search != "" && !relayLogSearchMatches(relayLog, scope.Search) {
+		return false
+	}
 	return true
+}
+
+func relayLogSearchMatches(relayLog model.RelayLog, search string) bool {
+	q := strings.ToLower(strings.TrimSpace(search))
+	if q == "" {
+		return true
+	}
+	if strings.Contains(strings.ToLower(relayLog.UserName), q) {
+		return true
+	}
+	if strings.Contains(strings.ToLower(relayLog.RequestAPIKeyName), q) {
+		return true
+	}
+	if strings.Contains(strings.ToLower(relayLog.Error), q) {
+		return true
+	}
+	if strings.Contains(strings.ToLower(relayLog.ErrorCode), q) {
+		return true
+	}
+	return false
 }
 
 // relayLogEndpointMatches reports whether a stored request_endpoint belongs to
@@ -1107,6 +1132,13 @@ func relayLogApplyScope(query *gorm.DB, scope *model.RelayLogScope) *gorm.DB {
 		// Exclude channel-test probe endpoints ("model_test", "model_test_responses", …).
 		// The underscore is escaped so it matches literally, not as a LIKE wildcard.
 		query = query.Where(`request_endpoint NOT LIKE ? ESCAPE '\'`, `model\_test%`)
+	}
+	if scope.Search != "" {
+		searchPattern := "%" + escapeLogEndpointLike(strings.ToLower(scope.Search)) + "%"
+		query = query.Where(
+			"LOWER(user_name) LIKE ? ESCAPE '\\' OR LOWER(request_api_key_name) LIKE ? ESCAPE '\\' OR LOWER(error) LIKE ? ESCAPE '\\' OR LOWER(error_code) LIKE ? ESCAPE '\\'",
+			searchPattern, searchPattern, searchPattern, searchPattern,
+		)
 	}
 	return query
 }

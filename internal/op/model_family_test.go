@@ -38,29 +38,6 @@ func TestFilterModelNamesForEndpointFamilyUsesSelectedChannelModels(t *testing.T
 		t.Fatalf("create discovered-only channel: %v", err)
 	}
 
-	for _, fixture := range []struct {
-		name      string
-		channelID int
-		modelName string
-	}{
-		{name: "claude-fable-5", channelID: anthropicChannel.ID, modelName: "claude-fable-5"},
-		{name: "gpt-5.5", channelID: openAIChannel.ID, modelName: "gpt-5.5"},
-	} {
-		group := model.Group{Name: fixture.name, Mode: model.GroupModeFailover}
-		if err := GroupCreate(&group, ctx); err != nil {
-			t.Fatalf("create group %s: %v", fixture.name, err)
-		}
-		if err := GroupItemAdd(&model.GroupItem{
-			GroupID:   group.ID,
-			ChannelID: fixture.channelID,
-			ModelName: fixture.modelName,
-			Priority:  1,
-			Weight:    1,
-		}, ctx); err != nil {
-			t.Fatalf("add group item %s: %v", fixture.name, err)
-		}
-	}
-
 	names := []string{"claude-fable-5", "gpt-5.5", "claude-discovered-only"}
 	assertChannelModels(t,
 		FilterModelNamesForEndpointFamily(ctx, names, model.APIKeyEndpointFamilyAnthropic),

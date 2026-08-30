@@ -61,23 +61,13 @@ func TestGeminiNativeRequestConvertsThroughOpenAIChannel(t *testing.T) {
 		BaseUrls: []dbmodel.BaseUrl{{
 			URL: upstream.URL,
 		}},
-		Keys: []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "openai-key"}},
+		Keys:         []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "openai-key"}},
+		Model:        "upstream-openai",
+		ModelMapping: map[string]string{"request-gemini": "upstream-openai"},
+		Priority:     1,
 	}
 	if err := op.ChannelCreate(&channel, ctx); err != nil {
 		t.Fatalf("create channel: %v", err)
-	}
-	group := dbmodel.Group{Name: "request-gemini", Mode: dbmodel.GroupModeFailover}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	if err := op.GroupItemAdd(&dbmodel.GroupItem{
-		GroupID:   group.ID,
-		ChannelID: channel.ID,
-		ModelName: "upstream-openai",
-		Priority:  1,
-		Weight:    1,
-	}, ctx); err != nil {
-		t.Fatalf("create group item: %v", err)
 	}
 
 	rec := httptest.NewRecorder()
@@ -184,23 +174,13 @@ func TestCustomOpenAIChatChannelUsesConfiguredEndpointPath(t *testing.T) {
 		BaseUrls: []dbmodel.BaseUrl{{
 			URL: upstream.URL + "/api/coding/paas/v4",
 		}},
-		Keys: []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "custom-key"}},
+		Keys:         []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "custom-key"}},
+		Model:        "glm-upstream",
+		ModelMapping: map[string]string{"request-glm": "glm-upstream"},
+		Priority:     1,
 	}
 	if err := op.ChannelCreate(&channel, ctx); err != nil {
 		t.Fatalf("create channel: %v", err)
-	}
-	group := dbmodel.Group{Name: "request-glm", Mode: dbmodel.GroupModeFailover}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	if err := op.GroupItemAdd(&dbmodel.GroupItem{
-		GroupID:   group.ID,
-		ChannelID: channel.ID,
-		ModelName: "glm-upstream",
-		Priority:  1,
-		Weight:    1,
-	}, ctx); err != nil {
-		t.Fatalf("create group item: %v", err)
 	}
 
 	rec := httptest.NewRecorder()
@@ -297,30 +277,18 @@ func TestOpenAIResponsesFallsBackToChatForCompatibleUpstream(t *testing.T) {
 	t.Cleanup(upstream.Close)
 
 	channel := dbmodel.Channel{
-		Name:    "GPT-CPA",
-		Type:    outbound.OutboundTypeOpenAIResponse,
-		Enabled: true,
-		Cloak:   dbmodel.ChannelCloak{Mode: "never"},
-		BaseUrls: []dbmodel.BaseUrl{{
-			URL: upstream.URL,
-		}},
-		Keys: []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "cpa-key"}},
+		Name:         "GPT-CPA",
+		Type:         outbound.OutboundTypeOpenAIResponse,
+		Enabled:      true,
+		Cloak:        dbmodel.ChannelCloak{Mode: "never"},
+		BaseUrls:     []dbmodel.BaseUrl{{URL: upstream.URL}},
+		Keys:         []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "cpa-key"}},
+		Model:        "gpt-5.5",
+		ModelMapping: map[string]string{"request-gpt": "gpt-5.5"},
+		Priority:     1,
 	}
 	if err := op.ChannelCreate(&channel, ctx); err != nil {
 		t.Fatalf("create channel: %v", err)
-	}
-	group := dbmodel.Group{Name: "request-gpt", Mode: dbmodel.GroupModeFailover}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	if err := op.GroupItemAdd(&dbmodel.GroupItem{
-		GroupID:   group.ID,
-		ChannelID: channel.ID,
-		ModelName: "gpt-5.5",
-		Priority:  1,
-		Weight:    1,
-	}, ctx); err != nil {
-		t.Fatalf("create group item: %v", err)
 	}
 
 	rec := httptest.NewRecorder()
@@ -424,30 +392,18 @@ func TestOpenAIResponsesFallsBackToChatForCompatibleUpstream503(t *testing.T) {
 	t.Cleanup(upstream.Close)
 
 	channel := dbmodel.Channel{
-		Name:    "muyuan-like-response",
-		Type:    outbound.OutboundTypeOpenAIResponse,
-		Enabled: true,
-		Cloak:   dbmodel.ChannelCloak{Mode: "never"},
-		BaseUrls: []dbmodel.BaseUrl{{
-			URL: upstream.URL,
-		}},
-		Keys: []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "cpa-key"}},
+		Name:         "muyuan-like-response",
+		Type:         outbound.OutboundTypeOpenAIResponse,
+		Enabled:      true,
+		Cloak:        dbmodel.ChannelCloak{Mode: "never"},
+		BaseUrls:     []dbmodel.BaseUrl{{URL: upstream.URL}},
+		Keys:         []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "cpa-key"}},
+		Model:        "gpt-5.5",
+		ModelMapping: map[string]string{"request-gpt-503": "gpt-5.5"},
+		Priority:     1,
 	}
 	if err := op.ChannelCreate(&channel, ctx); err != nil {
 		t.Fatalf("create channel: %v", err)
-	}
-	group := dbmodel.Group{Name: "request-gpt-503", Mode: dbmodel.GroupModeFailover}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	if err := op.GroupItemAdd(&dbmodel.GroupItem{
-		GroupID:   group.ID,
-		ChannelID: channel.ID,
-		ModelName: "gpt-5.5",
-		Priority:  1,
-		Weight:    1,
-	}, ctx); err != nil {
-		t.Fatalf("create group item: %v", err)
 	}
 
 	rec := httptest.NewRecorder()
@@ -508,30 +464,18 @@ func TestOpenAIResponsesChatFallbackSynthesizesDoneOnUpstreamEOF(t *testing.T) {
 	t.Cleanup(upstream.Close)
 
 	channel := dbmodel.Channel{
-		Name:    "muyuan-like-eof",
-		Type:    outbound.OutboundTypeOpenAIResponse,
-		Enabled: true,
-		Cloak:   dbmodel.ChannelCloak{Mode: "never"},
-		BaseUrls: []dbmodel.BaseUrl{{
-			URL: upstream.URL,
-		}},
-		Keys: []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "cpa-key"}},
+		Name:         "muyuan-like-eof",
+		Type:         outbound.OutboundTypeOpenAIResponse,
+		Enabled:      true,
+		Cloak:        dbmodel.ChannelCloak{Mode: "never"},
+		BaseUrls:     []dbmodel.BaseUrl{{URL: upstream.URL}},
+		Keys:         []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "cpa-key"}},
+		Model:        "gpt-5.5",
+		ModelMapping: map[string]string{"request-gpt-eof": "gpt-5.5"},
+		Priority:     1,
 	}
 	if err := op.ChannelCreate(&channel, ctx); err != nil {
 		t.Fatalf("create channel: %v", err)
-	}
-	group := dbmodel.Group{Name: "request-gpt-eof", Mode: dbmodel.GroupModeFailover}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	if err := op.GroupItemAdd(&dbmodel.GroupItem{
-		GroupID:   group.ID,
-		ChannelID: channel.ID,
-		ModelName: "gpt-5.5",
-		Priority:  1,
-		Weight:    1,
-	}, ctx); err != nil {
-		t.Fatalf("create group item: %v", err)
 	}
 
 	rec := httptest.NewRecorder()
@@ -584,29 +528,17 @@ func TestAnthropicMessagesViaOpenAIChatSynthesizesStopOnUpstreamEOF(t *testing.T
 	t.Cleanup(upstream.Close)
 
 	channel := dbmodel.Channel{
-		Name:    "openai-chat-for-anthropic-eof",
-		Type:    outbound.OutboundTypeOpenAIChat,
-		Enabled: true,
-		BaseUrls: []dbmodel.BaseUrl{{
-			URL: upstream.URL,
-		}},
-		Keys: []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "openai-key"}},
+		Name:         "openai-chat-for-anthropic-eof",
+		Type:         outbound.OutboundTypeOpenAIChat,
+		Enabled:      true,
+		BaseUrls:     []dbmodel.BaseUrl{{URL: upstream.URL}},
+		Keys:         []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "openai-key"}},
+		Model:        "gpt-5.5",
+		ModelMapping: map[string]string{"request-claude-eof": "gpt-5.5"},
+		Priority:     1,
 	}
 	if err := op.ChannelCreate(&channel, ctx); err != nil {
 		t.Fatalf("create channel: %v", err)
-	}
-	group := dbmodel.Group{Name: "request-claude-eof", Mode: dbmodel.GroupModeFailover}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	if err := op.GroupItemAdd(&dbmodel.GroupItem{
-		GroupID:   group.ID,
-		ChannelID: channel.ID,
-		ModelName: "gpt-5.5",
-		Priority:  1,
-		Weight:    1,
-	}, ctx); err != nil {
-		t.Fatalf("create group item: %v", err)
 	}
 
 	rec := httptest.NewRecorder()
@@ -656,29 +588,17 @@ func TestOpenAIResponsesStreamLogsChatStyleUsageAliases(t *testing.T) {
 	t.Cleanup(upstream.Close)
 
 	channel := dbmodel.Channel{
-		Name:    "responses-compatible-alias-usage",
-		Type:    outbound.OutboundTypeOpenAIResponse,
-		Enabled: true,
-		BaseUrls: []dbmodel.BaseUrl{{
-			URL: upstream.URL,
-		}},
-		Keys: []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "responses-key"}},
+		Name:         "responses-compatible-alias-usage",
+		Type:         outbound.OutboundTypeOpenAIResponse,
+		Enabled:      true,
+		BaseUrls:     []dbmodel.BaseUrl{{URL: upstream.URL}},
+		Keys:         []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "responses-key"}},
+		Model:        "glm-upstream",
+		ModelMapping: map[string]string{"request-glm-responses": "glm-upstream"},
+		Priority:     1,
 	}
 	if err := op.ChannelCreate(&channel, ctx); err != nil {
 		t.Fatalf("create channel: %v", err)
-	}
-	group := dbmodel.Group{Name: "request-glm-responses", Mode: dbmodel.GroupModeFailover}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	if err := op.GroupItemAdd(&dbmodel.GroupItem{
-		GroupID:   group.ID,
-		ChannelID: channel.ID,
-		ModelName: "glm-upstream",
-		Priority:  1,
-		Weight:    1,
-	}, ctx); err != nil {
-		t.Fatalf("create group item: %v", err)
 	}
 
 	rec := httptest.NewRecorder()

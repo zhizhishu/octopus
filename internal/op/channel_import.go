@@ -91,7 +91,6 @@ func ChannelImportCSV(ctx context.Context, content []byte, options model.Channel
 			),
 			AnthropicContext1M: row.AnthropicContext1M,
 			AutoSync:           false,
-			AutoGroup:          model.AutoGroupTypeNone,
 			Cloak:              model.ChannelCloak{Mode: "auto"},
 		}
 		if err := ChannelCreate(&channel, ctx); err != nil {

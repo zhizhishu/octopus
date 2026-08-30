@@ -9,7 +9,6 @@ import (
 	"github.com/bestruirui/octopus/internal/db"
 	"github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/utils/cache"
-	"github.com/bestruirui/octopus/internal/utils/log"
 )
 
 var accessPlanCache = cache.New[int, model.AccessPlan](16)
@@ -442,21 +441,12 @@ func AccessPlanGroupForModel(plan *model.AccessPlan, requestModel string, ctx co
 		if len(items) == 0 {
 			return model.Group{}, &ruleCopy, false, nil
 		}
-		// The access-plan rule's own Mode is not surfaced in any UI and defaults to
-		// fill-first (GroupModeFailover), which made the model pool's group Mode a DEAD
-		// CONFIG for access-plan traffic: setting a pool to round-robin had no effect
-		// because access-plan routing used ruleCopy.Mode, not the group's Mode. Let the
-		// model's own group Mode (the one the user sets in the model pool) drive routing
-		// instead, so the pool's mode is authoritative end-to-end. Fall back to the rule
-		// Mode only when the model genuinely has no group.
-		mode := ruleCopy.Mode
-		if grp, gerr := GroupGetEnabledMap(requestModel, ctx); gerr == nil && grp.Mode != 0 {
-			mode = grp.Mode
-		}
+		// 模型池已砍，规则 Mode 是唯一来源；ModeLocked=true 保护画布显式选择不被全局默认覆盖。
 		return model.Group{
-			Name:  model.CleanOneMillionCapabilityModelName(requestModel),
-			Mode:  mode,
-			Items: items,
+			Name:       model.CleanOneMillionCapabilityModelName(requestModel),
+			Mode:       ruleCopy.Mode,
+			ModeLocked: true,
+			Items:      items,
 		}, &ruleCopy, true, nil
 	}
 	return model.Group{}, nil, false, nil
@@ -1081,14 +1071,6 @@ func AccessPlanUpdateRouteTargets(accessPlanID int, targets []model.AccessRouteT
 		return model.AccessPlan{}, err
 	}
 	if err := accessPlanRefreshCache(ctx); err != nil {
-	// 画布调了候选顺序 → 同步到模型池同名 group 的 group_items（best-effort，
-	// 失败只记日志、不阻断方案保存；否则画布和模型池的顺序会各走各的）。
-	for _, key := range order {
-		bucket := buckets[key]
-		if err := SyncGroupItemsPriorityFromTargets(ctx, bucket.rule.RequestModel, bucket.targets); err != nil {
-			log.Warnf("failed to sync model pool priority for %s: %v", bucket.rule.RequestModel, err)
-		}
-	}
 		return model.AccessPlan{}, err
 	}
 	return accessPlanGetCached(accessPlanID, ctx)

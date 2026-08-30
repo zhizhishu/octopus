@@ -33,43 +33,30 @@ func TestConcurrentResponsesStreamingRoundRobinCompletesAllTurns(t *testing.T) {
 	t.Cleanup(right.Close)
 
 	leftChannel := dbmodel.Channel{
-		Name:    "concurrent-left",
-		Type:    outbound.OutboundTypeOpenAIResponse,
-		Enabled: true,
-		BaseUrls: []dbmodel.BaseUrl{{
-			URL: left.URL,
-		}},
-		Keys: []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "left-key"}},
+		Name:         "concurrent-left",
+		Type:         outbound.OutboundTypeOpenAIResponse,
+		Enabled:      true,
+		BaseUrls:     []dbmodel.BaseUrl{{URL: left.URL}},
+		Keys:         []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "left-key"}},
+		Model:        "upstream-concurrent",
+		ModelMapping: map[string]string{"gpt-concurrent-stream": "upstream-concurrent"},
+		Priority:     1,
 	}
 	if err := op.ChannelCreate(&leftChannel, ctx); err != nil {
 		t.Fatalf("create left channel: %v", err)
 	}
 	rightChannel := dbmodel.Channel{
-		Name:    "concurrent-right",
-		Type:    outbound.OutboundTypeOpenAIResponse,
-		Enabled: true,
-		BaseUrls: []dbmodel.BaseUrl{{
-			URL: right.URL,
-		}},
-		Keys: []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "right-key"}},
+		Name:         "concurrent-right",
+		Type:         outbound.OutboundTypeOpenAIResponse,
+		Enabled:      true,
+		BaseUrls:     []dbmodel.BaseUrl{{URL: right.URL}},
+		Keys:         []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "right-key"}},
+		Model:        "upstream-concurrent",
+		ModelMapping: map[string]string{"gpt-concurrent-stream": "upstream-concurrent"},
+		Priority:     1,
 	}
 	if err := op.ChannelCreate(&rightChannel, ctx); err != nil {
 		t.Fatalf("create right channel: %v", err)
-	}
-	group := dbmodel.Group{Name: "gpt-concurrent-stream", Mode: dbmodel.GroupModeRoundRobin}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	for _, channelID := range []int{leftChannel.ID, rightChannel.ID} {
-		if err := op.GroupItemAdd(&dbmodel.GroupItem{
-			GroupID:   group.ID,
-			ChannelID: channelID,
-			ModelName: "upstream-concurrent",
-			Priority:  1,
-			Weight:    1,
-		}, ctx); err != nil {
-			t.Fatalf("create group item: %v", err)
-		}
 	}
 
 	var wg sync.WaitGroup
@@ -123,6 +110,16 @@ func TestConcurrentResponsesClientSessionsDoNotCrossStickyChannels(t *testing.T)
 	gin.SetMode(gin.TestMode)
 	ctx := setupRelayKeyRetryDB(t)
 
+	// The pool grouped channels under a group with SessionKeepTime=300; the channels-
+	// only fallback reads the global session_keep_time_default instead, so seed it to
+	// keep this correctness-focused session pinning.
+	if err := op.InitCache(); err != nil {
+		t.Fatalf("init cache: %v", err)
+	}
+	if err := op.SettingSetString(dbmodel.SettingKeySessionKeepTimeDefault, "300"); err != nil {
+		t.Fatalf("set session keep time default: %v", err)
+	}
+
 	left := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeCodexShapeResponsesSSEWithText(w, "resp-session-left", "upstream-session-isolation", "LEFT")
 	}))
@@ -133,47 +130,30 @@ func TestConcurrentResponsesClientSessionsDoNotCrossStickyChannels(t *testing.T)
 	t.Cleanup(right.Close)
 
 	leftChannel := dbmodel.Channel{
-		Name:    "session-left",
-		Type:    outbound.OutboundTypeOpenAIResponse,
-		Enabled: true,
-		BaseUrls: []dbmodel.BaseUrl{{
-			URL: left.URL,
-		}},
-		Keys: []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "left-key"}},
+		Name:         "session-left",
+		Type:         outbound.OutboundTypeOpenAIResponse,
+		Enabled:      true,
+		BaseUrls:     []dbmodel.BaseUrl{{URL: left.URL}},
+		Keys:         []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "left-key"}},
+		Model:        "upstream-session-isolation",
+		ModelMapping: map[string]string{"gpt-session-isolation": "upstream-session-isolation"},
+		Priority:     1,
 	}
 	if err := op.ChannelCreate(&leftChannel, ctx); err != nil {
 		t.Fatalf("create left channel: %v", err)
 	}
 	rightChannel := dbmodel.Channel{
-		Name:    "session-right",
-		Type:    outbound.OutboundTypeOpenAIResponse,
-		Enabled: true,
-		BaseUrls: []dbmodel.BaseUrl{{
-			URL: right.URL,
-		}},
-		Keys: []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "right-key"}},
+		Name:         "session-right",
+		Type:         outbound.OutboundTypeOpenAIResponse,
+		Enabled:      true,
+		BaseUrls:     []dbmodel.BaseUrl{{URL: right.URL}},
+		Keys:         []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "right-key"}},
+		Model:        "upstream-session-isolation",
+		ModelMapping: map[string]string{"gpt-session-isolation": "upstream-session-isolation"},
+		Priority:     1,
 	}
 	if err := op.ChannelCreate(&rightChannel, ctx); err != nil {
 		t.Fatalf("create right channel: %v", err)
-	}
-	group := dbmodel.Group{
-		Name:            "gpt-session-isolation",
-		Mode:            dbmodel.GroupModeRoundRobin,
-		SessionKeepTime: 300,
-	}
-	if err := op.GroupCreate(&group, ctx); err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	for _, channelID := range []int{leftChannel.ID, rightChannel.ID} {
-		if err := op.GroupItemAdd(&dbmodel.GroupItem{
-			GroupID:   group.ID,
-			ChannelID: channelID,
-			ModelName: "upstream-session-isolation",
-			Priority:  1,
-			Weight:    1,
-		}, ctx); err != nil {
-			t.Fatalf("create group item: %v", err)
-		}
 	}
 
 	call := func(sessionID string) string {

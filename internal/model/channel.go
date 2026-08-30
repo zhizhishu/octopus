@@ -10,15 +10,6 @@ import (
 	"github.com/bestruirui/octopus/internal/utils/xurl"
 )
 
-type AutoGroupType int
-
-const (
-	AutoGroupTypeNone  AutoGroupType = 0 //不自动分组
-	AutoGroupTypeFuzzy AutoGroupType = 1 //模糊匹配
-	AutoGroupTypeExact AutoGroupType = 2 //准确匹配
-	AutoGroupTypeRegex AutoGroupType = 3 //正则匹配
-)
-
 // KeySelectStrategy controls the order in which a channel's available keys are tried.
 type KeySelectStrategy int
 
@@ -65,7 +56,6 @@ type Channel struct {
 	AnthropicContext1M    bool               `json:"anthropic_context_1m" gorm:"column:anthropic_context_1m;default:false"`
 	Proxy                 bool               `json:"proxy" gorm:"default:false"`
 	AutoSync              bool               `json:"auto_sync" gorm:"default:false"`
-	AutoGroup             AutoGroupType      `json:"auto_group" gorm:"default:0"`
 	CustomHeader          []CustomHeader     `json:"custom_header" gorm:"serializer:json"`
 	Cloak                 ChannelCloak       `json:"cloak" gorm:"serializer:json"`
 	// ThinkingToContent (opt-in, default false) mirrors new-api's thinking_to_content:
@@ -152,7 +142,6 @@ type ChannelUpdateRequest struct {
 	ThinkingToContent     *bool                  `json:"thinking_to_content,omitempty"`
 	Proxy                 *bool                  `json:"proxy,omitempty"`
 	AutoSync              *bool                  `json:"auto_sync,omitempty"`
-	AutoGroup             *AutoGroupType         `json:"auto_group,omitempty"`
 	CustomHeader          *[]CustomHeader        `json:"custom_header,omitempty"`
 	Cloak                 *ChannelCloak          `json:"cloak,omitempty"`
 	ChannelProxy          *string                `json:"channel_proxy,omitempty"`
