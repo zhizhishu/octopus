@@ -697,8 +697,7 @@
             "inputCache": "Input/Cache",
             "outputCache": "Output/Cache",
             "edit": "Edit",
-            "delete": "Delete"
-        
+            "delete": "Delete",
             "autoRescue": "Auto-rescued",
 },
         "overlay": {
