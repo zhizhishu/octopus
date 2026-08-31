@@ -314,6 +314,18 @@ func ChannelUpdate(req *model.ChannelUpdateRequest, ctx context.Context) (*model
 		selectFields = append(selectFields, "disable_circuit_breaker")
 		updates.DisableCircuitBreaker = *req.DisableCircuitBreaker
 	}
+	if req.RaceMode != nil {
+		selectFields = append(selectFields, "race_mode")
+		updates.RaceMode = *req.RaceMode
+	}
+	if req.RaceKeyConcurrency != nil {
+		selectFields = append(selectFields, "race_key_concurrency")
+		updates.RaceKeyConcurrency = *req.RaceKeyConcurrency
+	}
+	if req.RaceDelayMs != nil {
+		selectFields = append(selectFields, "race_delay_ms")
+		updates.RaceDelayMs = *req.RaceDelayMs
+	}
 	if req.Proxy != nil {
 		selectFields = append(selectFields, "proxy")
 		updates.Proxy = *req.Proxy

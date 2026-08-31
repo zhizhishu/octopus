@@ -108,14 +108,11 @@ type ResponseInbound struct {
 	usage *model.Usage
 
 	// sawContentAfterFinish records that a text / reasoning / tool delta arrived in a
-	// chunk at or after the one that first carried a finish_reason. Some upstreams
-	// (observed on the antigravity-backed gemini-3.7-flash channel) stamp EVERY
-	// streamed chunk with finish_reason="stop" AND a rolling usage block, rather than
-	// only the terminal one. Treating that first chunk as the end of the response
-	// completes the stream after a handful of characters and silently drops every
-	// later chunk, which downstream looks like "the model only answered a few words".
-	// Once this is set, the terminal response event is withheld until the transport
-	// really ends ([DONE] / TransformStreamEnd), so the remaining content still flows.
+	// chunk strictly after the one that first carried a finish_reason (i.e. hasFinished
+	// was already true in an earlier chunk). Some upstreams keep sending trailing text or
+	// repeated finish frames after the initial finish. Once this is set, the terminal
+	// response event is withheld until the transport really ends ([DONE] / TransformStreamEnd),
+	// so the remaining content still flows.
 	sawContentAfterFinish bool
 
 	// Stream chunks storage for aggregation
@@ -308,8 +305,15 @@ func (i *ResponseInbound) TransformStream(ctx context.Context, stream *model.Int
 		// of its own is a stray leftover past a genuine finish boundary and stays
 		// blocked, which is what keeps orphaned tool fragments out.
 		chunkCarriesContent := chunkCarriesGeneratedContent(choice)
+		rollingFinishChunk := choice.FinishReason != nil && chunkCarriesContent && stream.Usage != nil
 		contentIsStillInsideRun := !i.hasFinished ||
 			(chunkCarriesContent && choice.FinishReason != nil)
+
+		// Record if generated delta arrives strictly after finish_reason was already
+		// established in an earlier chunk.
+		if rollingFinishChunk || (i.hasFinished && chunkCarriesContent) {
+			i.sawContentAfterFinish = true
+		}
 
 		if !i.responseCompleted {
 			// Handle reasoning content delta.
@@ -341,18 +345,10 @@ func (i *ResponseInbound) TransformStream(ctx context.Context, stream *model.Int
 		}
 
 		// Handle finish reason: close open items at the finish boundary.
-		//
-		// Closing is skipped when content rode along in this very chunk: upstreams
-		// that repeat finish_reason on every chunk would otherwise close the message
-		// item after its first fragment and complete the response there, truncating
-		// the answer to a handful of characters. Those streams finalize on [DONE]
-		// instead, via completeResponseEvents.
 		if choice.FinishReason != nil && !i.hasFinished {
 			i.hasFinished = true
 			i.finishReason = strings.TrimSpace(*choice.FinishReason)
-			if chunkCarriesContent {
-				i.sawContentAfterFinish = true
-			} else {
+			if !rollingFinishChunk {
 				events = append(events, i.closeAllOpenItems()...)
 			}
 		}

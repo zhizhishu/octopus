@@ -144,8 +144,43 @@ export function getChannelRequestCount(channel: Channel): number {
     return Math.max(0, stats?.request_success ?? 0) + Math.max(0, stats?.request_failed ?? 0);
 }
 
-export function getChannelSuccessRate(channel: Channel): number | null {
-    const total = getChannelRequestCount(channel);
-    if (total <= 0) return null;
-    return Math.max(0, channel.stats?.request_success ?? 0) / total;
+export function filterChannel(channel: Channel, searchTerm: string): boolean {
+    const term = searchTerm.toLowerCase().trim();
+    if (!term) return true;
+
+    const family = getChannelEndpointFamily(channel);
+    const searchFields: string[] = [
+        channel.name ?? '',
+        String(channel.id ?? ''),
+        channel.model ?? '',
+        channel.custom_model ?? '',
+        ...(channel.selected_models ?? []),
+        ...(channel.discovered_models ?? []),
+        family.label ?? '',
+        family.shortLabel ?? '',
+    ];
+
+    // model_mapping alias and upstream
+    if (channel.model_mapping && typeof channel.model_mapping === 'object') {
+        for (const [alias, upstream] of Object.entries(channel.model_mapping)) {
+            if (alias) searchFields.push(alias);
+            if (upstream) searchFields.push(upstream);
+        }
+    }
+
+    // all base URLs
+    if (Array.isArray(channel.base_urls)) {
+        for (const item of channel.base_urls) {
+            if (item?.url) searchFields.push(item.url);
+        }
+    }
+
+    // Key remarks ONLY (strict: never search key plaintext)
+    if (Array.isArray(channel.keys)) {
+        for (const key of channel.keys) {
+            if (key?.remark) searchFields.push(key.remark);
+        }
+    }
+
+    return searchFields.some((field) => field.toLowerCase().includes(term));
 }

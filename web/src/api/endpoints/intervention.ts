@@ -11,6 +11,9 @@ export type InterventionSnapshot = {
     last_error: string;
     created_at: string;
     waiting_for: string;
+    status?: string;
+    rescue_round?: number;
+    next_retry_at?: string | null;
 };
 
 export type InterventionRetryRequest = {

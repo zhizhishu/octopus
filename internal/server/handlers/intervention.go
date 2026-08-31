@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/bestruirui/octopus/internal/op"
 	"github.com/bestruirui/octopus/internal/relay/intervention"
 	"github.com/bestruirui/octopus/internal/server/middleware"
 	"github.com/bestruirui/octopus/internal/server/resp"
@@ -69,8 +70,32 @@ func retryIntervention(c *gin.Context) {
 		resp.Error(c, http.StatusBadRequest, "channel_id is required")
 		return
 	}
+	if request.KeyID <= 0 {
+		resp.Error(c, http.StatusBadRequest, "key_id is required")
+		return
+	}
+	channel, err := op.ChannelGet(request.ChannelID, c.Request.Context())
+	if err != nil {
+		resp.Error(c, http.StatusBadRequest, "channel not found")
+		return
+	}
+	if !channel.Enabled {
+		resp.Error(c, http.StatusBadRequest, "channel is disabled")
+		return
+	}
+	keyIsEnabled := false
+	for _, channelKey := range channel.Keys {
+		if channelKey.ID == request.KeyID && channelKey.Enabled {
+			keyIsEnabled = true
+			break
+		}
+	}
+	if !keyIsEnabled {
+		resp.Error(c, http.StatusBadRequest, "key not found or disabled in channel")
+		return
+	}
 
-	err := intervention.Resolve(id, intervention.Resolution{
+	err = intervention.Resolve(id, intervention.Resolution{
 		Action:    intervention.ActionRetryChannel,
 		ChannelID: request.ChannelID,
 		KeyID:     request.KeyID,

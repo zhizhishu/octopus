@@ -117,4 +117,154 @@ func TestRelayLogSeverityCountsSQL(t *testing.T) {
 	if err != nil || len(found) != 1 || found[0].ID != 6002 {
 		t.Errorf("search rate_limit: got %v (len %d), want id 6002", found, len(found))
 	}
+
+	// Extended fuzzy search & provider/model filter tests
+	extendedLogs := []model.RelayLog{
+		{ID: 7001, Time: 7001, RequestModelName: "gpt-4o", ActualModelName: "gpt-4o-2024-08-06", ChannelId: 12, ChannelName: "OpenAI Main", RequestEndpoint: "chat", RequestPath: "/v1/chat/completions", SessionKey: "sess-abc-123"},
+		{ID: 7002, Time: 7002, RequestModelName: "claude-3-5-sonnet", ActualModelName: "claude-3-5-sonnet-20241022", ChannelId: 34, ChannelName: "Anthropic Direct", RequestEndpoint: "messages", RequestPath: "/v1/messages", SessionKey: "sess-def-456"},
+		{ID: 7003, Time: 7003, RequestModelName: "gemini-1.5-pro", ActualModelName: "gemini-1.5-pro-002", ChannelId: 56, ChannelName: "Google Vertex", RequestEndpoint: "gemini_generate_content", RequestPath: "/v1beta/models/gemini-1.5-pro:generateContent"},
+		{ID: 7004, Time: 7004, RequestModelName: "deepseek-chat", ActualModelName: "deepseek-v3", ChannelId: 78, ChannelName: "DeepSeek Official", RequestEndpoint: "chat", RequestPath: "/v1/chat/completions"},
+	}
+	if err := db.GetDB().WithContext(ctx).Create(&extendedLogs).Error; err != nil {
+		t.Fatalf("create extended logs: %v", err)
+	}
+
+	// 1. Search by channel_name
+	found, err = RelayLogList(ctx, nil, nil, 1, 20, &model.RelayLogScope{Search: "vertex"})
+	if err != nil || len(found) != 1 || found[0].ID != 7003 {
+		t.Errorf("search channel_name vertex: got %v (len %d), want id 7003", found, len(found))
+	}
+
+	// 2. Search by request_endpoint / request_path
+	found, err = RelayLogList(ctx, nil, nil, 1, 20, &model.RelayLogScope{Search: "generateContent"})
+	if err != nil || len(found) != 1 || found[0].ID != 7003 {
+		t.Errorf("search request_path generateContent: got %v (len %d), want id 7003", found, len(found))
+	}
+
+	// 3. Search by session_key
+	found, err = RelayLogList(ctx, nil, nil, 1, 20, &model.RelayLogScope{Search: "sess-abc"})
+	if err != nil || len(found) != 1 || found[0].ID != 7001 {
+		t.Errorf("search session_key sess-abc: got %v (len %d), want id 7001", found, len(found))
+	}
+
+	// 4. Search by numeric log ID or channel ID
+	found, err = RelayLogList(ctx, nil, nil, 1, 20, &model.RelayLogScope{Search: "7002"})
+	if err != nil || len(found) != 1 || found[0].ID != 7002 {
+		t.Errorf("search numeric log id 7002: got %v (len %d), want id 7002", found, len(found))
+	}
+	found, err = RelayLogList(ctx, nil, nil, 1, 20, &model.RelayLogScope{Search: "56"})
+	foundChannelID := false
+	for _, relayLog := range found {
+		if relayLog.ID == 7003 {
+			foundChannelID = true
+			break
+		}
+	}
+	if err != nil || !foundChannelID {
+		t.Errorf("search numeric channel id 56: got %v, want results to include id 7003", found)
+	}
+
+	// 5. Filter by provider taxonomy (anthropic, openai, google, deepseek)
+	found, err = RelayLogList(ctx, nil, nil, 1, 20, &model.RelayLogScope{Provider: "anthropic"})
+	if err != nil || len(found) != 1 || found[0].ID != 7002 {
+		t.Errorf("filter provider anthropic: got %v (len %d), want id 7002", found, len(found))
+	}
+	found, err = RelayLogList(ctx, nil, nil, 1, 20, &model.RelayLogScope{Provider: "deepseek"})
+	if err != nil || len(found) != 1 || found[0].ID != 7004 {
+		t.Errorf("filter provider deepseek: got %v (len %d), want id 7004", found, len(found))
+	}
+
+	// 6. Filter by model (request or actual)
+	found, err = RelayLogList(ctx, nil, nil, 1, 20, &model.RelayLogScope{Model: "gpt-4o"})
+	if err != nil || len(found) != 1 || found[0].ID != 7001 {
+		t.Errorf("filter request_model gpt-4o: got %v (len %d), want id 7001", found, len(found))
+	}
+	found, err = RelayLogList(ctx, nil, nil, 1, 20, &model.RelayLogScope{Model: "gpt-4o-2024-08-06"})
+	if err != nil || len(found) != 1 || found[0].ID != 7001 {
+		t.Errorf("filter actual_model gpt-4o-2024-08-06: got %v (len %d), want id 7001", found, len(found))
+	}
+
+	// 7. Filter by endpoint family (e.g. "gemini" family matches "gemini_generate_content")
+	found, err = RelayLogList(ctx, nil, nil, 1, 20, &model.RelayLogScope{Endpoint: "gemini"})
+	if err != nil || len(found) != 1 || found[0].ID != 7003 {
+		t.Errorf("filter endpoint family gemini: got %v (len %d), want id 7003", found, len(found))
+	}
+
+	// 8. Search numeric matching channel_id
+	numericLogs := []model.RelayLog{
+		{ID: 8001, Time: 8001, RequestModelName: "gpt-4o", ChannelId: 999, ChannelName: "Custom Channel 999"},
+	}
+	if err := db.GetDB().WithContext(ctx).Create(&numericLogs).Error; err != nil {
+		t.Fatalf("create numeric logs: %v", err)
+	}
+	found, err = RelayLogList(ctx, nil, nil, 1, 20, &model.RelayLogScope{Search: "999"})
+	if err != nil || len(found) != 1 || found[0].ID != 8001 {
+		t.Errorf("search channel_id 999: got %v (len %d), want id 8001", found, len(found))
+	}
+
+	// 9. Provider SQL and memory consistency tests
+	// Test slash provider prefix "openai/custom-model" matches provider "openai"
+	slashLogs := []model.RelayLog{
+		{ID: 8002, Time: 8002, RequestModelName: "openai/custom-agent", ActualModelName: "openai/custom-agent", ChannelId: 10},
+		{ID: 8003, Time: 8003, RequestModelName: "meta-llama/Llama-3-70B", ActualModelName: "meta-llama/Llama-3-70B", ChannelId: 11},
+		{ID: 8004, Time: 8004, RequestModelName: "not-a-google/my-model", ActualModelName: "not-a-google/my-model", ChannelId: 12},
+	}
+	if err := db.GetDB().WithContext(ctx).Create(&slashLogs).Error; err != nil {
+		t.Fatalf("create slash logs: %v", err)
+	}
+
+	// Provider "openai" should match 8002
+	found, err = RelayLogList(ctx, nil, nil, 1, 20, &model.RelayLogScope{Provider: "openai"})
+	found8002 := false
+	for _, l := range found {
+		if l.ID == 8002 {
+			found8002 = true
+		}
+	}
+	if !found8002 {
+		t.Errorf("expected provider openai to match openai/custom-agent (id 8002)")
+	}
+
+	// Provider "meta" should match 8003
+	found, err = RelayLogList(ctx, nil, nil, 1, 20, &model.RelayLogScope{Provider: "meta"})
+	if err != nil || len(found) != 1 || found[0].ID != 8003 {
+		t.Errorf("filter provider meta: got %v (len %d), want id 8003", found, len(found))
+	}
+
+	// Provider "google" should NOT match 8004
+	found, err = RelayLogList(ctx, nil, nil, 1, 20, &model.RelayLogScope{Provider: "google"})
+	for _, l := range found {
+		if l.ID == 8004 {
+			t.Errorf("provider google erroneously matched not-a-google/my-model (id 8004)")
+		}
+	}
+
+	// Unknown provider should match 0 rows
+	found, err = RelayLogList(ctx, nil, nil, 1, 20, &model.RelayLogScope{Provider: "unknown-provider-xyz"})
+	if err != nil || len(found) != 0 {
+		t.Errorf("unknown provider should match 0 rows, got %d", len(found))
+	}
+
+	// Verify memory matcher consistency
+	for _, log := range append(extendedLogs, slashLogs...) {
+		for _, p := range []string{"openai", "anthropic", "google", "deepseek", "meta", "unknown-xyz"} {
+			sqlScope := &model.RelayLogScope{Provider: p}
+			memMatch := RelayLogProviderMatches(log, p)
+			sqlFound, sqlErr := RelayLogList(ctx, nil, nil, 1, 100, sqlScope)
+			if sqlErr != nil {
+				t.Fatalf("SQL list error: %v", sqlErr)
+			}
+			foundInSQL := false
+			for _, sl := range sqlFound {
+				if sl.ID == log.ID {
+					foundInSQL = true
+					break
+				}
+			}
+			if memMatch != foundInSQL {
+				t.Errorf("log %d provider %s: memory=%v vs SQL=%v mismatch (model=%s/%s)",
+					log.ID, p, memMatch, foundInSQL, log.RequestModelName, log.ActualModelName)
+			}
+		}
+	}
 }

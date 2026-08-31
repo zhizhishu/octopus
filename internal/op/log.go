@@ -76,6 +76,8 @@ type relayLogStreamTokenScope struct {
 	UserID        int
 	APIKeyID      int
 	Endpoint      string
+	Provider      string
+	Model         string
 	Severity      string
 	Search        string
 	RetriedOnly   bool
@@ -104,6 +106,8 @@ func RelayLogStreamTokenCreateWithTimeRange(scope model.RelayLogScope, isAdmin b
 		UserID:        scope.UserID,
 		APIKeyID:      scope.APIKeyID,
 		Endpoint:      scope.Endpoint,
+		Provider:      scope.Provider,
+		Model:         scope.Model,
 		Severity:      scope.Severity,
 		Search:        scope.Search,
 		RetriedOnly:   scope.RetriedOnly,
@@ -992,6 +996,8 @@ func RelayLogUserSummary(relayLog model.RelayLog) model.RelayLogUserSummary {
 		AccessPlanSlug:     relayLog.AccessPlanSlug,
 		AccessPlanName:     relayLog.AccessPlanName,
 		BillingModel:       relayLog.BillingModel,
+		BaseInputPrice:     relayLog.BaseInputPrice,
+		BaseOutputPrice:    relayLog.BaseOutputPrice,
 	}
 }
 
@@ -1049,6 +1055,12 @@ func relayLogMatchScope(relayLog model.RelayLog, scope *model.RelayLogScope) boo
 	if scope.Endpoint != "" && !relayLogEndpointMatches(relayLog.RequestEndpoint, scope.Endpoint) {
 		return false
 	}
+	if scope.Provider != "" && !relayLogProviderMatches(relayLog, scope.Provider) {
+		return false
+	}
+	if scope.Model != "" && !relayLogModelMatches(relayLog, scope.Model) {
+		return false
+	}
 	if scope.Severity != "" && relayLogSeverityValue(relayLog) != scope.Severity {
 		return false
 	}
@@ -1069,10 +1081,35 @@ func relayLogSearchMatches(relayLog model.RelayLog, search string) bool {
 	if q == "" {
 		return true
 	}
+
+	if num, err := strconv.ParseInt(q, 10, 64); err == nil && num > 0 {
+		if relayLog.ID == num || int64(relayLog.ChannelId) == num {
+			return true
+		}
+	}
+
 	if strings.Contains(strings.ToLower(relayLog.UserName), q) {
 		return true
 	}
 	if strings.Contains(strings.ToLower(relayLog.RequestAPIKeyName), q) {
+		return true
+	}
+	if strings.Contains(strings.ToLower(relayLog.RequestModelName), q) {
+		return true
+	}
+	if strings.Contains(strings.ToLower(relayLog.ActualModelName), q) {
+		return true
+	}
+	if strings.Contains(strings.ToLower(relayLog.ChannelName), q) {
+		return true
+	}
+	if strings.Contains(strings.ToLower(relayLog.RequestEndpoint), q) {
+		return true
+	}
+	if strings.Contains(strings.ToLower(relayLog.RequestPath), q) {
+		return true
+	}
+	if strings.Contains(strings.ToLower(relayLog.SessionKey), q) {
 		return true
 	}
 	if strings.Contains(strings.ToLower(relayLog.Error), q) {
@@ -1084,12 +1121,128 @@ func relayLogSearchMatches(relayLog model.RelayLog, search string) bool {
 	return false
 }
 
+// relayLogModelMatches checks if the requested model or actual model equals the filter model (case-insensitive).
+func relayLogModelMatches(relayLog model.RelayLog, filterModel string) bool {
+	target := strings.ToLower(strings.TrimSpace(filterModel))
+	if target == "" {
+		return true
+	}
+	return strings.ToLower(strings.TrimSpace(relayLog.RequestModelName)) == target ||
+		strings.ToLower(strings.TrimSpace(relayLog.ActualModelName)) == target
+}
+
+// ProviderTaxonomyPrefixes maps unified provider IDs to their canonical model name prefix/substring markers.
+// Kept in sync with internal/price.Provider and web/src/lib/model-icons.tsx.
+var ProviderTaxonomyPrefixes = map[string][]string{
+	"openai":     {"gpt", "o1", "o3", "o4", "chatgpt", "text-embedding", "dall-e", "whisper", "tts"},
+	"anthropic":  {"claude"},
+	"google":     {"gemini", "gemma", "palm"},
+	"deepseek":   {"deepseek"},
+	"xai":        {"grok"},
+	"alibaba":    {"qwen", "qwq", "wanx"},
+	"zhipuai":    {"glm", "chatglm", "zhipu", "z-ai", "ox-", "ox_", "oxalpha", "niulai"},
+	"minimax":    {"minimax", "abab"},
+	"moonshotai": {"moonshot", "kimi"},
+	"mistral":    {"mistral", "mixtral", "codestral", "pixtral"},
+	"meta":       {"llama", "meta-llama"},
+	"bytedance":  {"doubao", "skylark"},
+	"baidu":      {"ernie", "wenxin"},
+	"tencent":    {"hunyuan"},
+	"cohere":     {"cohere", "command"},
+	"microsoft":  {"phi-", "wizardlm"},
+}
+
+// IsKnownProvider returns true if the given provider ID is recognized in the taxonomy.
+func IsKnownProvider(provider string) bool {
+	p := strings.ToLower(strings.TrimSpace(provider))
+	if p == "" {
+		return false
+	}
+	_, ok := ProviderTaxonomyPrefixes[p]
+	return ok
+}
+
+// normalizeModelForTaxonomy returns the path-prefix (if any) and basename for a model name.
+// E.g. "openai/gpt-4o" -> pathProvider: "openai", baseModel: "gpt-4o"
+// E.g. "claude-3-5-sonnet" -> pathProvider: "", baseModel: "claude-3-5-sonnet"
+func normalizeModelForTaxonomy(name string) (pathProvider string, baseModel string) {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	if lower == "" {
+		return "", ""
+	}
+	if idx := strings.LastIndex(lower, "/"); idx >= 0 {
+		pathProvider = lower[:idx]
+		if idx+1 < len(lower) {
+			baseModel = lower[idx+1:]
+		}
+		return pathProvider, baseModel
+	}
+	return "", lower
+}
+
+// modelMatchesProviderPrefixes returns true if modelName matches the given provider taxonomy.
+// It checks both the canonical provider prefix/path and the basename prefixes.
+// Unknown providers return false.
+func modelMatchesProviderPrefixes(modelName, provider string) bool {
+	p := strings.ToLower(strings.TrimSpace(provider))
+	if p == "" {
+		return false
+	}
+	prefixes, ok := ProviderTaxonomyPrefixes[p]
+	if !ok {
+		return false
+	}
+
+	pathProv, baseModel := normalizeModelForTaxonomy(modelName)
+	if baseModel == "" && pathProv == "" {
+		return false
+	}
+
+	// 1. If model has a path provider prefix (e.g. "openai/gpt-4" or "meta-llama/Llama-3"),
+	// match if path provider equals or ends with the provider key.
+	if pathProv != "" {
+		if pathProv == p || strings.HasSuffix(pathProv, "/"+p) || strings.HasPrefix(pathProv, p+"-") || strings.HasPrefix(pathProv, p+"_") {
+			return true
+		}
+		if p == "meta" && (pathProv == "meta-llama" || strings.HasPrefix(pathProv, "meta-")) {
+			return true
+		}
+	}
+
+	// 2. Match basename against controlled prefixes.
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(baseModel, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// RelayLogProviderMatches checks if either the request model or actual model belongs to the given provider taxonomy.
+func RelayLogProviderMatches(relayLog model.RelayLog, provider string) bool {
+	if strings.TrimSpace(provider) == "" {
+		return true
+	}
+	return modelMatchesProviderPrefixes(relayLog.ActualModelName, provider) ||
+		modelMatchesProviderPrefixes(relayLog.RequestModelName, provider)
+}
+
+func relayLogProviderMatches(relayLog model.RelayLog, provider string) bool {
+	return RelayLogProviderMatches(relayLog, provider)
+}
+
 // relayLogEndpointMatches reports whether a stored request_endpoint belongs to
 // the requested endpoint family: an exact match, or a "<family>_<variant>" form.
 // The relay stores variant endpoints as "<family>_<sub>" (e.g. gemini →
 // gemini_generate_content / gemini_stream_generate_content, images →
 // images_generations, videos → videos_poll), so the log filter matches by
 // family rather than requiring the caller to know every stored variant.
+// RelayLogEndpointMatches reports whether a stored request_endpoint belongs to
+// the requested endpoint family: an exact match, or a "<family>_<variant>" form.
+func RelayLogEndpointMatches(stored, filter string) bool {
+	return relayLogEndpointMatches(stored, filter)
+}
+
 func relayLogEndpointMatches(stored, filter string) bool {
 	return stored == filter || strings.HasPrefix(stored, filter+"_")
 }
@@ -1117,6 +1270,58 @@ func relayLogApplyScope(query *gorm.DB, scope *model.RelayLogScope) *gorm.DB {
 		// with relayLogEndpointMatches (memory path) and the SSE tail path.
 		query = query.Where("request_endpoint = ? OR request_endpoint LIKE ? ESCAPE '\\'", scope.Endpoint, escapeLogEndpointLike(scope.Endpoint)+`\_%`)
 	}
+	if scope.Model != "" {
+		m := strings.ToLower(strings.TrimSpace(scope.Model))
+		query = query.Where("LOWER(request_model_name) = ? OR LOWER(actual_model_name) = ?", m, m)
+	}
+	if scope.Provider != "" {
+		providerKey := strings.ToLower(strings.TrimSpace(scope.Provider))
+		prefixes, ok := ProviderTaxonomyPrefixes[providerKey]
+		if !ok {
+			// Unknown provider: reject/match nothing.
+			query = query.Where("1 = 0")
+		} else {
+			var conditions []string
+			var args []interface{}
+
+			// Model basename prefix conditions (e.g. "gpt%", "%/gpt%")
+			for _, prefix := range prefixes {
+				escaped := escapeLogEndpointLike(prefix)
+				patternStart := escaped + "%"
+				patternSlash := "%/" + escaped + "%"
+				for _, col := range []string{"LOWER(actual_model_name)", "LOWER(request_model_name)"} {
+					conditions = append(conditions, col+" LIKE ? ESCAPE '\\'", col+" LIKE ? ESCAPE '\\'")
+					args = append(args, patternStart, patternSlash)
+				}
+			}
+
+			// Provider path prefix conditions (e.g. "openai/%" or "openai-%" or "openai_%")
+			escapedProv := escapeLogEndpointLike(providerKey)
+			provSlash := escapedProv + "/%"
+			provSubSlash := "%/" + escapedProv + "/%"
+			provHyphen := escapedProv + "-%"
+			provUnderscore := escapedProv + "_%"
+			for _, col := range []string{"LOWER(actual_model_name)", "LOWER(request_model_name)"} {
+				conditions = append(conditions,
+					col+" LIKE ? ESCAPE '\\'",
+					col+" LIKE ? ESCAPE '\\'",
+					col+" LIKE ? ESCAPE '\\'",
+					col+" LIKE ? ESCAPE '\\'",
+				)
+				args = append(args, provSlash, provSubSlash, provHyphen, provUnderscore)
+			}
+			if providerKey == "meta" {
+				for _, col := range []string{"LOWER(actual_model_name)", "LOWER(request_model_name)"} {
+					conditions = append(conditions, col+" LIKE ? ESCAPE '\\'", col+" LIKE ? ESCAPE '\\'")
+					args = append(args, "meta-llama/%", "meta-%/%")
+				}
+			}
+
+			if len(conditions) > 0 {
+				query = query.Where(strings.Join(conditions, " OR "), args...)
+			}
+		}
+	}
 	switch scope.Severity {
 	case "error":
 		query = query.Where(relayLogErrorSQLCond)
@@ -1134,11 +1339,19 @@ func relayLogApplyScope(query *gorm.DB, scope *model.RelayLogScope) *gorm.DB {
 		query = query.Where(`request_endpoint NOT LIKE ? ESCAPE '\'`, `model\_test%`)
 	}
 	if scope.Search != "" {
-		searchPattern := "%" + escapeLogEndpointLike(strings.ToLower(scope.Search)) + "%"
-		query = query.Where(
-			"LOWER(user_name) LIKE ? ESCAPE '\\' OR LOWER(request_api_key_name) LIKE ? ESCAPE '\\' OR LOWER(error) LIKE ? ESCAPE '\\' OR LOWER(error_code) LIKE ? ESCAPE '\\'",
-			searchPattern, searchPattern, searchPattern, searchPattern,
-		)
+		trimmed := strings.TrimSpace(scope.Search)
+		searchPattern := "%" + escapeLogEndpointLike(strings.ToLower(trimmed)) + "%"
+		if num, err := strconv.ParseInt(trimmed, 10, 64); err == nil && num > 0 {
+			query = query.Where(
+				"id = ? OR channel_id = ? OR LOWER(user_name) LIKE ? ESCAPE '\\' OR LOWER(request_api_key_name) LIKE ? ESCAPE '\\' OR LOWER(request_model_name) LIKE ? ESCAPE '\\' OR LOWER(actual_model_name) LIKE ? ESCAPE '\\' OR LOWER(channel_name) LIKE ? ESCAPE '\\' OR LOWER(request_endpoint) LIKE ? ESCAPE '\\' OR LOWER(request_path) LIKE ? ESCAPE '\\' OR LOWER(session_key) LIKE ? ESCAPE '\\' OR LOWER(error) LIKE ? ESCAPE '\\' OR LOWER(error_code) LIKE ? ESCAPE '\\'",
+				num, int(num), searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern,
+			)
+		} else {
+			query = query.Where(
+				"LOWER(user_name) LIKE ? ESCAPE '\\' OR LOWER(request_api_key_name) LIKE ? ESCAPE '\\' OR LOWER(request_model_name) LIKE ? ESCAPE '\\' OR LOWER(actual_model_name) LIKE ? ESCAPE '\\' OR LOWER(channel_name) LIKE ? ESCAPE '\\' OR LOWER(request_endpoint) LIKE ? ESCAPE '\\' OR LOWER(request_path) LIKE ? ESCAPE '\\' OR LOWER(session_key) LIKE ? ESCAPE '\\' OR LOWER(error) LIKE ? ESCAPE '\\' OR LOWER(error_code) LIKE ? ESCAPE '\\'",
+				searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern,
+			)
+		}
 	}
 	return query
 }

@@ -1,6 +1,7 @@
 package model
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -45,36 +46,39 @@ type Channel struct {
 	// reason a direct connection can claw into a busy the relay while octopus could not).
 	// The zero value (false) — every pre-existing channel — keeps the full breaker
 	// behaviour byte-for-byte, so this is opt-in and changes nothing by default.
-	DisableCircuitBreaker bool               `json:"disable_circuit_breaker" gorm:"default:false"`
-	BaseUrls              []BaseUrl          `json:"base_urls" gorm:"serializer:json"`
-	Keys                  []ChannelKey       `json:"keys" gorm:"foreignKey:ChannelID"`
-	Model                 string             `json:"model"`
-	CustomModel           string             `json:"custom_model"`
-	DiscoveredModels      []string           `json:"discovered_models" gorm:"serializer:json"`
-	SelectedModels        []string           `json:"selected_models" gorm:"serializer:json"`
-	ModelMapping          map[string]string  `json:"model_mapping" gorm:"serializer:json"`
-	AnthropicContext1M    bool               `json:"anthropic_context_1m" gorm:"column:anthropic_context_1m;default:false"`
-	Proxy                 bool               `json:"proxy" gorm:"default:false"`
-	AutoSync              bool               `json:"auto_sync" gorm:"default:false"`
-	CustomHeader          []CustomHeader     `json:"custom_header" gorm:"serializer:json"`
-	Cloak                 ChannelCloak       `json:"cloak" gorm:"serializer:json"`
+	DisableCircuitBreaker bool              `json:"disable_circuit_breaker" gorm:"default:false"`
+	RaceMode              bool              `json:"race_mode" gorm:"default:false"`
+	RaceKeyConcurrency    int               `json:"race_key_concurrency" gorm:"default:2"`
+	RaceDelayMs           int               `json:"race_delay_ms" gorm:"default:0"`
+	BaseUrls              []BaseUrl         `json:"base_urls" gorm:"serializer:json"`
+	Keys                  []ChannelKey      `json:"keys" gorm:"foreignKey:ChannelID"`
+	Model                 string            `json:"model"`
+	CustomModel           string            `json:"custom_model"`
+	DiscoveredModels      []string          `json:"discovered_models" gorm:"serializer:json"`
+	SelectedModels        []string          `json:"selected_models" gorm:"serializer:json"`
+	ModelMapping          map[string]string `json:"model_mapping" gorm:"serializer:json"`
+	AnthropicContext1M    bool              `json:"anthropic_context_1m" gorm:"column:anthropic_context_1m;default:false"`
+	Proxy                 bool              `json:"proxy" gorm:"default:false"`
+	AutoSync              bool              `json:"auto_sync" gorm:"default:false"`
+	CustomHeader          []CustomHeader    `json:"custom_header" gorm:"serializer:json"`
+	Cloak                 ChannelCloak      `json:"cloak" gorm:"serializer:json"`
 	// ThinkingToContent (opt-in, default false) mirrors new-api's thinking_to_content:
 	// when the upstream only fills reasoning_content and leaves content empty (common
 	// on GLM with thinking + small max_tokens), fold reasoning into content so chat
 	// clients that only render message.content still see a reply. Shape-safe: only
 	// rewrites the application-layer body returned to the client, never outbound TLS.
 	ThinkingToContent    bool               `json:"thinking_to_content" gorm:"default:false"`
-	ParamOverride         *string            `json:"param_override"`
-	SystemPromptOverride  string             `json:"system_prompt_override"`
-	PromptOverrideMode    PromptOverrideMode `json:"prompt_override_mode" gorm:"default:append_system"`
-	ChannelProxy          *string            `json:"channel_proxy"`
-	OpenAIChatPath        string             `json:"openai_chat_path"`
-	OpenAIModelsPath      string             `json:"openai_models_path"`
-	Stats                 *StatsChannel      `json:"stats,omitempty" gorm:"foreignKey:ChannelID"`
-	MatchRegex            *string            `json:"match_regex"`
-	CircuitTripped        bool               `json:"circuit_tripped" gorm:"-"`
-	CircuitRemainingSecs  int                `json:"circuit_remaining_seconds" gorm:"-"`
-	CircuitOpenKeys       int                `json:"circuit_open_keys" gorm:"-"`
+	ParamOverride        *string            `json:"param_override"`
+	SystemPromptOverride string             `json:"system_prompt_override"`
+	PromptOverrideMode   PromptOverrideMode `json:"prompt_override_mode" gorm:"default:append_system"`
+	ChannelProxy         *string            `json:"channel_proxy"`
+	OpenAIChatPath       string             `json:"openai_chat_path"`
+	OpenAIModelsPath     string             `json:"openai_models_path"`
+	Stats                *StatsChannel      `json:"stats,omitempty" gorm:"foreignKey:ChannelID"`
+	MatchRegex           *string            `json:"match_regex"`
+	CircuitTripped       bool               `json:"circuit_tripped" gorm:"-"`
+	CircuitRemainingSecs int                `json:"circuit_remaining_seconds" gorm:"-"`
+	CircuitOpenKeys      int                `json:"circuit_open_keys" gorm:"-"`
 }
 
 type ChannelCircuitStatus struct {
@@ -133,6 +137,9 @@ type ChannelUpdateRequest struct {
 	RPMLimit              *int                   `json:"rpm_limit,omitempty"`
 	KeySelectStrategy     *KeySelectStrategy     `json:"key_select_strategy,omitempty"`
 	DisableCircuitBreaker *bool                  `json:"disable_circuit_breaker,omitempty"`
+	RaceMode              *bool                  `json:"race_mode,omitempty"`
+	RaceKeyConcurrency    *int                   `json:"race_key_concurrency,omitempty"`
+	RaceDelayMs           *int                   `json:"race_delay_ms,omitempty"`
 	BaseUrls              *[]BaseUrl             `json:"base_urls,omitempty"`
 	Model                 *string                `json:"model,omitempty"`
 	CustomModel           *string                `json:"custom_model,omitempty"`
@@ -199,6 +206,65 @@ type ChannelFetchModelRequest struct {
 	BaseURL string                `json:"base_url" binding:"required"`
 	Key     string                `json:"key" binding:"required"`
 	Proxy   bool                  `json:"proxy"`
+}
+
+// ValidateChannelRaceSettings validates race parameters for a channel or request.
+// Concurrency must be in [2, 5] (default 2 if 0/unspecified).
+// Delay ms must be in [0, 5000] (default 0 if unspecified).
+func ValidateChannelRaceSettings(raceMode bool, concurrency int, delayMs int) error {
+	if !raceMode {
+		return nil
+	}
+	if concurrency < 2 || concurrency > 5 {
+		return fmt.Errorf("race_key_concurrency must be between 2 and 5 (got %d)", concurrency)
+	}
+	if delayMs < 0 || delayMs > 5000 {
+		return fmt.Errorf("race_delay_ms must be between 0 and 5000 (got %d)", delayMs)
+	}
+	return nil
+}
+
+func (c *Channel) Validate() error {
+	if c == nil {
+		return nil
+	}
+	if c.RaceMode {
+		concurrency := c.RaceKeyConcurrency
+		if concurrency == 0 {
+			concurrency = 2
+		}
+		if err := ValidateChannelRaceSettings(true, concurrency, c.RaceDelayMs); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (req *ChannelUpdateRequest) Validate() error {
+	if req == nil {
+		return nil
+	}
+	concurrency := 2
+	if req.RaceKeyConcurrency != nil {
+		concurrency = *req.RaceKeyConcurrency
+	}
+	delayMs := 0
+	if req.RaceDelayMs != nil {
+		delayMs = *req.RaceDelayMs
+	}
+	if req.RaceMode != nil && *req.RaceMode {
+		if err := ValidateChannelRaceSettings(true, concurrency, delayMs); err != nil {
+			return err
+		}
+	} else {
+		if req.RaceKeyConcurrency != nil && (*req.RaceKeyConcurrency < 2 || *req.RaceKeyConcurrency > 5) {
+			return fmt.Errorf("race_key_concurrency must be between 2 and 5 (got %d)", *req.RaceKeyConcurrency)
+		}
+		if req.RaceDelayMs != nil && (*req.RaceDelayMs < 0 || *req.RaceDelayMs > 5000) {
+			return fmt.Errorf("race_delay_ms must be between 0 and 5000 (got %d)", *req.RaceDelayMs)
+		}
+	}
+	return nil
 }
 
 func (c *Channel) GetBaseUrl() string {

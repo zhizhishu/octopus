@@ -151,6 +151,8 @@ type RelayLogUserSummary struct {
 	AccessPlanSlug     string  `json:"access_plan_slug"`
 	AccessPlanName     string  `json:"access_plan_name"`
 	BillingModel       string  `json:"billing_model"`
+	BaseInputPrice     float64 `json:"base_input_price,omitempty"`
+	BaseOutputPrice    float64 `json:"base_output_price,omitempty"`
 }
 
 type RelayLogStorage struct {
@@ -163,6 +165,8 @@ type RelayLogScope struct {
 	UserID   int
 	APIKeyID int
 	Endpoint string
+	Provider string
+	Model    string
 	// Severity narrows to a single severity bucket: "success" | "warn" | "error".
 	// Empty means all. Kept in lockstep with the SQL / Go / web severity rules.
 	Severity string
@@ -175,8 +179,9 @@ type RelayLogScope struct {
 	// bad-window — can emit many test-probe failures; this filter keeps them from
 	// drowning out real traffic in the log view. Orthogonal to every other field.
 	HideModelTest bool
-	// Search filters by user_name, request_api_key_name, and approximate error text
-	// (error / error_code) case-insensitively (substring match).
+	// Search filters by user_name, request_api_key_name, request_model_name,
+	// actual_model_name, channel_name, request_endpoint, request_path,
+	// session_key, error, and error_code case-insensitively, or numeric log/channel id.
 	Search string
 	Redact bool
 }

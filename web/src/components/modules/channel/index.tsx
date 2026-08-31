@@ -9,10 +9,8 @@ import { cn } from '@/lib/utils';
 import {
     CHANNEL_ENDPOINT_FAMILIES,
     type ChannelEndpointFilter,
+    filterChannel,
     getChannelEndpointFamily,
-    getPrimaryBaseUrl,
-    getPrimaryChannelModel,
-    getSelectedChannelModels,
 } from './channel-utils';
 
 export function Channel() {
@@ -40,22 +38,12 @@ export function Channel() {
 
     const visibleChannels = useMemo(() => {
         const term = searchTerm.toLowerCase().trim();
-        const byName = !term ? sortedChannels : sortedChannels.filter((c) => {
-            const family = getChannelEndpointFamily(c.raw);
-            return [
-                c.raw.name,
-                getSelectedChannelModels(c.raw).join(','),
-                getPrimaryBaseUrl(c.raw),
-                getPrimaryChannelModel(c.raw),
-                family.label,
-                family.shortLabel,
-            ].some((value) => value.toLowerCase().includes(term));
-        });
+        const bySearch = !term ? sortedChannels : sortedChannels.filter((c) => filterChannel(c.raw, term));
 
-        if (filter === 'enabled') return byName.filter((c) => c.raw.enabled);
-        if (filter === 'disabled') return byName.filter((c) => !c.raw.enabled);
+        if (filter === 'enabled') return bySearch.filter((c) => c.raw.enabled);
+        if (filter === 'disabled') return bySearch.filter((c) => !c.raw.enabled);
 
-        return byName;
+        return bySearch;
     }, [sortedChannels, searchTerm, filter]);
 
     const endpointOptions = useMemo(() => {

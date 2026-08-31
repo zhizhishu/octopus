@@ -4,9 +4,32 @@ import {
     MorphingDialogContainer,
     MorphingDialogContent,
 } from '@/components/ui/morphing-dialog';
-import { Activity, AlertTriangle, CheckCircle2, Copy, DollarSign, Key, Layers, Loader2, MessageSquare, Play, RotateCcw, XCircle, Server } from 'lucide-react';
+import {
+    Activity,
+    AlertTriangle,
+    Check,
+    CheckCircle2,
+    Copy,
+    DollarSign,
+    Key,
+    Layers,
+    MessageSquare,
+    Pencil,
+    Play,
+    RotateCcw,
+    Server,
+    Trash2,
+    X,
+    XCircle,
+} from 'lucide-react';
 import { type StatsMetricsFormatted } from '@/api/endpoints/stats';
-import { type Channel, useCopyChannel, useEnableChannel, useResetChannelCircuit } from '@/api/endpoints/channel';
+import {
+    type Channel,
+    useCopyChannel,
+    useDeleteChannel,
+    useEnableChannel,
+    useResetChannelCircuit,
+} from '@/api/endpoints/channel';
 import { CardContent } from './CardContent';
 import { useTranslations } from 'next-intl';
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/animate-ui/components/animate/tooltip';
@@ -14,6 +37,7 @@ import { toast } from '@/components/common/Toast';
 import { Switch } from '@/components/ui/switch';
 import { useMemo, useState, type MouseEvent } from 'react';
 import { cn } from '@/lib/utils';
+import { Badge } from '@/components/ui/badge';
 import { ChannelTestDialog } from './channel-test-dialog';
 import {
     getChannelEndpointFamily,
@@ -26,8 +50,12 @@ export function Card({ channel, stats, layout = 'list' }: { channel: Channel; st
     const tMetrics = useTranslations('channel.detail.metrics');
     const enableChannel = useEnableChannel();
     const copyChannel = useCopyChannel();
+    const deleteChannel = useDeleteChannel();
     const resetCircuit = useResetChannelCircuit();
     const [testDialogOpen, setTestDialogOpen] = useState(false);
+    const [openInEditing, setOpenInEditing] = useState(false);
+    const [isConfirmingDelete, setIsConfirmingDelete] = useState(false);
+
     const circuitLabel = channel.circuit_remaining_seconds > 0
         ? t('circuit.remaining', { seconds: channel.circuit_remaining_seconds })
         : t('circuit.open');
@@ -39,6 +67,9 @@ export function Card({ channel, stats, layout = 'list' }: { channel: Channel; st
     const isGridLayout = layout === 'grid';
     const family = getChannelEndpointFamily(channel);
     const primaryModel = getPrimaryChannelModel(channel);
+
+    const hoverActionClass = 'flex size-8 items-center justify-center rounded-lg transition-all active:scale-95 sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100';
+
     const handleEnableChange = (checked: boolean) => {
         enableChannel.mutate(
             { id: channel.id, enabled: checked },
@@ -78,42 +109,115 @@ export function Card({ channel, stats, layout = 'list' }: { channel: Channel; st
         );
     };
 
-
     return (
         <MorphingDialog>
             <MorphingDialogTrigger className="w-full">
-                <article className={cn(
-                    'max-w-full overflow-hidden rounded-lg border bg-card text-card-foreground transition-colors hover:bg-muted/30',
-                    channel.circuit_tripped ? 'border-destructive/70' : 'border-border',
-                    isGridLayout
-                        ? 'flex min-h-[232px] flex-col gap-3 p-4'
-                        : 'grid min-h-[84px] grid-cols-1 items-center gap-3 px-3 py-2 md:grid-cols-[minmax(0,1.4fr)_minmax(0,2fr)_auto] md:px-4'
-                )}>
-                    <div className="flex min-w-0 items-center gap-3">
-                        <span className={cn(
-                            'flex h-9 w-9 shrink-0 items-center justify-center rounded-md',
-                            channel.enabled ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : 'bg-muted text-muted-foreground'
-                        )}>
-                            <Server className="size-4" />
-                        </span>
-                        <div className="min-w-0">
-                            <div className="flex min-w-0 items-center gap-2">
-                                <span className={cn('h-2 w-2 shrink-0 rounded-full', channel.enabled ? 'bg-emerald-500' : 'bg-muted-foreground/50')} />
-                                <Tooltip side="top" sideOffset={10} align="center">
-                                    <TooltipTrigger asChild>
-                                        <h3 className="min-w-0 truncate text-sm font-semibold md:text-base">{channel.name}</h3>
-                                    </TooltipTrigger>
-                                    <TooltipContent key={channel.name}>{channel.name}</TooltipContent>
-                                </Tooltip>
-                            </div>
-                            <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-                                <span>#{channel.id}</span>
-                                <span>P{channel.priority ?? 0}</span>
-                                <span>{family.shortLabel}</span>
-                                {primaryModel && <span className={cn('truncate', isGridLayout ? 'max-w-full' : 'max-w-[12rem]')}>{primaryModel}</span>}
+                <article
+                    onClickCapture={() => setOpenInEditing(false)}
+                    className={cn(
+                        'group max-w-full overflow-hidden rounded-lg border bg-card text-card-foreground transition-colors hover:bg-muted/30',
+                        channel.circuit_tripped ? 'border-destructive/70' : 'border-border',
+                        isGridLayout
+                            ? 'flex min-h-[232px] flex-col gap-3 p-4'
+                            : 'grid min-h-[84px] grid-cols-1 items-center gap-3 px-3 py-2 md:grid-cols-[minmax(0,1.4fr)_minmax(0,2fr)_auto] md:px-4'
+                    )}
+                >
+                    <header className="flex min-w-0 items-center justify-between gap-3">
+                        <div className="flex min-w-0 items-center gap-3">
+                            <span className={cn(
+                                'flex h-9 w-9 shrink-0 items-center justify-center rounded-md',
+                                channel.enabled ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : 'bg-muted text-muted-foreground'
+                            )}>
+                                <Server className="size-4" />
+                            </span>
+                            <div className="min-w-0">
+                                <div className="flex min-w-0 items-center gap-2">
+                                    <span className={cn('h-2 w-2 shrink-0 rounded-full', channel.enabled ? 'bg-emerald-500' : 'bg-muted-foreground/50')} />
+                                    <Tooltip side="top" sideOffset={10} align="center">
+                                        <TooltipTrigger asChild>
+                                            <h3 className="min-w-0 truncate text-sm font-semibold md:text-base">{channel.name}</h3>
+                                        </TooltipTrigger>
+                                        <TooltipContent key={channel.name}>{channel.name}</TooltipContent>
+                                    </Tooltip>
+                                </div>
+                                <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+                                    <span>#{channel.id}</span>
+                                    <span>P{channel.priority ?? 0}</span>
+                                    <span>{family.shortLabel}</span>
+                                    {channel.race_mode && (
+                                        <Badge variant="outline" className="h-4 border-amber-500/40 bg-amber-500/10 px-1 text-[10px] font-normal text-amber-600 dark:text-amber-400">
+                                            竞速 x{channel.race_key_concurrency || 2}{channel.race_delay_ms > 0 ? ` +${channel.race_delay_ms}ms` : ''}
+                                        </Badge>
+                                    )}
+                                    {primaryModel && <span className={cn('truncate', isGridLayout ? 'max-w-full' : 'max-w-[12rem]')}>{primaryModel}</span>}
+                                </div>
                             </div>
                         </div>
-                    </div>
+
+                        <div
+                            className="flex shrink-0 items-center gap-1"
+                            onClick={(e) => e.stopPropagation()}
+                            onPointerDown={(e) => e.stopPropagation()}
+                        >
+                            {isConfirmingDelete ? (
+                                <>
+                                    <button
+                                        type="button"
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            setIsConfirmingDelete(false);
+                                        }}
+                                        title={t('cancel')}
+                                        aria-label={t('cancel')}
+                                        className="flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-all hover:text-foreground active:scale-95"
+                                    >
+                                        <X className="size-4" />
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            deleteChannel.mutate(channel.id, {
+                                                onSuccess: () => {
+                                                    setIsConfirmingDelete(false);
+                                                },
+                                            });
+                                        }}
+                                        disabled={deleteChannel.isPending}
+                                        title={t('confirmDelete')}
+                                        aria-label={t('confirmDelete')}
+                                        className="flex size-8 items-center justify-center rounded-lg text-destructive transition-all hover:text-destructive/70 active:scale-95 disabled:opacity-50"
+                                    >
+                                        <Check className="size-4" />
+                                    </button>
+                                </>
+                            ) : (
+                                <>
+                                    <button
+                                        type="button"
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            setIsConfirmingDelete(true);
+                                        }}
+                                        title={t('delete')}
+                                        aria-label={t('delete')}
+                                        className={`${hoverActionClass} text-destructive hover:text-destructive/70`}
+                                    >
+                                        <Trash2 className="size-4" />
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setOpenInEditing(true)}
+                                        title={t('edit')}
+                                        aria-label={t('edit')}
+                                        className={`${hoverActionClass} text-muted-foreground hover:text-foreground`}
+                                    >
+                                        <Pencil className="size-4" />
+                                    </button>
+                                </>
+                            )}
+                        </div>
+                    </header>
 
                     <dl className={cn(
                         'grid min-w-0 gap-2',
@@ -250,7 +354,7 @@ export function Card({ channel, stats, layout = 'list' }: { channel: Channel; st
 
             <MorphingDialogContainer>
                 <MorphingDialogContent className="relative flex max-h-[calc(100dvh-1rem)] w-[calc(100vw-1rem)] max-w-full flex-col overflow-hidden rounded-3xl bg-card p-4 text-card-foreground md:max-h-[92vh] md:max-w-6xl md:p-6">
-                    <CardContent channel={channel} stats={stats} />
+                    <CardContent channel={channel} stats={stats} initialEditing={openInEditing} />
                 </MorphingDialogContent>
             </MorphingDialogContainer>
         </MorphingDialog>

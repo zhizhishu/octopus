@@ -94,6 +94,18 @@ func hideModelTestFromQuery(c *gin.Context) bool {
 	}
 }
 
+// providerFromQuery reads and normalizes ?provider=; unknown providers return "" (or rejection).
+func providerFromQuery(c *gin.Context) string {
+	p := strings.ToLower(strings.TrimSpace(c.Query("provider")))
+	if p == "" {
+		return ""
+	}
+	if !op.IsKnownProvider(p) {
+		return ""
+	}
+	return p
+}
+
 func listLog(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
@@ -114,6 +126,16 @@ func listLog(c *gin.Context) {
 	scope := logScopeFromContext(c)
 	if endpoint := strings.TrimSpace(c.Query("endpoint")); endpoint != "" {
 		scope.Endpoint = endpoint
+	}
+	if rawProv := strings.TrimSpace(c.Query("provider")); rawProv != "" {
+		if prov := providerFromQuery(c); prov != "" {
+			scope.Provider = prov
+		} else {
+			scope.Provider = "__unknown_rejected__"
+		}
+	}
+	if modelParam := strings.TrimSpace(c.Query("model")); modelParam != "" {
+		scope.Model = modelParam
 	}
 	if middleware.CurrentUserIsAdmin(c) {
 		var err error
@@ -162,6 +184,16 @@ func countLog(c *gin.Context) {
 	if endpoint := strings.TrimSpace(c.Query("endpoint")); endpoint != "" {
 		scope.Endpoint = endpoint
 	}
+	if rawProv := strings.TrimSpace(c.Query("provider")); rawProv != "" {
+		if prov := providerFromQuery(c); prov != "" {
+			scope.Provider = prov
+		} else {
+			scope.Provider = "__unknown_rejected__"
+		}
+	}
+	if modelParam := strings.TrimSpace(c.Query("model")); modelParam != "" {
+		scope.Model = modelParam
+	}
 	if middleware.CurrentUserIsAdmin(c) {
 		var err error
 		scope, err = logScopeFromAdminQuery(c, scope)
@@ -202,6 +234,16 @@ func exportLog(c *gin.Context) {
 	if endpoint := strings.TrimSpace(c.Query("endpoint")); endpoint != "" {
 		scope.Endpoint = endpoint
 	}
+	if rawProv := strings.TrimSpace(c.Query("provider")); rawProv != "" {
+		if prov := providerFromQuery(c); prov != "" {
+			scope.Provider = prov
+		} else {
+			scope.Provider = "__unknown_rejected__"
+		}
+	}
+	if modelParam := strings.TrimSpace(c.Query("model")); modelParam != "" {
+		scope.Model = modelParam
+	}
 	isAdmin := middleware.CurrentUserIsAdmin(c)
 	if isAdmin {
 		var err error
@@ -213,6 +255,10 @@ func exportLog(c *gin.Context) {
 	} else {
 		scope.Redact = true
 	}
+	scope.Severity = severityFromQuery(c)
+	scope.RetriedOnly = retriedFromQuery(c)
+	scope.HideModelTest = hideModelTestFromQuery(c)
+	scope.Search = strings.TrimSpace(c.Query("search"))
 
 	// Opt-in portable NDJSON/JSONL mode. The default (json array) behavior is
 	// unchanged. NDJSON is line-delimited so each record parses independently,
@@ -361,6 +407,16 @@ func getStreamToken(c *gin.Context) {
 	if endpoint := strings.TrimSpace(c.Query("endpoint")); endpoint != "" {
 		scope.Endpoint = endpoint
 	}
+	if rawProv := strings.TrimSpace(c.Query("provider")); rawProv != "" {
+		if prov := providerFromQuery(c); prov != "" {
+			scope.Provider = prov
+		} else {
+			scope.Provider = "__unknown_rejected__"
+		}
+	}
+	if modelParam := strings.TrimSpace(c.Query("model")); modelParam != "" {
+		scope.Model = modelParam
+	}
 	if middleware.CurrentUserIsAdmin(c) {
 		scope, err = logScopeFromAdminQuery(c, scope)
 		if err != nil {
@@ -371,6 +427,7 @@ func getStreamToken(c *gin.Context) {
 	scope.Severity = severityFromQuery(c)
 	scope.RetriedOnly = retriedFromQuery(c)
 	scope.HideModelTest = hideModelTestFromQuery(c)
+	scope.Search = strings.TrimSpace(c.Query("search"))
 	token, err := op.RelayLogStreamTokenCreateWithTimeRange(scope, middleware.CurrentUserIsAdmin(c), startTime, endTime)
 	if err != nil {
 		resp.Error(c, http.StatusInternalServerError, err.Error())
@@ -405,7 +462,7 @@ func streamLog(c *gin.Context) {
 		return
 	}
 
-	scope := model.RelayLogScope{UserID: tokenScope.UserID, APIKeyID: tokenScope.APIKeyID, Endpoint: tokenScope.Endpoint, Redact: !tokenScope.IsAdmin}
+	scope := model.RelayLogScope{UserID: tokenScope.UserID, APIKeyID: tokenScope.APIKeyID, Endpoint: tokenScope.Endpoint, Provider: tokenScope.Provider, Model: tokenScope.Model, Redact: !tokenScope.IsAdmin}
 	scope.Severity = tokenScope.Severity
 	scope.Search = tokenScope.Search
 	scope.RetriedOnly = tokenScope.RetriedOnly
@@ -537,9 +594,17 @@ func relayLogMatchesScope(log model.RelayLog, scope *model.RelayLogScope) bool {
 	if scope.APIKeyID > 0 && log.APIKeyID != scope.APIKeyID {
 		return false
 	}
-	if scope.Endpoint != "" && log.RequestEndpoint != scope.Endpoint && !strings.HasPrefix(log.RequestEndpoint, scope.Endpoint+"_") {
+	if scope.Endpoint != "" && !op.RelayLogEndpointMatches(log.RequestEndpoint, scope.Endpoint) {
 		// Family match, kept in sync with op.relayLogEndpointMatches / relayLogApplyScope.
 		return false
+	}
+	if scope.Model != "" && strings.ToLower(strings.TrimSpace(log.RequestModelName)) != strings.ToLower(strings.TrimSpace(scope.Model)) && strings.ToLower(strings.TrimSpace(log.ActualModelName)) != strings.ToLower(strings.TrimSpace(scope.Model)) {
+		return false
+	}
+	if scope.Provider != "" {
+		if !op.RelayLogProviderMatches(log, scope.Provider) {
+			return false
+		}
 	}
 	if scope.Severity != "" && op.RelayLogSeverityValue(log) != scope.Severity {
 		return false
@@ -553,8 +618,19 @@ func relayLogMatchesScope(log model.RelayLog, scope *model.RelayLogScope) bool {
 	if scope.Search != "" {
 		q := strings.ToLower(strings.TrimSpace(scope.Search))
 		if q != "" {
+			if num, err := strconv.ParseInt(q, 10, 64); err == nil && num > 0 {
+				if log.ID == num || int64(log.ChannelId) == num {
+					return true
+				}
+			}
 			if !strings.Contains(strings.ToLower(log.UserName), q) &&
 				!strings.Contains(strings.ToLower(log.RequestAPIKeyName), q) &&
+				!strings.Contains(strings.ToLower(log.RequestModelName), q) &&
+				!strings.Contains(strings.ToLower(log.ActualModelName), q) &&
+				!strings.Contains(strings.ToLower(log.ChannelName), q) &&
+				!strings.Contains(strings.ToLower(log.RequestEndpoint), q) &&
+				!strings.Contains(strings.ToLower(log.RequestPath), q) &&
+				!strings.Contains(strings.ToLower(log.SessionKey), q) &&
 				!strings.Contains(strings.ToLower(log.Error), q) &&
 				!strings.Contains(strings.ToLower(log.ErrorCode), q) {
 				return false

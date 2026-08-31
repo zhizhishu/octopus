@@ -31,6 +31,13 @@ const (
 	ActionAbort Action = "abort"
 )
 
+const (
+	// StatusAutoRetrying indicates the request is undergoing machine-first automatic rescue rounds.
+	StatusAutoRetrying = "auto_retrying"
+	// StatusAwaitingOperator indicates machine rescue rounds are exhausted and the request is awaiting human operator resolution.
+	StatusAwaitingOperator = "awaiting_operator"
+)
+
 var (
 	// ErrNotFound is returned when an intervention ID is unknown or already resolved.
 	ErrNotFound = errors.New("intervention not found")
@@ -52,8 +59,9 @@ type Resolution struct {
 	ModelName string `json:"model_name"`
 }
 
-// Pending is one held request awaiting an operator decision.
+// Pending is one held request awaiting an operator decision or automatic retry.
 type Pending struct {
+	mu           sync.Mutex
 	ID           string
 	LogID        int64
 	RequestModel string
@@ -61,6 +69,9 @@ type Pending struct {
 	Attempts     []model.ChannelAttempt
 	LastError    string
 	CreatedAt    time.Time
+	Status       string
+	RescueRound  int
+	NextRetryAt  *time.Time
 
 	resolve chan Resolution
 }
@@ -76,12 +87,88 @@ type Snapshot struct {
 	LastError    string                 `json:"last_error"`
 	CreatedAt    time.Time              `json:"created_at"`
 	WaitingFor   string                 `json:"waiting_for"`
+	Status       string                 `json:"status"`
+	RescueRound  int                    `json:"rescue_round"`
+	NextRetryAt  *time.Time             `json:"next_retry_at,omitempty"`
 }
 
 var registry = struct {
 	sync.RWMutex
 	pending map[string]*Pending
 }{pending: make(map[string]*Pending)}
+
+func cloneAttempts(attempts []model.ChannelAttempt) []model.ChannelAttempt {
+	if attempts == nil {
+		return nil
+	}
+	cp := make([]model.ChannelAttempt, len(attempts))
+	copy(cp, attempts)
+	return cp
+}
+
+// BackoffDuration calculates the deterministic capped exponential backoff duration (1s, 2s, 4s, 8s, max 15s).
+func BackoffDuration(round int) time.Duration {
+	if round <= 1 {
+		return 1 * time.Second
+	}
+	shift := round - 1
+	if shift > 4 {
+		return 15 * time.Second
+	}
+	secs := 1 << shift
+	if secs > 15 {
+		secs = 15
+	}
+	return time.Duration(secs) * time.Second
+}
+
+// UpdateStatus updates the status, rescue round, and next retry timestamp in a concurrency-safe manner.
+func (p *Pending) UpdateStatus(status string, rescueRound int, nextRetryAt *time.Time) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.Status = status
+	p.RescueRound = rescueRound
+	if nextRetryAt != nil {
+		t := *nextRetryAt
+		p.NextRetryAt = &t
+	} else {
+		p.NextRetryAt = nil
+	}
+}
+
+// UpdateAttempts updates the recorded attempts and last error in a concurrency-safe manner.
+func (p *Pending) UpdateAttempts(attempts []model.ChannelAttempt, lastErr string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.Attempts = cloneAttempts(attempts)
+	if lastErr != "" {
+		p.LastError = lastErr
+	}
+}
+
+// UpdateStatus updates the status of a pending intervention by ID.
+func UpdateStatus(id string, status string, rescueRound int, nextRetryAt *time.Time) error {
+	registry.RLock()
+	p, ok := registry.pending[id]
+	registry.RUnlock()
+	if !ok {
+		return ErrNotFound
+	}
+	p.UpdateStatus(status, rescueRound, nextRetryAt)
+	return nil
+}
+
+// UpdateAttempts updates the recorded attempts of a pending intervention by ID.
+func UpdateAttempts(id string, attempts []model.ChannelAttempt, lastErr string) error {
+	registry.RLock()
+	p, ok := registry.pending[id]
+	registry.RUnlock()
+	if !ok {
+		return ErrNotFound
+	}
+	p.UpdateAttempts(attempts, lastErr)
+	return nil
+}
 
 func newID() string {
 	buf := make([]byte, 8)
@@ -102,10 +189,13 @@ func Register(p *Pending) (string, error) {
 	if p.CreatedAt.IsZero() {
 		p.CreatedAt = time.Now()
 	}
+	if p.Status == "" {
+		p.Status = StatusAutoRetrying
+	}
 	// Buffered so Resolve never blocks on an operator decision that arrives just as the
 	// waiter times out and stops reading.
 	p.resolve = make(chan Resolution, 1)
-	p.Attempts = append([]model.ChannelAttempt(nil), p.Attempts...)
+	p.Attempts = cloneAttempts(p.Attempts)
 
 	registry.Lock()
 	defer registry.Unlock()
@@ -119,27 +209,70 @@ func Register(p *Pending) (string, error) {
 	return p.ID, nil
 }
 
-// Wait blocks until an operator resolves the request, the client disconnects, or the
-// timeout elapses. The entry is removed in every case.
-func Wait(ctx context.Context, id string, timeout time.Duration) (Resolution, error) {
+// Wait blocks until an operator resolves the request, total timeout context is done, or the client disconnects.
+// The entry is removed when Wait returns.
+func Wait(ctx context.Context, id string) (Resolution, error) {
+	defer remove(id)
+	return WaitOperator(ctx, id)
+}
+
+// WaitRound waits for either an operator resolution (preemption), client cancellation/timeout,
+// or the round backoff duration expiring.
+func WaitRound(ctx context.Context, id string, backoff time.Duration) (Resolution, bool, error) {
+	registry.RLock()
+	p, ok := registry.pending[id]
+	registry.RUnlock()
+	if !ok {
+		return Resolution{}, false, ErrNotFound
+	}
+
+	if backoff <= 0 {
+		select {
+		case resolution := <-p.resolve:
+			return resolution, true, nil
+		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return Resolution{}, false, ErrTimeout
+			}
+			return Resolution{}, false, ErrCanceled
+		default:
+			return Resolution{}, false, nil
+		}
+	}
+
+	timer := time.NewTimer(backoff)
+	defer timer.Stop()
+
+	select {
+	case resolution := <-p.resolve:
+		return resolution, true, nil
+	case <-ctx.Done():
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return Resolution{}, false, ErrTimeout
+		}
+		return Resolution{}, false, ErrCanceled
+	case <-timer.C:
+		return Resolution{}, false, nil
+	}
+}
+
+// WaitOperator blocks until an operator resolves the request, total timeout context is done, or client disconnects.
+func WaitOperator(ctx context.Context, id string) (Resolution, error) {
 	registry.RLock()
 	p, ok := registry.pending[id]
 	registry.RUnlock()
 	if !ok {
 		return Resolution{}, ErrNotFound
 	}
-	defer remove(id)
-
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
 
 	select {
 	case resolution := <-p.resolve:
 		return resolution, nil
 	case <-ctx.Done():
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return Resolution{}, ErrTimeout
+		}
 		return Resolution{}, ErrCanceled
-	case <-timer.C:
-		return Resolution{}, ErrTimeout
 	}
 }
 
@@ -200,14 +333,26 @@ func Get(id string) (Snapshot, bool) {
 }
 
 func (p *Pending) snapshot() Snapshot {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	var nextRetry *time.Time
+	if p.NextRetryAt != nil {
+		t := *p.NextRetryAt
+		nextRetry = &t
+	}
+
 	return Snapshot{
 		ID:           p.ID,
 		LogID:        p.LogID,
 		RequestModel: p.RequestModel,
 		Endpoint:     p.Endpoint,
-		Attempts:     append([]model.ChannelAttempt(nil), p.Attempts...),
+		Attempts:     cloneAttempts(p.Attempts),
 		LastError:    p.LastError,
 		CreatedAt:    p.CreatedAt,
 		WaitingFor:   time.Since(p.CreatedAt).Truncate(time.Second).String(),
+		Status:       p.Status,
+		RescueRound:  p.RescueRound,
+		NextRetryAt:  nextRetry,
 	}
 }

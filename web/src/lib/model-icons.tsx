@@ -55,7 +55,7 @@ type ModelIconConfig = {
  */
 const MODEL_ICON_PATTERNS: ModelIconConfig[] = [
     // OpenAI - GPT series
-    { prefixes: ['gpt-', 'o1', 'o3', 'o4', 'chatgpt', 'text-embedding', 'dall-e', 'openai'], Avatar: OpenAI.Avatar, color: '#10A37F' },
+    { prefixes: ['gpt-', 'gpt', 'o1', 'o3', 'o4', 'chatgpt', 'text-embedding', 'dall-e', 'whisper', 'tts', 'openai'], Avatar: OpenAI.Avatar, color: '#10A37F' },
     // Anthropic - Claude series
     { prefixes: ['claude', 'anthropic'], Avatar: Claude.Avatar, color: '#D7765A' },
     // Google - Gemini series
@@ -67,18 +67,18 @@ const MODEL_ICON_PATTERNS: ModelIconConfig[] = [
     // xAI - Grok series
     { prefixes: ['grok', 'xai'], Avatar: Grok.Avatar, color: '#000000' },
     // Alibaba - Qwen series
-    { prefixes: ['qwen', 'qwq', 'alibaba'], Avatar: Qwen.Avatar, color: '#6B4EFF' },
+    { prefixes: ['qwen', 'qwq', 'wanx', 'alibaba'], Avatar: Qwen.Avatar, color: '#6B4EFF' },
     // Zhipu - GLM series
     // Ox Alpha（牛来）匿名马甲真身是 GLM-5.3-Flash / 智谱，归 Zhipu 标
-    { prefixes: ['glm', 'chatglm', 'zhipu', 'z-ai', 'ox-', 'ox_', 'oxalpha', 'niulai', '牛来'], Avatar: Zhipu.Avatar, color: '#3C5BFC' },
+    { prefixes: ['glm', 'chatglm', 'codegeex', 'zhipu', 'z-ai', 'ox-', 'ox_', 'oxalpha', 'niulai', '牛来'], Avatar: Zhipu.Avatar, color: '#3C5BFC' },
     // MiniMax series
     { prefixes: ['minimax', 'abab'], Avatar: Minimax.Avatar, color: '#1A1A2E' },
     // Moonshot/Kimi series
     { prefixes: ['moonshot', 'kimi'], Avatar: Kimi.Avatar, color: '#000000' },
     // Mistral series
-    { prefixes: ['mistral', 'mixtral', 'codestral', 'pixtral'], Avatar: Mistral.Avatar, color: '#F7D046' },
+    { prefixes: ['mistral', 'mixtral', 'codestral', 'pixtral', 'ministral'], Avatar: Mistral.Avatar, color: '#F7D046' },
     // Meta - Llama series
-    { prefixes: ['llama', 'meta-llama', 'meta'], Avatar: Meta.Avatar, color: '#0668E1' },
+    { prefixes: ['llama', 'meta-llama', 'meta-'], Avatar: Meta.Avatar, color: '#0668E1' },
     // ByteDance - Doubao series
     { prefixes: ['doubao', 'skylark', 'bytedance'], Avatar: Doubao.Avatar, color: '#00D6C2' },
     // Yi series
@@ -127,12 +127,17 @@ const DEFAULT_CONFIG = { Avatar: OpenAI.Avatar, color: '#10A37F' };
  * @returns Object containing Avatar component and brand color
  */
 export function getModelIcon(modelName: string): { Avatar: AvatarComponent; color: string } {
-    // Extract the part after the first '/' if it exists
-    // e.g., "qwen/gpt-5.2" -> "gpt-5.2"
-    const nameToMatch = modelName.includes('/') ? modelName.split('/')[1] : modelName;
+    // Extract the part after the first '/' or ':' if it exists
+    // e.g., "qwen/gpt-5.2" -> "gpt-5.2", "openai:gpt-4o" -> "gpt-4o"
+    let nameToMatch = (modelName || '').trim();
+    if (nameToMatch.includes('/')) {
+        nameToMatch = nameToMatch.split('/')[1] || nameToMatch;
+    } else if (nameToMatch.includes(':')) {
+        nameToMatch = nameToMatch.split(':')[1] || nameToMatch;
+    }
     const lowerName = nameToMatch.toLowerCase();
     for (const { prefixes, Avatar, color } of MODEL_ICON_PATTERNS) {
-        if (prefixes.some(prefix => lowerName.startsWith(prefix))) {
+        if (prefixes.some(prefix => lowerName.startsWith(prefix) || lowerName.includes(prefix))) {
             return { Avatar, color };
         }
     }

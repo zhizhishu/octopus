@@ -62,6 +62,11 @@ func TestRetryInterventionValidation(t *testing.T) {
 	}
 	validKeyID := ch.Keys[0].ID
 	disabledKeyID := ch.Keys[1].ID
+	disabledKey := ch.Keys[1]
+	disabledKey.Enabled = false
+	if err := op.ChannelKeyUpdate(disabledKey); err != nil {
+		t.Fatalf("disable channel key: %v", err)
+	}
 
 	disabledCh := model.Channel{
 		Name:    "disabled-chan",
@@ -74,14 +79,10 @@ func TestRetryInterventionValidation(t *testing.T) {
 		t.Fatalf("create disabled channel: %v", err)
 	}
 	disabledChanKeyID := disabledCh.Keys[0].ID
-
-	id, err := intervention.Register(&intervention.Pending{
-		RequestModel: "gpt-4o",
-	})
-	if err != nil {
-		t.Fatalf("failed to register intervention: %v", err)
+	disabled := false
+	if _, err := op.ChannelUpdate(&model.ChannelUpdateRequest{ID: disabledCh.ID, Enabled: &disabled}, ctx); err != nil {
+		t.Fatalf("disable channel: %v", err)
 	}
-	defer intervention.Cancel(id)
 
 	tests := []struct {
 		name       string
@@ -135,6 +136,12 @@ func TestRetryInterventionValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			id, err := intervention.Register(&intervention.Pending{RequestModel: "gpt-4o"})
+			if err != nil {
+				t.Fatalf("failed to register intervention: %v", err)
+			}
+			defer intervention.Cancel(id)
+
 			jsonBytes, _ := json.Marshal(tt.body)
 			req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "/api/v1/intervention/"+id+"/retry", bytes.NewReader(jsonBytes))
 			req.Header.Set("Content-Type", "application/json")

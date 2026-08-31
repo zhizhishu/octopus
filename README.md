@@ -277,6 +277,18 @@ The program automatically appends API paths based on channel type. You only need
 
 > 💡 **Tip**: No need to include specific API endpoint paths in the Base URL - the program handles this automatically.
 
+**Channel Operations & Advanced Routing:**
+
+- **Quick Actions & Local Search**: Card and dialog top bars provide quick edit, clone, and delete actions; supports local fuzzy search on channel list (for security reasons, Key secrets are not searched).
+- **Multi-Key Concurrent Racing**:
+  - Disabled by default. When enabled, octopus races 2 to 5 enabled keys concurrently or with hedged delay within the same channel.
+  - Supports configurable hedge delay; the first valid response wins and is returned downstream immediately, while trailing/failed requests are cancelled automatically.
+  - Image/video generations do not participate in racing; racing may generate small amounts of extra upstream token/request consumption.
+  - **Note**: Multi-key racing and "disable circuit breaker & cooldown" are two independent features.
+- **Log Interceptions & Automatic Rescue**:
+  - When upstream temporary failures cause a request to be suspended/intercepted, the machine automatically performs multi-round backoff rescue following the access plan (round-robin / fill-first), automatically reloading latest channel & key configs, exponential backoff, and keeping downstream connections alive.
+  - Manual intervention on the dashboard ("Retry with selected channel") acts as an immediate override rather than a mandatory manual step.
+
 ---
 
 ### 📁 Group Management
@@ -317,6 +329,18 @@ Manage model pricing information in the system.
 | 🥈 Low | models.dev | Auto-synced default prices |
 
 > 💡 **Tip**: To override a model's default price, simply set a custom price for it in the price management page.
+
+---
+
+### 📋 Request Logs
+
+The system provides comprehensive request auditing and debugging capabilities:
+
+- **Fuzzy Search**: Multi-field search across usernames, API Key names, requested models, actual upstream models, channel names, endpoint names, request paths, session keys, error messages, and error status codes; purely numeric input additionally performs exact match on log ID or channel ID.
+- **Multi-Dimensional Filters**: Filter requests by inbound endpoint protocol (Chat / Responses / Messages / Gemini, etc.), provider family (OpenAI / Anthropic / Gemini / DeepSeek, etc.), and specific model names.
+- **Rescue State & Detail Audit**:
+  - For requests suspended due to temporary upstream failures, the log interface indicates machine auto-rescue progress (round count, backoff countdown) and allows administrators to click "Retry with selected channel" to immediately override the rescue strategy.
+  - Administrators can inspect full request/response bodies, channel attempt hops, token metrics, billing cost snapshots, and latency metrics.
 
 ---
 

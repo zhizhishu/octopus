@@ -17,6 +17,7 @@ import (
 	dbmodel "github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/op"
 	"github.com/bestruirui/octopus/internal/relay/balancer"
+	"github.com/bestruirui/octopus/internal/relay/intervention"
 	"github.com/bestruirui/octopus/internal/server/resp"
 	"github.com/bestruirui/octopus/internal/transformer/inbound"
 	"github.com/bestruirui/octopus/internal/transformer/model"
@@ -112,7 +113,22 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		triedReturnGroup   bool
 		interventionRounds int
 		contextWindowErr   error // 命中上下文超长: 停止跨渠道遍历、也不再试 fallback group
+
+		// Intervention state lifted above runIterator to ensure exactly one pending ID,
+		// one context/cancel, one keepalive goroutine, and single cleanup across the full request lifecycle.
+		pendingInterventionID     string
+		interventionCtx           context.Context
+		stopInterventionKeepalive func()
+		interventionRegistered    bool
 	)
+	defer func() {
+		if interventionRegistered && pendingInterventionID != "" {
+			intervention.Cancel(pendingInterventionID)
+		}
+		if stopInterventionKeepalive != nil {
+			stopInterventionKeepalive()
+		}
+	}()
 
 runIterator:
 	req.iter = iter
@@ -218,6 +234,59 @@ runIterator:
 		// channel whose upstream model differs from the client alias.
 		if mapped, ok := channel.ModelMapping[internalRequest.Model]; ok && mapped != "" {
 			iter.RemapCurrentModel(mapped)
+		}
+
+		// 多 Key 竞速模式分支：仅限普通文本 relay 且未被 intervention 指定单 Key、可用 Key >= 2
+		if canChannelRace(req, channel, availableKeys) {
+			// Single-threaded pre-race setup:
+			// 1. Update inbound adapter's ThinkingToContent once before goroutines start.
+			if setter, ok := req.inAdapter.(interface{ SetThinkingToContent(bool) }); ok {
+				setter.SetThinkingToContent(channel.ThinkingToContent)
+			}
+			// 2. Prepare immutable template internalRequest on main thread.
+			internalRequest.Model = item.ModelName
+			internalRequest.Messages = append([]model.Message(nil), baseMessages...)
+			internalRequest.PreviousResponseID = basePreviousResponseID
+			internalRequest.ResponsesInputRaw = cloneRawJSONMessage(baseResponsesInputRaw)
+			promptSnapshot := applyPromptOverrides(internalRequest, routeResult.AccessPlan, routeResult.AccessRouteRule, channel)
+			if len(promptSnapshot.Sources) > 0 {
+				clearResponsesRawPromptShape(internalRequest)
+			}
+			metrics.SetPromptOverrideSnapshot(promptSnapshot)
+
+			capabilityKey := routingCapabilityKey(internalRequest, channel)
+			log.Infof("request model %s, channel %s entering race mode with %d available keys (delay=%dms, sticky=%t)",
+				requestModel, channel.Name, len(availableKeys), channel.RaceDelayMs, iter.IsSticky())
+
+			result, remainingKeys := runChannelRace(
+				req,
+				channel,
+				availableKeys,
+				outAdapter,
+				requestEndpoint,
+				capabilityKey,
+				group.FirstTokenTimeOut,
+			)
+
+			if result.Success {
+				metrics.Save(c.Request.Context(), true, nil, append(allAttempts, iter.Attempts()...))
+				return
+			}
+			if result.Written {
+				req.wroteBusinessData = true
+				metrics.Save(c.Request.Context(), false, result.Err, append(allAttempts, iter.Attempts()...))
+				return
+			}
+			lastErr = result.Err
+			if result.Fatal {
+				contextWindowErr = result.Err
+				break
+			}
+			if len(remainingKeys) > 0 && shouldTryNextChannelKey(result.StatusCode) {
+				availableKeys = remainingKeys
+			} else {
+				continue
+			}
 		}
 
 		for keyIndex, usedKey := range availableKeys {
@@ -330,27 +399,139 @@ runIterator:
 	if finalErr == nil {
 		finalErr = routeSelectionErrorFromAttempts(allAttempts)
 	}
-	if shouldHoldForOperator(req, interventionRounds, contextWindowErr, finalErr) {
-		interventionRounds++
+	if shouldHoldForOperator(req, contextWindowErr, finalErr) || interventionRegistered {
+		if stopInterventionKeepalive == nil {
+			stopInterventionKeepalive = startDownstreamFirstByteKeepalive(c.Request.Context(), c)
+		}
+		if interventionCtx == nil {
+			totalTimeout := intervention.Timeout()
+			var interventionCancel context.CancelFunc
+			interventionCtx, interventionCancel = context.WithTimeout(c.Request.Context(), totalTimeout)
+			defer interventionCancel()
+		}
 
-		stopInterventionKeepalive := startDownstreamFirstByteKeepalive(c.Request.Context(), c)
-		resolution, ok := holdForOperator(c.Request.Context(), requestEndpoint, requestModel, allAttempts, finalErr)
-		stopInterventionKeepalive()
-		if ok {
-			req.interventionKeyID = resolution.KeyID
-			interventionGroup := singleChannelGroup(resolution, requestModel)
-			interventionGroup = enrichGroupForSmartRouting(c.Request.Context(), interventionGroup, preferStreamRouting)
-			interventionIter := balancer.NewIteratorWithSession(interventionGroup, apiKeyID, requestModel, "", false)
-			interventionIter.PrioritizeChannels(nativeProtocolChannelIDs(c.Request.Context(), inboundType, interventionGroup.Items))
-			if interventionIter.Len() > 0 {
-				group = interventionGroup
-				iter = interventionIter
-				req.stickyEnabled = false
-				internalRequest.Model = requestModel
-				internalRequest.Messages = append([]model.Message(nil), baseMessages...)
-				internalRequest.PreviousResponseID = basePreviousResponseID
-				internalRequest.ResponsesInputRaw = cloneRawJSONMessage(baseResponsesInputRaw)
-				goto runIterator
+		lastErrStr := ""
+		if finalErr != nil {
+			lastErrStr = finalErr.Error()
+		}
+
+		if !interventionRegistered {
+			pid, regErr := intervention.Register(&intervention.Pending{
+				RequestModel: requestModel,
+				Endpoint:     requestEndpoint,
+				Attempts:     allAttempts,
+				LastError:    lastErrStr,
+				Status:       intervention.StatusAutoRetrying,
+				RescueRound:  interventionRounds,
+			})
+			if regErr != nil {
+				log.Warnf("Intervention registration failed endpoint=%s model=%s: %v", requestEndpoint, requestModel, regErr)
+			} else {
+				pendingInterventionID = pid
+				interventionRegistered = true
+				log.Infof("Intervention held request id=%s endpoint=%s model=%s", pendingInterventionID, requestEndpoint, requestModel)
+			}
+		} else {
+			_ = intervention.UpdateAttempts(pendingInterventionID, allAttempts, lastErrStr)
+		}
+
+		if interventionRegistered {
+			var aborted bool
+			for interventionRounds < maxRelayInterventionRounds {
+				interventionRounds++
+				backoff := intervention.BackoffDuration(interventionRounds)
+				nextRetry := time.Now().Add(backoff)
+				_ = intervention.UpdateStatus(pendingInterventionID, intervention.StatusAutoRetrying, interventionRounds, &nextRetry)
+
+				resolution, isPreempted, waitErr := intervention.WaitRound(interventionCtx, pendingInterventionID, backoff)
+				if waitErr != nil {
+					log.Infof("Intervention finished id=%s err=%v", pendingInterventionID, waitErr)
+					break
+				}
+
+				if isPreempted {
+					if resolution.Action == intervention.ActionAbort {
+						aborted = true
+						break
+					}
+					req.interventionKeyID = resolution.KeyID
+					interventionGroup := singleChannelGroup(resolution, requestModel)
+					interventionGroup = enrichGroupForSmartRouting(c.Request.Context(), interventionGroup, preferStreamRouting)
+					interventionIter := balancer.NewIteratorWithSession(interventionGroup, apiKeyID, requestModel, "", false)
+					interventionIter.PrioritizeChannels(nativeProtocolChannelIDs(c.Request.Context(), inboundType, interventionGroup.Items))
+					if interventionIter.Len() > 0 {
+						group = interventionGroup
+						iter = interventionIter
+						req.stickyEnabled = false
+						triedReturnGroup = false
+						internalRequest.Model = requestModel
+						internalRequest.Messages = append([]model.Message(nil), baseMessages...)
+						internalRequest.PreviousResponseID = basePreviousResponseID
+						internalRequest.ResponsesInputRaw = cloneRawJSONMessage(baseResponsesInputRaw)
+						goto runIterator
+					}
+					// If the chosen channel had 0 items, remain in intervention loop
+					continue
+				}
+
+				// Machine-first automatic rescue retry: select fresh route group
+				freshRouteResult, freshStatus, _, freshErr := selectRouteGroup(c, apiKeyID, requestModel, anthropicAliases...)
+				if freshErr != nil || freshStatus != 0 {
+					continue
+				}
+				freshGroup := enrichGroupForSmartRouting(c.Request.Context(), freshRouteResult.Group, preferStreamRouting)
+				freshSticky := routeStickyEnabled(freshGroup.Mode, clientSession.Source)
+				freshIter := balancer.NewIteratorWithSession(freshGroup, apiKeyID, requestModel, clientSessionKey, freshSticky)
+				freshIter.PrioritizeChannels(nativeProtocolChannelIDs(c.Request.Context(), inboundType, freshGroup.Items))
+				prioritizeResponsesSessionOwner(c.Request.Context(), freshIter, internalRequest, apiKeyID, userID)
+				if freshIter.Len() > 0 {
+					group = freshGroup
+					iter = freshIter
+					routeResult = freshRouteResult
+					req.stickyEnabled = freshSticky
+					req.interventionKeyID = 0
+					triedReturnGroup = false
+					internalRequest.Model = requestModel
+					internalRequest.Messages = append([]model.Message(nil), baseMessages...)
+					internalRequest.PreviousResponseID = basePreviousResponseID
+					internalRequest.ResponsesInputRaw = cloneRawJSONMessage(baseResponsesInputRaw)
+					_ = intervention.UpdateAttempts(pendingInterventionID, allAttempts, lastErrStr)
+					goto runIterator
+				}
+			}
+
+			// If machine rescue exhausted and request not aborted, wait for human operator until total timeout or abort
+			if !aborted {
+				for {
+					_ = intervention.UpdateStatus(pendingInterventionID, intervention.StatusAwaitingOperator, interventionRounds, nil)
+					resolution, waitErr := intervention.WaitOperator(interventionCtx, pendingInterventionID)
+					if waitErr != nil {
+						log.Infof("Intervention operator wait finished id=%s err=%v", pendingInterventionID, waitErr)
+						break
+					}
+					if resolution.Action == intervention.ActionAbort {
+						break
+					}
+					if resolution.Action == intervention.ActionRetryChannel {
+						req.interventionKeyID = resolution.KeyID
+						interventionGroup := singleChannelGroup(resolution, requestModel)
+						interventionGroup = enrichGroupForSmartRouting(c.Request.Context(), interventionGroup, preferStreamRouting)
+						interventionIter := balancer.NewIteratorWithSession(interventionGroup, apiKeyID, requestModel, "", false)
+						interventionIter.PrioritizeChannels(nativeProtocolChannelIDs(c.Request.Context(), inboundType, interventionGroup.Items))
+						if interventionIter.Len() > 0 {
+							group = interventionGroup
+							iter = interventionIter
+							req.stickyEnabled = false
+							triedReturnGroup = false
+							internalRequest.Model = requestModel
+							internalRequest.Messages = append([]model.Message(nil), baseMessages...)
+							internalRequest.PreviousResponseID = basePreviousResponseID
+							internalRequest.ResponsesInputRaw = cloneRawJSONMessage(baseResponsesInputRaw)
+							goto runIterator
+						}
+						// If the chosen channel/iterator had 0 items, loop back and await next operator selection
+					}
+				}
 			}
 		}
 	}
@@ -421,12 +602,29 @@ func recordAttemptProxy(span *balancer.AttemptSpan, channel *dbmodel.Channel) {
 	span.SetProxy(info.Used, info.Source, info.Scheme, info.Host)
 }
 
+func (ra *relayAttempt) resolveRuntimeModel() string {
+	if ra == nil {
+		return ""
+	}
+	modelName := ""
+	if ra.internalRequest != nil {
+		modelName = ra.internalRequest.Model
+	}
+	if ra.channel != nil && len(ra.channel.ModelMapping) > 0 && modelName != "" {
+		if mapped, ok := ra.channel.ModelMapping[modelName]; ok && mapped != "" {
+			return mapped
+		}
+	}
+	return modelName
+}
+
 // attempt 统一管理一次通道尝试的完整生命周期
 func (ra *relayAttempt) attempt() attemptResult {
+	runtimeModel := ra.resolveRuntimeModel()
 	span := ra.iter.StartAttempt(ra.channel.ID, ra.usedKey.ID, ra.channel.Name)
 	span.SetRouteScope(ra.metrics.RequestEndpoint, ra.routingCapabilityKey())
 	recordAttemptProxy(span, ra.channel)
-	finishRuntimeAttempt := balancer.BeginRuntimeAttempt(ra.channel.ID, ra.usedKey.ID, ra.internalRequest.Model)
+	finishRuntimeAttempt := balancer.BeginRuntimeAttempt(ra.channel.ID, ra.usedKey.ID, runtimeModel)
 	defer finishRuntimeAttempt()
 
 	// 转发请求
@@ -441,7 +639,7 @@ func (ra *relayAttempt) attempt() attemptResult {
 		op.ChannelKeyRecordUse(ra.usedKey, statusCode, usedAt, costDelta)
 
 		span.End(dbmodel.AttemptSuccess, statusCode, "")
-		balancer.RecordRuntimeSuccess(ra.channel.ID, ra.usedKey.ID, ra.internalRequest.Model, balancer.AttemptRuntimeMetrics{
+		balancer.RecordRuntimeSuccess(ra.channel.ID, ra.usedKey.ID, runtimeModel, balancer.AttemptRuntimeMetrics{
 			Duration:     span.Duration(),
 			FirstToken:   firstTokenDurationSince(ra.metrics.FirstTokenTime, span.StartedAt()),
 			OutputTokens: ra.metrics.Stats.OutputToken,
@@ -455,7 +653,7 @@ func (ra *relayAttempt) attempt() attemptResult {
 		})
 
 		// 熔断器：记录成功
-		balancer.RecordSuccessScoped(ra.channel.ID, ra.usedKey.ID, ra.internalRequest.Model, ra.metrics.RequestEndpoint, ra.routingCapabilityKey())
+		balancer.RecordSuccessScoped(ra.channel.ID, ra.usedKey.ID, runtimeModel, ra.metrics.RequestEndpoint, ra.routingCapabilityKey())
 		// 会话保持：更新粘性记录（仅当该请求参与 sticky；轮询模式纯优化型会话不写，保证轮转）
 		if ra.stickyEnabled {
 			balancer.SetStickyWithSessionKey(ra.apiKeyID, ra.requestModel, ra.clientSessionKey, ra.channel.ID, ra.usedKey.ID)
@@ -481,7 +679,7 @@ func (ra *relayAttempt) attempt() attemptResult {
 	recordChannelHealth := breakerCounted && !ra.channel.DisableCircuitBreaker
 	if recordChannelHealth {
 		retryAfter, _ := retryAfterFromError(fwdErr)
-		balancer.RecordRuntimeFailure(ra.channel.ID, ra.usedKey.ID, ra.internalRequest.Model, recordStatusCode, span.Duration(), retryAfter)
+		balancer.RecordRuntimeFailure(ra.channel.ID, ra.usedKey.ID, runtimeModel, recordStatusCode, span.Duration(), retryAfter)
 	}
 
 	// Channel 维度统计
@@ -494,13 +692,13 @@ func (ra *relayAttempt) attempt() attemptResult {
 	// 熔断器：记录失败
 	// Do not let downstream disconnects or caller-side timeouts poison channel health.
 	if recordChannelHealth {
-		balancer.RecordFailureWithStatusScoped(ra.channel.ID, ra.usedKey.ID, ra.internalRequest.Model, ra.metrics.RequestEndpoint, ra.routingCapabilityKey(), recordStatusCode)
+		balancer.RecordFailureWithStatusScoped(ra.channel.ID, ra.usedKey.ID, runtimeModel, ra.metrics.RequestEndpoint, ra.routingCapabilityKey(), recordStatusCode)
 		if ra.iter != nil && ra.iter.IsStickyChannel(ra.channel.ID) {
 			balancer.ClearStickyWithSessionKey(ra.apiKeyID, ra.requestModel, ra.clientSessionKey)
 			log.Infof("cleared sticky route for api key %d model %s after channel %s failure", ra.apiKeyID, ra.requestModel, ra.channel.Name)
 		}
 	} else {
-		log.Infof("skip circuit breaker failure count for channel %s model %s: %v", ra.channel.Name, ra.internalRequest.Model, fwdErr)
+		log.Infof("skip circuit breaker failure count for channel %s model %s: %v", ra.channel.Name, runtimeModel, fwdErr)
 	}
 
 	ra.metrics.ParamOverride = paramOverrideValue(ra.channel.ParamOverride)
@@ -1374,6 +1572,10 @@ func (ra *relayAttempt) applyModelMapping() {
 }
 
 func (ra *relayAttempt) applyTransformOptions() error {
+	return ra.applyTransformOptionsWithInboundSetter(true)
+}
+
+func (ra *relayAttempt) applyTransformOptionsWithInboundSetter(updateInboundSetter bool) error {
 	ra.applyModelMapping()
 	ra.internalRequest.TransformOptions.AnthropicAutoCacheControl = false
 	// Channel cloak mode "never" disables Claude identity simulation end to end:
@@ -1386,9 +1588,11 @@ func (ra *relayAttempt) applyTransformOptions() error {
 	// inbound wire (new-api thinking_to_content). Default false = no behaviour change.
 	ra.internalRequest.TransformOptions.ThinkingToContent = ra.channel.ThinkingToContent
 	// TransformRequest runs before channel selection, so the inbound adapter may
-	// have captured ThinkingToContent=false. Push the live channel flag now.
-	if setter, ok := ra.inAdapter.(interface{ SetThinkingToContent(bool) }); ok {
-		setter.SetThinkingToContent(ra.channel.ThinkingToContent)
+	// have captured ThinkingToContent=false. Push the live channel flag now if requested.
+	if updateInboundSetter {
+		if setter, ok := ra.inAdapter.(interface{ SetThinkingToContent(bool) }); ok {
+			setter.SetThinkingToContent(ra.channel.ThinkingToContent)
+		}
 	}
 
 	if openAIPromptCacheKeyChannel(ra.channel.Type) {

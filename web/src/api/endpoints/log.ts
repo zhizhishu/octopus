@@ -58,6 +58,8 @@ export interface RelayLog {
     ftut: number;                // 首字时间(毫秒)
     use_time: number;            // 总用时(毫秒)
     cost: number;                // 消耗费用
+    base_input_price?: number;   // 日志记录的基础输入单价($/1M tokens)
+    base_output_price?: number;  // 日志记录的基础输出单价($/1M tokens)
     request_content?: string;    // 请求内容, 仅管理员日志详情返回
     response_content?: string;   // 响应内容, 仅管理员日志详情返回
     error?: string;              // 错误信息, 普通用户只接收 error_code/error_status
@@ -123,6 +125,8 @@ export interface LogListParams {
     user_id?: number;
     api_key_id?: number;
     endpoint?: string;
+    provider?: string;
+    model?: string;
     severity?: string;
     search?: string;
     retried?: boolean;
@@ -135,6 +139,12 @@ export interface LogExportParams {
     user_id?: number;
     api_key_id?: number;
     endpoint?: string;
+    provider?: string;
+    model?: string;
+    search?: string;
+    severity?: string;
+    retried?: boolean;
+    hide_model_test?: boolean;
 }
 
 function getAuthHeader(): string {
@@ -166,13 +176,84 @@ function logMatchesTimeRange(log: RelayLog, startTime?: number, endTime?: number
     return log.time >= startTime && log.time <= endTime;
 }
 
+// Provider taxonomy matching prefixes on frontend (mirrors internal/op/log.go ProviderTaxonomyPrefixes)
+const PROVIDER_TAXONOMY_PREFIXES: Record<string, string[]> = {
+    openai: ['gpt', 'o1', 'o3', 'o4', 'chatgpt', 'text-embedding', 'dall-e', 'whisper', 'tts'],
+    anthropic: ['claude'],
+    google: ['gemini', 'gemma', 'palm'],
+    deepseek: ['deepseek'],
+    xai: ['grok'],
+    alibaba: ['qwen', 'qwq', 'wanx'],
+    zhipuai: ['glm', 'chatglm', 'zhipu', 'z-ai', 'ox-', 'ox_', 'oxalpha', 'niulai'],
+    minimax: ['minimax', 'abab'],
+    moonshotai: ['moonshot', 'kimi'],
+    mistral: ['mistral', 'mixtral', 'codestral', 'pixtral'],
+    meta: ['llama', 'meta-llama'],
+    bytedance: ['doubao', 'skylark'],
+    baidu: ['ernie', 'wenxin'],
+    tencent: ['hunyuan'],
+    cohere: ['cohere', 'command'],
+    microsoft: ['phi-', 'wizardlm'],
+};
+
+function normalizeModelTaxonomy(name: string): { pathProvider: string; baseModel: string } {
+    const lower = (name || '').trim().toLowerCase();
+    if (!lower) return { pathProvider: '', baseModel: '' };
+    const slashIdx = lower.lastIndexOf('/');
+    if (slashIdx >= 0) {
+        return {
+            pathProvider: lower.slice(0, slashIdx),
+            baseModel: slashIdx + 1 < lower.length ? lower.slice(slashIdx + 1) : '',
+        };
+    }
+    return { pathProvider: '', baseModel: lower };
+}
+
+function modelMatchesProvider(modelName: string, provider: string): boolean {
+    const p = provider.trim().toLowerCase();
+    if (!p) return false;
+    const prefixes = PROVIDER_TAXONOMY_PREFIXES[p];
+    if (!prefixes) return false;
+
+    const { pathProvider, baseModel } = normalizeModelTaxonomy(modelName);
+    if (!pathProvider && !baseModel) return false;
+
+    // 1. Path provider prefix check (e.g. "openai/gpt-4" -> OpenAI)
+    if (pathProvider) {
+        if (pathProvider === p || pathProvider.endsWith(`/${p}`) || pathProvider.startsWith(`${p}-`) || pathProvider.startsWith(`${p}_`)) {
+            return true;
+        }
+        if (p === 'meta' && (pathProvider === 'meta-llama' || pathProvider.startsWith('meta-'))) {
+            return true;
+        }
+    }
+
+    // 2. Basename prefix check
+    return prefixes.some((prefix) => baseModel.startsWith(prefix));
+}
+
 function logMatchesLiveFilters(
     log: RelayLog,
-    options: { endpoint?: string; severity?: string; search?: string; retried?: boolean; hideModelTest?: boolean }
+    options: { endpoint?: string; provider?: string; model?: string; severity?: string; search?: string; retried?: boolean; hideModelTest?: boolean }
 ) {
     if (options.endpoint) {
         const stored = log.request_endpoint?.trim() ?? '';
         if (stored !== options.endpoint && !stored.startsWith(`${options.endpoint}_`)) {
+            return false;
+        }
+    }
+    if (options.model) {
+        const target = options.model.trim().toLowerCase();
+        const req = (log.request_model_name ?? '').trim().toLowerCase();
+        const act = (log.actual_model_name ?? '').trim().toLowerCase();
+        if (req !== target && act !== target) {
+            return false;
+        }
+    }
+    if (options.provider) {
+        const req = log.request_model_name ?? '';
+        const act = log.actual_model_name ?? '';
+        if (!modelMatchesProvider(act, options.provider) && !modelMatchesProvider(req, options.provider)) {
             return false;
         }
     }
@@ -187,11 +268,32 @@ function logMatchesLiveFilters(
     if (options.search) {
         const q = options.search.trim().toLowerCase();
         if (q) {
+            const num = Number(q);
+            if (Number.isFinite(num) && num > 0) {
+                if (log.id === num || log.channel === num) return true;
+            }
             const userName = (log.user_name ?? '').toLowerCase();
             const apiKeyName = (log.request_api_key_name ?? '').toLowerCase();
+            const reqModel = (log.request_model_name ?? '').toLowerCase();
+            const actModel = (log.actual_model_name ?? '').toLowerCase();
+            const channelName = (log.channel_name ?? '').toLowerCase();
+            const endpoint = (log.request_endpoint ?? '').toLowerCase();
+            const path = (log.request_path ?? '').toLowerCase();
+            const sessionKey = (log.session_key ?? '').toLowerCase();
             const error = (log.error ?? '').toLowerCase();
             const errorCode = (log.error_code ?? '').toLowerCase();
-            if (!userName.includes(q) && !apiKeyName.includes(q) && !error.includes(q) && !errorCode.includes(q)) {
+            if (
+                !userName.includes(q) &&
+                !apiKeyName.includes(q) &&
+                !reqModel.includes(q) &&
+                !actModel.includes(q) &&
+                !channelName.includes(q) &&
+                !endpoint.includes(q) &&
+                !path.includes(q) &&
+                !sessionKey.includes(q) &&
+                !error.includes(q) &&
+                !errorCode.includes(q)
+            ) {
                 return false;
             }
         }
@@ -227,6 +329,12 @@ export function useExportLogs() {
             appendOptionalParam(query, 'user_id', params.user_id);
             appendOptionalParam(query, 'api_key_id', params.api_key_id);
             appendOptionalParam(query, 'endpoint', params.endpoint);
+            appendOptionalParam(query, 'provider', params.provider);
+            appendOptionalParam(query, 'model', params.model);
+            appendOptionalParam(query, 'search', params.search);
+            appendOptionalParam(query, 'severity', params.severity);
+            if (params.retried) query.set('retried', '1');
+            if (params.hide_model_test) query.set('hide_model_test', '1');
             const res = await fetch(`${API_BASE_URL}/api/v1/log/export?${query.toString()}`, {
                 method: 'GET',
                 headers: { Authorization: getAuthHeader() },
@@ -284,6 +392,8 @@ const logsInfiniteQueryKey = (
     userID?: number,
     apiKeyID?: number,
     endpoint?: string,
+    provider?: string,
+    model?: string,
     startTime?: number,
     endTime?: number,
     page?: number,
@@ -291,18 +401,20 @@ const logsInfiniteQueryKey = (
     retried?: boolean,
     hideModelTest?: boolean,
     search?: string
-) => ['logs', 'infinite', pageSize, userID ?? 0, apiKeyID ?? 0, endpoint ?? '', startTime ?? 0, endTime ?? 0, page ?? -1, severity ?? '', retried ? 1 : 0, hideModelTest ? 1 : 0, search ?? ''] as const;
+) => ['logs', 'infinite', pageSize, userID ?? 0, apiKeyID ?? 0, endpoint ?? '', provider ?? '', model ?? '', startTime ?? 0, endTime ?? 0, page ?? -1, severity ?? '', retried ? 1 : 0, hideModelTest ? 1 : 0, search ?? ''] as const;
 
 const logCountQueryKey = (
     userID?: number,
     apiKeyID?: number,
     endpoint?: string,
+    provider?: string,
+    model?: string,
     startTime?: number,
     endTime?: number,
     retried?: boolean,
     hideModelTest?: boolean,
     search?: string
-) => ['logs', 'count', userID ?? 0, apiKeyID ?? 0, endpoint ?? '', startTime ?? 0, endTime ?? 0, retried ? 1 : 0, hideModelTest ? 1 : 0, search ?? ''] as const;
+) => ['logs', 'count', userID ?? 0, apiKeyID ?? 0, endpoint ?? '', provider ?? '', model ?? '', startTime ?? 0, endTime ?? 0, retried ? 1 : 0, hideModelTest ? 1 : 0, search ?? ''] as const;
 const LOG_STREAM_RECONNECT_BASE_MS = 1000;
 const LOG_STREAM_RECONNECT_MAX_MS = 15000;
 
@@ -315,6 +427,8 @@ export function useLogSeverityCounts(options: {
     userID?: number;
     apiKeyID?: number;
     endpoint?: string;
+    provider?: string;
+    model?: string;
     startTime?: number;
     endTime?: number;
     retried?: boolean;
@@ -322,14 +436,16 @@ export function useLogSeverityCounts(options: {
     search?: string;
     enabled?: boolean;
 } = {}) {
-    const { userID, apiKeyID, endpoint, startTime, endTime, retried, hideModelTest, search, enabled = true } = options;
+    const { userID, apiKeyID, endpoint, provider, model, startTime, endTime, retried, hideModelTest, search, enabled = true } = options;
     return useQuery({
-        queryKey: logCountQueryKey(userID, apiKeyID, endpoint, startTime, endTime, retried, hideModelTest, search),
+        queryKey: logCountQueryKey(userID, apiKeyID, endpoint, provider, model, startTime, endTime, retried, hideModelTest, search),
         queryFn: async () => {
             const params = new URLSearchParams();
             appendOptionalParam(params, 'user_id', userID);
             appendOptionalParam(params, 'api_key_id', apiKeyID);
             appendOptionalParam(params, 'endpoint', endpoint);
+            appendOptionalParam(params, 'provider', provider);
+            appendOptionalParam(params, 'model', model);
             appendOptionalParam(params, 'start_time', startTime);
             appendOptionalParam(params, 'end_time', endTime);
             appendOptionalParam(params, 'search', search);
@@ -360,8 +476,8 @@ export function useLogSeverityCounts(options: {
  * // 滚动到底部时加载更多
  * if (hasMore && !isLoadingMore) loadMore();
  */
-export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?: number; endpoint?: string; startTime?: number; endTime?: number; live?: boolean; page?: number; severity?: string; search?: string; retried?: boolean; hideModelTest?: boolean } = {}) {
-    const { pageSize = 20, userID, apiKeyID, endpoint, startTime, endTime, live = false, page, severity, search, retried, hideModelTest } = options;
+export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?: number; endpoint?: string; provider?: string; model?: string; startTime?: number; endTime?: number; live?: boolean; page?: number; severity?: string; search?: string; retried?: boolean; hideModelTest?: boolean } = {}) {
+    const { pageSize = 20, userID, apiKeyID, endpoint, provider, model, startTime, endTime, live = false, page, severity, search, retried, hideModelTest } = options;
 
     const [isConnected, setIsConnected] = useState(false);
     const [error, setError] = useState<Error | null>(null);
@@ -372,8 +488,8 @@ export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?
 
     const queryClient = useQueryClient();
     const queryKey = useMemo(
-        () => logsInfiniteQueryKey(pageSize, userID, apiKeyID, endpoint, startTime, endTime, page, severity, retried, hideModelTest, search),
-        [apiKeyID, endpoint, endTime, hideModelTest, page, pageSize, retried, search, severity, startTime, userID]
+        () => logsInfiniteQueryKey(pageSize, userID, apiKeyID, endpoint, provider, model, startTime, endTime, page, severity, retried, hideModelTest, search),
+        [apiKeyID, endpoint, provider, model, endTime, hideModelTest, page, pageSize, retried, search, severity, startTime, userID]
     );
 
     const logsQuery = useInfiniteQuery({
@@ -386,6 +502,8 @@ export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?
             appendOptionalParam(params, 'user_id', userID);
             appendOptionalParam(params, 'api_key_id', apiKeyID);
             appendOptionalParam(params, 'endpoint', endpoint);
+            appendOptionalParam(params, 'provider', provider);
+            appendOptionalParam(params, 'model', model);
             appendOptionalParam(params, 'start_time', startTime);
             appendOptionalParam(params, 'end_time', endTime);
             appendOptionalParam(params, 'severity', severity);
@@ -501,6 +619,8 @@ export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?
                 appendOptionalParam(params, 'user_id', userID);
                 appendOptionalParam(params, 'api_key_id', apiKeyID);
                 appendOptionalParam(params, 'endpoint', endpoint);
+                appendOptionalParam(params, 'provider', provider);
+                appendOptionalParam(params, 'model', model);
                 appendOptionalParam(params, 'start_time', startTime);
                 appendOptionalParam(params, 'end_time', endTime);
                 appendOptionalParam(params, 'severity', severity);
@@ -536,7 +656,7 @@ export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?
                         if (page !== undefined && page !== 1) return;
                         const log: RelayLog = JSON.parse(event.data);
                         if (!logMatchesTimeRange(log, startTime, endTime)) return;
-                        if (!logMatchesLiveFilters(log, { endpoint, severity, search, retried, hideModelTest })) return;
+                        if (!logMatchesLiveFilters(log, { endpoint, provider, model, severity, search, retried, hideModelTest })) return;
                         queryClient.setQueryData(
                             queryKey,
                             (old: InfiniteData<RelayLog[], number> | undefined) => {

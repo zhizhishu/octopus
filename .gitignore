@@ -10,6 +10,9 @@ static/out/*
 .codex/
 .serena/
 
+# Local molab sync helpers and generated transfer patches
+/.molab*
+
 # 参考项目（本地学习用，不上传）
 references/
 

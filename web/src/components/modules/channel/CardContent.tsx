@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import {
-    Trash2,
     CheckCircle2,
     XCircle,
     FileText,
@@ -10,7 +9,11 @@ import {
     TrendingUp,
     Globe,
     Key,
-    SlidersHorizontal
+    SlidersHorizontal,
+    Pencil,
+    Trash2,
+    Check,
+    X,
 } from 'lucide-react';
 import { useUpdateChannel, useDeleteChannel, type Channel, type UpdateChannelRequest } from '@/api/endpoints/channel';
 import {
@@ -29,11 +32,19 @@ import { Badge } from '@/components/ui/badge';
 import { MonoSafeText, SafeText } from '@/components/common/SafeText';
 import { cn } from '@/lib/utils';
 
-export function CardContent({ channel, stats }: { channel: Channel; stats: StatsMetricsFormatted }) {
+export function CardContent({
+    channel,
+    stats,
+    initialEditing = false,
+}: {
+    channel: Channel;
+    stats: StatsMetricsFormatted;
+    initialEditing?: boolean;
+}) {
     const { setIsOpen } = useMorphingDialog();
     const updateChannel = useUpdateChannel();
     const deleteChannel = useDeleteChannel();
-    const [isEditing, setIsEditing] = useState(false);
+    const [isEditing, setIsEditing] = useState(initialEditing);
     const [advancedOpen, setAdvancedOpen] = useState(false);
     const [isConfirmingDelete, setIsConfirmingDelete] = useState(false);
     const [formData, setFormData] = useState<ChannelFormData>({
@@ -44,6 +55,9 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
         rpm_limit: channel.rpm_limit ?? 0,
         key_select_strategy: channel.key_select_strategy ?? 0,
         disable_circuit_breaker: channel.disable_circuit_breaker ?? false,
+        race_mode: channel.race_mode ?? false,
+        race_key_concurrency: channel.race_key_concurrency ?? 2,
+        race_delay_ms: channel.race_delay_ms ?? 0,
         enabled: channel.enabled,
         base_urls: channel.base_urls?.length ? channel.base_urls : [{ url: '', delay: 0 }],
         custom_header: channel.custom_header ?? [],
@@ -81,6 +95,7 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
         model_mapping: channel.model_mapping,
     });
     const t = useTranslations('channel.detail');
+    const tCard = useTranslations('channel.card');
 
     const currentView = isEditing ? 'editing' : 'viewing';
 
@@ -101,6 +116,9 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
         if ((formData.rpm_limit ?? 0) !== (channel.rpm_limit ?? 0)) req.rpm_limit = formData.rpm_limit ?? 0;
         if ((formData.key_select_strategy ?? 0) !== (channel.key_select_strategy ?? 0)) req.key_select_strategy = formData.key_select_strategy ?? 0;
         if ((formData.disable_circuit_breaker ?? false) !== (channel.disable_circuit_breaker ?? false)) req.disable_circuit_breaker = formData.disable_circuit_breaker ?? false;
+        if ((formData.race_mode ?? false) !== (channel.race_mode ?? false)) req.race_mode = formData.race_mode ?? false;
+        if ((formData.race_key_concurrency ?? 2) !== (channel.race_key_concurrency ?? 2)) req.race_key_concurrency = formData.race_key_concurrency ?? 2;
+        if ((formData.race_delay_ms ?? 0) !== (channel.race_delay_ms ?? 0)) req.race_delay_ms = formData.race_delay_ms ?? 0;
         if (formData.enabled !== channel.enabled) req.enabled = formData.enabled;
         const normalizedBaseUrls = (formData.base_urls ?? []).filter((u) => u.url.trim()).map((u) => ({
             url: normalizeBaseUrlForChannelType(formData.type, u.url),
@@ -217,12 +235,7 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
         });
     };
 
-    const handleDeleteClick = () => {
-        if (!isConfirmingDelete) {
-            setIsConfirmingDelete(true);
-            return;
-        }
-
+    const handleDeleteConfirm = () => {
         setIsOpen(false);
         setTimeout(() => {
             deleteChannel.mutate(channel.id);
@@ -233,17 +246,82 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
         <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
             <MorphingDialogTitle className="shrink-0">
                 <header className="mb-4 flex items-center justify-between gap-2 border-b border-border/40 pb-3">
-                    <h2 className="whitespace-nowrap text-xl font-bold tabular-nums text-card-foreground sm:text-2xl">
-                        {isEditing ? t('title.edit') : t('title.view')}
-                    </h2>
-                    <MorphingDialogClose
-                        className="relative right-0 top-0 text-muted-foreground transition-colors hover:text-foreground"
-                        variants={{
-                            initial: { opacity: 0, scale: 0.8 },
-                            animate: { opacity: 1, scale: 1 },
-                            exit: { opacity: 0, scale: 0.8 }
-                        }}
-                    />
+                    <div className="flex min-w-0 items-center gap-3">
+                        <h2 className="whitespace-nowrap text-xl font-bold tabular-nums text-card-foreground sm:text-2xl">
+                            {isEditing ? t('title.edit') : t('title.view')}
+                        </h2>
+                        <span className="hidden truncate text-sm text-muted-foreground sm:inline-block max-w-[16rem]">
+                            {channel.name}
+                        </span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                        {!isEditing && (
+                            <>
+                                {isConfirmingDelete ? (
+                                    <div className="flex items-center gap-1">
+                                        <Button
+                                            type="button"
+                                            variant="ghost"
+                                            size="sm"
+                                            onClick={() => setIsConfirmingDelete(false)}
+                                            className="h-8 px-2 text-xs text-muted-foreground hover:text-foreground"
+                                            aria-label={tCard('cancel')}
+                                        >
+                                            <X className="mr-1 size-3.5" />
+                                            {tCard('cancel')}
+                                        </Button>
+                                        <Button
+                                            type="button"
+                                            variant="destructive"
+                                            size="sm"
+                                            onClick={handleDeleteConfirm}
+                                            disabled={deleteChannel.isPending}
+                                            className="h-8 px-2 text-xs"
+                                            aria-label={tCard('confirmDelete')}
+                                        >
+                                            <Check className="mr-1 size-3.5" />
+                                            {deleteChannel.isPending ? t('actions.deleting') : tCard('confirmDelete')}
+                                        </Button>
+                                    </div>
+                                ) : (
+                                    <>
+                                        <Button
+                                            type="button"
+                                            variant="outline"
+                                            size="sm"
+                                            onClick={() => {
+                                                setAdvancedOpen(false);
+                                                setIsEditing(true);
+                                            }}
+                                            className="h-8 px-2.5 text-xs"
+                                            aria-label={tCard('edit')}
+                                        >
+                                            <Pencil className="mr-1 size-3.5" />
+                                            {tCard('edit')}
+                                        </Button>
+                                        <Button
+                                            type="button"
+                                            variant="ghost"
+                                            size="sm"
+                                            onClick={() => setIsConfirmingDelete(true)}
+                                            className="h-8 px-2 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
+                                            aria-label={tCard('delete')}
+                                        >
+                                            <Trash2 className="size-3.5" />
+                                        </Button>
+                                    </>
+                                )}
+                            </>
+                        )}
+                        <MorphingDialogClose
+                            className="relative right-0 top-0 text-muted-foreground transition-colors hover:text-foreground"
+                            variants={{
+                                initial: { opacity: 0, scale: 0.8 },
+                                animate: { opacity: 1, scale: 1 },
+                                exit: { opacity: 0, scale: 0.8 }
+                            }}
+                        />
+                    </div>
                 </header>
             </MorphingDialogTitle>
 
@@ -488,37 +566,6 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
                                         </dd>
                                     </dl>
                                 </div>
-                            </div>
-
-                            {/* 操作按钮 */}
-                            <div className="grid shrink-0 gap-3 border-t border-border/60 bg-card pt-3 sm:grid-cols-2">
-                                <Button
-                                    onClick={() => {
-                                        if (isConfirmingDelete) {
-                                            setIsConfirmingDelete(false);
-                                            return;
-                                        }
-                                        setAdvancedOpen(false);
-                                        setIsEditing(true);
-                                    }}
-                                    variant={isConfirmingDelete ? 'secondary' : 'default'}
-                                    className="w-full rounded-2xl h-12"
-                                >
-                                    {isConfirmingDelete ? t('actions.cancel') : t('actions.edit')}
-                                </Button>
-                                <Button
-                                    onClick={handleDeleteClick}
-                                    disabled={deleteChannel.isPending}
-                                    variant="destructive"
-                                    className="w-full rounded-2xl h-12"
-                                >
-                                    <Trash2 className={`size-4 transition-transform ${isConfirmingDelete ? 'scale-110' : ''}`} />
-                                    {deleteChannel.isPending
-                                        ? t('actions.deleting')
-                                        : isConfirmingDelete
-                                            ? t('actions.confirmDelete')
-                                            : t('actions.delete')}
-                                </Button>
                             </div>
                         </TabsContent>
 

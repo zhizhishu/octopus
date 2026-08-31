@@ -205,11 +205,18 @@ function RetryBadgeWithTooltip({ channelName, brandColor, attempts }: RetryBadge
                                         value={attempt.channel_name}
                                         className="text-xs font-semibold text-foreground"
                                     />
-                                    <MonoSafeText
-                                        mode="wrap"
-                                        value={`${marketModelName(attempt.model_name)} - ${formatDuration(attempt.duration)}`}
-                                        className="text-[10px] text-muted-foreground"
-                                    />
+                                        <div className="flex items-center gap-1">
+                                            {(() => {
+                                                const modelName = attempt.model_name || '';
+                                                const { Avatar: AttemptAvatar } = getModelIcon(modelName);
+                                                return AttemptAvatar ? <AttemptAvatar size={14} className="shrink-0" /> : null;
+                                            })()}
+                                            <MonoSafeText
+                                                mode="wrap"
+                                                value={`${marketModelName(attempt.model_name)} - ${formatDuration(attempt.duration)}`}
+                                                className="text-[10px] text-muted-foreground"
+                                            />
+                                        </div>
                                     {attempt.upstream_path && (
                                         <MonoSafeText
                                             mode="wrap"
@@ -573,9 +580,10 @@ function LazyLogBodies({ logId, fallbackRequest, fallbackResponse, requestLabel,
 export const LogCard = React.memo(function LogCard({ log }: { log: RelayLog }) {
     const t = useTranslations('log.card');
     const canViewDetails = useAuthStore((state) => state.user?.role === 'admin');
+    const modelNameToDisplay = log.actual_model_name?.trim() || log.request_model_name?.trim() || '';
     const { Avatar: ModelAvatar, color: brandColor } = useMemo(
-        () => getModelIcon(log.actual_model_name),
-        [log.actual_model_name]
+        () => getModelIcon(modelNameToDisplay),
+        [modelNameToDisplay]
     );
     const sensitiveVisible = useSensitiveStore((state) => state.sensitiveVisible);
     const requestAPIKeyName = useMemo(() => log.request_api_key_name?.trim() ?? '', [log.request_api_key_name]);
@@ -933,6 +941,11 @@ export const LogCard = React.memo(function LogCard({ log }: { log: RelayLog }) {
                                             <MonoSafeText mode="wrap" value={Number(log.cost).toFixed(6)} className="block whitespace-nowrap text-xs font-semibold tabular-nums text-emerald-600 dark:text-emerald-400" />
                                         </DetailTile>
                                     )}
+                                    {!isModelTest && ((log.base_input_price !== undefined && log.base_input_price > 0) || (log.base_output_price !== undefined && log.base_output_price > 0)) && (
+                                        <DetailTile icon={<DollarSign className="size-3.5" />} label={t('basePrice')}>
+                                            <MonoSafeText mode="wrap" value={`$${(log.base_input_price ?? 0).toFixed(2)} / $${(log.base_output_price ?? 0).toFixed(2)} / 1M`} className="block whitespace-nowrap text-xs font-semibold tabular-nums text-muted-foreground" />
+                                        </DetailTile>
+                                    )}
                                 </div>
                                 {(hasError || hasPartialFailure || shouldShowAttempts) && (
                                     <div className={cn(
@@ -1040,11 +1053,18 @@ export const LogCard = React.memo(function LogCard({ log }: { log: RelayLog }) {
                                                                                 value={attempt.channel_name}
                                                                                 className="text-xs font-semibold text-foreground sm:flex-1"
                                                                             />
-                                                                            <MonoSafeText
-                                                                                mode="wrap"
-                                                                                value={marketModelName(attempt.model_name)}
-                                                                                className="text-[11px] text-muted-foreground sm:flex-1"
-                                                                            />
+                                                                            <div className="flex items-center gap-1 sm:flex-1">
+                                                                                {(() => {
+                                                                                    const modelName = attempt.model_name || log.actual_model_name || log.request_model_name || '';
+                                                                                    const { Avatar: AttemptAvatar } = getModelIcon(modelName);
+                                                                                    return AttemptAvatar ? <AttemptAvatar size={14} className="shrink-0" /> : null;
+                                                                                })()}
+                                                                                <MonoSafeText
+                                                                                    mode="wrap"
+                                                                                    value={marketModelName(attempt.model_name)}
+                                                                                    className="text-[11px] text-muted-foreground"
+                                                                                />
+                                                                            </div>
                                                                             {attempt.upstream_path && (
                                                                                 <MonoSafeText
                                                                                     mode="wrap"

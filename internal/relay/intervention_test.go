@@ -29,20 +29,18 @@ func TestShouldHoldForOperator(t *testing.T) {
 	streamFalse := false
 
 	tests := []struct {
-		name               string
-		enabled            bool
-		streamPrefers      *bool
-		rounds             int
-		wroteBusinessData  bool
-		contextWindowErr   error
-		finalErr           error
-		wantHold           bool
+		name              string
+		enabled           bool
+		streamPrefers     *bool
+		wroteBusinessData bool
+		contextWindowErr  error
+		finalErr          error
+		wantHold          bool
 	}{
 		{
 			name:              "intervention disabled -> false",
 			enabled:           false,
 			streamPrefers:     &streamTrue,
-			rounds:            0,
 			wroteBusinessData: false,
 			finalErr:          errors.New("502 bad gateway"),
 			wantHold:          false,
@@ -51,7 +49,6 @@ func TestShouldHoldForOperator(t *testing.T) {
 			name:              "eligible stream request with transient upstream failure -> true",
 			enabled:           true,
 			streamPrefers:     &streamTrue,
-			rounds:            0,
 			wroteBusinessData: false,
 			finalErr:          errors.New("upstream stream ended without internal response"),
 			wantHold:          true,
@@ -60,16 +57,6 @@ func TestShouldHoldForOperator(t *testing.T) {
 			name:              "non-stream request cannot hold -> false",
 			enabled:           true,
 			streamPrefers:     &streamFalse,
-			rounds:            0,
-			wroteBusinessData: false,
-			finalErr:          errors.New("502 bad gateway"),
-			wantHold:          false,
-		},
-		{
-			name:              "max rounds reached -> false",
-			enabled:           true,
-			streamPrefers:     &streamTrue,
-			rounds:            maxRelayInterventionRounds,
 			wroteBusinessData: false,
 			finalErr:          errors.New("502 bad gateway"),
 			wantHold:          false,
@@ -78,7 +65,6 @@ func TestShouldHoldForOperator(t *testing.T) {
 			name:              "already wrote business data to client -> false",
 			enabled:           true,
 			streamPrefers:     &streamTrue,
-			rounds:            0,
 			wroteBusinessData: true,
 			finalErr:          errors.New("502 bad gateway"),
 			wantHold:          false,
@@ -87,7 +73,6 @@ func TestShouldHoldForOperator(t *testing.T) {
 			name:              "client canceled context -> false",
 			enabled:           true,
 			streamPrefers:     &streamTrue,
-			rounds:            0,
 			wroteBusinessData: false,
 			finalErr:          context.Canceled,
 			wantHold:          false,
@@ -96,7 +81,6 @@ func TestShouldHoldForOperator(t *testing.T) {
 			name:              "context window error in contextWindowErr -> false",
 			enabled:           true,
 			streamPrefers:     &streamTrue,
-			rounds:            0,
 			wroteBusinessData: false,
 			contextWindowErr:  errors.New("context length exceeded"),
 			finalErr:          errors.New("context length exceeded"),
@@ -106,7 +90,6 @@ func TestShouldHoldForOperator(t *testing.T) {
 			name:              "context window error in finalErr -> false",
 			enabled:           true,
 			streamPrefers:     &streamTrue,
-			rounds:            0,
 			wroteBusinessData: false,
 			finalErr: newUpstreamError(http.StatusBadRequest, []byte(`{
 				"error": {
@@ -120,7 +103,6 @@ func TestShouldHoldForOperator(t *testing.T) {
 			name:              "request invalid / parsing error -> false",
 			enabled:           true,
 			streamPrefers:     &streamTrue,
-			rounds:            0,
 			wroteBusinessData: false,
 			finalErr: newUpstreamError(http.StatusBadRequest, []byte(`{
 				"error": {
@@ -134,7 +116,6 @@ func TestShouldHoldForOperator(t *testing.T) {
 			name:              "unsupported responses endpoint -> false",
 			enabled:           true,
 			streamPrefers:     &streamTrue,
-			rounds:            0,
 			wroteBusinessData: false,
 			finalErr: newUpstreamError(http.StatusBadRequest, []byte(`{
 				"error": {
@@ -143,6 +124,30 @@ func TestShouldHoldForOperator(t *testing.T) {
 				}
 			}`)),
 			wantHold: false,
+		},
+		{
+			name:              "transient 429 rate limit is eligible -> true",
+			enabled:           true,
+			streamPrefers:     &streamTrue,
+			wroteBusinessData: false,
+			finalErr:          newUpstreamError(http.StatusTooManyRequests, []byte(`{"error":{"message":"Rate limit reached"}}`)),
+			wantHold:          true,
+		},
+		{
+			name:              "transient 503 service unavailable is eligible -> true",
+			enabled:           true,
+			streamPrefers:     &streamTrue,
+			wroteBusinessData: false,
+			finalErr:          newUpstreamError(http.StatusServiceUnavailable, []byte(`{"error":{"message":"Overloaded"}}`)),
+			wantHold:          true,
+		},
+		{
+			name:              "deterministic 404 is not eligible -> false",
+			enabled:           true,
+			streamPrefers:     &streamTrue,
+			wroteBusinessData: false,
+			finalErr:          newUpstreamError(http.StatusNotFound, []byte(`{"error":{"message":"Resource not found"}}`)),
+			wantHold:          false,
 		},
 	}
 
@@ -157,7 +162,7 @@ func TestShouldHoldForOperator(t *testing.T) {
 				wroteBusinessData: tt.wroteBusinessData,
 			}
 
-			got := shouldHoldForOperator(req, tt.rounds, tt.contextWindowErr, tt.finalErr)
+			got := shouldHoldForOperator(req, tt.contextWindowErr, tt.finalErr)
 			if got != tt.wantHold {
 				t.Errorf("shouldHoldForOperator() = %v, want %v", got, tt.wantHold)
 			}

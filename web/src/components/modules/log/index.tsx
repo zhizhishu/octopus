@@ -10,6 +10,7 @@ import { PageWrapper } from '@/components/common/PageWrapper';
 import { MobileFilterCollapse } from '@/components/common/MobileFilterCollapse';
 import { useAPIKeyList } from '@/api/endpoints/apikey';
 import { useChannelList } from '@/api/endpoints/channel';
+import { useModelList } from '@/api/endpoints/model';
 import { useAbortIntervention, useInterventionList, useRetryIntervention, type InterventionSnapshot } from '@/api/endpoints/intervention';
 import { useAuthStore, useUserList } from '@/api/endpoints/user';
 import { Button } from '@/components/ui/button';
@@ -51,6 +52,25 @@ const endpointFilters = [
     { value: 'model_test_responses', label: 'model test responses' },
     { value: 'model_test_anthropic_messages', label: 'model test messages' },
     { value: 'model_test_gemini', label: 'model test gemini' },
+] as const;
+
+// Unified provider taxonomy options
+const providerFilters = [
+    { value: '', label: '全部厂商' },
+    { value: 'openai', label: 'OpenAI (GPT/o1/o3/o4)' },
+    { value: 'anthropic', label: 'Anthropic (Claude)' },
+    { value: 'google', label: 'Google (Gemini)' },
+    { value: 'deepseek', label: 'DeepSeek' },
+    { value: 'xai', label: 'xAI (Grok)' },
+    { value: 'alibaba', label: 'Alibaba (Qwen/通义)' },
+    { value: 'zhipuai', label: 'Zhipu (GLM/智谱)' },
+    { value: 'minimax', label: 'MiniMax (海螺)' },
+    { value: 'moonshotai', label: 'Moonshot (Kimi)' },
+    { value: 'mistral', label: 'Mistral' },
+    { value: 'meta', label: 'Meta (Llama)' },
+    { value: 'bytedance', label: 'ByteDance (豆包)' },
+    { value: 'baidu', label: 'Baidu (文心)' },
+    { value: 'tencent', label: 'Tencent (混元)' },
 ] as const;
 
 const dateRangeShortcuts: Array<{ id: LogDateRangeShortcut; label: string }> = [
@@ -234,6 +254,15 @@ type InterventionDraft = {
     modelName: string;
 };
 
+function formatRemainingSeconds(nextRetryAt: string | null | undefined): string | null {
+    if (!nextRetryAt) return null;
+    const target = new Date(nextRetryAt).getTime();
+    if (Number.isNaN(target)) return null;
+    const diffSeconds = Math.ceil((target - Date.now()) / 1000);
+    if (diffSeconds <= 0) return '即将重试';
+    return `${diffSeconds}s 后重试`;
+}
+
 function PendingInterventionsPanel({ isAdmin }: { isAdmin: boolean }) {
     const { data: interventions = [] } = useInterventionList({ enabled: isAdmin });
     const { data: channelRows = [] } = useChannelList({ enabled: isAdmin && interventions.length > 0 });
@@ -275,16 +304,19 @@ function PendingInterventionsPanel({ isAdmin }: { isAdmin: boolean }) {
                 },
             },
             {
-                onSuccess: () => toast.success('已放行人工重试'),
-                onError: (error) => toast.error('人工重试失败', { description: error instanceof Error ? error.message : String(error) }),
+                onSuccess: () => toast.success('已指定渠道立即重试'),
+                onError: (error) => toast.error('人工指定重试失败', { description: error instanceof Error ? error.message : String(error) }),
             }
         );
     };
 
     const abortHeldRequest = (intervention: InterventionSnapshot) => {
+        if (!window.confirm('确定终止此请求？客户端将立即收到失败响应。')) {
+            return;
+        }
         abortIntervention.mutate(intervention.id, {
-            onSuccess: () => toast.success('已结束挂起请求'),
-            onError: (error) => toast.error('结束挂起请求失败', { description: error instanceof Error ? error.message : String(error) }),
+            onSuccess: () => toast.success('已终止请求，客户端已收到失败响应'),
+            onError: (error) => toast.error('终止请求失败', { description: error instanceof Error ? error.message : String(error) }),
         });
     };
 
@@ -293,9 +325,9 @@ function PendingInterventionsPanel({ isAdmin }: { isAdmin: boolean }) {
             <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-2 text-amber-800 dark:text-amber-200">
                     <AlertTriangle className="size-4 shrink-0" />
-                    <span className="font-semibold">人工接管中：{interventions.length} 个请求正在等你选渠道</span>
+                    <span className="font-semibold">挂起请求救援中：{interventions.length} 个请求挂起中</span>
                 </div>
-                <span className="text-xs text-amber-700/80 dark:text-amber-300/80">客户端连接保持中，选中渠道后会继续把成功响应写回原请求。</span>
+                <span className="text-xs text-amber-700/80 dark:text-amber-300/80">客户端连接保持中；机器每轮会重新读取渠道/映射/Key按优先级自动救援，您也可随时人工立即覆盖。</span>
             </div>
             <div className="grid gap-2 lg:grid-cols-2">
                 {interventions.map((intervention) => {
@@ -304,70 +336,107 @@ function PendingInterventionsPanel({ isAdmin }: { isAdmin: boolean }) {
                     const selectedChannel = enabledChannels.find((channel) => channel.id === selectedChannelID);
                     const enabledKeys = selectedChannel?.keys?.filter((key) => key.enabled) ?? [];
                     const lastAttempts = intervention.attempts.slice(-3);
+                    const isAwaitingOperator = intervention.status === 'awaiting_operator';
+                    const roundNum = intervention.rescue_round ?? 1;
+                    const retryCountdown = formatRemainingSeconds(intervention.next_retry_at);
 
                     return (
-                        <div key={intervention.id} className="rounded-lg border border-amber-500/30 bg-background/80 p-2 shadow-sm">
+                        <div key={intervention.id} className="rounded-lg border border-amber-500/30 bg-background/80 p-2.5 shadow-sm space-y-2.5">
                             <div className="flex flex-wrap items-start justify-between gap-2">
-                                <div className="min-w-0 space-y-1">
+                                <div className="min-w-0 flex-1 space-y-1">
                                     <div className="flex flex-wrap items-center gap-1.5">
                                         <Badge variant="secondary" className="bg-amber-500/15 text-amber-700 dark:text-amber-300">{intervention.endpoint || 'relay'}</Badge>
                                         <span className="font-mono text-xs text-muted-foreground">{intervention.id}</span>
                                     </div>
                                     <p className="text-sm font-medium text-foreground">模型：{intervention.request_model || 'unknown'}</p>
-                                    <p className="line-clamp-2 text-xs text-destructive">{intervention.last_error || '上游全失败，等待人工选择渠道'}</p>
+                                    <p className="line-clamp-2 text-xs text-destructive">{intervention.last_error || '上游失败，机器正在自动救援'}</p>
                                 </div>
-                                <span className="shrink-0 rounded-full bg-amber-500/15 px-2 py-0.5 text-xs text-amber-700 dark:text-amber-300">
-                                    等待 {intervention.waiting_for}
-                                </span>
-                            </div>
-                            {lastAttempts.length > 0 && (
-                                <div className="mt-2 flex flex-wrap gap-1.5">
-                                    {lastAttempts.map((attempt, index) => (
-                                        <span key={`${attempt.channel_id}-${attempt.attempt_num || index}`} className="rounded-full border border-border/70 bg-muted/40 px-2 py-0.5 text-[11px] text-muted-foreground">
-                                            #{attempt.attempt_num || index + 1} {attempt.channel_name || `ch${attempt.channel_id}`} · {attempt.status}
+                                <div className="flex flex-col items-end gap-1 shrink-0">
+                                    <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-xs text-amber-700 dark:text-amber-300">
+                                        {isAwaitingOperator
+                                            ? '等待人工处理'
+                                            : `机器自动救援中 (第 ${roundNum} 轮)`}
+                                    </span>
+                                    {!isAwaitingOperator && retryCountdown && (
+                                        <span className="text-[11px] font-mono text-amber-600 dark:text-amber-400">
+                                            {retryCountdown}
                                         </span>
-                                    ))}
+                                    )}
+                                    {intervention.waiting_for && (
+                                        <span className="text-[11px] text-muted-foreground">
+                                            已挂起 {intervention.waiting_for}
+                                        </span>
+                                    )}
+                                </div>
+                            </div>
+
+                            {lastAttempts.length > 0 && (
+                                <div className="space-y-1">
+                                    <div className="text-[11px] text-muted-foreground font-medium">最近尝试：</div>
+                                    <div className="flex flex-col gap-1">
+                                        {lastAttempts.map((attempt, index) => (
+                                            <div key={`${attempt.channel_id}-${attempt.attempt_num || index}`} className="rounded border border-border/70 bg-muted/30 px-2 py-1 text-[11px]">
+                                                <div className="flex flex-wrap items-center justify-between gap-1 text-muted-foreground">
+                                                    <span>
+                                                        #{attempt.attempt_num || index + 1} {attempt.channel_name || `ch${attempt.channel_id}`} · {attempt.status}
+                                                    </span>
+                                                    {attempt.duration > 0 && (
+                                                        <span className="font-mono text-[10px]">{(attempt.duration / 1000).toFixed(2)}s</span>
+                                                    )}
+                                                </div>
+                                                {attempt.msg && (
+                                                    <p className="mt-0.5 line-clamp-2 text-[10px] text-destructive/90 break-all">{attempt.msg}</p>
+                                                )}
+                                            </div>
+                                        ))}
+                                    </div>
                                 </div>
                             )}
-                            <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
-                                <select
-                                    value={draft.channelID}
-                                    onChange={(event) => updateDraft(intervention.id, { channelID: event.target.value, keyID: '' })}
-                                    className="h-9 min-w-0 rounded-lg border border-input bg-background px-2 text-xs text-foreground"
-                                >
-                                    <option value="">选择重试渠道</option>
-                                    {enabledChannels.map((channel) => (
-                                        <option key={channel.id} value={channel.id}>{channel.name}</option>
-                                    ))}
-                                </select>
-                                <select
-                                    value={draft.keyID}
-                                    onChange={(event) => updateDraft(intervention.id, { keyID: event.target.value })}
-                                    className="h-9 min-w-0 rounded-lg border border-input bg-background px-2 text-xs text-foreground"
-                                    disabled={!selectedChannel}
-                                >
-                                    <option value="">自动选 Key</option>
-                                    {enabledKeys.map((key) => (
-                                        <option key={key.id} value={key.id}>{key.remark || `Key #${key.id}`}</option>
-                                    ))}
-                                </select>
-                                <input
-                                    value={draft.modelName}
-                                    onChange={(event) => updateDraft(intervention.id, { modelName: event.target.value })}
-                                    placeholder={`模型覆盖（默认 ${intervention.request_model || '原模型'}）`}
-                                    className="h-9 min-w-0 rounded-lg border border-input bg-background px-2 text-xs text-foreground sm:col-span-2"
-                                />
+
+                            <div className="rounded-md border border-dashed border-border/80 bg-muted/20 p-2 space-y-2">
+                                <div className="text-xs font-medium text-foreground">人工立即覆盖机器选择</div>
+                                <div className="grid gap-2 grid-cols-1 sm:grid-cols-2">
+                                    <select
+                                        value={draft.channelID}
+                                        onChange={(event) => updateDraft(intervention.id, { channelID: event.target.value, keyID: '' })}
+                                        className="h-9 w-full min-w-0 rounded-lg border border-input bg-background px-2 text-xs text-foreground"
+                                    >
+                                        <option value="">选择指定重试渠道</option>
+                                        {enabledChannels.map((channel) => (
+                                            <option key={channel.id} value={channel.id}>{channel.name}</option>
+                                        ))}
+                                    </select>
+                                    <select
+                                        value={draft.keyID}
+                                        onChange={(event) => updateDraft(intervention.id, { keyID: event.target.value })}
+                                        className="h-9 w-full min-w-0 rounded-lg border border-input bg-background px-2 text-xs text-foreground"
+                                        disabled={!selectedChannel}
+                                    >
+                                        <option value="">自动选 Key</option>
+                                        {enabledKeys.map((key) => (
+                                            <option key={key.id} value={key.id}>{key.remark || `Key #${key.id}`}</option>
+                                        ))}
+                                    </select>
+                                    <input
+                                        value={draft.modelName}
+                                        onChange={(event) => updateDraft(intervention.id, { modelName: event.target.value })}
+                                        placeholder={`模型覆盖（默认 ${intervention.request_model || '原模型'}）`}
+                                        className="h-9 w-full min-w-0 rounded-lg border border-input bg-background px-2 text-xs text-foreground sm:col-span-2"
+                                    />
+                                </div>
                             </div>
-                            <div className="mt-2 flex justify-end gap-2">
+
+                            <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
                                 <Button
                                     variant="outline"
                                     size="sm"
-                                    className="rounded-lg"
+                                    className="rounded-lg text-destructive hover:bg-destructive/10 hover:text-destructive border-destructive/30"
                                     disabled={abortIntervention.isPending}
                                     onClick={() => abortHeldRequest(intervention)}
+                                    title="终止请求并让客户端收到失败响应"
                                 >
                                     <X className="size-4" />
-                                    放弃
+                                    终止请求并返回失败
                                 </Button>
                                 <Button
                                     variant="default"
@@ -377,7 +446,7 @@ function PendingInterventionsPanel({ isAdmin }: { isAdmin: boolean }) {
                                     onClick={() => retryHeldRequest(intervention)}
                                 >
                                     {retryIntervention.isPending ? <Loader2 className="size-4 animate-spin" /> : <RotateCw className="size-4" />}
-                                    重试这个渠道
+                                    立即指定重试
                                 </Button>
                             </div>
                         </div>
@@ -406,6 +475,8 @@ export function Log() {
     const [selectedUserID, setSelectedUserID] = useState<number | undefined>();
     const [selectedAPIKeyID, setSelectedAPIKeyID] = useState<number | undefined>();
     const [selectedEndpoint, setSelectedEndpoint] = useState('');
+    const [selectedProvider, setSelectedProvider] = useState('');
+    const [selectedModel, setSelectedModel] = useState('');
     const [startDate, setStartDate] = useState(defaultRange.startDate);
     const [endDate, setEndDate] = useState(defaultRange.endDate);
     // 严重程度 + 「只看有重试」都是服务端过滤，翻页/总数都对得上。
@@ -423,6 +494,8 @@ export function Log() {
     const setSensitiveVisible = useSensitiveStore((state) => state.setSensitiveVisible);
     const { data: users = [] } = useUserList({ enabled: isAdmin });
     const { data: apiKeys = [] } = useAPIKeyList();
+    const { data: modelList = [] } = useModelList();
+    const { data: channelRows = [] } = useChannelList({ enabled: isAdmin });
     const exportLogs = useExportLogs();
     // 历史日志持久化状态：关闭时后端只留最近 ~100 条内存记录、重启即失，按日期查历史必然是空的。
     // 日志页过去对此零提示（静默显示内存缓存），用户会误以为“日志功能坏了”。这里显式暴露 + 一键开启。
@@ -461,6 +534,8 @@ export function Log() {
         userID: selectedUserID,
         apiKeyID: effectiveSelectedAPIKeyID,
         endpoint: selectedEndpoint || undefined,
+        provider: selectedProvider || undefined,
+        model: selectedModel || undefined,
         startTime,
         endTime,
         retried: retriedOnly,
@@ -493,6 +568,8 @@ export function Log() {
         userID: selectedUserID,
         apiKeyID: effectiveSelectedAPIKeyID,
         endpoint: selectedEndpoint || undefined,
+        provider: selectedProvider || undefined,
+        model: selectedModel || undefined,
         startTime,
         endTime,
         retried: retriedOnly,
@@ -501,6 +578,31 @@ export function Log() {
         // 实时刷新只在第 1 页（最新）生效；翻到历史页自然暂停，回第 1 页恢复。
         live: autoRefresh && currentPage === 1,
     });
+
+    // 收集当前可用模型候选：来自 modelList、channelRows、当前选中的模型、以及当前已经拉到的日志里的模型名
+    const availableModelOptions = useMemo(() => {
+        const set = new Set<string>();
+        if (selectedModel?.trim()) {
+            set.add(selectedModel.trim());
+        }
+        for (const m of modelList) {
+            if (m.name?.trim()) set.add(m.name.trim());
+        }
+        for (const ch of channelRows) {
+            const raw = ch.raw;
+            for (const m of raw.selected_models || []) {
+                if (m?.trim()) set.add(m.trim());
+            }
+            for (const m of raw.discovered_models || []) {
+                if (m?.trim()) set.add(m.trim());
+            }
+        }
+        for (const l of logs) {
+            if (l.request_model_name?.trim()) set.add(l.request_model_name.trim());
+            if (l.actual_model_name?.trim()) set.add(l.actual_model_name.trim());
+        }
+        return Array.from(set).sort((a, b) => a.localeCompare(b));
+    }, [channelRows, logs, modelList, selectedModel]);
 
     const handleSelectUser = (value: string) => {
         const nextUserID = Number(value) || undefined;
@@ -525,6 +627,16 @@ export function Log() {
         setCurrentPage(1);
     };
 
+    const handleSelectProvider = (value: string) => {
+        setSelectedProvider(value);
+        setCurrentPage(1);
+    };
+
+    const handleSelectModel = (value: string) => {
+        setSelectedModel(value);
+        setCurrentPage(1);
+    };
+
     const handleStartDate = (value: string) => { setStartDate(value); setCurrentPage(1); };
     const handleEndDate = (value: string) => { setEndDate(value); setCurrentPage(1); };
 
@@ -535,11 +647,13 @@ export function Log() {
         setCurrentPage(1);
     }, [todayLabel]);
 
-    // 所有筛选一键回默认（近 7 天、不限用户/Key/端点、全部状态、不限重试、清空搜索）。
+    // 所有筛选一键回默认（近 7 天、不限用户/Key/端点/厂商/模型、全部状态、不限重试、清空搜索）。
     const handleResetFilters = useCallback(() => {
         setSelectedUserID(undefined);
         setSelectedAPIKeyID(undefined);
         setSelectedEndpoint('');
+        setSelectedProvider('');
+        setSelectedModel('');
         setSeverityFilter('all');
         setRetriedOnly(false);
         setHideModelTest(false);
@@ -553,6 +667,8 @@ export function Log() {
     // 有任何非默认筛选在生效（决定是否显示「重置」+ 空状态提示是否算「被筛掉」）。
     const hasActiveFilter =
         !!selectedEndpoint ||
+        !!selectedProvider ||
+        !!selectedModel ||
         !!selectedUserID ||
         !!effectiveSelectedAPIKeyID ||
         severityFilter !== 'all' ||
@@ -571,6 +687,8 @@ export function Log() {
     }
     if (searchKeyword.trim()) activePills.push({ key: 'search', label: `搜索 "${searchKeyword.trim()}"`, onClear: () => { setSearchKeyword(''); setCurrentPage(1); } });
     if (selectedEndpoint) activePills.push({ key: 'ep', label: `接口 ${selectedEndpoint}`, onClear: () => { setSelectedEndpoint(''); setCurrentPage(1); } });
+    if (selectedProvider) activePills.push({ key: 'prov', label: `厂商 ${providerFilters.find((p) => p.value === selectedProvider)?.label ?? selectedProvider}`, onClear: () => { setSelectedProvider(''); setCurrentPage(1); } });
+    if (selectedModel) activePills.push({ key: 'mod', label: `模型 ${selectedModel}`, onClear: () => { setSelectedModel(''); setCurrentPage(1); } });
     if (severityFilter !== 'all') activePills.push({ key: 'sev', label: `状态 ${t(`list.filters.${severityFilter}`)}`, onClear: () => { setSeverityFilter('all'); setCurrentPage(1); } });
     if (retriedOnly) activePills.push({ key: 'retry', label: t('list.retriedOnly'), onClear: () => { setRetriedOnly(false); setCurrentPage(1); } });
     if (hideModelTest) activePills.push({ key: 'hidetest', label: '隐藏渠道测试探针', onClear: () => { setHideModelTest(false); setCurrentPage(1); } });
@@ -626,6 +744,8 @@ export function Log() {
         userID: selectedUserID,
         apiKeyID: effectiveSelectedAPIKeyID,
         endpoint: selectedEndpoint || undefined,
+        provider: selectedProvider || undefined,
+        model: selectedModel || undefined,
         retried: retriedOnly,
         hideModelTest,
         enabled: listIsEmpty,
@@ -647,13 +767,19 @@ export function Log() {
                 user_id: selectedUserID,
                 api_key_id: effectiveSelectedAPIKeyID,
                 endpoint: selectedEndpoint || undefined,
+                provider: selectedProvider || undefined,
+                model: selectedModel || undefined,
+                search: deferredSearch || undefined,
+                severity: severityFilter === 'all' ? undefined : severityFilter,
+                retried: retriedOnly,
+                hide_model_test: hideModelTest,
             },
             {
                 onSuccess: () => toast.success('日志已导出'),
                 onError: (error) => toast.error('日志导出失败', { description: error instanceof Error ? error.message : String(error) }),
             }
         );
-    }, [effectiveSelectedAPIKeyID, endTime, exportLogs, selectedEndpoint, selectedUserID, startTime]);
+    }, [deferredSearch, effectiveSelectedAPIKeyID, endTime, exportLogs, hideModelTest, retriedOnly, selectedEndpoint, selectedModel, selectedProvider, selectedUserID, severityFilter, startTime]);
 
     const renderLogCard = useCallback((row: LogRow) => <LogCard log={row.log} />, []);
     const getLogRowKey = useCallback((row: LogRow) => row.key, []);
@@ -758,8 +884,9 @@ export function Log() {
                             type="text"
                             value={searchKeyword}
                             onChange={(e) => { setSearchKeyword(e.target.value); setCurrentPage(1); }}
-                            placeholder="搜索用户 / Key / 错误…"
-                            className="h-9 w-44 rounded-lg border border-input bg-background pl-8 pr-7 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring sm:w-56"
+                            placeholder="模糊搜索：用户名/Key/模型/渠道/端点/路径/会话/错误/ID…"
+                            title="可搜索用户名、API Key 名、请求/实际模型名、渠道名、端点名、路径、会话 Key、错误信息及错误码；输入纯数字时额外精准匹配日志 ID 或渠道 ID"
+                            className="h-9 w-52 rounded-lg border border-input bg-background pl-8 pr-7 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring sm:w-64"
                         />
                         {searchKeyword && (
                             <button
@@ -774,15 +901,46 @@ export function Log() {
                     </label>
 
                     <label className="flex min-w-0 flex-wrap items-center gap-2">
-                        <span className="text-sm font-medium text-card-foreground">Endpoint</span>
+                        <span className="text-sm font-medium text-card-foreground">端点</span>
                         <select
                             value={selectedEndpoint}
                             onChange={(event) => handleSelectEndpoint(event.target.value)}
-                            className="h-9 min-w-44 rounded-lg border border-input bg-background px-3 text-sm text-foreground"
+                            className="h-9 min-w-36 rounded-lg border border-input bg-background px-3 text-sm text-foreground"
                         >
                             {endpointFilters.map((endpoint) => (
                                 <option key={endpoint.value || 'all'} value={endpoint.value}>
                                     {endpoint.label}
+                                </option>
+                            ))}
+                        </select>
+                    </label>
+
+                    <label className="flex min-w-0 flex-wrap items-center gap-2">
+                        <span className="text-sm font-medium text-card-foreground">厂商</span>
+                        <select
+                            value={selectedProvider}
+                            onChange={(event) => handleSelectProvider(event.target.value)}
+                            className="h-9 min-w-36 rounded-lg border border-input bg-background px-3 text-sm text-foreground"
+                        >
+                            {providerFilters.map((provider) => (
+                                <option key={provider.value || 'all'} value={provider.value}>
+                                    {provider.label}
+                                </option>
+                            ))}
+                        </select>
+                    </label>
+
+                    <label className="flex min-w-0 flex-wrap items-center gap-2">
+                        <span className="text-sm font-medium text-card-foreground">模型</span>
+                        <select
+                            value={selectedModel}
+                            onChange={(event) => handleSelectModel(event.target.value)}
+                            className="h-9 min-w-40 max-w-56 rounded-lg border border-input bg-background px-3 text-sm text-foreground"
+                        >
+                            <option value="">全部模型</option>
+                            {availableModelOptions.map((modelName) => (
+                                <option key={modelName} value={modelName}>
+                                    {modelName}
                                 </option>
                             ))}
                         </select>

@@ -69,6 +69,9 @@ export type Channel = {
     rpm_limit: number;
     key_select_strategy: KeySelectStrategy;
     disable_circuit_breaker: boolean;
+    race_mode: boolean;
+    race_key_concurrency: number;
+    race_delay_ms: number;
     base_urls: BaseUrl[];
     keys: ChannelKey[];
     model: string;
@@ -117,6 +120,9 @@ export type CreateChannelRequest = {
     rpm_limit?: number;
     key_select_strategy?: KeySelectStrategy;
     disable_circuit_breaker?: boolean;
+    race_mode?: boolean;
+    race_key_concurrency?: number;
+    race_delay_ms?: number;
     base_urls: BaseUrl[];
     keys: Array<Pick<ChannelKey, 'enabled' | 'channel_key' | 'remark'>>;
     model: string;
@@ -152,6 +158,9 @@ export type UpdateChannelRequest = {
     rpm_limit?: number;
     key_select_strategy?: KeySelectStrategy;
     disable_circuit_breaker?: boolean;
+    race_mode?: boolean;
+    race_key_concurrency?: number;
+    race_delay_ms?: number;
     base_urls?: BaseUrl[];
     model?: string;
     custom_model?: string;
@@ -277,6 +286,9 @@ export function useChannelList(options?: { enabled?: boolean }) {
                 rpm_limit: item.rpm_limit ?? 0,
                 key_select_strategy: item.key_select_strategy ?? 0,
                 disable_circuit_breaker: item.disable_circuit_breaker ?? false,
+                race_mode: item.race_mode ?? false,
+                race_key_concurrency: item.race_key_concurrency ?? 2,
+                race_delay_ms: item.race_delay_ms ?? 0,
                 circuit_tripped: item.circuit_tripped ?? false,
                 circuit_remaining_seconds: item.circuit_remaining_seconds ?? 0,
                 circuit_open_keys: item.circuit_open_keys ?? 0,
@@ -379,6 +391,9 @@ export function useCopyChannel() {
                 rpm_limit: source.rpm_limit,
                 key_select_strategy: source.key_select_strategy,
                 disable_circuit_breaker: source.disable_circuit_breaker,
+                race_mode: source.race_mode,
+                race_key_concurrency: source.race_key_concurrency,
+                race_delay_ms: source.race_delay_ms,
                 base_urls: (source.base_urls ?? []).map((u) => ({ url: u.url, delay: u.delay })),
                 keys: (source.keys ?? [])
                     .filter((k) => k.channel_key) // 跳过空 key, 不带 id/status_code/last_use_time_stamp/total_cost 等运行时字段

@@ -302,3 +302,126 @@ func TestChannelGetAvailableChannelKeysLastResortBypassesThrottle(t *testing.T) 
 
 // restoreProbeInterval resets the package-level knob after a test that overrode it.
 func restoreProbeInterval(d time.Duration) { ChannelKeyProbeInterval = d }
+
+func TestChannelRaceSettingsValidation(t *testing.T) {
+	tests := []struct {
+		name        string
+		channel     Channel
+		updateReq   *ChannelUpdateRequest
+		expectError bool
+	}{
+		{
+			name:        "race mode false ignores concurrency and delay",
+			channel:     Channel{RaceMode: false, RaceKeyConcurrency: 0, RaceDelayMs: 0},
+			expectError: false,
+		},
+		{
+			name:        "race mode true with valid defaults (2, 0)",
+			channel:     Channel{RaceMode: true, RaceKeyConcurrency: 2, RaceDelayMs: 0},
+			expectError: false,
+		},
+		{
+			name:        "race mode true with concurrency=0 treated as default 2",
+			channel:     Channel{RaceMode: true, RaceKeyConcurrency: 0, RaceDelayMs: 100},
+			expectError: false,
+		},
+		{
+			name:        "race mode true with max concurrency 5 and delay 5000",
+			channel:     Channel{RaceMode: true, RaceKeyConcurrency: 5, RaceDelayMs: 5000},
+			expectError: false,
+		},
+		{
+			name:        "race mode true with concurrency 1 invalid",
+			channel:     Channel{RaceMode: true, RaceKeyConcurrency: 1, RaceDelayMs: 0},
+			expectError: true,
+		},
+		{
+			name:        "race mode true with concurrency 6 invalid",
+			channel:     Channel{RaceMode: true, RaceKeyConcurrency: 6, RaceDelayMs: 0},
+			expectError: true,
+		},
+		{
+			name:        "race mode true with delay -1 invalid",
+			channel:     Channel{RaceMode: true, RaceKeyConcurrency: 2, RaceDelayMs: -1},
+			expectError: true,
+		},
+		{
+			name:        "race mode true with delay 5001 invalid",
+			channel:     Channel{RaceMode: true, RaceKeyConcurrency: 2, RaceDelayMs: 5001},
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.channel.Validate()
+			if (err != nil) != tt.expectError {
+				t.Fatalf("channel.Validate() error = %v, expectError = %v", err, tt.expectError)
+			}
+		})
+	}
+}
+
+func TestChannelUpdateRequestRaceSettingsValidation(t *testing.T) {
+	trueVal := true
+	falseVal := false
+	c1 := 1
+	c2 := 2
+	c5 := 5
+	c6 := 6
+	dNeg := -1
+	d0 := 0
+	d5000 := 5000
+	d5001 := 5001
+
+	tests := []struct {
+		name        string
+		req         ChannelUpdateRequest
+		expectError bool
+	}{
+		{
+			name:        "update with race mode false valid",
+			req:         ChannelUpdateRequest{ID: 1, RaceMode: &falseVal},
+			expectError: false,
+		},
+		{
+			name:        "update with race mode true concurrency 2 delay 0 valid",
+			req:         ChannelUpdateRequest{ID: 1, RaceMode: &trueVal, RaceKeyConcurrency: &c2, RaceDelayMs: &d0},
+			expectError: false,
+		},
+		{
+			name:        "update with race mode true concurrency 5 delay 5000 valid",
+			req:         ChannelUpdateRequest{ID: 1, RaceMode: &trueVal, RaceKeyConcurrency: &c5, RaceDelayMs: &d5000},
+			expectError: false,
+		},
+		{
+			name:        "update with race mode true concurrency 1 invalid",
+			req:         ChannelUpdateRequest{ID: 1, RaceMode: &trueVal, RaceKeyConcurrency: &c1},
+			expectError: true,
+		},
+		{
+			name:        "update with race mode true concurrency 6 invalid",
+			req:         ChannelUpdateRequest{ID: 1, RaceMode: &trueVal, RaceKeyConcurrency: &c6},
+			expectError: true,
+		},
+		{
+			name:        "update with race mode true delay negative invalid",
+			req:         ChannelUpdateRequest{ID: 1, RaceMode: &trueVal, RaceDelayMs: &dNeg},
+			expectError: true,
+		},
+		{
+			name:        "update with race mode true delay 5001 invalid",
+			req:         ChannelUpdateRequest{ID: 1, RaceMode: &trueVal, RaceDelayMs: &d5001},
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.req.Validate()
+			if (err != nil) != tt.expectError {
+				t.Fatalf("req.Validate() error = %v, expectError = %v", err, tt.expectError)
+			}
+		})
+	}
+}
