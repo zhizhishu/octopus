@@ -714,7 +714,7 @@ export const LogCard = React.memo(function LogCard({ log }: { log: RelayLog }) {
                                         className="shrink-0 gap-1 border-0 bg-amber-500/15 px-1.5 py-0 text-xs text-amber-700 dark:text-amber-300"
                                     >
                                         <RotateCw className="size-3 opacity-80" />
-                                        自动救援
+                                        {t('autoRescue')}
                                     </Badge>
                                 )}
                                 {canViewDetails && (

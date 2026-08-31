@@ -80,7 +80,7 @@ function AdvancedSettingsShell({
                 {/* Mobile: full-width bottom sheet with tap-outside dismiss; desktop keeps
                     the original right-side 26rem sheet untouched. */}
                 <aside
-                    className="fixed inset-x-0 bottom-0 z-20 w-full max-h-[85vh] overflow-y-auto rounded-t-xl border bg-card shadow-lg animate-in fade-in slide-in-from-bottom-3 sm:absolute sm:inset-x-auto sm:bottom-auto sm:right-0 sm:top-0 sm:z-10 sm:max-h-[72vh] sm:max-w-[min(26rem,100%)] sm:rounded-xl sm:border sm:slide-in-from-bottom-0 sm:slide-in-from-right-3"
+                    className="fixed inset-x-0 bottom-0 z-[60] w-full max-h-[85vh] overflow-y-auto rounded-t-xl border bg-card shadow-lg animate-in fade-in slide-in-from-bottom-3 sm:absolute sm:inset-x-auto sm:bottom-auto sm:right-0 sm:top-0 sm:z-[60] sm:max-h-[72vh] sm:max-w-[min(26rem,100%)] sm:rounded-xl sm:border sm:slide-in-from-bottom-0 sm:slide-in-from-right-3"
                     onClick={(event) => event.stopPropagation()}
                 >
                     <div className="space-y-4 p-4">
@@ -1157,7 +1157,7 @@ export function ChannelForm({
                             placeholder={t('modelFilterPlaceholder')}
                             className="mb-2 h-7 rounded-lg px-2.5 text-xs"
                         />
-                        <div className="flex max-h-36 min-w-0 flex-wrap gap-1.5 overflow-y-auto pr-1">
+                        <div className="flex min-w-0 flex-wrap gap-1.5 pr-1">
                             {visibleFetchedModels.map((model) => {
                                 const selected = selectedModelSet.has(model);
                                 return (
@@ -1200,7 +1200,7 @@ export function ChannelForm({
                             </Button>
                         )}
                     </div>
-                    <div className="rounded-xl border border-border bg-muted/30 p-2.5 max-h-40 min-h-12 overflow-y-auto">
+                    <div className="rounded-xl border border-border bg-muted/30 p-2.5 min-h-12">
                         {autoModels.length > 0 ? (
                             <div className="flex min-w-0 flex-wrap gap-1.5">
                                 {autoModels.map((model) => (
@@ -1351,7 +1351,7 @@ export function ChannelForm({
                             </span>
                             {channelTestResult.upstream_path ? <span className="font-mono">{channelTestResult.upstream_path}</span> : null}
                         </div>
-                        <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-background/70 p-2 text-[11px] text-foreground">
+                        <pre className="mt-2 max-h-28 whitespace-pre-wrap break-words rounded-lg bg-background/70 p-2 text-[11px] text-foreground">
                             {channelTestResult.success ? (channelTestResult.response_preview || 'OK') : (channelTestResult.error || '无错误详情')}
                         </pre>
                         {channelTestResult.attempts?.length ? (

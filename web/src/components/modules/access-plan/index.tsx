@@ -1645,6 +1645,21 @@ function RouteFlowCanvasInner({
     // ── ReactFlow 无限画布 ──
     const { fitView, setCenter } = useReactFlow();
 
+    // ── 全屏清屏切换（f0ba588 · 手机端拥挤优化 / 807e22b 双 rAF fitView）──
+    const [canvasFullscreen, setCanvasFullscreen] = useState(false);
+
+    useEffect(() => {
+        if (!canvasFullscreen) return;
+        const handler = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') {
+                setCanvasFullscreen(false);
+                requestAnimationFrame(() => fitView({ padding: 0.14, maxZoom: 1, duration: 220 }));
+            }
+        };
+        window.addEventListener('keydown', handler);
+        return () => window.removeEventListener('keydown', handler);
+    }, [canvasFullscreen, fitView]);
+
     const flow = useMemo(
         () => buildRouteFlow(plan, filteredRows, channelNameByID, onEditRequest, filteredMappings, onPriorityChange),
         [plan, filteredRows, channelNameByID, onEditRequest, filteredMappings, onPriorityChange],
@@ -1796,7 +1811,12 @@ function RouteFlowCanvasInner({
                     )}
                 </div>
             ) : (
-                <div className="min-h-0 flex-1 h-[clamp(300px,calc(100dvh-26rem),820px)] sm:h-[clamp(340px,calc(100dvh-22rem),860px)]">
+                <div className={cn(
+                    canvasFullscreen
+                        ? 'fixed inset-0 z-50 h-[100dvh] w-screen bg-background p-2 sm:p-4'
+                        : 'min-h-0 flex-1 h-[clamp(300px,calc(100dvh-26rem),820px)] sm:h-[clamp(340px,calc(100dvh-22rem),860px)]',
+                    'transition-[height]',
+                )}>
                     <ReactFlow<FlowNode, Edge>
                         nodes={nodes}
                         edges={edges}
@@ -1816,7 +1836,20 @@ function RouteFlowCanvasInner({
                         proOptions={{ hideAttribution: true }}
                     >
                         <Background variant={BackgroundVariant.Dots} gap={32} size={1} />
-                        <Controls showInteractive={false} />
+                        <Controls showInteractive={false} showFitView={false}>
+                            <ControlButton
+                                onClick={() => {
+                                    setCanvasFullscreen((v) => !v);
+                                    requestAnimationFrame(() => fitView({ padding: 0.14, maxZoom: 1, duration: 220 }));
+                                }}
+                                title={canvasFullscreen ? '退出全屏（Esc）' : '清屏（全屏画布）'}
+                                aria-label={canvasFullscreen ? '退出全屏（Esc）' : '清屏（全屏画布）'}
+                            >
+                                {canvasFullscreen
+                                    ? <Minimize2 style={{ width: 14, height: 14 }} />
+                                    : <Maximize2 style={{ width: 14, height: 14 }} />}
+                            </ControlButton>
+                        </Controls>
                         <MiniMap
                             pannable
                             zoomable

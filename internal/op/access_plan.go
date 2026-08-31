@@ -685,8 +685,13 @@ func AccessPlanSyncEnabledChannels(ctx context.Context) error {
 			rule := model.AccessRouteRule{
 				RouteProfileID: plan.RouteProfile.ID,
 				RequestModel:   pm.requestModel,
-				Mode:           3, // default spread
-				FallbackMode:   model.AccessRouteFallbackGroup,
+				// Match the project-wide default for a fresh rule: fill_first (3),
+				// the same value as the AccessRouteRule `gorm:"default:3"` column and
+				// the frontend contract (normalizeRouteMode defaults to 3). Using the
+				// named constant so the value can never drift from its meaning again
+				// (GroupModeSpread is 1 — do NOT write a bare 3 and call it "spread").
+				Mode:         model.GroupModeFillFirst,
+				FallbackMode: model.AccessRouteFallbackGroup,
 			}
 			if err := gormDB.Create(&rule).Error; err != nil {
 				continue
