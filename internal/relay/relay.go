@@ -29,7 +29,13 @@ import (
 	"github.com/tmaxmax/go-sse"
 )
 
-const maxRelayInterventionRounds = 8
+// Machine rescue keeps retrying until the request's total timeout or an explicit
+// operator abort — there is no round cap. Capped exponential backoff (1s→2s→4s→8s→15s)
+// prevents hammering; the request's own context deadline provides the safety valve.
+// A Codex/Claude CLI that sits quietly waiting for a valid response will never see an
+// "awaiting operator" intervention prompt — the machine keeps trying every available
+// route group until one works or the clock runs out.
+const maxRelayInterventionRounds = 0 // 0 = unlimited; machine rescue never exhausts
 
 // Handler 处理入站请求并转发到上游服务
 func Handler(inboundType inbound.InboundType, c *gin.Context) {
@@ -437,7 +443,7 @@ runIterator:
 
 		if interventionRegistered {
 			var aborted bool
-			for interventionRounds < maxRelayInterventionRounds {
+			for {
 				interventionRounds++
 				backoff := intervention.BackoffDuration(interventionRounds)
 				nextRetry := time.Now().Add(backoff)
@@ -500,7 +506,10 @@ runIterator:
 				}
 			}
 
-			// If machine rescue exhausted and request not aborted, wait for human operator until total timeout or abort
+			// Safety net: wait for human operator only when the request context expires or
+			// is explicitly aborted. The machine rescue loop above is unbounded, so this
+			// path is only reached on context cancellation — in practice the operator
+			// wait will also trip on the dead context and exit cleanly.
 			if !aborted {
 				for {
 					_ = intervention.UpdateStatus(pendingInterventionID, intervention.StatusAwaitingOperator, interventionRounds, nil)

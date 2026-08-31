@@ -822,7 +822,7 @@ export function ChannelForm({
                         <SelectTrigger id={`${idPrefix}-type`} className="rounded-xl w-full border border-border px-4 py-2 text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
                             <SelectValue />
                         </SelectTrigger>
-                        <SelectContent className='rounded-xl'>
+                        <SelectContent className='rounded-xl' position="popper">
                             <SelectItem className='rounded-xl' value={String(ChannelType.OpenAIChat)}>{t('typeOpenAIChat')}</SelectItem>
                             <SelectItem className='rounded-xl' value={String(ChannelType.OpenAIResponse)}>{t('typeOpenAIResponse')}</SelectItem>
                             <SelectItem className='rounded-xl' value={String(ChannelType.Anthropic)}>{t('typeAnthropic')}</SelectItem>
@@ -904,7 +904,7 @@ export function ChannelForm({
                         <SelectTrigger id={`${idPrefix}-key-select-strategy`} className="rounded-xl w-full border border-border px-4 py-2 text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
                             <SelectValue />
                         </SelectTrigger>
-                        <SelectContent className='rounded-xl'>
+                        <SelectContent className='rounded-xl' position="popper">
                             <SelectItem className='rounded-xl' value="0">{t('keySelectStrategyCostBalanced')}</SelectItem>
                             <SelectItem className='rounded-xl' value="1">{t('keySelectStrategySticky')}</SelectItem>
                         </SelectContent>
@@ -1367,6 +1367,81 @@ export function ChannelForm({
                 )}
             </div>
 
+            {/* ── 竞速模式：始终可见，不藏在高级面板里 ── */}
+            <div className="rounded-xl border border-border bg-background/70 p-3">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0 space-y-1">
+                        <div className="text-xs font-semibold text-card-foreground">{t('raceModeTitle')}</div>
+                        <p className="text-xs leading-relaxed text-muted-foreground">
+                            {t('raceModeHint')}
+                        </p>
+                    </div>
+                    <label className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-border bg-muted/30 px-2.5 py-1.5 text-xs text-muted-foreground">
+                        <Switch
+                            checked={formData.race_mode}
+                            onCheckedChange={(checked) => onFormDataChange({ ...formData, race_mode: checked })}
+                            aria-label={t('raceModeTitle')}
+                        />
+                        <span>{formData.race_mode ? t('raceModeOn') : t('raceModeOff')}</span>
+                    </label>
+                </div>
+                {formData.race_mode && (
+                    <div className="mt-3 border-t border-border/50 pt-3 space-y-3">
+                        {formData.keys.filter((k) => k.enabled && k.channel_key.trim()).length < 2 && (
+                            <div className="flex items-center gap-2 rounded-lg bg-amber-500/10 border border-amber-500/20 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
+                                <AlertTriangle className="h-4 w-4 shrink-0" />
+                                <span>{t('raceModeWarningFewKeys')}</span>
+                            </div>
+                        )}
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                            <div className="space-y-1.5">
+                                <label htmlFor={`${idPrefix}-race-key-concurrency`} className="text-xs font-medium text-card-foreground">
+                                    {t('raceKeyConcurrency')}
+                                </label>
+                                <Input
+                                    id={`${idPrefix}-race-key-concurrency`}
+                                    type="number"
+                                    min={2}
+                                    max={5}
+                                    value={formData.race_key_concurrency ?? 2}
+                                    onChange={(e) => {
+                                        const val = parseInt(e.target.value, 10);
+                                        onFormDataChange({
+                                            ...formData,
+                                            race_key_concurrency: isNaN(val) ? 2 : Math.min(5, Math.max(2, val))
+                                        });
+                                    }}
+                                    className="h-8 rounded-lg text-xs"
+                                />
+                                <p className="text-[11px] text-muted-foreground">{t('raceKeyConcurrencyHint')}</p>
+                            </div>
+                            <div className="space-y-1.5">
+                                <label htmlFor={`${idPrefix}-race-delay-ms`} className="text-xs font-medium text-card-foreground">
+                                    {t('raceDelayMs')}
+                                </label>
+                                <Input
+                                    id={`${idPrefix}-race-delay-ms`}
+                                    type="number"
+                                    min={0}
+                                    max={5000}
+                                    step={50}
+                                    value={formData.race_delay_ms ?? 0}
+                                    onChange={(e) => {
+                                        const val = parseInt(e.target.value, 10);
+                                        onFormDataChange({
+                                            ...formData,
+                                            race_delay_ms: isNaN(val) ? 0 : Math.min(5000, Math.max(0, val))
+                                        });
+                                    }}
+                                    className="h-8 rounded-lg text-xs"
+                                />
+                                <p className="text-[11px] text-muted-foreground">{t('raceDelayMsHint')}</p>
+                            </div>
+                        </div>
+                    </div>
+                )}
+            </div>
+
             {showAdvanced && (
                 <AdvancedSettingsShell panel={isAdvancedPanel} title={t('advanced')} onClose={onAdvancedClose ?? onCancel}>
                         {/* Vertical stack: proxy takes a full row; the two fingerprint controls
@@ -1462,7 +1537,7 @@ export function ChannelForm({
                                             <SelectTrigger id={`${idPrefix}-cloak-profile`} className="rounded-xl w-full border border-border px-4 py-2 text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
                                                 <SelectValue />
                                             </SelectTrigger>
-                                            <SelectContent className="rounded-xl">
+                                            <SelectContent className="rounded-xl" position="popper">
                                                 {sortedFingerprintProfiles.map((profile) => (
                                                     <SelectItem key={profile.id} className="rounded-xl" value={String(profile.id)}>
                                                         {profile.name}
@@ -1493,81 +1568,6 @@ export function ChannelForm({
                                     <span>{formData.disable_circuit_breaker ? t('disableCircuitBreakerOn') : t('disableCircuitBreakerOff')}</span>
                                 </label>
                             </div>
-                        </div>
-
-                        <div className="rounded-xl border border-border bg-background/70 p-3">
-                            <div className="flex flex-wrap items-start justify-between gap-3">
-                                <div className="min-w-0 space-y-1">
-                                    <div className="text-xs font-semibold text-card-foreground">{t('raceModeTitle')}</div>
-                                    <p className="text-xs leading-relaxed text-muted-foreground">
-                                        {t('raceModeHint')}
-                                    </p>
-                                </div>
-                                <label className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-border bg-muted/30 px-2.5 py-1.5 text-xs text-muted-foreground">
-                                    <Switch
-                                        checked={formData.race_mode}
-                                        onCheckedChange={(checked) => onFormDataChange({ ...formData, race_mode: checked })}
-                                        aria-label={t('raceModeTitle')}
-                                    />
-                                    <span>{formData.race_mode ? t('raceModeOn') : t('raceModeOff')}</span>
-                                </label>
-                            </div>
-
-                            {formData.race_mode && (
-                                <div className="mt-3 border-t border-border/50 pt-3 space-y-3">
-                                    {formData.keys.filter((k) => k.enabled && k.channel_key.trim()).length < 2 && (
-                                        <div className="flex items-center gap-2 rounded-lg bg-amber-500/10 border border-amber-500/20 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
-                                            <AlertTriangle className="h-4 w-4 shrink-0" />
-                                            <span>{t('raceModeWarningFewKeys')}</span>
-                                        </div>
-                                    )}
-                                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                                        <div className="space-y-1.5">
-                                            <label htmlFor={`${idPrefix}-race-key-concurrency`} className="text-xs font-medium text-card-foreground">
-                                                {t('raceKeyConcurrency')}
-                                            </label>
-                                            <Input
-                                                id={`${idPrefix}-race-key-concurrency`}
-                                                type="number"
-                                                min={2}
-                                                max={5}
-                                                value={formData.race_key_concurrency ?? 2}
-                                                onChange={(e) => {
-                                                    const val = parseInt(e.target.value, 10);
-                                                    onFormDataChange({
-                                                        ...formData,
-                                                        race_key_concurrency: isNaN(val) ? 2 : Math.min(5, Math.max(2, val))
-                                                    });
-                                                }}
-                                                className="h-8 rounded-lg text-xs"
-                                            />
-                                            <p className="text-[11px] text-muted-foreground">{t('raceKeyConcurrencyHint')}</p>
-                                        </div>
-                                        <div className="space-y-1.5">
-                                            <label htmlFor={`${idPrefix}-race-delay-ms`} className="text-xs font-medium text-card-foreground">
-                                                {t('raceDelayMs')}
-                                            </label>
-                                            <Input
-                                                id={`${idPrefix}-race-delay-ms`}
-                                                type="number"
-                                                min={0}
-                                                max={5000}
-                                                step={50}
-                                                value={formData.race_delay_ms ?? 0}
-                                                onChange={(e) => {
-                                                    const val = parseInt(e.target.value, 10);
-                                                    onFormDataChange({
-                                                        ...formData,
-                                                        race_delay_ms: isNaN(val) ? 0 : Math.min(5000, Math.max(0, val))
-                                                    });
-                                                }}
-                                                className="h-8 rounded-lg text-xs"
-                                            />
-                                            <p className="text-[11px] text-muted-foreground">{t('raceDelayMsHint')}</p>
-                                        </div>
-                                    </div>
-                                </div>
-                            )}
                         </div>
 
                         {isCustomOpenAIChat(formData.type) && (
