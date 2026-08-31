@@ -546,6 +546,15 @@ func AccessPlanSyncEnabledChannels(ctx context.Context) error {
 	}
 	sort.Ints(addIDs)
 
+	// ── effective global default mode (route_mode_override) ──
+	// Override wins; empty → project-default fill_first.
+	// This same reading drives both ADD-target priority and CREATE-new-rule mode.
+	overrideRaw, _ := SettingGetString(model.SettingKeyRouteModeOverride)
+	effectiveDefaultMode := model.GroupModeFillFirst
+	if strings.ToLower(strings.TrimSpace(overrideRaw)) == "spread" {
+		effectiveDefaultMode = model.GroupModeSpread
+	}
+
 	changed := false
 	gormDB := db.GetDB().WithContext(ctx)
 	for _, plan := range accessPlanCache.GetAll() {
@@ -595,7 +604,7 @@ func AccessPlanSyncEnabledChannels(ctx context.Context) error {
 			// every deploy, and the priority the operator sees matches what routing uses.
 			// Hand-tuned priorities of surviving targets are never touched (they are not in
 			// this ADD path).
-			for _, chID := range addIDs {
+			for addIdx, chID := range addIDs {
 				ec := enabledByID[chID]
 				sm, serves := ec.models[ruleModel]
 				if !serves {
@@ -615,7 +624,12 @@ func AccessPlanSyncEnabledChannels(ctx context.Context) error {
 					RouteRuleID:   rule.ID,
 					ChannelID:     ec.id,
 					UpstreamModel: upstreamModel,
-					Priority:      ec.priority,
+					Priority: func() int {
+						if effectiveDefaultMode == model.GroupModeSpread {
+							return 1
+						}
+						return addIdx + 1 // fill_first: channel-ID order → priority
+					}(),
 					Weight:        1,
 					Enabled:       true,
 				}
@@ -682,26 +696,32 @@ func AccessPlanSyncEnabledChannels(ctx context.Context) error {
 			continue
 		}
 		for _, pm := range missing {
+			// Sort channels by ID ascending so fill_first priority = join order.
+			sort.Slice(pm.channels, func(i, j int) bool {
+				return pm.channels[i].chID < pm.channels[j].chID
+			})
 			rule := model.AccessRouteRule{
 				RouteProfileID: plan.RouteProfile.ID,
 				RequestModel:   pm.requestModel,
-				// Match the project-wide default for a fresh rule: fill_first (3),
-				// the same value as the AccessRouteRule `gorm:"default:3"` column and
-				// the frontend contract (normalizeRouteMode defaults to 3). Using the
-				// named constant so the value can never drift from its meaning again
-				// (GroupModeSpread is 1 — do NOT write a bare 3 and call it "spread").
-				Mode:         model.GroupModeFillFirst,
+				// Follow the effective global default mode (route_mode_override) so a
+				// freshly-created rule matches the admin's chosen strategy: spread (1)
+				// or fill_first (3). Falls back to fill_first when unset.
+				Mode:         effectiveDefaultMode,
 				FallbackMode: model.AccessRouteFallbackGroup,
 			}
 			if err := gormDB.Create(&rule).Error; err != nil {
 				continue
 			}
-			for _, ch := range pm.channels {
+			for i, ch := range pm.channels {
+				priority := 1
+				if effectiveDefaultMode == model.GroupModeFillFirst {
+					priority = i + 1
+				}
 				target := model.AccessRouteTarget{
 					RouteRuleID:   rule.ID,
 					ChannelID:     ch.chID,
 					UpstreamModel: ch.upstream,
-					Priority:      ch.priority,
+					Priority:      priority,
 					Weight:        1,
 					Enabled:       true,
 				}
