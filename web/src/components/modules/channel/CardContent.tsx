@@ -243,7 +243,7 @@ export function CardContent({
     };
 
     return (
-        <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
+        <div className="flex h-full min-h-0 flex-1 flex-col">
             <MorphingDialogTitle className="shrink-0">
                 <header className="mb-4 flex items-center justify-between gap-2 border-b border-border/40 pb-3">
                     <div className="flex min-w-0 items-center gap-3">
@@ -325,11 +325,11 @@ export function CardContent({
                 </header>
             </MorphingDialogTitle>
 
-            <MorphingDialogDescription className="flex min-h-0 flex-1 flex-col overflow-hidden">
-                <Tabs value={currentView} className="flex min-h-0 flex-1 flex-col overflow-hidden">
-                    <TabsContents className="flex min-h-0 flex-1 flex-col overflow-hidden">
-                        <TabsContent value="viewing" className="flex min-h-0 flex-1 flex-col overflow-hidden">
-                            <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+            <MorphingDialogDescription className="flex min-h-0 flex-1 flex-col">
+                <Tabs value={currentView} className="flex min-h-0 flex-1 flex-col">
+                    <TabsContents className="flex min-h-0 flex-1 flex-col">
+                        <TabsContent value="viewing" className="flex min-h-0 flex-1 flex-col">
+                            <div className="min-h-0 flex-1 pr-1">
                                 <div className="space-y-4 pb-4 sm:space-y-5">
                                     <dl className="grid gap-3 grid-cols-1 sm:grid-cols-3">
                                         <div className="rounded-lg border border-border bg-muted/20 p-3 sm:p-4">
@@ -569,7 +569,7 @@ export function CardContent({
                             </div>
                         </TabsContent>
 
-                        <TabsContent value="editing" className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                        <TabsContent value="editing" className="flex min-h-0 flex-1 flex-col">
                             <div className="mb-4 flex shrink-0 flex-wrap items-center justify-between gap-3 rounded-lg border bg-muted/20 px-3 py-2">
                                 <div className="min-w-0">
                                     <div className="truncate text-sm font-medium text-card-foreground">{channel.name}</div>
@@ -586,7 +586,7 @@ export function CardContent({
                                     高级设定
                                 </Button>
                             </div>
-                            <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+                            <div className="min-h-0 flex-1 pr-1">
                                 <ChannelForm
                                     formData={formData}
                                     onFormDataChange={setFormData}

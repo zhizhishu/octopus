@@ -353,7 +353,7 @@ export function Card({ channel, stats, layout = 'list' }: { channel: Channel; st
             </MorphingDialogTrigger>
 
             <MorphingDialogContainer>
-                <MorphingDialogContent className="relative flex max-h-[calc(100dvh-1rem)] w-[calc(100vw-1rem)] max-w-full flex-col overflow-hidden rounded-3xl bg-card p-4 text-card-foreground md:max-h-[92vh] md:max-w-6xl md:p-6">
+                <MorphingDialogContent className="relative flex max-h-[calc(100dvh-1rem)] w-[calc(100vw-1rem)] max-w-full flex-col overflow-y-auto rounded-3xl bg-card p-4 text-card-foreground md:max-h-[92vh] md:max-w-6xl md:p-6">
                     <CardContent channel={channel} stats={stats} initialEditing={openInEditing} />
                 </MorphingDialogContent>
             </MorphingDialogContainer>
