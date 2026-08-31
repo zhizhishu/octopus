@@ -538,6 +538,14 @@ func AccessPlanSyncEnabledChannels(ctx context.Context) error {
 	// NOTE: we intentionally do NOT early-return when enabledByID is empty — we still
 	// need to evict stale targets from AutoSyncChannels plans if every channel was disabled.
 
+	// Deterministic channel-ID order reused by both the per-rule target sync
+	// and the missing-rule creation pass below.
+	addIDs := make([]int, 0, len(enabledByID))
+	for id := range enabledByID {
+		addIDs = append(addIDs, id)
+	}
+	sort.Ints(addIDs)
+
 	changed := false
 	gormDB := db.GetDB().WithContext(ctx)
 	for _, plan := range accessPlanCache.GetAll() {
@@ -587,11 +595,6 @@ func AccessPlanSyncEnabledChannels(ctx context.Context) error {
 			// every deploy, and the priority the operator sees matches what routing uses.
 			// Hand-tuned priorities of surviving targets are never touched (they are not in
 			// this ADD path).
-			addIDs := make([]int, 0, len(enabledByID))
-			for id := range enabledByID {
-				addIDs = append(addIDs, id)
-			}
-			sort.Ints(addIDs)
 			for _, chID := range addIDs {
 				ec := enabledByID[chID]
 				sm, serves := ec.models[ruleModel]
@@ -624,6 +627,84 @@ func AccessPlanSyncEnabledChannels(ctx context.Context) error {
 				existing[ec.id] = struct{}{}
 				changed = true
 			}
+		}
+	}
+
+	// --- CREATE missing rules for AutoSync plans: models served by enabled channels
+	// that have no RouteRule yet in the plan. Without this pass, a newly-onboarded
+	// channel/mapping brings a model that sits in the pool search dropdown but never
+	// appears on the canvas — because AccessPlanSyncEnabledChannels only managed
+	// targets of *existing* rules. This pass creates the rule + its initial targets
+	// in one shot, using the same channel-priority ordering as the existing ADD path.
+	for _, plan := range accessPlanCache.GetAll() {
+		if !plan.AutoSyncChannels || plan.RouteProfile == nil {
+			continue
+		}
+		// Build a set of request_model names that already have a rule.
+		ruleModels := make(map[string]int, len(plan.RouteProfile.Rules)) // model → ruleID
+		for _, rule := range plan.RouteProfile.Rules {
+			key := strings.ToLower(model.CleanOneMillionCapabilityModelName(rule.RequestModel))
+			if key != "" {
+				ruleModels[key] = rule.ID
+			}
+		}
+		// Collect every model that at least one enabled channel serves and that is
+		// NOT covered by an existing rule. Keep the first channel's casing of each
+		// model as the rule's RequestModel and its upstream name.
+		type pendingModel struct {
+			requestModel string // the cleaned client-visible name for the rule
+			channels     []struct {
+				chID     int
+				priority int
+				upstream string // upstream name for this channel's target
+			}
+		}
+		missing := make(map[string]*pendingModel)
+		for _, chID := range addIDs {
+			ec := enabledByID[chID]
+			for modelKey, sm := range ec.models {
+				if _, has := ruleModels[modelKey]; has {
+					continue
+				}
+				pm, ok := missing[modelKey]
+				if !ok {
+					pm = &pendingModel{requestModel: sm.upstream}
+					missing[modelKey] = pm
+				}
+				pm.channels = append(pm.channels, struct {
+					chID     int
+					priority int
+					upstream string
+				}{chID: ec.id, priority: ec.priority, upstream: sm.upstream})
+			}
+		}
+		if len(missing) == 0 {
+			continue
+		}
+		for _, pm := range missing {
+			rule := model.AccessRouteRule{
+				RouteProfileID: plan.RouteProfile.ID,
+				RequestModel:   pm.requestModel,
+				Mode:           3, // default spread
+				FallbackMode:   model.AccessRouteFallbackGroup,
+			}
+			if err := gormDB.Create(&rule).Error; err != nil {
+				continue
+			}
+			for _, ch := range pm.channels {
+				target := model.AccessRouteTarget{
+					RouteRuleID:   rule.ID,
+					ChannelID:     ch.chID,
+					UpstreamModel: ch.upstream,
+					Priority:      ch.priority,
+					Weight:        1,
+					Enabled:       true,
+				}
+				if err := gormDB.Create(&target).Error; err != nil {
+					continue
+				}
+			}
+			changed = true
 		}
 	}
 

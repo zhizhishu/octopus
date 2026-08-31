@@ -708,6 +708,15 @@ export const LogCard = React.memo(function LogCard({ log }: { log: RelayLog }) {
                                     upstreamPaths={upstreamPaths}
                                     upstreamPathTitle={upstreamPathTitle}
                                 />
+                                {(hasMultipleAttempts && hasPartialFailure) && (
+                                    <Badge
+                                        variant="secondary"
+                                        className="shrink-0 gap-1 border-0 bg-amber-500/15 px-1.5 py-0 text-xs text-amber-700 dark:text-amber-300"
+                                    >
+                                        <RotateCw className="size-3 opacity-80" />
+                                        自动救援
+                                    </Badge>
+                                )}
                                 {canViewDetails && (
                                     <span className="ml-auto hidden shrink-0 items-center gap-1 text-xs text-muted-foreground md:flex">
                                         <Eye className="size-3.5" />

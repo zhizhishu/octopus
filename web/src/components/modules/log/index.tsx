@@ -352,10 +352,18 @@ function PendingInterventionsPanel({ isAdmin }: { isAdmin: boolean }) {
                                     <p className="line-clamp-2 text-xs text-destructive">{intervention.last_error || '上游失败，机器正在自动救援'}</p>
                                 </div>
                                 <div className="flex flex-col items-end gap-1 shrink-0">
-                                    <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-xs text-amber-700 dark:text-amber-300">
+                                    <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-xs text-amber-700 dark:text-amber-300 inline-flex items-center gap-1">
                                         {isAwaitingOperator
                                             ? '等待人工处理'
-                                            : `机器自动救援中 (第 ${roundNum} 轮)`}
+                                            : (
+                                                <>
+                                                    <span className="relative flex size-2">
+                                                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-75" />
+                                                        <span className="relative inline-flex size-2 rounded-full bg-amber-500" />
+                                                    </span>
+                                                    机器自动救援中 (第 {roundNum} 轮)
+                                                </>
+                                            )}
                                     </span>
                                     {!isAwaitingOperator && retryCountdown && (
                                         <span className="text-[11px] font-mono text-amber-600 dark:text-amber-400">

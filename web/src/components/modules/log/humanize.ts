@@ -180,6 +180,23 @@ export function getLogVerdict(
         return { kind: 'success', text: '✅ 成功' };
     }
     if (severity === 'warn') {
+        // Pinpoint which channels failed and which rescued the request.
+        const attempts = log.attempts ?? [];
+        const failedNames = new Set<string>();
+        let rescueName = '';
+        for (const a of attempts) {
+            const name = a.channel_name ?? '';
+            if (!name) continue;
+            if (a.status === 'failed') failedNames.add(name);
+            else if (a.status === 'success') rescueName = name;
+        }
+        if (failedNames.size > 0 && rescueName) {
+            const failedList = [...failedNames].join('、');
+            return {
+                kind: 'warn',
+                text: `⚠️ 渠道「${failedList}」失败 → 自动切换到「${rescueName}」成功`,
+            };
+        }
         return {
             kind: 'warn',
             text: '⚠️ 最终成功，但中间有渠道尝试失败过（已自动重试到可用渠道）',

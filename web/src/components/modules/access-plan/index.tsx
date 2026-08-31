@@ -2,7 +2,6 @@
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-    ArrowUp,
     ArrowUpToLine,
     BadgeDollarSign,
     Check,
@@ -1643,6 +1642,39 @@ function RouteFlowCanvasInner({
     const targetCount = rows.reduce((sum, row) => sum + row.targets.length, 0);
     const hasCanvasContent = filteredRows.length > 0 || filteredUnroutedModels.length > 0 || filteredMappings.length > 0;
 
+    // ── ReactFlow 无限画布 ──
+    const { fitView, setCenter } = useReactFlow();
+
+    const flow = useMemo(
+        () => buildRouteFlow(plan, filteredRows, channelNameByID, onEditRequest, filteredMappings, onPriorityChange),
+        [plan, filteredRows, channelNameByID, onEditRequest, filteredMappings, onPriorityChange],
+    );
+
+    const [nodes, setNodes, onNodesChange] = useNodesState<FlowNode>(flow.nodes);
+    const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>(flow.edges);
+
+    useEffect(() => {
+        setNodes(flow.nodes);
+        setEdges(flow.edges);
+        const raf = requestAnimationFrame(() => fitView({ padding: 0.14, maxZoom: 1, duration: 220 }));
+        return () => cancelAnimationFrame(raf);
+    }, [flow, setNodes, setEdges, fitView]);
+
+    const showAll = useCallback(() => fitView({ padding: 0.12, duration: 400 }), [fitView]);
+
+    const focusReadable = useCallback(() => {
+        if (nodes.length === 0) return;
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const node of nodes) {
+            const { w, h } = flowNodeSize(node);
+            minX = Math.min(minX, node.position.x);
+            minY = Math.min(minY, node.position.y);
+            maxX = Math.max(maxX, node.position.x + w);
+            maxY = Math.max(maxY, node.position.y + h);
+        }
+        setCenter((minX + maxX) / 2, (minY + maxY) / 2, { zoom: 0.85, duration: 400 });
+    }, [nodes, setCenter]);
+
     return (
         <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-border/70 bg-background/70">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/70 px-4 py-3">
@@ -1745,7 +1777,7 @@ function RouteFlowCanvasInner({
                 </div>
             </div>
 
-            {!hasCanvasContent ? (
+            {filteredRows.length === 0 ? (
                 <div className="px-4 py-8 text-center text-sm text-muted-foreground">
                     {matchedPoolModels.length > 0 ? (
                         <div className="mx-auto max-w-md space-y-3 text-left">
@@ -1755,7 +1787,7 @@ function RouteFlowCanvasInner({
                                     <Badge key={name} variant="outline" className="rounded-full font-mono">{name}</Badge>
                                 ))}
                             </div>
-                            <p className="text-center text-xs">点上方「重建分组」把它们路由进来，或手动添加路线。</p>
+                            <p className="text-center text-xs">点上方「重建映射」把它们路由进来，或手动添加路线。</p>
                         </div>
                     ) : rows.length === 0 ? (
                         t('routes.canvasEmpty')
@@ -1764,198 +1796,52 @@ function RouteFlowCanvasInner({
                     )}
                 </div>
             ) : (
-                <div className="min-h-0 flex-1 overflow-y-auto p-3 sm:p-4">
-                    <div className="space-y-3">
-                        {filteredRows.map((row) => {
-                            // 规则自身存的 mode：1=轮询/spread，3=优先填充/fill_first；缺省或其它值一律视为优先填充。
-                            const isRowFillFirst = !isSpreadMode(row.targets[0]?.mode);
-                            const requestModelDisplayName = marketModelName(row.requestModel) || row.requestModel;
-                            const { Avatar: RequestAvatar } = getModelIcon(row.requestModel);
-                            const showRawRequestModel = requestModelDisplayName !== row.requestModel;
-
-                            return (
-                                <div key={row.requestKey || row.requestModel} className="rounded-2xl border border-border/70 bg-card/40">
-                                    <div className="flex items-center justify-between gap-3 border-b border-border/60 px-4 py-2.5">
-                                        <div className="flex min-w-0 items-center gap-2">
-                                            <RequestAvatar size={16} />
-                                            <div className="min-w-0">
-                                                <div className="truncate text-sm font-bold text-foreground" title={row.requestModel}>{requestModelDisplayName}</div>
-                                                {showRawRequestModel && (
-                                                    <div className="truncate font-mono text-[11px] text-muted-foreground">{row.requestModel}</div>
-                                                )}
-                                            </div>
-                                            <Badge variant="outline" className="rounded-full text-[11px]">
-                                                {isRowFillFirst ? '优先填充' : '轮询'}
-                                            </Badge>
-                                            {onModeChange && (
-                                                <select
-                                                    value={isRowFillFirst ? 3 : 1}
-                                                    onChange={(event) => onModeChange(row.targets, Number(event.target.value) as 1 | 3)}
-                                                    aria-label={`分流模式：${row.requestModel}`}
-                                                    title="分流模式：轮询=同一请求模型的候选均摊流量；优先填充=先集中打满高优先级候选"
-                                                    className="h-6 shrink-0 rounded-full border border-border/70 bg-background/60 px-2 text-[11px] text-foreground outline-none focus:border-primary/50"
-                                                >
-                                                    <option value={1}>轮询</option>
-                                                    <option value={3}>优先填充</option>
-                                                </select>
-                                            )}
-                                        </div>
-                                        <Button
-                                            type="button"
-                                            variant="outline"
-                                            size="sm"
-                                            className="h-7 gap-1 rounded-lg text-xs"
-                                            onClick={() => onEditRequest(row.requestKey ? row.requestModel : '')}
-                                        >
-                                            <PencilLine className="size-3" />
-                                            <span>{accessPlanText('routes.quickEdit')}</span>
-                                        </Button>
-                                    </div>
-                                    <div className="divide-y divide-border/50">
-                                        {row.targets.map((target, targetIndex) => {
-                                            const priority = clampRoutePriority(target.priority || 0);
-                                            const isStale = isPersistedStaleTarget(target, channelModelIndex);
-                                            const upstreamModel = cleanOneMillionModelName(target.upstream_model || accessPlanText('routes.unset'));
-                                            const upstreamDisplayName = marketModelName(upstreamModel) || upstreamModel;
-                                            const { Avatar: UpstreamAvatar } = getModelIcon(upstreamModel);
-                                            return (
-                                                <div
-                                                    key={target.id || targetIndex}
-                                                    className={cn('flex items-center gap-3 px-4 py-2.5', (!target.enabled || isStale) && 'opacity-55')}
-                                                >
-                                                    <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-                                                        <div className="flex items-center gap-1.5 font-semibold text-foreground">
-                                                            <span className={cn('size-1.5 shrink-0 rounded-full', target.enabled ? 'bg-emerald-500' : 'bg-muted-foreground')} />
-                                                            <span className="truncate">
-                                                                {channelNameByID.get(target.channel_id) ?? accessPlanText('routes.missingChannel', { id: target.channel_id })}
-                                                            </span>
-                                                            <span className="text-[11px] font-normal text-muted-foreground">#{target.channel_id}</span>
-                                                        </div>
-                                                        <div className="flex items-center gap-1.5 text-muted-foreground">
-                                                            <span className="text-foreground/40">→</span>
-                                                            <UpstreamAvatar size={14} />
-                                                            <span className="font-medium text-foreground" title={upstreamModel}>
-                                                                {upstreamDisplayName}
-                                                            </span>
-                                                        </div>
-                                                        {isStale && (
-                                                            <Badge variant="outline" className="h-5 gap-1 border-amber-500/40 px-1.5 text-[10px] font-normal text-amber-600 dark:text-amber-300">
-                                                                已失效
-                                                            </Badge>
-                                                        )}
-                                                    </div>
-                                                    <div className="flex shrink-0 items-center gap-1.5">
-                                                        <div className="inline-flex items-center gap-0.5">
-                                                            <button
-                                                                type="button"
-                                                                className="flex size-5 items-center justify-center rounded border border-border/70 bg-background text-xs font-semibold leading-none text-foreground hover:bg-muted disabled:opacity-40"
-                                                                disabled={!target.id || isStale || priority >= 9}
-                                                                aria-label="降低优先级"
-                                                                title="降低优先级（+1）"
-                                                                onClick={() => target.id && onPriorityChange?.(target.id, clampRoutePriority(priority + 1))}
-                                                            >
-                                                                −
-                                                            </button>
-                                                            <span className="min-w-4 text-center font-mono text-xs font-semibold tabular-nums text-foreground">
-                                                                {priority + 1}
-                                                            </span>
-                                                            <button
-                                                                type="button"
-                                                                className="flex size-5 items-center justify-center rounded border border-border/70 bg-background text-xs font-semibold leading-none text-foreground hover:bg-muted disabled:opacity-40"
-                                                                disabled={!target.id || isStale || priority <= 0}
-                                                                aria-label="提高优先级"
-                                                                title="提高优先级（-1）"
-                                                                onClick={() => target.id && onPriorityChange?.(target.id, clampRoutePriority(priority - 1))}
-                                                            >
-                                                                +
-                                                            </button>
-                                                        </div>
-                                                        <button
-                                                            type="button"
-                                                            className="flex h-7 items-center gap-1 rounded-lg border border-border/70 bg-background px-2 text-xs text-foreground hover:bg-muted disabled:opacity-40"
-                                                            disabled={!target.id || isStale || priority <= 0}
-                                                            onClick={() => onMoveUpOne?.(target.id!)}
-                                                            aria-label="上移一位"
-                                                            title="往上挪一位：点一下，这个模型就排到它上面那个的前面"
-                                                        >
-                                                            <ArrowUp className="size-3.5" />
-                                                            <span>上移</span>
-                                                        </button>
-                                                        <button
-                                                            type="button"
-                                                            className="flex h-7 items-center gap-1 rounded-lg border border-border/70 bg-background px-2 text-xs text-foreground hover:bg-muted disabled:opacity-40"
-                                                            disabled={!target.id || isStale || priority <= 0}
-                                                            onClick={() => onMoveToTop?.(target.id!)}
-                                                            aria-label="移到最上（最优先使用）"
-                                                            title="谁在上面谁先用：点一下，这个模型就排到最上面"
-                                                        >
-                                                            <ArrowUpToLine className="size-3.5" />
-                                                            <span>到顶</span>
-                                                        </button>
-                                                    </div>
-                                                </div>
-                                            );
-                                        })}
-                                    </div>
-                                </div>
-                            );
-                        })}
-
-                        {filteredUnroutedModels.length > 0 && (
-                            <div className="rounded-2xl border border-dashed border-primary/30 bg-primary/[0.03]">
-                                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-primary/15 px-4 py-2.5">
-                                    <div className="min-w-0">
-                                        <div className="text-xs font-bold text-foreground">模型池里还有未加入当前方案的模型</div>
-                                        <div className="mt-0.5 text-[11px] text-muted-foreground">新的渠道模型会先出现在这里，点「加入」后才参与当前方案路由。</div>
-                                    </div>
-                                    <Badge variant="outline" className="rounded-full text-[10px]">{unroutedModels.length}</Badge>
-                                </div>
-                                <div className="divide-y divide-primary/10">
-                                    {filteredUnroutedModels.map((model) => (
-                                        <div key={channelModelKey(model.channel_id, model.clean_name)} className="flex items-center justify-between gap-3 px-4 py-2.5 text-xs">
-                                            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1">
-                                                <span className="truncate font-semibold text-foreground" title={model.clean_name}>{marketModelName(model.clean_name) || model.clean_name}</span>
-                                                <span className="truncate text-muted-foreground">{channelNameByID.get(model.channel_id) ?? accessPlanText('routes.missingChannel', { id: model.channel_id })}</span>
-                                                <span className="text-[11px] text-muted-foreground">#{model.channel_id}</span>
-                                            </div>
-                                            <Button
-                                                type="button"
-                                                variant="outline"
-                                                size="sm"
-                                                className="h-7 shrink-0 rounded-lg text-xs"
-                                                onClick={() => onAddUnroutedModel?.(model)}
-                                                disabled={!onAddUnroutedModel}
-                                            >
-                                                加入
-                                            </Button>
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
-                        )}
-
-                        {filteredMappings.length > 0 && (
-                            <div className="rounded-2xl border border-border/70 bg-card/40">
-                                <div className="flex items-center gap-2 border-b border-border/60 px-4 py-2.5">
-                                    <span className="text-xs font-bold text-foreground">渠道级模型映射</span>
-                                    <Badge variant="outline" className="rounded-full text-[10px]">{filteredMappings.length}</Badge>
-                                </div>
-                                <div className="divide-y divide-border/50">
-                                    {filteredMappings.map((m, idx) => (
-                                        <div key={`${m.channelId}-${m.fromModel}-${m.toModel}-${idx}`} className="flex items-center justify-between gap-3 px-4 py-2 text-xs">
-                                            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2 font-mono">
-                                                <span className="font-semibold text-foreground">{m.fromModel}</span>
-                                                <span className="text-muted-foreground">→</span>
-                                                <span className="text-muted-foreground">{m.channelName} (#{m.channelId})</span>
-                                                <span className="text-muted-foreground">→</span>
-                                                <span className="font-semibold text-foreground">{m.toModel}</span>
-                                            </div>
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
-                        )}
-                    </div>
+                <div className="min-h-0 flex-1 h-[clamp(300px,calc(100dvh-26rem),820px)] sm:h-[clamp(340px,calc(100dvh-22rem),860px)]">
+                    <ReactFlow<FlowNode, Edge>
+                        nodes={nodes}
+                        edges={edges}
+                        onNodesChange={onNodesChange}
+                        onEdgesChange={onEdgesChange}
+                        nodeTypes={flowNodeTypes}
+                        colorMode="system"
+                        fitView
+                        fitViewOptions={{ padding: 0.14, maxZoom: 1 }}
+                        minZoom={0.15}
+                        maxZoom={1.8}
+                        nodesDraggable={false}
+                        nodesConnectable={false}
+                        elementsSelectable={false}
+                        edgesFocusable={false}
+                        zoomOnDoubleClick={false}
+                        proOptions={{ hideAttribution: true }}
+                    >
+                        <Background variant={BackgroundVariant.Dots} gap={32} size={1} />
+                        <Controls showInteractive={false} />
+                        <MiniMap
+                            pannable
+                            zoomable
+                            onClick={(_event, position) => setCenter(position.x, position.y, { zoom: 1, duration: 400 })}
+                            nodeColor={miniMapNodeColor}
+                            nodeStrokeWidth={2}
+                            className="!hidden sm:!block"
+                        />
+                        <Panel position="top-right" className="flex gap-1.5">
+                            <button
+                                type="button"
+                                onClick={showAll}
+                                className="rounded-full border border-border/70 bg-background/85 px-2.5 py-1 text-[11px] font-medium text-foreground shadow-sm backdrop-blur hover:bg-muted"
+                            >
+                                显示全部
+                            </button>
+                            <button
+                                type="button"
+                                onClick={focusReadable}
+                                className="rounded-full border border-border/70 bg-background/85 px-2.5 py-1 text-[11px] font-medium text-foreground shadow-sm backdrop-blur hover:bg-muted"
+                            >
+                                看得清
+                            </button>
+                        </Panel>
+                    </ReactFlow>
                 </div>
             )}
         </section>
