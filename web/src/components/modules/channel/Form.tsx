@@ -15,8 +15,7 @@ import { Badge } from '@/components/ui/badge';
 import { toast } from '@/components/common/Toast';
 import { useTranslations } from 'next-intl';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { createPortal } from 'react-dom';
-import { Loader2, Play, RefreshCw, X, Plus, Timer, Fingerprint, AlertTriangle } from 'lucide-react';
+import { Loader2, Play, RefreshCw, X, Plus, Timer, Fingerprint } from 'lucide-react';
 import {
     Accordion,
     AccordionContent,
@@ -45,63 +44,22 @@ function modelTestProxyLabel(result: Pick<ModelTestResult, 'proxy_used' | 'proxy
 function AdvancedSettingsShell({
     panel,
     title,
-    onClose,
     children,
 }: {
     panel: boolean;
     title: string;
-    onClose?: () => void;
     children: ReactNode;
 }) {
-    // Escape closes the advanced panel; capture phase so inner inputs stop seeing it first.
-    useEffect(() => {
-        if (!panel || !onClose) return;
-        const onKeyDown = (event: KeyboardEvent) => {
-            if (event.key !== 'Escape') return;
-            event.preventDefault();
-            event.stopPropagation();
-            onClose();
-        };
-        document.addEventListener('keydown', onKeyDown, true);
-        return () => document.removeEventListener('keydown', onKeyDown, true);
-    }, [panel, onClose]);
-
     if (panel) {
-        if (typeof document === 'undefined') return null;
-        return createPortal(
-            <>
-                {onClose && (
-                    <div
-                        className="fixed inset-0 z-10 bg-black/40 animate-in fade-in sm:hidden"
-                        onClick={onClose}
-                        aria-hidden="true"
-                    />
-                )}
-                {/* Mobile: full-width bottom sheet with tap-outside dismiss; desktop keeps
-                    the original right-side 26rem sheet untouched. */}
-                <aside
-                    className="fixed inset-x-0 bottom-0 z-[60] w-full max-h-[85vh] overflow-y-auto rounded-t-xl border bg-card shadow-lg animate-in fade-in slide-in-from-bottom-3 sm:absolute sm:inset-x-auto sm:bottom-auto sm:right-0 sm:top-0 sm:z-[60] sm:max-h-[72vh] sm:max-w-[min(26rem,100%)] sm:rounded-xl sm:border sm:slide-in-from-bottom-0 sm:slide-in-from-right-3"
-                    onClick={(event) => event.stopPropagation()}
-                >
-                    <div className="space-y-4 p-4">
-                        <div className="flex items-center justify-between border-b pb-3 text-sm font-medium text-card-foreground">
-                            <span>{title}</span>
-                            {onClose && (
-                                <button
-                                    type="button"
-                                    onClick={onClose}
-                                    className="rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                                    aria-label="Close"
-                                >
-                                    <X className="size-4" />
-                                </button>
-                            )}
-                        </div>
-                        {children}
+        return (
+            <aside className="absolute right-0 top-0 z-10 w-full max-w-[min(26rem,100%)] rounded-xl border bg-card max-h-[72vh] overflow-y-auto shadow-lg animate-in fade-in slide-in-from-right-3">
+                <div className="space-y-4 p-4">
+                    <div className="border-b pb-3 text-sm font-medium text-card-foreground">
+                        {title}
                     </div>
-                </aside>
-            </>,
-            document.body
+                    {children}
+                </div>
+            </aside>
         );
     }
 
@@ -137,9 +95,6 @@ export interface ChannelFormData {
     rpm_limit: number;
     key_select_strategy: KeySelectStrategy;
     disable_circuit_breaker: boolean;
-    race_mode: boolean;
-    race_key_concurrency: number;
-    race_delay_ms: number;
     base_urls: Channel['base_urls'];
     custom_header: Channel['custom_header'];
     cloak_mode: string;
@@ -176,7 +131,6 @@ export interface ChannelFormProps {
     idPrefix?: string;
     advancedMode?: 'accordion' | 'panel';
     advancedOpen?: boolean;
-    onAdvancedClose?: () => void;
 }
 
 const CHANNEL_BASE_URL_SUFFIXES: Partial<Record<ChannelType, string[]>> = {
@@ -290,7 +244,6 @@ export function ChannelForm({
     idPrefix = 'channel',
     advancedMode = 'accordion',
     advancedOpen = false,
-    onAdvancedClose,
 }: ChannelFormProps) {
     const t = useTranslations('channel.form');
 
@@ -822,7 +775,7 @@ export function ChannelForm({
                         <SelectTrigger id={`${idPrefix}-type`} className="rounded-xl w-full border border-border px-4 py-2 text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
                             <SelectValue />
                         </SelectTrigger>
-                        <SelectContent className='rounded-xl' position="popper">
+                        <SelectContent className='rounded-xl'>
                             <SelectItem className='rounded-xl' value={String(ChannelType.OpenAIChat)}>{t('typeOpenAIChat')}</SelectItem>
                             <SelectItem className='rounded-xl' value={String(ChannelType.OpenAIResponse)}>{t('typeOpenAIResponse')}</SelectItem>
                             <SelectItem className='rounded-xl' value={String(ChannelType.Anthropic)}>{t('typeAnthropic')}</SelectItem>
@@ -904,7 +857,7 @@ export function ChannelForm({
                         <SelectTrigger id={`${idPrefix}-key-select-strategy`} className="rounded-xl w-full border border-border px-4 py-2 text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
                             <SelectValue />
                         </SelectTrigger>
-                        <SelectContent className='rounded-xl' position="popper">
+                        <SelectContent className='rounded-xl'>
                             <SelectItem className='rounded-xl' value="0">{t('keySelectStrategyCostBalanced')}</SelectItem>
                             <SelectItem className='rounded-xl' value="1">{t('keySelectStrategySticky')}</SelectItem>
                         </SelectContent>
@@ -1157,7 +1110,7 @@ export function ChannelForm({
                             placeholder={t('modelFilterPlaceholder')}
                             className="mb-2 h-7 rounded-lg px-2.5 text-xs"
                         />
-                        <div className="flex min-w-0 flex-wrap gap-1.5 pr-1">
+                        <div className="flex max-h-36 min-w-0 flex-wrap gap-1.5 overflow-y-auto pr-1">
                             {visibleFetchedModels.map((model) => {
                                 const selected = selectedModelSet.has(model);
                                 return (
@@ -1200,7 +1153,7 @@ export function ChannelForm({
                             </Button>
                         )}
                     </div>
-                    <div className="rounded-xl border border-border bg-muted/30 p-2.5 min-h-12">
+                    <div className="rounded-xl border border-border bg-muted/30 p-2.5 max-h-40 min-h-12 overflow-y-auto">
                         {autoModels.length > 0 ? (
                             <div className="flex min-w-0 flex-wrap gap-1.5">
                                 {autoModels.map((model) => (
@@ -1351,7 +1304,7 @@ export function ChannelForm({
                             </span>
                             {channelTestResult.upstream_path ? <span className="font-mono">{channelTestResult.upstream_path}</span> : null}
                         </div>
-                        <pre className="mt-2 max-h-28 whitespace-pre-wrap break-words rounded-lg bg-background/70 p-2 text-[11px] text-foreground">
+                        <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-background/70 p-2 text-[11px] text-foreground">
                             {channelTestResult.success ? (channelTestResult.response_preview || 'OK') : (channelTestResult.error || '无错误详情')}
                         </pre>
                         {channelTestResult.attempts?.length ? (
@@ -1367,86 +1320,11 @@ export function ChannelForm({
                 )}
             </div>
 
-            {/* ── 竞速模式：始终可见，不藏在高级面板里 ── */}
-            <div className="rounded-xl border border-border bg-background/70 p-3">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div className="min-w-0 space-y-1">
-                        <div className="text-xs font-semibold text-card-foreground">{t('raceModeTitle')}</div>
-                        <p className="text-xs leading-relaxed text-muted-foreground">
-                            {t('raceModeHint')}
-                        </p>
-                    </div>
-                    <label className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-border bg-muted/30 px-2.5 py-1.5 text-xs text-muted-foreground">
-                        <Switch
-                            checked={formData.race_mode}
-                            onCheckedChange={(checked) => onFormDataChange({ ...formData, race_mode: checked })}
-                            aria-label={t('raceModeTitle')}
-                        />
-                        <span>{formData.race_mode ? t('raceModeOn') : t('raceModeOff')}</span>
-                    </label>
-                </div>
-                {formData.race_mode && (
-                    <div className="mt-3 border-t border-border/50 pt-3 space-y-3">
-                        {formData.keys.filter((k) => k.enabled && k.channel_key.trim()).length < 2 && (
-                            <div className="flex items-center gap-2 rounded-lg bg-amber-500/10 border border-amber-500/20 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
-                                <AlertTriangle className="h-4 w-4 shrink-0" />
-                                <span>{t('raceModeWarningFewKeys')}</span>
-                            </div>
-                        )}
-                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                            <div className="space-y-1.5">
-                                <label htmlFor={`${idPrefix}-race-key-concurrency`} className="text-xs font-medium text-card-foreground">
-                                    {t('raceKeyConcurrency')}
-                                </label>
-                                <Input
-                                    id={`${idPrefix}-race-key-concurrency`}
-                                    type="number"
-                                    min={2}
-                                    max={5}
-                                    value={formData.race_key_concurrency ?? 2}
-                                    onChange={(e) => {
-                                        const val = parseInt(e.target.value, 10);
-                                        onFormDataChange({
-                                            ...formData,
-                                            race_key_concurrency: isNaN(val) ? 2 : Math.min(5, Math.max(2, val))
-                                        });
-                                    }}
-                                    className="h-8 rounded-lg text-xs"
-                                />
-                                <p className="text-[11px] text-muted-foreground">{t('raceKeyConcurrencyHint')}</p>
-                            </div>
-                            <div className="space-y-1.5">
-                                <label htmlFor={`${idPrefix}-race-delay-ms`} className="text-xs font-medium text-card-foreground">
-                                    {t('raceDelayMs')}
-                                </label>
-                                <Input
-                                    id={`${idPrefix}-race-delay-ms`}
-                                    type="number"
-                                    min={0}
-                                    max={5000}
-                                    step={50}
-                                    value={formData.race_delay_ms ?? 0}
-                                    onChange={(e) => {
-                                        const val = parseInt(e.target.value, 10);
-                                        onFormDataChange({
-                                            ...formData,
-                                            race_delay_ms: isNaN(val) ? 0 : Math.min(5000, Math.max(0, val))
-                                        });
-                                    }}
-                                    className="h-8 rounded-lg text-xs"
-                                />
-                                <p className="text-[11px] text-muted-foreground">{t('raceDelayMsHint')}</p>
-                            </div>
-                        </div>
-                    </div>
-                )}
-            </div>
-
             {showAdvanced && (
-                <AdvancedSettingsShell panel={isAdvancedPanel} title={t('advanced')} onClose={onAdvancedClose ?? onCancel}>
-                        {/* Vertical stack: proxy takes a full row; the two fingerprint controls
-                            (mode + profile) are grouped into one titled card below so they read
-                            as one coherent section, not two floating selects. */}
+                <AdvancedSettingsShell panel={isAdvancedPanel} title={t('advanced')}>
+                        {/* Vertical stack: auto-group and proxy each take a full row; the two
+                            fingerprint controls (mode + profile) are grouped into one titled card
+                            below so they read as one coherent section, not two floating selects. */}
                         <div className="space-y-4">
                             <div className="space-y-2">
                                 <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1537,7 +1415,7 @@ export function ChannelForm({
                                             <SelectTrigger id={`${idPrefix}-cloak-profile`} className="rounded-xl w-full border border-border px-4 py-2 text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
                                                 <SelectValue />
                                             </SelectTrigger>
-                                            <SelectContent className="rounded-xl" position="popper">
+                                            <SelectContent className="rounded-xl">
                                                 {sortedFingerprintProfiles.map((profile) => (
                                                     <SelectItem key={profile.id} className="rounded-xl" value={String(profile.id)}>
                                                         {profile.name}
@@ -1807,7 +1685,7 @@ export function ChannelForm({
                 </div>
             </div>
 
-            <div className={cn(`sticky bottom-0 z-10 -mx-1 -mb-2 mt-4 flex flex-col gap-3 border-t border-border/60 bg-card/95 px-1 py-3 backdrop-blur-sm sm:-mx-1 sm:px-1 ${onCancel ? 'sm:flex-row' : ''}`)}>
+            <div className={cn(`flex flex-col gap-3 pt-2 ${onCancel ? 'sm:flex-row' : ''}`)}>
                 {onCancel && cancelText && (
                     <Button
                         type="button"

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import {
+    Trash2,
     CheckCircle2,
     XCircle,
     FileText,
@@ -9,11 +10,7 @@ import {
     TrendingUp,
     Globe,
     Key,
-    SlidersHorizontal,
-    Pencil,
-    Trash2,
-    Check,
-    X,
+    SlidersHorizontal
 } from 'lucide-react';
 import { useUpdateChannel, useDeleteChannel, type Channel, type UpdateChannelRequest } from '@/api/endpoints/channel';
 import {
@@ -32,19 +29,11 @@ import { Badge } from '@/components/ui/badge';
 import { MonoSafeText, SafeText } from '@/components/common/SafeText';
 import { cn } from '@/lib/utils';
 
-export function CardContent({
-    channel,
-    stats,
-    initialEditing = false,
-}: {
-    channel: Channel;
-    stats: StatsMetricsFormatted;
-    initialEditing?: boolean;
-}) {
+export function CardContent({ channel, stats }: { channel: Channel; stats: StatsMetricsFormatted }) {
     const { setIsOpen } = useMorphingDialog();
     const updateChannel = useUpdateChannel();
     const deleteChannel = useDeleteChannel();
-    const [isEditing, setIsEditing] = useState(initialEditing);
+    const [isEditing, setIsEditing] = useState(false);
     const [advancedOpen, setAdvancedOpen] = useState(false);
     const [isConfirmingDelete, setIsConfirmingDelete] = useState(false);
     const [formData, setFormData] = useState<ChannelFormData>({
@@ -55,9 +44,6 @@ export function CardContent({
         rpm_limit: channel.rpm_limit ?? 0,
         key_select_strategy: channel.key_select_strategy ?? 0,
         disable_circuit_breaker: channel.disable_circuit_breaker ?? false,
-        race_mode: channel.race_mode ?? false,
-        race_key_concurrency: channel.race_key_concurrency ?? 2,
-        race_delay_ms: channel.race_delay_ms ?? 0,
         enabled: channel.enabled,
         base_urls: channel.base_urls?.length ? channel.base_urls : [{ url: '', delay: 0 }],
         custom_header: channel.custom_header ?? [],
@@ -95,7 +81,6 @@ export function CardContent({
         model_mapping: channel.model_mapping,
     });
     const t = useTranslations('channel.detail');
-    const tCard = useTranslations('channel.card');
 
     const currentView = isEditing ? 'editing' : 'viewing';
 
@@ -116,9 +101,6 @@ export function CardContent({
         if ((formData.rpm_limit ?? 0) !== (channel.rpm_limit ?? 0)) req.rpm_limit = formData.rpm_limit ?? 0;
         if ((formData.key_select_strategy ?? 0) !== (channel.key_select_strategy ?? 0)) req.key_select_strategy = formData.key_select_strategy ?? 0;
         if ((formData.disable_circuit_breaker ?? false) !== (channel.disable_circuit_breaker ?? false)) req.disable_circuit_breaker = formData.disable_circuit_breaker ?? false;
-        if ((formData.race_mode ?? false) !== (channel.race_mode ?? false)) req.race_mode = formData.race_mode ?? false;
-        if ((formData.race_key_concurrency ?? 2) !== (channel.race_key_concurrency ?? 2)) req.race_key_concurrency = formData.race_key_concurrency ?? 2;
-        if ((formData.race_delay_ms ?? 0) !== (channel.race_delay_ms ?? 0)) req.race_delay_ms = formData.race_delay_ms ?? 0;
         if (formData.enabled !== channel.enabled) req.enabled = formData.enabled;
         const normalizedBaseUrls = (formData.base_urls ?? []).filter((u) => u.url.trim()).map((u) => ({
             url: normalizeBaseUrlForChannelType(formData.type, u.url),
@@ -235,7 +217,12 @@ export function CardContent({
         });
     };
 
-    const handleDeleteConfirm = () => {
+    const handleDeleteClick = () => {
+        if (!isConfirmingDelete) {
+            setIsConfirmingDelete(true);
+            return;
+        }
+
         setIsOpen(false);
         setTimeout(() => {
             deleteChannel.mutate(channel.id);
@@ -243,334 +230,301 @@ export function CardContent({
     };
 
     return (
-        <div className="flex h-full min-h-0 flex-1 flex-col">
-            <MorphingDialogTitle className="shrink-0">
-                <header className="mb-4 flex items-center justify-between gap-2 border-b border-border/40 pb-3">
-                    <div className="flex min-w-0 items-center gap-3">
-                        <h2 className="whitespace-nowrap text-xl font-bold tabular-nums text-card-foreground sm:text-2xl">
-                            {isEditing ? t('title.edit') : t('title.view')}
-                        </h2>
-                        <span className="hidden truncate text-sm text-muted-foreground sm:inline-block max-w-[16rem]">
-                            {channel.name}
-                        </span>
-                    </div>
-                    <div className="flex items-center gap-1.5">
-                        {!isEditing && (
-                            <>
-                                {isConfirmingDelete ? (
-                                    <div className="flex items-center gap-1">
-                                        <Button
-                                            type="button"
-                                            variant="ghost"
-                                            size="sm"
-                                            onClick={() => setIsConfirmingDelete(false)}
-                                            className="h-8 px-2 text-xs text-muted-foreground hover:text-foreground"
-                                            aria-label={tCard('cancel')}
-                                        >
-                                            <X className="mr-1 size-3.5" />
-                                            {tCard('cancel')}
-                                        </Button>
-                                        <Button
-                                            type="button"
-                                            variant="destructive"
-                                            size="sm"
-                                            onClick={handleDeleteConfirm}
-                                            disabled={deleteChannel.isPending}
-                                            className="h-8 px-2 text-xs"
-                                            aria-label={tCard('confirmDelete')}
-                                        >
-                                            <Check className="mr-1 size-3.5" />
-                                            {deleteChannel.isPending ? t('actions.deleting') : tCard('confirmDelete')}
-                                        </Button>
-                                    </div>
-                                ) : (
-                                    <>
-                                        <Button
-                                            type="button"
-                                            variant="outline"
-                                            size="sm"
-                                            onClick={() => {
-                                                setAdvancedOpen(false);
-                                                setIsEditing(true);
-                                            }}
-                                            className="h-8 px-2.5 text-xs"
-                                            aria-label={tCard('edit')}
-                                        >
-                                            <Pencil className="mr-1 size-3.5" />
-                                            {tCard('edit')}
-                                        </Button>
-                                        <Button
-                                            type="button"
-                                            variant="ghost"
-                                            size="sm"
-                                            onClick={() => setIsConfirmingDelete(true)}
-                                            className="h-8 px-2 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
-                                            aria-label={tCard('delete')}
-                                        >
-                                            <Trash2 className="size-3.5" />
-                                        </Button>
-                                    </>
-                                )}
-                            </>
-                        )}
-                        <MorphingDialogClose
-                            className="relative right-0 top-0 text-muted-foreground transition-colors hover:text-foreground"
-                            variants={{
-                                initial: { opacity: 0, scale: 0.8 },
-                                animate: { opacity: 1, scale: 1 },
-                                exit: { opacity: 0, scale: 0.8 }
-                            }}
-                        />
-                    </div>
+        <>
+            <MorphingDialogTitle>
+                <header className="mb-6 flex items-center justify-between">
+                    <h2 className="whitespace-nowrap text-2xl font-bold tabular-nums text-card-foreground">
+                        {isEditing ? t('title.edit') : t('title.view')}
+                    </h2>
+                    <MorphingDialogClose
+                        className="relative top-0 right-0"
+                        variants={{
+                            initial: { opacity: 0, scale: 0.8 },
+                            animate: { opacity: 1, scale: 1 },
+                            exit: { opacity: 0, scale: 0.8 }
+                        }}
+                    />
                 </header>
             </MorphingDialogTitle>
 
-            <MorphingDialogDescription className="flex min-h-0 flex-1 flex-col">
-                <Tabs value={currentView} className="flex min-h-0 flex-1 flex-col">
-                    <TabsContents className="flex min-h-0 flex-1 flex-col">
-                        <TabsContent value="viewing" className="flex min-h-0 flex-1 flex-col">
-                            <div className="min-h-0 flex-1 pr-1">
-                                <div className="space-y-4 pb-4 sm:space-y-5">
-                                    <dl className="grid gap-3 grid-cols-1 sm:grid-cols-3">
-                                        <div className="rounded-lg border border-border bg-muted/20 p-3 sm:p-4">
-                                            <dt className="flex items-center gap-2 mb-2 text-xs font-medium text-muted-foreground">
-                                                <Activity className="size-4 text-muted-foreground" />
-                                                {t('metrics.totalRequests')}
+            <MorphingDialogDescription>
+                <Tabs value={currentView}>
+                    <TabsContents>
+                        <TabsContent value="viewing" >
+                            {/* 单一滚动源：外层弹窗（Card.tsx max-h-[92vh] overflow-y-auto）负责滚，
+                                这里不再嵌套 max-h-[60vh] 滚动区——旧版里外两条滚动条叠着滚，
+                                内层还会把底部的模型列表/操作按钮裁在看不见的地方。 */}
+                            <div className="space-y-4 sm:space-y-5">
+                                <dl className="grid gap-3 grid-cols-1 sm:grid-cols-3">
+                                    <div className="rounded-lg border border-border bg-muted/20 p-3 sm:p-4">
+                                        <dt className="flex items-center gap-2 mb-2 text-xs font-medium text-muted-foreground">
+                                            <Activity className="size-4 text-muted-foreground" />
+                                            {t('metrics.totalRequests')}
+                                        </dt>
+                                        <dd className="text-xl sm:text-2xl font-bold text-foreground">
+                                            {stats.request_count.formatted.value}
+                                            <span className="text-xs font-normal ml-1 text-muted-foreground">{stats.request_count.formatted.unit}</span>
+                                        </dd>
+                                    </div>
+
+                                    <div className="rounded-lg border border-border bg-muted/20 p-3 sm:p-4">
+                                        <dt className="flex items-center gap-2 mb-2 text-xs font-medium text-muted-foreground">
+                                            <FileText className="size-4 text-muted-foreground" />
+                                            {t('metrics.totalToken')}
+                                        </dt>
+                                        <dd className="text-xl sm:text-2xl font-bold text-foreground">
+                                            {stats.total_token.formatted.value}
+                                            <span className="text-xs font-normal ml-1 text-muted-foreground">{stats.total_token.formatted.unit}</span>
+                                        </dd>
+                                    </div>
+
+                                    <div className="rounded-lg border border-border bg-muted/20 p-3 sm:p-4">
+                                        <dt className="flex items-center gap-2 mb-2 text-xs font-medium text-muted-foreground">
+                                            <DollarSign className="size-4 text-muted-foreground" />
+                                            {t('metrics.totalCost')}
+                                        </dt>
+                                        <dd className="whitespace-nowrap text-xl font-bold tabular-nums text-foreground sm:text-2xl">
+                                            {stats.total_cost.formatted.value}
+                                            <span className="text-xs font-normal ml-1 text-muted-foreground">{stats.total_cost.formatted.unit}</span>
+                                        </dd>
+                                    </div>
+                                </dl>
+
+                                {/* 请求详情 */}
+                                <section className="space-y-3">
+                                    <h4 className="flex items-center gap-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                                        <TrendingUp className="size-3.5" />
+                                        {t('sections.requests')}
+                                    </h4>
+                                    <dl className="grid gap-3 grid-cols-1 sm:grid-cols-2">
+                                        <div className="rounded-2xl border bg-card p-3 sm:p-4 transition-colors hover:bg-accent/5">
+                                            <dt className="flex items-center gap-2 mb-2 text-xs text-muted-foreground">
+                                                <CheckCircle2 className="size-4 text-accent" />
+                                                {t('metrics.successRequests')}
                                             </dt>
-                                            <dd className="text-xl sm:text-2xl font-bold text-foreground">
-                                                {stats.request_count.formatted.value}
-                                                <span className="text-xs font-normal ml-1 text-muted-foreground">{stats.request_count.formatted.unit}</span>
+                                            <dd className="text-2xl font-bold text-accent">
+                                                {stats.request_success.formatted.value}
+                                                <span className="text-sm font-normal ml-1 text-muted-foreground">{stats.request_success.formatted.unit}</span>
                                             </dd>
                                         </div>
 
-                                        <div className="rounded-lg border border-border bg-muted/20 p-3 sm:p-4">
-                                            <dt className="flex items-center gap-2 mb-2 text-xs font-medium text-muted-foreground">
-                                                <FileText className="size-4 text-muted-foreground" />
-                                                {t('metrics.totalToken')}
+                                        <div className="rounded-2xl border bg-card p-3 sm:p-4 transition-colors hover:bg-accent/5">
+                                            <dt className="flex items-center gap-2 mb-2 text-xs text-muted-foreground">
+                                                <XCircle className="size-4 text-destructive" />
+                                                {t('metrics.failedRequests')}
                                             </dt>
-                                            <dd className="text-xl sm:text-2xl font-bold text-foreground">
-                                                {stats.total_token.formatted.value}
-                                                <span className="text-xs font-normal ml-1 text-muted-foreground">{stats.total_token.formatted.unit}</span>
-                                            </dd>
-                                        </div>
-
-                                        <div className="rounded-lg border border-border bg-muted/20 p-3 sm:p-4">
-                                            <dt className="flex items-center gap-2 mb-2 text-xs font-medium text-muted-foreground">
-                                                <DollarSign className="size-4 text-muted-foreground" />
-                                                {t('metrics.totalCost')}
-                                            </dt>
-                                            <dd className="whitespace-nowrap text-xl font-bold tabular-nums text-foreground sm:text-2xl">
-                                                {stats.total_cost.formatted.value}
-                                                <span className="text-xs font-normal ml-1 text-muted-foreground">{stats.total_cost.formatted.unit}</span>
+                                            <dd className="text-2xl font-bold text-destructive">
+                                                {stats.request_failed.formatted.value}
+                                                <span className="text-sm font-normal ml-1 text-muted-foreground">{stats.request_failed.formatted.unit}</span>
                                             </dd>
                                         </div>
                                     </dl>
+                                </section>
 
-                                    {/* 请求详情 */}
-                                    <section className="space-y-3">
-                                        <h4 className="flex items-center gap-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                                            <TrendingUp className="size-3.5" />
-                                            {t('sections.requests')}
-                                        </h4>
-                                        <dl className="grid gap-3 grid-cols-1 sm:grid-cols-2">
-                                            <div className="rounded-2xl border bg-card p-3 sm:p-4 transition-colors hover:bg-accent/5">
-                                                <dt className="flex items-center gap-2 mb-2 text-xs text-muted-foreground">
-                                                    <CheckCircle2 className="size-4 text-accent" />
-                                                    {t('metrics.successRequests')}
-                                                </dt>
-                                                <dd className="text-2xl font-bold text-accent">
-                                                    {stats.request_success.formatted.value}
-                                                    <span className="text-sm font-normal ml-1 text-muted-foreground">{stats.request_success.formatted.unit}</span>
-                                                </dd>
-                                            </div>
-
-                                            <div className="rounded-2xl border bg-card p-3 sm:p-4 transition-colors hover:bg-accent/5">
-                                                <dt className="flex items-center gap-2 mb-2 text-xs text-muted-foreground">
-                                                    <XCircle className="size-4 text-destructive" />
-                                                    {t('metrics.failedRequests')}
-                                                </dt>
-                                                <dd className="text-2xl font-bold text-destructive">
-                                                    {stats.request_failed.formatted.value}
-                                                    <span className="text-sm font-normal ml-1 text-muted-foreground">{stats.request_failed.formatted.unit}</span>
-                                                </dd>
-                                            </div>
-                                        </dl>
-                                    </section>
-
-                                    {/* Token 使用 */}
-                                    <section className="space-y-3">
-                                        <h4 className="flex items-center gap-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                                            <FileText className="size-3.5" />
-                                            {t('sections.tokens')}
-                                        </h4>
-                                        <dl className="grid gap-3 grid-cols-1 sm:grid-cols-2">
-                                            <div className="rounded-2xl border bg-card p-3 sm:p-4 transition-colors hover:bg-accent/5">
-                                                <dt className="flex items-center gap-2 mb-2 text-xs text-muted-foreground">
-                                                    <div className="size-2 rounded-full bg-chart-1" />
-                                                    {t('metrics.inputToken')}
-                                                </dt>
-                                                <dd className="whitespace-nowrap text-2xl font-bold tabular-nums text-card-foreground">
-                                                    {stats.input_token.formatted.value}
-                                                    <span className="text-sm font-normal ml-1 text-muted-foreground">{stats.input_token.formatted.unit}</span>
-                                                </dd>
-                                            </div>
-
-                                            <div className="rounded-2xl border bg-card p-3 sm:p-4 transition-colors hover:bg-accent/5">
-                                                <dt className="flex items-center gap-2 mb-2 text-xs text-muted-foreground">
-                                                    <div className="size-2 rounded-full bg-chart-3" />
-                                                    {t('metrics.outputToken')}
-                                                </dt>
-                                                <dd className="whitespace-nowrap text-2xl font-bold tabular-nums text-card-foreground">
-                                                    {stats.output_token.formatted.value}
-                                                    <span className="text-sm font-normal ml-1 text-muted-foreground">{stats.output_token.formatted.unit}</span>
-                                                </dd>
-                                            </div>
-                                        </dl>
-                                    </section>
-
-                                    {/* 成本详情 */}
-                                    <section className="space-y-3">
-                                        <h4 className="flex items-center gap-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                                            <DollarSign className="size-3.5" />
-                                            {t('sections.costs')}
-                                        </h4>
-                                        <dl className="grid gap-3 grid-cols-1 sm:grid-cols-2">
-                                            <div className="rounded-2xl border bg-card p-3 sm:p-4 transition-colors hover:bg-accent/5">
-                                                <dt className="flex items-center gap-2 mb-2 text-xs text-muted-foreground">
-                                                    <div className="size-2 rounded-full bg-chart-2" />
-                                                    {t('metrics.inputCost')}
-                                                </dt>
-                                                <dd className="whitespace-nowrap text-2xl font-bold tabular-nums text-card-foreground">
-                                                    {stats.input_cost.formatted.value}
-                                                    <span className="text-sm font-normal ml-1 text-muted-foreground">{stats.input_cost.formatted.unit}</span>
-                                                </dd>
-                                            </div>
-
-                                            <div className="rounded-2xl border bg-card p-3 sm:p-4 transition-colors hover:bg-accent/5">
-                                                <dt className="flex items-center gap-2 mb-2 text-xs text-muted-foreground">
-                                                    <div className="size-2 rounded-full bg-chart-5" />
-                                                    {t('metrics.outputCost')}
-                                                </dt>
-                                                <dd className="whitespace-nowrap text-2xl font-bold tabular-nums text-card-foreground">
-                                                    {stats.output_cost.formatted.value}
-                                                    <span className="text-sm font-normal ml-1 text-muted-foreground">{stats.output_cost.formatted.unit}</span>
-                                                </dd>
-                                            </div>
-                                        </dl>
-                                    </section>
-
-                                    {/* Base URLs */}
-                                    <section className="space-y-3">
-                                        <h4 className="flex items-center gap-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                                            <Globe className="size-3.5" />
-                                            {t('sections.baseUrls')}
-                                        </h4>
-                                        <div className="rounded-2xl border bg-card overflow-hidden">
-                                            {channel.base_urls?.map((url, i) => (
-                                                <div key={i} className="flex items-center justify-between p-3 sm:p-4 border-b last:border-0 hover:bg-accent/5 transition-colors">
-                                                    <div className="flex flex-col gap-1 min-w-0">
-                                                        <MonoSafeText value={url.url} className="text-sm select-all" />
-                                                    </div>
-                                                    <Badge
-                                                        variant="secondary"
-                                                        className={cn(
-                                                            "h-5 px-1.5 text-xs",
-                                                            url.delay < 300
-                                                                ? "bg-green-500/15 text-green-700 dark:text-green-400"
-                                                                : url.delay < 1000
-                                                                    ? "bg-orange-500/15 text-orange-700 dark:text-orange-400"
-                                                                    : "bg-red-500/15 text-red-700 dark:text-red-400"
-                                                        )}
-                                                    >
-                                                        {url.delay}ms
-                                                    </Badge>
-                                                </div>
-                                            ))}
-                                            {(!channel.base_urls || channel.base_urls.length === 0) && (
-                                                <div className="p-4 text-sm text-muted-foreground text-center">{t('noBaseUrls')}</div>
-                                            )}
+                                {/* Token 使用 */}
+                                <section className="space-y-3">
+                                    <h4 className="flex items-center gap-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                                        <FileText className="size-3.5" />
+                                        {t('sections.tokens')}
+                                    </h4>
+                                    <dl className="grid gap-3 grid-cols-1 sm:grid-cols-2">
+                                        <div className="rounded-2xl border bg-card p-3 sm:p-4 transition-colors hover:bg-accent/5">
+                                            <dt className="flex items-center gap-2 mb-2 text-xs text-muted-foreground">
+                                                <div className="size-2 rounded-full bg-chart-1" />
+                                                {t('metrics.inputToken')}
+                                            </dt>
+                                            <dd className="whitespace-nowrap text-2xl font-bold tabular-nums text-card-foreground">
+                                                {stats.input_token.formatted.value}
+                                                <span className="text-sm font-normal ml-1 text-muted-foreground">{stats.input_token.formatted.unit}</span>
+                                            </dd>
                                         </div>
-                                    </section>
 
-                                    {/* Keys */}
-                                    <section className="space-y-3">
-                                        <h4 className="flex items-center gap-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                                            <Key className="size-3.5" />
-                                            {t('sections.keys')}
-                                        </h4>
-                                        <div className="rounded-2xl border bg-card overflow-hidden">
-                                            {channel.keys?.map((key) => (
-                                                <div key={key.id} className="flex items-center gap-3 p-3 sm:p-4 border-b last:border-0 hover:bg-accent/5 transition-colors">
-                                                    <div className={cn("size-2 shrink-0 rounded-full", key.enabled ? "bg-emerald-500" : "bg-destructive")} />
+                                        <div className="rounded-2xl border bg-card p-3 sm:p-4 transition-colors hover:bg-accent/5">
+                                            <dt className="flex items-center gap-2 mb-2 text-xs text-muted-foreground">
+                                                <div className="size-2 rounded-full bg-chart-3" />
+                                                {t('metrics.outputToken')}
+                                            </dt>
+                                            <dd className="whitespace-nowrap text-2xl font-bold tabular-nums text-card-foreground">
+                                                {stats.output_token.formatted.value}
+                                                <span className="text-sm font-normal ml-1 text-muted-foreground">{stats.output_token.formatted.unit}</span>
+                                            </dd>
+                                        </div>
+                                    </dl>
+                                </section>
 
-                                                    <MonoSafeText
-                                                        value={key.channel_key.length > 10
-                                                            ? `${key.channel_key.slice(0, 4)}...${key.channel_key.slice(-4)}`
-                                                            : key.channel_key}
-                                                        title={key.channel_key}
-                                                        className="text-sm flex-1"
-                                                    />
+                                {/* 成本详情 */}
+                                <section className="space-y-3">
+                                    <h4 className="flex items-center gap-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                                        <DollarSign className="size-3.5" />
+                                        {t('sections.costs')}
+                                    </h4>
+                                    <dl className="grid gap-3 grid-cols-1 sm:grid-cols-2">
+                                        <div className="rounded-2xl border bg-card p-3 sm:p-4 transition-colors hover:bg-accent/5">
+                                            <dt className="flex items-center gap-2 mb-2 text-xs text-muted-foreground">
+                                                <div className="size-2 rounded-full bg-chart-2" />
+                                                {t('metrics.inputCost')}
+                                            </dt>
+                                            <dd className="whitespace-nowrap text-2xl font-bold tabular-nums text-card-foreground">
+                                                {stats.input_cost.formatted.value}
+                                                <span className="text-sm font-normal ml-1 text-muted-foreground">{stats.input_cost.formatted.unit}</span>
+                                            </dd>
+                                        </div>
 
-                                                    {key.remark && (
-                                                        <SafeText value={key.remark} className="text-xs text-muted-foreground max-w-24" />
+                                        <div className="rounded-2xl border bg-card p-3 sm:p-4 transition-colors hover:bg-accent/5">
+                                            <dt className="flex items-center gap-2 mb-2 text-xs text-muted-foreground">
+                                                <div className="size-2 rounded-full bg-chart-5" />
+                                                {t('metrics.outputCost')}
+                                            </dt>
+                                            <dd className="whitespace-nowrap text-2xl font-bold tabular-nums text-card-foreground">
+                                                {stats.output_cost.formatted.value}
+                                                <span className="text-sm font-normal ml-1 text-muted-foreground">{stats.output_cost.formatted.unit}</span>
+                                            </dd>
+                                        </div>
+                                    </dl>
+                                </section>
+
+                                {/* Base URLs */}
+                                <section className="space-y-3">
+                                    <h4 className="flex items-center gap-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                                        <Globe className="size-3.5" />
+                                        {t('sections.baseUrls')}
+                                    </h4>
+                                    <div className="rounded-2xl border bg-card overflow-hidden">
+                                        {channel.base_urls?.map((url, i) => (
+                                            <div key={i} className="flex items-center justify-between p-3 sm:p-4 border-b last:border-0 hover:bg-accent/5 transition-colors">
+                                                <div className="flex flex-col gap-1 min-w-0">
+                                                    <MonoSafeText value={url.url} className="text-sm select-all" />
+                                                </div>
+                                                <Badge
+                                                    variant="secondary"
+                                                    className={cn(
+                                                        "h-5 px-1.5 text-xs",
+                                                        url.delay < 300
+                                                            ? "bg-green-500/15 text-green-700 dark:text-green-400"
+                                                            : url.delay < 1000
+                                                                ? "bg-orange-500/15 text-orange-700 dark:text-orange-400"
+                                                                : "bg-red-500/15 text-red-700 dark:text-red-400"
+                                                    )}
+                                                >
+                                                    {url.delay}ms
+                                                </Badge>
+                                            </div>
+                                        ))}
+                                        {(!channel.base_urls || channel.base_urls.length === 0) && (
+                                            <div className="p-4 text-sm text-muted-foreground text-center">{t('noBaseUrls')}</div>
+                                        )}
+                                    </div>
+                                </section>
+
+                                {/* Keys */}
+                                <section className="space-y-3">
+                                    <h4 className="flex items-center gap-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                                        <Key className="size-3.5" />
+                                        {t('sections.keys')}
+                                    </h4>
+                                    <div className="rounded-2xl border bg-card overflow-hidden">
+                                        {channel.keys?.map((key) => (
+                                            <div key={key.id} className="flex items-center gap-3 p-3 sm:p-4 border-b last:border-0 hover:bg-accent/5 transition-colors">
+                                                <div className={cn("size-2 shrink-0 rounded-full", key.enabled ? "bg-emerald-500" : "bg-destructive")} />
+
+                                                <MonoSafeText
+                                                    value={key.channel_key.length > 10
+                                                        ? `${key.channel_key.slice(0, 4)}...${key.channel_key.slice(-4)}`
+                                                        : key.channel_key}
+                                                    title={key.channel_key}
+                                                    className="text-sm flex-1"
+                                                />
+
+                                                {key.remark && (
+                                                    <SafeText value={key.remark} className="text-xs text-muted-foreground max-w-24" />
+                                                )}
+
+                                                <div className="flex items-center gap-2 shrink-0">
+                                                    {key.last_use_time_stamp > 0 && (
+                                                        <span className="text-xs text-muted-foreground whitespace-nowrap hidden sm:inline-block">
+                                                            {new Date(key.last_use_time_stamp * 1000).toLocaleString()}
+                                                        </span>
                                                     )}
 
-                                                    <div className="flex items-center gap-2 shrink-0">
-                                                        {key.last_use_time_stamp > 0 && (
-                                                            <span className="text-xs text-muted-foreground whitespace-nowrap hidden sm:inline-block">
-                                                                {new Date(key.last_use_time_stamp * 1000).toLocaleString()}
-                                                            </span>
-                                                        )}
-
-                                                        {key.status_code !== 0 && (
-                                                            <Badge
-                                                                variant="secondary"
-                                                                className={cn(
-                                                                    "h-5 px-1.5 text-[10px]",
-                                                                    key.status_code === 200
-                                                                        ? "bg-green-500/15 text-green-700 dark:text-green-400"
-                                                                        : key.status_code === 401 ||
-                                                                            key.status_code === 403 ||
-                                                                            key.status_code === 429 ||
-                                                                            key.status_code >= 500
-                                                                            ? "bg-red-500/15 text-red-700 dark:text-red-400"
-                                                                            : "bg-orange-500/15 text-orange-700 dark:text-orange-400"
-                                                                )}
-                                                            >
-                                                                {key.status_code}
-                                                            </Badge>
-                                                        )}
-
-                                                        <Badge variant="secondary" className="h-5 whitespace-nowrap px-1.5 text-[10px] tabular-nums">
-                                                            {formatMoney(key.total_cost).formatted.value}
-                                                            {formatMoney(key.total_cost).formatted.unit}
+                                                    {key.status_code !== 0 && (
+                                                        <Badge
+                                                            variant="secondary"
+                                                            className={cn(
+                                                                "h-5 px-1.5 text-[10px]",
+                                                                key.status_code === 200
+                                                                    ? "bg-green-500/15 text-green-700 dark:text-green-400"
+                                                                    : key.status_code === 401 ||
+                                                                        key.status_code === 403 ||
+                                                                        key.status_code === 429 ||
+                                                                        key.status_code >= 500
+                                                                        ? "bg-red-500/15 text-red-700 dark:text-red-400"
+                                                                        : "bg-orange-500/15 text-orange-700 dark:text-orange-400"
+                                                            )}
+                                                        >
+                                                            {key.status_code}
                                                         </Badge>
-                                                    </div>
-                                                </div>
-                                            ))}
-                                            {(!channel.keys || channel.keys.length === 0) && (
-                                                <div className="p-4 text-sm text-muted-foreground text-center">{t('noKeys')}</div>
-                                            )}
-                                        </div>
-                                    </section>
+                                                    )}
 
-                                    {/* 等待时间 */}
-                                    <dl className="rounded-2xl border bg-card p-3 sm:p-4 transition-colors hover:bg-accent/5">
-                                        <dt className="flex items-center gap-2 mb-2 text-xs text-muted-foreground">
-                                            <Clock className="size-4 text-primary" />
-                                            {t('metrics.avgWaitTime')}
-                                        </dt>
-                                        <dd className="text-2xl font-bold text-primary">
-                                            {stats.wait_time.formatted.value}
-                                            <span className="text-sm font-normal ml-1 text-muted-foreground">{stats.wait_time.formatted.unit}</span>
-                                        </dd>
-                                    </dl>
-                                </div>
+                                                    <Badge variant="secondary" className="h-5 whitespace-nowrap px-1.5 text-[10px] tabular-nums">
+                                                        {formatMoney(key.total_cost).formatted.value}
+                                                        {formatMoney(key.total_cost).formatted.unit}
+                                                    </Badge>
+                                                </div>
+                                            </div>
+                                        ))}
+                                        {(!channel.keys || channel.keys.length === 0) && (
+                                            <div className="p-4 text-sm text-muted-foreground text-center">{t('noKeys')}</div>
+                                        )}
+                                    </div>
+                                </section>
+
+                                {/* 等待时间 */}
+                                <dl className="rounded-2xl border bg-card p-3 sm:p-4 transition-colors hover:bg-accent/5">
+                                    <dt className="flex items-center gap-2 mb-2 text-xs text-muted-foreground">
+                                        <Clock className="size-4 text-primary" />
+                                        {t('metrics.avgWaitTime')}
+                                    </dt>
+                                    <dd className="text-2xl font-bold text-primary">
+                                        {stats.wait_time.formatted.value}
+                                        <span className="text-sm font-normal ml-1 text-muted-foreground">{stats.wait_time.formatted.unit}</span>
+                                    </dd>
+                                </dl>
+                            </div>
+
+                            {/* 操作按钮 */}
+                            <div className="grid gap-3 sm:grid-cols-2 pt-2">
+                                <Button
+                                    onClick={() => {
+                                        if (isConfirmingDelete) {
+                                            setIsConfirmingDelete(false);
+                                            return;
+                                        }
+                                        setAdvancedOpen(false);
+                                        setIsEditing(true);
+                                    }}
+                                    variant={isConfirmingDelete ? 'secondary' : 'default'}
+                                    className="w-full rounded-2xl h-12"
+                                >
+                                    {isConfirmingDelete ? t('actions.cancel') : t('actions.edit')}
+                                </Button>
+                                <Button
+                                    onClick={handleDeleteClick}
+                                    disabled={deleteChannel.isPending}
+                                    variant="destructive"
+                                    className="w-full rounded-2xl h-12"
+                                >
+                                    <Trash2 className={`size-4 transition-transform ${isConfirmingDelete ? 'scale-110' : ''}`} />
+                                    {deleteChannel.isPending
+                                        ? t('actions.deleting')
+                                        : isConfirmingDelete
+                                            ? t('actions.confirmDelete')
+                                            : t('actions.delete')}
+                                </Button>
                             </div>
                         </TabsContent>
 
-                        <TabsContent value="editing" className="flex min-h-0 flex-1 flex-col">
-                            <div className="mb-4 flex shrink-0 flex-wrap items-center justify-between gap-3 rounded-lg border bg-muted/20 px-3 py-2">
+                        <TabsContent value="editing">
+                            <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-muted/20 px-3 py-2">
                                 <div className="min-w-0">
                                     <div className="truncate text-sm font-medium text-card-foreground">{channel.name}</div>
                                     <div className="text-xs text-muted-foreground">#{channel.id}</div>
@@ -586,29 +540,26 @@ export function CardContent({
                                     高级设定
                                 </Button>
                             </div>
-                            <div className="min-h-0 flex-1 pr-1">
-                                <ChannelForm
-                                    formData={formData}
-                                    onFormDataChange={setFormData}
-                                    onSubmit={handleUpdate}
-                                    isPending={updateChannel.isPending}
-                                    submitText={t('actions.save')}
-                                    pendingText={t('actions.saving')}
-                                    onCancel={() => {
-                                        setAdvancedOpen(false);
-                                        setIsEditing(false);
-                                    }}
-                                    cancelText={t('actions.cancel')}
-                                    idPrefix="channel"
-                                    advancedMode="panel"
-                                    onAdvancedClose={() => setAdvancedOpen(false)}
-                                    advancedOpen={advancedOpen}
-                                />
-                            </div>
+                            <ChannelForm
+                                formData={formData}
+                                onFormDataChange={setFormData}
+                                onSubmit={handleUpdate}
+                                isPending={updateChannel.isPending}
+                                submitText={t('actions.save')}
+                                pendingText={t('actions.saving')}
+                                onCancel={() => {
+                                    setAdvancedOpen(false);
+                                    setIsEditing(false);
+                                }}
+                                cancelText={t('actions.cancel')}
+                                idPrefix="channel"
+                                advancedMode="panel"
+                                advancedOpen={advancedOpen}
+                            />
                         </TabsContent>
                     </TabsContents>
                 </Tabs>
             </MorphingDialogDescription>
-        </div>
+        </>
     );
 }
