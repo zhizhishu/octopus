@@ -698,7 +698,7 @@
             "outputCache": "输出/缓存",
             "edit": "编辑",
             "delete": "删除",
-            "autoRescue": "自动救援",
+            "autoRescue": "自动救援"
 },
         "overlay": {
             "cancel": "取消",
