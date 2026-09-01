@@ -456,18 +456,17 @@ func AccessPlanGroupForModel(plan *model.AccessPlan, requestModel string, ctx co
 // opted into AutoSyncChannels. For each existing route rule (request model) it:
 //
 //   - ADDS: any currently-enabled channel that serves that model but is not yet a
-//     target (priority mirrors the channel's own Priority — so equal-priority channels
-//     stay genuinely parallel under Spread and the value stops churning on every
-//     re-sync; weight 1, enabled). Hand-tuned priorities/weights of surviving targets
-//     are not touched.
+//     target. Spread creates parallel priority-1 targets; FillFirst follows stable
+//     channel-ID order. Hand-tuned priorities/weights of surviving targets are untouched.
 //   - REMOVES: any existing target whose channel is no longer enabled or no longer
 //     serves the rule's model, so a disabled channel is automatically evicted without
 //     requiring a manual rebuild.
+//   - CREATES: a missing rule plus its initial targets when an enabled channel exposes
+//     a new selected model or client-facing model_mapping alias.
 //
 // Plans that did NOT opt in (AutoSyncChannels=false) are never touched — they remain
-// strict allow-lists. New request models (no rule yet) are left to the group fallback,
-// not force-created here. Idempotent: safe to call after any channel enable/disable /
-// sync / create.
+// strict allow-lists. Idempotent: safe to call after any channel enable/disable / sync /
+// create.
 func AccessPlanSyncEnabledChannels(ctx context.Context) error {
 	if err := ensureAccessPlanCache(ctx); err != nil {
 		return err
@@ -479,6 +478,7 @@ func AccessPlanSyncEnabledChannels(ctx context.Context) error {
 	// model_mapping (authoritative for the upstream name) or a plainly-selected model
 	// (identity — client name == upstream name).
 	type servedModel struct {
+		request  string // cleaned client-facing name used by the route rule
 		upstream string
 		mapped   bool
 	}
@@ -505,7 +505,7 @@ func AccessPlanSyncEnabledChannels(ctx context.Context) error {
 		for _, name := range model.ChannelSelectedModelNames(ch) {
 			clean := model.CleanOneMillionCapabilityModelName(name)
 			if key := strings.ToLower(clean); key != "" {
-				served[key] = servedModel{upstream: clean} // identity: client name == upstream name
+				served[key] = servedModel{request: clean, upstream: clean} // identity: client name == upstream name
 				selectedSet[key] = struct{}{}
 			}
 		}
@@ -529,7 +529,7 @@ func AccessPlanSyncEnabledChannels(ctx context.Context) error {
 			if _, servesUpstream := selectedSet[strings.ToLower(upstreamClean)]; !servesUpstream {
 				continue
 			}
-			served[key] = servedModel{upstream: upstreamClean, mapped: true} // mapping wins
+			served[key] = servedModel{request: clientClean, upstream: upstreamClean, mapped: true} // mapping wins
 		}
 		if len(served) > 0 {
 			enabledByID[ch.ID] = enabledChannel{id: ch.ID, priority: ch.Priority, models: served}
@@ -630,8 +630,8 @@ func AccessPlanSyncEnabledChannels(ctx context.Context) error {
 						}
 						return addIdx + 1 // fill_first: channel-ID order → priority
 					}(),
-					Weight:        1,
-					Enabled:       true,
+					Weight:  1,
+					Enabled: true,
 				}
 				if err := gormDB.Create(&target).Error; err != nil {
 					// Best-effort: a unique-constraint race just means it already exists;
@@ -682,7 +682,7 @@ func AccessPlanSyncEnabledChannels(ctx context.Context) error {
 				}
 				pm, ok := missing[modelKey]
 				if !ok {
-					pm = &pendingModel{requestModel: sm.upstream}
+					pm = &pendingModel{requestModel: sm.request}
 					missing[modelKey] = pm
 				}
 				pm.channels = append(pm.channels, struct {

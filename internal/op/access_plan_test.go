@@ -22,6 +22,9 @@ func setupAccessPlanTest(t *testing.T) context.Context {
 	})
 
 	ctx := context.Background()
+	if err := settingRefreshCache(ctx); err != nil {
+		t.Fatalf("refresh setting cache: %v", err)
+	}
 	if err := channelRefreshCache(ctx); err != nil {
 		t.Fatalf("refresh channel cache: %v", err)
 	}
@@ -1008,6 +1011,87 @@ func TestAccessPlanUpdatePreservesProfilesAndAllowsDefaultSlugRename(t *testing.
 	}
 	if len(renamed.RouteTargets) != 1 || renamed.RouteTargets[0].RequestModel != "request-before-rename" {
 		t.Fatalf("route targets were not preserved: %#v", renamed.RouteTargets)
+	}
+}
+
+func TestAccessPlanSyncCreatesMappedRuleWithGlobalRouteMode(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		override       string
+		wantMode       model.GroupMode
+		wantPriorities []int
+	}{
+		{name: "spread creates parallel targets", override: "spread", wantMode: model.GroupModeSpread, wantPriorities: []int{1, 1}},
+		{name: "fill first follows channel order", override: "fill_first", wantMode: model.GroupModeFillFirst, wantPriorities: []int{1, 2}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := setupAccessPlanTest(t)
+			if err := SettingSetString(model.SettingKeyRouteModeOverride, tc.override); err != nil {
+				t.Fatalf("set route mode override: %v", err)
+			}
+
+			plans, err := AccessPlanList(ctx)
+			if err != nil {
+				t.Fatalf("list plans: %v", err)
+			}
+			var svip model.AccessPlan
+			for _, plan := range plans {
+				if plan.Slug == "svip" {
+					svip = plan
+					break
+				}
+			}
+			if svip.ID == 0 {
+				t.Fatal("svip plan not found")
+			}
+			svip.AutoSyncChannels = true
+			if err := AccessPlanUpdate(&svip, ctx); err != nil {
+				t.Fatalf("enable auto sync: %v", err)
+			}
+
+			channels := []model.Channel{
+				{Name: "mapped-rule-a", Enabled: true, Model: "upstream-a", ModelMapping: map[string]string{"client-alias": "upstream-a"}},
+				{Name: "mapped-rule-b", Enabled: true, Model: "upstream-b", ModelMapping: map[string]string{"client-alias": "upstream-b"}},
+			}
+			for i := range channels {
+				if err := ChannelCreate(&channels[i], ctx); err != nil {
+					t.Fatalf("create channel %d: %v", i, err)
+				}
+			}
+			if err := AccessPlanSyncEnabledChannels(ctx); err != nil {
+				t.Fatalf("sync enabled channels: %v", err)
+			}
+
+			var rule model.AccessRouteRule
+			if err := db.GetDB().WithContext(ctx).
+				Where("route_profile_id = ? AND request_model = ?", svip.RouteProfileID, "client-alias").
+				First(&rule).Error; err != nil {
+				t.Fatalf("expected client-facing mapping rule: %v", err)
+			}
+			if rule.Mode != tc.wantMode {
+				t.Fatalf("rule mode = %d, want %d", rule.Mode, tc.wantMode)
+			}
+
+			var targets []model.AccessRouteTarget
+			if err := db.GetDB().WithContext(ctx).
+				Where("route_rule_id = ?", rule.ID).
+				Order("channel_id ASC").
+				Find(&targets).Error; err != nil {
+				t.Fatalf("list created targets: %v", err)
+			}
+			if len(targets) != 2 {
+				t.Fatalf("target count = %d, want 2", len(targets))
+			}
+			for i, target := range targets {
+				if target.Priority != tc.wantPriorities[i] {
+					t.Fatalf("target %d priority = %d, want %d", i, target.Priority, tc.wantPriorities[i])
+				}
+				wantUpstream := channels[i].Model
+				if target.UpstreamModel != wantUpstream {
+					t.Fatalf("target %d upstream = %q, want %q", i, target.UpstreamModel, wantUpstream)
+				}
+			}
+		})
 	}
 }
 
