@@ -254,12 +254,12 @@ export function SettingLog() {
                 </div>
             </div>
 
-            {/* 上游错误人工接管 */}
-            <div className="space-y-3 rounded-2xl border border-amber-500/30 bg-amber-500/5 p-4">
+            {/* 上游错误自动救援 */}
+            <div className="space-y-3 rounded-2xl border border-sky-500/30 bg-sky-500/5 p-4">
                 <div className="flex items-center justify-between gap-4">
                     <div className="flex flex-col gap-1">
-                        <span className="text-sm font-medium">上游错误人工接管</span>
-                        <span className="text-xs text-muted-foreground">开启后，流式请求在所有自动渠道失败时会保持客户端连接，日志页可手动选择渠道重试。</span>
+                        <span className="text-sm font-medium">上游错误自动救援</span>
+                        <span className="text-xs text-muted-foreground">开启后，流式请求在所有自动渠道失败时会保持客户端连接，机器按画布顺序自动切换渠道重试，无需人工干预。</span>
                     </div>
                     <Switch
                         checked={interventionEnabled}
@@ -267,7 +267,7 @@ export function SettingLog() {
                     />
                 </div>
                 <div className="flex items-center justify-between gap-4">
-                    <span className="text-sm font-medium">人工接管等待上限（秒）</span>
+                    <span className="text-sm font-medium">自动救援等待上限（秒）</span>
                     <Input
                         type="number"
                         min="1"

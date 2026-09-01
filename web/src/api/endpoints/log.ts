@@ -778,13 +778,18 @@ export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?
  * 订阅实时请求状态流（running 日志）
  * 用于显示"调用中"状态，点击后查看每轮重试详情
  */
-export function useRequestStateStream() {
+export function useRequestStateStream(enabled = true) {
     const [states, setStates] = useState<RequestState[]>([]);
     const [isConnected, setIsConnected] = useState(false);
     const eventSourceRef = useRef<EventSource | null>(null);
     const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     useEffect(() => {
+        if (!enabled) {
+            setStates([]);
+            setIsConnected(false);
+            return;
+        }
         let cancelled = false;
         let reconnectAttempt = 0;
 
@@ -863,7 +868,7 @@ export function useRequestStateStream() {
             if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
             setIsConnected(false);
         };
-    }, []);
+    }, [enabled]);
 
     useEffect(() => {
         const cleanup = setInterval(() => {
