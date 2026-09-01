@@ -11,6 +11,32 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 export type AttemptStatus = 'success' | 'failed' | 'circuit_break' | 'skipped';
 
 /**
+ * 实时请求状态（SSE 推送）
+ */
+export interface RequestState {
+    id: number;
+    status: 'running' | 'success' | 'failed' | 'canceled';
+    started_at: string;
+    model: string;
+    endpoint: string;
+    round: number;
+    target_channel?: string;
+    target_model?: string;
+    sending: boolean;
+    error?: string;
+    finished_at?: string;
+    total_latency_ms?: number;
+    attempts?: {
+        round: number;
+        channel_name: string;
+        upstream_model?: string;
+        status: 'trying' | 'success' | 'error';
+        error_msg?: string;
+        latency_ms?: number;
+    }[];
+}
+
+/**
  * 单次渠道尝试信息
  */
 export interface ChannelAttempt {
@@ -725,5 +751,77 @@ export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?
         loadMore,
         refresh,
         clear,
+    };
+}
+
+/**
+ * 订阅实时请求状态流（running 日志）
+ * 用于显示"调用中"状态，点击后查看每轮重试详情
+ */
+export function useRequestStateStream() {
+    const [states, setStates] = useState<RequestState[]>([]);
+    const [isConnected, setIsConnected] = useState(false);
+    const eventSourceRef = useRef<EventSource | null>(null);
+
+    useEffect(() => {
+        const eventSource = new EventSource(`${API_BASE_URL}/api/v1/log/stream-state`);
+        eventSourceRef.current = eventSource;
+
+        eventSource.onopen = () => {
+            setIsConnected(true);
+            logger.info('[RequestStateStream] Connected');
+        };
+
+        eventSource.onmessage = (event) => {
+            try {
+                const state: RequestState = JSON.parse(event.data);
+                setStates((prev) => {
+                    // 更新或插入
+                    const index = prev.findIndex((s) => s.id === state.id);
+                    if (index >= 0) {
+                        const updated = [...prev];
+                        updated[index] = state;
+                        return updated;
+                    }
+                    return [state, ...prev];
+                });
+            } catch (err) {
+                logger.error('[RequestStateStream] Parse error:', err);
+            }
+        };
+
+        eventSource.onerror = (err) => {
+            logger.error('[RequestStateStream] Connection error:', err);
+            setIsConnected(false);
+            eventSource.close();
+        };
+
+        return () => {
+            eventSource.close();
+            eventSourceRef.current = null;
+            setIsConnected(false);
+        };
+    }, []);
+
+    // 清理已完成超过 5 分钟的请求（避免内存无限增长）
+    useEffect(() => {
+        const cleanup = setInterval(() => {
+            const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
+            setStates((prev) =>
+                prev.filter((state) => {
+                    if (state.status === 'running') return true;
+                    if (!state.finished_at) return true;
+                    return new Date(state.finished_at).getTime() > fiveMinutesAgo;
+                })
+            );
+        }, 30000); // 每 30 秒清理一次
+
+        return () => clearInterval(cleanup);
+    }, []);
+
+    return {
+        states,
+        isConnected,
+        runningCount: states.filter((s) => s.status === 'running').length,
     };
 }

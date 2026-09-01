@@ -57,6 +57,14 @@ func init() {
 		AddRoute(
 			router.NewRoute("/stream", http.MethodGet).
 				Handle(streamLog),
+		).
+		AddRoute(
+			router.NewRoute("/stream-state", http.MethodGet).
+				Handle(LogStreamSSE),
+		).
+		AddRoute(
+			router.NewRoute("/state-snapshot", http.MethodGet).
+				Handle(LogSnapshotJSON),
 		)
 }
 

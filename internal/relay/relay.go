@@ -87,6 +87,9 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 	metrics.SetRequestEndpoint(requestEndpoint, c.Request.URL.Path)
 	metrics.SetAccessPlan(routeResult.AccessPlan, routeResult.AccessRouteRule, routeResult.AccessRouteUsed)
 	metrics.SetClientSession(clientSession)
+
+	// 创建实时请求状态，立即推送 "running" 给 SSE 订阅者
+	requestState := newRequestState(requestModel, requestEndpoint)
 	baseMessages := append([]model.Message(nil), internalRequest.Messages...)
 	// The responses history bridges (chat / Anthropic) and codex shape clear
 	// PreviousResponseID / ResponsesInputRaw on the SHARED internalRequest once they
@@ -133,6 +136,14 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		}
 		if stopInterventionKeepalive != nil {
 			stopInterventionKeepalive()
+		}
+		// 请求结束时标记最终状态
+		if lastErr == nil {
+			requestState.markSuccess()
+		} else if c.Request.Context().Err() != nil {
+			requestState.markCanceled()
+		} else {
+			requestState.markFailed(lastErr.Error())
 		}
 	}()
 
@@ -322,6 +333,10 @@ runIterator:
 				requestModel, group.Mode, channel.Name, item.ModelName,
 				iter.Index()+1, iter.Len(), keyIndex+1, len(availableKeys), iter.IsSticky())
 
+			// 记录本轮开始尝试（推送实时状态）
+			attemptStartTime := time.Now()
+			requestState.startRound(channel.Name, item.ModelName)
+
 			// 构造尝试级上下文 -- 只写变化的 4 个字段
 			ra := &relayAttempt{
 				relayRequest:         req,
@@ -332,6 +347,16 @@ runIterator:
 			}
 
 			result := ra.attempt()
+			attemptLatency := time.Since(attemptStartTime).Milliseconds()
+
+			// 记录本轮结束（推送状态更新）
+			if result.Success {
+				requestState.finishRound("", attemptLatency)
+			} else if result.Err != nil {
+				requestState.finishRound(result.Err.Error(), attemptLatency)
+			} else {
+				requestState.finishRound("unknown error", attemptLatency)
+			}
 			for transientTry := 0; !result.Success && !result.Written && result.Retryable && transientTry < maxTransientStreamRetries; transientTry++ {
 				log.Warnf("retrying transient empty upstream stream on channel %s key %d (try %d/%d): %v",
 					channel.Name, usedKey.ID, transientTry+1, maxTransientStreamRetries, result.Err)
@@ -466,6 +491,11 @@ runIterator:
 					interventionIter := balancer.NewIteratorWithSession(interventionGroup, apiKeyID, requestModel, "", false)
 					interventionIter.PrioritizeChannels(nativeProtocolChannelIDs(c.Request.Context(), inboundType, interventionGroup.Items))
 					if interventionIter.Len() > 0 {
+						// 停止旧心跳协程，避免并发写 gin.Writer
+						if stopInterventionKeepalive != nil {
+							stopInterventionKeepalive()
+							stopInterventionKeepalive = nil
+						}
 						group = interventionGroup
 						iter = interventionIter
 						req.stickyEnabled = false
@@ -491,6 +521,11 @@ runIterator:
 				freshIter.PrioritizeChannels(nativeProtocolChannelIDs(c.Request.Context(), inboundType, freshGroup.Items))
 				prioritizeResponsesSessionOwner(c.Request.Context(), freshIter, internalRequest, apiKeyID, userID)
 				if freshIter.Len() > 0 {
+					// 停止旧心跳协程，避免并发写 gin.Writer
+					if stopInterventionKeepalive != nil {
+						stopInterventionKeepalive()
+						stopInterventionKeepalive = nil
+					}
 					group = freshGroup
 					iter = freshIter
 					routeResult = freshRouteResult
@@ -528,6 +563,11 @@ runIterator:
 						interventionIter := balancer.NewIteratorWithSession(interventionGroup, apiKeyID, requestModel, "", false)
 						interventionIter.PrioritizeChannels(nativeProtocolChannelIDs(c.Request.Context(), inboundType, interventionGroup.Items))
 						if interventionIter.Len() > 0 {
+							// 停止旧心跳协程，避免并发写 gin.Writer
+							if stopInterventionKeepalive != nil {
+								stopInterventionKeepalive()
+								stopInterventionKeepalive = nil
+							}
 							group = interventionGroup
 							iter = interventionIter
 							req.stickyEnabled = false
