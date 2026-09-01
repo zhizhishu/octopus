@@ -142,12 +142,14 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 			stopInterventionKeepalive()
 		}
 		// 请求结束时标记最终状态
-		if requestSucceeded || lastErr == nil {
+		if requestSucceeded {
 			requestState.markSuccess()
 		} else if c.Request.Context().Err() != nil {
 			requestState.markCanceled()
-		} else {
+		} else if lastErr != nil {
 			requestState.markFailed(lastErr.Error())
+		} else {
+			requestState.markFailed("request ended without a successful upstream response")
 		}
 	}()
 
@@ -378,6 +380,8 @@ runIterator:
 			for transientTry := 0; !result.Success && !result.Written && result.Retryable && transientTry < maxTransientStreamRetries; transientTry++ {
 				log.Warnf("retrying transient empty upstream stream on channel %s key %d (try %d/%d): %v",
 					channel.Name, usedKey.ID, transientTry+1, maxTransientStreamRetries, result.Err)
+				requestState.startRound(channel.Name, item.ModelName)
+				transientStartedAt := time.Now()
 				internalRequest.Messages = append([]model.Message(nil), baseMessages...)
 				internalRequest.PreviousResponseID = basePreviousResponseID
 				internalRequest.ResponsesInputRaw = cloneRawJSONMessage(baseResponsesInputRaw)
@@ -392,6 +396,14 @@ runIterator:
 					firstTokenTimeOutSec: group.FirstTokenTimeOut,
 				}
 				result = ra.attempt()
+				transientLatency := time.Since(transientStartedAt).Milliseconds()
+				if result.Success {
+					requestState.finishRound("", transientLatency)
+				} else if result.Err != nil {
+					requestState.finishRound(result.Err.Error(), transientLatency)
+				} else {
+					requestState.finishRound("unknown error", transientLatency)
+				}
 			}
 			if result.Success {
 				requestSucceeded = true
@@ -464,7 +476,7 @@ runIterator:
 		}
 		if interventionCtx == nil {
 			totalTimeout := noBreakerRescueBudget
-			if manualIntervention {
+			if !noBreakerAutoRescue && manualIntervention {
 				totalTimeout = intervention.Timeout()
 			}
 			var interventionCancel context.CancelFunc

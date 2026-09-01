@@ -190,29 +190,21 @@ func enqueueFinishedLocked(id uint64) {
 
 // SubscribeRequestState 注册一个 SSE 订阅者，返回接收通道。
 func SubscribeRequestState(ctx context.Context) <-chan *RequestState {
-	// 快照最多包含 maxFinished 条终态 + 正在运行请求。连接建立时发送快照发生在
-	// handler 开始消费之前，所以缓冲必须覆盖快照上限；16 会在历史稍多时把订阅卡死。
-	ch := make(chan *RequestState, maxFinished+64)
-
 	stateMu.Lock()
+	// 快照是在函数返回、handler 开始消费之前同步写入的，因此缓冲必须按当前
+	// stateRequests 精确扩容；固定 16/164 在高并发请求数超过阈值时都会卡死。
+	ch := make(chan *RequestState, len(stateRequests)+64)
 	stateWatchers[ch] = struct{}{}
-	stateMu.Unlock()
-
-	// 发送当前所有状态的快照
-	stateMu.RLock()
 	for _, state := range stateRequests {
 		snapshot := *state
 		snapshot.Attempts = append([]AttemptSnapshot(nil), state.Attempts...)
-		select {
-		case ch <- &snapshot:
-		case <-ctx.Done():
-			stateMu.RUnlock()
-			UnsubscribeRequestState(ch)
-			return ch
-		}
+		ch <- &snapshot
 	}
-	stateMu.RUnlock()
+	stateMu.Unlock()
 
+	if ctx.Err() != nil {
+		UnsubscribeRequestState(ch)
+	}
 	return ch
 }
 
