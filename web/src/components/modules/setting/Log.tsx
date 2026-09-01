@@ -36,6 +36,7 @@ export function SettingLog() {
     const [maxStorageGB, setMaxStorageGB] = useState('0');
     const [interventionEnabled, setInterventionEnabled] = useState(false);
     const [interventionTimeout, setInterventionTimeout] = useState('1800');
+    const [noBreakerRetryBudget, setNoBreakerRetryBudget] = useState('300');
     const [isClearing, setIsClearing] = useState(false);
 
     const initialEnabled = useRef(true);
@@ -43,6 +44,7 @@ export function SettingLog() {
     const initialMaxStorageGB = useRef('0');
     const initialInterventionEnabled = useRef(false);
     const initialInterventionTimeout = useRef('1800');
+    const initialNoBreakerRetryBudget = useRef('300');
 
     useEffect(() => {
         if (settings) {
@@ -51,6 +53,7 @@ export function SettingLog() {
             const maxStorageSetting = settings.find(s => s.key === SettingKey.RelayLogMaxStorageGB);
             const interventionEnabledSetting = settings.find(s => s.key === SettingKey.RelayInterventionEnabled);
             const interventionTimeoutSetting = settings.find(s => s.key === SettingKey.RelayInterventionTimeoutSeconds);
+            const noBreakerRetryBudgetSetting = settings.find(s => s.key === SettingKey.RelayNoBreakerRetryBudgetSeconds);
             if (enabledSetting) {
                 const isEnabled = enabledSetting.value === 'true';
                 queueMicrotask(() => setEnabled(isEnabled));
@@ -72,6 +75,10 @@ export function SettingLog() {
             if (interventionTimeoutSetting) {
                 queueMicrotask(() => setInterventionTimeout(interventionTimeoutSetting.value));
                 initialInterventionTimeout.current = interventionTimeoutSetting.value;
+            }
+            if (noBreakerRetryBudgetSetting) {
+                queueMicrotask(() => setNoBreakerRetryBudget(noBreakerRetryBudgetSetting.value));
+                initialNoBreakerRetryBudget.current = noBreakerRetryBudgetSetting.value;
             }
         }
     }, [settings]);
@@ -139,6 +146,22 @@ export function SettingLog() {
                 onSuccess: () => {
                     toast.success(t('saved'));
                     initialInterventionTimeout.current = interventionTimeout;
+                }
+            }
+        );
+    };
+
+    const handleNoBreakerRetryBudgetSave = () => {
+        const parsed = Number.parseInt(noBreakerRetryBudget, 10);
+        const normalized = String(Number.isFinite(parsed) ? Math.min(600, Math.max(0, parsed)) : 300);
+        setNoBreakerRetryBudget(normalized);
+        if (normalized === initialNoBreakerRetryBudget.current) return;
+        setSetting.mutate(
+            { key: SettingKey.RelayNoBreakerRetryBudgetSeconds, value: normalized },
+            {
+                onSuccess: () => {
+                    toast.success(t('saved'));
+                    initialNoBreakerRetryBudget.current = normalized;
                 }
             }
         );
@@ -244,7 +267,7 @@ export function SettingLog() {
                     />
                 </div>
                 <div className="flex items-center justify-between gap-4">
-                    <span className="text-sm font-medium">接管等待上限（秒）</span>
+                    <span className="text-sm font-medium">人工接管等待上限（秒）</span>
                     <Input
                         type="number"
                         min="1"
@@ -253,6 +276,21 @@ export function SettingLog() {
                         onBlur={handleInterventionTimeoutSave}
                         className="w-48 rounded-xl"
                         disabled={!interventionEnabled}
+                    />
+                </div>
+                <div className="flex items-center justify-between gap-4 border-t border-amber-500/20 pt-3">
+                    <div className="flex flex-col gap-1">
+                        <span className="text-sm font-medium">无熔断渠道自动猛打（秒）</span>
+                        <span className="text-xs text-muted-foreground">默认 300、最大 600。失败时拦截下游错误，按无限画布既定优先/轮询顺序每秒重新选路；0 表示关闭。开启熔断的渠道仍照常计失败并进入熔断。</span>
+                    </div>
+                    <Input
+                        type="number"
+                        min="0"
+                        max="600"
+                        value={noBreakerRetryBudget}
+                        onChange={(e) => setNoBreakerRetryBudget(e.target.value)}
+                        onBlur={handleNoBreakerRetryBudgetSave}
+                        className="w-48 shrink-0 rounded-xl"
                     />
                 </div>
             </div>

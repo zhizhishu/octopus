@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/bestruirui/octopus/internal/op"
 	"github.com/bestruirui/octopus/internal/relay"
+	"github.com/bestruirui/octopus/internal/server/middleware"
 	"github.com/bestruirui/octopus/internal/utils/safe"
 	"github.com/gin-gonic/gin"
 )
@@ -16,6 +18,14 @@ import (
 // 客户端连接后立即收到当前所有 running/finished 状态的快照，
 // 然后持续接收增量更新，直到客户端断开或服务关闭。
 func LogStreamSSE(c *gin.Context) {
+	token := c.Query("token")
+	tokenScope, ok := op.RelayLogStreamTokenVerify(token)
+	if token == "" || !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"code": http.StatusUnauthorized, "message": "invalid stream token"})
+		return
+	}
+	op.RelayLogStreamTokenRevoke(token)
+
 	// 设置 SSE 响应头
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
@@ -27,6 +37,9 @@ func LogStreamSSE(c *gin.Context) {
 	defer cancel()
 
 	stateChan := relay.SubscribeRequestState(ctx)
+	visibleState := func(state *relay.RequestState) bool {
+		return tokenScope.IsAdmin || (state != nil && state.UserID == tokenScope.UserID)
+	}
 	defer relay.UnsubscribeRequestState(stateChan)
 
 	// 确保响应立即 flush（Gin 默认会缓冲）
@@ -47,6 +60,9 @@ func LogStreamSSE(c *gin.Context) {
 			case state, ok := <-stateChan:
 				if !ok {
 					return
+				}
+				if !visibleState(state) {
+					continue
 				}
 				// 序列化状态为 JSON
 				data, err := json.Marshal(state)
@@ -70,7 +86,7 @@ func LogStreamSSE(c *gin.Context) {
 
 // LogSnapshotJSON 提供当前所有请求状态的 JSON 快照（供轮询客户端使用）。
 func LogSnapshotJSON(c *gin.Context) {
-	snapshot := relay.GetRequestStateSnapshot()
+	snapshot := relay.GetRequestStateSnapshotForUser(middleware.CurrentUserID(c), middleware.CurrentUserIsAdmin(c))
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data":    snapshot,

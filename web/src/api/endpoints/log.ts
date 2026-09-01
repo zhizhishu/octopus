@@ -736,7 +736,7 @@ export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?
             reconnectAttemptRef.current = 0;
             setIsConnected(false);
         };
-    }, [apiKeyID, endpoint, hideModelTest, live, page, pageSize, queryClient, queryKey, retried, severity, startTime, endTime, userID]);
+    }, [apiKeyID, endpoint, hideModelTest, live, model, page, pageSize, provider, queryClient, queryKey, retried, search, severity, startTime, endTime, userID]);
 
     const clear = useCallback(() => {
         queryClient.removeQueries({ queryKey, exact: true });
@@ -764,66 +764,88 @@ export function useRequestStateStream() {
     const [states, setStates] = useState<RequestState[]>([]);
     const [isConnected, setIsConnected] = useState(false);
     const eventSourceRef = useRef<EventSource | null>(null);
+    const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     useEffect(() => {
-        const eventSource = new EventSource(`${API_BASE_URL}/api/v1/log/stream-state`);
-        eventSourceRef.current = eventSource;
+        let cancelled = false;
+        let reconnectAttempt = 0;
 
-        eventSource.onopen = () => {
-            setIsConnected(true);
-            logger.info('[RequestStateStream] Connected');
+        const mergeState = (state: RequestState) => {
+            setStates((prev) => {
+                const index = prev.findIndex((item) => item.id === state.id);
+                if (index < 0) return [state, ...prev];
+                const updated = [...prev];
+                updated[index] = state;
+                return updated;
+            });
         };
 
-        eventSource.onmessage = (event) => {
+        const connect = async () => {
+            eventSourceRef.current?.close();
             try {
-                const state: RequestState = JSON.parse(event.data);
-                setStates((prev) => {
-                    // 更新或插入
-                    const index = prev.findIndex((s) => s.id === state.id);
-                    if (index >= 0) {
-                        const updated = [...prev];
-                        updated[index] = state;
-                        return updated;
+                // EventSource cannot attach Authorization headers. Reuse the same short-lived,
+                // one-shot stream token as persisted relay logs instead of exposing state publicly.
+                const { token } = await apiClient.get<{ token: string }>('/api/v1/log/stream-token');
+                if (cancelled) return;
+                const eventSource = new EventSource(`${API_BASE_URL}/api/v1/log/stream-state?token=${encodeURIComponent(token)}`);
+                eventSourceRef.current = eventSource;
+                eventSource.onopen = () => {
+                    reconnectAttempt = 0;
+                    setIsConnected(true);
+                };
+                eventSource.onmessage = (event) => {
+                    try {
+                        mergeState(JSON.parse(event.data) as RequestState);
+                    } catch (err) {
+                        logger.error('[RequestStateStream] Parse error:', err);
                     }
-                    return [state, ...prev];
-                });
+                };
+                eventSource.onerror = () => {
+                    eventSource.close();
+                    if (cancelled) return;
+                    setIsConnected(false);
+                    const delay = Math.min(1000 * (2 ** Math.min(reconnectAttempt++, 5)), 15000);
+                    reconnectTimerRef.current = setTimeout(() => void connect(), delay);
+                };
             } catch (err) {
-                logger.error('[RequestStateStream] Parse error:', err);
+                if (cancelled) return;
+                setIsConnected(false);
+                const delay = Math.min(1000 * (2 ** Math.min(reconnectAttempt++, 5)), 15000);
+                reconnectTimerRef.current = setTimeout(() => void connect(), delay);
+                logger.error('[RequestStateStream] Connection error:', err);
             }
         };
 
-        eventSource.onerror = (err) => {
-            logger.error('[RequestStateStream] Connection error:', err);
-            setIsConnected(false);
-            eventSource.close();
-        };
+        // Fill the refresh/navigation gap before the live connection is ready.
+        void apiClient.get<RequestState[]>('/api/v1/log/state-snapshot')
+            .then((snapshot) => {
+                if (cancelled) return;
+                setStates(snapshot);
+            })
+            .catch((err) => logger.error('[RequestStateStream] Snapshot error:', err));
+        void connect();
 
         return () => {
-            eventSource.close();
-            eventSourceRef.current = null;
+            cancelled = true;
+            eventSourceRef.current?.close();
+            if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
             setIsConnected(false);
         };
     }, []);
 
-    // 清理已完成超过 5 分钟的请求（避免内存无限增长）
     useEffect(() => {
         const cleanup = setInterval(() => {
             const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
-            setStates((prev) =>
-                prev.filter((state) => {
-                    if (state.status === 'running') return true;
-                    if (!state.finished_at) return true;
-                    return new Date(state.finished_at).getTime() > fiveMinutesAgo;
-                })
-            );
-        }, 30000); // 每 30 秒清理一次
-
+            setStates((prev) => prev.filter((state) =>
+                state.status === 'running' || !state.finished_at || new Date(state.finished_at).getTime() > fiveMinutesAgo
+            ));
+        }, 30000);
         return () => clearInterval(cleanup);
     }, []);
 
     return {
         states,
         isConnected,
-        runningCount: states.filter((s) => s.status === 'running').length,
+        runningCount: states.filter((state) => state.status === 'running').length,
     };
 }

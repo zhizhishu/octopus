@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useDeferredValue, useMemo, useState } from 'react';
-import { getRelayLogSeverity, type RelayLog, type RelayLogSeverity, useExportLogs, useLogSeverityCounts, useLogs } from '@/api/endpoints/log';
+import { getRelayLogSeverity, type RelayLog, type RelayLogSeverity, type RequestState, useExportLogs, useLogSeverityCounts, useLogs, useRequestStateStream } from '@/api/endpoints/log';
 import { LogCard, useSensitiveStore } from './Item';
 import { AlertCircle, AlertTriangle, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Circle, Download, Eye, EyeOff, Loader2, RefreshCw, RotateCcw, RotateCw, ScrollText, Search, SlidersHorizontal, Wifi, WifiOff, X } from 'lucide-react';
 import { useTranslations } from 'next-intl';
@@ -465,6 +465,66 @@ function PendingInterventionsPanel({ isAdmin }: { isAdmin: boolean }) {
     );
 }
 
+function RunningRequestsPanel({ states, connected }: { states: RequestState[]; connected: boolean }) {
+    const running = states.filter((state) => state.status === 'running');
+    if (running.length === 0) return null;
+
+    return (
+        <div className="flex flex-none flex-col gap-2 rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-2.5 text-sm">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-sky-800 dark:text-sky-200">
+                    <Loader2 className="size-4 animate-spin" />
+                    <span className="font-semibold">调用中：{running.length} 个请求</span>
+                </div>
+                <span className={cn('inline-flex items-center gap-1 text-xs', connected ? 'text-sky-700 dark:text-sky-300' : 'text-amber-700 dark:text-amber-300')}>
+                    {connected ? <Wifi className="size-3" /> : <WifiOff className="size-3" />}
+                    {connected ? '实时状态已连接' : '实时状态重连中'}
+                </span>
+            </div>
+            <div className="grid gap-2 lg:grid-cols-2">
+                {running.map((state) => {
+                    const latestAttempts = state.attempts?.slice(-4) ?? [];
+                    const startedAtLabel = new Date(state.started_at).toLocaleTimeString();
+                    return (
+                        <div key={state.id} className="rounded-lg border border-sky-500/30 bg-background/85 p-2.5 shadow-sm">
+                            <div className="flex items-start justify-between gap-2">
+                                <div className="min-w-0 space-y-1">
+                                    <div className="flex flex-wrap items-center gap-1.5">
+                                        <Badge variant="secondary" className="bg-sky-500/15 text-sky-700 dark:text-sky-300">{state.endpoint || 'relay'}</Badge>
+                                        <span className="font-medium text-foreground">{state.model || 'unknown'}</span>
+                                    </div>
+                                    <p className="text-xs text-muted-foreground">
+                                        {state.sending
+                                            ? `正在请求 ${state.target_channel || '自动选择渠道'}${state.target_model ? ` · ${state.target_model}` : ''}`
+                                            : '上一轮未成功，正在按画布顺序选择下一渠道'}
+                                    </p>
+                                </div>
+                                <div className="shrink-0 text-right">
+                                    <div className="text-xs font-medium text-sky-700 dark:text-sky-300">第 {state.round || 0} 轮</div>
+                                    <div className="font-mono text-[11px] text-muted-foreground">开始于 {startedAtLabel}</div>
+                                </div>
+                            </div>
+                            {state.error && <p className="mt-1.5 line-clamp-2 break-all text-[11px] text-destructive">已拦截：{state.error}</p>}
+                            {latestAttempts.length > 0 && (
+                                <div className="mt-2 flex flex-col gap-1 border-t border-border/60 pt-2">
+                                    {latestAttempts.map((attempt, index) => (
+                                        <div key={`${attempt.round}-${attempt.channel_name}-${index}`} className="flex min-w-0 items-center justify-between gap-2 text-[11px]">
+                                            <span className={cn('min-w-0 truncate', attempt.status === 'success' ? 'text-emerald-600' : attempt.status === 'error' ? 'text-destructive' : 'text-sky-600')}>
+                                                #{attempt.round} {attempt.channel_name} · {attempt.status === 'trying' ? '正在调用' : attempt.status === 'success' ? '成功' : '失败已拦截'}
+                                            </span>
+                                            {attempt.latency_ms !== undefined && <span className="shrink-0 font-mono text-muted-foreground">{attempt.latency_ms}ms</span>}
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    );
+                })}
+            </div>
+        </div>
+    );
+}
+
 /**
  * 日志页面组件
  * - 初始加载 pageSize 条历史日志
@@ -505,6 +565,7 @@ export function Log() {
     const { data: modelList = [] } = useModelList();
     const { data: channelRows = [] } = useChannelList({ enabled: isAdmin });
     const exportLogs = useExportLogs();
+    const { states: requestStates, isConnected: requestStateConnected } = useRequestStateStream();
     // 历史日志持久化状态：关闭时后端只留最近 ~100 条内存记录、重启即失，按日期查历史必然是空的。
     // 日志页过去对此零提示（静默显示内存缓存），用户会误以为“日志功能坏了”。这里显式暴露 + 一键开启。
     const { data: settings } = useSettingList({ enabled: isAdmin });
@@ -866,6 +927,7 @@ export function Log() {
                     </Button>
                 </div>
             )}
+            <RunningRequestsPanel states={requestStates} connected={requestStateConnected} />
             <PendingInterventionsPanel isAdmin={isAdmin} />
             <div className="flex flex-none flex-col gap-2 rounded-lg border border-border bg-card px-3 py-2">
                 <MobileFilterCollapse

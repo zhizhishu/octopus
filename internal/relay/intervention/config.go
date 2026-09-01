@@ -35,6 +35,24 @@ func Timeout() time.Duration {
 	return time.Duration(seconds) * time.Second
 }
 
+const maxNoBreakerRetryBudgetSeconds = 600
+
+// NoBreakerRetryBudget is the automatic rescue window for canvas routes that contain
+// at least one DisableCircuitBreaker channel. It is deliberately independent from the
+// manual-intervention switch: these channels explicitly opt out of cooldown/quarantine
+// and are expected to keep retrying like a direct CLI. The configured value is bounded
+// to 600 seconds so one downstream request cannot pin a relay slot indefinitely.
+func NoBreakerRetryBudget() time.Duration {
+	seconds, err := op.SettingGetInt(dbmodel.SettingKeyRelayNoBreakerRetryBudgetSec)
+	if err != nil || seconds < 0 {
+		seconds = 300
+	}
+	if seconds > maxNoBreakerRetryBudgetSeconds {
+		seconds = maxNoBreakerRetryBudgetSeconds
+	}
+	return time.Duration(seconds) * time.Second
+}
+
 // HasCapacity reports whether another request may be held.
 func HasCapacity() bool {
 	registry.RLock()

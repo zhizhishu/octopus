@@ -89,7 +89,7 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 	metrics.SetClientSession(clientSession)
 
 	// 创建实时请求状态，立即推送 "running" 给 SSE 订阅者
-	requestState := newRequestState(requestModel, requestEndpoint)
+	requestState := newRequestState(requestModel, requestEndpoint, userID, apiKeyID)
 	baseMessages := append([]model.Message(nil), internalRequest.Messages...)
 	// The responses history bridges (chat / Anthropic) and codex shape clear
 	// PreviousResponseID / ResponsesInputRaw on the SHARED internalRequest once they
@@ -122,6 +122,7 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		triedReturnGroup   bool
 		interventionRounds int
 		contextWindowErr   error // 命中上下文超长: 停止跨渠道遍历、也不再试 fallback group
+		requestSucceeded   bool  // 重试前的 lastErr 可能仍非 nil，终态需按真实成功结果判断
 
 		// Intervention state lifted above runIterator to ensure exactly one pending ID,
 		// one context/cancel, one keepalive goroutine, and single cleanup across the full request lifecycle.
@@ -129,6 +130,9 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		interventionCtx           context.Context
 		stopInterventionKeepalive func()
 		interventionRegistered    bool
+		noBreakerRescueStartedAt  time.Time
+		noBreakerRescueBudget     time.Duration
+		sawNoBreakerChannel       bool
 	)
 	defer func() {
 		if interventionRegistered && pendingInterventionID != "" {
@@ -138,7 +142,7 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 			stopInterventionKeepalive()
 		}
 		// 请求结束时标记最终状态
-		if lastErr == nil {
+		if requestSucceeded || lastErr == nil {
 			requestState.markSuccess()
 		} else if c.Request.Context().Err() != nil {
 			requestState.markCanceled()
@@ -171,6 +175,9 @@ runIterator:
 		if !channel.Enabled {
 			iter.Skip(channel.ID, 0, channel.Name, "channel disabled")
 			continue
+		}
+		if channel.DisableCircuitBreaker {
+			sawNoBreakerChannel = true
 		}
 		if internalRequest.IsImageGenerationRequest() && !isImageGenerationRequestCompatibleChannelType(channel.Type) {
 			iter.Skip(channel.ID, 0, channel.Name, fmt.Sprintf("channel type not compatible with image generation request: %d", channel.Type))
@@ -275,6 +282,8 @@ runIterator:
 			log.Infof("request model %s, channel %s entering race mode with %d available keys (delay=%dms, sticky=%t)",
 				requestModel, channel.Name, len(availableKeys), channel.RaceDelayMs, iter.IsSticky())
 
+			raceStartedAt := time.Now()
+			requestState.startRound(channel.Name, item.ModelName)
 			result, remainingKeys := runChannelRace(
 				req,
 				channel,
@@ -284,8 +293,17 @@ runIterator:
 				capabilityKey,
 				group.FirstTokenTimeOut,
 			)
+			raceLatency := time.Since(raceStartedAt).Milliseconds()
+			if result.Success {
+				requestState.finishRound("", raceLatency)
+			} else if result.Err != nil {
+				requestState.finishRound(result.Err.Error(), raceLatency)
+			} else {
+				requestState.finishRound("unknown error", raceLatency)
+			}
 
 			if result.Success {
+				requestSucceeded = true
 				metrics.Save(c.Request.Context(), true, nil, append(allAttempts, iter.Attempts()...))
 				return
 			}
@@ -376,6 +394,7 @@ runIterator:
 				result = ra.attempt()
 			}
 			if result.Success {
+				requestSucceeded = true
 				// 成功的这一次尝试所用的 Key 即最终 Key, 回填其备注供日志展示。
 				metrics.ChannelKeyRemark = usedKey.Remark
 				metrics.Save(c.Request.Context(), true, nil, append(allAttempts, iter.Attempts()...))
@@ -430,12 +449,24 @@ runIterator:
 	if finalErr == nil {
 		finalErr = routeSelectionErrorFromAttempts(allAttempts)
 	}
-	if shouldHoldForOperator(req, contextWindowErr, finalErr) || interventionRegistered {
+	if noBreakerRescueBudget == 0 {
+		noBreakerRescueBudget = intervention.NoBreakerRetryBudget()
+	}
+	noBreakerAutoRescue := sawNoBreakerChannel && noBreakerRescueBudget > 0 &&
+		isRescueableHeldRequest(req, contextWindowErr, finalErr)
+	manualIntervention := shouldHoldForOperator(req, contextWindowErr, finalErr)
+	if noBreakerAutoRescue || manualIntervention || interventionRegistered {
+		if noBreakerRescueStartedAt.IsZero() && noBreakerAutoRescue {
+			noBreakerRescueStartedAt = time.Now()
+		}
 		if stopInterventionKeepalive == nil {
 			stopInterventionKeepalive = startDownstreamFirstByteKeepalive(c.Request.Context(), c)
 		}
 		if interventionCtx == nil {
-			totalTimeout := intervention.Timeout()
+			totalTimeout := noBreakerRescueBudget
+			if manualIntervention {
+				totalTimeout = intervention.Timeout()
+			}
 			var interventionCancel context.CancelFunc
 			interventionCtx, interventionCancel = context.WithTimeout(c.Request.Context(), totalTimeout)
 			defer interventionCancel()
@@ -471,6 +502,11 @@ runIterator:
 			for {
 				interventionRounds++
 				backoff := intervention.BackoffDuration(interventionRounds)
+				if noBreakerAutoRescue {
+					// 无熔断渠道明确选择像直连 CLI 一样持续尝试：固定 1 秒节奏，
+					// 不使用会退到 15 秒的人工接管指数退避。
+					backoff = time.Second
+				}
 				nextRetry := time.Now().Add(backoff)
 				_ = intervention.UpdateStatus(pendingInterventionID, intervention.StatusAutoRetrying, interventionRounds, &nextRetry)
 

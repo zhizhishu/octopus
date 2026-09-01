@@ -15,6 +15,8 @@ type RequestState struct {
 	StartedAt time.Time `json:"started_at"`
 	Model     string    `json:"model"`
 	Endpoint  string    `json:"endpoint"`
+	UserID    int       `json:"-"` // 仅服务端做 SSE 权限过滤，绝不发到前端
+	APIKeyID  int       `json:"-"`
 
 	// 当前轮次信息
 	Round         int    `json:"round"`
@@ -42,16 +44,16 @@ type AttemptSnapshot struct {
 }
 
 var (
-	stateIDSeq    atomic.Uint64                          // 进程内严格递增的请求状态 ID
-	stateMu       sync.RWMutex                           // 全部共享状态的互斥锁
-	stateRequests = make(map[uint64]*RequestState)      // 按 ID 保存的全部请求状态
+	stateIDSeq    atomic.Uint64                           // 进程内严格递增的请求状态 ID
+	stateMu       sync.RWMutex                            // 全部共享状态的互斥锁
+	stateRequests = make(map[uint64]*RequestState)        // 按 ID 保存的全部请求状态
 	stateWatchers = make(map[chan *RequestState]struct{}) // 全部 SSE 订阅者（用双向 chan 作 key）
-	maxFinished   = 100                                 // 内存中保留的已完成请求数上限
-	finishedQueue []uint64                              // FIFO 队列，记录已完成请求的 ID
+	maxFinished   = 100                                   // 内存中保留的已完成请求数上限
+	finishedQueue []uint64                                // FIFO 队列，记录已完成请求的 ID
 )
 
 // newRequestState 分配请求 ID 并登记初始 running 状态，立即广播。
-func newRequestState(model, endpoint string) *RequestState {
+func newRequestState(model, endpoint string, userID, apiKeyID int) *RequestState {
 	stateMu.Lock()
 	defer stateMu.Unlock()
 
@@ -61,6 +63,8 @@ func newRequestState(model, endpoint string) *RequestState {
 		StartedAt: time.Now(),
 		Model:     model,
 		Endpoint:  endpoint,
+		UserID:    userID,
+		APIKeyID:  apiKeyID,
 		Attempts:  make([]AttemptSnapshot, 0, 4),
 	}
 	stateRequests[state.ID] = state
@@ -186,7 +190,9 @@ func enqueueFinishedLocked(id uint64) {
 
 // SubscribeRequestState 注册一个 SSE 订阅者，返回接收通道。
 func SubscribeRequestState(ctx context.Context) <-chan *RequestState {
-	ch := make(chan *RequestState, 16) // 缓冲避免慢消费者阻塞广播
+	// 快照最多包含 maxFinished 条终态 + 正在运行请求。连接建立时发送快照发生在
+	// handler 开始消费之前，所以缓冲必须覆盖快照上限；16 会在历史稍多时把订阅卡死。
+	ch := make(chan *RequestState, maxFinished+64)
 
 	stateMu.Lock()
 	stateWatchers[ch] = struct{}{}
@@ -225,11 +231,20 @@ func UnsubscribeRequestState(ch <-chan *RequestState) {
 
 // GetRequestStateSnapshot 获取当前所有请求状态的快照（供 HTTP 轮询接口）。
 func GetRequestStateSnapshot() []*RequestState {
+	return GetRequestStateSnapshotForUser(0, true)
+}
+
+// GetRequestStateSnapshotForUser returns admin-global state or only the caller's own
+// requests. UserID/APIKeyID remain server-only fields and are hidden by json tags.
+func GetRequestStateSnapshotForUser(userID int, isAdmin bool) []*RequestState {
 	stateMu.RLock()
 	defer stateMu.RUnlock()
 
 	snapshot := make([]*RequestState, 0, len(stateRequests))
 	for _, state := range stateRequests {
+		if !isAdmin && state.UserID != userID {
+			continue
+		}
 		stateCopy := *state
 		stateCopy.Attempts = append([]AttemptSnapshot(nil), state.Attempts...)
 		snapshot = append(snapshot, &stateCopy)

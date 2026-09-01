@@ -85,33 +85,38 @@ const (
 	// SettingKeyRelayInterventionTimeoutSec bounds that hold: once it elapses with nobody
 	// resolving the request, the original upstream error goes to the client after all.
 	SettingKeyRelayInterventionTimeoutSec SettingKey = "relay_intervention_timeout_seconds"
+	// SettingKeyRelayNoBreakerRetryBudgetSec controls the automatic rescue window for
+	// routes containing DisableCircuitBreaker channels. During this window the relay
+	// keeps the downstream connection alive and repeatedly rebuilds the normal canvas-
+	// ordered iterator. 0 disables this automatic rescue; valid values are capped at 600s.
+	SettingKeyRelayNoBreakerRetryBudgetSec SettingKey = "relay_no_breaker_retry_budget_seconds"
 
-	SettingKeyRouteModeOverride       SettingKey = "route_mode_override"      // 路由模式全局覆盖: ""=跟随分组各自模式, "spread"=强制轮询, "fill_first"=强制优先填充
-	SettingKeyRouteStickyCacheFirst   SettingKey = "route_sticky_cache_first" // 轮询类分组里纯优化型会话(prompt_cache_key/user/safety_identifier/oct 自造指纹)的粘性取舍: false=分摊优先(默认, 不粘、真轮转), true=缓存优先(非空来源也粘, 换上游 prompt-cache 命中)。语义详见 internal/relay/route_sticky.go
-	SettingKeyPromptOverrideSystem    SettingKey = "prompt_override_system"
-	SettingKeyPromptOverrideMode      SettingKey = "prompt_override_mode"
-	SettingKeyUpstreamErrorStatusPass SettingKey = "upstream_error_status_passthrough"
-	SettingKeyUpstreamErrorBodyMode   SettingKey = "upstream_error_body_mode"
-	SettingKeyUpstreamErrorCustom     SettingKey = "upstream_error_custom_message"
-	SettingKeyUpstreamErrorPublicCode SettingKey = "upstream_error_public_code"
-	SettingKeyCheckInEnabled                 SettingKey = "checkin_enabled"
-	SettingKeyCheckInRewardMode              SettingKey = "checkin_reward_mode"
-	SettingKeyCheckInRewardAmount            SettingKey = "checkin_reward_amount"
-	SettingKeyCheckInRewardMin               SettingKey = "checkin_reward_min"
-	SettingKeyCheckInRewardMax               SettingKey = "checkin_reward_max"
-	SettingKeyEmailVerificationEnabled       SettingKey = "email_verification_enabled"
-	SettingKeyEmailSMTPHost                  SettingKey = "email_smtp_host"
-	SettingKeyEmailSMTPPort                  SettingKey = "email_smtp_port"
-	SettingKeyEmailSMTPUser                  SettingKey = "email_smtp_user"
-	SettingKeyEmailSMTPPassword              SettingKey = "email_smtp_password"
-	SettingKeyEmailSMTPFrom                  SettingKey = "email_smtp_from"
-	SettingKeyEmailSMTPFromName              SettingKey = "email_smtp_from_name"
-	SettingKeyEmailSMTPSSL                   SettingKey = "email_smtp_ssl"
-	SettingKeyEmailProvider                  SettingKey = "email_provider" // "smtp" | "http"
-	SettingKeyEmailHTTPBaseURL               SettingKey = "email_http_base_url"
-	SettingKeyEmailHTTPFrom                  SettingKey = "email_http_from"
-	SettingKeyEmailHTTPAdminAuth             SettingKey = "email_http_admin_auth" // secret
-	SettingKeyEmailHTTPSiteAuth              SettingKey = "email_http_site_auth"  // secret
+	SettingKeyRouteModeOverride        SettingKey = "route_mode_override"      // 路由模式全局覆盖: ""=跟随分组各自模式, "spread"=强制轮询, "fill_first"=强制优先填充
+	SettingKeyRouteStickyCacheFirst    SettingKey = "route_sticky_cache_first" // 轮询类分组里纯优化型会话(prompt_cache_key/user/safety_identifier/oct 自造指纹)的粘性取舍: false=分摊优先(默认, 不粘、真轮转), true=缓存优先(非空来源也粘, 换上游 prompt-cache 命中)。语义详见 internal/relay/route_sticky.go
+	SettingKeyPromptOverrideSystem     SettingKey = "prompt_override_system"
+	SettingKeyPromptOverrideMode       SettingKey = "prompt_override_mode"
+	SettingKeyUpstreamErrorStatusPass  SettingKey = "upstream_error_status_passthrough"
+	SettingKeyUpstreamErrorBodyMode    SettingKey = "upstream_error_body_mode"
+	SettingKeyUpstreamErrorCustom      SettingKey = "upstream_error_custom_message"
+	SettingKeyUpstreamErrorPublicCode  SettingKey = "upstream_error_public_code"
+	SettingKeyCheckInEnabled           SettingKey = "checkin_enabled"
+	SettingKeyCheckInRewardMode        SettingKey = "checkin_reward_mode"
+	SettingKeyCheckInRewardAmount      SettingKey = "checkin_reward_amount"
+	SettingKeyCheckInRewardMin         SettingKey = "checkin_reward_min"
+	SettingKeyCheckInRewardMax         SettingKey = "checkin_reward_max"
+	SettingKeyEmailVerificationEnabled SettingKey = "email_verification_enabled"
+	SettingKeyEmailSMTPHost            SettingKey = "email_smtp_host"
+	SettingKeyEmailSMTPPort            SettingKey = "email_smtp_port"
+	SettingKeyEmailSMTPUser            SettingKey = "email_smtp_user"
+	SettingKeyEmailSMTPPassword        SettingKey = "email_smtp_password"
+	SettingKeyEmailSMTPFrom            SettingKey = "email_smtp_from"
+	SettingKeyEmailSMTPFromName        SettingKey = "email_smtp_from_name"
+	SettingKeyEmailSMTPSSL             SettingKey = "email_smtp_ssl"
+	SettingKeyEmailProvider            SettingKey = "email_provider" // "smtp" | "http"
+	SettingKeyEmailHTTPBaseURL         SettingKey = "email_http_base_url"
+	SettingKeyEmailHTTPFrom            SettingKey = "email_http_from"
+	SettingKeyEmailHTTPAdminAuth       SettingKey = "email_http_admin_auth" // secret
+	SettingKeyEmailHTTPSiteAuth        SettingKey = "email_http_site_auth"  // secret
 	// SettingKeyAdminToken is an OPTIONAL long-lived admin access token for
 	// automation/CLI that cannot hold a short-lived login JWT. Empty (default) =
 	// disabled; when set it grants full admin via the Auth() middleware fallback.
@@ -296,8 +301,9 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeySessionKeepTimeDefault, Value: "0"},                                             // 默认0=不启用全局粘性(向后兼容); 管理员设为如3600才全局开, 分组级 SessionKeepTime 仍优先
 		{Key: SettingKeyFirstTokenTimeOutDefault, Value: "0"},                                           // 默认0=不启用全局默认(向后兼容); 分组级 FirstTokenTimeOut 仍优先
 		{Key: SettingKeyFirstByteKeepaliveDelaySeconds, Value: defaultFirstByteKeepaliveDelaySeconds()}, // 默认20=开启: 上游首字节>20s才向下游注入SSE心跳(防前置反代/客户端60s空闲掐断); 0=关闭
-		{Key: SettingKeyRelayInterventionEnabled, Value: "false"},                                     // 默认关: 开启后上游全失败的请求会挂起等人工在日志页选渠道重试, 而不是把错误返回给客户端
-		{Key: SettingKeyRelayInterventionTimeoutSec, Value: "1800"},                                   // 挂起等待上限(秒), 超时后原错误照常返回客户端
+		{Key: SettingKeyRelayInterventionEnabled, Value: "false"},                                       // 默认关: 开启后上游全失败的请求会挂起等人工在日志页选渠道重试, 而不是把错误返回给客户端
+		{Key: SettingKeyRelayInterventionTimeoutSec, Value: "1800"},                                     // 人工接管等待上限(秒), 超时后原错误照常返回客户端
+		{Key: SettingKeyRelayNoBreakerRetryBudgetSec, Value: "300"},                                     // 无熔断渠道自动猛打预算(秒): 按画布既定顺序反复重试; 最大600, 0=关闭
 		{Key: SettingKeyRouteModeOverride, Value: ""},                                                   // 默认空=跟随分组各自模式(向后兼容); 设为 spread/fill_first 则强制覆盖所有分组
 		{Key: SettingKeyRouteStickyCacheFirst, Value: "false"},                                          // 默认 false=分摊优先(现行为不变); 设 true 切「缓存优先」: 轮询分组里非空的纯优化型会话也保留粘性
 		{Key: SettingKeyPromptOverrideSystem, Value: ""},
@@ -426,6 +432,12 @@ func (s *Setting) Validate() error {
 		value, err := strconv.Atoi(s.Value)
 		if err != nil || value < 0 {
 			return fmt.Errorf("%s must be a non-negative integer", s.Key)
+		}
+		return nil
+	case SettingKeyRelayNoBreakerRetryBudgetSec:
+		value, err := strconv.Atoi(s.Value)
+		if err != nil || value < 0 || value > 600 {
+			return fmt.Errorf("%s must be an integer between 0 and 600", s.Key)
 		}
 		return nil
 	case SettingKeyRouteModeOverride:

@@ -42,14 +42,7 @@ func isEligibleForInterventionRescue(err error) bool {
 
 // shouldHoldForOperator evaluates whether a request whose automatic attempts/fallbacks failed
 // is eligible to be held for automatic rescue and operator intervention.
-func shouldHoldForOperator(
-	req *relayRequest,
-	contextWindowErr error,
-	finalErr error,
-) bool {
-	if !intervention.Enabled() {
-		return false
-	}
+func isRescueableHeldRequest(req *relayRequest, contextWindowErr, finalErr error) bool {
 	if req == nil || req.internalRequest == nil {
 		return false
 	}
@@ -63,6 +56,10 @@ func shouldHoldForOperator(
 		return false
 	}
 	return isEligibleForInterventionRescue(finalErr)
+}
+
+func shouldHoldForOperator(req *relayRequest, contextWindowErr, finalErr error) bool {
+	return intervention.Enabled() && isRescueableHeldRequest(req, contextWindowErr, finalErr)
 }
 
 // singleChannelGroup packages an operator-selected channel and model into a single-item Group.
