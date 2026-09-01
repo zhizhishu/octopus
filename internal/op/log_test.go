@@ -73,6 +73,59 @@ func TestRelayLogCleanupByStorageKeepsNewestLog(t *testing.T) {
 	}
 }
 
+// TestRelayLogListOrdersByIDNotSecondTime 钉住日志列表按 id(snowflake 毫秒) 倒序而不是
+// 按秒级 time 倒序。回归的是"一批快速失败的请求整块压在慢成功请求上方"：
+// 失败请求几百毫秒就结束、写入 id 连续偏大，慢成功请求跑几十秒后才写入。若排序先比
+// 秒级 time，同秒内的行就失去时间分辨力，错误会扎堆顶在最前面。
+func TestRelayLogListOrdersByIDNotSecondTime(t *testing.T) {
+	ctx := setupRelayLogTest(t)
+
+	if err := SettingSetString(model.SettingKeyRelayLogKeepEnabled, "true"); err != nil {
+		t.Fatalf("enable relay log persistence: %v", err)
+	}
+
+	// 三条同属一秒(time=5000)但 id 递增: 后写入的 id 更大, 必须排在更前面。
+	for _, seed := range []struct {
+		id    int64
+		model string
+	}{
+		{5_000_100, "oldest-in-second"},
+		{5_000_200, "middle-in-second"},
+		{5_000_300, "newest-in-second"},
+	} {
+		if err := db.GetDB().WithContext(ctx).Create(&model.RelayLog{
+			ID:               seed.id,
+			Time:             5000,
+			RequestModelName: seed.model,
+		}).Error; err != nil {
+			t.Fatalf("seed log %d: %v", seed.id, err)
+		}
+	}
+
+	logs, err := RelayLogList(ctx, nil, nil, 1, 10, nil)
+	if err != nil {
+		t.Fatalf("list relay logs: %v", err)
+	}
+	if len(logs) != 3 {
+		t.Fatalf("expected 3 logs, got %d", len(logs))
+	}
+
+	want := []int64{5_000_300, 5_000_200, 5_000_100}
+	for i, wantID := range want {
+		if logs[i].ID != wantID {
+			t.Fatalf("logs[%d].ID = %d, want %d (full order: %v)", i, logs[i].ID, wantID, relayLogIDs(logs))
+		}
+	}
+}
+
+func relayLogIDs(logs []model.RelayLog) []int64 {
+	ids := make([]int64, 0, len(logs))
+	for _, l := range logs {
+		ids = append(ids, l.ID)
+	}
+	return ids
+}
+
 func TestRelayLogStorageInfoReportsConfiguredLimit(t *testing.T) {
 	ctx := setupRelayLogTest(t)
 

@@ -327,8 +327,10 @@ function logMatchesLiveFilters(
     return true;
 }
 
+// 只按 id 倒序，与后端 ORDER BY id DESC 保持一致。id 是 snowflake 毫秒时间戳且严格
+// 单调递增，比秒级的 time 精度高 1000 倍；先比 time 会让同一秒内的行退化成任意顺序，
+// 表现为一批快速失败的请求整块压在耗时较长的成功请求上方。
 function compareRelayLogsDesc(a: RelayLog, b: RelayLog) {
-    if (a.time !== b.time) return b.time - a.time;
     return b.id - a.id;
 }
 

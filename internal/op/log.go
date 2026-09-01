@@ -668,7 +668,10 @@ func RelayLogList(ctx context.Context, startTime, endTime *int, page, pageSize i
 					}
 					idQuery = relayLogApplyScope(idQuery, scope)
 					var ids []int64
-					if err := idQuery.Order("time DESC, id DESC").Limit(dbLimit).Pluck("id", &ids).Error; err != nil {
+					// 按 id 排序而不是 time: id 由 snowflake.GenerateID 发号, 本身就是严格单调
+					// 递增的毫秒时间戳, 而 time 只有秒级精度。同一秒内 time 相等会让排序退化,
+					// 快速失败的请求(几百毫秒就结束)拿到连续大 id 后会整批压在慢成功请求上方。
+					if err := idQuery.Order("id DESC").Limit(dbLimit).Pluck("id", &ids).Error; err != nil {
 						return err
 					}
 					if len(ids) > 0 {
@@ -688,7 +691,7 @@ func RelayLogList(ctx context.Context, startTime, endTime *int, page, pageSize i
 				// SQLite's parameter cap; keep the original single-query path (export streams
 				// everything and is not the interactive-page latency case the two-phase targets).
 				var dbLogs []model.RelayLog
-				if err := query.Order("time DESC, id DESC").Limit(dbLimit).Omit("request_content", "response_content").Find(&dbLogs).Error; err != nil {
+				if err := query.Order("id DESC").Limit(dbLimit).Omit("request_content", "response_content").Find(&dbLogs).Error; err != nil {
 					return nil, err
 				}
 				result = append(result, dbLogs...)
