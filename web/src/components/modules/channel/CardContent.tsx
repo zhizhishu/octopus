@@ -42,6 +42,9 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
         priority: channel.priority ?? 0,
         max_concurrent: channel.max_concurrent ?? 0,
         rpm_limit: channel.rpm_limit ?? 0,
+        race_mode: channel.race_mode ?? false,
+        race_key_concurrency: channel.race_key_concurrency ?? 2,
+        race_delay_ms: channel.race_delay_ms ?? 0,
         key_select_strategy: channel.key_select_strategy ?? 0,
         disable_circuit_breaker: channel.disable_circuit_breaker ?? false,
         enabled: channel.enabled,
@@ -99,6 +102,9 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
         if ((formData.priority ?? 0) !== (channel.priority ?? 0)) req.priority = formData.priority ?? 0;
         if ((formData.max_concurrent ?? 0) !== (channel.max_concurrent ?? 0)) req.max_concurrent = formData.max_concurrent ?? 0;
         if ((formData.rpm_limit ?? 0) !== (channel.rpm_limit ?? 0)) req.rpm_limit = formData.rpm_limit ?? 0;
+        if ((formData.race_mode ?? false) !== (channel.race_mode ?? false)) req.race_mode = formData.race_mode ?? false;
+        if ((formData.race_key_concurrency ?? 2) !== (channel.race_key_concurrency ?? 2)) req.race_key_concurrency = formData.race_key_concurrency ?? 2;
+        if ((formData.race_delay_ms ?? 0) !== (channel.race_delay_ms ?? 0)) req.race_delay_ms = formData.race_delay_ms ?? 0;
         if ((formData.key_select_strategy ?? 0) !== (channel.key_select_strategy ?? 0)) req.key_select_strategy = formData.key_select_strategy ?? 0;
         if ((formData.disable_circuit_breaker ?? false) !== (channel.disable_circuit_breaker ?? false)) req.disable_circuit_breaker = formData.disable_circuit_breaker ?? false;
         if (formData.enabled !== channel.enabled) req.enabled = formData.enabled;

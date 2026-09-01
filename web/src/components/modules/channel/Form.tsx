@@ -93,6 +93,9 @@ export interface ChannelFormData {
     priority: number;
     max_concurrent: number;
     rpm_limit: number;
+    race_mode: boolean;
+    race_key_concurrency: number;
+    race_delay_ms: number;
     key_select_strategy: KeySelectStrategy;
     disable_circuit_breaker: boolean;
     base_urls: Channel['base_urls'];
@@ -824,6 +827,70 @@ export function ChannelForm({
                         }}
                     />
                     <p className="text-xs text-muted-foreground">{t('maxConcurrentHint')}</p>
+                </div>
+
+                {/* 多 Key 竞速：同时打多把 key，最快回来的赢，其余标 raced_out 取消。
+                    需要 >=2 把可用 key，且只对普通文本 relay 生效（embedding/图片/视频走原路）。 */}
+                <div className="space-y-2 sm:col-span-2">
+                    <div className="flex items-center justify-between gap-3 rounded-xl border border-border/60 px-3 py-2.5">
+                        <div className="min-w-0">
+                            <label htmlFor={`${idPrefix}-race-mode`} className="text-sm font-medium text-card-foreground">
+                                多 Key 竞速
+                            </label>
+                            <p className="mt-0.5 text-xs text-muted-foreground">
+                                同一渠道内并发打多把 Key，最快返回的胜出，其余立即取消。需要至少 2 把可用 Key。
+                            </p>
+                        </div>
+                        <Switch
+                            id={`${idPrefix}-race-mode`}
+                            checked={formData.race_mode ?? false}
+                            onCheckedChange={(checked) => onFormDataChange({ ...formData, race_mode: checked })}
+                        />
+                    </div>
+                    {(formData.race_mode ?? false) && (
+                        <div className="grid gap-3 sm:grid-cols-2">
+                            <div className="space-y-2">
+                                <label htmlFor={`${idPrefix}-race-key-concurrency`} className="text-sm font-medium text-card-foreground">
+                                    竞速并发数
+                                </label>
+                                <Input
+                                    className='rounded-xl'
+                                    id={`${idPrefix}-race-key-concurrency`}
+                                    type="number"
+                                    inputMode="numeric"
+                                    min={2}
+                                    max={5}
+                                    step={1}
+                                    value={String(formData.race_key_concurrency ?? 2)}
+                                    onChange={(event) => {
+                                        const n = Number.parseInt(event.target.value, 10);
+                                        onFormDataChange({ ...formData, race_key_concurrency: Number.isFinite(n) ? Math.min(5, Math.max(2, n)) : 2 });
+                                    }}
+                                />
+                                <p className="text-xs text-muted-foreground">同时参赛的 Key 数量，2-5。</p>
+                            </div>
+                            <div className="space-y-2">
+                                <label htmlFor={`${idPrefix}-race-delay-ms`} className="text-sm font-medium text-card-foreground">
+                                    对冲延迟 (ms)
+                                </label>
+                                <Input
+                                    className='rounded-xl'
+                                    id={`${idPrefix}-race-delay-ms`}
+                                    type="number"
+                                    inputMode="numeric"
+                                    min={0}
+                                    max={5000}
+                                    step={50}
+                                    value={String(formData.race_delay_ms ?? 0)}
+                                    onChange={(event) => {
+                                        const n = Number.parseInt(event.target.value, 10);
+                                        onFormDataChange({ ...formData, race_delay_ms: Number.isFinite(n) ? Math.min(5000, Math.max(0, n)) : 0 });
+                                    }}
+                                />
+                                <p className="text-xs text-muted-foreground">0 = 全部同时发；&gt;0 则第一把先发、其余延后，首发够快就不浪费额度。</p>
+                            </div>
+                        </div>
+                    )}
                 </div>
 
                 <div className="space-y-2">
