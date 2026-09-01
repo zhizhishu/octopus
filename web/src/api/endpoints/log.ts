@@ -36,6 +36,24 @@ export interface RequestState {
     }[];
 }
 
+function mergeRequestState(current: RequestState, incoming: RequestState): RequestState {
+    const currentFinished = current.status !== 'running';
+    const incomingFinished = incoming.status !== 'running';
+    if (currentFinished !== incomingFinished) {
+        return incomingFinished ? incoming : current;
+    }
+
+    const currentAttempts = current.attempts?.length ?? 0;
+    const incomingAttempts = incoming.attempts?.length ?? 0;
+    if (incoming.round !== current.round) {
+        return incoming.round > current.round ? incoming : current;
+    }
+    if (incomingAttempts !== currentAttempts) {
+        return incomingAttempts > currentAttempts ? incoming : current;
+    }
+    return incoming;
+}
+
 /**
  * 单次渠道尝试信息
  */
@@ -775,9 +793,25 @@ export function useRequestStateStream() {
                 const index = prev.findIndex((item) => item.id === state.id);
                 if (index < 0) return [state, ...prev];
                 const updated = [...prev];
-                updated[index] = state;
+                updated[index] = mergeRequestState(prev[index], state);
                 return updated;
             });
+        };
+
+        const mergeSnapshot = (snapshot: RequestState[]) => {
+            setStates((prev) => {
+                const merged = new Map(prev.map((state) => [state.id, state]));
+                for (const state of snapshot) {
+                    const current = merged.get(state.id);
+                    merged.set(state.id, current ? mergeRequestState(current, state) : state);
+                }
+                return Array.from(merged.values()).sort((a, b) => b.id - a.id);
+            });
+        };
+
+        const refreshSnapshot = async () => {
+            const snapshot = await apiClient.get<RequestState[]>('/api/v1/log/state-snapshot');
+            if (!cancelled) mergeSnapshot(snapshot);
         };
 
         const connect = async () => {
@@ -792,6 +826,7 @@ export function useRequestStateStream() {
                 eventSource.onopen = () => {
                     reconnectAttempt = 0;
                     setIsConnected(true);
+                    void refreshSnapshot();
                 };
                 eventSource.onmessage = (event) => {
                     try {
@@ -817,12 +852,9 @@ export function useRequestStateStream() {
         };
 
         // Fill the refresh/navigation gap before the live connection is ready.
-        void apiClient.get<RequestState[]>('/api/v1/log/state-snapshot')
-            .then((snapshot) => {
-                if (cancelled) return;
-                setStates(snapshot);
-            })
-            .catch((err) => logger.error('[RequestStateStream] Snapshot error:', err));
+        // Use the same monotonic merge path as reconnect to avoid racing the
+        // initial SSE events with a stale snapshot.
+        void refreshSnapshot().catch((err) => logger.error('[RequestStateStream] Snapshot error:', err));
         void connect();
 
         return () => {
@@ -835,10 +867,16 @@ export function useRequestStateStream() {
 
     useEffect(() => {
         const cleanup = setInterval(() => {
-            const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
-            setStates((prev) => prev.filter((state) =>
-                state.status === 'running' || !state.finished_at || new Date(state.finished_at).getTime() > fiveMinutesAgo
-            ));
+            const now = Date.now();
+            const fiveMinutesAgo = now - 5 * 60 * 1000;
+            const tenMinutesAgo = now - 10 * 60 * 1000;
+            setStates((prev) => prev.filter((state) => {
+                if (state.status === 'running') {
+                    return new Date(state.started_at).getTime() > tenMinutesAgo;
+                }
+                if (!state.finished_at) return true;
+                return new Date(state.finished_at).getTime() > fiveMinutesAgo;
+            }));
         }, 30000);
         return () => clearInterval(cleanup);
     }, []);
