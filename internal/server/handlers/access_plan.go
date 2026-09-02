@@ -80,6 +80,7 @@ func createAccessPlan(c *gin.Context) {
 		resp.Error(c, http.StatusInternalServerError, err.Error())
 		return
 	}
+	scheduleAccessPlanChannelSync()
 	resp.Success(c, plan)
 }
 
@@ -93,6 +94,7 @@ func updateAccessPlan(c *gin.Context) {
 		resp.Error(c, http.StatusInternalServerError, err.Error())
 		return
 	}
+	scheduleAccessPlanChannelSync()
 	resp.Success(c, plan)
 }
 

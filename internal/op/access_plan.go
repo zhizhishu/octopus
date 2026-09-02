@@ -452,50 +452,38 @@ func AccessPlanGroupForModel(plan *model.AccessPlan, requestModel string, ctx co
 	return model.Group{}, nil, false, nil
 }
 
-// AccessPlanSyncEnabledChannels reconciles channel targets for every access plan that
-// opted into AutoSyncChannels. For each existing route rule (request model) it:
+// AccessPlanSyncEnabledChannels reconciles channel targets for every access plan
+// that has a route profile, regardless of plan enabled state or AutoSyncChannels.
+// AutoSyncChannels remains an API-compatible field and does not gate this path.
 //
-//   - ADDS: any currently-enabled channel that serves that model but is not yet a
-//     target. Spread creates parallel priority-1 targets; FillFirst follows stable
-//     channel-ID order. Hand-tuned priorities/weights of surviving targets are untouched.
-//   - REMOVES: any existing target whose channel is no longer enabled or no longer
-//     serves the rule's model, so a disabled channel is automatically evicted without
-//     requiring a manual rebuild.
-//   - CREATES: a missing rule plus its initial targets when an enabled channel exposes
-//     a new selected model or client-facing model_mapping alias.
+// For each existing route rule it:
+//   - removes targets whose channel is disabled or no longer serves the model
+//   - deduplicates same-rule/same-channel rows, keeping the lowest target ID
+//   - updates surviving UpstreamModel to the current served name
+//   - adds missing enabled-channel targets
+//   - spread: all desired priorities = 1 and PriorityOverridden = false
+//   - fill-first without override: priorities 1..N by ascending channel ID
+//   - fill-first with override: preserves survivor order and appends after max priority
 //
-// Plans that did NOT opt in (AutoSyncChannels=false) are never touched — they remain
-// strict allow-lists. Idempotent: safe to call after any channel enable/disable / sync /
-// create.
+// Missing rules are created from served request models using the global
+// route_mode_override default (spread or fill_first).
 func AccessPlanSyncEnabledChannels(ctx context.Context) error {
 	if err := ensureAccessPlanCache(ctx); err != nil {
 		return err
 	}
 
-	// Build a map: channelID → the models it serves (enabled channels only). Each entry
-	// maps a cleaned+lowercased client-facing model name to how the channel serves it:
-	// the upstream model name sent on the wire, plus whether it came from an explicit
-	// model_mapping (authoritative for the upstream name) or a plainly-selected model
-	// (identity — client name == upstream name).
-	type servedModel struct {
-		request  string // cleaned client-facing name used by the route rule
-		upstream string
-		mapped   bool
-	}
-	type enabledChannel struct {
-		id       int
-		priority int
-		models   map[string]servedModel
-	}
 	allChannels := channelCache.GetAll()
-	// Fail-safe: an empty channel cache almost certainly means it isn't loaded yet
-	// (a real deployment always has channels). Evicting every AutoSync target on a
-	// cache miss would nuke all routes; a genuine "all channels disabled" state still
-	// has entries here (just none enabled), so it is unaffected by this guard.
+	// Fail-safe: an empty channel cache almost certainly means it isn't loaded yet.
 	if len(allChannels) == 0 {
 		return nil
 	}
-	enabledByID := make(map[int]enabledChannel)
+
+	type servedModel struct {
+		request  string
+		upstream string
+	}
+
+	enabledByID := make(map[int]map[string]servedModel)
 	for _, ch := range allChannels {
 		if !ch.Enabled {
 			continue
@@ -505,16 +493,16 @@ func AccessPlanSyncEnabledChannels(ctx context.Context) error {
 		for _, name := range model.ChannelSelectedModelNames(ch) {
 			clean := model.CleanOneMillionCapabilityModelName(name)
 			if key := strings.ToLower(clean); key != "" {
-				served[key] = servedModel{request: clean, upstream: clean} // identity: client name == upstream name
+				served[key] = servedModel{request: clean, upstream: clean}
 				selectedSet[key] = struct{}{}
 			}
 		}
 		// Honor the channel's model_mapping: each mapping key is an additional
 		// client-facing model this channel serves, rewritten to the mapped upstream
-		// name on the wire. This is what lets a mapped channel (e.g. NVIDIA whose
-		// upstream name is "deepseek-ai/deepseek-v4-pro") join the pool's canonical
+		// name on the wire. This is what lets a mapped channel (e.g. an upstream whose
+		// upstream name is "provider/deepseek-v4-pro") join the pool's canonical
 		// "deepseek-v4-pro" route on the canvas/plan instead of sitting alone under
-		// its ugly upstream alias.
+		// its upstream alias.
 		for clientName, upstreamName := range ch.ModelMapping {
 			clientClean := model.CleanOneMillionCapabilityModelName(clientName)
 			upstreamClean := model.CleanOneMillionCapabilityModelName(upstreamName)
@@ -522,217 +510,281 @@ func AccessPlanSyncEnabledChannels(ctx context.Context) error {
 			if key == "" || upstreamClean == "" {
 				continue
 			}
-			// Only expose the alias when the channel actually serves the mapped upstream
-			// model (it must be a selected model). accessRouteTargetAvailable validates a
-			// target's UpstreamModel against selected_models, so aliasing to an unselected
-			// upstream would only sync a target that route selection immediately drops.
 			if _, servesUpstream := selectedSet[strings.ToLower(upstreamClean)]; !servesUpstream {
 				continue
 			}
-			served[key] = servedModel{request: clientClean, upstream: upstreamClean, mapped: true} // mapping wins
+			served[key] = servedModel{request: clientClean, upstream: upstreamClean}
 		}
 		if len(served) > 0 {
-			enabledByID[ch.ID] = enabledChannel{id: ch.ID, priority: ch.Priority, models: served}
+			enabledByID[ch.ID] = served
 		}
 	}
-	// NOTE: we intentionally do NOT early-return when enabledByID is empty — we still
-	// need to evict stale targets from AutoSyncChannels plans if every channel was disabled.
 
-	// Deterministic channel-ID order reused by both the per-rule target sync
-	// and the missing-rule creation pass below.
-	addIDs := make([]int, 0, len(enabledByID))
+	channelIDs := make([]int, 0, len(enabledByID))
 	for id := range enabledByID {
-		addIDs = append(addIDs, id)
+		channelIDs = append(channelIDs, id)
 	}
-	sort.Ints(addIDs)
+	sort.Ints(channelIDs)
 
-	// ── effective global default mode (route_mode_override) ──
-	// Override wins; empty → project-default fill_first.
-	// This same reading drives both ADD-target priority and CREATE-new-rule mode.
 	overrideRaw, _ := SettingGetString(model.SettingKeyRouteModeOverride)
-	effectiveDefaultMode := model.GroupModeFillFirst
+	globalDefaultMode := model.GroupModeFillFirst
 	if strings.ToLower(strings.TrimSpace(overrideRaw)) == "spread" {
-		effectiveDefaultMode = model.GroupModeSpread
+		globalDefaultMode = model.GroupModeSpread
 	}
+
+	tx := db.GetDB().WithContext(ctx).Begin()
+	if err := tx.Error; err != nil {
+		return err
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+			panic(r)
+		}
+	}()
 
 	changed := false
-	gormDB := db.GetDB().WithContext(ctx)
-	for _, plan := range accessPlanCache.GetAll() {
-		if !plan.AutoSyncChannels || plan.RouteProfile == nil {
+
+	plans := accessPlanCache.GetAll()
+	sort.Slice(plans, func(i, j int) bool {
+		return plans[i].ID < plans[j].ID
+	})
+
+	for _, plan := range plans {
+		if plan.RouteProfile == nil {
 			continue
 		}
-		for _, rule := range plan.RouteProfile.Rules {
+
+		rules := make([]model.AccessRouteRule, len(plan.RouteProfile.Rules))
+		copy(rules, plan.RouteProfile.Rules)
+		sort.Slice(rules, func(i, j int) bool {
+			return rules[i].ID < rules[j].ID
+		})
+
+		existingRuleModels := make(map[string]struct{}, len(rules))
+
+		for _, rule := range rules {
 			ruleModel := strings.ToLower(model.CleanOneMillionCapabilityModelName(rule.RequestModel))
 			if ruleModel == "" {
 				continue
 			}
+			existingRuleModels[ruleModel] = struct{}{}
 
-			// --- REMOVE: targets whose channel is disabled or no longer serves this model ---
-			for _, t := range rule.Targets {
-				ec, enabled := enabledByID[t.ChannelID]
-				if !enabled {
-					// Channel disabled or deleted — evict.
-					if err := gormDB.Delete(&model.AccessRouteTarget{}, t.ID).Error; err != nil {
-						// Best-effort: log-worthy but non-fatal; keep processing.
-						continue
-					}
-					changed = true
-					continue
-				}
-				if _, serves := ec.models[ruleModel]; !serves {
-					// Channel enabled but no longer serves this rule's model — evict.
-					if err := gormDB.Delete(&model.AccessRouteTarget{}, t.ID).Error; err != nil {
-						continue
-					}
-					changed = true
-				}
-			}
-
-			// --- ADD: enabled channels that serve this model but are not yet targets ---
-			existing := make(map[int]struct{}, len(rule.Targets))
-			for _, t := range rule.Targets {
-				existing[t.ChannelID] = struct{}{}
-			}
-			// Deterministic order + STABLE per-target priority. Previously each newly
-			// auto-synced target got a distinct, monotonically-increasing priority
-			// (max+1, max+2, …) in Go-map (random) iteration order, so every re-sync /
-			// channel toggle / post-deploy re-save churned the canvas priorities and
-			// manufactured artificial fill-first tiers that quietly defeated round-robin.
-			// A synced target's priority now mirrors its CHANNEL's own Priority (the same
-			// value that buckets Spread/round-robin at routing time), so equal-priority
-			// channels stay genuinely parallel ("并列"), the layout stops reshuffling on
-			// every deploy, and the priority the operator sees matches what routing uses.
-			// Hand-tuned priorities of surviving targets are never touched (they are not in
-			// this ADD path).
-			for addIdx, chID := range addIDs {
-				ec := enabledByID[chID]
-				sm, serves := ec.models[ruleModel]
-				if !serves {
-					continue
-				}
-				if _, already := existing[ec.id]; already {
-					continue
-				}
-				// A plainly-selected model keeps the rule's own casing exactly as before;
-				// an explicit model_mapping is authoritative for the upstream name (even a
-				// case-only remap).
-				upstreamModel := model.CleanOneMillionCapabilityModelName(rule.RequestModel)
-				if sm.mapped {
-					upstreamModel = sm.upstream
-				}
-				target := model.AccessRouteTarget{
-					RouteRuleID:   rule.ID,
-					ChannelID:     ec.id,
-					UpstreamModel: upstreamModel,
-					Priority: func() int {
-						if effectiveDefaultMode == model.GroupModeSpread {
-							return 1
-						}
-						return addIdx + 1 // fill_first: channel-ID order → priority
-					}(),
-					Weight:  1,
-					Enabled: true,
-				}
-				if err := gormDB.Create(&target).Error; err != nil {
-					// Best-effort: a unique-constraint race just means it already exists;
-					// skip it and keep syncing the rest.
-					continue
-				}
-				existing[ec.id] = struct{}{}
-				changed = true
-			}
-		}
-	}
-
-	// --- CREATE missing rules for AutoSync plans: models served by enabled channels
-	// that have no RouteRule yet in the plan. Without this pass, a newly-onboarded
-	// channel/mapping brings a model that sits in the pool search dropdown but never
-	// appears on the canvas — because AccessPlanSyncEnabledChannels only managed
-	// targets of *existing* rules. This pass creates the rule + its initial targets
-	// in one shot, using the same channel-priority ordering as the existing ADD path.
-	for _, plan := range accessPlanCache.GetAll() {
-		if !plan.AutoSyncChannels || plan.RouteProfile == nil {
-			continue
-		}
-		// Build a set of request_model names that already have a rule.
-		ruleModels := make(map[string]int, len(plan.RouteProfile.Rules)) // model → ruleID
-		for _, rule := range plan.RouteProfile.Rules {
-			key := strings.ToLower(model.CleanOneMillionCapabilityModelName(rule.RequestModel))
-			if key != "" {
-				ruleModels[key] = rule.ID
-			}
-		}
-		// Collect every model that at least one enabled channel serves and that is
-		// NOT covered by an existing rule. Keep the first channel's casing of each
-		// model as the rule's RequestModel and its upstream name.
-		type pendingModel struct {
-			requestModel string // the cleaned client-visible name for the rule
-			channels     []struct {
-				chID     int
-				priority int
-				upstream string // upstream name for this channel's target
-			}
-		}
-		missing := make(map[string]*pendingModel)
-		for _, chID := range addIDs {
-			ec := enabledByID[chID]
-			for modelKey, sm := range ec.models {
-				if _, has := ruleModels[modelKey]; has {
-					continue
-				}
-				pm, ok := missing[modelKey]
-				if !ok {
-					pm = &pendingModel{requestModel: sm.request}
-					missing[modelKey] = pm
-				}
-				pm.channels = append(pm.channels, struct {
-					chID     int
-					priority int
-					upstream string
-				}{chID: ec.id, priority: ec.priority, upstream: sm.upstream})
-			}
-		}
-		if len(missing) == 0 {
-			continue
-		}
-		for _, pm := range missing {
-			// Sort channels by ID ascending so fill_first priority = join order.
-			sort.Slice(pm.channels, func(i, j int) bool {
-				return pm.channels[i].chID < pm.channels[j].chID
+			targets := make([]model.AccessRouteTarget, len(rule.Targets))
+			copy(targets, rule.Targets)
+			sort.Slice(targets, func(i, j int) bool {
+				return targets[i].ID < targets[j].ID
 			})
-			rule := model.AccessRouteRule{
-				RouteProfileID: plan.RouteProfile.ID,
-				RequestModel:   pm.requestModel,
-				// Follow the effective global default mode (route_mode_override) so a
-				// freshly-created rule matches the admin's chosen strategy: spread (1)
-				// or fill_first (3). Falls back to fill_first when unset.
-				Mode:         effectiveDefaultMode,
-				FallbackMode: model.AccessRouteFallbackGroup,
-			}
-			if err := gormDB.Create(&rule).Error; err != nil {
-				continue
-			}
-			for i, ch := range pm.channels {
-				priority := 1
-				if effectiveDefaultMode == model.GroupModeFillFirst {
-					priority = i + 1
+
+			var survivors []model.AccessRouteTarget
+			seenChannel := make(map[int]bool)
+			for _, t := range targets {
+				chModels, enabled := enabledByID[t.ChannelID]
+				sm, serves := chModels[ruleModel]
+				if !enabled || !serves || seenChannel[t.ChannelID] {
+					if err := tx.Delete(&model.AccessRouteTarget{}, t.ID).Error; err != nil {
+						tx.Rollback()
+						return err
+					}
+					changed = true
+					continue
 				}
-				target := model.AccessRouteTarget{
-					RouteRuleID:   rule.ID,
-					ChannelID:     ch.chID,
-					UpstreamModel: ch.upstream,
-					Priority:      priority,
+				seenChannel[t.ChannelID] = true
+				if t.UpstreamModel != sm.upstream {
+					if err := tx.Model(&model.AccessRouteTarget{}).Where("id = ?", t.ID).Update("upstream_model", sm.upstream).Error; err != nil {
+						tx.Rollback()
+						return err
+					}
+					t.UpstreamModel = sm.upstream
+					changed = true
+				}
+				survivors = append(survivors, t)
+			}
+
+			if rule.Mode == model.GroupModeSpread {
+				if rule.PriorityOverridden {
+					if err := tx.Model(&model.AccessRouteRule{}).Where("id = ?", rule.ID).Update("priority_overridden", false).Error; err != nil {
+						tx.Rollback()
+						return err
+					}
+					changed = true
+				}
+				for _, s := range survivors {
+					if s.Priority != 1 {
+						if err := tx.Model(&model.AccessRouteTarget{}).Where("id = ?", s.ID).Update("priority", 1).Error; err != nil {
+							tx.Rollback()
+							return err
+						}
+						changed = true
+					}
+				}
+				for _, chID := range channelIDs {
+					sm, serves := enabledByID[chID][ruleModel]
+					if !serves || seenChannel[chID] {
+						continue
+					}
+					newTarget := model.AccessRouteTarget{
+						RouteRuleID:   rule.ID,
+						ChannelID:     chID,
+						UpstreamModel: sm.upstream,
+						Priority:      1,
+						Weight:        1,
+						Enabled:       true,
+					}
+					if err := tx.Create(&newTarget).Error; err != nil {
+						tx.Rollback()
+						return err
+					}
+					changed = true
+				}
+			} else {
+				if !rule.PriorityOverridden {
+					desiredChIDs := make([]int, 0)
+					for _, chID := range channelIDs {
+						if _, serves := enabledByID[chID][ruleModel]; serves {
+							desiredChIDs = append(desiredChIDs, chID)
+						}
+					}
+					desiredPriority := make(map[int]int, len(desiredChIDs))
+					for idx, chID := range desiredChIDs {
+						desiredPriority[chID] = idx + 1
+					}
+					for _, s := range survivors {
+						expected := desiredPriority[s.ChannelID]
+						if s.Priority != expected {
+							if err := tx.Model(&model.AccessRouteTarget{}).Where("id = ?", s.ID).Update("priority", expected).Error; err != nil {
+								tx.Rollback()
+								return err
+							}
+							changed = true
+						}
+					}
+					for _, chID := range desiredChIDs {
+						if seenChannel[chID] {
+							continue
+						}
+						sm := enabledByID[chID][ruleModel]
+						newTarget := model.AccessRouteTarget{
+							RouteRuleID:   rule.ID,
+							ChannelID:     chID,
+							UpstreamModel: sm.upstream,
+							Priority:      desiredPriority[chID],
+							Weight:        1,
+							Enabled:       true,
+						}
+						if err := tx.Create(&newTarget).Error; err != nil {
+							tx.Rollback()
+							return err
+						}
+						changed = true
+					}
+				} else {
+					hasSurvivor := len(survivors) > 0
+					nextPriority := 1
+					if hasSurvivor {
+						maxP := survivors[0].Priority
+						for _, s := range survivors[1:] {
+							if s.Priority > maxP {
+								maxP = s.Priority
+							}
+						}
+						nextPriority = maxP + 1
+					}
+					for _, chID := range channelIDs {
+						sm, serves := enabledByID[chID][ruleModel]
+						if !serves || seenChannel[chID] {
+							continue
+						}
+						newTarget := model.AccessRouteTarget{
+							RouteRuleID:   rule.ID,
+							ChannelID:     chID,
+							UpstreamModel: sm.upstream,
+							Priority:      nextPriority,
+							Weight:        1,
+							Enabled:       true,
+						}
+						nextPriority++
+						if err := tx.Create(&newTarget).Error; err != nil {
+							tx.Rollback()
+							return err
+						}
+						changed = true
+					}
+				}
+			}
+		}
+
+		type missingModelInfo struct {
+			key          string
+			requestModel string
+		}
+		missingModels := make(map[string]string)
+		for _, chID := range channelIDs {
+			for mKey, sm := range enabledByID[chID] {
+				if _, exists := existingRuleModels[mKey]; exists {
+					continue
+				}
+				if _, seen := missingModels[mKey]; !seen {
+					missingModels[mKey] = sm.request
+				}
+			}
+		}
+
+		missingKeys := make([]string, 0, len(missingModels))
+		for k := range missingModels {
+			missingKeys = append(missingKeys, k)
+		}
+		sort.Strings(missingKeys)
+
+		for _, mKey := range missingKeys {
+			reqModel := missingModels[mKey]
+			newRule := model.AccessRouteRule{
+				RouteProfileID:     plan.RouteProfile.ID,
+				RequestModel:       reqModel,
+				Mode:               globalDefaultMode,
+				PriorityOverridden: false,
+				FallbackMode:       model.AccessRouteFallbackReturnGroup,
+				BillingModelSource: model.AccessBillingModelSourceRequest,
+				PromptOverrideMode: model.PromptOverrideModeAppendSystem,
+			}
+			if err := tx.Create(&newRule).Error; err != nil {
+				tx.Rollback()
+				return err
+			}
+			changed = true
+
+			var ruleChIDs []int
+			for _, chID := range channelIDs {
+				if _, serves := enabledByID[chID][mKey]; serves {
+					ruleChIDs = append(ruleChIDs, chID)
+				}
+			}
+
+			for idx, chID := range ruleChIDs {
+				sm := enabledByID[chID][mKey]
+				p := 1
+				if globalDefaultMode != model.GroupModeSpread {
+					p = idx + 1
+				}
+				newTarget := model.AccessRouteTarget{
+					RouteRuleID:   newRule.ID,
+					ChannelID:     chID,
+					UpstreamModel: sm.upstream,
+					Priority:      p,
 					Weight:        1,
 					Enabled:       true,
 				}
-				if err := gormDB.Create(&target).Error; err != nil {
-					continue
+				if err := tx.Create(&newTarget).Error; err != nil {
+					tx.Rollback()
+					return err
 				}
 			}
-			changed = true
 		}
 	}
 
+	if err := tx.Commit().Error; err != nil {
+		return err
+	}
 	if changed {
 		return accessPlanRefreshCache(ctx)
 	}
@@ -1107,8 +1159,9 @@ func AccessPlanUpdateRouteTargets(accessPlanID int, targets []model.AccessRouteT
 	}
 
 	type routeBucket struct {
-		rule    model.AccessRouteRule
-		targets []model.AccessRouteTarget
+		rule         model.AccessRouteRule
+		targets      []model.AccessRouteTarget
+		seenChannels map[int]bool
 	}
 	buckets := make(map[string]*routeBucket)
 	order := make([]string, 0)
@@ -1116,10 +1169,11 @@ func AccessPlanUpdateRouteTargets(accessPlanID int, targets []model.AccessRouteT
 		target.AccessPlanID = accessPlanID
 		normalizeAccessRouteTarget(&target)
 		requestModel := strings.TrimSpace(target.RequestModel)
-		if requestModel == "" || target.ChannelID <= 0 || target.UpstreamModel == "" {
+		cleanRequest := model.CleanOneMillionCapabilityModelName(requestModel)
+		if cleanRequest == "" || target.ChannelID <= 0 || target.UpstreamModel == "" {
 			continue
 		}
-		key := strings.ToLower(requestModel)
+		key := strings.ToLower(cleanRequest)
 		bucket, ok := buckets[key]
 		if !ok {
 			mode := target.Mode
@@ -1129,11 +1183,11 @@ func AccessPlanUpdateRouteTargets(accessPlanID int, targets []model.AccessRouteT
 				}
 			}
 			if mode == 0 {
-				mode = model.GroupModeFailover
+				mode = model.GroupModeFillFirst
 			}
 			rule := model.AccessRouteRule{
 				RouteProfileID:       plan.RouteProfileID,
-				RequestModel:         requestModel,
+				RequestModel:         cleanRequest,
 				Mode:                 mode,
 				BillingModelSource:   target.BillingModelSource,
 				BillingModelOverride: model.CleanOneMillionCapabilityModelName(target.BillingModelOverride),
@@ -1142,16 +1196,34 @@ func AccessPlanUpdateRouteTargets(accessPlanID int, targets []model.AccessRouteT
 				PromptOverrideMode:   target.PromptOverrideMode,
 			}
 			normalizeAccessRouteRule(&rule)
-			bucket = &routeBucket{rule: rule}
+			bucket = &routeBucket{
+				rule:         rule,
+				seenChannels: make(map[int]bool),
+			}
 			buckets[key] = bucket
 			order = append(order, key)
 		} else if bucket.rule.Mode == 0 && target.Mode != 0 {
 			bucket.rule.Mode = target.Mode
 		}
+
+		if bucket.seenChannels[target.ChannelID] {
+			continue
+		}
+		bucket.seenChannels[target.ChannelID] = true
+
+		p := target.Priority
+		if bucket.rule.Mode == model.GroupModeSpread {
+			p = 1
+		} else {
+			if p < 1 {
+				p = 1
+			}
+		}
+
 		bucket.targets = append(bucket.targets, model.AccessRouteTarget{
 			ChannelID:     target.ChannelID,
 			UpstreamModel: target.UpstreamModel,
-			Priority:      target.Priority,
+			Priority:      p,
 			Weight:        target.Weight,
 			Enabled:       target.Enabled,
 		})
@@ -1159,6 +1231,12 @@ func AccessPlanUpdateRouteTargets(accessPlanID int, targets []model.AccessRouteT
 
 	for _, key := range order {
 		bucket := buckets[key]
+		if bucket.rule.Mode == model.GroupModeSpread {
+			bucket.rule.PriorityOverridden = false
+		} else {
+			bucket.rule.PriorityOverridden = true
+		}
+
 		if err := tx.Create(&bucket.rule).Error; err != nil {
 			tx.Rollback()
 			return model.AccessPlan{}, err
@@ -1632,6 +1710,7 @@ func flattenAccessPlan(plan *model.AccessPlan) {
 				target.FallbackMode = rule.FallbackMode
 				target.SystemPromptOverride = rule.SystemPromptOverride
 				target.PromptOverrideMode = rule.PromptOverrideMode
+				target.PriorityOverridden = rule.PriorityOverridden
 				normalizeAccessRouteTarget(&target)
 				plan.RouteTargets = append(plan.RouteTargets, target)
 			}

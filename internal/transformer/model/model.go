@@ -117,6 +117,10 @@ type InternalLLMRequest struct {
 	// We generally recommend altering this or `temperature` but not both.
 	TopP *float64 `json:"top_p,omitempty"`
 
+	// Nucleus sampling limit: only sample from the top K options for each subsequent
+	// token. Used by Anthropic Messages. Not supported by OpenAI Chat/Responses.
+	TopK *int64 `json:"top_k,omitempty"`
+
 	// Used by OpenAI to cache responses for similar requests to optimize your cache
 	// hit rates. Replaces the `user` field.
 	// [Learn more](https://platform.openai.com/docs/guides/prompt-caching).

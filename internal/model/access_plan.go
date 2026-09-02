@@ -36,11 +36,8 @@ type AccessPlan struct {
 	BillingProfileID     int                `json:"billing_profile_id" gorm:"index"`
 	SystemPromptOverride string             `json:"system_prompt_override"`
 	PromptOverrideMode   PromptOverrideMode `json:"prompt_override_mode" gorm:"default:append_system"`
-	// AutoSyncChannels, when true, makes a newly enabled/synced channel automatically
-	// join this plan's routes for the models it already serves — incremental ADD only,
-	// never a destructive delete-rebuild that would clobber hand-tuned priorities.
-	// Default false keeps the plan a strict allow-list (operators can still exclude a
-	// channel from a model by leaving this off and curating targets manually).
+	// AutoSyncChannels is retained for API compatibility. Reconciliation no longer
+	// gates on this flag: every plan with a route profile is synced.
 	AutoSyncChannels bool `json:"auto_sync_channels" gorm:"default:false"`
 
 	RouteProfile   *AccessRouteProfile   `json:"route_profile,omitempty" gorm:"foreignKey:RouteProfileID"`
@@ -67,7 +64,11 @@ type AccessRouteRule struct {
 	FallbackMode         AccessRouteFallbackMode  `json:"fallback_mode" gorm:"default:failover"`
 	SystemPromptOverride string                   `json:"system_prompt_override"`
 	PromptOverrideMode   PromptOverrideMode       `json:"prompt_override_mode" gorm:"default:append_system"`
-	Targets              []AccessRouteTarget      `json:"targets,omitempty" gorm:"foreignKey:RouteRuleID;constraint:OnDelete:CASCADE"`
+	// PriorityOverridden marks a rule whose channel priorities are hand-tuned and must
+	// not be re-derived or re-sorted by the flat API. True for every pre-migration rule
+	// (backfilled by db migration 013) so historical ordering is preserved.
+	PriorityOverridden bool                `json:"priority_overridden" gorm:"default:false"`
+	Targets            []AccessRouteTarget `json:"targets,omitempty" gorm:"foreignKey:RouteRuleID;constraint:OnDelete:CASCADE"`
 }
 
 type AccessRouteTarget struct {
@@ -87,6 +88,9 @@ type AccessRouteTarget struct {
 	FallbackMode         AccessRouteFallbackMode  `json:"fallback_mode,omitempty" gorm:"-"`
 	SystemPromptOverride string                   `json:"system_prompt_override,omitempty" gorm:"-"`
 	PromptOverrideMode   PromptOverrideMode       `json:"prompt_override_mode,omitempty" gorm:"-"`
+	// PriorityOverridden on AccessRouteTarget is a flat-API-only echo of
+	// AccessRouteRule.PriorityOverridden (never persisted; see gorm:"-").
+	PriorityOverridden bool `json:"priority_overridden,omitempty" gorm:"-"`
 }
 
 type AccessBillingProfile struct {

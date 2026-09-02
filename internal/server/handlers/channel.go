@@ -230,8 +230,8 @@ func scheduleChannelPostProcess(channels []model.Channel) {
 var accessPlanSyncMu sync.Mutex
 
 // runAccessPlanChannelSync executes one incremental access-plan reconciliation under the
-// package mutex. Plans with auto-sync off are a no-op and the op-layer function is
-// idempotent, so this stays cheap.
+// package mutex. Reconciliation is idempotent and reconciles all plans with route profiles,
+// refreshing the cache only when changes occur.
 func runAccessPlanChannelSync(ctx context.Context) {
 	accessPlanSyncMu.Lock()
 	defer accessPlanSyncMu.Unlock()
@@ -275,9 +275,8 @@ func enableChannel(c *gin.Context) {
 		resp.Error(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	// Always reconcile: enabling adds the channel to AutoSyncChannels plan routes;
-	// disabling removes it via the reconcile delete pass so targets are evicted
-	// automatically without requiring a manual rebuild.
+	// Always reconcile: enabling adds the channel to every plan with a route
+	// profile; disabling removes it so targets are evicted without a manual rebuild.
 	scheduleAccessPlanChannelSync()
 	resp.Success(c, nil)
 }
@@ -309,8 +308,8 @@ func deleteChannel(c *gin.Context) {
 		resp.Error(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	// ChannelDel removed the row + its channel-cache entry; reconcile so AutoSyncChannels
-	// plans evict the deleted channel's route targets without a manual rebuild.
+	// ChannelDel removed the row + its channel-cache entry; reconcile so every
+	// plan with a route profile evicts the deleted channel's targets.
 	scheduleAccessPlanChannelSync()
 	resp.Success(c, nil)
 }

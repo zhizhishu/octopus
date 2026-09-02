@@ -68,6 +68,7 @@ func (i *MessagesInbound) TransformRequest(ctx context.Context, body []byte) (*m
 		MaxTokens:           &anthropicReq.MaxTokens,
 		Temperature:         anthropicReq.Temperature,
 		TopP:                anthropicReq.TopP,
+		TopK:                anthropicReq.TopK,
 		Stream:              anthropicReq.Stream,
 		Metadata:            map[string]string{},
 		RawAPIFormat:        model.APIFormatAnthropicMessage,

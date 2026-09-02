@@ -25,6 +25,8 @@ export interface AccessPlanRouteTarget {
     enabled: boolean;
     /** 分流模式（JSON number）：1=spread 轮询（均摊）；3=fill_first 优先填充（默认）。挂在规则（request_model 级）上。 */
     mode?: number;
+    /** 请求模型 rule 级人工优先级覆盖回显：true 表示用户曾手动调整过优先级顺序，系统自动 sync 时锁定不再按渠道 ID 重置。 */
+    priority_overridden?: boolean;
     billing_model_source?: BillingModelSource;
     billing_model_override?: string;
     fallback_mode?: RouteFallbackMode;
@@ -82,8 +84,8 @@ export type UpdateAccessPlanRouteTargetsRequest = {
     targets: AccessPlanRouteTarget[];
 };
 
-/** 全局默认分流模式（setting route_mode_override）：''=跟随各规则；'spread'=全局轮询；'fill_first'=全局优先填充。 */
-export type RouteModeOverrideValue = '' | 'spread' | 'fill_first';
+/** 全局默认分流模式（setting route_mode_override）：'spread'=全局轮询；'fill_first'=全局优先填充。 */
+export type RouteModeOverrideValue = 'spread' | 'fill_first';
 
 const ACCESS_PLAN_LIST_KEY = ['access-plans', 'list'] as const;
 

@@ -265,7 +265,7 @@
         },
         "codexFastMode": {
             "label": "Codex fast 模式",
-            "hint": "預設關閉，跟隨客戶端請求。開啟後才會在客戶端未傳 text/reasoning 時補 text.verbosity=low 與 reasoning_effort=low，吐字更快但回答更簡略。"
+            "hint": "預設關閉。開啟後僅在客戶端未指定時補 service_tier=priority，用來適配支援 Fast 的上游；上游不支援就不要開。不會降低思考強度。"
         },
         "streamKeepalive": {
             "label": "串流保活間隔",

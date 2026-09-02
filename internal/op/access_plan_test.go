@@ -597,11 +597,10 @@ func TestAccessPlanUpdateRouteTargetsPreservesRouteMode(t *testing.T) {
 	}
 }
 
-// TestAccessPlanSyncEnabledChannelsReconcile verifies the full add+remove reconcile
-// behaviour of AccessPlanSyncEnabledChannels for AutoSyncChannels plans:
-//   - Enabling a channel (it serves the rule model) → target is created on next sync.
-//   - Disabling that channel → target is deleted on the following sync.
-//   - Plans that did NOT opt in (AutoSyncChannels=false) are never modified.
+// TestAccessPlanSyncEnabledChannelsReconcile verifies add+remove reconcile:
+//   - Enabling a channel that serves the rule model creates a target.
+//   - Disabling that channel deletes the target.
+//   - AutoSyncChannels no longer gates reconciliation.
 func TestAccessPlanSyncEnabledChannelsReconcile(t *testing.T) {
 	ctx := setupAccessPlanTest(t)
 
@@ -618,13 +617,6 @@ func TestAccessPlanSyncEnabledChannelsReconcile(t *testing.T) {
 	}
 	if svip.ID == 0 {
 		t.Fatalf("svip plan not found")
-	}
-
-	// Enable AutoSyncChannels on svip.
-	svipUpdate := svip
-	svipUpdate.AutoSyncChannels = true
-	if err := AccessPlanUpdate(&svipUpdate, ctx); err != nil {
-		t.Fatalf("enable AutoSyncChannels on svip: %v", err)
 	}
 
 	// Create a channel that serves "sync-test-model".
@@ -712,12 +704,6 @@ func TestAccessPlanSyncEvictsDeletedChannel(t *testing.T) {
 		t.Fatalf("svip plan not found")
 	}
 
-	svipUpdate := svip
-	svipUpdate.AutoSyncChannels = true
-	if err := AccessPlanUpdate(&svipUpdate, ctx); err != nil {
-		t.Fatalf("enable AutoSyncChannels on svip: %v", err)
-	}
-
 	// A second channel keeps channelCache non-empty after the delete below, so the sync's
 	// "empty cache == not loaded yet" fail-safe (which returns early to avoid nuking every
 	// route on a cache miss) doesn't short-circuit the eviction. A real deployment always
@@ -787,8 +773,8 @@ func TestAccessPlanSyncEvictsDeletedChannel(t *testing.T) {
 }
 
 // TestAccessPlanSyncHonorsChannelModelMapping verifies that a channel whose
-// selected_models only carry the ugly upstream name (e.g. NVIDIA's
-// "deepseek-ai/deepseek-v4-pro") still joins the pool's canonical route
+// selected_models only carry the ugly upstream name (e.g. a provider alias
+// "provider/deepseek-v4-pro") still joins the pool's canonical route
 // ("deepseek-v4-pro") when it declares a model_mapping alias, and that the
 // synced target sends the mapped upstream name on the wire.
 func TestAccessPlanSyncHonorsChannelModelMapping(t *testing.T) {
@@ -807,12 +793,6 @@ func TestAccessPlanSyncHonorsChannelModelMapping(t *testing.T) {
 	}
 	if svip.ID == 0 {
 		t.Fatalf("svip plan not found")
-	}
-
-	svipUpdate := svip
-	svipUpdate.AutoSyncChannels = true
-	if err := AccessPlanUpdate(&svipUpdate, ctx); err != nil {
-		t.Fatalf("enable AutoSyncChannels on svip: %v", err)
 	}
 
 	// The channel serves only the upstream alias in selected_models, but maps the
@@ -884,12 +864,6 @@ func TestAccessPlanSyncSkipsMappingToUnselectedUpstream(t *testing.T) {
 	}
 	if svip.ID == 0 {
 		t.Fatalf("svip plan not found")
-	}
-
-	svipUpdate := svip
-	svipUpdate.AutoSyncChannels = true
-	if err := AccessPlanUpdate(&svipUpdate, ctx); err != nil {
-		t.Fatalf("enable AutoSyncChannels on svip: %v", err)
 	}
 
 	// The channel serves only "real-a", but maps "alias-x" → "not-selected", an upstream
@@ -1044,11 +1018,6 @@ func TestAccessPlanSyncCreatesMappedRuleWithGlobalRouteMode(t *testing.T) {
 			if svip.ID == 0 {
 				t.Fatal("svip plan not found")
 			}
-			svip.AutoSyncChannels = true
-			if err := AccessPlanUpdate(&svip, ctx); err != nil {
-				t.Fatalf("enable auto sync: %v", err)
-			}
-
 			channels := []model.Channel{
 				{Name: "mapped-rule-a", Enabled: true, Model: "upstream-a", ModelMapping: map[string]string{"client-alias": "upstream-a"}},
 				{Name: "mapped-rule-b", Enabled: true, Model: "upstream-b", ModelMapping: map[string]string{"client-alias": "upstream-b"}},
@@ -1092,6 +1061,249 @@ func TestAccessPlanSyncCreatesMappedRuleWithGlobalRouteMode(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAccessPlanSyncPreservesOverriddenFillFirstOrder(t *testing.T) {
+	ctx := setupAccessPlanTest(t)
+
+	plans, err := AccessPlanList(ctx)
+	if err != nil {
+		t.Fatalf("list plans: %v", err)
+	}
+	var svip model.AccessPlan
+	for _, plan := range plans {
+		if plan.Slug == "svip" {
+			svip = plan
+			break
+		}
+	}
+	if svip.ID == 0 {
+		t.Fatalf("svip plan not found")
+	}
+
+	first := model.Channel{Name: "override-first", Enabled: true, Model: "override-model"}
+	second := model.Channel{Name: "override-second", Enabled: true, Model: "override-model"}
+	if err := ChannelCreate(&first, ctx); err != nil {
+		t.Fatalf("create first channel: %v", err)
+	}
+	if err := ChannelCreate(&second, ctx); err != nil {
+		t.Fatalf("create second channel: %v", err)
+	}
+
+	saved, err := AccessPlanUpdateRouteTargets(svip.ID, []model.AccessRouteTarget{
+		{
+			RequestModel:  "override-model",
+			ChannelID:     second.ID,
+			UpstreamModel: "override-model",
+			Priority:      1,
+			Weight:        7,
+			Enabled:       true,
+			Mode:          model.GroupModeFillFirst,
+		},
+		{
+			RequestModel:  "override-model",
+			ChannelID:     first.ID,
+			UpstreamModel: "override-model",
+			Priority:      4,
+			Weight:        3,
+			Enabled:       true,
+			Mode:          model.GroupModeFillFirst,
+		},
+	}, ctx)
+	if err != nil {
+		t.Fatalf("save overridden fill-first order: %v", err)
+	}
+	if len(saved.RouteTargets) != 2 {
+		t.Fatalf("expected 2 saved targets, got %d", len(saved.RouteTargets))
+	}
+	if !saved.RouteTargets[0].PriorityOverridden {
+		t.Fatalf("fill-first full save must echo priority_overridden=true")
+	}
+
+	third := model.Channel{Name: "override-third", Enabled: true, Model: "override-model"}
+	if err := ChannelCreate(&third, ctx); err != nil {
+		t.Fatalf("create third channel: %v", err)
+	}
+	if err := AccessPlanSyncEnabledChannels(ctx); err != nil {
+		t.Fatalf("sync after new channel: %v", err)
+	}
+
+	var rule model.AccessRouteRule
+	if err := db.GetDB().WithContext(ctx).
+		Where("route_profile_id = ? AND request_model = ?", svip.RouteProfileID, "override-model").
+		First(&rule).Error; err != nil {
+		t.Fatalf("load rule: %v", err)
+	}
+	if !rule.PriorityOverridden {
+		t.Fatalf("overridden fill-first rule must stay overridden")
+	}
+
+	var targets []model.AccessRouteTarget
+	if err := db.GetDB().WithContext(ctx).
+		Where("route_rule_id = ?", rule.ID).
+		Order("priority ASC, channel_id ASC").
+		Find(&targets).Error; err != nil {
+		t.Fatalf("list targets: %v", err)
+	}
+	if len(targets) != 3 {
+		t.Fatalf("expected 3 targets after append, got %d", len(targets))
+	}
+
+	byChannel := map[int]model.AccessRouteTarget{}
+	for _, target := range targets {
+		byChannel[target.ChannelID] = target
+	}
+	if got := byChannel[second.ID]; got.Priority != 1 || got.Weight != 7 {
+		t.Fatalf("survivor second = %+v, want priority 1 weight 7", got)
+	}
+	if got := byChannel[first.ID]; got.Priority != 4 || got.Weight != 3 {
+		t.Fatalf("survivor first = %+v, want priority 4 weight 3", got)
+	}
+	if got := byChannel[third.ID]; got.Priority != 5 || got.Weight != 1 {
+		t.Fatalf("appended third = %+v, want priority 5 weight 1", got)
+	}
+}
+
+func TestAccessPlanSyncDeduplicatesSameChannelAndUpdatesUpstream(t *testing.T) {
+	ctx := setupAccessPlanTest(t)
+
+	plans, err := AccessPlanList(ctx)
+	if err != nil {
+		t.Fatalf("list plans: %v", err)
+	}
+	var svip model.AccessPlan
+	for _, plan := range plans {
+		if plan.Slug == "svip" {
+			svip = plan
+			break
+		}
+	}
+	if svip.ID == 0 {
+		t.Fatalf("svip plan not found")
+	}
+
+	ch := model.Channel{
+		Name:         "dup-channel",
+		Enabled:      true,
+		Model:        "Canonical-Upstream",
+		ModelMapping: map[string]string{"dup-request": "Canonical-Upstream"},
+	}
+	if err := ChannelCreate(&ch, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+
+	rule := model.AccessRouteRule{
+		RouteProfileID:     svip.RouteProfileID,
+		RequestModel:       "dup-request",
+		Mode:               model.GroupModeFillFirst,
+		PriorityOverridden: true,
+	}
+	if err := AccessRouteRuleCreate(&rule, ctx); err != nil {
+		t.Fatalf("create rule: %v", err)
+	}
+	keeper := model.AccessRouteTarget{
+		RouteRuleID:   rule.ID,
+		ChannelID:     ch.ID,
+		UpstreamModel: "stale-upstream",
+		Priority:      8,
+		Weight:        2,
+		Enabled:       true,
+	}
+	if err := AccessRouteTargetCreate(&keeper, ctx); err != nil {
+		t.Fatalf("create keeper: %v", err)
+	}
+	dup := model.AccessRouteTarget{
+		RouteRuleID:   rule.ID,
+		ChannelID:     ch.ID,
+		UpstreamModel: "other-stale",
+		Priority:      1,
+		Weight:        9,
+		Enabled:       true,
+	}
+	if err := AccessRouteTargetCreate(&dup, ctx); err != nil {
+		t.Fatalf("create duplicate: %v", err)
+	}
+
+	if err := AccessPlanSyncEnabledChannels(ctx); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	var targets []model.AccessRouteTarget
+	if err := db.GetDB().WithContext(ctx).
+		Where("route_rule_id = ?", rule.ID).
+		Find(&targets).Error; err != nil {
+		t.Fatalf("list targets: %v", err)
+	}
+	if len(targets) != 1 {
+		t.Fatalf("expected 1 keeper after dedupe, got %d", len(targets))
+	}
+	if targets[0].ID != keeper.ID {
+		t.Fatalf("kept id=%d, want lowest id %d", targets[0].ID, keeper.ID)
+	}
+	if targets[0].UpstreamModel != "Canonical-Upstream" {
+		t.Fatalf("upstream = %q, want Canonical-Upstream", targets[0].UpstreamModel)
+	}
+	if targets[0].Priority != 8 || targets[0].Weight != 2 {
+		t.Fatalf("keeper fields changed: %+v", targets[0])
+	}
+}
+
+func TestAccessPlanUpdateRouteTargetsDedupesAndEchoesOverride(t *testing.T) {
+	ctx := setupAccessPlanTest(t)
+
+	plans, err := AccessPlanList(ctx)
+	if err != nil {
+		t.Fatalf("list plans: %v", err)
+	}
+	var vip model.AccessPlan
+	for _, plan := range plans {
+		if plan.Slug == "vip" {
+			vip = plan
+			break
+		}
+	}
+	if vip.ID == 0 {
+		t.Fatalf("vip plan not found")
+	}
+
+	ch := model.Channel{Name: "save-dup-channel", Enabled: true, Model: "save-model"}
+	if err := ChannelCreate(&ch, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+
+	spread, err := AccessPlanUpdateRouteTargets(vip.ID, []model.AccessRouteTarget{
+		{
+			RequestModel:  "save-model",
+			ChannelID:     ch.ID,
+			UpstreamModel: "save-model",
+			Priority:      9,
+			Enabled:       true,
+			Mode:          model.GroupModeSpread,
+		},
+		{
+			RequestModel:  "save-model",
+			ChannelID:     ch.ID,
+			UpstreamModel: "ignored-dup",
+			Priority:      2,
+			Enabled:       true,
+			Mode:          model.GroupModeSpread,
+		},
+	}, ctx)
+	if err != nil {
+		t.Fatalf("spread save: %v", err)
+	}
+	if len(spread.RouteTargets) != 1 {
+		t.Fatalf("expected first-wins channel dedupe, got %d targets", len(spread.RouteTargets))
+	}
+	if spread.RouteTargets[0].Priority != 1 {
+		t.Fatalf("spread priority = %d, want 1", spread.RouteTargets[0].Priority)
+	}
+	if spread.RouteTargets[0].PriorityOverridden {
+		t.Fatalf("spread save must echo priority_overridden=false")
+	}
+	if spread.RouteTargets[0].UpstreamModel != "save-model" {
+		t.Fatalf("dedupe should keep first upstream, got %q", spread.RouteTargets[0].UpstreamModel)
 	}
 }
 

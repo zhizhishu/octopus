@@ -265,7 +265,7 @@
         },
         "codexFastMode": {
             "label": "Codex fast mode",
-            "hint": "Off by default; follows the client request. When on, adds text.verbosity=low and reasoning_effort=low only if the client omitted them — faster output but terser answers."
+            "hint": "Off by default. When on, sets service_tier=priority only if the client omitted it, so Fast-capable upstreams can accelerate. Leave it off if the upstream does not support Fast. It does not lower reasoning effort."
         },
         "streamKeepalive": {
             "label": "Stream keepalive interval",

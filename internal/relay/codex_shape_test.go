@@ -52,11 +52,10 @@ func TestPrepareCodexRequestShapeForcesStoreFalseOverExplicitTrue(t *testing.T) 
 
 // A genuine codex CLI always sends reasoning:{effort,summary:"auto"}; the summary field is
 // what makes a Responses upstream stream reasoning-summary deltas *during* a long reasoning
-// turn. oct historically dropped it (the reasoning struct had no summary field), so a
-// max-effort turn over a large context streamed nothing to the client until the final
-// message and looked frozen. prepareCodexRequestShape must default reasoning.summary="auto"
-// when the client left it empty.
-func TestPrepareCodexRequestShapeDefaultsReasoningSummaryAuto(t *testing.T) {
+// prepareCodexRequestShape must NOT inject a reasoning.summary default. The real Codex CLI
+// 0.145.0 (captured 2026-09-02, forward.jsonl:31-32) sends reasoning={context,effort}
+// WITHOUT summary. Injecting "auto" caused a confirmed +477B body delta (42380→42857).
+func TestPrepareCodexRequestShapeDoesNotInjectReasoningSummary(t *testing.T) {
 	content := "Say OK only"
 	req := &model.InternalLLMRequest{
 		Model:        "gpt-5.6-sol",
@@ -76,8 +75,8 @@ func TestPrepareCodexRequestShapeDefaultsReasoningSummaryAuto(t *testing.T) {
 
 	ra.prepareCodexRequestShape()
 
-	if req.ReasoningSummary != "auto" {
-		t.Fatalf("expected codex shape to default reasoning.summary=auto, got %q", req.ReasoningSummary)
+	if req.ReasoningSummary != "" {
+		t.Fatalf("prepareCodexRequestShape must NOT inject reasoning.summary (real CLI 0.145.0 does not send it), got %q", req.ReasoningSummary)
 	}
 }
 
@@ -138,6 +137,57 @@ func TestPrepareCodexRequestShapeSkipsSummaryWhenNoEffort(t *testing.T) {
 	}
 	if req.ReasoningSummary != "" {
 		t.Fatalf("expected no summary default without an effort (avoid summary-only reasoning object), got %q", req.ReasoningSummary)
+	}
+}
+
+func TestApplyCodexFastModeSetsPriorityServiceTierWithoutLoweringEffort(t *testing.T) {
+	ctx := setupRelayErrorDB(t)
+	_ = ctx
+	if err := op.SettingSetString(dbmodel.SettingKeyCodexFastMode, "true"); err != nil {
+		t.Fatalf("set codex fast mode: %v", err)
+	}
+
+	content := "Say OK only"
+	req := &model.InternalLLMRequest{
+		Model:        "gpt-5.6-sol",
+		RawAPIFormat: model.APIFormatOpenAIResponse,
+		Messages: []model.Message{{
+			Role:    "user",
+			Content: model.MessageContent{Content: &content},
+		}},
+	}
+	ra := &relayAttempt{
+		relayRequest: &relayRequest{
+			inboundType:     inbound.InboundTypeOpenAIResponse,
+			internalRequest: req,
+		},
+		channel: &dbmodel.Channel{Type: outbound.OutboundTypeOpenAIResponse},
+	}
+	ra.prepareCodexRequestShape()
+	if req.ServiceTier == nil || *req.ServiceTier != "priority" {
+		t.Fatalf("fast mode must set service_tier=priority, got %#v", req.ServiceTier)
+	}
+	if len(req.ResponsesTextRaw) != 0 {
+		t.Fatalf("fast mode must not inject verbosity, got %s", string(req.ResponsesTextRaw))
+	}
+
+	existing := "flex"
+	req2 := &model.InternalLLMRequest{
+		Model:        "gpt-5.6-sol",
+		RawAPIFormat: model.APIFormatOpenAIResponse,
+		ServiceTier:  &existing,
+		Messages:     req.Messages,
+	}
+	ra2 := &relayAttempt{
+		relayRequest: &relayRequest{
+			inboundType:     inbound.InboundTypeOpenAIResponse,
+			internalRequest: req2,
+		},
+		channel: &dbmodel.Channel{Type: outbound.OutboundTypeOpenAIResponse},
+	}
+	ra2.prepareCodexRequestShape()
+	if req2.ServiceTier == nil || *req2.ServiceTier != "flex" {
+		t.Fatalf("client-sent service_tier must be preserved, got %#v", req2.ServiceTier)
 	}
 }
 
@@ -647,7 +697,6 @@ func TestPrepareCodexRequestShapeSelfContainedContinuationSuppressesHoist(t *tes
 func TestOpenAIChatCanRouteThroughCodexResponsesShape(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx := setupRelayErrorDB(t)
-	// Codex fast mode (verbosity/effort low) is now opt-in.
 	if err := op.SettingSetString(dbmodel.SettingKeyCodexFastMode, "true"); err != nil {
 		t.Fatalf("set codex fast mode: %v", err)
 	}
@@ -717,7 +766,6 @@ func TestOpenAIChatCanRouteThroughCodexResponsesShape(t *testing.T) {
 func TestPlainResponsesRoutesThroughCodexShape(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx := setupRelayErrorDB(t)
-	// Codex fast mode (verbosity/effort low) is now opt-in.
 	if err := op.SettingSetString(dbmodel.SettingKeyCodexFastMode, "true"); err != nil {
 		t.Fatalf("set codex fast mode: %v", err)
 	}
@@ -1024,13 +1072,13 @@ func assertCodexUpstreamRequest(t *testing.T, path string, headers http.Header, 
 	if !arrayContainsString(body["include"], "reasoning.encrypted_content") {
 		t.Fatalf("expected include reasoning.encrypted_content, got %#v", body["include"])
 	}
-	text, ok := body["text"].(map[string]any)
-	if !ok || text["verbosity"] != "low" {
-		t.Fatalf("expected text.verbosity=low, got %#v", body["text"])
+	if body["service_tier"] != "priority" {
+		t.Fatalf("expected service_tier=priority when Codex fast mode is on, got %#v", body["service_tier"])
 	}
-	reasoning, ok := body["reasoning"].(map[string]any)
-	if !ok || reasoning["effort"] != "low" {
-		t.Fatalf("expected reasoning.effort=low, got %#v", body["reasoning"])
+	if text, ok := body["text"].(map[string]any); ok && text["verbosity"] == "low" && body["reasoning"] != nil {
+		if reasoning, ok := body["reasoning"].(map[string]any); ok && reasoning["effort"] == "low" {
+			t.Fatalf("fast mode must not downgrade verbosity/effort, got text=%#v reasoning=%#v", body["text"], body["reasoning"])
+		}
 	}
 	if _, ok := body["client_metadata"].(map[string]any); !ok {
 		t.Fatalf("expected client_metadata object, got %#v", body["client_metadata"])

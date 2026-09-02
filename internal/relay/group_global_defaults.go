@@ -8,16 +8,14 @@ import (
 )
 
 // routeModeOverrideFromSetting maps the route_mode_override setting value to an
-// effective GroupMode override. Empty / whitespace / unknown → 0, meaning "no
-// override — follow each group's own stored mode".
+// effective GroupMode override. "spread" → Spread; everything else (fill_first,
+// empty, unknown) → FillFirst. Never returns 0 (always overrides).
 func routeModeOverrideFromSetting(raw string) dbmodel.GroupMode {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "spread":
 		return dbmodel.GroupModeSpread
-	case "fill_first":
-		return dbmodel.GroupModeFillFirst
 	default:
-		return 0
+		return dbmodel.GroupModeFillFirst
 	}
 }
 
@@ -25,17 +23,19 @@ func routeModeOverrideFromSetting(raw string) dbmodel.GroupMode {
 // it takes the already-read setting values so it can be unit-tested without a
 // settings cache.
 //
-//   - modeOverrideRaw, when it maps to a real mode, sets group.Mode to that mode for
-//     every group that is NOT mode-locked. Locked groups carry an admin's explicit
-//     per-group choice (group editor / access-plan canvas), so the global value acts
-//     as a DEFAULT for everyone else rather than a steamroller: "unless the canvas
-//     changed it, the global setting wins". Empty/unknown leaves all groups untouched.
+//   - modeOverrideRaw, when spread, forces Spread; any other value (fill_first,
+//     empty, unknown) forces FillFirst. Applied to every group that is NOT mode-locked.
+//     Locked groups carry an admin's explicit per-group choice (group editor /
+//     access-plan canvas), so the global value acts as a DEFAULT for everyone else rather
+//     than a steamroller: "unless the canvas changed it, the global setting wins".
+//     Since routeModeOverrideFromSetting never returns 0, an empty value still resolves
+//     to the FillFirst default.
 //   - firstTokenDefault is a fallback applied ONLY when the group's own
 //     FirstTokenTimeOut is unset (<=0), mirroring session_keep_time_default. 0 or
 //     negative means no global default, preserving per-group-only behavior.
 func applyGroupGlobalDefaultsResolved(group dbmodel.Group, modeOverrideRaw string, firstTokenDefault int) dbmodel.Group {
-	if mode := routeModeOverrideFromSetting(modeOverrideRaw); mode != 0 && !group.ModeLocked {
-		group.Mode = mode
+	if !group.ModeLocked {
+		group.Mode = routeModeOverrideFromSetting(modeOverrideRaw)
 	}
 	if group.FirstTokenTimeOut <= 0 && firstTokenDefault > 0 {
 		group.FirstTokenTimeOut = firstTokenDefault

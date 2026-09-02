@@ -131,7 +131,6 @@ func TestRunUsesAccessRouteAndDoesNotExposeBillingModelAsUpstream(t *testing.T) 
 
 func TestRunCanTestSavedChannelDirectlyWithoutGroup(t *testing.T) {
 	ctx := setupModelTestDB(t)
-	// Codex fast mode (verbosity/effort low) is now opt-in.
 	if err := op.SettingSetString(dbmodel.SettingKeyCodexFastMode, "true"); err != nil {
 		t.Fatalf("set codex fast mode: %v", err)
 	}
@@ -194,8 +193,8 @@ func TestRunCanTestSavedChannelDirectlyWithoutGroup(t *testing.T) {
 	if include, _ := body["include"].([]any); len(include) == 0 || include[0] != "reasoning.encrypted_content" {
 		t.Fatalf("expected Codex include in model test body, got %#v", body["include"])
 	}
-	if reasoning, _ := body["reasoning"].(map[string]any); reasoning["effort"] != "low" {
-		t.Fatalf("expected Codex fast reasoning effort in model test body, got %#v", body["reasoning"])
+	if body["service_tier"] != "priority" {
+		t.Fatalf("expected Codex fast service_tier=priority in model test body, got %#v", body["service_tier"])
 	}
 	if tools, _ := body["tools"].([]any); len(tools) < 4 {
 		t.Fatalf("expected Codex tools in model test body, got %#v", body["tools"])
@@ -710,9 +709,9 @@ func TestRunRespectsAPIKeySupportedModels(t *testing.T) {
 	channel := dbmodel.Channel{
 		Model:    "blocked-model",
 		Priority: 1,
-		Name:    "supported-model-channel",
-		Type:    outbound.OutboundTypeOpenAIChat,
-		Enabled: true,
+		Name:     "supported-model-channel",
+		Type:     outbound.OutboundTypeOpenAIChat,
+		Enabled:  true,
 		BaseUrls: []dbmodel.BaseUrl{{
 			URL: upstream.URL,
 		}},
@@ -874,9 +873,9 @@ data: {"type":"message_stop"}
 	channel := dbmodel.Channel{
 		Model:    "claude-opus-4-7[1m]",
 		Priority: 1,
-		Name:    "Claude-CPA",
-		Type:    outbound.OutboundTypeAnthropic,
-		Enabled: true,
+		Name:     "Claude-CPA",
+		Type:     outbound.OutboundTypeAnthropic,
+		Enabled:  true,
 		BaseUrls: []dbmodel.BaseUrl{{
 			URL: upstream.URL,
 		}},
@@ -1121,9 +1120,9 @@ data: {"type":"message_stop"}
 	channel := dbmodel.Channel{
 		Model:    "claude-opus-4-8[1m]",
 		Priority: 1,
-		Name:    "Claude-Full-1M",
-		Type:    outbound.OutboundTypeAnthropic,
-		Enabled: true,
+		Name:     "Claude-Full-1M",
+		Type:     outbound.OutboundTypeAnthropic,
+		Enabled:  true,
 		BaseUrls: []dbmodel.BaseUrl{{
 			URL: upstream.URL,
 		}},
@@ -1196,9 +1195,9 @@ data: {"type":"message_stop"}
 	channel := dbmodel.Channel{
 		Model:    "claude-opus-4-8[1m]",
 		Priority: 1,
-		Name:    "Claude-CPA-Terminal",
-		Type:    outbound.OutboundTypeAnthropic,
-		Enabled: true,
+		Name:     "Claude-CPA-Terminal",
+		Type:     outbound.OutboundTypeAnthropic,
+		Enabled:  true,
 		BaseUrls: []dbmodel.BaseUrl{{
 			URL: upstream.URL,
 		}},
@@ -1316,9 +1315,9 @@ func TestRunBatchHonorsConcurrency(t *testing.T) {
 	channel := dbmodel.Channel{
 		Model:    "model-a,model-b,model-c",
 		Priority: 1,
-		Name:    "batch-test-channel",
-		Type:    outbound.OutboundTypeOpenAIChat,
-		Enabled: true,
+		Name:     "batch-test-channel",
+		Type:     outbound.OutboundTypeOpenAIChat,
+		Enabled:  true,
 		BaseUrls: []dbmodel.BaseUrl{{
 			URL: upstream.URL,
 		}},

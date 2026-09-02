@@ -38,10 +38,17 @@ func (o *MessageOutbound) TransformRequest(ctx context.Context, request *model.I
 	// Convert to Anthropic request format
 	anthropicReq := convertToAnthropicRequest(request)
 
-	body, err := json.Marshal(anthropicReq)
-	if err != nil {
+	// Use a JSON encoder with HTML escaping disabled to match the real Claude
+	// CLI's Node.js JSON.stringify output. Go default json.Marshal escapes <, >,
+	// & as \u003c/\u003e/\u0026 — captured wire evidence (forward.jsonl) shows
+	// this causes a confirmed body delta vs genuine CLI (short +5B, long +560B).
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(anthropicReq); err != nil {
 		return nil, fmt.Errorf("failed to marshal anthropic request: %w", err)
 	}
+	body := bytes.TrimRight(buf.Bytes(), "\n")
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "", bytes.NewReader(body))
 	if err != nil {
@@ -389,6 +396,7 @@ func convertToAnthropicRequest(req *model.InternalLLMRequest) *anthropicModel.Me
 		Model:       model.NormalizeAnthropicModelAlias(req.Model),
 		Temperature: req.Temperature,
 		TopP:        req.TopP,
+		TopK:        req.TopK,
 		Stream:      req.Stream,
 		MaxTokens:   resolveMaxTokens(req),
 		System:      convertSystemPrompt(req),

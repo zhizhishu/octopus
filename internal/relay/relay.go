@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -1907,6 +1908,22 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 		return fmt.Errorf("upstream returned non-SSE content-type %q for stream request: %s", ct, string(body))
 	}
 
+	// Some upstreams return HTTP errors (500/502/503) with Content-Type: text/event-stream
+	// but a JSON error body. The SSE reader chokes on JSON, produces zero events, and the
+	// relay reports the opaque "upstream stream ended without internal response". Peek the
+	// first byte: if the body starts with '{' and the status is not 2xx, read it as a JSON
+	// error and surface the upstream message instead of swallowing it behind a stream error.
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		br := bufio.NewReaderSize(response.Body, 4*1024)
+		peek, err := br.Peek(1)
+		if err == nil && len(peek) > 0 && peek[0] == '{' {
+			body, _ := io.ReadAll(io.LimitReader(br, 16*1024))
+			response.Body.Close()
+			return fmt.Errorf("upstream %d (stream content-type) body: %s", response.StatusCode, string(body))
+		}
+		response.Body = io.NopCloser(br)
+	}
+
 	// We advertise a real claude-cli Accept-Encoding, so decompress any upstream
 	// Content-Encoding before the SSE reader (no-op on the common identity path).
 	if err := unwrapResponseEncoding(response); err != nil {
@@ -2365,6 +2382,17 @@ func (ra *relayAttempt) handleStreamResponseAsNonStream(ctx context.Context, res
 	if ct := response.Header.Get("Content-Type"); ct != "" && !strings.Contains(strings.ToLower(ct), "text/event-stream") {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 16*1024))
 		return fmt.Errorf("upstream returned non-SSE content-type %q for forced responses stream request: %s", ct, string(body))
+	}
+	// Same JSON-error-under-SSE-content-type guard as handleStreamResponse (see rationale there).
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		br := bufio.NewReaderSize(response.Body, 4*1024)
+		peek, err := br.Peek(1)
+		if err == nil && len(peek) > 0 && peek[0] == '{' {
+			body, _ := io.ReadAll(io.LimitReader(br, 16*1024))
+			response.Body.Close()
+			return fmt.Errorf("upstream %d (stream content-type) body: %s", response.StatusCode, string(body))
+		}
+		response.Body = io.NopCloser(br)
 	}
 
 	// Decompress any upstream Content-Encoding before the SSE reader (see the

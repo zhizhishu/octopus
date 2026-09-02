@@ -214,3 +214,34 @@ func TestSettingRefreshCacheKeepsCustomStreamDataTimeout(t *testing.T) {
 		t.Fatalf("expected custom stream data timeout to stay %q, got %q", customTimeout, cached)
 	}
 }
+
+func TestSettingRefreshCacheUpgradesEmptyRouteModeOverride(t *testing.T) {
+	ctx := setupSettingTest(t)
+
+	if err := db.GetDB().WithContext(ctx).Create(&model.Setting{
+		Key:   model.SettingKeyRouteModeOverride,
+		Value: "",
+	}).Error; err != nil {
+		t.Fatalf("seed empty route_mode_override: %v", err)
+	}
+
+	if err := settingRefreshCache(ctx); err != nil {
+		t.Fatalf("refresh setting cache: %v", err)
+	}
+
+	cached, err := SettingGetString(model.SettingKeyRouteModeOverride)
+	if err != nil {
+		t.Fatalf("get cached route_mode_override: %v", err)
+	}
+	if cached != "fill_first" {
+		t.Fatalf("expected empty route_mode_override upgraded to fill_first, got %q", cached)
+	}
+
+	var persisted model.Setting
+	if err := db.GetDB().WithContext(ctx).First(&persisted, "key = ?", model.SettingKeyRouteModeOverride).Error; err != nil {
+		t.Fatalf("load persisted route_mode_override: %v", err)
+	}
+	if persisted.Value != "fill_first" {
+		t.Fatalf("expected persisted route_mode_override to be fill_first, got %q", persisted.Value)
+	}
+}

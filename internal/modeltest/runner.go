@@ -1165,11 +1165,9 @@ func prepareCodexModelTestShape(req *transformermodel.InternalLLMRequest) {
 		store := false
 		req.Store = &store
 	}
-	if settingBool(dbmodel.SettingKeyCodexFastMode, false) && len(req.ResponsesTextRaw) == 0 {
-		req.ResponsesTextRaw = json.RawMessage(`{"verbosity":"low"}`)
-	}
-	if settingBool(dbmodel.SettingKeyCodexFastMode, false) && strings.TrimSpace(req.ReasoningEffort) == "" {
-		req.ReasoningEffort = "low"
+	if settingBool(dbmodel.SettingKeyCodexFastMode, false) && (req.ServiceTier == nil || strings.TrimSpace(*req.ServiceTier) == "") {
+		tier := "priority"
+		req.ServiceTier = &tier
 	}
 	if req.ResponsesInstructions == nil && !modelTestMessagesContainInstruction(req.Messages) {
 		content := defaultCodexInstructions

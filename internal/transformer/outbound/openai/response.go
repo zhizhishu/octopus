@@ -1173,9 +1173,9 @@ func ConvertToResponsesRequest(req *model.InternalLLMRequest) *ResponsesRequest 
 		}
 	}
 
-	// Convert reasoning. Summary is carried through faithfully (a genuine codex CLI always
-	// sends reasoning.summary="auto"); without it the upstream withholds reasoning-summary
-	// stream events and a long reasoning turn streams nothing until the final message.
+	// Convert reasoning. Summary is carried through faithfully when the client set it.
+	// The real Codex CLI 0.145.0 (captured 2026-09-02 via forward_capture_proxy) sends
+	// reasoning={context,effort} WITHOUT summary — Octopus no longer injects a default.
 	// Context must also materialize a reasoning object ON ITS OWN: the upstream ties
 	// reasoning.context="all_turns" to the codex Lite header rather than to reasoning being
 	// requested, so a codex turn with no effort/summary at all still has to carry it.

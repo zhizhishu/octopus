@@ -11,7 +11,6 @@ import {
     Minimize2,
     PencilLine,
     Plus,
-    RefreshCcw,
     Save,
     Search,
     ShieldCheck,
@@ -105,8 +104,6 @@ const ACCESS_PLAN_TEXT = {
         slug: '调用代号',
         enabled: '启用',
         defaultPlan: '默认方案',
-        autoSyncChannels: '跟随渠道自动同步',
-        autoSyncChannelsHint: '新启用或同步的渠道自动加入本方案已有模型的路由，不用手动重建；关闭则保持严格白名单',
     },
     billing: {
         title: '计费倍率',
@@ -136,7 +133,7 @@ const ACCESS_PLAN_TEXT = {
         targetCount: '映射 {count} 条',
         requestModel: '原请求模型',
         modeSpread: '轮询',
-        modeFillFirst: '填充优先',
+        modeFillFirst: '优先填充',
         upstreamModel: '发送模型',
         priority: '优先级',
         weight: '同级轮询权重',
@@ -145,20 +142,17 @@ const ACCESS_PLAN_TEXT = {
         empty: '暂无映射目标',
         canvasTitle: '模型顺序',
         canvasHint: '谁在上面谁先用；模型池只决定轮询还是优先填充。',
-        canvasEmpty: '暂无可视化链路，先重建映射或添加目标。',
+        canvasEmpty: '暂无可视化链路，渠道、模型或映射变更后会自动同步到此方案。',
         targetSummary: '候选渠道 / 发送模型',
         setupTitle: '调用前先确认模型池 / 方案',
-        setupHint: '模型池负责兜底，当前方案负责映射和计费。新渠道同步后用“重建当前方案映射”刷新。',
+        setupHint: '模型池负责兜底，当前方案负责映射和计费。渠道、模型或映射变更后会自动同步到此方案。',
         groupRouteHint: '用户扣费按“用户计费”列计算，实际请求会发送到下方渠道与模型。流式响应一旦写出，就不会中途硬切。',
-        rebuild: '重建映射',
-        rebuildGroup: '重建当前方案映射',
-        rebuildHint: '按当前渠道模型重建本方案映射，已消失的上游模型会被移除。',
         quickEdit: '编辑',
         quickEditTitle: '编辑模型映射',
         quickEditDescription: '直接编辑当前请求模型要走的渠道、发送模型、计费方式和提示词，不用滑到下方长列表。',
         targetMore: '+{count} 个目标',
         close: '关闭',
-        hiddenStale: '发现 {count} 个已失效映射，画布已标出；点“重建”才会清理。',
+        hiddenStale: '发现 {count} 个已失效映射，画布已标出。',
         fallback: '备用处理',
         billingModel: '用户计费',
         multiplier: '倍率',
@@ -200,8 +194,6 @@ const ACCESS_PLAN_TEXT = {
         billingUpdateFailed: '计费规则更新失败',
         routesUpdated: '模型映射已更新',
         routesUpdateFailed: '模型映射更新失败',
-        routesRebuilt: '模型映射已重建',
-        routesRebuildEmpty: '没有可用的渠道模型可重建',
         jsonApplied: 'JSON 已应用，记得保存',
         jsonInvalid: 'JSON 格式不对',
     },
@@ -234,8 +226,8 @@ function asPositiveInt(value: string, fallback: number) {
 }
 
 function clampRoutePriority(value: number) {
-    if (!Number.isFinite(value)) return 0;
-    return Math.min(9, Math.max(0, Math.trunc(value)));
+    if (!Number.isFinite(value)) return 1;
+    return Math.min(Number.MAX_SAFE_INTEGER, Math.max(1, Math.trunc(value)));
 }
 
 /**
@@ -251,12 +243,11 @@ function normalizeRouteMode(mode: number | undefined | null): 1 | 3 {
     return isSpreadMode(mode) ? 1 : 3;
 }
 
-/** 全局默认分流模式（setting route_mode_override）的可选值。 */
-type RouteModeOverrideChoice = '' | 'spread' | 'fill_first';
+/** 全局默认分流模式（setting route_mode_override）的可选值：新模型默认分流模式。 */
+type RouteModeOverrideChoice = 'spread' | 'fill_first';
 const ROUTE_MODE_OVERRIDE_CHOICES: Array<{ value: RouteModeOverrideChoice; label: string }> = [
-    { value: '', label: '跟随各规则' },
-    { value: 'spread', label: '全局轮询' },
-    { value: 'fill_first', label: '全局优先填充' },
+    { value: 'spread', label: '新模型默认：轮询' },
+    { value: 'fill_first', label: '新模型默认：优先填充' },
 ];
 
 function normalizeSlug(value: string) {
@@ -379,7 +370,6 @@ function modelFamilyKey(rawName: string): ModelFamilyKey {
 
 type RouteChannelModel = { channel_id: number; name: string; enabled?: boolean };
 
-type UnroutedChannelModel = RouteChannelModel & { clean_name: string };
 
 function cleanRouteTargetModels(target: AccessPlanRouteTarget): AccessPlanRouteTarget {
     return {
@@ -445,7 +435,9 @@ function moveRouteTargetToTop(targets: AccessPlanRouteTarget[], targetIndex: num
 
     return targets.map((target, index) => {
         const position = ordered.findIndex((item) => item.index === index);
-        return position >= 0 ? { ...target, priority: clampRoutePriority(position) } : target;
+        return position >= 0
+            ? { ...target, priority: clampRoutePriority(position + 1), priority_overridden: true }
+            : target;
     });
 }
 
@@ -472,74 +464,10 @@ function moveRouteTargetUpOne(targets: AccessPlanRouteTarget[], targetIndex: num
 
     return targets.map((target, index) => {
         const nextPosition = ordered.findIndex((item) => item.index === index);
-        return nextPosition >= 0 ? { ...target, priority: clampRoutePriority(nextPosition) } : target;
+        return nextPosition >= 0
+            ? { ...target, priority: clampRoutePriority(nextPosition + 1), priority_overridden: true }
+            : target;
     });
-}
-
-function unroutedChannelModels(channelModels: RouteChannelModel[], targets: AccessPlanRouteTarget[]) {
-    const routedKeys = new Set<string>();
-    targets.forEach((target) => {
-        routedKeys.add(channelModelKey(target.channel_id, cleanOneMillionModelName(target.upstream_model)));
-    });
-
-    const seen = new Set<string>();
-    return channelModels
-        .filter((model) => model.enabled !== false)
-        .map((model): UnroutedChannelModel | null => {
-            const cleanName = cleanOneMillionModelName(model.name);
-            if (!cleanName) return null;
-            const key = channelModelKey(model.channel_id, cleanName);
-            if (seen.has(key) || routedKeys.has(key)) return null;
-            seen.add(key);
-            return { ...model, clean_name: cleanName };
-        })
-        .filter((model): model is UnroutedChannelModel => model !== null)
-        .sort((a, b) => {
-            const byName = a.clean_name.localeCompare(b.clean_name);
-            return byName !== 0 ? byName : a.channel_id - b.channel_id;
-        });
-}
-
-function rebuildRouteTargetsFromChannelModels(channelModels: RouteChannelModel[], currentTargets: AccessPlanRouteTarget[]) {
-    const existingByChannelModel = new Map<string, AccessPlanRouteTarget>();
-    const existingByRequestModel = new Map<string, AccessPlanRouteTarget>();
-    currentTargets.forEach((target) => {
-        existingByChannelModel.set(channelModelKey(target.channel_id, cleanOneMillionModelName(target.upstream_model)), target);
-        const requestModel = cleanOneMillionModelName(target.request_model).toLowerCase();
-        if (requestModel && !existingByRequestModel.has(requestModel)) {
-            existingByRequestModel.set(requestModel, target);
-        }
-    });
-
-    const counters = new Map<string, number>();
-    return [...channelModels]
-        .filter((model) => model.enabled !== false && model.name.trim().length > 0)
-        .sort((a, b) => {
-            const byName = a.name.localeCompare(b.name);
-            return byName !== 0 ? byName : a.channel_id - b.channel_id;
-        })
-        .map((model) => {
-            const requestModel = cleanOneMillionModelName(model.name);
-            const previous = existingByChannelModel.get(channelModelKey(model.channel_id, requestModel))
-                ?? existingByRequestModel.get(requestModel.toLowerCase());
-            const nextPriority = (counters.get(requestModel.toLowerCase()) ?? 0) + 1;
-            counters.set(requestModel.toLowerCase(), nextPriority);
-
-            return {
-                request_model: requestModel,
-                channel_id: model.channel_id,
-                upstream_model: requestModel,
-                priority: previous?.priority ?? nextPriority,
-                weight: 1,
-                enabled: previous?.enabled ?? true,
-                billing_model_source: previous?.billing_model_source ?? 'request_model',
-                billing_model_override: previous?.billing_model_override,
-                mode: previous?.mode,
-                fallback_mode: previous?.fallback_mode ?? 'return_group',
-                system_prompt_override: previous?.system_prompt_override ?? '',
-                prompt_override_mode: previous?.prompt_override_mode ?? 'append_system',
-            } satisfies AccessPlanRouteTarget;
-        });
 }
 
 function CreatePlanPanel({
@@ -668,7 +596,6 @@ function PlanBasicsEditor({ plan }: { plan: AccessPlan }) {
     const [slug, setSlug] = useState(plan.slug);
     const [enabled, setEnabled] = useState(plan.enabled);
     const [isDefault, setIsDefault] = useState(plan.is_default);
-    const [autoSyncChannels, setAutoSyncChannels] = useState(plan.auto_sync_channels ?? false);
     const [confirmDelete, setConfirmDelete] = useState(false);
 
     const save = () => {
@@ -679,7 +606,6 @@ function PlanBasicsEditor({ plan }: { plan: AccessPlan }) {
                 slug: normalizeSlug(slug),
                 enabled,
                 is_default: isDefault,
-                auto_sync_channels: autoSyncChannels,
                 system_prompt_override: plan.system_prompt_override ?? '',
                 prompt_override_mode: plan.prompt_override_mode ?? 'append_system',
             },
@@ -774,13 +700,6 @@ function PlanBasicsEditor({ plan }: { plan: AccessPlan }) {
                     <label className="flex items-center justify-between gap-3 rounded-2xl border border-border/70 bg-muted/20 px-3 py-2 text-sm">
                         <span>{t('basic.defaultPlan')}</span>
                         <Switch checked={isDefault} onCheckedChange={setIsDefault} />
-                    </label>
-                    <label className="flex items-center justify-between gap-3 rounded-2xl border border-border/70 bg-muted/20 px-3 py-2 text-sm md:col-span-2">
-                        <span className="grid gap-0.5">
-                            <span>{t('basic.autoSyncChannels')}</span>
-                            <span className="text-xs text-muted-foreground">{t('basic.autoSyncChannelsHint')}</span>
-                        </span>
-                        <Switch checked={autoSyncChannels} onCheckedChange={setAutoSyncChannels} />
                     </label>
                 </div>
 
@@ -1081,6 +1000,7 @@ type TargetNodeData = {
     targetId?: number;
     laneId: string;
     priority: number;
+    orderIndex: number;
     showPriority: boolean;
     fillFirst: boolean;
     upstreamModel: string;
@@ -1164,8 +1084,8 @@ const TargetFlowCard = memo(function TargetFlowCard({ data }: NodeProps<TargetFl
         data.onPriorityChange(data.targetId, next);
     };
     const priorityTitle = data.fillFirst
-        ? accessPlanText('routes.priority')
-        : '并列显示不参与路由';
+        ? `第 ${data.orderIndex} 顺位 · ${accessPlanText('routes.priority')} P${priority}`
+        : '轮询候选（并列分流，无选路优先级之分）';
     return (
         <div
             className={cn('grid grid-cols-[minmax(84px,1.1fr)_minmax(96px,1.4fr)_auto] items-center gap-3 rounded-2xl border bg-card/90 px-3 py-2', data.enabled ? 'border-emerald-500/25' : 'border-border opacity-65')}
@@ -1181,40 +1101,44 @@ const TargetFlowCard = memo(function TargetFlowCard({ data }: NodeProps<TargetFl
                     <span className="shrink-0">#{data.channelId}</span>
                     <span className="shrink-0">·</span>
                     {data.fillFirst ? (
-                        <span className="shrink-0">{data.showPriority ? `P${priority}` : accessPlanText('routes.priority')}</span>
+                        <>
+                            <span className="shrink-0 font-medium text-foreground/80">第 {data.orderIndex} 顺位</span>
+                            <span className="shrink-0 text-muted-foreground/60">/</span>
+                            <span className="shrink-0">{data.showPriority ? `P${priority}` : accessPlanText('routes.priority')}</span>
+                            <div
+                                className="nodrag nopan pointer-events-auto ml-0.5 inline-flex shrink-0 items-center gap-0.5"
+                                onPointerDown={(event) => event.stopPropagation()}
+                            >
+                                <button
+                                    type="button"
+                                    className="flex size-4 items-center justify-center rounded border border-border/70 bg-background leading-none text-foreground hover:bg-muted disabled:opacity-40"
+                                    disabled={!data.targetId || priority >= Number.MAX_SAFE_INTEGER}
+                                    aria-label={`${accessPlanText('routes.priority')} demote`}
+                                    onClick={(event) => {
+                                        event.stopPropagation();
+                                        bumpPriority(1);
+                                    }}
+                                >
+                                    −
+                                </button>
+                                <span className="min-w-3.5 text-center font-semibold text-foreground">{priority}</span>
+                                <button
+                                    type="button"
+                                    className="flex size-4 items-center justify-center rounded border border-border/70 bg-background leading-none text-foreground hover:bg-muted disabled:opacity-40"
+                                    disabled={!data.targetId || priority <= 1}
+                                    aria-label={`${accessPlanText('routes.priority')} promote`}
+                                    onClick={(event) => {
+                                        event.stopPropagation();
+                                        bumpPriority(-1);
+                                    }}
+                                >
+                                    +
+                                </button>
+                            </div>
+                        </>
                     ) : (
-                        <span className="shrink-0">并列</span>
+                        <span className="shrink-0 rounded bg-emerald-500/10 px-1 py-0.5 font-medium text-emerald-600 dark:text-emerald-400">并列</span>
                     )}
-                    <div
-                        className="nodrag nopan pointer-events-auto ml-0.5 inline-flex shrink-0 items-center gap-0.5"
-                        onPointerDown={(event) => event.stopPropagation()}
-                    >
-                        <button
-                            type="button"
-                            className="flex size-4 items-center justify-center rounded border border-border/70 bg-background leading-none text-foreground hover:bg-muted disabled:opacity-40"
-                            disabled={!data.targetId || priority >= 9}
-                            aria-label={`${accessPlanText('routes.priority')} demote`}
-                            onClick={(event) => {
-                                event.stopPropagation();
-                                bumpPriority(1);
-                            }}
-                        >
-                            −
-                        </button>
-                        <span className="min-w-3.5 text-center font-semibold text-foreground">{priority}</span>
-                        <button
-                            type="button"
-                            className="flex size-4 items-center justify-center rounded border border-border/70 bg-background leading-none text-foreground hover:bg-muted disabled:opacity-40"
-                            disabled={!data.targetId || priority <= 0}
-                            aria-label={`${accessPlanText('routes.priority')} promote`}
-                            onClick={(event) => {
-                                event.stopPropagation();
-                                bumpPriority(-1);
-                            }}
-                        >
-                            +
-                        </button>
-                    </div>
                 </div>
             </div>
             <div className="min-w-0">
@@ -1370,9 +1294,7 @@ function buildRouteFlow(
                 type: 'default',
                 style: { stroke: 'var(--primary)', strokeWidth: 1.5, strokeOpacity: 0.5 },
             });
-            // 优先级只在「优先填充(Failover)」模式下才是真正的选路顺序；轮询(Spread)模式里它
-            // 只是拖拽序号、不参与路由（见 balancer.go Spread 语义：只有 ChannelPriority 是硬边界），
-            // 故一律并列显示，别把死数字画成假分档（存量老渠道序号各异 → 画布误显 P1-P4 的根因）。
+            // 优先级在「优先填充」模式下作为选路顺位；轮询 (Spread) 模式下所有目标并列参与加权负载均衡。
             const isFillFirstMode = !isSpreadMode(row.targets[0]?.mode);
             const prioritySet = new Set(row.targets.map((tgt) => tgt.priority || 0));
             const showPriority = isFillFirstMode && prioritySet.size > 1;
@@ -1393,7 +1315,8 @@ function buildRouteFlow(
                         channelId: target.channel_id,
                         targetId: target.id,
                         laneId: reqId,
-                        priority: clampRoutePriority(target.priority || 0),
+                        priority: clampRoutePriority(target.priority || 1),
+                        orderIndex: targetIndex + 1,
                         showPriority,
                         fillFirst: isFillFirstMode,
                         upstreamModel: cleanOneMillionModelName(target.upstream_model || accessPlanText('routes.unset')),
@@ -1503,12 +1426,8 @@ type RouteFlowCanvasProps = {
     modelNames: string[];
     channelModels: RouteChannelModel[];
     channelModelsReady: boolean;
-    unroutedModels: UnroutedChannelModel[];
     onEditRequest: (requestModel: string) => void;
     onPriorityChange?: (targetId: number, priority: number) => void;
-    onMoveToTop?: (targetId: number) => void;
-    onMoveUpOne?: (targetId: number) => void;
-    onAddUnroutedModel?: (model: UnroutedChannelModel) => void;
     onOpenJson?: () => void;
     onModeChange?: (rowTargets: AccessPlanRouteTarget[], mode: 1 | 3) => void;
 };
@@ -1516,7 +1435,7 @@ type RouteFlowCanvasProps = {
 type RouteViewMode = 'all' | 'channel' | 'mapping';
 
 function RouteFlowCanvasInner({
-    plan, rows, channels, channelMappings, modelNames, channelModels, channelModelsReady, unroutedModels, onEditRequest, onPriorityChange, onMoveToTop, onMoveUpOne, onAddUnroutedModel, onOpenJson, onModeChange,
+    plan, rows, channels, channelMappings, modelNames, channelModels, channelModelsReady, onEditRequest, onPriorityChange, onOpenJson, onModeChange,
 }: RouteFlowCanvasProps) {
     const t = accessPlanText;
     const channelNameByID = useMemo(() => new Map(channels.map((channel) => [channel.id, channel.name])), [channels]);
@@ -1586,61 +1505,7 @@ function RouteFlowCanvasInner({
         });
     }, [channelMappings, q, viewMode, selectedChannelId, selectedMappingModel]);
 
-    // 画布只渲染「已路由」的模型；搜索时把渠道模型池里命中但未路由的模型也捞出来，
-    // 免得搜 deepseek 时误以为系统里没有——其实是没路由进本方案。
-    const routedModelNames = useMemo(() => {
-        const names = new Set<string>();
-        rows.forEach((row) => {
-            names.add(row.requestModel.toLowerCase());
-            row.targets.forEach((target) => {
-                if (target.upstream_model) names.add(target.upstream_model.toLowerCase());
-            });
-        });
-        channelMappings.forEach((mapping) => {
-            names.add(mapping.fromModel.toLowerCase());
-            names.add(mapping.toModel.toLowerCase());
-        });
-        return names;
-    }, [rows, channelMappings]);
-
-    const matchedPoolModels = useMemo(() => {
-        if (!q) return [];
-        const seen = new Set<string>();
-        const hits: string[] = [];
-        const candidates = [...modelNames, ...channelModels.map((model) => model.name)];
-        for (const raw of candidates) {
-            const name = cleanOneMillionModelName(raw);
-            const key = name.toLowerCase();
-            if (!key || seen.has(key)) continue;
-            seen.add(key);
-            if (key.includes(q) && !routedModelNames.has(key)) hits.push(name);
-        }
-        return hits.sort((a, b) => a.localeCompare(b));
-    }, [q, modelNames, channelModels, routedModelNames]);
-
-    const filteredUnroutedModels = useMemo(() => {
-        const channelFilterId = viewMode === 'channel' && selectedChannelId ? Number(selectedChannelId) : null;
-        const modelFilter = viewMode === 'mapping' && selectedMappingModel ? selectedMappingModel.toLowerCase() : null;
-
-        const matches = unroutedModels.filter((model) => {
-            if (channelFilterId !== null && model.channel_id !== channelFilterId) {
-                return false;
-            }
-            if (modelFilter && model.clean_name.toLowerCase() !== modelFilter) {
-                return false;
-            }
-            if (!q) return true;
-            return (
-                model.clean_name.toLowerCase().includes(q)
-                || (channelNameByID.get(model.channel_id) ?? '').toLowerCase().includes(q)
-            );
-        });
-        // ponytail: cap beginner canvas overflow at 40; add pagination if admins manage hundreds of unrouted models.
-        return matches.slice(0, 40);
-    }, [unroutedModels, q, channelNameByID, viewMode, selectedChannelId, selectedMappingModel]);
-
     const targetCount = rows.reduce((sum, row) => sum + row.targets.length, 0);
-    const hasCanvasContent = filteredRows.length > 0 || filteredUnroutedModels.length > 0 || filteredMappings.length > 0;
 
     // ── ReactFlow 无限画布 ──
     const { fitView, setCenter } = useReactFlow();
@@ -1792,19 +1657,9 @@ function RouteFlowCanvasInner({
                 </div>
             </div>
 
-            {filteredRows.length === 0 ? (
+            {filteredRows.length === 0 && filteredMappings.length === 0 ? (
                 <div className="px-4 py-8 text-center text-sm text-muted-foreground">
-                    {matchedPoolModels.length > 0 ? (
-                        <div className="mx-auto max-w-md space-y-3 text-left">
-                            <p className="text-center">模型池里有「{query.trim()}」，但还没路由到本方案：</p>
-                            <div className="flex flex-wrap justify-center gap-1.5">
-                                {matchedPoolModels.map((name) => (
-                                    <Badge key={name} variant="outline" className="rounded-full font-mono">{name}</Badge>
-                                ))}
-                            </div>
-                            <p className="text-center text-xs">点上方「重建映射」把它们路由进来，或手动添加路线。</p>
-                        </div>
-                    ) : rows.length === 0 ? (
+                    {rows.length === 0 ? (
                         t('routes.canvasEmpty')
                     ) : (
                         `没有匹配当前筛选条件的模型或渠道`
@@ -1999,7 +1854,7 @@ function RouteTargetEditorCard({
                         variant="outline"
                         size="sm"
                         className="h-8 shrink-0 gap-1 rounded-xl text-xs"
-                        disabled={!moveTargetToTop || cleanOneMillionModelName(target.request_model).length === 0 || clampRoutePriority(target.priority) <= 0}
+                        disabled={!moveTargetToTop || cleanOneMillionModelName(target.request_model).length === 0}
                         onClick={() => moveTargetToTop?.(index)}
                         title="谁在上面谁先用：点一下，这个模型就排到最上面"
                     >
@@ -2109,7 +1964,6 @@ function RouteTargetsEditor({
     const editableTargets = useMemo(() => activeRouteTargets(targets, channelModelIndex), [targets, channelModelIndex]);
     // 画布展示全部映射（含已失效的），失效项在渲染层打「已失效」标，不再静默隐藏。
     const canvasRows = useMemo(() => groupedRouteTargets(targets), [targets]);
-    const unroutedModels = useMemo(() => unroutedChannelModels(channelModels, targets), [channelModels, targets]);
     const staleTargetCount = targets.length - editableTargets.length;
     const editingRequestKey = editingRequestModel ? cleanOneMillionModelName(editingRequestModel).toLowerCase() : '';
     const editingTargets = useMemo(() => (
@@ -2194,10 +2048,51 @@ function RouteTargetsEditor({
         onSuccess?: () => void,
         restoreOnError?: AccessPlanRouteTarget[],
     ) => {
+        // 按 request_model 分组归一化：
+        // 1. 同一 request_model 下 targets 统一 mode（以组内首个明确设置的 mode 为准，默认 fill_first 即 mode=3）
+        // 2. spread (mode=1 轮询)：全部 priority=1, priority_overridden=false
+        // 3. fill_first (mode=3 优先填充)：这是人工排序保存，必须同 rule 所有 target 无条件 priority_overridden=true，按分配的 priority (1..N) 保存
+        const groups = new Map<string, AccessPlanRouteTarget[]>();
+        nextTargets.forEach((target) => {
+            const key = cleanOneMillionModelName(target.request_model).toLowerCase();
+            const group = groups.get(key) ?? [];
+            group.push(target);
+            groups.set(key, group);
+        });
+
+        const normalizedTargets: AccessPlanRouteTarget[] = [];
+        groups.forEach((groupTargets) => {
+            const groupMode: 1 | 3 = isSpreadMode(groupTargets.find((t) => t.mode !== undefined)?.mode) ? 1 : 3;
+            if (groupMode === 1) {
+                // 轮询：所有 target 并列，priority=1，priority_overridden=false
+                groupTargets.forEach((target) => {
+                    normalizedTargets.push({
+                        ...target,
+                        mode: 1,
+                        priority: 1,
+                        priority_overridden: false,
+                    });
+                });
+            } else {
+                // 优先填充：人工排序保存，无条件 priority_overridden=true
+                groupTargets.forEach((target, i) => {
+                    const assignedPriority = Number.isFinite(target.priority)
+                        ? clampRoutePriority(target.priority)
+                        : clampRoutePriority(i + 1);
+                    normalizedTargets.push({
+                        ...target,
+                        mode: 3,
+                        priority: assignedPriority,
+                        priority_overridden: true,
+                    });
+                });
+            }
+        });
+
         updateRoutes.mutate(
             {
                 access_plan_id: plan.id,
-                targets: nextTargets.map((target, index) => ({
+                targets: normalizedTargets.map((target, index) => ({
                     ...target,
                     request_model: cleanOneMillionModelName(target.request_model),
                     upstream_model: cleanOneMillionModelName(target.upstream_model),
@@ -2206,8 +2101,8 @@ function RouteTargetsEditor({
                     enabled: target.enabled,
                     billing_model_source: target.billing_model_source ?? 'request_model',
                     billing_model_override: cleanOneMillionModelName(target.billing_model_override ?? '') || undefined,
-                    // 分流模式跟随每条规则（同 request_model 的所有 target 带同一个值），后端按规则落库。
                     mode: isSpreadMode(target.mode) ? 1 : 3,
+                    priority_overridden: target.priority_overridden,
                     fallback_mode: target.fallback_mode ?? 'return_group',
                     system_prompt_override: target.system_prompt_override?.trim() || undefined,
                     prompt_override_mode: target.prompt_override_mode ?? 'append_system',
@@ -2241,7 +2136,7 @@ function RouteTargetsEditor({
         if (index < 0) return;
         if (clampRoutePriority(current[index].priority) === nextPriority) return;
         const next = current.map((target, currentIndex) => (
-            currentIndex === index ? { ...target, priority: nextPriority } : target
+            currentIndex === index ? { ...target, priority: nextPriority, priority_overridden: true } : target
         ));
         setTargets(next);
         saveTargetsRef.current(
@@ -2250,32 +2145,6 @@ function RouteTargetsEditor({
             undefined,
             current,
         );
-    }, [t]);
-
-    // 「加一到顶」：把点中的候选提到同一请求模型的最前（优先级 0），其余顺延。
-    // 优先级同时被 failover(优先填充) 与 spread(轮询) 两个 balancer 消费，所以这里
-    // 只改顺序，两种模式的实际先后都会跟着变。
-    const moveCanvasTargetToTop = useCallback((targetId: number) => {
-        const current = targetsRef.current;
-        const index = current.findIndex((target) => target.id === targetId);
-        if (index < 0) return;
-        const next = moveRouteTargetToTop(current, index);
-        setTargets(next);
-        saveTargetsRef.current(
-            next,
-            t('toast.routesUpdated'),
-            undefined,
-            current,
-        );
-    }, [t]);
-
-    const moveCanvasTargetUpOne = useCallback((targetId: number) => {
-        const current = targetsRef.current;
-        const index = current.findIndex((target) => target.id === targetId);
-        if (index < 0) return;
-        const next = moveRouteTargetUpOne(current, index);
-        setTargets(next);
-        saveTargetsRef.current(next, t('toast.routesUpdated'), undefined, current);
     }, [t]);
 
     const moveEditorTargetToTop = useCallback((targetIndex: number) => {
@@ -2285,57 +2154,39 @@ function RouteTargetsEditor({
         saveTargetsRef.current(next, t('toast.routesUpdated'), undefined, current);
     }, [t]);
 
-    const addUnroutedModel = useCallback((model: UnroutedChannelModel) => {
-        const current = targetsRef.current;
-        const requestKey = model.clean_name.toLowerCase();
-        const nextPriority = current
-            .filter((target) => cleanOneMillionModelName(target.request_model).toLowerCase() === requestKey)
-            .reduce((maxPriority, target) => Math.max(maxPriority, clampRoutePriority(target.priority)), -1) + 1;
-        const next = [
-            ...current,
-            {
-                request_model: model.clean_name,
-                channel_id: model.channel_id,
-                upstream_model: model.clean_name,
-                priority: clampRoutePriority(nextPriority),
-                weight: 1,
-                enabled: true,
-                billing_model_source: 'request_model',
-                mode: 3,
-                fallback_mode: 'return_group',
-                system_prompt_override: '',
-                prompt_override_mode: 'append_system',
-            } satisfies AccessPlanRouteTarget,
-        ];
-        setTargets(next);
-        saveTargetsRef.current(next, t('toast.routesUpdated'), undefined, current);
-    }, [t]);
-
     const save = (onSuccess?: () => void) => saveTargets(targets, t('toast.routesUpdated'), onSuccess);
 
     // 画布行内「分流模式」下拉：同一条规则（request_model）的所有 target 一起改，
     // 后端按 request_model 聚成规则、取该组的 mode 落库（见 op.AccessPlanUpdateRouteTargets）。
+    // 切换到 spread (mode=1) 时重置 priority=1, priority_overridden=false；
+    // 切换到 fill_first (mode=3) 时按自然顺序 1..N 赋 priority 且 overridden=true（显式模式选择）。
     const updateRowMode = useCallback((rowTargets: AccessPlanRouteTarget[], mode: 1 | 3) => {
         const keys = new Set(rowTargets.map((target) => target.id).filter((id): id is number => typeof id === 'number'));
         const current = targetsRef.current;
-        const next = current.map((target) => (
-            (typeof target.id === 'number' && keys.has(target.id)) || rowTargets.includes(target)
-                ? { ...target, mode }
-                : target
-        ));
+        const matchingIndices: number[] = [];
+        current.forEach((target, i) => {
+            if ((typeof target.id === 'number' && keys.has(target.id)) || rowTargets.includes(target)) {
+                matchingIndices.push(i);
+            }
+        });
+
+        const next = current.map((target, idx) => {
+            const matchOrder = matchingIndices.indexOf(idx);
+            if (matchOrder === -1) return target;
+            if (mode === 1) {
+                return { ...target, mode, priority: 1, priority_overridden: false };
+            }
+            // 切换为 fill_first (mode=3)
+            return {
+                ...target,
+                mode,
+                priority: target.priority_overridden ? target.priority : clampRoutePriority(matchOrder + 1),
+                priority_overridden: true,
+            };
+        });
         setTargets(next);
         saveTargetsRef.current(next, t('toast.routesUpdated'), undefined, current);
     }, [t]);
-
-    const rebuild = () => {
-        const rebuilt = rebuildRouteTargetsFromChannelModels(channelModels, editableTargets);
-        if (rebuilt.length === 0) {
-            toast.error(t('toast.routesRebuildEmpty'));
-            return;
-        }
-        setTargets(rebuilt);
-        saveTargets(rebuilt, t('toast.routesRebuilt'));
-    };
 
     const fillJSON = () => {
         setJsonText(JSON.stringify(targets.map((target) => ({
@@ -2404,17 +2255,6 @@ function RouteTargetsEditor({
                     ) : null}
                 </div>
                 <div className="flex min-w-0 flex-wrap items-center gap-2 sm:justify-end">
-                    <Button
-                        type="button"
-                        variant="outline"
-                        className="rounded-xl"
-                        disabled={channelModels.length === 0 || updateRoutes.isPending}
-                        onClick={rebuild}
-                        title={t('routes.rebuildHint')}
-                    >
-                        <RefreshCcw className="size-4" />
-                        <span className="min-w-0 truncate">{t('routes.rebuildGroup')}</span>
-                    </Button>
                     <Button type="button" variant="outline" className="rounded-xl" onClick={addTarget}>
                         <Plus className="size-4" />
                         <span className="min-w-0 truncate">{t('actions.add')}</span>
@@ -2439,12 +2279,8 @@ function RouteTargetsEditor({
                 modelNames={modelNames}
                 channelModels={channelModels}
                 channelModelsReady={channelModelsReady}
-                unroutedModels={unroutedModels}
                 onEditRequest={setEditingRequestModel}
                 onPriorityChange={changeCanvasPriority}
-                onMoveToTop={moveCanvasTargetToTop}
-                onMoveUpOne={moveCanvasTargetUpOne}
-                onAddUnroutedModel={addUnroutedModel}
                 onOpenJson={openJson}
                 onModeChange={updateRowMode}
             />
@@ -2501,6 +2337,86 @@ function RouteTargetsEditor({
                         <DialogDescription>{t('routes.quickEditDescription')}</DialogDescription>
                     </DialogHeader>
                     <div className="max-h-[calc(100dvh-12rem)] min-w-0 space-y-2 overflow-y-auto px-4 py-3 sm:px-5">
+                        {editingRequestModel && (() => {
+                            const currentChannelIds = new Set(editingTargets.map((t) => t.channel_id));
+                            const reqKey = cleanOneMillionModelName(editingRequestModel).toLowerCase();
+
+                            // 预先建立每个渠道在当前 request_model 下的上游模型解析
+                            // 规则：
+                            // 1. 优先查 channelMappings (key=request model, value=upstream model)，
+                            //    若该渠道 mapping 的 fromModel 匹配 reqKey，且该渠道 selected_models 包含 mapped upstream，
+                            //    则解析为 mapping value（保留清洗后的显示名）
+                            // 2. 否则同名支持：若渠道 selected_models 包含与 reqKey 相同的模型名
+                            // 3. 不匹配的渠道不展示
+                            const availableChannelsWithUpstream = channels.flatMap((ch) => {
+                                if (ch.enabled === false || currentChannelIds.has(ch.id)) return [];
+                                const chModels = modelsForChannel(ch.id);
+
+                                // 检查是否有 mapping 匹配
+                                const matchedMapping = channelMappings.find(
+                                    (m) => m.channelId === ch.id && cleanOneMillionModelName(m.fromModel).toLowerCase() === reqKey
+                                );
+
+                                if (matchedMapping) {
+                                    const mappedUpstream = cleanOneMillionModelName(matchedMapping.toModel);
+                                    const mappedKey = mappedUpstream.toLowerCase();
+                                    const foundModel = chModels.find((m) => m.toLowerCase() === mappedKey);
+                                    if (foundModel) {
+                                        return [{ channel: ch, upstreamModel: foundModel }];
+                                    }
+                                }
+
+                                // identity 同名匹配
+                                const identityModel = chModels.find((m) => m.toLowerCase() === reqKey);
+                                if (identityModel) {
+                                    return [{ channel: ch, upstreamModel: identityModel }];
+                                }
+                                return [];
+                            });
+
+                            if (availableChannelsWithUpstream.length === 0) return null;
+                            return (
+                                <div className="flex items-center gap-2 rounded-xl border border-dashed border-border/80 bg-muted/20 p-2 text-xs">
+                                    <span className="shrink-0 text-muted-foreground">添加可用渠道:</span>
+                                    <select
+                                        value=""
+                                        onChange={(e) => {
+                                            const channelId = Number(e.target.value);
+                                            if (!channelId) return;
+                                            const match = availableChannelsWithUpstream.find((item) => item.channel.id === channelId);
+                                            if (!match) return;
+                                            const groupMode = editingTargets[0]?.mode ?? 3;
+                                            const maxPriority = editingTargets.reduce((max, t) => Math.max(max, t.priority ?? 0), 0);
+                                            setTargets((current) => [
+                                                ...current,
+                                                {
+                                                    request_model: editingRequestModel,
+                                                    channel_id: channelId,
+                                                    upstream_model: match.upstreamModel,
+                                                    priority: isSpreadMode(groupMode) ? 1 : Math.max(1, maxPriority + 1),
+                                                    weight: 1,
+                                                    enabled: true,
+                                                    billing_model_source: 'request_model',
+                                                    mode: isSpreadMode(groupMode) ? 1 : 3,
+                                                    priority_overridden: !isSpreadMode(groupMode),
+                                                    fallback_mode: 'return_group',
+                                                    system_prompt_override: '',
+                                                    prompt_override_mode: 'append_system',
+                                                },
+                                            ]);
+                                        }}
+                                        className="h-7 min-w-36 rounded-lg border border-border/70 bg-background px-2 text-xs text-foreground outline-none focus:border-primary/50"
+                                    >
+                                        <option value="">选择要添加的渠道...</option>
+                                        {availableChannelsWithUpstream.map(({ channel: ch }) => (
+                                            <option key={ch.id} value={ch.id}>
+                                                {ch.name} (#{ch.id})
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
+                            );
+                        })()}
                         {editingTargets.length === 0 ? (
                             <div className="rounded-xl border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">
                                 {t('routes.empty')}
@@ -2555,27 +2471,30 @@ function RouteTargetsEditor({
 
 /**
  * 「全局默认模式」下拉：读写通用 setting route_mode_override。
- * '' = 跟随各规则（无全局覆盖）；'spread' = 全局轮询；'fill_first' = 全局优先填充。
+ * 只提供明确的两项：'spread' = 新模型默认：轮询；'fill_first' = 新模型默认：优先填充。
+ * 读取到历史空值或未知值时，在 UI 归一到明确默认值 'fill_first'（不编造后端写回，仅在用户主动选择时持久化）。
  * 走现有 setting 的 GET（/setting/list）与写接口（/setting/set）。
  */
 function GlobalRouteModeSelect({ className }: { className?: string }) {
     const { data: settings } = useSettingList();
     const setSetting = useSetSetting();
-    const [value, setValue] = useState<RouteModeOverrideChoice>('');
-    const savedRef = useRef<RouteModeOverrideChoice>('');
+    const [value, setValue] = useState<RouteModeOverrideChoice>('fill_first');
+    const savedRef = useRef<RouteModeOverrideChoice>('fill_first');
 
     useEffect(() => {
         if (!settings) return;
         const found = settings.find((setting) => setting.key === SettingKey.RouteModeOverride);
         const raw = (found?.value ?? '') as RouteModeOverrideChoice;
-        const next = ROUTE_MODE_OVERRIDE_CHOICES.some((choice) => choice.value === raw) ? raw : '';
+        const next: RouteModeOverrideChoice = ROUTE_MODE_OVERRIDE_CHOICES.some((choice) => choice.value === raw)
+            ? raw
+            : 'fill_first';
         setValue(next);
         savedRef.current = next;
     }, [settings]);
 
     return (
         <label className={cn('flex min-w-0 items-center gap-2 text-xs text-muted-foreground', className)}>
-            <span className="shrink-0 whitespace-nowrap">全局默认模式</span>
+            <span className="shrink-0 whitespace-nowrap">新模型默认</span>
             <select
                 value={value}
                 onChange={(event) => {
@@ -2586,17 +2505,17 @@ function GlobalRouteModeSelect({ className }: { className?: string }) {
                         {
                             onSuccess: () => {
                                 savedRef.current = next;
-                                toast.success('全局默认模式已保存');
+                                toast.success('默认模式已保存');
                             },
                             onError: (error) => {
                                 setValue(savedRef.current);
-                                toast.error('全局默认模式保存失败', { description: apiErrorMessage(error) });
+                                toast.error('默认模式保存失败', { description: apiErrorMessage(error) });
                             },
                         },
                     );
                 }}
-                aria-label="全局默认模式"
-                title="全局默认分流模式：跟随各规则=不覆盖；全局轮询/全局优先填充=强制覆盖所有未锁定的分流规则"
+                aria-label="新模型默认分流模式"
+                title="新模型默认分流模式：轮询 / 优先填充"
                 className="h-8 min-w-0 rounded-full border border-border/70 bg-background/60 px-2.5 text-xs text-foreground outline-none focus:border-primary/50"
             >
                 {ROUTE_MODE_OVERRIDE_CHOICES.map((choice) => (

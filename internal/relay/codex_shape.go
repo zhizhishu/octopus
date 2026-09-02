@@ -47,7 +47,13 @@ func (ra *relayAttempt) prepareCodexRequestShape() {
 	req.Store = &store
 	applyCodexFastMode(req)
 	normalizeCodexReasoningEffort(req)
-	ensureCodexReasoningSummary(req)
+	// ensureCodexReasoningSummary was removed: the real Codex CLI 0.145.0 (captured
+	// 2026-09-02 via forward_capture_proxy, forward.jsonl:31-32) sends reasoning with
+	// keys ["context","effort"] and reasoning_summary=null. The prior comment claiming
+	// "genuine codex CLI always sends summary=auto" was wrong; injecting it added a
+	// field the real CLI does not send and caused a +477B body delta (42380→42857).
+	// Downstream clients that want progress events during long reasoning turns should
+	// set reasoning.summary explicitly — Octopus no longer injects a default.
 	ensureCodexReasoningContext(req)
 	ensureCodexParallelToolCalls(req)
 	if codexSelfContained {
@@ -108,12 +114,14 @@ func applyCodexFastMode(req *transformerModel.InternalLLMRequest) {
 	if req == nil || !settingBool(dbmodel.SettingKeyCodexFastMode, false) {
 		return
 	}
-	if len(req.ResponsesTextRaw) == 0 {
-		req.ResponsesTextRaw = json.RawMessage(`{"verbosity":"low"}`)
+	// Official Codex Fast is a service-tier request, not a verbosity/effort downgrade.
+	// CLIProxyAPI maps speed=fast / service_tier=fast onto service_tier=priority and
+	// leaves reasoning untouched. If the client already sent a tier, keep it.
+	if req.ServiceTier != nil && strings.TrimSpace(*req.ServiceTier) != "" {
+		return
 	}
-	if strings.TrimSpace(req.ReasoningEffort) == "" {
-		req.ReasoningEffort = "low"
-	}
+	tier := "priority"
+	req.ServiceTier = &tier
 }
 
 // normalizeCodexReasoningEffort adjusts the request body's reasoning.effort for two
@@ -129,15 +137,18 @@ func applyCodexFastMode(req *transformerModel.InternalLLMRequest) {
 //
 // Mirrors sub2api's normalizeOpenAIReasoningEffortForModel spirit without its aggressive
 // "drop unknown efforts" behaviour.
-// ensureCodexReasoningSummary guarantees the codex-faithful reasoning.summary="auto".
-// A genuine codex CLI always sends reasoning:{effort,summary:"auto"} — the summary field is
-// what makes a Responses upstream emit response.reasoning_summary_text.delta events *during*
-// a long reasoning turn. When it is missing (a chat->codex request, or a codex client that
-// left it empty) the upstream reasons silently, so a max-effort turn over a large context
-// streams NOTHING to the client for the whole 60-1200s reasoning window — perceived as a
-// hang. Only fill the default when the client left it empty; a client that explicitly chose
-// a summary level owns it. Shape-SAFE body change (reasoning.summary only), and it moves the
-// codex outbound CLOSER to the real CLI shape (which always carries summary="auto").
+// ensureCodexReasoningSummary is NO LONGER CALLED in prepareCodexRequestShape as of
+// 2026-09-03. Capture evidence (forward.jsonl:31-32, real Codex CLI 0.145.0 direct to
+// anyrouter.top) shows the genuine CLI sends reasoning={context,effort} WITHOUT summary —
+// reasoning_keys=["context","effort"], reasoning_summary=null. The prior claim that "a
+// genuine codex CLI always sends summary=auto" was incorrect, and injecting it caused a
+// confirmed +477B body delta (42380→42857) vs direct CLI.
+//
+// The function is kept as dead code for reference. The trade-off is real: without
+// summary, the upstream does not emit response.reasoning_summary_text.delta events during
+// long reasoning turns, so a max-effort turn streams nothing until the final message.
+// Downstream clients that want interim progress should explicitly set reasoning.summary
+// rather than relying on Octopus to inject it.
 func ensureCodexReasoningSummary(req *transformerModel.InternalLLMRequest) {
 	if req == nil {
 		return
