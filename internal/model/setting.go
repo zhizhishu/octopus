@@ -91,7 +91,7 @@ const (
 	// ordered iterator. 0 disables this automatic rescue; valid values are capped at 600s.
 	SettingKeyRelayNoBreakerRetryBudgetSec SettingKey = "relay_no_breaker_retry_budget_seconds"
 
-	SettingKeyRouteModeOverride        SettingKey = "route_mode_override"      // 路由模式全局覆盖: "spread"=强制轮询, "fill_first"=强制优先填充(默认); 后端拒绝空值
+	SettingKeyRouteModeOverride        SettingKey = "route_mode_override"      // 路由模式全局覆盖: ""=跟随分组各自模式, "spread"=强制轮询, "fill_first"=强制优先填充
 	SettingKeyRouteStickyCacheFirst    SettingKey = "route_sticky_cache_first" // 轮询类分组里纯优化型会话(prompt_cache_key/user/safety_identifier/oct 自造指纹)的粘性取舍: false=分摊优先(默认, 不粘、真轮转), true=缓存优先(非空来源也粘, 换上游 prompt-cache 命中)。语义详见 internal/relay/route_sticky.go
 	SettingKeyPromptOverrideSystem     SettingKey = "prompt_override_system"
 	SettingKeyPromptOverrideMode       SettingKey = "prompt_override_mode"
@@ -304,7 +304,7 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyRelayInterventionEnabled, Value: "false"},                                       // 默认关: 开启后上游全失败的请求会挂起等人工在日志页选渠道重试, 而不是把错误返回给客户端
 		{Key: SettingKeyRelayInterventionTimeoutSec, Value: "1800"},                                     // 人工接管等待上限(秒), 超时后原错误照常返回客户端
 		{Key: SettingKeyRelayNoBreakerRetryBudgetSec, Value: "300"},                                     // 无熔断渠道自动猛打预算(秒): 按画布既定顺序反复重试; 最大600, 0=关闭
-		{Key: SettingKeyRouteModeOverride, Value: "fill_first"},                                          // 默认 fill_first=强制优先填充; 设为 spread 则强制轮询
+		{Key: SettingKeyRouteModeOverride, Value: ""},                                                   // 默认空=跟随分组各自模式(向后兼容); 设为 spread/fill_first 则强制覆盖所有分组
 		{Key: SettingKeyRouteStickyCacheFirst, Value: "false"},                                          // 默认 false=分摊优先(现行为不变); 设 true 切「缓存优先」: 轮询分组里非空的纯优化型会话也保留粘性
 		{Key: SettingKeyPromptOverrideSystem, Value: ""},
 		{Key: SettingKeyPromptOverrideMode, Value: string(PromptOverrideModeAppendSystem)},
@@ -442,10 +442,10 @@ func (s *Setting) Validate() error {
 		return nil
 	case SettingKeyRouteModeOverride:
 		switch strings.ToLower(strings.TrimSpace(s.Value)) {
-		case "spread", "fill_first":
+		case "", "spread", "fill_first":
 			return nil
 		default:
-			return fmt.Errorf("%s must be spread or fill_first", s.Key)
+			return fmt.Errorf("%s must be empty, spread, or fill_first", s.Key)
 		}
 	case SettingKeyRelayLogKeepEnabled, SettingKeyAnthropicAutoCacheControl, SettingKeyOpenAIAutoPromptCacheKey,
 		SettingKeyClaudeHeaderStabilize, SettingKeyClaudeCLIAutoCompact, SettingKeyCodexFastMode,

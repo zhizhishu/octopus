@@ -8,9 +8,9 @@ import (
 
 func TestRouteModeOverrideFromSetting(t *testing.T) {
 	// The mapper accepts four input categories: explicit spread, explicit
-	// fill_first, empty, and unknown. Only spread surfaces as GroupModeSpread;
-	// every other value (fill_first, empty, unknown) resolves to GroupModeFillFirst
-	// so the effective default is always a concrete mode and never 0.
+	// fill_first, empty, and unknown. Only spread/fill_first surface as concrete
+	// modes; every other value (empty, unknown) resolves to 0 = "no override — follow
+	// the group's own stored mode".
 	cases := []struct {
 		name string
 		raw  string
@@ -22,10 +22,10 @@ func TestRouteModeOverrideFromSetting(t *testing.T) {
 		{"fill_first canonical", "fill_first", dbmodel.GroupModeFillFirst},
 		{"fill_first mixed-case", "Fill_First", dbmodel.GroupModeFillFirst},
 		{"fill_first trimmed", " fill_first ", dbmodel.GroupModeFillFirst},
-		{"empty -> fill_first", "", dbmodel.GroupModeFillFirst},
-		{"blank -> fill_first", "   ", dbmodel.GroupModeFillFirst},
-		{"unknown -> fill_first", "bogus", dbmodel.GroupModeFillFirst},
-		{"unknown alias -> fill_first", "round_robin", dbmodel.GroupModeFillFirst},
+		{"empty -> no override", "", 0},
+		{"blank -> no override", "   ", 0},
+		{"unknown -> no override", "bogus", 0},
+		{"unknown alias -> no override", "round_robin", 0},
 	}
 	for _, c := range cases {
 		if got := routeModeOverrideFromSetting(c.raw); got != c.want {
@@ -35,9 +35,9 @@ func TestRouteModeOverrideFromSetting(t *testing.T) {
 }
 
 func TestApplyGroupGlobalDefaultsResolved(t *testing.T) {
-	t.Run("unlocked groups follow the global mode", func(t *testing.T) {
-		// Four input categories (spread / fill_first / empty / unknown) all apply
-		// as an override whenever the group is NOT mode-locked.
+	t.Run("unlocked groups follow an explicit global override only", func(t *testing.T) {
+		// Only explicit spread/fill_first apply as an override; empty/unknown leave
+		// the group's own stored mode untouched.
 		cases := []struct {
 			name   string
 			stored dbmodel.GroupMode
@@ -47,8 +47,8 @@ func TestApplyGroupGlobalDefaultsResolved(t *testing.T) {
 			{"spread overrides stored fill_first", dbmodel.GroupModeFillFirst, "spread", dbmodel.GroupModeSpread},
 			{"spread overrides stored spread (idempotent)", dbmodel.GroupModeSpread, "spread", dbmodel.GroupModeSpread},
 			{"fill_first overrides stored spread", dbmodel.GroupModeSpread, "fill_first", dbmodel.GroupModeFillFirst},
-			{"empty resolves to fill_first", dbmodel.GroupModeSpread, "", dbmodel.GroupModeFillFirst},
-			{"unknown resolves to fill_first", dbmodel.GroupModeSpread, "bogus", dbmodel.GroupModeFillFirst},
+			{"empty leaves stored mode", dbmodel.GroupModeSpread, "", dbmodel.GroupModeSpread},
+			{"unknown leaves stored mode", dbmodel.GroupModeSpread, "bogus", dbmodel.GroupModeSpread},
 		}
 		for _, c := range cases {
 			g := applyGroupGlobalDefaultsResolved(dbmodel.Group{Mode: c.stored}, c.raw, 0)

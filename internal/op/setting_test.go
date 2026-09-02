@@ -215,7 +215,7 @@ func TestSettingRefreshCacheKeepsCustomStreamDataTimeout(t *testing.T) {
 	}
 }
 
-func TestSettingRefreshCacheUpgradesEmptyRouteModeOverride(t *testing.T) {
+func TestSettingRefreshCacheKeepsEmptyRouteModeOverride(t *testing.T) {
 	ctx := setupSettingTest(t)
 
 	if err := db.GetDB().WithContext(ctx).Create(&model.Setting{
@@ -233,15 +233,15 @@ func TestSettingRefreshCacheUpgradesEmptyRouteModeOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get cached route_mode_override: %v", err)
 	}
-	if cached != "fill_first" {
-		t.Fatalf("expected empty route_mode_override upgraded to fill_first, got %q", cached)
+	if cached != "" {
+		t.Fatalf("expected empty route_mode_override to stay empty (follow group), got %q", cached)
 	}
 
 	var persisted model.Setting
 	if err := db.GetDB().WithContext(ctx).First(&persisted, "key = ?", model.SettingKeyRouteModeOverride).Error; err != nil {
 		t.Fatalf("load persisted route_mode_override: %v", err)
 	}
-	if persisted.Value != "fill_first" {
-		t.Fatalf("expected persisted route_mode_override to be fill_first, got %q", persisted.Value)
+	if persisted.Value != "" {
+		t.Fatalf("expected persisted route_mode_override to stay empty, got %q", persisted.Value)
 	}
 }

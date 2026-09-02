@@ -527,9 +527,15 @@ func AccessPlanSyncEnabledChannels(ctx context.Context) error {
 	sort.Ints(channelIDs)
 
 	overrideRaw, _ := SettingGetString(model.SettingKeyRouteModeOverride)
-	globalDefaultMode := model.GroupModeFillFirst
-	if strings.ToLower(strings.TrimSpace(overrideRaw)) == "spread" {
+	// Route-target default mirrors the relay's "spread unless overridden" contract:
+	// empty/unknown → spread (round-robin); only an explicit fill_first override
+	// concentrates onto the priority order.
+	globalDefaultMode := model.GroupModeSpread
+	switch strings.ToLower(strings.TrimSpace(overrideRaw)) {
+	case "spread":
 		globalDefaultMode = model.GroupModeSpread
+	case "fill_first":
+		globalDefaultMode = model.GroupModeFillFirst
 	}
 
 	tx := db.GetDB().WithContext(ctx).Begin()
@@ -545,11 +551,14 @@ func AccessPlanSyncEnabledChannels(ctx context.Context) error {
 
 	changed := false
 
-	plans := accessPlanCache.GetAll()
+	planMap := accessPlanCache.GetAll()
+	plans := make([]model.AccessPlan, 0, len(planMap))
+	for _, p := range planMap {
+		plans = append(plans, p)
+	}
 	sort.Slice(plans, func(i, j int) bool {
 		return plans[i].ID < plans[j].ID
 	})
-
 	for _, plan := range plans {
 		if plan.RouteProfile == nil {
 			continue

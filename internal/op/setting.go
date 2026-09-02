@@ -43,9 +43,6 @@ var settingLegacyDefaultUpgrades = map[model.SettingKey]map[string]string{
 	model.SettingKeyRelayStreamDataTimeoutSec: {
 		model.LegacyDefaultRelayStreamDataIntervalTimeoutSeconds: model.DefaultRelayStreamDataIntervalTimeoutSeconds,
 	},
-	model.SettingKeyRouteModeOverride: {
-		"": "fill_first",
-	},
 }
 
 func SettingList(ctx context.Context) ([]model.Setting, error) {
