@@ -1,6 +1,5 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { Zap } from 'lucide-react';
 import { PageWrapper } from '@/components/common/PageWrapper';
@@ -14,35 +13,11 @@ import { SettingLLMSync } from './LLMSync';
 import { SettingLog } from './Log';
 import { SettingBackup } from './Backup';
 import { SettingCircuitBreaker } from './CircuitBreaker';
-import { useSettingList, useSetSetting, SettingKey } from '@/api/endpoints/setting';
-import { toast } from '@/components/common/Toast';
+import { useRouteModeOverrideSetting, RouteModeOverrideValue } from '@/api/endpoints/setting';
 
 function SettingRouteModeOverride() {
     const t = useTranslations('setting');
-    const { data: settings } = useSettingList();
-    const setSetting = useSetSetting();
-    const [routeMode, setRouteMode] = useState('');
-    const initialRouteMode = useRef('');
-
-    useEffect(() => {
-        if (settings) {
-            const rm = settings.find((s) => s.key === SettingKey.RouteModeOverride);
-            if (rm) {
-                setRouteMode(rm.value || '');
-                initialRouteMode.current = rm.value || '';
-            }
-        }
-    }, [settings]);
-
-    const handleSave = (value: string) => {
-        if (value === initialRouteMode.current) return;
-        setSetting.mutate({ key: SettingKey.RouteModeOverride, value }, {
-            onSuccess: () => {
-                toast.success(t('saved'));
-                initialRouteMode.current = value;
-            }
-        });
-    };
+    const { value, update, isPending } = useRouteModeOverrideSetting();
 
     return (
         <div className="rounded-3xl border border-border bg-card p-6">
@@ -52,16 +27,12 @@ function SettingRouteModeOverride() {
                     <span className="min-w-0 text-sm font-medium">{t('routeModeOverride.label')}</span>
                 </div>
                 <select
-                    value={routeMode}
-                    onChange={(event) => {
-                        const value = event.target.value;
-                        setRouteMode(value);
-                        handleSave(value);
-                    }}
+                    value={value}
+                    onChange={(event) => update(event.target.value as RouteModeOverrideValue)}
+                    disabled={isPending}
                     aria-label={t('routeModeOverride.label')}
                     className="h-9 w-48 shrink-0 rounded-xl border border-input bg-background px-3 text-sm text-foreground"
                 >
-                    <option value="">{t('routeModeOverride.followGroup')}</option>
                     <option value="spread">{t('routeModeOverride.spread')}</option>
                     <option value="fill_first">{t('routeModeOverride.fillFirst')}</option>
                 </select>

@@ -1,6 +1,8 @@
+import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiClient, API_BASE_URL } from '../client';
 import { logger } from '@/lib/logger';
+import { toast } from '@/components/common/Toast';
 import { useAuthStore } from './user';
 
 /**
@@ -108,10 +110,10 @@ export function useSettingList(options?: { enabled?: boolean }) {
 
 /**
  * 设置 Setting Hook
- * 
+ *
  * @example
  * const setSetting = useSetSetting();
- * 
+ *
  * setSetting.mutate({
  *   key: 'theme',
  *   value: 'dark',
@@ -132,6 +134,78 @@ export function useSetSetting() {
             logger.error('Setting 设置失败:', error);
         },
     });
+}
+
+/**
+ * 全局默认分流模式（route_mode_override）。
+ * 用户定 2027-02-21：只留「轮询 / 优先填充」两档，去掉「跟随各规则」；
+ * 历史空值/未知值在 UI 归一到默认档，并一次性固化写回，保证后端缺省与 UI 显示一致。
+ */
+export type RouteModeOverrideValue = 'spread' | 'fill_first';
+export const ROUTE_MODE_OVERRIDE_VALUES: readonly RouteModeOverrideValue[] = ['spread', 'fill_first'];
+export const ROUTE_MODE_OVERRIDE_DEFAULT: RouteModeOverrideValue = 'fill_first';
+
+export function routeModeOverrideLabel(value: RouteModeOverrideValue): string {
+    return value === 'spread' ? '轮询' : '优先填充';
+}
+
+export function normalizeRouteModeOverride(raw: string | undefined | null): RouteModeOverrideValue {
+    return ROUTE_MODE_OVERRIDE_VALUES.includes((raw ?? '') as RouteModeOverrideValue)
+        ? (raw as RouteModeOverrideValue)
+        : ROUTE_MODE_OVERRIDE_DEFAULT;
+}
+
+let routeModeOverrideFixupDone = false;
+
+/**
+ * 读写 route_mode_override 的共享 Hook：设置页与方案页顶栏下拉共用一套读写与归一逻辑。
+ * 首次加载发现历史空值/未知值时，自动固化为明确档位（一次性，带 toast 提示）。
+ */
+export function useRouteModeOverrideSetting() {
+    const { data: settings } = useSettingList();
+    const setSetting = useSetSetting();
+    const [value, setValue] = useState<RouteModeOverrideValue>(ROUTE_MODE_OVERRIDE_DEFAULT);
+    const savedRef = useRef<RouteModeOverrideValue>(ROUTE_MODE_OVERRIDE_DEFAULT);
+
+    useEffect(() => {
+        if (!settings) return;
+        const found = settings.find((s) => s.key === SettingKey.RouteModeOverride);
+        const raw = found?.value ?? '';
+        const next = normalizeRouteModeOverride(raw);
+        setValue(next);
+        savedRef.current = next;
+        if (raw !== next && !routeModeOverrideFixupDone) {
+            routeModeOverrideFixupDone = true;
+            setSetting.mutate(
+                { key: SettingKey.RouteModeOverride, value: next },
+                {
+                    onSuccess: () => {
+                        savedRef.current = next;
+                        toast.info(`全局默认分流模式已固化为：${routeModeOverrideLabel(next)}`);
+                    },
+                },
+            );
+        }
+    }, [settings]);
+
+    const update = (next: RouteModeOverrideValue) => {
+        if (next === savedRef.current) return;
+        setValue(next);
+        setSetting.mutate(
+            { key: SettingKey.RouteModeOverride, value: next },
+            {
+                onSuccess: () => {
+                    savedRef.current = next;
+                    toast.success('默认分流模式已保存');
+                },
+                onError: () => {
+                    setValue(savedRef.current);
+                },
+            },
+        );
+    };
+
+    return { value, update, isPending: setSetting.isPending };
 }
 
 /**

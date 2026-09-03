@@ -30,7 +30,7 @@ import {
 } from '@/api/endpoints/access-plan';
 import { useChannelList } from '@/api/endpoints/channel';
 import { useModelChannelList, useModelList } from '@/api/endpoints/model';
-import { SettingKey, useSetSetting, useSettingList } from '@/api/endpoints/setting';
+import { RouteModeOverrideValue, useRouteModeOverrideSetting } from '@/api/endpoints/setting';
 import { useAuthStore } from '@/api/endpoints/user';
 import { PageWrapper } from '@/components/common/PageWrapper';
 import { toast } from '@/components/common/Toast';
@@ -242,13 +242,6 @@ function isSpreadMode(mode: number | undefined | null): boolean {
 function normalizeRouteMode(mode: number | undefined | null): 1 | 3 {
     return isSpreadMode(mode) ? 1 : 3;
 }
-
-/** 全局默认分流模式（setting route_mode_override）的可选值：新模型默认分流模式。 */
-type RouteModeOverrideChoice = 'spread' | 'fill_first';
-const ROUTE_MODE_OVERRIDE_CHOICES: Array<{ value: RouteModeOverrideChoice; label: string }> = [
-    { value: 'spread', label: '新模型默认：轮询' },
-    { value: 'fill_first', label: '新模型默认：优先填充' },
-];
 
 function normalizeSlug(value: string) {
     return value.trim().toLowerCase().replace(/\s+/g, '-');
@@ -2472,55 +2465,24 @@ function RouteTargetsEditor({
 /**
  * 「全局默认模式」下拉：读写通用 setting route_mode_override。
  * 只提供明确的两项：'spread' = 新模型默认：轮询；'fill_first' = 新模型默认：优先填充。
- * 读取到历史空值或未知值时，在 UI 归一到明确默认值 'fill_first'（不编造后端写回，仅在用户主动选择时持久化）。
- * 走现有 setting 的 GET（/setting/list）与写接口（/setting/set）。
+ * 读写与历史空值固化逻辑统一走 useRouteModeOverrideSetting（与设置页共用，去掉「跟随各规则」）。
  */
 function GlobalRouteModeSelect({ className }: { className?: string }) {
-    const { data: settings } = useSettingList();
-    const setSetting = useSetSetting();
-    const [value, setValue] = useState<RouteModeOverrideChoice>('fill_first');
-    const savedRef = useRef<RouteModeOverrideChoice>('fill_first');
-
-    useEffect(() => {
-        if (!settings) return;
-        const found = settings.find((setting) => setting.key === SettingKey.RouteModeOverride);
-        const raw = (found?.value ?? '') as RouteModeOverrideChoice;
-        const next: RouteModeOverrideChoice = ROUTE_MODE_OVERRIDE_CHOICES.some((choice) => choice.value === raw)
-            ? raw
-            : 'fill_first';
-        setValue(next);
-        savedRef.current = next;
-    }, [settings]);
+    const { value, update, isPending } = useRouteModeOverrideSetting();
 
     return (
         <label className={cn('flex min-w-0 items-center gap-2 text-xs text-muted-foreground', className)}>
             <span className="shrink-0 whitespace-nowrap">新模型默认</span>
             <select
                 value={value}
-                onChange={(event) => {
-                    const next = event.target.value as RouteModeOverrideChoice;
-                    setValue(next);
-                    setSetting.mutate(
-                        { key: SettingKey.RouteModeOverride, value: next },
-                        {
-                            onSuccess: () => {
-                                savedRef.current = next;
-                                toast.success('默认模式已保存');
-                            },
-                            onError: (error) => {
-                                setValue(savedRef.current);
-                                toast.error('默认模式保存失败', { description: apiErrorMessage(error) });
-                            },
-                        },
-                    );
-                }}
+                onChange={(event) => update(event.target.value as RouteModeOverrideValue)}
+                disabled={isPending}
                 aria-label="新模型默认分流模式"
                 title="新模型默认分流模式：轮询 / 优先填充"
                 className="h-8 min-w-0 rounded-full border border-border/70 bg-background/60 px-2.5 text-xs text-foreground outline-none focus:border-primary/50"
             >
-                {ROUTE_MODE_OVERRIDE_CHOICES.map((choice) => (
-                    <option key={choice.value} value={choice.value}>{choice.label}</option>
-                ))}
+                <option value="spread">新模型默认：轮询</option>
+                <option value="fill_first">新模型默认：优先填充</option>
             </select>
         </label>
     );
