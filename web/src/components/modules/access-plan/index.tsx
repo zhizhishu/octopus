@@ -2468,7 +2468,7 @@ function RouteTargetsEditor({
  * 读写与历史空值固化逻辑统一走 useRouteModeOverrideSetting（与设置页共用，去掉「跟随各规则」）。
  */
 function GlobalRouteModeSelect({ className }: { className?: string }) {
-    const { value, update, isPending } = useRouteModeOverrideSetting();
+    const { value, update, isPending, isReady } = useRouteModeOverrideSetting();
 
     return (
         <label className={cn('flex min-w-0 items-center gap-2 text-xs text-muted-foreground', className)}>
@@ -2476,7 +2476,7 @@ function GlobalRouteModeSelect({ className }: { className?: string }) {
             <select
                 value={value}
                 onChange={(event) => update(event.target.value as RouteModeOverrideValue)}
-                disabled={isPending}
+                disabled={isPending || !isReady}
                 aria-label="新模型默认分流模式"
                 title="新模型默认分流模式：轮询 / 优先填充"
                 className="h-8 min-w-0 rounded-full border border-border/70 bg-background/60 px-2.5 text-xs text-foreground outline-none focus:border-primary/50"

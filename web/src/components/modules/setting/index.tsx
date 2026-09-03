@@ -17,7 +17,7 @@ import { useRouteModeOverrideSetting, RouteModeOverrideValue } from '@/api/endpo
 
 function SettingRouteModeOverride() {
     const t = useTranslations('setting');
-    const { value, update, isPending } = useRouteModeOverrideSetting();
+    const { value, update, isPending, isReady } = useRouteModeOverrideSetting();
 
     return (
         <div className="rounded-3xl border border-border bg-card p-6">
@@ -29,7 +29,7 @@ function SettingRouteModeOverride() {
                 <select
                     value={value}
                     onChange={(event) => update(event.target.value as RouteModeOverrideValue)}
-                    disabled={isPending}
+                    disabled={isPending || !isReady}
                     aria-label={t('routeModeOverride.label')}
                     className="h-9 w-48 shrink-0 rounded-xl border border-input bg-background px-3 text-sm text-foreground"
                 >

@@ -159,53 +159,70 @@ let routeModeOverrideFixupDone = false;
 
 /**
  * 读写 route_mode_override 的共享 Hook：设置页与方案页顶栏下拉共用一套读写与归一逻辑。
- * 首次加载发现历史空值/未知值时，自动固化为明确档位（一次性，带 toast 提示）。
+ * 首次在 fresh 数据上发现历史空值/未知值时，自动固化为明确档位（失败可重试，带 toast 提示）。
  */
 export function useRouteModeOverrideSetting() {
-    const { data: settings } = useSettingList();
+    const { data: settings, isFetching, isSuccess, isError } = useSettingList();
     const setSetting = useSetSetting();
     const [value, setValue] = useState<RouteModeOverrideValue>(ROUTE_MODE_OVERRIDE_DEFAULT);
-    const savedRef = useRef<RouteModeOverrideValue>(ROUTE_MODE_OVERRIDE_DEFAULT);
+    // 最近一次确认已持久化的原始值（空串 = 后端仍是历史空值/未知值）。
+    // 同值短路只对已持久化值生效，固化写回失败后用户重选同档仍能重试。
+    const persistedRef = useRef<string>('');
+    const errorToastedRef = useRef(false);
 
     useEffect(() => {
-        if (!settings) return;
-        const found = settings.find((s) => s.key === SettingKey.RouteModeOverride);
-        const raw = found?.value ?? '';
+        // 只信 fresh 数据（refetchOnMount:'always' 下仍可能先拿到旧缓存），防旧缓存抢先写回覆盖新值。
+        if (!settings || isFetching) return;
+        const raw = settings.find((s) => s.key === SettingKey.RouteModeOverride)?.value ?? '';
+        persistedRef.current = raw;
         const next = normalizeRouteModeOverride(raw);
         setValue(next);
-        savedRef.current = next;
         if (raw !== next && !routeModeOverrideFixupDone) {
             routeModeOverrideFixupDone = true;
             setSetting.mutate(
                 { key: SettingKey.RouteModeOverride, value: next },
                 {
                     onSuccess: () => {
-                        savedRef.current = next;
+                        persistedRef.current = next;
                         toast.info(`全局默认分流模式已固化为：${routeModeOverrideLabel(next)}`);
+                    },
+                    onError: () => {
+                        // 失败解除一次性 guard，下次 fresh 读取仍会重试固化。
+                        routeModeOverrideFixupDone = false;
+                        toast.error('全局默认分流模式固化失败');
                     },
                 },
             );
         }
-    }, [settings]);
+    }, [settings, isFetching]);
+
+    useEffect(() => {
+        if (isError && !errorToastedRef.current) {
+            errorToastedRef.current = true;
+            toast.error('默认分流模式读取失败');
+        }
+    }, [isError]);
 
     const update = (next: RouteModeOverrideValue) => {
-        if (next === savedRef.current) return;
+        if (next === persistedRef.current) return;
         setValue(next);
         setSetting.mutate(
             { key: SettingKey.RouteModeOverride, value: next },
             {
                 onSuccess: () => {
-                    savedRef.current = next;
+                    persistedRef.current = next;
                     toast.success('默认分流模式已保存');
                 },
                 onError: () => {
-                    setValue(savedRef.current);
+                    setValue(normalizeRouteModeOverride(persistedRef.current));
+                    toast.error('默认分流模式保存失败');
                 },
             },
         );
     };
 
-    return { value, update, isPending: setSetting.isPending };
+    // isReady=false（列表未读到）时禁用下拉，避免把显示默认值冒充已保存状态。
+    return { value, update, isPending: setSetting.isPending, isReady: isSuccess };
 }
 
 /**
