@@ -659,8 +659,8 @@ func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermod
 	// channel cloak applies (auto/always). Without this the test always injected them
 	// (zero-value false), so a cloak=never channel's test would send Claude identity the
 	// real relay would strip, and a cloaked channel's test must inject it (the block
-	// strict upstreams like Kiro/the relay gate on) — so the test faithfully reflects
-	// exactly what the upstream receives in production.
+	// strict relays gate on) — so the test faithfully reflects exactly what the upstream
+	// receives in production.
 	internalRequest.TransformOptions.SuppressClaudeIdentity = !shouldApplyChannelCloak(channel.Cloak)
 	// Resolve the channel's fingerprint profile once and feed it to every body-shape
 	// helper so the test's device_id / installation id match the relay forward path
@@ -687,8 +687,7 @@ func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermod
 		// NAME (see internalRequest: max_tokens 64000 / streamed / thinking only for
 		// "anthropic_messages"), so the model-test page — whose default endpoint is
 		// openai_responses — emitted a degraded non-CLI body (max_tokens 8 / no thinking /
-		// stream=false) that strict Claude-Code-gating upstreams (Kiro/k40) reject as
-		// "non-Claude", while the relay forward path (always the cli shape) passed (429).
+		// stream=false) that strict Claude-Code-gating relays reject as "non-Claude".
 		// Pin the cli body shape by CHANNEL TYPE so the test == relay on every endpoint.
 		if shouldApplyChannelCloak(channel.Cloak) {
 			forceClaudeModelTestBodyShape(internalRequest, r.request, fp)
