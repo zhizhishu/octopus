@@ -139,7 +139,7 @@ func applyCodexFastMode(req *transformerModel.InternalLLMRequest) {
 // "drop unknown efforts" behaviour.
 // ensureCodexReasoningSummary is NO LONGER CALLED in prepareCodexRequestShape as of
 // 2026-09-03. Capture evidence (forward.jsonl:31-32, real Codex CLI 0.145.0 direct to
-// anyrouter.top) shows the genuine CLI sends reasoning={context,effort} WITHOUT summary —
+// the relay) shows the genuine CLI sends reasoning={context,effort} WITHOUT summary —
 // reasoning_keys=["context","effort"], reasoning_summary=null. The prior claim that "a
 // genuine codex CLI always sends summary=auto" was incorrect, and injecting it caused a
 // confirmed +477B body delta (42380→42857) vs direct CLI.

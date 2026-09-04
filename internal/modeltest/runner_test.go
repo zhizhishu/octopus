@@ -1003,7 +1003,7 @@ data: {"type":"message_stop"}
 // claude request, so a connectivity test must send the genuine claude-cli body shape
 // (64000 max_tokens, streamed, explicit thinking, body metadata.user_id) even when the
 // inbound test endpoint is the model-test page default openai_responses — NOT a degraded
-// max_tokens=8 / no-thinking body that strict Claude-Code-gating upstreams (Kiro/k40)
+// max_tokens=8 / no-thinking body that strict Claude-Code-gating upstreams
 // reject as non-Claude while the relay forward path (always cli-shaped) passes. Uses a
 // plain (non-1M) claude model, the worst case, where the body would otherwise degrade.
 func TestRunClaudeChannelKeepsCLIBodyShapeOnNonAnthropicEndpoint(t *testing.T) {
