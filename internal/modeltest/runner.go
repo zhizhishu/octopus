@@ -671,8 +671,8 @@ func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermod
 		// Claude model so a non-Claude model sharing an Anthropic channel is never
 		// touched; codex/gpt models get prepareCodexModelTestRequest instead, other
 		// models get nothing. Simple model-family judgement, no collateral damage.
-		if shouldApplyChannelCloak(channel.Cloak) && strings.Contains(strings.ToLower(upstreamModel), "claude") {
-			internalRequest.Tools = claudeCodeProbeTools()
+		if shouldApplyChannelCloak(channel.Cloak) && transformermodel.IsClaudeCodeModel(upstreamModel) {
+			internalRequest.Tools = transformermodel.ClaudeCodeProbeTools()
 		}
 		if channel.AnthropicContext1M {
 			internalRequest.TransformOptions.AnthropicOneMillionBeta = true
@@ -863,29 +863,6 @@ func (r *modelRunner) internalRequest(upstreamModel string) *transformermodel.In
 		}
 	}
 	return internalRequest
-}
-
-// claudeCodeProbeTools returns a small representative subset of the genuine Claude
-// Code tool set. Strict CC-gated upstreams (e.g. Kiro proxies) inspect the request
-// BODY — not just headers — to decide a request came from a real Claude Code client;
-// a bare prompt with no tools reads as a non-CC "fake" and is rejected ("No available
-// accounts: this group only allows Claude Code clients") even though the relay, which
-// forwards the client's real tool-bearing body, passes. Attaching these makes the
-// Anthropic-channel probe mirror real Claude Code traffic. Caller gates this on
-// Anthropic (claude) channels with cloak on, so codex/openai/gemini channels are never
-// touched — codex channels get prepareCodexModelTestRequest instead.
-func claudeCodeProbeTools() []transformermodel.Tool {
-	schema := json.RawMessage(`{"type":"object","properties":{},"additionalProperties":true}`)
-	mk := func(name, desc string) transformermodel.Tool {
-		return transformermodel.Tool{Type: "function", Function: transformermodel.Function{Name: name, Description: desc, Parameters: schema}}
-	}
-	return []transformermodel.Tool{
-		mk("Bash", "Run a shell command."),
-		mk("Read", "Read a file from the filesystem."),
-		mk("Edit", "Make edits to a file."),
-		mk("Glob", "Find files matching a glob pattern."),
-		mk("Grep", "Search file contents with a regex."),
-	}
 }
 
 func nextDefaultModelTestPrompt() string {

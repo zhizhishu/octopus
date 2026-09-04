@@ -1785,7 +1785,7 @@ func (ra *relayAttempt) prepareClaudeOneMillionPlainClientShape() {
 	// convertSystemPrompt), so it is suppressed correctly when cloak mode is "never".
 	// Re-synthesising identity here would both leak it under cloak=never and duplicate
 	// those canonical builders, so this path deliberately does not touch it.
-	if ra.channel != nil && shouldApplyChannelCloak(ra.channel.Cloak) {
+	if ra.channel != nil && shouldApplyChannelCloak(ra.channel.Cloak) && model.IsClaudeCodeModel(ra.internalRequest.Model) {
 		ensureClaudeCodeFallbackTools(ra.internalRequest)
 	}
 	applyClaudeOneMillionRuntimeShape(ra.internalRequest)
@@ -1795,16 +1795,15 @@ func isNativeAnthropicClaudeShape(req *model.InternalLLMRequest) bool {
 	if req == nil || req.RawAPIFormat != model.APIFormatAnthropicMessage {
 		return false
 	}
-	if rawJSONPresentRelay(req.AnthropicThinking) ||
-		rawJSONPresentRelay(req.AnthropicOutputConfig) ||
-		rawJSONPresentRelay(req.AnthropicContextManagement) {
+	// Claude Code title / structured-output probes carry output_config and may deliberately
+	// send tools: []; preserve them exactly instead of adding fallback agent tools.
+	if rawJSONPresentRelay(req.AnthropicOutputConfig) {
 		return true
 	}
-	// metadata.user_id plus any arbitrary client system prompt is NOT enough to prove a
-	// genuine Claude Code request: octopus may already have injected metadata before this
-	// check, while the user supplied a normal system prompt. Require one of Claude Code's
-	// own system markers so plain non-CLI clients still receive the fallback tool shape.
-	if req.Metadata != nil && strings.TrimSpace(req.Metadata["user_id"]) != "" && messagesContainClaudeCodeSystemPrompt(req.Messages) {
+	// Raw thinking/context_management (or ordinary client tools) is not proof: non-CLI
+	// clients can legally send those fields too. Only Claude Code's own system markers
+	// prove an agent turn that should be preserved byte-shaped instead of synthesized.
+	if messagesContainClaudeCodeSystemPrompt(req.Messages) {
 		return true
 	}
 	return false
@@ -1834,27 +1833,11 @@ func ensureClaudeCodeFallbackTools(req *model.InternalLLMRequest) {
 	if req == nil || len(req.Tools) > 0 {
 		return
 	}
-	// Strict Claude Code pools inspect the BODY, not just headers. A cloaked non-CLI
-	// request with metadata/system but no tools is still visibly not a Claude Code agent
-	// turn and is rejected by the relay before business handling. Attach the small
-	// genuine-CLI tool triplet captured from a bare prompt; native CLI/title requests
-	// return before this helper, so their own tool shape remains untouched.
-	req.Tools = []model.Tool{
-		claudeCodeFallbackTool("Bash", "execute shell commands", `{"type":"object","properties":{"command":{"type":"string"},"timeout":{"type":"number"},"description":{"type":"string"},"run_in_background":{"type":"boolean"},"dangerouslyDisableSandbox":{"type":"boolean"}},"required":["command"],"additionalProperties":false}`),
-		claudeCodeFallbackTool("Edit", "modify file contents in place", `{"type":"object","properties":{"file_path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"},"replace_all":{"type":"boolean","default":false}},"required":["file_path","old_string","new_string"],"additionalProperties":false}`),
-		claudeCodeFallbackTool("Read", "read files, images, PDFs, notebooks", `{"type":"object","properties":{"file_path":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"},"pages":{"type":"string"}},"required":["file_path"],"additionalProperties":false}`),
-	}
-}
-
-func claudeCodeFallbackTool(name, description, schema string) model.Tool {
-	return model.Tool{
-		Type: "function",
-		Function: model.Function{
-			Name:        name,
-			Description: description,
-			Parameters:  json.RawMessage(schema),
-		},
-	}
+	// Strict Claude-gated relays inspect the BODY, not just headers. A cloaked non-CLI
+	// request with metadata/system but no tools is still visibly not an agent turn. Reuse
+	// the channel-test helper proven in d51f800 so model-test and live relay stay aligned;
+	// native CLI/title requests return before this helper, so their own shape remains untouched.
+	req.Tools = model.ClaudeCodeProbeTools()
 }
 
 func applyClaudeOneMillionRuntimeShape(req *model.InternalLLMRequest) {

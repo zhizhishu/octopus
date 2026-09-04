@@ -633,7 +633,7 @@ data: {"type":"message_stop"}
 // TestAnthropicOneMillionPlainClientWithOrdinarySystemGetsFallbackTools locks the
 // captured failure mode: octopus injects metadata before 1M shape preparation, while a
 // plain client may already have an ordinary system prompt. That is not a genuine Claude
-// Code request, so the fallback body must still include the small CLI tool triplet.
+// Code request, so the fallback body must still include the shared CLI probe tool set.
 func TestAnthropicOneMillionPlainClientWithOrdinarySystemGetsFallbackTools(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx := setupRelayErrorDB(t)
@@ -695,6 +695,8 @@ data: {"type":"message_stop"}
 		"model":"claude-opus-4-8",
 		"max_tokens":32,
 		"stream":false,
+		"thinking":{"type":"disabled"},
+		"context_management":{"edits":[{"type":"clear_thinking_20251015","keep":"all"}]},
 		"system":[{"type":"text","text":"Answer in one word.","cache_control":{"type":"ephemeral"}}],
 		"messages":[{"role":"user","content":"Reply with exactly OK."}]
 	}`))
@@ -716,10 +718,166 @@ data: {"type":"message_stop"}
 	for _, tool := range sawTools {
 		seenTools[tool.Name] = true
 	}
-	for _, want := range []string{"Bash", "Edit", "Read"} {
+	for _, want := range []string{"Bash", "Read", "Edit", "Glob", "Grep"} {
 		if !seenTools[want] {
 			t.Fatalf("expected fallback Claude Code tool %q in %#v", want, sawTools)
 		}
+	}
+}
+
+func TestAnthropicOneMillionPlainClientWithOwnToolKeepsToolAndGetsRuntimeShape(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayErrorDB(t)
+	if err := op.SettingSetString(dbmodel.SettingKeyClaudeCLIAutoCompact, "true"); err != nil {
+		t.Fatalf("set auto compact: %v", err)
+	}
+	if err := op.SettingSetString(dbmodel.SettingKeyClaudeCLIReasoningEffort, "high"); err != nil {
+		t.Fatalf("set reasoning effort: %v", err)
+	}
+
+	var sawThinking string
+	var sawContextManagement string
+	var sawTools []struct {
+		Name string `json:"name"`
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var raw map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		if data, err := json.Marshal(raw["thinking"]); err == nil {
+			sawThinking = string(data)
+		}
+		if data, err := json.Marshal(raw["context_management"]); err == nil {
+			sawContextManagement = string(data)
+		}
+		if data, err := json.Marshal(raw["tools"]); err == nil {
+			if err := json.Unmarshal(data, &sawTools); err != nil {
+				t.Fatalf("decode upstream tools: %v (raw %s)", err, string(data))
+			}
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`event: message_start
+data: {"type":"message_start","message":{"id":"msg_plain_own_tool","type":"message","role":"assistant","model":"claude-opus-4-8","content":[],"usage":{"input_tokens":3,"output_tokens":0}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"OK"}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	channel := dbmodel.Channel{
+		Name:               "the relay Claude 1M own tool",
+		Type:               outbound.OutboundTypeAnthropic,
+		Enabled:            true,
+		AnthropicContext1M: true,
+		Model:              "claude-opus-4-8",
+		BaseUrls:           []dbmodel.BaseUrl{{URL: upstream.URL}},
+		Keys:               []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "anthropic-key"}},
+		SelectedModels:     []string{"claude-opus-4-8"},
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{
+		"model":"claude-opus-4-8",
+		"max_tokens":32,
+		"stream":false,
+		"tools":[{"name":"Lookup","description":"Lookup one value.","input_schema":{"type":"object","properties":{},"additionalProperties":true}}],
+		"messages":[{"role":"user","content":"Reply with exactly OK."}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+	c.Set("api_key_id", 0)
+	c.Set("user_id", 0)
+	c.Set("request_ip", "127.0.0.1")
+
+	Handler(inbound.InboundTypeAnthropic, c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected plain-client own-tool [1m] request to succeed, got %d body %s", rec.Code, rec.Body.String())
+	}
+	if len(sawTools) != 1 || sawTools[0].Name != "Lookup" {
+		t.Fatalf("client tool should be preserved without fallback append/replace, got %#v", sawTools)
+	}
+	if !strings.Contains(sawThinking, `"adaptive"`) || !strings.Contains(sawContextManagement, "clear_thinking_20251015") {
+		t.Fatalf("own-tool nonCLI request should still get 1M runtime shape, thinking=%s context=%s", sawThinking, sawContextManagement)
+	}
+}
+
+func TestAnthropicOneMillionNonClaudeModelDoesNotGetClaudeFallbackTools(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayErrorDB(t)
+
+	var sawToolsPresent bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var raw map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		_, sawToolsPresent = raw["tools"]
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`event: message_start
+data: {"type":"message_start","message":{"id":"msg_non_claude","type":"message","role":"assistant","model":"mistral-large","content":[],"usage":{"input_tokens":3,"output_tokens":0}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"OK"}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	channel := dbmodel.Channel{
+		Name:               "the relay Anthropic compatible mixed 1M",
+		Type:               outbound.OutboundTypeAnthropic,
+		Enabled:            true,
+		AnthropicContext1M: true,
+		Model:              "mistral-large",
+		BaseUrls:           []dbmodel.BaseUrl{{URL: upstream.URL}},
+		Keys:               []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "anthropic-key"}},
+		SelectedModels:     []string{"mistral-large"},
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{
+		"model":"mistral-large",
+		"max_tokens":32,
+		"stream":false,
+		"messages":[{"role":"user","content":"Reply with exactly OK."}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+	c.Set("api_key_id", 0)
+	c.Set("user_id", 0)
+	c.Set("request_ip", "127.0.0.1")
+
+	Handler(inbound.InboundTypeAnthropic, c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected non-Claude Anthropic-compatible request to succeed, got %d body %s", rec.Code, rec.Body.String())
+	}
+	if sawToolsPresent {
+		t.Fatalf("non-Claude Anthropic-compatible model must not get Claude fallback tools")
 	}
 }
 
