@@ -1785,6 +1785,9 @@ func (ra *relayAttempt) prepareClaudeOneMillionPlainClientShape() {
 	// convertSystemPrompt), so it is suppressed correctly when cloak mode is "never".
 	// Re-synthesising identity here would both leak it under cloak=never and duplicate
 	// those canonical builders, so this path deliberately does not touch it.
+	if ra.channel != nil && shouldApplyChannelCloak(ra.channel.Cloak) {
+		ensureClaudeCodeFallbackTools(ra.internalRequest)
+	}
 	applyClaudeOneMillionRuntimeShape(ra.internalRequest)
 }
 
@@ -1797,7 +1800,11 @@ func isNativeAnthropicClaudeShape(req *model.InternalLLMRequest) bool {
 		rawJSONPresentRelay(req.AnthropicContextManagement) {
 		return true
 	}
-	if req.Metadata != nil && strings.TrimSpace(req.Metadata["user_id"]) != "" && messagesContainSystemPrompt(req.Messages) {
+	// metadata.user_id plus any arbitrary client system prompt is NOT enough to prove a
+	// genuine Claude Code request: octopus may already have injected metadata before this
+	// check, while the user supplied a normal system prompt. Require one of Claude Code's
+	// own system markers so plain non-CLI clients still receive the fallback tool shape.
+	if req.Metadata != nil && strings.TrimSpace(req.Metadata["user_id"]) != "" && messagesContainClaudeCodeSystemPrompt(req.Messages) {
 		return true
 	}
 	return false
@@ -1821,6 +1828,33 @@ func isBenignUpstreamStreamEnd(err error) bool {
 	}
 	normalized := strings.ToLower(err.Error())
 	return strings.Contains(normalized, "unexpected end of input") || strings.Contains(normalized, "eof")
+}
+
+func ensureClaudeCodeFallbackTools(req *model.InternalLLMRequest) {
+	if req == nil || len(req.Tools) > 0 {
+		return
+	}
+	// Strict Claude Code pools inspect the BODY, not just headers. A cloaked non-CLI
+	// request with metadata/system but no tools is still visibly not a Claude Code agent
+	// turn and is rejected by the relay before business handling. Attach the small
+	// genuine-CLI tool triplet captured from a bare prompt; native CLI/title requests
+	// return before this helper, so their own tool shape remains untouched.
+	req.Tools = []model.Tool{
+		claudeCodeFallbackTool("Bash", "execute shell commands", `{"type":"object","properties":{"command":{"type":"string"},"timeout":{"type":"number"},"description":{"type":"string"},"run_in_background":{"type":"boolean"},"dangerouslyDisableSandbox":{"type":"boolean"}},"required":["command"],"additionalProperties":false}`),
+		claudeCodeFallbackTool("Edit", "modify file contents in place", `{"type":"object","properties":{"file_path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"},"replace_all":{"type":"boolean","default":false}},"required":["file_path","old_string","new_string"],"additionalProperties":false}`),
+		claudeCodeFallbackTool("Read", "read files, images, PDFs, notebooks", `{"type":"object","properties":{"file_path":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"},"pages":{"type":"string"}},"required":["file_path"],"additionalProperties":false}`),
+	}
+}
+
+func claudeCodeFallbackTool(name, description, schema string) model.Tool {
+	return model.Tool{
+		Type: "function",
+		Function: model.Function{
+			Name:        name,
+			Description: description,
+			Parameters:  json.RawMessage(schema),
+		},
+	}
 }
 
 func applyClaudeOneMillionRuntimeShape(req *model.InternalLLMRequest) {
@@ -1849,11 +1883,17 @@ func claudeCLIReasoningEffort() string {
 	}
 }
 
-func messagesContainSystemPrompt(messages []model.Message) bool {
+func messagesContainClaudeCodeSystemPrompt(messages []model.Message) bool {
 	for _, msg := range messages {
 		switch strings.ToLower(strings.TrimSpace(msg.Role)) {
 		case "system", "developer":
-			return true
+			text := ""
+			if msg.Content.Content != nil {
+				text = strings.TrimSpace(*msg.Content.Content)
+			}
+			if strings.HasPrefix(text, "x-anthropic-billing-header:") || strings.Contains(text, "built on Anthropic's Claude Agent SDK") {
+				return true
+			}
 		}
 	}
 	return false

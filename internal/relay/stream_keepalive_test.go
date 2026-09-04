@@ -630,6 +630,99 @@ data: {"type":"message_stop"}
 	}
 }
 
+// TestAnthropicOneMillionPlainClientWithOrdinarySystemGetsFallbackTools locks the
+// captured failure mode: octopus injects metadata before 1M shape preparation, while a
+// plain client may already have an ordinary system prompt. That is not a genuine Claude
+// Code request, so the fallback body must still include the small CLI tool triplet.
+func TestAnthropicOneMillionPlainClientWithOrdinarySystemGetsFallbackTools(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayErrorDB(t)
+
+	var sawSystem []struct {
+		Text string `json:"text"`
+	}
+	var sawTools []struct {
+		Name string `json:"name"`
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var raw struct {
+			System json.RawMessage `json:"system"`
+			Tools  json.RawMessage `json:"tools"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		if err := json.Unmarshal(raw.System, &sawSystem); err != nil {
+			t.Fatalf("decode upstream system: %v (raw %s)", err, string(raw.System))
+		}
+		if err := json.Unmarshal(raw.Tools, &sawTools); err != nil {
+			t.Fatalf("decode upstream tools: %v (raw %s)", err, string(raw.Tools))
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`event: message_start
+data: {"type":"message_start","message":{"id":"msg_plain_tools","type":"message","role":"assistant","model":"claude-opus-4-8","content":[],"usage":{"input_tokens":3,"output_tokens":0}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"OK"}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	channel := dbmodel.Channel{
+		Name:               "the relay Claude 1M fallback tools",
+		Type:               outbound.OutboundTypeAnthropic,
+		Enabled:            true,
+		AnthropicContext1M: true,
+		Model:              "claude-opus-4-8",
+		BaseUrls:           []dbmodel.BaseUrl{{URL: upstream.URL}},
+		Keys:               []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "anthropic-key"}},
+		SelectedModels:     []string{"claude-opus-4-8"},
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{
+		"model":"claude-opus-4-8",
+		"max_tokens":32,
+		"stream":false,
+		"system":[{"type":"text","text":"Answer in one word.","cache_control":{"type":"ephemeral"}}],
+		"messages":[{"role":"user","content":"Reply with exactly OK."}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+	c.Set("api_key_id", 0)
+	c.Set("user_id", 0)
+	c.Set("request_ip", "127.0.0.1")
+
+	Handler(inbound.InboundTypeAnthropic, c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected plain-client [1m] request to succeed, got %d body %s", rec.Code, rec.Body.String())
+	}
+	if len(sawSystem) != 3 || !strings.Contains(sawSystem[2].Text, "Answer in one word") {
+		t.Fatalf("ordinary client system prompt should survive after billing+identity, got %#v", sawSystem)
+	}
+	seenTools := map[string]bool{}
+	for _, tool := range sawTools {
+		seenTools[tool.Name] = true
+	}
+	for _, want := range []string{"Bash", "Edit", "Read"} {
+		if !seenTools[want] {
+			t.Fatalf("expected fallback Claude Code tool %q in %#v", want, sawTools)
+		}
+	}
+}
+
 // TestAnthropicOneMillionPlainClientCloakOnEmitsCanonicalClaudeIdentity locks the
 // cloak=auto/always side of the F1 fix. After the relay-side identity injection was
 // deleted from prepareClaudeOneMillionPlainClientShape, the canonical cloak-gated paths
