@@ -1006,6 +1006,44 @@ data: {"type":"message_stop"}
 // max_tokens=8 / no-thinking body that strict Claude-Code-gating upstreams
 // reject as non-Claude while the relay forward path (always cli-shaped) passes. Uses a
 // plain (non-1M) claude model, the worst case, where the body would otherwise degrade.
+func TestRunClaudeChannelFallbackToolsFollowSimulationWithoutOneMillion(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		cloakMode string
+		wantTools int
+	}{
+		{name: "on", cloakMode: "auto", wantTools: 5},
+		{name: "off", cloakMode: "never"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := setupModelTestDB(t)
+			var sawTools int
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var payload struct {
+					Tools []json.RawMessage `json:"tools"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					t.Fatalf("decode upstream request: %v", err)
+				}
+				sawTools = len(payload.Tools)
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-haiku-4-5\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"OK\"}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))
+			}))
+			t.Cleanup(upstream.Close)
+			channel := dbmodel.Channel{Model: "claude-haiku-4-5", Name: "Claude-Tools-" + tt.name, Type: outbound.OutboundTypeAnthropic, Enabled: true, Cloak: dbmodel.ChannelCloak{Mode: tt.cloakMode}, BaseUrls: []dbmodel.BaseUrl{{URL: upstream.URL}}, Keys: []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "anthropic-key"}}}
+			if err := op.ChannelCreate(&channel, ctx); err != nil {
+				t.Fatalf("create channel: %v", err)
+			}
+			if _, err := Run(ctx, dbmodel.ModelTestRequest{Model: "claude-haiku-4-5", Endpoint: "openai_responses"}); err != nil {
+				t.Fatalf("run model test: %v", err)
+			}
+			if sawTools != tt.wantTools {
+				t.Fatalf("tools=%d, want %d", sawTools, tt.wantTools)
+			}
+		})
+	}
+}
+
 func TestRunClaudeChannelKeepsCLIBodyShapeOnNonAnthropicEndpoint(t *testing.T) {
 	ctx := setupModelTestDB(t)
 

@@ -19,6 +19,21 @@ export const MODEL_TEST_ENDPOINT_LABELS: Record<ModelTestEndpoint, string> = {
 
 export const DEFAULT_MODEL_TEST_TIMEOUT_SECONDS = 180;
 
+/**
+ * Sanitize provider error text before channel/model-test UI exposure.
+ * Keep code-like filenames readable while redacting upstream identity and credentials.
+ */
+export function sanitizeChannelTestError(text: string): string {
+    const fileExtensions = 'js|mjs|cjs|jsx|ts|tsx|go|py|rs|rb|php|java|kt|c|h|cc|cpp|hpp|cs|swift|json|ya?ml|toml|ini|env|md|txt|csv|log|html?|css|scss|sh|bash|zsh|sql|proto|lock|png|jpe?g|gif|svg|webp|ico|pdf|zip|tar|gz|exe|dll|so|dylib|bin|db|sqlite';
+    return text
+        .replace(/https?:\/\/[^\s"'）)\]]+/gi, '上游')
+        .replace(new RegExp(`\\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\.)+(?!(?:${fileExtensions})\\b)[a-z]{2,}(?::\\d{2,5})?\\b`, 'gi'), '上游')
+        .replace(/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d{2,5})?\b/g, '上游')
+        .replace(/(authorization\s*:\s*bearer|x-api-key|api[_-]?key|token|secret)\s*[=:]?\s*[^\s,;]+/gi, '$1 [已隐藏]')
+        .replace(/\bsk-[a-z0-9_-]+\b/gi, '[已隐藏]')
+        .trim();
+}
+
 export function defaultModelTestEndpointForChannel(type: ChannelType): ModelTestEndpoint {
     switch (type) {
         case ChannelType.OpenAIResponse:

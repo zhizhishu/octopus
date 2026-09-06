@@ -705,6 +705,43 @@ func TestClaudeFingerprintSuppressedWhenCloakOff(t *testing.T) {
 // so neither identity survives on the relay side. (The [1m] model still trips
 // AnthropicRequestWantsOneMillionBeta, so this exercises the real branch, not an early
 // return.)
+func TestPrepareClaudePlainClientShapeFallbackTools(t *testing.T) {
+	existing := transformermodel.Tool{Type: "function", Function: transformermodel.Function{Name: "ClientTool"}}
+	tests := []struct {
+		name         string
+		model        string
+		cloak        string
+		rawFormat    transformermodel.APIFormat
+		output       json.RawMessage
+		messages     []transformermodel.Message
+		tools        []transformermodel.Tool
+		modelMapping map[string]string
+		wantTools    int
+	}{
+		{name: "plain simulated non-1m", model: "claude-haiku-4-5", cloak: "auto", wantTools: 5},
+		{name: "plain simulated mapped model", model: "deepseek-v4-pro", cloak: "auto", modelMapping: map[string]string{"deepseek-v4-pro": "claude-sonnet-4-5"}, wantTools: 5},
+		{name: "simulation off", model: "claude-haiku-4-5", cloak: "never"},
+		{name: "non claude", model: "glm-4.6", cloak: "auto"},
+		{name: "existing tools", model: "claude-haiku-4-5", cloak: "auto", tools: []transformermodel.Tool{existing}, wantTools: 1},
+		{name: "native output config", model: "claude-haiku-4-5", cloak: "auto", rawFormat: transformermodel.APIFormatAnthropicMessage, output: json.RawMessage(`{"format":{"type":"json_schema"}}`)},
+		{name: "native empty tools", model: "claude-haiku-4-5", cloak: "auto", rawFormat: transformermodel.APIFormatAnthropicMessage, messages: []transformermodel.Message{{Role: "system", Content: transformermodel.MessageContent{Content: stringPointer("You are a Claude agent, built on Anthropic's Claude Agent SDK.")}}}},
+		{name: "plain simulated 1m", model: "claude-haiku-4-5[1m]", cloak: "auto", wantTools: 5},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &transformermodel.InternalLLMRequest{Model: tt.model, RawAPIFormat: tt.rawFormat, AnthropicOutputConfig: tt.output, Messages: tt.messages, Tools: tt.tools}
+			ra := &relayAttempt{relayRequest: &relayRequest{internalRequest: req}, channel: &dbmodel.Channel{Cloak: dbmodel.ChannelCloak{Mode: tt.cloak}, ModelMapping: tt.modelMapping}}
+			ra.applyModelMapping()
+			ra.prepareClaudePlainClientShape()
+			if len(req.Tools) != tt.wantTools {
+				t.Fatalf("tools=%d, want %d", len(req.Tools), tt.wantTools)
+			}
+		})
+	}
+}
+
+func stringPointer(value string) *string { return &value }
+
 func TestClaudeOneMillionPlainClientCloakOffEmitsNoClaudeIdentity(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -731,7 +768,7 @@ func TestClaudeOneMillionPlainClientCloakOffEmitsNoClaudeIdentity(t *testing.T) 
 
 	// The two relay-side identity calls applyTransformOptions runs, in the same order.
 	ra.ensureClaudeMetadataUserID()
-	ra.prepareClaudeOneMillionPlainClientShape()
+	ra.prepareClaudePlainClientShape()
 
 	if got := ra.internalRequest.Metadata["user_id"]; got != "" {
 		t.Fatalf("cloak=never [1m] must not inject metadata.user_id, got %q", got)

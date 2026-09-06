@@ -43,3 +43,11 @@ func ClaudeCodeProbeTools() []Tool {
 		mk("Grep", "Search file contents with a regex."),
 	}
 }
+
+// ApplyClaudeCodeFallbackTools adds fallback tools after callers limit use to Anthropic plain-client shaping.
+func ApplyClaudeCodeFallbackTools(req *InternalLLMRequest, simulationEnabled, plainClient bool) {
+	if req == nil || !simulationEnabled || !plainClient || !IsClaudeCodeModel(req.Model) || len(req.Tools) > 0 {
+		return
+	}
+	req.Tools = ClaudeCodeProbeTools()
+}

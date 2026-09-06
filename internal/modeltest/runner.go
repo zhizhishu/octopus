@@ -671,9 +671,7 @@ func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermod
 		// Claude model so a non-Claude model sharing an Anthropic channel is never
 		// touched; codex/gpt models get prepareCodexModelTestRequest instead, other
 		// models get nothing. Simple model-family judgement, no collateral damage.
-		if shouldApplyChannelCloak(channel.Cloak) && transformermodel.IsClaudeCodeModel(upstreamModel) {
-			internalRequest.Tools = transformermodel.ClaudeCodeProbeTools()
-		}
+		transformermodel.ApplyClaudeCodeFallbackTools(internalRequest, shouldApplyChannelCloak(channel.Cloak), true)
 		if channel.AnthropicContext1M {
 			internalRequest.TransformOptions.AnthropicOneMillionBeta = true
 		}

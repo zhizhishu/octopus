@@ -1735,7 +1735,7 @@ func (ra *relayAttempt) applyTransformOptionsWithInboundSetter(updateInboundSett
 	if ra.channel.AnthropicContext1M {
 		ra.internalRequest.TransformOptions.AnthropicOneMillionBeta = true
 	}
-	ra.prepareClaudeOneMillionPlainClientShape()
+	ra.prepareClaudePlainClientShape()
 
 	enabled, err := op.SettingGetBool(dbmodel.SettingKeyAnthropicAutoCacheControl)
 	if err != nil {
@@ -1771,24 +1771,15 @@ func routingCapabilityKey(req *model.InternalLLMRequest, channel *dbmodel.Channe
 	return strings.Join(capabilities, "+")
 }
 
-func (ra *relayAttempt) prepareClaudeOneMillionPlainClientShape() {
-	if ra == nil || ra.internalRequest == nil || !model.AnthropicRequestWantsOneMillionBeta(ra.internalRequest) {
+func (ra *relayAttempt) prepareClaudePlainClientShape() {
+	if ra == nil || ra.internalRequest == nil {
 		return
 	}
-	if isNativeAnthropicClaudeShape(ra.internalRequest) {
-		return
+	plainClient := !isNativeAnthropicClaudeShape(ra.internalRequest)
+	model.ApplyClaudeCodeFallbackTools(ra.internalRequest, ra.channel != nil && shouldApplyChannelCloak(ra.channel.Cloak), plainClient)
+	if plainClient && model.AnthropicRequestWantsOneMillionBeta(ra.internalRequest) {
+		applyClaudeOneMillionRuntimeShape(ra.internalRequest)
 	}
-	// Only the functional 1M runtime shape (reasoning effort / auto-compact context
-	// management) belongs here. The Claude identity — metadata.user_id and the
-	// agent-identity system block — is injected exclusively by the cloak-gated paths
-	// (ensureClaudeMetadataUserID and the Anthropic outbound transformer's
-	// convertSystemPrompt), so it is suppressed correctly when cloak mode is "never".
-	// Re-synthesising identity here would both leak it under cloak=never and duplicate
-	// those canonical builders, so this path deliberately does not touch it.
-	if ra.channel != nil && shouldApplyChannelCloak(ra.channel.Cloak) && model.IsClaudeCodeModel(ra.internalRequest.Model) {
-		ensureClaudeCodeFallbackTools(ra.internalRequest)
-	}
-	applyClaudeOneMillionRuntimeShape(ra.internalRequest)
 }
 
 func isNativeAnthropicClaudeShape(req *model.InternalLLMRequest) bool {
@@ -1827,17 +1818,6 @@ func isBenignUpstreamStreamEnd(err error) bool {
 	}
 	normalized := strings.ToLower(err.Error())
 	return strings.Contains(normalized, "unexpected end of input") || strings.Contains(normalized, "eof")
-}
-
-func ensureClaudeCodeFallbackTools(req *model.InternalLLMRequest) {
-	if req == nil || len(req.Tools) > 0 {
-		return
-	}
-	// Strict Claude-gated relays inspect the BODY, not just headers. A cloaked non-CLI
-	// request with metadata/system but no tools is still visibly not an agent turn. Reuse
-	// the channel-test helper proven in d51f800 so model-test and live relay stay aligned;
-	// native CLI/title requests return before this helper, so their own shape remains untouched.
-	req.Tools = model.ClaudeCodeProbeTools()
 }
 
 func applyClaudeOneMillionRuntimeShape(req *model.InternalLLMRequest) {

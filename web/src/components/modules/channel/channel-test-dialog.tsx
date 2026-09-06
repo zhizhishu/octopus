@@ -1,8 +1,7 @@
 'use client';
 
-// 渠道内测试对话框（学 new-api）：多选端点 + 流/非流开关 + 模型多选批量测试，
-// 复用 /api/v1/model/test 与统一的 shouldForceChannelTestStream + 180s。替代原独立「模型测试」页。
-import { useEffect, useMemo, useState } from 'react';
+// 渠道测试默认是一键当前渠道测试；管理员单/批量模型与端点测试保留在默认关闭的“高级模型测试”二层入口。
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { CheckCircle2, Fingerprint, Loader2, Lock, Play, RotateCw, XCircle } from 'lucide-react';
 import type { Channel } from '@/api/endpoints/channel';
 import { useChannelTestIdentity, useModelTest, type EndpointIdentity } from '@/api/endpoints/model';
@@ -28,6 +27,7 @@ import {
     MODEL_TEST_ENDPOINT_LABELS,
     defaultModelTestEndpointForChannel,
     makeModelTestPrompt,
+    sanitizeChannelTestError,
     shouldForceChannelTestStream,
     type ModelTestEndpoint,
 } from '@/lib/channel-test';
@@ -64,20 +64,6 @@ function classifyError(err?: string): 'capacity' | 'timeout' | 'other' {
     return 'other';
 }
 
-// 兜底脱敏：上游报错原文万一带出上游身份（URL / 域名 / IP），一律抹成「上游」，绝不让上游身份泄漏到页面。
-// 通用规则（不硬编码任何单一上游马甲名，公开仓也不留马甲字面量）：先抹整条 URL，再抹裸域名（含端口），再抹 IPv4。
-function redactUpstreamIdentity(text: string): string {
-    // 常见代码/文件扩展名：错误串里的 `config.json` / `node.js` / `main.go` 不是上游域名，别误抹。
-    const FILE_EXT = 'js|mjs|cjs|jsx|ts|tsx|go|py|rs|rb|php|java|kt|c|h|cc|cpp|hpp|cs|swift|json|ya?ml|toml|ini|env|md|txt|csv|log|html?|css|scss|sh|bash|zsh|sql|proto|lock|png|jpe?g|gif|svg|webp|ico|pdf|zip|tar|gz|exe|dll|so|dylib|bin|db|sqlite';
-    return text
-        // 整条 URL（http/https）——最明确的泄漏向量
-        .replace(/https?:\/\/[^\s"'）)\]]+/gi, '上游')
-        // 裸域名 host（两段以上、末段 2+ 字母 TLD、可选 :端口）；末段是常见文件扩展名的排除掉
-        .replace(new RegExp(`\\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\.)+(?!(?:${FILE_EXT})\\b)[a-z]{2,}(?::\\d{2,5})?\\b`, 'gi'), '上游')
-        // IPv4（含可选端口）
-        .replace(/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d{2,5})?\b/g, '上游');
-}
-
 const pillClass = (selected: boolean) =>
     cn(
         'nodrag rounded-full border px-2.5 py-1 text-xs font-medium transition-colors',
@@ -90,7 +76,7 @@ function apiErrorMessage(error: unknown): string | undefined {
     return (error as ApiError | undefined)?.message;
 }
 
-export function ChannelTestDialog({
+function AdvancedChannelTestDialog({
     channel,
     open,
     onOpenChange,
@@ -273,7 +259,7 @@ export function ChannelTestDialog({
                     const kind = classifyError(err);
                     c[kind] += 1;
                     // 每类各留一条报错原文（治"只看到计数、看不到 76 满 / 23 其它各错在哪"）。
-                    const clean = err && err.trim() ? redactUpstreamIdentity(err.trim()) : '';
+                    const clean = err && err.trim() ? sanitizeChannelTestError(err.trim()) : '';
                     if (clean) {
                         if (kind === 'capacity' && !c.capacityError) c.capacityError = clean;
                         else if (kind === 'timeout' && !c.timeoutError) c.timeoutError = clean;
@@ -304,7 +290,7 @@ export function ChannelTestDialog({
                             setResults((prev) => ({
                                 ...prev,
                                 [cellKey(endpoint, model)]: r
-                                    ? (r.success ? { status: 'success', ms: r.duration_ms } : { status: 'error', error: r.error ? redactUpstreamIdentity(r.error) : r.error })
+                                    ? (r.success ? { status: 'success', ms: r.duration_ms } : { status: 'error', error: r.error ? sanitizeChannelTestError(r.error) : r.error })
                                     : { status: 'error', error: '无结果' },
                             }));
                         }
@@ -612,5 +598,108 @@ export function ChannelTestDialog({
                 </div>
             </DialogContent>
         </Dialog>
+    );
+}
+
+export function ChannelTestDialog({
+    channel,
+    open,
+    onOpenChange,
+}: {
+    channel: Channel;
+    open: boolean;
+    onOpenChange: (open: boolean) => void;
+}) {
+    const modelTest = useModelTest();
+    const model = useMemo(() => getSelectedChannelModels(channel)[0] || '', [channel]);
+    const [advancedOpen, setAdvancedOpen] = useState(false);
+    const [primaryResult, setPrimaryResult] = useState<{ success: boolean; error?: string } | null>(null);
+    const autoTestStarted = useRef(false);
+
+    const runPrimaryTest = async () => {
+        if (!model) {
+            setPrimaryResult({ success: false, error: '当前渠道没有可测试的模型' });
+            return;
+        }
+        setPrimaryResult(null);
+        const endpoint = defaultModelTestEndpointForChannel(channel.type);
+        try {
+            const data = await modelTest.mutateAsync({
+                models: [model],
+                channel_id: channel.id,
+                endpoint,
+                prompt: makeModelTestPrompt(),
+                stream: undefined,
+                timeout_seconds: DEFAULT_MODEL_TEST_TIMEOUT_SECONDS,
+                audit_log: true,
+            });
+            const result = data.results?.[0];
+            setPrimaryResult(result?.success
+                ? { success: true }
+                : { success: false, error: sanitizeChannelTestError(result?.error || '无可用结果') });
+        } catch (error: unknown) {
+            setPrimaryResult({ success: false, error: sanitizeChannelTestError(apiErrorMessage(error) || '无可用结果') });
+        }
+    };
+
+    useEffect(() => {
+        if (!open) {
+            autoTestStarted.current = false;
+            setPrimaryResult(null);
+            return;
+        }
+        if (autoTestStarted.current) return;
+        autoTestStarted.current = true;
+        void runPrimaryTest();
+    }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    const openAdvanced = () => {
+        onOpenChange(false);
+        setAdvancedOpen(true);
+    };
+
+    return (
+        <>
+            <Dialog open={open} onOpenChange={onOpenChange}>
+                <DialogContent className="sm:max-w-md">
+                    <DialogHeader>
+                        <DialogTitle>渠道测试</DialogTitle>
+                    </DialogHeader>
+                    <div className="space-y-4">
+                        {modelTest.isPending && (
+                            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                                <Loader2 className="size-4 animate-spin" />
+                                测试中
+                            </div>
+                        )}
+                        {primaryResult && (
+                            <div className={cn(
+                                'rounded-xl border p-3 text-sm',
+                                primaryResult.success
+                                    ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+                                    : 'border-destructive/30 bg-destructive/10 text-destructive',
+                            )}>
+                                <div className="flex items-center gap-2 font-medium">
+                                    {primaryResult.success ? <CheckCircle2 className="size-4" /> : <XCircle className="size-4" />}
+                                    {primaryResult.success ? '测试成功' : '测试失败'}
+                                </div>
+                                {!primaryResult.success && primaryResult.error ? (
+                                    <p className="mt-1 break-words">{primaryResult.error}</p>
+                                ) : null}
+                            </div>
+                        )}
+                        {primaryResult && (
+                            <Button type="button" variant="ghost" size="sm" onClick={runPrimaryTest} disabled={modelTest.isPending} className="w-full text-muted-foreground">
+                                再试一次
+                            </Button>
+                        )}
+                        <Button type="button" variant="ghost" size="sm" onClick={openAdvanced} className="w-full text-muted-foreground">
+                            高级模型测试
+                        </Button>
+                    </div>
+                </DialogContent>
+            </Dialog>
+            <AdvancedChannelTestDialog channel={channel} open={advancedOpen} onOpenChange={setAdvancedOpen} />
+        </>
     );
 }

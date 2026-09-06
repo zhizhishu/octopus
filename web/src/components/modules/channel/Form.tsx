@@ -28,18 +28,8 @@ import {
     DEFAULT_MODEL_TEST_TIMEOUT_SECONDS,
     defaultModelTestEndpointForChannel,
     makeModelTestPrompt,
-    shouldForceChannelTestStream,
+    sanitizeChannelTestError,
 } from '@/lib/channel-test';
-
-
-function modelTestProxyLabel(result: Pick<ModelTestResult, 'proxy_used' | 'proxy_source' | 'proxy_scheme' | 'proxy_status'>) {
-    if (!result.proxy_used) return 'direct';
-    const parts = ['proxy'];
-    if (result.proxy_source) parts.push(result.proxy_source);
-    if (result.proxy_scheme) parts.push(result.proxy_scheme);
-    if (result.proxy_status) parts.push(`HTTP ${result.proxy_status}`);
-    return parts.join(' ');
-}
 
 function AdvancedSettingsShell({
     panel,
@@ -314,7 +304,6 @@ export function ChannelForm({
         }
     }, [sortedFingerprintProfiles, fallbackProfileId, formData, onFormDataChange]);
     const [channelTestResult, setChannelTestResult] = useState<ModelTestResult | null>(null);
-    const [channelTestStream, setChannelTestStream] = useState(true);
 
     const effectiveKey =
         formData.keys.find((k) => k.enabled && k.channel_key.trim())?.channel_key.trim() || '';
@@ -372,14 +361,6 @@ export function ChannelForm({
     };
 
     const testModel = inputValue.trim() || autoModels[0] || '';
-    const channelTestForcedStream = shouldForceChannelTestStream({
-        models: testModel,
-        endpoint: defaultModelTestEndpointForChannel(formData.type),
-        channelType: formData.type,
-        anthropicContext1M: formData.anthropic_context_1m,
-        cloakMode: formData.cloak_mode,
-    });
-
     const buildChannelTestConfig = () => ({
         name: formData.name.trim() || 'current channel',
         type: formData.type,
@@ -432,7 +413,7 @@ export function ChannelForm({
                 model: testModel,
                 endpoint: defaultModelTestEndpointForChannel(formData.type),
                 prompt: makeModelTestPrompt(),
-                stream: channelTestForcedStream ? true : channelTestStream,
+                stream: undefined,
                 timeout_seconds: DEFAULT_MODEL_TEST_TIMEOUT_SECONDS,
             },
             {
@@ -440,10 +421,10 @@ export function ChannelForm({
                     const result = data.results[0] ?? null;
                     setChannelTestResult(result);
                     if (result?.success) {
-                        toast.success('渠道测试成功', { description: result.response_preview || 'OK' });
+                        toast.success('测试成功');
                         return;
                     }
-                    toast.error('渠道测试失败', { description: result?.error || '无可用结果' });
+                    toast.error('测试失败', { description: sanitizeChannelTestError(result?.error || '无可用结果') });
                 },
                 onError: (error) => {
                     setChannelTestResult({
@@ -454,7 +435,7 @@ export function ChannelForm({
                         duration_ms: 0,
                         error: error.message,
                     });
-                    toast.error('渠道测试失败', { description: error.message });
+                    toast.error('测试失败', { description: sanitizeChannelTestError(error.message) });
                 },
             }
         );
@@ -1076,21 +1057,6 @@ export function ChannelForm({
                 <div className="flex items-center justify-between">
                     <label className="text-sm font-medium text-card-foreground">{t('model')}</label>
                     <div className="flex items-center gap-1">
-                        <label
-                            className={cn(
-                                "mr-1 inline-flex h-6 items-center gap-1 rounded-lg border border-border bg-background px-2 text-[11px] text-muted-foreground",
-                                channelTestForcedStream && "border-primary/30 bg-primary/10 text-primary"
-                            )}
-                            title={channelTestForcedStream ? "该模型必须走流式测试，Octopus 会自动切到正确链路，避免误判。" : "默认流式；需要排查兼容性时可手动切非流。"}
-                        >
-                            <Switch
-                                checked={channelTestForcedStream || channelTestStream}
-                                onCheckedChange={setChannelTestStream}
-                                disabled={channelTestForcedStream}
-                                aria-label="渠道配置测试流式模式"
-                            />
-                            <span>{channelTestForcedStream || channelTestStream ? '流式' : '非流'}</span>
-                        </label>
                         <Button
                             type="button"
                             variant="ghost"
@@ -1356,33 +1322,10 @@ export function ChannelForm({
 
                 {channelTestResult && (
                     <div className={`rounded-xl border p-2.5 text-xs ${channelTestResult.success ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'border-destructive/30 bg-destructive/10 text-destructive'}`}>
-                        <div className="flex min-w-0 flex-wrap items-center gap-2">
-                            <span className="font-medium">{channelTestResult.success ? '测试成功' : '测试失败'}</span>
-                            {channelTestResult.status_code ? <span>HTTP {channelTestResult.status_code}</span> : null}
-                            {channelTestResult.duration_ms ? <span>{(channelTestResult.duration_ms / 1000).toFixed(2)}s</span> : null}
-                            <span
-                                className={cn(
-                                    'rounded-md border px-1.5 py-0.5 font-mono text-[10px]',
-                                    channelTestResult.proxy_used ? 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300' : 'border-border bg-background/60 text-muted-foreground'
-                                )}
-                                title={channelTestResult.proxy_target || modelTestProxyLabel(channelTestResult)}
-                            >
-                                {modelTestProxyLabel(channelTestResult)}
-                            </span>
-                            {channelTestResult.upstream_path ? <span className="font-mono">{channelTestResult.upstream_path}</span> : null}
-                        </div>
-                        <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-background/70 p-2 text-[11px] text-foreground">
-                            {channelTestResult.success ? (channelTestResult.response_preview || 'OK') : (channelTestResult.error || '无错误详情')}
-                        </pre>
-                        {channelTestResult.attempts?.length ? (
-                            <div className="mt-2 grid gap-1 text-[11px] text-muted-foreground">
-                                {channelTestResult.attempts.slice(0, 2).map((attempt) => (
-                                    <div key={attempt.attempt_num} className="min-w-0 truncate font-mono" title={`${attempt.channel_name} / ${attempt.model_name} / ${attempt.upstream_path || '-'} / ${attempt.msg || ''}`}>
-                                        #{attempt.attempt_num} {attempt.status} {attempt.channel_name} / {attempt.model_name}{attempt.upstream_path ? ` / ${attempt.upstream_path}` : ''}{attempt.proxy_used ? ` / ${modelTestProxyLabel(attempt)}` : ''}
-                                    </div>
-                                ))}
-                            </div>
-                        ) : null}
+                        <span className="font-medium">{channelTestResult.success ? '测试成功' : '测试失败'}</span>
+                        {!channelTestResult.success && (
+                            <p className="mt-1 break-words">{sanitizeChannelTestError(channelTestResult.error || '无可用结果')}</p>
+                        )}
                     </div>
                 )}
             </div>
@@ -1451,27 +1394,32 @@ export function ChannelForm({
                             {/* Client-fingerprint group: mode + profile under one titled card so the
                                 section reads as one coherent unit instead of two stray selects. */}
                             <div className="space-y-3 rounded-xl border border-border bg-background/50 p-4">
-                                <div className="flex items-center gap-2">
-                                    <Fingerprint className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-                                    <span className="text-sm font-medium text-card-foreground">{t('cloakMode')}</span>
-                                </div>
-                                <p className="text-xs leading-relaxed text-muted-foreground">{t('cloakModeHint')}</p>
-                                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                                    <div className="space-y-1.5">
-                                        <label htmlFor={`${idPrefix}-cloak-mode`} className="text-xs font-medium text-muted-foreground">
-                                            {t('cloakModeField')}
-                                        </label>
-                                        <label className="flex h-10 w-full cursor-pointer items-center gap-2.5 rounded-xl border border-border bg-background px-4 text-sm text-foreground">
-                                            <Switch
-                                                id={`${idPrefix}-cloak-mode`}
-                                                checked={(formData.cloak_mode || 'auto') !== 'never'}
-                                                onCheckedChange={(checked) => onFormDataChange({ ...formData, cloak_mode: checked ? 'auto' : 'never' })}
-                                                aria-label={t('cloakModeField')}
-                                            />
-                                            <span>{(formData.cloak_mode || 'auto') !== 'never' ? t('cloakModeOn') : t('cloakModeOff')}</span>
-                                        </label>
-                                    </div>
-                                    <div className="space-y-1.5">
+                                {(formData.type === ChannelType.Anthropic || formData.type === ChannelType.OpenAIResponse) && (
+                                    <>
+                                        <div className="flex items-center gap-2">
+                                            <Fingerprint className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+                                            <span className="text-sm font-medium text-card-foreground">
+                                                {formData.type === ChannelType.Anthropic ? t('claudeSimulation') : t('codexSimulation')}
+                                            </span>
+                                        </div>
+                                        <p className="text-xs leading-relaxed text-muted-foreground">{t('cloakModeHint')}</p>
+                                        <div className="space-y-1.5">
+                                            <label htmlFor={`${idPrefix}-cloak-mode`} className="text-xs font-medium text-muted-foreground">
+                                                {t('cloakModeField')}
+                                            </label>
+                                            <label className="flex h-10 w-full cursor-pointer items-center gap-2.5 rounded-xl border border-border bg-background px-4 text-sm text-foreground">
+                                                <Switch
+                                                    id={`${idPrefix}-cloak-mode`}
+                                                    checked={(formData.cloak_mode || 'auto') !== 'never'}
+                                                    onCheckedChange={(checked) => onFormDataChange({ ...formData, cloak_mode: checked ? 'auto' : 'never' })}
+                                                    aria-label={t('cloakModeField')}
+                                                />
+                                                <span>{(formData.cloak_mode || 'auto') !== 'never' ? t('cloakModeOn') : t('cloakModeOff')}</span>
+                                            </label>
+                                        </div>
+                                    </>
+                                )}
+                                <div className="space-y-1.5">
                                         <label htmlFor={`${idPrefix}-cloak-profile`} className="text-xs font-medium text-muted-foreground">
                                             {t('cloakProfile')}
                                         </label>
@@ -1491,7 +1439,6 @@ export function ChannelForm({
                                             </SelectContent>
                                         </Select>
                                     </div>
-                                </div>
                                 <p className="text-xs leading-relaxed text-muted-foreground">{t('cloakProfileHint')}</p>
                             </div>
                         </div>
