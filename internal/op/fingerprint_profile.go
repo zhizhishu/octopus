@@ -137,12 +137,18 @@ func FingerprintProfileDelete(id int, ctx context.Context) error {
 
 // Canonical names of the built-in presets. A row carrying one of these names is
 // SYSTEM-MANAGED: fingerprintProfileRefreshCache forces its identity back to
-// builtinLinuxPresets() on every boot. Later presets (Ubuntu, macOS) are
-// backfilled when Debian is still present; deleting Debian resurrects none.
+// builtinLinuxPresets() on every boot. The 2nd preset (Ubuntu) is backfilled
+// when Debian is still present; deleting Debian resurrects none.
+//
+// "macOS · Chrome" was a 3rd built-in in earlier builds; it is now RETIRED:
+// the name survives only as retiredMacOSPresetName, and fingerprintProfileRefreshCache
+// deletes any row carrying that exact canonical name on every boot, so already-seeded
+// deployments collapse to the two Linux presets. A custom macOS-flavoured profile
+// under ANY other name is never matched here.
 const (
 	builtinDebianPresetName = "Linux · Debian"
 	builtinUbuntuPresetName = "Linux · Ubuntu"
-	builtinMacOSPresetName  = "macOS · Chrome"
+	retiredMacOSPresetName  = "macOS · Chrome"
 )
 
 // builtinPresetLegacyNames maps a built-in preset's canonical name to the earlier
@@ -164,8 +170,8 @@ var builtinPresetLegacyNames = map[string][]string{
 //
 // TWO presets = two distinct devices that both track the captured-latest versions.
 // Same claude/codex versions, DIFFERENT deterministic seeds (deriveProfileSeed 2 vs
-// 3 vs 4) => unrelated, stable device_id / installation ids, and a different OS
-// token in the generic UA / claude OS / codex UA so they read as separate machines.
+// 3) => unrelated, stable device_id / installation ids, and a different codex distro
+// token + generic UA (Chrome vs Firefox) so they read as separate machines.
 // Assign each to a different channel / upstream key to keep accounts uncorrelated.
 // The claude anthropic-beta SET is intentionally NOT part of any profile — every
 // profile reuses BuildClaudeCodeBetaOrder's canonical order; only the
@@ -204,21 +210,6 @@ func builtinLinuxPresets() []*model.FingerprintProfile {
 			CodexOriginator:      "codex_cli_rs",
 			CodexBetaFeatures:    "remote_compaction_v2",
 			GenericUA:            model.GenericUAUbuntu,
-		},
-		{
-			Name:                 builtinMacOSPresetName,
-			Seed:                 deriveProfileSeed(4),
-			ClaudeUserAgent:      "claude-cli/2.1.212 (external, sdk-cli)",
-			ClaudePackageVersion: "0.94.0",
-			ClaudeRuntimeVersion: "v26.3.0",
-			ClaudeOS:             "MacOS",
-			ClaudeArch:           "x64",
-			ClaudeTimeout:        "600",
-			ClaudeStabilize:      stabilize(),
-			CodexUserAgent:       "codex_cli_rs/0.145.0 (macOS 10.15.7; x86_64) unknown (codex_cli_rs; 0.145.0)",
-			CodexOriginator:      "codex_cli_rs",
-			CodexBetaFeatures:    "remote_compaction_v2",
-			GenericUA:            model.GenericUAMacOS,
 		},
 	}
 }
@@ -268,6 +259,23 @@ func fingerprintProfileRefreshCache(ctx context.Context) error {
 			p.CodexUserAgent == "" && p.CodexOriginator == "" && p.CodexBetaFeatures == "" && p.GenericUA == "" {
 			if err := db.GetDB().WithContext(ctx).Delete(&model.FingerprintProfile{}, p.ID).Error; err != nil {
 				return fmt.Errorf("failed to drop redundant default fingerprint profile: %w", err)
+			}
+		}
+	}
+	// Retire the legacy "macOS · Chrome" built-in. It was the 3rd preset in earlier
+	// builds; startup convergence now deletes a row carrying that EXACT canonical name
+	// — by NAME only, never by ID / UA / OS / fuzzy name — so an already-seeded
+	// deployment collapses to the two Linux presets. This is a one-way retirement:
+	// the name is dropped from builtinLinuxPresets(), so it can never be re-seeded, and
+	// a channel that had selected it points at a now-missing id (old ID lookup -> ok=false
+	// via FingerprintProfileGet, so relay falls back to the global default). A custom
+	// mac-flavoured profile under ANY other name, with identical header fields or not, is
+	// never matched here. Matching only rows that still exist keeps it idempotent on the
+	// next restart.
+	for _, p := range profiles {
+		if p.Name == retiredMacOSPresetName {
+			if err := db.GetDB().WithContext(ctx).Delete(&model.FingerprintProfile{}, p.ID).Error; err != nil {
+				return fmt.Errorf("failed to drop retired fingerprint profile %q: %w", retiredMacOSPresetName, err)
 			}
 		}
 	}
@@ -325,7 +333,8 @@ func fingerprintProfileRefreshCache(ctx context.Context) error {
 	// Seeding rule (unchanged): a FRESH deployment (no profiles at all) gets BOTH
 	// built-ins; a deployment that already has the 1st built-in but not the 2nd gets
 	// the 2nd backfilled on restart; if an operator DELETED the 1st we resurrect
-	// NEITHER (the deletion is respected).
+	// NEITHER (the deletion is respected). The retired "macOS · Chrome" name is not a
+	// built-in, so it is never seeded nor backfilled here — only dropped above.
 	var toSeed []*model.FingerprintProfile
 	switch {
 	case len(profiles) == 0:
