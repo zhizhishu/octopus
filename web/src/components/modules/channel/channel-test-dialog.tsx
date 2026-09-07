@@ -1,7 +1,6 @@
 'use client';
 
-// 渠道测试默认是一键当前渠道测试；管理员单/批量模型与端点测试保留在默认关闭的“高级模型测试”二层入口。
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { CheckCircle2, Fingerprint, Loader2, Lock, Play, RotateCw, XCircle } from 'lucide-react';
 import type { Channel } from '@/api/endpoints/channel';
 import { useChannelTestIdentity, useModelTest, type EndpointIdentity } from '@/api/endpoints/model';
@@ -610,96 +609,9 @@ export function ChannelTestDialog({
     open: boolean;
     onOpenChange: (open: boolean) => void;
 }) {
-    const modelTest = useModelTest();
-    const model = useMemo(() => getSelectedChannelModels(channel)[0] || '', [channel]);
-    const [advancedOpen, setAdvancedOpen] = useState(false);
-    const [primaryResult, setPrimaryResult] = useState<{ success: boolean; error?: string } | null>(null);
-    const autoTestStarted = useRef(false);
-
-    const runPrimaryTest = async () => {
-        if (!model) {
-            setPrimaryResult({ success: false, error: '当前渠道没有可测试的模型' });
-            return;
-        }
-        setPrimaryResult(null);
-        const endpoint = defaultModelTestEndpointForChannel(channel.type);
-        try {
-            const data = await modelTest.mutateAsync({
-                models: [model],
-                channel_id: channel.id,
-                endpoint,
-                prompt: makeModelTestPrompt(),
-                stream: undefined,
-                timeout_seconds: DEFAULT_MODEL_TEST_TIMEOUT_SECONDS,
-                audit_log: true,
-            });
-            const result = data.results?.[0];
-            setPrimaryResult(result?.success
-                ? { success: true }
-                : { success: false, error: sanitizeChannelTestError(result?.error || '无可用结果') });
-        } catch (error: unknown) {
-            setPrimaryResult({ success: false, error: sanitizeChannelTestError(apiErrorMessage(error) || '无可用结果') });
-        }
-    };
-
-    useEffect(() => {
-        if (!open) {
-            autoTestStarted.current = false;
-            setPrimaryResult(null);
-            return;
-        }
-        if (autoTestStarted.current) return;
-        autoTestStarted.current = true;
-        void runPrimaryTest();
-    }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
-
-    const openAdvanced = () => {
-        onOpenChange(false);
-        setAdvancedOpen(true);
-    };
-
+    // 渠道卡片「测试」直接打开完整高级模型测试界面（保留原有全部能力、默认选择与渠道绑定），
+    // 不再显示自动测试当前渠道的简化中转层，也不再显示「高级模型测试」二次入口按钮。
     return (
-        <>
-            <Dialog open={open} onOpenChange={onOpenChange}>
-                <DialogContent className="sm:max-w-md">
-                    <DialogHeader>
-                        <DialogTitle>渠道测试</DialogTitle>
-                    </DialogHeader>
-                    <div className="space-y-4">
-                        {modelTest.isPending && (
-                            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                                <Loader2 className="size-4 animate-spin" />
-                                测试中
-                            </div>
-                        )}
-                        {primaryResult && (
-                            <div className={cn(
-                                'rounded-xl border p-3 text-sm',
-                                primaryResult.success
-                                    ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-                                    : 'border-destructive/30 bg-destructive/10 text-destructive',
-                            )}>
-                                <div className="flex items-center gap-2 font-medium">
-                                    {primaryResult.success ? <CheckCircle2 className="size-4" /> : <XCircle className="size-4" />}
-                                    {primaryResult.success ? '测试成功' : '测试失败'}
-                                </div>
-                                {!primaryResult.success && primaryResult.error ? (
-                                    <p className="mt-1 break-words">{primaryResult.error}</p>
-                                ) : null}
-                            </div>
-                        )}
-                        {primaryResult && (
-                            <Button type="button" variant="ghost" size="sm" onClick={runPrimaryTest} disabled={modelTest.isPending} className="w-full text-muted-foreground">
-                                再试一次
-                            </Button>
-                        )}
-                        <Button type="button" variant="ghost" size="sm" onClick={openAdvanced} className="w-full text-muted-foreground">
-                            高级模型测试
-                        </Button>
-                    </div>
-                </DialogContent>
-            </Dialog>
-            <AdvancedChannelTestDialog channel={channel} open={advancedOpen} onOpenChange={setAdvancedOpen} />
-        </>
+        <AdvancedChannelTestDialog channel={channel} open={open} onOpenChange={onOpenChange} />
     );
 }
