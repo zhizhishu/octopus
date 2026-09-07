@@ -9,10 +9,10 @@ import (
 	"github.com/bestruirui/octopus/internal/transformer/model"
 )
 
-func chatRequestBody(t *testing.T, request *model.InternalLLMRequest) map[string]any {
+func chatRequestBodyWithBase(baseUrl string, t *testing.T, request *model.InternalLLMRequest) map[string]any {
 	t.Helper()
 
-	req, err := (&ChatOutbound{}).TransformRequest(context.Background(), request, "https://upstream.example", "key")
+	req, err := (&ChatOutbound{}).TransformRequest(context.Background(), request, baseUrl, "key")
 	if err != nil {
 		t.Fatalf("TransformRequest returned error: %v", err)
 	}
@@ -26,6 +26,24 @@ func chatRequestBody(t *testing.T, request *model.InternalLLMRequest) map[string
 	}
 	return payload
 }
+
+// chatRequestBody drives the generic upstream host, where tool_stream must NOT
+// be auto-injected; tests that need a first-party GLM host use
+// chatRequestBodyWithBase explicitly.
+func chatRequestBody(t *testing.T, request *model.InternalLLMRequest) map[string]any {
+	t.Helper()
+	return chatRequestBodyWithBase("https://upstream.example", t, request)
+}
+
+const (
+	glmNativeHostZAI   = "https://api.z.ai/v1"
+	glmNativeHostGLM   = "https://open.bigmodel.cn/api/paas/v4"
+	glmSpoofHostSuffix = "https://api.z.ai.evil.example/v1"
+	glmSpoofHostPrefix = "https://notapi.z.ai/v1"
+	glmSpoofPathOnly   = "https://example.com/api.z.ai/v1"
+	glmSpoofUserinfo   = "https://api.z.ai@evil.example/v1"
+	glmSpoofInvalid    = "https://%zz:bad"
+)
 
 func userMessages() []model.Message {
 	content := "hi"
@@ -165,7 +183,7 @@ func TestChatOutboundNonGLMNeverInjectsThinking(t *testing.T) {
 
 func TestChatOutboundGLMEnablesToolStreamingForStreamedTools(t *testing.T) {
 	stream := true
-	payload := chatRequestBody(t, &model.InternalLLMRequest{
+	payload := chatRequestBodyWithBase(glmNativeHostZAI, t, &model.InternalLLMRequest{
 		Model:    "glm-5.2",
 		Stream:   &stream,
 		Messages: userMessages(),
@@ -179,7 +197,7 @@ func TestChatOutboundGLMEnablesToolStreamingForStreamedTools(t *testing.T) {
 	})
 
 	if enabled, ok := payload["tool_stream"].(bool); !ok || !enabled {
-		t.Fatalf("expected tool_stream=true for a streamed GLM tool request, got %#v", payload["tool_stream"])
+		t.Fatalf("expected tool_stream=true for a streamed GLM tool request on %s, got %#v", glmNativeHostZAI, payload["tool_stream"])
 	}
 }
 
@@ -214,9 +232,9 @@ func TestChatOutboundToolStreamingProjectionDoesNotMutateRetryRequest(t *testing
 		}},
 	}
 
-	firstPayload := chatRequestBody(t, request)
+	firstPayload := chatRequestBodyWithBase(glmNativeHostZAI, t, request)
 	if enabled, ok := firstPayload["tool_stream"].(bool); !ok || !enabled {
-		t.Fatalf("expected GLM attempt to enable tool streaming, got %#v", firstPayload["tool_stream"])
+		t.Fatalf("expected GLM attempt on %s to enable tool streaming, got %#v", glmNativeHostZAI, firstPayload["tool_stream"])
 	}
 	if request.ToolStream != nil {
 		t.Fatalf("GLM projection leaked into the shared retry request: %#v", request.ToolStream)
@@ -318,7 +336,7 @@ func TestChatOutboundToolStreamingCompatibilityIsGLMOnly(t *testing.T) {
 				request.ToolStream = &toolStream
 			}
 
-			payload := chatRequestBody(t, request)
+			payload := chatRequestBodyWithBase(glmNativeHostZAI, t, request)
 			_, present := payload["tool_stream"]
 			if present != testCase.expectInjected {
 				t.Fatalf("tool_stream presence=%t, want %t: %#v", present, testCase.expectInjected, payload)
@@ -408,5 +426,149 @@ func TestChatOutboundGLMRemapsMaxCompletionTokens(t *testing.T) {
 	}
 	if got, ok := payload["max_tokens"].(float64); !ok || int64(got) != 4096 {
 		t.Fatalf("expected max_tokens=4096, got %#v", payload["max_tokens"])
+	}
+}
+
+func streamedGLMToolRequest() *model.InternalLLMRequest {
+	stream := true
+	return &model.InternalLLMRequest{
+		Model:    "glm-5.2",
+		Stream:   &stream,
+		Messages: userMessages(),
+		Tools: []model.Tool{{
+			Type:     "function",
+			Function: model.Function{Name: "ReadFile"},
+		}},
+	}
+}
+
+func TestChatOutboundGenericUpstreamStreamedGLMToolsOmitsSyntheticField(t *testing.T) {
+	// A generic (non first-party) gateway may serve a GLM model but reject the
+	// tool_stream extension as an unknown field. It must receive no synthetic
+	// value while the client's tools/stream are forwarded untouched.
+	payload := chatRequestBody(t, streamedGLMToolRequest())
+	if _, ok := payload["tool_stream"]; ok {
+		t.Fatalf("generic upstream must not receive a synthetic tool_stream, got %#v", payload["tool_stream"])
+	}
+	tools, ok := payload["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("generic upstream must keep tools even without tool_stream: %#v", payload)
+	}
+	if enabled, ok := payload["stream"].(bool); !ok || !enabled {
+		t.Fatalf("generic upstream must keep stream=true even without tool_stream: %#v", payload)
+	}
+}
+
+func TestChatOutboundNativeHostsEnableToolStreaming(t *testing.T) {
+	for _, host := range []string{glmNativeHostZAI, glmNativeHostGLM} {
+		t.Run(host, func(t *testing.T) {
+			payload := chatRequestBodyWithBase(host, t, streamedGLMToolRequest())
+			if enabled, ok := payload["tool_stream"].(bool); !ok || !enabled {
+				t.Fatalf("expected tool_stream=true for supported GLM on %s, got %#v", host, payload["tool_stream"])
+			}
+		})
+	}
+}
+
+func TestChatOutboundToolStreamingOmissionCases(t *testing.T) {
+	stream := true
+	// No tools.
+	noTools := chatRequestBodyWithBase(glmNativeHostZAI, t, &model.InternalLLMRequest{
+		Model:    "glm-5.2",
+		Stream:   &stream,
+		Messages: userMessages(),
+	})
+	if _, ok := noTools["tool_stream"]; ok {
+		t.Fatalf("no-tools request must not get tool_stream: %#v", noTools)
+	}
+	// Non-stream.
+	nonStream := false
+	nonStreamPayload := chatRequestBodyWithBase(glmNativeHostZAI, t, &model.InternalLLMRequest{
+		Model:    "glm-5.2",
+		Stream:   &nonStream,
+		Messages: userMessages(),
+		Tools: []model.Tool{{
+			Type:     "function",
+			Function: model.Function{Name: "ReadFile"},
+		}},
+	})
+	if _, ok := nonStreamPayload["tool_stream"]; ok {
+		t.Fatalf("non-stream request must not get tool_stream: %#v", nonStreamPayload)
+	}
+	// Unsupported family on a native host.
+	unsupported := chatRequestBodyWithBase(glmNativeHostZAI, t, &model.InternalLLMRequest{
+		Model:    "glm-4.5",
+		Stream:   &stream,
+		Messages: userMessages(),
+		Tools: []model.Tool{{
+			Type:     "function",
+			Function: model.Function{Name: "ReadFile"},
+		}},
+	})
+	if _, ok := unsupported["tool_stream"]; ok {
+		t.Fatalf("unsupported GLM family must not get tool_stream even on a native host: %#v", unsupported)
+	}
+}
+
+func TestChatOutboundGLMToolStreamingHostSpoofNegatives(t *testing.T) {
+	for _, host := range []string{
+		glmSpoofHostSuffix,
+		glmSpoofHostPrefix,
+		glmSpoofPathOnly,
+		glmSpoofUserinfo,
+		glmSpoofInvalid,
+		"",
+	} {
+		t.Run(host, func(t *testing.T) {
+			request := streamedGLMToolRequest()
+			applyGLMToolStreaming(request, host)
+			if request.ToolStream != nil {
+				t.Fatalf("host %q must not trigger tool_stream injection", host)
+			}
+		})
+	}
+}
+
+func TestChatOutboundGenericGLMPreservesExplicitToolStream(t *testing.T) {
+	stream := true
+	for _, value := range []bool{true, false} {
+		request := &model.InternalLLMRequest{
+			Model:      "glm-5.2",
+			Stream:     &stream,
+			ToolStream: &value,
+			Messages:   userMessages(),
+			Tools: []model.Tool{{
+				Type:     "function",
+				Function: model.Function{Name: "ReadFile"},
+			}},
+		}
+		payload := chatRequestBody(t, request)
+		got, ok := payload["tool_stream"].(bool)
+		if !ok || got != value {
+			t.Fatalf("explicit tool_stream=%t on a generic GLM host must be preserved, got %#v", value, payload["tool_stream"])
+		}
+	}
+}
+
+func TestChatOutboundToolStreamingNativeThenGenericSameModelIsolation(t *testing.T) {
+	// A native GLM attempt on api.z.ai auto-injects tool_stream, but a later
+	// generic failover for the SAME GLM model must not inherit the synthetic
+	// switch, and the shared retry request must remain untouched (ToolStream nil).
+	request := streamedGLMToolRequest()
+
+	nativePayload := chatRequestBodyWithBase(glmNativeHostZAI, t, request)
+	if enabled, ok := nativePayload["tool_stream"].(bool); !ok || !enabled {
+		t.Fatalf("native GLM attempt should enable tool_stream, got %#v", nativePayload["tool_stream"])
+	}
+	if request.ToolStream != nil {
+		t.Fatalf("native projection leaked into the shared retry request: %#v", request.ToolStream)
+	}
+
+	genericPayload := chatRequestBody(t, request)
+	if _, present := genericPayload["tool_stream"]; present {
+		t.Fatalf("same-model generic retry must not emit a synthetic tool_stream, got %#v", genericPayload["tool_stream"])
+	}
+	if request.ToolStream != nil {
+		t.Fatalf("generic retry must leave the shared request ToolStream nil, got %#v", request.ToolStream)
 	}
 }

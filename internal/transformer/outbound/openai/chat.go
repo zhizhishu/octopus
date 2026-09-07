@@ -137,7 +137,7 @@ func transformChatRequest(ctx context.Context, request *model.InternalLLMRequest
 	}
 
 	applyGLMThinking(request)
-	applyGLMToolStreaming(request)
+	applyGLMToolStreaming(request, baseUrl)
 	applyDeepSeekResponseFormat(request)
 	applyThirdPartyChatParamCompat(request, baseUrl)
 	applyGLMChatTokenFieldCompat(request)
@@ -503,12 +503,10 @@ func applyGLMThinking(request *model.InternalLLMRequest) {
 	request.ReasoningEffort = ""
 }
 
-// applyGLMToolStreaming enables GLM's separate function-call streaming switch.
-// Z.AI keeps tool_stream disabled by default even when stream=true, so a Cursor
-// Responses request can otherwise receive text while the call arguments remain
-// buffered and never reach the client as incremental tool_calls. Preserve an
-// explicit client value; only supply the compatibility default when tools exist.
-func applyGLMToolStreaming(request *model.InternalLLMRequest) {
+// applyGLMToolStreaming supplies the native GLM tool-streaming default only to
+// known first-party hosts: a model name alone does not prove gateway support.
+// Explicit client values are preserved for supported models.
+func applyGLMToolStreaming(request *model.InternalLLMRequest, baseUrl string) {
 	if request == nil {
 		return
 	}
@@ -524,9 +522,22 @@ func applyGLMToolStreaming(request *model.InternalLLMRequest) {
 	if request.Stream == nil || !*request.Stream || len(request.Tools) == 0 {
 		return
 	}
+	if !isGLMToolStreamingHost(baseUrl) {
+		return
+	}
 
 	toolStreamingEnabled := true
 	request.ToolStream = &toolStreamingEnabled
+}
+
+// Match the parsed hostname, never a substring in the path or userinfo.
+func isGLMToolStreamingHost(baseUrl string) bool {
+	parsed, err := url.Parse(baseUrl)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	return host == "api.z.ai" || host == "open.bigmodel.cn"
 }
 
 func supportsGLMToolStreaming(modelName string) bool {
