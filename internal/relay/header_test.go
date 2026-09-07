@@ -1173,3 +1173,30 @@ func TestRelayCopyHeadersAppliesGenericUAWhenCloakNeverOnGeminiChannel(t *testin
 		t.Fatalf("gemini cloak=never user-agent = %q, want unified DefaultGenericUA (not Go default / downstream leak)", got)
 	}
 }
+
+func TestApplyChannelWireHeadersCloakNeverUsesSelectedProfileGenericUA(t *testing.T) {
+	ctx := setupRelayErrorDB(t)
+	profile := dbmodel.FingerprintProfile{
+		Name:      "ubuntu-generic-off",
+		Seed:      "profile-generic-off-seed",
+		GenericUA: dbmodel.GenericUAUbuntu,
+	}
+	if err := op.FingerprintProfileCreate(&profile, ctx); err != nil {
+		t.Fatalf("create fingerprint profile: %v", err)
+	}
+
+	channel := &dbmodel.Channel{
+		Type:  outbound.OutboundTypeAnthropic,
+		Cloak: dbmodel.ChannelCloak{Mode: "never", ProfileID: profile.ID},
+	}
+	upstreamReq := httptest.NewRequest(http.MethodPost, "https://upstream.example/v1/messages", nil)
+	upstreamReq.Header.Set("User-Agent", "downstream-claude-cli")
+	ApplyChannelWireHeaders(upstreamReq, ChannelWireHeaderOptions{
+		Channel:         channel,
+		InboundType:     inbound.InboundTypeAnthropic,
+		InternalRequest: &transformermodel.InternalLLMRequest{Model: "claude-opus-5"},
+	})
+	if got := upstreamReq.Header.Get("User-Agent"); got != dbmodel.GenericUAUbuntu {
+		t.Fatalf("cloak=never selected profile UA = %q, want GenericUAUbuntu %q", got, dbmodel.GenericUAUbuntu)
+	}
+}
