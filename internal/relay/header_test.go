@@ -400,6 +400,50 @@ func TestRelayCopyHeadersCloakNeverAppliesGenericUANotCodex(t *testing.T) {
 	}
 }
 
+func TestApplyChannelWireHeadersCloakNeverKeepsOnlyRequestedOneMillionBeta(t *testing.T) {
+	channel := &dbmodel.Channel{
+		Type:  outbound.OutboundTypeAnthropic,
+		Cloak: dbmodel.ChannelCloak{Mode: "never"},
+	}
+	internalRequest := &transformermodel.InternalLLMRequest{Model: "claude-opus-5"}
+	internalRequest.TransformOptions.AnthropicOneMillionBeta = true
+	upstreamReq := httptest.NewRequest(http.MethodPost, "https://upstream.example/v1/messages", nil)
+	upstreamReq.Header.Set("Anthropic-Beta", "claude-code-20250219,"+transformermodel.AnthropicOneMillionBeta+",effort-2025-11-24")
+	upstreamReq.Header.Set("User-Agent", "downstream-claude-cli")
+
+	ApplyChannelWireHeaders(upstreamReq, ChannelWireHeaderOptions{
+		Channel:         channel,
+		InboundType:     inbound.InboundTypeAnthropic,
+		InternalRequest: internalRequest,
+	})
+
+	if got := upstreamReq.Header.Get("Anthropic-Beta"); got != transformermodel.AnthropicOneMillionBeta {
+		t.Fatalf("cloak=never 1M beta = %q, want only %q", got, transformermodel.AnthropicOneMillionBeta)
+	}
+	if got := upstreamReq.Header.Get("User-Agent"); got != dbmodel.DefaultGenericUA {
+		t.Fatalf("cloak=never 1M user-agent = %q, want generic %q", got, dbmodel.DefaultGenericUA)
+	}
+}
+
+func TestApplyChannelWireHeadersCloakNeverWithoutOneMillionStripsAnthropicBeta(t *testing.T) {
+	channel := &dbmodel.Channel{
+		Type:  outbound.OutboundTypeAnthropic,
+		Cloak: dbmodel.ChannelCloak{Mode: "never"},
+	}
+	upstreamReq := httptest.NewRequest(http.MethodPost, "https://upstream.example/v1/messages", nil)
+	upstreamReq.Header.Set("Anthropic-Beta", "claude-code-20250219,effort-2025-11-24")
+
+	ApplyChannelWireHeaders(upstreamReq, ChannelWireHeaderOptions{
+		Channel:         channel,
+		InboundType:     inbound.InboundTypeAnthropic,
+		InternalRequest: &transformermodel.InternalLLMRequest{Model: "claude-opus-5"},
+	})
+
+	if got := upstreamReq.Header.Get("Anthropic-Beta"); got != "" {
+		t.Fatalf("cloak=never non-1M beta = %q, want empty", got)
+	}
+}
+
 func TestRelayCopyHeadersDoesNotApplyCodexDefaultsToChatChannel(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())

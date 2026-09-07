@@ -54,7 +54,7 @@ func ApplyChannelWireHeaders(req *http.Request, options ChannelWireHeaderOptions
 	if !shouldApplyChannelCloak(options.Channel.Cloak) {
 		switch options.Channel.Type {
 		case outbound.OutboundTypeAnthropic:
-			req.Header.Del("Anthropic-Beta")
+			applyAnthropicCloakOffBeta(req.Header, options.InternalRequest)
 		case outbound.OutboundTypeOpenAIResponse:
 			stripCodexClientHeaders(req.Header)
 		}
@@ -101,9 +101,9 @@ func applyChannelWireHeaderDefaults(req *http.Request, options ChannelWireHeader
 		// Shape OFF (cloak=never): do NOT synthesize the claude/codex CLI identity. But
 		// "no CLI" must resolve to a CLEAN GENERIC identity, never a bare/leaky one:
 		//   1. Strip the CLI-specific headers a downstream CLI client leaked through
-		//      copyHeaders — Anthropic-Beta on the claude path, Originator/X-Codex-* on the
-		//      codex path. On a plain Anthropic/OpenAI-compatible upstream (GLM/DeepSeek)
-		//      those are a stray CLI fingerprint the operator explicitly opted out of.
+		//      copyHeaders — Claude betas on the Anthropic path, Originator/X-Codex-* on the
+		//      codex path. Keep only context-1m when the request separately asks for the
+		//      channel's 1M capability; that beta is runtime capability, not CLI identity.
 		//   2. Apply the unified generic UA on EVERY type — including the two CLI-capable
 		//      ones. Leaving them bare emitted Go's default "Go-http-client/1.1", which flags
 		//      the caller as a bot/script; the operator picked "no shape", not "no identity".
@@ -111,7 +111,7 @@ func applyChannelWireHeaderDefaults(req *http.Request, options ChannelWireHeader
 		//      Firefox / macOS Chrome), falling back to DefaultGenericUA.
 		switch channel.Type {
 		case outbound.OutboundTypeAnthropic:
-			req.Header.Del("Anthropic-Beta")
+			applyAnthropicCloakOffBeta(req.Header, options.InternalRequest)
 		case outbound.OutboundTypeOpenAIResponse:
 			stripCodexClientHeaders(req.Header)
 		}
@@ -284,6 +284,16 @@ func applyClaudeHeaderDefaultsWithFingerprint(req *http.Request, internalRequest
 	req.Header.Del("Anthropic-Beta")
 	for _, beta := range betas {
 		addAnthropicBetaHeader(req.Header, beta)
+	}
+}
+
+func applyAnthropicCloakOffBeta(headers http.Header, internalRequest *model.InternalLLMRequest) {
+	if headers == nil {
+		return
+	}
+	headers.Del("Anthropic-Beta")
+	if model.AnthropicRequestWantsOneMillionBeta(internalRequest) {
+		headers.Set("Anthropic-Beta", model.AnthropicOneMillionBeta)
 	}
 }
 
