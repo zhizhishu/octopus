@@ -367,7 +367,7 @@ func TestResponseOutboundIncompleteEventMapsToLengthFinish(t *testing.T) {
 
 func TestResponseOutboundFailedEventAcceptsStringErrorCode(t *testing.T) {
 	outbound := &ResponseOutbound{}
-	resp, err := outbound.TransformStream(context.Background(), []byte(`{
+	_, err := outbound.TransformStream(context.Background(), []byte(`{
 		"type":"response.failed",
 		"response":{
 			"id":"resp_1",
@@ -378,14 +378,13 @@ func TestResponseOutboundFailedEventAcceptsStringErrorCode(t *testing.T) {
 			"error":{"code":"rate_limit_exceeded","message":"busy"}
 		}
 	}`))
-	if err != nil {
-		t.Fatalf("TransformStream response.failed with string error code returned error: %v", err)
+	if err == nil {
+		t.Fatal("response.failed must terminate as an error so partial text cannot pass as success")
 	}
-	if resp == nil || len(resp.Choices) != 1 || resp.Choices[0].FinishReason == nil {
-		t.Fatalf("expected error finish chunk, got %#v", resp)
-	}
-	if *resp.Choices[0].FinishReason != "error" {
-		t.Fatalf("expected error finish reason, got %#v", resp.Choices[0].FinishReason)
+	// The redacted upstream reason must be preserved in the returned error so the
+	// model/relay failure accounting can surface what actually went wrong.
+	if !strings.Contains(err.Error(), "busy") || !strings.Contains(err.Error(), "rate_limit_exceeded") {
+		t.Fatalf("expected the failure reason to be preserved, got: %v", err)
 	}
 }
 

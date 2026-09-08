@@ -12,6 +12,7 @@ import (
 	"github.com/samber/lo"
 
 	"github.com/bestruirui/octopus/internal/transformer/model"
+	"github.com/bestruirui/octopus/internal/utils/xredact"
 	"github.com/bestruirui/octopus/internal/utils/xurl"
 )
 
@@ -407,6 +408,9 @@ func (o *ResponseOutbound) TransformStream(ctx context.Context, eventData []byte
 		}
 
 	case "response.completed":
+		if streamEvent.Response != nil && streamEvent.Response.Status == nil && streamEvent.Response.Error != nil {
+			return nil, fmt.Errorf("responses stream failed: %s", responsesStreamFailureReason(eventData))
+		}
 		var usage *ResponsesUsage
 		if streamEvent.Response != nil {
 			if streamEvent.Response.ID != "" {
@@ -432,8 +436,12 @@ func (o *ResponseOutbound) TransformStream(ctx context.Context, eventData []byte
 					}
 				case "incomplete":
 					finishReason = lo.ToPtr("length")
-				case "failed":
-					finishReason = lo.ToPtr("error")
+				case "failed", "error":
+					// A completed-with-failed/error response is a real upstream
+					// failure, so terminate as an error instead of letting prior
+					// partial text pass the stream as a success. Preserve the same
+					// redacted reason used by the response.failed / error events.
+					return nil, fmt.Errorf("responses stream failed: %s", responsesStreamFailureReason(eventData))
 				}
 			}
 			choice := model.Choice{Index: 0, FinishReason: finishReason}
@@ -465,12 +473,14 @@ func (o *ResponseOutbound) TransformStream(ctx context.Context, eventData []byte
 		}
 
 	case "response.failed", "error":
-		resp.Choices = []model.Choice{
-			{
-				Index:        0,
-				FinishReason: lo.ToPtr("error"),
-			},
-		}
+		// A terminal upstream failure must terminate the stream as an error: a
+		// plain error-finish chunk lets partial text streamed before the failure
+		// be judged a success (modeltest/relay accounting), and an empty failed
+		// stream becomes a bogus "completed but empty". Return the failure so the
+		// existing relay error path records it (and emits response.failed
+		// downstream once the stream already started). The reason is preserved and
+		// redacted so providers can never leak secrets through the error text.
+		return nil, fmt.Errorf("responses stream failed: %s", responsesStreamFailureReason(eventData))
 
 	default:
 		// Skip unhandled events
@@ -1014,10 +1024,10 @@ type ResponsesStreamEvent struct {
 	// response.custom_tool_call_input.done event (the full freeform tool input).
 	// It is a plain JSON string, so unlike Arguments/Delta it needs no
 	// object-or-string tolerance in UnmarshalJSON.
-	Input        string `json:"input,omitempty"`
-	SummaryIndex *int   `json:"summary_index,omitempty"`
-	Code         string `json:"code,omitempty"`
-	Message      string `json:"message,omitempty"`
+	Input        string             `json:"input,omitempty"`
+	SummaryIndex *int               `json:"summary_index,omitempty"`
+	Code         ResponsesErrorCode `json:"code,omitempty"`
+	Message      string             `json:"message,omitempty"`
 }
 
 // UnmarshalJSON tolerates upstreams that send the top-level `arguments`/`delta`
@@ -1750,4 +1760,82 @@ func convertResponsesUsage(usage *ResponsesUsage) *model.Usage {
 	}
 
 	return result
+}
+
+// responsesStreamError is the error detail shape carried by a terminal Responses
+// failure event. Code is kept as ResponsesErrorCode so both the OpenAI-style
+// string codes and numeric status-like codes emitted by compatible gateways
+// decode cleanly (see ResponsesErrorCode.UnmarshalJSON).
+type responsesStreamError struct {
+	Code    ResponsesErrorCode `json:"code,omitempty"`
+	Type    string             `json:"type,omitempty"`
+	Message string             `json:"message,omitempty"`
+}
+
+// responsesStreamFailureReason extracts a redacted, human-readable failure reason
+// from a terminal Responses failure event (response.failed / error /
+// response.completed-with-failed-status), mirroring the reference proxy's
+// codexTerminalFailureBody precedence for the nested `response.error`, nested
+// `error`, and flattened top-level `code`/`message` shapes. When no detail is
+// present it falls back to a generic message so a failure can never be misread as
+// a clean stop. The result is passed through xredact.Secrets so a provider error
+// body can never leak credentials into the returned error text.
+func responsesStreamFailureReason(eventData []byte) string {
+	const generic = "upstream stream failed without error details"
+	if len(bytes.TrimSpace(eventData)) == 0 {
+		return generic
+	}
+	var raw struct {
+		Type     string                `json:"type"`
+		Code     ResponsesErrorCode    `json:"code,omitempty"`
+		Message  string                `json:"message,omitempty"`
+		Error    *responsesStreamError `json:"error,omitempty"`
+		Response *struct {
+			Error *responsesStreamError `json:"error,omitempty"`
+		} `json:"response,omitempty"`
+	}
+	if err := json.Unmarshal(eventData, &raw); err != nil {
+		return generic
+	}
+	// Prefer the nested error carried on the response envelope for events that
+	// normally wrap one (response.failed / response.completed); a bare "error"
+	// event keeps the top-level `error` object. When the envelope has no error
+	// but a top-level error object is present, fall back to that before using
+	// the flattened top-level code/message.
+	detail := raw.Error
+	switch strings.TrimSpace(raw.Type) {
+	case "response.failed", "response.completed":
+		if raw.Response != nil && raw.Response.Error != nil {
+			detail = raw.Response.Error
+		} else if raw.Error != nil {
+			detail = raw.Error
+		}
+	}
+	// Flattened top-level code/message as the fallback when no nested error
+	// object (or an empty one) is present.
+	if detail == nil || (detail.Message == "" && detail.Code == "" && detail.Type == "") {
+		flat := &responsesStreamError{Code: raw.Code, Message: raw.Message}
+		if detail != nil {
+			flat.Type = detail.Type
+		}
+		detail = flat
+	}
+	// Preserve every piece of the upstream reason (message plus code/type when
+	// present) so the failure is diagnosable, then redact so a provider error
+	// body can never leak credentials through the returned error text.
+	var parts []string
+	if msg := strings.TrimSpace(detail.Message); msg != "" {
+		parts = append(parts, msg)
+	}
+	if code := strings.TrimSpace(string(detail.Code)); code != "" {
+		parts = append(parts, "code: "+code)
+	}
+	if typ := strings.TrimSpace(detail.Type); typ != "" {
+		parts = append(parts, "type: "+typ)
+	}
+	reason := xredact.Secrets(strings.Join(parts, ", "))
+	if reason == "" {
+		return generic
+	}
+	return reason
 }

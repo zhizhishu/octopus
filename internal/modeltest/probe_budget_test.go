@@ -2,6 +2,7 @@ package modeltest
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -200,5 +201,71 @@ func TestEmptyResultErrorDescribesObservationNotGuessedCause(t *testing.T) {
 	}
 	if !strings.Contains(result.Error, "without producing any content") {
 		t.Fatalf("error message should state what was observed, got: %s", result.Error)
+	}
+}
+
+// A Responses upstream that streams some text and then fails (response.failed with
+// response.error) must be reported as a FAILURE, never a success. Before the fix the
+// terminal response.failed event returned only an error-finish chunk, so the partial
+// text ahead of it made the probe pass (success=true) even though the upstream failed.
+// This pins that a partial-then-failed stream is a failure carrying the preserved,
+// redacted reason — and is not misreported as a "completed but empty" stream either.
+func TestProbePartialTextThenFailedIsFailureNotSuccess(t *testing.T) {
+	testProbePartialTextTerminalFailure(t, "response.failed")
+}
+
+func TestProbePartialTextThenCompletedFailureIsNotSuccess(t *testing.T) {
+	testProbePartialTextTerminalFailure(t, "response.completed")
+}
+
+func testProbePartialTextTerminalFailure(t *testing.T, terminalType string) {
+	t.Helper()
+	ctx := setupModelTestDB(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":123,\"model\":\"gpt-5.5\",\"status\":\"in_progress\",\"output\":[]}}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial answer\"}\n\n"))
+		// The terminal event type is parameterized so the two callers genuinely
+		// exercise different failure envelopes: response.failed and
+		// response.completed-with-failed-status both route through the failure
+		// paths in the Responses transformer.
+		_, _ = w.Write([]byte(fmt.Sprintf("data: {\"type\":\"%s\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":123,\"model\":\"gpt-5.5\",\"status\":\"failed\",\"output\":[],\"error\":{\"code\":\"upstream_error\",\"message\":\"generation cut off\"}}}\n\n", terminalType)))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	t.Cleanup(upstream.Close)
+
+	channel := dbmodel.Channel{
+		Name:     "partial-then-failed",
+		Type:     outbound.OutboundTypeOpenAIResponse,
+		Enabled:  false,
+		BaseUrls: []dbmodel.BaseUrl{{URL: upstream.URL}},
+		Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "test-key"}},
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+
+	response, err := Run(ctx, dbmodel.ModelTestRequest{
+		Model:     "gpt-5.5",
+		ChannelID: channel.ID,
+		Endpoint:  "openai_responses",
+	})
+	if err != nil {
+		t.Fatalf("run model test: %v", err)
+	}
+	if len(response.Results) != 1 {
+		t.Fatalf("results len = %d, want 1", len(response.Results))
+	}
+
+	result := response.Results[0]
+	if result.Success {
+		t.Fatal("a stream that produced partial text then failed must not be reported as success")
+	}
+	if strings.Contains(result.Error, "without producing any content") {
+		t.Fatalf("a failed stream must not be misreported as a completed-but-empty stream, got: %s", result.Error)
+	}
+	if !strings.Contains(result.Error, "generation cut off") {
+		t.Fatalf("expected the preserved failure reason in the error, got: %s", result.Error)
 	}
 }
