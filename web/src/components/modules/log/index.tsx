@@ -1,9 +1,9 @@
 'use client';
 
-import { useCallback, useDeferredValue, useMemo, useState } from 'react';
+import { useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
 import { getRelayLogSeverity, type RelayLog, type RelayLogSeverity, type RequestState, useExportLogs, useLogSeverityCounts, useLogs, useRequestStateStream } from '@/api/endpoints/log';
 import { LogCard, useSensitiveStore } from './Item';
-import { AlertCircle, AlertTriangle, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Circle, Download, Eye, EyeOff, Loader2, RefreshCw, RotateCcw, RotateCw, ScrollText, Search, SlidersHorizontal, Wifi, WifiOff, X } from 'lucide-react';
+import { AlertCircle, AlertTriangle, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Circle, Download, Eye, EyeOff, Loader2, RefreshCw, RotateCcw, RotateCw, ScrollText, Search, SlidersHorizontal, WifiOff, X } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { VirtualizedGrid } from '@/components/common/VirtualizedGrid';
 import { PageWrapper } from '@/components/common/PageWrapper';
@@ -15,7 +15,6 @@ import { useAbortIntervention, useInterventionList, useRetryIntervention, type I
 import { useAuthStore, useUserList } from '@/api/endpoints/user';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Switch } from '@/components/ui/switch';
 import { cn } from '@/lib/utils';
 import { toast } from '@/components/common/Toast';
 import { TooltipProvider } from '@/components/animate-ui/components/animate/tooltip';
@@ -254,30 +253,59 @@ type InterventionDraft = {
     modelName: string;
 };
 
-function formatRemainingSeconds(nextRetryAt: string | null | undefined): string | null {
-    if (!nextRetryAt) return null;
-    const target = new Date(nextRetryAt).getTime();
-    if (Number.isNaN(target)) return null;
-    const diffSeconds = Math.ceil((target - Date.now()) / 1000);
-    if (diffSeconds <= 0) return '即将重试';
-    return `${diffSeconds}s 后重试`;
+interface LiveActivityPanelProps {
+    isAdmin: boolean;
+    enabled: boolean;
+    requestStates: RequestState[];
+    requestStateConnected: boolean;
+    historyLogIDs: Set<number>;
 }
 
-function PendingInterventionsPanel({ isAdmin }: { isAdmin: boolean }) {
-    const { data: interventions = [] } = useInterventionList({ enabled: isAdmin });
-    const { data: channelRows = [] } = useChannelList({ enabled: isAdmin && interventions.length > 0 });
+function LiveActivityPanel({
+    isAdmin,
+    enabled,
+    requestStates,
+    requestStateConnected,
+    historyLogIDs,
+}: LiveActivityPanelProps) {
+    const t = useTranslations('log.live');
+    const { data: interventions = [], isSuccess } = useInterventionList({ enabled: isAdmin && enabled });
+    const { data: channelRows = [] } = useChannelList({ enabled: isAdmin && enabled && interventions.length > 0 });
     const retryIntervention = useRetryIntervention();
     const abortIntervention = useAbortIntervention();
     const [drafts, setDrafts] = useState<Record<string, InterventionDraft>>({});
+
+    useEffect(() => {
+        if (!enabled || !isSuccess) return;
+        const activeIDs = new Set(interventions.map((item) => item.id));
+        setDrafts((previous) => {
+            if (Object.keys(previous).every((id) => activeIDs.has(id))) return previous;
+            return Object.fromEntries(Object.entries(previous).filter(([id]) => activeIDs.has(id)));
+        });
+    }, [enabled, interventions, isSuccess]);
 
     const enabledChannels = useMemo(
         () => channelRows.map((row) => row.raw).filter((channel) => channel.enabled),
         [channelRows]
     );
 
-    if (!isAdmin || interventions.length === 0) {
-        return null;
-    }
+    // 去重与状态过滤：只看 running 状态，且若其 id 已在当前展示历史日志中则不重复展示
+    const runningStates = useMemo(() => {
+        if (!enabled) return [];
+        return requestStates.filter(
+            (state) => state.status === 'running' && (state.id === undefined || !historyLogIDs.has(state.id))
+        );
+    }, [enabled, historyLogIDs, requestStates]);
+
+    const activeInterventions = useMemo(() => {
+        if (!isAdmin || !enabled) return [];
+        return interventions.filter(
+            (item) => item.log_id === undefined || !historyLogIDs.has(item.log_id)
+        );
+    }, [enabled, historyLogIDs, interventions, isAdmin]);
+
+    if (!enabled) return null;
+    if (runningStates.length === 0 && activeInterventions.length === 0) return null;
 
     const updateDraft = (id: string, patch: Partial<InterventionDraft>) => {
         setDrafts((previousDrafts) => {
@@ -311,231 +339,187 @@ function PendingInterventionsPanel({ isAdmin }: { isAdmin: boolean }) {
     };
 
     const abortHeldRequest = (intervention: InterventionSnapshot) => {
-        if (!window.confirm('确定终止此请求？客户端将立即收到失败响应。')) {
-            return;
-        }
         abortIntervention.mutate(intervention.id, {
-            onSuccess: () => toast.success('已终止请求，客户端已收到失败响应'),
-            onError: (error) => toast.error('终止请求失败', { description: error instanceof Error ? error.message : String(error) }),
+            onSuccess: () => toast.success(t('stopSent')),
+            onError: (error) => toast.error(t('stopFailed'), { description: error instanceof Error ? error.message : String(error) }),
         });
     };
 
+    const totalCount = runningStates.length + activeInterventions.length;
+
     return (
-        <div className="flex flex-none flex-col gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-sm">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2 text-amber-800 dark:text-amber-200">
-                    <AlertTriangle className="size-4 shrink-0" />
-                    <span className="font-semibold">挂起请求救援中：{interventions.length} 个请求挂起中</span>
+        <section aria-label={t('activeActivity')} className="flex min-h-0 flex-none flex-col gap-2 rounded-lg border border-border bg-card p-3">
+            <div className="flex items-center justify-between gap-2 border-b border-border pb-2">
+                <div className="flex items-center gap-2 text-sm font-medium">
+                    <Loader2 className="size-4 animate-spin text-sky-500" />
+                    <span>{t('activeActivity')}</span>
+                    <Badge variant="secondary" className="tabular-nums px-1.5 py-0 text-xs">
+                        {totalCount}
+                    </Badge>
                 </div>
-                <span className="text-xs text-amber-700/80 dark:text-amber-300/80">客户端连接保持中；机器每轮会重新读取渠道/映射/Key按优先级自动救援，您也可随时人工立即覆盖。</span>
+                {!requestStateConnected && (
+                    <span className="flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400">
+                        <WifiOff className="size-3" />
+                        {t('reconnecting')}
+                    </span>
+                )}
             </div>
-            <div className="grid gap-2 lg:grid-cols-2">
-                {interventions.map((intervention) => {
+
+            <div className="max-h-60 space-y-1.5 overflow-y-auto overscroll-contain divide-y divide-border/60">
+                {/* 救援中请求 (仅管理员可见) */}
+                {activeInterventions.map((intervention) => {
                     const draft = drafts[intervention.id] ?? { channelID: '', keyID: '', modelName: '' };
-                    const selectedChannelID = Number(draft.channelID);
-                    const selectedChannel = enabledChannels.find((channel) => channel.id === selectedChannelID);
+                    const selectedChannel = enabledChannels.find((channel) => channel.id === Number(draft.channelID));
                     const enabledKeys = selectedChannel?.keys?.filter((key) => key.enabled) ?? [];
-                    const lastAttempts = intervention.attempts.slice(-3);
-                    const isAwaitingOperator = intervention.status === 'awaiting_operator';
-                    const roundNum = intervention.rescue_round ?? 1;
-                    const retryCountdown = formatRemainingSeconds(intervention.next_retry_at);
+                    const stopping = abortIntervention.isPending && abortIntervention.variables === intervention.id;
 
                     return (
-                        <div key={intervention.id} className="rounded-lg border border-amber-500/30 bg-background/80 p-2.5 shadow-sm space-y-2.5">
-                            <div className="flex flex-wrap items-start justify-between gap-2">
-                                <div className="min-w-0 flex-1 space-y-1">
-                                    <div className="flex flex-wrap items-center gap-1.5">
-                                        <Badge variant="secondary" className="bg-amber-500/15 text-amber-700 dark:text-amber-300">{intervention.endpoint || 'relay'}</Badge>
-                                        <span className="font-mono text-xs text-muted-foreground">{intervention.id}</span>
-                                    </div>
-                                    <p className="text-sm font-medium text-foreground">模型：{intervention.request_model || 'unknown'}</p>
-                                    <p className="line-clamp-2 text-xs text-destructive">{intervention.last_error || '上游失败，机器正在自动救援'}</p>
-                                </div>
-                                <div className="flex flex-col items-end gap-1 shrink-0">
-                                    <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-xs text-amber-700 dark:text-amber-300 inline-flex items-center gap-1">
-                                        {isAwaitingOperator
-                                            ? '等待人工处理'
-                                            : (
-                                                <>
-                                                    <span className="relative flex size-2">
-                                                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-75" />
-                                                        <span className="relative inline-flex size-2 rounded-full bg-amber-500" />
-                                                    </span>
-                                                    机器自动救援中 (第 {roundNum} 轮)
-                                                </>
-                                            )}
+                        <div key={intervention.id} className="flex items-start gap-2 pt-1.5 first:pt-0">
+                            <details className="group min-w-0 flex-1">
+                                <summary className="grid min-h-8 cursor-pointer list-none grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 rounded-md px-1.5 py-1 transition-colors hover:bg-muted/50 outline-none focus-visible:ring-2 focus-visible:ring-ring sm:grid-cols-[minmax(0,1fr)_auto_auto]">
+                                    <span className="flex min-w-0 items-center gap-1.5">
+                                        <ChevronRight className="size-3.5 shrink-0 transition-transform group-open:rotate-90 text-muted-foreground" />
+                                        <Badge variant="outline" className="border-amber-500/40 bg-amber-500/10 text-[10px] text-amber-700 dark:text-amber-300">
+                                            {t('rescue')}
+                                        </Badge>
+                                        <span className="truncate font-mono text-xs" title={intervention.request_model}>
+                                            {intervention.request_model || 'unknown'}
+                                        </span>
                                     </span>
-                                    {!isAwaitingOperator && retryCountdown && (
-                                        <span className="text-[11px] font-mono text-amber-600 dark:text-amber-400">
-                                            {retryCountdown}
-                                        </span>
+                                    <span className="text-xs text-amber-600 dark:text-amber-300">
+                                        {t('retryRound', { count: intervention.rescue_round ?? 1 })}
+                                    </span>
+                                    <span className="col-span-2 text-xs tabular-nums text-muted-foreground sm:col-span-1 sm:text-right">
+                                        {intervention.waiting_for}
+                                    </span>
+                                </summary>
+                                <div className="space-y-2 px-2 pb-2 pt-1 text-xs">
+                                    <p className="text-muted-foreground">{intervention.endpoint} · {intervention.id}</p>
+                                    {intervention.last_error && (
+                                        <p className="break-words text-destructive">{intervention.last_error}</p>
                                     )}
-                                    {intervention.waiting_for && (
-                                        <span className="text-[11px] text-muted-foreground">
-                                            已挂起 {intervention.waiting_for}
-                                        </span>
-                                    )}
-                                </div>
-                            </div>
-
-                            {lastAttempts.length > 0 && (
-                                <div className="space-y-1">
-                                    <div className="text-[11px] text-muted-foreground font-medium">最近尝试：</div>
-                                    <div className="flex flex-col gap-1">
-                                        {lastAttempts.map((attempt, index) => (
-                                            <div key={`${attempt.channel_id}-${attempt.attempt_num || index}`} className="rounded border border-border/70 bg-muted/30 px-2 py-1 text-[11px]">
-                                                <div className="flex flex-wrap items-center justify-between gap-1 text-muted-foreground">
-                                                    <span>
-                                                        #{attempt.attempt_num || index + 1} {attempt.channel_name || `ch${attempt.channel_id}`} · {attempt.status}
+                                    {intervention.attempts?.length > 0 && (
+                                        <div className="divide-y divide-border/60 rounded border border-border/60 bg-muted/20 px-2 py-1">
+                                            {intervention.attempts.slice(-3).map((attempt, index) => (
+                                                <div key={`${attempt.channel_id}-${index}`} className="flex min-w-0 flex-wrap justify-between gap-2 py-1">
+                                                    <span className="min-w-0 truncate">
+                                                        {attempt.channel_name || `ch#${attempt.channel_id}`} · {attempt.status}
                                                     </span>
-                                                    {attempt.duration > 0 && (
-                                                        <span className="font-mono text-[10px]">{(attempt.duration / 1000).toFixed(2)}s</span>
-                                                    )}
+                                                    <span className="tabular-nums text-muted-foreground">{attempt.duration}ms</span>
                                                 </div>
-                                                {attempt.msg && (
-                                                    <p className="mt-0.5 line-clamp-2 text-[10px] text-destructive/90 break-all">{attempt.msg}</p>
-                                                )}
-                                            </div>
-                                        ))}
-                                    </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                    <details className="space-y-2">
+                                        <summary className="cursor-pointer font-medium text-muted-foreground hover:text-foreground">
+                                            {t('override')}
+                                        </summary>
+                                        <div className="grid grid-cols-1 gap-2 pt-1 sm:grid-cols-2">
+                                            <select
+                                                aria-label={t('channel')}
+                                                value={draft.channelID}
+                                                onChange={(event) => updateDraft(intervention.id, { channelID: event.target.value, keyID: '' })}
+                                                className="h-8 min-w-0 rounded-md border border-input bg-background px-2 text-xs"
+                                            >
+                                                <option value="">{t('channel')}</option>
+                                                {enabledChannels.map((channel) => (
+                                                    <option key={channel.id} value={channel.id}>{channel.name}</option>
+                                                ))}
+                                            </select>
+                                            <select
+                                                aria-label={t('key')}
+                                                value={draft.keyID}
+                                                onChange={(event) => updateDraft(intervention.id, { keyID: event.target.value })}
+                                                disabled={!selectedChannel}
+                                                className="h-8 min-w-0 rounded-md border border-input bg-background px-2 text-xs"
+                                            >
+                                                <option value="">{t('key')}</option>
+                                                {enabledKeys.map((key) => (
+                                                    <option key={key.id} value={key.id}>{key.remark || `Key #${key.id}`}</option>
+                                                ))}
+                                            </select>
+                                            <input
+                                                aria-label={t('model')}
+                                                value={draft.modelName}
+                                                onChange={(event) => updateDraft(intervention.id, { modelName: event.target.value })}
+                                                placeholder={intervention.request_model}
+                                                className="h-8 min-w-0 rounded-md border border-input bg-background px-2 text-xs"
+                                            />
+                                            <Button
+                                                size="sm"
+                                                variant="outline"
+                                                className="h-8"
+                                                onClick={() => retryHeldRequest(intervention)}
+                                                disabled={retryIntervention.isPending && retryIntervention.variables?.id === intervention.id}
+                                            >
+                                                <RotateCw className="size-3.5" />
+                                                {t('retry')}
+                                            </Button>
+                                        </div>
+                                    </details>
                                 </div>
-                            )}
-
-                            <div className="rounded-md border border-dashed border-border/80 bg-muted/20 p-2 space-y-2">
-                                <div className="text-xs font-medium text-foreground">人工立即覆盖机器选择</div>
-                                <div className="grid gap-2 grid-cols-1 sm:grid-cols-2">
-                                    <select
-                                        value={draft.channelID}
-                                        onChange={(event) => updateDraft(intervention.id, { channelID: event.target.value, keyID: '' })}
-                                        className="h-9 w-full min-w-0 rounded-lg border border-input bg-background px-2 text-xs text-foreground"
-                                    >
-                                        <option value="">选择指定重试渠道</option>
-                                        {enabledChannels.map((channel) => (
-                                            <option key={channel.id} value={channel.id}>{channel.name}</option>
-                                        ))}
-                                    </select>
-                                    <select
-                                        value={draft.keyID}
-                                        onChange={(event) => updateDraft(intervention.id, { keyID: event.target.value })}
-                                        className="h-9 w-full min-w-0 rounded-lg border border-input bg-background px-2 text-xs text-foreground"
-                                        disabled={!selectedChannel}
-                                    >
-                                        <option value="">自动选 Key</option>
-                                        {enabledKeys.map((key) => (
-                                            <option key={key.id} value={key.id}>{key.remark || `Key #${key.id}`}</option>
-                                        ))}
-                                    </select>
-                                    <input
-                                        value={draft.modelName}
-                                        onChange={(event) => updateDraft(intervention.id, { modelName: event.target.value })}
-                                        placeholder={`模型覆盖（默认 ${intervention.request_model || '原模型'}）`}
-                                        className="h-9 w-full min-w-0 rounded-lg border border-input bg-background px-2 text-xs text-foreground sm:col-span-2"
-                                    />
-                                </div>
-                            </div>
-
-                            <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
-                                <Button
-                                    variant="outline"
-                                    size="sm"
-                                    className="rounded-lg text-destructive hover:bg-destructive/10 hover:text-destructive border-destructive/30"
-                                    disabled={abortIntervention.isPending}
-                                    onClick={() => abortHeldRequest(intervention)}
-                                    title="终止请求并让客户端收到失败响应"
-                                >
-                                    <X className="size-4" />
-                                    终止请求并返回失败
-                                </Button>
-                                <Button
-                                    variant="default"
-                                    size="sm"
-                                    className="rounded-lg"
-                                    disabled={retryIntervention.isPending}
-                                    onClick={() => retryHeldRequest(intervention)}
-                                >
-                                    {retryIntervention.isPending ? <Loader2 className="size-4 animate-spin" /> : <RotateCw className="size-4" />}
-                                    立即指定重试
-                                </Button>
-                            </div>
+                            </details>
+                            <Button
+                                variant="ghost"
+                                size="icon"
+                                className="size-8 shrink-0 text-destructive"
+                                disabled={stopping}
+                                onClick={() => abortHeldRequest(intervention)}
+                                title={t('stop')}
+                                aria-label={t('stop')}
+                            >
+                                {stopping ? <Loader2 className="size-3.5 animate-spin" /> : <X className="size-3.5" />}
+                            </Button>
                         </div>
                     );
                 })}
-            </div>
-        </div>
-    );
-}
 
-function RunningLogCards({ states, connected }: { states: RequestState[]; connected: boolean }) {
-    const running = states.filter((state) => state.status === 'running');
-    if (running.length === 0) return null;
-
-    return (
-        <div className="flex flex-none flex-col gap-2">
-            {running.map((state) => {
-                const latestAttempts = state.attempts?.slice(-4) ?? [];
-                const startedAtLabel = new Date(state.started_at).toLocaleTimeString();
-                return (
-                    <div
-                        key={state.id}
-                        className="rounded-lg border border-sky-500/40 bg-gradient-to-r from-sky-500/5 to-transparent px-3 py-2.5"
-                    >
-                        <div className="flex items-start justify-between gap-2">
-                            <div className="min-w-0 flex-1">
-                                <div className="flex items-center gap-2">
-                                    <Loader2 className="size-3.5 shrink-0 animate-spin text-sky-500" />
-                                    <Badge variant="secondary" className="bg-sky-500/15 text-sky-700 dark:text-sky-300 text-[11px]">
-                                        调用中
-                                    </Badge>
-                                    <span className="font-mono text-xs text-foreground">{state.model || 'unknown'}</span>
-                                    <span className="text-[11px] text-muted-foreground">
-                                        · 第 {state.round || 0} 轮 · {startedAtLabel}
-                                    </span>
+                {/* 正在运行中的请求 */}
+                {runningStates.map((state) => (
+                    <details key={state.id} className="group py-1.5 first:pt-0">
+                        <summary className="grid min-h-8 cursor-pointer list-none grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 rounded-md px-1.5 py-1 transition-colors hover:bg-muted/50 outline-none focus-visible:ring-2 focus-visible:ring-ring sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_6rem]">
+                            <span className="flex min-w-0 items-center gap-1.5">
+                                <ChevronRight className="size-3.5 shrink-0 transition-transform group-open:rotate-90 text-muted-foreground" />
+                                <Badge variant="outline" className="border-sky-500/40 bg-sky-500/10 text-[10px] text-sky-700 dark:text-sky-300">
+                                    {t('running')}
+                                </Badge>
+                                <span className="truncate font-mono text-xs" title={state.model}>
+                                    {state.model || 'unknown'}
+                                </span>
+                            </span>
+                            <span className="truncate text-xs text-sky-600 dark:text-sky-300">
+                                {isAdmin && state.sending && state.target_channel
+                                    ? state.target_channel
+                                    : state.round > 1
+                                        ? t('retryRound', { count: state.round })
+                                        : t('requesting')}
+                            </span>
+                            <time dateTime={state.started_at} className="col-span-2 text-xs tabular-nums text-muted-foreground sm:col-span-1 sm:text-right">
+                                {new Date(state.started_at).toLocaleTimeString()}
+                            </time>
+                        </summary>
+                        <div className="space-y-1.5 px-2 pb-1 pt-1 text-xs">
+                            <p className="text-muted-foreground">{state.endpoint} · #{state.id}</p>
+                            {state.error && <p className="break-words text-destructive">{state.error}</p>}
+                            {isAdmin && (state.attempts?.length ?? 0) > 0 && (
+                                <div className="divide-y divide-border/60 rounded border border-border/60 bg-muted/20 px-2 py-1">
+                                    {(state.attempts?.slice(-4) ?? []).map((attempt, index) => (
+                                        <div key={`${attempt.round}-${index}`} className="flex min-w-0 flex-wrap justify-between gap-2 py-1">
+                                            <span className="min-w-0 truncate">
+                                                #{attempt.round} {attempt.channel_name || 'Channel'}
+                                            </span>
+                                            <span className="tabular-nums text-muted-foreground">
+                                                {attempt.status} {attempt.latency_ms !== undefined ? `${attempt.latency_ms}ms` : ''}
+                                            </span>
+                                        </div>
+                                    ))}
                                 </div>
-                                <p className="mt-1 text-[11px] text-muted-foreground">
-                                    {state.sending
-                                        ? `正在请求 ${state.target_channel || '自动选择渠道'}${state.target_model ? ` · ${state.target_model}` : ''}`
-                                        : '上一轮未成功，正在按画布顺序选择下一渠道'}
-                                </p>
-                            </div>
-                            <div className="shrink-0 text-right">
-                                {!connected && (
-                                    <span className="inline-flex items-center gap-1 text-[10px] text-amber-600">
-                                        <WifiOff className="size-3" />
-                                        重连中
-                                    </span>
-                                )}
-                            </div>
+                            )}
                         </div>
-                        {state.error && (
-                            <p className="mt-1.5 line-clamp-2 break-all text-[11px] text-destructive">
-                                已拦截：{state.error}
-                            </p>
-                        )}
-                        {latestAttempts.length > 0 && (
-                            <div className="mt-1.5 flex flex-wrap gap-1.5 border-t border-border/40 pt-1.5">
-                                {latestAttempts.map((attempt, index) => (
-                                    <span
-                                        key={`${attempt.round}-${attempt.channel_name}-${index}`}
-                                        className={cn(
-                                            'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px]',
-                                            attempt.status === 'success'
-                                                ? 'bg-emerald-500/10 text-emerald-600'
-                                                : attempt.status === 'error'
-                                                    ? 'bg-destructive/10 text-destructive'
-                                                    : 'bg-sky-500/10 text-sky-600'
-                                        )}
-                                    >
-                                        #{attempt.round} {attempt.channel_name}
-                                        · {attempt.status === 'trying' ? '调用中' : attempt.status === 'success' ? '✓' : '✗'}
-                                        {attempt.latency_ms !== undefined && <span className="tabular-nums">{attempt.latency_ms}ms</span>}
-                                    </span>
-                                ))}
-                            </div>
-                        )}
-                    </div>
-                );
-            })}
-        </div>
+                    </details>
+                ))}
+            </div>
+        </section>
     );
 }
 
@@ -552,6 +536,7 @@ export function Log() {
     // 默认区间放宽到「近 7 天」而非「今天」：日志常是前一两天产生的，默认只查今天会让页面一开屏就空、
     // 显得「筛选无效」。近 7 天在「够聚焦」和「开屏能看到东西」之间取平衡。
     const defaultRange = useMemo(() => resolveDateRangeShortcut('last7Days', todayLabel), [todayLabel]);
+    const [viewMode, setViewMode] = useState<'history' | 'live'>('history');
     // 所有筛选都「即选即生效」——改了立刻查，不再需要点「搜索」。这正是过去让人觉得「筛选无效」的
     // 另一半原因：改了接口下拉/用户/Key 却要再点搜索才生效，看起来像没反应。
     const [selectedUserID, setSelectedUserID] = useState<number | undefined>();
@@ -567,9 +552,9 @@ export function Log() {
     const [hideModelTest, setHideModelTest] = useState(false);
     const [searchKeyword, setSearchKeyword] = useState('');
     const deferredSearch = useDeferredValue(searchKeyword.trim());
-    const [autoRefresh, setAutoRefresh] = useState(false);
+    const isLiveMode = viewMode === 'live';
     const [advancedOpen, setAdvancedOpen] = useState(false);
-    // 分页状态：当前页（从 1 开始）+ 跳页输入框草稿值。自动刷新时禁用分页，回退无限滚动。
+    // 分页状态：当前页（从 1 开始）+ 跳页输入框草稿值。
     const [currentPage, setCurrentPage] = useState(1);
     const [pageJumpInput, setPageJumpInput] = useState('');
     const sensitiveVisible = useSensitiveStore((state) => state.sensitiveVisible);
@@ -579,7 +564,7 @@ export function Log() {
     const { data: modelList = [] } = useModelList();
     const { data: channelRows = [] } = useChannelList({ enabled: isAdmin });
     const exportLogs = useExportLogs();
-    const { states: requestStates, isConnected: requestStateConnected } = useRequestStateStream(autoRefresh);
+    const { states: requestStates, isConnected: requestStateConnected } = useRequestStateStream(isLiveMode);
     // 历史日志持久化状态：关闭时后端只留最近 ~100 条内存记录、重启即失，按日期查历史必然是空的。
     // 日志页过去对此零提示（静默显示内存缓存），用户会误以为“日志功能坏了”。这里显式暴露 + 一键开启。
     const { data: settings } = useSettingList({ enabled: isAdmin });
@@ -658,8 +643,8 @@ export function Log() {
         retried: retriedOnly,
         hideModelTest,
         search: deferredSearch || undefined,
-        // 实时刷新只在第 1 页（最新）生效；翻到历史页自然暂停，回第 1 页恢复。
-        live: autoRefresh && currentPage === 1,
+        // 实时刷新只在实时模式 + 第 1 页（最新）生效；翻到历史页自然暂停，回第 1 页恢复。
+        live: isLiveMode && currentPage === 1,
     });
 
     // 收集当前可用模型候选：来自 modelList、channelRows、当前选中的模型、以及当前已经拉到的日志里的模型名
@@ -820,6 +805,15 @@ export function Log() {
     // 展示行：把重试过多个渠道的请求摊成分开的行（每个真实尝试一行），其余原样一行。
     const displayRows = useMemo(() => expandLogRows(filteredLogs), [filteredLogs]);
 
+    // 当前历史日志中已包含的 log ID 集合，供 LiveActivityPanel 去重（避免某条日志在 running 与已结算中重复呈现）
+    const historyLogIDs = useMemo(() => {
+        const set = new Set<number>();
+        for (const log of logs) {
+            if (typeof log.id === 'number') set.add(log.id);
+        }
+        return set;
+    }, [logs]);
+
     // 空状态智能提示的依据：列表真空时，查一下「不限日期」下总共有多少历史，
     // 好把「不是坏了、是被日期/筛选挡住了」说破。仅在真的空时才发这个请求。
     const listIsEmpty = !isLoading && filteredLogs.length === 0;
@@ -941,7 +935,6 @@ export function Log() {
                     </Button>
                 </div>
             )}
-            <PendingInterventionsPanel isAdmin={isAdmin} />
             <div className="flex flex-none flex-col gap-2 rounded-lg border border-border bg-card px-3 py-2">
                 <MobileFilterCollapse
                     label="筛选"
@@ -961,6 +954,57 @@ export function Log() {
                     }
                 >
                 <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    {/* 顶部清晰紧凑的历史/实时 segmented buttons */}
+                    <div className="flex min-w-0 items-center gap-1 rounded-lg bg-muted/60 p-1">
+                        <button
+                            type="button"
+                            aria-pressed={viewMode === 'history'}
+                            onClick={() => setViewMode('history')}
+                            className={cn(
+                                'inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium transition-colors',
+                                viewMode === 'history'
+                                    ? 'bg-background text-foreground shadow-sm'
+                                    : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'
+                            )}
+                        >
+                            <ScrollText className="size-3.5" />
+                            <span>{t('live.viewHistory')}</span>
+                        </button>
+                        <button
+                            type="button"
+                            aria-pressed={isLiveMode}
+                            onClick={() => {
+                                setViewMode('live');
+                                setCurrentPage(1);
+                            }}
+                            className={cn(
+                                'inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium transition-colors',
+                                isLiveMode
+                                    ? 'bg-background text-foreground shadow-sm'
+                                    : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'
+                            )}
+                        >
+                            <span className="relative flex size-2">
+                                {isLiveMode && isConnected && (
+                                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                                )}
+                                <span
+                                    className={cn(
+                                        'relative inline-flex size-2 rounded-full',
+                                        isLiveMode
+                                            ? isConnected
+                                                ? 'bg-emerald-500'
+                                                : streamError
+                                                    ? 'bg-destructive'
+                                                    : 'bg-amber-500'
+                                            : 'bg-muted-foreground/50'
+                                    )}
+                                />
+                            </span>
+                            <span>{t('live.viewLive')}</span>
+                        </button>
+                    </div>
+
                     <label className="relative flex min-w-0 items-center">
                         <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
                         <input
@@ -1193,32 +1237,6 @@ export function Log() {
                         >
                             {exportLogs.isPending ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}
                         </Button>
-                        {/* 自动刷新开关 + 连接状态合并成一个控件：label 文案/图标随连接态变，省掉独立徽章。 */}
-                        <label
-                            className="inline-flex h-9 items-center gap-2 rounded-lg border border-border bg-background px-2 text-xs text-muted-foreground"
-                            title={streamError?.message}
-                        >
-                            <Switch checked={autoRefresh} onCheckedChange={(v) => { setAutoRefresh(v); if (v) setCurrentPage(1); }} />
-                            <span
-                                className={cn(
-                                    'inline-flex items-center gap-1.5',
-                                    autoRefresh && isConnected
-                                        ? 'text-emerald-700 dark:text-emerald-300'
-                                        : autoRefresh && streamError
-                                            ? 'text-destructive'
-                                            : 'text-muted-foreground'
-                                )}
-                            >
-                                {autoRefresh && isConnected ? <Wifi className="size-3.5" /> : <WifiOff className="size-3.5" />}
-                                {autoRefresh
-                                    ? isConnected
-                                        ? t('list.liveOn')
-                                        : streamError
-                                            ? t('list.streamError')
-                                            : t('list.liveConnecting')
-                                    : t('list.autoRefresh')}
-                            </span>
-                        </label>
                     </div>
                 </div>
 
@@ -1271,7 +1289,7 @@ export function Log() {
                         ? <span>共 {activeTotal.toLocaleString()} 条{severityFilter !== 'all' ? `（${t(`list.filters.${severityFilter}`)}）` : ''}</span>
                         : <span>{t('list.loadedCount', { count: logs.length })}</span>}
                     <span>时间按浏览器本地时区显示</span>
-                    {autoRefresh && currentPage === 1 && <span className="text-emerald-700 dark:text-emerald-300">实时插入中</span>}
+                    {isLiveMode && currentPage === 1 && <span className="text-emerald-700 dark:text-emerald-300">实时插入中</span>}
                     {totalPages > 1 && (
                         <div className="hidden items-center gap-1 sm:flex">
                             <Button
@@ -1346,9 +1364,16 @@ export function Log() {
                     </div>
                 )}
             </div>
+            {/* 实时模式下的活跃动态面板 (请求中 / 救援中) */}
+            <LiveActivityPanel
+                isAdmin={isAdmin}
+                enabled={isLiveMode}
+                requestStates={requestStates}
+                requestStateConnected={requestStateConnected}
+                historyLogIDs={historyLogIDs}
+            />
             <div className="min-h-0 flex-1">
                 <TooltipProvider>
-                <RunningLogCards states={requestStates} connected={requestStateConnected} />
                 <VirtualizedGrid
                     items={displayRows}
                     layout="list"

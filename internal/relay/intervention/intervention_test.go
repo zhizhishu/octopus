@@ -249,6 +249,120 @@ func TestStatusAndAttemptsUpdates(t *testing.T) {
 	}
 }
 
+func TestResolveAbortInvokesCancelInternal(t *testing.T) {
+	resetRegistryForTest()
+	defer resetRegistryForTest()
+
+	canceled := false
+	var cancelMu sync.Mutex
+	id, err := Register(&Pending{
+		RequestModel: "test-model",
+		CancelInternal: func() {
+			cancelMu.Lock()
+			canceled = true
+			cancelMu.Unlock()
+		},
+	})
+	if err != nil {
+		t.Fatalf("Register failed: %v", err)
+	}
+
+	// ActionAbort must invoke the internal cancel callback so the in-flight
+	// upstream attempt is canceled immediately, not after the next backoff.
+	if err := Resolve(id, Resolution{Action: ActionAbort}); err != nil {
+		t.Fatalf("Resolve(ActionAbort) failed: %v", err)
+	}
+	cancelMu.Lock()
+	invoked := canceled
+	cancelMu.Unlock()
+	if !invoked {
+		t.Fatalf("Resolve(ActionAbort) must invoke the internal cancel callback")
+	}
+}
+
+func TestResolveRetryChannelDoesNotInvokeCancelInternal(t *testing.T) {
+	resetRegistryForTest()
+	defer resetRegistryForTest()
+
+	invoked := false
+	id, err := Register(&Pending{
+		RequestModel:   "test-model",
+		CancelInternal: func() { invoked = true },
+	})
+	if err != nil {
+		t.Fatalf("Register failed: %v", err)
+	}
+
+	// ActionRetryChannel must NOT trigger the immediate cancel: a retry runs to a
+	// safe preemption point rather than yanking real content midstream.
+	if err := Resolve(id, Resolution{Action: ActionRetryChannel, ChannelID: 1, KeyID: 10}); err != nil {
+		t.Fatalf("Resolve(ActionRetryChannel) failed: %v", err)
+	}
+	if invoked {
+		t.Fatalf("Resolve(ActionRetryChannel) must not invoke the internal cancel callback")
+	}
+}
+
+func TestCancelInternalExcludedFromSnapshot(t *testing.T) {
+	resetRegistryForTest()
+	defer resetRegistryForTest()
+
+	invoked := false
+	id, err := Register(&Pending{
+		RequestModel:   "test-model",
+		CancelInternal: func() { invoked = true },
+	})
+	if err != nil {
+		t.Fatalf("Register failed: %v", err)
+	}
+
+	snap, ok := Get(id)
+	if !ok {
+		t.Fatalf("Get failed")
+	}
+	if snap.ID != id {
+		t.Fatalf("snapshot id mismatch: %s vs %s", snap.ID, id)
+	}
+	// The cancel hook must never leak into the API-visible snapshot (struct has no
+	// such field, so this is a compile-time guarantee; the callback stays private).
+	if invoked {
+		t.Fatalf("reading a snapshot must not invoke the cancel callback")
+	}
+}
+
+func TestResolveAbortCancelsActiveWaiter(t *testing.T) {
+	resetRegistryForTest()
+	defer resetRegistryForTest()
+
+	id, err := Register(&Pending{RequestModel: "test-model"})
+	if err != nil {
+		t.Fatalf("Register failed: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	waitDone := make(chan struct{})
+	var res Resolution
+	var waitErr error
+	go func() {
+		defer close(waitDone)
+		res, waitErr = WaitOperator(ctx, id)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	if err := Resolve(id, Resolution{Action: ActionAbort}); err != nil {
+		t.Fatalf("Resolve failed: %v", err)
+	}
+	<-waitDone
+	if waitErr != nil {
+		t.Fatalf("WaitOperator failed: %v", waitErr)
+	}
+	if res.Action != ActionAbort {
+		t.Fatalf("expected ActionAbort resolution, got %#v", res)
+	}
+}
+
 func TestWaitRoundPreemption(t *testing.T) {
 	resetRegistryForTest()
 	defer resetRegistryForTest()

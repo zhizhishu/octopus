@@ -712,6 +712,25 @@
         }
     },
     "log": {
+        "live": {
+            "viewHistory": "历史日志",
+            "viewLive": "实时动态",
+            "activeActivity": "实时请求与自动救援",
+            "activeEmpty": "暂无活跃请求或救援任务",
+            "running": "正在调用",
+            "rescue": "自动救援",
+            "retryRound": "第 {count} 轮重试",
+            "reconnecting": "重连中",
+            "requesting": "请求中",
+            "stop": "终止请求",
+            "stopSent": "已发送终止请求",
+            "stopFailed": "终止请求失败",
+            "override": "指定渠道",
+            "channel": "选择渠道",
+            "key": "自动选 Key",
+            "model": "模型覆盖",
+            "retry": "指定重试"
+        },
         "list": {
             "userFilter": "用户筛选",
             "allUsers": "全部用户",

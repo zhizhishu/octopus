@@ -712,6 +712,25 @@
         }
     },
     "log": {
+        "live": {
+            "viewHistory": "History Logs",
+            "viewLive": "Live Activity",
+            "activeActivity": "Live Activity & Rescue",
+            "activeEmpty": "No active requests or rescue tasks",
+            "running": "In progress",
+            "rescue": "Automatic rescue",
+            "retryRound": "Retry {count}",
+            "reconnecting": "Reconnecting",
+            "requesting": "Requesting",
+            "stop": "Stop request",
+            "stopSent": "Stop requested",
+            "stopFailed": "Stop request failed",
+            "override": "Choose channel",
+            "channel": "Select channel",
+            "key": "Automatic key",
+            "model": "Model override",
+            "retry": "Retry on channel"
+        },
         "list": {
             "userFilter": "User filter",
             "allUsers": "All users",

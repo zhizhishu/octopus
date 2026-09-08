@@ -712,6 +712,25 @@
         }
     },
     "log": {
+        "live": {
+            "viewHistory": "歷史日誌",
+            "viewLive": "即時動態",
+            "activeActivity": "即時請求與自動救援",
+            "activeEmpty": "暫無活躍請求或救援任務",
+            "running": "正在呼叫",
+            "rescue": "自動救援",
+            "retryRound": "第 {count} 輪重試",
+            "reconnecting": "重新連線中",
+            "requesting": "請求中",
+            "stop": "終止請求",
+            "stopSent": "已傳送終止請求",
+            "stopFailed": "終止請求失敗",
+            "override": "指定通道",
+            "channel": "選擇通道",
+            "key": "自動選 Key",
+            "model": "模型覆寫",
+            "retry": "指定重試"
+        },
         "list": {
             "userFilter": "使用者篩選",
             "allUsers": "全部使用者",

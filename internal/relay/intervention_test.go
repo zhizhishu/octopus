@@ -169,3 +169,55 @@ func TestShouldHoldForOperator(t *testing.T) {
 		})
 	}
 }
+
+// TestRescueDoesNotContinueOnDeterministic400 guards the re-entry fix in relay.Handler:
+// a request that already started machine rescue must NOT keep rescuing when a later
+// retry attempt fails with a deterministic 4xx (here a 400 invalid-request payload).
+// The production eligibility predicate isRescueableHeldRequest (which gates the
+// interventionRegistered&&... re-entry branch) returns false for such an error, so the
+// rescue loop cannot spin forever on an error no channel will ever accept.
+func TestRescueDoesNotContinueOnDeterministic400(t *testing.T) {
+	setupRelayErrorDB(t)
+	setInterventionEnabledForTest(t, true)
+
+	streamTrue := true
+	req := &relayRequest{
+		internalRequest: &transformerModel.InternalLLMRequest{
+			Stream: &streamTrue,
+		},
+		wroteBusinessData: false,
+	}
+
+	deterministic400 := newUpstreamError(http.StatusBadRequest, []byte(`{
+		"error": {
+			"message": "Failed to deserialize the JSON body into ChatCompletionRequest",
+			"type": "invalid_request_error"
+		}
+	}`))
+
+	// The retry produced a deterministic 400: rescue continuation must be refused.
+	if isRescueableHeldRequest(req, nil, deterministic400) {
+		t.Fatalf("later deterministic 400 must NOT be eligible for continued rescue")
+	}
+}
+
+// TestRescueContinuationStillAllowedForTransientError proves the re-entry guard does
+// not over-correct: a transient (eligible) error after rescue started still passes the
+// eligibility predicate, so machine rescue keeps retrying while the budget is alive.
+func TestRescueContinuationStillAllowedForTransientError(t *testing.T) {
+	setupRelayErrorDB(t)
+	setInterventionEnabledForTest(t, true)
+
+	streamTrue := true
+	req := &relayRequest{
+		internalRequest: &transformerModel.InternalLLMRequest{
+			Stream: &streamTrue,
+		},
+		wroteBusinessData: false,
+	}
+
+	transient503 := newUpstreamError(http.StatusServiceUnavailable, []byte(`{"error":{"message":"Overloaded"}}`))
+	if !isRescueableHeldRequest(req, nil, transient503) {
+		t.Fatalf("later transient 503 must remain eligible for continued rescue")
+	}
+}

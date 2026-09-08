@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
@@ -60,6 +61,17 @@ func isRescueableHeldRequest(req *relayRequest, contextWindowErr, finalErr error
 
 func shouldHoldForOperator(req *relayRequest, contextWindowErr, finalErr error) bool {
 	return intervention.Enabled() && isRescueableHeldRequest(req, contextWindowErr, finalErr)
+}
+
+// rescueStopError distinguishes the relay's retry budget from the client's lifetime.
+func rescueStopError(rescueCtx, clientCtx context.Context) error {
+	if rescueCtx == nil || rescueCtx.Err() == nil || clientCtx.Err() != nil {
+		return nil
+	}
+	if errors.Is(rescueCtx.Err(), context.DeadlineExceeded) {
+		return &localRelayError{status: http.StatusGatewayTimeout, code: "octopus_rescue_timeout", strategy: "rescue_timeout", message: "automatic rescue timed out"}
+	}
+	return &localRelayError{status: http.StatusServiceUnavailable, code: "octopus_rescue_stopped", strategy: "rescue_stopped", message: "automatic rescue stopped"}
 }
 
 // singleChannelGroup packages an operator-selected channel and model into a single-item Group.

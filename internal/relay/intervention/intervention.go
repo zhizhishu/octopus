@@ -74,6 +74,9 @@ type Pending struct {
 	NextRetryAt  *time.Time
 
 	resolve chan Resolution
+
+	// CancelInternal stops an active retry on abort; snapshots omit it.
+	CancelInternal context.CancelFunc `json:"-"`
 }
 
 // Snapshot is the read-only view handed to the API layer. It deliberately excludes the
@@ -276,7 +279,10 @@ func WaitOperator(ctx context.Context, id string) (Resolution, error) {
 	}
 }
 
-// Resolve delivers an operator decision to the waiting relay goroutine.
+// Resolve delivers an operator decision to the waiting relay goroutine. When the
+// action is ActionAbort, CancelInternal is invoked immediately after the resolution
+// is safely queued (outside any registry lock) so the in-flight upstream attempt
+// cancels without waiting for the next backoff timeout.
 func Resolve(id string, r Resolution) error {
 	registry.RLock()
 	p, ok := registry.pending[id]
@@ -286,6 +292,12 @@ func Resolve(id string, r Resolution) error {
 	}
 	select {
 	case p.resolve <- r:
+		// Deliver the resolution first (the buffer is always sized 1, so this
+		// never blocks for a waiter to be ready). Then, for abort, cancel the
+		// in-flight attempt immediately via the internal hook.
+		if r.Action == ActionAbort && p.CancelInternal != nil {
+			p.CancelInternal()
+		}
 		return nil
 	default:
 		// Buffer already holds a decision: someone resolved this request first.

@@ -129,18 +129,24 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		// one context/cancel, one keepalive goroutine, and single cleanup across the full request lifecycle.
 		pendingInterventionID     string
 		interventionCtx           context.Context
+		interventionCancel        context.CancelFunc
 		stopInterventionKeepalive func()
 		interventionRegistered    bool
 		noBreakerRescueStartedAt  time.Time
 		noBreakerRescueBudget     time.Duration
 		sawNoBreakerChannel       bool
+		originalRequest           = c.Request
 	)
 	defer func() {
+		if stopInterventionKeepalive != nil {
+			stopInterventionKeepalive()
+		}
+		c.Request = originalRequest
 		if interventionRegistered && pendingInterventionID != "" {
 			intervention.Cancel(pendingInterventionID)
 		}
-		if stopInterventionKeepalive != nil {
-			stopInterventionKeepalive()
+		if interventionCancel != nil {
+			interventionCancel()
 		}
 		// 请求结束时标记最终状态
 		if requestSucceeded {
@@ -156,12 +162,17 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 
 runIterator:
 	req.iter = iter
+attemptChannels:
 	for iter.Next() {
 		select {
 		case <-c.Request.Context().Done():
-			log.Infof("request context canceled, stopping retry")
-			metrics.Save(c.Request.Context(), false, context.Canceled, append(allAttempts, iter.Attempts()...))
-			return
+			if originalRequest.Context().Err() != nil {
+				log.Infof("client request context canceled, stopping retry")
+				metrics.Save(originalRequest.Context(), false, originalRequest.Context().Err(), append(allAttempts, iter.Attempts()...))
+				return
+			}
+			lastErr = rescueStopError(interventionCtx, originalRequest.Context())
+			break attemptChannels
 		default:
 		}
 
@@ -368,6 +379,10 @@ runIterator:
 			}
 
 			result := ra.attempt()
+			if stopErr := rescueStopError(interventionCtx, originalRequest.Context()); stopErr != nil {
+				result.Err = stopErr
+				result.Retryable = false
+			}
 			attemptLatency := time.Since(attemptStartTime).Milliseconds()
 
 			// 记录本轮结束（推送状态更新）
@@ -468,7 +483,14 @@ runIterator:
 	noBreakerAutoRescue := sawNoBreakerChannel && noBreakerRescueBudget > 0 &&
 		isRescueableHeldRequest(req, contextWindowErr, finalErr)
 	manualIntervention := shouldHoldForOperator(req, contextWindowErr, finalErr)
-	if noBreakerAutoRescue || manualIntervention || interventionRegistered {
+	// Re-entry via `|| interventionRegistered` previously continued rescue blindly even
+	// when the latest attempt produced a deterministic (non-rescuable / context-window)
+	// error or the rescue budget already died — that looped forever or held a request
+	// whose error could never be rescued. Continue ONLY while the current final error is
+	// still eligible AND the rescue budget/context is still alive.
+	rescueBudgetAlive := interventionCtx == nil || interventionCtx.Err() == nil
+	if rescueBudgetAlive && (noBreakerAutoRescue || manualIntervention ||
+		(interventionRegistered && isRescueableHeldRequest(req, contextWindowErr, finalErr))) {
 		if noBreakerRescueStartedAt.IsZero() && noBreakerAutoRescue {
 			noBreakerRescueStartedAt = time.Now()
 		}
@@ -480,9 +502,17 @@ runIterator:
 			if !noBreakerAutoRescue && manualIntervention {
 				totalTimeout = intervention.Timeout()
 			}
-			var interventionCancel context.CancelFunc
 			interventionCtx, interventionCancel = context.WithTimeout(c.Request.Context(), totalTimeout)
 			defer interventionCancel()
+			// Route every subsequent upstream attempt through the rescue context so an
+			// in-flight attempt honors the rescue deadline / operator abort instead of
+			// ignoring it and letting the Pending Resolve wait until the attempt returns.
+			// forward()/race paths all read c.Request.Context(), so a single swap here
+			// propagates to all retry attempts without touching the wire (header/body shape
+			// is unchanged — only the request's context object changes). The raw client
+			// request is retained and restored on exit so the defer's state-marking check
+			// still sees the true client context.
+			c.Request = c.Request.WithContext(interventionCtx)
 		}
 
 		lastErrStr := ""
@@ -498,6 +528,11 @@ runIterator:
 				LastError:    lastErrStr,
 				Status:       intervention.StatusAutoRetrying,
 				RescueRound:  interventionRounds,
+				// An operator abort cancels the in-flight upstream attempt right away
+				// (Resolve invokes this outside registry locks) instead of waiting for it
+				// to return. It is idempotent: context.CancelFunc is safe to call more than
+				// once, and this fires after the resolved decision is already delivered.
+				CancelInternal: interventionCancel,
 			})
 			if regErr != nil {
 				log.Warnf("Intervention registration failed endpoint=%s model=%s: %v", requestEndpoint, requestModel, regErr)
@@ -511,7 +546,6 @@ runIterator:
 		}
 
 		if interventionRegistered {
-			var aborted bool
 			for {
 				interventionRounds++
 				backoff := intervention.BackoffDuration(interventionRounds)
@@ -531,7 +565,9 @@ runIterator:
 
 				if isPreempted {
 					if resolution.Action == intervention.ActionAbort {
-						aborted = true
+						// ActionAbort has already canceled the in-flight upstream attempt via
+						// Pending.CancelInternal (delivered by Resolve right after the decision);
+						// surface the terminal failure below. Nothing more to wait for.
 						break
 					}
 					req.interventionKeyID = resolution.KeyID
@@ -589,56 +625,21 @@ runIterator:
 					goto runIterator
 				}
 			}
-
-			// Safety net: wait for human operator only when the request context expires or
-			// is explicitly aborted. The machine rescue loop above is unbounded, so this
-			// path is only reached on context cancellation — in practice the operator
-			// wait will also trip on the dead context and exit cleanly.
-			if !aborted {
-				for {
-					_ = intervention.UpdateStatus(pendingInterventionID, intervention.StatusAwaitingOperator, interventionRounds, nil)
-					resolution, waitErr := intervention.WaitOperator(interventionCtx, pendingInterventionID)
-					if waitErr != nil {
-						log.Infof("Intervention operator wait finished id=%s err=%v", pendingInterventionID, waitErr)
-						break
-					}
-					if resolution.Action == intervention.ActionAbort {
-						break
-					}
-					if resolution.Action == intervention.ActionRetryChannel {
-						req.interventionKeyID = resolution.KeyID
-						interventionGroup := singleChannelGroup(resolution, requestModel)
-						interventionGroup = enrichGroupForSmartRouting(c.Request.Context(), interventionGroup, preferStreamRouting)
-						interventionIter := balancer.NewIteratorWithSession(interventionGroup, apiKeyID, requestModel, "", false)
-						interventionIter.PrioritizeChannels(nativeProtocolChannelIDs(c.Request.Context(), inboundType, interventionGroup.Items))
-						if interventionIter.Len() > 0 {
-							// 停止旧心跳协程，避免并发写 gin.Writer
-							if stopInterventionKeepalive != nil {
-								stopInterventionKeepalive()
-								stopInterventionKeepalive = nil
-							}
-							group = interventionGroup
-							iter = interventionIter
-							req.stickyEnabled = false
-							triedReturnGroup = false
-							internalRequest.Model = requestModel
-							internalRequest.Messages = append([]model.Message(nil), baseMessages...)
-							internalRequest.PreviousResponseID = basePreviousResponseID
-							internalRequest.ResponsesInputRaw = cloneRawJSONMessage(baseResponsesInputRaw)
-							goto runIterator
-						}
-						// If the chosen channel/iterator had 0 items, loop back and await next operator selection
-					}
-				}
-			}
 		}
 	}
 
 	finalErr = lastErr
+	if stopErr := rescueStopError(interventionCtx, originalRequest.Context()); stopErr != nil {
+		finalErr = stopErr
+	}
 	if finalErr == nil {
 		finalErr = routeSelectionErrorFromAttempts(allAttempts)
 	}
-	metrics.Save(c.Request.Context(), false, finalErr, allAttempts)
+	if stopInterventionKeepalive != nil {
+		stopInterventionKeepalive()
+		stopInterventionKeepalive = nil
+	}
+	metrics.Save(originalRequest.Context(), false, finalErr, allAttempts)
 	status, code, message := relayErrorResponse(finalErr)
 	if c.Writer.Written() {
 		// Deferred-commit kept the stream warm with heartbeats while we failed over
