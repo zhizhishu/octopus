@@ -1381,3 +1381,68 @@ func TestRunBatchHonorsConcurrency(t *testing.T) {
 		t.Fatalf("expected concurrent upstream calls, max in-flight was %d", maxSeen)
 	}
 }
+
+// Consume the fallback probe first: no-breaker tests must still reach upstream,
+// while regular channels, disabled keys and empty keys must remain excluded.
+func TestTryChannelKeyCooldownPolicy(t *testing.T) {
+	ctx := setupModelTestDB(t)
+	originalInterval := dbmodel.ChannelKeyProbeInterval
+	dbmodel.ChannelKeyProbeInterval = time.Hour
+	t.Cleanup(func() { dbmodel.ChannelKeyProbeInterval = originalInterval })
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"probe","object":"chat.completion","model":"probe-model","choices":[{"index":0,"message":{"role":"assistant","content":"OK"},"finish_reason":"stop"}]}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	for i, tt := range []struct {
+		name      string
+		noBreaker bool
+		status    int
+		enabled   bool
+		key       string
+		wantHits  int32
+	}{
+		{"no-breaker-429", true, 429, true, "test-key", 1},
+		{"no-breaker-503", true, 503, true, "test-key", 1},
+		{"regular-429", false, 429, true, "test-key", 0},
+		{"regular-503", false, 503, true, "test-key", 0},
+		{"disabled", true, 0, false, "test-key", 0},
+		{"empty", true, 0, true, "", 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			hits.Store(0)
+			channel := dbmodel.Channel{
+				ID:   2000000000 + i, // Separate from DB IDs and safe across repeated test runs.
+				Name: tt.name, Type: outbound.OutboundTypeOpenAIChat, Enabled: true,
+				DisableCircuitBreaker: tt.noBreaker,
+				BaseUrls:              []dbmodel.BaseUrl{{URL: upstream.URL}},
+				Keys: []dbmodel.ChannelKey{{Enabled: tt.enabled, ChannelKey: tt.key,
+					StatusCode: tt.status, LastUseTimeStamp: time.Now().Add(time.Hour).Unix()}},
+			}
+			if tt.status != 0 {
+				channel.GetAvailableChannelKeys()
+				if len(channel.GetAvailableChannelKeys()) != 0 {
+					t.Fatal("expected exhausted cooldown probe slot")
+				}
+			}
+			stream := false
+			runner := &modelRunner{request: dbmodel.ModelTestRequest{Model: "probe-model", Endpoint: "openai_chat", Stream: &stream}}
+			wantSuccess := tt.wantHits == 1
+			if got := runner.tryChannel(ctx, &channel, "probe-model", false); got != wantSuccess {
+				t.Fatalf("success=%v, want %v: %#v", got, wantSuccess, runner.result)
+			}
+			if hits.Load() != tt.wantHits || runner.result.Success != wantSuccess {
+				t.Fatalf("hits=%d, want %d; result=%#v", hits.Load(), tt.wantHits, runner.result)
+			}
+			if wantSuccess && runner.result.StatusCode != http.StatusOK {
+				t.Fatalf("status=%d, want 200", runner.result.StatusCode)
+			}
+			if !wantSuccess && (len(runner.result.Attempts) != 1 || runner.result.Attempts[0].Status != dbmodel.AttemptSkipped) {
+				t.Fatalf("expected skipped attempt: %#v", runner.result.Attempts)
+			}
+		})
+	}
+}

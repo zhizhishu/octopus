@@ -619,7 +619,14 @@ func (r *modelRunner) tryChannel(ctx context.Context, channel *dbmodel.Channel, 
 		return false
 	}
 
-	keys := channel.GetAvailableChannelKeys()
+	// Match production's key policy: bypass cooldown only when the channel disables
+	// its circuit breaker, without admitting disabled or empty keys.
+	var keys []dbmodel.ChannelKey
+	if channel.DisableCircuitBreaker {
+		keys = channel.GetAllEnabledChannelKeys()
+	} else {
+		keys = channel.GetAvailableChannelKeys()
+	}
 	if len(keys) == 0 {
 		r.recordAttempt(channel.ID, 0, channelName, upstreamModel, "", dbmodel.AttemptSkipped, 0, 0, "no available key")
 		return false
