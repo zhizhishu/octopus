@@ -555,6 +555,7 @@ func applyThinkingToContentStream(chunk *model.InternalLLMResponse, inbound *Cha
 		}
 		hasContent := strings.TrimSpace(contentText) != ""
 		hasReasoning := reasoning != ""
+		hasFinishReason := out.Choices[i].FinishReason != nil && *out.Choices[i].FinishReason != ""
 
 		if hasReasoning && !inbound.streamThinkingOpen[idx] {
 			// First thinking chunk: open <think> and put reasoning into content.
@@ -589,6 +590,21 @@ func applyThinkingToContentStream(chunk *model.InternalLLMResponse, inbound *Cha
 			copied.ReasoningContent = nil
 			copied.Reasoning = nil
 			out.Choices[i].Delta = &copied
+			continue
+		}
+
+		// D2 fix: Close unclosed <think> tag at finish_reason if no content follows.
+		// DeepSeek may end reasoning directly with tool_calls or stop, leaving the
+		// </think> tag unsent. Emit a synthetic close delta before the finish chunk
+		// so thinking and subsequent text content stay properly separated.
+		if hasFinishReason && inbound.streamThinkingOpen[idx] && !inbound.streamThinkingClosed[idx] {
+			copied := *delta
+			closeTag := "\n</think>\n"
+			copied.Content = model.MessageContent{Content: &closeTag}
+			copied.ReasoningContent = nil
+			copied.Reasoning = nil
+			out.Choices[i].Delta = &copied
+			inbound.streamThinkingClosed[idx] = true
 			continue
 		}
 
