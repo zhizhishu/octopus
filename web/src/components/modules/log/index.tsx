@@ -980,23 +980,60 @@ export function Log() {
                 </div>
             )}
             <div className="flex flex-none flex-col gap-2 rounded-lg border border-border bg-card px-3 py-2">
-                <MobileFilterCollapse
-                    label="筛选"
-                    activeCount={activePills.length}
-                    trailing={
-                        <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={handleRefresh}
-                            disabled={isRefreshing || isLoading}
-                            title={isRefreshing ? t('list.refreshing') : t('list.refresh')}
-                            aria-label={t('list.refresh')}
-                            className="ml-auto rounded-lg text-muted-foreground"
+                {/* Row 1: 历史/实时切换 */}
+                <div className="flex min-w-0 items-center gap-2">
+                    <div className="flex min-w-0 items-center gap-1 rounded-lg bg-muted/60 p-1">
+                        <button
+                            type="button"
+                            aria-pressed={viewMode === 'history'}
+                            onClick={() => setViewMode('history')}
+                            className={cn(
+                                'inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-sm font-medium transition-colors',
+                                viewMode === 'history'
+                                    ? 'bg-background text-foreground shadow-sm'
+                                    : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'
+                            )}
                         >
-                            <RefreshCw className={cn('size-4', isRefreshing && 'animate-spin')} />
-                        </Button>
-                    }
-                >
+                            <ScrollText className="size-3.5" />
+                            <span>历史日志</span>
+                        </button>
+                        <button
+                            type="button"
+                            aria-pressed={isLiveMode}
+                            onClick={() => {
+                                setViewMode('live');
+                                setCurrentPage(1);
+                            }}
+                            className={cn(
+                                'inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-sm font-medium transition-colors',
+                                isLiveMode
+                                    ? 'bg-background text-foreground shadow-sm'
+                                    : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'
+                            )}
+                        >
+                            <span className="relative flex size-2">
+                                {isLiveMode && isConnected && (
+                                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                                )}
+                                <span
+                                    className={cn(
+                                        'relative inline-flex size-2 rounded-full',
+                                        isLiveMode
+                                            ? isConnected
+                                                ? 'bg-emerald-500'
+                                                : streamError
+                                                    ? 'bg-destructive'
+                                                    : 'bg-amber-500'
+                                            : 'bg-muted-foreground/50'
+                                    )}
+                                />
+                            </span>
+                            <span>实时调用</span>
+                        </button>
+                    </div>
+                </div>
+
+                {/* Row 2: 搜索框 + 下拉框 + 高级筛选 */}
                 <div className="flex min-w-0 flex-wrap items-center gap-2">
                     <label className="relative flex min-w-0 items-center">
                         <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -1066,26 +1103,28 @@ export function Log() {
                         </select>
                     </label>
 
-                    <label className="flex min-w-0 flex-wrap items-center gap-2">
-                        <span className="text-sm font-medium text-card-foreground">日期</span>
-                        <input
-                            type="date"
-                            value={startDate}
-                            onChange={(event) => handleStartDate(event.target.value)}
-                            max={endDate || todayLabel}
-                            className="h-9 min-w-36 rounded-lg border border-input bg-background px-3 text-sm text-foreground"
-                        />
-                        <span className="text-xs text-muted-foreground">到</span>
-                        <input
-                            type="date"
-                            value={endDate}
-                            onChange={(event) => handleEndDate(event.target.value)}
-                            min={startDate || undefined}
-                            max={todayLabel}
-                            className="h-9 min-w-36 rounded-lg border border-input bg-background px-3 text-sm text-foreground"
-                        />
-                    </label>
+                    {isAdmin && (
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setAdvancedOpen((open) => !open)}
+                            className="rounded-lg"
+                        >
+                            <SlidersHorizontal className="size-4" />
+                            <span>{t('list.advancedFilters')}</span>
+                            {advancedActiveCount > 0 && (
+                                <Badge variant="secondary" className="h-5 min-w-5 justify-center px-1 text-[10px]">
+                                    {advancedActiveCount}
+                                </Badge>
+                            )}
+                            {advancedOpen ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
+                        </Button>
+                    )}
+                </div>
 
+                {/* Row 3: 日期快捷键 + 状态筛选pills + checkboxes + 操作按钮 */}
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    {/* 左侧：日期快捷键pills */}
                     <div className="flex min-w-0 flex-wrap items-center gap-1 rounded-lg bg-muted/60 p-1">
                         {dateRangeShortcuts.map((shortcut) => {
                             const active = activeDateShortcut === shortcut.id;
@@ -1108,36 +1147,7 @@ export function Log() {
                         })}
                     </div>
 
-                    {isAdmin && (
-                        <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => setAdvancedOpen((open) => !open)}
-                            className="rounded-lg"
-                        >
-                            <SlidersHorizontal className="size-4" />
-                            <span>{t('list.advancedFilters')}</span>
-                            {advancedActiveCount > 0 && (
-                                <Badge variant="secondary" className="h-5 min-w-5 justify-center px-1 text-[10px]">
-                                    {advancedActiveCount}
-                                </Badge>
-                            )}
-                            {advancedOpen ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
-                        </Button>
-                    )}
-
-                    {hasActiveFilter && (
-                        <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={handleResetFilters}
-                            className="rounded-lg"
-                        >
-                            <RotateCcw className="size-4" />
-                            <span>{t('list.reset')}</span>
-                        </Button>
-                    )}
-
+                    {/* 中间：状态筛选pills */}
                     <div className="flex min-w-0 flex-wrap items-center gap-1 rounded-lg bg-muted/60 p-1">
                         {severityFilters.map((filter) => {
                             const Icon = filter.icon;
@@ -1165,7 +1175,7 @@ export function Log() {
                         })}
                     </div>
 
-                    {/* 排障向快捷筛选：只看发生过重试 / 换渠道的请求（抖动渠道一眼揪出）。 */}
+                    {/* Checkboxes：只看重试 + 隐藏测试探针 */}
                     <button
                         type="button"
                         onClick={() => { setRetriedOnly((v) => !v); setCurrentPage(1); }}
@@ -1181,7 +1191,6 @@ export function Log() {
                         <span>{t('list.retriedOnly')}</span>
                     </button>
 
-                    {/* 隐藏渠道测试探针（model_test）：容量坏窗口 / 压测时探针失败会刷屏，藏掉只看真实业务。 */}
                     <button
                         type="button"
                         onClick={() => { setHideModelTest((v) => !v); setCurrentPage(1); }}
@@ -1197,57 +1206,20 @@ export function Log() {
                         <span>隐藏测试探针</span>
                     </button>
 
-                    {/* 历史/实时切换：按需求放在隐藏探针右侧，沿用原按钮设计。 */}
-                    <div className="flex min-w-0 items-center gap-1 rounded-lg bg-muted/60 p-1">
-                        <button
-                            type="button"
-                            aria-pressed={viewMode === 'history'}
-                            onClick={() => setViewMode('history')}
-                            className={cn(
-                                'inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium transition-colors',
-                                viewMode === 'history'
-                                    ? 'bg-background text-foreground shadow-sm'
-                                    : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'
-                            )}
+                    {/* 重置按钮 */}
+                    {hasActiveFilter && (
+                        <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={handleResetFilters}
+                            className="rounded-lg"
                         >
-                            <ScrollText className="size-3.5" />
-                            <span>{t('live.viewHistory')}</span>
-                        </button>
-                        <button
-                            type="button"
-                            aria-pressed={isLiveMode}
-                            onClick={() => {
-                                setViewMode('live');
-                                setCurrentPage(1);
-                            }}
-                            className={cn(
-                                'inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium transition-colors',
-                                isLiveMode
-                                    ? 'bg-background text-foreground shadow-sm'
-                                    : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'
-                            )}
-                        >
-                            <span className="relative flex size-2">
-                                {isLiveMode && isConnected && (
-                                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-                                )}
-                                <span
-                                    className={cn(
-                                        'relative inline-flex size-2 rounded-full',
-                                        isLiveMode
-                                            ? isConnected
-                                                ? 'bg-emerald-500'
-                                                : streamError
-                                                    ? 'bg-destructive'
-                                                    : 'bg-amber-500'
-                                            : 'bg-muted-foreground/50'
-                                    )}
-                                />
-                            </span>
-                            <span>{t('live.viewLive')}</span>
-                        </button>
-                    </div>
+                            <RotateCcw className="size-4" />
+                            <span>{t('list.reset')}</span>
+                        </Button>
+                    )}
 
+                    {/* 右侧：操作按钮组 */}
                     <div className="ml-auto flex min-w-0 flex-wrap items-center gap-2">
                         <Button
                             variant="ghost"
@@ -1319,7 +1291,32 @@ export function Log() {
                         </label>
                     </div>
                 )}
-                </MobileFilterCollapse>
+
+                {/* 日期选择器独立行（在高级筛选展开时显示） */}
+                {advancedOpen && (
+                    <div className="flex min-w-0 flex-wrap items-center gap-2 border-t border-border pt-2">
+                        <label className="flex min-w-0 flex-wrap items-center gap-2">
+                            <span className="text-sm font-medium text-card-foreground">日期范围</span>
+                            <input
+                                type="date"
+                                value={startDate}
+                                onChange={(event) => handleStartDate(event.target.value)}
+                                max={endDate || todayLabel}
+                                className="h-9 min-w-36 rounded-lg border border-input bg-background px-3 text-sm text-foreground"
+                            />
+                            <span className="text-xs text-muted-foreground">到</span>
+                            <input
+                                type="date"
+                                value={endDate}
+                                onChange={(event) => handleEndDate(event.target.value)}
+                                min={startDate || undefined}
+                                max={todayLabel}
+                                className="h-9 min-w-36 rounded-lg border border-input bg-background px-3 text-sm text-foreground"
+                            />
+                        </label>
+                    </div>
+                )}
+
                 {activePills.length > 0 && (
                     <div className="flex flex-wrap items-center gap-1.5 border-t border-border/60 pt-2">
                         <span className="text-xs text-muted-foreground">生效筛选</span>
