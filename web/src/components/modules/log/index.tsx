@@ -320,7 +320,7 @@ function LiveActivityPanel({
     const totalCount = runningStates.length + activeInterventions.length;
 
     return (
-        <section aria-label={t('activeActivity')} className="flex min-h-0 flex-none flex-col gap-2 rounded-lg border border-border bg-card p-3">
+        <section aria-label={t('activeActivity')} className="live-activity-panel flex min-h-0 flex-none flex-col gap-2 rounded-lg border border-border bg-card p-3">
             <div className="flex items-center justify-between gap-2 border-b border-border pb-2">
                 <div className="flex items-center gap-2 text-sm font-medium">
                     <Loader2 className="size-4 animate-spin text-sky-500" />
@@ -337,7 +337,36 @@ function LiveActivityPanel({
                 )}
             </div>
 
-            <div className="max-h-60 space-y-1.5 overflow-y-auto overscroll-contain divide-y divide-border/60">
+            <style jsx>{`
+                .live-activity-panel details > summary {
+                    user-select: none;
+                    -webkit-tap-highlight-color: transparent;
+                }
+                .live-activity-panel details[open] > summary {
+                    background-color: hsl(var(--muted) / 0.5);
+                }
+                .live-activity-panel details > .details-content {
+                    animation: slideDown 250ms cubic-bezier(0.4, 0, 0.2, 1);
+                }
+                @keyframes slideDown {
+                    from {
+                        opacity: 0;
+                        transform: translateY(-8px);
+                        max-height: 0;
+                    }
+                    to {
+                        opacity: 1;
+                        transform: translateY(0);
+                        max-height: 500px;
+                    }
+                }
+                @media (max-width: 640px) {
+                    .live-activity-panel details > .details-content {
+                        font-size: 0.8125rem;
+                    }
+                }
+            `}</style>
+            <div className="max-h-60 space-y-1.5 overflow-y-auto overscroll-contain divide-y divide-border/60 sm:max-h-48">
                 {/* 救援中请求 (仅管理员可见) */}
                 {activeInterventions.map((intervention) => {
                     const draft = drafts[intervention.id] ?? { channelID: '', keyID: '', modelName: '' };
@@ -348,9 +377,9 @@ function LiveActivityPanel({
                     return (
                         <div key={intervention.id} className="flex items-start gap-2 pt-1.5 first:pt-0">
                             <details className="group min-w-0 flex-1">
-                                <summary className="grid min-h-8 cursor-pointer list-none grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 rounded-md px-1.5 py-1 transition-colors hover:bg-muted/50 outline-none focus-visible:ring-2 focus-visible:ring-ring sm:grid-cols-[minmax(0,1fr)_auto_auto]">
+                                <summary className="grid min-h-10 min-w-0 cursor-pointer list-none grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1 rounded-md px-2 py-1.5 transition-[background-color,box-shadow,transform] duration-200 hover:bg-muted/70 hover:shadow-sm active:scale-[0.99] outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-8 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:gap-x-3 sm:px-1.5 sm:py-1">
                                     <span className="flex min-w-0 items-center gap-1.5">
-                                        <ChevronRight className="size-3.5 shrink-0 transition-transform group-open:rotate-90 text-muted-foreground" />
+                                        <ChevronRight className="size-3.5 shrink-0 text-muted-foreground transition-transform duration-200 ease-out group-open:rotate-90 group-hover:text-foreground" />
                                         <Badge variant="outline" className="border-amber-500/40 bg-amber-500/10 text-[10px] text-amber-700 dark:text-amber-300">
                                             {t('rescue')}
                                         </Badge>
@@ -365,7 +394,7 @@ function LiveActivityPanel({
                                         {intervention.waiting_for}
                                     </span>
                                 </summary>
-                                <div className="space-y-2 px-2 pb-2 pt-1 text-xs">
+                                <div className="details-content space-y-2 px-3 pb-2 pt-1 text-xs sm:px-2">
                                     <p className="text-muted-foreground">{intervention.endpoint} · {intervention.id}</p>
                                     {intervention.last_error && (
                                         <p className="break-words text-destructive">{intervention.last_error}</p>
@@ -434,13 +463,14 @@ function LiveActivityPanel({
                             <Button
                                 variant="ghost"
                                 size="icon"
-                                className="size-8 shrink-0 text-destructive"
+                                className="size-10 shrink-0 text-destructive transition-all duration-200 hover:scale-105 hover:text-destructive sm:size-8"
                                 disabled={stopping}
-                                onClick={() => abortHeldRequest(intervention)}
+                                onClick={(event) => { event.stopPropagation(); abortHeldRequest(intervention); }}
                                 title={t('stop')}
                                 aria-label={t('stop')}
+                                aria-busy={stopping}
                             >
-                                {stopping ? <Loader2 className="size-3.5 animate-spin" /> : <X className="size-3.5" />}
+                                {stopping ? <Loader2 className="size-4 animate-spin sm:size-3.5" /> : <X className="size-4 transition-transform duration-200 hover:scale-110 sm:size-3.5" />}
                             </Button>
                         </div>
                     );
@@ -457,10 +487,10 @@ function LiveActivityPanel({
                     return (
                         <div key={state.id} className="flex items-start gap-2 py-1.5 first:pt-0">
                             <details className="group min-w-0 flex-1">
-                                <summary className="grid min-h-8 cursor-pointer list-none grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1 rounded-md px-1.5 py-1 transition-colors hover:bg-muted/50 outline-none focus-visible:ring-2 focus-visible:ring-ring sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+                                <summary className="grid min-h-10 min-w-0 cursor-pointer list-none grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1 rounded-md px-2 py-1.5 transition-[background-color,box-shadow,transform] duration-200 hover:bg-muted/70 hover:shadow-sm active:scale-[0.99] outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-8 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] sm:px-1.5 sm:py-1">
                                     <span className="flex min-w-0 items-center gap-1.5">
-                                        <ChevronRight className="size-3.5 shrink-0 transition-transform group-open:rotate-90 text-muted-foreground" />
-                                        <Badge variant="outline" className="border-sky-500/40 bg-sky-500/10 text-[10px] text-sky-700 dark:text-sky-300">
+                                        <ChevronRight className="size-3.5 shrink-0 text-muted-foreground transition-transform duration-200 ease-out group-open:rotate-90 group-hover:text-foreground" />
+                                        <Badge variant="outline" className="border-sky-500/40 bg-sky-500/10 text-[10px] text-sky-700 dark:text-sky-300 animate-pulse">
                                             {t('running')}
                                         </Badge>
                                         <span className="truncate font-mono text-xs" title={state.model}>
@@ -478,16 +508,17 @@ function LiveActivityPanel({
                                         {new Date(state.started_at).toLocaleTimeString()}
                                     </time>
                                 </summary>
-                                <div className="space-y-2 px-2 pb-2 pt-1 text-xs">
+                                <div className="details-content space-y-2 px-3 pb-2 pt-1 text-xs sm:px-2">
                                     {isAdmin && (
-                                        <Button variant="outline" size="sm" className="h-7 text-xs"
+                                        <Button variant="outline" size="sm" className="h-9 text-xs sm:h-7"
                                             disabled={!state.rescuable || stopping || rescuingIDs.has(state.id)}
-                                            onClick={() => rescueRunning(state)}
-                                            title={state.rescuable ? '停止当前尝试，保留请求并交给自动救援' : '仅未开始返回内容的运行请求可转救援'}>
-                                            {rescuingIDs.has(state.id) ? '正在转入…' : '转自动救援'}
+                                            onClick={(event) => { event.stopPropagation(); rescueRunning(state); }}
+                                            title={state.rescuable ? '停止当前尝试，保留请求并交给自动救援' : '仅未开始返回内容的运行请求可转救援'}
+                                            aria-busy={rescuingIDs.has(state.id)}>
+                                            {rescuingIDs.has(state.id) ? (<><Loader2 className="size-3.5 animate-spin" />正在转入…</>) : '转自动救援'}
                                         </Button>
                                     )}
-                                    <div className="grid grid-cols-2 gap-2 rounded-md border border-border/60 bg-muted/20 p-2 sm:grid-cols-4">
+                                    <div className="grid grid-cols-2 gap-3 rounded-md border border-border/60 bg-muted/20 p-3 sm:grid-cols-4 sm:gap-2 sm:p-2">
                                         <div className="min-w-0">
                                             <span className="text-[10px] text-muted-foreground">端点</span>
                                             <p className="truncate font-mono text-foreground" title={state.endpoint}>{state.endpoint || '-'}</p>
@@ -506,7 +537,11 @@ function LiveActivityPanel({
                                                 <span className={state.status === 'running' ? 'font-medium text-sky-600 dark:text-sky-400' : 'text-muted-foreground'}>
                                                     {state.status}
                                                 </span>
-                                                {elapsedSeconds !== null && <span className="text-muted-foreground"> · {elapsedSeconds}s</span>}
+                                                {elapsedSeconds !== null && (
+                                                    <span className={elapsedSeconds > 30 ? 'font-bold text-amber-600 dark:text-amber-400' : 'text-muted-foreground'}>
+                                                        {' · '}{elapsedSeconds}s
+                                                    </span>
+                                                )}
                                             </p>
                                         </div>
                                         {isAdmin && state.intervention_id && (
@@ -552,13 +587,14 @@ function LiveActivityPanel({
                                 <Button
                                     variant="ghost"
                                     size="icon"
-                                    className="size-8 shrink-0 text-destructive transition-colors hover:text-destructive"
+                                    className="size-10 shrink-0 text-destructive transition-all duration-200 hover:scale-105 hover:text-destructive sm:size-8"
                                     disabled={stopping}
-                                    onClick={() => abortRunning(state)}
+                                    onClick={(event) => { event.stopPropagation(); abortRunning(state); }}
                                     title={t('stop')}
                                     aria-label={t('stop')}
+                                    aria-busy={stopping}
                                 >
-                                    {stopping ? <Loader2 className="size-3.5 animate-spin" /> : <X className="size-3.5" />}
+                                    {stopping ? <Loader2 className="size-4 animate-spin sm:size-3.5" /> : <X className="size-4 transition-transform duration-200 hover:scale-110 sm:size-3.5" />}
                                 </Button>
                             )}
                         </div>
