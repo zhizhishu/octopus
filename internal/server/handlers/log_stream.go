@@ -65,7 +65,7 @@ func LogStreamSSE(c *gin.Context) {
 					continue
 				}
 				// 序列化状态为 JSON
-				data, err := json.Marshal(state)
+				data, err := json.Marshal(relay.RedactRequestState(state, tokenScope.IsAdmin))
 				if err != nil {
 					continue
 				}

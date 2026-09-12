@@ -162,6 +162,7 @@ type relayRequest struct {
 	stickyEnabled       bool
 	iter                *balancer.Iterator
 	interventionKeyID   int
+	requestState        *RequestState
 
 	// wroteBusinessData flips true once real business data (text/tool_call/reasoning/usage
 	// content payload) has been written/committed downstream. When wroteBusinessData is true,

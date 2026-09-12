@@ -424,7 +424,7 @@ function DeferredJsonContent({ content, fallbackText }: { content: string | unde
 
     if (!content) {
         return (
-            <pre className="max-w-full whitespace-pre-wrap break-words p-3 text-xs leading-relaxed text-muted-foreground sm:p-4">
+            <pre className="max-w-full min-w-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere] p-3 text-xs leading-relaxed text-muted-foreground sm:p-4">
                 {fallbackText}
             </pre>
         );
@@ -472,7 +472,7 @@ function DeferredJsonContent({ content, fallbackText }: { content: string | unde
                     animate={{ opacity: 1 }}
                     exit={{ opacity: 0 }}
                     transition={{ duration: 0.2 }}
-                    className="max-w-full whitespace-pre-wrap break-words p-3 font-mono text-xs leading-relaxed text-muted-foreground sm:p-4"
+                    className="max-w-full min-w-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere] p-3 font-mono text-xs leading-relaxed text-muted-foreground sm:p-4"
                 >
                     {content}
                 </motion.pre>
@@ -533,10 +533,10 @@ function LazyLogBodies({ logId, fallbackRequest, fallbackResponse, requestLabel,
 
     return (
         <div className="grid grid-cols-1 gap-4 pb-2 md:h-full md:min-h-0 md:grid-cols-2 md:pb-0">
-            <div className="flex min-h-[18rem] flex-col overflow-hidden rounded-lg border border-border bg-muted/30 md:min-h-0">
-                <div className="flex items-center gap-2 px-3 md:px-4 py-2.5 md:py-3 border-b border-border bg-muted/50 shrink-0">
-                    <Send className="size-4 text-muted-foreground" />
-                    <span className="text-sm font-medium text-card-foreground">{requestLabel}</span>
+            <div className="flex min-h-[18rem] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-muted/30 md:min-h-0">
+                <div className="flex min-w-0 items-center gap-2 px-3 md:px-4 py-2.5 md:py-3 border-b border-border bg-muted/50 shrink-0">
+                    <Send className="size-4 shrink-0 text-muted-foreground" />
+                    <span className="truncate text-sm font-medium text-card-foreground">{requestLabel}</span>
                     {!isModelTest && (
                         <Badge variant="secondary" className="ml-auto max-w-[55%] whitespace-normal text-left text-xs">
                             {inputTokens.toLocaleString()} {tokensLabel} · {cacheHitLabel} {cacheHitTokens.toLocaleString()}
@@ -553,10 +553,10 @@ function LazyLogBodies({ logId, fallbackRequest, fallbackResponse, requestLabel,
                     )}
                 </div>
             </div>
-            <div className="flex min-h-[18rem] flex-col overflow-hidden rounded-lg border border-border bg-muted/30 md:min-h-0">
-                <div className="flex items-center gap-2 px-3 md:px-4 py-2.5 md:py-3 border-b border-border bg-muted/50 shrink-0">
-                    <MessageSquare className="size-4 text-muted-foreground" />
-                    <span className="text-sm font-medium text-card-foreground">{responseLabel}</span>
+            <div className="flex min-h-[18rem] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-muted/30 md:min-h-0">
+                <div className="flex min-w-0 items-center gap-2 px-3 md:px-4 py-2.5 md:py-3 border-b border-border bg-muted/50 shrink-0">
+                    <MessageSquare className="size-4 shrink-0 text-muted-foreground" />
+                    <span className="truncate text-sm font-medium text-card-foreground">{responseLabel}</span>
                     {!isModelTest && (
                         <Badge variant="secondary" className="ml-auto max-w-[55%] whitespace-normal text-left text-xs">
                             {outputTokens.toLocaleString()} {tokensLabel}
@@ -1021,7 +1021,7 @@ export const LogCard = React.memo(function LogCard({ log }: { log: RelayLog }) {
                                                 >
                                                     <div className="flex-1 overflow-auto p-2.5 md:p-3 flex flex-col gap-4">
                                                         {hasError && (
-                                                            <div className="relative pl-1">
+                                                            <div className="relative min-w-0 pl-1">
                                                                 <div className="absolute right-0 top-0">
                                                                     <CopyIconButton
                                                                         text={log.error ?? ''}
@@ -1035,12 +1035,12 @@ export const LogCard = React.memo(function LogCard({ log }: { log: RelayLog }) {
                                                         )}
 
                                                         {shouldShowAttempts && (
-                                                            <div className="flex flex-col gap-2">
+                                                            <div className="flex min-w-0 flex-col gap-2">
                                                                 {attempts.map((attempt, idx) => (
                                                                     <div
                                                                         key={idx}
                                                                         className={cn(
-                                                                            "text-xs p-2.5 rounded-xl border transition-colors flex flex-col gap-2",
+                                                                            "text-xs p-2.5 rounded-xl border transition-colors flex min-w-0 flex-col gap-2",
                                                                             attempt.status === 'success'
                                                                                 ? "bg-primary/5 border-primary/20 hover:bg-primary/10"
                                                                                 : "bg-destructive/5 border-destructive/20 hover:bg-destructive/10"
@@ -1060,9 +1060,9 @@ export const LogCard = React.memo(function LogCard({ log }: { log: RelayLog }) {
                                                                             <SafeText
                                                                                 mode="wrap"
                                                                                 value={attempt.channel_name}
-                                                                                className="text-xs font-semibold text-foreground sm:flex-1"
+                                                                                className="min-w-0 text-xs font-semibold text-foreground sm:flex-1"
                                                                             />
-                                                                            <div className="flex items-center gap-1 sm:flex-1">
+                                                                            <div className="flex min-w-0 items-center gap-1 sm:flex-1">
                                                                                 {(() => {
                                                                                     const modelName = attempt.model_name || log.actual_model_name || log.request_model_name || '';
                                                                                     const { Avatar: AttemptAvatar } = getModelIcon(modelName);
@@ -1071,23 +1071,23 @@ export const LogCard = React.memo(function LogCard({ log }: { log: RelayLog }) {
                                                                                 <MonoSafeText
                                                                                     mode="wrap"
                                                                                     value={marketModelName(attempt.model_name)}
-                                                                                    className="text-[11px] text-muted-foreground"
+                                                                                    className="min-w-0 text-[11px] text-muted-foreground"
                                                                                 />
                                                                             </div>
                                                                             {attempt.upstream_path && (
                                                                                 <MonoSafeText
                                                                                     mode="wrap"
                                                                                     value={attempt.upstream_path}
-                                                                                    className="text-[11px] text-muted-foreground sm:flex-1"
+                                                                                    className="min-w-0 text-[11px] text-muted-foreground sm:flex-1"
                                                                                 />
                                                                             )}
                                                                             <MonoSafeText
                                                                                 value={`#${attempt.attempt_num || idx + 1} - ${formatDuration(attempt.duration)}`}
-                                                                                className="text-[11px] text-muted-foreground"
+                                                                                className="shrink-0 text-[11px] text-muted-foreground"
                                                                             />
                                                                         </div>
                                                                         {attempt.msg && (
-                                                                            <ErrorSafeText value={attempt.msg} className="block border-l-2 border-destructive/30 pl-2 text-[11px] text-destructive/90" />
+                                                                            <ErrorSafeText value={attempt.msg} className="block min-w-0 border-l-2 border-destructive/30 pl-2 text-[11px] text-destructive/90" />
                                                                         )}
                                                                     </div>
                                                                 ))}

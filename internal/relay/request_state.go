@@ -2,9 +2,16 @@ package relay
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
+)
+
+var (
+	ErrRunningRequestNotFound = errors.New("running request not found")
+	ErrRunningRequestConflict = errors.New("running request state conflict")
+	errRunningRequestRescue   = errors.New("running request transferred to automatic rescue")
 )
 
 // RequestState 保存单个请求的实时状态，用于 SSE 推送"调用中"日志。
@@ -17,6 +24,17 @@ type RequestState struct {
 	Endpoint  string    `json:"endpoint"`
 	UserID    int       `json:"-"` // 仅服务端做 SSE 权限过滤，绝不发到前端
 	APIKeyID  int       `json:"-"`
+
+	// 救援干预关联
+	InterventionID string `json:"intervention_id,omitempty"`
+
+	// 取消控制（服务端未序列化）
+	cancel            context.CancelFunc `json:"-"`
+	cancelCanceled    bool               `json:"-"`
+	attemptCancel     context.CancelFunc `json:"-"`
+	rescueRequested   bool               `json:"-"`
+	businessCommitted bool               `json:"-"`
+	Rescuable         bool               `json:"rescuable"`
 
 	// 当前轮次信息
 	Round         int    `json:"round"`
@@ -54,6 +72,10 @@ var (
 
 // newRequestState 分配请求 ID 并登记初始 running 状态，立即广播。
 func newRequestState(model, endpoint string, userID, apiKeyID int) *RequestState {
+	return newRequestStateWithCancel(model, endpoint, userID, apiKeyID, nil)
+}
+
+func newRequestStateWithCancel(model, endpoint string, userID, apiKeyID int, cancel context.CancelFunc) *RequestState {
 	stateMu.Lock()
 	defer stateMu.Unlock()
 
@@ -65,6 +87,7 @@ func newRequestState(model, endpoint string, userID, apiKeyID int) *RequestState
 		Endpoint:  endpoint,
 		UserID:    userID,
 		APIKeyID:  apiKeyID,
+		cancel:    cancel,
 		Attempts:  make([]AttemptSnapshot, 0, 4),
 	}
 	stateRequests[state.ID] = state
@@ -118,11 +141,142 @@ func (s *RequestState) finishRound(errText string, latencyMs int64) {
 	publishStateLocked(s)
 }
 
+// BindCancel 绑定当前请求的取消函数
+func (s *RequestState) BindCancel(cancel context.CancelFunc) {
+	if s == nil {
+		return
+	}
+	stateMu.Lock()
+	defer stateMu.Unlock()
+	s.cancel = cancel
+}
+
+// BindInterventionID 绑定关联的救援干预ID并广播
+func (s *RequestState) BindInterventionID(interventionID string) {
+	if s == nil {
+		return
+	}
+	stateMu.Lock()
+	defer stateMu.Unlock()
+	s.InterventionID = interventionID
+	publishStateLocked(s)
+}
+
+// CancelRunningRequest 取消指定的运行中请求
+func CancelRunningRequest(id uint64, expectedStartedAt time.Time) error {
+	var cancelFn context.CancelFunc
+
+	stateMu.Lock()
+	state, exists := stateRequests[id]
+	if !exists {
+		stateMu.Unlock()
+		return ErrRunningRequestNotFound
+	}
+	if !state.StartedAt.Equal(expectedStartedAt) {
+		stateMu.Unlock()
+		return ErrRunningRequestConflict
+	}
+	if state.Status != "running" {
+		stateMu.Unlock()
+		return ErrRunningRequestConflict
+	}
+	if state.cancelCanceled {
+		// 已请求取消，幂等成功
+		stateMu.Unlock()
+		return nil
+	}
+	if state.cancel == nil {
+		stateMu.Unlock()
+		return ErrRunningRequestConflict
+	}
+	state.cancelCanceled = true
+	cancelFn = state.cancel
+	stateMu.Unlock()
+
+	if cancelFn != nil {
+		cancelFn()
+	}
+	return nil
+}
+
+// bindAttemptCancel enables rescue only while a stream attempt has not committed content.
+func (s *RequestState) bindAttemptCancel(cancel context.CancelFunc, stream bool) {
+	if s == nil {
+		return
+	}
+	stateMu.Lock()
+	defer stateMu.Unlock()
+	s.attemptCancel = cancel
+	s.Rescuable = cancel != nil && stream && s.Status == "running" && !s.cancelCanceled && !s.businessCommitted && !s.rescueRequested && s.InterventionID == ""
+	publishStateLocked(s)
+}
+
+// commitBusiness serializes the first business write against an operator rescue request.
+func (s *RequestState) commitBusiness() error {
+	if s == nil {
+		return nil
+	}
+	stateMu.Lock()
+	defer stateMu.Unlock()
+	if s.rescueRequested {
+		return errRunningRequestRescue
+	}
+	if !s.businessCommitted {
+		s.businessCommitted = true
+		s.Rescuable = false
+		publishStateLocked(s)
+	}
+	return nil
+}
+
+func (s *RequestState) consumeRescueRequest() bool {
+	stateMu.Lock()
+	defer stateMu.Unlock()
+	requested := s.rescueRequested
+	s.rescueRequested = false
+	return requested
+}
+
+// RescueRunningRequest cancels only the current attempt, never the client's parent request.
+func RescueRunningRequest(id uint64, expectedStartedAt time.Time) error {
+	stateMu.Lock()
+	s, exists := stateRequests[id]
+	if !exists {
+		stateMu.Unlock()
+		return ErrRunningRequestNotFound
+	}
+	if !s.StartedAt.Equal(expectedStartedAt) || s.Status != "running" || s.cancelCanceled {
+		stateMu.Unlock()
+		return ErrRunningRequestConflict
+	}
+	if s.rescueRequested || s.InterventionID != "" {
+		stateMu.Unlock()
+		return nil
+	}
+	if !s.Rescuable || s.attemptCancel == nil || s.businessCommitted {
+		stateMu.Unlock()
+		return ErrRunningRequestConflict
+	}
+	s.rescueRequested = true
+	s.Rescuable = false
+	cancel := s.attemptCancel
+	publishStateLocked(s)
+	stateMu.Unlock()
+	cancel()
+	return nil
+}
+
 // markSuccess 标记请求成功完成。
 func (s *RequestState) markSuccess() {
 	stateMu.Lock()
 	defer stateMu.Unlock()
 
+	if s.Status != "running" {
+		return
+	}
+	s.cancel = nil
+	s.attemptCancel = nil
+	s.Rescuable = false
 	s.Status = "success"
 	s.Error = ""
 	now := time.Now()
@@ -138,6 +292,12 @@ func (s *RequestState) markFailed(err string) {
 	stateMu.Lock()
 	defer stateMu.Unlock()
 
+	if s.Status != "running" {
+		return
+	}
+	s.cancel = nil
+	s.attemptCancel = nil
+	s.Rescuable = false
 	s.Status = "failed"
 	s.Error = err
 	now := time.Now()
@@ -153,6 +313,12 @@ func (s *RequestState) markCanceled() {
 	stateMu.Lock()
 	defer stateMu.Unlock()
 
+	if s.Status != "running" {
+		return
+	}
+	s.cancel = nil
+	s.attemptCancel = nil
+	s.Rescuable = false
 	s.Status = "canceled"
 	now := time.Now()
 	s.FinishedAt = &now
@@ -221,6 +387,27 @@ func UnsubscribeRequestState(ch <-chan *RequestState) {
 	}
 }
 
+// RedactRequestState projects a stable snapshot without exposing routing details to users.
+func RedactRequestState(state *RequestState, isAdmin bool) *RequestState {
+	if state == nil {
+		return nil
+	}
+	snapshot := *state
+	snapshot.cancel = nil
+	snapshot.attemptCancel = nil
+	snapshot.Attempts = append([]AttemptSnapshot(nil), state.Attempts...)
+	if !isAdmin {
+		snapshot.Rescuable = false
+		snapshot.InterventionID = ""
+		snapshot.TargetChannel = ""
+		snapshot.TargetModel = ""
+		snapshot.Attempts = nil
+		// Match normal-user log summaries: never expose raw upstream errors.
+		snapshot.Error = ""
+	}
+	return &snapshot
+}
+
 // GetRequestStateSnapshot 获取当前所有请求状态的快照（供 HTTP 轮询接口）。
 func GetRequestStateSnapshot() []*RequestState {
 	return GetRequestStateSnapshotForUser(0, true)
@@ -237,9 +424,7 @@ func GetRequestStateSnapshotForUser(userID int, isAdmin bool) []*RequestState {
 		if !isAdmin && state.UserID != userID {
 			continue
 		}
-		stateCopy := *state
-		stateCopy.Attempts = append([]AttemptSnapshot(nil), state.Attempts...)
-		snapshot = append(snapshot, &stateCopy)
+		snapshot = append(snapshot, RedactRequestState(state, isAdmin))
 	}
 	return snapshot
 }

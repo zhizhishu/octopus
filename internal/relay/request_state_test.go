@@ -14,6 +14,19 @@ func resetRequestStateForTest() {
 	stateIDSeq.Store(0)
 }
 
+func TestRequestStateCancelIsBoundBeforePublication(t *testing.T) {
+	resetRequestStateForTest()
+	t.Cleanup(resetRequestStateForTest)
+	ctx, cancel := context.WithCancel(context.Background())
+	state := newRequestStateWithCancel("model-a", "responses", 11, 101, cancel)
+	if err := CancelRunningRequest(state.ID, state.StartedAt); err != nil {
+		t.Fatalf("cancel before consumer registration: %v", err)
+	}
+	if ctx.Err() == nil {
+		t.Fatal("expected initial-state cancellation to reach context")
+	}
+}
+
 func TestRequestStateSnapshotFiltersNormalUsers(t *testing.T) {
 	resetRequestStateForTest()
 	t.Cleanup(resetRequestStateForTest)

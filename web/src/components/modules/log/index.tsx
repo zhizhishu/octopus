@@ -11,7 +11,7 @@ import { MobileFilterCollapse } from '@/components/common/MobileFilterCollapse';
 import { useAPIKeyList } from '@/api/endpoints/apikey';
 import { useChannelList } from '@/api/endpoints/channel';
 import { useModelList } from '@/api/endpoints/model';
-import { useAbortIntervention, useInterventionList, useRetryIntervention, type InterventionSnapshot } from '@/api/endpoints/intervention';
+import { useAbortIntervention, useAbortRunningRequest, useRescueRunningRequest, useInterventionList, useRetryIntervention, type InterventionSnapshot } from '@/api/endpoints/intervention';
 import { useAuthStore, useUserList } from '@/api/endpoints/user';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -170,82 +170,6 @@ function FilterPill({ label, onClear }: { label: string; onClear: () => void }) 
     );
 }
 
-/** 列表里的一行：一条真实日志，或一条多渠道请求拆出来的其中一次尝试。 */
-interface LogRow {
-    key: string;
-    log: RelayLog;
-}
-
-/**
- * 把「一条重试过多个渠道的请求」在日志列表里拆成分开的行。
- *
- * 后端一条请求只记一条日志，多次渠道尝试塞在 attempts[] 里（默认只在悬停里露出来，
- * 看着就像「同一个渠道」）。这里把真正试过的每一次尝试摊成独立一行——失败的渠道各占
- * 一行、最终成功的渠道占一行，各显示自己的渠道名与结果，一眼看清走了哪些不同渠道。
- *
- * - 只摊「真的试过」的尝试（success / failed）；skipped / circuit_break 这类没真正打出去的
- *   不单独成行，免得刷屏。真实尝试 ≤1 的日志原样保留一行。
- * - 费用 / token / 请求响应体属于整条请求，只挂在「最终计费」的那次尝试上；失败尝试清零，
- *   各自显示自己的失败原因。
- * - 纯展示层拆分，不改后端、不改计费、不改总条数统计。
- */
-function expandLogRows(logs: RelayLog[]): LogRow[] {
-    const rows: LogRow[] = [];
-    for (const log of logs) {
-        const realAttempts = (log.attempts ?? []).filter(
-            (attempt) => attempt.status === 'success' || attempt.status === 'failed'
-        );
-        if (realAttempts.length <= 1) {
-            rows.push({ key: `log-${log.id}`, log });
-            continue;
-        }
-        // 最终尝试 = 最后一次成功；全失败则取最后一次。它承载整条请求的费用/用量/请求响应体，
-        // 并在整条请求失败时沿用请求级错误码，让「锅在谁」结论准确。
-        let finalIdx = realAttempts.length - 1;
-        for (let i = realAttempts.length - 1; i >= 0; i--) {
-            if (realAttempts[i].status === 'success') {
-                finalIdx = i;
-                break;
-            }
-        }
-        realAttempts.forEach((attempt, idx) => {
-            const isFinal = idx === finalIdx;
-            const isSuccess = attempt.status === 'success';
-            const failText = attempt.msg?.trim() || (isFinal ? log.error?.trim() : '') || '该渠道此次尝试失败';
-            rows.push({
-                key: `log-${log.id}-a${attempt.attempt_num || idx + 1}`,
-                log: {
-                    ...log,
-                    channel: attempt.channel_id,
-                    channel_name: attempt.channel_name,
-                    actual_model_name: attempt.model_name || log.actual_model_name,
-                    use_time: attempt.duration || 0,
-                    // 拆成单渠道呈现：去掉重试徽标，只留这一次尝试。
-                    attempts: [attempt],
-                    total_attempts: 1,
-                    // 费用/用量只挂最终计费那次；失败尝试一律清零。
-                    input_tokens: isFinal ? log.input_tokens : 0,
-                    output_tokens: isFinal ? log.output_tokens : 0,
-                    cache_hit_tokens: isFinal ? log.cache_hit_tokens : 0,
-                    cache_write_tokens: isFinal ? log.cache_write_tokens : 0,
-                    cache_input_tokens: isFinal ? log.cache_input_tokens : 0,
-                    cache_hit_rate: isFinal ? log.cache_hit_rate : 0,
-                    cost: isFinal ? log.cost : 0,
-                    ftut: isFinal ? log.ftut : 0,
-                    // 成功行清掉错误；失败行显示这次尝试自己的失败原因（保证被判为失败、标红）。
-                    error: isSuccess ? undefined : failText,
-                    error_code: isSuccess ? undefined : (isFinal ? log.error_code : undefined),
-                    error_status: isSuccess ? undefined : (isFinal ? log.error_status : undefined),
-                    error_strategy: isSuccess ? undefined : (isFinal ? log.error_strategy : undefined),
-                    // 请求/响应体属于最终计费那次尝试。
-                    request_content: isFinal ? log.request_content : undefined,
-                    response_content: isFinal ? log.response_content : undefined,
-                },
-            });
-        });
-    }
-    return rows;
-}
 
 type InterventionDraft = {
     channelID: string;
@@ -273,6 +197,10 @@ function LiveActivityPanel({
     const { data: channelRows = [] } = useChannelList({ enabled: isAdmin && enabled && interventions.length > 0 });
     const retryIntervention = useRetryIntervention();
     const abortIntervention = useAbortIntervention();
+    const abortRunningRequest = useAbortRunningRequest();
+    const rescueRunningRequest = useRescueRunningRequest();
+    const [rescuingIDs, setRescuingIDs] = useState<Set<number>>(() => new Set());
+    const [abortingIDs, setAbortingIDs] = useState<Set<number>>(() => new Set());
     const [drafts, setDrafts] = useState<Record<string, InterventionDraft>>({});
 
     useEffect(() => {
@@ -289,20 +217,25 @@ function LiveActivityPanel({
         [channelRows]
     );
 
-    // 去重与状态过滤：只看 running 状态，且若其 id 已在当前展示历史日志中则不重复展示
-    const runningStates = useMemo(() => {
-        if (!enabled) return [];
-        return requestStates.filter(
-            (state) => state.status === 'running' && (state.id === undefined || !historyLogIDs.has(state.id))
-        );
-    }, [enabled, historyLogIDs, requestStates]);
-
     const activeInterventions = useMemo(() => {
         if (!isAdmin || !enabled) return [];
         return interventions.filter(
             (item) => item.log_id === undefined || !historyLogIDs.has(item.log_id)
         );
     }, [enabled, historyLogIDs, interventions, isAdmin]);
+
+    const activeInterventionIDs = useMemo(() => {
+        return new Set(activeInterventions.map((item) => item.id));
+    }, [activeInterventions]);
+
+    const runningStates = useMemo(() => {
+        if (!enabled) return [];
+        return requestStates.filter(
+            (state) =>
+                state.status === 'running' &&
+                (!state.intervention_id || !activeInterventionIDs.has(state.intervention_id))
+        );
+    }, [activeInterventionIDs, enabled, requestStates]);
 
     if (!enabled) return null;
     if (runningStates.length === 0 && activeInterventions.length === 0) return null;
@@ -343,6 +276,45 @@ function LiveActivityPanel({
             onSuccess: () => toast.success(t('stopSent')),
             onError: (error) => toast.error(t('stopFailed'), { description: error instanceof Error ? error.message : String(error) }),
         });
+    };
+
+    const abortRunning = async (state: RequestState) => {
+        if (!isAdmin) return;
+        setAbortingIDs((previous) => new Set(previous).add(state.id));
+        try {
+            await abortRunningRequest.mutateAsync({
+                id: state.id,
+                started_at: state.started_at,
+            });
+            toast.success(t('stopSent'));
+        } catch (error) {
+            toast.error(t('stopFailed'), {
+                description: error instanceof Error ? error.message : String(error),
+            });
+        } finally {
+            setAbortingIDs((previous) => {
+                const next = new Set(previous);
+                next.delete(state.id);
+                return next;
+            });
+        }
+    };
+
+    const rescueRunning = async (state: RequestState) => {
+        if (!isAdmin || !state.rescuable) return;
+        setRescuingIDs(previous => new Set(previous).add(state.id));
+        try {
+            await rescueRunningRequest.mutateAsync({ id: state.id, started_at: state.started_at });
+            toast.success('已转入自动救援');
+        } catch (error) {
+            toast.error('转入自动救援失败', { description: error instanceof Error ? error.message : String(error) });
+        } finally {
+            setRescuingIDs(previous => {
+                const next = new Set(previous);
+                next.delete(state.id);
+                return next;
+            });
+        }
     };
 
     const totalCount = runningStates.length + activeInterventions.length;
@@ -475,49 +447,123 @@ function LiveActivityPanel({
                 })}
 
                 {/* 正在运行中的请求 */}
-                {runningStates.map((state) => (
-                    <details key={state.id} className="group py-1.5 first:pt-0">
-                        <summary className="grid min-h-8 cursor-pointer list-none grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 rounded-md px-1.5 py-1 transition-colors hover:bg-muted/50 outline-none focus-visible:ring-2 focus-visible:ring-ring sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_6rem]">
-                            <span className="flex min-w-0 items-center gap-1.5">
-                                <ChevronRight className="size-3.5 shrink-0 transition-transform group-open:rotate-90 text-muted-foreground" />
-                                <Badge variant="outline" className="border-sky-500/40 bg-sky-500/10 text-[10px] text-sky-700 dark:text-sky-300">
-                                    {t('running')}
-                                </Badge>
-                                <span className="truncate font-mono text-xs" title={state.model}>
-                                    {state.model || 'unknown'}
-                                </span>
-                            </span>
-                            <span className="truncate text-xs text-sky-600 dark:text-sky-300">
-                                {isAdmin && state.sending && state.target_channel
-                                    ? state.target_channel
-                                    : state.round > 1
-                                        ? t('retryRound', { count: state.round })
-                                        : t('requesting')}
-                            </span>
-                            <time dateTime={state.started_at} className="col-span-2 text-xs tabular-nums text-muted-foreground sm:col-span-1 sm:text-right">
-                                {new Date(state.started_at).toLocaleTimeString()}
-                            </time>
-                        </summary>
-                        <div className="space-y-1.5 px-2 pb-1 pt-1 text-xs">
-                            <p className="text-muted-foreground">{state.endpoint} · #{state.id}</p>
-                            {state.error && <p className="break-words text-destructive">{state.error}</p>}
-                            {isAdmin && (state.attempts?.length ?? 0) > 0 && (
-                                <div className="divide-y divide-border/60 rounded border border-border/60 bg-muted/20 px-2 py-1">
-                                    {(state.attempts?.slice(-4) ?? []).map((attempt, index) => (
-                                        <div key={`${attempt.round}-${index}`} className="flex min-w-0 flex-wrap justify-between gap-2 py-1">
-                                            <span className="min-w-0 truncate">
-                                                #{attempt.round} {attempt.channel_name || 'Channel'}
-                                            </span>
-                                            <span className="tabular-nums text-muted-foreground">
-                                                {attempt.status} {attempt.latency_ms !== undefined ? `${attempt.latency_ms}ms` : ''}
-                                            </span>
+                {runningStates.map((state) => {
+                    const stopping = abortingIDs.has(state.id);
+                    const startedTimestamp = new Date(state.started_at).getTime();
+                    const elapsedSeconds = Number.isFinite(startedTimestamp)
+                        ? Math.max(0, Math.round(((state.finished_at ? new Date(state.finished_at).getTime() : Date.now()) - startedTimestamp) / 1000))
+                        : null;
+
+                    return (
+                        <div key={state.id} className="flex items-start gap-2 py-1.5 first:pt-0">
+                            <details className="group min-w-0 flex-1">
+                                <summary className="grid min-h-8 cursor-pointer list-none grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1 rounded-md px-1.5 py-1 transition-colors hover:bg-muted/50 outline-none focus-visible:ring-2 focus-visible:ring-ring sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+                                    <span className="flex min-w-0 items-center gap-1.5">
+                                        <ChevronRight className="size-3.5 shrink-0 transition-transform group-open:rotate-90 text-muted-foreground" />
+                                        <Badge variant="outline" className="border-sky-500/40 bg-sky-500/10 text-[10px] text-sky-700 dark:text-sky-300">
+                                            {t('running')}
+                                        </Badge>
+                                        <span className="truncate font-mono text-xs" title={state.model}>
+                                            {state.model || 'unknown'}
+                                        </span>
+                                    </span>
+                                    <span className="truncate text-xs text-sky-600 dark:text-sky-300">
+                                        {isAdmin && state.sending && state.target_channel
+                                            ? state.target_channel
+                                            : state.round > 1
+                                                ? t('retryRound', { count: state.round })
+                                                : t('requesting')}
+                                    </span>
+                                    <time dateTime={state.started_at} className="col-span-2 text-xs tabular-nums text-muted-foreground sm:col-span-1 sm:text-right">
+                                        {new Date(state.started_at).toLocaleTimeString()}
+                                    </time>
+                                </summary>
+                                <div className="space-y-2 px-2 pb-2 pt-1 text-xs">
+                                    {isAdmin && (
+                                        <Button variant="outline" size="sm" className="h-7 text-xs"
+                                            disabled={!state.rescuable || stopping || rescuingIDs.has(state.id)}
+                                            onClick={() => rescueRunning(state)}
+                                            title={state.rescuable ? '停止当前尝试，保留请求并交给自动救援' : '仅未开始返回内容的运行请求可转救援'}>
+                                            {rescuingIDs.has(state.id) ? '正在转入…' : '转自动救援'}
+                                        </Button>
+                                    )}
+                                    <div className="grid grid-cols-2 gap-2 rounded-md border border-border/60 bg-muted/20 p-2 sm:grid-cols-4">
+                                        <div className="min-w-0">
+                                            <span className="text-[10px] text-muted-foreground">端点</span>
+                                            <p className="truncate font-mono text-foreground" title={state.endpoint}>{state.endpoint || '-'}</p>
                                         </div>
-                                    ))}
+                                        <div className="min-w-0">
+                                            <span className="text-[10px] text-muted-foreground">模型</span>
+                                            <p className="truncate font-mono text-foreground" title={state.model}>{state.model || '-'}</p>
+                                        </div>
+                                        <div className="min-w-0">
+                                            <span className="text-[10px] text-muted-foreground">开始时间</span>
+                                            <p className="truncate tabular-nums text-foreground">{new Date(state.started_at).toLocaleTimeString()}</p>
+                                        </div>
+                                        <div className="min-w-0">
+                                            <span className="text-[10px] text-muted-foreground">状态 / 耗时</span>
+                                            <p className="truncate tabular-nums text-foreground">
+                                                <span className={state.status === 'running' ? 'font-medium text-sky-600 dark:text-sky-400' : 'text-muted-foreground'}>
+                                                    {state.status}
+                                                </span>
+                                                {elapsedSeconds !== null && <span className="text-muted-foreground"> · {elapsedSeconds}s</span>}
+                                            </p>
+                                        </div>
+                                        {isAdmin && state.intervention_id && (
+                                            <div className="col-span-2 min-w-0 sm:col-span-4">
+                                                <span className="text-[10px] text-muted-foreground">救援 ID</span>
+                                                <p className="truncate font-mono text-amber-600 dark:text-amber-400" title={state.intervention_id}>
+                                                    {state.intervention_id}
+                                                </p>
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    {state.error && <p className="break-words text-destructive">{state.error}</p>}
+
+                                    {isAdmin && (state.attempts?.length ?? 0) > 0 && (
+                                        <div className="divide-y divide-border/60 rounded border border-border/60 bg-muted/20 px-2 py-1">
+                                            <div className="py-1 text-[11px] font-medium text-muted-foreground">
+                                                渠道尝试 ({state.attempts?.length})
+                                            </div>
+                                            {(state.attempts ?? []).map((attempt, index) => (
+                                                <div key={`${attempt.round}-${index}`} className="flex min-w-0 flex-wrap items-center justify-between gap-2 py-1 text-xs">
+                                                    <span className="min-w-0 truncate">
+                                                        #{attempt.round} {attempt.channel_name || 'Channel'}
+                                                        {attempt.upstream_model && (
+                                                            <span className="ml-1 font-mono text-[11px] text-muted-foreground">
+                                                                ({attempt.upstream_model})
+                                                            </span>
+                                                        )}
+                                                    </span>
+                                                    <span className="shrink-0 tabular-nums text-muted-foreground">
+                                                        {attempt.status} {attempt.latency_ms !== undefined ? `${attempt.latency_ms}ms` : ''}
+                                                    </span>
+                                                    {attempt.error_msg && (
+                                                        <p className="w-full break-words text-[11px] text-destructive">{attempt.error_msg}</p>
+                                                    )}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
                                 </div>
+                            </details>
+                            {isAdmin && (
+                                <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="size-8 shrink-0 text-destructive transition-colors hover:text-destructive"
+                                    disabled={stopping}
+                                    onClick={() => abortRunning(state)}
+                                    title={t('stop')}
+                                    aria-label={t('stop')}
+                                >
+                                    {stopping ? <Loader2 className="size-3.5 animate-spin" /> : <X className="size-3.5" />}
+                                </Button>
                             )}
                         </div>
-                    </details>
-                ))}
+                    );
+                })}
             </div>
         </section>
     );
@@ -802,10 +848,8 @@ export function Log() {
         });
     }, [hideModelTest, logs, retriedOnly, selectedEndpoint, severityFilter]);
 
-    // 展示行：把重试过多个渠道的请求摊成分开的行（每个真实尝试一行），其余原样一行。
-    const displayRows = useMemo(() => expandLogRows(filteredLogs), [filteredLogs]);
 
-    // 当前历史日志中已包含的 log ID 集合，供 LiveActivityPanel 去重（避免某条日志在 running 与已结算中重复呈现）
+    // 当前历史日志中已包含的 log ID 集合，供 LiveActivityPanel 过滤救援列表（避免已落库日志的救援条目重复呈现）
     const historyLogIDs = useMemo(() => {
         const set = new Set<number>();
         for (const log of logs) {
@@ -858,8 +902,8 @@ export function Log() {
         );
     }, [deferredSearch, effectiveSelectedAPIKeyID, endTime, exportLogs, hideModelTest, retriedOnly, selectedEndpoint, selectedModel, selectedProvider, selectedUserID, severityFilter, startTime]);
 
-    const renderLogCard = useCallback((row: LogRow) => <LogCard log={row.log} />, []);
-    const getLogRowKey = useCallback((row: LogRow) => row.key, []);
+    const renderLogCard = useCallback((log: RelayLog) => <LogCard log={log} />, []);
+    const getLogRowKey = useCallback((log: RelayLog) => log.id, []);
 
     const footer = useMemo(() => {
         if (isLoading || isLoadingMore) {
@@ -954,57 +998,6 @@ export function Log() {
                     }
                 >
                 <div className="flex min-w-0 flex-wrap items-center gap-2">
-                    {/* 顶部清晰紧凑的历史/实时 segmented buttons */}
-                    <div className="flex min-w-0 items-center gap-1 rounded-lg bg-muted/60 p-1">
-                        <button
-                            type="button"
-                            aria-pressed={viewMode === 'history'}
-                            onClick={() => setViewMode('history')}
-                            className={cn(
-                                'inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium transition-colors',
-                                viewMode === 'history'
-                                    ? 'bg-background text-foreground shadow-sm'
-                                    : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'
-                            )}
-                        >
-                            <ScrollText className="size-3.5" />
-                            <span>{t('live.viewHistory')}</span>
-                        </button>
-                        <button
-                            type="button"
-                            aria-pressed={isLiveMode}
-                            onClick={() => {
-                                setViewMode('live');
-                                setCurrentPage(1);
-                            }}
-                            className={cn(
-                                'inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium transition-colors',
-                                isLiveMode
-                                    ? 'bg-background text-foreground shadow-sm'
-                                    : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'
-                            )}
-                        >
-                            <span className="relative flex size-2">
-                                {isLiveMode && isConnected && (
-                                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-                                )}
-                                <span
-                                    className={cn(
-                                        'relative inline-flex size-2 rounded-full',
-                                        isLiveMode
-                                            ? isConnected
-                                                ? 'bg-emerald-500'
-                                                : streamError
-                                                    ? 'bg-destructive'
-                                                    : 'bg-amber-500'
-                                            : 'bg-muted-foreground/50'
-                                    )}
-                                />
-                            </span>
-                            <span>{t('live.viewLive')}</span>
-                        </button>
-                    </div>
-
                     <label className="relative flex min-w-0 items-center">
                         <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
                         <input
@@ -1204,6 +1197,57 @@ export function Log() {
                         <span>隐藏测试探针</span>
                     </button>
 
+                    {/* 历史/实时切换：按需求放在隐藏探针右侧，沿用原按钮设计。 */}
+                    <div className="flex min-w-0 items-center gap-1 rounded-lg bg-muted/60 p-1">
+                        <button
+                            type="button"
+                            aria-pressed={viewMode === 'history'}
+                            onClick={() => setViewMode('history')}
+                            className={cn(
+                                'inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium transition-colors',
+                                viewMode === 'history'
+                                    ? 'bg-background text-foreground shadow-sm'
+                                    : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'
+                            )}
+                        >
+                            <ScrollText className="size-3.5" />
+                            <span>{t('live.viewHistory')}</span>
+                        </button>
+                        <button
+                            type="button"
+                            aria-pressed={isLiveMode}
+                            onClick={() => {
+                                setViewMode('live');
+                                setCurrentPage(1);
+                            }}
+                            className={cn(
+                                'inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium transition-colors',
+                                isLiveMode
+                                    ? 'bg-background text-foreground shadow-sm'
+                                    : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'
+                            )}
+                        >
+                            <span className="relative flex size-2">
+                                {isLiveMode && isConnected && (
+                                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                                )}
+                                <span
+                                    className={cn(
+                                        'relative inline-flex size-2 rounded-full',
+                                        isLiveMode
+                                            ? isConnected
+                                                ? 'bg-emerald-500'
+                                                : streamError
+                                                    ? 'bg-destructive'
+                                                    : 'bg-amber-500'
+                                            : 'bg-muted-foreground/50'
+                                    )}
+                                />
+                            </span>
+                            <span>{t('live.viewLive')}</span>
+                        </button>
+                    </div>
+
                     <div className="ml-auto flex min-w-0 flex-wrap items-center gap-2">
                         <Button
                             variant="ghost"
@@ -1375,7 +1419,7 @@ export function Log() {
             <div className="min-h-0 flex-1">
                 <TooltipProvider>
                 <VirtualizedGrid
-                    items={displayRows}
+                    items={filteredLogs}
                     layout="list"
                     columns={{ default: 1 }}
                     estimateItemHeight={80}

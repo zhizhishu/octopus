@@ -89,8 +89,15 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 	metrics.SetAccessPlan(routeResult.AccessPlan, routeResult.AccessRouteRule, routeResult.AccessRouteUsed)
 	metrics.SetClientSession(clientSession)
 
+	// 派生可被管理员或内部终止的请求上下文
+	clientRequest := c.Request
+	relayCtx, relayCancel := context.WithCancel(clientRequest.Context())
+	originalRequest := clientRequest.WithContext(relayCtx)
+	c.Request = originalRequest
+
 	// 创建实时请求状态，立即推送 "running" 给 SSE 订阅者
-	requestState := newRequestState(requestModel, requestEndpoint, userID, apiKeyID)
+	requestState := newRequestStateWithCancel(requestModel, requestEndpoint, userID, apiKeyID, relayCancel)
+
 	baseMessages := append([]model.Message(nil), internalRequest.Messages...)
 	// The responses history bridges (chat / Anthropic) and codex shape clear
 	// PreviousResponseID / ResponsesInputRaw on the SHARED internalRequest once they
@@ -115,6 +122,7 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		clientSessionSource: clientSession.Source,
 		stickyEnabled:       stickyEnabled,
 		iter:                iter,
+		requestState:        requestState,
 	}
 
 	var (
@@ -135,29 +143,44 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		noBreakerRescueStartedAt  time.Time
 		noBreakerRescueBudget     time.Duration
 		sawNoBreakerChannel       bool
-		originalRequest           = c.Request
+		operatorRescueRequested   bool
 	)
+	// The attempt context is disposable; the client/rescue deadline remains its parent.
+	beginControlledAttempt := func() func() {
+		parent := c.Request
+		attemptCtx, cancel := context.WithCancel(parent.Context())
+		c.Request = parent.WithContext(attemptCtx)
+		requestState.bindAttemptCancel(cancel, internalRequestPrefersStream(internalRequest))
+		return func() {
+			requestState.bindAttemptCancel(nil, false)
+			c.Request = parent
+			cancel()
+		}
+	}
 	defer func() {
 		if stopInterventionKeepalive != nil {
 			stopInterventionKeepalive()
 		}
-		c.Request = originalRequest
 		if interventionRegistered && pendingInterventionID != "" {
 			intervention.Cancel(pendingInterventionID)
 		}
-		if interventionCancel != nil {
-			interventionCancel()
-		}
-		// 请求结束时标记最终状态
+		// Inspect the request context before cleanup cancellation changes it.
+		// Rescue cleanup is not an operator/client cancellation.
+		// 请求结束时标记最终状态（先判断终态）
 		if requestSucceeded {
 			requestState.markSuccess()
-		} else if c.Request.Context().Err() != nil {
+		} else if relayCtx.Err() != nil {
 			requestState.markCanceled()
 		} else if lastErr != nil {
 			requestState.markFailed(lastErr.Error())
 		} else {
 			requestState.markFailed("request ended without a successful upstream response")
 		}
+		if interventionCancel != nil {
+			interventionCancel()
+		}
+		c.Request = clientRequest
+		relayCancel()
 	}()
 
 runIterator:
@@ -298,6 +321,7 @@ attemptChannels:
 
 			raceStartedAt := time.Now()
 			requestState.startRound(channel.Name, item.ModelName)
+			endAttempt := beginControlledAttempt()
 			result, remainingKeys := runChannelRace(
 				req,
 				channel,
@@ -307,6 +331,13 @@ attemptChannels:
 				capabilityKey,
 				group.FirstTokenTimeOut,
 			)
+			endAttempt()
+			if requestState.consumeRescueRequest() && !result.Success && !result.Written {
+				operatorRescueRequested = true
+				lastErr = errRunningRequestRescue
+				requestState.finishRound(lastErr.Error(), time.Since(raceStartedAt).Milliseconds())
+				break attemptChannels
+			}
 			raceLatency := time.Since(raceStartedAt).Milliseconds()
 			if result.Success {
 				requestState.finishRound("", raceLatency)
@@ -378,7 +409,15 @@ attemptChannels:
 				firstTokenTimeOutSec: group.FirstTokenTimeOut,
 			}
 
+			endAttempt := beginControlledAttempt()
 			result := ra.attempt()
+			endAttempt()
+			if requestState.consumeRescueRequest() && !result.Success && !result.Written {
+				operatorRescueRequested = true
+				lastErr = errRunningRequestRescue
+				requestState.finishRound(lastErr.Error(), time.Since(attemptStartTime).Milliseconds())
+				break attemptChannels
+			}
 			if stopErr := rescueStopError(interventionCtx, originalRequest.Context()); stopErr != nil {
 				result.Err = stopErr
 				result.Retryable = false
@@ -411,7 +450,15 @@ attemptChannels:
 					usedKey:              usedKey,
 					firstTokenTimeOutSec: group.FirstTokenTimeOut,
 				}
+				endAttempt = beginControlledAttempt()
 				result = ra.attempt()
+				endAttempt()
+				if requestState.consumeRescueRequest() && !result.Success && !result.Written {
+					operatorRescueRequested = true
+					lastErr = errRunningRequestRescue
+					requestState.finishRound(lastErr.Error(), time.Since(transientStartedAt).Milliseconds())
+					break attemptChannels
+				}
 				transientLatency := time.Since(transientStartedAt).Milliseconds()
 				if result.Success {
 					requestState.finishRound("", transientLatency)
@@ -453,7 +500,7 @@ attemptChannels:
 
 	// 所有通道都失败
 	allAttempts = append(allAttempts, iter.Attempts()...)
-	if contextWindowErr == nil && shouldReturnToOriginalGroup(routeResult, triedReturnGroup) {
+	if !operatorRescueRequested && contextWindowErr == nil && shouldReturnToOriginalGroup(routeResult, triedReturnGroup) {
 		triedReturnGroup = true
 		fallbackGroup, err := op.GroupGetEnabledMap(requestModel, c.Request.Context())
 		if err != nil {
@@ -482,7 +529,8 @@ attemptChannels:
 	}
 	noBreakerAutoRescue := sawNoBreakerChannel && noBreakerRescueBudget > 0 &&
 		isRescueableHeldRequest(req, contextWindowErr, finalErr)
-	manualIntervention := shouldHoldForOperator(req, contextWindowErr, finalErr)
+	manualIntervention := shouldHoldForOperator(req, contextWindowErr, finalErr) ||
+		(operatorRescueRequested && originalRequest.Context().Err() == nil && isRescueableHeldRequest(req, contextWindowErr, finalErr))
 	// Re-entry via `|| interventionRegistered` previously continued rescue blindly even
 	// when the latest attempt produced a deterministic (non-rescuable / context-window)
 	// error or the rescue budget already died — that looped forever or held a request
@@ -539,6 +587,7 @@ attemptChannels:
 			} else {
 				pendingInterventionID = pid
 				interventionRegistered = true
+				requestState.BindInterventionID(pid)
 				log.Infof("Intervention held request id=%s endpoint=%s model=%s", pendingInterventionID, requestEndpoint, requestModel)
 			}
 		} else {
@@ -1305,7 +1354,7 @@ func prioritizeAvailableChannelKey(keys []dbmodel.ChannelKey, preferredID int) [
 }
 
 func shouldRecordBreakerFailure(_ int, err error) bool {
-	if err == nil {
+	if err == nil || errors.Is(err, errRunningRequestRescue) {
 		return false
 	}
 	if isClientAbortError(err) {
@@ -2111,6 +2160,9 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 		if ra.wroteMeaningfulDownstream {
 			return nil
 		}
+		if err := ra.requestState.commitBusiness(); err != nil {
+			return err
+		}
 		if len(pendingPrelude) > 0 {
 			if err := writeStreamData(pendingPrelude); err != nil {
 				return err
@@ -2702,6 +2754,10 @@ func (ra *relayAttempt) handleNonStreamResponseAsStream(ctx context.Context, res
 	ra.c.Header("X-Accel-Buffering", "no")
 	ra.c.Header("X-Octopus-Stream-Fallback", "non-stream-upstream")
 
+	if err := ra.requestState.commitBusiness(); err != nil {
+		return err
+	}
+	ra.wroteMeaningfulDownstream = true
 	for _, chunk := range internalResponseToStreamChunks(internalResponse) {
 		data, err := ra.inAdapter.TransformStream(ctx, chunk)
 		if err != nil {

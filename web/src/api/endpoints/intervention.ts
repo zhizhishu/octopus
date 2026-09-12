@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiClient } from '../client';
+import { logger } from '@/lib/logger';
 import type { ChannelAttempt } from './log';
 
 export type InterventionSnapshot = {
@@ -52,6 +53,33 @@ export function useAbortIntervention() {
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ['interventions', 'list'] });
             queryClient.invalidateQueries({ queryKey: ['logs'] });
+        },
+    });
+}
+
+export function useRescueRunningRequest() {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: ({ id, started_at }: { id: number; started_at: string }) =>
+            apiClient.post<null>(`/api/v1/log/running/${id}/rescue`, { started_at }),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['interventions', 'list'] });
+            queryClient.invalidateQueries({ queryKey: ['logs'] });
+        },
+    });
+}
+
+export function useAbortRunningRequest() {
+    const queryClient = useQueryClient();
+
+    return useMutation({
+        mutationFn: ({ id, started_at }: { id: number; started_at: string }) =>
+            apiClient.post<null>(`/api/v1/log/running/${id}/abort`, { started_at }),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['logs'] });
+        },
+        onError: (error) => {
+            logger.error('终止运行中请求失败:', error);
         },
     });
 }
