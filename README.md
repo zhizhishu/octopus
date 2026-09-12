@@ -369,7 +369,7 @@ import os
 
 client = OpenAI(   
     base_url="http://127.0.0.1:8080/v1",   
-    api_key="sk-octopus-xxxxxxxxxxxxxxxxxxxxxxxx", 
+    api_key="<secret>", 
 )
 completion = client.chat.completions.create(
     model="octopus-openai",  # Use the correct group name
@@ -388,7 +388,7 @@ Edit `~/.claude/settings.json`
 {
   "env": {
     "ANTHROPIC_BASE_URL": "http://127.0.0.1:8080",
-    "ANTHROPIC_AUTH_TOKEN": "sk-octopus-xxxxxxxxxxxxxxxxxxxxxxxx",
+    "ANTHROPIC_AUTH_TOKEN": "<secret>",
     "API_TIMEOUT_MS": "3000000",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
     "ANTHROPIC_MODEL": "octopus-sonnet-4-5",
@@ -418,7 +418,7 @@ Edit `~/.codex/auth.json`
 
 ```json
 {
-  "OPENAI_API_KEY": "sk-octopus-xxxxxxxxxxxxxxxxxxxxxxxx"
+  "OPENAI_API_KEY": "<secret>"
 }
 ```
 
@@ -428,3 +428,4 @@ Edit `~/.codex/auth.json`
 
 - 🙏 [looplj/axonhub](https://github.com/looplj/axonhub) - The LLM API adaptation module in this project is directly derived from this repository
 - 📊 [sst/models.dev](https://github.com/sst/models.dev) - AI model database providing model pricing data
+

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
+import { useCallback, useDeferredValue, useEffect, useMemo, useState, useTransition } from 'react';
 import { getRelayLogSeverity, type RelayLog, type RelayLogSeverity, type RequestState, useExportLogs, useLogSeverityCounts, useLogs, useRequestStateStream } from '@/api/endpoints/log';
 import { LogCard, useSensitiveStore } from './Item';
 import { AlertCircle, AlertTriangle, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Circle, Download, Eye, EyeOff, Loader2, RefreshCw, RotateCcw, RotateCw, ScrollText, Search, SlidersHorizontal, WifiOff, X } from 'lucide-react';
@@ -597,6 +597,7 @@ export function Log() {
     const [retriedOnly, setRetriedOnly] = useState(false);
     const [hideModelTest, setHideModelTest] = useState(false);
     const [searchKeyword, setSearchKeyword] = useState('');
+    const [isPending, startTransition] = useTransition();
     const deferredSearch = useDeferredValue(searchKeyword.trim());
     const isLiveMode = viewMode === 'live';
     const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -825,28 +826,15 @@ export function Log() {
         return id === 'all' ? severityCounts.total : severityCounts[id];
     }, [severityCounts]);
 
-    // 服务端已按 severity 过滤；这里再做一遍本地过滤仅作实时插入时的显示兜底。
+    // 客户端轻量过滤：服务端已处理 severity/retried/hideModelTest，这里只需处理
+    // selectedEndpoint（服务端只粗过滤 endpoint 字段，前端需细化 endpoint_family 逻辑）
     const filteredLogs = useMemo(() => {
+        if (!selectedEndpoint) return logs;
         return logs.filter((log) => {
-            if (selectedEndpoint) {
-                const stored = log.request_endpoint?.trim() ?? '';
-                if (stored !== selectedEndpoint && !stored.startsWith(`${selectedEndpoint}_`)) {
-                    return false;
-                }
-            }
-            if (severityFilter !== 'all' && getRelayLogSeverity(log) !== severityFilter) {
-                return false;
-            }
-            if (retriedOnly) {
-                const attemptCount = log.total_attempts ?? log.attempts?.length ?? 0;
-                if (attemptCount <= 1) return false;
-            }
-            if (hideModelTest && (log.request_endpoint?.trim() ?? '').startsWith('model_test')) {
-                return false;
-            }
-            return true;
+            const stored = log.request_endpoint?.trim() ?? '';
+            return stored === selectedEndpoint || stored.startsWith(`${selectedEndpoint}_`);
         });
-    }, [hideModelTest, logs, retriedOnly, selectedEndpoint, severityFilter]);
+    }, [logs, selectedEndpoint]);
 
 
     // 当前历史日志中已包含的 log ID 集合，供 LiveActivityPanel 过滤救援列表（避免已落库日志的救援条目重复呈现）
@@ -1157,13 +1145,20 @@ export function Log() {
                                 <button
                                     key={filter.id}
                                     type="button"
-                                    onClick={() => { setSeverityFilter(filter.id); setCurrentPage(1); }}
+                                    onClick={() => { 
+                                        startTransition(() => {
+                                            setSeverityFilter(filter.id); 
+                                            setCurrentPage(1);
+                                        });
+                                    }}
                                     className={cn(
                                         'inline-flex h-8 min-w-0 items-center gap-1.5 rounded-lg px-2 text-xs font-medium transition-colors',
                                         active
                                             ? 'bg-background text-foreground shadow-sm'
-                                            : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'
+                                            : 'text-muted-foreground hover:bg-background/60 hover:text-foreground',
+                                        isPending && 'opacity-60 cursor-wait'
                                     )}
+                                    disabled={isPending}
                                 >
                                     <Icon className={cn('size-3.5 shrink-0', filter.className)} />
                                     <span>{t(`list.filters.${filter.id}`)}</span>
@@ -1178,14 +1173,21 @@ export function Log() {
                     {/* Checkboxes：只看重试 + 隐藏测试探针 */}
                     <button
                         type="button"
-                        onClick={() => { setRetriedOnly((v) => !v); setCurrentPage(1); }}
+                        onClick={() => { 
+                            startTransition(() => {
+                                setRetriedOnly((v) => !v); 
+                                setCurrentPage(1);
+                            });
+                        }}
                         title="只看发生过重试 / 换渠道的请求"
                         className={cn(
                             'inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition-colors',
                             retriedOnly
                                 ? 'border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-300'
-                                : 'border-border bg-background text-muted-foreground hover:text-foreground'
+                                : 'border-border bg-background text-muted-foreground hover:text-foreground',
+                            isPending && 'opacity-60 cursor-wait'
                         )}
+                        disabled={isPending}
                     >
                         <RotateCw className="size-3.5" />
                         <span>{t('list.retriedOnly')}</span>
@@ -1193,14 +1195,21 @@ export function Log() {
 
                     <button
                         type="button"
-                        onClick={() => { setHideModelTest((v) => !v); setCurrentPage(1); }}
+                        onClick={() => { 
+                            startTransition(() => {
+                                setHideModelTest((v) => !v); 
+                                setCurrentPage(1);
+                            });
+                        }}
                         title="隐藏渠道测试探针（model_test），只看真实业务流量"
                         className={cn(
                             'inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition-colors',
                             hideModelTest
                                 ? 'border-primary/50 bg-primary/10 text-primary'
-                                : 'border-border bg-background text-muted-foreground hover:text-foreground'
+                                : 'border-border bg-background text-muted-foreground hover:text-foreground',
+                            isPending && 'opacity-60 cursor-wait'
                         )}
+                        disabled={isPending}
                     >
                         <EyeOff className="size-3.5" />
                         <span>隐藏测试探针</span>
