@@ -1004,58 +1004,6 @@ export function Log() {
                 </div>
             )}
             <div className="flex flex-none flex-col gap-2 rounded-lg border border-border bg-card px-3 py-2">
-                {/* Row 1: 历史/实时切换 */}
-                <div className="flex min-w-0 items-center gap-2">
-                    <div className="flex min-w-0 items-center gap-1 rounded-lg bg-muted/60 p-1">
-                        <button
-                            type="button"
-                            aria-pressed={viewMode === 'history'}
-                            onClick={() => setViewMode('history')}
-                            className={cn(
-                                'inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-sm font-medium transition-colors',
-                                viewMode === 'history'
-                                    ? 'bg-background text-foreground shadow-sm'
-                                    : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'
-                            )}
-                        >
-                            <ScrollText className="size-3.5" />
-                            <span>历史日志</span>
-                        </button>
-                        <button
-                            type="button"
-                            aria-pressed={isLiveMode}
-                            onClick={() => {
-                                setViewMode('live');
-                                setCurrentPage(1);
-                            }}
-                            className={cn(
-                                'inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-sm font-medium transition-colors',
-                                isLiveMode
-                                    ? 'bg-background text-foreground shadow-sm'
-                                    : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'
-                            )}
-                        >
-                            <span className="relative flex size-2">
-                                {isLiveMode && isConnected && (
-                                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-                                )}
-                                <span
-                                    className={cn(
-                                        'relative inline-flex size-2 rounded-full',
-                                        isLiveMode
-                                            ? isConnected
-                                                ? 'bg-emerald-500'
-                                                : streamError
-                                                    ? 'bg-destructive'
-                                                    : 'bg-amber-500'
-                                            : 'bg-muted-foreground/50'
-                                    )}
-                                />
-                            </span>
-                            <span>实时调用</span>
-                        </button>
-                    </div>
-                </div>
 
                 {/* Row 2: 搜索框 + 下拉框 + 高级筛选 */}
                 <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -1206,7 +1154,7 @@ export function Log() {
                         })}
                     </div>
 
-                    {/* Checkboxes：只看重试 + 隐藏测试探针 */}
+                    {/* Checkboxes：只看重试 + 隐藏测试探针 + 历史/实时 */}
                     <button
                         type="button"
                         onClick={() => { 
@@ -1250,6 +1198,57 @@ export function Log() {
                         <EyeOff className="size-3.5" />
                         <span>隐藏测试探针</span>
                     </button>
+
+                    {/* 历史/实时切换 */}
+                    <div className="flex min-w-0 items-center gap-1 rounded-lg bg-muted/60 p-1">
+                        <button
+                            type="button"
+                            aria-pressed={viewMode === 'history'}
+                            onClick={() => setViewMode('history')}
+                            className={cn(
+                                'inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-sm font-medium transition-colors',
+                                viewMode === 'history'
+                                    ? 'bg-background text-foreground shadow-sm'
+                                    : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'
+                            )}
+                        >
+                            <ScrollText className="size-3.5" />
+                            <span>历史日志</span>
+                        </button>
+                        <button
+                            type="button"
+                            aria-pressed={isLiveMode}
+                            onClick={() => {
+                                setViewMode('live');
+                                setCurrentPage(1);
+                            }}
+                            className={cn(
+                                'inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-sm font-medium transition-colors',
+                                isLiveMode
+                                    ? 'bg-background text-foreground shadow-sm'
+                                    : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'
+                            )}
+                        >
+                            <span className="relative flex size-2">
+                                {isLiveMode && isConnected && (
+                                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                                )}
+                                <span
+                                    className={cn(
+                                        'relative inline-flex size-2 rounded-full',
+                                        isLiveMode
+                                            ? isConnected
+                                                ? 'bg-emerald-500'
+                                                : streamError
+                                                    ? 'bg-destructive'
+                                                    : 'bg-amber-500'
+                                            : 'bg-muted-foreground/50'
+                                    )}
+                                />
+                            </span>
+                            <span>实时调用</span>
+                        </button>
+                    </div>
 
                     {/* 重置按钮 */}
                     {hasActiveFilter && (
