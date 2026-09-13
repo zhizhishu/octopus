@@ -343,7 +343,7 @@ function LiveActivityPanel({
                     -webkit-tap-highlight-color: transparent;
                 }
                 .live-activity-panel details[open] > summary {
-                    background-color: hsl(var(--muted) / 0.5);
+                    background-color: color-mix(in srgb, var(--muted) 50%, transparent);
                 }
                 .live-activity-panel details > .details-content {
                     animation: slideDown 250ms cubic-bezier(0.4, 0, 0.2, 1);
@@ -363,6 +363,19 @@ function LiveActivityPanel({
                 @media (max-width: 640px) {
                     .live-activity-panel details > .details-content {
                         font-size: 0.8125rem;
+                    }
+                }
+                @media (prefers-reduced-motion: reduce) {
+                    .live-activity-panel details > .details-content {
+                        animation: none;
+                    }
+                    .live-activity-panel details > summary,
+                    .live-activity-panel details > summary :global(svg) {
+                        transition: none;
+                    }
+                    .live-activity-panel details > summary:active {
+                        transform: none;
+                        scale: none;
                     }
                 }
             `}</style>
@@ -1005,7 +1018,7 @@ export function Log() {
             )}
             <div className="flex flex-none flex-col gap-2 rounded-lg border border-border bg-card px-3 py-2">
 
-                {/* Row 2: 搜索框 + 下拉框 + 高级筛选 */}
+                {/* Row 1: 搜索框 + 下拉框 + 高级筛选 */}
                 <div className="flex min-w-0 flex-wrap items-center gap-2">
                     <label className="relative flex min-w-0 items-center">
                         <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -1094,7 +1107,7 @@ export function Log() {
                     )}
                 </div>
 
-                {/* Row 3: 日期快捷键 + 状态筛选pills + checkboxes + 操作按钮 */}
+                {/* Row 2: 日期快捷键 + 状态筛选pills + 只看重试/隐藏测试探针 checkboxes + 历史实时切换 + 操作按钮 */}
                 <div className="flex min-w-0 flex-wrap items-center gap-2">
                     {/* 左侧：日期快捷键pills */}
                     <div className="flex min-w-0 flex-wrap items-center gap-1 rounded-lg bg-muted/60 p-1">

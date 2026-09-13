@@ -212,6 +212,9 @@ func (i *ChatInbound) TransformResponse(ctx context.Context, response *model.Int
 
 func (i *ChatInbound) TransformStream(ctx context.Context, stream *model.InternalLLMResponse) ([]byte, error) {
 	if stream.Object == "[DONE]" {
+		if i != nil && i.thinkingToContent {
+			return i.syntheticDoneClosers()
+		}
 		return []byte("data: [DONE]\n\n"), nil
 	}
 
@@ -524,9 +527,9 @@ func applyThinkingToContentNonStream(resp *model.InternalLLMResponse, enabled bo
 	return &out
 }
 
-// applyThinkingToContentStream rewrites a stream chunk's reasoning delta into
-// content deltas with <think> open/close tags (new-api sendStreamData).
-// Mutates a shallow copy of the chunk; the original streamChunks entry is untouched.
+// applyThinkingToContentStream folds reasoning before content, closing each block
+// on content or finish and reopening for late reasoning. Only the wire copy changes;
+// aggregation retains the original content, reasoning, tools and usage.
 func applyThinkingToContentStream(chunk *model.InternalLLMResponse, inbound *ChatInbound) *model.InternalLLMResponse {
 	if chunk == nil || inbound == nil || !inbound.thinkingToContent || len(chunk.Choices) == 0 {
 		return chunk
@@ -543,80 +546,119 @@ func applyThinkingToContentStream(chunk *model.InternalLLMResponse, inbound *Cha
 	copy(out.Choices, chunk.Choices)
 
 	for i := range out.Choices {
-		delta := out.Choices[i].Delta
-		if delta == nil {
-			continue
-		}
-		idx := out.Choices[i].Index
-		reasoning := delta.GetReasoningContent()
-		contentText := ""
-		if delta.Content.Content != nil {
-			contentText = *delta.Content.Content
-		}
-		hasContent := strings.TrimSpace(contentText) != ""
-		hasReasoning := reasoning != ""
-		hasFinishReason := out.Choices[i].FinishReason != nil && *out.Choices[i].FinishReason != ""
+		choice := &out.Choices[i]
+		idx := choice.Index
+		delta := choice.Delta
 
-		if hasReasoning && !inbound.streamThinkingOpen[idx] {
-			// First thinking chunk: open <think> and put reasoning into content.
-			copied := *delta
-			opened := "<think>\n" + reasoning
-			copied.Content = model.MessageContent{Content: &opened}
-			copied.ReasoningContent = nil
-			copied.Reasoning = nil
-			out.Choices[i].Delta = &copied
-			inbound.streamThinkingOpen[idx] = true
-			continue
+		hasFinish := choice.FinishReason != nil && *choice.FinishReason != ""
+		var text string
+		hasText := false
+		hasMultipart := false
+		var reasoning string
+		hasReasoning := false
+		if delta != nil {
+			if delta.Content.Content != nil {
+				text = *delta.Content.Content
+				hasText = text != ""
+			}
+			hasMultipart = len(delta.Content.MultipleContent) > 0
+			reasoning = delta.GetReasoningContent()
+			hasReasoning = reasoning != ""
 		}
 
-		if hasContent && inbound.streamThinkingOpen[idx] && !inbound.streamThinkingClosed[idx] {
-			// Transition: close </think> then emit real content on a subsequent
-			// chunk would require multi-event emission; new-api sends a separate
-			// event. We prefix the content chunk with the close tag in one delta.
-			copied := *delta
-			closed := "\n</think>\n" + contentText
-			copied.Content = model.MessageContent{Content: &closed}
-			copied.ReasoningContent = nil
-			copied.Reasoning = nil
-			out.Choices[i].Delta = &copied
-			inbound.streamThinkingClosed[idx] = true
+		openUnclosed := inbound.streamThinkingOpen[idx] && !inbound.streamThinkingClosed[idx]
+		if !hasReasoning && !(openUnclosed && (hasText || hasMultipart || hasFinish)) {
 			continue
 		}
 
+		// Accumulate the opening marker + full reasoning first.
+		var prefix strings.Builder
 		if hasReasoning {
-			// Subsequent thinking: move into content, clear reasoning fields.
-			copied := *delta
-			copied.Content = model.MessageContent{Content: &reasoning}
-			copied.ReasoningContent = nil
-			copied.Reasoning = nil
-			out.Choices[i].Delta = &copied
-			continue
+			if !inbound.streamThinkingOpen[idx] || inbound.streamThinkingClosed[idx] {
+				prefix.WriteString("<think>\n")
+				inbound.streamThinkingOpen[idx] = true
+				inbound.streamThinkingClosed[idx] = false
+			}
+			prefix.WriteString(reasoning)
 		}
 
-		// D2 fix: Close unclosed <think> tag at finish_reason if no content follows.
-		// DeepSeek may end reasoning directly with tool_calls or stop, leaving the
-		// </think> tag unsent. Emit a synthetic close delta before the finish chunk
-		// so thinking and subsequent text content stay properly separated.
-		if hasFinishReason && inbound.streamThinkingOpen[idx] && !inbound.streamThinkingClosed[idx] {
-			copied := *delta
-			closeTag := "\n</think>\n"
-			copied.Content = model.MessageContent{Content: &closeTag}
-			copied.ReasoningContent = nil
-			copied.Reasoning = nil
-			out.Choices[i].Delta = &copied
+		// Decide the close AFTER opening so reasoning+finish/content works.
+		if inbound.streamThinkingOpen[idx] && !inbound.streamThinkingClosed[idx] &&
+			(hasText || hasMultipart || hasFinish) {
+			prefix.WriteString("\n</think>\n")
 			inbound.streamThinkingClosed[idx] = true
-			continue
 		}
 
-		// No reasoning/content transition: leave as-is (but strip empty reasoning noise).
-		if !hasReasoning && !hasContent {
-			copied := *delta
-			copied.ReasoningContent = nil
-			copied.Reasoning = nil
-			out.Choices[i].Delta = &copied
+		// Assemble the folded wire content and clear only the reasoning aliases.
+		var rewritten model.Message
+		if delta != nil {
+			rewritten = *delta
 		}
+		rewritten.Content = foldedWireContent(prefix.String(), text, delta)
+		rewritten.ReasoningContent = nil
+		rewritten.Reasoning = nil
+		choice.Delta = &rewritten
 	}
 	return &out
+}
+
+// foldedWireContent preserves multipart parts: their JSON representation takes
+// precedence over scalar content, so the prefix must be a separate text part.
+func foldedWireContent(prefix, originalText string, delta *model.Message) model.MessageContent {
+	hasParts := delta != nil && len(delta.Content.MultipleContent) > 0
+	combined := prefix
+	if originalText != "" {
+		combined += originalText
+	}
+	if !hasParts {
+		return model.MessageContent{Content: &combined}
+	}
+	parts := make([]model.MessageContentPart, 0, len(delta.Content.MultipleContent)+1)
+	if combined != "" {
+		parts = append(parts, model.MessageContentPart{Type: "text", Text: &combined})
+	}
+	parts = append(parts, delta.Content.MultipleContent...)
+	return model.MessageContent{MultipleContent: parts}
+}
+
+// syntheticDoneClosers closes remaining choices before DONE without adding a
+// finish reason, duplicating usage, or storing synthetic text in aggregation.
+func (i *ChatInbound) syntheticDoneClosers() ([]byte, error) {
+	indices := make([]int, 0, len(i.streamThinkingOpen))
+	for idx, open := range i.streamThinkingOpen {
+		if open && !i.streamThinkingClosed[idx] {
+			indices = append(indices, idx)
+		}
+	}
+	if len(indices) == 0 {
+		return []byte("data: [DONE]\n\n"), nil
+	}
+	sort.Ints(indices)
+
+	closing := model.InternalLLMResponse{Object: "chat.completion.chunk"}
+	if n := len(i.streamChunks); n > 0 {
+		last := i.streamChunks[n-1]
+		closing.ID = last.ID
+		closing.Created = last.Created
+		closing.Model = last.Model
+		closing.SystemFingerprint = last.SystemFingerprint
+		closing.ServiceTier = last.ServiceTier
+	}
+	closeTag := "\n</think>\n"
+	for _, idx := range indices {
+		closing.Choices = append(closing.Choices, model.Choice{
+			Index: idx,
+			Delta: &model.Message{Content: model.MessageContent{Content: &closeTag}},
+		})
+	}
+	body, err := json.Marshal(&closing)
+	if err != nil {
+		return nil, err
+	}
+	for _, idx := range indices {
+		i.streamThinkingClosed[idx] = true
+	}
+	return []byte("data: " + string(body) + "\n\ndata: [DONE]\n\n"), nil
 }
 
 func messageHasVisibleText(msg *model.Message) bool {
