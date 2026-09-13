@@ -1190,6 +1190,7 @@ export function Log() {
                         <span>{t('list.retriedOnly')}</span>
                     </button>
 
+                    <div className="inline-flex max-w-full shrink-0 items-center gap-2">
                     <button
                         type="button"
                         onClick={() => { 
@@ -1261,6 +1262,7 @@ export function Log() {
                             </span>
                             <span>实时调用</span>
                         </button>
+                    </div>
                     </div>
 
                     {/* 重置按钮 */}
