@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useDeferredValue, useEffect, useMemo, useState, useTransition } from 'react';
+import { useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
 import { getRelayLogSeverity, type RelayLog, type RelayLogSeverity, type RequestState, useExportLogs, useLogSeverityCounts, useLogs, useRequestStateStream } from '@/api/endpoints/log';
 import { LogCard, useSensitiveStore } from './Item';
 import { AlertCircle, AlertTriangle, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Circle, Download, Eye, EyeOff, Loader2, RefreshCw, RotateCcw, RotateCw, ScrollText, Search, SlidersHorizontal, WifiOff, X } from 'lucide-react';
@@ -646,7 +646,6 @@ export function Log() {
     const [retriedOnly, setRetriedOnly] = useState(false);
     const [hideModelTest, setHideModelTest] = useState(false);
     const [searchKeyword, setSearchKeyword] = useState('');
-    const [isPending, startTransition] = useTransition();
     const deferredSearch = useDeferredValue(searchKeyword.trim());
     const isLiveMode = viewMode === 'live';
     const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -694,7 +693,7 @@ export function Log() {
 
     // 全量严重程度计数（成功/警告/错误 + 总数）。与列表查询共享过滤参数，不含
     // page/page_size/severity，所以徽章数字与分页页数都是"全量"、不受当前页限制。
-    const { data: severityCounts } = useLogSeverityCounts({
+    const { data: severityCounts, isError: countsError, refetch: refreshCounts } = useLogSeverityCounts({
         userID: selectedUserID,
         apiKeyID: effectiveSelectedAPIKeyID,
         endpoint: selectedEndpoint || undefined,
@@ -708,10 +707,10 @@ export function Log() {
     });
     const LOG_PAGE_SIZE = 20;
     // 当前生效筛选下的总条数：全部→total，否则取该严重程度的计数。分页页数据此算。
-    const activeTotal = severityFilter === 'all'
-        ? (severityCounts?.total ?? 0)
-        : (severityCounts?.[severityFilter] ?? 0);
-    const totalPages = Math.max(1, Math.ceil(activeTotal / LOG_PAGE_SIZE));
+    const activeTotal = severityCounts && !countsError
+        ? (severityFilter === 'all' ? severityCounts.total : severityCounts[severityFilter])
+        : undefined;
+    const totalPages = activeTotal === undefined ? undefined : Math.max(1, Math.ceil(activeTotal / LOG_PAGE_SIZE));
 
     const {
         logs,
@@ -719,6 +718,8 @@ export function Log() {
         isLoading,
         isLoadingMore,
         isRefreshing,
+        isFetching,
+        isQueryError,
         isConnected,
         error: streamError,
         loadMore,
@@ -871,9 +872,9 @@ export function Log() {
 
     // 徽章数字：全部→total，其余取对应严重程度的全量计数（后端返回，非当前页）。
     const badgeCount = useCallback((id: LogSeverityFilter): number | undefined => {
-        if (!severityCounts) return undefined;
+        if (!severityCounts || countsError) return undefined;
         return id === 'all' ? severityCounts.total : severityCounts[id];
-    }, [severityCounts]);
+    }, [countsError, severityCounts]);
 
     // 客户端轻量过滤：服务端已处理 severity/retried/hideModelTest，这里只需处理
     // selectedEndpoint（服务端只粗过滤 endpoint 字段，前端需细化 endpoint_family 逻辑）
@@ -897,8 +898,8 @@ export function Log() {
 
     // 空状态智能提示的依据：列表真空时，查一下「不限日期」下总共有多少历史，
     // 好把「不是坏了、是被日期/筛选挡住了」说破。仅在真的空时才发这个请求。
-    const listIsEmpty = !isLoading && filteredLogs.length === 0;
-    const { data: allTimeCounts } = useLogSeverityCounts({
+    const listIsEmpty = !isLoading && !isQueryError && filteredLogs.length === 0;
+    const { data: allTimeCounts, isError: allTimeCountsError } = useLogSeverityCounts({
         userID: selectedUserID,
         apiKeyID: effectiveSelectedAPIKeyID,
         endpoint: selectedEndpoint || undefined,
@@ -916,7 +917,8 @@ export function Log() {
     }, [canLoadMore, loadMore]);
     const handleRefresh = useCallback(() => {
         void refresh();
-    }, [refresh]);
+        void refreshCounts();
+    }, [refresh, refreshCounts]);
     const handleExport = useCallback(() => {
         exportLogs.mutate(
             {
@@ -950,21 +952,24 @@ export function Log() {
                 </div>
             );
         }
+        if (isQueryError) return null;
         if (filteredLogs.length === 0) {
-            const historyTotal = allTimeCounts?.total ?? 0;
+            const historyTotal = allTimeCountsError ? undefined : allTimeCounts?.total;
             // 当前范围空、但不限日期时其实有货 → 说破「被日期/筛选挡住了」并给一键放开。
-            const hiddenByFilter = historyTotal > 0;
+            const hiddenByFilter = historyTotal !== undefined && historyTotal > 0;
             return (
                 <div className="flex flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-border bg-card/50 px-4 py-10 text-center">
                     <ScrollText className="size-8 text-muted-foreground/40" />
                     <div className="space-y-1">
                         <p className="text-sm font-medium text-foreground">
-                            {hiddenByFilter ? '当前筛选条件下暂无日志' : '还没有任何日志'}
+                            当前筛选条件下暂无日志
                         </p>
                         <p className="text-xs text-muted-foreground">
                             {hiddenByFilter
-                                ? `不是坏了 —— 共有 ${historyTotal.toLocaleString()} 条记录，只是不在当前范围。`
-                                : '有请求经过时会自动出现在这里。'}
+                                ? `共有 ${historyTotal.toLocaleString()} 条记录，不在当前筛选范围。`
+                                : historyTotal === undefined
+                                    ? '历史总数尚未取得，可重试或调整筛选。'
+                                    : '当前筛选条件下没有匹配记录，可调整筛选。'}
                         </p>
                     </div>
                     {hiddenByFilter && (
@@ -990,7 +995,7 @@ export function Log() {
         }
         // 始终分页：导航交给分页控件；实时模式下也不显示"已全部加载"（还有新日志会来）。
         return null;
-    }, [allTimeCounts?.total, filteredLogs.length, hasActiveFilter, hasMore, handleResetFilters, isLoading, isLoadingMore, loadMore, t]);
+    }, [allTimeCounts?.total, allTimeCountsError, filteredLogs.length, hasActiveFilter, hasMore, handleResetFilters, isLoading, isLoadingMore, isQueryError, loadMore, t]);
 
     return (
         // Bottom clearance for the fixed mobile nav lives inside VirtualizedGrid's
@@ -1142,20 +1147,17 @@ export function Log() {
                                 <button
                                     key={filter.id}
                                     type="button"
-                                    onClick={() => { 
-                                        startTransition(() => {
-                                            setSeverityFilter(filter.id); 
-                                            setCurrentPage(1);
-                                        });
+                                    aria-pressed={active}
+                                    onClick={() => {
+                                        setSeverityFilter(filter.id);
+                                        setCurrentPage(1);
                                     }}
                                     className={cn(
                                         'inline-flex h-8 min-w-0 items-center gap-1.5 rounded-lg px-2 text-xs font-medium transition-colors',
                                         active
                                             ? 'bg-background text-foreground shadow-sm'
-                                            : 'text-muted-foreground hover:bg-background/60 hover:text-foreground',
-                                        isPending && 'opacity-60 cursor-wait'
+                                            : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'
                                     )}
-                                    disabled={isPending}
                                 >
                                     <Icon className={cn('size-3.5 shrink-0', filter.className)} />
                                     <span>{t(`list.filters.${filter.id}`)}</span>
@@ -1170,21 +1172,18 @@ export function Log() {
                     {/* Checkboxes：只看重试 + 隐藏测试探针 + 历史/实时 */}
                     <button
                         type="button"
-                        onClick={() => { 
-                            startTransition(() => {
-                                setRetriedOnly((v) => !v); 
-                                setCurrentPage(1);
-                            });
+                        aria-pressed={retriedOnly}
+                        onClick={() => {
+                            setRetriedOnly((v) => !v);
+                            setCurrentPage(1);
                         }}
                         title="只看发生过重试 / 换渠道的请求"
                         className={cn(
                             'inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition-colors',
                             retriedOnly
                                 ? 'border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-300'
-                                : 'border-border bg-background text-muted-foreground hover:text-foreground',
-                            isPending && 'opacity-60 cursor-wait'
+                                : 'border-border bg-background text-muted-foreground hover:text-foreground'
                         )}
-                        disabled={isPending}
                     >
                         <RotateCw className="size-3.5" />
                         <span>{t('list.retriedOnly')}</span>
@@ -1193,37 +1192,34 @@ export function Log() {
                     <div className="inline-flex max-w-full shrink-0 items-center gap-2">
                     <button
                         type="button"
-                        onClick={() => { 
-                            startTransition(() => {
-                                setHideModelTest((v) => !v); 
-                                setCurrentPage(1);
-                            });
+                        aria-pressed={hideModelTest}
+                        onClick={() => {
+                            setHideModelTest((v) => !v);
+                            setCurrentPage(1);
                         }}
                         title="隐藏渠道测试探针（model_test），只看真实业务流量"
                         className={cn(
                             'inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition-colors',
                             hideModelTest
                                 ? 'border-primary/50 bg-primary/10 text-primary'
-                                : 'border-border bg-background text-muted-foreground hover:text-foreground',
-                            isPending && 'opacity-60 cursor-wait'
+                                : 'border-border bg-background text-muted-foreground hover:text-foreground'
                         )}
-                        disabled={isPending}
                     >
                         <EyeOff className="size-3.5" />
                         <span>隐藏测试探针</span>
                     </button>
 
                     {/* 历史/实时切换 */}
-                    <div className="flex min-w-0 items-center gap-1 rounded-lg bg-muted/60 p-1">
+                    <div className="flex min-w-0 items-center gap-2">
                         <button
                             type="button"
                             aria-pressed={viewMode === 'history'}
                             onClick={() => setViewMode('history')}
                             className={cn(
-                                'inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-sm font-medium transition-colors',
+                                'inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium shadow-sm transition-colors',
                                 viewMode === 'history'
-                                    ? 'bg-background text-foreground shadow-sm'
-                                    : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'
+                                    ? 'border-primary/50 bg-primary/10 text-primary'
+                                    : 'border-border bg-background text-muted-foreground hover:text-foreground'
                             )}
                         >
                             <ScrollText className="size-3.5" />
@@ -1237,10 +1233,10 @@ export function Log() {
                                 setCurrentPage(1);
                             }}
                             className={cn(
-                                'inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-sm font-medium transition-colors',
+                                'inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium shadow-sm transition-colors',
                                 isLiveMode
-                                    ? 'bg-background text-foreground shadow-sm'
-                                    : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'
+                                    ? 'border-primary/50 bg-primary/10 text-primary'
+                                    : 'border-border bg-background text-muted-foreground hover:text-foreground'
                             )}
                         >
                             <span className="relative flex size-2">
@@ -1385,12 +1381,15 @@ export function Log() {
                     </div>
                 )}
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-muted-foreground">
-                    {severityCounts !== undefined
+                    {activeTotal !== undefined
                         ? <span>共 {activeTotal.toLocaleString()} 条{severityFilter !== 'all' ? `（${t(`list.filters.${severityFilter}`)}）` : ''}</span>
-                        : <span>{t('list.loadedCount', { count: logs.length })}</span>}
+                        : <span>{countsError ? '总数统计暂不可用' : '总数计算中…'}</span>}
+                    <span role="status" aria-live="polite" className="min-w-14">
+                        {isLoading ? '加载中…' : isFetching ? '更新中…' : ''}
+                    </span>
                     <span>时间按浏览器本地时区显示</span>
                     {isLiveMode && currentPage === 1 && <span className="text-emerald-700 dark:text-emerald-300">实时插入中</span>}
-                    {totalPages > 1 && (
+                    {(currentPage > 1 || (totalPages !== undefined && totalPages > 1)) && (
                         <div className="hidden items-center gap-1 sm:flex">
                             <Button
                                 variant="ghost"
@@ -1402,12 +1401,12 @@ export function Log() {
                             >
                                 <ChevronLeft className="size-3" />
                             </Button>
-                            <span className="tabular-nums">第 {currentPage} / {totalPages} 页</span>
+                            <span className="tabular-nums">第 {currentPage} / {totalPages ?? '—'} 页</span>
                             <Button
                                 variant="ghost"
                                 size="icon"
-                                onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
-                                disabled={currentPage >= totalPages || isLoading}
+                                onClick={() => totalPages !== undefined && setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                                disabled={totalPages === undefined || currentPage >= totalPages || isLoading}
                                 className="h-6 w-6 rounded-md"
                                 aria-label="下一页"
                             >
@@ -1419,12 +1418,13 @@ export function Log() {
                                     type="number"
                                     min={1}
                                     max={totalPages}
+                                    disabled={totalPages === undefined}
                                     value={pageJumpInput}
                                     onChange={(e) => setPageJumpInput(e.target.value)}
                                     onKeyDown={(e) => {
                                         if (e.key !== 'Enter') return;
                                         const p = parseInt(pageJumpInput, 10);
-                                        if (Number.isFinite(p) && p >= 1 && p <= totalPages) {
+                                        if (totalPages !== undefined && Number.isFinite(p) && p >= 1 && p <= totalPages) {
                                             setCurrentPage(p);
                                         }
                                         setPageJumpInput('');
@@ -1438,7 +1438,7 @@ export function Log() {
                         </div>
                     )}
                 </div>
-                {totalPages > 1 && (
+                {(currentPage > 1 || (totalPages !== undefined && totalPages > 1)) && (
                     <div className="flex items-center gap-2 border-t border-border/60 pt-2 sm:hidden">
                         <Button
                             variant="outline"
@@ -1450,12 +1450,12 @@ export function Log() {
                             <ChevronLeft className="size-4" />
                             <span>上一页</span>
                         </Button>
-                        <span className="shrink-0 text-xs tabular-nums text-muted-foreground">第 {currentPage} / {totalPages} 页</span>
+                        <span className="shrink-0 text-xs tabular-nums text-muted-foreground">第 {currentPage} / {totalPages ?? '—'} 页</span>
                         <Button
                             variant="outline"
                             size="sm"
-                            onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
-                            disabled={currentPage >= totalPages || isLoading}
+                            onClick={() => totalPages !== undefined && setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                            disabled={totalPages === undefined || currentPage >= totalPages || isLoading}
                             className="h-9 flex-1 rounded-lg"
                         >
                             <span>下一页</span>
@@ -1464,6 +1464,17 @@ export function Log() {
                     </div>
                 )}
             </div>
+            {(isQueryError || countsError) && (
+                <div role="alert" className="flex flex-none flex-wrap items-center justify-between gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm">
+                    <span>{isQueryError
+                        ? logs.length > 0 ? '日志更新失败，当前显示已缓存的记录。' : '日志加载失败，请重试。'
+                        : '日志总数统计失败，列表仍可查看。'}</span>
+                    <Button variant="outline" size="sm" onClick={handleRefresh} disabled={isFetching}>
+                        <RefreshCw className={cn('size-3.5', isFetching && 'animate-spin')} />
+                        重试
+                    </Button>
+                </div>
+            )}
             {/* 实时模式下的活跃动态面板 (请求中 / 救援中) */}
             <LiveActivityPanel
                 isAdmin={isAdmin}
@@ -1472,7 +1483,7 @@ export function Log() {
                 requestStateConnected={requestStateConnected}
                 historyLogIDs={historyLogIDs}
             />
-            <div className="min-h-0 flex-1">
+            <div className="min-h-0 flex-1" aria-busy={isFetching}>
                 <TooltipProvider>
                 <VirtualizedGrid
                     items={filteredLogs}
