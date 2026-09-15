@@ -259,7 +259,7 @@ export function SettingLog() {
                 <div className="flex items-center justify-between gap-4">
                     <div className="flex flex-col gap-1">
                         <span className="text-sm font-medium">上游错误自动救援</span>
-                        <span className="text-xs text-muted-foreground">开启后，流式请求在所有自动渠道失败时会保持客户端连接，机器按画布顺序自动切换渠道重试，无需人工干预。</span>
+                        <span className="text-xs text-muted-foreground">默认开启。流式请求在所有自动渠道失败后会保持连接并自动换渠道重试；关闭后普通渠道立刻把错误返回客户端。</span>
                     </div>
                     <Switch
                         checked={interventionEnabled}

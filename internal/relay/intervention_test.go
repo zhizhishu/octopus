@@ -221,3 +221,27 @@ func TestRescueContinuationStillAllowedForTransientError(t *testing.T) {
 		t.Fatalf("later transient 503 must remain eligible for continued rescue")
 	}
 }
+
+func TestRelayStopAndRescueGateOnClientAbort(t *testing.T) {
+	parent, cancel := context.WithCancel(context.Background())
+	cancel()
+	current, currentCancel := context.WithCancel(context.Background())
+	defer currentCancel()
+	clientGone, stopErr := relayStop(parent, current, nil)
+	if !clientGone || stopErr == nil {
+		t.Fatalf("client abort should report clientGone, got gone=%v err=%v", clientGone, stopErr)
+	}
+}
+
+func TestRelayStopRescueContextDoesNotLookLikeClientAbort(t *testing.T) {
+	parent := context.Background()
+	rescueCtx, cancel := context.WithCancel(parent)
+	cancel()
+	clientGone, stopErr := relayStop(parent, rescueCtx, rescueCtx)
+	if clientGone {
+		t.Fatal("rescue abort must not be reported as clientGone")
+	}
+	if stopErr == nil {
+		t.Fatal("rescue abort should return stopErr")
+	}
+}

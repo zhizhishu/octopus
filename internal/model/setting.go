@@ -301,7 +301,7 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeySessionKeepTimeDefault, Value: "0"},                                             // 默认0=不启用全局粘性(向后兼容); 管理员设为如3600才全局开, 分组级 SessionKeepTime 仍优先
 		{Key: SettingKeyFirstTokenTimeOutDefault, Value: "0"},                                           // 默认0=不启用全局默认(向后兼容); 分组级 FirstTokenTimeOut 仍优先
 		{Key: SettingKeyFirstByteKeepaliveDelaySeconds, Value: defaultFirstByteKeepaliveDelaySeconds()}, // 默认20=开启: 上游首字节>20s才向下游注入SSE心跳(防前置反代/客户端60s空闲掐断); 0=关闭
-		{Key: SettingKeyRelayInterventionEnabled, Value: "false"},                                       // 默认关: 开启后上游全失败的请求会挂起等人工在日志页选渠道重试, 而不是把错误返回给客户端
+		{Key: SettingKeyRelayInterventionEnabled, Value: "true"},                                        // 默认开: 流式请求在普通渠道/回退用尽后自动救援; 关=普通渠道立刻回错(无熔断渠道仍可按预算自救)
 		{Key: SettingKeyRelayInterventionTimeoutSec, Value: "1800"},                                     // 人工接管等待上限(秒), 超时后原错误照常返回客户端
 		{Key: SettingKeyRelayNoBreakerRetryBudgetSec, Value: "300"},                                     // 无熔断渠道自动猛打预算(秒): 按画布既定顺序反复重试; 最大600, 0=关闭
 		{Key: SettingKeyRouteModeOverride, Value: ""},                                                   // 默认空=跟随分组各自模式(向后兼容); 设为 spread/fill_first 则强制覆盖所有分组

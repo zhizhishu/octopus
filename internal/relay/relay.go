@@ -187,16 +187,13 @@ runIterator:
 	req.iter = iter
 attemptChannels:
 	for iter.Next() {
-		select {
-		case <-c.Request.Context().Done():
-			if originalRequest.Context().Err() != nil {
-				log.Infof("client request context canceled, stopping retry")
-				metrics.Save(originalRequest.Context(), false, originalRequest.Context().Err(), append(allAttempts, iter.Attempts()...))
-				return
-			}
-			lastErr = rescueStopError(interventionCtx, originalRequest.Context())
+		if clientGone, stopErr := relayStop(originalRequest.Context(), c.Request.Context(), interventionCtx); clientGone {
+			log.Infof("client request context canceled, stopping retry")
+			metrics.Save(originalRequest.Context(), false, originalRequest.Context().Err(), append(allAttempts, iter.Attempts()...))
+			return
+		} else if stopErr != nil {
+			lastErr = stopErr
 			break attemptChannels
-		default:
 		}
 
 		item := iter.Item()
@@ -370,6 +367,14 @@ attemptChannels:
 		}
 
 		for keyIndex, usedKey := range availableKeys {
+			if clientGone, stopErr := relayStop(originalRequest.Context(), c.Request.Context(), interventionCtx); clientGone {
+				log.Infof("client request context canceled, stopping retry")
+				metrics.Save(originalRequest.Context(), false, originalRequest.Context().Err(), append(allAttempts, iter.Attempts()...))
+				return
+			} else if stopErr != nil {
+				lastErr = stopErr
+				break attemptChannels
+			}
 			// Reset the route model before each key attempt: applyModelMapping mutates
 			// internalRequest.Model to the mapped upstream name during the prior attempt,
 			// so without this a second key would see the already-mapped name, miss the
@@ -433,6 +438,14 @@ attemptChannels:
 				requestState.finishRound("unknown error", attemptLatency)
 			}
 			for transientTry := 0; !result.Success && !result.Written && result.Retryable && transientTry < maxTransientStreamRetries; transientTry++ {
+				if clientGone, stopErr := relayStop(originalRequest.Context(), c.Request.Context(), interventionCtx); clientGone {
+					log.Infof("client request context canceled, stopping retry")
+					metrics.Save(originalRequest.Context(), false, originalRequest.Context().Err(), append(allAttempts, iter.Attempts()...))
+					return
+				} else if stopErr != nil {
+					lastErr = stopErr
+					break attemptChannels
+				}
 				log.Warnf("retrying transient empty upstream stream on channel %s key %d (try %d/%d): %v",
 					channel.Name, usedKey.ID, transientTry+1, maxTransientStreamRetries, result.Err)
 				requestState.startRound(channel.Name, item.ModelName)
@@ -537,7 +550,8 @@ attemptChannels:
 	// whose error could never be rescued. Continue ONLY while the current final error is
 	// still eligible AND the rescue budget/context is still alive.
 	rescueBudgetAlive := interventionCtx == nil || interventionCtx.Err() == nil
-	if rescueBudgetAlive && (noBreakerAutoRescue || manualIntervention ||
+	clientAlive := originalRequest.Context().Err() == nil
+	if clientAlive && rescueBudgetAlive && (noBreakerAutoRescue || manualIntervention ||
 		(interventionRegistered && isRescueableHeldRequest(req, contextWindowErr, finalErr))) {
 		if noBreakerRescueStartedAt.IsZero() && noBreakerAutoRescue {
 			noBreakerRescueStartedAt = time.Now()

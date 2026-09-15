@@ -408,7 +408,10 @@ function LiveActivityPanel({
                                     </span>
                                 </summary>
                                 <div className="details-content space-y-2 px-3 pb-2 pt-1 text-xs sm:px-2">
-                                    <p className="text-muted-foreground">{intervention.endpoint} · {intervention.id}</p>
+                                    <p className="text-muted-foreground">{intervention.endpoint} · {intervention.id}{intervention.status ? ` · ${intervention.status}` : ''}</p>
+                                    {intervention.next_retry_at && (
+                                        <p className="tabular-nums text-muted-foreground">下次重试 {new Date(intervention.next_retry_at).toLocaleTimeString()}</p>
+                                    )}
                                     {intervention.last_error && (
                                         <p className="break-words text-destructive">{intervention.last_error}</p>
                                     )}

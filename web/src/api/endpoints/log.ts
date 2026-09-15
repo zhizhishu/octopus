@@ -797,8 +797,13 @@ export function useRequestStateStream(enabled = true) {
         }
         let cancelled = false;
         let reconnectAttempt = 0;
+        let eventSeq = 0;
+        let appliedSnapshotSeq = 0;
+        const lastEventSeqByID = new Map<number, number>();
 
         const mergeState = (state: RequestState) => {
+            const seq = ++eventSeq;
+            lastEventSeqByID.set(state.id, seq);
             setStates((prev) => {
                 const index = prev.findIndex((item) => item.id === state.id);
                 if (index < 0) return [state, ...prev];
@@ -808,9 +813,17 @@ export function useRequestStateStream(enabled = true) {
             });
         };
 
-        const mergeSnapshot = (snapshot: RequestState[]) => {
+        const mergeSnapshot = (snapshot: RequestState[], startedSeq: number) => {
+            if (startedSeq < appliedSnapshotSeq) return;
+            appliedSnapshotSeq = startedSeq;
+            const liveIDs = new Set(snapshot.map((state) => state.id));
             setStates((prev) => {
-                const merged = new Map(prev.map((state) => [state.id, state]));
+                const merged = new Map<number, RequestState>();
+                for (const state of prev) {
+                    const seenAfterStart = (lastEventSeqByID.get(state.id) ?? 0) > startedSeq;
+                    if (state.status === 'running' && !liveIDs.has(state.id) && !seenAfterStart) continue;
+                    merged.set(state.id, state);
+                }
                 for (const state of snapshot) {
                     const current = merged.get(state.id);
                     merged.set(state.id, current ? mergeRequestState(current, state) : state);
@@ -820,8 +833,9 @@ export function useRequestStateStream(enabled = true) {
         };
 
         const refreshSnapshot = async () => {
+            const startedSeq = eventSeq;
             const snapshot = await apiClient.get<RequestState[]>('/api/v1/log/state-snapshot');
-            if (!cancelled) mergeSnapshot(snapshot);
+            if (!cancelled) mergeSnapshot(snapshot, startedSeq);
         };
 
         const connect = async () => {
