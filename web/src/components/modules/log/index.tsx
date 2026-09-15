@@ -1024,19 +1024,70 @@ export function Log() {
                     </Button>
                 </div>
             )}
-            <div className="flex flex-none flex-col gap-2 rounded-lg border border-border bg-card px-3 py-2">
+            <div className="flex flex-none flex-col gap-3 rounded-2xl border border-border bg-card p-3.5 sm:px-4 sm:py-3.5 shadow-sm">
 
-                {/* Row 1: 搜索框 + 下拉框 + 高级筛选 */}
-                <div className="flex min-w-0 flex-wrap items-center gap-2">
-                    <label className="relative flex min-w-0 items-center">
+                {/* Row 1: 历史日志 / 实时调用（V7：38px 实体按钮，独立成行） */}
+                <div className="flex min-w-0 flex-wrap items-center gap-2.5">
+                    <button
+                        type="button"
+                        aria-pressed={viewMode === 'history'}
+                        onClick={() => setViewMode('history')}
+                        className={cn(
+                            'inline-flex h-[38px] items-center gap-1.5 rounded-[10px] border px-4 text-[13px] font-semibold whitespace-nowrap transition-colors',
+                            viewMode === 'history'
+                                ? 'border-[#d8c49e] bg-[#E8D7B4] text-[#433D35] dark:border-[#d8c49e]/40 dark:bg-[#E8D7B4]/25 dark:text-[#E8D7B4]'
+                                : 'border-border bg-[#fbfaf8] text-muted-foreground hover:bg-[#f5f2ea] hover:text-foreground dark:bg-card dark:hover:bg-muted/60'
+                        )}
+                    >
+                        <ScrollText className="size-4 shrink-0" />
+                        <span>历史日志</span>
+                    </button>
+                    <button
+                        type="button"
+                        aria-pressed={isLiveMode}
+                        onClick={() => {
+                            setViewMode('live');
+                            setCurrentPage(1);
+                        }}
+                        className={cn(
+                            'inline-flex h-[38px] items-center gap-1.5 rounded-[10px] border px-4 text-[13px] font-semibold whitespace-nowrap transition-colors',
+                            isLiveMode
+                                ? 'border-[#d8c49e] bg-[#E8D7B4] text-[#433D35] dark:border-[#d8c49e]/40 dark:bg-[#E8D7B4]/25 dark:text-[#E8D7B4]'
+                                : 'border-border bg-[#fbfaf8] text-muted-foreground hover:bg-[#f5f2ea] hover:text-foreground dark:bg-card dark:hover:bg-muted/60'
+                        )}
+                    >
+                        <span className="relative flex size-2 shrink-0">
+                            {isLiveMode && isConnected && (
+                                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                            )}
+                            <span
+                                className={cn(
+                                    'relative inline-flex size-2 rounded-full',
+                                    isLiveMode
+                                        ? isConnected
+                                            ? 'bg-emerald-500'
+                                            : streamError
+                                                ? 'bg-destructive'
+                                                : 'bg-amber-500'
+                                        : 'bg-muted-foreground/50'
+                                )}
+                            />
+                        </span>
+                        <span>实时调用</span>
+                    </button>
+                </div>
+
+                {/* Row 2: 搜索 + 端点 + 厂商 + 模型 + 高级筛选（V7：grid 1fr/140/140/140/auto，34px 高，无文字前缀） */}
+                <div className="grid grid-cols-[1fr_140px_140px_140px_auto] items-center gap-2 max-sm:flex max-sm:flex-wrap">
+                    <label className="relative flex min-w-0 items-center max-sm:w-full">
                         <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
                         <input
                             type="text"
                             value={searchKeyword}
                             onChange={(e) => { setSearchKeyword(e.target.value); setCurrentPage(1); }}
-                            placeholder="模糊搜索：用户名/Key/模型/渠道/端点/路径/会话/错误/ID…"
+                            placeholder="搜索请求 ID / 令牌 / 错误信息…"
                             title="可搜索用户名、API Key 名、请求/实际模型名、渠道名、端点名、路径、会话 Key、错误信息及错误码；输入纯数字时额外精准匹配日志 ID 或渠道 ID"
-                            className="h-9 w-52 rounded-lg border border-input bg-background pl-8 pr-7 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring sm:w-64"
+                            className="h-[34px] w-full rounded-[10px] border border-input bg-background pl-8 pr-7 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
                         />
                         {searchKeyword && (
                             <button
@@ -1049,59 +1100,52 @@ export function Log() {
                             </button>
                         )}
                     </label>
-
-                    <label className="flex min-w-0 flex-wrap items-center gap-2">
-                        <span className="text-sm font-medium text-card-foreground">端点</span>
-                        <select
-                            value={selectedEndpoint}
-                            onChange={(event) => handleSelectEndpoint(event.target.value)}
-                            className="h-9 min-w-36 rounded-lg border border-input bg-background px-3 text-sm text-foreground"
-                        >
-                            {endpointFilters.map((endpoint) => (
-                                <option key={endpoint.value || 'all'} value={endpoint.value}>
-                                    {endpoint.label}
-                                </option>
-                            ))}
-                        </select>
-                    </label>
-
-                    <label className="flex min-w-0 flex-wrap items-center gap-2">
-                        <span className="text-sm font-medium text-card-foreground">厂商</span>
-                        <select
-                            value={selectedProvider}
-                            onChange={(event) => handleSelectProvider(event.target.value)}
-                            className="h-9 min-w-36 rounded-lg border border-input bg-background px-3 text-sm text-foreground"
-                        >
-                            {providerFilters.map((provider) => (
-                                <option key={provider.value || 'all'} value={provider.value}>
-                                    {provider.label}
-                                </option>
-                            ))}
-                        </select>
-                    </label>
-
-                    <label className="flex min-w-0 flex-wrap items-center gap-2">
-                        <span className="text-sm font-medium text-card-foreground">模型</span>
-                        <select
-                            value={selectedModel}
-                            onChange={(event) => handleSelectModel(event.target.value)}
-                            className="h-9 min-w-40 max-w-56 rounded-lg border border-input bg-background px-3 text-sm text-foreground"
-                        >
-                            <option value="">全部模型</option>
-                            {availableModelOptions.map((modelName) => (
-                                <option key={modelName} value={modelName}>
-                                    {modelName}
-                                </option>
-                            ))}
-                        </select>
-                    </label>
-
+                    <select
+                        aria-label="端点"
+                        value={selectedEndpoint}
+                        onChange={(event) => handleSelectEndpoint(event.target.value)}
+                        className="h-[34px] w-[140px] rounded-[10px] border border-input bg-background px-3 text-xs text-foreground outline-none"
+                    >
+                        {endpointFilters.map((endpoint) => (
+                            <option key={endpoint.value || 'all'} value={endpoint.value}>
+                                {endpoint.label}
+                            </option>
+                        ))}
+                    </select>
+                    <select
+                        aria-label="厂商"
+                        value={selectedProvider}
+                        onChange={(event) => handleSelectProvider(event.target.value)}
+                        className="h-[34px] w-[140px] rounded-[10px] border border-input bg-background px-3 text-xs text-foreground outline-none"
+                    >
+                        {providerFilters.map((provider) => (
+                            <option key={provider.value || 'all'} value={provider.value}>
+                                {provider.label}
+                            </option>
+                        ))}
+                    </select>
+                    <select
+                        aria-label="模型"
+                        value={selectedModel}
+                        onChange={(event) => handleSelectModel(event.target.value)}
+                        className="h-[34px] w-[140px] rounded-[10px] border border-input bg-background px-3 text-xs text-foreground outline-none"
+                    >
+                        <option value="">全部模型</option>
+                        {availableModelOptions.map((modelName) => (
+                            <option key={modelName} value={modelName}>
+                                {modelName}
+                            </option>
+                        ))}
+                    </select>
                     {isAdmin && (
                         <Button
                             variant="outline"
                             size="sm"
                             onClick={() => setAdvancedOpen((open) => !open)}
-                            className="rounded-lg"
+                            className={cn(
+                                "h-[34px] rounded-[10px] px-3 max-sm:w-auto text-xs font-medium transition-colors",
+                                advancedOpen ? "bg-[#E8D7B4] text-[#433D35] border-[#d8c49e] dark:bg-[#E8D7B4]/25 dark:text-[#E8D7B4]" : ""
+                            )}
                         >
                             <SlidersHorizontal className="size-4" />
                             <span>{t('list.advancedFilters')}</span>
@@ -1115,180 +1159,121 @@ export function Log() {
                     )}
                 </div>
 
-                {/* Row 2: 日期快捷键 + 状态筛选pills（两组各自 flex-nowrap，组间可换行） */}
-                <div className="flex min-w-0 flex-wrap items-center gap-2">
-                    {/* 左侧：日期快捷键pills（组内永不断行） */}
-                    <div className="flex min-w-0 flex-nowrap items-center gap-1 rounded-lg bg-muted/60 p-1">
-                        {dateRangeShortcuts.map((shortcut) => {
-                            const active = activeDateShortcut === shortcut.id;
+                {/* Row 3: 日期/状态 pills + 只看重试/隐藏探针 + 右侧图标操作（V7：border-top 分隔，pills 组沙色容器） */}
+                <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 border-t border-[#f0ede6] pt-2.5 dark:border-border/60">
+                    {/* 左侧：日期 pills + 状态 pills（并排 14px 间距）+ 只看重试 + 隐藏探针 */}
+                    <div className="flex min-w-0 flex-wrap items-center gap-3.5">
+                        {/* 日期快捷键 pills（组内永不断行） */}
+                        <div className="flex flex-nowrap items-center gap-0.5 rounded-lg bg-[#f0ece1] p-0.5 dark:bg-[#f0ece1]/20">
+                            {dateRangeShortcuts.map((shortcut) => {
+                                const active = activeDateShortcut === shortcut.id;
 
-                            return (
-                                <button
-                                    key={shortcut.id}
-                                    type="button"
-                                    onClick={() => applyDateRangeShortcut(shortcut.id)}
-                                    className={cn(
-                                        'inline-flex h-8 items-center rounded-lg px-2.5 text-xs font-medium whitespace-nowrap transition-colors',
-                                        active
-                                            ? 'bg-background text-foreground shadow-sm'
-                                            : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'
-                                    )}
-                                >
-                                    {shortcut.label}
-                                </button>
-                            );
-                        })}
-                    </div>
+                                return (
+                                    <button
+                                        key={shortcut.id}
+                                        type="button"
+                                        aria-pressed={active}
+                                        onClick={() => applyDateRangeShortcut(shortcut.id)}
+                                        className={cn(
+                                            'inline-flex h-7 items-center rounded-md px-2.5 text-xs font-medium whitespace-nowrap transition-colors',
+                                            active
+                                                ? 'bg-white text-[#433D35] shadow-sm dark:bg-background dark:text-foreground dark:shadow-none'
+                                                : 'text-muted-foreground hover:bg-white/50 hover:text-foreground'
+                                        )}
+                                    >
+                                        {shortcut.label}
+                                    </button>
+                                );
+                            })}
+                        </div>
 
-                    {/* 中间：状态筛选pills（组内永不断行） */}
-                    <div className="flex min-w-0 flex-nowrap items-center gap-1 rounded-lg bg-muted/60 p-1">
-                        {severityFilters.map((filter) => {
-                            const Icon = filter.icon;
-                            const active = severityFilter === filter.id;
+                        {/* 状态筛选 pills（组内永不断行） */}
+                        <div className="flex flex-nowrap items-center gap-0.5 rounded-lg bg-[#f0ece1] p-0.5 dark:bg-[#f0ece1]/20">
+                            {severityFilters.map((filter) => {
+                                const Icon = filter.icon;
+                                const active = severityFilter === filter.id;
 
-                            return (
-                                <button
-                                    key={filter.id}
-                                    type="button"
-                                    aria-pressed={active}
-                                    onClick={() => {
-                                        setSeverityFilter(filter.id);
-                                        setCurrentPage(1);
-                                    }}
-                                    className={cn(
-                                        'inline-flex h-8 min-w-0 items-center gap-1.5 rounded-lg px-2 text-xs font-medium whitespace-nowrap transition-colors',
-                                        active
-                                            ? 'bg-background text-foreground shadow-sm'
-                                            : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'
-                                    )}
-                                >
-                                    <Icon className={cn('size-3.5 shrink-0', filter.className)} />
-                                    <span>{t(`list.filters.${filter.id}`)}</span>
-                                    <Badge variant="secondary" className="h-5 min-w-5 justify-center px-1 text-[10px]">
-                                        {badgeCount(filter.id)?.toLocaleString() ?? '—'}
-                                    </Badge>
-                                </button>
-                            );
-                        })}
-                    </div>
-                </div>
+                                return (
+                                    <button
+                                        key={filter.id}
+                                        type="button"
+                                        aria-pressed={active}
+                                        onClick={() => {
+                                            setSeverityFilter(filter.id);
+                                            setCurrentPage(1);
+                                        }}
+                                        className={cn(
+                                            'inline-flex h-7 min-w-0 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium whitespace-nowrap transition-colors',
+                                            active
+                                                ? 'bg-white text-[#433D35] shadow-sm dark:bg-background dark:text-foreground dark:shadow-none'
+                                                : 'text-muted-foreground hover:bg-white/50 hover:text-foreground'
+                                        )}
+                                    >
+                                        <Icon className={cn('size-3.5 shrink-0', filter.className)} />
+                                        <span>{t(`list.filters.${filter.id}`)}</span>
+                                        <Badge variant="secondary" className="h-5 min-w-5 justify-center px-1 text-[10px]">
+                                            {badgeCount(filter.id)?.toLocaleString() ?? '—'}
+                                        </Badge>
+                                    </button>
+                                );
+                            })}
+                        </div>
 
-                {/* Row 3: 只看重试 + 隐藏测试探针 + 历史/实时（历史/实时紧跟隐藏探针右侧）+ 操作按钮 */}
-                <div className="flex min-w-0 flex-wrap items-center gap-2">
-                    {/* 左侧连贯按钮组：有重试 → 隐藏探针 → 历史/实时（顺序固定，历史/实时紧贴隐藏探针） */}
-                    <div className="flex min-w-0 flex-wrap items-center gap-2">
-                        <button
-                            type="button"
-                            aria-pressed={retriedOnly}
-                            onClick={() => {
-                                setRetriedOnly((v) => !v);
-                                setCurrentPage(1);
-                            }}
+                        {/* 只看重试 */}
+                        <label
                             title="只看发生过重试 / 换渠道的请求"
-                            className={cn(
-                                'inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium whitespace-nowrap transition-colors',
-                                retriedOnly
-                                    ? 'border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-300'
-                                    : 'border-border bg-background text-muted-foreground hover:text-foreground'
-                            )}
+                            className="inline-flex shrink-0 cursor-pointer select-none items-center gap-1.5 text-xs text-muted-foreground"
                         >
-                            <RotateCw className="size-3.5" />
-                            <span>{t('list.retriedOnly')}</span>
-                        </button>
-
-                        <button
-                            type="button"
-                            aria-pressed={hideModelTest}
-                            onClick={() => {
-                                setHideModelTest((v) => !v);
-                                setCurrentPage(1);
-                            }}
-                            title="隐藏渠道测试探针（model_test），只看真实业务流量"
-                            className={cn(
-                                'inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium whitespace-nowrap transition-colors',
-                                hideModelTest
-                                    ? 'border-primary/50 bg-primary/10 text-primary'
-                                    : 'border-border bg-background text-muted-foreground hover:text-foreground'
-                            )}
-                        >
-                            <EyeOff className="size-3.5" />
-                            <span>隐藏测试探针</span>
-                        </button>
-
-                        {/* 历史/实时切换（pair，不断开） */}
-                        <div className="flex flex-nowrap items-center gap-2">
-                            <button
-                                type="button"
-                                aria-pressed={viewMode === 'history'}
-                                onClick={() => setViewMode('history')}
-                                className={cn(
-                                    'inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium whitespace-nowrap shadow-sm transition-colors',
-                                    viewMode === 'history'
-                                        ? 'border-primary/50 bg-primary/10 text-primary'
-                                        : 'border-border bg-background text-muted-foreground hover:text-foreground'
-                                )}
-                            >
-                                <ScrollText className="size-3.5" />
-                                <span>历史日志</span>
-                            </button>
-                            <button
-                                type="button"
-                                aria-pressed={isLiveMode}
-                                onClick={() => {
-                                    setViewMode('live');
+                            <input
+                                type="checkbox"
+                                checked={retriedOnly}
+                                onChange={() => {
+                                    setRetriedOnly((v) => !v);
                                     setCurrentPage(1);
                                 }}
-                                className={cn(
-                                    'inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium whitespace-nowrap shadow-sm transition-colors',
-                                    isLiveMode
-                                        ? 'border-primary/50 bg-primary/10 text-primary'
-                                        : 'border-border bg-background text-muted-foreground hover:text-foreground'
-                                )}
-                            >
-                                <span className="relative flex size-2">
-                                    {isLiveMode && isConnected && (
-                                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-                                    )}
-                                    <span
-                                        className={cn(
-                                            'relative inline-flex size-2 rounded-full',
-                                            isLiveMode
-                                                ? isConnected
-                                                    ? 'bg-emerald-500'
-                                                    : streamError
-                                                        ? 'bg-destructive'
-                                                        : 'bg-amber-500'
-                                                : 'bg-muted-foreground/50'
-                                        )}
-                                    />
-                                </span>
-                                <span>实时调用</span>
-                            </button>
-                        </div>
+                                className="size-3.5 rounded border-border accent-emerald-600"
+                            />
+                            {t('list.retriedOnly')}
+                        </label>
+
+                        {/* 隐藏测试探针 */}
+                        <label
+                            title="隐藏渠道测试探针（model_test），只看真实业务流量"
+                            className="inline-flex shrink-0 cursor-pointer select-none items-center gap-1.5 text-xs text-muted-foreground"
+                        >
+                            <input
+                                type="checkbox"
+                                checked={hideModelTest}
+                                onChange={() => {
+                                    setHideModelTest((v) => !v);
+                                    setCurrentPage(1);
+                                }}
+                                className="size-3.5 rounded border-border accent-emerald-600"
+                            />
+                            隐藏测试探针
+                        </label>
                     </div>
 
-                    {/* 重置按钮 */}
-                    {hasActiveFilter && (
-                        <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={handleResetFilters}
-                            className="rounded-lg"
-                        >
-                            <RotateCcw className="size-4" />
-                            <span>{t('list.reset')}</span>
-                        </Button>
-                    )}
-
-                    {/* 右侧：操作按钮组 */}
-                    <div className="ml-auto flex shrink-0 flex-nowrap items-center gap-2">
+                    {/* 右侧：重置（有生效筛选才出现）+ 显隐敏感 / 刷新 / 导出 */}
+                    <div className="ml-auto flex shrink-0 flex-nowrap items-center gap-1.5">
+                        {hasActiveFilter && (
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={handleResetFilters}
+                                className="h-8 rounded-lg px-2 text-xs"
+                            >
+                                <RotateCcw className="size-3.5" />
+                                <span>{t('list.reset')}</span>
+                            </Button>
+                        )}
                         <Button
                             variant="ghost"
                             size="icon"
                             onClick={() => setSensitiveVisible(!sensitiveVisible)}
                             title={sensitiveVisible ? t('list.hideSensitive') : t('list.showSensitive')}
                             aria-label={sensitiveVisible ? t('list.hideSensitive') : t('list.showSensitive')}
-                            className="rounded-lg text-muted-foreground"
+                            className="h-8 w-8 rounded-lg border border-border bg-background text-muted-foreground hover:text-foreground dark:bg-card"
                         >
                             {sensitiveVisible ? <Eye className="size-4" /> : <EyeOff className="size-4" />}
                         </Button>
@@ -1299,7 +1284,7 @@ export function Log() {
                             disabled={isRefreshing || isLoading}
                             title={isRefreshing ? t('list.refreshing') : t('list.refresh')}
                             aria-label={t('list.refresh')}
-                            className="rounded-lg text-muted-foreground max-sm:hidden"
+                            className="h-8 w-8 rounded-lg border border-border bg-background text-muted-foreground hover:text-foreground max-sm:hidden dark:bg-card"
                         >
                             <RefreshCw className={cn('size-4', isRefreshing && 'animate-spin')} />
                         </Button>
@@ -1310,7 +1295,7 @@ export function Log() {
                             disabled={exportLogs.isPending}
                             title={t('list.export')}
                             aria-label={t('list.export')}
-                            className="rounded-lg text-muted-foreground"
+                            className="h-8 w-8 rounded-lg border border-border bg-background text-muted-foreground hover:text-foreground dark:bg-card"
                         >
                             {exportLogs.isPending ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}
                         </Button>
