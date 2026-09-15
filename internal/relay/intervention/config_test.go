@@ -21,6 +21,13 @@ func setupConfigTest(t *testing.T) {
 	}
 }
 
+func TestInterventionEnabledDefaultsOnForNewInstall(t *testing.T) {
+	setupConfigTest(t)
+	if !Enabled() {
+		t.Fatal("new installs should default relay_intervention_enabled on")
+	}
+}
+
 func TestNoBreakerRetryBudgetDefaultAndBounds(t *testing.T) {
 	setupConfigTest(t)
 

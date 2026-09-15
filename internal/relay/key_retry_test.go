@@ -265,10 +265,10 @@ data: {"type":"message_stop"}
 	t.Cleanup(healthy.Close)
 
 	deadChannel := dbmodel.Channel{
-		Name:     "message-start-then-dead",
-		Type:     outbound.OutboundTypeAnthropic,
-		Enabled:  true,
-		Model:    "claude-up",
+		Name:    "message-start-then-dead",
+		Type:    outbound.OutboundTypeAnthropic,
+		Enabled: true,
+		Model:   "claude-up",
 		ModelMapping: map[string]string{
 			"claude-req": "claude-up",
 		},
@@ -280,10 +280,10 @@ data: {"type":"message_stop"}
 		t.Fatalf("create dead channel: %v", err)
 	}
 	healthyChannel := dbmodel.Channel{
-		Name:     "anthropic-healthy",
-		Type:     outbound.OutboundTypeAnthropic,
-		Enabled:  true,
-		Model:    "claude-up",
+		Name:    "anthropic-healthy",
+		Type:    outbound.OutboundTypeAnthropic,
+		Enabled: true,
+		Model:   "claude-up",
 		ModelMapping: map[string]string{
 			"claude-req": "claude-up",
 		},
@@ -341,5 +341,9 @@ func setupRelayKeyRetryDB(t *testing.T) context.Context {
 			t.Fatalf("close db: %v", err)
 		}
 	})
+	if err := op.InitCache(); err != nil {
+		t.Fatalf("init cache: %v", err)
+	}
+	disableRelayInterventionForTest(t)
 	return context.Background()
 }

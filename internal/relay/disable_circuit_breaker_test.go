@@ -138,5 +138,6 @@ func setupRelayCircuitBypassDB(t *testing.T) context.Context {
 	if err := op.InitCache(); err != nil {
 		t.Fatalf("init cache: %v", err)
 	}
+	disableRelayInterventionForTest(t)
 	return context.Background()
 }

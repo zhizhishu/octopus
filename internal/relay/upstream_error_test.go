@@ -541,7 +541,17 @@ func setupRelayErrorDB(t *testing.T) context.Context {
 	if err := op.InitCache(); err != nil {
 		t.Fatalf("init cache: %v", err)
 	}
+	disableRelayInterventionForTest(t)
 	return context.Background()
+}
+
+// New installs default intervention on. Ordinary relay tests must fail-fast unless they
+// are explicitly exercising the rescue path.
+func disableRelayInterventionForTest(t *testing.T) {
+	t.Helper()
+	if err := op.SettingSetString(dbmodel.SettingKeyRelayInterventionEnabled, "false"); err != nil {
+		t.Fatalf("disable intervention for test: %v", err)
+	}
 }
 
 // A route left on any fallback mode except an explicit "none" must spill to the model
