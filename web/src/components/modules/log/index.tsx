@@ -1115,10 +1115,10 @@ export function Log() {
                     )}
                 </div>
 
-                {/* Row 2: 日期快捷键 + 状态筛选pills + 只看重试/隐藏测试探针 checkboxes + 历史实时切换 + 操作按钮 */}
+                {/* Row 2: 日期快捷键 + 状态筛选pills（两组各自 flex-nowrap，组间可换行） */}
                 <div className="flex min-w-0 flex-wrap items-center gap-2">
-                    {/* 左侧：日期快捷键pills */}
-                    <div className="flex min-w-0 flex-wrap items-center gap-1 rounded-lg bg-muted/60 p-1">
+                    {/* 左侧：日期快捷键pills（组内永不断行） */}
+                    <div className="flex min-w-0 flex-nowrap items-center gap-1 rounded-lg bg-muted/60 p-1">
                         {dateRangeShortcuts.map((shortcut) => {
                             const active = activeDateShortcut === shortcut.id;
 
@@ -1128,7 +1128,7 @@ export function Log() {
                                     type="button"
                                     onClick={() => applyDateRangeShortcut(shortcut.id)}
                                     className={cn(
-                                        'inline-flex h-8 items-center rounded-lg px-2.5 text-xs font-medium transition-colors',
+                                        'inline-flex h-8 items-center rounded-lg px-2.5 text-xs font-medium whitespace-nowrap transition-colors',
                                         active
                                             ? 'bg-background text-foreground shadow-sm'
                                             : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'
@@ -1140,8 +1140,8 @@ export function Log() {
                         })}
                     </div>
 
-                    {/* 中间：状态筛选pills */}
-                    <div className="flex min-w-0 flex-wrap items-center gap-1 rounded-lg bg-muted/60 p-1">
+                    {/* 中间：状态筛选pills（组内永不断行） */}
+                    <div className="flex min-w-0 flex-nowrap items-center gap-1 rounded-lg bg-muted/60 p-1">
                         {severityFilters.map((filter) => {
                             const Icon = filter.icon;
                             const active = severityFilter === filter.id;
@@ -1156,7 +1156,7 @@ export function Log() {
                                         setCurrentPage(1);
                                     }}
                                     className={cn(
-                                        'inline-flex h-8 min-w-0 items-center gap-1.5 rounded-lg px-2 text-xs font-medium transition-colors',
+                                        'inline-flex h-8 min-w-0 items-center gap-1.5 rounded-lg px-2 text-xs font-medium whitespace-nowrap transition-colors',
                                         active
                                             ? 'bg-background text-foreground shadow-sm'
                                             : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'
@@ -1171,97 +1171,100 @@ export function Log() {
                             );
                         })}
                     </div>
+                </div>
 
-                    {/* Checkboxes：只看重试 + 隐藏测试探针 + 历史/实时 */}
-                    <button
-                        type="button"
-                        aria-pressed={retriedOnly}
-                        onClick={() => {
-                            setRetriedOnly((v) => !v);
-                            setCurrentPage(1);
-                        }}
-                        title="只看发生过重试 / 换渠道的请求"
-                        className={cn(
-                            'inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition-colors',
-                            retriedOnly
-                                ? 'border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-300'
-                                : 'border-border bg-background text-muted-foreground hover:text-foreground'
-                        )}
-                    >
-                        <RotateCw className="size-3.5" />
-                        <span>{t('list.retriedOnly')}</span>
-                    </button>
-
-                    <div className="inline-flex max-w-full shrink-0 items-center gap-2">
-                    <button
-                        type="button"
-                        aria-pressed={hideModelTest}
-                        onClick={() => {
-                            setHideModelTest((v) => !v);
-                            setCurrentPage(1);
-                        }}
-                        title="隐藏渠道测试探针（model_test），只看真实业务流量"
-                        className={cn(
-                            'inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition-colors',
-                            hideModelTest
-                                ? 'border-primary/50 bg-primary/10 text-primary'
-                                : 'border-border bg-background text-muted-foreground hover:text-foreground'
-                        )}
-                    >
-                        <EyeOff className="size-3.5" />
-                        <span>隐藏测试探针</span>
-                    </button>
-
-                    {/* 历史/实时切换 */}
-                    <div className="flex min-w-0 items-center gap-2">
+                {/* Row 3: 只看重试 + 隐藏测试探针 + 历史/实时（历史/实时紧跟隐藏探针右侧）+ 操作按钮 */}
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    {/* 左侧连贯按钮组：有重试 → 隐藏探针 → 历史/实时（顺序固定，历史/实时紧贴隐藏探针） */}
+                    <div className="flex min-w-0 flex-wrap items-center gap-2">
                         <button
                             type="button"
-                            aria-pressed={viewMode === 'history'}
-                            onClick={() => setViewMode('history')}
-                            className={cn(
-                                'inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium shadow-sm transition-colors',
-                                viewMode === 'history'
-                                    ? 'border-primary/50 bg-primary/10 text-primary'
-                                    : 'border-border bg-background text-muted-foreground hover:text-foreground'
-                            )}
-                        >
-                            <ScrollText className="size-3.5" />
-                            <span>历史日志</span>
-                        </button>
-                        <button
-                            type="button"
-                            aria-pressed={isLiveMode}
+                            aria-pressed={retriedOnly}
                             onClick={() => {
-                                setViewMode('live');
+                                setRetriedOnly((v) => !v);
                                 setCurrentPage(1);
                             }}
+                            title="只看发生过重试 / 换渠道的请求"
                             className={cn(
-                                'inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium shadow-sm transition-colors',
-                                isLiveMode
+                                'inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium whitespace-nowrap transition-colors',
+                                retriedOnly
+                                    ? 'border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+                                    : 'border-border bg-background text-muted-foreground hover:text-foreground'
+                            )}
+                        >
+                            <RotateCw className="size-3.5" />
+                            <span>{t('list.retriedOnly')}</span>
+                        </button>
+
+                        <button
+                            type="button"
+                            aria-pressed={hideModelTest}
+                            onClick={() => {
+                                setHideModelTest((v) => !v);
+                                setCurrentPage(1);
+                            }}
+                            title="隐藏渠道测试探针（model_test），只看真实业务流量"
+                            className={cn(
+                                'inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium whitespace-nowrap transition-colors',
+                                hideModelTest
                                     ? 'border-primary/50 bg-primary/10 text-primary'
                                     : 'border-border bg-background text-muted-foreground hover:text-foreground'
                             )}
                         >
-                            <span className="relative flex size-2">
-                                {isLiveMode && isConnected && (
-                                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-                                )}
-                                <span
-                                    className={cn(
-                                        'relative inline-flex size-2 rounded-full',
-                                        isLiveMode
-                                            ? isConnected
-                                                ? 'bg-emerald-500'
-                                                : streamError
-                                                    ? 'bg-destructive'
-                                                    : 'bg-amber-500'
-                                            : 'bg-muted-foreground/50'
-                                    )}
-                                />
-                            </span>
-                            <span>实时调用</span>
+                            <EyeOff className="size-3.5" />
+                            <span>隐藏测试探针</span>
                         </button>
-                    </div>
+
+                        {/* 历史/实时切换（pair，不断开） */}
+                        <div className="flex flex-nowrap items-center gap-2">
+                            <button
+                                type="button"
+                                aria-pressed={viewMode === 'history'}
+                                onClick={() => setViewMode('history')}
+                                className={cn(
+                                    'inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium whitespace-nowrap shadow-sm transition-colors',
+                                    viewMode === 'history'
+                                        ? 'border-primary/50 bg-primary/10 text-primary'
+                                        : 'border-border bg-background text-muted-foreground hover:text-foreground'
+                                )}
+                            >
+                                <ScrollText className="size-3.5" />
+                                <span>历史日志</span>
+                            </button>
+                            <button
+                                type="button"
+                                aria-pressed={isLiveMode}
+                                onClick={() => {
+                                    setViewMode('live');
+                                    setCurrentPage(1);
+                                }}
+                                className={cn(
+                                    'inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium whitespace-nowrap shadow-sm transition-colors',
+                                    isLiveMode
+                                        ? 'border-primary/50 bg-primary/10 text-primary'
+                                        : 'border-border bg-background text-muted-foreground hover:text-foreground'
+                                )}
+                            >
+                                <span className="relative flex size-2">
+                                    {isLiveMode && isConnected && (
+                                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                                    )}
+                                    <span
+                                        className={cn(
+                                            'relative inline-flex size-2 rounded-full',
+                                            isLiveMode
+                                                ? isConnected
+                                                    ? 'bg-emerald-500'
+                                                    : streamError
+                                                        ? 'bg-destructive'
+                                                        : 'bg-amber-500'
+                                                : 'bg-muted-foreground/50'
+                                        )}
+                                    />
+                                </span>
+                                <span>实时调用</span>
+                            </button>
+                        </div>
                     </div>
 
                     {/* 重置按钮 */}
@@ -1278,7 +1281,7 @@ export function Log() {
                     )}
 
                     {/* 右侧：操作按钮组 */}
-                    <div className="ml-auto flex min-w-0 flex-wrap items-center gap-2">
+                    <div className="ml-auto flex shrink-0 flex-nowrap items-center gap-2">
                         <Button
                             variant="ghost"
                             size="icon"
