@@ -1,5 +1,5 @@
 import type { InfiniteData } from '@tanstack/react-query';
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiClient, API_BASE_URL } from '../client';
 import { useAuthStore } from './user';
 import { logger } from '@/lib/logger';
@@ -504,6 +504,8 @@ export function useLogSeverityCounts(options: {
         enabled,
         staleTime: 0,
         refetchOnMount: 'always',
+        // 筛选变化时不要把徽章数字清空重算（保留上一份计数，避免 0/— 闪一下）。
+        placeholderData: keepPreviousData,
         // SSE 只推日志列表、不推计数；计数每 3 秒轻量重取，让总数/徽章/分页页数不陈旧。
         refetchInterval: 3000,
     });
@@ -569,6 +571,10 @@ export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?
         },
         staleTime: 0,
         refetchOnMount: 'always',
+        // 切成功/失败等筛选时 queryKey 变化会让 data 短暂为 undefined，列表整列闪空、
+        // 等一次网络往返才回来（用户感知为"筛选很慢"）。保留上一份数据先渲染，
+        // 新结果到达后再替换——视觉上是原地更新，不再是空态闪烁。
+        placeholderData: keepPreviousData,
         // 非实时(SSE)模式：每 3 秒轻量重取第 1 页，让新日志不必手动刷新即可出现。
         // live=true 时由 EventSource 推流接管，此处关闭轮询避免重复拉取。
         refetchInterval: live ? false : 3000,
