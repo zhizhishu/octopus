@@ -1179,39 +1179,43 @@ export function Log() {
                             })}
                         </div>
 
-                        {/* 只看重试 */}
-                        <label
+                        {/* 只看重试（5050 式描边切换按钮，替代裸 checkbox） */}
+                        <button
+                            type="button"
                             title="只看发生过重试 / 换渠道的请求"
-                            className="inline-flex shrink-0 cursor-pointer select-none items-center gap-1.5 text-xs text-muted-foreground"
+                            aria-pressed={retriedOnly}
+                            onClick={() => {
+                                setRetriedOnly((v) => !v);
+                                setCurrentPage(1);
+                            }}
+                            className={cn(
+                                'inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium whitespace-nowrap transition-colors',
+                                retriedOnly
+                                    ? 'border-foreground/25 bg-foreground/[0.06] text-foreground'
+                                    : 'border-border bg-background text-muted-foreground hover:text-foreground'
+                            )}
                         >
-                            <input
-                                type="checkbox"
-                                checked={retriedOnly}
-                                onChange={() => {
-                                    setRetriedOnly((v) => !v);
-                                    setCurrentPage(1);
-                                }}
-                                className="size-3.5 rounded border-border accent-emerald-600"
-                            />
                             {t('list.retriedOnly')}
-                        </label>
+                        </button>
 
-                        {/* 隐藏测试探针 */}
-                        <label
+                        {/* 隐藏测试探针（5050 式描边切换按钮，替代裸 checkbox） */}
+                        <button
+                            type="button"
                             title="隐藏渠道测试探针（model_test），只看真实业务流量"
-                            className="inline-flex shrink-0 cursor-pointer select-none items-center gap-1.5 text-xs text-muted-foreground"
+                            aria-pressed={hideModelTest}
+                            onClick={() => {
+                                setHideModelTest((v) => !v);
+                                setCurrentPage(1);
+                            }}
+                            className={cn(
+                                'inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium whitespace-nowrap transition-colors',
+                                hideModelTest
+                                    ? 'border-foreground/25 bg-foreground/[0.06] text-foreground'
+                                    : 'border-border bg-background text-muted-foreground hover:text-foreground'
+                            )}
                         >
-                            <input
-                                type="checkbox"
-                                checked={hideModelTest}
-                                onChange={() => {
-                                    setHideModelTest((v) => !v);
-                                    setCurrentPage(1);
-                                }}
-                                className="size-3.5 rounded border-border accent-emerald-600"
-                            />
                             隐藏测试探针
-                        </label>
+                        </button>
 
                         {/* 实时动态 Switch 开关（区分实时与关闭，对齐隐藏测试探针） */}
                         <div className="inline-flex shrink-0 items-center gap-2">

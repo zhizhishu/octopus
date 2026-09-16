@@ -714,15 +714,12 @@ export const LogCard = React.memo(function LogCard({ log }: { log: RelayLog }) {
                             hasError ? "bg-destructive" : hasPartialFailure ? "bg-amber-500" : "bg-emerald-500/50",
                         )}
                     />
-                    {/* V7：48px 官方真实模型 Logo 舱 + 内容列（紧凑排版） */}
-                    <div className="grid w-full grid-cols-[48px_minmax(0,1fr)] items-center gap-3.5 p-3 sm:px-4 sm:py-3">
-                        <div
-                            title={modelNameToDisplay}
-                            className="grid size-12 shrink-0 select-none place-items-center self-center rounded-2xl border border-border/70 bg-[#f4efe6] shadow-xs dark:border-border/40 dark:bg-muted/40"
-                        >
-                            <ModelAvatar size={28} />
+                    {/* 5050 基线：裸官方 Logo（auto 列）+ 内容列，p-4 / gap-4 */}
+                    <div className="p-4 grid grid-cols-[auto_1fr] gap-4 items-center">
+                        <div title={modelNameToDisplay} className="shrink-0">
+                            <ModelAvatar size={40} />
                         </div>
-                        <div className="flex min-w-0 flex-col gap-1.5">
+                        <div className="min-w-0 flex flex-col gap-3">
                             {/* 第 1 行：路由链路（状态 + 接口类型 + 路径 + 请求模型 → 渠道 + 实际模型 + 流式 + 详情） */}
                             <div className="flex min-w-0 flex-wrap items-center gap-2 text-sm">
                                 <LogRouteHeader
@@ -756,8 +753,8 @@ export const LogCard = React.memo(function LogCard({ log }: { log: RelayLog }) {
                                 )}
                             </div>
 
-                            {/* 第 2 行：紧凑摘要带（按信息组聚类，组内 whitespace-nowrap 不可断行，组间整组换行） */}
-                            <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs tabular-nums text-muted-foreground">
+                            {/* 第 2 行：紧凑摘要带（5050 的 gap-x-4 gap-y-2；组内 whitespace-nowrap 不可断行，组间整组换行） */}
+                            <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2 text-xs tabular-nums text-muted-foreground">
                                 {/* G1 时间与位置 */}
                                 <div className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
                                     <Clock className="size-3.5 shrink-0 text-muted-foreground" />
@@ -836,22 +833,7 @@ export const LogCard = React.memo(function LogCard({ log }: { log: RelayLog }) {
                                 )}
                             </div>
 
-                            {/* 错误/警告摘要（78d44e2 语义 token 块） */}
-                            {(hasError || hasPartialFailure) && (
-                                <div className={cn(
-                                    "overflow-hidden rounded-xl border p-2.5",
-                                    hasError ? "border-destructive/20 bg-destructive/10" : "border-amber-500/20 bg-amber-500/10",
-                                )}>
-                                    <SafeText
-                                        mode="wrap"
-                                        value={verdict.text}
-                                        className={cn(
-                                            "line-clamp-2 text-xs font-medium",
-                                            hasError ? "text-destructive" : "text-amber-700 dark:text-amber-300",
-                                        )}
-                                    />
-                                </div>
-                            )}
+                            {/* 错误/警告叙述框：按用户要求移除（详情弹窗里仍有完整 verdict） */}
                         </div>
                     </div>
                 </MorphingDialogTrigger>
