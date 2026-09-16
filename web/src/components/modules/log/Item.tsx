@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useMemo, useState, useEffect, useCallback, type ReactNode } from 'react';
-import { Brain, Clock, Cpu, Zap, AlertCircle, ArrowDownToLine, ArrowUpFromLine, DollarSign, ArrowRight, ArrowDown, Send, MessageSquare, Loader2, RotateCw, ChevronDown, ChevronUp, Pin, KeyRound, Percent, CheckCircle2, XCircle, Eye, Hash, MapPin, User, type LucideIcon } from 'lucide-react';
+import { Brain, Clock, Cpu, Zap, AlertCircle, ArrowDownToLine, ArrowUpFromLine, DollarSign, ArrowRight, ArrowDown, ArrowUp, Send, MessageSquare, Loader2, RotateCw, ChevronDown, ChevronUp, Pin, KeyRound, Percent, CheckCircle2, XCircle, Eye, Hash, MapPin, User, type LucideIcon } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { motion, AnimatePresence } from 'motion/react';
 import JsonView from '@uiw/react-json-view';
@@ -601,130 +601,6 @@ function LazyLogBodies({ logId, fallbackRequest, fallbackResponse, requestLabel,
     );
 }
 
-// 供应商色彩映射：厂商名称/前缀 -> 品牌主色、首字母缩写、浅色/暗色徽章样式
-interface ModelBrandStyle {
-    abbr: string;
-    bgClass: string;
-    textClass: string;
-    borderClass: string;
-}
-
-function getModelBrandStyle(modelName: string): ModelBrandStyle {
-    const name = (modelName || '').trim().toLowerCase();
-    // 剔除 provider/ 前缀，如 "anthropic/claude-3-5-sonnet" -> "claude-3-5-sonnet"
-    const cleanName = name.includes('/') ? name.split('/')[1] : name.includes(':') ? name.split(':')[1] : name;
-
-    if (cleanName.includes('deepseek')) {
-        return {
-            abbr: 'DS',
-            bgClass: 'bg-blue-500/15 dark:bg-blue-500/25',
-            textClass: 'text-blue-600 dark:text-blue-400',
-            borderClass: 'border-blue-500/30 dark:border-blue-500/40',
-        };
-    }
-    if (cleanName.includes('claude') || cleanName.includes('anthropic')) {
-        return {
-            abbr: 'C',
-            bgClass: 'bg-amber-500/15 dark:bg-amber-500/25',
-            textClass: 'text-amber-700 dark:text-amber-400',
-            borderClass: 'border-amber-500/30 dark:border-amber-500/40',
-        };
-    }
-    if (cleanName.includes('gpt') || cleanName.includes('openai') || cleanName.startsWith('o1') || cleanName.startsWith('o3') || cleanName.startsWith('o4')) {
-        return {
-            abbr: 'G',
-            bgClass: 'bg-emerald-500/15 dark:bg-emerald-500/25',
-            textClass: 'text-emerald-700 dark:text-emerald-400',
-            borderClass: 'border-emerald-500/30 dark:border-emerald-500/40',
-        };
-    }
-    if (cleanName.includes('gemini') || cleanName.includes('google') || cleanName.includes('gemma')) {
-        return {
-            abbr: 'GE',
-            bgClass: 'bg-indigo-500/15 dark:bg-indigo-500/25',
-            textClass: 'text-indigo-600 dark:text-indigo-400',
-            borderClass: 'border-indigo-500/30 dark:border-indigo-500/40',
-        };
-    }
-    if (cleanName.includes('glm') || cleanName.includes('zhipu') || cleanName.includes('chatglm') || cleanName.includes('codegeex')) {
-        return {
-            abbr: 'GLM',
-            bgClass: 'bg-cyan-500/15 dark:bg-cyan-500/25',
-            textClass: 'text-cyan-700 dark:text-cyan-400',
-            borderClass: 'border-cyan-500/30 dark:border-cyan-500/40',
-        };
-    }
-    if (cleanName.includes('qwen') || cleanName.includes('qwq') || cleanName.includes('alibaba')) {
-        return {
-            abbr: 'QW',
-            bgClass: 'bg-purple-500/15 dark:bg-purple-500/25',
-            textClass: 'text-purple-600 dark:text-purple-400',
-            borderClass: 'border-purple-500/30 dark:border-purple-500/40',
-        };
-    }
-    if (cleanName.includes('grok') || cleanName.includes('xai')) {
-        return {
-            abbr: 'X',
-            bgClass: 'bg-zinc-500/15 dark:bg-zinc-500/25',
-            textClass: 'text-zinc-700 dark:text-zinc-300',
-            borderClass: 'border-zinc-500/30 dark:border-zinc-500/40',
-        };
-    }
-    if (cleanName.includes('mistral') || cleanName.includes('codestral') || cleanName.includes('pixtral')) {
-        return {
-            abbr: 'M',
-            bgClass: 'bg-orange-500/15 dark:bg-orange-500/25',
-            textClass: 'text-orange-700 dark:text-orange-400',
-            borderClass: 'border-orange-500/30 dark:border-orange-500/40',
-        };
-    }
-    if (cleanName.includes('llama') || cleanName.includes('meta')) {
-        return {
-            abbr: 'L',
-            bgClass: 'bg-sky-500/15 dark:bg-sky-500/25',
-            textClass: 'text-sky-700 dark:text-sky-400',
-            borderClass: 'border-sky-500/30 dark:border-sky-500/40',
-        };
-    }
-    if (cleanName.includes('doubao') || cleanName.includes('bytedance')) {
-        return {
-            abbr: 'DB',
-            bgClass: 'bg-teal-500/15 dark:bg-teal-500/25',
-            textClass: 'text-teal-700 dark:text-teal-400',
-            borderClass: 'border-teal-500/30 dark:border-teal-500/40',
-        };
-    }
-    if (cleanName.includes('kimi') || cleanName.includes('moonshot')) {
-        return {
-            abbr: 'K',
-            bgClass: 'bg-violet-500/15 dark:bg-violet-500/25',
-            textClass: 'text-violet-700 dark:text-violet-400',
-            borderClass: 'border-violet-500/30 dark:border-violet-500/40',
-        };
-    }
-
-    // 兜底：稳定 hash(模型名) -> 预设色板
-    const fallbackPalettes = [
-        { bgClass: 'bg-blue-500/15 dark:bg-blue-500/25', textClass: 'text-blue-600 dark:text-blue-400', borderClass: 'border-blue-500/30 dark:border-blue-500/40' },
-        { bgClass: 'bg-emerald-500/15 dark:bg-emerald-500/25', textClass: 'text-emerald-700 dark:text-emerald-400', borderClass: 'border-emerald-500/30 dark:border-emerald-500/40' },
-        { bgClass: 'bg-purple-500/15 dark:bg-purple-500/25', textClass: 'text-purple-600 dark:text-purple-400', borderClass: 'border-purple-500/30 dark:border-purple-500/40' },
-        { bgClass: 'bg-amber-500/15 dark:bg-amber-500/25', textClass: 'text-amber-700 dark:text-amber-400', borderClass: 'border-amber-500/30 dark:border-amber-500/40' },
-        { bgClass: 'bg-rose-500/15 dark:bg-rose-500/25', textClass: 'text-rose-600 dark:text-rose-400', borderClass: 'border-rose-500/30 dark:border-rose-500/40' },
-        { bgClass: 'bg-cyan-500/15 dark:bg-cyan-500/25', textClass: 'text-cyan-700 dark:text-cyan-400', borderClass: 'border-cyan-500/30 dark:border-cyan-500/40' },
-    ];
-    let hash = 0;
-    for (let i = 0; i < cleanName.length; i++) {
-        hash = ((hash << 5) - hash) + cleanName.charCodeAt(i);
-        hash |= 0;
-    }
-    const idx = Math.abs(hash) % fallbackPalettes.length;
-    const initial = (cleanName.charAt(0) || 'M').toUpperCase();
-    return {
-        abbr: initial,
-        ...fallbackPalettes[idx],
-    };
-}
-
 export const LogCard = React.memo(function LogCard({ log }: { log: RelayLog }) {
     const t = useTranslations('log.card');
     const canViewDetails = useAuthStore((state) => state.user?.role === 'admin');
@@ -802,8 +678,6 @@ export const LogCard = React.memo(function LogCard({ log }: { log: RelayLog }) {
         usageMissingReason ? { label: 'usage_reason', value: usageMissingReason } : null,
     ].filter((item): item is { label: string; value: string } => item !== null);
 
-    const brandStyle = useMemo(() => getModelBrandStyle(modelNameToDisplay), [modelNameToDisplay]);
-
     const [isDiagnosticExpanded, setIsDiagnosticExpanded] = useState(false);
     const [isTechExpanded, setIsTechExpanded] = useState(false);
     const statusLabel = hasError ? t('failedStatus') : hasPartialFailure ? t('warnStatus') : t('successStatus');
@@ -838,21 +712,16 @@ export const LogCard = React.memo(function LogCard({ log }: { log: RelayLog }) {
                             hasError ? "bg-destructive" : hasPartialFailure ? "bg-amber-500" : "bg-emerald-500/50",
                         )}
                     />
-                    {/* V7：40px 圆形模型头像列 + 内容列（两行 + 可选的错误第三行） */}
-                    <div className="grid w-full grid-cols-[40px_minmax(0,1fr)] items-center gap-3.5 p-4">
+                    {/* V7：48px 官方真实模型 Logo 舱 + 内容列（三行工整排版） */}
+                    <div className="grid w-full grid-cols-[48px_minmax(0,1fr)] items-center gap-3.5 p-4">
                         <div
                             title={modelNameToDisplay}
-                            className={cn(
-                                "grid size-10 shrink-0 select-none place-items-center self-center rounded-full border text-xs font-bold tracking-wider",
-                                brandStyle.bgClass,
-                                brandStyle.textClass,
-                                brandStyle.borderClass,
-                            )}
+                            className="grid size-12 shrink-0 select-none place-items-center self-center rounded-2xl border border-border/70 bg-[#f4efe6] shadow-xs dark:border-border/40 dark:bg-muted/40"
                         >
-                            <span>{brandStyle.abbr}</span>
+                            <ModelAvatar size={28} />
                         </div>
                         <div className="flex min-w-0 flex-col gap-1.5">
-                            {/* 顶行：状态徽标 + 端点徽标 + 请求模型 → 实际模型 + 流式 + 详情 */}
+                            {/* 第 1 行：路由链路（状态 + 接口类型 + 路径 + 请求模型 → 渠道 + 实际模型 + 流式 + 详情） */}
                             <div className="flex min-w-0 flex-wrap items-center gap-2 text-sm">
                                 <LogRouteHeader
                                     variant="card"
@@ -884,53 +753,72 @@ export const LogCard = React.memo(function LogCard({ log }: { log: RelayLog }) {
                                     </span>
                                 )}
                             </div>
-                            {/* 底行：时间 + 渠道 + 令牌打码 + Tokens + 首字 + 总耗时 + 费用，带小图标，tabular-nums，gap-4 */}
-                            <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1.5 text-xs tabular-nums text-muted-foreground">
+
+                            {/* 第 2 行：性能指标（时间 + 首字 + 总耗时 + 输入 + 缓存命中 + 输出） */}
+                            <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-xs tabular-nums text-muted-foreground">
                                 <div className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
                                     <Clock className="size-3.5 shrink-0 text-muted-foreground" />
                                     <span>{formatTime(log.time)}</span>
                                 </div>
-                                {log.channel_name && (
-                                    <div className="flex shrink-0 items-center gap-1.5">
-                                        <SafeText value={log.channel_name} className="truncate" />
-                                    </div>
-                                )}
-                                {requestAPIKeyName && (
-                                    <div className="flex shrink-0 items-center gap-1.5">
-                                        <KeyRound className="size-3.5 shrink-0 text-muted-foreground" />
-                                        <MonoSafeText value={maskSensitive(requestAPIKeyName, sensitiveVisible)} className="min-w-0 truncate" />
-                                    </div>
-                                )}
-                                {!isModelTest && (
-                                    <div className="flex min-w-0 items-center gap-1.5">
-                                        <Cpu className="size-3.5 shrink-0 text-muted-foreground" />
-                                        <span className="min-w-0 truncate">{formatTokensSummary(log)}</span>
-                                    </div>
-                                )}
-                                <div className={cn("flex min-w-0 items-center gap-1.5 font-medium", latencyTextColor(log.ftut, 1500, 4000))}>
+                                <div className={cn("flex shrink-0 items-center gap-1 font-medium", latencyTextColor(log.ftut, 1500, 4000))}>
                                     <Zap className="size-3.5 shrink-0" />
-                                    <span className="min-w-0 truncate">{t('firstToken')} {Number.isFinite(log.ftut) && log.ftut > 0 ? formatDuration(log.ftut) : '--'}</span>
+                                    <span>{t('firstToken')} {Number.isFinite(log.ftut) && log.ftut > 0 ? formatDuration(log.ftut) : '--'}</span>
                                 </div>
-                                <div className={cn("flex min-w-0 items-center gap-1.5 font-medium", latencyTextColor(log.use_time, 5000, 15000))}>
+                                <div className={cn("flex shrink-0 items-center gap-1 font-medium", latencyTextColor(log.use_time, 5000, 15000))}>
                                     <Clock className="size-3.5 shrink-0 text-muted-foreground" />
-                                    <span className="min-w-0 truncate">{t('totalTime')} {formatDuration(log.use_time)}</span>
+                                    <span>{t('totalTime')} {formatDuration(log.use_time)}</span>
                                 </div>
                                 {!isModelTest && (
-                                    <div className="flex min-w-0 items-center gap-1.5">
+                                    <div className="flex shrink-0 items-center gap-1">
+                                        <ArrowDown className="size-3.5 shrink-0 text-muted-foreground" />
+                                        <span>输入 {(log.input_tokens ?? 0).toLocaleString()}</span>
+                                    </div>
+                                )}
+                                {!isModelTest && ((log.cache_hit_tokens ?? 0) > 0 || (log.cache_hit_rate ?? 0) > 0) && (
+                                    <div className="flex shrink-0 items-center gap-1 text-emerald-600 dark:text-emerald-400">
+                                        <Percent className="size-3.5 shrink-0" />
+                                        <span>缓存命中 {(log.cache_hit_tokens ?? 0).toLocaleString()} / {formatCacheRate(log.cache_hit_rate)}</span>
+                                    </div>
+                                )}
+                                {!isModelTest && (
+                                    <div className="flex shrink-0 items-center gap-1">
+                                        <ArrowUp className="size-3.5 shrink-0 text-muted-foreground" />
+                                        <span>输出 {(log.output_tokens ?? 0).toLocaleString()}</span>
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* 第 3 行：费用与元数据（费用 + 思考强度 + 令牌 + 用户） */}
+                            <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-xs tabular-nums text-muted-foreground">
+                                {!isModelTest && (
+                                    <div className="flex shrink-0 items-center gap-1">
                                         <DollarSign className="size-3.5 shrink-0 text-emerald-500" />
                                         <span className="shrink-0 whitespace-nowrap font-medium tabular-nums text-emerald-600 dark:text-emerald-400">
-                                            {Number(log.cost) > 0 ? `$${Number(log.cost).toFixed(6)}` : '$0.000000'}
+                                            {t('cost')}: {Number(log.cost) > 0 ? `$${Number(log.cost).toFixed(6)}` : '$0.000000'}
                                         </span>
                                     </div>
                                 )}
                                 {reasoningEffort && (
-                                    <div className="flex shrink-0 items-center gap-1.5">
+                                    <div className="flex shrink-0 items-center gap-1">
                                         <Brain className="size-3.5 shrink-0 text-muted-foreground" />
                                         <span className="min-w-0 truncate">{t('thinking')} · {reasoningEffort}</span>
                                     </div>
                                 )}
+                                {requestAPIKeyName && (
+                                    <div className="flex shrink-0 items-center gap-1">
+                                        <KeyRound className="size-3.5 shrink-0 text-muted-foreground" />
+                                        <MonoSafeText value={maskSensitive(requestAPIKeyName, sensitiveVisible)} className="min-w-0 truncate" />
+                                    </div>
+                                )}
+                                {canViewDetails && userName && (
+                                    <div className="flex shrink-0 items-center gap-1">
+                                        <User className="size-3.5 shrink-0 text-muted-foreground" />
+                                        <span className="min-w-0 truncate">{userName}</span>
+                                    </div>
+                                )}
                             </div>
-                            {/* 第三行：错误/警告摘要（浅色块，不再整卡染红） */}
+
+                            {/* 第 4 行：错误/警告摘要（浅色块，条件展示） */}
                             {(hasError || hasPartialFailure) && (
                                 <div className={cn(
                                     "rounded-lg border px-2.5 py-1 text-[11.5px]",

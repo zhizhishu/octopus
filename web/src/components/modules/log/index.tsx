@@ -15,6 +15,7 @@ import { useAbortIntervention, useAbortRunningRequest, useRescueRunningRequest, 
 import { useAuthStore, useUserList } from '@/api/endpoints/user';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Switch } from '@/components/ui/switch';
 import { cn } from '@/lib/utils';
 import { toast } from '@/components/common/Toast';
 import { TooltipProvider } from '@/components/animate-ui/components/animate/tooltip';
@@ -1202,55 +1203,39 @@ export function Log() {
                             隐藏测试探针
                         </label>
 
-                        {/* 历史日志 / 实时调用切换按钮（紧凑模式） */}
-                        <div className="inline-flex shrink-0 items-center gap-1">
-                            <button
-                                type="button"
-                                aria-pressed={viewMode === 'history'}
-                                onClick={() => setViewMode('history')}
-                                className={cn(
-                                    'inline-flex h-7 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium whitespace-nowrap transition-colors',
-                                    viewMode === 'history'
-                                        ? 'border-[#d8c49e] bg-[#E8D7B4] text-[#433D35] shadow-sm dark:border-[#d8c49e]/40 dark:bg-[#E8D7B4]/25 dark:text-[#E8D7B4] dark:shadow-none'
-                                        : 'border-border bg-background text-muted-foreground hover:bg-[#f5f2ea] hover:text-foreground dark:bg-card dark:hover:bg-muted/60'
-                                )}
+                        {/* 实时动态 Switch 开关（区分实时与关闭，对齐隐藏测试探针） */}
+                        <div className="inline-flex shrink-0 items-center gap-2">
+                            <label
+                                htmlFor="live-mode-switch"
+                                className="inline-flex cursor-pointer select-none items-center gap-1.5 text-xs text-muted-foreground"
                             >
-                                <ScrollText className="size-3.5 shrink-0" />
-                                <span>历史日志</span>
-                            </button>
-                            <button
-                                type="button"
-                                aria-pressed={isLiveMode}
-                                onClick={() => {
-                                    setViewMode('live');
-                                    setCurrentPage(1);
-                                }}
-                                className={cn(
-                                    'inline-flex h-7 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium whitespace-nowrap transition-colors',
-                                    isLiveMode
-                                        ? 'border-[#d8c49e] bg-[#E8D7B4] text-[#433D35] shadow-sm dark:border-[#d8c49e]/40 dark:bg-[#E8D7B4]/25 dark:text-[#E8D7B4] dark:shadow-none'
-                                        : 'border-border bg-background text-muted-foreground hover:bg-[#f5f2ea] hover:text-foreground dark:bg-card dark:hover:bg-muted/60'
-                                )}
-                            >
-                                <span className="relative flex size-2 shrink-0">
-                                    {isLiveMode && isConnected && (
-                                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-                                    )}
-                                    <span
-                                        className={cn(
-                                            'relative inline-flex size-2 rounded-full',
-                                            isLiveMode
-                                                ? isConnected
+                                <span>实时动态</span>
+                                {isLiveMode && (
+                                    <span className="relative flex size-2 shrink-0">
+                                        {isConnected && (
+                                            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                                        )}
+                                        <span
+                                            className={cn(
+                                                'relative inline-flex size-2 rounded-full',
+                                                isConnected
                                                     ? 'bg-emerald-500'
                                                     : streamError
                                                         ? 'bg-destructive'
                                                         : 'bg-amber-500'
-                                                : 'bg-muted-foreground/50'
-                                        )}
-                                    />
-                                </span>
-                                <span>实时调用</span>
-                            </button>
+                                            )}
+                                        />
+                                    </span>
+                                )}
+                            </label>
+                            <Switch
+                                id="live-mode-switch"
+                                checked={isLiveMode}
+                                onCheckedChange={(checked) => {
+                                    setViewMode(checked ? 'live' : 'history');
+                                    setCurrentPage(1);
+                                }}
+                            />
                         </div>
                     </div>
 
