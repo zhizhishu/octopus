@@ -715,7 +715,7 @@
         "live": {
             "viewHistory": "History Logs",
             "viewLive": "Live Activity",
-            "activeActivity": "Live Activity & Rescue",
+            "activeActivity": "Live Requests",
             "activeEmpty": "No active requests or rescue tasks",
             "running": "In progress",
             "rescue": "Automatic rescue",

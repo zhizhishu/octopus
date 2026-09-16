@@ -500,6 +500,9 @@ function LiveActivityPanel({
                     const elapsedSeconds = Number.isFinite(startedTimestamp)
                         ? Math.max(0, Math.round(((state.finished_at ? new Date(state.finished_at).getTime() : Date.now()) - startedTimestamp) / 1000))
                         : null;
+                    const isRescue = Boolean(state.intervention_id) || state.round > 1;
+                    const totalAttempts = Math.max(state.round, state.attempts?.length ?? 1);
+                    const retries = Math.max(0, totalAttempts - 1);
 
                     return (
                         <div key={state.id} className="flex items-start gap-2 py-1.5 first:pt-0">
@@ -507,14 +510,20 @@ function LiveActivityPanel({
                                 <summary className="grid min-h-10 min-w-0 cursor-pointer list-none grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1 rounded-md px-2 py-1.5 transition-[background-color,box-shadow,transform] duration-200 hover:bg-muted/70 hover:shadow-sm active:scale-[0.99] outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-8 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] sm:px-1.5 sm:py-1">
                                     <span className="flex min-w-0 items-center gap-1.5">
                                         <ChevronRight className="size-3.5 shrink-0 text-muted-foreground transition-transform duration-200 ease-out group-open:rotate-90 group-hover:text-foreground" />
-                                        <Badge variant="outline" className="border-sky-500/40 bg-sky-500/10 text-[10px] text-sky-700 dark:text-sky-300 animate-pulse">
-                                            {t('running')}
-                                        </Badge>
+                                        {isRescue ? (
+                                            <Badge variant="outline" className="border-amber-500/40 bg-amber-500/10 text-[10px] text-amber-700 dark:text-amber-300">
+                                                {t('autoRescue')}
+                                            </Badge>
+                                        ) : (
+                                            <Badge variant="outline" className="border-sky-500/40 bg-sky-500/10 text-[10px] text-sky-700 dark:text-sky-300 animate-pulse">
+                                                {t('running')}
+                                            </Badge>
+                                        )}
                                         <span className="truncate font-mono text-xs" title={state.model}>
                                             {state.model || 'unknown'}
                                         </span>
                                     </span>
-                                    <span className="truncate text-xs text-sky-600 dark:text-sky-300">
+                                    <span className={cn('truncate text-xs', isRescue ? 'text-amber-600 dark:text-amber-300' : 'text-sky-600 dark:text-sky-300')}>
                                         {isAdmin && state.sending && state.target_channel
                                             ? state.target_channel
                                             : state.round > 1
@@ -573,10 +582,11 @@ function LiveActivityPanel({
 
                                     {state.error && <p className="break-words text-destructive">{state.error}</p>}
 
-                                    {isAdmin && (state.attempts?.length ?? 0) > 0 && (
+                                    {isAdmin && (
                                         <div className="divide-y divide-border/60 rounded border border-border/60 bg-muted/20 px-2 py-1">
-                                            <div className="py-1 text-[11px] font-medium text-muted-foreground">
-                                                渠道尝试 ({state.attempts?.length})
+                                            <div className="flex items-center justify-between py-1 text-[11px] font-medium text-muted-foreground">
+                                                <span>渠道尝试 ({state.attempts?.length ?? 0})</span>
+                                                <span className="tabular-nums">总调用 {totalAttempts} 次 · 重试 {retries} 次</span>
                                             </div>
                                             {(state.attempts ?? []).map((attempt, index) => (
                                                 <div key={`${attempt.round}-${index}`} className="flex min-w-0 flex-wrap items-center justify-between gap-2 py-1 text-xs">
@@ -1109,10 +1119,10 @@ export function Log() {
                     )}
                 </div>
 
-                {/* Row 3: 日期/状态 pills + 只看重试/隐藏探针 + 元信息 + 右侧图标操作（V7 最终层：无 border-top、无 padding-top，行间仅靠父级 gap；pills 组沙色容器） */}
-                <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5">
-                    {/* 左侧：日期 pills + 状态 pills（并排 14px 间距）+ 只看重试 + 隐藏探针；flex-1 让右侧按钮组永远同行不被挤下去 */}
-                    <div className="flex min-w-0 flex-1 flex-wrap items-center gap-3.5">
+                {/* Row 3: 拆成两行（行 A: 筛选控件 / 行 B: 元信息 + 分页 + 操作按钮）。删掉原左组 flex-1，避免撑高导致按钮垂直居中悬空 */}
+                <div className="flex flex-col gap-2">
+                    {/* 行 A：筛选控件，自由折行 */}
+                    <div className="flex min-w-0 flex-wrap items-center gap-x-3.5 gap-y-1.5">
                         {/* 日期快捷键 pills（组内永不断行） */}
                         <div className="flex flex-nowrap items-center gap-0.5 rounded-lg bg-[#f0ece1] p-0.5 dark:bg-[#f0ece1]/20">
                             {dateRangeShortcuts.map((shortcut) => {
@@ -1237,8 +1247,11 @@ export function Log() {
                                 }}
                             />
                         </div>
+                    </div>
 
-                        {/* 元信息：总数 / 加载态 / 本地时区提示 / 实时指示 / 桌面端分页（与左侧控件同一行） */}
+                    {/* 行 B：元信息 + 分页 + 操作按钮，同一视觉横排，按钮贴右端 */}
+                    <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5">
+                        {/* 元信息：总数 / 加载态 / 本地时区提示 / 实时指示 / 桌面端分页 */}
                         {activeTotal !== undefined
                             ? <span className="text-xs text-muted-foreground">共 {activeTotal.toLocaleString()} 条{severityFilter !== 'all' ? `（${t(`list.filters.${severityFilter}`)}）` : ''}</span>
                             : <span className="text-xs text-muted-foreground">{countsError ? '总数统计暂不可用' : '总数计算中…'}</span>}
@@ -1295,53 +1308,53 @@ export function Log() {
                                 </label>
                             </div>
                         )}
-                    </div>
 
-                    {/* 右侧：重置（有生效筛选才出现）+ 显隐敏感 / 刷新 / 导出 */}
-                    <div className="ml-auto flex shrink-0 flex-nowrap items-center gap-1.5">
-                        {hasActiveFilter && (
+                        {/* 右端操作组：重置（有生效筛选才出现）+ 显隐敏感 / 刷新 / 导出 */}
+                        <div className="ml-auto flex shrink-0 flex-nowrap items-center gap-1.5">
+                            {hasActiveFilter && (
+                                <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={handleResetFilters}
+                                    className="h-8 rounded-lg px-2 text-xs"
+                                >
+                                    <RotateCcw className="size-3.5" />
+                                    <span>{t('list.reset')}</span>
+                                </Button>
+                            )}
                             <Button
                                 variant="ghost"
-                                size="sm"
-                                onClick={handleResetFilters}
-                                className="h-8 rounded-lg px-2 text-xs"
+                                size="icon"
+                                onClick={() => setSensitiveVisible(!sensitiveVisible)}
+                                title={sensitiveVisible ? t('list.hideSensitive') : t('list.showSensitive')}
+                                aria-label={sensitiveVisible ? t('list.hideSensitive') : t('list.showSensitive')}
+                                className="h-8 w-8 rounded-lg border border-border bg-background text-muted-foreground hover:text-foreground dark:bg-card"
                             >
-                                <RotateCcw className="size-3.5" />
-                                <span>{t('list.reset')}</span>
+                                {sensitiveVisible ? <Eye className="size-4" /> : <EyeOff className="size-4" />}
                             </Button>
-                        )}
-                        <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => setSensitiveVisible(!sensitiveVisible)}
-                            title={sensitiveVisible ? t('list.hideSensitive') : t('list.showSensitive')}
-                            aria-label={sensitiveVisible ? t('list.hideSensitive') : t('list.showSensitive')}
-                            className="h-8 w-8 rounded-lg border border-border bg-background text-muted-foreground hover:text-foreground dark:bg-card"
-                        >
-                            {sensitiveVisible ? <Eye className="size-4" /> : <EyeOff className="size-4" />}
-                        </Button>
-                        <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={handleRefresh}
-                            disabled={isRefreshing || isLoading}
-                            title={isRefreshing ? t('list.refreshing') : t('list.refresh')}
-                            aria-label={t('list.refresh')}
-                            className="h-8 w-8 rounded-lg border border-border bg-background text-muted-foreground hover:text-foreground max-sm:hidden dark:bg-card"
-                        >
-                            <RefreshCw className={cn('size-4', isRefreshing && 'animate-spin')} />
-                        </Button>
-                        <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={handleExport}
-                            disabled={exportLogs.isPending}
-                            title={t('list.export')}
-                            aria-label={t('list.export')}
-                            className="h-8 w-8 rounded-lg border border-border bg-background text-muted-foreground hover:text-foreground dark:bg-card"
-                        >
-                            {exportLogs.isPending ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}
-                        </Button>
+                            <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={handleRefresh}
+                                disabled={isRefreshing || isLoading}
+                                title={isRefreshing ? t('list.refreshing') : t('list.refresh')}
+                                aria-label={t('list.refresh')}
+                                className="h-8 w-8 rounded-lg border border-border bg-background text-muted-foreground hover:text-foreground max-sm:hidden dark:bg-card"
+                            >
+                                <RefreshCw className={cn('size-4', isRefreshing && 'animate-spin')} />
+                            </Button>
+                            <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={handleExport}
+                                disabled={exportLogs.isPending}
+                                title={t('list.export')}
+                                aria-label={t('list.export')}
+                                className="h-8 w-8 rounded-lg border border-border bg-background text-muted-foreground hover:text-foreground dark:bg-card"
+                            >
+                                {exportLogs.isPending ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}
+                            </Button>
+                        </div>
                     </div>
                 </div>
 

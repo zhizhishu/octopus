@@ -715,7 +715,7 @@
         "live": {
             "viewHistory": "历史日志",
             "viewLive": "实时动态",
-            "activeActivity": "实时请求与自动救援",
+            "activeActivity": "实时请求",
             "activeEmpty": "暂无活跃请求或救援任务",
             "running": "正在调用",
             "rescue": "自动救援",

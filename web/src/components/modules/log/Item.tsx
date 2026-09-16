@@ -715,7 +715,7 @@ export const LogCard = React.memo(function LogCard({ log }: { log: RelayLog }) {
                         )}
                     />
                     {/* V7：48px 官方真实模型 Logo 舱 + 内容列（紧凑排版） */}
-                    <div className="grid w-full grid-cols-[48px_minmax(0,1fr)] items-center gap-3.5 p-4">
+                    <div className="grid w-full grid-cols-[48px_minmax(0,1fr)] items-center gap-3.5 p-3 sm:px-4 sm:py-3">
                         <div
                             title={modelNameToDisplay}
                             className="grid size-12 shrink-0 select-none place-items-center self-center rounded-2xl border border-border/70 bg-[#f4efe6] shadow-xs dark:border-border/40 dark:bg-muted/40"
@@ -756,62 +756,82 @@ export const LogCard = React.memo(function LogCard({ log }: { log: RelayLog }) {
                                 )}
                             </div>
 
-                            {/* 第 2 行：指标与元数据合并单行（时间 · 首字 · 总耗时 · 输入 · 缓存命中 · 输出 · 费用 · 思考 · 令牌 · 用户） */}
-                            <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-xs tabular-nums text-muted-foreground">
+                            {/* 第 2 行：紧凑摘要带（按信息组聚类，组内 whitespace-nowrap 不可断行，组间整组换行） */}
+                            <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs tabular-nums text-muted-foreground">
+                                {/* G1 时间与位置 */}
                                 <div className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
                                     <Clock className="size-3.5 shrink-0 text-muted-foreground" />
                                     <span>{formatTime(log.time)}</span>
+                                    {log.request_ip?.trim() && (
+                                        <>
+                                            <span className="text-muted-foreground/60">·</span>
+                                            <span className="font-mono">{log.request_ip.trim()}</span>
+                                        </>
+                                    )}
                                 </div>
-                                <div className={cn("flex shrink-0 items-center gap-1 font-medium", latencyTextColor(log.ftut, 1500, 4000))}>
-                                    <Zap className="size-3.5 shrink-0" />
-                                    <span>{t('firstToken')} {Number.isFinite(log.ftut) && log.ftut > 0 ? formatDuration(log.ftut) : '--'}</span>
-                                </div>
-                                <div className={cn("flex shrink-0 items-center gap-1 font-medium", latencyTextColor(log.use_time, 5000, 15000))}>
-                                    <Clock className="size-3.5 shrink-0 text-muted-foreground" />
-                                    <span>{t('totalTime')} {formatDuration(log.use_time)}</span>
-                                </div>
+
+                                {/* G2 用量与推理 */}
                                 {!isModelTest && (
-                                    <div className="flex shrink-0 items-center gap-1">
-                                        <ArrowDown className="size-3.5 shrink-0 text-muted-foreground" />
-                                        <span>输入 {(log.input_tokens ?? 0).toLocaleString()}</span>
+                                    <div className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
+                                        <span>{formatTokensSummary(log)}</span>
+                                        {reasoningEffort && (
+                                            <>
+                                                <span className="text-muted-foreground/60">·</span>
+                                                <span className="inline-flex items-center gap-1">
+                                                    <Brain className="size-3.5 shrink-0 text-muted-foreground" />
+                                                    <span>{t('thinking')} {reasoningEffort}</span>
+                                                </span>
+                                            </>
+                                        )}
                                     </div>
                                 )}
-                                {!isModelTest && (
-                                    <div className="flex min-w-0 shrink-0 items-center gap-1">
-                                        <Percent className="size-3.5 shrink-0 text-muted-foreground" />
-                                        <span className="min-w-0 truncate">缓存命中 {(log.cache_hit_tokens ?? 0).toLocaleString()} / {formatCacheRate(log.cache_hit_rate)}</span>
-                                    </div>
-                                )}
-                                {!isModelTest && (
-                                    <div className="flex shrink-0 items-center gap-1">
-                                        <ArrowUp className="size-3.5 shrink-0 text-muted-foreground" />
-                                        <span>输出 {(log.output_tokens ?? 0).toLocaleString()}</span>
-                                    </div>
-                                )}
-                                {!isModelTest && (
-                                    <div className="flex shrink-0 items-center gap-1">
-                                        <DollarSign className="size-3.5 shrink-0 text-emerald-500" />
-                                        <span className="shrink-0 whitespace-nowrap font-medium tabular-nums text-emerald-600 dark:text-emerald-400">
-                                            {t('cost')}: {Number(log.cost) > 0 ? `$${Number(log.cost).toFixed(6)}` : '$0.000000'}
-                                        </span>
-                                    </div>
-                                )}
-                                {reasoningEffort && (
-                                    <div className="flex shrink-0 items-center gap-1">
+                                {isModelTest && reasoningEffort && (
+                                    <div className="flex shrink-0 items-center gap-1 whitespace-nowrap">
                                         <Brain className="size-3.5 shrink-0 text-muted-foreground" />
-                                        <span className="min-w-0 truncate">{t('thinking')} · {reasoningEffort}</span>
+                                        <span>{t('thinking')} {reasoningEffort}</span>
                                     </div>
                                 )}
-                                {requestAPIKeyName && (
-                                    <div className="flex shrink-0 items-center gap-1">
-                                        <KeyRound className="size-3.5 shrink-0 text-muted-foreground" />
-                                        <MonoSafeText value={maskSensitive(requestAPIKeyName, sensitiveVisible)} className="min-w-0 truncate" />
-                                    </div>
-                                )}
-                                {canViewDetails && userName && (
-                                    <div className="flex shrink-0 items-center gap-1">
-                                        <User className="size-3.5 shrink-0 text-muted-foreground" />
-                                        <span className="min-w-0 truncate">{userName}</span>
+
+                                {/* G3 耗时与费用 */}
+                                <div className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
+                                    <span className={cn("inline-flex items-center gap-1 font-medium", latencyTextColor(log.ftut, 1500, 4000))}>
+                                        <Zap className="size-3.5 shrink-0" />
+                                        <span>{t('firstToken')} {Number.isFinite(log.ftut) && log.ftut > 0 ? formatDuration(log.ftut) : '--'}</span>
+                                    </span>
+                                    <span className="text-muted-foreground/60">·</span>
+                                    <span className={cn("inline-flex items-center gap-1 font-medium", latencyTextColor(log.use_time, 5000, 15000))}>
+                                        <Clock className="size-3.5 shrink-0 text-muted-foreground" />
+                                        <span>{t('totalTime')} {formatDuration(log.use_time)}</span>
+                                    </span>
+                                    {!isModelTest && (
+                                        <>
+                                            <span className="text-muted-foreground/60">·</span>
+                                            <span className="inline-flex items-center gap-1 font-medium tabular-nums text-emerald-600 dark:text-emerald-400">
+                                                <DollarSign className="size-3.5 shrink-0 text-emerald-500" />
+                                                <span>{Number(log.cost) > 0 ? `$${Number(log.cost).toFixed(6)}` : '$0.000000'}</span>
+                                            </span>
+                                        </>
+                                    )}
+                                </div>
+
+                                {/* G4 身份 */}
+                                {(requestAPIKeyName || (canViewDetails && userName)) && (
+                                    <div className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
+                                        {requestAPIKeyName && (
+                                            <span className="inline-flex items-center gap-1">
+                                                <KeyRound className="size-3.5 shrink-0 text-muted-foreground" />
+                                                <MonoSafeText value={maskSensitive(requestAPIKeyName, sensitiveVisible)} className="max-w-[140px] truncate" />
+                                            </span>
+                                        )}
+                                        {requestAPIKeyName && canViewDetails && userName && (
+                                            <span className="text-muted-foreground/60">·</span>
+                                        )}
+                                        {canViewDetails && userName && (
+                                            <span className="inline-flex items-center gap-1">
+                                                <User className="size-3.5 shrink-0 text-muted-foreground" />
+                                                <span className="max-w-[120px] truncate">{userName}</span>
+                                            </span>
+                                        )}
                                     </div>
                                 )}
                             </div>
