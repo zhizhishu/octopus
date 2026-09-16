@@ -1026,58 +1026,7 @@ export function Log() {
             )}
             <div className="flex flex-none flex-col gap-3 rounded-2xl border border-border bg-card p-3.5 sm:px-4 sm:py-3.5 shadow-sm">
 
-                {/* Row 1: 历史日志 / 实时调用（V7：38px 实体按钮，独立成行） */}
-                <div className="flex min-w-0 flex-wrap items-center gap-2.5">
-                    <button
-                        type="button"
-                        aria-pressed={viewMode === 'history'}
-                        onClick={() => setViewMode('history')}
-                        className={cn(
-                            'inline-flex h-[38px] items-center gap-1.5 rounded-[10px] border px-4 text-[13px] font-semibold whitespace-nowrap transition-colors',
-                            viewMode === 'history'
-                                ? 'border-[#d8c49e] bg-[#E8D7B4] text-[#433D35] dark:border-[#d8c49e]/40 dark:bg-[#E8D7B4]/25 dark:text-[#E8D7B4]'
-                                : 'border-border bg-[#fbfaf8] text-muted-foreground hover:bg-[#f5f2ea] hover:text-foreground dark:bg-card dark:hover:bg-muted/60'
-                        )}
-                    >
-                        <ScrollText className="size-4 shrink-0" />
-                        <span>历史日志</span>
-                    </button>
-                    <button
-                        type="button"
-                        aria-pressed={isLiveMode}
-                        onClick={() => {
-                            setViewMode('live');
-                            setCurrentPage(1);
-                        }}
-                        className={cn(
-                            'inline-flex h-[38px] items-center gap-1.5 rounded-[10px] border px-4 text-[13px] font-semibold whitespace-nowrap transition-colors',
-                            isLiveMode
-                                ? 'border-[#d8c49e] bg-[#E8D7B4] text-[#433D35] dark:border-[#d8c49e]/40 dark:bg-[#E8D7B4]/25 dark:text-[#E8D7B4]'
-                                : 'border-border bg-[#fbfaf8] text-muted-foreground hover:bg-[#f5f2ea] hover:text-foreground dark:bg-card dark:hover:bg-muted/60'
-                        )}
-                    >
-                        <span className="relative flex size-2 shrink-0">
-                            {isLiveMode && isConnected && (
-                                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-                            )}
-                            <span
-                                className={cn(
-                                    'relative inline-flex size-2 rounded-full',
-                                    isLiveMode
-                                        ? isConnected
-                                            ? 'bg-emerald-500'
-                                            : streamError
-                                                ? 'bg-destructive'
-                                                : 'bg-amber-500'
-                                        : 'bg-muted-foreground/50'
-                                )}
-                            />
-                        </span>
-                        <span>实时调用</span>
-                    </button>
-                </div>
-
-                {/* Row 2: 搜索 + 端点 + 厂商 + 模型 + 高级筛选（V7：grid 1fr/140/140/140/auto，34px 高，无文字前缀） */}
+                {/* Row 1: 搜索 + 端点 + 厂商 + 模型 + 高级筛选（V7：grid 1fr/140/140/140/auto，34px 高，无文字前缀） */}
                 <div className="grid grid-cols-[1fr_140px_140px_140px_auto] items-center gap-2 max-sm:flex max-sm:flex-wrap">
                     <label className="relative flex min-w-0 items-center max-sm:w-full">
                         <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -1252,6 +1201,57 @@ export function Log() {
                             />
                             隐藏测试探针
                         </label>
+
+                        {/* 历史日志 / 实时调用切换按钮（紧凑模式） */}
+                        <div className="inline-flex shrink-0 items-center gap-1">
+                            <button
+                                type="button"
+                                aria-pressed={viewMode === 'history'}
+                                onClick={() => setViewMode('history')}
+                                className={cn(
+                                    'inline-flex h-7 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium whitespace-nowrap transition-colors',
+                                    viewMode === 'history'
+                                        ? 'border-[#d8c49e] bg-[#E8D7B4] text-[#433D35] shadow-sm dark:border-[#d8c49e]/40 dark:bg-[#E8D7B4]/25 dark:text-[#E8D7B4] dark:shadow-none'
+                                        : 'border-border bg-background text-muted-foreground hover:bg-[#f5f2ea] hover:text-foreground dark:bg-card dark:hover:bg-muted/60'
+                                )}
+                            >
+                                <ScrollText className="size-3.5 shrink-0" />
+                                <span>历史日志</span>
+                            </button>
+                            <button
+                                type="button"
+                                aria-pressed={isLiveMode}
+                                onClick={() => {
+                                    setViewMode('live');
+                                    setCurrentPage(1);
+                                }}
+                                className={cn(
+                                    'inline-flex h-7 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium whitespace-nowrap transition-colors',
+                                    isLiveMode
+                                        ? 'border-[#d8c49e] bg-[#E8D7B4] text-[#433D35] shadow-sm dark:border-[#d8c49e]/40 dark:bg-[#E8D7B4]/25 dark:text-[#E8D7B4] dark:shadow-none'
+                                        : 'border-border bg-background text-muted-foreground hover:bg-[#f5f2ea] hover:text-foreground dark:bg-card dark:hover:bg-muted/60'
+                                )}
+                            >
+                                <span className="relative flex size-2 shrink-0">
+                                    {isLiveMode && isConnected && (
+                                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                                    )}
+                                    <span
+                                        className={cn(
+                                            'relative inline-flex size-2 rounded-full',
+                                            isLiveMode
+                                                ? isConnected
+                                                    ? 'bg-emerald-500'
+                                                    : streamError
+                                                        ? 'bg-destructive'
+                                                        : 'bg-amber-500'
+                                                : 'bg-muted-foreground/50'
+                                        )}
+                                    />
+                                </span>
+                                <span>实时调用</span>
+                            </button>
+                        </div>
                     </div>
 
                     {/* 右侧：重置（有生效筛选才出现）+ 显隐敏感 / 刷新 / 导出 */}

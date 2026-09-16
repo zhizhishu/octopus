@@ -601,6 +601,130 @@ function LazyLogBodies({ logId, fallbackRequest, fallbackResponse, requestLabel,
     );
 }
 
+// 供应商色彩映射：厂商名称/前缀 -> 品牌主色、首字母缩写、浅色/暗色徽章样式
+interface ModelBrandStyle {
+    abbr: string;
+    bgClass: string;
+    textClass: string;
+    borderClass: string;
+}
+
+function getModelBrandStyle(modelName: string): ModelBrandStyle {
+    const name = (modelName || '').trim().toLowerCase();
+    // 剔除 provider/ 前缀，如 "anthropic/claude-3-5-sonnet" -> "claude-3-5-sonnet"
+    const cleanName = name.includes('/') ? name.split('/')[1] : name.includes(':') ? name.split(':')[1] : name;
+
+    if (cleanName.includes('deepseek')) {
+        return {
+            abbr: 'DS',
+            bgClass: 'bg-blue-500/15 dark:bg-blue-500/25',
+            textClass: 'text-blue-600 dark:text-blue-400',
+            borderClass: 'border-blue-500/30 dark:border-blue-500/40',
+        };
+    }
+    if (cleanName.includes('claude') || cleanName.includes('anthropic')) {
+        return {
+            abbr: 'C',
+            bgClass: 'bg-amber-500/15 dark:bg-amber-500/25',
+            textClass: 'text-amber-700 dark:text-amber-400',
+            borderClass: 'border-amber-500/30 dark:border-amber-500/40',
+        };
+    }
+    if (cleanName.includes('gpt') || cleanName.includes('openai') || cleanName.startsWith('o1') || cleanName.startsWith('o3') || cleanName.startsWith('o4')) {
+        return {
+            abbr: 'G',
+            bgClass: 'bg-emerald-500/15 dark:bg-emerald-500/25',
+            textClass: 'text-emerald-700 dark:text-emerald-400',
+            borderClass: 'border-emerald-500/30 dark:border-emerald-500/40',
+        };
+    }
+    if (cleanName.includes('gemini') || cleanName.includes('google') || cleanName.includes('gemma')) {
+        return {
+            abbr: 'GE',
+            bgClass: 'bg-indigo-500/15 dark:bg-indigo-500/25',
+            textClass: 'text-indigo-600 dark:text-indigo-400',
+            borderClass: 'border-indigo-500/30 dark:border-indigo-500/40',
+        };
+    }
+    if (cleanName.includes('glm') || cleanName.includes('zhipu') || cleanName.includes('chatglm') || cleanName.includes('codegeex')) {
+        return {
+            abbr: 'GLM',
+            bgClass: 'bg-cyan-500/15 dark:bg-cyan-500/25',
+            textClass: 'text-cyan-700 dark:text-cyan-400',
+            borderClass: 'border-cyan-500/30 dark:border-cyan-500/40',
+        };
+    }
+    if (cleanName.includes('qwen') || cleanName.includes('qwq') || cleanName.includes('alibaba')) {
+        return {
+            abbr: 'QW',
+            bgClass: 'bg-purple-500/15 dark:bg-purple-500/25',
+            textClass: 'text-purple-600 dark:text-purple-400',
+            borderClass: 'border-purple-500/30 dark:border-purple-500/40',
+        };
+    }
+    if (cleanName.includes('grok') || cleanName.includes('xai')) {
+        return {
+            abbr: 'X',
+            bgClass: 'bg-zinc-500/15 dark:bg-zinc-500/25',
+            textClass: 'text-zinc-700 dark:text-zinc-300',
+            borderClass: 'border-zinc-500/30 dark:border-zinc-500/40',
+        };
+    }
+    if (cleanName.includes('mistral') || cleanName.includes('codestral') || cleanName.includes('pixtral')) {
+        return {
+            abbr: 'M',
+            bgClass: 'bg-orange-500/15 dark:bg-orange-500/25',
+            textClass: 'text-orange-700 dark:text-orange-400',
+            borderClass: 'border-orange-500/30 dark:border-orange-500/40',
+        };
+    }
+    if (cleanName.includes('llama') || cleanName.includes('meta')) {
+        return {
+            abbr: 'L',
+            bgClass: 'bg-sky-500/15 dark:bg-sky-500/25',
+            textClass: 'text-sky-700 dark:text-sky-400',
+            borderClass: 'border-sky-500/30 dark:border-sky-500/40',
+        };
+    }
+    if (cleanName.includes('doubao') || cleanName.includes('bytedance')) {
+        return {
+            abbr: 'DB',
+            bgClass: 'bg-teal-500/15 dark:bg-teal-500/25',
+            textClass: 'text-teal-700 dark:text-teal-400',
+            borderClass: 'border-teal-500/30 dark:border-teal-500/40',
+        };
+    }
+    if (cleanName.includes('kimi') || cleanName.includes('moonshot')) {
+        return {
+            abbr: 'K',
+            bgClass: 'bg-violet-500/15 dark:bg-violet-500/25',
+            textClass: 'text-violet-700 dark:text-violet-400',
+            borderClass: 'border-violet-500/30 dark:border-violet-500/40',
+        };
+    }
+
+    // 兜底：稳定 hash(模型名) -> 预设色板
+    const fallbackPalettes = [
+        { bgClass: 'bg-blue-500/15 dark:bg-blue-500/25', textClass: 'text-blue-600 dark:text-blue-400', borderClass: 'border-blue-500/30 dark:border-blue-500/40' },
+        { bgClass: 'bg-emerald-500/15 dark:bg-emerald-500/25', textClass: 'text-emerald-700 dark:text-emerald-400', borderClass: 'border-emerald-500/30 dark:border-emerald-500/40' },
+        { bgClass: 'bg-purple-500/15 dark:bg-purple-500/25', textClass: 'text-purple-600 dark:text-purple-400', borderClass: 'border-purple-500/30 dark:border-purple-500/40' },
+        { bgClass: 'bg-amber-500/15 dark:bg-amber-500/25', textClass: 'text-amber-700 dark:text-amber-400', borderClass: 'border-amber-500/30 dark:border-amber-500/40' },
+        { bgClass: 'bg-rose-500/15 dark:bg-rose-500/25', textClass: 'text-rose-600 dark:text-rose-400', borderClass: 'border-rose-500/30 dark:border-rose-500/40' },
+        { bgClass: 'bg-cyan-500/15 dark:bg-cyan-500/25', textClass: 'text-cyan-700 dark:text-cyan-400', borderClass: 'border-cyan-500/30 dark:border-cyan-500/40' },
+    ];
+    let hash = 0;
+    for (let i = 0; i < cleanName.length; i++) {
+        hash = ((hash << 5) - hash) + cleanName.charCodeAt(i);
+        hash |= 0;
+    }
+    const idx = Math.abs(hash) % fallbackPalettes.length;
+    const initial = (cleanName.charAt(0) || 'M').toUpperCase();
+    return {
+        abbr: initial,
+        ...fallbackPalettes[idx],
+    };
+}
+
 export const LogCard = React.memo(function LogCard({ log }: { log: RelayLog }) {
     const t = useTranslations('log.card');
     const canViewDetails = useAuthStore((state) => state.user?.role === 'admin');
@@ -678,6 +802,8 @@ export const LogCard = React.memo(function LogCard({ log }: { log: RelayLog }) {
         usageMissingReason ? { label: 'usage_reason', value: usageMissingReason } : null,
     ].filter((item): item is { label: string; value: string } => item !== null);
 
+    const brandStyle = useMemo(() => getModelBrandStyle(modelNameToDisplay), [modelNameToDisplay]);
+
     const [isDiagnosticExpanded, setIsDiagnosticExpanded] = useState(false);
     const [isTechExpanded, setIsTechExpanded] = useState(false);
     const statusLabel = hasError ? t('failedStatus') : hasPartialFailure ? t('warnStatus') : t('successStatus');
@@ -714,8 +840,16 @@ export const LogCard = React.memo(function LogCard({ log }: { log: RelayLog }) {
                     />
                     {/* V7：40px 圆形模型头像列 + 内容列（两行 + 可选的错误第三行） */}
                     <div className="grid w-full grid-cols-[40px_minmax(0,1fr)] items-center gap-3.5 p-4">
-                        <div className="grid size-10 shrink-0 place-items-center self-center rounded-full border border-[#e3decb] bg-[#f0ece1] dark:border-[#e3decb]/30 dark:bg-[#f0ece1]/15">
-                            <ModelAvatar size={22} />
+                        <div
+                            title={modelNameToDisplay}
+                            className={cn(
+                                "grid size-10 shrink-0 select-none place-items-center self-center rounded-full border text-xs font-bold tracking-wider",
+                                brandStyle.bgClass,
+                                brandStyle.textClass,
+                                brandStyle.borderClass,
+                            )}
+                        >
+                            <span>{brandStyle.abbr}</span>
                         </div>
                         <div className="flex min-w-0 flex-col gap-1.5">
                             {/* 顶行：状态徽标 + 端点徽标 + 请求模型 → 实际模型 + 流式 + 详情 */}
