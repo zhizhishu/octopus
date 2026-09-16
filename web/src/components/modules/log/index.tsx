@@ -1111,8 +1111,8 @@ export function Log() {
 
                 {/* Row 3: 日期/状态 pills + 只看重试/隐藏探针 + 右侧图标操作（V7：border-top 分隔，pills 组沙色容器） */}
                 <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 border-t border-[#f0ede6] pt-2.5 dark:border-border/60">
-                    {/* 左侧：日期 pills + 状态 pills（并排 14px 间距）+ 只看重试 + 隐藏探针 */}
-                    <div className="flex min-w-0 flex-wrap items-center gap-3.5">
+                    {/* 左侧：日期 pills + 状态 pills（并排 14px 间距）+ 只看重试 + 隐藏探针；flex-1 让右侧按钮组永远同行不被挤下去 */}
+                    <div className="flex min-w-0 flex-1 flex-wrap items-center gap-3.5">
                         {/* 日期快捷键 pills（组内永不断行） */}
                         <div className="flex flex-nowrap items-center gap-0.5 rounded-lg bg-[#f0ece1] p-0.5 dark:bg-[#f0ece1]/20">
                             {dateRangeShortcuts.map((shortcut) => {
