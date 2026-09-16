@@ -1237,6 +1237,64 @@ export function Log() {
                                 }}
                             />
                         </div>
+
+                        {/* 元信息：总数 / 加载态 / 本地时区提示 / 实时指示 / 桌面端分页（与左侧控件同一行） */}
+                        {activeTotal !== undefined
+                            ? <span className="text-xs text-muted-foreground">共 {activeTotal.toLocaleString()} 条{severityFilter !== 'all' ? `（${t(`list.filters.${severityFilter}`)}）` : ''}</span>
+                            : <span className="text-xs text-muted-foreground">{countsError ? '总数统计暂不可用' : '总数计算中…'}</span>}
+                        <span role="status" aria-live="polite" className="min-w-14 text-xs text-muted-foreground">
+                            {isLoading ? '加载中…' : isFetching ? '更新中…' : ''}
+                        </span>
+                        <span className="text-xs text-muted-foreground">时间按浏览器本地时区显示</span>
+                        {isLiveMode && currentPage === 1 && <span className="text-xs text-emerald-700 dark:text-emerald-300">实时插入中</span>}
+                        {(currentPage > 1 || (totalPages !== undefined && totalPages > 1)) && (
+                            <div className="hidden items-center gap-1 text-xs text-muted-foreground sm:flex">
+                                <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                                    disabled={currentPage <= 1 || isLoading}
+                                    className="h-6 w-6 rounded-md"
+                                    aria-label="上一页"
+                                >
+                                    <ChevronLeft className="size-3" />
+                                </Button>
+                                <span className="tabular-nums">第 {currentPage} / {totalPages ?? '—'} 页</span>
+                                <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    onClick={() => totalPages !== undefined && setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                                    disabled={totalPages === undefined || currentPage >= totalPages || isLoading}
+                                    className="h-6 w-6 rounded-md"
+                                    aria-label="下一页"
+                                >
+                                    <ChevronRight className="size-3" />
+                                </Button>
+                                <label className="flex items-center gap-1">
+                                    <span>跳至</span>
+                                    <input
+                                        type="number"
+                                        min={1}
+                                        max={totalPages}
+                                        disabled={totalPages === undefined}
+                                        value={pageJumpInput}
+                                        onChange={(e) => setPageJumpInput(e.target.value)}
+                                        onKeyDown={(e) => {
+                                            if (e.key !== 'Enter') return;
+                                            const p = parseInt(pageJumpInput, 10);
+                                            if (totalPages !== undefined && Number.isFinite(p) && p >= 1 && p <= totalPages) {
+                                                setCurrentPage(p);
+                                            }
+                                            setPageJumpInput('');
+                                        }}
+                                        onBlur={() => setPageJumpInput('')}
+                                        placeholder={String(currentPage)}
+                                        className="h-6 w-10 rounded-md border border-input bg-background px-1.5 text-center text-xs text-foreground [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                                    />
+                                    <span>页</span>
+                                </label>
+                            </div>
+                        )}
                     </div>
 
                     {/* 右侧：重置（有生效筛选才出现）+ 显隐敏感 / 刷新 / 导出 */}
@@ -1356,64 +1414,6 @@ export function Log() {
                         ))}
                     </div>
                 )}
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-muted-foreground">
-                    {activeTotal !== undefined
-                        ? <span>共 {activeTotal.toLocaleString()} 条{severityFilter !== 'all' ? `（${t(`list.filters.${severityFilter}`)}）` : ''}</span>
-                        : <span>{countsError ? '总数统计暂不可用' : '总数计算中…'}</span>}
-                    <span role="status" aria-live="polite" className="min-w-14">
-                        {isLoading ? '加载中…' : isFetching ? '更新中…' : ''}
-                    </span>
-                    <span>时间按浏览器本地时区显示</span>
-                    {isLiveMode && currentPage === 1 && <span className="text-emerald-700 dark:text-emerald-300">实时插入中</span>}
-                    {(currentPage > 1 || (totalPages !== undefined && totalPages > 1)) && (
-                        <div className="hidden items-center gap-1 sm:flex">
-                            <Button
-                                variant="ghost"
-                                size="icon"
-                                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-                                disabled={currentPage <= 1 || isLoading}
-                                className="h-6 w-6 rounded-md"
-                                aria-label="上一页"
-                            >
-                                <ChevronLeft className="size-3" />
-                            </Button>
-                            <span className="tabular-nums">第 {currentPage} / {totalPages ?? '—'} 页</span>
-                            <Button
-                                variant="ghost"
-                                size="icon"
-                                onClick={() => totalPages !== undefined && setCurrentPage((p) => Math.min(totalPages, p + 1))}
-                                disabled={totalPages === undefined || currentPage >= totalPages || isLoading}
-                                className="h-6 w-6 rounded-md"
-                                aria-label="下一页"
-                            >
-                                <ChevronRight className="size-3" />
-                            </Button>
-                            <label className="flex items-center gap-1">
-                                <span>跳至</span>
-                                <input
-                                    type="number"
-                                    min={1}
-                                    max={totalPages}
-                                    disabled={totalPages === undefined}
-                                    value={pageJumpInput}
-                                    onChange={(e) => setPageJumpInput(e.target.value)}
-                                    onKeyDown={(e) => {
-                                        if (e.key !== 'Enter') return;
-                                        const p = parseInt(pageJumpInput, 10);
-                                        if (totalPages !== undefined && Number.isFinite(p) && p >= 1 && p <= totalPages) {
-                                            setCurrentPage(p);
-                                        }
-                                        setPageJumpInput('');
-                                    }}
-                                    onBlur={() => setPageJumpInput('')}
-                                    placeholder={String(currentPage)}
-                                    className="h-6 w-10 rounded-md border border-input bg-background px-1.5 text-center text-xs text-foreground [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-                                />
-                                <span>页</span>
-                            </label>
-                        </div>
-                    )}
-                </div>
                 {(currentPage > 1 || (totalPages !== undefined && totalPages > 1)) && (
                     <div className="flex items-center gap-2 border-t border-border/60 pt-2 sm:hidden">
                         <Button

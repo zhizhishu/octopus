@@ -321,7 +321,7 @@ function LogRouteHeader({
                     className={cn(
                         "min-w-0 shrink text-xs font-mono",
                         isCard
-                            ? "max-w-[14rem] border-0 bg-[#f0ece1] px-1.5 py-0 text-[#555] dark:bg-[#f0ece1]/15 dark:text-muted-foreground"
+                            ? "max-w-[14rem] border-border/70 bg-muted/40 px-1.5 py-0"
                             : "max-w-[16rem] border-border/70 bg-muted/40 px-2 py-0.5"
                     )}
                     title={endpointTitle}
@@ -335,7 +335,7 @@ function LogRouteHeader({
                     className={cn(
                         "min-w-0 shrink text-xs font-mono",
                         isCard
-                            ? "max-w-[14rem] border-0 bg-[#f0ece1] px-1.5 py-0 text-[#555] dark:bg-[#f0ece1]/15 dark:text-muted-foreground"
+                            ? "max-w-[14rem] border-border/70 bg-muted/40 px-1.5 py-0"
                             : "max-w-[16rem] border-border/70 bg-muted/40 px-2 py-0.5"
                     )}
                     title={upstreamPathTitle}
@@ -384,7 +384,7 @@ function LogRouteHeader({
                     className={cn(
                         "shrink-0 text-xs",
                         isCard
-                            ? "border-0 bg-[#f0ece1] px-1.5 py-0 text-[#555] dark:bg-[#f0ece1]/15 dark:text-muted-foreground"
+                            ? "border-border/60 bg-muted/30 px-1.5 py-0"
                             : "border-border/60 bg-muted/30 px-1.5 py-0"
                     )}
                 >
@@ -683,10 +683,10 @@ export const LogCard = React.memo(function LogCard({ log }: { log: RelayLog }) {
     const statusLabel = hasError ? t('failedStatus') : hasPartialFailure ? t('warnStatus') : t('successStatus');
     const StatusIcon = hasError ? XCircle : hasPartialFailure ? AlertCircle : CheckCircle2;
     const statusToneClass = hasError
-        ? "bg-[#f3e6e1] text-[#c75d44] dark:bg-[#f3e6e1]/25 dark:text-[#e08a72]"
+        ? "bg-destructive/10 text-destructive"
         : hasPartialFailure
-            ? "bg-[#fefce8] text-[#b45309] dark:bg-[#fefce8]/25 dark:text-[#eab308]"
-            : "bg-[#ecfdf5] text-[#059669] dark:bg-[#ecfdf5]/25 dark:text-[#34d399]";
+            ? "bg-amber-500/10 text-amber-700 dark:text-amber-300"
+            : "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400";
     const statusTextClass = hasError
         ? "text-destructive"
         : hasPartialFailure
@@ -698,10 +698,12 @@ export const LogCard = React.memo(function LogCard({ log }: { log: RelayLog }) {
                 <MorphingDialogTrigger
                     disabled={!canViewDetails}
                     className={cn(
-                        "relative flex w-full items-center overflow-hidden rounded-2xl border bg-card text-left",
+                        "relative w-full overflow-hidden rounded-lg border bg-card text-left",
                         hasError
-                            ? "min-h-[122px] border-[#fca5a5] dark:border-destructive/40"
-                            : "min-h-[96px] border-border",
+                            ? "border-destructive/40 bg-destructive/[0.05]"
+                            : hasPartialFailure
+                                ? "border-amber-500/40 bg-amber-500/[0.05]"
+                                : "border-border",
                     )}
                 >
                     {/* 左侧状态色条：失败/重试的行一眼可辨（抄自 new-api 的整行 tint 思路）。 */}
@@ -712,7 +714,7 @@ export const LogCard = React.memo(function LogCard({ log }: { log: RelayLog }) {
                             hasError ? "bg-destructive" : hasPartialFailure ? "bg-amber-500" : "bg-emerald-500/50",
                         )}
                     />
-                    {/* V7：48px 官方真实模型 Logo 舱 + 内容列（三行工整排版） */}
+                    {/* V7：48px 官方真实模型 Logo 舱 + 内容列（紧凑排版） */}
                     <div className="grid w-full grid-cols-[48px_minmax(0,1fr)] items-center gap-3.5 p-4">
                         <div
                             title={modelNameToDisplay}
@@ -740,7 +742,7 @@ export const LogCard = React.memo(function LogCard({ log }: { log: RelayLog }) {
                                 {(hasMultipleAttempts && hasPartialFailure) && (
                                     <Badge
                                         variant="secondary"
-                                        className="shrink-0 gap-1 border-0 bg-[#fefce8] px-1.5 py-0 text-xs text-[#b45309] dark:bg-[#fefce8]/25 dark:text-[#eab308]"
+                                        className="shrink-0 gap-1 border-0 bg-amber-500/15 px-1.5 py-0 text-xs text-amber-700 dark:text-amber-300"
                                     >
                                         <RotateCw className="size-3 opacity-80" />
                                         {t('autoRescue')}
@@ -754,7 +756,7 @@ export const LogCard = React.memo(function LogCard({ log }: { log: RelayLog }) {
                                 )}
                             </div>
 
-                            {/* 第 2 行：性能指标（时间 + 首字 + 总耗时 + 输入 + 缓存命中 + 输出） */}
+                            {/* 第 2 行：指标与元数据合并单行（时间 · 首字 · 总耗时 · 输入 · 缓存命中 · 输出 · 费用 · 思考 · 令牌 · 用户） */}
                             <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-xs tabular-nums text-muted-foreground">
                                 <div className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
                                     <Clock className="size-3.5 shrink-0 text-muted-foreground" />
@@ -774,10 +776,10 @@ export const LogCard = React.memo(function LogCard({ log }: { log: RelayLog }) {
                                         <span>输入 {(log.input_tokens ?? 0).toLocaleString()}</span>
                                     </div>
                                 )}
-                                {!isModelTest && ((log.cache_hit_tokens ?? 0) > 0 || (log.cache_hit_rate ?? 0) > 0) && (
-                                    <div className="flex shrink-0 items-center gap-1 text-emerald-600 dark:text-emerald-400">
-                                        <Percent className="size-3.5 shrink-0" />
-                                        <span>缓存命中 {(log.cache_hit_tokens ?? 0).toLocaleString()} / {formatCacheRate(log.cache_hit_rate)}</span>
+                                {!isModelTest && (
+                                    <div className="flex min-w-0 shrink-0 items-center gap-1">
+                                        <Percent className="size-3.5 shrink-0 text-muted-foreground" />
+                                        <span className="min-w-0 truncate">缓存命中 {(log.cache_hit_tokens ?? 0).toLocaleString()} / {formatCacheRate(log.cache_hit_rate)}</span>
                                     </div>
                                 )}
                                 {!isModelTest && (
@@ -786,10 +788,6 @@ export const LogCard = React.memo(function LogCard({ log }: { log: RelayLog }) {
                                         <span>输出 {(log.output_tokens ?? 0).toLocaleString()}</span>
                                     </div>
                                 )}
-                            </div>
-
-                            {/* 第 3 行：费用与元数据（费用 + 思考强度 + 令牌 + 用户） */}
-                            <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-xs tabular-nums text-muted-foreground">
                                 {!isModelTest && (
                                     <div className="flex shrink-0 items-center gap-1">
                                         <DollarSign className="size-3.5 shrink-0 text-emerald-500" />
@@ -818,18 +816,19 @@ export const LogCard = React.memo(function LogCard({ log }: { log: RelayLog }) {
                                 )}
                             </div>
 
-                            {/* 第 4 行：错误/警告摘要（浅色块，条件展示） */}
+                            {/* 错误/警告摘要（78d44e2 语义 token 块） */}
                             {(hasError || hasPartialFailure) && (
                                 <div className={cn(
-                                    "rounded-lg border px-2.5 py-1 text-[11.5px]",
-                                    hasError
-                                        ? "border-[#fee2e2] bg-[#fef2f2] text-[#b91c1c] dark:border-destructive/30 dark:bg-destructive/10 dark:text-destructive"
-                                        : "border-[#fef08a] bg-[#fefce8] text-[#b45309] dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300",
+                                    "overflow-hidden rounded-xl border p-2.5",
+                                    hasError ? "border-destructive/20 bg-destructive/10" : "border-amber-500/20 bg-amber-500/10",
                                 )}>
                                     <SafeText
                                         mode="wrap"
                                         value={verdict.text}
-                                        className="line-clamp-2 font-medium"
+                                        className={cn(
+                                            "line-clamp-2 text-xs font-medium",
+                                            hasError ? "text-destructive" : "text-amber-700 dark:text-amber-300",
+                                        )}
                                     />
                                 </div>
                             )}
