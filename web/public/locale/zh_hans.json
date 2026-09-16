@@ -713,6 +713,7 @@
     },
     "log": {
         "live": {
+            "autoRescue": "自动救援",
             "viewHistory": "历史日志",
             "viewLive": "实时动态",
             "activeActivity": "实时请求",
@@ -761,6 +762,7 @@
             }
         },
         "card": {
+            "autoRescue": "自动救援",
             "error": "错误",
             "errorInfo": "错误信息",
             "firstToken": "首字",

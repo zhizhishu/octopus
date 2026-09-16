@@ -713,6 +713,7 @@
     },
     "log": {
         "live": {
+            "autoRescue": "Auto-rescued",
             "viewHistory": "History Logs",
             "viewLive": "Live Activity",
             "activeActivity": "Live Requests",
@@ -761,6 +762,7 @@
             }
         },
         "card": {
+            "autoRescue": "Auto-rescued",
             "error": "Error",
             "errorInfo": "Error Info",
             "firstToken": "TTFT",

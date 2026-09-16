@@ -713,6 +713,7 @@
     },
     "log": {
         "live": {
+            "autoRescue": "自動救援",
             "viewHistory": "歷史日誌",
             "viewLive": "即時動態",
             "activeActivity": "即時請求",
@@ -761,6 +762,7 @@
             }
         },
         "card": {
+            "autoRescue": "自動救援",
             "error": "錯誤",
             "errorInfo": "錯誤訊息",
             "firstToken": "首字",
