@@ -753,8 +753,9 @@ export const LogCard = React.memo(function LogCard({ log }: { log: RelayLog }) {
                                 )}
                             </div>
 
-                            {/* 第 2 行：紧凑摘要带（5050 的 gap-x-4 gap-y-2；组内 whitespace-nowrap 不可断行，组间整组换行） */}
-                            <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2 text-xs tabular-nums text-muted-foreground">
+                            {/* 第 2 行：紧凑摘要带固定两行（与 5050 等高对齐：行1 身份与用量，行2 性能与费用） */}
+                            <div className="flex min-w-0 flex-col gap-2 text-xs tabular-nums text-muted-foreground">
+                                <div className="flex min-w-0 flex-wrap items-center gap-x-4">
                                 {/* G1 时间与位置 */}
                                 <div className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
                                     <Clock className="size-3.5 shrink-0 text-muted-foreground" />
@@ -788,6 +789,8 @@ export const LogCard = React.memo(function LogCard({ log }: { log: RelayLog }) {
                                         <span>{t('thinking')} {reasoningEffort}</span>
                                     </div>
                                 )}
+                                </div>
+                                <div className="flex min-w-0 flex-wrap items-center gap-x-4">
 
                                 {/* G3 耗时与费用 */}
                                 <div className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
@@ -831,6 +834,7 @@ export const LogCard = React.memo(function LogCard({ log }: { log: RelayLog }) {
                                         )}
                                     </div>
                                 )}
+                                </div>
                             </div>
 
                             {/* 错误/警告叙述框：按用户要求移除（详情弹窗里仍有完整 verdict） */}

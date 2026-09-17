@@ -1047,7 +1047,7 @@ export function Log() {
                             onChange={(e) => { setSearchKeyword(e.target.value); setCurrentPage(1); }}
                             placeholder="搜索请求 ID / 令牌 / 错误信息…"
                             title="可搜索用户名、API Key 名、请求/实际模型名、渠道名、端点名、路径、会话 Key、错误信息及错误码；输入纯数字时额外精准匹配日志 ID 或渠道 ID"
-                            className="h-[34px] w-full rounded-[10px] border border-input bg-background pl-8 pr-7 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+                            className="h-9 w-full rounded-lg border border-input bg-background pl-8 pr-7 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
                         />
                         {searchKeyword && (
                             <button
@@ -1064,7 +1064,7 @@ export function Log() {
                         aria-label="端点"
                         value={selectedEndpoint}
                         onChange={(event) => handleSelectEndpoint(event.target.value)}
-                        className="h-[34px] w-[140px] rounded-[10px] border border-input bg-background px-3 text-xs text-foreground outline-none"
+                        className="h-9 w-[140px] rounded-lg border border-input bg-background px-3 text-xs text-foreground outline-none"
                     >
                         {endpointFilters.map((endpoint) => (
                             <option key={endpoint.value || 'all'} value={endpoint.value}>
@@ -1076,7 +1076,7 @@ export function Log() {
                         aria-label="厂商"
                         value={selectedProvider}
                         onChange={(event) => handleSelectProvider(event.target.value)}
-                        className="h-[34px] w-[140px] rounded-[10px] border border-input bg-background px-3 text-xs text-foreground outline-none"
+                        className="h-9 w-[140px] rounded-lg border border-input bg-background px-3 text-xs text-foreground outline-none"
                     >
                         {providerFilters.map((provider) => (
                             <option key={provider.value || 'all'} value={provider.value}>
@@ -1088,7 +1088,7 @@ export function Log() {
                         aria-label="模型"
                         value={selectedModel}
                         onChange={(event) => handleSelectModel(event.target.value)}
-                        className="h-[34px] w-[140px] rounded-[10px] border border-input bg-background px-3 text-xs text-foreground outline-none"
+                        className="h-9 w-[140px] rounded-lg border border-input bg-background px-3 text-xs text-foreground outline-none"
                     >
                         <option value="">全部模型</option>
                         {availableModelOptions.map((modelName) => (
@@ -1103,8 +1103,8 @@ export function Log() {
                             size="sm"
                             onClick={() => setAdvancedOpen((open) => !open)}
                             className={cn(
-                                "h-[34px] rounded-[10px] px-3 max-sm:w-auto text-xs font-medium transition-colors",
-                                advancedOpen ? "bg-[#E8D7B4] text-[#433D35] border-[#d8c49e] dark:bg-[#E8D7B4]/25 dark:text-[#E8D7B4]" : ""
+                                "h-8 rounded-lg px-3 max-sm:w-auto text-xs font-medium transition-colors",
+                                advancedOpen ? "border-foreground/25 bg-foreground/[0.06] text-foreground" : ""
                             )}
                         >
                             <SlidersHorizontal className="size-4" />
@@ -1123,8 +1123,8 @@ export function Log() {
                 <div className="flex flex-col gap-2">
                     {/* 行 A：筛选控件，自由折行 */}
                     <div className="flex min-w-0 flex-wrap items-center gap-x-3.5 gap-y-1.5">
-                        {/* 日期快捷键 pills（组内永不断行） */}
-                        <div className="flex flex-nowrap items-center gap-0.5 rounded-lg bg-[#f0ece1] p-0.5 dark:bg-[#f0ece1]/20">
+                        {/* 日期快捷键 pills（5050 规格：bg-muted/60 托盘 + h-8 rounded-lg 白底阴影选中态） */}
+                        <div className="flex min-w-0 flex-wrap items-center gap-1 rounded-lg bg-muted/60 p-1">
                             {dateRangeShortcuts.map((shortcut) => {
                                 const active = activeDateShortcut === shortcut.id;
 
@@ -1135,10 +1135,10 @@ export function Log() {
                                         aria-pressed={active}
                                         onClick={() => applyDateRangeShortcut(shortcut.id)}
                                         className={cn(
-                                            'inline-flex h-7 items-center rounded-md px-2.5 text-xs font-medium whitespace-nowrap transition-colors',
+                                            'inline-flex h-8 items-center rounded-lg px-2.5 text-xs font-medium whitespace-nowrap transition-colors',
                                             active
-                                                ? 'bg-white text-[#433D35] shadow-sm dark:bg-background dark:text-foreground dark:shadow-none'
-                                                : 'text-muted-foreground hover:bg-white/50 hover:text-foreground'
+                                                ? 'bg-background text-foreground shadow-sm'
+                                                : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'
                                         )}
                                     >
                                         {shortcut.label}
@@ -1147,8 +1147,8 @@ export function Log() {
                             })}
                         </div>
 
-                        {/* 状态筛选 pills（组内永不断行） */}
-                        <div className="flex flex-nowrap items-center gap-0.5 rounded-lg bg-[#f0ece1] p-0.5 dark:bg-[#f0ece1]/20">
+                        {/* 状态筛选 pills（5050 规格：Error/Warn/成功 与日期钮同一套视觉） */}
+                        <div className="flex min-w-0 flex-wrap items-center gap-1 rounded-lg bg-muted/60 p-1">
                             {severityFilters.map((filter) => {
                                 const Icon = filter.icon;
                                 const active = severityFilter === filter.id;
@@ -1163,10 +1163,10 @@ export function Log() {
                                             setCurrentPage(1);
                                         }}
                                         className={cn(
-                                            'inline-flex h-7 min-w-0 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium whitespace-nowrap transition-colors',
+                                            'inline-flex h-8 min-w-0 items-center gap-1.5 rounded-lg px-2 text-xs font-medium whitespace-nowrap transition-colors',
                                             active
-                                                ? 'bg-white text-[#433D35] shadow-sm dark:bg-background dark:text-foreground dark:shadow-none'
-                                                : 'text-muted-foreground hover:bg-white/50 hover:text-foreground'
+                                                ? 'bg-background text-foreground shadow-sm'
+                                                : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'
                                         )}
                                     >
                                         <Icon className={cn('size-3.5 shrink-0', filter.className)} />
