@@ -122,7 +122,17 @@ func maybeHandleCursorEmptyAnthropicProbe(c *gin.Context, inboundType inbound.In
 }
 
 func requestHasNoEffectiveInput(req *transformerModel.InternalLLMRequest) bool {
-	if req == nil || len(req.Messages) == 0 {
+	if req == nil {
+		return true
+	}
+	// Embedding requests carry their payload in EmbeddingInput; Messages is
+	// naturally empty for them. Genuinely empty embedding input stays the
+	// upstream's call: InternalLLMRequest.Validate already rejects it with
+	// "input cannot be empty".
+	if req.IsEmbeddingRequest() {
+		return false
+	}
+	if len(req.Messages) == 0 {
 		return true
 	}
 	for _, msg := range req.Messages {

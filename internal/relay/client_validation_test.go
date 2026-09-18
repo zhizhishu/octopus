@@ -12,6 +12,7 @@ import (
 	"github.com/bestruirui/octopus/internal/op"
 	"github.com/bestruirui/octopus/internal/transformer/inbound"
 	geminiInbound "github.com/bestruirui/octopus/internal/transformer/inbound/gemini"
+	transformerModel "github.com/bestruirui/octopus/internal/transformer/model"
 	"github.com/gin-gonic/gin"
 )
 
@@ -448,5 +449,113 @@ func TestCursorAnthropicBlankMessageProbeIsLocal(t *testing.T) {
 	}
 	if logs[0].TotalAttempts != 0 || logs[0].ChannelId != 0 {
 		t.Fatalf("cursor blank-message probe must not forward upstream: channel=%d attempts=%d", logs[0].ChannelId, logs[0].TotalAttempts)
+	}
+}
+
+func TestRequestHasNoEffectiveInput(t *testing.T) {
+	tests := []struct {
+		name string
+		req  *transformerModel.InternalLLMRequest
+		want bool
+	}{
+		{name: "nil request", req: nil, want: true},
+		{
+			name: "embedding single input with empty messages",
+			req: &transformerModel.InternalLLMRequest{
+				Model:          "text-embedding-3-small",
+				EmbeddingInput: &transformerModel.EmbeddingInput{Single: strPtr("hello world")},
+			},
+			want: false,
+		},
+		{
+			name: "embedding multiple inputs with empty messages",
+			req: &transformerModel.InternalLLMRequest{
+				Model:          "text-embedding-3-small",
+				EmbeddingInput: &transformerModel.EmbeddingInput{Multiple: []string{"hello", "world"}},
+			},
+			want: false,
+		},
+		{
+			name: "embedding raw token-array input with empty messages",
+			req: &transformerModel.InternalLLMRequest{
+				Model:          "text-embedding-3-small",
+				EmbeddingInput: &transformerModel.EmbeddingInput{Raw: json.RawMessage(`[1,2,3]`)},
+			},
+			want: false,
+		},
+		{
+			// An empty-shell EmbeddingInput is Validate()'s job ("input cannot
+			// be empty"), not this gate's: the upstream stays the authority.
+			name: "embedding empty shell input still passes this gate",
+			req: &transformerModel.InternalLLMRequest{
+				Model:          "text-embedding-3-small",
+				EmbeddingInput: &transformerModel.EmbeddingInput{},
+			},
+			want: false,
+		},
+		{
+			name: "chat empty messages",
+			req:  &transformerModel.InternalLLMRequest{Model: "gpt-5.5"},
+			want: true,
+		},
+		{
+			name: "chat whitespace-only message",
+			req: &transformerModel.InternalLLMRequest{
+				Model:    "gpt-5.5",
+				Messages: []transformerModel.Message{{Role: "user", Content: transformerModel.MessageContent{Content: strPtr("   ")}}},
+			},
+			want: true,
+		},
+		{
+			name: "chat effective message",
+			req: &transformerModel.InternalLLMRequest{
+				Model:    "gpt-5.5",
+				Messages: []transformerModel.Message{{Role: "user", Content: transformerModel.MessageContent{Content: strPtr("hello")}}},
+			},
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := requestHasNoEffectiveInput(tt.req); got != tt.want {
+				t.Fatalf("requestHasNoEffectiveInput() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHandlerDoesNotRejectEmbeddingRequestAsEmpty(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayErrorDB(t)
+	if err := op.RelayLogClear(ctx, nil); err != nil {
+		t.Fatalf("clear relay logs: %v", err)
+	}
+
+	body := `{"model":"text-embedding-3-small","input":"hello world"}`
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/v1/embeddings", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+	c.Set("api_key_id", 0)
+	c.Set("user_id", 0)
+	c.Set("request_ip", "127.0.0.1")
+
+	Handler(inbound.InboundTypeOpenAIEmbedding, c)
+
+	// The empty-input gate must not fire for embedding requests. With an empty
+	// DB routing fails afterwards (404 "model not found"), which is fine: the
+	// point is the request got past local validation toward the upstream.
+	if rec.Code == http.StatusBadRequest && strings.Contains(rec.Body.String(), clientEmptyRequestCode) {
+		t.Fatalf("embedding request must not be rejected as empty, got %d body %s", rec.Code, rec.Body.String())
+	}
+	logs, err := op.RelayLogList(ctx, nil, nil, 1, 10, nil)
+	if err != nil {
+		t.Fatalf("list relay logs: %v", err)
+	}
+	for _, got := range logs {
+		if got.ErrorCode == clientEmptyRequestCode {
+			t.Fatalf("embedding request must not leave an empty-request validation log, got %#v", got)
+		}
 	}
 }
