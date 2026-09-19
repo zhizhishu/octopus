@@ -74,7 +74,8 @@ func NewProbeSender(channel dbmodel.Channel, upstreamModel, endpoint string) (*P
 // Ask 实现 modelverify.Sender：发一条题，返回归一后的响应。
 func (s *ProbeSender) Ask(ctx context.Context, ask modelverify.Ask) (modelverify.Response, error) {
 	prompt := strings.TrimSpace(ask.Prompt)
-	if prompt == "" {
+	// 多轮形态（签名回放）不带 Prompt，题目全在轮次里。
+	if len(ask.Turns) == 0 && prompt == "" {
 		return modelverify.Response{}, fmt.Errorf("探针题目为空")
 	}
 	r := &modelRunner{}
@@ -88,11 +89,43 @@ func (s *ProbeSender) Ask(ctx context.Context, ask modelverify.Ask) (modelverify
 	if ask.MaxTokens != nil && *ask.MaxTokens > 0 {
 		r.probeMaxTokens = *ask.MaxTokens
 	}
+	// 多轮形态：把探针的轮次翻成出站消息。留空则走原有单轮 Prompt 路径。
+	if len(ask.Turns) > 0 {
+		r.probeMessages = probeMessagesFrom(ask.Turns)
+	}
+	if ask.Thinking {
+		r.probeThinking = true
+	}
 	status, parsed, err := r.testChannelKey(ctx, s.adapter, &s.channel, s.key, s.upstreamModel)
 	if err != nil {
 		return modelverify.Response{}, fmt.Errorf("上游返回 %d: %w", status, err)
 	}
 	return ProbeResponseFrom(parsed), nil
+}
+
+// probeMessagesFrom 把探针的轮次翻成内部消息形态。
+//
+// 只有 assistant 轮会带签名：那是 harvest 阶段从上游拿到的密文，回放阶段原样还
+// 回去。thinking 文本留空是刻意的——这是上游的既定回放形态，模型解封的是密文
+// 本身，不需要我们提供明文，我们也提供不了。
+func probeMessagesFrom(turns []modelverify.Turn) []transformermodel.Message {
+	out := make([]transformermodel.Message, 0, len(turns))
+	for _, t := range turns {
+		msg := transformermodel.Message{Role: t.Role}
+		if t.Content != "" {
+			content := t.Content
+			msg.Content = transformermodel.MessageContent{Content: &content}
+		}
+		if t.Signature != "" {
+			sig := t.Signature
+			if t.Redacted {
+				sig = transformermodel.EncodeRedactedThinkingSignature(sig)
+			}
+			msg.ReasoningSignature = &sig
+		}
+		out = append(out, msg)
+	}
+	return out
 }
 
 // Protocol 返回该渠道实际使用的出站协议 id，用于决定 think-effort 的观测单位。
@@ -136,6 +169,25 @@ func ProbeResponseFrom(resp *transformermodel.InternalLLMResponse) modelverify.R
 			out.Content = messageText(msg)
 			if msg.ReasoningContent != nil {
 				out.ReasoningContent = *msg.ReasoningContent
+			}
+			// 签名分流。Message.ReasoningSignature 是所有协议共用的一条通道，
+			// 四种来源混在里面（见 transformer/model/reasoning_signature.go）：
+			//   Anthropic thinking        -> 裸 base64，无标签  ← 我们要的
+			//   Anthropic redacted        -> "redacted_thinking:" 前缀
+			//   Gemini thoughtSignature   -> "\x00rs-gemini:" 前缀
+			//   OpenAI encrypted_content  -> "\x00rs-openai-enc:" 前缀
+			// 后两者是别家密文，绝不能被当成 Claude 签名去判真假——
+			// 那会把一个正常的 Gemini 渠道误判成"Claude 替身"。
+			if msg.ReasoningSignature != nil {
+				switch {
+				case transformermodel.IsRedactedThinkingSignature(msg.ReasoningSignature):
+					data, _ := transformermodel.DecodeRedactedThinkingSignature(*msg.ReasoningSignature)
+					out.RedactedSignature = data
+				case transformermodel.HasProviderReasoningTag(msg.ReasoningSignature):
+					// 其它 provider 的密文，与 Claude 签名无关，丢弃。
+				default:
+					out.Signature = *msg.ReasoningSignature
+				}
 			}
 			for _, tc := range msg.ToolCalls {
 				out.ToolCalls = append(out.ToolCalls, modelverify.ToolCall{

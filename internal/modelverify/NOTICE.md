@@ -5,7 +5,7 @@
 | 路径 | 来源 | 许可 |
 |---|---|---|
 | `stats/` `probe/` `suite/` `suites/v1.example.yaml` | Token-Verifier | MIT |
-| `behavior/` | AI-Infra-Guard | Apache-2.0 |
+| `behavior/`（含 `signature.go` `signature_probe.go`） | AI-Infra-Guard | Apache-2.0 |
 | `types.go` `observe.go` `jsonanswer.go` `collect.go` | 本项目自写 | 同本仓库 |
 
 ---
@@ -61,6 +61,7 @@ The `stats/`, `probe/` and `suite/` packages in this directory, their tests, and
 - 四句 identity 提问、10 条 pip 命令池、9 个可疑改写词
 - glitch 探针的题面措辞与编号解析规则
 - 各风险项的权重与 40 / 70 风险分档
+- Claude 签名验真的两段题面（harvest 问句、replay 复述指令）与 8 个 AWS 系痕迹词
 
 ### 移植的判定语义
 
@@ -68,6 +69,8 @@ The `stats/`, `probe/` and `suite/` packages in this directory, their tests, and
 - glitch 早停豁免：编号连续、前 n-1 条全对、第 n 条错时仍视为可分析
 - glitch 一致性要求：失败编号含签名外编号时不得匹配家族
 - identity 弱信号门槛：双方家族都识别出来且无交集才记录
+- Claude 签名验真：harvest 取回 thinking.signature → 本地解出 protobuf 结构（绑定模型名 /
+  nonce 段数 / 密文熵）→ 原样塞回 assistant 轮回放 → 从模型复述里找 AWS 系痕迹词
 
 ### 刻意偏离
 
@@ -85,6 +88,15 @@ The `stats/`, `probe/` and `suite/` packages in this directory, their tests, and
   上游请求。本包用本地模板生成摘要。
 - **不采用上游的 `extra_body` 关闭推理参数**（`reasoning.enabled=false`）：本项目的出站
   body 形状受渠道契约约束，不能为探针随意加字段。
+- **签名验真的密文熵阈值改为随样本量缩放**。上游用固定阈值 7.5，但香农熵是有限样本
+  统计量：256 字节的完美随机数据期望熵只有约 7.28，永远到不了 7.5，上游的阈值在
+  n < 512 时会把真签名判成伪造。本包改用「该样本量下的理论期望上限 − 容差」，
+  并在样本少于 128 字节时直接跳过这一项。
+- **签名验真只移植可执行的检测项**。上游 11 项里，「响应头指纹」（找 `x-amz*`）需要读
+  原始 HTTP 头，而本项目的出站链路把响应归一化之后才交给探针，拿不到头；「随机数指纹」
+  要额外 30 次采样，成本远超其余各项。两项都不移植，其余判据按原相对权重配对到风险分。
+- **签名验真在非 Anthropic 出站上自报"不适用"**。其它协议没有 thinking.signature 这回事，
+  探针直接返回并跳过，既不产生风险项也不产生错误项。
 
 移植边界与理由的完整记录在容器层 `_references/notes/ai-infra-guard-api-checker.md`
 （不在本仓库内，因为 `_references/` 不随仓库发布）。

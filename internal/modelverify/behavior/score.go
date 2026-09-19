@@ -1,5 +1,7 @@
 package behavior
 
+import "fmt"
+
 // 评分层：把若干探针结果折算成一份可读的审计报告。
 //
 // 与上游（AI-Infra-Guard，Apache-2.0）的两处刻意偏离，都在注释里写明理由：
@@ -96,7 +98,7 @@ func BuildReport(results []Result, requestedModel string) Report {
 			continue
 		}
 		usable++
-		report.Findings = append(report.Findings, findingsFor(res, report.RequestedFamilies)...)
+		report.Findings = append(report.Findings, findingsFor(res, report.RequestedModel, report.RequestedFamilies)...)
 	}
 
 	total := 0
@@ -124,12 +126,126 @@ func BuildReport(results []Result, requestedModel string) Report {
 	return report
 }
 
+// signatureFindings 是签名验真探针的判定。
+//
+// 权重参照上游的 11 项检测，但只保留**我们能真正执行**的那些：上游的
+// 「响应头指纹」（找 x-amz*）要读原始 HTTP 头，而本项目的出站链路把响应归一化
+// 之后才交给我们，拿不到头；「随机数指纹」要额外 30 次采样，成本远超其余各项。
+// 去掉这两项后，剩余判据按原来的相对权重配对到 0-100 的风险分。
+//
+// 与其它探针一样，判定分「跑不动」与「查出问题」两条通道：res.Err 非空时
+// 返回 nil，由 BuildReport 记进 Errors，绝不当成替身证据。
+func signatureFindings(res Result, requestedModel string) []Finding {
+	// 探针自报不适用（非 Anthropic 出站），或压根没跑成。
+	if v, ok := res.Data["applicable"].(bool); ok && !v {
+		return nil
+	}
+	if res.Err != nil {
+		return nil
+	}
+
+	// 拿不到签名是这一层里最重的信号，但成因不唯一：可能是模型不支持
+	// extended thinking（正常），也可能是替身根本不产出签名（异常）。
+	// 探针层区分不了，所以判高危并要求人工复核，而不是直接定罪。
+	if v, ok := res.Data["signature_present"].(bool); ok && !v {
+		return []Finding{{
+			Probe: ProbeSignature, Severity: SeverityHigh, Score: 50,
+			Title: "未能取得 thinking 签名",
+			Evidence: map[string]any{
+				"finish_reason":   stringOf(res.Data, "finish_reason"),
+				"thinking_tokens": intOf(res.Data, "thinking_tokens"),
+				"content_len":     intOf(res.Data, "content_len"),
+			},
+			Recommendation: "该模型可能不支持扩展思考，也可能是替身不产出签名；请换用明确支持思考的型号复测后再下结论。",
+		}}
+	}
+
+	var findings []Finding
+
+	// 结构判定：绑定模型名 + nonce 段数 + 密文熵。
+	if v, ok := res.Data["structure_ok"].(bool); ok && !v {
+		findings = append(findings, Finding{
+			Probe: ProbeSignature, Severity: SeverityMedium, Score: 25,
+			Title: fmt.Sprintf("签名结构异常（%s）", stringOf(res.Data, "structure_reason")),
+			Evidence: map[string]any{
+				"bound_model":      stringOf(res.Data, "bound_model"),
+				"ciphertext_len":   intOf(res.Data, "ciphertext_len"),
+				"entropy":          res.Data["ciphertext_entropy"],
+				"nonce_segments":   intOf(res.Data, "nonce_segments"),
+				"signature_len":    intOf(res.Data, "signature_len"),
+				"structure_reason": stringOf(res.Data, "structure_reason"),
+			},
+			Recommendation: "签名不像 Anthropic 签发的 AEAD 密文；结合回放结果判断，必要时人工抽样复核。",
+		})
+	}
+
+	// 回放解封：最硬的一条。签名被原样透传时，模型能理解「这段推理已经在我上文里」
+	// 并把它复述出来；伪造的签名解封不出内容。
+	replayApplicable, _ := res.Data["replay_applicable"].(bool)
+	unsealed, _ := res.Data["unsealed"].(bool)
+	if replayApplicable && !unsealed {
+		findings = append(findings, Finding{
+			Probe: ProbeSignature, Severity: SeverityHigh, Score: 50,
+			Title: "签名回放无法解封",
+			Evidence: map[string]any{
+				"cot_found":          false,
+				"replay_content_len": intOf(res.Data, "replay_content_len"),
+				"bound_model":        stringOf(res.Data, "bound_model"),
+			},
+			Recommendation: "签名很可能不是上游原文透传。请确认该渠道是否为原生 Anthropic，并人工复核一次。",
+		})
+	}
+
+	// 解封内容里的 AWS 系痕迹：不是「假 Claude」，而是「经 AWS 系转售」的强特征。
+	if suspects := stringSliceOf(res.Data, "suspects"); len(suspects) > 0 {
+		findings = append(findings, Finding{
+			Probe: ProbeSignature, Severity: SeverityHigh, Score: 60,
+			Title: "解封的推理内容含 AWS 系平台痕迹",
+			Evidence: map[string]any{
+				"suspects":    suspects,
+				"bound_model": stringOf(res.Data, "bound_model"),
+			},
+			Recommendation: "该 Claude 很可能经 AWS 系基础设施（Bedrock / Amazon Q / Kiro）转售，与原生 Anthropic 存在能力与配额差异，请按业务要求评估。",
+		})
+	}
+
+	// 绑定模型名与请求模型名不符。判低分：上游做别名解析（补日期后缀等）属正常，
+	// 这条只作旁证，不足以单独定论。
+	if bound := stringOf(res.Data, "bound_model"); bound != "" && requestedModel != "" {
+		if !MatchSignatureModel(bound, requestedModel) {
+			findings = append(findings, Finding{
+				Probe: ProbeSignature, Severity: SeverityLow, Score: 15,
+				Title: "签名绑定的模型名与请求模型不符",
+				Evidence: map[string]any{
+					"bound_model":     bound,
+					"requested_model": requestedModel,
+				},
+				Recommendation: "可能是上游别名解析，也可能是签名被搬用；作为旁证，需结合其它探针判断。",
+			})
+		}
+	}
+
+	// thinking_tokens 为 0：请求了思考却没有思考产出。
+	if res.Data["thinking_tokens"] != nil && intOf(res.Data, "thinking_tokens") == 0 {
+		findings = append(findings, Finding{
+			Probe: ProbeSignature, Severity: SeverityLow, Score: 10,
+			Title:          "请求了扩展思考但思考 token 为 0",
+			Evidence:       map[string]any{"thinking_tokens": 0},
+			Recommendation: "上游可能丢弃了 thinking 参数，或该型号不支持思考；属轻微异常，建议观察。",
+		})
+	}
+
+	return findings
+}
+
 // findingsFor 依据单个探针结果产出风险项。
 //
 // 每条判定都配一条中文动作建议：结论要能直接转成"下一步做什么"，
 // 否则操作者拿到一个分数仍然不知道该怎么办。
-func findingsFor(res Result, requestedFamilies []string) []Finding {
+func findingsFor(res Result, requestedModel string, requestedFamilies []string) []Finding {
 	switch res.ProbeID {
+	case ProbeSignature:
+		return signatureFindings(res, requestedModel)
 	case ProbeLiveness:
 		if res.OK {
 			return nil
@@ -257,6 +373,14 @@ const tokenDeltaThreshold = 200
 //
 // 探针结果走 map[string]any，取值必须防御式：缺字段、类型不符都要
 // 安静地退化成零值，绝不允许在审计路径上 panic。
+
+func stringOf(data map[string]any, key string) string {
+	if data == nil {
+		return ""
+	}
+	v, _ := data[key].(string)
+	return v
+}
 
 func boolOf(data map[string]any, key string) bool {
 	v, ok := data[key].(bool)

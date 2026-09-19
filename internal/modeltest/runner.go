@@ -98,7 +98,26 @@ type modelRunner struct {
 	//
 	// 零值路径保持逐字节不变。
 	probeMaxTokens int
+	// probeMessages 非空时取代内置的单轮 user 消息（仅 Anthropic 渠道生效）。
+	//
+	// 签名回放探针必须发多轮：assistant 轮带上一次 harvest 拿到的 thinking 密文，
+	// user 轮要求把推理逐字复述。真 claude-cli 本来就会发多轮对话历史，所以这
+	// 不构成非 CLI 特征，形状安全。
+	probeMessages []transformermodel.Message
+	// probeThinking 要求本轮开启 extended thinking，用于取回 thinking.signature。
+	//
+	// 真 claude-cli 在用户开启思考时发的就是 {"type":"enabled","budget_tokens":N}，
+	// 这是合法的客户端行为，不是凭空多出来的字段。默认 false = 沿用既有的
+	// {"type":"disabled"}（普通轮的真 CLI 形态）。
+	probeThinking bool
 }
+
+// probeThinkingBudget 探针索要的思考预算。
+//
+// 取得足够大以保证思考块及其签名完整产出（签名是思考块的一部分，
+// 预算过小可能只拿到截断的思考、取不到签名），又远小于 Anthropic 渠道
+// 64000 的输出上限，不会挤压正文。harvest 与 replay 两轮共用。
+const probeThinkingBudget = 8000
 
 func Run(ctx context.Context, req dbmodel.ModelTestRequest) (dbmodel.ModelTestResponse, error) {
 	return run(ctx, req, nil)
@@ -676,6 +695,17 @@ func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermod
 		probeMax := int64(r.probeMaxTokens)
 		internalRequest.MaxTokens = &probeMax
 	}
+	// 探针索要 extended thinking（签名验真用）。用显式的 enabled 形态：它自洽于
+	// AnthropicThinking 一个字段，不牵连 output_config/effort，也不依赖 1M adaptive
+	// 那条路径。rawThinking 的优先级高于 adaptive，所以放在 1M 分支之后不会失效。
+	if r.probeThinking && channel.Type == outbound.OutboundTypeAnthropic {
+		internalRequest.AnthropicThinking = json.RawMessage(
+			fmt.Sprintf(`{"type":"enabled","budget_tokens":%d}`, probeThinkingBudget))
+	}
+	// 探针自带多轮会话（签名回放）。仅 Anthropic 渠道——回放的对象就是 Claude 自己。
+	if len(r.probeMessages) > 0 && channel.Type == outbound.OutboundTypeAnthropic {
+		internalRequest.Messages = r.probeMessages
+	}
 	// Mirror production relay (relay.go sets this from the same cloak switch): the
 	// synthetic Claude billing/agent-identity system blocks are injected only when the
 	// channel cloak applies (auto/always). Without this the test always injected them
@@ -873,11 +903,16 @@ func (r *modelRunner) internalRequest(upstreamModel string) *transformermodel.In
 	if endpoint.name == "anthropic_messages" {
 		if transformermodel.AnthropicModelWantsOneMillionBeta(upstreamModel) || transformermodel.AnthropicModelWantsOneMillionBeta(r.result.RequestModel) {
 			internalRequest.TransformOptions.AnthropicOneMillionBeta = true
-		} else {
+		} else if !r.probeThinking {
 			// Genuine claude-cli always carries an explicit thinking object; on a plain
 			// (non-1M / non-adaptive) turn it is {"type":"disabled"}. Sending no thinking
 			// field at all is a non-CLI tell, so set it to match real traffic. (The 1M
 			// path sets adaptive thinking via prepareClaudeOneMillionModelTestShape.)
+			//
+			// probeThinking 为真时故意留空，由 testChannelKey 补上 enabled 形态。
+			// 前提：该标志只在 Anthropic **渠道**上被置真（签名探针按 Protocol() 把关），
+			// 所以这里不必再判渠道——入站端点是 anthropic_messages 但渠道是别家时，
+			// 标志恒为假，走的仍是下面这条 disabled 路径。
 			internalRequest.AnthropicThinking = json.RawMessage(`{"type":"disabled"}`)
 		}
 	}

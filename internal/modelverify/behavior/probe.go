@@ -53,6 +53,7 @@ var probeRegistry = map[ProbeID]probeFunc{
 	ProbeTokenDelta:    runTokenDelta,
 	ProbeEchoRewrite:   runEchoRewrite,
 	ProbeContextCanary: runContextCanary,
+	ProbeSignature:     runSignature,
 }
 
 // DefaultProbes 返回默认启用的探针集合。
@@ -62,6 +63,7 @@ var probeRegistry = map[ProbeID]probeFunc{
 // 上游一遍收益很低，却要为它单独开一条出站路径。等确有需要再补。
 func DefaultProbes() []ProbeID {
 	return []ProbeID{
+		ProbeSignature,
 		ProbeLiveness,
 		ProbeIdentity,
 		ProbeGlitch,
