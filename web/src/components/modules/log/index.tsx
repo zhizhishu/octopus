@@ -676,7 +676,7 @@ export function Log() {
     const [selectedModel, setSelectedModel] = useState('');
     const [startDate, setStartDate] = useState(defaultRange.startDate);
     const [endDate, setEndDate] = useState(defaultRange.endDate);
-    // 严重程度 + 「只看有重试」都是服务端过滤，翻页/总数都对得上。
+    // 严重程度是服务端过滤，翻页/总数都对得上。
     const [severityFilter, setSeverityFilter] = useState<LogSeverityFilter>('all');
     const [searchKeyword, setSearchKeyword] = useState('');
     const deferredSearch = useDeferredValue(searchKeyword.trim());
