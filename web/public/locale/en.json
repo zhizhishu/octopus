@@ -714,10 +714,7 @@
     "log": {
         "live": {
             "autoRescue": "Auto-rescued",
-            "viewHistory": "History Logs",
-            "viewLive": "Live Activity",
             "activeActivity": "Live Requests",
-            "activeEmpty": "No active requests or rescue tasks",
             "running": "In progress",
             "rescue": "Automatic rescue",
             "retryRound": "Retry {count}",
@@ -733,27 +730,15 @@
             "retry": "Retry on channel"
         },
         "list": {
-            "userFilter": "User filter",
-            "allUsers": "All users",
-            "advancedFilters": "Advanced filters",
             "search": "Search",
             "reset": "Reset",
-            "retriedOnly": "Retried",
             "export": "Export logs",
             "showSensitive": "Show sensitive info",
             "hideSensitive": "Hide sensitive info",
-            "noMore": "No more logs",
             "empty": "No logs yet",
-            "emptyFiltered": "No logs match this filter in the loaded range",
             "loadMoreForFilter": "Load older logs",
             "refresh": "Refresh",
-            "refreshing": "Refreshing",
-            "autoRefresh": "Live refresh",
-            "liveOn": "Live connected",
-            "liveOff": "Live off",
-            "liveConnecting": "Live connecting",
             "streamError": "Live disconnected",
-            "loadedCount": "{count} loaded",
             "filters": {
                 "all": "All",
                 "success": "Success",

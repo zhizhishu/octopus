@@ -714,10 +714,7 @@
     "log": {
         "live": {
             "autoRescue": "自动救援",
-            "viewHistory": "历史日志",
-            "viewLive": "实时动态",
             "activeActivity": "实时请求",
-            "activeEmpty": "暂无活跃请求或救援任务",
             "running": "正在调用",
             "rescue": "自动救援",
             "retryRound": "第 {count} 轮重试",
@@ -733,27 +730,15 @@
             "retry": "指定重试"
         },
         "list": {
-            "userFilter": "用户筛选",
-            "allUsers": "全部用户",
-            "advancedFilters": "高级筛选",
             "search": "搜索",
             "reset": "重置",
-            "retriedOnly": "有重试",
             "export": "导出日志",
             "showSensitive": "显示敏感信息",
             "hideSensitive": "隐藏敏感信息",
-            "noMore": "没有更多日志了",
             "empty": "暂无日志",
-            "emptyFiltered": "当前筛选在已加载范围内没有日志",
             "loadMoreForFilter": "加载更早日志",
             "refresh": "刷新",
-            "refreshing": "刷新中",
-            "autoRefresh": "实时刷新",
-            "liveOn": "实时已连接",
-            "liveOff": "实时关闭",
-            "liveConnecting": "实时连接中",
             "streamError": "实时已断开",
-            "loadedCount": "已载入 {count} 条",
             "filters": {
                 "all": "全部",
                 "success": "成功",

@@ -714,10 +714,7 @@
     "log": {
         "live": {
             "autoRescue": "自動救援",
-            "viewHistory": "歷史日誌",
-            "viewLive": "即時動態",
             "activeActivity": "即時請求",
-            "activeEmpty": "暫無活躍請求或救援任務",
             "running": "正在呼叫",
             "rescue": "自動救援",
             "retryRound": "第 {count} 輪重試",
@@ -733,27 +730,15 @@
             "retry": "指定重試"
         },
         "list": {
-            "userFilter": "使用者篩選",
-            "allUsers": "全部使用者",
-            "advancedFilters": "進階篩選",
             "search": "搜尋",
             "reset": "重設",
-            "retriedOnly": "有重試",
             "export": "匯出日誌",
             "showSensitive": "顯示敏感資訊",
             "hideSensitive": "隱藏敏感資訊",
-            "noMore": "沒有更多日誌了",
             "empty": "暫無日誌",
-            "emptyFiltered": "目前篩選在已載入範圍內沒有日誌",
             "loadMoreForFilter": "載入更早日誌",
             "refresh": "重新整理",
-            "refreshing": "重新整理中",
-            "autoRefresh": "即時重新整理",
-            "liveOn": "即時已連線",
-            "liveOff": "即時關閉",
-            "liveConnecting": "即時連線中",
             "streamError": "即時已斷線",
-            "loadedCount": "已載入 {count} 筆",
             "filters": {
                 "all": "全部",
                 "success": "成功",
