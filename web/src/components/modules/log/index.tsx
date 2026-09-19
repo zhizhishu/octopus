@@ -3,7 +3,7 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
 import { type RelayLog, type RelayLogSeverity, type RequestState, useExportLogs, useLogSeverityCounts, useLogs, useRequestStateStream } from '@/api/endpoints/log';
 import { LogCard, useSensitiveStore } from './Item';
-import { AlertCircle, AlertTriangle, Calendar as CalendarIcon, CheckCircle2, ChevronLeft, ChevronRight, Circle, Download, Eye, EyeOff, Loader2, RefreshCw, RotateCcw, RotateCw, ScrollText, Search, WifiOff, X } from 'lucide-react';
+import { AlertCircle, AlertTriangle, Calendar as CalendarIcon, CheckCircle2, ChevronLeft, ChevronRight, Circle, Download, Eye, EyeOff, Loader2, RefreshCw, RotateCcw, RotateCw, ScrollText, Search, SlidersHorizontal, WifiOff, X } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { VirtualizedGrid } from '@/components/common/VirtualizedGrid';
 import { PageWrapper } from '@/components/common/PageWrapper';
@@ -679,6 +679,8 @@ export function Log() {
     // 严重程度是服务端过滤，翻页/总数都对得上。
     const [severityFilter, setSeverityFilter] = useState<LogSeverityFilter>('all');
     const [searchKeyword, setSearchKeyword] = useState('');
+    // 手机端默认只留搜索框、其余筛选控件折叠；桌面靠 sm: 断点强制常显，两种视口互不影响。
+    const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
     const deferredSearch = useDeferredValue(searchKeyword.trim());
     const isLiveMode = viewMode === 'live';
     // 分页状态：当前页（从 1 开始）+ 跳页输入框草稿值。
@@ -1047,9 +1049,10 @@ export function Log() {
             )}
             <div className="flex flex-none flex-col gap-2.5 rounded-2xl border border-border bg-card p-3 sm:px-4 sm:py-3.5 shadow-sm">
 
-                {/* 第一块：搜索 + 端点/厂商/模型。桌面一行；手机搜索通栏、三个下拉三列。 */}
+                {/* 第一块：搜索 + 端点/厂商/模型。桌面一行；手机默认只留搜索框，其余折叠。 */}
                 <div className="flex flex-col gap-2 sm:grid sm:grid-cols-[minmax(0,1fr)_8.5rem_8.5rem_8.5rem] sm:items-center sm:gap-2">
-                    <label className="relative flex min-w-0 items-center">
+                    <div className="flex min-w-0 items-center gap-2">
+                    <label className="relative flex min-w-0 flex-1 items-center">
                         <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
                         <input
                             type="text"
@@ -1070,7 +1073,24 @@ export function Log() {
                             </button>
                         )}
                     </label>
-                    <div className="grid grid-cols-3 gap-2 sm:contents">
+                    <button
+                        type="button"
+                        onClick={() => setMobileFiltersOpen((open) => !open)}
+                        aria-expanded={mobileFiltersOpen}
+                        aria-label={mobileFiltersOpen ? '收起筛选' : '展开筛选'}
+                        className={cn(
+                            'inline-flex h-9 shrink-0 items-center gap-1 rounded-lg border px-2.5 text-xs transition-colors sm:hidden',
+                            mobileFiltersOpen || hasActiveFilter
+                                ? 'border-primary/40 bg-primary/10 text-primary'
+                                : 'border-input bg-background text-muted-foreground'
+                        )}
+                    >
+                        <SlidersHorizontal className="size-3.5" />
+                        <span>{mobileFiltersOpen ? '收起' : '筛选'}</span>
+                        {!mobileFiltersOpen && hasActiveFilter && <span className="size-1.5 rounded-full bg-primary" />}
+                    </button>
+                    </div>
+                    <div className={cn('grid grid-cols-3 gap-2 sm:contents', !mobileFiltersOpen && 'hidden')}>
                     <select
                         aria-label="端点"
                         value={selectedEndpoint}
@@ -1111,8 +1131,8 @@ export function Log() {
                     </div>
                 </div>
 
-                {/* 第二块：1/7/30 + 日历 | 状态计数。桌面尽量一行；手机日期一行、状态可折。 */}
-                <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
+                {/* 第二块：1/7/30 + 日历 | 状态计数。桌面尽量一行；手机跟着筛选一起折叠。 */}
+                <div className={cn('min-w-0 flex-col gap-2 sm:flex sm:flex-row sm:items-center', mobileFiltersOpen ? 'flex' : 'hidden')}>
                     <div className="flex min-w-0 items-center gap-1.5">
                         <div className="flex min-w-0 flex-1 items-center gap-1 rounded-lg bg-muted/60 p-1 sm:flex-none">
                             {dateRangeShortcuts.map((shortcut) => {
