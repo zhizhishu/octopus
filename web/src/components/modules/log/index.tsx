@@ -1,14 +1,16 @@
 'use client';
 
 import { useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
-import { getRelayLogSeverity, type RelayLog, type RelayLogSeverity, type RequestState, useExportLogs, useLogSeverityCounts, useLogs, useRequestStateStream } from '@/api/endpoints/log';
+import { type RelayLog, type RelayLogSeverity, type RequestState, useExportLogs, useLogSeverityCounts, useLogs, useRequestStateStream } from '@/api/endpoints/log';
 import { LogCard, useSensitiveStore } from './Item';
-import { AlertCircle, AlertTriangle, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Circle, Download, Eye, EyeOff, Loader2, RefreshCw, RotateCcw, RotateCw, ScrollText, Search, SlidersHorizontal, WifiOff, X } from 'lucide-react';
+import { AlertCircle, AlertTriangle, Calendar as CalendarIcon, CheckCircle2, ChevronLeft, ChevronRight, Circle, Download, Eye, EyeOff, Loader2, RefreshCw, RotateCcw, RotateCw, ScrollText, Search, WifiOff, X } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { VirtualizedGrid } from '@/components/common/VirtualizedGrid';
 import { PageWrapper } from '@/components/common/PageWrapper';
-import { MobileFilterCollapse } from '@/components/common/MobileFilterCollapse';
 import { useAPIKeyList } from '@/api/endpoints/apikey';
+import { Calendar } from '@/components/ui/calendar';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import type { DateRange } from 'react-day-picker';
 import { useChannelList } from '@/api/endpoints/channel';
 import { useModelList } from '@/api/endpoints/model';
 import { useAbortIntervention, useAbortRunningRequest, useRescueRunningRequest, useInterventionList, useRetryIntervention, type InterventionSnapshot } from '@/api/endpoints/intervention';
@@ -22,7 +24,17 @@ import { TooltipProvider } from '@/components/animate-ui/components/animate/tool
 import { useSettingList, useSetSetting, SettingKey } from '@/api/endpoints/setting';
 
 type LogSeverityFilter = RelayLogSeverity | 'all';
-type LogDateRangeShortcut = 'today' | 'last7Days' | 'lastMonth' | 'all';
+type LogDateRangeShortcut = 'today' | 'last7Days' | 'last30Days' | 'all';
+
+/**
+ * 把计数压成紧凑写法，避免六位数（如 13,858）把筛选行撑爆而挤掉行尾控件。
+ * 10000 以下保值不动（用户能看准精确数）；10000 起缩写、精确值走 title。
+ */
+function formatBadgeCount(value: number): string {
+    if (value < 10_000) return value.toLocaleString();
+    if (value < 1_000_000) return `${(value / 1000).toFixed(value < 100_000 ? 1 : 0)}k`;
+    return `${(value / 1_000_000).toFixed(1)}M`;
+}
 
 const severityFilters: Array<{ id: LogSeverityFilter; icon: typeof Circle; className: string }> = [
     { id: 'all', icon: Circle, className: 'text-muted-foreground' },
@@ -74,11 +86,12 @@ const providerFilters = [
 ] as const;
 
 const dateRangeShortcuts: Array<{ id: LogDateRangeShortcut; label: string }> = [
-    { id: 'today', label: '今天' },
+    { id: 'today', label: '1天' },
     { id: 'last7Days', label: '7天' },
-    { id: 'lastMonth', label: '1个月' },
+    { id: 'last30Days', label: '30天' },
     { id: 'all', label: '全部' },
 ];
+const DATE_RANGE_MAX_DAYS = 90;
 
 function localDateInput(date: Date) {
     const pad = (n: number) => String(n).padStart(2, '0');
@@ -98,14 +111,22 @@ function addLocalDays(date: Date, days: number) {
     return nextDate;
 }
 
-function addLocalMonths(date: Date, months: number) {
-    const nextDate = new Date(date);
-    const originalDay = nextDate.getDate();
-    nextDate.setDate(1);
-    nextDate.setMonth(nextDate.getMonth() + months);
-    const lastDayOfTargetMonth = new Date(nextDate.getFullYear(), nextDate.getMonth() + 1, 0).getDate();
-    nextDate.setDate(Math.min(originalDay, lastDayOfTargetMonth));
-    return nextDate;
+function inclusiveDaySpan(from: Date, to: Date) {
+    const start = new Date(from.getFullYear(), from.getMonth(), from.getDate());
+    const end = new Date(to.getFullYear(), to.getMonth(), to.getDate());
+    return Math.floor((end.getTime() - start.getTime()) / 86_400_000) + 1;
+}
+
+function clampDateRangeToMaxDays(from: Date, to: Date, today: Date): { from: Date; to: Date } {
+    const earliest = addLocalDays(today, -(DATE_RANGE_MAX_DAYS - 1));
+    let start = from < earliest ? earliest : from;
+    let end = to > today ? today : to;
+    if (start > end) start = end;
+    if (inclusiveDaySpan(start, end) > DATE_RANGE_MAX_DAYS) {
+        start = addLocalDays(end, -(DATE_RANGE_MAX_DAYS - 1));
+        if (start < earliest) start = earliest;
+    }
+    return { from: start, to: end };
 }
 
 function resolveDateRangeShortcut(shortcut: LogDateRangeShortcut, todayLabel: string) {
@@ -119,8 +140,8 @@ function resolveDateRangeShortcut(shortcut: LogDateRangeShortcut, todayLabel: st
         return { startDate: localDateInput(addLocalDays(todayDate, -6)), endDate: todayLabel };
     }
 
-    if (shortcut === 'lastMonth') {
-        return { startDate: localDateInput(addLocalMonths(todayDate, -1)), endDate: todayLabel };
+    if (shortcut === 'last30Days') {
+        return { startDate: localDateInput(addLocalDays(todayDate, -29)), endDate: todayLabel };
     }
 
     return { startDate: todayLabel, endDate: todayLabel };
@@ -657,12 +678,9 @@ export function Log() {
     const [endDate, setEndDate] = useState(defaultRange.endDate);
     // 严重程度 + 「只看有重试」都是服务端过滤，翻页/总数都对得上。
     const [severityFilter, setSeverityFilter] = useState<LogSeverityFilter>('all');
-    const [retriedOnly, setRetriedOnly] = useState(false);
-    const [hideModelTest, setHideModelTest] = useState(false);
     const [searchKeyword, setSearchKeyword] = useState('');
     const deferredSearch = useDeferredValue(searchKeyword.trim());
     const isLiveMode = viewMode === 'live';
-    const [advancedOpen, setAdvancedOpen] = useState(false);
     // 分页状态：当前页（从 1 开始）+ 跳页输入框草稿值。
     const [currentPage, setCurrentPage] = useState(1);
     const [pageJumpInput, setPageJumpInput] = useState('');
@@ -715,8 +733,8 @@ export function Log() {
         model: selectedModel || undefined,
         startTime,
         endTime,
-        retried: retriedOnly,
-        hideModelTest,
+        retried: false,
+        hideModelTest: false,
         search: deferredSearch || undefined,
     });
     const LOG_PAGE_SIZE = 20;
@@ -751,8 +769,8 @@ export function Log() {
         model: selectedModel || undefined,
         startTime,
         endTime,
-        retried: retriedOnly,
-        hideModelTest,
+        retried: false,
+        hideModelTest: false,
         search: deferredSearch || undefined,
         // 实时刷新只在实时模式 + 第 1 页（最新）生效；翻到历史页自然暂停，回第 1 页恢复。
         live: isLiveMode && currentPage === 1,
@@ -783,24 +801,6 @@ export function Log() {
         return Array.from(set).sort((a, b) => a.localeCompare(b));
     }, [channelRows, logs, modelList, selectedModel]);
 
-    const handleSelectUser = (value: string) => {
-        const nextUserID = Number(value) || undefined;
-        setSelectedUserID(nextUserID);
-        // 换了用户但当前选中的 Key 不属于他 → 清掉 Key，避免矛盾筛选。
-        if (selectedAPIKey && nextUserID && selectedAPIKey.user_id !== nextUserID) {
-            setSelectedAPIKeyID(undefined);
-        }
-        setCurrentPage(1);
-    };
-
-    const handleSelectAPIKey = (value: string) => {
-        const nextAPIKeyID = Number(value) || undefined;
-        setSelectedAPIKeyID(nextAPIKeyID);
-        const nextAPIKey = apiKeys.find((apiKey) => apiKey.id === nextAPIKeyID);
-        if (nextAPIKey?.user_id) setSelectedUserID(nextAPIKey.user_id);
-        setCurrentPage(1);
-    };
-
     const handleSelectEndpoint = (value: string) => {
         setSelectedEndpoint(value);
         setCurrentPage(1);
@@ -816,9 +816,6 @@ export function Log() {
         setCurrentPage(1);
     };
 
-    const handleStartDate = (value: string) => { setStartDate(value); setCurrentPage(1); };
-    const handleEndDate = (value: string) => { setEndDate(value); setCurrentPage(1); };
-
     const applyDateRangeShortcut = useCallback((shortcut: LogDateRangeShortcut) => {
         const nextRange = resolveDateRangeShortcut(shortcut, todayLabel);
         setStartDate(nextRange.startDate);
@@ -826,7 +823,7 @@ export function Log() {
         setCurrentPage(1);
     }, [todayLabel]);
 
-    // 所有筛选一键回默认（近 7 天、不限用户/Key/端点/厂商/模型、全部状态、不限重试、清空搜索）。
+    // 所有筛选一键回默认（近 7 天、不限用户/Key/端点/厂商/模型、全部状态、清空搜索）。
     const handleResetFilters = useCallback(() => {
         setSelectedUserID(undefined);
         setSelectedAPIKeyID(undefined);
@@ -834,8 +831,6 @@ export function Log() {
         setSelectedProvider('');
         setSelectedModel('');
         setSeverityFilter('all');
-        setRetriedOnly(false);
-        setHideModelTest(false);
         setSearchKeyword('');
         setStartDate(defaultRange.startDate);
         setEndDate(defaultRange.endDate);
@@ -851,8 +846,6 @@ export function Log() {
         !!selectedUserID ||
         !!effectiveSelectedAPIKeyID ||
         severityFilter !== 'all' ||
-        retriedOnly ||
-        hideModelTest ||
         !!searchKeyword.trim() ||
         !isDefaultRange;
 
@@ -869,8 +862,6 @@ export function Log() {
     if (selectedProvider) activePills.push({ key: 'prov', label: `厂商 ${providerFilters.find((p) => p.value === selectedProvider)?.label ?? selectedProvider}`, onClear: () => { setSelectedProvider(''); setCurrentPage(1); } });
     if (selectedModel) activePills.push({ key: 'mod', label: `模型 ${selectedModel}`, onClear: () => { setSelectedModel(''); setCurrentPage(1); } });
     if (severityFilter !== 'all') activePills.push({ key: 'sev', label: `状态 ${t(`list.filters.${severityFilter}`)}`, onClear: () => { setSeverityFilter('all'); setCurrentPage(1); } });
-    if (retriedOnly) activePills.push({ key: 'retry', label: t('list.retriedOnly'), onClear: () => { setRetriedOnly(false); setCurrentPage(1); } });
-    if (hideModelTest) activePills.push({ key: 'hidetest', label: '隐藏渠道测试探针', onClear: () => { setHideModelTest(false); setCurrentPage(1); } });
     if (selectedUserID) activePills.push({ key: 'user', label: `用户 ${users.find((u) => u.id === selectedUserID)?.username ?? selectedUserID}`, onClear: () => { setSelectedUserID(undefined); setCurrentPage(1); } });
     if (effectiveSelectedAPIKeyID) activePills.push({ key: 'key', label: `Key ${selectedAPIKey?.name ?? effectiveSelectedAPIKeyID}`, onClear: () => { setSelectedAPIKeyID(undefined); setCurrentPage(1); } });
 
@@ -881,8 +872,27 @@ export function Log() {
         })?.id;
     }, [endDate, startDate, todayLabel]);
 
-    // 高级筛选（用户 / API Key）里有几项在生效——给折叠按钮上挂计数。
-    const advancedActiveCount = (selectedUserID ? 1 : 0) + (effectiveSelectedAPIKeyID ? 1 : 0);
+    const calendarSelected = useMemo<DateRange | undefined>(() => {
+        const from = parseLocalDateInput(startDate);
+        const to = parseLocalDateInput(endDate);
+        if (!from && !to) return undefined;
+        return { from: from ?? to, to: to ?? from };
+    }, [endDate, startDate]);
+
+    const todayDate = useMemo(() => parseLocalDateInput(todayLabel) ?? new Date(), [todayLabel]);
+    const calendarEarliest = useMemo(() => addLocalDays(todayDate, -(DATE_RANGE_MAX_DAYS - 1)), [todayDate]);
+
+    const handleCalendarSelect = useCallback((range: DateRange | undefined) => {
+        if (!range?.from) {
+            applyDateRangeShortcut('all');
+            return;
+        }
+        const end = range.to ?? range.from;
+        const clamped = clampDateRangeToMaxDays(range.from, end, todayDate);
+        setStartDate(localDateInput(clamped.from));
+        setEndDate(localDateInput(clamped.to));
+        setCurrentPage(1);
+    }, [applyDateRangeShortcut, todayDate]);
 
     // 徽章数字：全部→total，其余取对应严重程度的全量计数（后端返回，非当前页）。
     const badgeCount = useCallback((id: LogSeverityFilter): number | undefined => {
@@ -919,8 +929,8 @@ export function Log() {
         endpoint: selectedEndpoint || undefined,
         provider: selectedProvider || undefined,
         model: selectedModel || undefined,
-        retried: retriedOnly,
-        hideModelTest,
+        retried: false,
+        hideModelTest: false,
         enabled: listIsEmpty,
     });
 
@@ -945,15 +955,15 @@ export function Log() {
                 model: selectedModel || undefined,
                 search: deferredSearch || undefined,
                 severity: severityFilter === 'all' ? undefined : severityFilter,
-                retried: retriedOnly,
-                hide_model_test: hideModelTest,
+                retried: false,
+                hide_model_test: false,
             },
             {
                 onSuccess: () => toast.success('日志已导出'),
                 onError: (error) => toast.error('日志导出失败', { description: error instanceof Error ? error.message : String(error) }),
             }
         );
-    }, [deferredSearch, effectiveSelectedAPIKeyID, endTime, exportLogs, hideModelTest, retriedOnly, selectedEndpoint, selectedModel, selectedProvider, selectedUserID, severityFilter, startTime]);
+    }, [deferredSearch, effectiveSelectedAPIKeyID, endTime, exportLogs, selectedEndpoint, selectedModel, selectedProvider, selectedUserID, severityFilter, startTime]);
 
     const renderLogCard = useCallback((log: RelayLog) => <LogCard log={log} />, []);
     const getLogRowKey = useCallback((log: RelayLog) => log.id, []);
@@ -1035,11 +1045,11 @@ export function Log() {
                     </Button>
                 </div>
             )}
-            <div className="flex flex-none flex-col gap-3 rounded-2xl border border-border bg-card p-3.5 sm:px-4 sm:py-3.5 shadow-sm">
+            <div className="flex flex-none flex-col gap-2.5 rounded-2xl border border-border bg-card p-3 sm:px-4 sm:py-3.5 shadow-sm">
 
-                {/* Row 1: 搜索 + 端点 + 厂商 + 模型 + 高级筛选（V7：grid 1fr/140/140/140/auto，34px 高，无文字前缀） */}
-                <div className="grid grid-cols-[1fr_140px_140px_140px_auto] items-center gap-2 max-sm:flex max-sm:flex-wrap">
-                    <label className="relative flex min-w-0 items-center max-sm:w-full">
+                {/* 第一块：搜索 + 端点/厂商/模型。桌面一行；手机搜索通栏、三个下拉三列。 */}
+                <div className="flex flex-col gap-2 sm:grid sm:grid-cols-[minmax(0,1fr)_8.5rem_8.5rem_8.5rem] sm:items-center sm:gap-2">
+                    <label className="relative flex min-w-0 items-center">
                         <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
                         <input
                             type="text"
@@ -1060,11 +1070,12 @@ export function Log() {
                             </button>
                         )}
                     </label>
+                    <div className="grid grid-cols-3 gap-2 sm:contents">
                     <select
                         aria-label="端点"
                         value={selectedEndpoint}
                         onChange={(event) => handleSelectEndpoint(event.target.value)}
-                        className="h-9 w-[140px] rounded-lg border border-input bg-background px-3 text-xs text-foreground outline-none"
+                        className="h-9 min-w-0 w-full rounded-lg border border-input bg-background px-2 text-xs text-foreground outline-none sm:px-3"
                     >
                         {endpointFilters.map((endpoint) => (
                             <option key={endpoint.value || 'all'} value={endpoint.value}>
@@ -1076,7 +1087,7 @@ export function Log() {
                         aria-label="厂商"
                         value={selectedProvider}
                         onChange={(event) => handleSelectProvider(event.target.value)}
-                        className="h-9 w-[140px] rounded-lg border border-input bg-background px-3 text-xs text-foreground outline-none"
+                        className="h-9 min-w-0 w-full rounded-lg border border-input bg-background px-2 text-xs text-foreground outline-none sm:px-3"
                     >
                         {providerFilters.map((provider) => (
                             <option key={provider.value || 'all'} value={provider.value}>
@@ -1088,7 +1099,7 @@ export function Log() {
                         aria-label="模型"
                         value={selectedModel}
                         onChange={(event) => handleSelectModel(event.target.value)}
-                        className="h-9 w-[140px] rounded-lg border border-input bg-background px-3 text-xs text-foreground outline-none"
+                        className="h-9 min-w-0 w-full rounded-lg border border-input bg-background px-2 text-xs text-foreground outline-none sm:px-3"
                     >
                         <option value="">全部模型</option>
                         {availableModelOptions.map((modelName) => (
@@ -1097,34 +1108,13 @@ export function Log() {
                             </option>
                         ))}
                     </select>
-                    {isAdmin && (
-                        <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => setAdvancedOpen((open) => !open)}
-                            className={cn(
-                                "h-8 rounded-lg px-3 max-sm:w-auto text-xs font-medium transition-colors",
-                                advancedOpen ? "border-foreground/25 bg-foreground/[0.06] text-foreground" : ""
-                            )}
-                        >
-                            <SlidersHorizontal className="size-4" />
-                            <span>{t('list.advancedFilters')}</span>
-                            {advancedActiveCount > 0 && (
-                                <Badge variant="secondary" className="h-5 min-w-5 justify-center px-1 text-[10px]">
-                                    {advancedActiveCount}
-                                </Badge>
-                            )}
-                            {advancedOpen ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
-                        </Button>
-                    )}
+                    </div>
                 </div>
 
-                {/* Row 3: 拆成两行（行 A: 筛选控件 / 行 B: 元信息 + 分页 + 操作按钮）。删掉原左组 flex-1，避免撑高导致按钮垂直居中悬空 */}
-                <div className="flex flex-col gap-2">
-                    {/* 行 A：筛选控件，自由折行 */}
-                    <div className="flex min-w-0 flex-wrap items-center gap-x-3.5 gap-y-1.5">
-                        {/* 日期快捷键 pills（5050 规格：bg-muted/60 托盘 + h-8 rounded-lg 白底阴影选中态） */}
-                        <div className="flex min-w-0 flex-wrap items-center gap-1 rounded-lg bg-muted/60 p-1">
+                {/* 第二块：1/7/30 + 日历 | 状态计数。桌面尽量一行；手机日期一行、状态可折。 */}
+                <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
+                    <div className="flex min-w-0 items-center gap-1.5">
+                        <div className="flex min-w-0 flex-1 items-center gap-1 rounded-lg bg-muted/60 p-1 sm:flex-none">
                             {dateRangeShortcuts.map((shortcut) => {
                                 const active = activeDateShortcut === shortcut.id;
 
@@ -1135,7 +1125,7 @@ export function Log() {
                                         aria-pressed={active}
                                         onClick={() => applyDateRangeShortcut(shortcut.id)}
                                         className={cn(
-                                            'inline-flex h-8 items-center rounded-lg px-2.5 text-xs font-medium whitespace-nowrap transition-colors',
+                                            'inline-flex h-8 flex-1 items-center justify-center rounded-lg px-2 text-xs font-medium whitespace-nowrap transition-colors sm:flex-none sm:px-2.5',
                                             active
                                                 ? 'bg-background text-foreground shadow-sm'
                                                 : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'
@@ -1146,84 +1136,170 @@ export function Log() {
                                 );
                             })}
                         </div>
+                        <Popover>
+                            <PopoverTrigger asChild>
+                                <Button
+                                    variant="outline"
+                                    size="icon"
+                                    title={startDate && endDate ? `${startDate} ~ ${endDate}` : '选择日期（最长 90 天）'}
+                                    aria-label="选择日期范围"
+                                    className={cn(
+                                        'h-8 w-8 shrink-0 rounded-lg',
+                                        !activeDateShortcut && startDate ? 'border-foreground/25 bg-foreground/[0.06]' : ''
+                                    )}
+                                >
+                                    <CalendarIcon className="size-3.5" />
+                                </Button>
+                            </PopoverTrigger>
+                            <PopoverContent align="start" className="w-auto p-0">
+                                <Calendar
+                                    mode="range"
+                                    numberOfMonths={1}
+                                    selected={calendarSelected}
+                                    onSelect={handleCalendarSelect}
+                                    defaultMonth={calendarSelected?.from ?? todayDate}
+                                    disabled={(date) => date > todayDate || date < calendarEarliest}
+                                />
+                                <p className="border-t border-border px-3 py-2 text-[11px] text-muted-foreground">最长跨 90 天，超出按结束日往前裁切</p>
+                            </PopoverContent>
+                        </Popover>
+                    </div>
 
-                        {/* 状态筛选 pills（5050 规格：Error/Warn/成功 与日期钮同一套视觉） */}
-                        <div className="flex min-w-0 flex-wrap items-center gap-1 rounded-lg bg-muted/60 p-1">
-                            {severityFilters.map((filter) => {
-                                const Icon = filter.icon;
-                                const active = severityFilter === filter.id;
+                    <div className="flex min-w-0 flex-wrap items-center gap-1 rounded-lg bg-muted/60 p-1 sm:min-w-0">
+                        {severityFilters.map((filter) => {
+                            const Icon = filter.icon;
+                            const active = severityFilter === filter.id;
 
-                                return (
-                                    <button
-                                        key={filter.id}
-                                        type="button"
-                                        aria-pressed={active}
-                                        onClick={() => {
-                                            setSeverityFilter(filter.id);
-                                            setCurrentPage(1);
-                                        }}
-                                        className={cn(
-                                            'inline-flex h-8 min-w-0 items-center gap-1.5 rounded-lg px-2 text-xs font-medium whitespace-nowrap transition-colors',
-                                            active
-                                                ? 'bg-background text-foreground shadow-sm'
-                                                : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'
-                                        )}
+                            return (
+                                <button
+                                    key={filter.id}
+                                    type="button"
+                                    aria-pressed={active}
+                                    onClick={() => {
+                                        setSeverityFilter(filter.id);
+                                        setCurrentPage(1);
+                                    }}
+                                    className={cn(
+                                        'inline-flex h-8 min-w-0 items-center gap-1 rounded-lg px-1.5 text-xs font-medium whitespace-nowrap transition-colors sm:gap-1.5 sm:px-2',
+                                        active
+                                            ? 'bg-background text-foreground shadow-sm'
+                                            : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'
+                                    )}
+                                >
+                                    <Icon className={cn('size-3.5 shrink-0', filter.className)} />
+                                    {/* 手机端只留图标+计数，否则四个药丸在 390px 会折成两行 */}
+                                    <span className="hidden sm:inline">{t(`list.filters.${filter.id}`)}</span>
+                                    <Badge
+                                        variant="secondary"
+                                        className="h-5 min-w-5 justify-center px-1 text-[10px] tabular-nums"
+                                        title={badgeCount(filter.id)?.toLocaleString()}
                                     >
-                                        <Icon className={cn('size-3.5 shrink-0', filter.className)} />
-                                        <span>{t(`list.filters.${filter.id}`)}</span>
-                                        <Badge variant="secondary" className="h-5 min-w-5 justify-center px-1 text-[10px]">
-                                            {badgeCount(filter.id)?.toLocaleString() ?? '—'}
-                                        </Badge>
-                                    </button>
-                                );
-                            })}
+                                        {badgeCount(filter.id) === undefined ? '—' : formatBadgeCount(badgeCount(filter.id) as number)}
+                                    </Badge>
+                                </button>
+                            );
+                        })}
+                    </div>
+                </div>
+
+                {/* 第三块：总数/分页靠左；右下角固定 眼睛 / 下载 / 实时动态 */}
+                <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5">
+                    {activeTotal !== undefined
+                        ? <span className="text-xs text-muted-foreground">共 {activeTotal.toLocaleString()} 条{severityFilter !== 'all' ? `（${t(`list.filters.${severityFilter}`)}）` : ''}</span>
+                        : <span className="text-xs text-muted-foreground">{countsError ? '总数统计暂不可用' : '总数计算中…'}</span>}
+                    <span role="status" aria-live="polite" className="min-w-0 text-xs text-muted-foreground">
+                        {isLoading ? '加载中…' : isFetching ? '更新中…' : ''}
+                    </span>
+                    {isLiveMode && currentPage === 1 && <span className="text-xs text-emerald-700 dark:text-emerald-300">实时插入中</span>}
+                    {/* 重置跟计数同行，右下角只留 眼睛/下载/实时动态 */}
+                    {hasActiveFilter && (
+                        <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={handleResetFilters}
+                            className="h-6 rounded-md px-1.5 text-xs"
+                        >
+                            <RotateCcw className="size-3" />
+                            <span>{t('list.reset')}</span>
+                        </Button>
+                    )}
+                    {(currentPage > 1 || (totalPages !== undefined && totalPages > 1)) && (
+                        <div className="hidden items-center gap-1 text-xs text-muted-foreground sm:flex">
+                            <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                                disabled={currentPage <= 1 || isLoading}
+                                className="h-6 w-6 rounded-md"
+                                aria-label="上一页"
+                            >
+                                <ChevronLeft className="size-3" />
+                            </Button>
+                            <span className="tabular-nums">第 {currentPage} / {totalPages ?? '—'} 页</span>
+                            <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => totalPages !== undefined && setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                                disabled={totalPages === undefined || currentPage >= totalPages || isLoading}
+                                className="h-6 w-6 rounded-md"
+                                aria-label="下一页"
+                            >
+                                <ChevronRight className="size-3" />
+                            </Button>
+                            <label className="flex items-center gap-1">
+                                <span>跳至</span>
+                                <input
+                                    type="number"
+                                    min={1}
+                                    max={totalPages}
+                                    disabled={totalPages === undefined}
+                                    value={pageJumpInput}
+                                    onChange={(e) => setPageJumpInput(e.target.value)}
+                                    onKeyDown={(e) => {
+                                        if (e.key !== 'Enter') return;
+                                        const p = parseInt(pageJumpInput, 10);
+                                        if (totalPages !== undefined && Number.isFinite(p) && p >= 1 && p <= totalPages) {
+                                            setCurrentPage(p);
+                                        }
+                                        setPageJumpInput('');
+                                    }}
+                                    onBlur={() => setPageJumpInput('')}
+                                    placeholder={String(currentPage)}
+                                    className="h-6 w-10 rounded-md border border-input bg-background px-1.5 text-center text-xs text-foreground [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                                />
+                                <span>页</span>
+                            </label>
                         </div>
+                    )}
 
-                        {/* 只看重试（5050 式描边切换按钮，替代裸 checkbox） */}
-                        <button
-                            type="button"
-                            title="只看发生过重试 / 换渠道的请求"
-                            aria-pressed={retriedOnly}
-                            onClick={() => {
-                                setRetriedOnly((v) => !v);
-                                setCurrentPage(1);
-                            }}
-                            className={cn(
-                                'inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium whitespace-nowrap transition-colors',
-                                retriedOnly
-                                    ? 'border-foreground/25 bg-foreground/[0.06] text-foreground'
-                                    : 'border-border bg-background text-muted-foreground hover:text-foreground'
-                            )}
+                    <div className="ml-auto flex shrink-0 flex-nowrap items-center gap-1.5">
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => setSensitiveVisible(!sensitiveVisible)}
+                            title={sensitiveVisible ? t('list.hideSensitive') : t('list.showSensitive')}
+                            aria-label={sensitiveVisible ? t('list.hideSensitive') : t('list.showSensitive')}
+                            className="h-8 w-8 rounded-lg border border-border bg-background text-muted-foreground hover:text-foreground dark:bg-card"
                         >
-                            {t('list.retriedOnly')}
-                        </button>
-
-                        {/* 隐藏测试探针（5050 式描边切换按钮，替代裸 checkbox） */}
-                        <button
-                            type="button"
-                            title="隐藏渠道测试探针（model_test），只看真实业务流量"
-                            aria-pressed={hideModelTest}
-                            onClick={() => {
-                                setHideModelTest((v) => !v);
-                                setCurrentPage(1);
-                            }}
-                            className={cn(
-                                'inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium whitespace-nowrap transition-colors',
-                                hideModelTest
-                                    ? 'border-foreground/25 bg-foreground/[0.06] text-foreground'
-                                    : 'border-border bg-background text-muted-foreground hover:text-foreground'
-                            )}
+                            {sensitiveVisible ? <Eye className="size-4" /> : <EyeOff className="size-4" />}
+                        </Button>
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={handleExport}
+                            disabled={exportLogs.isPending}
+                            title={t('list.export')}
+                            aria-label={t('list.export')}
+                            className="h-8 w-8 rounded-lg border border-border bg-background text-muted-foreground hover:text-foreground dark:bg-card"
                         >
-                            隐藏测试探针
-                        </button>
-
-                        {/* 实时动态 Switch 开关（区分实时与关闭，对齐隐藏测试探针） */}
-                        <div className="inline-flex shrink-0 items-center gap-2">
+                            {exportLogs.isPending ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}
+                        </Button>
+                        <div className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-border bg-background px-2">
                             <label
                                 htmlFor="live-mode-switch"
                                 className="inline-flex cursor-pointer select-none items-center gap-1.5 text-xs text-muted-foreground"
                             >
-                                <span>实时动态</span>
+                                <span className="hidden sm:inline">实时动态</span>
                                 {isLiveMode && (
                                     <span className="relative flex size-2 shrink-0">
                                         {isConnected && (
@@ -1252,176 +1328,7 @@ export function Log() {
                             />
                         </div>
                     </div>
-
-                    {/* 行 B：元信息 + 分页 + 操作按钮，同一视觉横排，按钮贴右端 */}
-                    <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5">
-                        {/* 元信息：总数 / 加载态 / 本地时区提示 / 实时指示 / 桌面端分页 */}
-                        {activeTotal !== undefined
-                            ? <span className="text-xs text-muted-foreground">共 {activeTotal.toLocaleString()} 条{severityFilter !== 'all' ? `（${t(`list.filters.${severityFilter}`)}）` : ''}</span>
-                            : <span className="text-xs text-muted-foreground">{countsError ? '总数统计暂不可用' : '总数计算中…'}</span>}
-                        <span role="status" aria-live="polite" className="min-w-14 text-xs text-muted-foreground">
-                            {isLoading ? '加载中…' : isFetching ? '更新中…' : ''}
-                        </span>
-                        <span className="text-xs text-muted-foreground">时间按浏览器本地时区显示</span>
-                        {isLiveMode && currentPage === 1 && <span className="text-xs text-emerald-700 dark:text-emerald-300">实时插入中</span>}
-                        {(currentPage > 1 || (totalPages !== undefined && totalPages > 1)) && (
-                            <div className="hidden items-center gap-1 text-xs text-muted-foreground sm:flex">
-                                <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-                                    disabled={currentPage <= 1 || isLoading}
-                                    className="h-6 w-6 rounded-md"
-                                    aria-label="上一页"
-                                >
-                                    <ChevronLeft className="size-3" />
-                                </Button>
-                                <span className="tabular-nums">第 {currentPage} / {totalPages ?? '—'} 页</span>
-                                <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    onClick={() => totalPages !== undefined && setCurrentPage((p) => Math.min(totalPages, p + 1))}
-                                    disabled={totalPages === undefined || currentPage >= totalPages || isLoading}
-                                    className="h-6 w-6 rounded-md"
-                                    aria-label="下一页"
-                                >
-                                    <ChevronRight className="size-3" />
-                                </Button>
-                                <label className="flex items-center gap-1">
-                                    <span>跳至</span>
-                                    <input
-                                        type="number"
-                                        min={1}
-                                        max={totalPages}
-                                        disabled={totalPages === undefined}
-                                        value={pageJumpInput}
-                                        onChange={(e) => setPageJumpInput(e.target.value)}
-                                        onKeyDown={(e) => {
-                                            if (e.key !== 'Enter') return;
-                                            const p = parseInt(pageJumpInput, 10);
-                                            if (totalPages !== undefined && Number.isFinite(p) && p >= 1 && p <= totalPages) {
-                                                setCurrentPage(p);
-                                            }
-                                            setPageJumpInput('');
-                                        }}
-                                        onBlur={() => setPageJumpInput('')}
-                                        placeholder={String(currentPage)}
-                                        className="h-6 w-10 rounded-md border border-input bg-background px-1.5 text-center text-xs text-foreground [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-                                    />
-                                    <span>页</span>
-                                </label>
-                            </div>
-                        )}
-
-                        {/* 右端操作组：重置（有生效筛选才出现）+ 显隐敏感 / 刷新 / 导出 */}
-                        <div className="ml-auto flex shrink-0 flex-nowrap items-center gap-1.5">
-                            {hasActiveFilter && (
-                                <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    onClick={handleResetFilters}
-                                    className="h-8 rounded-lg px-2 text-xs"
-                                >
-                                    <RotateCcw className="size-3.5" />
-                                    <span>{t('list.reset')}</span>
-                                </Button>
-                            )}
-                            <Button
-                                variant="ghost"
-                                size="icon"
-                                onClick={() => setSensitiveVisible(!sensitiveVisible)}
-                                title={sensitiveVisible ? t('list.hideSensitive') : t('list.showSensitive')}
-                                aria-label={sensitiveVisible ? t('list.hideSensitive') : t('list.showSensitive')}
-                                className="h-8 w-8 rounded-lg border border-border bg-background text-muted-foreground hover:text-foreground dark:bg-card"
-                            >
-                                {sensitiveVisible ? <Eye className="size-4" /> : <EyeOff className="size-4" />}
-                            </Button>
-                            <Button
-                                variant="ghost"
-                                size="icon"
-                                onClick={handleRefresh}
-                                disabled={isRefreshing || isLoading}
-                                title={isRefreshing ? t('list.refreshing') : t('list.refresh')}
-                                aria-label={t('list.refresh')}
-                                className="h-8 w-8 rounded-lg border border-border bg-background text-muted-foreground hover:text-foreground max-sm:hidden dark:bg-card"
-                            >
-                                <RefreshCw className={cn('size-4', isRefreshing && 'animate-spin')} />
-                            </Button>
-                            <Button
-                                variant="ghost"
-                                size="icon"
-                                onClick={handleExport}
-                                disabled={exportLogs.isPending}
-                                title={t('list.export')}
-                                aria-label={t('list.export')}
-                                className="h-8 w-8 rounded-lg border border-border bg-background text-muted-foreground hover:text-foreground dark:bg-card"
-                            >
-                                {exportLogs.isPending ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}
-                            </Button>
-                        </div>
-                    </div>
                 </div>
-
-                {isAdmin && advancedOpen && (
-                    <div className="flex min-w-0 flex-wrap items-center gap-2 border-t border-border pt-2">
-                        <label className="flex min-w-0 flex-wrap items-center gap-2">
-                            <span className="text-sm font-medium text-card-foreground">{t('list.userFilter')}</span>
-                            <select
-                                value={selectedUserID ?? ''}
-                                onChange={(event) => handleSelectUser(event.target.value)}
-                                className="h-9 min-w-40 rounded-lg border border-input bg-background px-3 text-sm text-foreground"
-                            >
-                                <option value="">{t('list.allUsers')}</option>
-                                {users.map((user) => (
-                                    <option key={user.id} value={user.id}>
-                                        {user.username}
-                                    </option>
-                                ))}
-                            </select>
-                        </label>
-
-                        <label className="flex min-w-0 flex-wrap items-center gap-2">
-                            <span className="text-sm font-medium text-card-foreground">API Key</span>
-                            <select
-                                value={selectedAPIKeyID ?? ''}
-                                onChange={(event) => handleSelectAPIKey(event.target.value)}
-                                className="h-9 min-w-48 rounded-lg border border-input bg-background px-3 text-sm text-foreground"
-                            >
-                                <option value="">全部 API Key</option>
-                                {apiKeysForSelectedUser.map((apiKey) => (
-                                    <option key={apiKey.id} value={apiKey.id}>
-                                        {apiKey.name}{apiKey.user_name ? ` · ${apiKey.user_name}` : ''}
-                                    </option>
-                                ))}
-                            </select>
-                        </label>
-                    </div>
-                )}
-
-                {/* 日期选择器独立行（在高级筛选展开时显示） */}
-                {advancedOpen && (
-                    <div className="flex min-w-0 flex-wrap items-center gap-2 border-t border-border pt-2">
-                        <label className="flex min-w-0 flex-wrap items-center gap-2">
-                            <span className="text-sm font-medium text-card-foreground">日期范围</span>
-                            <input
-                                type="date"
-                                value={startDate}
-                                onChange={(event) => handleStartDate(event.target.value)}
-                                max={endDate || todayLabel}
-                                className="h-9 min-w-36 rounded-lg border border-input bg-background px-3 text-sm text-foreground"
-                            />
-                            <span className="text-xs text-muted-foreground">到</span>
-                            <input
-                                type="date"
-                                value={endDate}
-                                onChange={(event) => handleEndDate(event.target.value)}
-                                min={startDate || undefined}
-                                max={todayLabel}
-                                className="h-9 min-w-36 rounded-lg border border-input bg-background px-3 text-sm text-foreground"
-                            />
-                        </label>
-                    </div>
-                )}
 
                 {activePills.length > 0 && (
                     <div className="flex flex-wrap items-center gap-1.5 border-t border-border/60 pt-2">
