@@ -89,6 +89,15 @@ type modelRunner struct {
 	request dbmodel.ModelTestRequest
 	result  dbmodel.ModelTestResult
 	attempt int
+	// probeMaxTokens 是模型校验探针自带的输出预算要求（0 = 不干预，走原有默认）。
+	//
+	// 只对**非 Anthropic 渠道**生效。Anthropic 渠道的探针出站必须保持真
+	// claude-cli 的 64000 预算，那是出站形状契约的一部分，题面需求不能凌驾于它；
+	// 其余渠道不模拟 CLI，max_tokens 没有形状含义，让探针按内容长度要预算才能
+	// 避免"复述不完"被误判成"记错内容"（glitch 探针需要 1536，默认 256 会截断）。
+	//
+	// 零值路径保持逐字节不变。
+	probeMaxTokens int
 }
 
 func Run(ctx context.Context, req dbmodel.ModelTestRequest) (dbmodel.ModelTestResponse, error) {
@@ -661,6 +670,12 @@ func (r *modelRunner) tryChannel(ctx context.Context, channel *dbmodel.Channel, 
 
 func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermodel.Outbound, channel *dbmodel.Channel, key dbmodel.ChannelKey, upstreamModel string) (int, *transformermodel.InternalLLMResponse, error) {
 	internalRequest := r.internalRequest(upstreamModel)
+	// 模型校验探针可自带输出预算，仅在非 Anthropic 渠道覆盖。
+	// Anthropic 渠道保持 claude-cli 的 64000（见 probeMaxTokens 字段注释）。
+	if r.probeMaxTokens > 0 && channel.Type != outbound.OutboundTypeAnthropic {
+		probeMax := int64(r.probeMaxTokens)
+		internalRequest.MaxTokens = &probeMax
+	}
 	// Mirror production relay (relay.go sets this from the same cloak switch): the
 	// synthetic Claude billing/agent-identity system blocks are injected only when the
 	// channel cloak applies (auto/always). Without this the test always injected them
