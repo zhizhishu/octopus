@@ -71,6 +71,7 @@
         "model-test": "測試",
         "migration": "遷移",
         "prompt": "提示詞",
+        "audit": "審計",
         "log": "日誌",
         "setting": "設定"
     },

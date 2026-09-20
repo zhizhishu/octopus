@@ -61,8 +61,8 @@ type Finding struct {
 //
 // 它进入报告但不进风险分：探针失败是"我们没查成"，不是"对方有问题"。
 type ProbeError struct {
-	Probe ProbeID
-	Error string
+	Probe ProbeID `json:"probe"`
+	Error string  `json:"error"`
 }
 
 // Report 是一次渠道行为审计的结论。

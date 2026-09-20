@@ -1,7 +1,7 @@
 import { lazyWithPreload } from './lazy-with-preload';
 import { lazy, ComponentType } from 'react';
 import type { LucideIcon } from 'lucide-react';
-import { BadgeDollarSign, Home, Radio, Settings, Logs, KeyRound, Users, GitBranch, MessageSquareText, Database } from 'lucide-react';
+import { BadgeDollarSign, Home, Radio, Settings, Logs, KeyRound, Users, GitBranch, MessageSquareText, Database, Shield } from 'lucide-react';
 
 export type LazyComponent = ReturnType<typeof lazy> & {
     preload: () => Promise<{ default: ComponentType<Record<string, never>> }>
@@ -23,6 +23,7 @@ const Log_Module = lazyWithPreload(() => import('@/components/modules/log').then
 const Setting_Module = lazyWithPreload(() => import('@/components/modules/setting').then(m => ({ default: m.Setting })));
 const Key_Module = lazyWithPreload(() => import('@/components/modules/key').then(m => ({ default: m.Key })));
 const Prompt_Module = lazyWithPreload(() => import('@/components/modules/prompt').then(m => ({ default: m.PromptManagement })));
+const Audit_Module = lazyWithPreload(() => import('@/components/modules/model-audit').then(m => ({ default: m.ModelAudit })));
 const User_Module = lazyWithPreload(() => import('@/components/modules/user').then(m => ({ default: m.UserManagement })));
 
 export const ROUTES: RouteConfig[] = [
@@ -34,6 +35,7 @@ export const ROUTES: RouteConfig[] = [
     { id: 'model', label: 'Model', icon: BadgeDollarSign, component: Model_Module },
     { id: 'migration', label: 'Migration', icon: Database, component: Migration_Module },
     { id: 'prompt', label: 'Prompt', icon: MessageSquareText, component: Prompt_Module },
+    { id: 'audit', label: 'Audit', icon: Shield, component: Audit_Module },
     { id: 'log', label: 'Log', icon: Logs, component: Log_Module },
     { id: 'setting', label: 'Setting', icon: Settings, component: Setting_Module },
 ];
@@ -43,7 +45,7 @@ export const CONTENT_MAP = ROUTES.reduce((acc, route) => {
     return acc;
 }, {} as Record<string, LazyComponent>);
 
-export const ADMIN_ROUTE_IDS = ['home', 'user', 'key', 'channel', 'access-plan', 'model', 'migration', 'prompt', 'log', 'setting'] as const;
+export const ADMIN_ROUTE_IDS = ['home', 'user', 'key', 'channel', 'access-plan', 'model', 'migration', 'prompt', 'audit', 'log', 'setting'] as const;
 export const USER_ROUTE_IDS = ['home', 'key', 'log'] as const;
 
 export function routeIdsForRole(role?: string | null) {

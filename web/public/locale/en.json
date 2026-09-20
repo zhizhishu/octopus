@@ -71,6 +71,7 @@
         "model-test": "Test",
         "migration": "Migration",
         "prompt": "Prompt",
+        "audit": "Audit",
         "log": "Log",
         "setting": "Setting"
     },

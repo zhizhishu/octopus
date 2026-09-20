@@ -90,6 +90,7 @@ export function CommandPalette() {
             'model-test': ['测试', '模型测试', '连通性测试', 'model test', 'test', 'probe'],
             migration: ['迁移', '导入导出', 'migration', 'import', 'export', 'backup'],
             prompt: ['提示词', '提示词管理', 'prompt', 'prompts'],
+            audit: ['审计', '模型审计', '真假', '线索', 'audit', 'probe'],
             log: ['日志', '请求日志', 'log', 'logs'],
             setting: ['设置', '系统设置', 'setting', 'settings', 'config'],
         };

@@ -227,6 +227,15 @@ export function AppContainer() {
                             );
                             break;
                         }
+                        case 'audit': {
+                            prefetches.push(
+                                queryClient.prefetchQuery({
+                                    queryKey: ['channels', 'list'],
+                                    queryFn: async () => apiClient.get('/api/v1/channel/list'),
+                                })
+                            );
+                            break;
+                        }
                         case 'migration': {
                             prefetches.push(
                                 queryClient.prefetchQuery({
