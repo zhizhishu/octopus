@@ -55,21 +55,28 @@ type ChannelAttempt struct {
 }
 
 type RelayLog struct {
-	ID                    int64            `json:"id" gorm:"primaryKey;autoIncrement:false"`
-	UserID                int              `json:"user_id" gorm:"index;default:0"`
-	APIKeyID              int              `json:"api_key_id" gorm:"index;default:0"`
-	RequestIP             string           `json:"request_ip,omitempty" gorm:"size:128;index"`
-	Time                  int64            `json:"time" gorm:"index"`
-	RequestEndpoint       string           `json:"request_endpoint" gorm:"size:64;index"`
-	RequestPath           string           `json:"request_path" gorm:"size:256"`
-	RequestModelName      string           `json:"request_model_name"`
-	RequestAPIKeyName     string           `json:"request_api_key_name"`
-	UserName              string           `json:"user_name"`
-	ReasoningEffort       string           `json:"reasoning_effort" gorm:"size:32"`
-	ChannelId             int              `json:"channel"`
-	ChannelName           string           `json:"channel_name"`
-	ChannelKeyRemark      string           `json:"channel_key_remark"`
-	ActualModelName       string           `json:"actual_model_name"`
+	ID                int64  `json:"id" gorm:"primaryKey;autoIncrement:false"`
+	UserID            int    `json:"user_id" gorm:"index;default:0"`
+	APIKeyID          int    `json:"api_key_id" gorm:"index;default:0"`
+	RequestIP         string `json:"request_ip,omitempty" gorm:"size:128;index"`
+	Time              int64  `json:"time" gorm:"index"`
+	RequestEndpoint   string `json:"request_endpoint" gorm:"size:64;index"`
+	RequestPath       string `json:"request_path" gorm:"size:256"`
+	RequestModelName  string `json:"request_model_name"`
+	RequestAPIKeyName string `json:"request_api_key_name"`
+	UserName          string `json:"user_name"`
+	ReasoningEffort   string `json:"reasoning_effort" gorm:"size:32"`
+	ChannelId         int    `json:"channel"`
+	ChannelName       string `json:"channel_name"`
+	ChannelKeyRemark  string `json:"channel_key_remark"`
+	ActualModelName   string `json:"actual_model_name"`
+	// UpstreamResponseModel 是上游响应里自报的模型名, 取的是任何"客户端可见名还原"之前的原值。
+	// 与 ActualModelName(我们发出去的名字)比对, 用来发现"点的是 A、上游回的是 B"。
+	// 上游没声明时留空(加列之前的老记录同样为空)。纯观测, 不参与转发路径。
+	UpstreamResponseModel string `json:"upstream_response_model,omitempty" gorm:"size:200"`
+	// UpstreamModelMismatch 三态: nil = 无法判定(上游没声明, 或我们不知道发出去的名字),
+	// false = 一致, true = 不一致。只作线索——上游回显本身可以撒谎, 一致不等于真, 不一致不等于假。
+	UpstreamModelMismatch *bool            `json:"upstream_model_mismatch,omitempty"`
 	InputTokens           int              `json:"input_tokens"`
 	OutputTokens          int              `json:"output_tokens"`
 	CacheHitTokens        int              `json:"cache_hit_tokens"`
@@ -179,6 +186,12 @@ type RelayLogScope struct {
 	// bad-window — can emit many test-probe failures; this filter keeps them from
 	// drowning out real traffic in the log view. Orthogonal to every other field.
 	HideModelTest bool
+	// UpstreamModelMismatch, when non-nil, narrows to rows whose upstream-declared
+	// model name did (true) or did not (false) match the model we sent upstream.
+	// nil means "no filter". Rows where the upstream declared nothing stay out of
+	// both buckets — that is the third state, not a match and not a mismatch.
+	// Orthogonal to every other field.
+	UpstreamModelMismatch *bool
 	// Search filters by user_name, request_api_key_name, request_model_name,
 	// actual_model_name, channel_name, request_endpoint, request_path,
 	// session_key, error, and error_code case-insensitively, or numeric log/channel id.

@@ -2756,6 +2756,7 @@ func (ra *relayAttempt) handleNonStreamResponseAsStream(ctx context.Context, res
 		log.Warnf("failed to transform fallback non-stream response: %v", err)
 		return fmt.Errorf("failed to transform fallback non-stream response: %w", err)
 	}
+	ra.captureUpstreamDeclaredModel(internalResponse)
 	// When model_mapping remapped the request model, restore the client-visible name
 	// before converting the non-stream response to SSE chunks.
 	if ra.modelMapped && internalResponse != nil {
@@ -2985,6 +2986,7 @@ func (ra *relayAttempt) transformStreamChunk(ctx context.Context, data string, o
 	if internalStream == nil {
 		return nil, nil, nil
 	}
+	ra.captureUpstreamDeclaredModel(internalStream)
 	// When model_mapping remapped the request model, restore the client-visible name
 	// in the response chunk so the upstream name is never leaked to the client.
 	if ra.modelMapped && internalStream.Model != "" {
@@ -3402,6 +3404,7 @@ func (ra *relayAttempt) handleResponse(ctx context.Context, response *http.Respo
 		log.Warnf("failed to transform response: %v", err)
 		return fmt.Errorf("failed to transform outbound response: %w", err)
 	}
+	ra.captureUpstreamDeclaredModel(internalResponse)
 	// When model_mapping remapped the request model, restore the client-visible name
 	// so the upstream name is never leaked to the client.
 	if ra.modelMapped && internalResponse != nil {
@@ -3427,6 +3430,17 @@ func (ra *relayAttempt) collectResponse() {
 
 	ra.metrics.SetInternalResponse(internalResponse, ra.internalRequest.Model)
 	ra.recordResponsesSessionFromInbound(internalResponse)
+}
+
+// captureUpstreamDeclaredModel 记录上游自报的模型名(审计用)。
+//
+// 必须在 model_mapping 的"客户端可见名还原"之前调用: 那一步会把 internalResponse.Model
+// 覆盖成 ra.requestModel, 覆盖之后就再也拿不到上游的真名了。纯观测, 不改任何转发字节。
+func (ra *relayAttempt) captureUpstreamDeclaredModel(resp *model.InternalLLMResponse) {
+	if ra == nil || resp == nil {
+		return
+	}
+	ra.metrics.SetUpstreamDeclaredModel(resp.Model)
 }
 
 func paramOverrideValue(ptr *string) string {

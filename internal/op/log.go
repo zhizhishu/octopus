@@ -82,11 +82,13 @@ type relayLogStreamTokenScope struct {
 	Search        string
 	RetriedOnly   bool
 	HideModelTest bool
-	IsAdmin       bool
-	StartTime     int
-	EndTime       int
-	HasTimeRange  bool
-	createdAt     time.Time
+	// UpstreamModelMismatch 三态筛选: nil=不筛, true/false=只要上游回显不一致/一致的行。
+	UpstreamModelMismatch *bool
+	IsAdmin               bool
+	StartTime             int
+	EndTime               int
+	HasTimeRange          bool
+	createdAt             time.Time
 }
 
 var relayLogStreamTokens = make(map[string]relayLogStreamTokenScope)
@@ -112,8 +114,10 @@ func RelayLogStreamTokenCreateWithTimeRange(scope model.RelayLogScope, isAdmin b
 		Search:        scope.Search,
 		RetriedOnly:   scope.RetriedOnly,
 		HideModelTest: scope.HideModelTest,
-		IsAdmin:       isAdmin,
-		createdAt:     time.Now(),
+
+		UpstreamModelMismatch: scope.UpstreamModelMismatch,
+		IsAdmin:               isAdmin,
+		createdAt:             time.Now(),
 	}
 	if startTime != nil && endTime != nil {
 		tokenScope.StartTime = *startTime
@@ -1073,6 +1077,12 @@ func relayLogMatchScope(relayLog model.RelayLog, scope *model.RelayLogScope) boo
 	if scope.HideModelTest && strings.HasPrefix(relayLog.RequestEndpoint, "model_test") {
 		return false
 	}
+	// 三态: nil 的行(上游没声明模型名)两个桶都不进, 不是"一致"也不是"不一致"。
+	if scope.UpstreamModelMismatch != nil {
+		if relayLog.UpstreamModelMismatch == nil || *relayLog.UpstreamModelMismatch != *scope.UpstreamModelMismatch {
+			return false
+		}
+	}
 	if scope.Search != "" && !relayLogSearchMatches(relayLog, scope.Search) {
 		return false
 	}
@@ -1101,6 +1111,9 @@ func relayLogSearchMatches(relayLog model.RelayLog, search string) bool {
 		return true
 	}
 	if strings.Contains(strings.ToLower(relayLog.ActualModelName), q) {
+		return true
+	}
+	if strings.Contains(strings.ToLower(relayLog.UpstreamResponseModel), q) {
 		return true
 	}
 	if strings.Contains(strings.ToLower(relayLog.ChannelName), q) {
@@ -1341,18 +1354,24 @@ func relayLogApplyScope(query *gorm.DB, scope *model.RelayLogScope) *gorm.DB {
 		// The underscore is escaped so it matches literally, not as a LIKE wildcard.
 		query = query.Where(`request_endpoint NOT LIKE ? ESCAPE '\'`, `model\_test%`)
 	}
+	if scope.UpstreamModelMismatch != nil {
+		// Explicit IS NOT NULL keeps the third state (upstream declared nothing) out of
+		// both buckets — a plain `= ?` comparison would already drop NULLs, but stating it
+		// makes the tri-state contract obvious to the next reader.
+		query = query.Where("upstream_model_mismatch IS NOT NULL AND upstream_model_mismatch = ?", *scope.UpstreamModelMismatch)
+	}
 	if scope.Search != "" {
 		trimmed := strings.TrimSpace(scope.Search)
 		searchPattern := "%" + escapeLogEndpointLike(strings.ToLower(trimmed)) + "%"
 		if num, err := strconv.ParseInt(trimmed, 10, 64); err == nil && num > 0 {
 			query = query.Where(
-				"id = ? OR channel_id = ? OR LOWER(user_name) LIKE ? ESCAPE '\\' OR LOWER(request_api_key_name) LIKE ? ESCAPE '\\' OR LOWER(request_model_name) LIKE ? ESCAPE '\\' OR LOWER(actual_model_name) LIKE ? ESCAPE '\\' OR LOWER(channel_name) LIKE ? ESCAPE '\\' OR LOWER(request_endpoint) LIKE ? ESCAPE '\\' OR LOWER(request_path) LIKE ? ESCAPE '\\' OR LOWER(session_key) LIKE ? ESCAPE '\\' OR LOWER(error) LIKE ? ESCAPE '\\' OR LOWER(error_code) LIKE ? ESCAPE '\\'",
-				num, int(num), searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern,
+				"id = ? OR channel_id = ? OR LOWER(user_name) LIKE ? ESCAPE '\\' OR LOWER(request_api_key_name) LIKE ? ESCAPE '\\' OR LOWER(request_model_name) LIKE ? ESCAPE '\\' OR LOWER(actual_model_name) LIKE ? ESCAPE '\\' OR LOWER(upstream_response_model) LIKE ? ESCAPE '\\' OR LOWER(channel_name) LIKE ? ESCAPE '\\' OR LOWER(request_endpoint) LIKE ? ESCAPE '\\' OR LOWER(request_path) LIKE ? ESCAPE '\\' OR LOWER(session_key) LIKE ? ESCAPE '\\' OR LOWER(error) LIKE ? ESCAPE '\\' OR LOWER(error_code) LIKE ? ESCAPE '\\'",
+				num, int(num), searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern,
 			)
 		} else {
 			query = query.Where(
-				"LOWER(user_name) LIKE ? ESCAPE '\\' OR LOWER(request_api_key_name) LIKE ? ESCAPE '\\' OR LOWER(request_model_name) LIKE ? ESCAPE '\\' OR LOWER(actual_model_name) LIKE ? ESCAPE '\\' OR LOWER(channel_name) LIKE ? ESCAPE '\\' OR LOWER(request_endpoint) LIKE ? ESCAPE '\\' OR LOWER(request_path) LIKE ? ESCAPE '\\' OR LOWER(session_key) LIKE ? ESCAPE '\\' OR LOWER(error) LIKE ? ESCAPE '\\' OR LOWER(error_code) LIKE ? ESCAPE '\\'",
-				searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern,
+				"LOWER(user_name) LIKE ? ESCAPE '\\' OR LOWER(request_api_key_name) LIKE ? ESCAPE '\\' OR LOWER(request_model_name) LIKE ? ESCAPE '\\' OR LOWER(actual_model_name) LIKE ? ESCAPE '\\' OR LOWER(upstream_response_model) LIKE ? ESCAPE '\\' OR LOWER(channel_name) LIKE ? ESCAPE '\\' OR LOWER(request_endpoint) LIKE ? ESCAPE '\\' OR LOWER(request_path) LIKE ? ESCAPE '\\' OR LOWER(session_key) LIKE ? ESCAPE '\\' OR LOWER(error) LIKE ? ESCAPE '\\' OR LOWER(error_code) LIKE ? ESCAPE '\\'",
+				searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern,
 			)
 		}
 	}

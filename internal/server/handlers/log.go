@@ -102,6 +102,26 @@ func hideModelTestFromQuery(c *gin.Context) bool {
 	}
 }
 
+// upstreamModelMismatchFromQuery reads the optional ?upstream_model_mismatch= filter
+// ("1"/"true" → only rows where the upstream declared a different model name than the
+// one we sent; "0"/"false" → only rows where the declared name matched).
+//
+// Absent or unrecognized means no filter. Rows where the upstream declared nothing are
+// deliberately excluded from BOTH buckets — that third state is "cannot judge", not a
+// match and not a mismatch.
+func upstreamModelMismatchFromQuery(c *gin.Context) *bool {
+	switch strings.ToLower(strings.TrimSpace(c.Query("upstream_model_mismatch"))) {
+	case "1", "true", "yes", "on":
+		v := true
+		return &v
+	case "0", "false", "no", "off":
+		v := false
+		return &v
+	default:
+		return nil
+	}
+}
+
 // providerFromQuery reads and normalizes ?provider=; unknown providers return "" (or rejection).
 func providerFromQuery(c *gin.Context) string {
 	p := strings.ToLower(strings.TrimSpace(c.Query("provider")))
@@ -161,6 +181,7 @@ func listLog(c *gin.Context) {
 	scope.Severity = severityFromQuery(c)
 	scope.RetriedOnly = retriedFromQuery(c)
 	scope.HideModelTest = hideModelTestFromQuery(c)
+	scope.UpstreamModelMismatch = upstreamModelMismatchFromQuery(c)
 	scope.Search = strings.TrimSpace(c.Query("search"))
 
 	logs, err := op.RelayLogList(c.Request.Context(), startTime, endTime, page, pageSize, &scope)
@@ -215,6 +236,7 @@ func countLog(c *gin.Context) {
 
 	scope.RetriedOnly = retriedFromQuery(c)
 	scope.HideModelTest = hideModelTestFromQuery(c)
+	scope.UpstreamModelMismatch = upstreamModelMismatchFromQuery(c)
 	scope.Search = strings.TrimSpace(c.Query("search"))
 
 	counts, err := op.RelayLogSeverityCounts(c.Request.Context(), startTime, endTime, &scope)
@@ -266,6 +288,7 @@ func exportLog(c *gin.Context) {
 	scope.Severity = severityFromQuery(c)
 	scope.RetriedOnly = retriedFromQuery(c)
 	scope.HideModelTest = hideModelTestFromQuery(c)
+	scope.UpstreamModelMismatch = upstreamModelMismatchFromQuery(c)
 	scope.Search = strings.TrimSpace(c.Query("search"))
 
 	// Opt-in portable NDJSON/JSONL mode. The default (json array) behavior is
@@ -435,6 +458,7 @@ func getStreamToken(c *gin.Context) {
 	scope.Severity = severityFromQuery(c)
 	scope.RetriedOnly = retriedFromQuery(c)
 	scope.HideModelTest = hideModelTestFromQuery(c)
+	scope.UpstreamModelMismatch = upstreamModelMismatchFromQuery(c)
 	scope.Search = strings.TrimSpace(c.Query("search"))
 	token, err := op.RelayLogStreamTokenCreateWithTimeRange(scope, middleware.CurrentUserIsAdmin(c), startTime, endTime)
 	if err != nil {
@@ -475,6 +499,7 @@ func streamLog(c *gin.Context) {
 	scope.Search = tokenScope.Search
 	scope.RetriedOnly = tokenScope.RetriedOnly
 	scope.HideModelTest = tokenScope.HideModelTest
+	scope.UpstreamModelMismatch = tokenScope.UpstreamModelMismatch
 	var startTime, endTime *int
 	if tokenScope.HasTimeRange {
 		startTime = &tokenScope.StartTime
@@ -623,6 +648,11 @@ func relayLogMatchesScope(log model.RelayLog, scope *model.RelayLogScope) bool {
 	if scope.HideModelTest && strings.HasPrefix(log.RequestEndpoint, "model_test") {
 		return false
 	}
+	if scope.UpstreamModelMismatch != nil {
+		if log.UpstreamModelMismatch == nil || *log.UpstreamModelMismatch != *scope.UpstreamModelMismatch {
+			return false
+		}
+	}
 	if scope.Search != "" {
 		q := strings.ToLower(strings.TrimSpace(scope.Search))
 		if q != "" {
@@ -635,6 +665,7 @@ func relayLogMatchesScope(log model.RelayLog, scope *model.RelayLogScope) bool {
 				!strings.Contains(strings.ToLower(log.RequestAPIKeyName), q) &&
 				!strings.Contains(strings.ToLower(log.RequestModelName), q) &&
 				!strings.Contains(strings.ToLower(log.ActualModelName), q) &&
+				!strings.Contains(strings.ToLower(log.UpstreamResponseModel), q) &&
 				!strings.Contains(strings.ToLower(log.ChannelName), q) &&
 				!strings.Contains(strings.ToLower(log.RequestEndpoint), q) &&
 				!strings.Contains(strings.ToLower(log.RequestPath), q) &&

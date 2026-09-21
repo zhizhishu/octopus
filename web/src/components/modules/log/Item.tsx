@@ -378,6 +378,20 @@ function LogRouteHeader({
                 title={actualModelDisplayName === log.actual_model_name ? undefined : log.actual_model_name}
                 className="text-muted-foreground"
             />
+            {log.upstream_model_mismatch === true && (
+                <Badge
+                    variant="outline"
+                    className={cn(
+                        "shrink-0 border-amber-500/40 bg-amber-500/10 text-xs text-amber-800 dark:text-amber-200",
+                        isCard ? "px-1.5 py-0" : "px-2 py-0.5"
+                    )}
+                    title={log.upstream_response_model
+                        ? t('echoMismatchHint', { model: log.upstream_response_model })
+                        : t('echoMismatch')}
+                >
+                    {t('echoMismatch')}
+                </Badge>
+            )}
             {log.is_stream !== undefined && (
                 <Badge
                     variant="outline"

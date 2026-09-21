@@ -47,6 +47,11 @@ type RelayMetrics struct {
 	SessionKey    string
 	SessionSource string
 
+	// UpstreamDeclaredModel 是上游响应里自报的模型名。必须在 relay 把
+	// internalResponse.Model 改写成客户端可见名之前捕获(model_mapping 生效时会被覆盖),
+	// 否则拿到的永远是请求模型名而不是上游真名。见 SetUpstreamDeclaredModel。
+	UpstreamDeclaredModel string
+
 	// usageEstimated is true when Stats' token/cost figures were counted locally
 	// because the upstream omitted usage (see SetInternalResponse). saveLog surfaces
 	// this as usage_source=local_estimate so the numbers read as an estimate.
@@ -89,6 +94,46 @@ func (m *RelayMetrics) SetAccessPlan(plan *model.AccessPlan, rule *model.AccessR
 func (m *RelayMetrics) SetRequestEndpoint(endpoint string, path string) {
 	m.RequestEndpoint = cleanRelayEndpointName(endpoint)
 	m.RequestPath = strings.TrimSpace(path)
+}
+
+// SetUpstreamDeclaredModel 记录上游响应自报的模型名。
+//
+// 调用时机是硬要求: 必须在 relay 的"客户端可见名还原"之前。开启 model_mapping 时
+// relay 会把 internalResponse.Model 覆盖成 ra.requestModel(防止上游身份外泄给客户端),
+// 覆盖之后上游真名就没了。
+//
+// 首个非空声明胜出(流式每个分片通常都带同一个 model, 首个即可代表本次响应)。
+// 纯观测——不参与、不改变任何转发字节。
+func (m *RelayMetrics) SetUpstreamDeclaredModel(name string) {
+	if m == nil || m.UpstreamDeclaredModel != "" {
+		return
+	}
+	m.UpstreamDeclaredModel = strings.TrimSpace(name)
+}
+
+// upstreamModelMismatch 三态比对"上游自报的模型名"与"我们发出去的模型名"。
+//
+// 返回 nil 表示无法判定: 上游没声明模型名(很多中转不回这个字段), 或我们不知道发出去的
+// 是哪个名字。两种"没数据"都不该被读成"有问题"。
+//
+// 返回 false/true 才是有观测的结论。刻意偏离 sub2api 一处: 它在 sentModel 为空时判 true,
+// 而 octopus 的失败/本地校验路径经常没有出站模型名, 照搬会把"没请求过"记成"不一致"。
+func upstreamModelMismatch(sentModel, responseModel string) *bool {
+	responseModel = strings.TrimSpace(responseModel)
+	sentModel = strings.TrimSpace(sentModel)
+	if responseModel == "" || sentModel == "" {
+		return nil
+	}
+	mismatch := !upstreamModelsMatchForAudit(sentModel, responseModel)
+	return &mismatch
+}
+
+// upstreamModelsMatchForAudit 大小写不敏感比对(与 sub2api 同口径)。
+//
+// 刻意不做日期后缀归一: 上游回带日期后缀的同族变体(如 -20251101)会被记成不一致。
+// 那只是"待复核"线索, 不是结论——页面文案必须按线索表述, 不得写成"已证实伪造"。
+func upstreamModelsMatchForAudit(sentModel, responseModel string) bool {
+	return strings.EqualFold(strings.TrimSpace(sentModel), strings.TrimSpace(responseModel))
 }
 
 func (m *RelayMetrics) SetClientSession(info clientSessionInfo) {
@@ -535,6 +580,8 @@ func (m *RelayMetrics) saveLog(ctx context.Context, err error, duration time.Dur
 		ChannelId:             channelID,
 		ChannelKeyRemark:      m.ChannelKeyRemark,
 		ActualModelName:       actualModel,
+		UpstreamResponseModel: m.UpstreamDeclaredModel,
+		UpstreamModelMismatch: upstreamModelMismatch(m.ActualModel, m.UpstreamDeclaredModel),
 		UseTime:               int(duration.Milliseconds()),
 		Attempts:              attempts,
 		TotalAttempts:         len(attempts),

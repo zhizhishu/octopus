@@ -744,7 +744,11 @@
                 "all": "All",
                 "success": "Success",
                 "warn": "Warn",
-                "error": "Error"
+                "error": "Error",
+                "echo": "Upstream echo",
+                "echoAll": "All echoes",
+                "mismatch": "Echo mismatch",
+                "match": "Echo match"
             }
         },
         "card": {
@@ -781,6 +785,8 @@
             "channelAttempts": "Channel Attempts",
             "stream": "Stream",
             "nonStream": "Non-stream",
+            "echoMismatch": "Echo mismatch",
+            "echoMismatchHint": "Upstream reported {model}, which differs from the name we sent. This is a clue, not proof of a fake model",
             "reasoningEffort": "Reasoning Effort",
             "userName": "User",
             "channelKey": "Key Remark",

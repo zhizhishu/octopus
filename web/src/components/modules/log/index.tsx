@@ -678,6 +678,7 @@ export function Log() {
     const [endDate, setEndDate] = useState(defaultRange.endDate);
     // 严重程度是服务端过滤，翻页/总数都对得上。
     const [severityFilter, setSeverityFilter] = useState<LogSeverityFilter>('all');
+    const [mismatchFilter, setMismatchFilter] = useState<'all' | 'mismatch' | 'match'>('all');
     const [searchKeyword, setSearchKeyword] = useState('');
     // 手机端默认只留搜索框、其余筛选控件折叠；桌面靠 sm: 断点强制常显，两种视口互不影响。
     const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
@@ -724,6 +725,7 @@ export function Log() {
         ? selectedAPIKeyID
         : undefined;
     const { startTime, endTime } = resolveLogTimeRange(startDate, endDate);
+    const mismatchParam = isAdmin && mismatchFilter !== 'all' ? mismatchFilter === 'mismatch' : undefined;
 
     // 全量严重程度计数（成功/警告/错误 + 总数）。与列表查询共享过滤参数，不含
     // page/page_size/severity，所以徽章数字与分页页数都是"全量"、不受当前页限制。
@@ -738,6 +740,7 @@ export function Log() {
         retried: false,
         hideModelTest: false,
         search: deferredSearch || undefined,
+        upstreamModelMismatch: mismatchParam,
     });
     const LOG_PAGE_SIZE = 20;
     // 当前生效筛选下的总条数：全部→total，否则取该严重程度的计数。分页页数据此算。
@@ -774,6 +777,7 @@ export function Log() {
         retried: false,
         hideModelTest: false,
         search: deferredSearch || undefined,
+        upstreamModelMismatch: mismatchParam,
         // 实时刷新只在实时模式 + 第 1 页（最新）生效；翻到历史页自然暂停，回第 1 页恢复。
         live: isLiveMode && currentPage === 1,
     });
@@ -833,6 +837,7 @@ export function Log() {
         setSelectedProvider('');
         setSelectedModel('');
         setSeverityFilter('all');
+        setMismatchFilter('all');
         setSearchKeyword('');
         setStartDate(defaultRange.startDate);
         setEndDate(defaultRange.endDate);
@@ -848,6 +853,7 @@ export function Log() {
         !!selectedUserID ||
         !!effectiveSelectedAPIKeyID ||
         severityFilter !== 'all' ||
+        mismatchFilter !== 'all' ||
         !!searchKeyword.trim() ||
         !isDefaultRange;
 
@@ -864,6 +870,7 @@ export function Log() {
     if (selectedProvider) activePills.push({ key: 'prov', label: `厂商 ${providerFilters.find((p) => p.value === selectedProvider)?.label ?? selectedProvider}`, onClear: () => { setSelectedProvider(''); setCurrentPage(1); } });
     if (selectedModel) activePills.push({ key: 'mod', label: `模型 ${selectedModel}`, onClear: () => { setSelectedModel(''); setCurrentPage(1); } });
     if (severityFilter !== 'all') activePills.push({ key: 'sev', label: `状态 ${t(`list.filters.${severityFilter}`)}`, onClear: () => { setSeverityFilter('all'); setCurrentPage(1); } });
+    if (mismatchFilter !== 'all') activePills.push({ key: 'mismatch', label: t(`list.filters.${mismatchFilter}`), onClear: () => { setMismatchFilter('all'); setCurrentPage(1); } });
     if (selectedUserID) activePills.push({ key: 'user', label: `用户 ${users.find((u) => u.id === selectedUserID)?.username ?? selectedUserID}`, onClear: () => { setSelectedUserID(undefined); setCurrentPage(1); } });
     if (effectiveSelectedAPIKeyID) activePills.push({ key: 'key', label: `Key ${selectedAPIKey?.name ?? effectiveSelectedAPIKeyID}`, onClear: () => { setSelectedAPIKeyID(undefined); setCurrentPage(1); } });
 
@@ -933,6 +940,7 @@ export function Log() {
         model: selectedModel || undefined,
         retried: false,
         hideModelTest: false,
+        upstreamModelMismatch: mismatchParam,
         enabled: listIsEmpty,
     });
 
@@ -959,13 +967,14 @@ export function Log() {
                 severity: severityFilter === 'all' ? undefined : severityFilter,
                 retried: false,
                 hide_model_test: false,
+                upstream_model_mismatch: mismatchParam,
             },
             {
                 onSuccess: () => toast.success('日志已导出'),
                 onError: (error) => toast.error('日志导出失败', { description: error instanceof Error ? error.message : String(error) }),
             }
         );
-    }, [deferredSearch, effectiveSelectedAPIKeyID, endTime, exportLogs, selectedEndpoint, selectedModel, selectedProvider, selectedUserID, severityFilter, startTime]);
+    }, [deferredSearch, effectiveSelectedAPIKeyID, endTime, exportLogs, mismatchParam, selectedEndpoint, selectedModel, selectedProvider, selectedUserID, severityFilter, startTime]);
 
     const renderLogCard = useCallback((log: RelayLog) => <LogCard log={log} />, []);
     const getLogRowKey = useCallback((log: RelayLog) => log.id, []);
@@ -1050,7 +1059,7 @@ export function Log() {
             <div className="flex flex-none flex-col gap-2.5 rounded-2xl border border-border bg-card p-3 sm:px-4 sm:py-3.5 shadow-sm">
 
                 {/* 第一块：搜索 + 端点/厂商/模型。桌面一行；手机默认只留搜索框，其余折叠。 */}
-                <div className="flex flex-col gap-2 sm:grid sm:grid-cols-[minmax(0,1fr)_8.5rem_8.5rem_8.5rem] sm:items-center sm:gap-2">
+                <div className={cn('flex flex-col gap-2 sm:grid sm:items-center sm:gap-2', isAdmin ? 'sm:grid-cols-[minmax(0,1fr)_8.5rem_8.5rem_8.5rem_8.5rem]' : 'sm:grid-cols-[minmax(0,1fr)_8.5rem_8.5rem_8.5rem]')}>
                     <div className="flex min-w-0 items-center gap-2">
                     <label className="relative flex min-w-0 flex-1 items-center">
                         <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -1090,7 +1099,7 @@ export function Log() {
                         {!mobileFiltersOpen && hasActiveFilter && <span className="size-1.5 rounded-full bg-primary" />}
                     </button>
                     </div>
-                    <div className={cn('grid grid-cols-3 gap-2 sm:contents', !mobileFiltersOpen && 'hidden')}>
+                    <div className={cn('grid grid-cols-3 gap-2 sm:contents', isAdmin && 'grid-cols-2', !mobileFiltersOpen && 'hidden')}>
                     <select
                         aria-label="端点"
                         value={selectedEndpoint}
@@ -1128,6 +1137,22 @@ export function Log() {
                             </option>
                         ))}
                     </select>
+                    {isAdmin && (
+                        <select
+                            aria-label={t('list.filters.echo')}
+                            value={mismatchFilter}
+                            onChange={(event) => {
+                                const next = event.target.value as 'all' | 'mismatch' | 'match';
+                                setMismatchFilter(next);
+                                setCurrentPage(1);
+                            }}
+                            className="h-9 min-w-0 w-full rounded-lg border border-input bg-background px-2 text-xs text-foreground outline-none sm:px-3"
+                        >
+                            <option value="all">{t('list.filters.echoAll')}</option>
+                            <option value="mismatch">{t('list.filters.mismatch')}</option>
+                            <option value="match">{t('list.filters.match')}</option>
+                        </select>
+                    )}
                     </div>
                 </div>
 

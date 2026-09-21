@@ -744,7 +744,11 @@
                 "all": "全部",
                 "success": "成功",
                 "warn": "Warn",
-                "error": "Error"
+                "error": "Error",
+                "echo": "上游回顯",
+                "echoAll": "全部回顯",
+                "mismatch": "回顯不符",
+                "match": "回顯一致"
             }
         },
         "card": {
@@ -781,6 +785,8 @@
             "channelAttempts": "渠道嘗試",
             "stream": "串流",
             "nonStream": "非串流",
+            "echoMismatch": "回顯不符",
+            "echoMismatchHint": "上游自報 {model}，與送出去的名字不一致；這是線索，不是假模型證明",
             "reasoningEffort": "推理強度",
             "userName": "使用者",
             "channelKey": "渠道 Key 備註",
