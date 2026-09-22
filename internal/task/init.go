@@ -22,6 +22,7 @@ const (
 	TaskSyncLLM          = "sync_llm"
 	TaskCleanLLM         = "clean_llm"
 	TaskBaseUrlDelay     = "base_url_delay"
+	TaskModelAuditQuick  = "model_audit_quick"
 )
 
 func Init() {
@@ -33,6 +34,7 @@ func Init() {
 	// 生命周期的后台写库者(会撞各用例的临时 DB, CI 实翻过)。
 	op.RelayLogFlusherStart()
 	Register(TaskUserRelayIPSave, 1*time.Minute, false, op.UserRelayIPSaveDBTask)
+	Register(TaskModelAuditQuick, scheduledAuditInterval, false, ModelAuditQuickTask)
 
 	// 渠道 key 的计费(TotalCost)/401 隔离态(DisabledReason/At)/末次使用原本只在优雅退出的
 	// SaveCache 里落库, 崩溃/OOM/docker kill 会丢掉自启动以来累计的全部渠道 key 账目(含把坏

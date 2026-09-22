@@ -83,10 +83,41 @@ export type LogAnomalyReport = {
     disclaimer: string;
 };
 
+export type ScheduledAuditResult = {
+    channel_id: number;
+    channel_name: string;
+    model: string;
+    trigger: string;
+    skipped?: boolean;
+    skip_reason?: string;
+    duration_ms?: number;
+    verdict?: string;
+    score?: number;
+    finding_count?: number;
+    error_count?: number;
+};
+
+export type ScheduledAuditSnapshot = {
+    last_run_unix: number;
+    target_count: number;
+    ran_count: number;
+    results: ScheduledAuditResult[];
+    disclaimer: string;
+};
+
 export function useLogAnomalies(enabled = true) {
     return useQuery({
         queryKey: ['model-audit', 'log-anomalies'],
         queryFn: async () => apiClient.get<LogAnomalyReport>('/api/v1/model-audit/log-anomalies'),
+        enabled,
+        staleTime: 30_000,
+    });
+}
+
+export function useScheduledAudit(enabled = true) {
+    return useQuery({
+        queryKey: ['model-audit', 'scheduled'],
+        queryFn: async () => apiClient.get<ScheduledAuditSnapshot>('/api/v1/model-audit/scheduled'),
         enabled,
         staleTime: 30_000,
     });

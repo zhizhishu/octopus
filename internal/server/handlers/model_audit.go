@@ -39,6 +39,10 @@ func init() {
 		AddRoute(
 			router.NewRoute("/log-anomalies", http.MethodGet).
 				Handle(getLogAnomalies),
+		).
+		AddRoute(
+			router.NewRoute("/scheduled", http.MethodGet).
+				Handle(getScheduledAudit),
 		)
 }
 
@@ -65,6 +69,10 @@ func getLogAnomalies(c *gin.Context) {
 		return
 	}
 	resp.Success(c, report)
+}
+
+func getScheduledAudit(c *gin.Context) {
+	resp.Success(c, op.ScheduledAuditGet())
 }
 
 func runModelAudit(c *gin.Context) {

@@ -23,6 +23,7 @@ import {
     AUDIT_PROBE_IDS,
     useLogAnomalies,
     useRunModelAudit,
+    useScheduledAudit,
     type AuditFinding,
     type AuditProbeId,
     type AuditProbeResult,
@@ -180,6 +181,7 @@ function evidencePairs(row: DisplayRow): Array<[string, string]> {
 export function ModelAudit() {
     const { data: channelsData, isLoading } = useChannelList();
     const { data: logAnomalies } = useLogAnomalies();
+    const { data: scheduledAudit } = useScheduledAudit();
     const runAudit = useRunModelAudit();
     const channels = useMemo(
         () => (channelsData ?? []).map((item) => item.raw).filter((item) => item.enabled),
@@ -420,6 +422,27 @@ export function ModelAudit() {
                                         </ul>
                                     )}
                                     <p className="mt-2 text-[11px] leading-5 text-muted-foreground">{logAnomalies.disclaimer}</p>
+                                </div>
+                            )}
+                            {scheduledAudit && (
+                                <div className="mt-3 w-full max-w-lg rounded-2xl border border-border bg-muted/30 px-4 py-3 text-left">
+                                    <p className="text-xs text-muted-foreground">
+                                        定时快检 · {scheduledAudit.last_run_unix ? new Date(scheduledAudit.last_run_unix * 1000).toLocaleString('zh-CN') : '还没跑过'}
+                                        {scheduledAudit.last_run_unix ? ` · 跑了 ${scheduledAudit.ran_count}/${scheduledAudit.target_count}` : ''}
+                                    </p>
+                                    {(scheduledAudit.results ?? []).length === 0 ? (
+                                        <p className="mt-2 text-sm">开机不会立刻打上游。每 6 小时对启用渠道做一次轻量快检。</p>
+                                    ) : (
+                                        <ul className="mt-2 space-y-2">
+                                            {(scheduledAudit.results ?? []).slice(0, 4).map((item) => (
+                                                <li key={`${item.channel_id}-${item.model}-${item.trigger}`} className="text-sm">
+                                                    <span className="font-medium">{item.skipped ? (item.skip_reason || '本轮跳过') : (item.verdict === 'none' ? '未见异常' : item.verdict === 'unknown' ? '证据不足' : '待复核')}</span>
+                                                    <span className="mt-0.5 block text-xs text-muted-foreground">{item.channel_name || `渠道 ${item.channel_id}`} · {item.model}</span>
+                                                </li>
+                                            ))}
+                                        </ul>
+                                    )}
+                                    <p className="mt-2 text-[11px] leading-5 text-muted-foreground">{scheduledAudit.disclaimer}</p>
                                 </div>
                             )}
                         </div>
