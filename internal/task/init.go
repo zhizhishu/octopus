@@ -33,6 +33,7 @@ func Init() {
 	// 显式从这里起而不是 RelayLogAdd 里惰性起——生产必经此路, 而测试二进制绝不该有无人管
 	// 生命周期的后台写库者(会撞各用例的临时 DB, CI 实翻过)。
 	op.RelayLogFlusherStart()
+	RegisterAuditFollowUp()
 	Register(TaskUserRelayIPSave, 1*time.Minute, false, op.UserRelayIPSaveDBTask)
 	Register(TaskModelAuditQuick, scheduledAuditInterval, false, ModelAuditQuickTask)
 

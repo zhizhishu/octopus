@@ -347,6 +347,7 @@ func RelayLogAdd(ctx context.Context, relayLog model.RelayLog) error {
 		relayLogAddPending(relayLog)
 		// 实时推送保持在 Add 当下就发, 不等落库(日志页/SSE 尾随看到的仍是即时的)
 		safe.SafeGo("relay-log-notify", func() { notifySubscribers(relayLog) })
+		maybeTriggerAuditFollowUp(relayLog)
 		// Telemetry caches are TTL-bounded (see model_telemetry_cache.go); pushing
 		// invalidation here defeats the cache entirely under sustained traffic.
 		return nil
@@ -366,6 +367,7 @@ func RelayLogAdd(ctx context.Context, relayLog model.RelayLog) error {
 	}
 	relayLogCacheLock.Unlock()
 	safe.SafeGo("relay-log-notify", func() { notifySubscribers(relayLog) })
+	maybeTriggerAuditFollowUp(relayLog)
 	return nil
 }
 

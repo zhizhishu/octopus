@@ -34,6 +34,35 @@ type scheduledAuditTarget struct {
 	trigger string
 }
 
+// RegisterAuditFollowUp 把出错跟进挂到日志写入路径。Init 里调一次即可。
+func RegisterAuditFollowUp() {
+	op.SetScheduledAuditFollowUp(func(channelID int, modelName string) {
+		runAuditFollowUp(channelID, modelName)
+	})
+}
+
+func runAuditFollowUp(channelID int, modelName string) {
+	now := time.Now()
+	if op.ScheduledAuditOnCooldown(channelID, modelName, now, scheduledAuditCooldown) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), scheduledAuditProbeBudget+5*time.Second)
+	defer cancel()
+	channel, err := op.ChannelGet(channelID, ctx)
+	if err != nil || channel == nil || !channel.Enabled {
+		return
+	}
+	item := runScheduledAuditTarget(ctx, scheduledAuditTarget{
+		channel: *channel,
+		model:   modelName,
+		trigger: "echo_mismatch",
+	})
+	if !item.Skipped {
+		op.ScheduledAuditMarkHit(channelID, modelName, now)
+	}
+	op.ScheduledAuditAppend(item, now)
+}
+
 // ModelAuditQuickTask 对启用渠道做轻量快检。启动时不跑，避免一开机就打上游。
 func ModelAuditQuickTask() {
 	ctx, cancel := context.WithTimeout(context.Background(), scheduledAuditTaskBudget)
