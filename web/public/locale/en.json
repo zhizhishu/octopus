@@ -787,6 +787,7 @@
             "nonStream": "Non-stream",
             "echoMismatch": "Echo mismatch",
             "echoMismatchHint": "Upstream reported {model}, which differs from the name we sent. This is a clue, not proof of a fake model",
+            "upstreamEcho": "Upstream reported",
             "reasoningEffort": "Reasoning Effort",
             "userName": "User",
             "channelKey": "Key Remark",

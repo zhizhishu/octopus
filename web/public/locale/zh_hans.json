@@ -787,6 +787,7 @@
             "nonStream": "非流式",
             "echoMismatch": "回显不符",
             "echoMismatchHint": "上游自报 {model}，与发出去的名字不一致；这是线索，不是假模型证明",
+            "upstreamEcho": "上游自报",
             "reasoningEffort": "推理强度",
             "userName": "用户",
             "channelKey": "渠道 Key 备注",

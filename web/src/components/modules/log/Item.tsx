@@ -301,6 +301,10 @@ function LogRouteHeader({
     const textMode = isCard ? undefined : 'wrap';
     const requestModelDisplayName = marketModelName(log.request_model_name) || log.request_model_name;
     const actualModelDisplayName = marketModelName(log.actual_model_name) || log.actual_model_name;
+    const upstreamEchoName = log.upstream_response_model?.trim() ?? '';
+    const upstreamEchoDisplayName = upstreamEchoName
+        ? (marketModelName(upstreamEchoName) || upstreamEchoName)
+        : '';
 
     return (
         <>
@@ -379,18 +383,33 @@ function LogRouteHeader({
                 className="text-muted-foreground"
             />
             {log.upstream_model_mismatch === true && (
-                <Badge
-                    variant="outline"
-                    className={cn(
-                        "shrink-0 border-amber-500/40 bg-amber-500/10 text-xs text-amber-800 dark:text-amber-200",
-                        isCard ? "px-1.5 py-0" : "px-2 py-0.5"
+                <>
+                    {upstreamEchoDisplayName && (
+                        <>
+                            <ArrowRight className={cn("size-3.5 text-amber-600/70 dark:text-amber-400/70", isCard && "shrink-0")} />
+                            <SafeText
+                                mode={textMode}
+                                value={upstreamEchoDisplayName}
+                                title={upstreamEchoDisplayName === upstreamEchoName
+                                    ? t('echoMismatchHint', { model: upstreamEchoName })
+                                    : `${upstreamEchoName}\n${t('echoMismatchHint', { model: upstreamEchoName })}`}
+                                className="text-amber-800 dark:text-amber-200"
+                            />
+                        </>
                     )}
-                    title={log.upstream_response_model
-                        ? t('echoMismatchHint', { model: log.upstream_response_model })
-                        : t('echoMismatch')}
-                >
-                    {t('echoMismatch')}
-                </Badge>
+                    <Badge
+                        variant="outline"
+                        className={cn(
+                            "shrink-0 border-amber-500/40 bg-amber-500/10 text-xs text-amber-800 dark:text-amber-200",
+                            isCard ? "px-1.5 py-0" : "px-2 py-0.5"
+                        )}
+                        title={upstreamEchoName
+                            ? t('echoMismatchHint', { model: upstreamEchoName })
+                            : t('echoMismatch')}
+                    >
+                        {t('echoMismatch')}
+                    </Badge>
+                </>
             )}
             {log.is_stream !== undefined && (
                 <Badge
@@ -932,6 +951,20 @@ export const LogCard = React.memo(function LogCard({ log }: { log: RelayLog }) {
                                     {reasoningEffort && (
                                         <DetailTile icon={<Zap className="size-3.5" />} label={t('reasoningEffort')}>
                                             <SafeText mode="wrap" value={reasoningEffort} className="block text-xs font-semibold text-foreground" />
+                                        </DetailTile>
+                                    )}
+                                    {log.upstream_response_model?.trim() && (
+                                        <DetailTile icon={<Cpu className="size-3.5" />} label={t('upstreamEcho')}>
+                                            <SafeText
+                                                mode="wrap"
+                                                value={log.upstream_response_model.trim()}
+                                                className={cn(
+                                                    "block text-xs font-semibold",
+                                                    log.upstream_model_mismatch === true
+                                                        ? "text-amber-800 dark:text-amber-200"
+                                                        : "text-foreground",
+                                                )}
+                                            />
                                         </DetailTile>
                                     )}
                                     {log.request_ip && (
