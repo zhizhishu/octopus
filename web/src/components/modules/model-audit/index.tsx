@@ -21,6 +21,7 @@ import type { ApiError } from '@/api/types';
 import { ChannelType, useChannelList, type Channel } from '@/api/endpoints/channel';
 import {
     AUDIT_PROBE_IDS,
+    useLogAnomalies,
     useRunModelAudit,
     type AuditFinding,
     type AuditProbeId,
@@ -178,6 +179,7 @@ function evidencePairs(row: DisplayRow): Array<[string, string]> {
 
 export function ModelAudit() {
     const { data: channelsData, isLoading } = useChannelList();
+    const { data: logAnomalies } = useLogAnomalies();
     const runAudit = useRunModelAudit();
     const channels = useMemo(
         () => (channelsData ?? []).map((item) => item.raw).filter((item) => item.enabled),
@@ -402,6 +404,24 @@ export function ModelAudit() {
                             <Shield className="mb-3 size-8 text-muted-foreground" />
                             <h3 className="text-lg font-semibold">未开始检测</h3>
                             <p className="mt-1 max-w-sm text-sm text-muted-foreground">选好渠道和模型后开始。结果只作线索，不证明真假。</p>
+                            {logAnomalies && (
+                                <div className="mt-6 w-full max-w-lg rounded-2xl border border-border bg-muted/30 px-4 py-3 text-left">
+                                    <p className="text-xs text-muted-foreground">近 {logAnomalies.window_hours} 小时真实调用扫描 · {logAnomalies.sample_count} 条成功样本</p>
+                                    {(logAnomalies.findings ?? []).length === 0 ? (
+                                        <p className="mt-2 text-sm">近期日志未见需要复核的统计异常。</p>
+                                    ) : (
+                                        <ul className="mt-2 space-y-2">
+                                            {(logAnomalies.findings ?? []).slice(0, 4).map((item) => (
+                                                <li key={`${item.channel_id}-${item.code}-${item.model}`} className="text-sm">
+                                                    <span className="font-medium">{item.title}</span>
+                                                    <span className="mt-0.5 block text-xs text-muted-foreground">{item.channel_name || `渠道 ${item.channel_id}`} · {item.model}</span>
+                                                </li>
+                                            ))}
+                                        </ul>
+                                    )}
+                                    <p className="mt-2 text-[11px] leading-5 text-muted-foreground">{logAnomalies.disclaimer}</p>
+                                </div>
+                            )}
                         </div>
                     )}
 

@@ -32,6 +32,14 @@ func init() {
 			router.NewRoute("/run", http.MethodPost).
 				Handle(runModelAudit),
 		)
+
+	router.NewGroupRouter("/api/v1/model-audit").
+		Use(middleware.Auth()).
+		Use(middleware.AdminOnly()).
+		AddRoute(
+			router.NewRoute("/log-anomalies", http.MethodGet).
+				Handle(getLogAnomalies),
+		)
 }
 
 type modelAuditRequest struct {
@@ -48,6 +56,15 @@ type modelAuditResponse struct {
 	Endpoint      string              `json:"endpoint"`
 	DurationMs    int                 `json:"duration_ms"`
 	Report        behavior.ViewReport `json:"report"`
+}
+
+func getLogAnomalies(c *gin.Context) {
+	report, err := op.LogAnomalyScanGet(c.Request.Context())
+	if err != nil {
+		resp.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	resp.Success(c, report)
 }
 
 func runModelAudit(c *gin.Context) {

@@ -1,4 +1,4 @@
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import { apiClient } from '../client';
 import { logger } from '@/lib/logger';
 
@@ -64,6 +64,33 @@ export type ModelAuditResponse = {
     duration_ms: number;
     report: AuditViewReport;
 };
+
+export type LogAnomalyFinding = {
+    code: string;
+    severity: 'low' | 'medium';
+    channel_id: number;
+    channel_name: string;
+    model: string;
+    title: string;
+    evidence?: Record<string, unknown>;
+};
+
+export type LogAnomalyReport = {
+    window_hours: number;
+    sample_count: number;
+    bucket_count: number;
+    findings: LogAnomalyFinding[];
+    disclaimer: string;
+};
+
+export function useLogAnomalies(enabled = true) {
+    return useQuery({
+        queryKey: ['model-audit', 'log-anomalies'],
+        queryFn: async () => apiClient.get<LogAnomalyReport>('/api/v1/model-audit/log-anomalies'),
+        enabled,
+        staleTime: 30_000,
+    });
+}
 
 export function useRunModelAudit() {
     return useMutation({
