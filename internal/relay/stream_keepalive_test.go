@@ -1356,3 +1356,78 @@ data: {"type":"message_start","message":{"id":"msg_timeout","type":"message","ro
 		t.Fatalf("deferred-commit opener must not leak before content, got %s", rec.Body.String())
 	}
 }
+
+// TestClaudeCLIBearerAuthMirrorsAuthorizationOnly pins the CLI auth-style mirror:
+// a claude-CLI-shaped downstream (Anthropic-Beta carrying the claude-code flag)
+// that authenticated with Authorization: Bearer must produce an upstream request
+// carrying Authorization ONLY — the wire shape a genuine claude CLI sends to a
+// router/proxy base (packet-verified 2026-09-24: golden claude 2.1.281 carries no
+// X-Api-Key). A plain Bearer client without the claude-code beta keeps the
+// historical both-headers auth (covered by the plain-client 1M test above).
+func TestClaudeCLIBearerAuthMirrorsAuthorizationOnly(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayErrorDB(t)
+
+	var sawAPIKey string
+	var sawAuthorization string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawAPIKey = r.Header.Get("X-API-Key")
+		sawAuthorization = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`event: message_start
+data: {"type":"message_start","message":{"id":"msg_bearer","type":"message","role":"assistant","model":"claude-opus-4-8","content":[],"usage":{"input_tokens":3,"output_tokens":0}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"OK"}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	channel := dbmodel.Channel{
+		Name:    "the relay Claude bearer mirror",
+		Type:    outbound.OutboundTypeAnthropic,
+		Enabled: true,
+		Model:   "claude-opus-4-8",
+		BaseUrls: []dbmodel.BaseUrl{{URL: upstream.URL}},
+		Keys:    []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "anthropic-key"}},
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{
+		"model":"claude-opus-4-8",
+		"max_tokens":1024,
+		"stream":true,
+		"messages":[{"role":"user","content":"ping"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "claude-cli/2.1.281 (external, sdk-cli)")
+	req.Header.Set("Authorization", "Bearer client-octopus-key")
+	req.Header.Set("Anthropic-Beta", "claude-code-20250219,interleaved-thinking-2025-05-14")
+	c.Request = req
+	c.Set("api_key_id", 0)
+	c.Set("user_id", 0)
+	c.Set("request_ip", "127.0.0.1")
+
+	Handler(inbound.InboundTypeAnthropic, c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected CLI bearer stream to succeed, got %d body %s", rec.Code, rec.Body.String())
+	}
+	if sawAuthorization != "Bearer anthropic-key" {
+		t.Fatalf("upstream Authorization = %q, want the channel key Bearer", sawAuthorization)
+	}
+	if sawAPIKey != "" {
+		t.Fatalf("upstream X-Api-Key must be absent for a CLI-shaped Bearer client (golden parity), got %q", sawAPIKey)
+	}
+}

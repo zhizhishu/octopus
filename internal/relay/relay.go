@@ -927,6 +927,21 @@ func parseRequest(inboundType inbound.InboundType, c *gin.Context) (*model.Inter
 		return nil, nil, err
 	}
 
+	// A genuine claude CLI carries its beta set in the Anthropic-Beta HEADER, not
+	// the body-level `betas` field the inbound transformer also accepts — so for
+	// anthropic inbound, merge the header values into TransformOptions.AnthropicBetas.
+	// Downstream consumers (the mid-conversation-system message placement gate, the
+	// outbound beta merge) then see the client's real betas; every emitter dedupes,
+	// so nothing double-appends.
+	if inboundType == inbound.InboundTypeAnthropic {
+		for _, raw := range strings.Split(c.Request.Header.Get("Anthropic-Beta"), ",") {
+			if beta := strings.TrimSpace(raw); beta != "" {
+				internalRequest.TransformOptions.AnthropicBetas = append(
+					internalRequest.TransformOptions.AnthropicBetas, beta)
+			}
+		}
+	}
+
 	// Pass through the original query parameters, but strip the client's auth params
 	// (?key=/?api_key=/... = the client's Octopus key) so they never leak to the
 	// upstream provider; provider-specific switches (beta/alt/...) are preserved.

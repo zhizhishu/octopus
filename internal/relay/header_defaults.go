@@ -32,6 +32,12 @@ type ChannelWireHeaderOptions struct {
 	InboundType     inbound.InboundType
 	InternalRequest *model.InternalLLMRequest
 	ClaudeSessionID string
+	// ClientUsedBearerAuth reports whether the downstream client is a claude-CLI-shaped
+	// client (Anthropic-Beta carries the claude-code flag) that authenticated with an
+	// Authorization: Bearer header — the CLI auth-token style. Set only by the relay
+	// path (which sees the client request); synthetic callers (modeltest) and plain
+	// non-CLI clients leave it false and keep the historical both-headers auth.
+	ClientUsedBearerAuth bool
 }
 
 // ApplyChannelWireHeaders applies protocol defaults, operator custom headers,
@@ -78,11 +84,20 @@ func (ra *relayAttempt) applyHeaderDefaults(req *http.Request) {
 	if ra == nil || req == nil || ra.channel == nil {
 		return
 	}
+	clientUsedBearer := false
+	if ra.c != nil && ra.c.Request != nil {
+		// Gate on the claude-code beta so only a CLI-shaped Bearer client gets the
+		// Authorization-only mirror; a plain Bearer client (no claude-code beta)
+		// keeps the historical both-headers upstream auth.
+		clientUsedBearer = strings.TrimSpace(ra.c.Request.Header.Get("Authorization")) != "" &&
+			strings.Contains(ra.c.Request.Header.Get("Anthropic-Beta"), "claude-code")
+	}
 	ApplyChannelWireHeaders(req, ChannelWireHeaderOptions{
-		Channel:         ra.channel,
-		InboundType:     ra.inboundType,
-		InternalRequest: ra.internalRequest,
-		ClaudeSessionID: ra.claudeFingerprintSessionID(),
+		Channel:              ra.channel,
+		InboundType:          ra.inboundType,
+		InternalRequest:      ra.internalRequest,
+		ClaudeSessionID:      ra.claudeFingerprintSessionID(),
+		ClientUsedBearerAuth: clientUsedBearer,
 	})
 }
 
@@ -122,6 +137,16 @@ func applyChannelWireHeaderDefaults(req *http.Request, options ChannelWireHeader
 	switch channel.Type {
 	case outbound.OutboundTypeAnthropic:
 		applyClaudeHeaderDefaultsWithFingerprint(req, options.InternalRequest, fingerprint, options.ClaudeSessionID)
+		// Mirror the client's auth style: a downstream Bearer client (claude CLI
+		// auth-token mode) must produce an Authorization-only outbound, the exact
+		// wire shape a genuine CLI sends to a router/proxy base (packet-verified
+		// 2026-09-24: golden carries Authorization and no X-Api-Key). The outbound
+		// sets both for upstream compatibility; trim the extra X-Api-Key only when
+		// the outbound actually carries a Bearer (official api.anthropic.com keeps
+		// X-Api-Key and never gets Authorization, so it is untouched).
+		if options.ClientUsedBearerAuth && strings.TrimSpace(req.Header.Get("Authorization")) != "" {
+			req.Header.Del("X-Api-Key")
+		}
 	case outbound.OutboundTypeOpenAIResponse:
 		applyCodexHeaderDefaultsWithFingerprint(req, options.InternalRequest, fingerprint)
 	case outbound.OutboundTypeOpenAIChat, outbound.OutboundTypeCustomOpenAIChat:
@@ -222,32 +247,6 @@ func (ra *relayAttempt) applyClaudeHeaderDefaults(req *http.Request) {
 	// prior behaviour. A selected profile overrides only the fields it sets.
 	fp := ra.fingerprint()
 	applyClaudeHeaderDefaultsWithFingerprint(req, ra.internalRequest, fp, ra.claudeFingerprintSessionID())
-	ra.mirrorClientAuthStyle(req)
-}
-
-// mirrorClientAuthStyle trims the outbound auth headers to the shape a genuine
-// claude CLI would have produced given the downstream client's own auth style.
-// The Anthropic outbound sets BOTH X-Api-Key and Authorization on router/proxy
-// bases (upstream compatibility), but a real CLI never sends both: auth-token
-// mode (the standard relay client style) sends Authorization ONLY
-// (packet-verified 2026-09-24: golden claude 2.1.281 -> relay carries
-// Authorization and no X-Api-Key; oct's outbound carried both). When the
-// downstream client itself authenticated with Authorization: Bearer and the
-// outbound actually carries a Bearer (i.e. the router/proxy case — official
-// api.anthropic.com keeps X-Api-Key and never gets Authorization), drop the
-// extra X-Api-Key so the wire matches the CLI. Clients that authenticated with
-// X-Api-Key (or anything else) keep the historical both-headers behaviour.
-func (ra *relayAttempt) mirrorClientAuthStyle(req *http.Request) {
-	if ra == nil || req == nil || ra.c == nil || ra.c.Request == nil {
-		return
-	}
-	if strings.TrimSpace(ra.c.Request.Header.Get("Authorization")) == "" {
-		return
-	}
-	if strings.TrimSpace(req.Header.Get("Authorization")) == "" {
-		return
-	}
-	req.Header.Del("X-Api-Key")
 }
 
 func applyClaudeHeaderDefaultsWithFingerprint(req *http.Request, internalRequest *model.InternalLLMRequest, fp resolvedFingerprint, sessionID string) {
