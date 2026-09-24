@@ -168,6 +168,22 @@ func codexTurnMetadataFromRequest(req *transformerModel.InternalLLMRequest, sess
 }
 
 func ensureCodexClientMetadata(raw json.RawMessage, sessionID, installationID string) json.RawMessage {
+	// A genuine codex client sends a complete client_metadata in its own serde key
+	// order. Decoding into a Go map and re-marshalling reorders the keys alphabetically
+	// — the exact same non-codex tell ensureCodexTurnMetadata documents below — so when
+	// nothing is actually missing, pass the raw bytes through byte-for-byte
+	// (packet-verified 2026-09-24: real codex 0.156.1 client_metadata order vs the
+	// alphabetically-sorted oct outbound). Only a metadata block that is missing
+	// installation_id / window_id / turn-metadata (a non-codex client being cloaked)
+	// takes the rebuild path.
+	if trimmed := strings.TrimSpace(string(raw)); trimmed != "" && json.Valid([]byte(trimmed)) {
+		if metadata := decodeCodexClientMetadata(raw); metadata != nil &&
+			metadataStringValue(metadata, codexMetadataInstallationID) != "" &&
+			metadataStringValue(metadata, codexMetadataWindowID) != "" &&
+			metadataStringValue(metadata, codexMetadataTurnMetadata) != "" {
+			return raw
+		}
+	}
 	metadata := decodeCodexClientMetadata(raw)
 	if metadata == nil {
 		metadata = map[string]any{}

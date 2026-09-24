@@ -184,7 +184,11 @@ const (
 )
 
 type Thinking struct {
-	Type         string `json:"type"                    validate:"required,oneof=enabled disabled adaptive"`
+	Type string `json:"type"                    validate:"required,oneof=enabled disabled adaptive"`
+	// Display preserves the adaptive-thinking display preference a real Claude CLI
+	// sends (packet-verified 2.1.281: {"type":"adaptive","display":"omitted"}).
+	// Dropping it changes the outbound body shape vs a genuine CLI request.
+	Display      string `json:"display,omitempty"       validate:"omitempty,oneof=omitted"`
 	BudgetTokens *int64 `json:"budget_tokens,omitempty" validate:"required_if=Type enabled"`
 }
 

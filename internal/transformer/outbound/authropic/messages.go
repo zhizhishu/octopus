@@ -63,16 +63,17 @@ func (o *MessageOutbound) TransformRequest(ctx context.Context, request *model.I
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Anthropic-Version", "2023-06-01")
 	applyAnthropicAuthHeaders(req, baseUrl, key)
-	if request.Stream != nil && *request.Stream {
-		// Advertise the same encoding preference as the genuine claude-cli 2.1.198
-		// (gzip, deflate, br, zstd) instead of "identity" — a self-declared claude-cli
-		// that refuses compression is a detectable tell. Because this header is set
-		// manually, Go's transport will NOT auto-decompress, so the relay unwraps any
-		// upstream Content-Encoding before the SSE reader (unwrapResponseEncoding).
-		// Anthropic does not compress text/event-stream bodies in practice, so the
-		// unwrap is a no-op on the common path.
-		req.Header.Set("Accept-Encoding", "gzip, deflate, br, zstd")
-	}
+	// Advertise the same encoding preference as the genuine claude-cli
+	// (gzip, deflate, br, zstd) on EVERY request — stream or not. The real CLI sends
+	// this header unconditionally; gating it on stream=true made the Claude 1M
+	// non-stream fallback (the documented 502/503/504/520 retry-once path) emit a
+	// request no genuine CLI would ever send (packet-verified 2026-09-24: every
+	// stream=false capture lacked Accept-Encoding while every stream=true capture had
+	// it). Because this header is set manually, Go's transport will NOT
+	// auto-decompress, so the relay unwraps any upstream Content-Encoding before the
+	// SSE reader / JSON parser (unwrapResponseEncoding). Anthropic does not compress
+	// text/event-stream bodies in practice, so the unwrap is a no-op on the common path.
+	req.Header.Set("Accept-Encoding", "gzip, deflate, br, zstd")
 	for _, beta := range request.TransformOptions.AnthropicBetas {
 		addAnthropicBetaHeader(req.Header, beta)
 	}
@@ -611,8 +612,8 @@ const claudeBillingHeaderPrefix = "x-anthropic-billing-header:"
 // guards against drift (this package cannot import internal/model: that would be an
 // import cycle, since internal/model already depends on this package).
 const (
-	ClaudeCLIVersion       = "2.1.212"
-	ClaudeCLIVersionSuffix = "542"
+	ClaudeCLIVersion       = "2.1.281"
+	ClaudeCLIVersionSuffix = "e65"
 )
 
 // claudeBillingHeaderText returns the Claude CLI billing-header system block.
@@ -642,12 +643,37 @@ func systemPromptHasClaudeAgentIdentity(parts []anthropicModel.SystemPromptPart)
 	return false
 }
 
+// requestKeepsMidConversationSystem reports whether the client asked for the
+// mid-conversation-system beta (claude CLI 2.1.28x sends
+// "mid-conversation-system-2026-04-07" and then places a role:system message
+// INSIDE messages, after the user turn — packet-verified 2026-09-24: golden
+// messages = [user, system(env)] with a 3-block top-level system array). Only
+// then does the outbound keep such messages in place; without the beta the
+// historical hoist-into-system-array behavior is kept (safe for chat clients
+// whose interleaved system messages Anthropic would otherwise reject).
+func requestKeepsMidConversationSystem(req *model.InternalLLMRequest) bool {
+	for _, beta := range req.TransformOptions.AnthropicBetas {
+		if strings.HasPrefix(strings.TrimSpace(beta), "mid-conversation-system") {
+			return true
+		}
+	}
+	return false
+}
+
 func convertSystemPrompt(req *model.InternalLLMRequest) *anthropicModel.SystemPrompt {
+	keepMid := requestKeepsMidConversationSystem(req)
 	var systemMessages []model.Message
 	for _, msg := range req.Messages {
-		if msg.Role == "system" {
-			systemMessages = append(systemMessages, msg)
+		if msg.Role != "system" {
+			if keepMid {
+				// With the mid-conversation beta only the LEADING system run belongs
+				// to the top-level array; anything after the first non-system message
+				// stays in messages (see convertMessages).
+				break
+			}
+			continue
 		}
+		systemMessages = append(systemMessages, msg)
 	}
 
 	parts := make([]anthropicModel.SystemPromptPart, 0, len(systemMessages)+1)
@@ -803,10 +829,22 @@ func convertMessages(req *model.InternalLLMRequest) []anthropicModel.MessagePara
 	filteredMessages := filterOutResponsesCustomTools(req.Messages)
 	messages := make([]anthropicModel.MessageParam, 0, len(filteredMessages))
 	processedIndexes := make(map[int]bool)
+	keepMid := requestKeepsMidConversationSystem(req)
+	seenNonSystem := false
 
 	for _, msg := range filteredMessages {
 		if msg.Role == "system" {
-			continue
+			// The leading system run is hoisted into the top-level system array by
+			// convertSystemPrompt. A system message AFTER the first non-system message
+			// is a mid-conversation system message: with the mid-conversation-system
+			// beta (genuine claude CLI shape) it must stay in messages at its original
+			// position — hoisting it rewrites the message list AND grows the system
+			// array, both visible shape deltas vs a real CLI request.
+			if !keepMid || !seenNonSystem {
+				continue
+			}
+		} else {
+			seenNonSystem = true
 		}
 
 		converted := convertSingleMessage(msg, filteredMessages, processedIndexes)
@@ -910,6 +948,12 @@ func convertSingleMessage(msg model.Message, allMessages []model.Message, proces
 		return convertUserMessage(msg)
 	case "assistant":
 		return convertAssistantMessage(msg)
+	case "system":
+		// Mid-conversation system message (genuine claude CLI with the
+		// mid-conversation-system beta sends role:system inside messages).
+		// Emitted in place with its own cache_control; only reached when
+		// convertMessages decided to keep it.
+		return []anthropicModel.MessageParam{{Role: "system", Content: buildMessageContent(msg)}}
 	default:
 		return nil
 	}

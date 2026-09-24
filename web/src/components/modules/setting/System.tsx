@@ -49,9 +49,9 @@ export function SettingSystem() {
     const [streamDataTimeoutInterval, setStreamDataTimeoutInterval] = useState('900');
     const [firstByteKeepaliveDelay, setFirstByteKeepaliveDelay] = useState('0');
     const [responsesSessionTTL, setResponsesSessionTTL] = useState('3600');
-    const [claudeHeaderUserAgent, setClaudeHeaderUserAgent] = useState('claude-cli/2.1.168 (external, sdk-cli)');
-    const [claudeHeaderPackageVersion, setClaudeHeaderPackageVersion] = useState('0.94.0');
-    const [claudeHeaderRuntimeVersion, setClaudeHeaderRuntimeVersion] = useState('v24.3.0');
+    const [claudeHeaderUserAgent, setClaudeHeaderUserAgent] = useState('claude-cli/2.1.281 (external, sdk-cli)');
+    const [claudeHeaderPackageVersion, setClaudeHeaderPackageVersion] = useState('0.112.1');
+    const [claudeHeaderRuntimeVersion, setClaudeHeaderRuntimeVersion] = useState('v26.3.0');
     const [claudeHeaderOS, setClaudeHeaderOS] = useState('Linux');
     const [claudeHeaderArch, setClaudeHeaderArch] = useState('x64');
     const [claudeHeaderTimeout, setClaudeHeaderTimeout] = useState('600');
@@ -59,20 +59,20 @@ export function SettingSystem() {
     const [claudeCLIAutoCompact, setClaudeCLIAutoCompact] = useState(false);
     const [claudeCLIReasoningEffort, setClaudeCLIReasoningEffort] = useState('auto');
     const [claudeBetaStripFlags, setClaudeBetaStripFlags] = useState('');
-    const [codexHeaderUserAgent, setCodexHeaderUserAgent] = useState('codex_cli_rs/0.142.5 (Ubuntu 24.04.1; x86_64) unknown (codex_cli_rs; 0.142.5)');
-    const [codexHeaderBetaFeatures, setCodexHeaderBetaFeatures] = useState('terminal_resize_reflow');
+    const [codexHeaderUserAgent, setCodexHeaderUserAgent] = useState('codex_cli_rs/0.156.1 (Ubuntu 24.04.1; x86_64) unknown (codex_cli_rs; 0.156.1)');
+    const [codexHeaderBetaFeatures, setCodexHeaderBetaFeatures] = useState('remote_compaction_v2');
     const [codexFastMode, setCodexFastMode] = useState(false);
     const [editingHeaderProfile, setEditingHeaderProfile] = useState<HeaderProfile | null>(null);
     const [headerDraft, setHeaderDraft] = useState<HeaderDraft>({
-        claudeUserAgent: 'claude-cli/2.1.168 (external, sdk-cli)',
-        claudePackageVersion: '0.94.0',
-        claudeRuntimeVersion: 'v24.3.0',
+        claudeUserAgent: 'claude-cli/2.1.281 (external, sdk-cli)',
+        claudePackageVersion: '0.112.1',
+        claudeRuntimeVersion: 'v26.3.0',
         claudeOS: 'Linux',
         claudeArch: 'x64',
         claudeTimeout: '600',
         claudeStabilizeDeviceProfile: true,
-        codexUserAgent: 'codex_cli_rs/0.142.5 (Ubuntu 24.04.1; x86_64) unknown (codex_cli_rs; 0.142.5)',
-        codexBetaFeatures: 'terminal_resize_reflow',
+        codexUserAgent: 'codex_cli_rs/0.156.1 (Ubuntu 24.04.1; x86_64) unknown (codex_cli_rs; 0.156.1)',
+        codexBetaFeatures: 'remote_compaction_v2',
     });
     const [userRegistrationEnabled, setUserRegistrationEnabled] = useState(false);
     const [upstreamErrorStatusPassthrough, setUpstreamErrorStatusPassthrough] = useState(true);
@@ -108,9 +108,9 @@ export function SettingSystem() {
     const initialStreamDataTimeoutInterval = useRef('900');
     const initialFirstByteKeepaliveDelay = useRef('0');
     const initialResponsesSessionTTL = useRef('3600');
-    const initialClaudeHeaderUserAgent = useRef('claude-cli/2.1.168 (external, sdk-cli)');
-    const initialClaudeHeaderPackageVersion = useRef('0.94.0');
-    const initialClaudeHeaderRuntimeVersion = useRef('v24.3.0');
+    const initialClaudeHeaderUserAgent = useRef('claude-cli/2.1.281 (external, sdk-cli)');
+    const initialClaudeHeaderPackageVersion = useRef('0.112.1');
+    const initialClaudeHeaderRuntimeVersion = useRef('v26.3.0');
     const initialClaudeHeaderOS = useRef('Linux');
     const initialClaudeHeaderArch = useRef('x64');
     const initialClaudeHeaderTimeout = useRef('600');
@@ -118,8 +118,8 @@ export function SettingSystem() {
     const initialClaudeCLIAutoCompact = useRef(false);
     const initialClaudeCLIReasoningEffort = useRef('auto');
     const initialClaudeBetaStripFlags = useRef('');
-    const initialCodexHeaderUserAgent = useRef('codex_cli_rs/0.142.5 (Ubuntu 24.04.1; x86_64) unknown (codex_cli_rs; 0.142.5)');
-    const initialCodexHeaderBetaFeatures = useRef('terminal_resize_reflow');
+    const initialCodexHeaderUserAgent = useRef('codex_cli_rs/0.156.1 (Ubuntu 24.04.1; x86_64) unknown (codex_cli_rs; 0.156.1)');
+    const initialCodexHeaderBetaFeatures = useRef('remote_compaction_v2');
     const initialCodexFastMode = useRef(false);
     const initialUserRegistrationEnabled = useRef(false);
     const initialUpstreamErrorStatusPassthrough = useRef(true);

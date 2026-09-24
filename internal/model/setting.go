@@ -140,16 +140,18 @@ const (
 	// a genuine codex_cli_rs client carries codex_cli_rs in BOTH the leading token and the
 	// trailing (codex_cli_rs; <ver>) — the asymmetric (codex_exec) trailing produced by forcing
 	// CODEX_INTERNAL_ORIGINATOR_OVERRIDE is a "ran exec + overrode originator" tell, not this.
-	// The version advanced 0.142.5 -> 0.144.1 -> 0.145.0; the header set/order was otherwise
-	// unchanged. 0.145.0 matches the current codex CLI release (0.145.x, verified locally) and
-	// stays within the codex_cli_rs family + above the sub2api-observed upstream floor 0.144.0.
-	DefaultCodexHeaderUserAgent = "codex_cli_rs/0.145.0 (Ubuntu 24.04.1; x86_64) unknown (codex_cli_rs; 0.145.0)"
+	// The version advanced 0.142.5 -> 0.144.1 -> 0.145.0 -> 0.156.1; the header set/order was
+	// otherwise unchanged. 0.156.1 matches the current codex CLI release (0.156.x, packet-verified
+	// 2026-09-24 on the relay: originator codex_cli_rs, UA codex_cli_rs/0.156.1) and stays within
+	// the codex_cli_rs family + above the sub2api-observed upstream floor 0.144.0.
+	DefaultCodexHeaderUserAgent = "codex_cli_rs/0.156.1 (Ubuntu 24.04.1; x86_64) unknown (codex_cli_rs; 0.156.1)"
 
 	// DefaultClaudeCLIVersion is the named Claude Code CLI version used to build the
 	// user-agent below. The Anthropic outbound billing-header cc_version carries the
 	// same version (authropic.ClaudeCLIVersion); TestClaudeFingerprintVersionConsistency
-	// asserts the two never drift apart.
-	DefaultClaudeCLIVersion = "2.1.212"
+	// asserts the two never drift apart. 2.1.281 is packet-verified on the relay
+	// 2026-09-24 (real claude CLI 2.1.281, UA claude-cli/2.1.281, package 0.112.1).
+	DefaultClaudeCLIVersion = "2.1.281"
 
 	// DefaultClaudeHeaderUserAgent is the locally packet-verified Claude Code CLI
 	// user-agent (claude-cli/<DefaultClaudeCLIVersion>).
@@ -186,10 +188,19 @@ const (
 	// current UA via op.settingLegacyDefaultUpgrades so the seeded value never lags.
 	LegacyDefaultClaudeHeaderUserAgent2198 = "claude-cli/2.1.198 (external, sdk-cli)"
 
+	// LegacyDefaultClaudeHeaderUserAgent21212 was the previous Claude header default
+	// (claude-cli/2.1.212). 2.1.281 superseded it (packet-verified 2026-09-24); converge
+	// upgraded deployments to the current UA via op.settingLegacyDefaultUpgrades.
+	LegacyDefaultClaudeHeaderUserAgent21212 = "claude-cli/2.1.212 (external, sdk-cli)"
+
 	// DefaultClaudeHeaderPackageVersion is the current X-Stainless-Package-Version
-	// default (the value seeded into SettingKeyClaudeHeaderPackage). Unchanged from the
-	// 2.1.178 wire: 2.1.198 still reports 0.94.0.
-	DefaultClaudeHeaderPackageVersion = "0.94.0"
+	// default (the value seeded into SettingKeyClaudeHeaderPackage). 2.1.281 reports
+	// 0.112.1 on the wire (packet-verified 2026-09-24); 2.1.198/2.1.212 reported 0.94.0.
+	DefaultClaudeHeaderPackageVersion = "0.112.1"
+
+	// LegacyDefaultClaudeHeaderPackage0940 was the X-Stainless-Package-Version paired with
+	// the 2.1.198/2.1.212 UAs (0.94.0); migrate it to DefaultClaudeHeaderPackageVersion.
+	LegacyDefaultClaudeHeaderPackage0940 = "0.94.0"
 
 	// DefaultClaudeHeaderRuntimeVersion is the current X-Stainless-Runtime-Version default
 	// — the bundled node runtime a genuine claude-cli/2.1.198 reports on the wire.
@@ -241,6 +252,11 @@ const (
 	// LegacyDefaultCodexHeaderUserAgentCliRs0144 was the previous codex_cli_rs default
 	// (0.144.1). 0.145.0 superseded it; converge upgraded deployments via the DB map.
 	LegacyDefaultCodexHeaderUserAgentCliRs0144 = "codex_cli_rs/0.144.1 (Ubuntu 24.04.1; x86_64) unknown (codex_cli_rs; 0.144.1)"
+
+	// LegacyDefaultCodexHeaderUserAgentCliRs0145 was the previous codex_cli_rs default
+	// (0.145.0). 0.156.1 superseded it (packet-verified 2026-09-24 on the relay); converge
+	// upgraded deployments via the DB map.
+	LegacyDefaultCodexHeaderUserAgentCliRs0145 = "codex_cli_rs/0.145.0 (Ubuntu 24.04.1; x86_64) unknown (codex_cli_rs; 0.145.0)"
 
 	// LegacyDefaultCodexHeaderUserAgentCliRs0142 was the codex_cli_rs default before the
 	// 0.144.1 version bump (2026-07-10). Kept so already-seeded deployments converge to the

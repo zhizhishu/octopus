@@ -14,13 +14,15 @@ var settingCache = cache.New[model.SettingKey, string](16)
 
 var settingLegacyDefaultUpgrades = map[model.SettingKey]map[string]string{
 	model.SettingKeyClaudeHeaderUserAgent: {
-		model.LegacyDefaultClaudeHeaderUserAgent2168: model.DefaultClaudeHeaderUserAgent,
-		model.LegacyDefaultClaudeHeaderUserAgent2126: model.DefaultClaudeHeaderUserAgent,
-		model.LegacyDefaultClaudeHeaderUserAgent2178: model.DefaultClaudeHeaderUserAgent,
-		model.LegacyDefaultClaudeHeaderUserAgent2198: model.DefaultClaudeHeaderUserAgent,
+		model.LegacyDefaultClaudeHeaderUserAgent2168:  model.DefaultClaudeHeaderUserAgent,
+		model.LegacyDefaultClaudeHeaderUserAgent2126:  model.DefaultClaudeHeaderUserAgent,
+		model.LegacyDefaultClaudeHeaderUserAgent2178:  model.DefaultClaudeHeaderUserAgent,
+		model.LegacyDefaultClaudeHeaderUserAgent2198:  model.DefaultClaudeHeaderUserAgent,
+		model.LegacyDefaultClaudeHeaderUserAgent21212: model.DefaultClaudeHeaderUserAgent,
 	},
 	model.SettingKeyClaudeHeaderPackage: {
 		model.LegacyDefaultClaudeHeaderPackage0810: model.DefaultClaudeHeaderPackageVersion,
+		model.LegacyDefaultClaudeHeaderPackage0940: model.DefaultClaudeHeaderPackageVersion,
 	},
 	model.SettingKeyClaudeHeaderRuntime: {
 		model.LegacyDefaultClaudeHeaderRuntimeV2430: model.DefaultClaudeHeaderRuntimeVersion,
@@ -35,6 +37,7 @@ var settingLegacyDefaultUpgrades = map[model.SettingKey]map[string]string{
 		model.LegacyDefaultCodexHeaderUserAgentExec0142Win: model.DefaultCodexHeaderUserAgent,
 		model.LegacyDefaultCodexHeaderUserAgentCliRs0142:   model.DefaultCodexHeaderUserAgent,
 		model.LegacyDefaultCodexHeaderUserAgentCliRs0144:   model.DefaultCodexHeaderUserAgent,
+		model.LegacyDefaultCodexHeaderUserAgentCliRs0145:   model.DefaultCodexHeaderUserAgent,
 	},
 	model.SettingKeyCodexHeaderBetaFeatures: {
 		model.LegacyDefaultCodexHeaderBetaFeaturesMultiAgent:           model.DefaultCodexHeaderBetaFeatures,

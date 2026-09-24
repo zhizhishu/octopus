@@ -227,14 +227,14 @@ func TestFingerprintProfileConvergesLegacyBuiltinInOneStep(t *testing.T) {
 		t.Fatalf("convergence must rewrite the SAME row in place: id %d -> %d", legacy.ID, got.ID)
 	}
 	// Spelled out field by field so a regression names the exact stale value.
-	if got.ClaudeUserAgent != "claude-cli/2.1.212 (external, sdk-cli)" {
-		t.Fatalf("claude UA = %q, want the current 2.1.212", got.ClaudeUserAgent)
+	if got.ClaudeUserAgent != "claude-cli/2.1.281 (external, sdk-cli)" {
+		t.Fatalf("claude UA = %q, want the current 2.1.281", got.ClaudeUserAgent)
 	}
 	if got.ClaudeRuntimeVersion != "v26.3.0" {
 		t.Fatalf("claude runtime = %q, want v26.3.0", got.ClaudeRuntimeVersion)
 	}
-	if got.CodexUserAgent != "codex_cli_rs/0.145.0 (Debian 12.0.0; x86_64) unknown (codex_cli_rs; 0.145.0)" {
-		t.Fatalf("codex UA = %q, want the current codex_cli_rs 0.145.0 Debian UA", got.CodexUserAgent)
+	if got.CodexUserAgent != "codex_cli_rs/0.156.1 (Debian 12.0.0; x86_64) unknown (codex_cli_rs; 0.156.1)" {
+		t.Fatalf("codex UA = %q, want the current codex_cli_rs 0.156.1 Debian UA", got.CodexUserAgent)
 	}
 	if got.CodexOriginator != "codex_cli_rs" {
 		t.Fatalf("codex originator = %q, want codex_cli_rs (must match the UA's first token)", got.CodexOriginator)
