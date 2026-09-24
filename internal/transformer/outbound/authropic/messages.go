@@ -848,6 +848,13 @@ func convertMessages(req *model.InternalLLMRequest) []anthropicModel.MessagePara
 		}
 
 		converted := convertSingleMessage(msg, filteredMessages, processedIndexes)
+		// Re-emit a per-message output_config the client attached (claude CLI
+		// 2.1.28x per-turn effort on mid-conversation system messages).
+		if len(msg.AnthropicMessageOutputConfig) > 0 {
+			for i := range converted {
+				converted[i].OutputConfig = append(json.RawMessage(nil), msg.AnthropicMessageOutputConfig...)
+			}
+		}
 		for _, convertedMsg := range converted {
 			// Anthropic API 要求消息角色必须交替出现（user/assistant/user/assistant）。
 			// 当 OpenAI 格式的多个连续 tool 消息被各自转换为独立的 user 消息时，

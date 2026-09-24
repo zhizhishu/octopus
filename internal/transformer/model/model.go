@@ -695,6 +695,12 @@ type Message struct {
 	// CacheControl is used for provider-specific cache control (e.g., Anthropic).
 	// This field is not serialized in JSON.
 	CacheControl *CacheControl `json:"-"`
+
+	// AnthropicMessageOutputConfig is a help field carrying the per-message
+	// output_config an anthropic client attached to this message (claude CLI
+	// 2.1.28x per-turn effort on mid-conversation system messages). Not
+	// serialized; the anthropic outbound re-emits it verbatim.
+	AnthropicMessageOutputConfig json.RawMessage `json:"-"`
 }
 
 func (m *Message) ClearHelpFields() {

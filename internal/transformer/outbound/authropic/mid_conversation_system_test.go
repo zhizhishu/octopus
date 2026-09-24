@@ -1,6 +1,7 @@
 package authropic
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -21,6 +22,7 @@ func TestMidConversationSystemMessagePlacement(t *testing.T) {
 	user := model.Message{Role: "user", Content: model.MessageContent{Content: stringPtr("hello")}}
 	envBlock := sysMsg("# Environment\nshell info")
 	envBlock.CacheControl = &model.CacheControl{Type: "ephemeral"}
+	envBlock.AnthropicMessageOutputConfig = json.RawMessage(`{"effort":"medium"}`)
 
 	build := func(betas ...string) *model.InternalLLMRequest {
 		return &model.InternalLLMRequest{
@@ -55,6 +57,9 @@ func TestMidConversationSystemMessagePlacement(t *testing.T) {
 		}
 		if blocks[0].CacheControl == nil {
 			t.Fatalf("mid system message must keep its cache_control")
+		}
+		if string(got.Messages[1].OutputConfig) != `{"effort":"medium"}` {
+			t.Fatalf("mid system message must keep its per-message output_config, got %s", got.Messages[1].OutputConfig)
 		}
 	})
 

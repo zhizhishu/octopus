@@ -364,6 +364,11 @@ type InputSchema struct {
 type MessageParam struct {
 	Role    string         `json:"role"`
 	Content MessageContent `json:"content"`
+	// OutputConfig preserves the per-message output_config a real claude CLI
+	// 2.1.28x attaches to mid-conversation messages (packet-verified 2026-09-24:
+	// the env system message carries {"effort":"medium"}). Dropping it changes
+	// the outbound body shape vs a genuine CLI request.
+	OutputConfig json.RawMessage `json:"output_config,omitempty"`
 }
 
 // MessageContent supports both string and array formats.

@@ -136,6 +136,12 @@ func (i *MessagesInbound) TransformRequest(ctx context.Context, body []byte) (*m
 		chatMsg := model.Message{
 			Role: msg.Role,
 		}
+		// Preserve a per-message output_config (claude CLI 2.1.28x attaches
+		// {"effort":...} to mid-conversation system messages) for the anthropic
+		// outbound to re-emit verbatim.
+		if len(msg.OutputConfig) > 0 && string(msg.OutputConfig) != "null" {
+			chatMsg.AnthropicMessageOutputConfig = append(json.RawMessage(nil), msg.OutputConfig...)
+		}
 
 		var (
 			hasContent    bool
