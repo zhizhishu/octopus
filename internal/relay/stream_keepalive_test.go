@@ -1391,12 +1391,12 @@ data: {"type":"message_stop"}
 	t.Cleanup(upstream.Close)
 
 	channel := dbmodel.Channel{
-		Name:    "the relay Claude bearer mirror",
-		Type:    outbound.OutboundTypeAnthropic,
-		Enabled: true,
-		Model:   "claude-opus-4-8",
+		Name:     "the relay Claude bearer mirror",
+		Type:     outbound.OutboundTypeAnthropic,
+		Enabled:  true,
+		Model:    "claude-opus-4-8",
 		BaseUrls: []dbmodel.BaseUrl{{URL: upstream.URL}},
-		Keys:    []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "anthropic-key"}},
+		Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "anthropic-key"}},
 	}
 	if err := op.ChannelCreate(&channel, ctx); err != nil {
 		t.Fatalf("create channel: %v", err)
