@@ -254,3 +254,142 @@ func TestRelayRedactStreamAbruptEndNoHang(t *testing.T) {
 		t.Fatalf("stream did not terminate cleanly: %s", rec.Body.String())
 	}
 }
+
+// TestRelayRedactRaceModeRoundTrip: race mode runs each racer on an isolated
+// relayRequest clone, so each racer lazily creates its OWN redaction session.
+// Regression test for the audit finding (2026-09-25): the winner's response is
+// handled by a winnerRA attached to the PARENT relayRequest — before the fix,
+// the racer's session never transferred, restore was skipped entirely, and the
+// model's placeholder echo leaked raw {{Redact:...}} to the client. The fix
+// carries redactSession/redactApplied through racerResult into parentReq.
+func TestRelayRedactRaceModeRoundTrip(t *testing.T) {
+	setupRedactDB(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf := make([]byte, 1<<20)
+		n, _ := r.Body.Read(buf)
+		body := string(buf[:n])
+		token := ""
+		if m := redactTokenRe.FindString(body); m != "" {
+			token = m
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"chatcmpl-1","object":"chat.completion","created":1,"model":"upstream-model","choices":[{"index":0,"message":{"role":"assistant","content":"the address is ` + token + `"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	channel := dbmodel.Channel{
+		Name:               "race-redact-channel",
+		Type:               outbound.OutboundTypeOpenAIChat,
+		Enabled:            true,
+		BaseUrls:           []dbmodel.BaseUrl{{URL: upstream.URL}},
+		Keys:               []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "key-a"}, {Enabled: true, ChannelKey: "key-b"}},
+		Model:              "upstream-model",
+		ModelMapping:       map[string]string{"request-model": "upstream-model"},
+		Priority:           1,
+		RaceMode:           true,
+		RaceKeyConcurrency: 2,
+		RedactEnabled:      true,
+	}
+	if err := op.ChannelCreate(&channel, t.Context()); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	balancer.ResetChannel(channel.ID)
+
+	engine := newRedactGinEngine()
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"request-model","messages":[{"role":"user","content":"my contact is a@example.com please remember"}]}`))
+	engine.ServeHTTP(rec, c.Request)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "{{Redact:") {
+		t.Fatalf("race mode: placeholder leaked to client (session transfer broken): %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "a@example.com") {
+		t.Fatalf("race mode: client did not see restored secret: %s", rec.Body.String())
+	}
+}
+
+// TestRelayRedactRaceInheritedSessionRoundTrip locks the audit-critical fix:
+// attempt 1 on a redaction-enabled channel creates the parent's session and
+// fails; failover lands on a race-mode channel whose racers must NOT inherit
+// (and losers must NOT close) the parent's session — the winner's response
+// must be fully restored. Pre-fix, losers closed the shared inherited session
+// mid-stream and the whole winner response leaked placeholders.
+func TestRelayRedactRaceInheritedSessionRoundTrip(t *testing.T) {
+	setupRedactDB(t)
+
+	// Channel A: redaction enabled, always 500 — creates the parent session,
+	// then fails so failover moves on.
+	failUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":{"message":"boom"}}`, http.StatusInternalServerError)
+	}))
+	t.Cleanup(failUpstream.Close)
+
+	// Channel B: race mode, redaction enabled, echoes whatever token it got.
+	raceUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf := make([]byte, 1<<20)
+		n, _ := r.Body.Read(buf)
+		body := string(buf[:n])
+		token := ""
+		if m := redactTokenRe.FindString(body); m != "" {
+			token = m
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"chatcmpl-2","object":"chat.completion","created":1,"model":"upstream-model","choices":[{"index":0,"message":{"role":"assistant","content":"echo back ` + token + `"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`))
+	}))
+	t.Cleanup(raceUpstream.Close)
+
+	channelA := dbmodel.Channel{
+		Name:          "redact-fail-first",
+		Type:          outbound.OutboundTypeOpenAIChat,
+		Enabled:       true,
+		BaseUrls:      []dbmodel.BaseUrl{{URL: failUpstream.URL}},
+		Keys:          []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "key-fail"}},
+		Model:         "upstream-model",
+		ModelMapping:  map[string]string{"request-model": "upstream-model"},
+		Priority:      1,
+		RedactEnabled: true,
+	}
+	if err := op.ChannelCreate(&channelA, t.Context()); err != nil {
+		t.Fatalf("create channel A: %v", err)
+	}
+	balancer.ResetChannel(channelA.ID)
+
+	channelB := dbmodel.Channel{
+		Name:               "redact-race-second",
+		Type:               outbound.OutboundTypeOpenAIChat,
+		Enabled:            true,
+		BaseUrls:           []dbmodel.BaseUrl{{URL: raceUpstream.URL}},
+		Keys:               []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "key-r1"}, {Enabled: true, ChannelKey: "key-r2"}},
+		Model:              "upstream-model",
+		ModelMapping:       map[string]string{"request-model": "upstream-model"},
+		Priority:           2,
+		RaceMode:           true,
+		RaceKeyConcurrency: 2,
+		RedactEnabled:      true,
+	}
+	if err := op.ChannelCreate(&channelB, t.Context()); err != nil {
+		t.Fatalf("create channel B: %v", err)
+	}
+	balancer.ResetChannel(channelB.ID)
+
+	engine := newRedactGinEngine()
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"request-model","messages":[{"role":"user","content":"my contact is a@example.com please remember"}]}`))
+	engine.ServeHTTP(rec, c.Request)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "{{Redact:") {
+		t.Fatalf("inherited-session race: placeholder leaked to client (losers closed the shared session): %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "a@example.com") {
+		t.Fatalf("inherited-session race: client did not see restored secret: %s", rec.Body.String())
+	}
+}

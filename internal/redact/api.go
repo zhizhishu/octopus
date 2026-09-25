@@ -2,6 +2,7 @@ package redact
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/dop251/goja"
 )
@@ -19,6 +20,13 @@ type Session struct {
 	protocol string
 	notice   bool
 	count    int // redacted value count, exported after the fact for audit logs
+
+	// mu guards vm access across goroutines: the SSE reader goroutine calls
+	// Ingest/Finish while the main request goroutine may call Close (client
+	// disconnect unwinds the request before the reader's last in-flight JS call
+	// finishes). Close blocks until in-flight calls release the lock, so a VM is
+	// never returned to the pool while still in use.
+	mu sync.Mutex
 }
 
 // NewSession borrows a VM, builds a fresh RedactionContext (new random salt), and
@@ -48,6 +56,8 @@ func (s *Session) Count() int { return s.count }
 // Exposed for the admin redaction test endpoint; the relay path uses
 // RedactJSONBody. Updates the session count.
 func (s *Session) RedactText(text string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.vm == nil {
 		return "", fmt.Errorf("redact: session closed")
 	}
@@ -72,6 +82,8 @@ func (s *Session) RedactText(text string) (string, error) {
 
 // RestoreText restores placeholders in one plain text value.
 func (s *Session) RestoreText(text string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.vm == nil {
 		return "", fmt.Errorf("redact: session closed")
 	}
@@ -88,6 +100,8 @@ func (s *Session) RestoreText(text string) (string, error) {
 
 // Close returns the VM to the pool. Safe to call multiple times.
 func (s *Session) Close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.vm != nil {
 		s.engine.release(s.vm)
 		s.vm = nil
@@ -169,6 +183,8 @@ func (s *Session) stringifyJSON(v goja.Value) ([]byte, error) {
 // When nothing is redacted the input bytes are returned as-is (byte-identical, no
 // re-serialization), so untouched traffic pays only one detection pass.
 func (s *Session) RedactJSONBody(body []byte) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.vm == nil {
 		return nil, fmt.Errorf("redact: session closed")
 	}
@@ -237,6 +253,8 @@ func (s *Session) RedactJSONBody(body []byte) ([]byte, error) {
 // RestoreJSONBody restores placeholders in a complete (non-streaming) response body.
 // When the session redacted nothing the input bytes are returned untouched.
 func (s *Session) RestoreJSONBody(body []byte) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.vm == nil {
 		return nil, fmt.Errorf("redact: session closed")
 	}
@@ -268,6 +286,8 @@ type SseRestorer struct {
 
 // NewSseRestorer builds the stream restorer on the session's VM.
 func (s *Session) NewSseRestorer() (*SseRestorer, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.vm == nil {
 		return nil, fmt.Errorf("redact: session closed")
 	}
@@ -285,8 +305,13 @@ func (s *Session) NewSseRestorer() (*SseRestorer, error) {
 // the trailing blank line) and returns the restored event text to emit downstream
 // ("" means hold back — the restorer is buffering an incomplete placeholder).
 func (r *SseRestorer) Ingest(rawEvent string) (string, error) {
+	r.session.mu.Lock()
+	defer r.session.mu.Unlock()
 	if r.obj == nil {
 		return rawEvent, nil // pass-through mode
+	}
+	if r.session.vm == nil {
+		return "", fmt.Errorf("redact: session closed")
 	}
 	m := r.obj.ToObject(r.session.vm).Get("ingest")
 	cb, ok := goja.AssertFunction(m)
@@ -303,8 +328,13 @@ func (r *SseRestorer) Ingest(rawEvent string) (string, error) {
 // Finish flushes any buffered channel state at end-of-stream and returns the final
 // pending output ("" when nothing was held).
 func (r *SseRestorer) Finish() (string, error) {
+	r.session.mu.Lock()
+	defer r.session.mu.Unlock()
 	if r.obj == nil {
 		return "", nil
+	}
+	if r.session.vm == nil {
+		return "", fmt.Errorf("redact: session closed")
 	}
 	m := r.obj.ToObject(r.session.vm).Get("finish")
 	cb, ok := goja.AssertFunction(m)

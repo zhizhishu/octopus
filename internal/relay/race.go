@@ -12,6 +12,7 @@ import (
 
 	dbmodel "github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/op"
+	"github.com/bestruirui/octopus/internal/redact"
 	"github.com/bestruirui/octopus/internal/relay/balancer"
 	"github.com/bestruirui/octopus/internal/transformer/inbound"
 	"github.com/bestruirui/octopus/internal/transformer/model"
@@ -34,6 +35,11 @@ type racerResult struct {
 	canceled      bool // true if active loser canceled due to another winner
 	finishAttempt func()
 	racerCancel   context.CancelFunc
+	// 凭据脱敏: racer 出站用的 session + 是否真改了 body。赢家响应由挂在 parentReq
+	// 上的 winnerRA 处理, 而 session 在 racer 的 isolatedReq 上 — 不交接的话还原
+	// 全跳过, 占位符直接漏给客户端 (审计 2026-09-25 抓出的 race 模式泄漏)。
+	redactSession *redact.Session
+	redactApplied bool
 }
 
 // canChannelRace reports whether the channel and request qualify for multi-key racing.
@@ -102,6 +108,11 @@ func prepareRacerAttempt(
 	// never touch the shared parent relayRequest.
 	isolatedReq := *req
 	isolatedReq.internalRequest = clonedReq
+	// 凭据脱敏: racer 绝不继承父请求的 session (审计 critical 修复)。继承会让所有 racer
+	// 共享同一个 session, 输家的清理 defer 会把赢家正在用的 session 关掉 → 赢家响应
+	// 整体泄漏占位符。每个 racer 在自己的副本上按需新建; 父级旧 session 由赢家交接
+	// 逻辑负责关闭, 或留给后续 failover 复用。
+	isolatedReq.redactSession = nil
 
 	ra := &relayAttempt{
 		relayRequest: &isolatedReq,
@@ -168,6 +179,9 @@ func prepareRacerAttempt(
 	ra.copyHeaders(outboundRequest)
 	// 凭据脱敏: race 模式出站同样过 body 脱敏 (与 forward() 同一契约: 只改 body 文本, 指纹零改动)。
 	if err := ra.applyOutboundRedaction(outboundRequest, redactProtocolFor(ra.channel.Type)); err != nil {
+		// 扫描失败 = 请求被拒(fail-closed), 但 session 可能已在此前懒建 —
+		// ra 即将被丢弃, 这里关掉避免孤儿 (审计 Q4-2)。
+		ra.relayRequest.redactClose()
 		return nil, nil, nil, err
 	}
 	return ra, outboundRequest, upstreamPaths, nil
@@ -269,20 +283,28 @@ func runChannelRace(
 				sendErr   error
 				isWinner  bool
 				cleanedUp bool
+				racerRA   *relayAttempt
 			)
 
-			// Ensure loser runtime reservation, context cancel, and unread body are cleaned up
-			// safely in all exit paths (prep fail, send fail, fast 200 incompatible, 2xx loser, non-2xx).
+			// Ensure loser runtime reservation, context cancel, unread body, and the racer's
+			// redaction session are cleaned up safely in all exit paths (prep fail, send fail,
+			// fast 200 incompatible, 2xx loser, non-2xx). The winner's session is transferred
+			// to parentReq instead and closed by the request-end redactClose.
 			defer func() {
-				if !isWinner && !cleanedUp {
-					if resp != nil && resp.Body != nil {
-						_ = resp.Body.Close()
+				if !isWinner {
+					if racerRA != nil && racerRA.relayRequest != nil {
+						racerRA.relayRequest.redactClose()
 					}
-					if finishAttempt != nil {
-						finishAttempt()
-					}
-					if racerCancel != nil {
-						racerCancel()
+					if !cleanedUp {
+						if resp != nil && resp.Body != nil {
+							_ = resp.Body.Close()
+						}
+						if finishAttempt != nil {
+							finishAttempt()
+						}
+						if racerCancel != nil {
+							racerCancel()
+						}
 					}
 				}
 			}()
@@ -294,6 +316,8 @@ func runChannelRace(
 				racerKey,
 				outAdapter,
 			)
+			racerRA = ra
+			racerRA = ra
 			if prepErr != nil {
 				cleanedUp = true
 				finishAttempt()
@@ -381,6 +405,8 @@ func runChannelRace(
 						duration:      duration,
 						finishAttempt: finishAttempt,
 						racerCancel:   racerCancel,
+						redactSession: ra.redactSession,
+						redactApplied: ra.redactApplied,
 					}
 					return
 				}
@@ -454,6 +480,17 @@ func runChannelRace(
 		// Explicitly transfer prepared request ownership to parent relayRequest
 		// before building winnerRA, avoiding relying on promoted struct field side effects.
 		parentReq.internalRequest = winner.preparedReq
+		// 凭据脱敏: 把 racer 的 session 交接到 parentReq (winnerRA 挂在 parentReq 上),
+		// 并带上 redactApplied — 否则赢家响应的还原全跳过, 占位符漏给客户端。
+		// 请求结束时 parentReq 的 redactClose 会关掉这个交接来的 session。
+		if winner.redactSession != nil {
+			// racer 不继承父级 session（见 prepareRacerAttempt），赢家带的是自己
+			// 新建的 session；交接时关掉父级旧 session（前次尝试留下的），避免孤儿。
+			if parentReq.redactSession != nil && parentReq.redactSession != winner.redactSession {
+				parentReq.redactSession.Close()
+			}
+			parentReq.redactSession = winner.redactSession
+		}
 		winnerRA := &relayAttempt{
 			relayRequest:         parentReq,
 			outAdapter:           winner.outAdapter,
@@ -461,6 +498,7 @@ func runChannelRace(
 			usedKey:              winner.key,
 			firstTokenTimeOutSec: firstTokenTimeoutSec,
 			modelMapped:          winner.modelMapped,
+			redactApplied:        winner.redactApplied,
 		}
 		winnerRA.internalRequest = winner.preparedReq
 

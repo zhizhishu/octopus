@@ -15,6 +15,7 @@ import (
 	"github.com/bestruirui/octopus/internal/helper"
 	"github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/op"
+	"github.com/bestruirui/octopus/internal/redact"
 	"github.com/bestruirui/octopus/internal/relay/balancer"
 	"github.com/bestruirui/octopus/internal/relay/bodycache"
 	"github.com/bestruirui/octopus/internal/server/resp"
@@ -281,6 +282,9 @@ func videoForward(ctx context.Context, c *gin.Context, method, upstreamPath stri
 
 	var bodyReader io.Reader
 	contentType := ""
+	// 凭据脱敏: 视频生成 prompt 是用户文本, 渠道开了脱敏同样不能带密钥出境。
+	// 独立 session (videos 无 relayRequest), 请求结束即关。poll (GET) 无 body 不建。
+	var videoRedact *redact.Session
 	if method == http.MethodPost && payload != nil {
 		attemptPayload := make(map[string]any, len(payload)+1)
 		for k, v := range payload {
@@ -291,9 +295,22 @@ func videoForward(ctx context.Context, c *gin.Context, method, upstreamPath stri
 		if merr != nil {
 			return 0, nil, "", fmt.Errorf("failed to marshal video payload: %w", merr)
 		}
+		if videoRedact = newRedactSessionForChannel(channel, ""); videoRedact != nil {
+			redacted, rerr := videoRedact.RedactJSONBody(b)
+			if rerr != nil {
+				videoRedact.Close()
+				return 0, nil, "", fmt.Errorf("redact: outbound scan failed (request rejected to avoid leaking secrets): %w", rerr)
+			}
+			b = redacted
+		}
 		bodyReader = bytes.NewReader(b)
 		contentType = "application/json"
 	}
+	defer func() {
+		if videoRedact != nil {
+			videoRedact.Close()
+		}
+	}()
 
 	req, err := http.NewRequestWithContext(ctx, method, parsedURL.String(), bodyReader)
 	if err != nil {
@@ -319,6 +336,13 @@ func videoForward(ctx context.Context, c *gin.Context, method, upstreamPath stri
 	body, err := io.ReadAll(io.LimitReader(respUp.Body, videoResponseBodyLimit))
 	if err != nil {
 		return respUp.StatusCode, nil, upstreamCT, fmt.Errorf("failed to read video response: %w", err)
+	}
+	if videoRedact != nil {
+		if restored, rerr := videoRedact.RestoreJSONBody(body); rerr == nil {
+			body = restored
+		} else {
+			log.Warnf("redact: video response restore failed, placeholders may leak to client: %v", rerr)
+		}
 	}
 	return respUp.StatusCode, body, upstreamCT, nil
 }

@@ -27,17 +27,25 @@ import (
 )
 
 var (
-	redactEngineOnce sync.Once
-	redactEngine     *redact.Engine
-	redactEngineErr  error
+	redactEngineMu sync.Mutex
+	redactEngine   *redact.Engine
 )
 
-// sharedRedactEngine builds the JS engine pool once per process.
+// sharedRedactEngine builds the JS engine pool once per process. A failed build
+// is NOT cached (审计修复): a transient first-use failure would otherwise
+// silently disable redaction process-wide until restart. The next request
+// retries the build.
 func sharedRedactEngine() (*redact.Engine, error) {
-	redactEngineOnce.Do(func() {
-		redactEngine, redactEngineErr = redact.NewEngine()
-	})
-	return redactEngine, redactEngineErr
+	redactEngineMu.Lock()
+	defer redactEngineMu.Unlock()
+	if redactEngine == nil {
+		e, err := redact.NewEngine()
+		if err != nil {
+			return nil, err
+		}
+		redactEngine = e
+	}
+	return redactEngine, nil
 }
 
 func redactGlobalEnabled() bool {
@@ -76,6 +84,31 @@ func redactProtocolFor(t outbound.OutboundType) string {
 	default:
 		return "" // gemini/volcengine/embedding: generic walk
 	}
+}
+
+// newRedactSessionForChannel creates a standalone redaction session for send
+// paths that have no relayRequest (videos handler). Same gates as the relay
+// path: global master switch + channel opt-in. Returns nil when redaction is
+// inactive; the caller must Close a non-nil session when done.
+func newRedactSessionForChannel(ch *dbmodel.Channel, protocol string) *redact.Session {
+	if !redactGlobalEnabled() || ch == nil || !ch.RedactEnabled {
+		return nil
+	}
+	engine, err := sharedRedactEngine()
+	if err != nil {
+		log.Errorf("redact: engine unavailable, redaction disabled: %v", err)
+		return nil
+	}
+	flags := strings.TrimSpace(ch.RedactFlags)
+	if flags == "" {
+		flags = redactDefaultFlags()
+	}
+	s, err := engine.NewSession(flags, protocol, redactNoticeEnabled())
+	if err != nil {
+		log.Errorf("redact: session create failed, redaction disabled: %v", err)
+		return nil
+	}
+	return s
 }
 
 // redactSessionFor returns this request's redaction session, creating it lazily
@@ -149,22 +182,38 @@ func (ra *relayAttempt) applyOutboundRedaction(req *http.Request, protocol strin
 	req.Body = io.NopCloser(bytes.NewReader(redacted))
 	req.ContentLength = int64(len(redacted))
 	req.Header.Set("Content-Length", strconv.Itoa(len(redacted)))
+	// GetBody must serve the REDACTED bytes too: Go's transport uses it to re-send
+	// the body on 307/308 redirects — a stale GetBody (e.g. set by ApplyParamOverride)
+	// would leak the original unredacted secret to the redirect target.
+	redactedCopy := redacted
+	req.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(redactedCopy)), nil
+	}
 	return nil
 }
 
 // redactRestoreResponseBody restores placeholders in a complete (non-streaming)
 // upstream response body before the outbound transformer parses it. Restore
 // failures degrade to passing the body through (the client may see placeholders,
-// which is safe — the secret is not leaked — and the error is logged).
+// which is safe — the secret is not leaked — and the error is logged). Bodies
+// larger than the restore cap are passed through un-restored the same way:
+// the bytes already consumed are chained with the unread remainder so the
+// stream is never truncated or corrupted.
 func (ra *relayAttempt) redactRestoreResponseBody(response *http.Response) {
 	s := ra.redactSession
 	if s == nil || !ra.redactApplied || response == nil || response.Body == nil {
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(response.Body, redactMaxBodyBytes))
-	response.Body.Close()
+	original := response.Body
+	body, err := io.ReadAll(io.LimitReader(original, redactMaxBodyBytes+1))
 	if err != nil {
 		log.Warnf("redact: read response body failed, passing through: %v", err)
+		response.Body = chainedBody(bytes.NewReader(body), original)
+		return
+	}
+	if int64(len(body)) > redactMaxBodyBytes {
+		log.Warnf("redact: response body exceeds restore cap (%d bytes), passing through un-restored", redactMaxBodyBytes)
+		response.Body = chainedBody(bytes.NewReader(body), original)
 		return
 	}
 	restored, err := s.RestoreJSONBody(body)
@@ -172,9 +221,19 @@ func (ra *relayAttempt) redactRestoreResponseBody(response *http.Response) {
 		log.Warnf("redact: response restore failed, placeholders may leak to client: %v", err)
 		restored = body
 	}
+	original.Close()
 	response.Body = io.NopCloser(bytes.NewReader(restored))
 	response.ContentLength = int64(len(restored))
 	response.Header.Set("Content-Length", strconv.Itoa(len(restored)))
+}
+
+// chainedBody serves the already-buffered head followed by the unread rest of
+// the original stream; closing closes the original.
+func chainedBody(head io.Reader, rest io.ReadCloser) io.ReadCloser {
+	return struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(head, rest), rest}
 }
 
 // redactRestoreSseEvent feeds one raw upstream SSE event (the data payload text,
@@ -233,16 +292,20 @@ func (ra *relayAttempt) redactFinishSse() string {
 // splits on data:/event: lines itself. We wrap the payload into event text on
 // the way in and unwrap the restored events back to bare data payloads on the
 // way out, keeping the reader contract unchanged.
-func (ra *relayAttempt) redactForwardSseEvents(sseEventType, raw string) []string {
+func (ra *relayAttempt) redactForwardSseEvents(sseEventType, raw string) []restoredSseEvent {
 	s := ra.redactSession
 	if s == nil || !ra.redactApplied || ra.redactStreamBroken {
-		return []string{raw}
+		return []restoredSseEvent{{eventType: sseEventType, data: raw}}
 	}
 	var eventText strings.Builder
 	if sseEventType != "" {
 		eventText.WriteString("event: " + sseEventType + "\n")
 	}
-	eventText.WriteString("data: " + raw)
+	// 多行 data 按 SSE 规范拆成多条 data: 行 (Cosy 解析器逐行收、还原端 join 回
+	// "\n") — 单行写法会把续行变成无前缀裸行, 解析时被丢弃 = 内容丢失。
+	for _, line := range strings.Split(raw, "\n") {
+		eventText.WriteString("data: " + line + "\n")
+	}
 	restored := ra.redactRestoreSseEvent(eventText.String())
 	ec := classifyStreamEvent(raw)
 	if ec.isDone || ec.isTerminal(sseEventType) || ec.isCompleted(sseEventType) {
@@ -251,26 +314,43 @@ func (ra *relayAttempt) redactForwardSseEvents(sseEventType, raw string) []strin
 	if restored == "" {
 		return nil
 	}
-	return splitRestoredEventData(restored)
+	return splitRestoredEventData(restored, sseEventType)
+}
+
+// restoredSseEvent is one restored SSE event split back into the relay reader's
+// wire format: the event name (from the event's own event: line — a buffered
+// event keeps the type it was ingested with, NOT the type of the event that
+// flushed it) and the bare data payload.
+type restoredSseEvent struct {
+	eventType string
+	data      string
 }
 
 // splitRestoredEventData splits the restorer's joined event-text output back
-// into bare data payloads (the relay reader's wire format). Non-data lines are
-// dropped; an event's multiple data lines join with "\n" per SSE semantics.
-func splitRestoredEventData(joined string) []string {
+// into the relay reader's wire format. Each event's own event: line wins; the
+// fallback (events without one, e.g. OpenAI chat chunks that never carry an
+// event name) is the triggering event's type. Non-data lines are dropped; an
+// event's multiple data lines join with "\n" per SSE semantics.
+func splitRestoredEventData(joined string, fallbackType string) []restoredSseEvent {
 	parts := splitRestoredEvents(joined)
-	out := make([]string, 0, len(parts))
+	out := make([]restoredSseEvent, 0, len(parts))
 	for _, p := range parts {
+		evType := ""
 		var dataLines []string
 		for _, line := range strings.Split(p, "\n") {
-			if strings.HasPrefix(line, "data:") {
+			if strings.HasPrefix(line, "event:") {
+				evType = strings.TrimSpace(line[len("event:"):])
+			} else if strings.HasPrefix(line, "data:") {
 				payload := line[len("data:"):]
 				payload = strings.TrimPrefix(payload, " ")
 				dataLines = append(dataLines, payload)
 			}
 		}
 		if len(dataLines) > 0 {
-			out = append(out, strings.Join(dataLines, "\n"))
+			if evType == "" {
+				evType = fallbackType
+			}
+			out = append(out, restoredSseEvent{eventType: evType, data: strings.Join(dataLines, "\n")})
 		}
 	}
 	return out

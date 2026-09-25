@@ -15,6 +15,7 @@ import (
 
 	"github.com/bestruirui/octopus/internal/helper"
 	dbmodel "github.com/bestruirui/octopus/internal/model"
+	"github.com/bestruirui/octopus/internal/utils/log"
 	transformerModel "github.com/bestruirui/octopus/internal/transformer/model"
 	"github.com/bestruirui/octopus/internal/utils/xurl"
 	"github.com/gin-gonic/gin"
@@ -100,6 +101,30 @@ func geminiImagesAttempt(
 	// Own request (no copyHeadersToUpstream): apply the unified non-CLI UA here too.
 	setHeaderIfMissing(req.Header, "User-Agent", genericUAForChannel(channel))
 
+	// 凭据脱敏: prompt 是用户文本, 渠道开了脱敏同样不能带密钥出境。无 relayAttempt,
+	// 用独立 session, 请求结束即关。
+	redactS := newRedactSessionForChannel(channel, "")
+	if redactS != nil {
+		redacted, rerr := redactS.RedactJSONBody(body)
+		if rerr != nil {
+			redactS.Close()
+			return 0, false, nil, "", fmt.Errorf("redact: outbound scan failed (request rejected to avoid leaking secrets): %w", rerr)
+		}
+		body = redacted
+		req.Body = io.NopCloser(bytes.NewReader(redacted))
+		req.ContentLength = int64(len(redacted))
+		req.Header.Set("Content-Length", strconv.Itoa(len(redacted)))
+		redactedCopy := redacted
+		req.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(redactedCopy)), nil
+		}
+	}
+	defer func() {
+		if redactS != nil {
+			redactS.Close()
+		}
+	}()
+
 	httpClient, err := helper.ChannelHttpClient(channel)
 	if err != nil {
 		return 0, false, nil, "", err
@@ -116,6 +141,25 @@ func geminiImagesAttempt(
 		return respUp.StatusCode, false, nil, upstreamCT, newUpstreamError(respUp.StatusCode, b)
 	}
 
+	// 凭据脱敏: 还原响应里回显的占位符 (revised_prompt 等)。
+	if redactS != nil {
+		rb, rerr := io.ReadAll(io.LimitReader(respUp.Body, redactMaxBodyBytes+1))
+		if rerr != nil {
+			log.Warnf("redact: gemini image response read failed, passing through: %v", rerr)
+			respUp.Body = chainedBody(bytes.NewReader(rb), respUp.Body)
+		} else if int64(len(rb)) > redactMaxBodyBytes {
+			log.Warnf("redact: gemini image response exceeds restore cap, passing through un-restored")
+			respUp.Body = chainedBody(bytes.NewReader(rb), respUp.Body)
+		} else {
+			if restored, rerr2 := redactS.RestoreJSONBody(rb); rerr2 == nil {
+				rb = restored
+			} else {
+				log.Warnf("redact: gemini image response restore failed, placeholders may leak: %v", rerr2)
+			}
+			respUp.Body.Close()
+			respUp.Body = io.NopCloser(bytes.NewReader(rb))
+		}
+	}
 	imageResp, usage, err := openAIImagesResponseFromGemini(respUp.Body, modelName, jsonPayload)
 	if err != nil {
 		return respUp.StatusCode, false, nil, upstreamCT, err

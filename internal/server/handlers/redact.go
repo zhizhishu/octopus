@@ -52,6 +52,12 @@ func postRedactTest(c *gin.Context) {
 		resp.Error(c, http.StatusBadRequest, "flags may only contain the detector letters H P S I B E G (empty = all detectors)")
 		return
 	}
+	// Cap the sample: the JS interpreter runs ~0.13MB/s, so an unbounded paste
+	// would pin a CPU for minutes. 64KB is plenty for a verification sample.
+	if len(req.Text) > 64*1024 {
+		resp.Error(c, http.StatusBadRequest, "text too large for the test endpoint (max 64KB)")
+		return
+	}
 	flags := model.NormalizeRedactFlags(req.Flags)
 
 	engine, err := redact.NewEngine()

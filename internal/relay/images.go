@@ -917,6 +917,17 @@ func imagesAttempt(
 		if err != nil {
 			return 0, false, nil, "", fmt.Errorf("failed to marshal json: %w", err)
 		}
+		// 凭据脱敏: prompt 是用户文本, 渠道开了脱敏不能带密钥出境。独立 session,
+		// 尝试结束即关。multipart 分支是管道直通, v1 不脱敏(记录在案)。
+		if imagesRedact := newRedactSessionForChannel(channel, ""); imagesRedact != nil {
+			redacted, rerr := imagesRedact.RedactJSONBody(b)
+			if rerr != nil {
+				imagesRedact.Close()
+				return 0, false, nil, "", fmt.Errorf("redact: outbound scan failed (request rejected to avoid leaking secrets): %w", rerr)
+			}
+			b = redacted
+			defer imagesRedact.Close()
+		}
 		bodyReader = bytes.NewReader(b)
 		contentType = "application/json"
 	}

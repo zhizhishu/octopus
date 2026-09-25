@@ -2052,9 +2052,9 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 			if err != nil {
 				// 凭据脱敏: 上游断流时先把还原缓冲吐净再报错 — 缓冲里的尾部文本
 				// 是真实模型输出, 不该随错误一起丢掉。
-				for _, data := range splitRestoredEventData(ra.redactFinishSse()) {
+				for _, rev := range splitRestoredEventData(ra.redactFinishSse(), ev.Type) {
 					select {
-					case results <- sseReadResult{eventType: ev.Type, data: data}:
+					case results <- sseReadResult{eventType: rev.eventType, data: rev.data}:
 					case <-done:
 						return
 					}
@@ -2067,18 +2067,18 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 			}
 			// 凭据脱敏: 事件过还原过滤器 (0/1/N 个输出; 占位符跨事件切开时缓冲,
 			// 终止/DONE 事件强制 flush)。未脱敏请求 1:1 原样转发, 零额外成本。
-			for _, data := range ra.redactForwardSseEvents(ev.Type, ev.Data) {
+			for _, rev := range ra.redactForwardSseEvents(ev.Type, ev.Data) {
 				select {
-				case results <- sseReadResult{eventType: ev.Type, data: data}:
+				case results <- sseReadResult{eventType: rev.eventType, data: rev.data}:
 				case <-done:
 					return
 				}
 			}
 		}
 		// 流自然结束: 还原器残留缓冲 flush (上游戛然而止时占位符尾部的兜底)。
-		for _, data := range splitRestoredEventData(ra.redactFinishSse()) {
+		for _, rev := range splitRestoredEventData(ra.redactFinishSse(), "") {
 			select {
-			case results <- sseReadResult{data: data}:
+			case results <- sseReadResult{eventType: rev.eventType, data: rev.data}:
 			case <-done:
 				return
 			}
@@ -2531,9 +2531,9 @@ func (ra *relayAttempt) handleStreamResponseAsNonStream(ctx context.Context, res
 		for ev, err := range sse.Read(response.Body, readCfg) {
 			if err != nil {
 				// 凭据脱敏: 同 handleStreamResponse — 断流先吐还原缓冲再报错。
-				for _, data := range splitRestoredEventData(ra.redactFinishSse()) {
+				for _, rev := range splitRestoredEventData(ra.redactFinishSse(), ev.Type) {
 					select {
-					case results <- sseReadResult{data: data}:
+					case results <- sseReadResult{data: rev.data}:
 					case <-done:
 						return
 					}
@@ -2545,18 +2545,18 @@ func (ra *relayAttempt) handleStreamResponseAsNonStream(ctx context.Context, res
 				return
 			}
 			// 凭据脱敏: 事件过还原过滤器 (同 handleStreamResponse 的 reader 侧接入)。
-			for _, data := range ra.redactForwardSseEvents(ev.Type, ev.Data) {
+			for _, rev := range ra.redactForwardSseEvents(ev.Type, ev.Data) {
 				select {
-				case results <- sseReadResult{data: data}:
+				case results <- sseReadResult{data: rev.data}:
 				case <-done:
 					return
 				}
 			}
 		}
 		// 流自然结束: 还原器残留缓冲 flush。
-		for _, data := range splitRestoredEventData(ra.redactFinishSse()) {
+		for _, rev := range splitRestoredEventData(ra.redactFinishSse(), "") {
 			select {
-			case results <- sseReadResult{data: data}:
+			case results <- sseReadResult{data: rev.data}:
 			case <-done:
 				return
 			}

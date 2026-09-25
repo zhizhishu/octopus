@@ -116,6 +116,11 @@ func (ra *relayAttempt) forwardImageGenerationViaImages(ctx context.Context, spa
 			spanPath(req.URL.EscapedPath())
 		}
 	}
+	// 凭据脱敏: 图桥自带出站通道 (不走 forward 的出站 hook), 这里补上 — prompt 是
+	// 用户文本, 密钥同样不能出境。协议传空让 Cosy 走通用遍历 (images 载荷非 chat 形状)。
+	if err := ra.applyOutboundRedaction(req, ""); err != nil {
+		return 0, err
+	}
 
 	httpClient, err := helper.ChannelHttpClient(ra.channel)
 	if err != nil {
@@ -133,6 +138,8 @@ func (ra *relayAttempt) forwardImageGenerationViaImages(ctx context.Context, spa
 		return respUp.StatusCode, upErr
 	}
 
+	// 凭据脱敏: 还原 revised_prompt 等回显文本里的占位符。
+	ra.redactRestoreResponseBody(respUp)
 	internalResponse, err := internalResponseFromImagesGeneration(respUp.Body, ra.requestModel, actualModel, outputFormat)
 	if err != nil {
 		return respUp.StatusCode, err
@@ -185,6 +192,10 @@ func (ra *relayAttempt) forwardGeminiImageGenerationViaImages(ctx context.Contex
 			spanPath(path)
 		}
 	}
+	// 凭据脱敏: 同 OpenAI 图桥 — gemini 图桥也是自带出站通道, prompt 用户文本不过夜。
+	if err := ra.applyOutboundRedaction(req, ""); err != nil {
+		return 0, err
+	}
 
 	httpClient, err := helper.ChannelHttpClient(ra.channel)
 	if err != nil {
@@ -201,6 +212,8 @@ func (ra *relayAttempt) forwardGeminiImageGenerationViaImages(ctx context.Contex
 		return respUp.StatusCode, newUpstreamError(respUp.StatusCode, b)
 	}
 
+	// 凭据脱敏: 还原 gemini 图响应里的回显占位符。
+	ra.redactRestoreResponseBody(respUp)
 	imageResp, _, err := openAIImagesResponseFromGemini(respUp.Body, actualModel, payload)
 	if err != nil {
 		return respUp.StatusCode, err
