@@ -48,6 +48,18 @@ func currentFirstByteKeepaliveDelay() time.Duration {
 	return defaultFirstByteKeepaliveDelay()
 }
 
+// currentInterventionKeepaliveDelay is the hold-loop sibling of the first-byte delay.
+// The intervention hold restarts its downstream keepalive every round, so this delay
+// must be short enough to fire inside one round (hold backoff caps at ~15s); the 20s
+// first-byte default would never fire and the held client would sit byte-silent.
+func currentInterventionKeepaliveDelay() time.Duration {
+	seconds, err := op.SettingGetInt(dbmodel.SettingKeyInterventionKeepaliveDelaySeconds)
+	if err == nil {
+		return streamSecondsDuration(seconds)
+	}
+	return defaultInterventionKeepaliveDelay()
+}
+
 func defaultFirstByteKeepaliveDelay() time.Duration {
 	// Default ON at 20s. Only upstreams slower than this to their first byte get
 	// pre-content SSE comment heartbeats (":\n\n"), which keeps a downstream client
@@ -58,6 +70,14 @@ func defaultFirstByteKeepaliveDelay() time.Duration {
 	// upstream fingerprint. Override via OCTOPUS_RELAY_FIRST_BYTE_KEEPALIVE_DELAY_SECONDS
 	// or the runtime setting (set to 0 to disable).
 	return envStreamSecondsDuration("RELAY_FIRST_BYTE_KEEPALIVE_DELAY_SECONDS", 20)
+}
+
+func defaultInterventionKeepaliveDelay() time.Duration {
+	// Default ON at 2s: short enough to fire inside one hold round (backoff caps at
+	// ~15s), so a held client sees "working" heartbeats instead of byte-silence until
+	// the rescue budget dies. Override via OCTOPUS_RELAY_INTERVENTION_KEEPALIVE_DELAY_SECONDS
+	// or the runtime setting (set to 0 to disable).
+	return envStreamSecondsDuration("RELAY_INTERVENTION_KEEPALIVE_DELAY_SECONDS", 2)
 }
 
 func envStreamSecondsDuration(suffix string, fallbackSeconds int) time.Duration {

@@ -557,7 +557,7 @@ attemptChannels:
 			noBreakerRescueStartedAt = time.Now()
 		}
 		if stopInterventionKeepalive == nil {
-			stopInterventionKeepalive = startDownstreamFirstByteKeepalive(c.Request.Context(), c)
+			stopInterventionKeepalive = startInterventionKeepalive(c.Request.Context(), c)
 		}
 		if interventionCtx == nil {
 			totalTimeout := noBreakerRescueBudget
@@ -3256,7 +3256,24 @@ func (ra *relayAttempt) setDownstreamSSEHeaders() { setDownstreamSSEHeadersCtx(r
 // comments (never a committed envelope), so a pre-content upstream failure can still fail
 // over. delay<=0 or interval<=0 is a no-op.
 func startDownstreamFirstByteKeepalive(ctx context.Context, c *gin.Context) func() {
-	delay := currentFirstByteKeepaliveDelay()
+	return startDownstreamKeepaliveWithDelay(ctx, c, currentFirstByteKeepaliveDelay())
+}
+
+// startInterventionKeepalive is the hold-loop variant: the intervention hold restarts
+// its keepalive every round (stopped before goto runIterator, restarted on re-entry),
+// so one round's keepalive lifetime is bounded by the hold backoff cap (~15s) plus the
+// attempt time. The 20s first-byte delay would never fire inside a round — the held
+// client would sit byte-silent until the rescue budget dies (a codex TUI's ~300s
+// stream-idle timeout then races the budget). The dedicated short delay keeps
+// "working" heartbeats flowing. Downstream-only; never touches the upstream fingerprint.
+func startInterventionKeepalive(ctx context.Context, c *gin.Context) func() {
+	return startDownstreamKeepaliveWithDelay(ctx, c, currentInterventionKeepaliveDelay())
+}
+
+// startDownstreamKeepaliveWithDelay injects ignorable SSE comment heartbeats (":\n\n")
+// downstream after delay, then every relay_stream_keepalive_interval_seconds, until the
+// returned stop func is called. delay<=0 or interval<=0 is a no-op.
+func startDownstreamKeepaliveWithDelay(ctx context.Context, c *gin.Context, delay time.Duration) func() {
 	if delay <= 0 {
 		return func() {}
 	}

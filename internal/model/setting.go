@@ -74,6 +74,15 @@ const (
 	// downstream-only and never touches the codex/claude/gemini upstream fingerprint. Set
 	// to "0" to disable entirely.
 	SettingKeyFirstByteKeepaliveDelaySeconds SettingKey = "first_byte_keepalive_delay_seconds"
+	// SettingKeyInterventionKeepaliveDelaySeconds defaults to "2". The intervention hold
+	// loop restarts the downstream keepalive every round (stopped before goto runIterator,
+	// restarted on re-entry), so one round's keepalive lifetime is bounded by the hold
+	// backoff cap (~15s) plus the attempt time — the 20s first-byte delay would never
+	// fire inside a round and the held client would sit byte-silent until the rescue
+	// budget dies (a codex TUI's ~300s stream-idle timeout then races the budget). This
+	// dedicated short delay keeps "working" heartbeats flowing to the held client.
+	// Downstream-only; never touches the codex/claude/gemini upstream fingerprint. 0 disables.
+	SettingKeyInterventionKeepaliveDelaySeconds SettingKey = "intervention_keepalive_delay_seconds"
 	// SettingKeyRelayInterventionEnabled defaults to "false". When on, a request whose
 	// upstream attempts have all failed is held open instead of returning the error: the
 	// failure surfaces on the log page, where an operator picks a working channel and the
@@ -317,6 +326,7 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeySessionKeepTimeDefault, Value: "0"},                                             // 默认0=不启用全局粘性(向后兼容); 管理员设为如3600才全局开, 分组级 SessionKeepTime 仍优先
 		{Key: SettingKeyFirstTokenTimeOutDefault, Value: "0"},                                           // 默认0=不启用全局默认(向后兼容); 分组级 FirstTokenTimeOut 仍优先
 		{Key: SettingKeyFirstByteKeepaliveDelaySeconds, Value: defaultFirstByteKeepaliveDelaySeconds()}, // 默认20=开启: 上游首字节>20s才向下游注入SSE心跳(防前置反代/客户端60s空闲掐断); 0=关闭
+		{Key: SettingKeyInterventionKeepaliveDelaySeconds, Value: "2"},                                  // 默认2=hold期间2秒后即向下游注入SSE心跳: hold轮次寿命受backoff封顶15s约束,20s首字delay在轮内永远死胎; 0=关闭
 		{Key: SettingKeyRelayInterventionEnabled, Value: "true"},                                        // 默认开: 流式请求在普通渠道/回退用尽后自动救援; 关=普通渠道立刻回错(无熔断渠道仍可按预算自救)
 		{Key: SettingKeyRelayInterventionTimeoutSec, Value: "1800"},                                     // 人工接管等待上限(秒), 超时后原错误照常返回客户端
 		{Key: SettingKeyRelayNoBreakerRetryBudgetSec, Value: "300"},                                     // 无熔断渠道自动猛打预算(秒): 按画布既定顺序反复重试; 最大600, 0=关闭
@@ -444,7 +454,8 @@ func (s *Setting) Validate() error {
 		}
 		return nil
 	case SettingKeyRelayStreamKeepaliveSec, SettingKeyRelayStreamDataTimeoutSec, SettingKeyResponsesSessionTTL,
-		SettingKeySessionKeepTimeDefault, SettingKeyFirstTokenTimeOutDefault, SettingKeyFirstByteKeepaliveDelaySeconds:
+		SettingKeySessionKeepTimeDefault, SettingKeyFirstTokenTimeOutDefault, SettingKeyFirstByteKeepaliveDelaySeconds,
+		SettingKeyInterventionKeepaliveDelaySeconds:
 		value, err := strconv.Atoi(s.Value)
 		if err != nil || value < 0 {
 			return fmt.Errorf("%s must be a non-negative integer", s.Key)
