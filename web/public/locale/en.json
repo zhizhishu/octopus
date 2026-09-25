@@ -73,7 +73,8 @@
         "prompt": "Prompt",
         "audit": "Audit",
         "log": "Log",
-        "setting": "Setting"
+        "setting": "Setting",
+        "redact": "Redaction"
     },
     "toolbar": {
         "popover": {
@@ -514,11 +515,11 @@
                 "anthropicDescription": "For Claude / Anthropic Messages protocol.",
                 "empty": "This key has no available endpoint families yet."
             },
-                "form": {
-                    "name": "Name",
-                    "owner": "Owner",
-                    "currentAdmin": "Current admin",
-                    "maxCost": "Max Cost",
+            "form": {
+                "name": "Name",
+                "owner": "Owner",
+                "currentAdmin": "Current admin",
+                "maxCost": "Max Cost",
                 "maxCostPlaceholder": "Enter amount",
                 "unlimited": "Unlimited",
                 "expireAt": "Expire Date",
@@ -700,7 +701,7 @@
             "edit": "Edit",
             "delete": "Delete",
             "autoRescue": "Auto-rescued"
-},
+        },
         "overlay": {
             "cancel": "Cancel",
             "deleting": "Deleting...",
@@ -978,6 +979,38 @@
             "modelMappingEmpty": "No mappings yet",
             "proxyTest": "Test latency",
             "proxyTestDisabled": "Fill proxy first"
+        }
+    },
+    "redact": {
+        "global": {
+            "title": "Credential Redaction",
+            "subtitle": "Secrets become placeholders outbound and restore on the way back; body text only, fingerprint untouched",
+            "master": "Master Switch",
+            "masterHint": "Off = all channels pass through with zero scanning",
+            "notice": "Notice Injection",
+            "noticeHint": "Tell the model about placeholder semantics in the first user message",
+            "defaultFlags": "Default Detectors",
+            "defaultFlagsHint": "Detector set used when a channel has no override"
+        },
+        "channel": {
+            "title": "Per-Channel Redaction",
+            "subtitle": "Toggle per channel; expand to customize its detector set",
+            "empty": "No channels yet",
+            "active": "redacting",
+            "flagsHint": "Click letters to toggle this channel's detectors (dashed border = inherits global default)",
+            "followDefault": "Follow global default"
+        },
+        "test": {
+            "title": "Redaction Test",
+            "subtitle": "Run a synthetic sample through the redact-restore round trip",
+            "placeholder": "Enter text containing secrets…",
+            "flagsPlaceholder": "Detectors",
+            "flagsHint": "Empty = all detectors",
+            "run": "Run test",
+            "running": "Running…",
+            "upstreamSees": "Upstream sees",
+            "clientSees": "Client receives",
+            "count": "{count} hits"
         }
     }
 }

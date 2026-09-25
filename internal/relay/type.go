@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"github.com/bestruirui/octopus/internal/redact"
 	"os"
 	"strconv"
 	"strings"
@@ -179,6 +180,13 @@ type relayRequest struct {
 	// path uses it to deliver a JSON error body instead of splicing an SSE error into a
 	// Content-Type: application/json stream.
 	wroteNonStreamJSONKeepalive bool
+
+	// redactSession is the per-request credential-redaction session (CosyRedactGateway
+	// core). Created lazily by redactSessionFor on the first attempt whose channel has
+	// redaction enabled; lives at request level so channel retries reuse the same
+	// placeholder mapping (the model sees consistent placeholders across failover and
+	// the final response restores against the same map). nil = redaction inactive.
+	redactSession *redact.Session
 }
 
 // relayAttempt 尝试级上下文
@@ -230,6 +238,17 @@ type relayAttempt struct {
 	// that downgraded wire (which keeps no server-side response state) so a previous_response_id
 	// turn is rebuilt-or-loudly-rejected instead of forwarded context-stripped under a 200.
 	responsesDowngradedToChat bool
+
+	// Credential-redaction per-attempt state (see relayRequest.redactSession for the
+	// session itself). redactApplied flips true once an outbound body was actually
+	// rewritten (placeholders exist upstream-side), which gates response restoration —
+	// clean traffic never pays restore cost. redactFailed marks fail-closed rejection.
+	// redactSse is the stream restorer (created on first stream event); redactStreamBroken
+	// degrades stream restoration to pass-through after a restorer error.
+	redactApplied      bool
+	redactFailed       bool
+	redactSse          *redact.SseRestorer
+	redactStreamBroken bool
 }
 
 // attemptResult 封装单次尝试的结果

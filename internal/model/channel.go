@@ -58,10 +58,23 @@ type Channel struct {
 	SelectedModels        []string          `json:"selected_models" gorm:"serializer:json"`
 	ModelMapping          map[string]string `json:"model_mapping" gorm:"serializer:json"`
 	AnthropicContext1M    bool              `json:"anthropic_context_1m" gorm:"column:anthropic_context_1m;default:false"`
-	Proxy                 bool              `json:"proxy" gorm:"default:false"`
-	AutoSync              bool              `json:"auto_sync" gorm:"default:false"`
-	CustomHeader          []CustomHeader    `json:"custom_header" gorm:"serializer:json"`
-	Cloak                 ChannelCloak      `json:"cloak" gorm:"serializer:json"`
+	// RedactEnabled (opt-in, default false) enables credential redaction for this
+	// channel: outbound request bodies are scanned and secrets are replaced with
+	// reversible {{Redact:...}} placeholders BEFORE octopus sends the request with
+	// its own TLS/header fingerprint stack (the fingerprint bytes are never touched
+	// — only body text content changes, which is the point of redaction). Response
+	// text (JSON and SSE, including tool-argument deltas) restores placeholders
+	// back to the original values before the client sees them. Detection and
+	// restoration logic is vendored from CosyRedactGateway (Apache-2.0).
+	RedactEnabled bool `json:"redact_enabled" gorm:"default:false"`
+	// RedactFlags selects which detectors run for this channel, as CosyRedactGateway
+	// flag letters: H high-entropy credentials, P phone, S sk- keys, I ID card,
+	// B bank card, E email, G gitleaks. Empty = all detectors (HPSIBEG).
+	RedactFlags  string         `json:"redact_flags" gorm:"default:''"`
+	Proxy        bool           `json:"proxy" gorm:"default:false"`
+	AutoSync     bool           `json:"auto_sync" gorm:"default:false"`
+	CustomHeader []CustomHeader `json:"custom_header" gorm:"serializer:json"`
+	Cloak        ChannelCloak   `json:"cloak" gorm:"serializer:json"`
 	// ThinkingToContent (opt-in, default false) mirrors new-api's thinking_to_content:
 	// when the upstream only fills reasoning_content and leaves content empty (common
 	// on GLM with thinking + small max_tokens), fold reasoning into content so chat
@@ -146,6 +159,8 @@ type ChannelUpdateRequest struct {
 	DiscoveredModels      *[]string              `json:"discovered_models,omitempty"`
 	SelectedModels        *[]string              `json:"selected_models,omitempty"`
 	AnthropicContext1M    *bool                  `json:"anthropic_context_1m,omitempty"`
+	RedactEnabled         *bool                  `json:"redact_enabled,omitempty"`
+	RedactFlags           *string                `json:"redact_flags,omitempty"`
 	ThinkingToContent     *bool                  `json:"thinking_to_content,omitempty"`
 	Proxy                 *bool                  `json:"proxy,omitempty"`
 	AutoSync              *bool                  `json:"auto_sync,omitempty"`

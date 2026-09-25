@@ -73,7 +73,8 @@
         "prompt": "提示詞",
         "audit": "審計",
         "log": "日誌",
-        "setting": "設定"
+        "setting": "設定",
+        "redact": "憑據脫敏"
     },
     "toolbar": {
         "popover": {
@@ -514,11 +515,11 @@
                 "anthropicDescription": "用於 Claude / Anthropic Messages 協議。",
                 "empty": "這個金鑰暫時沒有可用端點。"
             },
-                "form": {
-                    "name": "名稱",
-                    "owner": "歸屬使用者",
-                    "currentAdmin": "目前管理員",
-                    "maxCost": "最大金額",
+            "form": {
+                "name": "名稱",
+                "owner": "歸屬使用者",
+                "currentAdmin": "目前管理員",
+                "maxCost": "最大金額",
                 "maxCostPlaceholder": "請輸入金額",
                 "unlimited": "無限制",
                 "expireAt": "過期日期",
@@ -700,7 +701,7 @@
             "edit": "編輯",
             "delete": "刪除",
             "autoRescue": "自動救援"
-},
+        },
         "overlay": {
             "cancel": "取消",
             "deleting": "刪除中...",
@@ -978,6 +979,38 @@
             "modelMappingEmpty": "暫無映射",
             "proxyTest": "測試延遲",
             "proxyTestDisabled": "請先填代理"
+        }
+    },
+    "redact": {
+        "global": {
+            "title": "凭据脱敏",
+            "subtitle": "出站密钥变占位符, 回程自动还原; 只改 body 文本, 指纹零改动",
+            "master": "脱敏总闸",
+            "masterHint": "关闭时所有渠道直通, 不做任何扫描",
+            "notice": "提示注入",
+            "noticeHint": "在首条用户消息前注入脱敏告知, 让模型知道占位符语义",
+            "defaultFlags": "默认检测器",
+            "defaultFlagsHint": "渠道未定制时使用的检测器组合"
+        },
+        "channel": {
+            "title": "渠道脱敏开关",
+            "subtitle": "按渠道开启; 展开可定制该渠道的检测器组合",
+            "empty": "还没有渠道",
+            "active": "脱敏中",
+            "flagsHint": "点字母切换该渠道的检测器 (虚线边框 = 继承全局默认)",
+            "followDefault": "跟随全局默认"
+        },
+        "test": {
+            "title": "脱敏测试",
+            "subtitle": "合成样本跑一遍 脱敏→还原 往返, 上线前先看效果",
+            "placeholder": "输入含敏感信息的文本…",
+            "flagsPlaceholder": "检测器",
+            "flagsHint": "留空 = 全部检测器",
+            "run": "跑测试",
+            "running": "跑着…",
+            "upstreamSees": "上游看到的",
+            "clientSees": "客户端收回的",
+            "count": "{count} 处"
         }
     }
 }

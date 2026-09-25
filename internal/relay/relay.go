@@ -158,6 +158,8 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		}
 	}
 	defer func() {
+		// 凭据脱敏: 请求结束释放 session 的引擎资源 (映射随请求丢弃, Cosy 请求级设计)。
+		req.redactClose()
 		if stopInterventionKeepalive != nil {
 			stopInterventionKeepalive()
 		}
@@ -1091,6 +1093,12 @@ retryWithAdapter:
 
 	// 复制请求头
 	ra.copyHeaders(outboundRequest)
+
+	// 凭据脱敏: 出站 body 密钥→占位符。只改 body 文本内容, TLS/header 指纹路径零改动
+	// (claude/codex CLI shape 与普通渠道 UA 全部保持原样); 渠道未开启或全局关闭时为 no-op。
+	if err := ra.applyOutboundRedaction(outboundRequest, redactProtocolFor(ra.channel.Type)); err != nil {
+		return 0, err
+	}
 
 	// 发送请求
 	// keepalive 注入的是 SSE 心跳，只有【下游客户端】收流式时才可注入（否则污染非流式响应）。
@@ -2042,14 +2050,35 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 		readCfg := &sse.ReadConfig{MaxEventSize: maxSSEEventSize}
 		for ev, err := range sse.Read(response.Body, readCfg) {
 			if err != nil {
+				// 凭据脱敏: 上游断流时先把还原缓冲吐净再报错 — 缓冲里的尾部文本
+				// 是真实模型输出, 不该随错误一起丢掉。
+				for _, data := range splitRestoredEventData(ra.redactFinishSse()) {
+					select {
+					case results <- sseReadResult{eventType: ev.Type, data: data}:
+					case <-done:
+						return
+					}
+				}
 				select {
 				case results <- sseReadResult{err: err}:
 				case <-done:
 				}
 				return
 			}
+			// 凭据脱敏: 事件过还原过滤器 (0/1/N 个输出; 占位符跨事件切开时缓冲,
+			// 终止/DONE 事件强制 flush)。未脱敏请求 1:1 原样转发, 零额外成本。
+			for _, data := range ra.redactForwardSseEvents(ev.Type, ev.Data) {
+				select {
+				case results <- sseReadResult{eventType: ev.Type, data: data}:
+				case <-done:
+					return
+				}
+			}
+		}
+		// 流自然结束: 还原器残留缓冲 flush (上游戛然而止时占位符尾部的兜底)。
+		for _, data := range splitRestoredEventData(ra.redactFinishSse()) {
 			select {
-			case results <- sseReadResult{eventType: ev.Type, data: ev.Data}:
+			case results <- sseReadResult{data: data}:
 			case <-done:
 				return
 			}
@@ -2501,14 +2530,33 @@ func (ra *relayAttempt) handleStreamResponseAsNonStream(ctx context.Context, res
 		readCfg := &sse.ReadConfig{MaxEventSize: maxSSEEventSize}
 		for ev, err := range sse.Read(response.Body, readCfg) {
 			if err != nil {
+				// 凭据脱敏: 同 handleStreamResponse — 断流先吐还原缓冲再报错。
+				for _, data := range splitRestoredEventData(ra.redactFinishSse()) {
+					select {
+					case results <- sseReadResult{data: data}:
+					case <-done:
+						return
+					}
+				}
 				select {
 				case results <- sseReadResult{err: err}:
 				case <-done:
 				}
 				return
 			}
+			// 凭据脱敏: 事件过还原过滤器 (同 handleStreamResponse 的 reader 侧接入)。
+			for _, data := range ra.redactForwardSseEvents(ev.Type, ev.Data) {
+				select {
+				case results <- sseReadResult{data: data}:
+				case <-done:
+					return
+				}
+			}
+		}
+		// 流自然结束: 还原器残留缓冲 flush。
+		for _, data := range splitRestoredEventData(ra.redactFinishSse()) {
 			select {
-			case results <- sseReadResult{data: ev.Data}:
+			case results <- sseReadResult{data: data}:
 			case <-done:
 				return
 			}
@@ -2766,6 +2814,8 @@ readLoop:
 
 func (ra *relayAttempt) handleNonStreamResponseAsStream(ctx context.Context, response *http.Response, outAdapter model.Outbound) error {
 	limitUpstreamResponseBody(response)
+	// 凭据脱敏还原: 占位符→原值(非流式 body 一次性还原)。未脱敏的请求为 no-op。
+	ra.redactRestoreResponseBody(response)
 	internalResponse, err := outAdapter.TransformResponse(ctx, response)
 	if err != nil {
 		log.Warnf("failed to transform fallback non-stream response: %v", err)
@@ -3431,6 +3481,8 @@ func (ra *relayAttempt) handleResponse(ctx context.Context, response *http.Respo
 	if err := unwrapResponseEncoding(response); err != nil {
 		return fmt.Errorf("failed to unwrap upstream response encoding: %w", err)
 	}
+	// 凭据脱敏还原: 占位符→原值(非流式 body 一次性还原)。未脱敏的请求为 no-op。
+	ra.redactRestoreResponseBody(response)
 	internalResponse, err := outAdapter.TransformResponse(ctx, response)
 	if err != nil {
 		log.Warnf("failed to transform response: %v", err)

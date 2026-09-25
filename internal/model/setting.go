@@ -100,14 +100,24 @@ const (
 	// ordered iterator. 0 disables this automatic rescue; valid values are capped at 600s.
 	SettingKeyRelayNoBreakerRetryBudgetSec SettingKey = "relay_no_breaker_retry_budget_seconds"
 
-	SettingKeyRouteModeOverride        SettingKey = "route_mode_override"      // 路由模式全局覆盖: ""=跟随分组各自模式, "spread"=强制轮询, "fill_first"=强制优先填充
-	SettingKeyRouteStickyCacheFirst    SettingKey = "route_sticky_cache_first" // 轮询类分组里纯优化型会话(prompt_cache_key/user/safety_identifier/oct 自造指纹)的粘性取舍: false=分摊优先(默认, 不粘、真轮转), true=缓存优先(非空来源也粘, 换上游 prompt-cache 命中)。语义详见 internal/relay/route_sticky.go
-	SettingKeyPromptOverrideSystem     SettingKey = "prompt_override_system"
-	SettingKeyPromptOverrideMode       SettingKey = "prompt_override_mode"
-	SettingKeyUpstreamErrorStatusPass  SettingKey = "upstream_error_status_passthrough"
-	SettingKeyUpstreamErrorBodyMode    SettingKey = "upstream_error_body_mode"
-	SettingKeyUpstreamErrorCustom      SettingKey = "upstream_error_custom_message"
-	SettingKeyUpstreamErrorPublicCode  SettingKey = "upstream_error_public_code"
+	SettingKeyRouteModeOverride       SettingKey = "route_mode_override"      // 路由模式全局覆盖: ""=跟随分组各自模式, "spread"=强制轮询, "fill_first"=强制优先填充
+	SettingKeyRouteStickyCacheFirst   SettingKey = "route_sticky_cache_first" // 轮询类分组里纯优化型会话(prompt_cache_key/user/safety_identifier/oct 自造指纹)的粘性取舍: false=分摊优先(默认, 不粘、真轮转), true=缓存优先(非空来源也粘, 换上游 prompt-cache 命中)。语义详见 internal/relay/route_sticky.go
+	SettingKeyPromptOverrideSystem    SettingKey = "prompt_override_system"
+	SettingKeyPromptOverrideMode      SettingKey = "prompt_override_mode"
+	SettingKeyUpstreamErrorStatusPass SettingKey = "upstream_error_status_passthrough"
+	SettingKeyUpstreamErrorBodyMode   SettingKey = "upstream_error_body_mode"
+	SettingKeyUpstreamErrorCustom     SettingKey = "upstream_error_custom_message"
+	SettingKeyUpstreamErrorPublicCode SettingKey = "upstream_error_public_code"
+	// Credential redaction (CosyRedactGateway-style). The global switch is the
+	// master gate: even channels with redact_enabled=true do nothing while it is
+	// false, so operators can kill the feature instance-wide without touching
+	// channel configs. Default flags apply to channels that enable redaction but
+	// leave their own flags empty. The notice toggle controls whether the
+	// redaction notice is injected into the first user message (helps models
+	// preserve placeholders; can be disabled for strict body-shape channels).
+	SettingKeyRedactEnabled            SettingKey = "redact_enabled"
+	SettingKeyRedactDefaultFlags       SettingKey = "redact_default_flags"
+	SettingKeyRedactNoticeEnabled      SettingKey = "redact_notice_enabled"
 	SettingKeyCheckInEnabled           SettingKey = "checkin_enabled"
 	SettingKeyCheckInRewardMode        SettingKey = "checkin_reward_mode"
 	SettingKeyCheckInRewardAmount      SettingKey = "checkin_reward_amount"
@@ -338,6 +348,9 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyUpstreamErrorBodyMode, Value: "redacted_upstream"},
 		{Key: SettingKeyUpstreamErrorCustom, Value: "Upstream request failed. Please try again later."},
 		{Key: SettingKeyUpstreamErrorPublicCode, Value: "service_busy"},
+		{Key: SettingKeyRedactEnabled, Value: "false"},        // 凭据脱敏总闸: 默认关; 开启后 redact_enabled=true 的渠道才会在出站 body 上做密钥→占位符替换+响应还原(指纹路径零改动)
+		{Key: SettingKeyRedactDefaultFlags, Value: "HPSIBEG"}, // 渠道未自定义 flags 时的默认检测器: H高熵 P电话 S密钥 I身份证 B银行卡 E邮箱 G gitleaks
+		{Key: SettingKeyRedactNoticeEnabled, Value: "true"},   // 脱敏时向首条用户消息注入占位符说明(提高模型保真); 可关
 		{Key: SettingKeyCheckInEnabled, Value: "false"},
 		{Key: SettingKeyCheckInRewardMode, Value: "fixed"},
 		{Key: SettingKeyCheckInRewardAmount, Value: "100"},
@@ -548,6 +561,18 @@ func (s *Setting) Validate() error {
 	case SettingKeyUpstreamErrorPublicCode:
 		if !isSafePublicErrorCode(s.Value) {
 			return fmt.Errorf("upstream error public code may only contain letters, numbers, dots, underscores, and dashes")
+		}
+		return nil
+	case SettingKeyRedactEnabled, SettingKeyRedactNoticeEnabled:
+		switch strings.ToLower(strings.TrimSpace(s.Value)) {
+		case "", "true", "false":
+			return nil
+		default:
+			return fmt.Errorf("%s must be true or false", s.Key)
+		}
+	case SettingKeyRedactDefaultFlags:
+		if HasInvalidRedactFlag(s.Value) {
+			return fmt.Errorf("%s may only contain the detector letters H P S I B E G (empty = all detectors)", s.Key)
 		}
 		return nil
 	case SettingKeyCheckInRewardMode:

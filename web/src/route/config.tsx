@@ -1,7 +1,7 @@
 import { lazyWithPreload } from './lazy-with-preload';
 import { lazy, ComponentType } from 'react';
 import type { LucideIcon } from 'lucide-react';
-import { BadgeDollarSign, Home, Radio, Settings, Logs, KeyRound, Users, GitBranch, MessageSquareText, Database, Shield } from 'lucide-react';
+import { BadgeDollarSign, Home, Radio, Settings, Logs, KeyRound, Users, GitBranch, MessageSquareText, Database, Shield, EyeOff } from 'lucide-react';
 
 export type LazyComponent = ReturnType<typeof lazy> & {
     preload: () => Promise<{ default: ComponentType<Record<string, never>> }>
@@ -16,6 +16,7 @@ export interface RouteConfig {
 
 const Home_Module = lazyWithPreload(() => import('@/components/modules/home').then(m => ({ default: m.Home })));
 const Channel_Module = lazyWithPreload(() => import('@/components/modules/channel').then(m => ({ default: m.Channel })));
+const Redact_Module = lazyWithPreload(() => import('@/components/modules/redact').then(m => ({ default: m.Redact })));
 const Model_Module = lazyWithPreload(() => import('@/components/modules/model').then(m => ({ default: m.Model })));
 const Migration_Module = lazyWithPreload(() => import('@/components/modules/migration').then(m => ({ default: m.Migration })));
 const AccessPlan_Module = lazyWithPreload(() => import('@/components/modules/access-plan').then(m => ({ default: m.AccessPlan })));
@@ -31,6 +32,7 @@ export const ROUTES: RouteConfig[] = [
     { id: 'user', label: 'Users', icon: Users, component: User_Module },
     { id: 'key', label: 'API Key', icon: KeyRound, component: Key_Module },
     { id: 'channel', label: 'Channel', icon: Radio, component: Channel_Module },
+    { id: 'redact', label: 'Redact', icon: EyeOff, component: Redact_Module },
     { id: 'access-plan', label: 'Plans', icon: GitBranch, component: AccessPlan_Module },
     { id: 'model', label: 'Model', icon: BadgeDollarSign, component: Model_Module },
     { id: 'migration', label: 'Migration', icon: Database, component: Migration_Module },
@@ -45,7 +47,7 @@ export const CONTENT_MAP = ROUTES.reduce((acc, route) => {
     return acc;
 }, {} as Record<string, LazyComponent>);
 
-export const ADMIN_ROUTE_IDS = ['home', 'user', 'key', 'channel', 'access-plan', 'model', 'migration', 'prompt', 'audit', 'log', 'setting'] as const;
+export const ADMIN_ROUTE_IDS = ['home', 'user', 'key', 'channel', 'redact', 'access-plan', 'model', 'migration', 'prompt', 'audit', 'log', 'setting'] as const;
 export const USER_ROUTE_IDS = ['home', 'key', 'log'] as const;
 
 export function routeIdsForRole(role?: string | null) {

@@ -166,6 +166,10 @@ func prepareRacerAttempt(
 	}
 
 	ra.copyHeaders(outboundRequest)
+	// 凭据脱敏: race 模式出站同样过 body 脱敏 (与 forward() 同一契约: 只改 body 文本, 指纹零改动)。
+	if err := ra.applyOutboundRedaction(outboundRequest, redactProtocolFor(ra.channel.Type)); err != nil {
+		return nil, nil, nil, err
+	}
 	return ra, outboundRequest, upstreamPaths, nil
 }
 

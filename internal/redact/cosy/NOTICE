@@ -1,0 +1,21 @@
+internal/redact/cosy/ contains the pure-logic core vendored from
+CassiopeiaCode/CosyRedactGateway (https://github.com/CassiopeiaCode/CosyRedactGateway),
+upstream commit 0e2be2e3ba7fcbe982942a941e3a2fd1b89e87f6, licensed Apache-2.0
+(full text in LICENSE next to this notice).
+
+worker-core.js is extracted from upstream worker.js by ../../../../../_artifacts/extract-cosy-core.py
+(range list produced by _artifacts/find-cosy-ranges.mjs, which uses Node's own parser).
+Logic-preserving changes, all documented in the file header:
+  - the HTTP proxy shell (routing, CORS, header filtering, fetch handler, and the
+    ReadableStream restoreSseStream adapter) is removed; this process calls the
+    SseRestorer class directly instead
+  - crypto.subtle.digest("SHA-256", ...) is replaced by a synchronous injected
+    __octSha256Hex(str) implemented in Go (crypto/sha256)
+  - crypto.getRandomValues is replaced by an injected __octRandomHex(nBytes)
+  - async/await is removed from RedactionContext.tokenFor / redactText / redactJson
+    (the only asynchronous call was the SHA-256 digest; control flow is unchanged)
+  - ESM exports are rewritten as a globalThis.__cosy export object for the goja runtime
+
+To upgrade: re-run the two extractor scripts against the new upstream worker.js and
+re-run the package tests (engine_test.go ports upstream's core test assertions;
+sse_test.go ports upstream's stream test scenarios).

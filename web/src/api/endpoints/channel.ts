@@ -79,6 +79,8 @@ export type Channel = {
     discovered_models: string[];
     selected_models: string[];
     anthropic_context_1m: boolean;
+    redact_enabled: boolean;
+    redact_flags: string;
     thinking_to_content: boolean;
     proxy: boolean;
     auto_sync: boolean;
@@ -130,6 +132,8 @@ export type CreateChannelRequest = {
     discovered_models?: string[];
     selected_models?: string[];
     anthropic_context_1m?: boolean;
+    redact_enabled?: boolean;
+    redact_flags?: string;
     thinking_to_content?: boolean;
     proxy?: boolean;
     auto_sync?: boolean;
@@ -167,6 +171,8 @@ export type UpdateChannelRequest = {
     discovered_models?: string[];
     selected_models?: string[];
     anthropic_context_1m?: boolean;
+    redact_enabled?: boolean;
+    redact_flags?: string;
     thinking_to_content?: boolean;
     proxy?: boolean;
     auto_sync?: boolean;
@@ -278,6 +284,8 @@ export function useChannelList(options?: { enabled?: boolean }) {
                 discovered_models: item.discovered_models ?? [],
                 selected_models: item.selected_models ?? [],
                 anthropic_context_1m: item.anthropic_context_1m ?? false,
+                redact_enabled: item.redact_enabled ?? false,
+                redact_flags: item.redact_flags ?? '',
                 thinking_to_content: item.thinking_to_content ?? false,
                 openai_chat_path: item.openai_chat_path ?? '',
                 openai_models_path: item.openai_models_path ?? '',

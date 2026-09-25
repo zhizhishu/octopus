@@ -294,6 +294,14 @@ func ChannelUpdate(req *model.ChannelUpdateRequest, ctx context.Context) (*model
 		selectFields = append(selectFields, "anthropic_context_1m")
 		updates.AnthropicContext1M = true
 	}
+	if req.RedactEnabled != nil {
+		selectFields = append(selectFields, "redact_enabled")
+		updates.RedactEnabled = *req.RedactEnabled
+	}
+	if req.RedactFlags != nil {
+		selectFields = append(selectFields, "redact_flags")
+		updates.RedactFlags = model.NormalizeRedactFlags(*req.RedactFlags)
+	}
 	if req.ThinkingToContent != nil {
 		selectFields = append(selectFields, "thinking_to_content")
 		updates.ThinkingToContent = *req.ThinkingToContent
