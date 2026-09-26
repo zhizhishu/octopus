@@ -67,6 +67,15 @@ function RedactGlobalCard() {
                 </div>
             </div>
 
+            <div className="mt-4 rounded-xl border border-border bg-muted/40 p-3.5">
+                <p className="text-xs font-semibold text-foreground">{t('global.scopeTitle')}</p>
+                <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
+                    <li>{t('global.scopeProtected')}</li>
+                    <li>{t('global.scopeUnprotected')}</li>
+                    <li>{t('global.scopeBypass')}</li>
+                </ul>
+            </div>
+
             <div className="mt-5 space-y-4">
                 <div className="flex items-center justify-between gap-4 rounded-xl border border-border bg-background px-4 py-3">
                     <div className="min-w-0">
@@ -133,8 +142,15 @@ function RedactGlobalCard() {
 function RedactChannelCard() {
     const t = useTranslations('redact');
     const { data: channels } = useChannelList();
+    const { data: settings } = useSettingList();
     const updateChannel = useUpdateChannel();
     const [expanded, setExpanded] = useState<number | null>(null);
+
+    const valueOf = (key: string, fallback: string) =>
+        settings?.find((s) => s.key === key)?.value ?? fallback;
+
+    const masterEnabled = valueOf(SettingKey.RedactEnabled, 'false') === 'true';
+    const globalDefaultFlags = normalizeFlags(valueOf(SettingKey.RedactDefaultFlags, 'HPSIBEG'));
 
     const sorted = useMemo(() => {
         if (!channels) return [];
@@ -159,89 +175,134 @@ function RedactChannelCard() {
                 {sorted.length === 0 && (
                     <p className="py-6 text-center text-sm text-muted-foreground">{t('channel.empty')}</p>
                 )}
-                {sorted.map(({ raw }) => (
-                    <div key={raw.id} className="rounded-xl border border-border bg-background">
-                        <div className="flex items-center justify-between gap-3 px-4 py-3">
-                            <button
-                                type="button"
-                                className="flex min-w-0 items-center gap-2 text-left"
-                                onClick={() => setExpanded(expanded === raw.id ? null : raw.id)}
-                            >
-                                <span
-                                    className={cn(
-                                        'h-2 w-2 shrink-0 rounded-full',
-                                        raw.redact_enabled ? 'bg-emerald-500' : 'bg-muted-foreground/30'
-                                    )}
-                                />
-                                <span className="min-w-0 truncate text-sm font-medium text-foreground">
-                                    {raw.name}
-                                </span>
-                                <span className="shrink-0 text-xs text-muted-foreground">#{raw.id}</span>
-                            </button>
-                            <div className="flex shrink-0 items-center gap-2">
-                                {raw.redact_enabled && (
-                                    <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
-                                        {t('channel.active')}
+                {sorted.map(({ raw }) => {
+                    const channelFlags = raw.redact_flags ?? '';
+                    // 空串 = 继承全局默认 (后端语义), 非空 = 该渠道自定义
+                    const inherits = channelFlags === '';
+                    // 实际生效 = 渠道自定义值, 否则全局默认值
+                    const effectiveFlags = inherits ? globalDefaultFlags : channelFlags;
+                    // 三态徽章 (+ 总闸态): 未启用 / 总闸关闭 / 继承默认 / 自定义
+                    const badge = !raw.redact_enabled
+                        ? { text: t('channel.statusDisabled'), cls: 'bg-muted text-muted-foreground' }
+                        : !masterEnabled
+                          ? {
+                                text: t('channel.statusMasterDisabled'),
+                                cls: 'bg-amber-500/10 text-amber-600 dark:text-amber-400',
+                            }
+                          : inherits
+                            ? {
+                                  text: t('channel.statusInherited', { flags: effectiveFlags || '—' }),
+                                  cls: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
+                              }
+                            : {
+                                  text: t('channel.statusCustom'),
+                                  cls: 'bg-sky-500/10 text-sky-600 dark:text-sky-400',
+                              };
+                    const dotCls = !raw.redact_enabled
+                        ? 'bg-muted-foreground/30'
+                        : !masterEnabled
+                          ? 'bg-amber-500'
+                          : 'bg-emerald-500';
+                    return (
+                        <div key={raw.id} className="rounded-xl border border-border bg-background">
+                            <div className="flex items-center justify-between gap-3 px-4 py-3">
+                                <button
+                                    type="button"
+                                    className="flex min-w-0 items-center gap-2 text-left"
+                                    onClick={() => setExpanded(expanded === raw.id ? null : raw.id)}
+                                >
+                                    <span className={cn('h-2 w-2 shrink-0 rounded-full', dotCls)} />
+                                    <span className="min-w-0 truncate text-sm font-medium text-foreground">
+                                        {raw.name}
                                     </span>
-                                )}
-                                <Switch
-                                    checked={raw.redact_enabled}
-                                    onCheckedChange={(v) =>
-                                        updateChannel.mutate({ id: raw.id, redact_enabled: v })
-                                    }
-                                    disabled={updateChannel.isPending}
-                                />
-                            </div>
-                        </div>
-                        {expanded === raw.id && (
-                            <div className="border-t border-border px-4 py-3">
-                                <p className="text-xs text-muted-foreground">{t('channel.flagsHint')}</p>
-                                <div className="mt-2 flex flex-wrap gap-1.5">
-                                    {DETECTORS.map((d) => {
-                                        const channelFlags = raw.redact_flags ?? '';
-                                        // 空串 = 跟随全局默认; 展开时按全局默认点亮
-                                        const effective = channelFlags || 'HPSIBEG';
-                                        const active = effective.includes(d.letter);
-                                        const inherited = channelFlags === '' && active;
-                                        return (
-                                            <button
-                                                key={d.letter}
-                                                type="button"
-                                                title={`${d.name} — ${d.hint}`}
-                                                onClick={() => {
-                                                    const base = channelFlags || 'HPSIBEG';
-                                                    const next = active
-                                                        ? base.split('').filter((c) => c !== d.letter).join('')
-                                                        : normalizeFlags(base + d.letter);
-                                                    updateChannel.mutate({ id: raw.id, redact_flags: next });
-                                                }}
-                                                className={cn(
-                                                    'h-7 rounded-md border px-2.5 text-xs font-medium transition-colors',
-                                                    active
-                                                        ? 'border-primary bg-primary text-primary-foreground'
-                                                        : 'border-border text-muted-foreground hover:bg-muted/70',
-                                                    inherited && 'border-dashed'
-                                                )}
-                                            >
-                                                {d.letter}
-                                                {inherited && <span className="ml-1 opacity-60">·</span>}
-                                            </button>
-                                        );
-                                    })}
-                                    {(raw.redact_flags ?? '') === '' && (
-                                        <button
-                                            type="button"
-                                            onClick={() => updateChannel.mutate({ id: raw.id, redact_flags: 'HPSIBEG' })}
-                                            className="h-7 rounded-md border border-dashed border-border px-2.5 text-xs text-muted-foreground hover:bg-muted/70"
-                                        >
-                                            {t('channel.followDefault')}
-                                        </button>
-                                    )}
+                                    <span className="shrink-0 text-xs text-muted-foreground">#{raw.id}</span>
+                                </button>
+                                <div className="flex shrink-0 items-center gap-2">
+                                    <span
+                                        className={cn(
+                                            'rounded-full px-2 py-0.5 text-[10px] font-medium',
+                                            badge.cls
+                                        )}
+                                    >
+                                        {badge.text}
+                                    </span>
+                                    <Switch
+                                        checked={raw.redact_enabled}
+                                        onCheckedChange={(v) =>
+                                            updateChannel.mutate({ id: raw.id, redact_enabled: v })
+                                        }
+                                        disabled={updateChannel.isPending}
+                                    />
                                 </div>
                             </div>
-                        )}
-                    </div>
-                ))}
+                            {expanded === raw.id && (
+                                <div className="border-t border-border px-4 py-3">
+                                    <p className="text-xs text-muted-foreground">{t('channel.flagsHint')}</p>
+                                    <div className="mt-2 flex flex-wrap gap-1.5">
+                                        {DETECTORS.map((d) => {
+                                            const active = effectiveFlags.includes(d.letter);
+                                            const inheritedActive = inherits && active;
+                                            return (
+                                                <button
+                                                    key={d.letter}
+                                                    type="button"
+                                                    title={`${d.name} — ${d.hint}`}
+                                                    onClick={() => {
+                                                        // 基于实际生效组合计算下一组合并写回渠道值;
+                                                        // 取消全部字母得到空串 = 恢复继承全局默认 (后端语义)。
+                                                        const next = active
+                                                            ? normalizeFlags(
+                                                                  effectiveFlags
+                                                                      .split('')
+                                                                      .filter((c) => c !== d.letter)
+                                                                      .join('')
+                                                              )
+                                                            : normalizeFlags(effectiveFlags + d.letter);
+                                                        updateChannel.mutate({ id: raw.id, redact_flags: next });
+                                                    }}
+                                                    className={cn(
+                                                        'h-7 rounded-md border px-2.5 text-xs font-medium transition-colors',
+                                                        active
+                                                            ? 'border-primary bg-primary text-primary-foreground'
+                                                            : 'border-border text-muted-foreground hover:bg-muted/70',
+                                                        inheritedActive && 'border-dashed'
+                                                    )}
+                                                >
+                                                    {d.letter}
+                                                    {inheritedActive && <span className="ml-1 opacity-60">·</span>}
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                    <p className="mt-2 text-xs text-muted-foreground">
+                                        {t('channel.effective', { flags: effectiveFlags || '—' })}
+                                    </p>
+                                    {inherits ? (
+                                        <p className="mt-1 text-xs text-muted-foreground">
+                                            {t('channel.inheritedNotice', { flags: effectiveFlags || '—' })}
+                                        </p>
+                                    ) : (
+                                        <div className="mt-1 flex flex-wrap items-center gap-2">
+                                            <p className="text-xs text-muted-foreground">
+                                                {t('channel.customNotice')}
+                                            </p>
+                                            <button
+                                                type="button"
+                                                onClick={() =>
+                                                    updateChannel.mutate({ id: raw.id, redact_flags: '' })
+                                                }
+                                                disabled={updateChannel.isPending}
+                                                className="h-7 rounded-md border border-dashed border-border px-2.5 text-xs text-muted-foreground hover:bg-muted/70"
+                                            >
+                                                {t('channel.restoreInherit')}
+                                            </button>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                    );
+                })}
             </div>
         </div>
     );

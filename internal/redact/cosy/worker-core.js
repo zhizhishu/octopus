@@ -9,6 +9,14 @@
 //   - async/await removed from tokenFor/redactText/redactJson (sole async source was
 //     the SHA-256 call; control flow is otherwise identical).
 //   - ESM exports rewritten to a globalThis.__cosy export object for the goja runtime.
+//   - Protocol-boundary patch (oct-only, not upstream; extractor transform 6): redactJson
+//     returns top-level protocol envelopes verbatim (tools/tool_choice for every protocol;
+//     per-protocol identity/cursor/cache/schema keys incl. anthropic metadata and responses
+//     previous_response_id/prompt_cache_key/prompt_cache_retention/safety_identifier/user/
+//     client_metadata/text, chat functions/prompt_cache_key/prompt_cache_retention/
+//     safety_identifier/user) and treats name/id/url as structural only outside a business
+//     payload (nested tool JSON + anthropic tool_use input), so tool-call business objects
+//     are still scanned.
 const ALL_FLAG_LETTERS = "HPSIBEG";
 const FLAG_NAMES = Object.freeze({
   H: "highEntropy",
@@ -504,13 +512,39 @@ class RedactionContext {
   }
 }
 
-const CONTROL_KEYS = new Set(["model","role","type","id","object","status","name","call_id","tool_call_id","finish_reason","stop_reason","media_type","mime_type","encoding","format"]);
-function shouldSkipString(path) {
+// Structural keys: protocol metadata that is never user/model payload, skipped at any position.
+// Envelope keys: structural only outside a business payload (see isBusinessPayload).
+const STRUCTURAL_KEYS = new Set(["model","role","type","object","status","call_id","tool_call_id","finish_reason","stop_reason","media_type","mime_type","encoding","format"]);
+const ENVELOPE_KEYS = new Set(["name","id","url"]);
+// Top-level protocol envelopes (identity / cursor / cache / tool declarations / schema output
+// text). Returned verbatim: they are routing and client-identity metadata, not content.
+// "generic" gets the shared subset only (tools/tool_choice).
+const TOP_LEVEL_SKIP_KEYS = {
+  generic: new Set(["tools","tool_choice"]),
+  openai_chat: new Set(["tools","tool_choice","functions","prompt_cache_key","prompt_cache_retention","safety_identifier","user"]),
+  openai_responses: new Set(["tools","tool_choice","previous_response_id","prompt_cache_key","prompt_cache_retention","safety_identifier","user","client_metadata","text"]),
+  anthropic_messages: new Set(["tools","tool_choice","metadata"]),
+};
+// Business payload = user/tool-supplied content rather than a protocol envelope:
+//   (a) anywhere under a JSON-encoded tool-argument string (path contains "<nested-json>");
+//   (b) under an anthropic tool_use block's input object (root back-lookup, mirrors isRequestModelState).
+function isBusinessPayload(protocol, root, path) {
+  if (path.indexOf("<nested-json>") >= 0) return true;
+  if (protocol === "anthropic_messages" &&
+      path.length >= 5 && path[0] === "messages" && path[2] === "content" && path[4] === "input" &&
+      /^\d+$/.test(path[1]) && /^\d+$/.test(path[3])) {
+    const block = root?.messages?.[Number(path[1])]?.content?.[Number(path[3])];
+    return block?.type === "tool_use";
+  }
+  return false;
+}
+function shouldSkipString(path, businessPayload) {
   const key = path[path.length - 1] || "";
-  if (CONTROL_KEYS.has(key)) return true;
+  if (STRUCTURAL_KEYS.has(key)) return true;
   const p = path.join(".").toLowerCase();
   if (/(?:image_url|input_image|input_audio|audio|file_data|b64_json|source\.data|image\.data)/.test(p)) return true;
-  if (key === "url" || key === "image_url") return true;
+  if (key === "image_url") return true;
+  if (ENVELOPE_KEYS.has(key)) return !businessPayload;
   return false;
 }
 
@@ -542,7 +576,8 @@ function isRequestModelState(protocol, root, path, value) {
 function redactJson(value, ctx, flags, protocol = "generic", path = [], root = value) {
   if (isRequestModelState(protocol, root, path, value)) return value;
   if (typeof value === "string") {
-    if (!shouldSkipString(path) && ctx.parseNestedJson && /^[\s]*[\[{]/.test(value)) {
+    const businessPayload = isBusinessPayload(protocol, root, path);
+    if (!shouldSkipString(path, businessPayload) && ctx.parseNestedJson && /^[\s]*[\[{]/.test(value)) {
       try {
         const nested = JSON.parse(value);
         if (nested && typeof nested === "object") {
@@ -551,7 +586,7 @@ function redactJson(value, ctx, flags, protocol = "generic", path = [], root = v
         }
       } catch { /* Treat non-JSON strings as ordinary text. */ }
     }
-    return shouldSkipString(path) ? value : ctx.redactText(value, flags);
+    return shouldSkipString(path, businessPayload) ? value : ctx.redactText(value, flags);
   }
   if (Array.isArray(value)) {
     const out = [];
@@ -559,8 +594,12 @@ function redactJson(value, ctx, flags, protocol = "generic", path = [], root = v
     return out;
   }
   if (value && typeof value === "object") {
+    const topSkip = path.length === 0 ? TOP_LEVEL_SKIP_KEYS[protocol] : null;
     const out = {};
-    for (const [k,v] of Object.entries(value)) out[k] = redactJson(v, ctx, flags, protocol, path.concat(k), root);
+    for (const [k,v] of Object.entries(value)) {
+      if (topSkip && topSkip.has(k)) { out[k] = v; continue; }
+      out[k] = redactJson(v, ctx, flags, protocol, path.concat(k), root);
+    }
     return out;
   }
   return value;

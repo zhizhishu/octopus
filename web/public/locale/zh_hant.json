@@ -989,16 +989,28 @@
             "masterHint": "关闭时所有渠道直通, 不做任何扫描",
             "notice": "提示注入",
             "noticeHint": "在首条用户消息前注入脱敏告知, 让模型知道占位符语义",
-            "defaultFlags": "默认检测器",
-            "defaultFlagsHint": "渠道未定制时使用的检测器组合"
+            "defaultFlags": "預設偵測器",
+            "defaultFlagsHint": "頻道未自訂時使用的偵測器組合",
+            "scopeTitle": "保護範圍與限制",
+            "scopeProtected": "保護範圍：僅限 Chat Completions、Responses、Anthropic Messages 入站協定的文字與工具內容。",
+            "scopeUnprotected": "未保護：圖片/影片生成、音訊、檔案/表單上傳、embedding、raw 端點及 Gemini 原生入口不經脫敏。",
+            "scopeBypass": "聊天附件與身分/快取欄位不做改寫。"
         },
         "channel": {
-            "title": "渠道脱敏开关",
-            "subtitle": "按渠道开启; 展开可定制该渠道的检测器组合",
-            "empty": "还没有渠道",
-            "active": "脱敏中",
-            "flagsHint": "点字母切换该渠道的检测器 (虚线边框 = 继承全局默认)",
-            "followDefault": "跟随全局默认"
+            "title": "頻道脫敏開關",
+            "subtitle": "按頻道開啟; 展開可自訂此頻道的偵測器組合",
+            "empty": "還沒有頻道",
+            "active": "脫敏中",
+            "flagsHint": "點字母切換此頻道的偵測器 (虛線邊框 = 繼承全域預設)",
+            "followDefault": "跟隨全域預設",
+            "statusDisabled": "未啟用",
+            "statusMasterDisabled": "總閘關閉",
+            "statusInherited": "繼承預設 {flags}",
+            "statusCustom": "自訂",
+            "effective": "實際生效：{flags}",
+            "inheritedNotice": "此頻道未自訂偵測器，實際沿用全域預設 {flags}。",
+            "customNotice": "此頻道已自訂偵測器，與全域預設互不影響。",
+            "restoreInherit": "恢復繼承全域預設"
         },
         "test": {
             "title": "脱敏测试",

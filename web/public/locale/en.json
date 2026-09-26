@@ -990,7 +990,11 @@
             "notice": "Notice Injection",
             "noticeHint": "Tell the model about placeholder semantics in the first user message",
             "defaultFlags": "Default Detectors",
-            "defaultFlagsHint": "Detector set used when a channel has no override"
+            "defaultFlagsHint": "Detector set used when a channel has no override",
+            "scopeTitle": "Scope & Limits",
+            "scopeProtected": "Protected: text and tool content from inbound Chat Completions, Responses, and Anthropic Messages protocols only.",
+            "scopeUnprotected": "Not protected: image/video generation, audio, file/form uploads, embeddings, raw endpoints, and native Gemini entrypoints bypass redaction.",
+            "scopeBypass": "Chat attachments and identity/cache fields are not rewritten."
         },
         "channel": {
             "title": "Per-Channel Redaction",
@@ -998,7 +1002,15 @@
             "empty": "No channels yet",
             "active": "redacting",
             "flagsHint": "Click letters to toggle this channel's detectors (dashed border = inherits global default)",
-            "followDefault": "Follow global default"
+            "followDefault": "Follow global default",
+            "statusDisabled": "disabled",
+            "statusMasterDisabled": "master off",
+            "statusInherited": "inherits {flags}",
+            "statusCustom": "custom",
+            "effective": "Effective: {flags}",
+            "inheritedNotice": "No custom detectors on this channel; it uses the global default {flags}.",
+            "customNotice": "This channel uses custom detectors, independent of the global default.",
+            "restoreInherit": "Restore global default"
         },
         "test": {
             "title": "Redaction Test",

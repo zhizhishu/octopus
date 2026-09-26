@@ -181,12 +181,11 @@ type relayRequest struct {
 	// Content-Type: application/json stream.
 	wroteNonStreamJSONKeepalive bool
 
-	// redactSession is the per-request credential-redaction session (CosyRedactGateway
-	// core). Created lazily by redactSessionFor on the first attempt whose channel has
-	// redaction enabled; lives at request level so channel retries reuse the same
-	// placeholder mapping (the model sees consistent placeholders across failover and
-	// the final response restores against the same map). nil = redaction inactive.
-	redactSession *redact.Session
+	// redactRequired pins that this request has been redacted on at least one attempt
+	// (protection sticky). Once true, every later attempt — even on a channel that did
+	// not opt in — must still redact (with the global default flags if the channel has
+	// none) so a protected request is never silently swapped to an unprotected channel.
+	redactRequired bool
 }
 
 // relayAttempt 尝试级上下文
@@ -239,12 +238,15 @@ type relayAttempt struct {
 	// turn is rebuilt-or-loudly-rejected instead of forwarded context-stripped under a 200.
 	responsesDowngradedToChat bool
 
-	// Credential-redaction per-attempt state (see relayRequest.redactSession for the
-	// session itself). redactApplied flips true once an outbound body was actually
-	// rewritten (placeholders exist upstream-side), which gates response restoration —
+	// Credential-redaction per-attempt state. redactSession is THIS attempt's own
+	// redaction session (created lazily by applyInboundRedaction with this channel's
+	// flags); each attempt owns its placeholder mapping so failover/race never shares a
+	// mapping across channels. redactApplied flips true once inbound text was actually
+	// rewritten (placeholders exist client-side), which gates response restoration —
 	// clean traffic never pays restore cost. redactFailed marks fail-closed rejection.
-	// redactSse is the stream restorer (created on first stream event); redactStreamBroken
-	// degrades stream restoration to pass-through after a restorer error.
+	// redactSse is the stream restorer (created on the main goroutine's first restored
+	// event); redactStreamBroken degrades stream restoration to an explicit error.
+	redactSession      *redact.Session
 	redactApplied      bool
 	redactFailed       bool
 	redactSse          *redact.SseRestorer

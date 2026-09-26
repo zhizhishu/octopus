@@ -52,6 +52,75 @@ func (e *Engine) NewSession(flagsRaw, protocol string, notice bool) (*Session, e
 // Count reports how many distinct values this session redacted (audit logging).
 func (s *Session) Count() int { return s.count }
 
+// injectNoticeInputRawScript wraps the raw Responses input ARRAY as {"input": arr},
+// runs the core's notice injection against the openai_responses shape, and returns
+// the (possibly prefixed) array text. "" means "leave the caller's bytes alone"
+// (unparseable input, or not an array) — never a silent rewrite.
+const injectNoticeInputRawScript = `
+(function () {
+	var parsed;
+	try {
+		parsed = JSON.parse(globalThis.__octRawInput);
+	} catch (e) {
+		return "";
+	}
+	if (!Array.isArray(parsed)) return "";
+	var body = { input: parsed };
+	globalThis.__cosy.injectRedactNotice(body, "openai_responses");
+	return JSON.stringify(body.input);
+})()
+`
+
+// InjectNoticeInputRaw prepends the core notice to the first user item of a raw
+// Responses input array. The relay calls this ONLY for inbound sessions whose
+// protocol is not openai_responses (chat/anthropic clients routed to a codex-shaped
+// responses channel, whose input oct synthesized): the core's own RedactJSONBody
+// path injects into body.input only when the SESSION protocol is openai_responses,
+// so such sessions need this explicit carrier. Passing no raw array text, or notice
+// disabled, returns raw unchanged at zero VM cost. The protocol is hardcoded
+// openai_responses because the caller's array IS responses-shaped (codex input
+// items use input_text), independent of the inbound session protocol.
+func (s *Session) InjectNoticeInputRaw(raw []byte) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.vm == nil {
+		return nil, fmt.Errorf("redact: session closed")
+	}
+	if !s.notice || len(raw) == 0 {
+		return raw, nil
+	}
+	if err := s.vm.Set("__octRawInput", s.vm.ToValue(string(raw))); err != nil {
+		return raw, fmt.Errorf("redact: inject notice input raw: %w", err)
+	}
+	out, err := s.vm.RunString(injectNoticeInputRawScript)
+	if err != nil {
+		return raw, fmt.Errorf("redact: inject notice input raw: %w", err)
+	}
+	if res := out.String(); res != "" {
+		return []byte(res), nil
+	}
+	return raw, nil
+}
+
+// NoticeText returns the core's redaction-notice text (REDACT_NOTICE) for callers
+// that must inject the notice outside RedactJSONBody (e.g. bridged continuation
+// histories). Empty string when the session was created without notice.
+func (s *Session) NoticeText() (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.vm == nil {
+		return "", fmt.Errorf("redact: session closed")
+	}
+	if !s.notice {
+		return "", nil
+	}
+	v, err := s.vm.RunString("globalThis.__cosy.REDACT_NOTICE")
+	if err != nil {
+		return "", fmt.Errorf("redact: REDACT_NOTICE: %w", err)
+	}
+	return v.String(), nil
+}
+
 // RedactText scans one plain text value and replaces secrets with placeholders.
 // Exposed for the admin redaction test endpoint; the relay path uses
 // RedactJSONBody. Updates the session count.

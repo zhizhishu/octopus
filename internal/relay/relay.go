@@ -158,8 +158,6 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		}
 	}
 	defer func() {
-		// 凭据脱敏: 请求结束释放 session 的引擎资源 (映射随请求丢弃, Cosy 请求级设计)。
-		req.redactClose()
 		if stopInterventionKeepalive != nil {
 			stopInterventionKeepalive()
 		}
@@ -790,6 +788,8 @@ func (ra *relayAttempt) attempt() attemptResult {
 	recordAttemptProxy(span, ra.channel)
 	finishRuntimeAttempt := balancer.BeginRuntimeAttempt(ra.channel.ID, ra.usedKey.ID, runtimeModel)
 	defer finishRuntimeAttempt()
+	// 凭据脱敏: 每次 attempt 自己的 session (占位符映射随 attempt 丢弃), attempt 返回即释放 VM。
+	defer ra.redactClose()
 
 	// 转发请求
 	statusCode, fwdErr := ra.forward(span)
@@ -1014,6 +1014,14 @@ retryWithAdapter:
 	originalPreviousResponseID := ra.internalRequest.PreviousResponseID
 	originalMessages := append([]model.Message(nil), ra.internalRequest.Messages...)
 	originalResponsesInputRaw := cloneRawJSONMessage(ra.internalRequest.ResponsesInputRaw)
+	// 凭据脱敏（调用端侧模块）: 先于任何上游出站构建, 用当次渠道 flags 扫描客户端
+	// 原样字节 (RawRequest 的副本), 把脱敏后的 Messages/ResponsesInstructions/
+	// ResponsesInputRaw 换回 internalRequest——之后 TransformRequest 构建的出站
+	// body 自然携占位符。session 挂在 attempt 上, 每次尝试独立; 失败即 attempt 显式
+	// 失败 (fail-closed), 绝不裸发原文。
+	if err := ra.applyInboundRedaction(); err != nil {
+		return 0, err
+	}
 	forwardedPreviousResponseID := originalPreviousResponseID
 	if dropResponsesSessionCursor {
 		if originalPreviousResponseID != nil && ra.shouldBridgePlainResponsesCodexHistory() {
@@ -1093,12 +1101,6 @@ retryWithAdapter:
 
 	// 复制请求头
 	ra.copyHeaders(outboundRequest)
-
-	// 凭据脱敏: 出站 body 密钥→占位符。只改 body 文本内容, TLS/header 指纹路径零改动
-	// (claude/codex CLI shape 与普通渠道 UA 全部保持原样); 渠道未开启或全局关闭时为 no-op。
-	if err := ra.applyOutboundRedaction(outboundRequest, redactProtocolFor(ra.channel.Type)); err != nil {
-		return 0, err
-	}
 
 	// 发送请求
 	// keepalive 注入的是 SSE 心跳，只有【下游客户端】收流式时才可注入（否则污染非流式响应）。
@@ -2050,35 +2052,14 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 		readCfg := &sse.ReadConfig{MaxEventSize: maxSSEEventSize}
 		for ev, err := range sse.Read(response.Body, readCfg) {
 			if err != nil {
-				// 凭据脱敏: 上游断流时先把还原缓冲吐净再报错 — 缓冲里的尾部文本
-				// 是真实模型输出, 不该随错误一起丢掉。
-				for _, rev := range splitRestoredEventData(ra.redactFinishSse(), ev.Type) {
-					select {
-					case results <- sseReadResult{eventType: rev.eventType, data: rev.data}:
-					case <-done:
-						return
-					}
-				}
 				select {
 				case results <- sseReadResult{err: err}:
 				case <-done:
 				}
 				return
 			}
-			// 凭据脱敏: 事件过还原过滤器 (0/1/N 个输出; 占位符跨事件切开时缓冲,
-			// 终止/DONE 事件强制 flush)。未脱敏请求 1:1 原样转发, 零额外成本。
-			for _, rev := range ra.redactForwardSseEvents(ev.Type, ev.Data) {
-				select {
-				case results <- sseReadResult{eventType: rev.eventType, data: rev.data}:
-				case <-done:
-					return
-				}
-			}
-		}
-		// 流自然结束: 还原器残留缓冲 flush (上游戛然而止时占位符尾部的兜底)。
-		for _, rev := range splitRestoredEventData(ra.redactFinishSse(), "") {
 			select {
-			case results <- sseReadResult{eventType: rev.eventType, data: rev.data}:
+			case results <- sseReadResult{eventType: ev.Type, data: ev.Data}:
 			case <-done:
 				return
 			}
@@ -2231,6 +2212,24 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 		return nil
 	}
 
+	// 凭据脱敏: 收尾/终止/报错前把客户端格式还原缓冲吐净 — 缓冲里是真实模型输出。
+	flushRedactRestore := func() error {
+		tail, err := ra.redactFlushClientSse()
+		if err != nil {
+			log.Errorf("redact: flush restored stream tail failed: %v", err)
+			return &localRelayError{
+				status:   http.StatusBadGateway,
+				code:     "octopus_upstream_stream_error",
+				strategy: "stream_restore_error;upstream_forwarded=true",
+				message:  fmt.Sprintf("failed to restore stream event: %v", err),
+			}
+		}
+		if len(tail) > 0 {
+			return writeStreamData(tail)
+		}
+		return nil
+	}
+
 	if data, err := ra.streamPreludeData(ctx, outAdapter); err != nil {
 		return err
 	} else if len(data) > 0 {
@@ -2280,6 +2279,9 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 			if err := commitPendingPrelude(); err != nil {
 				return err
 			}
+			if err := flushRedactRestore(); err != nil {
+				return err
+			}
 			if err := writeSynthesizedDone(); err != nil {
 				return err
 			}
@@ -2294,6 +2296,9 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 				// seen): flush any buffered opener so the client still gets a valid —
 				// if empty — turn before we finish.
 				if err := commitPendingPrelude(); err != nil {
+					return err
+				}
+				if err := flushRedactRestore(); err != nil {
 					return err
 				}
 				if !streamDoneSeen && ra.shouldSynthesizeStreamDone() {
@@ -2317,6 +2322,9 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 						if err := commitPendingPrelude(); err != nil {
 							return err
 						}
+						if err := flushRedactRestore(); err != nil {
+							return err
+						}
 						if !streamDoneSeen && ra.shouldSynthesizeStreamDone() {
 							data, err := ra.synthesizeStreamDone(ctx)
 							if err != nil {
@@ -2331,6 +2339,12 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 					return errors.New("upstream stream ended without internal response")
 				}
 				log.Warnf("failed to read event: %v", r.err)
+				// 凭据脱敏: 已提交后报错前先吐还原缓冲, 再走现有带内错误事件机制。
+				if ra.wroteMeaningfulDownstream {
+					if flushErr := flushRedactRestore(); flushErr != nil {
+						log.Errorf("redact: flush before stream error failed: %v", flushErr)
+					}
+				}
 				return fmt.Errorf("failed to read stream event: %w", r.err)
 			}
 			resetDataTimeout()
@@ -2384,6 +2398,21 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 					message:  fmt.Sprintf("failed to transform stream event: %v", err),
 				}
 			}
+			// 凭据脱敏: 在调用端格式产出后、写下游前逐事件还原占位符。占位符跨事件被缓冲时
+			// 本次输出为空 (restore 返回空) → 不写, 待闭合半到达后再吐。
+			if len(data) > 0 {
+				restored, rerr := ra.restoreClientStreamSse(data)
+				if rerr != nil {
+					log.Errorf("redact: client-format stream restore failed: %v", rerr)
+					return &localRelayError{
+						status:   http.StatusBadGateway,
+						code:     "octopus_upstream_stream_error",
+						strategy: "stream_restore_error;upstream_forwarded=true",
+						message:  fmt.Sprintf("failed to restore stream event: %v", rerr),
+					}
+				}
+				data = restored
+			}
 			if len(data) == 0 {
 				if eventClass.isKeepalive(r.eventType) {
 					if writeErr := writeStreamData(ra.streamKeepaliveData()); writeErr != nil {
@@ -2392,6 +2421,9 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 				}
 				if isTerminalEvent && seenMeaningfulChunk {
 					if writeErr := commitPendingPrelude(); writeErr != nil {
+						return writeErr
+					}
+					if writeErr := flushRedactRestore(); writeErr != nil {
 						return writeErr
 					}
 					if writeErr := writeSynthesizedDone(); writeErr != nil {
@@ -2441,6 +2473,9 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 				return err
 			}
 			if streamTerminalSeen() {
+				if err := flushRedactRestore(); err != nil {
+					return err
+				}
 				if err := writeSynthesizedDone(); err != nil {
 					return err
 				}
@@ -2530,33 +2565,14 @@ func (ra *relayAttempt) handleStreamResponseAsNonStream(ctx context.Context, res
 		readCfg := &sse.ReadConfig{MaxEventSize: maxSSEEventSize}
 		for ev, err := range sse.Read(response.Body, readCfg) {
 			if err != nil {
-				// 凭据脱敏: 同 handleStreamResponse — 断流先吐还原缓冲再报错。
-				for _, rev := range splitRestoredEventData(ra.redactFinishSse(), ev.Type) {
-					select {
-					case results <- sseReadResult{data: rev.data}:
-					case <-done:
-						return
-					}
-				}
 				select {
 				case results <- sseReadResult{err: err}:
 				case <-done:
 				}
 				return
 			}
-			// 凭据脱敏: 事件过还原过滤器 (同 handleStreamResponse 的 reader 侧接入)。
-			for _, rev := range ra.redactForwardSseEvents(ev.Type, ev.Data) {
-				select {
-				case results <- sseReadResult{data: rev.data}:
-				case <-done:
-					return
-				}
-			}
-		}
-		// 流自然结束: 还原器残留缓冲 flush。
-		for _, rev := range splitRestoredEventData(ra.redactFinishSse(), "") {
 			select {
-			case results <- sseReadResult{data: rev.data}:
+			case results <- sseReadResult{data: ev.Data}:
 			case <-done:
 				return
 			}
@@ -2798,6 +2814,20 @@ readLoop:
 	if err != nil {
 		return fmt.Errorf("failed to transform forced responses stream: %w", err)
 	}
+	// 凭据脱敏: 聚合出的调用端格式 body 在写下游前一次性还原占位符。还原失败时若
+	// 请求头已由空行 keepalive 提交则走带内错误 (below), 未提交则显式失败可 failover。
+	if ra.redactSession != nil && ra.redactApplied {
+		restored, rerr := ra.redactSession.RestoreJSONBody(inResponse)
+		if rerr != nil {
+			if ra.wroteNonStreamJSONKeepalive {
+				log.Errorf("redact: aggregated inbound response restore failed after keepalive commit: %v", rerr)
+			} else {
+				return fmt.Errorf("redact: restored aggregated inbound response failed: %w", rerr)
+			}
+		} else {
+			inResponse = restored
+		}
+	}
 	ra.wroteMeaningfulDownstream = true
 	if ra.wroteNonStreamJSONKeepalive {
 		// Response head already committed by blank-line keepalives; append the aggregated
@@ -2814,8 +2844,6 @@ readLoop:
 
 func (ra *relayAttempt) handleNonStreamResponseAsStream(ctx context.Context, response *http.Response, outAdapter model.Outbound) error {
 	limitUpstreamResponseBody(response)
-	// 凭据脱敏还原: 占位符→原值(非流式 body 一次性还原)。未脱敏的请求为 no-op。
-	ra.redactRestoreResponseBody(response)
 	internalResponse, err := outAdapter.TransformResponse(ctx, response)
 	if err != nil {
 		log.Warnf("failed to transform fallback non-stream response: %v", err)
@@ -2843,6 +2871,17 @@ func (ra *relayAttempt) handleNonStreamResponseAsStream(ctx context.Context, res
 		if err != nil {
 			log.Warnf("failed to transform fallback stream: %v", err)
 			return fmt.Errorf("failed to transform fallback stream: %w", err)
+		}
+		if len(data) == 0 {
+			continue
+		}
+		// 凭据脱敏: 转换出的调用端 SSE chunk 在写下游前逐事件还原。此路径在写首字前
+		// 已 commit (wroteMeaningfulDownstream=true), 还原失败只能带内报错, 不能 failover。
+		if restored, rerr := ra.restoreClientStreamSse(data); rerr != nil {
+			log.Errorf("redact: fallback stream restore failed: %v", rerr)
+			return fmt.Errorf("redact: fallback stream restore failed: %w", rerr)
+		} else {
+			data = restored
 		}
 		if len(data) == 0 {
 			continue
@@ -3481,8 +3520,6 @@ func (ra *relayAttempt) handleResponse(ctx context.Context, response *http.Respo
 	if err := unwrapResponseEncoding(response); err != nil {
 		return fmt.Errorf("failed to unwrap upstream response encoding: %w", err)
 	}
-	// 凭据脱敏还原: 占位符→原值(非流式 body 一次性还原)。未脱敏的请求为 no-op。
-	ra.redactRestoreResponseBody(response)
 	internalResponse, err := outAdapter.TransformResponse(ctx, response)
 	if err != nil {
 		log.Warnf("failed to transform response: %v", err)
@@ -3499,6 +3536,15 @@ func (ra *relayAttempt) handleResponse(ctx context.Context, response *http.Respo
 	if err != nil {
 		log.Warnf("failed to transform response: %v", err)
 		return fmt.Errorf("failed to transform inbound response: %w", err)
+	}
+	// 凭据脱敏: 调用端格式 body 在写客户端前还原占位符。失败=显式错误(尚未写客户端,
+	// 可 failover), 绝不透传占位符。
+	if ra.redactSession != nil && ra.redactApplied {
+		restored, rerr := ra.redactSession.RestoreJSONBody(inResponse)
+		if rerr != nil {
+			return fmt.Errorf("redact: restored inbound response failed: %w", rerr)
+		}
+		inResponse = restored
 	}
 
 	ra.c.Data(http.StatusOK, "application/json", inResponse)

@@ -990,7 +990,11 @@
             "notice": "提示注入",
             "noticeHint": "在首条用户消息前注入脱敏告知, 让模型知道占位符语义",
             "defaultFlags": "默认检测器",
-            "defaultFlagsHint": "渠道未定制时使用的检测器组合"
+            "defaultFlagsHint": "渠道未定制时使用的检测器组合",
+            "scopeTitle": "保护范围与限制",
+            "scopeProtected": "保护范围：仅 Chat Completions、Responses、Anthropic Messages 入站协议的文字与工具内容。",
+            "scopeUnprotected": "未保护：图片/视频生成、音频、文件/表单上传、embedding、raw 端点及 Gemini 原生入口不经脱敏。",
+            "scopeBypass": "聊天附件与身份/缓存字段不做改写。"
         },
         "channel": {
             "title": "渠道脱敏开关",
@@ -998,7 +1002,15 @@
             "empty": "还没有渠道",
             "active": "脱敏中",
             "flagsHint": "点字母切换该渠道的检测器 (虚线边框 = 继承全局默认)",
-            "followDefault": "跟随全局默认"
+            "followDefault": "跟随全局默认",
+            "statusDisabled": "未启用",
+            "statusMasterDisabled": "总闸关闭",
+            "statusInherited": "继承默认 {flags}",
+            "statusCustom": "自定义",
+            "effective": "实际生效：{flags}",
+            "inheritedNotice": "该渠道未定制检测器，实际沿用全局默认 {flags}。",
+            "customNotice": "该渠道已自定义检测器，与全局默认互不影响。",
+            "restoreInherit": "恢复继承全局默认"
         },
         "test": {
             "title": "脱敏测试",
