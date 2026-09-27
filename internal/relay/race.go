@@ -129,17 +129,20 @@ func prepareRacerAttempt(
 	originalPreviousResponseID := ra.internalRequest.PreviousResponseID
 	originalMessages := append([]model.Message(nil), ra.internalRequest.Messages...)
 	originalResponsesInputRaw := cloneRawJSONMessage(ra.internalRequest.ResponsesInputRaw)
+	// Capture the current top-level instructions verbatim (a *string) so the post-transform
+	// rollback restores the pre-redaction form (nil stays nil; "" sentinel stays non-nil).
+	originalResponsesInstructions := ra.internalRequest.ResponsesInstructions
 
-	// 凭据脱敏: 与 forward() 同一契约 — 在出站构建前, 用当次渠道 flags 扫描客户端
-	// 原样字节, 把脱敏后的 message 字段换回 internalRequest。每个 racer 自己的 attempt
-	// 级 session, 失败即 prep 失败 (fail-closed)。
+	ra.prepareResponsesSessionCursor(adapter)
+	ra.prepareResponsesEncryptedContent(adapter)
+
+	// 凭据脱敏: 与 forward() 同一排序契约 — 在所有历史并入点之后、出站构建之前, 用当次渠道
+	// flags 扫描客户端原样字节, 把脱敏后的 message 字段换回 internalRequest。每个 racer
+	// 自己的 attempt 级 session, 失败即 prep 失败 (fail-closed)。
 	if err := ra.applyInboundRedaction(); err != nil {
 		ra.redactClose()
 		return nil, nil, nil, err
 	}
-
-	ra.prepareResponsesSessionCursor(adapter)
-	ra.prepareResponsesEncryptedContent(adapter)
 
 	forceResponsesStreamUpstream := ra.shouldForceOpenAIResponsesStreamUpstream(adapter)
 	forceAnthropicStreamUpstream := ra.shouldForceAnthropicStreamUpstream()
@@ -162,6 +165,7 @@ func prepareRacerAttempt(
 	ra.internalRequest.PreviousResponseID = originalPreviousResponseID
 	ra.internalRequest.Messages = originalMessages
 	ra.internalRequest.ResponsesInputRaw = originalResponsesInputRaw
+	ra.internalRequest.ResponsesInstructions = originalResponsesInstructions
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to create request: %w", err)
 	}

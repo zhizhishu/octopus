@@ -107,6 +107,14 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 	// skips the bridge entirely, and silently forwards only the incremental turn.
 	basePreviousResponseID := internalRequest.PreviousResponseID
 	baseResponsesInputRaw := cloneRawJSONMessage(internalRequest.ResponsesInputRaw)
+	// baseResponsesInstructions is the attempt-start copy of the Responses top-level
+	// instructions. applyInboundRedaction rewrites it to placeholders on the SHARED
+	// internalRequest, so each attempt/key/transient retry must be rebuilt from this
+	// original (pointer kept verbatim: nil stays nil, suppressCodexHoistedContext's
+	// non-nil "" sentinel stays non-nil) — otherwise a failed attempt's placeholder
+	// instructions ride into the next channel's session, whose flags may not cover the
+	// token (audit #5).
+	baseResponsesInstructions := internalRequest.ResponsesInstructions
 
 	// 请求级上下文
 	req := &relayRequest{
@@ -306,6 +314,7 @@ attemptChannels:
 			internalRequest.Messages = append([]model.Message(nil), baseMessages...)
 			internalRequest.PreviousResponseID = basePreviousResponseID
 			internalRequest.ResponsesInputRaw = cloneRawJSONMessage(baseResponsesInputRaw)
+			internalRequest.ResponsesInstructions = baseResponsesInstructions
 			promptSnapshot := applyPromptOverrides(internalRequest, routeResult.AccessPlan, routeResult.AccessRouteRule, channel)
 			if len(promptSnapshot.Sources) > 0 {
 				clearResponsesRawPromptShape(internalRequest)
@@ -315,6 +324,16 @@ attemptChannels:
 			capabilityKey := routingCapabilityKey(internalRequest, channel)
 			log.Infof("request model %s, channel %s entering race mode with %d available keys (delay=%dms, sticky=%t)",
 				requestModel, channel.Name, len(availableKeys), channel.RaceDelayMs, iter.IsSticky())
+
+			// #2: pin request-level protection on the PARENT before any racer starts.
+			// Each racer's `isolatedReq := *req` VALUE-COPIES redactRequired, so a racer's
+			// own applyInboundRedaction never reaches the parent. Pinning here keeps the
+			// parent sticky even when ALL racers fail, so the next (possibly opted-out)
+			// channel's attempt still redacts instead of sending cleartext. The winner
+			// handoff needs no extra plumbing: it reads the parent request's field.
+			if req.redactRequired || (redactGlobalEnabled() && channel.RedactEnabled) {
+				req.redactRequired = true
+			}
 
 			raceStartedAt := time.Now()
 			requestState.startRound(channel.Name, item.ModelName)
@@ -384,6 +403,7 @@ attemptChannels:
 			internalRequest.Messages = append([]model.Message(nil), baseMessages...)
 			internalRequest.PreviousResponseID = basePreviousResponseID
 			internalRequest.ResponsesInputRaw = cloneRawJSONMessage(baseResponsesInputRaw)
+			internalRequest.ResponsesInstructions = baseResponsesInstructions
 			promptSnapshot := applyPromptOverrides(internalRequest, routeResult.AccessPlan, routeResult.AccessRouteRule, channel)
 			if len(promptSnapshot.Sources) > 0 {
 				clearResponsesRawPromptShape(internalRequest)
@@ -453,6 +473,7 @@ attemptChannels:
 				internalRequest.Messages = append([]model.Message(nil), baseMessages...)
 				internalRequest.PreviousResponseID = basePreviousResponseID
 				internalRequest.ResponsesInputRaw = cloneRawJSONMessage(baseResponsesInputRaw)
+				internalRequest.ResponsesInstructions = baseResponsesInstructions
 				if snap := applyPromptOverrides(internalRequest, routeResult.AccessPlan, routeResult.AccessRouteRule, channel); len(snap.Sources) > 0 {
 					clearResponsesRawPromptShape(internalRequest)
 				}
@@ -652,6 +673,7 @@ attemptChannels:
 						internalRequest.Messages = append([]model.Message(nil), baseMessages...)
 						internalRequest.PreviousResponseID = basePreviousResponseID
 						internalRequest.ResponsesInputRaw = cloneRawJSONMessage(baseResponsesInputRaw)
+						internalRequest.ResponsesInstructions = baseResponsesInstructions
 						goto runIterator
 					}
 					// If the chosen channel had 0 items, remain in intervention loop
@@ -684,6 +706,7 @@ attemptChannels:
 					internalRequest.Messages = append([]model.Message(nil), baseMessages...)
 					internalRequest.PreviousResponseID = basePreviousResponseID
 					internalRequest.ResponsesInputRaw = cloneRawJSONMessage(baseResponsesInputRaw)
+					internalRequest.ResponsesInstructions = baseResponsesInstructions
 					_ = intervention.UpdateAttempts(pendingInterventionID, allAttempts, lastErrStr)
 					goto runIterator
 				}
@@ -1014,14 +1037,11 @@ retryWithAdapter:
 	originalPreviousResponseID := ra.internalRequest.PreviousResponseID
 	originalMessages := append([]model.Message(nil), ra.internalRequest.Messages...)
 	originalResponsesInputRaw := cloneRawJSONMessage(ra.internalRequest.ResponsesInputRaw)
-	// 凭据脱敏（调用端侧模块）: 先于任何上游出站构建, 用当次渠道 flags 扫描客户端
-	// 原样字节 (RawRequest 的副本), 把脱敏后的 Messages/ResponsesInstructions/
-	// ResponsesInputRaw 换回 internalRequest——之后 TransformRequest 构建的出站
-	// body 自然携占位符。session 挂在 attempt 上, 每次尝试独立; 失败即 attempt 显式
-	// 失败 (fail-closed), 绝不裸发原文。
-	if err := ra.applyInboundRedaction(); err != nil {
-		return 0, err
-	}
+	// Capture the current top-level instructions verbatim (a *string): nil stays nil and
+	// suppressCodexHoistedContext's non-nil "" sentinel stays non-nil. Rolled back after
+	// TransformRequest like the other originals, so a goto re-entry and the next attempt
+	// both rebuild from the ORIGINAL instructions rather than a prior pass's placeholders.
+	originalResponsesInstructions := ra.internalRequest.ResponsesInstructions
 	forwardedPreviousResponseID := originalPreviousResponseID
 	if dropResponsesSessionCursor {
 		if originalPreviousResponseID != nil && ra.shouldBridgePlainResponsesCodexHistory() {
@@ -1037,6 +1057,16 @@ retryWithAdapter:
 		stripResponsesEncryptedContent(ra.internalRequest)
 	} else {
 		ra.prepareResponsesEncryptedContent(outAdapter)
+	}
+	// 凭据脱敏（调用端侧模块）: 排序契约 — 必须在【所有历史并入点】（applyTransformOptions 的
+	// chat/Anthropic 桥、dropResponsesSessionCursor 分支的 Codex 桥、prepareResponsesSessionCursor
+	// 的 chat-sourced 游标 graft、以及上面的 encrypted-content 处理）之后、出站 TransformRequest
+	// 之前调用，用当次渠道 flags 扫描客户端原样字节 (RawRequest)，把 Messages/ResponsesInstructions/
+	// ResponsesInputRaw 换成占位符——这样并入的历史文字也一并被扫，且之后的 TransformRequest
+	// 构建出的 body 自然携占位符。session 挂在 attempt 上, 每次尝试独立; 失败即 attempt 显式
+	// 失败 (fail-closed), 绝不裸发原文。
+	if err := ra.applyInboundRedaction(); err != nil {
+		return 0, err
 	}
 	forceResponsesStreamUpstream := ra.shouldForceOpenAIResponsesStreamUpstream(outAdapter) && !forceNonStreamUpstream
 	forceAnthropicStreamUpstream := ra.shouldForceAnthropicStreamUpstream() && !forceNonStreamUpstream
@@ -1079,6 +1109,7 @@ retryWithAdapter:
 	ra.internalRequest.PreviousResponseID = originalPreviousResponseID
 	ra.internalRequest.Messages = originalMessages
 	ra.internalRequest.ResponsesInputRaw = originalResponsesInputRaw
+	ra.internalRequest.ResponsesInstructions = originalResponsesInstructions
 	if err != nil {
 		log.Warnf("failed to create request: %v", err)
 		return 0, fmt.Errorf("failed to create request: %w", err)
@@ -3558,6 +3589,10 @@ func (ra *relayAttempt) collectResponse() {
 		return
 	}
 
+	// 凭据脱敏 (#6): 先把从 adapter 取回的 internal response 的受支持文字还原为原文，再交给
+	// metrics 与存档——这样 metrics 与本次保存的助手历史看到的内容与客户端实际收到的还原
+	// 原文一致，不会把占位符存进 transcript（后续独立会话无该 token 映射会形成还原缺口）。
+	internalResponse = ra.restoreInternalResponseTexts(internalResponse)
 	ra.metrics.SetInternalResponse(internalResponse, ra.internalRequest.Model)
 	ra.recordResponsesSessionFromInbound(internalResponse)
 }

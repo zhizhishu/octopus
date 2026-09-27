@@ -100,15 +100,26 @@ func inboundRedactProtocol(t inbound.InboundType) string {
 }
 
 // inboundRedactActive reports whether this attempt should redact the inbound
-// client text: global master switch ON, the request client-format is one of the
-// covered protocols, the attempt channel opted in (or a prior attempt already
-// demanded protection — redactRequired), and the request is not an embedding or a
-// media-generation bridge (image/video paths stay untouched this round).
+// client text. Order matters (defect #7): the request-level STICKY flag is checked
+// FIRST, then the global master switch, then the channel opt-in. A request that has
+// already pinned protection (redactRequired) keeps it for the REST of the request
+// even if the global master switch is flipped off mid-request — the switch only
+// governs NEW requests. The request client-format must be one of the covered
+// protocols and the request must not be an embedding or a media-generation bridge
+// (image/video paths stay untouched this round). A nil channel is always inactive.
 func (ra *relayAttempt) inboundRedactActive() bool {
-	if !redactGlobalEnabled() || ra.channel == nil {
+	if ra == nil || ra.channel == nil {
 		return false
 	}
-	if ra.channel.RedactEnabled || ra.redactRequired {
+	// Sticky first: once this request demanded protection, a mid-request master-switch
+	// change must not cancel it for later attempts (see applyInboundRedaction).
+	if ra.redactRequired {
+		return ra.inboundRedactCovered() && !ra.inboundRedactExcludedRequest()
+	}
+	if !redactGlobalEnabled() {
+		return false
+	}
+	if ra.channel.RedactEnabled {
 		return ra.inboundRedactCovered() && !ra.inboundRedactExcludedRequest()
 	}
 	return false
@@ -146,9 +157,12 @@ func (ra *relayAttempt) inboundRedactExcludedRequest() bool {
 // applyTransformOptions runs BEFORE this point (history bridge,
 // suppressCodexHoistedContext, synthesizeCodexResponsesInputRaw), and the
 // per-field pass redacts the CURRENT field values, so oct's shape decisions stand
-// byte-for-byte apart from the placeholder text. It runs inside the
-// retryWithAdapter block, after the originalXxx captures so the originals stay
-// available for restore-log/next-attempt, and before prepareResponsesSessionCursor.
+// byte-for-byte apart from the placeholder text. ORDERING CONTRACT for the caller:
+// it must be invoked inside the retryWithAdapter block, after the originalXxx
+// captures (so the originals stay available for restore-log/next-attempt) and after
+// ALL history-merge points (prepareResponsesSessionCursor /
+// prepareResponsesEncryptedContent), but BEFORE TransformRequest builds the outbound
+// body — so the finally-merged history text is covered by the scan.
 // Fail-closed: any engine/session/scan/field failure rejects the attempt rather
 // than sending the original text unprotected. Returns nil when redaction is
 // inactive for this attempt (pure no-op).
@@ -156,6 +170,14 @@ func (ra *relayAttempt) applyInboundRedaction() error {
 	if !ra.inboundRedactActive() || ra.redactFailed {
 		return nil
 	}
+	// Defect #1: pin the request-level protection demand BEFORE any fallible
+	// engine/session/scan work. If that work then fails, THIS attempt still fails
+	// closed (returns the error below), and every later attempt — even on a channel
+	// that did not opt in — re-enters redaction (via inboundRedactActive's sticky
+	// check) and also fails closed instead of shipping the raw text. Placed after the
+	// active check (nothing to protect when inactive) and before the empty-RawRequest
+	// no-op so even a no-op active attempt pins.
+	ra.redactRequired = true
 	if ra.internalRequest == nil || len(ra.internalRequest.RawRequest) == 0 {
 		return nil
 	}
@@ -188,11 +210,14 @@ func (ra *relayAttempt) applyInboundRedaction() error {
 		return fmt.Errorf("redact: inbound scan failed, request rejected to avoid leaking secrets: %w", err)
 	}
 	// Fast path: nothing sensitive in the client bytes AND no notice to inject ->
-	// keep the shaped fields untouched. A bridged continuation is exempt: the
-	// rebuilt prior-turn history lives only in Messages (the bytes scanned above are
-	// the CLIENT's current turn), so this count cannot see bridged-history
-	// credentials — the text pass below must run before this attempt is a no-op.
-	if s.Count() == 0 && !redactNoticeEnabled() && !ra.chatHistoryRebuilt {
+	// keep the shaped fields untouched. A bridged continuation is exempt: any history
+	// bridge (chat rebuild, plain-responses Codex history, chat-sourced responses
+	// cursor graft) merges a PRIOR turn's text into Messages, and those merged bytes
+	// are invisible to the client-bytes scan above (the scanned bytes are the CLIENT's
+	// current turn), so this count cannot see bridged-history credentials — the text
+	// pass below must run before this attempt is a no-op. historyBridged is the union
+	// of every bridge point (chatHistoryRebuilt is a subset of it).
+	if s.Count() == 0 && !redactNoticeEnabled() && !ra.historyBridged {
 		return nil
 	}
 
@@ -290,16 +315,17 @@ func (ra *relayAttempt) applyInboundRedaction() error {
 		ra.internalRequest.ResponsesInputRaw = inputRaw
 	}
 	ra.redactApplied = true
-	// A protection-demanding attempt pins the request redaction sticky so a later
-	// attempt on an opted-out channel still redacts (never silently swap to an
-	// unprotected channel).
+	// The request-level protection demand was already pinned at the top of this
+	// function, before any fallible work; this assignment is idempotent (kept so the
+	// successful-redaction path still self-documents the sticky guarantee).
 	ra.redactRequired = true
 	return nil
 }
 
 // redactMessagesText returns a DEEP COPY of msgs with every text-bearing field
-// scanned through s.RedactText — message string content, content-part text, and
-// tool-call arguments (both internal ToolCalls[] and the deprecated FunctionCall) —
+// scanned — message string content and content-part text through s.RedactText, and
+// tool-call arguments (both internal ToolCalls[] and the deprecated FunctionCall)
+// through the JSON-aware s.RedactJSONText —
 // and, when the session was created with notice enabled, the core redaction notice
 // prepended to the FIRST user message. It is the per-field counterpart of the
 // core's body scan (RedactJSONBody), applied directly to the in-memory Messages
@@ -346,12 +372,18 @@ func redactMessagesText(s *redact.Session, msgs []model.Message) ([]model.Messag
 			}
 			msg.Content.MultipleContent = newParts
 		}
-		// Tool-call arguments (the model's function-call payload carries real text).
+		// Tool-call arguments. These are (usually) a JSON arguments object, so they go
+		// through the JSON-aware RedactJSONText (the same core redactJson walker a full
+		// body scan uses): string leaves are redacted while numeric values and object
+		// keys are preserved exactly as the core leaves them (a plain RedactText would
+		// corrupt {"phone":13800138000} into invalid JSON and rewrite email-shaped JSON
+		// keys). A freeform/custom-tool payload that is not JSON falls back to
+		// RedactText inside RedactJSONText (mirroring the core's own nested-string catch).
 		if len(src.ToolCalls) > 0 {
 			newCalls := make([]model.ToolCall, 0, len(src.ToolCalls))
 			for _, tc := range src.ToolCalls {
 				call := tc
-				redacted, perr := s.RedactText(tc.Function.Arguments)
+				redacted, perr := s.RedactJSONText(tc.Function.Arguments)
 				if perr != nil {
 					return nil, perr
 				}
@@ -362,7 +394,7 @@ func redactMessagesText(s *redact.Session, msgs []model.Message) ([]model.Messag
 		}
 		if src.FunctionCall != nil {
 			fc := *src.FunctionCall
-			redacted, perr := s.RedactText(fc.Arguments)
+			redacted, perr := s.RedactJSONText(fc.Arguments)
 			if perr != nil {
 				return nil, perr
 			}
@@ -407,6 +439,86 @@ func prependRedactNotice(content model.MessageContent, notice string) model.Mess
 	only := notice
 	content.Content = &only
 	return content
+}
+
+// restoreResponseTextOrSame restores placeholders in one response-side text value via
+// the LIVE attempt session. On error it returns the ORIGINAL value: this is a
+// deliberate degradation — the helper's contract (restoreInternalResponseTexts) has no
+// error return, so a broken session leaves the placeholder in the stored
+// metrics/transcript rather than blanking the text. The client-facing restore path is
+// unaffected: it runs earlier, over the client-format bytes, and surfaces its own
+// error there.
+func (ra *relayAttempt) restoreResponseTextOrSame(v string) string {
+	if v == "" {
+		return v
+	}
+	out, err := ra.redactSession.RestoreText(v)
+	if err != nil {
+		return v
+	}
+	return out
+}
+
+// restoreInternalResponseTexts returns a COPY of resp with the four SUPPORTED text
+// kinds restored from this attempt's live session mapping:
+//   - Choices[].Message.Content.Content
+//   - Choices[].Message.Content.MultipleContent[].Text
+//   - Choices[].Message.ToolCalls[].Function.Arguments
+//   - Choices[].Message.FunctionCall.Arguments
+//
+// It exists so the content handed to metrics and to the stored assistant transcript
+// matches what the client received (relay.go's collectResponse calls it before
+// SetInternalResponse/recordResponsesSessionFromInbound). It NEVER touches reasoning,
+// reasoning signature, images/audio/file parts, or any model-state/attachment field,
+// and it never mutates its input (every touched slice/pointer is re-allocated).
+// No-op (returns resp unchanged) when the session is absent or nothing was applied.
+func (ra *relayAttempt) restoreInternalResponseTexts(resp *model.InternalLLMResponse) *model.InternalLLMResponse {
+	if resp == nil || ra.redactSession == nil || !ra.redactApplied {
+		return resp
+	}
+	out := *resp
+	if len(resp.Choices) == 0 {
+		return &out
+	}
+	choices := make([]model.Choice, len(resp.Choices))
+	copy(choices, resp.Choices)
+	for i := range choices {
+		if choices[i].Message == nil {
+			continue
+		}
+		msg := *choices[i].Message
+		if msg.Content.Content != nil {
+			restored := ra.restoreResponseTextOrSame(*msg.Content.Content)
+			msg.Content.Content = &restored
+		}
+		if len(msg.Content.MultipleContent) > 0 {
+			parts := make([]model.MessageContentPart, len(msg.Content.MultipleContent))
+			copy(parts, msg.Content.MultipleContent)
+			for j := range parts {
+				if parts[j].Text != nil {
+					restored := ra.restoreResponseTextOrSame(*parts[j].Text)
+					parts[j].Text = &restored
+				}
+			}
+			msg.Content.MultipleContent = parts
+		}
+		if len(msg.ToolCalls) > 0 {
+			calls := make([]model.ToolCall, len(msg.ToolCalls))
+			copy(calls, msg.ToolCalls)
+			for k := range calls {
+				calls[k].Function.Arguments = ra.restoreResponseTextOrSame(calls[k].Function.Arguments)
+			}
+			msg.ToolCalls = calls
+		}
+		if msg.FunctionCall != nil {
+			fc := *msg.FunctionCall
+			fc.Arguments = ra.restoreResponseTextOrSame(fc.Arguments)
+			msg.FunctionCall = &fc
+		}
+		choices[i].Message = &msg
+	}
+	out.Choices = choices
+	return &out
 }
 
 // redactClose releases the attempt's session engine VM when the attempt finishes.

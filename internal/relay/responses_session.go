@@ -840,6 +840,8 @@ func (ra *relayAttempt) rebuildHistoryForChatSourcedPreviousResponseID() bool {
 			stashedPrevID := previousResponseID
 			ra.chatHistoryRebuiltPreviousResponseID = &stashedPrevID
 			ra.chatHistoryRebuilt = true
+			// The grafted prior-turn text must be scanned by the redaction pass.
+			ra.historyBridged = true
 		}
 	}
 	// Always drop the chat-minted cursor: even without a transcript, forwarding it
@@ -987,6 +989,9 @@ func (ra *relayAttempt) bridgeResponsesHistoryForChat() error {
 	stashedPrevID := previousResponseID
 	ra.chatHistoryRebuiltPreviousResponseID = &stashedPrevID
 	ra.chatHistoryRebuilt = true
+	// A prior turn's text is now in Messages (invisible to the client-bytes scan) — mark
+	// the attempt so the redaction fast path never treats this as a clean no-op.
+	ra.historyBridged = true
 	req.PreviousResponseID = nil
 	req.ResponsesInputRaw = nil
 	return nil

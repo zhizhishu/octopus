@@ -355,6 +355,9 @@ func (ra *relayAttempt) applyPlainResponsesCodexHistoryForPreviousResponseID(pre
 	}
 	req.Messages = appendPlainResponsesHistory(history, req.Messages)
 	req.Messages = dropUnpairedToolItems(req.Messages)
+	// A prior turn's text is now in Messages (invisible to the client-bytes scan) — mark
+	// the attempt so the redaction fast path never treats this as a clean no-op.
+	ra.historyBridged = true
 	req.PreviousResponseID = nil
 	req.ResponsesInputRaw = nil
 }

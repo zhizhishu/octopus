@@ -232,6 +232,17 @@ type relayAttempt struct {
 	// conversation-root (prompt-cache anchor) instead of minting a fresh root every turn.
 	chatHistoryRebuiltPreviousResponseID *string
 
+	// historyBridged marks that ANY history bridge (chat rebuild, plain-responses
+	// Codex history, chat-sourced responses cursor graft) merged a PRIOR turn's text
+	// into internalRequest.Messages THIS attempt. Those merged bytes are invisible to
+	// the client-bytes scan (applyInboundRedaction scans RawRequest = the CLIENT's
+	// current turn), so the redaction FAST PATH must not treat a zero client-scan
+	// count as "clean" while historyBridged is set. Set at the bridge call sites and
+	// never cleared: the flag is attempt-scoped and monotonic — a stale-true only
+	// forces an extra (harmless) text pass. chatHistoryRebuilt keeps its own
+	// (narrower) responsibilities.
+	historyBridged bool
+
 	// responsesDowngradedToChat is set when the responses->chat compatibility fallback
 	// swapped the outbound to chat/completions. It lets bridgeResponsesHistoryForChat run on
 	// that downgraded wire (which keeps no server-side response state) so a previous_response_id

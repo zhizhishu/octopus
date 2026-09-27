@@ -1,7 +1,9 @@
 package redact
 
 import (
+	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/dop251/goja"
@@ -165,6 +167,71 @@ func (s *Session) RestoreText(text string) (string, error) {
 		return "", fmt.Errorf("redact: restoreText: %w", err)
 	}
 	return out.String(), nil
+}
+
+// RedactJSONText scans one tool-argument / embedded-JSON string value and replaces
+// sensitive STRING leaves with reversible placeholders, using the SAME core
+// redactJson semantics a full-body scan (RedactJSONBody) applies to a nested JSON
+// string. Empty input and non-JSON input (trimmed first char not '{'/'[', or not
+// valid JSON) fall back to the plain-text RedactText path, mirroring the core's own
+// nested-string catch (worker-core.js redactJson). Numeric values and object keys
+// are left exactly as the core leaves them (never widened). Updates the session
+// count.
+//
+// It reproduces byte-for-byte what the core produces when it encounters this same
+// text as a string value inside a whole body: it walks the parsed value with a
+// synthetic "<nested-json>" path segment, which makes the core treat the object's
+// leaves as business payload (isBusinessPayload) and skip the top-level envelope set
+// (path.length > 0) — the identical decisions the core's nested-json recursion makes.
+func (s *Session) RedactJSONText(text string) (string, error) {
+	if text == "" {
+		return text, nil
+	}
+	trimmed := strings.TrimSpace(text)
+	if len(trimmed) == 0 || (trimmed[0] != '{' && trimmed[0] != '[') || !json.Valid([]byte(text)) {
+		// Not JSON: reduce to the plain-text path. RedactText takes its own lock, so
+		// this branch must run before the lock below.
+		return s.RedactText(text)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.vm == nil {
+		return "", fmt.Errorf("redact: session closed")
+	}
+	parsed, err := s.parseJSON([]byte(text))
+	if err != nil {
+		return "", fmt.Errorf("redact: parse json text: %w", err)
+	}
+	proto, err := s.resolveProtocol(parsed)
+	if err != nil {
+		return "", err
+	}
+	flags, err := s.flagsValue()
+	if err != nil {
+		return "", err
+	}
+	redact, err := s.fn("redactJson")
+	if err != nil {
+		return "", err
+	}
+	// path = ["<nested-json>"] mirrors the core's own nested-json recursion
+	// (worker-core.js:580-587): leaves become business payload and the top-level
+	// envelope skip set is not applied. root = parsed is harmless here — at these
+	// paths isRequestModelState / isBusinessPayload never consult root.
+	pathVal := s.vm.ToValue([]string{"<nested-json>"})
+	out, err := redact(goja.Undefined(), parsed, s.ctx, flags, s.vm.ToValue(proto), pathVal, parsed)
+	if err != nil {
+		return "", fmt.Errorf("redact: redactJson: %w", err)
+	}
+	sizeVal := s.ctx.ToObject(s.vm).Get("rawToToken").ToObject(s.vm).Get("size")
+	if n, ok := sizeVal.Export().(int64); ok {
+		s.count = int(n)
+	}
+	outBytes, err := s.stringifyJSON(out)
+	if err != nil {
+		return "", err
+	}
+	return string(outBytes), nil
 }
 
 // Close returns the VM to the pool. Safe to call multiple times.
