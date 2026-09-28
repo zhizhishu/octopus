@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Check, Copy, Eye, EyeOff, KeyRound, RefreshCw, Trash2 } from 'lucide-react';
+import { Check, Copy, Eye, EyeOff, KeyRound, RefreshCw, Trash2, X } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { useSettingList, useSetSetting, SettingKey } from '@/api/endpoints/setting';
@@ -16,9 +16,37 @@ function generateToken(): string {
     return 'oct_' + Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+// 复制文本：优先 navigator.clipboard（仅安全上下文可用），不可用或失败时退回
+// 隐藏 textarea + execCommand('copy')，保证 http://内网IP 部署也能一键复制。
+async function copyText(value: string): Promise<boolean> {
+    try {
+        if (navigator.clipboard && window.isSecureContext) {
+            await navigator.clipboard.writeText(value);
+            return true;
+        }
+    } catch {
+        // 落到 execCommand 回退
+    }
+    try {
+        const ta = document.createElement('textarea');
+        ta.value = value;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        const ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        return ok;
+    } catch {
+        return false;
+    }
+}
+
 // 专给 AI / 脚本 / CLI 直连后台用的长效管理员令牌。
 // 后端已存令牌时 setting/list 只回 SECRET_MASK（非空），明文不回读；
-// 因此这里“已设置”只做状态提示，复制只在刚生成、内存里还握着明文时有效。
+// 因此“已设置”只做状态提示，明文只在刚生成时经一次性面板展示。
 export function SettingAccessToken() {
     const { data: settings } = useSettingList();
     const setSetting = useSetSetting();
@@ -27,6 +55,9 @@ export function SettingAccessToken() {
     const [reveal, setReveal] = useState(false);
     const [stored, setStored] = useState(false);
     const [dirty, setDirty] = useState(false);
+    // 刚生成的明文：独立于 settings 查询的状态，列表重取/30s 轮询都不会清掉它，
+    // 只有用户关闭面板或清除令牌才消失（后端永不回读明文，这是唯一可见窗口）。
+    const [freshToken, setFreshToken] = useState('');
     const plaintextRef = useRef('');
 
     useEffect(() => {
@@ -50,10 +81,7 @@ export function SettingAccessToken() {
 
     const handleGenerate = () => {
         const next = generateToken();
-        setToken(next);
-        plaintextRef.current = next;
-        setReveal(true);
-        setDirty(false);
+        setFreshToken(next);
         setStored(true);
         persist(next, '已生成并启用，请立刻复制保存');
     };
@@ -72,21 +100,21 @@ export function SettingAccessToken() {
     };
 
     const handleCopy = async () => {
-        const value = plaintextRef.current || token.trim();
+        const value = freshToken || plaintextRef.current || token.trim();
         if (!value) {
             toast.error('明文已隐藏无法回读，请重新生成以获取新令牌');
             return;
         }
-        try {
-            await navigator.clipboard.writeText(value);
+        if (await copyText(value)) {
             toast.success('已复制到剪贴板');
-        } catch {
-            toast.error('复制失败，请手动选中输入框内容');
+        } else {
+            toast.error('复制失败，请点击令牌文本全选后手动复制');
         }
     };
 
     const handleClear = () => {
         setToken('');
+        setFreshToken('');
         plaintextRef.current = '';
         setStored(false);
         setDirty(false);
@@ -152,6 +180,33 @@ export function SettingAccessToken() {
                     )}
                 </div>
             </div>
+
+            {freshToken && (
+                <div className="space-y-2 rounded-2xl border border-emerald-500/40 bg-emerald-500/5 p-3 sm:p-4">
+                    <div className="flex items-center justify-between gap-2">
+                        <p className="text-xs font-medium text-emerald-700 dark:text-emerald-400">
+                            新令牌已生成 —— 仅此一次显示，请立即复制保存
+                        </p>
+                        <button
+                            type="button"
+                            onClick={() => setFreshToken('')}
+                            aria-label="关闭"
+                            className="shrink-0 rounded-md text-muted-foreground hover:text-foreground"
+                        >
+                            <X className="size-4" />
+                        </button>
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <code className="min-w-0 flex-1 break-all rounded-xl bg-background px-3 py-2 font-mono text-sm select-all">
+                            {freshToken}
+                        </code>
+                        <Button type="button" size="sm" onClick={handleCopy} className="h-9 shrink-0 rounded-xl">
+                            <Copy className="size-3.5" />
+                            复制
+                        </Button>
+                    </div>
+                </div>
+            )}
 
             {stored && (
                 <div className="flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400">
