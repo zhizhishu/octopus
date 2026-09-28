@@ -291,6 +291,62 @@ func TestSseRestoreToolArgsJsonEscapedTokenSplit(t *testing.T) {
 	assertPemArgs(t, chatSseArgs(t, got1+got2+tail), pem)
 }
 
+// TestSseRestoreToolArgsJsonEscapedEmptyFirstDelta: OpenAI's name-bearing first
+// tool-call chunk carries arguments:"" — the channel is created on that empty
+// fragment, so the JSON-args marking must re-check on later appends instead of
+// deciding once on the first fragment (a one-shot test on "" would leave the
+// channel unmarked for the whole stream and restore raw, re-breaking the inner
+// JSON).
+func TestSseRestoreToolArgsJsonEscapedEmptyFirstDelta(t *testing.T) {
+	e := newTestEngine(t)
+	s, _ := e.NewSession("G", "openai_chat", false)
+	defer s.Close()
+	token, pem := redactPEM(t, s, "openai_chat")
+	cut := 20
+	start := sseEvent(t, map[string]any{
+		"choices": []any{map[string]any{
+			"index": 0,
+			"delta": map[string]any{
+				"tool_calls": []any{map[string]any{
+					"index": 0,
+					"id":    "call_1",
+					"type":  "function",
+					"function": map[string]any{
+						"name":      "store",
+						"arguments": "",
+					},
+				}},
+			},
+		}},
+	})
+	ev2 := chatArgsDelta(t, `{"pem":"`+token[:cut])
+	ev3 := chatArgsDelta(t, token[cut:]+`"}`)
+	r, err := s.NewSseRestorer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got1, err := r.Ingest(start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got2, err := r.Ingest(ev2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got2 != "" {
+		t.Fatalf("second ingest should buffer the partial placeholder, got %q", got2)
+	}
+	got3, err := r.Ingest(ev3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tail, err := r.Finish()
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertPemArgs(t, chatSseArgs(t, got1+got2+got3+tail), pem)
+}
+
 // TestSseRestoreToolArgsJsonEscapedMidJsonFlush: the placeholder completes while the
 // arguments JSON is still open and the JSON closes in a LATER delta. The channel
 // flushes mid-JSON — the fragment-escaped restore must still keep the reassembled

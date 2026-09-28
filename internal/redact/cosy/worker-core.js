@@ -815,8 +815,15 @@ class SseRestorer {
     const affected=new Set();
     for (const f of fields) {
       const parent=getAt(data,f.path), key=f.path[f.path.length-1], source=parent[key];
-      let ch=this.channels.get(f.channel); if (!ch) this.channels.set(f.channel,ch={text:"",records:[],jsonArgs:isJsonArgsChannel(f.channel)&&/^\s*[\[{]/.test(source)});
-      ch.text += source; ch.records.push({ev,parent,key}); affected.add(f.channel);
+      let ch=this.channels.get(f.channel); if (!ch) this.channels.set(f.channel,ch={text:"",records:[],jsonArgs:false});
+      ch.text += source;
+      // Mark JSON-args channels once the accumulated text starts looking like a JSON
+      // container, re-checked on every append until it sticks: the first fragment is
+      // often empty (OpenAI's name-bearing tool-call chunk carries arguments:""),
+      // and leading whitespace may arrive in its own fragment, so a one-shot test on
+      // the first fragment would leave the channel unmarked for the whole stream.
+      if (!ch.jsonArgs && isJsonArgsChannel(f.channel) && /^\s*[\[{]/.test(ch.text)) ch.jsonArgs = true;
+      ch.records.push({ev,parent,key}); affected.add(f.channel);
     }
     for (const key of affected) this.maybeFlushChannel(key,false);
     return this.drain();
