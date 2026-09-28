@@ -34,11 +34,13 @@ async function copyText(value: string): Promise<boolean> {
         ta.style.position = 'fixed';
         ta.style.opacity = '0';
         document.body.appendChild(ta);
-        ta.focus();
-        ta.select();
-        const ok = document.execCommand('copy');
-        document.body.removeChild(ta);
-        return ok;
+        try {
+            ta.focus();
+            ta.select();
+            return document.execCommand('copy');
+        } finally {
+            document.body.removeChild(ta);
+        }
     } catch {
         return false;
     }
