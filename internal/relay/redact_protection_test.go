@@ -430,6 +430,74 @@ func TestRedactToolArgumentsEndpointEndToEnd(t *testing.T) {
 	}
 }
 
+// TestRestoreInternalResponseTextsArgsJsonEscaped: tool-argument slots in the
+// stored transcript must restore via the JSON-aware path — a multi-line secret is
+// re-embedded ESCAPED so the arguments stay valid inner JSON (metrics/transcript
+// see the same valid JSON the client received, not raw newlines).
+func TestRestoreInternalResponseTextsArgsJsonEscaped(t *testing.T) {
+	setupRedactDB(t)
+
+	engine, err := sharedRedactEngine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := engine.NewSession("G", "openai_chat", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	pem := "-----BEGIN PRIVATE KEY-----\n" +
+		strings.Repeat("MIIEvQIBADANBgkqhkiG9w0BAQEFBAAKCAQEA", 2) +
+		"\n-----END PRIVATE KEY-----"
+	token, err := session.RedactText(pem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !redactTokenRe.MatchString(token) {
+		t.Fatalf("expected a placeholder token, got %q", token)
+	}
+
+	ra := &relayAttempt{redactSession: session, redactApplied: true}
+	fcArgs := `{"pem":"` + token + `"}`
+	in := &model.InternalLLMResponse{
+		ID: "resp-x",
+		Choices: []model.Choice{{
+			Index: 0,
+			Message: &model.Message{
+				Role:         "assistant",
+				ToolCalls:    []model.ToolCall{{ID: "c1", Type: "function", Function: model.FunctionCall{Name: "store", Arguments: fcArgs}}},
+				FunctionCall: &model.FunctionCall{Name: "legacy", Arguments: fcArgs},
+			},
+		}},
+	}
+	out := ra.restoreInternalResponseTexts(in)
+	msg := out.Choices[0].Message
+	for name, args := range map[string]string{
+		"tool_calls":    msg.ToolCalls[0].Function.Arguments,
+		"function_call": msg.FunctionCall.Arguments,
+	} {
+		if !json.Valid([]byte(args)) {
+			t.Fatalf("%s arguments must stay valid inner JSON, got %q", name, args)
+		}
+		var inner struct {
+			Pem string `json:"pem"`
+		}
+		if err := json.Unmarshal([]byte(args), &inner); err != nil {
+			t.Fatalf("%s arguments unmarshal: %v", name, err)
+		}
+		if inner.Pem != pem {
+			t.Fatalf("%s pem round-trip mismatch:\ngot  %q\nwant %q", name, inner.Pem, pem)
+		}
+		if !strings.Contains(args, "\\n") || strings.Contains(args, "\n") {
+			t.Fatalf("%s arguments must carry escaped (not raw) newlines, got %q", name, args)
+		}
+	}
+	// The input must not be mutated.
+	if got := in.Choices[0].Message.ToolCalls[0].Function.Arguments; got != fcArgs {
+		t.Fatalf("input mutated (tool-call arguments): %q", got)
+	}
+}
+
 // TestRestoreInternalResponseTexts covers the #6 restore helper: it returns a copy
 // with the four supported text kinds restored, leaves reasoning/signature drift
 // untouched, never mutates its input, and is an identity no-op when the session is

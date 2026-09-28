@@ -1,5 +1,5 @@
 // Vendored from CassiopeiaCode/CosyRedactGateway worker.js @ 0e2be2e3ba7fcbe982942a941e3a2fd1b89e87f6
-// (Apache-2.0; upstream notice in NOTICE). Extracted 2026-09-25
+// (Apache-2.0; upstream notice in NOTICE). Extracted 2026-09-28
 // by scripts/extract-cosy-core.py — do not hand-edit; re-run the extractor instead.
 // Changes vs upstream (logic-preserving, documented in the extractor):
 //   - HTTP proxy shell removed (routing/CORS/header-filter/fetch handler/ReadableStream
@@ -17,6 +17,14 @@
 //     safety_identifier/user) and treats name/id/url as structural only outside a business
 //     payload (nested tool JSON + anthropic tool_use input), so tool-call business objects
 //     are still scanned.
+//   - Tool-argument restore escaping (oct-only, not upstream; extractor transform 7):
+//     restored raw values are JSON-string-escaped when re-embedded into JSON-string
+//     slots (tool arguments), so the inner JSON the client parses stays valid.
+//     Complete slots are parse-guarded (mirror of the redaction side's nested-JSON
+//     recursion); streamed argument channels are marked by protocol path (chat
+//     function.arguments / responses function_call_arguments.delta / anthropic
+//     partial_json; custom_tool_call_input stays free text) and escape on every
+//     flush so mid-JSON flushes stay correct too.
 const ALL_FLAG_LETTERS = "HPSIBEG";
 const FLAG_NAMES = Object.freeze({
   H: "highEntropy",
@@ -605,8 +613,48 @@ function redactJson(value, ctx, flags, protocol = "generic", path = [], root = v
   return value;
 }
 
+// Tool-argument slots are JSON strings nested inside JSON: restoring a raw value
+// that contains newlines/quotes/backslashes back into such a slot unescaped breaks
+// the inner JSON the client parses. jsonStringEscape escapes only the inserted
+// fragment (the restored raw value); every other byte of the slot is untouched —
+// no re-serialization, so numbers, key order, duplicate keys and pre-existing
+// escapes are preserved exactly.
+function jsonStringEscape(s) {
+  let o = "";
+  for (const ch of s) {
+    const c = ch.codePointAt(0);
+    if (ch === "\"") o += "\\\"";
+    else if (ch === "\\") o += "\\\\";
+    else if (ch === "\n") o += "\\n";
+    else if (ch === "\r") o += "\\r";
+    else if (ch === "\t") o += "\\t";
+    else if (ch === "\b") o += "\\b";
+    else if (ch === "\f") o += "\\f";
+    else if (c < 0x20) o += "\\u" + c.toString(16).padStart(4, "0");
+    else o += ch;
+  }
+  return o;
+}
+// Fragment-escaped token restore: identical to ctx.restoreText except the inserted
+// raw value is JSON-string-escaped first. Used only in slots known to hold JSON.
+function restoreJsonFragments(text, ctx) {
+  return text.replace(TOKEN_RE, (tok) => { const raw = ctx.tokenToRaw.get(tok); return raw === undefined ? tok : jsonStringEscape(raw); });
+}
+// Complete-slot restore with a parse guard mirroring the redaction side's nested-JSON
+// recursion (parseNestedJson + leading '{'/'[' + JSON.parse object): JSON-container
+// strings get fragment-escaped restoration; every other string falls back to plain
+// restoreText, byte-for-byte unchanged.
+function restoreSlotText(text, ctx) {
+  if (text.indexOf(TOKEN_PREFIX) < 0) return ctx.restoreText(text);
+  const t = text.replace(/^\s+/, "");
+  if (t[0] !== "{" && t[0] !== "[") return ctx.restoreText(text);
+  let parsed;
+  try { parsed = JSON.parse(text); } catch { return ctx.restoreText(text); }
+  if (!parsed || typeof parsed !== "object") return ctx.restoreText(text);
+  return restoreJsonFragments(text, ctx);
+}
 function restoreJson(value, ctx) {
-  if (typeof value === "string") return ctx.restoreText(value);
+  if (typeof value === "string") return restoreSlotText(value, ctx);
   if (Array.isArray(value)) return value.map((v) => restoreJson(v, ctx));
   if (value && typeof value === "object") { for (const k of Object.keys(value)) value[k] = restoreJson(value[k], ctx); }
   return value;
@@ -736,12 +784,21 @@ function streamFields(data, eventName="") {
 }
 
 function restoreCompleteStrings(value, ctx, excluded = new Set(), path = []) {
-  if (typeof value === "string") return excluded.has(path.join(".")) ? value : ctx.restoreText(value);
+  if (typeof value === "string") return excluded.has(path.join(".")) ? value : restoreSlotText(value, ctx);
   if (Array.isArray(value)) { for (let i=0;i<value.length;i++) value[i]=restoreCompleteStrings(value[i],ctx,excluded,path.concat(String(i))); return value; }
   if (value && typeof value === "object") { for (const k of Object.keys(value)) value[k]=restoreCompleteStrings(value[k],ctx,excluded,path.concat(k)); }
   return value;
 }
 
+// isJsonArgsChannel reports whether a stream channel carries a protocol-defined JSON
+// tool-argument slot: chat function.arguments, responses function_call_arguments.delta,
+// anthropic partial_json. Custom tool input is free text and must stay byte-identical.
+function isJsonArgsChannel(channel) {
+  if (channel.indexOf("custom_tool_call_input") >= 0) return false;
+  return channel.endsWith("function.arguments") ||
+    channel.indexOf("response.function_call_arguments.delta") >= 0 ||
+    channel.endsWith("partial_json");
+}
 class SseRestorer {
   constructor(ctx) { this.ctx=ctx; this.channels=new Map(); this.queue=[]; }
   ingest(raw) {
@@ -758,7 +815,7 @@ class SseRestorer {
     const affected=new Set();
     for (const f of fields) {
       const parent=getAt(data,f.path), key=f.path[f.path.length-1], source=parent[key];
-      let ch=this.channels.get(f.channel); if (!ch) this.channels.set(f.channel,ch={text:"",records:[]});
+      let ch=this.channels.get(f.channel); if (!ch) this.channels.set(f.channel,ch={text:"",records:[],jsonArgs:isJsonArgsChannel(f.channel)&&/^\s*[\[{]/.test(source)});
       ch.text += source; ch.records.push({ev,parent,key}); affected.add(f.channel);
     }
     for (const key of affected) this.maybeFlushChannel(key,false);
@@ -767,7 +824,7 @@ class SseRestorer {
   maybeFlushChannel(key,force) {
     const ch=this.channels.get(key); if (!ch || !ch.records.length) return;
     if (!force && possibleTokenSuffixLength(ch.text)>0) return;
-    const restored=this.ctx.restoreText(ch.text);
+    const restored=ch.jsonArgs ? restoreJsonFragments(ch.text,this.ctx) : this.ctx.restoreText(ch.text);
     for (const r of ch.records) r.parent[r.key]="";
     const last=ch.records[ch.records.length-1]; last.parent[last.key]=restored;
     for (const r of ch.records) { r.ev.pending--; if (r.ev.pending===0) r.ev.safe=true; }
@@ -807,5 +864,6 @@ globalThis.__cosy = {
   serializeSseEvent: serializeSseEvent,
   streamFields: streamFields,
   restoreCompleteStrings: restoreCompleteStrings,
-  getAt: getAt
+  getAt: getAt,
+  restoreSlotText: restoreSlotText
 };

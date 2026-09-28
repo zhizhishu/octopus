@@ -459,12 +459,30 @@ func (ra *relayAttempt) restoreResponseTextOrSame(v string) string {
 	return out
 }
 
+// restoreResponseJSONTextOrSame is restoreResponseTextOrSame for tool-argument
+// slots: the value is a JSON string nested inside JSON, so the restored raw value
+// must be re-embedded escaped (RestoreJSONText) to keep the inner JSON valid.
+// Non-JSON values fall back to plain RestoreText inside RestoreJSONText; on error
+// the ORIGINAL value is returned — the same deliberate degradation as the plain
+// helper above.
+func (ra *relayAttempt) restoreResponseJSONTextOrSame(v string) string {
+	if v == "" {
+		return v
+	}
+	out, err := ra.redactSession.RestoreJSONText(v)
+	if err != nil {
+		return v
+	}
+	return out
+}
+
 // restoreInternalResponseTexts returns a COPY of resp with the four SUPPORTED text
 // kinds restored from this attempt's live session mapping:
 //   - Choices[].Message.Content.Content
 //   - Choices[].Message.Content.MultipleContent[].Text
-//   - Choices[].Message.ToolCalls[].Function.Arguments
-//   - Choices[].Message.FunctionCall.Arguments
+//   - Choices[].Message.ToolCalls[].Function.Arguments (JSON-aware: restored raw
+//     values are escaped on re-embed so the inner JSON stays valid)
+//   - Choices[].Message.FunctionCall.Arguments (JSON-aware, same as above)
 //
 // It exists so the content handed to metrics and to the stored assistant transcript
 // matches what the client received (relay.go's collectResponse calls it before
@@ -506,13 +524,13 @@ func (ra *relayAttempt) restoreInternalResponseTexts(resp *model.InternalLLMResp
 			calls := make([]model.ToolCall, len(msg.ToolCalls))
 			copy(calls, msg.ToolCalls)
 			for k := range calls {
-				calls[k].Function.Arguments = ra.restoreResponseTextOrSame(calls[k].Function.Arguments)
+				calls[k].Function.Arguments = ra.restoreResponseJSONTextOrSame(calls[k].Function.Arguments)
 			}
 			msg.ToolCalls = calls
 		}
 		if msg.FunctionCall != nil {
 			fc := *msg.FunctionCall
-			fc.Arguments = ra.restoreResponseTextOrSame(fc.Arguments)
+			fc.Arguments = ra.restoreResponseJSONTextOrSame(fc.Arguments)
 			msg.FunctionCall = &fc
 		}
 		choices[i].Message = &msg

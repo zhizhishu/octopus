@@ -169,6 +169,41 @@ func (s *Session) RestoreText(text string) (string, error) {
 	return out.String(), nil
 }
 
+// RestoreJSONText restores placeholders in one tool-argument / embedded-JSON string
+// value. JSON-container strings (trimmed first char '{'/'[' and valid JSON — the
+// mirror of the core's nested-JSON recursion and of RedactJSONText's guard) get
+// fragment-escaped restoration: the raw value is JSON-string-escaped as it is
+// re-embedded, so the inner JSON the client parses stays valid. Non-JSON input
+// falls back to the plain-text RestoreText path, byte-for-byte unchanged.
+func (s *Session) RestoreJSONText(text string) (string, error) {
+	if text == "" {
+		return text, nil
+	}
+	trimmed := strings.TrimSpace(text)
+	if len(trimmed) == 0 || (trimmed[0] != '{' && trimmed[0] != '[') || !json.Valid([]byte(text)) {
+		// Not JSON: reduce to the plain-text path. RestoreText takes its own lock, so
+		// this branch must run before the lock below.
+		return s.RestoreText(text)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.vm == nil {
+		return "", fmt.Errorf("redact: session closed")
+	}
+	if s.count == 0 {
+		return text, nil
+	}
+	restore, err := s.fn("restoreSlotText")
+	if err != nil {
+		return "", err
+	}
+	out, err := restore(goja.Undefined(), s.vm.ToValue(text), s.ctx)
+	if err != nil {
+		return "", fmt.Errorf("redact: restoreSlotText: %w", err)
+	}
+	return out.String(), nil
+}
+
 // RedactJSONText scans one tool-argument / embedded-JSON string value and replaces
 // sensitive STRING leaves with reversible placeholders, using the SAME core
 // redactJson semantics a full-body scan (RedactJSONBody) applies to a nested JSON
