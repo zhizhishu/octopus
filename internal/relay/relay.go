@@ -3541,15 +3541,97 @@ func (ra *relayAttempt) startFirstByteKeepalive(ctx context.Context) func() {
 	}
 }
 
+// responseIsEventStream reports whether the upstream response carries an SSE
+// content-type. Some upstreams (web-chat bridges) ignore "stream": false and reply
+// with text/event-stream anyway; handleResponse hands such responses to the
+// forced-stream aggregation path so a non-stream client still receives one complete
+// JSON response instead of an unmarshal error on the leading 'd' of "data:".
+func responseIsEventStream(response *http.Response) bool {
+	return strings.Contains(strings.ToLower(response.Header.Get("Content-Type")), "text/event-stream")
+}
+
+// peekedBody replays a bufio.Reader that was used to Peek a response body.
+// bufio.Reader.Peek consumes the underlying stream's error state (its readErr is
+// one-shot), so a non-EOF error hit during the peek — e.g. the upstream
+// body-size limit error, whose probe read may also swallow the overflow byte —
+// would otherwise vanish and the body would end in a clean EOF. peekedBody
+// re-injects that error after the replayed bytes are drained.
+type peekedBody struct {
+	br      *bufio.Reader
+	orig    io.Closer
+	pending error
+}
+
+func (p *peekedBody) Read(b []byte) (int, error) {
+	n, err := p.br.Read(b)
+	if n > 0 {
+		if err != nil && !errors.Is(err, io.EOF) && p.pending == nil {
+			p.pending = err
+		}
+		return n, nil
+	}
+	if p.pending != nil && (err == nil || errors.Is(err, io.EOF)) {
+		err = p.pending
+		p.pending = nil
+	}
+	return n, err
+}
+
+func (p *peekedBody) Close() error { return p.orig.Close() }
+
+// responseBodyLooksLikeSSE is the fallback for upstreams that omit (or mislabel)
+// the Content-Type header while still sending SSE: it peeks the first bytes of the
+// (already unwrapped) body and reports whether any physical line in the peek
+// window starts with an SSE field name ("data:"/"event:"). Line-level matching
+// cannot misfire on ordinary JSON: in a valid JSON encoding a physical line never
+// starts with "data:" or "event:", so string values that merely contain those
+// prefixes are not matched. The peek does not consume the body — peeked bytes are
+// replayed via peekedBody, which also preserves any error the peek consumed.
+func responseBodyLooksLikeSSE(response *http.Response) bool {
+	if response == nil || response.Body == nil {
+		return false
+	}
+	br := bufio.NewReaderSize(response.Body, 512)
+	peek, peekErr := br.Peek(512)
+	response.Body = &peekedBody{br: br, orig: response.Body, pending: peekErr}
+	if len(peek) == 0 {
+		return false
+	}
+	for _, line := range bytes.Split(peek, []byte("\n")) {
+		line = bytes.TrimRight(line, "\r")
+		if bytes.HasPrefix(line, []byte("data:")) || bytes.HasPrefix(line, []byte("event:")) {
+			return true
+		}
+	}
+	return false
+}
+
 // handleResponse 处理非流式响应
 func (ra *relayAttempt) handleResponse(ctx context.Context, response *http.Response, outAdapter model.Outbound) error {
 	limitUpstreamResponseBody(response)
+	// SSE self-heal: some upstreams (web-chat bridges) ignore "stream": false and
+	// reply with an SSE body. Detect it by content-type first and hand the untouched
+	// response to the forced-stream aggregation path (it unwraps encoding and guards
+	// non-2xx JSON bodies itself), so the non-stream client still gets one complete
+	// JSON response. Mirrors the stream path's non-SSE content-type guard in the
+	// opposite direction.
+	if responseIsEventStream(response) {
+		return ra.handleStreamResponseAsNonStream(ctx, response, outAdapter)
+	}
 	// Decompress any upstream Content-Encoding before the outbound parses the body. The
 	// claude/anthropic outbound advertises gzip,deflate,br,zstd and the shared transport has
 	// DisableCompression=true, so Go does not auto-decompress here (unlike the streaming path,
 	// which already calls unwrapResponseEncoding). No-ops on identity/absent/unknown encoding.
 	if err := unwrapResponseEncoding(response); err != nil {
 		return fmt.Errorf("failed to unwrap upstream response encoding: %w", err)
+	}
+	// SSE self-heal fallback: a few upstreams omit (or mislabel) the Content-Type
+	// header while still sending SSE; line-level framing detection on the peeked
+	// body prefix. Align the header with the body's real framing so the aggregation
+	// path's content-type guard accepts the handoff.
+	if responseBodyLooksLikeSSE(response) {
+		response.Header.Set("Content-Type", "text/event-stream")
+		return ra.handleStreamResponseAsNonStream(ctx, response, outAdapter)
 	}
 	internalResponse, err := outAdapter.TransformResponse(ctx, response)
 	if err != nil {
