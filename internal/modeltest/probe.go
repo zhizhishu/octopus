@@ -105,9 +105,10 @@ func (s *ProbeSender) Ask(ctx context.Context, ask modelverify.Ask) (modelverify
 
 // probeMessagesFrom 把探针的轮次翻成内部消息形态。
 //
-// 只有 assistant 轮会带签名：那是 harvest 阶段从上游拿到的密文，回放阶段原样还
-// 回去。thinking 文本留空是刻意的——这是上游的既定回放形态，模型解封的是密文
-// 本身，不需要我们提供明文，我们也提供不了。
+// assistant 轮的 Signature 是 harvest 阶段从上游拿到的密文，回放阶段原样还
+// 回去；Thinking 是同块采集的思考正文——出站护栏要求普通签名必须带非空
+// 正文才构造 thinking 块（防上游 400），只回签名不回正文等于没回放。
+// redacted 形态不需要正文（redacted_thinking 块只带 data）。
 func probeMessagesFrom(turns []modelverify.Turn) []transformermodel.Message {
 	out := make([]transformermodel.Message, 0, len(turns))
 	for _, t := range turns {
@@ -115,6 +116,10 @@ func probeMessagesFrom(turns []modelverify.Turn) []transformermodel.Message {
 		if t.Content != "" {
 			content := t.Content
 			msg.Content = transformermodel.MessageContent{Content: &content}
+		}
+		if t.Thinking != "" {
+			thinking := t.Thinking
+			msg.ReasoningContent = &thinking
 		}
 		if t.Signature != "" {
 			sig := t.Signature
@@ -205,8 +210,11 @@ func ProbeResponseFrom(resp *transformermodel.InternalLLMResponse) modelverify.R
 			Prompt:     int(resp.Usage.PromptTokens),
 			Completion: int(resp.Usage.CompletionTokens),
 		}
+		// 在场标记：上游没报思考用量字段时 Reasoning 保持 0，但 Reported=false，
+		// 评分层据此区分「明确为 0」与「没有数据」，不把缺失当异常扣分。
 		if resp.Usage.CompletionTokensDetails != nil {
 			out.Usage.Reasoning = int(resp.Usage.CompletionTokensDetails.ReasoningTokens)
+			out.Usage.ReasoningReported = true
 		}
 		if resp.Usage.PromptTokensDetails != nil {
 			out.Usage.Cached = int(resp.Usage.PromptTokensDetails.CachedTokens)

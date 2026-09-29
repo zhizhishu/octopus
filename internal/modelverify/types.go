@@ -39,6 +39,10 @@ type Turn struct {
 	Role string
 	// Content 该轮的可见文本。
 	Content string
+	// Thinking 该轮 assistant 的思考正文（与 Signature 同块采集）。签名回放
+	// 必须正文+签名成对发回：出站护栏会丢弃无正文的 thinking 块（防上游
+	// 400），只带签名不带正文等于没回放。留空表示该轮没有思考正文。
+	Thinking string
 	// Signature 仅 assistant 轮用到：把 harvest 拿到的签名原样回填。
 	// 对应的 thinking 文本留空是上游的既定做法——模型解封的是密文本身，
 	// 不需要我们提供明文。
@@ -55,6 +59,10 @@ type Usage struct {
 	Completion int
 	Reasoning  int
 	Cached     int
+	// ReasoningReported 区分「上游明确上报思考用量为 0」与「上游没报这个
+	// 字段」：前者是可判定的观测，后者不能当 0 参与评分，否则不报该字段的
+	// 正常渠道会被扣「思考 token 为 0」的分。只影响观测口径，不影响计费字段。
+	ReasoningReported bool
 }
 
 // ToolCall 一次工具调用的归一形态。Args 为参数 JSON 原文（流式增量拼接的结果），

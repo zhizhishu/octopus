@@ -97,6 +97,12 @@ func BuildReport(results []Result, requestedModel string) Report {
 			report.Errors = append(report.Errors, ProbeError{Probe: res.ProbeID, Error: res.Err.Error()})
 			continue
 		}
+		// 自报不适用的探针（如对非 Anthropic 出站问 Claude 签名）既没跑也没
+		// 发现问题：不计 usable——否则一条只剩少数探针真正跑了的审计会显示
+		// 「全部查过没问题」。结果仍保留在 Results 里供展示。
+		if v, ok := res.Data["applicable"].(bool); ok && !v {
+			continue
+		}
 		usable++
 		report.Findings = append(report.Findings, findingsFor(res, report.RequestedModel, report.RequestedFamilies)...)
 	}
@@ -179,20 +185,21 @@ func signatureFindings(res Result, requestedModel string) []Finding {
 		})
 	}
 
-	// 回放解封：最硬的一条。签名被原样透传时，模型能理解「这段推理已经在我上文里」
-	// 并把它复述出来；伪造的签名解封不出内容。
+	// 回放解封：签名已随回放真实发回上游且请求未被拒（被拒会走 Err 通道）。
+	// 但 <cot> 有无不是密码学证据——模型可能只是不守「机械复述」的格式指令。
+	// 拿不到 <cot> 按「证据不足」中危提示，不定罪、不写成已证实的解封失败。
 	replayApplicable, _ := res.Data["replay_applicable"].(bool)
 	unsealed, _ := res.Data["unsealed"].(bool)
 	if replayApplicable && !unsealed {
 		findings = append(findings, Finding{
-			Probe: ProbeSignature, Severity: SeverityHigh, Score: 50,
-			Title: "签名回放无法解封",
+			Probe: ProbeSignature, Severity: SeverityMedium, Score: 25,
+			Title: "签名回放未解封（证据不足）",
 			Evidence: map[string]any{
 				"cot_found":          false,
 				"replay_content_len": intOf(res.Data, "replay_content_len"),
 				"bound_model":        stringOf(res.Data, "bound_model"),
 			},
-			Recommendation: "签名很可能不是上游原文透传。请确认该渠道是否为原生 Anthropic，并人工复核一次。",
+			Recommendation: "签名已发回且请求未被拒，但模型未按指令复述 <cot> 内容。标签有无不构成密码学真伪证据；此条仅为复核提示，不足以单独定论，建议人工抽样确认。",
 		})
 	}
 
@@ -225,7 +232,8 @@ func signatureFindings(res Result, requestedModel string) []Finding {
 		}
 	}
 
-	// thinking_tokens 为 0：请求了思考却没有思考产出。
+	// thinking_tokens 明确上报为 0：请求了思考、上游也报了用量、但思考产出为 0。
+	// （未上报该字段的渠道不会带这个键——缺失是「没有数据」，不是异常，不扣分。）
 	if res.Data["thinking_tokens"] != nil && intOf(res.Data, "thinking_tokens") == 0 {
 		findings = append(findings, Finding{
 			Probe: ProbeSignature, Severity: SeverityLow, Score: 10,

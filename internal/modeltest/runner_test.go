@@ -3,6 +3,7 @@ package modeltest
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -1444,5 +1445,108 @@ func TestTryChannelKeyCooldownPolicy(t *testing.T) {
 				t.Fatalf("expected skipped attempt: %#v", runner.result.Attempts)
 			}
 		})
+	}
+}
+
+// anthropicSSE builds one Anthropic SSE event block.
+func anthropicSSE(t *testing.T, payload string) string {
+	t.Helper()
+	return "event: " + anthropicSSEEventOf(payload) + "\ndata: " + payload
+}
+
+func anthropicSSEEventOf(payload string) string {
+	var probe struct {
+		Type string `json:"type"`
+	}
+	_ = json.Unmarshal([]byte(payload), &probe)
+	return probe.Type
+}
+
+// TestTransformModelTestStreamPreservesSignatureAndFinishReason (C01/C03):
+// 合成 Anthropic SSE（thinking 分片 + signature_delta + 真实 stop 原因）经真实
+// 出站适配器 → 流收集 → ProbeResponseFrom：签名与真实结束原因必须存活到探针。
+// 修复前收集器只累计正文/思考文字，签名被本地丢掉（正常渠道被判「无签名」
+// 高危），结束原因被硬标 stop（截断触发 glitch 早停豁免误判）。
+func TestTransformModelTestStreamPreservesSignatureAndFinishReason(t *testing.T) {
+	adapter := outbound.Get(outbound.OutboundTypeAnthropic)
+	if adapter == nil {
+		t.Fatal("anthropic outbound adapter unavailable")
+	}
+	const sig = "c2lnbmF0dXJlLWJsb2I="
+	events := []string{
+		`{"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"17 * 23"}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"` + sig + `"}}`,
+		`{"type":"content_block_start","index":1,"content_block":{"type":"text"}}`,
+		`{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"391"}}`,
+		`{"type":"message_delta","delta":{"stop_reason":"max_tokens"}}`,
+	}
+	blocks := make([]string, 0, len(events))
+	for _, ev := range events {
+		blocks = append(blocks, anthropicSSE(t, ev))
+	}
+	body := strings.Join(blocks, "\n\n") + "\n\n"
+	resp := &http.Response{
+		Header: http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:   io.NopCloser(strings.NewReader(body)),
+	}
+	parsed, err := transformModelTestStream(context.Background(), adapter, resp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	obs := ProbeResponseFrom(parsed)
+	if obs.Signature != sig {
+		t.Fatalf("signature must survive the stream collector, got %q", obs.Signature)
+	}
+	if obs.ReasoningContent != "17 * 23" {
+		t.Fatalf("reasoning text mismatch: %q", obs.ReasoningContent)
+	}
+	if obs.Content != "391" {
+		t.Fatalf("content mismatch: %q", obs.Content)
+	}
+	// max_tokens 经协议转换成 length：截断必须保持截断，不能硬标 stop。
+	if obs.FinishReason != "length" {
+		t.Fatalf("real finish reason must survive (truncation must not be labeled stop), got %q", obs.FinishReason)
+	}
+}
+
+// TestTransformModelTestStreamMultiSignatureNotBlindlyMerged (C02): 多个 thinking
+// 块各带签名时，拼接后的 reasoning 无法与任一签名无损关联——不带签名，让探针
+// 按「无签名」如实处理，而不是挑一个冒充。
+func TestTransformModelTestStreamMultiSignatureNotBlindlyMerged(t *testing.T) {
+	adapter := outbound.Get(outbound.OutboundTypeAnthropic)
+	if adapter == nil {
+		t.Fatal("anthropic outbound adapter unavailable")
+	}
+	events := []string{
+		`{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"part one"}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"c2lnMQ=="}}`,
+		`{"type":"content_block_delta","index":1,"delta":{"type":"thinking_delta","thinking":"part two"}}`,
+		`{"type":"content_block_delta","index":1,"delta":{"type":"signature_delta","signature":"c2lnMg=="}}`,
+		`{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"done"}}`,
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn"}}`,
+	}
+	blocks := make([]string, 0, len(events))
+	for _, ev := range events {
+		blocks = append(blocks, anthropicSSE(t, ev))
+	}
+	body := strings.Join(blocks, "\n\n") + "\n\n"
+	resp := &http.Response{
+		Header: http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:   io.NopCloser(strings.NewReader(body)),
+	}
+	parsed, err := transformModelTestStream(context.Background(), adapter, resp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	obs := ProbeResponseFrom(parsed)
+	if obs.Signature != "" || obs.RedactedSignature != "" {
+		t.Fatalf("multi-block signatures must not be blindly attached, got %q/%q", obs.Signature, obs.RedactedSignature)
+	}
+	if obs.ReasoningContent != "part onepart two" {
+		t.Fatalf("reasoning text mismatch: %q", obs.ReasoningContent)
+	}
+	if obs.FinishReason != "stop" {
+		t.Fatalf("finish reason mismatch: %q", obs.FinishReason)
 	}
 }

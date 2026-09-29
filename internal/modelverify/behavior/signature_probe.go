@@ -109,7 +109,9 @@ func runSignature(ctx context.Context, s modelverify.Sender) Result {
 		// 人工复核。这里如实记录采集结果的形状。
 		res.Data["signature_present"] = false
 		res.Data["finish_reason"] = harvest.FinishReason
-		res.Data["thinking_tokens"] = harvest.Usage.Reasoning
+		if harvest.Usage.ReasoningReported {
+			res.Data["thinking_tokens"] = harvest.Usage.Reasoning
+		}
 		res.Data["content_len"] = len(harvest.Content)
 		res.Data["applicable"] = true
 		res.OK = false
@@ -135,19 +137,36 @@ func runSignature(ctx context.Context, s modelverify.Sender) Result {
 	if info.Reason != "" {
 		res.Data["structure_reason"] = info.Reason
 	}
-	res.Data["thinking_tokens"] = harvest.Usage.Reasoning
+	if harvest.Usage.ReasoningReported {
+		res.Data["thinking_tokens"] = harvest.Usage.Reasoning
+	}
 	res.Data["finish_reason"] = harvest.FinishReason
 	res.Data["harvest_prompt_tokens"] = harvest.Usage.Prompt
 	res.Data["harvest_completion_tokens"] = harvest.Usage.Completion
 
 	// ---- replay ----
 	//
-	// assistant 轮里 thinking 文本留空、只带签名，是上游的既定回放形态：
-	// 服务端解封的是密文本身，不需要我们提供明文（我们也提供不了）。
+	// 普通签名的回放必须正文+签名成对发回：出站护栏会丢弃无正文的 thinking
+	// 块（防上游 400，见 transformer 的 leadingReasoningBlock），只回签名不回
+	// 正文等于没回放。harvest 的思考正文与签名同块采集，原样配对还回去——
+	// 这也是参考实现的既定回放形态（原 thinking 块 + 文本）。
+	replayText := strings.TrimSpace(harvest.ReasoningContent)
+	if !usedRedacted && replayText == "" {
+		// 没有同块正文就无法构成合法、无损的回放。按「证据不足」明确记
+		// 进 Errors 通道：不发伪造/不完整的回放，不扣解封失败的分，也不把
+		// 这次算成有效验真。
+		res.Err = fmt.Errorf("签名缺少同块思考正文，无法构成合法无损回放（证据不足）")
+		return res
+	}
+	// assistant 轮里 thinking 文本留空、只带签名，是 redacted 形态的既定回放
+	// 形态：服务端解封的是密文本身，不需要我们提供明文（我们也提供不了）。
 	replay, err := s.Ask(ctx, modelverify.Ask{
 		MaxTokens: intPtr(signatureBudget),
+		// 回放的会话里带着 thinking 块，真实客户端在这种续轮上保持思考开启；
+		// 也避免「思考关闭却携带 thinking 块」的形态冲突。
+		Thinking: true,
 		Turns: []modelverify.Turn{
-			{Role: "assistant", Content: "Done.", Signature: sig, Redacted: usedRedacted},
+			{Role: "assistant", Content: "Done.", Thinking: replayText, Signature: sig, Redacted: usedRedacted},
 			{Role: "user", Content: signatureReplayPrompt},
 		},
 	})
@@ -185,13 +204,16 @@ func extractCOT(text string) string {
 
 // matchSuspect 在文本里找替身痕迹词，返回命中的词（去重、保持词表顺序）。
 //
-// 统一小写后做子串匹配：模型复述时大小写不稳定（"Bedrock" / "bedrock"），
-// 而这里的词都是专有名词，不存在因为大小写不敏感而误伤的常见词。
+// 统一小写后按整词边界匹配：裸子串匹配会把普通英文词里的片段当平台痕迹
+// （"draws"/"flaws" 含 "aws" 即命中，实测误报来源），而这里的词都是专有
+// 名词，整词命中才构成线索；大小写不敏感保持不变（模型复述时
+// "Bedrock"/"bedrock" 不稳定）。命中仍是文本线索，不等于已证明平台来源。
 func matchSuspect(keywords []string, text string) []string {
 	lower := strings.ToLower(text)
 	var hits []string
 	for _, kw := range keywords {
-		if strings.Contains(lower, kw) {
+		pat := regexp.MustCompile(`\b` + regexp.QuoteMeta(kw) + `\b`)
+		if pat.MatchString(lower) {
 			hits = append(hits, kw)
 		}
 	}

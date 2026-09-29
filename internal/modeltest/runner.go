@@ -1423,6 +1423,14 @@ func transformModelTestStream(ctx context.Context, adapter transformermodel.Outb
 	var text strings.Builder
 	var reasoning strings.Builder
 	var usage *transformermodel.Usage
+	// 签名与结束原因按「最后见到」收集：流式适配器把每个 thinking 块的签名作为
+	// 一整段放在 Delta.ReasoningSignature（Anthropic signature_delta / redacted
+	// 标记 / 其它 provider 密文标签都走这条通道），把真实 stop 原因放在终块
+	// FinishReason。合成消息必须携带真实值——否则截断会被硬标成 stop 触发早停
+	// 豁免误判，有签名的上游会被本地丢字段成「无签名」。
+	signatureSeen := 0
+	lastSignature := ""
+	finishReason := ""
 	readCfg := &sse.ReadConfig{MaxEventSize: 1024 * 1024}
 	for ev, err := range sse.Read(response.Body, readCfg) {
 		if err != nil {
@@ -1455,6 +1463,10 @@ func transformModelTestStream(ctx context.Context, adapter transformermodel.Outb
 				if rc := choice.Message.GetReasoningContent(); rc != "" {
 					reasoning.WriteString(rc)
 				}
+				if choice.Message.ReasoningSignature != nil && *choice.Message.ReasoningSignature != "" {
+					signatureSeen++
+					lastSignature = *choice.Message.ReasoningSignature
+				}
 			}
 			if choice.Delta != nil {
 				if content := messageText(choice.Delta); content != "" {
@@ -1463,6 +1475,13 @@ func transformModelTestStream(ctx context.Context, adapter transformermodel.Outb
 				if rc := choice.Delta.GetReasoningContent(); rc != "" {
 					reasoning.WriteString(rc)
 				}
+				if choice.Delta.ReasoningSignature != nil && *choice.Delta.ReasoningSignature != "" {
+					signatureSeen++
+					lastSignature = *choice.Delta.ReasoningSignature
+				}
+			}
+			if choice.FinishReason != nil && *choice.FinishReason != "" {
+				finishReason = *choice.FinishReason
 			}
 		}
 		if modelTestStreamTerminalEvent(ev.Type, ev.Data, streamResp) {
@@ -1494,12 +1513,23 @@ func transformModelTestStream(ctx context.Context, adapter transformermodel.Outb
 	if reasoningContent := strings.TrimSpace(reasoning.String()); reasoningContent != "" {
 		message.SetReasoningContent(reasoningContent)
 	}
-	finishReason := "stop"
+	// 单一签名 = 单个 thinking 块，与拼接后的 reasoning 文本无损对应，可以带。
+	// 多个签名意味着多个 thinking 块，拼接文本无法与任一签名无损关联——不带，
+	// 让探针按「无签名」如实处理，而不是挑一个冒充（不盲拼）。
+	if signatureSeen == 1 {
+		message.ReasoningSignature = &lastSignature
+	}
+	// 真实结束原因；流没给出（如中途断开）就留空，不猜 stop——空值在
+	// glitch 探针里不会触发早停豁免，是保守且诚实的「未知」。
+	var finishReasonPtr *string
+	if finishReason != "" {
+		finishReasonPtr = &finishReason
+	}
 	return &transformermodel.InternalLLMResponse{
 		Choices: []transformermodel.Choice{{
 			Index:        0,
 			Message:      message,
-			FinishReason: &finishReason,
+			FinishReason: finishReasonPtr,
 		}},
 		Usage: usage,
 	}, nil

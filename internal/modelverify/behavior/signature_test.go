@@ -248,8 +248,8 @@ func TestRunSignatureHarvestThenReplay(t *testing.T) {
 			if !ask.Thinking {
 				t.Error("harvest 阶段应请求 extended thinking")
 			}
-			return modelverify.Response{Signature: sig, FinishReason: "end_turn",
-				Usage: modelverify.Usage{Reasoning: 120}}, nil
+			return modelverify.Response{Signature: sig, ReasoningContent: "17 * 23 = 391", FinishReason: "end_turn",
+				Usage: modelverify.Usage{Reasoning: 120, ReasoningReported: true}}, nil
 		}
 		return modelverify.Response{
 			Content:      "<cot>17 * 23 = 391</cot>",
@@ -275,6 +275,14 @@ func TestRunSignatureHarvestThenReplay(t *testing.T) {
 	if replayTurns[0].Role != "assistant" || replayTurns[0].Signature != sig {
 		t.Fatalf("第一轮应是带签名的 assistant 轮: %+v", replayTurns[0])
 	}
+	// 回放必须正文+签名成对发回：出站护栏会丢弃无正文的 thinking 块，
+	// 只回签名不回正文等于没回放（F11）。
+	if replayTurns[0].Thinking == "" {
+		t.Fatalf("回放的 assistant 轮应携带同块思考正文: %+v", replayTurns[0])
+	}
+	if !stub.asks[1].Thinking {
+		t.Error("回放轮应保持思考开启（会话里带着 thinking 块）")
+	}
 	if replayTurns[1].Role != "user" {
 		t.Fatalf("第二轮应是 user 轮: %+v", replayTurns[1])
 	}
@@ -293,7 +301,8 @@ func TestRunSignatureDetectsAWSTraces(t *testing.T) {
 	sig := makeSignature("claude-sonnet-4-5", 2, 256, false)
 	stub := &signatureStub{respond: func(call int, _ modelverify.Ask) (modelverify.Response, error) {
 		if call == 1 {
-			return modelverify.Response{Signature: sig, FinishReason: "end_turn"}, nil
+			// 回放需要同块思考正文（F11：只回签名会被出站护栏丢弃）。
+			return modelverify.Response{Signature: sig, ReasoningContent: "17 * 23 = 391", FinishReason: "end_turn"}, nil
 		}
 		return modelverify.Response{
 			Content:      "<cot>I am running on Bedrock via Kiro, the guardrails apply.</cot>",
@@ -330,7 +339,8 @@ func TestRunSignatureDetectsUnsealed(t *testing.T) {
 	sig := makeSignature("claude-sonnet-4-5", 2, 256, false)
 	stub := &signatureStub{respond: func(call int, _ modelverify.Ask) (modelverify.Response, error) {
 		if call == 1 {
-			return modelverify.Response{Signature: sig, FinishReason: "end_turn"}, nil
+			// 回放需要同块思考正文（F11：只回签名会被出站护栏丢弃）。
+			return modelverify.Response{Signature: sig, ReasoningContent: "17 * 23 = 391", FinishReason: "end_turn"}, nil
 		}
 		// 模型没按格式输出 <cot> 段。
 		return modelverify.Response{Content: "I cannot access that.", FinishReason: "end_turn"}, nil
@@ -343,12 +353,17 @@ func TestRunSignatureDetectsUnsealed(t *testing.T) {
 	report := BuildReport([]Result{res}, "claude-sonnet-4-5")
 	found := false
 	for _, f := range report.Findings {
-		if f.Title == "签名回放无法解封" {
+		// <cot> 有无不是密码学证据（C05）：签名已发回且未被拒，只是模型没按
+		// 指令复述——降为「证据不足」的中危提示，不再当已证实的解封失败。
+		if f.Title == "签名回放未解封（证据不足）" {
 			found = true
+			if f.Score != 25 || f.Severity != SeverityMedium {
+				t.Fatalf("应为 25 分中危, 得到 %+v", f)
+			}
 		}
 	}
 	if !found {
-		t.Fatalf("应产出「无法解封」风险项, 得到 %+v", report.Findings)
+		t.Fatalf("应产出「未解封（证据不足）」风险项, 得到 %+v", report.Findings)
 	}
 }
 
@@ -357,7 +372,8 @@ func TestRunSignatureFallsBackToWholeReplyForSuspects(t *testing.T) {
 	sig := makeSignature("claude-sonnet-4-5", 2, 256, false)
 	stub := &signatureStub{respond: func(call int, _ modelverify.Ask) (modelverify.Response, error) {
 		if call == 1 {
-			return modelverify.Response{Signature: sig, FinishReason: "end_turn"}, nil
+			// 回放需要同块思考正文（F11：只回签名会被出站护栏丢弃）。
+			return modelverify.Response{Signature: sig, ReasoningContent: "17 * 23 = 391", FinishReason: "end_turn"}, nil
 		}
 		return modelverify.Response{Content: "Sure, running on bedrock here.", FinishReason: "end_turn"}, nil
 	}}
@@ -458,8 +474,9 @@ func TestSignatureModelMismatchIsWeakSignal(t *testing.T) {
 	sig := makeSignature("claude-haiku-4-5", 2, 256, false)
 	stub := &signatureStub{respond: func(call int, _ modelverify.Ask) (modelverify.Response, error) {
 		if call == 1 {
-			return modelverify.Response{Signature: sig, FinishReason: "end_turn",
-				Usage: modelverify.Usage{Reasoning: 50}}, nil
+			// 回放需要同块思考正文（F11：只回签名会被出站护栏丢弃）。
+			return modelverify.Response{Signature: sig, ReasoningContent: "arithmetic", FinishReason: "end_turn",
+				Usage: modelverify.Usage{Reasoning: 50, ReasoningReported: true}}, nil
 		}
 		return modelverify.Response{Content: "<cot>arithmetic</cot>", FinishReason: "end_turn"}, nil
 	}}
@@ -480,13 +497,15 @@ func TestSignatureModelMismatchIsWeakSignal(t *testing.T) {
 	}
 }
 
-// 请求了思考却零思考产出，记轻微异常。
+// 请求了思考、上游明确上报用量、但思考产出为 0，记轻微异常。
+// （未上报该字段的渠道不产生这条——缺失是「没有数据」，不是异常。）
 func TestSignatureZeroThinkingTokens(t *testing.T) {
 	sig := makeSignature("claude-sonnet-4-5", 2, 256, false)
 	stub := &signatureStub{respond: func(call int, _ modelverify.Ask) (modelverify.Response, error) {
 		if call == 1 {
-			return modelverify.Response{Signature: sig, FinishReason: "end_turn",
-				Usage: modelverify.Usage{Reasoning: 0}}, nil
+			// 回放需要同块思考正文（F11：只回签名会被出站护栏丢弃）。
+			return modelverify.Response{Signature: sig, ReasoningContent: "x", FinishReason: "end_turn",
+				Usage: modelverify.Usage{Reasoning: 0, ReasoningReported: true}}, nil
 		}
 		return modelverify.Response{Content: "<cot>x</cot>", FinishReason: "end_turn"}, nil
 	}}
@@ -516,5 +535,92 @@ func TestExtractCOT(t *testing.T) {
 		if got := extractCOT(c.in); got != c.want {
 			t.Fatalf("extractCOT(%q) = %q, 期望 %q", c.in, got, c.want)
 		}
+	}
+}
+
+// 普通签名但拿不到同块思考正文：无法构成合法无损回放（出站护栏会丢弃无
+// 正文的 thinking 块）。按「证据不足」走 Err 通道：不发伪造回放、不扣解封
+// 失败的分、也不计成有效验真。
+func TestRunSignatureNoThinkingTextIsInsufficient(t *testing.T) {
+	sig := makeSignature("claude-sonnet-4-5", 2, 256, false)
+	stub := &signatureStub{respond: func(call int, _ modelverify.Ask) (modelverify.Response, error) {
+		if call == 1 {
+			// 有签名、无思考正文。
+			return modelverify.Response{Signature: sig, FinishReason: "end_turn"}, nil
+		}
+		t.Error("证据不足时不应发出回放请求")
+		return modelverify.Response{}, nil
+	}}
+
+	res := RunProbe(context.Background(), ProbeSignature, stub)
+	if res.Err == nil {
+		t.Fatal("应按证据不足记 Err")
+	}
+	if stub.calls != 1 {
+		t.Fatalf("只应发一次采集请求, 实际 %d 次", stub.calls)
+	}
+	report := BuildReport([]Result{res}, "claude-sonnet-4-5")
+	if len(report.Findings) != 0 {
+		t.Fatalf("证据不足不应产生风险项, 得到 %+v", report.Findings)
+	}
+	if len(report.Errors) != 1 {
+		t.Fatalf("应记录 1 条探针错误, 得到 %d", len(report.Errors))
+	}
+}
+
+// 普通英文词不得命中平台痕迹词：裸子串匹配时 "draws"/"flaws" 含 "aws" 即
+// 误报；整词边界下真实平台词仍命中（大小写不敏感、多词短语）。
+func TestMatchSuspectWordBoundary(t *testing.T) {
+	kws := []string{"kiro", "amazon q", "bedrock", "nova", "titan", "guardrails", "aws", "firewall"}
+
+	if hits := matchSuspect(kws, "<cot>This draws on multiplication and points out its flaws.</cot>"); len(hits) != 0 {
+		t.Fatalf("普通英文词不得命中痕迹词, 得到 %v", hits)
+	}
+	if hits := matchSuspect(kws, "The AWS firewall applies here."); len(hits) != 2 {
+		t.Fatalf("真实平台词应命中 aws+firewall, 得到 %v", hits)
+	}
+	if hits := matchSuspect(kws, "Running on Bedrock via Amazon Q."); len(hits) != 2 {
+		t.Fatalf("大小写不敏感与多词短语应命中, 得到 %v", hits)
+	}
+	if hits := matchSuspect(kws, "supernova and titanic are ordinary words"); len(hits) != 0 {
+		t.Fatalf("词内片段不得命中, 得到 %v", hits)
+	}
+}
+
+// 上游未上报思考用量字段：缺失是「没有数据」，不扣「思考 token 为 0」的分。
+func TestSignatureMissingUsageNotScored(t *testing.T) {
+	sig := makeSignature("claude-sonnet-4-5", 2, 256, false)
+	stub := &signatureStub{respond: func(call int, _ modelverify.Ask) (modelverify.Response, error) {
+		if call == 1 {
+			// ReasoningReported=false：上游没报这个字段（Reasoning 的 0 只是默认值）。
+			return modelverify.Response{Signature: sig, ReasoningContent: "17 * 23 = 391", FinishReason: "end_turn"}, nil
+		}
+		return modelverify.Response{Content: "<cot>17 * 23 = 391</cot>", FinishReason: "end_turn"}, nil
+	}}
+
+	res := RunProbe(context.Background(), ProbeSignature, stub)
+	if _, present := res.Data["thinking_tokens"]; present {
+		t.Fatal("未上报用量时不应记录 thinking_tokens 键")
+	}
+	report := BuildReport([]Result{res}, "claude-sonnet-4-5")
+	for _, f := range report.Findings {
+		if f.Title == "请求了扩展思考但思考 token 为 0" {
+			t.Fatalf("缺失用量不得扣分, 得到 %+v", f)
+		}
+	}
+}
+
+// 自报不适用的探针不计 usable：只剩少数真正跑通的探针时，结论必须是
+// 「没查清」而不是「全部查过没问题」。
+func TestBuildReportNotApplicableNotUsable(t *testing.T) {
+	notApplicable := Result{ProbeID: ProbeSignature, OK: true, Data: map[string]any{"applicable": false, "protocol": "openai-chat"}}
+	usable := Result{ProbeID: ProbeLiveness, OK: true, Data: map[string]any{}}
+
+	report := BuildReport([]Result{notApplicable, usable}, "gpt-5")
+	if report.Verdict != VerdictUnknown {
+		t.Fatalf("不适用探针不应计入 usable, 结论应为 unknown, 得到 %q", report.Verdict)
+	}
+	if len(report.Findings) != 0 {
+		t.Fatalf("不适用不应产生风险项, 得到 %+v", report.Findings)
 	}
 }
