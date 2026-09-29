@@ -185,7 +185,24 @@ func signatureFindings(res Result, requestedModel string) []Finding {
 		})
 	}
 
-	// 回放解封：签名已随回放真实发回上游且请求未被拒（被拒会走 Err 通道）。
+	// 回放被上游拒收：签名已真实发回、上游当场以 4xx 拒绝。真 Anthropic 后端
+	// 不会拒收自己签发的签名——这是最接近密码学证明的伪造信号。参考项目里
+	// 回放失败是 weight 2.0 的失败检查项、直接参与 native/suspect/proxy 判定；
+	// 此前这里走 Err 通道零分，最硬的证据反而不进判分。拒收已含「未解封」，
+	// 故命中本条时不再叠加下方的证据不足项。
+	if rejected, _ := res.Data["replay_rejected"].(bool); rejected {
+		return append(findings, Finding{
+			Probe: ProbeSignature, Severity: SeverityHigh, Score: 50,
+			Title: "签名回放被上游拒绝",
+			Evidence: map[string]any{
+				"replay_reject_status": intOf(res.Data, "replay_reject_status"),
+				"bound_model":          stringOf(res.Data, "bound_model"),
+			},
+			Recommendation: "回放的 thinking 签名被上游 4xx 拒收：真 Anthropic 后端不会拒绝自己签发的签名，这是替身伪造签名的强证据。建议人工复核并考虑停用该渠道。",
+		})
+	}
+
+	// 回放解封：签名已随回放真实发回上游且请求未被拒（4xx 拒收已在上方单列）。
 	// 但 <cot> 有无不是密码学证据——模型可能只是不守「机械复述」的格式指令。
 	// 拿不到 <cot> 按「证据不足」中危提示，不定罪、不写成已证实的解封失败。
 	replayApplicable, _ := res.Data["replay_applicable"].(bool)

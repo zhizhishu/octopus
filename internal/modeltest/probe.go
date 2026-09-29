@@ -98,7 +98,9 @@ func (s *ProbeSender) Ask(ctx context.Context, ask modelverify.Ask) (modelverify
 	}
 	status, parsed, err := r.testChannelKey(ctx, s.adapter, &s.channel, s.key, s.upstreamModel)
 	if err != nil {
-		return modelverify.Response{}, fmt.Errorf("上游返回 %d: %w", status, err)
+		// 带状态码的类型化错误：判定层据此区分「上游明确拒收」（4xx，对签名
+		// 回放探针是判定级观测）与「网络/5xx 没跑成」（不算证据）。
+		return modelverify.Response{}, &modelverify.UpstreamStatusError{Status: status, Err: err}
 	}
 	return ProbeResponseFrom(parsed), nil
 }

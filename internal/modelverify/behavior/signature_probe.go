@@ -2,6 +2,7 @@ package behavior
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -171,6 +172,16 @@ func runSignature(ctx context.Context, s modelverify.Sender) Result {
 		},
 	})
 	if err != nil {
+		// 回放被上游 4xx 拒收是判定级观测，不是探针故障：harvest 刚在同一渠道
+		// 成功，紧接着把服务端签发的签名原样发回却被拒——真后端不会拒收自己
+		// 的签名。记进 Data 走 finding 通道（高危），而不是只进 Errors 零分。
+		// 5xx/网络错误仍走 Err 通道（上游容量问题不算任何一方的证据）。
+		var statusErr *modelverify.UpstreamStatusError
+		if errors.As(err, &statusErr) && statusErr.Status >= 400 && statusErr.Status < 500 {
+			res.Data["replay_rejected"] = true
+			res.Data["replay_reject_status"] = statusErr.Status
+			return res
+		}
 		res.Err = fmt.Errorf("回放签名失败: %w", err)
 		return res
 	}

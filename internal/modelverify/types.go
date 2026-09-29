@@ -1,6 +1,9 @@
 package modelverify
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 // Response 一次探针请求的协议无关观测输入。
 //
@@ -98,3 +101,21 @@ func ReasoningUnit(protocolID string) string {
 	}
 	return "tokens"
 }
+
+// UpstreamStatusError 标记一次探针请求被上游以非 2xx 状态码拒绝（桥层包装）。
+//
+// 判定层需要区分两类失败：
+//   - 「探针没跑成」（网络抖动/超时/5xx）——不算任何一方的证据，走 Err 通道；
+//   - 「上游明确拒收了请求」（4xx）——对签名回放探针是判定级观测：harvest 刚在
+//     同一渠道成功，紧接着把签名原样发回却被 4xx 拒收，最合理的解释是签名
+//     本身不被后端接受。真 Anthropic 后端不会拒收自己签发的签名。
+type UpstreamStatusError struct {
+	Status int
+	Err    error
+}
+
+func (e *UpstreamStatusError) Error() string {
+	return fmt.Sprintf("上游返回 %d: %v", e.Status, e.Err)
+}
+
+func (e *UpstreamStatusError) Unwrap() error { return e.Err }

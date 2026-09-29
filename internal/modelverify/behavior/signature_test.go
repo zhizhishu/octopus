@@ -335,6 +335,79 @@ func TestRunSignatureDetectsAWSTraces(t *testing.T) {
 	}
 }
 
+func TestRunSignatureReplayRejectedByUpstream(t *testing.T) {
+	sig := makeSignature("claude-sonnet-4-5", 2, 256, false)
+	stub := &signatureStub{respond: func(call int, _ modelverify.Ask) (modelverify.Response, error) {
+		if call == 1 {
+			// harvest 正常拿到签名（同渠道刚成功，反衬回放被拒的异常性）。
+			return modelverify.Response{Signature: sig, ReasoningContent: "17 * 23 = 391", FinishReason: "end_turn"}, nil
+		}
+		// 回放被上游 4xx 拒收：真 Anthropic 后端不会拒收自己签发的签名。
+		return modelverify.Response{}, &modelverify.UpstreamStatusError{Status: 400, Err: errors.New("invalid_request_error: signature")}
+	}}
+
+	res := RunProbe(context.Background(), ProbeSignature, stub)
+	// 4xx 拒收是判定级观测，不是探针故障——必须走 finding 通道而非 Err 通道。
+	if res.Err != nil {
+		t.Fatalf("4xx 拒收不应走 Err 通道: %v", res.Err)
+	}
+	if rejected, _ := res.Data["replay_rejected"].(bool); !rejected {
+		t.Fatalf("应记 replay_rejected: %+v", res.Data)
+	}
+	if got := intOf(res.Data, "replay_reject_status"); got != 400 {
+		t.Fatalf("拒收状态码 = %d, 应为 400", got)
+	}
+
+	report := BuildReport([]Result{res}, "claude-sonnet-4-5")
+	found := false
+	for _, f := range report.Findings {
+		if f.Title == "签名回放被上游拒绝" {
+			found = true
+			if f.Score != 50 || f.Severity != SeverityHigh {
+				t.Fatalf("应为 50 分高危, 得到 %+v", f)
+			}
+		}
+		// 拒收已含「未解封」，不应再叠加证据不足项（避免同一信号双计）。
+		if f.Title == "签名回放未解封（证据不足）" {
+			t.Fatalf("拒收时不应叠加未解封项: %+v", f)
+		}
+	}
+	if !found {
+		t.Fatalf("应有「签名回放被上游拒绝」finding: %+v", report.Findings)
+	}
+	// 50 分 ≥ 40 中危线：单此一条即中危。此前该信号走 Err 通道零分，
+	// 伪造签名的替身仅凭最硬证据最多得 none/unknown。
+	if report.Verdict != VerdictMedium {
+		t.Fatalf("单条拒收应判中危, 得到 %s", report.Verdict)
+	}
+}
+
+func TestRunSignatureReplayServerErrorStaysErr(t *testing.T) {
+	sig := makeSignature("claude-sonnet-4-5", 2, 256, false)
+	stub := &signatureStub{respond: func(call int, _ modelverify.Ask) (modelverify.Response, error) {
+		if call == 1 {
+			return modelverify.Response{Signature: sig, ReasoningContent: "17 * 23 = 391", FinishReason: "end_turn"}, nil
+		}
+		// 5xx = 上游容量/网关问题，不算任何一方的证据：仍走 Err 通道。
+		return modelverify.Response{}, &modelverify.UpstreamStatusError{Status: 503, Err: errors.New("upstream overloaded")}
+	}}
+
+	res := RunProbe(context.Background(), ProbeSignature, stub)
+	if res.Err == nil {
+		t.Fatal("5xx 应保持 Err 通道（探针没跑成，不是判定证据）")
+	}
+	if rejected, _ := res.Data["replay_rejected"].(bool); rejected {
+		t.Fatal("5xx 不应记 replay_rejected")
+	}
+	report := BuildReport([]Result{res}, "claude-sonnet-4-5")
+	if len(report.Findings) != 0 {
+		t.Fatalf("5xx 不应产生任何 finding: %+v", report.Findings)
+	}
+	if len(report.Errors) != 1 {
+		t.Fatalf("5xx 应记一条探针错误: %+v", report.Errors)
+	}
+}
+
 func TestRunSignatureDetectsUnsealed(t *testing.T) {
 	sig := makeSignature("claude-sonnet-4-5", 2, 256, false)
 	stub := &signatureStub{respond: func(call int, _ modelverify.Ask) (modelverify.Response, error) {
