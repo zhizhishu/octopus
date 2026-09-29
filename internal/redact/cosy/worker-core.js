@@ -22,9 +22,16 @@
 //     slots (tool arguments), so the inner JSON the client parses stays valid.
 //     Complete slots are parse-guarded (mirror of the redaction side's nested-JSON
 //     recursion); streamed argument channels are marked by protocol path (chat
-//     function.arguments / responses function_call_arguments.delta / anthropic
-//     partial_json; custom_tool_call_input stays free text) and escape on every
-//     flush so mid-JSON flushes stay correct too.
+//     function.arguments incl. legacy function_call.arguments / responses
+//     function_call_arguments.delta / anthropic partial_json; custom_tool_call_input
+//     stays free text) and escape on every flush so mid-JSON flushes stay correct too.
+//   - Stream-slot identity + freeform-input consistency (oct-only, not upstream;
+//     extractor transform 8): stream channels for array elements (chat tool_calls)
+//     key on the element's own protocol `index` field, not its per-event array
+//     position (chunks usually carry one element at position 0, so two interleaved
+//     tools would otherwise cross-contaminate); custom (freeform) tool input stays
+//     plain-text-restored in the done/output_item/final-object walks, matching the
+//     delta path.
 const ALL_FLAG_LETTERS = "HPSIBEG";
 const FLAG_NAMES = Object.freeze({
   H: "highEntropy",
@@ -653,10 +660,19 @@ function restoreSlotText(text, ctx) {
   if (!parsed || typeof parsed !== "object") return ctx.restoreText(text);
   return restoreJsonFragments(text, ctx);
 }
+// A custom (freeform-grammar) tool call carries its payload as raw text in `input`:
+// streamed deltas restore it as plain text, so the done/output_item/final-object
+// paths must match — a JSON-shaped freeform payload must NOT get fragment-escaped
+// restoration (that would double-escape what the client concatenates as raw text).
+function isCustomToolInputSlot(parent, key) {
+  if (key !== "input") return false;
+  const t = parent && typeof parent === "object" ? parent.type : null;
+  return t === "custom_tool_call" || (typeof t === "string" && t.indexOf("custom_tool_call_input") >= 0);
+}
 function restoreJson(value, ctx) {
   if (typeof value === "string") return restoreSlotText(value, ctx);
   if (Array.isArray(value)) return value.map((v) => restoreJson(v, ctx));
-  if (value && typeof value === "object") { for (const k of Object.keys(value)) value[k] = restoreJson(value[k], ctx); }
+  if (value && typeof value === "object") { for (const k of Object.keys(value)) value[k] = (typeof value[k] === "string" && isCustomToolInputSlot(value, k)) ? ctx.restoreText(value[k]) : restoreJson(value[k], ctx); }
   return value;
 }
 
@@ -749,16 +765,24 @@ function serializeSseEvent(parsed, dataText) {
 }
 
 function getAt(obj, path) { let x=obj; for (let i=0;i<path.length-1;i++) x=x?.[path[i]]; return x; }
-function collectStringLeaves(value, basePath, channelPrefix, fields, local = []) {
+function collectStringLeaves(value, basePath, channelPrefix, fields, local = [], channelLocal = null) {
+  if (channelLocal === null) channelLocal = local;
   if (!value || typeof value !== "object") return;
   for (const [key, child] of Object.entries(value)) {
     const next = local.concat(key);
+    // Stream chunks usually carry a single tool_call element whose array position
+    // (the key) is always 0; the element's own numeric `index` field is the protocol
+    // identity that keeps two interleaved tools on separate restore channels. The
+    // write-back path keeps the real array position (next), only the channel key
+    // is remapped.
+    const channelKey = (Array.isArray(value) && child && typeof child === "object" && !Array.isArray(child) && typeof child.index === "number") ? String(child.index) : key;
+    const channelNext = channelLocal.concat(channelKey);
     if (typeof child === "string") {
       // Metadata fields are not streamed user/model text and must not be coalesced.
       if (["role","type","id","object","status","finish_reason","stop_reason"].includes(key)) continue;
-      fields.push({ path:basePath.concat(next), channel:`${channelPrefix}:${next.join(".")}` });
+      fields.push({ path:basePath.concat(next), channel:`${channelPrefix}:${channelNext.join(".")}` });
     } else if (child && typeof child === "object") {
-      collectStringLeaves(child, basePath, channelPrefix, fields, next);
+      collectStringLeaves(child, basePath, channelPrefix, fields, next, channelNext);
     }
   }
 }
@@ -786,16 +810,18 @@ function streamFields(data, eventName="") {
 function restoreCompleteStrings(value, ctx, excluded = new Set(), path = []) {
   if (typeof value === "string") return excluded.has(path.join(".")) ? value : restoreSlotText(value, ctx);
   if (Array.isArray(value)) { for (let i=0;i<value.length;i++) value[i]=restoreCompleteStrings(value[i],ctx,excluded,path.concat(String(i))); return value; }
-  if (value && typeof value === "object") { for (const k of Object.keys(value)) value[k]=restoreCompleteStrings(value[k],ctx,excluded,path.concat(k)); }
+  if (value && typeof value === "object") { for (const k of Object.keys(value)) value[k]=(typeof value[k]==="string"&&isCustomToolInputSlot(value,k))?ctx.restoreText(value[k]):restoreCompleteStrings(value[k],ctx,excluded,path.concat(k)); }
   return value;
 }
 
 // isJsonArgsChannel reports whether a stream channel carries a protocol-defined JSON
-// tool-argument slot: chat function.arguments, responses function_call_arguments.delta,
-// anthropic partial_json. Custom tool input is free text and must stay byte-identical.
+// tool-argument slot: chat function.arguments (incl. legacy function_call.arguments),
+// responses function_call_arguments.delta, anthropic partial_json. Custom tool input
+// is free text and must stay byte-identical.
 function isJsonArgsChannel(channel) {
   if (channel.indexOf("custom_tool_call_input") >= 0) return false;
   return channel.endsWith("function.arguments") ||
+    channel.endsWith("function_call.arguments") ||
     channel.indexOf("response.function_call_arguments.delta") >= 0 ||
     channel.endsWith("partial_json");
 }

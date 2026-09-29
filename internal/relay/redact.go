@@ -481,7 +481,9 @@ func (ra *relayAttempt) restoreResponseJSONTextOrSame(v string) string {
 //   - Choices[].Message.Content.Content
 //   - Choices[].Message.Content.MultipleContent[].Text
 //   - Choices[].Message.ToolCalls[].Function.Arguments (JSON-aware: restored raw
-//     values are escaped on re-embed so the inner JSON stays valid)
+//     values are escaped on re-embed so the inner JSON stays valid; custom
+//     freeform-grammar tool calls restore plain text instead, matching the
+//     client-side delta path)
 //   - Choices[].Message.FunctionCall.Arguments (JSON-aware, same as above)
 //
 // It exists so the content handed to metrics and to the stored assistant transcript
@@ -524,7 +526,16 @@ func (ra *relayAttempt) restoreInternalResponseTexts(resp *model.InternalLLMResp
 			calls := make([]model.ToolCall, len(msg.ToolCalls))
 			copy(calls, msg.ToolCalls)
 			for k := range calls {
-				calls[k].Function.Arguments = ra.restoreResponseJSONTextOrSame(calls[k].Function.Arguments)
+				if calls[k].Type == model.ToolCallTypeCustom {
+					// A custom (freeform-grammar) tool call carries raw text in
+					// Function.Arguments, not a JSON arguments slot: restore it plain
+					// so the stored transcript matches what the client concatenated
+					// from the plain-text-restored deltas (a JSON-shaped freeform
+					// payload must not get fragment-escaped restoration).
+					calls[k].Function.Arguments = ra.restoreResponseTextOrSame(calls[k].Function.Arguments)
+				} else {
+					calls[k].Function.Arguments = ra.restoreResponseJSONTextOrSame(calls[k].Function.Arguments)
+				}
 			}
 			msg.ToolCalls = calls
 		}

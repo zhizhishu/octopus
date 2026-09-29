@@ -498,6 +498,58 @@ func TestRestoreInternalResponseTextsArgsJsonEscaped(t *testing.T) {
 	}
 }
 
+// TestRestoreInternalResponseCustomToolArgsPlain: a custom (freeform-grammar) tool
+// call carries raw text in Function.Arguments — the stored transcript must restore
+// it PLAIN, byte-identical to what the client concatenated from the plain-text
+// deltas, even when the payload happens to be JSON-shaped (the JSON-args escaping
+// path would double-escape it and disagree with the client-side stream).
+func TestRestoreInternalResponseCustomToolArgsPlain(t *testing.T) {
+	setupRedactDB(t)
+
+	engine, err := sharedRedactEngine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := engine.NewSession("G", "openai_responses", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	pem := "-----BEGIN PRIVATE KEY-----\n" +
+		strings.Repeat("MIIEvQIBADANBgkqhkiG9w0BAQEFBAAKCAQEA", 2) +
+		"\n-----END PRIVATE KEY-----"
+	token, err := session.RedactText(pem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !redactTokenRe.MatchString(token) {
+		t.Fatalf("expected a placeholder token, got %q", token)
+	}
+
+	ra := &relayAttempt{redactSession: session, redactApplied: true}
+	customArgs := `{"note":"` + token + `"}`
+	in := &model.InternalLLMResponse{
+		ID: "resp-x",
+		Choices: []model.Choice{{
+			Index: 0,
+			Message: &model.Message{
+				Role:      "assistant",
+				ToolCalls: []model.ToolCall{{ID: "c1", Type: model.ToolCallTypeCustom, Function: model.FunctionCall{Name: "exec", Arguments: customArgs}}},
+			},
+		}},
+	}
+	out := ra.restoreInternalResponseTexts(in)
+	got := out.Choices[0].Message.ToolCalls[0].Function.Arguments
+	want := `{"note":"` + pem + `"}`
+	if got != want {
+		t.Fatalf("custom tool input must restore plain (raw newlines), matching the client delta path:\ngot  %q\nwant %q", got, want)
+	}
+	// The input must not be mutated.
+	if got := in.Choices[0].Message.ToolCalls[0].Function.Arguments; got != customArgs {
+		t.Fatalf("input mutated (custom tool arguments): %q", got)
+	}
+}
+
 // TestRestoreInternalResponseTexts covers the #6 restore helper: it returns a copy
 // with the four supported text kinds restored, leaves reasoning/signature drift
 // untouched, never mutates its input, and is an identity no-op when the session is

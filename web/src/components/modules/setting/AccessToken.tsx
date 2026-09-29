@@ -55,50 +55,67 @@ export function SettingAccessToken() {
 
     const [token, setToken] = useState('');
     const [reveal, setReveal] = useState(false);
+    // “已启用”只反映服务端状态（setting/list 的非空回执），不在写请求发出前乐观置位。
     const [stored, setStored] = useState(false);
     const [dirty, setDirty] = useState(false);
     // 刚生成的明文：独立于 settings 查询的状态，列表重取/30s 轮询都不会清掉它，
-    // 只有用户关闭面板或清除令牌才消失（后端永不回读明文，这是唯一可见窗口）。
+    // 只有用户关闭面板、成功保存另一个值或成功清除令牌才消失（后端永不回读明文）。
+    // 仅在服务端确认保存成功后才展示，失败不出现“已生成”面板。
     const [freshToken, setFreshToken] = useState('');
+    // 本页最近一次“服务端确认保存成功”的明文，是复制的唯一可信来源；
+    // 轮询不清（否则 30s 后复制失效），成功换值/成功清除时才变。
     const plaintextRef = useRef('');
+    const saving = setSetting.isPending;
 
     useEffect(() => {
         if (!settings) return;
         const s = settings.find((x) => x.key === SettingKey.AdminAccessToken);
         setStored(!!(s && s.value));
-        setToken('');
-        setDirty(false);
-        plaintextRef.current = '';
     }, [settings]);
 
-    const persist = (value: string, okMsg: string) => {
+    // 写入串行：saving 期间生成/保存/清除按钮全部禁用，同一次交互只提交一次意图。
+    // 手动粘贴改为显式「保存」按钮提交，去掉失焦自动保存，避免失焦与按钮点击双重写入。
+    const applySaved = (value: string) => {
+        plaintextRef.current = value;
+        setToken('');
+        setDirty(false);
+        setStored(true);
+    };
+
+    const handleGenerate = () => {
+        const next = generateToken();
         setSetting.mutate(
-            { key: SettingKey.AdminAccessToken, value },
+            { key: SettingKey.AdminAccessToken, value: next },
             {
-                onSuccess: () => toast.success(okMsg),
+                onSuccess: () => {
+                    applySaved(next);
+                    setFreshToken(next);
+                    toast.success('已生成并启用，请立刻复制保存');
+                },
                 onError: (e) => toast.error(e instanceof Error ? e.message : String(e)),
             }
         );
     };
 
-    const handleGenerate = () => {
-        const next = generateToken();
-        setFreshToken(next);
-        setStored(true);
-        persist(next, '已生成并启用，请立刻复制保存');
-    };
-
     const handleSaveManual = () => {
         const value = token.trim();
-        setDirty(false);
         if (!value) return;
         if (value.length < MIN_LEN) {
             toast.error(`令牌至少 ${MIN_LEN} 位`);
             return;
         }
-        plaintextRef.current = value;
-        setStored(true);
-        persist(value, '已保存并启用');
+        setSetting.mutate(
+            { key: SettingKey.AdminAccessToken, value },
+            {
+                onSuccess: () => {
+                    applySaved(value);
+                    // 旧生成值不再当前：复制必须拿到刚保存的 B，而不是此前的 A。
+                    setFreshToken('');
+                    toast.success('已保存并启用');
+                },
+                onError: (e) => toast.error(e instanceof Error ? e.message : String(e)),
+            }
+        );
     };
 
     const handleCopy = async () => {
@@ -115,12 +132,21 @@ export function SettingAccessToken() {
     };
 
     const handleClear = () => {
-        setToken('');
-        setFreshToken('');
-        plaintextRef.current = '';
-        setStored(false);
-        setDirty(false);
-        persist('', '已清除，令牌直连已禁用');
+        // 清除也走服务端确认：失败时本页明文/启用状态原样保留，不假装已禁用。
+        setSetting.mutate(
+            { key: SettingKey.AdminAccessToken, value: '' },
+            {
+                onSuccess: () => {
+                    plaintextRef.current = '';
+                    setFreshToken('');
+                    setToken('');
+                    setDirty(false);
+                    setStored(false);
+                    toast.success('已清除，令牌直连已禁用');
+                },
+                onError: (e) => toast.error(e instanceof Error ? e.message : String(e)),
+            }
+        );
     };
 
     return (
@@ -146,7 +172,6 @@ export function SettingAccessToken() {
                             setToken(e.target.value);
                             setDirty(true);
                         }}
-                        onBlur={() => dirty && handleSaveManual()}
                         placeholder={stored ? '已设置（已隐藏，可重新生成覆盖）' : '点右侧「生成」，或手动粘贴 ≥24 位令牌'}
                         className="rounded-xl pr-10 font-mono"
                     />
@@ -160,7 +185,27 @@ export function SettingAccessToken() {
                     </button>
                 </div>
                 <div className="flex shrink-0 gap-2">
-                    <Button type="button" variant="outline" size="sm" onClick={handleGenerate} className="h-9 rounded-xl">
+                    {dirty && (
+                        <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={handleSaveManual}
+                            disabled={saving || token.trim().length < MIN_LEN}
+                            className="h-9 rounded-xl"
+                        >
+                            <Check className="size-3.5" />
+                            保存
+                        </Button>
+                    )}
+                    <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={handleGenerate}
+                        disabled={saving}
+                        className="h-9 rounded-xl"
+                    >
                         <RefreshCw className="size-3.5" />
                         生成
                     </Button>
@@ -174,6 +219,7 @@ export function SettingAccessToken() {
                             variant="ghost"
                             size="sm"
                             onClick={handleClear}
+                            disabled={saving}
                             className="h-9 rounded-xl text-muted-foreground hover:text-destructive"
                         >
                             <Trash2 className="size-3.5" />
