@@ -71,7 +71,7 @@
         "model-test": "测试",
         "migration": "迁移",
         "prompt": "提示词",
-        "audit": "审计",
+        "audit": "检测",
         "log": "日志",
         "setting": "设置",
         "redact": "凭据脱敏"

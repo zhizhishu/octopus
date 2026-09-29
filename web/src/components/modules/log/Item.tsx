@@ -411,15 +411,12 @@ function LogRouteHeader({
                     </Badge>
                 </>
             )}
-            {log.is_stream !== undefined && (
+            {/* 流式/非流式徽标：卡片形态挪到第 2 行行首（GLM 控制台式两行布局，
+                主行只留路由链路）；详情弹窗标题仍保留在链路尾部。 */}
+            {log.is_stream !== undefined && !isCard && (
                 <Badge
                     variant="outline"
-                    className={cn(
-                        "shrink-0 text-xs",
-                        isCard
-                            ? "border-border/60 bg-muted/30 px-1.5 py-0"
-                            : "border-border/60 bg-muted/30 px-1.5 py-0"
-                    )}
+                    className="shrink-0 text-xs border-border/60 bg-muted/30 px-1.5 py-0"
                 >
                     {log.is_stream ? t('stream') : t('nonStream')}
                 </Badge>
@@ -778,17 +775,28 @@ export const LogCard = React.memo(function LogCard({ log }: { log: RelayLog }) {
                                         {t('autoRescue')}
                                     </Badge>
                                 )}
+                            </div>
+
+                            {/* 第 2 行：紧凑摘要带固定两行（与 5050 等高对齐：行1 身份与用量，行2 性能与费用）。
+                                行首放「流式/非流式」徽标与「查看详情」入口（GLM 控制台式两行布局：
+                                主行只留路由链路，次要信息全部下沉）。 */}
+                            <div className="flex min-w-0 flex-col gap-2 text-xs tabular-nums text-muted-foreground">
+                                <div className="flex min-w-0 flex-wrap items-center gap-x-4">
+                                {/* G0 流式与详情入口 */}
+                                {log.is_stream !== undefined && (
+                                    <Badge
+                                        variant="outline"
+                                        className="shrink-0 border-border/60 bg-muted/30 px-1.5 py-0 text-xs"
+                                    >
+                                        {log.is_stream ? t('stream') : t('nonStream')}
+                                    </Badge>
+                                )}
                                 {canViewDetails && (
-                                    <span className="ml-auto hidden shrink-0 items-center gap-1 text-xs text-muted-foreground md:flex">
+                                    <span className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
                                         <Eye className="size-3.5" />
                                         {t('openDetails')}
                                     </span>
                                 )}
-                            </div>
-
-                            {/* 第 2 行：紧凑摘要带固定两行（与 5050 等高对齐：行1 身份与用量，行2 性能与费用） */}
-                            <div className="flex min-w-0 flex-col gap-2 text-xs tabular-nums text-muted-foreground">
-                                <div className="flex min-w-0 flex-wrap items-center gap-x-4">
                                 {/* G1 时间与位置 */}
                                 <div className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
                                     <Clock className="size-3.5 shrink-0 text-muted-foreground" />

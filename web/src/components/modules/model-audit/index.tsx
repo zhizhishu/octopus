@@ -31,6 +31,7 @@ import {
     type ModelAuditResponse,
 } from '@/api/endpoints/model-audit';
 import { PageWrapper } from '@/components/common/PageWrapper';
+import { SearchableSelect } from '@/components/ui/searchable-select';
 import { toast } from '@/components/common/Toast';
 import { Button } from '@/components/ui/button';
 import {
@@ -294,27 +295,33 @@ export function ModelAudit() {
             <section>
                 <p className="mb-3 text-[11px] font-medium tracking-[0.16em] text-muted-foreground">01 目标</p>
                 <label className="mb-1 block text-xs text-muted-foreground">渠道</label>
-                <select
-                    value={channel?.id ?? ''}
-                    onChange={(event) => chooseChannel(Number(event.target.value))}
-                    className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
-                >
-                    {channels.length === 0 && <option value="">暂无启用渠道</option>}
-                    {channels.map((item) => (
-                        <option key={item.id} value={item.id}>{item.name}</option>
-                    ))}
-                </select>
+                {/* 渠道多时原生 select 是平铺长列表：换 SearchableSelect 带内联模糊搜索
+                    （名称/编号/模型名都可搜），键盘上下+回车提交。 */}
+                <SearchableSelect
+                    value={channel ? String(channel.id) : ''}
+                    onValueChange={(value) => chooseChannel(Number(value))}
+                    options={channels.map((item) => ({
+                        value: String(item.id),
+                        label: item.name,
+                        keywords: `#${item.id} ${(item.selected_models ?? []).join(' ')}`,
+                    }))}
+                    placeholder={channels.length === 0 ? '暂无启用渠道' : '选择渠道'}
+                    searchPlaceholder="搜渠道名 / 编号 / 模型…"
+                    emptyText="没有匹配的渠道"
+                    className="h-10 w-full"
+                    disabled={channels.length === 0}
+                />
                 <label className="mb-1 mt-3 block text-xs text-muted-foreground">模型</label>
-                <select
+                <SearchableSelect
                     value={activeModel}
-                    onChange={(event) => setModelName(event.target.value)}
-                    className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
-                >
-                    {models.length === 0 && <option value="">该渠道没有可选模型</option>}
-                    {models.map((item) => (
-                        <option key={item} value={item}>{item}</option>
-                    ))}
-                </select>
+                    onValueChange={setModelName}
+                    options={models.map((item) => ({ value: item, label: item }))}
+                    placeholder={models.length === 0 ? '该渠道没有可选模型' : '选择模型'}
+                    searchPlaceholder="搜模型名…"
+                    emptyText="没有匹配的模型"
+                    className="h-10 w-full"
+                    disabled={models.length === 0}
+                />
             </section>
 
             <section className="border-t border-border pt-4">
@@ -382,7 +389,7 @@ export function ModelAudit() {
             <div className="flex flex-wrap items-end justify-between gap-3 px-1">
                 <div>
                     <p className="text-[11px] font-medium tracking-[0.18em] text-muted-foreground">OCTOPUS</p>
-                    <h2 className="text-2xl font-bold tracking-tight">模型审计</h2>
+                    <h2 className="text-2xl font-bold tracking-tight">模型检测</h2>
                     <p className="mt-1 text-sm text-muted-foreground">对渠道模型做一组轻量能力检查，结果仅作参考线索。</p>
                 </div>
             </div>
