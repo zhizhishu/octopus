@@ -706,7 +706,7 @@ func (ra *relayAttempt) executeWinnerResponse(response *http.Response, outAdapte
 	}
 	originalStream := ra.internalRequest.Stream
 	if (forceResponsesStreamUpstream || forceAnthropicStreamUpstream) && (originalStream == nil || !*originalStream) {
-		return ra.handleStreamResponseAsNonStream(ctx, response, outAdapter)
+		return ra.handleStreamResponseAsNonStream(ctx, response, outAdapter, 0)
 	}
 	if forceResponsesStreamUpstream || forceAnthropicStreamUpstream || (ra.internalRequest.Stream != nil && *ra.internalRequest.Stream) {
 		return ra.handleStreamResponse(ctx, response, outAdapter)

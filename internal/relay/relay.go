@@ -1229,7 +1229,7 @@ retryWithAdapter:
 		return response.StatusCode, nil
 	}
 	if (forceResponsesStreamUpstream || forceAnthropicStreamUpstream) && (originalStream == nil || !*originalStream) {
-		if err := ra.handleStreamResponseAsNonStream(ctx, response, outAdapter); err != nil {
+		if err := ra.handleStreamResponseAsNonStream(ctx, response, outAdapter, 0); err != nil {
 			return response.StatusCode, err
 		}
 		return response.StatusCode, nil
@@ -2558,7 +2558,20 @@ func (ra *relayAttempt) synthesizeStreamDone(ctx context.Context) ([]byte, error
 	return ra.inAdapter.TransformStream(ctx, &model.InternalLLMResponse{Object: "[DONE]"})
 }
 
-func (ra *relayAttempt) handleStreamResponseAsNonStream(ctx context.Context, response *http.Response, outAdapter model.Outbound) error {
+// firstTokenHandoffFloor is the minimum first-token budget handed to the
+// aggregation loop after an identification phase already consumed most of it:
+// just enough to drain the bytes already buffered in memory (the replayed peek
+// window) without racing the timer against the buffered events. It is NOT a
+// fresh budget — the identification elapsed time is subtracted first.
+const firstTokenHandoffFloor = 100 * time.Millisecond
+
+// handleStreamResponseAsNonStream aggregates an upstream SSE stream into one
+// complete JSON response for a non-stream client. identifyElapsed is the time
+// the caller already spent identifying the response framing (the content-type
+// fallback peek); it is counted against the first-token budget so the
+// aggregation does not get a fresh full window on top of the identification
+// wait (F8).
+func (ra *relayAttempt) handleStreamResponseAsNonStream(ctx context.Context, response *http.Response, outAdapter model.Outbound, identifyElapsed time.Duration) error {
 	if ct := response.Header.Get("Content-Type"); ct != "" && !strings.Contains(strings.ToLower(ct), "text/event-stream") {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 16*1024))
 		return fmt.Errorf("upstream returned non-SSE content-type %q for forced responses stream request: %s", ct, string(body))
@@ -2619,7 +2632,16 @@ func (ra *relayAttempt) handleStreamResponseAsNonStream(ctx context.Context, res
 	var firstTokenTimer *time.Timer
 	var firstTokenC <-chan time.Time
 	if ra.firstTokenTimeOutSec > 0 {
-		firstTokenTimer = time.NewTimer(time.Duration(ra.firstTokenTimeOutSec) * time.Second)
+		budget := time.Duration(ra.firstTokenTimeOutSec) * time.Second
+		// 识别阶段已耗的时间计入首 token 预算, 不重新赠送完整窗口(F8)。
+		// 识别本身受同一超时约束(超时即失败), 所以剩余额正常总是正数;
+		// 边界处(识别恰好耗尽预算)只留排空内存缓冲的下限, 避免定时器和
+		// 已缓冲事件赛跑。
+		budget -= identifyElapsed
+		if budget < firstTokenHandoffFloor {
+			budget = firstTokenHandoffFloor
+		}
+		firstTokenTimer = time.NewTimer(budget)
 		firstTokenC = firstTokenTimer.C
 		defer func() {
 			if firstTokenTimer != nil {
@@ -3563,6 +3585,14 @@ type peekedBody struct {
 }
 
 func (p *peekedBody) Read(b []byte) (int, error) {
+	// 缓冲已耗尽且已有暂存错误: 先回放该错误, 绝不再碰底层。Peek 已把 bufio 的
+	// readErr 一次性消费掉, 此时 br.Read 会重新读底层——底层若停住会无限延迟
+	// 这个已知错误, 若返回别的错误会覆盖首个关键错误(F9)。
+	if p.pending != nil && p.br.Buffered() == 0 {
+		err := p.pending
+		p.pending = nil
+		return 0, err
+	}
 	n, err := p.br.Read(b)
 	if n > 0 {
 		if err != nil && !errors.Is(err, io.EOF) && p.pending == nil {
@@ -3579,24 +3609,17 @@ func (p *peekedBody) Read(b []byte) (int, error) {
 
 func (p *peekedBody) Close() error { return p.orig.Close() }
 
-// responseBodyLooksLikeSSE is the fallback for upstreams that omit (or mislabel)
-// the Content-Type header while still sending SSE: it peeks the first bytes of the
-// (already unwrapped) body and reports whether any physical line in the peek
-// window starts with an SSE field name ("data:"/"event:"). Line-level matching
-// cannot misfire on ordinary JSON: in a valid JSON encoding a physical line never
+// sseFramingPeekWindow is the identification window for the content-type
+// fallback: enough bytes to see a physical SSE field line, small enough that
+// the probe read stays a bounded prefix of the body.
+const sseFramingPeekWindow = 512
+
+// sseFieldLinePresent reports whether any physical line in the peek window
+// starts with an SSE field name ("data:"/"event:"). Line-level matching cannot
+// misfire on ordinary JSON: in a valid JSON encoding a physical line never
 // starts with "data:" or "event:", so string values that merely contain those
-// prefixes are not matched. The peek does not consume the body — peeked bytes are
-// replayed via peekedBody, which also preserves any error the peek consumed.
-func responseBodyLooksLikeSSE(response *http.Response) bool {
-	if response == nil || response.Body == nil {
-		return false
-	}
-	br := bufio.NewReaderSize(response.Body, 512)
-	peek, peekErr := br.Peek(512)
-	response.Body = &peekedBody{br: br, orig: response.Body, pending: peekErr}
-	if len(peek) == 0 {
-		return false
-	}
+// prefixes are not matched.
+func sseFieldLinePresent(peek []byte) bool {
 	for _, line := range bytes.Split(peek, []byte("\n")) {
 		line = bytes.TrimRight(line, "\r")
 		if bytes.HasPrefix(line, []byte("data:")) || bytes.HasPrefix(line, []byte("event:")) {
@@ -3604,6 +3627,78 @@ func responseBodyLooksLikeSSE(response *http.Response) bool {
 		}
 	}
 	return false
+}
+
+// responseBodyLooksLikeSSE is the fallback for upstreams that omit (or mislabel)
+// the Content-Type header while still sending SSE: it peeks the first bytes of
+// the (already unwrapped) body and reports whether the framing is SSE. The peek
+// does not consume the body — peeked bytes are replayed via peekedBody, which
+// also preserves any error the peek consumed.
+//
+// 识别读取被请求取消与首 token 超时预算覆盖(F8): Peek 会一直等满窗口或等错误,
+// 一个只发了不足 512 字节前奏就停住的上游会把非流式识别无限挂住——那时聚合器
+// 的首 token/间隔超时和心跳都还没启动。超时/取消时关闭真实 body 让停在探测读
+// 里的协程返回(带缓冲通道保证它退出), 并返回错误, 上层按普通尝试失败处理,
+// 保留既有换渠道行为。探测协程受控: 生命周期就是这一次识别, 识别结束(含超时
+// 关闭)即结束, 不留后台读取。
+//
+// 一旦足以判定帧型(见到 data:/event: 行, 或窗口读满/EOF/错误)立即返回, 不无
+// 条件等满窗口。返回的探测耗时由调用方计入聚合器的首 token 预算, 不重新赠送
+// 完整窗口。单读者所有权: 探测读完成后才把同一个 body 交给聚合器读。
+func (ra *relayAttempt) responseBodyLooksLikeSSE(ctx context.Context, response *http.Response) (bool, time.Duration, error) {
+	if response == nil || response.Body == nil {
+		return false, 0, nil
+	}
+	br := bufio.NewReaderSize(response.Body, sseFramingPeekWindow)
+	orig := response.Body
+	pb := &peekedBody{br: br, orig: orig}
+	response.Body = pb
+
+	type probeResult struct {
+		peek []byte
+		err  error
+	}
+	resCh := make(chan probeResult, 1)
+	safe.SafeGo("relay-sse-framing-probe", func() {
+		// 增量 Peek: 每多到一个字节就检查一次是否已可判定, 不等满窗口。
+		var (
+			peek []byte
+			err  error
+		)
+		for want := 1; want <= sseFramingPeekWindow; want++ {
+			peek, err = br.Peek(want)
+			if err != nil || sseFieldLinePresent(peek) {
+				break
+			}
+		}
+		resCh <- probeResult{peek: peek, err: err}
+	})
+
+	startedAt := time.Now()
+	var timerC <-chan time.Time
+	if ra.firstTokenTimeOutSec > 0 {
+		timer := time.NewTimer(time.Duration(ra.firstTokenTimeOutSec) * time.Second)
+		defer timer.Stop()
+		timerC = timer.C
+	}
+
+	select {
+	case res := <-resCh:
+		elapsed := time.Since(startedAt)
+		// 探测协程已结束, 此时回填 pending 才不会与探测读并发。
+		pb.pending = res.err
+		return sseFieldLinePresent(res.peek), elapsed, nil
+	case <-timerC:
+		// 关闭真实 body: 停在 Peek 里的探测读随之返回, 协程经带缓冲通道退出。
+		// 之后无人再读该 body(本次尝试失败), 不存在并发读。
+		_ = orig.Close()
+		return false, time.Since(startedAt), fmt.Errorf(
+			"upstream response framing not decidable within first-token timeout (%ds)", ra.firstTokenTimeOutSec)
+	case <-ctx.Done():
+		_ = orig.Close()
+		return false, time.Since(startedAt), fmt.Errorf(
+			"upstream response identification canceled: %w", ctx.Err())
+	}
 }
 
 // handleResponse 处理非流式响应
@@ -3616,7 +3711,7 @@ func (ra *relayAttempt) handleResponse(ctx context.Context, response *http.Respo
 	// JSON response. Mirrors the stream path's non-SSE content-type guard in the
 	// opposite direction.
 	if responseIsEventStream(response) {
-		return ra.handleStreamResponseAsNonStream(ctx, response, outAdapter)
+		return ra.handleStreamResponseAsNonStream(ctx, response, outAdapter, 0)
 	}
 	// Decompress any upstream Content-Encoding before the outbound parses the body. The
 	// claude/anthropic outbound advertises gzip,deflate,br,zstd and the shared transport has
@@ -3628,10 +3723,17 @@ func (ra *relayAttempt) handleResponse(ctx context.Context, response *http.Respo
 	// SSE self-heal fallback: a few upstreams omit (or mislabel) the Content-Type
 	// header while still sending SSE; line-level framing detection on the peeked
 	// body prefix. Align the header with the body's real framing so the aggregation
-	// path's content-type guard accepts the handoff.
-	if responseBodyLooksLikeSSE(response) {
+	// path's content-type guard accepts the handoff. The identification read is
+	// bounded by the request context and the first-token budget (F8): a stalled
+	// upstream fails this attempt (existing channel-switch behavior) instead of
+	// hanging the non-stream client.
+	isSSE, identifyElapsed, identifyErr := ra.responseBodyLooksLikeSSE(ctx, response)
+	if identifyErr != nil {
+		return identifyErr
+	}
+	if isSSE {
 		response.Header.Set("Content-Type", "text/event-stream")
-		return ra.handleStreamResponseAsNonStream(ctx, response, outAdapter)
+		return ra.handleStreamResponseAsNonStream(ctx, response, outAdapter, identifyElapsed)
 	}
 	internalResponse, err := outAdapter.TransformResponse(ctx, response)
 	if err != nil {

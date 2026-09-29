@@ -352,7 +352,7 @@ func TestForcedResponsesNonStreamStopsSilentUpstream(t *testing.T) {
 	}()
 
 	startedAt := time.Now()
-	err := ra.handleStreamResponseAsNonStream(c.Request.Context(), response, &openaiOutbound.ResponseOutbound{})
+	err := ra.handleStreamResponseAsNonStream(c.Request.Context(), response, &openaiOutbound.ResponseOutbound{}, 0)
 	if elapsed := time.Since(startedAt); elapsed > 3*time.Second {
 		t.Fatalf("expected silent upstream to be cut quickly, elapsed %s", elapsed)
 	}
@@ -393,7 +393,7 @@ func TestForcedResponsesNonStreamCompletedAggregates(t *testing.T) {
 		)),
 	}
 
-	if err := ra.handleStreamResponseAsNonStream(c.Request.Context(), response, &openaiOutbound.ResponseOutbound{}); err != nil {
+	if err := ra.handleStreamResponseAsNonStream(c.Request.Context(), response, &openaiOutbound.ResponseOutbound{}, 0); err != nil {
 		t.Fatalf("handle forced non-stream aggregation: %v", err)
 	}
 	if rec.Code != http.StatusOK {
@@ -433,7 +433,7 @@ func TestForcedResponsesNonStreamToolCallDoneWaitsForCompletedUsage(t *testing.T
 		)),
 	}
 
-	if err := relayAttempt.handleStreamResponseAsNonStream(ginContext.Request.Context(), response, &openaiOutbound.ResponseOutbound{}); err != nil {
+	if err := relayAttempt.handleStreamResponseAsNonStream(ginContext.Request.Context(), response, &openaiOutbound.ResponseOutbound{}, 0); err != nil {
 		t.Fatalf("handle forced non-stream tool call with completed usage: %v", err)
 	}
 	if recorder.Code != http.StatusOK {
@@ -508,7 +508,7 @@ func TestForcedResponsesNonStreamFirstTokenTimeout(t *testing.T) {
 	}()
 
 	startedAt := time.Now()
-	err := ra.handleStreamResponseAsNonStream(c.Request.Context(), response, &openaiOutbound.ResponseOutbound{})
+	err := ra.handleStreamResponseAsNonStream(c.Request.Context(), response, &openaiOutbound.ResponseOutbound{}, 0)
 	close(stop)
 	if elapsed := time.Since(startedAt); elapsed > 3*time.Second {
 		t.Fatalf("expected first-token timeout to cut the stall quickly, elapsed %s", elapsed)
@@ -563,7 +563,7 @@ func TestForcedResponsesNonStreamKeepaliveThenAggregates(t *testing.T) {
 		_ = pw.Close()
 	}()
 
-	if err := ra.handleStreamResponseAsNonStream(c.Request.Context(), response, &openaiOutbound.ResponseOutbound{}); err != nil {
+	if err := ra.handleStreamResponseAsNonStream(c.Request.Context(), response, &openaiOutbound.ResponseOutbound{}, 0); err != nil {
 		t.Fatalf("handle forced non-stream aggregation with keepalive: %v", err)
 	}
 	body := rec.Body.String()
@@ -609,7 +609,7 @@ func TestForcedResponsesNonStreamResetsAdapterBetweenAttempts(t *testing.T) {
 		_, _ = io.WriteString(pw1, `data: {"type":"response.output_text.delta","delta":"OLD-LEAKED-TEXT"}`+"\n\n")
 		_ = pw1.CloseWithError(errors.New("upstream boom"))
 	}()
-	if err := ra.handleStreamResponseAsNonStream(c.Request.Context(), resp1, &openaiOutbound.ResponseOutbound{}); err == nil {
+	if err := ra.handleStreamResponseAsNonStream(c.Request.Context(), resp1, &openaiOutbound.ResponseOutbound{}, 0); err == nil {
 		t.Fatalf("attempt 1 was expected to fail on the stream read error")
 	}
 
@@ -626,7 +626,7 @@ func TestForcedResponsesNonStreamResetsAdapterBetweenAttempts(t *testing.T) {
 				`data: [DONE]` + "\n\n",
 		)),
 	}
-	if err := ra.handleStreamResponseAsNonStream(ra.c.Request.Context(), resp2, &openaiOutbound.ResponseOutbound{}); err != nil {
+	if err := ra.handleStreamResponseAsNonStream(ra.c.Request.Context(), resp2, &openaiOutbound.ResponseOutbound{}, 0); err != nil {
 		t.Fatalf("attempt 2 aggregation failed: %v", err)
 	}
 	body := rec2.Body.String()
