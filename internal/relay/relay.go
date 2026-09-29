@@ -2904,6 +2904,16 @@ readLoop:
 
 func (ra *relayAttempt) handleNonStreamResponseAsStream(ctx context.Context, response *http.Response, outAdapter model.Outbound) error {
 	limitUpstreamResponseBody(response)
+	// Decompress any upstream Content-Encoding before the outbound parses the body. The
+	// claude/anthropic outbound advertises gzip,deflate,br,zstd and the shared transport has
+	// DisableCompression=true, so Go does not auto-decompress here. The three sibling response
+	// paths (handleStreamResponse, handleStreamResponseAsNonStream, handleResponse) all unwrap;
+	// this fallback path is reached when an anthropic stream is retried as non-stream after
+	// 502/503/504/520, and without this line a compressed 200 JSON fails to parse, silently
+	// breaking the whole stream-to-non-stream fallback feature.
+	if err := unwrapResponseEncoding(response); err != nil {
+		return fmt.Errorf("failed to unwrap upstream response encoding: %w", err)
+	}
 	internalResponse, err := outAdapter.TransformResponse(ctx, response)
 	if err != nil {
 		log.Warnf("failed to transform fallback non-stream response: %v", err)
