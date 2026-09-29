@@ -10,6 +10,7 @@ import { githubLightTheme } from '@uiw/react-json-view/githubLight';
 import { useTheme } from 'next-themes';
 import { create } from 'zustand';
 import { fetchLogById, getRelayLogSeverity, type RelayLog, type ChannelAttempt } from '@/api/endpoints/log';
+import type { ScheduledAuditResult } from '@/api/endpoints/model-audit';
 import {
     getLogVerdict,
     humanizeClient,
@@ -302,7 +303,6 @@ function LogRouteHeader({
     const textMode = isCard ? undefined : 'wrap';
     const requestModelDisplayName = marketModelName(log.request_model_name) || log.request_model_name;
     const actualModelDisplayName = marketModelName(log.actual_model_name) || log.actual_model_name;
-    const clientLabel = humanizeClient(log.request_user_agent);
     const upstreamEchoName = log.upstream_response_model?.trim() ?? '';
     const upstreamEchoDisplayName = upstreamEchoName
         ? (marketModelName(upstreamEchoName) || upstreamEchoName)
@@ -355,18 +355,6 @@ function LogRouteHeader({
                 title={requestModelDisplayName === log.request_model_name ? undefined : log.request_model_name}
                 className="font-semibold text-card-foreground"
             />
-            {/* 客户端识别: 调用端 UA 解析出的客户端名(原样 UA 挂 title 提示)。
-                放在请求模型与渠道之间——「点的是哪个模型 · 谁在调 · 走了哪条渠道」。
-                紫色系与渠道的品牌色区分开: 客户端=谁在用, 渠道=走了哪。 */}
-            {clientLabel && (
-                <Badge
-                    variant="outline"
-                    className="shrink-0 border-violet-500/30 bg-violet-500/10 px-1.5 py-0 text-xs text-violet-600 dark:text-violet-300"
-                    title={log.request_user_agent}
-                >
-                    {clientLabel}
-                </Badge>
-            )}
             {/* Channel identity is admin-only: a normal user's log carries no
                 channel_name (see RelayLogUserSummary), so the header degrades to
                 request model → actual model without ever revealing the upstream. */}
@@ -425,9 +413,9 @@ function LogRouteHeader({
                     </Badge>
                 </>
             )}
-            {/* 流式/非流式徽标：卡片形态挪到第 2 行行首（GLM 控制台式两行布局，
-                主行只留路由链路）；详情弹窗标题仍保留在链路尾部。 */}
-            {log.is_stream !== undefined && !isCard && (
+            {/* 流式/非流式徽标：主行链路尾部（原始位置）。客户端识别与模型检测
+                徽标在下方独立行，不占主行。 */}
+            {log.is_stream !== undefined && (
                 <Badge
                     variant="outline"
                     className="shrink-0 text-xs border-border/60 bg-muted/30 px-1.5 py-0"
@@ -645,7 +633,77 @@ function LazyLogBodies({ logId, fallbackRequest, fallbackResponse, requestLabel,
     );
 }
 
-export const LogCard = React.memo(function LogCard({ log }: { log: RelayLog }) {
+type AuditBadge = {
+    label: string;
+    title: string;
+    className: string;
+};
+
+/**
+ * 模型检测徽标：把定时快检快照（按 渠道ID|模型 索引）匹配到这条日志上，
+ * 回答「上游模型对不对」。匹配顺序：先按实际发上游的模型名，再按请求模型名
+ * （model_mapping 场景下快检记的可能是任一侧）。没检过/跳过/普通用户 → 无徽标。
+ * verdict 语义与检测页一致：none=未见异常、unknown=证据不足、low/medium/high=待复核。
+ */
+function auditBadgeForLog(
+    log: RelayLog,
+    index: Map<string, ScheduledAuditResult> | undefined,
+    t: (key: string) => string,
+): AuditBadge | undefined {
+    if (!index?.size || !log.channel) return undefined;
+    const hit =
+        index.get(`${log.channel}|${log.actual_model_name}`) ??
+        index.get(`${log.channel}|${log.request_model_name}`);
+    if (!hit || hit.skipped || !hit.verdict) return undefined;
+
+    const verdict = hit.verdict;
+    let label: string;
+    let className: string;
+    switch (verdict) {
+        case 'none':
+            label = t('auditClean');
+            className = 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300';
+            break;
+        case 'unknown':
+            label = t('auditInsufficient');
+            className = 'border-border/60 bg-muted/30 text-muted-foreground';
+            break;
+        case 'low':
+            label = t('auditLow');
+            className = 'border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-300';
+            break;
+        case 'medium':
+            label = t('auditMedium');
+            className = 'border-orange-500/30 bg-orange-500/10 text-orange-600 dark:text-orange-300';
+            break;
+        default:
+            label = t('auditHigh');
+            className = 'border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-300';
+            break;
+    }
+    const titleParts = [
+        hit.channel_name || `渠道 ${hit.channel_id}`,
+        hit.model,
+        typeof hit.score === 'number' ? `${t('auditScore')}: ${hit.score}` : undefined,
+        typeof hit.finding_count === 'number' && hit.finding_count > 0
+            ? `${t('auditFindings')}: ${hit.finding_count}`
+            : undefined,
+    ].filter(Boolean);
+    return {
+        label: `${t('auditPrefix')} · ${label}`,
+        title: titleParts.join(' · '),
+        className,
+    };
+}
+
+export const LogCard = React.memo(function LogCard({
+    log,
+    auditByChannelModel,
+}: {
+    log: RelayLog;
+    /** 定时快检快照按 `渠道ID|模型` 的索引（管理员日志页拉取；普通用户不传）。 */
+    auditByChannelModel?: Map<string, ScheduledAuditResult>;
+}) {
     const t = useTranslations('log.card');
     const canViewDetails = useAuthStore((state) => state.user?.role === 'admin');
     const modelNameToDisplay = log.actual_model_name?.trim() || log.request_model_name?.trim() || '';
@@ -658,6 +716,11 @@ export const LogCard = React.memo(function LogCard({ log }: { log: RelayLog }) {
     const userName = useMemo(() => log.user_name?.trim() ?? '', [log.user_name]);
     const reasoningEffort = useMemo(() => log.reasoning_effort?.trim() ?? '', [log.reasoning_effort]);
     const channelKeyRemark = useMemo(() => log.channel_key_remark?.trim() ?? '', [log.channel_key_remark]);
+    const clientLabel = useMemo(() => humanizeClient(log.request_user_agent), [log.request_user_agent]);
+    const auditBadge = useMemo(
+        () => auditBadgeForLog(log, auditByChannelModel, t),
+        [log, auditByChannelModel, t],
+    );
     const requestEndpoint = useMemo(() => log.request_endpoint?.trim() ?? '', [log.request_endpoint]);
     const requestPath = useMemo(() => log.request_path?.trim() ?? '', [log.request_path]);
     // 连通性测试日志：费用/缓存/token 这些对它全是噪音，按这个标记隐掉。
@@ -789,28 +852,44 @@ export const LogCard = React.memo(function LogCard({ log }: { log: RelayLog }) {
                                         {t('autoRescue')}
                                     </Badge>
                                 )}
-                            </div>
-
-                            {/* 第 2 行：紧凑摘要带固定两行（与 5050 等高对齐：行1 身份与用量，行2 性能与费用）。
-                                行首放「流式/非流式」徽标与「查看详情」入口（GLM 控制台式两行布局：
-                                主行只留路由链路，次要信息全部下沉）。 */}
-                            <div className="flex min-w-0 flex-col gap-2 text-xs tabular-nums text-muted-foreground">
-                                <div className="flex min-w-0 flex-wrap items-center gap-x-4">
-                                {/* G0 流式与详情入口 */}
-                                {log.is_stream !== undefined && (
-                                    <Badge
-                                        variant="outline"
-                                        className="shrink-0 border-border/60 bg-muted/30 px-1.5 py-0 text-xs"
-                                    >
-                                        {log.is_stream ? t('stream') : t('nonStream')}
-                                    </Badge>
-                                )}
                                 {canViewDetails && (
-                                    <span className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
+                                    <span className="ml-auto hidden shrink-0 items-center gap-1 text-xs text-muted-foreground md:flex">
                                         <Eye className="size-3.5" />
                                         {t('openDetails')}
                                     </span>
                                 )}
+                            </div>
+
+                            {/* 识别行（单独一行）：下游客户端识别 + 上游模型真假检测。
+                                客户端徽标来自调用端 UA（humanizeClient）；检测徽标来自定时快检
+                                快照按 渠道+模型 匹配（管理员拉取，普通用户只有客户端徽标）。
+                                两者都缺时整行不渲染，老日志零高度变化。 */}
+                            {(clientLabel || auditBadge) && (
+                                <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1">
+                                    {clientLabel && (
+                                        <Badge
+                                            variant="outline"
+                                            className="shrink-0 border-violet-500/30 bg-violet-500/10 px-1.5 py-0 text-xs text-violet-600 dark:text-violet-300"
+                                            title={log.request_user_agent}
+                                        >
+                                            {clientLabel}
+                                        </Badge>
+                                    )}
+                                    {auditBadge && (
+                                        <Badge
+                                            variant="outline"
+                                            className={cn('shrink-0 px-1.5 py-0 text-xs', auditBadge.className)}
+                                            title={auditBadge.title}
+                                        >
+                                            {auditBadge.label}
+                                        </Badge>
+                                    )}
+                                </div>
+                            )}
+
+                            {/* 第 2 行：紧凑摘要带固定两行（与 5050 等高对齐：行1 身份与用量，行2 性能与费用） */}
+                            <div className="flex min-w-0 flex-col gap-2 text-xs tabular-nums text-muted-foreground">
+                                <div className="flex min-w-0 flex-wrap items-center gap-x-4">
                                 {/* G1 时间与位置 */}
                                 <div className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
                                     <Clock className="size-3.5 shrink-0 text-muted-foreground" />
