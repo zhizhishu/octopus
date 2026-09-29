@@ -2544,7 +2544,14 @@ func (ra *relayAttempt) shouldSynthesizeStreamDone() bool {
 		return false
 	}
 	switch ra.inboundType {
-	case inbound.InboundTypeOpenAIChat, inbound.InboundTypeOpenAIResponse, inbound.InboundTypeAnthropic:
+	// Gemini is included for successful-end finalization only: its inbound
+	// TransformStream treats the internal [DONE] sentinel as a flush trigger
+	// for buffered tool calls and returns no [DONE] wire bytes, so a stream
+	// that ends cleanly without a finish_reason frame or literal [DONE] (plain
+	// EOF) still delivers complete functionCall parts instead of silently
+	// dropping them. Failure paths (cancel/timeout/read error) never reach
+	// this synthesis and must keep failing without flushing partial calls.
+	case inbound.InboundTypeOpenAIChat, inbound.InboundTypeOpenAIResponse, inbound.InboundTypeAnthropic, inbound.InboundTypeGemini:
 		return true
 	default:
 		return false

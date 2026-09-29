@@ -282,3 +282,211 @@ func TestStreamSingleChunkToolCallEmitsCompleteOnFinish(t *testing.T) {
 		t.Fatalf("wrong args: %v", fc)
 	}
 }
+
+// 反例（协同审查 R1）：部分上游在同一工具的每个分片里重复完整函数名
+// （既有 chat_tool_name_dedup_test.go 记录的形态）。名字是原子值，取第一个
+// 非空值，绝不拼接；且出口名字必须与聚合（日志/计费口径）一致。
+func TestStreamRepeatedFullNameNotConcatenated(t *testing.T) {
+	inbound := &GenerateContentInbound{}
+	chunks := []*transformerModel.InternalLLMResponse{
+		{
+			Object: "chat.completion.chunk",
+			Choices: []transformerModel.Choice{{
+				Index: 0,
+				Delta: &transformerModel.Message{
+					ToolCalls: []transformerModel.ToolCall{{
+						ID:    "call_r1",
+						Index: 0,
+						Function: transformerModel.FunctionCall{
+							Name:      "oct9_lookup",
+							Arguments: "",
+						},
+					}},
+				},
+			}},
+		},
+		{
+			Object: "chat.completion.chunk",
+			Choices: []transformerModel.Choice{{
+				Index: 0,
+				Delta: &transformerModel.Message{
+					ToolCalls: []transformerModel.ToolCall{{
+						Index: 0,
+						Function: transformerModel.FunctionCall{
+							Name:      "oct9_lookup",
+							Arguments: `{"q": "OCT9-`,
+						},
+					}},
+				},
+			}},
+		},
+		{
+			Object: "chat.completion.chunk",
+			Choices: []transformerModel.Choice{{
+				Index: 0,
+				Delta: &transformerModel.Message{
+					ToolCalls: []transformerModel.ToolCall{{
+						Index: 0,
+						Function: transformerModel.FunctionCall{
+							Name:      "oct9_lookup",
+							Arguments: `R1}"}`,
+						},
+					}},
+				},
+				FinishReason: strPtr("tool_calls"),
+			}},
+		},
+	}
+
+	var wire strings.Builder
+	for _, chunk := range chunks {
+		out, err := inbound.TransformStream(context.Background(), chunk)
+		if err != nil {
+			t.Fatalf("transform stream: %v", err)
+		}
+		wire.Write(out)
+	}
+	if strings.Contains(wire.String(), "oct9_lookupoct9_lookup") {
+		t.Fatalf("tool name concatenated on client wire: %s", wire.String())
+	}
+	if !strings.Contains(wire.String(), `"name":"oct9_lookup"`) {
+		t.Fatalf("complete functionCall missing: %s", wire.String())
+	}
+
+	// 出口与聚合口径必须一致：客户端看到的名字 = 日志/计费记录的名字。
+	aggregate, err := inbound.GetInternalResponse(context.Background())
+	if err != nil {
+		t.Fatalf("aggregate: %v", err)
+	}
+	aggName := aggregate.Choices[0].Message.ToolCalls[0].Function.Name
+	if aggName != "oct9_lookup" {
+		t.Fatalf("aggregate name diverges: %q", aggName)
+	}
+}
+
+// 名字迟到：首片只有参数增量、名字为空，后续片才带完整名字。
+func TestStreamNameArrivesInLaterFragment(t *testing.T) {
+	inbound := &GenerateContentInbound{}
+	chunks := []*transformerModel.InternalLLMResponse{
+		{
+			Object: "chat.completion.chunk",
+			Choices: []transformerModel.Choice{{
+				Index: 0,
+				Delta: &transformerModel.Message{
+					ToolCalls: []transformerModel.ToolCall{{
+						ID:    "call_late",
+						Index: 0,
+						Function: transformerModel.FunctionCall{
+							Arguments: `{"text": "OCT9-`,
+						},
+					}},
+				},
+			}},
+		},
+		{
+			Object: "chat.completion.chunk",
+			Choices: []transformerModel.Choice{{
+				Index: 0,
+				Delta: &transformerModel.Message{
+					ToolCalls: []transformerModel.ToolCall{{
+						Index: 0,
+						Function: transformerModel.FunctionCall{
+							Name:      "oct9_late",
+							Arguments: `LATE}"}`,
+						},
+					}},
+				},
+				FinishReason: strPtr("tool_calls"),
+			}},
+		},
+	}
+
+	var sawComplete bool
+	for _, chunk := range chunks {
+		out, err := inbound.TransformStream(context.Background(), chunk)
+		if err != nil {
+			t.Fatalf("transform stream: %v", err)
+		}
+		if !strings.Contains(string(out), `"name":"oct9_late"`) {
+			continue
+		}
+		if !strings.Contains(string(out), `OCT9-LATE}`) {
+			t.Fatalf("late name emitted without complete args: %s", out)
+		}
+		sawComplete = true
+	}
+	if !sawComplete {
+		t.Fatalf("late-arriving name never emitted as a complete call")
+	}
+}
+
+// 参数归一化契约（参考项目 CLIProxyAPI parseArgsToObjectRaw 同款）：
+// JSON 对象原样通过；空、截断、null/数组/标量一律归一为空对象——调用
+// 不丢、不报错、客户端拿到结构完好的 functionCall。
+func TestParseToolCallArgsObject(t *testing.T) {
+	cases := []struct {
+		name      string
+		arguments string
+		want      map[string]interface{}
+	}{
+		{"valid object", `{"x":1}`, map[string]interface{}{"x": float64(1)}},
+		{"empty object", `{}`, map[string]interface{}{}},
+		{"empty string", "", map[string]interface{}{}},
+		{"whitespace only", "  ", map[string]interface{}{}},
+		{"truncated object", `{"x":`, map[string]interface{}{}},
+		{"json null", `null`, map[string]interface{}{}},
+		{"json array", `[]`, map[string]interface{}{}},
+		{"json scalar", `42`, map[string]interface{}{}},
+		{"garbage", `not json`, map[string]interface{}{}},
+	}
+	for _, tc := range cases {
+		got := parseToolCallArgsObject(tc.arguments)
+		if len(got) != len(tc.want) {
+			t.Fatalf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
+		for k, v := range tc.want {
+			if got[k] != v {
+				t.Fatalf("%s: key %q got %v, want %v", tc.name, k, got[k], v)
+			}
+		}
+	}
+}
+
+// 截断参数（如 finish_reason=length 切断 JSON）仍须发出带名字的完好调用，
+// 不丢调用、不报错——与参考项目的 fail-open 归一化一致。
+func TestStreamTruncatedArgsStillEmitNamedCall(t *testing.T) {
+	inbound := &GenerateContentInbound{}
+	chunks := []*transformerModel.InternalLLMResponse{
+		{
+			Object: "chat.completion.chunk",
+			Choices: []transformerModel.Choice{{
+				Index: 0,
+				Delta: &transformerModel.Message{
+					ToolCalls: []transformerModel.ToolCall{{
+						ID:    "call_trunc",
+						Index: 0,
+						Function: transformerModel.FunctionCall{
+							Name:      "oct9_trunc",
+							Arguments: `{"x":`,
+						},
+					}},
+				},
+			}},
+		},
+		{Object: "[DONE]"},
+	}
+
+	var sawNamed bool
+	for _, chunk := range chunks {
+		out, err := inbound.TransformStream(context.Background(), chunk)
+		if err != nil {
+			t.Fatalf("truncated args must not error: %v", err)
+		}
+		if strings.Contains(string(out), `"name":"oct9_trunc"`) {
+			sawNamed = true
+		}
+	}
+	if !sawNamed {
+		t.Fatalf("truncated-args call dropped entirely")
+	}
+}

@@ -152,7 +152,15 @@ func (i *GenerateContentInbound) streamEmissionView(stream *model.InternalLLMRes
 				if frag.ID != "" {
 					buf.id = frag.ID
 				}
-				buf.name += frag.Function.Name
+				// Tool-call name is atomic, never a streamed fragment: some
+				// upstream shapes repeat the full name on every chunk, which
+				// concatenation would corrupt (lookup -> lookuplookup). Take
+				// the first non-empty value, matching mergeToolCall's
+				// aggregation semantics so the emitted call and the audit-log
+				// aggregate always agree.
+				if frag.Function.Name != "" && buf.name == "" {
+					buf.name = frag.Function.Name
+				}
 				buf.args.WriteString(frag.Function.Arguments)
 			}
 		}
@@ -698,16 +706,36 @@ func convertMessageToGeminiContent(msg *model.Message) *model.GeminiContent {
 		}
 	}
 	for _, toolCall := range msg.ToolCalls {
-		var args map[string]interface{}
-		_ = json.Unmarshal([]byte(toolCall.Function.Arguments), &args)
 		content.Parts = append(content.Parts, &model.GeminiPart{
 			FunctionCall: &model.GeminiFunctionCall{
 				Name: toolCall.Function.Name,
-				Args: args,
+				Args: parseToolCallArgsObject(toolCall.Function.Arguments),
 			},
 		})
 	}
 	return content
+}
+
+// parseToolCallArgsObject normalizes a tool call's arguments string into the
+// Gemini functionCall args object. Contract follows the reference translator
+// (CLIProxyAPI ConvertOpenAIResponseToGemini): a JSON object passes through;
+// empty, truncated, or non-object input (null/array/scalar, e.g. a stream cut
+// mid-argument) normalizes to an empty object so the client always receives a
+// well-formed functionCall instead of a silently dropped or half-emitted call.
+// The reference additionally tolerates bareword values ({"city": 北京}); no
+// octopus upstream has been observed emitting that shape, so that layer is
+// deliberately not ported.
+// ponytail: add tolerant bareword parsing only when such an upstream appears.
+func parseToolCallArgsObject(arguments string) map[string]interface{} {
+	trimmed := strings.TrimSpace(arguments)
+	if trimmed == "" || trimmed == "{}" {
+		return map[string]interface{}{}
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(trimmed), &args); err != nil || args == nil {
+		return map[string]interface{}{}
+	}
+	return args
 }
 
 func convertFinishReasonToGemini(reason *string) *string {
