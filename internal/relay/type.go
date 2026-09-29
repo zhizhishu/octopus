@@ -203,6 +203,15 @@ type relayAttempt struct {
 	// in the model field returned to the client.
 	modelMapped bool
 
+	// upstreamDeclaredModel is THIS attempt's own observation of the upstream's
+	// self-declared response model (captured before the model_mapping rewrite,
+	// first non-empty wins within the attempt — stream chunks repeat the same
+	// model). It is deliberately attempt-scoped: the request-level metrics field
+	// is committed only by the attempt that actually produced the final response
+	// (collectResponse), so a failed attempt's declaration can never be attributed
+	// to the channel that later succeeded (F10).
+	upstreamDeclaredModel string
+
 	// prewarmMu/prewarmStopped guard the first-byte keepalive goroutine so the
 	// injected heartbeat writes and the main response writes never race.
 	prewarmMu      sync.Mutex

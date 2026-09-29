@@ -3676,6 +3676,9 @@ func (ra *relayAttempt) collectResponse() {
 	// 原文一致，不会把占位符存进 transcript（后续独立会话无该 token 映射会形成还原缺口）。
 	internalResponse = ra.restoreInternalResponseTexts(internalResponse)
 	ra.metrics.SetInternalResponse(internalResponse, ra.internalRequest.Model)
+	// 自报型号与 ActualModel 同点提交: 都归属「产出这次内部响应的尝试」。
+	// 失败尝试的声明留在尝试级不落请求级, 赢家不自报就是未知(F10)。
+	ra.metrics.CommitUpstreamDeclaredModel(ra.upstreamDeclaredModel)
 	ra.recordResponsesSessionFromInbound(internalResponse)
 }
 
@@ -3683,11 +3686,19 @@ func (ra *relayAttempt) collectResponse() {
 //
 // 必须在 model_mapping 的"客户端可见名还原"之前调用: 那一步会把 internalResponse.Model
 // 覆盖成 ra.requestModel, 覆盖之后就再也拿不到上游的真名了。纯观测, 不改任何转发字节。
+//
+// 写的是尝试级字段(首个非空胜出, 流式分片重复回显同一型号): 请求级 metrics 只在
+// collectResponse 由「产出最终响应的这次尝试」提交(见 CommitUpstreamDeclaredModel),
+// 失败尝试的声明不会挤占后来成功渠道的日志归属(F10)。
 func (ra *relayAttempt) captureUpstreamDeclaredModel(resp *model.InternalLLMResponse) {
 	if ra == nil || resp == nil {
 		return
 	}
-	ra.metrics.SetUpstreamDeclaredModel(resp.Model)
+	name := strings.TrimSpace(resp.Model)
+	if name == "" || ra.upstreamDeclaredModel != "" {
+		return
+	}
+	ra.upstreamDeclaredModel = name
 }
 
 func paramOverrideValue(ptr *string) string {

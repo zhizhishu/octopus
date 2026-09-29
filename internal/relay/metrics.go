@@ -49,7 +49,9 @@ type RelayMetrics struct {
 
 	// UpstreamDeclaredModel 是上游响应里自报的模型名。必须在 relay 把
 	// internalResponse.Model 改写成客户端可见名之前捕获(model_mapping 生效时会被覆盖),
-	// 否则拿到的永远是请求模型名而不是上游真名。见 SetUpstreamDeclaredModel。
+	// 否则拿到的永远是请求模型名而不是上游真名。归属规则: 只记「产出最终
+	// 响应的那次尝试」的观测, 失败尝试的声明不落请求级(见
+	// CommitUpstreamDeclaredModel)。
 	UpstreamDeclaredModel string
 
 	// usageEstimated is true when Stats' token/cost figures were counted locally
@@ -96,16 +98,18 @@ func (m *RelayMetrics) SetRequestEndpoint(endpoint string, path string) {
 	m.RequestPath = strings.TrimSpace(path)
 }
 
-// SetUpstreamDeclaredModel 记录上游响应自报的模型名。
+// CommitUpstreamDeclaredModel 把「产出本次最终响应的尝试」的自报型号写进请求级观测。
 //
-// 调用时机是硬要求: 必须在 relay 的"客户端可见名还原"之前。开启 model_mapping 时
-// relay 会把 internalResponse.Model 覆盖成 ra.requestModel(防止上游身份外泄给客户端),
+// 调用时机是硬要求: 必须在 relay 的"客户端可见名还原"之前完成捕获(见
+// relayAttempt.captureUpstreamDeclaredModel), 开启 model_mapping 时 relay 会把
+// internalResponse.Model 覆盖成 ra.requestModel(防止上游身份外泄给客户端),
 // 覆盖之后上游真名就没了。
 //
-// 首个非空声明胜出(流式每个分片通常都带同一个 model, 首个即可代表本次响应)。
-// 纯观测——不参与、不改变任何转发字节。
-func (m *RelayMetrics) SetUpstreamDeclaredModel(name string) {
-	if m == nil || m.UpstreamDeclaredModel != "" {
+// 无条件覆盖: "首个非空"的判定在尝试层(流式分片重复回显同一型号), 请求级只
+// 反映赢家——失败尝试的声明留在尝试级不落日志, 赢家不自报就是未知(空), 不
+// 沿用先前失败尝试的声明(F10)。纯观测——不参与、不改变任何转发字节。
+func (m *RelayMetrics) CommitUpstreamDeclaredModel(name string) {
+	if m == nil {
 		return
 	}
 	m.UpstreamDeclaredModel = strings.TrimSpace(name)
