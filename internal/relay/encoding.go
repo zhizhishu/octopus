@@ -54,6 +54,15 @@ func unwrapResponseEncoding(resp *http.Response) error {
 	return nil
 }
 
+// UnwrapResponseEncoding exposes unwrapResponseEncoding to sibling packages that
+// build their own upstream requests (model-test/channel-test probes), so an error
+// body that the upstream compressed is decoded before it is summarized. Without
+// this the probe recorded raw br/zstd bytes as the error text and the operator saw
+// mojibake instead of the provider's real message.
+func UnwrapResponseEncoding(resp *http.Response) error {
+	return unwrapResponseEncoding(resp)
+}
+
 // decompressBody adapts a decompressing reader back into an io.ReadCloser, closing
 // both the decompressor (when it is itself a Closer) and the underlying body.
 type decompressBody struct {

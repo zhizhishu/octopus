@@ -794,6 +794,15 @@ func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermod
 	}
 	defer response.Body.Close()
 
+	// Mirror relay.handleResponse: our outbound advertises the genuine claude-cli
+	// Accept-Encoding, which Go's transport does not auto-decompress, so both a
+	// compressed success body and a compressed error body must be decoded here.
+	// Skipping it made a 400 read as raw br/zstd bytes in the UI instead of the
+	// provider's actual reason.
+	if err := relay.UnwrapResponseEncoding(response); err != nil {
+		log.Warnf("model test: failed to decode upstream response body: %v", err)
+	}
+
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, upstreamBodyLimit))
 		code, message := upstreamErrorSummary(body)

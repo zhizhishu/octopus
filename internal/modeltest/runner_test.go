@@ -1,6 +1,7 @@
 package modeltest
 
 import (
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"io"
@@ -1318,6 +1319,58 @@ func TestRunRedactsSecretsFromUpstreamErrorSummary(t *testing.T) {
 	}
 	if !strings.Contains(result.Error, "[redacted]") || result.ErrorCode != "invalid_api_key" {
 		t.Fatalf("expected redacted provider error with code, got %#v", result)
+	}
+}
+
+func TestRunChannelDecodesCompressedUpstreamErrorBody(t *testing.T) {
+	ctx := setupModelTestDB(t)
+
+	const providerMessage = `{"error":{"type":"invalid_request_error","message":"\"thinking.type.disabled\" is not supported for this model. Use \"thinking.type.adaptive\" and \"output_config.effort\" to control thinking behavior."}}`
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The outbound advertises the genuine claude-cli Accept-Encoding, which Go's
+		// transport does not auto-decompress, so a real provider can compress even an
+		// error body. The probe must decode it, otherwise the operator sees mojibake
+		// instead of the provider's actual reason.
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Encoding", "gzip")
+		w.WriteHeader(http.StatusBadRequest)
+		gz := gzip.NewWriter(w)
+		_, _ = gz.Write([]byte(providerMessage))
+		_ = gz.Close()
+	}))
+	t.Cleanup(upstream.Close)
+
+	stream := false
+	response, err := RunChannel(ctx, dbmodel.Channel{
+		Name:    "compressed-error-channel",
+		Type:    outbound.OutboundTypeAnthropic,
+		Enabled: true,
+		BaseUrls: []dbmodel.BaseUrl{{
+			URL: upstream.URL,
+		}},
+		Keys: []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "sk-provider-request"}},
+	}, dbmodel.ModelTestRequest{
+		Model:    "claude-opus-5-5",
+		Endpoint: "anthropic_messages",
+		Stream:   &stream,
+	})
+	if err != nil {
+		t.Fatalf("run channel test: %v", err)
+	}
+	if response.Summary.Success != 0 || len(response.Results) != 1 {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+	result := response.Results[0]
+	combined := result.Error
+	if len(result.Attempts) > 0 {
+		combined += " " + result.Attempts[0].Msg
+	}
+	if !strings.Contains(combined, "thinking.type.disabled") {
+		t.Fatalf("expected the decoded provider message, got %q", combined)
+	}
+	if strings.ContainsRune(combined, '�') {
+		t.Fatalf("compressed error body leaked as mojibake: %q", combined)
 	}
 }
 

@@ -38,6 +38,18 @@ func (o *MessageOutbound) TransformRequest(ctx context.Context, request *model.I
 	// Convert to Anthropic request format
 	anthropicReq := convertToAnthropicRequest(request)
 
+	// Official Anthropic no longer accepts an explicit "disabled" thinking type on
+	// its current models: api.anthropic.com answers 400 `"thinking.type.disabled" is
+	// not supported for this model. Use "thinking.type.adaptive" and
+	// "output_config.effort" to control thinking behavior.` Omitting the field means
+	// the same thing (no extended thinking) and is accepted everywhere, so drop it —
+	// but ONLY for official bases. Third-party relays keep the byte-exact claude-cli
+	// shape they fingerprint on, where an explicit {"type":"disabled"} is expected.
+	if isOfficialAnthropicBase(baseUrl) && anthropicReq.Thinking != nil &&
+		anthropicReq.Thinking.Type == anthropicModel.ThinkingTypeDisabled {
+		anthropicReq.Thinking = nil
+	}
+
 	// Use a JSON encoder with HTML escaping disabled to match the real Claude
 	// CLI's Node.js JSON.stringify output. Go default json.Marshal escapes <, >,
 	// & as \u003c/\u003e/\u0026 — captured wire evidence (forward.jsonl) shows
@@ -141,7 +153,9 @@ func applyAnthropicAuthHeaders(req *http.Request, baseURL, key string) {
 	}
 }
 
-func shouldSendAnthropicBearerAuth(baseURL string) bool {
+// isOfficialAnthropicBase reports whether baseURL points at Anthropic's own API
+// (api.anthropic.com and its subdomains) rather than a third-party relay.
+func isOfficialAnthropicBase(baseURL string) bool {
 	parsed, err := url.Parse(strings.TrimSpace(baseURL))
 	if err != nil {
 		return false
@@ -150,10 +164,18 @@ func shouldSendAnthropicBearerAuth(baseURL string) bool {
 	if host == "" {
 		return false
 	}
-	if host == "api.anthropic.com" || strings.HasSuffix(host, ".anthropic.com") {
+	return host == "api.anthropic.com" || strings.HasSuffix(host, ".anthropic.com")
+}
+
+func shouldSendAnthropicBearerAuth(baseURL string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil {
 		return false
 	}
-	return true
+	if strings.ToLower(parsed.Hostname()) == "" {
+		return false
+	}
+	return !isOfficialAnthropicBase(baseURL)
 }
 
 func (o *MessageOutbound) TransformResponse(ctx context.Context, response *http.Response) (*model.InternalLLMResponse, error) {
