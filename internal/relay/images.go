@@ -136,6 +136,7 @@ func ImagesHandler(endpoint string, c *gin.Context) {
 
 	// 初始化 Metrics（Images 独立，避免 b64_json 内存膨胀）
 	metrics := newImagesRelayMetrics(apiKeyID, userID, c.GetString("request_ip"), requestModel, imageEndpointName(endpoint), c.Request.URL.Path)
+	metrics.RequestUserAgent = c.Request.UserAgent()
 	metrics.SetAccessPlan(routeResult.AccessPlan, routeResult.AccessRouteRule, routeResult.AccessRouteUsed)
 	metrics.SetClientSession(clientSession)
 	metrics.RequestContent = buildImagesRequestContentForLog(isMultipart, bc, jsonPayload)
@@ -416,15 +417,16 @@ func (u imagesUsage) CacheInputTokenCount() int {
 }
 
 type imagesRelayMetrics struct {
-	APIKeyID        int
-	UserID          int
-	RequestIP       string
-	RequestModel    string
-	RequestEndpoint string
-	RequestPath     string
-	ActualModel     string
-	StartTime       time.Time
-	FirstToken      time.Time
+	APIKeyID         int
+	UserID           int
+	RequestIP        string
+	RequestUserAgent string
+	RequestModel     string
+	RequestEndpoint  string
+	RequestPath      string
+	ActualModel      string
+	StartTime        time.Time
+	FirstToken       time.Time
 
 	Stats model.StatsMetrics
 
@@ -640,6 +642,7 @@ func (m *imagesRelayMetrics) saveLog(ctx context.Context, err error, duration ti
 		UserID:           m.UserID,
 		APIKeyID:         m.APIKeyID,
 		RequestIP:        m.RequestIP,
+		RequestUserAgent: truncateUserAgentForLog(m.RequestUserAgent),
 		Time:             m.StartTime.Unix(),
 		RequestEndpoint:  m.RequestEndpoint,
 		RequestPath:      m.RequestPath,

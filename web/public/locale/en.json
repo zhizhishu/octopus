@@ -791,6 +791,7 @@
             "upstreamEcho": "Upstream reported",
             "reasoningEffort": "Reasoning Effort",
             "userName": "User",
+            "client": "Client",
             "channelKey": "Key Remark",
             "thinking": "Thinking",
             "basePrice": "Base Price (In/Out)"

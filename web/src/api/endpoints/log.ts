@@ -87,6 +87,7 @@ export interface RelayLog {
     time: number;                // 时间戳
     request_endpoint?: string;   // chat / responses / messages / raw protocol name
     request_path?: string;       // original inbound path
+    request_user_agent?: string; // 调用端 User-Agent 原样快照(512 截断), 供客户端识别
     request_model_name: string;  // 请求模型名称
     request_api_key_name?: string; // 请求使用的 API Key 名称
     user_name?: string;          // 发起请求的用户名, 仅管理员日志返回

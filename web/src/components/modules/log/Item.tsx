@@ -12,6 +12,7 @@ import { create } from 'zustand';
 import { fetchLogById, getRelayLogSeverity, type RelayLog, type ChannelAttempt } from '@/api/endpoints/log';
 import {
     getLogVerdict,
+    humanizeClient,
     humanizeErrorCode,
     humanizeUsageSource,
     humanizeUsageReason,
@@ -301,6 +302,7 @@ function LogRouteHeader({
     const textMode = isCard ? undefined : 'wrap';
     const requestModelDisplayName = marketModelName(log.request_model_name) || log.request_model_name;
     const actualModelDisplayName = marketModelName(log.actual_model_name) || log.actual_model_name;
+    const clientLabel = humanizeClient(log.request_user_agent);
     const upstreamEchoName = log.upstream_response_model?.trim() ?? '';
     const upstreamEchoDisplayName = upstreamEchoName
         ? (marketModelName(upstreamEchoName) || upstreamEchoName)
@@ -353,6 +355,18 @@ function LogRouteHeader({
                 title={requestModelDisplayName === log.request_model_name ? undefined : log.request_model_name}
                 className="font-semibold text-card-foreground"
             />
+            {/* 客户端识别: 调用端 UA 解析出的客户端名(原样 UA 挂 title 提示)。
+                放在请求模型与渠道之间——「点的是哪个模型 · 谁在调 · 走了哪条渠道」。
+                紫色系与渠道的品牌色区分开: 客户端=谁在用, 渠道=走了哪。 */}
+            {clientLabel && (
+                <Badge
+                    variant="outline"
+                    className="shrink-0 border-violet-500/30 bg-violet-500/10 px-1.5 py-0 text-xs text-violet-600 dark:text-violet-300"
+                    title={log.request_user_agent}
+                >
+                    {clientLabel}
+                </Badge>
+            )}
             {/* Channel identity is admin-only: a normal user's log carries no
                 channel_name (see RelayLogUserSummary), so the header degrades to
                 request model → actual model without ever revealing the upstream. */}
@@ -944,6 +958,11 @@ export const LogCard = React.memo(function LogCard({ log }: { log: RelayLog }) {
                                     {requestAPIKeyName && (
                                         <DetailTile icon={<KeyRound className="size-3.5" />} label="API Key">
                                             <MonoSafeText mode="wrap" value={maskSensitive(requestAPIKeyName, sensitiveVisible)} className="block text-xs text-foreground" />
+                                        </DetailTile>
+                                    )}
+                                    {log.request_user_agent && (
+                                        <DetailTile icon={<User className="size-3.5" />} label={t('client')}>
+                                            <MonoSafeText mode="wrap" value={log.request_user_agent} className="block text-xs text-foreground" />
                                         </DetailTile>
                                     )}
                                     {userName && (

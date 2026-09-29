@@ -791,6 +791,7 @@
             "upstreamEcho": "上游自报",
             "reasoningEffort": "推理强度",
             "userName": "用户",
+            "client": "客户端",
             "channelKey": "渠道 Key 备注",
             "thinking": "思考",
             "basePrice": "基准单价(In/Out)"

@@ -978,6 +978,7 @@ func RelayLogUserSummary(relayLog model.RelayLog) model.RelayLogUserSummary {
 		RequestEndpoint:   relayLog.RequestEndpoint,
 		RequestPath:       relayLog.RequestPath,
 		RequestModelName:  relayLog.RequestModelName,
+		RequestUserAgent:  relayLog.RequestUserAgent,
 		RequestAPIKeyName: relayLog.RequestAPIKeyName,
 		// ChannelId / ChannelName are intentionally NOT copied: a normal user's log
 		// view must not reveal which upstream channel served the request (the channel

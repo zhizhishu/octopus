@@ -55,13 +55,18 @@ type ChannelAttempt struct {
 }
 
 type RelayLog struct {
-	ID                int64  `json:"id" gorm:"primaryKey;autoIncrement:false"`
-	UserID            int    `json:"user_id" gorm:"index;default:0"`
-	APIKeyID          int    `json:"api_key_id" gorm:"index;default:0"`
-	RequestIP         string `json:"request_ip,omitempty" gorm:"size:128;index"`
-	Time              int64  `json:"time" gorm:"index"`
-	RequestEndpoint   string `json:"request_endpoint" gorm:"size:64;index"`
-	RequestPath       string `json:"request_path" gorm:"size:256"`
+	ID              int64  `json:"id" gorm:"primaryKey;autoIncrement:false"`
+	UserID          int    `json:"user_id" gorm:"index;default:0"`
+	APIKeyID        int    `json:"api_key_id" gorm:"index;default:0"`
+	RequestIP       string `json:"request_ip,omitempty" gorm:"size:128;index"`
+	Time            int64  `json:"time" gorm:"index"`
+	RequestEndpoint string `json:"request_endpoint" gorm:"size:64;index"`
+	RequestPath     string `json:"request_path" gorm:"size:256"`
+	// RequestUserAgent 是调用端 User-Agent 的原样快照(512 rune 截断), 供日志页识别
+	// 客户端(claude-cli/codex/cursor/cherry/浏览器/SDK)。做法对齐 new-api/axonhub:
+	// 原样存库、前端解析展示; 服务端不做 UA→名称映射表, 避免随客户端生态漂移。
+	// 纯观测字段: 不参与路由/计费/指纹, 出站 UA 仍由 header 默认值统一覆盖。
+	RequestUserAgent  string `json:"request_user_agent,omitempty" gorm:"size:512"`
 	RequestModelName  string `json:"request_model_name"`
 	RequestAPIKeyName string `json:"request_api_key_name"`
 	UserName          string `json:"user_name"`
@@ -126,12 +131,14 @@ type RelayLog struct {
 }
 
 type RelayLogUserSummary struct {
-	ID                int64  `json:"id"`
-	UserID            int    `json:"user_id"`
-	APIKeyID          int    `json:"api_key_id"`
-	Time              int64  `json:"time"`
-	RequestEndpoint   string `json:"request_endpoint"`
-	RequestPath       string `json:"request_path"`
+	ID              int64  `json:"id"`
+	UserID          int    `json:"user_id"`
+	APIKeyID        int    `json:"api_key_id"`
+	Time            int64  `json:"time"`
+	RequestEndpoint string `json:"request_endpoint"`
+	RequestPath     string `json:"request_path"`
+	// 调用端自己的 UA 快照: 属于用户自己的请求信息, 随摘要下发(不含任何上游身份)。
+	RequestUserAgent  string `json:"request_user_agent,omitempty"`
 	RequestModelName  string `json:"request_model_name"`
 	RequestAPIKeyName string `json:"request_api_key_name"`
 	// Channel identity is deliberately omitted from the user-facing summary so a

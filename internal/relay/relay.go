@@ -84,6 +84,9 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 
 	// 初始化 Metrics
 	metrics := NewRelayMetrics(apiKeyID, userID, c.GetString("request_ip"), requestModel, internalRequest)
+	// 客户端识别: 原样快照调用端 User-Agent(落库时 512 截断)。纯观测字段——
+	// 出站 UA 仍由 header 默认值统一覆盖, 这里只回答"谁在调用"。
+	metrics.RequestUserAgent = c.Request.UserAgent()
 	requestEndpoint := endpointNameForInbound(inboundType, c.Request.URL.Path)
 	metrics.SetRequestEndpoint(requestEndpoint, c.Request.URL.Path)
 	metrics.SetAccessPlan(routeResult.AccessPlan, routeResult.AccessRouteRule, routeResult.AccessRouteUsed)

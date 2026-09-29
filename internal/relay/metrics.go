@@ -20,13 +20,14 @@ const metricsPersistTimeout = 30 * time.Second
 
 // RelayMetrics 负责最终的日志收集与持久化
 type RelayMetrics struct {
-	APIKeyID        int
-	UserID          int
-	RequestIP       string
-	RequestModel    string
-	RequestEndpoint string
-	RequestPath     string
-	StartTime       time.Time
+	APIKeyID         int
+	UserID           int
+	RequestIP        string
+	RequestUserAgent string
+	RequestModel     string
+	RequestEndpoint  string
+	RequestPath      string
+	StartTime        time.Time
 
 	// 首 Token 时间
 	FirstTokenTime time.Time
@@ -85,6 +86,21 @@ func NewRelayMetrics(apiKeyID int, userID int, requestIP string, requestModel st
 
 func (m *RelayMetrics) SetFirstTokenTime(t time.Time) {
 	m.FirstTokenTime = t
+}
+
+// truncateUserAgentForLog caps the stored client User-Agent at 512 runes (the
+// column width). Rune-safe so a multi-byte UA never splits mid-character, and
+// no suffix marker is appended — the frontend parses the raw UA for client
+// identification, so the stored value stays clean.
+func truncateUserAgentForLog(ua string) string {
+	ua = strings.TrimSpace(ua)
+	if ua == "" {
+		return ""
+	}
+	if r := []rune(ua); len(r) > 512 {
+		return string(r[:512])
+	}
+	return ua
 }
 
 func (m *RelayMetrics) SetAccessPlan(plan *model.AccessPlan, rule *model.AccessRouteRule, routeUsed bool) {
@@ -576,6 +592,7 @@ func (m *RelayMetrics) saveLog(ctx context.Context, err error, duration time.Dur
 		UserID:                m.UserID,
 		APIKeyID:              m.APIKeyID,
 		RequestIP:             m.RequestIP,
+		RequestUserAgent:      truncateUserAgentForLog(m.RequestUserAgent),
 		Time:                  m.StartTime.Unix(),
 		RequestEndpoint:       m.RequestEndpoint,
 		RequestPath:           m.RequestPath,

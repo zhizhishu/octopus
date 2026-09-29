@@ -136,6 +136,7 @@ func RawProtocolHandler(options RawProtocolOptions, c *gin.Context) {
 	}
 
 	metrics := newRawProtocolRelayMetrics(apiKeyID, userID, c.GetString("request_ip"), requestModel, options.Name, c.Request.URL.Path)
+	metrics.RequestUserAgent = c.Request.UserAgent()
 	metrics.SetAccessPlan(routeResult.AccessPlan, routeResult.AccessRouteRule, routeResult.AccessRouteUsed)
 	metrics.SetClientSession(clientSession)
 	metrics.RequestContent = buildRawProtocolRequestContent(isMultipart, bc, jsonPayload, options.Name)
@@ -972,15 +973,16 @@ func proxyOpaqueResponse(c *gin.Context, respUp *http.Response) (*imagesUsage, b
 }
 
 type rawProtocolRelayMetrics struct {
-	APIKeyID     int
-	UserID       int
-	RequestIP    string
-	RequestModel string
-	Protocol     string
-	RequestPath  string
-	ActualModel  string
-	StartTime    time.Time
-	FirstToken   time.Time
+	APIKeyID         int
+	UserID           int
+	RequestIP        string
+	RequestUserAgent string
+	RequestModel     string
+	Protocol         string
+	RequestPath      string
+	ActualModel      string
+	StartTime        time.Time
+	FirstToken       time.Time
 
 	Stats model.StatsMetrics
 
@@ -1188,6 +1190,7 @@ func (m *rawProtocolRelayMetrics) saveLog(ctx context.Context, err error, durati
 		UserID:           m.UserID,
 		APIKeyID:         m.APIKeyID,
 		RequestIP:        m.RequestIP,
+		RequestUserAgent: truncateUserAgentForLog(m.RequestUserAgent),
 		Time:             m.StartTime.Unix(),
 		RequestEndpoint:  cleanRelayEndpointName(m.Protocol),
 		RequestPath:      m.RequestPath,

@@ -155,6 +155,45 @@ export function humanizeSessionSource(source: string | undefined): string | unde
 }
 
 /**
+ * 客户端识别: 把调用端 User-Agent 解析成人类可读的客户端名。
+ *
+ * 服务端只存原始 UA(对齐 new-api/axonhub 的做法), 映射在前端做——客户端生态
+ * 漂移时改这里即可, 不动库表。识别不出的 UA 截断展示原样字符串, 不猜。
+ * 顺序按「最具体的在前」: claude-cli 必须先于泛 claude, codex_cli_rs 先于 codex。
+ */
+const CLIENT_LABELS: Array<[pattern: RegExp, label: string]> = [
+    [/^claude-cli\//i, 'Claude CLI'],
+    [/^codex_cli_rs|^codex_cli|^codex-tui|^codex_exec|^codex\//i, 'Codex CLI'],
+    [/^codex/i, 'Codex'],
+    [/^claude/i, 'Claude'],
+    [/cursor/i, 'Cursor'],
+    [/cherrystudio|^cherry/i, 'Cherry Studio'],
+    [/continue\//i, 'Continue'],
+    [/^cline/i, 'Cline'],
+    [/^roo/i, 'Roo Code'],
+    [/windsurf/i, 'Windsurf'],
+    [/^dsh\//i, 'DSH'],
+    [/^pi\//i, 'Pi'],
+    [/vscode|^code\//i, 'VS Code'],
+    [/^mozilla\//i, '浏览器'],
+    [/python-requests|^python\//i, 'Python'],
+    [/^node|^axios|^undici/i, 'Node.js'],
+    [/^go-http-client/i, 'Go'],
+    [/^okhttp|^java\//i, 'Java'],
+    [/^curl\//i, 'curl'],
+    [/^wget/i, 'wget'],
+];
+
+export function humanizeClient(ua: string | undefined): string | undefined {
+    const raw = ua?.trim();
+    if (!raw) return undefined;
+    for (const [pattern, label] of CLIENT_LABELS) {
+        if (pattern.test(raw)) return label;
+    }
+    return raw.length > 28 ? `${raw.slice(0, 28)}…` : raw;
+}
+
+/**
  * 一句话「锅在谁」结论。
  *
  * 判定优先级（从最明确到兜底）：
