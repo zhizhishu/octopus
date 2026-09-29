@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/bestruirui/octopus/internal/transformer/model"
@@ -27,6 +28,20 @@ func WithRequestOptions(ctx context.Context, model string, stream bool) context.
 type GenerateContentInbound struct {
 	streamChunks   []*model.InternalLLMResponse
 	storedResponse *model.InternalLLMResponse
+	// toolCallFragments buffers streamed tool-call fragments per
+	// (choice index, tool-call index) until the choice finishes. Gemini's
+	// wire format has no incremental functionCall arguments, so OpenAI-style
+	// fragments (name-only first delta, argument-only follow-ups) must be
+	// reassembled and emitted as ONE complete functionCall part — forwarding
+	// them raw loses the arguments entirely (§9 F13).
+	toolCallFragments map[int]map[int]*streamedToolCall
+}
+
+// streamedToolCall accumulates one tool call's streamed fragments.
+type streamedToolCall struct {
+	id   string
+	name string
+	args strings.Builder
 }
 
 func (i *GenerateContentInbound) TransformRequest(ctx context.Context, body []byte) (*model.InternalLLMRequest, error) {
@@ -73,16 +88,173 @@ func (i *GenerateContentInbound) TransformResponse(ctx context.Context, response
 }
 
 func (i *GenerateContentInbound) TransformStream(ctx context.Context, stream *model.InternalLLMResponse) ([]byte, error) {
-	if stream == nil || stream.Object == "[DONE]" {
+	if stream == nil {
 		return nil, nil
+	}
+	if stream.Object == "[DONE]" {
+		// The stream ended: flush tool calls that never saw a finish_reason
+		// chunk so their buffered arguments are not lost.
+		return i.flushBufferedToolCalls(), nil
 	}
 
 	i.streamChunks = append(i.streamChunks, stream)
-	body, err := json.Marshal(convertInternalResponseToGemini(stream, true))
+	body, err := json.Marshal(convertInternalResponseToGemini(i.streamEmissionView(stream), true))
 	if err != nil {
 		return nil, err
 	}
 	return []byte("data: " + string(body) + "\n\n"), nil
+}
+
+// streamEmissionView returns the chunk to serialize for the Gemini-native
+// stream. OpenAI-style tool-call fragments are buffered (never forwarded
+// raw: Gemini has no incremental functionCall arguments, so a name-only
+// first delta or an argument-only follow-up would emit an unusable part and
+// lose the arguments). When the choice finishes, the buffered fragments are
+// emitted as complete tool calls on that same frame. The original chunk
+// (already kept in streamChunks for aggregation) is never modified.
+func (i *GenerateContentInbound) streamEmissionView(stream *model.InternalLLMResponse) *model.InternalLLMResponse {
+	hasFragments := false
+	for _, choice := range stream.Choices {
+		if choice.Delta != nil && len(choice.Delta.ToolCalls) > 0 {
+			hasFragments = true
+			break
+		}
+	}
+	if !hasFragments {
+		// Nothing to buffer; a finishing choice can still release pending
+		// calls buffered by earlier chunks.
+		releasing := false
+		if len(i.toolCallFragments) > 0 {
+			for _, choice := range stream.Choices {
+				if choice.FinishReason != nil {
+					releasing = true
+					break
+				}
+			}
+		}
+		if !releasing {
+			return stream
+		}
+	}
+
+	view := *stream
+	view.Choices = make([]model.Choice, len(stream.Choices))
+	copy(view.Choices, stream.Choices)
+	for ci := range view.Choices {
+		choice := &view.Choices[ci]
+		hasFrags := choice.Delta != nil && len(choice.Delta.ToolCalls) > 0
+		if !hasFrags && choice.FinishReason == nil {
+			continue
+		}
+		if hasFrags {
+			for _, frag := range choice.Delta.ToolCalls {
+				buf := i.toolCallBuffer(choice.Index, frag.Index)
+				if frag.ID != "" {
+					buf.id = frag.ID
+				}
+				buf.name += frag.Function.Name
+				buf.args.WriteString(frag.Function.Arguments)
+			}
+		}
+		if choice.FinishReason != nil {
+			if calls := i.takeCompletedToolCalls(choice.Index); len(calls) > 0 {
+				var deltaCopy model.Message
+				if choice.Delta != nil {
+					deltaCopy = *choice.Delta
+				}
+				deltaCopy.ToolCalls = calls
+				choice.Delta = &deltaCopy
+			} else if hasFrags {
+				deltaCopy := *choice.Delta
+				deltaCopy.ToolCalls = nil
+				choice.Delta = &deltaCopy
+			}
+			continue
+		}
+		// Fragments without a finish reason: suppress them in the emitted
+		// view; they stay buffered until the choice finishes.
+		deltaCopy := *choice.Delta
+		deltaCopy.ToolCalls = nil
+		choice.Delta = &deltaCopy
+	}
+	return &view
+}
+
+func (i *GenerateContentInbound) toolCallBuffer(choiceIndex, toolIndex int) *streamedToolCall {
+	if i.toolCallFragments == nil {
+		i.toolCallFragments = make(map[int]map[int]*streamedToolCall)
+	}
+	byTool := i.toolCallFragments[choiceIndex]
+	if byTool == nil {
+		byTool = make(map[int]*streamedToolCall)
+		i.toolCallFragments[choiceIndex] = byTool
+	}
+	buf := byTool[toolIndex]
+	if buf == nil {
+		buf = &streamedToolCall{}
+		byTool[toolIndex] = buf
+	}
+	return buf
+}
+
+// takeCompletedToolCalls drains the buffered fragments for one choice into
+// complete tool calls, ordered by tool-call index.
+func (i *GenerateContentInbound) takeCompletedToolCalls(choiceIndex int) []model.ToolCall {
+	byTool := i.toolCallFragments[choiceIndex]
+	if len(byTool) == 0 {
+		return nil
+	}
+	delete(i.toolCallFragments, choiceIndex)
+	toolIndices := make([]int, 0, len(byTool))
+	for toolIndex := range byTool {
+		toolIndices = append(toolIndices, toolIndex)
+	}
+	sort.Ints(toolIndices)
+	calls := make([]model.ToolCall, 0, len(toolIndices))
+	for _, toolIndex := range toolIndices {
+		buf := byTool[toolIndex]
+		calls = append(calls, model.ToolCall{
+			ID:    buf.id,
+			Index: toolIndex,
+			Function: model.FunctionCall{
+				Name:      buf.name,
+				Arguments: buf.args.String(),
+			},
+		})
+	}
+	return calls
+}
+
+// flushBufferedToolCalls emits any tool calls still buffered when the stream
+// ends without a finish_reason chunk, so their arguments are not lost.
+func (i *GenerateContentInbound) flushBufferedToolCalls() []byte {
+	if len(i.toolCallFragments) == 0 {
+		return nil
+	}
+	choiceIndices := make([]int, 0, len(i.toolCallFragments))
+	for choiceIndex := range i.toolCallFragments {
+		choiceIndices = append(choiceIndices, choiceIndex)
+	}
+	sort.Ints(choiceIndices)
+	resp := &model.InternalLLMResponse{Object: "chat.completion.chunk"}
+	for _, choiceIndex := range choiceIndices {
+		calls := i.takeCompletedToolCalls(choiceIndex)
+		if len(calls) == 0 {
+			continue
+		}
+		resp.Choices = append(resp.Choices, model.Choice{
+			Index: choiceIndex,
+			Delta: &model.Message{ToolCalls: calls},
+		})
+	}
+	if len(resp.Choices) == 0 {
+		return nil
+	}
+	body, err := json.Marshal(convertInternalResponseToGemini(resp, true))
+	if err != nil {
+		return nil
+	}
+	return []byte("data: " + string(body) + "\n\n")
 }
 
 func (i *GenerateContentInbound) GetInternalResponse(ctx context.Context) (*model.InternalLLMResponse, error) {
