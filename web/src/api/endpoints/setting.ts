@@ -140,6 +140,23 @@ export function useSetSetting() {
 }
 
 /**
+ * 读取密钥类设置的明文（后端受保护的一次性接口 `GET /setting/secret`）。
+ * 只支持 admin_access_token 这一个 key；用管理员令牌自身鉴权的会话会被后端 403。
+ * 刻意不走 react-query：明文不进任何查询缓存，随调用方组件卸载即丢。
+ */
+export type SettingSecretSource = 'setting' | 'env' | 'none';
+
+export interface SettingSecret {
+    key: string;
+    value: string;
+    source: SettingSecretSource;
+}
+
+export function fetchSettingSecret(key: string): Promise<SettingSecret> {
+    return apiClient.get<SettingSecret>('/api/v1/setting/secret', { key });
+}
+
+/**
  * 全局默认分流模式（route_mode_override）。
  * 用户定 2027-02-21：只留「轮询 / 优先填充」两档，去掉「跟随各规则」；
  * 历史空值/未知值在 UI 归一到默认档，并一次性固化写回，保证后端缺省与 UI 显示一致。

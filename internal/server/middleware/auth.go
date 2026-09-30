@@ -28,6 +28,9 @@ func Auth() gin.HandlerFunc {
 			// a short-lived login JWT. Only matches a non-empty configured token (empty =
 			// disabled, never a backdoor); see auth.VerifyAdminAccessToken.
 			if admin, matched := auth.VerifyAdminAccessToken(bearer); matched {
+				// Distinguish the credential kind so handlers can refuse to let an
+				// automation token export a secret (see setting.getSettingSecret).
+				c.Set("auth_method", "admin_token")
 				SetCurrentUser(c, admin)
 				c.Next()
 				return
@@ -36,6 +39,7 @@ func Auth() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
+		c.Set("auth_method", "jwt")
 		SetCurrentUser(c, user)
 		c.Next()
 	}

@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/bestruirui/octopus/internal/conf"
 	"github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/op"
 	"github.com/bestruirui/octopus/internal/server/middleware"
@@ -29,6 +31,10 @@ func init() {
 			router.NewRoute("/set", http.MethodPost).
 				Use(middleware.RequireJSON()).
 				Handle(setSetting),
+		).
+		AddRoute(
+			router.NewRoute("/secret", http.MethodGet).
+				Handle(getSettingSecret),
 		).
 		AddRoute(
 			router.NewRoute("/export", http.MethodGet).
@@ -55,6 +61,51 @@ func getSettingList(c *gin.Context) {
 		}
 	}
 	resp.Success(c, settings)
+}
+
+// getSettingSecret returns the PLAINTEXT of the ONE secret the Settings page must be
+// able to show and copy: the admin access token. Guard rails that keep this from
+// becoming a generic "read any secret" endpoint:
+//   - `key` must be SettingKeyAdminToken (anything else is 400);
+//   - a request authenticated BY the admin token itself gets 403 — an automation
+//     credential must never be able to export the credential it is using, only a
+//     real logged-in admin session may read it;
+//   - a token supplied by the <APP>_ADMIN_TOKEN env var is NOT exported (source
+//     "env" with an empty value); the page only tells the operator to manage it in
+//     the deployment config;
+//   - Cache-Control: no-store so the plaintext never lands in a browser/proxy cache;
+//   - the value is never logged, never put in an error string, never fmt-printed.
+func getSettingSecret(c *gin.Context) {
+	key := c.Query("key")
+	if key != string(model.SettingKeyAdminToken) {
+		resp.Error(c, http.StatusBadRequest, "unsupported setting key")
+		return
+	}
+	if c.GetString("auth_method") == "admin_token" {
+		resp.Error(c, http.StatusForbidden, "admin access token cannot read secrets; sign in as an admin")
+		return
+	}
+
+	c.Header("Cache-Control", "no-store")
+
+	value, err := op.SettingGetString(model.SettingKeyAdminToken)
+	if err != nil {
+		resp.Error(c, http.StatusInternalServerError, "failed to read setting")
+		return
+	}
+	value = strings.TrimSpace(value)
+
+	source := "none"
+	switch {
+	case value != "":
+		source = "setting"
+	case strings.TrimSpace(os.Getenv(strings.ToUpper(conf.APP_NAME)+"_ADMIN_TOKEN")) != "":
+		// Same env fallback VerifyAdminAccessToken uses. The value stays unexported.
+		source = "env"
+		value = ""
+	}
+
+	resp.Success(c, gin.H{"key": key, "value": value, "source": source})
 }
 
 func setSetting(c *gin.Context) {
