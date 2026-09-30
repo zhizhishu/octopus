@@ -276,14 +276,22 @@ interface LogRouteHeaderProps {
     endpointTitle: string;
     upstreamPaths: string[];
     upstreamPathTitle: string;
+    /** card 专用槽位：B1 尾部的「自动救援」徽标（路由状态）。detail 忽略。 */
+    autoRescueSlot?: ReactNode;
+    /** card 专用槽位：A2 下游客户端徽标（含 Popover）。缺省时渲染低强调占位。 */
+    clientSlot?: ReactNode;
+    /** card 专用槽位：B2 模型检测徽标。无结果时传 null，不造假占位。 */
+    auditSlot?: ReactNode;
+    /** card 专用槽位：C2「查看详情」。detail 忽略。 */
+    detailsSlot?: ReactNode;
 }
 
 /**
  * 日志「路由头部」：状态 / 接口 / 上游路径徽标 → request_model_name → 渠道（多尝试展开
  * RetryBadgeWithTooltip，否则渠道 Badge）→ actual_model_name → 可能的 stream / sticky 徽标。
  * 卡片列表头部与详情弹窗标题渲染同一套元素，只差尺寸与换行，用 variant 收敛：
- * card 紧凑不换行（SafeText 默认 truncate），detail 标题区可换行（mode="wrap"）。
- * 返回 Fragment，外层容器与各自独有元素（卡片的「点开详情」、详情的头像）留在调用点。
+ * card 走「固定 3 列 × 2 行列轨道」grid（见下方 isCard 分支），detail 标题区仍是可换行 flex。
+ * 两分支复用同一批原子元素，避免同一枚徽标出现两份实现。
  */
 function LogRouteHeader({
     variant,
@@ -298,6 +306,10 @@ function LogRouteHeader({
     endpointTitle,
     upstreamPaths,
     upstreamPathTitle,
+    autoRescueSlot,
+    clientSlot,
+    auditSlot,
+    detailsSlot,
 }: LogRouteHeaderProps) {
     const t = useTranslations('log.card');
     const isCard = variant === 'card';
@@ -309,124 +321,193 @@ function LogRouteHeader({
         ? (marketModelName(upstreamEchoName) || upstreamEchoName)
         : '';
 
-    return (
+    // 原子元素先摊平命名，card（固定列轨道）与 detail（可换行 flex）按各自顺序取用。
+    const statusBadge = (
+        <Badge
+            variant="secondary"
+            className={cn(
+                "gap-1 border-0 text-xs",
+                isCard ? "shrink-0 px-1.5 py-0" : "px-2 py-0.5",
+                statusToneClass
+            )}
+        >
+            <StatusIcon className={isCard ? "size-3" : "size-3.5"} />
+            {statusLabel}
+        </Badge>
+    );
+    const endpointBadge = requestEndpointLabel ? (
+        <Badge
+            variant="outline"
+            className={cn(
+                "min-w-0 shrink text-xs font-mono",
+                isCard
+                    ? "max-w-[14rem] border-border/70 bg-muted/40 px-1.5 py-0"
+                    : "max-w-[16rem] border-border/70 bg-muted/40 px-2 py-0.5"
+            )}
+            title={endpointTitle}
+        >
+            <MonoSafeText value={requestEndpointLabel} className="text-xs" />
+        </Badge>
+    ) : null;
+    const upstreamPathBadge = upstreamPaths.length > 0 ? (
+        <Badge
+            variant="outline"
+            className={cn(
+                "min-w-0 shrink text-xs font-mono",
+                isCard
+                    ? "max-w-[14rem] border-border/70 bg-muted/40 px-1.5 py-0"
+                    : "max-w-[16rem] border-border/70 bg-muted/40 px-2 py-0.5"
+            )}
+            title={upstreamPathTitle}
+        >
+            <MonoSafeText value={upstreamPaths[0]} className="text-xs" />
+        </Badge>
+    ) : null;
+    const requestModelText = (
+        <SafeText
+            mode={textMode}
+            value={requestModelDisplayName}
+            title={requestModelDisplayName === log.request_model_name ? undefined : log.request_model_name}
+            className="font-semibold text-card-foreground"
+        />
+    );
+    /* Channel identity is admin-only: a normal user's log carries no
+       channel_name (see RelayLogUserSummary), so the header degrades to
+       request model → actual model without ever revealing the upstream. */
+    const channelGroup = log.channel_name ? (
         <>
-            <Badge
-                variant="secondary"
-                className={cn(
-                    "gap-1 border-0 text-xs",
-                    isCard ? "shrink-0 px-1.5 py-0" : "px-2 py-0.5",
-                    statusToneClass
-                )}
-            >
-                <StatusIcon className={isCard ? "size-3" : "size-3.5"} />
-                {statusLabel}
-            </Badge>
-            {requestEndpointLabel && (
+            <ArrowRight className={cn("size-3.5 text-muted-foreground/50", isCard && "shrink-0")} />
+            {hasMultipleAttempts ? (
+                <RetryBadgeWithTooltip
+                    channelName={log.channel_name}
+                    brandColor={brandColor}
+                    attempts={attempts}
+                />
+            ) : (
                 <Badge
-                    variant="outline"
-                    className={cn(
-                        "min-w-0 shrink text-xs font-mono",
-                        isCard
-                            ? "max-w-[14rem] border-border/70 bg-muted/40 px-1.5 py-0"
-                            : "max-w-[16rem] border-border/70 bg-muted/40 px-2 py-0.5"
-                    )}
-                    title={endpointTitle}
+                    variant="secondary"
+                    className="min-w-0 max-w-[12rem] px-1.5 py-0 text-xs"
+                    style={{ backgroundColor: `${brandColor}15`, color: brandColor }}
                 >
-                    <MonoSafeText value={requestEndpointLabel} className="text-xs" />
+                    <SafeText value={log.channel_name} className="text-xs" />
                 </Badge>
             )}
-            {upstreamPaths.length > 0 && (
-                <Badge
-                    variant="outline"
-                    className={cn(
-                        "min-w-0 shrink text-xs font-mono",
-                        isCard
-                            ? "max-w-[14rem] border-border/70 bg-muted/40 px-1.5 py-0"
-                            : "max-w-[16rem] border-border/70 bg-muted/40 px-2 py-0.5"
-                    )}
-                    title={upstreamPathTitle}
-                >
-                    <MonoSafeText value={upstreamPaths[0]} className="text-xs" />
-                </Badge>
-            )}
-            <SafeText
-                mode={textMode}
-                value={requestModelDisplayName}
-                title={requestModelDisplayName === log.request_model_name ? undefined : log.request_model_name}
-                className="font-semibold text-card-foreground"
-            />
-            {/* Channel identity is admin-only: a normal user's log carries no
-                channel_name (see RelayLogUserSummary), so the header degrades to
-                request model → actual model without ever revealing the upstream. */}
-            {log.channel_name && (
+        </>
+    ) : null;
+    const actualModelText = (
+        <SafeText
+            mode={textMode}
+            value={actualModelDisplayName}
+            title={actualModelDisplayName === log.actual_model_name ? undefined : log.actual_model_name}
+            className="text-muted-foreground"
+        />
+    );
+    // 上游自报名 + 「回显不符」徽标：只在上游自报与发出去的不一致时整组出现。
+    const echoGroup = log.upstream_model_mismatch === true ? (
+        <>
+            {upstreamEchoDisplayName && (
                 <>
-                    <ArrowRight className={cn("size-3.5 text-muted-foreground/50", isCard && "shrink-0")} />
-                    {hasMultipleAttempts ? (
-                        <RetryBadgeWithTooltip
-                            channelName={log.channel_name}
-                            brandColor={brandColor}
-                            attempts={attempts}
-                        />
-                    ) : (
+                    <ArrowRight className={cn("size-3.5 text-amber-600/70 dark:text-amber-400/70", isCard && "shrink-0")} />
+                    <SafeText
+                        mode={textMode}
+                        value={upstreamEchoDisplayName}
+                        title={upstreamEchoDisplayName === upstreamEchoName
+                            ? t('echoMismatchHint', { model: upstreamEchoName })
+                            : `${upstreamEchoName}\n${t('echoMismatchHint', { model: upstreamEchoName })}`}
+                        className="text-amber-800 dark:text-amber-200"
+                    />
+                </>
+            )}
+            <Badge
+                variant="outline"
+                className={cn(
+                    "shrink-0 border-amber-500/40 bg-amber-500/10 text-xs text-amber-800 dark:text-amber-200",
+                    isCard ? "px-1.5 py-0" : "px-2 py-0.5"
+                )}
+                title={upstreamEchoName
+                    ? t('echoMismatchHint', { model: upstreamEchoName })
+                    : t('echoMismatch')}
+            >
+                {t('echoMismatch')}
+            </Badge>
+        </>
+    ) : null;
+    // 流式/非流式徽标：card 里钉在第 1 排右列，不再跟随回显/客户端内容重新落位。
+    const streamBadge = log.is_stream !== undefined ? (
+        <Badge
+            variant="outline"
+            className="shrink-0 text-xs border-border/60 bg-muted/30 px-1.5 py-0"
+        >
+            {log.is_stream ? t('stream') : t('nonStream')}
+        </Badge>
+    ) : null;
+    const stickyPin = log.attempts?.some(a => a.sticky)
+        ? <Pin className="size-3.5 shrink-0 text-amber-500" />
+        : null;
+
+    if (isCard) {
+        /**
+         * 固定列轨道（行落强制）：一个 grid + 6 个子元素，row-major 填进 3 列 × 2 行。
+         * md 及以上 `auto | minmax(0,1fr) | auto`——上下两排共享列宽，所以「状态」永远压在
+         * 「客户端」上面、「流式」永远压在「查看详情」上面，不再由 flex-wrap 按剩余宽度决定谁换行。
+         * md 以下退化成单列自然堆叠，顺序仍是 A1→B1→C1→A2→B2（流式排在客户端之前）。
+         * 所有单元格 min-w-0：长文本交给 SafeText/MonoSafeText 截断，整卡不产生横向滚动。
+         */
+        return (
+            <div className="grid min-w-0 gap-x-4 gap-y-1 text-sm md:grid-cols-[auto_minmax(0,1fr)_auto] md:items-center">
+                {/* A1 状态 · 接口 · 上游路径 */}
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    {statusBadge}
+                    {endpointBadge}
+                    {upstreamPathBadge}
+                </div>
+                {/* B1 请求模型 → 渠道 · 实际模型 · 自动救援（路由状态收在这一格尾部） */}
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    {requestModelText}
+                    {channelGroup}
+                    {actualModelText}
+                    {autoRescueSlot}
+                </div>
+                {/* C1 流式 · 粘性图钉（固定右列） */}
+                <div className="flex min-w-0 items-center gap-2 md:justify-self-end">
+                    {streamBadge}
+                    {stickyPin}
+                </div>
+                {/* A2 下游客户端；缺失时给低强调占位，「第 2 排永远渲染」让列轨道恒定 */}
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    {clientSlot ?? (
                         <Badge
-                            variant="secondary"
-                            className="min-w-0 max-w-[12rem] px-1.5 py-0 text-xs"
-                            style={{ backgroundColor: `${brandColor}15`, color: brandColor }}
+                            variant="outline"
+                            className="shrink-0 border-border/60 bg-muted/30 px-1.5 py-0 text-xs font-normal text-muted-foreground"
                         >
-                            <SafeText value={log.channel_name} className="text-xs" />
+                            {t('clientUnknown')}
                         </Badge>
                     )}
-                </>
-            )}
-            <SafeText
-                mode={textMode}
-                value={actualModelDisplayName}
-                title={actualModelDisplayName === log.actual_model_name ? undefined : log.actual_model_name}
-                className="text-muted-foreground"
-            />
-            {log.upstream_model_mismatch === true && (
-                <>
-                    {upstreamEchoDisplayName && (
-                        <>
-                            <ArrowRight className={cn("size-3.5 text-amber-600/70 dark:text-amber-400/70", isCard && "shrink-0")} />
-                            <SafeText
-                                mode={textMode}
-                                value={upstreamEchoDisplayName}
-                                title={upstreamEchoDisplayName === upstreamEchoName
-                                    ? t('echoMismatchHint', { model: upstreamEchoName })
-                                    : `${upstreamEchoName}\n${t('echoMismatchHint', { model: upstreamEchoName })}`}
-                                className="text-amber-800 dark:text-amber-200"
-                            />
-                        </>
-                    )}
-                    <Badge
-                        variant="outline"
-                        className={cn(
-                            "shrink-0 border-amber-500/40 bg-amber-500/10 text-xs text-amber-800 dark:text-amber-200",
-                            isCard ? "px-1.5 py-0" : "px-2 py-0.5"
-                        )}
-                        title={upstreamEchoName
-                            ? t('echoMismatchHint', { model: upstreamEchoName })
-                            : t('echoMismatch')}
-                    >
-                        {t('echoMismatch')}
-                    </Badge>
-                </>
-            )}
-            {/* 流式/非流式徽标：主行链路尾部（原始位置）。客户端识别与模型检测
-                徽标在下方独立行，不占主行。 */}
-            {log.is_stream !== undefined && (
-                <Badge
-                    variant="outline"
-                    className="shrink-0 text-xs border-border/60 bg-muted/30 px-1.5 py-0"
-                >
-                    {log.is_stream ? t('stream') : t('nonStream')}
-                </Badge>
-            )}
-            {log.attempts?.some(a => a.sticky) && (
-                <Pin className="size-3.5 shrink-0 text-amber-500" />
-            )}
+                </div>
+                {/* B2 上游回显 · 回显不符 · 模型检测（检测无结果就留空，不造假占位） */}
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    {echoGroup}
+                    {auditSlot}
+                </div>
+                {/* C2 查看详情 */}
+                <div className="hidden min-w-0 items-center gap-1 text-xs text-muted-foreground md:flex md:justify-self-end">
+                    {detailsSlot}
+                </div>
+            </div>
+        );
+    }
+
+    return (
+        <>
+            {statusBadge}
+            {endpointBadge}
+            {upstreamPathBadge}
+            {requestModelText}
+            {channelGroup}
+            {actualModelText}
+            {echoGroup}
+            {streamBadge}
+            {stickyPin}
         </>
     );
 }
@@ -802,6 +883,112 @@ export const LogCard = React.memo(function LogCard({
             ? "text-amber-700 dark:text-amber-300"
             : "text-emerald-600 dark:text-emerald-400";
 
+    /**
+     * 卡片头部各槽位（交给 LogRouteHeader 摆进固定列轨道）：
+     * B1 自动救援（路由状态）、A2 下游客户端、B2 模型检测、C2 查看详情。
+     * 客户端槽位缺失时由 LogRouteHeader 兜底渲染低强调占位；检测徽标无结果就是 null。
+     */
+    const autoRescueSlot = (hasMultipleAttempts && hasPartialFailure) ? (
+        <Badge
+            variant="secondary"
+            className="shrink-0 gap-1 border-0 bg-amber-500/15 px-1.5 py-0 text-xs text-amber-700 dark:text-amber-300"
+        >
+            <RotateCw className="size-3 opacity-80" />
+            {t('autoRescue')}
+        </Badge>
+    ) : null;
+    // 客户端徽标来自调用端 UA（humanizeClient）。徽标点按弹出详情（Popover）——移动端手指
+    // 可触，不依赖悬停。卡片外层是 MorphingDialogTrigger（自带 onClick/onKeyDown），徽标必须
+    // 就地掐断事件冒泡，否则点徽标会连带打开整卡详情弹窗。
+    const clientSlot = clientLabel ? (
+        <Popover>
+            <PopoverTrigger asChild>
+                <Badge
+                    variant="outline"
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => e.stopPropagation()}
+                    className="shrink-0 cursor-pointer border-violet-500/30 bg-violet-500/10 px-1.5 py-0 text-xs text-violet-600 dark:text-violet-300"
+                >
+                    {clientLabel}
+                </Badge>
+            </PopoverTrigger>
+            <PopoverContent align="start" className="w-72 p-3">
+                <p className="text-xs font-medium text-foreground">{t('client')}</p>
+                <p className="mt-1 break-all font-mono text-[11px] leading-5 text-muted-foreground">
+                    {log.request_user_agent}
+                </p>
+            </PopoverContent>
+        </Popover>
+    ) : null;
+    // 检测徽标来自定时快检快照按 渠道+模型 匹配（管理员拉取，普通用户没有 → null）。
+    // 弹层同时给「发送模型 vs 上游自报」的本行证据；同样掐断冒泡，避免误开整卡详情。
+    const auditSlot = auditBadge ? (
+        <Popover>
+            <PopoverTrigger asChild>
+                <Badge
+                    variant="outline"
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => e.stopPropagation()}
+                    className={cn('shrink-0 cursor-pointer px-1.5 py-0 text-xs', auditBadge.className)}
+                >
+                    {auditBadge.label}
+                </Badge>
+            </PopoverTrigger>
+            <PopoverContent align="start" className="w-80 p-3">
+                <div className="space-y-2 text-xs">
+                    <p className="font-medium text-foreground">
+                        {t('auditPrefix')} · {auditBadge.hit.channel_name || `渠道 ${auditBadge.hit.channel_id}`}
+                    </p>
+                    <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+                        <span className="text-muted-foreground">{t('auditModel')}</span>
+                        <span className="break-all">{auditBadge.hit.model}</span>
+                        {typeof auditBadge.hit.score === 'number' && (
+                            <>
+                                <span className="text-muted-foreground">{t('auditScore')}</span>
+                                <span className="tabular-nums">{auditBadge.hit.score}</span>
+                            </>
+                        )}
+                        {typeof auditBadge.hit.finding_count === 'number' && auditBadge.hit.finding_count > 0 && (
+                            <>
+                                <span className="text-muted-foreground">{t('auditFindings')}</span>
+                                <span className="tabular-nums">{auditBadge.hit.finding_count}</span>
+                            </>
+                        )}
+                    </div>
+                    {/* 本行证据：发送的模型 vs 上游自报的模型（sub2api 式
+                        「被路由到什么模型」——上游自报与发送不符是最直接的
+                        造假线索；上游沉默则无法判定）。 */}
+                    <div className="border-t border-border pt-2">
+                        <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+                            <span className="text-muted-foreground">{t('sentModel')}</span>
+                            <span className="break-all">{actualModelDisplayName || requestModelDisplayName}</span>
+                            <span className="text-muted-foreground">{t('upstreamDeclared')}</span>
+                            {upstreamEchoDisplayName ? (
+                                <span className={cn('break-all', log.upstream_model_mismatch === true && 'font-medium text-amber-600 dark:text-amber-400')}>
+                                    {upstreamEchoDisplayName}
+                                    {log.upstream_model_mismatch === true && ` · ${t('echoInconsistent')}`}
+                                    {log.upstream_model_mismatch === false && ` · ${t('echoConsistent')}`}
+                                </span>
+                            ) : (
+                                <span className="text-muted-foreground/70">{t('upstreamSilent')}</span>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            </PopoverContent>
+        </Popover>
+    ) : null;
+    const detailsSlot = canViewDetails ? (
+        <>
+            <Eye className="size-3.5" />
+            {t('openDetails')}
+        </>
+    ) : null;
+
     return (
             <MorphingDialog>
                 <MorphingDialogTrigger
@@ -829,125 +1016,28 @@ export const LogCard = React.memo(function LogCard({
                             <ModelAvatar size={40} />
                         </div>
                         <div className="min-w-0 flex flex-col gap-3">
-                            {/* 第 1 行：路由链路（状态 + 接口类型 + 路径 + 请求模型 → 渠道 + 实际模型 + 流式 + 详情） */}
-                            <div className="flex min-w-0 flex-wrap items-center gap-2 text-sm">
-                                <LogRouteHeader
-                                    variant="card"
-                                    log={log}
-                                    attempts={attempts}
-                                    brandColor={brandColor}
-                                    hasMultipleAttempts={hasMultipleAttempts}
-                                    StatusIcon={StatusIcon}
-                                    statusLabel={statusLabel}
-                                    statusToneClass={statusToneClass}
-                                    requestEndpointLabel={requestEndpointLabel}
-                                    endpointTitle={endpointTitle}
-                                    upstreamPaths={upstreamPaths}
-                                    upstreamPathTitle={upstreamPathTitle}
-                                />
-                                {(hasMultipleAttempts && hasPartialFailure) && (
-                                    <Badge
-                                        variant="secondary"
-                                        className="shrink-0 gap-1 border-0 bg-amber-500/15 px-1.5 py-0 text-xs text-amber-700 dark:text-amber-300"
-                                    >
-                                        <RotateCw className="size-3 opacity-80" />
-                                        {t('autoRescue')}
-                                    </Badge>
-                                )}
-                                {canViewDetails && (
-                                    <span className="ml-auto hidden shrink-0 items-center gap-1 text-xs text-muted-foreground md:flex">
-                                        <Eye className="size-3.5" />
-                                        {t('openDetails')}
-                                    </span>
-                                )}
-                            </div>
-
-                            {/* 识别行（单独一行）：下游客户端识别 + 上游模型真假检测。
-                                客户端徽标来自调用端 UA（humanizeClient）；检测徽标来自定时快检
-                                快照按 渠道+模型 匹配（管理员拉取，普通用户只有客户端徽标）。
-                                两者都缺时整行不渲染，老日志零高度变化。
-                                徽标点按弹出详情（Popover）——移动端手指可触，不依赖悬停；
-                                检测弹层同时给「发送模型 vs 上游自报」的本行证据。 */}
-                            {(clientLabel || auditBadge) && (
-                                <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1">
-                                    {clientLabel && (
-                                        <Popover>
-                                            <PopoverTrigger asChild>
-                                                <Badge
-                                                    variant="outline"
-                                                    role="button"
-                                                    tabIndex={0}
-                                                    className="shrink-0 cursor-pointer border-violet-500/30 bg-violet-500/10 px-1.5 py-0 text-xs text-violet-600 dark:text-violet-300"
-                                                >
-                                                    {clientLabel}
-                                                </Badge>
-                                            </PopoverTrigger>
-                                            <PopoverContent align="start" className="w-72 p-3">
-                                                <p className="text-xs font-medium text-foreground">{t('client')}</p>
-                                                <p className="mt-1 break-all font-mono text-[11px] leading-5 text-muted-foreground">
-                                                    {log.request_user_agent}
-                                                </p>
-                                            </PopoverContent>
-                                        </Popover>
-                                    )}
-                                    {auditBadge && (
-                                        <Popover>
-                                            <PopoverTrigger asChild>
-                                                <Badge
-                                                    variant="outline"
-                                                    role="button"
-                                                    tabIndex={0}
-                                                    className={cn('shrink-0 cursor-pointer px-1.5 py-0 text-xs', auditBadge.className)}
-                                                >
-                                                    {auditBadge.label}
-                                                </Badge>
-                                            </PopoverTrigger>
-                                            <PopoverContent align="start" className="w-80 p-3">
-                                                <div className="space-y-2 text-xs">
-                                                    <p className="font-medium text-foreground">
-                                                        {t('auditPrefix')} · {auditBadge.hit.channel_name || `渠道 ${auditBadge.hit.channel_id}`}
-                                                    </p>
-                                                    <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
-                                                        <span className="text-muted-foreground">{t('auditModel')}</span>
-                                                        <span className="break-all">{auditBadge.hit.model}</span>
-                                                        {typeof auditBadge.hit.score === 'number' && (
-                                                            <>
-                                                                <span className="text-muted-foreground">{t('auditScore')}</span>
-                                                                <span className="tabular-nums">{auditBadge.hit.score}</span>
-                                                            </>
-                                                        )}
-                                                        {typeof auditBadge.hit.finding_count === 'number' && auditBadge.hit.finding_count > 0 && (
-                                                            <>
-                                                                <span className="text-muted-foreground">{t('auditFindings')}</span>
-                                                                <span className="tabular-nums">{auditBadge.hit.finding_count}</span>
-                                                            </>
-                                                        )}
-                                                    </div>
-                                                    {/* 本行证据：发送的模型 vs 上游自报的模型（sub2api 式
-                                                        「被路由到什么模型」——上游自报与发送不符是最直接的
-                                                        造假线索；上游沉默则无法判定）。 */}
-                                                    <div className="border-t border-border pt-2">
-                                                        <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
-                                                            <span className="text-muted-foreground">{t('sentModel')}</span>
-                                                            <span className="break-all">{actualModelDisplayName || requestModelDisplayName}</span>
-                                                            <span className="text-muted-foreground">{t('upstreamDeclared')}</span>
-                                                            {upstreamEchoDisplayName ? (
-                                                                <span className={cn('break-all', log.upstream_model_mismatch === true && 'font-medium text-amber-600 dark:text-amber-400')}>
-                                                                    {upstreamEchoDisplayName}
-                                                                    {log.upstream_model_mismatch === true && ` · ${t('echoInconsistent')}`}
-                                                                    {log.upstream_model_mismatch === false && ` · ${t('echoConsistent')}`}
-                                                                </span>
-                                                            ) : (
-                                                                <span className="text-muted-foreground/70">{t('upstreamSilent')}</span>
-                                                            )}
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            </PopoverContent>
-                                        </Popover>
-                                    )}
-                                </div>
-                            )}
+                            {/* 路由头部：固定 3 列 × 2 行列轨道（在 LogRouteHeader 的 card 分支里）。
+                                第 1 排 = 状态·接口·路径 | 请求模型→渠道·实际模型·自动救援 | 流式·图钉；
+                                第 2 排 = 下游客户端 | 上游回显·回显不符·模型检测 | 查看详情。
+                                第 2 排永远渲染（客户端缺失给灰占位），所以上下两排列宽恒定、内容不再漂移。 */}
+                            <LogRouteHeader
+                                variant="card"
+                                log={log}
+                                attempts={attempts}
+                                brandColor={brandColor}
+                                hasMultipleAttempts={hasMultipleAttempts}
+                                StatusIcon={StatusIcon}
+                                statusLabel={statusLabel}
+                                statusToneClass={statusToneClass}
+                                requestEndpointLabel={requestEndpointLabel}
+                                endpointTitle={endpointTitle}
+                                upstreamPaths={upstreamPaths}
+                                upstreamPathTitle={upstreamPathTitle}
+                                autoRescueSlot={autoRescueSlot}
+                                clientSlot={clientSlot}
+                                auditSlot={auditSlot}
+                                detailsSlot={detailsSlot}
+                            />
 
                             {/* 第 2 行：紧凑摘要带固定两行（与 5050 等高对齐：行1 身份与用量，行2 性能与费用） */}
                             <div className="flex min-w-0 flex-col gap-2 text-xs tabular-nums text-muted-foreground">

@@ -232,15 +232,28 @@ function clampRoutePriority(value: number) {
 
 /**
  * 分流模式（后端契约）：规则对象上的 mode 是 JSON number，
- * 1 = spread 轮询（均摊），3 = fill_first 优先填充（默认）。其他/缺省值一律视为 fill_first。
+ * 1 = 纯轮询 spread（所有目标并列均摊），4 = 分层轮询（目标上的数字越大越先尝试，
+ * 同一个数字内继续轮询），3 = fill_first 优先填充（默认）。其他/缺省值一律视为 fill_first。
+ *
+ * 4 是用户 2026-09-30 定的「B 方案」：画布节点上的数字必须真的影响选路。纯轮询(1) 故意
+ * 不看数字（拖拽序号天然唯一，当硬边界会退化成固定顺序），所以分层语义单独一档，
+ * 旧规则不动、只有在管理员显式改数字或重选模式时才升级为 4。
  */
+const SPREAD_TIERED_MODE = 4;
+
 function isSpreadMode(mode: number | undefined | null): boolean {
-    return Number(mode) === 1;
+    const value = Number(mode);
+    return value === 1 || value === SPREAD_TIERED_MODE;
 }
 
-/** 把 mode 归一到合法值：1 或 3（默认 3）。 */
-function normalizeRouteMode(mode: number | undefined | null): 1 | 3 {
-    return isSpreadMode(mode) ? 1 : 3;
+/** 轮询家族内部保持原本那一档：分层轮询不能因为一次保存被悄悄降级回纯轮询。 */
+function spreadModeValue(mode: number | undefined | null): 1 | 4 {
+    return Number(mode) === SPREAD_TIERED_MODE ? SPREAD_TIERED_MODE : 1;
+}
+
+/** 把 mode 归一到合法值：1 / 4 / 3（默认 3）。 */
+function normalizeRouteMode(mode: number | undefined | null): 1 | 3 | 4 {
+    return isSpreadMode(mode) ? spreadModeValue(mode) : 3;
 }
 
 function normalizeSlug(value: string) {
@@ -996,6 +1009,8 @@ type TargetNodeData = {
     orderIndex: number;
     showPriority: boolean;
     fillFirst: boolean;
+    // 轮询家族（纯轮询或分层轮询）：显示数字 + −/+ 步进器，数字越大越先尝试。
+    spreadFamily: boolean;
     upstreamModel: string;
     enabled: boolean;
     fallback: string;
@@ -1078,7 +1093,9 @@ const TargetFlowCard = memo(function TargetFlowCard({ data }: NodeProps<TargetFl
     };
     const priorityTitle = data.fillFirst
         ? `第 ${data.orderIndex} 顺位 · ${accessPlanText('routes.priority')} P${priority}`
-        : '轮询候选（并列分流，无选路优先级之分）';
+        : data.spreadFamily
+            ? `分层轮询：数字越大越先尝试（当前 ${priority}）；同一数字内继续轮询`
+            : '轮询候选（并列分流，无选路优先级之分）';
     return (
         <div
             className={cn('grid grid-cols-[minmax(84px,1.1fr)_minmax(96px,1.4fr)_auto] items-center gap-3 rounded-2xl border bg-card/90 px-3 py-2', data.enabled ? 'border-emerald-500/25' : 'border-border opacity-65')}
@@ -1123,6 +1140,44 @@ const TargetFlowCard = memo(function TargetFlowCard({ data }: NodeProps<TargetFl
                                     onClick={(event) => {
                                         event.stopPropagation();
                                         bumpPriority(-1);
+                                    }}
+                                >
+                                    +
+                                </button>
+                            </div>
+                        </>
+                    ) : data.spreadFamily ? (
+                        // 分层轮询：数字就是优先级，越大越先被尝试；同数字内仍然轮询。
+                        // 这里 + 是「抬数字」= 更优先，与上面优先填充的顺位语义相反（顺位越小越先）。
+                        <>
+                            <span className="shrink-0 rounded bg-emerald-500/10 px-1 py-0.5 font-medium text-emerald-600 dark:text-emerald-400">
+                                {data.showPriority ? '分层轮询' : '同级轮询'}
+                            </span>
+                            <div
+                                className="nodrag nopan pointer-events-auto ml-0.5 inline-flex shrink-0 items-center gap-0.5"
+                                onPointerDown={(event) => event.stopPropagation()}
+                            >
+                                <button
+                                    type="button"
+                                    className="flex size-4 items-center justify-center rounded border border-border/70 bg-background leading-none text-foreground hover:bg-muted disabled:opacity-40"
+                                    disabled={!data.targetId || priority <= 1}
+                                    aria-label="降低该渠道优先级"
+                                    onClick={(event) => {
+                                        event.stopPropagation();
+                                        bumpPriority(-1);
+                                    }}
+                                >
+                                    −
+                                </button>
+                                <span className="min-w-3.5 text-center font-semibold text-foreground">{priority}</span>
+                                <button
+                                    type="button"
+                                    className="flex size-4 items-center justify-center rounded border border-border/70 bg-background leading-none text-foreground hover:bg-muted disabled:opacity-40"
+                                    disabled={!data.targetId || priority >= Number.MAX_SAFE_INTEGER}
+                                    aria-label="提高该渠道优先级"
+                                    onClick={(event) => {
+                                        event.stopPropagation();
+                                        bumpPriority(1);
                                     }}
                                 >
                                     +
@@ -1287,10 +1342,12 @@ function buildRouteFlow(
                 type: 'default',
                 style: { stroke: 'var(--primary)', strokeWidth: 1.5, strokeOpacity: 0.5 },
             });
-            // 优先级在「优先填充」模式下作为选路顺位；轮询 (Spread) 模式下所有目标并列参与加权负载均衡。
+            // 优先填充：数字是选路顺位（越小越先）。轮询家族（纯轮询/分层轮询）：数字是分层，
+            // 越大越先；同数字内继续轮询。showPriority 表示「这一行的数字不全相同」，用来把
+            // 「同级轮询」和「分层轮询」的措辞分开。
             const isFillFirstMode = !isSpreadMode(row.targets[0]?.mode);
             const prioritySet = new Set(row.targets.map((tgt) => tgt.priority || 0));
-            const showPriority = isFillFirstMode && prioritySet.size > 1;
+            const showPriority = prioritySet.size > 1;
             const startY = rowY + (rowH - targetsH) / 2;
             row.targets.forEach((target, targetIndex) => {
                 const tgtId = `tgt:${reqId}:${target.id ?? targetIndex}`;
@@ -1312,6 +1369,7 @@ function buildRouteFlow(
                         orderIndex: targetIndex + 1,
                         showPriority,
                         fillFirst: isFillFirstMode,
+                        spreadFamily: !isFillFirstMode,
                         upstreamModel: cleanOneMillionModelName(target.upstream_model || accessPlanText('routes.unset')),
                         enabled: target.enabled,
                         fallback: fallbackModeLabel(target.fallback_mode),
@@ -1422,13 +1480,12 @@ type RouteFlowCanvasProps = {
     onEditRequest: (requestModel: string) => void;
     onPriorityChange?: (targetId: number, priority: number) => void;
     onOpenJson?: () => void;
-    onModeChange?: (rowTargets: AccessPlanRouteTarget[], mode: 1 | 3) => void;
 };
 
 type RouteViewMode = 'all' | 'channel' | 'mapping';
 
 function RouteFlowCanvasInner({
-    plan, rows, channels, channelMappings, modelNames, channelModels, channelModelsReady, onEditRequest, onPriorityChange, onOpenJson, onModeChange,
+    plan, rows, channels, channelMappings, modelNames, channelModels, channelModelsReady, onEditRequest, onPriorityChange, onOpenJson,
 }: RouteFlowCanvasProps) {
     const t = accessPlanText;
     const channelNameByID = useMemo(() => new Map(channels.map((channel) => [channel.id, channel.name])), [channels]);
@@ -1879,11 +1936,12 @@ function RouteTargetEditorCard({
                             分流模式
                             <select
                                 value={normalizeRouteMode(target.mode)}
-                                onChange={(event) => updateTarget(index, { mode: Number(event.target.value) as 1 | 3 })}
+                                onChange={(event) => updateTarget(index, { mode: Number(event.target.value) as 1 | 3 | 4 })}
                                 aria-label="分流模式"
                                 className="h-9 w-full min-w-0 rounded-xl border border-input bg-background px-3 text-sm text-foreground"
                             >
-                                <option value={1}>轮询（spread / 均摊）</option>
+                                <option value={1}>轮询（所有目标同级轮转）</option>
+                                <option value={4}>分层轮询（数字越大越先尝试，同数字内轮转）</option>
                                 <option value={3}>优先填充（fill_first / 默认）</option>
                             </select>
                         </label>
@@ -2043,8 +2101,10 @@ function RouteTargetsEditor({
     ) => {
         // 按 request_model 分组归一化：
         // 1. 同一 request_model 下 targets 统一 mode（以组内首个明确设置的 mode 为准，默认 fill_first 即 mode=3）
-        // 2. spread (mode=1 轮询)：全部 priority=1, priority_overridden=false
-        // 3. fill_first (mode=3 优先填充)：这是人工排序保存，必须同 rule 所有 target 无条件 priority_overridden=true，按分配的 priority (1..N) 保存
+        // 2. 纯轮询 (mode=1)：全部 priority=1, priority_overridden=false（选路本来就不看数字）
+        // 3. 分层轮询 (mode=4)：保留每个 target 的数字（≥1）并标 priority_overridden=true，
+        //    数字越大越先尝试；保存时绝不清零，否则画布上的 +/− 就成了假按钮。
+        // 4. fill_first (mode=3 优先填充)：这是人工排序保存，必须同 rule 所有 target 无条件 priority_overridden=true，按分配的 priority (1..N) 保存
         const groups = new Map<string, AccessPlanRouteTarget[]>();
         nextTargets.forEach((target) => {
             const key = cleanOneMillionModelName(target.request_model).toLowerCase();
@@ -2055,15 +2115,15 @@ function RouteTargetsEditor({
 
         const normalizedTargets: AccessPlanRouteTarget[] = [];
         groups.forEach((groupTargets) => {
-            const groupMode: 1 | 3 = isSpreadMode(groupTargets.find((t) => t.mode !== undefined)?.mode) ? 1 : 3;
-            if (groupMode === 1) {
-                // 轮询：所有 target 并列，priority=1，priority_overridden=false
+            const rowMode = normalizeRouteMode(groupTargets.find((t) => t.mode !== undefined)?.mode);
+            if (rowMode === 1 || rowMode === SPREAD_TIERED_MODE) {
+                const tiered = rowMode === SPREAD_TIERED_MODE;
                 groupTargets.forEach((target) => {
                     normalizedTargets.push({
                         ...target,
-                        mode: 1,
-                        priority: 1,
-                        priority_overridden: false,
+                        mode: rowMode,
+                        priority: tiered ? clampRoutePriority(target.priority) : 1,
+                        priority_overridden: tiered,
                     });
                 });
             } else {
@@ -2094,7 +2154,7 @@ function RouteTargetsEditor({
                     enabled: target.enabled,
                     billing_model_source: target.billing_model_source ?? 'request_model',
                     billing_model_override: cleanOneMillionModelName(target.billing_model_override ?? '') || undefined,
-                    mode: isSpreadMode(target.mode) ? 1 : 3,
+                    mode: isSpreadMode(target.mode) ? spreadModeValue(target.mode) : 3,
                     priority_overridden: target.priority_overridden,
                     fallback_mode: target.fallback_mode ?? 'return_group',
                     system_prompt_override: target.system_prompt_override?.trim() || undefined,
@@ -2122,15 +2182,32 @@ function RouteTargetsEditor({
     const targetsRef = useRef(targets);
     targetsRef.current = targets;
 
+    // 画布节点上的 +/−：改的是「这条规则内、这个渠道」的分层数字。
+    // 关键一步：轮询家族的规则（纯轮询 1 或分层 4）在这里统一升级为分层轮询(4)，
+    // 否则保存归一化会把数字清回 1 —— 那就是用户说的「按钮没用」。
+    // 同一条规则（同 request_model）的所有 target 一起换成 mode=4，因为 mode 是规则级字段。
     const changeCanvasPriority = useCallback((targetId: number, nextPriorityRaw: number) => {
         const nextPriority = clampRoutePriority(nextPriorityRaw);
         const current = targetsRef.current;
         const index = current.findIndex((target) => target.id === targetId);
         if (index < 0) return;
         if (clampRoutePriority(current[index].priority) === nextPriority) return;
-        const next = current.map((target, currentIndex) => (
-            currentIndex === index ? { ...target, priority: nextPriority, priority_overridden: true } : target
-        ));
+        const editedKey = cleanOneMillionModelName(current[index].request_model).toLowerCase();
+        const next = current.map((target, currentIndex) => {
+            const sameRule = cleanOneMillionModelName(target.request_model).toLowerCase() === editedKey;
+            if (currentIndex === index) {
+                return {
+                    ...target,
+                    priority: nextPriority,
+                    priority_overridden: true,
+                    mode: isSpreadMode(target.mode) ? SPREAD_TIERED_MODE : target.mode,
+                };
+            }
+            if (sameRule && isSpreadMode(target.mode)) {
+                return { ...target, mode: SPREAD_TIERED_MODE, priority_overridden: true };
+            }
+            return target;
+        });
         setTargets(next);
         saveTargetsRef.current(
             next,
@@ -2149,38 +2226,8 @@ function RouteTargetsEditor({
 
     const save = (onSuccess?: () => void) => saveTargets(targets, t('toast.routesUpdated'), onSuccess);
 
-    // 画布行内「分流模式」下拉：同一条规则（request_model）的所有 target 一起改，
-    // 后端按 request_model 聚成规则、取该组的 mode 落库（见 op.AccessPlanUpdateRouteTargets）。
-    // 切换到 spread (mode=1) 时重置 priority=1, priority_overridden=false；
-    // 切换到 fill_first (mode=3) 时按自然顺序 1..N 赋 priority 且 overridden=true（显式模式选择）。
-    const updateRowMode = useCallback((rowTargets: AccessPlanRouteTarget[], mode: 1 | 3) => {
-        const keys = new Set(rowTargets.map((target) => target.id).filter((id): id is number => typeof id === 'number'));
-        const current = targetsRef.current;
-        const matchingIndices: number[] = [];
-        current.forEach((target, i) => {
-            if ((typeof target.id === 'number' && keys.has(target.id)) || rowTargets.includes(target)) {
-                matchingIndices.push(i);
-            }
-        });
-
-        const next = current.map((target, idx) => {
-            const matchOrder = matchingIndices.indexOf(idx);
-            if (matchOrder === -1) return target;
-            if (mode === 1) {
-                return { ...target, mode, priority: 1, priority_overridden: false };
-            }
-            // 切换为 fill_first (mode=3)
-            return {
-                ...target,
-                mode,
-                priority: target.priority_overridden ? target.priority : clampRoutePriority(matchOrder + 1),
-                priority_overridden: true,
-            };
-        });
-        setTargets(next);
-        saveTargetsRef.current(next, t('toast.routesUpdated'), undefined, current);
-    }, [t]);
-
+    // 分流模式只在「高级编辑」的分流模式下拉里改（updateTarget 会把同一条 request_model 的
+    // 所有 target 一起同步，因为 mode 是规则级字段）。旧的画布行内下拉是死代码，已删除。
     const fillJSON = () => {
         setJsonText(JSON.stringify(targets.map((target) => ({
             request_model: cleanOneMillionModelName(target.request_model),
@@ -2191,7 +2238,7 @@ function RouteTargetsEditor({
             enabled: target.enabled,
             billing_model_source: target.billing_model_source ?? 'request_model',
             billing_model_override: cleanOneMillionModelName(target.billing_model_override ?? ''),
-            mode: isSpreadMode(target.mode) ? 1 : 3,
+            mode: isSpreadMode(target.mode) ? spreadModeValue(target.mode) : 3,
             fallback_mode: target.fallback_mode ?? 'return_group',
             prompt_override_mode: target.prompt_override_mode ?? 'append_system',
             system_prompt_override: target.system_prompt_override ?? '',
@@ -2222,7 +2269,7 @@ function RouteTargetsEditor({
                 enabled: target.enabled ?? true,
                 billing_model_source: target.billing_model_source ?? 'request_model',
                 billing_model_override: cleanOneMillionModelName(target.billing_model_override ?? '') || undefined,
-                mode: Number(target.mode) === 1 ? 1 : 3,
+                mode: Number(target.mode) === 1 ? 1 : (Number(target.mode) === SPREAD_TIERED_MODE ? SPREAD_TIERED_MODE : 3),
                 fallback_mode: target.fallback_mode ?? 'return_group',
                 system_prompt_override: target.system_prompt_override?.trim() || undefined,
                 prompt_override_mode: target.prompt_override_mode ?? 'append_system',
@@ -2275,7 +2322,6 @@ function RouteTargetsEditor({
                 onEditRequest={setEditingRequestModel}
                 onPriorityChange={changeCanvasPriority}
                 onOpenJson={openJson}
-                onModeChange={updateRowMode}
             />
 
             <details ref={advancedRef} className="shrink-0 rounded-2xl border border-border/70 bg-card/70">
@@ -2380,18 +2426,22 @@ function RouteTargetsEditor({
                                             if (!match) return;
                                             const groupMode = editingTargets[0]?.mode ?? 3;
                                             const maxPriority = editingTargets.reduce((max, t) => Math.max(max, t.priority ?? 0), 0);
+                                            // 轮询家族新渠道进「最低层」（数字 1）：不抢现有分层；分层轮询保持 4，
+                                            // 否则列表里加个渠道就把这条规则悄悄降级回纯轮询。
+                                            const spreadRow = isSpreadMode(groupMode);
+                                            const rowMode = spreadRow ? spreadModeValue(groupMode) : 3;
                                             setTargets((current) => [
                                                 ...current,
                                                 {
                                                     request_model: editingRequestModel,
                                                     channel_id: channelId,
                                                     upstream_model: match.upstreamModel,
-                                                    priority: isSpreadMode(groupMode) ? 1 : Math.max(1, maxPriority + 1),
+                                                    priority: spreadRow ? 1 : Math.max(1, maxPriority + 1),
                                                     weight: 1,
                                                     enabled: true,
                                                     billing_model_source: 'request_model',
-                                                    mode: isSpreadMode(groupMode) ? 1 : 3,
-                                                    priority_overridden: !isSpreadMode(groupMode),
+                                                    mode: rowMode,
+                                                    priority_overridden: rowMode !== 1,
                                                     fallback_mode: 'return_group',
                                                     system_prompt_override: '',
                                                     prompt_override_mode: 'append_system',
@@ -2463,26 +2513,29 @@ function RouteTargetsEditor({
 }
 
 /**
- * 「全局默认模式」下拉：读写通用 setting route_mode_override。
- * 只提供明确的两项：'spread' = 新模型默认：轮询；'fill_first' = 新模型默认：优先填充。
- * 读写与历史空值固化逻辑统一走 useRouteModeOverrideSetting（与设置页共用，去掉「跟随各规则」）。
+ * 「路由默认模式」下拉：读写通用 setting route_mode_override。
+ * 只提供明确的两项：'spread' = 轮询；'fill_first' = 优先填充。
+ * 读写与历史空值固化逻辑统一走 useRouteModeOverrideSetting（设置页只留说明，编辑入口只剩这里）。
+ *
+ * 措辞刻意不用「强制/覆盖」：它只作用于新建规则与没单独指定模式的模型组，
+ * 画布上显式选过模式的规则（ModeLocked）不受影响 —— 老文案把作用范围说大了。
  */
 function GlobalRouteModeSelect({ className }: { className?: string }) {
     const { value, update, isPending, isReady } = useRouteModeOverrideSetting();
 
     return (
         <label className={cn('flex min-w-0 items-center gap-2 text-xs text-muted-foreground', className)}>
-            <span className="shrink-0 whitespace-nowrap">新模型默认</span>
+            <span className="shrink-0 whitespace-nowrap">路由默认模式</span>
             <select
                 value={value}
                 onChange={(event) => update(event.target.value as RouteModeOverrideValue)}
                 disabled={isPending || !isReady}
-                aria-label="新模型默认分流模式"
-                title="新模型默认分流模式：轮询 / 优先填充"
+                aria-label="路由默认模式"
+                title="新建规则与未单独指定模式的模型组用哪一档选渠道；已有独立模式的规则保持自己的选择"
                 className="h-8 min-w-0 rounded-full border border-border/70 bg-background/60 px-2.5 text-xs text-foreground outline-none focus:border-primary/50"
             >
-                <option value="spread">新模型默认：轮询</option>
-                <option value="fill_first">新模型默认：优先填充</option>
+                <option value="spread">轮询</option>
+                <option value="fill_first">优先填充</option>
             </select>
         </label>
     );
