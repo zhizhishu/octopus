@@ -19,6 +19,34 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// authMethodJWT is the marker middleware.Auth writes into the gin context when the
+// request was authenticated by a real admin LOGIN session (a short-lived JWT). The
+// only other value it writes is "admin_token" — the long-lived automation credential.
+const authMethodJWT = "jwt"
+
+// errAdminLoginRequired is the ONE refusal wording shared by every endpoint that must
+// not answer an automation credential (the admin access token) — the secret read and
+// the full-site backup. Same sentence everywhere so the answer cannot be used to probe
+// which endpoint is guarded.
+const errAdminLoginRequired = "请先用管理员账号登录"
+
+// requireAdminLogin reports whether the request may touch site-wide secrets, and writes
+// the 403 refusal itself when it may not. Whitelist + fail-closed: ONLY an exact "jwt"
+// marker passes, so a missing marker (handler mounted outside middleware.Auth, or a
+// future auth kind) is denied instead of silently trusted — the earlier blacklist
+// (`== "admin_token"`) let a missing/unknown marker straight through.
+//
+// Why it exists: the admin access token is meant for a script, and a script credential
+// must never be able to read back the credential it is using, nor pull a backup that
+// carries every plaintext key of the site (admin token, SMTP password, channel keys).
+func requireAdminLogin(c *gin.Context) bool {
+	if c.GetString("auth_method") == authMethodJWT {
+		return true
+	}
+	resp.Error(c, http.StatusForbidden, errAdminLoginRequired)
+	return false
+}
+
 func init() {
 	router.NewGroupRouter("/api/v1/setting").
 		Use(middleware.Auth()).
@@ -67,9 +95,9 @@ func getSettingList(c *gin.Context) {
 // able to show and copy: the admin access token. Guard rails that keep this from
 // becoming a generic "read any secret" endpoint:
 //   - `key` must be SettingKeyAdminToken (anything else is 400);
-//   - a request authenticated BY the admin token itself gets 403 — an automation
-//     credential must never be able to export the credential it is using, only a
-//     real logged-in admin session may read it;
+//   - only a real logged-in admin session may read it: requireAdminLogin refuses
+//     everyone else with 403 (an automation credential must never be able to read
+//     back the credential it is using), whitelist + fail-closed;
 //   - a token supplied by the <APP>_ADMIN_TOKEN env var is NOT exported (source
 //     "env" with an empty value); the page only tells the operator to manage it in
 //     the deployment config;
@@ -81,8 +109,7 @@ func getSettingSecret(c *gin.Context) {
 		resp.Error(c, http.StatusBadRequest, "unsupported setting key")
 		return
 	}
-	if c.GetString("auth_method") == "admin_token" {
-		resp.Error(c, http.StatusForbidden, "admin access token cannot read secrets; sign in as an admin")
+	if !requireAdminLogin(c) {
 		return
 	}
 
@@ -156,7 +183,16 @@ func setSetting(c *gin.Context) {
 	resp.Success(c, setting)
 }
 
+// exportDB streams the whole-site backup. It dumps settings (including the plaintext
+// admin access token, SMTP password and channel keys) verbatim, so it is guarded by the
+// same admin-LOGIN requirement as getSettingSecret: a script holding the admin access
+// token must not be able to download every secret of the site. A logged-in admin is
+// unaffected — the backup stays a faithful, unredacted migration package.
 func exportDB(c *gin.Context) {
+	if !requireAdminLogin(c) {
+		return
+	}
+
 	includeLogs, _ := strconv.ParseBool(c.DefaultQuery("include_logs", "false"))
 	includeStats, _ := strconv.ParseBool(c.DefaultQuery("include_stats", "false"))
 
@@ -171,7 +207,15 @@ func exportDB(c *gin.Context) {
 	c.JSON(http.StatusOK, dump)
 }
 
+// importDB merges an uploaded backup, which can overwrite site settings (including the
+// admin access token and SMTP password), so it is guarded by the same admin-LOGIN
+// requirement as getSettingSecret. The check runs BEFORE the body is read, so a script
+// credential cannot even make the server ingest its payload.
 func importDB(c *gin.Context) {
+	if !requireAdminLogin(c) {
+		return
+	}
+
 	var dump model.DBDump
 
 	contentType := c.GetHeader("Content-Type")

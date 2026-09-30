@@ -30,6 +30,9 @@ func Auth() gin.HandlerFunc {
 			if admin, matched := auth.VerifyAdminAccessToken(bearer); matched {
 				// Distinguish the credential kind so handlers can refuse to let an
 				// automation token export a secret (see setting.getSettingSecret).
+				// The settings group guards site secrets with a WHITELIST on the other
+				// value ("jwt"), so renaming these markers denies loudly rather than
+				// silently opening a hole.
 				c.Set("auth_method", "admin_token")
 				SetCurrentUser(c, admin)
 				c.Next()
