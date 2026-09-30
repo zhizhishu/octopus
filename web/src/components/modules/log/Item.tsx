@@ -21,6 +21,7 @@ import {
     isModelTestEndpoint,
 } from './humanize';
 import { getModelIcon } from '@/lib/model-icons';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { marketModelName } from '@/lib/model-aliases';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
@@ -635,8 +636,9 @@ function LazyLogBodies({ logId, fallbackRequest, fallbackResponse, requestLabel,
 
 type AuditBadge = {
     label: string;
-    title: string;
     className: string;
+    /** 命中的快检结果原样保留，供点按弹层展示（得分/发现数/渠道/模型）。 */
+    hit: ScheduledAuditResult;
 };
 
 /**
@@ -644,6 +646,7 @@ type AuditBadge = {
  * 回答「上游模型对不对」。匹配顺序：先按实际发上游的模型名，再按请求模型名
  * （model_mapping 场景下快检记的可能是任一侧）。没检过/跳过/普通用户 → 无徽标。
  * verdict 语义与检测页一致：none=未见异常、unknown=证据不足、low/medium/high=待复核。
+ * 徽标本身点按弹出详情（Popover，移动端手指可触），不再依赖悬停 title。
  */
 function auditBadgeForLog(
     log: RelayLog,
@@ -681,18 +684,10 @@ function auditBadgeForLog(
             className = 'border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-300';
             break;
     }
-    const titleParts = [
-        hit.channel_name || `渠道 ${hit.channel_id}`,
-        hit.model,
-        typeof hit.score === 'number' ? `${t('auditScore')}: ${hit.score}` : undefined,
-        typeof hit.finding_count === 'number' && hit.finding_count > 0
-            ? `${t('auditFindings')}: ${hit.finding_count}`
-            : undefined,
-    ].filter(Boolean);
     return {
         label: `${t('auditPrefix')} · ${label}`,
-        title: titleParts.join(' · '),
         className,
+        hit,
     };
 }
 
@@ -707,6 +702,13 @@ export const LogCard = React.memo(function LogCard({
     const t = useTranslations('log.card');
     const canViewDetails = useAuthStore((state) => state.user?.role === 'admin');
     const modelNameToDisplay = log.actual_model_name?.trim() || log.request_model_name?.trim() || '';
+    // 检测弹层用的三个显示名（与主行同款归一规则）：发送的模型 / 请求的模型 / 上游自报。
+    const actualModelDisplayName = marketModelName(log.actual_model_name) || log.actual_model_name;
+    const requestModelDisplayName = marketModelName(log.request_model_name) || log.request_model_name;
+    const upstreamEchoDisplayName = useMemo(() => {
+        const raw = log.upstream_response_model?.trim() ?? '';
+        return raw ? (marketModelName(raw) || raw) : '';
+    }, [log.upstream_response_model]);
     const { Avatar: ModelAvatar, color: brandColor } = useMemo(
         () => getModelIcon(modelNameToDisplay),
         [modelNameToDisplay]
@@ -863,26 +865,86 @@ export const LogCard = React.memo(function LogCard({
                             {/* 识别行（单独一行）：下游客户端识别 + 上游模型真假检测。
                                 客户端徽标来自调用端 UA（humanizeClient）；检测徽标来自定时快检
                                 快照按 渠道+模型 匹配（管理员拉取，普通用户只有客户端徽标）。
-                                两者都缺时整行不渲染，老日志零高度变化。 */}
+                                两者都缺时整行不渲染，老日志零高度变化。
+                                徽标点按弹出详情（Popover）——移动端手指可触，不依赖悬停；
+                                检测弹层同时给「发送模型 vs 上游自报」的本行证据。 */}
                             {(clientLabel || auditBadge) && (
                                 <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1">
                                     {clientLabel && (
-                                        <Badge
-                                            variant="outline"
-                                            className="shrink-0 border-violet-500/30 bg-violet-500/10 px-1.5 py-0 text-xs text-violet-600 dark:text-violet-300"
-                                            title={log.request_user_agent}
-                                        >
-                                            {clientLabel}
-                                        </Badge>
+                                        <Popover>
+                                            <PopoverTrigger asChild>
+                                                <Badge
+                                                    variant="outline"
+                                                    role="button"
+                                                    tabIndex={0}
+                                                    className="shrink-0 cursor-pointer border-violet-500/30 bg-violet-500/10 px-1.5 py-0 text-xs text-violet-600 dark:text-violet-300"
+                                                >
+                                                    {clientLabel}
+                                                </Badge>
+                                            </PopoverTrigger>
+                                            <PopoverContent align="start" className="w-72 p-3">
+                                                <p className="text-xs font-medium text-foreground">{t('client')}</p>
+                                                <p className="mt-1 break-all font-mono text-[11px] leading-5 text-muted-foreground">
+                                                    {log.request_user_agent}
+                                                </p>
+                                            </PopoverContent>
+                                        </Popover>
                                     )}
                                     {auditBadge && (
-                                        <Badge
-                                            variant="outline"
-                                            className={cn('shrink-0 px-1.5 py-0 text-xs', auditBadge.className)}
-                                            title={auditBadge.title}
-                                        >
-                                            {auditBadge.label}
-                                        </Badge>
+                                        <Popover>
+                                            <PopoverTrigger asChild>
+                                                <Badge
+                                                    variant="outline"
+                                                    role="button"
+                                                    tabIndex={0}
+                                                    className={cn('shrink-0 cursor-pointer px-1.5 py-0 text-xs', auditBadge.className)}
+                                                >
+                                                    {auditBadge.label}
+                                                </Badge>
+                                            </PopoverTrigger>
+                                            <PopoverContent align="start" className="w-80 p-3">
+                                                <div className="space-y-2 text-xs">
+                                                    <p className="font-medium text-foreground">
+                                                        {t('auditPrefix')} · {auditBadge.hit.channel_name || `渠道 ${auditBadge.hit.channel_id}`}
+                                                    </p>
+                                                    <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+                                                        <span className="text-muted-foreground">{t('auditModel')}</span>
+                                                        <span className="break-all">{auditBadge.hit.model}</span>
+                                                        {typeof auditBadge.hit.score === 'number' && (
+                                                            <>
+                                                                <span className="text-muted-foreground">{t('auditScore')}</span>
+                                                                <span className="tabular-nums">{auditBadge.hit.score}</span>
+                                                            </>
+                                                        )}
+                                                        {typeof auditBadge.hit.finding_count === 'number' && auditBadge.hit.finding_count > 0 && (
+                                                            <>
+                                                                <span className="text-muted-foreground">{t('auditFindings')}</span>
+                                                                <span className="tabular-nums">{auditBadge.hit.finding_count}</span>
+                                                            </>
+                                                        )}
+                                                    </div>
+                                                    {/* 本行证据：发送的模型 vs 上游自报的模型（sub2api 式
+                                                        「被路由到什么模型」——上游自报与发送不符是最直接的
+                                                        造假线索；上游沉默则无法判定）。 */}
+                                                    <div className="border-t border-border pt-2">
+                                                        <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+                                                            <span className="text-muted-foreground">{t('sentModel')}</span>
+                                                            <span className="break-all">{actualModelDisplayName || requestModelDisplayName}</span>
+                                                            <span className="text-muted-foreground">{t('upstreamDeclared')}</span>
+                                                            {upstreamEchoDisplayName ? (
+                                                                <span className={cn('break-all', log.upstream_model_mismatch === true && 'font-medium text-amber-600 dark:text-amber-400')}>
+                                                                    {upstreamEchoDisplayName}
+                                                                    {log.upstream_model_mismatch === true && ` · ${t('echoInconsistent')}`}
+                                                                    {log.upstream_model_mismatch === false && ` · ${t('echoConsistent')}`}
+                                                                </span>
+                                                            ) : (
+                                                                <span className="text-muted-foreground/70">{t('upstreamSilent')}</span>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </PopoverContent>
+                                        </Popover>
                                     )}
                                 </div>
                             )}

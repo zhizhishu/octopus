@@ -800,6 +800,12 @@
             "auditHigh": "high-risk review",
             "auditScore": "score",
             "auditFindings": "findings",
+            "auditModel": "audited model",
+            "sentModel": "sent model",
+            "upstreamDeclared": "upstream declared",
+            "echoInconsistent": "differs from sent",
+            "echoConsistent": "matches sent",
+            "upstreamSilent": "upstream did not declare",
             "channelKey": "Key Remark",
             "thinking": "Thinking",
             "basePrice": "Base Price (In/Out)"

@@ -800,6 +800,12 @@
             "auditHigh": "高危待覆核",
             "auditScore": "得分",
             "auditFindings": "發現",
+            "auditModel": "檢測模型",
+            "sentModel": "發送模型",
+            "upstreamDeclared": "上游自報",
+            "echoInconsistent": "與發送不符",
+            "echoConsistent": "與發送一致",
+            "upstreamSilent": "上游未自報模型",
             "channelKey": "渠道 Key 備註",
             "thinking": "思考",
             "basePrice": "基準單價(In/Out)"
