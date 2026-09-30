@@ -84,9 +84,6 @@ export type UpdateAccessPlanRouteTargetsRequest = {
     targets: AccessPlanRouteTarget[];
 };
 
-/** 全局默认分流模式（setting route_mode_override）：'spread'=全局轮询；'fill_first'=全局优先填充。 */
-export type RouteModeOverrideValue = 'spread' | 'fill_first';
-
 const ACCESS_PLAN_LIST_KEY = ['access-plans', 'list'] as const;
 
 function normalizeAccessPlan(plan: AccessPlanServer): AccessPlan {

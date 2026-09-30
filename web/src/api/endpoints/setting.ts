@@ -158,62 +158,71 @@ export function fetchSettingSecret(key: string): Promise<SettingSecret> {
 
 /**
  * 全局默认分流模式（route_mode_override）。
- * 用户定 2027-02-21：只留「轮询 / 优先填充」两档，去掉「跟随各规则」；
- * 历史空值/未知值在 UI 归一到默认档，并一次性固化写回，保证后端缺省与 UI 显示一致。
+ *
+ * 后端是**三态**：`''` = 跟随各分组自己的模式（出厂默认）/ `'spread'` = 轮询 /
+ * `'fill_first'` = 优先填充；空串是后端显式校验通过的合法值。
+ *
+ * 曾经的实现是「读到空值/未知值就在 UI 归一到默认档，并一次性写回」，理由是让后端缺省与
+ * 界面显示保持一致。**那是个坑**：这个值在选路时实时生效，静默写回等于把「跟随各分组」
+ * 这一档从线上抹掉 —— 全新安装的实例，管理员打开一次画布页，所有没单独指定过模式的分组
+ * 就从「各按各的」变成「全体优先填充」，而且没有任何人点过保存。所以这里改成：
+ *
+ *   - 空值如实显示「未设（跟随各规则）」，**不写回**，等用户自己点；
+ *   - 读到不认识的取值就如实标「不支持」并原样留着，不假装成另一档、也不覆盖它；
+ *   - 只有用户在界面上主动选择时才发写请求（含主动选回「未设」）。
  */
-export type RouteModeOverrideValue = 'spread' | 'fill_first';
-export const ROUTE_MODE_OVERRIDE_VALUES: readonly RouteModeOverrideValue[] = ['spread', 'fill_first'];
-export const ROUTE_MODE_OVERRIDE_DEFAULT: RouteModeOverrideValue = 'fill_first';
+export type RouteModeOverrideValue = 'spread' | 'fill_first' | '';
+/** 用户可主动选择的明确档位（不含「未设」）。 */
+export const ROUTE_MODE_OVERRIDE_VALUES: readonly Exclude<RouteModeOverrideValue, ''>[] = ['spread', 'fill_first'];
 
 export function routeModeOverrideLabel(value: RouteModeOverrideValue): string {
-    return value === 'spread' ? '轮询' : '优先填充';
+    if (value === 'spread') return '轮询';
+    if (value === 'fill_first') return '优先填充';
+    return '未设（跟随各规则）';
 }
-
-export function normalizeRouteModeOverride(raw: string | undefined | null): RouteModeOverrideValue {
-    return ROUTE_MODE_OVERRIDE_VALUES.includes((raw ?? '') as RouteModeOverrideValue)
-        ? (raw as RouteModeOverrideValue)
-        : ROUTE_MODE_OVERRIDE_DEFAULT;
-}
-
-let routeModeOverrideFixupDone = false;
 
 /**
- * 读写 route_mode_override 的共享 Hook：设置页与方案页顶栏下拉共用一套读写与归一逻辑。
- * 首次在 fresh 数据上发现历史空值/未知值时，自动固化为明确档位（失败可重试，带 toast 提示）。
+ * 把后端原始值分类成「能对上的档位 / 空 / 不认识的三方值」，**不做静默归一**。
+ * `unsupported` 非空 = 后端存着一个我们不认识的取值：界面要如实说不支持，
+ * 既不能当成某一档显示，也不能顺手把它覆盖掉。
+ */
+export function classifyRouteModeOverride(raw: string | undefined | null): {
+    value: RouteModeOverrideValue;
+    unsupported: string | null;
+} {
+    const trimmed = (raw ?? '').trim();
+    if (trimmed === '') return { value: '', unsupported: null };
+    if ((ROUTE_MODE_OVERRIDE_VALUES as readonly string[]).includes(trimmed)) {
+        return { value: trimmed as RouteModeOverrideValue, unsupported: null };
+    }
+    return { value: '', unsupported: trimmed };
+}
+
+/**
+ * 读写 route_mode_override 的共享 Hook：设置页与方案页顶栏下拉共用一套读写与分类逻辑。
+ * **进页面只读不写**；写只发生在用户主动选择时。
  */
 export function useRouteModeOverrideSetting() {
     const { data: settings, isFetching, isSuccess, isError } = useSettingList();
     const setSetting = useSetSetting();
-    const [value, setValue] = useState<RouteModeOverrideValue>(ROUTE_MODE_OVERRIDE_DEFAULT);
-    // 最近一次确认已持久化的原始值（空串 = 后端仍是历史空值/未知值）。
-    // 同值短路只对已持久化值生效，固化写回失败后用户重选同档仍能重试。
+    // 显示值：'' 表示后端就是「未设」，界面照实显示，不再假装成某一档。
+    const [value, setValue] = useState<RouteModeOverrideValue>('');
+    // 后端存着我们不认识的取值时原样带出来，界面标「不支持」而不是当成另一档。
+    const [unsupported, setUnsupported] = useState<string | null>(null);
+    // 最近一次确认已持久化的**原始**值（空串 = 后端就是未设）。
+    // 同值短路只对已持久化值生效；保存失败也要回滚到它，而不是回滚成某个「默认档」。
     const persistedRef = useRef<string>('');
     const errorToastedRef = useRef(false);
 
     useEffect(() => {
-        // 只信 fresh 数据（refetchOnMount:'always' 下仍可能先拿到旧缓存），防旧缓存抢先写回覆盖新值。
+        // 只信 fresh 数据（refetchOnMount:'always' 下仍可能先拿到旧缓存）。
         if (!settings || isFetching) return;
         const raw = settings.find((s) => s.key === SettingKey.RouteModeOverride)?.value ?? '';
         persistedRef.current = raw;
-        const next = normalizeRouteModeOverride(raw);
-        setValue(next);
-        if (raw !== next && !routeModeOverrideFixupDone) {
-            routeModeOverrideFixupDone = true;
-            setSetting.mutate(
-                { key: SettingKey.RouteModeOverride, value: next },
-                {
-                    onSuccess: () => {
-                        persistedRef.current = next;
-                        toast.info(`全局默认分流模式已固化为：${routeModeOverrideLabel(next)}`);
-                    },
-                    onError: () => {
-                        // 失败解除一次性 guard，下次 fresh 读取仍会重试固化。
-                        routeModeOverrideFixupDone = false;
-                        toast.error('全局默认分流模式固化失败');
-                    },
-                },
-            );
-        }
+        const classified = classifyRouteModeOverride(raw);
+        setValue(classified.value);
+        setUnsupported(classified.unsupported);
+        // 这里**故意不发写请求**：进页面只读。空值与未知值都如实显示，等用户自己点。
     }, [settings, isFetching]);
 
     useEffect(() => {
@@ -226,6 +235,8 @@ export function useRouteModeOverrideSetting() {
     const update = (next: RouteModeOverrideValue) => {
         if (next === persistedRef.current) return;
         setValue(next);
+        // 用户主动选了一个明确档位，那个「不支持」的陈旧提示就该收掉。
+        setUnsupported(null);
         setSetting.mutate(
             { key: SettingKey.RouteModeOverride, value: next },
             {
@@ -234,15 +245,18 @@ export function useRouteModeOverrideSetting() {
                     toast.success('默认分流模式已保存');
                 },
                 onError: () => {
-                    setValue(normalizeRouteModeOverride(persistedRef.current));
+                    // 回到真实的持久化值（可能还是空 = 未设），不假装成某一档写成功了。
+                    const restored = classifyRouteModeOverride(persistedRef.current);
+                    setValue(restored.value);
+                    setUnsupported(restored.unsupported);
                     toast.error('默认分流模式保存失败');
                 },
             },
         );
     };
 
-    // isReady=false（列表未读到）时禁用下拉，避免把显示默认值冒充已保存状态。
-    return { value, update, isPending: setSetting.isPending, isReady: isSuccess };
+    // isReady=false（列表未读到）时禁用下拉，避免把显示值冒充已保存状态。
+    return { value, unsupported, update, isPending: setSetting.isPending, isReady: isSuccess };
 }
 
 /**
