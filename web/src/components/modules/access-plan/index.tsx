@@ -232,14 +232,15 @@ function clampRoutePriority(value: number) {
 
 /**
  * 分流模式（后端契约）：规则对象上的 mode 是 JSON number，
- * 1 = 纯轮询 spread（所有目标并列均摊），4 = 分层轮询（目标上的数字越大越先尝试，
+ * 1 = 纯轮询 spread（所有目标并列均摊），6 = 分层轮询（目标上的数字越大越先尝试，
  * 同一个数字内继续轮询），3 = fill_first 优先填充（默认）。其他/缺省值一律视为 fill_first。
  *
- * 4 是用户 2026-09-30 定的「B 方案」：画布节点上的数字必须真的影响选路。纯轮询(1) 故意
+ * 6 是用户 2026-09-30 定的「B 方案」：画布节点上的数字必须真的影响选路（刻意不用旧版退役过的
+ * 2/4/5，避免历史库里的旧模式值被重新赋义）。纯轮询(1) 故意
  * 不看数字（拖拽序号天然唯一，当硬边界会退化成固定顺序），所以分层语义单独一档，
  * 旧规则不动、只有在管理员显式改数字或重选模式时才升级为 4。
  */
-const SPREAD_TIERED_MODE = 4;
+const SPREAD_TIERED_MODE = 6;
 
 function isSpreadMode(mode: number | undefined | null): boolean {
     const value = Number(mode);
@@ -247,12 +248,12 @@ function isSpreadMode(mode: number | undefined | null): boolean {
 }
 
 /** 轮询家族内部保持原本那一档：分层轮询不能因为一次保存被悄悄降级回纯轮询。 */
-function spreadModeValue(mode: number | undefined | null): 1 | 4 {
+function spreadModeValue(mode: number | undefined | null): 1 | 6 {
     return Number(mode) === SPREAD_TIERED_MODE ? SPREAD_TIERED_MODE : 1;
 }
 
-/** 把 mode 归一到合法值：1 / 4 / 3（默认 3）。 */
-function normalizeRouteMode(mode: number | undefined | null): 1 | 3 | 4 {
+/** 把 mode 归一到合法值：1 / 6 / 3（默认 3）。 */
+function normalizeRouteMode(mode: number | undefined | null): 1 | 3 | 6 {
     return isSpreadMode(mode) ? spreadModeValue(mode) : 3;
 }
 
@@ -1936,12 +1937,12 @@ function RouteTargetEditorCard({
                             分流模式
                             <select
                                 value={normalizeRouteMode(target.mode)}
-                                onChange={(event) => updateTarget(index, { mode: Number(event.target.value) as 1 | 3 | 4 })}
+                                onChange={(event) => updateTarget(index, { mode: Number(event.target.value) as 1 | 3 | 6 })}
                                 aria-label="分流模式"
                                 className="h-9 w-full min-w-0 rounded-xl border border-input bg-background px-3 text-sm text-foreground"
                             >
                                 <option value={1}>轮询（所有目标同级轮转）</option>
-                                <option value={4}>分层轮询（数字越大越先尝试，同数字内轮转）</option>
+                                <option value={6}>分层轮询（数字越大越先尝试，同数字内轮转）</option>
                                 <option value={3}>优先填充（fill_first / 默认）</option>
                             </select>
                         </label>

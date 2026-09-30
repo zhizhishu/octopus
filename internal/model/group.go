@@ -27,10 +27,13 @@ const (
 	// 为什么单独一个模式值: 纯轮询(1) 故意忽略条目 Priority —— 拖拽序号天然唯一, 一旦让它当
 	// 硬边界就会退化成固定顺序、永不轮转(见 balancer.Spread 注释)。分层语义必须另立, 不能改
 	// 纯轮询的比较器, 否则既有轮询规则全部变形。
-	GroupModeSpreadTiered GroupMode = 4
+	//
+	// 用 6 而不是 4: 上游历史版本里 2/4/5 是已退役的 random/weighted/smart 模式, 复用 4 会让
+	// 老库里残留的 weighted 分组被重新赋义成分层轮询。6 从未被任何版本写入过。
+	GroupModeSpreadTiered GroupMode = 6
 )
 
-// IsSpreadFamily 表示「轮询家族」: 纯轮询(1) 与分层轮询(4) 都按轮询选路, 而非优先填充。
+// IsSpreadFamily 表示「轮询家族」: 纯轮询(1) 与分层轮询(6) 都按轮询选路, 而非优先填充。
 // 判断「这条规则是不是轮询类」一律用它, 不要再逐个字面量比较。
 func (m GroupMode) IsSpreadFamily() bool {
 	return m == GroupModeRoundRobin || m == GroupModeSpreadTiered
