@@ -1,4 +1,4 @@
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiClient } from '../client';
 import { logger } from '@/lib/logger';
 
@@ -120,14 +120,21 @@ export function useScheduledAudit(enabled = true) {
         queryFn: async () => apiClient.get<ScheduledAuditSnapshot>('/api/v1/model-audit/scheduled'),
         enabled,
         staleTime: 30_000,
+        // Let a failed read hide stale evidence immediately; the next poll retries.
+        retry: false,
+        // Read the saved snapshot only; this endpoint never runs upstream probes.
+        refetchInterval: 5_000,
+        refetchIntervalInBackground: false,
     });
 }
 
 export function useRunModelAudit() {
+    const queryClient = useQueryClient();
     return useMutation({
         mutationFn: async (data: ModelAuditRequest) => {
             return apiClient.post<ModelAuditResponse>('/api/v1/model-audit/run', data);
         },
+        onSuccess: () => queryClient.invalidateQueries({ queryKey: ['model-audit'] }),
         onError: (error) => {
             logger.error('模型审计失败:', error);
         },

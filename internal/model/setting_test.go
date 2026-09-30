@@ -80,7 +80,8 @@ func TestRouteModeOverrideValidation(t *testing.T) {
 		value   string
 		wantErr bool
 	}{
-		{name: "empty follows group", value: ""},
+		{name: "empty uses default", value: ""},
+		{name: "blank uses default", value: " \t "},
 		{name: "spread", value: "spread"},
 		{name: "fill_first", value: "fill_first"},
 		{name: "uppercase spread", value: "SPREAD"},

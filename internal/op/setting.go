@@ -68,6 +68,12 @@ func SettingGetString(key model.SettingKey) (string, error) {
 }
 
 func SettingSetString(key model.SettingKey, value string) error {
+	if key == model.SettingKeyRouteModeOverride {
+		if err := (&model.Setting{Key: key, Value: value}).Validate(); err != nil {
+			return err
+		}
+		value = model.NormalizeRouteModeOverride(value)
+	}
 	valueCache, ok := settingCache.Get(key)
 	if !ok {
 		return fmt.Errorf("setting not found")
@@ -155,6 +161,19 @@ func settingRefreshCache(ctx context.Context) error {
 	}
 
 	for i := range settings {
+		if settings[i].Key == model.SettingKeyRouteModeOverride {
+			nextValue := model.NormalizeRouteModeOverride(settings[i].Value)
+			if nextValue != settings[i].Value {
+				result := db.Model(&model.Setting{Key: settings[i].Key}).Update("Value", nextValue)
+				if result.Error != nil {
+					return fmt.Errorf("failed to normalize route mode setting: %w", result.Error)
+				}
+				if result.RowsAffected == 0 {
+					return fmt.Errorf("failed to normalize route mode setting: key not found")
+				}
+				settings[i].Value = nextValue
+			}
+		}
 		replacements := settingLegacyDefaultUpgrades[settings[i].Key]
 		if len(replacements) == 0 {
 			continue

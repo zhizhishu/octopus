@@ -18,6 +18,10 @@ import (
 func TestConcurrentResponsesStreamingRoundRobinCompletesAllTurns(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx := setupRelayKeyRetryDB(t)
+	// This regression exercises spread, independently of the installation default.
+	if err := op.SettingSetString(dbmodel.SettingKeyRouteModeOverride, "spread"); err != nil {
+		t.Fatalf("set spread routing: %v", err)
+	}
 
 	var leftCount int64
 	var rightCount int64
@@ -111,6 +115,10 @@ func TestConcurrentResponsesStreamingRoundRobinCompletesAllTurns(t *testing.T) {
 func TestConcurrentResponsesClientSessionsDoNotCrossStickyChannels(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx := setupRelayKeyRetryDB(t)
+	// This regression exercises spread, independently of the installation default.
+	if err := op.SettingSetString(dbmodel.SettingKeyRouteModeOverride, "spread"); err != nil {
+		t.Fatalf("set spread routing: %v", err)
+	}
 
 	// The pool grouped channels under a group with SessionKeepTime=300; the channels-
 	// only fallback reads the global session_keep_time_default instead, so seed it to

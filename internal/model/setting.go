@@ -100,7 +100,7 @@ const (
 	// ordered iterator. 0 disables this automatic rescue; valid values are capped at 600s.
 	SettingKeyRelayNoBreakerRetryBudgetSec SettingKey = "relay_no_breaker_retry_budget_seconds"
 
-	SettingKeyRouteModeOverride       SettingKey = "route_mode_override"      // 路由模式全局覆盖: ""=跟随分组各自模式, "spread"=强制轮询, "fill_first"=强制优先填充
+	SettingKeyRouteModeOverride       SettingKey = "route_mode_override"      // 路由默认模式: spread=轮询, fill_first=优先填充；不覆盖 ModeLocked 规则
 	SettingKeyRouteStickyCacheFirst   SettingKey = "route_sticky_cache_first" // 轮询类分组里纯优化型会话(prompt_cache_key/user/safety_identifier/oct 自造指纹)的粘性取舍: false=分摊优先(默认, 不粘、真轮转), true=缓存优先(非空来源也粘, 换上游 prompt-cache 命中)。语义详见 internal/relay/route_sticky.go
 	SettingKeyPromptOverrideSystem    SettingKey = "prompt_override_system"
 	SettingKeyPromptOverrideMode      SettingKey = "prompt_override_mode"
@@ -152,6 +152,17 @@ type Setting struct {
 // SettingSecretMaskValue is returned by the settings API in place of stored
 // secrets (e.g. SMTP password) and is treated as "keep existing" on write.
 const SettingSecretMaskValue = "__OCTOPUS_SECRET_KEPT__"
+
+const DefaultRouteModeOverride = "fill_first"
+
+// NormalizeRouteModeOverride repairs stored legacy values at startup/import boundaries.
+// Request validation must run first: unknown API input is rejected, not repaired.
+func NormalizeRouteModeOverride(value string) string {
+	if strings.ToLower(strings.TrimSpace(value)) == "spread" {
+		return "spread"
+	}
+	return DefaultRouteModeOverride
+}
 
 const (
 	// DefaultCodexHeaderUserAgent: a clean, self-consistent codex_cli_rs identity on a Linux
@@ -340,7 +351,7 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyRelayInterventionEnabled, Value: "true"},                                        // 默认开: 流式请求在普通渠道/回退用尽后自动救援; 关=普通渠道立刻回错(无熔断渠道仍可按预算自救)
 		{Key: SettingKeyRelayInterventionTimeoutSec, Value: "1800"},                                     // 人工接管等待上限(秒), 超时后原错误照常返回客户端
 		{Key: SettingKeyRelayNoBreakerRetryBudgetSec, Value: "300"},                                     // 无熔断渠道自动猛打预算(秒): 按画布既定顺序反复重试; 最大600, 0=关闭
-		{Key: SettingKeyRouteModeOverride, Value: ""},                                                   // 默认空=跟随分组各自模式(向后兼容); 设为 spread/fill_first 则强制覆盖所有分组
+		{Key: SettingKeyRouteModeOverride, Value: DefaultRouteModeOverride},                             // 默认优先填充；已有独立模式的规则不受影响
 		{Key: SettingKeyRouteStickyCacheFirst, Value: "false"},                                          // 默认 false=分摊优先(现行为不变); 设 true 切「缓存优先」: 轮询分组里非空的纯优化型会话也保留粘性
 		{Key: SettingKeyPromptOverrideSystem, Value: ""},
 		{Key: SettingKeyPromptOverrideMode, Value: string(PromptOverrideModeAppendSystem)},
@@ -485,7 +496,7 @@ func (s *Setting) Validate() error {
 		case "", "spread", "fill_first":
 			return nil
 		default:
-			return fmt.Errorf("%s must be empty, spread, or fill_first", s.Key)
+			return fmt.Errorf("%s must be spread or fill_first (empty uses the default)", s.Key)
 		}
 	case SettingKeyRelayLogKeepEnabled, SettingKeyAnthropicAutoCacheControl, SettingKeyOpenAIAutoPromptCacheKey,
 		SettingKeyClaudeHeaderStabilize, SettingKeyClaudeCLIAutoCompact, SettingKeyCodexFastMode,

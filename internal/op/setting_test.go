@@ -2,11 +2,13 @@ package op
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 
 	"github.com/bestruirui/octopus/internal/db"
 	"github.com/bestruirui/octopus/internal/model"
+	"gorm.io/gorm"
 )
 
 func setupSettingTest(t *testing.T) context.Context {
@@ -215,33 +217,119 @@ func TestSettingRefreshCacheKeepsCustomStreamDataTimeout(t *testing.T) {
 	}
 }
 
-func TestSettingRefreshCacheKeepsEmptyRouteModeOverride(t *testing.T) {
-	ctx := setupSettingTest(t)
-
-	if err := db.GetDB().WithContext(ctx).Create(&model.Setting{
-		Key:   model.SettingKeyRouteModeOverride,
-		Value: "",
-	}).Error; err != nil {
-		t.Fatalf("seed empty route_mode_override: %v", err)
-	}
-
-	if err := settingRefreshCache(ctx); err != nil {
-		t.Fatalf("refresh setting cache: %v", err)
-	}
-
+func assertRouteModeSetting(t *testing.T, wantDB, wantCache string) {
+	t.Helper()
 	cached, err := SettingGetString(model.SettingKeyRouteModeOverride)
-	if err != nil {
-		t.Fatalf("get cached route_mode_override: %v", err)
+	if err != nil || cached != wantCache {
+		t.Fatalf("cached route mode = %q, %v; want %q", cached, err, wantCache)
 	}
-	if cached != "" {
-		t.Fatalf("expected empty route_mode_override to stay empty (follow group), got %q", cached)
-	}
-
 	var persisted model.Setting
-	if err := db.GetDB().WithContext(ctx).First(&persisted, "key = ?", model.SettingKeyRouteModeOverride).Error; err != nil {
-		t.Fatalf("load persisted route_mode_override: %v", err)
+	if err := db.GetDB().First(&persisted, "key = ?", model.SettingKeyRouteModeOverride).Error; err != nil {
+		t.Fatalf("load persisted route mode: %v", err)
 	}
-	if persisted.Value != "" {
-		t.Fatalf("expected persisted route_mode_override to stay empty, got %q", persisted.Value)
+	if persisted.Value != wantDB {
+		t.Fatalf("persisted route mode = %q, want %q", persisted.Value, wantDB)
+	}
+}
+
+func TestSettingRefreshCacheNormalizesRouteModeOverride(t *testing.T) {
+	for _, tc := range []struct {
+		name, raw, want string
+		missing         bool
+	}{
+		{name: "new database", missing: true, want: "fill_first"},
+		{name: "legacy empty", want: "fill_first"},
+		{name: "legacy blank", raw: " \t ", want: "fill_first"},
+		{name: "legacy unknown", raw: "smart", want: "fill_first"},
+		{name: "spread", raw: "spread", want: "spread"},
+		{name: "canonical spread", raw: " SPREAD ", want: "spread"},
+		{name: "fill first", raw: "fill_first", want: "fill_first"},
+		{name: "canonical fill first", raw: " Fill_First ", want: "fill_first"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := setupSettingTest(t)
+			if !tc.missing {
+				if err := db.GetDB().Create(&model.Setting{Key: model.SettingKeyRouteModeOverride, Value: tc.raw}).Error; err != nil {
+					t.Fatalf("seed route mode: %v", err)
+				}
+			}
+			if err := settingRefreshCache(ctx); err != nil {
+				t.Fatalf("refresh: %v", err)
+			}
+			assertRouteModeSetting(t, tc.want, tc.want)
+
+			// A second refresh must not issue even an idempotent UPDATE.
+			const callback = "test:reject_repeated_route_update"
+			if err := db.GetDB().Callback().Update().Before("gorm:update").Register(callback, func(tx *gorm.DB) {
+				tx.AddError(errors.New("unexpected update after normalization"))
+			}); err != nil {
+				t.Fatal(err)
+			}
+			defer db.GetDB().Callback().Update().Remove(callback)
+			if err := settingRefreshCache(ctx); err != nil {
+				t.Fatalf("idempotent refresh: %v", err)
+			}
+			assertRouteModeSetting(t, tc.want, tc.want)
+		})
+	}
+}
+
+func TestSettingSetRouteModeOverrideCanonicalAndRejectsUnknown(t *testing.T) {
+	ctx := setupSettingTest(t)
+	if err := settingRefreshCache(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ raw, want string }{
+		{raw: " SPREAD ", want: "spread"},
+		{raw: "", want: "fill_first"},
+		{raw: "spread", want: "spread"},
+		{raw: " \t ", want: "fill_first"},
+		{raw: " Fill_First ", want: "fill_first"},
+	} {
+		if err := SettingSetString(model.SettingKeyRouteModeOverride, tc.raw); err != nil {
+			t.Fatalf("set %q: %v", tc.raw, err)
+		}
+		assertRouteModeSetting(t, tc.want, tc.want)
+	}
+	for _, raw := range []string{"smart", "round_robin"} {
+		if err := SettingSetString(model.SettingKeyRouteModeOverride, raw); err == nil {
+			t.Fatalf("unknown mode %q accepted", raw)
+		}
+		assertRouteModeSetting(t, "fill_first", "fill_first")
+	}
+}
+
+func TestSettingRouteModeWriteFailurePreservesCache(t *testing.T) {
+	ctx := setupSettingTest(t)
+	if err := settingRefreshCache(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := SettingSetString(model.SettingKeyRouteModeOverride, "spread"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.GetDB().Model(&model.Setting{Key: model.SettingKeyRouteModeOverride}).Update("value", "legacy-invalid").Error; err != nil {
+		t.Fatal(err)
+	}
+	const callback = "test:reject_route_mode_write"
+	if err := db.GetDB().Callback().Update().Before("gorm:update").Register(callback, func(tx *gorm.DB) {
+		tx.AddError(errors.New("injected setting write failure"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	defer db.GetDB().Callback().Update().Remove(callback)
+
+	if err := settingRefreshCache(ctx); err == nil {
+		t.Fatal("normalization must fail when its database write fails")
+	}
+	assertRouteModeSetting(t, "legacy-invalid", "spread")
+	if err := SettingSetString(model.SettingKeyRouteModeOverride, ""); err == nil {
+		t.Fatal("setter must fail when its database write fails")
+	}
+	assertRouteModeSetting(t, "legacy-invalid", "spread")
+	for i := 0; i < 2; i++ {
+		if _, err := SettingList(ctx); err != nil {
+			t.Fatal(err)
+		}
+		assertRouteModeSetting(t, "legacy-invalid", "spread")
 	}
 }

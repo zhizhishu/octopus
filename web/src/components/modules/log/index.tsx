@@ -665,14 +665,18 @@ export function Log() {
     const isAdmin = useAuthStore((state) => state.user?.role === 'admin');
     // 模型检测徽标数据源：定时快检快照（管理员接口，普通用户不拉）。
     // 一次拉全量、按 渠道ID|模型 建索引，逐行卡片 O(1) 匹配。
-    const { data: scheduledAudit } = useScheduledAudit(isAdmin);
+    const { data: scheduledAudit, isError: auditUnavailable } = useScheduledAudit(isAdmin);
     const auditByChannelModel = useMemo(() => {
         const index = new Map<string, ScheduledAuditResult>();
+        // A failed refresh must not present a cached green badge as current evidence.
+        if (auditUnavailable) return index;
         for (const item of scheduledAudit?.results ?? []) {
-            if (item.channel_id && item.model) index.set(`${item.channel_id}|${item.model}`, item);
+            // Follow-up results are newest first; older duplicates must not hide them.
+            const key = `${item.channel_id}|${item.model}`;
+            if (item.channel_id && item.model && !index.has(key)) index.set(key, item);
         }
         return index;
-    }, [scheduledAudit]);
+    }, [scheduledAudit, auditUnavailable]);
     const todayLabel = useMemo(() => localDateInput(new Date()), []);
     // 默认区间放宽到「近 7 天」而非「今天」：日志常是前一两天产生的，默认只查今天会让页面一开屏就空、
     // 显得「筛选无效」。近 7 天在「够聚焦」和「开屏能看到东西」之间取平衡。

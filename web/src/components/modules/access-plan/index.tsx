@@ -30,7 +30,7 @@ import {
 } from '@/api/endpoints/access-plan';
 import { useChannelList } from '@/api/endpoints/channel';
 import { useModelChannelList, useModelList } from '@/api/endpoints/model';
-import { RouteModeOverrideValue, routeModeOverrideLabel, useRouteModeOverrideSetting } from '@/api/endpoints/setting';
+import { ROUTE_MODE_OVERRIDE_VALUES, RouteModeOverrideValue, routeModeOverrideLabel, useRouteModeOverrideSetting } from '@/api/endpoints/setting';
 import { useAuthStore } from '@/api/endpoints/user';
 import { PageWrapper } from '@/components/common/PageWrapper';
 import { toast } from '@/components/common/Toast';
@@ -2599,49 +2599,29 @@ function RouteTargetsEditor({
     );
 }
 
-/**
- * 「路由默认模式」下拉：读写通用 setting route_mode_override。
- * 三态如实呈现：未设（跟随各规则）/ 轮询 / 优先填充。
- *
- * 空值**不再被写回成某一档**：这个值在选路时实时生效，进页面顺手改写等于把「跟随各分组」
- * 这一档从线上抹掉（fresh 安装打开一次画布页，缺省就变成显式全覆盖）。只有用户在这里
- * 主动选择时才发写请求；读到后端存着的不认识取值只如实标「不支持」，不覆盖它。
- *
- * 措辞刻意不用「强制/覆盖」：它只作用于新建规则与没单独指定模式的模型组，
- * 画布上显式选过模式的规则（ModeLocked）不受影响 —— 老文案把作用范围说大了。
- */
-const ROUTE_MODE_OVERRIDE_OPTIONS: RouteModeOverrideValue[] = ['', 'spread', 'fill_first'];
-/** 「后端存了个我们不认识的值」在下拉里的占位取值，永远不该被写回后端。 */
-const ROUTE_MODE_OVERRIDE_UNSUPPORTED = '__unsupported__';
-
+/** 默认只有轮询/优先填充两档；独立设置过模式的规则保持自己的选择。 */
 function GlobalRouteModeSelect({ className }: { className?: string }) {
-    const { value, unsupported, update, isPending, isReady } = useRouteModeOverrideSetting();
+    const { value, update, isPending, isReady } = useRouteModeOverrideSetting();
+    if (!ROUTE_MODE_OVERRIDE_VALUES.includes(value as RouteModeOverrideValue)) {
+        return <span className={cn('text-xs text-muted-foreground', className)} role="status">路由默认模式暂不可用</span>;
+    }
 
     return (
         <label className={cn('flex min-w-0 items-center gap-2 text-xs text-muted-foreground', className)}>
             <span className="shrink-0 whitespace-nowrap">路由默认模式</span>
             <select
-                value={unsupported ? ROUTE_MODE_OVERRIDE_UNSUPPORTED : value}
-                onChange={(event) => {
-                    // 「不支持」那一项只是如实展示当前状态，不能被选中写回。
-                    if (event.target.value === ROUTE_MODE_OVERRIDE_UNSUPPORTED) return;
-                    update(event.target.value as RouteModeOverrideValue);
-                }}
+                value={value}
+                onChange={(event) => update(event.target.value as RouteModeOverrideValue)}
                 disabled={isPending || !isReady}
                 aria-label="路由默认模式"
-                title={unsupported
-                    ? `后端当前值「${unsupported}」不是已知档位，已如实标出、未做任何改写`
-                    : '新建规则与未单独指定模式的模型组用哪一档选渠道；「未设」= 跟随各分组自己的模式；已有独立模式的规则保持自己的选择'}
+                title="新建规则与未单独指定模式的模型组用哪一档选渠道；已有独立模式的规则保持自己的选择"
                 className="h-8 min-w-0 rounded-full border border-border/70 bg-background/60 px-2.5 text-xs text-foreground outline-none focus:border-primary/50"
             >
-                {ROUTE_MODE_OVERRIDE_OPTIONS.map((option) => (
-                    <option key={option || 'unset'} value={option}>
+                {ROUTE_MODE_OVERRIDE_VALUES.map((option) => (
+                    <option key={option} value={option}>
                         {routeModeOverrideLabel(option)}
                     </option>
                 ))}
-                {unsupported ? (
-                    <option value={ROUTE_MODE_OVERRIDE_UNSUPPORTED}>不支持：{unsupported}</option>
-                ) : null}
             </select>
         </label>
     );

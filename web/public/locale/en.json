@@ -330,8 +330,7 @@
             "hint": "Which strategy new rules and groups without their own mode use by default. Spread = rotate across channels sharing the same number; Fill-first = concentrate on the top healthy channel and only sink on failure (better upstream cache hits).",
             "description": "This is a default, not an override: rules whose mode you picked in Plans -> Infinite canvas keep their own choice.",
             "movedHint": "The editor moved to the 「Default routing mode」 control in the Plans -> Infinite canvas toolbar.",
-            "defaultHint": "When unset, each group picks by its own mode (factory default)",
-            "followGroup": "Unset (follow each rule)",
+            "defaultHint": "Defaults to fill-first; switch to spread if needed. Rules with their own mode are unchanged.",
             "spread": "Spread",
             "fillFirst": "Fill-first"
         },

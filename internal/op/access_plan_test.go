@@ -994,14 +994,19 @@ func TestAccessPlanSyncCreatesMappedRuleWithGlobalRouteMode(t *testing.T) {
 		override       string
 		wantMode       model.GroupMode
 		wantPriorities []int
+		useDefault     bool
 	}{
+		{name: "new database defaults to fill first", useDefault: true, wantMode: model.GroupModeFillFirst, wantPriorities: []int{1, 2}},
+		{name: "legacy empty input uses fill first", override: "", wantMode: model.GroupModeFillFirst, wantPriorities: []int{1, 2}},
 		{name: "spread creates parallel targets", override: "spread", wantMode: model.GroupModeSpread, wantPriorities: []int{1, 1}},
 		{name: "fill first follows channel order", override: "fill_first", wantMode: model.GroupModeFillFirst, wantPriorities: []int{1, 2}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := setupAccessPlanTest(t)
-			if err := SettingSetString(model.SettingKeyRouteModeOverride, tc.override); err != nil {
-				t.Fatalf("set route mode override: %v", err)
+			if !tc.useDefault {
+				if err := SettingSetString(model.SettingKeyRouteModeOverride, tc.override); err != nil {
+					t.Fatalf("set route mode override: %v", err)
+				}
 			}
 
 			plans, err := AccessPlanList(ctx)

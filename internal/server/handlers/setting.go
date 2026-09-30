@@ -159,6 +159,9 @@ func setSetting(c *gin.Context) {
 		resp.Error(c, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if setting.Key == model.SettingKeyRouteModeOverride {
+		setting.Value = model.NormalizeRouteModeOverride(setting.Value)
+	}
 	switch setting.Key {
 	case model.SettingKeyModelInfoUpdateInterval:
 		hours, err := strconv.Atoi(setting.Value)
@@ -258,7 +261,10 @@ func importDB(c *gin.Context) {
 		return
 	}
 
-	_ = op.InitCache()
+	if err := op.InitCache(); err != nil {
+		resp.Error(c, http.StatusInternalServerError, "import was committed but cache refresh failed; retry the import or restart the service")
+		return
+	}
 
 	resp.Success(c, result)
 }
