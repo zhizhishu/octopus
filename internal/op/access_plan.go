@@ -1178,6 +1178,28 @@ func AccessPlanUpdateRouteTargets(accessPlanID int, targets []model.AccessRouteT
 	}
 	buckets := make(map[string]*routeBucket)
 	order := make([]string, 0)
+
+	// 规则级 mode 只该有一个值：先扫出每个 request_model 桶里第一个**显式**传上来的 mode。
+	// 不能只看第一条 target 的 mode —— 建桶时 normalizeAccessRouteRule 会把 0 定成
+	// Failover(=优先填充/3)，而下面那条「桶里后来出现别的 mode 就覆盖」的分支因此永远
+	// 不触发（死分支）。结果是：裸 API / 手写 JSON 只要同一 request_model 的第一条漏传
+	// mode，后面显式传的分层轮询(6) 就被静默存成优先填充 —— 画布看着是分层，选路却按顺位。
+	modeByKey := make(map[string]model.GroupMode)
+	for _, target := range targets {
+		cleanRequest := model.CleanOneMillionCapabilityModelName(strings.TrimSpace(target.RequestModel))
+		cleanUpstream := model.CleanOneMillionCapabilityModelName(target.UpstreamModel)
+		if cleanRequest == "" || target.ChannelID <= 0 || cleanUpstream == "" {
+			continue
+		}
+		key := strings.ToLower(cleanRequest)
+		if _, decided := modeByKey[key]; decided {
+			continue
+		}
+		if target.Mode != 0 {
+			modeByKey[key] = target.Mode
+		}
+	}
+
 	for _, target := range targets {
 		target.AccessPlanID = accessPlanID
 		normalizeAccessRouteTarget(&target)
@@ -1189,7 +1211,7 @@ func AccessPlanUpdateRouteTargets(accessPlanID int, targets []model.AccessRouteT
 		key := strings.ToLower(cleanRequest)
 		bucket, ok := buckets[key]
 		if !ok {
-			mode := target.Mode
+			mode := modeByKey[key]
 			if mode == 0 {
 				if existing, ok := existingRuleByModel[key]; ok {
 					mode = existing.Mode
@@ -1215,8 +1237,6 @@ func AccessPlanUpdateRouteTargets(accessPlanID int, targets []model.AccessRouteT
 			}
 			buckets[key] = bucket
 			order = append(order, key)
-		} else if bucket.rule.Mode == 0 && target.Mode != 0 {
-			bucket.rule.Mode = target.Mode
 		}
 
 		if bucket.seenChannels[target.ChannelID] {

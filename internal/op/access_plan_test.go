@@ -1493,3 +1493,141 @@ func TestAccessPlanSyncKeepsTieredSpreadNumbers(t *testing.T) {
 		t.Fatalf("新渠道应补进最低层 1, got %d", got[newcomer.ID])
 	}
 }
+
+// TestAccessPlanTieredSpreadClampsIllegalPriority 守住分层轮询的入参下界：
+// 画布的 +/− 不可能发出 0 或负数，但裸 API / 导入 JSON 可以。后端必须把非法数字钳到
+// 最低层 1 —— 原样存负数会让这一条排在所有层之后（选路里它永远最后），
+// 而 UI 又只显示 1..N，等于存进去一个看不见的坑。
+func TestAccessPlanTieredSpreadClampsIllegalPriority(t *testing.T) {
+	ctx := setupAccessPlanTest(t)
+
+	plans, err := AccessPlanList(ctx)
+	if err != nil {
+		t.Fatalf("list plans: %v", err)
+	}
+	var vip model.AccessPlan
+	for _, plan := range plans {
+		if plan.Slug == "vip" {
+			vip = plan
+			break
+		}
+	}
+	if vip.ID == 0 {
+		t.Fatalf("vip plan not found")
+	}
+
+	channels := []model.Channel{
+		{Name: "clamp-channel-a", Enabled: true, Model: "clamp-upstream-a"},
+		{Name: "clamp-channel-b", Enabled: true, Model: "clamp-upstream-b"},
+	}
+	for i := range channels {
+		if err := ChannelCreate(&channels[i], ctx); err != nil {
+			t.Fatalf("create channel %d: %v", i, err)
+		}
+	}
+
+	if _, err := AccessPlanUpdateRouteTargets(vip.ID, []model.AccessRouteTarget{
+		{
+			RequestModel: "clamp-request", Mode: model.GroupModeSpreadTiered,
+			ChannelID: channels[0].ID, UpstreamModel: "clamp-upstream-a",
+			Priority: -7, Weight: 1, Enabled: true, PriorityOverridden: true,
+		},
+		{
+			RequestModel: "clamp-request", Mode: model.GroupModeSpreadTiered,
+			ChannelID: channels[1].ID, UpstreamModel: "clamp-upstream-b",
+			Priority: 0, Weight: 1, Enabled: true, PriorityOverridden: true,
+		},
+	}, ctx); err != nil {
+		t.Fatalf("save clamped targets: %v", err)
+	}
+
+	selected, err := AccessPlanSelect(0, "vip", ctx)
+	if err != nil {
+		t.Fatalf("select vip: %v", err)
+	}
+	group, _, ok, err := AccessPlanGroupForModel(selected, "clamp-request", ctx)
+	if err != nil || !ok {
+		t.Fatalf("expected clamped route group, ok=%v err=%v", ok, err)
+	}
+	if group.Mode != model.GroupModeSpreadTiered {
+		t.Fatalf("rule mode = %d, want %d (分层轮询)", group.Mode, model.GroupModeSpreadTiered)
+	}
+	if len(group.Items) != 2 {
+		t.Fatalf("want 2 items, got %d", len(group.Items))
+	}
+	for _, item := range group.Items {
+		if item.Priority != 1 {
+			t.Fatalf("非法数字必须钳到最低层 1, got %d (channel %d)", item.Priority, item.ChannelID)
+		}
+	}
+}
+
+// TestAccessPlanTieredSpreadModeSurvivesUnspecifiedFirstTarget 守住规则级 mode 的取值：
+// 裸 API / 手写 JSON 会让同一 request_model 的第一条 target 漏传 mode（Go/JSON 里都是 0）。
+// 建桶时 normalizeAccessRouteRule 会把 0 定成优先填充(3)，所以「只看第一条 target 的 mode」
+// 会把整条分层规则静默存成优先填充，画布上的层级数字随之失效。规则级 mode 必须取
+// 桶内第一个**显式**传上来的值，与它在数组里的位置无关。
+func TestAccessPlanTieredSpreadModeSurvivesUnspecifiedFirstTarget(t *testing.T) {
+	ctx := setupAccessPlanTest(t)
+
+	plans, err := AccessPlanList(ctx)
+	if err != nil {
+		t.Fatalf("list plans: %v", err)
+	}
+	var vip model.AccessPlan
+	for _, plan := range plans {
+		if plan.Slug == "vip" {
+			vip = plan
+			break
+		}
+	}
+	if vip.ID == 0 {
+		t.Fatalf("vip plan not found")
+	}
+
+	channels := []model.Channel{
+		{Name: "mixed-mode-channel-a", Enabled: true, Model: "mixed-mode-upstream-a"},
+		{Name: "mixed-mode-channel-b", Enabled: true, Model: "mixed-mode-upstream-b"},
+	}
+	for i := range channels {
+		if err := ChannelCreate(&channels[i], ctx); err != nil {
+			t.Fatalf("create channel %d: %v", i, err)
+		}
+	}
+
+	// 第一条刻意不传 mode（零值 0），第二条才显式声明分层轮询。
+	if _, err := AccessPlanUpdateRouteTargets(vip.ID, []model.AccessRouteTarget{
+		{
+			RequestModel: "mixed-mode-request",
+			ChannelID:    channels[0].ID, UpstreamModel: "mixed-mode-upstream-a",
+			Priority: 4, Weight: 1, Enabled: true, PriorityOverridden: true,
+		},
+		{
+			RequestModel: "mixed-mode-request", Mode: model.GroupModeSpreadTiered,
+			ChannelID: channels[1].ID, UpstreamModel: "mixed-mode-upstream-b",
+			Priority: 2, Weight: 1, Enabled: true, PriorityOverridden: true,
+		},
+	}, ctx); err != nil {
+		t.Fatalf("save mixed-mode targets: %v", err)
+	}
+
+	selected, err := AccessPlanSelect(0, "vip", ctx)
+	if err != nil {
+		t.Fatalf("select vip: %v", err)
+	}
+	group, _, ok, err := AccessPlanGroupForModel(selected, "mixed-mode-request", ctx)
+	if err != nil || !ok {
+		t.Fatalf("expected mixed-mode route group, ok=%v err=%v", ok, err)
+	}
+	if group.Mode != model.GroupModeSpreadTiered {
+		t.Fatalf("规则 mode = %d, want %d（第一条漏传 mode 不能把分层吞成优先填充）",
+			group.Mode, model.GroupModeSpreadTiered)
+	}
+	priorities := map[int]int{}
+	for _, item := range group.Items {
+		priorities[item.ChannelID] = item.Priority
+	}
+	if priorities[channels[0].ID] != 4 || priorities[channels[1].ID] != 2 {
+		t.Fatalf("分层数字必须在混传 mode 时也保留: %v", priorities)
+	}
+}
