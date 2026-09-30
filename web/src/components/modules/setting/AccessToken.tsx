@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Check, CircleAlert, Copy, Eye, EyeOff, Info, KeyRound, RefreshCw, Trash2 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -88,6 +88,19 @@ export function SettingAccessToken() {
         setPlain('');
         setReveal(false);
     };
+
+    // 复制被拦下后要「展开 + 选中」：展开是异步渲染，用一个标记在渲染落地后补选中。
+    const wantSelectRef = useRef(false);
+    const selectToken = () => {
+        const input = fieldRef.current?.querySelector('input');
+        input?.focus();
+        input?.select();
+    };
+    useEffect(() => {
+        if (!wantSelectRef.current || !reveal) return;
+        wantSelectRef.current = false;
+        selectToken();
+    }, [reveal, plain]);
 
     // 明文只有一个来源：受保护的 /setting/secret。env/none 只回 source、不回明文。
     // 失败时已 toast，返回 null 让调用方保持遮罩，绝不显示假值。
@@ -183,12 +196,14 @@ export function SettingAccessToken() {
         // 到这里说明自动复制被浏览器拦下了（http:// 内网 IP 部署没有异步剪贴板，
         // 只剩 execCommand，而它要求真实用户手势）。这时至少替用户把令牌选中：
         // 「点了按钮没反应」比一句提示更糟，选中后 Ctrl/⌘+C 就能拿到真值。
-        setReveal(true);
-        requestAnimationFrame(() => {
-            const input = fieldRef.current?.querySelector('input');
-            input?.focus();
-            input?.select();
-        });
+        // 注意必须等「展开」这一次渲染真正落地后再选：输入框是受控的，value 一变
+        // React 会把光标重置到末尾，抢在渲染前 select() 会被冲掉。
+        if (reveal) {
+            selectToken();
+        } else {
+            wantSelectRef.current = true;
+            setReveal(true);
+        }
         toast.error('浏览器拦下了自动复制，已替你选中令牌，按 Ctrl/⌘+C 即可');
     };
 
