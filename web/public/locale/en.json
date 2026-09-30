@@ -337,7 +337,7 @@
         },
         "poolDefaults": {
             "title": "Model pool global defaults",
-            "hint": "Pool-wide routing defaults applied to every group: the mode override forces one mode on all groups; the first-token and session-keep defaults only kick in when a group's own value is 0. A group's own configuration always takes precedence."
+            "hint": "Pool-wide routing defaults applied to every group: the route mode default only fills in for rules that have not chosen their own mode; the first-token and session-keep defaults only kick in when a group's own value is 0. A group's own configuration always takes precedence."
         },
         "userRegistration": {
             "label": "Allow Direct Registration",

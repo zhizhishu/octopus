@@ -37,7 +37,6 @@ import {
     MorphingDialogDescription,
     useMorphingDialog,
 } from '@/components/ui/morphing-dialog';
-import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from '@/components/animate-ui/components/animate/tooltip';
 import { useAuthStore } from '@/api/endpoints/user';
 
 /**
@@ -158,32 +157,40 @@ function attemptRouteLabel(a: Pick<ChannelAttempt, 'proxy_used' | 'proxy_scheme'
     return parts.length ? `proxy · ${parts.join(' ')}` : 'proxy';
 }
 
-interface RetryBadgeWithTooltipProps {
+interface RetryBadgeWithPopoverProps {
     channelName: string;
     brandColor: string;
     attempts: ChannelAttempt[];
 }
 
-function RetryBadgeWithTooltip({ channelName, brandColor, attempts }: RetryBadgeWithTooltipProps) {
+function RetryBadgeWithPopover({ channelName, brandColor, attempts }: RetryBadgeWithPopoverProps) {
     const t = useTranslations('log.card');
 
     return (
-        <Tooltip>
-            <TooltipTrigger asChild>
+        <Popover>
+            <PopoverTrigger asChild>
                 <Badge
                     variant="secondary"
-                    className="min-w-0 max-w-[12rem] cursor-help px-1.5 py-0 text-xs"
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => e.stopPropagation()}
+                    className="min-w-0 max-w-[12rem] cursor-pointer px-1.5 py-0 text-xs"
                     style={{ backgroundColor: `${brandColor}15`, color: brandColor }}
                 >
                     <RotateCw className="size-3 mr-1 opacity-80" />
                     <SafeText value={channelName} className="text-xs" />
                 </Badge>
-            </TooltipTrigger>
-            <TooltipContent className="flex w-[min(20rem,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] flex-col gap-1 rounded-lg border bg-card p-2 shadow-sm">
+            </PopoverTrigger>
+            <PopoverContent
+                align="start"
+                className="flex max-h-[min(24rem,calc(100dvh-2rem))] w-[min(20rem,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] flex-col gap-1 overflow-y-auto rounded-lg border bg-card p-2 shadow-sm"
+            >
+                <p className="px-1.5 pt-0.5 text-xs font-medium text-foreground">{t('retryDetails')}</p>
                 {(() => {
                     // The "final" attempt = the last successful one, else the last attempt —
                     // it is what the top-level channel/result reflects (mirrors the server's
-                    // finalChannel). Highlight it and number every attempt so the tooltip
+                    // finalChannel). Highlight it and number every attempt so the popover
                     // reads as one request's failover trail (#1 → #2 → … → final), not as
                     // several unrelated logs sharing a page.
                     let finalIdx = attempts.length - 1;
@@ -258,8 +265,8 @@ function RetryBadgeWithTooltip({ channelName, brandColor, attempts }: RetryBadge
                         </div>
                     ));
                 })()}
-            </TooltipContent>
-        </Tooltip >
+            </PopoverContent>
+        </Popover>
     );
 }
 
@@ -288,7 +295,7 @@ interface LogRouteHeaderProps {
 
 /**
  * 日志「路由头部」：状态 / 接口 / 上游路径徽标 → request_model_name → 渠道（多尝试展开
- * RetryBadgeWithTooltip，否则渠道 Badge）→ actual_model_name → 可能的 stream / sticky 徽标。
+ * RetryBadgeWithPopover，否则渠道 Badge）→ actual_model_name → 可能的 stream / sticky 徽标。
  * 卡片列表头部与详情弹窗标题渲染同一套元素，只差尺寸与换行，用 variant 收敛：
  * card 走「固定 3 列 × 2 行列轨道」grid（见下方 isCard 分支），detail 标题区仍是可换行 flex。
  * 两分支复用同一批原子元素，避免同一枚徽标出现两份实现。
@@ -378,7 +385,7 @@ function LogRouteHeader({
         <>
             <ArrowRight className={cn("size-3.5 text-muted-foreground/50", isCard && "shrink-0")} />
             {hasMultipleAttempts ? (
-                <RetryBadgeWithTooltip
+                <RetryBadgeWithPopover
                     channelName={log.channel_name}
                     brandColor={brandColor}
                     attempts={attempts}
@@ -418,18 +425,42 @@ function LogRouteHeader({
                     />
                 </>
             )}
-            <Badge
-                variant="outline"
-                className={cn(
-                    "shrink-0 border-amber-500/40 bg-amber-500/10 text-xs text-amber-800 dark:text-amber-200",
-                    isCard ? "px-1.5 py-0" : "px-2 py-0.5"
-                )}
-                title={upstreamEchoName
-                    ? t('echoMismatchHint', { model: upstreamEchoName })
-                    : t('echoMismatch')}
-            >
-                {t('echoMismatch')}
-            </Badge>
+            {/* 「回显不符」徽标本行证据（发送模型 vs 上游自报）点按可见。卡片外层是
+                MorphingDialogTrigger（自带 onClick/onKeyDown），徽标必须就地掐断冒泡，
+                否则点徽标会连带打开整卡详情——与上面「客户端 / 检测」徽标同款写法。 */}
+            <Popover>
+                <PopoverTrigger asChild>
+                    <Badge
+                        variant="outline"
+                        role="button"
+                        tabIndex={0}
+                        onClick={(e) => e.stopPropagation()}
+                        onKeyDown={(e) => e.stopPropagation()}
+                        className={cn(
+                            "shrink-0 cursor-pointer border-amber-500/40 bg-amber-500/10 text-xs text-amber-800 dark:text-amber-200",
+                            isCard ? "px-1.5 py-0" : "px-2 py-0.5"
+                        )}
+                    >
+                        {t('echoMismatch')}
+                    </Badge>
+                </PopoverTrigger>
+                <PopoverContent align="start" className="w-72 p-3">
+                    <p className="text-xs font-medium text-foreground">{t('echoMismatch')}</p>
+                    <div className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[11px]">
+                        <span className="text-muted-foreground">{t('sentModel')}</span>
+                        <span className="break-all">{actualModelDisplayName || requestModelDisplayName}</span>
+                        <span className="text-muted-foreground">{t('upstreamEcho')}</span>
+                        <span className="break-all text-amber-700 dark:text-amber-300">
+                            {upstreamEchoDisplayName || t('upstreamSilent')}
+                        </span>
+                    </div>
+                    {upstreamEchoName && (
+                        <p className="mt-2 border-t border-border pt-2 text-[11px] leading-5 text-muted-foreground">
+                            {t('echoMismatchHint', { model: upstreamEchoName })}
+                        </p>
+                    )}
+                </PopoverContent>
+            </Popover>
         </>
     ) : null;
     // 流式/非流式徽标：card 里钉在第 1 排右列，不再跟随回显/客户端内容重新落位。
@@ -1555,4 +1586,11 @@ export const LogCard = React.memo(function LogCard({
                 </MorphingDialogContainer>
             </MorphingDialog>
     );
-}, (prevProps, nextProps) => prevProps.log.id === nextProps.log.id && prevProps.log.time === nextProps.log.time);
+}, (prevProps, nextProps) => (
+    prevProps.log.id === nextProps.log.id
+    && prevProps.log.time === nextProps.log.time
+    // 定时快检结果通常晚于日志到达（日志先推送、快检后跑）。父组件已用 useMemo 稳定住
+    // auditByChannelModel 的引用，所以这里比引用即可；不比较它的话快检结果到达时卡片不重绘，
+    // 第 2 排的「模型检测」徽标会一直空着，只有刷新或 log.time 变化才可能露出来。
+    && prevProps.auditByChannelModel === nextProps.auditByChannelModel
+));
