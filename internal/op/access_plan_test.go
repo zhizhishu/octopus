@@ -1315,3 +1315,181 @@ func containsString(values []string, target string) bool {
 	}
 	return false
 }
+
+// TestAccessPlanTieredSpreadKeepsCanvasNumbers 是「画布上的数字必须真的影响选路」这条需求的回归闸。
+// 分层轮询(6) 下管理员抬过的数字，保存路径与同步路径都不许抹平 —— 保存路径此前把整个轮询家族一律
+// 归一成 priority=1、同步路径此前按渠道顺序重排优先级；任一条没守住，节点上的 −/+ 就退化成纯装饰。
+func TestAccessPlanTieredSpreadKeepsCanvasNumbers(t *testing.T) {
+	ctx := setupAccessPlanTest(t)
+
+	plans, err := AccessPlanList(ctx)
+	if err != nil {
+		t.Fatalf("list plans: %v", err)
+	}
+	var vip model.AccessPlan
+	for _, plan := range plans {
+		if plan.Slug == "vip" {
+			vip = plan
+			break
+		}
+	}
+	if vip.ID == 0 {
+		t.Fatalf("vip plan not found")
+	}
+
+	channels := []model.Channel{
+		{Name: "tier-channel-a", Enabled: true, Model: "tier-upstream-a"},
+		{Name: "tier-channel-b", Enabled: true, Model: "tier-upstream-b"},
+	}
+	for i := range channels {
+		if err := ChannelCreate(&channels[i], ctx); err != nil {
+			t.Fatalf("create channel %d: %v", i, err)
+		}
+	}
+
+	// 画布上把 a 抬到 2、b 留在 1：保存后必须原样落库，而不是被归一成两条 1。
+	if _, err := AccessPlanUpdateRouteTargets(vip.ID, []model.AccessRouteTarget{
+		{
+			RequestModel: "tier-request", Mode: model.GroupModeSpreadTiered,
+			ChannelID: channels[0].ID, UpstreamModel: "tier-upstream-a",
+			Priority: 2, Weight: 1, Enabled: true, PriorityOverridden: true,
+		},
+		{
+			RequestModel: "tier-request", Mode: model.GroupModeSpreadTiered,
+			ChannelID: channels[1].ID, UpstreamModel: "tier-upstream-b",
+			Priority: 1, Weight: 1, Enabled: true, PriorityOverridden: true,
+		},
+	}, ctx); err != nil {
+		t.Fatalf("save tiered targets: %v", err)
+	}
+
+	selected, err := AccessPlanSelect(0, "vip", ctx)
+	if err != nil {
+		t.Fatalf("select vip: %v", err)
+	}
+	group, _, ok, err := AccessPlanGroupForModel(selected, "tier-request", ctx)
+	if err != nil || !ok {
+		t.Fatalf("expected tiered route group, ok=%v err=%v", ok, err)
+	}
+	if group.Mode != model.GroupModeSpreadTiered {
+		t.Fatalf("rule mode = %d, want %d (分层轮询)", group.Mode, model.GroupModeSpreadTiered)
+	}
+	priorities := map[int]int{}
+	for _, item := range group.Items {
+		priorities[item.ChannelID] = item.Priority
+	}
+	if priorities[channels[0].ID] != 2 || priorities[channels[1].ID] != 1 {
+		t.Fatalf("画布数字没有传到选路分组: %v", priorities)
+	}
+
+	// 纯轮询(1) 仍然忽略条目数字（拖拽序号天然唯一，当硬边界会让轮询退化成固定顺序），
+	// 这条老语义必须原样保留，否则既有轮询规则全部变形。
+	if _, err := AccessPlanUpdateRouteTargets(vip.ID, []model.AccessRouteTarget{{
+		RequestModel: "pure-spread-request", Mode: model.GroupModeSpread,
+		ChannelID: channels[0].ID, UpstreamModel: "tier-upstream-a",
+		Priority: 5, Weight: 1, Enabled: true,
+	}}, ctx); err != nil {
+		t.Fatalf("save pure spread target: %v", err)
+	}
+	pureSelected, err := AccessPlanSelect(0, "vip", ctx)
+	if err != nil {
+		t.Fatalf("re-select vip: %v", err)
+	}
+	pureGroup, _, ok, err := AccessPlanGroupForModel(pureSelected, "pure-spread-request", ctx)
+	if err != nil || !ok {
+		t.Fatalf("expected pure spread group, ok=%v err=%v", ok, err)
+	}
+	if pureGroup.Mode != model.GroupModeSpread {
+		t.Fatalf("纯轮询模式被改写: %d", pureGroup.Mode)
+	}
+	for _, item := range pureGroup.Items {
+		if item.Priority != 1 {
+			t.Fatalf("纯轮询必须把数字归一成 1, got %d", item.Priority)
+		}
+	}
+}
+
+// TestAccessPlanSyncKeepsTieredSpreadNumbers 守住同步路径：新渠道补进最低层(1)，
+// 既有分层数字一个都不动（同步抹平数字 = 画布按钮失效，正是这条需求的根因）。
+func TestAccessPlanSyncKeepsTieredSpreadNumbers(t *testing.T) {
+	ctx := setupAccessPlanTest(t)
+
+	plans, err := AccessPlanList(ctx)
+	if err != nil {
+		t.Fatalf("list plans: %v", err)
+	}
+	var svip model.AccessPlan
+	for _, plan := range plans {
+		if plan.Slug == "svip" {
+			svip = plan
+			break
+		}
+	}
+	if svip.ID == 0 {
+		t.Fatal("svip plan not found")
+	}
+
+	// 前两个渠道已建好分层规则（数字 3 / 1），第三个渠道稍后才启用 -> 应以数字 1 补入。
+	channels := []model.Channel{
+		{Name: "tier-sync-a", Enabled: true, Model: "sync-upstream-a", ModelMapping: map[string]string{"tier-sync-alias": "sync-upstream-a"}},
+		{Name: "tier-sync-b", Enabled: true, Model: "sync-upstream-b", ModelMapping: map[string]string{"tier-sync-alias": "sync-upstream-b"}},
+	}
+	for i := range channels {
+		if err := ChannelCreate(&channels[i], ctx); err != nil {
+			t.Fatalf("create channel %d: %v", i, err)
+		}
+	}
+	if _, err := AccessPlanUpdateRouteTargets(svip.ID, []model.AccessRouteTarget{
+		{
+			RequestModel: "tier-sync-alias", Mode: model.GroupModeSpreadTiered,
+			ChannelID: channels[0].ID, UpstreamModel: "sync-upstream-a",
+			Priority: 3, Weight: 1, Enabled: true, PriorityOverridden: true,
+		},
+		{
+			RequestModel: "tier-sync-alias", Mode: model.GroupModeSpreadTiered,
+			ChannelID: channels[1].ID, UpstreamModel: "sync-upstream-b",
+			Priority: 1, Weight: 1, Enabled: true, PriorityOverridden: true,
+		},
+	}, ctx); err != nil {
+		t.Fatalf("save tiered sync targets: %v", err)
+	}
+
+	newcomer := model.Channel{
+		Name: "tier-sync-c", Enabled: true, Model: "sync-upstream-c",
+		ModelMapping: map[string]string{"tier-sync-alias": "sync-upstream-c"},
+	}
+	if err := ChannelCreate(&newcomer, ctx); err != nil {
+		t.Fatalf("create newcomer channel: %v", err)
+	}
+	if err := AccessPlanSyncEnabledChannels(ctx); err != nil {
+		t.Fatalf("sync enabled channels: %v", err)
+	}
+
+	var rule model.AccessRouteRule
+	if err := db.GetDB().WithContext(ctx).
+		Where("route_profile_id = ? AND request_model = ?", svip.RouteProfileID, "tier-sync-alias").
+		First(&rule).Error; err != nil {
+		t.Fatalf("expected tiered sync rule: %v", err)
+	}
+	if rule.Mode != model.GroupModeSpreadTiered {
+		t.Fatalf("同步改写了规则模式: %d, want %d", rule.Mode, model.GroupModeSpreadTiered)
+	}
+
+	var targets []model.AccessRouteTarget
+	if err := db.GetDB().WithContext(ctx).
+		Where("route_rule_id = ?", rule.ID).
+		Order("channel_id ASC").
+		Find(&targets).Error; err != nil {
+		t.Fatalf("list synced targets: %v", err)
+	}
+	got := map[int]int{}
+	for _, target := range targets {
+		got[target.ChannelID] = target.Priority
+	}
+	if got[channels[0].ID] != 3 || got[channels[1].ID] != 1 {
+		t.Fatalf("同步抹掉了画布数字: %v", got)
+	}
+	if got[newcomer.ID] != 1 {
+		t.Fatalf("新渠道应补进最低层 1, got %d", got[newcomer.ID])
+	}
+}

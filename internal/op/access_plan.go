@@ -628,7 +628,7 @@ func AccessPlanSyncEnabledChannels(ctx context.Context) error {
 					}
 				}
 			}
-			// 分层轮询(4) 与纯轮询(1) 一样按「新渠道进最低层」补渠道，但绝不重排/清零既有数字：
+			// 分层轮询(6, IsSpreadFamily) 与纯轮询(1) 一样按「新渠道进最低层」补渠道，但绝不重排/清零既有数字：
 			// 那些数字是管理员在画布上显式设的分层，被同步抹掉就等于按钮失效（用户 2026-09-30 要求）。
 			if rule.Mode.IsSpreadFamily() {
 				for _, chID := range channelIDs {
@@ -1225,7 +1225,7 @@ func AccessPlanUpdateRouteTargets(accessPlanID int, targets []model.AccessRouteT
 		bucket.seenChannels[target.ChannelID] = true
 
 		// 纯轮询(1) 强制并列 —— 它的选路本来就不看条目 Priority。
-		// 分层轮询(4) 与优先填充(3) 都保留管理员设的数字（分层轮询数字越大越优先）。
+		// 分层轮询(6) 与优先填充(3) 都保留管理员设的数字（分层轮询数字越大越优先）。
 		p := target.Priority
 		if bucket.rule.Mode == model.GroupModeSpread {
 			p = 1
@@ -1247,7 +1247,7 @@ func AccessPlanUpdateRouteTargets(accessPlanID int, targets []model.AccessRouteT
 		if bucket.rule.Mode == model.GroupModeSpread {
 			bucket.rule.PriorityOverridden = false
 		} else {
-			// 分层轮询(4) 的数字是管理员显式设定的分层, 必须标 overridden, 否则同步会按
+			// 分层轮询(6) 的数字是管理员显式设定的分层, 必须标 overridden, 否则同步会按
 			// 自然顺序重排它。
 			bucket.rule.PriorityOverridden = true
 		}

@@ -1094,9 +1094,7 @@ const TargetFlowCard = memo(function TargetFlowCard({ data }: NodeProps<TargetFl
     };
     const priorityTitle = data.fillFirst
         ? `第 ${data.orderIndex} 顺位 · ${accessPlanText('routes.priority')} P${priority}`
-        : data.spreadFamily
-            ? `分层轮询：数字越大越先尝试（当前 ${priority}）；同一数字内继续轮询`
-            : '轮询候选（并列分流，无选路优先级之分）';
+        : `分层轮询：数字越大越先尝试（当前 ${priority}）；同一数字内继续轮询`;
     return (
         <div
             className={cn('grid grid-cols-[minmax(84px,1.1fr)_minmax(96px,1.4fr)_auto] items-center gap-3 rounded-2xl border bg-card/90 px-3 py-2', data.enabled ? 'border-emerald-500/25' : 'border-border opacity-65')}
@@ -1186,7 +1184,9 @@ const TargetFlowCard = memo(function TargetFlowCard({ data }: NodeProps<TargetFl
                             </div>
                         </>
                     ) : (
-                        <span className="shrink-0 rounded bg-emerald-500/10 px-1 py-0.5 font-medium text-emerald-600 dark:text-emerald-400">并列</span>
+                        // 兜底：spreadFamily = !fillFirst，正常构造下走不到这里。留着只是为了
+                        // 万一有别的构造点忘了传 spreadFamily 时不至于整行空白。
+                        <span className="shrink-0 rounded bg-emerald-500/10 px-1 py-0.5 font-medium text-emerald-600 dark:text-emerald-400">轮询</span>
                     )}
                 </div>
             </div>
@@ -2103,7 +2103,7 @@ function RouteTargetsEditor({
         // 按 request_model 分组归一化：
         // 1. 同一 request_model 下 targets 统一 mode（以组内首个明确设置的 mode 为准，默认 fill_first 即 mode=3）
         // 2. 纯轮询 (mode=1)：全部 priority=1, priority_overridden=false（选路本来就不看数字）
-        // 3. 分层轮询 (mode=4)：保留每个 target 的数字（≥1）并标 priority_overridden=true，
+        // 3. 分层轮询 (mode=6)：保留每个 target 的数字（≥1）并标 priority_overridden=true，
         //    数字越大越先尝试；保存时绝不清零，否则画布上的 +/− 就成了假按钮。
         // 4. fill_first (mode=3 优先填充)：这是人工排序保存，必须同 rule 所有 target 无条件 priority_overridden=true，按分配的 priority (1..N) 保存
         const groups = new Map<string, AccessPlanRouteTarget[]>();
@@ -2184,9 +2184,9 @@ function RouteTargetsEditor({
     targetsRef.current = targets;
 
     // 画布节点上的 +/−：改的是「这条规则内、这个渠道」的分层数字。
-    // 关键一步：轮询家族的规则（纯轮询 1 或分层 4）在这里统一升级为分层轮询(4)，
+    // 关键一步：轮询家族的规则（纯轮询 1 或分层 6）在这里统一升级为分层轮询(6)，
     // 否则保存归一化会把数字清回 1 —— 那就是用户说的「按钮没用」。
-    // 同一条规则（同 request_model）的所有 target 一起换成 mode=4，因为 mode 是规则级字段。
+    // 同一条规则（同 request_model）的所有 target 一起换成 mode=6，因为 mode 是规则级字段。
     const changeCanvasPriority = useCallback((targetId: number, nextPriorityRaw: number) => {
         const nextPriority = clampRoutePriority(nextPriorityRaw);
         const current = targetsRef.current;
@@ -2427,7 +2427,7 @@ function RouteTargetsEditor({
                                             if (!match) return;
                                             const groupMode = editingTargets[0]?.mode ?? 3;
                                             const maxPriority = editingTargets.reduce((max, t) => Math.max(max, t.priority ?? 0), 0);
-                                            // 轮询家族新渠道进「最低层」（数字 1）：不抢现有分层；分层轮询保持 4，
+                                            // 轮询家族新渠道进「最低层」（数字 1）：不抢现有分层；分层轮询保持 6，
                                             // 否则列表里加个渠道就把这条规则悄悄降级回纯轮询。
                                             const spreadRow = isSpreadMode(groupMode);
                                             const rowMode = spreadRow ? spreadModeValue(groupMode) : 3;
