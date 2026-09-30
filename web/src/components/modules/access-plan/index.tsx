@@ -133,6 +133,7 @@ const ACCESS_PLAN_TEXT = {
         targetCount: '映射 {count} 条',
         requestModel: '原请求模型',
         modeSpread: '轮询',
+        modeSpreadTiered: '分层轮询',
         modeFillFirst: '优先填充',
         upstreamModel: '发送模型',
         priority: '优先级',
@@ -141,7 +142,7 @@ const ACCESS_PLAN_TEXT = {
         missingChannel: '渠道 #{id} 已不存在',
         empty: '暂无映射目标',
         canvasTitle: '模型顺序',
-        canvasHint: '谁在上面谁先用；模型池只决定轮询还是优先填充。',
+        canvasHint: '谁在上面谁先用；优先填充看顺位（越小越先），分层轮询看数字（越大越先）。',
         canvasEmpty: '暂无可视化链路，渠道、模型或映射变更后会自动同步到此方案。',
         targetSummary: '候选渠道 / 发送模型',
         setupTitle: '调用前先确认模型池 / 方案',
@@ -238,7 +239,7 @@ function clampRoutePriority(value: number) {
  * 6 是用户 2026-09-30 定的「B 方案」：画布节点上的数字必须真的影响选路（刻意不用旧版退役过的
  * 2/4/5，避免历史库里的旧模式值被重新赋义）。纯轮询(1) 故意
  * 不看数字（拖拽序号天然唯一，当硬边界会退化成固定顺序），所以分层语义单独一档，
- * 旧规则不动、只有在管理员显式改数字或重选模式时才升级为 4。
+ * 旧规则不动、只有在管理员显式改数字或重选模式时才升级为 6。
  */
 const SPREAD_TIERED_MODE = 6;
 
@@ -331,14 +332,24 @@ function groupedRouteTargets(targets: AccessPlanRouteTarget[]) {
     });
 
     return [...grouped.entries()]
-        .map(([requestKey, routeTargets]) => ({
-            requestKey,
-            requestModel: cleanOneMillionModelName(routeTargets[0]?.request_model ?? '') || accessPlanText('routes.unset'),
-            targets: [...routeTargets].sort((a, b) => {
-                const byPriority = (a.priority || 0) - (b.priority || 0);
-                return byPriority !== 0 ? byPriority : (a.channel_id || 0) - (b.channel_id || 0);
-            }),
-        }))
+        .map(([requestKey, routeTargets]) => {
+            // 数字在两档里的含义相反：优先填充 = 顺位（越小越先），分层轮询 = 层级（越大越先）。
+            // 画布必须按「谁先被尝试」从上往下画，否则同一个 + 会让节点往下掉、看起来被贬到队尾，
+            // 而选路其实先打它 —— 这正是审查抓到的「画布和选路对穿」。
+            const rowMode = normalizeRouteMode(routeTargets.find((target) => target.mode !== undefined)?.mode);
+            const tiered = rowMode === SPREAD_TIERED_MODE;
+            return {
+                requestKey,
+                requestModel: cleanOneMillionModelName(routeTargets[0]?.request_model ?? '') || accessPlanText('routes.unset'),
+                mode: rowMode,
+                targets: [...routeTargets].sort((a, b) => {
+                    const byPriority = tiered
+                        ? (b.priority || 0) - (a.priority || 0)
+                        : (a.priority || 0) - (b.priority || 0);
+                    return byPriority !== 0 ? byPriority : (a.channel_id || 0) - (b.channel_id || 0);
+                }),
+            };
+        })
         .sort((a, b) => a.requestModel.localeCompare(b.requestModel));
 }
 
@@ -422,6 +433,12 @@ function activeRouteTargets(targets: AccessPlanRouteTarget[], index: ReturnType<
     return targets.filter((target) => !isPersistedStaleTarget(target, index));
 }
 
+/**
+ * 「到顶」。两档语义相反，必须分开处理：
+ * - 优先填充：数字是顺位，越小越先 → 重编号 1..N，让被点项拿到 1。
+ * - 分层轮询：数字是层级，越大越先 → 只把被点项抬到「比全场最大值再高一档」，
+ *   其余候选的数字一个都不动（全行重编号会把「同一层」的关系抹掉，同层轮询就没了）。
+ */
 function moveRouteTargetToTop(targets: AccessPlanRouteTarget[], targetIndex: number) {
     const selectedTarget = targets[targetIndex];
     if (!selectedTarget) return targets;
@@ -435,6 +452,22 @@ function moveRouteTargetToTop(targets: AccessPlanRouteTarget[], targetIndex: num
             || (a.target.channel_id || 0) - (b.target.channel_id || 0)
             || a.index - b.index
         ));
+    if (peers.length === 0) return targets;
+
+    if (normalizeRouteMode(peers[0].target.mode) === SPREAD_TIERED_MODE) {
+        const maxPriority = peers.reduce(
+            (max, item) => Math.max(max, clampRoutePriority(item.target.priority)),
+            1,
+        );
+        // 已经顶到数值上限就没法再「严格更高」，原样返回（按钮侧同步禁用，不假装成功）。
+        if (maxPriority >= Number.MAX_SAFE_INTEGER) return targets;
+        return targets.map((target, index) => (
+            index === targetIndex
+                ? { ...target, priority: maxPriority + 1, priority_overridden: true, mode: SPREAD_TIERED_MODE }
+                : target
+        ));
+    }
+
     const ordered = [
         { target: selectedTarget, index: targetIndex },
         ...peers.filter((item) => item.index !== targetIndex),
@@ -448,8 +481,26 @@ function moveRouteTargetToTop(targets: AccessPlanRouteTarget[], targetIndex: num
     });
 }
 
+/**
+ * 分层轮询下「到顶」是否已无意义：被点项已独占最高层，或全场数字都顶到数值上限。
+ * 优先填充恒为 false（它的「到顶」总能通过重编号达成）。
+ */
+function isRouteTargetAtTopTier(target: AccessPlanRouteTarget, peers: AccessPlanRouteTarget[]) {
+    if (normalizeRouteMode(peers[0]?.mode ?? target.mode) !== SPREAD_TIERED_MODE) return false;
+    const maxPriority = peers.reduce(
+        (max, item) => Math.max(max, clampRoutePriority(item.priority)),
+        1,
+    );
+    if (maxPriority >= Number.MAX_SAFE_INTEGER) return true;
+    const own = clampRoutePriority(target.priority);
+    const sameTier = peers.filter((item) => clampRoutePriority(item.priority) === own);
+    return own === maxPriority && sameTier.length === 1;
+}
+
 // 上移一位：同一请求模型组内，把点中的候选与它前一个互换，其余 priority 顺延。
 // 这是新手最直观的「谁在上面谁先用」手势：点一下往上一格，连点几下就到顶。
+// ⚠️ 目前没有接到界面上（grep 只有定义、无调用点）。若将来要接，必须按模式分岔：
+// 分层轮询的数字是层级（越大越先），不能像优先填充那样「重编号 1..N」——那会把同层关系抹掉。
 function moveRouteTargetUpOne(targets: AccessPlanRouteTarget[], targetIndex: number) {
     const selectedTarget = targets[targetIndex];
     if (!selectedTarget) return targets;
@@ -1054,9 +1105,11 @@ const PlanFlowCard = memo(function PlanFlowCard({ data }: NodeProps<PlanFlowNode
 
 const RequestFlowCard = memo(function RequestFlowCard({ data }: NodeProps<RequestFlowNode>) {
     const modeLabel = data.mode !== undefined
-        ? (isSpreadMode(data.mode)
-            ? accessPlanText('routes.modeSpread')
-            : accessPlanText('routes.modeFillFirst'))
+        ? (Number(data.mode) === SPREAD_TIERED_MODE
+            ? accessPlanText('routes.modeSpreadTiered')
+            : isSpreadMode(data.mode)
+                ? accessPlanText('routes.modeSpread')
+                : accessPlanText('routes.modeFillFirst'))
         : null;
     return (
         <div className="rounded-2xl border border-amber-500/25 bg-amber-500/10 px-3 py-2.5" style={{ width: REQ_W, height: REQ_H }}>
@@ -1353,7 +1406,9 @@ function buildRouteFlow(
             // 越大越先；同数字内继续轮询。
             // showPriority 只给优先填充那一路用（数字不全相同时才显示 P 值）；轮询家族的徽标
             // 走 spreadTiered = 模式本身，避免「数字调成一样」被误读成模式变了。
-            const rowMode = normalizeRouteMode(row.targets[0]?.mode);
+            // 用分组时算好的模式，不要回头看 row.targets[0] —— 分层行的顺序已被改成降序，
+            // 取首项会变成「看哪个渠道恰好排第一」，模式的判定不该跟着排序跑。
+            const rowMode = row.mode;
             const isFillFirstMode = !isSpreadMode(rowMode);
             const spreadTiered = rowMode === SPREAD_TIERED_MODE;
             const prioritySet = new Set(row.targets.map((tgt) => tgt.priority || 0));
@@ -1809,6 +1864,7 @@ function RouteTargetEditorCard({
     planId,
     target,
     index,
+    peerTargets,
     channels,
     requestModelListId,
     upstreamModels,
@@ -1823,6 +1879,8 @@ function RouteTargetEditorCard({
     planId: number;
     target: AccessPlanRouteTarget;
     index: number;
+    /** 同一条规则（同 request_model）的全部候选，用来判断分层下是否已经在最高层。 */
+    peerTargets?: AccessPlanRouteTarget[];
     channels: Array<{ id: number; name: string; enabled: boolean }>;
     requestModelListId: string;
     upstreamModels: string[];
@@ -1837,6 +1895,23 @@ function RouteTargetEditorCard({
     const t = accessPlanText;
     const upstreamListId = `${idPrefix}-${planId}-${index}`;
     const selectedChannelKnown = target.channel_id <= 0 || channels.some((channel) => channel.id === target.channel_id);
+    // 「到顶」按钮在三档里的含义不同，文案和可用性都必须跟着走，否则就是审查抓到的
+    // 「点了提示已更新、回读全是 1」的假按钮。
+    const rowMode = normalizeRouteMode(target.mode);
+    const pureSpreadMode = rowMode === 1;
+    const tieredMode = rowMode === SPREAD_TIERED_MODE;
+    const tierPeers = peerTargets && peerTargets.length > 0 ? peerTargets : [target];
+    const atTopTier = tieredMode && isRouteTargetAtTopTier(target, tierPeers);
+    const moveToTopDisabled = !moveTargetToTop
+        || cleanOneMillionModelName(target.request_model).length === 0
+        || pureSpreadMode
+        || atTopTier;
+    const moveToTopTitle = pureSpreadMode
+        ? '纯轮询不看数字：先在画布上按 + 把这条规则变成分层轮询'
+        : tieredMode
+            ? (atTopTier ? '已经在最高层' : '点一下，把这个渠道抬到比全场更高的一层（其余候选的数字不动）')
+            : '谁在上面谁先用：点一下，这个模型排到第 1 顺位';
+    const moveToTopLabel = tieredMode ? '抬到最高层' : '加一到顶';
 
     return (
         <div className={cn('min-w-0 rounded-xl border border-border/80 bg-muted/15', compact ? 'p-2.5' : 'p-3')}>
@@ -1915,12 +1990,12 @@ function RouteTargetEditorCard({
                         variant="outline"
                         size="sm"
                         className="h-8 shrink-0 gap-1 rounded-xl text-xs"
-                        disabled={!moveTargetToTop || cleanOneMillionModelName(target.request_model).length === 0}
+                        disabled={moveToTopDisabled}
                         onClick={() => moveTargetToTop?.(index)}
-                        title="谁在上面谁先用：点一下，这个模型就排到最上面"
+                        title={moveToTopTitle}
                     >
                         <ArrowUpToLine className="size-3.5" />
-                        加一到顶
+                        {moveToTopLabel}
                     </Button>
                     <Button
                         type="button"
@@ -2483,6 +2558,7 @@ function RouteTargetsEditor({
                                     planId={plan.id}
                                     target={target}
                                     index={index}
+                                    peerTargets={editingTargets}
                                     channels={channels}
                                     requestModelListId={requestModelListId}
                                     upstreamModels={modelsForChannel(target.channel_id)}
