@@ -37,6 +37,9 @@ type Balancer interface {
 //   - Spread / round-robin (everything else): load-aware distribution across
 //     same-priority channels using recent health, in-flight + selection
 //     reservations, latency and throughput, with priority still a hard boundary.
+//   - Tiered spread (GroupModeSpreadTiered): the access-plan canvas 「分层轮询」 ——
+//     the rule's own numbers are tried high-to-low, and inside one number the
+//     Spread rotation above still applies.
 //
 // The retired random / weighted / smart values were removed; any unknown/legacy value
 // still folds into the spread strategy here as a safety net, and migrate/012 normalizes
@@ -45,6 +48,8 @@ func GetBalancer(mode model.GroupMode) Balancer {
 	switch mode {
 	case model.GroupModeFillFirst:
 		return &Failover{}
+	case model.GroupModeSpreadTiered:
+		return &SpreadTiered{}
 	default:
 		return &Spread{}
 	}
@@ -109,6 +114,37 @@ func (b *Spread) Candidates(items []model.GroupItem) []model.GroupItem {
 		return nil
 	}
 	return rotateByChannelPriorityAndHealth(items)
+}
+
+// SpreadTiered 分层轮询(画布「大数字优先、同级轮询」，用户定 2026-09-30)：
+// 条目 Priority 是外层硬边界 —— 数字越大越先尝试；同一个数字内仍复用 Spread 的
+// 「渠道优先级 + 健康/容量」轮询，所以同级渠道依旧轮转、慢渠道依旧降档。
+//
+// 与 Spread 的唯一区别就是这层按 Priority 的分桶。纯轮询(GroupModeSpread)保持原样，
+// 因为它的注释已经说明：条目序号唯一时若当硬边界，轮询会退化成固定顺序。
+// 同层数字全等时，分层轮询与纯轮询结果一致 —— 这也是旧规则就地升级不会改变行为的原因。
+type SpreadTiered struct{}
+
+func (b *SpreadTiered) Candidates(items []model.GroupItem) []model.GroupItem {
+	if len(items) == 0 {
+		return nil
+	}
+	tiered := make([]model.GroupItem, len(items))
+	copy(tiered, items)
+	// 稳定降序：数字大的层整体在前，同层保持调用方给的顺序再交给轮询函数打散。
+	sort.SliceStable(tiered, func(leftIndex, rightIndex int) bool {
+		return tiered[leftIndex].Priority > tiered[rightIndex].Priority
+	})
+	result := make([]model.GroupItem, 0, len(tiered))
+	for tierStart := 0; tierStart < len(tiered); {
+		tierEnd := tierStart + 1
+		for tierEnd < len(tiered) && tiered[tierEnd].Priority == tiered[tierStart].Priority {
+			tierEnd++
+		}
+		result = append(result, rotateByChannelPriorityAndHealth(tiered[tierStart:tierEnd])...)
+		tierStart = tierEnd
+	}
+	return result
 }
 
 // rotateByChannelPriorityAndHealth applies both routing hard boundaries before

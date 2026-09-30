@@ -20,12 +20,26 @@ const (
 	// GroupModeSpread load-balances across same-priority channels; priority
 	// remains a hard boundary.
 	GroupModeSpread = GroupModeRoundRobin
+	// GroupModeSpreadTiered 是画布「分层轮询」(用户定 2026-09-30)：条目 Priority 是外层硬边界,
+	// 数字越大越先尝试; 同一数字层内仍按 Spread 的渠道优先级 + 健康/容量轮询, 高层整体不可用
+	// 时才下沉到低层。
+	//
+	// 为什么单独一个模式值: 纯轮询(1) 故意忽略条目 Priority —— 拖拽序号天然唯一, 一旦让它当
+	// 硬边界就会退化成固定顺序、永不轮转(见 balancer.Spread 注释)。分层语义必须另立, 不能改
+	// 纯轮询的比较器, 否则既有轮询规则全部变形。
+	GroupModeSpreadTiered GroupMode = 4
 )
 
+// IsSpreadFamily 表示「轮询家族」: 纯轮询(1) 与分层轮询(4) 都按轮询选路, 而非优先填充。
+// 判断「这条规则是不是轮询类」一律用它, 不要再逐个字面量比较。
+func (m GroupMode) IsSpreadFamily() bool {
+	return m == GroupModeRoundRobin || m == GroupModeSpreadTiered
+}
+
 type Group struct {
-	ID                int         `json:"id" gorm:"primaryKey"`
-	Name              string      `json:"name" gorm:"unique;not null"`
-	Mode              GroupMode   `json:"mode" gorm:"not null"`
+	ID   int       `json:"id" gorm:"primaryKey"`
+	Name string    `json:"name" gorm:"unique;not null"`
+	Mode GroupMode `json:"mode" gorm:"not null"`
 	// ModeLocked records that an admin explicitly chose this group's Mode (via the
 	// access-plan canvas). A locked group keeps its own mode even when the fleet-wide
 	// route_mode_override setting is set; unlocked groups follow the global default.
