@@ -100,8 +100,17 @@ func NewIteratorWithSession(group model.Group, apiKeyID int, requestModel, clien
 	return it
 }
 
-// PrioritizeChannels keeps the balancer order inside each bucket while moving
-// preferred channels to the front. It is used for protocol-native-first routing.
+// PrioritizeChannels moves every preferred (protocol-native) channel ahead of every
+// other channel, preserving relative order inside each of those two groups. It is used
+// for protocol-native-first routing.
+//
+// NOTE: this is a GLOBAL two-way split, NOT a per-Priority-tier one — the old comment
+// here claimed it kept "the balancer order inside each bucket", which the code does not
+// do. Under GroupModeSpreadTiered that means a low-tier native channel can jump ahead of
+// a high-tier converted one, i.e. the canvas tier number is not a hard boundary on rules
+// that mix protocols. That is pre-existing behaviour, deliberately left alone for now:
+// narrowing it to per-tier ranking changes the long-standing "prefer the same protocol"
+// trade-off and needs an explicit decision.
 func (it *Iterator) PrioritizeChannels(preferred map[int]bool) {
 	if it == nil || len(preferred) == 0 || len(it.candidates) < 2 {
 		return
