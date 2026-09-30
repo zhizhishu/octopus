@@ -1012,6 +1012,10 @@ type TargetNodeData = {
     fillFirst: boolean;
     // 轮询家族（纯轮询或分层轮询）：显示数字 + −/+ 步进器，数字越大越先尝试。
     spreadFamily: boolean;
+    // 轮询家族里具体是哪一档：true = 分层轮询(6)，false = 纯轮询(1)。
+    // 徽标只认模式本身，不按「数字是否全都相同」推断 —— 否则把两个数字设成一样时
+    // 徽标会从「分层轮询」翻成「同级轮询」，看起来像模式被改回去了。
+    spreadTiered: boolean;
     upstreamModel: string;
     enabled: boolean;
     fallback: string;
@@ -1094,7 +1098,9 @@ const TargetFlowCard = memo(function TargetFlowCard({ data }: NodeProps<TargetFl
     };
     const priorityTitle = data.fillFirst
         ? `第 ${data.orderIndex} 顺位 · ${accessPlanText('routes.priority')} P${priority}`
-        : `分层轮询：数字越大越先尝试（当前 ${priority}）；同一数字内继续轮询`;
+        : data.spreadTiered
+            ? `分层轮询：数字越大越先尝试（当前 ${priority}）；同一数字内继续轮询`
+            : `同级轮询：所有目标平等轮转（当前 ${priority}）；用 + 抬数字即可变成分层`;
     return (
         <div
             className={cn('grid grid-cols-[minmax(84px,1.1fr)_minmax(96px,1.4fr)_auto] items-center gap-3 rounded-2xl border bg-card/90 px-3 py-2', data.enabled ? 'border-emerald-500/25' : 'border-border opacity-65')}
@@ -1150,7 +1156,7 @@ const TargetFlowCard = memo(function TargetFlowCard({ data }: NodeProps<TargetFl
                         // 这里 + 是「抬数字」= 更优先，与上面优先填充的顺位语义相反（顺位越小越先）。
                         <>
                             <span className="shrink-0 rounded bg-emerald-500/10 px-1 py-0.5 font-medium text-emerald-600 dark:text-emerald-400">
-                                {data.showPriority ? '分层轮询' : '同级轮询'}
+                                {data.spreadTiered ? '分层轮询' : '同级轮询'}
                             </span>
                             <div
                                 className="nodrag nopan pointer-events-auto ml-0.5 inline-flex shrink-0 items-center gap-0.5"
@@ -1344,9 +1350,12 @@ function buildRouteFlow(
                 style: { stroke: 'var(--primary)', strokeWidth: 1.5, strokeOpacity: 0.5 },
             });
             // 优先填充：数字是选路顺位（越小越先）。轮询家族（纯轮询/分层轮询）：数字是分层，
-            // 越大越先；同数字内继续轮询。showPriority 表示「这一行的数字不全相同」，用来把
-            // 「同级轮询」和「分层轮询」的措辞分开。
-            const isFillFirstMode = !isSpreadMode(row.targets[0]?.mode);
+            // 越大越先；同数字内继续轮询。
+            // showPriority 只给优先填充那一路用（数字不全相同时才显示 P 值）；轮询家族的徽标
+            // 走 spreadTiered = 模式本身，避免「数字调成一样」被误读成模式变了。
+            const rowMode = normalizeRouteMode(row.targets[0]?.mode);
+            const isFillFirstMode = !isSpreadMode(rowMode);
+            const spreadTiered = rowMode === SPREAD_TIERED_MODE;
             const prioritySet = new Set(row.targets.map((tgt) => tgt.priority || 0));
             const showPriority = prioritySet.size > 1;
             const startY = rowY + (rowH - targetsH) / 2;
@@ -1371,6 +1380,7 @@ function buildRouteFlow(
                         showPriority,
                         fillFirst: isFillFirstMode,
                         spreadFamily: !isFillFirstMode,
+                        spreadTiered,
                         upstreamModel: cleanOneMillionModelName(target.upstream_model || accessPlanText('routes.unset')),
                         enabled: target.enabled,
                         fallback: fallbackModeLabel(target.fallback_mode),

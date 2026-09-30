@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Check, CircleAlert, Copy, Eye, EyeOff, Info, KeyRound, RefreshCw, Trash2 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -65,6 +65,8 @@ function sourceHint(secret: SettingSecret): string {
 // 版式：一行输入框 + 行内眼睛（默认遮罩，点开现读明文）/ 第二行生成·复制·清除 / 第三行状态。
 // 明文只存在本组件内存里：不写 localStorage / sessionStorage / URL / console，离开页面即丢。
 export function SettingAccessToken() {
+    // 复制被拦下时用它兜底选中令牌（Input 未透传 ref，所以从容器里取）。
+    const fieldRef = useRef<HTMLDivElement | null>(null);
     const { data: settings, isError: listError } = useSettingList();
     const setSetting = useSetSetting();
 
@@ -176,9 +178,18 @@ export function SettingAccessToken() {
         }
         if (await copyText(value)) {
             toast.success('已复制到剪贴板');
-        } else {
-            toast.error('复制失败，请手动选中令牌后复制');
+            return;
         }
+        // 到这里说明自动复制被浏览器拦下了（http:// 内网 IP 部署没有异步剪贴板，
+        // 只剩 execCommand，而它要求真实用户手势）。这时至少替用户把令牌选中：
+        // 「点了按钮没反应」比一句提示更糟，选中后 Ctrl/⌘+C 就能拿到真值。
+        setReveal(true);
+        requestAnimationFrame(() => {
+            const input = fieldRef.current?.querySelector('input');
+            input?.focus();
+            input?.select();
+        });
+        toast.error('浏览器拦下了自动复制，已替你选中令牌，按 Ctrl/⌘+C 即可');
     };
 
     const handleClear = () => {
@@ -216,7 +227,7 @@ export function SettingAccessToken() {
             </div>
 
             {/* 第一行：当前密钥占满一行，右端行内眼睛。默认遮罩，点开现读真值。 */}
-            <div className="relative min-w-0">
+            <div className="relative min-w-0" ref={fieldRef}>
                 <Input
                     type={editing || reveal ? 'text' : 'password'}
                     value={display}
