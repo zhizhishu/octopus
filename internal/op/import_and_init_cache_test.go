@@ -137,14 +137,20 @@ func TestConcurrentImportsStayConsistent(t *testing.T) {
 
 	values := []string{"spread", "fill_first", "", " SPREAD ", " Fill_First "}
 	errs := make([]error, len(values))
+	// Release every goroutine at once so the imports genuinely overlap; two concurrent
+	// imports used to interleave the fingerprint-preset seeding and fail with a UNIQUE
+	// constraint, reported to the admin as a spurious cache-refresh failure.
+	start := make(chan struct{})
 	var wg sync.WaitGroup
 	for i, value := range values {
 		wg.Add(1)
 		go func(i int, value string) {
 			defer wg.Done()
+			<-start
 			_, errs[i] = ImportAndInitCache(ctx, routeModeDump(value))
 		}(i, value)
 	}
+	close(start)
 	finished := make(chan struct{})
 	go func() { wg.Wait(); close(finished) }()
 	select {

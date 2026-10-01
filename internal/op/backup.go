@@ -3,6 +3,7 @@ package op
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/bestruirui/octopus/internal/db"
@@ -86,11 +87,27 @@ func (e *ImportCacheRefreshError) Error() string {
 
 func (e *ImportCacheRefreshError) Unwrap() error { return e.Err }
 
+// importMu serializes whole imports. It is deliberately NOT settingWriteMu: the runtime
+// cache reload seeds the built-in fingerprint presets, whose seeds are derived from the
+// instance seed, and the first use of that seed persists itself through SettingSetString
+// — which takes settingWriteMu. Holding the settings lock across the runtime reload would
+// therefore self-deadlock.
+//
+// Without this lock two concurrent imports interleave that preset seeding and one of them
+// fails with a UNIQUE constraint on the preset name, which surfaced as a spurious
+// "import was committed but cache refresh failed" for an admin who did nothing wrong.
+//
+// Lock order: importMu -> settingWriteMu. Nothing that holds settingWriteMu ever takes
+// importMu, so the order cannot invert.
+var importMu sync.Mutex
+
 // ImportAndInitCache is the entry point for a DB import: it commits the import and
-// republishes every cache, holding settingWriteMu from before the settings upsert
-// until the settings snapshot is published. That window is what stops a concurrent
-// settings save from being reverted by a refresh reading the pre-import snapshot.
+// republishes every cache, holding settingWriteMu from before the settings upsert until
+// the settings snapshot is published. That window is what stops a concurrent settings
+// save from being reverted by a refresh reading the pre-import snapshot.
 func ImportAndInitCache(ctx context.Context, dump *model.DBDump) (*model.DBImportResult, error) {
+	importMu.Lock()
+	defer importMu.Unlock()
 	res, err := importAndRefreshSettingsLocked(ctx, dump)
 	if err != nil {
 		return res, err
