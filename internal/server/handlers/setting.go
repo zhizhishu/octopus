@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -255,14 +256,14 @@ func importDB(c *gin.Context) {
 		}
 	}
 
-	result, err := op.DBImportIncremental(c.Request.Context(), &dump)
+	result, err := op.ImportAndInitCache(c.Request.Context(), &dump)
 	if err != nil {
+		var committed *op.ImportCacheRefreshError
+		if errors.As(err, &committed) {
+			resp.Error(c, http.StatusInternalServerError, "import was committed but cache refresh failed; retry the import or restart the service")
+			return
+		}
 		resp.Error(c, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	if err := op.InitCache(); err != nil {
-		resp.Error(c, http.StatusInternalServerError, "import was committed but cache refresh failed; retry the import or restart the service")
 		return
 	}
 

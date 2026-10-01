@@ -75,6 +75,51 @@ func DBExportAll(ctx context.Context, includeLogs, includeStats bool) (*model.DB
 	return d, nil
 }
 
+// ImportCacheRefreshError reports an import that WAS committed but whose cache
+// refresh then failed. Callers must surface this as its own outcome: the DB holds
+// the imported data, so reporting a plain "import failed" would be a lie.
+type ImportCacheRefreshError struct{ Err error }
+
+func (e *ImportCacheRefreshError) Error() string {
+	return fmt.Sprintf("import was committed but cache refresh failed: %v", e.Err)
+}
+
+func (e *ImportCacheRefreshError) Unwrap() error { return e.Err }
+
+// ImportAndInitCache is the entry point for a DB import: it commits the import and
+// republishes every cache, holding settingWriteMu from before the settings upsert
+// until the settings snapshot is published. That window is what stops a concurrent
+// settings save from being reverted by a refresh reading the pre-import snapshot.
+func ImportAndInitCache(ctx context.Context, dump *model.DBDump) (*model.DBImportResult, error) {
+	res, err := importAndRefreshSettingsLocked(ctx, dump)
+	if err != nil {
+		return res, err
+	}
+	refreshCtx, cancel := context.WithTimeout(context.Background(), cacheOperationTimeout)
+	defer cancel()
+	if err := refreshRuntimeCaches(refreshCtx); err != nil {
+		return res, &ImportCacheRefreshError{Err: err}
+	}
+	return res, nil
+}
+
+// importAndRefreshSettingsLocked commits the import and republishes the settings
+// snapshot as one write-locked step. The lock is scoped to this function on purpose:
+// the remaining caches do not read the settings cache, so they must not lengthen the
+// window a concurrent settings save spends waiting.
+func importAndRefreshSettingsLocked(ctx context.Context, dump *model.DBDump) (*model.DBImportResult, error) {
+	settingWriteMu.Lock()
+	defer settingWriteMu.Unlock()
+	res, err := DBImportIncremental(ctx, dump)
+	if err != nil {
+		return nil, err
+	}
+	if err := settingRefreshCacheLocked(ctx); err != nil {
+		return res, &ImportCacheRefreshError{Err: err}
+	}
+	return res, nil
+}
+
 func DBImportIncremental(ctx context.Context, dump *model.DBDump) (*model.DBImportResult, error) {
 	if dump == nil {
 		return nil, fmt.Errorf("empty dump")

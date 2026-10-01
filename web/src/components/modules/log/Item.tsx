@@ -1024,6 +1024,9 @@ export const LogCard = React.memo(function LogCard({
             <MorphingDialog>
                 <MorphingDialogTrigger
                     disabled={!canViewDetails}
+                    // 验收/排障锚点：让真机脚本能把「模型检测」徽标绑定到某一条确定的日志卡，
+                    // 而不是全页面按文字找。日志 id 本身不是敏感字段（详情弹层里就显示它）。
+                    data-log-id={log.id}
                     className={cn(
                         "relative w-full overflow-hidden rounded-lg border bg-card text-left",
                         hasError

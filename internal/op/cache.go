@@ -11,9 +11,23 @@ const cacheOperationTimeout = 60 * time.Second
 func InitCache() error {
 	ctx, cancel := context.WithTimeout(context.Background(), cacheOperationTimeout)
 	defer cancel()
+	return initCache(ctx)
+}
+
+// initCache loads settings first and under the settings write lock, then the caches
+// that do not read the settings cache. Callers that already hold settingWriteMu must
+// call refreshRuntimeCaches directly instead of this.
+func initCache(ctx context.Context) error {
 	if err := settingRefreshCache(ctx); err != nil {
 		return fmt.Errorf("setting refresh cache error: %v", err)
 	}
+	return refreshRuntimeCaches(ctx)
+}
+
+// refreshRuntimeCaches reloads every cache except settings. None of these read the
+// settings cache, so they run OUTSIDE settingWriteMu and never extend the window in
+// which a concurrent settings save has to wait.
+func refreshRuntimeCaches(ctx context.Context) error {
 	if err := userRefreshCache(ctx); err != nil {
 		return fmt.Errorf("user refresh cache error: %v", err)
 	}

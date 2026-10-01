@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"sync"
 
 	"github.com/bestruirui/octopus/internal/db"
 	"github.com/bestruirui/octopus/internal/model"
@@ -11,6 +12,19 @@ import (
 )
 
 var settingCache = cache.New[model.SettingKey, string](16)
+
+// settingWriteMu serializes every settings write against the settings-snapshot
+// refresh. Without it, a refresh that read the pre-import snapshot can write its
+// stale repair back OVER a value an admin saved while the refresh was in flight,
+// and then publish that stale snapshot to the cache.
+//
+// Held by: SettingSetString / SettingSetInt, settingRefreshCache, and the whole
+// settings part of an import (commit + snapshot publish). Never held by readers
+// (SettingGet*) or by the relay hot path.
+//
+// ponytail: one process-wide lock. Octopus runs a single instance against one DB,
+// so a finer-grained scheme would only add ways to get this wrong.
+var settingWriteMu sync.Mutex
 
 var settingLegacyDefaultUpgrades = map[model.SettingKey]map[string]string{
 	model.SettingKeyClaudeHeaderUserAgent: {
@@ -68,25 +82,40 @@ func SettingGetString(key model.SettingKey) (string, error) {
 }
 
 func SettingSetString(key model.SettingKey, value string) error {
+	settingWriteMu.Lock()
+	defer settingWriteMu.Unlock()
+	return settingSetStringLocked(key, value)
+}
+
+// settingSetStringLocked assumes settingWriteMu is held.
+func settingSetStringLocked(key model.SettingKey, value string) error {
 	if key == model.SettingKeyRouteModeOverride {
 		if err := (&model.Setting{Key: key, Value: value}).Validate(); err != nil {
 			return err
 		}
 		value = model.NormalizeRouteModeOverride(value)
 	}
-	valueCache, ok := settingCache.Get(key)
-	if !ok {
+	if _, ok := settingCache.Get(key); !ok {
 		return fmt.Errorf("setting not found")
 	}
-	if valueCache == value {
-		return nil
-	}
+	// Always write through to the DB, even when the cache already holds this value.
+	// A failed import can leave the DB and the cache disagreeing (DB imported, cache
+	// refresh failed), and a cache-equality short circuit would then report success
+	// while the DB kept the imported value.
 	result := db.GetDB().Model(&model.Setting{Key: key}).Update("Value", value)
 	if result.Error != nil {
 		return fmt.Errorf("failed to set setting: %w", result.Error)
 	}
 	if result.RowsAffected == 0 {
-		return fmt.Errorf("failed to set setting, key not found")
+		// Some drivers report 0 rows for an UPDATE that stores the existing value, so a
+		// missing row is the only real error: confirm before claiming the key is gone.
+		var count int64
+		if err := db.GetDB().Model(&model.Setting{}).Where("key = ?", key).Count(&count).Error; err != nil {
+			return fmt.Errorf("failed to set setting: %w", err)
+		}
+		if count == 0 {
+			return fmt.Errorf("failed to set setting, key not found")
+		}
 	}
 	settingCache.Set(key, value)
 	return nil
@@ -109,29 +138,50 @@ func SettingGetBool(key model.SettingKey) (bool, error) {
 }
 
 func SettingSetInt(key model.SettingKey, value int) error {
+	settingWriteMu.Lock()
+	defer settingWriteMu.Unlock()
+	return settingSetIntLocked(key, value)
+}
+
+// settingSetIntLocked assumes settingWriteMu is held.
+func settingSetIntLocked(key model.SettingKey, value int) error {
 	valueCache, ok := settingCache.Get(key)
 	if !ok {
 		return fmt.Errorf("setting not found")
 	}
-	valueCacheNum, err := strconv.Atoi(valueCache)
-	if err != nil {
+	// Keep the type guard: SettingSetInt on a key whose stored value is not an integer
+	// must fail rather than quietly reinterpret it.
+	if _, err := strconv.Atoi(valueCache); err != nil {
 		return fmt.Errorf("failed to set setting: %w", err)
 	}
-	if valueCacheNum == value {
-		return nil
-	}
-	result := db.GetDB().Model(&model.Setting{Key: key}).Update("Value", value)
+	stored := strconv.Itoa(value)
+	result := db.GetDB().Model(&model.Setting{Key: key}).Update("Value", stored)
 	if result.Error != nil {
 		return fmt.Errorf("failed to set setting: %w", result.Error)
 	}
 	if result.RowsAffected == 0 {
-		return fmt.Errorf("failed to set setting, key not found")
+		var count int64
+		if err := db.GetDB().Model(&model.Setting{}).Where("key = ?", key).Count(&count).Error; err != nil {
+			return fmt.Errorf("failed to set setting: %w", err)
+		}
+		if count == 0 {
+			return fmt.Errorf("failed to set setting, key not found")
+		}
 	}
-	settingCache.Set(key, strconv.Itoa(value))
+	settingCache.Set(key, stored)
 	return nil
 }
 
 func settingRefreshCache(ctx context.Context) error {
+	settingWriteMu.Lock()
+	defer settingWriteMu.Unlock()
+	return settingRefreshCacheLocked(ctx)
+}
+
+// settingRefreshCacheLocked assumes settingWriteMu is held. It must stay that way:
+// the SELECT, the legacy-value repair, and the ReplaceAll publish are one atomic
+// step, otherwise a concurrent save is overwritten and the stale snapshot wins.
+func settingRefreshCacheLocked(ctx context.Context) error {
 	db := db.GetDB().WithContext(ctx)
 
 	var settings []model.Setting
