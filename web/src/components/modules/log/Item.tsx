@@ -1024,9 +1024,6 @@ export const LogCard = React.memo(function LogCard({
             <MorphingDialog>
                 <MorphingDialogTrigger
                     disabled={!canViewDetails}
-                    // 验收/排障锚点：让真机脚本能把「模型检测」徽标绑定到某一条确定的日志卡，
-                    // 而不是全页面按文字找。日志 id 本身不是敏感字段（详情弹层里就显示它）。
-                    data-log-id={log.id}
                     className={cn(
                         "relative w-full overflow-hidden rounded-lg border bg-card text-left",
                         hasError
@@ -1045,7 +1042,14 @@ export const LogCard = React.memo(function LogCard({
                         )}
                     />
                     {/* 5050 基线：裸官方 Logo（auto 列）+ 内容列，p-4 / gap-4 */}
-                    <div className="p-4 grid grid-cols-[auto_1fr] gap-4 items-center">
+                    <div
+                        // 验收/排障锚点：让真机脚本能把「模型检测」徽标绑定到某一条确定的日志卡，
+                        // 而不是全页面按文字找。日志 id 不是敏感字段（详情弹层里本来就显示它）。
+                        // 必须挂在真实 DOM 节点上：MorphingDialogTrigger 只透传它解构过的
+                        // props，挂在它上面会被静默丢掉、压根渲染不出来。
+                        data-log-id={log.id}
+                        className="p-4 grid grid-cols-[auto_1fr] gap-4 items-center"
+                    >
                         <div title={modelNameToDisplay} className="shrink-0">
                             <ModelAvatar size={40} />
                         </div>
