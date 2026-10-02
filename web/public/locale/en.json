@@ -807,6 +807,7 @@
             "echoInconsistent": "differs from sent",
             "echoConsistent": "matches sent",
             "upstreamSilent": "upstream did not declare",
+            "mappedByUs": "sent name is our mapping",
             "channelKey": "Key Remark",
             "thinking": "Thinking",
             "basePrice": "Base Price (In/Out)"

@@ -1,17 +1,24 @@
 package handlers
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/bestruirui/octopus/internal/conf"
 	"github.com/bestruirui/octopus/internal/db"
 	"github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/op"
+	"github.com/bestruirui/octopus/internal/server/auth"
 	"github.com/bestruirui/octopus/internal/server/middleware"
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
 	"gorm.io/gorm"
 )
 
@@ -220,4 +227,109 @@ func TestRouteModeWriteFailuresDoNotPublishCacheOrClaimImportSuccess(t *testing.
 		t.Fatalf("failed refresh must report committed import: %d %s", rec.Code, rec.Body.String())
 	}
 	assertHandlerRouteMode(t, "", "spread")
+}
+
+// S05 remainder: missing Authorization (not a garbage token) must refuse and leave
+// the stored mode / locked-rule-free settings row untouched.
+func TestRouteModeSetRejectsMissingAuthorization(t *testing.T) {
+	engine, _ := setupRouteModeHandlerTest(t)
+	if err := op.SettingSetString(model.SettingKeyRouteModeOverride, "spread"); err != nil {
+		t.Fatal(err)
+	}
+	seedLockedFillFirstRule(t, "locked-auth-model")
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/setting/set", bytes.NewReader(routeModePayload("fill_first")))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	engine.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing auth status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	assertHandlerRouteMode(t, "spread", "spread")
+	assertLockedFillFirstUnchanged(t, "locked-auth-model")
+}
+
+// S05 remainder: a real JWT that was valid for this admin, but is already expired,
+// must refuse. A garbage string is not this case.
+func TestRouteModeSetRejectsExpiredJWT(t *testing.T) {
+	engine, _ := setupRouteModeHandlerTest(t)
+	if err := op.SettingSetString(model.SettingKeyRouteModeOverride, "spread"); err != nil {
+		t.Fatal(err)
+	}
+	seedLockedFillFirstRule(t, "locked-expired-model")
+	admin, err := op.UserGetByUsername("route-mode-admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Add(-2 * time.Hour)
+	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, &auth.Claims{
+		UserID:   admin.ID,
+		Username: admin.Username,
+		Role:     admin.Role,
+		RegisteredClaims: jwt.RegisteredClaims{
+			IssuedAt:  jwt.NewNumericDate(now),
+			NotBefore: jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(time.Minute)),
+			Issuer:    conf.APP_NAME,
+			Subject:   fmt.Sprintf("%d", admin.ID),
+		},
+	}).SignedString([]byte(admin.Username + admin.Password))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := doSettingAuthRequest(engine, http.MethodPost, "/api/v1/setting/set", token, routeModePayload("fill_first"))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expired jwt status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	assertHandlerRouteMode(t, "spread", "spread")
+	assertLockedFillFirstUnchanged(t, "locked-expired-model")
+}
+
+// S06 remainder: a fill_first locked rule stays fill_first when the global default
+// is switched via setting/set (import preservation is covered elsewhere).
+func TestLockedFillFirstRuleSurvivesGlobalSpreadSwitch(t *testing.T) {
+	engine, bearer := setupRouteModeHandlerTest(t)
+	seedLockedFillFirstRule(t, "locked-fill-model")
+	rec := doSettingAuthRequest(engine, http.MethodPost, "/api/v1/setting/set", bearer, routeModePayload("spread"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("set spread: %d %s", rec.Code, rec.Body.String())
+	}
+	assertHandlerRouteMode(t, "spread", "spread")
+	assertLockedFillFirstUnchanged(t, "locked-fill-model")
+}
+
+func seedLockedFillFirstRule(t *testing.T, modelName string) {
+	t.Helper()
+	ctx := t.Context()
+	plan, err := op.AccessPlanSelect(0, "svip", ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel := model.Channel{Name: "locked-" + modelName, Enabled: true, Model: modelName}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatal(err)
+	}
+	rule := model.AccessRouteRule{RouteProfileID: plan.RouteProfileID, RequestModel: modelName, Mode: model.GroupModeFillFirst}
+	if err := op.AccessRouteRuleCreate(&rule, ctx); err != nil {
+		t.Fatal(err)
+	}
+	target := model.AccessRouteTarget{RouteRuleID: rule.ID, ChannelID: channel.ID, UpstreamModel: modelName, Priority: 2, Weight: 3, Enabled: true}
+	if err := op.AccessRouteTargetCreate(&target, ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertLockedFillFirstUnchanged(t *testing.T, modelName string) {
+	t.Helper()
+	ctx := t.Context()
+	plan, err := op.AccessPlanSelect(0, "svip", ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	group, _, ok, err := op.AccessPlanGroupForModel(plan, modelName, ctx)
+	if err != nil || !ok || !group.ModeLocked || group.Mode != model.GroupModeFillFirst {
+		t.Fatalf("locked fill_first changed: mode=%d locked=%v ok=%v err=%v", group.Mode, group.ModeLocked, ok, err)
+	}
+	if len(group.Items) != 1 || group.Items[0].Weight != 3 || group.Items[0].Priority != 2 {
+		t.Fatalf("locked items mutated: %+v", group.Items)
+	}
 }

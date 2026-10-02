@@ -409,59 +409,86 @@ function LogRouteHeader({
             className="text-muted-foreground"
         />
     );
-    // 上游自报名 + 「回显不符」徽标：只在上游自报与发出去的不一致时整组出现。
-    const echoGroup = log.upstream_model_mismatch === true ? (
-        <>
-            {upstreamEchoDisplayName && (
+    // 管理员才有渠道名/自报。普通用户摘要故意不下发，这里保持空白，不能用「未自报」冒充。
+    const showEcho = Boolean(log.channel_name) || Boolean(upstreamEchoName) || typeof log.upstream_model_mismatch === 'boolean';
+    const mappedByUs = Boolean(log.request_model_name && log.actual_model_name && log.request_model_name !== log.actual_model_name);
+    const echoMismatch = log.upstream_model_mismatch === true;
+    const echoState = echoMismatch ? 'mismatch' : (upstreamEchoName ? 'match' : 'silent');
+    const echoGroup = showEcho ? (
+        <span
+            data-echo-state={echoState}
+            data-upstream-echo={upstreamEchoName}
+            className="inline-flex min-w-0 flex-wrap items-center gap-2"
+        >
+            {mappedByUs && (
+                <Badge
+                    variant="outline"
+                    className={cn(
+                        "shrink-0 border-border/60 bg-muted/30 text-xs font-normal text-muted-foreground",
+                        isCard ? "px-1.5 py-0" : "px-2 py-0.5"
+                    )}
+                    title={t('mappedByUs')}
+                >
+                    {t('mappedByUs')}
+                </Badge>
+            )}
+            {upstreamEchoDisplayName ? (
                 <>
-                    <ArrowRight className={cn("size-3.5 text-amber-600/70 dark:text-amber-400/70", isCard && "shrink-0")} />
+                    <ArrowRight className={cn(
+                        "size-3.5",
+                        isCard && "shrink-0",
+                        echoMismatch ? "text-amber-600/70 dark:text-amber-400/70" : "text-muted-foreground/50"
+                    )} />
                     <SafeText
                         mode={textMode}
                         value={upstreamEchoDisplayName}
-                        title={upstreamEchoDisplayName === upstreamEchoName
-                            ? t('echoMismatchHint', { model: upstreamEchoName })
-                            : `${upstreamEchoName}\n${t('echoMismatchHint', { model: upstreamEchoName })}`}
-                        className="text-amber-800 dark:text-amber-200"
+                        title={echoMismatch
+                            ? (upstreamEchoDisplayName === upstreamEchoName
+                                ? t('echoMismatchHint', { model: upstreamEchoName })
+                                : `${upstreamEchoName}\n${t('echoMismatchHint', { model: upstreamEchoName })}`)
+                            : (upstreamEchoDisplayName === upstreamEchoName ? t('echoConsistent') : `${upstreamEchoName}\n${t('echoConsistent')}`)}
+                        className={echoMismatch ? "text-amber-800 dark:text-amber-200" : "text-muted-foreground"}
                     />
                 </>
+            ) : (
+                <span className="text-xs text-muted-foreground">{t('upstreamSilent')}</span>
             )}
-            {/* 「回显不符」徽标本行证据（发送模型 vs 上游自报）点按可见。卡片外层是
-                MorphingDialogTrigger（自带 onClick/onKeyDown），徽标必须就地掐断冒泡，
-                否则点徽标会连带打开整卡详情——与上面「客户端 / 检测」徽标同款写法。 */}
-            <Popover>
-                <PopoverTrigger asChild>
-                    <Badge
-                        variant="outline"
-                        role="button"
-                        tabIndex={0}
-                        onClick={(e) => e.stopPropagation()}
-                        onKeyDown={(e) => e.stopPropagation()}
-                        className={cn(
-                            "shrink-0 cursor-pointer border-amber-500/40 bg-amber-500/10 text-xs text-amber-800 dark:text-amber-200",
-                            isCard ? "px-1.5 py-0" : "px-2 py-0.5"
+            {echoMismatch && (
+                <Popover>
+                    <PopoverTrigger asChild>
+                        <Badge
+                            variant="outline"
+                            role="button"
+                            tabIndex={0}
+                            onClick={(e) => e.stopPropagation()}
+                            onKeyDown={(e) => e.stopPropagation()}
+                            className={cn(
+                                "shrink-0 cursor-pointer border-amber-500/40 bg-amber-500/10 text-xs text-amber-800 dark:text-amber-200",
+                                isCard ? "px-1.5 py-0" : "px-2 py-0.5"
+                            )}
+                        >
+                            {t('echoMismatch')}
+                        </Badge>
+                    </PopoverTrigger>
+                    <PopoverContent align="start" className="w-72 p-3">
+                        <p className="text-xs font-medium text-foreground">{t('echoMismatch')}</p>
+                        <div className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[11px]">
+                            <span className="text-muted-foreground">{t('sentModel')}</span>
+                            <span className="break-all">{actualModelDisplayName || requestModelDisplayName}</span>
+                            <span className="text-muted-foreground">{t('upstreamEcho')}</span>
+                            <span className="break-all text-amber-700 dark:text-amber-300">
+                                {upstreamEchoDisplayName || t('upstreamSilent')}
+                            </span>
+                        </div>
+                        {upstreamEchoName && (
+                            <p className="mt-2 border-t border-border pt-2 text-[11px] leading-5 text-muted-foreground">
+                                {t('echoMismatchHint', { model: upstreamEchoName })}
+                            </p>
                         )}
-                    >
-                        {t('echoMismatch')}
-                    </Badge>
-                </PopoverTrigger>
-                <PopoverContent align="start" className="w-72 p-3">
-                    <p className="text-xs font-medium text-foreground">{t('echoMismatch')}</p>
-                    <div className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[11px]">
-                        <span className="text-muted-foreground">{t('sentModel')}</span>
-                        <span className="break-all">{actualModelDisplayName || requestModelDisplayName}</span>
-                        <span className="text-muted-foreground">{t('upstreamEcho')}</span>
-                        <span className="break-all text-amber-700 dark:text-amber-300">
-                            {upstreamEchoDisplayName || t('upstreamSilent')}
-                        </span>
-                    </div>
-                    {upstreamEchoName && (
-                        <p className="mt-2 border-t border-border pt-2 text-[11px] leading-5 text-muted-foreground">
-                            {t('echoMismatchHint', { model: upstreamEchoName })}
-                        </p>
-                    )}
-                </PopoverContent>
-            </Popover>
-        </>
+                    </PopoverContent>
+                </Popover>
+            )}
+        </span>
     ) : null;
     // 流式/非流式徽标：card 里钉在第 1 排右列，不再跟随回显/客户端内容重新落位。
     const streamBadge = log.is_stream !== undefined ? (

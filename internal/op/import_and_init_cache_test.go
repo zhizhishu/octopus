@@ -180,6 +180,34 @@ func TestConcurrentImportsStayConsistent(t *testing.T) {
 	}
 }
 
+// R02 — a successful save does not freeze the value: a later import of the opposite
+// mode is allowed to win. This is sequential, not a lock-interleaving test.
+func TestSaveThenImportOppositeValueLetsImportWin(t *testing.T) {
+	ctx := setupSettingTest(t)
+	if err := settingRefreshCache(ctx); err != nil {
+		t.Fatal(err)
+	}
+	seedDefaultAdmin(t, ctx)
+
+	if err := SettingSetString(model.SettingKeyRouteModeOverride, "spread"); err != nil {
+		t.Fatal(err)
+	}
+	assertRouteModeConsistent(t, "spread", "spread")
+	if _, err := ImportAndInitCache(ctx, routeModeDump("fill_first")); err != nil {
+		t.Fatalf("import fill_first after save: %v", err)
+	}
+	assertRouteModeConsistent(t, "fill_first", "fill_first")
+
+	if err := SettingSetString(model.SettingKeyRouteModeOverride, "fill_first"); err != nil {
+		t.Fatal(err)
+	}
+	assertRouteModeConsistent(t, "fill_first", "fill_first")
+	if _, err := ImportAndInitCache(ctx, routeModeDump("spread")); err != nil {
+		t.Fatalf("import spread after save: %v", err)
+	}
+	assertRouteModeConsistent(t, "spread", "spread")
+}
+
 // A successful import publishes the imported-and-normalized value to both stores.
 func TestSuccessfulImportPublishesNormalizedValue(t *testing.T) {
 	ctx := setupSettingTest(t)

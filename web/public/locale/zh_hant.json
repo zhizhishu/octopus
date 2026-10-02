@@ -807,6 +807,7 @@
             "echoInconsistent": "與發送不符",
             "echoConsistent": "與發送一致",
             "upstreamSilent": "上游未自報模型",
+            "mappedByUs": "送出名由我們對應",
             "channelKey": "渠道 Key 備註",
             "thinking": "思考",
             "basePrice": "基準單價(In/Out)"
