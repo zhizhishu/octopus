@@ -213,11 +213,13 @@ func (s *Session) RestoreJSONText(text string) (string, error) {
 // are left exactly as the core leaves them (never widened). Updates the session
 // count.
 //
-// It reproduces byte-for-byte what the core produces when it encounters this same
-// text as a string value inside a whole body: it walks the parsed value with a
-// synthetic "<nested-json>" path segment, which makes the core treat the object's
-// leaves as business payload (isBusinessPayload) and skip the top-level envelope set
-// (path.length > 0) — the identical decisions the core's nested-json recursion makes.
+// It routes the raw text through the core's own nested-json recursion (the string
+// branch of redactJson) with a synthetic "<nested-json>" path segment, so the leaves
+// are treated as business payload (isBusinessPayload) and the top-level envelope set
+// is not applied — the identical decisions a whole-body scan makes for this same text
+// as a string value. On a hit the core splices the escaped (secret -> placeholder)
+// pairs back into the original bytes, so numbers (>2^53), whitespace, key order and
+// duplicate-key folding match a whole-body scan instead of a JSON.stringify reflow.
 func (s *Session) RedactJSONText(text string) (string, error) {
 	if text == "" {
 		return text, nil
@@ -250,11 +252,16 @@ func (s *Session) RedactJSONText(text string) (string, error) {
 		return "", err
 	}
 	// path = ["<nested-json>"] mirrors the core's own nested-json recursion
-	// (worker-core.js:580-587): leaves become business payload and the top-level
-	// envelope skip set is not applied. root = parsed is harmless here — at these
-	// paths isRequestModelState / isBusinessPayload never consult root.
+	// (worker-core.js): leaves become business payload and the top-level envelope
+	// skip set is not applied. Passing the RAW TEXT as the string value routes it
+	// through that same recursion, so the core applies its byte-preserving splice
+	// (zero hit -> original bytes; hit -> escaped-pair splice) instead of Go
+	// re-serializing the parsed object. parsed above is used only to resolve the
+	// protocol; at these paths isRequestModelState / isBusinessPayload never consult
+	// root, so the string value is a fine root too.
 	pathVal := s.vm.ToValue([]string{"<nested-json>"})
-	out, err := redact(goja.Undefined(), parsed, s.ctx, flags, s.vm.ToValue(proto), pathVal, parsed)
+	val := s.vm.ToValue(text)
+	out, err := redact(goja.Undefined(), val, s.ctx, flags, s.vm.ToValue(proto), pathVal, val)
 	if err != nil {
 		return "", fmt.Errorf("redact: redactJson: %w", err)
 	}
@@ -262,11 +269,12 @@ func (s *Session) RedactJSONText(text string) (string, error) {
 	if n, ok := sizeVal.Export().(int64); ok {
 		s.count = int(n)
 	}
-	outBytes, err := s.stringifyJSON(out)
-	if err != nil {
-		return "", err
+	// Zero hit across the session: the input bytes are returned untouched (mirrors
+	// RedactJSONBody's fast path).
+	if s.count == 0 {
+		return text, nil
 	}
-	return string(outBytes), nil
+	return out.String(), nil
 }
 
 // Close returns the VM to the pool. Safe to call multiple times.
