@@ -173,13 +173,16 @@ func runSignature(ctx context.Context, s modelverify.Sender) Result {
 	})
 	if err != nil {
 		// 回放被上游 4xx 拒收是判定级观测，不是探针故障：harvest 刚在同一渠道
-		// 成功，紧接着把服务端签发的签名原样发回却被拒——真后端不会拒收自己
-		// 的签名。记进 Data 走 finding 通道（高危），而不是只进 Errors 零分。
+		// 成功，紧接着把服务端签发的签名原样发回却被拒。但 4xx 成因不唯一，
+		// 不能一概当成「伪造签名」：401/403 是鉴权失败、429 是限流，都与签名
+		// 真伪无关；其余 4xx 只说明请求被上游拒收，仍可能出在鉴权/限流/请求
+		// 构造而非签名本身。故只记观测（含分类）走 finding 通道，不下伪造结论。
 		// 5xx/网络错误仍走 Err 通道（上游容量问题不算任何一方的证据）。
 		var statusErr *modelverify.UpstreamStatusError
 		if errors.As(err, &statusErr) && statusErr.Status >= 400 && statusErr.Status < 500 {
 			res.Data["replay_rejected"] = true
 			res.Data["replay_reject_status"] = statusErr.Status
+			res.Data["replay_reject_class"] = classifyReplayReject(statusErr.Status)
 			return res
 		}
 		res.Err = fmt.Errorf("回放签名失败: %w", err)
@@ -202,6 +205,20 @@ func runSignature(ctx context.Context, s modelverify.Sender) Result {
 	res.Data["replay_applicable"] = !usedRedacted
 	res.OK = info.OK && (cot != "" || usedRedacted)
 	return res
+}
+
+// classifyReplayReject 把回放 4xx 拒收按成因归类，供评分层分流措辞。
+//
+// 401/403 是鉴权失败、429 是限流，都与签名真伪无关；其余 4xx 只说明请求
+// 被上游拒收。分类仅用于「不可判」措辞，不作为伪造签名的证据——上游返回
+// 的错误本身也可能被伪造，即便明确拒绝也不宣称密码学证明假模型。
+func classifyReplayReject(status int) string {
+	switch status {
+	case 401, 403, 429:
+		return "auth_rate_limit"
+	default:
+		return "request_rejected"
+	}
 }
 
 // extractCOT 取出第一段 <cot>...</cot> 的内容。

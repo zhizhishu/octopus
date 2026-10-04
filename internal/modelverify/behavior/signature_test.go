@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"math/rand"
 	"strings"
 	"testing"
@@ -342,7 +343,7 @@ func TestRunSignatureReplayRejectedByUpstream(t *testing.T) {
 			// harvest 正常拿到签名（同渠道刚成功，反衬回放被拒的异常性）。
 			return modelverify.Response{Signature: sig, ReasoningContent: "17 * 23 = 391", FinishReason: "end_turn"}, nil
 		}
-		// 回放被上游 4xx 拒收：真 Anthropic 后端不会拒收自己签发的签名。
+		// 回放被上游普通 4xx 拒收：成因不唯一（鉴权/限流/请求构造/签名），不可判伪造。
 		return modelverify.Response{}, &modelverify.UpstreamStatusError{Status: 400, Err: errors.New("invalid_request_error: signature")}
 	}}
 
@@ -357,28 +358,119 @@ func TestRunSignatureReplayRejectedByUpstream(t *testing.T) {
 	if got := intOf(res.Data, "replay_reject_status"); got != 400 {
 		t.Fatalf("拒收状态码 = %d, 应为 400", got)
 	}
+	if class := stringOf(res.Data, "replay_reject_class"); class != "request_rejected" {
+		t.Fatalf("普通 400 应归类 request_rejected, 得到 %q", class)
+	}
 
 	report := BuildReport([]Result{res}, "claude-sonnet-4-5")
-	found := false
-	for _, f := range report.Findings {
-		if f.Title == "签名回放被上游拒绝" {
-			found = true
-			if f.Score != 50 || f.Severity != SeverityHigh {
-				t.Fatalf("应为 50 分高危, 得到 %+v", f)
+	// 回放被拒不可判伪造：单条 0 分 low 提示，不产出高危、不出现「伪造」字样、
+	// 不贡献风险分，也不叠加「未解封」证据不足项（避免同一信号双计）。
+	if len(report.Findings) != 1 {
+		t.Fatalf("回放拒收应只产出一条提示 finding, 得到 %+v", report.Findings)
+	}
+	f := report.Findings[0]
+	if f.Severity != SeverityLow || f.Score != 0 {
+		t.Fatalf("回放拒收应为 0 分 low, 得到 %+v", f)
+	}
+	if f.Title != "签名回放被上游拒绝（不可判）" {
+		t.Fatalf("标题 = %q, 应为「签名回放被上游拒绝（不可判）」", f.Title)
+	}
+	// 不得作出伪造结论（旧文案「替身伪造签名的强证据」）；只能保留「不作为伪造证据」
+	// 这类否定式免责说明。
+	if strings.Contains(f.Title, "伪造") || strings.Contains(f.Recommendation, "强证据") || strings.Contains(f.Recommendation, "替身") {
+		t.Fatalf("回放拒收不应作出伪造结论: %+v", f)
+	}
+	if !strings.Contains(f.Recommendation, "不作为伪造证据") {
+		t.Fatalf("应写明「不作为伪造证据」: %+v", f)
+	}
+	if report.Score != 0 {
+		t.Fatalf("回放拒收总分 = %d, 应为 0", report.Score)
+	}
+	if report.Verdict != VerdictNone {
+		t.Fatalf("回放拒收应判 none, 得到 %s", report.Verdict)
+	}
+}
+
+// 401/403/429 是鉴权失败/限流，与签名真伪无关：只记观测并归类 auth_rate_limit，
+// 判「不可判」，绝不产出伪造高危分。
+func TestRunSignatureReplayAuthRateLimitRejected(t *testing.T) {
+	for _, status := range []int{401, 429} {
+		t.Run(fmt.Sprintf("status_%d", status), func(t *testing.T) {
+			sig := makeSignature("claude-sonnet-4-5", 2, 256, false)
+			stub := &signatureStub{respond: func(call int, _ modelverify.Ask) (modelverify.Response, error) {
+				if call == 1 {
+					return modelverify.Response{Signature: sig, ReasoningContent: "17 * 23 = 391", FinishReason: "end_turn"}, nil
+				}
+				return modelverify.Response{}, &modelverify.UpstreamStatusError{Status: status, Err: errors.New("auth/rate limit")}
+			}}
+
+			res := RunProbe(context.Background(), ProbeSignature, stub)
+			if res.Err != nil {
+				t.Fatalf("4xx 拒收不应走 Err 通道: %v", res.Err)
 			}
+			if rejected, _ := res.Data["replay_rejected"].(bool); !rejected {
+				t.Fatalf("应记 replay_rejected: %+v", res.Data)
+			}
+			if got := intOf(res.Data, "replay_reject_status"); got != status {
+				t.Fatalf("拒收状态码 = %d, 应为 %d", got, status)
+			}
+			if class := stringOf(res.Data, "replay_reject_class"); class != "auth_rate_limit" {
+				t.Fatalf("状态 %d 应归类 auth_rate_limit, 得到 %q", status, class)
+			}
+
+			report := BuildReport([]Result{res}, "claude-sonnet-4-5")
+			if len(report.Findings) != 1 {
+				t.Fatalf("应只产出一条提示 finding, 得到 %+v", report.Findings)
+			}
+			f := report.Findings[0]
+			if f.Severity != SeverityLow || f.Score != 0 {
+				t.Fatalf("鉴权/限流拒收应为 0 分 low, 得到 %+v", f)
+			}
+			if f.Title != "签名回放被鉴权/限流拒绝（不可判）" {
+				t.Fatalf("标题 = %q, 应为「签名回放被鉴权/限流拒绝（不可判）」", f.Title)
+			}
+			if report.Score != 0 {
+				t.Fatalf("总分 = %d, 应为 0", report.Score)
+			}
+		})
+	}
+}
+
+// 结构异常与回放拒收是两条独立信号：回放拒收归 0 分不可判，结构异常仍按自身
+// 25 分计，两者可叠加，不被回放拒收的早退吞掉。
+func TestRunSignatureStructureAnomalyWithReplayReject(t *testing.T) {
+	// nonce 段不足 → 结构异常（structure_ok=false），但探针仍会尝试回放。
+	sig := makeSignature("claude-sonnet-4-5", 1, 128, false)
+	stub := &signatureStub{respond: func(call int, _ modelverify.Ask) (modelverify.Response, error) {
+		if call == 1 {
+			return modelverify.Response{Signature: sig, ReasoningContent: "17 * 23 = 391", FinishReason: "end_turn"}, nil
 		}
-		// 拒收已含「未解封」，不应再叠加证据不足项（避免同一信号双计）。
-		if f.Title == "签名回放未解封（证据不足）" {
-			t.Fatalf("拒收时不应叠加未解封项: %+v", f)
+		return modelverify.Response{}, &modelverify.UpstreamStatusError{Status: 400, Err: errors.New("invalid_request_error")}
+	}}
+
+	res := RunProbe(context.Background(), ProbeSignature, stub)
+	if ok, _ := res.Data["structure_ok"].(bool); ok {
+		t.Fatalf("该 fixture 应判结构异常: %+v", res.Data)
+	}
+	if rejected, _ := res.Data["replay_rejected"].(bool); !rejected {
+		t.Fatalf("应记 replay_rejected: %+v", res.Data)
+	}
+
+	report := BuildReport([]Result{res}, "claude-sonnet-4-5")
+	if report.Score != 25 {
+		t.Fatalf("结构异常+回放拒收总分 = %d, 应为 25", report.Score)
+	}
+	foundStructure := false
+	for _, f := range report.Findings {
+		if f.Severity == SeverityMedium && f.Score == 25 && strings.Contains(f.Title, "签名结构异常") {
+			foundStructure = true
+		}
+		if f.Severity == SeverityHigh {
+			t.Fatalf("两条信号都不应产出高危项: %+v", f)
 		}
 	}
-	if !found {
-		t.Fatalf("应有「签名回放被上游拒绝」finding: %+v", report.Findings)
-	}
-	// 50 分 ≥ 40 中危线：单此一条即中危。此前该信号走 Err 通道零分，
-	// 伪造签名的替身仅凭最硬证据最多得 none/unknown。
-	if report.Verdict != VerdictMedium {
-		t.Fatalf("单条拒收应判中危, 得到 %s", report.Verdict)
+	if !foundStructure {
+		t.Fatalf("应保留结构异常 25 分 finding: %+v", report.Findings)
 	}
 }
 

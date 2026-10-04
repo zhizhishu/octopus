@@ -185,20 +185,25 @@ func signatureFindings(res Result, requestedModel string) []Finding {
 		})
 	}
 
-	// 回放被上游拒收：签名已真实发回、上游当场以 4xx 拒绝。真 Anthropic 后端
-	// 不会拒收自己签发的签名——这是最接近密码学证明的伪造信号。参考项目里
-	// 回放失败是 weight 2.0 的失败检查项、直接参与 native/suspect/proxy 判定；
-	// 此前这里走 Err 通道零分，最硬的证据反而不进判分。拒收已含「未解封」，
-	// 故命中本条时不再叠加下方的证据不足项。
+	// 回放被上游拒收：签名已真实发回、上游当场以 4xx 拒绝。但 4xx 成因不唯一
+	// （鉴权失败、限流、请求构造、乃至签名问题），不能据此判「伪造」——上游
+	// 返回的错误本身也可被伪造，且 401/403/429 与签名真伪无关。故只记一条 0 分
+	// 的「不可判」提示供人工复核，不贡献风险分。保留早退：拒收时不再叠加下方
+	// 「未解封」25 分项（避免顺路加分），也不把拒收当成解封证据。
 	if rejected, _ := res.Data["replay_rejected"].(bool); rejected {
+		title := "签名回放被上游拒绝（不可判）"
+		if stringOf(res.Data, "replay_reject_class") == "auth_rate_limit" {
+			title = "签名回放被鉴权/限流拒绝（不可判）"
+		}
 		return append(findings, Finding{
-			Probe: ProbeSignature, Severity: SeverityHigh, Score: 50,
-			Title: "签名回放被上游拒绝",
+			Probe: ProbeSignature, Severity: SeverityLow, Score: 0,
+			Title: title,
 			Evidence: map[string]any{
 				"replay_reject_status": intOf(res.Data, "replay_reject_status"),
+				"replay_reject_class":  stringOf(res.Data, "replay_reject_class"),
 				"bound_model":          stringOf(res.Data, "bound_model"),
 			},
-			Recommendation: "回放的 thinking 签名被上游 4xx 拒收：真 Anthropic 后端不会拒绝自己签发的签名，这是替身伪造签名的强证据。建议人工复核并考虑停用该渠道。",
+			Recommendation: "回放的 thinking 签名被上游 4xx 拒绝：无法区分限流/鉴权/请求构造与签名问题，不作为伪造证据，必要时人工复核。",
 		})
 	}
 
