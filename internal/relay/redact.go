@@ -61,11 +61,23 @@ func sharedRedactEngine() (*redact.Engine, error) {
 	return redactEngine, nil
 }
 
+// redactGlobalEnabled reports the global redaction master switch. Reading it can
+// fail two ways, and SettingGetBool treats them the same: a never-configured key
+// returns (false, "setting not found") and an unparseable stored value returns
+// (false, strconv.ParseBool error) — it does NOT return a default-with-nil.
+//
+// Defect F9: on any such read error we deliberately report the switch as ON
+// (fail-closed). An undecidable master switch must never silently disable
+// protection (the old `return false` was a fail-OPEN). Because inboundRedactActive
+// still requires the per-channel opt-in (channel.RedactEnabled), a read failure can
+// only ever OVER-protect a channel that already asked for redaction — it never sends
+// cleartext for a channel that did not opt in. The request-level sticky flag is
+// checked before this and is unaffected.
 func redactGlobalEnabled() bool {
 	if v, err := op.SettingGetBool(dbmodel.SettingKeyRedactEnabled); err == nil {
 		return v
 	}
-	return false
+	return true
 }
 
 func redactNoticeEnabled() bool {
@@ -615,7 +627,11 @@ func (ra *relayAttempt) restoreClientStreamSse(data []byte) ([]byte, error) {
 		eventType, payload := parseClientSseEvent(blob)
 		if payload == "" {
 			// Comment/heartbeat/blank line: nothing to restore, forward as-is.
-			out.WriteString(blob)
+			// splitClientSseEvents split on "\n\n" and dropped the separator, so the
+			// blank line that terminates this event must be re-added — otherwise two
+			// consecutive events are concatenated (": ping" + "data: {...}") and the
+			// client's SSE parser never sees the following event.
+			out.WriteString(blob + "\n\n")
 			continue
 		}
 		var eventText strings.Builder

@@ -14,7 +14,6 @@ import (
 	"github.com/bestruirui/octopus/internal/op"
 	"github.com/bestruirui/octopus/internal/redact"
 	"github.com/bestruirui/octopus/internal/relay/balancer"
-	"github.com/bestruirui/octopus/internal/transformer/inbound"
 	"github.com/bestruirui/octopus/internal/transformer/model"
 	"github.com/bestruirui/octopus/internal/utils/safe"
 )
@@ -565,16 +564,7 @@ func runChannelRace(
 
 		committed := winnerRA.wroteMeaningfulDownstream
 		if committed {
-			switch winnerRA.inboundType {
-			case inbound.InboundTypeOpenAIResponse:
-				if message := responsesStreamFailureMessage(handleErr); message != "" {
-					writeResponsesFailedSSE(winnerRA.c, winnerRA.requestModel, "upstream_error", message)
-				}
-			case inbound.InboundTypeAnthropic:
-				if message := anthropicStreamFailureMessage(handleErr); message != "" {
-					writeAnthropicErrorSSE(winnerRA.c, "api_error", message)
-				}
-			}
+			writeCommittedStreamFailure(winnerRA, handleErr)
 			winnerRA.collectResponse()
 		}
 

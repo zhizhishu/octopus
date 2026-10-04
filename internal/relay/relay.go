@@ -901,16 +901,7 @@ func (ra *relayAttempt) attempt() attemptResult {
 	// channels and must instead surface the failure as an in-band error event.
 	committed := ra.wroteMeaningfulDownstream
 	if committed {
-		switch ra.inboundType {
-		case inbound.InboundTypeOpenAIResponse:
-			if message := responsesStreamFailureMessage(fwdErr); message != "" {
-				writeResponsesFailedSSE(ra.c, ra.requestModel, "upstream_error", message)
-			}
-		case inbound.InboundTypeAnthropic:
-			if message := anthropicStreamFailureMessage(fwdErr); message != "" {
-				writeAnthropicErrorSSE(ra.c, "api_error", message)
-			}
-		}
+		writeCommittedStreamFailure(ra, fwdErr)
 		ra.collectResponse()
 	}
 	return attemptResult{
@@ -2965,6 +2956,21 @@ func (ra *relayAttempt) handleNonStreamResponseAsStream(ctx context.Context, res
 		if _, err := ra.c.Writer.Write(data); err != nil {
 			log.Infof("client disconnected during fallback stream write: %v", err)
 			return fmt.Errorf("client disconnected during fallback stream write: %w", err)
+		}
+		ra.c.Writer.Flush()
+	}
+	// 凭据脱敏: 逐 chunk 还原时若最后一个事件以半截占位符收尾, 还原器会把该通道整段
+	// (含被并进去的真实前缀文字) 缓冲, 仅 finish() 才吐。主链路 handleStreamResponse
+	// 在终止写出前会 flushRedactRestore; 这条非流转流兜底路径原本漏了收尾 flush, 半截
+	// 尾部连同真实内容被静默丢弃。缓冲里的终止事件排在未吐内容之后 (队列按序), 故此处
+	// 唯一一次 flush 吐出的尾帧仍严格在终止标记之前。失败按失败回传, 不追加成功结束。
+	if tail, ferr := ra.redactFlushClientSse(); ferr != nil {
+		log.Errorf("redact: fallback stream tail flush failed: %v", ferr)
+		return fmt.Errorf("redact: fallback stream tail flush failed: %w", ferr)
+	} else if len(tail) > 0 {
+		if _, werr := ra.c.Writer.Write(tail); werr != nil {
+			log.Infof("client disconnected during fallback stream tail write: %v", werr)
+			return fmt.Errorf("client disconnected during fallback stream tail write: %w", werr)
 		}
 		ra.c.Writer.Flush()
 	}

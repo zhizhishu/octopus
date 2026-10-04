@@ -192,6 +192,50 @@ func anthropicStreamFailureMessage(err error) string {
 	return "upstream stream failed before terminal event"
 }
 
+// chatStreamFailureMessage mirrors anthropicStreamFailureMessage for the OpenAI
+// chat inbound: a client abort (or a nil error) yields "" so no frame is written
+// for a client that already hung up; every other failure yields the display text.
+func chatStreamFailureMessage(err error) string {
+	if err == nil {
+		return "upstream stream failed"
+	}
+	if isClientAbortError(err) {
+		return ""
+	}
+	return "upstream stream failed"
+}
+
+// writeCommittedStreamFailure surfaces an upstream stream failure on an
+// ALREADY-committed stream (meaningful content was flushed, so the channel can no
+// longer be swapped): it writes the in-band error envelope in the client's inbound
+// protocol exactly once. Shared by the two committed-failure sites (relayAttempt
+// .attempt and runChannelRace's winner), which used to duplicate this switch — and
+// both of which silently dropped the failure for OpenAI chat inbound, leaving the
+// client a truncated stream with no error frame and no [DONE].
+//
+// Only the three covered inbound protocols get a frame; Gemini / embedding inbound
+// (and anything else) stay untouched, matching the previous Responses/Anthropic-only
+// behaviour. A client abort is silent for every protocol.
+func writeCommittedStreamFailure(ra *relayAttempt, fwdErr error) {
+	if ra == nil || ra.c == nil {
+		return
+	}
+	switch ra.inboundType {
+	case inbound.InboundTypeOpenAIResponse:
+		if message := responsesStreamFailureMessage(fwdErr); message != "" {
+			writeResponsesFailedSSE(ra.c, ra.requestModel, "upstream_error", message)
+		}
+	case inbound.InboundTypeAnthropic:
+		if message := anthropicStreamFailureMessage(fwdErr); message != "" {
+			writeAnthropicErrorSSE(ra.c, "api_error", message)
+		}
+	case inbound.InboundTypeOpenAIChat:
+		if message := chatStreamFailureMessage(fwdErr); message != "" {
+			writeChatErrorSSE(ra.c, "upstream_error", message)
+		}
+	}
+}
+
 // writeRelayErrorPreStream writes a pre-stream error in the inbound-aware envelope.
 //
 // On the /v1/responses path, octopus's internal ResponseStruct {code,error_code,message}
