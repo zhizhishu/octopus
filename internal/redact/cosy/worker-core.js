@@ -1,5 +1,5 @@
 // Vendored from CassiopeiaCode/CosyRedactGateway worker.js @ 0e2be2e3ba7fcbe982942a941e3a2fd1b89e87f6
-// (Apache-2.0; upstream notice in NOTICE). Extracted 2026-09-28
+// (Apache-2.0; upstream notice in NOTICE). Extracted 2026-10-04
 // by scripts/extract-cosy-core.py — do not hand-edit; re-run the extractor instead.
 // Changes vs upstream (logic-preserving, documented in the extractor):
 //   - HTTP proxy shell removed (routing/CORS/header-filter/fetch handler/ReadableStream
@@ -32,6 +32,12 @@
 //     tools would otherwise cross-contaminate); custom (freeform) tool input stays
 //     plain-text-restored in the done/output_item/final-object walks, matching the
 //     delta path.
+//   - Data fidelity (oct-only, not upstream; extractor transform 10): the nested-JSON
+//     string branch returns the original string untouched on a zero hit and, on a hit,
+//     splices the JSON-escaped (secret -> placeholder) pairs into the original string
+//     bytes (literal, no regex), so numbers (>2^53), whitespace, key order and
+//     duplicate-key folding stay exactly as JSON.parse saw them; JSON.stringify is only
+//     used when the splice cannot be proven faithful.
 const ALL_FLAG_LETTERS = "HPSIBEG";
 const FLAG_NAMES = Object.freeze({
   H: "highEntropy",
@@ -527,7 +533,9 @@ class RedactionContext {
   }
 }
 
-// Structural keys: protocol metadata that is never user/model payload, skipped at any position.
+// Structural keys: protocol metadata that is never user/model payload -- like ENVELOPE_KEYS
+// they are structural only outside a business payload (see isBusinessPayload), so a
+// business value under one of these key names is still scanned.
 // Envelope keys: structural only outside a business payload (see isBusinessPayload).
 const STRUCTURAL_KEYS = new Set(["model","role","type","object","status","call_id","tool_call_id","finish_reason","stop_reason","media_type","mime_type","encoding","format"]);
 const ENVELOPE_KEYS = new Set(["name","id","url"]);
@@ -555,7 +563,7 @@ function isBusinessPayload(protocol, root, path) {
 }
 function shouldSkipString(path, businessPayload) {
   const key = path[path.length - 1] || "";
-  if (STRUCTURAL_KEYS.has(key)) return true;
+  if (STRUCTURAL_KEYS.has(key)) return !businessPayload;
   const p = path.join(".").toLowerCase();
   if (/(?:image_url|input_image|input_audio|audio|file_data|b64_json|source\.data|image\.data)/.test(p)) return true;
   if (key === "image_url") return true;
@@ -588,6 +596,39 @@ function isRequestModelState(protocol, root, path, value) {
   return false;
 }
 
+// Byte-preserving redaction splice (oct-only, not upstream; extractor transform 10).
+// Given the (json-encoded secret -> placeholder) pairs a nested-JSON walk applied,
+// replace each JSON-escaped secret with its JSON-escaped placeholder directly in the
+// ORIGINAL string bytes: literal indexOf/split-join (never a regex, so secrets with
+// regex metacharacters are safe), leaving numbers, whitespace, key order and
+// duplicate keys untouched. Returns null to signal "fall back to JSON.stringify": an
+// occurrence count that does not match the walk (the escaped secret also sits in a
+// non-redacted position), a secret the walk never saw (a value dropped by JSON.parse
+// duplicate-key folding), or a spliced result that no longer re-parses to the walk
+// output. Never throws; never returns a partially-spliced string.
+function spliceRedactionPairs(text, pairs, redacted, flags) {
+  const counts = new Map(), tokens = new Map();
+  for (const [raw, tok] of pairs) {
+    counts.set(raw, (counts.get(raw) || 0) + 1);
+    tokens.set(raw, tok);
+  }
+  for (const [raw] of tokens) {
+    const escRaw = JSON.stringify(raw).slice(1, -1);
+    let occ = 0, idx = 0;
+    while ((idx = text.indexOf(escRaw, idx)) >= 0) { occ++; idx += escRaw.length; }
+    if (occ !== counts.get(raw)) return null;
+  }
+  let result = text;
+  for (const [raw, tok] of tokens) {
+    const escRaw = JSON.stringify(raw).slice(1, -1);
+    const escTok = JSON.stringify(tok).slice(1, -1);
+    result = result.split(escRaw).join(escTok);
+  }
+  if (findSensitiveSpans(result, flags).length) return null;
+  try { if (JSON.stringify(JSON.parse(result)) !== JSON.stringify(redacted)) return null; }
+  catch { return null; }
+  return result;
+}
 function redactJson(value, ctx, flags, protocol = "generic", path = [], root = value) {
   if (isRequestModelState(protocol, root, path, value)) return value;
   if (typeof value === "string") {
@@ -596,8 +637,24 @@ function redactJson(value, ctx, flags, protocol = "generic", path = [], root = v
       try {
         const nested = JSON.parse(value);
         if (nested && typeof nested === "object") {
-          const redacted = redactJson(nested, ctx, flags, protocol, path.concat("<nested-json>"), root);
-          return JSON.stringify(redacted);
+          // Capture the (secret -> placeholder) pairs this nested walk applies by
+          // shadowing the session ctx.tokenFor (idempotent, session-scoped) for the
+          // duration of the walk only, then restore it. The pairs let a hit keep the
+          // original bytes instead of re-serializing the whole value.
+          const pairs = [];
+          const origTokenFor = ctx.tokenFor;
+          ctx.tokenFor = function (raw) { const tok = origTokenFor.call(ctx, raw); pairs.push([raw, tok]); return tok; };
+          let redacted;
+          try {
+            redacted = redactJson(nested, ctx, flags, protocol, path.concat("<nested-json>"), root);
+          } finally {
+            ctx.tokenFor = origTokenFor;
+          }
+          // No replacement in this nested value: original bytes, no re-serialization.
+          if (!pairs.length) return value;
+          // Replacement: byte-preserving splice, else fall back to re-serialization.
+          const spliced = spliceRedactionPairs(value, pairs, redacted, flags);
+          return spliced === null ? JSON.stringify(redacted) : spliced;
         }
       } catch { /* Treat non-JSON strings as ordinary text. */ }
     }

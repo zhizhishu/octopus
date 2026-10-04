@@ -252,3 +252,217 @@ func TestRedactRestoreRoundTripProtocols(t *testing.T) {
 		})
 	}
 }
+
+// R1 (extractor transform 9): STRUCTURAL_KEYS (model/role/type/object/status/call_id/
+// tool_call_id/finish_reason/stop_reason/media_type/mime_type/encoding/format) are
+// structural only outside a business payload. A tool-argument value under one of those
+// key names must be scanned even though the same key name at a protocol position stays
+// verbatim.
+
+// synthEmail builds a synthetic address that the email (and entropy) detector matches,
+// with no real secret (public-repo rule: synthetic samples only).
+func synthEmail(local, tag string) string { return local + "_" + tag + "@example.com" }
+
+// TestStructuralKeyBusinessPayloadScanned: chat tool-call arguments (a JSON string)
+// carrying structural key names must be redacted and restore to the original bytes.
+func TestStructuralKeyBusinessPayloadScanned(t *testing.T) {
+	e := newTestEngine(t)
+	s, err := e.NewSession("HES", "openai_chat", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	typeVal := synthEmail("type", he32)
+	formatVal := synthSk(40)
+	statusVal := synthEmail("status", he32b)
+	modelVal := synthEmail("model", he32)
+	roleVal := synthEmail("role", he32b)
+	encVal := synthEmail("encoding", he32)
+
+	// JSON-encoded tool arguments whose decoded object uses structural key names.
+	args := fmt.Sprintf(`{\"type\":\"%s\",\"format\":\"%s\",\"status\":\"%s\",\"model\":\"%s\",\"role\":\"%s\",\"encoding\":\"%s\"}`,
+		typeVal, formatVal, statusVal, modelVal, roleVal, encVal)
+
+	body := []byte(fmt.Sprintf(`{"model":"gpt-test-model","response_format":{"type":"json_schema","json_schema":{"name":"fmt_ok"}},"messages":[{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"run","arguments":"%s"}}]},{"role":"tool","tool_call_id":"call_1","content":"ok"}]}`, args))
+
+	out, err := s.RedactJSONBody(body)
+	if err != nil {
+		t.Fatalf("redact: %v", err)
+	}
+	ob := string(out)
+	for _, raw := range []string{typeVal, formatVal, statusVal, modelVal, roleVal, encVal} {
+		if strings.Contains(ob, raw) {
+			t.Fatalf("business value under a structural key survived redaction: %q in %s", raw, ob)
+		}
+	}
+	if !hasRedactToken(ob) {
+		t.Fatalf("no placeholder emitted for tool arguments: %s", ob)
+	}
+	if s.Count() == 0 {
+		t.Fatal("fixture produced no redactions")
+	}
+
+	// True protocol positions must be byte-identical (structural keys skipped there).
+	for _, intact := range []string{
+		`"model":"gpt-test-model"`,
+		`"role":"assistant"`,
+		`"role":"tool"`,
+		`"tool_call_id":"call_1"`,
+		`"response_format":{"type":"json_schema","json_schema":{"name":"fmt_ok"}}`,
+		`"type":"function"`,
+		`"name":"run"`,
+	} {
+		if !strings.Contains(ob, intact) {
+			t.Fatalf("protocol-layer bytes changed/missing: %s\n in %s", intact, ob)
+		}
+	}
+
+	back, err := s.RestoreJSONBody(out)
+	if err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if !reflect.DeepEqual(decodeBody(t, back), decodeBody(t, body)) {
+		t.Fatalf("round trip mismatch:\n in=%s\nout=%s", body, back)
+	}
+}
+
+// TestStructuralKeyAnthropicToolUseInputScanned: anthropic tool_use.input is a business
+// object (not a JSON string); structural key names directly under it must be scanned.
+func TestStructuralKeyAnthropicToolUseInputScanned(t *testing.T) {
+	e := newTestEngine(t)
+	s, err := e.NewSession("ES", "anthropic_messages", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	typeVal := synthEmail("type", he32)
+	formatVal := synthSk(40)
+	statusVal := synthEmail("status", he32b)
+	modelVal := synthEmail("model", he32)
+	roleVal := synthEmail("role", he32b)
+	encVal := synthEmail("encoding", he32)
+
+	body := []byte(fmt.Sprintf(`{"model":"claude-test","max_tokens":16,"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"send","input":{"type":"%s","format":"%s","status":"%s","model":"%s","role":"%s","encoding":"%s"}}]}]}`,
+		typeVal, formatVal, statusVal, modelVal, roleVal, encVal))
+
+	out, err := s.RedactJSONBody(body)
+	if err != nil {
+		t.Fatalf("redact: %v", err)
+	}
+	ob := string(out)
+	for _, raw := range []string{typeVal, formatVal, statusVal, modelVal, roleVal, encVal} {
+		if strings.Contains(ob, raw) {
+			t.Fatalf("tool_use.input value under a structural key survived redaction: %q in %s", raw, ob)
+		}
+	}
+	if !hasRedactToken(ob) {
+		t.Fatalf("no placeholder emitted for tool_use.input: %s", ob)
+	}
+	// The block type ("tool_use") sits at a non-business position and must survive.
+	for _, intact := range []string{`"model":"claude-test"`, `"role":"assistant"`, `"type":"tool_use"`, `"id":"toolu_1"`, `"name":"send"`} {
+		if !strings.Contains(ob, intact) {
+			t.Fatalf("protocol-layer bytes changed/missing: %s\n in %s", intact, ob)
+		}
+	}
+
+	back, err := s.RestoreJSONBody(out)
+	if err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if !reflect.DeepEqual(decodeBody(t, back), decodeBody(t, body)) {
+		t.Fatalf("round trip mismatch:\n in=%s\nout=%s", body, back)
+	}
+}
+
+// TestStructuralKeyLegacyFunctionCallScanned: legacy chat function_call.arguments is a
+// JSON string too; nested structural key names inside it must be scanned.
+func TestStructuralKeyLegacyFunctionCallScanned(t *testing.T) {
+	e := newTestEngine(t)
+	s, err := e.NewSession("HES", "openai_chat", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	outer := synthEmail("type", he32)
+	innerStatus := synthSk(40)
+	innerFormat := synthEmail("format", he32b)
+
+	// Nested: a business object inside the JSON-string arguments, carrying structural
+	// key names at both levels.
+	args := fmt.Sprintf(`{\"type\":\"%s\",\"payload\":{\"status\":\"%s\",\"format\":\"%s\"}}`, outer, innerStatus, innerFormat)
+
+	body := []byte(fmt.Sprintf(`{"model":"gpt-test-model","messages":[{"role":"assistant","function_call":{"name":"run","arguments":"%s"}}]}`, args))
+
+	out, err := s.RedactJSONBody(body)
+	if err != nil {
+		t.Fatalf("redact: %v", err)
+	}
+	ob := string(out)
+	for _, raw := range []string{outer, innerStatus, innerFormat} {
+		if strings.Contains(ob, raw) {
+			t.Fatalf("legacy function_call value survived redaction: %q in %s", raw, ob)
+		}
+	}
+	if !hasRedactToken(ob) {
+		t.Fatalf("no placeholder emitted for legacy function_call: %s", ob)
+	}
+	if !strings.Contains(ob, `"function_call":{"name":"run"`) {
+		t.Fatalf("protocol-layer function_call name changed: %s", ob)
+	}
+
+	back, err := s.RestoreJSONBody(out)
+	if err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if !reflect.DeepEqual(decodeBody(t, back), decodeBody(t, body)) {
+		t.Fatalf("round trip mismatch:\n in=%s\nout=%s", body, back)
+	}
+}
+
+// TestStructuralKeysProtocolPositionsUntouched: the same structural key names at real
+// protocol positions stay verbatim even when their values look redactable, while a
+// business payload in the same body is still scanned (path decides, not key name).
+func TestStructuralKeysProtocolPositionsUntouched(t *testing.T) {
+	e := newTestEngine(t)
+	s, err := e.NewSession("HES", "openai_chat", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	// A redactable-looking protocol model id (top-level `model`, a structural key).
+	protoModel := "gpt-" + he32 + "@example.com"
+	// A redactable-looking business value under the same key name, inside tool args.
+	bizModel := synthEmail("model", he32b)
+	args := fmt.Sprintf(`{\"model\":\"%s\"}`, bizModel)
+
+	body := []byte(fmt.Sprintf(`{"model":"%s","messages":[{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"run","arguments":"%s"}}]}]}`, protoModel, args))
+
+	out, err := s.RedactJSONBody(body)
+	if err != nil {
+		t.Fatalf("redact: %v", err)
+	}
+	ob := string(out)
+	// Top-level protocol model survives verbatim ...
+	if !strings.Contains(ob, `"model":"`+protoModel+`"`) {
+		t.Fatalf("top-level protocol model was altered: %s", ob)
+	}
+	// ... while the same key name inside the tool-argument business payload is redacted.
+	if strings.Contains(ob, bizModel) {
+		t.Fatalf("business value under key 'model' survived redaction: %s", ob)
+	}
+	if !hasRedactToken(ob) {
+		t.Fatalf("no placeholder emitted for tool arguments: %s", ob)
+	}
+
+	back, err := s.RestoreJSONBody(out)
+	if err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if !reflect.DeepEqual(decodeBody(t, back), decodeBody(t, body)) {
+		t.Fatalf("round trip mismatch:\n in=%s\nout=%s", body, back)
+	}
+}
