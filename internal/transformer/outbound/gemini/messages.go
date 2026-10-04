@@ -676,6 +676,15 @@ func convertGeminiToLLMResponse(geminiResp *model.GeminiGenerateContentResponse,
 		resp.Object = "chat.completion"
 	}
 
+	// Carry the upstream self-declared model back to the relay so the audit
+	// path can compare it against the model we actually sent (modelVersion is
+	// the only place Gemini reports it). Blank/missing stays unset: absence of
+	// a self-report must never be backfilled with the request model. Pure
+	// observation — relay restores the client-visible name separately.
+	if v := strings.TrimSpace(geminiResp.ModelVersion); v != "" {
+		resp.Model = v
+	}
+
 	// Convert candidates to choices
 	for _, candidate := range geminiResp.Candidates {
 		choice := model.Choice{
