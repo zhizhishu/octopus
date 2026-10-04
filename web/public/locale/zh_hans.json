@@ -1008,6 +1008,8 @@
             "noticeHint": "在首条用户消息前注入脱敏告知, 让模型知道占位符语义",
             "defaultFlags": "默认检测器",
             "defaultFlagsHint": "渠道未定制时使用的检测器组合",
+            "allDetectors": "全部检测器",
+            "selectedFlags": "默认检测器：{flags}",
             "scopeTitle": "保护范围与限制",
             "scopeProtected": "保护范围：仅 Chat Completions、Responses、Anthropic Messages 入站协议的文字与工具内容。",
             "scopeUnprotected": "未保护：图片/视频生成、音频、文件/表单上传、embedding、raw 端点及 Gemini 原生入口不经脱敏。",
@@ -1022,10 +1024,11 @@
             "followDefault": "跟随全局默认",
             "statusDisabled": "未启用",
             "statusMasterDisabled": "总闸关闭",
-            "statusInherited": "继承默认 {flags}",
+            "statusInherited": "继承全局：{flags}",
             "statusCustom": "自定义",
             "effective": "实际生效：{flags}",
-            "inheritedNotice": "该渠道未定制检测器，实际沿用全局默认 {flags}。",
+            "allDetectors": "全部检测器",
+            "inheritedNotice": "该渠道未定制检测器，实际沿用全局默认：{flags}。",
             "customNotice": "该渠道已自定义检测器，与全局默认互不影响。",
             "restoreInherit": "恢复继承全局默认"
         },
@@ -1040,6 +1043,10 @@
             "upstreamSees": "上游看到的",
             "clientSees": "客户端收回的",
             "count": "{count} 处"
+        },
+        "toast": {
+            "saved": "已保存",
+            "saveFailed": "保存失败"
         }
     }
 }

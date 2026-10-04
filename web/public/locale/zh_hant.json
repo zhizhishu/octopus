@@ -1008,6 +1008,8 @@
             "noticeHint": "在首条用户消息前注入脱敏告知, 让模型知道占位符语义",
             "defaultFlags": "預設偵測器",
             "defaultFlagsHint": "頻道未自訂時使用的偵測器組合",
+            "allDetectors": "全部偵測器",
+            "selectedFlags": "預設偵測器：{flags}",
             "scopeTitle": "保護範圍與限制",
             "scopeProtected": "保護範圍：僅限 Chat Completions、Responses、Anthropic Messages 入站協定的文字與工具內容。",
             "scopeUnprotected": "未保護：圖片/影片生成、音訊、檔案/表單上傳、embedding、raw 端點及 Gemini 原生入口不經脫敏。",
@@ -1022,10 +1024,11 @@
             "followDefault": "跟隨全域預設",
             "statusDisabled": "未啟用",
             "statusMasterDisabled": "總閘關閉",
-            "statusInherited": "繼承預設 {flags}",
+            "statusInherited": "繼承全域：{flags}",
             "statusCustom": "自訂",
             "effective": "實際生效：{flags}",
-            "inheritedNotice": "此頻道未自訂偵測器，實際沿用全域預設 {flags}。",
+            "allDetectors": "全部偵測器",
+            "inheritedNotice": "此頻道未自訂偵測器，實際沿用全域預設：{flags}。",
             "customNotice": "此頻道已自訂偵測器，與全域預設互不影響。",
             "restoreInherit": "恢復繼承全域預設"
         },
@@ -1040,6 +1043,10 @@
             "upstreamSees": "上游看到的",
             "clientSees": "客户端收回的",
             "count": "{count} 处"
+        },
+        "toast": {
+            "saved": "已儲存",
+            "saveFailed": "儲存失敗"
         }
     }
 }

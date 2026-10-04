@@ -22,6 +22,7 @@ import { useSettingList, useSetSetting, SettingKey } from '@/api/endpoints/setti
 import { useChannelList, useUpdateChannel } from '@/api/endpoints/channel';
 import { apiClient } from '@/api/client';
 import { cn } from '@/lib/utils';
+import { toast } from '@/components/common/Toast';
 
 /** 检测器字母 → 名称 (与后端 model.RedactFlagLetters 一致) */
 const DETECTORS: Array<{ letter: string; name: string; hint: string }> = [
@@ -55,7 +56,18 @@ function RedactGlobalCard() {
     const noticeEnabled = valueOf(SettingKey.RedactNoticeEnabled, 'true') === 'true';
     const defaultFlags = valueOf(SettingKey.RedactDefaultFlags, 'HPSIBEG');
 
-    const update = (key: string, value: string) => setSetting.mutate({ key, value });
+    // 复用现有 setting mutation 钩子, 在调用点补保存反馈; 钩子自身只写日志, 不重复弹 toast。
+    const update = (key: string, value: string) =>
+        setSetting.mutate(
+            { key, value },
+            {
+                onSuccess: () => toast.success(t('toast.saved')),
+                onError: (e) =>
+                    toast.error(t('toast.saveFailed'), {
+                        description: e instanceof Error ? e.message : String(e),
+                    }),
+            }
+        );
 
     return (
         <div className="rounded-3xl border border-border bg-card p-6">
@@ -132,6 +144,11 @@ function RedactGlobalCard() {
                             );
                         })}
                     </div>
+                    <p className="mt-2 text-xs text-muted-foreground">
+                        {defaultFlags === ''
+                            ? t('global.allDetectors')
+                            : t('global.selectedFlags', { flags: defaultFlags })}
+                    </p>
                 </div>
             </div>
         </div>
@@ -151,6 +168,16 @@ function RedactChannelCard() {
 
     const masterEnabled = valueOf(SettingKey.RedactEnabled, 'false') === 'true';
     const globalDefaultFlags = normalizeFlags(valueOf(SettingKey.RedactDefaultFlags, 'HPSIBEG'));
+
+    // 复用现有渠道 mutation 钩子, 在调用点补保存反馈; 钩子自身只写日志, 不重复弹 toast。
+    const patchChannel = (payload: { id: number; redact_enabled?: boolean; redact_flags?: string }) =>
+        updateChannel.mutate(payload, {
+            onSuccess: () => toast.success(t('toast.saved')),
+            onError: (e) =>
+                toast.error(t('toast.saveFailed'), {
+                    description: e instanceof Error ? e.message : String(e),
+                }),
+        });
 
     const sorted = useMemo(() => {
         if (!channels) return [];
@@ -181,6 +208,9 @@ function RedactChannelCard() {
                     const inherits = channelFlags === '';
                     // 实际生效 = 渠道自定义值, 否则全局默认值
                     const effectiveFlags = inherits ? globalDefaultFlags : channelFlags;
+                    // 空串继承链: 渠道空 -> 全局; 全局也空才是全部检测器。展示时把空串翻成"全部检测器"。
+                    const effectiveLabel =
+                        effectiveFlags === '' ? t('channel.allDetectors') : effectiveFlags;
                     // 三态徽章 (+ 总闸态): 未启用 / 总闸关闭 / 继承默认 / 自定义
                     const badge = !raw.redact_enabled
                         ? { text: t('channel.statusDisabled'), cls: 'bg-muted text-muted-foreground' }
@@ -191,7 +221,7 @@ function RedactChannelCard() {
                             }
                           : inherits
                             ? {
-                                  text: t('channel.statusInherited', { flags: effectiveFlags || '—' }),
+                                  text: t('channel.statusInherited', { flags: effectiveLabel }),
                                   cls: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
                               }
                             : {
@@ -229,7 +259,7 @@ function RedactChannelCard() {
                                     <Switch
                                         checked={raw.redact_enabled}
                                         onCheckedChange={(v) =>
-                                            updateChannel.mutate({ id: raw.id, redact_enabled: v })
+                                            patchChannel({ id: raw.id, redact_enabled: v })
                                         }
                                         disabled={updateChannel.isPending}
                                     />
@@ -258,7 +288,7 @@ function RedactChannelCard() {
                                                                       .join('')
                                                               )
                                                             : normalizeFlags(effectiveFlags + d.letter);
-                                                        updateChannel.mutate({ id: raw.id, redact_flags: next });
+                                                        patchChannel({ id: raw.id, redact_flags: next });
                                                     }}
                                                     className={cn(
                                                         'h-7 rounded-md border px-2.5 text-xs font-medium transition-colors',
@@ -275,11 +305,11 @@ function RedactChannelCard() {
                                         })}
                                     </div>
                                     <p className="mt-2 text-xs text-muted-foreground">
-                                        {t('channel.effective', { flags: effectiveFlags || '—' })}
+                                        {t('channel.effective', { flags: effectiveLabel })}
                                     </p>
                                     {inherits ? (
                                         <p className="mt-1 text-xs text-muted-foreground">
-                                            {t('channel.inheritedNotice', { flags: effectiveFlags || '—' })}
+                                            {t('channel.inheritedNotice', { flags: effectiveLabel })}
                                         </p>
                                     ) : (
                                         <div className="mt-1 flex flex-wrap items-center gap-2">
@@ -289,7 +319,7 @@ function RedactChannelCard() {
                                             <button
                                                 type="button"
                                                 onClick={() =>
-                                                    updateChannel.mutate({ id: raw.id, redact_flags: '' })
+                                                    patchChannel({ id: raw.id, redact_flags: '' })
                                                 }
                                                 disabled={updateChannel.isPending}
                                                 className="h-7 rounded-md border border-dashed border-border px-2.5 text-xs text-muted-foreground hover:bg-muted/70"

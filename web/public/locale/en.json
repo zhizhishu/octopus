@@ -1008,6 +1008,8 @@
             "noticeHint": "Tell the model about placeholder semantics in the first user message",
             "defaultFlags": "Default Detectors",
             "defaultFlagsHint": "Detector set used when a channel has no override",
+            "allDetectors": "All detectors",
+            "selectedFlags": "Default detectors: {flags}",
             "scopeTitle": "Scope & Limits",
             "scopeProtected": "Protected: text and tool content from inbound Chat Completions, Responses, and Anthropic Messages protocols only.",
             "scopeUnprotected": "Not protected: image/video generation, audio, file/form uploads, embeddings, raw endpoints, and native Gemini entrypoints bypass redaction.",
@@ -1022,10 +1024,11 @@
             "followDefault": "Follow global default",
             "statusDisabled": "disabled",
             "statusMasterDisabled": "master off",
-            "statusInherited": "inherits {flags}",
+            "statusInherited": "inherits global: {flags}",
             "statusCustom": "custom",
             "effective": "Effective: {flags}",
-            "inheritedNotice": "No custom detectors on this channel; it uses the global default {flags}.",
+            "allDetectors": "All detectors",
+            "inheritedNotice": "No custom detectors on this channel; it uses the global default: {flags}.",
             "customNotice": "This channel uses custom detectors, independent of the global default.",
             "restoreInherit": "Restore global default"
         },
@@ -1040,6 +1043,10 @@
             "upstreamSees": "Upstream sees",
             "clientSees": "Client receives",
             "count": "{count} hits"
+        },
+        "toast": {
+            "saved": "Saved",
+            "saveFailed": "Save failed"
         }
     }
 }
