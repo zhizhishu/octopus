@@ -33,11 +33,28 @@
 //     plain-text-restored in the done/output_item/final-object walks, matching the
 //     delta path.
 //   - Data fidelity (oct-only, not upstream; extractor transform 10): the nested-JSON
-//     string branch returns the original string untouched on a zero hit and, on a hit,
-//     splices the JSON-escaped (secret -> placeholder) pairs into the original string
-//     bytes (literal, no regex), so numbers (>2^53), whitespace, key order and
-//     duplicate-key folding stay exactly as JSON.parse saw them; JSON.stringify is only
-//     used when the splice cannot be proven faithful.
+//     string branch lexes the value (no parse+stringify), decodes each string VALUE,
+//     runs the same detector on the decoded text and maps each hit back to the
+//     original byte offsets, so a zero hit returns the original bytes and a hit
+//     replaces only the matched spans. Numbers (>2^53), whitespace, key order,
+//     duplicate keys and untouched escapes stay byte-for-byte; a value that cannot be
+//     lexed/mapped throws (fail-closed) rather than re-serializing.
+//   - Multi-level restore (oct-only, not upstream; extractor transform 11): the
+//     complete-slot restore (restoreSlotText) mirrors the transform-10 lexer and
+//     re-escapes the restored raw value once per enclosing JSON string level, so a
+//     token nested in >=2 JSON strings round-trips exactly (the old single-escape
+//     restore under-escaped at depth >=2). Non-JSON strings keep plain restoreText
+//     semantics (custom freeform tool input stays unescaped).
+//   - Streaming multi-level restore (oct-only, not upstream; extractor transform 12):
+//     SseRestorer tracks JSON-string nesting incrementally (depth = number of open JSON
+//     strings; never a backslash count) and re-escapes the restored value once per open
+//     string, so a placeholder split across deltas at any depth restores correctly. Only
+//     a trailing incomplete placeholder prefix is buffered per channel; heartbeat/non-JSON
+//     and parsed branches share ONE enqueue whose pending payload (queued event raw text +
+//     channel out/hold copies, in UTF-8 bytes) is charged to a single budget, rejected
+//     before any large allocation. finish() raises on an ambiguous registered placeholder
+//     tail (>=1 hex that is a byte prefix of a registered token); a bare or unknown tail is
+//     emitted verbatim.
 const ALL_FLAG_LETTERS = "HPSIBEG";
 const FLAG_NAMES = Object.freeze({
   H: "highEntropy",
@@ -565,8 +582,11 @@ function shouldSkipString(path, businessPayload) {
   const key = path[path.length - 1] || "";
   if (STRUCTURAL_KEYS.has(key)) return !businessPayload;
   const p = path.join(".").toLowerCase();
-  if (/(?:image_url|input_image|input_audio|audio|file_data|b64_json|source\.data|image\.data)/.test(p)) return true;
-  if (key === "image_url") return true;
+  // Media paths are structural only outside a business payload (same rule as STRUCTURAL_KEYS):
+  // a tool argument whose key is literally named image_url/input_audio/... is business
+  // content and must still be scanned.
+  if (/(?:image_url|input_image|input_audio|audio|file_data|b64_json|source\.data|image\.data)/.test(p)) return !businessPayload;
+  if (key === "image_url") return !businessPayload;
   if (ENVELOPE_KEYS.has(key)) return !businessPayload;
   return false;
 }
@@ -596,67 +616,190 @@ function isRequestModelState(protocol, root, path, value) {
   return false;
 }
 
-// Byte-preserving redaction splice (oct-only, not upstream; extractor transform 10).
-// Given the (json-encoded secret -> placeholder) pairs a nested-JSON walk applied,
-// replace each JSON-escaped secret with its JSON-escaped placeholder directly in the
-// ORIGINAL string bytes: literal indexOf/split-join (never a regex, so secrets with
-// regex metacharacters are safe), leaving numbers, whitespace, key order and
-// duplicate keys untouched. Returns null to signal "fall back to JSON.stringify": an
-// occurrence count that does not match the walk (the escaped secret also sits in a
-// non-redacted position), a secret the walk never saw (a value dropped by JSON.parse
-// duplicate-key folding), or a spliced result that no longer re-parses to the walk
-// output. Never throws; never returns a partially-spliced string.
-function spliceRedactionPairs(text, pairs, redacted, flags) {
-  const counts = new Map(), tokens = new Map();
-  for (const [raw, tok] of pairs) {
-    counts.set(raw, (counts.get(raw) || 0) + 1);
-    tokens.set(raw, tok);
+// Byte-preserving nested-JSON redaction (oct-only, not upstream; extractor transform
+// 10). Lexical, no parse+stringify: decode each JSON string VALUE, run the SAME
+// detector on the decoded text, and map each hit back to the original byte offsets so
+// only the matched spans change. Numbers, keys, duplicate keys, whitespace and
+// untouched escapes keep their original bytes; a value that cannot be lexed/mapped
+// throws (fail-closed) instead of re-serializing the whole value.
+//
+// decodeJsonStringContent(content): decode the bytes between a JSON string's quotes
+// -> {value, map}, where map[k] is the raw offset (within `content`) of the
+// escape/literal that produced decoded UTF-16 code unit k, and
+// map[value.length] === content.length. Every JSON escape yields exactly one code
+// unit (\uXXXX incl. surrogate halves, \n \\ \" \/ ...), so a hit boundary can never
+// land inside an escape.
+function decodeJsonStringContent(content) {
+  let value = "";
+  const map = [];
+  let i = 0;
+  while (i < content.length) {
+    map.push(i);
+    if (content[i] === "\\") {
+      const e = content[i + 1];
+      if (e === "u") { value += String.fromCharCode(parseInt(content.slice(i + 2, i + 6), 16)); i += 6; }
+      else if (e === "b") { value += "\b"; i += 2; }
+      else if (e === "f") { value += "\f"; i += 2; }
+      else if (e === "n") { value += "\n"; i += 2; }
+      else if (e === "r") { value += "\r"; i += 2; }
+      else if (e === "t") { value += "\t"; i += 2; }
+      else { value += e; i += 2; } // \" \\ \/ (JSON.parse rejects any other escape)
+    } else {
+      value += content[i];
+      i += 1;
+    }
   }
-  for (const [raw] of tokens) {
-    const escRaw = JSON.stringify(raw).slice(1, -1);
-    let occ = 0, idx = 0;
-    while ((idx = text.indexOf(escRaw, idx)) >= 0) { occ++; idx += escRaw.length; }
-    if (occ !== counts.get(raw)) return null;
+  map.push(content.length);
+  return { value: value, map: map };
+}
+// jsonStringTokens(text, basePath): lexical scan of a JSON container -> every string
+// VALUE as {path,start,end} (byte offsets of the content between the quotes). Object
+// keys advance the path but are never emitted (keys are never redacted); array
+// elements use their index. Returns null when `text` is not a well-formed JSON
+// container -- the caller then falls back to the plain-text path, exactly as a failed
+// JSON.parse did. Numbers are consumed but never tokenized.
+function jsonStringTokens(text, basePath) {
+  let i = 0;
+  const out = [];
+  function skipWs() {
+    while (i < text.length) {
+      const d = text.charCodeAt(i);
+      if (d === 0x20 || d === 0x09 || d === 0x0a || d === 0x0d) i++; else break;
+    }
   }
-  let result = text;
-  for (const [raw, tok] of tokens) {
-    const escRaw = JSON.stringify(raw).slice(1, -1);
-    const escTok = JSON.stringify(tok).slice(1, -1);
-    result = result.split(escRaw).join(escTok);
+  function readString() {
+    i++; // opening quote
+    const start = i;
+    while (i < text.length) {
+      const c = text[i];
+      if (c === "\\") { i += 2; continue; }
+      if (c === '"') break;
+      i++;
+    }
+    if (i >= text.length) return null;
+    const end = i; i++; // closing quote
+    return { start: start, end: end };
   }
-  if (findSensitiveSpans(result, flags).length) return null;
-  try { if (JSON.stringify(JSON.parse(result)) !== JSON.stringify(redacted)) return null; }
-  catch { return null; }
-  return result;
+  function readNumber() {
+    const start = i;
+    while (i < text.length) {
+      const c = text[i];
+      if ((c >= "0" && c <= "9") || c === "-" || c === "+" || c === "." || c === "e" || c === "E") i++; else break;
+    }
+    return i > start;
+  }
+  function readLiteral() {
+    if (text.startsWith("true", i)) { i += 4; return true; }
+    if (text.startsWith("false", i)) { i += 5; return true; }
+    if (text.startsWith("null", i)) { i += 4; return true; }
+    return false;
+  }
+  function parseObject(path) {
+    i++;
+    skipWs();
+    if (text[i] === "}") { i++; return true; }
+    while (true) {
+      skipWs();
+      if (text[i] !== '"') return false;
+      const keyTok = readString();
+      if (!keyTok) return false;
+      const key = decodeJsonStringContent(text.slice(keyTok.start, keyTok.end)).value;
+      skipWs();
+      if (text[i] !== ":") return false;
+      i++;
+      if (!parseValue(path.concat(key))) return false;
+      skipWs();
+      if (text[i] === ",") { i++; continue; }
+      if (text[i] === "}") { i++; return true; }
+      return false;
+    }
+  }
+  function parseArray(path) {
+    i++;
+    skipWs();
+    if (text[i] === "]") { i++; return true; }
+    let idx = 0;
+    while (true) {
+      if (!parseValue(path.concat(String(idx)))) return false;
+      idx++;
+      skipWs();
+      if (text[i] === ",") { i++; continue; }
+      if (text[i] === "]") { i++; return true; }
+      return false;
+    }
+  }
+  function parseValue(path) {
+    skipWs();
+    const c = text[i];
+    if (c === "{") return parseObject(path);
+    if (c === "[") return parseArray(path);
+    if (c === '"') {
+      const t = readString();
+      if (!t) return false;
+      out.push({ path: path, start: t.start, end: t.end });
+      return true;
+    }
+    if (readLiteral()) return true;
+    if (readNumber()) return true;
+    return false;
+  }
+  skipWs();
+  if (!parseValue(basePath)) return null;
+  skipWs();
+  if (i !== text.length) return null;
+  return out;
+}
+// stringValueEdits(value, ...): the decoded string's replacement edits in its own
+// coordinates. A JSON-container value is lexed and recursed (a "<nested-json>" path
+// segment keeps it business payload, mirroring the old JSON.parse recursion); every
+// other string is scanned by the SAME findSensitiveSpans detector. tokenFor stays
+// idempotent, so a secret already minted earlier still yields an edit.
+function stringValueEdits(value, ctx, flags, protocol, path, root) {
+  if (ctx.parseNestedJson && /^[\s]*[\[{]/.test(value)) {
+    let parsed;
+    try { parsed = JSON.parse(value); } catch (e) { parsed = undefined; }
+    if (parsed && typeof parsed === "object") {
+      const toks = jsonStringTokens(value, path.concat("<nested-json>"));
+      if (!toks) throw new Error("redact: nested JSON lexical scan failed");
+      const edits = [];
+      for (const tok of toks) {
+        const bp = isBusinessPayload(protocol, root, tok.path);
+        if (shouldSkipString(tok.path, bp)) continue;
+        const dec = decodeJsonStringContent(value.slice(tok.start, tok.end));
+        const sub = stringValueEdits(dec.value, ctx, flags, protocol, tok.path, root);
+        for (const e of sub) edits.push({ start: tok.start + dec.map[e.start], end: tok.start + dec.map[e.end], repl: e.repl });
+      }
+      return edits;
+    }
+  }
+  const edits = [];
+  const spans = findSensitiveSpans(value, flags);
+  for (const s of spans) edits.push({ start: s.start, end: s.end, repl: ctx.tokenFor(value.slice(s.start, s.end)) });
+  return edits;
+}
+// redactJsonStringValue(value, ...): apply the edits to the ORIGINAL bytes. Zero hit
+// -> the input verbatim (no reflow); a hit -> only the matched raw spans are swapped
+// for their placeholder. The placeholder is {{Redact:<hex>}} -- '{', '}', ':' and hex
+// only, so it is inserted unescaped and the value stays valid JSON.
+function redactJsonStringValue(value, ctx, flags, protocol, path, root) {
+  const edits = stringValueEdits(value, ctx, flags, protocol, path, root);
+  if (!edits.length) return value;
+  edits.sort((a, b) => a.start - b.start);
+  let out = "", at = 0;
+  for (const e of edits) { out += value.slice(at, e.start) + e.repl; at = e.end; }
+  return out + value.slice(at);
 }
 function redactJson(value, ctx, flags, protocol = "generic", path = [], root = value) {
   if (isRequestModelState(protocol, root, path, value)) return value;
   if (typeof value === "string") {
     const businessPayload = isBusinessPayload(protocol, root, path);
     if (!shouldSkipString(path, businessPayload) && ctx.parseNestedJson && /^[\s]*[\[{]/.test(value)) {
-      try {
-        const nested = JSON.parse(value);
-        if (nested && typeof nested === "object") {
-          // Capture the (secret -> placeholder) pairs this nested walk applies by
-          // shadowing the session ctx.tokenFor (idempotent, session-scoped) for the
-          // duration of the walk only, then restore it. The pairs let a hit keep the
-          // original bytes instead of re-serializing the whole value.
-          const pairs = [];
-          const origTokenFor = ctx.tokenFor;
-          ctx.tokenFor = function (raw) { const tok = origTokenFor.call(ctx, raw); pairs.push([raw, tok]); return tok; };
-          let redacted;
-          try {
-            redacted = redactJson(nested, ctx, flags, protocol, path.concat("<nested-json>"), root);
-          } finally {
-            ctx.tokenFor = origTokenFor;
-          }
-          // No replacement in this nested value: original bytes, no re-serialization.
-          if (!pairs.length) return value;
-          // Replacement: byte-preserving splice, else fall back to re-serialization.
-          const spliced = spliceRedactionPairs(value, pairs, redacted, flags);
-          return spliced === null ? JSON.stringify(redacted) : spliced;
-        }
-      } catch { /* Treat non-JSON strings as ordinary text. */ }
+      // Lexical, byte-preserving nested-JSON redaction (extractor transform 10). The
+      // value is never re-serialized: numbers, keys, duplicate keys, whitespace and
+      // untouched escapes keep their original bytes. A genuine scan failure throws and
+      // is NOT swallowed as ordinary text (fail-closed), so a value that cannot be
+      // mapped safely is never sent raw or corrupted.
+      return redactJsonStringValue(value, ctx, flags, protocol, path, root);
     }
     return shouldSkipString(path, businessPayload) ? value : ctx.redactText(value, flags);
   }
@@ -675,6 +818,40 @@ function redactJson(value, ctx, flags, protocol = "generic", path = [], root = v
     return out;
   }
   return value;
+}
+// Whole-body lexical redaction: keep the original JSON bytes, replacing only string
+// VALUES whose detector produced edits. Numbers, keys, duplicate keys, whitespace,
+// skipped envelopes and request-model-state subtrees stay verbatim. A body that
+// cannot be lexed throws (fail-closed) instead of JSON.stringify.
+function redactJsonText(text, ctx, flags, protocol = "generic", root = null) {
+  const toks = jsonStringTokens(text, []);
+  if (!toks) throw new Error("redact: JSON lexical scan failed");
+  let parsedRoot = root;
+  if (parsedRoot == null) {
+    try { parsedRoot = JSON.parse(text); } catch (e) { throw new Error("redact: JSON parse failed"); }
+  }
+  const topSkip = TOP_LEVEL_SKIP_KEYS[protocol];
+  const edits = [];
+  for (const tok of toks) {
+    if (topSkip && tok.path.length >= 1 && topSkip.has(tok.path[0])) continue;
+    let skipPrefix = false, walk = parsedRoot;
+    for (let i = 0; i < tok.path.length; i++) {
+      const prefix = tok.path.slice(0, i + 1);
+      walk = walk?.[tok.path[i]];
+      if (isRequestModelState(protocol, parsedRoot, prefix, walk)) { skipPrefix = true; break; }
+    }
+    if (skipPrefix) continue;
+    const bp = isBusinessPayload(protocol, parsedRoot, tok.path);
+    if (shouldSkipString(tok.path, bp)) continue;
+    const dec = decodeJsonStringContent(text.slice(tok.start, tok.end));
+    const sub = stringValueEdits(dec.value, ctx, flags, protocol, tok.path, parsedRoot);
+    for (const e of sub) edits.push({ start: tok.start + dec.map[e.start], end: tok.start + dec.map[e.end], repl: e.repl });
+  }
+  if (!edits.length) return text;
+  edits.sort((a, b) => a.start - b.start);
+  let out = "", at = 0;
+  for (const e of edits) { out += text.slice(at, e.start) + e.repl; at = e.end; }
+  return out + text.slice(at);
 }
 
 // Tool-argument slots are JSON strings nested inside JSON: restoring a raw value
@@ -699,15 +876,46 @@ function jsonStringEscape(s) {
   }
   return o;
 }
-// Fragment-escaped token restore: identical to ctx.restoreText except the inserted
-// raw value is JSON-string-escaped first. Used only in slots known to hold JSON.
-function restoreJsonFragments(text, ctx) {
-  return text.replace(TOKEN_RE, (tok) => { const raw = ctx.tokenToRaw.get(tok); return raw === undefined ? tok : jsonStringEscape(raw); });
+
+// Multi-level restore (extractor transform 11). Mirror of the redaction lexer:
+// restoreValueEdits(value, ctx) returns edits (in value's own coordinates) that
+// replace registered tokens with their raw value, descending into JSON-container
+// strings so the raw value is JSON-string-escaped exactly ONCE per enclosing JSON
+// string level. The escaping depth therefore matches the nesting (1 level -> 1
+// escape, N levels -> N escapes), which the old single-escape slot restore could not
+// do for >=2 levels. Unmatched bytes are never touched; every non-container string
+// keeps plain ctx.restoreText semantics (custom freeform input stays unescaped).
+function restoreValueEdits(value, ctx) {
+  if (/^[\s]*[\[{]/.test(value)) {
+    let parsed;
+    try { parsed = JSON.parse(value); } catch (e) { parsed = undefined; }
+    if (parsed && typeof parsed === "object") {
+      const toks = jsonStringTokens(value, []);
+      if (toks) {
+        const edits = [];
+        for (const tok of toks) {
+          const dec = decodeJsonStringContent(value.slice(tok.start, tok.end));
+          const sub = restoreValueEdits(dec.value, ctx);
+          for (const e of sub) edits.push({ start: tok.start + dec.map[e.start], end: tok.start + dec.map[e.end], repl: jsonStringEscape(e.repl) });
+        }
+        return edits;
+      }
+    }
+  }
+  const edits = [];
+  TOKEN_RE.lastIndex = 0;
+  let m;
+  while ((m = TOKEN_RE.exec(value))) {
+    const raw = ctx.tokenToRaw.get(m[0]);
+    if (raw !== undefined) edits.push({ start: m.index, end: m.index + m[0].length, repl: raw });
+  }
+  return edits;
 }
 // Complete-slot restore with a parse guard mirroring the redaction side's nested-JSON
 // recursion (parseNestedJson + leading '{'/'[' + JSON.parse object): JSON-container
-// strings get fragment-escaped restoration; every other string falls back to plain
-// restoreText, byte-for-byte unchanged.
+// strings are restored by the same lexical recursion as redaction (so any nesting
+// depth is escaped correctly); every other string falls back to plain restoreText,
+// byte-for-byte unchanged. Shared by the complete done/final slot walks too.
 function restoreSlotText(text, ctx) {
   if (text.indexOf(TOKEN_PREFIX) < 0) return ctx.restoreText(text);
   const t = text.replace(/^\s+/, "");
@@ -715,7 +923,12 @@ function restoreSlotText(text, ctx) {
   let parsed;
   try { parsed = JSON.parse(text); } catch { return ctx.restoreText(text); }
   if (!parsed || typeof parsed !== "object") return ctx.restoreText(text);
-  return restoreJsonFragments(text, ctx);
+  const edits = restoreValueEdits(text, ctx);
+  if (!edits.length) return text;
+  edits.sort((a, b) => a.start - b.start);
+  let out = "", at = 0;
+  for (const e of edits) { out += text.slice(at, e.start) + e.repl; at = e.end; }
+  return out + text.slice(at);
 }
 // A custom (freeform-grammar) tool call carries its payload as raw text in `input`:
 // streamed deltas restore it as plain text, so the done/output_item/final-object
@@ -731,6 +944,32 @@ function restoreJson(value, ctx) {
   if (Array.isArray(value)) return value.map((v) => restoreJson(v, ctx));
   if (value && typeof value === "object") { for (const k of Object.keys(value)) value[k] = (typeof value[k] === "string" && isCustomToolInputSlot(value, k)) ? ctx.restoreText(value[k]) : restoreJson(value[k], ctx); }
   return value;
+}
+// Whole-body lexical restore: keep the original JSON bytes, replacing only string
+// VALUES whose restored text differs. Custom freeform input stays unescaped (same
+// rule as restoreJson); JSON-container slots use restoreSlotText. A body that
+// cannot be lexed throws (fail-closed) instead of JSON.stringify.
+function restoreJsonText(text, ctx) {
+  const toks = jsonStringTokens(text, []);
+  if (!toks) throw new Error("redact: JSON lexical scan failed");
+  let root;
+  try { root = JSON.parse(text); } catch (e) { throw new Error("redact: JSON parse failed"); }
+  const edits = [];
+  for (const tok of toks) {
+    const parent = getAt(root, tok.path);
+    const key = tok.path[tok.path.length - 1];
+    const orig = decodeJsonStringContent(text.slice(tok.start, tok.end)).value;
+    const next = (parent && typeof parent === "object" && isCustomToolInputSlot(parent, key))
+      ? ctx.restoreText(orig)
+      : restoreSlotText(orig, ctx);
+    if (next === orig) continue;
+    edits.push({ start: tok.start, end: tok.end, repl: jsonStringEscape(next) });
+  }
+  if (!edits.length) return text;
+  edits.sort((a, b) => a.start - b.start);
+  let out = "", at = 0;
+  for (const e of edits) { out += text.slice(at, e.start) + e.repl; at = e.end; }
+  return out + text.slice(at);
 }
 
 function detectProtocol(body, upstream, headers) {
@@ -785,6 +1024,68 @@ function injectRedactNotice(body, protocol, options = {}) {
     }
   }
   return false;
+}
+// Lexical notice inject: prepend the notice into an existing string slot and keep
+// every other byte. Returns null when injection would change structure (new content
+// part / missing content) so the caller can fall back to stringify.
+function findUserIndex(arr, position) {
+  if (!Array.isArray(arr)) return -1;
+  if (position === "first_user") {
+    for (let i = 0; i < arr.length; i++) if (arr[i] && arr[i].role === "user") return i;
+  } else {
+    for (let i = arr.length - 1; i >= 0; i--) if (arr[i] && arr[i].role === "user") return i;
+  }
+  return -1;
+}
+function contentStringPath(message, base) {
+  if (!message || typeof message !== "object") return null;
+  if (typeof message.content === "string") return base.concat("content");
+  if (Array.isArray(message.content)) {
+    for (let j = 0; j < message.content.length; j++) {
+      const block = message.content[j];
+      if (block && typeof block === "object" && typeof block.text === "string" && (block.type === "text" || block.type === "input_text" || !block.type))
+        return base.concat("content", String(j), "text");
+    }
+  }
+  return null;
+}
+function noticeInjectStringPath(body, protocol, position) {
+  if (!body || typeof body !== "object") return null;
+  if (protocol === "openai_responses") {
+    if (typeof body.input === "string") return ["input"];
+    if (Array.isArray(body.input)) {
+      const idx = findUserIndex(body.input, position);
+      if (idx < 0) return null;
+      return contentStringPath(body.input[idx], ["input", String(idx)]);
+    }
+    return null;
+  }
+  if (Array.isArray(body.messages)) {
+    const idx = findUserIndex(body.messages, position);
+    if (idx < 0) return null;
+    return contentStringPath(body.messages[idx], ["messages", String(idx)]);
+  }
+  return null;
+}
+function injectRedactNoticeText(text, protocol, options = {}) {
+  if (options.enabled === false) return text;
+  const position = options.position || "first_user";
+  if (position !== "first_user" && position !== "last_user") throw new Error("REDACT_NOTICE_POSITION must be 'first_user' or 'last_user'");
+  const toks = jsonStringTokens(text, []);
+  if (!toks) throw new Error("redact: JSON lexical scan failed");
+  let root;
+  try { root = JSON.parse(text); } catch (e) { throw new Error("redact: JSON parse failed"); }
+  const path = noticeInjectStringPath(root, protocol, position);
+  if (!path) return null;
+  let hit = null;
+  for (const tok of toks) {
+    if (tok.path.length !== path.length) continue;
+    let same = true;
+    for (let i = 0; i < path.length; i++) if (tok.path[i] !== path[i]) { same = false; break; }
+    if (same) hit = tok;
+  }
+  if (!hit) return null;
+  return text.slice(0, hit.start) + jsonStringEscape(REDACT_NOTICE + "\n\n") + text.slice(hit.start);
 }
 function isJsonContentType(ct) { return /(^|[+\/])json(?:$|[; ])/i.test(ct || "") || /application\/.*\+json/i.test(ct || ""); }
 function isTextualContentType(ct) { return isJsonContentType(ct) || /^text\//i.test(ct || "") || /javascript|xml/i.test(ct || ""); }
@@ -882,51 +1183,223 @@ function isJsonArgsChannel(channel) {
     channel.indexOf("response.function_call_arguments.delta") >= 0 ||
     channel.endsWith("partial_json");
 }
+// Streaming multi-level restore (extractor transform 12). The streamed arguments
+// text is itself JSON nested inside JSON: a placeholder split across SSE deltas must
+// be re-escaped once per enclosing JSON string level, and that level is only known
+// from the whole prefix seen so far. JsonDepth tracks the structure incrementally (a
+// bounded stack of open JSON strings; it NEVER counts backslashes): depth(byte) =
+// number of open JSON strings. Per channel only a trailing incomplete placeholder
+// prefix is buffered -- the full arguments text is never accumulated.
+//
+// Memory contract (payload budget, NOT an exact JS-heap cap): every retained payload
+// byte -- each queued event's raw text AND each channel's retained out/hold copies --
+// is charged to one counter in UTF-8 bytes (jsonUtf8Len; never String.length, which
+// is UTF-16). The budget bounds pending bytes (a stream that drains each event never
+// accrues), and the JS object graph is additionally bounded by explicit event /
+// channel / nesting-depth counts. Limits are explicit and fail closed.
+const MAX_SSE_STRING_DEPTH = 32;
+const MAX_SSE_HOLD_BYTES = TOKEN_LENGTH;
+const MAX_SSE_PENDING_EVENTS = 4096;
+// One pending payload budget, reusing the existing body-size ceiling (no arbitrary
+// cap that would reject a legitimate large-but-draining stream).
+const MAX_SSE_PENDING_BYTES = DEFAULT_MAX_BODY_BYTES;
+const MAX_SSE_CHANNELS = DEFAULT_MAX_REDACTIONS;
+
+// UTF-8 byte length of a JS string (String.length counts UTF-16 code units, so it is
+// not a byte measure -- astral chars would be under-counted).
+function jsonUtf8Len(s) {
+  let n = 0;
+  for (const ch of s) { const c = ch.codePointAt(0); n += c < 0x80 ? 1 : c < 0x800 ? 2 : c < 0x10000 ? 3 : 4; }
+  return n;
+}
+function JsonDepth() { this.stack = [{ inStr: false, escMode: 0, uHex: "", first: false, child: null }]; }
+JsonDepth.prototype.depth = function () { let n = 0; for (const l of this.stack) if (l.inStr) n++; return n; };
+JsonDepth.prototype.feed = function (c) { this.step(this.stack[0], c); };
+JsonDepth.prototype.step = function (lv, c) {
+  if (!lv.inStr) { if (c === '"') { lv.inStr = true; lv.escMode = 0; lv.first = true; lv.child = null; } return; }
+  if (lv.escMode === 2) { lv.uHex += c; if (lv.uHex.length === 4) { lv.escMode = 0; this.content(lv, String.fromCharCode(parseInt(lv.uHex, 16))); lv.uHex = ""; } return; }
+  if (lv.escMode === 1) { lv.escMode = 0; if (c === "u") { lv.escMode = 2; lv.uHex = ""; return; } this.content(lv, jsonUnescapeChar(c)); return; }
+  if (c === "\\") { lv.escMode = 1; return; }
+  if (c === '"') { this.closeString(lv); return; }
+  this.content(lv, c);
+};
+JsonDepth.prototype.content = function (lv, ch) {
+  if (lv.child) { this.step(lv.child, ch); return; }
+  if (!lv.first) return;
+  if (ch === " " || ch === "\t" || ch === "\n" || ch === "\r") return;
+  lv.first = false;
+  if (ch === "{" || ch === "[") {
+    lv.child = { inStr: false, escMode: 0, uHex: "", first: false, child: null };
+    this.stack.push(lv.child);
+    if (this.stack.length > MAX_SSE_STRING_DEPTH) throw new RedactionLimitError(`redact: SSE string nesting depth exceeded (${MAX_SSE_STRING_DEPTH})`);
+  }
+};
+JsonDepth.prototype.closeString = function (lv) {
+  lv.inStr = false; lv.child = null; lv.first = false; lv.escMode = 0; lv.uHex = "";
+  while (this.stack.length && this.stack[this.stack.length - 1] !== lv) this.stack.pop();
+};
+function jsonUnescapeChar(c) {
+  if (c === "n") return "\n"; if (c === "t") return "\t"; if (c === "r") return "\r";
+  if (c === "b") return "\b"; if (c === "f") return "\f";
+  return c;
+}
+function jsonStringEscapeTimes(s, n) { for (let i = 0; i < n; i++) s = jsonStringEscape(s); return s; }
+// Indeterminate-tail contract. A held tail that has AT LEAST ONE hex digit after the
+// prefix and is a byte prefix of a REGISTERED token is ambiguous: it is either a
+// truncated placeholder or a user literal that spells exactly the same bytes. Those
+// are byte-identical, so NO threshold can separate them -- finish() therefore FAILS
+// CLOSED (explicit indeterminate-restore error) rather than emit the fragment or
+// claim zero false-positives. A bare prefix (zero hex) is an ordinary literal and is
+// emitted; a tail that is not a prefix of any registered token (unknown) is emitted
+// verbatim; a COMPLETE unknown token is likewise emitted verbatim.
+function isIndeterminateRegisteredPlaceholder(h, ctx) {
+  if (h.length <= TOKEN_PREFIX.length) return false;
+  if (!/^\{\{Redact:[a-f0-9]{1,64}\}?\}?$/.test(h)) return false;
+  for (const tok of ctx.tokenToRaw.keys()) if (tok.startsWith(h)) return true;
+  return false;
+}
+// Replace complete REGISTERED placeholders in the committed bytes, escaping once per
+// enclosing JSON string (JsonDepth). Every other byte is copied verbatim; the token
+// bytes are not fed to the depth tracker (they are string content, not structure).
+function sseRestoreJsonChunk(ch, ctx, chunk) {
+  let out = "", i = 0;
+  while (i < chunk.length) {
+    const c = chunk[i];
+    if (c === "{") {
+      TOKEN_RE.lastIndex = i;
+      const m = TOKEN_RE.exec(chunk);
+      if (m && m.index === i) {
+        const raw = ctx.tokenToRaw.get(m[0]);
+        if (raw !== undefined) { out += jsonStringEscapeTimes(raw, ch.depth.depth()); i = m.index + m[0].length; continue; }
+      }
+    }
+    ch.depth.feed(c); out += c; i++;
+  }
+  return out;
+}
+// SSE event body splice: keep the original data: bytes, replacing only JSON string
+// VALUES whose restored text (already on `data`) differs. Numbers, keys, duplicate
+// keys, whitespace and untouched escapes stay verbatim. Returns null when the
+// payload is not a well-formed JSON container (caller then falls back to stringify).
+function spliceRestoredSseData(payload, data) {
+  const toks = jsonStringTokens(payload, []);
+  if (!toks) return null;
+  const edits = [];
+  for (const tok of toks) {
+    const parent = getAt(data, tok.path);
+    const next = parent?.[tok.path[tok.path.length - 1]];
+    if (typeof next !== "string") continue;
+    const orig = decodeJsonStringContent(payload.slice(tok.start, tok.end)).value;
+    if (next === orig) continue;
+    edits.push({ start: tok.start, end: tok.end, repl: jsonStringEscape(next) });
+  }
+  if (!edits.length) return payload;
+  edits.sort((a, b) => a.start - b.start);
+  let out = "", at = 0;
+  for (const e of edits) { out += payload.slice(at, e.start) + e.repl; at = e.end; }
+  return out + payload.slice(at);
+}
 class SseRestorer {
-  constructor(ctx) { this.ctx=ctx; this.channels=new Map(); this.queue=[]; }
+  constructor(ctx) { this.ctx=ctx; this.channels=new Map(); this.queue=[]; this.pendingBytes=0; }
+  // The single charge point for pending payload; fail closed before/after any grow.
+  chargeBytes(n) {
+    this.pendingBytes += n;
+    if (this.pendingBytes > MAX_SSE_PENDING_BYTES) throw new RedactionLimitError(`redact: SSE pending payload exceeded (${MAX_SSE_PENDING_BYTES} bytes)`);
+  }
+  releaseBytes(n) { this.pendingBytes -= n; }
+  // Unified enqueue for ALL three ingest outcomes (heartbeat/[DONE], non-JSON, and a
+  // parsed event), so the queue cap cannot be bypassed by the early-return branches.
+  enqueue(ev) {
+    this.queue.push(ev);
+    this.chargeBytes(ev.bytes);
+    if (this.queue.length > MAX_SSE_PENDING_EVENTS) throw new RedactionLimitError(`redact: SSE pending event queue exceeded (${MAX_SSE_PENDING_EVENTS})`);
+  }
+  getChannel(key) {
+    let ch=this.channels.get(key);
+    if (!ch) {
+      if (this.channels.size >= MAX_SSE_CHANNELS) throw new RedactionLimitError(`redact: SSE channel count exceeded (${MAX_SSE_CHANNELS})`);
+      ch={records:[], out:"", hold:"", probeState:0, depth:null}; this.channels.set(key,ch);
+    }
+    return ch;
+  }
+  finalizeChannel(ch) {
+    if (!ch.records.length) return;
+    for (const r of ch.records) r.parent[r.key]="";
+    const last=ch.records[ch.records.length-1]; last.parent[last.key]=ch.out;
+    for (const r of ch.records) { r.ev.pending--; if (r.ev.pending===0) r.ev.safe=true; }
+    this.releaseBytes(jsonUtf8Len(ch.out));
+    ch.records=[]; ch.out="";
+  }
   ingest(raw) {
+    // Reject BEFORE any large allocation (parseSseEvent's split/join): the unified
+    // pending budget is checked here for every branch, using real UTF-8 bytes.
+    const rawBytes = jsonUtf8Len(raw);
+    if (this.pendingBytes + rawBytes > MAX_SSE_PENDING_BYTES) throw new RedactionLimitError(`redact: SSE pending payload exceeded (${MAX_SSE_PENDING_BYTES} bytes)`);
     const parsed=parseSseEvent(raw);
     const payload=parsed.dataText;
-    if (!payload || payload === "[DONE]") { this.queue.push({safe:true, output:raw+"\n\n"}); return this.drain(); }
+    if (!payload || payload === "[DONE]") { this.enqueue({safe:true, output:raw+"\n\n", bytes:rawBytes}); return this.drain(); }
     let data;
-    try { data=JSON.parse(payload); } catch { this.queue.push({safe:true, output:serializeSseEvent(parsed,this.ctx.restoreText(payload))}); return this.drain(); }
+    try { data=JSON.parse(payload); } catch { this.enqueue({safe:true, output:serializeSseEvent(parsed,this.ctx.restoreText(payload)), bytes:rawBytes}); return this.drain(); }
     const fields=streamFields(data, parsed.eventName);
     const excluded=new Set(fields.map((f)=>f.path.join(".")));
     restoreCompleteStrings(data,this.ctx,excluded);
-    const ev={safe:fields.length===0,pending:fields.length,parsed,data,output:null};
-    this.queue.push(ev);
-    const affected=new Set();
+    const ev={safe:fields.length===0,pending:fields.length,parsed,data,output:null,bytes:rawBytes};
+    this.enqueue(ev);
     for (const f of fields) {
       const parent=getAt(data,f.path), key=f.path[f.path.length-1], source=parent[key];
-      let ch=this.channels.get(f.channel); if (!ch) this.channels.set(f.channel,ch={text:"",records:[],jsonArgs:false});
-      ch.text += source;
-      // Mark JSON-args channels once the accumulated text starts looking like a JSON
-      // container, re-checked on every append until it sticks: the first fragment is
-      // often empty (OpenAI's name-bearing tool-call chunk carries arguments:""),
-      // and leading whitespace may arrive in its own fragment, so a one-shot test on
-      // the first fragment would leave the channel unmarked for the whole stream.
-      if (!ch.jsonArgs && isJsonArgsChannel(f.channel) && /^\s*[\[{]/.test(ch.text)) ch.jsonArgs = true;
-      ch.records.push({ev,parent,key}); affected.add(f.channel);
+      const ch=this.getChannel(f.channel);
+      // Latch JSON-args vs plain on the channel's first NON-whitespace byte, skipping
+      // only JSON whitespace. Arbitrarily long leading whitespace never latches plain,
+      // so it cannot be used to bypass the per-level escaping; nothing is buffered
+      // (the scan state is one tri-state: 0 unknown, 1 json, 2 plain).
+      if (ch.probeState === 0 && isJsonArgsChannel(f.channel)) {
+        for (let i = 0; i < source.length; i++) {
+          const c = source[i];
+          if (c === " " || c === "\t" || c === "\n" || c === "\r") continue;
+          ch.probeState = (c === "{" || c === "[") ? 1 : 2;
+          break;
+        }
+      }
+      if (ch.depth === null) ch.depth = new JsonDepth();
+      ch.records.push({ev,parent,key});
+      const buf=ch.hold + source;
+      const split=buf.length - possibleTokenSuffixLength(buf);
+      const committed=buf.slice(0,split);
+      const newHold=buf.slice(split);
+      if (jsonUtf8Len(newHold) > MAX_SSE_HOLD_BYTES) throw new RedactionLimitError(`redact: SSE pending placeholder tail exceeded (${MAX_SSE_HOLD_BYTES})`);
+      const piece = ch.probeState === 1 ? sseRestoreJsonChunk(ch, this.ctx, committed) : this.ctx.restoreText(committed);
+      this.releaseBytes(jsonUtf8Len(ch.hold));
+      this.chargeBytes(jsonUtf8Len(piece));
+      this.chargeBytes(jsonUtf8Len(newHold));
+      ch.hold=newHold;
+      ch.out += piece;
+      if (ch.hold.length === 0) this.finalizeChannel(ch);
     }
-    for (const key of affected) this.maybeFlushChannel(key,false);
     return this.drain();
   }
-  maybeFlushChannel(key,force) {
-    const ch=this.channels.get(key); if (!ch || !ch.records.length) return;
-    if (!force && possibleTokenSuffixLength(ch.text)>0) return;
-    const restored=ch.jsonArgs ? restoreJsonFragments(ch.text,this.ctx) : this.ctx.restoreText(ch.text);
-    for (const r of ch.records) r.parent[r.key]="";
-    const last=ch.records[ch.records.length-1]; last.parent[last.key]=restored;
-    for (const r of ch.records) { r.ev.pending--; if (r.ev.pending===0) r.ev.safe=true; }
-    ch.text=""; ch.records=[];
+  finish() {
+    for (const ch of this.channels.values()) {
+      if (ch.hold.length) {
+        // Ambiguous registered prefix -> explicit failure for the caller; a literal /
+        // unknown tail is emitted verbatim (never swallowed, never deleted).
+        if (isIndeterminateRegisteredPlaceholder(ch.hold, this.ctx)) throw new Error(`redact: indeterminate registered placeholder at stream finish (${ch.hold.length} chars held)`);
+        ch.out += ch.hold; ch.hold="";
+      }
+      this.finalizeChannel(ch);
+    }
+    this.channels.clear();
+    return this.drain(true);
   }
-  finish() { for (const key of this.channels.keys()) this.maybeFlushChannel(key,true); return this.drain(true); }
   drain(force=false) {
     let out="";
     while (this.queue.length && (this.queue[0].safe || force)) {
       const ev=this.queue.shift();
+      this.releaseBytes(ev.bytes);
       if (ev.output != null) out += ev.output;
-      else if (ev.data !== undefined) out += serializeSseEvent(ev.parsed, JSON.stringify(ev.data));
+      else if (ev.data !== undefined) {
+        const spliced = spliceRestoredSseData(ev.parsed.dataText, ev.data);
+        out += serializeSseEvent(ev.parsed, spliced != null ? spliced : JSON.stringify(ev.data));
+      }
       else out += ev.parsed?.raw ? ev.parsed.raw+"\n\n" : "";
     }
     return out;
@@ -944,9 +1417,12 @@ globalThis.__cosy = {
   RedactionLimitError: RedactionLimitError,
   RedactionContext: RedactionContext,
   redactJson: redactJson,
+  redactJsonText: redactJsonText,
   restoreJson: restoreJson,
+  restoreJsonText: restoreJsonText,
   detectProtocol: detectProtocol,
   injectRedactNotice: injectRedactNotice,
+  injectRedactNoticeText: injectRedactNoticeText,
   REDACT_NOTICE: REDACT_NOTICE,
   SseRestorer: SseRestorer,
   possibleTokenSuffixLength: possibleTokenSuffixLength,

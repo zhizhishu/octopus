@@ -91,6 +91,22 @@ func (s *Session) InjectNoticeInputRaw(raw []byte) ([]byte, error) {
 	if !s.notice || len(raw) == 0 {
 		return raw, nil
 	}
+	wrapped := []byte(`{"input":` + string(raw) + `}`)
+	inject, err := s.fn("injectRedactNoticeText")
+	if err != nil {
+		return raw, err
+	}
+	spliced, err := inject(goja.Undefined(), s.vm.ToValue(string(wrapped)), s.vm.ToValue("openai_responses"))
+	if err != nil {
+		return raw, fmt.Errorf("redact: injectRedactNoticeText: %w", err)
+	}
+	if spliced != nil && !goja.IsUndefined(spliced) && !goja.IsNull(spliced) {
+		text := spliced.String()
+		const prefix = `{"input":`
+		if strings.HasPrefix(text, prefix) && strings.HasSuffix(text, "}") {
+			return []byte(text[len(prefix) : len(text)-1]), nil
+		}
+	}
 	if err := s.vm.Set("__octRawInput", s.vm.ToValue(string(raw))); err != nil {
 		return raw, fmt.Errorf("redact: inject notice input raw: %w", err)
 	}
@@ -359,8 +375,9 @@ func (s *Session) stringifyJSON(v goja.Value) ([]byte, error) {
 // reversible placeholders, and (when the session has notice enabled) injects the
 // redaction notice into the first user message. The returned bytes are what oct must
 // send upstream — oct's own TLS/header fingerprint stack sends them unchanged.
-// When nothing is redacted the input bytes are returned as-is (byte-identical, no
-// re-serialization), so untouched traffic pays only one detection pass.
+// When nothing is redacted and notice is off, the input bytes are returned as-is
+// (byte-identical, no re-serialization). Notice-on traffic still splices the
+// notice into an existing string slot when one exists.
 func (s *Session) RedactJSONBody(body []byte) ([]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -380,53 +397,50 @@ func (s *Session) RedactJSONBody(body []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	redact, err := s.fn("redactJson")
+	redact, err := s.fn("redactJsonText")
 	if err != nil {
 		return nil, err
 	}
-	out, err := redact(goja.Undefined(), parsed, s.ctx, flags, s.vm.ToValue(proto))
+	out, err := redact(goja.Undefined(), s.vm.ToValue(string(body)), s.ctx, flags, s.vm.ToValue(proto), parsed)
 	if err != nil {
-		return nil, fmt.Errorf("redact: redactJson: %w", err)
-	}
-	if s.notice {
-		inject, err := s.fn("injectRedactNotice")
-		if err != nil {
-			return nil, err
-		}
-		if _, err := inject(goja.Undefined(), out, s.vm.ToValue(proto)); err != nil {
-			return nil, fmt.Errorf("redact: injectRedactNotice: %w", err)
-		}
+		return nil, fmt.Errorf("redact: redactJsonText: %w", err)
 	}
 	sizeVal := s.ctx.ToObject(s.vm).Get("rawToToken").ToObject(s.vm).Get("size")
 	if n, ok := sizeVal.Export().(int64); ok {
 		s.count = int(n)
 	}
-	// Fast path: nothing redacted and no notice -> return the original bytes.
-	if s.count == 0 && !s.notice {
-		return body, nil
+	redacted := body
+	if s.count != 0 {
+		redacted = []byte(out.String())
 	}
-	stringify, err := s.fn("__stringify")
+	if !s.notice {
+		return redacted, nil
+	}
+	inject, err := s.fn("injectRedactNoticeText")
 	if err != nil {
-		// Fall back to JSON.stringify on the VM.
-		v, serr := s.vm.RunString("JSON.stringify")
-		if serr != nil {
-			return nil, serr
-		}
-		cb, ok := goja.AssertFunction(v)
-		if !ok {
-			return nil, fmt.Errorf("redact: JSON.stringify not callable")
-		}
-		out2, serr := cb(goja.Undefined(), out)
-		if serr != nil {
-			return nil, serr
-		}
-		return []byte(out2.String()), nil
+		return nil, err
 	}
-	v, err := stringify(goja.Undefined(), out)
+	spliced, err := inject(goja.Undefined(), s.vm.ToValue(string(redacted)), s.vm.ToValue(proto))
 	if err != nil {
-		return nil, fmt.Errorf("redact: stringify: %w", err)
+		return nil, fmt.Errorf("redact: injectRedactNoticeText: %w", err)
 	}
-	return []byte(v.String()), nil
+	if spliced != nil && !goja.IsUndefined(spliced) && !goja.IsNull(spliced) {
+		return []byte(spliced.String()), nil
+	}
+	// Structure-changing inject (new content part): keep the redacted bytes as
+	// the parse source, then stringify. Unavoidable when the notice adds keys.
+	obj, err := s.parseJSON(redacted)
+	if err != nil {
+		return redacted, nil
+	}
+	legacy, err := s.fn("injectRedactNotice")
+	if err != nil {
+		return nil, err
+	}
+	if _, err := legacy(goja.Undefined(), obj, s.vm.ToValue(proto)); err != nil {
+		return nil, fmt.Errorf("redact: injectRedactNotice: %w", err)
+	}
+	return s.stringifyJSON(obj)
 }
 
 // RestoreJSONBody restores placeholders in a complete (non-streaming) response body.
@@ -440,19 +454,18 @@ func (s *Session) RestoreJSONBody(body []byte) ([]byte, error) {
 	if s.count == 0 {
 		return body, nil
 	}
-	parsed, err := s.parseJSON(body)
-	if err != nil {
+	if _, err := s.parseJSON(body); err != nil {
 		return body, nil // not JSON — nothing we can restore
 	}
-	restore, err := s.fn("restoreJson")
+	restore, err := s.fn("restoreJsonText")
 	if err != nil {
 		return nil, err
 	}
-	out, err := restore(goja.Undefined(), parsed, s.ctx)
+	out, err := restore(goja.Undefined(), s.vm.ToValue(string(body)), s.ctx)
 	if err != nil {
-		return nil, fmt.Errorf("redact: restoreJson: %w", err)
+		return nil, fmt.Errorf("redact: restoreJsonText: %w", err)
 	}
-	return s.stringifyJSON(out)
+	return []byte(out.String()), nil
 }
 
 // SseRestorer restores placeholders across SSE events (including tool-argument
