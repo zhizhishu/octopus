@@ -103,7 +103,20 @@ func BuildReport(results []Result, requestedModel string) Report {
 		if v, ok := res.Data["applicable"].(bool); ok && !v {
 			continue
 		}
-		usable++
+		// 回放被上游拒绝的签名探针同样不计 usable：它既没证明签名是假的，也没
+		// 证明渠道干净，只产出一条 0 分「不可判」提示（见 signatureFindings）。
+		// 把它算成"跑通"会让一条只剩它跑完的审计落到 none——那是把"没查清"
+		// 读成"查过没问题"。它的 finding 仍照常产出：若它另带实质风险（结构
+		// 异常等），该分独立计入，不受本计数影响。
+		countsAsUsable := true
+		if res.ProbeID == ProbeSignature {
+			if rejected, _ := res.Data["replay_rejected"].(bool); rejected {
+				countsAsUsable = false
+			}
+		}
+		if countsAsUsable {
+			usable++
+		}
 		report.Findings = append(report.Findings, findingsFor(res, report.RequestedModel, report.RequestedFamilies)...)
 	}
 
@@ -117,8 +130,10 @@ func BuildReport(results []Result, requestedModel string) Report {
 	report.Score = total
 
 	switch {
-	case len(report.Findings) == 0 && usable < minUsableProbes:
-		// 没有风险项，但跑通的探针太少——不能说"没问题"，只能说"没查清"。
+	case total == 0 && usable < minUsableProbes:
+		// 没有任何"实质风险项"（0 分的「不可判」提示不算证据），但真正跑通的
+		// 干净探针太少——不能说"没问题"，只能说"没查清"。有实质风险分时绝不
+		// 走这条：阳性风险不能被"证据数量"盖过去。
 		report.Verdict = VerdictUnknown
 	case total >= riskHighThreshold:
 		report.Verdict = VerdictHigh

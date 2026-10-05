@@ -386,8 +386,10 @@ func TestRunSignatureReplayRejectedByUpstream(t *testing.T) {
 	if report.Score != 0 {
 		t.Fatalf("回放拒收总分 = %d, 应为 0", report.Score)
 	}
-	if report.Verdict != VerdictNone {
-		t.Fatalf("回放拒收应判 none, 得到 %s", report.Verdict)
+	// 只有一条 0 分「不可判」提示、没有任何跑通的干净探针证据：必须判 unknown
+	// （没查清），不能判 none（查过没问题）。回放拒绝的探针本身不计 usable。
+	if report.Verdict != VerdictUnknown {
+		t.Fatalf("回放拒收应判 unknown, 得到 %s", report.Verdict)
 	}
 }
 

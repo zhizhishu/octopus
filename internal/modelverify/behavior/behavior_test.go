@@ -431,6 +431,64 @@ func TestReportVerdictNoneWhenAllClean(t *testing.T) {
 	}
 }
 
+// 回放被上游拒绝的签名探针只产出一条 0 分「不可判」提示，本身不计入"跑通"
+// 的干净探针数——否则「没查清」会被读成「查过没问题」。两条真正干净的探针
+// 加一条回放拒绝，仍只有两条有效证据，必须判 unknown；凑够三条干净的才判 none。
+func TestReplayRejectedProbeDoesNotCountAsUsable(t *testing.T) {
+	clean := func(id ProbeID) Result {
+		return Result{ProbeID: id, OK: true, Data: map[string]any{}}
+	}
+	rejected := Result{
+		ProbeID: ProbeSignature,
+		OK:      false,
+		Data: map[string]any{
+			"applicable":           true,
+			"replay_rejected":      true,
+			"replay_reject_status": 400,
+			"replay_reject_class":  "request_rejected",
+		},
+	}
+
+	two := BuildReport([]Result{clean(ProbeLiveness), clean(ProbeEchoRewrite), rejected}, "claude-sonnet-4-5")
+	if two.Verdict != VerdictUnknown {
+		t.Fatalf("两条干净+一条回放拒绝应判 unknown（拒绝探针不计证据），得到 %q", two.Verdict)
+	}
+	if two.Score != 0 {
+		t.Fatalf("回放拒绝与干净探针都不应产生风险分，得到 %d", two.Score)
+	}
+
+	three := BuildReport([]Result{clean(ProbeLiveness), clean(ProbeEchoRewrite), clean(ProbeContextCanary), rejected}, "claude-sonnet-4-5")
+	if three.Verdict != VerdictNone {
+		t.Fatalf("三条干净探针时应判 none，得到 %q", three.Verdict)
+	}
+}
+
+// 阳性风险不能被"证据数量"盖过去：只要有实质（正分）风险项，就绝不能显示
+// none/unknown，哪怕干净探针够多；反向也一样，只有一条风险探针、其余全失败
+// 时仍是风险而非"证据不足"。判定新契约靠总分为零，不靠把风险分抬高或压低。
+func TestSubstantiveRiskNeverMaskedByProbeCount(t *testing.T) {
+	sufficient := BuildReport([]Result{
+		{ProbeID: ProbeLiveness, OK: false, Data: map[string]any{"truncated": false}}, // high 50
+		{ProbeID: ProbeEchoRewrite, OK: true, Data: map[string]any{}},
+		{ProbeID: ProbeContextCanary, OK: true, Data: map[string]any{}},
+		{ProbeID: ProbeTokenDelta, OK: true, Data: map[string]any{}},
+	}, "gpt-5")
+	if sufficient.Score == 0 {
+		t.Fatalf("实质风险不应被清零，得到 %d", sufficient.Score)
+	}
+	if sufficient.Verdict != VerdictMedium {
+		t.Fatalf("单条 50 分风险应判 medium，不能因证据充足就判 none/unknown，得到 %q", sufficient.Verdict)
+	}
+
+	insufficient := BuildReport([]Result{
+		{ProbeID: ProbeLiveness, OK: false, Data: map[string]any{"truncated": false}}, // high 50
+		{ProbeID: ProbeEchoRewrite, Err: errors.New("boom")},
+	}, "gpt-5")
+	if insufficient.Verdict == VerdictUnknown || insufficient.Verdict == VerdictNone {
+		t.Fatalf("有阳性风险时不得判 unknown/none，得到 %q", insufficient.Verdict)
+	}
+}
+
 func TestReportScoreIsCappedAtHundred(t *testing.T) {
 	// 人为堆出超过 100 的风险项，验证封顶。
 	results := []Result{
