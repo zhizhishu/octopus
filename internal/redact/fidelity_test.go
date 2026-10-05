@@ -415,6 +415,59 @@ func TestFidelityInjectNoticeInputRawStructureChangeKeepsBigInteger(t *testing.T
 	}
 }
 
+// Chat-session protocol on a synthesized {"input":…} wrapper has no messages
+// slot. RedactJSONBody must keep already-spliced notice bytes and >2^53
+// integers instead of JSON.stringify the wrapper.
+func TestFidelityChatWrapperAfterNoticeSpliceKeepsBigInteger(t *testing.T) {
+	e := newTestEngine(t)
+	s, err := e.NewSession("E", "openai_chat", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	raw := []byte(`[ { "role" : "user" , "content" : [ { "type" : "input_image" , "image_url" : "https://example.com/x.png" } ] } , { "n" : 9007199254740993 } ]`)
+	injected, err := s.InjectNoticeInputRaw(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapped := []byte(`{"input":` + string(injected) + `}`)
+	out, err := s.RedactJSONBody(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	os := string(out)
+	if os != string(wrapped) {
+		t.Fatalf("chat protocol must not re-serialize a responses wrapper, got %q want %q", os, wrapped)
+	}
+	if !strings.Contains(os, "Sensitive values are redacted") {
+		t.Fatalf("notice from InjectNoticeInputRaw must survive RedactJSONBody, got %q", os)
+	}
+	if !strings.Contains(os, `9007199254740993`) || strings.Contains(os, "9007199254740992") {
+		t.Fatalf("big integer must stay, got %q", os)
+	}
+}
+
+// Responses inbound whose input has no user item: notice cannot land, so
+// RedactJSONBody must keep original bytes (including >2^53 integers).
+func TestFidelityResponsesInputWithoutUserKeepsOuterBytes(t *testing.T) {
+	e := newTestEngine(t)
+	s, err := e.NewSession("E", "openai_responses", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	body := []byte(`{ "input" : [ { "role" : "assistant" , "content" : "ok" } ] , "n" : 9007199254740993 }`)
+	out, err := s.RedactJSONBody(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != string(body) {
+		t.Fatalf("no-user responses body must stay byte-identical, got %q want %q", out, body)
+	}
+}
+
 func TestFidelityInjectNoticeInputRawDisabledIsByteIdentical(t *testing.T) {
 	e := newTestEngine(t)
 	s, err := e.NewSession("E", "openai_chat", false)

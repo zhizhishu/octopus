@@ -427,8 +427,9 @@ func (s *Session) RedactJSONBody(body []byte) ([]byte, error) {
 	if spliced != nil && !goja.IsUndefined(spliced) && !goja.IsNull(spliced) {
 		return []byte(spliced.String()), nil
 	}
-	// Structure-changing inject (new content part): keep the redacted bytes as
-	// the parse source, then stringify. Unavoidable when the notice adds keys.
+	// Lexical inject found no slot for this protocol (e.g. chat session on a
+	// {"input":…} wrapper). Only stringify if the object injector actually
+	// changed structure; otherwise keep the already-redacted bytes.
 	obj, err := s.parseJSON(redacted)
 	if err != nil {
 		return redacted, nil
@@ -437,8 +438,12 @@ func (s *Session) RedactJSONBody(body []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := legacy(goja.Undefined(), obj, s.vm.ToValue(proto)); err != nil {
+	changed, err := legacy(goja.Undefined(), obj, s.vm.ToValue(proto))
+	if err != nil {
 		return nil, fmt.Errorf("redact: injectRedactNotice: %w", err)
+	}
+	if changed == nil || goja.IsUndefined(changed) || goja.IsNull(changed) || !changed.ToBoolean() {
+		return redacted, nil
 	}
 	return s.stringifyJSON(obj)
 }
