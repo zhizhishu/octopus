@@ -679,10 +679,15 @@ func convertGeminiToLLMResponse(geminiResp *model.GeminiGenerateContentResponse,
 	// Carry the upstream self-declared model back to the relay so the audit
 	// path can compare it against the model we actually sent (modelVersion is
 	// the only place Gemini reports it). Blank/missing stays unset: absence of
-	// a self-report must never be backfilled with the request model. Pure
-	// observation — relay restores the client-visible name separately.
+	// a self-report must never be backfilled with the request model.
+	//
+	// Written to the audit-only field, NOT to resp.Model: Model is the
+	// client-visible name (and the field model_mapping rewrites), so setting it
+	// here would leak the upstream version into an unmapped Gemini→Chat response
+	// and change the old client contract. The relay reads the audit field first
+	// (relayAttempt.captureUpstreamDeclaredModel).
 	if v := strings.TrimSpace(geminiResp.ModelVersion); v != "" {
-		resp.Model = v
+		resp.UpstreamDeclaredModel = v
 	}
 
 	// Convert candidates to choices

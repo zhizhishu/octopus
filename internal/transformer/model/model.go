@@ -873,6 +873,15 @@ type InternalLLMResponse struct {
 	// Model is the model used to generate the response.
 	Model string `json:"model"`
 
+	// UpstreamDeclaredModel carries the model name the upstream self-declared in
+	// this response body (e.g. Gemini's modelVersion, or the `model` field of an
+	// OpenAI/Anthropic body). Audit-only observation: it is never serialized
+	// (json:"-"), so it cannot reach a client body or SSE frame, and it is never
+	// used for display or billing. captureUpstreamDeclaredModel reads it to compare
+	// against the model actually sent, leaving Model (and the model_mapping rewrite
+	// keyed on it) as the client-visible contract.
+	UpstreamDeclaredModel string `json:"-"`
+
 	// An optional field that will only be present when you set stream_options: {"include_usage": true} in your request.
 	// When present, it contains a null value except for the last chunk which contains the token usage statistics
 	// for the entire request.

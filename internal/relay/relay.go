@@ -3822,7 +3822,14 @@ func (ra *relayAttempt) captureUpstreamDeclaredModel(resp *model.InternalLLMResp
 	if ra == nil || resp == nil {
 		return
 	}
-	name := strings.TrimSpace(resp.Model)
+	name := strings.TrimSpace(resp.UpstreamDeclaredModel)
+	if name == "" {
+		// Outbounds that declare through Model (OpenAI/Anthropic) keep working;
+		// converters that write the audit-only field (Gemini) leave Model alone,
+		// so the client-visible body/SSE and the model_mapping rewrite on Model
+		// stay exactly as before.
+		name = strings.TrimSpace(resp.Model)
+	}
 	if name == "" || ra.upstreamDeclaredModel != "" {
 		return
 	}

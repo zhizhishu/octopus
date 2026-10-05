@@ -2,13 +2,17 @@ package relay
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/bestruirui/octopus/internal/transformer/inbound"
+	openaiInbound "github.com/bestruirui/octopus/internal/transformer/inbound/openai"
 	"github.com/bestruirui/octopus/internal/transformer/model"
+	geminiOutbound "github.com/bestruirui/octopus/internal/transformer/outbound/gemini"
 	"github.com/gin-gonic/gin"
 )
 
@@ -234,4 +238,280 @@ func TestFailedAttemptDeclarationDoesNotLeakIntoWinnerLog(t *testing.T) {
 	if mismatch := upstreamModelMismatch("sent-model", metrics2.UpstreamDeclaredModel); mismatch != nil {
 		t.Fatalf("mismatch = %v, want nil (cannot judge) when the winner declares nothing", *mismatch)
 	}
+}
+
+// captureUpstreamDeclaredModel 优先读审计专用字段（TrimSpace 后非空），只有
+// 它为空时才回落到 Model —— 这样写审计字段的转换器（Gemini）不必污染客户端
+// 可见的 Model，而走 Model 的转换器（OpenAI/Anthropic）维持旧采集路径。
+func TestCaptureUpstreamDeclaredModelPrefersAuditField(t *testing.T) {
+	ra := &relayAttempt{relayRequest: &relayRequest{metrics: &RelayMetrics{}}}
+
+	// 审计字段优先于 Model。
+	ra.captureUpstreamDeclaredModel(&model.InternalLLMResponse{
+		UpstreamDeclaredModel: "  audit-name  ",
+		Model:                 "client-visible-name",
+	})
+	if ra.upstreamDeclaredModel != "audit-name" {
+		t.Fatalf("审计字段应优先并去空白, 得到 %q", ra.upstreamDeclaredModel)
+	}
+
+	// 审计字段为空时回落到 Model（OpenAI/Anthropic 旧路径）。
+	ra2 := &relayAttempt{relayRequest: &relayRequest{metrics: &RelayMetrics{}}}
+	ra2.captureUpstreamDeclaredModel(&model.InternalLLMResponse{Model: "  openai-declared  "})
+	if ra2.upstreamDeclaredModel != "openai-declared" {
+		t.Fatalf("空审计字段应回落 Model, 得到 %q", ra2.upstreamDeclaredModel)
+	}
+
+	// 两者都空（或只有空白）= 未自报。
+	ra3 := &relayAttempt{relayRequest: &relayRequest{metrics: &RelayMetrics{}}}
+	ra3.captureUpstreamDeclaredModel(&model.InternalLLMResponse{UpstreamDeclaredModel: "   ", Model: "  "})
+	if ra3.upstreamDeclaredModel != "" {
+		t.Fatalf("全空白应视为未自报, 得到 %q", ra3.upstreamDeclaredModel)
+	}
+}
+
+// json:"-" 必须真的不进 JSON：审计字段里装的是上游真名，绝不能通过任何
+// 序列化（客户端 body / SSE chunk / 存档）泄给调用端；客户端可见的 Model
+// 字段则照旧序列化。
+func TestInternalLLMResponseAuditFieldNeverSerialized(t *testing.T) {
+	body, err := json.Marshal(model.InternalLLMResponse{
+		Object:                "chat.completion",
+		Model:                 "client-visible",
+		UpstreamDeclaredModel: "upstream-secret-name",
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	js := string(body)
+	if strings.Contains(js, "upstream-secret-name") {
+		t.Fatalf("审计字段值泄露进 JSON: %s", js)
+	}
+	if strings.Contains(js, "UpstreamDeclaredModel") {
+		t.Fatalf("审计字段名泄露进 JSON: %s", js)
+	}
+	if !strings.Contains(js, `"model":"client-visible"`) {
+		t.Fatalf("客户端 model 字段应照旧序列化, 得到 %s", js)
+	}
+}
+
+// M2 端到端（非流，未映射）：真实 Gemini 出站 + 真实 Chat 入站。客户端 body
+// 必须保持旧契约（model 为空、不含上游真名），同时审计捕获仍拿到上游名。
+func TestGeminiUpstreamModelAuditKeepsUnmappedChatBodyContract(t *testing.T) {
+	ra, rec := newGeminiChatAttempt(t, false)
+	metrics := ra.relayRequest.metrics
+
+	if err := ra.handleResponse(context.Background(), geminiJSONResponse(t), &geminiOutbound.MessagesOutbound{}); err != nil {
+		t.Fatalf("handleResponse: %v", err)
+	}
+	// 审计：上游真名被捕获（日志/跟进比对用）。
+	if ra.upstreamDeclaredModel != "gemini-2.5-pro" {
+		t.Fatalf("审计捕获 = %q, 应为 gemini-2.5-pro", ra.upstreamDeclaredModel)
+	}
+	// 客户端契约：未映射时 model 仍为空，且上游真名不出现在 body 里。
+	wire := rec.Body.String()
+	if got := bodyModelField(t, wire); got != "" {
+		t.Fatalf("未映射渠道客户端 model 应保持旧行为(空), 得到 %q", got)
+	}
+	if strings.Contains(wire, "gemini-2.5-pro") || strings.Contains(wire, "UpstreamDeclaredModel") {
+		t.Fatalf("上游真名/审计字段泄露到客户端 body: %s", wire)
+	}
+
+	ra.collectResponse()
+	if metrics.UpstreamDeclaredModel != "gemini-2.5-pro" {
+		t.Fatalf("请求级审计提交 = %q, 应为 gemini-2.5-pro", metrics.UpstreamDeclaredModel)
+	}
+}
+
+// M2 端到端（非流，已映射）：客户端仍只看得到请求名（旧契约），审计仍拿到
+// 上游真名；计费/统计的实际模型名仍取发送名，不被自报名污染。
+func TestGeminiUpstreamModelAuditKeepsMappedChatBodyContract(t *testing.T) {
+	ra, rec := newGeminiChatAttempt(t, true)
+	metrics := ra.relayRequest.metrics
+
+	if err := ra.handleResponse(context.Background(), geminiJSONResponse(t), &geminiOutbound.MessagesOutbound{}); err != nil {
+		t.Fatalf("handleResponse: %v", err)
+	}
+	if ra.upstreamDeclaredModel != "gemini-2.5-pro" {
+		t.Fatalf("审计捕获 = %q, 应为 gemini-2.5-pro（须在 model_mapping 改写之前）", ra.upstreamDeclaredModel)
+	}
+	wire := rec.Body.String()
+	if got := bodyModelField(t, wire); got != "client-visible-name" {
+		t.Fatalf("映射渠道客户端 model 应为请求名, 得到 %q", got)
+	}
+	if strings.Contains(wire, "gemini-2.5-pro") {
+		t.Fatalf("上游真名泄露到客户端 body: %s", wire)
+	}
+
+	ra.collectResponse()
+	if metrics.UpstreamDeclaredModel != "gemini-2.5-pro" {
+		t.Fatalf("请求级审计提交 = %q, 应为 gemini-2.5-pro", metrics.UpstreamDeclaredModel)
+	}
+	// 计费/统计：实际模型名仍是发送名，自报名只进审计观测。
+	if metrics.ActualModel != "sent-upstream-name" {
+		t.Fatalf("计费/统计实际模型应为发送名, 得到 %q", metrics.ActualModel)
+	}
+}
+
+// M2 端到端（流/SSE 捕获点 relay.go:3172，未映射）：Gemini 流转换器写审计字段，
+// 客户端 SSE 既要有真实内容、又要按旧契约终结（恰一个 [DONE]），且不得出现上游
+// 真名或审计字段名。断言真实输出 + 终结，避免"空 wire 不含真名"式空过。
+func TestGeminiStreamUpstreamModelAuditKeepsChatSseContract(t *testing.T) {
+	ra, rec := newGeminiChatAttempt(t, false)
+
+	sse := "data: " + `{"candidates":[{"index":0,"content":{"role":"model","parts":[{"text":"hi"}]}}],"modelVersion":"gemini-2.5-pro"}` + "\n\n"
+	response := &http.Response{
+		Header: http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:   io.NopCloser(strings.NewReader(sse)),
+	}
+	if err := ra.handleStreamResponse(ra.c.Request.Context(), response, &geminiOutbound.MessagesOutbound{}); err != nil {
+		t.Fatalf("handleStreamResponse: %v", err)
+	}
+	if ra.upstreamDeclaredModel != "gemini-2.5-pro" {
+		t.Fatalf("流分片审计捕获 = %q, 应为 gemini-2.5-pro", ra.upstreamDeclaredModel)
+	}
+
+	wire := rec.Body.String()
+	assertChatSseContentAndTermination(t, wire, "hi")
+	if got := sseChunkModelField(t, wire); got != "" {
+		t.Fatalf("未映射渠道流式 model 应保持旧行为(空), 得到 %q", got)
+	}
+	if strings.Contains(wire, "gemini-2.5-pro") || strings.Contains(wire, "UpstreamDeclaredModel") {
+		t.Fatalf("上游真名/审计字段泄露到客户端 SSE: %s", wire)
+	}
+}
+
+// M2 端到端（流/SSE，已映射）：即使开了 model_mapping，客户端 SSE 也不得出现上游
+// 真名，内容与终结照旧。注：transformStreamChunk 的"上游自报名非空才改写成请求名"
+// 守卫使 Gemini 流（Model 保持空）客户端 model 仍为空——即与写 Model 之前的旧契约
+// 一致（非流路径无该守卫，映射后客户端 model = 请求名，见 body 用例）。
+func TestGeminiStreamUpstreamModelAuditKeepsMappedChatSseContract(t *testing.T) {
+	ra, rec := newGeminiChatAttempt(t, true)
+
+	sse := "data: " + `{"candidates":[{"index":0,"content":{"role":"model","parts":[{"text":"hi"}]}}],"modelVersion":"gemini-2.5-pro"}` + "\n\n"
+	response := &http.Response{
+		Header: http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:   io.NopCloser(strings.NewReader(sse)),
+	}
+	if err := ra.handleStreamResponse(ra.c.Request.Context(), response, &geminiOutbound.MessagesOutbound{}); err != nil {
+		t.Fatalf("handleStreamResponse: %v", err)
+	}
+	if ra.upstreamDeclaredModel != "gemini-2.5-pro" {
+		t.Fatalf("流分片审计捕获 = %q, 应为 gemini-2.5-pro（须在 model_mapping 改写之前）", ra.upstreamDeclaredModel)
+	}
+
+	wire := rec.Body.String()
+	assertChatSseContentAndTermination(t, wire, "hi")
+	if got := sseChunkModelField(t, wire); got != "" {
+		t.Fatalf("映射渠道流式 model 应保持旧契约(空), 得到 %q", got)
+	}
+	if strings.Contains(wire, "gemini-2.5-pro") || strings.Contains(wire, "UpstreamDeclaredModel") {
+		t.Fatalf("上游真名/审计字段泄露到客户端 SSE: %s", wire)
+	}
+}
+
+// M2 端到端（non-stream→stream 第三捕获点 relay.go:2916，未映射）：上游返回非流
+// JSON、下游是流。必须有真实内容并按旧契约产出终止帧（finish_reason），审计仍
+// 拿到上游真名，且不泄露。
+func TestGeminiNonStreamToStreamUpstreamModelAudit(t *testing.T) {
+	ra, rec := newGeminiChatAttempt(t, false)
+
+	if err := ra.handleNonStreamResponseAsStream(context.Background(), geminiJSONResponse(t), &geminiOutbound.MessagesOutbound{}); err != nil {
+		t.Fatalf("handleNonStreamResponseAsStream: %v", err)
+	}
+	if ra.upstreamDeclaredModel != "gemini-2.5-pro" {
+		t.Fatalf("非流转流捕获点审计捕获 = %q, 应为 gemini-2.5-pro", ra.upstreamDeclaredModel)
+	}
+
+	wire := rec.Body.String()
+	if !strings.Contains(wire, `"content":"hi"`) {
+		t.Fatalf("non-stream→stream 未产出真实内容: %q", wire)
+	}
+	if !strings.Contains(wire, `"finish_reason":"stop"`) {
+		t.Fatalf("non-stream→stream 未按旧契约产出终止帧: %q", wire)
+	}
+	if got := sseChunkModelField(t, wire); got != "" {
+		t.Fatalf("未映射渠道 non-stream→stream model 应保持旧行为(空), 得到 %q", got)
+	}
+	if strings.Contains(wire, "gemini-2.5-pro") || strings.Contains(wire, "UpstreamDeclaredModel") {
+		t.Fatalf("上游真名/审计字段泄露到客户端 SSE: %s", wire)
+	}
+}
+
+// assertChatSseContentAndTermination asserts the Chat SSE wire carries the real
+// content AND terminates under the old contract (exactly one `data: [DONE]`), so a
+// test cannot "pass" merely because nothing was written.
+func assertChatSseContentAndTermination(t *testing.T, wire, content string) {
+	t.Helper()
+	if !strings.Contains(wire, `"content":"`+content+`"`) {
+		t.Fatalf("SSE wire missing real content %q: %s", content, wire)
+	}
+	if got := strings.Count(wire, "data: [DONE]"); got != 1 {
+		t.Fatalf("SSE wire must terminate with exactly one [DONE], got %d: %s", got, wire)
+	}
+}
+
+// sseChunkModelField returns the `model` value from the first JSON data event on a
+// client Chat SSE wire.
+func sseChunkModelField(t *testing.T, wire string) string {
+	t.Helper()
+	for _, line := range strings.Split(wire, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data: ") || strings.Contains(line, "[DONE]") {
+			continue
+		}
+		var got struct {
+			Model string `json:"model"`
+		}
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &got); err != nil {
+			continue
+		}
+		return got.Model
+	}
+	t.Fatalf("no JSON data event on SSE wire: %s", wire)
+	return ""
+}
+
+// newGeminiChatAttempt builds a relay attempt wired like a real Gemini upstream
+// request routed to an OpenAI Chat client. mapped flips model_mapping on so the
+// client-visible name rewrite path is exercised too. Reused by the stream,
+// non-stream and non-stream→stream (fallback) capture-point tests.
+func newGeminiChatAttempt(t *testing.T, mapped bool) (*relayAttempt, *httptest.ResponseRecorder) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	ra := &relayAttempt{
+		relayRequest: &relayRequest{
+			c:               c,
+			inboundType:     inbound.InboundTypeOpenAIChat,
+			inAdapter:       &openaiInbound.ChatInbound{},
+			metrics:         &RelayMetrics{},
+			requestModel:    "client-visible-name",
+			internalRequest: &model.InternalLLMRequest{Model: "sent-upstream-name"},
+		},
+		modelMapped: mapped,
+	}
+	return ra, rec
+}
+
+func geminiJSONResponse(t *testing.T) *http.Response {
+	t.Helper()
+	return &http.Response{
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(
+			`{"candidates":[{"index":0,"content":{"role":"model","parts":[{"text":"hi"}]}}],"modelVersion":"gemini-2.5-pro"}`)),
+	}
+}
+
+func bodyModelField(t *testing.T, wire string) string {
+	t.Helper()
+	var got struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal([]byte(wire), &got); err != nil {
+		t.Fatalf("客户端 body 不是 JSON: %v (%s)", err, wire)
+	}
+	return got.Model
 }
