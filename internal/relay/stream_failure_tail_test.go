@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -67,50 +68,44 @@ func TestRestoreClientStreamSseKeepsEventSeparator(t *testing.T) {
 	}
 }
 
-// --- R3c: handleNonStreamResponseAsStream must flush the redact tail buffer ---
+// --- R3c: the non-stream→stream fallback must flush the redact tail buffer ---
 
-// TestHandleNonStreamResponseAsStreamFlushesRedactTail proves defect F4: when the
-// synthesized stream's last data event ends with a HALF placeholder, the restorer
-// buffers that whole channel (it can only know at finish() that no closing half is
-// coming). The fallback path never calls finish(), so the buffered text — including
-// the real "hello " prefix it was coalesced with — is silently dropped. The test
-// drives the fallback path with a redact session and asserts the buffered tail
-// reaches the client.
-func TestHandleNonStreamResponseAsStreamFlushesRedactTail(t *testing.T) {
+// runFallbackWithHeldContent drives handleNonStreamResponseAsStream (the anthropic
+// stream→non-stream retry fallback) with a redact session whose single assistant
+// message holds "hello " + content(token) as its tail. The restorer buffers that
+// channel (it can only know at finish() that no closing half is coming), so the
+// fallback's end-of-stream flush is the only thing that can emit it.
+func runFallbackWithHeldContent(t *testing.T, content func(token string) string) (rec *httptest.ResponseRecorder, token string, err error) {
+	t.Helper()
 	setupRedactDB(t)
 
-	engine, err := sharedRedactEngine()
-	if err != nil {
-		t.Fatal(err)
+	engine, cerr := sharedRedactEngine()
+	if cerr != nil {
+		t.Fatal(cerr)
 	}
-	session, err := engine.NewSession("E", "openai_chat", false)
-	if err != nil {
-		t.Fatal(err)
+	session, cerr := engine.NewSession("E", "openai_chat", false)
+	if cerr != nil {
+		t.Fatal(cerr)
 	}
-	defer session.Close()
+	t.Cleanup(session.Close)
 
-	secret := "a@example.com"
-	token, err := session.RedactText(secret)
-	if err != nil {
-		t.Fatal(err)
+	token, cerr = session.RedactText("a@example.com")
+	if cerr != nil {
+		t.Fatal(cerr)
 	}
 	if !redactTokenRe.MatchString(token) {
 		t.Fatalf("expected a placeholder token, got %q", token)
 	}
-	// Half of the placeholder sits at the very tail of the model text: the restorer
-	// holds the channel awaiting the closing half that never arrives.
-	half := token[:30]
-	content := "hello " + half
 
-	body, err := json.Marshal(map[string]any{
+	body, cerr := json.Marshal(map[string]any{
 		"id":      "chatcmpl-fb",
 		"object":  "chat.completion",
 		"model":   "upstream-model",
-		"choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": content}, "finish_reason": "stop"}},
+		"choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": content(token)}, "finish_reason": "stop"}},
 		"usage":   map[string]any{"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
 	})
-	if err != nil {
-		t.Fatal(err)
+	if cerr != nil {
+		t.Fatal(cerr)
 	}
 
 	resp := &http.Response{
@@ -120,7 +115,7 @@ func TestHandleNonStreamResponseAsStreamFlushesRedactTail(t *testing.T) {
 	}
 
 	gin.SetMode(gin.TestMode)
-	rec := httptest.NewRecorder()
+	rec = httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 
 	stream := true
@@ -135,14 +130,59 @@ func TestHandleNonStreamResponseAsStreamFlushesRedactTail(t *testing.T) {
 		redactSession: session,
 		redactApplied: true,
 	}
+	err = ra.handleNonStreamResponseAsStream(context.Background(), resp, outbound.Get(outbound.OutboundTypeOpenAIChat))
+	return rec, token, err
+}
 
-	if err := ra.handleNonStreamResponseAsStream(context.Background(), resp, outbound.Get(outbound.OutboundTypeOpenAIChat)); err != nil {
-		t.Fatalf("fallback path returned error: %v", err)
+// S (safe tail): a placeholder-SHAPED literal that matches no registered token must
+// still succeed with the real content flushed byte-complete before the terminal
+// marker — the original F4 regression (buffered tail silently dropped) must stay
+// covered, not just replaced by a nil→non-nil flip.
+func TestNonStreamToStreamFallbackEmitsSafeLiteralTail(t *testing.T) {
+	rec, token, err := runFallbackWithHeldContent(t, func(tok string) string {
+		return "hello " + nonRegisteredPlaceholderLiteral(t, tok)
+	})
+	if err != nil {
+		t.Fatalf("a safe literal tail must NOT fail the fallback: %v", err)
 	}
+	body := rec.Body.String()
+	lit := nonRegisteredPlaceholderLiteral(t, token)
 
-	got := rec.Body.String()
-	if !strings.Contains(got, "hello ") {
-		t.Fatalf("redact tail buffer dropped the real content text (F4): %q", got)
+	if !strings.Contains(body, "hello ") {
+		t.Fatalf("fallback dropped the real content coalesced with the tail (F4): %q", body)
+	}
+	if got := strings.Count(body, lit); got != 1 {
+		t.Fatalf("safe literal tail must reach the client exactly once, byte-complete, got %d: %q", got, body)
+	}
+	if leaksRegisteredTokenFragment(body, token) {
+		t.Fatalf("registered token fragment leaked to client: %q", body)
+	}
+	// Normal completion must still be intact (the flush must not eat the terminal).
+	// This function writes the finish chunk itself; the caller appends "data: [DONE]".
+	if !strings.Contains(body, `"finish_reason":"stop"`) {
+		t.Fatalf("successful fallback must keep its terminal marker (F4 regression): %q", body)
+	}
+}
+
+// H (fail-closed): when the tail is a HALF of THIS session's REGISTERED placeholder,
+// finish() fails explicitly and the fallback must fail closed — no fragment of the
+// registered token on the wire, no success termination, and a non-nil error so the
+// caller surfaces the failure instead of a truncated silent success.
+func TestNonStreamToStreamFallbackHalfTokenFailsClosed(t *testing.T) {
+	rec, token, err := runFallbackWithHeldContent(t, func(tok string) string {
+		return "hello " + tok[:30]
+	})
+	body := rec.Body.String()
+	t.Logf("fail-closed body=%q err=%v", body, err)
+
+	if err == nil {
+		t.Fatalf("a half registered placeholder at finish must fail the fallback explicitly, got nil error: %q", body)
+	}
+	if leaksRegisteredTokenFragment(body, token) {
+		t.Fatalf("half registered token leaked to client: %q", body)
+	}
+	if strings.Contains(body, "data: [DONE]") || strings.Contains(body, `"finish_reason":"stop"`) {
+		t.Fatalf("fail-closed must not emit a success termination: %q", body)
 	}
 }
 
@@ -262,5 +302,257 @@ func TestRedactGlobalEnabledReadErrorFailsClosed(t *testing.T) {
 	explicitOn := &relayAttempt{relayRequest: mkReq(false), channel: &dbmodel.Channel{RedactEnabled: true, RedactFlags: "E"}}
 	if !explicitOn.inboundRedactActive() {
 		t.Fatal("explicit master-on + opt-in must be active")
+	}
+}
+
+// --- R3d: a committed stream failure must not silently drop the buffered redact tail ---
+
+// minRegisteredTokenFragment is the shortest run of THIS session's registered token
+// treated as an unambiguous leak. It must stay above len("{{Redact:") (9) so a
+// legitimate literal that merely shares the placeholder opening is not flagged.
+const minRegisteredTokenFragment = 13
+
+// leaksRegisteredTokenFragment reports whether wire contains the session's registered
+// token, or a long-enough prefix of it (>= minRegisteredTokenFragment). It is scoped
+// to the token registered by THIS session, so a literal that merely looks like a
+// placeholder (e.g. "{{Redact:" + unrelated hex) is NOT a false positive — unlike a
+// naive strings.Contains(wire, "{{Redact:") ban, which would reject legitimate text.
+func leaksRegisteredTokenFragment(wire, token string) bool {
+	if token == "" {
+		return false
+	}
+	for n := len(token); n >= minRegisteredTokenFragment; n-- {
+		if strings.Contains(wire, token[:n]) {
+			return true
+		}
+	}
+	return false
+}
+
+// nonRegisteredPlaceholderLiteral derives a placeholder-shaped literal from a real
+// token: same length/format, but the FIRST hex digit is flipped, so it shares only
+// the 9-char "{{Redact:" opening with the token and matches NO registered token. The
+// restorer must therefore treat it as ordinary literal text (a SAFE tail).
+func nonRegisteredPlaceholderLiteral(t *testing.T, token string) string {
+	t.Helper()
+	if len(token) < 57 || !redactTokenRe.MatchString(token) {
+		t.Fatalf("bad token fixture: %q", token)
+	}
+	flipped := byte('0')
+	if token[9] == '0' {
+		flipped = 'f'
+	}
+	lit := token[:9] + string(flipped) + token[10:57]
+	if strings.HasPrefix(token, lit) {
+		t.Fatalf("fixture invalid: literal is still a registered prefix: %q", lit)
+	}
+	if leaksRegisteredTokenFragment(lit, token) {
+		t.Fatalf("fixture invalid: literal embeds a long registered prefix: %q", lit)
+	}
+	if !strings.HasPrefix(lit, "{{Redact:") {
+		t.Fatalf("fixture invalid: literal must look like a placeholder: %q", lit)
+	}
+	return lit
+}
+
+// buildCommittedRedactFailureAttempt builds an already-committed Chat stream whose
+// redaction restorer is holding real model text ("hello " prefix + caller-supplied
+// tail) in a single channel. It mirrors the stream loop: a token-free safe block is
+// emitted first (committing the stream, so failover is no longer possible), then the
+// held event is fed through restoreClientStreamSse — which holds the whole channel
+// back (returns ""). closeSession lets a test break the restorer.
+func buildCommittedRedactFailureAttempt(t *testing.T, heldContent func(token string) string) (ra *relayAttempt, rec *httptest.ResponseRecorder, token string, closeSession func()) {
+	t.Helper()
+	setupRedactDB(t)
+
+	engine, err := sharedRedactEngine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := engine.NewSession("E", "openai_chat", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(session.Close)
+
+	secret := "a@example.com"
+	token, err = session.RedactText(secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !redactTokenRe.MatchString(token) {
+		t.Fatalf("expected a placeholder token, got %q", token)
+	}
+	if len(token) < 30 {
+		t.Fatalf("token too short to split into a half-placeholder fixture: %q", token)
+	}
+
+	gin.SetMode(gin.TestMode)
+	rec = httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	ra = &relayAttempt{
+		relayRequest:  &relayRequest{c: c, inboundType: inbound.InboundTypeOpenAIChat},
+		redactSession: session,
+		redactApplied: true,
+	}
+
+	// 1) token-free safe block: the restorer passes it straight through, so it reaches
+	// the client and commits the stream exactly like a real content chunk would.
+	safe, err := ra.restoreClientStreamSse([]byte(`data: {"choices":[{"delta":{"content":"safe "}}]}` + "\n\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(safe) == 0 {
+		t.Fatal("token-free block should pass straight through")
+	}
+	if _, err := ra.c.Writer.Write(safe); err != nil {
+		t.Fatal(err)
+	}
+	ra.wroteMeaningfulDownstream = true
+
+	// 2) held event: the restorer buffers the whole channel back.
+	content := heldContent(token)
+	body, err := json.Marshal(map[string]any{
+		"choices": []any{map[string]any{"delta": map[string]any{"content": content}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, err := ra.restoreClientStreamSse([]byte("data: " + string(body) + "\n\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(held) != 0 {
+		t.Fatalf("fixture invariant: the tail must be buffered, not emitted, got %q", held)
+	}
+	return ra, rec, token, session.Close
+}
+
+// S (safe tail): a committed failure must flush the pending restored tail BEFORE the
+// in-band error frame — otherwise the real "hello " text the restorer was holding is
+// silently lost. The tail here is a placeholder-SHAPED literal that matches no
+// registered token, so the restorer can safely emit it verbatim. The already-emitted
+// block and the terminal [DONE] must not be duplicated, and the terminal frame must
+// be the ordinary upstream error (the restorer did not fail).
+func TestCommittedStreamFailureFlushesSafeLiteralTailBeforeError(t *testing.T) {
+	ra, rec, token, _ := buildCommittedRedactFailureAttempt(t, func(tok string) string {
+		return "hello " + nonRegisteredPlaceholderLiteral(t, tok)
+	})
+
+	// Proof that the OLD (flush-less) failure path dropped the content: before the
+	// terminal failure the held tail is not on the wire at all, so it can only appear
+	// because the fix flushes it.
+	if pre := rec.Body.String(); strings.Contains(pre, "hello ") {
+		t.Fatalf("fixture invariant: buffered tail must not be on the wire before the flush: %q", pre)
+	}
+
+	writeCommittedStreamFailure(ra, errors.New("failed to transform stream event: upstream sent a bad frame"))
+
+	body := rec.Body.String()
+	safeIdx := strings.Index(body, "safe ")
+	if safeIdx < 0 {
+		t.Fatalf("already-committed block lost: %q", body)
+	}
+	if got := strings.Count(body, "safe "); got != 1 {
+		t.Fatalf("committed block must not be duplicated, got %d: %q", got, body)
+	}
+	helloIdx := strings.Index(body, "hello ")
+	if helloIdx < 0 {
+		t.Fatalf("safe literal tail dropped on committed failure: %q", body)
+	}
+	errIdx := strings.Index(body, `"error"`)
+	if errIdx < 0 {
+		t.Fatalf("missing in-band error frame: %q", body)
+	}
+	if !(safeIdx < helloIdx && helloIdx < errIdx) {
+		t.Fatalf("order must be committed block -> flushed tail -> error frame: %q", body)
+	}
+	if got := strings.Count(body, "data: [DONE]"); got != 1 {
+		t.Fatalf("terminal [DONE] must appear exactly once, got %d: %q", got, body)
+	}
+	// Scoped leak check: no fragment of THIS session's registered token, while the
+	// literal placeholder-shaped text is expected and allowed.
+	if leaksRegisteredTokenFragment(body, token) {
+		t.Fatalf("registered token fragment leaked to client: %q", body)
+	}
+	if strings.Contains(body, streamRestoreErrorCode) {
+		t.Fatalf("a safe tail must not be reported as a restore failure: %q", body)
+	}
+}
+
+// H (fail-closed): a HALF of THIS session's REGISTERED placeholder at finish cannot be
+// split from the real "hello " prefix it was coalesced with, so NOTHING unrestored may
+// be emitted. The pending fragment is dropped and the terminal frame reports the fixed,
+// secret-free restore-error identifiers (never the raw upstream error), exactly once.
+// "hello " is deliberately NOT asserted present: fail-closed may drop it, and the
+// frame must not claim the content is complete.
+func TestCommittedStreamFailureHalfRegisteredTokenFailsClosed(t *testing.T) {
+	ra, rec, token, _ := buildCommittedRedactFailureAttempt(t, func(tok string) string {
+		return "hello " + tok[:30]
+	})
+
+	writeCommittedStreamFailure(ra, errors.New("failed to transform stream event: boom"))
+
+	body := rec.Body.String()
+	if leaksRegisteredTokenFragment(body, token) {
+		t.Fatalf("DEPENDENT on redact core: a half REGISTERED placeholder at Finish must NOT be emitted, but "+
+			"the current core still coalesce-emits it; this stays red until B lands fail-closed Finish: %q", body)
+	}
+	if got := strings.Count(body, "data: [DONE]"); got != 1 {
+		t.Fatalf("terminal [DONE] must appear exactly once, got %d: %q", got, body)
+	}
+	if !strings.Contains(body, streamRestoreErrorCode) || !strings.Contains(body, streamRestoreErrorMessage) {
+		t.Fatalf("must fail explicitly with the fixed restore-error identifiers: %q", body)
+	}
+	if !strings.Contains(body, "safe ") {
+		t.Fatalf("already-emitted block must remain on the wire: %q", body)
+	}
+	if strings.Contains(body, "failed to transform") || strings.Contains(body, "boom") {
+		t.Fatalf("the raw upstream error must not be surfaced: %q", body)
+	}
+}
+
+// A client abort means the client already hung up: the shared failure writer must add
+// ZERO new bytes — no tail flush and no error frame.
+func TestCommittedStreamFailureClientAbortAddsNoBytes(t *testing.T) {
+	ra, rec, _, _ := buildCommittedRedactFailureAttempt(t, func(tok string) string {
+		return "hello " + tok[:30]
+	})
+	before := rec.Body.String()
+
+	writeCommittedStreamFailure(ra, context.Canceled)
+
+	after := rec.Body.String()
+	if after != before {
+		t.Fatalf("client abort must add zero bytes; before=%q after=%q", before, after)
+	}
+	if strings.Contains(after, "hello ") || strings.Contains(after, `"error"`) {
+		t.Fatalf("client abort must neither flush the tail nor write an error frame: %q", after)
+	}
+}
+
+// A broken restorer (its buffer may hold unrestored placeholders / raw tokens) must
+// NOT be flushed: skip the tail, but still fail explicitly in-protocol with the fixed,
+// secret-free restore-error identifiers.
+func TestCommittedStreamFailureBrokenRestorerLeaksNoToken(t *testing.T) {
+	ra, rec, token, closeSession := buildCommittedRedactFailureAttempt(t, func(tok string) string {
+		return "hello " + tok[:30]
+	})
+	closeSession() // breaks the restorer: Finish() now returns an error
+
+	writeCommittedStreamFailure(ra, errors.New("failed to transform stream event: boom"))
+
+	body := rec.Body.String()
+	if leaksRegisteredTokenFragment(body, token) || strings.Contains(body, "hello ") {
+		t.Fatalf("broken restorer must not emit buffered/raw tokens: %q", body)
+	}
+	if !strings.Contains(body, `"error"`) || !strings.Contains(body, streamRestoreErrorCode) {
+		t.Fatalf("broken restorer must surface the fixed restore-error frame: %q", body)
+	}
+	if strings.Contains(body, "failed to transform") {
+		t.Fatalf("the raw upstream error must not be surfaced: %q", body)
+	}
+	if !strings.Contains(body, "safe ") {
+		t.Fatalf("already-emitted block must remain on the wire: %q", body)
 	}
 }

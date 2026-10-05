@@ -9,6 +9,7 @@ import (
 
 	"github.com/bestruirui/octopus/internal/server/resp"
 	"github.com/bestruirui/octopus/internal/transformer/inbound"
+	"github.com/bestruirui/octopus/internal/utils/log"
 	"github.com/gin-gonic/gin"
 )
 
@@ -205,6 +206,16 @@ func chatStreamFailureMessage(err error) string {
 	return "upstream stream failed"
 }
 
+// Fixed, secret-free identifiers for the terminal frame written when the
+// credential-redaction restorer could not be flushed safely at a committed stream
+// failure. The underlying restorer error is deliberately NOT surfaced (it can echo
+// restored/unrestored token data); the message also does not claim the content is
+// complete.
+const (
+	streamRestoreErrorCode    = "stream_restore_error"
+	streamRestoreErrorMessage = "response stream could not be restored after redaction; the stream is truncated"
+)
+
 // writeCommittedStreamFailure surfaces an upstream stream failure on an
 // ALREADY-committed stream (meaningful content was flushed, so the channel can no
 // longer be swapped): it writes the in-band error envelope in the client's inbound
@@ -213,27 +224,88 @@ func chatStreamFailureMessage(err error) string {
 // both of which silently dropped the failure for OpenAI chat inbound, leaving the
 // client a truncated stream with no error frame and no [DONE].
 //
+// Before the terminal error frame it flushes any *pending* restored client-format
+// SSE tail the credential-redaction restorer was still buffering (real model output
+// coalesced with a placeholder): without this, a committed failure silently dropped
+// that buffered content. Only the not-yet-emitted tail is written, so no already-sent
+// content or [DONE] is duplicated. A client abort emits NOTHING new (the client is
+// already gone). When the restorer cannot produce a safe tail (broken, or a
+// Finish/flush failure) its buffer may hold raw/unrestored token data, so it is
+// dropped and the terminal frame carries the fixed streamRestoreError* identifiers
+// instead of the upstream message.
+//
 // Only the three covered inbound protocols get a frame; Gemini / embedding inbound
 // (and anything else) stay untouched, matching the previous Responses/Anthropic-only
-// behaviour. A client abort is silent for every protocol.
+// behaviour.
 func writeCommittedStreamFailure(ra *relayAttempt, fwdErr error) {
 	if ra == nil || ra.c == nil {
 		return
 	}
+	// Client abort: the client hung up, so adding no bytes at all is correct — no
+	// tail flush and no error frame.
+	if isClientAbortError(fwdErr) {
+		return
+	}
+	restoreFailed := flushCommittedRestoreTail(ra)
 	switch ra.inboundType {
 	case inbound.InboundTypeOpenAIResponse:
-		if message := responsesStreamFailureMessage(fwdErr); message != "" {
-			writeResponsesFailedSSE(ra.c, ra.requestModel, "upstream_error", message)
+		code, message := "upstream_error", responsesStreamFailureMessage(fwdErr)
+		if restoreFailed {
+			code, message = streamRestoreErrorCode, streamRestoreErrorMessage
+		}
+		if message != "" {
+			writeResponsesFailedSSE(ra.c, ra.requestModel, code, message)
 		}
 	case inbound.InboundTypeAnthropic:
+		if restoreFailed {
+			writeAnthropicErrorSSE(ra.c, "api_error", streamRestoreErrorMessage)
+			return
+		}
 		if message := anthropicStreamFailureMessage(fwdErr); message != "" {
 			writeAnthropicErrorSSE(ra.c, "api_error", message)
 		}
 	case inbound.InboundTypeOpenAIChat:
-		if message := chatStreamFailureMessage(fwdErr); message != "" {
-			writeChatErrorSSE(ra.c, "upstream_error", message)
+		code, message := "upstream_error", chatStreamFailureMessage(fwdErr)
+		if restoreFailed {
+			code, message = streamRestoreErrorCode, streamRestoreErrorMessage
+		}
+		if message != "" {
+			writeChatErrorSSE(ra.c, code, message)
 		}
 	}
+}
+
+// flushCommittedRestoreTail writes the redaction restorer's still-pending tail to
+// the client once, ahead of the terminal error frame, and reports whether the
+// restorer could NOT produce a safe tail. It returns true (no bytes written) when
+// the restorer already broke, or when Finish/flush fails: its buffer may hold raw
+// placeholders / unrestored tokens, so nothing may be emitted and the caller must
+// fail with the fixed restore-error frame. It returns false for the normal cases
+// (nothing redacted, empty tail, or a safely flushed tail). redactFlushClientSse
+// returns only the bytes the restorer has NOT emitted yet (and marks the restorer
+// broken on failure), so this can never re-emit already-written content or a
+// duplicate [DONE].
+func flushCommittedRestoreTail(ra *relayAttempt) bool {
+	if ra == nil || ra.c == nil || ra.redactSession == nil || !ra.redactApplied {
+		return false
+	}
+	if ra.redactStreamBroken {
+		return true
+	}
+	tail, err := ra.redactFlushClientSse()
+	if err != nil {
+		log.Errorf("redact: flush restored stream tail before terminal error failed: %v", err)
+		return true
+	}
+	if len(tail) == 0 {
+		return false
+	}
+	if _, werr := ra.c.Writer.Write(tail); werr != nil {
+		log.Warnf("redact: write restored stream tail before terminal error: %v", werr)
+		return false
+	}
+	ra.c.Writer.Flush()
+	return false
 }
 
 // writeRelayErrorPreStream writes a pre-stream error in the inbound-aware envelope.

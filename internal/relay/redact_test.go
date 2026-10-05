@@ -216,19 +216,18 @@ func unescapeJSONString(s string) string {
 
 // TestRelayRedactStreamAbruptEndNoHang: the upstream cuts the stream right after
 // a delta whose content ends with a split placeholder's first half (no DONE, no
-// terminal event). The restorer holds that event buffered; the end-of-stream
-// force flush surfaces it. A truncated placeholder fragment cannot be restored
-// (the mapping has no key for a half token — same as upstream Cosy), so the
-// fragment passes through verbatim; what must hold is that the stream
-// terminates cleanly with the buffered text delivered, no hang, no drop.
+// terminal event). Finish cannot restore that half, so the restorer fails closed:
+// no registered-token fragment, no silent hang, and an explicit restore-error
+// frame instead of leaking the buffered half. Coalesced real text ("mail me at")
+// may be dropped with the unsafe tail.
 func TestRelayRedactStreamAbruptEndNoHang(t *testing.T) {
 	setupRedactDB(t)
 
+	var token string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		buf := make([]byte, 1<<20)
 		n, _ := r.Body.Read(buf)
 		body := string(buf[:n])
-		token := ""
 		if m := redactTokenRe.FindString(body); m != "" {
 			token = m
 		}
@@ -249,15 +248,15 @@ func TestRelayRedactStreamAbruptEndNoHang(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
 	}
-	// The buffered delta text must reach the client (not dropped by the buffer):
-	// the fragment itself passes through verbatim — a half token has no mapping
-	// key, matching upstream Cosy behavior.
-	if !strings.Contains(rec.Body.String(), "mail me at") {
-		t.Fatalf("buffered event text was dropped on abrupt end: %s", rec.Body.String())
+	body := rec.Body.String()
+	if token != "" && leaksRegisteredTokenFragment(body, token) {
+		t.Fatalf("half registered token leaked on abrupt end: %s", body)
 	}
-	// Stream must terminate cleanly with a DONE marker (oct synthesizes it).
-	if !strings.Contains(rec.Body.String(), "data: [DONE]") {
-		t.Fatalf("stream did not terminate cleanly: %s", rec.Body.String())
+	if !strings.Contains(body, streamRestoreErrorCode) {
+		t.Fatalf("abrupt half-token end must fail closed with restore-error, got %s", body)
+	}
+	if !strings.Contains(body, "data: [DONE]") {
+		t.Fatalf("stream did not terminate cleanly: %s", body)
 	}
 }
 
