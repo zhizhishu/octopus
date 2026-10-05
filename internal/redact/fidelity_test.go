@@ -321,8 +321,9 @@ func TestFidelityNoticeInjectIntoContentBlockKeepsOuterBytes(t *testing.T) {
 	}
 }
 
-// Image-only user content has no string slot: injection adds a part and may
-// re-serialize. The notice must still land; this is the documented fallback.
+// Image-only user content has no string slot: injection splices a text part
+// into the content array. Outer bytes (whitespace, >2^53 integers) must stay;
+// JSON.stringify rounding is not an allowed fallback.
 func TestFidelityNoticeInjectStructureChangeFallsBack(t *testing.T) {
 	e := newTestEngine(t)
 	s, err := e.NewSession("E", "openai_chat", true)
@@ -331,17 +332,26 @@ func TestFidelityNoticeInjectStructureChangeFallsBack(t *testing.T) {
 	}
 	defer s.Close()
 
-	body := []byte(`{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/x.png"}}]}]}`)
+	body := []byte(`{ "n" : 9007199254740993, "messages" : [ { "role" : "user" , "content" : [ { "type" : "image_url" , "image_url" : { "url" : "https://example.com/x.png" } } ] } ] }`)
 	out, err := s.RedactJSONBody(body)
 	if err != nil {
 		t.Fatal(err)
 	}
 	os := string(out)
 	if !json.Valid(out) {
-		t.Fatalf("fallback must stay valid JSON, got %q", os)
+		t.Fatalf("structure-change inject must stay valid JSON, got %q", os)
 	}
 	if !strings.Contains(os, "Sensitive values are redacted") {
 		t.Fatalf("notice must still be injected, got %q", os)
+	}
+	if !strings.Contains(os, `{ "n" : 9007199254740993, "messages"`) {
+		t.Fatalf("outer bytes must stay through structure-change inject, got %q", os)
+	}
+	if strings.Contains(os, "9007199254740992") {
+		t.Fatalf("big integer must not be rounded, got %q", os)
+	}
+	if !strings.Contains(os, `"type" : "image_url"`) {
+		t.Fatalf("existing image part bytes must stay, got %q", os)
 	}
 }
 
@@ -372,6 +382,36 @@ func TestFidelityInjectNoticeInputRawKeepsOuterBytes(t *testing.T) {
 	}
 	if strings.Count(os, `"type"`) != 1 {
 		t.Fatalf("must not insert a sibling content part, got %q", os)
+	}
+}
+
+// Image-only Responses input has no string slot: InjectNoticeInputRaw must
+// splice a part, not JSON.stringify the array (which would round >2^53).
+func TestFidelityInjectNoticeInputRawStructureChangeKeepsBigInteger(t *testing.T) {
+	e := newTestEngine(t)
+	s, err := e.NewSession("E", "openai_chat", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	raw := []byte(`[ { "role" : "user" , "content" : [ { "type" : "input_image" , "image_url" : "https://example.com/x.png" } ] } , { "n" : 9007199254740993 } ]`)
+	out, err := s.InjectNoticeInputRaw(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	os := string(out)
+	if !json.Valid(out) {
+		t.Fatalf("structure-change inject must stay valid JSON, got %q", os)
+	}
+	if !strings.Contains(os, "Sensitive values are redacted") {
+		t.Fatalf("notice missing, got %q", os)
+	}
+	if !strings.Contains(os, `{ "n" : 9007199254740993 }`) {
+		t.Fatalf("sibling object whitespace and big integer must stay, got %q", os)
+	}
+	if strings.Contains(os, "9007199254740992") {
+		t.Fatalf("big integer must not be rounded, got %q", os)
 	}
 }
 

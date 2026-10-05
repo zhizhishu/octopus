@@ -658,7 +658,7 @@ function decodeJsonStringContent(content) {
 // elements use their index. Returns null when `text` is not a well-formed JSON
 // container -- the caller then falls back to the plain-text path, exactly as a failed
 // JSON.parse did. Numbers are consumed but never tokenized.
-function jsonStringTokens(text, basePath) {
+function jsonStringTokens(text, basePath, extras) {
   let i = 0;
   const out = [];
   function skipWs() {
@@ -715,7 +715,9 @@ function jsonStringTokens(text, basePath) {
     }
   }
   function parseArray(path) {
+    const open = i;
     i++;
+    if (extras && extras.arrays) extras.arrays.push({ path: path, open: open });
     skipWs();
     if (text[i] === "]") { i++; return true; }
     let idx = 0;
@@ -1026,8 +1028,8 @@ function injectRedactNotice(body, protocol, options = {}) {
   return false;
 }
 // Lexical notice inject: prepend the notice into an existing string slot and keep
-// every other byte. Returns null when injection would change structure (new content
-// part / missing content) so the caller can fall back to stringify.
+// every other byte. When the first user has no string slot (image-only content),
+// splice a text part into the content array instead of JSON.stringify.
 function findUserIndex(arr, position) {
   if (!Array.isArray(arr)) return -1;
   if (position === "first_user") {
@@ -1048,6 +1050,28 @@ function contentStringPath(message, base) {
     }
   }
   return null;
+}
+function noticeInjectArrayPath(body, protocol, position) {
+  if (!body || typeof body !== "object") return null;
+  if (protocol === "openai_responses" && Array.isArray(body.input)) {
+    const idx = findUserIndex(body.input, position);
+    if (idx < 0) return null;
+    const item = body.input[idx];
+    if (item && Array.isArray(item.content)) return ["input", String(idx), "content"];
+    return null;
+  }
+  if (Array.isArray(body.messages)) {
+    const idx = findUserIndex(body.messages, position);
+    if (idx < 0) return null;
+    const m = body.messages[idx];
+    if (m && Array.isArray(m.content)) return ["messages", String(idx), "content"];
+  }
+  return null;
+}
+function sameJsonPath(a, b) {
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (String(a[i]) !== String(b[i])) return false;
+  return true;
 }
 function noticeInjectStringPath(body, protocol, position) {
   if (!body || typeof body !== "object") return null;
@@ -1071,21 +1095,38 @@ function injectRedactNoticeText(text, protocol, options = {}) {
   if (options.enabled === false) return text;
   const position = options.position || "first_user";
   if (position !== "first_user" && position !== "last_user") throw new Error("REDACT_NOTICE_POSITION must be 'first_user' or 'last_user'");
-  const toks = jsonStringTokens(text, []);
+  const extras = { arrays: [] };
+  const toks = jsonStringTokens(text, [], extras);
   if (!toks) throw new Error("redact: JSON lexical scan failed");
   let root;
   try { root = JSON.parse(text); } catch (e) { throw new Error("redact: JSON parse failed"); }
   const path = noticeInjectStringPath(root, protocol, position);
-  if (!path) return null;
   let hit = null;
-  for (const tok of toks) {
-    if (tok.path.length !== path.length) continue;
-    let same = true;
-    for (let i = 0; i < path.length; i++) if (tok.path[i] !== path[i]) { same = false; break; }
-    if (same) hit = tok;
+  if (path) {
+    for (const tok of toks) {
+      if (tok.path.length !== path.length) continue;
+      let same = true;
+      for (let i = 0; i < path.length; i++) if (tok.path[i] !== path[i]) { same = false; break; }
+      if (same) hit = tok;
+    }
   }
-  if (!hit) return null;
-  return text.slice(0, hit.start) + jsonStringEscape(REDACT_NOTICE + "\n\n") + text.slice(hit.start);
+  if (hit) return text.slice(0, hit.start) + jsonStringEscape(REDACT_NOTICE + "\n\n") + text.slice(hit.start);
+  // No string slot (image-only content): splice a text part into the content
+  // array. JSON.stringify would round >2^53 integers and fold duplicate keys.
+  const arrPath = noticeInjectArrayPath(root, protocol, position);
+  if (!arrPath) return null;
+  const arr = extras.arrays.find((a) => sameJsonPath(a.path, arrPath));
+  if (!arr) return null;
+  const insertAt = arr.open + 1;
+  let j = insertAt;
+  while (j < text.length) {
+    const d = text.charCodeAt(j);
+    if (d === 0x20 || d === 0x09 || d === 0x0a || d === 0x0d) j++; else break;
+  }
+  const type = protocol === "openai_responses" ? "input_text" : "text";
+  const part = `{"type":"${type}","text":"${jsonStringEscape(REDACT_NOTICE)}"}`;
+  const ins = text[j] === "]" ? part : part + ",";
+  return text.slice(0, insertAt) + ins + text.slice(insertAt);
 }
 function isJsonContentType(ct) { return /(^|[+\/])json(?:$|[; ])/i.test(ct || "") || /application\/.*\+json/i.test(ct || ""); }
 function isTextualContentType(ct) { return isJsonContentType(ct) || /^text\//i.test(ct || "") || /javascript|xml/i.test(ct || ""); }

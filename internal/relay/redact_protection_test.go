@@ -430,6 +430,75 @@ func TestRedactToolArgumentsEndpointEndToEnd(t *testing.T) {
 	}
 }
 
+// TestRedactBusinessMediaKeyToolArgumentsEndpointEndToEnd is the wire-level
+// counterpart of TestFidelityBusinessMediaKeyInToolArgumentsIsScanned: an
+// assistant tool-call argument whose keys are literally audio/image_url must
+// still be scanned on the real outbound chat body.
+func TestRedactBusinessMediaKeyToolArgumentsEndpointEndToEnd(t *testing.T) {
+	setupRedactDB(t)
+
+	var mu sync.Mutex
+	var gotBody string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		gotBody = string(b)
+		mu.Unlock()
+		redactProtWriteChatOK(w)
+	}))
+	defer upstream.Close()
+	newRedactChannelFull(t, "redact-media-keys", upstream.URL, outbound.OutboundTypeOpenAIChat, true, "E", 1)
+
+	args := `{"audio":"a@example.com","image_url":"b@example.com","phone":13800138000}`
+	argsJSON, err := json.Marshal(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"model":"request-model","messages":[{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"lookup","arguments":` + string(argsJSON) + `}}]}]}`
+
+	rec := httptest.NewRecorder()
+	newRedactGinEngine().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+
+	mu.Lock()
+	up := gotBody
+	mu.Unlock()
+	if strings.Contains(up, "a@example.com") || strings.Contains(up, "b@example.com") {
+		t.Fatalf("media-key emails leaked inside tool args: %s", up)
+	}
+	var parsed struct {
+		Messages []struct {
+			ToolCalls []struct {
+				Function struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(up), &parsed); err != nil {
+		t.Fatalf("upstream body not JSON: %v (%s)", err, up)
+	}
+	if len(parsed.Messages) == 0 || len(parsed.Messages[0].ToolCalls) == 0 {
+		t.Fatalf("tool_calls missing upstream: %s", up)
+	}
+	fn := parsed.Messages[0].ToolCalls[0].Function
+	if fn.Name != "lookup" {
+		t.Fatalf("tool name changed: %q", fn.Name)
+	}
+	if !json.Valid([]byte(fn.Arguments)) {
+		t.Fatalf("arguments no longer valid JSON: %q", fn.Arguments)
+	}
+	if strings.Count(fn.Arguments, "{{Redact:") < 2 {
+		t.Fatalf("both media-key secrets must become placeholders: %q", fn.Arguments)
+	}
+	if !strings.Contains(fn.Arguments, "13800138000") {
+		t.Fatalf("numeric value not preserved: %q", fn.Arguments)
+	}
+}
+
 // TestRestoreInternalResponseTextsArgsJsonEscaped: tool-argument slots in the
 // stored transcript must restore via the JSON-aware path — a multi-line secret is
 // re-embedded ESCAPED so the arguments stay valid inner JSON (metrics/transcript

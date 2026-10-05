@@ -396,7 +396,7 @@ func TestRunSignatureReplayRejectedByUpstream(t *testing.T) {
 // 401/403/429 是鉴权失败/限流，与签名真伪无关：只记观测并归类 auth_rate_limit，
 // 判「不可判」，绝不产出伪造高危分。
 func TestRunSignatureReplayAuthRateLimitRejected(t *testing.T) {
-	for _, status := range []int{401, 429} {
+	for _, status := range []int{401, 403, 429} {
 		t.Run(fmt.Sprintf("status_%d", status), func(t *testing.T) {
 			sig := makeSignature("claude-sonnet-4-5", 2, 256, false)
 			stub := &signatureStub{respond: func(call int, _ modelverify.Ask) (modelverify.Response, error) {
@@ -433,6 +433,10 @@ func TestRunSignatureReplayAuthRateLimitRejected(t *testing.T) {
 			}
 			if report.Score != 0 {
 				t.Fatalf("总分 = %d, 应为 0", report.Score)
+			}
+			view := ToView(report)
+			if len(view.Findings) != 1 || view.Findings[0].Title != f.Title || view.Findings[0].Score != 0 {
+				t.Fatalf("页面卡片必须与原始 finding 一致: view=%+v raw=%+v", view.Findings, f)
 			}
 		})
 	}
@@ -474,6 +478,76 @@ func TestRunSignatureStructureAnomalyWithReplayReject(t *testing.T) {
 	if !foundStructure {
 		t.Fatalf("应保留结构异常 25 分 finding: %+v", report.Findings)
 	}
+}
+
+// M1-T: the same harvest fixture against 404 (request_rejected finding), 500 and
+// timeout (probe Err, no finding). None of these may produce a forgery high score.
+func TestRunSignatureReplayRejectMatrix404AndFailures(t *testing.T) {
+	sig := makeSignature("claude-sonnet-4-5", 2, 256, false)
+
+	t.Run("status_404", func(t *testing.T) {
+		stub := &signatureStub{respond: func(call int, _ modelverify.Ask) (modelverify.Response, error) {
+			if call == 1 {
+				return modelverify.Response{Signature: sig, ReasoningContent: "17 * 23 = 391", FinishReason: "end_turn"}, nil
+			}
+			return modelverify.Response{}, &modelverify.UpstreamStatusError{Status: 404, Err: errors.New("not found")}
+		}}
+		res := RunProbe(context.Background(), ProbeSignature, stub)
+		if res.Err != nil {
+			t.Fatalf("404 拒收不应走 Err 通道: %v", res.Err)
+		}
+		if class := stringOf(res.Data, "replay_reject_class"); class != "request_rejected" {
+			t.Fatalf("404 应归类 request_rejected, 得到 %q", class)
+		}
+		report := BuildReport([]Result{res}, "claude-sonnet-4-5")
+		view := ToView(report)
+		if report.Score != 0 || len(report.Findings) != 1 {
+			t.Fatalf("404 应为 0 分单条不可判, 得到 score=%d findings=%+v", report.Score, report.Findings)
+		}
+		if strings.Contains(report.Findings[0].Title, "伪造") || report.Findings[0].Score != 0 {
+			t.Fatalf("404 不得判伪造: %+v", report.Findings[0])
+		}
+		if view.Findings[0].Title != report.Findings[0].Title || view.Findings[0].Score != 0 {
+			t.Fatalf("页面视图标题必须与原始 finding 一致: view=%+v raw=%+v", view.Findings[0], report.Findings[0])
+		}
+	})
+
+	t.Run("status_500", func(t *testing.T) {
+		stub := &signatureStub{respond: func(call int, _ modelverify.Ask) (modelverify.Response, error) {
+			if call == 1 {
+				return modelverify.Response{Signature: sig, ReasoningContent: "17 * 23 = 391", FinishReason: "end_turn"}, nil
+			}
+			return modelverify.Response{}, &modelverify.UpstreamStatusError{Status: 500, Err: errors.New("internal")}
+		}}
+		res := RunProbe(context.Background(), ProbeSignature, stub)
+		if res.Err == nil {
+			t.Fatal("500 应保持 Err 通道")
+		}
+		report := BuildReport([]Result{res}, "claude-sonnet-4-5")
+		if len(report.Findings) != 0 || report.Score != 0 {
+			t.Fatalf("500 不应产生 finding/风险分: %+v score=%d", report.Findings, report.Score)
+		}
+	})
+
+	t.Run("timeout", func(t *testing.T) {
+		stub := &signatureStub{respond: func(call int, _ modelverify.Ask) (modelverify.Response, error) {
+			if call == 1 {
+				return modelverify.Response{Signature: sig, ReasoningContent: "17 * 23 = 391", FinishReason: "end_turn"}, nil
+			}
+			return modelverify.Response{}, context.DeadlineExceeded
+		}}
+		res := RunProbe(context.Background(), ProbeSignature, stub)
+		if res.Err == nil {
+			t.Fatal("超时应保持 Err 通道")
+		}
+		if rejected, _ := res.Data["replay_rejected"].(bool); rejected {
+			t.Fatal("超时不应记 replay_rejected")
+		}
+		report := BuildReport([]Result{res}, "claude-sonnet-4-5")
+		if len(report.Findings) != 0 || report.Score != 0 {
+			t.Fatalf("超时不应产生 finding/风险分: %+v score=%d", report.Findings, report.Score)
+		}
+	})
 }
 
 func TestRunSignatureReplayServerErrorStaysErr(t *testing.T) {

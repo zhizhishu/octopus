@@ -129,13 +129,14 @@ func TestSseRestoreStreamKeepsNonPlaceholderBytes(t *testing.T) {
 // TestSseRestoreFinishFailsOnIndeterminateRegisteredPrefix: a stream that ends on a
 // placeholder prefix whose hex is >=1 and IS a byte prefix of a registered token is
 // byte-identical to a user literal, so Finish must FAIL CLOSED (explicit error) at
-// every hex length 1..63 and every split point -- never emitting half a placeholder.
+// every hex length 1..64 (full 64 hex without the closing braces) and every split
+// point -- never emitting half a placeholder.
 func TestSseRestoreFinishFailsOnIndeterminateRegisteredPrefix(t *testing.T) {
 	s := newFidelitySession(t, "G")
 	defer s.Close()
 	token, _ := redactPEM(t, s, "openai_chat")
 
-	for n := 1; n <= 63; n++ {
+	for n := 1; n <= 64; n++ {
 		frag := `{"pem":"` + token[:len("{{Redact:")+n]
 		for cut := 1; cut < len(frag); cut++ {
 			r, err := s.NewSseRestorer()
