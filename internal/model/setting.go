@@ -28,16 +28,24 @@ const (
 	SettingKeyOpenAIAutoPromptCacheKey  SettingKey = "openai_auto_prompt_cache_key"
 	SettingKeyUpstreamUTLSFingerprint   SettingKey = "upstream_utls_fingerprint" // 直连上游用 Chrome uTLS ClientHello (JA3); opt-in, 默认关, 启用前须过 the relay 复验
 	SettingKeyRelayStreamDataTimeoutSec SettingKey = "relay_stream_data_interval_timeout_seconds"
-	SettingKeyResponsesSessionTTL       SettingKey = "responses_session_ttl_seconds"
-	SettingKeyClaudeHeaderUserAgent     SettingKey = "claude_header_defaults_user_agent"
-	SettingKeyClaudeHeaderPackage       SettingKey = "claude_header_defaults_package_version"
-	SettingKeyClaudeHeaderRuntime       SettingKey = "claude_header_defaults_runtime_version"
-	SettingKeyClaudeHeaderOS            SettingKey = "claude_header_defaults_os"
-	SettingKeyClaudeHeaderArch          SettingKey = "claude_header_defaults_arch"
-	SettingKeyClaudeHeaderTimeout       SettingKey = "claude_header_defaults_timeout"
-	SettingKeyClaudeHeaderStabilize     SettingKey = "claude_header_defaults_stabilize_device_profile"
-	SettingKeyClaudeCLIAutoCompact      SettingKey = "claude_cli_auto_compact"
-	SettingKeyClaudeCLIReasoningEffort  SettingKey = "claude_cli_reasoning_effort"
+	// SettingKeyUpstreamHeaderTimeoutSec bounds how long ONE attempt may wait for the
+	// upstream to send response headers at all. The existing first-token guard only
+	// arms AFTER headers arrive, so an upstream that accepts the request and then
+	// stays silent was bounded by nothing (measured: 60s and still waiting). 0 (the
+	// default) keeps the previous behaviour. Only the header wait is bounded — the
+	// SSE body stream is unaffected, and a fired budget is an ordinary attempt
+	// failure, so failover and automatic rescue keep working.
+	SettingKeyUpstreamHeaderTimeoutSec SettingKey = "upstream_header_timeout_seconds"
+	SettingKeyResponsesSessionTTL      SettingKey = "responses_session_ttl_seconds"
+	SettingKeyClaudeHeaderUserAgent    SettingKey = "claude_header_defaults_user_agent"
+	SettingKeyClaudeHeaderPackage      SettingKey = "claude_header_defaults_package_version"
+	SettingKeyClaudeHeaderRuntime      SettingKey = "claude_header_defaults_runtime_version"
+	SettingKeyClaudeHeaderOS           SettingKey = "claude_header_defaults_os"
+	SettingKeyClaudeHeaderArch         SettingKey = "claude_header_defaults_arch"
+	SettingKeyClaudeHeaderTimeout      SettingKey = "claude_header_defaults_timeout"
+	SettingKeyClaudeHeaderStabilize    SettingKey = "claude_header_defaults_stabilize_device_profile"
+	SettingKeyClaudeCLIAutoCompact     SettingKey = "claude_cli_auto_compact"
+	SettingKeyClaudeCLIReasoningEffort SettingKey = "claude_cli_reasoning_effort"
 	// SettingKeyClaudeBetaStripFlags is an OPT-IN escape hatch (default empty = OFF).
 	// When empty, octopus faithfully forwards the downstream claude-cli's anthropic-beta
 	// verbatim (unchanged behaviour). When set to a comma-separated list of beta flags,
@@ -324,6 +332,9 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyOpenAIAutoPromptCacheKey, Value: "true"},
 		{Key: SettingKeyUpstreamUTLSFingerprint, Value: "false"}, // 默认关：改 TLS 指纹影响所有上游，须先过 the relay 复验再开
 		{Key: SettingKeyRelayStreamDataTimeoutSec, Value: defaultRelayStreamDataIntervalTimeoutSeconds()},
+		// 0 = 不启用（默认，保持旧行为）：只给"等上游响应头"加时限，SSE 正文不受影响。
+		// 启用后每次尝试按预算切断，失败照常换家/进自动救援，因此可随时回退为 0。
+		{Key: SettingKeyUpstreamHeaderTimeoutSec, Value: "0"},
 		{Key: SettingKeyResponsesSessionTTL, Value: "3600"},
 		{Key: SettingKeyClaudeHeaderUserAgent, Value: DefaultClaudeHeaderUserAgent},
 		{Key: SettingKeyClaudeHeaderPackage, Value: DefaultClaudeHeaderPackageVersion},
@@ -479,7 +490,7 @@ func (s *Setting) Validate() error {
 		return nil
 	case SettingKeyRelayStreamKeepaliveSec, SettingKeyRelayStreamDataTimeoutSec, SettingKeyResponsesSessionTTL,
 		SettingKeySessionKeepTimeDefault, SettingKeyFirstTokenTimeOutDefault, SettingKeyFirstByteKeepaliveDelaySeconds,
-		SettingKeyInterventionKeepaliveDelaySeconds:
+		SettingKeyInterventionKeepaliveDelaySeconds, SettingKeyUpstreamHeaderTimeoutSec:
 		value, err := strconv.Atoi(s.Value)
 		if err != nil || value < 0 {
 			return fmt.Errorf("%s must be a non-negative integer", s.Key)

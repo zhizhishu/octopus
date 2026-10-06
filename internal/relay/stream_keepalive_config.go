@@ -32,12 +32,36 @@ func currentStreamDataIntervalTimeout() time.Duration {
 	return defaultStreamDataIntervalTimeout()
 }
 
+// currentUpstreamHeaderTimeout bounds how long ONE attempt may wait for the upstream
+// to send response headers. 0 (the default) keeps the old behaviour: wait forever.
+//
+// This is the one gap the first-content guard cannot cover. That guard starts a timer
+// only once headers have arrived, so an upstream that accepts the request and never
+// answers headers used to be bounded by nothing at all — measured on an isolated
+// instance: the attempt sat for the full 60s client window with the guard armed at
+// 10s, because the guard had not started. Bounding the header wait turns that into an
+// ordinary attempt failure, so failover and automatic rescue continue as before.
+func currentUpstreamHeaderTimeout() time.Duration {
+	seconds, err := op.SettingGetInt(dbmodel.SettingKeyUpstreamHeaderTimeoutSec)
+	if err == nil {
+		return streamSecondsDuration(seconds)
+	}
+	return defaultUpstreamHeaderTimeout()
+}
+
 func defaultStreamKeepaliveInterval() time.Duration {
 	return envStreamSecondsDuration("RELAY_STREAM_KEEPALIVE_INTERVAL_SECONDS", defaultStreamKeepaliveIntervalSeconds)
 }
 
 func defaultStreamDataIntervalTimeout() time.Duration {
 	return envStreamSecondsDuration("RELAY_STREAM_DATA_INTERVAL_TIMEOUT_SECONDS", defaultStreamDataIntervalTimeoutSeconds)
+}
+
+func defaultUpstreamHeaderTimeout() time.Duration {
+	// Default 0 = disabled: unchanged behaviour until an operator opts in, because a
+	// too-short budget would cut slow-but-healthy channels. Override with
+	// OCTOPUS_UPSTREAM_HEADER_TIMEOUT_SECONDS or the runtime setting.
+	return envStreamSecondsDuration("UPSTREAM_HEADER_TIMEOUT_SECONDS", 0)
 }
 
 func currentFirstByteKeepaliveDelay() time.Duration {

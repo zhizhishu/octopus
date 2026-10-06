@@ -2015,6 +2015,36 @@ func (ra *relayAttempt) sendRequest(req *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 
+	// 只给"等上游下发响应头"这一段加预算（默认 0 = 不启用，旧行为不变）。
+	// 为什么需要：首内容守卫是在拿到响应头之后才起表的，所以"上游收下请求却一直
+	// 不下发响应头"这一档此前没有任何东西兜底（隔离实例实测：设了 10s 仍挂满 60s）。
+	// 作用范围严格限定在响应头：拿到头就停表，正文 SSE 继续用原 context 读，绝不被
+	// 这个预算掐断；计时器只在我们这一侧，出站字节一个不改。
+	// 预算触发就是一次普通的"这次尝试失败"：按 504 计入渠道健康、按既有规则换家并进入
+	// 自动救援，因此救援能力不被削弱。
+	if budget := currentUpstreamHeaderTimeout(); budget > 0 {
+		ctx, cancel := context.WithCancel(req.Context())
+		timer := time.AfterFunc(budget, cancel)
+		response, err := helper.DoPreserveMethodRedirect(httpClient, req.WithContext(ctx))
+		if timer.Stop() {
+			// 响应头按时到达。这里刻意不调用 cancel：该 context 还要供正文流式读取
+			// 使用，等父 context（本次客户端请求）结束时自然释放。
+			return response, err
+		}
+		// 计时器已触发，说明等待响应头超预算。
+		if err != nil {
+			log.Warnf("upstream header timeout (%s), switching channel", budget)
+			return nil, &localRelayError{
+				status:   http.StatusGatewayTimeout,
+				code:     "octopus_upstream_header_timeout",
+				strategy: "upstream_header_timeout;upstream_forwarded=true",
+				message:  fmt.Sprintf("upstream did not send response headers within %s", budget),
+			}
+		}
+		// 计时器触发与响应头到达的竞态：头已经拿到，按成功继续。
+		return response, nil
+	}
+
 	response, err := helper.DoPreserveMethodRedirect(httpClient, req)
 	if err != nil {
 		log.Warnf("failed to send request: %v", err)
