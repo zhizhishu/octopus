@@ -183,6 +183,18 @@ runIterator:
 				balancer.RecordFailureWithStatus(channel.ID, usedKey.ID, item.ModelName, recordStatusCode)
 			}
 
+			// The upstream answered 2xx: it has already accepted (and will bill) the
+			// video task, so failing over here would create a SECOND task and lose the
+			// first one's id (recordVideoTaskOwner only runs on the success branch
+			// above). The images and raw pass-through paths already refuse to fail over
+			// once the upstream has answered; video creation is the same class of
+			// money-costing, side-effecting operation. Fail here instead of silently
+			// creating a duplicate.
+			if statusCode >= 200 && statusCode < 300 {
+				metrics.Save(ctx, false, fwdErr, append(allAttempts, iter.Attempts()...))
+				return
+			}
+
 			lastErr = fmt.Errorf("channel %s failed: %w", channel.Name, fwdErr)
 			if !shouldTryNextChannelKey(recordStatusCode) {
 				break
