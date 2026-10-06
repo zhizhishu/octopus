@@ -859,7 +859,7 @@ func (ra *relayAttempt) attempt() attemptResult {
 	// ====== 失败 ======
 	recordStatusCode := attemptStatusCode(statusCode, fwdErr)
 	op.ChannelKeyRecordUse(ra.usedKey, recordStatusCode, usedAt, 0)
-	span.End(dbmodel.AttemptFailed, recordStatusCode, auditErrorMessage(fwdErr))
+	span.End(dbmodel.AttemptFailed, recordStatusCode, attemptAuditMessage(ra.upstreamResponded, fwdErr))
 
 	breakerCounted := shouldRecordBreakerFailure(recordStatusCode, fwdErr)
 	// A DisableCircuitBreaker channel never accumulates circuit/runtime failure state: a
@@ -1152,6 +1152,10 @@ retryWithAdapter:
 	if err != nil {
 		return 0, fmt.Errorf("failed to send request: %w", err)
 	}
+	// The upstream answered, so this attempt's request really was executed there (and
+	// may already be billed). Recorded so a later failure on this attempt can say so in
+	// the audit log; it does not change whether the relay fails over.
+	ra.upstreamResponded = true
 	if ra.metrics != nil {
 		ra.metrics.ResponseHeaderTime = time.Now()
 	}

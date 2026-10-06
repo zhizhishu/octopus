@@ -97,6 +97,25 @@ func auditErrorMessage(err error) string {
 	return err.Error()
 }
 
+// attemptAuditMessage is the per-attempt message the admin log shows. When the
+// upstream had already answered this attempt, it says so: the request was really
+// executed upstream (and may already be billed) even though nothing reached the
+// client and the relay is about to re-send it to the next channel. Without this the
+// log cannot distinguish "never reached upstream" from "reached upstream, response
+// lost" — the retry gate itself keys off a fact about the CLIENT, so it can never
+// supply that distinction on its own.
+func attemptAuditMessage(upstreamResponded bool, err error) string {
+	msg := auditErrorMessage(err)
+	if !upstreamResponded {
+		return msg
+	}
+	const note = "upstream had already answered: this request was executed upstream before the relay moved on"
+	if msg == "" {
+		return note
+	}
+	return msg + " (" + note + ")"
+}
+
 func upstreamErrorDetails(err error) (status int, code string, strategy string, ok bool) {
 	var upErr *upstreamError
 	if !errors.As(err, &upErr) {

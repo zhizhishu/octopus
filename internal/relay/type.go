@@ -212,6 +212,14 @@ type relayAttempt struct {
 	// to the channel that later succeeded (F10).
 	upstreamDeclaredModel string
 
+	// upstreamResponded records that THIS attempt got an HTTP response back from the
+	// upstream, i.e. the request really was transmitted and executed there. The retry
+	// gate keys off wroteMeaningfulDownstream (a fact about the CLIENT), so without
+	// this the relay cannot tell "never reached upstream" from "reached upstream,
+	// response lost, now re-sent to the next channel". It is recorded for the audit
+	// log only and deliberately does not change the retry decision.
+	upstreamResponded bool
+
 	// prewarmMu/prewarmStopped guard the first-byte keepalive goroutine so the
 	// injected heartbeat writes and the main response writes never race.
 	prewarmMu      sync.Mutex
