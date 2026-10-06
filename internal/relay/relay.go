@@ -64,6 +64,7 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		if message == "" && err != nil {
 			message = err.Error()
 		}
+		saveRouteSelectionFailureRelayLog(c.Request.Context(), c, inboundType, internalRequest, routeSelectionUnconfigured, status, message)
 		writeRelayErrorPreStream(c, inboundType, status, "api_error", "", message)
 		return
 	}
@@ -78,6 +79,7 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 	iter.PrioritizeChannels(nativeProtocolChannelIDs(c.Request.Context(), inboundType, group.Items))
 	prioritizeResponsesSessionOwner(c.Request.Context(), iter, internalRequest, apiKeyID, userID)
 	if iter.Len() == 0 {
+		saveRouteSelectionFailureRelayLog(c.Request.Context(), c, inboundType, internalRequest, routeSelectionNoCandidates, http.StatusServiceUnavailable, "no available channel")
 		writeRelayErrorPreStream(c, inboundType, http.StatusServiceUnavailable, "api_error", "no_available_channel", "no available channel")
 		return
 	}

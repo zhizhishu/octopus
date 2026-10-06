@@ -780,6 +780,8 @@
             "attempts": "次嘗試",
             "success": "成功",
             "failed": "失敗",
+            "skipped": "已跳過",
+            "circuitBreak": "熔斷冷卻中",
             "successStatus": "成功",
             "warnStatus": "成功但有告警",
             "failedStatus": "失敗",

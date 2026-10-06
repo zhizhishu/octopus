@@ -32,6 +32,7 @@ const ERROR_CODE_LABELS: Record<string, string> = {
 
     // ---- 本网关侧（你的配置/调度）相关 ----
     octopus_no_available_channel: '没有可用渠道',
+    octopus_route_unresolved: '没有可用渠道（请求没发出去）',
     octopus_channel_circuit_open: '渠道被熔断（连续失败被暂时停用）',
     octopus_all_channels_failed: '所有渠道都失败了',
 
@@ -113,6 +114,21 @@ function lookup(map: Record<string, string>, raw: string | undefined): string | 
  */
 function prettifyRawCode(raw: string): string {
     return raw.replace(/[_-]+/g, ' ').trim();
+}
+
+/**
+ * 从 error_strategy 里取 `reason=xxx`。后端把「选路为什么没成」编码在这个分号串里
+ * （如 `local_route_selection;reason=no_candidates;upstream_forwarded=false`），
+ * 只有 reason 的部分值对运维有意义，其余是内部标记。
+ */
+function strategyReason(strategy: string | undefined): string {
+    const raw = strategy?.trim();
+    if (!raw) return '';
+    for (const part of raw.split(';')) {
+        const [key, value] = part.split('=');
+        if (key?.trim().toLowerCase() === 'reason') return value?.trim().toLowerCase() ?? '';
+    }
+    return '';
 }
 
 /** 是不是「连通性测试」类日志（model_test / model_test_xxx）。 */
@@ -265,6 +281,25 @@ export function getLogVerdict(
     }
 
     // 3. 本网关配置 / 调度侧
+    if (code === 'octopus_route_unresolved') {
+        const reason = strategyReason(log.error_strategy);
+        if (reason === 'no_candidates') {
+            return {
+                kind: 'config',
+                text: '❌ 失败：这个模型的分组里一条可用渠道都没有，请求根本没发出去。这不是上游的问题，也不会自己好——去「渠道」把这个模型挂到已启用的渠道上。',
+            };
+        }
+        if (reason === 'route_unconfigured') {
+            return {
+                kind: 'config',
+                text: '❌ 失败：这个模型没能匹配到任何分组，请求根本没发出去。检查模型名是否写对，以及「方案」里的模型路由是否指向了目标渠道。',
+            };
+        }
+        return {
+            kind: 'config',
+            text: '❌ 失败：没有可用渠道，请求根本没发出去。这属于配置问题，等着不会自己好。',
+        };
+    }
     if (code === 'octopus_no_available_channel') {
         return { kind: 'config', text: '❌ 失败：没有可用渠道。请检查这个模型是否绑定了「已启用」的渠道。这通常是你的配置问题。' };
     }

@@ -15,6 +15,13 @@ const (
 	RelayLogErrorStrategyLocalValidation     = "local_validation;upstream_forwarded=false;billable=false;stats_counted=false"
 	RelayLogErrorStrategyLocalCursorProbe    = "local_validation;cursor_empty_probe=true;upstream_forwarded=false;billable=false;stats_counted=false"
 	RelayLogErrorStrategyLocalValidationPart = "local_validation"
+	// RelayLogErrorCodeRouteUnresolved marks a request that died BEFORE any channel was
+	// attempted (the model mapped to no usable route group, or the group held no channels).
+	// Nothing was forwarded upstream, so an audit log is the only record an operator gets.
+	RelayLogErrorCodeRouteUnresolved = "octopus_route_unresolved"
+	// RelayLogErrorStrategyRouteSelectionPart is the marker op.relayLogExcludedFromModelTelemetry
+	// already matches on, keeping these pre-attempt rows out of model health telemetry.
+	RelayLogErrorStrategyRouteSelectionPart = "local_route_selection"
 )
 
 const (

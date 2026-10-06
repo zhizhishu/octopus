@@ -108,10 +108,31 @@ function formatTokensSummary(log: RelayLog): string {
     return `Tokens: ${total.toLocaleString()} (入 ${inStr} / 出 ${outStr} / 缓 ${cacheTokens}${cacheRate})`;
 }
 
-function formatAttemptStatus(status: ChannelAttempt['status'], successLabel: string, failedLabel: string): string {
-    if (status === 'success') return successLabel;
-    if (status === 'failed') return failedLabel;
-    return status.replace(/_/g, ' ');
+function formatAttemptStatus(status: ChannelAttempt['status'], t: (key: string) => string): string {
+    switch (status) {
+        case 'success':
+            return t('success');
+        case 'failed':
+            return t('failed');
+        // skipped / circuit_break 是"没试"和"被暂时挡住"，不是失败——别再糊英文枚举给管理员。
+        case 'skipped':
+            return t('skipped');
+        case 'circuit_break':
+            return t('circuitBreak');
+        default:
+            // 后端将来新增状态时的兜底：下划线换空格，不裸糊机器码。
+            return String(status).replace(/_/g, ' ');
+    }
+}
+
+/**
+ * 尝试状态的徽章配色。跳过/熔断不是失败：跳过往往是配置原因（渠道停用、无密钥、类型不兼容），
+ * 熔断是会自己恢复的暂时状态。用琥珀色与真失败（红）区分，避免"排序靠后/暂时冷却"被看成"封禁"。
+ */
+function attemptStatusBadgeClass(status: ChannelAttempt['status']): string {
+    if (status === 'success') return 'bg-primary/15 text-primary';
+    if (status === 'failed') return 'bg-destructive/15 text-destructive';
+    return 'bg-amber-500/15 text-amber-600 dark:text-amber-400';
 }
 
 function formatEndpointName(endpoint: string | undefined): string {
@@ -214,12 +235,10 @@ function RetryBadgeWithPopover({ channelName, brandColor, attempts }: RetryBadge
                                 <Badge
                                     className={cn(
                                         "h-5 shrink-0 px-1.5 text-[10px] font-bold uppercase shadow-none border-0",
-                                        attempt.status === 'success'
-                                            ? "bg-primary/15 text-primary"
-                                            : "bg-destructive/15 text-destructive"
+                                        attemptStatusBadgeClass(attempt.status)
                                     )}
                                 >
-                                    {formatAttemptStatus(attempt.status, t('success'), t('failed'))}
+                                    {formatAttemptStatus(attempt.status, t)}
                                 </Badge>
                                 <div className="flex min-w-0 flex-col flex-1">
                                     <SafeText
@@ -239,6 +258,18 @@ function RetryBadgeWithPopover({ channelName, brandColor, attempts }: RetryBadge
                                                 className="text-[10px] text-muted-foreground"
                                             />
                                         </div>
+                                    {attempt.msg && attempt.status !== 'success' && (
+                                        <MonoSafeText
+                                            mode="wrap"
+                                            value={attempt.msg}
+                                            className={cn(
+                                                "text-[10px]",
+                                                attempt.status === 'failed'
+                                                    ? "text-destructive/90"
+                                                    : "text-amber-600 dark:text-amber-400"
+                                            )}
+                                        />
+                                    )}
                                     {attempt.upstream_path && (
                                         <MonoSafeText
                                             mode="wrap"
@@ -1467,12 +1498,10 @@ export const LogCard = React.memo(function LogCard({
                                                                             <Badge
                                                                                 className={cn(
                                                                                     "h-5 w-fit shrink-0 px-1.5 text-[10px] font-bold uppercase shadow-none border-0",
-                                                                                    attempt.status === 'success'
-                                                                                        ? "bg-primary/15 text-primary"
-                                                                                        : "bg-destructive/15 text-destructive"
+                                                                                    attemptStatusBadgeClass(attempt.status)
                                                                                 )}
                                                                             >
-                                                                                {formatAttemptStatus(attempt.status, t('success'), t('failed'))}
+                                                                                {formatAttemptStatus(attempt.status, t)}
                                                                             </Badge>
                                                                             <SafeText
                                                                                 mode="wrap"

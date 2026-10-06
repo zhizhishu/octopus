@@ -780,6 +780,8 @@
             "attempts": "attempts",
             "success": "Success",
             "failed": "Failed",
+            "skipped": "Skipped",
+            "circuitBreak": "Cooling down",
             "successStatus": "Success",
             "warnStatus": "Success with warnings",
             "failedStatus": "Failed",
