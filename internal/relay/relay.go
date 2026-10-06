@@ -2221,7 +2221,32 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 	// stream committed. Withholding it keeps ra.wroteMeaningfulDownstream false so a
 	// pre-content upstream death can still fail over — the client has seen only
 	// ignorable SSE comment heartbeats, never a committed envelope.
+	// A provider that streams nothing but envelope events (message_start /
+	// response.created / a bare role delta) would otherwise grow pendingPrelude
+	// without bound: the upstream data-interval timer is reset by every event we
+	// read, and the first-token timer is opt-in (group default 0, global default
+	// 0 = disabled). So neither existing clock bounds this buffer. Cap it and fail
+	// the attempt instead of buffering forever.
+	//
+	// Sized for headroom, not for tightness: a real opener is a few hundred bytes, and
+	// the cap must not fire on a provider that legitimately echoes a large prompt or
+	// instructions inside its opener event. 1MiB is orders of magnitude above any
+	// plausible opener while still being a hard per-request bound.
+	const maxPendingPreludeBytes = 1 << 20
 	var pendingPrelude []byte
+	bufferPrelude := func(chunk []byte) error {
+		if len(pendingPrelude)+len(chunk) > maxPendingPreludeBytes {
+			_ = response.Body.Close()
+			return &localRelayError{
+				status:   http.StatusBadGateway,
+				code:     "octopus_upstream_stream_error",
+				strategy: "stream_prelude_over_limit;upstream_forwarded=false",
+				message:  fmt.Sprintf("upstream stream opener exceeded %d bytes without any content", maxPendingPreludeBytes),
+			}
+		}
+		pendingPrelude = append(pendingPrelude, chunk...)
+		return nil
+	}
 	commitPendingPrelude := func() error {
 		if ra.wroteMeaningfulDownstream {
 			return nil
@@ -2265,7 +2290,9 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 		// Deliberately do NOT arm/cancel the first-token timer here: the opener is not
 		// real content, so the slow-first-token channel switch must stay armed until an
 		// actual content chunk arrives.
-		pendingPrelude = append(pendingPrelude, data...)
+		if err := bufferPrelude(data); err != nil {
+			return err
+		}
 	}
 
 	for {
@@ -2467,7 +2494,9 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 			// fails over. Once content arrives, flush the buffered opener ahead of it and
 			// mark the stream committed — later failures then surface to the client.
 			if !ra.wroteMeaningfulDownstream && !meaningfulNow {
-				pendingPrelude = append(pendingPrelude, data...)
+				if err := bufferPrelude(data); err != nil {
+					return err
+				}
 				continue
 			}
 			if err := commitPendingPrelude(); err != nil {
