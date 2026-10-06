@@ -26,6 +26,7 @@ export const SettingKey = {
     OpenAIAutoPromptCacheKey: 'openai_auto_prompt_cache_key',
     RelayStreamKeepaliveIntervalSeconds: 'relay_stream_keepalive_interval_seconds',
     RelayStreamDataIntervalTimeoutSeconds: 'relay_stream_data_interval_timeout_seconds',
+    UpstreamHeaderTimeoutSeconds: 'upstream_header_timeout_seconds',
     FirstByteKeepaliveDelaySeconds: 'first_byte_keepalive_delay_seconds',
     RelayInterventionEnabled: 'relay_intervention_enabled',
     RelayInterventionTimeoutSeconds: 'relay_intervention_timeout_seconds',

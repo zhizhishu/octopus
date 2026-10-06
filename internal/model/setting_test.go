@@ -21,6 +21,18 @@ func TestRelayStreamKeepaliveIntervalValidation(t *testing.T) {
 		{name: "first token default disabled", key: SettingKeyFirstTokenTimeOutDefault, value: "0"},
 		{name: "first token default negative", key: SettingKeyFirstTokenTimeOutDefault, value: "-1", wantErr: true},
 		{name: "first token default not integer", key: SettingKeyFirstTokenTimeOutDefault, value: "1.5", wantErr: true},
+		// Upstream header wait: default-off, but bounded so an out-of-range value can
+		// never overflow into a negative duration (which the relay reads as disabled).
+		{name: "upstream header disabled", key: SettingKeyUpstreamHeaderTimeoutSec, value: "0"},
+		{name: "upstream header positive", key: SettingKeyUpstreamHeaderTimeoutSec, value: "120"},
+		{name: "upstream header at ceiling", key: SettingKeyUpstreamHeaderTimeoutSec, value: "86400"},
+		{name: "upstream header above ceiling", key: SettingKeyUpstreamHeaderTimeoutSec, value: "86401", wantErr: true},
+		{name: "upstream header overflow attempt", key: SettingKeyUpstreamHeaderTimeoutSec, value: "9223372036", wantErr: true},
+		{name: "upstream header negative", key: SettingKeyUpstreamHeaderTimeoutSec, value: "-1", wantErr: true},
+		{name: "upstream header not integer", key: SettingKeyUpstreamHeaderTimeoutSec, value: "1.5", wantErr: true},
+		{name: "upstream header not a number", key: SettingKeyUpstreamHeaderTimeoutSec, value: "abc", wantErr: true},
+		{name: "upstream header empty", key: SettingKeyUpstreamHeaderTimeoutSec, value: "", wantErr: true},
+		{name: "upstream header blank", key: SettingKeyUpstreamHeaderTimeoutSec, value: " ", wantErr: true},
 	}
 
 	for _, tt := range tests {
@@ -194,5 +206,46 @@ func TestProxyURLRedactMergeRoundTrip(t *testing.T) {
 	}
 	if err := (&Setting{Key: SettingKeyProxyURL, Value: merged}).Validate(); err != nil {
 		t.Fatalf("merged value failed Validate: %v", err)
+	}
+}
+
+// The upstream header budget is default-off, and the environment variable is the
+// *initial* value only: it seeds DefaultSettings, after which the stored setting (what
+// the Settings page writes) wins. This pins the seeding half; the relay-side reader
+// pins that a stored value is what takes effect.
+func TestUpstreamHeaderTimeoutDefaultSeededFromEnvironment(t *testing.T) {
+	cases := []struct {
+		name string
+		env  string
+		want string
+	}{
+		{name: "unset stays disabled", env: "", want: "0"},
+		{name: "valid seconds", env: "120", want: "120"},
+		{name: "negative falls back to disabled", env: "-5", want: "0"},
+		{name: "garbage falls back to disabled", env: "abc", want: "0"},
+		{name: "fractional falls back to disabled", env: "1.5", want: "0"},
+		{name: "above ceiling is capped", env: "999999", want: "86400"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("OCTOPUS_UPSTREAM_HEADER_TIMEOUT_SECONDS", tc.env)
+			if got := defaultUpstreamHeaderTimeoutSeconds(); got != tc.want {
+				t.Fatalf("seeded default = %q, want %q", got, tc.want)
+			}
+			var seeded string
+			found := false
+			for _, s := range DefaultSettings() {
+				if s.Key == SettingKeyUpstreamHeaderTimeoutSec {
+					seeded, found = s.Value, true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("DefaultSettings must register %s", SettingKeyUpstreamHeaderTimeoutSec)
+			}
+			if seeded != tc.want {
+				t.Fatalf("DefaultSettings value = %q, want %q", seeded, tc.want)
+			}
+		})
 	}
 }

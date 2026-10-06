@@ -47,6 +47,7 @@ export function SettingSystem() {
     const [openAIAutoPromptCacheKey, setOpenAIAutoPromptCacheKey] = useState(true);
     const [streamKeepaliveInterval, setStreamKeepaliveInterval] = useState('15');
     const [streamDataTimeoutInterval, setStreamDataTimeoutInterval] = useState('900');
+    const [upstreamHeaderTimeout, setUpstreamHeaderTimeout] = useState('0');
     const [firstByteKeepaliveDelay, setFirstByteKeepaliveDelay] = useState('0');
     const [responsesSessionTTL, setResponsesSessionTTL] = useState('3600');
     const [claudeHeaderUserAgent, setClaudeHeaderUserAgent] = useState('claude-cli/2.1.281 (external, sdk-cli)');
@@ -106,6 +107,7 @@ export function SettingSystem() {
     const initialOpenAIAutoPromptCacheKey = useRef(true);
     const initialStreamKeepaliveInterval = useRef('15');
     const initialStreamDataTimeoutInterval = useRef('900');
+    const initialUpstreamHeaderTimeout = useRef('0');
     const initialFirstByteKeepaliveDelay = useRef('0');
     const initialResponsesSessionTTL = useRef('3600');
     const initialClaudeHeaderUserAgent = useRef('claude-cli/2.1.281 (external, sdk-cli)');
@@ -155,6 +157,7 @@ export function SettingSystem() {
             const openAIAutoCacheKey = settings.find(s => s.key === SettingKey.OpenAIAutoPromptCacheKey);
             const keepalive = settings.find(s => s.key === SettingKey.RelayStreamKeepaliveIntervalSeconds);
             const dataTimeout = settings.find(s => s.key === SettingKey.RelayStreamDataIntervalTimeoutSeconds);
+            const upstreamHeader = settings.find(s => s.key === SettingKey.UpstreamHeaderTimeoutSeconds);
             const firstByteKeepalive = settings.find(s => s.key === SettingKey.FirstByteKeepaliveDelaySeconds);
             const responsesTTL = settings.find(s => s.key === SettingKey.ResponsesSessionTTLSeconds);
             const claudeUA = settings.find(s => s.key === SettingKey.ClaudeHeaderUserAgent);
@@ -226,6 +229,8 @@ export function SettingSystem() {
             if (dataTimeout) {
                 queueMicrotask(() => setStreamDataTimeoutInterval(dataTimeout.value || '900'));
                 initialStreamDataTimeoutInterval.current = dataTimeout.value || '900';
+                setUpstreamHeaderTimeout(upstreamHeader?.value || '0');
+                initialUpstreamHeaderTimeout.current = upstreamHeader?.value || '0';
             }
             if (firstByteKeepalive) {
                 queueMicrotask(() => setFirstByteKeepaliveDelay(firstByteKeepalive.value || '0'));
@@ -409,6 +414,9 @@ export function SettingSystem() {
                     initialStreamKeepaliveInterval.current = value;
                 } else if (key === SettingKey.RelayStreamDataIntervalTimeoutSeconds) {
                     initialStreamDataTimeoutInterval.current = value;
+                } else if (key === SettingKey.UpstreamHeaderTimeoutSeconds) {
+                    setUpstreamHeaderTimeout(value);
+                    initialUpstreamHeaderTimeout.current = value;
                 } else if (key === SettingKey.FirstByteKeepaliveDelaySeconds) {
                     initialFirstByteKeepaliveDelay.current = value;
                 } else if (key === SettingKey.ResponsesSessionTTLSeconds) {
@@ -507,6 +515,25 @@ export function SettingSystem() {
             SettingKey.RelayStreamDataIntervalTimeoutSeconds,
             normalizedValue,
             initialStreamDataTimeoutInterval.current
+        );
+    };
+
+    const handleUpstreamHeaderTimeoutBlur = () => {
+        const rawValue = upstreamHeaderTimeout.trim();
+        const numericValue = Number(rawValue);
+        // Bounded like the backend's Validate(): an out-of-range value would overflow a
+        // duration server-side, so it is rejected here with the same ceiling.
+        if (!rawValue || !Number.isInteger(numericValue) || numericValue < 0 || numericValue > 86400) {
+            setUpstreamHeaderTimeout(initialUpstreamHeaderTimeout.current || '0');
+            toast.error(t('upstreamHeaderTimeout.invalid'));
+            return;
+        }
+        const normalizedValue = String(numericValue);
+        setUpstreamHeaderTimeout(normalizedValue);
+        handleSave(
+            SettingKey.UpstreamHeaderTimeoutSeconds,
+            normalizedValue,
+            initialUpstreamHeaderTimeout.current
         );
     };
 
@@ -1379,6 +1406,53 @@ export function SettingSystem() {
                             className="w-24 rounded-xl sm:w-28"
                         />
                         <span className="min-w-0 text-xs text-muted-foreground">{t('streamDataTimeout.seconds')}</span>
+                    </div>
+                </div>
+                <div className="flex flex-col gap-3 border-t border-border/60 pt-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="flex min-w-0 items-start gap-3">
+                        <Clock className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" />
+                        <div className="min-w-0 space-y-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                                <span className="text-sm font-medium">{t('upstreamHeaderTimeout.label')}</span>
+                                <span className="rounded-full bg-background px-2 py-0.5 text-[11px] text-muted-foreground">
+                                    {t('upstreamHeaderTimeout.disabledHint')}
+                                </span>
+                                <TooltipProvider>
+                                    <Tooltip>
+                                        <TooltipTrigger asChild>
+                                            <HelpCircle className="size-4 text-muted-foreground cursor-help" />
+                                        </TooltipTrigger>
+                                        <TooltipContent className="max-w-xs">
+                                            {t('upstreamHeaderTimeout.hint')}
+                                        </TooltipContent>
+                                    </Tooltip>
+                                </TooltipProvider>
+                            </div>
+                            <p className="text-xs leading-5 text-muted-foreground">
+                                {t('upstreamHeaderTimeout.description')}
+                            </p>
+                            <p className="break-all text-[11px] leading-5 text-muted-foreground">
+                                <span className="font-mono">OCTOPUS_UPSTREAM_HEADER_TIMEOUT_SECONDS</span>
+                                {' '}
+                                {t('upstreamHeaderTimeout.envHint')}
+                            </p>
+                        </div>
+                    </div>
+                    <div className="flex w-full min-w-0 items-center gap-2 self-start sm:w-auto sm:shrink-0 sm:self-center">
+                        <Input
+                            type="number"
+                            min="0"
+                            max="86400"
+                            step="1"
+                            inputMode="numeric"
+                            value={upstreamHeaderTimeout}
+                            onChange={(event) => setUpstreamHeaderTimeout(event.target.value)}
+                            onBlur={handleUpstreamHeaderTimeoutBlur}
+                            placeholder={t('upstreamHeaderTimeout.placeholder')}
+                            aria-label={t('upstreamHeaderTimeout.label')}
+                            className="w-24 rounded-xl sm:w-28"
+                        />
+                        <span className="min-w-0 text-xs text-muted-foreground">{t('upstreamHeaderTimeout.seconds')}</span>
                     </div>
                 </div>
                 <div className="flex flex-col gap-3 border-t border-border/60 pt-3 sm:flex-row sm:items-start sm:justify-between">

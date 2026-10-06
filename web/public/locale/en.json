@@ -298,6 +298,16 @@
             "seconds": "sec",
             "invalid": "Stream idle timeout must be 0 or a positive integer number of seconds"
         },
+        "upstreamHeaderTimeout": {
+            "label": "Upstream response header timeout",
+            "hint": "Caps how long each attempt waits for the upstream to send response headers. On expiry the attempt fails and the existing failover / automatic rescue rules continue; the body stream after headers arrive is unaffected.",
+            "description": "Prevents an upstream that accepts a request and then never answers from holding a single connection for the whole wait. This limits one attempt only, not the total length of automatic rescue.",
+            "disabledHint": "0 seconds disables",
+            "envHint": "can still provide the first deployment default.",
+            "placeholder": "0",
+            "seconds": "sec",
+            "invalid": "Upstream response header timeout must be an integer between 0 and 86400 seconds"
+        },
         "responsesSessionTTL": {
             "label": "Responses session keep",
             "hint": "Remembers which channel and key own a previous_response_id, reducing broken continuations after restarts or route changes.",

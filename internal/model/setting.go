@@ -334,7 +334,9 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyRelayStreamDataTimeoutSec, Value: defaultRelayStreamDataIntervalTimeoutSeconds()},
 		// 0 = 不启用（默认，保持旧行为）：只给"等上游响应头"加时限，SSE 正文不受影响。
 		// 启用后每次尝试按预算切断，失败照常换家/进自动救援，因此可随时回退为 0。
-		{Key: SettingKeyUpstreamHeaderTimeoutSec, Value: "0"},
+		// 初始值可被 OCTOPUS_UPSTREAM_HEADER_TIMEOUT_SECONDS 影响（与相邻超时设置同规矩）；
+		// 一旦本机已有该行（含默认写入的 0），设置页/数据库的值优先，环境变量只作初始化默认。
+		{Key: SettingKeyUpstreamHeaderTimeoutSec, Value: defaultUpstreamHeaderTimeoutSeconds()},
 		{Key: SettingKeyResponsesSessionTTL, Value: "3600"},
 		{Key: SettingKeyClaudeHeaderUserAgent, Value: DefaultClaudeHeaderUserAgent},
 		{Key: SettingKeyClaudeHeaderPackage, Value: DefaultClaudeHeaderPackageVersion},
@@ -490,10 +492,19 @@ func (s *Setting) Validate() error {
 		return nil
 	case SettingKeyRelayStreamKeepaliveSec, SettingKeyRelayStreamDataTimeoutSec, SettingKeyResponsesSessionTTL,
 		SettingKeySessionKeepTimeDefault, SettingKeyFirstTokenTimeOutDefault, SettingKeyFirstByteKeepaliveDelaySeconds,
-		SettingKeyInterventionKeepaliveDelaySeconds, SettingKeyUpstreamHeaderTimeoutSec:
+		SettingKeyInterventionKeepaliveDelaySeconds:
 		value, err := strconv.Atoi(s.Value)
 		if err != nil || value < 0 {
 			return fmt.Errorf("%s must be a non-negative integer", s.Key)
+		}
+		return nil
+	case SettingKeyUpstreamHeaderTimeoutSec:
+		// Bounded like the no-breaker retry budget: an out-of-range value would be
+		// multiplied into a time.Duration and could overflow into a negative number,
+		// which the relay reads as "disabled" — a silent way to lose the guard.
+		value, err := strconv.Atoi(s.Value)
+		if err != nil || value < 0 || value > MaxUpstreamHeaderTimeoutSeconds {
+			return fmt.Errorf("%s must be an integer between 0 and %d", s.Key, MaxUpstreamHeaderTimeoutSeconds)
 		}
 		return nil
 	case SettingKeyRelayNoBreakerRetryBudgetSec:
@@ -671,6 +682,29 @@ func (s *Setting) Validate() error {
 	}
 
 	return nil
+}
+
+// MaxUpstreamHeaderTimeoutSeconds bounds the configurable per-attempt header wait. It
+// exists so the seconds value can never overflow into a negative time.Duration (which
+// the relay would read as "disabled"); one day is far beyond any healthy slow upstream.
+const MaxUpstreamHeaderTimeoutSeconds = 86400
+
+func defaultUpstreamHeaderTimeoutSeconds() string {
+	raw := strings.TrimSpace(os.Getenv("OCTOPUS_UPSTREAM_HEADER_TIMEOUT_SECONDS"))
+	if raw == "" {
+		return "0"
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return "0"
+	}
+	if value < 0 {
+		return "0"
+	}
+	if value > MaxUpstreamHeaderTimeoutSeconds {
+		return strconv.Itoa(MaxUpstreamHeaderTimeoutSeconds)
+	}
+	return strconv.Itoa(value)
 }
 
 func defaultRelayStreamKeepaliveIntervalSeconds() string {

@@ -162,3 +162,95 @@ func TestUpstreamHeaderTimeoutConfig(t *testing.T) {
 		t.Fatalf("expected disabled upstream header timeout, got %s", got)
 	}
 }
+
+// A client that goes away while we are waiting for headers must keep its own
+// attribution. Recording it as "upstream never answered" would poison channel health
+// and blame the upstream for the client's own cancellation.
+func TestUpstreamHeaderTimeoutKeepsClientCancelAttribution(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	setupRelayErrorDB(t)
+	if err := op.SettingSetString(dbmodel.SettingKeyUpstreamHeaderTimeoutSec, "30"); err != nil {
+		t.Fatalf("set upstream header timeout: %v", err)
+	}
+
+	release := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+	}))
+	t.Cleanup(func() {
+		close(release)
+		upstream.Close()
+	})
+
+	clientCtx, cancelClient := context.WithCancel(context.Background())
+	req, err := http.NewRequestWithContext(clientCtx, http.MethodPost, upstream.URL+"/v1/chat/completions", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		cancelClient()
+	}()
+
+	ra := &relayAttempt{channel: &dbmodel.Channel{Name: "cancel-attribution"}}
+	_, sendErr := ra.sendRequest(req)
+	if sendErr == nil {
+		t.Fatalf("a cancelled client must not produce a success")
+	}
+	if _, code, _, ok := localRelayErrorDetails(sendErr); ok && code == "octopus_upstream_header_timeout" {
+		t.Fatalf("client cancellation was misattributed to the upstream header budget: %v", sendErr)
+	}
+	if !isClientAbortError(sendErr) {
+		t.Fatalf("expected client-abort attribution, got %v", sendErr)
+	}
+}
+
+// A response that only arrives once the budget has already fired must be treated as a
+// failed attempt. Handing back a "successful" response whose context is already
+// cancelled would give the caller a stream that is guaranteed to break mid-answer.
+func TestUpstreamHeaderTimeoutNeverReturnsUnusableResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	setupRelayErrorDB(t)
+	if err := op.SettingSetString(dbmodel.SettingKeyUpstreamHeaderTimeoutSec, "1"); err != nil {
+		t.Fatalf("set upstream header timeout: %v", err)
+	}
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(1400 * time.Millisecond)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	t.Cleanup(upstream.Close)
+
+	ra := &relayAttempt{channel: &dbmodel.Channel{Name: "late-headers"}}
+	req, err := http.NewRequest(http.MethodPost, upstream.URL+"/v1/chat/completions", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	startedAt := time.Now()
+	response, sendErr := ra.sendRequest(req)
+	elapsed := time.Since(startedAt)
+	if response != nil {
+		_ = response.Body.Close()
+		t.Fatalf("headers arriving after the budget must not be returned as success")
+	}
+	if sendErr == nil {
+		t.Fatalf("headers arriving after the budget must fail the attempt")
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("the attempt should fail on its budget, took %s", elapsed)
+	}
+}
+
+// A value written straight into the database (bypassing the API's validation) must not
+// be able to overflow the duration into a negative number, which the caller reads as
+// "disabled" — that would silently drop the guard.
+func TestUpstreamHeaderTimeoutClampsOutOfRangeStoredValue(t *testing.T) {
+	setupRelayErrorDB(t)
+	if err := op.SettingSetString(dbmodel.SettingKeyUpstreamHeaderTimeoutSec, "9223372036"); err != nil {
+		t.Fatalf("write out-of-range value: %v", err)
+	}
+	if got, want := currentUpstreamHeaderTimeout(), time.Duration(86400)*time.Second; got != want {
+		t.Fatalf("out-of-range stored value = %s, want it clamped to %s", got, want)
+	}
+}

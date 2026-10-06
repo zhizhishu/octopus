@@ -298,6 +298,16 @@
             "seconds": "秒",
             "invalid": "上游靜默逾時必須是 0 或正整數秒"
         },
+        "upstreamHeaderTimeout": {
+            "label": "上游回應標頭等待上限",
+            "hint": "只限制每次嘗試等待上游回傳回應標頭的時間。逾時後照原本規則繼續換通道或進入自動救援；收到回應標頭之後的正文輸出不受影響。",
+            "description": "用於避免上游收下請求卻一直不回應，讓單一連線獨佔整段等待時間。此項只限制單次嘗試，不限制整次自動救援的總時長。",
+            "disabledHint": "0 秒關閉",
+            "envHint": "仍可作為首次部署預設值。",
+            "placeholder": "0",
+            "seconds": "秒",
+            "invalid": "上游回應標頭等待上限必須是 0 到 86400 之間的整數秒"
+        },
         "responsesSessionTTL": {
             "label": "Responses 會話保持",
             "hint": "記住 previous_response_id 屬於哪個供應源和 Key，減少重啟或切路由後的續聊斷開。",

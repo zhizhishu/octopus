@@ -2031,18 +2031,28 @@ func (ra *relayAttempt) sendRequest(req *http.Request) (*http.Response, error) {
 			// 使用，等父 context（本次客户端请求）结束时自然释放。
 			return response, err
 		}
-		// 计时器已触发，说明等待响应头超预算。
-		if err != nil {
-			log.Warnf("upstream header timeout (%s), switching channel", budget)
-			return nil, &localRelayError{
-				status:   http.StatusGatewayTimeout,
-				code:     "octopus_upstream_header_timeout",
-				strategy: "upstream_header_timeout;upstream_forwarded=true",
-				message:  fmt.Sprintf("upstream did not send response headers within %s", budget),
-			}
+		// 预算已经触发：cancel 已执行或即将执行，这个 context 必然被取消，因此即使拿回了
+		// 响应（Stop 与回调之间的竞态窗口），它的正文也已经不可信——读它只会得到
+		// context canceled。这一档统一判定为"本次尝试失败"，绝不带着一个将死的 context
+		// 返回成功头，否则调用方会拿到一个必然中断的流。
+		if response != nil && response.Body != nil {
+			_ = response.Body.Close()
 		}
-		// 计时器触发与响应头到达的竞态：头已经拿到，按成功继续。
-		return response, nil
+		if req.Context().Err() != nil {
+			// 整次请求先结束（客户端取消/超时）：保留既有取消归因，不能被误记成上游沉默，
+			// 否则会污染渠道健康统计、把客户端的问题算到上游头上。
+			if err == nil {
+				err = context.Canceled
+			}
+			return nil, err
+		}
+		log.Warnf("upstream header timeout (%s), switching channel", budget)
+		return nil, &localRelayError{
+			status:   http.StatusGatewayTimeout,
+			code:     "octopus_upstream_header_timeout",
+			strategy: "upstream_header_timeout;upstream_forwarded=true",
+			message:  fmt.Sprintf("upstream did not send response headers within %s", budget),
+		}
 	}
 
 	response, err := helper.DoPreserveMethodRedirect(httpClient, req)

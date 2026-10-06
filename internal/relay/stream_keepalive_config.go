@@ -43,10 +43,22 @@ func currentStreamDataIntervalTimeout() time.Duration {
 // ordinary attempt failure, so failover and automatic rescue continue as before.
 func currentUpstreamHeaderTimeout() time.Duration {
 	seconds, err := op.SettingGetInt(dbmodel.SettingKeyUpstreamHeaderTimeoutSec)
-	if err == nil {
-		return streamSecondsDuration(seconds)
+	if err != nil {
+		return clampUpstreamHeaderTimeout(defaultUpstreamHeaderTimeout())
 	}
-	return defaultUpstreamHeaderTimeout()
+	return clampUpstreamHeaderTimeout(streamSecondsDuration(seconds))
+}
+
+// clampUpstreamHeaderTimeout keeps the budget inside the range the setting accepts.
+// Defensive: a value written straight into the database (bypassing Validate) would
+// otherwise be multiplied into a time.Duration and could overflow negative, which the
+// caller reads as "disabled" — the guard would silently disappear.
+func clampUpstreamHeaderTimeout(budget time.Duration) time.Duration {
+	max := time.Duration(dbmodel.MaxUpstreamHeaderTimeoutSeconds) * time.Second
+	if budget > max {
+		return max
+	}
+	return budget
 }
 
 func defaultStreamKeepaliveInterval() time.Duration {
