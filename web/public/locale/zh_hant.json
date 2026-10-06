@@ -669,6 +669,12 @@
                 "current": "目前占用",
                 "unlimited": "不限"
             },
+            "queueHealth": {
+                "pending": "待儲存",
+                "dropped": "已丟記錄",
+                "writeFailed": "儲存失敗",
+                "healthy": "寫入正常"
+            },
             "clear": {
                 "label": "清空歷史日誌",
                 "button": "清空",

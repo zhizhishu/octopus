@@ -133,6 +133,22 @@ export interface RelayLogStorage {
     max_gb: number;
 }
 
+/**
+ * 日志落库队列的只读健康快照（后端 /log/health，仅管理员）。
+ *
+ * 用来区分“日志里查不到这条”与“请求根本没发生”：落库跟不上时列表看着一样完整。
+ * 计数是进程内的，重启归零；persistence_enabled=false 是主动设置，不是故障。
+ */
+export interface RelayLogQueueHealth {
+    persistence_enabled: boolean;
+    pending_count: number;
+    pending_capacity: number;
+    dropped_total: number;
+    write_failure_total: number;
+    /** Unix 秒；0 表示本进程内没失败过。 */
+    last_write_failure_at: number;
+}
+
 export type RelayLogSeverity = 'success' | 'warn' | 'error';
 
 /** 全量严重程度计数（后端 /log/count 返回），用于日志页徽章显示真实总数而非当前页。 */
@@ -447,6 +463,21 @@ export function useLogStorage() {
             return apiClient.get<RelayLogStorage>('/api/v1/log/storage');
         },
         refetchInterval: 30000,
+        refetchOnMount: 'always',
+    });
+}
+
+/**
+ * 日志落库队列健康（仅管理员接口）。轮询间隔比容量慢得多：它反映的是“落库跟不跟得上”，
+ * 不需要秒级。
+ */
+export function useLogQueueHealth() {
+    return useQuery({
+        queryKey: ['logs', 'queue-health'],
+        queryFn: async () => {
+            return apiClient.get<RelayLogQueueHealth>('/api/v1/log/health');
+        },
+        refetchInterval: 60000,
         refetchOnMount: 'always',
     });
 }

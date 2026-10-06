@@ -8,7 +8,7 @@ import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { useSettingList, useSetSetting, SettingKey } from '@/api/endpoints/setting';
-import { useClearLogs, useLogStorage } from '@/api/endpoints/log';
+import { useClearLogs, useLogStorage, useLogQueueHealth } from '@/api/endpoints/log';
 import { toast } from '@/components/common/Toast';
 
 function formatBytes(bytes: number): string {
@@ -28,6 +28,7 @@ export function SettingLog() {
     const t = useTranslations('setting');
     const { data: settings } = useSettingList();
     const { data: storage } = useLogStorage();
+    const { data: queueHealth } = useLogQueueHealth();
     const setSetting = useSetSetting();
     const clearLogs = useClearLogs();
 
@@ -251,6 +252,35 @@ export function SettingLog() {
                             {storage?.max_bytes ? ` / ${formatBytes(storage.max_bytes)}` : ` / ${t('log.maxStorage.unlimited')}`}
                         </span>
                     </div>
+                    {/* 落库队列健康: 没有这一行时, “日志里查不到这条”和“请求没发生”看着一模一样。
+                        计数是进程内的(重启归零), 关闭持久化是主动设置、不算故障。 */}
+                    {queueHealth?.persistence_enabled && (
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                            <span className="text-muted-foreground">
+                                {t('log.queueHealth.pending')}
+                                <span className="ml-1 tabular-nums text-foreground">
+                                    {queueHealth.pending_count} / {queueHealth.pending_capacity}
+                                </span>
+                            </span>
+                            {queueHealth.dropped_total > 0 && (
+                                <span className="text-amber-600 dark:text-amber-500">
+                                    {t('log.queueHealth.dropped')}
+                                    <span className="ml-1 tabular-nums">{queueHealth.dropped_total}</span>
+                                </span>
+                            )}
+                            {queueHealth.write_failure_total > 0 && (
+                                <span className="text-rose-600 dark:text-rose-500">
+                                    {t('log.queueHealth.writeFailed')}
+                                    <span className="ml-1 tabular-nums">{queueHealth.write_failure_total}</span>
+                                    {queueHealth.last_write_failure_at > 0 &&
+                                        ` · ${new Date(queueHealth.last_write_failure_at * 1000).toLocaleString('zh-CN')}`}
+                                </span>
+                            )}
+                            {queueHealth.dropped_total === 0 && queueHealth.write_failure_total === 0 && (
+                                <span className="text-muted-foreground">{t('log.queueHealth.healthy')}</span>
+                            )}
+                        </div>
+                    )}
                 </div>
             </div>
 

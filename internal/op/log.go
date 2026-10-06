@@ -69,6 +69,12 @@ var relayLogFlusherOnce sync.Once
 var relayLogPendingDropped int64
 var relayLogDropWarnAt time.Time
 
+// relayLogWriteFailures / relayLogLastWriteFailureAt 同样由 relayLogCacheLock 保护：
+// 进程内累计落库失败次数与最近一次失败时间。没有这两个数，运维只能从“列表里少了一条”
+// 反推落库出过事——而丢日志和“请求没发生”在界面上长得一模一样。
+var relayLogWriteFailures int64
+var relayLogLastWriteFailureAt int64
+
 var relayLogSubscribers = make(map[chan model.RelayLog]struct{})
 var relayLogSubscribersLock sync.RWMutex
 
@@ -213,6 +219,12 @@ func relayLogFlushToDB(ctx context.Context) error {
 		// 每次 flush 都带着它重试、永久失败, 而 enabled 分支的封顶淘汰会替它丢掉更新的日志。
 		// 丢掉这一批(含可能是暂时性 DB 抖动的正常行), 换取落库不被单条坏行永久卡死。
 		relayLogRemoveFlushed(batch)
+		// 计数放在这里而不是各调用方: 后台 flusher 与 RelayLogSaveDBTask 都经此函数落库,
+		// 分开记会漏掉其中的失败。
+		relayLogCacheLock.Lock()
+		relayLogWriteFailures++
+		relayLogLastWriteFailureAt = time.Now().Unix()
+		relayLogCacheLock.Unlock()
 		return result.Error
 	}
 
@@ -525,6 +537,52 @@ func RelayLogStorageInfo(ctx context.Context, scope *model.RelayLogScope) (model
 		MaxBytes:    maxBytes,
 		MaxGB:       maxGB,
 	}, nil
+}
+
+// RelayLogQueueHealth 是日志落库队列的只读健康快照, 只回答一个问题: 日志系统自己
+// 有没有积压或丢记录。没有它时, "日志里查不到"既可能是请求没发生、也可能是落库没跟上,
+// 两种完全不同的结论在界面上长得一模一样。
+//
+// 计数是进程内的: 重启归零。刻意不做持久化——它描述的是"当前进程的落库状态",
+// 重启后残留的历史数字反而会被误读成正在发生的故障。
+type RelayLogQueueHealth struct {
+	// PersistenceEnabled 为 false 表示这是主动设置(只在内存里留最近若干条), 不是故障。
+	PersistenceEnabled bool `json:"persistence_enabled"`
+	// PendingCount / PendingCapacity 是当前待落库条数与队列上限。
+	PendingCount    int `json:"pending_count"`
+	PendingCapacity int `json:"pending_capacity"`
+	// DroppedTotal 是落库跟不上时被丢掉的条数(丢最旧), 只增不减。
+	DroppedTotal int64 `json:"dropped_total"`
+	// WriteFailureTotal / LastWriteFailureAt 是落库失败次数与最近失败时间(Unix 秒, 0 表示本次进程内没失败过)。
+	WriteFailureTotal  int64 `json:"write_failure_total"`
+	LastWriteFailureAt int64 `json:"last_write_failure_at"`
+}
+
+// RelayLogQueueHealthGet 读取上面的快照。只读内存计数, 不碰 DB、不触发落库,
+// 因此可以在管理页随便轮询。
+func RelayLogQueueHealthGet() (RelayLogQueueHealth, error) {
+	enabled, err := SettingGetBool(model.SettingKeyRelayLogKeepEnabled)
+	if err != nil {
+		return RelayLogQueueHealth{}, err
+	}
+
+	relayLogCacheLock.Lock()
+	health := RelayLogQueueHealth{
+		PersistenceEnabled: enabled,
+		PendingCount:       len(relayLogCache),
+		DroppedTotal:       relayLogPendingDropped,
+		WriteFailureTotal:  relayLogWriteFailures,
+		LastWriteFailureAt: relayLogLastWriteFailureAt,
+	}
+	relayLogCacheLock.Unlock()
+
+	// 关掉持久化时队列按 relayLogMaxSizeNoDB 走"只留最近几条"的裁剪, 上限不是待落库上限。
+	if enabled {
+		health.PendingCapacity = relayLogPendingMaxSize
+	} else {
+		health.PendingCapacity = relayLogMaxSizeNoDB
+	}
+	return health, nil
 }
 
 // relayLogExportFormatVersion 标记可移植 NDJSON 导出文件的结构版本。

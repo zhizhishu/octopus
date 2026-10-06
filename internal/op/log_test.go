@@ -435,6 +435,104 @@ func TestRelayLogPendingQueueCapsAndDropsOldest(t *testing.T) {
 	relayLogCacheLock.Unlock()
 }
 
+// 队列健康快照要能回答“有没有积压、队列多大”: 待落库条数与上限。持久化关掉时上限换成
+// 内存裁剪上限——那是“主动不留历史”, 不是队列故障, 报错上限会让管理员去查一个不存在的病。
+func TestRelayLogQueueHealthReportsQueueState(t *testing.T) {
+	ctx := setupRelayLogTest(t)
+
+	if err := SettingSetString(model.SettingKeyRelayLogKeepEnabled, "true"); err != nil {
+		t.Fatalf("enable relay log persistence: %v", err)
+	}
+
+	relayLogCacheLock.Lock()
+	relayLogCache = make([]model.RelayLog, 0, relayLogMaxSize)
+	relayLogCacheLock.Unlock()
+
+	for i := 0; i < 3; i++ {
+		if err := RelayLogAdd(ctx, model.RelayLog{RequestModelName: "health-" + strconv.Itoa(i)}); err != nil {
+			t.Fatalf("add relay log %d: %v", i, err)
+		}
+	}
+
+	health, err := RelayLogQueueHealthGet()
+	if err != nil {
+		t.Fatalf("queue health: %v", err)
+	}
+	if !health.PersistenceEnabled {
+		t.Fatalf("persistence should be reported as enabled")
+	}
+	if health.PendingCount != 3 {
+		t.Fatalf("pending count = %d, want 3", health.PendingCount)
+	}
+	if health.PendingCapacity != relayLogPendingMaxSize {
+		t.Fatalf("pending capacity = %d, want %d", health.PendingCapacity, relayLogPendingMaxSize)
+	}
+
+	if err := SettingSetString(model.SettingKeyRelayLogKeepEnabled, "false"); err != nil {
+		t.Fatalf("disable relay log persistence: %v", err)
+	}
+	health, err = RelayLogQueueHealthGet()
+	if err != nil {
+		t.Fatalf("queue health after disabling: %v", err)
+	}
+	if health.PersistenceEnabled {
+		t.Fatalf("persistence should be reported as disabled")
+	}
+	if health.PendingCapacity != relayLogMaxSizeNoDB {
+		t.Fatalf("in-memory pending capacity = %d, want %d", health.PendingCapacity, relayLogMaxSizeNoDB)
+	}
+
+	relayLogCacheLock.Lock()
+	relayLogCache = make([]model.RelayLog, 0, relayLogMaxSize)
+	relayLogCacheLock.Unlock()
+}
+
+// 落库失败必须自己留痕: 没有这个计数, “日志列表里查不到这条”和“请求根本没发生”在界面上
+// 长得一模一样, 而后者会把一个正在丢审计记录的实例判成“流量正常”。
+func TestRelayLogQueueHealthCountsWriteFailures(t *testing.T) {
+	ctx := setupRelayLogTest(t)
+
+	if err := SettingSetString(model.SettingKeyRelayLogKeepEnabled, "true"); err != nil {
+		t.Fatalf("enable relay log persistence: %v", err)
+	}
+
+	relayLogCacheLock.Lock()
+	failuresBefore := relayLogWriteFailures
+	relayLogCacheLock.Unlock()
+
+	// 制造一次真实落库失败: 抽掉表让批量 INSERT 报错(只动本用例的临时库)。
+	if err := db.GetDB().Migrator().DropTable(&model.RelayLog{}); err != nil {
+		t.Fatalf("drop relay log table: %v", err)
+	}
+	if err := RelayLogAdd(ctx, model.RelayLog{RequestModelName: "write-failure"}); err != nil {
+		t.Fatalf("add relay log: %v", err)
+	}
+	if err := relayLogFlushToDB(ctx); err == nil {
+		t.Fatalf("expected the flush to fail against a missing table")
+	}
+
+	health, err := RelayLogQueueHealthGet()
+	if err != nil {
+		t.Fatalf("queue health: %v", err)
+	}
+	if health.WriteFailureTotal-failuresBefore != 1 {
+		t.Fatalf("write failures = %d, want exactly one more than %d", health.WriteFailureTotal, failuresBefore)
+	}
+	if health.LastWriteFailureAt == 0 {
+		t.Fatalf("expected a recorded last write failure time")
+	}
+	// 失败的那一批已被排空(不让坏行永久卡住落库), 队列不该还压着它。
+	if health.PendingCount != 0 {
+		t.Fatalf("pending count = %d, want 0 after the failed batch was dropped", health.PendingCount)
+	}
+
+	relayLogCacheLock.Lock()
+	relayLogWriteFailures = failuresBefore
+	relayLogLastWriteFailureAt = 0
+	relayLogCache = make([]model.RelayLog, 0, relayLogMaxSize)
+	relayLogCacheLock.Unlock()
+}
+
 // 落库完成后只移除“这一批”(按 ID), 不按位置裁剪: flush 在途期间队头可能被封顶淘汰或
 // RelayLogClear 削掉, 按位置裁会误删还没落库的新日志。
 func TestRelayLogRemoveFlushedKeepsUnflushedEntries(t *testing.T) {

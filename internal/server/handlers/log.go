@@ -66,6 +66,15 @@ func init() {
 			router.NewRoute("/stream-state", http.MethodGet).
 				Handle(LogStreamSSE),
 		)
+
+	// 日志落库队列健康: 系统级运维指标, 只给管理员(普通用户拿不到别人的落库积压)。
+	router.NewGroupRouter("/api/v1/log").
+		Use(middleware.Auth()).
+		Use(middleware.AdminOnly()).
+		AddRoute(
+			router.NewRoute("/health", http.MethodGet).
+				Handle(getLogQueueHealth),
+		)
 }
 
 // severityFromQuery reads the optional ?severity= filter and validates it against
@@ -426,6 +435,18 @@ func getLogStorage(c *gin.Context) {
 		return
 	}
 	resp.Success(c, storage)
+}
+
+// getLogQueueHealth 返回日志落库队列的只读健康快照(积压/丢弃/写失败)。
+// 目的是把“日志里查不到这条”与“请求根本没发生”区分开: 落库跟不上时列表看着一样完整。
+// 只读内存计数, 不查 DB、不触发落库, 因此可以随管理页轮询。
+func getLogQueueHealth(c *gin.Context) {
+	health, err := op.RelayLogQueueHealthGet()
+	if err != nil {
+		resp.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	resp.Success(c, health)
 }
 
 func getStreamToken(c *gin.Context) {

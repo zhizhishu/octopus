@@ -669,6 +669,12 @@
                 "current": "Current usage",
                 "unlimited": "Unlimited"
             },
+            "queueHealth": {
+                "pending": "Pending writes",
+                "dropped": "Dropped records",
+                "writeFailed": "Write failures",
+                "healthy": "Writes healthy"
+            },
             "clear": {
                 "label": "Clear History Logs",
                 "button": "Clear",
