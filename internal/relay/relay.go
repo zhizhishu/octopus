@@ -172,11 +172,28 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 	beginControlledAttempt := func() func() {
 		parent := c.Request
 		attemptCtx, cancel := context.WithCancel(parent.Context())
+		// R10: an attempt started BEFORE the intervention hold exists (a pre-hold candidate
+		// on a later key) would otherwise be a plain WithCancel child of the client context
+		// with no server-side clock — the rescue deadline timer is not armed yet and cannot
+		// cancel it, and the sweep guard only runs between attempts. Pre-hold attempts are
+		// therefore bounded by a stoppable cancel timer at recoveryStartedAt+autoRescueCap
+		// so the ONE automatic-recovery window holds for the whole request. Attempts inside
+		// the hold already sit under interventionCtx (its timer fires at the deadline, and
+		// armRescueDeadline re-arms it tighten-only on every hold re-entry); the pre-hold
+		// cancel timer is stopped by releaseRescueDeadline, so a recovered delivery that
+		// commits mid-attempt survives past the cap.
+		var stopAttemptDeadline func()
+		if !recoveryStartedAt.IsZero() && interventionCtx == nil {
+			stopAttemptDeadline = req.armAttemptDeadlineCancel(recoveryStartedAt.Add(autoRescueCap), cancel)
+		}
 		c.Request = parent.WithContext(attemptCtx)
 		requestState.bindAttemptCancel(cancel, internalRequestPrefersStream(internalRequest))
 		return func() {
 			requestState.bindAttemptCancel(nil, false)
 			c.Request = parent
+			if stopAttemptDeadline != nil {
+				stopAttemptDeadline()
+			}
 			cancel()
 		}
 	}
@@ -640,16 +657,7 @@ attemptChannels:
 				start = time.Now()
 				recoveryStartedAt = start
 			}
-			deadline := rescueWindowDeadline(start, noBreakerRescueBudget, noBreakerAutoRescue, intervention.Timeout())
 			interventionCtx, interventionCancel = context.WithCancel(c.Request.Context())
-			// Releasable deadline: fire() marks the cancel as a rescue timeout (vs an operator
-			// abort, which reads as rescue_stopped). releaseRescueDeadline stops the timer the
-			// moment real content reaches the client, so a recovered long body keeps streaming
-			// under the client context instead of being cut by the rescue clock.
-			req.rescueDeadlineTimer = time.AfterFunc(time.Until(deadline), func() {
-				rescueFired.Store(true)
-				interventionCancel()
-			})
 			defer interventionCancel()
 			// Route every subsequent upstream attempt through the rescue context so an
 			// in-flight attempt honors the rescue deadline / operator abort instead of
@@ -661,6 +669,19 @@ attemptChannels:
 			// still sees the true client context.
 			c.Request = c.Request.WithContext(interventionCtx)
 		}
+		// R12: the window is re-derived on EVERY hold entry, not only when the rescue
+		// context is first created — a machine rescue retry or an operator channel switch
+		// re-enters this block with interventionCtx already set, and a clamp that tightened
+		// in the meantime (no-breaker budget / operator hold, both live-read) must apply.
+		// armRescueDeadline is tighten-only: a recomputed deadline that is equal or later
+		// never extends the current timer, and the R18 release-vs-fire mutex holds for
+		// both the first arm and the re-arm.
+		noBreakerRescueBudget = intervention.NoBreakerRetryBudget()
+		req.armRescueDeadline(
+			rescueWindowDeadline(recoveryStartedAt, noBreakerRescueBudget, noBreakerAutoRescue, intervention.Timeout()),
+			rescueFired,
+			interventionCancel,
+		)
 
 		lastErrStr := ""
 		if finalErr != nil {
@@ -779,7 +800,11 @@ attemptChannels:
 	}
 
 	finalErr = lastErr
-	if stopErr := rescueStopError(interventionCtx, originalRequest.Context(), rescueFired); stopErr != nil {
+	// R18 belt-and-suspenders: a rescue timeout may only override the final error when
+	// no business data reached the client. Every current Written exit returns before this
+	// line, so the override is unreachable for committed bodies today; the gate keeps any
+	// future path from ever relabeling a delivered response as rescue_timeout.
+	if stopErr := rescueStopError(interventionCtx, originalRequest.Context(), rescueFired); stopErr != nil && !req.wroteBusinessData {
 		finalErr = stopErr
 	}
 	if finalErr == nil {
@@ -2118,6 +2143,12 @@ func (ra *relayAttempt) sendRequest(req *http.Request) (*http.Response, error) {
 	if err != nil {
 		log.Warnf("failed to send request: %v", err)
 		return nil, err
+	}
+	if response == nil || response.Body == nil {
+		// C11 defensive guard: the redirect-preserving client should never return a
+		// success without a body, but callers read response.Body directly (and the
+		// deferred Close below would nil-panic) — fail this attempt instead.
+		return nil, fmt.Errorf("upstream returned no response body")
 	}
 
 	return response, nil

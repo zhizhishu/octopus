@@ -23,19 +23,26 @@ export function SettingLLMSync() {
         if (settings) {
             const interval = settings.find(s => s.key === SettingKey.SyncLLMInterval);
             if (interval) {
-                queueMicrotask(() => setSyncInterval(interval.value));
-                initialSyncInterval.current = interval.value;
+                if (interval.value !== initialSyncInterval.current) {
+                    queueMicrotask(() => setSyncInterval(interval.value));
+                    initialSyncInterval.current = interval.value;
+                }
             }
         }
     }, [settings]);
 
     const handleSave = (key: string, value: string, initialValue: string) => {
         if (value === initialValue) return;
+        if (setSetting.isPending) return;
 
         setSetting.mutate({ key, value }, {
             onSuccess: () => {
                 toast.success(t('saved'));
                 initialSyncInterval.current = value;
+            },
+            onError: () => {
+                // 保留草稿不回滚：再次失焦即可重试。
+                toast.error(t('saveFailed'));
             }
         });
     };

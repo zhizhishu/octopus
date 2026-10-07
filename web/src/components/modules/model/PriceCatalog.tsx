@@ -25,7 +25,7 @@ export function ModelPriceCatalog() {
         if (!settings) return;
 
         const interval = settings.find((s) => s.key === SettingKey.ModelInfoUpdateInterval);
-        if (!interval) return;
+        if (!interval || interval.value === initialUpdateInterval.current) return;
 
         queueMicrotask(() => setUpdateInterval(interval.value));
         initialUpdateInterval.current = interval.value;
@@ -33,11 +33,16 @@ export function ModelPriceCatalog() {
 
     const handleSave = (key: string, value: string, initialValue: string) => {
         if (value === initialValue) return;
+        if (setSetting.isPending) return;
 
         setSetting.mutate({ key, value }, {
             onSuccess: () => {
                 toast.success(t('saved'));
                 initialUpdateInterval.current = value;
+            },
+            onError: () => {
+                // 保留草稿不回滚：再次失焦即可重试。
+                toast.error(t('saveFailed'));
             },
         });
     };

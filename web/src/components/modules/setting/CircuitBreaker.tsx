@@ -27,22 +27,29 @@ export function SettingCircuitBreaker() {
             const cd = settings.find(s => s.key === SettingKey.CircuitBreakerCooldown);
             const mcd = settings.find(s => s.key === SettingKey.CircuitBreakerMaxCooldown);
             if (th) {
-                queueMicrotask(() => setThreshold(th.value));
-                initialThreshold.current = th.value;
+                if (th.value !== initialThreshold.current) {
+                    queueMicrotask(() => setThreshold(th.value));
+                    initialThreshold.current = th.value;
+                }
             }
             if (cd) {
-                queueMicrotask(() => setCooldown(cd.value));
-                initialCooldown.current = cd.value;
+                if (cd.value !== initialCooldown.current) {
+                    queueMicrotask(() => setCooldown(cd.value));
+                    initialCooldown.current = cd.value;
+                }
             }
             if (mcd) {
-                queueMicrotask(() => setMaxCooldown(mcd.value));
-                initialMaxCooldown.current = mcd.value;
+                if (mcd.value !== initialMaxCooldown.current) {
+                    queueMicrotask(() => setMaxCooldown(mcd.value));
+                    initialMaxCooldown.current = mcd.value;
+                }
             }
         }
     }, [settings]);
 
     const handleSave = (key: string, value: string, initialValue: string) => {
         if (value === initialValue) return;
+        if (setSetting.isPending) return;
 
         setSetting.mutate({ key, value }, {
             onSuccess: () => {
@@ -53,6 +60,18 @@ export function SettingCircuitBreaker() {
                     initialCooldown.current = value;
                 } else if (key === SettingKey.CircuitBreakerMaxCooldown) {
                     initialMaxCooldown.current = value;
+                }
+            },
+            onError: () => {
+                // 合法值也可能因 401/403/500/断网而失败：必须可见，且不能假装已保存。
+                // initial ref 未变，展示值回滚到已确认值后，再次失焦即可重试。
+                toast.error(t('saveFailed'));
+                if (key === SettingKey.CircuitBreakerThreshold) {
+                    setThreshold(initialThreshold.current);
+                } else if (key === SettingKey.CircuitBreakerCooldown) {
+                    setCooldown(initialCooldown.current);
+                } else if (key === SettingKey.CircuitBreakerMaxCooldown) {
+                    setMaxCooldown(initialMaxCooldown.current);
                 }
             }
         });

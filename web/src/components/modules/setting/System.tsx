@@ -197,20 +197,28 @@ export function SettingSystem() {
             const emailHTTPAdmin = settings.find(s => s.key === SettingKey.EmailHTTPAdminAuth);
             const emailHTTPSite = settings.find(s => s.key === SettingKey.EmailHTTPSiteAuth);
             if (proxy) {
-                queueMicrotask(() => setProxyUrl(proxy.value));
-                initialProxyUrl.current = proxy.value;
+                if (proxy.value !== initialProxyUrl.current) {
+                    queueMicrotask(() => setProxyUrl(proxy.value));
+                    initialProxyUrl.current = proxy.value;
+                }
             }
             if (trustedProxiesSetting) {
-                queueMicrotask(() => setTrustedProxies(trustedProxiesSetting.value));
-                initialTrustedProxies.current = trustedProxiesSetting.value;
+                if (trustedProxiesSetting.value !== initialTrustedProxies.current) {
+                    queueMicrotask(() => setTrustedProxies(trustedProxiesSetting.value));
+                    initialTrustedProxies.current = trustedProxiesSetting.value;
+                }
             }
             if (interval) {
-                queueMicrotask(() => setStatsSaveInterval(interval.value));
-                initialStatsSaveInterval.current = interval.value;
+                if (interval.value !== initialStatsSaveInterval.current) {
+                    queueMicrotask(() => setStatsSaveInterval(interval.value));
+                    initialStatsSaveInterval.current = interval.value;
+                }
             }
             if (cors) {
-                queueMicrotask(() => setCorsAllowOrigins(cors.value));
-                initialCorsAllowOrigins.current = cors.value;
+                if (cors.value !== initialCorsAllowOrigins.current) {
+                    queueMicrotask(() => setCorsAllowOrigins(cors.value));
+                    initialCorsAllowOrigins.current = cors.value;
+                }
             }
             if (autoCache) {
                 const enabled = autoCache.value === 'true';
@@ -223,48 +231,75 @@ export function SettingSystem() {
                 initialOpenAIAutoPromptCacheKey.current = enabled;
             }
             if (keepalive) {
-                queueMicrotask(() => setStreamKeepaliveInterval(keepalive.value || '15'));
-                initialStreamKeepaliveInterval.current = keepalive.value || '15';
+                const value = keepalive.value || '15';
+                if (value !== initialStreamKeepaliveInterval.current) {
+                    queueMicrotask(() => setStreamKeepaliveInterval(value));
+                    initialStreamKeepaliveInterval.current = value;
+                }
             }
             if (dataTimeout) {
-                queueMicrotask(() => setStreamDataTimeoutInterval(dataTimeout.value || '900'));
-                initialStreamDataTimeoutInterval.current = dataTimeout.value || '900';
+                const value = dataTimeout.value || '900';
+                if (value !== initialStreamDataTimeoutInterval.current) {
+                    queueMicrotask(() => setStreamDataTimeoutInterval(value));
+                    initialStreamDataTimeoutInterval.current = value;
+                }
             }
             if (upstreamHeader) {
-                queueMicrotask(() => setUpstreamHeaderTimeout(upstreamHeader.value || '0'));
-                initialUpstreamHeaderTimeout.current = upstreamHeader.value || '0';
+                const value = upstreamHeader.value || '0';
+                if (value !== initialUpstreamHeaderTimeout.current) {
+                    queueMicrotask(() => setUpstreamHeaderTimeout(value));
+                    initialUpstreamHeaderTimeout.current = value;
+                }
             }
             if (firstByteKeepalive) {
-                queueMicrotask(() => setFirstByteKeepaliveDelay(firstByteKeepalive.value || '0'));
-                initialFirstByteKeepaliveDelay.current = firstByteKeepalive.value || '0';
+                const value = firstByteKeepalive.value || '0';
+                if (value !== initialFirstByteKeepaliveDelay.current) {
+                    queueMicrotask(() => setFirstByteKeepaliveDelay(value));
+                    initialFirstByteKeepaliveDelay.current = value;
+                }
             }
             if (responsesTTL) {
-                queueMicrotask(() => setResponsesSessionTTL(responsesTTL.value || '3600'));
-                initialResponsesSessionTTL.current = responsesTTL.value || '3600';
+                const value = responsesTTL.value || '3600';
+                if (value !== initialResponsesSessionTTL.current) {
+                    queueMicrotask(() => setResponsesSessionTTL(value));
+                    initialResponsesSessionTTL.current = value;
+                }
             }
             if (claudeUA) {
-                queueMicrotask(() => setClaudeHeaderUserAgent(claudeUA.value));
-                initialClaudeHeaderUserAgent.current = claudeUA.value;
+                if (claudeUA.value !== initialClaudeHeaderUserAgent.current) {
+                    queueMicrotask(() => setClaudeHeaderUserAgent(claudeUA.value));
+                    initialClaudeHeaderUserAgent.current = claudeUA.value;
+                }
             }
             if (claudePackage) {
-                queueMicrotask(() => setClaudeHeaderPackageVersion(claudePackage.value));
-                initialClaudeHeaderPackageVersion.current = claudePackage.value;
+                if (claudePackage.value !== initialClaudeHeaderPackageVersion.current) {
+                    queueMicrotask(() => setClaudeHeaderPackageVersion(claudePackage.value));
+                    initialClaudeHeaderPackageVersion.current = claudePackage.value;
+                }
             }
             if (claudeRuntime) {
-                queueMicrotask(() => setClaudeHeaderRuntimeVersion(claudeRuntime.value));
-                initialClaudeHeaderRuntimeVersion.current = claudeRuntime.value;
+                if (claudeRuntime.value !== initialClaudeHeaderRuntimeVersion.current) {
+                    queueMicrotask(() => setClaudeHeaderRuntimeVersion(claudeRuntime.value));
+                    initialClaudeHeaderRuntimeVersion.current = claudeRuntime.value;
+                }
             }
             if (claudeOS) {
-                queueMicrotask(() => setClaudeHeaderOS(claudeOS.value));
-                initialClaudeHeaderOS.current = claudeOS.value;
+                if (claudeOS.value !== initialClaudeHeaderOS.current) {
+                    queueMicrotask(() => setClaudeHeaderOS(claudeOS.value));
+                    initialClaudeHeaderOS.current = claudeOS.value;
+                }
             }
             if (claudeArch) {
-                queueMicrotask(() => setClaudeHeaderArch(claudeArch.value));
-                initialClaudeHeaderArch.current = claudeArch.value;
+                if (claudeArch.value !== initialClaudeHeaderArch.current) {
+                    queueMicrotask(() => setClaudeHeaderArch(claudeArch.value));
+                    initialClaudeHeaderArch.current = claudeArch.value;
+                }
             }
             if (claudeTimeout) {
-                queueMicrotask(() => setClaudeHeaderTimeout(claudeTimeout.value));
-                initialClaudeHeaderTimeout.current = claudeTimeout.value;
+                if (claudeTimeout.value !== initialClaudeHeaderTimeout.current) {
+                    queueMicrotask(() => setClaudeHeaderTimeout(claudeTimeout.value));
+                    initialClaudeHeaderTimeout.current = claudeTimeout.value;
+                }
             }
             if (claudeStabilize) {
                 const enabled = claudeStabilize.value === 'true';
@@ -279,20 +314,28 @@ export function SettingSystem() {
             if (claudeReasoningEffort) {
                 const rawValue = (claudeReasoningEffort.value || 'auto').toLowerCase();
                 const value = ['auto', 'off', 'low', 'medium', 'high'].includes(rawValue) ? rawValue : 'auto';
-                queueMicrotask(() => setClaudeCLIReasoningEffort(value));
-                initialClaudeCLIReasoningEffort.current = value;
+                if (value !== initialClaudeCLIReasoningEffort.current) {
+                    queueMicrotask(() => setClaudeCLIReasoningEffort(value));
+                    initialClaudeCLIReasoningEffort.current = value;
+                }
             }
             if (claudeBetaStrip) {
-                queueMicrotask(() => setClaudeBetaStripFlags(claudeBetaStrip.value));
-                initialClaudeBetaStripFlags.current = claudeBetaStrip.value;
+                if (claudeBetaStrip.value !== initialClaudeBetaStripFlags.current) {
+                    queueMicrotask(() => setClaudeBetaStripFlags(claudeBetaStrip.value));
+                    initialClaudeBetaStripFlags.current = claudeBetaStrip.value;
+                }
             }
             if (codexUA) {
-                queueMicrotask(() => setCodexHeaderUserAgent(codexUA.value));
-                initialCodexHeaderUserAgent.current = codexUA.value;
+                if (codexUA.value !== initialCodexHeaderUserAgent.current) {
+                    queueMicrotask(() => setCodexHeaderUserAgent(codexUA.value));
+                    initialCodexHeaderUserAgent.current = codexUA.value;
+                }
             }
             if (codexBetaFeatures) {
-                queueMicrotask(() => setCodexHeaderBetaFeatures(codexBetaFeatures.value));
-                initialCodexHeaderBetaFeatures.current = codexBetaFeatures.value;
+                if (codexBetaFeatures.value !== initialCodexHeaderBetaFeatures.current) {
+                    queueMicrotask(() => setCodexHeaderBetaFeatures(codexBetaFeatures.value));
+                    initialCodexHeaderBetaFeatures.current = codexBetaFeatures.value;
+                }
             }
             if (codexFast) {
                 const enabled = codexFast.value !== 'false';
@@ -310,16 +353,23 @@ export function SettingSystem() {
                 initialUpstreamErrorStatusPassthrough.current = enabled;
             }
             if (errorBodyMode) {
-                queueMicrotask(() => setUpstreamErrorBodyMode(errorBodyMode.value || 'redacted_upstream'));
-                initialUpstreamErrorBodyMode.current = errorBodyMode.value || 'redacted_upstream';
+                const value = errorBodyMode.value || 'redacted_upstream';
+                if (value !== initialUpstreamErrorBodyMode.current) {
+                    queueMicrotask(() => setUpstreamErrorBodyMode(value));
+                    initialUpstreamErrorBodyMode.current = value;
+                }
             }
             if (errorCustomMessage) {
-                queueMicrotask(() => setUpstreamErrorCustomMessage(errorCustomMessage.value));
-                initialUpstreamErrorCustomMessage.current = errorCustomMessage.value;
+                if (errorCustomMessage.value !== initialUpstreamErrorCustomMessage.current) {
+                    queueMicrotask(() => setUpstreamErrorCustomMessage(errorCustomMessage.value));
+                    initialUpstreamErrorCustomMessage.current = errorCustomMessage.value;
+                }
             }
             if (errorPublicCode) {
-                queueMicrotask(() => setUpstreamErrorPublicCode(errorPublicCode.value));
-                initialUpstreamErrorPublicCode.current = errorPublicCode.value;
+                if (errorPublicCode.value !== initialUpstreamErrorPublicCode.current) {
+                    queueMicrotask(() => setUpstreamErrorPublicCode(errorPublicCode.value));
+                    initialUpstreamErrorPublicCode.current = errorPublicCode.value;
+                }
             }
             if (checkInEnabledSetting) {
                 const enabled = checkInEnabledSetting.value === 'true';
@@ -327,20 +377,29 @@ export function SettingSystem() {
                 initialCheckInEnabled.current = enabled;
             }
             if (checkInMode) {
-                queueMicrotask(() => setCheckInRewardMode(checkInMode.value || 'fixed'));
-                initialCheckInRewardMode.current = checkInMode.value || 'fixed';
+                const value = checkInMode.value || 'fixed';
+                if (value !== initialCheckInRewardMode.current) {
+                    queueMicrotask(() => setCheckInRewardMode(value));
+                    initialCheckInRewardMode.current = value;
+                }
             }
             if (checkInAmount) {
-                queueMicrotask(() => setCheckInRewardAmount(checkInAmount.value));
-                initialCheckInRewardAmount.current = checkInAmount.value;
+                if (checkInAmount.value !== initialCheckInRewardAmount.current) {
+                    queueMicrotask(() => setCheckInRewardAmount(checkInAmount.value));
+                    initialCheckInRewardAmount.current = checkInAmount.value;
+                }
             }
             if (checkInMin) {
-                queueMicrotask(() => setCheckInRewardMin(checkInMin.value));
-                initialCheckInRewardMin.current = checkInMin.value;
+                if (checkInMin.value !== initialCheckInRewardMin.current) {
+                    queueMicrotask(() => setCheckInRewardMin(checkInMin.value));
+                    initialCheckInRewardMin.current = checkInMin.value;
+                }
             }
             if (checkInMax) {
-                queueMicrotask(() => setCheckInRewardMax(checkInMax.value));
-                initialCheckInRewardMax.current = checkInMax.value;
+                if (checkInMax.value !== initialCheckInRewardMax.current) {
+                    queueMicrotask(() => setCheckInRewardMax(checkInMax.value));
+                    initialCheckInRewardMax.current = checkInMax.value;
+                }
             }
             if (emailVerification) {
                 const enabled = emailVerification.value === 'true';
@@ -349,32 +408,48 @@ export function SettingSystem() {
             }
             if (emailProviderSetting) {
                 const provider = emailProviderSetting.value === 'http' ? 'http' : 'smtp';
-                queueMicrotask(() => setEmailProvider(provider));
-                initialEmailProvider.current = provider;
+                if (provider !== initialEmailProvider.current) {
+                    queueMicrotask(() => setEmailProvider(provider));
+                    initialEmailProvider.current = provider;
+                }
             }
             if (emailHost) {
-                queueMicrotask(() => setEmailSMTPHost(emailHost.value));
-                initialEmailSMTPHost.current = emailHost.value;
+                if (emailHost.value !== initialEmailSMTPHost.current) {
+                    queueMicrotask(() => setEmailSMTPHost(emailHost.value));
+                    initialEmailSMTPHost.current = emailHost.value;
+                }
             }
             if (emailPort) {
-                queueMicrotask(() => setEmailSMTPPort(emailPort.value || '587'));
-                initialEmailSMTPPort.current = emailPort.value || '587';
+                const value = emailPort.value || '587';
+                if (value !== initialEmailSMTPPort.current) {
+                    queueMicrotask(() => setEmailSMTPPort(value));
+                    initialEmailSMTPPort.current = value;
+                }
             }
             if (emailUser) {
-                queueMicrotask(() => setEmailSMTPUser(emailUser.value));
-                initialEmailSMTPUser.current = emailUser.value;
+                if (emailUser.value !== initialEmailSMTPUser.current) {
+                    queueMicrotask(() => setEmailSMTPUser(emailUser.value));
+                    initialEmailSMTPUser.current = emailUser.value;
+                }
             }
             if (emailPassword) {
-                queueMicrotask(() => setEmailSMTPPassword(emailPassword.value));
-                initialEmailSMTPPassword.current = emailPassword.value;
+                if (emailPassword.value !== initialEmailSMTPPassword.current) {
+                    queueMicrotask(() => setEmailSMTPPassword(emailPassword.value));
+                    initialEmailSMTPPassword.current = emailPassword.value;
+                }
             }
             if (emailFrom) {
-                queueMicrotask(() => setEmailSMTPFrom(emailFrom.value));
-                initialEmailSMTPFrom.current = emailFrom.value;
+                if (emailFrom.value !== initialEmailSMTPFrom.current) {
+                    queueMicrotask(() => setEmailSMTPFrom(emailFrom.value));
+                    initialEmailSMTPFrom.current = emailFrom.value;
+                }
             }
             if (emailFromName) {
-                queueMicrotask(() => setEmailSMTPFromName(emailFromName.value || 'Octopus'));
-                initialEmailSMTPFromName.current = emailFromName.value || 'Octopus';
+                const value = emailFromName.value || 'Octopus';
+                if (value !== initialEmailSMTPFromName.current) {
+                    queueMicrotask(() => setEmailSMTPFromName(value));
+                    initialEmailSMTPFromName.current = value;
+                }
             }
             if (emailSSL) {
                 const enabled = emailSSL.value === 'true';
@@ -382,20 +457,28 @@ export function SettingSystem() {
                 initialEmailSMTPSSL.current = enabled;
             }
             if (emailHTTPBase) {
-                queueMicrotask(() => setEmailHTTPBaseURL(emailHTTPBase.value));
-                initialEmailHTTPBaseURL.current = emailHTTPBase.value;
+                if (emailHTTPBase.value !== initialEmailHTTPBaseURL.current) {
+                    queueMicrotask(() => setEmailHTTPBaseURL(emailHTTPBase.value));
+                    initialEmailHTTPBaseURL.current = emailHTTPBase.value;
+                }
             }
             if (emailHTTPFromSetting) {
-                queueMicrotask(() => setEmailHTTPFrom(emailHTTPFromSetting.value));
-                initialEmailHTTPFrom.current = emailHTTPFromSetting.value;
+                if (emailHTTPFromSetting.value !== initialEmailHTTPFrom.current) {
+                    queueMicrotask(() => setEmailHTTPFrom(emailHTTPFromSetting.value));
+                    initialEmailHTTPFrom.current = emailHTTPFromSetting.value;
+                }
             }
             if (emailHTTPAdmin) {
-                queueMicrotask(() => setEmailHTTPAdminAuth(emailHTTPAdmin.value));
-                initialEmailHTTPAdminAuth.current = emailHTTPAdmin.value;
+                if (emailHTTPAdmin.value !== initialEmailHTTPAdminAuth.current) {
+                    queueMicrotask(() => setEmailHTTPAdminAuth(emailHTTPAdmin.value));
+                    initialEmailHTTPAdminAuth.current = emailHTTPAdmin.value;
+                }
             }
             if (emailHTTPSite) {
-                queueMicrotask(() => setEmailHTTPSiteAuth(emailHTTPSite.value));
-                initialEmailHTTPSiteAuth.current = emailHTTPSite.value;
+                if (emailHTTPSite.value !== initialEmailHTTPSiteAuth.current) {
+                    queueMicrotask(() => setEmailHTTPSiteAuth(emailHTTPSite.value));
+                    initialEmailHTTPSiteAuth.current = emailHTTPSite.value;
+                }
             }
         }
     }, [settings]);

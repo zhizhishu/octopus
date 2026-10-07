@@ -107,6 +107,8 @@ func prepareRacerAttempt(
 	// never touch the shared parent relayRequest.
 	isolatedReq := *req
 	isolatedReq.internalRequest = clonedReq
+	// rescueClock is a pointer: the isolated copy shares the parent's rescue-clock
+	// state (racers never drive it) instead of copying a sync.Mutex.
 
 	ra := &relayAttempt{
 		relayRequest: &isolatedReq,
@@ -514,8 +516,23 @@ func runChannelRace(
 
 		usedAt := time.Now().Unix()
 
-		// Drain remaining loser results with a bounded timeout (250ms) to record loser telemetry
-		drainLosers(resultsChan, &loserResults, 250*time.Millisecond)
+		// Drain remaining loser results until resultsChan closes, so late loser telemetry
+		// (raced_out) is never dropped. Termination: after the winner's CAS every racer has
+		// been canceled, so each racer goroutine reaches its result-send or no-result exit,
+		// and the drain goroutine (wg.Wait -> close) guarantees channel closure. The previous
+		// 250ms bounded drain discarded results that arrived late under load.
+		for res := range resultsChan {
+			if res.response != nil {
+				_ = res.response.Body.Close()
+			}
+			if res.finishAttempt != nil {
+				res.finishAttempt()
+			}
+			if res.racerCancel != nil {
+				res.racerCancel()
+			}
+			loserResults = append(loserResults, res)
+		}
 
 		// Record loser spans sequentially on main goroutine
 		recordLoserResults(parentReq, channel, requestEndpoint, capabilityKey, runtimeModel, loserResults, &bestFailStatus)
@@ -601,31 +618,6 @@ func runChannelRace(
 		Retryable:  false,
 		Fatal:      isContextWindowError(lastErr),
 	}, remainingKeys
-}
-
-func drainLosers(resultsChan <-chan racerResult, loserResults *[]racerResult, timeout time.Duration) {
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	for {
-		select {
-		case res, ok := <-resultsChan:
-			if !ok {
-				return
-			}
-			if res.response != nil {
-				_ = res.response.Body.Close()
-			}
-			if res.finishAttempt != nil {
-				res.finishAttempt()
-			}
-			if res.racerCancel != nil {
-				res.racerCancel()
-			}
-			*loserResults = append(*loserResults, res)
-		case <-timer.C:
-			return
-		}
-	}
 }
 
 func recordLoserResults(

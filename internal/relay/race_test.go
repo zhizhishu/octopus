@@ -138,6 +138,10 @@ func TestChannelRaceFast200WinsAfter429(t *testing.T) {
 		case "Bearer slow":
 			select {
 			case <-request.Context().Done():
+				// Deterministic flake reproducer: the real flake only shows under load,
+				// where the cancel -> sendRequest-return chain exceeds the 250ms drain
+				// budget. This sleep widens that window on an idle machine.
+				time.Sleep(300 * time.Millisecond)
 			case <-time.After(2 * time.Second):
 				responseWriter.WriteHeader(http.StatusGatewayTimeout)
 			}

@@ -6,7 +6,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/bestruirui/octopus/internal/conf"
 	dbmodel "github.com/bestruirui/octopus/internal/model"
@@ -188,11 +187,14 @@ type relayRequest struct {
 	// none) so a protected request is never silently swapped to an unprotected channel.
 	redactRequired bool
 
-	// rescueDeadlineTimer is the releasable automatic-recovery deadline (see
-	// rescue_window.go). Armed once when the rescue context is created and cleared by
-	// releaseRescueDeadline the instant real content reaches the client, so a recovered
-	// long body is never cut by the rescue clock. nil outside the rescue loop.
-	rescueDeadlineTimer *time.Timer
+	// rescueClock owns the releasable automatic-recovery deadline state (see
+	// rescue_window.go): the rescue timer, its absolute deadline and the released
+	// flag, all guarded by the clock's own mutex. It is allocated by armRescueDeadline
+	// when the rescue hold is first built and stays shared by every racer's isolated
+	// relayRequest copy (pointer copy — racers never drive the rescue clock, they only
+	// ever read through the nil-safe accessors). A pointer keeps sync.Mutex out of the
+	// relayRequest struct itself so the racer shallow copy cannot copy a lock.
+	rescueClock *relayRescueClock
 }
 
 // relayAttempt 尝试级上下文

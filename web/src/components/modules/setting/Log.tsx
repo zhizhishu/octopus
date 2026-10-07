@@ -61,12 +61,16 @@ export function SettingLog() {
                 initialEnabled.current = isEnabled;
             }
             if (periodSetting) {
-                queueMicrotask(() => setKeepPeriod(periodSetting.value));
-                initialKeepPeriod.current = periodSetting.value;
+                if (periodSetting.value !== initialKeepPeriod.current) {
+                    queueMicrotask(() => setKeepPeriod(periodSetting.value));
+                    initialKeepPeriod.current = periodSetting.value;
+                }
             }
             if (maxStorageSetting) {
-                queueMicrotask(() => setMaxStorageGB(maxStorageSetting.value));
-                initialMaxStorageGB.current = maxStorageSetting.value;
+                if (maxStorageSetting.value !== initialMaxStorageGB.current) {
+                    queueMicrotask(() => setMaxStorageGB(maxStorageSetting.value));
+                    initialMaxStorageGB.current = maxStorageSetting.value;
+                }
             }
             if (interventionEnabledSetting) {
                 const isInterventionEnabled = interventionEnabledSetting.value === 'true';
@@ -74,12 +78,16 @@ export function SettingLog() {
                 initialInterventionEnabled.current = isInterventionEnabled;
             }
             if (interventionTimeoutSetting) {
-                queueMicrotask(() => setInterventionTimeout(interventionTimeoutSetting.value));
-                initialInterventionTimeout.current = interventionTimeoutSetting.value;
+                if (interventionTimeoutSetting.value !== initialInterventionTimeout.current) {
+                    queueMicrotask(() => setInterventionTimeout(interventionTimeoutSetting.value));
+                    initialInterventionTimeout.current = interventionTimeoutSetting.value;
+                }
             }
             if (noBreakerRetryBudgetSetting) {
-                queueMicrotask(() => setNoBreakerRetryBudget(noBreakerRetryBudgetSetting.value));
-                initialNoBreakerRetryBudget.current = noBreakerRetryBudgetSetting.value;
+                if (noBreakerRetryBudgetSetting.value !== initialNoBreakerRetryBudget.current) {
+                    queueMicrotask(() => setNoBreakerRetryBudget(noBreakerRetryBudgetSetting.value));
+                    initialNoBreakerRetryBudget.current = noBreakerRetryBudgetSetting.value;
+                }
             }
         }
     }, [settings]);
