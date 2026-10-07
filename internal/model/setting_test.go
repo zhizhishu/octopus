@@ -1,6 +1,10 @@
 package model
 
-import "testing"
+import (
+	"math"
+	"strconv"
+	"testing"
+)
 
 func TestRelayStreamKeepaliveIntervalValidation(t *testing.T) {
 	tests := []struct {
@@ -28,6 +32,8 @@ func TestRelayStreamKeepaliveIntervalValidation(t *testing.T) {
 		{name: "upstream header at ceiling", key: SettingKeyUpstreamHeaderTimeoutSec, value: "86400"},
 		{name: "upstream header above ceiling", key: SettingKeyUpstreamHeaderTimeoutSec, value: "86401", wantErr: true},
 		{name: "upstream header overflow attempt", key: SettingKeyUpstreamHeaderTimeoutSec, value: "9223372036", wantErr: true},
+		{name: "upstream header just past overflow boundary", key: SettingKeyUpstreamHeaderTimeoutSec, value: "9223372037", wantErr: true},
+		{name: "upstream header platform int max", key: SettingKeyUpstreamHeaderTimeoutSec, value: strconv.Itoa(math.MaxInt), wantErr: true},
 		{name: "upstream header negative", key: SettingKeyUpstreamHeaderTimeoutSec, value: "-1", wantErr: true},
 		{name: "upstream header not integer", key: SettingKeyUpstreamHeaderTimeoutSec, value: "1.5", wantErr: true},
 		{name: "upstream header not a number", key: SettingKeyUpstreamHeaderTimeoutSec, value: "abc", wantErr: true},
@@ -245,6 +251,38 @@ func TestUpstreamHeaderTimeoutDefaultSeededFromEnvironment(t *testing.T) {
 			}
 			if seeded != tc.want {
 				t.Fatalf("DefaultSettings value = %q, want %q", seeded, tc.want)
+			}
+		})
+	}
+}
+
+// The no-breaker rescue budget is capped at MaxRelayNoBreakerRetryBudgetSeconds (300s),
+// which is also the hard ceiling on the unified automatic-recovery window. The old 600s
+// ceiling must now be rejected.
+func TestNoBreakerRetryBudgetValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{name: "disabled", value: "0"},
+		{name: "at ceiling", value: "300"},
+		{name: "tightened", value: "120"},
+		{name: "above ceiling", value: "301", wantErr: true},
+		{name: "old ceiling now rejected", value: "600", wantErr: true},
+		{name: "negative", value: "-1", wantErr: true},
+		{name: "not an integer", value: "1.5", wantErr: true},
+		{name: "not a number", value: "abc", wantErr: true},
+		{name: "empty", value: "", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := (&Setting{Key: SettingKeyRelayNoBreakerRetryBudgetSec, Value: tt.value}).Validate()
+			if tt.wantErr && err == nil {
+				t.Fatalf("expected validation error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected validation error: %v", err)
 			}
 		})
 	}

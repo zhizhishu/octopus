@@ -34,11 +34,21 @@ func TestNoBreakerRetryBudgetDefaultAndBounds(t *testing.T) {
 	if got := NoBreakerRetryBudget(); got != 300*time.Second {
 		t.Fatalf("default budget = %v, want 300s", got)
 	}
-	if err := op.SettingSetString(dbmodel.SettingKeyRelayNoBreakerRetryBudgetSec, "900"); err != nil {
+	// A stored value above the ceiling (an older build's 600/900) must be clamped down to
+	// 300 at read time, never honoured.
+	for _, stored := range []string{"600", "900"} {
+		if err := op.SettingSetString(dbmodel.SettingKeyRelayNoBreakerRetryBudgetSec, stored); err != nil {
+			t.Fatalf("set budget %s: %v", stored, err)
+		}
+		if got := NoBreakerRetryBudget(); got != 300*time.Second {
+			t.Fatalf("stored %s clamped budget = %v, want 300s", stored, got)
+		}
+	}
+	if err := op.SettingSetString(dbmodel.SettingKeyRelayNoBreakerRetryBudgetSec, "120"); err != nil {
 		t.Fatalf("set budget: %v", err)
 	}
-	if got := NoBreakerRetryBudget(); got != 600*time.Second {
-		t.Fatalf("capped budget = %v, want 600s", got)
+	if got := NoBreakerRetryBudget(); got != 120*time.Second {
+		t.Fatalf("tightened budget = %v, want 120s", got)
 	}
 	if err := op.SettingSetString(dbmodel.SettingKeyRelayNoBreakerRetryBudgetSec, "0"); err != nil {
 		t.Fatalf("disable budget: %v", err)

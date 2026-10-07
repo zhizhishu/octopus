@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/bestruirui/octopus/internal/conf"
 	dbmodel "github.com/bestruirui/octopus/internal/model"
@@ -186,6 +187,12 @@ type relayRequest struct {
 	// not opt in — must still redact (with the global default flags if the channel has
 	// none) so a protected request is never silently swapped to an unprotected channel.
 	redactRequired bool
+
+	// rescueDeadlineTimer is the releasable automatic-recovery deadline (see
+	// rescue_window.go). Armed once when the rescue context is created and cleared by
+	// releaseRescueDeadline the instant real content reaches the client, so a recovered
+	// long body is never cut by the rescue clock. nil outside the rescue loop.
+	rescueDeadlineTimer *time.Timer
 }
 
 // relayAttempt 尝试级上下文

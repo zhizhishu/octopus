@@ -3,8 +3,10 @@ package relay
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -252,5 +254,54 @@ func TestUpstreamHeaderTimeoutClampsOutOfRangeStoredValue(t *testing.T) {
 	}
 	if got, want := currentUpstreamHeaderTimeout(), time.Duration(86400)*time.Second; got != want {
 		t.Fatalf("out-of-range stored value = %s, want it clamped to %s", got, want)
+	}
+}
+
+// The overflow guard must catch the FIRST value past the int64-nanosecond boundary:
+// 9223372037 * time.Second wraps negative, which the caller reads as "disabled". The
+// previous order (multiply, then clamp) let this through silently.
+func TestUpstreamHeaderTimeoutClampsJustPastOverflowBoundary(t *testing.T) {
+	setupRelayErrorDB(t)
+	if err := op.SettingSetString(dbmodel.SettingKeyUpstreamHeaderTimeoutSec, "9223372037"); err != nil {
+		t.Fatalf("write out-of-range value: %v", err)
+	}
+	want := time.Duration(dbmodel.MaxUpstreamHeaderTimeoutSeconds) * time.Second
+	if got := currentUpstreamHeaderTimeout(); got != want {
+		t.Fatalf("value just past the overflow boundary = %s, want it clamped to %s (never negative)", got, want)
+	}
+}
+
+// The env fallback path (used when the setting row is absent) must clamp identically:
+// the seconds value is clamped BEFORE the multiply, so an oversized env var cannot
+// overflow into "disabled".
+func TestUpstreamHeaderTimeoutEnvFallbackClampsOverflow(t *testing.T) {
+	want := time.Duration(dbmodel.MaxUpstreamHeaderTimeoutSeconds) * time.Second
+	for _, raw := range []string{"9223372036", "9223372037", strconv.Itoa(math.MaxInt)} {
+		t.Run(raw, func(t *testing.T) {
+			t.Setenv("OCTOPUS_UPSTREAM_HEADER_TIMEOUT_SECONDS", raw)
+			got := defaultUpstreamHeaderTimeout()
+			if got < 0 {
+				t.Fatalf("env %q overflowed to a negative duration %s (reads as disabled)", raw, got)
+			}
+			if got != want {
+				t.Fatalf("env %q = %s, want clamped to %s", raw, got, want)
+			}
+		})
+	}
+}
+
+// The platform int ceiling must never overflow into a negative duration on the stored
+// path either.
+func TestUpstreamHeaderTimeoutClampsPlatformIntMax(t *testing.T) {
+	setupRelayErrorDB(t)
+	if err := op.SettingSetString(dbmodel.SettingKeyUpstreamHeaderTimeoutSec, strconv.Itoa(math.MaxInt)); err != nil {
+		t.Fatalf("write platform-int-max value: %v", err)
+	}
+	got := currentUpstreamHeaderTimeout()
+	if got < 0 {
+		t.Fatalf("platform-int-max stored value overflowed negative: %s", got)
+	}
+	if want := time.Duration(dbmodel.MaxUpstreamHeaderTimeoutSeconds) * time.Second; got != want {
+		t.Fatalf("platform-int-max stored value = %s, want clamped to %s", got, want)
 	}
 }

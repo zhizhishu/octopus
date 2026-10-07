@@ -44,21 +44,25 @@ func currentStreamDataIntervalTimeout() time.Duration {
 func currentUpstreamHeaderTimeout() time.Duration {
 	seconds, err := op.SettingGetInt(dbmodel.SettingKeyUpstreamHeaderTimeoutSec)
 	if err != nil {
-		return clampUpstreamHeaderTimeout(defaultUpstreamHeaderTimeout())
+		return defaultUpstreamHeaderTimeout()
 	}
-	return clampUpstreamHeaderTimeout(streamSecondsDuration(seconds))
+	return upstreamHeaderTimeoutDuration(seconds)
 }
 
-// clampUpstreamHeaderTimeout keeps the budget inside the range the setting accepts.
-// Defensive: a value written straight into the database (bypassing Validate) would
-// otherwise be multiplied into a time.Duration and could overflow negative, which the
-// caller reads as "disabled" — the guard would silently disappear.
-func clampUpstreamHeaderTimeout(budget time.Duration) time.Duration {
-	max := time.Duration(dbmodel.MaxUpstreamHeaderTimeoutSeconds) * time.Second
-	if budget > max {
-		return max
+// upstreamHeaderTimeoutDuration clamps the raw seconds BEFORE the multiply into a
+// time.Duration. A value written straight into the database (bypassing Validate) — or,
+// on the env fallback path, an oversized environment variable — would otherwise overflow
+// into a negative duration, which the caller reads as "disabled": the guard would
+// silently disappear. Clamping after the multiply (the previous order) cannot catch that
+// because the overflow has already happened.
+func upstreamHeaderTimeoutDuration(seconds int) time.Duration {
+	if seconds <= 0 {
+		return 0
 	}
-	return budget
+	if seconds > dbmodel.MaxUpstreamHeaderTimeoutSeconds {
+		seconds = dbmodel.MaxUpstreamHeaderTimeoutSeconds
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 func defaultStreamKeepaliveInterval() time.Duration {
@@ -72,8 +76,17 @@ func defaultStreamDataIntervalTimeout() time.Duration {
 func defaultUpstreamHeaderTimeout() time.Duration {
 	// Default 0 = disabled: unchanged behaviour until an operator opts in, because a
 	// too-short budget would cut slow-but-healthy channels. Override with
-	// OCTOPUS_UPSTREAM_HEADER_TIMEOUT_SECONDS or the runtime setting.
-	return envStreamSecondsDuration("UPSTREAM_HEADER_TIMEOUT_SECONDS", 0)
+	// OCTOPUS_UPSTREAM_HEADER_TIMEOUT_SECONDS or the runtime setting. The seconds value is
+	// clamped before the multiply so an oversized env var cannot overflow into "disabled".
+	raw := strings.TrimSpace(os.Getenv(strings.ToUpper(conf.APP_NAME) + "_UPSTREAM_HEADER_TIMEOUT_SECONDS"))
+	if raw == "" {
+		return 0
+	}
+	seconds, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0
+	}
+	return upstreamHeaderTimeoutDuration(seconds)
 }
 
 func currentFirstByteKeepaliveDelay() time.Duration {

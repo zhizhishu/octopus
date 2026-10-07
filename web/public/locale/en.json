@@ -476,6 +476,7 @@
             }
         },
         "saved": "Saved",
+        "saveFailed": "Save failed. The setting was not applied. Please try again.",
         "backup": {
             "title": "Backup / Restore",
             "export": {
@@ -691,7 +692,17 @@
                 "clearing": "Clearing..."
             },
             "clearSuccess": "Logs cleared",
-            "clearFailed": "Failed to clear logs"
+            "clearFailed": "Failed to clear logs",
+            "intervention": {
+                "label": "Automatic rescue for upstream errors",
+                "description": "Enabled by default. Streaming requests hold the connection and retry on other channels automatically after all automatic channels fail; when disabled, ordinary channels return the error to the client immediately.",
+                "timeoutLabel": "Automatic rescue wait limit (sec)",
+                "timeoutHint": "Automatic rescue lasts at most 300 seconds in total; this value only shortens the waiting window when it is below 300 seconds and cannot extend it; the default 1800 seconds has no effect on automatic retries."
+            },
+            "noBreaker": {
+                "label": "No-breaker channel retry budget (sec)",
+                "hint": "Default and maximum are both 300 seconds. On failure the downstream error is intercepted while the gateway re-selects channels every second in the established priority/round-robin order; 0 disables this. Channels with the circuit breaker enabled still count failures and trip as usual."
+            }
         }
     },
     "model": {

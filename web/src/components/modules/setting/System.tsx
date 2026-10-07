@@ -229,8 +229,10 @@ export function SettingSystem() {
             if (dataTimeout) {
                 queueMicrotask(() => setStreamDataTimeoutInterval(dataTimeout.value || '900'));
                 initialStreamDataTimeoutInterval.current = dataTimeout.value || '900';
-                setUpstreamHeaderTimeout(upstreamHeader?.value || '0');
-                initialUpstreamHeaderTimeout.current = upstreamHeader?.value || '0';
+            }
+            if (upstreamHeader) {
+                queueMicrotask(() => setUpstreamHeaderTimeout(upstreamHeader.value || '0'));
+                initialUpstreamHeaderTimeout.current = upstreamHeader.value || '0';
             }
             if (firstByteKeepalive) {
                 queueMicrotask(() => setFirstByteKeepaliveDelay(firstByteKeepalive.value || '0'));
@@ -400,6 +402,8 @@ export function SettingSystem() {
 
     const handleSave = (key: string, value: string, initialValue: string) => {
         if (value === initialValue) return;
+        // 单一 mutation 槽本身就是串行闸门：pending 中拒绝新提交，旧响应永远追不上新值。
+        if (setSetting.isPending) return;
 
         setSetting.mutate({ key, value }, {
             onSuccess: () => {
@@ -479,6 +483,22 @@ export function SettingSystem() {
                     initialCodexHeaderUserAgent.current = value;
                 } else if (key === SettingKey.CodexHeaderBetaFeatures) {
                     initialCodexHeaderBetaFeatures.current = value;
+                }
+            },
+            onError: () => {
+                // 合法值也可能因 401/403/500/断网而失败：必须可见，且不能假装已保存。
+                // initial ref 未变，展示值回滚到已确认值后，再次失焦即可重试。
+                toast.error(t('saveFailed'));
+                if (key === SettingKey.RelayStreamKeepaliveIntervalSeconds) {
+                    setStreamKeepaliveInterval(initialStreamKeepaliveInterval.current || '15');
+                } else if (key === SettingKey.RelayStreamDataIntervalTimeoutSeconds) {
+                    setStreamDataTimeoutInterval(initialStreamDataTimeoutInterval.current || '900');
+                } else if (key === SettingKey.UpstreamHeaderTimeoutSeconds) {
+                    setUpstreamHeaderTimeout(initialUpstreamHeaderTimeout.current || '0');
+                } else if (key === SettingKey.FirstByteKeepaliveDelaySeconds) {
+                    setFirstByteKeepaliveDelay(initialFirstByteKeepaliveDelay.current || '0');
+                } else if (key === SettingKey.ResponsesSessionTTLSeconds) {
+                    setResponsesSessionTTL(initialResponsesSessionTTL.current || '3600');
                 }
             }
         });
@@ -572,6 +592,7 @@ export function SettingSystem() {
     };
 
     const handleAnthropicAutoCacheControlChange = (checked: boolean) => {
+        if (setSetting.isPending) return;
         setAnthropicAutoCacheControl(checked);
         if (checked === initialAnthropicAutoCacheControl.current) return;
 
@@ -579,11 +600,16 @@ export function SettingSystem() {
             onSuccess: () => {
                 toast.success(t('saved'));
                 initialAnthropicAutoCacheControl.current = checked;
+            },
+            onError: () => {
+                toast.error(t('saveFailed'));
+                setAnthropicAutoCacheControl(initialAnthropicAutoCacheControl.current);
             }
         });
     };
 
     const handleOpenAIAutoPromptCacheKeyChange = (checked: boolean) => {
+        if (setSetting.isPending) return;
         setOpenAIAutoPromptCacheKey(checked);
         if (checked === initialOpenAIAutoPromptCacheKey.current) return;
 
@@ -591,11 +617,16 @@ export function SettingSystem() {
             onSuccess: () => {
                 toast.success(t('saved'));
                 initialOpenAIAutoPromptCacheKey.current = checked;
+            },
+            onError: () => {
+                toast.error(t('saveFailed'));
+                setOpenAIAutoPromptCacheKey(initialOpenAIAutoPromptCacheKey.current);
             }
         });
     };
 
     const handleClaudeCLIAutoCompactChange = (checked: boolean) => {
+        if (setSetting.isPending) return;
         setClaudeCLIAutoCompact(checked);
         if (checked === initialClaudeCLIAutoCompact.current) return;
 
@@ -603,11 +634,16 @@ export function SettingSystem() {
             onSuccess: () => {
                 toast.success(t('saved'));
                 initialClaudeCLIAutoCompact.current = checked;
+            },
+            onError: () => {
+                toast.error(t('saveFailed'));
+                setClaudeCLIAutoCompact(initialClaudeCLIAutoCompact.current);
             }
         });
     };
 
     const handleCodexFastModeChange = (checked: boolean) => {
+        if (setSetting.isPending) return;
         setCodexFastMode(checked);
         if (checked === initialCodexFastMode.current) return;
 
@@ -615,11 +651,16 @@ export function SettingSystem() {
             onSuccess: () => {
                 toast.success(t('saved'));
                 initialCodexFastMode.current = checked;
+            },
+            onError: () => {
+                toast.error(t('saveFailed'));
+                setCodexFastMode(initialCodexFastMode.current);
             }
         });
     };
 
     const handleUserRegistrationEnabledChange = (checked: boolean) => {
+        if (setSetting.isPending) return;
         setUserRegistrationEnabled(checked);
         if (checked === initialUserRegistrationEnabled.current) return;
 
@@ -627,11 +668,16 @@ export function SettingSystem() {
             onSuccess: () => {
                 toast.success(t('saved'));
                 initialUserRegistrationEnabled.current = checked;
+            },
+            onError: () => {
+                toast.error(t('saveFailed'));
+                setUserRegistrationEnabled(initialUserRegistrationEnabled.current);
             }
         });
     };
 
     const handleEmailVerificationEnabledChange = (checked: boolean) => {
+        if (setSetting.isPending) return;
         setEmailVerificationEnabled(checked);
         if (checked === initialEmailVerificationEnabled.current) return;
 
@@ -639,11 +685,16 @@ export function SettingSystem() {
             onSuccess: () => {
                 toast.success(t('saved'));
                 initialEmailVerificationEnabled.current = checked;
+            },
+            onError: () => {
+                toast.error(t('saveFailed'));
+                setEmailVerificationEnabled(initialEmailVerificationEnabled.current);
             }
         });
     };
 
     const handleEmailSMTPSSLChange = (checked: boolean) => {
+        if (setSetting.isPending) return;
         setEmailSMTPSSL(checked);
         if (checked === initialEmailSMTPSSL.current) return;
 
@@ -651,11 +702,16 @@ export function SettingSystem() {
             onSuccess: () => {
                 toast.success(t('saved'));
                 initialEmailSMTPSSL.current = checked;
+            },
+            onError: () => {
+                toast.error(t('saveFailed'));
+                setEmailSMTPSSL(initialEmailSMTPSSL.current);
             }
         });
     };
 
     const handleUpstreamErrorStatusPassthroughChange = (checked: boolean) => {
+        if (setSetting.isPending) return;
         setUpstreamErrorStatusPassthrough(checked);
         if (checked === initialUpstreamErrorStatusPassthrough.current) return;
 
@@ -663,11 +719,16 @@ export function SettingSystem() {
             onSuccess: () => {
                 toast.success(t('saved'));
                 initialUpstreamErrorStatusPassthrough.current = checked;
+            },
+            onError: () => {
+                toast.error(t('saveFailed'));
+                setUpstreamErrorStatusPassthrough(initialUpstreamErrorStatusPassthrough.current);
             }
         });
     };
 
     const handleCheckInEnabledChange = (checked: boolean) => {
+        if (setSetting.isPending) return;
         setCheckInEnabled(checked);
         if (checked === initialCheckInEnabled.current) return;
 
@@ -675,6 +736,10 @@ export function SettingSystem() {
             onSuccess: () => {
                 toast.success(t('saved'));
                 initialCheckInEnabled.current = checked;
+            },
+            onError: () => {
+                toast.error(t('saveFailed'));
+                setCheckInEnabled(initialCheckInEnabled.current);
             }
         });
     };
@@ -780,6 +845,9 @@ export function SettingSystem() {
     };
 
     const handleSaveHeaderProfile = async () => {
+        // 单一 mutation 槽在 pending 中拒绝重复提交，防止两批 header 写入交错。
+        if (setSetting.isPending) return;
+
         const updates: Array<{ key: string; value: string; apply: () => void }> = [];
 
         if (editingHeaderProfile === 'claude') {

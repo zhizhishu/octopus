@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"sync/atomic"
 
 	"github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/relay/intervention"
@@ -64,23 +65,27 @@ func shouldHoldForOperator(req *relayRequest, contextWindowErr, finalErr error) 
 }
 
 // relayStop reports client abort vs rescue/operator abort. parent is the original
-// client context; current may already be the rescue timeout context.
-func relayStop(parent, current, rescueCtx context.Context) (clientGone bool, stopErr error) {
+// client context; current may already be the rescue deadline context. rescueFired marks
+// whether a rescue context cancel came from the automatic-recovery deadline.
+func relayStop(parent, current, rescueCtx context.Context, rescueFired *atomic.Bool) (clientGone bool, stopErr error) {
 	if parent != nil && parent.Err() != nil {
 		return true, parent.Err()
 	}
 	if current != nil && current.Err() != nil {
-		return false, rescueStopError(rescueCtx, parent)
+		return false, rescueStopError(rescueCtx, parent, rescueFired)
 	}
 	return false, nil
 }
 
-// rescueStopError distinguishes the relay's retry budget from the client's lifetime.
-func rescueStopError(rescueCtx, clientCtx context.Context) error {
+// rescueStopError distinguishes the automatic-recovery deadline from every other cancel
+// (operator abort, client lifetime). The deadline is now a releasable time.AfterFunc (not
+// a context deadline), so its fire flag — not DeadlineExceeded — decides
+// "rescue_timeout" vs "rescue_stopped". Semantics are unchanged.
+func rescueStopError(rescueCtx, clientCtx context.Context, rescueFired *atomic.Bool) error {
 	if rescueCtx == nil || rescueCtx.Err() == nil || clientCtx.Err() != nil {
 		return nil
 	}
-	if errors.Is(rescueCtx.Err(), context.DeadlineExceeded) {
+	if rescueFired != nil && rescueFired.Load() {
 		return &localRelayError{status: http.StatusGatewayTimeout, code: "octopus_rescue_timeout", strategy: "rescue_timeout", message: "automatic rescue timed out"}
 	}
 	return &localRelayError{status: http.StatusServiceUnavailable, code: "octopus_rescue_stopped", strategy: "rescue_stopped", message: "automatic rescue stopped"}

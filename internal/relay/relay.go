@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bestruirui/octopus/internal/helper"
@@ -153,10 +154,19 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		interventionCancel        context.CancelFunc
 		stopInterventionKeepalive func()
 		interventionRegistered    bool
-		noBreakerRescueStartedAt  time.Time
 		noBreakerRescueBudget     time.Duration
 		sawNoBreakerChannel       bool
 		operatorRescueRequested   bool
+
+		// ONE automatic-recovery window (see rescue_window.go). recoveryStartedAt pins the
+		// first rescuable failure; every later retry / branch switch (plain<->no-breaker<->
+		// operator) / channel change / operator click shares it, so the cap can only be
+		// tightened, never reset. rescueFired marks the cancel as a deadline (rescue_timeout)
+		// rather than an operator abort (rescue_stopped). rescueExpired records that the window
+		// elapsed mid-sweep, so the original-group fallback is skipped and no new attempt starts.
+		recoveryStartedAt time.Time
+		rescueFired       = &atomic.Bool{}
+		rescueExpired     bool
 	)
 	// The attempt context is disposable; the client/rescue deadline remains its parent.
 	beginControlledAttempt := func() func() {
@@ -189,6 +199,7 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		} else {
 			requestState.markFailed("request ended without a successful upstream response")
 		}
+		req.releaseRescueDeadline()
 		if interventionCancel != nil {
 			interventionCancel()
 		}
@@ -200,12 +211,19 @@ runIterator:
 	req.iter = iter
 attemptChannels:
 	for iter.Next() {
-		if clientGone, stopErr := relayStop(originalRequest.Context(), c.Request.Context(), interventionCtx); clientGone {
+		if clientGone, stopErr := relayStop(originalRequest.Context(), c.Request.Context(), interventionCtx, rescueFired); clientGone {
 			log.Infof("client request context canceled, stopping retry")
 			metrics.Save(originalRequest.Context(), false, originalRequest.Context().Err(), append(allAttempts, iter.Attempts()...))
 			return
 		} else if stopErr != nil {
 			lastErr = stopErr
+			break attemptChannels
+		}
+		if rescueDeadlineExpired(recoveryStartedAt, time.Now()) {
+			// The single automatic-recovery window already elapsed: start no further attempt.
+			// Flow on to the hold block, which opens an immediately-expired window and
+			// terminates cleanly with octopus_rescue_timeout.
+			rescueExpired = true
 			break attemptChannels
 		}
 
@@ -353,6 +371,10 @@ attemptChannels:
 				group.FirstTokenTimeOut,
 			)
 			endAttempt()
+			recoveryStartedAt = markRecoveryStart(recoveryStartedAt, result.Err)
+			if result.Err == nil {
+				req.releaseRescueDeadline()
+			}
 			if requestState.consumeRescueRequest() && !result.Success && !result.Written {
 				operatorRescueRequested = true
 				lastErr = errRunningRequestRescue
@@ -391,12 +413,16 @@ attemptChannels:
 		}
 
 		for keyIndex, usedKey := range availableKeys {
-			if clientGone, stopErr := relayStop(originalRequest.Context(), c.Request.Context(), interventionCtx); clientGone {
+			if clientGone, stopErr := relayStop(originalRequest.Context(), c.Request.Context(), interventionCtx, rescueFired); clientGone {
 				log.Infof("client request context canceled, stopping retry")
 				metrics.Save(originalRequest.Context(), false, originalRequest.Context().Err(), append(allAttempts, iter.Attempts()...))
 				return
 			} else if stopErr != nil {
 				lastErr = stopErr
+				break attemptChannels
+			}
+			if rescueDeadlineExpired(recoveryStartedAt, time.Now()) {
+				rescueExpired = true
 				break attemptChannels
 			}
 			// Reset the route model before each key attempt: applyModelMapping mutates
@@ -442,13 +468,17 @@ attemptChannels:
 			endAttempt := beginControlledAttempt()
 			result := ra.attempt()
 			endAttempt()
+			recoveryStartedAt = markRecoveryStart(recoveryStartedAt, result.Err)
+			if result.Err == nil {
+				req.releaseRescueDeadline()
+			}
 			if requestState.consumeRescueRequest() && !result.Success && !result.Written {
 				operatorRescueRequested = true
 				lastErr = errRunningRequestRescue
 				requestState.finishRound(lastErr.Error(), time.Since(attemptStartTime).Milliseconds())
 				break attemptChannels
 			}
-			if stopErr := rescueStopError(interventionCtx, originalRequest.Context()); stopErr != nil {
+			if stopErr := rescueStopError(interventionCtx, originalRequest.Context(), rescueFired); stopErr != nil {
 				result.Err = stopErr
 				result.Retryable = false
 			}
@@ -463,12 +493,16 @@ attemptChannels:
 				requestState.finishRound("unknown error", attemptLatency)
 			}
 			for transientTry := 0; !result.Success && !result.Written && result.Retryable && transientTry < maxTransientStreamRetries; transientTry++ {
-				if clientGone, stopErr := relayStop(originalRequest.Context(), c.Request.Context(), interventionCtx); clientGone {
+				if clientGone, stopErr := relayStop(originalRequest.Context(), c.Request.Context(), interventionCtx, rescueFired); clientGone {
 					log.Infof("client request context canceled, stopping retry")
 					metrics.Save(originalRequest.Context(), false, originalRequest.Context().Err(), append(allAttempts, iter.Attempts()...))
 					return
 				} else if stopErr != nil {
 					lastErr = stopErr
+					break attemptChannels
+				}
+				if rescueDeadlineExpired(recoveryStartedAt, time.Now()) {
+					rescueExpired = true
 					break attemptChannels
 				}
 				log.Warnf("retrying transient empty upstream stream on channel %s key %d (try %d/%d): %v",
@@ -492,6 +526,10 @@ attemptChannels:
 				endAttempt = beginControlledAttempt()
 				result = ra.attempt()
 				endAttempt()
+				recoveryStartedAt = markRecoveryStart(recoveryStartedAt, result.Err)
+				if result.Err == nil {
+					req.releaseRescueDeadline()
+				}
 				if requestState.consumeRescueRequest() && !result.Success && !result.Written {
 					operatorRescueRequested = true
 					lastErr = errRunningRequestRescue
@@ -539,7 +577,7 @@ attemptChannels:
 
 	// 所有通道都失败
 	allAttempts = append(allAttempts, iter.Attempts()...)
-	if !operatorRescueRequested && contextWindowErr == nil && shouldReturnToOriginalGroup(routeResult, triedReturnGroup) {
+	if !rescueExpired && !operatorRescueRequested && contextWindowErr == nil && shouldReturnToOriginalGroup(routeResult, triedReturnGroup) {
 		triedReturnGroup = true
 		fallbackGroup, err := op.GroupGetEnabledMap(requestModel, c.Request.Context())
 		if err != nil {
@@ -579,18 +617,30 @@ attemptChannels:
 	clientAlive := originalRequest.Context().Err() == nil
 	if clientAlive && rescueBudgetAlive && (noBreakerAutoRescue || manualIntervention ||
 		(interventionRegistered && isRescueableHeldRequest(req, contextWindowErr, finalErr))) {
-		if noBreakerRescueStartedAt.IsZero() && noBreakerAutoRescue {
-			noBreakerRescueStartedAt = time.Now()
-		}
 		if stopInterventionKeepalive == nil {
 			stopInterventionKeepalive = startInterventionKeepalive(c.Request.Context(), c)
 		}
 		if interventionCtx == nil {
-			totalTimeout := noBreakerRescueBudget
-			if !noBreakerAutoRescue && manualIntervention {
-				totalTimeout = intervention.Timeout()
+			// ONE automatic-recovery window, measured from the first rescuable failure and
+			// capped at autoRescueCap. The operator hold timeout can only tighten it — it must
+			// never lend extra life to an automatic retry. A deadline already in the past opens
+			// an immediately-expired window so the loop terminates cleanly with
+			// octopus_rescue_timeout.
+			start := recoveryStartedAt
+			if start.IsZero() {
+				start = time.Now()
+				recoveryStartedAt = start
 			}
-			interventionCtx, interventionCancel = context.WithTimeout(c.Request.Context(), totalTimeout)
+			deadline := rescueWindowDeadline(start, noBreakerRescueBudget, noBreakerAutoRescue, intervention.Timeout())
+			interventionCtx, interventionCancel = context.WithCancel(c.Request.Context())
+			// Releasable deadline: fire() marks the cancel as a rescue timeout (vs an operator
+			// abort, which reads as rescue_stopped). releaseRescueDeadline stops the timer the
+			// moment real content reaches the client, so a recovered long body keeps streaming
+			// under the client context instead of being cut by the rescue clock.
+			req.rescueDeadlineTimer = time.AfterFunc(time.Until(deadline), func() {
+				rescueFired.Store(true)
+				interventionCancel()
+			})
 			defer interventionCancel()
 			// Route every subsequent upstream attempt through the rescue context so an
 			// in-flight attempt honors the rescue deadline / operator abort instead of
@@ -720,7 +770,7 @@ attemptChannels:
 	}
 
 	finalErr = lastErr
-	if stopErr := rescueStopError(interventionCtx, originalRequest.Context()); stopErr != nil {
+	if stopErr := rescueStopError(interventionCtx, originalRequest.Context(), rescueFired); stopErr != nil {
 		finalErr = stopErr
 	}
 	if finalErr == nil {
@@ -2305,6 +2355,9 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 			pendingPrelude = nil
 		}
 		ra.wroteMeaningfulDownstream = true
+		// Commit reached the client: the response is recovered, so release the rescue
+		// deadline and let the body stream under the client context.
+		ra.releaseRescueDeadline()
 		return nil
 	}
 
@@ -2958,6 +3011,7 @@ readLoop:
 		}
 	}
 	ra.wroteMeaningfulDownstream = true
+	ra.releaseRescueDeadline()
 	if ra.wroteNonStreamJSONKeepalive {
 		// Response head already committed by blank-line keepalives; append the aggregated
 		// JSON body — valid JSON after the leading insignificant whitespace.
@@ -3005,6 +3059,7 @@ func (ra *relayAttempt) handleNonStreamResponseAsStream(ctx context.Context, res
 		return err
 	}
 	ra.wroteMeaningfulDownstream = true
+	ra.releaseRescueDeadline()
 	for _, chunk := range internalResponseToStreamChunks(internalResponse) {
 		data, err := ra.inAdapter.TransformStream(ctx, chunk)
 		if err != nil {

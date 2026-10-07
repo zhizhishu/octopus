@@ -101,11 +101,17 @@ const (
 	SettingKeyRelayInterventionEnabled SettingKey = "relay_intervention_enabled"
 	// SettingKeyRelayInterventionTimeoutSec bounds that hold: once it elapses with nobody
 	// resolving the request, the original upstream error goes to the client after all.
+	// Since the unified automatic-recovery window is hard-capped at 300s from the first
+	// rescuable failure, this value can only TIGHTEN that window (a value below 300s
+	// shortens it); a larger value — including the 1800s default — can never extend an
+	// automatic retry.
 	SettingKeyRelayInterventionTimeoutSec SettingKey = "relay_intervention_timeout_seconds"
 	// SettingKeyRelayNoBreakerRetryBudgetSec controls the automatic rescue window for
 	// routes containing DisableCircuitBreaker channels. During this window the relay
 	// keeps the downstream connection alive and repeatedly rebuilds the normal canvas-
-	// ordered iterator. 0 disables this automatic rescue; valid values are capped at 600s.
+	// ordered iterator. 0 disables this automatic rescue; valid values are capped at
+	// MaxRelayNoBreakerRetryBudgetSeconds (300s). It never extends the unified automatic-
+	// recovery window (also 300s from the first rescuable failure) — it can only tighten it.
 	SettingKeyRelayNoBreakerRetryBudgetSec SettingKey = "relay_no_breaker_retry_budget_seconds"
 
 	SettingKeyRouteModeOverride       SettingKey = "route_mode_override"      // 路由默认模式: spread=轮询, fill_first=优先填充；不覆盖 ModeLocked 规则
@@ -362,8 +368,8 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyFirstByteKeepaliveDelaySeconds, Value: defaultFirstByteKeepaliveDelaySeconds()}, // 默认20=开启: 上游首字节>20s才向下游注入SSE心跳(防前置反代/客户端60s空闲掐断); 0=关闭
 		{Key: SettingKeyInterventionKeepaliveDelaySeconds, Value: "2"},                                  // 默认2=hold期间2秒后即向下游注入SSE心跳: hold轮次寿命受backoff封顶15s约束,20s首字delay在轮内永远死胎; 0=关闭
 		{Key: SettingKeyRelayInterventionEnabled, Value: "true"},                                        // 默认开: 流式请求在普通渠道/回退用尽后自动救援; 关=普通渠道立刻回错(无熔断渠道仍可按预算自救)
-		{Key: SettingKeyRelayInterventionTimeoutSec, Value: "1800"},                                     // 人工接管等待上限(秒), 超时后原错误照常返回客户端
-		{Key: SettingKeyRelayNoBreakerRetryBudgetSec, Value: "300"},                                     // 无熔断渠道自动猛打预算(秒): 按画布既定顺序反复重试; 最大600, 0=关闭
+		{Key: SettingKeyRelayInterventionTimeoutSec, Value: "1800"},                                     // 人工接管等待上限(秒); 自动救援总计已封顶300s, 此值仅可再收紧(<300), 超时后原错误照常返回客户端
+		{Key: SettingKeyRelayNoBreakerRetryBudgetSec, Value: "300"},                                     // 无熔断渠道自动猛打预算(秒): 按画布既定顺序反复重试; 最大300(自动救援总计上限), 0=关闭
 		{Key: SettingKeyRouteModeOverride, Value: DefaultRouteModeOverride},                             // 默认优先填充；已有独立模式的规则不受影响
 		{Key: SettingKeyRouteStickyCacheFirst, Value: "false"},                                          // 默认 false=分摊优先(现行为不变); 设 true 切「缓存优先」: 轮询分组里非空的纯优化型会话也保留粘性
 		{Key: SettingKeyPromptOverrideSystem, Value: ""},
@@ -509,8 +515,8 @@ func (s *Setting) Validate() error {
 		return nil
 	case SettingKeyRelayNoBreakerRetryBudgetSec:
 		value, err := strconv.Atoi(s.Value)
-		if err != nil || value < 0 || value > 600 {
-			return fmt.Errorf("%s must be an integer between 0 and 600", s.Key)
+		if err != nil || value < 0 || value > MaxRelayNoBreakerRetryBudgetSeconds {
+			return fmt.Errorf("%s must be an integer between 0 and %d", s.Key, MaxRelayNoBreakerRetryBudgetSeconds)
 		}
 		return nil
 	case SettingKeyRouteModeOverride:
@@ -688,6 +694,13 @@ func (s *Setting) Validate() error {
 // exists so the seconds value can never overflow into a negative time.Duration (which
 // the relay would read as "disabled"); one day is far beyond any healthy slow upstream.
 const MaxUpstreamHeaderTimeoutSeconds = 86400
+
+// MaxRelayNoBreakerRetryBudgetSeconds bounds the automatic rescue window for routes that
+// contain DisableCircuitBreaker channels. It is shared by the API validation here and the
+// relay reader (intervention.NoBreakerRetryBudget) so the two can never drift apart, and
+// it is also the hard ceiling on the unified automatic-recovery window: 300s measured
+// from the first rescuable failure, whatever branch the request takes.
+const MaxRelayNoBreakerRetryBudgetSeconds = 300
 
 func defaultUpstreamHeaderTimeoutSeconds() string {
 	raw := strings.TrimSpace(os.Getenv("OCTOPUS_UPSTREAM_HEADER_TIMEOUT_SECONDS"))

@@ -85,6 +85,7 @@ export function SettingLog() {
     }, [settings]);
 
     const handleEnabledChange = (checked: boolean) => {
+        if (setSetting.isPending) return;
         setEnabled(checked);
         setSetting.mutate(
             { key: SettingKey.RelayLogKeepEnabled, value: checked ? 'true' : 'false' },
@@ -92,6 +93,10 @@ export function SettingLog() {
                 onSuccess: () => {
                     toast.success(t('saved'));
                     initialEnabled.current = checked;
+                },
+                onError: () => {
+                    toast.error(t('saveFailed'));
+                    setEnabled(initialEnabled.current);
                 }
             }
         );
@@ -99,6 +104,7 @@ export function SettingLog() {
 
     const handleKeepPeriodSave = () => {
         if (keepPeriod === initialKeepPeriod.current) return;
+        if (setSetting.isPending) return;
 
         setSetting.mutate(
             { key: SettingKey.RelayLogKeepPeriod, value: keepPeriod },
@@ -106,6 +112,10 @@ export function SettingLog() {
                 onSuccess: () => {
                     toast.success(t('saved'));
                     initialKeepPeriod.current = keepPeriod;
+                },
+                onError: () => {
+                    // 保留草稿不回滚：再次失焦即可重试。
+                    toast.error(t('saveFailed'));
                 }
             }
         );
@@ -113,6 +123,7 @@ export function SettingLog() {
 
     const handleMaxStorageSave = () => {
         if (maxStorageGB === initialMaxStorageGB.current) return;
+        if (setSetting.isPending) return;
 
         setSetting.mutate(
             { key: SettingKey.RelayLogMaxStorageGB, value: maxStorageGB },
@@ -120,12 +131,17 @@ export function SettingLog() {
                 onSuccess: () => {
                     toast.success(t('saved'));
                     initialMaxStorageGB.current = maxStorageGB;
+                },
+                onError: () => {
+                    // 保留草稿不回滚：再次失焦即可重试。
+                    toast.error(t('saveFailed'));
                 }
             }
         );
     };
 
     const handleInterventionEnabledChange = (checked: boolean) => {
+        if (setSetting.isPending) return;
         setInterventionEnabled(checked);
         setSetting.mutate(
             { key: SettingKey.RelayInterventionEnabled, value: checked ? 'true' : 'false' },
@@ -133,6 +149,10 @@ export function SettingLog() {
                 onSuccess: () => {
                     toast.success(t('saved'));
                     initialInterventionEnabled.current = checked;
+                },
+                onError: () => {
+                    toast.error(t('saveFailed'));
+                    setInterventionEnabled(initialInterventionEnabled.current);
                 }
             }
         );
@@ -140,6 +160,7 @@ export function SettingLog() {
 
     const handleInterventionTimeoutSave = () => {
         if (interventionTimeout === initialInterventionTimeout.current) return;
+        if (setSetting.isPending) return;
 
         setSetting.mutate(
             { key: SettingKey.RelayInterventionTimeoutSeconds, value: interventionTimeout },
@@ -147,14 +168,19 @@ export function SettingLog() {
                 onSuccess: () => {
                     toast.success(t('saved'));
                     initialInterventionTimeout.current = interventionTimeout;
+                },
+                onError: () => {
+                    // 保留草稿不回滚：再次失焦即可重试。
+                    toast.error(t('saveFailed'));
                 }
             }
         );
     };
 
     const handleNoBreakerRetryBudgetSave = () => {
+        if (setSetting.isPending) return;
         const parsed = Number.parseInt(noBreakerRetryBudget, 10);
-        const normalized = String(Number.isFinite(parsed) ? Math.min(600, Math.max(0, parsed)) : 300);
+        const normalized = String(Number.isFinite(parsed) ? Math.min(300, Math.max(0, parsed)) : 300);
         setNoBreakerRetryBudget(normalized);
         if (normalized === initialNoBreakerRetryBudget.current) return;
         setSetting.mutate(
@@ -163,6 +189,10 @@ export function SettingLog() {
                 onSuccess: () => {
                     toast.success(t('saved'));
                     initialNoBreakerRetryBudget.current = normalized;
+                },
+                onError: () => {
+                    // 保留钳制后的草稿不回滚：再次失焦即可重试。
+                    toast.error(t('saveFailed'));
                 }
             }
         );
@@ -288,8 +318,8 @@ export function SettingLog() {
             <div className="space-y-3 rounded-2xl border border-sky-500/30 bg-sky-500/5 p-4">
                 <div className="flex items-center justify-between gap-4">
                     <div className="flex flex-col gap-1">
-                        <span className="text-sm font-medium">上游错误自动救援</span>
-                        <span className="text-xs text-muted-foreground">默认开启。流式请求在所有自动渠道失败后会保持连接并自动换渠道重试；关闭后普通渠道立刻把错误返回客户端。</span>
+                        <span className="text-sm font-medium">{t('log.intervention.label')}</span>
+                        <span className="text-xs text-muted-foreground">{t('log.intervention.description')}</span>
                     </div>
                     <Switch
                         checked={interventionEnabled}
@@ -297,7 +327,10 @@ export function SettingLog() {
                     />
                 </div>
                 <div className="flex items-center justify-between gap-4">
-                    <span className="text-sm font-medium">自动救援等待上限（秒）</span>
+                    <div className="flex flex-col gap-1">
+                        <span className="text-sm font-medium">{t('log.intervention.timeoutLabel')}</span>
+                        <span className="text-xs text-muted-foreground">{t('log.intervention.timeoutHint')}</span>
+                    </div>
                     <Input
                         type="number"
                         min="1"
@@ -310,13 +343,13 @@ export function SettingLog() {
                 </div>
                 <div className="flex items-center justify-between gap-4 border-t border-amber-500/20 pt-3">
                     <div className="flex flex-col gap-1">
-                        <span className="text-sm font-medium">无熔断渠道自动猛打（秒）</span>
-                        <span className="text-xs text-muted-foreground">默认 300、最大 600。失败时拦截下游错误，按无限画布既定优先/轮询顺序每秒重新选路；0 表示关闭。开启熔断的渠道仍照常计失败并进入熔断。</span>
+                        <span className="text-sm font-medium">{t('log.noBreaker.label')}</span>
+                        <span className="text-xs text-muted-foreground">{t('log.noBreaker.hint')}</span>
                     </div>
                     <Input
                         type="number"
                         min="0"
-                        max="600"
+                        max="300"
                         value={noBreakerRetryBudget}
                         onChange={(e) => setNoBreakerRetryBudget(e.target.value)}
                         onBlur={handleNoBreakerRetryBudgetSave}
