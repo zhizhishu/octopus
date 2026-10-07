@@ -68,8 +68,10 @@ func TestStartInterventionKeepaliveNoOpWhenDelayZero(t *testing.T) {
 // comment heartbeats. Before the fix, the hold loop stopped and restarted the shared
 // 20s-delay keepalive every round, so its delay timer never fired and the held client
 // sat byte-silent until the rescue budget died — racing client stream-idle timeouts
-// (codex TUI ~300s). With the dedicated short delay, each round outlives the delay and
-// the client sees "working" heartbeats.
+// (codex TUI ~300s). The keepalive is stopped BEFORE each round's attempt (to keep a
+// single writer on gin.Writer), so its delay must fire inside the backoff wait — the
+// no-breaker hold clamps the delay to half a round, which makes one heartbeat land
+// per round deterministically instead of racing the round boundary.
 func TestInterventionHoldEmitsDownstreamHeartbeats(t *testing.T) {
 	setupRescueDeadlineDB(t)
 	// setupRescueDeadlineDB disables the stream keepalive interval; re-enable both the
@@ -84,9 +86,10 @@ func TestInterventionHoldEmitsDownstreamHeartbeats(t *testing.T) {
 		t.Fatalf("set budget: %v", err)
 	}
 
-	// Upstream 500s after a short delay: each rescue round lives ~1s backoff + ~300ms
-	// attempt, comfortably outliving the 1s intervention delay so a heartbeat fires
-	// every round.
+	// Upstream 500s after a short delay. The keepalive is stopped before each attempt,
+	// so the beat must land inside the ~1s backoff wait: the hold clamps the 1s delay
+	// to half a round, giving the timer a ~500ms margin instead of a DB-query sliver
+	// (the unclamped 1s/1s pairing raced the round boundary and flaked under load).
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(300 * time.Millisecond)
 		w.WriteHeader(http.StatusInternalServerError)

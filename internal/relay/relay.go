@@ -618,7 +618,16 @@ attemptChannels:
 	if clientAlive && rescueBudgetAlive && (noBreakerAutoRescue || manualIntervention ||
 		(interventionRegistered && isRescueableHeldRequest(req, contextWindowErr, finalErr))) {
 		if stopInterventionKeepalive == nil {
-			stopInterventionKeepalive = startInterventionKeepalive(c.Request.Context(), c)
+			// 无熔断救援固定 1s 轮次，且心跳协程在每轮尝试开始前就被停掉（防并发写
+			// gin.Writer）：2s 默认延迟在轮内永远死胎，救援期间客户端全程静默——正是
+			// 该心跳特性要防的事。钳到半轮，保证每轮退避期间必发一拍。
+			holdDelay := currentInterventionKeepaliveDelay()
+			if noBreakerAutoRescue {
+				if halfRound := time.Second / 2; holdDelay > halfRound {
+					holdDelay = halfRound
+				}
+			}
+			stopInterventionKeepalive = startDownstreamKeepaliveWithDelay(c.Request.Context(), c, holdDelay)
 		}
 		if interventionCtx == nil {
 			// ONE automatic-recovery window, measured from the first rescuable failure and
