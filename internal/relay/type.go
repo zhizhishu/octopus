@@ -221,12 +221,16 @@ type relayAttempt struct {
 	// to the channel that later succeeded (F10).
 	upstreamDeclaredModel string
 
-	// upstreamResponded records that THIS attempt got an HTTP response back from the
-	// upstream, i.e. the request really was transmitted and executed there. The retry
-	// gate keys off wroteMeaningfulDownstream (a fact about the CLIENT), so without
-	// this the relay cannot tell "never reached upstream" from "reached upstream,
-	// response lost, now re-sent to the next channel". It is recorded for the audit
-	// log only and deliberately does not change the retry decision.
+	// upstreamResponded records that THIS attempt got an HTTP response back from
+	// the upstream. Receiving a response does NOT mean the request was executed:
+	// a deterministic 4xx rejection (e.g. 400/422) is an explicit refusal where
+	// nothing ran upstream. The audit message built from this flag states only the
+	// "an HTTP response arrived" fact and derives the executed/rejected wording
+	// from the response status (see attemptAuditMessage). The retry gate keys off
+	// wroteMeaningfulDownstream (a fact about the CLIENT), so without this flag the
+	// relay cannot tell "never reached upstream" from "reached upstream". It is
+	// recorded for the audit log only and deliberately does not change the retry
+	// decision.
 	upstreamResponded bool
 
 	// prewarmMu/prewarmStopped guard the first-byte keepalive goroutine so the

@@ -97,17 +97,32 @@ func auditErrorMessage(err error) string {
 	return err.Error()
 }
 
-// attemptAuditMessage is the per-attempt message the admin log shows. When the
-// upstream had already answered this attempt, it says so: the request was really
-// executed upstream (and may already be billed) even though nothing reached the
-// client and the relay is about to re-send it to the next channel. Without this the
-// log cannot distinguish "never reached upstream" from "reached upstream, response
-// lost" — the retry gate itself keys off a fact about the CLIENT, so it can never
-// supply that distinction on its own.
-func attemptAuditMessage(upstreamResponded bool, err error) string {
+// attemptAuditMessage is the per-attempt message the admin log shows for a
+// failed attempt. upstreamResponded only states that THIS attempt received an
+// HTTP response from the upstream — it does NOT imply the request was executed:
+// a deterministic client rejection (4xx except 429) is an explicit refusal where
+// nothing was executed and nothing was billed, so the note says exactly that.
+// In every other case (429, 5xx, no status / transient stream failure, 2xx whose
+// stream then broke) the response was lost after reaching the upstream, so the
+// original note records that the request was executed there and may already be
+// billed — even though nothing reached the client and the relay is about to
+// re-send it to the next channel. Without this the log cannot distinguish
+// "never reached upstream" from "reached upstream, response lost" — the retry
+// gate itself keys off a fact about the CLIENT, so it can never supply that
+// distinction on its own.
+func attemptAuditMessage(upstreamResponded bool, status int, err error) string {
 	msg := auditErrorMessage(err)
 	if !upstreamResponded {
 		return msg
+	}
+	if status >= 400 && status < 500 && status != 429 {
+		// Deterministic client rejection: the upstream explicitly refused this
+		// request, so nothing was executed there.
+		const rejected = "upstream rejected this request (the request was not run upstream)"
+		if msg == "" {
+			return rejected
+		}
+		return msg + " (" + rejected + ")"
 	}
 	const note = "upstream had already answered: this request was executed upstream before the relay moved on"
 	if msg == "" {

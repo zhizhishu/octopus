@@ -943,7 +943,7 @@ func (ra *relayAttempt) attempt() attemptResult {
 	// ====== 失败 ======
 	recordStatusCode := attemptStatusCode(statusCode, fwdErr)
 	op.ChannelKeyRecordUse(ra.usedKey, recordStatusCode, usedAt, 0)
-	span.End(dbmodel.AttemptFailed, recordStatusCode, attemptAuditMessage(ra.upstreamResponded, fwdErr))
+	span.End(dbmodel.AttemptFailed, recordStatusCode, attemptAuditMessage(ra.upstreamResponded, recordStatusCode, fwdErr))
 
 	breakerCounted := shouldRecordBreakerFailure(recordStatusCode, fwdErr)
 	// A DisableCircuitBreaker channel never accumulates circuit/runtime failure state: a
