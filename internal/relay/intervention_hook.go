@@ -31,9 +31,19 @@ func isEligibleForInterventionRescue(err error) bool {
 		if isOpenAIResponsesEndpointUnsupportedError(upErr.StatusCode(), upErr.Body()) {
 			return false
 		}
-		// Deterministic client 4xx status codes (except 429 rate limit) should not be rescued.
+		// 429 stays transient (rate limit). 400/422 are only rescueable when the body
+		// carries generic transient-capacity evidence (isTransientCapacityUpstreamError,
+		// which itself loses to the deterministic request-invalid / context-window
+		// exclusions already applied above). Every other 4xx (401/403/404/405/409/413/415
+		// ...) is a deterministic client error and fast-fails.
 		sc := upErr.StatusCode()
-		if sc >= 400 && sc < 500 && sc != http.StatusTooManyRequests {
+		if sc == http.StatusTooManyRequests {
+			return true
+		}
+		if sc == http.StatusBadRequest || sc == http.StatusUnprocessableEntity {
+			return isTransientCapacityUpstreamError(err)
+		}
+		if sc >= 400 && sc < 500 {
 			return false
 		}
 		return true

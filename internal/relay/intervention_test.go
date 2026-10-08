@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	dbmodel "github.com/bestruirui/octopus/internal/model"
@@ -149,6 +150,46 @@ func TestShouldHoldForOperator(t *testing.T) {
 			finalErr:          newUpstreamError(http.StatusNotFound, []byte(`{"error":{"message":"Resource not found"}}`)),
 			wantHold:          false,
 		},
+		{
+			name:              "400 with transient capacity evidence is eligible -> true",
+			enabled:           true,
+			streamPrefers:     &streamTrue,
+			wroteBusinessData: false,
+			finalErr:          newUpstreamError(http.StatusBadRequest, []byte(`{"error":{"message":"upstream capacity temporarily exceeded, retry later"}}`)),
+			wantHold:          true,
+		},
+		{
+			name:              "400 deterministic availability advisory is not eligible -> false",
+			enabled:           true,
+			streamPrefers:     &streamTrue,
+			wroteBusinessData: false,
+			finalErr:          newUpstreamError(http.StatusBadRequest, []byte(`{"error":{"message":"model gpt-6-astra availability cannot be guaranteed, please use another model"}}`)),
+			wantHold:          false,
+		},
+		{
+			name:              "400 retry routing advice without transient evidence is not eligible -> false",
+			enabled:           true,
+			streamPrefers:     &streamTrue,
+			wroteBusinessData: false,
+			finalErr:          newUpstreamError(http.StatusBadRequest, []byte(`{"error":{"message":"please retry with a different model"}}`)),
+			wantHold:          false,
+		},
+		{
+			name:              "422 invalid_argument is not eligible -> false",
+			enabled:           true,
+			streamPrefers:     &streamTrue,
+			wroteBusinessData: false,
+			finalErr:          newUpstreamError(http.StatusUnprocessableEntity, []byte(`{"error":{"message":"invalid_argument"}}`)),
+			wantHold:          false,
+		},
+		{
+			name:              "400 unsupported parameter value is not eligible -> false",
+			enabled:           true,
+			streamPrefers:     &streamTrue,
+			wroteBusinessData: false,
+			finalErr:          newUpstreamError(http.StatusBadRequest, []byte(`{"error":{"message":"Unsupported value: 'none' is not supported with the 'gpt-6-astra' model. Supported values are: 'low', 'medium', 'high', 'xhigh', and 'max'."}}`)),
+			wantHold:          false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -165,6 +206,106 @@ func TestShouldHoldForOperator(t *testing.T) {
 			got := shouldHoldForOperator(req, tt.contextWindowErr, tt.finalErr)
 			if got != tt.wantHold {
 				t.Errorf("shouldHoldForOperator() = %v, want %v", got, tt.wantHold)
+			}
+		})
+	}
+}
+
+// TestMatchTransientCapacityText locks the generic transient-capacity evidence table:
+// broad enough for universal capacity/rate-limit/overload phrasing, but with NO bare
+// "retry" marker (deterministic advisories say "please retry with a different model")
+// and no vendor/model-specific strings.
+func TestMatchTransientCapacityText(t *testing.T) {
+	positives := []string{
+		"upstream capacity temporarily exceeded, retry later",
+		"rate limit exceeded, slow down",
+		"rate_limit_error",
+		"429 too many requests",
+		"server overloaded, try again soon",
+		"model is overloaded",
+		"channel is busy, please wait",
+		"service temporarily unavailable",
+		"request throttled, back off",
+		"temporary failure, try again",
+	}
+	for _, s := range positives {
+		if !matchTransientCapacityText(s) {
+			t.Errorf("expected transient-capacity match for %q", s)
+		}
+	}
+
+	negatives := []string{
+		"",
+		"please retry with a different model",
+		"model gpt-6-astra availability cannot be guaranteed, please use another model",
+		"invalid_request_error: failed to deserialize the JSON body",
+		"prompt is too long: 201015 tokens > 200000 maximum",
+		"Unsupported value: 'none' is not supported with the 'gpt-6-astra' model",
+		"resource not found",
+		"unauthorized: bad api key",
+	}
+	for _, s := range negatives {
+		if matchTransientCapacityText(strings.ToLower(s)) {
+			t.Errorf("did not expect transient-capacity match for %q", s)
+		}
+	}
+}
+
+// TestIsTransientCapacityUpstreamError locks the status gate and deterministic-wins
+// tie-breaking of the end-to-end predicate: only 400/422 bodies with generic transient
+// evidence qualify; request-invalid / context-window bodies never do; other statuses
+// keep their own (already transient or already deterministic) handling.
+func TestIsTransientCapacityUpstreamError(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "400 capacity evidence -> true",
+			err:  newUpstreamError(http.StatusBadRequest, []byte(`{"error":{"message":"upstream capacity temporarily exceeded, retry later"}}`)),
+			want: true,
+		},
+		{
+			name: "422 overloaded evidence -> true",
+			err:  newUpstreamError(http.StatusUnprocessableEntity, []byte(`{"error":{"message":"model is overloaded, try again soon"}}`)),
+			want: true,
+		},
+		{
+			name: "400 without transient evidence -> false",
+			err:  newUpstreamError(http.StatusBadRequest, []byte(`{"error":{"message":"please retry with a different model"}}`)),
+			want: false,
+		},
+		{
+			name: "400 request-invalid wins over capacity wording -> false",
+			err:  newUpstreamError(http.StatusBadRequest, []byte(`{"error":{"message":"invalid_request_error: too many requests in body"}}`)),
+			want: false,
+		},
+		{
+			name: "400 context-window wins over capacity wording -> false",
+			err:  newUpstreamError(http.StatusBadRequest, []byte(`{"error":{"message":"prompt is too long: 201015 tokens > 200000 maximum"}}`)),
+			want: false,
+		},
+		{
+			name: "429 stays outside this predicate -> false",
+			err:  newUpstreamError(http.StatusTooManyRequests, []byte(`{"error":{"message":"rate limit exceeded"}}`)),
+			want: false,
+		},
+		{
+			name: "503 stays outside this predicate -> false",
+			err:  newUpstreamError(http.StatusServiceUnavailable, []byte(`{"error":{"message":"overloaded"}}`)),
+			want: false,
+		},
+		{
+			name: "non-upstream error -> false",
+			err:  errors.New("capacity temporarily exceeded"),
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isTransientCapacityUpstreamError(tc.err); got != tc.want {
+				t.Errorf("isTransientCapacityUpstreamError() = %v, want %v", got, tc.want)
 			}
 		})
 	}

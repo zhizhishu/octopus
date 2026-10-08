@@ -260,7 +260,17 @@ func ensureCodexParallelToolCalls(req *transformerModel.InternalLLMRequest) {
 	req.ParallelToolCalls = &falseVal
 }
 
-var gpt56CodexEffortAllowSet = map[string]bool{
+// codexEffortAllowSet is the exact set of reasoning.effort values the codex upstream
+// accepts. Source of truth is the real upstream's own 400 message (production log,
+// non-official client DSH via a Responses-type codex channel, model gpt-6-astra):
+//
+//	Unsupported value: 'none' is not supported with the 'gpt-6-astra' model.
+//	Supported values are: 'low', 'medium', 'high', 'xhigh', and 'max'.
+//
+// This is byte-identical to the long-standing GPT-5.6 contract ("level \"minimal\" not
+// supported, valid levels: low, medium, high, xhigh, max"), so ONE set now serves both
+// families.
+var codexEffortAllowSet = map[string]bool{
 	"low":    true,
 	"medium": true,
 	"high":   true,
@@ -278,9 +288,25 @@ func normalizeCodexReasoningEffort(req *transformerModel.InternalLLMRequest) {
 			req.ReasoningEffort = "high"
 			return
 		}
-		if !gpt56CodexEffortAllowSet[effort] {
+		if !codexEffortAllowSet[effort] {
 			req.ReasoningEffort = "low"
 			return
+		}
+		return
+	}
+	// GPT-6 family: the upstream rejects anything outside codexEffortAllowSet with the
+	// same 400 the gpt-5.6 family does ("'none' is not supported with the 'gpt-6-astra'
+	// model. Supported values are: 'low', 'medium', 'high', 'xhigh', and 'max'."), so
+	// clamp a non-empty illegal effort (none/minimal/unknown) to "low" the same way.
+	// Deliberately CONSERVATIVE, two asymmetries vs 5.6, both evidence-driven:
+	//   - empty effort is left untouched: production evidence only proves an EXPLICIT
+	//     "none" is rejected, not that a missing default is; no default is invented.
+	//   - "max" is NOT downgraded to "xhigh": the upstream's own error message lists
+	//     "max" as supported for gpt-6, so the generic non-5.6 max→xhigh remap below
+	//     must not run for this family.
+	if isGPT6Model(req.Model) {
+		if effort != "" && !codexEffortAllowSet[effort] {
+			req.ReasoningEffort = "low"
 		}
 		return
 	}
@@ -307,6 +333,25 @@ func isGPT56Model(model string) bool {
 	// Require an exact "gpt-5.6" or a "gpt-5.6-<suffix>" (variant/date/effort) so adjacent
 	// names like "gpt-5.60" or "gpt-5.6foo" are NOT mistaken for the 5.6 family.
 	return name == "gpt-5.6" || strings.HasPrefix(name, "gpt-5.6-")
+}
+
+// isGPT6Model reports whether model refers to the GPT-6 family (gpt-6, gpt-6-astra,
+// gpt-6-astra-turbo, …). Semantics are deliberately identical to isGPT56Model:
+// case-insensitive, tolerant of a leading provider/path prefix (e.g.
+// "openai/gpt-6-astra") and of date/variant suffixes. A leading path/vendor segment is
+// stripped the same way so "openai/gpt-6" matches like a bare "gpt-6". Requires an exact
+// "gpt-6" or a "gpt-6-<suffix>" so adjacent names like "gpt-6.1-sol", "gpt-60" or
+// "gpt-6foo" are NOT mistaken for the 6 family (same guard as 5.6's "gpt-5.60"/
+// "gpt-5.6foo" exclusion).
+func isGPT6Model(model string) bool {
+	name := strings.ToLower(strings.TrimSpace(model))
+	if name == "" {
+		return false
+	}
+	if idx := strings.LastIndex(name, "/"); idx >= 0 {
+		name = name[idx+1:]
+	}
+	return name == "gpt-6" || strings.HasPrefix(name, "gpt-6-")
 }
 
 // bridgePlainResponsesCodexHistory rebuilds the full input from octopus's stored transcript

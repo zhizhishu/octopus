@@ -563,6 +563,75 @@ func isContextWindowError(err error) bool {
 	return false
 }
 
+// matchTransientCapacityText reports whether text (already lowercased and trimmed)
+// carries GENERIC transient-capacity evidence — universal capacity / rate-limit /
+// overload / temporary / throttling / busy / unavailable phrasing that says "the
+// channel is at capacity right now but could serve this request later". This is
+// deliberately NOT a vendor copybook: no provider names, no model names, no
+// provider-specific error-code strings — only generic vocabulary any upstream uses
+// for momentary capacity state. There is deliberately NO bare "retry" marker:
+// deterministic advisories routinely say "please retry with a different model",
+// and bare "retry" (or "please retry") would misread such routing advice as
+// transient capacity (the exact mis-rescue this predicate exists to prevent). Only
+// compound forms that express a temporary state ("retry later", "try again") are
+// evidence.
+func matchTransientCapacityText(lower string) bool {
+	if lower == "" {
+		return false
+	}
+	switch {
+	case strings.Contains(lower, "capacity"),
+		strings.Contains(lower, "rate limit"),
+		strings.Contains(lower, "rate_limit"),
+		strings.Contains(lower, "too many requests"),
+		strings.Contains(lower, "overload"),
+		strings.Contains(lower, "temporarily"),
+		strings.Contains(lower, "temporary"),
+		strings.Contains(lower, "retry later"),
+		strings.Contains(lower, "try again"),
+		strings.Contains(lower, "busy"),
+		strings.Contains(lower, "unavailable"),
+		strings.Contains(lower, "throttl"):
+		return true
+	}
+	return false
+}
+
+// isTransientCapacityUpstreamError reports whether an upstream 400/422 body carries
+// generic transient-capacity evidence (see matchTransientCapacityText) instead of a
+// deterministic request-shape rejection. Some gateways answer a momentary capacity
+// squeeze with a bare 400 whose payload says "capacity" / "overloaded" / "rate
+// limit" rather than a 429/5xx; such an error is transient — another channel (or the
+// same one later) may well serve the request — so it is eligible for intervention
+// rescue instead of fast-failing. Deterministic rejections win every tie: a body that
+// is request-invalid or a context-window overflow is NEVER transient capacity, no
+// matter what else it mentions. Gated on 400/422 so 429/5xx bodies keep their own
+// (already transient) handling. This predicate only gates rescue eligibility — it
+// never touches the relay attempt loop, channel-key rotation, or circuit breaker.
+func isTransientCapacityUpstreamError(err error) bool {
+	var upErr *upstreamError
+	if !errors.As(err, &upErr) || upErr == nil {
+		return false
+	}
+	if upErr.statusCode != http.StatusBadRequest && upErr.statusCode != http.StatusUnprocessableEntity {
+		return false
+	}
+	if isRequestInvalidUpstreamError(err) || isContextWindowError(err) {
+		return false
+	}
+	body := []byte(upErr.body)
+	for _, candidate := range []string{
+		extractUpstreamErrorMessage(body),
+		extractUpstreamErrorCode(body),
+		upErr.body,
+	} {
+		if matchTransientCapacityText(strings.ToLower(strings.TrimSpace(candidate))) {
+			return true
+		}
+	}
+	return false
+}
+
 // isRequestInvalidUpstreamError reports whether an upstream rejection is a
 // deterministic REQUEST-shape error — the upstream refused THIS request's body —
 // as opposed to a channel-health failure. A strict OpenAI-compatible gateway
