@@ -2309,6 +2309,16 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 	upstreamTerminalSeen := false
 	sawUpstreamCompletion := false
 	seenMeaningfulChunk := false
+	// upstreamFinishSeen records a real per-turn stop marker on the upstream wire
+	// (choices[].finish_reason). It is a terminal marker the other flags do not
+	// capture, and the truncation detector must honour it so a chat upstream that
+	// ends after a finish_reason chunk (no [DONE]) is not misreported as truncated.
+	upstreamFinishSeen := false
+	// responsesToolCallTerminalSeen records a responses sequential-CLI tool-call-done
+	// that the relay treats as the turn's terminal boundary (the grace-timer path
+	// synthesizes the terminal for it). It is a legitimate end, so the truncation
+	// detector must not fire after one.
+	responsesToolCallTerminalSeen := false
 	requireResponsesCompleted := ra.requiresUpstreamResponsesCompleted(outAdapter)
 	streamTerminalSeen := func() bool {
 		if !seenMeaningfulChunk {
@@ -2321,6 +2331,28 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 			return true
 		}
 		return requireResponsesCompleted && upstreamResponsesCompletedSeen
+	}
+	// upstreamStreamTruncated reports the half-stream truncation the two "benign end"
+	// branches below would otherwise misreport as success: real content already reached
+	// the client, yet the upstream produced NO terminal signal for its protocol at all.
+	// The negative set is exhaustive per protocol so a legitimate end is never
+	// misreported: the [DONE] sentinel (streamDoneSeen), the message_stop /
+	// response.completed envelope (upstreamTerminalSeen / sawUpstreamCompletion), a chat
+	// choices[].finish_reason (upstreamFinishSeen) and the responses sequential-CLI
+	// tool-call-done (responsesToolCallTerminalSeen). Gemini is deliberately excluded:
+	// its inbound has no in-band failure frame, and its clean-EOF [DONE] synthesis is a
+	// legitimate end that flushes buffered tool calls, so its behaviour must not change.
+	upstreamStreamTruncated := func() bool {
+		if !ra.wroteMeaningfulDownstream {
+			return false
+		}
+		switch ra.inboundType {
+		case inbound.InboundTypeOpenAIChat, inbound.InboundTypeOpenAIResponse, inbound.InboundTypeAnthropic:
+		default:
+			return false
+		}
+		return !upstreamTerminalSeen && !streamDoneSeen && !sawUpstreamCompletion &&
+			!upstreamFinishSeen && !responsesToolCallTerminalSeen
 	}
 	writeStreamData := func(data []byte) error {
 		if len(data) == 0 {
@@ -2492,6 +2524,17 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 				if err := flushRedactRestore(); err != nil {
 					return err
 				}
+				// Upstream half-stream truncation: real content already reached the client,
+				// yet the upstream ended with NO terminal marker at all. Synthesizing a
+				// success tail here would fake a completed turn (and record the request as a
+				// success); surface the failure in-band instead. Still return nil: returning
+				// an error after business data was delivered could trigger a channel swap and
+				// opaque replay of the whole body, which the SOP forbids.
+				if upstreamStreamTruncated() {
+					ra.writeTruncatedStreamTerminal()
+					log.Warnf("upstream stream truncated before terminal event; wrote in-band failure frame (inbound=%v)", ra.inboundType)
+					return nil
+				}
 				if !streamDoneSeen && ra.shouldSynthesizeStreamDone() {
 					data, err := ra.synthesizeStreamDone(ctx)
 					if err != nil {
@@ -2515,6 +2558,15 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 						}
 						if err := flushRedactRestore(); err != nil {
 							return err
+						}
+						// Upstream half-stream truncation (see the closed-channel branch above):
+						// a "benign" read end with content already delivered but no terminal
+						// marker is exactly the fake-success case — write the failure frame and
+						// still return nil to avoid an opaque replay after business data.
+						if upstreamStreamTruncated() {
+							ra.writeTruncatedStreamTerminal()
+							log.Warnf("upstream stream truncated before terminal event; wrote in-band failure frame (inbound=%v)", ra.inboundType)
+							return nil
 						}
 						if !streamDoneSeen && ra.shouldSynthesizeStreamDone() {
 							data, err := ra.synthesizeStreamDone(ctx)
@@ -2554,6 +2606,7 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 				disarmToolCallCompletionFallback()
 			} else if ra.shouldTreatResponsesToolCallDoneAsTerminal(outAdapter, eventClass) {
 				armToolCallCompletionFallback()
+				responsesToolCallTerminalSeen = true
 			}
 			if isTerminalEvent {
 				upstreamTerminalSeen = true
@@ -2580,6 +2633,9 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 			meaningfulNow := internalStream != nil && internalStream.Object != "[DONE]" && internalStreamHasMeaningfulResponse(internalStream)
 			if meaningfulNow {
 				seenMeaningfulChunk = true
+			}
+			if internalStreamHasFinish(internalStream) {
+				upstreamFinishSeen = true
 			}
 			if err != nil {
 				return &localRelayError{
@@ -2725,6 +2781,39 @@ func (ra *relayAttempt) synthesizeStreamDone(ctx context.Context) ([]byte, error
 		return nil, nil
 	}
 	return ra.inAdapter.TransformStream(ctx, &model.InternalLLMResponse{Object: "[DONE]"})
+}
+
+// Terminal-frame identifiers for an upstream half-stream truncation. Fixed and free
+// of any upstream identity (public-repo no-leak rule): the message states only the
+// protocol-level fact — the upstream ended before a terminal event — and names no
+// host, account, channel or URL.
+const (
+	upstreamStreamTruncatedCode    = "octopus_upstream_stream_truncated"
+	upstreamStreamTruncatedMessage = "upstream stream ended before a terminal event"
+)
+
+// writeTruncatedStreamTerminal surfaces an upstream half-stream truncation in the
+// client's own inbound protocol. The upstream dropped the connection after real
+// content had already been flushed downstream but WITHOUT any terminal marker
+// (finish_reason / [DONE] / response.completed / message_stop), so the turn is
+// incomplete. It reuses the same in-band failure frames as the committed-failure
+// path (writeResponsesFailedSSE / writeAnthropicErrorSSE / writeChatErrorSSE) so the
+// client learns the stream failed instead of being handed a synthesized success tail.
+//
+// It writes ONLY downstream bytes (c.Writer): no outbound header/TLS/UA/body is
+// touched, so the outbound fingerprint shape is unchanged.
+func (ra *relayAttempt) writeTruncatedStreamTerminal() {
+	if ra == nil || ra.c == nil {
+		return
+	}
+	switch ra.inboundType {
+	case inbound.InboundTypeOpenAIResponse:
+		writeResponsesFailedSSE(ra.c, ra.requestModel, upstreamStreamTruncatedCode, upstreamStreamTruncatedMessage)
+	case inbound.InboundTypeAnthropic:
+		writeAnthropicErrorSSE(ra.c, "api_error", upstreamStreamTruncatedMessage)
+	case inbound.InboundTypeOpenAIChat:
+		writeChatErrorSSE(ra.c, upstreamStreamTruncatedCode, upstreamStreamTruncatedMessage)
+	}
 }
 
 // firstTokenHandoffFloor is the minimum first-token budget handed to the
@@ -3378,6 +3467,25 @@ func responsesStreamEventIsPrelude(eventType string) bool {
 	default:
 		return false
 	}
+}
+
+// internalStreamHasFinish reports whether an upstream chunk carried a real per-turn
+// stop marker (choices[].finish_reason). For the chat wire this is the only terminal
+// signal: the SSE-level streamDoneSeen / sawUpstreamCompletion flags only fire on the
+// literal [DONE] sentinel or a message_stop / response.completed envelope, so a chat
+// stream that ends with a finish_reason chunk and then just closes the socket is a
+// *completed* turn, not a truncation. The truncation detector must treat it as such to
+// avoid a false in-band failure frame on an otherwise clean EOF.
+func internalStreamHasFinish(resp *model.InternalLLMResponse) bool {
+	if resp == nil {
+		return false
+	}
+	for _, choice := range resp.Choices {
+		if choice.FinishReason != nil && strings.TrimSpace(*choice.FinishReason) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func internalStreamHasMeaningfulResponse(resp *model.InternalLLMResponse) bool {
