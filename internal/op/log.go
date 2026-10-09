@@ -740,7 +740,7 @@ func RelayLogList(ctx context.Context, startTime, endTime *int, page, pageSize i
 					}
 					if len(ids) > 0 {
 						var dbLogs []model.RelayLog
-						if err := tx.Where("id IN ?", ids).Omit("request_content", "response_content").Find(&dbLogs).Error; err != nil {
+						if err := tx.Where("id IN ?", ids).Omit("request_content", "response_content", "model_audit_report").Find(&dbLogs).Error; err != nil {
 							return err
 						}
 						result = append(result, dbLogs...)
@@ -755,7 +755,7 @@ func RelayLogList(ctx context.Context, startTime, endTime *int, page, pageSize i
 				// SQLite's parameter cap; keep the original single-query path (export streams
 				// everything and is not the interactive-page latency case the two-phase targets).
 				var dbLogs []model.RelayLog
-				if err := query.Order("id DESC").Limit(dbLimit).Omit("request_content", "response_content").Find(&dbLogs).Error; err != nil {
+				if err := query.Order("id DESC").Limit(dbLimit).Omit("request_content", "response_content", "model_audit_report").Find(&dbLogs).Error; err != nil {
 					return nil, err
 				}
 				result = append(result, dbLogs...)
@@ -924,7 +924,7 @@ func RelayLogListSinceRange(ctx context.Context, sinceID int64, limit int, scope
 		query = relayLogApplyScope(query, scope)
 
 		var dbLogs []model.RelayLog
-		if err := query.Order("id ASC").Limit(limit+len(result)).Omit("request_content", "response_content").Find(&dbLogs).Error; err != nil {
+		if err := query.Order("id ASC").Limit(limit+len(result)).Omit("request_content", "response_content", "model_audit_report").Find(&dbLogs).Error; err != nil {
 			return nil, err
 		}
 		result = append(result, dbLogs...)
@@ -1025,6 +1025,29 @@ func RelayLogGetByID(ctx context.Context, id int64, scope *model.RelayLogScope) 
 		item = RelayLogRedact(item)
 	}
 	return &item, nil
+}
+
+// RelayLogMarkAudited 把一次行为审计的结论钉回触发它的那一条日志行(先到先得)。
+// 实现为单条 UPDATE, WHERE 限制 verdict 仍为空(NULL/" = 未检测): 被影响行数为 0 说明
+// 已有更早的结论占了位(或行不存在), 视为"已有结论，不覆盖"，返回 nil 而不是报错。
+// 语义与 behavior.Verdict 对齐: none/unknown/low/medium/high; reportJSON 是 behavior.ViewReport 的 JSON。
+func RelayLogMarkAudited(ctx context.Context, logID int64, verdict string, score, findingN int, trigger, reportJSON string) error {
+	if logID <= 0 {
+		return nil
+	}
+	result := db.GetDB().WithContext(ctx).Model(&model.RelayLog{}).
+		Where("id = ? AND (model_audit_verdict IS NULL OR model_audit_verdict = '')", logID).
+		Updates(map[string]any{
+			"model_audit_verdict":   verdict,
+			"model_audit_score":     score,
+			"model_audit_finding_n": findingN,
+			"model_audit_trigger":   trigger,
+			"model_audit_report":    reportJSON,
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	return nil
 }
 
 func RelayLogUserSummary(relayLog model.RelayLog) model.RelayLogUserSummary {

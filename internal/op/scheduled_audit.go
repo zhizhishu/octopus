@@ -16,7 +16,7 @@ var (
 	scheduledAuditMu       sync.RWMutex
 	scheduledAuditSnapshot model.ScheduledAuditSnapshot
 	scheduledAuditLastHit  = map[string]int64{}
-	scheduledAuditFollowUp func(channelID int, modelName string)
+	scheduledAuditFollowUp func(channelID int, modelName string, logID int64)
 )
 
 const scheduledAuditSnapshotKeep = 20
@@ -71,7 +71,8 @@ func scheduledAuditCooldownKey(channelID int, modelName string) string {
 }
 
 // SetScheduledAuditFollowUp 由定时任务在启动时挂上。日志层不直接打上游。
-func SetScheduledAuditFollowUp(fn func(channelID int, modelName string)) {
+// logID 是触发跟进的那条日志行 ID: 跟进跑完把结论写回该行(先到先得), 不再只留在内存快照里。
+func SetScheduledAuditFollowUp(fn func(channelID int, modelName string, logID int64)) {
 	scheduledAuditMu.Lock()
 	scheduledAuditFollowUp = fn
 	scheduledAuditMu.Unlock()
@@ -109,7 +110,8 @@ func maybeTriggerAuditFollowUp(relayLog model.RelayLog) {
 		return
 	}
 	channelID := relayLog.ChannelId
-	safe.SafeGo("scheduled-audit-followup", func() { fn(channelID, modelName) })
+	logID := relayLog.ID
+	safe.SafeGo("scheduled-audit-followup", func() { fn(channelID, modelName, logID) })
 }
 
 // ScheduledAuditAppend 把单次跟进结果接到快照前面，不覆盖整轮定时结果。

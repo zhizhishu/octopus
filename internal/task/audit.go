@@ -2,6 +2,7 @@ package task
 
 import (
 	"context"
+	"encoding/json"
 	"strconv"
 	"strings"
 	"time"
@@ -32,16 +33,19 @@ type scheduledAuditTarget struct {
 	channel model.Channel
 	model   string
 	trigger string
+	// logID 是触发这次检测的那条日志行(回显不一致跟进才有; 整轮定时快检为 0)。
+	// 非零时检测结论会先到先得地写回该行, 不再只留在内存快照里。
+	logID int64
 }
 
 // RegisterAuditFollowUp 把出错跟进挂到日志写入路径。Init 里调一次即可。
 func RegisterAuditFollowUp() {
-	op.SetScheduledAuditFollowUp(func(channelID int, modelName string) {
-		runAuditFollowUp(channelID, modelName)
+	op.SetScheduledAuditFollowUp(func(channelID int, modelName string, logID int64) {
+		runAuditFollowUp(channelID, modelName, logID)
 	})
 }
 
-func runAuditFollowUp(channelID int, modelName string) {
+func runAuditFollowUp(channelID int, modelName string, logID int64) {
 	now := time.Now()
 	if op.ScheduledAuditOnCooldown(channelID, modelName, now, scheduledAuditCooldown) {
 		return
@@ -56,6 +60,7 @@ func runAuditFollowUp(channelID int, modelName string) {
 		channel: *channel,
 		model:   modelName,
 		trigger: "echo_mismatch",
+		logID:   logID,
 	})
 	if !item.Skipped {
 		op.ScheduledAuditMarkHit(channelID, modelName, now)
@@ -167,6 +172,7 @@ func runScheduledAuditTarget(ctx context.Context, target scheduledAuditTarget) m
 		ChannelName: target.channel.Name,
 		Model:       target.model,
 		Trigger:     target.trigger,
+		LogID:       target.logID,
 	}
 	upstreamModel := target.model
 	if mapped, ok := target.channel.ModelMapping[upstreamModel]; ok && mapped != "" {
@@ -188,6 +194,19 @@ func runScheduledAuditTarget(ctx context.Context, target scheduledAuditTarget) m
 	item.Score = report.Score
 	item.FindingN = len(report.Findings)
 	item.ErrorN = len(report.Errors)
+
+	// 结论落库: 钉回触发它的那行日志, 先到先得(空 verdict 才写), 重启不再丢。
+	if target.logID > 0 {
+		trigger := target.trigger
+		if trigger == "" {
+			trigger = "schedule"
+		}
+		if reportJSON, err := json.Marshal(report); err == nil {
+			if err := op.RelayLogMarkAudited(ctx, target.logID, string(report.Verdict), report.Score, len(report.Findings), trigger, string(reportJSON)); err != nil {
+				log.Warnf("model audit persist for log %d failed: %v", target.logID, err)
+			}
+		}
+	}
 	return item
 }
 

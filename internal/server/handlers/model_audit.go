@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/bestruirui/octopus/internal/server/resp"
 	"github.com/bestruirui/octopus/internal/server/router"
 	"github.com/bestruirui/octopus/internal/transformer/outbound"
+	"github.com/bestruirui/octopus/internal/utils/log"
 	"github.com/gin-gonic/gin"
 )
 
@@ -51,6 +53,9 @@ type modelAuditRequest struct {
 	Model          string   `json:"model"`
 	Probes         []string `json:"probes"`
 	TimeoutSeconds int      `json:"timeout_seconds"`
+	// LogID 可选: 带值时把这次手动审计的结论先到先得地写回那条日志行(trigger=manual),
+	// 用于从日志详情页对单条日志发起检测的场景。0/缺省 = 只跑检测不落库。
+	LogID int64 `json:"log_id"`
 }
 
 type modelAuditResponse struct {
@@ -128,6 +133,15 @@ func runModelAudit(c *gin.Context) {
 	started := time.Now()
 	results := behavior.Run(ctx, ids, sender)
 	report := behavior.ToView(behavior.BuildReport(results, modelName))
+
+	// 结论落库: 仅当请求显式带 log_id 时才写回那行(trigger=manual, 先到先得)。
+	if req.LogID > 0 {
+		if reportJSON, err := json.Marshal(report); err == nil {
+			if err := op.RelayLogMarkAudited(c.Request.Context(), req.LogID, string(report.Verdict), report.Score, len(report.Findings), "manual", string(reportJSON)); err != nil {
+				log.Warnf("manual model audit persist for log %d failed: %v", req.LogID, err)
+			}
+		}
+	}
 
 	resp.Success(c, modelAuditResponse{
 		ChannelID:     channel.ID,

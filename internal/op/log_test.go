@@ -642,6 +642,13 @@ func TestRelayLogListOmitsContentBodies(t *testing.T) {
 		ActualModelName:  "glm-5.2",
 		RequestContent:   big,
 		ResponseContent:  big,
+		// 行级审计结论: 徽标要用的轻字段必须随列表下发, 重的报告正文必须留下(与
+		// request/response_content 同等对待), 否则日志列表每行都拖着整份报告。
+		ModelAuditVerdict:  "high",
+		ModelAuditScore:    88,
+		ModelAuditFindingN: 2,
+		ModelAuditTrigger:  "echo_mismatch",
+		ModelAuditReport:   big,
 	}
 	if err := RelayLogAdd(ctx, item); err != nil {
 		t.Fatalf("add log: %v", err)
@@ -660,11 +667,21 @@ func TestRelayLogListOmitsContentBodies(t *testing.T) {
 	if logs[0].RequestContent != "" || logs[0].ResponseContent != "" {
 		t.Fatalf("list must omit bodies, got req=%d resp=%d", len(logs[0].RequestContent), len(logs[0].ResponseContent))
 	}
+	if logs[0].ModelAuditReport != "" {
+		t.Fatalf("list must omit the audit report body, got %d bytes", len(logs[0].ModelAuditReport))
+	}
+	if logs[0].ModelAuditVerdict != "high" || logs[0].ModelAuditScore != 88 ||
+		logs[0].ModelAuditFindingN != 2 || logs[0].ModelAuditTrigger != "echo_mismatch" {
+		t.Fatalf("list must keep the per-row audit badge fields, got %#v", logs[0])
+	}
 	detail, err := RelayLogGetByID(ctx, logs[0].ID, nil)
 	if err != nil {
 		t.Fatalf("get detail: %v", err)
 	}
 	if detail.RequestContent != big || detail.ResponseContent != big {
 		t.Fatalf("detail must keep bodies")
+	}
+	if detail.ModelAuditReport != big {
+		t.Fatalf("detail must keep the audit report body, got %d bytes", len(detail.ModelAuditReport))
 	}
 }

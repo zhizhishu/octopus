@@ -54,6 +54,8 @@ export type ModelAuditRequest = {
     model: string;
     probes?: AuditProbeId[];
     timeout_seconds?: number;
+    /** 可选：带值时把这次手动审计结论先到先得地写回那条日志行（trigger=manual）。 */
+    log_id?: number;
 };
 
 export type ModelAuditResponse = {
@@ -88,6 +90,8 @@ export type ScheduledAuditResult = {
     channel_name: string;
     model: string;
     trigger: string;
+    /** 触发本次检测的那条日志行 ID（0/缺省 = 不是由单条日志触发）。 */
+    log_id?: number;
     skipped?: boolean;
     skip_reason?: string;
     duration_ms?: number;

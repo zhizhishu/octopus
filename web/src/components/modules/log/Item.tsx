@@ -812,24 +812,10 @@ type AuditBadge = {
 };
 
 /**
- * 模型检测徽标：把定时快检快照（按 渠道ID|模型 索引）匹配到这条日志上，
- * 回答「上游模型对不对」。匹配顺序：先按实际发上游的模型名，再按请求模型名
- * （model_mapping 场景下快检记的可能是任一侧）。没检过/跳过/普通用户 → 无徽标。
- * verdict 语义与检测页一致：none=未见异常、unknown=证据不足、low/medium/high=待复核。
- * 徽标本身点按弹出详情（Popover，移动端手指可触），不再依赖悬停 title。
+ * verdict → 徽标文案与配色。语义与检测页一致：
+ * none=未见异常、unknown=证据不足、low/medium/high=待复核。
  */
-function auditBadgeForLog(
-    log: RelayLog,
-    index: Map<string, ScheduledAuditResult> | undefined,
-    t: (key: string) => string,
-): AuditBadge | undefined {
-    if (!index?.size || !log.channel) return undefined;
-    const hit =
-        index.get(`${log.channel}|${log.actual_model_name}`) ??
-        index.get(`${log.channel}|${log.request_model_name}`);
-    if (!hit || hit.skipped || !hit.verdict) return undefined;
-
-    const verdict = hit.verdict;
+function auditVerdictStyle(verdict: string, t: (key: string) => string): { label: string; className: string } {
     let label: string;
     let className: string;
     switch (verdict) {
@@ -854,9 +840,50 @@ function auditBadgeForLog(
             className = 'border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-300';
             break;
     }
+    return { label, className };
+}
+
+/**
+ * 模型检测徽标。优先读本行自己的审计字段（model_audit_verdict 等，只有这行真的被检测过才有值，
+ * 逐行独立，不再是同渠道同模型共用一份）；本行为空（旧行/未检测）才回退到定时快检快照
+ * 按 渠道ID|模型 匹配（匹配顺序：先实际发上游的模型名，再请求模型名——model_mapping 场景下
+ * 快检记的可能是任一侧）。都没命中/快检跳过/普通用户 → 无徽标。
+ * 徽标本身点按弹出详情（Popover，移动端手指可触），不再依赖悬停 title。
+ */
+function auditBadgeForLog(
+    log: RelayLog,
+    index: Map<string, ScheduledAuditResult> | undefined,
+    t: (key: string) => string,
+): AuditBadge | undefined {
+    // 本行有自己的结论：直接用行字段组徽标，不碰快照。
+    const rowVerdict = log.model_audit_verdict?.trim() ?? '';
+    if (rowVerdict) {
+        const style = auditVerdictStyle(rowVerdict, t);
+        return {
+            label: `${t('auditPrefix')} · ${style.label}`,
+            className: style.className,
+            hit: {
+                channel_id: log.channel,
+                channel_name: log.channel_name ?? '',
+                model: log.actual_model_name?.trim() || log.request_model_name?.trim() || '',
+                trigger: log.model_audit_trigger ?? '',
+                verdict: rowVerdict,
+                score: log.model_audit_score ?? 0,
+                finding_count: log.model_audit_finding_n ?? 0,
+            },
+        };
+    }
+
+    if (!index?.size || !log.channel) return undefined;
+    const hit =
+        index.get(`${log.channel}|${log.actual_model_name}`) ??
+        index.get(`${log.channel}|${log.request_model_name}`);
+    if (!hit || hit.skipped || !hit.verdict) return undefined;
+
+    const style = auditVerdictStyle(hit.verdict, t);
     return {
-        label: `${t('auditPrefix')} · ${label}`,
-        className,
+        label: `${t('auditPrefix')} · ${style.label}`,
+        className: style.className,
         hit,
     };
 }

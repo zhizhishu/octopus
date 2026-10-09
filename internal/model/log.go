@@ -88,7 +88,21 @@ type RelayLog struct {
 	UpstreamResponseModel string `json:"upstream_response_model,omitempty" gorm:"size:200"`
 	// UpstreamModelMismatch 三态: nil = 无法判定(上游没声明, 或我们不知道发出去的名字),
 	// false = 一致, true = 不一致。只作线索——上游回显本身可以撒谎, 一致不等于真, 不一致不等于假。
-	UpstreamModelMismatch *bool            `json:"upstream_model_mismatch,omitempty"`
+	UpstreamModelMismatch *bool `json:"upstream_model_mismatch,omitempty"`
+	// 以下 5 列把「行为审计」结论钉回触发了它的那一条日志行(此前结论只在内存快照里,
+	// 重启即丢, 且同渠道同模型的所有日志行共用一份快照)。全部由 AutoMigrate 自动加列,
+	// 历史行为空 = 未检测, 不回填。与 modelverify/behavior 的 Verdict 语义对齐:
+	// ''=未检测; none/unknown/low/medium/high。
+	// ModelAuditVerdict 为空即「本行没被检测过」; 先到先得, 后到的结论不覆盖(见
+	// op.RelayLogMarkAudited 的单条 UPDATE WHERE verdict 为空)。
+	ModelAuditVerdict  string `json:"model_audit_verdict,omitempty" gorm:"size:16;index;default:''"`
+	ModelAuditScore    int    `json:"model_audit_score,omitempty" gorm:"default:0"`
+	ModelAuditFindingN int    `json:"model_audit_finding_n,omitempty" gorm:"default:0"`
+	// ModelAuditTrigger 记录这次检测由谁触发: schedule(定时快检) / echo_mismatch(回显不一致跟进) / manual(管理员手动)。
+	ModelAuditTrigger string `json:"model_audit_trigger,omitempty" gorm:"size:32;default:''"`
+	// ModelAuditReport 是 behavior.ViewReport 的 JSON, 只有被检测过的行才有值; 列表查询与
+	// request/response_content 一样被 Omit, 详情接口才返回。
+	ModelAuditReport      string           `json:"model_audit_report,omitempty" gorm:"type:text;default:''"`
 	InputTokens           int              `json:"input_tokens"`
 	OutputTokens          int              `json:"output_tokens"`
 	CacheHitTokens        int              `json:"cache_hit_tokens"`
