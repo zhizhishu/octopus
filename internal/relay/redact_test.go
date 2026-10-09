@@ -11,13 +11,16 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	dbmodel "github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/op"
 	"github.com/bestruirui/octopus/internal/relay/balancer"
 	"github.com/bestruirui/octopus/internal/transformer/inbound"
+	openaiInbound "github.com/bestruirui/octopus/internal/transformer/inbound/openai"
 	"github.com/bestruirui/octopus/internal/transformer/model"
 	"github.com/bestruirui/octopus/internal/transformer/outbound"
+	openaiOutbound "github.com/bestruirui/octopus/internal/transformer/outbound/openai"
 	"github.com/gin-gonic/gin"
 )
 
@@ -1257,5 +1260,98 @@ func TestRelayRedactSynthesizedCodexInputRawNotice(t *testing.T) {
 	}
 	if redactTokenRe.MatchString(rec.Body.String()) {
 		t.Fatalf("placeholder leaked to the client: %s", rec.Body.String())
+	}
+}
+
+// TestRelayRedactAggregatedRestoreFailureFailsClosed locks the fail-closed contract of
+// handleStreamResponseAsNonStream's aggregated-body restore: once the blank-line
+// keepalive has committed the application/json head, a restore failure must STILL
+// surface as an error (so the request-level tail in relay.go delivers the in-band JSON
+// error body), never be logged-and-ignored and have the raw {{Redact:…}} placeholder
+// written as a 200. Before the fix the keepalive-committed branch only logged, and the
+// unrecovered body (placeholder included) reached the client.
+//
+// The vendored core's restoreJsonText never throws on a JSON-valid body and leaves an
+// unknown placeholder in place, so a placeholder mismatch cannot force the error; a
+// deliberately closed session is the only hook-free way to make RestoreJSONBody fail
+// deterministically, and the session is private to this attempt (never closed mid-flight
+// in production, where the same fail-closed branch guards a genuine core throw).
+func TestRelayRedactAggregatedRestoreFailureFailsClosed(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	setupRedactDB(t)
+	if err := op.SettingSetString(dbmodel.SettingKeyRelayStreamKeepaliveSec, "1"); err != nil {
+		t.Fatalf("set keepalive setting: %v", err)
+	}
+	if err := op.SettingSetString(dbmodel.SettingKeyRelayStreamDataTimeoutSec, "30"); err != nil {
+		t.Fatalf("set stream data timeout setting: %v", err)
+	}
+
+	engine, err := sharedRedactEngine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := engine.NewSession("E", "openai_chat", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := session.RedactText("a@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !redactTokenRe.MatchString(token) {
+		t.Fatalf("expected a placeholder token, got %q", token)
+	}
+	// Deterministic restore failure with no production hook: a closed session errors
+	// instead of silently passing the placeholder through. (Not run in production — a
+	// real core throw hits the same branch.)
+	session.Close()
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	ra := &relayAttempt{
+		relayRequest: &relayRequest{
+			c:            c,
+			inboundType:  inbound.InboundTypeOpenAIResponse,
+			inAdapter:    &openaiInbound.ResponseInbound{},
+			requestModel: "gpt-5.5",
+		},
+		redactSession: session,
+		redactApplied: true,
+	}
+
+	pr, pw := io.Pipe()
+	defer pr.Close()
+	response := &http.Response{
+		Header: http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:   pr,
+	}
+	// Prelude, then "reason" past the 1s keepalive (flushes "\n", committing the head
+	// and setting wroteNonStreamJSONKeepalive), then the terminal completion carrying
+	// the placeholder. The keepalive must NOT be followed by an unrecovered 200 body.
+	go func() {
+		_, _ = io.WriteString(pw, `data: {"type":"response.created","response":{"id":"resp_1","object":"response","created_at":123,"model":"gpt-5.5","status":"in_progress","output":[]}}`+"\n\n")
+		time.Sleep(1500 * time.Millisecond)
+		_, _ = io.WriteString(pw, `data: {"type":"response.output_text.delta","delta":"`+token+`"}`+"\n\n")
+		_, _ = io.WriteString(pw, `data: {"type":"response.completed","response":{"id":"resp_1","object":"response","created_at":123,"model":"gpt-5.5","status":"completed","output":[{"id":"msg_1","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"`+token+`"}]}],"usage":{"input_tokens":2,"input_tokens_details":{"cached_tokens":0},"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":3}}}`+"\n\n")
+		_, _ = io.WriteString(pw, `data: [DONE]`+"\n\n")
+		_ = pw.Close()
+	}()
+
+	err = ra.handleStreamResponseAsNonStream(c.Request.Context(), response, &openaiOutbound.ResponseOutbound{}, 0)
+	if err == nil {
+		t.Fatalf("restore failure after keepalive commit must fail closed, got nil error (body=%q)", rec.Body.String())
+	}
+	if !strings.Contains(err.Error(), "redact: restored aggregated inbound response failed") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !ra.wroteNonStreamJSONKeepalive {
+		t.Fatalf("expected the keepalive path to have committed the response head")
+	}
+	// The unrecovered body must not have been written: the client sees only the
+	// keepalive whitespace, so the request-level tail can append a valid JSON error.
+	if strings.Contains(rec.Body.String(), "{{Redact:") {
+		t.Fatalf("unrecovered placeholder leaked to the client: %q", rec.Body.String())
 	}
 }

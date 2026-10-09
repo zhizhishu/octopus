@@ -468,6 +468,32 @@ func TestFidelityResponsesInputWithoutUserKeepsOuterBytes(t *testing.T) {
 	}
 }
 
+// Chat-to-responses synthesized input whose array has NO user item cannot receive
+// the notice (the core's injectRedactNoticeText returns null). InjectNoticeInputRaw
+// must then return the caller's bytes UNCHANGED rather than JSON.stringify the array:
+// re-serialization reorders whitespace, folds duplicate keys, drops trailing bytes,
+// and rounds integers > 2^53 (9007199254740993 -> ...992) without delivering a notice.
+func TestFidelityInjectNoticeInputRawNoUserKeepsOuterBytes(t *testing.T) {
+	e := newTestEngine(t)
+	s, err := e.NewSession("E", "openai_chat", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	raw := []byte(`[ { "role" : "assistant" , "content" : [ { "type" : "input_text" , "text" : "ok" } ] } , { "n" : 9007199254740993 } ]`)
+	out, err := s.InjectNoticeInputRaw(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != string(raw) {
+		t.Fatalf("no-user input must stay byte-identical\n in=%q\nout=%q", raw, out)
+	}
+	if strings.Contains(string(out), "9007199254740992") {
+		t.Fatalf("big integer must not be rounded, got %q", out)
+	}
+}
+
 func TestFidelityInjectNoticeInputRawDisabledIsByteIdentical(t *testing.T) {
 	e := newTestEngine(t)
 	s, err := e.NewSession("E", "openai_chat", false)

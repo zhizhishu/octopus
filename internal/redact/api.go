@@ -54,25 +54,6 @@ func (e *Engine) NewSession(flagsRaw, protocol string, notice bool) (*Session, e
 // Count reports how many distinct values this session redacted (audit logging).
 func (s *Session) Count() int { return s.count }
 
-// injectNoticeInputRawScript wraps the raw Responses input ARRAY as {"input": arr},
-// runs the core's notice injection against the openai_responses shape, and returns
-// the (possibly prefixed) array text. "" means "leave the caller's bytes alone"
-// (unparseable input, or not an array) — never a silent rewrite.
-const injectNoticeInputRawScript = `
-(function () {
-	var parsed;
-	try {
-		parsed = JSON.parse(globalThis.__octRawInput);
-	} catch (e) {
-		return "";
-	}
-	if (!Array.isArray(parsed)) return "";
-	var body = { input: parsed };
-	globalThis.__cosy.injectRedactNotice(body, "openai_responses");
-	return JSON.stringify(body.input);
-})()
-`
-
 // InjectNoticeInputRaw prepends the core notice to the first user item of a raw
 // Responses input array. The relay calls this ONLY for inbound sessions whose
 // protocol is not openai_responses (chat/anthropic clients routed to a codex-shaped
@@ -107,16 +88,13 @@ func (s *Session) InjectNoticeInputRaw(raw []byte) ([]byte, error) {
 			return []byte(text[len(prefix) : len(text)-1]), nil
 		}
 	}
-	if err := s.vm.Set("__octRawInput", s.vm.ToValue(string(raw))); err != nil {
-		return raw, fmt.Errorf("redact: inject notice input raw: %w", err)
-	}
-	out, err := s.vm.RunString(injectNoticeInputRawScript)
-	if err != nil {
-		return raw, fmt.Errorf("redact: inject notice input raw: %w", err)
-	}
-	if res := out.String(); res != "" {
-		return []byte(res), nil
-	}
+	// The core's lexical splice produced neither a {"input":…} wrapper nor a
+	// recognised result: leave the caller's bytes untouched (byte-identical),
+	// mirroring the responses entrypoint's "no slot -> original bytes" rule. This
+	// is an honest degradation, NOT fail-closed: "no slot -> no injection" is the
+	// core's own semantics. Re-serializing here (JSON.stringify) would silently
+	// reorder whitespace, fold duplicate keys, drop trailing bytes, and round
+	// integers > 2^53 without gaining a notice.
 	return raw, nil
 }
 

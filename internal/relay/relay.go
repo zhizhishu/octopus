@@ -3036,19 +3036,16 @@ readLoop:
 	if err != nil {
 		return fmt.Errorf("failed to transform forced responses stream: %w", err)
 	}
-	// 凭据脱敏: 聚合出的调用端格式 body 在写下游前一次性还原占位符。还原失败时若
-	// 请求头已由空行 keepalive 提交则走带内错误 (below), 未提交则显式失败可 failover。
+	// 凭据脱敏: 聚合出的调用端格式 body 在写下游前一次性还原占位符。还原失败一律 fail-closed:
+	// 头未提交时由上层 failover; 头已由空行 keepalive 提交且无更优渠道时, 请求级收尾路径
+	// (relay.go writeNonStreamJSONError) 会写出带内 JSON 错误 —— 绝不把未还原的
+	// {{Redact:…}} 占位符当 200 返回给调用方。
 	if ra.redactSession != nil && ra.redactApplied {
 		restored, rerr := ra.redactSession.RestoreJSONBody(inResponse)
 		if rerr != nil {
-			if ra.wroteNonStreamJSONKeepalive {
-				log.Errorf("redact: aggregated inbound response restore failed after keepalive commit: %v", rerr)
-			} else {
-				return fmt.Errorf("redact: restored aggregated inbound response failed: %w", rerr)
-			}
-		} else {
-			inResponse = restored
+			return fmt.Errorf("redact: restored aggregated inbound response failed: %w", rerr)
 		}
+		inResponse = restored
 	}
 	ra.wroteMeaningfulDownstream = true
 	ra.releaseRescueDeadline()
