@@ -226,6 +226,12 @@ func (i *ChatInbound) TransformStream(ctx context.Context, stream *model.Interna
 	if i != nil && i.thinkingToContent {
 		wire = applyThinkingToContentStream(wire, i)
 	}
+	// OpenAI Chat Completions always carries a `delta` object, even on the terminal
+	// finish-only frame (`"delta":{}`). Some upstream chat bridges omit it, which
+	// `Choice.Delta`'s omitempty then drops entirely; strict clients that read
+	// `choices[0].delta.content` crash on the missing object. Backfill the same
+	// minimal finish delta oct itself synthesizes (relay.go internalResponseToStreamChunks).
+	wire = ensureFinishChoiceDelta(wire)
 
 	var body []byte
 	var err error
@@ -619,6 +625,38 @@ func foldedWireContent(prefix, originalText string, delta *model.Message) model.
 	}
 	parts = append(parts, delta.Content.MultipleContent...)
 	return model.MessageContent{MultipleContent: parts}
+}
+
+// ensureFinishChoiceDelta returns a wire view of the chunk where any choice that
+// carries a non-empty finish_reason but no delta gets a minimal
+// `"delta":{"role":"assistant"}` object, matching the OpenAI Chat Completions
+// standard and oct's own synthesized finish chunk. The input chunk (kept for
+// aggregation / billing) is never mutated; chunks that already carry a delta, or
+// carry no finish_reason, are returned unchanged (no copy).
+func ensureFinishChoiceDelta(chunk *model.InternalLLMResponse) *model.InternalLLMResponse {
+	if chunk == nil {
+		return chunk
+	}
+	needsCopy := false
+	for i := range chunk.Choices {
+		c := chunk.Choices[i]
+		if c.Delta == nil && c.FinishReason != nil && *c.FinishReason != "" {
+			needsCopy = true
+			break
+		}
+	}
+	if !needsCopy {
+		return chunk
+	}
+	out := *chunk
+	out.Choices = make([]model.Choice, len(chunk.Choices))
+	copy(out.Choices, chunk.Choices)
+	for i := range out.Choices {
+		if out.Choices[i].Delta == nil && out.Choices[i].FinishReason != nil && *out.Choices[i].FinishReason != "" {
+			out.Choices[i].Delta = &model.Message{Role: "assistant"}
+		}
+	}
+	return &out
 }
 
 // syntheticDoneClosers closes remaining choices before DONE without adding a
