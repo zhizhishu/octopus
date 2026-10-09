@@ -843,6 +843,33 @@ func (i *MessagesInbound) TransformStream(ctx context.Context, stream *model.Int
 
 		// Add signature delta if signature is available
 		if choice.Delta != nil && choice.Delta.ReasoningSignature != nil && *choice.Delta.ReasoningSignature != "" {
+			// A signature can arrive with no reasoning text (the upstream emits a
+			// signature_delta without any thinking_delta). The thinking block is
+			// normally opened by the reasoning-delta path above, which never runs in
+			// that case, so open it here first: otherwise this delta (and the terminal
+			// content_block_stop) would target a block that was never started, and
+			// strict clients (the Anthropic SDK indexes the content-block list by
+			// index) reject the stream. Opening the block also keeps the signature
+			// instead of dropping it.
+			if !i.hasThinkingContentStarted {
+				i.hasThinkingContentStarted = true
+
+				startEvent := StreamEvent{
+					Type:  "content_block_start",
+					Index: &i.contentIndex,
+					ContentBlock: &MessageContentBlock{
+						Type:      "thinking",
+						Thinking:  lo.ToPtr(""),
+						Signature: lo.ToPtr(""),
+					},
+				}
+				data, err := json.Marshal(startEvent)
+				if err != nil {
+					return nil, fmt.Errorf("failed to marshal content_block_start event: %w", err)
+				}
+				events = append(events, formatSSEEvent("content_block_start", data))
+			}
+
 			sigEvent := StreamEvent{
 				Type:  "content_block_delta",
 				Index: &i.contentIndex,
@@ -1058,15 +1085,22 @@ func (i *MessagesInbound) TransformStream(ctx context.Context, stream *model.Int
 		if choice.FinishReason != nil && !i.hasFinished {
 			i.hasFinished = true
 
-			stopEvent := StreamEvent{
-				Type:  "content_block_stop",
-				Index: &i.contentIndex,
+			// Only close a content block that was actually opened. When the reply
+			// carried no content/thinking/tool block at all (e.g. an empty answer),
+			// emitting content_block_stop here would be an orphan stop with no matching
+			// content_block_start, which strict clients reject. Every path that opens a
+			// block sets one of these flags before the block is open.
+			if i.hasTextContentStarted || i.hasThinkingContentStarted || i.hasToolContentStarted {
+				stopEvent := StreamEvent{
+					Type:  "content_block_stop",
+					Index: &i.contentIndex,
+				}
+				data, err := json.Marshal(stopEvent)
+				if err != nil {
+					return nil, fmt.Errorf("failed to marshal content_block_stop event: %w", err)
+				}
+				events = append(events, formatSSEEvent("content_block_stop", data))
 			}
-			data, err := json.Marshal(stopEvent)
-			if err != nil {
-				return nil, fmt.Errorf("failed to marshal content_block_stop event: %w", err)
-			}
-			events = append(events, formatSSEEvent("content_block_stop", data))
 
 			// Convert finish reason to Anthropic format
 			var stopReason string
