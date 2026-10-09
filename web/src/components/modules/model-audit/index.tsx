@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
     AlertTriangle,
     Binary,
@@ -199,6 +199,9 @@ export function ModelAudit() {
     const [report, setReport] = useState<ModelAuditResponse | null>(null);
     const [errorText, setErrorText] = useState('');
     const [openRow, setOpenRow] = useState<DisplayRow | null>(null);
+    // 请求在飞行时为 true。disabled 只是视觉拦截，受渲染时序影响；
+    // 这个 ref 是硬性单飞闸门，确保同一时刻只有一个检测任务。
+    const inFlight = useRef(false);
 
     const channel = channels.find((item) => item.id === channelId) ?? channels[0];
     const models = useMemo(
@@ -252,6 +255,8 @@ export function ModelAudit() {
     };
 
     const run = async () => {
+        // 飞行中直接忽略，杜绝连点/重复触发发出第二个 POST。
+        if (inFlight.current) return;
         if (!channel || !activeModel) {
             toast.warning('先选渠道和模型');
             return;
@@ -261,6 +266,7 @@ export function ModelAudit() {
             toast.warning('至少勾一项检查');
             return;
         }
+        inFlight.current = true;
         setPageState('running');
         setErrorText('');
         try {
@@ -276,6 +282,9 @@ export function ModelAudit() {
             setErrorText(message);
             setPageState('error');
             toast.error(message);
+        } finally {
+            // 成功、失败、超时都走到这里：必须解锁，别把按钮永久锁死。
+            inFlight.current = false;
         }
     };
 
