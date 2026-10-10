@@ -312,6 +312,13 @@ type InternalLLMRequest struct {
 	// that exact presence rather than only on semantic content.
 	AnthropicToolsPresent bool `json:"-"`
 
+	// AnthropicExtraTopLevel preserves the inbound Claude request's top-level keys
+	// that the transformer does not model (for example the client's `safeguards`
+	// object). A same-protocol Claude -> Claude relay must hand the provider back
+	// the request the CLI actually sent; dropping an unrecognised key changes the
+	// request shape and can drop a control the provider honours.
+	AnthropicExtraTopLevel map[string]json.RawMessage `json:"-"`
+
 	// ResponsesRawRequestFields preserve same-protocol OpenAI Responses request
 	// shapes that cannot be represented losslessly by the chat-like internal model.
 	ResponsesInstructions  *string           `json:"-"`
@@ -473,6 +480,7 @@ func (r *InternalLLMRequest) ClearHelpFields() {
 	r.AnthropicThinking = nil
 	r.AnthropicOutputConfig = nil
 	r.AnthropicToolsPresent = false
+	r.AnthropicExtraTopLevel = nil
 	r.ResponsesInstructions = nil
 	r.ResponsesInputRaw = nil
 	r.ResponsesToolsRaw = nil

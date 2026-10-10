@@ -83,6 +83,17 @@ func (i *MessagesInbound) TransformRequest(ctx context.Context, body []byte) (*m
 	if _, ok := rawFields["tools"]; ok {
 		chatReq.AnthropicToolsPresent = true
 	}
+	if len(anthropicReq.Extra) > 0 {
+		extra := make(map[string]json.RawMessage, len(anthropicReq.Extra))
+		for key, value := range anthropicReq.Extra {
+			if len(value) > 0 {
+				extra[key] = append(json.RawMessage(nil), value...)
+			}
+		}
+		if len(extra) > 0 {
+			chatReq.AnthropicExtraTopLevel = extra
+		}
+	}
 	if anthropicReq.ServiceTier != "" {
 		chatReq.ServiceTier = &anthropicReq.ServiceTier
 	}

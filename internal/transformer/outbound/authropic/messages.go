@@ -431,6 +431,17 @@ func convertToAnthropicRequest(req *model.InternalLLMRequest) *anthropicModel.Me
 	if len(req.AnthropicContextManagement) > 0 {
 		result.ContextManagement = append(json.RawMessage(nil), req.AnthropicContextManagement...)
 	}
+	if len(req.AnthropicExtraTopLevel) > 0 {
+		extra := make(map[string]json.RawMessage, len(req.AnthropicExtraTopLevel))
+		for key, value := range req.AnthropicExtraTopLevel {
+			if len(value) > 0 {
+				extra[key] = append(json.RawMessage(nil), value...)
+			}
+		}
+		if len(extra) > 0 {
+			result.Extra = extra
+		}
+	}
 	rawThinkingPreserved := false
 	if thinking, ok := decodeAnthropicThinking(req.AnthropicThinking); ok {
 		result.Thinking = thinking
@@ -541,7 +552,7 @@ func anthropicOutputFormatFromResponseFormat(rf *model.ResponseFormat) (json.Raw
 		format["schema"] = append(json.RawMessage(nil), rf.JSONSchema...)
 	}
 
-	raw, err := json.Marshal(format)
+	raw, err := anthropicModel.EncodeJSONNoHTMLEscape(format)
 	if err != nil {
 		return nil, false
 	}

@@ -1,8 +1,10 @@
 package anthropic
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"sort"
 )
 
 // MessageRequest represents the Anthropic Messages API request format.
@@ -101,22 +103,234 @@ type MessageRequest struct {
 	// marshalling when the semantic tool list is empty but the original field was
 	// present.
 	ForceEmptyTools bool `json:"-"`
+
+	// Extra holds top-level request keys this struct does not model (for example the
+	// client's `safeguards` object). A same-protocol Claude -> Claude relay must hand
+	// the provider back the request the CLI actually sent: silently dropping an
+	// unrecognised top-level key changes the request shape, and can drop a control the
+	// provider honours. Populated by UnmarshalJSON, replayed by MarshalJSON.
+	Extra map[string]json.RawMessage `json:"-"`
+}
+
+// messageRequestEncodedKeys reports the top-level keys MessageRequest models, plus the
+// `tools` key whose presence is tracked separately by ForceEmptyTools rather than by the
+// slice itself (an empty tools array is omitted by `omitempty`). Derived from the
+// encoded struct rather than a hand-written list so a newly added field can never be
+// misclassified as "unknown" and emitted twice.
+func messageRequestEncodedKeys(m MessageRequest) map[string]struct{} {
+	keys := map[string]struct{}{"tools": {}}
+	type alias MessageRequest
+	data, err := EncodeJSONNoHTMLEscape(alias(m))
+	if err != nil {
+		return keys
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return keys
+	}
+	for key := range obj {
+		keys[key] = struct{}{}
+	}
+	return keys
+}
+
+func (m *MessageRequest) UnmarshalJSON(data []byte) error {
+	type alias MessageRequest
+	var parsed alias
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return err
+	}
+	*m = MessageRequest(parsed)
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		// The typed decode above already accepted the object, so a failure here means the
+		// raw view is unavailable, not that the request is malformed. Proceed without the
+		// fidelity channel rather than rejecting an otherwise valid request.
+		return nil
+	}
+	known := messageRequestEncodedKeys(*m)
+	extra := make(map[string]json.RawMessage)
+	for key, value := range raw {
+		if _, ok := known[key]; ok {
+			continue
+		}
+		if len(value) > 0 {
+			extra[key] = append(json.RawMessage(nil), value...)
+		}
+	}
+	if len(extra) > 0 {
+		m.Extra = extra
+	}
+	return nil
+}
+
+// EncodeJSONNoHTMLEscape serialises v the way the CLI's own JSON serialiser does. Go's
+// json.Marshal rewrites <, > and & as \u003c / \u003e / \u0026, which is a byte-level
+// divergence from the body a genuine Claude CLI produces.
+func EncodeJSONNoHTMLEscape(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
+}
+
+// jsonMemberStart walks back from the offset where a member's value begins to the
+// opening quote of that member's key. The encoded object is compact and the top-level
+// keys are plain identifiers, so the key string carries no escapes to step over.
+func jsonMemberStart(data []byte, valueStart int64) int {
+	i := int(valueStart) - 1
+	skipSpace := func() {
+		for i >= 0 && (data[i] == ' ' || data[i] == '\n' || data[i] == '\t' || data[i] == '\r') {
+			i--
+		}
+	}
+	skipSpace()
+	if i >= 0 && data[i] == ':' {
+		i--
+	}
+	skipSpace()
+	// i now sits on the key's closing quote. Step inside the key and walk back to its
+	// opening quote. Top-level keys are plain identifiers, so there are no escaped
+	// quotes to step over.
+	if i >= 0 && data[i] == '"' {
+		i--
+	}
+	for i >= 0 && data[i] != '"' {
+		i--
+	}
+	return i
+}
+
+// topLevelMembers reports where each top-level member of a compact JSON object begins,
+// and the offset of the object's closing brace. Splice points are found by decoding the
+// object rather than by searching for a key's text: a request whose prompt happens to
+// contain `"stream":` must not be mistaken for the real field.
+func topLevelMembers(data []byte) (map[string]int, int, bool) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, 0, false
+	}
+	if delim, ok := tok.(json.Delim); !ok || delim != '{' {
+		return nil, 0, false
+	}
+	starts := make(map[string]int)
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return nil, 0, false
+		}
+		key, ok := keyTok.(string)
+		if !ok {
+			return nil, 0, false
+		}
+		valueStart := dec.InputOffset()
+		var value json.RawMessage
+		if err := dec.Decode(&value); err != nil {
+			return nil, 0, false
+		}
+		starts[key] = jsonMemberStart(data, valueStart)
+	}
+	closeOffset := bytes.LastIndexByte(data, '}')
+	if closeOffset < 0 {
+		return nil, 0, false
+	}
+	return starts, closeOffset, true
 }
 
 func (m MessageRequest) MarshalJSON() ([]byte, error) {
 	type alias MessageRequest
-	data, err := json.Marshal(alias(m))
-	if err != nil || !m.ForceEmptyTools || len(m.Tools) > 0 {
-		return data, err
+	data, err := EncodeJSONNoHTMLEscape(alias(m))
+	if err != nil {
+		return nil, err
 	}
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal(data, &obj); err != nil {
+	forceEmptyTools := m.ForceEmptyTools && len(m.Tools) == 0
+	if !forceEmptyTools && len(m.Extra) == 0 {
 		return data, nil
 	}
-	if _, ok := obj["tools"]; !ok {
-		obj["tools"] = json.RawMessage(`[]`)
+
+	starts, closeOffset, ok := topLevelMembers(data)
+	if !ok {
+		// Not a shape we can splice into safely: fall back to the plain encoding rather
+		// than emitting a malformed body.
+		return data, nil
 	}
-	return json.Marshal(obj)
+	nonEmpty := len(starts) > 0
+
+	type splice struct {
+		at   int
+		text string
+	}
+	splices := make([]splice, 0, len(m.Extra)+1)
+
+	// An explicit "tools":[] belongs where the struct declares `tools` — immediately
+	// before `tool_choice` / `stream` — so the member order keeps matching a genuine
+	// CLI request. A tools value already carried in Extra wins: replaying the client's
+	// own bytes beats a synthesised empty array.
+	if forceEmptyTools {
+		if _, carried := m.Extra["tools"]; !carried {
+			at := closeOffset
+			text := `"tools":[]`
+			if nonEmpty {
+				text = `,"tools":[]`
+			}
+			if p, ok := starts["tool_choice"]; ok {
+				at, text = p, `"tools":[],`
+			} else if p, ok := starts["stream"]; ok {
+				at, text = p, `"tools":[],`
+			}
+			splices = append(splices, splice{at: at, text: text})
+		}
+	}
+
+	// Unmodelled client keys replay verbatim, after every modelled member. Sorted for a
+	// deterministic body so the same request always serialises to the same bytes.
+	if len(m.Extra) > 0 {
+		keys := make([]string, 0, len(m.Extra))
+		for key := range m.Extra {
+			if len(m.Extra[key]) == 0 || key == "tools" {
+				continue
+			}
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			encodedKey, err := EncodeJSONNoHTMLEscape(key)
+			if err != nil {
+				return nil, err
+			}
+			prefix := ","
+			if !nonEmpty && len(splices) == 0 {
+				prefix = ""
+			}
+			splices = append(splices, splice{
+				at:   closeOffset,
+				text: prefix + string(encodedKey) + ":" + string(m.Extra[key]),
+			})
+		}
+	}
+	if len(splices) == 0 {
+		return data, nil
+	}
+
+	sort.SliceStable(splices, func(i, j int) bool { return splices[i].at < splices[j].at })
+	var out bytes.Buffer
+	out.Grow(len(data) + 64)
+	cursor := 0
+	for _, s := range splices {
+		if s.at < cursor || s.at > len(data) {
+			return data, nil
+		}
+		out.Write(data[cursor:s.at])
+		out.WriteString(s.text)
+		cursor = s.at
+	}
+	out.Write(data[cursor:])
+	return out.Bytes(), nil
 }
 
 type AnthropicMetadata struct {
@@ -131,11 +345,11 @@ type SystemPrompt struct {
 
 func (s *SystemPrompt) MarshalJSON() ([]byte, error) {
 	if s.Prompt != nil {
-		return json.Marshal(s.Prompt)
+		return EncodeJSONNoHTMLEscape(s.Prompt)
 	}
 
 	if len(s.MultiplePrompts) > 0 {
-		return json.Marshal(s.MultiplePrompts)
+		return EncodeJSONNoHTMLEscape(s.MultiplePrompts)
 	}
 
 	return []byte("null"), nil
@@ -231,7 +445,7 @@ func (o OutputConfig) MarshalJSON() ([]byte, error) {
 		}
 	}
 	if o.Effort != "" {
-		data, err := json.Marshal(o.Effort)
+		data, err := EncodeJSONNoHTMLEscape(o.Effort)
 		if err != nil {
 			return nil, err
 		}
@@ -243,7 +457,7 @@ func (o OutputConfig) MarshalJSON() ([]byte, error) {
 	if len(obj) == 0 {
 		return []byte(`{}`), nil
 	}
-	return json.Marshal(obj)
+	return EncodeJSONNoHTMLEscape(obj)
 }
 
 type ToolChoice struct {
@@ -307,12 +521,12 @@ func (t Tool) MarshalJSON() ([]byte, error) {
 			// Not an object we can merge into; emit as-is.
 			return append(json.RawMessage(nil), t.Raw...), nil
 		}
-		cc, err := json.Marshal(t.CacheControl)
+		cc, err := EncodeJSONNoHTMLEscape(t.CacheControl)
 		if err != nil {
 			return nil, err
 		}
 		obj["cache_control"] = cc
-		return json.Marshal(obj)
+		return EncodeJSONNoHTMLEscape(obj)
 	}
 	type standardTool struct {
 		Name         string          `json:"name"`
@@ -320,7 +534,7 @@ func (t Tool) MarshalJSON() ([]byte, error) {
 		InputSchema  json.RawMessage `json:"input_schema"`
 		CacheControl *CacheControl   `json:"cache_control,omitempty"`
 	}
-	return json.Marshal(standardTool{
+	return EncodeJSONNoHTMLEscape(standardTool{
 		Name:         t.Name,
 		Description:  t.Description,
 		InputSchema:  t.InputSchema,
@@ -402,10 +616,10 @@ func (m MessageContent) ExtractTrivalBlocks(cacheControl *CacheControl) []Messag
 
 func (c MessageContent) MarshalJSON() ([]byte, error) {
 	if c.Content != nil {
-		return json.Marshal(c.Content)
+		return EncodeJSONNoHTMLEscape(c.Content)
 	}
 
-	return json.Marshal(c.MultipleContent)
+	return EncodeJSONNoHTMLEscape(c.MultipleContent)
 }
 
 func (c *MessageContent) UnmarshalJSON(data []byte) error {

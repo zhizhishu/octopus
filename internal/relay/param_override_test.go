@@ -2,6 +2,10 @@ package relay
 
 import (
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -95,4 +99,34 @@ func jsonEqual(a, b map[string]any) bool {
 	bj, _ := json.Marshal(b)
 	// map 的 Marshal 会按键排序，故字节相等即语义相等。
 	return string(aj) == string(bj)
+}
+
+// Rewriting a body for param_override must not HTML-escape its content. Go's
+// json.Marshal turns <, > and & into \u003c / \u003e / \u0026, so a request carrying
+// markup or a shell `&&` would leave with different bytes than the client produced —
+// a body-shape delta introduced purely by our own rewrite.
+func TestApplyParamOverrideDoesNotHTMLEscapeBody(t *testing.T) {
+	const body = `{"model":"m","messages":[{"role":"user","content":"a < b && c > d"}]}`
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	override := `{"temperature":0.5}`
+	if err := ApplyParamOverride(req, &override); err != nil {
+		t.Fatalf("ApplyParamOverride error: %v", err)
+	}
+
+	rewritten, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatalf("read rewritten body: %v", err)
+	}
+	if strings.Contains(string(rewritten), `\u003c`) ||
+		strings.Contains(string(rewritten), `\u0026`) ||
+		strings.Contains(string(rewritten), `\u003e`) {
+		t.Fatalf("param_override rewrite HTML-escaped the body: %s", rewritten)
+	}
+	if !strings.Contains(string(rewritten), `a < b && c > d`) {
+		t.Fatalf("expected the client's literal text to survive the rewrite: %s", rewritten)
+	}
+	if !strings.Contains(string(rewritten), `"temperature":0.5`) {
+		t.Fatalf("expected the override to be applied: %s", rewritten)
+	}
 }

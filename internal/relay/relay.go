@@ -1342,6 +1342,22 @@ retryWithAdapter:
 	return response.StatusCode, nil
 }
 
+// marshalJSONNoHTMLEscape serialises a request body the way the client's own JSON
+// serialiser does. Go's json.Marshal rewrites <, > and & as \u003c / \u003e / \u0026, so a
+// relayed body carrying markup, a shell `&&` or an HTML snippet leaves with different
+// bytes than the client produced — a body-shape delta on exactly the large real-world
+// requests where it matters. Matches the same guard already used on the Anthropic
+// outbound path (outbound/authropic MessageOutbound.TransformRequest).
+func marshalJSONNoHTMLEscape(value any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(value); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
+}
+
 // ApplyParamOverride applies a channel's top-level JSON body overrides while
 // preserving the original request when either JSON document is invalid. A null
 // override removes the key, matching the production relay contract.
@@ -1376,7 +1392,7 @@ func ApplyParamOverride(req *http.Request, overrideJSON *string) error {
 	}
 
 	applyParamOverrideMap(bodyMap, overrideMap)
-	modifiedBody, err := json.Marshal(bodyMap)
+	modifiedBody, err := marshalJSONNoHTMLEscape(bodyMap)
 	if err != nil {
 		log.Warnf("failed to marshal modified body: %v, skipping param_override", err)
 		restoreBody(originalBody)
