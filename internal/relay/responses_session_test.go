@@ -863,3 +863,109 @@ func TestBridgeResponsesHistoryForAnthropicRebuildsToolOutputContinuation(t *tes
 		t.Fatalf("expected rebuilt history to pair assistant(tool_call:%s) with tool(output), got %#v", callID, req.Messages)
 	}
 }
+
+// The Responses encrypted-content guard must not reach a Claude request. An Anthropic
+// thinking signature lives in the same internal field the guard clears, and that
+// signature is what lets the provider validate the thinking block on the next turn:
+// clearing it on a Claude -> Claude relay gets the request rejected or silently breaks
+// thinking continuity. A nil adapter is the sharpest probe: it fails the outbound
+// cursor-support check, so the old code stripped unconditionally here.
+func TestPrepareResponsesEncryptedContentLeavesAnthropicSignatureIntact(t *testing.T) {
+	clearResponsesSessionCacheForTest()
+	signature := "anthropic-thinking-signature"
+
+	req := &transformerModel.InternalLLMRequest{
+		Messages: []transformerModel.Message{{
+			Role:               "assistant",
+			ReasoningSignature: &signature,
+		}},
+	}
+	ra := &relayAttempt{
+		relayRequest: &relayRequest{
+			inboundType:     inbound.InboundTypeAnthropic,
+			internalRequest: req,
+		},
+	}
+
+	ra.prepareResponsesEncryptedContent(nil)
+
+	if req.Messages[0].ReasoningSignature == nil {
+		t.Fatalf("Claude thinking signature must survive a Claude -> Claude relay, but it was cleared")
+	}
+	if *req.Messages[0].ReasoningSignature != signature {
+		t.Fatalf("thinking signature changed in transit: %q", *req.Messages[0].ReasoningSignature)
+	}
+}
+
+// The same guard must leave an Anthropic request's raw input untouched too: the raw
+// byte blob is what the outbound Anthropic body rebuilds from.
+func TestPrepareResponsesEncryptedContentLeavesAnthropicRawInputIntact(t *testing.T) {
+	clearResponsesSessionCacheForTest()
+	const raw = `{"thinking":{"type":"enabled","signature":"sig"},"content":[{"type":"reasoning","encrypted_content":"opaque"}]}`
+
+	req := &transformerModel.InternalLLMRequest{
+		ResponsesInputRaw: []byte(raw),
+	}
+	ra := &relayAttempt{
+		relayRequest: &relayRequest{
+			inboundType:     inbound.InboundTypeAnthropic,
+			internalRequest: req,
+		},
+	}
+
+	ra.prepareResponsesEncryptedContent(nil)
+
+	if string(req.ResponsesInputRaw) != raw {
+		t.Fatalf("Anthropic raw input must not be rewritten by the Responses guard\n got: %s\nwant: %s", req.ResponsesInputRaw, raw)
+	}
+}
+
+// Narrowing the guard must not weaken the Responses dialect itself: on a Responses
+// inbound whose outbound cannot carry the session cursor, the encrypted reasoning is
+// still cleared (the pre-existing behavior this fix is careful to preserve).
+func TestPrepareResponsesEncryptedContentStillStripsForResponsesInbound(t *testing.T) {
+	clearResponsesSessionCacheForTest()
+	encrypted := "gAAAAABopaque"
+
+	req := &transformerModel.InternalLLMRequest{
+		Messages: []transformerModel.Message{{
+			Role:               "assistant",
+			ReasoningSignature: &encrypted,
+		}},
+	}
+	ra := &relayAttempt{
+		relayRequest: &relayRequest{
+			inboundType:     inbound.InboundTypeOpenAIResponse,
+			internalRequest: req,
+		},
+	}
+
+	ra.prepareResponsesEncryptedContent(nil)
+
+	if req.Messages[0].ReasoningSignature != nil {
+		t.Fatalf("a Responses request whose outbound cannot carry the cursor must still drop encrypted reasoning")
+	}
+}
+
+// A request with neither a signature nor encrypted content is not the guard's business
+// on any protocol.
+func TestPrepareResponsesEncryptedContentIgnoresPlainRequests(t *testing.T) {
+	clearResponsesSessionCacheForTest()
+	plain := ""
+
+	req := &transformerModel.InternalLLMRequest{
+		Messages: []transformerModel.Message{{Role: "assistant", ReasoningSignature: &plain}},
+	}
+	ra := &relayAttempt{
+		relayRequest: &relayRequest{
+			inboundType:     inbound.InboundTypeOpenAIResponse,
+			internalRequest: req,
+		},
+	}
+
+	ra.prepareResponsesEncryptedContent(nil)
+
+	if *req.Messages[0].ReasoningSignature != "" {
+		t.Fatalf("blank signature should be left as-is")
+	}
+}

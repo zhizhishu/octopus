@@ -588,7 +588,18 @@ func (ra *relayAttempt) prepareResponsesEncryptedContent(outAdapter transformerM
 	if ra == nil || ra.internalRequest == nil || !requestHasResponsesEncryptedContent(ra.internalRequest) {
 		return
 	}
-	if ra.inboundType != inbound.InboundTypeOpenAIResponse || !outboundSupportsResponsesSessionCursor(outAdapter) {
+	// This guard belongs to the OpenAI Responses dialect: an encrypted reasoning blob
+	// minted for another tenant/channel/key must not be replayed to a different owner.
+	// An Anthropic request carries a thinking *signature* in the same internal field, and
+	// that signature is exactly what lets the provider validate the thinking block on the
+	// next turn. Clearing it on a Claude -> Claude relay either gets the request rejected
+	// or silently breaks thinking continuity, so a non-Responses inbound is left alone.
+	// requestHasResponsesEncryptedContent cannot tell the two apart on its own — only the
+	// inbound protocol can.
+	if ra.inboundType != inbound.InboundTypeOpenAIResponse {
+		return
+	}
+	if !outboundSupportsResponsesSessionCursor(outAdapter) {
 		stripResponsesEncryptedContent(ra.internalRequest)
 		return
 	}
