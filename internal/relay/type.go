@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/bestruirui/octopus/internal/conf"
 	dbmodel "github.com/bestruirui/octopus/internal/model"
@@ -302,4 +303,7 @@ type attemptResult struct {
 	StatusCode int   // upstream status for retry decisions
 	Retryable  bool  // 上游空流等瞬态失败且未写入下游，可安全重试
 	Fatal      bool  // 上下文超长等确定性错误：换任何渠道/key 都会同样失败，停止遍历
+	// RetryAfter 是上游给的 Retry-After 提示（限流/过载时要求多久后再来），
+	// 缺省为 0 表示上游没给。转发层用它给下游定节奏，重试轮次用它避免自己打自己。
+	RetryAfter time.Duration
 }

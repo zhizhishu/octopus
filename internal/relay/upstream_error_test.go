@@ -666,3 +666,57 @@ func TestRelayErrorResponseMasksOnlyUpstreamServerErrors(t *testing.T) {
 		}
 	}
 }
+
+// End-to-end wiring for the pacing hint: a rate-limited upstream must put its Retry-After
+// on the client's response, not swallow it between the two hops.
+func TestHandlerForwardsUpstreamRetryAfterOn429(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayErrorDB(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After", "42")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"code":"rate_limited","message":"slow down"}}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	channel := dbmodel.Channel{
+		Name:    "rate-limited-channel",
+		Type:    outbound.OutboundTypeOpenAIChat,
+		Enabled: true,
+		Model:   "upstream-model",
+		ModelMapping: map[string]string{
+			"request-model": "upstream-model",
+		},
+		Priority: 1,
+		BaseUrls: []dbmodel.BaseUrl{{
+			URL: upstream.URL,
+		}},
+		Keys: []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "rate-limited-key"}},
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+		"model":"request-model",
+		"messages":[{"role":"user","content":"ping"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+	c.Set("api_key_id", 0)
+	c.Set("user_id", 0)
+	c.Set("request_ip", "127.0.0.1")
+
+	Handler(inbound.InboundTypeOpenAIChat, c)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected the upstream 429 to reach the client, got %d body %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Retry-After"); got != "42" {
+		t.Fatalf("expected the upstream Retry-After hint to reach the client, got %q", got)
+	}
+}

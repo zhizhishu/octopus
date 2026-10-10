@@ -141,6 +141,7 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 
 	var (
 		lastErr            error
+		lastRetryAfter     time.Duration // 最近一次失败携带的上游 Retry-After（0 = 上游没给）
 		allAttempts        []dbmodel.ChannelAttempt
 		triedReturnGroup   bool
 		interventionRounds int
@@ -418,6 +419,7 @@ attemptChannels:
 				return
 			}
 			lastErr = result.Err
+			lastRetryAfter = result.RetryAfter
 			if result.Fatal {
 				contextWindowErr = result.Err
 				break
@@ -577,6 +579,7 @@ attemptChannels:
 				return
 			}
 			lastErr = result.Err
+			lastRetryAfter = result.RetryAfter
 			if result.Fatal {
 				// Context-window overflow: no other channel/key will accept the same
 				// oversized payload — stop iterating and return the 400 as-is.
@@ -723,6 +726,13 @@ attemptChannels:
 					// 不使用会退到 15 秒的人工接管指数退避。
 					backoff = time.Second
 				}
+				// 上游明确要求"多久之后再来"时，这个节奏归它：比它更早重试只会再吃一次
+				// 429/503，把一次短暂限流拖成自己打自己的循环。这里只把等待拉长到上游
+				// 要求的下限；救援窗口仍由 armRescueDeadline 收口——窗口比 Retry-After
+				// 短就照旧按窗口结束，不会凭空续命。
+				if lastRetryAfter > backoff {
+					backoff = lastRetryAfter
+				}
 				nextRetry := time.Now().Add(backoff)
 				_ = intervention.UpdateStatus(pendingInterventionID, intervention.StatusAutoRetrying, interventionRounds, &nextRetry)
 
@@ -838,6 +848,7 @@ attemptChannels:
 		}
 		return
 	}
+	writeUpstreamRetryAfterHint(c, status, finalErr)
 	writeRelayErrorPreStream(c, inboundType, status, "api_error", code, message)
 }
 
@@ -997,6 +1008,7 @@ func (ra *relayAttempt) attempt() attemptResult {
 		StatusCode: recordStatusCode,
 		Retryable:  !committed && isRetryableUpstreamStreamError(fwdErr),
 		Fatal:      isContextWindowError(fwdErr),
+		RetryAfter: upstreamRetryAfter(fwdErr),
 	}
 }
 

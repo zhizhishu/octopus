@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -333,4 +334,40 @@ func writeRelayErrorPreStream(c *gin.Context, inboundType inbound.InboundType, h
 			resp.ErrorWithCode(c, httpStatus, errCode, message)
 		}
 	}
+}
+
+// writeUpstreamRetryAfterHint forwards the provider's Retry-After hint onto the
+// downstream error response when the status we are about to send is itself a
+// "come back later" status (429 / 503).
+//
+// A client routed through the relay must pace itself exactly as it would against the
+// provider directly. Dropping the hint leaves claude-code / codex with nothing to wait
+// on, so they retry immediately and a brief upstream rate-limit degenerates into a
+// self-inflicted hammering loop — the relay looking far worse than the raw provider.
+//
+// The value is a pure timing hint: it carries no provider identity, so it travels safely
+// alongside the redacted body and honours the admin passthrough/body policies unchanged.
+// It is only written before the response head is committed; once anything has been
+// flushed the failure travels in-band and headers are no longer settable.
+func writeUpstreamRetryAfterHint(c *gin.Context, httpStatus int, err error) {
+	if c == nil || err == nil || c.Writer.Written() {
+		return
+	}
+	if httpStatus != http.StatusTooManyRequests && httpStatus != http.StatusServiceUnavailable {
+		return
+	}
+	hint := upstreamRetryAfter(err)
+	if hint <= 0 {
+		return
+	}
+	// Retry-After is defined in whole seconds; round up so we never advertise a shorter
+	// wait than the provider asked for.
+	seconds := int64(hint / time.Second)
+	if hint%time.Second != 0 {
+		seconds++
+	}
+	if seconds < 1 {
+		seconds = 1
+	}
+	c.Header("Retry-After", strconv.FormatInt(seconds, 10))
 }

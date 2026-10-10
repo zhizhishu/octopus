@@ -765,3 +765,14 @@ func retryAfterFromError(err error) (time.Duration, bool) {
 	}
 	return 0, false
 }
+
+// upstreamRetryAfter reports the upstream Retry-After hint carried by err, or zero
+// when the upstream did not supply one. A zero value means "no pacing instruction",
+// so callers can treat it as "no opinion" without a separate presence flag.
+func upstreamRetryAfter(err error) time.Duration {
+	value, ok := retryAfterFromError(err)
+	if !ok {
+		return 0
+	}
+	return value
+}
