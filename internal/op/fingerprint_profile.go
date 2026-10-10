@@ -184,8 +184,8 @@ func builtinLinuxPresets() []*model.FingerprintProfile {
 		{
 			Name:                 builtinDebianPresetName,
 			Seed:                 deriveProfileSeed(2),
-			ClaudeUserAgent:      "claude-cli/2.1.281 (external, sdk-cli)",
-			ClaudePackageVersion: "0.112.1",
+			ClaudeUserAgent:      "claude-cli/2.1.294 (external, sdk-cli)",
+			ClaudePackageVersion: "0.128.0",
 			ClaudeRuntimeVersion: "v26.3.0",
 			ClaudeOS:             "Linux",
 			ClaudeArch:           "x64",
@@ -199,8 +199,8 @@ func builtinLinuxPresets() []*model.FingerprintProfile {
 		{
 			Name:                 builtinUbuntuPresetName,
 			Seed:                 deriveProfileSeed(3),
-			ClaudeUserAgent:      "claude-cli/2.1.281 (external, sdk-cli)",
-			ClaudePackageVersion: "0.112.1",
+			ClaudeUserAgent:      "claude-cli/2.1.294 (external, sdk-cli)",
+			ClaudePackageVersion: "0.128.0",
 			ClaudeRuntimeVersion: "v26.3.0",
 			ClaudeOS:             "Linux",
 			ClaudeArch:           "x64",

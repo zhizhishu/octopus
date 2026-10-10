@@ -227,8 +227,8 @@ func TestFingerprintProfileConvergesLegacyBuiltinInOneStep(t *testing.T) {
 		t.Fatalf("convergence must rewrite the SAME row in place: id %d -> %d", legacy.ID, got.ID)
 	}
 	// Spelled out field by field so a regression names the exact stale value.
-	if got.ClaudeUserAgent != "claude-cli/2.1.281 (external, sdk-cli)" {
-		t.Fatalf("claude UA = %q, want the current 2.1.281", got.ClaudeUserAgent)
+	if got.ClaudeUserAgent != "claude-cli/2.1.294 (external, sdk-cli)" {
+		t.Fatalf("claude UA = %q, want the current 2.1.294", got.ClaudeUserAgent)
 	}
 	if got.ClaudeRuntimeVersion != "v26.3.0" {
 		t.Fatalf("claude runtime = %q, want v26.3.0", got.ClaudeRuntimeVersion)
