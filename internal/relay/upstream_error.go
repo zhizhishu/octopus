@@ -213,6 +213,16 @@ func relayErrorResponse(err error) (status int, code string, message string) {
 		if isContextWindowError(err) {
 			return http.StatusBadRequest, "context_length_exceeded", contextWindowUserMessage(err)
 		}
+		// A deterministic request-shape rejection (invalid_request_error /
+		// INVALID_ARGUMENT / serde body-deserialize failure) is the CALLER's error, not
+		// the gateway's: every channel refuses the same payload, so the relay stops
+		// retrying (see isDeterministicClientRejection) and hands the upstream's own
+		// status, code and reason back instead of hiding them behind the generic
+		// octopus_* code. Secret redaction and the length cap still apply, and an
+		// explicit admin public-code / custom-message / octopus-standard setting wins.
+		if isRequestInvalidUpstreamError(err) {
+			return status, requestInvalidPublicCode(err), requestInvalidUserMessage(err)
+		}
 		// Preserve upstream client-error status independently of body redaction:
 		// callers must distinguish invalid input, auth failures and rate limits from
 		// gateway failures. The admin toggle continues to control upstream 5xx only.
@@ -701,8 +711,70 @@ func matchRequestInvalidText(lower string) bool {
 	case strings.Contains(lower, "did not match any variant"):
 		// serde untagged-enum error (e.g. ChatCompletionToolChoiceOption).
 		return true
+	case strings.Contains(lower, "供应难以保证"):
+		// 上游策略性停供（"由于 … 模型供应难以保证，上线 … 模型"）。这是一个 400，但语义上
+		// 与"参数错"同类：换渠道、等一会儿都不会变，属于确定性拒绝 ⇒ 不重试、原样透传真实
+		// 400 与文案。判定按错误体语义而不是状态码，所以凡 400 一律重试或一律不重试都是错的。
+		return true
 	}
 	return false
+}
+
+// isDeterministicClientRejection reports whether an upstream failure is a rejection of
+// THIS request's payload rather than a channel-health problem: a context-window overflow
+// or a malformed/unsupported request shape. Such an error is stable across channels —
+// re-sending the identical body to a different channel cannot succeed — so the relay
+// stops iterating and the rescue loop never starts: the caller gets the real 4xx instead
+// of a gateway-shaped 502 or a 300s rescue that could only end in the same rejection.
+func isDeterministicClientRejection(err error) bool {
+	return isContextWindowError(err) || isRequestInvalidUpstreamError(err)
+}
+
+func upstreamErrorOf(err error) *upstreamError {
+	var upErr *upstreamError
+	if errors.As(err, &upErr) {
+		return upErr
+	}
+	return nil
+}
+
+// requestInvalidPublicCode is the client-facing error code for a deterministic
+// request-shape rejection. The upstream's own code (normalized) is passed through so the
+// caller can tell a malformed body from a bad parameter without reading prose. The
+// admin's unified public-code setting is deliberately NOT applied here, exactly as it is
+// not applied to the sibling context-window branch: those two codes are the caller's
+// action items ("this request is wrong"), not upstream identity leaks.
+func requestInvalidPublicCode(err error) string {
+	if upErr := upstreamErrorOf(err); upErr != nil {
+		if providerCode := normalizeErrorCode(extractUpstreamErrorCode([]byte(upErr.body))); providerCode != "" {
+			return providerCode
+		}
+	}
+	return "invalid_request_error"
+}
+
+// requestInvalidUserMessage is the client-facing message for a deterministic
+// request-shape rejection. The admin body-mode setting is honoured the same way as for
+// every other upstream error: "custom_message" keeps the operator's wording and
+// "octopus_standard" keeps the generic one; the default "redacted_upstream" passes the
+// upstream's own reason through (secrets redacted, whitespace collapsed, length capped by
+// upstreamBodySummary) because that reason is exactly what the caller must act on.
+func requestInvalidUserMessage(err error) string {
+	switch upstreamErrorBodyMode() {
+	case "custom_message":
+		if message := upstreamErrorCustomMessage(); message != "" {
+			return message
+		}
+		return "upstream request failed"
+	case "octopus_standard":
+		return "upstream request failed"
+	}
+	if upErr := upstreamErrorOf(err); upErr != nil {
+		if detail := upstreamBodySummary(upErr.body); detail != "" {
+			return detail
+		}
+	}
+	return "upstream rejected this request as invalid"
 }
 
 // contextWindowUserMessage is the client-facing message for a context-window

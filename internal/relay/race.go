@@ -591,7 +591,7 @@ func runChannelRace(
 			Err:        fmt.Errorf("channel %s failed: %w", channel.Name, handleErr),
 			StatusCode: recStatus,
 			Retryable:  !committed && isRetryableUpstreamStreamError(handleErr),
-			Fatal:      isContextWindowError(handleErr),
+			Fatal:      isDeterministicClientRejection(handleErr),
 		}, remainingKeys
 	}
 
@@ -616,7 +616,7 @@ func runChannelRace(
 		Err:        fmt.Errorf("channel %s failed: %w", channel.Name, lastErr),
 		StatusCode: finalStatus,
 		Retryable:  false,
-		Fatal:      isContextWindowError(lastErr),
+		Fatal:      isDeterministicClientRejection(lastErr),
 	}, remainingKeys
 }
 

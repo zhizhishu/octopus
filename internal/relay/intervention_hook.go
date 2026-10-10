@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"sync/atomic"
+	"time"
 
 	"github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/relay/intervention"
@@ -52,26 +53,48 @@ func isEligibleForInterventionRescue(err error) bool {
 	return true
 }
 
-// shouldHoldForOperator evaluates whether a request whose automatic attempts/fallbacks failed
-// is eligible to be held for automatic rescue and operator intervention.
-func isRescueableHeldRequest(req *relayRequest, contextWindowErr, finalErr error) bool {
+// isRescueableHeldRequest evaluates whether a request whose automatic attempts/fallbacks
+// failed may enter the automatic-recovery hold: an eligible (transient) upstream failure
+// with nothing committed downstream yet. The client's stream preference is deliberately
+// NOT part of this test — a non-stream caller's request is every bit as rescuable as a
+// streaming one (it just gets no SSE heartbeats while it waits), so gating on it silently
+// turned off the whole rescue chain for plain HTTP clients.
+func isRescueableHeldRequest(req *relayRequest, fatalClientErr, finalErr error) bool {
 	if req == nil || req.internalRequest == nil {
-		return false
-	}
-	if !internalRequestPrefersStream(req.internalRequest) {
 		return false
 	}
 	if req.wroteBusinessData {
 		return false
 	}
-	if contextWindowErr != nil {
+	if fatalClientErr != nil {
 		return false
 	}
 	return isEligibleForInterventionRescue(finalErr)
 }
 
-func shouldHoldForOperator(req *relayRequest, contextWindowErr, finalErr error) bool {
-	return intervention.Enabled() && isRescueableHeldRequest(req, contextWindowErr, finalErr)
+func shouldHoldForOperator(req *relayRequest, fatalClientErr, finalErr error) bool {
+	return intervention.Enabled() && isRescueableHeldRequest(req, fatalClientErr, finalErr)
+}
+
+// waitRescueRound paces one automatic-rescue round. A request that is also registered for
+// an operator decision waits through intervention.WaitRound so a human click preempts the
+// sleep; an unregistered automatic rescue has no registry entry to watch, so it just waits
+// out the backoff under the rescue deadline context.
+func waitRescueRound(ctx context.Context, id string, registered bool, backoff time.Duration) (intervention.Resolution, bool, error) {
+	if registered {
+		return intervention.WaitRound(ctx, id, backoff)
+	}
+	if backoff <= 0 {
+		return intervention.Resolution{}, false, nil
+	}
+	timer := time.NewTimer(backoff)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return intervention.Resolution{}, false, ctx.Err()
+	case <-timer.C:
+		return intervention.Resolution{}, false, nil
+	}
 }
 
 // relayStop reports client abort vs rescue/operator abort. parent is the original

@@ -141,11 +141,11 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 
 	var (
 		lastErr            error
-		lastRetryAfter     time.Duration // 最近一次失败携带的上游 Retry-After（0 = 上游没给）
+		retryAfterFloor    time.Duration // 距上次「已按上游 Retry-After 等待」以来见到的最大 Retry-After（0 = 上游没给）
 		allAttempts        []dbmodel.ChannelAttempt
 		triedReturnGroup   bool
 		interventionRounds int
-		contextWindowErr   error // 命中上下文超长: 停止跨渠道遍历、也不再试 fallback group
+		fatalClientErr     error // 确定性客户端错误(上下文超长/请求体非法): 停止遍历与救援, 原样透传真实 4xx
 		requestSucceeded   bool  // 重试前的 lastErr 可能仍非 nil，终态需按真实成功结果判断
 
 		// Intervention state lifted above runIterator to ensure exactly one pending ID,
@@ -155,7 +155,6 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		interventionCancel        context.CancelFunc
 		stopInterventionKeepalive func()
 		interventionRegistered    bool
-		noBreakerRescueBudget     time.Duration
 		sawNoBreakerChannel       bool
 		operatorRescueRequested   bool
 
@@ -196,6 +195,29 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 				stopAttemptDeadline()
 			}
 			cancel()
+		}
+	}
+	// paceRetryWait honours the upstream's Retry-After before another round of attempts
+	// starts. retryAfterFloor is the largest Retry-After seen since the last paced wait: a
+	// sweep may mix targets, and a 429 that asked for 2s must not be re-hit just because the
+	// attempt after it (a 500 that asked for nothing) overwrote the record. Cross-channel
+	// failover WITHIN one sweep is deliberately NOT paced — a different channel is not the
+	// throttled one, and switching instantly is the whole point of having a pool. Returns
+	// false when the wait was cut short by a cancel (client gone / rescue deadline), leaving
+	// the caller's liveness checks to terminate cleanly.
+	paceRetryWait := func(ctx context.Context) bool {
+		if retryAfterFloor <= 0 {
+			return true
+		}
+		wait := retryAfterFloor
+		retryAfterFloor = 0
+		timer := time.NewTimer(wait)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return false
+		case <-timer.C:
+			return true
 		}
 	}
 	defer func() {
@@ -419,9 +441,9 @@ attemptChannels:
 				return
 			}
 			lastErr = result.Err
-			lastRetryAfter = result.RetryAfter
+			retryAfterFloor = max(retryAfterFloor, result.RetryAfter)
 			if result.Fatal {
-				contextWindowErr = result.Err
+				fatalClientErr = result.Err
 				break
 			}
 			if len(remainingKeys) > 0 && shouldTryNextChannelKey(result.StatusCode) {
@@ -579,25 +601,27 @@ attemptChannels:
 				return
 			}
 			lastErr = result.Err
-			lastRetryAfter = result.RetryAfter
+			retryAfterFloor = max(retryAfterFloor, result.RetryAfter)
 			if result.Fatal {
-				// Context-window overflow: no other channel/key will accept the same
-				// oversized payload — stop iterating and return the 400 as-is.
-				contextWindowErr = result.Err
+				// Deterministic client rejection (context-window overflow / malformed
+				// request body): no other channel or key will accept the same payload —
+				// stop iterating, do not start the rescue loop, and return the upstream's
+				// own 4xx (real status + code + reason) as-is.
+				fatalClientErr = result.Err
 				break
 			}
 			if !result.Retryable && !shouldTryNextChannelKey(result.StatusCode) {
 				break
 			}
 		}
-		if contextWindowErr != nil {
+		if fatalClientErr != nil {
 			break
 		}
 	}
 
 	// 所有通道都失败
 	allAttempts = append(allAttempts, iter.Attempts()...)
-	if !rescueExpired && !operatorRescueRequested && contextWindowErr == nil && shouldReturnToOriginalGroup(routeResult, triedReturnGroup) {
+	if !rescueExpired && !operatorRescueRequested && fatalClientErr == nil && shouldReturnToOriginalGroup(routeResult, triedReturnGroup) {
 		triedReturnGroup = true
 		fallbackGroup, err := op.GroupGetEnabledMap(requestModel, c.Request.Context())
 		if err != nil {
@@ -609,11 +633,20 @@ attemptChannels:
 			fallbackIter.PrioritizeChannels(nativeProtocolChannelIDs(c.Request.Context(), inboundType, fallbackGroup.Items))
 			prioritizeResponsesSessionOwner(c.Request.Context(), fallbackIter, internalRequest, apiKeyID, userID)
 			if fallbackIter.Len() > 0 {
-				group = fallbackGroup
-				iter = fallbackIter
-				req.stickyEnabled = fallbackSticky
-				internalRequest.Model = requestModel
-				goto runIterator
+				// Spilling to the model pool re-attempts targets that have just failed, so
+				// an upstream Retry-After applies here exactly as it does inside the rescue
+				// loop: never re-hit a throttled upstream before it said to come back.
+				if !paceRetryWait(c.Request.Context()) {
+					if rescueDeadlineExpired(recoveryStartedAt, time.Now()) {
+						rescueExpired = true
+					}
+				} else {
+					group = fallbackGroup
+					iter = fallbackIter
+					req.stickyEnabled = fallbackSticky
+					internalRequest.Model = requestModel
+					goto runIterator
+				}
 			}
 		}
 	}
@@ -621,28 +654,36 @@ attemptChannels:
 	if finalErr == nil {
 		finalErr = routeSelectionErrorFromAttempts(allAttempts)
 	}
-	if noBreakerRescueBudget == 0 {
-		noBreakerRescueBudget = intervention.NoBreakerRetryBudget()
-	}
-	noBreakerAutoRescue := sawNoBreakerChannel && noBreakerRescueBudget > 0 &&
-		isRescueableHeldRequest(req, contextWindowErr, finalErr)
-	manualIntervention := shouldHoldForOperator(req, contextWindowErr, finalErr) ||
-		(operatorRescueRequested && originalRequest.Context().Err() == nil && isRescueableHeldRequest(req, contextWindowErr, finalErr))
-	// Re-entry via `|| interventionRegistered` previously continued rescue blindly even
-	// when the latest attempt produced a deterministic (non-rescuable / context-window)
-	// error or the rescue budget already died — that looped forever or held a request
-	// whose error could never be rescued. Continue ONLY while the current final error is
-	// still eligible AND the rescue budget/context is still alive.
+	// 自动救援是所有「可恢复失败」的默认行为（硬规定：429/5xx/超时/半截流 全部要救，守
+	// Retry-After、退避重试、换渠道，直到成功或预算用完）：只要还没向客户端提交任何业务内容，
+	// 就一直重打。默认配置下它就是开着的（relay_intervention_enabled 默认 true），管理员仍
+	// 可用该开关让普通渠道快速失败——这正是该设置原本的语义，不另造第二个开关；无熔断渠道
+	// 例外，它们按预算自救（relay_no_breaker_retry_budget_seconds 就是这笔预算，
+	// rescueWindowDeadline 仍把它钳在 autoRescueCap 以内）。它也刻意不挂调用端是否要流式——
+	// 非流式调用端一样享受救援，只是不发 SSE 心跳（心跳会把 JSON 响应体弄脏）；这正是矩阵里
+	// 6×429 被秒回 502 的根因：非流式请求根本进不了救援循环。
+	rescueBudget := intervention.NoBreakerRetryBudget()
+	rescuable := isRescueableHeldRequest(req, fatalClientErr, finalErr)
+	autoRescue := rescuable && (intervention.Enabled() || sawNoBreakerChannel) && rescueBudget > 0
+	manualIntervention := shouldHoldForOperator(req, fatalClientErr, finalErr) ||
+		(operatorRescueRequested && isRescueableHeldRequest(req, fatalClientErr, finalErr))
+	// Re-entry previously continued rescue blindly even when the latest attempt produced a
+	// deterministic (non-rescuable / context-window / malformed-body) error or the rescue
+	// budget already died — that looped forever or held a request whose error could never be
+	// rescued. Continue ONLY while the current final error is still eligible AND the rescue
+	// budget/context is still alive.
 	rescueBudgetAlive := interventionCtx == nil || interventionCtx.Err() == nil
 	clientAlive := originalRequest.Context().Err() == nil
-	if clientAlive && rescueBudgetAlive && (noBreakerAutoRescue || manualIntervention ||
-		(interventionRegistered && isRescueableHeldRequest(req, contextWindowErr, finalErr))) {
-		if stopInterventionKeepalive == nil {
+	if clientAlive && rescueBudgetAlive && (autoRescue || manualIntervention) {
+		// Heartbeats keep a STREAM client's connection "working" while the rescue retries;
+		// a non-stream client's body must stay pure JSON, so it gets none (it simply waits,
+		// bounded by its own client timeout and by the rescue window).
+		if stopInterventionKeepalive == nil && internalRequestPrefersStream(req.internalRequest) {
 			// 无熔断救援固定 1s 轮次，且心跳协程在每轮尝试开始前就被停掉（防并发写
 			// gin.Writer）：2s 默认延迟在轮内永远死胎，救援期间客户端全程静默——正是
 			// 该心跳特性要防的事。钳到半轮，保证每轮退避期间必发一拍。
 			holdDelay := currentInterventionKeepaliveDelay()
-			if noBreakerAutoRescue {
+			if sawNoBreakerChannel {
 				if halfRound := time.Second / 2; holdDelay > halfRound {
 					holdDelay = halfRound
 				}
@@ -679,9 +720,9 @@ attemptChannels:
 		// armRescueDeadline is tighten-only: a recomputed deadline that is equal or later
 		// never extends the current timer, and the R18 release-vs-fire mutex holds for
 		// both the first arm and the re-arm.
-		noBreakerRescueBudget = intervention.NoBreakerRetryBudget()
+		rescueBudget = intervention.NoBreakerRetryBudget()
 		req.armRescueDeadline(
-			rescueWindowDeadline(recoveryStartedAt, noBreakerRescueBudget, noBreakerAutoRescue, intervention.Timeout()),
+			rescueWindowDeadline(recoveryStartedAt, rescueBudget, autoRescue, intervention.Timeout()),
 			rescueFired,
 			interventionCancel,
 		)
@@ -691,7 +732,10 @@ attemptChannels:
 			lastErrStr = finalErr.Error()
 		}
 
-		if !interventionRegistered {
+		// Registering for an operator decision is the opt-in half of this block: the switch
+		// only controls whether a human can see/steer the held request. The automatic retry
+		// loop below runs regardless of it.
+		if intervention.Enabled() && !interventionRegistered {
 			pid, regErr := intervention.Register(&intervention.Pending{
 				RequestModel: requestModel,
 				Endpoint:     requestEndpoint,
@@ -713,15 +757,15 @@ attemptChannels:
 				requestState.BindInterventionID(pid)
 				log.Infof("Intervention held request id=%s endpoint=%s model=%s", pendingInterventionID, requestEndpoint, requestModel)
 			}
-		} else {
+		} else if interventionRegistered {
 			_ = intervention.UpdateAttempts(pendingInterventionID, allAttempts, lastErrStr)
 		}
 
-		if interventionRegistered {
+		{
 			for {
 				interventionRounds++
 				backoff := intervention.BackoffDuration(interventionRounds)
-				if noBreakerAutoRescue {
+				if sawNoBreakerChannel {
 					// 无熔断渠道明确选择像直连 CLI 一样持续尝试：固定 1 秒节奏，
 					// 不使用会退到 15 秒的人工接管指数退避。
 					backoff = time.Second
@@ -729,14 +773,18 @@ attemptChannels:
 				// 上游明确要求"多久之后再来"时，这个节奏归它：比它更早重试只会再吃一次
 				// 429/503，把一次短暂限流拖成自己打自己的循环。这里只把等待拉长到上游
 				// 要求的下限；救援窗口仍由 armRescueDeadline 收口——窗口比 Retry-After
-				// 短就照旧按窗口结束，不会凭空续命。
-				if lastRetryAfter > backoff {
-					backoff = lastRetryAfter
+				// 短就照旧按窗口结束，不会凭空续命。floor 与本轮 backoff 取大即清零，
+				// 下一轮重新只认新一轮上游给的节奏。
+				if retryAfterFloor > backoff {
+					backoff = retryAfterFloor
 				}
+				retryAfterFloor = 0
 				nextRetry := time.Now().Add(backoff)
-				_ = intervention.UpdateStatus(pendingInterventionID, intervention.StatusAutoRetrying, interventionRounds, &nextRetry)
+				if interventionRegistered {
+					_ = intervention.UpdateStatus(pendingInterventionID, intervention.StatusAutoRetrying, interventionRounds, &nextRetry)
+				}
 
-				resolution, isPreempted, waitErr := intervention.WaitRound(interventionCtx, pendingInterventionID, backoff)
+				resolution, isPreempted, waitErr := waitRescueRound(interventionCtx, pendingInterventionID, interventionRegistered, backoff)
 				if waitErr != nil {
 					log.Infof("Intervention finished id=%s err=%v", pendingInterventionID, waitErr)
 					break
@@ -1007,7 +1055,7 @@ func (ra *relayAttempt) attempt() attemptResult {
 		Err:        fmt.Errorf("channel %s failed: %w", ra.channel.Name, fwdErr),
 		StatusCode: recordStatusCode,
 		Retryable:  !committed && isRetryableUpstreamStreamError(fwdErr),
-		Fatal:      isContextWindowError(fwdErr),
+		Fatal:      isDeterministicClientRejection(fwdErr),
 		RetryAfter: upstreamRetryAfter(fwdErr),
 	}
 }

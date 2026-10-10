@@ -55,12 +55,16 @@ func TestShouldHoldForOperator(t *testing.T) {
 			wantHold:          true,
 		},
 		{
-			name:              "non-stream request cannot hold -> false",
+			// A non-stream caller is as rescuable as a streaming one: the stream gate on
+			// this predicate is what used to disable the whole rescue chain for plain
+			// HTTP clients (measured: 6x429 -> immediate 502 service_busy). The hold only
+			// differs in that a non-stream response gets no SSE heartbeats.
+			name:              "non-stream request is rescuable too -> true",
 			enabled:           true,
 			streamPrefers:     &streamFalse,
 			wroteBusinessData: false,
 			finalErr:          errors.New("502 bad gateway"),
-			wantHold:          false,
+			wantHold:          true,
 		},
 		{
 			name:              "already wrote business data to client -> false",
@@ -164,6 +168,16 @@ func TestShouldHoldForOperator(t *testing.T) {
 			streamPrefers:     &streamTrue,
 			wroteBusinessData: false,
 			finalErr:          newUpstreamError(http.StatusBadRequest, []byte(`{"error":{"message":"model gpt-6-astra availability cannot be guaranteed, please use another model"}}`)),
+			wantHold:          false,
+		},
+		{
+			// 同一类策略性停供的中文文案：换渠道/等一会儿都不会变，所以不进救援循环。
+			// 判定按错误体语义，不看状态码。
+			name:              "400 策略性停供(中文) is not eligible -> false",
+			enabled:           true,
+			streamPrefers:     &streamTrue,
+			wroteBusinessData: false,
+			finalErr:          newUpstreamError(http.StatusBadRequest, []byte(`{"error":{"message":"由于 claude 模型供应难以保证，上线 gpt-6-astra 模型"}}`)),
 			wantHold:          false,
 		},
 		{

@@ -28,12 +28,14 @@ func markRecoveryStart(current time.Time, err error) time.Time {
 }
 
 // rescueWindowDeadline returns the absolute instant the automatic-recovery window closes.
-// It is always capped at autoRescueCap; an active no-breaker budget and the operator hold
-// timeout may only tighten it further (they are ignored when larger, and when <= 0).
-func rescueWindowDeadline(recoveryStart time.Time, noBreakerBudget time.Duration, noBreakerActive bool, operatorHold time.Duration) time.Time {
+// It is always capped at autoRescueCap; the configured rescue budget
+// (relay_no_breaker_retry_budget_seconds, shared by plain and no-breaker channels) and the
+// operator hold timeout may only tighten it further (they are ignored when larger, and
+// when <= 0).
+func rescueWindowDeadline(recoveryStart time.Time, rescueBudget time.Duration, rescueBudgetActive bool, operatorHold time.Duration) time.Time {
 	cap := autoRescueCap
-	if noBreakerActive && noBreakerBudget > 0 && noBreakerBudget < cap {
-		cap = noBreakerBudget
+	if rescueBudgetActive && rescueBudget > 0 && rescueBudget < cap {
+		cap = rescueBudget
 	}
 	if operatorHold > 0 && operatorHold < cap {
 		cap = operatorHold

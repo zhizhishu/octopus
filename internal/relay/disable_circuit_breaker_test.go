@@ -41,6 +41,15 @@ func TestHandlerDisableCircuitBreakerBypassesShortCircuit(t *testing.T) {
 		if err := op.SettingSetString(dbmodel.SettingKeyCircuitBreakerThreshold, "1"); err != nil {
 			t.Fatalf("set circuit threshold: %v", err)
 		}
+		// This test is about breaker short-circuiting, not about rescue pacing: with a
+		// DisableCircuitBreaker channel the automatic-recovery loop keeps re-attempting
+		// the always-failing upstream until the rescue budget runs out, so the hit count
+		// would no longer be a breaker signal. Budget 0 is the documented "no auto-rescue"
+		// setting (relay_no_breaker_retry_budget_seconds=0), which leaves the forwarding
+		// behaviour this test actually asserts untouched.
+		if err := op.SettingSetString(dbmodel.SettingKeyRelayNoBreakerRetryBudgetSec, "0"); err != nil {
+			t.Fatalf("disable rescue budget: %v", err)
+		}
 
 		var mu sync.Mutex
 		hits := 0
