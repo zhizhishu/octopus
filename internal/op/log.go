@@ -1099,7 +1099,13 @@ func RelayLogUserSummary(relayLog model.RelayLog) model.RelayLogUserSummary {
 // upstream status.
 // COALESCE guards against nullable columns: NOT (NULL OR ...) is NULL, which would
 // silently drop such rows from the warn/success filters and undercount them.
-const relayLogErrorSQLCond = "(COALESCE(error,'') <> '' OR COALESCE(error_code,'') <> '' OR COALESCE(error_status,0) >= 400)"
+// TRIM is NOT optional: relayLogIsError and the web getRelayLogSeverity both
+// compare strings.TrimSpace(...) != "", so a whitespace-only error/error_code is a
+// *success* on both of those sides. Without TRIM here the same row is an error in
+// SQL and a success in the list/badge classification — i.e. filtering by "error"
+// returned rows the page then painted as 成功, and the 成功/警告/错误 badges
+// disagreed with the rows under them.
+const relayLogErrorSQLCond = "(TRIM(COALESCE(error,'')) <> '' OR TRIM(COALESCE(error_code,'')) <> '' OR COALESCE(error_status,0) >= 400)"
 
 // relayLogIsError reports whether a log counts as an error (the request failed).
 func relayLogIsError(relayLog model.RelayLog) bool {
@@ -1353,6 +1359,13 @@ func escapeLogEndpointLike(s string) string {
 	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
 }
 
+// relayLogModelFilterCols are the model-name columns referenced by the provider LIKE
+// predicates. They are TRIMmed because normalizeModelForTaxonomy (the Go/web side of the
+// same rule) applies TrimSpace before matching, so a stored name carrying padding
+// (" gpt-4o ") is the openai provider on those paths; comparing the raw column made the
+// identical row invisible to the DB path.
+var relayLogModelFilterCols = []string{"LOWER(TRIM(actual_model_name))", "LOWER(TRIM(request_model_name))"}
+
 func relayLogApplyScope(query *gorm.DB, scope *model.RelayLogScope) *gorm.DB {
 	if scope == nil {
 		return query
@@ -1372,7 +1385,12 @@ func relayLogApplyScope(query *gorm.DB, scope *model.RelayLogScope) *gorm.DB {
 	}
 	if scope.Model != "" {
 		m := strings.ToLower(strings.TrimSpace(scope.Model))
-		query = query.Where("LOWER(request_model_name) = ? OR LOWER(actual_model_name) = ?", m, m)
+		// TRIM the columns too: relayLogModelMatches trims both sides before comparing,
+		// so a row whose stored model name carries padding (" gpt-4o ") is a match on the
+		// cache/SSE path. Comparing LOWER(col) here without TRIM made the same row
+		// invisible to the DB path — a filter that "works until the row moves from the
+		// in-memory cache into the database".
+		query = query.Where("LOWER(TRIM(request_model_name)) = ? OR LOWER(TRIM(actual_model_name)) = ?", m, m)
 	}
 	if scope.Provider != "" {
 		providerKey := strings.ToLower(strings.TrimSpace(scope.Provider))
@@ -1389,19 +1407,25 @@ func relayLogApplyScope(query *gorm.DB, scope *model.RelayLogScope) *gorm.DB {
 				escaped := escapeLogEndpointLike(prefix)
 				patternStart := escaped + "%"
 				patternSlash := "%/" + escaped + "%"
-				for _, col := range []string{"LOWER(actual_model_name)", "LOWER(request_model_name)"} {
+				for _, col := range relayLogModelFilterCols {
 					conditions = append(conditions, col+" LIKE ? ESCAPE '\\'", col+" LIKE ? ESCAPE '\\'")
 					args = append(args, patternStart, patternSlash)
 				}
 			}
 
-			// Provider path prefix conditions (e.g. "openai/%" or "openai-%" or "openai_%")
+			// Provider path prefix conditions (e.g. "openai/%" or "openai-%/" or "openai_%/").
+			// The trailing "/" is required: modelMatchesProviderPrefixes only accepts a
+			// "<provider>-"/"<provider>_" token as a *path* prefix (the segment before a
+			// slash), so a bare basename like "openai_gpt" is NOT the openai provider. The
+			// meta special case below already spells the path form ("meta-%/%"); the generic
+			// hyphen/underscore patterns used to omit it and over-matched bare basenames.
+			// Kept in sync with modelMatchesProviderPrefixes (memory/SSE path).
 			escapedProv := escapeLogEndpointLike(providerKey)
 			provSlash := escapedProv + "/%"
 			provSubSlash := "%/" + escapedProv + "/%"
-			provHyphen := escapedProv + "-%"
-			provUnderscore := escapedProv + "_%"
-			for _, col := range []string{"LOWER(actual_model_name)", "LOWER(request_model_name)"} {
+			provHyphen := escapedProv + "-%/"
+			provUnderscore := escapedProv + "_%/"
+			for _, col := range relayLogModelFilterCols {
 				conditions = append(conditions,
 					col+" LIKE ? ESCAPE '\\'",
 					col+" LIKE ? ESCAPE '\\'",
@@ -1411,7 +1435,7 @@ func relayLogApplyScope(query *gorm.DB, scope *model.RelayLogScope) *gorm.DB {
 				args = append(args, provSlash, provSubSlash, provHyphen, provUnderscore)
 			}
 			if providerKey == "meta" {
-				for _, col := range []string{"LOWER(actual_model_name)", "LOWER(request_model_name)"} {
+				for _, col := range relayLogModelFilterCols {
 					conditions = append(conditions, col+" LIKE ? ESCAPE '\\'", col+" LIKE ? ESCAPE '\\'")
 					args = append(args, "meta-llama/%", "meta-%/%")
 				}
