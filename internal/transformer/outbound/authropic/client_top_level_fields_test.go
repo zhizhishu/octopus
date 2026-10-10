@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -157,5 +158,88 @@ func TestAnthropicExtraReplaysValueBytesVerbatim(t *testing.T) {
 	// Key order inside the preserved value is the client's business, not ours.
 	if !strings.Contains(wire, `"safeguards":{"b":1,"a":2}`) {
 		t.Fatalf("preserved value was re-encoded instead of replayed: %s", wire)
+	}
+}
+
+// topLevelKeySequence reports an object's top-level keys in wire order.
+func topLevelKeySequence(t *testing.T, wire string) []string {
+	t.Helper()
+	dec := json.NewDecoder(strings.NewReader(wire))
+	if _, err := dec.Token(); err != nil {
+		t.Fatalf("relayed body is not a JSON object: %v (%s)", err, wire)
+	}
+	var keys []string
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			t.Fatalf("decode key: %v (%s)", err, wire)
+		}
+		key, ok := tok.(string)
+		if !ok {
+			t.Fatalf("expected string key, got %T (%s)", tok, wire)
+		}
+		keys = append(keys, key)
+		var skip json.RawMessage
+		if err := dec.Decode(&skip); err != nil {
+			t.Fatalf("decode value of %q: %v (%s)", key, err, wire)
+		}
+	}
+	return keys
+}
+
+// The sequence below is captured, not invented: it is the top-level key order a real
+// Claude Code 2.1.294 request carried to the upstream on /v1/messages?beta=true,
+// including `safeguards`, which this relay does not model. Members in a different order
+// are a different request shape, so a same-protocol relay must replay the client's order.
+func TestAnthropicRelayReplaysClientTopLevelKeyOrder(t *testing.T) {
+	const body = `{"model":"claude-opus-4-8",` +
+		`"messages":[{"role":"user","content":"pong"}],` +
+		`"system":[{"type":"text","text":"sys"}],` +
+		`"tools":[{"name":"Read","description":"read","input_schema":{"type":"object"}}],` +
+		`"metadata":{"user_id":"u"},"max_tokens":64,` +
+		`"thinking":{"type":"enabled","budget_tokens":1024},` +
+		`"context_management":{"edits":[]},` +
+		`"safeguards":{"policy":"default"},` +
+		`"output_config":{"effort":"high"},"stream":true}`
+	want := []string{
+		"model", "messages", "system", "tools", "metadata", "max_tokens",
+		"thinking", "context_management", "safeguards", "output_config", "stream",
+	}
+
+	wire := relayAnthropicBody(t, body)
+	got := topLevelKeySequence(t, wire)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("relayed top-level key order does not replay the client's order: got %v want %v body: %s", got, want, wire)
+	}
+}
+
+// A forced empty tools array (Claude Code's no-tool shape) is emitted at the position the
+// client put `tools` in, not appended at the end.
+func TestAnthropicRelayReplaysClientOrderWithForcedEmptyTools(t *testing.T) {
+	const body = `{"model":"claude-opus-4-8","messages":[{"role":"user","content":"pong"}],` +
+		`"system":[{"type":"text","text":"sys"}],"tools":[],` +
+		`"safeguards":{"policy":"default"},"max_tokens":64,"stream":true}`
+	want := []string{"model", "messages", "system", "tools", "safeguards", "max_tokens", "stream"}
+
+	wire := relayAnthropicBody(t, body)
+	if !strings.Contains(wire, `"tools":[]`) {
+		t.Fatalf("forced empty tools array was dropped: %s", wire)
+	}
+	got := topLevelKeySequence(t, wire)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("relayed top-level key order with forced empty tools: got %v want %v body: %s", got, want, wire)
+	}
+}
+
+// Fields this relay adds itself (the client never sent them) keep a stable position at the
+// end, and a client key the relay does not model still keeps its own slot.
+func TestAnthropicRelayAppendsRelayAddedFieldsAfterClientKeys(t *testing.T) {
+	const body = `{"model":"claude-opus-4-8","messages":[{"role":"user","content":"pong"}],` +
+		`"safeguards":{"policy":"default"},"stream":true}`
+	want := []string{"model", "messages", "safeguards", "stream"}
+
+	got := topLevelKeySequence(t, relayAnthropicBody(t, body))
+	if !reflect.DeepEqual(got[:len(want)], want) {
+		t.Fatalf("client keys did not keep their order: got %v want prefix %v", got, want)
 	}
 }

@@ -94,6 +94,9 @@ func (i *MessagesInbound) TransformRequest(ctx context.Context, body []byte) (*m
 			chatReq.AnthropicExtraTopLevel = extra
 		}
 	}
+	if len(anthropicReq.KeyOrder) > 0 {
+		chatReq.AnthropicKeyOrder = append([]string(nil), anthropicReq.KeyOrder...)
+	}
 	if anthropicReq.ServiceTier != "" {
 		chatReq.ServiceTier = &anthropicReq.ServiceTier
 	}

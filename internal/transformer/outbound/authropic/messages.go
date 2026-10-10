@@ -442,6 +442,9 @@ func convertToAnthropicRequest(req *model.InternalLLMRequest) *anthropicModel.Me
 			result.Extra = extra
 		}
 	}
+	if len(req.AnthropicKeyOrder) > 0 {
+		result.KeyOrder = append([]string(nil), req.AnthropicKeyOrder...)
+	}
 	rawThinkingPreserved := false
 	if thinking, ok := decodeAnthropicThinking(req.AnthropicThinking); ok {
 		result.Thinking = thinking

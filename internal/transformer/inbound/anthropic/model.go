@@ -110,6 +110,122 @@ type MessageRequest struct {
 	// unrecognised top-level key changes the request shape, and can drop a control the
 	// provider honours. Populated by UnmarshalJSON, replayed by MarshalJSON.
 	Extra map[string]json.RawMessage `json:"-"`
+
+	// KeyOrder records the top-level key sequence of the body the client actually sent.
+	// MarshalJSON replays it so the relay's outbound body keeps the client's member order
+	// instead of this struct's declaration order. Like Extra it is a fidelity channel: it
+	// is never sent by a client and never serialised as a field.
+	KeyOrder []string `json:"-"`
+}
+
+// topLevelKeyOrder reports the object's top-level keys in the order they appear on the
+// wire. Captured at inbound so the outbound can emit the request's members in the same
+// sequence the client used: a genuine Claude CLI sends `model, messages, system, tools,
+// metadata, max_tokens, thinking, context_management, safeguards, output_config, stream`,
+// and a body whose members are merely all present but differently ordered is still a
+// different byte sequence on the wire.
+func topLevelKeyOrder(data []byte) []string {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	tok, err := dec.Token()
+	if err != nil {
+		return nil
+	}
+	if delim, ok := tok.(json.Delim); !ok || delim != '{' {
+		return nil
+	}
+	var keys []string
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return keys
+		}
+		key, ok := keyTok.(string)
+		if !ok {
+			return keys
+		}
+		keys = append(keys, key)
+		var skip json.RawMessage
+		if err := dec.Decode(&skip); err != nil {
+			return keys
+		}
+	}
+	return keys
+}
+
+// reorderTopLevelMembers re-emits a compact JSON object with its members in `order`.
+// Members the client did not send (fields this relay adds) keep their relative position
+// at the end. Values are copied byte for byte - only the member sequence changes.
+func reorderTopLevelMembers(data []byte, order []string) []byte {
+	if len(order) == 0 {
+		return data
+	}
+	starts, closeBrace, ok := topLevelMembers(data)
+	if !ok || len(starts) == 0 || closeBrace < 0 || closeBrace > len(data) {
+		return data
+	}
+	type member struct {
+		key   string
+		start int
+	}
+	members := make([]member, 0, len(starts))
+	for key, start := range starts {
+		members = append(members, member{key: key, start: start})
+	}
+	sort.Slice(members, func(i, j int) bool { return members[i].start < members[j].start })
+
+	text := make([]string, len(members))
+	for i, mem := range members {
+		end := closeBrace
+		if i+1 < len(members) {
+			end = members[i+1].start
+		}
+		if mem.start < 0 || end > len(data) || mem.start >= end {
+			return data
+		}
+		// Every member but the last carries its separating comma.
+		chunk := bytes.TrimRight(data[mem.start:end], ", \t\r\n")
+		if len(chunk) == 0 {
+			return data
+		}
+		text[i] = string(chunk)
+	}
+
+	rank := make(map[string]int, len(order))
+	for i, key := range order {
+		if _, seen := rank[key]; !seen {
+			rank[key] = i
+		}
+	}
+	idx := make([]int, len(members))
+	for i := range idx {
+		idx[i] = i
+	}
+	sort.SliceStable(idx, func(a, b int) bool {
+		ra, oka := rank[members[idx[a]].key]
+		rb, okb := rank[members[idx[b]].key]
+		switch {
+		case oka && okb:
+			return ra < rb
+		case oka:
+			return true
+		case okb:
+			return false
+		default:
+			return false // neither key came from the client: keep the encoded order
+		}
+	})
+
+	var buf bytes.Buffer
+	buf.WriteByte('{')
+	for i, j := range idx {
+		if i > 0 {
+			buf.WriteByte(',')
+		}
+		buf.WriteString(text[j])
+	}
+	buf.WriteByte('}')
+	return buf.Bytes()
 }
 
 // messageRequestEncodedKeys reports the top-level keys MessageRequest models, plus the
@@ -141,6 +257,7 @@ func (m *MessageRequest) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*m = MessageRequest(parsed)
+	m.KeyOrder = topLevelKeyOrder(data)
 
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -243,6 +360,18 @@ func topLevelMembers(data []byte) (map[string]int, int, bool) {
 }
 
 func (m MessageRequest) MarshalJSON() ([]byte, error) {
+	data, err := m.marshalWithFidelitySplices()
+	if err != nil {
+		return nil, err
+	}
+	// Replay the client's member order last, so the provider receives the same top-level
+	// key sequence the CLI actually sent rather than this struct's field order.
+	return reorderTopLevelMembers(data, m.KeyOrder), nil
+}
+
+// marshalWithFidelitySplices encodes the request and folds in the fidelity splices
+// (forced empty tools, unmodelled top-level keys). Member order is applied by the caller.
+func (m MessageRequest) marshalWithFidelitySplices() ([]byte, error) {
 	type alias MessageRequest
 	data, err := EncodeJSONNoHTMLEscape(alias(m))
 	if err != nil {

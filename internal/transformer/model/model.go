@@ -319,6 +319,12 @@ type InternalLLMRequest struct {
 	// request shape and can drop a control the provider honours.
 	AnthropicExtraTopLevel map[string]json.RawMessage `json:"-"`
 
+	// AnthropicKeyOrder preserves the inbound Claude request's top-level key sequence.
+	// A same-protocol Claude -> Claude relay emits its body with the client's member
+	// order: identical members in a different order are a different byte sequence, and
+	// the request shape a CLI presents is part of what a strict upstream fingerprints.
+	AnthropicKeyOrder []string `json:"-"`
+
 	// ResponsesRawRequestFields preserve same-protocol OpenAI Responses request
 	// shapes that cannot be represented losslessly by the chat-like internal model.
 	ResponsesInstructions  *string           `json:"-"`
@@ -481,6 +487,7 @@ func (r *InternalLLMRequest) ClearHelpFields() {
 	r.AnthropicOutputConfig = nil
 	r.AnthropicToolsPresent = false
 	r.AnthropicExtraTopLevel = nil
+	r.AnthropicKeyOrder = nil
 	r.ResponsesInstructions = nil
 	r.ResponsesInputRaw = nil
 	r.ResponsesToolsRaw = nil
