@@ -314,7 +314,7 @@ interface LogRouteHeaderProps {
     endpointTitle: string;
     upstreamPaths: string[];
     upstreamPathTitle: string;
-    /** card 专用槽位：B1 尾部的「自动救援」徽标（路由状态）。detail 忽略。 */
+    /** card 专用槽位：A1 的「自动救援」徽标（路由状态，紧跟主状态徽标）。detail 忽略。 */
     autoRescueSlot?: ReactNode;
     /** card 专用槽位：A2 下游客户端徽标（含 Popover）。缺省时渲染低强调占位。 */
     clientSlot?: ReactNode;
@@ -445,11 +445,40 @@ function LogRouteHeader({
     const mappedByUs = Boolean(log.request_model_name && log.actual_model_name && log.request_model_name !== log.actual_model_name);
     const echoMismatch = log.upstream_model_mismatch === true;
     const echoState = echoMismatch ? 'mismatch' : (upstreamEchoName ? 'match' : 'silent');
+    /**
+     * B1 尾部：上游自报的真模型（`upstream_response_model`）。紧跟 oct 实际发出的模型，
+     * 一行里就能比对「客户端要的 → 我们发的 → 上游自报的」。上游没自报时明确写「未自报」，
+     * 不用别的名字冒充。不一致时的「回显不符」徽标留在 B2（状态徽标不跟模型名抢位置）。
+     */
+    const upstreamEchoModel = showEcho ? (
+        upstreamEchoDisplayName ? (
+            <span className="inline-flex min-w-0 max-w-[14rem] shrink items-center gap-2">
+                <ArrowRight className={cn(
+                    "size-3.5 shrink-0",
+                    echoMismatch ? "text-amber-600/70 dark:text-amber-400/70" : "text-muted-foreground/50"
+                )} />
+                <SafeText
+                    mode={textMode}
+                    value={upstreamEchoDisplayName}
+                    title={echoMismatch
+                        ? (upstreamEchoDisplayName === upstreamEchoName
+                            ? t('echoMismatchHint', { model: upstreamEchoName })
+                            : `${upstreamEchoName}\n${t('echoMismatchHint', { model: upstreamEchoName })}`)
+                        : (upstreamEchoDisplayName === upstreamEchoName ? t('echoConsistent') : `${upstreamEchoName}\n${t('echoConsistent')}`)}
+                    className={echoMismatch ? "text-amber-800 dark:text-amber-200" : "text-muted-foreground"}
+                />
+            </span>
+        ) : (
+            <span className="shrink-0 text-xs text-muted-foreground">{t('upstreamSilent')}</span>
+        )
+    ) : null;
+    // B2：回显状态徽标（映射自 / 回显不符）。回显模型名已挪到 B1，这里只留状态；
+    // 整组不换行，否则「检测」徽标会被它挤到下一行、位置随外部文本长度漂移。
     const echoGroup = showEcho ? (
         <span
             data-echo-state={echoState}
             data-upstream-echo={upstreamEchoName}
-            className="inline-flex min-w-0 flex-wrap items-center gap-2"
+            className="inline-flex min-w-0 items-center gap-2"
         >
             {mappedByUs && (
                 <Badge
@@ -462,27 +491,6 @@ function LogRouteHeader({
                 >
                     {t('mappedByUs')}
                 </Badge>
-            )}
-            {upstreamEchoDisplayName ? (
-                <>
-                    <ArrowRight className={cn(
-                        "size-3.5",
-                        isCard && "shrink-0",
-                        echoMismatch ? "text-amber-600/70 dark:text-amber-400/70" : "text-muted-foreground/50"
-                    )} />
-                    <SafeText
-                        mode={textMode}
-                        value={upstreamEchoDisplayName}
-                        title={echoMismatch
-                            ? (upstreamEchoDisplayName === upstreamEchoName
-                                ? t('echoMismatchHint', { model: upstreamEchoName })
-                                : `${upstreamEchoName}\n${t('echoMismatchHint', { model: upstreamEchoName })}`)
-                            : (upstreamEchoDisplayName === upstreamEchoName ? t('echoConsistent') : `${upstreamEchoName}\n${t('echoConsistent')}`)}
-                        className={echoMismatch ? "text-amber-800 dark:text-amber-200" : "text-muted-foreground"}
-                    />
-                </>
-            ) : (
-                <span className="text-xs text-muted-foreground">{t('upstreamSilent')}</span>
             )}
             {echoMismatch && (
                 <Popover>
@@ -541,21 +549,28 @@ function LogRouteHeader({
          * 「客户端」上面、「流式」永远压在「查看详情」上面，不再由 flex-wrap 按剩余宽度决定谁换行。
          * md 以下退化成单列自然堆叠，顺序仍是 A1→B1→C1→A2→B2（流式排在客户端之前）。
          * 所有单元格 min-w-0：长文本交给 SafeText/MonoSafeText 截断，整卡不产生横向滚动。
+         * 纵向对齐用 `md:items-start`：行高是 auto，中间那格（B1）换行就会把整行撑高；
+         * 若用 items-center，左侧「状态」徽标会被顺手推到行中线上，同一枚徽标在不同卡上
+         * 落在不同高度。顶对齐把这些标记钉死在固定位置。
          */
         return (
-            <div className="grid min-w-0 gap-x-4 gap-y-1 text-sm md:grid-cols-[auto_minmax(0,1fr)_auto] md:items-center">
-                {/* A1 状态 · 接口 · 上游路径 */}
+            <div className="grid min-w-0 gap-x-4 gap-y-1 text-sm md:grid-cols-[auto_minmax(0,1fr)_auto] md:items-start">
+                {/* A1 状态 · 自动救援 · 接口 · 上游路径
+                    注：本格用 items-center。实测窄屏下这会让 16px 的主徽标在「同排有 18px 徽标」时
+                    被居中推下 1px（卡内 A1 高 68 时 y=0，高 44 时 y=1），桌面 1440 下恒为单值。
+                    若要把这 1px 也钉死，改成 items-start 即可；本轮未带真机复测，故未改。 */}
                 <div className="flex min-w-0 flex-wrap items-center gap-2">
                     {statusBadge}
+                    {autoRescueSlot}
                     {endpointBadge}
                     {upstreamPathBadge}
                 </div>
-                {/* B1 请求模型 → 渠道 · 实际模型 · 自动救援（路由状态收在这一格尾部） */}
+                {/* B1 请求模型 → 渠道 · oct 实际发出模型 · 上游自报模型 */}
                 <div className="flex min-w-0 flex-wrap items-center gap-2">
                     {requestModelText}
                     {channelGroup}
                     {actualModelText}
-                    {autoRescueSlot}
+                    {upstreamEchoModel}
                 </div>
                 {/* C1 流式 · 粘性图钉（固定右列） */}
                 <div className="flex min-w-0 items-center gap-2 md:justify-self-end">
@@ -573,10 +588,12 @@ function LogRouteHeader({
                         </Badge>
                     )}
                 </div>
-                {/* B2 上游回显 · 回显不符 · 模型检测（检测无结果就留空，不造假占位） */}
-                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                {/* B2 映射自 · 回显不符 · 模型检测（检测无结果就留空，不造假占位）。
+                    整格不换行：回显状态徽标让位截断，检测徽标永远贴在本格右端，
+                    不再被前面的文本挤到下一行去。 */}
+                <div className="flex min-w-0 items-center gap-2">
                     {echoGroup}
-                    {auditSlot}
+                    {auditSlot ? <span className="shrink-0">{auditSlot}</span> : null}
                 </div>
                 {/* C2 查看详情 */}
                 <div className="hidden min-w-0 items-center gap-1 text-xs text-muted-foreground md:flex md:justify-self-end">
@@ -594,6 +611,7 @@ function LogRouteHeader({
             {requestModelText}
             {channelGroup}
             {actualModelText}
+            {upstreamEchoModel}
             {echoGroup}
             {streamBadge}
             {stickyPin}
@@ -1001,7 +1019,7 @@ export const LogCard = React.memo(function LogCard({
 
     /**
      * 卡片头部各槽位（交给 LogRouteHeader 摆进固定列轨道）：
-     * B1 自动救援（路由状态）、A2 下游客户端、B2 模型检测、C2 查看详情。
+     * A1 自动救援（路由状态，与主状态徽标同格同高）、A2 下游客户端、B2 模型检测、C2 查看详情。
      * 客户端槽位缺失时由 LogRouteHeader 兜底渲染低强调占位；检测徽标无结果就是 null。
      */
     const autoRescueSlot = (hasMultipleAttempts && hasPartialFailure) ? (
@@ -1140,8 +1158,8 @@ export const LogCard = React.memo(function LogCard({
                         </div>
                         <div className="min-w-0 flex flex-col gap-3">
                             {/* 路由头部：固定 3 列 × 2 行列轨道（在 LogRouteHeader 的 card 分支里）。
-                                第 1 排 = 状态·接口·路径 | 请求模型→渠道·实际模型·自动救援 | 流式·图钉；
-                                第 2 排 = 下游客户端 | 上游回显·回显不符·模型检测 | 查看详情。
+                                第 1 排 = 状态·自动救援·接口·路径 | 请求模型→渠道·实际模型·上游自报模型 | 流式·图钉；
+                                第 2 排 = 下游客户端 | 映射自·回显不符·模型检测 | 查看详情。
                                 第 2 排永远渲染（客户端缺失给灰占位），所以上下两排列宽恒定、内容不再漂移。 */}
                             <LogRouteHeader
                                 variant="card"

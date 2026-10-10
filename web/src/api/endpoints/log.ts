@@ -506,6 +506,17 @@ const logsInfiniteQueryKey = (
     upstreamModelMismatch?: boolean
 ) => ['logs', 'infinite', pageSize, userID ?? 0, apiKeyID ?? 0, endpoint ?? '', provider ?? '', model ?? '', startTime ?? 0, endTime ?? 0, page ?? -1, severity ?? '', retried ? 1 : 0, hideModelTest ? 1 : 0, search ?? '', upstreamModelMismatch === undefined ? '' : upstreamModelMismatch ? 1 : 0] as const;
 
+/** queryKey 里「页码」所在的下标（顺序见 logsInfiniteQueryKey 的元素表）。 */
+const LOGS_KEY_PAGE_INDEX = 10;
+
+/**
+ * 抽「筛选签名」：日志列表 queryKey 里除页码之外的全部条件。
+ * 只用于判断 placeholderData 该不该保留上一份数据 —— 页码变了可以原地换热页，
+ * 但筛选一变就必须丢掉旧数据，否则屏幕上摆着的是上一个筛选的结果在冒充当前筛选。
+ */
+const logsFilterSignature = (key: readonly unknown[]): string =>
+    key.filter((_, index) => index !== LOGS_KEY_PAGE_INDEX).join('\u0000');
+
 const logCountQueryKey = (
     userID?: number,
     apiKeyID?: number,
@@ -633,9 +644,13 @@ export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?
         staleTime: 0,
         refetchOnMount: 'always',
         // 切成功/失败等筛选时 queryKey 变化会让 data 短暂为 undefined，列表整列闪空、
-        // 等一次网络往返才回来（用户感知为"筛选很慢"）。保留上一份数据先渲染，
-        // 新结果到达后再替换——视觉上是原地更新，不再是空态闪烁。
-        placeholderData: keepPreviousData,
+        // 等一次网络往返才回来。这里只在**筛选签名没变**时（同条件重取 / 换页）保留上一份
+        // 数据先渲染，保证不闪空；筛选一变就放弃旧数据，宁可闪一次空态 ——
+        // 否则屏幕上留下的是上一个筛选的结果，用户看到的就是"筛选不生效"。
+        placeholderData: (previousData, previousQuery) =>
+            previousQuery && logsFilterSignature(previousQuery.queryKey) === logsFilterSignature(queryKey)
+                ? previousData
+                : undefined,
         // 非实时(SSE)模式：每 3 秒轻量重取第 1 页，让新日志不必手动刷新即可出现。
         // live=true 时由 EventSource 推流接管，此处关闭轮询避免重复拉取。
         refetchInterval: live ? false : 3000,
