@@ -2450,6 +2450,25 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 		if err != nil {
 			return err
 		}
+		// 凭据脱敏: 合成帧同样要过还原闸门。这一帧是 oct 自己造的 (上游那帧可能根本没有
+		// 正文), 而它的正文/工具参数取自入站适配器的累积状态 — 累积的是上游发来的、已脱敏
+		// 的值。此前只有上游来的帧过闸门 (见下面逐事件路径), 合成帧直接写下游, 于是客户端
+		// 在收尾帧 (Responses response.completed / 工具参数) 里拿到的是占位符, 而同一份文本
+		// 的其它副本都已还原。调用方必须在本函数之后 flush: 还原器可能因前一个事件仍在等
+		// 占位符闭合而把本帧排在队尾, 只有 Finish 才会按 FIFO 吐净。
+		if len(data) > 0 {
+			restored, rerr := ra.restoreClientStreamSse(data)
+			if rerr != nil {
+				log.Errorf("redact: client-format synthesized-stream restore failed: %v", rerr)
+				return &localRelayError{
+					status:   http.StatusBadGateway,
+					code:     "octopus_upstream_stream_error",
+					strategy: "stream_restore_error;upstream_forwarded=true",
+					message:  fmt.Sprintf("failed to restore synthesized stream terminal event: %v", rerr),
+				}
+			}
+			data = restored
+		}
 		if err := writeStreamData(data); err != nil {
 			return err
 		}
@@ -2578,10 +2597,12 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 			if err := commitPendingPrelude(); err != nil {
 				return err
 			}
-			if err := flushRedactRestore(); err != nil {
+			// 凭据脱敏: 合成帧先写 (它会进还原器, 可能被前一个未闭合的占位符挡在队尾),
+			// 再 flush 才能把缓冲按 FIFO 吐净。
+			if err := writeSynthesizedDone(); err != nil {
 				return err
 			}
-			if err := writeSynthesizedDone(); err != nil {
+			if err := flushRedactRestore(); err != nil {
 				return err
 			}
 			return nil
@@ -2597,9 +2618,6 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 				if err := commitPendingPrelude(); err != nil {
 					return err
 				}
-				if err := flushRedactRestore(); err != nil {
-					return err
-				}
 				// Upstream half-stream truncation: real content already reached the client,
 				// yet the upstream ended with NO terminal marker at all. Synthesizing a
 				// success tail here would fake a completed turn (and record the request as a
@@ -2607,18 +2625,20 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 				// an error after business data was delivered could trigger a channel swap and
 				// opaque replay of the whole body, which the SOP forbids.
 				if upstreamStreamTruncated() {
+					// 截断不是正常收尾: 先把还原缓冲吐净, 再写带内失败帧。
+					if err := flushRedactRestore(); err != nil {
+						return err
+					}
 					ra.writeTruncatedStreamTerminal()
 					log.Warnf("upstream stream truncated before terminal event; wrote in-band failure frame (inbound=%v)", ra.inboundType)
 					return nil
 				}
-				if !streamDoneSeen && ra.shouldSynthesizeStreamDone() {
-					data, err := ra.synthesizeStreamDone(ctx)
-					if err != nil {
-						return err
-					}
-					if err := writeStreamData(data); err != nil {
-						return err
-					}
+				// 凭据脱敏: 合成帧先写 (进还原器), 再 flush 把缓冲按 FIFO 吐净。
+				if err := writeSynthesizedDone(); err != nil {
+					return err
+				}
+				if err := flushRedactRestore(); err != nil {
+					return err
 				}
 				return nil
 			}
@@ -2632,26 +2652,25 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 						if err := commitPendingPrelude(); err != nil {
 							return err
 						}
-						if err := flushRedactRestore(); err != nil {
-							return err
-						}
 						// Upstream half-stream truncation (see the closed-channel branch above):
 						// a "benign" read end with content already delivered but no terminal
 						// marker is exactly the fake-success case — write the failure frame and
 						// still return nil to avoid an opaque replay after business data.
 						if upstreamStreamTruncated() {
+							// 截断不是正常收尾: 先把还原缓冲吐净, 再写带内失败帧。
+							if err := flushRedactRestore(); err != nil {
+								return err
+							}
 							ra.writeTruncatedStreamTerminal()
 							log.Warnf("upstream stream truncated before terminal event; wrote in-band failure frame (inbound=%v)", ra.inboundType)
 							return nil
 						}
-						if !streamDoneSeen && ra.shouldSynthesizeStreamDone() {
-							data, err := ra.synthesizeStreamDone(ctx)
-							if err != nil {
-								return err
-							}
-							if err := writeStreamData(data); err != nil {
-								return err
-							}
+						// 凭据脱敏: 合成帧先写 (进还原器), 再 flush 把缓冲按 FIFO 吐净。
+						if err := writeSynthesizedDone(); err != nil {
+							return err
+						}
+						if err := flushRedactRestore(); err != nil {
+							return err
 						}
 						return nil
 					}
@@ -2746,10 +2765,11 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 					if writeErr := commitPendingPrelude(); writeErr != nil {
 						return writeErr
 					}
-					if writeErr := flushRedactRestore(); writeErr != nil {
+					// 凭据脱敏: 合成帧先进还原器 (可能被未闭合的占位符挡在队尾), 再 flush。
+					if writeErr := writeSynthesizedDone(); writeErr != nil {
 						return writeErr
 					}
-					if writeErr := writeSynthesizedDone(); writeErr != nil {
+					if writeErr := flushRedactRestore(); writeErr != nil {
 						return writeErr
 					}
 					return nil
@@ -2798,10 +2818,11 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 				return err
 			}
 			if streamTerminalSeen() {
-				if err := flushRedactRestore(); err != nil {
+				// 凭据脱敏: 合成帧先写 (进还原器), 再 flush 把缓冲按 FIFO 吐净。
+				if err := writeSynthesizedDone(); err != nil {
 					return err
 				}
-				if err := writeSynthesizedDone(); err != nil {
+				if err := flushRedactRestore(); err != nil {
 					return err
 				}
 				return nil

@@ -21,6 +21,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 
@@ -29,6 +30,20 @@ import (
 	"github.com/bestruirui/octopus/internal/redact"
 	"github.com/bestruirui/octopus/internal/transformer/inbound"
 	"github.com/bestruirui/octopus/internal/transformer/model"
+)
+
+const (
+	// redactMaxScanBytes bounds how large a body this module hands to the JS core.
+	// Stop-the-bleed constant, not a tuning surface — see the oversize guard in
+	// applyInboundRedaction for the measurements behind it. 4MB sits far above the
+	// real usage we measured (1MB was the largest live case), so no existing request
+	// narrows. If "configurable" is ever wanted, promote it to a
+	// `redact_max_scan_bytes` setting next to redact_default_flags and keep this as
+	// the default value.
+	redactMaxScanBytes = 4 << 20
+	// redactBodyTooLargeCode is the client-facing code for that guard. An operator or
+	// an agent CLI can act on it without reading prose.
+	redactBodyTooLargeCode = "octopus_redact_body_too_large"
 )
 
 var (
@@ -193,6 +208,33 @@ func (ra *relayAttempt) applyInboundRedaction() error {
 	if ra.internalRequest == nil || len(ra.internalRequest.RawRequest) == 0 {
 		return nil
 	}
+	// Oversize guard (fail fast, never raw): the core redacts at roughly
+	// 0.13 MB/s (the admin test endpoint caps its samples at 64KB for the same
+	// reason), and one attempt runs at least two full JS passes over the body.
+	// Measured on the candidate (run 033a2a): 1MB ≈ 207s, and a 1.1MB
+	// over-limit request pinned the instance for ~18.4 minutes before the client
+	// connection died — i.e. far beyond any client timeout, while the client only
+	// ever saw a dead socket instead of an explicit error. Rejecting up front
+	// keeps the fail-closed contract honest: the request fails loudly and nothing
+	// is forwarded. Checked before the session lookup so it holds on every attempt,
+	// and after the active check so an inactive module still passes the body through
+	// untouched.
+	//
+	// The limit is a deliberate constant, not a setting: this is a stop-the-bleed
+	// bound, not a tuning surface. If "configurable" is ever wanted, promote it to
+	// a `redact_max_scan_bytes` setting next to redact_default_flags and keep this
+	// constant as the default value.
+	if bodyBytes := len(ra.internalRequest.RawRequest); bodyBytes > redactMaxScanBytes {
+		ra.redactFailed = true
+		return &localRelayError{
+			status:   http.StatusRequestEntityTooLarge,
+			code:     redactBodyTooLargeCode,
+			strategy: "redact_body_over_limit;upstream_forwarded=false",
+			message: fmt.Sprintf(
+				"request body is %d bytes, above the redaction scan limit of %d bytes; the request was rejected instead of being scanned for an unbounded time (nothing was forwarded upstream)",
+				bodyBytes, redactMaxScanBytes),
+		}
+	}
 	s := ra.redactSession
 	if s == nil {
 		engine, err := sharedRedactEngine()
@@ -217,6 +259,16 @@ func (ra *relayAttempt) applyInboundRedaction() error {
 	// count signal the gates below use. The returned bytes are discarded — oct's own
 	// shape decisions own the wire (no whole-field graft). RedactJSONBody never
 	// mutates its input, so no copy is needed here.
+	//
+	// 🔴 Do NOT ever graft this result onto the outbound request. The core's
+	// whole-body strategy is deliberately WIDER than the contract: it rewrites every
+	// string leaf it considers sensitive, including `messages[].reasoning_signature`
+	// (nothing exempts model signatures) — and the boundary rule says model
+	// signatures must not be rewritten. Today that cannot bite because only the token
+	// table is kept from this call and every byte oct sends is produced by the narrow
+	// per-field pass below; `relay_redact_signature_byte_identity_test.go` pins the
+	// invariant (a high-entropy signature must leave oct byte-identical). Use the
+	// result for counting/token minting only.
 	if _, err := s.RedactJSONBody(ra.internalRequest.RawRequest); err != nil {
 		ra.redactFailed = true
 		return fmt.Errorf("redact: inbound scan failed, request rejected to avoid leaking secrets: %w", err)
@@ -240,6 +292,41 @@ func (ra *relayAttempt) applyInboundRedaction() error {
 	if err != nil {
 		ra.redactFailed = true
 		return fmt.Errorf("redact: message redaction failed, request rejected to avoid leaking secrets: %w", err)
+	}
+
+	// Stop sequences (chat `stop`, anthropic `stop_sequences` — one internal field
+	// feeds both): the core's per-protocol skip table does not exempt `stop`, and the
+	// body scan below cannot carry it, so it needs its own write-back. A sensitive
+	// value parked in a stop sequence used to reach the upstream raw.
+	//
+	// Deliberately NOT wrapped in JSON like the fields around it: Stop.MarshalJSON
+	// normalizes a single value to a bare string and a list to an array, so wrapping
+	// (and re-serializing) would overwrite that shape choice on the wire. Values are
+	// scanned one by one instead.
+	stop := ra.internalRequest.Stop
+	if stop != nil {
+		redactedStop := *stop
+		if stop.Stop != nil {
+			value, serr := s.RedactText(*stop.Stop)
+			if serr != nil {
+				ra.redactFailed = true
+				return fmt.Errorf("redact: stop sequence redaction failed, request rejected to avoid leaking secrets: %w", serr)
+			}
+			redactedStop.Stop = &value
+		}
+		if len(stop.MultipleStop) > 0 {
+			values := make([]string, 0, len(stop.MultipleStop))
+			for _, item := range stop.MultipleStop {
+				value, serr := s.RedactText(item)
+				if serr != nil {
+					ra.redactFailed = true
+					return fmt.Errorf("redact: stop sequence redaction failed, request rejected to avoid leaking secrets: %w", serr)
+				}
+				values = append(values, value)
+			}
+			redactedStop.MultipleStop = values
+		}
+		stop = &redactedStop
 	}
 
 	// ResponsesInstructions: only a non-empty current value is scanned. Nil stays
@@ -320,6 +407,9 @@ func (ra *relayAttempt) applyInboundRedaction() error {
 	}
 
 	ra.internalRequest.Messages = messages
+	if stop != nil {
+		ra.internalRequest.Stop = stop
+	}
 	if instructions != nil {
 		ra.internalRequest.ResponsesInstructions = instructions
 	}

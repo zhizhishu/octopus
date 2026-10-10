@@ -231,6 +231,14 @@ func relayErrorResponse(err error) (status int, code string, message string) {
 		}
 		return status, upstreamErrorPublicCode(code), upstreamErrorUserMessage(err)
 	}
+	if status, code, _, ok := localRelayErrorDetails(err); ok && code == redactBodyTooLargeCode {
+		// The caller CAN act on this one (send a smaller body), and the number is the
+		// whole point of the message, so it gets a real sentence instead of the generic
+		// local-error text. No internal routing detail is exposed either way.
+		return status, code, fmt.Sprintf(
+			"request body exceeds the redaction scan limit (%d bytes); shorten the request — nothing was forwarded upstream",
+			redactMaxScanBytes)
+	}
 	if status, code, _, ok := localRelayErrorDetails(err); ok && status >= 400 && status < 600 {
 		// Local route-selection errors carry internal detail (channel names, circuit /
 		// cooldown state) in their underlying message — never surface that to the caller.
@@ -727,6 +735,13 @@ func matchRequestInvalidText(lower string) bool {
 // stops iterating and the rescue loop never starts: the caller gets the real 4xx instead
 // of a gateway-shaped 502 or a 300s rescue that could only end in the same rejection.
 func isDeterministicClientRejection(err error) bool {
+	if _, code, _, ok := localRelayErrorDetails(err); ok && code == redactBodyTooLargeCode {
+		// A body over the redaction scan limit is refused for the same reason no matter
+		// which channel is picked (the scan runs before that channel's send), so sweeping
+		// channels or starting a rescue round can only waste the client's time:
+		// short-circuit to the real 413 instead.
+		return true
+	}
 	return isContextWindowError(err) || isRequestInvalidUpstreamError(err)
 }
 
