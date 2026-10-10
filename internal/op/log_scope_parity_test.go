@@ -85,32 +85,19 @@ func relayLogScopeParityCorpus() []model.RelayLog {
 //   - SQL 侧：relayLogApplyScope（数据库分页拼的 WHERE）
 //
 // 两边必须给出**完全相同的 id 集合**。不等就是规则漂移，测试直接把分歧行的字段打出来。
-func TestRelayLogScopeRuleParity(t *testing.T) {
-	ctx := setupRelayLogTest(t)
+// relayLogParityScope 是"一个筛选组合 + 它的名字"，给规则对拍用例共用。
+type relayLogParityScope struct {
+	name  string
+	scope *model.RelayLogScope
+}
 
-	corpus := relayLogScopeParityCorpus()
-	if err := db.GetDB().WithContext(ctx).Create(&corpus).Error; err != nil {
-		t.Fatalf("create corpus: %v", err)
-	}
-	// 可空列陷阱：直接插一行 NULL 的 error/error_code/total_attempts。
-	// NOT (NULL OR ...) 是 NULL，会把行从三个桶里全部静默丢掉，所以 COALESCE 是必须的。
-	if err := db.GetDB().WithContext(ctx).Exec(
-		`INSERT INTO relay_logs (id, time, request_endpoint, request_model_name, error, error_code, total_attempts)
-		 VALUES (?, ?, ?, ?, NULL, NULL, NULL)`, 1701, 1701, "chat", "null-model").Error; err != nil {
-		t.Fatalf("insert null row: %v", err)
-	}
-
-	// Go 侧的输入就是 DB 里的行：只是换个规则函数过一遍。
-	var all []model.RelayLog
-	if err := db.GetDB().WithContext(ctx).Order("id ASC").Find(&all).Error; err != nil {
-		t.Fatalf("load rows: %v", err)
-	}
-
+// relayLogParityScopes 是两套规则（Go=relayLogMatchScope / SQL=relayLogApplyScope）必须逐位一致的
+// 筛选组合全集：单条件、组合条件、以及专门挑出来的边界形状（空白串、带空格模型名、裸 provider
+// 前缀、LIKE 元字符搜索词、三态 mismatch、未知 provider）。两个对拍用例（36 行语料 / 5000 行量级）
+// 共用这一份，避免"改了用例只覆盖一半"。
+func relayLogParityScopes() []relayLogParityScope {
 	yes, no := true, false
-	scopes := []struct {
-		name  string
-		scope *model.RelayLogScope
-	}{
+	return []relayLogParityScope{
 		{"nil scope", nil},
 		{"severity=error", &model.RelayLogScope{Severity: "error"}},
 		{"severity=warn", &model.RelayLogScope{Severity: "warn"}},
@@ -124,6 +111,10 @@ func TestRelayLogScopeRuleParity(t *testing.T) {
 		{"endpoint=model_test", &model.RelayLogScope{Endpoint: "model_test"}},
 		{"endpoint=gemini", &model.RelayLogScope{Endpoint: "gemini"}},
 		{"hide_model_test", &model.RelayLogScope{HideModelTest: true}},
+		{"model=lf-ok-a", &model.RelayLogScope{Model: "lf-ok-a"}},
+		{"model=lf-warn-a", &model.RelayLogScope{Model: "lf-warn-a"}},
+		{"model=lf-err-a", &model.RelayLogScope{Model: "lf-err-a"}},
+		{"model=' lf-warn-a '(筛选值带空格)", &model.RelayLogScope{Model: "  lf-warn-a  "}},
 		{"model=spaced-model", &model.RelayLogScope{Model: "spaced-model"}},
 		{"model=padded-both", &model.RelayLogScope{Model: "padded-both"}},
 		{"model=trimmmed-input", &model.RelayLogScope{Model: "  spaced-model  "}},
@@ -147,6 +138,30 @@ func TestRelayLogScopeRuleParity(t *testing.T) {
 		{"success+provider=openai", &model.RelayLogScope{Severity: "success", Provider: "openai"}},
 		{"hide_model_test+error", &model.RelayLogScope{HideModelTest: true, Severity: "error"}},
 	}
+}
+
+func TestRelayLogScopeRuleParity(t *testing.T) {
+	ctx := setupRelayLogTest(t)
+
+	corpus := relayLogScopeParityCorpus()
+	if err := db.GetDB().WithContext(ctx).Create(&corpus).Error; err != nil {
+		t.Fatalf("create corpus: %v", err)
+	}
+	// 可空列陷阱：直接插一行 NULL 的 error/error_code/total_attempts。
+	// NOT (NULL OR ...) 是 NULL，会把行从三个桶里全部静默丢掉，所以 COALESCE 是必须的。
+	if err := db.GetDB().WithContext(ctx).Exec(
+		`INSERT INTO relay_logs (id, time, request_endpoint, request_model_name, error, error_code, total_attempts)
+		 VALUES (?, ?, ?, ?, NULL, NULL, NULL)`, 1701, 1701, "chat", "null-model").Error; err != nil {
+		t.Fatalf("insert null row: %v", err)
+	}
+
+	// Go 侧的输入就是 DB 里的行：只是换个规则函数过一遍。
+	var all []model.RelayLog
+	if err := db.GetDB().WithContext(ctx).Order("id ASC").Find(&all).Error; err != nil {
+		t.Fatalf("load rows: %v", err)
+	}
+
+	scopes := relayLogParityScopes()
 
 	byID := make(map[int64]model.RelayLog, len(all))
 	for _, row := range all {
@@ -300,6 +315,171 @@ func TestRelayLogListMatchesCountPerSeverity(t *testing.T) {
 }
 
 var _ = context.Background
+
+// TestRelayLogScopeRuleParityAtVolume 把同一套差分对拍放大到"几千条"量级。
+//
+// 为什么要有它：36 行的对抗语料能证明"规则语义一致"，但证明不了"量大、命中集跨很多页"时还一致。
+// 这个用例：
+//   - 桶分布照抄远端 lf_lab.py 的造数配方（35% 成功 / 45% 警告 / 15% 错误 / 5% 回显不一致），
+//     每 40 条一条**前后带空格的模型名**（真实客户端从剪贴板抄模型名常带空格，而 oct 原样入库）；
+//   - 规模远超单页，逐个筛选的命中集必然跨多页；
+//   - 除了 Go/SQL 规则对拍，还按 severity 逐页走完，断言"页走到的集合 == 该桶计数、
+//     无重复、不串桶"——这正是页面上「徽章数字 / 列表内容 / 总页数」互相矛盾的那条链。
+func TestRelayLogScopeRuleParityAtVolume(t *testing.T) {
+	ctx := setupRelayLogTest(t)
+
+	const total = 5000
+	const baseTime = int64(1_700_000_000_000)
+	endpoints := []string{"chat", "messages", "responses"}
+	okModels := []string{"lf-ok-a", "lf-ok-b", "lf-ok-c"}
+	warnModels := []string{"lf-warn-a", "lf-warn-b"}
+	errModels := []string{"lf-err-a", "lf-err-b"}
+	yes := true
+
+	rows := make([]model.RelayLog, 0, total)
+	for i := 0; i < total; i++ {
+		bucket := i % 20
+		row := model.RelayLog{
+			ID:              int64(3000 + i),
+			Time:            baseTime + int64(i)*1000,
+			RequestEndpoint: endpoints[i%len(endpoints)],
+		}
+		switch {
+		case bucket < 7: // 35% 纯成功（首试成功）
+			row.RequestModelName = okModels[i%len(okModels)]
+			row.ActualModelName = row.RequestModelName
+			row.TotalAttempts = 1
+		case bucket < 14: // 35% 重试一次后成功 → warn
+			row.RequestModelName = warnModels[i%len(warnModels)]
+			row.ActualModelName = row.RequestModelName
+			row.TotalAttempts = 2
+		case bucket < 16: // 10% 重试三次后成功 → warn
+			row.RequestModelName = "lf-warn-c"
+			row.ActualModelName = "lf-warn-c"
+			row.TotalAttempts = 4
+		case bucket < 19: // 15% 纯失败（且带多次尝试）→ error
+			row.RequestModelName = errModels[i%len(errModels)]
+			row.ActualModelName = row.RequestModelName
+			row.Error = "Upstream request failed (status 500, code upstream_unavailable)."
+			row.ErrorCode = "upstream_unavailable"
+			row.ErrorStatus = 500
+			row.TotalAttempts = 3
+		default: // 5% 回显不一致
+			row.RequestModelName = "lf-mismatch-ok"
+			row.ActualModelName = "declared-other-model"
+			row.UpstreamModelMismatch = &yes
+			row.TotalAttempts = 1
+		}
+		// 前后带空格的模型名：错开到 ok/warn/err 三个桶上，否则带空格的行全落在 ok 桶，
+		// `model=` / `provider=` 这两类 scope 根本压不到它们（第一版就是这样白跑的）。
+		if i%40 == 0 || i%40 == 13 || i%40 == 19 {
+			row.RequestModelName = "  " + row.RequestModelName + "  "
+		}
+		rows = append(rows, row)
+	}
+	// 批次必须小：sqlite 的绑定变量上限是 999，GORM 一批要绑 行数×列数 个变量，
+	// 500 一批直接 `SQL logic error: too many SQL variables`。
+	// 量级语料之外，还要把 36 行对抗语料一并塞进来：否则量级用例只覆盖"正常值 × 大量"，
+	// 空白串 error / 带空格模型名 / 裸 provider 前缀这些**真正触发漂移的形状**一个都压不到
+	// （第一版就是这样在无修复时也跑绿，等于没有锁）。
+	rows = append(rows, relayLogScopeParityCorpus()...)
+	if err := db.GetDB().WithContext(ctx).CreateInBatches(rows, 40).Error; err != nil {
+		t.Fatalf("create %d rows: %v", total, err)
+	}
+
+	var all []model.RelayLog
+	if err := db.GetDB().WithContext(ctx).Order("id ASC").Find(&all).Error; err != nil {
+		t.Fatalf("load rows: %v", err)
+	}
+	if len(all) < total {
+		t.Fatalf("期望至少 %d 行, 实际 %d 行", total, len(all))
+	}
+
+	// --- ① 规则层：Go vs SQL，逐 scope 逐位对拍 ---
+	drifts := 0
+	for _, tc := range relayLogParityScopes() {
+		want := map[int64]bool{}
+		for _, row := range all {
+			if relayLogMatchScope(row, tc.scope) {
+				want[row.ID] = true
+			}
+		}
+		var ids []int64
+		q := relayLogApplyScope(db.GetDB().WithContext(ctx).Model(&model.RelayLog{}), tc.scope)
+		if err := q.Pluck("id", &ids).Error; err != nil {
+			t.Fatalf("%s: pluck ids: %v", tc.name, err)
+		}
+		got := map[int64]bool{}
+		for _, id := range ids {
+			got[id] = true
+		}
+		var diffs []int64
+		for id := range want {
+			if !got[id] {
+				diffs = append(diffs, id)
+			}
+		}
+		for id := range got {
+			if !want[id] {
+				diffs = append(diffs, id)
+			}
+		}
+		if len(diffs) == 0 {
+			continue
+		}
+		drifts++
+		sort.Slice(diffs, func(i, j int) bool { return diffs[i] < diffs[j] })
+		show := diffs
+		if len(show) > 5 {
+			show = show[:5]
+		}
+		t.Errorf("量大场景规则漂移 scope=%s: 分歧 %d 行, 前几个 id=%v", tc.name, len(diffs), show)
+	}
+	if drifts > 0 {
+		t.Errorf("量大场景下共 %d 个 scope 漂移（Go=relayLogMatchScope vs SQL=relayLogApplyScope）", drifts)
+	}
+
+	// --- ② 展示层：逐页走完必须与该桶计数一致（徽章/总页数/列表三者对账） ---
+	for _, severity := range []string{"success", "warn", "error"} {
+		want := 0
+		for _, row := range all {
+			if relayLogSeverityValue(row) == severity {
+				want++
+			}
+		}
+		scope := &model.RelayLogScope{Severity: severity}
+		count, err := RelayLogCount(ctx, nil, nil, scope)
+		if err != nil {
+			t.Fatalf("count %s: %v", severity, err)
+		}
+		seen := map[int64]bool{}
+		const pageSize = 20 // 与日志页 LOG_PAGE_SIZE 一致
+		for page := 1; page <= total; page++ {
+			logs, err := RelayLogList(ctx, nil, nil, page, pageSize, scope)
+			if err != nil {
+				t.Fatalf("list %s page %d: %v", severity, page, err)
+			}
+			if len(logs) == 0 {
+				break
+			}
+			for _, l := range logs {
+				if seen[l.ID] {
+					t.Errorf("severity=%s 翻页出现重复行 id=%d (page=%d)", severity, l.ID, page)
+				}
+				seen[l.ID] = true
+				if v := relayLogSeverityValue(l); v != severity {
+					t.Errorf("severity=%s 列表里混进了 %s 的行 id=%d (page=%d)", severity, v, l.ID, page)
+				}
+			}
+		}
+		if len(seen) != want {
+			t.Errorf("severity=%s: 逐页走完拿到 %d 行, Go 规则分桶应为 %d 行", severity, len(seen), want)
+		}
+		if count != int64(want) {
+			t.Errorf("severity=%s: 计数(徽章/总页数用)说 %d 行, 规则分桶应为 %d 行", severity, count, want)
+		}
+	}
+}
 
 // TestRelayLogSeverityTabOnlyResidualDifference 记录两套规则**仅剩**的一处差异，钉住它
 // 而不是假装不存在——有人哪天顺手修了它会看到这个测试红，从而知道要同步改这边。
