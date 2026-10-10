@@ -442,9 +442,12 @@ func convertToAnthropicRequest(req *model.InternalLLMRequest) *anthropicModel.Me
 			result.Extra = extra
 		}
 	}
-	if len(req.AnthropicKeyOrder) > 0 {
-		result.KeyOrder = append([]string(nil), req.AnthropicKeyOrder...)
-	}
+	// Rebuild the outbound member order from the real CLI's shape rather than replaying the
+	// downstream client's order. A non-CLI client emits its own order (often alphabetical),
+	// and replaying it leaks a non-CLI byte shape upstream. Members outside the canonical
+	// list keep their encoded order and are appended by reorderTopLevelMembers, so no key is
+	// ever dropped.
+	result.KeyOrder = append([]string(nil), canonicalAnthropicRequestKeyOrder...)
 	rawThinkingPreserved := false
 	if thinking, ok := decodeAnthropicThinking(req.AnthropicThinking); ok {
 		result.Thinking = thinking

@@ -84,8 +84,9 @@ func TestAnthropicRelayKeepsFieldOrderWithForcedEmptyTools(t *testing.T) {
 
 	wire := relayAnthropicBody(t, body)
 
-	// Declaration order puts `model` before `metadata`; alphabetical sorting would put
-	// `metadata` first. `temperature` before `system` discriminates the same way.
+	// Canonical order puts `model` before `metadata`; alphabetical sorting would put
+	// `metadata` first. A field the golden CLI capture proves no slot for (here
+	// `temperature`) keeps its encoded order and follows the canonical members.
 	modelAt := strings.Index(wire, `"model"`)
 	metadataAt := strings.Index(wire, `"metadata"`)
 	if modelAt < 0 {
@@ -95,8 +96,8 @@ func TestAnthropicRelayKeepsFieldOrderWithForcedEmptyTools(t *testing.T) {
 		t.Fatalf("relayed body was re-sorted alphabetically: %s", wire)
 	}
 	tempAt, systemAt := strings.Index(wire, `"temperature"`), strings.Index(wire, `"system"`)
-	if tempAt < 0 || systemAt < 0 || systemAt < tempAt {
-		t.Fatalf("expected temperature before system in declaration order: %s", wire)
+	if tempAt < 0 || systemAt < 0 || tempAt < systemAt {
+		t.Fatalf("expected the canonical system slot to precede the unranked temperature field: %s", wire)
 	}
 
 	// Claude Code's no-tool shape must survive, and it belongs before tool_choice/stream.
@@ -213,13 +214,13 @@ func TestAnthropicRelayReplaysClientTopLevelKeyOrder(t *testing.T) {
 	}
 }
 
-// A forced empty tools array (Claude Code's no-tool shape) is emitted at the position the
-// client put `tools` in, not appended at the end.
-func TestAnthropicRelayReplaysClientOrderWithForcedEmptyTools(t *testing.T) {
+// A forced empty tools array (Claude Code's no-tool shape) still lands in the canonical
+// `tools` slot; the relay's own rebuilt order applies, not the client's.
+func TestAnthropicRelayAppliesCanonicalOrderWithForcedEmptyTools(t *testing.T) {
 	const body = `{"model":"claude-opus-4-8","messages":[{"role":"user","content":"pong"}],` +
 		`"system":[{"type":"text","text":"sys"}],"tools":[],` +
 		`"safeguards":{"policy":"default"},"max_tokens":64,"stream":true}`
-	want := []string{"model", "messages", "system", "tools", "safeguards", "max_tokens", "stream"}
+	want := []string{"model", "messages", "system", "tools", "max_tokens", "safeguards", "stream"}
 
 	wire := relayAnthropicBody(t, body)
 	if !strings.Contains(wire, `"tools":[]`) {
@@ -231,15 +232,32 @@ func TestAnthropicRelayReplaysClientOrderWithForcedEmptyTools(t *testing.T) {
 	}
 }
 
-// Fields this relay adds itself (the client never sent them) keep a stable position at the
-// end, and a client key the relay does not model still keeps its own slot.
+// Fields the relay adds itself (the client never sent them) take their canonical slot, so a
+// client key the relay does not model keeps a deterministic position.
 func TestAnthropicRelayAppendsRelayAddedFieldsAfterClientKeys(t *testing.T) {
 	const body = `{"model":"claude-opus-4-8","messages":[{"role":"user","content":"pong"}],` +
 		`"safeguards":{"policy":"default"},"stream":true}`
-	want := []string{"model", "messages", "safeguards", "stream"}
+	want := []string{"model", "messages", "system", "max_tokens", "safeguards", "stream"}
 
 	got := topLevelKeySequence(t, relayAnthropicBody(t, body))
 	if !reflect.DeepEqual(got[:len(want)], want) {
 		t.Fatalf("client keys did not keep their order: got %v want prefix %v", got, want)
+	}
+}
+
+// The shape contract that actually matters: a downstream client that is NOT the Claude CLI
+// (an SDK, a bare HTTP client, another gateway) sends its own member order — typically
+// alphabetical. The relay must still emit the CLI's canonical order, or a non-CLI request
+// reaches the upstream carrying a non-CLI byte shape.
+func TestAnthropicRelayRebuildsCanonicalOrderForNonCLIClient(t *testing.T) {
+	const body = `{"max_tokens":64,"messages":[{"role":"user","content":"pong"}],` +
+		`"model":"claude-opus-4-8","stream":true,` +
+		`"system":[{"type":"text","text":"sys"}]}`
+	want := []string{"model", "messages", "system", "max_tokens", "stream"}
+
+	wire := relayAnthropicBody(t, body)
+	got := topLevelKeySequence(t, wire)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("non-CLI client body kept its own order instead of the CLI shape: got %v want %v body: %s", got, want, wire)
 	}
 }
