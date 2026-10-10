@@ -483,6 +483,209 @@ func TestForcedStreamAggregationOpenerThenSilentIsCut(t *testing.T) {
 	}
 }
 
+// TestContentFreeEventFloodKeepsRenewingTheIntervalTimer is the falsifiable form of the
+// diagnosis this whole change rests on. Read the three reset sites yourself:
+//
+//	relay.go:2688  (stream path)          resetDataTimeout() runs BEFORE classifyStreamEvent,
+//	relay.go:3148  (aggregation path)     same position, no content condition,
+//	images.go:1259 (side path)            resets on every upstream SSE LINE.
+//
+// So any event read from the upstream renews the interval timer, content or not. Here the
+// absolute pre-content deadline is DISABLED (that is the old shipped configuration) and
+// the interval timer is 2s: if a content-free flood renewed the timer, this request is
+// unbounded and the test must see it still running well past 2s. If the flood did NOT
+// renew it, the relay would end the request at ~2s and this test fails.
+func TestContentFreeEventFloodKeepsRenewingTheIntervalTimer(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	setupRelayErrorDB(t)
+	setIdleSetting(t, dbmodel.SettingKeyFirstTokenTimeOutDefault, "0") // old shipped default
+	setIdleSetting(t, dbmodel.SettingKeyRelayStreamDataTimeoutSec, "2")
+	setIdleSetting(t, dbmodel.SettingKeyRelayStreamKeepaliveSec, "1")
+	setIdleSetting(t, dbmodel.SettingKeyFirstByteKeepaliveDelaySeconds, "1")
+
+	rec := httptest.NewRecorder()
+	ra, c := newChatPreludeAttempt(rec)
+	ra.firstTokenTimeOutSec = 0
+
+	pr, pw := io.Pipe()
+	floodStop := make(chan struct{})
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	go func() {
+		defer pw.Close()
+		for {
+			select {
+			case <-floodStop:
+				<-release // keep the connection open and silent
+				return
+			default:
+			}
+			if _, err := io.WriteString(pw, chatOpenerEvent()); err != nil {
+				return
+			}
+			select {
+			case <-floodStop:
+				<-release
+				return
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+	}()
+
+	response := &http.Response{
+		Header: http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:   pr,
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- ra.handleStreamResponse(c.Request.Context(), response, &openaiOutbound.ChatOutbound{})
+	}()
+
+	// 2s interval timer, a content-free event every 100ms: only renewal can explain
+	// survival here.
+	select {
+	case err := <-done:
+		t.Fatalf("a content-free event flood must not be bounded by the interval timer, but the request ended: %v", err)
+	case <-time.After(5 * time.Second):
+	}
+
+	close(floodStop) // flood stops, connection stays open
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "timed out waiting for SSE event") {
+			t.Fatalf("once the flood stops, the interval timer is what must fire, got err=%v", err)
+		}
+	case <-time.After(6 * time.Second):
+		t.Fatalf("the interval timer did not fire after the flood stopped; it must be armed")
+	}
+}
+
+// TestCommittedContentThenStallHonestFramePerProtocol covers the real production shape B
+// (a stream that had already delivered content and then went quiet for 529s until the
+// caller left) in each protocol we serve. A channel cannot be swapped once content
+// reached the caller, so the only acceptable ending is the caller's own terminal frame.
+func TestCommittedContentThenStallHonestFramePerProtocol(t *testing.T) {
+	const partialText = "PARTIAL-ANSWER-TEXT"
+
+	cases := []struct {
+		name         string
+		inbound      inbound.InboundType
+		outboundType outbound.OutboundType
+		path         string
+		body         string
+		upstream     string
+		wantError    string
+		wantTerminal string
+	}{
+		{
+			name:         "chat",
+			inbound:      inbound.InboundTypeOpenAIChat,
+			outboundType: outbound.OutboundTypeOpenAIChat,
+			path:         "/v1/chat/completions",
+			body:         `{"model":"stall-model","stream":true,"messages":[{"role":"user","content":"hi"}]}`,
+			upstream:     chatOpenerEvent() + chatContentEvent(partialText),
+			wantError:    `"type":"upstream_error"`,
+			wantTerminal: "data: [DONE]",
+		},
+		{
+			name:         "responses",
+			inbound:      inbound.InboundTypeOpenAIResponse,
+			outboundType: outbound.OutboundTypeOpenAIResponse,
+			path:         "/v1/responses",
+			body:         `{"model":"stall-model","input":"hi","stream":true}`,
+			upstream: responsesOpenerEvent("resp_partial") +
+				`data: {"type":"response.output_text.delta","delta":"` + partialText + `"}` + "\n\n",
+			wantError:    "event: response.failed",
+			wantTerminal: "data: [DONE]",
+		},
+		{
+			// The real stream B ran through an Anthropic-type channel: this row exists
+			// because of that, and it is the protocol most likely to be assumed covered.
+			name:         "anthropic",
+			inbound:      inbound.InboundTypeAnthropic,
+			outboundType: outbound.OutboundTypeAnthropic,
+			path:         "/v1/messages",
+			body:         `{"model":"stall-model","stream":true,"max_tokens":32,"messages":[{"role":"user","content":"hi"}]}`,
+			upstream: anthropicOpenerEvent("msg_partial") +
+				"event: content_block_start\n" +
+				`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}` + "\n\n" +
+				"event: content_block_delta\n" +
+				`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"` + partialText + `"}}` + "\n\n",
+			wantError:    "event: error",
+			wantTerminal: `"type":"error"`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gin.SetMode(gin.TestMode)
+			setupRelayErrorDB(t)
+			// Post-content silence budget is the clock under test here; the pre-content
+			// deadline must be far away because content DOES arrive.
+			setIdleSetting(t, dbmodel.SettingKeyFirstTokenTimeOutDefault, "30")
+			setIdleSetting(t, dbmodel.SettingKeyRelayStreamDataTimeoutSec, "1")
+
+			stop := make(chan struct{})
+			defer close(stop)
+
+			channelName := "committed-stall-" + tc.name
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte(tc.upstream))
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+				<-stop // content delivered, then nothing, connection still open
+			}))
+			t.Cleanup(upstream.Close)
+
+			channel := dbmodel.Channel{
+				Name:     channelName,
+				Type:     tc.outboundType,
+				Enabled:  true,
+				Model:    "stall-model",
+				Priority: 1,
+				BaseUrls: []dbmodel.BaseUrl{{URL: upstream.URL}},
+				Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "stall-key"}},
+			}
+			if err := op.ChannelCreate(&channel, context.Background()); err != nil {
+				t.Fatalf("create channel: %v", err)
+			}
+
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			c.Request = req
+			c.Set("api_key_id", 0)
+			c.Set("user_id", 0)
+			c.Set("request_ip", "127.0.0.1")
+
+			start := time.Now()
+			Handler(tc.inbound, c)
+			elapsed := time.Since(start)
+
+			if elapsed > 6*time.Second {
+				t.Fatalf("a stall after delivered content must end at the configured 1s, took %s", elapsed)
+			}
+			body := rec.Body.String()
+			if !strings.Contains(body, partialText) {
+				t.Fatalf("content already delivered to the caller must be preserved, got %q", body)
+			}
+			if !strings.Contains(body, tc.wantError) {
+				t.Fatalf("the caller must get %q as an explicit terminal error, got %q", tc.wantError, body)
+			}
+			if !strings.Contains(body, tc.wantTerminal) {
+				t.Fatalf("the stream must be terminated in the caller's own protocol (%q), got %q", tc.wantTerminal, body)
+			}
+			if strings.Contains(body, channelName) || strings.Contains(body, upstream.URL) {
+				t.Fatalf("the terminal frame must not leak channel or upstream identity, got %q", body)
+			}
+		})
+	}
+}
+
 func createChatChannel(t *testing.T, upstreamURL, name string, priority int) {
 	t.Helper()
 	channel := dbmodel.Channel{
