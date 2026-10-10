@@ -52,7 +52,7 @@ func sanitizeResponsesInputItemIDsRaw(raw json.RawMessage) (json.RawMessage, boo
 			continue
 		}
 		delete(itemObject, "id")
-		fixedItem, err := json.Marshal(itemObject)
+		fixedItem, err := encodeJSONNoHTMLEscape(itemObject)
 		if err != nil {
 			continue
 		}
@@ -62,7 +62,7 @@ func sanitizeResponsesInputItemIDsRaw(raw json.RawMessage) (json.RawMessage, boo
 	if !changed {
 		return raw, false
 	}
-	sanitized, err := json.Marshal(items)
+	sanitized, err := encodeJSONNoHTMLEscape(items)
 	if err != nil {
 		return raw, false
 	}

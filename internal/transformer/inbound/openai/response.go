@@ -169,7 +169,47 @@ func (i *ResponseInbound) TransformRequest(ctx context.Context, body []byte) (*m
 	// entry (default = function_call behaviour).
 	i.clientToolTypeByToolName = buildClientToolTypeByToolName(req.Tools)
 
-	return convertToInternalRequest(&req)
+	internalReq, err := convertToInternalRequest(&req)
+	if err != nil {
+		return nil, err
+	}
+	// Record the client's top-level key sequence so a same-protocol relay hands the
+	// provider the same member order the client used. A genuine Codex CLI sends
+	// `model, stream, input, ...`; the outbound struct's field order is not that.
+	internalReq.ResponsesKeyOrder = topLevelKeyOrder(body)
+	return internalReq, nil
+}
+
+// topLevelKeyOrder reports an object's top-level keys in the order they appear on the
+// wire. It is decode-driven rather than text-searching, so a prompt containing `"stream":`
+// can never be mistaken for a real top-level field.
+func topLevelKeyOrder(data []byte) []string {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	tok, err := dec.Token()
+	if err != nil {
+		return nil
+	}
+	if delim, isDelim := tok.(json.Delim); !isDelim || delim != '{' {
+		return nil
+	}
+	var keys []string
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return keys
+		}
+		key, isString := keyTok.(string)
+		if !isString {
+			return keys
+		}
+		keys = append(keys, key)
+		var skip json.RawMessage
+		if err := dec.Decode(&skip); err != nil {
+			return keys
+		}
+	}
+	return keys
 }
 
 func (i *ResponseInbound) TransformResponse(ctx context.Context, response *model.InternalLLMResponse) ([]byte, error) {

@@ -47,7 +47,9 @@ func (o *ResponseOutbound) TransformRequest(ctx context.Context, request *model.
 	// Convert to Responses API request format
 	responsesReq := ConvertToResponsesRequest(request)
 
-	body, err := json.Marshal(responsesReq)
+	// encodeJSONNoHTMLEscape, not json.Marshal: a captured genuine Codex CLI body keeps
+	// <, > and & raw, and the encoder is what makes them raw again on the way out.
+	body, err := encodeJSONNoHTMLEscape(responsesReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal responses api request: %w", err)
 	}
@@ -655,6 +657,23 @@ type ResponsesRequest struct {
 	TopP                 *float64              `json:"top_p,omitempty"`
 	Reasoning            *ResponsesReasoning   `json:"reasoning,omitempty"`
 	Include              []string              `json:"include,omitempty"`
+
+	// KeyOrder is the top-level key sequence the Responses client actually sent. It is
+	// replayed by MarshalJSON so a same-protocol relay emits the body in the client's
+	// member order instead of this struct's field order; an empty value leaves the
+	// encoded order alone (non-Codex clients are unaffected).
+	KeyOrder []string `json:"-"`
+}
+
+// MarshalJSON encodes the request the way the client's own serialiser would: HTML escaping
+// off, and the members in the sequence the client used.
+func (r ResponsesRequest) MarshalJSON() ([]byte, error) {
+	type alias ResponsesRequest
+	data, err := encodeJSONNoHTMLEscape(alias(r))
+	if err != nil {
+		return nil, err
+	}
+	return reorderTopLevelMembers(data, r.KeyOrder), nil
 }
 
 type ResponsesInput struct {
@@ -668,9 +687,9 @@ func (i ResponsesInput) MarshalJSON() ([]byte, error) {
 		return i.Raw, nil
 	}
 	if i.Text != nil {
-		return json.Marshal(i.Text)
+		return encodeJSONNoHTMLEscape(i.Text)
 	}
-	return json.Marshal(i.Items)
+	return encodeJSONNoHTMLEscape(i.Items)
 }
 
 func (i *ResponsesInput) UnmarshalJSON(data []byte) error {
@@ -882,7 +901,7 @@ func (t ResponsesTool) MarshalJSON() ([]byte, error) {
 		return t.Raw, nil
 	}
 	type Alias ResponsesTool
-	return json.Marshal(Alias(t))
+	return encodeJSONNoHTMLEscape(Alias(t))
 }
 
 type ResponsesToolChoice struct {
@@ -901,11 +920,11 @@ func (t ResponsesToolChoice) MarshalJSON() ([]byte, error) {
 	}
 	// If only Mode is set and it's a simple mode like "auto", "none", "required"
 	if t.Mode != nil && t.Type == nil && t.Name == nil {
-		return json.Marshal(*t.Mode)
+		return encodeJSONNoHTMLEscape(*t.Mode)
 	}
 	// Otherwise, serialize as an object
 	type Alias ResponsesToolChoice
-	return json.Marshal(Alias(t))
+	return encodeJSONNoHTMLEscape(Alias(t))
 }
 
 type ResponsesTextOptions struct {
@@ -919,7 +938,7 @@ func (t ResponsesTextOptions) MarshalJSON() ([]byte, error) {
 		return t.Raw, nil
 	}
 	type Alias ResponsesTextOptions
-	return json.Marshal(Alias(t))
+	return encodeJSONNoHTMLEscape(Alias(t))
 }
 
 type ResponsesTextFormat struct {
@@ -1141,6 +1160,7 @@ func (u *ResponsesUsage) UnmarshalJSON(data []byte) error {
 func ConvertToResponsesRequest(req *model.InternalLLMRequest) *ResponsesRequest {
 	result := &ResponsesRequest{
 		Model:                req.Model,
+		KeyOrder:             append([]string(nil), req.ResponsesKeyOrder...),
 		Temperature:          req.Temperature,
 		TopP:                 req.TopP,
 		Stream:               req.Stream,

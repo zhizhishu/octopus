@@ -333,6 +333,11 @@ type InternalLLMRequest struct {
 	ResponsesToolChoiceRaw json.RawMessage   `json:"-"`
 	ResponsesTextRaw       json.RawMessage   `json:"-"`
 
+	// ResponsesKeyOrder preserves the inbound Responses request's top-level key sequence.
+	// A same-protocol codex relay emits its body with the client's member order: the same
+	// members in a different order are a different byte sequence on the wire.
+	ResponsesKeyOrder []string `json:"-"`
+
 	// Query stores the original query parameters from the inbound request.
 	// This is a help field and will not be sent to the llm service.
 	Query url.Values `json:"-"`
@@ -488,6 +493,7 @@ func (r *InternalLLMRequest) ClearHelpFields() {
 	r.AnthropicToolsPresent = false
 	r.AnthropicExtraTopLevel = nil
 	r.AnthropicKeyOrder = nil
+	r.ResponsesKeyOrder = nil
 	r.ResponsesInstructions = nil
 	r.ResponsesInputRaw = nil
 	r.ResponsesToolsRaw = nil
