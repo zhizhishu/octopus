@@ -203,8 +203,49 @@ const (
 	// user-agent (claude-cli/<DefaultClaudeCLIVersion>).
 	DefaultClaudeHeaderUserAgent = "claude-cli/" + DefaultClaudeCLIVersion + " (external, sdk-cli)"
 
-	DefaultRelayStreamDataIntervalTimeoutSeconds       = "900"
+	// DefaultRelayStreamDataIntervalTimeoutSeconds bounds "no new upstream SSE event"
+	// during the post-content phase. Its pre-content job is gone: that phase is now
+	// covered by the absolute first-content deadline below, which upstream events
+	// cannot extend. What is left is a mid-answer stall, where the answer has already
+	// reached the client (so failover is impossible and the only honest outcome is a
+	// terminal error frame). 900 used to be the value, but a client that gives up
+	// first (measured: 369s / 529s) always beat it, so the operator saw
+	// "octopus_client_canceled" instead of our own ending. 300 is the largest value
+	// that still fires before the shortest client patience we have measured.
+	DefaultRelayStreamDataIntervalTimeoutSeconds       = "300"
 	LegacyDefaultRelayStreamDataIntervalTimeoutSeconds = "180"
+
+	// LegacyDefaultRelayStreamDataIntervalTimeoutSeconds900 is the value this
+	// setting carried while it was the shipped default. Registered as a product
+	// default (not an administrator's value) so already-installed deployments
+	// converge to the new default instead of keeping 900 forever — a settings row
+	// written by the old seed wins over the new constant otherwise.
+	LegacyDefaultRelayStreamDataIntervalTimeoutSeconds900 = "900"
+
+	// DefaultFirstTokenTimeOutSeconds is the fleet-wide fallback for a group whose
+	// own FirstTokenTimeOut is unset (<= 0). It is an ABSOLUTE pre-content deadline:
+	// armed when the upstream response headers arrive, released only by real
+	// content, and never extended by the events a stuck upstream keeps emitting
+	// (message_start openers, bare role deltas, data-bearing pings). That last
+	// property is the whole point — the event-interval timer above is reset by every
+	// event we read, so an upstream that only ever sends openers kept a request
+	// alive indefinitely (confirmed on an isolated instance 2026-10-06: the request
+	// hung with comment heartbeats only and neither timeout fired).
+	//
+	// 120s mirrors the only reference implementation found to actually solve this
+	// (the reference's pre-content max wait), and gpt-load's first-byte budget of the
+	// same length. Before content exists nothing has been delivered, so firing here
+	// is an ordinary attempt failure: it fails over to the next channel and the
+	// client stays unaware (measured: three attempts inside one client window, the
+	// caller never even received response headers). Cost to keep in mind: a healthy
+	// channel slower than this to its FIRST token is now failed and retried, which
+	// can execute (and bill) the upstream request twice. Operators who prefer the old
+	// behaviour set this to 0, or set a per-group FirstTokenTimeOut.
+	DefaultFirstTokenTimeOutSeconds = "120"
+
+	// LegacyDefaultFirstTokenTimeOutSeconds is the shipped default that meant
+	// "no global default". Registered so existing rows converge to the value above.
+	LegacyDefaultFirstTokenTimeOutSeconds = "0"
 
 	// LegacyDefaultCodexHeaderUserAgent0133 was briefly shipped as the Codex
 	// header default. Treat it as a product default, not as an administrator's
@@ -377,7 +418,7 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyDebugLoadBalancer, Value: "false"},                                              // 默认关闭选路决策日志
 		{Key: SettingKeyDiagnosticMode, Value: "false"},                                                 // 默认关闭诊断模式(各阶段耗时+逐次尝试日志)
 		{Key: SettingKeySessionKeepTimeDefault, Value: "0"},                                             // 默认0=不启用全局粘性(向后兼容); 管理员设为如3600才全局开, 分组级 SessionKeepTime 仍优先
-		{Key: SettingKeyFirstTokenTimeOutDefault, Value: "0"},                                           // 默认0=不启用全局默认(向后兼容); 分组级 FirstTokenTimeOut 仍优先
+		{Key: SettingKeyFirstTokenTimeOutDefault, Value: DefaultFirstTokenTimeOutSeconds},               // 非0=启用全局首内容绝对死线(参考实现同值); 分组级 FirstTokenTimeOut 仍优先, 设0可退回旧行为
 		{Key: SettingKeyFirstByteKeepaliveDelaySeconds, Value: defaultFirstByteKeepaliveDelaySeconds()}, // 默认20=开启: 上游首字节>20s才向下游注入SSE心跳(防前置反代/客户端60s空闲掐断); 0=关闭
 		{Key: SettingKeyInterventionKeepaliveDelaySeconds, Value: "2"},                                  // 默认2=hold期间2秒后即向下游注入SSE心跳: hold轮次寿命受backoff封顶15s约束,20s首字delay在轮内永远死胎; 0=关闭
 		{Key: SettingKeyRelayInterventionEnabled, Value: "true"},                                        // 默认开: 流式请求在普通渠道/回退用尽后自动救援; 关=普通渠道立刻回错(无熔断渠道仍可按预算自救)

@@ -12,8 +12,14 @@ import (
 )
 
 const (
-	defaultStreamKeepaliveIntervalSeconds   = 15
-	defaultStreamDataIntervalTimeoutSeconds = 900
+	defaultStreamKeepaliveIntervalSeconds = 15
+	// defaultStreamDataIntervalTimeoutSeconds is only the fallback used when the
+	// setting cannot be read. It tracks
+	// dbmodel.DefaultRelayStreamDataIntervalTimeoutSeconds (see the reasoning there):
+	// the pre-content phase is covered by the absolute first-content deadline, so this
+	// window only bounds a mid-answer stall, and it must fire before the client's own
+	// patience (measured 369s/529s) does.
+	defaultStreamDataIntervalTimeoutSeconds = 300
 )
 
 func currentStreamKeepaliveInterval() time.Duration {

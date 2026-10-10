@@ -1261,8 +1261,8 @@ func TestCurrentStreamDataIntervalTimeoutUsesSetting(t *testing.T) {
 	t.Setenv("OCTOPUS_RELAY_STREAM_DATA_INTERVAL_TIMEOUT_SECONDS", "")
 	setupRelayErrorDB(t)
 
-	if got := currentStreamDataIntervalTimeout(); got != 900*time.Second {
-		t.Fatalf("expected default stream data interval timeout 900s, got %s", got)
+	if got := currentStreamDataIntervalTimeout(); got != defaultStreamDataIntervalTimeout() {
+		t.Fatalf("expected default stream data interval timeout %s, got %s", defaultStreamDataIntervalTimeout(), got)
 	}
 	if err := op.SettingSetString(dbmodel.SettingKeyRelayStreamDataTimeoutSec, "0"); err != nil {
 		t.Fatalf("disable stream data timeout setting: %v", err)

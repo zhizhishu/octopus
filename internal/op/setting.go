@@ -60,7 +60,17 @@ var settingLegacyDefaultUpgrades = map[model.SettingKey]map[string]string{
 		model.LegacyDefaultCodexHeaderBetaFeaturesTerminalResizeReflow: model.DefaultCodexHeaderBetaFeatures,
 	},
 	model.SettingKeyRelayStreamDataTimeoutSec: {
-		model.LegacyDefaultRelayStreamDataIntervalTimeoutSeconds: model.DefaultRelayStreamDataIntervalTimeoutSeconds,
+		model.LegacyDefaultRelayStreamDataIntervalTimeoutSeconds:    model.DefaultRelayStreamDataIntervalTimeoutSeconds,
+		model.LegacyDefaultRelayStreamDataIntervalTimeoutSeconds900: model.DefaultRelayStreamDataIntervalTimeoutSeconds,
+	},
+	// The pre-content deadline used to ship disabled ("0" = no global default). An
+	// existing row of 0 therefore means "the product default", not "the operator
+	// turned it off" — without this mapping, installed deployments would keep the
+	// behaviour this change exists to fix. An operator who wants it off again sets
+	// the key to 0 (or a per-group FirstTokenTimeOut), and that value sticks because
+	// this map only rewrites the exact legacy default.
+	model.SettingKeyFirstTokenTimeOutDefault: {
+		model.LegacyDefaultFirstTokenTimeOutSeconds: model.DefaultFirstTokenTimeOutSeconds,
 	},
 }
 
