@@ -194,9 +194,8 @@ func TestRelayErrorResponseHidesRawStatusWhenPassthroughDisabled(t *testing.T) {
 		t.Fatalf("set public code: %v", err)
 	}
 
-	// Use a non-429 upstream status: a 429 is always passed through (see
-	// TestRelayErrorResponseAlwaysPassesThrough429); every other status is still hidden
-	// behind a friendly 502 when passthrough is disabled.
+	// Upstream 4xx always retain their status. Upstream 5xx still honor the
+	// admin passthrough toggle independently of the public body policy.
 	status, code, message := relayErrorResponse(newUpstreamError(http.StatusInternalServerError, []byte(`{"error":{"code":"500","message":"cpu overloaded"}}`)))
 	if status != http.StatusBadGateway || code != "service_busy" {
 		t.Fatalf("expected friendly public status/code, got status=%d code=%q message=%q", status, code, message)
@@ -591,5 +590,79 @@ func TestShouldReturnToOriginalGroupSpillsUnlessNone(t *testing.T) {
 	// A request that never used a route has nothing to spill from.
 	if shouldReturnToOriginalGroup(routeGroupResult{AccessRouteUsed: false}, false) {
 		t.Fatalf("a request that did not use a route must not trigger group fallback")
+	}
+}
+
+// An upstream client-error status is the provider's verdict on THIS request: bad input,
+// bad credentials, unknown model, unsupported media, rate limit. Rewriting it as a
+// gateway 502 tells the caller "the relay is broken", so clients either retry a request
+// that can never succeed or abandon a session over their own malformed call. Preserve
+// the status; the body/code redaction policy is a separate concern and stays in force.
+func TestRelayErrorResponsePreservesUpstreamClientErrorStatus(t *testing.T) {
+	setupRelayErrorDB(t)
+
+	if err := op.SettingSetString(dbmodel.SettingKeyUpstreamErrorStatusPass, "false"); err != nil {
+		t.Fatalf("set status passthrough: %v", err)
+	}
+	if err := op.SettingSetString(dbmodel.SettingKeyUpstreamErrorBodyMode, "redacted_upstream"); err != nil {
+		t.Fatalf("set body mode: %v", err)
+	}
+	if err := op.SettingSetString(dbmodel.SettingKeyUpstreamErrorPublicCode, "service_busy"); err != nil {
+		t.Fatalf("set public code: %v", err)
+	}
+
+	for _, want := range []int{
+		http.StatusBadRequest,
+		http.StatusUnauthorized,
+		http.StatusForbidden,
+		http.StatusNotFound,
+		http.StatusMethodNotAllowed,
+		http.StatusConflict,
+		http.StatusRequestEntityTooLarge,
+		http.StatusUnprocessableEntity,
+		http.StatusTooManyRequests,
+	} {
+		status, code, message := relayErrorResponse(newUpstreamError(want, []byte(`{"error":{"message":"provider detail sk-live"}}`)))
+		if status != want {
+			t.Errorf("upstream %d must reach the client as %d, got %d", want, want, status)
+		}
+		if code != "service_busy" {
+			t.Errorf("upstream %d should keep the configured public code, got %q", want, code)
+		}
+		if strings.Contains(message, "provider detail") || strings.Contains(message, "sk-live") {
+			t.Errorf("upstream %d leaked the upstream body: %q", want, message)
+		}
+	}
+}
+
+// The admin passthrough toggle governs upstream SERVER errors only. A 5xx still reads as
+// a gateway failure by default (friendly 502) and passes through when the operator asks
+// for it; upstream 4xx never depend on this toggle.
+func TestRelayErrorResponseMasksOnlyUpstreamServerErrors(t *testing.T) {
+	setupRelayErrorDB(t)
+
+	if err := op.SettingSetString(dbmodel.SettingKeyUpstreamErrorBodyMode, "redacted_upstream"); err != nil {
+		t.Fatalf("set body mode: %v", err)
+	}
+	if err := op.SettingSetString(dbmodel.SettingKeyUpstreamErrorPublicCode, "service_busy"); err != nil {
+		t.Fatalf("set public code: %v", err)
+	}
+
+	if err := op.SettingSetString(dbmodel.SettingKeyUpstreamErrorStatusPass, "false"); err != nil {
+		t.Fatalf("disable status passthrough: %v", err)
+	}
+	for _, want := range []int{http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout} {
+		if status, _, _ := relayErrorResponse(newUpstreamError(want, []byte(`{"error":{"message":"boom"}}`))); status != http.StatusBadGateway {
+			t.Errorf("upstream %d should stay a friendly 502 with passthrough off, got %d", want, status)
+		}
+	}
+
+	if err := op.SettingSetString(dbmodel.SettingKeyUpstreamErrorStatusPass, "true"); err != nil {
+		t.Fatalf("enable status passthrough: %v", err)
+	}
+	for _, want := range []int{http.StatusInternalServerError, http.StatusServiceUnavailable} {
+		if status, _, _ := relayErrorResponse(newUpstreamError(want, []byte(`{"error":{"message":"boom"}}`))); status != want {
+			t.Errorf("upstream %d should pass through with passthrough on, got %d", want, status)
+		}
 	}
 }

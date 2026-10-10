@@ -75,7 +75,7 @@ func TestIsContextWindowError(t *testing.T) {
 
 // TestRelayErrorResponseContextWindow: a context-window 400 must surface to the
 // client as a clean 400 with the context_length_exceeded code — NOT masked as the
-// default 502 that a plain upstream 400 becomes.
+// gateway 502; plain upstream 4xx statuses are preserved as well.
 func TestRelayErrorResponseContextWindow(t *testing.T) {
 	ctxErr := &upstreamError{statusCode: http.StatusBadRequest, code: "octopus_upstream_bad_request",
 		body: `{"error":{"code":"context_length_exceeded"}}`}
@@ -87,11 +87,11 @@ func TestRelayErrorResponseContextWindow(t *testing.T) {
 		t.Fatalf("expected context_length_exceeded code, got %q", code)
 	}
 
-	// Contrast: a plain upstream 400 is still masked as 502 (default redact policy).
+	// Body redaction must not turn an ordinary upstream 400 into a gateway error.
 	plain := &upstreamError{statusCode: http.StatusBadRequest, code: "octopus_upstream_bad_request",
 		body: `{"error":{"message":"model not found"}}`}
-	if status, _, _ := relayErrorResponse(plain); status != http.StatusBadGateway {
-		t.Fatalf("plain 400 should mask to 502 by default, got %d", status)
+	if status, _, _ := relayErrorResponse(plain); status != http.StatusBadRequest {
+		t.Fatalf("plain upstream 400 must remain 400, got %d", status)
 	}
 }
 
