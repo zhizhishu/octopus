@@ -6,6 +6,7 @@ import (
 
 	dbmodel "github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/op"
+	"github.com/bestruirui/octopus/internal/transformer/model"
 	"github.com/bestruirui/octopus/internal/transformer/outbound"
 	"github.com/bestruirui/octopus/internal/utils/log"
 )
@@ -58,8 +59,18 @@ func (ra *relayAttempt) ensureClaudeCLIShapeTopLevelKeys() {
 	if !shouldApplyChannelCloak(ra.channel.Cloak) {
 		return
 	}
-	// A genuine CLI caller owns its own shape; completing it would rewrite the caller's body.
+	// A genuine CLI caller owns its own shape; completing it would rewrite the caller's body
+	// (filling thinking would switch thinking ON for a client that chose to leave it out). So it is
+	// left alone — but a CLI-shaped caller MISSING these members is an anomaly worth a warning: a
+	// real CLI sends all three on every request (22/22), so this is either a spoofed User-Agent or
+	// a trimmed client, and the operator should know the body is not what the shape suggests.
 	if clientIsCLIShaped(ra.c.Request) {
+		if missing := missingClaudeCLIShapeKeys(ra.internalRequest); len(missing) > 0 {
+			log.Warnf("claude CLI shape: a CLI-shaped caller is missing top-level %v — leaving the body exactly as the caller sent it "+
+				"(a genuine CLI sends all three on every request, so this is a spoofed fingerprint or a trimmed client; "+
+				"completing them would switch thinking on for a client that chose to leave it out, so it stays the caller's call)",
+				missing)
+		}
 		return
 	}
 	enabled, err := op.SettingGetBool(dbmodel.SettingKeyRelayClaudeCLIShapeKeys)
@@ -86,4 +97,22 @@ func (ra *relayAttempt) ensureClaudeCLIShapeTopLevelKeys() {
 
 	log.Infof("claude CLI shape: completed top-level thinking/context_management/output_config for a non-CLI caller (thinking enables upstream thinking, output_config effort=high); key %s=false disables",
 		dbmodel.SettingKeyRelayClaudeCLIShapeKeys)
+}
+
+// missingClaudeCLIShapeKeys lists the CLI-shaped top-level members this request does not carry.
+func missingClaudeCLIShapeKeys(req *model.InternalLLMRequest) []string {
+	if req == nil {
+		return nil
+	}
+	var missing []string
+	if len(req.AnthropicThinking) == 0 {
+		missing = append(missing, "thinking")
+	}
+	if len(req.AnthropicContextManagement) == 0 {
+		missing = append(missing, "context_management")
+	}
+	if len(req.AnthropicOutputConfig) == 0 {
+		missing = append(missing, "output_config")
+	}
+	return missing
 }
