@@ -167,8 +167,12 @@ func TestApplyCodexFastModeSetsPriorityServiceTierWithoutLoweringEffort(t *testi
 	if req.ServiceTier == nil || *req.ServiceTier != "priority" {
 		t.Fatalf("fast mode must set service_tier=priority, got %#v", req.ServiceTier)
 	}
-	if len(req.ResponsesTextRaw) != 0 {
-		t.Fatalf("fast mode must not inject verbosity, got %s", string(req.ResponsesTextRaw))
+	// 2026-10-10 口径更新: 真 Codex CLI 抓包两份都带顶层 text={"verbosity":"low"} ⇒ 现在会补这个
+	// 成员(见 ensureCodexTextVerbosity)。本条真正要守的是"**快模式不许把 verbosity 调低**" ——
+	// 补出来的是黄金样本的默认值 low, 与"快模式降级"不是一回事, 所以断言改成: 只要补了, 值必须是
+	// 那个默认值(即快模式没有往里写别的值)。
+	if len(req.ResponsesTextRaw) != 0 && string(req.ResponsesTextRaw) != `{"verbosity":"low"}` {
+		t.Fatalf("fast mode must not change verbosity (only the golden default may appear), got %s", string(req.ResponsesTextRaw))
 	}
 
 	existing := "flex"
@@ -218,8 +222,9 @@ func TestPrepareCodexRequestShapeSynthesizesPlainResponsesInput(t *testing.T) {
 	if !containsString(req.Include, "reasoning.encrypted_content") {
 		t.Fatalf("expected reasoning encrypted content include, got %#v", req.Include)
 	}
-	if len(req.ResponsesTextRaw) != 0 {
-		t.Fatalf("expected no text verbosity injection when fast mode is off by default, got %s", string(req.ResponsesTextRaw))
+	// 同上: 默认(非快模式)现在按黄金样本补 {"verbosity":"low"}; 调用方自己发的不许被改。
+	if got := string(req.ResponsesTextRaw); got != "" && got != `{"verbosity":"low"}` {
+		t.Fatalf("expected the golden text verbosity when the caller sent none, got %s", got)
 	}
 	if req.ReasoningEffort != "" {
 		t.Fatalf("expected no forced reasoning effort when fast mode is off by default, got %q", req.ReasoningEffort)

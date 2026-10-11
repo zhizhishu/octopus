@@ -6,6 +6,7 @@ import (
 
 	dbmodel "github.com/bestruirui/octopus/internal/model"
 	transformerModel "github.com/bestruirui/octopus/internal/transformer/model"
+	"github.com/bestruirui/octopus/internal/utils/log"
 	"github.com/bestruirui/octopus/internal/transformer/outbound"
 )
 
@@ -21,6 +22,7 @@ func (ra *relayAttempt) prepareCodexRequestShape() {
 	}
 	req := ra.internalRequest
 	addCodexResponsesInclude(req)
+	ensureCodexTextVerbosity(req)
 	ra.bridgePlainResponsesCodexHistory()
 	// A genuine codex client sends a Responses-shaped `input` that already carries its own
 	// developer/system instructions and tool declarations inline (SELF-CONTAINED). Detect that
@@ -241,6 +243,25 @@ func ensureCodexReasoningContext(req *transformerModel.InternalLLMRequest) {
 // plain (non-codex) Responses channels, which never get the Lite header and whose
 // upstreams may handle the field differently. Living in the codex shaper keeps every
 // other channel's bytes untouched.
+// ensureCodexTextVerbosity fills the top-level `text` member a genuine codex client always
+// sends. 依据: 2026-10-10 归档的两份真 Codex CLI /v1/responses 抓包
+// (2026-10-10-gpt-6-astra-golden-direct-v1_responses-002.json 与 …-viaoct-…-004.json) 顶层键序
+// 完全一致(model, stream, input, tool_choice, parallel_tool_calls, reasoning, store, include,
+// prompt_cache_key, text, client_metadata), 且两份的 text 都是 {"verbosity":"low"}。
+// 只在**缺席**时补(调用方自己发的 text 不覆盖), 由 relay_codex_text_verbosity 开关控制(默认开),
+// 补了就打日志 —— 与补齐 Claude 三键 / safeguards 同一族做法。
+func ensureCodexTextVerbosity(req *transformerModel.InternalLLMRequest) {
+	if req == nil || len(req.ResponsesTextRaw) > 0 {
+		return
+	}
+	if settingString(dbmodel.SettingKeyRelayCodexTextVerbosity, "true") != "true" {
+		return
+	}
+	req.ResponsesTextRaw = json.RawMessage(`{"verbosity":"low"}`)
+	log.Infof("codex shape: filled the top-level text member with the golden sample value {\"verbosity\":\"low\"} "+
+		"(the caller sent none); key %s=false disables", dbmodel.SettingKeyRelayCodexTextVerbosity)
+}
+
 func ensureCodexParallelToolCalls(req *transformerModel.InternalLLMRequest) {
 	if req == nil {
 		return

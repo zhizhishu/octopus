@@ -122,6 +122,12 @@ const (
 	// pass-through: present if the caller sent it, absent otherwise). tool_choice / temperature
 	// / top_p are never added (the CLI sends them in 0% of captures).
 	SettingKeyRelayClaudeCLIShapeKeys SettingKey = "relay_claude_cli_shape_keys"
+
+	// SettingKeyRelayCodexTextVerbosity defaults to "true". When on, a request routed to the
+	// Codex /v1/responses shape that carries NO top-level `text` member gets the golden one
+	// (`{"verbosity":"low"}`) — 2026-10-10 归档的 2 份真 Codex CLI 抓包(direct-002 / viaoct-004)
+	// 都是这个值, 且都带这个成员。只在缺席时补: 调用方自己发的 text 一律不覆盖。
+	SettingKeyRelayCodexTextVerbosity SettingKey = "relay_codex_text_verbosity"
 	// SettingKeyRelayInterventionTimeoutSec bounds that hold: once it elapses with nobody
 	// resolving the request, the original upstream error goes to the client after all.
 	// Since the unified automatic-recovery window is hard-capped at 300s from the first
@@ -474,6 +480,7 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyInterventionKeepaliveDelaySeconds, Value: "2"},                                  // 默认2=hold期间2秒后即向下游注入SSE心跳: hold轮次寿命受backoff封顶15s约束,20s首字delay在轮内永远死胎; 0=关闭
 		{Key: SettingKeyRelayInterventionEnabled, Value: "true"},                                        // 默认开: 流式请求在普通渠道/回退用尽后自动救援; 关=普通渠道立刻回错(无熔断渠道仍可按预算自救)
 		{Key: SettingKeyRelayClaudeCLIShapeKeys, Value: "true"},                                          // 默认开: 非 CLI 调用方经 Anthropic 渠道出站补齐真 CLI 必发的 thinking/context_management/output_config(值取 22/22 黄金样本); 关=完全按调用方原样发
+		{Key: SettingKeyRelayCodexTextVerbosity, Value: "true"},                                          // 默认开: 走 Codex /v1/responses 形状且调用方没发顶层 text 时, 补黄金样本的 {"verbosity":"low"}; 关=不补                                          // 默认开: 非 CLI 调用方经 Anthropic 渠道出站补齐真 CLI 必发的 thinking/context_management/output_config(值取 22/22 黄金样本); 关=完全按调用方原样发
 		{Key: SettingKeyRelayInterventionTimeoutSec, Value: "1800"},                                     // 人工接管等待上限(秒); 自动救援总计已封顶300s, 此值仅可再收紧(<300), 超时后原错误照常返回客户端
 		{Key: SettingKeyRelayNoBreakerRetryBudgetSec, Value: "300"},                                     // 无熔断渠道自动猛打预算(秒): 按画布既定顺序反复重试; 最大300(自动救援总计上限), 0=关闭
 		{Key: SettingKeyRouteModeOverride, Value: DefaultRouteModeOverride},                             // 默认优先填充；已有独立模式的规则不受影响

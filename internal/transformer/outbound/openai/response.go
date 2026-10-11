@@ -636,27 +636,34 @@ func (o *ResponseOutbound) emitToolCallName(outputIndex int, name string) string
 
 // ResponsesRequest represents the OpenAI Responses API request format.
 type ResponsesRequest struct {
+	// 字段顺序 = 真 Codex CLI /v1/responses 的顶层键序(2026-10-10 归档的 2 份抓包:
+	// 2026-10-10-gpt-6-astra-golden-direct-v1_responses-002.json 与 …-viaoct-…-004.json, 两份完全一致:
+	// model, stream, input, tool_choice, parallel_tool_calls, reasoning, store, include,
+	// prompt_cache_key, text, client_metadata)。非 Codex 调用方走本字段序; 同协议调用方由 KeyOrder
+	// 重放它自己的顺序 —— 所以这里只影响"我们替调用方构造"的那条路。
+	// ⚠️ instructions / tools 不在这两份样本里(那两轮没带), 位置**没有原始依据** ⇒ 暂放 input 之后,
+	// 标注"位置待真 raw 确认", 不臆造。
 	Model                string                `json:"model"`
-	Instructions         string                `json:"instructions,omitempty"`
+	Stream               *bool                 `json:"stream,omitempty"`
 	Input                ResponsesInput        `json:"input"`
-	Tools                []ResponsesTool       `json:"tools,omitempty"`
+	Instructions         string                `json:"instructions,omitempty"` // 位置待真 raw 确认
+	Tools                []ResponsesTool       `json:"tools,omitempty"`        // 位置待真 raw 确认
 	ToolChoice           *ResponsesToolChoice  `json:"tool_choice,omitempty"`
 	ParallelToolCalls    *bool                 `json:"parallel_tool_calls,omitempty"`
-	Stream               *bool                 `json:"stream,omitempty"`
-	Text                 *ResponsesTextOptions `json:"text,omitempty"`
+	Reasoning            *ResponsesReasoning   `json:"reasoning,omitempty"`
 	Store                *bool                 `json:"store,omitempty"`
+	Include              []string              `json:"include,omitempty"`
+	PromptCacheKey       *string               `json:"prompt_cache_key,omitempty"`
+	Text                 *ResponsesTextOptions `json:"text,omitempty"`
+	ClientMetadata       json.RawMessage       `json:"client_metadata,omitempty"`
 	ServiceTier          *string               `json:"service_tier,omitempty"`
 	User                 *string               `json:"user,omitempty"`
-	PromptCacheKey       *string               `json:"prompt_cache_key,omitempty"`
 	PromptCacheRetention *string               `json:"prompt_cache_retention,omitempty"`
 	PreviousResponseID   *string               `json:"previous_response_id,omitempty"`
 	Metadata             map[string]string     `json:"metadata,omitempty"`
-	ClientMetadata       json.RawMessage       `json:"client_metadata,omitempty"`
 	MaxOutputTokens      *int64                `json:"max_output_tokens,omitempty"`
 	Temperature          *float64              `json:"temperature,omitempty"`
 	TopP                 *float64              `json:"top_p,omitempty"`
-	Reasoning            *ResponsesReasoning   `json:"reasoning,omitempty"`
-	Include              []string              `json:"include,omitempty"`
 
 	// KeyOrder is the top-level key sequence the Responses client actually sent. It is
 	// replayed by MarshalJSON so a same-protocol relay emits the body in the client's
