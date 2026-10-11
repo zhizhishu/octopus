@@ -2188,6 +2188,13 @@ func enforceCodexNoAcceptEncoding(channelType outbound.OutboundType, header http
 // 首字母大写)。只有直接写 map 键能绕过规范化, 所以放在**真正发出前的最后一步**: 上游逻辑里按规范名
 // 读这些头的地方(Header.Get 走规范名)不受影响。
 func lowercaseAnthropicCLIHeaderNames(h http.Header) {
+	// X-Stainless-OS: 真 CLI 抓包里是 `X-Stainless-OS`(OS 全大写), 而 Go 的规范化产出
+	// `X-Stainless-Os` —— 实测 21 份真 CLI 抓包 21/21 都是 `X-Stainless-OS`。这个头不在下面的
+	// 小写名单里(它整体是规范大写), 单独按键名精确重写。
+	if values, ok := h["X-Stainless-Os"]; ok && len(values) > 0 {
+		delete(h, "X-Stainless-Os")
+		h["X-Stainless-OS"] = append(h["X-Stainless-OS"], values...)
+	}
 	for _, wire := range []string{
 		"anthropic-beta",
 		"anthropic-version",
