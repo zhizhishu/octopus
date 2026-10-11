@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/bestruirui/octopus/internal/model"
+	"github.com/bestruirui/octopus/internal/utils/xredact"
 )
 
 // Iterator 统一的负载均衡迭代器
@@ -227,7 +228,7 @@ func (it *Iterator) Skip(channelID, channelKeyID int, channelName, msg string) {
 		AttemptNum:   it.count,
 		Status:       model.AttemptSkipped,
 		Sticky:       it.IsSticky(),
-		Msg:          msg,
+		Msg:          xredact.Secrets(msg),
 	})
 }
 
@@ -257,7 +258,7 @@ func (it *Iterator) SkipCircuitBreakScoped(channelID, channelKeyID int, channelN
 		AttemptNum:   it.count,
 		Status:       model.AttemptCircuitBreak,
 		Sticky:       it.IsSticky(),
-		Msg:          msg,
+		Msg:          xredact.Secrets(msg),
 	})
 	return true
 }
@@ -316,7 +317,7 @@ func (s *AttemptSpan) End(status model.AttemptStatus, statusCode int, msg string
 	s.ended = true
 	s.attempt.Status = status
 	s.attempt.Duration = int(time.Since(s.startTime).Milliseconds())
-	s.attempt.Msg = msg
+	s.attempt.Msg = xredact.Secrets(msg)
 	s.iter.attempts = append(s.iter.attempts, s.attempt)
 }
 

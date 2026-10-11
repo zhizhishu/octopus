@@ -31,6 +31,8 @@ export function sanitizeChannelTestError(text: string): string {
         .replace(/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d{2,5})?\b/g, '上游')
         .replace(/(authorization\s*:\s*bearer|x-api-key|api[_-]?key|token|secret)\s*[=:]?\s*[^\s,;]+/gi, '$1 [已隐藏]')
         .replace(/\bsk-[a-z0-9_-]+\b/gi, '[已隐藏]')
+        .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, '[已隐藏]')
+        .replace(/\b[A-Fa-f0-9]{32,}\b/g, '[已隐藏]')
         .trim();
 }
 

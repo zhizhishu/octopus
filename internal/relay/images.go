@@ -1108,7 +1108,7 @@ type proxySSEOptions struct {
 func proxySSEWithOptions(ctx context.Context, c *gin.Context, respUp *http.Response, firstTokenTimeOutSec int, metrics firstTokenMetrics, options proxySSEOptions) (*imagesUsage, bool, string, error) {
 	if ct := respUp.Header.Get("Content-Type"); ct != "" && !strings.Contains(strings.ToLower(ct), "text/event-stream") {
 		b, _ := io.ReadAll(io.LimitReader(respUp.Body, imagesUpstreamErrorBodyLimit))
-		return nil, false, "", fmt.Errorf("upstream returned non-SSE content-type %q for stream request: %s", ct, string(b))
+		return nil, false, "", fmt.Errorf("upstream returned non-SSE content-type %q for stream request: %s", ct, upstreamBodySummary(string(b)))
 	}
 
 	// 设置 SSE 响应头

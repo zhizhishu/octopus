@@ -11,6 +11,8 @@ var secretPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)(x-api-key\s*[:=]\s*)([^\s"',;{}\[\]]+)`),
 	regexp.MustCompile(`(?i)((?:api[_-]?key|apikey|token|secret)\s*[:=]\s*)([^\s"',;{}\[\]]+)`),
 	regexp.MustCompile(`\bsk-[A-Za-z0-9._-]{3,}\b`),
+	regexp.MustCompile(`\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b`),
+	regexp.MustCompile(`\b[A-Fa-f0-9]{32,}\b`),
 }
 
 // Secrets replaces provider/API credentials that might be echoed by upstream

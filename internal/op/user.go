@@ -80,7 +80,7 @@ func UserInit() error {
 		if err := conn.Create(&admin).Error; err != nil {
 			return err
 		}
-		log.Infof("initial user: admin,password: admin")
+		log.Infof("initial user: admin (default password set; please change it immediately after login)")
 	} else {
 		var first model.User
 		if err := conn.Order("id ASC").First(&first).Error; err != nil {
