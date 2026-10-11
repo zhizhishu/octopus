@@ -83,6 +83,10 @@ func ShouldTriggerAuditFollowUp(relayLog model.RelayLog) bool {
 	if relayLog.ChannelId <= 0 {
 		return false
 	}
+	// 跟进开关: 默认开(键缺失时视为开), 管理员关掉后 echo_mismatch 跟进静默停打上游。
+	if enabled, err := SettingGetBool(model.SettingKeyModelAuditFollowUpEnabled); err == nil && !enabled {
+		return false
+	}
 	if relayLogExcludedFromModelTelemetry(relayLog) {
 		return false
 	}

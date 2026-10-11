@@ -817,6 +817,8 @@
             "nonStream": "Non-stream",
             "echoMismatch": "Echo mismatch",
             "echoMismatchHint": "Upstream reported {model}, which differs from the name we sent. This is a clue, not proof of a fake model",
+            "echoAliasVariant": "alias suspected",
+            "echoAliasVariantHint": "Upstream reported {model}, a same-family variant of the name we sent (suffix/date build differs). Likely alias parsing — a clue, not proof of a fake model",
             "upstreamEcho": "Upstream reported",
             "reasoningEffort": "Reasoning Effort",
             "userName": "User",

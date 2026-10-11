@@ -89,6 +89,10 @@ type RelayLog struct {
 	// UpstreamModelMismatch 三态: nil = 无法判定(上游没声明, 或我们不知道发出去的名字),
 	// false = 一致, true = 不一致。只作线索——上游回显本身可以撒谎, 一致不等于真, 不一致不等于假。
 	UpstreamModelMismatch *bool `json:"upstream_model_mismatch,omitempty"`
+	// UpstreamMismatchCode 细分 mismatch 类型: ''=完全不符(旧语义)/非 mismatch;
+	// 'alias_variant'=同族别名疑似(剥日期后缀后同族前缀一致, 只有后缀/日期档位不同)。
+	// 前端据此区分「别名疑似」与「名字完全不符」。AutoMigrate 自动加列, 旧行为空。
+	UpstreamMismatchCode string `json:"upstream_mismatch_code,omitempty" gorm:"size:32;default:''"`
 	// 以下 5 列把「行为审计」结论钉回触发了它的那一条日志行(此前结论只在内存快照里,
 	// 重启即丢, 且同渠道同模型的所有日志行共用一份快照)。全部由 AutoMigrate 自动加列,
 	// 历史行为空 = 未检测, 不回填。与 modelverify/behavior 的 Verdict 语义对齐:

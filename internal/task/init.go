@@ -35,7 +35,11 @@ func Init() {
 	op.RelayLogFlusherStart()
 	RegisterAuditFollowUp()
 	Register(TaskUserRelayIPSave, 1*time.Minute, false, op.UserRelayIPSaveDBTask)
-	Register(TaskModelAuditQuick, scheduledAuditInterval, false, ModelAuditQuickTask)
+	// 模型快检总开关: 默认开(键缺失视为开), 关掉后不再注册周期任务(已注册任务按间隔空转前的
+	// 惰性守卫放在 ModelAuditQuickTask 内)。这里只控制注册, 回退=关开关零代码回滚。
+	if modelAuditEnabled, err := op.SettingGetBool(model.SettingKeyModelAuditEnabled); err != nil || modelAuditEnabled {
+		Register(TaskModelAuditQuick, scheduledAuditInterval, false, ModelAuditQuickTask)
+	}
 
 	// 渠道 key 的计费(TotalCost)/401 隔离态(DisabledReason/At)/末次使用原本只在优雅退出的
 	// SaveCache 里落库, 崩溃/OOM/docker kill 会丢掉自启动以来累计的全部渠道 key 账目(含把坏

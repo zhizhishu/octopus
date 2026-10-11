@@ -26,7 +26,7 @@ const (
 	SettingKeyAnthropicAutoCacheControl SettingKey = "anthropic_auto_cache_control" // Anthropic 出站自动为稳定长前缀注入 cache_control
 	SettingKeyRelayStreamKeepaliveSec   SettingKey = "relay_stream_keepalive_interval_seconds"
 	SettingKeyOpenAIAutoPromptCacheKey  SettingKey = "openai_auto_prompt_cache_key"
-	SettingKeyUpstreamUTLSFingerprint   SettingKey = "upstream_utls_fingerprint" // 直连上游用 Chrome uTLS ClientHello (JA3); opt-in, 默认关, 启用前须过 the relay 复验
+	SettingKeyUpstreamUTLSFingerprint   SettingKey = "upstream_utls_fingerprint"   // 直连上游用 Chrome uTLS ClientHello (JA3); opt-in, 默认关, 启用前须过 the relay 复验
 	SettingKeyUpstreamHTTP1HeaderOrder  SettingKey = "upstream_http1_header_order" // 明文 HTTP/1.1 出站按真 CLI 的 21 项逐字节头序(含头名大小写与 Connection: keep-alive)重写; opt-in, 默认关, 关闭=与今天逐字节相同
 	SettingKeyRelayStreamDataTimeoutSec SettingKey = "relay_stream_data_interval_timeout_seconds"
 	// SettingKeyRelayRequestTotalTimeoutSec is the THIRD clock: an absolute ceiling on
@@ -152,6 +152,11 @@ const (
 	SettingKeyUpstreamErrorBodyMode   SettingKey = "upstream_error_body_mode"
 	SettingKeyUpstreamErrorCustom     SettingKey = "upstream_error_custom_message"
 	SettingKeyUpstreamErrorPublicCode SettingKey = "upstream_error_public_code"
+	// Model audit switches (gateway model authenticity detection). Both default to true:
+	// disabled = one-switch rollback with zero code changes. followup controls the
+	// echo-mismatch follow-up probe; enabled controls the whole scheduled quick audit.
+	SettingKeyModelAuditEnabled         SettingKey = "model_audit_enabled"          // 网关模型真假检测总开关(定时快检); 默认开, 关=一键回退
+	SettingKeyModelAuditFollowUpEnabled SettingKey = "model_audit_followup_enabled" // 回显不一致自动跟进检测开关; 默认开, 关=只记日志不打上游
 	// Credential redaction (CosyRedactGateway-style). The global switch is the
 	// master gate: even channels with redact_enabled=true do nothing while it is
 	// false, so operators can kill the feature instance-wide without touching
@@ -442,7 +447,7 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyAnthropicAutoCacheControl, Value: "true"}, // 默认开启稳定前缀缓存断点，提升 provider 原生命中率
 		{Key: SettingKeyRelayStreamKeepaliveSec, Value: defaultRelayStreamKeepaliveIntervalSeconds()},
 		{Key: SettingKeyOpenAIAutoPromptCacheKey, Value: "true"},
-		{Key: SettingKeyUpstreamUTLSFingerprint, Value: "false"}, // 默认关：改 TLS 指纹影响所有上游，须先过 the relay 复验再开
+		{Key: SettingKeyUpstreamUTLSFingerprint, Value: "false"},  // 默认关：改 TLS 指纹影响所有上游，须先过 the relay 复验再开
 		{Key: SettingKeyUpstreamHTTP1HeaderOrder, Value: "false"}, // 默认关：明文 HTTP/1.1 出站头序/头名大小写/Connection 重写，须先过抓包复验再开；关=旧字节
 		{Key: SettingKeyRelayStreamDataTimeoutSec, Value: defaultRelayStreamDataIntervalTimeoutSeconds()},
 		// 整次请求的绝对时长上限(秒), 0 = 不启用(旧行为)。给"上游一直在慢慢吐字节/一直发开场事件"
@@ -481,8 +486,8 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyFirstByteKeepaliveDelaySeconds, Value: defaultFirstByteKeepaliveDelaySeconds()}, // 默认20=开启: 上游首字节>20s才向下游注入SSE心跳(防前置反代/客户端60s空闲掐断); 0=关闭
 		{Key: SettingKeyInterventionKeepaliveDelaySeconds, Value: "2"},                                  // 默认2=hold期间2秒后即向下游注入SSE心跳: hold轮次寿命受backoff封顶15s约束,20s首字delay在轮内永远死胎; 0=关闭
 		{Key: SettingKeyRelayInterventionEnabled, Value: "true"},                                        // 默认开: 流式请求在普通渠道/回退用尽后自动救援; 关=普通渠道立刻回错(无熔断渠道仍可按预算自救)
-		{Key: SettingKeyRelayClaudeCLIShapeKeys, Value: "true"},                                          // 默认开: 非 CLI 调用方经 Anthropic 渠道出站补齐真 CLI 必发的 thinking/context_management/output_config(值取 22/22 黄金样本); 关=完全按调用方原样发
-		{Key: SettingKeyRelayCodexTextVerbosity, Value: "true"},                                          // 默认开: 走 Codex /v1/responses 形状且调用方没发顶层 text 时, 补黄金样本的 {"verbosity":"low"}; 关=不补                                          // 默认开: 非 CLI 调用方经 Anthropic 渠道出站补齐真 CLI 必发的 thinking/context_management/output_config(值取 22/22 黄金样本); 关=完全按调用方原样发
+		{Key: SettingKeyRelayClaudeCLIShapeKeys, Value: "true"},                                         // 默认开: 非 CLI 调用方经 Anthropic 渠道出站补齐真 CLI 必发的 thinking/context_management/output_config(值取 22/22 黄金样本); 关=完全按调用方原样发
+		{Key: SettingKeyRelayCodexTextVerbosity, Value: "true"},                                         // 默认开: 走 Codex /v1/responses 形状且调用方没发顶层 text 时, 补黄金样本的 {"verbosity":"low"}; 关=不补                                          // 默认开: 非 CLI 调用方经 Anthropic 渠道出站补齐真 CLI 必发的 thinking/context_management/output_config(值取 22/22 黄金样本); 关=完全按调用方原样发
 		{Key: SettingKeyRelayInterventionTimeoutSec, Value: "1800"},                                     // 人工接管等待上限(秒); 自动救援总计已封顶300s, 此值仅可再收紧(<300), 超时后原错误照常返回客户端
 		{Key: SettingKeyRelayNoBreakerRetryBudgetSec, Value: "300"},                                     // 无熔断渠道自动猛打预算(秒): 按画布既定顺序反复重试; 最大300(自动救援总计上限), 0=关闭
 		{Key: SettingKeyRouteModeOverride, Value: DefaultRouteModeOverride},                             // 默认优先填充；已有独立模式的规则不受影响
@@ -493,9 +498,11 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyUpstreamErrorBodyMode, Value: "redacted_upstream"},
 		{Key: SettingKeyUpstreamErrorCustom, Value: "Upstream request failed. Please try again later."},
 		{Key: SettingKeyUpstreamErrorPublicCode, Value: "service_busy"},
-		{Key: SettingKeyRedactEnabled, Value: "false"},        // 凭据脱敏总闸: 默认关; 开启后 redact_enabled=true 的渠道才会在出站 body 上做密钥→占位符替换+响应还原(指纹路径零改动)
-		{Key: SettingKeyRedactDefaultFlags, Value: "HPSIBEG"}, // 渠道未自定义 flags 时的默认检测器: H高熵 P电话 S密钥 I身份证 B银行卡 E邮箱 G gitleaks
-		{Key: SettingKeyRedactNoticeEnabled, Value: "true"},   // 脱敏时向首条用户消息注入占位符说明(提高模型保真); 可关
+		{Key: SettingKeyRedactEnabled, Value: "false"},            // 凭据脱敏总闸: 默认关; 开启后 redact_enabled=true 的渠道才会在出站 body 上做密钥→占位符替换+响应还原(指纹路径零改动)
+		{Key: SettingKeyRedactDefaultFlags, Value: "HPSIBEG"},     // 渠道未自定义 flags 时的默认检测器: H高熵 P电话 S密钥 I身份证 B银行卡 E邮箱 G gitleaks
+		{Key: SettingKeyRedactNoticeEnabled, Value: "true"},       // 脱敏时向首条用户消息注入占位符说明(提高模型保真); 可关
+		{Key: SettingKeyModelAuditEnabled, Value: "true"},         // 模型真假检测(定时快检)默认开
+		{Key: SettingKeyModelAuditFollowUpEnabled, Value: "true"}, // 回显不一致自动跟进默认开
 		{Key: SettingKeyCheckInEnabled, Value: "false"},
 		{Key: SettingKeyCheckInRewardMode, Value: "fixed"},
 		{Key: SettingKeyCheckInRewardAmount, Value: "100"},
@@ -655,7 +662,8 @@ func (s *Setting) Validate() error {
 		SettingKeyClaudeHeaderStabilize, SettingKeyClaudeCLIAutoCompact, SettingKeyCodexFastMode,
 		SettingKeyUserRegistrationEnabled, SettingKeyUpstreamErrorStatusPass, SettingKeyCheckInEnabled,
 		SettingKeyDebugLoadBalancer, SettingKeyEmailVerificationEnabled, SettingKeyEmailSMTPSSL,
-		SettingKeyUpstreamUTLSFingerprint, SettingKeyUpstreamHTTP1HeaderOrder, SettingKeyDiagnosticMode, SettingKeyRouteStickyCacheFirst:
+		SettingKeyUpstreamUTLSFingerprint, SettingKeyUpstreamHTTP1HeaderOrder, SettingKeyDiagnosticMode, SettingKeyRouteStickyCacheFirst,
+		SettingKeyModelAuditEnabled, SettingKeyModelAuditFollowUpEnabled:
 		if s.Value != "true" && s.Value != "false" {
 			return fmt.Errorf("%s must be true or false", s.Key)
 		}

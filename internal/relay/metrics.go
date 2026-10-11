@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"regexp"
 	"strings"
 	"time"
 
@@ -138,6 +139,24 @@ func (m *RelayMetrics) CommitUpstreamDeclaredModel(name string) {
 //
 // 返回 false/true 才是有观测的结论。刻意偏离 sub2api 一处: 它在 sentModel 为空时判 true,
 // 而 octopus 的失败/本地校验路径经常没有出站模型名, 照搬会把"没请求过"记成"不一致"。
+
+// UpstreamMismatchCodeAliasVariant 标记「同族别名疑似」: 名字剥掉日期后缀后同族前缀一致,
+// 只有后缀/日期档位不同。仍是 mismatch(线索照记), 但前端文案按「别名疑似」而非「名字完全
+// 不符」呈现。空串 = 完全不符(旧语义)。
+const UpstreamMismatchCodeAliasVariant = "alias_variant"
+
+// UpstreamModelMismatchCode 把 mismatch 的细分 code 映射出来: mismatch 为 nil/false 时恒空。
+// 没有额外数据可比对时也返回空, 与 mismatch 三态语义对齐。
+func UpstreamModelMismatchCode(mismatch *bool, sentModel, responseModel string) string {
+	if mismatch == nil || !*mismatch {
+		return ""
+	}
+	if upstreamAliasVariantMatch(sentModel, responseModel) {
+		return UpstreamMismatchCodeAliasVariant
+	}
+	return ""
+}
+
 func upstreamModelMismatch(sentModel, responseModel string) *bool {
 	responseModel = strings.TrimSpace(responseModel)
 	sentModel = strings.TrimSpace(sentModel)
@@ -150,11 +169,46 @@ func upstreamModelMismatch(sentModel, responseModel string) *bool {
 
 // upstreamModelsMatchForAudit 大小写不敏感比对(与 sub2api 同口径)。
 //
-// 刻意不做日期后缀归一: 上游回带日期后缀的同族变体(如 -20251101)会被记成不一致。
-// 那只是"待复核"线索, 不是结论——页面文案必须按线索表述, 不得写成"已证实伪造"。
+// 刻意不做日期后缀归一进匹配本身: 上游回带日期后缀的同族变体(如 -20251101)仍记不一致,
+// 但由 UpstreamModelMismatchCode 标成 alias_variant(「别名疑似」), 与「名字完全不符」区分。
 func upstreamModelsMatchForAudit(sentModel, responseModel string) bool {
 	return strings.EqualFold(strings.TrimSpace(sentModel), strings.TrimSpace(responseModel))
 }
+
+// upstreamAliasVariantMatch 判定「同族不同后缀」: 两名小写化后, 剥掉尾部 \d{8} 日期后缀
+// 与连字符, 一侧是另一侧的前缀(且双方非空)。只做受控归一, 不猜家族表——避免把完全不同
+// 的模型名误判成同族。
+func upstreamAliasVariantMatch(sentModel, responseModel string) bool {
+	a, b := upstreamAliasNormalize(sentModel), upstreamAliasNormalize(responseModel)
+	if a == "" || b == "" {
+		return false
+	}
+	short, long := a, b
+	if len(short) > len(long) {
+		short, long = long, short
+	}
+	if !strings.HasPrefix(long, short) {
+		return false
+	}
+	// 前缀边界必须是分隔符(-/_/.), 防止 "mod" 被当成 "modular-..." 的同族前缀。
+	return len(long) == len(short) || long[len(short)] == '-' || long[len(short)] == '_' || long[len(short)] == '.'
+}
+
+// upstreamAliasNormalize 剥尾部 \d{8}$ 日期后缀与其前面的连字符, 小写化, 去首尾空白。
+func upstreamAliasNormalize(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if loc := upstreamModelDateSuffix.FindStringSubmatchIndex(name); loc != nil {
+		// loc[2]..loc[3] 是 \d{8} 组, 其前一个字符若为连字符一并剥掉。
+		end := loc[2]
+		if end > 0 && (name[end-1] == '-' || name[end-1] == '_' || name[end-1] == '.') {
+			end--
+		}
+		name = name[:end]
+	}
+	return strings.TrimSpace(name)
+}
+
+var upstreamModelDateSuffix = regexp.MustCompile(`(\d{8})$`)
 
 func (m *RelayMetrics) SetClientSession(info clientSessionInfo) {
 	m.SessionKey = info.Key
@@ -603,6 +657,10 @@ func (m *RelayMetrics) saveLog(ctx context.Context, err error, duration time.Dur
 		ActualModelName:       actualModel,
 		UpstreamResponseModel: m.UpstreamDeclaredModel,
 		UpstreamModelMismatch: upstreamModelMismatch(m.ActualModel, m.UpstreamDeclaredModel),
+		UpstreamMismatchCode: func() string {
+			mm := upstreamModelMismatch(m.ActualModel, m.UpstreamDeclaredModel)
+			return UpstreamModelMismatchCode(mm, m.ActualModel, m.UpstreamDeclaredModel)
+		}(),
 		UseTime:               int(duration.Milliseconds()),
 		Attempts:              attempts,
 		TotalAttempts:         len(attempts),

@@ -444,6 +444,9 @@ function LogRouteHeader({
     const showEcho = Boolean(log.channel_name) || Boolean(upstreamEchoName) || typeof log.upstream_model_mismatch === 'boolean';
     const mappedByUs = Boolean(log.request_model_name && log.actual_model_name && log.request_model_name !== log.actual_model_name);
     const echoMismatch = log.upstream_model_mismatch === true;
+    // 同族别名疑似：剥日期后缀后同族前缀一致，只有后缀/日期档位不同。文案按「别名疑似」
+    // 呈现，与「名字完全不符」区分；仍是线索不是结论。
+    const echoAliasVariant = log.upstream_mismatch_code === 'alias_variant';
     const echoState = echoMismatch ? 'mismatch' : (upstreamEchoName ? 'match' : 'silent');
     /**
      * B1 尾部：上游自报的真模型（`upstream_response_model`）。紧跟 oct 实际发出的模型，
@@ -506,11 +509,11 @@ function LogRouteHeader({
                                 isCard ? "px-1.5 py-0" : "px-2 py-0.5"
                             )}
                         >
-                            {t('echoMismatch')}
+                            {echoAliasVariant ? t('echoAliasVariant') : t('echoMismatch')}
                         </Badge>
                     </PopoverTrigger>
                     <PopoverContent align="start" className="w-72 p-3">
-                        <p className="text-xs font-medium text-foreground">{t('echoMismatch')}</p>
+                        <p className="text-xs font-medium text-foreground">{echoAliasVariant ? t('echoAliasVariant') : t('echoMismatch')}</p>
                         <div className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[11px]">
                             <span className="text-muted-foreground">{t('sentModel')}</span>
                             <span className="break-all">{actualModelDisplayName || requestModelDisplayName}</span>
@@ -521,7 +524,9 @@ function LogRouteHeader({
                         </div>
                         {upstreamEchoName && (
                             <p className="mt-2 border-t border-border pt-2 text-[11px] leading-5 text-muted-foreground">
-                                {t('echoMismatchHint', { model: upstreamEchoName })}
+                                {echoAliasVariant
+                                    ? t('echoAliasVariantHint', { model: upstreamEchoName })
+                                    : t('echoMismatchHint', { model: upstreamEchoName })}
                             </p>
                         )}
                     </PopoverContent>
@@ -1105,7 +1110,7 @@ export const LogCard = React.memo(function LogCard({
                             {upstreamEchoDisplayName ? (
                                 <span className={cn('break-all', log.upstream_model_mismatch === true && 'font-medium text-amber-600 dark:text-amber-400')}>
                                     {upstreamEchoDisplayName}
-                                    {log.upstream_model_mismatch === true && ` · ${t('echoInconsistent')}`}
+                                    {log.upstream_model_mismatch === true && (log.upstream_mismatch_code === 'alias_variant' ? ` · ${t('echoAliasVariant')}` : ` · ${t('echoInconsistent')}`)}
                                     {log.upstream_model_mismatch === false && ` · ${t('echoConsistent')}`}
                                 </span>
                             ) : (
