@@ -639,24 +639,33 @@ attemptChannels:
 			lastErr = err
 		} else {
 			fallbackGroup = enrichGroupForSmartRouting(c.Request.Context(), fallbackGroup, preferStreamRouting)
-			fallbackSticky := routeStickyEnabled(fallbackGroup.Mode, clientSession.Source)
-			fallbackIter := balancer.NewIteratorWithSession(fallbackGroup, apiKeyID, requestModel, clientSessionKey, fallbackSticky)
-			fallbackIter.PrioritizeChannels(nativeProtocolChannelIDs(c.Request.Context(), inboundType, fallbackGroup.Items))
-			prioritizeResponsesSessionOwner(c.Request.Context(), fallbackIter, internalRequest, apiKeyID, userID)
-			if fallbackIter.Len() > 0 {
-				// Spilling to the model pool re-attempts targets that have just failed, so
-				// an upstream Retry-After applies here exactly as it does inside the rescue
-				// loop: never re-hit a throttled upstream before it said to come back.
-				if !paceRetryWait(c.Request.Context()) {
-					if rescueDeadlineExpired(recoveryStartedAt, time.Now()) {
-						rescueExpired = true
+			// 回退轮不得重打本次请求已经试过的渠道: 池里只剩同一家时, 旧行为会在失败后 1ms
+			// 又发一次(同一渠道两份上游执行/两份计费), 而救援循环每轮都把 triedReturnGroup
+			// 重置, 于是每一轮都重复这一发——现场实测 8 次上游请求其实是 4 轮 × 2 发。
+			// 回退的意义是触达"路由没试过的渠道", 已经试过的先剔掉。
+			fallbackGroup, anyFallbackLeft := excludeAttemptedChannels(fallbackGroup, allAttempts)
+			if !anyFallbackLeft {
+				log.Infof("access-route fallback pass has no untried channel left for model %s, skipping it", requestModel)
+			} else {
+				fallbackSticky := routeStickyEnabled(fallbackGroup.Mode, clientSession.Source)
+				fallbackIter := balancer.NewIteratorWithSession(fallbackGroup, apiKeyID, requestModel, clientSessionKey, fallbackSticky)
+				fallbackIter.PrioritizeChannels(nativeProtocolChannelIDs(c.Request.Context(), inboundType, fallbackGroup.Items))
+				prioritizeResponsesSessionOwner(c.Request.Context(), fallbackIter, internalRequest, apiKeyID, userID)
+				if fallbackIter.Len() > 0 {
+					// Spilling to the model pool re-attempts targets that have just failed, so
+					// an upstream Retry-After applies here exactly as it does inside the rescue
+					// loop: never re-hit a throttled upstream before it said to come back.
+					if !paceRetryWait(c.Request.Context()) {
+						if rescueDeadlineExpired(recoveryStartedAt, time.Now()) {
+							rescueExpired = true
+						}
+					} else {
+						group = fallbackGroup
+						iter = fallbackIter
+						req.stickyEnabled = fallbackSticky
+						internalRequest.Model = requestModel
+						goto runIterator
 					}
-				} else {
-					group = fallbackGroup
-					iter = fallbackIter
-					req.stickyEnabled = fallbackSticky
-					internalRequest.Model = requestModel
-					goto runIterator
 				}
 			}
 		}

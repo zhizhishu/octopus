@@ -131,6 +131,36 @@ func (r *rescueRotation) exclude(group dbmodel.Group) (dbmodel.Group, bool) {
 	return group, len(kept) > 0
 }
 
+// excludeAttemptedChannels drops the channels this request already dispatched to. The
+// access-route pool fallback is a SECOND pass over another candidate set, and it used to
+// re-dispatch a channel that had just failed milliseconds earlier: with a single-candidate
+// pool the upstream saw two requests 1ms apart for one retry (duplicate execution, and
+// duplicate billing on a non-idempotent model call). The pass exists to reach channels the
+// route did not try, so what has been attempted is removed from it.
+func excludeAttemptedChannels(group dbmodel.Group, attempts []dbmodel.ChannelAttempt) (dbmodel.Group, bool) {
+	if len(attempts) == 0 || len(group.Items) == 0 {
+		return group, len(group.Items) > 0
+	}
+	burned := make(map[int]struct{}, len(attempts))
+	for _, attempt := range attempts {
+		if attempt.ChannelID != 0 {
+			burned[attempt.ChannelID] = struct{}{}
+		}
+	}
+	kept := make([]dbmodel.GroupItem, 0, len(group.Items))
+	for _, item := range group.Items {
+		if _, seen := burned[item.ChannelID]; seen {
+			continue
+		}
+		kept = append(kept, item)
+	}
+	if len(kept) == len(group.Items) {
+		return group, true
+	}
+	group.Items = kept
+	return group, len(kept) > 0
+}
+
 // exhaustedCount is how many distinct channels have been dropped so far.
 func (r *rescueRotation) exhaustedCount() int {
 	return len(r.exhaustedOrder)
