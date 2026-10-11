@@ -25,7 +25,12 @@ var anthropicClaudeCodeBaseBetas = []string{
 	"context-management-2025-06-27",
 	"prompt-caching-scope-2026-01-05",
 	"mid-conversation-system-2026-04-07",
+	// 2026-10-10 黄金样本(16 份真 CLI 直连抓包)实测的成员, 按线上顺序补齐:
+	"per-turn-control-2026-07-01",
+	"mid-conversation-tool-changes-2026-07-01",
 	"effort-2025-11-24",
+	"dangerous-tool-use-2026-09-03",
+	"afk-mode-2026-01-31",
 }
 
 // One-million variant inserts context-1m-2025-08-07 in the exact wire position the real
@@ -39,7 +44,12 @@ var anthropicClaudeCodeOneMillionBetas = []string{
 	"context-management-2025-06-27",
 	"prompt-caching-scope-2026-01-05",
 	"mid-conversation-system-2026-04-07",
+	// 2026-10-10 黄金样本(16 份真 CLI 直连抓包)实测的成员, 按线上顺序补齐:
+	"per-turn-control-2026-07-01",
+	"mid-conversation-tool-changes-2026-07-01",
 	"effort-2025-11-24",
+	"dangerous-tool-use-2026-09-03",
+	"afk-mode-2026-01-31",
 }
 
 // Haiku (and any model the real 2.1.198 CLI sends a reduced anthropic-beta set for)

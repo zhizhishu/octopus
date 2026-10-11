@@ -10,6 +10,7 @@ import (
 	"io"
 	"maps"
 	"net/http"
+	"net/textproto"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2179,7 +2180,32 @@ func enforceCodexNoAcceptEncoding(channelType outbound.OutboundType, header http
 }
 
 // sendRequest 发送 HTTP 请求
+// lowercaseAnthropicCLIHeaderNames 把四个 anthropic 系头名改回真 CLI 线上用的全小写。
+// 实测(2026-10-10, 22 份配对抓包, 按腿分组): 真 CLI 直连 sent `anthropic-beta` /
+// `anthropic-version` / `anthropic-dangerous-direct-browser-access` / `x-app` 全小写 9/9,
+// 而我们的出站是 `Anthropic-Beta` / `Anthropic-Version` / `Anthropic-Dangerous-...` / `X-App` 8/8
+// —— 上游可识别的非 CLI 特征(node/undici 线上就是小写, Go 的 http.Header.Set 会把头名规范化成
+// 首字母大写)。只有直接写 map 键能绕过规范化, 所以放在**真正发出前的最后一步**: 上游逻辑里按规范名
+// 读这些头的地方(Header.Get 走规范名)不受影响。
+func lowercaseAnthropicCLIHeaderNames(h http.Header) {
+	for _, wire := range []string{
+		"anthropic-beta",
+		"anthropic-version",
+		"anthropic-dangerous-direct-browser-access",
+		"x-app",
+	} {
+		canonical := textproto.CanonicalMIMEHeaderKey(wire)
+		values, ok := h[canonical]
+		if !ok || len(values) == 0 {
+			continue
+		}
+		delete(h, canonical)
+		h[wire] = append(h[wire], values...)
+	}
+}
+
 func (ra *relayAttempt) sendRequest(req *http.Request) (*http.Response, error) {
+	lowercaseAnthropicCLIHeaderNames(req.Header)
 	httpClient, err := helper.ChannelHttpClient(ra.channel)
 	if err != nil {
 		log.Warnf("failed to get http client: %v", err)
