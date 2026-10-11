@@ -138,20 +138,30 @@ func TestInterventionHoldEmitsDownstreamHeartbeats(t *testing.T) {
 			}
 		}
 	}()
+	// 新契约(大领导 18:38 定的): 救援期间**不许**发预内容心跳。心跳会把响应提交成 HTTP 200,
+	// 提交之后"全渠道失败"就只能写成带内错误帧 —— 调用方看到 200 + 空内容, 比报错更糟。
+	// 心跳让位给真错误码: 请求保持未提交, 收尾时如实回上游状态。这条测试的上游一直失败,
+	// 所以调用方必须拿到真错误码, 且正文里不许出现任何心跳注释。
 	var received []byte
 	deadline := time.After(5 * time.Second)
-	for strings.Count(string(received), ":\n\n") < 2 {
+	for {
 		select {
 		case c := <-chunks:
 			if c.data != nil {
 				received = append(received, c.data...)
 			}
 			if c.err != nil {
-				t.Fatalf("stream ended before heartbeats flowed: err=%v received=%q", c.err, received)
+				if n := strings.Count(string(received), ":\n\n"); n != 0 {
+					t.Fatalf("a failing-over request must not send pre-content heartbeats (got %d) — they commit HTTP 200 and turn "+
+						"the failure into a fake success; received=%q", n, received)
+				}
+				if resp.StatusCode == http.StatusOK {
+					t.Fatalf("the caller got HTTP 200 for a request that never got content: body=%q", received)
+				}
+				return
 			}
 		case <-deadline:
-			t.Fatalf("expected >=2 downstream heartbeats during the intervention hold, got %d in %d bytes",
-				strings.Count(string(received), ":\n\n"), len(received))
+			t.Fatalf("the failing request neither finished nor failed within 5s: received=%q", received)
 		}
 	}
 }

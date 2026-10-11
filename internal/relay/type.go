@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bestruirui/octopus/internal/conf"
@@ -258,6 +259,17 @@ type relayRequest struct {
 	// path uses it to deliver a JSON error body instead of splicing an SSE error into a
 	// Content-Type: application/json stream.
 	wroteNonStreamJSONKeepalive bool
+
+	// suppressPreContentKeepalive stops the PRE-CONTENT heartbeats (the hold keepalive and the
+	// first-byte keepalive) once the relay knows this request is failing over. Those heartbeats
+	// write ":" comments before any content, which commits HTTP 200 on the downstream connection;
+	// after that no later attempt can return a real status code, so an exhausted rescue could only
+	// deliver a 200 carrying an in-band error frame — a fake success the caller reads as "the model
+	// answered nothing". Staying uncommitted until either real content or a terminal decision is
+	// what lets the exhaustion path hand back the upstream's own 429/5xx.
+	// It is only ever set while nothing meaningful has been delivered, and content delivery
+	// (wroteMeaningfulDownstream) makes it irrelevant: the 200 is committed by real content then.
+	suppressPreContentKeepalive atomic.Bool
 
 	// redactRequired pins that this request has been redacted on at least one attempt
 	// (protection sticky). Once true, every later attempt — even on a channel that did

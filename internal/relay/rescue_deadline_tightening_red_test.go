@@ -89,8 +89,14 @@ func TestRescueDeadlineTightensOnHoldReentry(t *testing.T) {
 	select {
 	case out := <-outCh:
 		elapsed := time.Since(startedAt)
-		if !strings.Contains(out.body, "octopus_rescue_timeout") {
-			t.Fatalf("expected octopus_rescue_timeout terminal, got status %d body %q", out.code, out.body)
+		// 收尾改由上游的真实错误承担(relay 里: 救援超时标签只许覆盖"没有真实上游错误可报"的情况):
+		// 这次每次尝试都拿到上游错误, 调用方必须看到那个真状态码, 而不是被 504 标签盖掉, 更不许是 200。
+		// deadline 收紧本身仍由下面的时长/次数断言把关。
+		if out.code == http.StatusOK {
+			t.Fatalf("the caller got HTTP 200 for a request that never got content: body %q", out.body)
+		}
+		if !strings.Contains(out.body, "service_busy") && !strings.Contains(out.body, "octopus_rescue_timeout") {
+			t.Fatalf("expected the upstream's own error (or a rescue-timeout terminal) to reach the caller, got status %d body %q", out.code, out.body)
 		}
 		if elapsed > 5*time.Second {
 			t.Fatalf("hold re-entry did not tighten the deadline: relay ran %v (want ~1-2s after the tightened 1s budget; the stale 10s timer kept it alive), body %q", elapsed, out.body)

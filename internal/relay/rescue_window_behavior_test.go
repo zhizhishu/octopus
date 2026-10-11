@@ -89,8 +89,13 @@ func TestAutoRescueCapAppliesToPlainChannel(t *testing.T) {
 		if elapsed := time.Since(startedAt); elapsed > 6*time.Second {
 			t.Fatalf("plain-channel rescue ran %v; the 1800s operator hold must not apply", elapsed)
 		}
-		if res.code != http.StatusGatewayTimeout || !strings.Contains(res.body, "octopus_rescue_timeout") {
-			t.Fatalf("expected a clean octopus_rescue_timeout terminal, got status %d body %q", res.code, res.body)
+		// 上游每一次尝试都报错时, 收尾必须把那个真实错误给调用方(大领导 18:38: 绝不许把失败吞成
+		// "200 + 空内容")。这条测试关心的"救援在自动上限处停下"仍由上面的时长断言把关。
+		if res.code == http.StatusOK {
+			t.Fatalf("the caller got HTTP 200 for a request that never got content: body %q", res.body)
+		}
+		if !strings.Contains(res.body, "service_busy") && !strings.Contains(res.body, "octopus_rescue_timeout") {
+			t.Fatalf("expected the upstream's own error (or a rescue-timeout terminal) to reach the caller, got status %d body %q", res.code, res.body)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatalf("plain-channel rescue did not stop at the automatic-recovery cap")

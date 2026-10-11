@@ -635,6 +635,12 @@ attemptChannels:
 	// 6×429 被秒回 502 的根因：非流式请求根本进不了救援循环。
 	rescueBudget := intervention.NoBreakerRetryBudget()
 	rescuable := isRescueableHeldRequest(req, fatalClientErr, finalErr)
+	// 假成功防线: 只要这次失败还救得回来, 就别再发"预内容心跳"。心跳会把响应提交成 HTTP 200,
+	// 提交之后再怎么救, 收尾只能写带内错误帧 —— 调用方看到的就是 "200 + 空内容", 比报错更糟。
+	// 不提交, 耗尽时才能如实回上游的真实状态码 (429/5xx 透传)。
+	if rescuable && !req.wroteBusinessData {
+		req.suppressPreContentKeepalive.Store(true)
+	}
 	autoRescue := rescuable && (intervention.Enabled() || sawNoBreakerChannel) && rescueBudget > 0
 	manualIntervention := shouldHoldForOperator(req, fatalClientErr, finalErr) ||
 		(operatorRescueRequested && isRescueableHeldRequest(req, fatalClientErr, finalErr))
@@ -659,7 +665,7 @@ attemptChannels:
 					holdDelay = halfRound
 				}
 			}
-			stopInterventionKeepalive = startDownstreamKeepaliveWithDelay(c.Request.Context(), c, holdDelay)
+			stopInterventionKeepalive = startDownstreamKeepaliveWithDelayUnless(c.Request.Context(), c, holdDelay, func() bool { return req.suppressPreContentKeepalive.Load() && !req.wroteBusinessData })
 		}
 		if interventionCtx == nil {
 			// ONE automatic-recovery window, measured from the first rescuable failure and
@@ -859,7 +865,10 @@ attemptChannels:
 	// no business data reached the client. Every current Written exit returns before this
 	// line, so the override is unreachable for committed bodies today; the gate keeps any
 	// future path from ever relabeling a delivered response as rescue_timeout.
-	if stopErr := rescueStopError(interventionCtx, originalRequest.Context(), rescueFired); stopErr != nil && !req.wroteBusinessData {
+	if stopErr := rescueStopError(interventionCtx, originalRequest.Context(), rescueFired); stopErr != nil && !req.wroteBusinessData && !carriesUpstreamStatus(lastErr) {
+		// 救援超时标签只许覆盖"没有真实上游错误可报"的情况。每一次尝试都回了 429/5xx 时, 调用方
+		// 必须看到那个真实状态码 —— 用 504 octopus_rescue_timeout 盖掉它, 等于把"上游在限流"
+		// 这件事藏成一个笼统的网关超时。
 		finalErr = stopErr
 	}
 	if finalErr == nil {
@@ -3853,6 +3862,15 @@ func startInterventionKeepalive(ctx context.Context, c *gin.Context) func() {
 // downstream after delay, then every relay_stream_keepalive_interval_seconds, until the
 // returned stop func is called. delay<=0 or interval<=0 is a no-op.
 func startDownstreamKeepaliveWithDelay(ctx context.Context, c *gin.Context, delay time.Duration) func() {
+	return startDownstreamKeepaliveWithDelayUnless(ctx, c, delay, nil)
+}
+
+// startDownstreamKeepaliveWithDelayUnless is startDownstreamKeepaliveWithDelay with a veto: while
+// skip() reports true the loop stays alive but writes nothing, so the response is not committed and
+// a failover that ends in failure can still hand back a real status code (see
+// relayRequest.suppressPreContentKeepalive). Setting the headers is not a commit — only the first
+// body write is, which is why the veto can withhold the response head too.
+func startDownstreamKeepaliveWithDelayUnless(ctx context.Context, c *gin.Context, delay time.Duration, skip func() bool) func() {
 	if delay <= 0 {
 		return func() {}
 	}
@@ -3885,19 +3903,25 @@ func startDownstreamKeepaliveWithDelay(ctx context.Context, c *gin.Context, dela
 				mu.Unlock()
 				return
 			}
-			if !headersSet {
-				// Commit the anti-buffering headers before the first heartbeat byte so a
-				// front proxy (nginx/OpenResty) forwards the pre-content heartbeats instead
-				// of buffering them. proxySSEWithOptions re-sets the same headers later
-				// (idempotent, no-op once committed).
-				setDownstreamSSEHeadersCtx(c)
-				headersSet = true
-			}
-			_, werr := c.Writer.Write([]byte(":\n\n"))
-			c.Writer.Flush()
-			mu.Unlock()
-			if werr != nil {
-				return
+			if skip != nil && skip() {
+				// Vetoed: withhold the write (and with it the header commit) so the response stays
+				// uncommitted; keep looping in case the veto lifts.
+				mu.Unlock()
+			} else {
+				if !headersSet {
+					// Commit the anti-buffering headers before the first heartbeat byte so a
+					// front proxy (nginx/OpenResty) forwards the pre-content heartbeats instead
+					// of buffering them. proxySSEWithOptions re-sets the same headers later
+					// (idempotent, no-op once committed).
+					setDownstreamSSEHeadersCtx(c)
+					headersSet = true
+				}
+				_, werr := c.Writer.Write([]byte(":\n\n"))
+				c.Writer.Flush()
+				mu.Unlock()
+				if werr != nil {
+					return
+				}
 			}
 			select {
 			case <-done:
@@ -3973,11 +3997,17 @@ func (ra *relayAttempt) startFirstByteKeepalive(ctx context.Context) func() {
 				ra.prewarmMu.Unlock()
 				return
 			}
-			_, werr := ra.c.Writer.Write(ra.streamKeepaliveData())
-			ra.c.Writer.Flush()
-			ra.prewarmMu.Unlock()
-			if werr != nil {
-				return
+			if ra.suppressPreContentKeepalive.Load() && !ra.wroteBusinessData {
+				// 假成功防线 (见 relayRequest.suppressPreContentKeepalive): 救援期间一律不发预内容
+				// 心跳 —— 心跳会提交 200, 让"全渠道失败"变成调用方眼里的"成功但空回答"。
+				ra.prewarmMu.Unlock()
+			} else {
+				_, werr := ra.c.Writer.Write(ra.streamKeepaliveData())
+				ra.c.Writer.Flush()
+				ra.prewarmMu.Unlock()
+				if werr != nil {
+					return
+				}
 			}
 			select {
 			case <-done:

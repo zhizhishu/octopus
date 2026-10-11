@@ -131,6 +131,16 @@ func attemptAuditMessage(upstreamResponded bool, status int, err error) string {
 	return msg + " (" + note + ")"
 }
 
+// carriesUpstreamStatus reports whether err came from an upstream response, i.e. it has a real
+// HTTP status the caller should see rather than a locally generated gateway label.
+func carriesUpstreamStatus(err error) bool {
+	if err == nil {
+		return false
+	}
+	status, _, _, ok := upstreamErrorDetails(err)
+	return ok && status >= 400 && status < 600
+}
+
 func upstreamErrorDetails(err error) (status int, code string, strategy string, ok bool) {
 	var upErr *upstreamError
 	if !errors.As(err, &upErr) {
