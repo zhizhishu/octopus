@@ -29,8 +29,13 @@ var claudeCanonicalHeaderOrder = []string{
 	"anthropic-beta",
 	"anthropic-dangerous-direct-browser-access",
 	"anthropic-version",
-	"x-api-key",
+	// 2026-10-10 保序抓包(同一跳原始字节证明代理没重排): 真 CLI 自己发的业务头只有 1-17,
+	// 14 anthropic-beta / 15 anthropic-dangerous-... / 16 anthropic-version / **17 x-app** ——
+	// **没有 x-api-key**(真 CLI 指向代理/转发时只发 authorization)。这条死条目删掉; 我们出站自
+	// 184ce53 起也不再发它, 于是"表 = 真 CLI 业务头顺序"。
 	"x-app",
+	// 下面这个是真 CLI 的 HTTP 栈自己追加的(18-21: Connection/Host/Accept-Encoding/Content-Length),
+	// 不是 CLI 业务头, 也不模仿 —— 只把 accept-encoding 留在表尾, 免得它被排到业务头前面。
 	"accept-encoding",
 }
 
