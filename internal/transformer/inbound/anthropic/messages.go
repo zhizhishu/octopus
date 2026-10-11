@@ -269,19 +269,14 @@ func (i *MessagesInbound) TransformRequest(ctx context.Context, body []byte) (*m
 				}
 			}
 
-			// Check if it's a simple text-only message (single text block)
-			if len(contentParts) == 1 && contentParts[0].Type == "text" {
-				// Convert single text block to simple content format for compatibility
-				chatMsg.Content = model.MessageContent{
-					Content: contentParts[0].Text,
-				}
-				// Preserve cache control at message level when simplifying
-				if contentParts[0].CacheControl != nil {
-					chatMsg.CacheControl = contentParts[0].CacheControl
-				}
-
-				hasContent = true
-			} else if len(contentParts) > 0 {
+			// Keep the caller's shape. This branch used to collapse a single text block into a
+			// bare string ("for compatibility"), which rewrote the caller's body on the wire:
+			// measured against a transparent capture of the same request, [{"type":"text",
+			// "text":"X"}] left the relay as "X" while the direct leg sent the block array
+			// unchanged. Two blocks were left alone, so the rewrite was selective and therefore
+			// plainly ours, not the upstream's. An array now stays an array; protocols whose
+			// canonical form is a string still get one from MessageContent.MarshalJSON.
+			if len(contentParts) > 0 {
 				chatMsg.Content = model.MessageContent{
 					MultipleContent: contentParts,
 				}

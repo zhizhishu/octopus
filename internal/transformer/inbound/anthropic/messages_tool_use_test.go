@@ -60,7 +60,11 @@ func TestTransformRequestPreservesToolChoiceAndParallelPreference(t *testing.T) 
 		}
 		if msg.Role == "user" && msg.MessageIndex != nil && *msg.MessageIndex == 2 {
 			pairedUserFound = true
-			if msg.Content.Content == nil || *msg.Content.Content != "thanks" {
+			// The text must survive the tool_result pairing. Its representation is the caller's
+			// business: a single text block now stays a block array (an array must not be
+			// collapsed into a bare string on the way out), so accept either form and require
+			// only that the text itself is still there.
+			if text, ok := messageText(msg.Content); !ok || text != "thanks" {
 				t.Fatalf("expected paired user text to survive, got %#v", msg.Content)
 			}
 		}
@@ -284,4 +288,18 @@ func TestTransformStreamInterleavedToolCallArgsRouteToOwnBlocks(t *testing.T) {
 	if gotB != blockB {
 		t.Fatalf(`argument {"b":2} landed on block %d, want tool call 1's block %d`, gotB, blockB)
 	}
+}
+
+// messageText reads a message's text from either representation: the plain string form, or a
+// single text block inside the array form.
+func messageText(content transformerModel.MessageContent) (string, bool) {
+	if content.Content != nil {
+		return *content.Content, true
+	}
+	for _, part := range content.MultipleContent {
+		if part.Type == "text" && part.Text != nil {
+			return *part.Text, true
+		}
+	}
+	return "", false
 }

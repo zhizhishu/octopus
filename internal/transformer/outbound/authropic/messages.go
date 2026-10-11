@@ -1249,6 +1249,16 @@ func buildMessageContent(msg model.Message) anthropicModel.MessageContent {
 		return convertMultiplePartContent(msg)
 	}
 
+	// A turn whose only block was reasoning (the caller sent [{type:"thinking"}] and nothing
+	// else) must still carry that block. This path used to fall through to an empty MessageContent,
+	// which marshalled as content:null — the caller's block array both changed shape and lost its
+	// content. Measured before the fix: caller=[{"type":"thinking",...}] outbound=null.
+	if block, ok := leadingReasoningBlock(msg); ok {
+		return anthropicModel.MessageContent{
+			MultipleContent: []anthropicModel.MessageContentBlock{block},
+		}
+	}
+
 	return anthropicModel.MessageContent{}
 }
 
