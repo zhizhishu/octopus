@@ -196,7 +196,8 @@ func upstreamAliasVariantMatch(sentModel, responseModel string) bool {
 
 // upstreamAliasNormalize 剥尾部 \d{8}$ 日期后缀与其前面的连字符, 小写化, 去首尾空白。
 func upstreamAliasNormalize(name string) string {
-	name = strings.ToLower(strings.TrimSpace(name))
+	origTrimmed := strings.TrimSpace(name)
+	name = strings.ToLower(origTrimmed)
 	if loc := upstreamModelDateSuffix.FindStringSubmatchIndex(name); loc != nil {
 		// loc[2]..loc[3] 是 \d{8} 组, 其前一个字符若为连字符一并剥掉。
 		end := loc[2]
@@ -204,6 +205,11 @@ func upstreamAliasNormalize(name string) string {
 			end--
 		}
 		name = name[:end]
+	}
+	// 整名就是 8 位数字时剥完为空：返回原名, 让上游判空归 false(不同族),
+	// 而不是把纯数字名错剥成空串。
+	if name == "" {
+		name = strings.ToLower(strings.TrimSpace(origTrimmed))
 	}
 	return strings.TrimSpace(name)
 }
