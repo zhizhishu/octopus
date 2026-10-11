@@ -544,59 +544,10 @@ attemptChannels:
 			} else {
 				requestState.finishRound("unknown error", attemptLatency)
 			}
-			for transientTry := 0; !result.Success && !result.Written && result.Retryable && transientTry < maxTransientStreamRetries; transientTry++ {
-				if clientGone, stopErr := relayStop(originalRequest.Context(), c.Request.Context(), interventionCtx, rescueFired); clientGone {
-					log.Infof("client request context canceled, stopping retry")
-					metrics.Save(originalRequest.Context(), false, originalRequest.Context().Err(), append(allAttempts, iter.Attempts()...))
-					return
-				} else if stopErr != nil {
-					lastErr = stopErr
-					break attemptChannels
-				}
-				if rescueDeadlineExpired(recoveryStartedAt, time.Now()) {
-					rescueExpired = true
-					break attemptChannels
-				}
-				log.Warnf("retrying transient empty upstream stream on channel %s key %d (try %d/%d): %v",
-					channel.Name, usedKey.ID, transientTry+1, maxTransientStreamRetries, result.Err)
-				requestState.startRound(channel.Name, item.ModelName)
-				transientStartedAt := time.Now()
-				internalRequest.Messages = append([]model.Message(nil), baseMessages...)
-				internalRequest.PreviousResponseID = basePreviousResponseID
-				internalRequest.ResponsesInputRaw = cloneRawJSONMessage(baseResponsesInputRaw)
-				internalRequest.ResponsesInstructions = baseResponsesInstructions
-				if snap := applyPromptOverrides(internalRequest, routeResult.AccessPlan, routeResult.AccessRouteRule, channel); len(snap.Sources) > 0 {
-					clearResponsesRawPromptShape(internalRequest)
-				}
-				ra = &relayAttempt{
-					relayRequest:         req,
-					outAdapter:           outAdapter,
-					channel:              channel,
-					usedKey:              usedKey,
-					firstTokenTimeOutSec: group.FirstTokenTimeOut,
-				}
-				endAttempt = beginControlledAttempt()
-				result = ra.attempt()
-				endAttempt()
-				recoveryStartedAt = markRecoveryStart(recoveryStartedAt, result.Err)
-				if result.Err == nil {
-					req.releaseRescueDeadline()
-				}
-				if requestState.consumeRescueRequest() && !result.Success && !result.Written {
-					operatorRescueRequested = true
-					lastErr = errRunningRequestRescue
-					requestState.finishRound(lastErr.Error(), time.Since(transientStartedAt).Milliseconds())
-					break attemptChannels
-				}
-				transientLatency := time.Since(transientStartedAt).Milliseconds()
-				if result.Success {
-					requestState.finishRound("", transientLatency)
-				} else if result.Err != nil {
-					requestState.finishRound(result.Err.Error(), transientLatency)
-				} else {
-					requestState.finishRound("unknown error", transientLatency)
-				}
-			}
+			// 坏响应（200 但一个字节都没有 / 流自然结束却没有任何内容）不再"原地立刻重发"：
+			// 旧行为在这条分支里连发 2 次、间隔 1~2ms，现场锚点因此出现"同一请求体同一渠道
+			// 连发 5 次、间隔无退避"。现在一律交给下面那条已经带退避、带同渠上限、并受整次
+			// 请求总时长上限约束的自动救援链：节奏由其退避决定，渠道由轮换决定。
 			if result.Success {
 				requestSucceeded = true
 				// 成功的这一次尝试所用的 Key 即最终 Key, 回填其备注供日志展示。
@@ -1585,13 +1536,6 @@ func shouldTryNextChannelKey(statusCode int) bool {
 	return statusCode == http.StatusTooManyRequests
 }
 
-// maxTransientStreamRetries bounds how many times one channel+key is retried
-// in-place when the upstream opens a stream then ends it without any content.
-// Such empty streams are transient upstream hiccups; nothing was written
-// downstream yet, so an immediate same-target retry is safe and recovers the
-// turn instead of failing it outright when there is no redundant channel.
-const maxTransientStreamRetries = 2
-
 // toolCallCompletionGracePeriod preserves the compatibility fallback for providers
 // that never send response.completed, while allowing conforming providers to deliver
 // the terminal usage event that follows response.output_item.done.
@@ -1644,7 +1588,8 @@ func shouldRecordBreakerFailure(_ int, err error) bool {
 		return false
 	}
 	if isRetryableUpstreamStreamError(err) {
-		// Transient empty-stream failures are retried in place (maxTransientStreamRetries),
+		// Transient empty-stream failures are retried by the automatic rescue loop (paced and
+		// bounded per channel), not in place,
 		// so counting each retry toward the breaker / runtime health would trip a
 		// healthy channel ~3x sooner and skew capacity ranking. Let the retry +
 		// final request error surface it instead of poisoning channel health.
