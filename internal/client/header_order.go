@@ -1,6 +1,11 @@
 package client
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/bestruirui/octopus/internal/model"
+	"github.com/bestruirui/octopus/internal/op"
+)
 
 // chromePseudoHeaderOrder is the HTTP/2 pseudo-header order presented on the uTLS
 // (Chrome ClientHello) path. It is set on EVERY fhttp request so fhttp never falls
@@ -57,6 +62,86 @@ var codexCanonicalHeaderOrder = []string{
 	"authorization",
 	"originator",
 	"user-agent",
+}
+
+// claudeHTTP1WireHeaderOrder is the byte-exact header block a genuine claude-cli emits
+// on its PLAINTEXT HTTP/1.1 leg, captured and compared byte-by-byte (2026-10-10). Items
+// 1-17 are the CLI's own business headers; 18-21 are appended by the CLI's own HTTP
+// stack (Connection / Host / Accept-Encoding / Content-Length).
+//
+// This SUPERSEDES the older "the trailing four belong to our HTTP stack, we do not
+// imitate them" reading (still recorded on claudeCanonicalHeaderOrder above, which is a
+// DIFFERENT table for a DIFFERENT layer): the 2026-10-10 ruling is that byte-exactness
+// includes header order, so this 21-item sequence is the target for HTTP/1.1.
+//
+// Casing is part of the bytes and is written to the wire verbatim, which is why
+// `anthropic-beta` / `anthropic-version` / `x-app` are lowercase while `Accept`,
+// `Content-Type` and `X-Stainless-OS` are not.
+//
+// Consumed ONLY by the plaintext HTTP/1.1 path (ordered_conn.go). It is NOT
+// claudeCanonicalHeaderOrder: that list is lowercase and drives fhttp's h2 HPACK field
+// order (utls_transport.go), which must not change here.
+var claudeHTTP1WireHeaderOrder = []string{
+	"Accept",
+	"Authorization",
+	"Content-Type",
+	"User-Agent",
+	"X-Claude-Code-Session-Id",
+	"X-Stainless-Arch",
+	"X-Stainless-Lang",
+	"X-Stainless-OS",
+	"X-Stainless-Package-Version",
+	"X-Stainless-Retry-Count",
+	"X-Stainless-Runtime",
+	"X-Stainless-Runtime-Version",
+	"X-Stainless-Timeout",
+	"anthropic-beta",
+	"anthropic-dangerous-direct-browser-access",
+	"anthropic-version",
+	"x-app",
+	// 18-21: the CLI's own HTTP stack. `Host` / `Accept-Encoding` / `Content-Length`
+	// already exist in Go's serialisation and are moved here; `Connection` does NOT
+	// exist and is ADDED (see synthesizedHTTP1HeaderLine) — Go's net/http never emits it.
+	"Connection",
+	"Host",
+	"Accept-Encoding",
+	"Content-Length",
+}
+
+// http1WireHeaderOrderForTarget maps one HTTP/1.1 request target to its captured wire
+// order. Deliberately pure — no settings — so tests can pin the byte sequence.
+//
+// Only the Anthropic /v1/messages leg has a captured CLI baseline. The codex
+// /v1/responses leg is NOT covered by this change and returns nil, i.e. its block is
+// passed through byte-for-byte exactly as today.
+func http1WireHeaderOrderForTarget(requestTarget string) []string {
+	if strings.Contains(strings.ToLower(requestTarget), "/messages") {
+		return claudeHTTP1WireHeaderOrder
+	}
+	return nil
+}
+
+// http1RequestHeaderOrder is the production hook handed to every plaintext dial. The
+// switch is read PER REQUEST rather than baked into the transport, because the
+// transports themselves are cached process-wide: this way turning the setting off
+// takes effect immediately, including on connections already sitting in the pool. Off
+// (or unset) returns nil == the header block is left exactly as Go serialised it, which
+// is byte-for-byte today's outbound request.
+func http1RequestHeaderOrder(method, requestTarget string) []string {
+	if !upstreamHTTP1HeaderOrderEnabled() {
+		return nil
+	}
+	return http1WireHeaderOrderForTarget(requestTarget)
+}
+
+// upstreamHTTP1HeaderOrderEnabled reads the opt-in switch for the plaintext HTTP/1.1
+// wire-order rewrite. Default off; a missing or unreadable setting means off.
+func upstreamHTTP1HeaderOrderEnabled() bool {
+	enabled, err := op.SettingGetBool(model.SettingKeyUpstreamHTTP1HeaderOrder)
+	if err != nil {
+		return false
+	}
+	return enabled
 }
 
 // canonicalHeaderOrderForPath picks the genuine-CLI regular-header order for an

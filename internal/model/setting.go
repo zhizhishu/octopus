@@ -27,6 +27,7 @@ const (
 	SettingKeyRelayStreamKeepaliveSec   SettingKey = "relay_stream_keepalive_interval_seconds"
 	SettingKeyOpenAIAutoPromptCacheKey  SettingKey = "openai_auto_prompt_cache_key"
 	SettingKeyUpstreamUTLSFingerprint   SettingKey = "upstream_utls_fingerprint" // 直连上游用 Chrome uTLS ClientHello (JA3); opt-in, 默认关, 启用前须过 the relay 复验
+	SettingKeyUpstreamHTTP1HeaderOrder  SettingKey = "upstream_http1_header_order" // 明文 HTTP/1.1 出站按真 CLI 的 21 项逐字节头序(含头名大小写与 Connection: keep-alive)重写; opt-in, 默认关, 关闭=与今天逐字节相同
 	SettingKeyRelayStreamDataTimeoutSec SettingKey = "relay_stream_data_interval_timeout_seconds"
 	// SettingKeyRelayRequestTotalTimeoutSec is the THIRD clock: an absolute ceiling on
 	// the whole request, measured from the moment the request arrived and never fed by
@@ -442,6 +443,7 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyRelayStreamKeepaliveSec, Value: defaultRelayStreamKeepaliveIntervalSeconds()},
 		{Key: SettingKeyOpenAIAutoPromptCacheKey, Value: "true"},
 		{Key: SettingKeyUpstreamUTLSFingerprint, Value: "false"}, // 默认关：改 TLS 指纹影响所有上游，须先过 the relay 复验再开
+		{Key: SettingKeyUpstreamHTTP1HeaderOrder, Value: "false"}, // 默认关：明文 HTTP/1.1 出站头序/头名大小写/Connection 重写，须先过抓包复验再开；关=旧字节
 		{Key: SettingKeyRelayStreamDataTimeoutSec, Value: defaultRelayStreamDataIntervalTimeoutSeconds()},
 		// 整次请求的绝对时长上限(秒), 0 = 不启用(旧行为)。给"上游一直在慢慢吐字节/一直发开场事件"
 		// 这一档兜底：相邻两道钟都盖不住它(首内容钟被首个真内容解除, 事件间隔钟被每个上游事件重置)。
@@ -653,7 +655,7 @@ func (s *Setting) Validate() error {
 		SettingKeyClaudeHeaderStabilize, SettingKeyClaudeCLIAutoCompact, SettingKeyCodexFastMode,
 		SettingKeyUserRegistrationEnabled, SettingKeyUpstreamErrorStatusPass, SettingKeyCheckInEnabled,
 		SettingKeyDebugLoadBalancer, SettingKeyEmailVerificationEnabled, SettingKeyEmailSMTPSSL,
-		SettingKeyUpstreamUTLSFingerprint, SettingKeyDiagnosticMode, SettingKeyRouteStickyCacheFirst:
+		SettingKeyUpstreamUTLSFingerprint, SettingKeyUpstreamHTTP1HeaderOrder, SettingKeyDiagnosticMode, SettingKeyRouteStickyCacheFirst:
 		if s.Value != "true" && s.Value != "false" {
 			return fmt.Errorf("%s must be true or false", s.Key)
 		}

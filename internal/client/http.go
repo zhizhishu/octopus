@@ -173,7 +173,35 @@ func clonedDefaultTransport() (*http.Transport, error) {
 	// keep a real per-host pool. Pool sizing only; nothing here touches the handshake
 	// or any header, so the outbound fingerprint is unchanged.
 	cloned.MaxIdleConnsPerHost = 32
+	// Byte-exact HTTP/1.1 header order for the plaintext leg. Go serialises the request
+	// header block in its own canonical order (`Host`, `User-Agent`, `Content-Length`
+	// first, then the rest ASCII-sorted) and never emits `Connection`; a genuine
+	// claude-cli writes a different block (claudeHTTP1WireHeaderOrder). Go has no hook
+	// for that, so wrap the DIAL — not the transport — and rewrite the already
+	// serialised block on its way to the socket. Pooling, timeouts, redirects, proxy
+	// handling, response decoding and TLS all stay exactly the standard library's.
+	// ordered_conn.go documents why a TLS or h2 stream can never enter the rewriter.
+	// Opt-in (upstream_http1_header_order, default off) and evaluated per request, so
+	// while it is off the outbound request is byte-for-byte what it is today.
+	cloned.DialContext = plainHTTP1OrderingDial(cloned.DialContext)
 	return cloned, nil
+}
+
+// plainHTTP1OrderingDial wraps a transport dial function so the connection it returns
+// rewrites HTTP/1.1 request header blocks. A nil inner dial (the transport would then
+// dial with the package default) falls back to net.Dialer, which is what net/http uses
+// in that case anyway.
+func plainHTTP1OrderingDial(inner func(ctx context.Context, network, addr string) (net.Conn, error)) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	if inner == nil {
+		inner = (&net.Dialer{}).DialContext
+	}
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		conn, err := inner(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		return newOrderedRequestConn(conn, http1RequestHeaderOrder), nil
+	}
 }
 
 func newHTTPClientNoProxy() (*http.Client, error) {
@@ -205,9 +233,12 @@ func newHTTPClientCustomProxy(proxyURLStr string) (*http.Client, error) {
 			return nil, fmt.Errorf("invalid socks proxy: %w", err)
 		}
 		cloned.Proxy = nil
-		cloned.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		// Keep the plaintext HTTP/1.1 wire-order rewriter in the chain: this branch
+		// replaces the dial function clonedDefaultTransport installed, so without this
+		// the capability would silently not apply on socks channels.
+		cloned.DialContext = plainHTTP1OrderingDial(func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return socksDialer.Dial(network, addr)
-		}
+		})
 	default:
 		return nil, fmt.Errorf("unsupported proxy scheme: %s", proxyURL.Scheme)
 	}
