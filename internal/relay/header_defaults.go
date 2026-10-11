@@ -38,6 +38,15 @@ type ChannelWireHeaderOptions struct {
 	// path (which sees the client request); synthetic callers (modeltest) and plain
 	// non-CLI clients leave it false and keep the historical both-headers auth.
 	ClientUsedBearerAuth bool
+	// ClientUsedAPIKeyAuth is the mirror signal: the downstream client authenticated with
+	// an x-api-key and sent NO Authorization — the CLI's api-key style (a plain Anthropic
+	// SDK client looks the same on the wire). A relay-shaped Anthropic upstream currently
+	// receives BOTH credential headers because applyAnthropicAuthHeaders adds
+	// `Authorization: Bearer` for any non-official base, which is a shape deviation: the
+	// client that arrived with one credential header must leave with one. Gated the same
+	// way as the Bearer mirror (relay path only), and the delete only happens while the
+	// outbound still carries X-API-Key, so a request can never leave credential-less.
+	ClientUsedAPIKeyAuth bool
 }
 
 // ApplyChannelWireHeaders applies protocol defaults, operator custom headers,
@@ -85,12 +94,18 @@ func (ra *relayAttempt) applyHeaderDefaults(req *http.Request) {
 		return
 	}
 	clientUsedBearer := false
+	clientUsedAPIKey := false
 	if ra.c != nil && ra.c.Request != nil {
 		// Gate on the claude-code beta so only a CLI-shaped Bearer client gets the
 		// Authorization-only mirror; a plain Bearer client (no claude-code beta)
 		// keeps the historical both-headers upstream auth.
 		clientUsedBearer = strings.TrimSpace(ra.c.Request.Header.Get("Authorization")) != "" &&
 			strings.Contains(ra.c.Request.Header.Get("Anthropic-Beta"), "claude-code")
+		// The api-key mirror is the same rule from the other side: the client presented
+		// exactly one credential header (x-api-key) and no Authorization, so the outbound
+		// must present exactly one too.
+		clientUsedAPIKey = strings.TrimSpace(ra.c.Request.Header.Get("X-Api-Key")) != "" &&
+			strings.TrimSpace(ra.c.Request.Header.Get("Authorization")) == ""
 	}
 	ApplyChannelWireHeaders(req, ChannelWireHeaderOptions{
 		Channel:              ra.channel,
@@ -98,6 +113,7 @@ func (ra *relayAttempt) applyHeaderDefaults(req *http.Request) {
 		InternalRequest:      ra.internalRequest,
 		ClaudeSessionID:      ra.claudeFingerprintSessionID(),
 		ClientUsedBearerAuth: clientUsedBearer,
+		ClientUsedAPIKeyAuth: clientUsedAPIKey,
 	})
 }
 
@@ -146,6 +162,15 @@ func applyChannelWireHeaderDefaults(req *http.Request, options ChannelWireHeader
 		// X-Api-Key and never gets Authorization, so it is untouched).
 		if options.ClientUsedBearerAuth && strings.TrimSpace(req.Header.Get("Authorization")) != "" {
 			req.Header.Del("X-Api-Key")
+		} else if options.ClientUsedAPIKeyAuth && strings.TrimSpace(req.Header.Get("X-API-Key")) != "" {
+			// Mirror image of the rule above, same packet-level principle: a client that
+			// authenticated with an API key only must produce an api-key-only outbound.
+			// applyAnthropicAuthHeaders adds `Authorization: Bearer` for every non-official
+			// base "for upstream compatibility", so on a relay-shaped upstream Octopus sent
+			// two credential headers where the real CLI sends one. The guard keeps the
+			// request authenticated: X-API-Key is already present and carries the channel
+			// key, so dropping the Bearer copy cannot leave the attempt credential-less.
+			req.Header.Del("Authorization")
 		}
 	case outbound.OutboundTypeOpenAIResponse:
 		applyCodexHeaderDefaultsWithFingerprint(req, options.InternalRequest, fingerprint)
@@ -264,6 +289,9 @@ func applyClaudeHeaderDefaultsWithFingerprint(req *http.Request, internalRequest
 	setHeaderIfMissing(req.Header, "X-Stainless-Runtime", "node")
 	setHeaderIfMissing(req.Header, "X-Stainless-Runtime-Version", fp.ClaudeRuntimeVersion())
 	setHeaderIfMissing(req.Header, "X-Stainless-Package-Version", fp.ClaudePackageVersion())
+	// Fallback only: a caller that declared its own x-stainless-timeout keeps it verbatim
+	// (clientTimeoutHeaders is no longer a drop list), so this fills the gap for callers
+	// that sent none. Never overwrite a caller's declaration here.
 	setHeaderIfMissing(req.Header, "X-Stainless-Timeout", fp.ClaudeTimeout())
 	// Always emit X-Stainless-OS / X-Stainless-Arch. A genuine claude-cli sends both on
 	// every request, and the downstream client's own x-stainless-* were already stripped

@@ -2,6 +2,7 @@ package relay
 
 import (
 	"github.com/bestruirui/octopus/internal/redact"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -67,9 +68,28 @@ var hopByHopHeaders = map[string]bool{
 	"x-cluster-client-ip": true,
 }
 
-// clientTimeoutHeaders are SDK/client-side advisory timeout headers. When
-// Octopus is the relay, forwarding them upstream can make long Claude/MCP or
-// Responses tool turns fail early even though the downstream stream is healthy.
+// clientTimeoutHeaders are SDK/client-side advisory timeout headers.
+//
+// 2026-10 reversal of the original policy (this USED to be a drop list): a caller that
+// declares its own SDK timeout now has that declaration forwarded verbatim. Three
+// real-machine probes settled it — the client sent `x-stainless-timeout: 111`, the direct
+// leg reached the upstream as `111`, and the leg through Octopus arrived as `600`, i.e. the
+// value was not merely rewritten, it was dropped and then refilled from the fingerprint
+// profile. Two problems with that:
+//
+//  1. Shape: the header MEANS "how long the caller is willing to wait". A genuine CLI
+//     sends its own number; answering with a fixed 600 is a deviation from the captured
+//     client, and it is the deviation the acceptance runs kept hitting.
+//  2. Behaviour: telling the upstream "this caller will wait 600s" plausibly invites
+//     longer thinking and slower dribbling upstream — which is exactly the two shapes
+//     measured (154s verbose turns, and half-streams still generating past six minutes).
+//
+// The original rationale was "forwarding these can make long Claude/MCP or Responses tool
+// turns fail early even though the downstream stream is healthy". That concern belongs to
+// OUR side of the relay: our own rescue clocks (first-content 120s, stream-silence 300s,
+// absolute request ceiling) decide when we stop waiting and retry, so we do not need to
+// edit the caller's declaration to protect ourselves. A caller that sends nothing is
+// unchanged: the fingerprint value still fills in (setHeaderIfMissing).
 var clientTimeoutHeaders = map[string]bool{
 	"x-stainless-timeout":         true,
 	"x-stainless-read-timeout":    true,
@@ -118,6 +138,39 @@ var clientIdentityHeaders = map[string]bool{
 	"x-client-app":  true,
 }
 
+// shouldForwardClientHeaderForCaller is shouldForwardClientHeader with one scoped
+// exception: a CLI-shaped caller's own SDK timeout declarations are forwarded verbatim,
+// because that is the one wire shape Octopus imitates (2026-10 probes: the caller sent
+// `x-stainless-timeout: 111`, the direct leg reached the upstream as 111, the leg through
+// Octopus arrived as 600 — the value was dropped and refilled from the fingerprint).
+// Telling an upstream "this caller will wait 600s" when the caller said 111 is both a shape
+// deviation and a plausible invitation to think longer and dribble slower.
+//
+// Everyone else is unchanged: a plain/non-CLI caller still has these headers stripped, so
+// nothing about non-CLI traffic gains a caller-declared timeout upstream.
+func shouldForwardClientHeaderForCaller(key string, cliShapedCaller bool) bool {
+	if cliShapedCaller {
+		if lower := strings.ToLower(strings.TrimSpace(key)); clientTimeoutHeaders[lower] {
+			return true
+		}
+	}
+	return shouldForwardClientHeader(key)
+}
+
+// clientIsCLIShaped reports whether the downstream caller presents itself as the Claude
+// Code CLI. Two signals, both already used elsewhere for CLI-shape decisions: the
+// claude-code Anthropic-Beta flag, and the claude-cli/<version> User-Agent that the
+// captured clients send (the 2026-10 probes sent exactly that UA plus x-api-key).
+func clientIsCLIShaped(req *http.Request) bool {
+	if req == nil {
+		return false
+	}
+	if strings.HasPrefix(strings.TrimSpace(req.Header.Get("User-Agent")), "claude-cli/") {
+		return true
+	}
+	return strings.Contains(req.Header.Get("Anthropic-Beta"), "claude-code")
+}
+
 func shouldForwardClientHeader(key string) bool {
 	lower := strings.ToLower(strings.TrimSpace(key))
 	if lower == "" {
@@ -127,6 +180,12 @@ func shouldForwardClientHeader(key string) bool {
 		return false
 	}
 	if clientTimeoutHeaders[lower] {
+		// Dropped here on purpose: the caller's own SDK timeout is forwarded only for a
+		// CLI-shaped caller — see shouldForwardClientHeaderForCaller, which is what the relay
+		// copy paths use. A plain non-CLI caller keeps having it stripped, because forwarding
+		// its declaration upstream ("I will wait 1s") tells the upstream to give up on a turn
+		// we intend to stream for minutes. An existing test pins exactly that
+		// (TestAnthropicOneMillionPlainClientGetsClaudeCompatibleStreamShape).
 		return false
 	}
 	if clientTraceHeaders[lower] {

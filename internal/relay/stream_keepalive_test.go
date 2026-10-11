@@ -1364,6 +1364,102 @@ data: {"type":"message_start","message":{"id":"msg_timeout","type":"message","ro
 // router/proxy base (packet-verified 2026-09-24: golden claude 2.1.281 carries no
 // X-Api-Key). A plain Bearer client without the claude-code beta keeps the
 // historical both-headers auth (covered by the plain-client 1M test above).
+// TestClaudeCLIAPIKeyAuthMirrorsAPIKeyOnly pins the mirror on the other side of the CLI
+// auth styles, and is the fix for the 2026-10 probe finding "the client sent only x-api-key
+// and the outbound carried x-api-key AND Authorization". The upstream here is a relay-shaped
+// base (not api.anthropic.com), so applyAnthropicAuthHeaders deliberately adds
+// `Authorization: Bearer` next to X-API-Key; for a client that arrived with one credential
+// header the outbound must carry one. The second case pins that nothing widened: a plain
+// non-CLI caller (no x-api-key, no Authorization) still gets the historical both-headers auth.
+func TestClaudeCLIAPIKeyAuthMirrorsAPIKeyOnly(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	run := func(t *testing.T, inboundUA string, apiKey, authorization string) (string, string, int) {
+		t.Helper()
+		ctx := setupRelayErrorDB(t)
+		var sawAPIKey, sawAuthorization string
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			sawAPIKey = r.Header.Get("X-API-Key")
+			sawAuthorization = r.Header.Get("Authorization")
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte(`event: message_start
+data: {"type":"message_start","message":{"id":"msg_apikey","type":"message","role":"assistant","model":"claude-opus-4-8","content":[],"usage":{"input_tokens":3,"output_tokens":0}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"OK"}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`))
+		}))
+		t.Cleanup(upstream.Close)
+
+		channel := dbmodel.Channel{
+			Name:     "the relay Claude api-key mirror",
+			Type:     outbound.OutboundTypeAnthropic,
+			Enabled:  true,
+			Model:    "claude-opus-4-8",
+			BaseUrls: []dbmodel.BaseUrl{{URL: upstream.URL}},
+			Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "anthropic-key"}},
+		}
+		if err := op.ChannelCreate(&channel, ctx); err != nil {
+			t.Fatalf("create channel: %v", err)
+		}
+
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{
+			"model":"claude-opus-4-8",
+			"max_tokens":1024,
+			"stream":true,
+			"messages":[{"role":"user","content":"ping"}]
+		}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("User-Agent", inboundUA)
+		req.Header.Set("Anthropic-Version", "2023-06-01")
+		if apiKey != "" {
+			req.Header.Set("X-Api-Key", apiKey)
+		}
+		if authorization != "" {
+			req.Header.Set("Authorization", authorization)
+		}
+		c.Request = req
+		c.Set("api_key_id", 0)
+		c.Set("user_id", 0)
+		c.Set("request_ip", "127.0.0.1")
+
+		Handler(inbound.InboundTypeAnthropic, c)
+		return sawAPIKey, sawAuthorization, rec.Code
+	}
+
+	t.Run("api-key client leaves with one credential header", func(t *testing.T) {
+		sawAPIKey, sawAuthorization, code := run(t, "claude-cli/2.1.294 (external, sdk-cli)", "client-octopus-key", "")
+		if code != http.StatusOK {
+			t.Fatalf("expected the api-key stream to succeed, got %d", code)
+		}
+		if sawAPIKey != "anthropic-key" {
+			t.Fatalf("upstream X-API-Key must carry the channel key, got %q", sawAPIKey)
+		}
+		if sawAuthorization != "" {
+			t.Fatalf("an x-api-key-only client must not gain an Authorization header upstream, got %q", sawAuthorization)
+		}
+	})
+
+	t.Run("plain client keeps the historical both-headers auth", func(t *testing.T) {
+		sawAPIKey, sawAuthorization, code := run(t, "python-httpx/0.27.0", "", "")
+		if code != http.StatusOK {
+			t.Fatalf("expected the plain client stream to succeed, got %d", code)
+		}
+		if sawAPIKey != "anthropic-key" || sawAuthorization != "Bearer anthropic-key" {
+			t.Fatalf("a non-CLI caller keeps both credential headers, got x-api-key=%q authorization=%q", sawAPIKey, sawAuthorization)
+		}
+	})
+}
+
 func TestClaudeCLIBearerAuthMirrorsAuthorizationOnly(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx := setupRelayErrorDB(t)

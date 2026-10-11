@@ -510,7 +510,7 @@ func TestRelayCopyHeadersAppliesCodexDefaultsWhenResponsesUseChatChannel(t *test
 	}
 }
 
-func TestRelayCopyHeadersFiltersClientTimeoutHeadersButAllowsAdminCustomHeader(t *testing.T) {
+func TestRelayCopyHeadersForwardsClientTimeoutHeadersButAllowsAdminCustomHeader(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
@@ -541,11 +541,11 @@ func TestRelayCopyHeadersFiltersClientTimeoutHeadersButAllowsAdminCustomHeader(t
 	if got := upstreamReq.Header.Get("X-Stainless-Timeout"); got != "180000" {
 		t.Fatalf("expected explicit admin custom timeout header to win, got %q", got)
 	}
-	if got := upstreamReq.Header.Get("X-Request-Timeout"); got != "" {
-		t.Fatalf("expected client x-request-timeout to be filtered, got %q", got)
+	if got := upstreamReq.Header.Get("X-Request-Timeout"); got != "30" {
+		t.Fatalf("expected the caller's x-request-timeout to be forwarded verbatim, got %q", got)
 	}
-	if got := upstreamReq.Header.Get("Grpc-Timeout"); got != "" {
-		t.Fatalf("expected client grpc-timeout to be filtered, got %q", got)
+	if got := upstreamReq.Header.Get("Grpc-Timeout"); got != "30S" {
+		t.Fatalf("expected the caller's grpc-timeout to be forwarded verbatim, got %q", got)
 	}
 	if got := upstreamReq.Header.Get("X-Stainless-Lang"); got != "" {
 		t.Fatalf("expected client x-stainless-lang to be filtered, got %q", got)
@@ -558,6 +558,45 @@ func TestRelayCopyHeadersFiltersClientTimeoutHeadersButAllowsAdminCustomHeader(t
 	}
 	if got := upstreamReq.Header.Get("X-Octopus-Plan"); got != "" {
 		t.Fatalf("expected octopus routing header to remain filtered, got %q", got)
+	}
+}
+
+// TestClientDeclaredTimeoutIsForwardedVerbatimAndOnlyFilledWhenAbsent pins the two
+// assertions the shape fix owes: a caller that declared 111 must reach the upstream as 111
+// on the real fingerprint path (not merely "not dropped" on the raw copy path), and a
+// caller that declared nothing still gets the fingerprint value exactly as before.
+func TestClientDeclaredTimeoutIsForwardedVerbatimAndOnlyFilledWhenAbsent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	upstreamFor := func(userAgent, callerValue string) *http.Request {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+		c.Request.Header.Set("User-Agent", userAgent)
+		if callerValue != "" {
+			c.Request.Header.Set("X-Stainless-Timeout", callerValue)
+		}
+		ra := &relayAttempt{
+			relayRequest: &relayRequest{
+				c:               c,
+				internalRequest: &transformermodel.InternalLLMRequest{Model: "claude-opus-4-8"},
+			},
+			channel: &dbmodel.Channel{Type: outbound.OutboundTypeAnthropic},
+		}
+		req := httptest.NewRequest(http.MethodPost, "https://upstream.example/v1/messages", nil)
+		ra.copyHeaders(req)
+		return req
+	}
+
+	const cliUA = "claude-cli/2.1.294 (external, sdk-cli)"
+	if got := upstreamFor(cliUA, "111").Header.Get("X-Stainless-Timeout"); got != "111" {
+		t.Fatalf("a CLI-shaped caller's declared timeout must be forwarded verbatim, got %q", got)
+	}
+	if got := upstreamFor(cliUA, "").Header.Get("X-Stainless-Timeout"); got != defaultClaudeTimeout {
+		t.Fatalf("a CLI caller that declared nothing keeps the fingerprint fallback %q, got %q", defaultClaudeTimeout, got)
+	}
+	// The passthrough is scoped to the CLI shape: a plain caller's declaration must not reach
+	// the upstream, or we would ask the upstream to abandon a turn we still intend to stream.
+	if got := upstreamFor("python-httpx/0.27.0", "1").Header.Get("X-Stainless-Timeout"); got != defaultClaudeTimeout {
+		t.Fatalf("a non-CLI caller's declaration must not be forwarded (fingerprint fallback expected), got %q", got)
 	}
 }
 
@@ -617,11 +656,13 @@ func TestCopyHeadersToUpstreamFiltersClientTimeoutHeaders(t *testing.T) {
 	upstreamReq := httptest.NewRequest(http.MethodPost, "https://upstream.example/v1/responses", nil)
 	copyHeadersToUpstream(upstreamReq, c, &dbmodel.Channel{}, "upstream-key", "application/json", true)
 
+	// This caller is not CLI-shaped (codex-style UA, no claude-code beta), so the timeout
+	// family stays stripped: only the CLI wire shape forwards the caller's own declaration.
 	if got := upstreamReq.Header.Get("X-Stainless-Timeout"); got != "" {
-		t.Fatalf("expected client x-stainless-timeout to be filtered, got %q", got)
+		t.Fatalf("expected a non-CLI caller's x-stainless-timeout to be filtered, got %q", got)
 	}
 	if got := upstreamReq.Header.Get("Request-Timeout"); got != "" {
-		t.Fatalf("expected client request-timeout to be filtered, got %q", got)
+		t.Fatalf("expected a non-CLI caller's request-timeout to be filtered, got %q", got)
 	}
 	if got := upstreamReq.Header.Get("X-Stainless-Lang"); got != "" {
 		t.Fatalf("expected client x-stainless-lang to be filtered, got %q", got)

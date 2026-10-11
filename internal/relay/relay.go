@@ -2184,8 +2184,9 @@ func messagesContainClaudeCodeSystemPrompt(messages []model.Message) bool {
 
 // copyHeaders 复制请求头，过滤 hop-by-hop 头
 func (ra *relayAttempt) copyHeaders(outboundRequest *http.Request) {
+	cliShapedCaller := clientIsCLIShaped(ra.c.Request)
 	for key, values := range ra.c.Request.Header {
-		if !shouldForwardClientHeader(key) {
+		if !shouldForwardClientHeaderForCaller(key, cliShapedCaller) {
 			continue
 		}
 		if strings.EqualFold(key, "Accept") && strings.TrimSpace(outboundRequest.Header.Get("Accept")) != "" {

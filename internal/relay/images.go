@@ -973,8 +973,9 @@ func imagesAttempt(
 }
 
 func copyHeadersToUpstream(req *http.Request, c *gin.Context, channel *model.Channel, channelKey string, contentType string, stream bool) {
+	cliShapedCaller := clientIsCLIShaped(c.Request)
 	for k, values := range c.Request.Header {
-		if !shouldForwardClientHeader(k) {
+		if !shouldForwardClientHeaderForCaller(k, cliShapedCaller) {
 			continue
 		}
 		for _, v := range values {
