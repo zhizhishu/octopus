@@ -9,6 +9,7 @@ import (
 	"github.com/bestruirui/octopus/internal/transformer/model"
 	"github.com/bestruirui/octopus/internal/transformer/outbound"
 	"github.com/bestruirui/octopus/internal/utils/log"
+	"github.com/samber/lo"
 )
 
 // The three top-level members a genuine Claude CLI puts on every POST /v1/messages, measured
@@ -95,8 +96,24 @@ func (ra *relayAttempt) ensureClaudeCLIShapeTopLevelKeys() {
 		req.AnthropicOutputConfig = claudeCLIShapeOutputConfig
 	}
 
-	log.Infof("claude CLI shape: completed top-level thinking/context_management/output_config for a non-CLI caller (thinking enables upstream thinking, output_config effort=high); key %s=false disables",
-		dbmodel.SettingKeyRelayClaudeCLIShapeKeys)
+	// safeguards: 值取自黄金样本, 只把 platform 换成我们对外宣称的平台; 其余字段(调用方的
+	// cwd/home/permission_mode/git_state 等)是样本默认值, 不是调用方的真实状态 —— 如实记在日志里。
+	safeguardsDefaulted := false
+	if req.AnthropicExtraTopLevel == nil {
+		req.AnthropicExtraTopLevel = make(map[string]json.RawMessage, 1)
+	}
+	if _, ok := req.AnthropicExtraTopLevel["safeguards"]; !ok {
+		req.AnthropicExtraTopLevel["safeguards"] = claudeCLIShapeSafeguards()
+		safeguardsDefaulted = true
+	}
+
+	log.Infof("claude CLI shape: completed top-level thinking/context_management/output_config%s for a non-CLI caller (thinking enables upstream thinking, output_config effort=high); key %s=false disables",
+		lo.Ternary(safeguardsDefaulted, "/safeguards", ""), dbmodel.SettingKeyRelayClaudeCLIShapeKeys)
+	if safeguardsDefaulted {
+		log.Warnf("claude CLI shape: the filled safeguards is NOT the caller's real state — platform is derived from our advertised fingerprint, "+
+			"while permission_mode/live_cwd/home_dir/git_state/rules keep the golden sample's defaults (measured: a genuine CLI sends safeguards on "+
+			"12 of 22 captured requests, so it is conditional, not universal)")
+	}
 }
 
 // missingClaudeCLIShapeKeys lists the CLI-shaped top-level members this request does not carry.
@@ -114,5 +131,28 @@ func missingClaudeCLIShapeKeys(req *model.InternalLLMRequest) []string {
 	if len(req.AnthropicOutputConfig) == 0 {
 		missing = append(missing, "output_config")
 	}
+	if _, ok := req.AnthropicExtraTopLevel["safeguards"]; !ok {
+		missing = append(missing, "safeguards")
+	}
 	return missing
+}
+
+// claudeCLIShapeSafeguardsTemplate 是"非 CLI 调用方"出站时补的 safeguards 值, 逐字取自
+// 2026-10-10 的黄金抓包(真 CLI 直连 22 份里 12 份带这个成员 = 54.5%; 是隔次/按条件出现, 不是每轮都有
+// —— 大领导要求补齐, 故补; 口径可回退: 关掉开关即不补)。
+//
+// ⚠️ 语义: classifier_context 描述的是**调用方自己的机器与 CLI 配置**(live_cwd / home_dir /
+// permission_mode / git_state / rules ...), oct 拿不到, 所以保留黄金样本默认值。也就是说补出来的
+// 这一段等于替调用方宣称"permission_mode=auto, cwd=/, home=/root, 非 git 仓库"。唯一派生的是
+// platform: 取我们对外宣称的指纹平台(与 X-Stainless-OS 同源), 免得出现"头里说 Windows、
+// safeguards 里说 linux"这种自相矛盾的组合。哪些字段是默认值见补值时打的日志。
+const claudeCLIShapeSafeguardsTemplate = `[{"type":"dangerous_tool_use","classifier_context":{"v":1,"permission_mode":"auto","platform":"__PLATFORM__","live_cwd":"/","home_dir":"/root","rule_roots":{"userSettings":"/root/.claude","projectSettings":"/","localSettings":"/","flagSettings":"/","policySettings":"/","cliArg":"/","command":"/","session":"/","toolsNarrowing":"/","mcpServerPolicy":"/","hostCredential":"/"},"trusted_directories":{"primary":{"path":"/","resolved":["/"]},"additional":[],"network":[],"block_reads_outside_working_directories":false},"rules":{"allow":[],"deny":[],"ask":[]},"auto_mode":{"allow":[],"soft_deny":[],"hard_deny":[],"environment":[]},"artifact_consent_holdback":false,"case_insensitive_paths":false,"restricted":false,"is_remote_mode":false,"classify_all_shell":false,"user_identity":null,"git_state":{"cwd":"/","root":null,"branch":null,"default_branch":null,"status":null,"visibility":{"origin":null,"push_remote":null,"remotes":[],"visibility_cache":[]},"error":"not_a_repo"}}}]`
+
+// claudeCLIShapeSafeguards 返回补给出站的 safeguards: platform 派生, 其余为样本默认值。
+func claudeCLIShapeSafeguards() json.RawMessage {
+	platform := settingString(dbmodel.SettingKeyClaudeHeaderOS, dbmodel.DefaultClaudeHeaderOS)
+	if platform == "" {
+		platform = dbmodel.DefaultClaudeHeaderOS
+	}
+	return json.RawMessage(strings.ReplaceAll(claudeCLIShapeSafeguardsTemplate, "__PLATFORM__", strings.ToLower(platform)))
 }

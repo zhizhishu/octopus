@@ -88,15 +88,21 @@ func TestNonCLICallerOutboundCarriesTheCLIShapedKeyOrder(t *testing.T) {
 			t.Fatalf("outbound body is missing %q: %s", key, body)
 		}
 	}
-	// Same rule as the CLI: safeguards only when the caller sent it, and never the 0% members.
-	for _, key := range []string{"safeguards", "tool_choice", "temperature", "top_p"} {
+	// 2026-10-10 大领导口径更新: safeguards 也补(真 CLI 22 份抓包里 12 份带它 = 54.5%, 隔次出现;
+	// 值取黄金样本, 只有 platform 从我们对外宣称的指纹派生)。tool_choice/temperature/top_p 仍不补(0/22)。
+	if _, ok := decoded["safeguards"]; !ok {
+		t.Errorf("outbound body is missing \"safeguards\" (the golden CLI samples carry it in 12/22 captures): %s", body)
+	} else if !strings.Contains(string(body), `"platform":"`+strings.ToLower(settingString(dbmodel.SettingKeyClaudeHeaderOS, dbmodel.DefaultClaudeHeaderOS))+`"`) {
+		t.Errorf("safeguards.platform must be the lowercased advertised platform (a genuine CLI writes its GOOS in lowercase): %s", body)
+	}
+	for _, key := range []string{"tool_choice", "temperature", "top_p"} {
 		if _, ok := decoded[key]; ok {
 			t.Errorf("outbound body must not add %q (a real CLI sends it in 0%% of captures): %s", key, body)
 		}
 	}
 	// The measured CLI order, with `system` present because the relay injects the agent-identity
 	// system block for a non-CLI caller (a separate, pre-existing behaviour).
-	if got, want := topLevelKeyOrder(t, body), []string{"model", "messages", "system", "max_tokens", "thinking", "context_management", "output_config", "stream"}; strings.Join(got, ",") != strings.Join(want, ",") {
+	if got, want := topLevelKeyOrder(t, body), []string{"model", "messages", "system", "max_tokens", "thinking", "context_management", "safeguards", "output_config", "stream"}; strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("outbound key order = %v, want the CLI order %v", got, want)
 	}
 }
