@@ -137,6 +137,13 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		stickyEnabled:       stickyEnabled,
 		iter:                iter,
 		requestState:        requestState,
+		totalTimeoutSec:     group.TotalTimeOut,
+	}
+	// 第三道钟（见 request_total_timeout.go）：整次请求的绝对时长上限。死线在此刻钉死——
+	// 之后任何事件、换家、救援回合都只能消耗剩下的部分，无法重置或延长它。
+	if budget := resolvedRequestTotalBudget(req.totalTimeoutSec); budget > 0 {
+		req.totalBudget = budget
+		req.totalDeadline = time.Now().Add(budget)
 	}
 
 	var (
@@ -721,8 +728,11 @@ attemptChannels:
 		// never extends the current timer, and the R18 release-vs-fire mutex holds for
 		// both the first arm and the re-arm.
 		rescueBudget = intervention.NoBreakerRetryBudget()
+		// 整次请求的绝对时长上限也参与收紧救援等待窗口: 救援环节不能比总钟活得更久, 否则
+		// "到点收尾"会被 300s 的等待窗口拖过头(第三道钟见 request_total_timeout.go)。
+		rescueRemaining, rescueCeilingActive := req.totalBudgetRemainingClamped()
 		req.armRescueDeadline(
-			rescueWindowDeadline(recoveryStartedAt, rescueBudget, autoRescue, intervention.Timeout()),
+			rescueWindowDeadline(recoveryStartedAt, rescueBudget, autoRescue, intervention.Timeout(), rescueCeilingActive, rescueRemaining),
 			rescueFired,
 			interventionCancel,
 		)
@@ -762,14 +772,18 @@ attemptChannels:
 		}
 
 		{
+			// 救援轮次的节奏与轮换状态（见 rescue_retry_pacing.go）：同一渠道连续失败到上限
+			// 就把它从候选里剔除，强制换渠道；退避必须真的增长，且整段救援受请求总时长上限约束。
+			rotation := newRescueRotation()
 			for {
 				interventionRounds++
-				backoff := intervention.BackoffDuration(interventionRounds)
-				if sawNoBreakerChannel {
-					// 无熔断渠道明确选择像直连 CLI 一样持续尝试：固定 1 秒节奏，
-					// 不使用会退到 15 秒的人工接管指数退避。
-					backoff = time.Second
+				if exhaustedNow, id, name, rounds := rotation.noteRound(allAttempts); exhaustedNow {
+					log.Warnf("channel %s (id=%d) failed %d consecutive automatic-rescue rounds, dropping it and switching channel",
+						name, id, rounds)
 				}
+				// 无熔断渠道仍保留"像直连 CLI 一样先快试"的意图(前两轮 1s)，但之后必须按
+				// 指数退避增长：现场实测那版固定 1s 把 300s 救援窗口烧成同一渠道 138 次原地重试。
+				backoff := rescueRoundBackoff(interventionRounds, sawNoBreakerChannel)
 				// 上游明确要求"多久之后再来"时，这个节奏归它：比它更早重试只会再吃一次
 				// 429/503，把一次短暂限流拖成自己打自己的循环。这里只把等待拉长到上游
 				// 要求的下限；救援窗口仍由 armRescueDeadline 收口——窗口比 Retry-After
@@ -779,6 +793,17 @@ attemptChannels:
 					backoff = retryAfterFloor
 				}
 				retryAfterFloor = 0
+				// 整次请求的绝对时长上限同样约束救援节奏(与第三道钟共用同一预算，不另算一套)：
+				// 预算用尽就退出循环，剩下的等待绝不越过上限；剩余额度不足一轮退避时按剩余额度等。
+				if remaining, active := req.totalBudgetRemaining(); active {
+					if remaining <= 0 {
+						log.Warnf("relay request total timeout (%s) reached during automatic rescue, stopping the retry loop", req.totalBudget)
+						break
+					}
+					if backoff > remaining {
+						backoff = remaining
+					}
+				}
 				nextRetry := time.Now().Add(backoff)
 				if interventionRegistered {
 					_ = intervention.UpdateStatus(pendingInterventionID, intervention.StatusAutoRetrying, interventionRounds, &nextRetry)
@@ -829,6 +854,14 @@ attemptChannels:
 					continue
 				}
 				freshGroup := enrichGroupForSmartRouting(c.Request.Context(), freshRouteResult.Group, preferStreamRouting)
+				// 已经连续失败到上限的渠道不再进入候选，强制换渠道而不是原地重试。
+				var anyCandidateLeft bool
+				freshGroup, anyCandidateLeft = rotation.exclude(freshGroup)
+				if !anyCandidateLeft {
+					log.Warnf("every candidate channel failed %d consecutive automatic-rescue rounds, ending the rescue loop",
+						maxRescueRoundsPerSameChannel)
+					break
+				}
 				freshSticky := routeStickyEnabled(freshGroup.Mode, clientSession.Source)
 				freshIter := balancer.NewIteratorWithSession(freshGroup, apiKeyID, requestModel, clientSessionKey, freshSticky)
 				freshIter.PrioritizeChannels(nativeProtocolChannelIDs(c.Request.Context(), inboundType, freshGroup.Items))
@@ -1000,6 +1033,9 @@ func (ra *relayAttempt) attempt() attemptResult {
 	}
 
 	// ====== 失败 ======
+	// 第三道钟: 这次失败若是"整次请求预算到点"造成的取消, 换成具名错误, 让日志/指标/调用端
+	// 错误都指向真实原因; 调用端自己的取消照旧保留原有归因。
+	fwdErr = ra.classifyTotalTimeout(fwdErr)
 	recordStatusCode := attemptStatusCode(statusCode, fwdErr)
 	op.ChannelKeyRecordUse(ra.usedKey, recordStatusCode, usedAt, 0)
 	span.End(dbmodel.AttemptFailed, recordStatusCode, attemptAuditMessage(ra.upstreamResponded, recordStatusCode, fwdErr))
@@ -1149,6 +1185,10 @@ func parseRequest(inboundType inbound.InboundType, c *gin.Context) (*model.Inter
 // forward 转发请求到上游服务
 func (ra *relayAttempt) forward(span *balancer.AttemptSpan) (int, error) {
 	ctx := ra.c.Request.Context()
+	// 第三道钟的统一兜底(见 request_total_timeout.go): 把这次尝试的上游工作绑在整次请求的绝对
+	// 死线上。流式路径有自己的计时器(好在到点时分辨"已交付/未交付"), 这里保证没有计时器的路径
+	// (例如纯粹的流式响应体读取) 同样不会被拖到客户端自己放弃。
+	ctx = ra.boundUpstreamLifetime(ctx)
 	ra.responsesDowngradedToChat = false
 	originalInternalRequest := cloneInternalRequestForRetry(ra.internalRequest)
 	// A responses request bound for a chat channel that carries an unresolvable
@@ -2331,6 +2371,10 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 		dataTimeoutC = dataTimeoutTimer.C
 		defer dataTimeoutTimer.Stop()
 	}
+	// 第三道钟: 整次请求的绝对时长上限。刻意在这里只取"剩余额度", 所以它跨尝试是绝对的——
+	// 换渠道/重试都继承剩下的部分, 不会重新赠送一个完整窗口; 上游持续吐字节也重置不了它。
+	totalTimeoutC, stopTotalTimeout := ra.armTotalTimeout()
+	defer stopTotalTimeout()
 	resetDataTimeout := func() {
 		if dataTimeoutTimer == nil {
 			return
@@ -2590,6 +2634,15 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 				strategy: "stream_data_interval_timeout;upstream_forwarded=true",
 				message:  fmt.Sprintf("upstream stream timed out waiting for SSE event (%s)", dataIntervalTimeout),
 			}
+		case <-totalTimeoutC:
+			// 第三道钟到点: 上游"一直在慢慢吐字节/一直在发开场事件"时上面两道钟都不会响, 只有这里能
+			// 结束它。已交付内容 = 诚实收尾(交给中心失败路径写终结帧, 不换家也不静默); 未交付 = 走
+			// 既有换家/自动救援链。
+			_ = response.Body.Close()
+			if ra.wroteMeaningfulDownstream {
+				return ra.committedTotalTimeoutError()
+			}
+			return ra.totalTimeoutError()
 		case <-toolCallCompletionC:
 			if !seenMeaningfulChunk {
 				return errors.New("upstream stream ended without internal response")
@@ -3015,6 +3068,10 @@ func (ra *relayAttempt) handleStreamResponseAsNonStream(ctx context.Context, res
 		dataTimeoutC = dataTimeoutTimer.C
 		defer dataTimeoutTimer.Stop()
 	}
+	// 第三道钟: 整次请求的绝对时长上限。刻意在这里只取"剩余额度", 所以它跨尝试是绝对的——
+	// 换渠道/重试都继承剩下的部分, 不会重新赠送一个完整窗口; 上游持续吐字节也重置不了它。
+	totalTimeoutC, stopTotalTimeout := ra.armTotalTimeout()
+	defer stopTotalTimeout()
 	resetDataTimeout := func() {
 		if dataTimeoutTimer == nil {
 			return
@@ -3123,6 +3180,13 @@ readLoop:
 				strategy: "stream_data_interval_timeout;upstream_forwarded=true",
 				message:  fmt.Sprintf("upstream stream timed out waiting for SSE event (%s)", dataIntervalTimeout),
 			}
+		case <-totalTimeoutC:
+			// 第三道钟到点(非流式聚合路径): 处置同上——已交付诚实收尾, 未交付换家/进救援。
+			_ = response.Body.Close()
+			if ra.wroteMeaningfulDownstream {
+				return ra.committedTotalTimeoutError()
+			}
+			return ra.totalTimeoutError()
 		case <-toolCallCompletionC:
 			sawUpstreamCompletion = true
 			break readLoop

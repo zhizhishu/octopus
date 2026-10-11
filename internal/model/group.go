@@ -46,14 +46,18 @@ type Group struct {
 	// ModeLocked records that an admin explicitly chose this group's Mode (via the
 	// access-plan canvas). A locked group keeps its own mode even when the fleet-wide
 	// route_mode_override setting is set; unlocked groups follow the global default.
-	ModeLocked        bool        `json:"mode_locked" gorm:"not null;default:false"`
-	MatchRegex        string      `json:"match_regex"`
-	FirstTokenTimeOut int         `json:"first_token_time_out"`            // 单个渠道首个Token响应超时时间(秒)
-	SessionKeepTime   int         `json:"session_keep_time"`               // 会话保持时间(秒) 0 为禁用
-	MaxConcurrent     int         `json:"max_concurrent" gorm:"default:0"` // 分组级并发上限(整组在途请求数), 0=不限. 到顶硬拒(429)以保护上游
-	RPMLimit          int         `json:"rpm_limit" gorm:"default:0"`      // 分组级每分钟请求上限(整组近60s请求数), 0=不限. 到顶硬拒(429), 保护上游不被打满
-	AutoCreated       bool        `json:"auto_created" gorm:"default:false"`
-	Items             []GroupItem `json:"items,omitempty" gorm:"foreignKey:GroupID"`
+	ModeLocked        bool   `json:"mode_locked" gorm:"not null;default:false"`
+	MatchRegex        string `json:"match_regex"`
+	FirstTokenTimeOut int    `json:"first_token_time_out"` // 单个渠道首个Token响应超时时间(秒)
+	// TotalTimeOut is the per-group override for the whole-request ceiling
+	// (relay_request_total_timeout_seconds). 0 = fall back to the global default; a
+	// negative value is treated the same way. Unit: seconds.
+	TotalTimeOut    int         `json:"total_time_out"`                  // 分组级整次请求时长上限(秒), 0=用全局默认
+	SessionKeepTime int         `json:"session_keep_time"`               // 会话保持时间(秒) 0 为禁用
+	MaxConcurrent   int         `json:"max_concurrent" gorm:"default:0"` // 分组级并发上限(整组在途请求数), 0=不限. 到顶硬拒(429)以保护上游
+	RPMLimit        int         `json:"rpm_limit" gorm:"default:0"`      // 分组级每分钟请求上限(整组近60s请求数), 0=不限. 到顶硬拒(429), 保护上游不被打满
+	AutoCreated     bool        `json:"auto_created" gorm:"default:false"`
+	Items           []GroupItem `json:"items,omitempty" gorm:"foreignKey:GroupID"`
 }
 
 type GroupItem struct {

@@ -33,12 +33,17 @@ func routeModeOverrideFromSetting(raw string) dbmodel.GroupMode {
 //   - firstTokenDefault is a fallback applied ONLY when the group's own
 //     FirstTokenTimeOut is unset (<=0), mirroring session_keep_time_default. 0 or
 //     negative means no global default, preserving per-group-only behavior.
-func applyGroupGlobalDefaultsResolved(group dbmodel.Group, modeOverrideRaw string, firstTokenDefault int) dbmodel.Group {
+func applyGroupGlobalDefaultsResolved(group dbmodel.Group, modeOverrideRaw string, firstTokenDefault, totalTimeoutDefault int) dbmodel.Group {
 	if mode := routeModeOverrideFromSetting(modeOverrideRaw); mode != 0 && !group.ModeLocked {
 		group.Mode = mode
 	}
 	if group.FirstTokenTimeOut <= 0 && firstTokenDefault > 0 {
 		group.FirstTokenTimeOut = firstTokenDefault
+	}
+	// Same shape as FirstTokenTimeOut above: the group's own value wins whenever it is
+	// set, 0 means "use the fleet-wide default", and a global 0 means "no ceiling".
+	if group.TotalTimeOut <= 0 && totalTimeoutDefault > 0 {
+		group.TotalTimeOut = totalTimeoutDefault
 	}
 	return group
 }
@@ -56,5 +61,6 @@ func applyGroupGlobalDefaultsResolved(group dbmodel.Group, modeOverrideRaw strin
 func applyGroupGlobalDefaults(group dbmodel.Group) dbmodel.Group {
 	modeOverrideRaw, _ := op.SettingGetString(dbmodel.SettingKeyRouteModeOverride)
 	firstTokenDefault, _ := op.SettingGetInt(dbmodel.SettingKeyFirstTokenTimeOutDefault)
-	return applyGroupGlobalDefaultsResolved(group, modeOverrideRaw, firstTokenDefault)
+	totalTimeoutDefault, _ := op.SettingGetInt(dbmodel.SettingKeyRelayRequestTotalTimeoutSec)
+	return applyGroupGlobalDefaultsResolved(group, modeOverrideRaw, firstTokenDefault, totalTimeoutDefault)
 }

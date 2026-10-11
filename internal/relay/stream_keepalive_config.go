@@ -20,6 +20,9 @@ const (
 	// window only bounds a mid-answer stall, and it must fire before the client's own
 	// patience (measured 369s/529s) does.
 	defaultStreamDataIntervalTimeoutSeconds = 300
+	// defaultRelayRequestTotalTimeoutSeconds is only the fallback used when the setting
+	// cannot be read. It tracks dbmodel.DefaultRelayRequestTotalTimeoutSeconds.
+	defaultRelayRequestTotalTimeoutSeconds = 600
 )
 
 func currentStreamKeepaliveInterval() time.Duration {
@@ -47,6 +50,33 @@ func currentStreamDataIntervalTimeout() time.Duration {
 // instance: the attempt sat for the full 60s client window with the guard armed at
 // 10s, because the guard had not started. Bounding the header wait turns that into an
 // ordinary attempt failure, so failover and automatic rescue continue as before.
+// currentRelayRequestTotalTimeout is the absolute ceiling on one whole request
+// (0 = disabled). It is read once per request, at request construction, and turned
+// into an absolute deadline there — nothing an upstream sends may move it.
+func currentRelayRequestTotalTimeout() time.Duration {
+	seconds, err := op.SettingGetInt(dbmodel.SettingKeyRelayRequestTotalTimeoutSec)
+	if err != nil {
+		return defaultRelayRequestTotalTimeout()
+	}
+	return requestTotalTimeoutDuration(seconds)
+}
+
+// requestTotalTimeoutDuration clamps the raw seconds BEFORE the multiply (same reason
+// as upstreamHeaderTimeoutDuration: an overflow would read as "disabled").
+func requestTotalTimeoutDuration(seconds int) time.Duration {
+	if seconds <= 0 {
+		return 0
+	}
+	if seconds > dbmodel.MaxRelayRequestTotalTimeoutSeconds {
+		seconds = dbmodel.MaxRelayRequestTotalTimeoutSeconds
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func defaultRelayRequestTotalTimeout() time.Duration {
+	return envStreamSecondsDuration("RELAY_REQUEST_TOTAL_TIMEOUT_SECONDS", defaultRelayRequestTotalTimeoutSeconds)
+}
+
 func currentUpstreamHeaderTimeout() time.Duration {
 	seconds, err := op.SettingGetInt(dbmodel.SettingKeyUpstreamHeaderTimeoutSec)
 	if err != nil {

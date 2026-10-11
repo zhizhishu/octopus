@@ -51,7 +51,7 @@ func TestApplyGroupGlobalDefaultsResolved(t *testing.T) {
 			{"unknown leaves stored mode", dbmodel.GroupModeSpread, "bogus", dbmodel.GroupModeSpread},
 		}
 		for _, c := range cases {
-			g := applyGroupGlobalDefaultsResolved(dbmodel.Group{Mode: c.stored}, c.raw, 0)
+			g := applyGroupGlobalDefaultsResolved(dbmodel.Group{Mode: c.stored}, c.raw, 0, 0)
 			if g.Mode != c.want {
 				t.Errorf("%s: mode = %d, want %d", c.name, g.Mode, c.want)
 			}
@@ -74,7 +74,7 @@ func TestApplyGroupGlobalDefaultsResolved(t *testing.T) {
 			{"empty global keeps locked fill_first", dbmodel.GroupModeFillFirst, ""},
 		}
 		for _, c := range cases {
-			g := applyGroupGlobalDefaultsResolved(dbmodel.Group{Mode: c.stored, ModeLocked: true}, c.raw, 0)
+			g := applyGroupGlobalDefaultsResolved(dbmodel.Group{Mode: c.stored, ModeLocked: true}, c.raw, 0, 0)
 			if g.Mode != c.stored {
 				t.Errorf("%s: locked mode changed = %d, want %d (unchanged)", c.name, g.Mode, c.stored)
 			}
@@ -83,26 +83,26 @@ func TestApplyGroupGlobalDefaultsResolved(t *testing.T) {
 
 	t.Run("first-token default is only a fallback", func(t *testing.T) {
 		// Global first-token default fills in only when the group's own is unset (<=0).
-		g := applyGroupGlobalDefaultsResolved(dbmodel.Group{FirstTokenTimeOut: 0}, "", 30)
+		g := applyGroupGlobalDefaultsResolved(dbmodel.Group{FirstTokenTimeOut: 0}, "", 30, 0)
 		if g.FirstTokenTimeOut != 30 {
 			t.Fatalf("expected fallback 30, got %d", g.FirstTokenTimeOut)
 		}
 
 		// The group's own first-token timeout wins over the global default.
-		g = applyGroupGlobalDefaultsResolved(dbmodel.Group{FirstTokenTimeOut: 5}, "", 30)
+		g = applyGroupGlobalDefaultsResolved(dbmodel.Group{FirstTokenTimeOut: 5}, "", 30, 0)
 		if g.FirstTokenTimeOut != 5 {
 			t.Fatalf("expected group value 5 to win, got %d", g.FirstTokenTimeOut)
 		}
 
 		// Both applied together on an unlocked group: mode overridden and timeout filled.
-		g = applyGroupGlobalDefaultsResolved(dbmodel.Group{Mode: dbmodel.GroupModeFillFirst, FirstTokenTimeOut: 0}, "spread", 45)
+		g = applyGroupGlobalDefaultsResolved(dbmodel.Group{Mode: dbmodel.GroupModeFillFirst, FirstTokenTimeOut: 0}, "spread", 45, 0)
 		if g.Mode != dbmodel.GroupModeSpread || g.FirstTokenTimeOut != 45 {
 			t.Fatalf("expected spread+45, got mode=%d ftt=%d", g.Mode, g.FirstTokenTimeOut)
 		}
 
 		// On a locked group the global mode never applies, but the first-token
 		// fallback still does (its own timeout was unset).
-		g = applyGroupGlobalDefaultsResolved(dbmodel.Group{Mode: dbmodel.GroupModeFillFirst, ModeLocked: true, FirstTokenTimeOut: 0}, "spread", 45)
+		g = applyGroupGlobalDefaultsResolved(dbmodel.Group{Mode: dbmodel.GroupModeFillFirst, ModeLocked: true, FirstTokenTimeOut: 0}, "spread", 45, 0)
 		if g.Mode != dbmodel.GroupModeFillFirst || g.FirstTokenTimeOut != 45 {
 			t.Fatalf("expected kept fill_first + fallback 45, got mode=%d ftt=%d", g.Mode, g.FirstTokenTimeOut)
 		}

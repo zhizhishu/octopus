@@ -166,6 +166,24 @@ type relayRequest struct {
 	interventionKeyID   int
 	requestState        *RequestState
 
+	// totalTimeoutSec is the resolved whole-request ceiling in seconds (0 = disabled):
+	// the group's own TotalTimeOut, else the fleet-wide
+	// relay_request_total_timeout_seconds. See request_total_timeout.go.
+	totalTimeoutSec int
+
+	// totalBudget is the window actually armed (the resolved seconds, or the test
+	// override). Kept beside the deadline so messages name the real budget.
+	totalBudget time.Duration
+
+	// totalDeadline is the absolute instant that ceiling passes, computed ONCE when the
+	// request is constructed. Nothing may move it: each attempt only ever gets what is
+	// left of it.
+	totalDeadline time.Time
+
+	// totalClock carries the ceiling's fire bookkeeping across attempts; the racer
+	// shallow copy shares the pointer rather than the state.
+	totalClock *relayTotalClock
+
 	// wroteBusinessData flips true once real business data (text/tool_call/reasoning/usage
 	// content payload) has been written/committed downstream. When wroteBusinessData is true,
 	// the request cannot be held for manual intervention (or failover) because partial

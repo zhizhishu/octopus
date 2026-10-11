@@ -28,6 +28,16 @@ const (
 	SettingKeyOpenAIAutoPromptCacheKey  SettingKey = "openai_auto_prompt_cache_key"
 	SettingKeyUpstreamUTLSFingerprint   SettingKey = "upstream_utls_fingerprint" // 直连上游用 Chrome uTLS ClientHello (JA3); opt-in, 默认关, 启用前须过 the relay 复验
 	SettingKeyRelayStreamDataTimeoutSec SettingKey = "relay_stream_data_interval_timeout_seconds"
+	// SettingKeyRelayRequestTotalTimeoutSec is the THIRD clock: an absolute ceiling on
+	// the whole request, measured from the moment the request arrived and never fed by
+	// anything the upstream sends. The two clocks beside it cannot bound a slow-but-alive
+	// upstream — `first_token_time_out_default` is released by the first real content, and
+	// `relay_stream_data_interval_timeout_seconds` is reset by EVERY upstream event — so an
+	// upstream that keeps dribbling bytes (or keeps emitting openers) holds a request open
+	// indefinitely. 0 disables the ceiling (the previous behaviour). A fired ceiling is an
+	// ordinary attempt failure before any content is delivered (failover / automatic rescue
+	// continue) and an honest in-band terminal frame once content has been delivered.
+	SettingKeyRelayRequestTotalTimeoutSec SettingKey = "relay_request_total_timeout_seconds"
 	// SettingKeyUpstreamHeaderTimeoutSec bounds how long ONE attempt may wait for the
 	// upstream to send response headers at all. The existing first-token guard only
 	// arms AFTER headers arrive, so an upstream that accepts the request and then
@@ -247,6 +257,21 @@ const (
 	// "no global default". Registered so existing rows converge to the value above.
 	LegacyDefaultFirstTokenTimeOutSeconds = "0"
 
+	// DefaultRelayRequestTotalTimeoutSeconds is the absolute ceiling on one whole
+	// request (see SettingKeyRelayRequestTotalTimeoutSec). 600s is the order of
+	// magnitude the only reference implementation with an equivalent knob uses
+	// (axonhub `server.llm_request_timeout: 600s`, "the maximum duration for
+	// processing a request to LLM"), and it stays generous next to this fleet's
+	// observed normal turns (40-120s) and next to the upstream-side slowness that
+	// motivated it (measured: a 154s turn that produced 17k output tokens, and a
+	// turn that was still generating past 6 minutes). Cutting a legitimate long
+	// generation is a real cost — the caller loses the tail of an answer that a
+	// direct upstream call would have finished — so this is a ceiling of last
+	// resort, not a target: the pre-content deadline and the mid-stream idle
+	// window must fire first in every shape they can see. Operators who prefer the
+	// old unbounded behaviour set it to 0, or set a per-group TotalTimeOut.
+	DefaultRelayRequestTotalTimeoutSeconds = "600"
+
 	// LegacyDefaultCodexHeaderUserAgent0133 was briefly shipped as the Codex
 	// header default. Treat it as a product default, not as an administrator's
 	// custom value, so upgraded deployments converge to the locally verified
@@ -392,6 +417,12 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyOpenAIAutoPromptCacheKey, Value: "true"},
 		{Key: SettingKeyUpstreamUTLSFingerprint, Value: "false"}, // 默认关：改 TLS 指纹影响所有上游，须先过 the relay 复验再开
 		{Key: SettingKeyRelayStreamDataTimeoutSec, Value: defaultRelayStreamDataIntervalTimeoutSeconds()},
+		// 整次请求的绝对时长上限(秒), 0 = 不启用(旧行为)。给"上游一直在慢慢吐字节/一直发开场事件"
+		// 这一档兜底：相邻两道钟都盖不住它(首内容钟被首个真内容解除, 事件间隔钟被每个上游事件重置)。
+		// 到点且未交付内容 = 一次普通尝试失败(照常换家/自动救援)；已交付内容 = 诚实收尾(保留已送内容 +
+		// 明确错误 + 终结帧)。取消合法长回答是有代价的(见 DefaultRelayRequestTotalTimeoutSeconds), 因此
+		// 取值刻意宽裕, 且可随时改回 0。初值可被 OCTOPUS_RELAY_REQUEST_TOTAL_TIMEOUT_SECONDS 影响。
+		{Key: SettingKeyRelayRequestTotalTimeoutSec, Value: defaultRelayRequestTotalTimeoutSeconds()},
 		// 0 = 不启用（默认，保持旧行为）：只给"等上游响应头"加时限，SSE 正文不受影响。
 		// 启用后每次尝试按预算切断，失败照常换家/进自动救援，因此可随时回退为 0。
 		// 初始值可被 OCTOPUS_UPSTREAM_HEADER_TIMEOUT_SECONDS 影响（与相邻超时设置同规矩）；
@@ -565,6 +596,16 @@ func (s *Setting) Validate() error {
 		value, err := strconv.Atoi(s.Value)
 		if err != nil || value < 0 || value > MaxUpstreamHeaderTimeoutSeconds {
 			return fmt.Errorf("%s must be an integer between 0 and %d", s.Key, MaxUpstreamHeaderTimeoutSeconds)
+		}
+		return nil
+	case SettingKeyRelayRequestTotalTimeoutSec:
+		// Bounded like the neighbouring budgets: a value written straight into the
+		// database (bypassing Validate) would be multiplied into a time.Duration and
+		// could overflow into a negative number, which the relay reads as "disabled" —
+		// a silent way to lose the ceiling.
+		value, err := strconv.Atoi(s.Value)
+		if err != nil || value < 0 || value > MaxRelayRequestTotalTimeoutSeconds {
+			return fmt.Errorf("%s must be an integer between 0 and %d", s.Key, MaxRelayRequestTotalTimeoutSeconds)
 		}
 		return nil
 	case SettingKeyRelayNoBreakerRetryBudgetSec:
@@ -749,6 +790,11 @@ func (s *Setting) Validate() error {
 // the relay would read as "disabled"); one day is far beyond any healthy slow upstream.
 const MaxUpstreamHeaderTimeoutSeconds = 86400
 
+// MaxRelayRequestTotalTimeoutSeconds bounds relay_request_total_timeout_seconds (24h).
+// Only a guard against overflow-into-negative when a raw DB write bypasses Validate;
+// the shipped default is far below it.
+const MaxRelayRequestTotalTimeoutSeconds = 86400
+
 // MaxRelayNoBreakerRetryBudgetSeconds bounds the automatic rescue window for routes that
 // contain DisableCircuitBreaker channels. It is shared by the API validation here and the
 // relay reader (intervention.NoBreakerRetryBudget) so the two can never drift apart, and
@@ -770,6 +816,23 @@ func defaultUpstreamHeaderTimeoutSeconds() string {
 	}
 	if value > MaxUpstreamHeaderTimeoutSeconds {
 		return strconv.Itoa(MaxUpstreamHeaderTimeoutSeconds)
+	}
+	return strconv.Itoa(value)
+}
+
+// defaultRelayRequestTotalTimeoutSeconds mirrors defaultUpstreamHeaderTimeoutSeconds:
+// the environment may only seed the initial value, the stored row wins afterwards.
+func defaultRelayRequestTotalTimeoutSeconds() string {
+	raw := strings.TrimSpace(os.Getenv("OCTOPUS_RELAY_REQUEST_TOTAL_TIMEOUT_SECONDS"))
+	if raw == "" {
+		return DefaultRelayRequestTotalTimeoutSeconds
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 0 {
+		return DefaultRelayRequestTotalTimeoutSeconds
+	}
+	if value > MaxRelayRequestTotalTimeoutSeconds {
+		value = MaxRelayRequestTotalTimeoutSeconds
 	}
 	return strconv.Itoa(value)
 }

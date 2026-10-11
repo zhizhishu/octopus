@@ -32,13 +32,21 @@ func markRecoveryStart(current time.Time, err error) time.Time {
 // (relay_no_breaker_retry_budget_seconds, shared by plain and no-breaker channels) and the
 // operator hold timeout may only tighten it further (they are ignored when larger, and
 // when <= 0).
-func rescueWindowDeadline(recoveryStart time.Time, rescueBudget time.Duration, rescueBudgetActive bool, operatorHold time.Duration) time.Time {
+func rescueWindowDeadline(recoveryStart time.Time, rescueBudget time.Duration, rescueBudgetActive bool, operatorHold time.Duration, requestCeilingActive bool, requestRemaining time.Duration) time.Time {
 	cap := autoRescueCap
 	if rescueBudgetActive && rescueBudget > 0 && rescueBudget < cap {
 		cap = rescueBudget
 	}
 	if operatorHold > 0 && operatorHold < cap {
 		cap = operatorHold
+	}
+	// The whole-request ceiling (relay_request_total_timeout_seconds) is the outermost
+	// bound of all: an automatic-recovery hold may not outlive it either, or "end at the
+	// ceiling" would silently become "end 300s after the ceiling". Tighten-only, like the
+	// budgets above; when the ceiling is disabled, or the request has one that already
+	// passed, the hold behaves exactly as before.
+	if requestCeilingActive && requestRemaining < cap {
+		cap = requestRemaining
 	}
 	return recoveryStart.Add(cap)
 }

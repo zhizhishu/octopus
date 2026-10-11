@@ -79,3 +79,39 @@ func TestDefaultStreamBoundsRegisterTheirLegacyValues(t *testing.T) {
 		t.Fatalf("the registered legacy value must differ from the shipped default, or the upgrade map is a no-op")
 	}
 }
+
+// The third clock's shipped default is what the acceptance criteria were measured
+// against, and it is deliberately far above this fleet's normal turn length: a ceiling
+// that fires during ordinary traffic would cut legitimate answers and re-bill them on a
+// second channel. 600s mirrors the reference implementation's
+// `server.llm_request_timeout` and stays ~5x the observed 40-120s turns.
+func TestDefaultRequestCeilingIsGenerousAndReferenceMatched(t *testing.T) {
+	seconds, err := strconv.Atoi(DefaultRelayRequestTotalTimeoutSeconds)
+	if err != nil {
+		t.Fatalf("the ceiling default must be an integer number of seconds, got %q", DefaultRelayRequestTotalTimeoutSeconds)
+	}
+	if seconds != 600 {
+		t.Fatalf("the shipped ceiling must stay at the reference implementation's order of magnitude (600s), got %d", seconds)
+	}
+	if seconds <= 300 {
+		t.Fatalf("the ceiling (%ds) must stay above the mid-answer silence budget (300s), otherwise it would pre-empt the clock that can end a request honestly sooner", seconds)
+	}
+	if MaxRelayRequestTotalTimeoutSeconds < seconds {
+		t.Fatalf("the validation bound (%d) must not reject the shipped default (%d)", MaxRelayRequestTotalTimeoutSeconds, seconds)
+	}
+}
+
+func TestRequestCeilingSettingRejectsOutOfRangeValues(t *testing.T) {
+	if err := (&Setting{Key: SettingKeyRelayRequestTotalTimeoutSec, Value: "600"}).Validate(); err != nil {
+		t.Fatalf("600 must validate: %v", err)
+	}
+	if err := (&Setting{Key: SettingKeyRelayRequestTotalTimeoutSec, Value: "0"}).Validate(); err != nil {
+		t.Fatalf("0 (disabled) must validate: %v", err)
+	}
+	if err := (&Setting{Key: SettingKeyRelayRequestTotalTimeoutSec, Value: "-1"}).Validate(); err == nil {
+		t.Fatalf("a negative ceiling must be rejected")
+	}
+	if err := (&Setting{Key: SettingKeyRelayRequestTotalTimeoutSec, Value: strconv.Itoa(MaxRelayRequestTotalTimeoutSeconds + 1)}).Validate(); err == nil {
+		t.Fatalf("a ceiling above the bound must be rejected, otherwise it overflows into 'disabled'")
+	}
+}

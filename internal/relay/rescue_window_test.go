@@ -16,7 +16,11 @@ func TestRescueWindowDeadlineCapsAtAutoRescueCap(t *testing.T) {
 		noBreakerBudget time.Duration
 		noBreakerActive bool
 		operatorHold    time.Duration
-		want            time.Duration
+		// The whole-request ceiling (third clock) is the outermost bound: a hold may
+		// not outlive it.
+		requestCeilingActive    bool
+		requestCeilingRemaining time.Duration
+		want                    time.Duration
 	}{
 		{name: "plain channel ignores the 1800s operator hold", noBreakerActive: false, operatorHold: 1800 * time.Second, want: autoRescueCap},
 		{name: "operator hold can only tighten", noBreakerActive: false, operatorHold: 120 * time.Second, want: 120 * time.Second},
@@ -24,10 +28,13 @@ func TestRescueWindowDeadlineCapsAtAutoRescueCap(t *testing.T) {
 		{name: "no-breaker budget tightens", noBreakerActive: true, noBreakerBudget: 30 * time.Second, operatorHold: 1800 * time.Second, want: 30 * time.Second},
 		{name: "zero no-breaker budget does not tighten", noBreakerActive: true, noBreakerBudget: 0, operatorHold: 1800 * time.Second, want: autoRescueCap},
 		{name: "no caps present still bounded", noBreakerActive: false, want: autoRescueCap},
+		{name: "request ceiling tightens the hold", requestCeilingActive: true, requestCeilingRemaining: 45 * time.Second, operatorHold: 1800 * time.Second, want: 45 * time.Second},
+		{name: "expired request ceiling collapses the hold", requestCeilingActive: true, requestCeilingRemaining: 0, want: 0},
+		{name: "inactive request ceiling changes nothing", requestCeilingActive: false, requestCeilingRemaining: 0, want: autoRescueCap},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := rescueWindowDeadline(base, tc.noBreakerBudget, tc.noBreakerActive, tc.operatorHold)
+			got := rescueWindowDeadline(base, tc.noBreakerBudget, tc.noBreakerActive, tc.operatorHold, tc.requestCeilingActive, tc.requestCeilingRemaining)
 			if want := base.Add(tc.want); !got.Equal(want) {
 				t.Fatalf("deadline = %v, want %v", got, want)
 			}
