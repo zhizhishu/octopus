@@ -160,7 +160,14 @@ func applyChannelWireHeaderDefaults(req *http.Request, options ChannelWireHeader
 		// sets both for upstream compatibility; trim the extra X-Api-Key only when
 		// the outbound actually carries a Bearer (official api.anthropic.com keeps
 		// X-Api-Key and never gets Authorization, so it is untouched).
-		if options.ClientUsedBearerAuth && strings.TrimSpace(req.Header.Get("Authorization")) != "" {
+		// 2026-10-10 大领导拍板(真 CLI 抓包对照): 真 CLI 指向代理/转发时**只发 authorization**,
+		// 我们出站两个都发 —— 上游可识别的非 CLI 特征。规则收窄成"出站只要带着 Authorization
+		// (那正是渠道 key: applyAnthropicAuthHeaders 对每个非官方 base 都注入 Bearer), 就绝不再发
+		// X-Api-Key", 不再要求调用方自己也用 Bearer。为什么不会断渠道: 被删的 X-Api-Key 是
+		// copyHeadersToUpstream 复制来的**调用方**那个头, 而 Authorization 里是渠道 key —— 删掉它
+		// 不会让这次尝试变成"无凭证"。官方 api.anthropic.com 那条路不注入 Authorization(只发
+		// X-Api-Key), 因此完全不受影响。
+		if strings.TrimSpace(req.Header.Get("Authorization")) != "" {
 			req.Header.Del("X-Api-Key")
 		} else if options.ClientUsedAPIKeyAuth && strings.TrimSpace(req.Header.Get("X-API-Key")) != "" {
 			// Mirror image of the rule above, same packet-level principle: a client that

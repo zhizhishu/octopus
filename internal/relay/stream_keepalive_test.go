@@ -607,8 +607,10 @@ data: {"type":"message_stop"}
 	if !strings.Contains(sawBeta, defaultClaudeOneMillionBeta) {
 		t.Fatalf("expected 1m beta %q, got %q", defaultClaudeOneMillionBeta, sawBeta)
 	}
-	if sawAPIKey != "anthropic-key" || sawAuthorization != "Bearer anthropic-key" {
-		t.Fatalf("unexpected upstream auth headers: x-api-key=%q authorization=%q", sawAPIKey, sawAuthorization)
+	// 2026-10-10 大领导拍板: 出站只发 authorization(真 CLI 指向代理/转发时的线上形状); 复制来的
+	// 调用方 X-Api-Key 在出站已带 Authorization 时必须去掉。
+	if sawAPIKey != "" || sawAuthorization != "Bearer anthropic-key" {
+		t.Fatalf("upstream auth must be authorization-only: x-api-key=%q authorization=%q", sawAPIKey, sawAuthorization)
 	}
 	if sawClaudeSessionID == "" {
 		t.Fatalf("expected X-Claude-Code-Session-Id to be set, got %q", sawClaudeSessionID)
@@ -1436,26 +1438,29 @@ data: {"type":"message_stop"}
 		return sawAPIKey, sawAuthorization, rec.Code
 	}
 
-	t.Run("api-key client leaves with one credential header", func(t *testing.T) {
+	// 调用方用 x-api-key 认证 oct 时, 出站仍然是 authorization-only: 渠道 key 由
+	// applyAnthropicAuthHeaders 注入 Authorization, 复制的调用方 X-Api-Key 被去掉。
+	// (2026-10-10 大领导拍板: 真 CLI 只发 authorization, 别两个都发。)
+	t.Run("api-key client still leaves authorization-only upstream", func(t *testing.T) {
 		sawAPIKey, sawAuthorization, code := run(t, "claude-cli/2.1.294 (external, sdk-cli)", "client-octopus-key", "")
 		if code != http.StatusOK {
 			t.Fatalf("expected the api-key stream to succeed, got %d", code)
 		}
-		if sawAPIKey != "anthropic-key" {
-			t.Fatalf("upstream X-API-Key must carry the channel key, got %q", sawAPIKey)
+		if sawAuthorization != "Bearer anthropic-key" {
+			t.Fatalf("upstream Authorization must carry the channel key, got %q", sawAuthorization)
 		}
-		if sawAuthorization != "" {
-			t.Fatalf("an x-api-key-only client must not gain an Authorization header upstream, got %q", sawAuthorization)
+		if sawAPIKey != "" {
+			t.Fatalf("the outbound must not also send X-Api-Key when Authorization is present, got %q", sawAPIKey)
 		}
 	})
 
-	t.Run("plain client keeps the historical both-headers auth", func(t *testing.T) {
+	t.Run("plain client also leaves authorization-only upstream", func(t *testing.T) {
 		sawAPIKey, sawAuthorization, code := run(t, "python-httpx/0.27.0", "", "")
 		if code != http.StatusOK {
 			t.Fatalf("expected the plain client stream to succeed, got %d", code)
 		}
-		if sawAPIKey != "anthropic-key" || sawAuthorization != "Bearer anthropic-key" {
-			t.Fatalf("a non-CLI caller keeps both credential headers, got x-api-key=%q authorization=%q", sawAPIKey, sawAuthorization)
+		if sawAuthorization != "Bearer anthropic-key" || sawAPIKey != "" {
+			t.Fatalf("every non-official base must leave authorization-only (real-CLI shape), got x-api-key=%q authorization=%q", sawAPIKey, sawAuthorization)
 		}
 	})
 }
