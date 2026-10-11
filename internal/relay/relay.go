@@ -2014,6 +2014,9 @@ func (ra *relayAttempt) applyTransformOptionsWithInboundSetter(updateInboundSett
 		ra.internalRequest.TransformOptions.AnthropicOneMillionBeta = true
 	}
 	ra.prepareClaudePlainClientShape()
+	// 补齐真 CLI 必发的三个顶层成员; 必须在 prepareClaudePlainClientShape 之后 —— 那条路径靠
+	// "体内是否已有 CLI 成员" 判断调用方是不是普通客户端, 提前填值会把普通客户端的回退工具顶掉。
+	ra.ensureClaudeCLIShapeTopLevelKeys()
 
 	enabled, err := op.SettingGetBool(dbmodel.SettingKeyAnthropicAutoCacheControl)
 	if err != nil {

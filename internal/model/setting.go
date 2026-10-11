@@ -109,6 +109,19 @@ const (
 	// told to continue; holding the connection keeps it in "working" instead. Off by
 	// default because a held request pins a connection until someone resolves it.
 	SettingKeyRelayInterventionEnabled SettingKey = "relay_intervention_enabled"
+	// SettingKeyRelayClaudeCLIShapeKeys defaults to "true". When on, a request to an
+	// Anthropic channel whose caller is NOT a CLI-shaped client gets the three top-level
+	// members every genuine Claude CLI sends — thinking, context_management, output_config —
+	// filled in from the measured golden values, because without them the outbound body is
+	// missing keys the upstream expects from a CLI-shaped client.
+	//
+	// Semantic consequence (deliberate): filling thinking genuinely enables thinking upstream
+	// and output_config carries effort=high. That is the "match the real CLI" side of the
+	// trade-off; turn this off to send exactly what the caller asked for instead.
+	// safeguards is never synthesised (the CLI sends it in only 45.5% of captures, so it stays
+	// pass-through: present if the caller sent it, absent otherwise). tool_choice / temperature
+	// / top_p are never added (the CLI sends them in 0% of captures).
+	SettingKeyRelayClaudeCLIShapeKeys SettingKey = "relay_claude_cli_shape_keys"
 	// SettingKeyRelayInterventionTimeoutSec bounds that hold: once it elapses with nobody
 	// resolving the request, the original upstream error goes to the client after all.
 	// Since the unified automatic-recovery window is hard-capped at 300s from the first
@@ -453,6 +466,7 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyFirstByteKeepaliveDelaySeconds, Value: defaultFirstByteKeepaliveDelaySeconds()}, // 默认20=开启: 上游首字节>20s才向下游注入SSE心跳(防前置反代/客户端60s空闲掐断); 0=关闭
 		{Key: SettingKeyInterventionKeepaliveDelaySeconds, Value: "2"},                                  // 默认2=hold期间2秒后即向下游注入SSE心跳: hold轮次寿命受backoff封顶15s约束,20s首字delay在轮内永远死胎; 0=关闭
 		{Key: SettingKeyRelayInterventionEnabled, Value: "true"},                                        // 默认开: 流式请求在普通渠道/回退用尽后自动救援; 关=普通渠道立刻回错(无熔断渠道仍可按预算自救)
+		{Key: SettingKeyRelayClaudeCLIShapeKeys, Value: "true"},                                          // 默认开: 非 CLI 调用方经 Anthropic 渠道出站补齐真 CLI 必发的 thinking/context_management/output_config(值取 22/22 黄金样本); 关=完全按调用方原样发
 		{Key: SettingKeyRelayInterventionTimeoutSec, Value: "1800"},                                     // 人工接管等待上限(秒); 自动救援总计已封顶300s, 此值仅可再收紧(<300), 超时后原错误照常返回客户端
 		{Key: SettingKeyRelayNoBreakerRetryBudgetSec, Value: "300"},                                     // 无熔断渠道自动猛打预算(秒): 按画布既定顺序反复重试; 最大300(自动救援总计上限), 0=关闭
 		{Key: SettingKeyRouteModeOverride, Value: DefaultRouteModeOverride},                             // 默认优先填充；已有独立模式的规则不受影响
