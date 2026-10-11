@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -18,6 +19,7 @@ import (
 	"github.com/bestruirui/octopus/internal/server/resp"
 	"github.com/bestruirui/octopus/internal/server/router"
 	"github.com/bestruirui/octopus/internal/task"
+	"gorm.io/gorm"
 	"github.com/bestruirui/octopus/internal/utils/log"
 	"github.com/bestruirui/octopus/internal/utils/safe"
 	"github.com/bestruirui/octopus/internal/utils/xstrings"
@@ -110,7 +112,7 @@ func createChannel(c *gin.Context) {
 		return
 	}
 	if err := op.ChannelCreate(&channel, c.Request.Context()); err != nil {
-		resp.Error(c, http.StatusInternalServerError, err.Error())
+		writeConflictOrInternal(c, err)
 		return
 	}
 	stats := op.StatsChannelGet(channel.ID)
@@ -131,7 +133,7 @@ func updateChannel(c *gin.Context) {
 	}
 	channel, err := op.ChannelUpdate(&req, c.Request.Context())
 	if err != nil {
-		resp.Error(c, http.StatusInternalServerError, err.Error())
+		writeConflictOrInternal(c, err)
 		return
 	}
 	stats := op.StatsChannelGet(channel.ID)
@@ -398,4 +400,33 @@ func testChannelProxy(c *gin.Context) {
 		return
 	}
 	resp.Success(c, proxyTestResult{OK: true, DelayMs: delayMs, Message: ""})
+}
+
+// writeConflictOrInternal classifies a channel write failure by what the caller can do about it.
+// A database uniqueness violation means the same request body can never succeed: that is a
+// client-side conflict (409), and answering 500 instead tells the caller the server broke and
+// invites a retry against a call that cannot work — which is how a duplicate channel name became
+// a retry loop in the field. Everything else keeps the existing 500.
+func writeConflictOrInternal(c *gin.Context, err error) {
+	if isUniqueConstraintViolation(err) {
+		resp.Error(c, http.StatusConflict, err.Error())
+		return
+	}
+	resp.Error(c, http.StatusInternalServerError, err.Error())
+}
+
+// isUniqueConstraintViolation recognises a uniqueness conflict across the supported databases:
+// gorm's translated error where the driver provides one, and the raw driver text otherwise
+// (sqlite "UNIQUE constraint failed", mysql "Duplicate entry", postgres "duplicate key").
+func isUniqueConstraintViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, gorm.ErrDuplicatedKey) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "unique constraint") ||
+		strings.Contains(msg, "duplicate entry") ||
+		strings.Contains(msg, "duplicate key")
 }
