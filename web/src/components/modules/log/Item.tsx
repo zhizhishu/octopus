@@ -316,7 +316,7 @@ interface LogRouteHeaderProps {
     upstreamPathTitle: string;
     /** card 专用槽位：A1 的「自动救援」徽标（路由状态，紧跟主状态徽标）。detail 忽略。 */
     autoRescueSlot?: ReactNode;
-    /** card 专用槽位：A2 下游客户端徽标（含 Popover）。缺省时渲染低强调占位。 */
+    /** 下游客户端徽标（含 Popover）：card 在 B1 行末、detail 在模型链后。缺省时不渲染。 */
     clientSlot?: ReactNode;
     /** card 专用槽位：B2 模型检测徽标。无结果时传 null，不造假占位。 */
     auditSlot?: ReactNode;
@@ -565,28 +565,28 @@ function LogRouteHeader({
                     {endpointBadge}
                     {upstreamPathBadge}
                 </div>
-                {/* B1 请求模型 → 渠道 · oct 实际发出模型 · 上游自报模型 */}
+                {/* B1 请求模型 → 渠道 · oct 实际发出模型 · 上游自报模型 · 下游客户端
+                    （客户端徽标与真模型链同一行：调用方一眼对上「谁 → 用什么模型」） */}
                 <div className="flex min-w-0 flex-wrap items-center gap-2">
                     {requestModelText}
                     {channelGroup}
                     {actualModelText}
                     {upstreamEchoModel}
+                    {clientSlot}
                 </div>
                 {/* C1 流式 · 粘性图钉（固定右列） */}
                 <div className="flex min-w-0 items-center gap-2 md:justify-self-end">
                     {streamBadge}
                     {stickyPin}
                 </div>
-                {/* A2 下游客户端；缺失时给低强调占位，「第 2 排永远渲染」让列轨道恒定 */}
+                {/* A2 客户端已并入 B1；保留低强调占位，让「第 2 排永远渲染」、列轨道恒定 */}
                 <div className="flex min-w-0 flex-wrap items-center gap-2">
-                    {clientSlot ?? (
-                        <Badge
-                            variant="outline"
-                            className="shrink-0 border-border/60 bg-muted/30 px-1.5 py-0 text-xs font-normal text-muted-foreground"
-                        >
-                            {t('clientUnknown')}
-                        </Badge>
-                    )}
+                    <Badge
+                        variant="outline"
+                        className="shrink-0 border-border/60 bg-muted/30 px-1.5 py-0 text-xs font-normal text-muted-foreground"
+                    >
+                        {t('clientUnknown')}
+                    </Badge>
                 </div>
                 {/* B2 映射自 · 回显不符 · 模型检测（检测无结果就留空，不造假占位）。
                     整格不换行：回显状态徽标让位截断，检测徽标永远贴在本格右端，
@@ -612,6 +612,7 @@ function LogRouteHeader({
             {channelGroup}
             {actualModelText}
             {upstreamEchoModel}
+            {clientSlot}
             {echoGroup}
             {streamBadge}
             {stickyPin}

@@ -1,6 +1,16 @@
 'use client';
 
-import { useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+
+function useDebouncedValue<T>(value: T, delayMs: number): T {
+    const [debounced, setDebounced] = useState(value);
+    useEffect(() => {
+        const timer = setTimeout(() => setDebounced(value), delayMs);
+        return () => clearTimeout(timer);
+    }, [value, delayMs]);
+    return debounced;
+}
+
 import { type RelayLog, type RelayLogSeverity, type RequestState, useExportLogs, useLogSeverityCounts, useLogs, useRequestStateStream } from '@/api/endpoints/log';
 import { LogCard, useSensitiveStore } from './Item';
 import { AlertCircle, AlertTriangle, Calendar as CalendarIcon, CheckCircle2, ChevronLeft, ChevronRight, Circle, Download, Eye, EyeOff, Loader2, RefreshCw, RotateCcw, RotateCw, ScrollText, Search, SlidersHorizontal, WifiOff, X } from 'lucide-react';
@@ -697,7 +707,10 @@ export function Log() {
     const [searchKeyword, setSearchKeyword] = useState('');
     // 手机端默认只留搜索框、其余筛选控件折叠；桌面靠 sm: 断点强制常显，两种视口互不影响。
     const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
-    const deferredSearch = useDeferredValue(searchKeyword.trim());
+    // 网络层 debounce（300ms）：真节流，替代 useDeferredValue（那只是渲染优先级，
+    // 每个键入仍会改 queryKey 立即发请求）。参考 clearTimeout+setTimeout 模式。
+    const debouncedSearch = useDebouncedValue(searchKeyword.trim(), 300);
+    const deferredSearch = debouncedSearch;
     const isLiveMode = viewMode === 'live';
     // 分页状态：当前页（从 1 开始）+ 跳页输入框草稿值。
     const [currentPage, setCurrentPage] = useState(1);
@@ -924,15 +937,11 @@ export function Log() {
         return id === 'all' ? severityCounts.total : severityCounts[id];
     }, [countsError, severityCounts]);
 
-    // 客户端轻量过滤：服务端已处理 severity/retried/hideModelTest，这里只需处理
-    // selectedEndpoint（服务端只粗过滤 endpoint 字段，前端需细化 endpoint_family 逻辑）
-    const filteredLogs = useMemo(() => {
-        if (!selectedEndpoint) return logs;
-        return logs.filter((log) => {
-            const stored = log.request_endpoint?.trim() ?? '';
-            return stored === selectedEndpoint || stored.startsWith(`${selectedEndpoint}_`);
-        });
-    }, [logs, selectedEndpoint]);
+    // endpoint 筛选已完全由服务端 family 匹配（RelayLogEndpointMatches：
+    // request_endpoint = ? OR request_endpoint LIKE 'family\_%'），
+    // 前端不再二次过滤——双重过滤曾导致存储 variant 命名与 startsWith 语义不一致时整页被筛空、
+    // 与 activeTotal 分页数互相矛盾。保留别名以减小调用点 diff。
+    const filteredLogs = logs;
 
 
     // 当前历史日志中已包含的 log ID 集合，供 LiveActivityPanel 过滤救援列表（避免已落库日志的救援条目重复呈现）

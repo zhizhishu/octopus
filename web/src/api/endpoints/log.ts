@@ -576,8 +576,9 @@ export function useLogSeverityCounts(options: {
         refetchOnMount: 'always',
         // 筛选变化时不要把徽章数字清空重算（保留上一份计数，避免 0/— 闪一下）。
         placeholderData: keepPreviousData,
-        // SSE 只推日志列表、不推计数；计数每 3 秒轻量重取，让总数/徽章/分页页数不陈旧。
-        refetchInterval: 3000,
+        // SSE 只推日志列表、不推计数；计数降到每 15 秒重取（后端对 error/warn 谓词是
+        // 非索引字段判断，3s 全表扫×3 成本过高；徽章数字最长陈旧 15s 可接受）。
+        refetchInterval: 15000,
     });
 }
 
