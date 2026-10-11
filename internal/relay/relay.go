@@ -144,6 +144,10 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 	if budget := resolvedRequestTotalBudget(req.totalTimeoutSec); budget > 0 {
 		req.totalBudget = budget
 		req.totalDeadline = time.Now().Add(budget)
+		// Allocate the clock with the deadline, never lazily: the ceiling's timer callbacks
+		// and the streaming loop read content progress through it from different goroutines,
+		// so a nil-to-value transition at first cut would be a race.
+		req.totalClock = &relayTotalClock{}
 	}
 
 	var (
@@ -2375,7 +2379,9 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 	// 第三道钟: 整次请求的绝对时长上限。刻意在这里只取"剩余额度", 所以它跨尝试是绝对的——
 	// 换渠道/重试都继承剩下的部分, 不会重新赠送一个完整窗口; 上游持续吐字节也重置不了它。
 	totalTimeoutC, stopTotalTimeout := ra.armTotalTimeout()
-	defer stopTotalTimeout()
+	// Closure, not a direct defer: when the ceiling passes while content is still flowing the
+	// cut point re-arms, and the timer that then needs stopping is the new one.
+	defer func() { stopTotalTimeout() }()
 	resetDataTimeout := func() {
 		if dataTimeoutTimer == nil {
 			return
@@ -2567,6 +2573,7 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 			pendingPrelude = nil
 		}
 		ra.wroteMeaningfulDownstream = true
+		ra.noteMeaningfulContent()
 		// Commit reached the client: the response is recovered, so release the rescue
 		// deadline and let the body stream under the client context.
 		ra.releaseRescueDeadline()
@@ -2636,9 +2643,16 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 				message:  fmt.Sprintf("upstream stream timed out waiting for SSE event (%s)", dataIntervalTimeout),
 			}
 		case <-totalTimeoutC:
-			// 第三道钟到点: 上游"一直在慢慢吐字节/一直在发开场事件"时上面两道钟都不会响, 只有这里能
-			// 结束它。已交付内容 = 诚实收尾(交给中心失败路径写终结帧, 不换家也不静默); 未交付 = 走
-			// 既有换家/自动救援链。
+			// 第三道钟到点。它只管"救援等待"——等首内容、等重试/换渠道；一条**正在真出内容**的流
+			// 不许被它砍断(大领导 2026-10 口径)。所以先看内容是否仍在流动：仍在流动就续期再看，
+			// 不流动才按"已交付⇒诚实收尾 / 未交付⇒换家救援"处置。续期信号只认实质内容，无内容
+			// 事件(心跳/开场)不续期——与 bd1bfb3 的绝对时钟口径一致。
+			if ra.wroteMeaningfulDownstream && !ra.meaningfulContentIdle() {
+				log.Warnf("relay request total timeout (%s) reached while content is still flowing, letting the stream run", ra.totalBudget)
+				totalTimeoutC, stopTotalTimeout = ra.rearmTotalTimeoutCheck()
+				continue
+			}
+			// 上游"一直在慢慢吐字节/一直在发开场事件"时上面两道钟都不会响, 只有这里能结束它。
 			_ = response.Body.Close()
 			if ra.wroteMeaningfulDownstream {
 				return ra.committedTotalTimeoutError()
@@ -2870,6 +2884,9 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 					return nil
 				}
 				return err
+			}
+			if meaningfulNow {
+				ra.noteMeaningfulContent()
 			}
 			if streamTerminalSeen() {
 				// 凭据脱敏: 合成帧先写 (进还原器), 再 flush 把缓冲按 FIFO 吐净。

@@ -43,29 +43,48 @@ func postChatStream(t *testing.T, c *gin.Context) {
 	c.Set("request_ip", "127.0.0.1")
 }
 
-// TestDribblingUpstreamIsCutByTheRequestCeiling is the case neither existing clock can
-// catch: bytes keep arriving well inside the idle window, forever. Half a second of
-// silence never happens, so the idle timer is useless here, and content arrived long ago,
-// so the pre-content deadline is already released.
-func TestDribblingUpstreamIsCutByTheRequestCeiling(t *testing.T) {
+// The ceiling's streaming behaviour is pinned by the two tests below: a stream that keeps
+// producing content outlives it (the rule), and a committed stream that goes quiet is still
+// ended honestly by it (the original job — the case neither older clock can catch, because
+// bytes kept arriving inside the idle window)
+// TestCeilingDoesNotCutAStreamThatKeepsProducingContent is the must-not-happen rule for the
+// third clock: it bounds rescue WAITING (first content, a retry, a channel switch), and it
+// must never end a stream that is still producing real content. The upstream here dribbles a
+// real content event every 150ms for three seconds and then finishes normally, while the
+// ceiling is 1.2s and both older clocks are parked far away: if the answer arrives whole,
+// with no injected failure frame, the ceiling stood down. The renewal signal is real content
+// only — keepalive/opener events do not renew it (see meaningfulContentIdle).
+func TestCeilingDoesNotCutAStreamThatKeepsProducingContent(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	setupRelayErrorDB(t)
 	withRequestCeiling(t, 1200*time.Millisecond)
-	// Both older clocks are parked far away on purpose: whatever ends this request must be
-	// the ceiling, not a stall.
+	restoreFlowKnobs := withFlowKnobs(t, 200*time.Millisecond, 300*time.Millisecond)
+	defer restoreFlowKnobs()
 	setIdleSetting(t, dbmodel.SettingKeyFirstTokenTimeOutDefault, "30")
 	setIdleSetting(t, dbmodel.SettingKeyRelayStreamDataTimeoutSec, "300")
 
-	stop := make(chan struct{})
-	defer close(stop)
-
+	const dribbleFor = 3 * time.Second
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		// A real content event every 200ms: never silent, never finished.
-		writeLoopThenStall(w, chatContentEvent("DRIP"), 200*time.Millisecond, stop)
+		flusher, _ := w.(http.Flusher)
+		deadline := time.Now().Add(dribbleFor)
+		for time.Now().Before(deadline) {
+			if _, err := w.Write([]byte(chatContentEvent("DRIP"))); err != nil {
+				return
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+			time.Sleep(150 * time.Millisecond)
+		}
+		_, _ = w.Write([]byte(chatFinishEvent()))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
 	}))
 	t.Cleanup(upstream.Close)
-	createChatChannel(t, upstream.URL, "dribbling-forever", 1)
+	createChatChannel(t, upstream.URL, "keeps-producing", 1)
 
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -75,25 +94,98 @@ func TestDribblingUpstreamIsCutByTheRequestCeiling(t *testing.T) {
 	Handler(inbound.InboundTypeOpenAIChat, c)
 	elapsed := time.Since(start)
 
-	if elapsed > 5*time.Second {
-		t.Fatalf("an always-dribbling upstream must end at the 1.2s ceiling, took %s", elapsed)
+	body := rec.Body.String()
+	if elapsed < 2500*time.Millisecond {
+		t.Fatalf("a stream that keeps producing content must outlive the 1.2s ceiling, took %s", elapsed)
+	}
+	if strings.Contains(body, `"type":"upstream_error"`) || strings.Contains(body, `"type":"error"`) {
+		t.Fatalf("the ceiling must not inject a failure frame into a live answer, got %q", body)
+	}
+	if got := strings.Count(body, "DRIP"); got < 10 {
+		t.Fatalf("every content event the upstream produced must reach the caller, got %d of ~20: %q", got, body)
+	}
+	if !strings.Contains(body, "data: [DONE]") {
+		t.Fatalf("the answer must finish in the caller's protocol, got %q", body)
+	}
+	if !strings.Contains(body, `"finish_reason":"stop"`) {
+		t.Fatalf("the upstream's own finish must be delivered, got %q", body)
+	}
+}
+
+// TestCeilingStillEndsACommittedStreamThatWentQuiet is the other half of the rule: content
+// already delivered, then nothing. That is a stalled answer, and the ceiling still ends it
+// honestly (explicit frame in the caller's protocol, delivered content preserved) instead of
+// leaving the caller to time out. The grace and recheck knobs are shrunk so the assertion
+// does not have to wait the production 30s.
+func TestCeilingStillEndsACommittedStreamThatWentQuiet(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	setupRelayErrorDB(t)
+	withRequestCeiling(t, 1200*time.Millisecond)
+	restoreFlowKnobs := withFlowKnobs(t, 200*time.Millisecond, 300*time.Millisecond)
+	defer restoreFlowKnobs()
+	setIdleSetting(t, dbmodel.SettingKeyFirstTokenTimeOutDefault, "30")
+	setIdleSetting(t, dbmodel.SettingKeyRelayStreamDataTimeoutSec, "300")
+
+	stop := make(chan struct{})
+	defer close(stop)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		if f, ok := w.(http.Flusher); ok {
+			defer f.Flush()
+		}
+		// One real content event, then silence: committed, but stalled.
+		_, _ = w.Write([]byte(chatContentEvent("DRIP")))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		<-stop
+	}))
+	t.Cleanup(upstream.Close)
+	createChatChannel(t, upstream.URL, "committed-then-quiet", 1)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	postChatStream(t, c)
+
+	start := time.Now()
+	Handler(inbound.InboundTypeOpenAIChat, c)
+	elapsed := time.Since(start)
+
+	if elapsed > 6*time.Second {
+		t.Fatalf("a stalled committed stream must be ended by the ceiling, took %s", elapsed)
 	}
 	body := rec.Body.String()
 	if !strings.Contains(body, "DRIP") {
-		t.Fatalf("content delivered before the ceiling must be preserved, got %q", body)
+		t.Fatalf("delivered content must be preserved, got %q", body)
 	}
 	if !strings.Contains(body, `"type":"upstream_error"`) {
-		t.Fatalf("the ceiling must end with an explicit error frame, got %q", body)
+		t.Fatalf("a stalled committed stream must end with an explicit frame, got %q", body)
 	}
 	if !strings.Contains(body, "data: [DONE]") {
 		t.Fatalf("the stream must be terminated in the caller's protocol, got %q", body)
 	}
-	if strings.Contains(body, "dribbling-forever") || strings.Contains(body, upstream.URL) {
+	if strings.Contains(body, "committed-then-quiet") || strings.Contains(body, upstream.URL) {
 		t.Fatalf("the terminal frame must not leak channel or upstream identity, got %q", body)
 	}
-	if strings.Contains(body, `"finish_reason"`) {
-		t.Fatalf("the ceiling must not let the upstream pretend the answer finished, got %q", body)
+}
+
+// chatFinishEvent is the upstream's own terminal marker, so a test can distinguish "the
+// answer finished" from "the relay synthesised an ending".
+func chatFinishEvent() string {
+	return `data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":123,"model":"gpt-5.5","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}` + "\n\n"
+}
+
+// withFlowKnobs shrinks the ceiling's flow grace and recheck interval for one test.
+func withFlowKnobs(t *testing.T, recheck, grace time.Duration) func() {
+	t.Helper()
+	prevRecheck, prevGrace := totalTimeoutRecheckInterval, totalTimeoutFlowGrace
+	totalTimeoutRecheckInterval, totalTimeoutFlowGrace = recheck, grace
+	restore := func() {
+		totalTimeoutRecheckInterval, totalTimeoutFlowGrace = prevRecheck, prevGrace
 	}
+	t.Cleanup(restore)
+	return restore
 }
 
 // TestDribblingOpenersFailOverBeforeTheCeiling covers the uncommitted branch the way the

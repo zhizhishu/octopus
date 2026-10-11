@@ -68,6 +68,38 @@ var errRequestTotalTimeout = errors.New("relay request total timeout")
 type relayTotalClock struct {
 	mu   sync.Mutex
 	cuts int
+	// lastContentAt is when the last MEANINGFUL content went downstream (a content payload,
+	// not a keepalive/opener). The ceiling uses it to tell "we are waiting" from "the
+	// upstream is answering": see meaningfulContentIdle.
+	lastContentAt time.Time
+}
+
+// noteMeaningfulContent records real content progress. Called from the write points that
+// carry business payload (content/tool_call/reasoning), never from keepalive writes.
+func (ra *relayAttempt) noteMeaningfulContent() {
+	if ra == nil || ra.totalClock == nil {
+		return
+	}
+	ra.totalClock.mu.Lock()
+	ra.totalClock.lastContentAt = time.Now()
+	ra.totalClock.mu.Unlock()
+}
+
+// meaningfulContentIdle reports whether real content has stopped arriving for long enough
+// that the ceiling may act. Content inside the grace window means the upstream is still
+// producing an answer, which the ceiling must not cut: it bounds rescue waiting (waiting
+// for first content, waiting before a retry or a channel switch), not a live answer.
+func (ra *relayAttempt) meaningfulContentIdle() bool {
+	if ra == nil || ra.totalClock == nil {
+		return true
+	}
+	ra.totalClock.mu.Lock()
+	last := ra.totalClock.lastContentAt
+	ra.totalClock.mu.Unlock()
+	if last.IsZero() {
+		return true
+	}
+	return time.Since(last) > totalTimeoutFlowGrace
 }
 
 func (r *relayRequest) totalClockState() *relayTotalClock {
@@ -152,6 +184,19 @@ func (ra *relayAttempt) totalBudgetDisposition() string {
 	return "no content delivered, switching channel"
 }
 
+// The ceiling's streaming behaviour has two knobs. They are vars (not consts) so tests can
+// shrink them; production keeps the defaults below.
+var (
+	// totalTimeoutRecheckInterval is how long a cut point waits before looking at the stream
+	// again once the ceiling passed while content was still flowing.
+	totalTimeoutRecheckInterval = 30 * time.Second
+	// totalTimeoutFlowGrace is the window in which real content counts as "still producing".
+	// It matches the recheck interval: content seen within the last check means the answer is
+	// still coming, so the ceiling keeps standing down (the stream-silence clock remains the
+	// mechanism that ends a stream which went quiet).
+	totalTimeoutFlowGrace = 30 * time.Second
+)
+
 // committedTotalTimeoutError is the failure used on the honest-ending branch. It is a
 // plain error on purpose: the central attempt-failure path already writes the caller's
 // protocol-specific terminal frame (writeCommittedStreamFailure) once real content has
@@ -183,6 +228,15 @@ func (ra *relayAttempt) armTotalTimeout() (<-chan time.Time, func()) {
 	return timer.C, func() { timer.Stop() }
 }
 
+// rearmTotalTimeoutCheck returns a channel that fires after one recheck interval. The
+// streaming cut point uses it when its ceiling passed while real content was still flowing:
+// instead of ending a live answer it waits, looks again, and only cuts once content has
+// actually stopped (or the stream-silence clock ends it first).
+func (ra *relayAttempt) rearmTotalTimeoutCheck() (<-chan time.Time, func()) {
+	timer := time.NewTimer(totalTimeoutRecheckInterval)
+	return timer.C, func() { timer.Stop() }
+}
+
 // boundUpstreamLifetime derives the context used for ONE upstream attempt, cancelled when
 // the request ceiling passes. It is the uniform net under every relay path: the streaming
 // paths cut the stream on their own timer (so they can pick the right terminal frame), but
@@ -205,7 +259,30 @@ func (ra *relayAttempt) boundUpstreamLifetime(parent context.Context) context.Co
 		return ctx
 	}
 	ctx, cancel := context.WithCancelCause(parent)
-	timer := time.AfterFunc(remaining, func() { cancel(errRequestTotalTimeout) })
+	var timer *time.Timer
+	// The net re-checks instead of firing blind: a ceiling that passed while the upstream was
+	// still producing content must not abort a live answer, so schedule looks at content
+	// progress and either stands down for another interval or cancels for real. Without this
+	// the context timer would kill a dribbling-but-alive stream even though the streaming cut
+	// point now refuses to.
+	var schedule func()
+	schedule = func() {
+		left, active := ra.totalBudgetRemaining()
+		if !active {
+			return
+		}
+		if left > 0 {
+			timer = time.AfterFunc(left, schedule)
+			return
+		}
+		if ra.wroteMeaningfulDownstream && !ra.meaningfulContentIdle() {
+			log.Warnf("relay request total timeout (%s) passed while content is still flowing, letting the stream run", ra.totalBudget)
+			timer = time.AfterFunc(totalTimeoutRecheckInterval, schedule)
+			return
+		}
+		cancel(errRequestTotalTimeout)
+	}
+	schedule()
 	// Clean both up when the request itself ends (client gone, response finished): a
 	// ceiling timer must never outlive its request. The child context is deliberately
 	// NOT cancelled here — the response body is still being read by the caller.
@@ -234,6 +311,11 @@ func (ra *relayAttempt) classifyTotalTimeout(err error) error {
 	}
 	if ra.c != nil && ra.c.Request != nil && ra.c.Request.Context().Err() != nil {
 		// The caller's own context is gone: that is a client abort, not our ceiling.
+		return err
+	}
+	if ra.wroteMeaningfulDownstream && !ra.meaningfulContentIdle() {
+		// Content is still being produced: this cancellation is not the ceiling acting on a
+		// stalled answer, so keep its own attribution instead of relabelling it.
 		return err
 	}
 	if ra.wroteMeaningfulDownstream {
