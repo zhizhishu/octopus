@@ -898,7 +898,9 @@ func convertMessages(req *model.InternalLLMRequest) []anthropicModel.MessagePara
 			// Anthropic API 要求消息角色必须交替出现（user/assistant/user/assistant）。
 			// 当 OpenAI 格式的多个连续 tool 消息被各自转换为独立的 user 消息时，
 			// 会产生连续的同角色消息，需要合并以避免 "Improperly formed request" 错误。
-			if n := len(messages); n > 0 && messages[n-1].Role == convertedMsg.Role {
+			// 同协议调用方(Anthropic -> Anthropic)不合并: 它自己发的边界就是它要的边界, 合并会改它的
+			// 字节。合并只服务跨协议场景(见上面注释)。
+			if n := len(messages); n > 0 && messages[n-1].Role == convertedMsg.Role && !req.TransformOptions.FromAnthropicInbound {
 				last := &messages[n-1]
 				mergedBlocks := append(contentToBlocks(last.Content), contentToBlocks(convertedMsg.Content)...)
 				if convertedMsg.Role == "assistant" {
@@ -1257,6 +1259,13 @@ func buildMessageContent(msg model.Message) anthropicModel.MessageContent {
 		return anthropicModel.MessageContent{
 			MultipleContent: []anthropicModel.MessageContentBlock{block},
 		}
+	}
+
+	// 调用方显式发了空块数组 (content: []): 原样发 [] 。必须排在 reasoning 回放之后 ——
+	// thinking-only 回合在入站侧把块记在 ReasoningContent 里、块数组本身是空的, 那条要走上面的
+	// 回放分支。nil 会被 MarshalJSON 编成 null, 那正是"content 变 null"的出口。
+	if msg.Content.MultipleContent != nil && len(msg.Content.MultipleContent) == 0 {
+		return anthropicModel.MessageContent{MultipleContent: []anthropicModel.MessageContentBlock{}}
 	}
 
 	return anthropicModel.MessageContent{}

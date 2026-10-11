@@ -160,6 +160,9 @@ func (i *MessagesInbound) TransformRequest(ctx context.Context, body []byte) (*m
 		var (
 			hasContent    bool
 			hasToolResult bool
+			// explicitEmptyArray: 调用方明确发了 content: [] —— 空数组也是它要发的形态, 要原样保留;
+			// 与之相对的是"数组非空但块都被消费掉(tool_result)", 那种空壳沿用旧行为丢掉。
+			explicitEmptyArray = msg.Content.MultipleContent != nil && len(msg.Content.MultipleContent) == 0
 		)
 
 		// Convert content
@@ -170,7 +173,9 @@ func (i *MessagesInbound) TransformRequest(ctx context.Context, body []byte) (*m
 			}
 			hasContent = true
 			i.inputToken += int64(tokenizer.CountTokens(*msg.Content.Content, chatReq.Model))
-		} else if len(msg.Content.MultipleContent) > 0 {
+		} else if msg.Content.MultipleContent != nil {
+			// 非 nil 即"调用方显式发了块数组", 空数组也走这条 —— 否则 content: [] 这条消息会带着
+			// nil 内容活到出站, 被编成 content:null(实测: 直连 [] / 经 oct null)。
 			contentParts := make([]model.MessageContentPart, 0, len(msg.Content.MultipleContent))
 
 			var (
@@ -276,11 +281,18 @@ func (i *MessagesInbound) TransformRequest(ctx context.Context, body []byte) (*m
 			// unchanged. Two blocks were left alone, so the rewrite was selective and therefore
 			// plainly ours, not the upstream's. An array now stays an array; protocols whose
 			// canonical form is a string still get one from MessageContent.MarshalJSON.
-			if len(contentParts) > 0 {
+			// contentParts 非 nil 就说明调用方显式发了块数组(哪怕它是空的 content: [])。
+			// 空数组也要保留 —— 丢了它就等于改调用方的消息条数: 手臂工兵探针 P2 实测直连 2 条
+			// ([[], [text]]) / 经 oct 只有 1 条。
+			if contentParts != nil {
 				chatMsg.Content = model.MessageContent{
 					MultipleContent: contentParts,
 				}
-				hasContent = true
+				// 只有"调用方显式发的空数组"(content: [])才算内容形态必须保留; 数组非空但块都被
+				// 消费掉(tool_result 等)时沿用旧行为丢掉空壳, 免得凭空多出一条消息。
+				if explicitEmptyArray {
+					hasContent = true
+				}
 			}
 
 			// Assign reasoning content and signature if present
@@ -293,7 +305,9 @@ func (i *MessagesInbound) TransformRequest(ctx context.Context, body []byte) (*m
 			}
 		}
 
-		if !hasContent {
+		// 显式块数组(含空数组)不算"没内容", 不许丢; 只有真的什么都没发(content 是裸字符串以外的
+		// 空)才丢。
+		if !hasContent && !explicitEmptyArray {
 			continue
 		}
 
@@ -304,6 +318,10 @@ func (i *MessagesInbound) TransformRequest(ctx context.Context, body []byte) (*m
 
 		messages = append(messages, chatMsg)
 	}
+
+	// 本适配器就是 Anthropic 原生入站: 标记出来, 出站据此对"同协议调用方"原样保留消息边界
+	// (不合并相邻同角色、不丢空块数组); 跨协议(OpenAI 等)不带这个标记, 合并照旧。
+	chatReq.TransformOptions.FromAnthropicInbound = true
 
 	chatReq.Messages = messages
 

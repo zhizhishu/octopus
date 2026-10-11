@@ -594,6 +594,14 @@ type TransformOptions struct {
 	// current Model string.
 	AnthropicOneMillionBeta bool `json:"-"`
 
+	// FromAnthropicInbound records that this request entered the relay through the native
+	// Anthropic (/v1/messages) inbound, i.e. the caller itself speaks the same protocol the
+	// Anthropic outbound emits. The outbound uses it to leave the caller's message boundaries
+	// alone: merging adjacent same-role messages exists for CROSS-protocol traffic (OpenAI-format
+	// consecutive tool messages each becoming their own user message), and applying it to a
+	// same-protocol caller rewrites its bytes (measured: direct leg 2 messages, via oct 1).
+	FromAnthropicInbound bool `json:"-"`
+
 	// AnthropicBetas preserves client-supplied Anthropic beta names that arrived
 	// in request bodies. Some proxy-compatible clients put betas in JSON instead
 	// of the Anthropic-Beta header; outbound Anthropic requests merge these into

@@ -40,10 +40,11 @@ func shapeMatrixCases() []struct {
 		{"two text blocks", `[{"role":"user","content":[{"type":"text","text":"SP3X-C1"},{"type":"text","text":"SP3X-C2"}]}]`, ""},
 		{"single block with cache_control", `[{"role":"user","content":[{"type":"text","text":"SP3X-D","cache_control":{"type":"ephemeral"}}]}]`, ""},
 		{"plain string", `[{"role":"assistant","content":"SP3X-E"}]`, ""},
-		{"empty array", `[{"role":"user","content":[]},{"role":"assistant","content":[{"type":"text","text":"SP3X-F"}]}]`,
-			"caller 2 messages -> 1: the inbound skips a message when nothing it understands was in it (inbound/anthropic/messages.go: `if !hasContent { continue }`)"},
-		{"adjacent same role", `[{"role":"user","content":[{"type":"text","text":"SP3X-G1"}]},{"role":"user","content":[{"type":"text","text":"SP3X-G2"}]}]`,
-			"caller 2 messages -> 1: adjacent same-role turns are merged (outbound/authropic/messages.go convertMessages merge branch)"},
+		// 同协议调用方的两条边界规则(实测判据: 经 oct 出站与直连逐字节一致):
+		//   content: []            —— 空数组也要出去, 不许丢消息;
+		//   相邻同角色              —— 不许合并, 调用方自己划的边界就是它要的边界。
+		{"empty array", `[{"role":"user","content":[]},{"role":"assistant","content":[{"type":"text","text":"SP3X-F"}]}]`, ""},
+		{"adjacent same role", `[{"role":"user","content":[{"type":"text","text":"SP3X-G1"}]},{"role":"user","content":[{"type":"text","text":"SP3X-G2"}]}]`, ""},
 		{"empty text block", `[{"role":"user","content":[{"type":"text","text":""}]},{"role":"assistant","content":[{"type":"text","text":"SP3X-H"}]}]`, ""},
 	}
 }
