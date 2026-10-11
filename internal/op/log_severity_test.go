@@ -268,3 +268,171 @@ func TestRelayLogSeverityCountsSQL(t *testing.T) {
 		}
 	}
 }
+
+// TestRelayLogSeverityCountsSingleQueryParity guards the one-query rewrite of
+// RelayLogSeverityCounts:
+//   - per-severity counts must stay identical to what the List path
+//     (relayLogApplyScope + relayLogSeverityValue) would return, i.e. the
+//     SUM(CASE) buckets are in lockstep with the severity WHERE branches;
+//   - total must equal success+warn+error on the DB path;
+//   - the in-memory path (persistence off, relayLogCache) must produce the same
+//     numbers and the same total-sum invariant.
+func TestRelayLogSeverityCountsSingleQueryParity(t *testing.T) {
+	ctx := setupRelayLogTest(t)
+	if err := SettingSetString(model.SettingKeyRelayLogKeepEnabled, "true"); err != nil {
+		t.Fatalf("enable persistence: %v", err)
+	}
+
+	logs := []model.RelayLog{
+		{ID: 9001, Time: 9001, RequestModelName: "s", TotalAttempts: 1},
+		{ID: 9002, Time: 9002, RequestModelName: "s", TotalAttempts: 0},
+		{ID: 9003, Time: 9003, RequestModelName: "w", TotalAttempts: 2},
+		{ID: 9004, Time: 9004, RequestModelName: "e", Error: "boom"},
+		{ID: 9005, Time: 9005, RequestModelName: "e", Error: "   ", TotalAttempts: 3}, // whitespace error → warn, not error
+		{ID: 9006, Time: 9006, RequestModelName: "e", ErrorStatus: 400, TotalAttempts: 9},
+		{ID: 9007, Time: 9007, RequestModelName: "s", RequestEndpoint: "chat", UserID: 7, APIKeyID: 8},
+		{ID: 9008, Time: 9008, RequestModelName: "s", RequestEndpoint: "chat_v2", TotalAttempts: 2},
+	}
+	if err := db.GetDB().WithContext(ctx).Create(&logs).Error; err != nil {
+		t.Fatalf("create logs: %v", err)
+	}
+
+	scopes := []*model.RelayLogScope{
+		nil,
+		{Severity: "error"},
+		{Severity: "warn"},
+		{Severity: "success"},
+		{Endpoint: "chat"}, // family match crosses both chat rows
+		{UserID: 7, APIKeyID: 8},
+		{RetriedOnly: true},
+		{HideModelTest: true},
+	}
+	for _, scope := range scopes {
+		counts, err := RelayLogSeverityCounts(ctx, nil, nil, scope)
+		if err != nil {
+			t.Fatalf("counts(%+v): %v", scope, err)
+		}
+		if counts.Total != counts.Success+counts.Warn+counts.Error {
+			t.Errorf("scope %+v: total=%d != success(%d)+warn(%d)+error(%d)",
+				scope, counts.Total, counts.Success, counts.Warn, counts.Error)
+		}
+		// When the scope itself narrows to one severity, the other two buckets must
+		// be empty and total must equal the scoped per-severity count — a mismatch
+		// here would mean the SUM(CASE) buckets leak rows across severities.
+		if scope != nil && scope.Severity != "" {
+			buckets := map[string]int64{"success": counts.Success, "warn": counts.Warn, "error": counts.Error}
+			for name, n := range buckets {
+				if name != scope.Severity && n != 0 {
+					t.Errorf("scope severity=%s: bucket %s = %d, want 0", scope.Severity, name, n)
+				}
+			}
+			want, err := RelayLogCount(ctx, nil, nil, scope)
+			if err != nil {
+				t.Fatalf("count(%+v): %v", scope, err)
+			}
+			if counts.Total != want {
+				t.Errorf("scope severity=%s: total=%d, per-severity count=%d", scope.Severity, counts.Total, want)
+			}
+		}
+		// Parity with the per-severity COUNT path (relayLogApplyScope severity WHERE
+		// branches — the same clauses RelayLogCount/List use): each bucket must equal
+		// the count for that severity under the same base scope. Only evaluated on
+		// scopes that do NOT already narrow by severity: re-running COUNT with
+		// scope.Severity = bucket under a severity-narrowed base scope would always
+		// return 0 for the other two buckets.
+		for _, severity := range []string{"success", "warn", "error"} {
+			if scope != nil && scope.Severity != "" {
+				continue
+			}
+			scoped := model.RelayLogScope{}
+			if scope != nil {
+				scoped = *scope
+			}
+			scoped.Severity = severity
+			rows, err := RelayLogList(ctx, nil, nil, 1, 100, &scoped)
+			if err != nil {
+				t.Fatalf("list(%+v): %v", &scoped, err)
+			}
+			// The listed rows must all classify into the requested bucket.
+			for _, r := range rows {
+				if relayLogSeverityValue(r) != severity {
+					t.Errorf("scope %+v severity %s: list row id=%d classified %q", scope, severity, r.ID, relayLogSeverityValue(r))
+				}
+			}
+			// And the SUM(CASE) bucket must equal the authoritative per-severity count.
+			want, err := RelayLogCount(ctx, nil, nil, &scoped)
+			if err != nil {
+				t.Fatalf("count(%+v): %v", &scoped, err)
+			}
+			got := map[string]int64{"success": counts.Success, "warn": counts.Warn, "error": counts.Error}[severity]
+			if got != want {
+				t.Errorf("scope %+v severity %s: SUM(CASE)=%d, per-severity count=%d", scope, severity, got, want)
+			}
+		}
+	}
+
+	// Time-filtered counts must agree with RelayLogCount for each severity.
+	start, end := int64(9003), int64(9006)
+	st, et := int(start), int(end)
+	for _, severity := range []string{"success", "warn", "error"} {
+		scoped := model.RelayLogScope{Severity: severity}
+		counts, err := RelayLogSeverityCounts(ctx, &st, &et, &scoped)
+		if err != nil {
+			t.Fatalf("time-filtered counts(%s): %v", severity, err)
+		}
+		want, err := RelayLogCount(ctx, &st, &et, &scoped)
+		if err != nil {
+			t.Fatalf("time-filtered count(%s): %v", severity, err)
+		}
+		got := map[string]int64{"success": counts.Success, "warn": counts.Warn, "error": counts.Error}[severity]
+		if got != want {
+			t.Errorf("time-filtered severity %s: counts=%d, RelayLogCount=%d", severity, got, want)
+		}
+	}
+
+	// In-memory path (persistence off): same rows via RelayLogAdd must give the
+	// same bucket sizes and the same total-sum invariant.
+	if err := RelayLogClear(ctx, nil); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if err := SettingSetString(model.SettingKeyRelayLogKeepEnabled, "false"); err != nil {
+		t.Fatalf("disable persistence: %v", err)
+	}
+	for _, l := range logs {
+		l.ID = 0
+		if err := RelayLogAdd(ctx, l); err != nil {
+			t.Fatalf("add to cache: %v", err)
+		}
+	}
+	// The in-memory path must classify the same rows into the same buckets and keep
+	// the total-sum invariant.
+	memCounts, err := RelayLogSeverityCounts(ctx, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("memory counts: %v", err)
+	}
+	if memCounts.Total != int64(len(logs)) {
+		t.Errorf("memory: total=%d, want %d", memCounts.Total, len(logs))
+	}
+	if memCounts.Total != memCounts.Success+memCounts.Warn+memCounts.Error {
+		t.Errorf("memory: total=%d != success(%d)+warn(%d)+error(%d)",
+			memCounts.Total, memCounts.Success, memCounts.Warn, memCounts.Error)
+	}
+	// 双路径一致性：同样的行经 flush 落库后，DB 路径必须给出完全相同的桶。
+	// relayLogFlushToDB 把缓存整批搬进 DB（两条路径对行做划分，不重复计数）。
+	if err := SettingSetString(model.SettingKeyRelayLogKeepEnabled, "true"); err != nil {
+		t.Fatalf("re-enable persistence: %v", err)
+	}
+	if err := relayLogFlushToDB(ctx); err != nil {
+		t.Fatalf("flush cache to db: %v", err)
+	}
+	dbCounts, err := RelayLogSeverityCounts(ctx, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("db counts: %v", err)
+	}
+	if dbCounts != memCounts {
+		t.Errorf("DB path %+v != memory path %+v", dbCounts, memCounts)
+	}
+	if dbCounts != (model.RelayLogSeverityCounts{Total: 8, Success: 3, Warn: 3, Error: 2}) {
+		t.Errorf("db counts = %+v, want total 8 (success 3 / warn 3 / error 2)", dbCounts)
+	}
+}

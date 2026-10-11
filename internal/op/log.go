@@ -832,33 +832,81 @@ func RelayLogCount(ctx context.Context, startTime, endTime *int, scope *model.Re
 
 // RelayLogSeverityCounts returns the total plus per-severity counts for the given
 // filters, so the client can render accurate global badges (成功 / Warn / Error)
-// independent of the current page. It reuses RelayLogCount per severity (so both
-// the DB and the in-memory cache paths, and the persistence toggle, stay covered);
-// every log classifies into exactly one severity, hence total is their sum.
+// independent of the current page.
+//
+// 改写前这里对 success/warn/error 各调一次 RelayLogCount —— 同一份谓词在 DB 上串行
+// 全表扫 3 次（error 谓词落在非索引字段上，大表成本 ×3），持久化关闭时内存缓存也要
+// 遍历 3 遍。现在两条路径都一次算齐：
+//   - DB 路径：一条查询，用与 relayLogApplyScope 完全相同的条件式把每行归入
+//     success/warn/error 三桶（SUM(CASE)），谓词逐字复用 relayLogErrorSQLCond，
+//     与 List/Count 路径不会漂移；
+//   - 内存路径：遍历 relayLogCache 一次，按 relayLogSeverityValue 归桶。
+//
+// 每条日志恰好归入一个桶，因此 total 恒等于 success+warn+error（两条路径都成立）。
 func RelayLogSeverityCounts(ctx context.Context, startTime, endTime *int, scope *model.RelayLogScope) (model.RelayLogSeverityCounts, error) {
-	base := model.RelayLogScope{}
-	if scope != nil {
-		base = *scope
+	enabled, err := SettingGetBool(model.SettingKeyRelayLogKeepEnabled)
+	if err != nil {
+		return model.RelayLogSeverityCounts{}, err
 	}
 
-	var counts model.RelayLogSeverityCounts
-	for _, severity := range []string{"success", "warn", "error"} {
-		scoped := base
-		scoped.Severity = severity
-		count, err := RelayLogCount(ctx, startTime, endTime, &scoped)
+	hasTimeFilter := startTime != nil && endTime != nil
+
+	if enabled {
+		query := db.GetDB().WithContext(ctx).Model(&model.RelayLog{})
+		if hasTimeFilter {
+			query = query.Where("time >= ? AND time <= ?", *startTime, *endTime)
+		}
+		query = relayLogApplyScope(query, scope)
+
+		// 三桶条件式与 relayLogApplyScope 的 severity 分支逐字对齐：
+		//   error = relayLogErrorSQLCond
+		//   warn  = NOT error AND total_attempts > 1
+		//   success = NOT error AND total_attempts <= 1
+		// 每个 CASE 的 WHEN 互斥且并集为全集，SUM 即 total。
+		var row struct {
+			Total        int64
+			SuccessError int64
+			Warn         int64
+			SuccessOK    int64
+		}
+		err := query.Select(
+			"COUNT(*) AS total, " +
+				"COALESCE(SUM(CASE WHEN " + relayLogErrorSQLCond + " THEN 1 ELSE 0 END),0) AS success_error, " +
+				"COALESCE(SUM(CASE WHEN NOT " + relayLogErrorSQLCond + " AND COALESCE(total_attempts,0) > 1 THEN 1 ELSE 0 END),0) AS warn, " +
+				"COALESCE(SUM(CASE WHEN NOT " + relayLogErrorSQLCond + " AND COALESCE(total_attempts,0) <= 1 THEN 1 ELSE 0 END),0) AS success_ok",
+		).Scan(&row).Error
 		if err != nil {
 			return model.RelayLogSeverityCounts{}, err
 		}
-		switch severity {
+		return model.RelayLogSeverityCounts{
+			Total:   row.Total,
+			Success: row.SuccessOK,
+			Warn:    row.Warn,
+			Error:   row.SuccessError,
+		}, nil
+	}
+
+	relayLogCacheLock.Lock()
+	defer relayLogCacheLock.Unlock()
+
+	var counts model.RelayLogSeverityCounts
+	for _, relayLog := range relayLogCache {
+		if !relayLogMatchScope(relayLog, scope) {
+			continue
+		}
+		if hasTimeFilter && (relayLog.Time < int64(*startTime) || relayLog.Time > int64(*endTime)) {
+			continue
+		}
+		counts.Total++
+		switch relayLogSeverityValue(relayLog) {
 		case "success":
-			counts.Success = count
+			counts.Success++
 		case "warn":
-			counts.Warn = count
-		case "error":
-			counts.Error = count
+			counts.Warn++
+		default:
+			counts.Error++
 		}
 	}
-	counts.Total = counts.Success + counts.Warn + counts.Error
 	return counts, nil
 }
 

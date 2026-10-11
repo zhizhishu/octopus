@@ -328,7 +328,9 @@ interface LogRouteHeaderProps {
  * 日志「路由头部」：状态 / 接口 / 上游路径徽标 → request_model_name → 渠道（多尝试展开
  * RetryBadgeWithPopover，否则渠道 Badge）→ actual_model_name → 可能的 stream / sticky 徽标。
  * 卡片列表头部与详情弹窗标题渲染同一套元素，只差尺寸与换行，用 variant 收敛：
- * card 走「固定 3 列 × 2 行列轨道」grid（见下方 isCard 分支），detail 标题区仍是可换行 flex。
+ * card 走「固定 3 列 × 2 行列轨道」grid（见下方 isCard 分支），detail 标题区是可换行 flex、
+ * 但状态徽标被钉进固定首位 span（见 detail 分支注释）——两变体的成功/失败/警告标记
+ * 都落在同一个固定槽位，不随文本长度漂移。
  * 两分支复用同一批原子元素，避免同一枚徽标出现两份实现。
  */
 function LogRouteHeader({
@@ -608,9 +610,12 @@ function LogRouteHeader({
         );
     }
 
+    // detail（弹窗标题）分支：把状态徽标包进一个固定顺序、不换行的首位 span——
+    // 成功/失败/警告标记与 card 变体的 A1 首格落在同一个「永远第一、宽度固定」的槽位，
+    // 不随后面文本的 flex-wrap 漂移。其余元素保持原有顺序。
     return (
         <>
-            {statusBadge}
+            <span className="inline-flex shrink-0 items-center order-first">{statusBadge}</span>
             {endpointBadge}
             {upstreamPathBadge}
             {requestModelText}
