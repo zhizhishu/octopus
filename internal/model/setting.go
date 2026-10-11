@@ -211,7 +211,14 @@ const (
 	// otherwise unchanged. 0.156.1 matches the current codex CLI release (0.156.x, packet-verified
 	// 2026-09-24 on the relay: originator codex_cli_rs, UA codex_cli_rs/0.156.1) and stays within
 	// the codex_cli_rs family + above the sub2api-observed upstream floor 0.144.0.
-	DefaultCodexHeaderUserAgent = "codex_cli_rs/0.156.1 (Ubuntu 24.04.1; x86_64) unknown (codex_cli_rs; 0.156.1)"
+	// 2026-10-10 大领导实测对照(真 Codex CLI 抓包): 线上身份是 **codex_exec/0.161.0** —— 注意这与
+	// 上面那个提醒并不矛盾: 那次警告针对的是"改了尾串、留着头串"的**不对称**组合(exec+override),
+	// 而真抓包是 **对称的 codex_exec 家族**(头串与尾串都是 codex_exec, 版本都是 0.161.0), 与
+	// LegacyDefaultCodexHeaderUserAgent0133 同族、只是版本更新。版本 0.161.0 也在 sub2api 观测到的
+	// 上游下限 0.144.0 之上。
+	// ⚠️ 平台段(Ubuntu 24.04.1; x86_64)沿用改前的值: 抓包只给了 产品/版本 这两个 token, 平台段
+	// 没有实测依据 ⇒ 不臆造, 待抓到完整 UA 再对齐。
+	DefaultCodexHeaderUserAgent = "codex_exec/0.161.0 (Ubuntu 24.04.1; x86_64) unknown (codex_exec; 0.161.0)"
 
 	// DefaultClaudeCLIVersion is the named Claude Code CLI version used to build the
 	// user-agent below. The Anthropic outbound billing-header cc_version carries the

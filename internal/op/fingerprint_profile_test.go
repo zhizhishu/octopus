@@ -233,11 +233,12 @@ func TestFingerprintProfileConvergesLegacyBuiltinInOneStep(t *testing.T) {
 	if got.ClaudeRuntimeVersion != "v26.3.0" {
 		t.Fatalf("claude runtime = %q, want v26.3.0", got.ClaudeRuntimeVersion)
 	}
-	if got.CodexUserAgent != "codex_cli_rs/0.156.1 (Debian 12.0.0; x86_64) unknown (codex_cli_rs; 0.156.1)" {
-		t.Fatalf("codex UA = %q, want the current codex_cli_rs 0.156.1 Debian UA", got.CodexUserAgent)
+	// 2026-10-10 实测对齐后的当前身份(真 Codex CLI 抓包: codex_exec/0.161.0)。平台段沿用旧值。
+	if got.CodexUserAgent != "codex_exec/0.161.0 (Debian 12.0.0; x86_64) unknown (codex_exec; 0.161.0)" {
+		t.Fatalf("codex UA = %q, want the current codex_exec 0.161.0 Debian UA", got.CodexUserAgent)
 	}
-	if got.CodexOriginator != "codex_cli_rs" {
-		t.Fatalf("codex originator = %q, want codex_cli_rs (must match the UA's first token)", got.CodexOriginator)
+	if got.CodexOriginator != "codex_exec" {
+		t.Fatalf("codex originator = %q, want codex_exec (must match the UA's first token)", got.CodexOriginator)
 	}
 	if got.GenericUA != model.DefaultGenericUA {
 		t.Fatalf("generic UA = %q, want DefaultGenericUA %q", got.GenericUA, model.DefaultGenericUA)

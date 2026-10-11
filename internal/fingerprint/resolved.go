@@ -10,7 +10,9 @@ import (
 const (
 	defaultClaudeArchitecture = "x64"
 	defaultClaudeTimeout      = "600"
-	defaultCodexOriginator    = "codex_cli_rs"
+	// originator 头与 UA 头串必须同一个身份(真抓包: codex_exec/0.161.0 + originator codex_exec),
+	// 混用(exec 的 UA 配 cli_rs 的 originator)才是可识别的 tell。
+	defaultCodexOriginator    = "codex_exec"
 )
 
 // Resolved is the immutable upstream identity selected for one channel. An

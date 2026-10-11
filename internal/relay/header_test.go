@@ -125,9 +125,9 @@ func TestApplyHeaderDefaultsKeepsOriginatorForNonCodexToAnthropic(t *testing.T) 
 // TestApplyHeaderDefaultsCodexOutboundNormalizesOriginatorKeepsBeta covers the codex
 // (OpenAIResponse) outbound: codex client headers are NOT stripped (stripCodexClientHeaders
 // runs only for Anthropic outbounds), so X-Codex-Beta-Features is kept as sent — BUT
-// Originator (and User-Agent) are FORCE-normalized to the resolved codex_cli_rs fingerprint so
+// Originator (and User-Agent) are FORCE-normalized to the resolved codex_exec fingerprint so
 // originator↔UA always pair for the upstream (sub2api #3901: a mismatch is rejected). A
-// leaked-through arbitrary Originator is overwritten by codex_cli_rs, not preserved.
+// leaked-through arbitrary Originator is overwritten by codex_exec, not preserved.
 func TestApplyHeaderDefaultsCodexOutboundNormalizesOriginatorKeepsBeta(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -144,8 +144,8 @@ func TestApplyHeaderDefaultsCodexOutboundNormalizesOriginatorKeepsBeta(t *testin
 
 	ra.copyHeaders(upstreamReq)
 
-	// Originator is force-normalized to the codex_cli_rs fingerprint (overriding the leaked
-	// "my-codex-originator") so it pairs with the codex_cli_rs User-Agent (sub2api #3901).
+	// Originator is force-normalized to the codex_exec fingerprint (overriding the leaked
+	// "my-codex-originator") so it pairs with the codex_exec User-Agent (sub2api #3901).
 	if got := upstreamReq.Header.Get("Originator"); got != defaultCodexOriginator {
 		t.Fatalf("codex Originator must be force-normalized to %q, got %q", defaultCodexOriginator, got)
 	}
