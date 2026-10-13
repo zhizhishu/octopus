@@ -1,0 +1,208 @@
+package client
+
+import (
+	"strings"
+
+	utls "github.com/refraction-networking/utls"
+)
+
+// Per-CLI-family TLS ClientHello faces.
+//
+// Both specs below are byte-faithful transcriptions of ClientHellos captured on
+// the wire from the genuine CLIs (2026-10-13, direct legs against a capture
+// proxy; see _artifacts/berobox/codexshape-h2/captures/ and
+// parse_clienthello.py for the decoder):
+//
+//   - codex:  codex CLI 0.161.0 (linux-x64 musl, rustls) — 10 cipher suites,
+//     ALPN h2+http/1.1, 10 extensions, X25519MLKEM768 + X25519 key shares,
+//     1466 bytes total. The API connection is the ALPN-carrying one; the CLI's
+//     no-ALPN network-probe connection is NOT mimicked (oct only makes API
+//     calls).
+//   - claude: Claude Code 2.1.296 (linux-x64, Node/OpenSSL) — 30 cipher suites,
+//     NO ALPN (Node speaks HTTP/1.1 over TLS), 10 extensions, X25519MLKEM768 +
+//     X25519 key shares, 1522 bytes total.
+//
+// Extension order, cipher order, curve order and signature-algorithm order are
+// all part of the fingerprint and are kept exactly as captured. Values are raw
+// hex with names in comments so the wire bytes stay auditable against the
+// capture. SNI is first in both lists (both stacks prepend server_name for
+// hostname targets); uTLS omits the extension entirely for IP targets, which is
+// also what the real CLIs do (the captures, taken against an IP, show no SNI).
+//
+// Randoms differ per connection by design (client random, session id, key
+// shares) — uTLS generates fresh ones, matching how the real CLI behaves.
+//
+// The reference project CLIProxyAPI ships the same approach for Anthropic
+// (internal/runtime/executor/helps/utls_client.go, claudeCodeTLSClientHelloSpec)
+// with a macOS capture; ours is transcribed from our own linux capture of the
+// current CLI version instead.
+
+// codexRustlsClientHelloSpec reproduces the genuine codex CLI's rustls
+// ClientHello for /responses traffic.
+func codexRustlsClientHelloSpec() *utls.ClientHelloSpec {
+	return &utls.ClientHelloSpec{
+		CipherSuites: []uint16{
+			0x1302, // TLS_AES_256_GCM_SHA384
+			0x1301, // TLS_AES_128_GCM_SHA256
+			0x1303, // TLS_CHACHA20_POLY1305_SHA256
+			0xc02c, // ECDHE-ECDSA-AES256-GCM-SHA384
+			0xc02b, // ECDHE-ECDSA-AES128-GCM-SHA256
+			0xcca9, // ECDHE-ECDSA-CHACHA20-POLY1305
+			0xc030, // ECDHE-RSA-AES256-GCM-SHA384
+			0xc02f, // ECDHE-RSA-AES128-GCM-SHA256
+			0xcca8, // ECDHE-RSA-CHACHA20-POLY1305
+			0x00ff, // TLS_EMPTY_RENEGOTIATION_INFO_SCSV
+		},
+		CompressionMethods: []uint8{0},
+		Extensions: []utls.TLSExtension{
+			&utls.SNIExtension{},
+			&utls.SupportedVersionsExtension{Versions: []uint16{utls.VersionTLS13, utls.VersionTLS12}},
+			&utls.ALPNExtension{AlpnProtocols: []string{"h2", "http/1.1"}},
+			&utls.KeyShareExtension{KeyShares: []utls.KeyShare{{Group: utls.X25519MLKEM768}, {Group: utls.X25519}}},
+			&utls.ExtendedMasterSecretExtension{},
+			&utls.SignatureAlgorithmsExtension{SupportedSignatureAlgorithms: []utls.SignatureScheme{
+				0x0503, // ecdsa_secp384r1_sha384
+				0x0403, // ecdsa_secp256r1_sha256
+				0x0603, // ecdsa_secp521r1_sha512
+				0x0807, // ed25519
+				0x0806, // rsa_pss_rsae_sha512
+				0x0805, // rsa_pss_rsae_sha384
+				0x0804, // rsa_pss_rsae_sha256
+				0x0601, // rsa_pkcs1_sha512
+				0x0501, // rsa_pkcs1_sha384
+				0x0401, // rsa_pkcs1_sha256
+				0x0904, // post-quantum signature scheme (ML-DSA family)
+				0x0905, // post-quantum signature scheme (ML-DSA family)
+				0x0906, // post-quantum signature scheme (ML-DSA family)
+			}},
+			&utls.SessionTicketExtension{},
+			&utls.SupportedPointsExtension{SupportedPoints: []byte{0}},
+			&utls.SupportedCurvesExtension{Curves: []utls.CurveID{
+				utls.X25519MLKEM768, // 0x11ec
+				utls.X25519,         // 0x001d
+				utls.CurveP256,      // 0x0017
+				utls.CurveP384,      // 0x0018
+			}},
+			&utls.PSKKeyExchangeModesExtension{Modes: []uint8{utls.PskModeDHE}},
+			&utls.StatusRequestExtension{},
+		},
+	}
+}
+
+// claudeCodeNodeClientHelloSpec reproduces the genuine Claude Code CLI's
+// Node/OpenSSL ClientHello for /messages traffic. No ALPN: the CLI speaks
+// HTTP/1.1 over TLS, so this face never negotiates h2.
+func claudeCodeNodeClientHelloSpec() *utls.ClientHelloSpec {
+	return &utls.ClientHelloSpec{
+		CipherSuites: []uint16{
+			0x1302, // TLS_AES_256_GCM_SHA384
+			0x1303, // TLS_AES_128_GCM_SHA256
+			0x1301, // TLS_CHACHA20_POLY1305_SHA256
+			0xc02c, // ECDHE-ECDSA-AES256-GCM-SHA384
+			0xc030, // ECDHE-RSA-AES256-GCM-SHA384
+			0x009f, // DHE-RSA-AES256-GCM-SHA384
+			0xcca9, // ECDHE-ECDSA-CHACHA20-POLY1305
+			0xcca8, // ECDHE-RSA-CHACHA20-POLY1305
+			0xccaa, // ECDHE-ECDSA-CHACHA20-POLY1305 (old draft codepoint)
+			0xc02b, // ECDHE-ECDSA-AES128-GCM-SHA256
+			0xc02f, // ECDHE-RSA-AES128-GCM-SHA256
+			0x009e, // DHE-RSA-AES128-GCM-SHA256
+			0xc024, // ECDHE-ECDSA-AES256-SHA384
+			0xc028, // ECDHE-RSA-AES256-SHA384
+			0x006b, // DHE-RSA-AES256-SHA256
+			0xc023, // ECDHE-ECDSA-AES128-SHA256
+			0xc027, // ECDHE-RSA-AES128-SHA256
+			0x0067, // DHE-RSA-AES128-SHA256
+			0xc00a, // ECDHE-ECDSA-AES256-SHA
+			0xc014, // ECDHE-RSA-AES256-SHA
+			0x0039, // DHE-RSA-AES256-SHA
+			0xc009, // ECDHE-ECDSA-AES128-SHA
+			0xc013, // ECDHE-RSA-AES128-SHA
+			0x0033, // DHE-RSA-AES128-SHA
+			0x009d, // RSA-AES256-GCM-SHA384
+			0x009c, // RSA-AES128-GCM-SHA256
+			0x003d, // RSA-AES256-SHA256
+			0x003c, // RSA-AES128-SHA256
+			0x0035, // RSA-AES256-SHA
+			0x002f, // RSA-AES128-SHA
+		},
+		CompressionMethods: []uint8{0},
+		Extensions: []utls.TLSExtension{
+			&utls.SNIExtension{},
+			&utls.RenegotiationInfoExtension{Renegotiation: utls.RenegotiateOnceAsClient},
+			&utls.SupportedPointsExtension{SupportedPoints: []byte{0}},
+			&utls.SupportedCurvesExtension{Curves: []utls.CurveID{
+				utls.X25519MLKEM768,  // 0x11ec
+				utls.X25519,          // 0x001d
+				utls.CurveP256,       // 0x0017
+				utls.CurveID(0x001e), // x448
+				utls.CurveP384,       // 0x0018
+				utls.CurveP521,       // 0x0019
+				utls.CurveID(0x0100), // ffdhe2048
+				utls.CurveID(0x0101), // ffdhe3072
+			}},
+			&utls.SessionTicketExtension{},
+			// encrypt_then_mac (type 22, empty body): uTLS 1.8.2 has no typed
+			// extension for it, so emit it generically — byte-identical on the wire.
+			&utls.GenericExtension{Id: 22},
+			&utls.ExtendedMasterSecretExtension{},
+			&utls.SignatureAlgorithmsExtension{SupportedSignatureAlgorithms: []utls.SignatureScheme{
+				0x0905, // post-quantum signature scheme (ML-DSA family)
+				0x0906, // post-quantum signature scheme (ML-DSA family)
+				0x0904, // post-quantum signature scheme (ML-DSA family)
+				0x0403, // ecdsa_secp256r1_sha256
+				0x0503, // ecdsa_secp384r1_sha384
+				0x0603, // ecdsa_secp521r1_sha512
+				0x0807, // ed25519
+				0x0808, // ed448
+				0x081a, // ecdsa_brainpoolP256r1_sha256
+				0x081b, // ecdsa_brainpoolP384r1_sha384
+				0x081c, // ecdsa_brainpoolP512r1_sha512
+				0x0809, // rsa_pss_pss_sha256
+				0x080a, // rsa_pss_pss_sha384
+				0x080b, // rsa_pss_pss_sha512
+				0x0804, // rsa_pss_rsae_sha256
+				0x0805, // rsa_pss_rsae_sha384
+				0x0806, // rsa_pss_rsae_sha512
+				0x0401, // rsa_pkcs1_sha256
+				0x0501, // rsa_pkcs1_sha384
+				0x0601, // rsa_pkcs1_sha512
+				0x0303, // ecdsa_sha224
+				0x0301, // rsa_pkcs1_sha224
+				0x0302, // dsa_sha224
+				0x0402, // dsa_sha256
+				0x0502, // dsa_sha384
+				0x0602, // dsa_sha512
+			}},
+			&utls.SupportedVersionsExtension{Versions: []uint16{utls.VersionTLS13, utls.VersionTLS12}},
+			&utls.PSKKeyExchangeModesExtension{Modes: []uint8{utls.PskModeDHE}},
+			&utls.KeyShareExtension{KeyShares: []utls.KeyShare{{Group: utls.X25519MLKEM768}, {Group: utls.X25519}}},
+		},
+	}
+}
+
+// tlsFaceFamily labels which ClientHello face a request's upstream connection
+// should wear. It follows the same path routing as the header-order tables in
+// header_order.go: /responses is codex CLI traffic, /messages is Claude Code
+// traffic, anything else keeps the Chrome face (non-CLI upstreams are not
+// mimicked — see the shape rules).
+const (
+	tlsFaceCodex  = "codex"
+	tlsFaceClaude = "claude"
+	tlsFaceChrome = "chrome"
+)
+
+// clientHelloSpecForPath routes a request to its CLI-family ClientHello spec.
+// A nil spec means "use utls.HelloChrome_Auto" (the pre-existing default face
+// for non-CLI paths).
+func clientHelloSpecForPath(path string) (spec *utls.ClientHelloSpec, family string) {
+	p := strings.ToLower(path)
+	switch {
+	case strings.Contains(p, "/responses"):
+		return codexRustlsClientHelloSpec(), tlsFaceCodex
+	case strings.Contains(p, "/messages"):
+		return claudeCodeNodeClientHelloSpec(), tlsFaceClaude
+	default:
+		return nil, tlsFaceChrome
+	}
+}
