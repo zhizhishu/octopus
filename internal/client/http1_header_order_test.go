@@ -433,14 +433,15 @@ func TestClaudeHTTP1WireHeaderOrderIsTheCaptured21Items(t *testing.T) {
 	}
 }
 
-// TestPlainHTTP1OrderingDefaultsOff asserts the switch ships disabled, so a fresh install
-// keeps byte-for-byte the current outbound requests.
-func TestPlainHTTP1OrderingDefaultsOff(t *testing.T) {
-	if upstreamHTTP1HeaderOrderEnabled() {
-		t.Fatal("plaintext HTTP/1.1 header-order rewrite must default to off")
+// TestPlainHTTP1OrderingDefaultsOn asserts the switch ships enabled, so a fresh install
+// and a database that never stored the key both emit the captured header order.
+func TestPlainHTTP1OrderingDefaultsOn(t *testing.T) {
+	if !upstreamHTTP1HeaderOrderEnabled() {
+		t.Fatal("plaintext HTTP/1.1 header-order rewrite must default to on")
 	}
-	if order := http1RequestHeaderOrder(http.MethodPost, "/v1/messages?beta=true"); order != nil {
-		t.Fatalf("with the switch off the order must be nil (block untouched), got %v", order)
+	order := http1RequestHeaderOrder(http.MethodPost, "/v1/messages?beta=true")
+	if !reflect.DeepEqual(order, claudeHTTP1WireHeaderOrder) {
+		t.Fatalf("with the switch on the /messages order must be the captured 21 items, got %v", order)
 	}
 }
 

@@ -777,6 +777,16 @@ func (c *MessageContent) UnmarshalJSON(data []byte) error {
 
 // MessageContentBlock represents different types of content blocks.
 type MessageContentBlock struct {
+	// Tool result fields come BEFORE Type on purpose. encoding/json emits struct
+	// fields in declaration order, and a genuine claude-cli writes a tool_result
+	// block as tool_use_id, type, content (captured 2026-10-10, round 3/6/7/9).
+	// Declaring them here makes that block match; every other block type leaves
+	// these nil, so omitempty drops them and those blocks are unchanged.
+	ToolUseID *string `json:"tool_use_id,omitempty"`
+	// The content of the tool result. Type can be "text" or "image".
+	Content *MessageContent `json:"content,omitempty"`
+	IsError *bool           `json:"is_error,omitempty"`
+
 	// Any of "text", "image", "thinking", "redacted_thinking", "tool_use", "server_tool_use", "tool_result".
 	Type string `json:"type"`
 
@@ -804,13 +814,6 @@ type MessageContentBlock struct {
 	Name         *string         `json:"name,omitempty"`
 	Input        json.RawMessage `json:"input,omitempty"`
 	CacheControl *CacheControl   `json:"cache_control,omitempty"`
-
-	// Tool result fields
-	ToolUseID *string `json:"tool_use_id,omitempty"`
-	// The content of the tool result.
-	// Type can be "text" or "image".
-	Content *MessageContent `json:"content,omitempty"`
-	IsError *bool           `json:"is_error,omitempty"`
 }
 
 // ImageSource represents image source for Anthropic.

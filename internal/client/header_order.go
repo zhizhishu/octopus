@@ -134,12 +134,14 @@ func http1RequestHeaderOrder(method, requestTarget string) []string {
 	return http1WireHeaderOrderForTarget(requestTarget)
 }
 
-// upstreamHTTP1HeaderOrderEnabled reads the opt-in switch for the plaintext HTTP/1.1
-// wire-order rewrite. Default off; a missing or unreadable setting means off.
+// upstreamHTTP1HeaderOrderEnabled reads the switch for the plaintext HTTP/1.1
+// wire-order rewrite. Default on: a missing or unreadable setting means on, so an
+// existing database that never stored the key still gets the captured order. Set the
+// key to false to fall back to Go's own header order.
 func upstreamHTTP1HeaderOrderEnabled() bool {
 	enabled, err := op.SettingGetBool(model.SettingKeyUpstreamHTTP1HeaderOrder)
 	if err != nil {
-		return false
+		return true
 	}
 	return enabled
 }

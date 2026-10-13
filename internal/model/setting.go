@@ -447,8 +447,8 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyAnthropicAutoCacheControl, Value: "true"}, // 默认开启稳定前缀缓存断点，提升 provider 原生命中率
 		{Key: SettingKeyRelayStreamKeepaliveSec, Value: defaultRelayStreamKeepaliveIntervalSeconds()},
 		{Key: SettingKeyOpenAIAutoPromptCacheKey, Value: "true"},
-		{Key: SettingKeyUpstreamUTLSFingerprint, Value: "false"},  // 默认关：改 TLS 指纹影响所有上游，须先过 the relay 复验再开
-		{Key: SettingKeyUpstreamHTTP1HeaderOrder, Value: "false"}, // 默认关：明文 HTTP/1.1 出站头序/头名大小写/Connection 重写，须先过抓包复验再开；关=旧字节
+		{Key: SettingKeyUpstreamUTLSFingerprint, Value: "false"}, // 默认关：改 TLS 指纹影响所有上游，须先过 the relay 复验再开
+		{Key: SettingKeyUpstreamHTTP1HeaderOrder, Value: "true"}, // 默认开：明文 HTTP/1.1 出站按真 CLI 的 21 项头序重写（2026-10-10 抓包已定稿）
 		{Key: SettingKeyRelayStreamDataTimeoutSec, Value: defaultRelayStreamDataIntervalTimeoutSeconds()},
 		// 整次请求的绝对时长上限(秒), 0 = 不启用(旧行为)。给"上游一直在慢慢吐字节/一直发开场事件"
 		// 这一档兜底：相邻两道钟都盖不住它(首内容钟被首个真内容解除, 事件间隔钟被每个上游事件重置)。
