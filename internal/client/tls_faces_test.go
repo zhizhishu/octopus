@@ -3,6 +3,7 @@ package client
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -459,5 +460,101 @@ func serveH2Frames(conn net.Conn, orderCh chan<- []string) {
 				EndStream:     true,
 			})
 		}
+	}
+}
+
+// keyShareRawBytes returns the raw key_share extension payload from a captured
+// ClientHello record (nil when absent).
+func keyShareRawBytes(t *testing.T, rec []byte) []byte {
+	t.Helper()
+	if len(rec) < 9 || rec[0] != 0x16 {
+		return nil
+	}
+	hsLen := int(rec[6])<<16 | int(rec[7])<<8 | int(rec[8])
+	ch := rec[9 : 9+hsLen-4]
+	pos := 0
+	pos += 2 + 32
+	sidLen := int(ch[pos])
+	pos += 1 + sidLen
+	csLen := int(ch[pos])<<8 | int(ch[pos+1])
+	pos += 2 + csLen
+	compLen := int(ch[pos])
+	pos += 1 + compLen
+	extTotal := int(ch[pos])<<8 | int(ch[pos+1])
+	pos += 2
+	end := pos + extTotal
+	for pos < end {
+		etype := uint16(ch[pos])<<8 | uint16(ch[pos+1])
+		elen := int(ch[pos+2])<<8 | int(ch[pos+3])
+		if etype == 51 {
+			return append([]byte(nil), ch[pos+4:pos+4+elen]...)
+		}
+		pos += 4 + elen
+	}
+	return nil
+}
+
+// TestSpecForDialGivesFreshKeySharesPerDial regression-tests shared-spec
+// poisoning: utls's ApplyPreset writes the generated key-share bytes into the
+// spec's KeyShareExtension.Data in place, so a spec pinned by a long-lived
+// caller (the per-family h1 transport closure) made every dial after the first
+// send the first connection's public key with no matching private key — the
+// TLS 1.3 handshake then aborted with internal_error (observed live: the first
+// claude-face connection succeeded, all later ones failed). Two dials on the
+// same spec object must both complete and present different key-share
+// material, exactly like the genuine CLIs.
+func TestSpecForDialGivesFreshKeySharesPerDial(t *testing.T) {
+	pair := genTestCert(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	helloCh := make(chan []byte, 2)
+	go func() {
+		for i := 0; i < 2; i++ {
+			raw, acceptErr := ln.Accept()
+			if acceptErr != nil {
+				return
+			}
+			hello := readClientHelloRecords(t, raw)
+			select {
+			case helloCh <- hello:
+			default:
+			}
+			replay := &replayConn{Conn: raw, pending: hello}
+			_ = raw.SetReadDeadline(time.Time{})
+			tlsConn := tls.Server(replay, &tls.Config{Certificates: []tls.Certificate{pair}})
+			_ = tlsConn.Handshake()
+			_ = tlsConn.Close()
+			_ = raw.Close()
+		}
+	}()
+
+	rt := newFaceTestRoundTripper(t)
+	spec := claudeCodeNodeClientHelloSpec()
+	addr := ln.Addr().String()
+	var hellos [2][]byte
+	for i := 0; i < 2; i++ {
+		uConn, dialErr := rt.dialUTLS(context.Background(), "tcp", addr, "127.0.0.1", spec)
+		if dialErr != nil {
+			t.Fatalf("dial %d failed (shared-spec poisoning regression): %v", i+1, dialErr)
+		}
+		_ = uConn.Close()
+		select {
+		case h := <-helloCh:
+			hellos[i] = h
+		case <-time.After(5 * time.Second):
+			t.Fatalf("dial %d: no ClientHello captured", i+1)
+		}
+	}
+	ks1 := keyShareRawBytes(t, hellos[0])
+	ks2 := keyShareRawBytes(t, hellos[1])
+	if len(ks1) == 0 || len(ks2) == 0 {
+		t.Fatalf("missing key_share extension: ks1=%d ks2=%d", len(ks1), len(ks2))
+	}
+	if bytes.Equal(ks1, ks2) {
+		t.Fatal("key-share material identical across dials — shared-spec poisoning regression")
 	}
 }

@@ -194,7 +194,9 @@ const (
 
 // clientHelloSpecForPath routes a request to its CLI-family ClientHello spec.
 // A nil spec means "use utls.HelloChrome_Auto" (the pre-existing default face
-// for non-CLI paths).
+// for non-CLI paths). The returned spec may be pinned by long-lived callers
+// (the per-family h1 transport closure), so dialUTLS clones it per dial —
+// see specForDial.
 func clientHelloSpecForPath(path string) (spec *utls.ClientHelloSpec, family string) {
 	p := strings.ToLower(path)
 	switch {
@@ -204,5 +206,48 @@ func clientHelloSpecForPath(path string) (spec *utls.ClientHelloSpec, family str
 		return claudeCodeNodeClientHelloSpec(), tlsFaceClaude
 	default:
 		return nil, tlsFaceChrome
+	}
+}
+
+// specForDial returns a per-dial copy of a face spec. utls's ApplyPreset
+// copies the extension slice by pointer and then fills KeyShareExtension.Data
+// in place (and ApplyPreset/dialUTLS write SNIExtension.ServerName the same
+// way), so a spec reused across connections would carry the first
+// connection's key-share bytes forever — later connections send that stale
+// public key with no matching private key and the TLS 1.3 handshake aborts
+// with internal_error. Clearing Data makes utls generate fresh key material
+// per connection, exactly like the genuine CLIs; the copied SNI extension
+// keeps per-connection ServerName fills off the shared spec. The wire shape
+// is unchanged (groups, lengths and field order all come from the same
+// literals).
+func specForDial(spec *utls.ClientHelloSpec) *utls.ClientHelloSpec {
+	if spec == nil {
+		return nil
+	}
+	exts := make([]utls.TLSExtension, len(spec.Extensions))
+	copy(exts, spec.Extensions)
+	for i, ext := range exts {
+		switch e := ext.(type) {
+		case *utls.KeyShareExtension:
+			shares := make([]utls.KeyShare, len(e.KeyShares))
+			for j, ks := range e.KeyShares {
+				shares[j] = utls.KeyShare{Group: ks.Group}
+			}
+			exts[i] = &utls.KeyShareExtension{KeyShares: shares}
+		case *utls.SNIExtension:
+			cp := *e
+			exts[i] = &cp
+		}
+	}
+	suites := make([]uint16, len(spec.CipherSuites))
+	copy(suites, spec.CipherSuites)
+	methods := make([]uint8, len(spec.CompressionMethods))
+	copy(methods, spec.CompressionMethods)
+	return &utls.ClientHelloSpec{
+		CipherSuites:       suites,
+		CompressionMethods: methods,
+		Extensions:         exts,
+		TLSVersMin:         spec.TLSVersMin,
+		TLSVersMax:         spec.TLSVersMax,
 	}
 }

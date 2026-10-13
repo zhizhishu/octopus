@@ -170,6 +170,11 @@ func (t *utlsRoundTripper) dialUTLS(ctx context.Context, network, addr, serverNa
 	if t.tlsConfigForHost != nil {
 		cfg = t.tlsConfigForHost(serverName)
 	}
+	// Clone per dial: utls mutates the spec's KeyShareExtension.Data and
+	// SNIExtension.ServerName in place, so a spec pinned by a long-lived
+	// caller (the per-family h1 transport closure) would poison every dial
+	// after the first with stale key-share bytes and no private key.
+	spec = specForDial(spec)
 	var uConn *utls.UConn
 	if spec != nil {
 		uConn = utls.UClient(rawConn, cfg, utls.HelloCustom)
