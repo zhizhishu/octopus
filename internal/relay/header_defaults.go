@@ -23,7 +23,7 @@ const (
 	defaultCodexBetaFeatures    = dbmodel.DefaultCodexHeaderBetaFeatures
 	// 2026-10-10 实测对齐: 真 Codex CLI 抓包的身份是 codex_exec/0.161.0 + originator codex_exec
 	// (对称的 codex_exec 家族)。originator 必须与 UA 头串同一身份, 混用才是 tell。
-	defaultCodexOriginator      = "codex_exec"
+	defaultCodexOriginator = "codex_exec"
 )
 
 // ChannelWireHeaderOptions contains the request context needed to apply the
