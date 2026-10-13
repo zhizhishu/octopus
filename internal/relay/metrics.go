@@ -15,7 +15,13 @@ import (
 	transformerModel "github.com/bestruirui/octopus/internal/transformer/model"
 	"github.com/bestruirui/octopus/internal/utils/log"
 	"github.com/bestruirui/octopus/internal/utils/tokenizer"
+	"github.com/bestruirui/octopus/internal/utils/xredact"
 )
+
+// redactLogBody 只用于写进日志的正文。出站请求体不经过这里。
+func redactLogBody(body string) string {
+	return xredact.Secrets(body)
+}
 
 const metricsPersistTimeout = 30 * time.Second
 
@@ -755,6 +761,8 @@ func (m *RelayMetrics) saveLog(ctx context.Context, err error, duration time.Dur
 				}
 			}
 		}
+		// 入库前打码：只改写进日志的这份，发给上游的请求体一个字节不动。
+		relayLog.RequestContent = redactLogBody(relayLog.RequestContent)
 	}
 
 	// 响应内容
@@ -767,7 +775,7 @@ func (m *RelayMetrics) saveLog(ctx context.Context, err error, duration time.Dur
 				insert := fmt.Sprintf(`"usage":{"cache_creation_input_tokens":%d,`, m.InternalResponse.Usage.CacheCreationInputTokens)
 				respJSON = []byte(strings.Replace(respStr, old, insert, 1))
 			}
-			relayLog.ResponseContent = string(respJSON)
+			relayLog.ResponseContent = redactLogBody(string(respJSON))
 		}
 	}
 

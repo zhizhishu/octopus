@@ -139,7 +139,7 @@ func RawProtocolHandler(options RawProtocolOptions, c *gin.Context) {
 	metrics.RequestUserAgent = c.Request.UserAgent()
 	metrics.SetAccessPlan(routeResult.AccessPlan, routeResult.AccessRouteRule, routeResult.AccessRouteUsed)
 	metrics.SetClientSession(clientSession)
-	metrics.RequestContent = buildRawProtocolRequestContent(isMultipart, bc, jsonPayload, options.Name)
+	metrics.RequestContent = redactLogBody(buildRawProtocolRequestContent(isMultipart, bc, jsonPayload, options.Name))
 
 	var (
 		lastErr          error

@@ -139,7 +139,7 @@ func ImagesHandler(endpoint string, c *gin.Context) {
 	metrics.RequestUserAgent = c.Request.UserAgent()
 	metrics.SetAccessPlan(routeResult.AccessPlan, routeResult.AccessRouteRule, routeResult.AccessRouteUsed)
 	metrics.SetClientSession(clientSession)
-	metrics.RequestContent = buildImagesRequestContentForLog(isMultipart, bc, jsonPayload)
+	metrics.RequestContent = redactLogBody(buildImagesRequestContentForLog(isMultipart, bc, jsonPayload))
 
 	var (
 		lastErr          error

@@ -82,7 +82,7 @@ func VideosHandler(c *gin.Context) {
 
 	metrics := newRawProtocolRelayMetrics(apiKeyID, userID, c.GetString("request_ip"), requestModel, "videos", c.Request.URL.Path)
 	metrics.SetAccessPlan(routeResult.AccessPlan, routeResult.AccessRouteRule, routeResult.AccessRouteUsed)
-	metrics.RequestContent = buildRawProtocolRequestContent(false, bc, payload, "videos")
+	metrics.RequestContent = redactLogBody(buildRawProtocolRequestContent(false, bc, payload, "videos"))
 
 	var (
 		lastErr          error

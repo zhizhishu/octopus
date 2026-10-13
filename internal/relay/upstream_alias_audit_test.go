@@ -14,9 +14,12 @@ func TestUpstreamModelMismatchAliasVariant(t *testing.T) {
 		wantCode string
 	}{
 		{name: "same family dated suffix is alias_variant", sent: "model-family-alpha", response: "model-family-alpha-20251101", want: true, wantCode: UpstreamMismatchCodeAliasVariant},
+		{name: "claude-fable dated suffix is alias_variant", sent: "claude-fable-5-1", response: "claude-fable-5-1-20251101", want: true, wantCode: UpstreamMismatchCodeAliasVariant},
+		{name: "claude-fable versus unrelated model", sent: "claude-fable-5-1", response: "totally-other-model", want: true, wantCode: ""},
 		{name: "same family different minor suffix", sent: "model-family-alpha-8", response: "model-family-alpha-8-20251101", want: true, wantCode: UpstreamMismatchCodeAliasVariant},
 		{name: "case and whitespace only, same name", sent: " Model-Family-Alpha ", response: "model-family-alpha", want: false, wantCode: ""},
 		{name: "completely different names", sent: "model-family-alpha", response: "model-family-beta", want: true, wantCode: ""},
+		{name: "same stem with non-separator suffix is not the same family", sent: "model-family-alpha", response: "model-family-alphaX", want: true, wantCode: ""},
 		{name: "shared prefix too short is not alias", sent: "mod", response: "modular-something-20251101", want: true, wantCode: ""},
 		{name: "empty sent", sent: "", response: "model-family-alpha", wantNil: true, wantCode: ""},
 		{name: "empty response", sent: "model-family-alpha", response: "", wantNil: true, wantCode: ""},

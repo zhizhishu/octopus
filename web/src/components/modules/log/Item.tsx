@@ -566,8 +566,8 @@ function LogRouteHeader({
                     注：本格用 items-center。实测窄屏下这会让 16px 的主徽标在「同排有 18px 徽标」时
                     被居中推下 1px（卡内 A1 高 68 时 y=0，高 44 时 y=1），桌面 1440 下恒为单值。
                     若要把这 1px 也钉死，改成 items-start 即可；本轮未带真机复测，故未改。 */}
-                <div className="flex min-w-0 flex-wrap items-center gap-2">
-                    {statusBadge}
+                <div className="flex min-w-0 flex-nowrap items-center gap-2">
+                    <span className="inline-flex shrink-0 items-center order-first">{statusBadge}</span>
                     {autoRescueSlot}
                     {endpointBadge}
                     {upstreamPathBadge}
