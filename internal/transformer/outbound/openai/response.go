@@ -392,19 +392,26 @@ func (o *ResponseOutbound) TransformStream(ctx context.Context, eventData []byte
 				Delta: delta,
 			}}
 		} else if streamEvent.Item != nil &&
-			strings.TrimSpace(streamEvent.Item.Type) == "message" &&
-			streamEvent.Item.Phase != nil {
-			// Carry the message item's `phase` (codex emits e.g. "commentary") so the
-			// client-facing rebuilt message item can replay it on the next turn.
-			// A message item's text already streams via response.output_text.delta,
-			// so this emits only the phase; without it the field is dropped and the
-			// client echoes a phase-less item back.
+			strings.TrimSpace(streamEvent.Item.Type) == "message" {
+			// Carry the message item's `phase` (codex emits e.g. "commentary") and its
+			// own `id` (e.g. "msg_0e71...") so the client-facing rebuilt message item
+			// can replay both on the next turn. A message item's text already streams
+			// via response.output_text.delta, so this emits only these carried fields;
+			// without the id, oct minted a short msg_ id and the upstream saw a foreign
+			// id on the next-turn echo. Emit nothing when the item carries neither.
+			delta := &model.Message{Role: "assistant"}
+			if streamEvent.Item.Phase != nil {
+				delta.ResponsesPhase = streamEvent.Item.Phase
+			}
+			if id := strings.TrimSpace(streamEvent.Item.ID); id != "" {
+				delta.ResponsesItemID = lo.ToPtr(id)
+			}
+			if delta.ResponsesPhase == nil && delta.ResponsesItemID == nil {
+				return nil, nil
+			}
 			resp.Choices = []model.Choice{{
 				Index: 0,
-				Delta: &model.Message{
-					Role:           "assistant",
-					ResponsesPhase: streamEvent.Item.Phase,
-				},
+				Delta: delta,
 			}}
 		} else {
 			return nil, nil
@@ -1655,6 +1662,11 @@ func convertToLLMResponseFromResponses(resp *ResponsesResponse) *model.InternalL
 		// item, so it survives the upstream->internal hop and the inbound rebuild
 		// can re-emit it on the client-facing message item.
 		messagePhase *string
+		// messageItemID carries the upstream message item's own `id` (e.g.
+		// "msg_0e71...") so the inbound rebuild echoes the upstream's id instead of
+		// minting a short one. First non-empty id wins (a collapsed multi-part
+		// message keeps the leading item's id); nil when the upstream sent none.
+		messageItemID *string
 	)
 
 	for _, outputItem := range resp.Output {
@@ -1669,6 +1681,9 @@ func convertToLLMResponseFromResponses(resp *ResponsesResponse) *model.InternalL
 			}
 			if outputItem.Phase != nil {
 				messagePhase = outputItem.Phase
+			}
+			if id := strings.TrimSpace(outputItem.ID); id != "" && messageItemID == nil {
+				messageItemID = lo.ToPtr(id)
 			}
 		case "output_text":
 			if outputItem.Text != nil {
@@ -1727,9 +1742,10 @@ func convertToLLMResponseFromResponses(resp *ResponsesResponse) *model.InternalL
 	choice := model.Choice{
 		Index: 0,
 		Message: &model.Message{
-			Role:           "assistant",
-			ToolCalls:      toolCalls,
-			ResponsesPhase: messagePhase,
+			Role:            "assistant",
+			ToolCalls:       toolCalls,
+			ResponsesPhase:  messagePhase,
+			ResponsesItemID: messageItemID,
 		},
 	}
 

@@ -64,6 +64,15 @@ type ResponseInbound struct {
 	// same-protocol Responses client replays it on the next turn.
 	messagePhase *string
 
+	// messageUpstreamID carries the upstream Responses message item's own id
+	// (e.g. "msg_0e71a8f0..."), captured from the message item's output_item.added
+	// (see the Responses outbound parse). When non-empty, emitTextContent opens the
+	// client-facing message item with this id so the client replays the upstream's
+	// own id format on the next turn; empty falls back to generateMessageItemID.
+	// Cleared alongside messageItemID so a later message item never inherits a
+	// stale upstream id.
+	messageUpstreamID string
+
 	// glmInlineBuffer holds a GLM text run that is turning into inline tool call
 	// markup. GLM upstreams emit tool calls as literal text markup split across
 	// stream chunks, so the run must be withheld until the markup closes — streaming
@@ -364,6 +373,15 @@ func (i *ResponseInbound) TransformStream(ctx context.Context, stream *model.Int
 			// chunk onto the open client-facing message item.
 			if choice.Delta != nil && choice.Delta.ResponsesPhase != nil {
 				i.messagePhase = choice.Delta.ResponsesPhase
+			}
+			// Carry the upstream message item's own id onto the client-facing message
+			// item, so oct echoes the upstream's id rather than minting a short one. It
+			// arrives on the message item's output_item.added, i.e. before any text
+			// delta, so emitTextContent can open the item with it.
+			if choice.Delta != nil && choice.Delta.ResponsesItemID != nil {
+				if id := strings.TrimSpace(*choice.Delta.ResponsesItemID); id != "" {
+					i.messageUpstreamID = id
+				}
 			}
 			// Handle reasoning content delta.
 			if choice.Delta != nil && contentIsStillInsideRun {
@@ -808,9 +826,16 @@ func (i *ResponseInbound) emitTextContent(content string) [][]byte {
 	// part are open.
 	events = append(events, i.closeReasoningItem()...)
 
-	// Start message output item if not started
+	// Start message output item if not started. Prefer the upstream message item's
+	// own id (carried from the message item's output_item.added) so the client
+	// replays the id the upstream minted; only mint a msg_ fallback when the
+	// upstream sent none.
 	if i.messageItemID == "" {
-		i.messageItemID = generateMessageItemID()
+		if i.messageUpstreamID != "" {
+			i.messageItemID = i.messageUpstreamID
+		} else {
+			i.messageItemID = generateMessageItemID()
+		}
 		i.messageOutputIdx = i.allocOutputIndex()
 		itemID := i.messageItemID
 
@@ -1169,8 +1194,10 @@ func (i *ResponseInbound) closeMessageItem() [][]byte {
 		Item:        &item,
 	}))
 
-	// Clear the slot so a later contiguous text run opens a fresh message item.
+	// Clear the slot so a later contiguous text run opens a fresh message item and
+	// never inherits this item's upstream id.
 	i.messageItemID = ""
+	i.messageUpstreamID = ""
 	i.accumulatedText.Reset()
 
 	return events
@@ -2834,7 +2861,7 @@ func convertToResponsesAPIResponse(resp *model.InternalLLMResponse) *ResponsesRe
 		if message.Content.Content != nil && *message.Content.Content != "" {
 			text := *message.Content.Content
 			result.Output = append(result.Output, ResponsesItem{
-				ID:   generateMessageItemID(),
+				ID:   responsesMessageItemID(message),
 				Type: "message",
 				Role: "assistant",
 				Content: &ResponsesInput{
@@ -2878,7 +2905,7 @@ func convertToResponsesAPIResponse(resp *model.InternalLLMResponse) *ResponsesRe
 
 			if len(contentItems) > 0 {
 				result.Output = append(result.Output, ResponsesItem{
-					ID:      generateMessageItemID(),
+					ID:      responsesMessageItemID(message),
 					Type:    "message",
 					Role:    "assistant",
 					Content: &ResponsesInput{Items: contentItems},
@@ -2968,6 +2995,22 @@ func convertUsageToResponses(usage *model.Usage) *ResponsesUsage {
 // 'msg'"). So mint what the real backend mints: msg_ / rs_ / fc_ / ig_.
 func generateMessageItemID() string {
 	return fmt.Sprintf("msg_%s", lo.RandomString(16, lo.AlphanumericCharset))
+}
+
+// responsesMessageItemID returns the id to emit on a rebuilt message output item:
+// the upstream's own id when the Responses outbound parse captured one, else a
+// freshly minted msg_ fallback. This keeps a same-protocol Responses relay
+// upstream-faithful — oct echoes the id the upstream minted (e.g. a long msg_ hex)
+// instead of a short synthesized one, so the client's next-turn echo carries the
+// id format the upstream expects. generateMessageItemID stays the fallback for the
+// upstream-sent-no-id case.
+func responsesMessageItemID(message *model.Message) string {
+	if message != nil && message.ResponsesItemID != nil {
+		if id := strings.TrimSpace(*message.ResponsesItemID); id != "" {
+			return id
+		}
+	}
+	return generateMessageItemID()
 }
 
 func generateReasoningItemID() string {

@@ -730,6 +730,16 @@ type Message struct {
 	// internal model's wire contract, hence json:"-".
 	ResponsesPhase *string `json:"-"`
 
+	// ResponsesItemID carries an OpenAI Responses message item's own `id` (e.g.
+	// "msg_0e71a8f0...") parsed off the upstream response. It is a help field
+	// mirroring ResponsesPhase: only the Responses outbound parse sets it and the
+	// Responses inbound rebuild re-emits it verbatim, so oct hands the client the
+	// upstream's own id instead of minting a short one. The client replays that id
+	// on the next turn, and the upstream then sees the id format it minted. Empty
+	// when the upstream sent no id, in which case the inbound mints a msg_ fallback.
+	// Not part of the internal model's wire contract, hence json:"-".
+	ResponsesItemID *string `json:"-"`
+
 	// CacheControl is used for provider-specific cache control (e.g., Anthropic).
 	// This field is not serialized in JSON.
 	CacheControl *CacheControl `json:"-"`
