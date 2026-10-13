@@ -391,6 +391,21 @@ func (o *ResponseOutbound) TransformStream(ctx context.Context, eventData []byte
 				Index: 0,
 				Delta: delta,
 			}}
+		} else if streamEvent.Item != nil &&
+			strings.TrimSpace(streamEvent.Item.Type) == "message" &&
+			streamEvent.Item.Phase != nil {
+			// Carry the message item's `phase` (codex emits e.g. "commentary") so the
+			// client-facing rebuilt message item can replay it on the next turn.
+			// A message item's text already streams via response.output_text.delta,
+			// so this emits only the phase; without it the field is dropped and the
+			// client echoes a phase-less item back.
+			resp.Choices = []model.Choice{{
+				Index: 0,
+				Delta: &model.Message{
+					Role:           "assistant",
+					ResponsesPhase: streamEvent.Item.Phase,
+				},
+			}}
 		} else {
 			return nil, nil
 		}
@@ -759,6 +774,14 @@ type ResponsesItem struct {
 	// Reasoning fields
 	Summary          []ResponsesReasoningSummary `json:"summary,omitempty"`
 	EncryptedContent *string                     `json:"encrypted_content,omitempty"`
+
+	// Phase carries a Responses message item's `phase` (the codex CLI emits e.g.
+	// "commentary" on assistant message items and replays it on the next turn).
+	// Kept last so it marshals after content/status, the position the genuine CLI
+	// uses. Preserved on both the decode (upstream response) and encode (rebuilt
+	// input) sides; without it a same-protocol relay drops the field the client
+	// echoes back on the following turn.
+	Phase *string `json:"phase,omitempty"`
 }
 
 // ResponsesInputAudio is the nested payload of an OpenAI Responses
@@ -1513,6 +1536,9 @@ func convertAssistantMessageToResponses(msg model.Message) []ResponsesItem {
 			Role:    msg.Role,
 			Status:  lo.ToPtr("completed"),
 			Content: &ResponsesInput{Items: contentItems},
+			// Preserve a carried phase (e.g. "commentary") on the rebuilt input
+			// message item so the client's replayed history round-trips it.
+			Phase: msg.ResponsesPhase,
 		})
 	}
 
@@ -1625,6 +1651,10 @@ func convertToLLMResponseFromResponses(resp *ResponsesResponse) *model.InternalL
 		reasoningContent   strings.Builder
 		reasoningSignature string
 		toolCalls          []model.ToolCall
+		// messagePhase carries the phase of the (last) assistant message output
+		// item, so it survives the upstream->internal hop and the inbound rebuild
+		// can re-emit it on the client-facing message item.
+		messagePhase *string
 	)
 
 	for _, outputItem := range resp.Output {
@@ -1636,6 +1666,9 @@ func convertToLLMResponseFromResponses(resp *ResponsesResponse) *model.InternalL
 						textContent.WriteString(*item.Text)
 					}
 				}
+			}
+			if outputItem.Phase != nil {
+				messagePhase = outputItem.Phase
 			}
 		case "output_text":
 			if outputItem.Text != nil {
@@ -1694,8 +1727,9 @@ func convertToLLMResponseFromResponses(resp *ResponsesResponse) *model.InternalL
 	choice := model.Choice{
 		Index: 0,
 		Message: &model.Message{
-			Role:      "assistant",
-			ToolCalls: toolCalls,
+			Role:           "assistant",
+			ToolCalls:      toolCalls,
+			ResponsesPhase: messagePhase,
 		},
 	}
 

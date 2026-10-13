@@ -59,6 +59,10 @@ type ResponseInbound struct {
 	messageOutputIdx int
 	contentPartOpen  bool
 	accumulatedText  strings.Builder
+	// messagePhase carries the `phase` of the upstream message item (e.g.
+	// "commentary"); re-emitted on the client-facing message item so a
+	// same-protocol Responses client replays it on the next turn.
+	messagePhase *string
 
 	// glmInlineBuffer holds a GLM text run that is turning into inline tool call
 	// markup. GLM upstreams emit tool calls as literal text markup split across
@@ -356,6 +360,11 @@ func (i *ResponseInbound) TransformStream(ctx context.Context, stream *model.Int
 		}
 
 		if !i.responseCompleted {
+			// Carry a message item's `phase` (e.g. "commentary") from the upstream
+			// chunk onto the open client-facing message item.
+			if choice.Delta != nil && choice.Delta.ResponsesPhase != nil {
+				i.messagePhase = choice.Delta.ResponsesPhase
+			}
 			// Handle reasoning content delta.
 			if choice.Delta != nil && contentIsStillInsideRun {
 				if reasoning := choice.Delta.GetReasoningContent(); reasoning != "" {
@@ -814,6 +823,7 @@ func (i *ResponseInbound) emitTextContent(content string) [][]byte {
 				Status:  lo.ToPtr("in_progress"),
 				Role:    "assistant",
 				Content: &ResponsesInput{Items: []ResponsesItem{}},
+				Phase:   i.messagePhase,
 			},
 		}))
 	}
@@ -1150,6 +1160,7 @@ func (i *ResponseInbound) closeMessageItem() [][]byte {
 				Text: &fullText,
 			}},
 		},
+		Phase: i.messagePhase,
 	}
 
 	events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
@@ -1781,6 +1792,12 @@ type ResponsesItem struct {
 	// Reasoning fields
 	Summary          []ResponsesReasoningSummary `json:"summary,omitempty"`
 	EncryptedContent *string                     `json:"encrypted_content,omitempty"`
+
+	// Phase carries a Responses message item's `phase` (the codex CLI emits e.g.
+	// "commentary" on assistant message items and replays it on the next turn).
+	// Kept last so it marshals after content/status, the position the genuine CLI
+	// uses. Populated on the upstream->client rebuild.
+	Phase *string `json:"phase,omitempty"`
 }
 
 // MarshalJSON guarantees a reasoning item always carries a "summary" array, even
@@ -2830,6 +2847,7 @@ func convertToResponsesAPIResponse(resp *model.InternalLLMResponse) *ResponsesRe
 					},
 				},
 				Status: lo.ToPtr("completed"),
+				Phase:  message.ResponsesPhase,
 			})
 		} else if len(message.Content.MultipleContent) > 0 {
 			contentItems := make([]ResponsesItem, 0)
@@ -2865,6 +2883,7 @@ func convertToResponsesAPIResponse(resp *model.InternalLLMResponse) *ResponsesRe
 					Role:    "assistant",
 					Content: &ResponsesInput{Items: contentItems},
 					Status:  lo.ToPtr("completed"),
+					Phase:   message.ResponsesPhase,
 				})
 			}
 		}

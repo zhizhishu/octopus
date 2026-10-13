@@ -721,6 +721,15 @@ type Message struct {
 	// Help field, will not be sent to the llm service, to adapt the anthropic think signature.
 	ReasoningSignature *string `json:"reasoning_signature,omitempty"`
 
+	// ResponsesPhase carries an OpenAI Responses message item's `phase` field
+	// (the codex CLI emits e.g. "commentary" on an assistant message item and
+	// replays it on the next turn). It is a help field: the chat / gemini /
+	// anthropic outbounds never serialize it, only the Responses outbound parse
+	// and inbound rebuild re-emit it verbatim, so a same-protocol Responses
+	// relay preserves the client's replayed phase. "phase" is not part of the
+	// internal model's wire contract, hence json:"-".
+	ResponsesPhase *string `json:"-"`
+
 	// CacheControl is used for provider-specific cache control (e.g., Anthropic).
 	// This field is not serialized in JSON.
 	CacheControl *CacheControl `json:"-"`

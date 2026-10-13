@@ -44,6 +44,27 @@ var claudeHTTP1WireHeaderOrderWant = []string{
 	"Content-Length",
 }
 
+// codexHTTP1WireHeaderOrderWant is the 14-item all-lowercase wire block a genuine Codex CLI
+// (0.161.0, reqwest/hyper) emits on its plaintext HTTP/1.1 leg to /v1/responses, captured
+// 2026-10-13 on berobox from the direct leg (source `direct-00003.req`). Written as a literal
+// so a typo in codexHTTP1WireHeaderOrder cannot agree with itself.
+var codexHTTP1WireHeaderOrderWant = []string{
+	"x-codex-beta-features",
+	"x-codex-window-id",
+	"x-codex-turn-metadata",
+	"x-openai-internal-codex-responses-lite",
+	"x-client-request-id",
+	"session-id",
+	"thread-id",
+	"accept",
+	"content-type",
+	"authorization",
+	"originator",
+	"user-agent",
+	"host",
+	"content-length",
+}
+
 const (
 	testClaudeBody      = `{"model":"claude-opus-5-5","messages":[]}`
 	testClaudeCLIUA     = "claude-cli/2.1.198 (external, cli)"
@@ -391,8 +412,9 @@ func TestPlainHTTP1ReordersSecondRequestAfterChunkedBody(t *testing.T) {
 }
 
 // TestHTTP1WireHeaderOrderTargetSelection pins which legs the HTTP/1.1 rewrite covers.
-// The codex /v1/responses leg must stay untouched (nil == pass-through), and an HTTP
-// proxy's absolute-form target must still be recognised.
+// The codex /v1/responses leg now has a captured baseline of its own (the 14-item lowercase
+// table), /v1/messages keeps the claude table, and an HTTP proxy's absolute-form target must
+// still be recognised on both.
 func TestHTTP1WireHeaderOrderTargetSelection(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -402,7 +424,7 @@ func TestHTTP1WireHeaderOrderTargetSelection(t *testing.T) {
 		{"claude origin-form", "/v1/messages?beta=true", claudeHTTP1WireHeaderOrder},
 		{"claude count_tokens", "/v1/messages/count_tokens", claudeHTTP1WireHeaderOrder},
 		{"claude via http proxy absolute-form", "http://upstream.example/v1/messages?beta=true", claudeHTTP1WireHeaderOrder},
-		{"codex responses untouched", "/v1/responses", nil},
+		{"codex responses", "/v1/responses", codexHTTP1WireHeaderOrder},
 		{"other path untouched", "/v1/chat/completions", nil},
 	}
 	for _, tc := range cases {
@@ -412,6 +434,123 @@ func TestHTTP1WireHeaderOrderTargetSelection(t *testing.T) {
 				t.Fatalf("target %q: got %v want %v", tc.target, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestHTTP1WireHeaderOrderForTargetSelectsCapturedLegs is the direct mapping assertion the
+// codex HTTP/1.1 change asks for: /v1/responses -> the 14-item lowercase codex block,
+// /v1/messages -> the 21-item claude block, any other path -> nil (byte-for-byte pass-through).
+func TestHTTP1WireHeaderOrderForTargetSelectsCapturedLegs(t *testing.T) {
+	cases := []struct {
+		name   string
+		target string
+		want   []string
+	}{
+		{"codex responses", "/v1/responses", codexHTTP1WireHeaderOrder},
+		{"codex responses via http proxy absolute-form", "http://upstream.example/v1/responses", codexHTTP1WireHeaderOrder},
+		{"claude messages", "/v1/messages?beta=true", claudeHTTP1WireHeaderOrder},
+		{"other path untouched", "/v1/chat/completions", nil},
+		{"root untouched", "/healthz", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := http1WireHeaderOrderForTarget(tc.target)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("target %q: got %v want %v", tc.target, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCodexHTTP1WireHeaderOrderIsTheCaptured14Items guards the codex table itself so a future
+// edit cannot silently drop, reorder or re-case an entry, and pins that the h2 codex table —
+// a different contract for a different layer — was not touched.
+func TestCodexHTTP1WireHeaderOrderIsTheCaptured14Items(t *testing.T) {
+	if !reflect.DeepEqual(codexHTTP1WireHeaderOrder, codexHTTP1WireHeaderOrderWant) {
+		t.Fatalf("codexHTTP1WireHeaderOrder drifted from the captured 14-item sequence:\n got=%v\nwant=%v",
+			codexHTTP1WireHeaderOrder, codexHTTP1WireHeaderOrderWant)
+	}
+	if len(codexHTTP1WireHeaderOrder) != 14 {
+		t.Fatalf("codex HTTP/1.1 wire block must be exactly 14 items, got %d", len(codexHTTP1WireHeaderOrder))
+	}
+	for i, name := range codexHTTP1WireHeaderOrder {
+		if name != strings.ToLower(name) {
+			t.Fatalf("codex HTTP/1.1 wire name %d must be lowercase, got %q", i, name)
+		}
+	}
+	if last := codexHTTP1WireHeaderOrder[len(codexHTTP1WireHeaderOrder)-1]; last != "content-length" {
+		t.Fatalf("codex HTTP/1.1 wire block must end with content-length, got %q", last)
+	}
+	if !reflect.DeepEqual(codexCanonicalHeaderOrder, []string{
+		"x-codex-beta-features", "x-codex-window-id", "x-codex-turn-metadata",
+		"x-openai-internal-codex-responses-lite", "x-client-request-id", "session-id",
+		"thread-id", "accept", "content-type", "authorization", "originator", "user-agent",
+	}) {
+		t.Fatalf("codexCanonicalHeaderOrder (h2 path) must stay unchanged, got %v", codexCanonicalHeaderOrder)
+	}
+}
+
+// testCodexBody is the request body used by the codex wire-order round trip.
+const testCodexBody = `{"model":"gpt-5.6-sol","stream":true}`
+
+// codexWireHeaderValues lists the 12 codex business headers (host/content-length are added by
+// Go) in REVERSE of the captured wire order, set through Go's CANONICAL spelling, so a passing
+// round trip proves both the reordering and the lowercase rewrite happened on the wire.
+var codexWireHeaderValues = []struct{ key, value string }{
+	{"User-Agent", "codex_exec/0.161.0 (Ubuntu 24.04.1; x86_64) unknown (codex_exec; 0.161.0)"},
+	{"Originator", "codex_exec"},
+	{"Authorization", "Bearer test-key"},
+	{"Content-Type", "application/json"},
+	{"Accept", "text/event-stream"},
+	{"Thread-Id", "019e8d7b-0690-7a91-a60f-b642269c3439"},
+	{"Session-Id", "019e8d7b-0690-7a91-a60f-b642269c3439"},
+	{"X-Client-Request-Id", "019e8d7b-0690-7a91-a60f-b642269c3439"},
+	{"X-Openai-Internal-Codex-Responses-Lite", "true"},
+	{"X-Codex-Turn-Metadata", `{"turn_id":"t"}`},
+	{"X-Codex-Window-Id", "019e8d7b-0690-7a91-a60f-b642269c3439:0"},
+	{"X-Codex-Beta-Features", "remote_compaction_v2"},
+}
+
+func codexWireRequest(url string) (*http.Request, error) {
+	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(testCodexBody))
+	if err != nil {
+		return nil, err
+	}
+	for _, kv := range codexWireHeaderValues {
+		req.Header.Set(kv.key, kv.value)
+	}
+	req.ContentLength = int64(len(testCodexBody))
+	return req, nil
+}
+
+// TestPlainHTTP1EmitsCodexWireHeaderOrder is the byte-level self-check for the codex
+// plaintext leg: a real request through a real net/http transport over a loopback socket must
+// arrive with exactly the 14 captured header names, in order, all lowercase, host/content-length
+// closing the block — and with NO synthesized Connection header (the real CLI sends none).
+func TestPlainHTTP1EmitsCodexWireHeaderOrder(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	req, err := codexWireRequest("http://" + ln.Addr().String() + "/v1/responses")
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	got := roundTripCaptureBlock(t, orderedTransport(wireOrderFunc()), req, ln)
+
+	names := make([]string, 0, len(got)-2)
+	for _, line := range got[1 : len(got)-1] {
+		names = append(names, strings.SplitN(line, ":", 2)[0])
+	}
+	if !reflect.DeepEqual(names, codexHTTP1WireHeaderOrderWant) {
+		t.Fatalf("codex plaintext HTTP/1.1 header names mismatch:\n got=%v\nwant=%v", names, codexHTTP1WireHeaderOrderWant)
+	}
+	for _, line := range got {
+		if strings.HasPrefix(strings.ToLower(line), "connection:") {
+			t.Fatalf("codex leg must not emit a Connection header, got %q", line)
+		}
 	}
 }
 

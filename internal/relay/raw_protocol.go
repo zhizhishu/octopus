@@ -876,7 +876,16 @@ func rawProtocolAttempt(
 	}
 	copyHeadersToUpstream(req, c, channel, channelKey, contentType, stream)
 	if isResponsesCompactRawProtocol(options) {
-		applyCodexHeaderDefaultsWithFingerprint(req, rawProtocolCodexIdentity(jsonPayload, clientSessionKey, actualModel), resolveFingerprintForChannel(channel))
+		// Echo the downstream client's own codex Originator+UA pair on this leg too: the
+		// raw path has no relayAttempt, so read it straight off the gin request context
+		// (User-Agent is hop-by-hop-filtered in copyHeadersToUpstream, so it is only here).
+		inboundUserAgent := ""
+		inboundOriginator := ""
+		if c != nil && c.Request != nil {
+			inboundUserAgent = c.Request.UserAgent()
+			inboundOriginator = c.Request.Header.Get("Originator")
+		}
+		applyCodexHeaderDefaultsWithFingerprint(req, rawProtocolCodexIdentity(jsonPayload, clientSessionKey, actualModel), resolveFingerprintForChannel(channel), inboundUserAgent, inboundOriginator)
 	}
 
 	httpClient, err := helper.ChannelHttpClient(channel)

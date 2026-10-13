@@ -108,17 +108,50 @@ var claudeHTTP1WireHeaderOrder = []string{
 	"Content-Length",
 }
 
+// codexHTTP1WireHeaderOrder is the byte-exact header block a genuine Codex CLI (0.161.0)
+// emits on its PLAINTEXT HTTP/1.1 leg to /v1/responses, captured and compared on the wire
+// (2026-10-13 berobox leg capture; source request file `direct-00003.req`, where direct =
+// the real CLI straight to the upstream). The real CLI's HTTP stack is reqwest/hyper, which
+// writes EVERY header name in lowercase — so this list is lowercase and, because
+// ordered_conn.go's rewriter writes the table's spelling verbatim, that lowercase spelling
+// IS the on-wire byte. Exactly 14 items, `host` / `content-length` closing the block.
+//
+// Consumed ONLY by the plaintext HTTP/1.1 path (ordered_conn.go). It is NOT
+// codexCanonicalHeaderOrder: that list is a DIFFERENT contract for a DIFFERENT layer and
+// drives fhttp's h2 HPACK field order (utls_transport.go), which must not change here.
+var codexHTTP1WireHeaderOrder = []string{
+	"x-codex-beta-features",
+	"x-codex-window-id",
+	"x-codex-turn-metadata",
+	"x-openai-internal-codex-responses-lite",
+	"x-client-request-id",
+	"session-id",
+	"thread-id",
+	"accept",
+	"content-type",
+	"authorization",
+	"originator",
+	"user-agent",
+	"host",
+	"content-length",
+}
+
 // http1WireHeaderOrderForTarget maps one HTTP/1.1 request target to its captured wire
 // order. Deliberately pure — no settings — so tests can pin the byte sequence.
 //
-// Only the Anthropic /v1/messages leg has a captured CLI baseline. The codex
-// /v1/responses leg is NOT covered by this change and returns nil, i.e. its block is
-// passed through byte-for-byte exactly as today.
+// Both captured CLI baselines are covered: the Anthropic /v1/messages leg (claude-cli) and
+// the OpenAI-Responses /v1/responses leg (codex CLI). Any other target returns nil, i.e. its
+// block is passed through byte-for-byte exactly as Go serialised it.
 func http1WireHeaderOrderForTarget(requestTarget string) []string {
-	if strings.Contains(strings.ToLower(requestTarget), "/messages") {
+	lower := strings.ToLower(requestTarget)
+	switch {
+	case strings.Contains(lower, "/responses"):
+		return codexHTTP1WireHeaderOrder
+	case strings.Contains(lower, "/messages"):
 		return claudeHTTP1WireHeaderOrder
+	default:
+		return nil
 	}
-	return nil
 }
 
 // http1RequestHeaderOrder is the production hook handed to every plaintext dial. The
