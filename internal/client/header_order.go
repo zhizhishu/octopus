@@ -12,6 +12,26 @@ import (
 // back to its linked-transport PseudoHeaderOrder (which would be nil here).
 var chromePseudoHeaderOrder = []string{":method", ":authority", ":scheme", ":path"}
 
+// codexH2PseudoHeaderOrder is the exact HTTP/2 pseudo-header field order a genuine
+// codex CLI (0.161.0; reqwest on the Rust h2 crate) emits on /v1/responses, captured
+// on the wire (2026-10-13 berobox h2 leg, capture direct-00004.headers.json). The
+// Rust h2 crate writes request pseudo-headers in this fixed sequence; Go's stdlib
+// h2 emits :authority,:method,:path,:scheme and fhttp's Chrome default is
+// :method,:authority,:scheme,:path — both differ from the genuine CLI.
+var codexH2PseudoHeaderOrder = []string{":method", ":scheme", ":authority", ":path"}
+
+// h2PseudoHeaderOrderForPath picks the genuine-CLI HTTP/2 pseudo-header order for an
+// upstream request by API path. Only the codex /v1/responses leg has a live-captured
+// CLI baseline (codexH2PseudoHeaderOrder); every other target keeps the Chrome order
+// (the historical default, no captured CLI baseline to replace it with yet).
+func h2PseudoHeaderOrderForPath(path string) []string {
+	p := strings.ToLower(path)
+	if strings.Contains(p, "/responses") {
+		return codexH2PseudoHeaderOrder
+	}
+	return chromePseudoHeaderOrder
+}
+
 // claudeCanonicalHeaderOrder is the exact regular-header order a genuine
 // claude-cli 2.1.198 emits, captured on the wire (2026-07-03). Lowercase: fhttp
 // lowercases each actual header key before matching against this list and before

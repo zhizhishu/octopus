@@ -94,10 +94,12 @@ func toFHTTPRequest(req *http.Request) (*fhttp.Request, error) {
 		copy(cp, vv)
 		h[k] = cp
 	}
-	// Always set the pseudo-header order so fhttp never falls back to its linked
-	// (nil) transport's PseudoHeaderOrder. Set the regular-header order only when we
-	// have a captured CLI baseline for this path.
-	h[fhttp.PHeaderOrderKey] = chromePseudoHeaderOrder
+	// Always set a pseudo-header order so fhttp never falls back to its linked
+	// (nil) transport's PseudoHeaderOrder. The codex /responses leg uses the
+	// live-captured genuine-CLI pseudo order; other targets keep the Chrome order.
+	// The regular-header order is set only when we have a captured CLI baseline
+	// for this path.
+	h[fhttp.PHeaderOrderKey] = h2PseudoHeaderOrderForPath(req.URL.Path)
 	if order := canonicalHeaderOrderForPath(req.URL.Path); order != nil {
 		h[fhttp.HeaderOrderKey] = order
 	}

@@ -104,8 +104,44 @@ func TestUTLSEmitsCanonicalHeaderOrder(t *testing.T) {
 	}
 }
 
+// TestUTLSEmitsCodexPseudoHeaderOrder pins the HTTP/2 pseudo-header field order for
+// the codex /responses leg to the live-captured genuine-CLI sequence
+// (:method,:scheme,:authority,:path — the Rust h2 crate order), and pins every other
+// target to the historical Chrome order. Go's stdlib h2 and fhttp's default both
+// differ, so this is a real regression guard.
+func TestUTLSEmitsCodexPseudoHeaderOrder(t *testing.T) {
+	cases := []struct {
+		name string
+		path string
+		want []string
+	}{
+		{"codex/responses", "https://upstream.example/v1/responses", codexH2PseudoHeaderOrder},
+		{"claude/messages", "https://upstream.example/v1/messages", chromePseudoHeaderOrder},
+		{"other/openai-chat", "https://upstream.example/v1/chat/completions", chromePseudoHeaderOrder},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, tc.path, nil)
+			req.Header = http.Header{}
+			req.Header.Set("content-type", "application/json")
+
+			got := roundTripCaptureRegularOrder(t, req)
+
+			pseudo := make([]string, 0, 4)
+			for _, h := range got {
+				if strings.HasPrefix(h, ":") {
+					pseudo = append(pseudo, h)
+				}
+			}
+			if !reflect.DeepEqual(pseudo, tc.want) {
+				t.Fatalf("HEADERS-frame pseudo-header order mismatch:\n got=%v\nwant=%v\n(full captured=%v)", pseudo, tc.want, got)
+			}
+		})
+	}
+}
+
 // roundTripCaptureRegularOrder runs req through fhttp2 over a loopback h2 connection
-// and returns the ordered list of REGULAR (non-pseudo) header field names as the
+// and returns the ordered list of ALL header field names (pseudo + regular) as the
 // server received them in the HEADERS frame.
 func roundTripCaptureRegularOrder(t *testing.T, req *http.Request) []string {
 	t.Helper()
@@ -191,9 +227,7 @@ func h2CaptureServer(ln net.Listener, orderCh chan<- []string) {
 			responded = true
 			order := make([]string, 0, len(mf.Fields))
 			for _, hf := range mf.Fields {
-				if !strings.HasPrefix(hf.Name, ":") {
-					order = append(order, hf.Name)
-				}
+				order = append(order, hf.Name)
 			}
 			orderCh <- order
 			var buf bytes.Buffer
