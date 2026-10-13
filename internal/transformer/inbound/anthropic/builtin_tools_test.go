@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -110,4 +111,74 @@ func TestStandardToolMarshalOmitsType(t *testing.T) {
 	if _, ok := obj["input_schema"]; !ok {
 		t.Fatalf("expected input_schema field, got %s", out)
 	}
+}
+
+// jsonObjectKeyOrder returns the top-level keys of a JSON object in the order
+// they appear on the wire (encoding/json emits struct fields in declaration
+// order, so this is exactly the byte order a client would observe).
+func jsonObjectKeyOrder(t *testing.T, data []byte) []string {
+	t.Helper()
+	dec := json.NewDecoder(bytes.NewReader(data))
+	open, err := dec.Token()
+	if err != nil {
+		t.Fatalf("decode opening token: %v", err)
+	}
+	if d, ok := open.(json.Delim); !ok || d != '{' {
+		t.Fatalf("expected JSON object, got %v (%s)", open, data)
+	}
+	var keys []string
+	for dec.More() {
+		kt, err := dec.Token()
+		if err != nil {
+			t.Fatalf("decode key token: %v", err)
+		}
+		key, ok := kt.(string)
+		if !ok {
+			t.Fatalf("expected string key, got %v", kt)
+		}
+		keys = append(keys, key)
+		var value json.RawMessage
+		if err := dec.Decode(&value); err != nil {
+			t.Fatalf("decode value for %q: %v", key, err)
+		}
+	}
+	return keys
+}
+
+// TestMessageContentBlockJSONKeyOrder pins the on-wire key order of
+// MessageContentBlock. A genuine claude-cli emits a tool_result block as
+// tool_use_id, type, content (captured 2026-10-10, round 3/6/7/9); encoding/json
+// serialises struct fields in declaration order, so the struct must declare
+// ToolUseID, then Type, then Content.
+func TestMessageContentBlockJSONKeyOrder(t *testing.T) {
+	t.Run("tool_result", func(t *testing.T) {
+		toolUseID := "toolu_test_1"
+		ok := "ok"
+		block := MessageContentBlock{
+			ToolUseID: &toolUseID,
+			Type:      "tool_result",
+			Content:   &MessageContent{Content: &ok},
+		}
+		out, err := json.Marshal(block)
+		if err != nil {
+			t.Fatalf("marshal error: %v", err)
+		}
+		got := jsonObjectKeyOrder(t, out)
+		if len(got) != 3 || got[0] != "tool_use_id" || got[1] != "type" || got[2] != "content" {
+			t.Fatalf("tool_result key order = %v, want [tool_use_id type content] (raw: %s)", got, out)
+		}
+	})
+
+	t.Run("text", func(t *testing.T) {
+		hi := "hi"
+		block := MessageContentBlock{Type: "text", Text: &hi}
+		out, err := json.Marshal(block)
+		if err != nil {
+			t.Fatalf("marshal error: %v", err)
+		}
+		got := jsonObjectKeyOrder(t, out)
+		if len(got) != 2 || got[0] != "type" || got[1] != "text" {
+			t.Fatalf("text key order = %v, want [type text] (raw: %s)", got, out)
+		}
+	})
 }
