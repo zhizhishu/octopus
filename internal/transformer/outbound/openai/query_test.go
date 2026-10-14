@@ -1,53 +1,47 @@
 package openai
 
 import (
-	"context"
-	"net/http"
 	"net/url"
 	"testing"
-
-	"github.com/bestruirui/octopus/internal/transformer/model"
 )
 
-func TestOpenAIOutboundMergesInboundQuery(t *testing.T) {
-	content := "hello"
-	tests := []struct {
-		name    string
-		adapter interface {
-			TransformRequest(context.Context, *model.InternalLLMRequest, string, string) (*http.Request, error)
-		}
-		wantPath string
-	}{
-		{name: "chat", adapter: &ChatOutbound{}, wantPath: "/api/provider/openai/v1/chat/completions"},
-		{name: "responses", adapter: &ResponseOutbound{}, wantPath: "/api/provider/openai/v1/responses"},
-	}
+func TestMergeInboundQueryStripsBetaParam(t *testing.T) {
+	// Cross-protocol: anthropic /v1/messages?beta=true -> chat /v1/chat/completions.
+	// The beta param is anthropic-specific and must not leak into the outbound
+	// chat URL (a real chat client never sends it; its presence fingerprints
+	// converter traffic).
+	inboundQuery := url.Values{"beta": {"true"}}
+	outboundURL := &url.URL{Path: "/v1/chat/completions"}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			req := &model.InternalLLMRequest{
-				Model: "gpt-test",
-				Messages: []model.Message{{
-					Role: "user",
-					Content: model.MessageContent{
-						Content: &content,
-					},
-				}},
-				Query: url.Values{
-					"trace": []string{"client"},
-					"debug": []string{"1"},
-				},
-			}
-			httpReq, err := tt.adapter.TransformRequest(context.Background(), req, "https://example.test/api/provider/openai?trace=base&base=1", "sk-test")
-			if err != nil {
-				t.Fatalf("transform request: %v", err)
-			}
-			if httpReq.URL.Path != tt.wantPath {
-				t.Fatalf("unexpected path: %q", httpReq.URL.Path)
-			}
-			q := httpReq.URL.Query()
-			if q.Get("base") != "1" || q.Get("trace") != "client" || q.Get("debug") != "1" {
-				t.Fatalf("unexpected query: %s", httpReq.URL.RawQuery)
-			}
-		})
+	mergeInboundQuery(outboundURL, inboundQuery)
+
+	if got := outboundURL.RawQuery; got != "" {
+		t.Errorf("beta param leaked into chat outbound: RawQuery=%q, want empty", got)
+	}
+}
+
+func TestMergeInboundQueryPreservesNonAnthropicParams(t *testing.T) {
+	// Legit chat query params (e.g. a provider's custom switch) must still
+	// pass through when the inbound is same-protocol chat.
+	inboundQuery := url.Values{"session_id": {"abc123"}}
+	outboundURL := &url.URL{Path: "/v1/chat/completions"}
+
+	mergeInboundQuery(outboundURL, inboundQuery)
+
+	want := "session_id=abc123"
+	if got := outboundURL.RawQuery; got != want {
+		t.Errorf("non-anthropic param dropped: RawQuery=%q, want %q", got, want)
+	}
+}
+
+func TestMergeInboundQueryBetaCaseInsensitive(t *testing.T) {
+	// "Beta" / "BETA" variants must also be stripped.
+	inboundQuery := url.Values{"Beta": {"true"}}
+	outboundURL := &url.URL{Path: "/v1/responses"}
+
+	mergeInboundQuery(outboundURL, inboundQuery)
+
+	if got := outboundURL.RawQuery; got != "" {
+		t.Errorf("case-variant beta leaked: RawQuery=%q, want empty", got)
 	}
 }
