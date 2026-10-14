@@ -4,20 +4,25 @@ import "strings"
 
 const AnthropicOneMillionBeta = "context-1m-2025-08-07"
 
-// Beta sets mirror the real Claude CLI (claude-cli/2.1.198) anthropic-beta header
-// captured on the wire from a genuine `claude -p` request (flagship model, e.g.
-// claude-opus-4-8 / claude-sonnet-5); the order matches the wire exactly so the relay
-// shape checks see an authentic Claude Code request. 2.1.198 DROPPED advisor-tool and
-// structured-outputs from the declared set that 2.1.168 carried — sending either is a
-// stale-client tell — and no longer sends thinking-token-count/mid-conversation-system
-// as optional: the flagship set is these seven. NOTE: real 2.1.198 varies this set by
-// model AND request type (haiku/older-sonnet send a reduced set with claude-code-20250219
-// last; a title/structured-output probe drops claude-code and carries structured-outputs).
-// A 2026-07-02 wire A/B against the relay DISPROVED the earlier assumption that its shape
-// check is not per-model strict: a fixed flagship 7-set on a haiku request is rejected.
-// So this canonical set is now used ONLY as the synthesis fallback for non-claude
-// downstreams / the channel test; a genuine claude-cli's own per-model beta is preserved
-// verbatim — see BuildClaudeCodeBetaHeader.
+// Beta sets mirror the real upstream Claude Code CLI (claude-cli/2.1.296)
+// anthropic-beta header captured on the wire from the genuine flagship request
+// (2026-10-14 packet capture, verified: UA claude-cli/2.1.296, package 0.128.0
+// unchanged, runtime v26.3.0 unchanged); the order matches the wire exactly so the
+// relay shape checks see an authentic Claude Code request. The flagship set is these
+// eleven, in wire order, and effort-2025-11-24 sits LAST. NOTE: the real 2.1.296 CLI
+// varies this set by model AND request type (haiku/older-sonnet send a reduced set
+// with claude-code-20250219 near the end; a title/structured-output probe drops
+// claude-code and carries structured-outputs). A 2026-07-02 wire A/B against the relay
+// DISPROVED the earlier assumption that its shape check is not per-model strict: a
+// fixed flagship set on a haiku request is rejected. So this canonical set is used
+// ONLY as the synthesis fallback for non-claude downstreams / the channel test; a
+// genuine claude-cli's own per-model beta is preserved verbatim — see
+// BuildClaudeCodeBetaHeader.
+//
+// Source of truth retired: the earlier 2026-10-10 golden-sample set (16 real-config CLI
+// direct captures) predated the 2.1.296 flagship wire set — it still carried
+// dangerous-tool-use-2026-09-03 / afk-mode-2026-01-31 and omitted
+// inline-tools-2026-09-15 / advisor-tool-2026-03-01, so it is no longer authoritative.
 var anthropicClaudeCodeBaseBetas = []string{
 	"claude-code-20250219",
 	"interleaved-thinking-2025-05-14",
@@ -25,16 +30,16 @@ var anthropicClaudeCodeBaseBetas = []string{
 	"context-management-2025-06-27",
 	"prompt-caching-scope-2026-01-05",
 	"mid-conversation-system-2026-04-07",
-	// 2026-10-10 黄金样本(16 份真 CLI 直连抓包)实测的成员, 按线上顺序补齐:
+	// 2.1.296 旗舰实包线上顺序(2026-10-14 抓包验证), 逐项按序补齐:
 	"per-turn-control-2026-07-01",
 	"mid-conversation-tool-changes-2026-07-01",
+	"inline-tools-2026-09-15",
+	"advisor-tool-2026-03-01",
 	"effort-2025-11-24",
-	"dangerous-tool-use-2026-09-03",
-	"afk-mode-2026-01-31",
 }
 
 // One-million variant inserts context-1m-2025-08-07 in the exact wire position the real
-// 2.1.198 CLI uses: position 2, immediately after claude-code-20250219 (captured from a
+// 2.1.296 CLI uses: position 2, immediately after claude-code-20250219 (captured from a
 // genuine claude-opus-4-8[1m] request), NOT after mid-conversation-system as 2.1.168 did.
 var anthropicClaudeCodeOneMillionBetas = []string{
 	"claude-code-20250219",
@@ -44,12 +49,12 @@ var anthropicClaudeCodeOneMillionBetas = []string{
 	"context-management-2025-06-27",
 	"prompt-caching-scope-2026-01-05",
 	"mid-conversation-system-2026-04-07",
-	// 2026-10-10 黄金样本(16 份真 CLI 直连抓包)实测的成员, 按线上顺序补齐:
+	// 2.1.296 旗舰实包线上顺序(2026-10-14 抓包验证), 逐项按序补齐:
 	"per-turn-control-2026-07-01",
 	"mid-conversation-tool-changes-2026-07-01",
+	"inline-tools-2026-09-15",
+	"advisor-tool-2026-03-01",
 	"effort-2025-11-24",
-	"dangerous-tool-use-2026-09-03",
-	"afk-mode-2026-01-31",
 }
 
 // Haiku (and any model the real 2.1.198 CLI sends a reduced anthropic-beta set for)
