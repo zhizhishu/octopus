@@ -489,10 +489,18 @@ func TestRelayCopyHeadersAppliesGenericUAToGeminiChannel(t *testing.T) {
 }
 
 func TestRelayCopyHeadersAppliesCodexDefaultsWhenResponsesUseChatChannel(t *testing.T) {
+	// 2026-10-14 (user decision, "channel determines shape"): a Chat channel's
+	// outbound is ALWAYS the generic chat identity. The old behavior applied
+	// codex CLI headers when a codex (Responses) client hit a Chat channel,
+	// leaking originator/thread-id/x-codex-* upstream. Now those are stripped
+	// and the generic (CherryStudio) UA is applied instead.
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 	c.Request.Header.Set("User-Agent", "filtered-codex")
+	c.Request.Header.Set("Originator", "codex_exec")
+	c.Request.Header.Set("Thread-Id", "test-thread-123")
+	c.Request.Header.Set("X-Codex-Beta-Features", "remote_compaction_v2")
 
 	upstreamReq := httptest.NewRequest(http.MethodPost, "https://upstream.example/v1/chat/completions", nil)
 	ra := &relayAttempt{
@@ -502,11 +510,17 @@ func TestRelayCopyHeadersAppliesCodexDefaultsWhenResponsesUseChatChannel(t *test
 
 	ra.copyHeaders(upstreamReq)
 
-	if got := upstreamReq.Header.Get("User-Agent"); got != defaultCodexUserAgent {
-		t.Fatalf("codex default user-agent = %q, want %q", got, defaultCodexUserAgent)
+	if got := upstreamReq.Header.Get("User-Agent"); got != dbmodel.DefaultGenericUA {
+		t.Fatalf("chat channel user-agent = %q, want generic %q", got, dbmodel.DefaultGenericUA)
 	}
-	if got := upstreamReq.Header.Get("X-Codex-Beta-Features"); got != defaultCodexBetaFeatures {
-		t.Fatalf("codex beta features = %q, want %q", got, defaultCodexBetaFeatures)
+	if got := upstreamReq.Header.Get("X-Codex-Beta-Features"); got != "" {
+		t.Fatalf("codex beta features leaked to chat outbound: %q, want empty", got)
+	}
+	if got := upstreamReq.Header.Get("Originator"); got != "" {
+		t.Fatalf("originator leaked to chat outbound: %q, want empty", got)
+	}
+	if got := upstreamReq.Header.Get("Thread-Id"); got != "" {
+		t.Fatalf("thread-id leaked to chat outbound: %q, want empty", got)
 	}
 }
 

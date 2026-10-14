@@ -47,22 +47,24 @@ type FingerprintProfile struct {
 // DefaultGenericUA is the built-in fallback User-Agent for non claude/codex channels
 // (Gemini / Volcengine / plain OpenAI-chat) when no profile pins a GenericUA. Without
 // it Go's transport emits "Go-http-client/1.1", which flags the caller as a bot/proxy.
-// A stable, ordinary Chrome-on-Linux (X11 x86_64) desktop UA blends in instead. It is
-// downstream-of-nothing: these channels are NOT claude/codex, so this never touches the
-// codex/claude CLI fingerprint.
 //
-// This is ALSO the "Linux · Debian" built-in profile's generic UA and the value a
-// ProfileID=0 ("follow global") channel resolves to — so Debian and the global default
-// present ONE identical non-CLI UA (Debian is the default preset new channels get).
-const DefaultGenericUA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+// 2026-10-14 (user decision): replaced the previous bare-Chrome identity with a
+// CherryStudio desktop-client identity. A plain Chrome UA on a chat API endpoint is
+// itself unusual (browsers do not call /v1/chat/completions directly); CherryStudio
+// is a real, widely-used multi-provider desktop chat client whose Electron UA is
+// exactly what a genuine chat-API caller looks like. Wire source: CherryStudio
+// GitHub issue #10209 shows the app's default UA verbatim.
+const DefaultGenericUA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) CherryStudio/1.5.11 Chrome/138.0.7204.243 Electron/37.4.0 Safari/537.36"
 
 // GenericUAUbuntu is the "Linux · Ubuntu" built-in profile's generic UA — the second,
-// selectable non-CLI identity. It is a different, equally ordinary Linux client (Firefox
+// selectable non-CLI identity. A distinct CherryStudio build on Ubuntu (different
+// app + Chrome versions) so the two profiles present two unrelated devices.
+const GenericUAUbuntu = "Mozilla/5.0 (X11; Ubuntu; x86_64) AppleWebKit/537.36 (KHTML, like Gecko) CherryStudio/1.6.0 Chrome/139.0.7258.138 Electron/38.2.0 Safari/537.36"
+
 // on X11 x86_64) so the two built-in profiles read as two UNCORRELATED machines on
 // non-CLI channels too, mirroring their already-distinct codex distro token and device
 // seed. Picking the Ubuntu profile on a channel's advanced settings switches its non-CLI
 // UA to this; it likewise never touches any claude/codex CLI fingerprint.
-const GenericUAUbuntu = "Mozilla/5.0 (X11; Linux x86_64; rv:133.0) Gecko/20100101 Firefox/133.0"
 
 // GenericUAMacOS is the "macOS · Chrome" built-in profile's generic UA — a third,
 // selectable non-CLI identity for operators whose real machine is a Mac. The string

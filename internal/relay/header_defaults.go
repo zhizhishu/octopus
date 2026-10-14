@@ -207,11 +207,17 @@ func applyChannelWireHeaderDefaults(req *http.Request, options ChannelWireHeader
 	case outbound.OutboundTypeOpenAIResponse:
 		applyCodexHeaderDefaultsWithFingerprint(req, options.InternalRequest, fingerprint, options.InboundUserAgent, options.InboundOriginator)
 	case outbound.OutboundTypeOpenAIChat, outbound.OutboundTypeCustomOpenAIChat:
+		// 2026-10-14 (user decision, "channel determines shape"): a Chat channel's
+		// outbound is ALWAYS the generic chat identity, regardless of which client
+		// protocol came in. The previous branch applied codex CLI headers when a
+		// codex (Responses) client hit a Chat channel — leaking originator /
+		// thread-id / x-codex-* upstream and fingerprinting the request as
+		// converter traffic. A genuine chat client never sends those headers.
+		// Strip any CLI headers copyHeaders forwarded, then apply the generic UA.
 		if options.InboundType == inbound.InboundTypeOpenAIResponse {
-			applyCodexHeaderDefaultsWithFingerprint(req, options.InternalRequest, fingerprint, options.InboundUserAgent, options.InboundOriginator)
-		} else {
-			applyGenericHeaderDefaultsForChannel(req, channel)
+			stripCodexClientHeaders(req.Header)
 		}
+		applyGenericHeaderDefaultsForChannel(req, channel)
 	default:
 		// Non claude/codex channels (Gemini/Volcengine/plain OpenAI-chat) get no
 		// fingerprint UA today. A selected profile may pin a unified GenericUA so
@@ -228,8 +234,12 @@ func shouldUseCodexHeaderDefaults(channel *dbmodel.Channel, inboundType inbound.
 	if channel.Type == outbound.OutboundTypeOpenAIResponse {
 		return true
 	}
-	return inboundType == inbound.InboundTypeOpenAIResponse &&
-		(channel.Type == outbound.OutboundTypeOpenAIChat || channel.Type == outbound.OutboundTypeCustomOpenAIChat)
+	// 2026-10-14 (user decision, "channel determines shape"): Chat channels no
+	// longer borrow the codex identity when a codex (Responses) client calls in.
+	// The old return here applied codex UA/Originator to a Chat channel's outbound,
+	// fingerprinting the request as codex-converter traffic on a chat endpoint.
+	// A Chat channel's outbound is always the generic chat identity.
+	return false
 }
 
 // applyGenericHeaderDefaults sets a unified User-Agent on channels that have no
@@ -265,6 +275,7 @@ func genericUAForChannel(channel *dbmodel.Channel) string {
 // Additive to shouldForwardClientHeader, which already drops the session/trace variants.
 func stripCodexClientHeaders(header http.Header) {
 	header.Del("Originator")
+	header.Del("Thread-Id")
 	header.Del("X-Codex-Beta-Features")
 	header.Del("X-Codex-Turn-Metadata")
 	header.Del("X-Codex-Window-Id")
