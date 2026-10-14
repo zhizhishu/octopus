@@ -92,6 +92,7 @@ export interface ChannelFormData {
     custom_header: Channel['custom_header'];
     cloak_mode: string;
     cloak_profile_id: number;
+    cloak_shape: string;
     channel_proxy: string;
     param_override: string;
     system_prompt_override: string;
@@ -136,6 +137,14 @@ const CHANNEL_BASE_URL_SUFFIXES: Partial<Record<ChannelType, string[]>> = {
 
 function isCustomOpenAIChat(type: ChannelType) {
     return type === ChannelType.CustomOpenAIChat;
+}
+
+// Chat-family channels (OpenAI Chat + Custom OpenAI Chat) are the only ones that
+// accept a cloak shape: their body stays chat format while the outbound identity
+// can be dressed as claude/codex. Anthropic/Responses channels' shape IS their
+// protocol, so the selector is not offered for them.
+function isChatShapeChannel(type: ChannelType) {
+    return type === ChannelType.OpenAIChat || type === ChannelType.CustomOpenAIChat;
 }
 
 function stripKnownEndpointSuffix(type: ChannelType, pathname: string) {
@@ -392,7 +401,7 @@ export function ChannelForm({
         proxy: formData.proxy,
         auto_sync: formData.auto_sync,
         custom_header: formData.custom_header?.filter((header) => header.header_key.trim()) || [],
-        cloak: { mode: formData.cloak_mode || 'auto', profile_id: formData.cloak_profile_id ?? 0 },
+        cloak: { mode: formData.cloak_mode || 'auto', profile_id: formData.cloak_profile_id ?? 0, shape: formData.cloak_shape || '' },
         channel_proxy: formData.channel_proxy?.trim() || null,
         openai_chat_path: formData.openai_chat_path.trim(),
         openai_models_path: formData.openai_models_path.trim(),
@@ -1394,12 +1403,16 @@ export function ChannelForm({
                             {/* Client-fingerprint group: mode + profile under one titled card so the
                                 section reads as one coherent unit instead of two stray selects. */}
                             <div className="space-y-3 rounded-xl border border-border bg-background/50 p-4">
-                                {(formData.type === ChannelType.Anthropic || formData.type === ChannelType.OpenAIResponse) && (
+                                {(formData.type === ChannelType.Anthropic || formData.type === ChannelType.OpenAIResponse || isChatShapeChannel(formData.type)) && (
                                     <>
                                         <div className="flex items-center gap-2">
                                             <Fingerprint className="size-4 shrink-0 text-muted-foreground" aria-hidden />
                                             <span className="text-sm font-medium text-card-foreground">
-                                                {formData.type === ChannelType.Anthropic ? t('claudeSimulation') : t('codexSimulation')}
+                                                {formData.type === ChannelType.Anthropic
+                                                    ? t('claudeSimulation')
+                                                    : isChatShapeChannel(formData.type)
+                                                        ? t('cloakMode')
+                                                        : t('codexSimulation')}
                                             </span>
                                         </div>
                                         <p className="text-xs leading-relaxed text-muted-foreground">{t('cloakModeHint')}</p>
@@ -1417,6 +1430,27 @@ export function ChannelForm({
                                                 <span>{(formData.cloak_mode || 'auto') !== 'never' ? t('cloakModeOn') : t('cloakModeOff')}</span>
                                             </label>
                                         </div>
+                                        {isChatShapeChannel(formData.type) && (
+                                            <div className="space-y-1.5">
+                                                <label htmlFor={`${idPrefix}-cloak-shape`} className="text-xs font-medium text-muted-foreground">
+                                                    {t('cloakShape')}
+                                                </label>
+                                                <Select
+                                                    value={formData.cloak_shape || 'generic'}
+                                                    onValueChange={(value) => onFormDataChange({ ...formData, cloak_shape: value === 'generic' ? '' : value })}
+                                                >
+                                                    <SelectTrigger id={`${idPrefix}-cloak-shape`} className="rounded-xl w-full border border-border px-4 py-2 text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                                                        <SelectValue />
+                                                    </SelectTrigger>
+                                                    <SelectContent className="rounded-xl">
+                                                        <SelectItem className="rounded-xl" value="generic">{t('cloakShapeGeneric')}</SelectItem>
+                                                        <SelectItem className="rounded-xl" value="claude">{t('cloakShapeClaude')}</SelectItem>
+                                                        <SelectItem className="rounded-xl" value="codex">{t('cloakShapeCodex')}</SelectItem>
+                                                    </SelectContent>
+                                                </Select>
+                                                <p className="text-xs leading-relaxed text-muted-foreground">{t('cloakShapeHint')}</p>
+                                            </div>
+                                        )}
                                     </>
                                 )}
                                 <div className="space-y-1.5">

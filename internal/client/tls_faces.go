@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"strings"
 
 	utls "github.com/refraction-networking/utls"
@@ -203,6 +204,40 @@ func clientHelloSpecForPath(path string) (spec *utls.ClientHelloSpec, family str
 	case strings.Contains(p, "/responses"):
 		return codexRustlsClientHelloSpec(), tlsFaceCodex
 	case strings.Contains(p, "/messages"):
+		return claudeCodeNodeClientHelloSpec(), tlsFaceClaude
+	default:
+		return nil, tlsFaceChrome
+	}
+}
+
+// tlsFaceOverrideKeyType keys the per-request TLS face override in the request
+// context. The relay sets it when a Chat channel's cloak shape explicitly
+// dresses the outbound as claude/codex, so the ClientHello face follows the
+// header identity instead of the URL path.
+type tlsFaceOverrideKeyType struct{}
+
+var tlsFaceOverrideKey tlsFaceOverrideKeyType
+
+// WithTLSFace pins the CLI-family ClientHello face for a request regardless of
+// its URL path. Used by the relay when a Chat channel's cloak shape explicitly
+// dresses the outbound as claude/codex; an empty family clears the override.
+func WithTLSFace(ctx context.Context, family string) context.Context {
+	return context.WithValue(ctx, tlsFaceOverrideKey, family)
+}
+
+func tlsFaceFromContext(ctx context.Context) string {
+	v, _ := ctx.Value(tlsFaceOverrideKey).(string)
+	return v
+}
+
+// clientHelloSpecForFamily maps an explicit face family to its ClientHello spec.
+// An unknown/empty family (or "chrome") keeps the pre-existing Chrome default, so
+// an unknown override value can never select an undefined face.
+func clientHelloSpecForFamily(family string) (spec *utls.ClientHelloSpec, fam string) {
+	switch family {
+	case tlsFaceCodex:
+		return codexRustlsClientHelloSpec(), tlsFaceCodex
+	case tlsFaceClaude:
 		return claudeCodeNodeClientHelloSpec(), tlsFaceClaude
 	default:
 		return nil, tlsFaceChrome

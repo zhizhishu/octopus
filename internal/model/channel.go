@@ -112,6 +112,13 @@ type CustomHeader struct {
 
 type ChannelCloak struct {
 	Mode string `json:"mode,omitempty"`
+	// Shape overrides the outbound identity family for Chat channels only.
+	// "" (zero value) = generic chat identity (byte-identical to today's behaviour).
+	// "claude" = dress the chat outbound in the Claude CLI header set + claude TLS face.
+	// "codex" = dress the chat outbound in the codex CLI header set + codex TLS face.
+	// Ignored on Anthropic/Responses channels (their shape IS their protocol).
+	// Any other value fails safe to generic.
+	Shape string `json:"shape,omitempty"`
 	// ProfileID selects which fingerprint profile this channel cloaks as. 0 (the
 	// zero value every existing channel deserialises to) means "use the global
 	// default single fingerprint" — i.e. the per-instance seed + global header

@@ -311,6 +311,61 @@ func TestRunAppliesCodexDefaultsWhenResponsesUseChatChannel(t *testing.T) {
 	}
 }
 
+// TestRunAppliesCodexIdentityWhenChatChannelShapeCodex pins the new channel-level cloak
+// shape on the model-test path: a Chat channel whose cloak shape is "codex" dresses its
+// outbound in the codex CLI identity (codex_exec UA + paired Originator), even though an
+// empty/generic shape keeps the CherryStudio generic UA (see the sibling test above).
+func TestRunAppliesCodexIdentityWhenChatChannelShapeCodex(t *testing.T) {
+	ctx := setupModelTestDB(t)
+
+	var seenUserAgent atomic.Value
+	var seenOriginator atomic.Value
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenUserAgent.Store(r.Header.Get("User-Agent"))
+		seenOriginator.Store(r.Header.Get("Originator"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"chatcmpl-test",
+			"object":"chat.completion",
+			"created":123,
+			"model":"gpt-5.5",
+			"choices":[{"index":0,"message":{"role":"assistant","content":"OK"},"finish_reason":"stop"}],
+			"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}
+		}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	channel := dbmodel.Channel{
+		Name:     "chat-shape-codex",
+		Type:     outbound.OutboundTypeOpenAIChat,
+		Enabled:  false,
+		Cloak:    dbmodel.ChannelCloak{Shape: "codex"},
+		BaseUrls: []dbmodel.BaseUrl{{URL: upstream.URL}},
+		Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "test-key"}},
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+
+	response, err := Run(ctx, dbmodel.ModelTestRequest{
+		Model:     "gpt-5.5",
+		ChannelID: channel.ID,
+		Endpoint:  "openai_responses",
+	})
+	if err != nil {
+		t.Fatalf("run model test: %v", err)
+	}
+	if response.Summary.Success != 1 {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+	if got, _ := seenUserAgent.Load().(string); got != defaultCodexUserAgent {
+		t.Fatalf("chat shape=codex user-agent = %q, want %q", got, defaultCodexUserAgent)
+	}
+	if got, _ := seenOriginator.Load().(string); got == "" {
+		t.Fatalf("chat shape=codex must carry a codex Originator (got empty)")
+	}
+}
+
 func TestPrepareCodexModelTestRequestUsesStableDeviceAcrossSessions(t *testing.T) {
 	first := &transformermodel.InternalLLMRequest{Model: "gpt-5.5"}
 	second := &transformermodel.InternalLLMRequest{Model: "gpt-5.5"}

@@ -52,6 +52,37 @@ func TestClientHelloSpecRouting(t *testing.T) {
 	}
 }
 
+// TestWithTLSFaceOverrideSelectsFamilySpec pins the per-request TLS face override the
+// relay uses for a Chat channel's cloak shape: WithTLSFace("claude") resolves to the Claude
+// Node ClientHello spec, an unknown/empty family keeps the Chrome default (nil spec), so a
+// stray override value can never select an undefined face.
+func TestWithTLSFaceOverrideSelectsFamilySpec(t *testing.T) {
+	ctx := WithTLSFace(context.Background(), "claude")
+	if got := tlsFaceFromContext(ctx); got != "claude" {
+		t.Fatalf("tlsFaceFromContext = %q, want claude", got)
+	}
+	spec, family := clientHelloSpecForFamily(tlsFaceFromContext(ctx))
+	if family != tlsFaceClaude {
+		t.Fatalf("family = %q, want %q", family, tlsFaceClaude)
+	}
+	if spec == nil {
+		t.Fatalf("claude override must return a non-nil ClientHello spec")
+	}
+
+	ctxCodex := WithTLSFace(context.Background(), "codex")
+	codexSpec, codexFamily := clientHelloSpecForFamily(tlsFaceFromContext(ctxCodex))
+	if codexFamily != tlsFaceCodex || codexSpec == nil {
+		t.Fatalf("codex override: family = %q, spec nil = %v", codexFamily, codexSpec == nil)
+	}
+
+	// No override (empty family) keeps the Chrome default: family=chrome, spec=nil
+	// (HelloChrome_Auto is the pre-existing non-CLI face).
+	chromeSpec, chromeFamily := clientHelloSpecForFamily(tlsFaceFromContext(context.Background()))
+	if chromeFamily != tlsFaceChrome || chromeSpec != nil {
+		t.Fatalf("empty override must keep the chrome face, got family = %q, spec nil = %v", chromeFamily, chromeSpec == nil)
+	}
+}
+
 // Wire expectations transcribed from the live captures (2026-10-13,
 // _artifacts/berobox/codexshape-h2/captures/). These are the regression guard:
 // if the specs or uTLS emission drift, the test fails with the actual wire

@@ -208,22 +208,69 @@ func applyChannelWireHeaderDefaults(req *http.Request, options ChannelWireHeader
 		applyCodexHeaderDefaultsWithFingerprint(req, options.InternalRequest, fingerprint, options.InboundUserAgent, options.InboundOriginator)
 	case outbound.OutboundTypeOpenAIChat, outbound.OutboundTypeCustomOpenAIChat:
 		// 2026-10-14 (user decision, "channel determines shape"): a Chat channel's
-		// outbound is ALWAYS the generic chat identity, regardless of which client
-		// protocol came in. The previous branch applied codex CLI headers when a
-		// codex (Responses) client hit a Chat channel — leaking originator /
-		// thread-id / x-codex-* upstream and fingerprinting the request as
-		// converter traffic. A genuine chat client never sends those headers.
-		// Strip any CLI headers copyHeaders forwarded, then apply the generic UA.
-		if options.InboundType == inbound.InboundTypeOpenAIResponse {
-			stripCodexClientHeaders(req.Header)
+		// outbound defaults to the generic chat identity, regardless of which client
+		// protocol came in. The codex CLI headers that the old branch applied when a
+		// codex (Responses) client hit a Chat channel leaked originator / thread-id /
+		// x-codex-* upstream and fingerprinted the request as converter traffic.
+		//
+		// A channel-level cloak shape may now explicitly opt INTO a CLI identity while
+		// keeping the chat body/format unchanged: shape "claude" dresses the outbound
+		// in the Claude CLI header set, shape "codex" in the codex CLI header set. Any
+		// other value (including the "" zero value) keeps the generic identity,
+		// byte-for-byte identical to the pre-shape behaviour.
+		switch chatChannelShape(channel) {
+		case "claude":
+			// Operator explicitly dresses the chat outbound as a claude CLI. Strip any
+			// codex headers a codex inbound forwarded first — a claude-dressed request
+			// must not carry codex identity bytes.
+			if options.InboundType == inbound.InboundTypeOpenAIResponse {
+				stripCodexClientHeaders(req.Header)
+			}
+			applyClaudeHeaderDefaultsWithFingerprint(req, options.InternalRequest, fingerprint, options.ClaudeSessionID)
+		case "codex":
+			applyCodexHeaderDefaultsWithFingerprint(req, options.InternalRequest, fingerprint, options.InboundUserAgent, options.InboundOriginator)
+		default: // "" or unknown: generic chat identity, byte-identical to pre-shape behaviour
+			if options.InboundType == inbound.InboundTypeOpenAIResponse {
+				stripCodexClientHeaders(req.Header)
+			}
+			applyGenericHeaderDefaultsForChannel(req, channel)
 		}
-		applyGenericHeaderDefaultsForChannel(req, channel)
 	default:
 		// Non claude/codex channels (Gemini/Volcengine/plain OpenAI-chat) get no
 		// fingerprint UA today. A selected profile may pin a unified GenericUA so
 		// these channels present a consistent client identity too; with no profile
 		// (or an empty GenericUA) this is a no-op, preserving current behaviour.
 		applyGenericHeaderDefaultsForChannel(req, channel)
+	}
+}
+
+// chatChannelShape normalizes a Chat channel's cloak shape selector into the
+// canonical lowercase form. Returns "claude", "codex", or "" for anything else
+// (including the zero value), so a stray/foreign value fails safe to the generic
+// chat identity instead of producing an undefined outbound shape.
+func chatChannelShape(channel *dbmodel.Channel) string {
+	if channel == nil {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(channel.Cloak.Shape))
+}
+
+// chatChannelTLSFace maps a Chat channel's cloak shape to the TLS face family the
+// outbound should present. Empty string = no override (path-based default).
+func chatChannelTLSFace(channel *dbmodel.Channel) string {
+	if channel == nil || channel.Type != outbound.OutboundTypeOpenAIChat && channel.Type != outbound.OutboundTypeCustomOpenAIChat {
+		return ""
+	}
+	if !shouldApplyChannelCloak(channel.Cloak) {
+		return ""
+	}
+	switch chatChannelShape(channel) {
+	case "claude":
+		return "claude"
+	case "codex":
+		return "codex"
+	default:
+		return ""
 	}
 }
 

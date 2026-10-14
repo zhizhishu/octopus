@@ -74,6 +74,9 @@ func (t *utlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 		return t.fallback.RoundTrip(req)
 	}
 	spec, family := clientHelloSpecForPath(req.URL.Path)
+	if override := tlsFaceFromContext(req.Context()); override != "" {
+		spec, family = clientHelloSpecForFamily(override)
+	}
 	host := req.URL.Hostname()
 	port := req.URL.Port()
 	if port == "" {

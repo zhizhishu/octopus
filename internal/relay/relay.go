@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/bestruirui/octopus/internal/client"
 	"github.com/bestruirui/octopus/internal/helper"
 	dbmodel "github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/op"
@@ -2223,6 +2224,12 @@ func lowercaseAnthropicCLIHeaderNames(h http.Header) {
 
 func (ra *relayAttempt) sendRequest(req *http.Request) (*http.Response, error) {
 	lowercaseAnthropicCLIHeaderNames(req.Header)
+	// Chat channel with an explicit cloak shape dresses the TLS face to match the
+	// header identity (claude shape -> claude Node face, codex shape -> codex rustls
+	// face). Generic/empty shape keeps the path-based default (Chrome for chat paths).
+	if face := chatChannelTLSFace(ra.channel); face != "" {
+		req = req.WithContext(client.WithTLSFace(req.Context(), face))
+	}
 	httpClient, err := helper.ChannelHttpClient(ra.channel)
 	if err != nil {
 		log.Warnf("failed to get http client: %v", err)

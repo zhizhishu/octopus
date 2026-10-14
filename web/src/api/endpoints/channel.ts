@@ -43,6 +43,8 @@ export type ChannelCloak = {
     mode?: 'auto' | 'always' | 'never' | string;
     // 0 = 跟随全局默认指纹（现状）；>0 = 使用对应的指纹 Profile。
     profile_id?: number;
+    // Chat 渠道专用：出站身份族（'' 通用 / 'claude' / 'codex'）。Anthropic/Responses 忽略。
+    shape?: string;
 };
 
 export type ChannelKey = {

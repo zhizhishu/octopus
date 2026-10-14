@@ -524,6 +524,162 @@ func TestRelayCopyHeadersAppliesCodexDefaultsWhenResponsesUseChatChannel(t *test
 	}
 }
 
+// TestRelayCopyHeadersChatShapeClaudeDressesClaudeIdentity pins the new channel-level
+// cloak shape: a Chat channel with shape="claude" dresses the OUTBOUND in the Claude CLI
+// header set (UA + anthropic-version + x-app) while the body/format stays chat, and the
+// request carries no codex identity bytes.
+func TestRelayCopyHeadersChatShapeClaudeDressesClaudeIdentity(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	upstreamReq := httptest.NewRequest(http.MethodPost, "https://upstream.example/v1/chat/completions", nil)
+	ra := &relayAttempt{
+		relayRequest: &relayRequest{
+			c:               c,
+			inboundType:     inbound.InboundTypeOpenAIChat,
+			internalRequest: &transformermodel.InternalLLMRequest{Model: "claude-opus-4-8"},
+		},
+		channel: &dbmodel.Channel{
+			Type:  outbound.OutboundTypeOpenAIChat,
+			Cloak: dbmodel.ChannelCloak{Shape: "claude"},
+		},
+	}
+
+	ra.copyHeaders(upstreamReq)
+
+	if got := upstreamReq.Header.Get("User-Agent"); got != defaultClaudeUserAgent {
+		t.Fatalf("chat shape=claude user-agent = %q, want %q", got, defaultClaudeUserAgent)
+	}
+	if got := upstreamReq.Header.Get("Anthropic-Version"); got != "2023-06-01" {
+		t.Fatalf("chat shape=claude anthropic-version = %q, want 2023-06-01", got)
+	}
+	if got := upstreamReq.Header.Get("X-App"); got != "cli" {
+		t.Fatalf("chat shape=claude x-app = %q, want cli", got)
+	}
+	if got := upstreamReq.Header.Get("Originator"); got != "" {
+		t.Fatalf("chat shape=claude must not carry a codex Originator, got %q", got)
+	}
+	if got := upstreamReq.Header.Get("X-Codex-Beta-Features"); got != "" {
+		t.Fatalf("chat shape=claude must not carry codex beta features, got %q", got)
+	}
+}
+
+// TestRelayCopyHeadersChatShapeCodexDressesCodexIdentity pins shape="codex": the Chat
+// channel's outbound carries the codex CLI identity (codex_exec UA + paired Originator).
+func TestRelayCopyHeadersChatShapeCodexDressesCodexIdentity(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	upstreamReq := httptest.NewRequest(http.MethodPost, "https://upstream.example/v1/chat/completions", nil)
+	ra := &relayAttempt{
+		relayRequest: &relayRequest{
+			c:               c,
+			inboundType:     inbound.InboundTypeOpenAIChat,
+			internalRequest: &transformermodel.InternalLLMRequest{Model: "gpt-5.5"},
+		},
+		channel: &dbmodel.Channel{
+			Type:  outbound.OutboundTypeOpenAIChat,
+			Cloak: dbmodel.ChannelCloak{Shape: "codex"},
+		},
+	}
+
+	ra.copyHeaders(upstreamReq)
+
+	if got := upstreamReq.Header.Get("User-Agent"); got != defaultCodexUserAgent {
+		t.Fatalf("chat shape=codex user-agent = %q, want %q", got, defaultCodexUserAgent)
+	}
+	if got := upstreamReq.Header.Get("Originator"); got != defaultCodexOriginator {
+		t.Fatalf("chat shape=codex Originator = %q, want %q", got, defaultCodexOriginator)
+	}
+}
+
+// TestRelayCopyHeadersChatShapeClaudeStripsCodexClientHeaders pins the contradiction guard
+// for the new shape: a codex (Responses) client hitting a Chat channel with shape="claude"
+// has its forwarded codex headers stripped first, so the claude-dressed outbound never
+// carries codex identity bytes.
+func TestRelayCopyHeadersChatShapeClaudeStripsCodexClientHeaders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	upstreamReq := httptest.NewRequest(http.MethodPost, "https://upstream.example/v1/chat/completions", nil)
+	codexHeaders := []string{
+		"Originator",
+		"X-Codex-Beta-Features",
+		"X-Codex-Turn-Metadata",
+		"X-Codex-Window-Id",
+		"X-Openai-Internal-Codex-Responses-Lite",
+	}
+	for _, h := range codexHeaders {
+		upstreamReq.Header.Set(h, "codex-value")
+	}
+	ra := &relayAttempt{
+		relayRequest: &relayRequest{
+			c:               c,
+			inboundType:     inbound.InboundTypeOpenAIResponse,
+			internalRequest: &transformermodel.InternalLLMRequest{Model: "claude-opus-4-8"},
+		},
+		channel: &dbmodel.Channel{
+			Type:  outbound.OutboundTypeOpenAIChat,
+			Cloak: dbmodel.ChannelCloak{Shape: "claude"},
+		},
+	}
+
+	ra.copyHeaders(upstreamReq)
+
+	for _, h := range codexHeaders {
+		if got := upstreamReq.Header.Get(h); got != "" {
+			t.Fatalf("codex client header %q must be stripped on a claude-shaped chat outbound, got %q", h, got)
+		}
+	}
+	if got := upstreamReq.Header.Get("User-Agent"); got != defaultClaudeUserAgent {
+		t.Fatalf("chat shape=claude user-agent = %q, want %q", got, defaultClaudeUserAgent)
+	}
+}
+
+// TestRelayCopyHeadersChatShapeGenericKeepsDefaultIdentity locks the default path: an empty
+// (or unknown) shape keeps the generic chat identity byte-for-byte — the pre-shape behaviour.
+func TestRelayCopyHeadersChatShapeGenericKeepsDefaultIdentity(t *testing.T) {
+	cases := []struct {
+		name  string
+		shape string
+	}{
+		{name: "empty", shape: ""},
+		{name: "whitespace", shape: "   "},
+		{name: "unknown", shape: "unknown-value"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gin.SetMode(gin.TestMode)
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+			upstreamReq := httptest.NewRequest(http.MethodPost, "https://upstream.example/v1/chat/completions", nil)
+			ra := &relayAttempt{
+				relayRequest: &relayRequest{
+					c:           c,
+					inboundType: inbound.InboundTypeOpenAIChat,
+				},
+				channel: &dbmodel.Channel{
+					Type:  outbound.OutboundTypeOpenAIChat,
+					Cloak: dbmodel.ChannelCloak{Shape: tc.shape},
+				},
+			}
+
+			ra.copyHeaders(upstreamReq)
+
+			if got := upstreamReq.Header.Get("User-Agent"); got != dbmodel.DefaultGenericUA {
+				t.Fatalf("shape %q user-agent = %q, want generic %q", tc.shape, got, dbmodel.DefaultGenericUA)
+			}
+			if got := upstreamReq.Header.Get("Originator"); got != "" {
+				t.Fatalf("shape %q must not add a codex Originator, got %q", tc.shape, got)
+			}
+		})
+	}
+}
+
 func TestRelayCopyHeadersForwardsClientTimeoutHeadersButAllowsAdminCustomHeader(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
