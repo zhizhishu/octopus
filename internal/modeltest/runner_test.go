@@ -254,6 +254,12 @@ func TestModelTestForcesStreamForCodexEvenWhenClientAsksNonStream(t *testing.T) 
 }
 
 func TestRunAppliesCodexDefaultsWhenResponsesUseChatChannel(t *testing.T) {
+	// 2026-10-14 (user decision, "channel determines shape"): a Chat channel's
+	// outbound is ALWAYS the generic chat identity. The old test expected codex
+	// UA + beta features on a Chat channel when the modeltest endpoint was
+	// openai_responses; that behavior leaked codex CLI headers upstream and was
+	// removed. Now the generic (CherryStudio) UA is applied and no codex
+	// header survives.
 	ctx := setupModelTestDB(t)
 
 	var seenUserAgent atomic.Value
@@ -297,11 +303,11 @@ func TestRunAppliesCodexDefaultsWhenResponsesUseChatChannel(t *testing.T) {
 	if response.Summary.Success != 1 {
 		t.Fatalf("unexpected response: %#v", response)
 	}
-	if got, _ := seenUserAgent.Load().(string); got != defaultCodexUserAgent {
-		t.Fatalf("user-agent = %q, want %q", got, defaultCodexUserAgent)
+	if got, _ := seenUserAgent.Load().(string); got != dbmodel.DefaultGenericUA {
+		t.Fatalf("user-agent = %q, want generic %q", got, dbmodel.DefaultGenericUA)
 	}
-	if got, _ := seenBetaFeatures.Load().(string); got != defaultCodexBetaFeatures {
-		t.Fatalf("codex beta features = %q, want %q", got, defaultCodexBetaFeatures)
+	if got, _ := seenBetaFeatures.Load().(string); got != "" {
+		t.Fatalf("codex beta features leaked to chat outbound: %q, want empty", got)
 	}
 }
 
