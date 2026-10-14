@@ -113,7 +113,7 @@ func TestCLIShapedCallerBodyIsLeftAlone(t *testing.T) {
 		t.Fatalf("enable switch: %v", err)
 	}
 
-	ra := claudeShapeAttempt(t, "claude-cli/2.1.294 (external, sdk-cli)", outbound.OutboundTypeAnthropic)
+	ra := claudeShapeAttempt(t, "claude-cli/2.1.296 (external, sdk-cli)", outbound.OutboundTypeAnthropic)
 	ra.ensureClaudeCLIShapeTopLevelKeys()
 	if len(ra.internalRequest.AnthropicThinking) != 0 || len(ra.internalRequest.AnthropicContextManagement) != 0 || len(ra.internalRequest.AnthropicOutputConfig) != 0 {
 		t.Fatalf("a CLI-shaped caller owns its shape; the relay must not add anything (thinking=%s context=%s output=%s)",

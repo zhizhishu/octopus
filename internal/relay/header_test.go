@@ -586,7 +586,7 @@ func TestClientDeclaredTimeoutIsForwardedVerbatimAndOnlyFilledWhenAbsent(t *test
 		return req
 	}
 
-	const cliUA = "claude-cli/2.1.294 (external, sdk-cli)"
+	const cliUA = "claude-cli/2.1.296 (external, sdk-cli)"
 	if got := upstreamFor(cliUA, "111").Header.Get("X-Stainless-Timeout"); got != "111" {
 		t.Fatalf("a CLI-shaped caller's declared timeout must be forwarded verbatim, got %q", got)
 	}

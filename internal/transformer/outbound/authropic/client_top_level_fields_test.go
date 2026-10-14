@@ -189,7 +189,7 @@ func topLevelKeySequence(t *testing.T, wire string) []string {
 }
 
 // The sequence below is captured, not invented: it is the top-level key order a real
-// Claude Code 2.1.294 request carried to the upstream on /v1/messages?beta=true,
+// Claude Code 2.1.296 request carried to the upstream on /v1/messages?beta=true,
 // including `safeguards`, which this relay does not model. Members in a different order
 // are a different request shape, so a same-protocol relay must replay the client's order.
 func TestAnthropicRelayReplaysClientTopLevelKeyOrder(t *testing.T) {

@@ -1442,7 +1442,7 @@ data: {"type":"message_stop"}
 	// applyAnthropicAuthHeaders 注入 Authorization, 复制的调用方 X-Api-Key 被去掉。
 	// (2026-10-10 大领导拍板: 真 CLI 只发 authorization, 别两个都发。)
 	t.Run("api-key client still leaves authorization-only upstream", func(t *testing.T) {
-		sawAPIKey, sawAuthorization, code := run(t, "claude-cli/2.1.294 (external, sdk-cli)", "client-octopus-key", "")
+		sawAPIKey, sawAuthorization, code := run(t, "claude-cli/2.1.296 (external, sdk-cli)", "client-octopus-key", "")
 		if code != http.StatusOK {
 			t.Fatalf("expected the api-key stream to succeed, got %d", code)
 		}

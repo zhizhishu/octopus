@@ -235,11 +235,12 @@ const (
 	// DefaultClaudeCLIVersion is the named Claude Code CLI version used to build the
 	// user-agent below. The Anthropic outbound billing-header cc_version carries the
 	// same version (authropic.ClaudeCLIVersion); TestClaudeFingerprintVersionConsistency
-	// asserts the two never drift apart. 2.1.294 is packet-verified on the wire
-	// 2026-10-10 (real claude CLI 2.1.294, UA claude-cli/2.1.294, package 0.128.0,
-	// billing cc_version 2.1.294.362) — captured direct on the capture proxy and
-	// mirrored byte-for-byte when the same CLI is routed through the relay.
-	DefaultClaudeCLIVersion = "2.1.294"
+	// asserts the two never drift apart. 2.1.296 is packet-verified on the wire
+	// 2026-10-14 (real claude CLI 2.1.296, UA claude-cli/2.1.296, package 0.128.0
+	// unchanged, runtime v26.3.0 unchanged, billing cc_version 2.1.296.406) —
+	// captured direct on the capture proxy and mirrored byte-for-byte when the same
+	// CLI is routed through the relay.
+	DefaultClaudeCLIVersion = "2.1.296"
 
 	// DefaultClaudeHeaderUserAgent is the locally packet-verified Claude Code CLI
 	// user-agent (claude-cli/<DefaultClaudeCLIVersion>).
@@ -340,7 +341,8 @@ const (
 	// DefaultClaudeHeaderPackageVersion is the current X-Stainless-Package-Version
 	// default (the value seeded into SettingKeyClaudeHeaderPackage). 2.1.294 reports
 	// 0.128.0 on the wire (packet-verified 2026-10-10); 2.1.281 reported 0.112.1,
-	// and 2.1.198/2.1.212 reported 0.94.0.
+	// and 2.1.198/2.1.212 reported 0.94.0. 2.1.296 still reports 0.128.0
+	// (packet-verified 2026-10-14), so the default stays.
 	DefaultClaudeHeaderPackageVersion = "0.128.0"
 
 	// LegacyDefaultClaudeHeaderUserAgent21281 was the previous Claude header default
@@ -348,6 +350,12 @@ const (
 	// converge upgraded deployments to the current UA via op.settingLegacyDefaultUpgrades
 	// so existing installs do not keep emitting the stale 2.1.281 fingerprint.
 	LegacyDefaultClaudeHeaderUserAgent21281 = "claude-cli/2.1.281 (external, sdk-cli)"
+
+	// LegacyDefaultClaudeHeaderUserAgent21294 was the previous Claude header default
+	// (claude-cli/2.1.294). 2.1.296 superseded it (packet-verified 2026-10-14);
+	// converge upgraded deployments to the current UA via op.settingLegacyDefaultUpgrades
+	// so existing installs do not keep emitting the stale 2.1.294 fingerprint.
+	LegacyDefaultClaudeHeaderUserAgent21294 = "claude-cli/2.1.294 (external, sdk-cli)"
 
 	// LegacyDefaultClaudeHeaderPackage01121 was the X-Stainless-Package-Version paired
 	// with the 2.1.281 UA (0.112.1); migrate it to DefaultClaudeHeaderPackageVersion.
