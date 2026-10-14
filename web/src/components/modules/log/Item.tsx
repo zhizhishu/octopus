@@ -408,7 +408,7 @@ function LogRouteHeader({
             mode={textMode}
             value={requestModelDisplayName}
             title={requestModelDisplayName === log.request_model_name ? undefined : log.request_model_name}
-            className="font-semibold text-card-foreground"
+            className={cn("font-semibold text-card-foreground", isCard && "max-w-[12rem]")}
         />
     );
     /* Channel identity is admin-only: a normal user's log carries no
@@ -439,7 +439,7 @@ function LogRouteHeader({
             mode={textMode}
             value={actualModelDisplayName}
             title={actualModelDisplayName === log.actual_model_name ? undefined : log.actual_model_name}
-            className="text-muted-foreground"
+            className={cn("text-muted-foreground", isCard && "max-w-[12rem]")}
         />
     );
     // 管理员才有渠道名/自报。普通用户摘要故意不下发，这里保持空白，不能用「未自报」冒充。
@@ -449,6 +449,20 @@ function LogRouteHeader({
     // 同族别名疑似：剥日期后缀后同族前缀一致，只有后缀/日期档位不同。文案按「别名疑似」
     // 呈现，与「名字完全不符」区分；仍是线索不是结论。
     const echoAliasVariant = log.upstream_mismatch_code === 'alias_variant';
+    // 三档判定（后端 evalModelFamilyVerdict 落库）：''=旧行未判定 / trusted / suspect / unknown。
+    const familyVerdict = log.model_family_verdict?.trim() ?? '';
+    const vendorHint = log.model_vendor_hint?.trim() ?? '';
+    // trusted：无怀疑直接显示「供应商 / 模型名」。后端给的 vendorHint 是上游自报名剥出的前缀，
+    // 这里把前缀从显示名里去掉，只留裸模型名，避免「vercel-deepseek / Vercel DeepSeek Deepseek V4」式重复。
+    const trustedEchoName = (() => {
+        if (!upstreamEchoName) return '';
+        let bare = upstreamEchoName;
+        if (vendorHint && (bare.startsWith(`${vendorHint}/`) || bare.startsWith(`${vendorHint}:`))) {
+            bare = bare.slice(vendorHint.length + 1);
+        }
+        return marketModelName(bare) || bare;
+    })();
+    const trustedLabel = vendorHint ? `${vendorHint}${t('vendorModelSeparator')}${trustedEchoName}` : trustedEchoName;
     const echoState = echoMismatch ? 'mismatch' : (upstreamEchoName ? 'match' : 'silent');
     /**
      * B1 尾部：上游自报的真模型（`upstream_response_model`）。紧跟 oct 实际发出的模型，
@@ -477,62 +491,117 @@ function LogRouteHeader({
             <span className="shrink-0 text-xs text-muted-foreground">{t('upstreamSilent')}</span>
         )
     ) : null;
-    // B2：回显状态徽标（映射自 / 回显不符）。回显模型名已挪到 B1，这里只留状态；
+    // B2：回显判定组。三档（后端 model_family_verdict）决定呈现语义：
+    //  - trusted：绿色直显「供应商 / 模型名」，无歧义就不再挂「发出名由我们映射」兜底徽标；
+    //  - suspect：琥珀色直显对照「客户端要的 → 实际路由」，另配红「不符」（跨家族被替换）
+    //    或琥珀「别名疑似」（同族别名）徽标；
+    //  - unknown / 旧行（无 verdict）：保持原来的「映射自 + 回显不符」徽标，mappedByUs 只在
+    //    verdict 为空（旧数据）时兜底。
     // 整组不换行，否则「检测」徽标会被它挤到下一行、位置随外部文本长度漂移。
     const echoGroup = showEcho ? (
         <span
             data-echo-state={echoState}
             data-upstream-echo={upstreamEchoName}
+            data-family-verdict={familyVerdict}
             className="inline-flex min-w-0 items-center gap-2"
         >
-            {mappedByUs && (
-                <Badge
-                    variant="outline"
-                    className={cn(
-                        "shrink-0 border-border/60 bg-muted/30 text-xs font-normal text-muted-foreground",
-                        isCard ? "px-1.5 py-0" : "px-2 py-0.5"
-                    )}
-                    title={t('mappedByUs')}
-                >
-                    {t('mappedByUs')}
-                </Badge>
-            )}
-            {echoMismatch && (
-                <Popover>
-                    <PopoverTrigger asChild>
+            {familyVerdict === 'trusted' ? (
+                trustedLabel ? (
+                    <span className="inline-flex min-w-0 items-center gap-1" title={t('familyTrusted')}>
+                        <CheckCircle2 className="size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                        <span className="shrink-0 text-xs text-emerald-600 dark:text-emerald-400">{t('familyTrusted')}</span>
+                        <span className="shrink-0 text-xs text-muted-foreground/60">·</span>
+                        <SafeText value={trustedLabel} className="text-xs text-emerald-700 dark:text-emerald-300" />
+                    </span>
+                ) : (
+                    <span className="shrink-0 text-xs text-muted-foreground">{t('upstreamSilent')}</span>
+                )
+            ) : familyVerdict === 'suspect' ? (
+                <>
+                    <span
+                        className="inline-flex min-w-0 items-center gap-1 text-xs text-amber-700 dark:text-amber-300"
+                        title={t('familySuspectHint')}
+                    >
+                        <SafeText value={requestModelDisplayName} className="text-xs text-amber-700/80 dark:text-amber-300/80" />
+                        <ArrowRight className="size-3.5 shrink-0 text-amber-600/70 dark:text-amber-400/70" />
+                        <SafeText value={actualModelDisplayName} className="text-xs font-medium text-amber-800 dark:text-amber-200" />
+                    </span>
+                    {echoAliasVariant ? (
                         <Badge
                             variant="outline"
-                            role="button"
-                            tabIndex={0}
-                            onClick={(e) => e.stopPropagation()}
-                            onKeyDown={(e) => e.stopPropagation()}
                             className={cn(
-                                "shrink-0 cursor-pointer border-amber-500/40 bg-amber-500/10 text-xs text-amber-800 dark:text-amber-200",
+                                "shrink-0 border-amber-500/40 bg-amber-500/10 text-xs text-amber-800 dark:text-amber-200",
                                 isCard ? "px-1.5 py-0" : "px-2 py-0.5"
                             )}
+                            title={upstreamEchoName ? t('echoAliasVariantHint', { model: upstreamEchoName }) : t('familySuspectHint')}
                         >
-                            {echoAliasVariant ? t('echoAliasVariant') : t('echoMismatch')}
+                            {t('echoAliasVariant')}
                         </Badge>
-                    </PopoverTrigger>
-                    <PopoverContent align="start" className="w-72 p-3">
-                        <p className="text-xs font-medium text-foreground">{echoAliasVariant ? t('echoAliasVariant') : t('echoMismatch')}</p>
-                        <div className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[11px]">
-                            <span className="text-muted-foreground">{t('sentModel')}</span>
-                            <span className="break-all">{actualModelDisplayName || requestModelDisplayName}</span>
-                            <span className="text-muted-foreground">{t('upstreamEcho')}</span>
-                            <span className="break-all text-amber-700 dark:text-amber-300">
-                                {upstreamEchoDisplayName || t('upstreamSilent')}
-                            </span>
-                        </div>
-                        {upstreamEchoName && (
-                            <p className="mt-2 border-t border-border pt-2 text-[11px] leading-5 text-muted-foreground">
-                                {echoAliasVariant
-                                    ? t('echoAliasVariantHint', { model: upstreamEchoName })
-                                    : t('echoMismatchHint', { model: upstreamEchoName })}
-                            </p>
-                        )}
-                    </PopoverContent>
-                </Popover>
+                    ) : (
+                        <Badge
+                            variant="outline"
+                            className={cn(
+                                "shrink-0 border-red-500/40 bg-red-500/10 text-xs text-red-600 dark:text-red-300",
+                                isCard ? "px-1.5 py-0" : "px-2 py-0.5"
+                            )}
+                            title={upstreamEchoName ? t('echoMismatchHint', { model: upstreamEchoName }) : t('familyReplaced')}
+                        >
+                            {t('familyReplaced')}
+                        </Badge>
+                    )}
+                </>
+            ) : (
+                <>
+                    {!familyVerdict && mappedByUs && (
+                        <Badge
+                            variant="outline"
+                            className={cn(
+                                "shrink-0 border-border/60 bg-muted/30 text-xs font-normal text-muted-foreground",
+                                isCard ? "px-1.5 py-0" : "px-2 py-0.5"
+                            )}
+                            title={t('mappedByUs')}
+                        >
+                            {t('mappedByUs')}
+                        </Badge>
+                    )}
+                    {echoMismatch && (
+                        <Popover>
+                            <PopoverTrigger asChild>
+                                <Badge
+                                    variant="outline"
+                                    role="button"
+                                    tabIndex={0}
+                                    onClick={(e) => e.stopPropagation()}
+                                    onKeyDown={(e) => e.stopPropagation()}
+                                    className={cn(
+                                        "shrink-0 cursor-pointer border-amber-500/40 bg-amber-500/10 text-xs text-amber-800 dark:text-amber-200",
+                                        isCard ? "px-1.5 py-0" : "px-2 py-0.5"
+                                    )}
+                                >
+                                    {echoAliasVariant ? t('echoAliasVariant') : t('echoMismatch')}
+                                </Badge>
+                            </PopoverTrigger>
+                            <PopoverContent align="start" className="w-72 p-3">
+                                <p className="text-xs font-medium text-foreground">{echoAliasVariant ? t('echoAliasVariant') : t('echoMismatch')}</p>
+                                <div className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[11px]">
+                                    <span className="text-muted-foreground">{t('sentModel')}</span>
+                                    <span className="break-all">{actualModelDisplayName || requestModelDisplayName}</span>
+                                    <span className="text-muted-foreground">{t('upstreamEcho')}</span>
+                                    <span className="break-all text-amber-700 dark:text-amber-300">
+                                        {upstreamEchoDisplayName || t('upstreamSilent')}
+                                    </span>
+                                </div>
+                                {upstreamEchoName && (
+                                    <p className="mt-2 border-t border-border pt-2 text-[11px] leading-5 text-muted-foreground">
+                                        {echoAliasVariant
+                                            ? t('echoAliasVariantHint', { model: upstreamEchoName })
+                                            : t('echoMismatchHint', { model: upstreamEchoName })}
+                                    </p>
+                                )}
+                            </PopoverContent>
+                        </Popover>
+                    )}
+                </>
             )}
         </span>
     ) : null;
@@ -573,8 +642,10 @@ function LogRouteHeader({
                     {upstreamPathBadge}
                 </div>
                 {/* B1 请求模型 → 渠道 · oct 实际发出模型 · 上游自报模型 · 下游客户端
-                    （客户端徽标与真模型链同一行：调用方一眼对上「谁 → 用什么模型」） */}
-                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    （客户端徽标与真模型链同一行：调用方一眼对上「谁 → 用什么模型」）
+                    整行强制不换行：链上文本各自 min-w-0 + truncate 截断，卡高才恒定
+                    （此前 flex-wrap 会随模型名长度折成 2/3 行，卡高 158/184/236 不等）。 */}
+                <div className="flex min-w-0 flex-nowrap items-center gap-2">
                     {requestModelText}
                     {channelGroup}
                     {actualModelText}

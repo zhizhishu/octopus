@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/bestruirui/octopus/internal/model"
+	"github.com/bestruirui/octopus/internal/modelverify/behavior"
 	"github.com/bestruirui/octopus/internal/op"
 	"github.com/bestruirui/octopus/internal/price"
 	transformerModel "github.com/bestruirui/octopus/internal/transformer/model"
@@ -161,6 +162,74 @@ func UpstreamModelMismatchCode(mismatch *bool, sentModel, responseModel string) 
 		return UpstreamMismatchCodeAliasVariant
 	}
 	return ""
+}
+
+// 模型家族判定三档(落 model.RelayLog.ModelFamilyVerdict 列)。
+const (
+	// ModelFamilyVerdictTrusted: 无怀疑(回显与实际一致, 且请求端与自报端家族不冲突)。
+	ModelFamilyVerdictTrusted = "trusted"
+	// ModelFamilyVerdictSuspect: 有怀疑(回显不符, 或回显一致但请求端与自报端跨家族)。
+	ModelFamilyVerdictSuspect = "suspect"
+	// ModelFamilyVerdictUnknown: 无法判定(上游没自报, 或我们不知道发出去的模型名)。
+	ModelFamilyVerdictUnknown = "unknown"
+)
+
+// evalModelFamilyVerdict 把「回显三态 + 家族别名表」收敛成一条可落库的三档判定。
+//
+// 输入:
+//   - requestModel: 客户端请求的模型名(判定同族时用它, 而不是被 model_mapping 改写后的那份);
+//   - actualModel:  oct 实际发出去的模型名(与 UpstreamModelMismatch 列同源, 保证两列一致);
+//   - upstreamEcho: 上游响应自报的模型名;
+//   - mismatchCode: UpstreamModelMismatchCode 的产物(空串 或 alias_variant)。suspect 的细分
+//     类型已单独落在 UpstreamMismatchCode 列(前端据此区分「别名疑似」与「不符」), 这里对三档
+//     的唯一贡献是: 有该 code 就确认 mismatch 为真; 故不再单独分支。
+//
+// 判定:
+//   - unknown: 上游没自报(echo 为空), 或上游没声明/我们没出站名(mismatch 为 nil);
+//   - trusted: 回显与实际一致(mismatch==false), 且客户端请求家族与自报家族不冲突
+//     (任一边识别不出家族, 或两边都识别出且有交集);
+//   - suspect: 其余有观测的情形——回显与实际不符, 或回显一致但两边家族都能识别且无交集
+//     (客户端要 A 家族、我们(经映射)发 B 家族、上游也回 B: 名字一致掩盖不了跨家族替换)。
+//
+// vendorHint 与判定独立: 只从上游自报名里按最后一个 '/' 或 ':' 剥前缀, 无前缀留空。
+func evalModelFamilyVerdict(requestModel, actualModel, upstreamEcho string, mismatchCode string) (verdict string, vendorHint string) {
+	echo := strings.TrimSpace(upstreamEcho)
+	vendorHint = modelVendorHint(echo)
+	if echo == "" {
+		return ModelFamilyVerdictUnknown, vendorHint
+	}
+	mismatch := upstreamModelMismatch(actualModel, echo)
+	if mismatch == nil {
+		// 上游自报了名字, 但我们不知道发出去的是哪个(actualModel 空): 仍无法判定。
+		return ModelFamilyVerdictUnknown, vendorHint
+	}
+	if *mismatch || mismatchCode != "" {
+		// mismatchCode 非空必然意味着 mismatch 为真(见 UpstreamModelMismatchCode), 双保险。
+		return ModelFamilyVerdictSuspect, vendorHint
+	}
+	// 回显与实际一致: 只要不是「请求家族与自报家族都能识别且完全无交集」, 就无怀疑。
+	requestedFamilies := behavior.InferFamilies(requestModel)
+	echoFamilies := behavior.InferFamilies(echo)
+	if len(requestedFamilies) == 0 || len(echoFamilies) == 0 || behavior.FamiliesIntersect(requestedFamilies, echoFamilies) {
+		return ModelFamilyVerdictTrusted, vendorHint
+	}
+	return ModelFamilyVerdictSuspect, vendorHint
+}
+
+// modelVendorHint 从模型名里剥出供应商前缀(最后一个 '/' 或 ':' 之前的部分)。
+// 对齐 internal/price/price.go:GetLLMPrice 的 vendor-prefixed 回退: 无分隔符, 或分隔符在
+// 首/尾(剥完为空)时留空——事实提取, 绝不猜造。
+// 例: "vercel-deepseek/deepseek-v4" -> "vercel-deepseek"; "vendor:gpt-x" -> "vendor"。
+func modelVendorHint(modelName string) string {
+	name := strings.TrimSpace(modelName)
+	if name == "" {
+		return ""
+	}
+	i := strings.LastIndexAny(name, "/:")
+	if i <= 0 || i+1 >= len(name) {
+		return ""
+	}
+	return name[:i]
 }
 
 func upstreamModelMismatch(sentModel, responseModel string) *bool {
@@ -654,6 +723,12 @@ func (m *RelayMetrics) saveLog(ctx context.Context, err error, duration time.Dur
 	}
 	billingSnapshot := m.currentBillingSnapshot(actualModel)
 
+	// 回显三态只算一次, 保证 UpstreamModelMismatch / UpstreamMismatchCode / ModelFamilyVerdict
+	// 三列互相一致(mismatch 与 code 沿用早先口径: 只拿 m.ActualModel 比, 不做 RequestModel 回退)。
+	mismatch := upstreamModelMismatch(m.ActualModel, m.UpstreamDeclaredModel)
+	mismatchCode := UpstreamModelMismatchCode(mismatch, m.ActualModel, m.UpstreamDeclaredModel)
+	familyVerdict, vendorHint := evalModelFamilyVerdict(m.RequestModel, m.ActualModel, m.UpstreamDeclaredModel, mismatchCode)
+
 	relayLog := model.RelayLog{
 		UserID:                m.UserID,
 		APIKeyID:              m.APIKeyID,
@@ -668,11 +743,10 @@ func (m *RelayMetrics) saveLog(ctx context.Context, err error, duration time.Dur
 		ChannelKeyRemark:      m.ChannelKeyRemark,
 		ActualModelName:       actualModel,
 		UpstreamResponseModel: m.UpstreamDeclaredModel,
-		UpstreamModelMismatch: upstreamModelMismatch(m.ActualModel, m.UpstreamDeclaredModel),
-		UpstreamMismatchCode: func() string {
-			mm := upstreamModelMismatch(m.ActualModel, m.UpstreamDeclaredModel)
-			return UpstreamModelMismatchCode(mm, m.ActualModel, m.UpstreamDeclaredModel)
-		}(),
+		UpstreamModelMismatch: mismatch,
+		UpstreamMismatchCode:  mismatchCode,
+		ModelFamilyVerdict:    familyVerdict,
+		ModelVendorHint:       vendorHint,
 		UseTime:               int(duration.Milliseconds()),
 		Attempts:              attempts,
 		TotalAttempts:         len(attempts),

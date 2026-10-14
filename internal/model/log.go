@@ -101,6 +101,17 @@ type RelayLog struct {
 	// 'alias_variant'=同族别名疑似(剥日期后缀后同族前缀一致, 只有后缀/日期档位不同)。
 	// 前端据此区分「别名疑似」与「名字完全不符」。AutoMigrate 自动加列, 旧行为空。
 	UpstreamMismatchCode string `json:"upstream_mismatch_code,omitempty" gorm:"size:32;default:''"`
+	// ModelFamilyVerdict 是「模型家族」三档判定, 由回显(mismatch 三态)+家族别名表推导:
+	// '' = 未判定(AutoMigrate 前的旧行, 或本轮没有可判据);
+	// 'trusted' = 无怀疑(上游自报与实际发出一致, 且客户端请求的家族与自报家族同族);
+	// 'suspect' = 有怀疑(回显不符: 跨家族被替换 / 同族别名疑似);
+	// 'unknown' = 无法判定(上游没自报, 或我们不知道发出去的名字)。
+	// 与 UpstreamModelMismatch 一样只作线索(回显本身可撒谎), 不参与路由/计费。
+	ModelFamilyVerdict string `json:"model_family_verdict,omitempty" gorm:"size:16;default:''"`
+	// ModelVendorHint 是上游自报模型名里的供应商细分提示, 由 '/' 或 ':' 前缀剥出(对齐 price 的
+	// vendor-prefixed 逻辑), 如 "vercel-deepseek/deepseek-v4" -> "vercel-deepseek"。
+	// 无前缀留空——事实提取, 绝不猜造。判不出家族时也可能留空。
+	ModelVendorHint string `json:"model_vendor_hint,omitempty" gorm:"size:64;default:''"`
 	// 以下 5 列把「行为审计」结论钉回触发了它的那一条日志行(此前结论只在内存快照里,
 	// 重启即丢, 且同渠道同模型的所有日志行共用一份快照)。全部由 AutoMigrate 自动加列,
 	// 历史行为空 = 未检测, 不回填。与 modelverify/behavior 的 Verdict 语义对齐:

@@ -102,6 +102,10 @@ export interface RelayLog {
     upstream_model_mismatch?: boolean;
     // 不一致细分：'alias_variant'=同族别名疑似（剥日期后缀后同族前缀一致）；''/缺省=完全不符。
     upstream_mismatch_code?: string;
+    // 模型家族三档判定：''=未判定（旧行）/trusted=无怀疑/suspect=有怀疑/unknown=无法判定。仅管理员日志返回。
+    model_family_verdict?: string;
+    // 上游自报模型名里剥出的供应商前缀（如 'vercel-deepseek'），无前缀留空。
+    model_vendor_hint?: string;
     // 行级行为审计结论（''=未检测；none/unknown/low/medium/high）。只有被检测过的行才有值；
     // 旧行回退到定时快检快照（按 渠道|模型 匹配）。仅管理员日志返回。
     model_audit_verdict?: string;
