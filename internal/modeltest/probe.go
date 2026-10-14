@@ -38,8 +38,11 @@ type ProbeSender struct {
 // endpoint 与渠道检测同语义（openai_chat / openai_responses / anthropic_messages /
 // gemini_generate_content），空值按 openai_chat 处理。密钥选取沿用 tryChannel 的
 // 策略：关闭熔断的渠道取全部启用密钥，否则只取可用（未冷却）密钥。
+//
+// 嵌入渠道（type 5）也在准入范围：出站走 EmbeddingOutbound，请求体只有 model+input，
+// 不牵涉任何 chat/claude/codex 形状（见 testChannelKey 的 embeddingProbe 分支）。
 func NewProbeSender(channel dbmodel.Channel, upstreamModel, endpoint string) (*ProbeSender, error) {
-	if !outbound.IsChatChannelType(channel.Type) {
+	if !outbound.IsChatChannelType(channel.Type) && !outbound.IsEmbeddingChannelType(channel.Type) {
 		return nil, fmt.Errorf("渠道类型 %d 不支持探针校验", channel.Type)
 	}
 	if strings.TrimSpace(channel.GetBaseUrl()) == "" {

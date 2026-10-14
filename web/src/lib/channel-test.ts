@@ -6,6 +6,7 @@ export const MODEL_TEST_ENDPOINTS = [
     { value: 'openai_responses', label: 'Responses' },
     { value: 'anthropic_messages', label: 'Claude' },
     { value: 'gemini_generate_content', label: 'Gemini' },
+    { value: 'openai_embeddings', label: 'Embeddings' },
 ] as const;
 
 export type ModelTestEndpoint = (typeof MODEL_TEST_ENDPOINTS)[number]['value'];
@@ -15,6 +16,7 @@ export const MODEL_TEST_ENDPOINT_LABELS: Record<ModelTestEndpoint, string> = {
     openai_responses: 'Responses',
     anthropic_messages: 'Claude',
     gemini_generate_content: 'Gemini',
+    openai_embeddings: 'Embeddings',
 };
 
 export const DEFAULT_MODEL_TEST_TIMEOUT_SECONDS = 180;
@@ -44,6 +46,10 @@ export function defaultModelTestEndpointForChannel(type: ChannelType): ModelTest
             return 'anthropic_messages';
         case ChannelType.Gemini:
             return 'gemini_generate_content';
+        case ChannelType.OpenAIEmbedding:
+            // 嵌入渠道只有 /v1/embeddings 一个可用端点：chat 形状会被出站适配器
+            // 直接拒收（EmbeddingOutbound 只认 EmbeddingInput）。
+            return 'openai_embeddings';
         default:
             return 'openai_chat';
     }

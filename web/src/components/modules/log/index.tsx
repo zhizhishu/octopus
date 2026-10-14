@@ -75,6 +75,7 @@ const endpointFilters = [
     { value: 'model_test_responses', label: 'model test responses' },
     { value: 'model_test_anthropic_messages', label: 'model test messages' },
     { value: 'model_test_gemini', label: 'model test gemini' },
+    { value: 'model_test_embeddings', label: 'model test embeddings' },
 ] as const;
 
 // Unified provider taxonomy options

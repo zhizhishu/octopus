@@ -62,6 +62,9 @@ const (
 	defaultCodexBetaFeatures    = dbmodel.DefaultCodexHeaderBetaFeatures
 	defaultCodexOriginator      = "codex_cli_rs"
 	defaultCodexInstructions    = "You are Codex, a coding agent based on GPT-5. You and the user share one workspace. Answer directly and do not call tools unless the user asks for workspace inspection or file changes."
+	// embeddingTestEndpointName 是嵌入探针的端点名（channel test 与模型校验探针共用）。
+	// 它不是一个 chat 形状：没有 messages/stream/思考，出站只有 model+input。
+	embeddingTestEndpointName = "openai_embeddings"
 )
 
 var defaultPromptCounter uint64
@@ -331,6 +334,8 @@ func modelTestAuditEndpoint(endpoint string) string {
 		return "model_test_anthropic_messages"
 	case "gemini_generate_content":
 		return "model_test_gemini"
+	case embeddingTestEndpointName:
+		return "model_test_embeddings"
 	case "":
 		return "model_test"
 	default:
@@ -512,6 +517,13 @@ func normalizeEndpoint(value string) (testEndpoint, error) {
 			inbound:   inbound.InboundTypeAnthropic,
 			path:      func(string) string { return "/v1/messages" },
 		}, nil
+	case embeddingTestEndpointName, "embeddings":
+		return testEndpoint{
+			name:      embeddingTestEndpointName,
+			apiFormat: transformermodel.APIFormatOpenAIEmbedding,
+			inbound:   inbound.InboundTypeOpenAIEmbedding,
+			path:      func(string) string { return "/v1/embeddings" },
+		}, nil
 	case "gemini_generate_content", "gemini":
 		return testEndpoint{
 			name:      "gemini_generate_content",
@@ -638,7 +650,7 @@ func (r *modelRunner) tryChannel(ctx context.Context, channel *dbmodel.Channel, 
 		r.recordAttempt(channel.ID, 0, channelName, upstreamModel, "", dbmodel.AttemptSkipped, 0, 0, "channel disabled")
 		return false
 	}
-	if !outbound.IsChatChannelType(channel.Type) {
+	if !outbound.IsChatChannelType(channel.Type) && !outbound.IsEmbeddingChannelType(channel.Type) {
 		r.recordAttempt(channel.ID, 0, channelName, upstreamModel, "", dbmodel.AttemptSkipped, 0, 0, fmt.Sprintf("channel type %d does not support model connectivity tests", channel.Type))
 		return false
 	}
@@ -689,9 +701,13 @@ func (r *modelRunner) tryChannel(ctx context.Context, channel *dbmodel.Channel, 
 
 func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermodel.Outbound, channel *dbmodel.Channel, key dbmodel.ChannelKey, upstreamModel string) (int, *transformermodel.InternalLLMResponse, error) {
 	internalRequest := r.internalRequest(upstreamModel)
+	// 嵌入探针没有任何 chat 形状：下面的渠道形状分支（思考预算、claude body shape、
+	// responses 强制流式、codex 指纹）对它一律不适用——嵌入请求带 Stream 会被出站
+	// 直接拒收，带指纹字段则属于"嵌入流量碰指纹路径"，是明确红线。
+	embeddingProbe := internalRequest.IsEmbeddingRequest()
 	// 模型校验探针可自带输出预算，仅在非 Anthropic 渠道覆盖。
 	// Anthropic 渠道保持 claude-cli 的 64000（见 probeMaxTokens 字段注释）。
-	if r.probeMaxTokens > 0 && channel.Type != outbound.OutboundTypeAnthropic {
+	if r.probeMaxTokens > 0 && channel.Type != outbound.OutboundTypeAnthropic && !embeddingProbe {
 		probeMax := int64(r.probeMaxTokens)
 		internalRequest.MaxTokens = &probeMax
 	}
@@ -718,7 +734,7 @@ func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermod
 	// helper so the test's device_id / installation id match the relay forward path
 	// for this channel (test==real-traffic invariant).
 	fp := resolveFingerprint(channel)
-	if channel.Type == outbound.OutboundTypeAnthropic {
+	if channel.Type == outbound.OutboundTypeAnthropic && !embeddingProbe {
 		// Claude model -> Claude Code probe (tools). Gate on the model actually being a
 		// Claude model so a non-Claude model sharing an Anthropic channel is never
 		// touched; codex/gpt models get prepareCodexModelTestRequest instead, other
@@ -743,7 +759,7 @@ func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermod
 			forceClaudeModelTestBodyShape(internalRequest, r.request, fp)
 		}
 	}
-	if channel.Type == outbound.OutboundTypeOpenAIResponse {
+	if channel.Type == outbound.OutboundTypeOpenAIResponse && !embeddingProbe {
 		// Shape lock: a real codex client ALWAYS streams to the upstream, and the relay
 		// forces a streaming upstream for every codex (Responses) channel regardless of
 		// what the client asked (relay.shouldForceOpenAIResponsesStreamUpstream). A
@@ -754,7 +770,7 @@ func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermod
 		stream := true
 		internalRequest.Stream = &stream
 	}
-	if modelTestUsesCodexFingerprint(channel, r.request.Endpoint) {
+	if !embeddingProbe && modelTestUsesCodexFingerprint(channel, r.request.Endpoint) {
 		prepareCodexModelTestRequest(internalRequest, channel.Type, fp)
 	}
 
@@ -827,7 +843,18 @@ func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermod
 	if err != nil {
 		return response.StatusCode, nil, fmt.Errorf("parse response: %w", err)
 	}
-	if parsed == nil || !parsed.IsChatResponse() {
+	if parsed == nil {
+		return response.StatusCode, parsed, fmt.Errorf("upstream returned no chat choices")
+	}
+	if embeddingProbe {
+		// 嵌入端点不返回 choices：只有 data[].embedding。接受口径按 IsEmbeddingResponse
+		// 判（而不是 chat choices），且不做"正文非空"检查——1024 维向量里本来就没有文字。
+		if !parsed.IsEmbeddingResponse() {
+			return response.StatusCode, parsed, fmt.Errorf("upstream returned no embedding data")
+		}
+		return response.StatusCode, parsed, nil
+	}
+	if !parsed.IsChatResponse() {
 		return response.StatusCode, parsed, fmt.Errorf("upstream returned no chat choices")
 	}
 	if responsePreview(parsed) == "" && !parsedHasReasoningContent(parsed) {
@@ -862,6 +889,19 @@ func (r *modelRunner) internalRequest(upstreamModel string) *transformermodel.In
 	}
 
 	endpoint, _ := normalizeEndpoint(r.request.Endpoint)
+	if endpoint.name == embeddingTestEndpointName {
+		// 嵌入端点走的是完全不同的出站形状：只有 model + input（可选的 dimensions/
+		// encoding_format），没有 messages/tools/思考，不设 max_tokens，也不强制流式
+		// （EmbeddingOutbound 只认 EmbeddingInput，TransformStream 直接报错）。所以
+		// 这里提前返回，下面的 chat/claude/codex 形状逻辑一律不参与——这也保证嵌入
+		// 探针永不碰任何指纹路径（与 relay 侧对嵌入流量的处理一致）。
+		probeInput := prompt
+		return &transformermodel.InternalLLMRequest{
+			Model:          upstreamModel,
+			EmbeddingInput: &transformermodel.EmbeddingInput{Single: &probeInput},
+			RawAPIFormat:   endpoint.apiFormat,
+		}
+	}
 	// Anthropic test must mirror a genuine claude-cli request byte-shape, not a
 	// lightweight probe: 64000 max_tokens (a tiny 8 is a glaring non-CLI tell),
 	// streamed, and NO temperature field at all (real claude-cli omits it; sending
@@ -948,6 +988,19 @@ func (r *modelRunner) succeed(channel *dbmodel.Channel, key dbmodel.ChannelKey, 
 	r.result.ChannelKeyID = key.ID
 	r.result.UpstreamModel = upstreamModel
 	r.result.ResponsePreview = responsePreview(response)
+	if response != nil && response.IsEmbeddingResponse() && r.result.ResponsePreview == "" {
+		// 嵌入响应里没有文字可预览（choices 为空）。用「N 条 × D 维」代替空预览，
+		// 让渠道测试页一眼就能确认上游真的回了指定维度的向量，而不是靠"成功"两字猜。
+		dim := 0
+		if first := response.EmbeddingData[0]; first.Embedding.FloatArray != nil {
+			dim = len(first.Embedding.FloatArray)
+		}
+		if dim > 0 {
+			r.result.ResponsePreview = fmt.Sprintf("%d embedding(s) x %d dims", len(response.EmbeddingData), dim)
+		} else {
+			r.result.ResponsePreview = fmt.Sprintf("%d embedding(s)", len(response.EmbeddingData))
+		}
+	}
 	if response != nil && response.Usage != nil {
 		r.result.InputTokens = response.Usage.PromptTokens
 		r.result.OutputTokens = response.Usage.CompletionTokens

@@ -45,6 +45,8 @@ const ENDPOINT_IDENTITY: Record<ModelTestEndpoint, 'codex' | 'claude' | 'generic
     openai_responses: 'codex',
     anthropic_messages: 'claude',
     gemini_generate_content: 'generic',
+    // 嵌入流量是非 CLI 流量：不带任何 codex/claude 形状，只有通用 UA。
+    openai_embeddings: 'generic',
 };
 const SHAPE_LABEL: Record<'codex' | 'claude' | 'generic', string> = {
     codex: 'codex CLI', claude: 'claude CLI', generic: '通用 UA',

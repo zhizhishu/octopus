@@ -22,6 +22,14 @@ const (
 	// RelayLogErrorStrategyRouteSelectionPart is the marker op.relayLogExcludedFromModelTelemetry
 	// already matches on, keeping these pre-attempt rows out of model health telemetry.
 	RelayLogErrorStrategyRouteSelectionPart = "local_route_selection"
+	// RelayLogErrorCodeRequestUnparsable marks a request whose body could not be read or
+	// parsed at all (over the size cap, or malformed). Nothing was forwarded and not even a
+	// model name was recoverable, so the audit row is the operator's only trace.
+	RelayLogErrorCodeRequestUnparsable = "octopus_request_unparsable"
+	// RelayLogErrorCodeModelNotSupported marks a request the calling API key's
+	// supported_models allow-list refused. Same posture as the route-selection rows: the
+	// request never reached an upstream, so an audit log is the only clue an operator gets.
+	RelayLogErrorCodeModelNotSupported = "octopus_model_not_supported"
 )
 
 const (

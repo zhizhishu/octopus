@@ -42,7 +42,8 @@ const maxRelayInterventionRounds = 0 // 0 = unlimited; machine rescue never exha
 
 // Handler 处理入站请求并转发到上游服务
 func Handler(inboundType inbound.InboundType, c *gin.Context) {
-	// 解析请求
+	// 解析请求。解析失败的审计在 parseRequest 内部的两个静默点补（读体失败/入站转换
+	// 失败）；Validate/空请求那类错误 parseRequest 自己已落行，这里不再补，避免双写。
 	internalRequest, inAdapter, err := parseRequest(inboundType, c)
 	if err != nil {
 		return
@@ -50,6 +51,9 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 	supportedModels := c.GetString("supported_models")
 	anthropicAliases := prepareAnthropicModelCompatibility(inboundType, internalRequest)
 	if !isSupportedRequestModel(supportedModels, internalRequest.Model, anthropicAliases) {
+		// 同一个"上游未被触达"的窗口：白名单拒绝过去也只写 400、不落日志。先落库再写响应，
+		// 响应体与改动前逐字节一致（savePreRoutingFailureRelayLog 不碰 c.Writer）。
+		savePreRoutingFailureRelayLog(c.Request.Context(), c, inboundType, internalRequest, preRoutingModelNotSupported, dbmodel.RelayLogErrorCodeModelNotSupported, http.StatusBadRequest, "model not supported")
 		writeRelayErrorPreStream(c, inboundType, http.StatusBadRequest, "invalid_request_error", "model_not_supported", "model not supported")
 		return
 	}
@@ -1089,9 +1093,13 @@ func parseRequest(inboundType inbound.InboundType, c *gin.Context) (*model.Inter
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
 			resp.Error(c, http.StatusRequestEntityTooLarge, "request body too large")
+			// 静默窗口补审计：此前这里只写响应不落库（嵌入这类非 CLI 流量尤其容易
+			// 被当成"网关没统计"）。只落库、不碰 c.Writer，响应字节不变。
+			savePreRoutingFailureRelayLog(c.Request.Context(), c, inboundType, nil, preRoutingRequestUnparsable, dbmodel.RelayLogErrorCodeRequestUnparsable, http.StatusRequestEntityTooLarge, "request body rejected before routing")
 			return nil, nil, err
 		}
 		resp.Error(c, http.StatusInternalServerError, err.Error())
+		savePreRoutingFailureRelayLog(c.Request.Context(), c, inboundType, nil, preRoutingRequestUnparsable, dbmodel.RelayLogErrorCodeRequestUnparsable, http.StatusInternalServerError, "request body rejected before routing")
 		return nil, nil, err
 	}
 
@@ -1099,6 +1107,8 @@ func parseRequest(inboundType inbound.InboundType, c *gin.Context) (*model.Inter
 	internalRequest, err := inAdapter.TransformRequest(c.Request.Context(), body)
 	if err != nil {
 		resp.Error(c, http.StatusInternalServerError, err.Error())
+		// 同上：入站转换失败（含 JSON 解析失败）此前不落库。
+		savePreRoutingFailureRelayLog(c.Request.Context(), c, inboundType, nil, preRoutingRequestUnparsable, dbmodel.RelayLogErrorCodeRequestUnparsable, http.StatusInternalServerError, "request body rejected before routing")
 		return nil, nil, err
 	}
 

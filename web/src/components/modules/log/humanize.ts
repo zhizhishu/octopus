@@ -43,6 +43,9 @@ const ERROR_CODE_LABELS: Record<string, string> = {
     // ---- 本地预校验（请求还没真正发出去）----
     client_empty_request: '客户端发来了空请求',
     cursor_empty_probe: 'Cursor 的空探测请求（正常现象）',
+    // 路由前置拒绝（上游未被触达）：网关侧给出的两个新码
+    octopus_request_unparsable: '请求体读不出来（超体积上限或格式不对）',
+    octopus_model_not_supported: '模型不在该 API Key 的允许清单里',
 
     // ---- 上游供应商原样透出的码（上游 JSON 里的 code / type，开放集，只收高频）----
     // 后端 internal/relay/upstream_error.go 会把上游返回的 error.code/type 原样塞进 error_code，
@@ -100,6 +103,7 @@ const ENDPOINT_LABELS: Record<string, string> = {
     model_test_responses: '连通性测试（Responses）',
     model_test_anthropic_messages: '连通性测试（Messages）',
     model_test_gemini: '连通性测试（Gemini）',
+    model_test_embeddings: '连通性测试（向量）',
 };
 
 function lookup(map: Record<string, string>, raw: string | undefined): string | undefined {
@@ -298,6 +302,18 @@ export function getLogVerdict(
         return {
             kind: 'config',
             text: '❌ 失败：没有可用渠道，请求根本没发出去。这属于配置问题，等着不会自己好。',
+        };
+    }
+    if (code === 'octopus_model_not_supported') {
+        return {
+            kind: 'config',
+            text: '❌ 失败：这个模型不在当前 API Key 的允许清单里，请求根本没发出去。去「API Key」把模型加进 supported_models，或换个 key。',
+        };
+    }
+    if (code === 'octopus_request_unparsable') {
+        return {
+            kind: 'client',
+            text: '❌ 失败：网关没能读出客户端请求体（超过体积上限或格式不对），请求根本没发出去。',
         };
     }
     if (code === 'octopus_no_available_channel') {
