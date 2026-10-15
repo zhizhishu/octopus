@@ -178,7 +178,7 @@ export function humanizeSessionSource(source: string | undefined): string | unde
  * 客户端识别: 把调用端 User-Agent 解析成人类可读的客户端名。
  *
  * 服务端只存原始 UA(对齐 new-api/axonhub 的做法), 映射在前端做——客户端生态
- * 漂移时改这里即可, 不动库表。识别不出的 UA 截断展示原样字符串, 不猜。
+ * 漂移时改这里即可, 不动库表。识别不出的 UA 完整展示原样字符串, 不猜；换行交给卡片。
  * 顺序按「最具体的在前」: claude-cli 必须先于泛 claude, codex_cli_rs 先于 codex。
  */
 const CLIENT_LABELS: Array<[pattern: RegExp, label: string]> = [
@@ -210,7 +210,7 @@ export function humanizeClient(ua: string | undefined): string | undefined {
     for (const [pattern, label] of CLIENT_LABELS) {
         if (pattern.test(raw)) return label;
     }
-    return raw.length > 28 ? `${raw.slice(0, 28)}…` : raw;
+    return raw;
 }
 
 /**

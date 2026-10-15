@@ -8,7 +8,7 @@ const { test } = require('node:test');
 const React = require('react');
 const { load } = require('./load-typescript.cjs');
 
-const { describeEchoComparison, isRegionNamespaceHint } = load('src/components/modules/log/humanize.ts');
+const { describeEchoComparison, isRegionNamespaceHint, humanizeClient } = load('src/components/modules/log/humanize.ts');
 const display = (value) => value ?? '';
 const base = {
     request_model_name: '',
@@ -85,6 +85,13 @@ test('region/namespace hint detection', () => {
     assert.equal(isRegionNamespaceHint('us-east'), true);
     assert.equal(isRegionNamespaceHint('vercel-deepseek'), false);
     assert.equal(isRegionNamespaceHint(''), false);
+});
+
+test('unrecognized long client identifiers remain complete before layout', () => {
+    for (const ua of ['deepseek-harness/0.1.5-rc.2 (win32; x64)', 'pi (win32 10.0.26200; x64) production-worker']) {
+        assert.equal(humanizeClient(ua), ua, 'the formatter must not pre-truncate the client label');
+    }
+    assert.equal(humanizeClient('claude-cli/2.1.296 (external, sdk-cli)'), 'Claude CLI');
 });
 
 // --- card header DOM structure ---------------------------------------------
