@@ -324,11 +324,11 @@ test('client badge shows fully: no ellipsis, wraps long words, badge overflow un
     assert.doesNotMatch(cls, /truncate/, 'never degrades to ellipsis');
 });
 
-test('model names render in wrap mode (desktop and mobile) instead of ellipsis', () => {
+test('card model names truncate so the header stays two rows', () => {
     const { LogCard } = loadCard();
     const grid = renderCardHeader(LogCard, sampleLog());
-    const modelTexts = collect(grid.props.children, (node) => node.props && node.props.mode === 'wrap');
-    assert.ok(modelTexts.length >= 2, 'both the request model and the sent model render with mode=wrap');
+    const modelTexts = collect(grid.props.children, (node) => node.props && node.props.mode === 'truncate');
+    assert.ok(modelTexts.length >= 2, 'request model and sent model truncate inside the card');
 });
 
 test('summary band no longer forces both rows onto one line', () => {
