@@ -196,7 +196,15 @@ function RetryBadgeWithPopover({ channelName, brandColor, attempts }: RetryBadge
                     role="button"
                     tabIndex={0}
                     onClick={(e) => e.stopPropagation()}
-                    onKeyDown={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => {
+                        // Enter/Space 就地激活本徽标的 Popover（span[role=button] 没有原生按钮行为），
+                        // 同时掐断冒泡，避免连带打开整卡详情。
+                        e.stopPropagation();
+                        if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            e.currentTarget.click();
+                        }
+                    }}
                     className="min-w-0 max-w-[min(12rem,100%)] cursor-pointer px-1.5 py-0 text-xs"
                     style={{ backgroundColor: `${brandColor}15`, color: brandColor }}
                 >
@@ -329,7 +337,7 @@ interface LogRouteHeaderProps {
  * 日志「路由头部」：状态 / 接口 / 上游路径徽标 → request_model_name → 渠道（多尝试展开
  * RetryBadgeWithPopover，否则渠道 Badge）→ actual_model_name → 可能的 stream / sticky 徽标。
  * 卡片列表头部与详情弹窗标题渲染同一套元素，只差尺寸与换行，用 variant 收敛：
- * card 走「固定 3 列 × 2 行列轨道」grid（见下方 isCard 分支），detail 标题区是可换行 flex、
+ * card 走「自然三分区两排」grid（见下方 isCard 分支），detail 标题区是可换行 flex、
  * 但状态徽标被钉进固定首位 span（见 detail 分支注释）——两变体的成功/失败/警告标记
  * 都落在同一个固定槽位，不随文本长度漂移。
  * 两分支复用同一批原子元素，避免同一枚徽标出现两份实现。
@@ -354,7 +362,8 @@ function LogRouteHeader({
 }: LogRouteHeaderProps) {
     const t = useTranslations('log.card');
     const isCard = variant === 'card';
-    const textMode = isCard ? undefined : 'wrap';
+    // 模型名一律可换行：长名/长词在父格内自然断行，不再整段省略号（不改 SafeText 全局行为）。
+    const textMode = 'wrap';
     const requestModelDisplayName = marketModelName(log.request_model_name) || log.request_model_name;
     const actualModelDisplayName = marketModelName(log.actual_model_name) || log.actual_model_name;
     const upstreamEchoName = log.upstream_response_model?.trim() ?? '';
@@ -382,7 +391,7 @@ function LogRouteHeader({
             className={cn(
                 "min-w-0 shrink text-xs font-mono",
                 isCard
-                    ? "max-w-[6rem] sm:max-w-[9rem] lg:max-w-[12rem] border-border/70 bg-muted/40 px-1.5 py-0"
+                    ? "max-w-[14rem] border-border/70 bg-muted/40 px-1.5 py-0"
                     : "max-w-[16rem] border-border/70 bg-muted/40 px-2 py-0.5"
             )}
             title={endpointTitle}
@@ -396,7 +405,7 @@ function LogRouteHeader({
             className={cn(
                 "min-w-0 shrink text-xs font-mono",
                 isCard
-                    ? "max-w-[7rem] sm:max-w-[11rem] lg:max-w-[15rem] border-border/70 bg-muted/40 px-1.5 py-0"
+                    ? "max-w-[14rem] border-border/70 bg-muted/40 px-1.5 py-0"
                     : "max-w-[16rem] border-border/70 bg-muted/40 px-2 py-0.5"
             )}
             title={upstreamPathTitle}
@@ -415,8 +424,8 @@ function LogRouteHeader({
     /* Channel identity is admin-only: a normal user's log carries no
        channel_name (see RelayLogUserSummary), so the header degrades to
        request model → actual model without ever revealing the upstream. */
-    // 渠道拆成两个独立元素：箭头占 grid col3、徽标占 col4（重试 Popover 里的 Badge 也是一个
-    // grid 子节点，不能让整个 Fragment 变成一个格子）。
+    // 渠道拆成两个独立元素：箭头 + 徽标都落在中列的「请求→渠道→发出名」自然组里，
+    // 由该组的 flex-wrap 自行摆放（不再靠固定列轨道），重试 Popover 里的 Badge 也是独立元素。
     const channelArrow = log.channel_name ? (
         <ArrowRight className="size-3.5 shrink-0 text-muted-foreground/50" />
     ) : null;
@@ -469,29 +478,31 @@ function LogRouteHeader({
                 ? t('familyReplacedHint', { requested: echo.fromRaw, echo: echo.toRaw })
                 : t('echoMismatchHint', { model: echo.toRaw })}
         >
-            <SafeText value={echo.fromLabel} className="min-w-0 text-xs" />
+            <SafeText value={echo.fromLabel} mode="wrap" className="min-w-0 text-xs" />
             <ArrowRight className="size-3.5 shrink-0" />
-            <SafeText value={echo.toLabel} className="min-w-0 text-xs font-medium" />
+            <SafeText value={echo.toLabel} mode="wrap" className="min-w-0 text-xs font-medium" />
         </span>
     ) : null;
-    // B2：渠道列下承接回显证据 + 风险徽标。整组不换行，检测徽标贴在本格右端。
+    // B2：渠道列下承接回显证据 + 风险徽标。整组可换行（窄屏/长回显名不裁），检测徽标另占一格。
     const echoGroup = showEcho ? (
         <span
             data-echo-state={echoState}
             data-echo-tone={echoTone}
             data-upstream-echo={upstreamEchoName}
             data-family-verdict={familyVerdict}
-            className="inline-flex min-w-0 items-center gap-2"
+            className="inline-flex min-w-0 flex-wrap items-center gap-2"
         >
             {echoTone === 'trusted' ? (
                 <SafeText
                     value={echo.vendorPrefix ? `${echo.vendorPrefix}${t('vendorModelSeparator')}${echo.modelName}` : echo.modelName}
+                    mode="wrap"
                     title={t('familyTrustedHint')}
                     className="text-xs text-emerald-700 dark:text-emerald-300"
                 />
             ) : echoTone === 'equivalent' ? (
                 <SafeText
                     value={echo.toLabel || upstreamEchoDisplayName}
+                    mode="wrap"
                     title={t('echoConsistent')}
                     className="text-xs text-muted-foreground"
                 />
@@ -501,7 +512,7 @@ function LogRouteHeader({
                     <Badge
                         variant="outline"
                         className={cn(
-                            "border-red-500/40 bg-red-500/10 text-xs text-red-600 dark:text-red-300",
+                            "overflow-visible whitespace-normal break-words border-red-500/40 bg-red-500/10 text-xs text-red-600 dark:text-red-300",
                             isCard ? "px-1.5 py-0" : "px-2 py-0.5"
                         )}
                         title={t('familyReplacedHint', { requested: echo.fromRaw, echo: echo.toRaw })}
@@ -515,7 +526,7 @@ function LogRouteHeader({
                     <Badge
                         variant="outline"
                         className={cn(
-                            "border-amber-500/40 bg-amber-500/10 text-xs text-amber-800 dark:text-amber-200",
+                            "overflow-visible whitespace-normal break-words border-amber-500/40 bg-amber-500/10 text-xs text-amber-800 dark:text-amber-200",
                             isCard ? "px-1.5 py-0" : "px-2 py-0.5"
                         )}
                         title={t('echoAliasVariantHint', { model: echo.toRaw })}
@@ -545,9 +556,16 @@ function LogRouteHeader({
                                 role="button"
                                 tabIndex={0}
                                 onClick={(e) => e.stopPropagation()}
-                                onKeyDown={(e) => e.stopPropagation()}
+                                onKeyDown={(e) => {
+                                    // Enter/Space 就地激活「回显不符」Popover，不误开整卡。
+                                    e.stopPropagation();
+                                    if (e.key === 'Enter' || e.key === ' ') {
+                                        e.preventDefault();
+                                        e.currentTarget.click();
+                                    }
+                                }}
                                 className={cn(
-                                    "cursor-pointer border-amber-500/40 bg-amber-500/10 text-xs text-amber-800 dark:text-amber-200",
+                                    "cursor-pointer overflow-visible whitespace-normal break-words border-amber-500/40 bg-amber-500/10 text-xs text-amber-800 dark:text-amber-200",
                                     isCard ? "px-1.5 py-0" : "px-2 py-0.5"
                                 )}
                             >
@@ -571,7 +589,7 @@ function LogRouteHeader({
                     </Popover>
                 </>
             ) : upstreamEchoName ? (
-                <SafeText value={upstreamEchoDisplayName} title={t('upstreamEcho')} className="text-xs text-muted-foreground" />
+                <SafeText value={upstreamEchoDisplayName} mode="wrap" title={t('upstreamEcho')} className="text-xs text-muted-foreground" />
             ) : (
                 <span className="min-w-0 truncate text-xs text-muted-foreground/60" title={t('upstreamSilent')}>{t('upstreamSilent')}</span>
             )}
@@ -592,42 +610,41 @@ function LogRouteHeader({
 
     if (isCard) {
         /**
-         * 一个共享 header grid，6 列 × 2 排（所有断点都不堆叠，小屏靠截断/缩略字段）：
-         *   col1 `fit-content(36%)`（状态/救援/短接口/受限长路径） · col2 `minmax(0,1fr)`（请求模型）
-         *   · col3 `14px`（渠道前右箭头） · col4 `minmax(0,.8fr)`（渠道） · col5 `minmax(0,1fr)`（发出名）
-         *   · col6 `auto`（流式/详情）。
-         * 第 1 排 = A1 / 请求模型 / → / 渠道 / 发出名 / 流式；发出名即便与请求同名也照原样显示（不隐藏）。
-         * 第 2 排 = col1 客户端 · col4-col5 渠道列正下方的证据（ArrowDown 从渠道列开始）· col6 详情。
-         * 每个格子都带 `data-log-row`（1/2）与 `data-log-cell`（列号），供同宽 + 390px 真页测量。
+         * 自然三分区两排（暖纸精修；不逐字照抄原型）：
+         * md 及以上 `minmax(0,.9fr) | minmax(0,1.4fr) | auto` 三列两排——状态/救援/接口/路径（左）、
+         * 请求模型→渠道→发出名（中、最宽）、流式·图钉（右）；下排 客户端（左）、回显证据·检测（中）、
+         * 查看详情（右）。左列用 .9fr 避免长客户端名把右侧 auto 列撑大；每格都是 flex-wrap 自然组。
+         * md 以下两列 `minmax(0,1fr) | auto`：状态 R1C1、流式 R1C2、路由 R2 跨两列、客户端 R3 跨两列、
+         * 回显 R4C1、查看详情 R4C2——不把流式/详情独占整行留下大空洞。
+         * 回显格额外用 flex-nowrap 外层固定箭头、内层 flex-wrap 收容回显/检测。
+         * 每个格子都带 `data-log-row`（1/2）与 `data-log-cell`（区号），供同宽 + 390px 真页测量。
          */
+        const hasEchoEvidence = Boolean(echoGroup || auditSlot);
         return (
-            <div data-log-header className="grid min-w-0 grid-cols-[fit-content(36%)_minmax(0,1fr)_14px_minmax(0,.8fr)_minmax(0,1fr)_auto] grid-rows-[1.25rem_1.25rem] items-center gap-x-1 gap-y-1 text-sm sm:gap-x-2">
-                {/* R1C1 状态 · 自动救援 · 短接口 · 受限长路径（内容宽、长值截断，完整值在 title） */}
-                <div data-log-row="1" data-log-cell="1" className="col-start-1 row-start-1 flex min-w-0 flex-nowrap items-center gap-2">
+            <div
+                data-log-header
+                className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-x-2 gap-y-1.5 text-sm md:grid-cols-[minmax(0,.9fr)_minmax(0,1.4fr)_auto] md:gap-x-3.5 md:gap-y-2"
+            >
+                {/* R1C1 状态 · 自动救援 · 接口 · 上游路径（内容宽，长值在自身 max-w 内截断，完整值在 title） */}
+                <div data-log-row="1" data-log-cell="1" className="col-start-1 row-start-1 flex min-w-0 flex-wrap items-center gap-2 md:col-start-1 md:row-start-1">
                     <span className="inline-flex shrink-0 items-center order-first">{statusBadge}</span>
                     {autoRescueSlot}
                     {endpointBadge}
                     {upstreamPathBadge}
                 </div>
-                {/* R1C2 请求模型（下面 R2C2 留空，不硬占短徽标宽度） */}
-                <div data-log-row="1" data-log-cell="2" className="col-start-2 row-start-1 min-w-0">{requestModelText}</div>
-                {/* R1C3 右箭头（渠道前，独立 14px 列） */}
-                {channelArrow ? (
-                    <div data-log-row="1" data-log-cell="3" className="col-start-3 row-start-1 flex min-w-0 items-center justify-center">{channelArrow}</div>
-                ) : null}
-                {/* R1C4 渠道（重试 Popover 里的 Badge 也落在本列，Fragment 不占格） */}
-                {channelBadge ? (
-                    <div data-log-row="1" data-log-cell="4" className="col-start-4 row-start-1 min-w-0">{channelBadge}</div>
-                ) : null}
-                {/* R1C5 发出模型（同名也照生产原样显示，不隐藏） */}
-                <div data-log-row="1" data-log-cell="5" className="col-start-5 row-start-1 min-w-0">{actualModelText}</div>
-                {/* R1C6 流式 · 粘性图钉（右） */}
-                <div data-log-row="1" data-log-cell="6" className="col-start-6 row-start-1 flex min-w-0 items-center justify-self-end gap-2">
+                {/* R1C2 请求模型 → 渠道 → 发出名（中列最宽；组内自然换行，长名可断） */}
+                <div data-log-row="1" data-log-cell="2" className="col-span-2 col-start-1 row-start-2 flex min-w-0 flex-wrap items-center gap-2 md:col-span-1 md:col-start-2 md:row-start-1">
+                    {requestModelText}
+                    {channelGroup}
+                    {actualModelText}
+                </div>
+                {/* R1C3 流式 · 粘性图钉（小屏落在 R1C2，右对齐） */}
+                <div data-log-row="1" data-log-cell="3" className="col-start-2 row-start-1 flex min-w-0 flex-wrap items-center justify-self-end gap-2 md:col-start-3 md:row-start-1">
                     {streamBadge}
                     {stickyPin}
                 </div>
-                {/* R2C1 下游客户端（截断 + title；缺失给低强调占位） */}
-                <div data-log-row="2" data-log-cell="1" className="col-start-1 row-start-2 flex min-w-0 flex-nowrap items-center gap-2">
+                {/* R2C1 下游客户端（完整显示不 ellipsis；小屏 R3 跨两列） */}
+                <div data-log-row="2" data-log-cell="1" className="col-span-2 col-start-1 row-start-3 flex min-w-0 flex-wrap items-center gap-2 md:col-span-1 md:col-start-1 md:row-start-2">
                     {clientSlot ?? (
                         <Badge
                             variant="outline"
@@ -637,14 +654,20 @@ function LogRouteHeader({
                         </Badge>
                     )}
                 </div>
-                {/* R2C4–C5 渠道列正下方：向下箭头承接回显证据 + 风险徽标（+检测） */}
-                <div data-log-row="2" data-log-cell="4" className="col-start-2 col-span-4 row-start-2 grid min-w-0 grid-cols-subgrid items-center sm:col-start-4 sm:col-span-2 sm:flex sm:flex-nowrap sm:gap-2">
-                    <ArrowDown className="col-start-3 row-start-1 size-3.5 shrink-0 text-muted-foreground/40" />
-                    <span className="col-start-1 col-span-2 row-start-1 flex min-w-0 overflow-hidden sm:overflow-visible">{echoGroup}</span>
-                    {auditSlot ? <span className="col-start-4 row-start-1 min-w-0 max-w-full shrink overflow-hidden sm:max-w-[45%]" title={t('auditPrefix')}>{auditSlot}</span> : null}
+                {/* R2C2 回显证据 · 风险徽标 · 检测（左端固定向下箭头承接渠道）。
+                    外层 flex-nowrap：箭头永远钉在左端、长回显只能在内层自己换行，
+                    不会整组掉下一行导致箭头脱离它；无任何证据时不渲染箭头（普通用户不造空箭头）。 */}
+                <div data-log-row="2" data-log-cell="2" className="col-start-1 row-start-4 flex min-w-0 flex-nowrap items-start gap-x-1.5 md:col-start-2 md:row-start-2">
+                    {hasEchoEvidence ? <ArrowDown className="size-3.5 shrink-0 text-muted-foreground/40" /> : null}
+                    {hasEchoEvidence ? (
+                        <span className="flex min-w-0 flex-1 flex-wrap items-start gap-x-1.5 gap-y-1">
+                            {echoGroup}
+                            {auditSlot ? <span className="min-w-0">{auditSlot}</span> : null}
+                        </span>
+                    ) : null}
                 </div>
-                {/* R2C6 查看详情（右；小屏仍可点图标，仅文字标签收起） */}
-                <div data-log-row="2" data-log-cell="6" className="col-start-6 row-start-2 flex min-w-0 items-center justify-self-end gap-1 text-xs text-muted-foreground">
+                {/* R2C3 查看详情（小屏 R4C2） */}
+                <div data-log-row="2" data-log-cell="3" className="col-start-2 row-start-4 flex min-w-0 flex-wrap items-center justify-self-end gap-1 text-xs text-muted-foreground md:col-start-3 md:row-start-2">
                     {detailsSlot}
                 </div>
             </div>
@@ -1082,9 +1105,9 @@ export const LogCard = React.memo(function LogCard({
             {t('autoRescue')}
         </Badge>
     ) : null;
-    // 客户端徽标来自调用端 UA（humanizeClient）。徽标点按弹出详情（Popover）——移动端手指
-    // 可触，不依赖悬停。卡片外层是 MorphingDialogTrigger（自带 onClick/onKeyDown），徽标必须
-    // 就地掐断事件冒泡，否则点徽标会连带打开整卡详情弹窗。
+    // 客户端徽标来自调用端 UA（humanizeClient）。徽标点按/Enter/Space 弹出详情（Popover）——移动端
+    // 手指可触、键盘可激活，不依赖悬停。卡片外层是 MorphingDialogTrigger（自带 onClick/onKeyDown），
+    // 徽标必须就地掐断事件冒泡，否则会连带打开整卡详情弹窗。
     const clientSlot = clientLabel ? (
         <Popover>
             <PopoverTrigger asChild>
@@ -1093,9 +1116,16 @@ export const LogCard = React.memo(function LogCard({
                     role="button"
                     tabIndex={0}
                     onClick={(e) => e.stopPropagation()}
-                    onKeyDown={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => {
+                        // Enter/Space 就地激活 Popover，不误开整卡。
+                        e.stopPropagation();
+                        if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            e.currentTarget.click();
+                        }
+                    }}
                     title={clientLabel}
-                    className="min-w-0 max-w-full cursor-pointer border-violet-500/30 bg-violet-500/10 px-1.5 py-0 text-xs text-violet-600 dark:text-violet-300"
+                    className="min-w-0 max-w-full cursor-pointer overflow-visible whitespace-normal break-all border-violet-500/30 bg-violet-500/10 px-1.5 py-0 text-xs text-violet-600 dark:text-violet-300"
                 >
                     {clientLabel}
                 </Badge>
@@ -1118,8 +1148,15 @@ export const LogCard = React.memo(function LogCard({
                     role="button"
                     tabIndex={0}
                     onClick={(e) => e.stopPropagation()}
-                    onKeyDown={(e) => e.stopPropagation()}
-                    className={cn('shrink-0 cursor-pointer px-1.5 py-0 text-xs', auditBadge.className)}
+                    onKeyDown={(e) => {
+                        // Enter/Space 就地激活「模型检测」Popover，不误开整卡。
+                        e.stopPropagation();
+                        if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            e.currentTarget.click();
+                        }
+                    }}
+                    className={cn('min-w-0 cursor-pointer overflow-visible whitespace-normal px-1.5 py-0 text-xs', auditBadge.className)}
                 >
                     {auditBadge.label}
                 </Badge>
@@ -1180,15 +1217,15 @@ export const LogCard = React.memo(function LogCard({
                 <MorphingDialogTrigger
                     disabled={!canViewDetails}
                     className={cn(
-                        "relative w-full overflow-hidden rounded-lg border bg-card text-left",
+                        "relative w-full overflow-hidden rounded-lg border bg-card text-left shadow-sm",
                         hasError
-                            ? "border-destructive/40 bg-destructive/[0.05]"
+                            ? "border-destructive/40"
                             : hasPartialFailure
-                                ? "border-amber-500/40 bg-amber-500/[0.05]"
+                                ? "border-amber-500/40"
                                 : "border-border",
                     )}
                 >
-                    {/* 左侧状态色条：失败/重试的行一眼可辨（抄自 new-api 的整行 tint 思路）。 */}
+                    {/* 左侧状态色条：失败/重试的行一眼可辨，仅作点缀（不再整卡铺红/琥珀底）。 */}
                     <span
                         aria-hidden
                         className={cn(
@@ -1196,23 +1233,26 @@ export const LogCard = React.memo(function LogCard({
                             hasError ? "bg-destructive" : hasPartialFailure ? "bg-amber-500" : "bg-emerald-500/50",
                         )}
                     />
-                    {/* 5050 基线：裸官方 Logo（auto 列）+ 内容列，p-4 / gap-4 */}
+                    {/* 暖纸精修：裸官方 Logo（auto 列）+ 内容列，桌面 pad16/gap14，手机 pad12/gap10，顶对齐 */}
                     <div
                         // 验收/排障锚点：让真机脚本能把「模型检测」徽标绑定到某一条确定的日志卡，
                         // 而不是全页面按文字找。日志 id 不是敏感字段（详情弹层里本来就显示它）。
                         // 必须挂在真实 DOM 节点上：MorphingDialogTrigger 只透传它解构过的
                         // props，挂在它上面会被静默丢掉、压根渲染不出来。
                         data-log-id={log.id}
-                        className="p-4 grid grid-cols-[auto_1fr] gap-4 items-center"
+                        className="p-3 md:p-4 grid grid-cols-[auto_1fr] gap-2.5 md:gap-3.5 items-start"
                     >
-                        <div title={modelNameToDisplay} className="shrink-0">
-                            <ModelAvatar size={40} />
+                        {/* Avatar 只接 size（IconAvatar 拿它写 inline 宽高，且 TS 里必填）：外层用 class
+                            定 28/36，style 在 IconAvatar 里于 inline 宽高之后合并、可覆盖成 100%；
+                            svg 的 width/height 是属性，被 [&_svg]:size-full 覆盖（CSS 胜过展示属性）。 */}
+                        <div title={modelNameToDisplay} className="shrink-0 size-7 md:size-9 [&_svg]:size-full">
+                            <ModelAvatar size={36} style={{ width: '100%', height: '100%' }} />
                         </div>
-                        <div className="min-w-0 flex flex-col gap-3">
-                            {/* 路由头部：一个共享 6 列 × 2 排 grid（在 LogRouteHeader 的 card 分支里）。
-                                第 1 排 = 状态/救援/短接口/受限路径 | 请求模型 | → | 渠道 | 发出(实际)模型 | 流式·图钉；
-                                第 2 排 = 下游客户端 | （渠道列下）回显证据·风险·模型检测 | 查看详情。
-                                第 2 排永远渲染（客户端/回显缺失给占位），所以两排列宽恒定、内容不再漂移。 */}
+                        <div className="min-w-0 flex flex-col gap-2.5 md:gap-3">
+                            {/* 路由头部：自然三分区两排 grid（在 LogRouteHeader 的 card 分支里）。
+                                第 1 排 = 状态/救援/接口/路径 | 请求模型→渠道→发出名 | 流式·图钉；
+                                第 2 排 = 下游客户端 | 回显证据·风险·模型检测 | 查看详情。
+                                小屏两列并重排，不把流式/详情独占整行留下大空洞。 */}
                             <LogRouteHeader
                                 variant="card"
                                 log={log}
@@ -1232,81 +1272,92 @@ export const LogCard = React.memo(function LogCard({
                                 detailsSlot={detailsSlot}
                             />
 
-                            {/* 第 2 行：紧凑摘要带固定两行（与 5050 等高对齐：行1 身份与用量，行2 性能与费用） */}
-                            <div className="flex min-w-0 flex-col gap-2 text-xs tabular-nums text-muted-foreground">
-                                <div data-log-row="3" className="flex min-w-0 flex-nowrap items-center gap-x-4">
-                                {/* G1 时间与位置 */}
-                                <div className="flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap">
-                                    <Clock className="size-3.5 shrink-0 text-muted-foreground" />
-                                    <span className="min-w-0 truncate">{formatTime(log.time)}</span>
+                            {/* 第 2 行：紧凑摘要（组间可换行；关键数字 shrink-0 + nowrap，绝不只剩省略号） */}
+                            <div className="flex min-w-0 flex-col gap-2.5 md:gap-3 text-xs tabular-nums text-muted-foreground">
+                                <div data-log-row="3" className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+                                {/* G1 时间与位置（时间/IP 可换行；分隔点与 IP 同组，不孤立） */}
+                                <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
+                                    <span className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap">
+                                        <Clock className="size-3.5 shrink-0 text-muted-foreground" />
+                                        <span>{formatTime(log.time)}</span>
+                                    </span>
                                     {log.request_ip?.trim() && (
-                                        <>
+                                        <span className="inline-flex min-w-0 items-center gap-1.5">
                                             <span className="shrink-0 text-muted-foreground/60">·</span>
-                                            <span className="min-w-0 truncate font-mono" title={log.request_ip.trim()}>{log.request_ip.trim()}</span>
-                                        </>
+                                            <span className="min-w-0 break-all font-mono" title={log.request_ip.trim()}>{log.request_ip.trim()}</span>
+                                        </span>
                                     )}
                                 </div>
 
-                                {/* G2 用量与推理 */}
+                                {/* G2 用量与推理（摘要允许换行，不截断） */}
                                 {!isModelTest && (
-                                    <div className="flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap">
-                                        <span className="min-w-0 truncate" title={formatTokensSummary(log)}>{formatTokensSummary(log)}</span>
+                                    <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
+                                        <span className="min-w-0 break-words" title={formatTokensSummary(log)}>{formatTokensSummary(log)}</span>
                                         {reasoningEffort && (
-                                            <>
+                                            <span className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap">
                                                 <span className="text-muted-foreground/60">·</span>
-                                                <span className="inline-flex items-center gap-1">
-                                                    <Brain className="size-3.5 shrink-0 text-muted-foreground" />
-                                                    <span>{t('thinking')} {reasoningEffort}</span>
-                                                </span>
-                                            </>
+                                                <Brain className="size-3.5 shrink-0 text-muted-foreground" />
+                                                <span>{t('thinking')} {reasoningEffort}</span>
+                                            </span>
                                         )}
                                     </div>
                                 )}
                                 {isModelTest && reasoningEffort && (
-                                    <div className="flex min-w-0 items-center gap-1 whitespace-nowrap">
+                                    <div className="flex min-w-0 shrink-0 items-center gap-1 whitespace-nowrap">
                                         <Brain className="size-3.5 shrink-0 text-muted-foreground" />
-                                        <span className="min-w-0 truncate">{t('thinking')} {reasoningEffort}</span>
+                                        <span>{t('thinking')} {reasoningEffort}</span>
                                     </div>
                                 )}
                                 </div>
-                                <div data-log-row="4" className="flex min-w-0 flex-nowrap items-center gap-x-4">
+                                <div data-log-row="4" className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
 
-                                {/* G3 耗时与费用 */}
-                                <div className="flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap">
-                                    <span className={cn("inline-flex min-w-0 items-center gap-1 overflow-hidden font-medium", latencyTextColor(log.ftut, 1500, 4000))}>
+                                {/* G3 耗时与费用（每个数字小组 shrink-0 + nowrap，关键值绝不只剩省略号） */}
+                                <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
+                                    <span
+                                        className={cn("inline-flex shrink-0 items-center gap-1 whitespace-nowrap font-medium", latencyTextColor(log.ftut, 1500, 4000))}
+                                        title={`${t('firstToken')} ${Number.isFinite(log.ftut) && log.ftut > 0 ? formatDuration(log.ftut) : '--'}`}
+                                    >
                                         <Zap className="size-3.5 shrink-0" />
-                                        <span className="min-w-0 truncate" title={`${t('firstToken')} ${Number.isFinite(log.ftut) && log.ftut > 0 ? formatDuration(log.ftut) : '--'}`}>{t('firstToken')} {Number.isFinite(log.ftut) && log.ftut > 0 ? formatDuration(log.ftut) : '--'}</span>
+                                        <span>{t('firstToken')} {Number.isFinite(log.ftut) && log.ftut > 0 ? formatDuration(log.ftut) : '--'}</span>
                                     </span>
-                                    <span className="text-muted-foreground/60">·</span>
-                                    <span className={cn("inline-flex min-w-0 items-center gap-1 overflow-hidden font-medium", latencyTextColor(log.use_time, 5000, 15000))}>
-                                        <Clock className="size-3.5 shrink-0 text-muted-foreground" />
-                                        <span className="min-w-0 truncate" title={`${t('totalTime')} ${formatDuration(log.use_time)}`}>{t('totalTime')} {formatDuration(log.use_time)}</span>
+                                    <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap">
+                                        <span className="text-muted-foreground/60">·</span>
+                                        <span
+                                            className={cn("inline-flex items-center gap-1 font-medium", latencyTextColor(log.use_time, 5000, 15000))}
+                                            title={`${t('totalTime')} ${formatDuration(log.use_time)}`}
+                                        >
+                                            <Clock className="size-3.5 shrink-0 text-muted-foreground" />
+                                            <span>{t('totalTime')} {formatDuration(log.use_time)}</span>
+                                        </span>
                                     </span>
                                     {!isModelTest && (
-                                        <>
+                                        <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap">
                                             <span className="text-muted-foreground/60">·</span>
-                                            <span className="inline-flex min-w-0 items-center gap-1 overflow-hidden font-medium tabular-nums text-emerald-600 dark:text-emerald-400">
+                                            <span
+                                                className="inline-flex items-center gap-1 font-medium tabular-nums text-emerald-600 dark:text-emerald-400"
+                                                title={`$${Number(log.cost || 0).toFixed(6)}`}
+                                            >
                                                 <DollarSign className="size-3.5 shrink-0 text-emerald-500" />
-                                                <span className="min-w-0 truncate" title={`$${Number(log.cost || 0).toFixed(6)}`}>{Number(log.cost) > 0 ? `$${Number(log.cost).toFixed(6)}` : '$0.000000'}</span>
+                                                <span>{Number(log.cost) > 0 ? `$${Number(log.cost).toFixed(6)}` : '$0.000000'}</span>
                                             </span>
-                                        </>
+                                        </span>
                                     )}
                                 </div>
 
-                                {/* G4 身份 */}
+                                {/* G4 身份（分隔点与用户同组，不孤立） */}
                                 {(requestAPIKeyName || (canViewDetails && userName)) && (
-                                    <div className="flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap">
+                                    <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
                                         {requestAPIKeyName && (
-                                            <span className="inline-flex items-center gap-1">
+                                            <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap">
                                                 <KeyRound className="size-3.5 shrink-0 text-muted-foreground" />
                                                 <MonoSafeText value={maskSensitive(requestAPIKeyName, sensitiveVisible)} className="max-w-[140px] truncate" />
                                             </span>
                                         )}
-                                        {requestAPIKeyName && canViewDetails && userName && (
-                                            <span className="text-muted-foreground/60">·</span>
-                                        )}
                                         {canViewDetails && userName && (
                                             <span className="inline-flex min-w-0 items-center gap-1">
+                                                {requestAPIKeyName && (
+                                                    <span className="shrink-0 text-muted-foreground/60">·</span>
+                                                )}
                                                 <User className="size-3.5 shrink-0 text-muted-foreground" />
                                                 <span className="min-w-0 max-w-[120px] truncate" title={userName}>{userName}</span>
                                             </span>

@@ -1,7 +1,8 @@
 // Run from web/: node --test tests/log-echo-verdict.test.cjs
 //
-// 覆盖日志卡片「回显判定」收敛（humanize.describeEchoComparison）与卡片头部的
-// 共享 6 列 × 2 排 grid 结构（data-log-* 验收钩子）。
+// 覆盖日志卡片「回显判定」收敛（humanize.describeEchoComparison）、卡片头部的
+// 可读性契约（自然三分区两排 grid / 不做断点式 max-w 挤压 / 回显格箭头阅读序）
+// 与交互徽标的键盘激活（Enter/Space 就地开 Popover，不误开整卡）。
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const React = require('react');
@@ -150,8 +151,8 @@ function loadCard() {
 
 // LogCard.type(...) returns an element tree; the card header is a LogRouteHeader
 // element, so it must be invoked explicitly before its data-* hooks exist.
-function renderCardHeader(LogCard, log) {
-    const tree = LogCard.type({ log, auditByChannelModel: undefined });
+function renderCardHeader(LogCard, log, auditByChannelModel) {
+    const tree = LogCard.type({ log, auditByChannelModel });
     const headerEl = findElement(tree, (node) => typeof node.type === 'function' && node.type.name === 'LogRouteHeader' && node.props?.variant === 'card');
     assert.ok(headerEl, 'card variant LogRouteHeader element must exist');
     return headerEl.type(headerEl.props);
@@ -163,6 +164,18 @@ function collect(node, predicate, out = []) {
     if (predicate(node)) out.push(node);
     collect(node.props?.children, predicate, out);
     return out;
+}
+
+// 造一个最小的 keyboard 事件：只关心 preventDefault / stopPropagation / currentTarget.click。
+function fireKey(handler, key) {
+    const calls = { preventDefault: 0, stopPropagation: 0, click: 0 };
+    handler({
+        key,
+        preventDefault: () => { calls.preventDefault += 1; },
+        stopPropagation: () => { calls.stopPropagation += 1; },
+        currentTarget: { click: () => { calls.click += 1; } },
+    });
+    return calls;
 }
 
 const sampleLog = (overrides = {}) => ({
@@ -179,37 +192,195 @@ const sampleLog = (overrides = {}) => ({
     ...overrides,
 });
 
-test('card header is one shared 6-col/2-row grid with an arrow over the channel column', () => {
+// 名称不符：发出 gpt-example / 回显 claude-example，mismatch=true、verdict=suspect 且无 cross_family code
+// -> tone = name-mismatch，才会渲染「回显不符」Popover 徽标与 from → to 对照。
+const mismatchLog = (overrides = {}) => sampleLog({
+    request_model_name: 'claude-example',
+    actual_model_name: 'gpt-example',
+    upstream_response_model: 'claude-example',
+    upstream_model_mismatch: true,
+    upstream_mismatch_code: '',
+    model_family_verdict: 'suspect',
+    ...overrides,
+});
+
+// 带上 request_endpoint 与 attempt.upstream_path，才能同时渲染「接口」与「上游路径」两个 14rem 徽标。
+const routedLog = (overrides = {}) => sampleLog({
+    request_endpoint: '/v1/chat/completions',
+    attempts: [
+        { status: 'failed', channel_name: 'workbuddy', duration: 1, model_name: 'deepseek-v4.1-flash', attempt_num: 1, upstream_path: '/v1/chat/completions' },
+        { status: 'success', channel_name: 'workbuddy', duration: 1, model_name: 'deepseek-v4.1-flash', attempt_num: 2 },
+    ],
+    ...overrides,
+});
+
+test('card header is a natural 3-zone grid, not per-breakpoint max-w squeezing', () => {
     const { LogCard } = loadCard();
     const grid = renderCardHeader(LogCard, sampleLog());
     assert.notEqual(grid.props['data-log-header'], undefined, 'header root carries data-log-header');
-    assert.match(grid.props.className, /grid-rows-\[1\.25rem_1\.25rem\]/, 'both header lines use the same single-line track height');
+
+    const cls = String(grid.props.className);
+    assert.match(cls, /grid-cols-\[minmax\(0,1fr\)_auto\]/, 'mobile is a 2-col grid (main + auto)');
+    assert.match(cls, /md:grid-cols-\[minmax\(0,\.9fr\)_minmax\(0,1\.4fr\)_auto\]/, 'desktop is a natural 3-zone grid');
+    assert.doesNotMatch(cls, /grid-rows-\[/, 'no forced equal-height row track rem');
+    assert.doesNotMatch(cls, /fit-content/, 'no fit-content squeeze column');
 
     const cells = collect(grid.props.children, (node) => node.props && node.props['data-log-row'] !== undefined).map((node) => node.props);
     const has = (row, cell) => cells.some((p) => p['data-log-row'] === row && p['data-log-cell'] === cell);
-    assert.ok(has('1', '1'), 'row1 col1 (status/endpoint/path)');
-    assert.ok(has('1', '2'), 'row1 col2 (request model)');
-    assert.ok(has('1', '3'), 'row1 col3 (arrow, 14px column)');
-    assert.ok(has('1', '4'), 'row1 col4 (channel / retry badge)');
-    assert.ok(has('1', '5'), 'row1 col5 (actual model, never hidden)');
-    assert.ok(has('1', '6'), 'row1 col6 (stream)');
+    assert.ok(has('1', '1'), 'row1 col1 (status · rescue · endpoint · path)');
+    assert.ok(has('1', '2'), 'row1 col2 (request → channel → sent name)');
+    assert.ok(has('1', '3'), 'row1 col3 (stream · pin)');
     assert.ok(has('2', '1'), 'row2 col1 (client)');
-    assert.ok(has('2', '4'), 'row2 col4 (evidence under channel column)');
-    assert.ok(has('2', '6'), 'row2 col6 (details, clickable on all sizes)');
+    assert.ok(has('2', '2'), 'row2 col2 (echo evidence · audit)');
+    assert.ok(has('2', '3'), 'row2 col3 (details)');
+    assert.equal(cells.length, 6, 'exactly three zones × two rows, no synthetic spacer cells');
+    const placements = {
+        '1:1': ['col-start-1', 'row-start-1', 'md:col-start-1', 'md:row-start-1'],
+        '1:2': ['col-span-2', 'row-start-2', 'md:col-span-1', 'md:col-start-2', 'md:row-start-1'],
+        '1:3': ['col-start-2', 'row-start-1', 'md:col-start-3', 'md:row-start-1'],
+        '2:1': ['col-span-2', 'row-start-3', 'md:col-span-1', 'md:col-start-1', 'md:row-start-2'],
+        '2:2': ['col-start-1', 'row-start-4', 'md:col-start-2', 'md:row-start-2'],
+        '2:3': ['col-start-2', 'row-start-4', 'md:col-start-3', 'md:row-start-2'],
+    };
+    for (const p of cells) {
+        const actual = String(p.className).split(/\s+/);
+        for (const token of placements[`${p['data-log-row']}:${p['data-log-cell']}`]) {
+            assert.ok(actual.includes(token), `responsive placement keeps ${token}`);
+        }
+    }
 
-    const evidence = cells.find((p) => p['data-log-row'] === '2' && p['data-log-cell'] === '4');
-    assert.match(String(evidence.className), /col-start-2 col-span-4/);
-    assert.match(String(evidence.className), /grid-cols-subgrid/);
-    assert.match(String(evidence.className), /sm:col-start-4 sm:col-span-2/);
-    assert.match(String(evidence.className), /row-start-2/);
-    assert.ok(findElement(evidence.children, (node) => node.type === 'ArrowDown'), 'evidence cell contains a down arrow');
+    for (const p of cells) {
+        assert.match(String(p.className), /\bflex\b/, 'every zone group is a flex row');
+        assert.match(String(p.className), /flex-(wrap|nowrap)/, 'and states its wrapping policy explicitly');
+    }
+    const echoCell = cells.find((p) => p['data-log-row'] === '2' && p['data-log-cell'] === '2');
+    assert.match(String(echoCell.className), /flex-nowrap/, 'echo cell keeps the arrow pinned (outer row never wraps)');
+    assert.doesNotMatch(String(echoCell.className), /flex-wrap/, 'no flex-wrap on the echo cell outer row');
 
-    // 重试渠道徽标是一个独立元素（不是把 Fragment 当一个 grid 子节点撑破列），落在 col4 格子里。
-    const channelCell = cells.find((p) => p['data-log-row'] === '1' && p['data-log-cell'] === '4');
-    const retry = findElement(channelCell.children, (node) => typeof node.type === 'function' && node.type.name === 'RetryBadgeWithPopover');
-    assert.ok(retry, 'retry channel badge lives inside the col4 cell');
+    // 重试渠道徽标是一个独立元素（不是把 Fragment 当一个 grid 子节点撑破列）。
+    const retry = findElement(grid, (node) => typeof node.type === 'function' && node.type.name === 'RetryBadgeWithPopover');
+    assert.ok(retry, 'retry channel badge lives inside the route zone');
     const retryTree = retry.type(retry.props);
-    assert.ok(findElement(retryTree, (node) => node.type === 'Badge' && String(node.props.className).includes('max-w-[min(12rem,100%)]')), 'retry badge must stay within the shared channel track');
+    assert.ok(findElement(retryTree, (node) => node.type === 'Badge' && String(node.props.className).includes('max-w-[min(12rem,100%)]')), 'retry badge must stay within the channel track');
+});
+
+test('endpoint / upstream-path badges use a single fixed max-w (no breakpoint ladder)', () => {
+    const { LogCard } = loadCard();
+    const grid = renderCardHeader(LogCard, routedLog());
+    const badges = collect(grid.props.children, (node) => node.props && String(node.props.className).includes('max-w-[14rem]'));
+    assert.equal(badges.length, 2, 'endpoint badge + upstream-path badge both capped at 14rem');
+    for (const node of badges) {
+        const cls = String(node.props.className);
+        assert.doesNotMatch(cls, /sm:max-w-/, 'no sm: max-w tier');
+        assert.doesNotMatch(cls, /lg:max-w-/, 'no lg: max-w tier');
+        assert.match(cls, /border-border\/70 bg-muted\/40/, 'same quiet warm-paper chrome');
+    }
+});
+
+test('echo evidence cell pins the down arrow and wraps the echo group on an inner row', () => {
+    const { LogCard } = loadCard();
+    const grid = renderCardHeader(LogCard, mismatchLog());
+    const cell = findElement(grid, (node) => node.props?.['data-log-cell'] === '2' && node.props?.['data-log-row'] === '2');
+    assert.ok(cell, 'row2 col2 evidence cell exists');
+    const children = cell.props.children;
+    assert.equal(children[0]?.type, 'ArrowDown', 'down arrow is the first, fixed child (never follows the echo group)');
+
+    const inner = children[1];
+    assert.ok(inner, 'an inner container holds the echo evidence');
+    assert.match(String(inner.props.className), /flex-wrap/, 'inner container wraps long echo text');
+    assert.match(String(inner.props.className), /\bmin-w-0\b/, 'inner container can shrink inside the pinned row');
+    assert.ok(findElement(inner, (node) => node.props?.children === 'echoMismatch'), 'echo group lives inside the inner container');
+});
+
+test('no empty down arrow is drawn when a row has neither echo nor audit evidence', () => {
+    const { LogCard } = loadCard();
+    // 普通用户摘要：渠道名/自报/判定字段全不下发 -> 无回显、无检测 -> 整格不画箭头。
+    const grid = renderCardHeader(LogCard, sampleLog({
+        channel_name: '', upstream_response_model: '', upstream_model_mismatch: undefined,
+        upstream_mismatch_code: '', model_family_verdict: '',
+    }));
+    const cell = findElement(grid, (node) => node.props?.['data-log-cell'] === '2' && node.props?.['data-log-row'] === '2');
+    assert.ok(cell, 'row2 col2 cell still exists as a layout slot');
+    assert.equal(cell.props.children[0], null, 'no arrow when there is nothing to point at');
+    assert.equal(cell.props.children[1], null, 'no inner container either');
+});
+
+test('client badge shows fully: no ellipsis, wraps long words, badge overflow unlocked', () => {
+    const { LogCard } = loadCard();
+    const grid = renderCardHeader(LogCard, sampleLog());
+    const client = collect(grid.props.children, (node) => node.type === 'Badge' && String(node.props.className).includes('break-all'))[0];
+    assert.ok(client, 'client badge exists');
+    const cls = String(client.props.className);
+    assert.match(cls, /overflow-visible/, 'overrides Badge base overflow-hidden');
+    assert.match(cls, /whitespace-normal/, 'overrides Badge base whitespace-nowrap');
+    assert.match(cls, /break-all/, 'long client tokens break instead of ellipsis');
+    assert.doesNotMatch(cls, /truncate/, 'never degrades to ellipsis');
+});
+
+test('model names render in wrap mode (desktop and mobile) instead of ellipsis', () => {
+    const { LogCard } = loadCard();
+    const grid = renderCardHeader(LogCard, sampleLog());
+    const modelTexts = collect(grid.props.children, (node) => node.props && node.props.mode === 'wrap');
+    assert.ok(modelTexts.length >= 2, 'both the request model and the sent model render with mode=wrap');
+});
+
+test('summary band no longer forces both rows onto one line', () => {
+    const { LogCard } = loadCard();
+    const tree = LogCard.type({ log: sampleLog({ id: 3 }), auditByChannelModel: undefined });
+    const rows = collect(tree, (node) => node.props && (node.props['data-log-row'] === '3' || node.props['data-log-row'] === '4')).map((node) => node.props);
+    assert.equal(rows.length, 2, 'both summary rows present');
+    for (const p of rows) {
+        assert.match(String(p.className), /flex-wrap/, 'summary rows wrap instead of clipping');
+        assert.doesNotMatch(String(p.className), /flex-nowrap/, 'no forced single line');
+        assert.doesNotMatch(String(p.className), /overflow-hidden/, 'no clipping that hides metrics');
+    }
+});
+
+test('echo comparison text wraps and risk badges override the Badge overflow clip', () => {
+    const { LogCard } = loadCard();
+    const grid = renderCardHeader(LogCard, mismatchLog());
+
+    const echoGroupEl = findElement(grid, (node) => node.props?.['data-echo-state'] !== undefined);
+    assert.ok(echoGroupEl, 'echo group exists for a name mismatch');
+    const echoTexts = collect(echoGroupEl, (node) => node.type === 'SafeText');
+    assert.ok(echoTexts.length >= 2, 'both sides of the comparison are rendered');
+    for (const node of echoTexts) {
+        assert.equal(node.props.mode, 'wrap', 'echo/comparison text wraps instead of falling back to truncate');
+    }
+
+    const risk = collect(grid.props.children, (node) => node.type === 'Badge' && node.props?.children === 'echoMismatch')[0];
+    assert.ok(risk, 'echo-mismatch risk badge exists');
+    const cls = String(risk.props.className);
+    assert.match(cls, /overflow-visible/, 'risk badge overrides Badge base overflow-hidden');
+    assert.match(cls, /whitespace-normal/, 'risk badge overrides Badge base whitespace-nowrap');
+    assert.doesNotMatch(cls, /truncate/, 'risk badge never truncates its title');
+});
+
+test('interactive badges activate on Enter/Space in place, and ignore other keys', () => {
+    const { LogCard } = loadCard();
+    // name-mismatch 才会渲染「回显不符」Popover 徽标（plus 重试渠道徽标 + 客户端徽标 = 3 个触发器）。
+    const audit = new Map([['7|gpt-example', { channel_id: 7, model: 'gpt-example', verdict: 'low', score: 1 }]]);
+    const grid = renderCardHeader(LogCard, mismatchLog(), audit);
+
+    const retry = findElement(grid, (node) => typeof node.type === 'function' && node.type.name === 'RetryBadgeWithPopover');
+    assert.ok(retry, 'retry badge element found');
+    const retryTree = retry.type(retry.props);
+
+    const triggers = [grid, retryTree].flatMap((source) => collect(source, (node) => typeof node.props?.onKeyDown === 'function'));
+    assert.equal(triggers.length, 4, 'retry, mismatch, client and saved-audit triggers are all exercised');
+    const handlers = triggers.map((node) => node.props.onKeyDown);
+    for (const trigger of triggers) {
+        let bubbled = 1;
+        trigger.props.onClick({ stopPropagation() { bubbled = 0; } });
+        assert.equal(bubbled, 0, 'the dispatched click is stopped before reaching the card');
+    }
+
+    for (const handler of handlers) {
+        for (const key of ['Enter', ' ']) {
+            assert.deepEqual(fireKey(handler, key), { preventDefault: 1, stopPropagation: 1, click: 1 }, `key "${key}" activates the badge and stops bubbling`);
+        }
+        assert.deepEqual(fireKey(handler, 'Tab'), { preventDefault: 0, stopPropagation: 1, click: 0 }, 'other keys only stop bubbling, never open the card');
+    }
 });
 
 test('summary band exposes data-log-row 3 and 4', () => {
