@@ -362,8 +362,9 @@ function LogRouteHeader({
 }: LogRouteHeaderProps) {
     const t = useTranslations('log.card');
     const isCard = variant === 'card';
-    // 模型名一律可换行：长名/长词在父格内自然断行，不再整段省略号（不改 SafeText 全局行为）。
-    const textMode = 'wrap';
+    // 卡片里模型名放不下就省略（鼠标悬停看全名），和正式站一样挤在同一行；
+    // 弹窗标题仍换行，那里有整行宽度，不需要省略。
+    const textMode = isCard ? 'truncate' : 'wrap';
     const requestModelDisplayName = marketModelName(log.request_model_name) || log.request_model_name;
     const actualModelDisplayName = marketModelName(log.actual_model_name) || log.actual_model_name;
     const upstreamEchoName = log.upstream_response_model?.trim() ?? '';
