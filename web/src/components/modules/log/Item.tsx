@@ -611,41 +611,32 @@ function LogRouteHeader({
 
     if (isCard) {
         /**
-         * 自然三分区两排（暖纸精修；不逐字照抄原型）：
-         * md 及以上 `minmax(0,.9fr) | minmax(0,1.4fr) | auto` 三列两排——状态/救援/接口/路径（左）、
-         * 请求模型→渠道→发出名（中、最宽）、流式·图钉（右）；下排 客户端（左）、回显证据·检测（中）、
-         * 查看详情（右）。左列用 .9fr 避免长客户端名把右侧 auto 列撑大；每格都是 flex-wrap 自然组。
-         * md 以下两列 `minmax(0,1fr) | auto`：状态 R1C1、流式 R1C2、路由 R2 跨两列、客户端 R3 跨两列、
-         * 回显 R4C1、查看详情 R4C2——不把流式/详情独占整行留下大空洞。
-         * 回显格额外用 flex-nowrap 外层固定箭头、内层 flex-wrap 收容回显/检测。
-         * 每个格子都带 `data-log-row`（1/2）与 `data-log-cell`（区号），供同宽 + 390px 真页测量。
+         * 对齐 9d1619b：宽屏三列两行，按书写顺序自动落位，不手写 row-start。
+         * 模型名和状态、接口挤在同一行；客户端、回显、查看详情在下一行。
+         * 窄屏仍按这六个格子的顺序自然往下排。
          */
         const hasEchoEvidence = Boolean(echoGroup || auditSlot);
         return (
             <div
                 data-log-header
-                className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-x-2 gap-y-1.5 text-sm md:grid-cols-[minmax(0,.9fr)_minmax(0,1.4fr)_auto] md:gap-x-3.5 md:gap-y-2"
+                className="grid min-w-0 gap-x-4 gap-y-1 text-sm md:grid-cols-[auto_minmax(0,1fr)_auto] md:items-center"
             >
-                {/* R1C1 状态 · 自动救援 · 接口 · 上游路径（内容宽，长值在自身 max-w 内截断，完整值在 title） */}
-                <div data-log-row="1" data-log-cell="1" className="col-start-1 row-start-1 flex min-w-0 flex-wrap items-center gap-2 md:col-start-1 md:row-start-1">
-                    <span className="inline-flex shrink-0 items-center order-first">{statusBadge}</span>
+                <div data-log-row="1" data-log-cell="1" className="flex min-w-0 flex-wrap items-center gap-2">
+                    <span className="inline-flex shrink-0 items-center">{statusBadge}</span>
                     {autoRescueSlot}
                     {endpointBadge}
                     {upstreamPathBadge}
                 </div>
-                {/* R1C2 请求模型 → 渠道 → 发出名（中列最宽；组内自然换行，长名可断） */}
-                <div data-log-row="1" data-log-cell="2" className="col-span-2 col-start-1 row-start-2 flex min-w-0 flex-wrap items-center gap-2 md:col-span-1 md:col-start-2 md:row-start-1">
+                <div data-log-row="1" data-log-cell="2" className="flex min-w-0 flex-wrap items-center gap-2">
                     {requestModelText}
                     {channelGroup}
                     {actualModelText}
                 </div>
-                {/* R1C3 流式 · 粘性图钉（小屏落在 R1C2，右对齐） */}
-                <div data-log-row="1" data-log-cell="3" className="col-start-2 row-start-1 flex min-w-0 flex-wrap items-center justify-self-end gap-2 md:col-start-3 md:row-start-1">
+                <div data-log-row="1" data-log-cell="3" className="flex min-w-0 flex-nowrap items-center gap-2 md:justify-self-end">
                     {streamBadge}
                     {stickyPin}
                 </div>
-                {/* R2C1 下游客户端（完整显示不 ellipsis；小屏 R3 跨两列） */}
-                <div data-log-row="2" data-log-cell="1" className="col-span-2 col-start-1 row-start-3 flex min-w-0 flex-wrap items-center gap-2 md:col-span-1 md:col-start-1 md:row-start-2">
+                <div data-log-row="2" data-log-cell="1" className="flex min-w-0 flex-wrap items-center gap-2">
                     {clientSlot ?? (
                         <Badge
                             variant="outline"
@@ -655,10 +646,7 @@ function LogRouteHeader({
                         </Badge>
                     )}
                 </div>
-                {/* R2C2 回显证据 · 风险徽标 · 检测（左端固定向下箭头承接渠道）。
-                    外层 flex-nowrap：箭头永远钉在左端、长回显只能在内层自己换行，
-                    不会整组掉下一行导致箭头脱离它；无任何证据时不渲染箭头（普通用户不造空箭头）。 */}
-                <div data-log-row="2" data-log-cell="2" className="col-start-1 row-start-4 flex min-w-0 flex-nowrap items-start gap-x-1.5 md:col-start-2 md:row-start-2">
+                <div data-log-row="2" data-log-cell="2" className="flex min-w-0 flex-nowrap items-start gap-x-1.5">
                     {hasEchoEvidence ? <ArrowDown className="size-3.5 shrink-0 text-muted-foreground/40" /> : null}
                     {hasEchoEvidence ? (
                         <span className="flex min-w-0 flex-1 flex-wrap items-start gap-x-1.5 gap-y-1">
@@ -667,8 +655,7 @@ function LogRouteHeader({
                         </span>
                     ) : null}
                 </div>
-                {/* R2C3 查看详情（小屏 R4C2） */}
-                <div data-log-row="2" data-log-cell="3" className="col-start-2 row-start-4 flex min-w-0 flex-wrap items-center justify-self-end gap-1 text-xs text-muted-foreground md:col-start-3 md:row-start-2">
+                <div data-log-row="2" data-log-cell="3" className="hidden min-w-0 flex-nowrap items-center gap-1 text-xs text-muted-foreground md:flex md:justify-self-end">
                     {detailsSlot}
                 </div>
             </div>

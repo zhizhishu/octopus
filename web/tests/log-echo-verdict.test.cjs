@@ -227,8 +227,8 @@ test('card header is a natural 3-zone grid, not per-breakpoint max-w squeezing',
     assert.notEqual(grid.props['data-log-header'], undefined, 'header root carries data-log-header');
 
     const cls = String(grid.props.className);
-    assert.match(cls, /grid-cols-\[minmax\(0,1fr\)_auto\]/, 'mobile is a 2-col grid (main + auto)');
-    assert.match(cls, /md:grid-cols-\[minmax\(0,\.9fr\)_minmax\(0,1\.4fr\)_auto\]/, 'desktop is a natural 3-zone grid');
+    assert.match(cls, /md:grid-cols-\[auto_minmax\(0,1fr\)_auto\]/, 'desktop keeps status and model on the same row');
+    assert.doesNotMatch(cls, /grid-cols-\[minmax\(0,1fr\)_auto\]/, 'mobile no longer gives the model its own full row');
     assert.doesNotMatch(cls, /grid-rows-\[/, 'no forced equal-height row track rem');
     assert.doesNotMatch(cls, /fit-content/, 'no fit-content squeeze column');
 
@@ -241,19 +241,8 @@ test('card header is a natural 3-zone grid, not per-breakpoint max-w squeezing',
     assert.ok(has('2', '2'), 'row2 col2 (echo evidence · audit)');
     assert.ok(has('2', '3'), 'row2 col3 (details)');
     assert.equal(cells.length, 6, 'exactly three zones × two rows, no synthetic spacer cells');
-    const placements = {
-        '1:1': ['col-start-1', 'row-start-1', 'md:col-start-1', 'md:row-start-1'],
-        '1:2': ['col-span-2', 'row-start-2', 'md:col-span-1', 'md:col-start-2', 'md:row-start-1'],
-        '1:3': ['col-start-2', 'row-start-1', 'md:col-start-3', 'md:row-start-1'],
-        '2:1': ['col-span-2', 'row-start-3', 'md:col-span-1', 'md:col-start-1', 'md:row-start-2'],
-        '2:2': ['col-start-1', 'row-start-4', 'md:col-start-2', 'md:row-start-2'],
-        '2:3': ['col-start-2', 'row-start-4', 'md:col-start-3', 'md:row-start-2'],
-    };
     for (const p of cells) {
-        const actual = String(p.className).split(/\s+/);
-        for (const token of placements[`${p['data-log-row']}:${p['data-log-cell']}`]) {
-            assert.ok(actual.includes(token), `responsive placement keeps ${token}`);
-        }
+        assert.doesNotMatch(String(p.className), /row-start-/, 'cells follow the production row order instead of manual row placement');
     }
 
     for (const p of cells) {
