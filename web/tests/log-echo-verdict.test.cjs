@@ -183,6 +183,7 @@ test('card header is one shared 6-col/2-row grid with an arrow over the channel 
     const { LogCard } = loadCard();
     const grid = renderCardHeader(LogCard, sampleLog());
     assert.notEqual(grid.props['data-log-header'], undefined, 'header root carries data-log-header');
+    assert.match(grid.props.className, /grid-rows-\[1\.25rem_1\.25rem\]/, 'both header lines use the same single-line track height');
 
     const cells = collect(grid.props.children, (node) => node.props && node.props['data-log-row'] !== undefined).map((node) => node.props);
     const has = (row, cell) => cells.some((p) => p['data-log-row'] === row && p['data-log-cell'] === cell);
@@ -197,8 +198,9 @@ test('card header is one shared 6-col/2-row grid with an arrow over the channel 
     assert.ok(has('2', '6'), 'row2 col6 (details, clickable on all sizes)');
 
     const evidence = cells.find((p) => p['data-log-row'] === '2' && p['data-log-cell'] === '4');
-    assert.match(String(evidence.className), /col-start-4/);
-    assert.match(String(evidence.className), /col-span-2/);
+    assert.match(String(evidence.className), /col-start-2 col-span-4/);
+    assert.match(String(evidence.className), /grid-cols-subgrid/);
+    assert.match(String(evidence.className), /sm:col-start-4 sm:col-span-2/);
     assert.match(String(evidence.className), /row-start-2/);
     assert.ok(findElement(evidence.children, (node) => node.type === 'ArrowDown'), 'evidence cell contains a down arrow');
 

@@ -430,7 +430,7 @@ function LogRouteHeader({
         ) : (
             <Badge
                 variant="secondary"
-                className="min-w-0 max-w-[12rem] px-1.5 py-0 text-xs"
+                className="min-w-0 max-w-[min(12rem,100%)] px-1.5 py-0 text-xs"
                 style={{ backgroundColor: `${brandColor}15`, color: brandColor }}
             >
                 <SafeText value={log.channel_name} className="text-xs" />
@@ -601,7 +601,7 @@ function LogRouteHeader({
          * 每个格子都带 `data-log-row`（1/2）与 `data-log-cell`（列号），供同宽 + 390px 真页测量。
          */
         return (
-            <div data-log-header className="grid min-w-0 grid-cols-[fit-content(36%)_minmax(0,1fr)_14px_minmax(0,.8fr)_minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1 text-sm">
+            <div data-log-header className="grid min-w-0 grid-cols-[fit-content(36%)_minmax(0,1fr)_14px_minmax(0,.8fr)_minmax(0,1fr)_auto] grid-rows-[1.25rem_1.25rem] items-center gap-x-1 gap-y-1 text-sm sm:gap-x-2">
                 {/* R1C1 状态 · 自动救援 · 短接口 · 受限长路径（内容宽、长值截断，完整值在 title） */}
                 <div data-log-row="1" data-log-cell="1" className="col-start-1 row-start-1 flex min-w-0 flex-nowrap items-center gap-2">
                     <span className="inline-flex shrink-0 items-center order-first">{statusBadge}</span>
@@ -638,10 +638,10 @@ function LogRouteHeader({
                     )}
                 </div>
                 {/* R2C4–C5 渠道列正下方：向下箭头承接回显证据 + 风险徽标（+检测） */}
-                <div data-log-row="2" data-log-cell="4" className="col-start-4 col-span-2 row-start-2 flex min-w-0 flex-nowrap items-center gap-2">
-                    <ArrowDown className="size-3.5 shrink-0 text-muted-foreground/40" />
-                    {echoGroup}
-                    {auditSlot ? <span className="min-w-0 shrink max-w-[45%]" title={t('auditPrefix')}>{auditSlot}</span> : null}
+                <div data-log-row="2" data-log-cell="4" className="col-start-2 col-span-4 row-start-2 grid min-w-0 grid-cols-subgrid items-center sm:col-start-4 sm:col-span-2 sm:flex sm:flex-nowrap sm:gap-2">
+                    <ArrowDown className="col-start-3 row-start-1 size-3.5 shrink-0 text-muted-foreground/40" />
+                    <span className="col-start-1 col-span-2 row-start-1 flex min-w-0 overflow-hidden sm:overflow-visible">{echoGroup}</span>
+                    {auditSlot ? <span className="col-start-4 row-start-1 min-w-0 max-w-full shrink overflow-hidden sm:max-w-[45%]" title={t('auditPrefix')}>{auditSlot}</span> : null}
                 </div>
                 {/* R2C6 查看详情（右；小屏仍可点图标，仅文字标签收起） */}
                 <div data-log-row="2" data-log-cell="6" className="col-start-6 row-start-2 flex min-w-0 items-center justify-self-end gap-1 text-xs text-muted-foreground">
@@ -1236,7 +1236,7 @@ export const LogCard = React.memo(function LogCard({
                             <div className="flex min-w-0 flex-col gap-2 text-xs tabular-nums text-muted-foreground">
                                 <div data-log-row="3" className="flex min-w-0 flex-nowrap items-center gap-x-4">
                                 {/* G1 时间与位置 */}
-                                <div className="flex min-w-0 items-center gap-1.5 whitespace-nowrap">
+                                <div className="flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap">
                                     <Clock className="size-3.5 shrink-0 text-muted-foreground" />
                                     <span className="min-w-0 truncate">{formatTime(log.time)}</span>
                                     {log.request_ip?.trim() && (
@@ -1249,7 +1249,7 @@ export const LogCard = React.memo(function LogCard({
 
                                 {/* G2 用量与推理 */}
                                 {!isModelTest && (
-                                    <div className="flex min-w-0 items-center gap-1.5 whitespace-nowrap">
+                                    <div className="flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap">
                                         <span className="min-w-0 truncate" title={formatTokensSummary(log)}>{formatTokensSummary(log)}</span>
                                         {reasoningEffort && (
                                             <>
@@ -1272,22 +1272,22 @@ export const LogCard = React.memo(function LogCard({
                                 <div data-log-row="4" className="flex min-w-0 flex-nowrap items-center gap-x-4">
 
                                 {/* G3 耗时与费用 */}
-                                <div className="flex min-w-0 items-center gap-1.5 whitespace-nowrap">
-                                    <span className={cn("inline-flex items-center gap-1 font-medium", latencyTextColor(log.ftut, 1500, 4000))}>
+                                <div className="flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap">
+                                    <span className={cn("inline-flex min-w-0 items-center gap-1 overflow-hidden font-medium", latencyTextColor(log.ftut, 1500, 4000))}>
                                         <Zap className="size-3.5 shrink-0" />
-                                        <span>{t('firstToken')} {Number.isFinite(log.ftut) && log.ftut > 0 ? formatDuration(log.ftut) : '--'}</span>
+                                        <span className="min-w-0 truncate" title={`${t('firstToken')} ${Number.isFinite(log.ftut) && log.ftut > 0 ? formatDuration(log.ftut) : '--'}`}>{t('firstToken')} {Number.isFinite(log.ftut) && log.ftut > 0 ? formatDuration(log.ftut) : '--'}</span>
                                     </span>
                                     <span className="text-muted-foreground/60">·</span>
-                                    <span className={cn("inline-flex items-center gap-1 font-medium", latencyTextColor(log.use_time, 5000, 15000))}>
+                                    <span className={cn("inline-flex min-w-0 items-center gap-1 overflow-hidden font-medium", latencyTextColor(log.use_time, 5000, 15000))}>
                                         <Clock className="size-3.5 shrink-0 text-muted-foreground" />
-                                        <span>{t('totalTime')} {formatDuration(log.use_time)}</span>
+                                        <span className="min-w-0 truncate" title={`${t('totalTime')} ${formatDuration(log.use_time)}`}>{t('totalTime')} {formatDuration(log.use_time)}</span>
                                     </span>
                                     {!isModelTest && (
                                         <>
                                             <span className="text-muted-foreground/60">·</span>
-                                            <span className="inline-flex items-center gap-1 font-medium tabular-nums text-emerald-600 dark:text-emerald-400">
+                                            <span className="inline-flex min-w-0 items-center gap-1 overflow-hidden font-medium tabular-nums text-emerald-600 dark:text-emerald-400">
                                                 <DollarSign className="size-3.5 shrink-0 text-emerald-500" />
-                                                <span>{Number(log.cost) > 0 ? `$${Number(log.cost).toFixed(6)}` : '$0.000000'}</span>
+                                                <span className="min-w-0 truncate" title={`$${Number(log.cost || 0).toFixed(6)}`}>{Number(log.cost) > 0 ? `$${Number(log.cost).toFixed(6)}` : '$0.000000'}</span>
                                             </span>
                                         </>
                                     )}
@@ -1295,7 +1295,7 @@ export const LogCard = React.memo(function LogCard({
 
                                 {/* G4 身份 */}
                                 {(requestAPIKeyName || (canViewDetails && userName)) && (
-                                    <div className="flex min-w-0 items-center gap-1.5 whitespace-nowrap">
+                                    <div className="flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap">
                                         {requestAPIKeyName && (
                                             <span className="inline-flex items-center gap-1">
                                                 <KeyRound className="size-3.5 shrink-0 text-muted-foreground" />
