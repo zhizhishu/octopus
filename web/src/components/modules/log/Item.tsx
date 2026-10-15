@@ -627,7 +627,7 @@ function LogRouteHeader({
                     {endpointBadge}
                     {upstreamPathBadge}
                 </div>
-                <div data-log-row="1" data-log-cell="2" className="flex min-w-0 flex-wrap items-center gap-2">
+                <div data-log-row="1" data-log-cell="2" className="flex min-w-0 flex-nowrap items-center gap-2 overflow-hidden">
                     {requestModelText}
                     {channelGroup}
                     {actualModelText}
