@@ -13,6 +13,7 @@ import { fetchLogById, getRelayLogSeverity, type RelayLog, type ChannelAttempt }
 import type { ScheduledAuditResult } from '@/api/endpoints/model-audit';
 import {
     getLogVerdict,
+    describeEchoComparison,
     humanizeClient,
     humanizeErrorCode,
     humanizeUsageSource,
@@ -381,7 +382,7 @@ function LogRouteHeader({
             className={cn(
                 "min-w-0 shrink text-xs font-mono",
                 isCard
-                    ? "w-[13rem] border-border/70 bg-muted/40 px-1.5 py-0"
+                    ? "max-w-[6rem] sm:max-w-[9rem] lg:max-w-[12rem] border-border/70 bg-muted/40 px-1.5 py-0"
                     : "max-w-[16rem] border-border/70 bg-muted/40 px-2 py-0.5"
             )}
             title={endpointTitle}
@@ -395,7 +396,7 @@ function LogRouteHeader({
             className={cn(
                 "min-w-0 shrink text-xs font-mono",
                 isCard
-                    ? "w-[13rem] border-border/70 bg-muted/40 px-1.5 py-0"
+                    ? "max-w-[7rem] sm:max-w-[11rem] lg:max-w-[15rem] border-border/70 bg-muted/40 px-1.5 py-0"
                     : "max-w-[16rem] border-border/70 bg-muted/40 px-2 py-0.5"
             )}
             title={upstreamPathTitle}
@@ -408,155 +409,127 @@ function LogRouteHeader({
             mode={textMode}
             value={requestModelDisplayName}
             title={requestModelDisplayName === log.request_model_name ? undefined : log.request_model_name}
-            className={cn("font-semibold text-card-foreground", isCard && "w-[9rem]")}
+            className="font-semibold text-card-foreground"
         />
     );
     /* Channel identity is admin-only: a normal user's log carries no
        channel_name (see RelayLogUserSummary), so the header degrades to
        request model → actual model without ever revealing the upstream. */
-    const channelGroup = log.channel_name ? (
-        <>
-            <ArrowRight className={cn("size-3.5 text-muted-foreground/50", isCard && "shrink-0")} />
-            {hasMultipleAttempts ? (
-                <RetryBadgeWithPopover
-                    channelName={log.channel_name}
-                    brandColor={brandColor}
-                    attempts={attempts}
-                />
-            ) : (
-                <Badge
-                    variant="secondary"
-                    className={cn("min-w-0 px-1.5 py-0 text-xs", isCard ? "w-[9rem]" : "max-w-[12rem]")}
-                    style={{ backgroundColor: `${brandColor}15`, color: brandColor }}
-                >
-                    <SafeText value={log.channel_name} className="text-xs" />
-                </Badge>
-            )}
-        </>
+    // 渠道拆成两个独立元素：箭头占 grid col3、徽标占 col4（重试 Popover 里的 Badge 也是一个
+    // grid 子节点，不能让整个 Fragment 变成一个格子）。
+    const channelArrow = log.channel_name ? (
+        <ArrowRight className="size-3.5 shrink-0 text-muted-foreground/50" />
     ) : null;
+    const channelBadge = log.channel_name ? (
+        hasMultipleAttempts ? (
+            <RetryBadgeWithPopover
+                channelName={log.channel_name}
+                brandColor={brandColor}
+                attempts={attempts}
+            />
+        ) : (
+            <Badge
+                variant="secondary"
+                className="min-w-0 max-w-[12rem] px-1.5 py-0 text-xs"
+                style={{ backgroundColor: `${brandColor}15`, color: brandColor }}
+            >
+                <SafeText value={log.channel_name} className="text-xs" />
+            </Badge>
+        )
+    ) : null;
+    const channelGroup = log.channel_name ? (<>{channelArrow}{channelBadge}</>) : null;
     const actualModelText = (
         <SafeText
             mode={textMode}
             value={actualModelDisplayName}
             title={actualModelDisplayName === log.actual_model_name ? undefined : log.actual_model_name}
-            className={cn("text-muted-foreground", isCard && "w-[9rem]")}
+            className="text-muted-foreground"
         />
     );
     // 管理员才有渠道名/自报。普通用户摘要故意不下发，这里保持空白，不能用「未自报」冒充。
     const showEcho = Boolean(log.channel_name) || Boolean(upstreamEchoName) || typeof log.upstream_model_mismatch === 'boolean';
     const mappedByUs = Boolean(log.request_model_name && log.actual_model_name && log.request_model_name !== log.actual_model_name);
-    const echoMismatch = log.upstream_model_mismatch === true;
-    // 同族别名疑似：剥日期后缀后同族前缀一致，只有后缀/日期档位不同。文案按「别名疑似」
-    // 呈现，与「名字完全不符」区分；仍是线索不是结论。
-    const echoAliasVariant = log.upstream_mismatch_code === 'alias_variant';
-    // 三档判定（后端 evalModelFamilyVerdict 落库）：''=旧行未判定 / trusted / suspect / unknown。
+    // 回显判定收敛成一条展示档（吃后端既有字段，不新增家族表）：
+    // cross-family（可确定不同家族，唯一红标）/ trusted / equivalent（cn: 前缀严格等价）/
+    // alias-variant / name-mismatch（其余未知差异，琥珀）/ none。
+    // 对照取实际回显；跨族 code 比发出名，映射跨族比请求名，其余差异比发出名。
+    const echo = describeEchoComparison(log, (value) => marketModelName(value ?? ''));
+    const echoTone = echo.tone;
     const familyVerdict = log.model_family_verdict?.trim() ?? '';
-    const vendorHint = log.model_vendor_hint?.trim() ?? '';
-    // trusted：无怀疑直接显示「供应商 / 模型名」。后端给的 vendorHint 是上游自报名剥出的前缀，
-    // 这里把前缀从显示名里去掉，只留裸模型名，避免「vercel-deepseek / Vercel DeepSeek Deepseek V4」式重复。
-    const trustedEchoName = (() => {
-        if (!upstreamEchoName) return '';
-        let bare = upstreamEchoName;
-        if (vendorHint && (bare.startsWith(`${vendorHint}/`) || bare.startsWith(`${vendorHint}:`))) {
-            bare = bare.slice(vendorHint.length + 1);
-        }
-        return marketModelName(bare) || bare;
-    })();
-    const trustedLabel = vendorHint ? `${vendorHint}${t('vendorModelSeparator')}${trustedEchoName}` : trustedEchoName;
-    const echoState = echoMismatch ? 'mismatch' : (upstreamEchoName ? 'match' : 'silent');
-    /**
-     * B1 尾部：上游自报的真模型（`upstream_response_model`）。紧跟 oct 实际发出的模型，
-     * 一行里就能比对「客户端要的 → 我们发的 → 上游自报的」。上游没自报时明确写「未自报」，
-     * 不用别的名字冒充。不一致时的「回显不符」徽标留在 B2（状态徽标不跟模型名抢位置）。
-     */
-    const upstreamEchoModel = showEcho ? (
-        upstreamEchoDisplayName ? (
-            <span className={cn("inline-flex min-w-0 shrink items-center gap-2", isCard ? "w-[11rem]" : "max-w-[14rem]")}>
-                <ArrowRight className={cn(
-                    "size-3.5 shrink-0",
-                    echoMismatch ? "text-amber-600/70 dark:text-amber-400/70" : "text-muted-foreground/50"
-                )} />
-                <SafeText
-                    mode={textMode}
-                    value={upstreamEchoDisplayName}
-                    title={echoMismatch
-                        ? (upstreamEchoDisplayName === upstreamEchoName
-                            ? t('echoMismatchHint', { model: upstreamEchoName })
-                            : `${upstreamEchoName}\n${t('echoMismatchHint', { model: upstreamEchoName })}`)
-                        : (upstreamEchoDisplayName === upstreamEchoName ? t('echoConsistent') : `${upstreamEchoName}\n${t('echoConsistent')}`)}
-                    className={echoMismatch ? "text-amber-800 dark:text-amber-200" : "text-muted-foreground"}
-                />
-            </span>
-        ) : (
-            <span className="shrink-0 text-xs text-muted-foreground">{t('upstreamSilent')}</span>
-        )
+    const echoState = !upstreamEchoName ? 'silent' : (echoTone === 'trusted' || echoTone === 'equivalent' || log.upstream_model_mismatch === false) ? 'match' : 'mismatch';
+    const echoComparison = echo.showComparison ? (
+        <span
+            className={cn(
+                "inline-flex min-w-0 items-center gap-1 text-xs",
+                echoTone === 'cross-family'
+                    ? "text-red-600 dark:text-red-300"
+                    : "text-amber-700 dark:text-amber-300"
+            )}
+            title={echoTone === 'cross-family'
+                ? t('familyReplacedHint', { requested: echo.fromRaw, echo: echo.toRaw })
+                : t('echoMismatchHint', { model: echo.toRaw })}
+        >
+            <SafeText value={echo.fromLabel} className="min-w-0 text-xs" />
+            <ArrowRight className="size-3.5 shrink-0" />
+            <SafeText value={echo.toLabel} className="min-w-0 text-xs font-medium" />
+        </span>
     ) : null;
-    // B2：回显判定组。三档（后端 model_family_verdict）决定呈现语义：
-    //  - trusted：绿色直显「供应商 / 模型名」，无歧义就不再挂「发出名由我们映射」兜底徽标；
-    //  - suspect：琥珀色直显对照「客户端要的 → 实际路由」，另配红「不符」（跨家族被替换）
-    //    或琥珀「别名疑似」（同族别名）徽标；
-    //  - unknown / 旧行（无 verdict）：保持原来的「映射自 + 回显不符」徽标，mappedByUs 只在
-    //    verdict 为空（旧数据）时兜底。
-    // 整组不换行，否则「检测」徽标会被它挤到下一行、位置随外部文本长度漂移。
+    // B2：渠道列下承接回显证据 + 风险徽标。整组不换行，检测徽标贴在本格右端。
     const echoGroup = showEcho ? (
         <span
             data-echo-state={echoState}
+            data-echo-tone={echoTone}
             data-upstream-echo={upstreamEchoName}
             data-family-verdict={familyVerdict}
             className="inline-flex min-w-0 items-center gap-2"
         >
-            {familyVerdict === 'trusted' ? (
-                trustedLabel ? (
-                    <span className="inline-flex min-w-0 items-center gap-1" title={t('familyTrusted')}>
-                        <CheckCircle2 className="size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
-                        <span className="shrink-0 text-xs text-emerald-600 dark:text-emerald-400">{t('familyTrusted')}</span>
-                        <span className="shrink-0 text-xs text-muted-foreground/60">·</span>
-                        <SafeText value={trustedLabel} className="text-xs text-emerald-700 dark:text-emerald-300" />
-                    </span>
-                ) : (
-                    <span className="shrink-0 text-xs text-muted-foreground">{t('upstreamSilent')}</span>
-                )
-            ) : familyVerdict === 'suspect' ? (
+            {echoTone === 'trusted' ? (
+                <SafeText
+                    value={echo.vendorPrefix ? `${echo.vendorPrefix}${t('vendorModelSeparator')}${echo.modelName}` : echo.modelName}
+                    title={t('familyTrustedHint')}
+                    className="text-xs text-emerald-700 dark:text-emerald-300"
+                />
+            ) : echoTone === 'equivalent' ? (
+                <SafeText
+                    value={echo.toLabel || upstreamEchoDisplayName}
+                    title={t('echoConsistent')}
+                    className="text-xs text-muted-foreground"
+                />
+            ) : echoTone === 'cross-family' ? (
                 <>
-                    <span
-                        className="inline-flex min-w-0 items-center gap-1 text-xs text-amber-700 dark:text-amber-300"
-                        title={t('familySuspectHint')}
+                    {echoComparison}
+                    <Badge
+                        variant="outline"
+                        className={cn(
+                            "border-red-500/40 bg-red-500/10 text-xs text-red-600 dark:text-red-300",
+                            isCard ? "px-1.5 py-0" : "px-2 py-0.5"
+                        )}
+                        title={t('familyReplacedHint', { requested: echo.fromRaw, echo: echo.toRaw })}
                     >
-                        <SafeText value={requestModelDisplayName} className="text-xs text-amber-700/80 dark:text-amber-300/80" />
-                        <ArrowRight className="size-3.5 shrink-0 text-amber-600/70 dark:text-amber-400/70" />
-                        <SafeText value={actualModelDisplayName} className="text-xs font-medium text-amber-800 dark:text-amber-200" />
-                    </span>
-                    {echoAliasVariant ? (
-                        <Badge
-                            variant="outline"
-                            className={cn(
-                                "shrink-0 border-amber-500/40 bg-amber-500/10 text-xs text-amber-800 dark:text-amber-200",
-                                isCard ? "px-1.5 py-0" : "px-2 py-0.5"
-                            )}
-                            title={upstreamEchoName ? t('echoAliasVariantHint', { model: upstreamEchoName }) : t('familySuspectHint')}
-                        >
-                            {t('echoAliasVariant')}
-                        </Badge>
-                    ) : (
-                        <Badge
-                            variant="outline"
-                            className={cn(
-                                "shrink-0 border-red-500/40 bg-red-500/10 text-xs text-red-600 dark:text-red-300",
-                                isCard ? "px-1.5 py-0" : "px-2 py-0.5"
-                            )}
-                            title={upstreamEchoName ? t('echoMismatchHint', { model: upstreamEchoName }) : t('familyReplaced')}
-                        >
-                            {t('familyReplaced')}
-                        </Badge>
-                    )}
+                        {t('familyReplaced')}
+                    </Badge>
                 </>
-            ) : (
+            ) : echoTone === 'alias-variant' ? (
+                <>
+                    {echoComparison}
+                    <Badge
+                        variant="outline"
+                        className={cn(
+                            "border-amber-500/40 bg-amber-500/10 text-xs text-amber-800 dark:text-amber-200",
+                            isCard ? "px-1.5 py-0" : "px-2 py-0.5"
+                        )}
+                        title={t('echoAliasVariantHint', { model: echo.toRaw })}
+                    >
+                        {t('echoAliasVariant')}
+                    </Badge>
+                </>
+            ) : echoTone === 'name-mismatch' ? (
                 <>
                     {!familyVerdict && mappedByUs && (
                         <Badge
                             variant="outline"
                             className={cn(
-                                "shrink-0 border-border/60 bg-muted/30 text-xs font-normal text-muted-foreground",
+                                "border-border/60 bg-muted/30 text-xs font-normal text-muted-foreground",
                                 isCard ? "px-1.5 py-0" : "px-2 py-0.5"
                             )}
                             title={t('mappedByUs')}
@@ -564,44 +537,43 @@ function LogRouteHeader({
                             {t('mappedByUs')}
                         </Badge>
                     )}
-                    {echoMismatch && (
-                        <Popover>
-                            <PopoverTrigger asChild>
-                                <Badge
-                                    variant="outline"
-                                    role="button"
-                                    tabIndex={0}
-                                    onClick={(e) => e.stopPropagation()}
-                                    onKeyDown={(e) => e.stopPropagation()}
-                                    className={cn(
-                                        "shrink-0 cursor-pointer border-amber-500/40 bg-amber-500/10 text-xs text-amber-800 dark:text-amber-200",
-                                        isCard ? "px-1.5 py-0" : "px-2 py-0.5"
-                                    )}
-                                >
-                                    {echoAliasVariant ? t('echoAliasVariant') : t('echoMismatch')}
-                                </Badge>
-                            </PopoverTrigger>
-                            <PopoverContent align="start" className="w-72 p-3">
-                                <p className="text-xs font-medium text-foreground">{echoAliasVariant ? t('echoAliasVariant') : t('echoMismatch')}</p>
-                                <div className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[11px]">
-                                    <span className="text-muted-foreground">{t('sentModel')}</span>
-                                    <span className="break-all">{actualModelDisplayName || requestModelDisplayName}</span>
-                                    <span className="text-muted-foreground">{t('upstreamEcho')}</span>
-                                    <span className="break-all text-amber-700 dark:text-amber-300">
-                                        {upstreamEchoDisplayName || t('upstreamSilent')}
-                                    </span>
-                                </div>
-                                {upstreamEchoName && (
-                                    <p className="mt-2 border-t border-border pt-2 text-[11px] leading-5 text-muted-foreground">
-                                        {echoAliasVariant
-                                            ? t('echoAliasVariantHint', { model: upstreamEchoName })
-                                            : t('echoMismatchHint', { model: upstreamEchoName })}
-                                    </p>
+                    {echoComparison}
+                    <Popover>
+                        <PopoverTrigger asChild>
+                            <Badge
+                                variant="outline"
+                                role="button"
+                                tabIndex={0}
+                                onClick={(e) => e.stopPropagation()}
+                                onKeyDown={(e) => e.stopPropagation()}
+                                className={cn(
+                                    "cursor-pointer border-amber-500/40 bg-amber-500/10 text-xs text-amber-800 dark:text-amber-200",
+                                    isCard ? "px-1.5 py-0" : "px-2 py-0.5"
                                 )}
-                            </PopoverContent>
-                        </Popover>
-                    )}
+                            >
+                                {t('echoMismatch')}
+                            </Badge>
+                        </PopoverTrigger>
+                        <PopoverContent align="start" className="w-72 p-3">
+                            <p className="text-xs font-medium text-foreground">{t('echoMismatch')}</p>
+                            <div className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[11px]">
+                                <span className="text-muted-foreground">{t('sentModel')}</span>
+                                <span className="break-all">{echo.fromLabel || echo.fromRaw}</span>
+                                <span className="text-muted-foreground">{t('upstreamEcho')}</span>
+                                <span className="break-all text-amber-700 dark:text-amber-300">{echo.toLabel || echo.toRaw}</span>
+                            </div>
+                            {echo.toRaw && (
+                                <p className="mt-2 border-t border-border pt-2 text-[11px] leading-5 text-muted-foreground">
+                                    {t('echoMismatchHint', { model: echo.toRaw })}
+                                </p>
+                            )}
+                        </PopoverContent>
+                    </Popover>
                 </>
+            ) : upstreamEchoName ? (
+                <SafeText value={upstreamEchoDisplayName} title={t('upstreamEcho')} className="text-xs text-muted-foreground" />
+            ) : (
+                <span className="min-w-0 truncate text-xs text-muted-foreground/60" title={t('upstreamSilent')}>{t('upstreamSilent')}</span>
             )}
         </span>
     ) : null;
@@ -620,64 +592,59 @@ function LogRouteHeader({
 
     if (isCard) {
         /**
-         * 固定列轨道（行落强制）：一个 grid + 6 个子元素，row-major 填进 3 列 × 2 行。
-         * md 及以上 `auto | minmax(0,1fr) | auto`——上下两排共享列宽，所以「状态」永远压在
-         * 「客户端」上面、「流式」永远压在「查看详情」上面，不再由 flex-wrap 按剩余宽度决定谁换行。
-         * md 以下退化成单列自然堆叠，顺序仍是 A1→B1→C1→A2→B2（流式排在客户端之前）。
-         * 所有单元格 min-w-0：长文本交给 SafeText/MonoSafeText 截断，整卡不产生横向滚动。
-         * 纵向对齐用 `md:items-start`：行高是 auto，中间那格（B1）换行就会把整行撑高；
-         * 若用 items-center，左侧「状态」徽标会被顺手推到行中线上，同一枚徽标在不同卡上
-         * 落在不同高度。顶对齐把这些标记钉死在固定位置。
+         * 一个共享 header grid，6 列 × 2 排（所有断点都不堆叠，小屏靠截断/缩略字段）：
+         *   col1 `fit-content(36%)`（状态/救援/短接口/受限长路径） · col2 `minmax(0,1fr)`（请求模型）
+         *   · col3 `14px`（渠道前右箭头） · col4 `minmax(0,.8fr)`（渠道） · col5 `minmax(0,1fr)`（发出名）
+         *   · col6 `auto`（流式/详情）。
+         * 第 1 排 = A1 / 请求模型 / → / 渠道 / 发出名 / 流式；发出名即便与请求同名也照原样显示（不隐藏）。
+         * 第 2 排 = col1 客户端 · col4-col5 渠道列正下方的证据（ArrowDown 从渠道列开始）· col6 详情。
+         * 每个格子都带 `data-log-row`（1/2）与 `data-log-cell`（列号），供同宽 + 390px 真页测量。
          */
         return (
-            <div className="grid min-w-0 gap-x-4 gap-y-1 text-sm md:grid-cols-[auto_minmax(0,1fr)_auto] md:items-start">
-                {/* A1 状态 · 自动救援 · 接口 · 上游路径
-                    注：本格用 items-center。实测窄屏下这会让 16px 的主徽标在「同排有 18px 徽标」时
-                    被居中推下 1px（卡内 A1 高 68 时 y=0，高 44 时 y=1），桌面 1440 下恒为单值。
-                    若要把这 1px 也钉死，改成 items-start 即可；本轮未带真机复测，故未改。 */}
-                <div className="flex min-w-0 flex-nowrap items-center gap-2">
+            <div data-log-header className="grid min-w-0 grid-cols-[fit-content(36%)_minmax(0,1fr)_14px_minmax(0,.8fr)_minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1 text-sm">
+                {/* R1C1 状态 · 自动救援 · 短接口 · 受限长路径（内容宽、长值截断，完整值在 title） */}
+                <div data-log-row="1" data-log-cell="1" className="col-start-1 row-start-1 flex min-w-0 flex-nowrap items-center gap-2">
                     <span className="inline-flex shrink-0 items-center order-first">{statusBadge}</span>
                     {autoRescueSlot}
                     {endpointBadge}
                     {upstreamPathBadge}
                 </div>
-                {/* B1 请求模型 → 渠道 · oct 实际发出模型 · 上游自报模型 · 下游客户端
-                    （客户端徽标与真模型链同一行：调用方一眼对上「谁 → 用什么模型」）
-                    整行强制不换行：链上文本各自 min-w-0 + truncate 截断，卡高才恒定
-                    （此前 flex-wrap 会随模型名长度折成 2/3 行，卡高 158/184/236 不等）。 */}
-                <div className="flex min-w-0 flex-nowrap items-center gap-2">
-                    {requestModelText}
-                    {channelGroup}
-                    {actualModelText}
-                    {upstreamEchoModel}
-                </div>
-                {/* C1 流式 · 粘性图钉（固定右列） */}
-                <div className="flex min-w-0 items-center gap-2 md:justify-self-end">
+                {/* R1C2 请求模型（下面 R2C2 留空，不硬占短徽标宽度） */}
+                <div data-log-row="1" data-log-cell="2" className="col-start-2 row-start-1 min-w-0">{requestModelText}</div>
+                {/* R1C3 右箭头（渠道前，独立 14px 列） */}
+                {channelArrow ? (
+                    <div data-log-row="1" data-log-cell="3" className="col-start-3 row-start-1 flex min-w-0 items-center justify-center">{channelArrow}</div>
+                ) : null}
+                {/* R1C4 渠道（重试 Popover 里的 Badge 也落在本列，Fragment 不占格） */}
+                {channelBadge ? (
+                    <div data-log-row="1" data-log-cell="4" className="col-start-4 row-start-1 min-w-0">{channelBadge}</div>
+                ) : null}
+                {/* R1C5 发出模型（同名也照生产原样显示，不隐藏） */}
+                <div data-log-row="1" data-log-cell="5" className="col-start-5 row-start-1 min-w-0">{actualModelText}</div>
+                {/* R1C6 流式 · 粘性图钉（右） */}
+                <div data-log-row="1" data-log-cell="6" className="col-start-6 row-start-1 flex min-w-0 items-center justify-self-end gap-2">
                     {streamBadge}
                     {stickyPin}
                 </div>
-                {/* A2 渠道徽标正下方：向下箭头过渡 + 下游客户端（有客户端徽标用之，
-                    没有则低强调「客户端未知」占位——第 2 排永远渲染、列轨道恒定） */}
-                <div className="flex min-w-0 flex-nowrap items-center gap-2">
-                    <ArrowDown className="size-3.5 shrink-0 text-muted-foreground/40" />
+                {/* R2C1 下游客户端（截断 + title；缺失给低强调占位） */}
+                <div data-log-row="2" data-log-cell="1" className="col-start-1 row-start-2 flex min-w-0 flex-nowrap items-center gap-2">
                     {clientSlot ?? (
                         <Badge
                             variant="outline"
-                            className="shrink-0 border-border/60 bg-muted/30 px-1.5 py-0 text-xs font-normal text-muted-foreground"
+                            className="min-w-0 border-border/60 bg-muted/30 px-1.5 py-0 text-xs font-normal text-muted-foreground"
                         >
                             {t('clientUnknown')}
                         </Badge>
                     )}
                 </div>
-                {/* B2 映射自 · 回显不符 · 模型检测（检测无结果就留空，不造假占位）。
-                    整格不换行：回显状态徽标让位截断，检测徽标永远贴在本格右端，
-                    不再被前面的文本挤到下一行去。 */}
-                <div className="flex min-w-0 items-center gap-2">
+                {/* R2C4–C5 渠道列正下方：向下箭头承接回显证据 + 风险徽标（+检测） */}
+                <div data-log-row="2" data-log-cell="4" className="col-start-4 col-span-2 row-start-2 flex min-w-0 flex-nowrap items-center gap-2">
+                    <ArrowDown className="size-3.5 shrink-0 text-muted-foreground/40" />
                     {echoGroup}
-                    {auditSlot ? <span className="shrink-0">{auditSlot}</span> : null}
+                    {auditSlot ? <span className="min-w-0 shrink max-w-[45%]" title={t('auditPrefix')}>{auditSlot}</span> : null}
                 </div>
-                {/* C2 查看详情 */}
-                <div className="hidden min-w-0 items-center gap-1 text-xs text-muted-foreground md:flex md:justify-self-end">
+                {/* R2C6 查看详情（右；小屏仍可点图标，仅文字标签收起） */}
+                <div data-log-row="2" data-log-cell="6" className="col-start-6 row-start-2 flex min-w-0 items-center justify-self-end gap-1 text-xs text-muted-foreground">
                     {detailsSlot}
                 </div>
             </div>
@@ -695,7 +662,6 @@ function LogRouteHeader({
             {requestModelText}
             {channelGroup}
             {actualModelText}
-            {upstreamEchoModel}
             {clientSlot}
             {echoGroup}
             {streamBadge}
@@ -1128,7 +1094,8 @@ export const LogCard = React.memo(function LogCard({
                     tabIndex={0}
                     onClick={(e) => e.stopPropagation()}
                     onKeyDown={(e) => e.stopPropagation()}
-                    className="shrink-0 cursor-pointer border-violet-500/30 bg-violet-500/10 px-1.5 py-0 text-xs text-violet-600 dark:text-violet-300"
+                    title={clientLabel}
+                    className="min-w-0 max-w-full cursor-pointer border-violet-500/30 bg-violet-500/10 px-1.5 py-0 text-xs text-violet-600 dark:text-violet-300"
                 >
                     {clientLabel}
                 </Badge>
@@ -1204,7 +1171,7 @@ export const LogCard = React.memo(function LogCard({
     const detailsSlot = canViewDetails ? (
         <>
             <Eye className="size-3.5" />
-            {t('openDetails')}
+            <span className="hidden md:inline">{t('openDetails')}</span>
         </>
     ) : null;
 
@@ -1242,10 +1209,10 @@ export const LogCard = React.memo(function LogCard({
                             <ModelAvatar size={40} />
                         </div>
                         <div className="min-w-0 flex flex-col gap-3">
-                            {/* 路由头部：固定 3 列 × 2 行列轨道（在 LogRouteHeader 的 card 分支里）。
-                                第 1 排 = 状态·自动救援·接口·路径 | 请求模型→渠道·实际模型·上游自报模型 | 流式·图钉；
-                                第 2 排 = 下游客户端 | 映射自·回显不符·模型检测 | 查看详情。
-                                第 2 排永远渲染（客户端缺失给灰占位），所以上下两排列宽恒定、内容不再漂移。 */}
+                            {/* 路由头部：一个共享 6 列 × 2 排 grid（在 LogRouteHeader 的 card 分支里）。
+                                第 1 排 = 状态/救援/短接口/受限路径 | 请求模型 | → | 渠道 | 发出(实际)模型 | 流式·图钉；
+                                第 2 排 = 下游客户端 | （渠道列下）回显证据·风险·模型检测 | 查看详情。
+                                第 2 排永远渲染（客户端/回显缺失给占位），所以两排列宽恒定、内容不再漂移。 */}
                             <LogRouteHeader
                                 variant="card"
                                 log={log}
@@ -1267,23 +1234,23 @@ export const LogCard = React.memo(function LogCard({
 
                             {/* 第 2 行：紧凑摘要带固定两行（与 5050 等高对齐：行1 身份与用量，行2 性能与费用） */}
                             <div className="flex min-w-0 flex-col gap-2 text-xs tabular-nums text-muted-foreground">
-                                <div className="flex min-w-0 flex-wrap items-center gap-x-4">
+                                <div data-log-row="3" className="flex min-w-0 flex-nowrap items-center gap-x-4">
                                 {/* G1 时间与位置 */}
-                                <div className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
+                                <div className="flex min-w-0 items-center gap-1.5 whitespace-nowrap">
                                     <Clock className="size-3.5 shrink-0 text-muted-foreground" />
-                                    <span>{formatTime(log.time)}</span>
+                                    <span className="min-w-0 truncate">{formatTime(log.time)}</span>
                                     {log.request_ip?.trim() && (
                                         <>
-                                            <span className="text-muted-foreground/60">·</span>
-                                            <span className="font-mono">{log.request_ip.trim()}</span>
+                                            <span className="shrink-0 text-muted-foreground/60">·</span>
+                                            <span className="min-w-0 truncate font-mono" title={log.request_ip.trim()}>{log.request_ip.trim()}</span>
                                         </>
                                     )}
                                 </div>
 
                                 {/* G2 用量与推理 */}
                                 {!isModelTest && (
-                                    <div className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
-                                        <span>{formatTokensSummary(log)}</span>
+                                    <div className="flex min-w-0 items-center gap-1.5 whitespace-nowrap">
+                                        <span className="min-w-0 truncate" title={formatTokensSummary(log)}>{formatTokensSummary(log)}</span>
                                         {reasoningEffort && (
                                             <>
                                                 <span className="text-muted-foreground/60">·</span>
@@ -1296,16 +1263,16 @@ export const LogCard = React.memo(function LogCard({
                                     </div>
                                 )}
                                 {isModelTest && reasoningEffort && (
-                                    <div className="flex shrink-0 items-center gap-1 whitespace-nowrap">
+                                    <div className="flex min-w-0 items-center gap-1 whitespace-nowrap">
                                         <Brain className="size-3.5 shrink-0 text-muted-foreground" />
-                                        <span>{t('thinking')} {reasoningEffort}</span>
+                                        <span className="min-w-0 truncate">{t('thinking')} {reasoningEffort}</span>
                                     </div>
                                 )}
                                 </div>
-                                <div className="flex min-w-0 flex-wrap items-center gap-x-4">
+                                <div data-log-row="4" className="flex min-w-0 flex-nowrap items-center gap-x-4">
 
                                 {/* G3 耗时与费用 */}
-                                <div className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
+                                <div className="flex min-w-0 items-center gap-1.5 whitespace-nowrap">
                                     <span className={cn("inline-flex items-center gap-1 font-medium", latencyTextColor(log.ftut, 1500, 4000))}>
                                         <Zap className="size-3.5 shrink-0" />
                                         <span>{t('firstToken')} {Number.isFinite(log.ftut) && log.ftut > 0 ? formatDuration(log.ftut) : '--'}</span>
@@ -1328,7 +1295,7 @@ export const LogCard = React.memo(function LogCard({
 
                                 {/* G4 身份 */}
                                 {(requestAPIKeyName || (canViewDetails && userName)) && (
-                                    <div className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
+                                    <div className="flex min-w-0 items-center gap-1.5 whitespace-nowrap">
                                         {requestAPIKeyName && (
                                             <span className="inline-flex items-center gap-1">
                                                 <KeyRound className="size-3.5 shrink-0 text-muted-foreground" />
@@ -1339,9 +1306,9 @@ export const LogCard = React.memo(function LogCard({
                                             <span className="text-muted-foreground/60">·</span>
                                         )}
                                         {canViewDetails && userName && (
-                                            <span className="inline-flex items-center gap-1">
+                                            <span className="inline-flex min-w-0 items-center gap-1">
                                                 <User className="size-3.5 shrink-0 text-muted-foreground" />
-                                                <span className="max-w-[120px] truncate">{userName}</span>
+                                                <span className="min-w-0 max-w-[120px] truncate" title={userName}>{userName}</span>
                                             </span>
                                         )}
                                     </div>

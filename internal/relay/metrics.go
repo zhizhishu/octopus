@@ -152,16 +152,38 @@ func (m *RelayMetrics) CommitUpstreamDeclaredModel(name string) {
 // 不符」呈现。空串 = 完全不符(旧语义)。
 const UpstreamMismatchCodeAliasVariant = "alias_variant"
 
+// UpstreamMismatchCodeCrossFamily 标记「跨家族疑似」: 我们发出的名字与上游自报的名字, 都能被
+// behavior 家族表识别、且两者家族无交集——比 alias_variant 更强的线索(名字不是同族档位差异,
+// 而像换了另一个家族)。仍只是线索(回显本身可撒谎), 不宣称模型真实性。
+const UpstreamMismatchCodeCrossFamily = "cross_family"
+
 // UpstreamModelMismatchCode 把 mismatch 的细分 code 映射出来: mismatch 为 nil/false 时恒空。
 // 没有额外数据可比对时也返回空, 与 mismatch 三态语义对齐。
+// 优先级: cross_family > alias_variant——跨族是更强的线索, 只有非跨族时才退到同族别名疑似。
 func UpstreamModelMismatchCode(mismatch *bool, sentModel, responseModel string) string {
 	if mismatch == nil || !*mismatch {
 		return ""
+	}
+	if upstreamCrossFamily(sentModel, responseModel) {
+		return UpstreamMismatchCodeCrossFamily
 	}
 	if upstreamAliasVariantMatch(sentModel, responseModel) {
 		return UpstreamMismatchCodeAliasVariant
 	}
 	return ""
+}
+
+// upstreamCrossFamily 判定「发出去的名字」与「上游自报的名字」是否跨家族: 两者都能被
+// behavior 家族表识别, 且家族集合无交集。任一识别不出(含空) → false——缺一边不是信号,
+// 与 evalModelFamilyVerdict 里 request/echo 家族比对的既有口径一致。纯名称/家族线索,
+// 不宣称模型真实性。
+func upstreamCrossFamily(sentModel, responseModel string) bool {
+	sentFamilies := behavior.InferFamilies(sentModel)
+	echoFamilies := behavior.InferFamilies(responseModel)
+	if len(sentFamilies) == 0 || len(echoFamilies) == 0 {
+		return false
+	}
+	return !behavior.FamiliesIntersect(sentFamilies, echoFamilies)
 }
 
 // 模型家族判定三档(落 model.RelayLog.ModelFamilyVerdict 列)。
@@ -180,9 +202,9 @@ const (
 //   - requestModel: 客户端请求的模型名(判定同族时用它, 而不是被 model_mapping 改写后的那份);
 //   - actualModel:  oct 实际发出去的模型名(与 UpstreamModelMismatch 列同源, 保证两列一致);
 //   - upstreamEcho: 上游响应自报的模型名;
-//   - mismatchCode: UpstreamModelMismatchCode 的产物(空串 或 alias_variant)。suspect 的细分
-//     类型已单独落在 UpstreamMismatchCode 列(前端据此区分「别名疑似」与「不符」), 这里对三档
-//     的唯一贡献是: 有该 code 就确认 mismatch 为真; 故不再单独分支。
+//   - mismatchCode: UpstreamModelMismatchCode 的产物(空串 / alias_variant / cross_family)。
+//     suspect 的细分类型已单独落在 UpstreamMismatchCode 列(前端据此区分「跨族」「别名疑似」
+//     与「不符」), 这里对三档的唯一贡献是: 有该 code 就确认 mismatch 为真; 故不再单独分支。
 //
 // 判定:
 //   - unknown: 上游没自报(echo 为空), 或上游没声明/我们没出站名(mismatch 为 nil);
@@ -246,8 +268,30 @@ func upstreamModelMismatch(sentModel, responseModel string) *bool {
 //
 // 刻意不做日期后缀归一进匹配本身: 上游回带日期后缀的同族变体(如 -20251101)仍记不一致,
 // 但由 UpstreamModelMismatchCode 标成 alias_variant(「别名疑似」), 与「名字完全不符」区分。
+//
+// 受控命名空间归一: 先按原样 EqualFold; 不中时, 各自剥掉**一层** "cn:" 前缀(大小写不敏感)
+// 后再完整 EqualFold。因此 "cn:gpt-5" 与 "gpt-5" 视为同一模型(合法命名空间差异不算跨家族),
+// 而 "cn:gpt-5" 与 "gpt-6" 仍不符, "gpt-5:free" 与 "gpt-5" 也不会被误合并(只剥 cn: 一层,
+// 不做通用 LastIndexAny——那会吞掉 gpt:free 这类带冒号的合法版本/档位后缀或多层模型名)。
 func upstreamModelsMatchForAudit(sentModel, responseModel string) bool {
-	return strings.EqualFold(strings.TrimSpace(sentModel), strings.TrimSpace(responseModel))
+	sent := strings.TrimSpace(sentModel)
+	response := strings.TrimSpace(responseModel)
+	if strings.EqualFold(sent, response) {
+		return true
+	}
+	return strings.EqualFold(modelNamespaceStripped(sent), modelNamespaceStripped(response))
+}
+
+// modelNamespaceStripped 去掉一层 "cn:" 命名空间前缀(trim 后大小写不敏感判断), 无该前缀则
+// 原样返回(已 trim)。刻意不做通用 "最后一个 '/' 或 ':' 之后" 的剥离: 那会把 "gpt-5:free" 剥成
+// "free"、把多层模型名 "a/b/c" 的中间段吞掉, 从而把不同模型/版本误判为相同。此处只做已知
+// 命名空间的一种、一层归一——仅用于比较, 落库字段仍保留原始名称(见 saveLog)。
+func modelNamespaceStripped(modelName string) string {
+	name := strings.TrimSpace(modelName)
+	if len(name) >= 3 && strings.EqualFold(name[:3], "cn:") {
+		return strings.TrimSpace(name[3:])
+	}
+	return name
 }
 
 // upstreamAliasVariantMatch 判定「同族不同后缀」: 两名小写化后, 剥掉尾部 \d{8} 日期后缀

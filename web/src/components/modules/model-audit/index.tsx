@@ -443,11 +443,11 @@ export function ModelAudit() {
                             {scheduledAudit && (
                                 <div className="mt-3 w-full max-w-lg rounded-2xl border border-border bg-muted/30 px-4 py-3 text-left">
                                     <p className="text-xs text-muted-foreground">
-                                        定时快检 · {scheduledAudit.last_run_unix ? new Date(scheduledAudit.last_run_unix * 1000).toLocaleString('zh-CN') : '还没跑过'}
+                                        历史主动检测记录 · {scheduledAudit.last_run_unix ? new Date(scheduledAudit.last_run_unix * 1000).toLocaleString('zh-CN') : '还没跑过'}
                                         {scheduledAudit.last_run_unix ? ` · 跑了 ${scheduledAudit.ran_count}/${scheduledAudit.target_count}` : ''}
                                     </p>
                                     {(scheduledAudit.results ?? []).length === 0 ? (
-                                        <p className="mt-2 text-sm">开机不会立刻打上游。每 6 小时对启用渠道做一次轻量快检。</p>
+                                        <p className="mt-2 text-sm">后台自动检测已停用，不再定期打上游；仅手动检测会调用上游。</p>
                                     ) : (
                                         <ul className="mt-2 space-y-2">
                                             {(scheduledAudit.results ?? []).slice(0, 4).map((item) => (

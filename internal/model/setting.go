@@ -152,11 +152,14 @@ const (
 	SettingKeyUpstreamErrorBodyMode   SettingKey = "upstream_error_body_mode"
 	SettingKeyUpstreamErrorCustom     SettingKey = "upstream_error_custom_message"
 	SettingKeyUpstreamErrorPublicCode SettingKey = "upstream_error_public_code"
-	// Model audit switches (gateway model authenticity detection). Both default to true:
-	// disabled = one-switch rollback with zero code changes. followup controls the
-	// echo-mismatch follow-up probe; enabled controls the whole scheduled quick audit.
-	SettingKeyModelAuditEnabled         SettingKey = "model_audit_enabled"          // 网关模型真假检测总开关(定时快检); 默认开, 关=一键回退
-	SettingKeyModelAuditFollowUpEnabled SettingKey = "model_audit_followup_enabled" // 回显不一致自动跟进检测开关; 默认开, 关=只记日志不打上游
+	// Model audit switches (gateway model authenticity detection). Both default to FALSE and
+	// BOTH auto paths are disconnected (see task.Init / op.RelayLogAdd): the scheduled quick
+	// audit and the echo-mismatch follow-up no longer auto-start, so no token-consuming behavior
+	// probe is fired without an operator. Only the manual run (POST /api/v1/model-audit/run)
+	// actively calls probes. The keys are kept for compatibility/UI; a stored legacy "true" does
+	// NOT re-enable auto-running (no migration is applied).
+	SettingKeyModelAuditEnabled         SettingKey = "model_audit_enabled"          // 网关模型真假检测总开关(定时快检); 已停用自动检测, 默认 false; 仅手动 run 主动调用
+	SettingKeyModelAuditFollowUpEnabled SettingKey = "model_audit_followup_enabled" // 回显不一致自动跟进检测开关; 已停用自动接线, 默认 false; 仅手动 run 主动调用
 	// Credential redaction (CosyRedactGateway-style). The global switch is the
 	// master gate: even channels with redact_enabled=true do nothing while it is
 	// false, so operators can kill the feature instance-wide without touching
@@ -506,11 +509,11 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyUpstreamErrorBodyMode, Value: "redacted_upstream"},
 		{Key: SettingKeyUpstreamErrorCustom, Value: "Upstream request failed. Please try again later."},
 		{Key: SettingKeyUpstreamErrorPublicCode, Value: "service_busy"},
-		{Key: SettingKeyRedactEnabled, Value: "false"},            // 凭据脱敏总闸: 默认关; 开启后 redact_enabled=true 的渠道才会在出站 body 上做密钥→占位符替换+响应还原(指纹路径零改动)
-		{Key: SettingKeyRedactDefaultFlags, Value: "HPSIBEG"},     // 渠道未自定义 flags 时的默认检测器: H高熵 P电话 S密钥 I身份证 B银行卡 E邮箱 G gitleaks
-		{Key: SettingKeyRedactNoticeEnabled, Value: "true"},       // 脱敏时向首条用户消息注入占位符说明(提高模型保真); 可关
-		{Key: SettingKeyModelAuditEnabled, Value: "true"},         // 模型真假检测(定时快检)默认开
-		{Key: SettingKeyModelAuditFollowUpEnabled, Value: "true"}, // 回显不一致自动跟进默认开
+		{Key: SettingKeyRedactEnabled, Value: "false"},             // 凭据脱敏总闸: 默认关; 开启后 redact_enabled=true 的渠道才会在出站 body 上做密钥→占位符替换+响应还原(指纹路径零改动)
+		{Key: SettingKeyRedactDefaultFlags, Value: "HPSIBEG"},      // 渠道未自定义 flags 时的默认检测器: H高熵 P电话 S密钥 I身份证 B银行卡 E邮箱 G gitleaks
+		{Key: SettingKeyRedactNoticeEnabled, Value: "true"},        // 脱敏时向首条用户消息注入占位符说明(提高模型保真); 可关
+		{Key: SettingKeyModelAuditEnabled, Value: "false"},         // 模型真假检测(定时快检)已停用自动注册, 默认 false; 仅手动 run
+		{Key: SettingKeyModelAuditFollowUpEnabled, Value: "false"}, // 回显不一致自动跟进已停用自动接线, 默认 false; 仅手动 run
 		{Key: SettingKeyCheckInEnabled, Value: "false"},
 		{Key: SettingKeyCheckInRewardMode, Value: "fixed"},
 		{Key: SettingKeyCheckInRewardAmount, Value: "100"},

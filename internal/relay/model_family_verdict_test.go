@@ -79,6 +79,29 @@ func TestEvalModelFamilyVerdictThreeTiers(t *testing.T) {
 			wantVerdict:    ModelFamilyVerdictTrusted,
 			wantVendorHint: "vendor",
 		},
+		{
+			name:         "cn namespace echo vs bare sent -> trusted (not cross-family)",
+			requestModel: "gpt-5",
+			actualModel:  "cn:gpt-5",
+			upstreamEcho: "gpt-5",
+			wantVerdict:  ModelFamilyVerdictTrusted,
+		},
+		{
+			name:           "cn namespace-only difference -> trusted + vendor hint from echo",
+			requestModel:   "deepseek-v4",
+			actualModel:    "deepseek-v4",
+			upstreamEcho:   "cn:deepseek-v4",
+			wantVerdict:    ModelFamilyVerdictTrusted,
+			wantVendorHint: "cn",
+		},
+		{
+			name:           "cn namespace does not hide a cross-family echo -> suspect",
+			requestModel:   "gpt-5",
+			actualModel:    "gpt-5",
+			upstreamEcho:   "cn:gemini-2.5-pro",
+			wantVerdict:    ModelFamilyVerdictSuspect,
+			wantVendorHint: "cn",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			gotVerdict, gotVendorHint := evalModelFamilyVerdict(tc.requestModel, tc.actualModel, tc.upstreamEcho, tc.mismatchCode)

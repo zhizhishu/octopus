@@ -25,6 +25,17 @@ func TestScheduledAuditCooldown(t *testing.T) {
 }
 
 func TestShouldTriggerAuditFollowUpOnlyOnEchoMismatch(t *testing.T) {
+	// This legacy predicate is retained for compatibility but is no longer wired
+	// to RelayLogAdd. Test its filtering explicitly, independent of cached defaults.
+	previous, existed := settingCache.Get(model.SettingKeyModelAuditFollowUpEnabled)
+	settingCache.Set(model.SettingKeyModelAuditFollowUpEnabled, "true")
+	t.Cleanup(func() {
+		if existed {
+			settingCache.Set(model.SettingKeyModelAuditFollowUpEnabled, previous)
+		} else {
+			settingCache.Del(model.SettingKeyModelAuditFollowUpEnabled)
+		}
+	})
 	yes := true
 	no := false
 	if ShouldTriggerAuditFollowUp(model.RelayLog{ChannelId: 1, RequestModelName: "claude-opus-4-8"}) {

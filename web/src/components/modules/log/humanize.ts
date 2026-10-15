@@ -356,3 +356,175 @@ export function getLogVerdict(
         text: '❌ 失败：发生了错误。展开下面的「技术详情」把内容发给技术同学排查。',
     };
 }
+
+/**
+ * 上游自报模型名里的「地域 / 命名空间」前缀（如 cn:、global:）。这类前缀不是供应商，
+ * 展示时不据此猜供应商真身。
+ */
+const REGION_NAMESPACE_HINTS = new Set([
+    'cn', 'chn', 'global', 'intl', 'overseas', 'us', 'eu', 'asia', 'apac', 'hk', 'sg', 'jp', 'kr', 'mainland',
+]);
+
+/** 判断 vendor hint 是否为地域/命名空间前缀（是则不该当供应商展示）。 */
+export function isRegionNamespaceHint(hint: string | undefined): boolean {
+    const value = hint?.trim().toLowerCase() ?? '';
+    if (!value) return false;
+    if (REGION_NAMESPACE_HINTS.has(value)) return true;
+    return /^(cn|us|eu|asia|apac|global|intl|overseas)[-_]/i.test(value);
+}
+
+/**
+ * 只归一 cn: 这一种命名空间前缀（严格等价用）。刻意不做任意 ':' 切分——那会掩盖版本号等
+ * 真实差异（例如 "model:beta" 与 "model" 并非同一模型）。
+ */
+function stripCnNamespace(value: string): string {
+    return value.trim().replace(/^cn:/i, '').trim();
+}
+
+export type EchoTone = 'none' | 'trusted' | 'equivalent' | 'cross-family' | 'alias-variant' | 'name-mismatch';
+
+export interface EchoComparison {
+    tone: EchoTone;
+    /** 是否需要渲染「from → to」对照（两侧显示名都非空且不同才渲染）。 */
+    showComparison: boolean;
+    fromLabel: string;
+    toLabel: string;
+    fromRaw: string;
+    toRaw: string;
+    /** trusted 专用：剔除地域/命名空间前缀后可展示的自报前缀，空串表示不展示。 */
+    vendorPrefix: string;
+    /** trusted 专用：上游自报的模型显示名（已去前缀）。 */
+    modelName: string;
+}
+
+/**
+ * 把上游回显收敛成一条展示档（只吃后端既有字段，不新增家族表、不冒充真模型）：
+ *
+ *   - cross-family：后端新 code `cross_family`，或旧口径 `model_family_verdict==='suspect'`
+ *     且 `upstream_model_mismatch===false`（两侧家族可识别且无交集）——**唯一红标**；
+ *   - trusted：后端 trusted；
+ *   - equivalent：`cn:` 前缀严格等价（只归一 cn:），直接显示回显名，不挂「不符」；
+ *   - alias-variant：`upstream_mismatch_code==='alias_variant'`；
+ *   - name-mismatch：其余 `mismatch===true` 的未知差异（琥珀，from=发出名, to=回显名）；
+ *   - none：上游未自报或没差异。
+ *
+ * 对照一律基于实际上游自报名（`upstream_response_model`）：cross-family 用「请求名 → 回显名」
+ * （同名掩盖不了跨家族），其余用「发出名 → 回显名」。
+ */
+export function describeEchoComparison(
+    log: Pick<
+        RelayLog,
+        | 'request_model_name'
+        | 'actual_model_name'
+        | 'upstream_response_model'
+        | 'upstream_model_mismatch'
+        | 'upstream_mismatch_code'
+        | 'model_family_verdict'
+        | 'model_vendor_hint'
+    >,
+    display: (value?: string) => string,
+): EchoComparison {
+    const echoRaw = log.upstream_response_model?.trim() ?? '';
+    const actualRaw = log.actual_model_name?.trim() ?? '';
+    const requestRaw = log.request_model_name?.trim() ?? '';
+    const verdict = log.model_family_verdict?.trim() ?? '';
+    const code = log.upstream_mismatch_code?.trim() ?? '';
+    const mismatch = log.upstream_model_mismatch;
+
+    const blank = (tone: EchoTone): EchoComparison => ({
+        tone,
+        showComparison: false,
+        fromLabel: '',
+        toLabel: '',
+        fromRaw: '',
+        toRaw: '',
+        vendorPrefix: '',
+        modelName: '',
+    });
+
+    if (!echoRaw) return blank('none');
+
+    const echoLabel = display(echoRaw) || echoRaw;
+
+    // 唯一红标：可确定不同家族。对照方向分两种：
+    //   - code=cross_family：actual 与 echo 跨族（request 可能等于 echo）→ 对照 actual→echo；
+    //   - 旧口径 suspect && mismatch===false：echo==actual，request 与 echo 跨族 → 对照 request→echo。
+    if (code === 'cross_family' || (verdict === 'suspect' && mismatch === false)) {
+        const crossByCode = code === 'cross_family';
+        const fromRaw = crossByCode ? actualRaw : requestRaw;
+        const fromLabel = display(fromRaw) || fromRaw;
+        return {
+            tone: 'cross-family',
+            showComparison: Boolean(fromLabel && echoLabel && fromLabel !== echoLabel),
+            fromLabel,
+            toLabel: echoLabel,
+            fromRaw,
+            toRaw: echoRaw,
+            vendorPrefix: '',
+            modelName: '',
+        };
+    }
+
+    if (verdict === 'trusted') {
+        const vendorHint = log.model_vendor_hint?.trim() ?? '';
+        const bare = vendorHint && (echoRaw.startsWith(`${vendorHint}/`) || echoRaw.startsWith(`${vendorHint}:`))
+            ? echoRaw.slice(vendorHint.length + 1)
+            : echoRaw;
+        return {
+            tone: 'trusted',
+            showComparison: false,
+            fromLabel: '',
+            toLabel: echoLabel,
+            fromRaw: '',
+            toRaw: echoRaw,
+            vendorPrefix: isRegionNamespaceHint(vendorHint) ? '' : vendorHint,
+            modelName: display(bare) || bare,
+        };
+    }
+
+    // cn: 前缀严格等价：旧行/未分档的行也直接显回显名，不挂琥珀「不符」。
+    const cnEquivalent = actualRaw !== ''
+        && stripCnNamespace(echoRaw).toLowerCase() === stripCnNamespace(actualRaw).toLowerCase();
+    if (cnEquivalent) {
+        return {
+            tone: 'equivalent',
+            showComparison: false,
+            fromLabel: '',
+            toLabel: echoLabel,
+            fromRaw: actualRaw,
+            toRaw: echoRaw,
+            vendorPrefix: '',
+            modelName: '',
+        };
+    }
+
+    const actualLabel = display(actualRaw) || actualRaw;
+
+    if (code === 'alias_variant') {
+        return {
+            tone: 'alias-variant',
+            showComparison: Boolean(actualLabel && echoLabel && actualLabel !== echoLabel),
+            fromLabel: actualLabel,
+            toLabel: echoLabel,
+            fromRaw: actualRaw,
+            toRaw: echoRaw,
+            vendorPrefix: '',
+            modelName: '',
+        };
+    }
+
+    if (mismatch === true) {
+        return {
+            tone: 'name-mismatch',
+            showComparison: Boolean(actualLabel && echoLabel && actualLabel !== echoLabel),
+            fromLabel: actualLabel,
+            toLabel: echoLabel,
+            fromRaw: actualRaw,
+            toRaw: echoRaw,
+            vendorPrefix: '',
+            modelName: '',
+        };
+    }
+
+    return blank('none');
+}

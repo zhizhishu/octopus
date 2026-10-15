@@ -10,10 +10,10 @@ import (
 	"github.com/bestruirui/octopus/internal/model"
 )
 
-// TestScheduledAuditFollowUpCallbackCarriesLogID 钉住 follow-up 回调签名带 logID:
-// 回显不一致触发跟进时, 只有拿到日志行 ID 才能把审计结论写回那一条日志(先到先得),
-// 否则结论永远只躺在内存快照里、重启即丢。
-func TestScheduledAuditFollowUpCallbackCarriesLogID(t *testing.T) {
+// TestRelayLogAddDoesNotTriggerAuditFollowUp 断言日志写入路径不再触发行为检测跟进——后台自动
+// 检测已停用, 只有检测栏手动 run 能主动打上游。即便显式把 model_audit_followup_enabled 设为
+// true、日志行也确带 UpstreamModelMismatch=true(旧版必触发的组合), RelayLogAdd 仍必须零回调。
+func TestRelayLogAddDoesNotTriggerAuditFollowUp(t *testing.T) {
 	if err := db.InitDB("sqlite", filepath.Join(t.TempDir(), "octopus.db"), false); err != nil {
 		t.Fatalf("init db: %v", err)
 	}
@@ -25,36 +25,39 @@ func TestScheduledAuditFollowUpCallbackCarriesLogID(t *testing.T) {
 	if err := settingRefreshCache(context.Background()); err != nil {
 		t.Fatalf("refresh setting cache: %v", err)
 	}
-
-	type payload struct {
-		channelID int
-		model     string
-		logID     int64
+	// 硬断线不靠开关值: 即便部署残留 true, 也不得恢复自动跟进。
+	if err := SettingSetString(model.SettingKeyModelAuditFollowUpEnabled, "true"); err != nil {
+		t.Fatalf("set model_audit_followup_enabled=true: %v", err)
 	}
-	got := make(chan payload, 1)
-	SetScheduledAuditFollowUp(func(channelID int, modelName string, logID int64) {
-		got <- payload{channelID, modelName, logID}
+	// 复位(在 db.Close 之前执行): 不把这个 true 泄漏给同包后续用例。
+	t.Cleanup(func() {
+		if err := SettingSetString(model.SettingKeyModelAuditFollowUpEnabled, "false"); err != nil {
+			t.Logf("restore model_audit_followup_enabled=false: %v", err)
+		}
 	})
+
+	invoked := make(chan struct{}, 1)
+	SetScheduledAuditFollowUp(func(channelID int, modelName string, logID int64) { invoked <- struct{}{} })
 	t.Cleanup(func() { SetScheduledAuditFollowUp(nil) })
 
-	if err := RelayLogAdd(context.Background(), model.RelayLog{
-		ChannelId:             7,
-		RequestModelName:      "claude-opus-4-8",
-		UpstreamModelMismatch: boolPtr(true),
-	}); err != nil {
-		t.Fatalf("add relay log: %v", err)
-	}
+	for _, keepLogs := range []string{"true", "false"} {
+		if err := SettingSetString(model.SettingKeyRelayLogKeepEnabled, keepLogs); err != nil {
+			t.Fatalf("set relay log persistence=%s: %v", keepLogs, err)
+		}
+		if err := RelayLogAdd(context.Background(), model.RelayLog{
+			ChannelId:             7,
+			RequestModelName:      "claude-opus-4-8",
+			ActualModelName:       "deepseek-v3",
+			UpstreamModelMismatch: boolPtr(true),
+		}); err != nil {
+			t.Fatalf("add relay log (persistence=%s): %v", keepLogs, err)
+		}
 
-	select {
-	case p := <-got:
-		if p.channelID != 7 || p.model != "claude-opus-4-8" {
-			t.Fatalf("callback args = (%d, %s), want (7, claude-opus-4-8)", p.channelID, p.model)
+		select {
+		case <-invoked:
+			t.Fatalf("RelayLogAdd must not invoke audit follow-up (persistence=%s)", keepLogs)
+		case <-time.After(300 * time.Millisecond):
 		}
-		if p.logID <= 0 {
-			t.Fatalf("callback logID = %d, want the snowflake id of the relay log row", p.logID)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("follow-up callback was not invoked within 2s")
 	}
 }
 

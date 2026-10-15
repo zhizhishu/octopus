@@ -6,6 +6,25 @@ import (
 	"testing"
 )
 
+// TestModelAuditDefaultsOff 锁死: 出厂默认下两个旧的自动检测开关都为 false。这是"后台不再自动
+// 启动消耗 token 的 behavior 探针"的默认面; 接线面(Init 不注册、RelayLogAdd 不跟进)由 task/op
+// 层测试另测——单独断言默认 false 而漏接线不算覆盖。
+func TestModelAuditDefaultsOff(t *testing.T) {
+	values := map[SettingKey]string{}
+	for _, s := range DefaultSettings() {
+		values[s.Key] = s.Value
+	}
+	for _, key := range []SettingKey{SettingKeyModelAuditEnabled, SettingKeyModelAuditFollowUpEnabled} {
+		got, ok := values[key]
+		if !ok {
+			t.Fatalf("DefaultSettings must seed %s", key)
+		}
+		if got != "false" {
+			t.Fatalf("DefaultSettings %s = %q, want \"false\"", key, got)
+		}
+	}
+}
+
 func TestRelayStreamKeepaliveIntervalValidation(t *testing.T) {
 	tests := []struct {
 		name    string

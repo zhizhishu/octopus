@@ -21,6 +21,16 @@ func TestUpstreamModelMismatchAliasVariant(t *testing.T) {
 		{name: "completely different names", sent: "model-family-alpha", response: "model-family-beta", want: true, wantCode: ""},
 		{name: "same stem with non-separator suffix is not the same family", sent: "model-family-alpha", response: "model-family-alphaX", want: true, wantCode: ""},
 		{name: "shared prefix too short is not alias", sent: "mod", response: "modular-something-20251101", want: true, wantCode: ""},
+		// 受控命名空间归一: 只剥一层 "cn:"(大小写不敏感), 之后完整 EqualFold。
+		{name: "cn namespace vs bare is the same model", sent: "cn:model-family-alpha", response: "model-family-alpha", want: false, wantCode: ""},
+		{name: "bare vs cn namespace is the same model", sent: "model-family-alpha", response: "cn:model-family-alpha", want: false, wantCode: ""},
+		{name: "uppercase CN namespace still the same model", sent: "CN:model-family-alpha", response: "model-family-alpha", want: false, wantCode: ""},
+		{name: "namespace does not hide a different model", sent: "cn:model-family-alpha", response: "cn:model-family-beta", want: true, wantCode: ""},
+		{name: "namespace does not unify versions", sent: "cn:model-family-alpha-1", response: "cn:model-family-alpha-2", want: true, wantCode: ""},
+		{name: "colon version suffix is not a namespace", sent: "model-family-alpha:free", response: "model-family-alpha", want: true, wantCode: ""},
+		// 跨族 code 优先于别名: 两名均能被家族表识别且无交集。
+		{name: "cross-family names get cross_family code", sent: "deepseek-v3", response: "gemini-2.5-pro", want: true, wantCode: UpstreamMismatchCodeCrossFamily},
+		{name: "cn namespace does not stop cross-family detection", sent: "cn:deepseek-v3", response: "gemini-2.5-pro", want: true, wantCode: UpstreamMismatchCodeCrossFamily},
 		{name: "empty sent", sent: "", response: "model-family-alpha", wantNil: true, wantCode: ""},
 		{name: "empty response", sent: "model-family-alpha", response: "", wantNil: true, wantCode: ""},
 	} {
@@ -60,6 +70,24 @@ func TestUpstreamAliasNormalize(t *testing.T) {
 	} {
 		if got := upstreamAliasNormalize(tc.in); got != tc.want {
 			t.Fatalf("upstreamAliasNormalize(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// 命名空间归一: 只剥一层 "cn:"(trim 后大小写不敏感), 不碰 '/' 前缀、多层名或冒号版本后缀。
+func TestModelNamespaceStripped(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"cn:deepseek-v4", "deepseek-v4"},
+		{"CN:deepseek-v4", "deepseek-v4"},
+		{"  cn: deepseek-v4  ", "deepseek-v4"},
+		{"cn:gpt-5:free", "gpt-5:free"},
+		{"vendor/deepseek-v4", "vendor/deepseek-v4"}, // 只剥 cn:, 不碰 '/' 前缀
+		{"gpt-5", "gpt-5"},
+		{"cn:", ""},
+		{"", ""},
+	} {
+		if got := modelNamespaceStripped(tc.in); got != tc.want {
+			t.Fatalf("modelNamespaceStripped(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
 }
