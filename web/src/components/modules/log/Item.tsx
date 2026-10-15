@@ -381,7 +381,7 @@ function LogRouteHeader({
             className={cn(
                 "min-w-0 shrink text-xs font-mono",
                 isCard
-                    ? "max-w-[14rem] border-border/70 bg-muted/40 px-1.5 py-0"
+                    ? "w-[13rem] border-border/70 bg-muted/40 px-1.5 py-0"
                     : "max-w-[16rem] border-border/70 bg-muted/40 px-2 py-0.5"
             )}
             title={endpointTitle}
@@ -395,7 +395,7 @@ function LogRouteHeader({
             className={cn(
                 "min-w-0 shrink text-xs font-mono",
                 isCard
-                    ? "max-w-[14rem] border-border/70 bg-muted/40 px-1.5 py-0"
+                    ? "w-[13rem] border-border/70 bg-muted/40 px-1.5 py-0"
                     : "max-w-[16rem] border-border/70 bg-muted/40 px-2 py-0.5"
             )}
             title={upstreamPathTitle}
@@ -408,7 +408,7 @@ function LogRouteHeader({
             mode={textMode}
             value={requestModelDisplayName}
             title={requestModelDisplayName === log.request_model_name ? undefined : log.request_model_name}
-            className={cn("font-semibold text-card-foreground", isCard && "max-w-[12rem]")}
+            className={cn("font-semibold text-card-foreground", isCard && "w-[9rem]")}
         />
     );
     /* Channel identity is admin-only: a normal user's log carries no
@@ -426,7 +426,7 @@ function LogRouteHeader({
             ) : (
                 <Badge
                     variant="secondary"
-                    className="min-w-0 max-w-[12rem] px-1.5 py-0 text-xs"
+                    className={cn("min-w-0 px-1.5 py-0 text-xs", isCard ? "w-[9rem]" : "max-w-[12rem]")}
                     style={{ backgroundColor: `${brandColor}15`, color: brandColor }}
                 >
                     <SafeText value={log.channel_name} className="text-xs" />
@@ -439,7 +439,7 @@ function LogRouteHeader({
             mode={textMode}
             value={actualModelDisplayName}
             title={actualModelDisplayName === log.actual_model_name ? undefined : log.actual_model_name}
-            className={cn("text-muted-foreground", isCard && "max-w-[12rem]")}
+            className={cn("text-muted-foreground", isCard && "w-[9rem]")}
         />
     );
     // 管理员才有渠道名/自报。普通用户摘要故意不下发，这里保持空白，不能用「未自报」冒充。
@@ -471,7 +471,7 @@ function LogRouteHeader({
      */
     const upstreamEchoModel = showEcho ? (
         upstreamEchoDisplayName ? (
-            <span className="inline-flex min-w-0 max-w-[14rem] shrink items-center gap-2">
+            <span className={cn("inline-flex min-w-0 shrink items-center gap-2", isCard ? "w-[11rem]" : "max-w-[14rem]")}>
                 <ArrowRight className={cn(
                     "size-3.5 shrink-0",
                     echoMismatch ? "text-amber-600/70 dark:text-amber-400/70" : "text-muted-foreground/50"
@@ -650,21 +650,24 @@ function LogRouteHeader({
                     {channelGroup}
                     {actualModelText}
                     {upstreamEchoModel}
-                    {clientSlot}
                 </div>
                 {/* C1 流式 · 粘性图钉（固定右列） */}
                 <div className="flex min-w-0 items-center gap-2 md:justify-self-end">
                     {streamBadge}
                     {stickyPin}
                 </div>
-                {/* A2 客户端已并入 B1；保留低强调占位，让「第 2 排永远渲染」、列轨道恒定 */}
-                <div className="flex min-w-0 flex-wrap items-center gap-2">
-                    <Badge
-                        variant="outline"
-                        className="shrink-0 border-border/60 bg-muted/30 px-1.5 py-0 text-xs font-normal text-muted-foreground"
-                    >
-                        {t('clientUnknown')}
-                    </Badge>
+                {/* A2 渠道徽标正下方：向下箭头过渡 + 下游客户端（有客户端徽标用之，
+                    没有则低强调「客户端未知」占位——第 2 排永远渲染、列轨道恒定） */}
+                <div className="flex min-w-0 flex-nowrap items-center gap-2">
+                    <ArrowDown className="size-3.5 shrink-0 text-muted-foreground/40" />
+                    {clientSlot ?? (
+                        <Badge
+                            variant="outline"
+                            className="shrink-0 border-border/60 bg-muted/30 px-1.5 py-0 text-xs font-normal text-muted-foreground"
+                        >
+                            {t('clientUnknown')}
+                        </Badge>
+                    )}
                 </div>
                 {/* B2 映射自 · 回显不符 · 模型检测（检测无结果就留空，不造假占位）。
                     整格不换行：回显状态徽标让位截断，检测徽标永远贴在本格右端，
