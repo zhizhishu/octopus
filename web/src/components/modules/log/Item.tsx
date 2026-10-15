@@ -197,7 +197,7 @@ function RetryBadgeWithPopover({ channelName, brandColor, attempts }: RetryBadge
                     tabIndex={0}
                     onClick={(e) => e.stopPropagation()}
                     onKeyDown={(e) => e.stopPropagation()}
-                    className="min-w-0 max-w-[12rem] cursor-pointer px-1.5 py-0 text-xs"
+                    className="min-w-0 max-w-[min(12rem,100%)] cursor-pointer px-1.5 py-0 text-xs"
                     style={{ backgroundColor: `${brandColor}15`, color: brandColor }}
                 >
                     <RotateCw className="size-3 mr-1 opacity-80" />

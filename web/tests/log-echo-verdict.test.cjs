@@ -206,10 +206,10 @@ test('card header is one shared 6-col/2-row grid with an arrow over the channel 
 
     // 重试渠道徽标是一个独立元素（不是把 Fragment 当一个 grid 子节点撑破列），落在 col4 格子里。
     const channelCell = cells.find((p) => p['data-log-row'] === '1' && p['data-log-cell'] === '4');
-    assert.ok(
-        findElement(channelCell.children, (node) => typeof node.type === 'function' && node.type.name === 'RetryBadgeWithPopover'),
-        'retry channel badge lives inside the col4 cell'
-    );
+    const retry = findElement(channelCell.children, (node) => typeof node.type === 'function' && node.type.name === 'RetryBadgeWithPopover');
+    assert.ok(retry, 'retry channel badge lives inside the col4 cell');
+    const retryTree = retry.type(retry.props);
+    assert.ok(findElement(retryTree, (node) => node.type === 'Badge' && String(node.props.className).includes('max-w-[min(12rem,100%)]')), 'retry badge must stay within the shared channel track');
 });
 
 test('summary band exposes data-log-row 3 and 4', () => {
