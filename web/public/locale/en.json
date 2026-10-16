@@ -695,13 +695,11 @@
             "clearFailed": "Failed to clear logs",
             "intervention": {
                 "label": "Automatic rescue for upstream errors",
-                "description": "Enabled by default. Streaming requests hold the connection and retry on other channels automatically after all automatic channels fail; when disabled, ordinary channels return the error to the client immediately.",
-                "timeoutLabel": "Automatic rescue wait limit (sec)",
-                "timeoutHint": "Automatic rescue lasts at most 300 seconds in total; this value only shortens the waiting window when it is below 300 seconds and cannot extend it; the default 1800 seconds has no effect on automatic retries."
+                "description": "Automatic rescue retries the same user message on other channels once, at one retry per second, for at most 300 seconds. It runs at most once per new user message: once the rescue is exhausted, later requests carrying that same message are forwarded normally until one succeeds or a new user message arrives. Identical conversation histories cannot be told apart, so a repeated message shares the same rescue."
             },
             "noBreaker": {
-                "label": "No-breaker channel retry budget (sec)",
-                "hint": "Default and maximum are both 300 seconds. On failure the downstream error is intercepted while the gateway re-selects channels every second in the established priority/round-robin order; 0 disables this. Channels with the circuit breaker enabled still count failures and trip as usual."
+                "label": "Automatic rescue window (sec)",
+                "hint": "Default and maximum are both 300 seconds; 0 turns automatic rescue off. It applies to channels with the circuit breaker disabled, regardless of the switch above."
             }
         }
     },

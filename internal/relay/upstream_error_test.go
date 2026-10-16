@@ -541,6 +541,8 @@ func setupRelayErrorDB(t *testing.T) context.Context {
 		t.Fatalf("init cache: %v", err)
 	}
 	disableRelayInterventionForTest(t)
+	// Isolate the process-wide episode gate (see resetRescueEpisodes).
+	resetRescueEpisodes(t)
 	return context.Background()
 }
 

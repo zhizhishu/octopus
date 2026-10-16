@@ -16,9 +16,8 @@ import (
 	"github.com/bestruirui/octopus/internal/transformer/outbound"
 )
 
-// newNoBreakerChannel registers a DisableCircuitBreaker channel — the kind that used to
-// put the rescue loop on a flat 1s rhythm (138 attempts inside one 300s window in
-// production). Its breaker is off by design, so nothing else throttles the retries.
+// newNoBreakerChannel registers a DisableCircuitBreaker channel — the kind that retries
+// like a direct client and is paced by the fixed one-second rescue round.
 func newNoBreakerChannel(t *testing.T, upstream, name string, priority int, noBreaker bool) int {
 	t.Helper()
 	// Mirrors newPlainChannel (which the rescue-window tests use): the group's channel
@@ -42,10 +41,10 @@ func newNoBreakerChannel(t *testing.T, upstream, name string, priority int, noBr
 	return channel.ID
 }
 
-// TestRescueBackoffGrowsInsteadOfHotLooping is the production defect: one channel that
-// always fails fast, retried in place with a flat rhythm until the budget died. The
-// schedule must now grow, and the whole thing must stay inside the request ceiling.
-func TestRescueBackoffGrowsInsteadOfHotLooping(t *testing.T) {
+// TestRescuePacesAtOneSecondAndStaysBounded: one channel that always fails fast is retried
+// on the fixed one-second rhythm, never back-to-back, and the whole rescue stays inside the
+// request ceiling and ends with an explicit failure rather than a silent timeout.
+func TestRescuePacesAtOneSecondAndStaysBounded(t *testing.T) {
 	setupRescueDeadlineDB(t)
 	withAutoRescueCap(t, 12*time.Second)
 	withRequestCeiling(t, 12*time.Second)
@@ -85,7 +84,7 @@ func TestRescueBackoffGrowsInsteadOfHotLooping(t *testing.T) {
 	select {
 	case res = <-resCh:
 	case <-time.After(30 * time.Second):
-		t.Fatalf("the rescue loop never ended; a growing backoff must stop it")
+		t.Fatalf("the rescue loop never ended; the window/ceiling must stop it")
 	}
 	elapsed := time.Since(startedAt)
 
@@ -96,16 +95,11 @@ func TestRescueBackoffGrowsInsteadOfHotLooping(t *testing.T) {
 	if len(stamps) < 3 {
 		t.Fatalf("expected the rescue to retry a few times before giving up, got %d upstream requests", len(stamps))
 	}
-	if len(stamps) > 8 {
-		t.Fatalf("a 12s window with a growing backoff must not fit %d attempts (the hot loop this pins measured 138 per 300s)", len(stamps))
-	}
-	intervals := make([]time.Duration, 0, len(stamps)-1)
+	// Every dispatch is a fixed one-second round apart — never a hot loop.
 	for i := 1; i < len(stamps); i++ {
-		intervals = append(intervals, stamps[i].Sub(stamps[i-1]))
-	}
-	first, last := intervals[0], intervals[len(intervals)-1]
-	if last < 2*first {
-		t.Fatalf("the retry intervals must grow (exponential + jitter), got first=%s last=%s series=%v", first, last, intervals)
+		if gap := stamps[i].Sub(stamps[i-1]); gap < 800*time.Millisecond {
+			t.Fatalf("the rescue retried %s after the previous round; it must be paced at ~1s (series=%v)", gap, stamps)
+		}
 	}
 	if elapsed > 20*time.Second {
 		t.Fatalf("the request ceiling (12s) must bound the whole rescue, took %s", elapsed)
@@ -117,12 +111,12 @@ func TestRescueBackoffGrowsInsteadOfHotLooping(t *testing.T) {
 	if !strings.Contains(res.body, "error") && !strings.Contains(res.body, "retry") {
 		t.Fatalf("expected an explicit failure body, got %d %q", res.code, res.body)
 	}
-	t.Logf("rescue retry intervals (12s cap): %v", intervals)
+	t.Logf("rescue rounds (12s cap): %d dispatches", len(stamps))
 }
 
 // TestSingleTransientFailureStillRescuesToSuccess pins the capability that must NOT
-// regress while adding backoff: one transient failure on the first channel still ends as a
-// successful answer from another channel.
+// regress: one transient failure on the first channel still ends as a successful answer
+// from another channel.
 func TestSingleTransientFailureStillRescuesToSuccess(t *testing.T) {
 	setupRescueDeadlineDB(t)
 	setIdleSetting(t, dbmodel.SettingKeyFirstTokenTimeOutDefault, "30")
@@ -134,7 +128,7 @@ func TestSingleTransientFailureStillRescuesToSuccess(t *testing.T) {
 		_, _ = w.Write([]byte(`{"error":{"message":"rate limited"}}`))
 	}))
 	t.Cleanup(flaky.Close)
-	// The failing channel is a no-breaker one, i.e. the eager path that used to hot-loop.
+	// The failing channel is a no-breaker one, i.e. the eager path.
 	newNoBreakerChannel(t, flaky.URL, "flaky-first", 1, true)
 
 	healthy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -157,75 +151,13 @@ func TestSingleTransientFailureStillRescuesToSuccess(t *testing.T) {
 	}
 }
 
-// TestRescueRotationDropsRepeatedlyFailingChannel pins the rotation rule: after the
-// configured number of consecutive failures a channel is excluded, and when that leaves no
-// candidate the loop must stop instead of retrying forever.
-func TestRescueRotationDropsRepeatedlyFailingChannel(t *testing.T) {
-	attemptsFor := func(id int, name string) []dbmodel.ChannelAttempt {
-		return []dbmodel.ChannelAttempt{{ChannelID: id, ChannelName: name}}
-	}
-
-	rotation := newRescueRotation()
-	for round := 1; round < maxRescueRoundsPerSameChannel; round++ {
-		if exhausted, _, _, _ := rotation.noteRound(attemptsFor(7, "bad")); exhausted {
-			t.Fatalf("round %d must not exhaust the channel yet", round)
-		}
-	}
-	exhausted, id, name, rounds := rotation.noteRound(attemptsFor(7, "bad"))
-	if !exhausted || id != 7 || rounds != maxRescueRoundsPerSameChannel {
-		t.Fatalf("round %d must drop channel 7, got exhausted=%v id=%d rounds=%d", maxRescueRoundsPerSameChannel, exhausted, id, rounds)
-	}
-	if name != "bad" {
-		t.Fatalf("expected the channel name to be reported for the switch log, got %q", name)
-	}
-	// Re-reporting the same channel must not log a second switch.
-	if again, _, _, _ := rotation.noteRound(attemptsFor(7, "bad")); again {
-		t.Fatalf("the switch must be reported exactly once per channel")
-	}
-
-	group := dbmodel.Group{Items: []dbmodel.GroupItem{{ChannelID: 7}, {ChannelID: 9}}}
-	filtered, anyLeft := rotation.exclude(group)
-	if !anyLeft || len(filtered.Items) != 1 || filtered.Items[0].ChannelID != 9 {
-		t.Fatalf("the exhausted channel must be dropped from the candidate list, got %+v", filtered.Items)
-	}
-	onlyBad := dbmodel.Group{Items: []dbmodel.GroupItem{{ChannelID: 7}}}
-	if _, anyLeft := rotation.exclude(onlyBad); anyLeft {
-		t.Fatalf("with every candidate exhausted the loop must be told to stop")
-	}
-
-	// A different channel resets the streak: three failures must be CONSECUTIVE.
-	fresh := newRescueRotation()
-	sequence := []int{7, 7, 9, 7, 9}
-	for _, chID := range sequence {
-		if exhausted, _, _, _ := fresh.noteRound(attemptsFor(chID, "x")); exhausted {
-			t.Fatalf("channel %d must not be dropped from a non-consecutive sequence %v", chID, sequence)
-		}
-	}
-}
-
-// TestRescueRoundBackoffKeepsEagerStartAndGrows pins the schedule itself: the first rounds
-// stay eager (a no-breaker channel is meant to retry like a direct client), and the series
-// then grows towards the 15s ceiling.
-func TestRescueRoundBackoffKeepsEagerStartAndGrows(t *testing.T) {
+// TestRescueRoundBackoffIsFixedOneSecond pins the schedule itself: every round waits the
+// same one second, regardless of round number or whether a no-breaker channel was seen.
+func TestRescueRoundBackoffIsFixedOneSecond(t *testing.T) {
 	for _, eager := range []bool{true, false} {
-		first := rescueRoundBackoff(1, eager)
-		if first < 800*time.Millisecond || first > 1200*time.Millisecond {
-			t.Fatalf("round 1 must stay about a second (eager=%v), got %s", eager, first)
-		}
-		late := rescueRoundBackoff(6, eager)
-		if late < 12*time.Second || late > 18*time.Second {
-			t.Fatalf("the schedule must grow to the 15s cap by round 6 (eager=%v), got %s", eager, late)
-		}
-		if late <= first {
-			t.Fatalf("the schedule must grow, got first=%s late=%s", first, late)
-		}
-		// The no-breaker eager rounds are the only difference between the two modes.
-		if eager {
-			if second := rescueRoundBackoff(2, true); second > 1200*time.Millisecond {
-				t.Fatalf("a no-breaker channel keeps its eager second round, got %s", second)
-			}
-			if third := rescueRoundBackoff(3, true); third < 1600*time.Millisecond {
-				t.Fatalf("eagerness must stop after %d rounds, round 3 got %s", noBreakerEagerRounds, third)
+		for _, round := range []int{1, 2, 3, 6, 20} {
+			if got := rescueRoundBackoff(round, eager); got != time.Second {
+				t.Fatalf("rescueRoundBackoff(%d, eager=%v) = %s, want 1s", round, eager, got)
 			}
 		}
 	}

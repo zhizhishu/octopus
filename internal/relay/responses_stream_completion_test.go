@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -264,12 +265,35 @@ func TestResponsesStreamToolCallDoneWaitsForCompletedUsage(t *testing.T) {
 	}
 }
 
+// responsesStreamDoneSignal wraps httptest.ResponseRecorder so a fixture goroutine can react to
+// downstream output without reading the recorder's unsynchronized buffer while the handler is
+// still writing into it. The handler stays the only writer; the fixture only waits on seen.
+type responsesStreamDoneSignal struct {
+	*httptest.ResponseRecorder
+	needle string
+	once   sync.Once
+	seen   chan struct{}
+}
+
+func (r *responsesStreamDoneSignal) Write(p []byte) (int, error) {
+	n, err := r.ResponseRecorder.Write(p)
+	if strings.Contains(r.ResponseRecorder.Body.String(), r.needle) {
+		r.once.Do(func() { close(r.seen) })
+	}
+	return n, err
+}
+
 func TestResponsesStreamClientCancelAfterCompletedSucceeds(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	rec := httptest.NewRecorder()
+	rec := &responsesStreamDoneSignal{
+		ResponseRecorder: httptest.NewRecorder(),
+		needle:           "response.completed",
+		seen:             make(chan struct{}),
+	}
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 	ctx, cancel := context.WithCancel(c.Request.Context())
+	defer cancel()
 	c.Request = c.Request.WithContext(ctx)
 
 	ra := &relayAttempt{relayRequest: &relayRequest{
@@ -293,14 +317,20 @@ func TestResponsesStreamClientCancelAfterCompletedSucceeds(t *testing.T) {
 				`data: {"type":"response.output_text.delta","delta":"OK"}`+"\n\n"+
 				`data: {"type":"response.completed","response":{"id":"resp_1","object":"response","created_at":123,"model":"gpt-5.5","status":"completed","output":[],"usage":{"input_tokens":2,"input_tokens_details":{"cached_tokens":0},"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":3}}}`+"\n\n",
 		)
-		for range 100 {
-			if strings.Contains(rec.Body.String(), "response.completed") {
-				break
-			}
-			time.Sleep(10 * time.Millisecond)
+		if err != nil {
+			cancel()
+			writeDone <- err
+			return
+		}
+		select {
+		case <-rec.seen:
+		case <-time.After(2 * time.Second):
+			cancel()
+			writeDone <- errors.New("response.completed never reached the client")
+			return
 		}
 		cancel()
-		writeDone <- err
+		writeDone <- nil
 	}()
 
 	if err := ra.handleStreamResponse(c.Request.Context(), response, &openaiOutbound.ResponseOutbound{}); err != nil {

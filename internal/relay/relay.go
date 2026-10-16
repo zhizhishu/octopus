@@ -128,6 +128,12 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 	// token (audit #5).
 	baseResponsesInstructions := internalRequest.ResponsesInstructions
 
+	// Episode gate (见 rescue_episode.go): 在正式遍历开始前，仅凭「原始入站请求」判定这一轮
+	// 用户消息是否允许跑机器救援。身份可识别时必得一个可观测的 lease；已被压制(同名消息已耗尽
+	// 且尚未恢复)或已有并发同名轮次时 Allowed=false——该请求仍会照常转发每一个正常候选，只是
+	// 不再自动救援/自动停机；只有它自己完整成功才会在下面 defer 里解除压制。
+	rescueLease := acquireRescueEpisode(apiKeyID, userID, requestEndpoint, requestModel, c.Request.Header, internalRequest)
+
 	// 请求级上下文
 	req := &relayRequest{
 		c:                   c,
@@ -164,6 +170,7 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		interventionRounds int
 		fatalClientErr     error // 确定性客户端错误(上下文超长/请求体非法): 停止遍历与救援, 原样透传真实 4xx
 		requestSucceeded   bool  // 重试前的 lastErr 可能仍非 nil，终态需按真实成功结果判断
+		machineRescueRan   bool  // startRecovery 首次 pin 成功即置真: 预算耗尽/机器终止都据此压制同名消息
 
 		// Intervention state lifted above runIterator to ensure exactly one pending ID,
 		// one context/cancel, one keepalive goroutine, and single cleanup across the full request lifecycle.
@@ -201,7 +208,11 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		// commits mid-attempt survives past the cap.
 		var stopAttemptDeadline func()
 		if !recoveryStartedAt.IsZero() && interventionCtx == nil {
-			stopAttemptDeadline = req.armAttemptDeadlineCancel(recoveryStartedAt.Add(autoRescueCap), cancel)
+			// 停机前的候选(started before the intervention hold exists)同样受「这一次救援窗口」约束:
+			// 配置预算裁剪 min(配置预算, autoRescueCap)，且此处无 operator(停机之前压根没有 operator)。
+			// 否则配置了短预算的请求会先白等满 300s 才进 hold。
+			preholdDeadline := rescueWindowDeadline(recoveryStartedAt, intervention.NoBreakerRetryBudget(), true, 0, false, 0)
+			stopAttemptDeadline = req.armAttemptDeadlineCancel(preholdDeadline, cancel)
 		}
 		c.Request = parent.WithContext(attemptCtx)
 		requestState.bindAttemptCancel(cancel, internalRequestPrefersStream(internalRequest))
@@ -262,6 +273,49 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		}
 		c.Request = clientRequest
 		relayCancel()
+	}()
+
+	// startRecovery pins the ONE automatic-recovery window at the first rescuable failure,
+	// but ONLY when a machine rescue is actually available for this turn: the episode lease
+	// must allow it, the rescue budget must be on, and either the ordinary switch is on or a
+	// no-breaker channel was already seen. A bypassed / suppressed turn therefore never starts
+	// the clock, so its normal candidates are not bounded by the 300s window. The first
+	// successful pin also marks that a machine rescue ran — so a pre-hold budget expiry (no
+	// hold ever entered) still suppresses the episode.
+	startRecovery := func(current time.Time, err error) time.Time {
+		if !current.IsZero() {
+			return current
+		}
+		if rescueLease == nil || !rescueLease.Allowed {
+			return current
+		}
+		if intervention.NoBreakerRetryBudget() <= 0 {
+			return current
+		}
+		if !intervention.Enabled() && !sawNoBreakerChannel {
+			return current
+		}
+		pinned := markRecoveryStart(current, err)
+		if !pinned.IsZero() {
+			machineRescueRan = true
+		}
+		return pinned
+	}
+
+	// 请求彻底结束后一次性上报 episode 结果。完整成功(有真实 choices.message/delta 内容，
+	// 而不是裸 200 / 仅 usage)才恢复该 episode；否则只要跑过机器救援且既没成功、又不是客户端
+	// 主动取消，就压制它。区分靠真正的客户端上下文 clientRequest 而非 relayCtx：
+	//   * 客户 cancel      -> clientRequest 已取消  -> 不压制（用户自己重发应重新救援）
+	//   * operator 主动中止 -> 只取消 interventionCtx -> 算耗尽，压制
+	//   * 机器死线 / 停机  -> 只取消 interventionCtx -> 算耗尽，压制
+	//   * operator 走 request-state 的 relayCancel -> relayCtx 取消但 clientRequest 未取消 -> 算耗尽，压制
+	// lease 为 nil(身份不可识别)时 Finish 是 nil-safe 的空操作。
+	defer func() {
+		clientCanceled := clientRequest.Context().Err() != nil
+		rescueExhausted := machineRescueRan && !requestSucceeded && !clientCanceled
+		// raceResponseHasContent（另一工兵提供）只看 choices.message/delta，不含 usage：
+		// 裸 200/仅统计用量不算「恢复」，只有真正交付了内容才算。
+		rescueLease.Finish(requestSucceeded && raceResponseHasContent(metrics.InternalResponse), rescueExhausted)
 	}()
 
 runIterator:
@@ -382,53 +436,42 @@ attemptChannels:
 			iter.RemapCurrentModel(mapped)
 		}
 
-		// 多 Key 竞速模式分支：仅限普通文本 relay 且未被 intervention 指定单 Key、可用 Key >= 2
-		if canChannelRace(req, channel, availableKeys) {
-			// Single-threaded pre-race setup:
-			// 1. Update inbound adapter's ThinkingToContent once before goroutines start.
-			if setter, ok := req.inAdapter.(interface{ SetThinkingToContent(bool) }); ok {
-				setter.SetThinkingToContent(channel.ThinkingToContent)
-			}
-			// 2. Prepare immutable template internalRequest on main thread.
+		// Racing is opt-in and confined to contiguous peers in the current hard tier.
+		// Restore the untouched inbound template first; every channel applies its own
+		// prompt/model preparation on an independent copy, before goroutines start.
+		if channel.RaceMode && req.interventionKeyID == 0 && !isVideoRequest(req) &&
+			!internalRequest.IsEmbeddingRequest() && !internalRequest.IsImageGenerationRequest() {
 			internalRequest.Model = item.ModelName
 			internalRequest.Messages = append([]model.Message(nil), baseMessages...)
 			internalRequest.PreviousResponseID = basePreviousResponseID
 			internalRequest.ResponsesInputRaw = cloneRawJSONMessage(baseResponsesInputRaw)
 			internalRequest.ResponsesInstructions = baseResponsesInstructions
-			promptSnapshot := applyPromptOverrides(internalRequest, routeResult.AccessPlan, routeResult.AccessRouteRule, channel)
-			if len(promptSnapshot.Sources) > 0 {
-				clearResponsesRawPromptShape(internalRequest)
+			req.internalRequest = internalRequest
+			contenders, peers := buildGroupRaceContenders(c.Request.Context(), req, item, channel, availableKeys, routeResult, requestEndpoint)
+			if len(contenders) == 0 {
+				goto serialChannel
 			}
-			metrics.SetPromptOverrideSnapshot(promptSnapshot)
-
-			capabilityKey := routingCapabilityKey(internalRequest, channel)
-			log.Infof("request model %s, channel %s entering race mode with %d available keys (delay=%dms, sticky=%t)",
-				requestModel, channel.Name, len(availableKeys), channel.RaceDelayMs, iter.IsSticky())
-
-			// #2: pin request-level protection on the PARENT before any racer starts.
-			// Each racer's `isolatedReq := *req` VALUE-COPIES redactRequired, so a racer's
-			// own applyInboundRedaction never reaches the parent. Pinning here keeps the
-			// parent sticky even when ALL racers fail, so the next (possibly opted-out)
-			// channel's attempt still redacts instead of sending cleartext. The winner
-			// handoff needs no extra plumbing: it reads the parent request's field.
-			if req.redactRequired || (redactGlobalEnabled() && channel.RedactEnabled) {
-				req.redactRequired = true
+			for _, contender := range contenders {
+				if contender.channel.DisableCircuitBreaker {
+					sawNoBreakerChannel = true
+				}
+				if req.redactRequired || (redactGlobalEnabled() && contender.channel.RedactEnabled) {
+					req.redactRequired = true
+				}
 			}
 
 			raceStartedAt := time.Now()
 			requestState.startRound(channel.Name, item.ModelName)
 			endAttempt := beginControlledAttempt()
-			result, remainingKeys := runChannelRace(
-				req,
-				channel,
-				availableKeys,
-				outAdapter,
-				requestEndpoint,
-				capabilityKey,
-				group.FirstTokenTimeOut,
-			)
+			result, _ := runGroupRace(req, contenders, requestEndpoint, group.FirstTokenTimeOut)
 			endAttempt()
-			recoveryStartedAt = markRecoveryStart(recoveryStartedAt, result.Err)
+			iter.ConsumeTierItems(peers)
+			// The winner may have replaced the parent's request for response conversion.
+			// A pre-content failure must restore the original local pointer before retry.
+			if !result.Success {
+				req.internalRequest = internalRequest
+			}
+			recoveryStartedAt = startRecovery(recoveryStartedAt, result.Err)
 			if result.Err == nil {
 				req.releaseRescueDeadline()
 			}
@@ -463,13 +506,11 @@ attemptChannels:
 				fatalClientErr = result.Err
 				break
 			}
-			if len(remainingKeys) > 0 && shouldTryNextChannelKey(result.StatusCode) {
-				availableKeys = remainingKeys
-			} else {
-				continue
-			}
+			// Every eligible key in the grouped peers was exhausted by the waves.
+			continue
 		}
 
+	serialChannel:
 		for keyIndex, usedKey := range availableKeys {
 			if clientGone, stopErr := relayStop(originalRequest.Context(), c.Request.Context(), interventionCtx, rescueFired); clientGone {
 				log.Infof("client request context canceled, stopping retry")
@@ -526,7 +567,7 @@ attemptChannels:
 			endAttempt := beginControlledAttempt()
 			result := ra.attempt()
 			endAttempt()
-			recoveryStartedAt = markRecoveryStart(recoveryStartedAt, result.Err)
+			recoveryStartedAt = startRecovery(recoveryStartedAt, result.Err)
 			if result.Err == nil {
 				req.releaseRescueDeadline()
 			}
@@ -550,10 +591,8 @@ attemptChannels:
 			} else {
 				requestState.finishRound("unknown error", attemptLatency)
 			}
-			// 坏响应（200 但一个字节都没有 / 流自然结束却没有任何内容）不再"原地立刻重发"：
-			// 旧行为在这条分支里连发 2 次、间隔 1~2ms，现场锚点因此出现"同一请求体同一渠道
-			// 连发 5 次、间隔无退避"。现在一律交给下面那条已经带退避、带同渠上限、并受整次
-			// 请求总时长上限约束的自动救援链：节奏由其退避决定，渠道由轮换决定。
+			// Empty responses do not trigger duplicate immediate dispatches. Eligible
+			// turns re-enter the fixed-interval rescue loop under the shared deadline.
 			if result.Success {
 				requestSucceeded = true
 				// 成功的这一次尝试所用的 Key 即最终 Key, 回填其备注供日志展示。
@@ -612,16 +651,16 @@ attemptChannels:
 					// Spilling to the model pool re-attempts targets that have just failed, so
 					// an upstream Retry-After applies here exactly as it does inside the rescue
 					// loop: never re-hit a throttled upstream before it said to come back.
-					if !paceRetryWait(c.Request.Context()) {
-						if rescueDeadlineExpired(recoveryStartedAt, time.Now()) {
-							rescueExpired = true
-						}
-					} else {
+					// 无熔断渠道不被上游 Retry-After 下限拖慢(像直连 CLI 一样保持急切重试)；
+					// 普通路由仍尊重下限，避免在上游明确说"等会儿再来"时反复去撞。
+					if sawNoBreakerChannel || paceRetryWait(c.Request.Context()) {
 						group = fallbackGroup
 						iter = fallbackIter
 						req.stickyEnabled = fallbackSticky
 						internalRequest.Model = requestModel
 						goto runIterator
+					} else if rescueDeadlineExpired(recoveryStartedAt, time.Now()) {
+						rescueExpired = true
 					}
 				}
 			}
@@ -647,8 +686,12 @@ attemptChannels:
 	if rescuable && !req.wroteBusinessData {
 		req.suppressPreContentKeepalive.Store(true)
 	}
-	autoRescue := rescuable && (intervention.Enabled() || sawNoBreakerChannel) && rescueBudget > 0
-	manualIntervention := shouldHoldForOperator(req, fatalClientErr, finalErr) ||
+	// episode lease 门控所有「隐式」救援分支: 被压制(同名消息已耗尽未恢复)或并发同轮的请求
+	// 不得自动重试/自动停机; budget=0 则整个机器救援关闭。显式 operator 动作
+	// (operatorRescueRequested)仍然保留。无论是否救援，请求仍会转发每一个正常候选。
+	rescueAllowed := rescueLease != nil && rescueLease.Allowed
+	autoRescue := rescuable && rescueAllowed && (intervention.Enabled() || sawNoBreakerChannel) && rescueBudget > 0
+	manualIntervention := (shouldHoldForOperator(req, fatalClientErr, finalErr) && rescueAllowed && rescueBudget > 0) ||
 		(operatorRescueRequested && isRescueableHeldRequest(req, fatalClientErr, finalErr))
 	// Re-entry previously continued rescue blindly even when the latest attempt produced a
 	// deterministic (non-rescuable / context-window / malformed-body) error or the rescue
@@ -658,6 +701,7 @@ attemptChannels:
 	rescueBudgetAlive := interventionCtx == nil || interventionCtx.Err() == nil
 	clientAlive := originalRequest.Context().Err() == nil
 	if clientAlive && rescueBudgetAlive && (autoRescue || manualIntervention) {
+		machineRescueRan = true
 		// Heartbeats keep a STREAM client's connection "working" while the rescue retries;
 		// a non-stream client's body must stay pure JSON, so it gets none (it simply waits,
 		// bounded by its own client timeout and by the rescue window).
@@ -675,9 +719,9 @@ attemptChannels:
 		}
 		if interventionCtx == nil {
 			// ONE automatic-recovery window, measured from the first rescuable failure and
-			// capped at autoRescueCap. The operator hold timeout can only tighten it — it must
-			// never lend extra life to an automatic retry. A deadline already in the past opens
-			// an immediately-expired window so the loop terminates cleanly with
+			// capped at autoRescueCap. The legacy operator hold timeout is IGNORED here — it can
+			// neither tighten nor extend the shared automatic window. A deadline already in the
+			// past opens an immediately-expired window so the loop terminates cleanly with
 			// octopus_rescue_timeout.
 			start := recoveryStartedAt
 			if start.IsZero() {
@@ -748,24 +792,20 @@ attemptChannels:
 		}
 
 		{
-			// 救援轮次的节奏与轮换状态（见 rescue_retry_pacing.go）：同一渠道连续失败到上限
-			// 就把它从候选里剔除，强制换渠道；退避必须真的增长，且整段救援受请求总时长上限约束。
-			rotation := newRescueRotation()
+			// 救援轮次的固定节奏（见 rescue_retry_pacing.go）：每轮固定 1s，不再按渠道剔除、
+			// 不再指数退避/抖动；整段救援只由「一次救援窗口(=首失败起 min(配置预算,300s))」与
+			// 整次请求总时长上限收口。同渠道可被反复重试（单渠道也能连续救超过 3 次）。
 			for {
 				interventionRounds++
-				if exhaustedNow, id, name, rounds := rotation.noteRound(allAttempts); exhaustedNow {
-					log.Warnf("channel %s (id=%d) failed %d consecutive automatic-rescue rounds, dropping it and switching channel",
-						name, id, rounds)
-				}
-				// 无熔断渠道仍保留"像直连 CLI 一样先快试"的意图(前两轮 1s)，但之后必须按
-				// 指数退避增长：现场实测那版固定 1s 把 300s 救援窗口烧成同一渠道 138 次原地重试。
 				backoff := rescueRoundBackoff(interventionRounds, sawNoBreakerChannel)
 				// 上游明确要求"多久之后再来"时，这个节奏归它：比它更早重试只会再吃一次
 				// 429/503，把一次短暂限流拖成自己打自己的循环。这里只把等待拉长到上游
 				// 要求的下限；救援窗口仍由 armRescueDeadline 收口——窗口比 Retry-After
 				// 短就照旧按窗口结束，不会凭空续命。floor 与本轮 backoff 取大即清零，
 				// 下一轮重新只认新一轮上游给的节奏。
-				if retryAfterFloor > backoff {
+				// 普通（有熔断）路由仍遵守上游 Retry-After 下限；无熔断渠道不被 floor 拖慢,
+				// 扫完一轮下一轮就是固定 1s。
+				if !sawNoBreakerChannel && retryAfterFloor > backoff {
 					backoff = retryAfterFloor
 				}
 				retryAfterFloor = 0
@@ -830,14 +870,8 @@ attemptChannels:
 					continue
 				}
 				freshGroup := enrichGroupForSmartRouting(c.Request.Context(), freshRouteResult.Group, preferStreamRouting)
-				// 已经连续失败到上限的渠道不再进入候选，强制换渠道而不是原地重试。
-				var anyCandidateLeft bool
-				freshGroup, anyCandidateLeft = rotation.exclude(freshGroup)
-				if !anyCandidateLeft {
-					log.Warnf("every candidate channel failed %d consecutive automatic-rescue rounds, ending the rescue loop",
-						maxRescueRoundsPerSameChannel)
-					break
-				}
+				// 不再剔除"连续失败"渠道：固定 1s 轮次下同一个渠道可以反复重试，单渠道也能
+				// 连续失败 6 次后成功。循环只由救援窗口 / 总钟预算 / 取消收口。
 				freshSticky := routeStickyEnabled(freshGroup.Mode, clientSession.Source)
 				freshIter := balancer.NewIteratorWithSession(freshGroup, apiKeyID, requestModel, clientSessionKey, freshSticky)
 				freshIter.PrioritizeChannels(nativeProtocolChannelIDs(c.Request.Context(), inboundType, freshGroup.Items))

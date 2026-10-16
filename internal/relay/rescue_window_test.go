@@ -7,8 +7,9 @@ import (
 )
 
 // TestRescueWindowDeadlineCapsAtAutoRescueCap proves the ONE automatic-recovery window is
-// always capped at autoRescueCap and that the no-breaker budget and the operator hold
-// timeout can only tighten it — never extend it (the 1800s operator hold is inert here).
+// always capped at autoRescueCap and that the no-breaker budget may only tighten it —
+// never extend it. The legacy 1800s operator hold is IGNORED entirely (it neither
+// extends nor shortens the shared window).
 func TestRescueWindowDeadlineCapsAtAutoRescueCap(t *testing.T) {
 	base := time.Unix(1_700_000_000, 0)
 	cases := []struct {
@@ -23,7 +24,7 @@ func TestRescueWindowDeadlineCapsAtAutoRescueCap(t *testing.T) {
 		want                    time.Duration
 	}{
 		{name: "plain channel ignores the 1800s operator hold", noBreakerActive: false, operatorHold: 1800 * time.Second, want: autoRescueCap},
-		{name: "operator hold can only tighten", noBreakerActive: false, operatorHold: 120 * time.Second, want: 120 * time.Second},
+		{name: "operator hold is ignored even when small", noBreakerActive: false, operatorHold: 120 * time.Second, want: autoRescueCap},
 		{name: "no-breaker budget above the cap is ignored", noBreakerActive: true, noBreakerBudget: 600 * time.Second, operatorHold: 1800 * time.Second, want: autoRescueCap},
 		{name: "no-breaker budget tightens", noBreakerActive: true, noBreakerBudget: 30 * time.Second, operatorHold: 1800 * time.Second, want: 30 * time.Second},
 		{name: "zero no-breaker budget does not tighten", noBreakerActive: true, noBreakerBudget: 0, operatorHold: 1800 * time.Second, want: autoRescueCap},

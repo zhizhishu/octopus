@@ -11,9 +11,10 @@ import (
 // window. It is measured from the first rescuable failure and shared by every branch
 // that the same request may take afterwards — plain channels, no-breaker channels and
 // operator-triggered retries alike. No switch, channel change or operator click may
-// reset or widen it; the operator hold timeout (relay_intervention_timeout_seconds,
-// 1800s default) can only tighten it, never lend extra life to an automatic retry.
-// Overridable in tests so the cap can be exercised without waiting the full 300s.
+// reset or widen it. The legacy operator hold timeout
+// (relay_intervention_timeout_seconds, 1800s default) is IGNORED: it neither tightens
+// nor widens this window. Overridable in tests so the cap can be exercised without
+// waiting the full 300s.
 var autoRescueCap = 300 * time.Second
 
 // markRecoveryStart pins the start of the automatic-recovery window at the first
@@ -29,16 +30,17 @@ func markRecoveryStart(current time.Time, err error) time.Time {
 
 // rescueWindowDeadline returns the absolute instant the automatic-recovery window closes.
 // It is always capped at autoRescueCap; the configured rescue budget
-// (relay_no_breaker_retry_budget_seconds, shared by plain and no-breaker channels) and the
-// operator hold timeout may only tighten it further (they are ignored when larger, and
-// when <= 0).
+// (relay_no_breaker_retry_budget_seconds, shared by plain and no-breaker channels) may
+// tighten it further (ignored when larger, and when <= 0).
+//
+// operatorHold is kept only for call-site compatibility and is deliberately IGNORED: the
+// legacy operator hold timeout (relay_intervention_timeout_seconds, default 1800s) must
+// not influence the shared automatic-recovery window — it neither extends nor shortens it.
 func rescueWindowDeadline(recoveryStart time.Time, rescueBudget time.Duration, rescueBudgetActive bool, operatorHold time.Duration, requestCeilingActive bool, requestRemaining time.Duration) time.Time {
+	_ = operatorHold
 	cap := autoRescueCap
 	if rescueBudgetActive && rescueBudget > 0 && rescueBudget < cap {
 		cap = rescueBudget
-	}
-	if operatorHold > 0 && operatorHold < cap {
-		cap = operatorHold
 	}
 	// The whole-request ceiling (relay_request_total_timeout_seconds) is the outermost
 	// bound of all: an automatic-recovery hold may not outlive it either, or "end at the

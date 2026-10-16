@@ -16,6 +16,7 @@ type Iterator struct {
 	stickyIdx   int // 粘性通道在 candidates 中的位置，-1 表示无
 	stickyKeyID int
 	modelName   string // 请求模型名（用于熔断检查）
+	mode        model.GroupMode
 
 	// 内嵌追踪
 	attempts []model.ChannelAttempt
@@ -64,13 +65,18 @@ func NewIteratorWithSession(group model.Group, apiKeyID int, requestModel, clien
 					if tripped || keyRuntime.CooldownRemainingMs > 0 {
 						break
 					}
-					if i > 0 {
-						// 将粘性通道移到最前面
-						stickyItem := candidates[i]
-						copy(candidates[1:i+1], candidates[0:i])
-						candidates[0] = stickyItem
+					// 只在粘性通道自己所属的硬路由层内部提前，绝不越过更高的硬层：
+					// 低层粘性通道不得插到高层候选前面（与 PrioritizeChannels 同规则）。
+					tierStart := i
+					for tierStart > 0 && SameRoutingTier(group.Mode, candidates[i], candidates[tierStart-1]) {
+						tierStart--
 					}
-					stickyIdx = 0
+					if tierStart < i {
+						stickyItem := candidates[i]
+						copy(candidates[tierStart+1:i+1], candidates[tierStart:i])
+						candidates[tierStart] = stickyItem
+					}
+					stickyIdx = tierStart
 					stickyKeyID = sticky.ChannelKeyID
 					break
 				}
@@ -92,6 +98,7 @@ func NewIteratorWithSession(group model.Group, apiKeyID int, requestModel, clien
 		stickyIdx:   stickyIdx,
 		stickyKeyID: stickyKeyID,
 		modelName:   requestModel,
+		mode:        group.Mode,
 	}
 	// Optional decision-trace hook (set by the relay layer when the debug setting is
 	// on). Kept as an injected hook so this package needs no logger/settings import.
@@ -101,17 +108,41 @@ func NewIteratorWithSession(group model.Group, apiKeyID int, requestModel, clien
 	return it
 }
 
-// PrioritizeChannels moves every preferred (protocol-native) channel ahead of every
-// other channel, preserving relative order inside each of those two groups. It is used
-// for protocol-native-first routing.
+// SameRoutingTier reports whether two candidates occupy the SAME hard routing tier for
+// the given group mode — i.e. the balancer treats them as equally preferred on every hard
+// boundary, so they may be reordered relative to one another or raced together WITHOUT a
+// lower tier leapfrogging a higher one.
 //
-// NOTE: this is a GLOBAL two-way split, NOT a per-Priority-tier one — the old comment
-// here claimed it kept "the balancer order inside each bucket", which the code does not
-// do. Under GroupModeSpreadTiered that means a low-tier native channel can jump ahead of
-// a high-tier converted one, i.e. the canvas tier number is not a hard boundary on rules
-// that mix protocols. That is pre-existing behaviour, deliberately left alone for now:
-// narrowing it to per-tier ranking changes the long-standing "prefer the same protocol"
-// trade-off and needs an explicit decision.
+// The rule mirrors each strategy's real hard boundaries (see balancer.go):
+//   - SpreadTiered: item Priority is the outer hard boundary and ChannelPriority the
+//     inner one, so a tier is a (Priority, ChannelPriority) pair.
+//   - FillFirst (Failover): sortByRoutingPriority orders by ChannelPriority primary and
+//     item Priority secondary, so a tier is likewise a (ChannelPriority, Priority) pair.
+//     The ChannelID deterministic tie-break is a serial-order detail, not a boundary —
+//     two channels tied on both keys are the same tier and may race.
+//   - Spread (round-robin) and any unknown/legacy mode: item Priority is deliberately NOT
+//     a boundary (a unique drag order would freeze the rotation), so a tier is just a
+//     ChannelPriority value.
+//
+// Exported so the relay can group cross-channel racers from the same tier.
+func SameRoutingTier(mode model.GroupMode, a, b model.GroupItem) bool {
+	switch mode {
+	case model.GroupModeSpreadTiered, model.GroupModeFillFirst:
+		return a.Priority == b.Priority && a.ChannelPriority == b.ChannelPriority
+	default:
+		return a.ChannelPriority == b.ChannelPriority
+	}
+}
+
+// PrioritizeChannels moves preferred (protocol-native) channels to the front of their
+// OWN hard-tier block, preserving relative order inside each block. It is used for
+// protocol-native-first routing.
+//
+// It is deliberately a PER-TIER reorder, not a global two-way split: a lower-tier native
+// channel must never jump ahead of a higher-tier converted one, so the canvas tier number
+// stays a hard boundary even on rules that mix protocols. A preferred channel can only
+// win its own tier. The global owner exception (which IS allowed to cross tiers) lives in
+// PrioritizeOwnerChannel instead.
 func (it *Iterator) PrioritizeChannels(preferred map[int]bool) {
 	if it == nil || len(preferred) == 0 || len(it.candidates) < 2 {
 		return
@@ -123,28 +154,125 @@ func (it *Iterator) PrioritizeChannels(preferred map[int]bool) {
 		stickyChannelID = it.candidates[it.stickyIdx].ChannelID
 	}
 
-	prioritized := make([]model.GroupItem, 0, len(it.candidates))
-	others := make([]model.GroupItem, 0, len(it.candidates))
-	for _, item := range it.candidates {
-		if preferred[item.ChannelID] {
-			prioritized = append(prioritized, item)
-		} else {
-			others = append(others, item)
+	reordered := make([]model.GroupItem, 0, len(it.candidates))
+	for blockStart := 0; blockStart < len(it.candidates); {
+		blockEnd := blockStart + 1
+		for blockEnd < len(it.candidates) &&
+			SameRoutingTier(it.mode, it.candidates[blockStart], it.candidates[blockEnd]) {
+			blockEnd++
 		}
-	}
-	if len(prioritized) == 0 || len(others) == 0 {
-		return
-	}
-	prioritized = append(prioritized, others...)
-	it.candidates = prioritized
-	it.stickyIdx = -1
-	if hasSticky {
-		for i, item := range it.candidates {
-			if item.ChannelID == stickyChannelID {
-				it.stickyIdx = i
-				break
+		chosen := make([]model.GroupItem, 0, blockEnd-blockStart)
+		others := make([]model.GroupItem, 0, blockEnd-blockStart)
+		for _, item := range it.candidates[blockStart:blockEnd] {
+			if preferred[item.ChannelID] {
+				chosen = append(chosen, item)
+			} else {
+				others = append(others, item)
 			}
 		}
+		reordered = append(reordered, chosen...)
+		reordered = append(reordered, others...)
+		blockStart = blockEnd
+	}
+	it.candidates = reordered
+	it.refindStickyChannel(stickyChannelID, hasSticky)
+}
+
+// PrioritizeOwnerChannel moves ONLY the given owner channel's candidate to the very front,
+// keeping every other candidate's relative order intact. Unlike PrioritizeChannels this is
+// allowed to cross hard tiers on purpose: a Responses cursor can only be replayed on the
+// exact channel+key that minted it, so the owner channel must be tried first even when it
+// sits in a lower tier. It never drags the owner's tier-mates up with it. The sticky marker
+// is re-found afterwards, exactly like every other reorder.
+func (it *Iterator) PrioritizeOwnerChannel(channelID int) {
+	if it == nil || channelID == 0 || len(it.candidates) < 2 {
+		return
+	}
+	ownerIndex := -1
+	for i, item := range it.candidates {
+		if item.ChannelID == channelID {
+			ownerIndex = i
+			break
+		}
+	}
+	if ownerIndex <= 0 {
+		return
+	}
+
+	stickyChannelID := 0
+	hasSticky := it.stickyIdx >= 0 && it.stickyIdx < len(it.candidates)
+	if hasSticky {
+		stickyChannelID = it.candidates[it.stickyIdx].ChannelID
+	}
+
+	ownerItem := it.candidates[ownerIndex]
+	copy(it.candidates[1:ownerIndex+1], it.candidates[0:ownerIndex])
+	it.candidates[0] = ownerItem
+	it.refindStickyChannel(stickyChannelID, hasSticky)
+}
+
+// refindStickyChannel restores stickyIdx after a reorder by looking the sticky channel
+// back up. Callers compute stickyChannelID/hasSticky BEFORE mutating candidates. When
+// several candidates share the sticky channel id the first match wins, matching the
+// historical behaviour of PrioritizeChannels.
+func (it *Iterator) refindStickyChannel(stickyChannelID int, hasSticky bool) {
+	if it == nil {
+		return
+	}
+	it.stickyIdx = -1
+	if !hasSticky {
+		return
+	}
+	for i, item := range it.candidates {
+		if item.ChannelID == stickyChannelID {
+			it.stickyIdx = i
+			break
+		}
+	}
+}
+
+// RemainingTierItems returns value copies of the candidates that follow the current index
+// and share the current candidate's hard routing tier (SameRoutingTier), stopping at the
+// first candidate that does not (the tier is contiguous, so this is the whole remaining
+// tail of the current tier). The current item itself is EXCLUDED and the index is not
+// moved. The relay uses it to discover which later candidates may race alongside the
+// current one. nil-safe and boundary-safe.
+func (it *Iterator) RemainingTierItems() []model.GroupItem {
+	if it == nil || it.index < 0 || it.index >= len(it.candidates) {
+		return nil
+	}
+	current := it.candidates[it.index]
+	var result []model.GroupItem
+	for j := it.index + 1; j < len(it.candidates); j++ {
+		if !SameRoutingTier(it.mode, current, it.candidates[j]) {
+			break
+		}
+		result = append(result, it.candidates[j])
+	}
+	return result
+}
+
+// ConsumeTierItems advances the index past n candidates that were actually raced as
+// contiguous same-tier contenders alongside the current item. n counts only the
+// immediately-following candidates (the current item is NOT included), so a relay that
+// races the current item plus the first k of RemainingTierItems calls ConsumeTierItems(k).
+//
+// It never skips a candidate that was not raced, and it is clamped to the END of the
+// current hard tier — not the end of the whole candidate list — so an over-large n can
+// never jump across a lower tier. index < 0 and n <= 0 are no-ops. The index lands on the
+// last consumed candidate so the next Next() resumes right after it. nil-safe.
+func (it *Iterator) ConsumeTierItems(n int) {
+	if it == nil || n <= 0 || it.index < 0 || it.index >= len(it.candidates) {
+		return
+	}
+	current := it.candidates[it.index]
+	tierTail := it.index
+	for tierTail+1 < len(it.candidates) && SameRoutingTier(it.mode, current, it.candidates[tierTail+1]) {
+		tierTail++
+	}
+	it.index += n
+	if it.index > tierTail {
+		it.index = tierTail
 	}
 }
 
@@ -327,6 +455,18 @@ func (s *AttemptSpan) SetUpstreamPath(path string) {
 		return
 	}
 	s.attempt.UpstreamPath = path
+}
+
+// SetModelName rewrites the attempt's recorded model name. The relay race core uses it
+// so a cross-channel/generic-contender winner or loser is audited under the model it
+// actually attempted (the channel's mapped/runtime model) rather than the iterator's
+// current candidate model — preventing a race winner on another channel from being
+// mis-attributed in the audit log. No-op after the span has ended or for a nil span.
+func (s *AttemptSpan) SetModelName(modelName string) {
+	if s == nil || s.ended {
+		return
+	}
+	s.attempt.ModelName = modelName
 }
 
 func (s *AttemptSpan) SetRouteScope(endpoint, capability string) {

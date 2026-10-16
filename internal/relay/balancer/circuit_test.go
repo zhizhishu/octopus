@@ -128,7 +128,11 @@ func TestSnapshotAndResetChannelCircuit(t *testing.T) {
 	}
 }
 
-func TestIteratorPrioritizeChannelsKeepsPreferredFirst(t *testing.T) {
+func TestIteratorPrioritizeChannelsStaysWithinHardTier(t *testing.T) {
+	// FillFirst's hard tier is the (ChannelPriority, Priority) pair, so three channels
+	// with distinct item priorities are three different tiers. A preferred channel can
+	// only be reordered inside its own tier and must NOT leapfrog a higher tier — the
+	// old global-two-way-split expectation (preferred channel to the very front) is gone.
 	iter := NewIterator(model.Group{
 		Mode: model.GroupModeFailover,
 		Items: []model.GroupItem{
@@ -140,16 +144,13 @@ func TestIteratorPrioritizeChannelsKeepsPreferredFirst(t *testing.T) {
 
 	iter.PrioritizeChannels(map[int]bool{2: true})
 
-	if !iter.Next() {
-		t.Fatalf("expected first candidate")
-	}
-	if got := iter.Item().ChannelID; got != 2 {
-		t.Fatalf("expected preferred channel first, got %d", got)
-	}
 	if !iter.Next() || iter.Item().ChannelID != 1 {
-		t.Fatalf("expected original order inside non-preferred bucket")
+		t.Fatalf("higher tier must stay first; a lower-tier preferred channel must not rise")
+	}
+	if !iter.Next() || iter.Item().ChannelID != 2 {
+		t.Fatalf("original priority order must be preserved within distinct tiers")
 	}
 	if !iter.Next() || iter.Item().ChannelID != 3 {
-		t.Fatalf("expected remaining non-preferred channel")
+		t.Fatalf("expected the remaining channel last")
 	}
 }

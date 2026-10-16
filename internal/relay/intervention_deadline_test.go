@@ -41,6 +41,9 @@ func setupRescueDeadlineDB(t *testing.T) {
 	if err := op.SettingSetString(dbmodel.SettingKeyRelayStreamKeepaliveSec, "0"); err != nil {
 		t.Fatalf("disable keepalive: %v", err)
 	}
+	// Isolate the process-wide episode gate so tests sharing api=0/user=0/"ping" cannot
+	// suppress each other's rescue.
+	resetRescueEpisodes(t)
 }
 
 // newRescueChannel registers a DisableCircuitBreaker channel backed by the given

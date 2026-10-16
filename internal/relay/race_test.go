@@ -225,6 +225,195 @@ func TestChannelRaceHedgeSkipsSecondKeyAfterFastWinner(t *testing.T) {
 	}
 }
 
+// The parent snapshot must be a true value snapshot: later mutations of the parent (the
+// winner handoff writes parentReq.internalRequest / metrics.PromptSnapshot) must never
+// reach a racer's copy, while the total clock stays the one shared object.
+func TestCopyRelayRequestForRacerSnapshotIsIndependent(t *testing.T) {
+	parent := &relayRequest{
+		apiKeyID:      11,
+		requestModel:  "gpt-4o",
+		stickyEnabled: true,
+		totalClock:    &relayTotalClock{},
+		metrics: &RelayMetrics{
+			APIKeyID:       11,
+			PromptSnapshot: promptOverrideSnapshot{Mode: dbmodel.PromptOverrideModeAppendSystem},
+		},
+	}
+	parent.suppressPreContentKeepalive.Store(true)
+
+	snapshot := copyRelayRequestForRacer(parent, &transformerModel.InternalLLMRequest{Model: "gpt-4o"})
+	if snapshot == nil {
+		t.Fatal("snapshot is nil")
+	}
+
+	// Scalars: a later parent write must not leak into the snapshot.
+	parent.apiKeyID = 99
+	parent.requestModel = "changed"
+	if snapshot.apiKeyID != 11 || snapshot.requestModel != "gpt-4o" {
+		t.Fatalf("snapshot scalars tracked the parent: apiKeyID=%d model=%q", snapshot.apiKeyID, snapshot.requestModel)
+	}
+
+	// Atomic flag: copied by value at snapshot time, not shared.
+	if !snapshot.suppressPreContentKeepalive.Load() {
+		t.Fatal("atomic suppress flag must be copied at snapshot time")
+	}
+	parent.suppressPreContentKeepalive.Store(false)
+	if !snapshot.suppressPreContentKeepalive.Load() {
+		t.Fatal("snapshot atomic flag must not follow later parent stores")
+	}
+
+	// Metrics: an independent value copy, so a parent PromptSnapshot write cannot race it.
+	if snapshot.metrics == parent.metrics {
+		t.Fatal("snapshot must own its own metrics value")
+	}
+	if snapshot.metrics.PromptSnapshot.Mode != dbmodel.PromptOverrideModeAppendSystem {
+		t.Fatalf("snapshot lost the copied prompt snapshot: %#v", snapshot.metrics.PromptSnapshot)
+	}
+	parent.metrics.PromptSnapshot = promptOverrideSnapshot{Mode: dbmodel.PromptOverrideModeReplaceSystem}
+	if snapshot.metrics.PromptSnapshot.Mode != dbmodel.PromptOverrideModeAppendSystem {
+		t.Fatal("a later parent metrics write must not touch the snapshot")
+	}
+
+	// The total clock is SHARED by design: one ceiling across every racer.
+	if snapshot.totalClock != parent.totalClock {
+		t.Fatal("totalClock must remain the shared ceiling object")
+	}
+
+	// The snapshot must also carry the contender's own internal request.
+	if snapshot.internalRequest == nil || snapshot.internalRequest.Model != "gpt-4o" {
+		t.Fatalf("snapshot internal request not carried: %#v", snapshot.internalRequest)
+	}
+}
+
+func TestGroupRaceEmptyBodyLosesToRealChannel(t *testing.T) {
+	emptyServer := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		responseWriter.Header().Set("Content-Type", "application/json")
+		_, _ = responseWriter.Write([]byte(`{}`))
+	}))
+	defer emptyServer.Close()
+	realServer := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		// Resolve AFTER the empty contender so the loser/winner ordering is deterministic.
+		time.Sleep(120 * time.Millisecond)
+		responseWriter.Header().Set("Content-Type", "application/json")
+		_, _ = responseWriter.Write([]byte(`{"id":"win","choices":[{"message":{"role":"assistant","content":"real answer"},"finish_reason":"stop"}]}`))
+	}))
+	defer realServer.Close()
+
+	_, request, _ := setupRaceTestRequest(t, emptyServer.URL)
+	emptyChannel := &dbmodel.Channel{ID: 1, Name: "empty", Type: outbound.OutboundTypeOpenAIChat, Enabled: true, RaceMode: true, BaseUrls: []dbmodel.BaseUrl{{URL: emptyServer.URL}}}
+	realChannel := &dbmodel.Channel{ID: 2, Name: "real", Type: outbound.OutboundTypeOpenAIChat, Enabled: true, RaceMode: true, BaseUrls: []dbmodel.BaseUrl{{URL: realServer.URL}}}
+
+	contenders := []raceContender{
+		{channel: emptyChannel, key: dbmodel.ChannelKey{ID: 1, ChannelID: 1, Enabled: true, ChannelKey: "k1"}, internalRequest: request.internalRequest, runtimeModel: "gpt-4o"},
+		{channel: realChannel, key: dbmodel.ChannelKey{ID: 2, ChannelID: 2, Enabled: true, ChannelKey: "k2"}, internalRequest: request.internalRequest, runtimeModel: "gpt-4o"},
+	}
+	result, winner := runRaceContenders(request, contenders, "chat", 30)
+	if !result.Success {
+		t.Fatalf("race failed: %v", result.Err)
+	}
+	if winner == nil || winner.channel.ID != 2 {
+		t.Fatalf("winner = %#v, want the real channel", winner)
+	}
+	for _, attempt := range request.iter.Attempts() {
+		if attempt.ChannelID == 1 && attempt.Msg == "raced_out" {
+			t.Fatalf("a probed-but-empty 200 must not be recorded as raced_out: %#v", request.iter.Attempts())
+		}
+	}
+}
+
+func TestRaceRealSendFailureIsNotRacedOut(t *testing.T) {
+	// Port 1 is never listening: this forces a real transport error, not a race cancel.
+	_, request, channel := setupRaceTestRequest(t, "http://127.0.0.1:1")
+	contenders := []raceContender{
+		{channel: channel, key: dbmodel.ChannelKey{ID: 1, ChannelID: channel.ID, Enabled: true, ChannelKey: "k1"}, internalRequest: request.internalRequest, runtimeModel: "gpt-4o"},
+	}
+	result, winner := runRaceContenders(request, contenders, "chat", 30)
+	if result.Success || winner != nil {
+		t.Fatalf("unreachable upstream must fail: result=%#v winner=%#v", result, winner)
+	}
+	if result.Err == nil {
+		t.Fatal("expected a real failure error")
+	}
+	sawRealFailure := false
+	for _, attempt := range request.iter.Attempts() {
+		if attempt.Msg == "raced_out" {
+			t.Fatalf("a real send failure must not be raced_out: %#v", request.iter.Attempts())
+		}
+		if attempt.Status == dbmodel.AttemptFailed {
+			sawRealFailure = true
+		}
+	}
+	if !sawRealFailure {
+		t.Fatalf("expected a real (non raced_out) failure attempt: %#v", request.iter.Attempts())
+	}
+}
+
+func TestGroupRaceAllFailedPropagatesRetryAfter(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		responseWriter.Header().Set("Retry-After", "7")
+		responseWriter.Header().Set("Content-Type", "application/json")
+		responseWriter.WriteHeader(http.StatusTooManyRequests)
+		_, _ = responseWriter.Write([]byte(`{"error":{"message":"busy"}}`))
+	}))
+	defer server.Close()
+
+	_, request, _ := setupRaceTestRequest(t, server.URL)
+	ch1 := &dbmodel.Channel{ID: 1, Name: "a", Type: outbound.OutboundTypeOpenAIChat, Enabled: true, RaceMode: true, BaseUrls: []dbmodel.BaseUrl{{URL: server.URL}}}
+	ch2 := &dbmodel.Channel{ID: 2, Name: "b", Type: outbound.OutboundTypeOpenAIChat, Enabled: true, RaceMode: true, BaseUrls: []dbmodel.BaseUrl{{URL: server.URL}}}
+	contenders := []raceContender{
+		{channel: ch1, key: dbmodel.ChannelKey{ID: 1, ChannelID: 1, Enabled: true, ChannelKey: "k1"}, internalRequest: request.internalRequest, runtimeModel: "gpt-4o"},
+		{channel: ch2, key: dbmodel.ChannelKey{ID: 2, ChannelID: 2, Enabled: true, ChannelKey: "k2"}, internalRequest: request.internalRequest, runtimeModel: "gpt-4o"},
+	}
+	result, _ := runGroupRace(request, contenders, "chat", 30)
+	if result.Success {
+		t.Fatal("all-429 race must not succeed")
+	}
+	if result.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429", result.StatusCode)
+	}
+	if result.RetryAfter != 7*time.Second {
+		t.Fatalf("retry-after = %v, want 7s", result.RetryAfter)
+	}
+}
+
+func TestPerRacerOutboundAdapterIsolation(t *testing.T) {
+	_, request, channel := setupRaceTestRequest(t, "http://127.0.0.1:1")
+	// Probe the Anthropic outbound instead of the OpenAI chat one: the chat adapter is a
+	// zero-size struct, so two fresh instances MAY legally share one address and the
+	// pointer-identity assertions below would be vacuous. This adapter carries per-racer stream
+	// state, so distinctness is a real property.
+	channel.Type = outbound.OutboundTypeAnthropic
+
+	first := outbound.Get(outbound.OutboundTypeAnthropic)
+	second := outbound.Get(outbound.OutboundTypeAnthropic)
+	if first == nil || second == nil {
+		t.Fatal("outbound.Get must return an adapter")
+	}
+	if first == second {
+		t.Fatal("outbound.Get must return a fresh adapter instance per racer")
+	}
+
+	ra1, _, _, err := prepareRacerAttemptForTemplate(context.Background(), request, channel,
+		dbmodel.ChannelKey{ID: 1, ChannelID: channel.ID, Enabled: true, ChannelKey: "k1"}, request.internalRequest, first)
+	if err != nil {
+		t.Fatalf("prepare racer 1: %v", err)
+	}
+	defer ra1.redactClose()
+	ra2, _, _, err := prepareRacerAttemptForTemplate(context.Background(), request, channel,
+		dbmodel.ChannelKey{ID: 2, ChannelID: channel.ID, Enabled: true, ChannelKey: "k2"}, request.internalRequest, second)
+	if err != nil {
+		t.Fatalf("prepare racer 2: %v", err)
+	}
+	defer ra2.redactClose()
+
+	if ra1.outAdapter != first || ra2.outAdapter != second {
+		t.Fatal("each racer must keep the adapter instance it was given")
+	}
+	if ra1.outAdapter == ra2.outAdapter {
+		t.Fatal("racers must not share one outbound adapter instance")
+	}
+}
+
 func TestChannelRaceAllFailedReturnsRemainingKeys(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
 		responseWriter.WriteHeader(http.StatusTooManyRequests)

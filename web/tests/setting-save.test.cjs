@@ -823,7 +823,8 @@ test('locale: three languages carry the new keys (guards against MISSING_MESSAGE
         assert.ok(setting.saveFailed, `${lang}: setting.saveFailed missing`);
         const log = setting.log;
         assert.ok(log.intervention?.label && log.intervention?.description, `${lang}: log.intervention label/description missing`);
-        assert.ok(log.intervention?.timeoutLabel && log.intervention?.timeoutHint, `${lang}: log.intervention timeout texts missing`);
+        assert.equal(log.intervention?.timeoutLabel, undefined, `${lang}: obsolete intervention timeout label must stay removed`);
+        assert.equal(log.intervention?.timeoutHint, undefined, `${lang}: obsolete intervention timeout hint must stay removed`);
         assert.ok(log.noBreaker?.label && log.noBreaker?.hint, `${lang}: log.noBreaker texts missing`);
     }
 });

@@ -35,16 +35,14 @@ export function SettingLog() {
     const [enabled, setEnabled] = useState(true);
     const [keepPeriod, setKeepPeriod] = useState('7');
     const [maxStorageGB, setMaxStorageGB] = useState('0');
-    const [interventionEnabled, setInterventionEnabled] = useState(false);
-    const [interventionTimeout, setInterventionTimeout] = useState('1800');
+    const [interventionEnabled, setInterventionEnabled] = useState(true);
     const [noBreakerRetryBudget, setNoBreakerRetryBudget] = useState('300');
     const [isClearing, setIsClearing] = useState(false);
 
     const initialEnabled = useRef(true);
     const initialKeepPeriod = useRef('7');
     const initialMaxStorageGB = useRef('0');
-    const initialInterventionEnabled = useRef(false);
-    const initialInterventionTimeout = useRef('1800');
+    const initialInterventionEnabled = useRef(true);
     const initialNoBreakerRetryBudget = useRef('300');
 
     useEffect(() => {
@@ -53,7 +51,6 @@ export function SettingLog() {
             const periodSetting = settings.find(s => s.key === SettingKey.RelayLogKeepPeriod);
             const maxStorageSetting = settings.find(s => s.key === SettingKey.RelayLogMaxStorageGB);
             const interventionEnabledSetting = settings.find(s => s.key === SettingKey.RelayInterventionEnabled);
-            const interventionTimeoutSetting = settings.find(s => s.key === SettingKey.RelayInterventionTimeoutSeconds);
             const noBreakerRetryBudgetSetting = settings.find(s => s.key === SettingKey.RelayNoBreakerRetryBudgetSeconds);
             if (enabledSetting) {
                 const isEnabled = enabledSetting.value === 'true';
@@ -76,12 +73,6 @@ export function SettingLog() {
                 const isInterventionEnabled = interventionEnabledSetting.value === 'true';
                 queueMicrotask(() => setInterventionEnabled(isInterventionEnabled));
                 initialInterventionEnabled.current = isInterventionEnabled;
-            }
-            if (interventionTimeoutSetting) {
-                if (interventionTimeoutSetting.value !== initialInterventionTimeout.current) {
-                    queueMicrotask(() => setInterventionTimeout(interventionTimeoutSetting.value));
-                    initialInterventionTimeout.current = interventionTimeoutSetting.value;
-                }
             }
             if (noBreakerRetryBudgetSetting) {
                 if (noBreakerRetryBudgetSetting.value !== initialNoBreakerRetryBudget.current) {
@@ -161,25 +152,6 @@ export function SettingLog() {
                 onError: () => {
                     toast.error(t('saveFailed'));
                     setInterventionEnabled(initialInterventionEnabled.current);
-                }
-            }
-        );
-    };
-
-    const handleInterventionTimeoutSave = () => {
-        if (interventionTimeout === initialInterventionTimeout.current) return;
-        if (setSetting.isPending) return;
-
-        setSetting.mutate(
-            { key: SettingKey.RelayInterventionTimeoutSeconds, value: interventionTimeout },
-            {
-                onSuccess: () => {
-                    toast.success(t('saved'));
-                    initialInterventionTimeout.current = interventionTimeout;
-                },
-                onError: () => {
-                    // 保留草稿不回滚：再次失焦即可重试。
-                    toast.error(t('saveFailed'));
                 }
             }
         );
@@ -332,21 +304,6 @@ export function SettingLog() {
                     <Switch
                         checked={interventionEnabled}
                         onCheckedChange={handleInterventionEnabledChange}
-                    />
-                </div>
-                <div className="flex items-center justify-between gap-4">
-                    <div className="flex flex-col gap-1">
-                        <span className="text-sm font-medium">{t('log.intervention.timeoutLabel')}</span>
-                        <span className="text-xs text-muted-foreground">{t('log.intervention.timeoutHint')}</span>
-                    </div>
-                    <Input
-                        type="number"
-                        min="1"
-                        value={interventionTimeout}
-                        onChange={(e) => setInterventionTimeout(e.target.value)}
-                        onBlur={handleInterventionTimeoutSave}
-                        className="w-48 rounded-xl"
-                        disabled={!interventionEnabled}
                     />
                 </div>
                 <div className="flex items-center justify-between gap-4 border-t border-amber-500/20 pt-3">

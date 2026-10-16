@@ -611,7 +611,7 @@ func prioritizeRawProtocolResponsesOwner(ctx context.Context, iter *balancer.Ite
 	if !responsesSessionOwnerMatches(owner, reqTokenID, reqUserID) {
 		return
 	}
-	iter.PrioritizeChannels(map[int]bool{owner.channelID: true})
+	iter.PrioritizeOwnerChannel(owner.channelID)
 }
 
 func shouldForwardRawProtocolResponsesCursor(ctx context.Context, iter *balancer.Iterator, previousResponseID string, channelID int, channelKeyID int, clientSessionSource string, reqTokenID, reqUserID int) bool {

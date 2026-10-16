@@ -247,11 +247,21 @@ func (ra *relayAttempt) rearmTotalTimeoutCheck() (<-chan time.Time, func()) {
 // apart from a client cancellation. On the normal (unexpired) path the returned context is
 // the parent itself, so nothing about the request changes.
 func (ra *relayAttempt) boundUpstreamLifetime(parent context.Context) context.Context {
-	remaining, active := ra.totalBudgetRemaining()
-	if !active {
+	// Capture the ceiling ONCE, here on the bind (main) goroutine. Every timer callback
+	// below must work from these captures alone: after the race's winner handoff the
+	// attempt's relayRequest pointer is repointed at the parent request and the
+	// cross-attempt wroteMeaningfulDownstream bool is written concurrently, so a callback
+	// that touched ra / relayRequest would read torn, stale state.
+	deadline := ra.totalDeadline
+	budget := ra.totalBudget
+	clock := ra.totalClock
+	flowGrace := totalTimeoutFlowGrace
+	recheckInterval := totalTimeoutRecheckInterval
+
+	if deadline.IsZero() {
 		return parent
 	}
-	if remaining <= 0 {
+	if remaining := time.Until(deadline); remaining <= 0 {
 		// Already out of budget: do not spend another upstream request. The caller sees
 		// the ordinary attempt failure and the loop moves on without contacting anyone.
 		ctx, cancel := context.WithCancelCause(parent)
@@ -259,35 +269,64 @@ func (ra *relayAttempt) boundUpstreamLifetime(parent context.Context) context.Co
 		return ctx
 	}
 	ctx, cancel := context.WithCancelCause(parent)
-	var timer *time.Timer
-	// The net re-checks instead of firing blind: a ceiling that passed while the upstream was
-	// still producing content must not abort a live answer, so schedule looks at content
-	// progress and either stands down for another interval or cancels for real. Without this
-	// the context timer would kill a dribbling-but-alive stream even though the streaming cut
-	// point now refuses to.
+
+	// Live-answer test, derived purely from the captured clock (its own mutex guards
+	// lastContentAt). Non-zero content seen within the grace window is exactly "real content
+	// was delivered and is still flowing" — the same signal the old wroteMeaningfulDownstream
+	// && !meaningfulContentIdle() pair produced, but without touching the racy bool.
+	contentFlowing := func() bool {
+		if clock == nil {
+			return false
+		}
+		clock.mu.Lock()
+		last := clock.lastContentAt
+		clock.mu.Unlock()
+		return !last.IsZero() && time.Since(last) <= flowGrace
+	}
+
+	// timerMu serialises every write to / Stop of timer between the rearm chain and the
+	// parent-cleanup callback, so a rearm racing a cancel can neither leave a live timer
+	// behind nor nil-deref. All state is local to this call — no goroutine, no persistence.
+	var (
+		timerMu sync.Mutex
+		timer   *time.Timer
+		stopped bool
+	)
 	var schedule func()
 	schedule = func() {
-		left, active := ra.totalBudgetRemaining()
-		if !active {
+		timerMu.Lock()
+		defer timerMu.Unlock()
+		if stopped || ctx.Err() != nil {
 			return
 		}
-		if left > 0 {
-			timer = time.AfterFunc(left, schedule)
+		left := time.Until(deadline)
+		if left <= 0 && !contentFlowing() {
+			cancel(errRequestTotalTimeout)
 			return
 		}
-		if ra.wroteMeaningfulDownstream && !ra.meaningfulContentIdle() {
-			log.Warnf("relay request total timeout (%s) passed while content is still flowing, letting the stream run", ra.totalBudget)
-			timer = time.AfterFunc(totalTimeoutRecheckInterval, schedule)
-			return
+		next := left
+		if next <= 0 {
+			// Ceiling passed while real content is still flowing: stand down for one recheck
+			// interval instead of cutting a live answer (unchanged live-content semantics).
+			log.Warnf("relay request total timeout (%s) passed while content is still flowing, letting the stream run", budget)
+			next = recheckInterval
 		}
-		cancel(errRequestTotalTimeout)
+		timer = time.AfterFunc(next, schedule)
 	}
 	schedule()
+
 	// Clean both up when the request itself ends (client gone, response finished): a
 	// ceiling timer must never outlive its request. The child context is deliberately
-	// NOT cancelled here — the response body is still being read by the caller.
+	// NOT cancelled here — the response body is still being read by the caller. stopped is
+	// set under the lock before the nil-guarded Stop so a cleanup racing the first schedule
+	// cannot panic on a nil timer and cannot leave a timer armed.
 	context.AfterFunc(parent, func() {
-		timer.Stop()
+		timerMu.Lock()
+		stopped = true
+		if timer != nil {
+			timer.Stop()
+		}
+		timerMu.Unlock()
 		cancel(errRequestTotalTimeout)
 	})
 	return ctx

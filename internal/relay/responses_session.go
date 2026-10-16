@@ -521,7 +521,7 @@ func prioritizeResponsesSessionOwner(ctx context.Context, iter *balancer.Iterato
 	if !responsesSessionOwnerMatches(owner, reqTokenID, reqUserID) {
 		return
 	}
-	iter.PrioritizeChannels(map[int]bool{owner.channelID: true})
+	iter.PrioritizeOwnerChannel(owner.channelID)
 }
 
 func responsesOwnerKeyForChannel(ctx context.Context, previousResponseID string, channelID, reqTokenID, reqUserID int) int {
