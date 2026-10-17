@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/bestruirui/octopus/internal/db"
@@ -331,5 +332,63 @@ func TestSettingRouteModeWriteFailurePreservesCache(t *testing.T) {
 			t.Fatal(err)
 		}
 		assertRouteModeSetting(t, "legacy-invalid", "spread")
+	}
+}
+
+// TestCodexUserAgentConvergesShippedDefaultsToRustCLI locks the convergence of every Codex
+// header default that was ever shipped. A default that is replaced without a matching entry
+// in settingLegacyDefaultUpgrades leaves installed deployments pinned to it forever — which
+// is exactly what happened to 0.156.1 (shipped by 8b1ec23, replaced by f9ef88f) and would
+// leave production on an identity that no longer matches the code. The interim codex_exec
+// default from that window must converge too, or the flip back to the rust CLI family would
+// strand those deployments on exec.
+func TestCodexUserAgentConvergesShippedDefaultsToRustCLI(t *testing.T) {
+	ctx := setupSettingTest(t)
+
+	for _, legacy := range []string{
+		model.LegacyDefaultCodexHeaderUserAgentCliRs0156,
+		model.LegacyDefaultCodexHeaderUserAgentExec0161,
+	} {
+		if err := db.GetDB().Where("key = ?", model.SettingKeyCodexHeaderUserAgent).
+			Delete(&model.Setting{}).Error; err != nil {
+			t.Fatalf("reset setting row: %v", err)
+		}
+		if err := db.GetDB().Create(&model.Setting{
+			Key:   model.SettingKeyCodexHeaderUserAgent,
+			Value: legacy,
+		}).Error; err != nil {
+			t.Fatalf("seed legacy value: %v", err)
+		}
+
+		if err := settingRefreshCache(ctx); err != nil {
+			t.Fatalf("load settings: %v", err)
+		}
+
+		var stored model.Setting
+		if err := db.GetDB().Where("key = ?", model.SettingKeyCodexHeaderUserAgent).
+			First(&stored).Error; err != nil {
+			t.Fatalf("read back setting: %v", err)
+		}
+		if stored.Value != model.DefaultCodexHeaderUserAgent {
+			t.Fatalf("legacy default %q did not converge: stored %q, want %q",
+				legacy, stored.Value, model.DefaultCodexHeaderUserAgent)
+		}
+	}
+}
+
+// TestCodexDefaultIdentityIsRustCLI guards the project rule that the default Codex identity
+// is codex_cli_rs: an upstream pairs the UA's leading token against the Originator, so a
+// default in the codex_exec family silently downgrades every deployment to that identity.
+func TestCodexDefaultIdentityIsRustCLI(t *testing.T) {
+	const wantPrefix = "codex_cli_rs/"
+	if !strings.HasPrefix(model.DefaultCodexHeaderUserAgent, wantPrefix) {
+		t.Fatalf("default codex UA must start with %q, got %q",
+			wantPrefix, model.DefaultCodexHeaderUserAgent)
+	}
+	// The trailing product token must agree with the leading one; an asymmetric pair
+	// (exec head + rs tail, or the reverse) is the exact tell the rule exists to avoid.
+	if !strings.Contains(model.DefaultCodexHeaderUserAgent, "(codex_cli_rs;") {
+		t.Fatalf("default codex UA tail must also be codex_cli_rs, got %q",
+			model.DefaultCodexHeaderUserAgent)
 	}
 }

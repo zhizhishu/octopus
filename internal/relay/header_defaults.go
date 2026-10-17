@@ -21,9 +21,10 @@ const (
 	defaultClaudeOneMillionBeta = model.AnthropicOneMillionBeta
 	defaultCodexUserAgent       = dbmodel.DefaultCodexHeaderUserAgent
 	defaultCodexBetaFeatures    = dbmodel.DefaultCodexHeaderBetaFeatures
-	// 2026-10-10 实测对齐: 真 Codex CLI 抓包的身份是 codex_exec/0.161.0 + originator codex_exec
-	// (对称的 codex_exec 家族)。originator 必须与 UA 头串同一身份, 混用才是 tell。
-	defaultCodexOriginator = "codex_exec"
+	// defaultCodexOriginator is the last-resort Originator. It is now consistent with the
+	// default UA family (codex_cli_rs): an upstream pairs the two, so a fallback in another
+	// family would defeat the pairing the rest of this file enforces.
+	defaultCodexOriginator = "codex_cli_rs"
 )
 
 // ChannelWireHeaderOptions contains the request context needed to apply the
@@ -95,7 +96,7 @@ func ApplyChannelWireHeaders(req *http.Request, options ChannelWireHeaderOptions
 	// codex_exec pair (sub2api #3901: originator↔UA-first-token must pair).
 	if shouldUseCodexHeaderDefaults(options.Channel, options.InboundType) {
 		fingerprint := resolveFingerprintForChannel(options.Channel)
-		codexUserAgent, codexOriginator := codexIdentityPair(options.InboundUserAgent, options.InboundOriginator, fingerprint)
+		codexUserAgent, codexOriginator := codexIdentityPair(options.InboundUserAgent, fingerprint)
 		setHeaderForce(req.Header, "Originator", codexOriginator)
 		setHeaderForce(req.Header, "User-Agent", codexUserAgent)
 		applyCodexResponsesLiteHeader(req.Header, options.InternalRequest)
@@ -205,7 +206,7 @@ func applyChannelWireHeaderDefaults(req *http.Request, options ChannelWireHeader
 			req.Header.Del("Authorization")
 		}
 	case outbound.OutboundTypeOpenAIResponse:
-		applyCodexHeaderDefaultsWithFingerprint(req, options.InternalRequest, fingerprint, options.InboundUserAgent, options.InboundOriginator)
+		applyCodexHeaderDefaultsWithFingerprint(req, options.InternalRequest, fingerprint, options.InboundUserAgent)
 	case outbound.OutboundTypeOpenAIChat, outbound.OutboundTypeCustomOpenAIChat:
 		// 2026-10-14 (user decision, "channel determines shape"): a Chat channel's
 		// outbound defaults to the generic chat identity, regardless of which client
@@ -228,7 +229,7 @@ func applyChannelWireHeaderDefaults(req *http.Request, options ChannelWireHeader
 			}
 			applyClaudeHeaderDefaultsWithFingerprint(req, options.InternalRequest, fingerprint, options.ClaudeSessionID)
 		case "codex":
-			applyCodexHeaderDefaultsWithFingerprint(req, options.InternalRequest, fingerprint, options.InboundUserAgent, options.InboundOriginator)
+			applyCodexHeaderDefaultsWithFingerprint(req, options.InternalRequest, fingerprint, options.InboundUserAgent)
 		default: // "" or unknown: generic chat identity, byte-identical to pre-shape behaviour
 			if options.InboundType == inbound.InboundTypeOpenAIResponse {
 				stripCodexClientHeaders(req.Header)
@@ -478,12 +479,11 @@ func addAnthropicBetaHeader(headers http.Header, beta string) {
 }
 
 func (ra *relayAttempt) applyCodexHeaderDefaults(req *http.Request, internalRequest *model.InternalLLMRequest) {
-	inboundUserAgent, inboundOriginator := "", ""
+	inboundUserAgent := ""
 	if ra != nil && ra.c != nil && ra.c.Request != nil {
 		inboundUserAgent = ra.c.Request.UserAgent()
-		inboundOriginator = ra.c.Request.Header.Get("Originator")
 	}
-	applyCodexHeaderDefaultsWithFingerprint(req, internalRequest, ra.fingerprint(), inboundUserAgent, inboundOriginator)
+	applyCodexHeaderDefaultsWithFingerprint(req, internalRequest, ra.fingerprint(), inboundUserAgent)
 }
 
 // applyCodexHeaderDefaultsWithFingerprint is the shared codex header writer used by
@@ -492,12 +492,13 @@ func (ra *relayAttempt) applyCodexHeaderDefaults(req *http.Request, internalRequ
 // global setting value, so this is byte-for-byte the prior behaviour. A selected
 // profile overrides only the codex fields it sets.
 //
-// inboundUserAgent/inboundOriginator are the DOWNSTREAM client's own Originator+UA pair
-// when it has one. A genuine Codex CLI sends a self-consistent pair, so its exact bytes are
-// echoed back to the upstream — the upstream then sees what a direct connection would have
-// carried. A non-CLI downstream (empty or foreign UA) keeps the profile's codex_exec pair,
-// preserving the sub2api #3901 originator↔UA-first-token pairing rule.
-func applyCodexHeaderDefaultsWithFingerprint(req *http.Request, internalRequest *model.InternalLLMRequest, fp resolvedFingerprint, inboundUserAgent string, inboundOriginator string) {
+// inboundUserAgent is the DOWNSTREAM client's own User-Agent when it has one. A genuine
+// Codex CLI sends a self-consistent UA+Originator pair, so its exact UA is echoed back and
+// the Originator is derived from that same UA's leading token — the upstream then sees what
+// a direct connection would have carried, and the two headers can never disagree. A non-CLI
+// downstream (empty or foreign UA) keeps the profile's pair, preserving the sub2api #3901
+// originator↔UA-first-token pairing rule.
+func applyCodexHeaderDefaultsWithFingerprint(req *http.Request, internalRequest *model.InternalLLMRequest, fp resolvedFingerprint, inboundUserAgent string) {
 	// NB: a genuine Codex CLI (reqwest/hyper) sends NO `Connection` header on its plaintext
 	// HTTP/1.1 leg (2026-10-13 berobox packet capture, direct-00003.req). Keep-alive is the
 	// HTTP/1.1 default, so oct must not add one either — the old synthesized
@@ -514,7 +515,7 @@ func applyCodexHeaderDefaultsWithFingerprint(req *http.Request, internalRequest 
 	// producing exactly that mismatch on the wire. codexIdentityPair echoes a genuine Codex
 	// CLI's own pair verbatim and otherwise uses the resolved fingerprint's pair, so a
 	// selected profile still overrides them.
-	codexUserAgent, codexOriginator := codexIdentityPair(inboundUserAgent, inboundOriginator, fp)
+	codexUserAgent, codexOriginator := codexIdentityPair(inboundUserAgent, fp)
 	setHeaderForce(req.Header, "Originator", codexOriginator)
 	setHeaderForce(req.Header, "User-Agent", codexUserAgent)
 	setHeaderIfMissing(req.Header, "X-Codex-Beta-Features", fp.CodexBetaFeatures())
@@ -533,20 +534,48 @@ func isCodexFamilyUserAgent(ua string) bool {
 		strings.HasPrefix(lower, "codex_cli_rs/")
 }
 
+// deprecatedCodexTUIUserAgentPrefix is the interactive-TUI product token. An upstream pairs
+// the UA's leading token against the Originator header, so letting this family through
+// would publish an identity the project has decided never to emit. It is rewritten to the
+// Rust CLI pair below instead.
+const deprecatedCodexTUIUserAgentPrefix = "codex-tui/"
+
+// codexOriginatorFromUserAgent derives the Originator an upstream will pair a UA against:
+// the UA's own leading product token. Callers use it to keep the two headers inseparable,
+// because an unpaired Originator is exactly what a fingerprint check rejects.
+func codexOriginatorFromUserAgent(ua string) string {
+	lower := strings.ToLower(strings.TrimSpace(ua))
+	token, _, _ := strings.Cut(lower, "/")
+	return token
+}
+
+// isCodexFamilyOriginator reports whether an Originator header names a Codex CLI product
+// token. The Originator is a bare product name (no version suffix), so it cannot be judged
+// by the UA-prefix helper; the same three families are recognised here, which keeps inbound
+// detection working no matter which family a client announces itself with.
+func isCodexFamilyOriginator(originator string) bool {
+	switch strings.ToLower(strings.TrimSpace(originator)) {
+	case "codex_exec", "codex_cli_rs", "codex-tui", "codex-tui-rs":
+		return true
+	}
+	return false
+}
+
 // codexIdentityPair selects the Originator + User-Agent pair to force on a codex outbound.
 // A codex-family downstream (a genuine CLI) carries a self-consistent pair, so its EXACT
-// bytes are echoed verbatim; an Originator that is somehow empty still falls back to the
-// profile's. Any other downstream (no CLI, or a foreign UA) maps to the profile's codex_exec
-// pair. Returning the pair from one place keeps Originator and User-Agent from ever being
-// split across the two branches.
-func codexIdentityPair(inboundUserAgent, inboundOriginator string, fp resolvedFingerprint) (userAgent, originator string) {
+// bytes are echoed verbatim, and any Originator that is empty or disagrees with the UA's
+// leading token is corrected to that token: emitting rs UA + exec Originator is precisely
+// the split this rule exists to prevent. The interactive-TUI family is never echoed — it is
+// rewritten to the profile's pair. Any other downstream (no CLI, or a foreign UA) maps to
+// the profile's pair. Returning the pair from one place keeps Originator and User-Agent
+// from ever being split across the two branches.
+func codexIdentityPair(inboundUserAgent string, fp resolvedFingerprint) (userAgent, originator string) {
 	inboundUserAgent = strings.TrimSpace(inboundUserAgent)
 	if isCodexFamilyUserAgent(inboundUserAgent) {
-		originator = strings.TrimSpace(inboundOriginator)
-		if originator == "" {
-			originator = fp.CodexOriginator()
+		if strings.HasPrefix(strings.ToLower(inboundUserAgent), deprecatedCodexTUIUserAgentPrefix) {
+			return fp.CodexUserAgent(), fp.CodexOriginator()
 		}
-		return inboundUserAgent, originator
+		return inboundUserAgent, codexOriginatorFromUserAgent(inboundUserAgent)
 	}
 	return fp.CodexUserAgent(), fp.CodexOriginator()
 }

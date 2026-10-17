@@ -20,11 +20,19 @@ var chromePseudoHeaderOrder = []string{":method", ":authority", ":scheme", ":pat
 // :method,:authority,:scheme,:path — both differ from the genuine CLI.
 var codexH2PseudoHeaderOrder = []string{":method", ":scheme", ":authority", ":path"}
 
-// h2PseudoHeaderOrderForPath picks the genuine-CLI HTTP/2 pseudo-header order for an
-// upstream request by API path. Only the codex /v1/responses leg has a live-captured
-// CLI baseline (codexH2PseudoHeaderOrder); every other target keeps the Chrome order
-// (the historical default, no captured CLI baseline to replace it with yet).
-func h2PseudoHeaderOrderForPath(path string) []string {
+// h2PseudoHeaderOrderForFace picks the genuine-CLI HTTP/2 pseudo-header order for an
+// upstream request. An explicit face override wins over the API path: a Chat channel
+// dressed as codex/claude must not keep the Chrome header order behind a CLI
+// ClientHello, because the ordering layer is itself a recognisable tell. With no
+// override the historical path rule still applies (only the /v1/responses leg has a
+// live-captured CLI baseline; every other target keeps the Chrome order).
+func h2PseudoHeaderOrderForFace(path, face string) []string {
+	switch face {
+	case tlsFaceCodex:
+		return codexH2PseudoHeaderOrder
+	case tlsFaceClaude, tlsFaceChrome:
+		return chromePseudoHeaderOrder
+	}
 	p := strings.ToLower(path)
 	if strings.Contains(p, "/responses") {
 		return codexH2PseudoHeaderOrder
@@ -199,12 +207,21 @@ func upstreamHTTP1HeaderOrderEnabled() bool {
 	return enabled
 }
 
-// canonicalHeaderOrderForPath picks the genuine-CLI regular-header order for an
-// upstream request by API path: Anthropic /v1/messages -> claude-cli order, the
-// OpenAI-Responses /v1/responses (codex) path -> codex_exec order. Other paths
-// (gemini / images / plain openai-chat) return nil: we have no captured CLI header
-// order to match for them, so fhttp uses its default ordering.
-func canonicalHeaderOrderForPath(path string) []string {
+// canonicalHeaderOrderForFace picks the genuine-CLI regular-header order for an
+// upstream request. An explicit face override wins over the API path, so a channel
+// dressed as claude/codex gets that CLI's field order regardless of endpoint. With no
+// override the historical path rule applies: /v1/messages -> claude-cli order, /v1/responses
+// -> codex order. Other paths (gemini / images / plain openai-chat) return nil: we have no
+// captured CLI header order to match for them, so fhttp uses its default ordering.
+func canonicalHeaderOrderForFace(path, face string) []string {
+	switch face {
+	case tlsFaceCodex:
+		return codexCanonicalHeaderOrder
+	case tlsFaceClaude:
+		return claudeCanonicalHeaderOrder
+	case tlsFaceChrome:
+		return nil
+	}
 	p := strings.ToLower(path)
 	switch {
 	case strings.Contains(p, "/messages"):

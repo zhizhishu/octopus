@@ -233,7 +233,13 @@ const (
 	// 上游下限 0.144.0 之上。
 	// ⚠️ 平台段(Ubuntu 24.04.1; x86_64)沿用改前的值: 抓包只给了 产品/版本 这两个 token, 平台段
 	// 没有实测依据 ⇒ 不臆造, 待抓到完整 UA 再对齐。
-	DefaultCodexHeaderUserAgent = "codex_exec/0.161.0 (Ubuntu 24.04.1; x86_64) unknown (codex_exec; 0.161.0)"
+	//
+	// 2026-10-17 (大领导定, 覆盖上面的 0.161.0): 默认身份回到 **codex_cli_rs 家族**, 版本 0.163.0。
+	// 理由: 绝大多数 sub2api / new-api 系上游**只认 rs**, 拒非配套 CLI (用户定, 2026-08-03);
+	// 出站 Originator 现在由 UA 首段派生 (见 relay codexIdentityPair), 所以这里的首段就是上游
+	// 与之配对的 token —— 写成 codex_exec 会把整套身份拉成 exec。改默认值必须同时补
+	// LegacyDefaultCodexHeaderUserAgentCliRs0156 收敛项, 否则已装实例永远停在旧值。
+	DefaultCodexHeaderUserAgent = "codex_cli_rs/0.163.0 (Ubuntu 24.04.1; x86_64) unknown (codex_cli_rs; 0.163.0)"
 
 	// DefaultClaudeCLIVersion is the named Claude Code CLI version used to build the
 	// user-agent below. The Anthropic outbound billing-header cc_version carries the
@@ -423,6 +429,21 @@ const (
 	// (0.145.0). 0.156.1 superseded it (packet-verified 2026-09-24 on the relay); converge
 	// upgraded deployments via the DB map.
 	LegacyDefaultCodexHeaderUserAgentCliRs0145 = "codex_cli_rs/0.145.0 (Ubuntu 24.04.1; x86_64) unknown (codex_cli_rs; 0.145.0)"
+
+	// LegacyDefaultCodexHeaderUserAgentCliRs0156 was the codex_cli_rs default shipped by
+	// 8b1ec23 ("shape: match claude 2.1.281 / codex 0.156.1 golden wire shape") and then
+	// replaced by codex_exec/0.161.0 in f9ef88f — which added no convergence entry, so every
+	// deployment seeded in between stayed pinned to 0.156.1 forever. Restored here so those
+	// installs finally converge to the current default; the value must stay byte-identical to
+	// what was shipped or the lookup misses again.
+	LegacyDefaultCodexHeaderUserAgentCliRs0156 = "codex_cli_rs/0.156.1 (Ubuntu 24.04.1; x86_64) unknown (codex_cli_rs; 0.156.1)"
+
+	// LegacyDefaultCodexHeaderUserAgentExec0161 was the interim codex_exec default
+	// (f9ef88f, 0.161.0) that superseded 0.156.1. It was briefly the product default, so
+	// deployments created or reset during that window carry it and must converge too —
+	// otherwise flipping the default back to the rs family would strand them on exec, which
+	// is exactly the split identity the current default exists to prevent.
+	LegacyDefaultCodexHeaderUserAgentExec0161 = "codex_exec/0.161.0 (Ubuntu 24.04.1; x86_64) unknown (codex_exec; 0.161.0)"
 
 	// LegacyDefaultCodexHeaderUserAgentCliRs0142 was the codex_cli_rs default before the
 	// 0.144.1 version bump (2026-07-10). Kept so already-seeded deployments converge to the

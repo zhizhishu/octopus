@@ -58,7 +58,11 @@ func (ra *relayAttempt) inboundLooksLikeCodexClient() bool {
 		return false
 	}
 	headers := ra.c.Request.Header
-	if strings.EqualFold(strings.TrimSpace(headers.Get("Originator")), defaultCodexOriginator) {
+	// Judge the whole codex family, not one pinned value: a genuine CLI may announce
+	// itself as codex_exec, codex_cli_rs or codex-tui, and the default identity has moved
+	// across those families over time. Matching a single constant silently stopped
+	// recognising every client of the other families.
+	if isCodexFamilyOriginator(headers.Get("Originator")) {
 		return true
 	}
 	if strings.TrimSpace(headers.Get("X-Codex-Beta-Features")) != "" ||

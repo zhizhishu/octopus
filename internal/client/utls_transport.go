@@ -222,12 +222,13 @@ func toFHTTPRequest(req *http.Request) (*fhttp.Request, error) {
 		h[k] = cp
 	}
 	// Always set a pseudo-header order so fhttp never falls back to its linked
-	// (nil) transport's PseudoHeaderOrder. The codex /responses leg uses the
-	// live-captured genuine-CLI pseudo order; other targets keep the Chrome order.
-	// The regular-header order is set only when we have a captured CLI baseline
-	// for this path.
-	h[fhttp.PHeaderOrderKey] = h2PseudoHeaderOrderForPath(req.URL.Path)
-	if order := canonicalHeaderOrderForPath(req.URL.Path); order != nil {
+	// (nil) transport's PseudoHeaderOrder. A face override (a Chat channel dressed as
+	// codex/claude) takes precedence over the path, so the field order follows the
+	// identity the ClientHello already presents instead of falling back to Chrome; with
+	// no override the historical path rule applies unchanged.
+	face := tlsFaceFromContext(req.Context())
+	h[fhttp.PHeaderOrderKey] = h2PseudoHeaderOrderForFace(req.URL.Path, face)
+	if order := canonicalHeaderOrderForFace(req.URL.Path, face); order != nil {
 		h[fhttp.HeaderOrderKey] = order
 	}
 	freq.Header = h
