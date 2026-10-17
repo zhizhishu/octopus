@@ -354,6 +354,9 @@ func RelayLogAdd(ctx context.Context, relayLog model.RelayLog) error {
 	if relayLog.Time <= 0 {
 		relayLog.Time = time.Now().Unix()
 	}
+	// 被动观察: 在 ID/Time 归一后、pending/SSE 之前对已脱敏副本做一次纯本地
+	// 计算(纯函数, 无外部副作用, 失败以 not_applicable 表达, 不返回业务错误)。
+	relayLog.PassiveSummary = computePassiveSummary(relayLog)
 
 	if enabled {
 		relayLogAddPending(relayLog)

@@ -112,6 +112,12 @@ func BuildReport(results []Result, requestedModel string) Report {
 		if res.ProbeID == ProbeSignature {
 			if rejected, _ := res.Data["replay_rejected"].(bool); rejected {
 				countsAsUsable = false
+			} else if present, ok := res.Data["signature_present"].(bool); ok && !present {
+				// 采集后无签名（insufficient_evidence）不算证据：不计 usable、
+				// 不产 finding——可能是模型不支持思考（正常），也可能是替身
+				// 不产出签名，探针层区分不了，不能定罪也不能假绿。缺
+				// signature_present 键的旧形态 Result 不新造证据，仍计 usable。
+				countsAsUsable = false
 			}
 		}
 		if countsAsUsable {
@@ -157,7 +163,7 @@ func BuildReport(results []Result, requestedModel string) Report {
 // 与其它探针一样，判定分「跑不动」与「查出问题」两条通道：res.Err 非空时
 // 返回 nil，由 BuildReport 记进 Errors，绝不当成替身证据。
 func signatureFindings(res Result, requestedModel string) []Finding {
-	// 探针自报不适用（非 Anthropic 出站），或压根没跑成。
+	// 探针自报不适用（非 Anthropic 出站/无型号元数据等），或压根没跑成。
 	if v, ok := res.Data["applicable"].(bool); ok && !v {
 		return nil
 	}
@@ -165,20 +171,12 @@ func signatureFindings(res Result, requestedModel string) []Finding {
 		return nil
 	}
 
-	// 拿不到签名是这一层里最重的信号，但成因不唯一：可能是模型不支持
-	// extended thinking（正常），也可能是替身根本不产出签名（异常）。
-	// 探针层区分不了，所以判高危并要求人工复核，而不是直接定罪。
+	// 拿不到签名只能算证据不足：可能是模型不支持 extended thinking（正常），
+	// 也可能是替身不产出签名（异常）——探针层区分不了，不能据此定罪。
+	// 返回 nil 不产出任何 finding；usable 层已把它排除出证据分母（见
+	// BuildReport），"查清与否"由 verdict 规则自然呈现，无需额外补数循环。
 	if v, ok := res.Data["signature_present"].(bool); ok && !v {
-		return []Finding{{
-			Probe: ProbeSignature, Severity: SeverityHigh, Score: 50,
-			Title: "未能取得 thinking 签名",
-			Evidence: map[string]any{
-				"finish_reason":   stringOf(res.Data, "finish_reason"),
-				"thinking_tokens": intOf(res.Data, "thinking_tokens"),
-				"content_len":     intOf(res.Data, "content_len"),
-			},
-			Recommendation: "该模型可能不支持扩展思考，也可能是替身不产出签名；请换用明确支持思考的型号复测后再下结论。",
-		}}
+		return nil
 	}
 
 	var findings []Finding
@@ -371,6 +369,27 @@ func findingsFor(res Result, requestedModel string, requestedFamilies []string) 
 
 	case ProbeGlitch:
 		if !res.OK {
+			return nil
+		}
+		// 探针自报不适用（发送前已判定请求家族无签名/未知）：不产出任何信号。
+		if v, ok := res.Data["applicable"].(bool); ok && !v {
+			return nil
+		}
+		// 防御：请求家族未知，或请求家族在签名表里没有本族签名时，
+		// 任何家族的 Consistent 都不能当"指向其它家族"的证据——
+		// 引用 glitchFamilySignatures 实际键判断，不猜 Anthropic 有无。
+		if len(requestedFamilies) == 0 {
+			return nil
+		}
+		sigFamilies := glitchSignatureFamilies()
+		hasKnownFamily := false
+		for _, f := range requestedFamilies {
+			if _, ok := sigFamilies[f]; ok {
+				hasKnownFamily = true
+				break
+			}
+		}
+		if !hasKnownFamily {
 			return nil
 		}
 		candidates := candidateSliceOf(res.Data, "candidates")

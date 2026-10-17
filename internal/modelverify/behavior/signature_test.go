@@ -217,11 +217,25 @@ func TestMatchSignatureModel(t *testing.T) {
 var errTest = errors.New("upstream unavailable")
 
 // signatureStub 用闭包应答，同时记录每次的请求参数以便断言回放形态。
+// 实现 ModelNamer：默认自报明确的 Anthropic 家族型号，验「适用链」走得通；
+// 个别用例可改写 model 字段验不适用分支。
 type signatureStub struct {
 	respond func(call int, ask modelverify.Ask) (modelverify.Response, error)
 	calls   int
 	asks    []modelverify.Ask
+	model   string
 }
+
+func (s *signatureStub) TargetModel() string {
+	if s.model == "" {
+		return "claude-sonnet-4-5"
+	}
+	return s.model
+}
+
+// Protocol 自报 anthropic-messages：直跑 RunProbe 的既有用例默认走
+// "协议适用+家族明确"的适用链；验其它协议的用例用 protocolStub 包裹覆盖。
+func (s *signatureStub) Protocol() string { return "anthropic-messages" }
 
 func (s *signatureStub) Ask(_ context.Context, ask modelverify.Ask) (modelverify.Response, error) {
 	s.asks = append(s.asks, ask)
@@ -230,6 +244,8 @@ func (s *signatureStub) Ask(_ context.Context, ask modelverify.Ask) (modelverify
 }
 
 // protocolStub 在内层 Sender 之上自报一个出站协议，用来验证「不适用」分支。
+// TargetModel 必须委派内层：否则被包裹的型号元数据会在这里丢失，
+// 让不适用用例因 missing_model 假通过、让适用用例提前返回。
 type protocolStub struct {
 	inner modelverify.Sender
 	proto string
@@ -237,6 +253,13 @@ type protocolStub struct {
 
 func (s *protocolStub) Ask(ctx context.Context, ask modelverify.Ask) (modelverify.Response, error) {
 	return s.inner.Ask(ctx, ask)
+}
+
+func (s *protocolStub) TargetModel() string {
+	if n, ok := s.inner.(ModelNamer); ok {
+		return n.TargetModel()
+	}
+	return ""
 }
 
 func (s *protocolStub) Protocol() string { return s.proto }
@@ -644,6 +667,91 @@ func TestRunSignatureNotApplicableOnOtherProtocols(t *testing.T) {
 	}
 }
 
+// 协议兼容 Anthropic 但目标型号不是 anthropic 家族（如 Grok）：零请求。
+func TestRunSignatureNotApplicableOnNonAnthropicModel(t *testing.T) {
+	stub := &signatureStub{respond: func(int, modelverify.Ask) (modelverify.Response, error) {
+		t.Fatal("非 anthropic 家族目标不应发出任何请求")
+		return modelverify.Response{}, nil
+	}}
+	stub.model = "grok-4.7"
+	sender := &protocolStub{inner: stub, proto: "anthropic-messages"}
+	res := RunProbe(context.Background(), ProbeSignature, sender)
+	if applicable, _ := res.Data["applicable"].(bool); applicable {
+		t.Fatal("应标记不适用")
+	}
+	// 元数据已真送达（grok-4.7 能识别出家族），不适用原因必须是家族不符
+	// 而不是 missing_model 掩盖。
+	if reason := stringOf(res.Data, "not_applicable_reason"); strings.Contains(reason, "missing") || reason == "" {
+		t.Fatalf("元数据已送达时 reason 不应缺失/missing, 得到 %q", reason)
+	}
+	if stub.calls != 0 {
+		t.Fatalf("不应发出任何请求, 实际 %d", stub.calls)
+	}
+	if findings := BuildReport([]Result{res}, "grok-4.7").Findings; len(findings) != 0 {
+		t.Fatalf("不适用不应产生风险项, 得到 %+v", findings)
+	}
+}
+
+// 目标型号元数据缺失时同样零请求：宁可不查，不能把无签名当异常。
+// 该用例用真未知型号（识别不出家族）验证"未知≠missing"路径。
+func TestRunSignatureNotApplicableWithoutModelMetadata(t *testing.T) {
+	stub := &signatureStub{respond: func(int, modelverify.Ask) (modelverify.Response, error) {
+		t.Fatal("缺型号元数据时不应发出任何请求")
+		return modelverify.Response{}, nil
+	}}
+	stub.model = "totally-unknown-model"
+	sender := &protocolStub{inner: stub, proto: "anthropic-messages"}
+	res := RunProbe(context.Background(), ProbeSignature, sender)
+	if applicable, _ := res.Data["applicable"].(bool); applicable {
+		t.Fatal("应标记不适用")
+	}
+	if stub.calls != 0 {
+		t.Fatalf("不应发出任何请求, 实际 %d", stub.calls)
+	}
+}
+
+// 目标型号识别出多个家族（含 anthropic 在内）视为 ambiguous：同样零请求，
+// 不允许多族目标也算"明确 anthropic"。
+func TestRunSignatureNotApplicableOnAmbiguousFamilies(t *testing.T) {
+	stub := &signatureStub{respond: func(int, modelverify.Ask) (modelverify.Response, error) {
+		t.Fatal("多家族歧义目标不应发出任何请求")
+		return modelverify.Response{}, nil
+	}}
+	stub.model = "claude via openai-compatible thing"
+	sender := &protocolStub{inner: stub, proto: "anthropic-messages"}
+	res := RunProbe(context.Background(), ProbeSignature, sender)
+	if applicable, _ := res.Data["applicable"].(bool); applicable {
+		t.Fatal("应标记不适用")
+	}
+	// 元数据已送达且能识别出多家族：reason 必须是家族歧义，不是 missing_model。
+	if reason := stringOf(res.Data, "not_applicable_reason"); strings.Contains(reason, "missing") || reason == "" {
+		t.Fatalf("元数据已送达时 reason 不应缺失/missing, 得到 %q", reason)
+	}
+}
+
+// 明确的 anthropic 家族目标保留既有的主动签名检查（既有行为回归）。
+func TestRunSignatureApplicableForAnthropicModel(t *testing.T) {
+	sig := makeSignature("claude-sonnet-4-5", 2, 256, false)
+	stub := &signatureStub{respond: func(call int, _ modelverify.Ask) (modelverify.Response, error) {
+		if call == 1 {
+			return modelverify.Response{Signature: sig, ReasoningContent: "17 * 23 = 391", FinishReason: "end_turn"}, nil
+		}
+		return modelverify.Response{Content: "<cot>17 * 23 = 391</cot>", FinishReason: "end_turn"}, nil
+	}}
+	stub.model = "claude-opus-4-8"
+	sender := &protocolStub{inner: stub, proto: "anthropic-messages"}
+	res := RunProbe(context.Background(), ProbeSignature, sender)
+	if res.Err != nil || !res.OK {
+		t.Fatalf("明确的 anthropic 目标应正常跑签名检查: %+v", res)
+	}
+	if applicable, _ := res.Data["applicable"].(bool); !applicable {
+		t.Fatal("应标记适用")
+	}
+	if stub.calls != 2 {
+		t.Fatalf("应发采集+回放两次请求, 实际 %d", stub.calls)
+	}
+}
+
 // 采集失败（上游错误）走 Err 通道，绝不产生风险项。
 func TestRunSignatureHarvestErrorIsNotEvidence(t *testing.T) {
 	stub := &signatureStub{respond: func(int, modelverify.Ask) (modelverify.Response, error) {
@@ -662,7 +770,8 @@ func TestRunSignatureHarvestErrorIsNotEvidence(t *testing.T) {
 	}
 }
 
-// 完全没有签名时如实记录，判定层给高危并要求复核。
+// 完全没有签名时如实记录：探针层只能算证据不足，不能据此定罪。
+// 判定层返回 nil，不产出风险项；结论由 verdict 层按"没查清"呈现。
 func TestRunSignatureNoSignatureAtAll(t *testing.T) {
 	stub := &signatureStub{respond: func(int, modelverify.Ask) (modelverify.Response, error) {
 		return modelverify.Response{Content: "391", FinishReason: "end_turn"}, nil
@@ -674,13 +783,19 @@ func TestRunSignatureNoSignatureAtAll(t *testing.T) {
 	if present, _ := res.Data["signature_present"].(bool); present {
 		t.Fatal("不应记为有签名")
 	}
+	if ins, _ := res.Data["insufficient_evidence"].(bool); !ins {
+		t.Fatal("应记 insufficient_evidence")
+	}
 	// 只发了一次（采集），拿不到签名就没有回放的必要。
 	if stub.calls != 1 {
 		t.Fatalf("拿不到签名时不应继续回放, 实际请求 %d 次", stub.calls)
 	}
 	report := BuildReport([]Result{res}, "claude-sonnet-4-5")
-	if len(report.Findings) != 1 || report.Findings[0].Score != 50 {
-		t.Fatalf("应产出 50 分高危项, 得到 %+v", report.Findings)
+	if len(report.Findings) != 0 || report.Score != 0 {
+		t.Fatalf("无签名不得产出风险项/分数, 得到 %+v score=%d", report.Findings, report.Score)
+	}
+	if report.Verdict != VerdictUnknown {
+		t.Fatalf("无签名只算证据不足, 结论应为 unknown, 得到 %q", report.Verdict)
 	}
 }
 

@@ -88,7 +88,6 @@ function logComponents() {
         ...common,
         react: pageHooks.react,
         './Item': item,
-        '@/api/endpoints/model-audit': { useScheduledAudit: (enabled) => { assert.equal(enabled, true); return queryResult; } },
         '@/api/endpoints/log': { useLogs: () => ({ logs: [log] }), useLogSeverityCounts: () => ({ data: { total: 1 } }), useExportLogs: () => ({}), useRequestStateStream: () => ({ states: [] }) },
         '@/api/endpoints/apikey': { useAPIKeyList: () => ({ data: [] }) },
         '@/api/endpoints/channel': { useChannelList: () => ({ data: [] }) },
@@ -122,6 +121,14 @@ function logComponents() {
             previousProps = props;
             return { label: text(auditSlot), renders, props };
         },
+        // 直接渲染单个 LogCard 并取「模型检测」槽位：回归本行审计字段（手动/历史自动来源）。
+        renderAudit(logRow) {
+            cardHooks.begin();
+            const card = item.LogCard.type({ log: logRow });
+            const header = findElement(card, (node) => Object.hasOwn(node.props ?? {}, 'auditSlot'));
+            assert.ok(header, 'card variant header must expose the audit slot');
+            return header.props.auditSlot;
+        },
     };
 }
 
@@ -146,43 +153,37 @@ test('saved snapshot polling updates unchanged log cards: empty, new, changed, f
     assert.equal(requests.length, 1);
 
     const tick = async () => { t.mock.timers.tick(5000); await setImmediate(); };
+    // 快照本身不再给「本行没有审计字段」的日志贴主动徽标（不拿整个渠道的表现冒充这一条被检测过）。
     saved = snapshot([clean]);
     await tick();
-    assert.match(displayed.label, /auditClean/);
+    assert.equal(displayed.label, '', 'a clean snapshot must not paint a badge on a row without its own audit fields');
     assert.strictEqual(displayed.props.log, log, 'id/time and the whole log remain unchanged');
     const stableRenders = displayed.renders;
     await tick();
-    assert.equal(displayed.renders, stableRenders, 'identical API data preserves query/map identity');
+    assert.equal(displayed.renders, stableRenders, 'identical log props preserve the card render');
 
-    // Append puts newest first. The previous clean result must not overwrite it.
-    saved = snapshot([suspicious, clean]);
-    await tick();
-    assert.match(displayed.label, /auditHigh/);
-    assert.doesNotMatch(displayed.label, /auditClean/);
+    // 快照内容变化（新增/高危/unknown/skipped/移除）都不改变本行徽标。
+    for (const next of [
+        snapshot([suspicious, clean]),
+        snapshot([{ ...clean, verdict: 'unknown', error_count: 1 }, clean]),
+        snapshot([{ ...clean, skipped: true }, clean]),
+        snapshot([clean]),
+        snapshot(),
+    ]) {
+        saved = next;
+        await tick();
+        assert.equal(displayed.label, '', 'snapshot state never paints a per-row detect badge');
+    }
 
-    saved = snapshot([{ ...clean, verdict: 'unknown', error_count: 1 }, clean]);
-    await tick();
-    assert.match(displayed.label, /auditInsufficient/);
-    saved = snapshot([{ ...clean, skipped: true }, clean]);
-    await tick();
-    assert.equal(displayed.label, '', 'a newer skipped result cannot fall back to old green');
-
-    saved = snapshot([clean]);
-    await tick();
-    assert.match(displayed.label, /auditClean/);
     const lastData = observer.getCurrentResult().data;
     failure = true;
     await tick();
     assert.equal(observer.getCurrentResult().isError, true);
     assert.strictEqual(observer.getCurrentResult().data, lastData, 'failure does not synthesize new data');
-    assert.equal(displayed.label, '', 'failed refresh must hide cached green evidence');
+    assert.equal(displayed.label, '', 'failed refresh never paints a row badge');
     failure = false;
     await tick();
-    assert.match(displayed.label, /auditClean/);
-
-    saved = snapshot();
-    await tick();
-    assert.equal(displayed.label, '', 'removed results disappear without a new log');
+    assert.equal(displayed.label, '', 'recovered snapshot still paints no row badge');
     assert.ok(requests.every((url) => url === '/api/v1/model-audit/scheduled'));
 
     focusManager.setFocused(false);
@@ -196,6 +197,28 @@ test('saved snapshot polling updates unchanged log cards: empty, new, changed, f
     const beforeUnmount = requests.length;
     await tick();
     assert.equal(requests.length, beforeUnmount, 'unmounted query does not poll');
+});
+
+test('row audit badge reads only its own fields; source separates manual and historical auto', () => {
+    const ui = logComponents();
+    const rowLog = (overrides = {}) => ({ ...log, ...overrides });
+
+    // 本行无审计字段 -> 无徽标（快照不冒充本行，见上一测试）。
+    assert.equal(text(ui.renderAudit(rowLog())), '', 'no own audit fields -> no badge');
+
+    // 未知家族/证据不足仍是「证据不足」，不被升级成风险；来源标明手动。
+    const unknown = text(ui.renderAudit(rowLog({ model_audit_verdict: 'unknown', model_audit_trigger: 'manual' })));
+    assert.match(unknown, /auditInsufficient/);
+    assert.match(unknown, /auditSourceManual/, 'manual source labelled');
+
+    // 历史自动来源与手动不同，不冒充手动。
+    const auto = text(ui.renderAudit(rowLog({ model_audit_verdict: 'high', model_audit_trigger: 'schedule' })));
+    assert.match(auto, /auditSourceSchedule/);
+    assert.doesNotMatch(auto, /auditSourceManual/);
+
+    // 旧口径 echo_mismatch 也归历史自动；未知/空来源标「历史来源未记录」。
+    assert.match(text(ui.renderAudit(rowLog({ model_audit_verdict: 'low', model_audit_trigger: 'echo_mismatch' }))), /auditSourceSchedule/);
+    assert.match(text(ui.renderAudit(rowLog({ model_audit_verdict: 'none', model_audit_trigger: '' }))), /auditSourceUnknown/);
 });
 
 test('disabled admin query never fetches; initial failure cannot create clean evidence', async (t) => {
@@ -247,4 +270,265 @@ test('manual success invalidates related queries, failure does not, and neither 
     assert.equal(client.getQueryState(['unrelated']).isInvalidated, false);
     assert.deepEqual(client.getQueryData(scheduledKey).results, [], 'manual report is not a scheduled snapshot');
     assert.equal(requests.filter(([method]) => method === 'POST').length, 2, 'only explicit mutations run audits');
+});
+
+test('run input strips the local AbortSignal from the body and forwards it as request options', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { gcTime: Infinity }, mutations: { gcTime: Infinity } } });
+    let captured;
+    const api = endpoint(client, {
+        async get() { return {}; },
+        async post(url, data, params, options) { captured = { url, data, params, options }; return { report: { verdict: 'none' } }; },
+    });
+    const controller = new AbortController();
+    await api.useRunModelAudit().mutationFn({ channel_id: 7, model: 'test-model', probes: ['liveness'], log_id: 42, signal: controller.signal });
+    assert.equal(captured.url, '/api/v1/model-audit/run');
+    assert.equal('signal' in captured.data, false, 'signal is not part of the network body');
+    assert.equal(captured.data.log_id, 42, 'real payload fields survive');
+    assert.equal(captured.options.signal, controller.signal, 'signal forwarded as request options');
+});
+
+test('apiClient forwards an optional AbortSignal to fetch without changing defaults', async () => {
+    const { apiClient } = load('src/api/client.ts', { './types': { HttpStatus: { UNAUTHORIZED: 401 } } });
+    const calls = [];
+    const originalFetch = global.fetch;
+    global.fetch = async (url, init) => {
+        calls.push({ url, init });
+        return { ok: true, headers: { get: () => 'application/json' }, json: async () => ({ data: { ok: true } }), text: async () => '' };
+    };
+    try {
+        const controller = new AbortController();
+        await apiClient.post('/x', { a: 1 }, undefined, { signal: controller.signal });
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0].init.signal, controller.signal, 'signal reaches fetch');
+        assert.equal(calls[0].init.method, 'POST');
+        assert.equal(calls[0].init.body, JSON.stringify({ a: 1 }));
+
+        // 不传 signal 时保持默认：signal 为 undefined，不改变任何现有请求行为。
+        await apiClient.get('/y');
+        assert.equal(calls[1].init.signal, undefined, 'no signal by default');
+    } finally {
+        global.fetch = originalFetch;
+    }
+});
+
+// 组件级模拟：直接调用真实 ModelAudit 组件函数，用可重渲染的 hooks 观察状态转换。
+// 不新增框架/DOM：只在现有 element-tree 基础上驱动按钮/选项。
+function auditPage() {
+    const memo = [];
+    const refs = [];
+    const states = [];
+    const effects = [];
+    let m = 0, r = 0, s = 0, e = 0;
+    const hooksState = {
+        begin() { m = 0; r = 0; s = 0; e = 0; },
+        react: {
+            ...React,
+            useMemo(fn, deps) {
+                const i = m++;
+                const d = deps ?? [];
+                if (!memo[i] || !deps || d.some((v, j) => !Object.is(v, memo[i].deps[j]))) memo[i] = { deps: d, value: fn() };
+                return memo[i].value;
+            },
+            useState(initial) {
+                const i = s++;
+                if (!(i in states)) states[i] = typeof initial === 'function' ? initial() : initial;
+                const set = (v) => { states[i] = typeof v === 'function' ? v(states[i]) : v; };
+                return [states[i], set];
+            },
+            useRef(initial) { const i = r++; if (!refs[i]) refs[i] = { current: initial }; return refs[i]; },
+            useCallback(fn) { return fn; },
+            useEffect(fn) { effects[e++] = fn; },
+        },
+    };
+    const calls = [];
+    let channelData = [];
+    let mutateImpl = () => new Promise(() => {});
+    const mutation = { mutateAsync(vars) { calls.push(vars); return mutateImpl(vars); } };
+    const toast = { warning() {}, error(...a) { toast.errors.push(a); }, errors: [] };
+    const { ModelAudit } = load('src/components/modules/model-audit/index.tsx', {
+        react: hooksState.react,
+        'lucide-react': new Proxy({}, { get: (_, key) => key }),
+        'next-intl': { useTranslations: () => (key) => key },
+        '@/api/endpoints/channel': { ChannelType: { Chat: 0, Anthropic: 2 }, useChannelList: () => ({ data: channelData, isLoading: false }) },
+        '@/api/endpoints/model-audit': {
+            AUDIT_PROBE_IDS: ['liveness', 'identity', 'glitch', 'token_delta', 'echo_rewrite', 'context_canary', 'signature'],
+            useLogAnomalies: () => ({ data: undefined }),
+            useRunModelAudit: () => mutation,
+            useScheduledAudit: () => ({ data: undefined }),
+        },
+        '@/components/common/PageWrapper': widgets('PageWrapper'),
+        '@/components/ui/searchable-select': widgets('SearchableSelect'),
+        '@/components/common/Toast': { toast },
+        '@/components/ui/button': widgets('Button'),
+        '@/components/ui/dialog': widgets('Dialog DialogContent DialogDescription DialogHeader DialogTitle'),
+        '@/lib/utils': { cn: (...p) => p.filter(Boolean).join(' ') },
+        '@/components/modules/channel/channel-utils': { getSelectedChannelModels: (channel) => channel.selected_models ?? [] },
+        '@/lib/channel-test': { sanitizeChannelTestError: (value) => value },
+    });
+    return {
+        calls,
+        toast,
+        setChannels(next) { channelData = next; },
+        setMutate(fn) { mutateImpl = fn; },
+        render() { hooksState.begin(); return ModelAudit(); },
+        mount() {
+            const cleanups = [];
+            for (const fn of effects) { const c = fn(); if (typeof c === 'function') cleanups.push(c); }
+            return () => cleanups.forEach((c) => c());
+        },
+    };
+}
+
+const grokChannel = [{ raw: { id: 7, name: 'c', enabled: true, type: 2, selected_models: ['grok-4.7'] } }];
+
+// 挂载/改选项发 0 次；点一次=1 次 POST；pending 期间重复点也不再加。
+test('active audit page: mount and option changes never call upstream; one click = one POST', () => {
+    const page = auditPage();
+    page.setChannels(grokChannel);
+    let tree = page.render();
+    const cleanup = page.mount();
+    assert.equal(page.calls.length, 0, 'mount issues no audit call');
+
+    // 改变渠道/计划/探针勾选：均只改本地状态，不发请求。
+    findElement(tree, (n) => n.type === 'SearchableSelect' && typeof n.props?.onValueChange === 'function').props.onValueChange('7');
+    findElement(tree, (n) => n.type === 'button' && text(n).includes('快速')).props.onClick();
+    findElement(tree, (n) => n.type === 'input' && n.props?.type === 'checkbox').props.onChange({ target: { checked: true } });
+    assert.equal(page.calls.length, 0, 'option changes never call upstream');
+
+    findElement(tree, (n) => n.type === 'Button' && text(n).includes('开始检查')).props.onClick();
+    assert.equal(page.calls.length, 1, 'one click = one POST');
+    assert.equal(page.calls[0].channel_id, 7);
+    assert.equal(page.calls[0].probes.includes('signature'), false, 'grok model never selects the signature probe');
+    assert.ok(page.calls[0].signal instanceof AbortSignal, 'run carries an AbortSignal');
+
+    tree = page.render();
+    const running = findElement(tree, (n) => n.type === 'Button' && text(n).includes('正在检查'));
+    assert.ok(running, 'start button shows the running state');
+    assert.ok(findElement(tree, (n) => n.type === 'Button' && text(n).includes('cancelCheck')), 'cancel button appears while running');
+    running.props.onClick(); // pending 期间再次点击
+    assert.equal(page.calls.length, 1, 'double click while pending is ignored');
+    cleanup();
+});
+
+// silent signature 预筛：Anthropic 渠道 + 明确 Claude 型号才选；不把含 'claude' 子串的假名泛化。
+test('signature probe needs both an Anthropic channel and a boundary-matched Claude model', () => {
+    const cases = [
+        { type: 2, model: 'claude-opus-4-8', expect: true },
+        { type: 2, model: 'anthropic/claude-3-5-sonnet', expect: true },
+        { type: 2, model: 'grok-4.7', expect: false },
+        { type: 2, model: 'claudex-fake', expect: false },
+        { type: 2, model: 'notclaude', expect: false },
+        { type: 0, model: 'claude-opus-4-8', expect: false },
+    ];
+    for (const c of cases) {
+        const page = auditPage();
+        page.setChannels([{ raw: { id: 1, name: 'c', enabled: true, type: c.type, selected_models: [c.model] } }]);
+        const tree = page.render();
+        findElement(tree, (n) => n.type === 'Button' && text(n).includes('开始检查')).props.onClick();
+        assert.equal((page.calls[0]?.probes ?? []).includes('signature'), c.expect, `${c.model} on type ${c.type}`);
+    }
+});
+
+// 取消：abort 信号、显示已取消状态、不显示成功报告、不自动重跑、不当作失败。
+test('cancel aborts the run signal and shows the cancelled state without success or re-run', async () => {
+    const page = auditPage();
+    page.setChannels(grokChannel);
+    page.setMutate((vars) => new Promise((_, reject) => {
+        vars.signal.addEventListener('abort', () => { const e = new Error('aborted'); e.name = 'AbortError'; reject(e); });
+    }));
+    let tree = page.render();
+    const cleanup = page.mount();
+    findElement(tree, (n) => n.type === 'Button' && text(n).includes('开始检查')).props.onClick();
+    assert.equal(page.calls.length, 1);
+    const signal = page.calls[0].signal;
+    assert.equal(signal.aborted, false);
+
+    tree = page.render();
+    const cancel = findElement(tree, (n) => n.type === 'Button' && text(n).includes('cancelCheck'));
+    assert.ok(cancel, 'cancel button visible while running');
+    cancel.props.onClick();
+    assert.equal(signal.aborted, true, 'cancel aborts the HTTP request signal');
+    await new Promise((r) => setTimeout(r, 0));
+
+    tree = page.render();
+    assert.ok(findElement(tree, (n) => text(n) === 'cancelledTitle'), 'cancelled state is shown');
+    assert.equal(text(tree).includes('本次报告'), false, 'no success/report is shown after cancel');
+    assert.equal(findElement(tree, (n) => text(n).includes('导出 JSON')), undefined, 'no export button after cancel');
+    assert.equal(page.calls.length, 1, 'cancel never triggers another run');
+    assert.equal(page.toast.errors.length, 0, 'cancel is not treated as a failure');
+    cleanup();
+});
+
+// 组件卸载：abort 仍在飞行的 controller。
+test('unmount aborts an in-flight run', () => {
+    const page = auditPage();
+    page.setChannels(grokChannel);
+    const tree = page.render();
+    const cleanup = page.mount();
+    findElement(tree, (n) => n.type === 'Button' && text(n).includes('开始检查')).props.onClick();
+    const signal = page.calls[0].signal;
+    assert.equal(signal.aborted, false);
+    cleanup();
+    assert.equal(signal.aborted, true, 'unmount aborts the current controller');
+});
+
+const minimalReport = () => ({
+    channel_id: 7,
+    channel_name: 'c',
+    upstream_model: 'grok-4.7',
+    endpoint: '/v1/messages',
+    duration_ms: 12,
+    report: {
+        requested_model: 'grok-4.7',
+        score: 0,
+        verdict: 'none',
+        findings: [],
+        results: [{ probe_id: 'identity', ok: true, data: { insufficient_evidence: true, reason: 'no_calibrated_profile' } }],
+        errors: [],
+        disclaimer: 'x',
+    },
+});
+
+// 证据不足要显示 reason，且 headline 不得谎称「未见需要复核项」。
+test('insufficient-evidence rows show their reason and headline no longer claims a clean result', async () => {
+    const page = auditPage();
+    page.setChannels(grokChannel);
+    page.setMutate(() => Promise.resolve(minimalReport()));
+    let tree = page.render();
+    const cleanup = page.mount();
+    findElement(tree, (n) => n.type === 'Button' && text(n).includes('开始检查')).props.onClick();
+    await new Promise((r) => setTimeout(r, 0));
+    tree = page.render();
+    const body = text(tree);
+    assert.ok(body.includes('statusInsufficient'), 'row shows insufficient status');
+    assert.ok(body.includes('no_calibrated_profile'), 'reason shown (not_applicable_reason/reason alias)');
+    assert.ok(body.includes('headlineInsufficientTitle'), 'headline reports insufficient evidence');
+    assert.equal(body.includes('未见需要复核的项'), false, 'headline must not claim a clean result');
+    cleanup();
+});
+
+// 下一轮开始即清空旧报告；取消后没有可导出的旧报告。
+test('starting a new run clears the previous report so cancel cannot export it', async () => {
+    const page = auditPage();
+    page.setChannels(grokChannel);
+    let resolveRun;
+    page.setMutate(() => new Promise((res) => { resolveRun = res; }));
+    let tree = page.render();
+    const cleanup = page.mount();
+    findElement(tree, (n) => n.type === 'Button' && text(n).includes('开始检查')).props.onClick();
+    resolveRun(minimalReport());
+    await new Promise((r) => setTimeout(r, 0));
+    tree = page.render();
+    assert.ok(findElement(tree, (n) => text(n).includes('导出 JSON')), 'export visible after a successful run');
+
+    // 第二轮：开始即清空旧报告，然后取消。
+    page.setMutate((vars) => new Promise((_, reject) => { vars.signal.addEventListener('abort', () => reject(new Error('aborted'))); }));
+    findElement(tree, (n) => n.type === 'Button' && text(n).includes('开始检查')).props.onClick();
+    tree = page.render();
+    assert.equal(text(tree).includes('本次报告'), false, 'old report is cleared as soon as a new run starts');
+    findElement(tree, (n) => n.type === 'Button' && text(n).includes('cancelCheck')).props.onClick();
+    await new Promise((r) => setTimeout(r, 0));
+    tree = page.render();
+    assert.equal(findElement(tree, (n) => text(n).includes('导出 JSON')), undefined, 'no export after cancel');
+    cleanup();
 });

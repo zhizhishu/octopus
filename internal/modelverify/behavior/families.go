@@ -5,6 +5,33 @@ import (
 	"strings"
 )
 
+// isAlnumByte 判断小写化文本里的字节是否为字母或数字。
+// 只用于 xai 家族的边界判定；'-' 与 '.' 都不是字母数字，因此
+// "grok-4.7"、"xai/grok-4.7" 这类型号名在分隔符处都能命中。
+func isAlnumByte(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9')
+}
+
+// containsWithBoundary 带两侧字母数字边界的子串匹配。
+// 别名两侧必须是文本端点或非字母数字字符："xai" 不再命中 "taxation"
+// 这类普通词，而 "xai/grok-4.7" 里的分隔符不挡命中。
+func containsWithBoundary(lower, alias string) bool {
+	for i := 0; i <= len(lower)-len(alias); {
+		idx := strings.Index(lower[i:], alias)
+		if idx < 0 {
+			return false
+		}
+		start := i + idx
+		end := start + len(alias)
+		if (start == 0 || !isAlnumByte(lower[start-1])) &&
+			(end == len(lower) || !isAlnumByte(lower[end])) {
+			return true
+		}
+		i = start + 1
+	}
+	return false
+}
+
 // 模型家族别名表。
 //
 // 移植自 AI-Infra-Guard（github.com/Tencent/AI-Infra-Guard，Apache-2.0）
@@ -38,6 +65,10 @@ var familyAliases = map[string][]string{
 	"baidu":     {"ernie", "wenxin", "文心"},
 	"meta":      {"llama"},
 	"mistral":   {"mistral", "mixtral"},
+	// xai 是唯一使用带字母数字边界匹配的家族："grok"/"xai"/"x-ai" 都是
+	// 容易撞普通词的短串（"taxation" 含 "xai"），裸子串会误命中；其它家族
+	// 保持既有裸子串语义不变（见 InferFamilies 注释）。
+	"xai": {"grok", "xai", "x-ai"},
 }
 
 // familyNames 按字典序返回家族名。
@@ -66,7 +97,13 @@ func InferFamilies(text string) []string {
 	var out []string
 	for _, name := range familyNames() {
 		for _, alias := range familyAliases[name] {
-			if strings.Contains(lower, alias) {
+			hit := strings.Contains(lower, alias)
+			if name == "xai" {
+				// 只有 xai 走边界匹配；其它家族维持上游原样的裸子串语义，
+				// 收紧范围以本次批准的 xai 增补为限。
+				hit = containsWithBoundary(lower, alias)
+			}
+			if hit {
 				out = append(out, name)
 				break
 			}

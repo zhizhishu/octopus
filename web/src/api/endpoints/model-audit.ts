@@ -77,11 +77,24 @@ export type LogAnomalyFinding = {
     evidence?: Record<string, unknown>;
 };
 
+export type LogAnomalyPassiveBucket = {
+    channel_id: number;
+    model: string;
+    endpoint: string;
+    is_stream: boolean;
+    language: string;
+    feature_version: string;
+    count: number;
+    no_profile_count: number;
+};
+
 export type LogAnomalyReport = {
     window_hours: number;
     sample_count: number;
     bucket_count: number;
     findings: LogAnomalyFinding[];
+    /** 被动观察摘要的独立汇总（可选）：只读计数，不参与 findings 判定。 */
+    passive_observations?: LogAnomalyPassiveBucket[];
     disclaimer: string;
 };
 
@@ -132,11 +145,19 @@ export function useScheduledAudit(enabled = true) {
     });
 }
 
+/** 运行控制参数：本地交参，不进入网络 body。 */
+export type RunModelAuditOptions = {
+    signal?: AbortSignal;
+};
+
+export type RunModelAuditInput = ModelAuditRequest & RunModelAuditOptions;
+
 export function useRunModelAudit() {
     const queryClient = useQueryClient();
     return useMutation({
-        mutationFn: async (data: ModelAuditRequest) => {
-            return apiClient.post<ModelAuditResponse>('/api/v1/model-audit/run', data);
+        mutationFn: async ({ signal, ...payload }: RunModelAuditInput) => {
+            // signal 只作 fetch 的取消信号，绝不打进请求 body。
+            return apiClient.post<ModelAuditResponse>('/api/v1/model-audit/run', payload, undefined, { signal });
         },
         onSuccess: () => queryClient.invalidateQueries({ queryKey: ['model-audit'] }),
         onError: (error) => {

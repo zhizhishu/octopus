@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -52,8 +53,11 @@ func ScanLogAnomalies(logs []model.RelayLog, now time.Time) model.LogAnomalyRepo
 		Findings:    []model.LogAnomalyFinding{},
 		Disclaimer:  logAnomalyDisclaimer,
 	}
+	// SampleCount 口径保持不变: 只统计进入 token/latency 统计的有效样本
+	// (error 行不计), 与既有告警基准同一口径。
 	cutoff := now.Add(-logAnomalyLookback).Unix()
 	buckets := map[string]*logAnomalyBucket{}
+	passive := map[string]*model.LogAnomalyPassiveBucket{}
 
 	for _, relayLog := range logs {
 		if relayLog.Time < cutoff {
@@ -73,9 +77,13 @@ func ScanLogAnomalies(logs []model.RelayLog, now time.Time) model.LogAnomalyRepo
 			buckets[key] = acc
 		}
 		if relayLog.UpstreamModelMismatch != nil {
-			acc.declaredN++
-			if *relayLog.UpstreamModelMismatch {
-				acc.mismatchN++
+			// alias_variant(同族别名疑似)不计入"名字经常不符"风险桶,
+			// 但本行 UpstreamModelMismatch 原值保留不动, 原始事实不删。
+			if !strings.EqualFold(strings.TrimSpace(relayLog.UpstreamMismatchCode), "alias_variant") {
+				acc.declaredN++
+				if *relayLog.UpstreamModelMismatch {
+					acc.mismatchN++
+				}
 			}
 		}
 		if strings.TrimSpace(relayLog.Error) != "" {
@@ -84,12 +92,43 @@ func ScanLogAnomalies(logs []model.RelayLog, now time.Time) model.LogAnomalyRepo
 		acc.times = append(acc.times, relayLog.Time)
 		acc.outputs = append(acc.outputs, relayLog.OutputTokens)
 		acc.latencies = append(acc.latencies, relayLog.UseTime)
+
+		// 被动观察摘要走独立 map(language+version 维度), 不把旧 token/latency
+		// 统计按有无新摘要拆成两份。旧行/未观察(nil)不计; 仅汇总 Features 非空
+		// 的 valid 观察为 no_profile_count, 不计算任何漂移阈值。
+		if s := relayLog.PassiveSummary; s != nil && s.Features != nil &&
+			s.Status == model.PassiveStatusInsufficientEvidence {
+			pk := passiveBucketKey(relayLog, s)
+			pb := passive[pk]
+			if pb == nil {
+				pb = &model.LogAnomalyPassiveBucket{
+					ChannelID:      relayLog.ChannelId,
+					Model:          logAnomalyModelName(relayLog),
+					Endpoint:       strings.TrimSpace(relayLog.RequestEndpoint),
+					IsStream:       relayLog.IsStream,
+					Language:       s.Language,
+					FeatureVersion: s.Version,
+				}
+				passive[pk] = pb
+			}
+			pb.Count++
+			pb.NoProfileCount++
+		}
 	}
 
 	report.BucketCount = len(buckets)
 	for _, acc := range buckets {
 		report.SampleCount += len(acc.times)
 		report.Findings = append(report.Findings, scanLogAnomalyBucket(acc)...)
+	}
+	// passive 桶按 key 稳定排序输出, 保证报告可复现。
+	pKeys := make([]string, 0, len(passive))
+	for k := range passive {
+		pKeys = append(pKeys, k)
+	}
+	sort.Strings(pKeys)
+	for _, k := range pKeys {
+		report.PassiveObservations = append(report.PassiveObservations, *passive[k])
 	}
 	sort.Slice(report.Findings, func(i, j int) bool {
 		if report.Findings[i].Severity == report.Findings[j].Severity {
@@ -212,7 +251,7 @@ func logAnomalyLogs(ctx context.Context, since int64) ([]model.RelayLog, error) 
 	var dbLogs []model.RelayLog
 	err := db.GetDB().WithContext(ctx).
 		Model(&model.RelayLog{}).
-		Select("id", "time", "channel_id", "channel_name", "request_model_name", "actual_model_name", "output_tokens", "use_time", "error", "error_code", "error_strategy", "upstream_response_model", "upstream_model_mismatch").
+		Select("id", "time", "channel_id", "channel_name", "request_model_name", "actual_model_name", "request_endpoint", "is_stream", "output_tokens", "use_time", "error", "error_code", "error_strategy", "upstream_response_model", "upstream_model_mismatch", "upstream_mismatch_code", "passive_summary").
 		Where("time >= ?", since).
 		Find(&dbLogs).Error
 	if err != nil {
@@ -237,23 +276,40 @@ func logAnomalyLogs(ctx context.Context, since int64) ([]model.RelayLog, error) 
 		if _, ok := seen[relayLog.ID]; ok {
 			continue
 		}
+		// 同 ID 的缓存行也登记 seen, 防止后续同 ID 缓存行被重复统计/重算。
+		seen[relayLog.ID] = struct{}{}
 		logs = append(logs, relayLog)
 	}
 	return logs, nil
 }
 
 func logAnomalyBucketKey(relayLog model.RelayLog) string {
-	return strings.TrimSpace(relayLog.ChannelName) + "\x1f" + logAnomalyModelName(relayLog)
+	// 按 channelID + actual 模型优先 + request endpoint + is_stream 分桶,
+	// 不再用 channelName + requestModel: 同名渠道/请求别名会让不同渠道或不同
+	// 实际模型混进同一个桶。
+	return strconv.Itoa(relayLog.ChannelId) + "\x1f" + logAnomalyModelName(relayLog) +
+		"\x1f" + strings.TrimSpace(relayLog.RequestEndpoint) +
+		"\x1f" + strconv.FormatBool(relayLog.IsStream)
 }
 
 func logAnomalyModelName(relayLog model.RelayLog) string {
-	if name := strings.TrimSpace(relayLog.RequestModelName); name != "" {
-		return name
-	}
+	// actual 模型优先: 它才是上游实际服务的模型; 请求名可能只是别名/路由名。
 	if name := strings.TrimSpace(relayLog.ActualModelName); name != "" {
 		return name
 	}
+	if name := strings.TrimSpace(relayLog.RequestModelName); name != "" {
+		return name
+	}
 	return "unknown"
+}
+
+// passiveBucketKey 与主桶无关的独立分桶 key: channelID + actual 优先 + endpoint +
+// is_stream + language + feature version。
+func passiveBucketKey(relayLog model.RelayLog, s *model.RelayLogPassiveSummary) string {
+	return strconv.Itoa(relayLog.ChannelId) + "\x1f" + logAnomalyModelName(relayLog) +
+		"\x1f" + strings.TrimSpace(relayLog.RequestEndpoint) +
+		"\x1f" + strconv.FormatBool(relayLog.IsStream) +
+		"\x1f" + s.Language + "\x1f" + s.Version
 }
 
 func medianInt(values []int) int {

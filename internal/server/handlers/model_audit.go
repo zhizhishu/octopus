@@ -114,6 +114,18 @@ func runModelAudit(c *gin.Context) {
 	}
 	endpoint := auditEndpointFor(*channel)
 
+	// 单飞闸门：同一 (渠道, 上游模型) 同时只允许一个手动检测在跑。
+	// 放在解析出 upstreamModel 之后，因为锁的粒度就是这一对；放在任何探针发送之前，
+	// 因为这条路径上的每个探针都是一次真实计费请求。重复点击/多标签页/直接调接口
+	// 都会在这里被挡住，不是在 UI 上假挡一下。
+	release, ok := acquireModelAuditSlot(channel.ID, upstreamModel)
+	if !ok {
+		resp.Error(c, http.StatusConflict,
+			"an audit for this channel and model is already running; wait for it to finish instead of starting a second billable run")
+		return
+	}
+	defer release()
+
 	sender, err := modeltest.NewProbeSender(*channel, upstreamModel, endpoint)
 	if err != nil {
 		resp.Error(c, http.StatusBadRequest, err.Error())
@@ -131,7 +143,7 @@ func runModelAudit(c *gin.Context) {
 	defer cancel()
 
 	started := time.Now()
-	results := behavior.Run(ctx, ids, sender)
+	results := behavior.Run(ctx, ids, sender, upstreamModel)
 	report := behavior.ToView(behavior.BuildReport(results, modelName))
 
 	// 结论落库: 仅当请求显式带 log_id 时才写回那行(trigger=manual, 先到先得)。

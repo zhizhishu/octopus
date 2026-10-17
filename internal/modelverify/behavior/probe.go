@@ -43,7 +43,9 @@ type Result struct {
 }
 
 // probeFunc 是一个探针的实现。传入的 Sender 保证走渠道检测的既有出站链路。
-type probeFunc func(ctx context.Context, s modelverify.Sender) Result
+// targetModel 是被测目标型号（只读元数据，仅用于本地适用性判断，
+// 不参与任何出站请求参数/协议/shape）。可为空：空表示调用方没提供型号元数据。
+type probeFunc func(ctx context.Context, s modelverify.Sender, targetModel string) Result
 
 // probeRegistry 是探针注册表。新增探针只需在这里挂一项。
 var probeRegistry = map[ProbeID]probeFunc{
@@ -73,8 +75,28 @@ func DefaultProbes() []ProbeID {
 	}
 }
 
-// RunProbe 执行单个探针。
+// ModelNamer 由 Sender 自报被测的目标型号。
+// 只读元数据：探针据此在发送前判断某条探针对这个型号是否适用，
+// 不改变 Ask 的任何参数。ProbeSender 等实现方可选择提供。
+type ModelNamer interface {
+	TargetModel() string
+}
+
+// senderTargetModel 从 Sender 上取目标型号元数据（未实现则空）。
+func senderTargetModel(s modelverify.Sender) string {
+	if n, ok := s.(ModelNamer); ok {
+		return n.TargetModel()
+	}
+	return ""
+}
+
+// RunProbe 执行单个探针。型号元数据取自 Sender 的 ModelNamer（若有）。
 func RunProbe(ctx context.Context, id ProbeID, s modelverify.Sender) Result {
+	return runProbe(ctx, id, s, senderTargetModel(s))
+}
+
+// runProbe 带显式型号元数据执行单个探针。
+func runProbe(ctx context.Context, id ProbeID, s modelverify.Sender, targetModel string) Result {
 	fn, ok := probeRegistry[id]
 	if !ok {
 		return Result{ProbeID: id, Err: fmt.Errorf("未知探针 %q", id)}
@@ -82,21 +104,29 @@ func RunProbe(ctx context.Context, id ProbeID, s modelverify.Sender) Result {
 	if s == nil {
 		return Result{ProbeID: id, Err: fmt.Errorf("探针 %q 没有可用的发送器", id)}
 	}
-	res := fn(ctx, s)
+	res := fn(ctx, s, targetModel)
 	res.ProbeID = id
 	return res
 }
 
 // Run 依次执行给定探针。探针之间串行——它们共用同一个渠道密钥，
 // 并发会同时抬高上游限流压力和本地连接数，而审计本身并不追求低延迟。
-func Run(ctx context.Context, ids []ProbeID, s modelverify.Sender) []Result {
+//
+// 可选的最后一位参数是被测目标型号（只读元数据）：传了之后，适用性依赖
+// 型号的探针（signature/glitch）会在发送前判断是否适用，不适用的直接
+// 自报 applicable=false，零请求。不传则尝试从 Sender 的 ModelNamer 取。
+func Run(ctx context.Context, ids []ProbeID, s modelverify.Sender, upstreamModel ...string) []Result {
+	targetModel := senderTargetModel(s)
+	if len(upstreamModel) > 0 && upstreamModel[0] != "" {
+		targetModel = upstreamModel[0]
+	}
 	results := make([]Result, 0, len(ids))
 	for _, id := range ids {
 		if err := ctx.Err(); err != nil {
 			results = append(results, Result{ProbeID: id, Err: err})
 			continue
 		}
-		results = append(results, RunProbe(ctx, id, s))
+		results = append(results, runProbe(ctx, id, s, targetModel))
 	}
 	return results
 }
@@ -107,7 +137,7 @@ func Run(ctx context.Context, ids []ProbeID, s modelverify.Sender) []Result {
 //
 // 判定是**子串包含**而非精确相等：模型多加一句客气话不该算失败，
 // 真正的失败是随机串根本没出现在回答里。
-func runLiveness(ctx context.Context, s modelverify.Sender) Result {
+func runLiveness(ctx context.Context, s modelverify.Sender, _ string) Result {
 	expected := "echo-" + randStr(6) + "-" + randStr(4)
 	resp, err := s.Ask(ctx, modelverify.Ask{
 		Prompt:    "Reply with exactly: " + expected,
@@ -143,7 +173,7 @@ var identityPrompts = []string{
 // 探针自身的 OK 只看请求是否成功——**不在这里判身份**。判定留给评分层，
 // 因为这里拿到的是模型的口供：中转站完全可以把它改成任意名字。它唯一的价值
 // 是当一个廉价的旁证，且上游也只按弱信号处理（双方家族都识别出且无交集）。
-func runIdentity(ctx context.Context, s modelverify.Sender) Result {
+func runIdentity(ctx context.Context, s modelverify.Sender, _ string) Result {
 	resp, err := s.Ask(ctx, modelverify.Ask{
 		Prompt:    identityPrompts[rand.IntN(len(identityPrompts))],
 		MaxTokens: intPtr(512),
@@ -169,7 +199,7 @@ func runIdentity(ctx context.Context, s modelverify.Sender) Result {
 //
 // 期望值只是粗估，所以阈值必须宽松：上游取 200，只抓"异常偏高"。
 // 轻微偏差是正常的（分词器差异、脚手架附加），不该报警。
-func runTokenDelta(ctx context.Context, s modelverify.Sender) Result {
+func runTokenDelta(ctx context.Context, s modelverify.Sender, _ string) Result {
 	word := randStr(8)
 	prompt := "Return only the word: " + word
 	resp, err := s.Ask(ctx, modelverify.Ask{
@@ -199,7 +229,7 @@ func runTokenDelta(ctx context.Context, s modelverify.Sender) Result {
 // 选真实 pip 命令（而不是随机字符串）是上游的设计：中转站若在注入
 // "把命令改成镜像源"之类的隐藏提示，会在这类内容上露馅——随机串它没法改写，
 // 真实的包安装命令才有"可被改写"的语义。
-func runEchoRewrite(ctx context.Context, s modelverify.Sender) Result {
+func runEchoRewrite(ctx context.Context, s modelverify.Sender, _ string) Result {
 	expected := pipCommands[rand.IntN(len(pipCommands))]
 	resp, err := s.Ask(ctx, modelverify.Ask{
 		Prompt:    "Echo this text exactly, no markdown, no explanation:\n" + expected,
@@ -235,7 +265,7 @@ func runEchoRewrite(ctx context.Context, s modelverify.Sender) Result {
 //
 // 判定只看**尾部**哨兵（上游同此）：尾部丢失才是上下文被截断的直接证据。
 // 首部丢失更可能是模型自己偷懒跳读，不足以定罪。
-func runContextCanary(ctx context.Context, s modelverify.Sender) Result {
+func runContextCanary(ctx context.Context, s modelverify.Sender, _ string) Result {
 	start, mid, end := "CANARY_"+randStr(10), "CANARY_"+randStr(10), "CANARY_"+randStr(10)
 	filler := strings.Repeat("The quick brown fox jumps over the lazy dog. ", 120)
 	prompt := start + "\n" + filler + mid + "\n" + filler + end +

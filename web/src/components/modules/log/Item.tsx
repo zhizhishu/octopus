@@ -10,7 +10,6 @@ import { githubLightTheme } from '@uiw/react-json-view/githubLight';
 import { useTheme } from 'next-themes';
 import { create } from 'zustand';
 import { fetchLogById, getRelayLogSeverity, type RelayLog, type ChannelAttempt } from '@/api/endpoints/log';
-import type { ScheduledAuditResult } from '@/api/endpoints/model-audit';
 import {
     getLogVerdict,
     describeEchoComparison,
@@ -329,6 +328,8 @@ interface LogRouteHeaderProps {
     clientSlot?: ReactNode;
     /** card 专用槽位：B2 模型检测徽标。无结果时传 null，不造假占位。 */
     auditSlot?: ReactNode;
+    /** card 专用槽位：B2 被动（纯本地）摘要徽标。与 auditSlot 同格，不新增轨道。 */
+    passiveSlot?: ReactNode;
     /** card 专用槽位：C2「查看详情」。detail 忽略。 */
     detailsSlot?: ReactNode;
 }
@@ -358,6 +359,7 @@ function LogRouteHeader({
     autoRescueSlot,
     clientSlot,
     auditSlot,
+    passiveSlot,
     detailsSlot,
 }: LogRouteHeaderProps) {
     const t = useTranslations('log.card');
@@ -473,7 +475,9 @@ function LogRouteHeader({
                 "inline-flex min-w-0 items-center gap-1 text-xs",
                 echoTone === 'cross-family'
                     ? "text-red-600 dark:text-red-300"
-                    : "text-amber-700 dark:text-amber-300"
+                    : echoTone === 'alias-variant'
+                        ? "text-muted-foreground"
+                        : "text-amber-700 dark:text-amber-300"
             )}
             title={echoTone === 'cross-family'
                 ? t('familyReplacedHint', { requested: echo.fromRaw, echo: echo.toRaw })
@@ -527,7 +531,7 @@ function LogRouteHeader({
                     <Badge
                         variant="outline"
                         className={cn(
-                            "overflow-visible whitespace-normal break-words border-amber-500/40 bg-amber-500/10 text-xs text-amber-800 dark:text-amber-200",
+                            "overflow-visible whitespace-normal break-words border-border/60 bg-muted/30 text-xs font-normal text-muted-foreground",
                             isCard ? "px-1.5 py-0" : "px-2 py-0.5"
                         )}
                         title={t('echoAliasVariantHint', { model: echo.toRaw })}
@@ -615,7 +619,7 @@ function LogRouteHeader({
          * 模型名和状态、接口挤在同一行；客户端、回显、查看详情在下一行。
          * 窄屏仍按这六个格子的顺序自然往下排。
          */
-        const hasEchoEvidence = Boolean(echoGroup || auditSlot);
+        const hasEchoEvidence = Boolean(echoGroup || auditSlot || passiveSlot);
         return (
             <div
                 data-log-header
@@ -652,6 +656,7 @@ function LogRouteHeader({
                         <span className="flex min-w-0 flex-1 flex-wrap items-start gap-x-1.5 gap-y-1">
                             {echoGroup}
                             {auditSlot ? <span className="min-w-0">{auditSlot}</span> : null}
+                            {passiveSlot ? <span className="min-w-0">{passiveSlot}</span> : null}
                         </span>
                     ) : null}
                 </div>
@@ -675,6 +680,7 @@ function LogRouteHeader({
             {actualModelText}
             {clientSlot}
             {echoGroup}
+            {passiveSlot}
             {streamBadge}
             {stickyPin}
         </>
@@ -884,11 +890,21 @@ function LazyLogBodies({ logId, fallbackRequest, fallbackResponse, requestLabel,
     );
 }
 
+type AuditHit = {
+    channel_id: number;
+    channel_name: string;
+    model: string;
+    trigger: string;
+    verdict: string;
+    score: number;
+    finding_count: number;
+};
+
 type AuditBadge = {
     label: string;
     className: string;
-    /** 命中的快检结果原样保留，供点按弹层展示（得分/发现数/渠道/模型）。 */
-    hit: ScheduledAuditResult;
+    /** 本行审计字段原样保留，供点按弹层展示（来源/得分/发现数/渠道/模型）。 */
+    hit: AuditHit;
 };
 
 /**
@@ -924,57 +940,76 @@ function auditVerdictStyle(verdict: string, t: (key: string) => string): { label
 }
 
 /**
- * 模型检测徽标。优先读本行自己的审计字段（model_audit_verdict 等，只有这行真的被检测过才有值，
- * 逐行独立，不再是同渠道同模型共用一份）；本行为空（旧行/未检测）才回退到定时快检快照
- * 按 渠道ID|模型 匹配（匹配顺序：先实际发上游的模型名，再请求模型名——model_mapping 场景下
- * 快检记的可能是任一侧）。都没命中/快检跳过/普通用户 → 无徽标。
+ * 模型检测徽标。只读本行自己的审计字段（model_audit_verdict 等，只有这行真的被检测过才有值，
+ * 逐行独立）。本行没有主动结论 → 无徽标：绝不回退到同渠道/同模型的定时快检快照（也不拿
+ * 「整个渠道最近表现」冒充「这一条回复被检测过」）。
  * 徽标本身点按弹出详情（Popover，移动端手指可触），不再依赖悬停 title。
  */
 function auditBadgeForLog(
     log: RelayLog,
-    index: Map<string, ScheduledAuditResult> | undefined,
     t: (key: string) => string,
 ): AuditBadge | undefined {
-    // 本行有自己的结论：直接用行字段组徽标，不碰快照。
+    // 只有本行真的被检测过才有主动结论；旧行/未检测一律无徽标。
     const rowVerdict = log.model_audit_verdict?.trim() ?? '';
-    if (rowVerdict) {
-        const style = auditVerdictStyle(rowVerdict, t);
-        return {
-            label: `${t('auditPrefix')} · ${style.label}`,
-            className: style.className,
-            hit: {
-                channel_id: log.channel,
-                channel_name: log.channel_name ?? '',
-                model: log.actual_model_name?.trim() || log.request_model_name?.trim() || '',
-                trigger: log.model_audit_trigger ?? '',
-                verdict: rowVerdict,
-                score: log.model_audit_score ?? 0,
-                finding_count: log.model_audit_finding_n ?? 0,
-            },
-        };
-    }
-
-    if (!index?.size || !log.channel) return undefined;
-    const hit =
-        index.get(`${log.channel}|${log.actual_model_name}`) ??
-        index.get(`${log.channel}|${log.request_model_name}`);
-    if (!hit || hit.skipped || !hit.verdict) return undefined;
-
-    const style = auditVerdictStyle(hit.verdict, t);
+    if (!rowVerdict) return undefined;
+    const trigger = log.model_audit_trigger ?? '';
+    const style = auditVerdictStyle(rowVerdict, t);
     return {
-        label: `${t('auditPrefix')} · ${style.label}`,
+        label: `${auditSourceLabel(trigger, t)} · ${style.label}`,
         className: style.className,
-        hit,
+        hit: {
+            channel_id: log.channel,
+            channel_name: log.channel_name ?? '',
+            model: log.actual_model_name?.trim() || log.request_model_name?.trim() || '',
+            trigger,
+            verdict: rowVerdict,
+            score: log.model_audit_score ?? 0,
+            finding_count: log.model_audit_finding_n ?? 0,
+        },
     };
+}
+
+/**
+ * 主动检测来源 → 人话：manual=手动检测、schedule/echo_mismatch=历史自动检测；
+ * 未知/未记录来源标「历史来源未记录」，绝不冒充被动结果或当前真伪。
+ */
+function auditSourceLabel(trigger: string, t: (key: string) => string): string {
+    const value = trigger.trim();
+    if (value === 'manual') return t('auditSourceManual');
+    if (value === 'schedule' || value === 'echo_mismatch') return t('auditSourceSchedule');
+    return t('auditSourceUnknown');
+}
+
+type PassiveState = 'missing' | 'insufficient' | 'not_applicable';
+type PassiveSummary = NonNullable<RelayLog['passive_summary']>;
+type PassiveBadge = {
+    state: PassiveState;
+    label: string;
+    summary?: PassiveSummary;
+};
+
+/** 被动摘要微标永远是中性色（不风险、不认证），与 model_audit_* 主动字段互不混合。 */
+const PASSIVE_NEUTRAL_CLASS = 'border-border/60 bg-muted/30 font-normal text-muted-foreground';
+
+/**
+ * 被动（纯本地）摘要徽标：有特征→「证据不足」，范围外→「未评估」，nil→「未分析」。
+ * 只读 passive_summary，不拿任何主动字段/快照当样本。
+ */
+function passiveBadgeForLog(log: RelayLog, t: (key: string) => string): PassiveBadge {
+    const summary = log.passive_summary;
+    if (!summary || !summary.status) {
+        return { state: 'missing', label: t('passiveBadgeMissing') };
+    }
+    if (summary.status === 'insufficient_evidence') {
+        return { state: 'insufficient', label: t('passiveBadgeInsufficient'), summary };
+    }
+    return { state: 'not_applicable', label: t('passiveBadgeNotApplicable'), summary };
 }
 
 export const LogCard = React.memo(function LogCard({
     log,
-    auditByChannelModel,
 }: {
     log: RelayLog;
-    /** 定时快检快照按 `渠道ID|模型` 的索引（管理员日志页拉取；普通用户不传）。 */
-    auditByChannelModel?: Map<string, ScheduledAuditResult>;
 }) {
     const t = useTranslations('log.card');
     const canViewDetails = useAuthStore((state) => state.user?.role === 'admin');
@@ -997,8 +1032,13 @@ export const LogCard = React.memo(function LogCard({
     const channelKeyRemark = useMemo(() => log.channel_key_remark?.trim() ?? '', [log.channel_key_remark]);
     const clientLabel = useMemo(() => humanizeClient(log.request_user_agent), [log.request_user_agent]);
     const auditBadge = useMemo(
-        () => auditBadgeForLog(log, auditByChannelModel, t),
-        [log, auditByChannelModel, t],
+        () => auditBadgeForLog(log, t),
+        [log, t],
+    );
+    // 本行有无正文的被动摘要时可读；管理员另显示旧行尚未分析的状态。
+    const passiveBadge = useMemo(
+        () => ((canViewDetails || log.passive_summary) ? passiveBadgeForLog(log, t) : null),
+        [log, t, canViewDetails],
     );
     const requestEndpoint = useMemo(() => log.request_endpoint?.trim() ?? '', [log.request_endpoint]);
     const requestPath = useMemo(() => log.request_path?.trim() ?? '', [log.request_path]);
@@ -1126,8 +1166,8 @@ export const LogCard = React.memo(function LogCard({
             </PopoverContent>
         </Popover>
     ) : null;
-    // 检测徽标来自定时快检快照按 渠道+模型 匹配（管理员拉取，普通用户没有 → null）。
-    // 弹层同时给「发送模型 vs 上游自报」的本行证据；同样掐断冒泡，避免误开整卡详情。
+    // 检测徽标只来自本行自己的审计字段（本行没被检测过 → null，不拿快照冒充）。
+    // 弹层同时给「发送模型 vs 上游自报」的本行证据与来源；同样掐断冒泡，避免误开整卡详情。
     const auditSlot = auditBadge ? (
         <Popover>
             <PopoverTrigger asChild>
@@ -1157,6 +1197,10 @@ export const LogCard = React.memo(function LogCard({
                     <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
                         <span className="text-muted-foreground">{t('auditModel')}</span>
                         <span className="break-all">{auditBadge.hit.model}</span>
+                        <span className="text-muted-foreground">{t('auditSource')}</span>
+                        <span>{auditSourceLabel(auditBadge.hit.trigger, t)}</span>
+                        <span className="text-muted-foreground">{t('auditRow')}</span>
+                        <span className="break-all">#{log.id} · {formatTime(log.time)}</span>
                         {typeof auditBadge.hit.score === 'number' && (
                             <>
                                 <span className="text-muted-foreground">{t('auditScore')}</span>
@@ -1189,6 +1233,78 @@ export const LogCard = React.memo(function LogCard({
                             )}
                         </div>
                     </div>
+                </div>
+            </PopoverContent>
+        </Popover>
+    ) : null;
+    // 被动（纯本地）摘要徽标：中性色，弹层只给版本/粗语言/六项特征与说明，不认证真伪。
+    const passiveSlot = passiveBadge ? (
+        <Popover>
+            <PopoverTrigger asChild>
+                <Badge
+                    variant="outline"
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => {
+                        e.stopPropagation();
+                        if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            e.currentTarget.click();
+                        }
+                    }}
+                    className={cn('min-w-0 cursor-pointer overflow-visible whitespace-normal px-1.5 py-0 text-xs', PASSIVE_NEUTRAL_CLASS)}
+                >
+                    {passiveBadge.label}
+                </Badge>
+            </PopoverTrigger>
+            <PopoverContent align="start" className="w-80 p-3">
+                <div className="space-y-2 text-xs">
+                    <p className="font-medium text-foreground">{t('passiveTitle')} · {passiveBadge.label}</p>
+                    <p className="text-[11px] leading-5 text-muted-foreground">{t('passiveExplain')}</p>
+                    {passiveBadge.state === 'insufficient' && passiveBadge.summary && (
+                        <>
+                            <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+                                <span className="text-muted-foreground">{t('passiveStatus')}</span>
+                                <span>{t('passiveStatusInsufficient')}</span>
+                                <span className="text-muted-foreground">{t('passiveVersion')}</span>
+                                <span className="tabular-nums">{passiveBadge.summary.version}</span>
+                                {passiveBadge.summary.language && (
+                                    <>
+                                        <span className="text-muted-foreground">{t('passiveLanguage')}</span>
+                                        <span>{passiveBadge.summary.language}</span>
+                                    </>
+                                )}
+                            </div>
+                            {passiveBadge.summary.features && (
+                                <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 border-t border-border pt-2">
+                                    <span className="text-muted-foreground">{t('passiveFeatureChars')}</span>
+                                    <span className="tabular-nums">{passiveBadge.summary.features.chars}</span>
+                                    <span className="text-muted-foreground">{t('passiveFeatureLines')}</span>
+                                    <span className="tabular-nums">{passiveBadge.summary.features.lines}</span>
+                                    <span className="text-muted-foreground">{t('passiveFeatureParagraphs')}</span>
+                                    <span className="tabular-nums">{passiveBadge.summary.features.paragraphs}</span>
+                                    <span className="text-muted-foreground">{t('passiveFeatureCodeBlocks')}</span>
+                                    <span className="tabular-nums">{passiveBadge.summary.features.code_blocks}</span>
+                                    <span className="text-muted-foreground">{t('passiveFeatureCodeRatio')}</span>
+                                    <span className="tabular-nums">{Number(passiveBadge.summary.features.code_ratio).toFixed(2)}</span>
+                                    <span className="text-muted-foreground">{t('passiveFeatureMarkdownLines')}</span>
+                                    <span className="tabular-nums">{passiveBadge.summary.features.markdown_lines}</span>
+                                </div>
+                            )}
+                        </>
+                    )}
+                    {passiveBadge.state === 'not_applicable' && passiveBadge.summary && (
+                        <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+                            <span className="text-muted-foreground">{t('passiveStatus')}</span>
+                            <span>{t('passiveStatusNotApplicable')}</span>
+                            <span className="text-muted-foreground">{t('passiveReason')}</span>
+                            <span className="break-all">{passiveBadge.summary.reason}</span>
+                        </div>
+                    )}
+                    {passiveBadge.state === 'missing' && (
+                        <p className="text-[11px] leading-5 text-muted-foreground">{t('passiveLegacyHint')}</p>
+                    )}
                 </div>
             </PopoverContent>
         </Popover>
@@ -1257,6 +1373,7 @@ export const LogCard = React.memo(function LogCard({
                                 autoRescueSlot={autoRescueSlot}
                                 clientSlot={clientSlot}
                                 auditSlot={auditSlot}
+                                passiveSlot={passiveSlot}
                                 detailsSlot={detailsSlot}
                             />
 
@@ -1788,8 +1905,12 @@ export const LogCard = React.memo(function LogCard({
 }, (prevProps, nextProps) => (
     prevProps.log.id === nextProps.log.id
     && prevProps.log.time === nextProps.log.time
-    // 定时快检结果通常晚于日志到达（日志先推送、快检后跑）。父组件已用 useMemo 稳定住
-    // auditByChannelModel 的引用，所以这里比引用即可；不比较它的话快检结果到达时卡片不重绘，
-    // 第 2 排的「模型检测」徽标会一直空着，只有刷新或 log.time 变化才可能露出来。
-    && prevProps.auditByChannelModel === nextProps.auditByChannelModel
+    // 本行审计字段随后端回写而变化时（手动检测带 log_id 写回同一行、id/time 不变），
+    // 必须让卡片重绘，否则「模型检测」徽标不会出现/不会更新。
+    && prevProps.log.model_audit_verdict === nextProps.log.model_audit_verdict
+    && prevProps.log.model_audit_trigger === nextProps.log.model_audit_trigger
+    && prevProps.log.model_audit_score === nextProps.log.model_audit_score
+    && prevProps.log.model_audit_finding_n === nextProps.log.model_audit_finding_n
+    // 被动摘要随后端回写而变化时必须重绘（字段在同一 log 对象上，引用比较即可）。
+    && prevProps.log.passive_summary === nextProps.log.passive_summary
 ));

@@ -15,8 +15,10 @@ import {
     SlidersHorizontal,
     TextQuote,
     Wifi,
+    XCircle,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
+import { useTranslations } from 'next-intl';
 import type { ApiError } from '@/api/types';
 import { ChannelType, useChannelList, type Channel } from '@/api/endpoints/channel';
 import {
@@ -47,7 +49,7 @@ import { sanitizeChannelTestError } from '@/lib/channel-test';
 
 type PlanId = 'quick' | 'standard';
 type RowTone = 'pass' | 'warn' | 'info' | 'fail' | 'skip';
-type PageState = 'idle' | 'running' | 'report' | 'error';
+type PageState = 'idle' | 'running' | 'report' | 'error' | 'cancelling' | 'cancelled';
 
 type ProbeMeta = {
     id: AuditProbeId;
@@ -75,20 +77,55 @@ type DisplayRow = {
     status: string;
     result?: AuditProbeResult;
     findings: AuditFinding[];
+    /** 不适用/证据不足等状态下后端给出的原因（用于行内展示）。 */
+    reason?: string;
+    /** 证据不足（未认证）标记：headline 据此不再谎称“未见需要复核项”。 */
+    insufficient?: boolean;
 };
 
 function apiErrorMessage(error: unknown): string | undefined {
     return (error as ApiError | undefined)?.message;
 }
 
-function isApplicable(channel: Channel | undefined, id: AuditProbeId): boolean {
-    if (id !== 'signature') return true;
-    return channel?.type === ChannelType.Anthropic;
+/**
+ * 型号是否明确属于 Claude 家族。用「边界匹配」：'claude' 必须作为独立一段出现
+ * （名字开头/结尾或被非字母数字分隔），避免 'claudexxx'、'notclaude' 之类含子串的
+ * 假名被泛化成 Claude。只作前端预筛，后端仍是权威 gate。
+ */
+function isClaudeModelFamily(model: string): boolean {
+    const name = model.trim().toLowerCase();
+    if (!name) return false;
+    return /(^|[^a-z0-9])claude([^a-z0-9]|$)/.test(name);
 }
 
-function planIds(plan: PlanId, channel: Channel | undefined): AuditProbeId[] {
+/**
+ * 探针适用性（前端预筛，后端会再权威 gate）：
+ * - signature 需 Anthropic 渠道 **且** 型号明确是 Claude（Grok 经 Anthropic 兼容协议也不等于 Claude）；
+ * - 其余探针默认适用，是否真有基准由后端返回 not_applicable/insufficient_evidence。
+ */
+function isApplicable(channel: Channel | undefined, id: AuditProbeId, model = ''): boolean {
+    if (id !== 'signature') return true;
+    return channel?.type === ChannelType.Anthropic && isClaudeModelFamily(model);
+}
+
+function planIds(plan: PlanId, channel: Channel | undefined, model = ''): AuditProbeId[] {
     const base = plan === 'quick' ? QUICK_IDS : [...AUDIT_PROBE_IDS];
-    return base.filter((id) => isApplicable(channel, id));
+    return base.filter((id) => isApplicable(channel, id, model));
+}
+
+/** 主动检测来源 → 人话（三语键）；未知来源如实标注。 */
+function triggerLabel(trigger: string, t: (key: string) => string): string {
+    const value = trigger.trim();
+    if (value === 'manual') return t('sourceManual');
+    if (value === 'schedule') return t('sourceSchedule');
+    if (value === 'echo_mismatch') return t('sourceEcho');
+    return t('sourceUnknown');
+}
+
+/** 后端不适用/不足原因：读 not_applicable_reason，兼容旧字段名 reason。 */
+function rowReason(data: Record<string, unknown>): string | undefined {
+    const value = data.not_applicable_reason ?? data.reason;
+    return typeof value === 'string' ? value : undefined;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -98,14 +135,18 @@ function asRecord(value: unknown): Record<string, unknown> {
     return {};
 }
 
-function rowFromResult(meta: ProbeMeta, report: ModelAuditResponse): DisplayRow {
+function rowFromResult(meta: ProbeMeta, report: ModelAuditResponse, t: (key: string) => string): DisplayRow {
     const result = report.report.results.find((item) => item.probe_id === meta.id);
     const findings = (report.report.findings ?? []).filter((item) => item.probe === meta.id);
     const probeError = (report.report.errors ?? []).find((item) => item.probe === meta.id);
     const data = asRecord(result?.data);
 
     if (data.applicable === false) {
-        return { meta, tone: 'skip', status: '不适用', result, findings: [] };
+        return { meta, tone: 'skip', status: t('statusNotApplicable'), result, findings: [], reason: rowReason(data) };
+    }
+    // 适用性未知（如身份/签名拿不到证据）：后端标 insufficient_evidence → 不进 pass/warn，只报证据不足。
+    if (data.insufficient_evidence === true) {
+        return { meta, tone: 'info', status: t('statusInsufficient'), result, findings: [], reason: rowReason(data), insufficient: true };
     }
     if (probeError || result?.error) {
         return {
@@ -141,7 +182,7 @@ function formatDuration(ms: number): string {
     return `${(ms / 1000).toFixed(1)}s`;
 }
 
-function headline(verdict: AuditVerdict, warnCount: number, failCount: number): { title: string; sub: string } {
+function headline(verdict: AuditVerdict, warnCount: number, failCount: number, insufficientCount: number, t: (key: string, values?: Record<string, string | number>) => string): { title: string; sub: string } {
     if (failCount > 0 && warnCount === 0) {
         return { title: '证据不足，部分检查未完成', sub: '未完成的检查不记为异常，只说明这次没查清。' };
     }
@@ -152,6 +193,13 @@ function headline(verdict: AuditVerdict, warnCount: number, failCount: number): 
         return {
             title: `发现 ${warnCount} 项需要复核`,
             sub: '其余检查未见异常或仅为结构线索。',
+        };
+    }
+    // 有证据不足项时，不得谎称“未见需要复核项”；不认证真伪。
+    if (insufficientCount > 0) {
+        return {
+            title: t('headlineInsufficientTitle'),
+            sub: t('headlineInsufficientSub', { count: insufficientCount }),
         };
     }
     return {
@@ -180,6 +228,7 @@ function evidencePairs(row: DisplayRow): Array<[string, string]> {
 }
 
 export function ModelAudit() {
+    const t = useTranslations('modelAudit');
     const { data: channelsData, isLoading } = useChannelList();
     const { data: logAnomalies } = useLogAnomalies();
     const { data: scheduledAudit } = useScheduledAudit();
@@ -202,6 +251,8 @@ export function ModelAudit() {
     // 请求在飞行时为 true。disabled 只是视觉拦截，受渲染时序影响；
     // 这个 ref 是硬性单飞闸门，确保同一时刻只有一个检测任务。
     const inFlight = useRef(false);
+    // 当前任务的取消句柄：取消/卸载时 abort，HTTP 断掉，服务端 c.Request.Context 随之停止后续探针。
+    const controllerRef = useRef<AbortController | null>(null);
 
     const channel = channels.find((item) => item.id === channelId) ?? channels[0];
     const models = useMemo(
@@ -216,19 +267,22 @@ export function ModelAudit() {
         const nextModel = models[0] ?? '';
         if (!models.includes(modelName) && modelName !== nextModel) setModelName(nextModel);
     }, [channel, channelId, modelName, models]);
-    const applicableSelected = selected.filter((id) => isApplicable(channel, id));
-    const runCount = plan === 'quick' ? planIds('quick', channel).length : applicableSelected.length;
+    // 组件卸载：中断仍在飞行的请求（避免后台继续占用/计费，也不残留 controller）。
+    useEffect(() => () => { controllerRef.current?.abort(); }, []);
+    const applicableSelected = selected.filter((id) => isApplicable(channel, id, activeModel));
+    const runCount = plan === 'quick' ? planIds('quick', channel, activeModel).length : applicableSelected.length;
 
     const rows = useMemo(() => {
         if (!report) return [];
         const ran = new Set((report.report.results ?? []).map((item) => item.probe_id));
         return orderedRows(
-            PROBES.filter((meta) => ran.has(meta.id)).map((meta) => rowFromResult(meta, report)),
+            PROBES.filter((meta) => ran.has(meta.id)).map((meta) => rowFromResult(meta, report, t)),
         );
-    }, [report]);
+    }, [report, t]);
     const warnCount = rows.filter((row) => row.tone === 'warn').length;
     const failCount = rows.filter((row) => row.tone === 'fail').length;
-    const copy = report ? headline(report.report.verdict, warnCount, failCount) : null;
+    const insufficientCount = rows.filter((row) => row.insufficient).length;
+    const copy = report ? headline(report.report.verdict, warnCount, failCount, insufficientCount, t) : null;
 
     const chooseChannel = (id: number) => {
         setChannelId(id);
@@ -236,14 +290,14 @@ export function ModelAudit() {
         const nextModels = next ? getSelectedChannelModels(next) : [];
         setModelName(nextModels[0] ?? '');
         if (plan === 'standard') {
-            setSelected(AUDIT_PROBE_IDS.filter((probeId) => isApplicable(next, probeId)));
+            setSelected(AUDIT_PROBE_IDS.filter((probeId) => isApplicable(next, probeId, nextModels[0] ?? '')));
         }
     };
 
     const choosePlan = (next: PlanId) => {
         setPlan(next);
-        if (next === 'quick') setSelected(planIds('quick', channel));
-        else setSelected(AUDIT_PROBE_IDS.filter((id) => isApplicable(channel, id)));
+        if (next === 'quick') setSelected(planIds('quick', channel, activeModel));
+        else setSelected(AUDIT_PROBE_IDS.filter((id) => isApplicable(channel, id, activeModel)));
     };
 
     const toggleProbe = (id: AuditProbeId, checked: boolean) => {
@@ -261,31 +315,49 @@ export function ModelAudit() {
             toast.warning('先选渠道和模型');
             return;
         }
-        const probes = plan === 'quick' ? planIds('quick', channel) : applicableSelected;
+        const probes = plan === 'quick' ? planIds('quick', channel, activeModel) : applicableSelected;
         if (probes.length === 0) {
             toast.warning('至少勾一项检查');
             return;
         }
         inFlight.current = true;
+        // 每个任务一个 controller：取消/卸载时 abort，HTTP 断掉，服务端 c.Request.Context 随之停止后续串行探针。
+        const controller = new AbortController();
+        controllerRef.current = controller;
         setPageState('running');
         setErrorText('');
+        setReport(null); // 新一轮开始即清空旧报告，避免取消失败后误导出旧结果
         try {
             const data = await runAudit.mutateAsync({
                 channel_id: channel.id,
                 model: activeModel,
                 probes,
+                signal: controller.signal,
             });
+            if (controller.signal.aborted) { setPageState('cancelled'); return; } // 已取消：不当作成功、不落报告
             setReport(data);
             setPageState('report');
         } catch (error) {
+            if (controller.signal.aborted) { setPageState('cancelled'); return; } // 取消不是失败：不报错、不自动重跑
             const message = sanitizeChannelTestError(apiErrorMessage(error) || '审计未完成');
             setErrorText(message);
             setPageState('error');
             toast.error(message);
         } finally {
-            // 成功、失败、超时都走到这里：必须解锁，别把按钮永久锁死。
-            inFlight.current = false;
+            // 只有仍是当前 controller 时才解锁，避免竞态清掉新任务的闸门。
+            if (controllerRef.current === controller) {
+                controllerRef.current = null;
+                inFlight.current = false;
+            }
         }
+    };
+
+    // 取消：仅中断当前 HTTP；服务端自行停止后续探针。取消与失败分开，不显示成功、不恢复旧报告、不自动重跑。
+    const cancel = () => {
+        if (!inFlight.current) return;
+        setReport(null);            // 旧报告清空，避免导出
+        setPageState('cancelling'); // 未 settle 前按钮保持 disabled/「正在取消」
+        controllerRef.current?.abort();
     };
 
     const exportJson = () => {
@@ -337,7 +409,7 @@ export function ModelAudit() {
                 <p className="mb-3 text-[11px] font-medium tracking-[0.16em] text-muted-foreground">02 检查</p>
                 <div className="grid gap-1">
                     {PROBES.map((probe) => {
-                        const disabled = !isApplicable(channel, probe.id);
+                        const disabled = !isApplicable(channel, probe.id, activeModel);
                         const checked = selected.includes(probe.id) && !disabled;
                         return (
                             <label key={probe.id} className={cn('flex items-center gap-2 rounded-xl px-1 py-1.5 text-sm', disabled && 'opacity-40')}>
@@ -384,11 +456,16 @@ export function ModelAudit() {
                         超时跟随渠道检测上限。签名、身份、词元只作线索，不作为原厂证明。
                     </p>
                 )}
-                <Button type="button" className="mt-4 h-11 w-full rounded-xl" disabled={pageState === 'running' || runCount === 0} onClick={() => void run()}>
-                    {pageState === 'running' ? <Loader2 className="size-4 animate-spin" /> : null}
-                    {pageState === 'running' ? '正在检查' : '开始检查'}
+                <Button type="button" className="mt-4 h-11 w-full rounded-xl" disabled={pageState === 'running' || pageState === 'cancelling' || runCount === 0} onClick={() => void run()}>
+                    {pageState === 'running' || pageState === 'cancelling' ? <Loader2 className="size-4 animate-spin" /> : null}
+                    {pageState === 'running' ? '正在检查' : pageState === 'cancelling' ? t('cancelling') : '开始检查'}
                 </Button>
-                <p className="mt-2 text-center text-[11px] text-muted-foreground">预计执行 {runCount} 项检查 · 串行</p>
+                {(pageState === 'running' || pageState === 'cancelling') && (
+                    <Button type="button" variant="outline" className="mt-2 h-9 w-full rounded-xl" disabled={pageState === 'cancelling'} onClick={cancel}>
+                        {pageState === 'cancelling' ? t('cancelling') : t('cancelCheck')}
+                    </Button>
+                )}
+                <p className="mt-2 text-center text-[11px] leading-5 text-muted-foreground">{t('manualGate', { count: runCount })}</p>
             </section>
         </aside>
     );
@@ -438,6 +515,9 @@ export function ModelAudit() {
                                         </ul>
                                     )}
                                     <p className="mt-2 text-[11px] leading-5 text-muted-foreground">{logAnomalies.disclaimer}</p>
+                                    {logAnomalies.passive_observations?.length ? (
+                                        <p className="mt-1 text-[11px] leading-5 text-muted-foreground">{t('passiveObserved', { count: logAnomalies.passive_observations.reduce((sum, bucket) => sum + bucket.count, 0) })}</p>
+                                    ) : null}
                                 </div>
                             )}
                             {scheduledAudit && (
@@ -452,7 +532,7 @@ export function ModelAudit() {
                                         <ul className="mt-2 space-y-2">
                                             {(scheduledAudit.results ?? []).slice(0, 4).map((item) => (
                                                 <li key={`${item.channel_id}-${item.model}-${item.trigger}`} className="text-sm">
-                                                    <span className="font-medium">{item.skipped ? (item.skip_reason || '本轮跳过') : (item.verdict === 'none' ? '未见异常' : item.verdict === 'unknown' ? '证据不足' : '待复核')}</span>
+                                                    <span className="font-medium">{triggerLabel(item.trigger, t)}：{item.skipped ? (item.skip_reason || '本轮跳过') : (item.verdict === 'none' ? '未见异常' : item.verdict === 'unknown' ? '证据不足' : '待复核')}</span>
                                                     <span className="mt-0.5 block text-xs text-muted-foreground">{item.channel_name || `渠道 ${item.channel_id}`} · {item.model}</span>
                                                 </li>
                                             ))}
@@ -477,6 +557,14 @@ export function ModelAudit() {
                             <AlertTriangle className="mb-3 size-8 text-amber-600" />
                             <h3 className="text-lg font-semibold">执行未完成</h3>
                             <p className="mt-1 max-w-md text-sm text-muted-foreground">{errorText || '这次没有拿到完整报告。网络或额度问题不记为造假。'}</p>
+                        </div>
+                    )}
+
+                    {pageState === 'cancelled' && (
+                        <div className="flex min-h-80 flex-col items-center justify-center text-center">
+                            <XCircle className="mb-3 size-8 text-muted-foreground" />
+                            <h3 className="text-lg font-semibold">{t('cancelledTitle')}</h3>
+                            <p className="mt-1 max-w-md text-sm text-muted-foreground">{t('cancelledBody')}</p>
                         </div>
                     )}
 
@@ -542,7 +630,7 @@ export function ModelAudit() {
                                             <Icon className="size-4 shrink-0 text-muted-foreground" />
                                             <span className="min-w-0 flex-1">
                                                 <span className="block text-sm font-medium">{row.meta.name}</span>
-                                                <span className="block truncate text-xs text-muted-foreground">{row.meta.desc}</span>
+                                                <span className="block truncate text-xs text-muted-foreground">{row.reason || row.meta.desc}</span>
                                             </span>
                                             <span className={cn(
                                                 'rounded-full px-2 py-0.5 text-[11px]',

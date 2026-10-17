@@ -22,7 +22,6 @@ import { Calendar } from '@/components/ui/calendar';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import type { DateRange } from 'react-day-picker';
 import { useChannelList } from '@/api/endpoints/channel';
-import { useScheduledAudit, type ScheduledAuditResult } from '@/api/endpoints/model-audit';
 import { useModelList } from '@/api/endpoints/model';
 import { useAbortIntervention, useAbortRunningRequest, useRescueRunningRequest, useInterventionList, useRetryIntervention, type InterventionSnapshot } from '@/api/endpoints/intervention';
 import { useAuthStore, useUserList } from '@/api/endpoints/user';
@@ -674,20 +673,8 @@ function LiveActivityPanel({
 export function Log() {
     const t = useTranslations('log');
     const isAdmin = useAuthStore((state) => state.user?.role === 'admin');
-    // 模型检测徽标数据源：定时快检快照（管理员接口，普通用户不拉）。
-    // 一次拉全量、按 渠道ID|模型 建索引，逐行卡片 O(1) 匹配。
-    const { data: scheduledAudit, isError: auditUnavailable } = useScheduledAudit(isAdmin);
-    const auditByChannelModel = useMemo(() => {
-        const index = new Map<string, ScheduledAuditResult>();
-        // A failed refresh must not present a cached green badge as current evidence.
-        if (auditUnavailable) return index;
-        for (const item of scheduledAudit?.results ?? []) {
-            // Follow-up results are newest first; older duplicates must not hide them.
-            const key = `${item.channel_id}|${item.model}`;
-            if (item.channel_id && item.model && !index.has(key)) index.set(key, item);
-        }
-        return index;
-    }, [scheduledAudit, auditUnavailable]);
+    // 模型检测徽标只读每行自己的审计字段（见 LogCard）：日志页不再拉定时快检快照，
+    // 避免把「同渠道同模型的最近快检」冒充成「这一条日志被检测过」。独立检测栏仍展示历史列表。
     const todayLabel = useMemo(() => localDateInput(new Date()), []);
     // 默认区间放宽到「近 7 天」而非「今天」：日志常是前一两天产生的，默认只查今天会让页面一开屏就空、
     // 显得「筛选无效」。近 7 天在「够聚焦」和「开屏能看到东西」之间取平衡。
@@ -1002,8 +989,8 @@ export function Log() {
     }, [deferredSearch, effectiveSelectedAPIKeyID, endTime, exportLogs, mismatchParam, selectedEndpoint, selectedModel, selectedProvider, selectedUserID, severityFilter, startTime]);
 
     const renderLogCard = useCallback(
-        (log: RelayLog) => <LogCard log={log} auditByChannelModel={auditByChannelModel} />,
-        [auditByChannelModel],
+        (log: RelayLog) => <LogCard log={log} />,
+        [],
     );
     const getLogRowKey = useCallback((log: RelayLog) => log.id, []);
 

@@ -130,6 +130,13 @@ function findElement(node, predicate) {
     return findElement(node.props?.children, predicate);
 }
 
+function text(node) {
+    if (node == null || typeof node === 'boolean') return '';
+    if (typeof node === 'string' || typeof node === 'number') return String(node);
+    if (Array.isArray(node)) return node.map(text).join(' ');
+    return text(node.props?.children);
+}
+
 function loadCard() {
     const cardHooks = hooks();
     return load('src/components/modules/log/Item.tsx', {
@@ -158,8 +165,8 @@ function loadCard() {
 
 // LogCard.type(...) returns an element tree; the card header is a LogRouteHeader
 // element, so it must be invoked explicitly before its data-* hooks exist.
-function renderCardHeader(LogCard, log, auditByChannelModel) {
-    const tree = LogCard.type({ log, auditByChannelModel });
+function renderCardHeader(LogCard, log) {
+    const tree = LogCard.type({ log });
     const headerEl = findElement(tree, (node) => typeof node.type === 'function' && node.type.name === 'LogRouteHeader' && node.props?.variant === 'card');
     assert.ok(headerEl, 'card variant LogRouteHeader element must exist');
     return headerEl.type(headerEl.props);
@@ -288,17 +295,56 @@ test('echo evidence cell pins the down arrow and wraps the echo group on an inne
     assert.ok(findElement(inner, (node) => node.props?.children === 'echoMismatch'), 'echo group lives inside the inner container');
 });
 
-test('no empty down arrow is drawn when a row has neither echo nor audit evidence', () => {
+test('admin row keeps the passive summary chip and the down arrow even without echo/audit', () => {
     const { LogCard } = loadCard();
-    // 普通用户摘要：渠道名/自报/判定字段全不下发 -> 无回显、无检测 -> 整格不画箭头。
+    // 无回显/无主动字段；nil 被动字段 -> 「未分析」，不伪造样本。
     const grid = renderCardHeader(LogCard, sampleLog({
         channel_name: '', upstream_response_model: '', upstream_model_mismatch: undefined,
         upstream_mismatch_code: '', model_family_verdict: '',
     }));
     const cell = findElement(grid, (node) => node.props?.['data-log-cell'] === '2' && node.props?.['data-log-row'] === '2');
     assert.ok(cell, 'row2 col2 cell still exists as a layout slot');
-    assert.equal(cell.props.children[0], null, 'no arrow when there is nothing to point at');
-    assert.equal(cell.props.children[1], null, 'no inner container either');
+    assert.equal(cell.props.children[0]?.type, 'ArrowDown', 'passive summary keeps the down arrow');
+    assert.ok(findElement(cell, (node) => node.props?.children === 'passiveBadgeMissing'), 'nil passive -> not-analyzed chip');
+});
+
+test('passive summary badge shows the six features and stays neutral (never a risk colour)', () => {
+    const { LogCard } = loadCard();
+    const grid = renderCardHeader(LogCard, sampleLog({
+        passive_summary: {
+            version: 'v1', status: 'insufficient_evidence', reason: 'no_calibrated_profile', language: 'zh',
+            features: { chars: 120, lines: 4, paragraphs: 2, code_blocks: 0, code_ratio: 0, markdown_lines: 1 },
+        },
+    }));
+    const badge = collect(grid.props.children, (node) => node.type === 'Badge' && node.props?.children === 'passiveBadgeInsufficient')[0];
+    assert.ok(badge, 'insufficient passive badge exists');
+    const cls = String(badge.props.className);
+    assert.doesNotMatch(cls, /amber-/, 'passive badge never amber');
+    assert.doesNotMatch(cls, /red-/, 'passive badge never red');
+    assert.match(cls, /text-muted-foreground/, 'passive badge is neutral');
+    const popover = findElement(grid, (node) => node.type === 'Popover' && text(node).includes('passiveBadgeInsufficient'));
+    assert.ok(popover, 'passive popover exists');
+    const content = text(popover);
+    assert.match(content, /passiveFeatureChars/);
+    assert.ok(content.includes('120'), 'chars value shown');
+    assert.ok(content.includes('v1'), 'version shown');
+    assert.ok(content.includes('zh'), 'coarse language shown');
+    assert.ok(content.includes('no_calibrated_profile') === false, 'insufficient reason is not dumped as a raw code');
+});
+
+test('not_applicable passive summary is neutral and shows its reason, never a warning', () => {
+    const { LogCard } = loadCard();
+    const grid = renderCardHeader(LogCard, sampleLog({
+        passive_summary: { version: 'v1', status: 'not_applicable', reason: 'tool_output' },
+    }));
+    const badge = collect(grid.props.children, (node) => node.type === 'Badge' && node.props?.children === 'passiveBadgeNotApplicable')[0];
+    assert.ok(badge, 'not-applicable passive badge exists');
+    const cls = String(badge.props.className);
+    assert.doesNotMatch(cls, /amber-/, 'not a warning colour');
+    assert.doesNotMatch(cls, /red-/, 'not a risk colour');
+    const popover = findElement(grid, (node) => node.type === 'Popover' && text(node).includes('passiveBadgeNotApplicable'));
+    assert.ok(popover, 'not-applicable popover exists');
+    assert.ok(text(popover).includes('tool_output'), 'reason shown in the popover');
 });
 
 test('client badge shows fully: no ellipsis, wraps long words, badge overflow unlocked', () => {
@@ -322,7 +368,7 @@ test('card model names truncate so the header stays two rows', () => {
 
 test('summary band no longer forces both rows onto one line', () => {
     const { LogCard } = loadCard();
-    const tree = LogCard.type({ log: sampleLog({ id: 3 }), auditByChannelModel: undefined });
+    const tree = LogCard.type({ log: sampleLog({ id: 3 }) });
     const rows = collect(tree, (node) => node.props && (node.props['data-log-row'] === '3' || node.props['data-log-row'] === '4')).map((node) => node.props);
     assert.equal(rows.length, 2, 'both summary rows present');
     for (const p of rows) {
@@ -354,16 +400,16 @@ test('echo comparison text wraps and risk badges override the Badge overflow cli
 
 test('interactive badges activate on Enter/Space in place, and ignore other keys', () => {
     const { LogCard } = loadCard();
-    // name-mismatch 才会渲染「回显不符」Popover 徽标（plus 重试渠道徽标 + 客户端徽标 = 3 个触发器）。
-    const audit = new Map([['7|gpt-example', { channel_id: 7, model: 'gpt-example', verdict: 'low', score: 1 }]]);
-    const grid = renderCardHeader(LogCard, mismatchLog(), audit);
+    // name-mismatch 渲染「回显不符」Popover 徽标 + 客户端徽标 + 被动摘要徽标（grid 内 3 个）+ 重试渠道徽标（retryTree 1 个）。
+    // 该行没有本行审计字段 → 无 detect 触发器（快照不冒充本行）；被动摘要与主动字段隔离。
+    const grid = renderCardHeader(LogCard, mismatchLog());
 
     const retry = findElement(grid, (node) => typeof node.type === 'function' && node.type.name === 'RetryBadgeWithPopover');
     assert.ok(retry, 'retry badge element found');
     const retryTree = retry.type(retry.props);
 
     const triggers = [grid, retryTree].flatMap((source) => collect(source, (node) => typeof node.props?.onKeyDown === 'function'));
-    assert.equal(triggers.length, 4, 'retry, mismatch, client and saved-audit triggers are all exercised');
+    assert.equal(triggers.length, 4, 'client + echo-mismatch + passive summary + retry; a row without own audit fields has no detect trigger');
     const handlers = triggers.map((node) => node.props.onKeyDown);
     for (const trigger of triggers) {
         let bubbled = 1;
@@ -381,7 +427,7 @@ test('interactive badges activate on Enter/Space in place, and ignore other keys
 
 test('summary band exposes data-log-row 3 and 4', () => {
     const { LogCard } = loadCard();
-    const tree = LogCard.type({ log: sampleLog({ id: 2, channel_name: 'c', upstream_response_model: '', upstream_model_mismatch: undefined, model_family_verdict: '', attempts: [] }), auditByChannelModel: undefined });
+    const tree = LogCard.type({ log: sampleLog({ id: 2, channel_name: 'c', upstream_response_model: '', upstream_model_mismatch: undefined, model_family_verdict: '', attempts: [] }) });
     const rows = collect(tree, (node) => node.props && (node.props['data-log-row'] === '3' || node.props['data-log-row'] === '4')).map((node) => node.props['data-log-row']);
     assert.ok(rows.includes('3'), 'summary row 3 present');
     assert.ok(rows.includes('4'), 'summary row 4 present');
@@ -398,4 +444,57 @@ test('echo tone none with no echo shows upstreamSilent', () => {
     const { LogCard } = loadCard();
     const grid = renderCardHeader(LogCard, sampleLog({ upstream_response_model: '', upstream_model_mismatch: undefined, model_family_verdict: '' }));
     assert.ok(findElement(grid, (node) => node.props?.children === 'upstreamSilent'), 'upstreamSilent placeholder is displayed');
+});
+
+// 真实生产样本：request=actual=grok-4.7，echo=grok-4.7-build，code=alias_variant，mismatch=true，verdict=suspect，
+// 行审计字段为空。这是「名字变体被展示成风险」的现象修正：仍保留原始对照，只把语义降为中性名称变体。
+test('real Grok alias sample: name variant stays visible, neutral tone, raw names untouched', () => {
+    const grokLog = sampleLog({
+        request_model_name: 'grok-4.7',
+        actual_model_name: 'grok-4.7',
+        upstream_response_model: 'grok-4.7-build',
+        upstream_model_mismatch: true,
+        upstream_mismatch_code: 'alias_variant',
+        model_family_verdict: 'suspect',
+    });
+    // 判定层：仍是 alias-variant，tone 与原始字段不改（不统统等价、不改后台 mismatch）。
+    const c = describeEchoComparison(grokLog, display);
+    assert.equal(c.tone, 'alias-variant');
+    assert.equal(c.fromRaw, 'grok-4.7');
+    assert.equal(c.toRaw, 'grok-4.7-build');
+    assert.equal(c.showComparison, true);
+
+    // 展示层：中性低强调徽标（非风险色），两侧原始名（含 -build）都在、未被删改。
+    const { LogCard } = loadCard();
+    const grid = renderCardHeader(LogCard, grokLog);
+    const badge = collect(grid.props.children, (node) => node.type === 'Badge' && node.props?.children === 'echoAliasVariant')[0];
+    assert.ok(badge, 'alias-variant badge exists');
+    const cls = String(badge.props.className);
+    assert.doesNotMatch(cls, /amber-/, 'alias badge is not amber');
+    assert.doesNotMatch(cls, /red-/, 'alias badge is not red');
+    assert.match(cls, /text-muted-foreground/, 'alias badge is low emphasis');
+    assert.ok(findElement(grid, (node) => node.props?.value === 'grok-4.7-build'), 'echo name kept verbatim');
+    assert.ok(findElement(grid, (node) => node.props?.value === 'grok-4.7'), 'sent name kept verbatim');
+});
+
+// 未知家族：不得被归成 cross-family 红标（证据不足就证据不足）。
+test('unknown family verdict never becomes a cross-family red flag', () => {
+    const c = describeEchoComparison({ ...base, request_model_name: 'grok-4.7', actual_model_name: 'grok-4.7', upstream_response_model: 'some-other-model', upstream_model_mismatch: true, model_family_verdict: 'unknown' }, display);
+    assert.notEqual(c.tone, 'cross-family');
+});
+
+// 已知 cross-family 仍可见、不隐藏：保留徽标与两侧对照。
+test('known cross-family stays visible with both sides of the comparison', () => {
+    const { LogCard } = loadCard();
+    const grid = renderCardHeader(LogCard, sampleLog({
+        request_model_name: 'gpt-5.5',
+        actual_model_name: 'gpt-5.5',
+        upstream_response_model: 'deepseek-v4.1-flash',
+        upstream_model_mismatch: false,
+        upstream_mismatch_code: 'cross_family',
+        model_family_verdict: 'suspect',
+    }));
+    assert.ok(collect(grid.props.children, (node) => node.type === 'Badge' && node.props?.children === 'familyReplaced')[0], 'cross-family badge still rendered');
+    assert.ok(findElement(grid, (node) => node.props?.value === 'deepseek-v4.1-flash'), 'echo side visible');
+    assert.ok(findElement(grid, (node) => node.props?.value === 'gpt-5.5'), 'source side visible');
 });

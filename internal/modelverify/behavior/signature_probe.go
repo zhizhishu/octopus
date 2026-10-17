@@ -75,18 +75,38 @@ type ProtocolNamer interface {
 }
 
 // runSignature 执行签名验真探针。
-func runSignature(ctx context.Context, s modelverify.Sender) Result {
+// targetModel 是被测目标型号（只读元数据）：仅用于发送前判断适用性，
+// 不改变任何出站请求参数。
+func runSignature(ctx context.Context, s modelverify.Sender, targetModel string) Result {
 	res := Result{ProbeID: ProbeSignature, Data: map[string]any{}}
 
-	// 非 Anthropic 出站没有 thinking.signature 这回事。标记不适用后正常返回，
-	// 不记错误——这不是"探针跑不动"，是"对这条渠道问错了问题"。
+	// 适用性前置：非 Anthropic 出站、或目标型号不是明确的 Anthropic 家族，
+	// 都没有 thinking.signature 这回事。发题前直接标记不适用并注明原因，
+	// 零请求——这不是"探针跑不动"，是"对这条渠道问错了问题"。
+	// 型号元数据缺失时也按不适用处理：宁可少查，不能把没有签名的情况
+	// 当成异常去定罪。明确的 anthropic 家族目标保留既有的主动签名检查。
+	applicable := false
+	reason := ""
 	if p, ok := s.(ProtocolNamer); ok {
-		if proto := p.Protocol(); proto != "anthropic-messages" {
-			res.OK = true
-			res.Data["applicable"] = false
-			res.Data["protocol"] = proto
-			return res
+		proto := p.Protocol()
+		res.Data["protocol"] = proto
+		if proto != "anthropic-messages" {
+			reason = "非 Anthropic 出站协议，无 thinking 签名"
+			// 型号必须**单一且明确**落在 anthropic 家族：识别出多个家族
+			// （含 anthropic 在内）视为 ambiguous，同样不发题。
+		} else if families := InferFamilies(targetModel); len(families) != 1 || families[0] != "anthropic" {
+			reason = "目标型号不是单一明确的 anthropic 家族，不主动发题"
+		} else {
+			applicable = true
 		}
+	} else {
+		reason = "发送器未自报出站协议，无法判断签名适用性"
+	}
+	if !applicable {
+		res.OK = true
+		res.Data["applicable"] = false
+		res.Data["not_applicable_reason"] = reason
+		return res
 	}
 
 	// ---- harvest ----
@@ -105,17 +125,18 @@ func runSignature(ctx context.Context, s modelverify.Sender) Result {
 	sig := strings.TrimSpace(harvest.Signature)
 	redacted := strings.TrimSpace(harvest.RedactedSignature)
 	if sig == "" && redacted == "" {
-		// 拿不到任何签名。可能是模型不支持 extended thinking，也可能是替身
-		// 根本不产出签名——两者在探针层无法区分，交给判定层按高危处理并要求
-		// 人工复核。这里如实记录采集结果的形状。
+		// 拿不到任何签名：可能是模型不支持 extended thinking，也可能是替身
+		// 不产出签名——探针层无法区分，这只能算证据不足，不能据此定罪。
+		// 如实记录采集结果形状，由判定层返回 nil（UI 上仍会展示未查清）。
 		res.Data["signature_present"] = false
+		res.Data["insufficient_evidence"] = true
 		res.Data["finish_reason"] = harvest.FinishReason
 		if harvest.Usage.ReasoningReported {
 			res.Data["thinking_tokens"] = harvest.Usage.Reasoning
 		}
 		res.Data["content_len"] = len(harvest.Content)
 		res.Data["applicable"] = true
-		res.OK = false
+		res.OK = true
 		return res
 	}
 

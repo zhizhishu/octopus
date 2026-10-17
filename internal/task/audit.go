@@ -187,7 +187,7 @@ func runScheduledAuditTarget(ctx context.Context, target scheduledAuditTarget) m
 	probeCtx, cancel := context.WithTimeout(ctx, scheduledAuditProbeBudget)
 	defer cancel()
 	started := time.Now()
-	results := behavior.Run(probeCtx, scheduledAuditQuickProbes, sender)
+	results := behavior.Run(probeCtx, scheduledAuditQuickProbes, sender, upstreamModel)
 	report := behavior.ToView(behavior.BuildReport(results, target.model))
 	item.DurationMs = int(time.Since(started).Milliseconds())
 	item.Verdict = string(report.Verdict)

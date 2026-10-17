@@ -87,7 +87,9 @@ async function request<T>(
     method: string,
     path: string,
     body?: BodyInit,
-    params?: Record<string, string | number | boolean>
+    params?: Record<string, string | number | boolean>,
+    // 可选：调用方传入 AbortSignal 以取消这单次请求（不传时行为完全不变）。
+    options?: { signal?: AbortSignal }
 ): Promise<T> {
     // 构建 URL
     const searchParams = params ? new URLSearchParams(
@@ -116,6 +118,7 @@ async function request<T>(
         method,
         headers,
         body,
+        signal: options?.signal,
     });
 
     return handleResponse<T>(response);
@@ -128,31 +131,31 @@ export const apiClient = {
     /**
      * GET 请求
      */
-    get: <T>(path: string, params?: Record<string, string | number | boolean>): Promise<T> =>
-        request<T>('GET', path, undefined, params),
+    get: <T>(path: string, params?: Record<string, string | number | boolean>, options?: { signal?: AbortSignal }): Promise<T> =>
+        request<T>('GET', path, undefined, params, options),
 
     /**
      * POST 请求
      */
-    post: <T>(path: string, data?: unknown, params?: Record<string, string | number | boolean>): Promise<T> =>
-        request<T>('POST', path, data ? JSON.stringify(data) : undefined, params),
+    post: <T>(path: string, data?: unknown, params?: Record<string, string | number | boolean>, options?: { signal?: AbortSignal }): Promise<T> =>
+        request<T>('POST', path, data ? JSON.stringify(data) : undefined, params, options),
 
     /**
      * PUT 请求
      */
-    put: <T>(path: string, data?: unknown, params?: Record<string, string | number | boolean>): Promise<T> =>
-        request<T>('PUT', path, data ? JSON.stringify(data) : undefined, params),
+    put: <T>(path: string, data?: unknown, params?: Record<string, string | number | boolean>, options?: { signal?: AbortSignal }): Promise<T> =>
+        request<T>('PUT', path, data ? JSON.stringify(data) : undefined, params, options),
 
     /**
      * DELETE 请求
      */
-    delete: <T>(path: string, params?: Record<string, string | number | boolean>): Promise<T> =>
-        request<T>('DELETE', path, undefined, params),
+    delete: <T>(path: string, params?: Record<string, string | number | boolean>, options?: { signal?: AbortSignal }): Promise<T> =>
+        request<T>('DELETE', path, undefined, params, options),
 
     /**
      * PATCH 请求
      */
-    patch: <T>(path: string, data?: unknown, params?: Record<string, string | number | boolean>): Promise<T> =>
-        request<T>('PATCH', path, data ? JSON.stringify(data) : undefined, params),
+    patch: <T>(path: string, data?: unknown, params?: Record<string, string | number | boolean>, options?: { signal?: AbortSignal }): Promise<T> =>
+        request<T>('PATCH', path, data ? JSON.stringify(data) : undefined, params, options),
 };
 
