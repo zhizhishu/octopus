@@ -291,6 +291,27 @@ func channelTLSFace(channel *dbmodel.Channel) string {
 	return ""
 }
 
+// ChannelTLSFace exposes channelTLSFace to the model-test/probe path.
+//
+// Why an exported wrapper instead of exporting the function itself: the relay's own
+// call sites stay byte-identical, and there is exactly ONE definition of "what face
+// does this channel wear". A probe that resolved its own face could drift from the
+// real forward path, and the whole point of the probe is that the upstream cannot
+// tell them apart. Read-only: it never mutates the channel.
+func ChannelTLSFace(channel *dbmodel.Channel) string {
+	return channelTLSFace(channel)
+}
+
+// LowercaseAnthropicCLIHeaderNames exposes lowercaseAnthropicCLIHeaderNames to the
+// model-test/probe path, for the same test==real-traffic reason as ChannelTLSFace:
+// a real Claude CLI (node/undici) puts these header NAMES on the wire in all
+// lowercase, while Go's http.Header.Set canonicalizes them to `Anthropic-Beta` etc.
+// That casing alone is an upstream-visible "not a CLI" tell, so a probe that skips
+// this step is detectable even when every other byte matches.
+func LowercaseAnthropicCLIHeaderNames(h http.Header) {
+	lowercaseAnthropicCLIHeaderNames(h)
+}
+
 // chatChannelTLSFace maps a Chat channel's cloak shape to the TLS face family the
 // outbound should present. Empty string = no override (path-based default).
 // Retained for the Chat-specific callers and tests; channelTLSFace covers the

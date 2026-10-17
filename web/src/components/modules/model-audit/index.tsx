@@ -51,6 +51,20 @@ type PlanId = 'quick' | 'standard';
 type RowTone = 'pass' | 'warn' | 'info' | 'fail' | 'skip';
 type PageState = 'idle' | 'running' | 'report' | 'error' | 'cancelling' | 'cancelled';
 
+// 队列项状态。故意只有四态，且 done/failed 是终态——队列跑完不会自动重排，
+// 想再来一次由用户重新加入。skipped 表示轮到它之前队列就被用户停了。
+type QueueState = 'pending' | 'running' | 'done' | 'failed' | 'skipped';
+type AuditQueueItem = {
+    // key 用 渠道ID::模型名，同一个模型在同一渠道不会重复入队（避免误点两次花两份钱）。
+    key: string;
+    channelId: number;
+    channelName: string;
+    model: string;
+    state: QueueState;
+    // error 只在 state=failed 时有值，给用户看失败原因（已脱敏）。
+    error?: string;
+};
+
 type ProbeMeta = {
     id: AuditProbeId;
     name: string;
@@ -248,11 +262,23 @@ export function ModelAudit() {
     const [report, setReport] = useState<ModelAuditResponse | null>(null);
     const [errorText, setErrorText] = useState('');
     const [openRow, setOpenRow] = useState<DisplayRow | null>(null);
+    // 队列：一批要逐个检测的模型。串行执行——一次只有一个请求在飞，跑完一个才开始下一个。
+    // 串行不是性能妥协，是刻意的：检测的每个探针都是真实计费请求，并发打同一渠道既容易被
+    // 上游限流/风控，也会让"哪个模型出的问题"变得难判。配合后端单飞闸门，重复点击和并发
+    // 都不会造成重复计费。
+    const [queue, setQueue] = useState<AuditQueueItem[]>([]);
+    // 队列里已完成模型的报告，按模型名索引；切换查看不影响正在跑的任务。
+    const [reports, setReports] = useState<Record<string, ModelAuditResponse>>({});
+    // 当前正在检测的模型名（用于在队列行上标"进行中"）；空串 = 没有在跑。
+    const [runningModel, setRunningModel] = useState('');
     // 请求在飞行时为 true。disabled 只是视觉拦截，受渲染时序影响；
     // 这个 ref 是硬性单飞闸门，确保同一时刻只有一个检测任务。
     const inFlight = useRef(false);
     // 当前任务的取消句柄：取消/卸载时 abort，HTTP 断掉，服务端 c.Request.Context 随之停止后续探针。
     const controllerRef = useRef<AbortController | null>(null);
+    // 队列是否还要继续往下跑。取消/清空时置 false，正在跑的请求 abort 后循环自然退出，
+    // 不会"取消了还把剩下的模型接着跑完"。
+    const queueAlive = useRef(false);
 
     const channel = channels.find((item) => item.id === channelId) ?? channels[0];
     const models = useMemo(
@@ -308,52 +334,172 @@ export function ModelAudit() {
         });
     };
 
-    const run = async () => {
-        // 飞行中直接忽略，杜绝连点/重复触发发出第二个 POST。
-        if (inFlight.current) return;
-        if (!channel || !activeModel) {
-            toast.warning('先选渠道和模型');
+    // 把勾选的模型加入队列。同一渠道同一模型不重复入队——重复入队等于重复计费，
+    // 这是唯一"多花钱"的入口，必须在这里挡住。
+    const enqueue = (targets: string[]) => {
+        if (!channel) return;
+        const names = targets.filter((name) => name.trim() !== '');
+        if (names.length === 0) {
+            toast.warning('先选要检测的模型');
             return;
         }
-        const probes = plan === 'quick' ? planIds('quick', channel, activeModel) : applicableSelected;
-        if (probes.length === 0) {
-            toast.warning('至少勾一项检查');
-            return;
-        }
-        inFlight.current = true;
-        // 每个任务一个 controller：取消/卸载时 abort，HTTP 断掉，服务端 c.Request.Context 随之停止后续串行探针。
-        const controller = new AbortController();
-        controllerRef.current = controller;
-        setPageState('running');
-        setErrorText('');
-        setReport(null); // 新一轮开始即清空旧报告，避免取消失败后误导出旧结果
-        try {
-            const data = await runAudit.mutateAsync({
-                channel_id: channel.id,
-                model: activeModel,
-                probes,
-                signal: controller.signal,
-            });
-            if (controller.signal.aborted) { setPageState('cancelled'); return; } // 已取消：不当作成功、不落报告
-            setReport(data);
-            setPageState('report');
-        } catch (error) {
-            if (controller.signal.aborted) { setPageState('cancelled'); return; } // 取消不是失败：不报错、不自动重跑
-            const message = sanitizeChannelTestError(apiErrorMessage(error) || '审计未完成');
-            setErrorText(message);
-            setPageState('error');
-            toast.error(message);
-        } finally {
-            // 只有仍是当前 controller 时才解锁，避免竞态清掉新任务的闸门。
-            if (controllerRef.current === controller) {
-                controllerRef.current = null;
-                inFlight.current = false;
+        setQueue((current) => {
+            // 已跑完(done/failed/skipped)的项允许再次入队——用户想复检同一个模型是正常的。
+            // 只挡"还在队列里排队或正在跑"的重复项，那才是真的会重复花钱。
+            const active = new Set(
+                current.filter((item) => item.state === 'pending' || item.state === 'running').map((item) => item.key),
+            );
+            const added: AuditQueueItem[] = [];
+            for (const name of names) {
+                const key = `${channel.id}::${name}`;
+                if (active.has(key)) continue;
+                active.add(key);
+                added.push({
+                    key,
+                    channelId: channel.id,
+                    channelName: channel.name,
+                    model: name,
+                    state: 'pending',
+                });
             }
-        }
+            if (added.length === 0) {
+                toast.info('这些模型已经在队列里了');
+                return current;
+            }
+            // 复检时用新的 pending 项替换掉旧的同 key 记录，列表里不会同一个模型出现两行。
+            const replaced = new Set(added.map((item) => item.key));
+            return [...current.filter((item) => !replaced.has(item.key)), ...added];
+        });
     };
 
-    // 取消：仅中断当前 HTTP；服务端自行停止后续探针。取消与失败分开，不显示成功、不恢复旧报告、不自动重跑。
+    // 从队列里删掉一项。正在跑的那项不允许直接删——先取消，避免"界面删了但请求还在花钱"。
+    const removeFromQueue = (key: string) => {
+        setQueue((current) => {
+            const target = current.find((item) => item.key === key);
+            if (target?.state === 'running') {
+                toast.warning('这一项正在检测，请先取消');
+                return current;
+            }
+            return current.filter((item) => item.key !== key);
+        });
+    };
+
+    // 清空队列。只清掉没在跑的项；正在跑的那项保留并提示先取消，理由同上。
+    const clearQueue = () => {
+        setQueue((current) => {
+            if (current.some((item) => item.state === 'running')) {
+                toast.warning('有任务正在检测，请先取消');
+                return current;
+            }
+            return [];
+        });
+    };
+
+    // 串行把队列跑完。一次只发一个请求：跑完一个才轮到下一个。
+    // 取消时 queueAlive 置 false，当前请求 abort，循环立刻退出，后面的项标成 skipped
+    // 而不是继续偷偷跑——取消必须是"真的不再花钱"。
+    const runQueue = async () => {
+        if (inFlight.current) return; // 连点/重复触发的硬闸门
+        const pending = queue.filter((item) => item.state === 'pending');
+        if (pending.length === 0) {
+            toast.warning('队列里没有待检测的模型');
+            return;
+        }
+        if (!channel) return;
+
+        inFlight.current = true;
+        queueAlive.current = true;
+        setErrorText('');
+        // 新一轮开始就把旧报告清掉：否则用户点了开始又立刻取消，界面上还挂着上一轮的
+        // 结果，容易被当成这次的结果导出/引用。这条是上一轮明确修过的问题，队列改造
+        // 时不能丢。report 只清显示的那份，reports 里已完成模型的历史仍保留，供队列行回看。
+        setReport(null);
+        setPageState('running');
+
+        for (const item of pending) {
+            if (!queueAlive.current) break;
+            // 每个模型一个 controller：取消只影响当前这个，不会把队列状态弄乱。
+            // 探针必须按**这一项自己的**渠道和模型算，不能借用外层当前选中的渠道：
+            // 入队之后用户完全可能切到别的渠道去看，用错渠道算出来的探针集合会把
+            // 模型不支持的项目也发上去（例如给非 Claude 模型发签名回放），白白报错花钱。
+            const itemChannel = channels.find((entry) => entry.id === item.channelId);
+            const itemProbes = plan === 'quick'
+                ? planIds('quick', itemChannel, item.model)
+                : selected.filter((id) => isApplicable(itemChannel, id, item.model));
+            if (itemProbes.length === 0) {
+                // 没有任何适用探针就别发请求——发了也是白花钱换一个"不适用"。
+                setQueue((current) =>
+                    current.map((entry) =>
+                        entry.key === item.key
+                            ? { ...entry, state: 'failed', error: '这个模型没有可用的检查项' }
+                            : entry,
+                    ),
+                );
+                continue;
+            }
+            const controller = new AbortController();
+            controllerRef.current = controller;
+            setRunningModel(item.model);
+            setQueue((current) =>
+                current.map((entry) => (entry.key === item.key ? { ...entry, state: 'running', error: undefined } : entry)),
+            );
+            try {
+                const data = await runAudit.mutateAsync({
+                    channel_id: item.channelId,
+                    model: item.model,
+                    probes: itemProbes,
+                    signal: controller.signal,
+                });
+                if (controller.signal.aborted) {
+                    // 取消：不当作成功、不落报告、不标 done。
+                    setQueue((current) =>
+                        current.map((entry) => (entry.key === item.key ? { ...entry, state: 'skipped' } : entry)),
+                    );
+                    break;
+                }
+                setReports((current) => ({ ...current, [item.key]: data }));
+                setQueue((current) =>
+                    current.map((entry) => (entry.key === item.key ? { ...entry, state: 'done' } : entry)),
+                );
+                // 每跑完一个就把报告切到它，用户能立刻看到结果，不必等整队跑完。
+                setReport(data);
+                setPageState('report');
+            } catch (error) {
+                if (controller.signal.aborted) {
+                    setQueue((current) =>
+                        current.map((entry) => (entry.key === item.key ? { ...entry, state: 'skipped' } : entry)),
+                    );
+                    break;
+                }
+                // 单个模型失败不中断整个队列：剩下的模型继续跑，失败项留在队列里带原因，
+                // 用户可以单独重试。这比"一个失败全队作废"更省用户的钱和时间。
+                const message = sanitizeChannelTestError(apiErrorMessage(error) || '审计未完成');
+                setQueue((current) =>
+                    current.map((entry) => (entry.key === item.key ? { ...entry, state: 'failed', error: message } : entry)),
+                );
+            } finally {
+                if (controllerRef.current === controller) controllerRef.current = null;
+            }
+        }
+
+        // 收尾：被取消时把还没轮到的项标成 skipped，让"取消"在界面上有明确交代。
+        setQueue((current) =>
+            current.map((entry) => (entry.state === 'pending' ? { ...entry, state: 'skipped' } : entry)),
+        );
+        const cancelled = !queueAlive.current;
+        queueAlive.current = false;
+        setRunningModel('');
+        inFlight.current = false;
+        // 只在被取消时把状态落回 idle。正常跑完必须保留 report —— 那正是用户要看的结论，
+        // 之前这里无条件重置会把刚出的报告从界面上抹掉。
+        if (cancelled) setPageState((prev) => (prev === 'running' || prev === 'cancelling' ? 'cancelled' : prev));
+    };
+
+    // 取消：先关掉队列闸门，再中断当前 HTTP。顺序很重要——先关闸门保证 abort 之后循环
+    // 不会再去发下一个模型；服务端 c.Request.Context 随后停止剩余探针。取消与失败分开，
+    // 不显示成功、不恢复旧报告、不自动重跑。
     const cancel = () => {
+        queueAlive.current = false;
         if (!inFlight.current) return;
         setReport(null);            // 旧报告清空，避免导出
         setPageState('cancelling'); // 未 settle 前按钮保持 disabled/「正在取消」
@@ -403,7 +549,102 @@ export function ModelAudit() {
                     className="h-10 w-full"
                     disabled={models.length === 0}
                 />
+                {/* 多模型逐个检测：勾选多个后加入队列，队列串行执行。
+                    为什么不做成"选一个跑一个"：中转站通常是"这个渠道到底是不是真货"的问题，
+                    要一次看几个模型，逐个点太累；而并发又会同时打上游、容易被限流。
+                    入队后由下面那条队列统一推进，一次只有一个请求在飞。 */}
+                <div className="mt-2 flex items-center gap-2">
+                    <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-8 flex-1 rounded-lg text-xs"
+                        disabled={models.length === 0 || pageState === 'running' || pageState === 'cancelling'}
+                        onClick={() => enqueue([activeModel])}
+                    >
+                        加入队列
+                    </Button>
+                    <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-8 flex-1 rounded-lg text-xs"
+                        disabled={models.length === 0 || pageState === 'running' || pageState === 'cancelling'}
+                        onClick={() => enqueue(models)}
+                    >
+                        全部加入
+                    </Button>
+                </div>
             </section>
+
+            {queue.length > 0 && (
+                <section className="border-t border-border pt-4">
+                    <div className="mb-2 flex items-center justify-between">
+                        <p className="text-[11px] font-medium tracking-[0.16em] text-muted-foreground">
+                            03 队列 · {queue.filter((item) => item.state === 'pending').length} 待检 / 共 {queue.length}
+                        </p>
+                        <button
+                            type="button"
+                            className="text-[11px] text-muted-foreground underline-offset-2 hover:underline"
+                            disabled={pageState === 'running' || pageState === 'cancelling'}
+                            onClick={clearQueue}
+                        >
+                            清空
+                        </button>
+                    </div>
+                    <ul className="grid gap-1">
+                        {queue.map((item) => (
+                            <li
+                                key={item.key}
+                                className={cn(
+                                    'flex items-center gap-2 rounded-lg border border-border/60 px-2 py-1.5 text-xs',
+                                    item.state === 'running' && 'border-primary/40 bg-primary/5',
+                                    item.state === 'skipped' && 'opacity-50',
+                                )}
+                            >
+                                {/* 已完成的项可点回看：队列跑完往往想比对几个模型，
+                                    不必重新检测（重新检测是真的再花钱）。 */}
+                                <button
+                                    type="button"
+                                    className="min-w-0 flex-1 truncate text-left disabled:cursor-default"
+                                    title={item.state === 'done' ? '查看这个模型的报告' : item.model}
+                                    disabled={item.state !== 'done'}
+                                    onClick={() => {
+                                        const saved = reports[item.key];
+                                        if (!saved) return;
+                                        setReport(saved);
+                                        setPageState('report');
+                                    }}
+                                >
+                                    {item.model}
+                                </button>
+                                <span className="shrink-0 text-[10px] text-muted-foreground">
+                                    {item.state === 'pending' && '待检'}
+                                    {item.state === 'running' && '检测中'}
+                                    {item.state === 'done' && '完成'}
+                                    {item.state === 'failed' && '失败'}
+                                    {item.state === 'skipped' && '已跳过'}
+                                </span>
+                                {/* 正在跑的那项不给删：先取消，避免"界面删了但请求还在花钱"。 */}
+                                <button
+                                    type="button"
+                                    className="shrink-0 text-muted-foreground hover:text-destructive disabled:opacity-30"
+                                    disabled={item.state === 'running'}
+                                    title={item.state === 'running' ? '正在检测，请先取消' : '从队列移除'}
+                                    onClick={() => removeFromQueue(item.key)}
+                                >
+                                    ✕
+                                </button>
+                            </li>
+                        ))}
+                    </ul>
+                    {queue.some((item) => item.state === 'failed') && (
+                        <p className="mt-2 text-[11px] text-muted-foreground">
+                            失败项：{queue.filter((item) => item.state === 'failed').map((item) => `${item.model}（${item.error ?? '未知原因'}）`).join('；')}
+                        </p>
+                    )}
+                </section>
+            )}
 
             <section className="border-t border-border pt-4">
                 <p className="mb-3 text-[11px] font-medium tracking-[0.16em] text-muted-foreground">02 检查</p>
@@ -456,9 +697,18 @@ export function ModelAudit() {
                         超时跟随渠道检测上限。签名、身份、词元只作线索，不作为原厂证明。
                     </p>
                 )}
-                <Button type="button" className="mt-4 h-11 w-full rounded-xl" disabled={pageState === 'running' || pageState === 'cancelling' || runCount === 0} onClick={() => void run()}>
+                <Button
+                    type="button"
+                    className="mt-4 h-11 w-full rounded-xl"
+                    disabled={pageState === 'running' || pageState === 'cancelling' || runCount === 0 || queue.every((item) => item.state !== 'pending')}
+                    onClick={() => void runQueue()}
+                >
                     {pageState === 'running' || pageState === 'cancelling' ? <Loader2 className="size-4 animate-spin" /> : null}
-                    {pageState === 'running' ? '正在检查' : pageState === 'cancelling' ? t('cancelling') : '开始检查'}
+                    {pageState === 'running'
+                        ? `正在检查${runningModel ? ` · ${runningModel}` : ''}`
+                        : pageState === 'cancelling'
+                            ? t('cancelling')
+                            : `开始检测队列（${queue.filter((item) => item.state === 'pending').length}）`}
                 </Button>
                 {(pageState === 'running' || pageState === 'cancelling') && (
                     <Button type="button" variant="outline" className="mt-2 h-9 w-full rounded-xl" disabled={pageState === 'cancelling'} onClick={cancel}>

@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/bestruirui/octopus/internal/client"
 	"github.com/bestruirui/octopus/internal/helper"
 	dbmodel "github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/op"
@@ -799,7 +800,31 @@ func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermod
 		return 0, nil, err
 	}
 
-	client, err := helper.ChannelHttpClient(channel)
+	// ── 让检测请求穿上与真实转发**同一身**出站身份（test == real traffic）────────────────
+	//
+	// 为什么必须有这一段：检测的价值前提是"上游看不出这是检测"。而 relay 的发请求路径
+	// （relay.sendRequest）在真正发出前还会做两件按渠道身份决定的事，检测路径原先两件都
+	// 没做：
+	//
+	//   1. lowercaseAnthropicCLIHeaderNames —— 真 Claude CLI（node/undici）线上发的是全小写的
+	//      `anthropic-beta` / `anthropic-version` / `x-app`，而 Go 的 header.Set 会规范化成
+	//      `Anthropic-Beta`。这个大小写差异本身就是上游可识别的"非 CLI"特征。
+	//   2. channelTLSFace → client.WithTLSFace —— 渠道一旦承诺了 CLI 身份，TLS ClientHello
+	//      （JA3/JA4）也必须是那家的。缺这一步的后果最严重：headers 全说是 codex，握手却是
+	//      标准 Go 的 —— 比完全不伪装更容易被认出来，严格校验来源的渠道会直接拒掉，
+	//      表现为"这个渠道根本检测不了"。
+	//
+	// 注意作用范围：这里只影响**检测/探针**这一次出站，因为本函数是 modeltest 自己的发送
+	// 实现。relay 真实转发字节一个都不动（Shape 铁律）。TLS face 走 context 传递而不是改
+	// client 构造，正是 relay 已有的做法，复用同一条通道 —— 检测与转发因此不可能漂移。
+	relay.LowercaseAnthropicCLIHeaderNames(outboundRequest.Header)
+	clientCtx := outboundRequest.Context()
+	if face := relay.ChannelTLSFace(channel); face != "" {
+		clientCtx = client.WithTLSFace(clientCtx, face)
+		outboundRequest = outboundRequest.WithContext(clientCtx)
+	}
+
+	client, err := helper.ChannelHttpClientContext(clientCtx, channel)
 	if err != nil {
 		return 0, nil, err
 	}

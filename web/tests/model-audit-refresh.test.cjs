@@ -313,6 +313,23 @@ test('apiClient forwards an optional AbortSignal to fetch without changing defau
 
 // 组件级模拟：直接调用真实 ModelAudit 组件函数，用可重渲染的 hooks 观察状态转换。
 // 不新增框架/DOM：只在现有 element-tree 基础上驱动按钮/选项。
+
+// 检测页现在是队列式：先把模型加入队列，再点「开始检测队列」才会真正发请求。
+// 旧流程是单选模型直接「开始检查」——入队这一步是新增的、也是防重复计费的关键，
+// 所以测试必须走真实路径，不能绕过它直接调发送。
+function enqueueAndStart(tree, page) {
+    // 1) 若模型还没进队列，先点「加入队列」。点击只改 React 状态，必须重新 render
+    //    才能看到队列渲染出来 —— 假 hooks 不重建树，和真实 React 的时序不同。
+    let stage = findElement(tree, (n) => n.type === 'Button' && text(n).includes('加入队列'));
+    if (stage) stage.props.onClick();
+    tree = page.render();
+    // 2) 再点开始（按钮文案已变，按关键片段找，避免文案微调就挂测试）。
+    const startBtn = findElement(tree, (n) => n.type === 'Button' && text(n).includes('开始检测队列'));
+    if (!startBtn) throw new Error('start button not found after enqueue');
+    startBtn.props.onClick();
+    return tree;
+}
+
 function auditPage() {
     const memo = [];
     const refs = [];
@@ -344,7 +361,7 @@ function auditPage() {
     let channelData = [];
     let mutateImpl = () => new Promise(() => {});
     const mutation = { mutateAsync(vars) { calls.push(vars); return mutateImpl(vars); } };
-    const toast = { warning() {}, error(...a) { toast.errors.push(a); }, errors: [] };
+    const toast = { warning() {}, info() {}, error(...a) { toast.errors.push(a); }, errors: [] };
     const { ModelAudit } = load('src/components/modules/model-audit/index.tsx', {
         react: hooksState.react,
         'lucide-react': new Proxy({}, { get: (_, key) => key }),
@@ -395,7 +412,7 @@ test('active audit page: mount and option changes never call upstream; one click
     findElement(tree, (n) => n.type === 'input' && n.props?.type === 'checkbox').props.onChange({ target: { checked: true } });
     assert.equal(page.calls.length, 0, 'option changes never call upstream');
 
-    findElement(tree, (n) => n.type === 'Button' && text(n).includes('开始检查')).props.onClick();
+    enqueueAndStart(tree, page);
     assert.equal(page.calls.length, 1, 'one click = one POST');
     assert.equal(page.calls[0].channel_id, 7);
     assert.equal(page.calls[0].probes.includes('signature'), false, 'grok model never selects the signature probe');
@@ -424,7 +441,7 @@ test('signature probe needs both an Anthropic channel and a boundary-matched Cla
         const page = auditPage();
         page.setChannels([{ raw: { id: 1, name: 'c', enabled: true, type: c.type, selected_models: [c.model] } }]);
         const tree = page.render();
-        findElement(tree, (n) => n.type === 'Button' && text(n).includes('开始检查')).props.onClick();
+        enqueueAndStart(tree, page);
         assert.equal((page.calls[0]?.probes ?? []).includes('signature'), c.expect, `${c.model} on type ${c.type}`);
     }
 });
@@ -438,7 +455,7 @@ test('cancel aborts the run signal and shows the cancelled state without success
     }));
     let tree = page.render();
     const cleanup = page.mount();
-    findElement(tree, (n) => n.type === 'Button' && text(n).includes('开始检查')).props.onClick();
+    enqueueAndStart(tree, page);
     assert.equal(page.calls.length, 1);
     const signal = page.calls[0].signal;
     assert.equal(signal.aborted, false);
@@ -465,7 +482,7 @@ test('unmount aborts an in-flight run', () => {
     page.setChannels(grokChannel);
     const tree = page.render();
     const cleanup = page.mount();
-    findElement(tree, (n) => n.type === 'Button' && text(n).includes('开始检查')).props.onClick();
+    enqueueAndStart(tree, page);
     const signal = page.calls[0].signal;
     assert.equal(signal.aborted, false);
     cleanup();
@@ -496,7 +513,7 @@ test('insufficient-evidence rows show their reason and headline no longer claims
     page.setMutate(() => Promise.resolve(minimalReport()));
     let tree = page.render();
     const cleanup = page.mount();
-    findElement(tree, (n) => n.type === 'Button' && text(n).includes('开始检查')).props.onClick();
+    enqueueAndStart(tree, page);
     await new Promise((r) => setTimeout(r, 0));
     tree = page.render();
     const body = text(tree);
@@ -515,7 +532,7 @@ test('starting a new run clears the previous report so cancel cannot export it',
     page.setMutate(() => new Promise((res) => { resolveRun = res; }));
     let tree = page.render();
     const cleanup = page.mount();
-    findElement(tree, (n) => n.type === 'Button' && text(n).includes('开始检查')).props.onClick();
+    enqueueAndStart(tree, page);
     resolveRun(minimalReport());
     await new Promise((r) => setTimeout(r, 0));
     tree = page.render();
@@ -523,7 +540,7 @@ test('starting a new run clears the previous report so cancel cannot export it',
 
     // 第二轮：开始即清空旧报告，然后取消。
     page.setMutate((vars) => new Promise((_, reject) => { vars.signal.addEventListener('abort', () => reject(new Error('aborted'))); }));
-    findElement(tree, (n) => n.type === 'Button' && text(n).includes('开始检查')).props.onClick();
+    enqueueAndStart(tree, page);
     tree = page.render();
     assert.equal(text(tree).includes('本次报告'), false, 'old report is cleared as soon as a new run starts');
     findElement(tree, (n) => n.type === 'Button' && text(n).includes('cancelCheck')).props.onClick();
