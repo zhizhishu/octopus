@@ -1103,10 +1103,27 @@ func (ra *relayAttempt) attempt() attemptResult {
 		Written:    committed,
 		Err:        fmt.Errorf("channel %s failed: %w", ra.channel.Name, fwdErr),
 		StatusCode: recordStatusCode,
-		Retryable:  !committed && isRetryableUpstreamStreamError(fwdErr),
+		// An encrypted-reasoning refusal is worth one more try on another channel even
+		// when it arrived as a mid-stream error event rather than a 4xx, because the
+		// rejection is deterministic per ciphertext: a different channel may accept it.
+		// The !committed guard is not negotiable — once real content reached the client a
+		// replay would duplicate output, so the refusal is only remembered, never retried.
+		Retryable:  !committed && (isRetryableUpstreamStreamError(fwdErr) || isRetryableResponsesStreamRejection(fwdErr)),
 		Fatal:      isDeterministicClientRejection(fwdErr),
 		RetryAfter: upstreamRetryAfter(fwdErr),
 	}
+}
+
+// isRetryableResponsesStreamRejection widens the mid-stream retry set to encrypted-reasoning
+// refusals. isRetryableUpstreamStreamError only recognises "upstream stream ended without
+// internal response", so a 200+SSE invalid_encrypted_content event previously never
+// qualified for failover even when nothing had been sent to the client yet. Callers must
+// still combine this with !wroteMeaningfulDownstream.
+func isRetryableResponsesStreamRejection(err error) bool {
+	if err == nil {
+		return false
+	}
+	return isResponsesEncryptedContentError(err.Error())
 }
 
 // maxClientRequestBodyBytes caps the client request body on the chat/messages/responses
@@ -1256,6 +1273,16 @@ retryWithAdapter:
 		stripResponsesEncryptedContent(ra.internalRequest)
 	} else {
 		ra.prepareResponsesEncryptedContent(outAdapter)
+		// Blunt strips above are all-or-nothing: dropResponsesEncryptedContent nukes every
+		// reasoning signature and prepareResponsesEncryptedContent rebuilds from stored
+		// state. Neither knows WHICH ciphertext an upstream already refused, so a poisoned
+		// one comes back every turn. Strip just the remembered rejects here, after the
+		// rebuild, so a continuation keeps the reasoning context it can still use.
+		if rejected := knownRejectedResponsesEncryptedDigests(ra.encryptedRejectSessionKey()); len(rejected) > 0 {
+			if stripResponsesEncryptedContentMatching(ra.internalRequest, rejected) {
+				log.Infof("stripped previously rejected encrypted reasoning content for this session on channel %s", ra.channel.Name)
+			}
+		}
 	}
 	// 凭据脱敏（调用端侧模块）: 排序契约 — 必须在【所有历史并入点】（applyTransformOptions 的
 	// chat/Anthropic 桥、dropResponsesSessionCursor 分支的 Codex 桥、prepareResponsesSessionCursor
@@ -1385,6 +1412,10 @@ retryWithAdapter:
 		}
 		if !responsesEncryptedContentRecoveryTried && ra.shouldRecoverOpenAIResponsesInvalidEncryptedContent(response.StatusCode, upErr) {
 			responsesEncryptedContentRecoveryTried = true
+			// Remember WHICH ciphertexts this upstream refused before the blunt strip below
+			// discards them: the strip fixes only this attempt, while the memory is what
+			// keeps the next turn from resending the same poisoned item.
+			ra.rememberRejectedResponsesEncryptedContent()
 			dropResponsesEncryptedContent = true
 			_ = response.Body.Close()
 			log.Infof("openai responses upstream rejected encrypted reasoning content on channel %s; retrying same key once without encrypted content", ra.channel.Name)
@@ -2851,6 +2882,16 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 				upstreamFinishSeen = true
 			}
 			if err != nil {
+				// A 200 SSE stream can still carry an upstream error event, and an
+				// invalid_encrypted_content refusal arrives exactly this way. Record the
+				// ciphertexts before returning so the NEXT turn stops resending them, then
+				// decide whether this attempt may still be retried at all: once real
+				// content reached the client the stream is committed and a replay would
+				// duplicate output, so remembering is the only safe action left.
+				if isResponsesEncryptedContentError(err.Error()) {
+					ra.rememberRejectedResponsesEncryptedContent()
+					log.Warnf("upstream rejected encrypted reasoning content mid-stream on channel %s (already forwarded=%v)", ra.channel.Name, ra.wroteMeaningfulDownstream)
+				}
 				return &localRelayError{
 					status:   http.StatusBadGateway,
 					code:     "octopus_upstream_stream_error",
