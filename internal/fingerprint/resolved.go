@@ -10,9 +10,11 @@ import (
 const (
 	defaultClaudeArchitecture = "x64"
 	defaultClaudeTimeout      = "600"
-	// originator 头与 UA 头串必须同一个身份(真抓包: codex_exec/0.161.0 + originator codex_exec),
-	// 混用(exec 的 UA 配 cli_rs 的 originator)才是可识别的 tell。
-	defaultCodexOriginator    = "codex_exec"
+	// The Originator must name the same identity family as the User-Agent's leading token:
+	// an upstream pairs the two, and a mismatch is itself the tell (sub2api #3901). The default
+	// UA is codex_cli_rs, so this fallback must be codex_cli_rs too — it previously said
+	// codex_exec, which split the pair for every channel without a profile override.
+	defaultCodexOriginator    = "codex_cli_rs"
 )
 
 // Resolved is the immutable upstream identity selected for one channel. An
