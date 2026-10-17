@@ -105,7 +105,7 @@ func TestFingerprintProfileRefreshDropsRedundantDefault(t *testing.T) {
 	if _, ok := byName["Linux 真机 2 (Ubuntu)"]; ok {
 		t.Fatalf("legacy 真机 2 preset name must be converged away, got %+v", byName)
 	}
-	presets := builtinLinuxPresets()
+	presets := builtinPresets()
 	if len(byName) != len(presets) {
 		t.Fatalf("expected exactly the %d built-in presets, got %d: %+v", len(presets), len(byName), byName)
 	}
@@ -144,7 +144,7 @@ func TestFingerprintProfileRefreshKeepsCustomizedProfileNamedDefault(t *testing.
 
 // TestFingerprintProfileSeedsCanonicalBuiltins pins the FRESH-deploy path: an empty DB
 // gets exactly the two built-in Linux presets, every field straight from
-// builtinLinuxPresets() (the single source of truth), with DISTINCT generic (non-CLI)
+// builtinPresets() (the single source of truth), with DISTINCT generic (non-CLI)
 // User-Agents and DISTINCT device seeds — so picking a preset really does change both
 // the non-CLI UA and the derived device_id, instead of the two reading as one machine.
 func TestFingerprintProfileSeedsCanonicalBuiltins(t *testing.T) {
@@ -155,7 +155,7 @@ func TestFingerprintProfileSeedsCanonicalBuiltins(t *testing.T) {
 	}
 
 	byName := loadFingerprintProfilesByName(t, ctx)
-	presets := builtinLinuxPresets()
+	presets := builtinPresets()
 	if len(byName) != len(presets) {
 		t.Fatalf("fresh deploy must seed exactly %d presets, got %d: %+v", len(presets), len(byName), byName)
 	}
@@ -245,7 +245,7 @@ func TestFingerprintProfileConvergesLegacyBuiltinInOneStep(t *testing.T) {
 		t.Fatalf("generic UA = %q, want DefaultGenericUA %q", got.GenericUA, model.DefaultGenericUA)
 	}
 	// ...and the whole struct, so no OTHER field is left on a stale value either.
-	assertConvergedTo(t, got, builtinLinuxPresets()[0])
+	assertConvergedTo(t, got, builtinPresets()[0])
 	// The row's own device seed is the one thing convergence must not touch.
 	if got.Seed != "legacy-device-seed" {
 		t.Fatalf("seed = %q, want the row's original seed preserved", got.Seed)
@@ -267,7 +267,7 @@ func TestFingerprintProfileConvergesLegacyBuiltinInOneStep(t *testing.T) {
 func TestFingerprintProfileRenamesLegacyMacOSBuiltin(t *testing.T) {
 	ctx := setupFingerprintProfileTest(t)
 
-	presets := builtinLinuxPresets()
+	presets := builtinPresets()
 	debian := *presets[0]
 	ubuntu := *presets[1]
 	debian.Seed = "keep-debian-seed"
@@ -355,7 +355,7 @@ func TestFingerprintProfileRenamesLegacyMacOSBuiltin(t *testing.T) {
 func TestFingerprintProfileRefreshIsIdempotentAtThreePresets(t *testing.T) {
 	ctx := setupFingerprintProfileTest(t)
 
-	preset := *builtinLinuxPresets()[0]
+	preset := *builtinPresets()[0]
 	preset.Seed = "keep-debian-seed"
 	if err := db.GetDB().WithContext(ctx).Create(&preset).Error; err != nil {
 		t.Fatalf("seed debian: %v", err)
@@ -386,7 +386,7 @@ func TestFingerprintProfileRefreshIsIdempotentAtThreePresets(t *testing.T) {
 func TestFingerprintProfileKeepsOtherNamedMacOSProfile(t *testing.T) {
 	ctx := setupFingerprintProfileTest(t)
 
-	presets := builtinLinuxPresets()
+	presets := builtinPresets()
 	debian := *presets[0]
 	ubuntu := *presets[1]
 	if err := db.GetDB().WithContext(ctx).Create(&debian).Error; err != nil {
@@ -505,7 +505,7 @@ func TestFingerprintProfileConvergeForcesCustomisedBuiltin(t *testing.T) {
 	}
 
 	byName := loadFingerprintProfilesByName(t, ctx)
-	assertConvergedTo(t, byName[builtinDebianPresetName], builtinLinuxPresets()[0])
+	assertConvergedTo(t, byName[builtinDebianPresetName], builtinPresets()[0])
 	if got := byName[builtinDebianPresetName].Seed; got != "seed-debian" {
 		t.Fatalf("built-in seed = %q, want the row's own seed kept", got)
 	}
@@ -536,7 +536,7 @@ func TestFingerprintProfileConvergeFillsOnlyEmptySeed(t *testing.T) {
 	}
 
 	byName := loadFingerprintProfilesByName(t, ctx)
-	want := builtinLinuxPresets()[0]
+	want := builtinPresets()[0]
 	if got := byName[builtinDebianPresetName].Seed; got != want.Seed || got == "" {
 		t.Fatalf("empty seed must be filled with the derived seed, got %q want %q", got, want.Seed)
 	}

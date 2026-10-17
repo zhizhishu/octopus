@@ -137,25 +137,24 @@ func FingerprintProfileDelete(id int, ctx context.Context) error {
 
 // Canonical names of the built-in presets. A row carrying one of these names is
 // SYSTEM-MANAGED: fingerprintProfileRefreshCache forces its identity back to
-// builtinLinuxPresets() on every boot. The 2nd preset (Ubuntu) is backfilled
-// when Debian is still present; deleting Debian resurrects none.
+// builtinPresets() on every boot. Presets 2 and 3 are backfilled while Debian is still
+// present; deleting Debian resurrects none.
 //
-// "macOS · Chrome" was a 3rd built-in in earlier builds; it is now RETIRED:
-// the name survives only as retiredMacOSPresetName, and fingerprintProfileRefreshCache
-// deletes any row carrying that exact canonical name on every boot, so already-seeded
-// deployments collapse to the two Linux presets. A custom macOS-flavoured profile
-// under ANY other name is never matched here.
+// All three present real devices with three unrelated identities: two Linux machines
+// and one Apple Silicon Mac, each running the same two CLI products plus the same
+// desktop chat client at different versions. "macOS · Chrome" is the third preset's
+// OLD name — see retiredMacOSPresetName for how an older deployment converges.
 const (
 	builtinDebianPresetName = "Linux · Debian"
 	builtinUbuntuPresetName = "Linux · Ubuntu"
 	builtinMacOSPresetName  = "macOS · CherryStudio"
 	// retiredMacOSPresetName is the OLD canonical name of the third built-in. It used a
 	// bare Chrome-on-macOS generic UA and therefore presented a browser on a chat API
-	// endpoint, which is itself the tell. It is NOT deleted any more (see the
-	// convergence block in fingerprintProfileRefreshCache): a row still carrying this
-	// name is RENAMED in place to builtinMacOSPresetName and rewritten from the
-	// canonical definition, so a deployment upgrading from an older build keeps any
-	// channel that had selected it pointing at the same row id.
+	// endpoint, which is itself the tell. It is NOT deleted any more (see the rename
+	// block in fingerprintProfileRefreshCache): a row still carrying this name is
+	// RENAMED in place to builtinMacOSPresetName and rewritten from the canonical
+	// definition, so a deployment upgrading from an older build keeps any channel that
+	// had selected it pointing at the same row id.
 	retiredMacOSPresetName = "macOS · Chrome"
 )
 
@@ -171,22 +170,23 @@ var builtinPresetLegacyNames = map[string][]string{
 	builtinMacOSPresetName:  {retiredMacOSPresetName},
 }
 
-// builtinLinuxPresets returns the built-in presets in their CURRENT canonical
+// builtinPresets returns the built-in presets in their CURRENT canonical
 // form. This is the SINGLE source of truth for EVERY field of each preset:
 // it seeds a fresh deployment AND force-converges an existing built-in row
 // (see fingerprintProfileRefreshCache). Bumping a captured CLI identity = editing
 // the strings here; every deployment picks it up on its next restart, with no
 // per-version migration bolted on.
 //
-// TWO presets = two distinct devices that both track the captured-latest versions.
-// Same claude/codex versions, DIFFERENT deterministic seeds (deriveProfileSeed 2 vs
-// 3) => unrelated, stable device_id / installation ids, and a different codex distro
-// token + generic UA (Chrome vs Firefox) so they read as separate machines.
-// Assign each to a different channel / upstream key to keep accounts uncorrelated.
+// THREE presets = three distinct devices that all track the captured-latest versions.
+// Same claude/codex product families, DIFFERENT deterministic seeds (deriveProfileSeed
+// 2 / 3 / 4) => unrelated, stable device_id / installation ids, plus a per-machine codex
+// platform segment and a per-machine CherryStudio build so they read as separate
+// machines. Assign each to a different channel / upstream key to keep accounts
+// uncorrelated.
 // The claude anthropic-beta SET is intentionally NOT part of any profile — every
 // profile reuses BuildClaudeCodeBetaOrder's canonical order; only the
-// version-bearing header strings + the device seed differ.
-func builtinLinuxPresets() []*model.FingerprintProfile {
+// version-bearing header strings, the platform pair and the device seed differ.
+func builtinPresets() []*model.FingerprintProfile {
 	// Each preset gets its OWN *bool, so copying a preset onto a row never makes two
 	// rows alias one shared value.
 	stabilize := func() *bool { v := true; return &v }
@@ -336,7 +336,7 @@ func fingerprintProfileRefreshCache(ctx context.Context) error {
 	// codex_cli_rs 0.142.5 -> 0.144.1 -> 0.145.0, the "真机" rename, the GenericUA
 	// backfill): every release bolted on another hop that could never be deleted, and a
 	// deployment had to walk the whole chain in order to arrive at today's identity.
-	// Instead the built-ins are SYSTEM-MANAGED — builtinLinuxPresets() is the single
+	// Instead the built-ins are SYSTEM-MANAGED — builtinPresets() is the single
 	// source of truth and EVERY identity field of the matching row is rewritten from it
 	// on each boot, so ANY older shape (legacy name, codex_exec originator, stale
 	// claude/codex UA, empty GenericUA) converges in ONE step no matter which version
@@ -347,7 +347,7 @@ func fingerprintProfileRefreshCache(ctx context.Context) error {
 	// any other name is never touched here. The row's own Seed is the ONE thing kept
 	// (rewriting it would change the device_id / installation id the preset already
 	// ships); only an EMPTY seed is filled in from the canonical derived seed.
-	presets := builtinLinuxPresets()
+	presets := builtinPresets()
 	for _, canonical := range presets {
 		idx := findBuiltinPresetIndex(profiles, canonical.Name)
 		if idx < 0 {

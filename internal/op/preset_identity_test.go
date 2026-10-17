@@ -12,7 +12,7 @@ import (
 // makes a device distinguishable must differ; every field that identifies the product
 // must stay in lockstep (an upstream pairs the codex UA with its Originator).
 func TestBuiltinPresetsAreThreeUncorrelatedDevices(t *testing.T) {
-	presets := builtinLinuxPresets()
+	presets := builtinPresets()
 	if len(presets) != 3 {
 		t.Fatalf("expected three built-in presets, got %d", len(presets))
 	}
