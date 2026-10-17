@@ -2289,13 +2289,18 @@ func lowercaseAnthropicCLIHeaderNames(h http.Header) {
 
 func (ra *relayAttempt) sendRequest(req *http.Request) (*http.Response, error) {
 	lowercaseAnthropicCLIHeaderNames(req.Header)
-	// Chat channel with an explicit cloak shape dresses the TLS face to match the
-	// header identity (claude shape -> claude Node face, codex shape -> codex rustls
-	// face). Generic/empty shape keeps the path-based default (Chrome for chat paths).
-	if face := chatChannelTLSFace(ra.channel); face != "" {
+	// A channel that presents a CLI identity dresses the TLS face to match the headers
+	// it already sends: an Anthropic channel wears the Claude Code face, a Responses
+	// channel the codex rustls face, and a Chat channel whatever its cloak shape asked
+	// for. Generic channels keep the path-based default.
+	//
+	// The face is decided by identity, never by transport, so it is applied here and
+	// honoured downstream even when the channel reaches the upstream through a proxy:
+	// the handshake is tunnelled through that proxy rather than dropped.
+	if face := channelTLSFace(ra.channel); face != "" {
 		req = req.WithContext(client.WithTLSFace(req.Context(), face))
 	}
-	httpClient, err := helper.ChannelHttpClient(ra.channel)
+	httpClient, err := helper.ChannelHttpClientContext(req.Context(), ra.channel)
 	if err != nil {
 		log.Warnf("failed to get http client: %v", err)
 		return nil, err

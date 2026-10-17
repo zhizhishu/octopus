@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bestruirui/octopus/internal/client"
 	"github.com/bestruirui/octopus/internal/helper"
 	"github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/op"
@@ -887,7 +888,13 @@ func rawProtocolAttempt(
 		applyCodexHeaderDefaultsWithFingerprint(req, rawProtocolCodexIdentity(jsonPayload, clientSessionKey, actualModel), resolveFingerprintForChannel(channel), inboundUserAgent)
 	}
 
-	httpClient, err := helper.ChannelHttpClient(channel)
+	// This leg has no relayAttempt, so it must stamp the CLI face itself: a channel that
+	// presents a CLI identity has to keep that identity's handshake here too, or the raw
+	// path would leak a stock Go ClientHello on exactly the requests it exists to serve.
+	if face := channelTLSFace(channel); face != "" {
+		req = req.WithContext(client.WithTLSFace(req.Context(), face))
+	}
+	httpClient, err := helper.ChannelHttpClientContext(req.Context(), channel)
 	if err != nil {
 		return 0, false, nil, "", "", err
 	}

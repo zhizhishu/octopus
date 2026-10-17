@@ -230,6 +230,16 @@ func tlsFaceFromContext(ctx context.Context) string {
 	return v
 }
 
+// TLSFaceFromContext exposes the per-request face to packages that must choose a
+// transport before the request is built (the helper picks the HTTP client, and a
+// face-carrying channel needs the uTLS transport regardless of its proxy).
+func TLSFaceFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	return tlsFaceFromContext(ctx)
+}
+
 // clientHelloSpecForFamily maps an explicit face family to its ClientHello spec.
 // An unknown/empty family (or "chrome") keeps the pre-existing Chrome default, so
 // an unknown override value can never select an undefined face.

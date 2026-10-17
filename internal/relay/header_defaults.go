@@ -256,8 +256,45 @@ func chatChannelShape(channel *dbmodel.Channel) string {
 	return strings.ToLower(strings.TrimSpace(channel.Cloak.Shape))
 }
 
+// channelTLSFace resolves the TLS face a channel's outbound must present, or ""
+// when the channel has no CLI identity to protect.
+//
+// A channel has one when either:
+//   - its type IS that protocol — an Anthropic channel speaks the Claude CLI's
+//     protocol and a Responses channel speaks the Codex CLI's, so their identity is
+//     not optional and there is no shape field to set; or
+//   - it is a Chat channel that explicitly opted in via cloak.shape.
+//
+// Cloak mode "never"/"off" disables shaping for a channel in both cases (the
+// operator's switch wins), which is why the cloak gate is checked first.
+//
+// This is deliberately separate from chatChannelShape: shape is a Chat-only field,
+// so deriving the face from it alone would leave the two channels that most need a
+// CLI handshake — the codex and claude ones — without one.
+func channelTLSFace(channel *dbmodel.Channel) string {
+	if channel == nil || !shouldApplyChannelCloak(channel.Cloak) {
+		return ""
+	}
+	switch channel.Type {
+	case outbound.OutboundTypeOpenAIResponse:
+		return "codex"
+	case outbound.OutboundTypeAnthropic:
+		return "claude"
+	case outbound.OutboundTypeOpenAIChat, outbound.OutboundTypeCustomOpenAIChat:
+		switch chatChannelShape(channel) {
+		case "claude":
+			return "claude"
+		case "codex":
+			return "codex"
+		}
+	}
+	return ""
+}
+
 // chatChannelTLSFace maps a Chat channel's cloak shape to the TLS face family the
 // outbound should present. Empty string = no override (path-based default).
+// Retained for the Chat-specific callers and tests; channelTLSFace covers the
+// protocol-implied cases too.
 func chatChannelTLSFace(channel *dbmodel.Channel) string {
 	if channel == nil || channel.Type != outbound.OutboundTypeOpenAIChat && channel.Type != outbound.OutboundTypeCustomOpenAIChat {
 		return ""

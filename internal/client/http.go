@@ -19,6 +19,10 @@ var (
 	systemProxyClient  *http.Client
 	systemProxyURL     string
 	utlsDirectClient   *http.Client
+	// utlsProxyClients caches one uTLS client per proxy URL ("" = direct) so a
+	// shaped channel keeps its ClientHello face through a proxy without paying a
+	// fresh transport per request. Bounded by the number of configured proxies.
+	utlsProxyClients = make(map[string]*http.Client)
 	// customProxyClients caches one client (hence one transport, hence one idle
 	// connection pool) per channel proxy URL. Keyed by the raw URL string, mirroring
 	// the systemProxyURL equality check: a different URL is a different client, an
@@ -58,6 +62,71 @@ func GetHTTPClientUTLSDirect() (*http.Client, error) {
 	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
 	utlsDirectClient = &http.Client{Transport: newUTLSRoundTripper(dialer.DialContext, fallback)}
 	return utlsDirectClient, nil
+}
+
+// TransportKind names the transport behind an HTTP client for diagnostics and tests:
+// "utls" means the request will wear a CLI/browser ClientHello face, anything else
+// means a stock Go handshake. Kept intentionally small so a test can assert the
+// property that matters instead of reaching into unexported types.
+func TransportKind(c *http.Client) string {
+	if c == nil {
+		return ""
+	}
+	if _, ok := c.Transport.(*utlsRoundTripper); ok {
+		return "utls"
+	}
+	return "standard"
+}
+
+// GetHTTPClientUTLSForProxy returns a cached http.Client that presents the uTLS
+// CLI face for a channel that reaches the upstream through proxyURL (nil = direct).
+//
+// This exists because a channel that committed to a CLI identity must keep that
+// identity on every path. Routing the uTLS handshake through a proxy tunnel is the
+// whole point: the proxy must not be able to turn a shaped request into an
+// unshaped one, which is what happened while shaped channels bypassed uTLS
+// whenever a proxy was configured.
+//
+// Clients are cached per proxy URL — one transport, one idle pool each — and the
+// nil entry holds the direct client, so a mixed fleet pays no rebuild cost.
+func GetHTTPClientUTLSForProxy(proxyURL *url.URL) (*http.Client, error) {
+	key := ""
+	if proxyURL != nil {
+		key = proxyURL.String()
+	}
+
+	clientLock.RLock()
+	if cached, ok := utlsProxyClients[key]; ok {
+		clientLock.RUnlock()
+		return cached, nil
+	}
+	clientLock.RUnlock()
+
+	clientLock.Lock()
+	defer clientLock.Unlock()
+	if cached, ok := utlsProxyClients[key]; ok {
+		return cached, nil
+	}
+
+	fallback, err := clonedDefaultTransport()
+	if err != nil {
+		return nil, err
+	}
+	fallback.Proxy = nil
+
+	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+	dialContext := dialer.DialContext
+	if proxyURL != nil {
+		tunnel, err := proxyTunnelDialer(proxyURL)
+		if err != nil {
+			return nil, err
+		}
+		dialContext = tunnel
+	}
+
+	built := &http.Client{Transport: newUTLSRoundTripper(dialContext, fallback)}
+	utlsProxyClients[key] = built
+	return built, nil
 }
 
 // GetHTTPClientSystemProxy returns a cached http.Client.
