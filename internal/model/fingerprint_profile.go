@@ -66,12 +66,18 @@ const GenericUAUbuntu = "Mozilla/5.0 (X11; Ubuntu; x86_64) AppleWebKit/537.36 (K
 // seed. Picking the Ubuntu profile on a channel's advanced settings switches its non-CLI
 // UA to this; it likewise never touches any claude/codex CLI fingerprint.
 
-// GenericUAMacOS is the "macOS · Chrome" built-in profile's generic UA — a third,
-// selectable non-CLI identity for operators whose real machine is a Mac. The string
-// is a captured Chrome-on-macOS desktop UA (Intel Mac OS X 10_15_7 / Chrome 131);
-// AppleWebKit/Chrome/Safari tokens stay as Chrome reports them. Like the two Linux
-// presets it never touches any claude/codex CLI fingerprint.
-const GenericUAMacOS = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+// GenericUAMacOS is the "macOS · CherryStudio" built-in profile's generic UA — the
+// third, selectable non-CLI identity, for operators whose real machine is a Mac.
+//
+// 2026-10-17 (user decision): this used to be a bare Chrome-on-macOS UA, which broke
+// the identity story the other two presets keep — a browser does not call a chat API
+// endpoint directly, so a plain Chrome UA is itself the tell. It is now the SAME
+// product (CherryStudio) on a DIFFERENT machine: an Electron build on Apple Silicon
+// with its own app/Chrome/Electron versions, so all three presets read as three
+// unrelated installs of a real desktop chat client rather than two clients and one
+// browser. Token layout mirrors the two Linux presets exactly (Electron always reports
+// `X11; Linux x86_64` / `Macintosh; Intel Mac OS X 10_15_7` on those platforms).
+const GenericUAMacOS = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) CherryStudio/1.7.0 Chrome/140.0.7339.82 Electron/39.0.0 Safari/537.36"
 
 // FingerprintProfileUpdateRequest carries a partial update — only non-nil fields
 // are applied, mirroring ChannelUpdateRequest's pointer-field convention.

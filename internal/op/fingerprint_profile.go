@@ -148,17 +148,27 @@ func FingerprintProfileDelete(id int, ctx context.Context) error {
 const (
 	builtinDebianPresetName = "Linux · Debian"
 	builtinUbuntuPresetName = "Linux · Ubuntu"
-	retiredMacOSPresetName  = "macOS · Chrome"
+	builtinMacOSPresetName  = "macOS · CherryStudio"
+	// retiredMacOSPresetName is the OLD canonical name of the third built-in. It used a
+	// bare Chrome-on-macOS generic UA and therefore presented a browser on a chat API
+	// endpoint, which is itself the tell. It is NOT deleted any more (see the
+	// convergence block in fingerprintProfileRefreshCache): a row still carrying this
+	// name is RENAMED in place to builtinMacOSPresetName and rewritten from the
+	// canonical definition, so a deployment upgrading from an older build keeps any
+	// channel that had selected it pointing at the same row id.
+	retiredMacOSPresetName = "macOS · Chrome"
 )
 
 // builtinPresetLegacyNames maps a built-in preset's canonical name to the earlier
 // names the SAME row may still carry on a deployment upgrading from an older build
-// ("Linux 真机" / "Linux 真机 2 (Ubuntu)"). Migration 009 renumbers those rows to ids
-// 1/2 resolving them by the same name set, but refreshCache must NOT assume 009 has
-// already run — the NAME is the stable identity of a built-in row, so resolve by it.
+// ("Linux 真机" / "Linux 真机 2 (Ubuntu)" / "macOS · Chrome"). Migration 009 renumbers
+// those rows to ids 1/2 resolving them by the same name set, but refreshCache must NOT
+// assume 009 has already run — the NAME is the stable identity of a built-in row, so
+// resolve by it.
 var builtinPresetLegacyNames = map[string][]string{
 	builtinDebianPresetName: {"Linux 真机"},
 	builtinUbuntuPresetName: {"Linux 真机 2 (Ubuntu)"},
+	builtinMacOSPresetName:  {retiredMacOSPresetName},
 }
 
 // builtinLinuxPresets returns the built-in presets in their CURRENT canonical
@@ -211,6 +221,37 @@ func builtinLinuxPresets() []*model.FingerprintProfile {
 			CodexBetaFeatures:    "remote_compaction_v2",
 			GenericUA:            model.GenericUAUbuntu,
 		},
+		{
+			// Third built-in: the SAME two CLI identities and the SAME CherryStudio
+			// desktop client, presented from macOS instead of Linux. Three unrelated
+			// devices, not three flavours of one.
+			//
+			// The codex UA's platform segment is what makes it read as a Mac:
+			// `(Mac OS X 10_15_7; arm64)`. Everything else — product token, version,
+			// trailing pair — stays in lockstep with the two Linux presets, and the
+			// Originator is the UA's leading token, exactly as codexIdentityPair
+			// derives it for every other preset (an upstream pairs the two, and a
+			// mismatch is itself the tell).
+			//
+			// Claude side: claude-cli reports its platform through X-Stainless-OS /
+			// X-Stainless-Arch, not through the UA, so "macOS" here means Darwin +
+			// arm64 in those headers while the UA keeps the identical
+			// `claude-cli/2.1.296 (external, sdk-cli)` shape — that string carries no
+			// platform token at all.
+			Name:                 builtinMacOSPresetName,
+			Seed:                 deriveProfileSeed(4),
+			ClaudeUserAgent:      "claude-cli/2.1.296 (external, sdk-cli)",
+			ClaudePackageVersion: "0.128.0",
+			ClaudeRuntimeVersion: "v26.3.0",
+			ClaudeOS:             "MacOS",
+			ClaudeArch:           "arm64",
+			ClaudeTimeout:        "600",
+			ClaudeStabilize:      stabilize(),
+			CodexUserAgent:       "codex_exec/0.161.0 (Mac OS X 10_15_7; arm64) unknown (codex_exec; 0.161.0)",
+			CodexOriginator:      "codex_exec",
+			CodexBetaFeatures:    "remote_compaction_v2",
+			GenericUA:            model.GenericUAMacOS,
+		},
 	}
 }
 
@@ -262,22 +303,28 @@ func fingerprintProfileRefreshCache(ctx context.Context) error {
 			}
 		}
 	}
-	// Retire the legacy "macOS · Chrome" built-in. It was the 3rd preset in earlier
-	// builds; startup convergence now deletes a row carrying that EXACT canonical name
-	// — by NAME only, never by ID / UA / OS / fuzzy name — so an already-seeded
-	// deployment collapses to the two Linux presets. This is a one-way retirement:
-	// the name is dropped from builtinLinuxPresets(), so it can never be re-seeded, and
-	// a channel that had selected it points at a now-missing id (old ID lookup -> ok=false
-	// via FingerprintProfileGet, so relay falls back to the global default). A custom
-	// mac-flavoured profile under ANY other name, with identical header fields or not, is
-	// never matched here. Matching only rows that still exist keeps it idempotent on the
-	// next restart.
-	for _, p := range profiles {
-		if p.Name == retiredMacOSPresetName {
-			if err := db.GetDB().WithContext(ctx).Delete(&model.FingerprintProfile{}, p.ID).Error; err != nil {
-				return fmt.Errorf("failed to drop retired fingerprint profile %q: %w", retiredMacOSPresetName, err)
-			}
+	// Rename the legacy "macOS · Chrome" built-in in place to its new canonical name.
+	// It was the 3rd preset in earlier builds and, for a while, was deleted on every
+	// boot; it is a first-class built-in again (2026-10-17) with a CherryStudio identity
+	// instead of a bare browser UA. Renaming — rather than dropping and re-seeding —
+	// keeps the row id stable, so a channel that had selected it keeps pointing at the
+	// SAME identity after the upgrade instead of silently falling back to the global
+	// default. Matching is by EXACT legacy name only, never by id / UA / OS / fuzzy
+	// name, so a custom mac-flavoured profile under any other name is never touched.
+	//
+	// The rename happens BEFORE the convergence loop below, which then rewrites every
+	// identity field of the (now canonically named) row and restores its own seed —
+	// so an older build's Chrome-on-macOS strings converge in the same step.
+	for i := range profiles {
+		if profiles[i].Name != retiredMacOSPresetName {
+			continue
 		}
+		if err := db.GetDB().WithContext(ctx).Model(&model.FingerprintProfile{}).
+			Where("id = ?", profiles[i].ID).
+			Update("name", builtinMacOSPresetName).Error; err != nil {
+			return fmt.Errorf("failed to rename legacy fingerprint profile %q: %w", retiredMacOSPresetName, err)
+		}
+		profiles[i].Name = builtinMacOSPresetName
 	}
 	// Reload after cleanup so the seed-if-empty check and cache reflect the deletion.
 	if err := db.GetDB().WithContext(ctx).Find(&profiles).Error; err != nil {
@@ -330,11 +377,12 @@ func fingerprintProfileRefreshCache(ctx context.Context) error {
 	// redundant all-empty "默认(Windows)" row (making the dropdown show THREE entries);
 	// the cleanup above drops it.
 	//
-	// Seeding rule (unchanged): a FRESH deployment (no profiles at all) gets BOTH
-	// built-ins; a deployment that already has the 1st built-in but not the 2nd gets
-	// the 2nd backfilled on restart; if an operator DELETED the 1st we resurrect
-	// NEITHER (the deletion is respected). The retired "macOS · Chrome" name is not a
-	// built-in, so it is never seeded nor backfilled here — only dropped above.
+	// Seeding rule (unchanged): a FRESH deployment (no profiles at all) gets ALL THREE
+	// built-ins; a deployment that already has the 1st built-in gets any missing one
+	// backfilled on restart; if an operator DELETED the 1st we resurrect NONE (the
+	// deletion is respected). The legacy "macOS · Chrome" name is no longer a separate
+	// concept — it is the SAME row as builtinMacOSPresetName and is renamed, not seeded,
+	// above.
 	var toSeed []*model.FingerprintProfile
 	switch {
 	case len(profiles) == 0:
