@@ -44,6 +44,7 @@ func ChannelHttpClientContext(ctx context.Context, channel *model.Channel) (*htt
 	}
 
 	face := client.TLSFaceFromContext(ctx)
+	log.Infof("shape diag: channel=%d type=%d face=%q proxy=%v", channel.ID, channel.Type, face, channel.Proxy)
 	if face != "" {
 		proxyURL, err := channelProxyURL(channel)
 		if err != nil {
