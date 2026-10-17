@@ -164,12 +164,41 @@ func (ra *relayAttempt) inboundRedactCovered() bool {
 	}
 }
 
+// inboundRedactExcludedRequest reports whether this request belongs to a family the
+// redaction module deliberately never touches, even on an opted-in channel. The three
+// exclusions below are NOT "not implemented yet" — two of them are permanent, and the
+// reasons differ, so do not "finish" this list by wiring them up:
+//
+//  1. Image generation (gpt-image-*, Dall-E, image modalities, image_generation tool)
+//     and 2. Video generation (/videos endpoints).
+//     The sensitive payload of these requests is INSIDE the generated artefact or the
+//     prompt that produces it, not in travelable chat text: a user pastes a screenshot
+//     containing a password, and the credential lives in the PIXELS. This module is a
+//     text detector — it swaps matched substrings for reversible placeholders — so it
+//     cannot see, let alone mask, an image or an audio waveform. Honouring a channel
+//     opt-in here would mean shipping the bytes unscanned anyway while LOOKING
+//     protected, i.e. strictly worse than the honest "unprotected" label the admin page
+//     shows (web locale keys redact.global.scopeUnprotected). Real coverage needs OCR /
+//     speech-to-text / visual masking — a different product, not a thin integration.
+//
+//  3. Embedding. This one is excluded for a POSITIVE reason: redaction would BREAK it.
+//     An embedding request sends text and gets back a VECTOR ([]float32 — see
+//     model.EmbeddingObject). Two consequences: (a) there is nothing to restore, because
+//     the original words no longer exist anywhere in the response, only their linear
+//     projection; (b) rewriting the input text silently changes the vector, since a
+//     vector is the mathematical fingerprint of the exact string that was sent. The
+//     caller would then store vectors computed from {{Redact:...}} placeholders and its
+//     similarity search would start matching unrelated documents — silent semantic
+//     corruption, with no error to notice. Adding embedding to the covered set is
+//     therefore a regression, not a feature; TestRedactEmbeddingRequestStaysUnprotected
+//     pins it.
+//
+// A nil internalRequest is treated as excluded (defensive: never scan what we cannot
+// classify).
 func (ra *relayAttempt) inboundRedactExcludedRequest() bool {
 	if ra == nil || ra.internalRequest == nil {
 		return true
 	}
-	// Media-generation paths and embedding requests are out of the supported scope;
-	// never redact them this round even when a channel opted in.
 	return ra.internalRequest.IsImageGenerationRequest() ||
 		ra.internalRequest.EmbeddingInput != nil ||
 		isVideoRequest(ra.relayRequest)

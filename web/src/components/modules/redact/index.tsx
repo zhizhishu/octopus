@@ -86,6 +86,13 @@ function RedactGlobalCard() {
                     <li>{t('global.scopeUnprotected')}</li>
                     <li>{t('global.scopeBypass')}</li>
                 </ul>
+                {/* 为什么这些不接: 这两条不是"尚未实现", 是永久边界。写在这里, 免得
+                    以后有人看到"未保护"就想顺手加上——embedding 加了会让检索错乱,
+                    媒体加了等于装作保护却仍原样发出。 */}
+                <ul className="mt-2 space-y-1 border-t border-border/60 pt-2 text-xs text-muted-foreground/80">
+                    <li>{t('global.scopeWhyMedia')}</li>
+                    <li>{t('global.scopeWhyEmbedding')}</li>
+                </ul>
             </div>
 
             <div className="mt-5 space-y-4">
