@@ -120,6 +120,19 @@ func BuildReport(results []Result, requestedModel string) Report {
 				countsAsUsable = false
 			}
 		}
+		// 指纹探针没得出可判结论时同样不计 usable：
+		// 模型拒答、样本不足、参考库外型号，都只意味着"这次没测出来"，
+		// 把它算成跑通会让一条只剩它的审计显示成"查过没问题"。
+		if res.ProbeID == ProbeFingerprint {
+			switch stringOf(res.Data, "fingerprint_decision") {
+			case "scorable":
+				// 有完整结论，算跑通。
+			default:
+				// ""（没测成）/ unscorable（拒答）/ partial（样本不足）
+				// 都只说明这次没测出来，不能算"查过没问题"。
+				countsAsUsable = false
+			}
+		}
 		if countsAsUsable {
 			usable++
 		}
@@ -289,6 +302,8 @@ func findingsFor(res Result, requestedModel string, requestedFamilies []string) 
 	switch res.ProbeID {
 	case ProbeSignature:
 		return signatureFindings(res, requestedModel)
+	case ProbeFingerprint:
+		return fingerprintFindings(res, requestedModel)
 	case ProbeLiveness:
 		if res.OK {
 			return nil

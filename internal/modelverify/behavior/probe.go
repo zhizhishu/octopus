@@ -56,6 +56,7 @@ var probeRegistry = map[ProbeID]probeFunc{
 	ProbeEchoRewrite:   runEchoRewrite,
 	ProbeContextCanary: runContextCanary,
 	ProbeSignature:     runSignature,
+	ProbeFingerprint:   runFingerprint,
 }
 
 // DefaultProbes 返回默认启用的探针集合。
@@ -64,6 +65,9 @@ var probeRegistry = map[ProbeID]probeFunc{
 // 渠道有哪些模型，Octopus 本来就知道（模型列表就是渠道配置的一部分），再去问
 // 上游一遍收益很低，却要为它单独开一条出站路径。等确有需要再补。
 func DefaultProbes() []ProbeID {
+	// 刻意不含 ProbeFingerprint：它要发三道题、每题几百个整数，
+	// 是整套审计里最贵的一条。默认开着等于每次检测都悄悄多花三倍额度，
+	// 所以它只能由用户在检测项里显式勾选。
 	return []ProbeID{
 		ProbeSignature,
 		ProbeLiveness,
@@ -360,4 +364,26 @@ func clip(s string, n int) string {
 		return s
 	}
 	return s[:n]
+}
+
+// OptionalProbes 返回**默认关闭、但允许手动勾选**的探针。
+//
+// 与 DefaultProbes 分开是为了让"能不能跑"和"默认跑不跑"变成两件事：
+// 指纹探针要发三道题、每题几百个整数，默认开着等于每次检测都悄悄多花三倍额度，
+// 所以它只能由用户显式勾选；但勾选了就必须真能跑，不能因为不在默认集里被拒。
+func OptionalProbes() []ProbeID {
+	return []ProbeID{
+		ProbeFingerprint,
+	}
+}
+
+// IsKnownProbe 判断某个 id 是不是本包实现过的探针（含默认关闭的）。
+//
+// 调用方（如审计接口的入参校验）应当用它，而不是拿 DefaultProbes 当白名单——
+// 那会把"默认关闭"误当成"不存在"。
+func IsKnownProbe(id ProbeID) bool {
+	if _, ok := probeRegistry[id]; ok {
+		return true
+	}
+	return false
 }

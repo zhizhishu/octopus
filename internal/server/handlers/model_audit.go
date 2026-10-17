@@ -192,12 +192,9 @@ func parseAuditProbes(raw []string) ([]behavior.ProbeID, error) {
 }
 
 func knownAuditProbe(id behavior.ProbeID) bool {
-	for _, item := range behavior.DefaultProbes() {
-		if item == id {
-			return true
-		}
-	}
-	return false
+	// 用“注册表里有没有”判存在，而不是拿 DefaultProbes 当白名单：
+	// 指纹探针刻意默认关闭（开销高），但手动勾选时必须能跑。
+	return behavior.IsKnownProbe(id)
 }
 
 func auditEndpointFor(ch model.Channel) string {

@@ -5,6 +5,7 @@ import {
     AlertTriangle,
     Binary,
     ChevronRight,
+    Dices,
     Fingerprint,
     Loader2,
     MessageSquareQuote,
@@ -81,6 +82,9 @@ const PROBES: ProbeMeta[] = [
     { id: 'echo_rewrite', name: '输出改写', hint: '基础', desc: '检查指定文本是否被原样回传', icon: Repeat2 },
     { id: 'context_canary', name: '上下文完整性', hint: '基础', desc: '确认上下文标记未被截断', icon: TextQuote },
     { id: 'signature', name: '思考签名', hint: '仅Claude', desc: '检查思考块是否附带签名字段', icon: Signature },
+    // 随机数指纹：要发三道题、每题几百个整数，是整套检测里最贵的一条，
+    // 所以单独标"高开销"，让用户在勾选前就知道代价。
+    { id: 'fingerprint', name: '随机数指纹', hint: '高开销', desc: '按取值习惯比对参考库，识别冒充', icon: Dices },
 ];
 
 const QUICK_IDS: AuditProbeId[] = ['liveness', 'echo_rewrite', 'context_canary'];

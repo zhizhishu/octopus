@@ -10,6 +10,7 @@ export const AUDIT_PROBE_IDS = [
     'echo_rewrite',
     'context_canary',
     'signature',
+    'fingerprint',
 ] as const;
 
 export type AuditProbeId = (typeof AUDIT_PROBE_IDS)[number];
