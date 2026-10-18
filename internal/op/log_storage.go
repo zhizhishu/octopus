@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/bestruirui/octopus/internal/db"
 	"github.com/bestruirui/octopus/internal/model"
@@ -111,6 +112,46 @@ func relayLogSearchIndexBytes(ctx context.Context) int64 {
 		return 0
 	}
 	return row.Bytes + int64(relayLogRowStructOverhead)*row.Rows
+}
+
+// relayLogDeleteExpiredBefore 删除 time < cutoff 的日志，分批进行。
+//
+// 为什么不直接 `Where("time < ?", cutoff).Delete(...)` 一把梭：
+// 保留期一到，待删行可能有几十万。一条 DELETE 命中几十万行会长时间持有写锁、
+// 把 WAL 撑得很大，期间所有日志写入都被挡住（SQLite 单写者）。分批让写入有机会插进来。
+//
+// 投影表必须同步删：主表删掉后就没有 time 可比了，顺序反了会留下"永远搜得到、
+// 点开却没有"的幽灵行。
+func relayLogDeleteExpiredBefore(ctx context.Context, cutoff int64) error {
+	const deadline = 5 * time.Minute
+	start := time.Now()
+
+	for {
+		var ids []int64
+		if err := db.GetDB().WithContext(ctx).Model(&model.RelayLog{}).
+			Where("time < ?", cutoff).
+			Order("id ASC").Limit(relayLogDeleteChunk).
+			Pluck("id", &ids).Error; err != nil {
+			return err
+		}
+		if len(ids) == 0 {
+			return nil
+		}
+
+		relayLogSearchIndexDeleteByIDs(db.GetDB().WithContext(ctx), ids)
+		if err := db.GetDB().WithContext(ctx).Where("id IN ?", ids).Delete(&model.RelayLog{}).Error; err != nil {
+			return err
+		}
+
+		// 保留期清理是"能删多少删多少"，不该把一次任务拖成几小时；剩下的
+		// 下一轮(10 分钟后)继续。这让单次任务的耗时有上界。
+		if time.Since(start) > deadline {
+			return nil
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
 }
 
 // relayLogCleanupByStorageBounded 按容量上限收缩，全程有界内存。

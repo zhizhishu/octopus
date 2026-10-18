@@ -426,14 +426,12 @@ func relayLogCleanup(ctx context.Context) error {
 
 	if keepPeriod > 0 {
 		cutoffTime := time.Now().Add(-time.Duration(keepPeriod) * 24 * time.Hour).Unix()
-		// 先删投影表: 主表删掉后就没有 time 可比了, 顺序反了会留下永远搜得到、
-		// 点开却没有的幽灵行。time 不在投影表里, 所以按"主表选定 id"来删。
-		var expiredIDs []int64
-		if err := db.GetDB().WithContext(ctx).Model(&model.RelayLog{}).
-			Where("time < ?", cutoffTime).Pluck("id", &expiredIDs).Error; err == nil {
-			relayLogSearchIndexDeleteByIDs(db.GetDB().WithContext(ctx), expiredIDs)
-		}
-		if err := db.GetDB().WithContext(ctx).Where("time < ?", cutoffTime).Delete(&model.RelayLog{}).Error; err != nil {
+		// 按时间分批删，而不是"先把所有过期 id Pluck 进一个切片"。
+		//
+		// 旧写法在大库上是个陷阱：过期 id 可能有几十万个，一个 []int64 就是几 MB，
+		// 之后还要拼成 `id IN (?,?,…)` 的超长语句 —— 参数个数有上限，且整条语句
+		// 要在内存里拼出来。分批删的成本只与删除量成正比，内存却是常量。
+		if err := relayLogDeleteExpiredBefore(ctx, cutoffTime); err != nil {
 			return err
 		}
 	}
