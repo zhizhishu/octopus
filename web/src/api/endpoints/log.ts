@@ -677,7 +677,13 @@ export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?
                 : undefined,
         // 非实时(SSE)模式：每 3 秒轻量重取第 1 页，让新日志不必手动刷新即可出现。
         // live=true 时由 EventSource 推流接管，此处关闭轮询避免重复拉取。
-        refetchInterval: live ? false : 3000,
+        // 分页模式(page 明确指定)下不轮询：
+        //   1) 用户正在翻历史页，每 3 秒把当前页重拉一次纯属浪费，还会跟翻页
+        //      请求抢同一个连接/同一份 DB 扫描，翻页就显得卡；
+        //   2) 翻页时 placeholderData 会先用上一页数据渲染，轮询一插进来容易让
+        //      刚翻到的页被旧数据顶掉(revalidate 覆盖)。
+        // 实时性由 live(SSE) 模式负责；非 live 的无限滚动仍保留轮询。
+        refetchInterval: live || page !== undefined ? false : 3000,
     });
 
     const logs = useMemo(() => {
