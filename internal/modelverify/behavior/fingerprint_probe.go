@@ -131,6 +131,13 @@ func runFingerprint(ctx context.Context, s modelverify.Sender, _ string) Result 
 	res.Data["fingerprint_reference_built_at"] = analysis.ReferenceBuiltAt
 	res.Data["fingerprint_used_outputs"] = analysis.UsedOutputs
 	res.Data["fingerprint_probability_scope"] = analysis.ProbabilityNote
+
+	// 前端按 insufficient_evidence 决定这一行显示成"证据不足"而不是"通过"。
+	// 没有这一位，一次"模型拒答"会被读成"查过没问题"——正是我们要避免的。
+	if analysis.Decision != fingerprint.DecisionScorable {
+		res.Data["insufficient_evidence"] = true
+		res.Data["reason"] = analysis.Reason
+	}
 	if analysis.Probability != nil {
 		res.Data["fingerprint_probability"] = *analysis.Probability
 	}

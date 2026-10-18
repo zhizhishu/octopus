@@ -270,3 +270,24 @@ func numberList(n int) string {
 	}
 	return string(out)
 }
+
+// TestFingerprintProbeFlagsInsufficientEvidence 守住"证据不足不能被读成通过"。
+//
+// 前端按 insufficient_evidence 决定这一行显示成"证据不足"还是普通结果；
+// 探针不设这一位，一次模型拒答就会在界面上变成"查过没问题"。
+func TestFingerprintProbeFlagsInsufficientEvidence(t *testing.T) {
+	challenges, _ := fingerprint.PickChallenges(fingerprintChallenges)
+	// 让模型"答非所问"：不给数字，只回一句拒绝。
+	sender := &scriptedSender{respond: func(int) string { return "I cannot help with that request." }}
+	res := runFingerprint(t.Context(), sender, "claude-opus-4-6")
+	if res.Err != nil {
+		t.Fatalf("探针执行失败: %v", res.Err)
+	}
+	if got := boolOf(res.Data, "insufficient_evidence"); !got {
+		t.Fatalf("证据不足时必须标 insufficient_evidence，data=%v", res.Data)
+	}
+	if reason := stringOf(res.Data, "reason"); reason == "" {
+		t.Fatal("证据不足时应给出原因")
+	}
+	_ = challenges
+}
