@@ -200,6 +200,7 @@ const logMocks = {
         useClearLogs: () => ({ mutate() {}, isPending: false }),
         useLogStorage: () => ({ data: undefined }),
         useLogQueueHealth: () => ({ data: undefined }),
+        useLogCleanupNow: () => ({ mutate() {}, isPending: false }),
     },
     'lucide-react': lucide,
 };
