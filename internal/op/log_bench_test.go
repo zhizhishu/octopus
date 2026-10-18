@@ -118,6 +118,12 @@ func setupLogBench(tb testing.TB, rows int) {
 	flush()
 	db.GetDB().Exec("ANALYZE")
 
+	// 投影表要跟主表一致, 否则搜索会降级到主表 LIKE, 量出来的就是"没优化"的数字。
+	// 生产里由落库路径和迁移 014 维护, 基准直接灌主表, 所以这里显式重建。
+	if err := relayLogSearchIndexRebuild(context.Background()); err != nil {
+		tb.Fatalf("rebuild search index: %v", err)
+	}
+
 	var got int64
 	db.GetDB().Model(&model.RelayLog{}).Count(&got)
 	if got != int64(rows) {
