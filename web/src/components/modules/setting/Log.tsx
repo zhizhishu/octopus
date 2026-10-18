@@ -8,7 +8,7 @@ import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { useSettingList, useSetSetting, SettingKey } from '@/api/endpoints/setting';
-import { useClearLogs, useLogStorage, useLogQueueHealth } from '@/api/endpoints/log';
+import { useClearLogs, useLogStorage, useLogQueueHealth, useLogCleanupNow } from '@/api/endpoints/log';
 import { toast } from '@/components/common/Toast';
 
 function formatBytes(bytes: number): string {
@@ -31,6 +31,7 @@ export function SettingLog() {
     const { data: queueHealth } = useLogQueueHealth();
     const setSetting = useSetSetting();
     const clearLogs = useClearLogs();
+    const cleanupNow = useLogCleanupNow();
 
     const [enabled, setEnabled] = useState(true);
     const [keepPeriod, setKeepPeriod] = useState('7');
@@ -255,13 +256,37 @@ export function SettingLog() {
                         value={storage?.max_bytes ? Math.min(100, (storage.stored_bytes / storage.max_bytes) * 100) : 0}
                         className="h-1.5"
                     />
-                    <div className="flex justify-between text-xs text-muted-foreground">
+                    <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
                         <span>{t('log.maxStorage.current')}</span>
-                        <span>
-                            {formatBytes(storage?.stored_bytes ?? 0)}
-                            {storage?.max_bytes ? ` / ${formatBytes(storage.max_bytes)}` : ` / ${t('log.maxStorage.unlimited')}`}
-                        </span>
+                        <div className="flex items-center gap-2">
+                            <span className="tabular-nums">
+                                {formatBytes(storage?.stored_bytes ?? 0)}
+                                {storage?.max_bytes ? ` / ${formatBytes(storage.max_bytes)}` : ` / ${t('log.maxStorage.unlimited')}`}
+                            </span>
+                            <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-7 rounded-lg px-2 text-xs"
+                                disabled={!enabled || cleanupNow.isPending}
+                                onClick={() => {
+                                    cleanupNow.mutate(undefined, {
+                                        onSuccess: (r) => {
+                                            // 只删了行但 VACUUM 失败时不能报"成功"，否则用户会以为空间回来了
+                                            if (r.freed_bytes > 0 && r.vacuumed) toast.success(t('log.maxStorage.cleanupFreed', { size: formatBytes(r.freed_bytes) }));
+                                            else if (r.freed_bytes > 0) toast.warning(r.note || t('log.maxStorage.cleanupVacuumFailed'));
+                                            else toast.info(r.note || t('log.maxStorage.cleanupNothing'));
+                                        },
+                                        onError: () => toast.error(t('log.maxStorage.cleanupFailed')),
+                                    });
+                                }}
+                            >
+                                {cleanupNow.isPending ? t('log.maxStorage.cleaning') : t('log.maxStorage.cleanupNow')}
+                            </Button>
+                        </div>
                     </div>
+                    {/* 说明"已用"含哪些东西：不说清楚的话，主表删了、副本还在长，
+                        用户会以为上限没用。 */}
+                    <p className="text-xs text-muted-foreground/80">{t('log.maxStorage.usageHint')}</p>
                     {/* 落库队列健康: 没有这一行时, “日志里查不到这条”和“请求没发生”看着一模一样。
                         计数是进程内的(重启归零), 关闭持久化是主动设置、不算故障。 */}
                     {queueHealth?.persistence_enabled && (

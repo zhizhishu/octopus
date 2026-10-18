@@ -457,16 +457,6 @@ func relayLogMaxStorage() (float64, int64, error) {
 	return maxGB, maxBytes, nil
 }
 
-func relayLogStorageRows(ctx context.Context, scope *model.RelayLogScope) ([]model.RelayLog, error) {
-	var logs []model.RelayLog
-	query := db.GetDB().WithContext(ctx).
-		Model(&model.RelayLog{}).
-		Select("id", "user_id", "api_key_id", "request_endpoint", "request_path", "request_model_name", "request_api_key_name", "channel_name", "actual_model_name", "request_content", "response_content", "error", "attempts")
-	query = relayLogApplyScope(query, scope)
-	err := query.Order("id DESC").Find(&logs).Error
-	return logs, err
-}
-
 func relayLogApproxBytes(relayLog model.RelayLog) int64 {
 	size := len(relayLog.RequestModelName) +
 		len(relayLog.RequestEndpoint) +
@@ -489,67 +479,35 @@ func relayLogApproxBytes(relayLog model.RelayLog) int64 {
 }
 
 func relayLogCleanupByStorage(ctx context.Context) error {
-	_, maxBytes, err := relayLogMaxStorage()
-	if err != nil || maxBytes <= 0 {
-		return err
-	}
-
-	logs, err := relayLogStorageRows(ctx, nil)
+	// 旧实现在这里把所有日志正文一次性读进内存再倒推要删的 id：生产上几十万行
+	// 就是几十 GB 内存，进程被 OOM 杀掉后清理永远跑不完，磁盘只涨不降
+	// (设置 10GB、实际 59GB 就是这么来的)。改为全 SQL 聚合 + 分批删除，
+	// 内存与数据量无关。详见 log_storage.go。
+	before, _, err := relayLogStoredBytes(ctx, nil)
 	if err != nil {
 		return err
 	}
-
-	var total int64
-	deleteIDs := make([]int64, 0)
-	for idx, relayLog := range logs {
-		total += relayLogApproxBytes(relayLog)
-		if idx == 0 {
-			continue
-		}
-		if total > maxBytes {
-			deleteIDs = append(deleteIDs, relayLog.ID)
+	if err := relayLogCleanupByStorageBounded(ctx); err != nil {
+		return err
+	}
+	after, _, err := relayLogStoredBytes(ctx, nil)
+	if err != nil {
+		return err
+	}
+	if after < before {
+		// 确实删掉了行才 VACUUM：只标空闲不还空间，db 文件不会变小，
+		// 用户看到的就是"设了上限、日志也少了，文件还是那么大"。
+		if vacuumErr := relayLogVacuum(ctx); vacuumErr != nil {
+			log.Warnf("relay log vacuum failed (rows deleted, disk space not reclaimed): %v", vacuumErr)
 		}
 	}
-
-	if len(deleteIDs) == 0 {
-		return nil
-	}
-
-	// 投影表先删: 这些 id 即将从主表消失, 留着就会"搜得到但打不开"。
-	relayLogSearchIndexDeleteByIDs(db.GetDB().WithContext(ctx), deleteIDs)
-	return db.GetDB().WithContext(ctx).Where("id IN ?", deleteIDs).Delete(&model.RelayLog{}).Error
+	return nil
 }
 
 func RelayLogStorageInfo(ctx context.Context, scope *model.RelayLogScope) (model.RelayLogStorage, error) {
-	logs, err := relayLogStorageRows(ctx, scope)
-	if err != nil {
-		return model.RelayLogStorage{}, err
-	}
-
-	var storedBytes int64
-	for _, relayLog := range logs {
-		storedBytes += relayLogApproxBytes(relayLog)
-	}
-	relayLogCacheLock.Lock()
-	cachedLogs := make([]model.RelayLog, len(relayLogCache))
-	copy(cachedLogs, relayLogCache)
-	relayLogCacheLock.Unlock()
-	for _, relayLog := range cachedLogs {
-		if !relayLogMatchScope(relayLog, scope) {
-			continue
-		}
-		storedBytes += relayLogApproxBytes(relayLog)
-	}
-
-	maxGB, maxBytes, err := relayLogMaxStorage()
-	if err != nil {
-		return model.RelayLogStorage{}, err
-	}
-	return model.RelayLogStorage{
-		StoredBytes: storedBytes,
-		MaxBytes:    maxBytes,
-		MaxGB:       maxGB,
-	}, nil
+	// 旧实现同样要先读全表正文才能算字节数，管理页一问就卡死(实测生产 15s 无响应)。
+	// 现在走 SQL 聚合，并额外把搜索投影表的占用算进来。详见 log_storage.go。
+	return relayLogStorageInfoBounded(ctx, scope)
 }
 
 // RelayLogQueueHealth 是日志落库队列的只读健康快照, 只回答一个问题: 日志系统自己

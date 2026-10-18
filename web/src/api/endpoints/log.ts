@@ -486,6 +486,34 @@ export function useClearLogs() {
     });
 }
 
+/** 手动清理的结果。带 before/after 是因为用户真正想知道"降了多少"。 */
+export interface RelayLogCleanupResult {
+    before_bytes: number;
+    after_bytes: number;
+    freed_bytes: number;
+    vacuumed: boolean;
+    note?: string;
+}
+
+/**
+ * 立即按当前上限收缩一次日志占用（仅管理员）。
+ *
+ * 为什么不只依赖定时任务：磁盘已经涨上来时，用户不该被迫等到下一个调度周期。
+ * 后端对并发调用做了单飞，重复点会直接被拒，不会并发跑两份。
+ */
+export function useLogCleanupNow() {
+    const queryClient = useQueryClient();
+
+    return useMutation({
+        mutationFn: async () => {
+            return apiClient.post<RelayLogCleanupResult>('/api/v1/log/cleanup');
+        },
+        onSuccess: (result) => {
+            queryClient.invalidateQueries({ queryKey: ['logs'] });
+        },
+    });
+}
+
 export function useLogStorage() {
     return useQuery({
         queryKey: ['logs', 'storage'],

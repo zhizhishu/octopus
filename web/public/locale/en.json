@@ -1,1133 +1,1140 @@
 {
-    "login": {
-        "username": "Username",
-        "usernamePlaceholder": "Enter your username",
-        "password": "Password",
-        "passwordPlaceholder": "Enter your password",
-        "apikey": "API Key",
-        "apikeyPlaceholder": "Enter your API Key (sk-octopus-...)",
-        "inviteCode": "Invite code",
-        "inviteCodeRequiredPlaceholder": "Enter invite/redeem code",
-        "inviteCodeOptionalPlaceholder": "Optional: enter a code for quota",
-        "inviteRequiredHint": "An invite code is required. Its quota or monthly card is applied after registration.",
-        "inviteOptionalHint": "Direct registration is enabled. An invite code can still add quota or a monthly card.",
-        "mode": {
-            "user": "Account",
-            "register": "Register",
-            "apikey": "API Key"
-        },
-        "error": {
-            "generic": "Login failed, please check your credentials"
-        },
-        "button": {
-            "loading": "Logging in...",
-            "submit": "Login",
-            "register": "Register"
-        },
-        "email": {
-            "label": "Email",
-            "placeholder": "Enter your email",
-            "sendCode": "Send code",
-            "countdown": "Resend in {seconds}s",
-            "codeLabel": "Verification code",
-            "codePlaceholder": "Enter the 6-digit code",
-            "emptyEmail": "Please enter your email first",
-            "codeSent": "Verification code sent. Please check your inbox.",
-            "sendFailed": "Failed to send verification code"
-        }
+  "login": {
+    "username": "Username",
+    "usernamePlaceholder": "Enter your username",
+    "password": "Password",
+    "passwordPlaceholder": "Enter your password",
+    "apikey": "API Key",
+    "apikeyPlaceholder": "Enter your API Key (sk-octopus-...)",
+    "inviteCode": "Invite code",
+    "inviteCodeRequiredPlaceholder": "Enter invite/redeem code",
+    "inviteCodeOptionalPlaceholder": "Optional: enter a code for quota",
+    "inviteRequiredHint": "An invite code is required. Its quota or monthly card is applied after registration.",
+    "inviteOptionalHint": "Direct registration is enabled. An invite code can still add quota or a monthly card.",
+    "mode": {
+      "user": "Account",
+      "register": "Register",
+      "apikey": "API Key"
     },
-    "apiKeyDashboard": {
-        "error": "Failed to load data",
-        "logout": "Logout",
-        "requestStats": "Request Stats",
-        "totalStats": "Total Stats",
-        "inputStats": "Input Stats",
-        "outputStats": "Output Stats",
-        "requestCount": "Requests",
-        "timeConsumed": "Time Consumed",
-        "totalToken": "Tokens Used",
-        "totalCost": "Total Cost",
-        "inputTokens": "Input Tokens",
-        "inputCost": "Input Cost",
-        "outputTokens": "Output Tokens",
-        "outputCost": "Output Cost",
-        "successRequests": "Successful",
-        "failedRequests": "Failed",
-        "quota": "Remaining Quota",
+    "error": {
+      "generic": "Login failed, please check your credentials"
+    },
+    "button": {
+      "loading": "Logging in...",
+      "submit": "Login",
+      "register": "Register"
+    },
+    "email": {
+      "label": "Email",
+      "placeholder": "Enter your email",
+      "sendCode": "Send code",
+      "countdown": "Resend in {seconds}s",
+      "codeLabel": "Verification code",
+      "codePlaceholder": "Enter the 6-digit code",
+      "emptyEmail": "Please enter your email first",
+      "codeSent": "Verification code sent. Please check your inbox.",
+      "sendFailed": "Failed to send verification code"
+    }
+  },
+  "apiKeyDashboard": {
+    "error": "Failed to load data",
+    "logout": "Logout",
+    "requestStats": "Request Stats",
+    "totalStats": "Total Stats",
+    "inputStats": "Input Stats",
+    "outputStats": "Output Stats",
+    "requestCount": "Requests",
+    "timeConsumed": "Time Consumed",
+    "totalToken": "Tokens Used",
+    "totalCost": "Total Cost",
+    "inputTokens": "Input Tokens",
+    "inputCost": "Input Cost",
+    "outputTokens": "Output Tokens",
+    "outputCost": "Output Cost",
+    "successRequests": "Successful",
+    "failedRequests": "Failed",
+    "quota": "Remaining Quota",
+    "unlimited": "Unlimited",
+    "expireAt": "Expires",
+    "neverExpire": "Never",
+    "daysLeft": "days left",
+    "expired": "Expired",
+    "supportedModels": "Supported Models"
+  },
+  "navbar": {
+    "home": "Home",
+    "user": "Users",
+    "channel": "Channel",
+    "access-plan": "Plans",
+    "key": "API Key",
+    "model": "Price",
+    "model-test": "Test",
+    "migration": "Migration",
+    "prompt": "Prompt",
+    "audit": "Detect",
+    "log": "Log",
+    "setting": "Setting",
+    "redact": "Redaction"
+  },
+  "toolbar": {
+    "popover": {
+      "ariaLabel": "View options",
+      "layout": "Layout",
+      "sort": "Sort",
+      "grid": "Grid",
+      "list": "List",
+      "nameAsc": "Name Asc",
+      "nameDesc": "Name Desc",
+      "createdAsc": "Time Asc",
+      "createdDesc": "Time Desc",
+      "asc": "Asc",
+      "desc": "Desc",
+      "filter": {
+        "title": "Filter",
+        "channel": {
+          "all": "All channels",
+          "enabled": "Enabled only",
+          "disabled": "Disabled only"
+        },
+        "model": {
+          "all": "All models",
+          "priced": "Priced only",
+          "free": "Free only"
+        }
+      }
+    }
+  },
+  "common": {
+    "copy": {
+      "success": "Copied",
+      "failed": "Copy failed",
+      "noContent": "Nothing to copy"
+    }
+  },
+  "home": {
+    "activity": {
+      "requestCount": "Requests",
+      "waitTime": "Wait Time",
+      "totalToken": "Tokens Used",
+      "totalCost": "Total Cost",
+      "cacheHitRate": "Cache Hit Rate",
+      "noData": "No Data"
+    },
+    "total": {
+      "requestStats": "Request Stats",
+      "totalStats": "Total Stats",
+      "inputStats": "Input Stats",
+      "outputStats": "Output Stats",
+      "requestCount": "Requests",
+      "timeConsumed": "Time Consumed",
+      "totalToken": "Tokens Used",
+      "totalCost": "Total Cost",
+      "inputTokens": "Input Tokens",
+      "inputCost": "Input Cost",
+      "cacheHitRate": "Cache Hit Rate",
+      "outputTokens": "Output Tokens",
+      "outputCost": "Output Cost"
+    },
+    "chart": {
+      "title": "Trend",
+      "totalRequests": "Total Requests",
+      "totalCost": "Total Cost",
+      "totalTokens": "Total Tokens",
+      "cacheHitRate": "Cache Hit Rate",
+      "timePeriod": "Time Period",
+      "metricType": {
+        "cost": "Cost",
+        "count": "Count",
+        "tokens": "Tokens",
+        "cache": "Cache"
+      },
+      "period": {
+        "today": "Today",
+        "last7Days": "7 Days",
+        "last30Days": "30 Days"
+      }
+    },
+    "modelHealth": {
+      "title": "Model Health",
+      "models": "models",
+      "noData": "No model requests",
+      "loading": "Loading model health…",
+      "loadFailed": "Model health is temporarily unavailable",
+      "requestCount": "Requests",
+      "successFailed": "Success / Failed",
+      "firstTokenP90": "TTFT P90",
+      "avgThroughput": "Avg Throughput",
+      "cacheRate": "Cache Rate",
+      "expandModels": "Show {count} more",
+      "collapseModels": "Show fewer"
+    },
+    "rank": {
+      "title": "Model Ranking",
+      "sortByCost": "Cost",
+      "sortByCount": "Count",
+      "sortByTokens": "Tokens",
+      "noData": "No ranking data",
+      "loading": "Loading ranking…",
+      "loadFailed": "Ranking is temporarily unavailable",
+      "successRate": "Success Rate"
+    },
+    "checkIn": {
+      "title": "Daily Check-in",
+      "reward": "{amount} points",
+      "available": "You have not checked in today. The reward is added to your balance.",
+      "checked": "You received {amount} points today. Come back tomorrow.",
+      "balance": "Balance {amount}",
+      "button": "Check in",
+      "checking": "Checking in...",
+      "done": "Checked in",
+      "success": "Check-in successful",
+      "successDescription": "{amount} points added to your balance",
+      "failed": "Check-in failed"
+    }
+  },
+  "setting": {
+    "appearance": "Appearance",
+    "system": "System",
+    "theme": {
+      "label": "Theme",
+      "light": "Light",
+      "dark": "Dark",
+      "system": "System"
+    },
+    "language": {
+      "label": "Language",
+      "zh_hans": "Chinese (Simplified)",
+      "zh_hant": "Chinese (Traditional)",
+      "en": "English"
+    },
+    "proxyUrl": {
+      "label": "Proxy URL",
+      "placeholder": "Enter proxy URL"
+    },
+    "trustedProxies": {
+      "label": "Trusted proxies",
+      "placeholder": "e.g. 172.16.0.0/12,10.0.0.0/8",
+      "description": "Empty trusts only Cloudflare. Behind a local reverse proxy / Docker, set the proxy's subnet so logs and rate limiting use the real client IP"
+    },
+    "statsSaveInterval": {
+      "label": "Stats Save Interval",
+      "placeholder": "Enter interval in minutes"
+    },
+    "anthropicAutoCacheControl": {
+      "label": "Anthropic Stable Prefix Cache",
+      "hint": "Automatically add cache_control to long system prompts, tools, or the first long user context"
+    },
+    "openAIAutoPromptCacheKey": {
+      "label": "OpenAI Stable Cache Key",
+      "hint": "When the client omits prompt_cache_key, generate an opaque stable key from the user, request model, system/tool anchors, and first user message. Client values always win."
+    },
+    "headerDefaults": {
+      "title": "Header Defaults",
+      "hint": "Filled only when the upstream request is missing these client identity headers. Channel custom headers still override them.",
+      "description": "Claude applies to Anthropic channels. Codex applies to OpenAI Responses channels.",
+      "claude": "Claude Header Defaults",
+      "codex": "Codex Header Defaults",
+      "packageVersion": "Package Version",
+      "runtimeVersion": "Runtime Version",
+      "stabilizeDeviceProfile": "Stable device profile",
+      "claudeDescription": "Manage Anthropic prefix caching together with Claude CLI identity headers for long system/tool prefixes.",
+      "codexDescription": "Manage OpenAI cache keys together with Codex Responses identity headers while preserving stream/SSE forwarding.",
+      "edit": "Edit",
+      "fixed": "Fixed",
+      "editable": "Editable",
+      "cancel": "Cancel",
+      "save": "Save"
+    },
+    "claudeCLIAutoCompact": {
+      "label": "Claude CLI auto compact",
+      "hint": "Off by default; passes through Claude CLI native behavior. When on, adds context_management clear_thinking only if the client did not send it, reducing slow long chats and CLI hangs."
+    },
+    "claudeCLIReasoningEffort": {
+      "label": "Claude reasoning effort",
+      "hint": "Default \"Adaptive\": follows the client request — high stays high, low stays low, and if none is sent the model decides on its own; Octopus does not override. Low/Medium/High force that level when the client sent none; Off adds no effort at all.",
+      "auto": "Adaptive (follow request)",
+      "off": "Off",
+      "low": "Low",
+      "medium": "Medium",
+      "high": "High"
+    },
+    "claudeBetaStripFlags": {
+      "label": "Claude Beta strip flags",
+      "defaultHint": "Empty = off",
+      "hint": "When empty, the downstream claude-cli's anthropic-beta is forwarded verbatim (default, zero behaviour change). Set a comma-separated list of beta flags to strip them from the outbound anthropic-beta — an escape hatch for when an upstream throws a 520 on a specific flag, while the rest of the genuine shape is preserved.",
+      "description": "Upstream escape hatch: comma-separated, empty = off. e.g. prompt-caching-scope-2026-01-05.",
+      "placeholder": "prompt-caching-scope-2026-01-05"
+    },
+    "codexFastMode": {
+      "label": "Codex fast mode",
+      "hint": "Off by default. When on, sets service_tier=priority only if the client omitted it, so Fast-capable upstreams can accelerate. Leave it off if the upstream does not support Fast. It does not lower reasoning effort."
+    },
+    "streamKeepalive": {
+      "label": "Stream keepalive interval",
+      "hint": "Sends a keepalive only during an active streaming request when no output has been written for the configured number of seconds. It does not start another upstream request or consume extra tokens.",
+      "description": "Helps long Claude/MCP tool calls survive reverse proxies and clients that close apparently idle streams.",
+      "disabledHint": "0 seconds disables",
+      "envHint": "can still provide the first deployment default.",
+      "placeholder": "15",
+      "seconds": "sec",
+      "invalid": "Keepalive interval must be 0 or a positive integer number of seconds"
+    },
+    "firstByteKeepalive": {
+      "label": "First-byte keepalive delay",
+      "hint": "When a streaming request waits longer than this many seconds for the upstream first byte, octopus injects a keepalive comment downstream to prevent idle-connection cuts by a front-end reverse proxy. Only enable when you cannot adjust the reverse proxy's idle timeout.",
+      "description": "Injects downstream keepalive while waiting for the upstream first byte, preventing front reverse proxies from closing the apparently idle connection.",
+      "disabledHint": "0 = off (default)",
+      "placeholder": "0",
+      "seconds": "sec",
+      "invalid": "First-byte keepalive delay must be 0 or a positive integer number of seconds"
+    },
+    "streamDataTimeout": {
+      "label": "Upstream stream idle timeout",
+      "hint": "Stops an active streaming request when the upstream provider sends no SSE event for the configured number of seconds. Upstream ping events count as activity.",
+      "description": "Prevents a stalled upstream stream from being kept alive forever by downstream keepalive writes.",
+      "disabledHint": "0 seconds disables",
+      "envHint": "can still provide the first deployment default.",
+      "placeholder": "900",
+      "seconds": "sec",
+      "invalid": "Stream idle timeout must be 0 or a positive integer number of seconds"
+    },
+    "upstreamHeaderTimeout": {
+      "label": "Upstream response header timeout",
+      "hint": "Caps how long each attempt waits for the upstream to send response headers. On expiry the attempt fails and the existing failover / automatic rescue rules continue; the body stream after headers arrive is unaffected.",
+      "description": "Prevents an upstream that accepts a request and then never answers from holding a single connection for the whole wait. This limits one attempt only, not the total length of automatic rescue.",
+      "disabledHint": "0 seconds disables",
+      "envHint": "can still provide the first deployment default.",
+      "placeholder": "0",
+      "seconds": "sec",
+      "invalid": "Upstream response header timeout must be an integer between 0 and 86400 seconds"
+    },
+    "responsesSessionTTL": {
+      "label": "Responses session keep",
+      "hint": "Remembers which channel and key own a previous_response_id, reducing broken continuations after restarts or route changes.",
+      "description": "Only affects OpenAI Responses continuation routing memory. It does not change normal logs or billing.",
+      "defaultHint": "Default 3600 sec",
+      "placeholder": "3600",
+      "seconds": "sec",
+      "invalid": "Responses session keep time must be 0 or a positive integer number of seconds"
+    },
+    "sessionKeepTimeDefault": {
+      "label": "Global session-keep default",
+      "hint": "Fallback sticky window for groups whose own session-keep time is 0, so one client keeps hitting the same channel and key instead of scattering across upstreams and wasting prompt cache.",
+      "description": "Only a fallback: a group's own session-keep time still takes precedence. 0 disables the global default and keeps the legacy per-group-only behavior.",
+      "defaultHint": "Default 0 (off)",
+      "placeholder": "0",
+      "seconds": "sec",
+      "invalid": "Global session-keep default must be 0 or a positive integer number of seconds"
+    },
+    "firstTokenTimeOutDefault": {
+      "label": "Global first-token timeout default",
+      "hint": "Fallback per-channel first-token timeout for groups whose own value is 0; if no first token arrives within this window the request switches to the next candidate channel. Streaming responses only.",
+      "description": "Only a fallback: a group's own first-token timeout still takes precedence. 0 disables the global default and keeps the legacy per-group-only behavior.",
+      "defaultHint": "Default 0 (off)",
+      "placeholder": "0",
+      "seconds": "sec",
+      "invalid": "Global first-token timeout default must be 0 or a positive integer number of seconds"
+    },
+    "routeModeOverride": {
+      "label": "Default routing mode",
+      "hint": "Which strategy new rules and groups without their own mode use by default. Spread = rotate across channels sharing the same number; Fill-first = concentrate on the top healthy channel and only sink on failure (better upstream cache hits).",
+      "description": "This is a default, not an override: rules whose mode you picked in Plans -> Infinite canvas keep their own choice.",
+      "movedHint": "The editor moved to the 「Default routing mode」 control in the Plans -> Infinite canvas toolbar.",
+      "defaultHint": "Defaults to fill-first; switch to spread if needed. Rules with their own mode are unchanged.",
+      "spread": "Spread",
+      "fillFirst": "Fill-first"
+    },
+    "poolDefaults": {
+      "title": "Model pool global defaults",
+      "hint": "Pool-wide routing defaults applied to every group: the route mode default only fills in for rules that have not chosen their own mode; the first-token and session-keep defaults only kick in when a group's own value is 0. A group's own configuration always takes precedence."
+    },
+    "userRegistration": {
+      "label": "Allow Direct Registration",
+      "hint": "When disabled, new users must enter an invite code. When enabled, users can register directly; an invite code still grants its quota or monthly card."
+    },
+    "emailVerification": {
+      "title": "Email Verification on Registration",
+      "hint": "When enabled, public registration requires an email and a 6-digit code sent to it. Configure the SMTP sender below.",
+      "enabled": "Enable email verification",
+      "host": "SMTP host",
+      "hostPlaceholder": "e.g. smtp.example.com",
+      "port": "SMTP port",
+      "portPlaceholder": "587",
+      "user": "SMTP username",
+      "userPlaceholder": "SMTP login username",
+      "password": "SMTP password",
+      "passwordPlaceholder": "SMTP login password",
+      "passwordKeptPlaceholder": "Already set, leave blank to keep current",
+      "from": "Sender address",
+      "fromPlaceholder": "e.g. no-reply@example.com",
+      "fromName": "Sender name",
+      "fromNamePlaceholder": "Octopus",
+      "ssl": "Implicit TLS (SSL)",
+      "sslHint": "Enable for implicit TLS on port 465. Leave off for STARTTLS (e.g. port 587).",
+      "provider": "Mail provider",
+      "providerHint": "Choose how verification codes are sent. HTTP API suits self-hosted services without SMTP (e.g. ClawEmail).",
+      "providerSMTP": "SMTP",
+      "providerHTTP": "HTTP API",
+      "httpBaseUrl": "API base URL",
+      "httpBaseUrlPlaceholder": "https://your-service/ext",
+      "httpFrom": "Sender address",
+      "httpFromPlaceholder": "agent@example.com",
+      "httpAdminAuth": "Admin auth token",
+      "httpAdminAuthPlaceholder": "Admin API token",
+      "httpSiteAuth": "Site auth token",
+      "httpSiteAuthPlaceholder": "Site API token"
+    },
+    "checkIn": {
+      "title": "User Daily Check-in",
+      "hint": "When enabled, signed-in users can claim one balance reward per day from Home. Rewards can be fixed or a random range.",
+      "enabled": "Enable daily check-in",
+      "rewardMode": "Check-in reward mode",
+      "fixed": "Fixed amount",
+      "random": "Random range",
+      "amountPlaceholder": "Fixed amount, e.g. 100",
+      "minPlaceholder": "Minimum",
+      "maxPlaceholder": "Maximum"
+    },
+    "upstreamError": {
+      "title": "Upstream Error Response",
+      "hint": "Admin logs keep real upstream status and error codes; users can see a public code and friendly message instead.",
+      "statusPassthrough": "Pass through upstream status",
+      "bodyMode": "Error body mode",
+      "publicCode": "Public error code",
+      "publicCodePlaceholder": "Code shown to users, e.g. service_busy",
+      "redacted": "Redacted upstream",
+      "custom": "Custom message",
+      "standard": "Octopus standard",
+      "customPlaceholder": "Message shown to users when custom mode is selected"
+    },
+    "corsAllowOrigins": {
+      "label": "CORS Allowed Origins",
+      "hint": "Empty = deny all, * = allow all",
+      "example": "Only allow specific domains: https://example.com,https://example2.com"
+    },
+    "circuitBreaker": {
+      "title": "Circuit Breaker",
+      "threshold": {
+        "label": "Failure Threshold (consecutive failures)",
+        "placeholder": "Enter threshold"
+      },
+      "cooldown": {
+        "label": "Base Cooldown (seconds)",
+        "placeholder": "Enter cooldown in seconds"
+      },
+      "maxCooldown": {
+        "label": "Max Cooldown (seconds)",
+        "placeholder": "Enter max cooldown in seconds"
+      },
+      "hint": "When a channel fails consecutively up to the threshold, circuit breaker trips. Cooldown grows exponentially up to the max cooldown"
+    },
+    "fingerprintProfile": {
+      "title": "Fingerprint Profiles",
+      "description": "Prepare multiple independent device fingerprints for different channels, so upstream keys behind different egress IPs present distinct devices instead of sharing one global fingerprint. Leave any field empty to fall back to the global default.",
+      "add": "New",
+      "edit": "Edit",
+      "delete": "Delete",
+      "confirmDelete": "Confirm delete",
+      "cancel": "Cancel",
+      "save": "Save",
+      "empty": "No fingerprint profiles yet. Click New to add one. Channels can still choose \"Default (follow global)\".",
+      "createTitle": "New Fingerprint Profile",
+      "editTitle": "Edit Fingerprint Profile",
+      "dialogHint": "Leave any field empty to fall back to the matching global default; only fill in the fields you want to differ on.",
+      "nameRequired": "Please enter a profile name",
+      "followGlobal": "Default (follow global)",
+      "genericUAHint": "Unified User-Agent for non Claude/Codex channels (Gemini / Volcengine / plain OpenAI Chat), which emit no UA by default. Leave empty to keep current behaviour.",
+      "groups": {
+        "claude": "Claude Fingerprint",
+        "codex": "Codex Fingerprint"
+      },
+      "fields": {
+        "name": "Name",
+        "seed": "Seed",
+        "claudeUserAgent": "Claude User-Agent",
+        "claudePackageVersion": "Claude Package Version",
+        "claudeRuntimeVersion": "Claude Runtime Version",
+        "claudeOS": "Claude OS",
+        "claudeArch": "Claude Arch",
+        "claudeTimeout": "Claude Timeout",
+        "claudeStabilize": "Stabilize device profile",
+        "codexUserAgent": "Codex User-Agent",
+        "codexOriginator": "Codex Originator",
+        "codexBetaFeatures": "Codex Beta Features",
+        "genericUA": "Generic User-Agent"
+      },
+      "placeholders": {
+        "name": "A recognizable name, e.g. macOS Claude / Windows Node A",
+        "seed": "Leave empty to auto-generate a random seed on first save",
+        "followGlobal": "Empty = follow global default",
+        "genericUA": "Empty = keep current behaviour (no UA set)"
+      },
+      "stabilize": {
+        "follow": "Follow global",
+        "on": "On",
+        "off": "Off"
+      }
+    },
+    "saved": "Saved",
+    "saveFailed": "Save failed. The setting was not applied. Please try again.",
+    "backup": {
+      "title": "Backup / Restore",
+      "export": {
+        "title": "Export",
+        "includeLogs": "Include Logs",
+        "includeStats": "Include Stats",
+        "button": "Download JSON",
+        "exporting": "Exporting...",
+        "success": "Export started"
+      },
+      "import": {
+        "title": "Import (Incremental)",
+        "selected": "File selected",
+        "button": "Import JSON",
+        "importing": "Importing...",
+        "noFile": "Please select a JSON file first",
+        "success": "Import successful",
+        "failed": "Import failed",
+        "result": "Import result"
+      }
+    },
+    "apiKey": {
+      "title": "API Keys",
+      "empty": "No API keys",
+      "add": "Add Key",
+      "loadFailed": "Failed to load",
+      "list": {
+        "plans": "Plans",
+        "endpoints": "Endpoints",
+        "defaultPlan": "Default plan",
+        "morePlans": "{count} more plans"
+      },
+      "guide": {
+        "button": "Usage Guide",
+        "title": "API Key Usage Guide",
+        "description": "Copy the Base URL and key below into your client.",
+        "baseUrl": "Base URL",
+        "allowedEndpoints": "Allowed endpoints",
+        "accessPlan": "Access plan",
+        "currentPlan": "Current plan",
+        "defaultPlan": "Default",
+        "planHint": "Choose which plan this tutorial should use. Requests follow that plan's model mapping and billing policy.",
+        "requestHeader": "Request header",
+        "groupAlias": "Compatible alias",
+        "openaiDescription": "For OpenAI-compatible clients, Chat Completions, and Responses.",
+        "geminiDescription": "For native Gemini generateContent / streamGenerateContent.",
+        "anthropicDescription": "For Claude / Anthropic Messages protocol.",
+        "empty": "This key has no available endpoint families yet."
+      },
+      "form": {
+        "name": "Name",
+        "owner": "Owner",
+        "currentAdmin": "Current admin",
+        "maxCost": "Max Cost",
+        "maxCostPlaceholder": "Enter amount",
         "unlimited": "Unlimited",
-        "expireAt": "Expires",
-        "neverExpire": "Never",
-        "daysLeft": "days left",
-        "expired": "Expired",
-        "supportedModels": "Supported Models"
+        "expireAt": "Expire Date",
+        "selectDate": "Select date",
+        "neverExpire": "Never Expire",
+        "supportedModels": "Supported Models",
+        "noModels": "No models available",
+        "modelsHint": "Leave empty for unlimited models; select models or use Select all for stricter control.",
+        "selectAllModels": "Select all",
+        "unlimitedModels": "Unlimited",
+        "searchModels": "Search models",
+        "noMatchedModels": "No matching models",
+        "accessPlans": "Plans",
+        "noAccessPlans": "No plans available",
+        "defaultAccessPlan": "Default Plan",
+        "accessPlansHint": "Admins can limit this key to plans allowed by the owner; request headers may only switch among selected plans.",
+        "selectAllPlans": "Select all",
+        "defaultOnly": "Default",
+        "endpointFamilies": "Endpoint Families",
+        "endpointFamiliesHint": "All families are selected by default for existing key compatibility. Uncheck a family to block that protocol.",
+        "endpointUsage": "Usage Examples",
+        "enabled": "Enabled",
+        "cancel": "Cancel",
+        "create": "Create",
+        "save": "Save",
+        "confirm": "Confirm"
+      },
+      "stats": {
+        "noData": "No statistics available",
+        "inputToken": "Input Token",
+        "outputToken": "Output Token",
+        "inputCost": "Input Cost",
+        "outputCost": "Output Cost",
+        "requestSuccess": "Request Success",
+        "requestFailed": "Request Failed"
+      },
+      "toast": {
+        "createSuccess": "API key created",
+        "createError": "Failed to create API key",
+        "updateSuccess": "API key updated",
+        "updateError": "Failed to update API key",
+        "deleteSuccess": "API key deleted",
+        "deleteError": "Failed to delete API key"
+      }
     },
-    "navbar": {
-        "home": "Home",
-        "user": "Users",
-        "channel": "Channel",
-        "access-plan": "Plans",
-        "key": "API Key",
-        "model": "Price",
-        "model-test": "Test",
-        "migration": "Migration",
-        "prompt": "Prompt",
-        "audit": "Detect",
-        "log": "Log",
-        "setting": "Setting",
-        "redact": "Redaction"
+    "llmPrice": {
+      "title": "Model Pricing",
+      "description": "Pull the public price catalog from models.dev. Local manual overrides still take priority.",
+      "source": "Price source",
+      "sourceName": "models.dev",
+      "checking": "Checking...",
+      "updateInterval": {
+        "label": "Auto Update Interval (hours)",
+        "placeholder": "Enter interval in hours"
+      },
+      "manualUpdate": {
+        "label": "Price Catalog Update",
+        "hint": "Refreshes the model price cache without overwriting locally maintained model prices.",
+        "button": "Update from models.dev",
+        "updating": "Updating..."
+      },
+      "lastUpdate": "Last Update",
+      "neverUpdated": "Never updated",
+      "updateSuccess": "Price catalog updated from models.dev",
+      "updateFailed": "Failed to update price catalog from models.dev"
     },
-    "toolbar": {
-        "popover": {
-            "ariaLabel": "View options",
-            "layout": "Layout",
-            "sort": "Sort",
-            "grid": "Grid",
-            "list": "List",
-            "nameAsc": "Name Asc",
-            "nameDesc": "Name Desc",
-            "createdAsc": "Time Asc",
-            "createdDesc": "Time Desc",
-            "asc": "Asc",
-            "desc": "Desc",
-            "filter": {
-                "title": "Filter",
-                "channel": {
-                    "all": "All channels",
-                    "enabled": "Enabled only",
-                    "disabled": "Disabled only"
-                },
-                "model": {
-                    "all": "All models",
-                    "priced": "Priced only",
-                    "free": "Free only"
-                }
-            }
-        }
+    "llmSync": {
+      "title": "Channel Sync",
+      "syncInterval": {
+        "label": "Auto Sync Interval (hours)",
+        "placeholder": "Enter interval in hours"
+      },
+      "manualSync": {
+        "label": "Manual Channel Sync",
+        "button": "Sync Now",
+        "syncing": "Syncing..."
+      },
+      "lastSync": "Last Sync",
+      "neverSynced": "Never synced",
+      "syncSuccess": "Channel synced successfully",
+      "syncFailed": "Failed to sync channel"
     },
-    "common": {
-        "copy": {
-            "success": "Copied",
-            "failed": "Copy failed",
-            "noContent": "Nothing to copy"
-        }
+    "account": {
+      "title": "Account Settings",
+      "save": "Save",
+      "saving": "Saving...",
+      "username": {
+        "label": "Change Username",
+        "placeholder": "Enter new username",
+        "empty": "Username cannot be empty",
+        "success": "Username changed successfully",
+        "failed": "Failed to change username"
+      },
+      "password": {
+        "label": "Change Password",
+        "oldPlaceholder": "Enter current password",
+        "newPlaceholder": "Enter new password",
+        "confirmPlaceholder": "Confirm new password",
+        "oldEmpty": "Please enter current password",
+        "newEmpty": "Please enter new password",
+        "mismatch": "Passwords do not match",
+        "tooShort": "Password must be at least 6 characters",
+        "change": "Change Password",
+        "success": "Password changed successfully",
+        "failed": "Failed to change password"
+      }
     },
-    "home": {
-        "activity": {
-            "requestCount": "Requests",
-            "waitTime": "Wait Time",
-            "totalToken": "Tokens Used",
-            "totalCost": "Total Cost",
-            "cacheHitRate": "Cache Hit Rate",
-            "noData": "No Data"
-        },
-        "total": {
-            "requestStats": "Request Stats",
-            "totalStats": "Total Stats",
-            "inputStats": "Input Stats",
-            "outputStats": "Output Stats",
-            "requestCount": "Requests",
-            "timeConsumed": "Time Consumed",
-            "totalToken": "Tokens Used",
-            "totalCost": "Total Cost",
-            "inputTokens": "Input Tokens",
-            "inputCost": "Input Cost",
-            "cacheHitRate": "Cache Hit Rate",
-            "outputTokens": "Output Tokens",
-            "outputCost": "Output Cost"
-        },
-        "chart": {
-            "title": "Trend",
-            "totalRequests": "Total Requests",
-            "totalCost": "Total Cost",
-            "totalTokens": "Total Tokens",
-            "cacheHitRate": "Cache Hit Rate",
-            "timePeriod": "Time Period",
-            "metricType": {
-                "cost": "Cost",
-                "count": "Count",
-                "tokens": "Tokens",
-                "cache": "Cache"
-            },
-            "period": {
-                "today": "Today",
-                "last7Days": "7 Days",
-                "last30Days": "30 Days"
-            }
-        },
-        "modelHealth": {
-            "title": "Model Health",
-            "models": "models",
-            "noData": "No model requests",
-            "loading": "Loading model health…",
-            "loadFailed": "Model health is temporarily unavailable",
-            "requestCount": "Requests",
-            "successFailed": "Success / Failed",
-            "firstTokenP90": "TTFT P90",
-            "avgThroughput": "Avg Throughput",
-            "cacheRate": "Cache Rate",
-            "expandModels": "Show {count} more",
-            "collapseModels": "Show fewer"
-        },
-        "rank": {
-            "title": "Model Ranking",
-            "sortByCost": "Cost",
-            "sortByCount": "Count",
-            "sortByTokens": "Tokens",
-            "noData": "No ranking data",
-            "loading": "Loading ranking…",
-            "loadFailed": "Ranking is temporarily unavailable",
-            "successRate": "Success Rate"
-        },
-        "checkIn": {
-            "title": "Daily Check-in",
-            "reward": "{amount} points",
-            "available": "You have not checked in today. The reward is added to your balance.",
-            "checked": "You received {amount} points today. Come back tomorrow.",
-            "balance": "Balance {amount}",
-            "button": "Check in",
-            "checking": "Checking in...",
-            "done": "Checked in",
-            "success": "Check-in successful",
-            "successDescription": "{amount} points added to your balance",
-            "failed": "Check-in failed"
-        }
-    },
-    "setting": {
-        "appearance": "Appearance",
-        "system": "System",
-        "theme": {
-            "label": "Theme",
-            "light": "Light",
-            "dark": "Dark",
-            "system": "System"
-        },
-        "language": {
-            "label": "Language",
-            "zh_hans": "Chinese (Simplified)",
-            "zh_hant": "Chinese (Traditional)",
-            "en": "English"
-        },
-        "proxyUrl": {
-            "label": "Proxy URL",
-            "placeholder": "Enter proxy URL"
-        },
-        "trustedProxies": {
-            "label": "Trusted proxies",
-            "placeholder": "e.g. 172.16.0.0/12,10.0.0.0/8",
-            "description": "Empty trusts only Cloudflare. Behind a local reverse proxy / Docker, set the proxy's subnet so logs and rate limiting use the real client IP"
-        },
-        "statsSaveInterval": {
-            "label": "Stats Save Interval",
-            "placeholder": "Enter interval in minutes"
-        },
-        "anthropicAutoCacheControl": {
-            "label": "Anthropic Stable Prefix Cache",
-            "hint": "Automatically add cache_control to long system prompts, tools, or the first long user context"
-        },
-        "openAIAutoPromptCacheKey": {
-            "label": "OpenAI Stable Cache Key",
-            "hint": "When the client omits prompt_cache_key, generate an opaque stable key from the user, request model, system/tool anchors, and first user message. Client values always win."
-        },
-        "headerDefaults": {
-            "title": "Header Defaults",
-            "hint": "Filled only when the upstream request is missing these client identity headers. Channel custom headers still override them.",
-            "description": "Claude applies to Anthropic channels. Codex applies to OpenAI Responses channels.",
-            "claude": "Claude Header Defaults",
-            "codex": "Codex Header Defaults",
-            "packageVersion": "Package Version",
-            "runtimeVersion": "Runtime Version",
-            "stabilizeDeviceProfile": "Stable device profile",
-            "claudeDescription": "Manage Anthropic prefix caching together with Claude CLI identity headers for long system/tool prefixes.",
-            "codexDescription": "Manage OpenAI cache keys together with Codex Responses identity headers while preserving stream/SSE forwarding.",
-            "edit": "Edit",
-            "fixed": "Fixed",
-            "editable": "Editable",
-            "cancel": "Cancel",
-            "save": "Save"
-        },
-        "claudeCLIAutoCompact": {
-            "label": "Claude CLI auto compact",
-            "hint": "Off by default; passes through Claude CLI native behavior. When on, adds context_management clear_thinking only if the client did not send it, reducing slow long chats and CLI hangs."
-        },
-        "claudeCLIReasoningEffort": {
-            "label": "Claude reasoning effort",
-            "hint": "Default \"Adaptive\": follows the client request — high stays high, low stays low, and if none is sent the model decides on its own; Octopus does not override. Low/Medium/High force that level when the client sent none; Off adds no effort at all.",
-            "auto": "Adaptive (follow request)",
-            "off": "Off",
-            "low": "Low",
-            "medium": "Medium",
-            "high": "High"
-        },
-        "claudeBetaStripFlags": {
-            "label": "Claude Beta strip flags",
-            "defaultHint": "Empty = off",
-            "hint": "When empty, the downstream claude-cli's anthropic-beta is forwarded verbatim (default, zero behaviour change). Set a comma-separated list of beta flags to strip them from the outbound anthropic-beta — an escape hatch for when an upstream throws a 520 on a specific flag, while the rest of the genuine shape is preserved.",
-            "description": "Upstream escape hatch: comma-separated, empty = off. e.g. prompt-caching-scope-2026-01-05.",
-            "placeholder": "prompt-caching-scope-2026-01-05"
-        },
-        "codexFastMode": {
-            "label": "Codex fast mode",
-            "hint": "Off by default. When on, sets service_tier=priority only if the client omitted it, so Fast-capable upstreams can accelerate. Leave it off if the upstream does not support Fast. It does not lower reasoning effort."
-        },
-        "streamKeepalive": {
-            "label": "Stream keepalive interval",
-            "hint": "Sends a keepalive only during an active streaming request when no output has been written for the configured number of seconds. It does not start another upstream request or consume extra tokens.",
-            "description": "Helps long Claude/MCP tool calls survive reverse proxies and clients that close apparently idle streams.",
-            "disabledHint": "0 seconds disables",
-            "envHint": "can still provide the first deployment default.",
-            "placeholder": "15",
-            "seconds": "sec",
-            "invalid": "Keepalive interval must be 0 or a positive integer number of seconds"
-        },
-        "firstByteKeepalive": {
-            "label": "First-byte keepalive delay",
-            "hint": "When a streaming request waits longer than this many seconds for the upstream first byte, octopus injects a keepalive comment downstream to prevent idle-connection cuts by a front-end reverse proxy. Only enable when you cannot adjust the reverse proxy's idle timeout.",
-            "description": "Injects downstream keepalive while waiting for the upstream first byte, preventing front reverse proxies from closing the apparently idle connection.",
-            "disabledHint": "0 = off (default)",
-            "placeholder": "0",
-            "seconds": "sec",
-            "invalid": "First-byte keepalive delay must be 0 or a positive integer number of seconds"
-        },
-        "streamDataTimeout": {
-            "label": "Upstream stream idle timeout",
-            "hint": "Stops an active streaming request when the upstream provider sends no SSE event for the configured number of seconds. Upstream ping events count as activity.",
-            "description": "Prevents a stalled upstream stream from being kept alive forever by downstream keepalive writes.",
-            "disabledHint": "0 seconds disables",
-            "envHint": "can still provide the first deployment default.",
-            "placeholder": "900",
-            "seconds": "sec",
-            "invalid": "Stream idle timeout must be 0 or a positive integer number of seconds"
-        },
-        "upstreamHeaderTimeout": {
-            "label": "Upstream response header timeout",
-            "hint": "Caps how long each attempt waits for the upstream to send response headers. On expiry the attempt fails and the existing failover / automatic rescue rules continue; the body stream after headers arrive is unaffected.",
-            "description": "Prevents an upstream that accepts a request and then never answers from holding a single connection for the whole wait. This limits one attempt only, not the total length of automatic rescue.",
-            "disabledHint": "0 seconds disables",
-            "envHint": "can still provide the first deployment default.",
-            "placeholder": "0",
-            "seconds": "sec",
-            "invalid": "Upstream response header timeout must be an integer between 0 and 86400 seconds"
-        },
-        "responsesSessionTTL": {
-            "label": "Responses session keep",
-            "hint": "Remembers which channel and key own a previous_response_id, reducing broken continuations after restarts or route changes.",
-            "description": "Only affects OpenAI Responses continuation routing memory. It does not change normal logs or billing.",
-            "defaultHint": "Default 3600 sec",
-            "placeholder": "3600",
-            "seconds": "sec",
-            "invalid": "Responses session keep time must be 0 or a positive integer number of seconds"
-        },
-        "sessionKeepTimeDefault": {
-            "label": "Global session-keep default",
-            "hint": "Fallback sticky window for groups whose own session-keep time is 0, so one client keeps hitting the same channel and key instead of scattering across upstreams and wasting prompt cache.",
-            "description": "Only a fallback: a group's own session-keep time still takes precedence. 0 disables the global default and keeps the legacy per-group-only behavior.",
-            "defaultHint": "Default 0 (off)",
-            "placeholder": "0",
-            "seconds": "sec",
-            "invalid": "Global session-keep default must be 0 or a positive integer number of seconds"
-        },
-        "firstTokenTimeOutDefault": {
-            "label": "Global first-token timeout default",
-            "hint": "Fallback per-channel first-token timeout for groups whose own value is 0; if no first token arrives within this window the request switches to the next candidate channel. Streaming responses only.",
-            "description": "Only a fallback: a group's own first-token timeout still takes precedence. 0 disables the global default and keeps the legacy per-group-only behavior.",
-            "defaultHint": "Default 0 (off)",
-            "placeholder": "0",
-            "seconds": "sec",
-            "invalid": "Global first-token timeout default must be 0 or a positive integer number of seconds"
-        },
-        "routeModeOverride": {
-            "label": "Default routing mode",
-            "hint": "Which strategy new rules and groups without their own mode use by default. Spread = rotate across channels sharing the same number; Fill-first = concentrate on the top healthy channel and only sink on failure (better upstream cache hits).",
-            "description": "This is a default, not an override: rules whose mode you picked in Plans -> Infinite canvas keep their own choice.",
-            "movedHint": "The editor moved to the 「Default routing mode」 control in the Plans -> Infinite canvas toolbar.",
-            "defaultHint": "Defaults to fill-first; switch to spread if needed. Rules with their own mode are unchanged.",
-            "spread": "Spread",
-            "fillFirst": "Fill-first"
-        },
-        "poolDefaults": {
-            "title": "Model pool global defaults",
-            "hint": "Pool-wide routing defaults applied to every group: the route mode default only fills in for rules that have not chosen their own mode; the first-token and session-keep defaults only kick in when a group's own value is 0. A group's own configuration always takes precedence."
-        },
-        "userRegistration": {
-            "label": "Allow Direct Registration",
-            "hint": "When disabled, new users must enter an invite code. When enabled, users can register directly; an invite code still grants its quota or monthly card."
-        },
-        "emailVerification": {
-            "title": "Email Verification on Registration",
-            "hint": "When enabled, public registration requires an email and a 6-digit code sent to it. Configure the SMTP sender below.",
-            "enabled": "Enable email verification",
-            "host": "SMTP host",
-            "hostPlaceholder": "e.g. smtp.example.com",
-            "port": "SMTP port",
-            "portPlaceholder": "587",
-            "user": "SMTP username",
-            "userPlaceholder": "SMTP login username",
-            "password": "SMTP password",
-            "passwordPlaceholder": "SMTP login password",
-            "passwordKeptPlaceholder": "Already set, leave blank to keep current",
-            "from": "Sender address",
-            "fromPlaceholder": "e.g. no-reply@example.com",
-            "fromName": "Sender name",
-            "fromNamePlaceholder": "Octopus",
-            "ssl": "Implicit TLS (SSL)",
-            "sslHint": "Enable for implicit TLS on port 465. Leave off for STARTTLS (e.g. port 587).",
-            "provider": "Mail provider",
-            "providerHint": "Choose how verification codes are sent. HTTP API suits self-hosted services without SMTP (e.g. ClawEmail).",
-            "providerSMTP": "SMTP",
-            "providerHTTP": "HTTP API",
-            "httpBaseUrl": "API base URL",
-            "httpBaseUrlPlaceholder": "https://your-service/ext",
-            "httpFrom": "Sender address",
-            "httpFromPlaceholder": "agent@example.com",
-            "httpAdminAuth": "Admin auth token",
-            "httpAdminAuthPlaceholder": "Admin API token",
-            "httpSiteAuth": "Site auth token",
-            "httpSiteAuthPlaceholder": "Site API token"
-        },
-        "checkIn": {
-            "title": "User Daily Check-in",
-            "hint": "When enabled, signed-in users can claim one balance reward per day from Home. Rewards can be fixed or a random range.",
-            "enabled": "Enable daily check-in",
-            "rewardMode": "Check-in reward mode",
-            "fixed": "Fixed amount",
-            "random": "Random range",
-            "amountPlaceholder": "Fixed amount, e.g. 100",
-            "minPlaceholder": "Minimum",
-            "maxPlaceholder": "Maximum"
-        },
-        "upstreamError": {
-            "title": "Upstream Error Response",
-            "hint": "Admin logs keep real upstream status and error codes; users can see a public code and friendly message instead.",
-            "statusPassthrough": "Pass through upstream status",
-            "bodyMode": "Error body mode",
-            "publicCode": "Public error code",
-            "publicCodePlaceholder": "Code shown to users, e.g. service_busy",
-            "redacted": "Redacted upstream",
-            "custom": "Custom message",
-            "standard": "Octopus standard",
-            "customPlaceholder": "Message shown to users when custom mode is selected"
-        },
-        "corsAllowOrigins": {
-            "label": "CORS Allowed Origins",
-            "hint": "Empty = deny all, * = allow all",
-            "example": "Only allow specific domains: https://example.com,https://example2.com"
-        },
-        "circuitBreaker": {
-            "title": "Circuit Breaker",
-            "threshold": {
-                "label": "Failure Threshold (consecutive failures)",
-                "placeholder": "Enter threshold"
-            },
-            "cooldown": {
-                "label": "Base Cooldown (seconds)",
-                "placeholder": "Enter cooldown in seconds"
-            },
-            "maxCooldown": {
-                "label": "Max Cooldown (seconds)",
-                "placeholder": "Enter max cooldown in seconds"
-            },
-            "hint": "When a channel fails consecutively up to the threshold, circuit breaker trips. Cooldown grows exponentially up to the max cooldown"
-        },
-        "fingerprintProfile": {
-            "title": "Fingerprint Profiles",
-            "description": "Prepare multiple independent device fingerprints for different channels, so upstream keys behind different egress IPs present distinct devices instead of sharing one global fingerprint. Leave any field empty to fall back to the global default.",
-            "add": "New",
-            "edit": "Edit",
-            "delete": "Delete",
-            "confirmDelete": "Confirm delete",
-            "cancel": "Cancel",
-            "save": "Save",
-            "empty": "No fingerprint profiles yet. Click New to add one. Channels can still choose \"Default (follow global)\".",
-            "createTitle": "New Fingerprint Profile",
-            "editTitle": "Edit Fingerprint Profile",
-            "dialogHint": "Leave any field empty to fall back to the matching global default; only fill in the fields you want to differ on.",
-            "nameRequired": "Please enter a profile name",
-            "followGlobal": "Default (follow global)",
-            "genericUAHint": "Unified User-Agent for non Claude/Codex channels (Gemini / Volcengine / plain OpenAI Chat), which emit no UA by default. Leave empty to keep current behaviour.",
-            "groups": {
-                "claude": "Claude Fingerprint",
-                "codex": "Codex Fingerprint"
-            },
-            "fields": {
-                "name": "Name",
-                "seed": "Seed",
-                "claudeUserAgent": "Claude User-Agent",
-                "claudePackageVersion": "Claude Package Version",
-                "claudeRuntimeVersion": "Claude Runtime Version",
-                "claudeOS": "Claude OS",
-                "claudeArch": "Claude Arch",
-                "claudeTimeout": "Claude Timeout",
-                "claudeStabilize": "Stabilize device profile",
-                "codexUserAgent": "Codex User-Agent",
-                "codexOriginator": "Codex Originator",
-                "codexBetaFeatures": "Codex Beta Features",
-                "genericUA": "Generic User-Agent"
-            },
-            "placeholders": {
-                "name": "A recognizable name, e.g. macOS Claude / Windows Node A",
-                "seed": "Leave empty to auto-generate a random seed on first save",
-                "followGlobal": "Empty = follow global default",
-                "genericUA": "Empty = keep current behaviour (no UA set)"
-            },
-            "stabilize": {
-                "follow": "Follow global",
-                "on": "On",
-                "off": "Off"
-            }
-        },
-        "saved": "Saved",
-        "saveFailed": "Save failed. The setting was not applied. Please try again.",
-        "backup": {
-            "title": "Backup / Restore",
-            "export": {
-                "title": "Export",
-                "includeLogs": "Include Logs",
-                "includeStats": "Include Stats",
-                "button": "Download JSON",
-                "exporting": "Exporting...",
-                "success": "Export started"
-            },
-            "import": {
-                "title": "Import (Incremental)",
-                "selected": "File selected",
-                "button": "Import JSON",
-                "importing": "Importing...",
-                "noFile": "Please select a JSON file first",
-                "success": "Import successful",
-                "failed": "Import failed",
-                "result": "Import result"
-            }
-        },
-        "apiKey": {
-            "title": "API Keys",
-            "empty": "No API keys",
-            "add": "Add Key",
-            "loadFailed": "Failed to load",
-            "list": {
-                "plans": "Plans",
-                "endpoints": "Endpoints",
-                "defaultPlan": "Default plan",
-                "morePlans": "{count} more plans"
-            },
-            "guide": {
-                "button": "Usage Guide",
-                "title": "API Key Usage Guide",
-                "description": "Copy the Base URL and key below into your client.",
-                "baseUrl": "Base URL",
-                "allowedEndpoints": "Allowed endpoints",
-                "accessPlan": "Access plan",
-                "currentPlan": "Current plan",
-                "defaultPlan": "Default",
-                "planHint": "Choose which plan this tutorial should use. Requests follow that plan's model mapping and billing policy.",
-                "requestHeader": "Request header",
-                "groupAlias": "Compatible alias",
-                "openaiDescription": "For OpenAI-compatible clients, Chat Completions, and Responses.",
-                "geminiDescription": "For native Gemini generateContent / streamGenerateContent.",
-                "anthropicDescription": "For Claude / Anthropic Messages protocol.",
-                "empty": "This key has no available endpoint families yet."
-            },
-            "form": {
-                "name": "Name",
-                "owner": "Owner",
-                "currentAdmin": "Current admin",
-                "maxCost": "Max Cost",
-                "maxCostPlaceholder": "Enter amount",
-                "unlimited": "Unlimited",
-                "expireAt": "Expire Date",
-                "selectDate": "Select date",
-                "neverExpire": "Never Expire",
-                "supportedModels": "Supported Models",
-                "noModels": "No models available",
-                "modelsHint": "Leave empty for unlimited models; select models or use Select all for stricter control.",
-                "selectAllModels": "Select all",
-                "unlimitedModels": "Unlimited",
-                "searchModels": "Search models",
-                "noMatchedModels": "No matching models",
-                "accessPlans": "Plans",
-                "noAccessPlans": "No plans available",
-                "defaultAccessPlan": "Default Plan",
-                "accessPlansHint": "Admins can limit this key to plans allowed by the owner; request headers may only switch among selected plans.",
-                "selectAllPlans": "Select all",
-                "defaultOnly": "Default",
-                "endpointFamilies": "Endpoint Families",
-                "endpointFamiliesHint": "All families are selected by default for existing key compatibility. Uncheck a family to block that protocol.",
-                "endpointUsage": "Usage Examples",
-                "enabled": "Enabled",
-                "cancel": "Cancel",
-                "create": "Create",
-                "save": "Save",
-                "confirm": "Confirm"
-            },
-            "stats": {
-                "noData": "No statistics available",
-                "inputToken": "Input Token",
-                "outputToken": "Output Token",
-                "inputCost": "Input Cost",
-                "outputCost": "Output Cost",
-                "requestSuccess": "Request Success",
-                "requestFailed": "Request Failed"
-            },
-            "toast": {
-                "createSuccess": "API key created",
-                "createError": "Failed to create API key",
-                "updateSuccess": "API key updated",
-                "updateError": "Failed to update API key",
-                "deleteSuccess": "API key deleted",
-                "deleteError": "Failed to delete API key"
-            }
-        },
-        "llmPrice": {
-            "title": "Model Pricing",
-            "description": "Pull the public price catalog from models.dev. Local manual overrides still take priority.",
-            "source": "Price source",
-            "sourceName": "models.dev",
-            "checking": "Checking...",
-            "updateInterval": {
-                "label": "Auto Update Interval (hours)",
-                "placeholder": "Enter interval in hours"
-            },
-            "manualUpdate": {
-                "label": "Price Catalog Update",
-                "hint": "Refreshes the model price cache without overwriting locally maintained model prices.",
-                "button": "Update from models.dev",
-                "updating": "Updating..."
-            },
-            "lastUpdate": "Last Update",
-            "neverUpdated": "Never updated",
-            "updateSuccess": "Price catalog updated from models.dev",
-            "updateFailed": "Failed to update price catalog from models.dev"
-        },
-        "llmSync": {
-            "title": "Channel Sync",
-            "syncInterval": {
-                "label": "Auto Sync Interval (hours)",
-                "placeholder": "Enter interval in hours"
-            },
-            "manualSync": {
-                "label": "Manual Channel Sync",
-                "button": "Sync Now",
-                "syncing": "Syncing..."
-            },
-            "lastSync": "Last Sync",
-            "neverSynced": "Never synced",
-            "syncSuccess": "Channel synced successfully",
-            "syncFailed": "Failed to sync channel"
-        },
-        "account": {
-            "title": "Account Settings",
-            "save": "Save",
-            "saving": "Saving...",
-            "username": {
-                "label": "Change Username",
-                "placeholder": "Enter new username",
-                "empty": "Username cannot be empty",
-                "success": "Username changed successfully",
-                "failed": "Failed to change username"
-            },
-            "password": {
-                "label": "Change Password",
-                "oldPlaceholder": "Enter current password",
-                "newPlaceholder": "Enter new password",
-                "confirmPlaceholder": "Confirm new password",
-                "oldEmpty": "Please enter current password",
-                "newEmpty": "Please enter new password",
-                "mismatch": "Passwords do not match",
-                "tooShort": "Password must be at least 6 characters",
-                "change": "Change Password",
-                "success": "Password changed successfully",
-                "failed": "Failed to change password"
-            }
-        },
-        "info": {
-            "title": "Version Info",
-            "currentVersion": "Current Version",
-            "latestVersion": "Latest Version",
-            "currentBuildTime": "Current Build Time",
-            "latestBuildTime": "Latest Build Time",
-            "buildTime": "Build Time",
-            "publishedAt": "Published At",
-            "github": "GitHub Repository",
-            "versionSource": "Version Source",
-            "commit": "Commit",
-            "unknown": "Unknown",
-            "checkUpdate": "Check Update",
-            "checkSuccess": "Update check refreshed",
-            "versionMismatch": "Version Mismatch",
-            "versionMismatchHint": "Frontend version ({frontend}) does not match backend version ({backend}). This may be a browser cache issue. Please force refresh the page.",
-            "forceRefresh": "Force Refresh",
-            "newVersionAvailable": "New version available",
-            "newVersionAvailableHint": "Please backup your data first, then update the system",
-            "futureUpdateHint": "Future builds keep the official version number, while updates come from zhizhishu/octopus images and packages.",
-            "openFutureUpdate": "Open Future Update",
-            "updateNow": "Update Now",
-            "updating": "Updating...",
-            "updateSuccess": "Update successful, service will restart shortly",
-            "updateFailed": "Update failed"
-        },
-        "log": {
-            "title": "Log Settings",
-            "enabled": {
-                "label": "Enable History Logs"
-            },
-            "keepPeriod": {
-                "label": "Log Retention (days)",
-                "placeholder": "Enter days"
-            },
-            "maxStorage": {
-                "label": "Log Storage Limit (GB)",
-                "placeholder": "0 means unlimited",
-                "hint": "Estimated from request/response content; oldest logs are removed after the limit",
-                "current": "Current usage",
-                "unlimited": "Unlimited"
-            },
-            "queueHealth": {
-                "pending": "Pending writes",
-                "dropped": "Dropped records",
-                "writeFailed": "Write failures",
-                "healthy": "Writes healthy"
-            },
-            "clear": {
-                "label": "Clear History Logs",
-                "button": "Clear",
-                "clearing": "Clearing..."
-            },
-            "clearSuccess": "Logs cleared",
-            "clearFailed": "Failed to clear logs",
-            "intervention": {
-                "label": "Automatic rescue for upstream errors",
-                "description": "Automatic rescue retries the same user message on other channels once, at one retry per second, for at most 300 seconds. It runs at most once per new user message: once the rescue is exhausted, later requests carrying that same message are forwarded normally until one succeeds or a new user message arrives. Identical conversation histories cannot be told apart, so a repeated message shares the same rescue."
-            },
-            "noBreaker": {
-                "label": "Automatic rescue window (sec)",
-                "hint": "Default and maximum are both 300 seconds; 0 turns automatic rescue off. It applies to channels with the circuit breaker disabled, regardless of the switch above."
-            }
-        }
-    },
-    "model": {
-        "create": {
-            "title": "Create Model",
-            "name": "Model Name",
-            "input": "Input Price",
-            "output": "Output Price",
-            "cacheRead": "Cache Read",
-            "cacheWrite": "Cache Write",
-            "submit": "Create",
-            "submitting": "Creating..."
-        },
-        "toast": {
-            "updated": "Model price updated",
-            "updateFailed": "Update failed",
-            "deleted": "Model deleted",
-            "deleteFailed": "Delete failed"
-        },
-        "card": {
-            "inputCache": "Input/Cache",
-            "outputCache": "Output/Cache",
-            "edit": "Edit",
-            "delete": "Delete",
-            "autoRescue": "Auto-rescued"
-        },
-        "overlay": {
-            "cancel": "Cancel",
-            "deleting": "Deleting...",
-            "confirmDelete": "Confirm Delete",
-            "input": "Input",
-            "output": "Output",
-            "cacheRead": "Cache Read",
-            "cacheWrite": "Cache Write",
-            "save": "Save"
-        }
+    "info": {
+      "title": "Version Info",
+      "currentVersion": "Current Version",
+      "latestVersion": "Latest Version",
+      "currentBuildTime": "Current Build Time",
+      "latestBuildTime": "Latest Build Time",
+      "buildTime": "Build Time",
+      "publishedAt": "Published At",
+      "github": "GitHub Repository",
+      "versionSource": "Version Source",
+      "commit": "Commit",
+      "unknown": "Unknown",
+      "checkUpdate": "Check Update",
+      "checkSuccess": "Update check refreshed",
+      "versionMismatch": "Version Mismatch",
+      "versionMismatchHint": "Frontend version ({frontend}) does not match backend version ({backend}). This may be a browser cache issue. Please force refresh the page.",
+      "forceRefresh": "Force Refresh",
+      "newVersionAvailable": "New version available",
+      "newVersionAvailableHint": "Please backup your data first, then update the system",
+      "futureUpdateHint": "Future builds keep the official version number, while updates come from zhizhishu/octopus images and packages.",
+      "openFutureUpdate": "Open Future Update",
+      "updateNow": "Update Now",
+      "updating": "Updating...",
+      "updateSuccess": "Update successful, service will restart shortly",
+      "updateFailed": "Update failed"
     },
     "log": {
-        "live": {
-            "autoRescue": "Auto-rescued",
-            "activeActivity": "Live Requests",
-            "running": "In progress",
-            "rescue": "Automatic rescue",
-            "retryRound": "Retry {count}",
-            "reconnecting": "Reconnecting",
-            "requesting": "Requesting",
-            "stop": "Stop request",
-            "stopSent": "Stop requested",
-            "stopFailed": "Stop request failed",
-            "override": "Choose channel",
-            "channel": "Select channel",
-            "key": "Automatic key",
-            "model": "Model override",
-            "retry": "Retry on channel"
-        },
-        "list": {
-            "search": "Search",
-            "reset": "Reset",
-            "export": "Export logs",
-            "showSensitive": "Show sensitive info",
-            "hideSensitive": "Hide sensitive info",
-            "empty": "No logs yet",
-            "loadMoreForFilter": "Load older logs",
-            "refresh": "Refresh",
-            "streamError": "Live disconnected",
-            "filters": {
-                "all": "All",
-                "success": "Success",
-                "warn": "Warn",
-                "error": "Error",
-                "echo": "Upstream echo",
-                "echoAll": "All echoes",
-                "mismatch": "Echo mismatch",
-                "match": "Echo match"
-            }
-        },
-        "card": {
-            "autoRescue": "Auto-rescued",
-            "error": "Error",
-            "errorInfo": "Error Info",
-            "firstToken": "TTFT",
-            "totalTime": "Total",
-            "input": "Input",
-            "output": "Output",
-            "cost": "Cost",
-            "requestContent": "Request Content",
-            "responseContent": "Response Content",
-            "noRequestContent": "(No request content)",
-            "noResponseContent": "(No response content)",
-            "firstTokenTime": "First Token Time",
-            "tokens": "tokens",
-            "cacheHit": "Cache Hit",
-            "cacheWrite": "Cache Write",
-            "cacheInput": "Cache Input",
-            "retryDetails": "Retry Details",
-            "attempts": "attempts",
-            "success": "Success",
-            "failed": "Failed",
-            "skipped": "Skipped",
-            "circuitBreak": "Cooling down",
-            "successStatus": "Success",
-            "warnStatus": "Success with warnings",
-            "failedStatus": "Failed",
-            "warningInfo": "Warning Details",
-            "openDetails": "View Details",
-            "auditStatus": "Status",
-            "logId": "Log ID",
-            "requestIP": "Request IP",
-            "endpoint": "Endpoint",
-            "channelAttempts": "Channel Attempts",
-            "stream": "Stream",
-            "nonStream": "Non-stream",
-            "echoMismatch": "Echo mismatch",
-            "echoMismatchHint": "Upstream reported {model}, which differs from the name we sent. This is a clue, not proof of a fake model",
-            "echoAliasVariant": "echo name variant",
-            "echoAliasVariantHint": "Upstream reported {model}, which differs from the name we sent only by an alias form such as a suffix/date build. This does not mean the model was swapped - a name-variant clue only",
-            "upstreamEcho": "Upstream reported",
-            "reasoningEffort": "Reasoning Effort",
-            "userName": "User",
-            "client": "Client",
-            "clientUnknown": "unknown client",
-            "auditPrefix": "Detect",
-            "auditClean": "no anomaly",
-            "auditInsufficient": "insufficient evidence",
-            "auditLow": "low-risk review",
-            "auditMedium": "medium-risk review",
-            "auditHigh": "high-risk review",
-            "auditScore": "score",
-            "auditFindings": "findings",
-            "auditModel": "audited model",
-            "auditSource": "source",
-            "auditSourceManual": "manual check",
-            "auditSourceSchedule": "historical auto check",
-            "auditSourceUnknown": "historical source not recorded",
-            "auditRow": "this row",
-            "passiveBadgeInsufficient": "passive · insufficient evidence",
-            "passiveBadgeNotApplicable": "passive · not evaluated",
-            "passiveBadgeMissing": "passive · not analyzed",
-            "passiveTitle": "Passive local analysis",
-            "passiveExplain": "Local statistics of the reply already received; no upstream request was sent; no calibrated target baseline, so no authenticity claim.",
-            "passiveStatus": "status",
-            "passiveStatusInsufficient": "insufficient evidence (no baseline)",
-            "passiveStatusNotApplicable": "not evaluated (out of scope)",
-            "passiveReason": "reason",
-            "passiveVersion": "version",
-            "passiveLanguage": "language",
-            "passiveLegacyHint": "not analyzed (legacy record)",
-            "passiveFeatureChars": "chars",
-            "passiveFeatureLines": "lines",
-            "passiveFeatureParagraphs": "paragraphs",
-            "passiveFeatureCodeBlocks": "code blocks",
-            "passiveFeatureCodeRatio": "code ratio",
-            "passiveFeatureMarkdownLines": "markdown lines",
-            "sentModel": "sent model",
-            "upstreamDeclared": "upstream declared",
-            "echoInconsistent": "differs from sent",
-            "echoConsistent": "matches sent",
-            "upstreamSilent": "upstream did not declare",
-            "mappedByUs": "sent name is our mapping",
-            "familyTrusted": "No suspicion",
-            "familyTrustedHint": "Upstream self-reported name; a clue, not identity verification - the prefix is not the verified vendor",
-            "familySuspectHint": "Upstream name differs from what was sent (or the family differs); a clue, not proof of a real model",
-            "familyReplaced": "family clue mismatch",
-            "familyReplacedHint": "The client-requested family and the upstream-declared family clue do not agree (both identifiable, no overlap); this may be a local mapping or needs review, and does not prove the model is real or fake",
-            "vendorModelSeparator": " / ",
-            "channelKey": "Key Remark",
-            "thinking": "Thinking",
-            "basePrice": "Base Price (In/Out)"
-        }
+      "title": "Log Settings",
+      "enabled": {
+        "label": "Enable History Logs"
+      },
+      "keepPeriod": {
+        "label": "Log Retention (days)",
+        "placeholder": "Enter days"
+      },
+      "maxStorage": {
+        "label": "Log Storage Limit (GB)",
+        "placeholder": "0 means unlimited",
+        "hint": "Estimated from request/response content; oldest logs are removed after the limit",
+        "current": "Current usage",
+        "unlimited": "Unlimited",
+        "cleanupNow": "Clean up now",
+        "cleaning": "Cleaning…",
+        "cleanupFreed": "Freed {size}",
+        "cleanupNothing": "Usage is within the limit; nothing to clean up.",
+        "cleanupVacuumFailed": "Logs were trimmed to the limit, but disk space could not be reclaimed, so the file may stay the same size for now.",
+        "cleanupFailed": "Cleanup failed",
+        "usageHint": "Used space includes log bodies plus the search index copy. Deleting logs does not shrink the file immediately — space is reclaimed only after compaction."
+      },
+      "queueHealth": {
+        "pending": "Pending writes",
+        "dropped": "Dropped records",
+        "writeFailed": "Write failures",
+        "healthy": "Writes healthy"
+      },
+      "clear": {
+        "label": "Clear History Logs",
+        "button": "Clear",
+        "clearing": "Clearing..."
+      },
+      "clearSuccess": "Logs cleared",
+      "clearFailed": "Failed to clear logs",
+      "intervention": {
+        "label": "Automatic rescue for upstream errors",
+        "description": "Automatic rescue retries the same user message on other channels once, at one retry per second, for at most 300 seconds. It runs at most once per new user message: once the rescue is exhausted, later requests carrying that same message are forwarded normally until one succeeds or a new user message arrives. Identical conversation histories cannot be told apart, so a repeated message shares the same rescue."
+      },
+      "noBreaker": {
+        "label": "Automatic rescue window (sec)",
+        "hint": "Default and maximum are both 300 seconds; 0 turns automatic rescue off. It applies to channels with the circuit breaker disabled, regardless of the switch above."
+      }
+    }
+  },
+  "model": {
+    "create": {
+      "title": "Create Model",
+      "name": "Model Name",
+      "input": "Input Price",
+      "output": "Output Price",
+      "cacheRead": "Cache Read",
+      "cacheWrite": "Cache Write",
+      "submit": "Create",
+      "submitting": "Creating..."
+    },
+    "toast": {
+      "updated": "Model price updated",
+      "updateFailed": "Update failed",
+      "deleted": "Model deleted",
+      "deleteFailed": "Delete failed"
+    },
+    "card": {
+      "inputCache": "Input/Cache",
+      "outputCache": "Output/Cache",
+      "edit": "Edit",
+      "delete": "Delete",
+      "autoRescue": "Auto-rescued"
+    },
+    "overlay": {
+      "cancel": "Cancel",
+      "deleting": "Deleting...",
+      "confirmDelete": "Confirm Delete",
+      "input": "Input",
+      "output": "Output",
+      "cacheRead": "Cache Read",
+      "cacheWrite": "Cache Write",
+      "save": "Save"
+    }
+  },
+  "log": {
+    "live": {
+      "autoRescue": "Auto-rescued",
+      "activeActivity": "Live Requests",
+      "running": "In progress",
+      "rescue": "Automatic rescue",
+      "retryRound": "Retry {count}",
+      "reconnecting": "Reconnecting",
+      "requesting": "Requesting",
+      "stop": "Stop request",
+      "stopSent": "Stop requested",
+      "stopFailed": "Stop request failed",
+      "override": "Choose channel",
+      "channel": "Select channel",
+      "key": "Automatic key",
+      "model": "Model override",
+      "retry": "Retry on channel"
+    },
+    "list": {
+      "search": "Search",
+      "reset": "Reset",
+      "export": "Export logs",
+      "showSensitive": "Show sensitive info",
+      "hideSensitive": "Hide sensitive info",
+      "empty": "No logs yet",
+      "loadMoreForFilter": "Load older logs",
+      "refresh": "Refresh",
+      "streamError": "Live disconnected",
+      "filters": {
+        "all": "All",
+        "success": "Success",
+        "warn": "Warn",
+        "error": "Error",
+        "echo": "Upstream echo",
+        "echoAll": "All echoes",
+        "mismatch": "Echo mismatch",
+        "match": "Echo match"
+      }
+    },
+    "card": {
+      "autoRescue": "Auto-rescued",
+      "error": "Error",
+      "errorInfo": "Error Info",
+      "firstToken": "TTFT",
+      "totalTime": "Total",
+      "input": "Input",
+      "output": "Output",
+      "cost": "Cost",
+      "requestContent": "Request Content",
+      "responseContent": "Response Content",
+      "noRequestContent": "(No request content)",
+      "noResponseContent": "(No response content)",
+      "firstTokenTime": "First Token Time",
+      "tokens": "tokens",
+      "cacheHit": "Cache Hit",
+      "cacheWrite": "Cache Write",
+      "cacheInput": "Cache Input",
+      "retryDetails": "Retry Details",
+      "attempts": "attempts",
+      "success": "Success",
+      "failed": "Failed",
+      "skipped": "Skipped",
+      "circuitBreak": "Cooling down",
+      "successStatus": "Success",
+      "warnStatus": "Success with warnings",
+      "failedStatus": "Failed",
+      "warningInfo": "Warning Details",
+      "openDetails": "View Details",
+      "auditStatus": "Status",
+      "logId": "Log ID",
+      "requestIP": "Request IP",
+      "endpoint": "Endpoint",
+      "channelAttempts": "Channel Attempts",
+      "stream": "Stream",
+      "nonStream": "Non-stream",
+      "echoMismatch": "Echo mismatch",
+      "echoMismatchHint": "Upstream reported {model}, which differs from the name we sent. This is a clue, not proof of a fake model",
+      "echoAliasVariant": "echo name variant",
+      "echoAliasVariantHint": "Upstream reported {model}, which differs from the name we sent only by an alias form such as a suffix/date build. This does not mean the model was swapped - a name-variant clue only",
+      "upstreamEcho": "Upstream reported",
+      "reasoningEffort": "Reasoning Effort",
+      "userName": "User",
+      "client": "Client",
+      "clientUnknown": "unknown client",
+      "auditPrefix": "Detect",
+      "auditClean": "no anomaly",
+      "auditInsufficient": "insufficient evidence",
+      "auditLow": "low-risk review",
+      "auditMedium": "medium-risk review",
+      "auditHigh": "high-risk review",
+      "auditScore": "score",
+      "auditFindings": "findings",
+      "auditModel": "audited model",
+      "auditSource": "source",
+      "auditSourceManual": "manual check",
+      "auditSourceSchedule": "historical auto check",
+      "auditSourceUnknown": "historical source not recorded",
+      "auditRow": "this row",
+      "passiveBadgeInsufficient": "passive · insufficient evidence",
+      "passiveBadgeNotApplicable": "passive · not evaluated",
+      "passiveBadgeMissing": "passive · not analyzed",
+      "passiveTitle": "Passive local analysis",
+      "passiveExplain": "Local statistics of the reply already received; no upstream request was sent; no calibrated target baseline, so no authenticity claim.",
+      "passiveStatus": "status",
+      "passiveStatusInsufficient": "insufficient evidence (no baseline)",
+      "passiveStatusNotApplicable": "not evaluated (out of scope)",
+      "passiveReason": "reason",
+      "passiveVersion": "version",
+      "passiveLanguage": "language",
+      "passiveLegacyHint": "not analyzed (legacy record)",
+      "passiveFeatureChars": "chars",
+      "passiveFeatureLines": "lines",
+      "passiveFeatureParagraphs": "paragraphs",
+      "passiveFeatureCodeBlocks": "code blocks",
+      "passiveFeatureCodeRatio": "code ratio",
+      "passiveFeatureMarkdownLines": "markdown lines",
+      "sentModel": "sent model",
+      "upstreamDeclared": "upstream declared",
+      "echoInconsistent": "differs from sent",
+      "echoConsistent": "matches sent",
+      "upstreamSilent": "upstream did not declare",
+      "mappedByUs": "sent name is our mapping",
+      "familyTrusted": "No suspicion",
+      "familyTrustedHint": "Upstream self-reported name; a clue, not identity verification - the prefix is not the verified vendor",
+      "familySuspectHint": "Upstream name differs from what was sent (or the family differs); a clue, not proof of a real model",
+      "familyReplaced": "family clue mismatch",
+      "familyReplacedHint": "The client-requested family and the upstream-declared family clue do not agree (both identifiable, no overlap); this may be a local mapping or needs review, and does not prove the model is real or fake",
+      "vendorModelSeparator": " / ",
+      "channelKey": "Key Remark",
+      "thinking": "Thinking",
+      "basePrice": "Base Price (In/Out)"
+    }
+  },
+  "channel": {
+    "card": {
+      "requestCount": "Requests",
+      "totalCost": "Total Cost",
+      "edit": "Edit",
+      "delete": "Delete",
+      "confirmDelete": "Confirm Delete",
+      "cancel": "Cancel",
+      "copy": "Copy",
+      "copyTooltip": "Clone all configuration of this channel; name gets a _copy suffix and is disabled by default",
+      "copySuccess": "Copied as {name}",
+      "copyFailed": "Copy failed",
+      "circuit": {
+        "open": "Circuit open",
+        "remaining": "Circuit {seconds}s",
+        "reset": "Reset circuit",
+        "tooltip": "{count} key/model entries are circuit-open. Click to reset."
+      },
+      "toast": {
+        "enabled": "Channel enabled",
+        "disabled": "Channel disabled",
+        "circuitReset": "Circuit reset"
+      }
+    },
+    "detail": {
+      "title": {
+        "edit": "Edit Channel",
+        "view": "Channel Details"
+      },
+      "sections": {
+        "requests": "Request Details",
+        "tokens": "Token Usage",
+        "costs": "Cost Details",
+        "baseUrls": "Base URLs",
+        "keys": "Keys"
+      },
+      "noBaseUrls": "No Base URLs",
+      "noKeys": "No Keys",
+      "metrics": {
+        "totalRequests": "Total Requests",
+        "totalToken": "Total Tokens",
+        "totalCost": "Total Cost",
+        "successRequests": "Successful Requests",
+        "failedRequests": "Failed Requests",
+        "inputToken": "Input Tokens",
+        "outputToken": "Output Tokens",
+        "inputCost": "Input Cost",
+        "outputCost": "Output Cost",
+        "avgWaitTime": "Wait Time"
+      },
+      "actions": {
+        "edit": "Edit",
+        "cancel": "Cancel",
+        "save": "Save",
+        "saving": "Saving...",
+        "delete": "Delete",
+        "confirmDelete": "Confirm Delete",
+        "deleting": "Deleting..."
+      }
+    },
+    "create": {
+      "dialogTitle": "Create New Channel",
+      "submit": "Create Channel",
+      "submitting": "Creating..."
+    },
+    "form": {
+      "add": "Add",
+      "name": "Channel Name",
+      "type": "Channel Type",
+      "priority": "Channel Priority",
+      "priorityHint": "Lower numbers mean higher priority. Same-priority channels round-robin by default, with cooldown and session affinity.",
+      "maxConcurrent": "Max concurrent",
+      "maxConcurrentHint": "Hard cap on in-flight requests for this channel (0 = unlimited). At the cap, the channel is deprioritized so bursts spread to other channels, but it stays usable as a last resort.",
+      "rpmLimit": "Max RPM",
+      "rpmLimitHint": "Soft cap on requests per minute for this channel (0 = unlimited). At the cap, the channel is deprioritized so bursts spread to other channels, but it stays usable as a last resort.",
+      "keySelectStrategy": "Key Selection Strategy",
+      "keySelectStrategyCostBalanced": "Cost-balanced (default)",
+      "keySelectStrategySticky": "Sticky (same key first)",
+      "disableCircuitBreaker": "Disable Circuit Breaker & Cooldown",
+      "disableCircuitBreakerHint": "When on, this channel behaves like a direct client: every request is forwarded upstream, never tripped by circuit breaker, ignores key cooldown and rapidly rotates enabled keys, handing capacity retry control back to client. Default off = existing behaviour.",
+      "disableCircuitBreakerOn": "On (No breaker / Ignore cooldown)",
+      "disableCircuitBreakerOff": "Default (Breaker on)",
+      "raceMode": "Multi-Key Race Mode",
+      "raceModeTitle": "Multi-Key Race Mode",
+      "raceModeOn": "Enabled",
+      "raceModeOff": "Default (Off)",
+      "raceModeHint": "Concurrently or hedge-delays requests across multiple enabled keys in this channel. The first successful response wins and returns immediately; losing requests are cancelled. May consume extra upstream tokens; image/video generation is excluded.",
+      "raceModeWarningFewKeys": "Fewer than 2 enabled keys available. At runtime this will automatically degrade to serial single-key retries.",
+      "raceKeyConcurrency": "Key Concurrency",
+      "raceKeyConcurrencyHint": "Max concurrent keys per race attempt (2-5, default 2).",
+      "raceDelayMs": "Hedge Delay (ms)",
+      "raceDelayMsHint": "Delay in milliseconds before sending speculative requests (0-5000, default 0 for simultaneous race).",
+      "baseUrls": "Base URLs",
+      "baseUrlUrl": "URL",
+      "baseUrlDelay": "Delay(ms)",
+      "advanced": "Advanced Settings",
+      "apiKey": "API Key",
+      "apiKeyBulkHint": "One key per line, or paste a JSON array",
+      "bulkAddKey": "Bulk paste",
+      "bulkAddKeyPlaceholder": "One key per line, or comma-separated / a JSON array",
+      "bulkAddKeySubmit": "Add all",
+      "bulkAddKeyInvalid": "Invalid input: not a valid JSON array of keys",
+      "bulkAddKeyAllDup": "All pasted keys already exist",
+      "bulkAddKeyAdded": "Added {count} key(s)",
+      "customHeader": "Custom Headers",
+      "customHeaderKey": "Header Key",
+      "customHeaderValue": "Header Value",
+      "customHeaderAdd": "Add Header",
+      "headerPresetCodex": "Codex",
+      "headerPresetClaude": "Claude",
+      "headerPresetOpenAI": "OpenAI Python",
+      "headerPresetHint": "CliProxy-style client header presets. They only fill headers, and each row remains editable.",
+      "cloakMode": "Client identity",
+      "claudeSimulation": "Claude simulation",
+      "codexSimulation": "Codex simulation",
+      "cloakModeField": "Simulation",
+      "cloakModeOn": "On",
+      "cloakModeOff": "Off",
+      "cloakModeHint": "On uses the selected Claude/Codex identity. Off uses that same profile's generic UA.",
+      "cloakShape": "Outbound identity",
+      "cloakShapeGeneric": "Generic",
+      "cloakShapeClaude": "Claude CLI",
+      "cloakShapeCodex": "Codex CLI",
+      "cloakShapeHint": "Chat channels only: dress the outbound in the Claude/Codex header set + TLS fingerprint while the body stays chat format. Generic keeps today's behaviour.",
+      "channelProxy": "Channel Proxy",
+      "channelProxyPlaceholder": "Optional, e.g. socks5://user:pass@host:port or http://host:port — this channel only (overrides global proxy)",
+      "paramOverride": "Param Override",
+      "paramOverridePlaceholder": "Optional: JSON string to override request params",
+      "paramOverrideHint": "Auto-formats JSON on blur",
+      "paramOverrideTidy": "Tidy up",
+      "paramOverrideTidyFail": "Cannot auto-tidy: please check it contains valid JSON",
+      "paramOverrideStateEmpty": "Empty = no parameters overridden",
+      "paramOverrideStateValid": "✓ Valid — will override {count} param(s): {keys}",
+      "paramOverrideStateNotObject": "✗ Must be a JSON object, not an array or a single value",
+      "paramOverrideStateInvalid": "✗ Not valid JSON ({reason})",
+      "paramOverrideStateInvalidTip": "Tip: paste only the part starting with a brace — do not include the label text",
+      "promptOverride": "Prompt Override",
+      "promptOverrideMode": "Prompt override mode",
+      "promptAppend": "Append system",
+      "promptReplace": "Replace system",
+      "promptOverridePlaceholder": "Optional: system prompt applied at this channel layer",
+      "model": "Model",
+      "enabled": "Enabled",
+      "proxy": "Use Proxy",
+      "modelCustomPlaceholder": "Custom model name",
+      "modelAdd": "Add",
+      "modelRefresh": "Refresh",
+      "modelRefreshSuccess": "Models fetched successfully",
+      "modelRefreshFailed": "Failed to fetch models",
+      "modelRefreshEmpty": "No models found",
+      "modelSelected": "Selected Models",
+      "modelNoSelected": "No models selected",
+      "modelClearAll": "Clear All",
+      "modelFetched": "Fetched Models",
+      "modelSelectAll": "Select All",
+      "modelClearFetched": "Clear Candidates",
+      "modelAlreadySelected": "Selected",
+      "modelFilterPlaceholder": "Search models…",
+      "typeOpenAIChat": "OpenAI Chat",
+      "typeOpenAIResponse": "OpenAI Response",
+      "typeOpenAIEmbedding": "OpenAI Embedding",
+      "typeAnthropic": "Anthropic",
+      "typeGemini": "Gemini",
+      "typeVolcengine": "Volcengine",
+      "typeCustomOpenAIChat": "Custom OpenAI Chat",
+      "openaiChatPath": "Chat endpoint path",
+      "openaiModelsPath": "Models endpoint path",
+      "autoSync": "Auto Sync",
+      "autoSyncHint": "Fetch models on schedule/after save. Newly discovered models stay candidates until an admin enables them.",
+      "autoGroup": "Model-pool fill",
+      "autoGroupNone": "Do not auto add",
+      "autoGroupFuzzy": "Smart (recommended)",
+      "autoGroupExact": "Exact name",
+      "autoGroupRegex": "Regex",
+      "matchRegex": "Match Regex",
+      "matchRegexPlaceholder": "Optional: regex pattern to match request model names",
+      "remark": "Remark",
+      "cloakProfile": "Identity profile",
+      "cloakProfileGlobal": "Default (follow global)",
+      "cloakProfileHint": "Pick a profile from Settings. Simulation uses its Claude/Codex UA; off uses its generic UA.",
+      "modelMapping": "Model Mapping",
+      "modelMappingHint": "Left = client-facing name, right = upstream's real model name.",
+      "modelMappingClientName": "Client name",
+      "modelMappingUpstreamName": "Upstream name",
+      "modelMappingAdd": "Add mapping",
+      "modelMappingEmpty": "No mappings yet",
+      "proxyTest": "Test latency",
+      "proxyTestDisabled": "Fill proxy first"
+    }
+  },
+  "redact": {
+    "global": {
+      "title": "Credential Redaction",
+      "subtitle": "Secrets become placeholders outbound and restore on the way back; body text only, fingerprint untouched",
+      "master": "Master Switch",
+      "masterHint": "Off = all channels pass through with zero scanning",
+      "notice": "Notice Injection",
+      "noticeHint": "Tell the model about placeholder semantics in the first user message",
+      "defaultFlags": "Default Detectors",
+      "defaultFlagsHint": "Detector set used when a channel has no override",
+      "allDetectors": "All detectors",
+      "selectedFlags": "Default detectors: {flags}",
+      "scopeTitle": "Scope & Limits",
+      "scopeProtected": "Protected: text and tool content from inbound Chat Completions, Responses, and Anthropic Messages protocols only.",
+      "scopeUnprotected": "Not protected: image/video generation, audio, file/form uploads, embeddings, raw endpoints, and native Gemini entrypoints bypass redaction.",
+      "scopeBypass": "Chat attachments and identity/cache fields are not rewritten.",
+      "scopeWhyMedia": "Why image/video/audio is not protected: the sensitive content lives in the pixels or the waveform (a password in a screenshot, say). Redaction only swaps text and cannot read an image, so wiring it in would look protected while still shipping the raw bytes.",
+      "scopeWhyEmbedding": "Why embedding is not protected: it sends text and returns a vector, so the original words no longer exist and there is nothing to restore. Rewriting the input would also produce a different vector, making similarity search start matching unrelated documents. Leaving it untouched is the correct behaviour."
     },
     "channel": {
-        "card": {
-            "requestCount": "Requests",
-            "totalCost": "Total Cost",
-            "edit": "Edit",
-            "delete": "Delete",
-            "confirmDelete": "Confirm Delete",
-            "cancel": "Cancel",
-            "copy": "Copy",
-            "copyTooltip": "Clone all configuration of this channel; name gets a _copy suffix and is disabled by default",
-            "copySuccess": "Copied as {name}",
-            "copyFailed": "Copy failed",
-            "circuit": {
-                "open": "Circuit open",
-                "remaining": "Circuit {seconds}s",
-                "reset": "Reset circuit",
-                "tooltip": "{count} key/model entries are circuit-open. Click to reset."
-            },
-            "toast": {
-                "enabled": "Channel enabled",
-                "disabled": "Channel disabled",
-                "circuitReset": "Circuit reset"
-            }
-        },
-        "detail": {
-            "title": {
-                "edit": "Edit Channel",
-                "view": "Channel Details"
-            },
-            "sections": {
-                "requests": "Request Details",
-                "tokens": "Token Usage",
-                "costs": "Cost Details",
-                "baseUrls": "Base URLs",
-                "keys": "Keys"
-            },
-            "noBaseUrls": "No Base URLs",
-            "noKeys": "No Keys",
-            "metrics": {
-                "totalRequests": "Total Requests",
-                "totalToken": "Total Tokens",
-                "totalCost": "Total Cost",
-                "successRequests": "Successful Requests",
-                "failedRequests": "Failed Requests",
-                "inputToken": "Input Tokens",
-                "outputToken": "Output Tokens",
-                "inputCost": "Input Cost",
-                "outputCost": "Output Cost",
-                "avgWaitTime": "Wait Time"
-            },
-            "actions": {
-                "edit": "Edit",
-                "cancel": "Cancel",
-                "save": "Save",
-                "saving": "Saving...",
-                "delete": "Delete",
-                "confirmDelete": "Confirm Delete",
-                "deleting": "Deleting..."
-            }
-        },
-        "create": {
-            "dialogTitle": "Create New Channel",
-            "submit": "Create Channel",
-            "submitting": "Creating..."
-        },
-        "form": {
-            "add": "Add",
-            "name": "Channel Name",
-            "type": "Channel Type",
-            "priority": "Channel Priority",
-            "priorityHint": "Lower numbers mean higher priority. Same-priority channels round-robin by default, with cooldown and session affinity.",
-            "maxConcurrent": "Max concurrent",
-            "maxConcurrentHint": "Hard cap on in-flight requests for this channel (0 = unlimited). At the cap, the channel is deprioritized so bursts spread to other channels, but it stays usable as a last resort.",
-            "rpmLimit": "Max RPM",
-            "rpmLimitHint": "Soft cap on requests per minute for this channel (0 = unlimited). At the cap, the channel is deprioritized so bursts spread to other channels, but it stays usable as a last resort.",
-            "keySelectStrategy": "Key Selection Strategy",
-            "keySelectStrategyCostBalanced": "Cost-balanced (default)",
-            "keySelectStrategySticky": "Sticky (same key first)",
-            "disableCircuitBreaker": "Disable Circuit Breaker & Cooldown",
-            "disableCircuitBreakerHint": "When on, this channel behaves like a direct client: every request is forwarded upstream, never tripped by circuit breaker, ignores key cooldown and rapidly rotates enabled keys, handing capacity retry control back to client. Default off = existing behaviour.",
-            "disableCircuitBreakerOn": "On (No breaker / Ignore cooldown)",
-            "disableCircuitBreakerOff": "Default (Breaker on)",
-            "raceMode": "Multi-Key Race Mode",
-            "raceModeTitle": "Multi-Key Race Mode",
-            "raceModeOn": "Enabled",
-            "raceModeOff": "Default (Off)",
-            "raceModeHint": "Concurrently or hedge-delays requests across multiple enabled keys in this channel. The first successful response wins and returns immediately; losing requests are cancelled. May consume extra upstream tokens; image/video generation is excluded.",
-            "raceModeWarningFewKeys": "Fewer than 2 enabled keys available. At runtime this will automatically degrade to serial single-key retries.",
-            "raceKeyConcurrency": "Key Concurrency",
-            "raceKeyConcurrencyHint": "Max concurrent keys per race attempt (2-5, default 2).",
-            "raceDelayMs": "Hedge Delay (ms)",
-            "raceDelayMsHint": "Delay in milliseconds before sending speculative requests (0-5000, default 0 for simultaneous race).",
-            "baseUrls": "Base URLs",
-            "baseUrlUrl": "URL",
-            "baseUrlDelay": "Delay(ms)",
-            "advanced": "Advanced Settings",
-            "apiKey": "API Key",
-            "apiKeyBulkHint": "One key per line, or paste a JSON array",
-            "bulkAddKey": "Bulk paste",
-            "bulkAddKeyPlaceholder": "One key per line, or comma-separated / a JSON array",
-            "bulkAddKeySubmit": "Add all",
-            "bulkAddKeyInvalid": "Invalid input: not a valid JSON array of keys",
-            "bulkAddKeyAllDup": "All pasted keys already exist",
-            "bulkAddKeyAdded": "Added {count} key(s)",
-            "customHeader": "Custom Headers",
-            "customHeaderKey": "Header Key",
-            "customHeaderValue": "Header Value",
-            "customHeaderAdd": "Add Header",
-            "headerPresetCodex": "Codex",
-            "headerPresetClaude": "Claude",
-            "headerPresetOpenAI": "OpenAI Python",
-            "headerPresetHint": "CliProxy-style client header presets. They only fill headers, and each row remains editable.",
-            "cloakMode": "Client identity",
-            "claudeSimulation": "Claude simulation",
-            "codexSimulation": "Codex simulation",
-            "cloakModeField": "Simulation",
-            "cloakModeOn": "On",
-            "cloakModeOff": "Off",
-            "cloakModeHint": "On uses the selected Claude/Codex identity. Off uses that same profile's generic UA.",
-            "cloakShape": "Outbound identity",
-            "cloakShapeGeneric": "Generic",
-            "cloakShapeClaude": "Claude CLI",
-            "cloakShapeCodex": "Codex CLI",
-            "cloakShapeHint": "Chat channels only: dress the outbound in the Claude/Codex header set + TLS fingerprint while the body stays chat format. Generic keeps today's behaviour.",
-            "channelProxy": "Channel Proxy",
-            "channelProxyPlaceholder": "Optional, e.g. socks5://user:pass@host:port or http://host:port — this channel only (overrides global proxy)",
-            "paramOverride": "Param Override",
-            "paramOverridePlaceholder": "Optional: JSON string to override request params",
-            "paramOverrideHint": "Auto-formats JSON on blur",
-            "paramOverrideTidy": "Tidy up",
-            "paramOverrideTidyFail": "Cannot auto-tidy: please check it contains valid JSON",
-            "paramOverrideStateEmpty": "Empty = no parameters overridden",
-            "paramOverrideStateValid": "✓ Valid — will override {count} param(s): {keys}",
-            "paramOverrideStateNotObject": "✗ Must be a JSON object, not an array or a single value",
-            "paramOverrideStateInvalid": "✗ Not valid JSON ({reason})",
-            "paramOverrideStateInvalidTip": "Tip: paste only the part starting with a brace — do not include the label text",
-            "promptOverride": "Prompt Override",
-            "promptOverrideMode": "Prompt override mode",
-            "promptAppend": "Append system",
-            "promptReplace": "Replace system",
-            "promptOverridePlaceholder": "Optional: system prompt applied at this channel layer",
-            "model": "Model",
-            "enabled": "Enabled",
-            "proxy": "Use Proxy",
-            "modelCustomPlaceholder": "Custom model name",
-            "modelAdd": "Add",
-            "modelRefresh": "Refresh",
-            "modelRefreshSuccess": "Models fetched successfully",
-            "modelRefreshFailed": "Failed to fetch models",
-            "modelRefreshEmpty": "No models found",
-            "modelSelected": "Selected Models",
-            "modelNoSelected": "No models selected",
-            "modelClearAll": "Clear All",
-            "modelFetched": "Fetched Models",
-            "modelSelectAll": "Select All",
-            "modelClearFetched": "Clear Candidates",
-            "modelAlreadySelected": "Selected",
-            "modelFilterPlaceholder": "Search models…",
-            "typeOpenAIChat": "OpenAI Chat",
-            "typeOpenAIResponse": "OpenAI Response",
-            "typeOpenAIEmbedding": "OpenAI Embedding",
-            "typeAnthropic": "Anthropic",
-            "typeGemini": "Gemini",
-            "typeVolcengine": "Volcengine",
-            "typeCustomOpenAIChat": "Custom OpenAI Chat",
-            "openaiChatPath": "Chat endpoint path",
-            "openaiModelsPath": "Models endpoint path",
-            "autoSync": "Auto Sync",
-            "autoSyncHint": "Fetch models on schedule/after save. Newly discovered models stay candidates until an admin enables them.",
-            "autoGroup": "Model-pool fill",
-            "autoGroupNone": "Do not auto add",
-            "autoGroupFuzzy": "Smart (recommended)",
-            "autoGroupExact": "Exact name",
-            "autoGroupRegex": "Regex",
-            "matchRegex": "Match Regex",
-            "matchRegexPlaceholder": "Optional: regex pattern to match request model names",
-            "remark": "Remark",
-            "cloakProfile": "Identity profile",
-            "cloakProfileGlobal": "Default (follow global)",
-            "cloakProfileHint": "Pick a profile from Settings. Simulation uses its Claude/Codex UA; off uses its generic UA.",
-            "modelMapping": "Model Mapping",
-            "modelMappingHint": "Left = client-facing name, right = upstream's real model name.",
-            "modelMappingClientName": "Client name",
-            "modelMappingUpstreamName": "Upstream name",
-            "modelMappingAdd": "Add mapping",
-            "modelMappingEmpty": "No mappings yet",
-            "proxyTest": "Test latency",
-            "proxyTestDisabled": "Fill proxy first"
-        }
+      "title": "Per-Channel Redaction",
+      "subtitle": "Toggle per channel; expand to customize its detector set",
+      "empty": "No channels yet",
+      "active": "redacting",
+      "flagsHint": "Click letters to toggle this channel's detectors (dashed border = inherits global default)",
+      "followDefault": "Follow global default",
+      "statusDisabled": "disabled",
+      "statusMasterDisabled": "master off",
+      "statusInherited": "inherits global: {flags}",
+      "statusCustom": "custom",
+      "effective": "Effective: {flags}",
+      "allDetectors": "All detectors",
+      "inheritedNotice": "No custom detectors on this channel; it uses the global default: {flags}.",
+      "customNotice": "This channel uses custom detectors, independent of the global default.",
+      "restoreInherit": "Restore global default"
     },
-    "redact": {
-        "global": {
-            "title": "Credential Redaction",
-            "subtitle": "Secrets become placeholders outbound and restore on the way back; body text only, fingerprint untouched",
-            "master": "Master Switch",
-            "masterHint": "Off = all channels pass through with zero scanning",
-            "notice": "Notice Injection",
-            "noticeHint": "Tell the model about placeholder semantics in the first user message",
-            "defaultFlags": "Default Detectors",
-            "defaultFlagsHint": "Detector set used when a channel has no override",
-            "allDetectors": "All detectors",
-            "selectedFlags": "Default detectors: {flags}",
-            "scopeTitle": "Scope & Limits",
-            "scopeProtected": "Protected: text and tool content from inbound Chat Completions, Responses, and Anthropic Messages protocols only.",
-            "scopeUnprotected": "Not protected: image/video generation, audio, file/form uploads, embeddings, raw endpoints, and native Gemini entrypoints bypass redaction.",
-            "scopeBypass": "Chat attachments and identity/cache fields are not rewritten.",
-            "scopeWhyMedia": "Why image/video/audio is not protected: the sensitive content lives in the pixels or the waveform (a password in a screenshot, say). Redaction only swaps text and cannot read an image, so wiring it in would look protected while still shipping the raw bytes.",
-            "scopeWhyEmbedding": "Why embedding is not protected: it sends text and returns a vector, so the original words no longer exist and there is nothing to restore. Rewriting the input would also produce a different vector, making similarity search start matching unrelated documents. Leaving it untouched is the correct behaviour."
-        },
-        "channel": {
-            "title": "Per-Channel Redaction",
-            "subtitle": "Toggle per channel; expand to customize its detector set",
-            "empty": "No channels yet",
-            "active": "redacting",
-            "flagsHint": "Click letters to toggle this channel's detectors (dashed border = inherits global default)",
-            "followDefault": "Follow global default",
-            "statusDisabled": "disabled",
-            "statusMasterDisabled": "master off",
-            "statusInherited": "inherits global: {flags}",
-            "statusCustom": "custom",
-            "effective": "Effective: {flags}",
-            "allDetectors": "All detectors",
-            "inheritedNotice": "No custom detectors on this channel; it uses the global default: {flags}.",
-            "customNotice": "This channel uses custom detectors, independent of the global default.",
-            "restoreInherit": "Restore global default"
-        },
-        "test": {
-            "title": "Redaction Test",
-            "subtitle": "Run a synthetic sample through the redact-restore round trip",
-            "placeholder": "Enter text containing secrets…",
-            "flagsPlaceholder": "Detectors",
-            "flagsHint": "Empty = all detectors",
-            "run": "Run test",
-            "running": "Running…",
-            "upstreamSees": "Upstream sees",
-            "clientSees": "Client receives",
-            "count": "{count} hits"
-        },
-        "toast": {
-            "saved": "Saved",
-            "saveFailed": "Save failed"
-        }
+    "test": {
+      "title": "Redaction Test",
+      "subtitle": "Run a synthetic sample through the redact-restore round trip",
+      "placeholder": "Enter text containing secrets…",
+      "flagsPlaceholder": "Detectors",
+      "flagsHint": "Empty = all detectors",
+      "run": "Run test",
+      "running": "Running…",
+      "upstreamSees": "Upstream sees",
+      "clientSees": "Client receives",
+      "count": "{count} hits"
     },
-    "modelAudit": {
-        "manualGate": "Upstream is only called when you click Start; it consumes tokens and may be billed. The current {count} checks ≠ {count} requests: probes such as signature may take multiple rounds or be reused, so actual calls and usage are per the server records. Timeout follows the channel test limit.",
-        "cancelCheck": "Cancel check",
-        "cancelling": "Cancelling",
-        "cancelledTitle": "Cancelled",
-        "cancelledBody": "This check was interrupted: unfinished parts count as unfinished, not as anomalies, and it will not auto-run again; the old report was cleared to avoid exporting it by mistake. Click Start again if needed.",
-        "sourceManual": "manual check",
-        "sourceSchedule": "historical auto check",
-        "sourceEcho": "historical auto check (echo trigger)",
-        "sourceUnknown": "historical source not recorded",
-        "statusNotApplicable": "not applicable",
-        "statusInsufficient": "insufficient evidence",
-        "headlineInsufficientTitle": "Insufficient evidence, not certified",
-        "headlineInsufficientSub": "{count} checks have insufficient evidence: this is neither a clean result nor a claim about the model being real or fake.",
-        "passiveObserved": "{count} locally observed, no baseline"
+    "toast": {
+      "saved": "Saved",
+      "saveFailed": "Save failed"
     }
+  },
+  "modelAudit": {
+    "manualGate": "Upstream is only called when you click Start; it consumes tokens and may be billed. The current {count} checks ≠ {count} requests: probes such as signature may take multiple rounds or be reused, so actual calls and usage are per the server records. Timeout follows the channel test limit.",
+    "cancelCheck": "Cancel check",
+    "cancelling": "Cancelling",
+    "cancelledTitle": "Cancelled",
+    "cancelledBody": "This check was interrupted: unfinished parts count as unfinished, not as anomalies, and it will not auto-run again; the old report was cleared to avoid exporting it by mistake. Click Start again if needed.",
+    "sourceManual": "manual check",
+    "sourceSchedule": "historical auto check",
+    "sourceEcho": "historical auto check (echo trigger)",
+    "sourceUnknown": "historical source not recorded",
+    "statusNotApplicable": "not applicable",
+    "statusInsufficient": "insufficient evidence",
+    "headlineInsufficientTitle": "Insufficient evidence, not certified",
+    "headlineInsufficientSub": "{count} checks have insufficient evidence: this is neither a clean result nor a claim about the model being real or fake.",
+    "passiveObserved": "{count} locally observed, no baseline"
+  }
 }

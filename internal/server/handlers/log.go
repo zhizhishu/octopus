@@ -74,6 +74,13 @@ func init() {
 		AddRoute(
 			router.NewRoute("/health", http.MethodGet).
 				Handle(getLogQueueHealth),
+		).
+		AddRoute(
+			// 手动触发一次容量清理。定时任务本身会跑，但磁盘已经涨上来时
+			// 用户不该被迫等到下一个调度周期(生产曾出现 10GB 上限涨到 59GB，
+			// 期间没有任何入口可以立刻收缩)。
+			router.NewRoute("/cleanup", http.MethodPost).
+				Handle(runLogCleanup),
 		)
 }
 
@@ -435,6 +442,19 @@ func getLogStorage(c *gin.Context) {
 		return
 	}
 	resp.Success(c, storage)
+}
+
+// runLogCleanup 立即执行一次容量清理，并回报清理前后的真实占用。
+//
+// 返回 before/after 而不是只回 "ok"，是因为用户真正关心的是"到底释放了多少"。
+// 单飞由 op 层的锁保证(见 op.RelayLogCleanupNow)，重复点不会并发跑两份。
+func runLogCleanup(c *gin.Context) {
+	result, err := op.RelayLogCleanupNow(c.Request.Context())
+	if err != nil {
+		resp.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	resp.Success(c, result)
 }
 
 // getLogQueueHealth 返回日志落库队列的只读健康快照(积压/丢弃/写失败)。

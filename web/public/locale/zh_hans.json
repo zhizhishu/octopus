@@ -1,1133 +1,1140 @@
 {
-    "login": {
-        "username": "用户名",
-        "usernamePlaceholder": "请输入用户名",
-        "password": "密码",
-        "passwordPlaceholder": "请输入密码",
-        "apikey": "API 密钥",
-        "apikeyPlaceholder": "请输入 API 密钥 (sk-octopus-...)",
-        "inviteCode": "邀请码",
-        "inviteCodeRequiredPlaceholder": "请输入邀请码 / 兑换码",
-        "inviteCodeOptionalPlaceholder": "可选：输入邀请码获取额度",
-        "inviteRequiredHint": "当前需要邀请码才能注册，注册成功后会自动发放对应额度或月卡。",
-        "inviteOptionalHint": "管理员已允许直接注册；填写邀请码可同时获得对应额度或月卡。",
-        "mode": {
-            "user": "账户登录",
-            "register": "注册",
-            "apikey": "密钥登录"
-        },
-        "error": {
-            "generic": "登录失败,请检查登录凭据"
-        },
-        "button": {
-            "loading": "登录中...",
-            "submit": "登录",
-            "register": "注册"
-        },
-        "email": {
-            "label": "邮箱",
-            "placeholder": "请输入邮箱",
-            "sendCode": "发送验证码",
-            "countdown": "{seconds} 秒后重发",
-            "codeLabel": "验证码",
-            "codePlaceholder": "请输入 6 位验证码",
-            "emptyEmail": "请先填写邮箱",
-            "codeSent": "验证码已发送，请查收邮箱。",
-            "sendFailed": "验证码发送失败"
-        }
+  "login": {
+    "username": "用户名",
+    "usernamePlaceholder": "请输入用户名",
+    "password": "密码",
+    "passwordPlaceholder": "请输入密码",
+    "apikey": "API 密钥",
+    "apikeyPlaceholder": "请输入 API 密钥 (sk-octopus-...)",
+    "inviteCode": "邀请码",
+    "inviteCodeRequiredPlaceholder": "请输入邀请码 / 兑换码",
+    "inviteCodeOptionalPlaceholder": "可选：输入邀请码获取额度",
+    "inviteRequiredHint": "当前需要邀请码才能注册，注册成功后会自动发放对应额度或月卡。",
+    "inviteOptionalHint": "管理员已允许直接注册；填写邀请码可同时获得对应额度或月卡。",
+    "mode": {
+      "user": "账户登录",
+      "register": "注册",
+      "apikey": "密钥登录"
     },
-    "apiKeyDashboard": {
-        "error": "加载数据失败",
-        "logout": "退出",
-        "requestStats": "请求统计",
-        "totalStats": "全部统计",
-        "inputStats": "输入统计",
-        "outputStats": "输出统计",
-        "requestCount": "请求次数",
-        "timeConsumed": "消耗时间",
-        "totalToken": "消耗 Token",
-        "totalCost": "消耗费用",
-        "inputTokens": "输入 Tokens",
-        "inputCost": "输入费用",
-        "outputTokens": "输出 Tokens",
-        "outputCost": "输出费用",
-        "successRequests": "成功请求",
-        "failedRequests": "失败请求",
-        "quota": "剩余额度",
+    "error": {
+      "generic": "登录失败,请检查登录凭据"
+    },
+    "button": {
+      "loading": "登录中...",
+      "submit": "登录",
+      "register": "注册"
+    },
+    "email": {
+      "label": "邮箱",
+      "placeholder": "请输入邮箱",
+      "sendCode": "发送验证码",
+      "countdown": "{seconds} 秒后重发",
+      "codeLabel": "验证码",
+      "codePlaceholder": "请输入 6 位验证码",
+      "emptyEmail": "请先填写邮箱",
+      "codeSent": "验证码已发送，请查收邮箱。",
+      "sendFailed": "验证码发送失败"
+    }
+  },
+  "apiKeyDashboard": {
+    "error": "加载数据失败",
+    "logout": "退出",
+    "requestStats": "请求统计",
+    "totalStats": "全部统计",
+    "inputStats": "输入统计",
+    "outputStats": "输出统计",
+    "requestCount": "请求次数",
+    "timeConsumed": "消耗时间",
+    "totalToken": "消耗 Token",
+    "totalCost": "消耗费用",
+    "inputTokens": "输入 Tokens",
+    "inputCost": "输入费用",
+    "outputTokens": "输出 Tokens",
+    "outputCost": "输出费用",
+    "successRequests": "成功请求",
+    "failedRequests": "失败请求",
+    "quota": "剩余额度",
+    "unlimited": "无限制",
+    "expireAt": "过期时间",
+    "neverExpire": "永不过期",
+    "daysLeft": "天后到期",
+    "expired": "已过期",
+    "supportedModels": "支持的模型"
+  },
+  "navbar": {
+    "home": "主页",
+    "user": "用户",
+    "channel": "渠道",
+    "access-plan": "方案",
+    "key": "API Key",
+    "model": "价格",
+    "model-test": "测试",
+    "migration": "迁移",
+    "prompt": "提示词",
+    "audit": "检测",
+    "log": "日志",
+    "setting": "设置",
+    "redact": "凭据脱敏"
+  },
+  "toolbar": {
+    "popover": {
+      "ariaLabel": "视图选项",
+      "layout": "布局",
+      "sort": "排序",
+      "grid": "网格",
+      "list": "列表",
+      "nameAsc": "名称正序",
+      "nameDesc": "名称倒序",
+      "createdAsc": "时间正序",
+      "createdDesc": "时间倒序",
+      "asc": "升序",
+      "desc": "降序",
+      "filter": {
+        "title": "筛选",
+        "channel": {
+          "all": "全部渠道",
+          "enabled": "仅启用",
+          "disabled": "仅禁用"
+        },
+        "model": {
+          "all": "全部模型",
+          "priced": "仅收费",
+          "free": "仅免费"
+        }
+      }
+    }
+  },
+  "common": {
+    "copy": {
+      "success": "复制成功",
+      "failed": "复制失败",
+      "noContent": "无可复制内容"
+    }
+  },
+  "home": {
+    "activity": {
+      "requestCount": "请求次数",
+      "waitTime": "等待时间",
+      "totalToken": "消耗 Token",
+      "totalCost": "消耗费用",
+      "cacheHitRate": "缓存命中率",
+      "noData": "无数据"
+    },
+    "total": {
+      "requestStats": "请求统计",
+      "totalStats": "全部统计",
+      "inputStats": "输入统计",
+      "outputStats": "输出统计",
+      "requestCount": "请求次数",
+      "timeConsumed": "消耗时间",
+      "totalToken": "消耗 Token",
+      "totalCost": "消耗费用",
+      "inputTokens": "输入 Tokens",
+      "inputCost": "输入费用",
+      "cacheHitRate": "缓存命中率",
+      "outputTokens": "输出 Tokens",
+      "outputCost": "输出费用"
+    },
+    "chart": {
+      "title": "趋势",
+      "totalRequests": "请求次数",
+      "totalCost": "消费金额",
+      "totalTokens": "Tokens 消耗",
+      "cacheHitRate": "缓存命中率",
+      "timePeriod": "时间周期",
+      "metricType": {
+        "cost": "金额",
+        "count": "次数",
+        "tokens": "Tokens",
+        "cache": "缓存"
+      },
+      "period": {
+        "today": "今天",
+        "last7Days": "7天",
+        "last30Days": "30天"
+      }
+    },
+    "modelHealth": {
+      "title": "模型健康",
+      "models": "个模型",
+      "noData": "暂无模型请求",
+      "loading": "模型健康加载中…",
+      "loadFailed": "模型健康暂时读不出来",
+      "requestCount": "请求次数",
+      "successFailed": "成功 / 失败",
+      "firstTokenP90": "首字延迟P90",
+      "avgThroughput": "平均吞吐",
+      "cacheRate": "缓存率",
+      "expandModels": "展开其余 {count} 个",
+      "collapseModels": "收起模型"
+    },
+    "rank": {
+      "title": "模型排行榜",
+      "sortByCost": "金额",
+      "sortByCount": "次数",
+      "sortByTokens": "Tokens",
+      "noData": "暂无排行数据",
+      "loading": "排行榜加载中…",
+      "loadFailed": "排行榜暂时读不出来",
+      "successRate": "成功率"
+    },
+    "checkIn": {
+      "title": "每日签到",
+      "reward": "奖励 {amount} 点",
+      "available": "今天还没签到，领取后会直接增加余额。",
+      "checked": "今天已领取 {amount} 点，明天再来。",
+      "balance": "余额 {amount}",
+      "button": "签到领取",
+      "checking": "领取中...",
+      "done": "已签到",
+      "success": "签到成功",
+      "successDescription": "已获得 {amount} 点余额",
+      "failed": "签到失败"
+    }
+  },
+  "setting": {
+    "appearance": "外观",
+    "system": "系统",
+    "theme": {
+      "label": "主题",
+      "light": "浅色",
+      "dark": "深色",
+      "system": "跟随系统"
+    },
+    "language": {
+      "label": "语言",
+      "zh_hans": "简体中文",
+      "zh_hant": "繁体中文",
+      "en": "English"
+    },
+    "proxyUrl": {
+      "label": "代理地址",
+      "placeholder": "请输入代理地址"
+    },
+    "trustedProxies": {
+      "label": "可信反代网段",
+      "placeholder": "如 172.16.0.0/12,10.0.0.0/8",
+      "description": "留空只信 Cloudflare。本地反代/Docker 部署填反代所在网段后，日志与限流才会记录真实访客 IP"
+    },
+    "statsSaveInterval": {
+      "label": "统计保存周期（分钟）",
+      "placeholder": "请输入周期（分钟）"
+    },
+    "anthropicAutoCacheControl": {
+      "label": "Anthropic 稳定前缀缓存",
+      "hint": "为长 system、工具定义或首条长用户上下文自动注入 cache_control"
+    },
+    "openAIAutoPromptCacheKey": {
+      "label": "OpenAI 稳定缓存键",
+      "hint": "客户端未传 prompt_cache_key 时，根据用户、请求模型、system/工具锚点和首条用户消息生成不含明文的稳定 key；客户端显式值永远优先。"
+    },
+    "headerDefaults": {
+      "title": "Header 默认值",
+      "hint": "只在上游请求缺少这些客户端身份 Header 时补齐；渠道自定义 Header 仍然优先。",
+      "description": "Claude 作用于 Anthropic 渠道；Codex 作用于 OpenAI Responses 渠道。",
+      "claude": "Claude Header Defaults",
+      "codex": "Codex Header Defaults",
+      "packageVersion": "Package Version",
+      "runtimeVersion": "Runtime Version",
+      "stabilizeDeviceProfile": "稳定设备指纹",
+      "claudeDescription": "Anthropic 缓存开关和 Claude CLI 指纹一起管理，适合长 system / 工具定义前缀。",
+      "codexDescription": "OpenAI 缓存键和 Codex Responses 指纹一起管理，转发时保持 stream 与 SSE 形态。",
+      "edit": "编辑",
+      "fixed": "固定",
+      "editable": "可编辑",
+      "cancel": "取消",
+      "save": "保存"
+    },
+    "claudeCLIAutoCompact": {
+      "label": "Claude CLI 自动压缩",
+      "hint": "默认关闭，按 Claude CLI 原生行为透传。开启后才会在客户端未传 context_management 时补 clear_thinking 清理思考内容，用于降低多轮长聊越聊越慢和 CLI 卡住风险。"
+    },
+    "claudeCLIReasoningEffort": {
+      "label": "Claude 思考强度",
+      "hint": "默认「自适应」：跟随客户端请求，带高就高、带低就低，没带就交给模型自行决定，不强制覆盖。选低/中/高则在客户端未传时强制该档；关闭表示完全不补思考强度。",
+      "auto": "自适应（跟随请求）",
+      "off": "关闭",
+      "low": "低",
+      "medium": "中",
+      "high": "高"
+    },
+    "claudeBetaStripFlags": {
+      "label": "Claude Beta 剥离标记",
+      "defaultHint": "留空=关",
+      "hint": "留空时忠实透传客户端 claude-cli 的 anthropic-beta（默认，零行为变化）。填入逗号分隔的 beta 标记后，出站前会把这些标记从 anthropic-beta 中摘掉，用来在上游因某个 flag 抽风触发 520 时逃生，同时保留其余标记的真实形状。",
+      "description": "上游抽风逃生：逗号分隔，默认空=关。例如 prompt-caching-scope-2026-01-05。",
+      "placeholder": "prompt-caching-scope-2026-01-05"
+    },
+    "codexFastMode": {
+      "label": "Codex fast 模式",
+      "hint": "默认关闭。开启后仅在客户端未指定时补 service_tier=priority，用于适配支持 Fast 的上游；上游不支持就不要开。不会降低思考强度。"
+    },
+    "streamKeepalive": {
+      "label": "流式保活间隔",
+      "hint": "只在流式请求进行中，并且超过设定秒数没有输出时发送保活；不会发起新的上游请求，也不会额外消耗 token。",
+      "description": "用于降低 Claude/MCP 长工具调用在反代或客户端侧被误判断开的概率。",
+      "disabledHint": "0 秒关闭",
+      "envHint": "仍可作为首次部署默认值。",
+      "placeholder": "15",
+      "seconds": "秒",
+      "invalid": "保活间隔必须是 0 或正整数秒"
+    },
+    "firstByteKeepalive": {
+      "label": "首字节保活延迟 (秒)",
+      "hint": "流式请求等待上游首字节超过该秒数后，向下游客户端注入心跳注释，防止前置反向代理因空闲掐断连接。仅在无法修改前置反代超时配置时才需开启。",
+      "description": "在等待上游首字节期间向下游注入保活，防止前置反代将空闲连接掐断。",
+      "disabledHint": "0 = 关闭（默认）",
+      "placeholder": "0",
+      "seconds": "秒",
+      "invalid": "首字节保活延迟必须是 0 或正整数秒"
+    },
+    "streamDataTimeout": {
+      "label": "上游流式静默超时",
+      "hint": "只在流式请求进行中生效；如果上游在设定秒数内没有发送任何 SSE 事件，就主动结束这次请求。上游 ping 会算作仍然活着。",
+      "description": "用于避免上游卡死后，下游保活还一直维持连接，导致请求长期挂起。",
+      "disabledHint": "0 秒关闭",
+      "envHint": "仍可作为首次部署默认值。",
+      "placeholder": "900",
+      "seconds": "秒",
+      "invalid": "上游静默超时必须是 0 或正整数秒"
+    },
+    "upstreamHeaderTimeout": {
+      "label": "上游响应头等待上限",
+      "hint": "只限制每次尝试等待上游返回响应头的时间。超时后按原有规则继续换渠道或进入自动救援；收到响应头之后的正文输出不受影响。",
+      "description": "用于避免上游收下请求却一直不回应答，让单个连接独吞掉整段等待时间。此项只限制单次尝试，不限制整次自动救援的总时长。",
+      "disabledHint": "0 秒关闭",
+      "envHint": "仍可作为首次部署默认值。",
+      "placeholder": "0",
+      "seconds": "秒",
+      "invalid": "上游响应头等待上限必须是 0 到 86400 之间的整数秒"
+    },
+    "responsesSessionTTL": {
+      "label": "Responses 会话保持",
+      "hint": "记住 previous_response_id 属于哪个渠道和 Key，减少重启或切路由后的续聊断开。",
+      "description": "仅影响 OpenAI Responses 的续聊路由记忆，不改变普通请求日志或计费。",
+      "defaultHint": "默认 3600 秒",
+      "placeholder": "3600",
+      "seconds": "秒",
+      "invalid": "Responses 会话保持时间必须是 0 或正整数秒"
+    },
+    "sessionKeepTimeDefault": {
+      "label": "会话保持全局默认",
+      "hint": "当分组自身会话保持时间为 0 时回退使用的粘性时长，让同一客户端持续命中同一渠道与 Key，避免在多个上游间分散、浪费提示词缓存。",
+      "description": "仅作回退：分组自身的会话保持时间仍优先。0 表示关闭全局默认，维持仅按分组配置的旧行为。",
+      "defaultHint": "默认 0（关闭）",
+      "placeholder": "0",
+      "seconds": "秒",
+      "invalid": "会话保持全局默认必须是 0 或正整数秒"
+    },
+    "firstTokenTimeOutDefault": {
+      "label": "首字超时全局默认",
+      "hint": "当分组自身首字超时为 0 时回退使用的单渠道首个 Token 超时时长；在此时间内没等到首字就切换到下一个候选渠道，仅对流式响应生效。",
+      "description": "仅作回退：分组自身的首字超时仍优先。0 表示关闭全局默认，维持仅按分组配置的旧行为。",
+      "defaultHint": "默认 0（关闭）",
+      "placeholder": "0",
+      "seconds": "秒",
+      "invalid": "首字超时全局默认必须是 0 或正整数秒"
+    },
+    "routeModeOverride": {
+      "label": "路由默认模式",
+      "hint": "新建规则、以及没有单独指定模式的模型组，默认用哪一档选渠道。轮询=同一个数字的渠道之间轮转均摊；优先填充=尽量打满最优渠道、失败才降级（上游缓存命中更好）。",
+      "description": "这是默认值，不是强制覆盖：在「方案 → 无限画布」里单独选过模式的规则保持自己的选择，不受这里影响。",
+      "movedHint": "编辑入口已收起到「方案 → 无限画布」工具栏的「路由默认模式」。",
+      "defaultHint": "默认优先填充；可切换为轮询。独立设置过模式的规则保持不变。",
+      "spread": "轮询",
+      "fillFirst": "优先填充"
+    },
+    "poolDefaults": {
+      "title": "模型池全局默认",
+      "hint": "整个模型池的全局路由默认，作用于所有分组：路由默认模式只作缺省，单独设过模式的规则保持自己的选择；首字超时与会话保持仅在分组自身值为 0 时回退使用。分组自身的配置始终优先。"
+    },
+    "userRegistration": {
+      "label": "允许直接注册",
+      "hint": "关闭时新用户必须填写邀请码；开启后可无邀请码注册，填写邀请码仍会发放对应额度或月卡。"
+    },
+    "emailVerification": {
+      "title": "注册邮箱验证",
+      "hint": "开启后，公开注册需填写邮箱并输入发送到该邮箱的 6 位验证码。请在下方配置 SMTP 发件信息。",
+      "enabled": "启用邮箱验证",
+      "host": "SMTP 服务器",
+      "hostPlaceholder": "例如 smtp.example.com",
+      "port": "SMTP 端口",
+      "portPlaceholder": "587",
+      "user": "SMTP 用户名",
+      "userPlaceholder": "SMTP 登录用户名",
+      "password": "SMTP 密码",
+      "passwordPlaceholder": "SMTP 登录密码",
+      "passwordKeptPlaceholder": "已设置，留空保持不变",
+      "from": "发件人地址",
+      "fromPlaceholder": "例如 no-reply@example.com",
+      "fromName": "发件人名称",
+      "fromNamePlaceholder": "Octopus",
+      "ssl": "隐式 TLS（SSL）",
+      "sslHint": "端口 465 使用隐式 TLS 时开启；STARTTLS（如 587 端口）请关闭。",
+      "provider": "发件方式",
+      "providerHint": "选择验证码的发送方式。HTTP API 适用于没有 SMTP 的自建服务（如 ClawEmail）。",
+      "providerSMTP": "SMTP",
+      "providerHTTP": "HTTP API",
+      "httpBaseUrl": "API 基础地址",
+      "httpBaseUrlPlaceholder": "https://your-service/ext",
+      "httpFrom": "发件人地址",
+      "httpFromPlaceholder": "agent@example.com",
+      "httpAdminAuth": "管理员鉴权令牌",
+      "httpAdminAuthPlaceholder": "管理员 API 令牌",
+      "httpSiteAuth": "站点鉴权令牌",
+      "httpSiteAuthPlaceholder": "站点 API 令牌"
+    },
+    "checkIn": {
+      "title": "用户每日签到",
+      "hint": "开启后，登录用户可在首页每天领取一次余额奖励；可选择固定点数或随机区间。",
+      "enabled": "启用每日签到",
+      "rewardMode": "签到奖励模式",
+      "fixed": "固定点数",
+      "random": "随机区间",
+      "amountPlaceholder": "固定点数，例如 100",
+      "minPlaceholder": "最小点数",
+      "maxPlaceholder": "最大点数"
+    },
+    "upstreamError": {
+      "title": "上游错误响应",
+      "hint": "管理员日志保留真实上游状态和错误码；用户侧可统一显示公开错误码与友好提示。",
+      "statusPassthrough": "透传上游状态码",
+      "bodyMode": "错误正文模式",
+      "publicCode": "公开错误码",
+      "publicCodePlaceholder": "给用户看的错误码，例如 service_busy",
+      "redacted": "脱敏上游错误",
+      "custom": "自定义提示",
+      "standard": "Octopus 标准提示",
+      "customPlaceholder": "选择自定义模式时展示给用户的提示"
+    },
+    "corsAllowOrigins": {
+      "label": "CORS 跨域白名单",
+      "hint": "为空禁止跨域，* 允许所有",
+      "example": "只允许指定域名: https://example.com,https://example2.com"
+    },
+    "circuitBreaker": {
+      "title": "熔断器配置",
+      "threshold": {
+        "label": "熔断触发阈值（连续失败次数）",
+        "placeholder": "请输入阈值"
+      },
+      "cooldown": {
+        "label": "基础冷却时间（秒）",
+        "placeholder": "请输入冷却时间"
+      },
+      "maxCooldown": {
+        "label": "最大冷却时间（秒）",
+        "placeholder": "请输入最大冷却时间"
+      },
+      "hint": "当渠道连续失败达到阈值后触发熔断，冷却时间按指数退避增长，上限为最大冷却时间"
+    },
+    "fingerprintProfile": {
+      "title": "指纹 Profile 管理",
+      "description": "为不同渠道准备多套独立设备指纹，让走不同出口 IP 的上游 key 呈现不同设备，而不是共用全局唯一指纹。各字段留空即回落全局默认。",
+      "add": "新建",
+      "edit": "编辑",
+      "delete": "删除",
+      "confirmDelete": "确认删除",
+      "cancel": "取消",
+      "save": "保存",
+      "empty": "暂无指纹 Profile，点「新建」添加一套。渠道仍可选「默认（跟随全局）」。",
+      "createTitle": "新建指纹 Profile",
+      "editTitle": "编辑指纹 Profile",
+      "dialogHint": "各字段留空即回落对应的全局默认设置；只需填写要区分的字段。",
+      "nameRequired": "请填写 Profile 名称",
+      "followGlobal": "默认（跟随全局）",
+      "genericUAHint": "统一 User-Agent，作用于非 Claude/Codex 渠道（Gemini / 火山引擎 / 普通 OpenAI Chat），这些渠道默认不带 UA。留空即保持现状。",
+      "groups": {
+        "claude": "Claude 指纹",
+        "codex": "Codex 指纹"
+      },
+      "fields": {
+        "name": "名称",
+        "seed": "种子 Seed",
+        "claudeUserAgent": "Claude User-Agent",
+        "claudePackageVersion": "Claude Package Version",
+        "claudeRuntimeVersion": "Claude Runtime Version",
+        "claudeOS": "Claude OS",
+        "claudeArch": "Claude Arch",
+        "claudeTimeout": "Claude Timeout",
+        "claudeStabilize": "稳定设备指纹",
+        "codexUserAgent": "Codex User-Agent",
+        "codexOriginator": "Codex Originator",
+        "codexBetaFeatures": "Codex Beta Features",
+        "genericUA": "通用 User-Agent"
+      },
+      "placeholders": {
+        "name": "便于辨认的名字，如 macOS Claude / Windows 节点 A",
+        "seed": "留空则后端首次保存时自动生成随机种子",
+        "followGlobal": "留空 = 默认（跟随全局）",
+        "genericUA": "留空 = 保持现状（不设置 UA）"
+      },
+      "stabilize": {
+        "follow": "跟随全局",
+        "on": "开启",
+        "off": "关闭"
+      }
+    },
+    "saved": "已保存",
+    "saveFailed": "保存失败，设置未生效，请重试",
+    "backup": {
+      "title": "备份 / 恢复",
+      "export": {
+        "title": "导出",
+        "includeLogs": "包含日志",
+        "includeStats": "包含统计",
+        "button": "下载 JSON",
+        "exporting": "导出中...",
+        "success": "开始导出"
+      },
+      "import": {
+        "title": "导入（增量）",
+        "selected": "已选择文件",
+        "button": "导入 JSON",
+        "importing": "导入中...",
+        "noFile": "请先选择 JSON 文件",
+        "success": "导入成功",
+        "failed": "导入失败",
+        "result": "导入结果"
+      }
+    },
+    "apiKey": {
+      "title": "API 密钥",
+      "empty": "暂无 API 密钥",
+      "add": "添加密钥",
+      "loadFailed": "加载失败",
+      "list": {
+        "plans": "方案",
+        "endpoints": "端点",
+        "defaultPlan": "默认方案",
+        "morePlans": "还有 {count} 个方案"
+      },
+      "guide": {
+        "button": "使用教程",
+        "title": "API Key 使用教程",
+        "description": "复制下面的 Base URL 和密钥配置到客户端。",
+        "baseUrl": "Base URL",
+        "allowedEndpoints": "允许端点",
+        "accessPlan": "访问方案",
+        "currentPlan": "当前方案",
+        "defaultPlan": "默认",
+        "planHint": "选择本次教程要走的方案，请求会按该方案的模型映射和计费策略执行。",
+        "requestHeader": "请求头",
+        "groupAlias": "兼容别名",
+        "openaiDescription": "用于 OpenAI 兼容客户端、Chat Completions 和 Responses。",
+        "geminiDescription": "用于 Gemini 原生 generateContent / streamGenerateContent。",
+        "anthropicDescription": "用于 Claude / Anthropic Messages 协议。",
+        "empty": "这个密钥暂时没有可用端点。"
+      },
+      "form": {
+        "name": "名称",
+        "owner": "归属用户",
+        "currentAdmin": "当前管理员",
+        "maxCost": "最大金额",
+        "maxCostPlaceholder": "请输入金额",
         "unlimited": "无限制",
-        "expireAt": "过期时间",
+        "expireAt": "过期日期",
+        "selectDate": "选择日期",
         "neverExpire": "永不过期",
-        "daysLeft": "天后到期",
-        "expired": "已过期",
-        "supportedModels": "支持的模型"
+        "supportedModels": "支持的模型",
+        "noModels": "暂无可选模型",
+        "modelsHint": "留空表示不限制模型；需要精确控制时可手动勾选或全选。",
+        "selectAllModels": "全选",
+        "unlimitedModels": "不限",
+        "searchModels": "搜索模型",
+        "noMatchedModels": "没有匹配的模型",
+        "accessPlans": "可用方案",
+        "noAccessPlans": "暂无可选方案",
+        "defaultAccessPlan": "默认方案",
+        "accessPlansHint": "管理员可限制该密钥只能使用用户被授权的方案；请求头只能在已选方案内切换。",
+        "selectAllPlans": "全选",
+        "defaultOnly": "默认",
+        "endpointFamilies": "可用协议端点",
+        "endpointFamiliesHint": "默认全选以兼容旧密钥；取消某类后，该密钥无法访问对应协议端点。",
+        "endpointUsage": "调用示例",
+        "enabled": "是否启用",
+        "cancel": "取消",
+        "create": "创建",
+        "save": "保存",
+        "confirm": "确认"
+      },
+      "stats": {
+        "noData": "暂无统计数据",
+        "inputToken": "输入 Token",
+        "outputToken": "输出 Token",
+        "inputCost": "输入费用",
+        "outputCost": "输出费用",
+        "requestSuccess": "成功请求",
+        "requestFailed": "失败请求"
+      },
+      "toast": {
+        "createSuccess": "API 密钥创建成功",
+        "createError": "API 密钥创建失败",
+        "updateSuccess": "API 密钥更新成功",
+        "updateError": "API 密钥更新失败",
+        "deleteSuccess": "API 密钥删除成功",
+        "deleteError": "API 密钥删除失败"
+      }
     },
-    "navbar": {
-        "home": "主页",
-        "user": "用户",
-        "channel": "渠道",
-        "access-plan": "方案",
-        "key": "API Key",
-        "model": "价格",
-        "model-test": "测试",
-        "migration": "迁移",
-        "prompt": "提示词",
-        "audit": "检测",
-        "log": "日志",
-        "setting": "设置",
-        "redact": "凭据脱敏"
+    "llmPrice": {
+      "title": "模型价格",
+      "description": "从 models.dev 拉取公开价格库，本地手动覆盖仍优先。",
+      "source": "价格来源",
+      "sourceName": "models.dev",
+      "checking": "检查中...",
+      "updateInterval": {
+        "label": "自动更新间隔（小时）",
+        "placeholder": "请输入间隔（小时）"
+      },
+      "manualUpdate": {
+        "label": "价格库更新",
+        "hint": "更新后会刷新模型价格缓存，不会覆盖已手动维护的本地模型价格。",
+        "button": "从 models.dev 更新价格库",
+        "updating": "更新中..."
+      },
+      "lastUpdate": "上次更新",
+      "neverUpdated": "从未更新",
+      "updateSuccess": "已从 models.dev 更新价格库",
+      "updateFailed": "从 models.dev 更新价格库失败"
     },
-    "toolbar": {
-        "popover": {
-            "ariaLabel": "视图选项",
-            "layout": "布局",
-            "sort": "排序",
-            "grid": "网格",
-            "list": "列表",
-            "nameAsc": "名称正序",
-            "nameDesc": "名称倒序",
-            "createdAsc": "时间正序",
-            "createdDesc": "时间倒序",
-            "asc": "升序",
-            "desc": "降序",
-            "filter": {
-                "title": "筛选",
-                "channel": {
-                    "all": "全部渠道",
-                    "enabled": "仅启用",
-                    "disabled": "仅禁用"
-                },
-                "model": {
-                    "all": "全部模型",
-                    "priced": "仅收费",
-                    "free": "仅免费"
-                }
-            }
-        }
+    "llmSync": {
+      "title": "渠道同步",
+      "syncInterval": {
+        "label": "自动同步间隔（小时）",
+        "placeholder": "请输入间隔（小时）"
+      },
+      "manualSync": {
+        "label": "手动同步渠道",
+        "button": "立即同步",
+        "syncing": "同步中..."
+      },
+      "lastSync": "上次同步",
+      "neverSynced": "从未同步",
+      "syncSuccess": "渠道同步成功",
+      "syncFailed": "渠道同步失败"
     },
-    "common": {
-        "copy": {
-            "success": "复制成功",
-            "failed": "复制失败",
-            "noContent": "无可复制内容"
-        }
+    "account": {
+      "title": "账户设置",
+      "save": "保存",
+      "saving": "保存中...",
+      "username": {
+        "label": "修改用户名",
+        "placeholder": "请输入新用户名",
+        "empty": "用户名不能为空",
+        "success": "用户名修改成功",
+        "failed": "用户名修改失败"
+      },
+      "password": {
+        "label": "修改密码",
+        "oldPlaceholder": "请输入当前密码",
+        "newPlaceholder": "请输入新密码",
+        "confirmPlaceholder": "请确认新密码",
+        "oldEmpty": "请输入当前密码",
+        "newEmpty": "请输入新密码",
+        "mismatch": "两次输入的密码不一致",
+        "tooShort": "密码长度至少为6位",
+        "change": "修改密码",
+        "success": "密码修改成功",
+        "failed": "密码修改失败"
+      }
     },
-    "home": {
-        "activity": {
-            "requestCount": "请求次数",
-            "waitTime": "等待时间",
-            "totalToken": "消耗 Token",
-            "totalCost": "消耗费用",
-            "cacheHitRate": "缓存命中率",
-            "noData": "无数据"
-        },
-        "total": {
-            "requestStats": "请求统计",
-            "totalStats": "全部统计",
-            "inputStats": "输入统计",
-            "outputStats": "输出统计",
-            "requestCount": "请求次数",
-            "timeConsumed": "消耗时间",
-            "totalToken": "消耗 Token",
-            "totalCost": "消耗费用",
-            "inputTokens": "输入 Tokens",
-            "inputCost": "输入费用",
-            "cacheHitRate": "缓存命中率",
-            "outputTokens": "输出 Tokens",
-            "outputCost": "输出费用"
-        },
-        "chart": {
-            "title": "趋势",
-            "totalRequests": "请求次数",
-            "totalCost": "消费金额",
-            "totalTokens": "Tokens 消耗",
-            "cacheHitRate": "缓存命中率",
-            "timePeriod": "时间周期",
-            "metricType": {
-                "cost": "金额",
-                "count": "次数",
-                "tokens": "Tokens",
-                "cache": "缓存"
-            },
-            "period": {
-                "today": "今天",
-                "last7Days": "7天",
-                "last30Days": "30天"
-            }
-        },
-        "modelHealth": {
-            "title": "模型健康",
-            "models": "个模型",
-            "noData": "暂无模型请求",
-            "loading": "模型健康加载中…",
-            "loadFailed": "模型健康暂时读不出来",
-            "requestCount": "请求次数",
-            "successFailed": "成功 / 失败",
-            "firstTokenP90": "首字延迟P90",
-            "avgThroughput": "平均吞吐",
-            "cacheRate": "缓存率",
-            "expandModels": "展开其余 {count} 个",
-            "collapseModels": "收起模型"
-        },
-        "rank": {
-            "title": "模型排行榜",
-            "sortByCost": "金额",
-            "sortByCount": "次数",
-            "sortByTokens": "Tokens",
-            "noData": "暂无排行数据",
-            "loading": "排行榜加载中…",
-            "loadFailed": "排行榜暂时读不出来",
-            "successRate": "成功率"
-        },
-        "checkIn": {
-            "title": "每日签到",
-            "reward": "奖励 {amount} 点",
-            "available": "今天还没签到，领取后会直接增加余额。",
-            "checked": "今天已领取 {amount} 点，明天再来。",
-            "balance": "余额 {amount}",
-            "button": "签到领取",
-            "checking": "领取中...",
-            "done": "已签到",
-            "success": "签到成功",
-            "successDescription": "已获得 {amount} 点余额",
-            "failed": "签到失败"
-        }
-    },
-    "setting": {
-        "appearance": "外观",
-        "system": "系统",
-        "theme": {
-            "label": "主题",
-            "light": "浅色",
-            "dark": "深色",
-            "system": "跟随系统"
-        },
-        "language": {
-            "label": "语言",
-            "zh_hans": "简体中文",
-            "zh_hant": "繁体中文",
-            "en": "English"
-        },
-        "proxyUrl": {
-            "label": "代理地址",
-            "placeholder": "请输入代理地址"
-        },
-        "trustedProxies": {
-            "label": "可信反代网段",
-            "placeholder": "如 172.16.0.0/12,10.0.0.0/8",
-            "description": "留空只信 Cloudflare。本地反代/Docker 部署填反代所在网段后，日志与限流才会记录真实访客 IP"
-        },
-        "statsSaveInterval": {
-            "label": "统计保存周期（分钟）",
-            "placeholder": "请输入周期（分钟）"
-        },
-        "anthropicAutoCacheControl": {
-            "label": "Anthropic 稳定前缀缓存",
-            "hint": "为长 system、工具定义或首条长用户上下文自动注入 cache_control"
-        },
-        "openAIAutoPromptCacheKey": {
-            "label": "OpenAI 稳定缓存键",
-            "hint": "客户端未传 prompt_cache_key 时，根据用户、请求模型、system/工具锚点和首条用户消息生成不含明文的稳定 key；客户端显式值永远优先。"
-        },
-        "headerDefaults": {
-            "title": "Header 默认值",
-            "hint": "只在上游请求缺少这些客户端身份 Header 时补齐；渠道自定义 Header 仍然优先。",
-            "description": "Claude 作用于 Anthropic 渠道；Codex 作用于 OpenAI Responses 渠道。",
-            "claude": "Claude Header Defaults",
-            "codex": "Codex Header Defaults",
-            "packageVersion": "Package Version",
-            "runtimeVersion": "Runtime Version",
-            "stabilizeDeviceProfile": "稳定设备指纹",
-            "claudeDescription": "Anthropic 缓存开关和 Claude CLI 指纹一起管理，适合长 system / 工具定义前缀。",
-            "codexDescription": "OpenAI 缓存键和 Codex Responses 指纹一起管理，转发时保持 stream 与 SSE 形态。",
-            "edit": "编辑",
-            "fixed": "固定",
-            "editable": "可编辑",
-            "cancel": "取消",
-            "save": "保存"
-        },
-        "claudeCLIAutoCompact": {
-            "label": "Claude CLI 自动压缩",
-            "hint": "默认关闭，按 Claude CLI 原生行为透传。开启后才会在客户端未传 context_management 时补 clear_thinking 清理思考内容，用于降低多轮长聊越聊越慢和 CLI 卡住风险。"
-        },
-        "claudeCLIReasoningEffort": {
-            "label": "Claude 思考强度",
-            "hint": "默认「自适应」：跟随客户端请求，带高就高、带低就低，没带就交给模型自行决定，不强制覆盖。选低/中/高则在客户端未传时强制该档；关闭表示完全不补思考强度。",
-            "auto": "自适应（跟随请求）",
-            "off": "关闭",
-            "low": "低",
-            "medium": "中",
-            "high": "高"
-        },
-        "claudeBetaStripFlags": {
-            "label": "Claude Beta 剥离标记",
-            "defaultHint": "留空=关",
-            "hint": "留空时忠实透传客户端 claude-cli 的 anthropic-beta（默认，零行为变化）。填入逗号分隔的 beta 标记后，出站前会把这些标记从 anthropic-beta 中摘掉，用来在上游因某个 flag 抽风触发 520 时逃生，同时保留其余标记的真实形状。",
-            "description": "上游抽风逃生：逗号分隔，默认空=关。例如 prompt-caching-scope-2026-01-05。",
-            "placeholder": "prompt-caching-scope-2026-01-05"
-        },
-        "codexFastMode": {
-            "label": "Codex fast 模式",
-            "hint": "默认关闭。开启后仅在客户端未指定时补 service_tier=priority，用于适配支持 Fast 的上游；上游不支持就不要开。不会降低思考强度。"
-        },
-        "streamKeepalive": {
-            "label": "流式保活间隔",
-            "hint": "只在流式请求进行中，并且超过设定秒数没有输出时发送保活；不会发起新的上游请求，也不会额外消耗 token。",
-            "description": "用于降低 Claude/MCP 长工具调用在反代或客户端侧被误判断开的概率。",
-            "disabledHint": "0 秒关闭",
-            "envHint": "仍可作为首次部署默认值。",
-            "placeholder": "15",
-            "seconds": "秒",
-            "invalid": "保活间隔必须是 0 或正整数秒"
-        },
-        "firstByteKeepalive": {
-            "label": "首字节保活延迟 (秒)",
-            "hint": "流式请求等待上游首字节超过该秒数后，向下游客户端注入心跳注释，防止前置反向代理因空闲掐断连接。仅在无法修改前置反代超时配置时才需开启。",
-            "description": "在等待上游首字节期间向下游注入保活，防止前置反代将空闲连接掐断。",
-            "disabledHint": "0 = 关闭（默认）",
-            "placeholder": "0",
-            "seconds": "秒",
-            "invalid": "首字节保活延迟必须是 0 或正整数秒"
-        },
-        "streamDataTimeout": {
-            "label": "上游流式静默超时",
-            "hint": "只在流式请求进行中生效；如果上游在设定秒数内没有发送任何 SSE 事件，就主动结束这次请求。上游 ping 会算作仍然活着。",
-            "description": "用于避免上游卡死后，下游保活还一直维持连接，导致请求长期挂起。",
-            "disabledHint": "0 秒关闭",
-            "envHint": "仍可作为首次部署默认值。",
-            "placeholder": "900",
-            "seconds": "秒",
-            "invalid": "上游静默超时必须是 0 或正整数秒"
-        },
-        "upstreamHeaderTimeout": {
-            "label": "上游响应头等待上限",
-            "hint": "只限制每次尝试等待上游返回响应头的时间。超时后按原有规则继续换渠道或进入自动救援；收到响应头之后的正文输出不受影响。",
-            "description": "用于避免上游收下请求却一直不回应答，让单个连接独吞掉整段等待时间。此项只限制单次尝试，不限制整次自动救援的总时长。",
-            "disabledHint": "0 秒关闭",
-            "envHint": "仍可作为首次部署默认值。",
-            "placeholder": "0",
-            "seconds": "秒",
-            "invalid": "上游响应头等待上限必须是 0 到 86400 之间的整数秒"
-        },
-        "responsesSessionTTL": {
-            "label": "Responses 会话保持",
-            "hint": "记住 previous_response_id 属于哪个渠道和 Key，减少重启或切路由后的续聊断开。",
-            "description": "仅影响 OpenAI Responses 的续聊路由记忆，不改变普通请求日志或计费。",
-            "defaultHint": "默认 3600 秒",
-            "placeholder": "3600",
-            "seconds": "秒",
-            "invalid": "Responses 会话保持时间必须是 0 或正整数秒"
-        },
-        "sessionKeepTimeDefault": {
-            "label": "会话保持全局默认",
-            "hint": "当分组自身会话保持时间为 0 时回退使用的粘性时长，让同一客户端持续命中同一渠道与 Key，避免在多个上游间分散、浪费提示词缓存。",
-            "description": "仅作回退：分组自身的会话保持时间仍优先。0 表示关闭全局默认，维持仅按分组配置的旧行为。",
-            "defaultHint": "默认 0（关闭）",
-            "placeholder": "0",
-            "seconds": "秒",
-            "invalid": "会话保持全局默认必须是 0 或正整数秒"
-        },
-        "firstTokenTimeOutDefault": {
-            "label": "首字超时全局默认",
-            "hint": "当分组自身首字超时为 0 时回退使用的单渠道首个 Token 超时时长；在此时间内没等到首字就切换到下一个候选渠道，仅对流式响应生效。",
-            "description": "仅作回退：分组自身的首字超时仍优先。0 表示关闭全局默认，维持仅按分组配置的旧行为。",
-            "defaultHint": "默认 0（关闭）",
-            "placeholder": "0",
-            "seconds": "秒",
-            "invalid": "首字超时全局默认必须是 0 或正整数秒"
-        },
-        "routeModeOverride": {
-            "label": "路由默认模式",
-            "hint": "新建规则、以及没有单独指定模式的模型组，默认用哪一档选渠道。轮询=同一个数字的渠道之间轮转均摊；优先填充=尽量打满最优渠道、失败才降级（上游缓存命中更好）。",
-            "description": "这是默认值，不是强制覆盖：在「方案 → 无限画布」里单独选过模式的规则保持自己的选择，不受这里影响。",
-            "movedHint": "编辑入口已收起到「方案 → 无限画布」工具栏的「路由默认模式」。",
-            "defaultHint": "默认优先填充；可切换为轮询。独立设置过模式的规则保持不变。",
-            "spread": "轮询",
-            "fillFirst": "优先填充"
-        },
-        "poolDefaults": {
-            "title": "模型池全局默认",
-            "hint": "整个模型池的全局路由默认，作用于所有分组：路由默认模式只作缺省，单独设过模式的规则保持自己的选择；首字超时与会话保持仅在分组自身值为 0 时回退使用。分组自身的配置始终优先。"
-        },
-        "userRegistration": {
-            "label": "允许直接注册",
-            "hint": "关闭时新用户必须填写邀请码；开启后可无邀请码注册，填写邀请码仍会发放对应额度或月卡。"
-        },
-        "emailVerification": {
-            "title": "注册邮箱验证",
-            "hint": "开启后，公开注册需填写邮箱并输入发送到该邮箱的 6 位验证码。请在下方配置 SMTP 发件信息。",
-            "enabled": "启用邮箱验证",
-            "host": "SMTP 服务器",
-            "hostPlaceholder": "例如 smtp.example.com",
-            "port": "SMTP 端口",
-            "portPlaceholder": "587",
-            "user": "SMTP 用户名",
-            "userPlaceholder": "SMTP 登录用户名",
-            "password": "SMTP 密码",
-            "passwordPlaceholder": "SMTP 登录密码",
-            "passwordKeptPlaceholder": "已设置，留空保持不变",
-            "from": "发件人地址",
-            "fromPlaceholder": "例如 no-reply@example.com",
-            "fromName": "发件人名称",
-            "fromNamePlaceholder": "Octopus",
-            "ssl": "隐式 TLS（SSL）",
-            "sslHint": "端口 465 使用隐式 TLS 时开启；STARTTLS（如 587 端口）请关闭。",
-            "provider": "发件方式",
-            "providerHint": "选择验证码的发送方式。HTTP API 适用于没有 SMTP 的自建服务（如 ClawEmail）。",
-            "providerSMTP": "SMTP",
-            "providerHTTP": "HTTP API",
-            "httpBaseUrl": "API 基础地址",
-            "httpBaseUrlPlaceholder": "https://your-service/ext",
-            "httpFrom": "发件人地址",
-            "httpFromPlaceholder": "agent@example.com",
-            "httpAdminAuth": "管理员鉴权令牌",
-            "httpAdminAuthPlaceholder": "管理员 API 令牌",
-            "httpSiteAuth": "站点鉴权令牌",
-            "httpSiteAuthPlaceholder": "站点 API 令牌"
-        },
-        "checkIn": {
-            "title": "用户每日签到",
-            "hint": "开启后，登录用户可在首页每天领取一次余额奖励；可选择固定点数或随机区间。",
-            "enabled": "启用每日签到",
-            "rewardMode": "签到奖励模式",
-            "fixed": "固定点数",
-            "random": "随机区间",
-            "amountPlaceholder": "固定点数，例如 100",
-            "minPlaceholder": "最小点数",
-            "maxPlaceholder": "最大点数"
-        },
-        "upstreamError": {
-            "title": "上游错误响应",
-            "hint": "管理员日志保留真实上游状态和错误码；用户侧可统一显示公开错误码与友好提示。",
-            "statusPassthrough": "透传上游状态码",
-            "bodyMode": "错误正文模式",
-            "publicCode": "公开错误码",
-            "publicCodePlaceholder": "给用户看的错误码，例如 service_busy",
-            "redacted": "脱敏上游错误",
-            "custom": "自定义提示",
-            "standard": "Octopus 标准提示",
-            "customPlaceholder": "选择自定义模式时展示给用户的提示"
-        },
-        "corsAllowOrigins": {
-            "label": "CORS 跨域白名单",
-            "hint": "为空禁止跨域，* 允许所有",
-            "example": "只允许指定域名: https://example.com,https://example2.com"
-        },
-        "circuitBreaker": {
-            "title": "熔断器配置",
-            "threshold": {
-                "label": "熔断触发阈值（连续失败次数）",
-                "placeholder": "请输入阈值"
-            },
-            "cooldown": {
-                "label": "基础冷却时间（秒）",
-                "placeholder": "请输入冷却时间"
-            },
-            "maxCooldown": {
-                "label": "最大冷却时间（秒）",
-                "placeholder": "请输入最大冷却时间"
-            },
-            "hint": "当渠道连续失败达到阈值后触发熔断，冷却时间按指数退避增长，上限为最大冷却时间"
-        },
-        "fingerprintProfile": {
-            "title": "指纹 Profile 管理",
-            "description": "为不同渠道准备多套独立设备指纹，让走不同出口 IP 的上游 key 呈现不同设备，而不是共用全局唯一指纹。各字段留空即回落全局默认。",
-            "add": "新建",
-            "edit": "编辑",
-            "delete": "删除",
-            "confirmDelete": "确认删除",
-            "cancel": "取消",
-            "save": "保存",
-            "empty": "暂无指纹 Profile，点「新建」添加一套。渠道仍可选「默认（跟随全局）」。",
-            "createTitle": "新建指纹 Profile",
-            "editTitle": "编辑指纹 Profile",
-            "dialogHint": "各字段留空即回落对应的全局默认设置；只需填写要区分的字段。",
-            "nameRequired": "请填写 Profile 名称",
-            "followGlobal": "默认（跟随全局）",
-            "genericUAHint": "统一 User-Agent，作用于非 Claude/Codex 渠道（Gemini / 火山引擎 / 普通 OpenAI Chat），这些渠道默认不带 UA。留空即保持现状。",
-            "groups": {
-                "claude": "Claude 指纹",
-                "codex": "Codex 指纹"
-            },
-            "fields": {
-                "name": "名称",
-                "seed": "种子 Seed",
-                "claudeUserAgent": "Claude User-Agent",
-                "claudePackageVersion": "Claude Package Version",
-                "claudeRuntimeVersion": "Claude Runtime Version",
-                "claudeOS": "Claude OS",
-                "claudeArch": "Claude Arch",
-                "claudeTimeout": "Claude Timeout",
-                "claudeStabilize": "稳定设备指纹",
-                "codexUserAgent": "Codex User-Agent",
-                "codexOriginator": "Codex Originator",
-                "codexBetaFeatures": "Codex Beta Features",
-                "genericUA": "通用 User-Agent"
-            },
-            "placeholders": {
-                "name": "便于辨认的名字，如 macOS Claude / Windows 节点 A",
-                "seed": "留空则后端首次保存时自动生成随机种子",
-                "followGlobal": "留空 = 默认（跟随全局）",
-                "genericUA": "留空 = 保持现状（不设置 UA）"
-            },
-            "stabilize": {
-                "follow": "跟随全局",
-                "on": "开启",
-                "off": "关闭"
-            }
-        },
-        "saved": "已保存",
-        "saveFailed": "保存失败，设置未生效，请重试",
-        "backup": {
-            "title": "备份 / 恢复",
-            "export": {
-                "title": "导出",
-                "includeLogs": "包含日志",
-                "includeStats": "包含统计",
-                "button": "下载 JSON",
-                "exporting": "导出中...",
-                "success": "开始导出"
-            },
-            "import": {
-                "title": "导入（增量）",
-                "selected": "已选择文件",
-                "button": "导入 JSON",
-                "importing": "导入中...",
-                "noFile": "请先选择 JSON 文件",
-                "success": "导入成功",
-                "failed": "导入失败",
-                "result": "导入结果"
-            }
-        },
-        "apiKey": {
-            "title": "API 密钥",
-            "empty": "暂无 API 密钥",
-            "add": "添加密钥",
-            "loadFailed": "加载失败",
-            "list": {
-                "plans": "方案",
-                "endpoints": "端点",
-                "defaultPlan": "默认方案",
-                "morePlans": "还有 {count} 个方案"
-            },
-            "guide": {
-                "button": "使用教程",
-                "title": "API Key 使用教程",
-                "description": "复制下面的 Base URL 和密钥配置到客户端。",
-                "baseUrl": "Base URL",
-                "allowedEndpoints": "允许端点",
-                "accessPlan": "访问方案",
-                "currentPlan": "当前方案",
-                "defaultPlan": "默认",
-                "planHint": "选择本次教程要走的方案，请求会按该方案的模型映射和计费策略执行。",
-                "requestHeader": "请求头",
-                "groupAlias": "兼容别名",
-                "openaiDescription": "用于 OpenAI 兼容客户端、Chat Completions 和 Responses。",
-                "geminiDescription": "用于 Gemini 原生 generateContent / streamGenerateContent。",
-                "anthropicDescription": "用于 Claude / Anthropic Messages 协议。",
-                "empty": "这个密钥暂时没有可用端点。"
-            },
-            "form": {
-                "name": "名称",
-                "owner": "归属用户",
-                "currentAdmin": "当前管理员",
-                "maxCost": "最大金额",
-                "maxCostPlaceholder": "请输入金额",
-                "unlimited": "无限制",
-                "expireAt": "过期日期",
-                "selectDate": "选择日期",
-                "neverExpire": "永不过期",
-                "supportedModels": "支持的模型",
-                "noModels": "暂无可选模型",
-                "modelsHint": "留空表示不限制模型；需要精确控制时可手动勾选或全选。",
-                "selectAllModels": "全选",
-                "unlimitedModels": "不限",
-                "searchModels": "搜索模型",
-                "noMatchedModels": "没有匹配的模型",
-                "accessPlans": "可用方案",
-                "noAccessPlans": "暂无可选方案",
-                "defaultAccessPlan": "默认方案",
-                "accessPlansHint": "管理员可限制该密钥只能使用用户被授权的方案；请求头只能在已选方案内切换。",
-                "selectAllPlans": "全选",
-                "defaultOnly": "默认",
-                "endpointFamilies": "可用协议端点",
-                "endpointFamiliesHint": "默认全选以兼容旧密钥；取消某类后，该密钥无法访问对应协议端点。",
-                "endpointUsage": "调用示例",
-                "enabled": "是否启用",
-                "cancel": "取消",
-                "create": "创建",
-                "save": "保存",
-                "confirm": "确认"
-            },
-            "stats": {
-                "noData": "暂无统计数据",
-                "inputToken": "输入 Token",
-                "outputToken": "输出 Token",
-                "inputCost": "输入费用",
-                "outputCost": "输出费用",
-                "requestSuccess": "成功请求",
-                "requestFailed": "失败请求"
-            },
-            "toast": {
-                "createSuccess": "API 密钥创建成功",
-                "createError": "API 密钥创建失败",
-                "updateSuccess": "API 密钥更新成功",
-                "updateError": "API 密钥更新失败",
-                "deleteSuccess": "API 密钥删除成功",
-                "deleteError": "API 密钥删除失败"
-            }
-        },
-        "llmPrice": {
-            "title": "模型价格",
-            "description": "从 models.dev 拉取公开价格库，本地手动覆盖仍优先。",
-            "source": "价格来源",
-            "sourceName": "models.dev",
-            "checking": "检查中...",
-            "updateInterval": {
-                "label": "自动更新间隔（小时）",
-                "placeholder": "请输入间隔（小时）"
-            },
-            "manualUpdate": {
-                "label": "价格库更新",
-                "hint": "更新后会刷新模型价格缓存，不会覆盖已手动维护的本地模型价格。",
-                "button": "从 models.dev 更新价格库",
-                "updating": "更新中..."
-            },
-            "lastUpdate": "上次更新",
-            "neverUpdated": "从未更新",
-            "updateSuccess": "已从 models.dev 更新价格库",
-            "updateFailed": "从 models.dev 更新价格库失败"
-        },
-        "llmSync": {
-            "title": "渠道同步",
-            "syncInterval": {
-                "label": "自动同步间隔（小时）",
-                "placeholder": "请输入间隔（小时）"
-            },
-            "manualSync": {
-                "label": "手动同步渠道",
-                "button": "立即同步",
-                "syncing": "同步中..."
-            },
-            "lastSync": "上次同步",
-            "neverSynced": "从未同步",
-            "syncSuccess": "渠道同步成功",
-            "syncFailed": "渠道同步失败"
-        },
-        "account": {
-            "title": "账户设置",
-            "save": "保存",
-            "saving": "保存中...",
-            "username": {
-                "label": "修改用户名",
-                "placeholder": "请输入新用户名",
-                "empty": "用户名不能为空",
-                "success": "用户名修改成功",
-                "failed": "用户名修改失败"
-            },
-            "password": {
-                "label": "修改密码",
-                "oldPlaceholder": "请输入当前密码",
-                "newPlaceholder": "请输入新密码",
-                "confirmPlaceholder": "请确认新密码",
-                "oldEmpty": "请输入当前密码",
-                "newEmpty": "请输入新密码",
-                "mismatch": "两次输入的密码不一致",
-                "tooShort": "密码长度至少为6位",
-                "change": "修改密码",
-                "success": "密码修改成功",
-                "failed": "密码修改失败"
-            }
-        },
-        "info": {
-            "title": "版本信息",
-            "currentVersion": "当前版本",
-            "latestVersion": "最新版本",
-            "currentBuildTime": "当前构建时间",
-            "latestBuildTime": "最新构建时间",
-            "buildTime": "构建时间",
-            "publishedAt": "发布时间",
-            "github": "GitHub 仓库",
-            "versionSource": "版本来源",
-            "commit": "提交",
-            "unknown": "未知",
-            "checkUpdate": "检查更新",
-            "checkSuccess": "已重新检查更新",
-            "versionMismatch": "版本不匹配",
-            "versionMismatchHint": "前端版本 ({frontend}) 与后端版本 ({backend}) 不一致，可能是浏览器缓存问题，请强制刷新页面。",
-            "forceRefresh": "强制刷新",
-            "newVersionAvailable": "发现新版本可用",
-            "newVersionAvailableHint": "请先备份数据，然后更新系统",
-            "futureUpdateHint": "future 构建保留官方版本号，更新入口使用 zhizhishu/octopus 的镜像与包。",
-            "openFutureUpdate": "打开 future 更新",
-            "updateNow": "立即更新",
-            "updating": "更新中...",
-            "updateSuccess": "更新成功，服务即将重启",
-            "updateFailed": "更新失败"
-        },
-        "log": {
-            "title": "日志设置",
-            "enabled": {
-                "label": "启用历史日志"
-            },
-            "keepPeriod": {
-                "label": "日志保存天数",
-                "placeholder": "请输入天数"
-            },
-            "maxStorage": {
-                "label": "日志容量上限（GB）",
-                "placeholder": "0 表示不限",
-                "hint": "按请求/响应内容估算，超出后自动删除最旧日志",
-                "current": "当前占用",
-                "unlimited": "不限"
-            },
-            "queueHealth": {
-                "pending": "待保存",
-                "dropped": "已丢记录",
-                "writeFailed": "保存失败",
-                "healthy": "写入正常"
-            },
-            "clear": {
-                "label": "清空历史日志",
-                "button": "清空",
-                "clearing": "清空中..."
-            },
-            "clearSuccess": "日志已清空",
-            "clearFailed": "清空失败",
-            "intervention": {
-                "label": "上游错误自动救援",
-                "description": "所有自动渠道都失败时，对同一条新用户消息救援一次：每秒重新选路并重试一个渠道，最长 300 秒。每条新用户消息最多救援一次；救援耗尽后，携带同一消息的后续请求按普通转发处理，直到某次成功或用户发来新消息。完全相同的对话历史无法区分，重发同一消息会共用同一次救援。"
-            },
-            "noBreaker": {
-                "label": "自动救援时长（秒）",
-                "hint": "默认与上限均为 300 秒；0 表示关闭。对关闭了熔断的渠道生效，不受上方开关限制。"
-            }
-        }
-    },
-    "model": {
-        "create": {
-            "title": "创建模型",
-            "name": "模型名称",
-            "input": "输入价格",
-            "output": "输出价格",
-            "cacheRead": "缓存读取",
-            "cacheWrite": "缓存写入",
-            "submit": "创建",
-            "submitting": "创建中..."
-        },
-        "toast": {
-            "updated": "模型价格已更新",
-            "updateFailed": "更新失败",
-            "deleted": "模型已删除",
-            "deleteFailed": "删除失败"
-        },
-        "card": {
-            "inputCache": "输入/缓存",
-            "outputCache": "输出/缓存",
-            "edit": "编辑",
-            "delete": "删除",
-            "autoRescue": "自动救援"
-        },
-        "overlay": {
-            "cancel": "取消",
-            "deleting": "删除中...",
-            "confirmDelete": "确认删除",
-            "input": "输入",
-            "output": "输出",
-            "cacheRead": "缓存读取",
-            "cacheWrite": "缓存写入",
-            "save": "保存"
-        }
+    "info": {
+      "title": "版本信息",
+      "currentVersion": "当前版本",
+      "latestVersion": "最新版本",
+      "currentBuildTime": "当前构建时间",
+      "latestBuildTime": "最新构建时间",
+      "buildTime": "构建时间",
+      "publishedAt": "发布时间",
+      "github": "GitHub 仓库",
+      "versionSource": "版本来源",
+      "commit": "提交",
+      "unknown": "未知",
+      "checkUpdate": "检查更新",
+      "checkSuccess": "已重新检查更新",
+      "versionMismatch": "版本不匹配",
+      "versionMismatchHint": "前端版本 ({frontend}) 与后端版本 ({backend}) 不一致，可能是浏览器缓存问题，请强制刷新页面。",
+      "forceRefresh": "强制刷新",
+      "newVersionAvailable": "发现新版本可用",
+      "newVersionAvailableHint": "请先备份数据，然后更新系统",
+      "futureUpdateHint": "future 构建保留官方版本号，更新入口使用 zhizhishu/octopus 的镜像与包。",
+      "openFutureUpdate": "打开 future 更新",
+      "updateNow": "立即更新",
+      "updating": "更新中...",
+      "updateSuccess": "更新成功，服务即将重启",
+      "updateFailed": "更新失败"
     },
     "log": {
-        "live": {
-            "autoRescue": "自动救援",
-            "activeActivity": "实时请求",
-            "running": "正在调用",
-            "rescue": "自动救援",
-            "retryRound": "第 {count} 轮重试",
-            "reconnecting": "重连中",
-            "requesting": "请求中",
-            "stop": "终止请求",
-            "stopSent": "已发送终止请求",
-            "stopFailed": "终止请求失败",
-            "override": "指定渠道",
-            "channel": "选择渠道",
-            "key": "自动选 Key",
-            "model": "模型覆盖",
-            "retry": "指定重试"
-        },
-        "list": {
-            "search": "搜索",
-            "reset": "重置",
-            "export": "导出日志",
-            "showSensitive": "显示敏感信息",
-            "hideSensitive": "隐藏敏感信息",
-            "empty": "暂无日志",
-            "loadMoreForFilter": "加载更早日志",
-            "refresh": "刷新",
-            "streamError": "实时已断开",
-            "filters": {
-                "all": "全部",
-                "success": "成功",
-                "warn": "Warn",
-                "error": "Error",
-                "echo": "上游回显",
-                "echoAll": "全部回显",
-                "mismatch": "回显不符",
-                "match": "回显一致"
-            }
-        },
-        "card": {
-            "autoRescue": "自动救援",
-            "error": "错误",
-            "errorInfo": "错误信息",
-            "firstToken": "首字",
-            "totalTime": "总耗时",
-            "input": "输入",
-            "output": "输出",
-            "cost": "费用",
-            "requestContent": "请求内容",
-            "responseContent": "响应内容",
-            "noRequestContent": "(无请求内容)",
-            "noResponseContent": "(无响应内容)",
-            "firstTokenTime": "首字时间",
-            "tokens": "tokens",
-            "cacheHit": "缓存命中",
-            "cacheWrite": "缓存写入",
-            "cacheInput": "缓存输入",
-            "retryDetails": "重试详情",
-            "attempts": "次尝试",
-            "success": "成功",
-            "failed": "失败",
-            "skipped": "已跳过",
-            "circuitBreak": "熔断冷却中",
-            "successStatus": "成功",
-            "warnStatus": "成功但有告警",
-            "failedStatus": "失败",
-            "warningInfo": "告警详情",
-            "openDetails": "查看详情",
-            "auditStatus": "状态",
-            "logId": "日志 ID",
-            "requestIP": "请求 IP",
-            "endpoint": "端点",
-            "channelAttempts": "渠道尝试",
-            "stream": "流式",
-            "nonStream": "非流式",
-            "echoMismatch": "回显不符",
-            "echoMismatchHint": "上游自报 {model}，与发出去的名字不一致；这是线索，不是假模型证明",
-            "echoAliasVariant": "回显名称变体",
-            "echoAliasVariantHint": "上游自报 {model}，与我们发出的名字只差后缀/日期档位等别名写法；这不代表模型被替换，仅为名称变体线索",
-            "upstreamEcho": "上游自报",
-            "reasoningEffort": "推理强度",
-            "userName": "用户",
-            "client": "客户端",
-            "clientUnknown": "客户端未知",
-            "auditPrefix": "检测",
-            "auditClean": "未见异常",
-            "auditInsufficient": "证据不足",
-            "auditLow": "低危待复核",
-            "auditMedium": "中危待复核",
-            "auditHigh": "高危待复核",
-            "auditScore": "得分",
-            "auditFindings": "发现",
-            "auditModel": "检测模型",
-            "auditSource": "来源",
-            "auditSourceManual": "手动检测",
-            "auditSourceSchedule": "历史自动检测",
-            "auditSourceUnknown": "历史来源未记录",
-            "auditRow": "本行",
-            "passiveBadgeInsufficient": "被动·证据不足",
-            "passiveBadgeNotApplicable": "被动·未评估",
-            "passiveBadgeMissing": "被动·未分析",
-            "passiveTitle": "被动本地分析",
-            "passiveExplain": "基于已到达回复的本地统计；未向上游发任何请求；无目标型号基准，不做真伪认证。",
-            "passiveStatus": "状态",
-            "passiveStatusInsufficient": "证据不足（无目标基准）",
-            "passiveStatusNotApplicable": "未评估（范围外）",
-            "passiveReason": "原因",
-            "passiveVersion": "版本",
-            "passiveLanguage": "语言",
-            "passiveLegacyHint": "未分析（旧记录）",
-            "passiveFeatureChars": "字符",
-            "passiveFeatureLines": "行",
-            "passiveFeatureParagraphs": "段落",
-            "passiveFeatureCodeBlocks": "代码块",
-            "passiveFeatureCodeRatio": "代码占比",
-            "passiveFeatureMarkdownLines": "标记行",
-            "sentModel": "发送模型",
-            "upstreamDeclared": "上游自报",
-            "echoInconsistent": "与发送不符",
-            "echoConsistent": "与发送一致",
-            "upstreamSilent": "上游未自报模型",
-            "mappedByUs": "发出名由我们映射",
-            "familyTrusted": "无怀疑",
-            "familyTrustedHint": "上游自报的名称；这是线索，不是实名认证——前缀不代表已验证的供应商",
-            "familySuspectHint": "上游自报名与发出名（或家族）不一致；这是线索，不是真模型证明",
-            "familyReplaced": "家族线索不一致",
-            "familyReplacedHint": "客户端请求的家族与上游自报的家族线索不一致（两侧均可识别且无交集）；可能是本地映射或待核对，不代表模型真假",
-            "vendorModelSeparator": " / ",
-            "channelKey": "渠道 Key 备注",
-            "thinking": "思考",
-            "basePrice": "基准单价(In/Out)"
-        }
+      "title": "日志设置",
+      "enabled": {
+        "label": "启用历史日志"
+      },
+      "keepPeriod": {
+        "label": "日志保存天数",
+        "placeholder": "请输入天数"
+      },
+      "maxStorage": {
+        "label": "日志容量上限（GB）",
+        "placeholder": "0 表示不限",
+        "hint": "按请求/响应内容估算，超出后自动删除最旧日志",
+        "current": "当前占用",
+        "unlimited": "不限",
+        "cleanupNow": "立即清理",
+        "cleaning": "清理中…",
+        "cleanupFreed": "已释放 {size}",
+        "cleanupNothing": "当前占用未超过上限，无需清理。",
+        "cleanupVacuumFailed": "日志已按上限收缩，但磁盘空间回收失败，文件大小可能暂时不变。",
+        "cleanupFailed": "清理失败",
+        "usageHint": "此处“已用”包含日志正文与搜索加速副本的真实占用；删除日志后文件不会立刻变小，需完成空间回收才会缩小。"
+      },
+      "queueHealth": {
+        "pending": "待保存",
+        "dropped": "已丢记录",
+        "writeFailed": "保存失败",
+        "healthy": "写入正常"
+      },
+      "clear": {
+        "label": "清空历史日志",
+        "button": "清空",
+        "clearing": "清空中..."
+      },
+      "clearSuccess": "日志已清空",
+      "clearFailed": "清空失败",
+      "intervention": {
+        "label": "上游错误自动救援",
+        "description": "所有自动渠道都失败时，对同一条新用户消息救援一次：每秒重新选路并重试一个渠道，最长 300 秒。每条新用户消息最多救援一次；救援耗尽后，携带同一消息的后续请求按普通转发处理，直到某次成功或用户发来新消息。完全相同的对话历史无法区分，重发同一消息会共用同一次救援。"
+      },
+      "noBreaker": {
+        "label": "自动救援时长（秒）",
+        "hint": "默认与上限均为 300 秒；0 表示关闭。对关闭了熔断的渠道生效，不受上方开关限制。"
+      }
+    }
+  },
+  "model": {
+    "create": {
+      "title": "创建模型",
+      "name": "模型名称",
+      "input": "输入价格",
+      "output": "输出价格",
+      "cacheRead": "缓存读取",
+      "cacheWrite": "缓存写入",
+      "submit": "创建",
+      "submitting": "创建中..."
+    },
+    "toast": {
+      "updated": "模型价格已更新",
+      "updateFailed": "更新失败",
+      "deleted": "模型已删除",
+      "deleteFailed": "删除失败"
+    },
+    "card": {
+      "inputCache": "输入/缓存",
+      "outputCache": "输出/缓存",
+      "edit": "编辑",
+      "delete": "删除",
+      "autoRescue": "自动救援"
+    },
+    "overlay": {
+      "cancel": "取消",
+      "deleting": "删除中...",
+      "confirmDelete": "确认删除",
+      "input": "输入",
+      "output": "输出",
+      "cacheRead": "缓存读取",
+      "cacheWrite": "缓存写入",
+      "save": "保存"
+    }
+  },
+  "log": {
+    "live": {
+      "autoRescue": "自动救援",
+      "activeActivity": "实时请求",
+      "running": "正在调用",
+      "rescue": "自动救援",
+      "retryRound": "第 {count} 轮重试",
+      "reconnecting": "重连中",
+      "requesting": "请求中",
+      "stop": "终止请求",
+      "stopSent": "已发送终止请求",
+      "stopFailed": "终止请求失败",
+      "override": "指定渠道",
+      "channel": "选择渠道",
+      "key": "自动选 Key",
+      "model": "模型覆盖",
+      "retry": "指定重试"
+    },
+    "list": {
+      "search": "搜索",
+      "reset": "重置",
+      "export": "导出日志",
+      "showSensitive": "显示敏感信息",
+      "hideSensitive": "隐藏敏感信息",
+      "empty": "暂无日志",
+      "loadMoreForFilter": "加载更早日志",
+      "refresh": "刷新",
+      "streamError": "实时已断开",
+      "filters": {
+        "all": "全部",
+        "success": "成功",
+        "warn": "Warn",
+        "error": "Error",
+        "echo": "上游回显",
+        "echoAll": "全部回显",
+        "mismatch": "回显不符",
+        "match": "回显一致"
+      }
+    },
+    "card": {
+      "autoRescue": "自动救援",
+      "error": "错误",
+      "errorInfo": "错误信息",
+      "firstToken": "首字",
+      "totalTime": "总耗时",
+      "input": "输入",
+      "output": "输出",
+      "cost": "费用",
+      "requestContent": "请求内容",
+      "responseContent": "响应内容",
+      "noRequestContent": "(无请求内容)",
+      "noResponseContent": "(无响应内容)",
+      "firstTokenTime": "首字时间",
+      "tokens": "tokens",
+      "cacheHit": "缓存命中",
+      "cacheWrite": "缓存写入",
+      "cacheInput": "缓存输入",
+      "retryDetails": "重试详情",
+      "attempts": "次尝试",
+      "success": "成功",
+      "failed": "失败",
+      "skipped": "已跳过",
+      "circuitBreak": "熔断冷却中",
+      "successStatus": "成功",
+      "warnStatus": "成功但有告警",
+      "failedStatus": "失败",
+      "warningInfo": "告警详情",
+      "openDetails": "查看详情",
+      "auditStatus": "状态",
+      "logId": "日志 ID",
+      "requestIP": "请求 IP",
+      "endpoint": "端点",
+      "channelAttempts": "渠道尝试",
+      "stream": "流式",
+      "nonStream": "非流式",
+      "echoMismatch": "回显不符",
+      "echoMismatchHint": "上游自报 {model}，与发出去的名字不一致；这是线索，不是假模型证明",
+      "echoAliasVariant": "回显名称变体",
+      "echoAliasVariantHint": "上游自报 {model}，与我们发出的名字只差后缀/日期档位等别名写法；这不代表模型被替换，仅为名称变体线索",
+      "upstreamEcho": "上游自报",
+      "reasoningEffort": "推理强度",
+      "userName": "用户",
+      "client": "客户端",
+      "clientUnknown": "客户端未知",
+      "auditPrefix": "检测",
+      "auditClean": "未见异常",
+      "auditInsufficient": "证据不足",
+      "auditLow": "低危待复核",
+      "auditMedium": "中危待复核",
+      "auditHigh": "高危待复核",
+      "auditScore": "得分",
+      "auditFindings": "发现",
+      "auditModel": "检测模型",
+      "auditSource": "来源",
+      "auditSourceManual": "手动检测",
+      "auditSourceSchedule": "历史自动检测",
+      "auditSourceUnknown": "历史来源未记录",
+      "auditRow": "本行",
+      "passiveBadgeInsufficient": "被动·证据不足",
+      "passiveBadgeNotApplicable": "被动·未评估",
+      "passiveBadgeMissing": "被动·未分析",
+      "passiveTitle": "被动本地分析",
+      "passiveExplain": "基于已到达回复的本地统计；未向上游发任何请求；无目标型号基准，不做真伪认证。",
+      "passiveStatus": "状态",
+      "passiveStatusInsufficient": "证据不足（无目标基准）",
+      "passiveStatusNotApplicable": "未评估（范围外）",
+      "passiveReason": "原因",
+      "passiveVersion": "版本",
+      "passiveLanguage": "语言",
+      "passiveLegacyHint": "未分析（旧记录）",
+      "passiveFeatureChars": "字符",
+      "passiveFeatureLines": "行",
+      "passiveFeatureParagraphs": "段落",
+      "passiveFeatureCodeBlocks": "代码块",
+      "passiveFeatureCodeRatio": "代码占比",
+      "passiveFeatureMarkdownLines": "标记行",
+      "sentModel": "发送模型",
+      "upstreamDeclared": "上游自报",
+      "echoInconsistent": "与发送不符",
+      "echoConsistent": "与发送一致",
+      "upstreamSilent": "上游未自报模型",
+      "mappedByUs": "发出名由我们映射",
+      "familyTrusted": "无怀疑",
+      "familyTrustedHint": "上游自报的名称；这是线索，不是实名认证——前缀不代表已验证的供应商",
+      "familySuspectHint": "上游自报名与发出名（或家族）不一致；这是线索，不是真模型证明",
+      "familyReplaced": "家族线索不一致",
+      "familyReplacedHint": "客户端请求的家族与上游自报的家族线索不一致（两侧均可识别且无交集）；可能是本地映射或待核对，不代表模型真假",
+      "vendorModelSeparator": " / ",
+      "channelKey": "渠道 Key 备注",
+      "thinking": "思考",
+      "basePrice": "基准单价(In/Out)"
+    }
+  },
+  "channel": {
+    "card": {
+      "requestCount": "请求次数",
+      "totalCost": "总成本",
+      "edit": "编辑",
+      "delete": "删除",
+      "confirmDelete": "确认删除",
+      "cancel": "取消",
+      "copy": "复制",
+      "copyTooltip": "克隆本渠道全部配置，name 加 _copy 后缀且默认禁用",
+      "copySuccess": "已复制为 {name}",
+      "copyFailed": "复制失败",
+      "circuit": {
+        "open": "熔断中",
+        "remaining": "熔断 {seconds}s",
+        "reset": "解除熔断",
+        "tooltip": "{count} 个 key/model 处于熔断，点击解除"
+      },
+      "toast": {
+        "enabled": "渠道已启用",
+        "disabled": "渠道已禁用",
+        "circuitReset": "熔断已解除"
+      }
+    },
+    "detail": {
+      "title": {
+        "edit": "编辑渠道",
+        "view": "渠道详情"
+      },
+      "sections": {
+        "requests": "请求详情",
+        "tokens": "Token 使用",
+        "costs": "成本详情",
+        "baseUrls": "Base URLs",
+        "keys": "密钥"
+      },
+      "noBaseUrls": "暂无 Base URL",
+      "noKeys": "暂无密钥",
+      "metrics": {
+        "totalRequests": "总请求",
+        "totalToken": "总 Token",
+        "totalCost": "总成本",
+        "successRequests": "成功请求",
+        "failedRequests": "失败请求",
+        "inputToken": "输入 Token",
+        "outputToken": "输出 Token",
+        "inputCost": "输入成本",
+        "outputCost": "输出成本",
+        "avgWaitTime": "等待时间"
+      },
+      "actions": {
+        "edit": "编辑",
+        "cancel": "取消",
+        "save": "保存",
+        "saving": "保存中...",
+        "delete": "删除",
+        "confirmDelete": "确认删除",
+        "deleting": "删除中..."
+      }
+    },
+    "create": {
+      "dialogTitle": "创建新渠道",
+      "submit": "创建渠道",
+      "submitting": "创建中..."
+    },
+    "form": {
+      "add": "添加",
+      "name": "渠道名称",
+      "type": "渠道类型",
+      "priority": "渠道优先级",
+      "priorityHint": "数字越小优先级越高；同优先级默认轮询，可配合故障冷却和会话粘住。",
+      "maxConcurrent": "并发上限",
+      "maxConcurrentHint": "本渠道在途请求数硬上限（0=不限）。到顶后该渠道降档、让突发请求铺到其它渠道，但无更优渠道时仍可用。",
+      "rpmLimit": "RPM 上限",
+      "rpmLimitHint": "本渠道每分钟请求数软上限（0=不限）。到顶后该渠道降档、让突发请求铺到其它渠道，但无更优渠道时仍可用。",
+      "keySelectStrategy": "Key 选择策略",
+      "keySelectStrategyCostBalanced": "成本均衡（默认）",
+      "keySelectStrategySticky": "同 key 优先",
+      "disableCircuitBreaker": "关闭熔断与冷却",
+      "disableCircuitBreakerHint": "开启后本渠道像直连客户端一样：每个请求都照实转发上游，永不熔断、忽略冷却并快速轮询启用 Key，把“挤进容量”的重试权还给客户端。默认关闭＝完全保持现有行为、零变化。",
+      "disableCircuitBreakerOn": "已开启（关闭熔断/忽略冷却）",
+      "disableCircuitBreakerOff": "默认（保留熔断）",
+      "raceMode": "多 Key 并发竞速",
+      "raceModeTitle": "多 Key 并发竞速",
+      "raceModeOn": "已开启",
+      "raceModeOff": "默认关闭",
+      "raceModeHint": "同渠道多个启用 Key 并发或错峰对冲发起请求，首个有效响应胜出并立即返回，失败/落后请求自动取消。注意：可能产生少量上游多消耗；图像/视频生成暂不参与。",
+      "raceModeWarningFewKeys": "当前可用 Key 少于 2 个，运行时将自动降级为单 Key 串行重试。",
+      "raceKeyConcurrency": "并发 Key 数",
+      "raceKeyConcurrencyHint": "每次竞速同时发起的最大 Key 数量（2-5，默认 2）。",
+      "raceDelayMs": "对冲延迟 (ms)",
+      "raceDelayMsHint": "首个请求发出后等待的毫秒数（0-5000，默认 0 为完全并发；设置延迟可在主请求慢时再发对冲请求以节省消耗）。",
+      "baseUrls": "Base URLs",
+      "baseUrlUrl": "地址",
+      "baseUrlDelay": "延迟(ms)",
+      "advanced": "高级设置",
+      "apiKey": "API Key",
+      "apiKeyBulkHint": "每行一个 key，或粘贴 JSON 数组",
+      "bulkAddKey": "批量粘贴",
+      "bulkAddKeyPlaceholder": "每行一个 key，或用逗号/JSON 数组",
+      "bulkAddKeySubmit": "全部添加",
+      "bulkAddKeyInvalid": "输入无效：不是合法的 key JSON 数组",
+      "bulkAddKeyAllDup": "粘贴的 key 都已存在",
+      "bulkAddKeyAdded": "已添加 {count} 个 key",
+      "customHeader": "自定义 Header",
+      "customHeaderKey": "Header Key",
+      "customHeaderValue": "Header Value",
+      "customHeaderAdd": "添加 Header",
+      "headerPresetCodex": "Codex",
+      "headerPresetClaude": "Claude",
+      "headerPresetOpenAI": "OpenAI Python",
+      "headerPresetHint": "CliProxy 风格客户端 Header 模板。只填 Header，每一行仍可继续编辑。",
+      "cloakMode": "客户端身份",
+      "claudeSimulation": "Claude 模拟",
+      "codexSimulation": "Codex 模拟",
+      "cloakModeField": "模拟开关",
+      "cloakModeOn": "开启",
+      "cloakModeOff": "关闭",
+      "cloakModeHint": "开启时使用下面选中的 Claude/Codex 身份；关闭时使用同一套身份里的通用 UA。选哪套用哪套。",
+      "cloakShape": "出站身份",
+      "cloakShapeGeneric": "通用",
+      "cloakShapeClaude": "Claude CLI",
+      "cloakShapeCodex": "Codex CLI",
+      "cloakShapeHint": "仅 Chat 渠道生效：让出站请求穿 Claude/Codex 的报文头与 TLS 指纹，正文仍是 chat 格式。通用即保持现状。",
+      "channelProxy": "渠道代理",
+      "channelProxyPlaceholder": "可选：如 socks5://用户:密码@主机:端口 或 http://主机:端口，仅对该渠道生效（覆盖全局代理）",
+      "paramOverride": "参数覆盖",
+      "paramOverridePlaceholder": "可选：JSON 字符串，用于覆盖请求参数",
+      "paramOverrideHint": "失焦时自动格式化 JSON",
+      "paramOverrideTidy": "一键整理",
+      "paramOverrideTidyFail": "无法自动整理：请检查是否包含合法的 JSON",
+      "paramOverrideStateEmpty": "留空＝不覆盖任何参数",
+      "paramOverrideStateValid": "✓ 格式正确，将覆盖 {count} 个参数：{keys}",
+      "paramOverrideStateNotObject": "✗ 必须是一个 JSON 对象，不能是数组或单个值",
+      "paramOverrideStateInvalid": "✗ 不是合法的 JSON（{reason}）",
+      "paramOverrideStateInvalidTip": "提示：只填花括号开头的内容，别把左边的「参数覆盖」标题文字一起粘进来",
+      "promptOverride": "提示词覆盖",
+      "promptOverrideMode": "提示词覆盖模式",
+      "promptAppend": "追加 system",
+      "promptReplace": "替换 system",
+      "promptOverridePlaceholder": "可选：该渠道最终注入的 system 提示词",
+      "model": "模型",
+      "enabled": "启用",
+      "proxy": "使用代理",
+      "modelCustomPlaceholder": "自定义模型名称",
+      "modelAdd": "添加",
+      "modelRefresh": "刷新",
+      "modelRefreshSuccess": "模型列表获取成功",
+      "modelRefreshFailed": "模型列表获取失败",
+      "modelRefreshEmpty": "未获取到模型列表",
+      "modelSelected": "已选模型",
+      "modelNoSelected": "暂未选择模型",
+      "modelClearAll": "清除全部",
+      "modelFetched": "可选模型",
+      "modelSelectAll": "全选",
+      "modelClearFetched": "清空候选",
+      "modelAlreadySelected": "已选",
+      "modelFilterPlaceholder": "搜索模型…",
+      "typeOpenAIChat": "OpenAI Chat",
+      "typeOpenAIResponse": "OpenAI Response",
+      "typeOpenAIEmbedding": "OpenAI Embedding",
+      "typeAnthropic": "Anthropic",
+      "typeGemini": "Gemini",
+      "typeVolcengine": "火山引擎",
+      "typeCustomOpenAIChat": "自定义 OpenAI Chat",
+      "openaiChatPath": "Chat 端点路径",
+      "openaiModelsPath": "Models 端点路径",
+      "autoSync": "自动同步",
+      "autoSyncHint": "定时/保存后拉取模型列表；新发现只进候选，手动启用后才进入模型池/路由。",
+      "autoGroup": "模型池补全",
+      "autoGroupNone": "不自动加入",
+      "autoGroupFuzzy": "智能（推荐）",
+      "autoGroupExact": "严格同名",
+      "autoGroupRegex": "正则匹配",
+      "matchRegex": "匹配正则",
+      "matchRegexPlaceholder": "可选：用于匹配请求模型名称的正则表达式",
+      "remark": "备注",
+      "cloakProfile": "身份套件",
+      "cloakProfileGlobal": "默认（跟随全局）",
+      "cloakProfileHint": "选设置页维护的那套身份。开模拟用其中的 Claude/Codex UA，关模拟用其中的通用 UA。",
+      "modelMapping": "模型映射",
+      "modelMappingHint": "客户端用左边的名字，转发上游时改成右边的真实名。",
+      "modelMappingClientName": "客户端名",
+      "modelMappingUpstreamName": "上游真实名",
+      "modelMappingAdd": "添加映射",
+      "modelMappingEmpty": "暂无映射",
+      "proxyTest": "测试延迟",
+      "proxyTestDisabled": "先填代理"
+    }
+  },
+  "redact": {
+    "global": {
+      "title": "凭据脱敏",
+      "subtitle": "出站密钥变占位符, 回程自动还原; 只改 body 文本, 指纹零改动",
+      "master": "脱敏总闸",
+      "masterHint": "关闭时所有渠道直通, 不做任何扫描",
+      "notice": "提示注入",
+      "noticeHint": "在首条用户消息前注入脱敏告知, 让模型知道占位符语义",
+      "defaultFlags": "默认检测器",
+      "defaultFlagsHint": "渠道未定制时使用的检测器组合",
+      "allDetectors": "全部检测器",
+      "selectedFlags": "默认检测器：{flags}",
+      "scopeTitle": "保护范围与限制",
+      "scopeProtected": "保护范围：仅 Chat Completions、Responses、Anthropic Messages 入站协议的文字与工具内容。",
+      "scopeUnprotected": "未保护：图片/视频生成、音频、文件/表单上传、embedding、raw 端点及 Gemini 原生入口不经脱敏。",
+      "scopeBypass": "聊天附件与身份/缓存字段不做改写。",
+      "scopeWhyMedia": "图片/视频/音频为什么不保护：敏感内容在画面或声音里（比如截图里的密码），脱敏只能替换文字，看不见图像，硬接等于装作保护了却仍原样发出。",
+      "scopeWhyEmbedding": "embedding 为什么不保护：它发出去是文字、回来是一串向量数字，原文已不存在、无从还原；而改写输入文字会算出一个不同的向量，让相似检索开始匹配到不相干的文档。不碰它才是对的。"
     },
     "channel": {
-        "card": {
-            "requestCount": "请求次数",
-            "totalCost": "总成本",
-            "edit": "编辑",
-            "delete": "删除",
-            "confirmDelete": "确认删除",
-            "cancel": "取消",
-            "copy": "复制",
-            "copyTooltip": "克隆本渠道全部配置，name 加 _copy 后缀且默认禁用",
-            "copySuccess": "已复制为 {name}",
-            "copyFailed": "复制失败",
-            "circuit": {
-                "open": "熔断中",
-                "remaining": "熔断 {seconds}s",
-                "reset": "解除熔断",
-                "tooltip": "{count} 个 key/model 处于熔断，点击解除"
-            },
-            "toast": {
-                "enabled": "渠道已启用",
-                "disabled": "渠道已禁用",
-                "circuitReset": "熔断已解除"
-            }
-        },
-        "detail": {
-            "title": {
-                "edit": "编辑渠道",
-                "view": "渠道详情"
-            },
-            "sections": {
-                "requests": "请求详情",
-                "tokens": "Token 使用",
-                "costs": "成本详情",
-                "baseUrls": "Base URLs",
-                "keys": "密钥"
-            },
-            "noBaseUrls": "暂无 Base URL",
-            "noKeys": "暂无密钥",
-            "metrics": {
-                "totalRequests": "总请求",
-                "totalToken": "总 Token",
-                "totalCost": "总成本",
-                "successRequests": "成功请求",
-                "failedRequests": "失败请求",
-                "inputToken": "输入 Token",
-                "outputToken": "输出 Token",
-                "inputCost": "输入成本",
-                "outputCost": "输出成本",
-                "avgWaitTime": "等待时间"
-            },
-            "actions": {
-                "edit": "编辑",
-                "cancel": "取消",
-                "save": "保存",
-                "saving": "保存中...",
-                "delete": "删除",
-                "confirmDelete": "确认删除",
-                "deleting": "删除中..."
-            }
-        },
-        "create": {
-            "dialogTitle": "创建新渠道",
-            "submit": "创建渠道",
-            "submitting": "创建中..."
-        },
-        "form": {
-            "add": "添加",
-            "name": "渠道名称",
-            "type": "渠道类型",
-            "priority": "渠道优先级",
-            "priorityHint": "数字越小优先级越高；同优先级默认轮询，可配合故障冷却和会话粘住。",
-            "maxConcurrent": "并发上限",
-            "maxConcurrentHint": "本渠道在途请求数硬上限（0=不限）。到顶后该渠道降档、让突发请求铺到其它渠道，但无更优渠道时仍可用。",
-            "rpmLimit": "RPM 上限",
-            "rpmLimitHint": "本渠道每分钟请求数软上限（0=不限）。到顶后该渠道降档、让突发请求铺到其它渠道，但无更优渠道时仍可用。",
-            "keySelectStrategy": "Key 选择策略",
-            "keySelectStrategyCostBalanced": "成本均衡（默认）",
-            "keySelectStrategySticky": "同 key 优先",
-            "disableCircuitBreaker": "关闭熔断与冷却",
-            "disableCircuitBreakerHint": "开启后本渠道像直连客户端一样：每个请求都照实转发上游，永不熔断、忽略冷却并快速轮询启用 Key，把“挤进容量”的重试权还给客户端。默认关闭＝完全保持现有行为、零变化。",
-            "disableCircuitBreakerOn": "已开启（关闭熔断/忽略冷却）",
-            "disableCircuitBreakerOff": "默认（保留熔断）",
-            "raceMode": "多 Key 并发竞速",
-            "raceModeTitle": "多 Key 并发竞速",
-            "raceModeOn": "已开启",
-            "raceModeOff": "默认关闭",
-            "raceModeHint": "同渠道多个启用 Key 并发或错峰对冲发起请求，首个有效响应胜出并立即返回，失败/落后请求自动取消。注意：可能产生少量上游多消耗；图像/视频生成暂不参与。",
-            "raceModeWarningFewKeys": "当前可用 Key 少于 2 个，运行时将自动降级为单 Key 串行重试。",
-            "raceKeyConcurrency": "并发 Key 数",
-            "raceKeyConcurrencyHint": "每次竞速同时发起的最大 Key 数量（2-5，默认 2）。",
-            "raceDelayMs": "对冲延迟 (ms)",
-            "raceDelayMsHint": "首个请求发出后等待的毫秒数（0-5000，默认 0 为完全并发；设置延迟可在主请求慢时再发对冲请求以节省消耗）。",
-            "baseUrls": "Base URLs",
-            "baseUrlUrl": "地址",
-            "baseUrlDelay": "延迟(ms)",
-            "advanced": "高级设置",
-            "apiKey": "API Key",
-            "apiKeyBulkHint": "每行一个 key，或粘贴 JSON 数组",
-            "bulkAddKey": "批量粘贴",
-            "bulkAddKeyPlaceholder": "每行一个 key，或用逗号/JSON 数组",
-            "bulkAddKeySubmit": "全部添加",
-            "bulkAddKeyInvalid": "输入无效：不是合法的 key JSON 数组",
-            "bulkAddKeyAllDup": "粘贴的 key 都已存在",
-            "bulkAddKeyAdded": "已添加 {count} 个 key",
-            "customHeader": "自定义 Header",
-            "customHeaderKey": "Header Key",
-            "customHeaderValue": "Header Value",
-            "customHeaderAdd": "添加 Header",
-            "headerPresetCodex": "Codex",
-            "headerPresetClaude": "Claude",
-            "headerPresetOpenAI": "OpenAI Python",
-            "headerPresetHint": "CliProxy 风格客户端 Header 模板。只填 Header，每一行仍可继续编辑。",
-            "cloakMode": "客户端身份",
-            "claudeSimulation": "Claude 模拟",
-            "codexSimulation": "Codex 模拟",
-            "cloakModeField": "模拟开关",
-            "cloakModeOn": "开启",
-            "cloakModeOff": "关闭",
-            "cloakModeHint": "开启时使用下面选中的 Claude/Codex 身份；关闭时使用同一套身份里的通用 UA。选哪套用哪套。",
-            "cloakShape": "出站身份",
-            "cloakShapeGeneric": "通用",
-            "cloakShapeClaude": "Claude CLI",
-            "cloakShapeCodex": "Codex CLI",
-            "cloakShapeHint": "仅 Chat 渠道生效：让出站请求穿 Claude/Codex 的报文头与 TLS 指纹，正文仍是 chat 格式。通用即保持现状。",
-            "channelProxy": "渠道代理",
-            "channelProxyPlaceholder": "可选：如 socks5://用户:密码@主机:端口 或 http://主机:端口，仅对该渠道生效（覆盖全局代理）",
-            "paramOverride": "参数覆盖",
-            "paramOverridePlaceholder": "可选：JSON 字符串，用于覆盖请求参数",
-            "paramOverrideHint": "失焦时自动格式化 JSON",
-            "paramOverrideTidy": "一键整理",
-            "paramOverrideTidyFail": "无法自动整理：请检查是否包含合法的 JSON",
-            "paramOverrideStateEmpty": "留空＝不覆盖任何参数",
-            "paramOverrideStateValid": "✓ 格式正确，将覆盖 {count} 个参数：{keys}",
-            "paramOverrideStateNotObject": "✗ 必须是一个 JSON 对象，不能是数组或单个值",
-            "paramOverrideStateInvalid": "✗ 不是合法的 JSON（{reason}）",
-            "paramOverrideStateInvalidTip": "提示：只填花括号开头的内容，别把左边的「参数覆盖」标题文字一起粘进来",
-            "promptOverride": "提示词覆盖",
-            "promptOverrideMode": "提示词覆盖模式",
-            "promptAppend": "追加 system",
-            "promptReplace": "替换 system",
-            "promptOverridePlaceholder": "可选：该渠道最终注入的 system 提示词",
-            "model": "模型",
-            "enabled": "启用",
-            "proxy": "使用代理",
-            "modelCustomPlaceholder": "自定义模型名称",
-            "modelAdd": "添加",
-            "modelRefresh": "刷新",
-            "modelRefreshSuccess": "模型列表获取成功",
-            "modelRefreshFailed": "模型列表获取失败",
-            "modelRefreshEmpty": "未获取到模型列表",
-            "modelSelected": "已选模型",
-            "modelNoSelected": "暂未选择模型",
-            "modelClearAll": "清除全部",
-            "modelFetched": "可选模型",
-            "modelSelectAll": "全选",
-            "modelClearFetched": "清空候选",
-            "modelAlreadySelected": "已选",
-            "modelFilterPlaceholder": "搜索模型…",
-            "typeOpenAIChat": "OpenAI Chat",
-            "typeOpenAIResponse": "OpenAI Response",
-            "typeOpenAIEmbedding": "OpenAI Embedding",
-            "typeAnthropic": "Anthropic",
-            "typeGemini": "Gemini",
-            "typeVolcengine": "火山引擎",
-            "typeCustomOpenAIChat": "自定义 OpenAI Chat",
-            "openaiChatPath": "Chat 端点路径",
-            "openaiModelsPath": "Models 端点路径",
-            "autoSync": "自动同步",
-            "autoSyncHint": "定时/保存后拉取模型列表；新发现只进候选，手动启用后才进入模型池/路由。",
-            "autoGroup": "模型池补全",
-            "autoGroupNone": "不自动加入",
-            "autoGroupFuzzy": "智能（推荐）",
-            "autoGroupExact": "严格同名",
-            "autoGroupRegex": "正则匹配",
-            "matchRegex": "匹配正则",
-            "matchRegexPlaceholder": "可选：用于匹配请求模型名称的正则表达式",
-            "remark": "备注",
-            "cloakProfile": "身份套件",
-            "cloakProfileGlobal": "默认（跟随全局）",
-            "cloakProfileHint": "选设置页维护的那套身份。开模拟用其中的 Claude/Codex UA，关模拟用其中的通用 UA。",
-            "modelMapping": "模型映射",
-            "modelMappingHint": "客户端用左边的名字，转发上游时改成右边的真实名。",
-            "modelMappingClientName": "客户端名",
-            "modelMappingUpstreamName": "上游真实名",
-            "modelMappingAdd": "添加映射",
-            "modelMappingEmpty": "暂无映射",
-            "proxyTest": "测试延迟",
-            "proxyTestDisabled": "先填代理"
-        }
+      "title": "渠道脱敏开关",
+      "subtitle": "按渠道开启; 展开可定制该渠道的检测器组合",
+      "empty": "还没有渠道",
+      "active": "脱敏中",
+      "flagsHint": "点字母切换该渠道的检测器 (虚线边框 = 继承全局默认)",
+      "followDefault": "跟随全局默认",
+      "statusDisabled": "未启用",
+      "statusMasterDisabled": "总闸关闭",
+      "statusInherited": "继承全局：{flags}",
+      "statusCustom": "自定义",
+      "effective": "实际生效：{flags}",
+      "allDetectors": "全部检测器",
+      "inheritedNotice": "该渠道未定制检测器，实际沿用全局默认：{flags}。",
+      "customNotice": "该渠道已自定义检测器，与全局默认互不影响。",
+      "restoreInherit": "恢复继承全局默认"
     },
-    "redact": {
-        "global": {
-            "title": "凭据脱敏",
-            "subtitle": "出站密钥变占位符, 回程自动还原; 只改 body 文本, 指纹零改动",
-            "master": "脱敏总闸",
-            "masterHint": "关闭时所有渠道直通, 不做任何扫描",
-            "notice": "提示注入",
-            "noticeHint": "在首条用户消息前注入脱敏告知, 让模型知道占位符语义",
-            "defaultFlags": "默认检测器",
-            "defaultFlagsHint": "渠道未定制时使用的检测器组合",
-            "allDetectors": "全部检测器",
-            "selectedFlags": "默认检测器：{flags}",
-            "scopeTitle": "保护范围与限制",
-            "scopeProtected": "保护范围：仅 Chat Completions、Responses、Anthropic Messages 入站协议的文字与工具内容。",
-            "scopeUnprotected": "未保护：图片/视频生成、音频、文件/表单上传、embedding、raw 端点及 Gemini 原生入口不经脱敏。",
-            "scopeBypass": "聊天附件与身份/缓存字段不做改写。",
-            "scopeWhyMedia": "图片/视频/音频为什么不保护：敏感内容在画面或声音里（比如截图里的密码），脱敏只能替换文字，看不见图像，硬接等于装作保护了却仍原样发出。",
-            "scopeWhyEmbedding": "embedding 为什么不保护：它发出去是文字、回来是一串向量数字，原文已不存在、无从还原；而改写输入文字会算出一个不同的向量，让相似检索开始匹配到不相干的文档。不碰它才是对的。"
-        },
-        "channel": {
-            "title": "渠道脱敏开关",
-            "subtitle": "按渠道开启; 展开可定制该渠道的检测器组合",
-            "empty": "还没有渠道",
-            "active": "脱敏中",
-            "flagsHint": "点字母切换该渠道的检测器 (虚线边框 = 继承全局默认)",
-            "followDefault": "跟随全局默认",
-            "statusDisabled": "未启用",
-            "statusMasterDisabled": "总闸关闭",
-            "statusInherited": "继承全局：{flags}",
-            "statusCustom": "自定义",
-            "effective": "实际生效：{flags}",
-            "allDetectors": "全部检测器",
-            "inheritedNotice": "该渠道未定制检测器，实际沿用全局默认：{flags}。",
-            "customNotice": "该渠道已自定义检测器，与全局默认互不影响。",
-            "restoreInherit": "恢复继承全局默认"
-        },
-        "test": {
-            "title": "脱敏测试",
-            "subtitle": "合成样本跑一遍 脱敏→还原 往返, 上线前先看效果",
-            "placeholder": "输入含敏感信息的文本…",
-            "flagsPlaceholder": "检测器",
-            "flagsHint": "留空 = 全部检测器",
-            "run": "跑测试",
-            "running": "跑着…",
-            "upstreamSees": "上游看到的",
-            "clientSees": "客户端收回的",
-            "count": "{count} 处"
-        },
-        "toast": {
-            "saved": "已保存",
-            "saveFailed": "保存失败"
-        }
+    "test": {
+      "title": "脱敏测试",
+      "subtitle": "合成样本跑一遍 脱敏→还原 往返, 上线前先看效果",
+      "placeholder": "输入含敏感信息的文本…",
+      "flagsPlaceholder": "检测器",
+      "flagsHint": "留空 = 全部检测器",
+      "run": "跑测试",
+      "running": "跑着…",
+      "upstreamSees": "上游看到的",
+      "clientSees": "客户端收回的",
+      "count": "{count} 处"
     },
-    "modelAudit": {
-        "manualGate": "只有点「开始检查」才调用上游，会消耗 token、可能计费。当前 {count} 项检查≠{count} 次请求：签名等探针可能多轮/复用，实际调用与用量以后台记录为准。超时跟随渠道检测上限。",
-        "cancelCheck": "取消检查",
-        "cancelling": "正在取消",
-        "cancelledTitle": "已取消",
-        "cancelledBody": "已中断本次检测：未完成的部分记为未完成，不当作异常，也不自动重跑；旧报告已清空以避免误导出。需要时请重新点「开始检查」。",
-        "sourceManual": "手动检测",
-        "sourceSchedule": "历史自动检测",
-        "sourceEcho": "历史自动检测（回显触发）",
-        "sourceUnknown": "历史来源未记录",
-        "statusNotApplicable": "不适用",
-        "statusInsufficient": "证据不足",
-        "headlineInsufficientTitle": "证据不足，未认证",
-        "headlineInsufficientSub": "本次有 {count} 项证据不足：既不等于未见异常，也不代表模型真假。",
-        "passiveObserved": "本地已观察 {count} 条，无基准"
+    "toast": {
+      "saved": "已保存",
+      "saveFailed": "保存失败"
     }
+  },
+  "modelAudit": {
+    "manualGate": "只有点「开始检查」才调用上游，会消耗 token、可能计费。当前 {count} 项检查≠{count} 次请求：签名等探针可能多轮/复用，实际调用与用量以后台记录为准。超时跟随渠道检测上限。",
+    "cancelCheck": "取消检查",
+    "cancelling": "正在取消",
+    "cancelledTitle": "已取消",
+    "cancelledBody": "已中断本次检测：未完成的部分记为未完成，不当作异常，也不自动重跑；旧报告已清空以避免误导出。需要时请重新点「开始检查」。",
+    "sourceManual": "手动检测",
+    "sourceSchedule": "历史自动检测",
+    "sourceEcho": "历史自动检测（回显触发）",
+    "sourceUnknown": "历史来源未记录",
+    "statusNotApplicable": "不适用",
+    "statusInsufficient": "证据不足",
+    "headlineInsufficientTitle": "证据不足，未认证",
+    "headlineInsufficientSub": "本次有 {count} 项证据不足：既不等于未见异常，也不代表模型真假。",
+    "passiveObserved": "本地已观察 {count} 条，无基准"
+  }
 }
