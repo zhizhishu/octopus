@@ -19,6 +19,8 @@ package op
 import (
 	"context"
 	"errors"
+	"strconv"
+	"strings"
 	"sync/atomic"
 
 	"github.com/bestruirui/octopus/internal/db"
@@ -231,7 +233,75 @@ func relayLogStorageInfoBounded(ctx context.Context, scope *model.RelayLogScope)
 // VACUUM 会重建整个数据库文件，期间需要约等于当前库大小的临时空间。
 // 因此只在**确实删掉了行**之后调用，且失败不影响清理本身(空间没还回去而已)。
 func relayLogVacuum(ctx context.Context) error {
+	safe, reason := relayLogVacuumSafe()
+	if !safe {
+		return errors.New(reason)
+	}
 	return db.GetDB().WithContext(ctx).Exec("VACUUM").Error
+}
+
+// relayLogVacuumSafe 判断当前是否适合做 VACUUM。
+//
+// VACUUM 会重建整个数据库文件，WAL 模式下峰值临时占用约等于当前库大小。
+// 生产库 59GB 时如果不加判断就 VACUUM，很可能把磁盘写满 —— 那会让数据库
+// **写入失败**，比"空间暂时没还回来"严重得多。所以宁可跳过并如实说明。
+//
+// 判据：可用空间 > 当前库大小 + 512MB 余量。拿不到库大小或可用空间时一律
+// 判不安全(保守)，因为误判"够"的代价远大于少回收一次空间。
+func relayLogVacuumSafe() (bool, string) {
+	var pageCount, pageSize int64
+	row := db.GetDB().Raw("PRAGMA page_count").Row()
+	if err := row.Scan(&pageCount); err != nil {
+		return false, "无法读取数据库大小，已跳过空间回收"
+	}
+	row = db.GetDB().Raw("PRAGMA page_size").Row()
+	if err := row.Scan(&pageSize); err != nil {
+		return false, "无法读取数据库页大小，已跳过空间回收"
+	}
+	dbBytes := pageCount * pageSize
+	if dbBytes <= 0 {
+		return false, "数据库大小异常，已跳过空间回收"
+	}
+
+	var dbPath string
+	row = db.GetDB().Raw("PRAGMA database_list").Row()
+	// database_list 返回 (seq, name, file) 三列
+	var seq int64
+	var name string
+	if err := row.Scan(&seq, &name, &dbPath); err != nil || dbPath == "" {
+		return false, "无法定位数据库文件，已跳过空间回收"
+	}
+	// 取数据库文件所在目录的可用空间
+	dir := dbPath
+	if idx := strings.LastIndexAny(dir, "/\\"); idx > 0 {
+		dir = dir[:idx]
+	}
+
+	free, ok := diskFreeBytes(dir)
+	if !ok {
+		return false, "无法读取磁盘可用空间，已跳过空间回收"
+	}
+
+	const margin = 512 << 20 // 512MB 余量，留给正常写入
+	if free < dbBytes+margin {
+		return false, "磁盘可用空间不足以安全回收(需要约 " + humanBytes(dbBytes+margin) + "，实际可用 " + humanBytes(free) + ")，已跳过"
+	}
+	return true, ""
+}
+
+// humanBytes 把字节数格式化成便于阅读的形式，只用于给用户看的说明文字。
+func humanBytes(n int64) string {
+	if n <= 0 {
+		return "0 B"
+	}
+	units := []string{"B", "KB", "MB", "GB", "TB"}
+	value := float64(n)
+	idx := 0
+	for value >= 1024 && idx < len(units)-1 {
+		value /= 1024
+		idx++
+	}
+	return strconv.FormatFloat(value, 'f', 1, 64) + " " + units[idx]
 }
 
 var _ = gorm.ErrRecordNotFound

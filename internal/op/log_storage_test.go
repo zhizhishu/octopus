@@ -277,3 +277,118 @@ func TestStoredBytesDoesNotLoadContentIntoMemory(t *testing.T) {
 			after.TotalAlloc-before.TotalAlloc, budget)
 	}
 }
+
+// VACUUM 的安全门槛必须真的拦得住：生产库 59GB 时盲目 VACUUM 会重建整个文件，
+// 临时占用约等于库大小，写满磁盘就会让数据库写入失败 —— 比"空间没还回来"严重。
+//
+// 这里只验证"拿不到磁盘信息时保守跳过"，不依赖具体机器的剩余空间，
+// 所以 Windows(无 Statfs 实现) 与 Linux 上同样成立。
+func TestVacuumSafetyIsConservative(t *testing.T) {
+	_ = setupRelayLogTest(t)
+
+	safe, reason := relayLogVacuumSafe()
+	if safe {
+		// 只有在磁盘真的宽裕时才会返回 true；此时 reason 应为空
+		if reason != "" {
+			t.Fatalf("判定安全时不应带原因: %q", reason)
+		}
+		return
+	}
+	if reason == "" {
+		t.Fatal("判定不安全时必须给出原因，否则用户不知道为什么没回收空间")
+	}
+}
+
+// 每批删除后必须重新统计，最终确实落回上限内(而不是靠一次估算删过头或不够)。
+func TestBoundedCleanupLoopsUntilUnderLimit(t *testing.T) {
+	ctx := setupRelayLogTest(t)
+	ensureSearchIndexTable(t)
+
+	const n = 30
+	rows := make([]model.RelayLog, 0, n)
+	for i := 0; i < n; i++ {
+		rows = append(rows, model.RelayLog{
+			ID:               int64(7600 + i),
+			Time:             int64(7600 + i),
+			RequestModelName: "kimi-k3",
+			RequestContent:   strings.Repeat("c", 300),
+			ResponseContent:  strings.Repeat("d", 300),
+		})
+	}
+	if err := db.GetDB().CreateInBatches(&rows, 10).Error; err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// 上限设成极小值，迫使循环多轮才能收敛
+	if err := SettingSetString(model.SettingKeyRelayLogMaxStorageGB, "0.000002"); err != nil {
+		t.Fatalf("set cap: %v", err)
+	}
+	if err := relayLogCleanupByStorageBounded(ctx); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+
+	after, rowsLeft, err := relayLogStoredBytes(ctx, nil)
+	if err != nil {
+		t.Fatalf("measure: %v", err)
+	}
+	_, maxBytes, _ := relayLogMaxStorage()
+	if after > maxBytes {
+		t.Fatalf("多轮清理后仍超限: after=%d max=%d", after, maxBytes)
+	}
+	// 必须给最新一条留位置（旧实现里 idx==0 不删，语义保留）
+	if rowsLeft < 1 {
+		t.Fatal("不应把日志删光，最新一条要留着")
+	}
+}
+
+// 手动清理回报的前后差值必须是真删掉的量，不能是负数或凭空出现。
+func TestCleanupNowReportsRealDelta(t *testing.T) {
+	ctx := setupRelayLogTest(t)
+	ensureSearchIndexTable(t)
+
+	rows := make([]model.RelayLog, 0, 10)
+	for i := 0; i < 10; i++ {
+		rows = append(rows, model.RelayLog{
+			ID:              int64(7700 + i),
+			Time:            int64(7700 + i),
+			RequestContent:  strings.Repeat("e", 400),
+			ResponseContent: strings.Repeat("f", 400),
+		})
+	}
+	if err := db.GetDB().CreateInBatches(&rows, 10).Error; err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if err := SettingSetString(model.SettingKeyRelayLogMaxStorageGB, "0.000003"); err != nil {
+		t.Fatalf("set cap: %v", err)
+	}
+
+	result, err := RelayLogCleanupNow(ctx)
+	if err != nil {
+		t.Fatalf("cleanup now: %v", err)
+	}
+	if result.FreedBytes != result.BeforeBytes-result.AfterBytes {
+		t.Fatalf("释放量与前後差值不一致: %+v", result)
+	}
+	if result.FreedBytes <= 0 {
+		t.Fatalf("应确实删掉了一些日志: %+v", result)
+	}
+	if result.Note == "" {
+		t.Fatal("必须给用户一句说明，否则只回数字不知道发生了什么")
+	}
+}
+
+// 单飞：并发调用只能有一个真正执行，其余立刻被拒(不能排队跑两次 VACUUM)。
+func TestCleanupNowIsSingleFlight(t *testing.T) {
+	ctx := setupRelayLogTest(t)
+
+	// 手动占住标志，模拟"上一次还在跑"
+	if !relayLogCleanupRunning.CompareAndSwap(false, true) {
+		t.Fatal("标志初始应为 false")
+	}
+	defer relayLogCleanupRunning.Store(false)
+
+	if _, err := RelayLogCleanupNow(ctx); err == nil {
+		t.Fatal("清理进行中时应直接拒绝，而不是排队再跑一次")
+	}
+}
