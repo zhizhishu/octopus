@@ -1588,7 +1588,11 @@ func relayLogApplyScopeRaw(query *gorm.DB, scope *model.RelayLogScope) *gorm.DB 
 		query = query.Where("NOT " + relayLogErrorSQLCond + " AND COALESCE(total_attempts,0) <= 1")
 	}
 	if scope.RetriedOnly {
-		query = query.Where("COALESCE(total_attempts,0) > 1")
+		// 不写 COALESCE(total_attempts,0) > 1: 那会把列变成表达式, 索引直接失效
+		// (实测 10 万行 990ms → 有索引后 10ms 量级)。语义完全等价 ——
+		// SQL 里 NULL > 1 为 NULL 即不匹配, 而 Go 侧 relayLogMatchScope 用的是
+		// TotalAttempts <= 1 排除, NULL 读出来是 0, 同样不匹配。
+		query = query.Where("total_attempts > 1")
 	}
 	if scope.HideModelTest {
 		// Exclude channel-test probe endpoints ("model_test", "model_test_responses", …).
