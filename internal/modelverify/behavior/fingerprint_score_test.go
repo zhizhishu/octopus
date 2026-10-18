@@ -111,9 +111,11 @@ func TestFingerprintSmallGapDoesNotConviction(t *testing.T) {
 	}
 }
 
-// TestFingerprintUnknownDeclaredModelDoesNotConviction：
-// 声明型号认不出家族时没有可比对象，不能判不符。
-func TestFingerprintUnknownDeclaredModelDoesNotConviction(t *testing.T) {
+// TestFingerprintUnknownDeclaredModelSaysIncomparable：
+// 声明型号认不出家族时没有可比对象：既不能说"一致"，也不能说"不符"，
+// 必须如实说"无法比较"。曾经这里默认走"一致"分支，等于给一个根本没比较过的
+// 结论盖了合格章。
+func TestFingerprintUnknownDeclaredModelSaysIncomparable(t *testing.T) {
 	p := 0.9
 	res := fingerprintResult("scorable", "deepseek-v4-pro", "deepseek", "DeepSeek", &p,
 		fingerprint.Candidate{Model: "deepseek-v4-pro", DisplayName: "DeepSeek V4 Pro", Family: "deepseek", FamilyName: "DeepSeek", Score: 4.8},
@@ -125,6 +127,12 @@ func TestFingerprintUnknownDeclaredModelDoesNotConviction(t *testing.T) {
 	}
 	if findings[0].Score != 0 {
 		t.Fatalf("认不出声明家族时不应计风险分，实际 %d", findings[0].Score)
+	}
+	if !strings.Contains(findings[0].Title, "无法比较") {
+		t.Fatalf("应明确说无法比较，实际: %s", findings[0].Title)
+	}
+	if strings.Contains(findings[0].Title, "一致") {
+		t.Fatalf("没比较过就不能说一致，实际: %s", findings[0].Title)
 	}
 }
 

@@ -86,6 +86,31 @@ func runFingerprint(ctx context.Context, s modelverify.Sender, _ string) Result 
 
 	res.OK = true
 	res.Data["challenge_ids"] = challengeIDs
+
+	// 原始回答是要留的：它是"这条结论从哪来"的唯一凭据，出问题时要能回看。
+	// 但不能无限大——真实回答常有几千字，还有模型会加长解释。单条封顶后
+	// 只丢掉超出部分，判定用的是完整 outputs（内存里），不受截断影响。
+	const maxEvidenceChars = 1200
+	evidence := make([]map[string]any, 0, len(outputs))
+	for i, o := range outputs {
+		text := o.Text
+		truncated := false
+		if len(text) > maxEvidenceChars {
+			text = text[:maxEvidenceChars]
+			truncated = true
+		}
+		item := map[string]any{
+			"index":          i,
+			"expected_count": o.ExpectedCount,
+			"text":           text,
+		}
+		if truncated {
+			item["truncated"] = true
+			item["full_length"] = len(o.Text)
+		}
+		evidence = append(evidence, item)
+	}
+	res.Data["answers"] = evidence
 	res.Data["outputs"] = outputs
 
 	// 这里就把结论算出来，而不是留给评分层再做一次：

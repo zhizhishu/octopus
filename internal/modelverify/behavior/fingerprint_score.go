@@ -86,12 +86,24 @@ func fingerprintFindings(res Result, requestedModel string) []Finding {
 		gap = *hint
 	}
 
-	declared := InferFamilies(requestedModel)
-	matchesDeclared := declaredMatches(analysis, declared)
 	confidence := ""
 	if analysis.Probability != nil {
 		confidence = fmt.Sprintf("置信度 %.1f%%（参考库内相对值）", *analysis.Probability*100)
 	}
+
+	declared := InferFamilies(requestedModel)
+	if len(declared) == 0 {
+		// 认不出声明型号属于哪个家族（自定义别名、新发布型号等）：
+		// 没有可比对象，既不能说一致也不能说不符。如实说"无法比较"。
+		return []Finding{{
+			Probe:    ProbeFingerprint,
+			Severity: SeverityLow,
+			Score:    0,
+			Title: fmt.Sprintf("实测指纹最接近 %s（%s）%s，但认不出声明型号 %s 属于哪个家族，无法比较是否相符",
+				displayOrID(analysis), analysis.FamilyName, confidenceOrEmpty(confidence), requestedModel),
+		}}
+	}
+	matchesDeclared := declaredMatches(analysis, declared)
 
 	if matchesDeclared {
 		// 对上了：这是"没发现矛盾"，不是"证明了正品"。
@@ -133,10 +145,7 @@ func fingerprintFindings(res Result, requestedModel string) []Finding {
 // （同代 opus 4.6 与 4.7 的分布余弦相似度 0.997），拿版本号去卡会大量误报。
 // 只有"连家族都不对"才是可靠信号。
 func declaredMatches(analysis *fingerprint.Analysis, declared []string) bool {
-	if len(declared) == 0 {
-		// 声明型号认不出家族（比如自定义别名）：没有可比对象，不判不符。
-		return true
-	}
+	// 调用方已保证 declared 非空（空的情况在上面单独处理成"无法比较"）。
 	for _, family := range declared {
 		if family == analysis.Family {
 			return true
