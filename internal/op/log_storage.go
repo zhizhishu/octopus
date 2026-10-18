@@ -118,70 +118,135 @@ func relayLogSearchIndexBytes(ctx context.Context) int64 {
 // 与旧实现的区别：不再先把所有行读进内存再倒推要删哪些 id，而是
 //
 //  1. 用 SQL 算出当前总字节；
-//  2. 若超限，按 id 从旧到新**分批**找出需要删除的 id(累计到超出的那部分为止)；
-//  3. 删一批、recount 一次，直到回到上限内或没有更多可删。
+//  2. 若超限，按 id 从旧到新分批删除；
+//  3. 删完再核对一次，仍超限就再来一轮。
 //
-// 第 3 步的 recount 很重要：单批删除量与上限的差额未必吻合，硬凑容易删过头。
-// 每批都有上限，所以内存始终是常量，生产上不会再被 OOM 打断。
+// 🔴 这里有个必须先想清楚的代价：一次 relayLogStoredBytes 是**全表扫描**。
+// 29GB 的库上实测约 2 分钟。所以绝对不能"每删一批就重新统计一遍再决定下一批"
+// —— 那会把删除变成 N 次全表扫描，在超大库上等于永远跑不完(400 批 × 2 分钟 > 13 小时)。
+//
+// 正确做法是：先算一次拿到总字节和行数，按平均行大小**一次性估算**该删多少行，
+// 然后连续删完，最后再核对一次。轮数被 relayLogCleanupMaxRounds 钉死，
+// 最坏情况是固定次数的全表扫描，而不是与删除量成正比。
+//
+// 估算偏差由最后那次核对兜底：删多了无害(本来就是超限要删)，删少了下一轮补，
+// 而轮数封顶保证绝不会无限扫。
 func relayLogCleanupByStorageBounded(ctx context.Context) error {
+	return relayLogCleanupByStorageBoundedDepth(ctx, 0)
+}
+
+// relayLogCleanupMaxRounds 限制"统计→删除"的轮数。
+//
+// 为什么要封顶：每轮都有一次全表扫描。上限大 10 倍时按估算应当 1 轮就够，
+// 给到 3 轮足以吸收行大小分布不均(比如老日志正文特别大)，同时保证最坏情况下
+// 也只有 3 次扫描、不会变成无底洞。
+const relayLogCleanupMaxRounds = 3
+
+// relayLogDeleteChunk 是单条 DELETE 语句一次处理的行数。
+//
+// 不能一次删几百万行：那会在一个事务里持有巨大的 WAL、把 autocheckpoint 拖爆，
+// 期间所有写入都被挡住。分批删除让检查点有机会插进来。
+const relayLogDeleteChunk = 5000
+
+func relayLogCleanupByStorageBoundedDepth(ctx context.Context, depth int) error {
 	_, maxBytes, err := relayLogMaxStorage()
 	if err != nil || maxBytes <= 0 {
 		return err
 	}
 
-	const deleteBatch = 2000
-	for {
-		total, rows, err := relayLogStoredBytes(ctx, nil)
-		if err != nil {
-			return err
-		}
-		if total <= maxBytes || rows == 0 {
-			return nil
+	if depth >= relayLogCleanupMaxRounds {
+		// 轮数用尽仍超限：日志会在下一个调度周期继续收敛。
+		// 不在这里死循环 —— 那会在超大库上把清理任务永久占住。
+		return nil
+	}
+
+	total, rows, err := relayLogStoredBytes(ctx, nil)
+	if err != nil {
+		return err
+	}
+	if total <= maxBytes || rows <= 1 {
+		// rows<=1：只剩最后一条，保留它(旧实现里 idx==0 永不删，语义一致)。
+		return nil
+	}
+
+	avg := total / rows
+	if avg <= 0 {
+		avg = 1
+	}
+	over := total - maxBytes
+	if over <= 0 {
+		return nil
+	}
+
+	// 该删多少行：超出部分 ÷ 平均行大小，再留 5% 余量吸收平均值误差，
+	// 避免"算得刚刚好、结果差一点又超限"导致多跑一轮全表扫描。
+	want := over / avg
+	want += want / 20
+	if want < 1 {
+		want = 1
+	}
+	// 永远不删最后一条。
+	if want > rows-1 {
+		want = rows - 1
+	}
+
+	deleted, err := relayLogDeleteOldest(ctx, want)
+	if err != nil {
+		return err
+	}
+	if deleted == 0 {
+		return nil
+	}
+
+	// 删完核对一次：还超限就再走一轮(轮数有封顶)。
+	after, afterRows, err := relayLogStoredBytes(ctx, nil)
+	if err != nil {
+		return err
+	}
+	if after > maxBytes && afterRows > 1 {
+		return relayLogCleanupByStorageBoundedDepth(ctx, depth+1)
+	}
+	return nil
+}
+
+// relayLogDeleteOldest 从最旧的开始删最多 want 行，返回实际删除的行数。
+//
+// 全程按 id 游标推进，每批都是"取一批 id → 删这批"，不做任何全表统计，
+// 所以成本与删除量成正比，而不是与表大小成正比。
+func relayLogDeleteOldest(ctx context.Context, want int64) (int64, error) {
+	var deleted int64
+	var lastID int64
+
+	for deleted < want {
+		batch := int64(relayLogDeleteChunk)
+		if remaining := want - deleted; remaining < batch {
+			batch = remaining
 		}
 
-		// 需要抹掉的字节数，换算成"至少删多少行"：用平均每行字节数估算，
-		// 只在批大小上做参考，准确性由循环的 recount 兜底。
-		over := total - maxBytes
-		avg := total / rows
-		if avg <= 0 {
-			avg = 1
-		}
-		want := over / avg
-		if want < 1 {
-			want = 1
-		}
-		batch := int64(deleteBatch)
-		if want < batch {
-			batch = want
-		}
-		if batch > rows {
-			batch = rows
-		}
-
-		// 保留最新一条：旧实现里 idx == 0 不计入删除，这里逐字保留同一语义
-		// (全新部署/极端配置下也不该把最后一条日志删光)。
 		var ids []int64
-		if err := db.GetDB().WithContext(ctx).Model(&model.RelayLog{}).
-			Order("id ASC").Limit(int(batch)).Pluck("id", &ids).Error; err != nil {
-			return err
+		query := db.GetDB().WithContext(ctx).Model(&model.RelayLog{}).
+			Where("id > ?", lastID).Order("id ASC").Limit(int(batch))
+		if err := query.Pluck("id", &ids).Error; err != nil {
+			return deleted, err
 		}
 		if len(ids) == 0 {
-			return nil
+			return deleted, nil
 		}
-		if int64(len(ids)) >= rows {
-			ids = ids[:len(ids)-1]
-		}
-		if len(ids) == 0 {
-			return nil
-		}
+		lastID = ids[len(ids)-1]
 
+		// 投影表先删：这些 id 即将从主表消失，留着就会"搜得到但打不开"。
 		relayLogSearchIndexDeleteByIDs(db.GetDB().WithContext(ctx), ids)
 		if err := db.GetDB().WithContext(ctx).Where("id IN ?", ids).Delete(&model.RelayLog{}).Error; err != nil {
-			return err
+			return deleted, err
 		}
+		deleted += int64(len(ids))
 
-		// 循环继续：重新统计，直到回到上限内。每轮都释放了内存，不会累积。
+		// 每批之间检查上下文，长清理能被取消打断。
+		if err := ctx.Err(); err != nil {
+			return deleted, err
+		}
 	}
+	return deleted, nil
 }
 
 // relayLogStorageInfoBounded 是 RelayLogStorageInfo 的有界实现。

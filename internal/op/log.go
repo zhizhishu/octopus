@@ -483,22 +483,30 @@ func relayLogCleanupByStorage(ctx context.Context) error {
 	// 就是几十 GB 内存，进程被 OOM 杀掉后清理永远跑不完，磁盘只涨不降
 	// (设置 10GB、实际 59GB 就是这么来的)。改为全 SQL 聚合 + 分批删除，
 	// 内存与数据量无关。详见 log_storage.go。
-	before, _, err := relayLogStoredBytes(ctx, nil)
+	//
+	// 注意这里刻意只统计一次：relayLogStoredBytes 是全表扫描，在 29GB 的库上
+	// 实测约 2 分钟，多算一次就是白烧两分钟。
+	before, beforeRows, err := relayLogStoredBytes(ctx, nil)
 	if err != nil {
 		return err
 	}
 	if err := relayLogCleanupByStorageBounded(ctx); err != nil {
 		return err
 	}
-	after, _, err := relayLogStoredBytes(ctx, nil)
+	after, afterRows, err := relayLogStoredBytes(ctx, nil)
 	if err != nil {
 		return err
 	}
-	if after < before {
+	// 用行数判断"是否真的删了东西"，比用字节数更可靠：字节估算受平均值影响，
+	// 而行数变化是确定的。
+	if afterRows < beforeRows {
 		// 确实删掉了行才 VACUUM：只标空闲不还空间，db 文件不会变小，
 		// 用户看到的就是"设了上限、日志也少了，文件还是那么大"。
 		if vacuumErr := relayLogVacuum(ctx); vacuumErr != nil {
-			log.Warnf("relay log vacuum failed (rows deleted, disk space not reclaimed): %v", vacuumErr)
+			// 这里用 Debugf 而不是 Warnf：磁盘不够时跳过是**预期行为**，
+			// 每 10 分钟报一次 WARN 只会污染日志，让真正的问题淹掉。
+			log.Debugf("relay log vacuum skipped/failed (rows deleted %d→%d, bytes %d→%d): %v",
+				beforeRows, afterRows, before, after, vacuumErr)
 		}
 	}
 	return nil

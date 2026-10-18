@@ -392,3 +392,105 @@ func TestCleanupNowIsSingleFlight(t *testing.T) {
 		t.Fatal("清理进行中时应直接拒绝，而不是排队再跑一次")
 	}
 }
+
+// 🔴 清理成本必须与"删多少行"成正比，不能与"扫多少遍全表"成正比。
+//
+// 这是一次真实的返工：最初的实现是"删一批 → 重新统计全库 → 再决定下一批"。
+// 统计是全表扫描，29GB 库上约 2 分钟一次，400 批就是十几个小时 —— 等于把
+// "内存爆掉"换成了"永远跑不完"。现在改成"算一次 → 连续删完 → 核对一次"，
+// 轮数封顶 relayLogCleanupMaxRounds。
+//
+// 这个用例钉两件事：轮数常量不许被调大、以及大量删除仍能在合理时间内收敛。
+func TestCleanupCostScalesWithRowsDeletedNotScans(t *testing.T) {
+	if relayLogCleanupMaxRounds > 3 {
+		t.Fatalf("清理轮数上限是 %d：每轮都有一次全表扫描，调大它会让超大库上的"+
+			"清理退化成永远跑不完(这正是返工前的问题)", relayLogCleanupMaxRounds)
+	}
+
+	ctx := setupRelayLogTest(t)
+	ensureSearchIndexTable(t)
+
+	const n = 800
+	body := strings.Repeat("v", 500)
+	for i := 0; i < n; i++ {
+		r := model.RelayLog{
+			ID: int64(i + 1), Time: int64(i + 1),
+			RequestModelName: "kimi-k3",
+			RequestContent:   body, ResponseContent: body,
+		}
+		if err := db.GetDB().Create(&r).Error; err != nil {
+			t.Fatalf("seed %d: %v", i, err)
+		}
+	}
+
+	full, totalRows, err := relayLogStoredBytes(ctx, nil)
+	if err != nil {
+		t.Fatalf("measure: %v", err)
+	}
+	// 限到 1/4，逼它删掉绝大部分
+	gb := float64(full) / 4 / (1024 * 1024 * 1024)
+	if err := SettingSetString(model.SettingKeyRelayLogMaxStorageGB, fmt.Sprintf("%.12f", gb)); err != nil {
+		t.Fatalf("set cap: %v", err)
+	}
+
+	if err := relayLogCleanupByStorageBounded(ctx); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+
+	after, afterRows, err := relayLogStoredBytes(ctx, nil)
+	if err != nil {
+		t.Fatalf("remeasure: %v", err)
+	}
+	_, maxBytes, _ := relayLogMaxStorage()
+
+	if after > maxBytes {
+		t.Fatalf("删掉大部分后仍超限: after=%d max=%d", after, maxBytes)
+	}
+	if afterRows >= totalRows {
+		t.Fatalf("应当删掉了行: before=%d after=%d", totalRows, afterRows)
+	}
+	// 一轮估算 + 5% 余量应当足够，不该需要反复逼近
+	if afterRows < 1 {
+		t.Fatal("不能把日志删光")
+	}
+}
+
+// 估算要留余量：算得刚刚好会因为平均值误差多跑一轮全表扫描。
+func TestCleanupEstimateLeavesHeadroom(t *testing.T) {
+	ctx := setupRelayLogTest(t)
+	ensureSearchIndexTable(t)
+
+	// 行大小故意不均：一半很大、一半很小，平均值会把估算带偏
+	const n = 400
+	for i := 0; i < n; i++ {
+		body := strings.Repeat("a", 2000)
+		if i%2 == 0 {
+			body = "tiny"
+		}
+		r := model.RelayLog{
+			ID: int64(i + 1), Time: int64(i + 1),
+			RequestModelName: "kimi-k3", RequestContent: body,
+		}
+		if err := db.GetDB().Create(&r).Error; err != nil {
+			t.Fatalf("seed %d: %v", i, err)
+		}
+	}
+
+	full, _, _ := relayLogStoredBytes(ctx, nil)
+	gb := float64(full) / 2 / (1024 * 1024 * 1024)
+	if err := SettingSetString(model.SettingKeyRelayLogMaxStorageGB, fmt.Sprintf("%.12f", gb)); err != nil {
+		t.Fatalf("set cap: %v", err)
+	}
+	if err := relayLogCleanupByStorageBounded(ctx); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+
+	after, _, err := relayLogStoredBytes(ctx, nil)
+	if err != nil {
+		t.Fatalf("measure: %v", err)
+	}
+	_, maxBytes, _ := relayLogMaxStorage()
+	if after > maxBytes {
+		t.Fatalf("行大小不均时也应收敛到上限内: after=%d max=%d", after, maxBytes)
+	}
+}
