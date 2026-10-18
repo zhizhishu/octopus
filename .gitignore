@@ -1,4 +1,8 @@
 data
+# 指纹探针的运行时数据必须入库：detector.bin/suite.json/models.json 是用 go:embed
+# 打进二进制的，仓库里没有它们，云端构建会直接报 "pattern data/detector.bin:
+# no matching files found"。上面的 data 规则是按名匹配任意层级，故在此显式放行。
+!internal/modelverify/fingerprint/data/
 build
 .codex-runtime/
 test-results/
