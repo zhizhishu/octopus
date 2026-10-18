@@ -1,0 +1,210 @@
+// TestFingerprintProfileRenamesLegacyMacOSBuiltin pins the 2026-10-17 change: the
+// legacy "macOS · Chrome" row is a first-class built-in again, so startup RENAMES it
+// in place to the canonical macOS name and converges every identity field, instead of
+// deleting it. The row id survives, which keeps any channel that had selected it
+// pointing at the SAME identity (no silent drop back to the global default).
+func TestFingerprintProfileRenamesLegacyMacOSBuiltin(t *testing.T) {
+	ctx := setupFingerprintProfileTest(t)
+
+	presets := builtinLinuxPresets()
+	debian := *presets[0]
+	ubuntu := *presets[1]
+	debian.Seed = "keep-debian-seed"
+	ubuntu.Seed = "keep-ubuntu-seed"
+	if err := db.GetDB().WithContext(ctx).Create(&debian).Error; err != nil {
+		t.Fatalf("seed debian: %v", err)
+	}
+	if err := db.GetDB().WithContext(ctx).Create(&ubuntu).Error; err != nil {
+		t.Fatalf("seed ubuntu: %v", err)
+	}
+	// The legacy 3rd built-in with a now-stale Chrome-on-macOS identity.
+	macrow := &model.FingerprintProfile{
+		Name:                 "macOS · Chrome",
+		Seed:                 "mac-seed",
+		ClaudeUserAgent:      "claude-cli/2.1.212 (external, sdk-cli)",
+		ClaudePackageVersion: "0.94.0",
+		ClaudeRuntimeVersion: "v26.3.0",
+		ClaudeOS:             "MacOS",
+		ClaudeArch:           "x64",
+		ClaudeTimeout:        "600",
+		CodexUserAgent:       "codex_cli_rs/0.145.0 (macOS 10.15.7; x86_64) unknown (codex_cli_rs; 0.145.0)",
+		CodexOriginator:      "codex_cli_rs",
+		CodexBetaFeatures:    "remote_compaction_v2",
+		GenericUA:            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+	}
+	if err := db.GetDB().WithContext(ctx).Create(macrow).Error; err != nil {
+		t.Fatalf("seed macos: %v", err)
+	}
+	channel := &model.Channel{
+		Name:  "channel-with-legacy-macos-profile",
+		Cloak: model.ChannelCloak{Mode: "never", ProfileID: macrow.ID},
+	}
+	if err := db.GetDB().WithContext(ctx).Create(channel).Error; err != nil {
+		t.Fatalf("seed channel pointing at legacy profile: %v", err)
+	}
+
+	if err := fingerprintProfileRefreshCache(ctx); err != nil {
+		t.Fatalf("refresh fingerprint cache: %v", err)
+	}
+
+	byName := loadFingerprintProfilesByName(t, ctx)
+	if len(byName) != 3 {
+		t.Fatalf("expected all three built-ins kept, got %d: %+v", len(byName), byName)
+	}
+	if byName[builtinDebianPresetName].Seed != "keep-debian-seed" {
+		t.Fatalf("existing Debian seed must be preserved")
+	}
+	if byName[builtinUbuntuPresetName].Seed != "keep-ubuntu-seed" {
+		t.Fatalf("existing Ubuntu seed must be preserved")
+	}
+	// The legacy name is gone, the canonical name is present, and it is the SAME row.
+	if _, ok := byName[retiredMacOSPresetName]; ok {
+		t.Fatalf("legacy macOS name must be renamed away, got %+v", byName)
+	}
+	mac, ok := byName[builtinMacOSPresetName]
+	if !ok {
+		t.Fatalf("macOS built-in must exist under its canonical name, got %+v", byName)
+	}
+	if mac.ID != macrow.ID {
+		t.Fatalf("rename must keep the row id: got %d want %d", mac.ID, macrow.ID)
+	}
+	// The stale Chrome identity converged to the current CherryStudio one.
+	assertConvergedTo(t, mac, presets[2])
+	if mac.GenericUA != model.GenericUAMacOS {
+		t.Fatalf("macOS generic UA must be the CherryStudio identity, got %q", mac.GenericUA)
+	}
+	if strings.Contains(mac.GenericUA, "Chrome/131") {
+		t.Fatalf("legacy bare-Chrome macOS UA must be gone, got %q", mac.GenericUA)
+	}
+	// The channel still points at the same, now-canonical, identity.
+	if _, ok := FingerprintProfileGet(macrow.ID); !ok {
+		t.Fatalf("old macOS profile id %d must still resolve after the rename", macrow.ID)
+	}
+	var persistedChannel model.Channel
+	if err := db.GetDB().WithContext(ctx).First(&persistedChannel, channel.ID).Error; err != nil {
+		t.Fatalf("reload channel pointing at legacy profile: %v", err)
+	}
+	if persistedChannel.Cloak.ProfileID != macrow.ID {
+		t.Fatalf("refresh must not rewrite channel profile id: got %d want %d", persistedChannel.Cloak.ProfileID, macrow.ID)
+	}
+}
+
+// TestFingerprintProfileRefreshIsIdempotentAtThreePresets: a second refresh must not
+// error, duplicate, or resurrect anything — three built-ins stay three.
+func TestFingerprintProfileRefreshIsIdempotentAtThreePresets(t *testing.T) {
+	ctx := setupFingerprintProfileTest(t)
+
+	preset := *builtinLinuxPresets()[0]
+	preset.Seed = "keep-debian-seed"
+	if err := db.GetDB().WithContext(ctx).Create(&preset).Error; err != nil {
+		t.Fatalf("seed debian: %v", err)
+	}
+
+	if err := fingerprintProfileRefreshCache(ctx); err != nil {
+		t.Fatalf("first refresh: %v", err)
+	}
+	if err := fingerprintProfileRefreshCache(ctx); err != nil {
+		t.Fatalf("second refresh must be a no-op, got: %v", err)
+	}
+	if err := fingerprintProfileRefreshCache(ctx); err != nil {
+		t.Fatalf("third refresh must be a no-op, got: %v", err)
+	}
+
+	byName := loadFingerprintProfilesByName(t, ctx)
+	if len(byName) != 3 {
+		t.Fatalf("refresh must remain idempotent at three presets, got %d: %+v", len(byName), byName)
+	}
+	if byName[builtinDebianPresetName].Seed != "keep-debian-seed" {
+		t.Fatalf("Debian seed must be preserved across idempotent refreshes")
+	}
+}
+
+// TestFingerprintProfileKeepsOtherNamedMacOSProfile: a custom macOS-flavoured profile
+// under a NON-canonical name must be preserved alongside the three built-ins — the
+// rename matches the exact legacy name only, never any other name.
+func TestFingerprintProfileKeepsOtherNamedMacOSProfile(t *testing.T) {
+	ctx := setupFingerprintProfileTest(t)
+
+	presets := builtinLinuxPresets()
+	debian := *presets[0]
+	ubuntu := *presets[1]
+	if err := db.GetDB().WithContext(ctx).Create(&debian).Error; err != nil {
+		t.Fatalf("seed debian: %v", err)
+	}
+	if err := db.GetDB().WithContext(ctx).Create(&ubuntu).Error; err != nil {
+		t.Fatalf("seed ubuntu: %v", err)
+	}
+
+	custom := &model.FingerprintProfile{
+		Name:                 "我的 Mac 真机",
+		Seed:                 "mac-custom-seed",
+		ClaudeUserAgent:      "claude-cli/2.1.212 (external, sdk-cli)",
+		ClaudePackageVersion: "0.94.0",
+		ClaudeRuntimeVersion: "v26.3.0",
+		ClaudeOS:             "MacOS",
+		ClaudeArch:           "x64",
+		ClaudeTimeout:        "600",
+		CodexUserAgent:       "codex_cli_rs/0.145.0 (macOS 10.15.7; x86_64) unknown (codex_cli_rs; 0.145.0)",
+		CodexOriginator:      "codex_cli_rs",
+		CodexBetaFeatures:    "remote_compaction_v2",
+		GenericUA:            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) CustomAgent/1.0",
+	}
+	if err := db.GetDB().WithContext(ctx).Create(custom).Error; err != nil {
+		t.Fatalf("seed custom macos profile: %v", err)
+	}
+
+	if err := fingerprintProfileRefreshCache(ctx); err != nil {
+		t.Fatalf("refresh fingerprint cache: %v", err)
+	}
+
+	byName := loadFingerprintProfilesByName(t, ctx)
+	// Three built-ins plus the custom Mac one.
+	if len(byName) != 4 {
+		t.Fatalf("built-ins + custom macOS profile must survive, got %d: %+v", len(byName), byName)
+	}
+	got, ok := byName[custom.Name]
+	if !ok {
+		t.Fatalf("custom macOS profile under a non-canonical name must survive, got %+v", byName)
+	}
+	if got.Seed != "mac-custom-seed" || got.ClaudeOS != "MacOS" || got.ClaudeUserAgent != custom.ClaudeUserAgent || got.GenericUA != custom.GenericUA {
+		t.Fatalf("custom macOS profile must be preserved byte-for-byte, got %+v", got)
+	}
+}
+
+// TestFingerprintProfileConvergesEditedLegacyMacOSRow: an EDITED legacy-named row is
+// renamed and then converged like any other built-in — the name identifies the built-in,
+// and a built-in's identity fields are system-managed.
+func TestFingerprintProfileConvergesEditedLegacyMacOSRow(t *testing.T) {
+	ctx := setupFingerprintProfileTest(t)
+
+	edited := &model.FingerprintProfile{
+		Name:            "macOS · Chrome",
+		Seed:            "edited-mac-seed",
+		ClaudeUserAgent: "claude-cli/9.9.9 (external, sdk-cli)",
+		ClaudeOS:        "MacOS",
+		GenericUA:       "Mozilla/5.0 (operator-pinned) CustomAgent/1.0",
+	}
+	if err := db.GetDB().WithContext(ctx).Create(edited).Error; err != nil {
+		t.Fatalf("seed edited macos row: %v", err)
+	}
+
+	if err := fingerprintProfileRefreshCache(ctx); err != nil {
+		t.Fatalf("refresh fingerprint cache: %v", err)
+	}
+
+	mac, ok := FingerprintProfileGet(edited.ID)
+	if !ok {
+		t.Fatalf("edited legacy row must survive the rename under the same id %d", edited.ID)
+	}
+	if mac.Name != builtinMacOSPresetName {
+		t.Fatalf("legacy name must converge to %q, got %q", builtinMacOSPresetName, mac.Name)
+	}
+	if mac.ClaudeUserAgent == "claude-cli/9.9.9 (external, sdk-cli)" {
+		t.Fatalf("operator edit to a built-in must be converged away, got %q", mac.ClaudeUserAgent)
+	}
+	// The row's OWN seed is the one thing a built-in convergence keeps.
+	if mac.Seed != "edited-mac-seed" {
+		t.Fatalf("row seed must be preserved, got %q", mac.Seed)
+	}
+}
+

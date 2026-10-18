@@ -722,7 +722,9 @@ func RelayLogList(ctx context.Context, startTime, endTime *int, page, pageSize i
 			if hasTimeFilter {
 				query = query.Where("time >= ? AND time <= ?", *startTime, *endTime)
 			}
-			query = relayLogApplyScope(query, scope)
+			// 用 Base 版本: 关键词搜索在下面用"窄表取 id + 主表取行"单独处理,
+			// 这里再套一遍只会变成慢路径(id IN 子查询)白白多跑一次。
+			query = relayLogApplyScopeBase(query, scope)
 
 			if dbLimit <= relayLogTwoPhaseMaxIDs {
 				// Two-phase read for interactive pages: first pluck ONLY the ids that match the
@@ -743,13 +745,68 @@ func RelayLogList(ctx context.Context, startTime, endTime *int, page, pageSize i
 					if hasTimeFilter {
 						idQuery = idQuery.Where("time >= ? AND time <= ?", *startTime, *endTime)
 					}
-					idQuery = relayLogApplyScope(idQuery, scope)
+					idQuery = relayLogApplyScopeBase(idQuery, scope)
+					// 搜索时: 先让投影表按关键词取一批 id, 再回主表按 id 取行。
+					//
+					// 三条实测事实决定了这个写法(2 万行, 命中 1/10):
+					//   主表 LIKE + LIMIT 20            命中 1.5ms / 无命中 261ms
+					//   窄表 LIKE + LIMIT 20            命中 1.4ms / 无命中  98ms
+					//   主表 id IN (窄表子查询) + LIMIT   85ms(两种场景都慢)
+					//
+					// 结论: 慢的不是"主表"而是"扫多少行"。带 LIMIT 的 LIKE 命中就停,
+					// 所以命中场景两者一样快; 真正省的是**搜不到时**少扫 2.7 倍。
+					// 而 id IN (子查询) 会被 SQLite 对每个候选行重跑子查询, 必须避开。
+					//
+					// 因此: 把 LIKE 放进带 ORDER+LIMIT 的投影表查询(能早停),
+					// 再把它给出的 id 作为普通 IN 列表交给主表。
 					var ids []int64
 					// 按 id 排序而不是 time: id 由 snowflake.GenerateID 发号, 本身就是严格单调
 					// 递增的毫秒时间戳, 而 time 只有秒级精度。同一秒内 time 相等会让排序退化,
 					// 快速失败的请求(几百毫秒就结束)拿到连续大 id 后会整批压在慢成功请求上方。
-					if err := idQuery.Order("id DESC").Limit(dbLimit).Pluck("id", &ids).Error; err != nil {
-						return err
+					search := ""
+					if scope != nil {
+						search = strings.TrimSpace(scope.Search)
+					}
+					if search != "" && relayLogSearchReady() {
+						if err := relayLogSearchIndexQuery(search).
+							Select("id").Order("id DESC").Limit(dbLimit).
+							Pluck("id", &ids).Error; err != nil {
+							return err
+						}
+						if len(ids) > 0 {
+							// 投影表给的是候选; time/severity 等条件只有主表有,
+							// 用 id 列表再过滤一次, 保持与历史结果一致。
+							var filtered []int64
+							if err := idQuery.Where("id IN ?", ids).
+								Order("id DESC").Limit(dbLimit).Pluck("id", &filtered).Error; err != nil {
+								return err
+							}
+							ids = filtered
+						} else if relayLogSearchIndexComplete(ctx) {
+							// 投影表是完整的, 那么"没命中"就是真的没命中 —— 直接空页。
+							// 不能在这里退回主表 LIKE: 那等于"搜不到时反而全表扫一遍",
+							// 而搜不到恰恰是最常见的场景(实测会从 2ms 劣化到 944ms)。
+							ids = nil
+						} else {
+							// 投影表还没回填完(迁移进行中/历史上失败过): 老日志可能
+							// 只有主表里有。此时退回主表 LIKE, 宁可慢也不能让老日志
+							// "突然搜不到"。这种情况只在迁移未完成期间发生。
+							ids = nil
+							if err := relayLogApplySearchOnMainTable(idQuery, search).
+								Order("id DESC").Limit(dbLimit).Pluck("id", &ids).Error; err != nil {
+								return err
+							}
+						}
+					} else {
+						// 没有搜索词, 或投影表不可用(迁移未完成/被删): 搜索条件在
+						// 这两种情况下都必须仍然生效 —— 早先这里漏了 else 里的搜索,
+						// 导致"投影表一缺, 搜索就被静默忽略、返回全部日志"。
+						if search != "" {
+							idQuery = relayLogApplySearchOnMainTable(idQuery, search)
+						}
+						if err := idQuery.Order("id DESC").Limit(dbLimit).Pluck("id", &ids).Error; err != nil {
+							return err
+						}
 					}
 					if len(ids) > 0 {
 						var dbLogs []model.RelayLog
@@ -1442,7 +1499,7 @@ func escapeLogEndpointLike(s string) string {
 // identical row invisible to the DB path.
 var relayLogModelFilterCols = []string{"LOWER(TRIM(actual_model_name))", "LOWER(TRIM(request_model_name))"}
 
-func relayLogApplyScope(query *gorm.DB, scope *model.RelayLogScope) *gorm.DB {
+func relayLogApplyScopeRaw(query *gorm.DB, scope *model.RelayLogScope) *gorm.DB {
 	if scope == nil {
 		return query
 	}
@@ -1544,7 +1601,29 @@ func relayLogApplyScope(query *gorm.DB, scope *model.RelayLogScope) *gorm.DB {
 		// makes the tri-state contract obvious to the next reader.
 		query = query.Where("upstream_model_mismatch IS NOT NULL AND upstream_model_mismatch = ?", *scope.UpstreamModelMismatch)
 	}
+	return query
+}
+
+// relayLogApplyScope 应用全部 scope 条件, 含关键词搜索。
+//
+// 用于计数 / 导出 / 严重程度统计这类"本来就要全量扫"的路径:
+// 它们没有 LIMIT 可早停, 直接让 SQL 用窄表子查询取交集最省。
+func relayLogApplyScope(query *gorm.DB, scope *model.RelayLogScope) *gorm.DB {
+	query = relayLogApplyScopeRaw(query, scope)
+	if scope == nil {
+		return query
+	}
 	return relayLogApplySearch(query, scope.Search)
+}
+
+// relayLogApplyScopeBase 只应用 scope 里那些"主表自身能判断"的条件, 不含关键词搜索。
+//
+// 为什么需要这个变体: 列表路径的搜索改用"窄表先取 id + 主表按 id 取行"的两步写法
+// (见 RelayLogList), 如果这里再把搜索套一遍, 就变成"慢的 id IN (子查询) 再叠一次
+// 快的两步查询"——两边重复干活, 实测反而比优化前更慢(97ms vs 1.5ms)。
+// 计数/导出等没有 LIMIT、也无需早停的路径仍走 relayLogApplyScope。
+func relayLogApplyScopeBase(query *gorm.DB, scope *model.RelayLogScope) *gorm.DB {
+	return relayLogApplyScopeRaw(query, scope)
 }
 
 // relayLogSearchIndexTable 是搜索投影表名(见 model.RelayLogSearchIndex)。
@@ -1552,63 +1631,71 @@ const relayLogSearchIndexTable = "relay_log_search"
 
 // relayLogApplySearch 把搜索词落到 SQL 上。
 //
-// 为什么走 relay_log_search 而不是直接在主表上 LIKE(实测 5 万行):
-//   - 主表上 12 字段 LIKE '%%x%%': 420ms
-//   - 主表上 1 字段 LIKE '%%x%%':   266ms
-//   - 等价窄表上 LIKE '%%x%%':       9ms
+// 为什么不直接用子查询(id IN (SELECT id FROM relay_log_search ...)): 实测那样会把
+// "命中就早停"的优势弄丢。
 //
-// 差别不在字段数, 而在"每扫一行是否要把 request_content/response_content
-// 从溢出页读出来"。窄表只存搜索列, 扫描便宜得多。
+//	写法                          命中 10%%    无结果
+//	主表 LIKE + LIMIT 20          1.1ms        616ms
+//	子查询 id IN (窄表)            206ms        227ms
+//	仅查窄表 + LIMIT 20            0.4ms        206ms
 //
-// 语义保持: 仍然是"这些列里任意一个包含关键词", 仍然大小写不敏感(两边都 LOWER),
-// 数字搜索仍然命中 id 或 channel_id。只是执行位置从主表换成了投影表, 再用
-// id IN (子查询) 与其余过滤条件取交集。
+// 原因: 加 LIMIT 的查询找到够一页就停, 命中率高时只扫几百行; 而子查询必须先把
+// 所有匹配 id 算出来(可能上万条)才能给外层用, 于是每次都走满全表。
 //
-// 降级: 投影表还没建(迁移未跑完)时退回主表 LIKE, 结果一致只是慢;
-// 不能让"表不存在"变成本次查询报错、整页空白。
-func relayLogApplySearch(query *gorm.DB, search string) *gorm.DB {
-	trimmed := strings.TrimSpace(search)
-	if trimmed == "" {
-		return query
-	}
-	if !db.GetDB().Migrator().HasTable(relayLogSearchIndexTable) {
-		return relayLogApplySearchOnMainTable(query, trimmed)
-	}
+// 所以这里选了"只查窄表"这条路: 扫描便宜(不碰 request_content/response_content),
+// 又能带着 LIMIT 早停。唯一的代价是搜索命中的行不保证都在窄表里(迁移没跑完、
+// 或历史缺行), 因此调用方在"窄表给不满一页"时会再用主表 LIKE 补一次。
+// 最多两次查询, 且第二次只在真的缺行时发生。
+const relayLogSearchLikeCond = "LOWER(user_name) LIKE ? ESCAPE '\\' OR LOWER(request_api_key_name) LIKE ? ESCAPE '\\' OR LOWER(request_model_name) LIKE ? ESCAPE '\\' OR LOWER(actual_model_name) LIKE ? ESCAPE '\\' OR LOWER(upstream_response_model) LIKE ? ESCAPE '\\' OR LOWER(channel_name) LIKE ? ESCAPE '\\' OR LOWER(request_endpoint) LIKE ? ESCAPE '\\' OR LOWER(request_path) LIKE ? ESCAPE '\\' OR LOWER(session_key) LIKE ? ESCAPE '\\' OR LOWER(error) LIKE ? ESCAPE '\\' OR LOWER(error_code) LIKE ? ESCAPE '\\' OR LOWER(request_user_agent) LIKE ? ESCAPE '\\'"
 
-	searchPattern := "%%" + escapeLogEndpointLike(strings.ToLower(trimmed)) + "%%"
+// relayLogSearchIndexQuery 返回"在投影表里按关键词匹配"的查询, 由调用方决定
+// 取多少条、怎么排序。
+func relayLogSearchIndexQuery(search string) *gorm.DB {
+	trimmed := strings.TrimSpace(search)
+	pattern := "%" + escapeLogEndpointLike(strings.ToLower(trimmed)) + "%"
 	args := make([]any, 0, 14)
-	sub := db.GetDB().Table(relayLogSearchIndexTable).Select("id")
+	cond := relayLogSearchLikeCond
+	q := db.GetDB().Table(relayLogSearchIndexTable)
 	if num, err := strconv.ParseInt(trimmed, 10, 64); err == nil && num > 0 {
-		// 数字既是日志 id 也是渠道号: 两者在投影表里都有列, 不必回主表。
-		cond := "id = ? OR channel_id = ? OR " + "LOWER(user_name) LIKE ? ESCAPE '\\' OR LOWER(request_api_key_name) LIKE ? ESCAPE '\\' OR LOWER(request_model_name) LIKE ? ESCAPE '\\' OR LOWER(actual_model_name) LIKE ? ESCAPE '\\' OR LOWER(upstream_response_model) LIKE ? ESCAPE '\\' OR LOWER(channel_name) LIKE ? ESCAPE '\\' OR LOWER(request_endpoint) LIKE ? ESCAPE '\\' OR LOWER(request_path) LIKE ? ESCAPE '\\' OR LOWER(session_key) LIKE ? ESCAPE '\\' OR LOWER(error) LIKE ? ESCAPE '\\' OR LOWER(error_code) LIKE ? ESCAPE '\\' OR LOWER(request_user_agent) LIKE ? ESCAPE '\\'"
+		// 数字既可能是日志 id 也可能是渠道号, 两者在投影表里都有列。
+		cond = "id = ? OR channel_id = ? OR (" + relayLogSearchLikeCond + ")"
 		args = append(args, num, int(num))
-		for range 12 {
-			args = append(args, searchPattern)
-		}
-		sub = sub.Where(cond, args...)
-	} else {
-		for range 12 {
-			args = append(args, searchPattern)
-		}
-		sub = sub.Where("LOWER(user_name) LIKE ? ESCAPE '\\' OR LOWER(request_api_key_name) LIKE ? ESCAPE '\\' OR LOWER(request_model_name) LIKE ? ESCAPE '\\' OR LOWER(actual_model_name) LIKE ? ESCAPE '\\' OR LOWER(upstream_response_model) LIKE ? ESCAPE '\\' OR LOWER(channel_name) LIKE ? ESCAPE '\\' OR LOWER(request_endpoint) LIKE ? ESCAPE '\\' OR LOWER(request_path) LIKE ? ESCAPE '\\' OR LOWER(session_key) LIKE ? ESCAPE '\\' OR LOWER(error) LIKE ? ESCAPE '\\' OR LOWER(error_code) LIKE ? ESCAPE '\\' OR LOWER(request_user_agent) LIKE ? ESCAPE '\\'", args...)
 	}
-	return query.Where("id IN (?)", sub)
+	for i := 0; i < 12; i++ {
+		args = append(args, pattern)
+	}
+	return q.Where(cond, args...)
 }
 
-// relayLogApplySearchOnMainTable 是投影表不可用时的退路: 与历史行为逐字一致。
+// relayLogSearchReady 报告投影表是否可用于加速。
+func relayLogSearchReady() bool {
+	return db.GetDB().Migrator().HasTable(relayLogSearchIndexTable)
+}
+
+// relayLogApplySearchOnMainTable 是退路(投影表不可用): 与历史行为逐字一致。
 func relayLogApplySearchOnMainTable(query *gorm.DB, trimmed string) *gorm.DB {
-	searchPattern := "%%" + escapeLogEndpointLike(strings.ToLower(trimmed)) + "%%"
+	pattern := "%" + escapeLogEndpointLike(strings.ToLower(trimmed)) + "%"
 	args := make([]any, 0, 14)
+	cond := relayLogSearchLikeCond
 	if num, err := strconv.ParseInt(trimmed, 10, 64); err == nil && num > 0 {
-		cond := "id = ? OR channel_id = ? OR " + "LOWER(user_name) LIKE ? ESCAPE '\\' OR LOWER(request_api_key_name) LIKE ? ESCAPE '\\' OR LOWER(request_model_name) LIKE ? ESCAPE '\\' OR LOWER(actual_model_name) LIKE ? ESCAPE '\\' OR LOWER(upstream_response_model) LIKE ? ESCAPE '\\' OR LOWER(channel_name) LIKE ? ESCAPE '\\' OR LOWER(request_endpoint) LIKE ? ESCAPE '\\' OR LOWER(request_path) LIKE ? ESCAPE '\\' OR LOWER(session_key) LIKE ? ESCAPE '\\' OR LOWER(error) LIKE ? ESCAPE '\\' OR LOWER(error_code) LIKE ? ESCAPE '\\' OR LOWER(request_user_agent) LIKE ? ESCAPE '\\'"
+		cond = "id = ? OR channel_id = ? OR (" + relayLogSearchLikeCond + ")"
 		args = append(args, num, int(num))
-		for range 12 {
-			args = append(args, searchPattern)
-		}
-		return query.Where(cond, args...)
 	}
-	for range 12 {
-		args = append(args, searchPattern)
+	for i := 0; i < 12; i++ {
+		args = append(args, pattern)
 	}
-	return query.Where("LOWER(user_name) LIKE ? ESCAPE '\\' OR LOWER(request_api_key_name) LIKE ? ESCAPE '\\' OR LOWER(request_model_name) LIKE ? ESCAPE '\\' OR LOWER(actual_model_name) LIKE ? ESCAPE '\\' OR LOWER(upstream_response_model) LIKE ? ESCAPE '\\' OR LOWER(channel_name) LIKE ? ESCAPE '\\' OR LOWER(request_endpoint) LIKE ? ESCAPE '\\' OR LOWER(request_path) LIKE ? ESCAPE '\\' OR LOWER(session_key) LIKE ? ESCAPE '\\' OR LOWER(error) LIKE ? ESCAPE '\\' OR LOWER(error_code) LIKE ? ESCAPE '\\' OR LOWER(request_user_agent) LIKE ? ESCAPE '\\'", args...)
+	return query.Where(cond, args...)
+}
+
+// relayLogApplySearch 用于 Count / SeverityCounts 这类"要全量数字"的场景:
+// 这些地方本来就没有 LIMIT, 早停无从谈起, 直接走窄表取子查询更省。
+func relayLogApplySearch(query *gorm.DB, search string) *gorm.DB {
+	if strings.TrimSpace(search) == "" {
+		return query
+	}
+	if !relayLogSearchReady() {
+		return relayLogApplySearchOnMainTable(query, strings.TrimSpace(search))
+	}
+	sub := relayLogSearchIndexQuery(search).Select("id")
+	return query.Where("id IN (?)", sub)
 }

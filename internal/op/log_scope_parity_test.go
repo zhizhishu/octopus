@@ -155,6 +155,13 @@ func TestRelayLogScopeRuleParity(t *testing.T) {
 		t.Fatalf("insert null row: %v", err)
 	}
 
+	// 搜索条件现在由 relay_log_search 投影表承载(见 relayLogApplySearch)。本用例
+	// 直接往主表插数据, 必须同样填投影表, 否则 SQL 侧搜到空集、Go 侧却命中,
+	// 会报成"规则漂移"——那是测试自身的缺口, 不是两套规则真的不一致。
+	if err := relayLogSearchIndexRebuild(ctx); err != nil {
+		t.Fatalf("rebuild search index: %v", err)
+	}
+
 	// Go 侧的输入就是 DB 里的行：只是换个规则函数过一遍。
 	var all []model.RelayLog
 	if err := db.GetDB().WithContext(ctx).Order("id ASC").Find(&all).Error; err != nil {

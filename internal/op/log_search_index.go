@@ -13,6 +13,7 @@ import (
 	"context"
 
 	"github.com/bestruirui/octopus/internal/db"
+	"github.com/bestruirui/octopus/internal/db/migrate"
 	"github.com/bestruirui/octopus/internal/model"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -126,4 +127,23 @@ func relayLogSearchIndexRebuild(ctx context.Context) error {
 			return nil
 		}
 	}
+}
+
+// relayLogSearchIndexMigrationVersion 是"建表 + 回填存量"那次迁移的版本号。
+const relayLogSearchIndexMigrationVersion = 14
+
+// relayLogSearchIndexComplete 报告投影表是否已经完整回填。
+//
+// 用来区分两种"搜不到":
+//   - 表是完整的 → 真的没有匹配行, 可以直接返回空页(快)。
+//   - 表还没回填完(迁移在跑/失败过) → 老日志只存在于主表, 必须退回主表 LIKE。
+//
+// 判据用迁移记录而不是"行数相等": 行数在主表持续写入时会瞬时不等, 且大表上
+// 每次搜索都数两遍行数本身就是笔开销。
+func relayLogSearchIndexComplete(ctx context.Context) bool {
+	var rec migrate.MigrationRecord
+	err := db.GetDB().WithContext(ctx).
+		Where("version = ? AND status = ?", relayLogSearchIndexMigrationVersion, migrate.MigrationRecordStatusSuccess).
+		Take(&rec).Error
+	return err == nil
 }
