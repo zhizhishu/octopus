@@ -320,12 +320,10 @@ test('apiClient forwards an optional AbortSignal to fetch without changing defau
 function enqueueAndStart(tree, page) {
     // 1) 若模型还没进队列，先点「加入队列」。点击只改 React 状态，必须重新 render
     //    才能看到队列渲染出来 —— 假 hooks 不重建树，和真实 React 的时序不同。
-    let stage = findElement(tree, (n) => n.type === 'Button' && text(n).includes('加入队列'));
-    if (stage) stage.props.onClick();
-    tree = page.render();
-    // 2) 再点开始（按钮文案已变，按关键片段找，避免文案微调就挂测试）。
-    const startBtn = findElement(tree, (n) => n.type === 'Button' && text(n).includes('开始检测队列'));
-    if (!startBtn) throw new Error('start button not found after enqueue');
+    //    2026-10-20 起：前端队列已并入后端真队列，不再有"加入队列"这一步。
+    //    现在点一次「后台检测」= 一次 enqueue POST，所以这里只找那一个按钮。
+    const startBtn = findElement(tree, (n) => n.type === 'Button' && text(n).includes('后台检测'));
+    if (!startBtn) throw new Error('start button not found');
     startBtn.props.onClick();
     return tree;
 }
@@ -358,6 +356,8 @@ function auditPage() {
         },
     };
     const calls = [];
+    const enqueued = [];
+    const queueView = { onOpenReport: undefined };
     let channelData = [];
     let mutateImpl = () => new Promise(() => {});
     const mutation = { mutateAsync(vars) { calls.push(vars); return mutateImpl(vars); } };
@@ -371,6 +371,12 @@ function auditPage() {
             AUDIT_PROBE_IDS: ['liveness', 'identity', 'glitch', 'token_delta', 'echo_rewrite', 'context_canary', 'signature'],
             useLogAnomalies: () => ({ data: undefined }),
             useRunModelAudit: () => mutation,
+            // 后台队列入口。这些测试关心的是"点一下会不会多打上游"，
+            // 所以给一个可观测的替身：调用被记进 enqueued 数组，不真的发请求。
+            useEnqueueAudit: () => ({
+                isPending: false,
+                mutateAsync: (vars) => { enqueued.push(vars); return Promise.resolve({ job_id: 1 }); },
+            }),
             useScheduledAudit: () => ({ data: undefined }),
         },
         '@/components/common/PageWrapper': widgets('PageWrapper'),
@@ -381,12 +387,20 @@ function auditPage() {
         '@/lib/utils': { cn: (...p) => p.filter(Boolean).join(' ') },
         '@/components/modules/channel/channel-utils': { getSelectedChannelModels: (channel) => channel.selected_models ?? [] },
         '@/lib/channel-test': { sanitizeChannelTestError: (value) => value },
-        // 批量队列页在单次模式的测试里不渲染，给个空存根即可。
-        // 它自身的 API hooks 有独立依赖，不该把单次模式的测试拖下水。
-        './Queue': { ModelAuditQueue: () => null },
+        // 队列页自身的渲染在这里不测（有独立的 model-audit-queue.test.cjs）。
+        // 但它现在是报告的唯一来源：用户在队列里点开某条结果，报告才回到本页，
+        // 所以给一个能触发回调的存根，测试才能走完整的"回看"路径。
+        './Queue': {
+            ModelAuditQueue: ({ onOpenReport } = {}) => {
+                queueView.onOpenReport = onOpenReport;
+                return null;
+            },
+        },
     });
     return {
         calls,
+        enqueued,
+        queueView,
         toast,
         setChannels(next) { channelData = next; },
         setMutate(fn) { mutateImpl = fn; },
@@ -402,31 +416,33 @@ function auditPage() {
 const grokChannel = [{ raw: { id: 7, name: 'c', enabled: true, type: 2, selected_models: ['grok-4.7'] } }];
 
 // 挂载/改选项发 0 次；点一次=1 次 POST；pending 期间重复点也不再加。
-test('active audit page: mount and option changes never call upstream; one click = one POST', () => {
+test('active audit page: mount and option changes never call upstream; one click = one enqueue', () => {
     const page = auditPage();
     page.setChannels(grokChannel);
     let tree = page.render();
     const cleanup = page.mount();
     assert.equal(page.calls.length, 0, 'mount issues no audit call');
+    assert.equal(page.enqueued.length, 0, 'mount issues no enqueue call');
 
-    // 改变渠道/计划/探针勾选：均只改本地状态，不发请求。
+    // 改变渠道/计划/探针勾选：均只改本地状态，不发请求、不入队。
     findElement(tree, (n) => n.type === 'SearchableSelect' && typeof n.props?.onValueChange === 'function').props.onValueChange('7');
     findElement(tree, (n) => n.type === 'button' && text(n).includes('快速')).props.onClick();
     findElement(tree, (n) => n.type === 'input' && n.props?.type === 'checkbox').props.onChange({ target: { checked: true } });
     assert.equal(page.calls.length, 0, 'option changes never call upstream');
+    assert.equal(page.enqueued.length, 0, 'option changes never enqueue');
 
-    enqueueAndStart(tree, page);
-    assert.equal(page.calls.length, 1, 'one click = one POST');
-    assert.equal(page.calls[0].channel_id, 7);
-    assert.equal(page.calls[0].probes.includes('signature'), false, 'grok model never selects the signature probe');
-    assert.ok(page.calls[0].signal instanceof AbortSignal, 'run carries an AbortSignal');
-
+    // 点一次「后台检测」= 一次入队提交，而不是一次同步 /run。
+    //
+    // 这条守的是花钱边界：检测每个探针都是真实计费请求，点一次只能产生一次提交。
+    // 以前守的是"一次 POST /run"，现在守"一次 POST /enqueue"，被保护的东西没变。
     tree = page.render();
-    const running = findElement(tree, (n) => n.type === 'Button' && text(n).includes('正在检查'));
-    assert.ok(running, 'start button shows the running state');
-    assert.ok(findElement(tree, (n) => n.type === 'Button' && text(n).includes('cancelCheck')), 'cancel button appears while running');
-    running.props.onClick(); // pending 期间再次点击
-    assert.equal(page.calls.length, 1, 'double click while pending is ignored');
+    enqueueAndStart(tree, page);
+    assert.equal(page.enqueued.length, 1, 'one click = one enqueue');
+    assert.equal(page.calls.length, 0, 'the sync /run path is no longer used by the page');
+    assert.equal(page.enqueued[0].channel_id, 7);
+    assert.equal(page.enqueued[0].probes.includes('signature'), false, 'grok model never selects the signature probe');
+    assert.ok(Array.isArray(page.enqueued[0].models) && page.enqueued[0].models.length === 1, 'submits exactly the selected model');
+
     cleanup();
 });
 
@@ -445,52 +461,60 @@ test('signature probe needs both an Anthropic channel and a boundary-matched Cla
         page.setChannels([{ raw: { id: 1, name: 'c', enabled: true, type: c.type, selected_models: [c.model] } }]);
         const tree = page.render();
         enqueueAndStart(tree, page);
-        assert.equal((page.calls[0]?.probes ?? []).includes('signature'), c.expect, `${c.model} on type ${c.type}`);
+        // 探针选择现在随入队请求提交，从 enqueued 取；被守的规则本身没变。
+        assert.equal((page.enqueued[0]?.probes ?? []).includes('signature'), c.expect, `${c.model} on type ${c.type}`);
     }
 });
-
-// 取消：abort 信号、显示已取消状态、不显示成功报告、不自动重跑、不当作失败。
-test('cancel aborts the run signal and shows the cancelled state without success or re-run', async () => {
-    const page = auditPage();
-    page.setChannels(grokChannel);
-    page.setMutate((vars) => new Promise((_, reject) => {
-        vars.signal.addEventListener('abort', () => { const e = new Error('aborted'); e.name = 'AbortError'; reject(e); });
-    }));
-    let tree = page.render();
-    const cleanup = page.mount();
-    enqueueAndStart(tree, page);
-    assert.equal(page.calls.length, 1);
-    const signal = page.calls[0].signal;
-    assert.equal(signal.aborted, false);
-
-    tree = page.render();
-    const cancel = findElement(tree, (n) => n.type === 'Button' && text(n).includes('cancelCheck'));
-    assert.ok(cancel, 'cancel button visible while running');
-    cancel.props.onClick();
-    assert.equal(signal.aborted, true, 'cancel aborts the HTTP request signal');
-    await new Promise((r) => setTimeout(r, 0));
-
-    tree = page.render();
-    assert.ok(findElement(tree, (n) => text(n) === 'cancelledTitle'), 'cancelled state is shown');
-    assert.equal(text(tree).includes('本次报告'), false, 'no success/report is shown after cancel');
-    assert.equal(findElement(tree, (n) => text(n).includes('导出 JSON')), undefined, 'no export button after cancel');
-    assert.equal(page.calls.length, 1, 'cancel never triggers another run');
-    assert.equal(page.toast.errors.length, 0, 'cancel is not treated as a failure');
-    cleanup();
-});
-
-// 组件卸载：abort 仍在飞行的 controller。
-test('unmount aborts an in-flight run', () => {
+// 取消：现在取消的是后端任务，不是浏览器里那个 HTTP 连接。
+//
+// 为什么必须这样：检测的每一次探针都是真实计费请求。以前 abort 掉 fetch 只断开
+// 当前这一个连接，后台队列该跑还是跑、该花钱还是花钱。要让"取消"名副其实，
+// 只能打后端的 cancel 接口。所以这条测试断言的对象从 AbortSignal 换成了入队 + 取消目标。
+test('cancel is delegated to the backend job, not to a browser abort', async () => {
     const page = auditPage();
     page.setChannels(grokChannel);
     const tree = page.render();
     const cleanup = page.mount();
+
     enqueueAndStart(tree, page);
-    const signal = page.calls[0].signal;
-    assert.equal(signal.aborted, false);
+    assert.equal(page.enqueued.length, 1, 'submitting is one enqueue');
+    assert.equal(page.calls.length, 0, 'no synchronous /run is issued any more');
+
+    // 检测页本身不再持有"正在跑"的状态，因此也不再显示一个假的取消按钮；
+    // 取消统一在队列页对具体任务操作（那条链路由 model-audit-queue.test.cjs 覆盖）。
+    const localCancel = findElement(page.render(), (n) => n.type === 'Button' && text(n).includes('cancelCheck'));
+    assert.equal(localCancel, undefined, 'the page no longer fakes a cancel it cannot honour');
+
     cleanup();
-    assert.equal(signal.aborted, true, 'unmount aborts the current controller');
 });
+
+// 卸载：关掉页面不该中断后台检测。
+//
+// 这正好是旧行为反过来的一条。以前卸载会 abort 请求，看起来"干净"，实际是把
+// 用户已经付过钱的检测半路掐死。现在活儿已经在后端队列里，关页面只是关掉观察窗口。
+test('unmounting the page leaves the background job alone', () => {
+    const page = auditPage();
+    page.setChannels(grokChannel);
+    const tree = page.render();
+    const cleanup = page.mount();
+
+    enqueueAndStart(tree, page);
+    assert.equal(page.enqueued.length, 1, 'the job was submitted');
+
+    cleanup(); // 模拟离开页面
+    assert.equal(page.calls.length, 0, 'no request was aborted because none was in flight');
+    assert.equal(page.enqueued.length, 1, 'the submission is not withdrawn by leaving');
+});
+
+
+// 这个测试框架刻意不展开函数组件（只做元素树比对），所以队列存根不会自己执行。
+// 想验证"从队列点开历史报告"这条路径，就得手动把它跑一次，拿它注册的回调。
+function mountQueueStub(tree, page) {
+    const node = findElement(tree, (n) => typeof n.type === 'function' && n.type.name === 'ModelAuditQueue');
+    assert.ok(node, 'queue stub is present in the tree');
+    node.type(node.props);
+    assert.equal(typeof page.queueView.onOpenReport, 'function', 'queue page exposes the report callback');
+}
 
 const minimalReport = () => ({
     channel_id: 7,
@@ -508,17 +532,34 @@ const minimalReport = () => ({
         disclaimer: 'x',
     },
 });
-
 // 证据不足要显示 reason，且 headline 不得谎称「未见需要复核项」。
+//
+// 报告现在从队列结果回看进来（openStoredReport 解析后端存的 JSON），
+// 所以这条测试走真实入口：切到队列、模拟点开某条已完成结果。
 test('insufficient-evidence rows show their reason and headline no longer claims a clean result', async () => {
     const page = auditPage();
     page.setChannels(grokChannel);
-    page.setMutate(() => Promise.resolve(minimalReport()));
     let tree = page.render();
     const cleanup = page.mount();
-    enqueueAndStart(tree, page);
-    await new Promise((r) => setTimeout(r, 0));
+
+    // 切到「检测记录」，让队列页渲染出来并拿到 onOpenReport 回调。
+    findElement(tree, (n) => n.type === 'button' && text(n).includes('检测记录')).props.onClick();
     tree = page.render();
+    mountQueueStub(tree, page);
+
+    const view = minimalReport().report;
+    page.queueView.onOpenReport({
+        id: 1, job_id: 1, log_id: 0, channel_id: 7, channel_name: 'c',
+        model: 'grok-4.7', upstream_model: '', status: 'done',
+        verdict: 'none', score: 0, finding_n: 0,
+        report: JSON.stringify(view), error_msg: '', duration_ms: 12,
+        created_at: new Date().toISOString(),
+    });
+    tree = page.render();
+    // 点开报告后要切回详情视图才会渲染它（mode 决定渲染哪一侧）。
+    findElement(tree, (n) => n.type === 'button' && text(n).includes('发起检测')).props.onClick();
+    tree = page.render();
+
     const body = text(tree);
     assert.ok(body.includes('statusInsufficient'), 'row shows insufficient status');
     assert.ok(body.includes('no_calibrated_profile'), 'reason shown (not_applicable_reason/reason alias)');
@@ -527,28 +568,37 @@ test('insufficient-evidence rows show their reason and headline no longer claims
     cleanup();
 });
 
-// 下一轮开始即清空旧报告；取消后没有可导出的旧报告。
-test('starting a new run clears the previous report so cancel cannot export it', async () => {
+// 下一轮开始即清空旧报告；否则用户会把上一轮的报告当成这一轮的导出。
+test('starting a new run clears the previous report so it cannot be exported as the new one', async () => {
     const page = auditPage();
     page.setChannels(grokChannel);
-    let resolveRun;
-    page.setMutate(() => new Promise((res) => { resolveRun = res; }));
     let tree = page.render();
     const cleanup = page.mount();
-    enqueueAndStart(tree, page);
-    resolveRun(minimalReport());
-    await new Promise((r) => setTimeout(r, 0));
-    tree = page.render();
-    assert.ok(findElement(tree, (n) => text(n).includes('导出 JSON')), 'export visible after a successful run');
 
-    // 第二轮：开始即清空旧报告，然后取消。
-    page.setMutate((vars) => new Promise((_, reject) => { vars.signal.addEventListener('abort', () => reject(new Error('aborted'))); }));
+    // 先从队列回看一份历史报告：此时详情面板是「有报告」状态。
+    findElement(tree, (n) => n.type === 'button' && text(n).includes('检测记录')).props.onClick();
+    tree = page.render();
+    mountQueueStub(tree, page);
+    page.queueView.onOpenReport({
+        id: 1, job_id: 1, log_id: 0, channel_id: 7, channel_name: 'c',
+        model: 'grok-4.7', upstream_model: '', status: 'done',
+        verdict: 'none', score: 0, finding_n: 0,
+        report: JSON.stringify(minimalReport().report), error_msg: '', duration_ms: 12,
+        created_at: new Date().toISOString(),
+    });
+    tree = page.render();
+    mountQueueStub(tree, page);
+    findElement(tree, (n) => n.type === 'button' && text(n).includes('发起检测')).props.onClick();
+    tree = page.render();
+    assert.ok(findElement(tree, (n) => text(n).includes('导出 JSON')), 'export visible while a report is open');
+
+    // 回到「发起检测」并提交新一轮：旧报告必须立刻消失。
+    findElement(tree, (n) => n.type === 'button' && text(n).includes('发起检测')).props.onClick();
+    tree = page.render();
     enqueueAndStart(tree, page);
+    // 提交是异步的：清报告发生在 await 之后，必须让微任务跑完再看。
+    await new Promise((r) => setTimeout(r, 0));
     tree = page.render();
     assert.equal(text(tree).includes('本次报告'), false, 'old report is cleared as soon as a new run starts');
-    findElement(tree, (n) => n.type === 'Button' && text(n).includes('cancelCheck')).props.onClick();
-    await new Promise((r) => setTimeout(r, 0));
-    tree = page.render();
-    assert.equal(findElement(tree, (n) => text(n).includes('导出 JSON')), undefined, 'no export after cancel');
-    cleanup();
+    assert.equal(findElement(tree, (n) => text(n).includes('导出 JSON')), undefined, 'no stale export button after starting a new run');
 });

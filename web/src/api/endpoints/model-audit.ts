@@ -227,6 +227,14 @@ export type AuditResult = {
     duration_ms: number;
     created_at: string;
     finished_at?: string;
+    /**
+     * 已尝试次数。失败后会自动重试（翻倍退避，最长 10 分钟一次），
+     * 重试期间状态仍是 pending —— 所以界面上必须能看出"它在等重试"，
+     * 否则进度条不动，用户会以为卡死了。
+     */
+    attempt?: number;
+    /** 下次重试时间点。有值 = 正在退避等待，不是排队等前面的人。 */
+    next_retry_at?: string;
 };
 
 export type AuditJobDetail = {

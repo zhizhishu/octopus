@@ -3,12 +3,14 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/modeltest"
 	"github.com/zhizhishu/octopus/internal/modelverify/behavior"
@@ -18,7 +20,6 @@ import (
 	"github.com/zhizhishu/octopus/internal/server/router"
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 	"github.com/zhizhishu/octopus/internal/utils/log"
-	"github.com/gin-gonic/gin"
 )
 
 const (
@@ -94,6 +95,13 @@ func enqueueModelAudit(c *gin.Context) {
 		Trigger:        "manual",
 	})
 	if err != nil {
+		// 已经在队列里不算错误：用户想要的结果（这些模型会被检测）已经成立。
+		// 用 409 而不是 400，让前端能把它显示成"不用重复提交"的提示，
+		// 而不是一条红色的失败信息。
+		if errors.Is(err, op.ErrAuditAlreadyQueued) {
+			resp.Error(c, http.StatusConflict, err.Error())
+			return
+		}
 		resp.Error(c, http.StatusBadRequest, err.Error())
 		return
 	}

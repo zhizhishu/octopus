@@ -21,13 +21,49 @@ import (
 // 瞬间承受成倍的请求，既容易触发上游限流把结论污染成"失败"，也让费用不可预测。
 // worker 数固定为 1 是有意的取舍，不是为了省事。
 
+// ErrAuditAlreadyQueued 表示要检测的模型已经全在队列里（等待中或正在跑）。
+//
+// 单独定义一个错误而不是返回 nil：调用方需要区分「新建了任务」和「本来就排着」，
+// 否则前端会显示一个并不存在的任务号。
+var ErrAuditAlreadyQueued = errors.New("这些模型已经在检测队列里了")
+
 const (
 	// auditResultRetention 结果保留天数。检测是花钱得到的记录，比日志保得久。
-	auditResultRetention = 90 * 24 * time.Hour
-
+	auditResultRetention       = 90 * 24 * time.Hour
 	AuditDefaultTimeoutSeconds = 300
 	AuditMaxTimeoutSeconds     = 300
+
+	// AuditMaxAttempts 单条结果最多试几次（含第一次）。
+	//
+	// 定成 3 而不是"一直试到成功"：检测会真的打上游、真的计费，无限重试等于
+	// 给一个坏渠道无限烧钱。3 次足够跨过上游抖动，又不至于失控。
+	AuditMaxAttempts = 3
+
+	// auditRetryBaseBackoff 第一次重试前的等待，之后每次翻倍（30s → 60s）。
+	//
+	// 退避的意义不是省事：上游抖动往往是短暂的，立刻重试只是把同一堵墙再撞一次，
+	// 还会让"这个渠道真的不通"这个结论迟迟定不下来。
+	auditRetryBaseBackoff = 30 * time.Second
 )
+
+// AuditRetryBackoff 第 attempt 次失败后该等多久再试（attempt 从 1 开始）。
+//
+// 翻倍退避，不加重试上限之外的复杂度：检测失败的绝大多数原因是上游瞬时抖动，
+// 指数拉开间隔比"多试几次"更有效，也更容易在日志里看出"它一直在失败"。
+func AuditRetryBackoff(attempt int) time.Duration {
+	if attempt <= 1 {
+		return auditRetryBaseBackoff
+	}
+	d := auditRetryBaseBackoff
+	for i := 1; i < attempt; i++ {
+		d *= 2
+	}
+	// 封顶 10 分钟：再长用户会以为任务卡死了，而不是在等重试。
+	if d > 10*time.Minute {
+		d = 10 * time.Minute
+	}
+	return d
+}
 
 // ModelAuditEnqueueInput 一次入队请求。
 type ModelAuditEnqueueInput struct {
@@ -67,6 +103,44 @@ func ModelAuditEnqueue(ctx context.Context, in ModelAuditEnqueueInput) (int64, e
 	channel, err := ChannelGet(in.ChannelID, ctx)
 	if err != nil {
 		return 0, errors.New("渠道不存在")
+	}
+
+	// 查库去重：同一个渠道下，已经「在排队」或「正在跑」的模型不再重复入队。
+	//
+	// 为什么必须在库里查、而不是只靠调用方自觉：
+	//   1. 重复点击、刷新页面重发、多标签页并开，都会各自发一次入队请求；
+	//   2. 每一次入队最终都会变成真实的上游计费请求；
+	//   3. 前端那个 isPending 只挡得住同一个标签页里的连点，挡不住别的。
+	// 所以这道闸门必须落在数据库这一层，且要在建任务之前查。
+	//
+	// 只挡 pending/running：已经跑完（done/failed/skipped）的模型允许再检，
+	// 用户想复检是正常需求，不该被拦住。
+	activeModels := make(map[string]struct{}, len(models))
+	var inflight []string
+	if err := db.GetDB().WithContext(ctx).
+		Model(&model.ModelAuditResult{}).
+		Where("channel_id = ? AND model IN ? AND status IN ?",
+			channel.ID, models, []string{model.AuditResultPending, model.AuditResultRunning}).
+		Distinct().
+		Pluck("model", &inflight).Error; err != nil {
+		return 0, err
+	}
+	for _, m := range inflight {
+		activeModels[m] = struct{}{}
+	}
+	if len(activeModels) > 0 {
+		kept := models[:0]
+		for _, m := range models {
+			if _, busy := activeModels[m]; !busy {
+				kept = append(kept, m)
+			}
+		}
+		models = kept
+		if len(models) == 0 {
+			// 全部都在队列里了：不新建任务，也不报错——用户想要的结果
+			// （这些模型会被检测）已经成立，再建一个只会重复花钱。
+			return 0, ErrAuditAlreadyQueued
+		}
 	}
 
 	timeout := in.TimeoutSeconds

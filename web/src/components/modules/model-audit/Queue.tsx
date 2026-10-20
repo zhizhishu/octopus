@@ -80,7 +80,7 @@ function jobProgressText(job: AuditJob, t: (k: string, v?: Record<string, string
     }
 }
 
-export function ModelAuditQueue() {
+export function ModelAuditQueue({ onOpenReport }: { onOpenReport?: (result: AuditResult) => void } = {}) {
     const t = useTranslations('modelAudit');
     const { data: channels } = useChannelList();
     const { data: jobs } = useAuditJobs(50);
@@ -199,6 +199,7 @@ export function ModelAuditQueue() {
                                 onToggle={() => setOpenJobID(openJobID === job.id ? null : job.id)}
                                 onCancel={() => cancelJob.mutate(job.id)}
                                 canceling={cancelJob.isPending && cancelJob.variables === job.id}
+                                onOpenReport={onOpenReport}
                             />
                         ))}
                     </div>
@@ -214,12 +215,14 @@ function JobRow({
     onToggle,
     onCancel,
     canceling,
+    onOpenReport,
 }: {
     job: AuditJob;
     open: boolean;
     onToggle: () => void;
     onCancel: () => void;
     canceling: boolean;
+    onOpenReport?: (result: AuditResult) => void;
 }) {
     const t = useTranslations('modelAudit');
     const active = job.status === 'queued' || job.status === 'running';
@@ -270,12 +273,12 @@ function JobRow({
                 </div>
             )}
 
-            {open && <JobResults jobID={job.id} />}
+            {open && <JobResults jobID={job.id} onOpenReport={onOpenReport} />}
         </div>
     );
 }
 
-function JobResults({ jobID }: { jobID: number }) {
+function JobResults({ jobID, onOpenReport }: { jobID: number; onOpenReport?: (result: AuditResult) => void }) {
     const t = useTranslations('modelAudit');
     const { data, isLoading } = useAuditJobDetail(jobID);
 
@@ -295,23 +298,31 @@ function JobResults({ jobID }: { jobID: number }) {
     return (
         <div className="space-y-1.5 border-t border-border/60 p-3">
             {results.map((r) => (
-                <ResultRow key={r.id} result={r} />
+                <ResultRow key={r.id} result={r} onOpenReport={onOpenReport} />
             ))}
         </div>
     );
 }
 
-function ResultRow({ result }: { result: AuditResult }) {
+function ResultRow({ result, onOpenReport }: { result: AuditResult; onOpenReport?: (result: AuditResult) => void }) {
     const t = useTranslations('modelAudit');
     const [expanded, setExpanded] = useState(false);
 
     if (result.status === 'pending' || result.status === 'running') {
+        // 重试中的行仍是 pending，但它和"排在别人后面等着"是两回事：
+        // 前者已经花过钱、失败过、正在退避等待。不区分的话，用户看到进度条
+        // 好几分钟不动，只会以为卡死了，甚至重复提交一遍（等于再花一次钱）。
+        const retrying = result.status === 'pending' && !!result.next_retry_at;
         return (
             <div className="flex items-center gap-2 rounded-xl bg-background/50 px-2.5 py-2 text-xs text-muted-foreground">
                 <Loader2 className="size-3 shrink-0 animate-spin" />
                 <span className="min-w-0 flex-1 truncate font-mono">{result.model}</span>
-                <span>
-                    {result.status === 'pending' ? t('queue.resultPending') : t('queue.resultRunning')}
+                <span className="shrink-0">
+                    {retrying
+                        ? t('queue.resultRetrying', { attempt: result.attempt ?? 1 })
+                        : result.status === 'pending'
+                          ? t('queue.resultPending')
+                          : t('queue.resultRunning')}
                 </span>
             </div>
         );
@@ -353,21 +364,39 @@ function ResultRow({ result }: { result: AuditResult }) {
 
     return (
         <div className="rounded-xl bg-background/50 px-2.5 py-2">
-            <button type="button" onClick={() => setExpanded(!expanded)} className="flex w-full items-center gap-2 text-left">
-                <span className={cn('flex size-5 shrink-0 items-center justify-center rounded-full', style.ring)}>
-                    <Icon className={cn('size-3', style.tone)} />
-                </span>
-                <span className="min-w-0 flex-1 truncate font-mono text-xs text-card-foreground">{result.model}</span>
-                {family && (
-                    <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                        {family}
+            <div className="flex w-full items-center gap-2">
+                <button
+                    type="button"
+                    onClick={() => setExpanded(!expanded)}
+                    className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                >
+                    <span className={cn('flex size-5 shrink-0 items-center justify-center rounded-full', style.ring)}>
+                        <Icon className={cn('size-3', style.tone)} />
                     </span>
+                    <span className="min-w-0 flex-1 truncate font-mono text-xs text-card-foreground">{result.model}</span>
+                    {family && (
+                        <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                            {family}
+                        </span>
+                    )}
+                    <span className={cn('shrink-0 text-[11px] font-medium', style.tone)}>
+                        {plain?.headline ?? result.verdict}
+                    </span>
+                    {expanded ? <ChevronDown className="size-3 shrink-0" /> : <ChevronRight className="size-3 shrink-0" />}
+                </button>
+                {/* 展开只是摘要；要看完整报告（每条探针的明细、可导出 JSON）走这里。
+                    报告存在结果行的 report 字段里，不受日志保留期影响。 */}
+                {onOpenReport && (
+                    <button
+                        type="button"
+                        onClick={() => onOpenReport(result)}
+                        className="shrink-0 text-[11px] text-muted-foreground underline-offset-2 hover:underline"
+                        title="查看完整报告"
+                    >
+                        {t('queue.openReport')}
+                    </button>
                 )}
-                <span className={cn('shrink-0 text-[11px] font-medium', style.tone)}>
-                    {plain?.headline ?? result.verdict}
-                </span>
-                {expanded ? <ChevronDown className="size-3 shrink-0" /> : <ChevronRight className="size-3 shrink-0" />}
-            </button>
+            </div>
 
             {expanded && plain && (
                 <div className="mt-2 space-y-1.5 border-t border-border/40 pt-2 pl-7 text-[11px] leading-5">

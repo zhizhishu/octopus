@@ -102,6 +102,18 @@ type ModelAuditResult struct {
 	// ErrorMsg 检测没跑成时的原因（网络/鉴权/超时），与"查出问题"分开记。
 	ErrorMsg string `json:"error_msg" gorm:"type:text"`
 
+	// Attempt 已经试过几次。0 = 还没开始；1 = 第一次；以此类推。
+	//
+	// 为什么要记：检测会真的打上游、真的花钱。一次失败可能是上游抖了一下、
+	// 也可能是这个模型压根不通——不重试就把后者当成"结论"是错的，无限重试
+	// 又会烧钱。所以次数要落在行上，看得见、能设上限、能人工判断。
+	Attempt int `json:"attempt" gorm:"default:0"`
+	// NextRetryAt 下一次可以再试的时间（退避）。nil/零 = 立刻可跑。
+	//
+	// 用时间点而不是"睡一会儿"，是为了让重试在进程重启后依然有效：
+	// 睡在内存里的重试一重启就没了，落在库里的时间点不会。
+	NextRetryAt *time.Time `json:"next_retry_at,omitempty" gorm:"index"`
+
 	DurationMs int64      `json:"duration_ms" gorm:"default:0"`
 	CreatedAt  time.Time  `json:"created_at" gorm:"index"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`

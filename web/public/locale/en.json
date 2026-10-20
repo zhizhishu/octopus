@@ -1167,6 +1167,8 @@
       "noResults": "This job has no result rows",
       "resultPending": "Pending",
       "resultRunning": "Running",
+      "resultRetrying": "Retrying (attempt {attempt})",
+      "openReport": "Full report",
       "resultFailed": "Did not run",
       "resultSkipped": "Skipped",
       "caveatLabel": "What this does NOT tell you: ",

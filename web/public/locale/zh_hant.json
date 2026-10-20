@@ -1167,6 +1167,8 @@
       "noResults": "這次任務沒有結果記錄",
       "resultPending": "等待中",
       "resultRunning": "檢測中",
+      "resultRetrying": "重試中（第 {attempt} 次）",
+      "openReport": "完整報告",
       "resultFailed": "沒跑成",
       "resultSkipped": "已跳過",
       "caveatLabel": "這個結論不能說明什麼：",

@@ -2,7 +2,10 @@ package op
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/zhizhishu/octopus/internal/db"
 	"github.com/zhizhishu/octopus/internal/model"
@@ -201,9 +204,11 @@ func TestAuditJobListOrdersNewestFirst(t *testing.T) {
 	ch := ensureAuditChannel(t, "列表渠道")
 
 	for i := 0; i < 3; i++ {
+		// 每次都换一个模型名：入队会挡掉「同渠道同模型且还在队列里」的重复提交，
+		// 这里要测的是列表排序，不是去重，所以不该撞那道闸门。
 		if _, err := ModelAuditEnqueue(ctx, ModelAuditEnqueueInput{
 			ChannelID: ch.ID,
-			Models:    []string{"m"},
+			Models:    []string{fmt.Sprintf("m-%d", i)},
 		}); err != nil {
 			t.Fatalf("enqueue %d: %v", i, err)
 		}
@@ -220,5 +225,199 @@ func TestAuditJobListOrdersNewestFirst(t *testing.T) {
 		if jobs[i-1].ID < jobs[i].ID {
 			t.Fatalf("任务应按 id 降序：%d 在 %d 之前", jobs[i-1].ID, jobs[i].ID)
 		}
+	}
+}
+
+// TestAuditRetryBackoffGrowsAndCaps 守退避曲线的两个性质：
+//  1. 单调递增（否则重试等于连撞同一堵墙）
+//  2. 有上限（否则用户以为任务卡死，而不是在等重试）
+func TestAuditRetryBackoffGrowsAndCaps(t *testing.T) {
+	prev := AuditRetryBackoff(1)
+	if prev <= 0 {
+		t.Fatalf("第一次退避必须为正，实际 %v", prev)
+	}
+	for attempt := 2; attempt <= 6; attempt++ {
+		cur := AuditRetryBackoff(attempt)
+		if cur < prev {
+			t.Fatalf("退避必须单调不减: attempt=%d %v < %v", attempt, cur, prev)
+		}
+		prev = cur
+	}
+	if got := AuditRetryBackoff(20); got > 10*time.Minute {
+		t.Fatalf("退避必须有上限，实际 %v", got)
+	}
+}
+
+// TestAuditRetryFieldsPersist 守"重试状态落在行上"。
+//
+// 为什么这条重要：重试如果只活在内存里，进程一重启就全丢——用户点了检测、
+// 跑失败该重试的，重启后永远停在失败。所以 attempt / next_retry_at 必须是
+// 查得回来的列，不能是 worker 的局部变量。
+func TestAuditRetryFieldsPersist(t *testing.T) {
+	ctx := setupAuditQueueTest(t)
+	ch := ensureAuditChannel(t, "重试渠道")
+
+	jobID, err := ModelAuditEnqueue(ctx, ModelAuditEnqueueInput{
+		ChannelID: ch.ID,
+		Models:    []string{"retry-model"},
+	})
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	var res model.ModelAuditResult
+	if err := db.GetDB().WithContext(ctx).Where("job_id = ?", jobID).First(&res).Error; err != nil {
+		t.Fatalf("load result: %v", err)
+	}
+	if res.Attempt != 0 {
+		t.Fatalf("新入队的 attempt 应为 0，实际 %d", res.Attempt)
+	}
+
+	// 模拟一次失败：回到 pending 并设置退避时间。
+	next := time.Now().Add(AuditRetryBackoff(1))
+	if err := db.GetDB().WithContext(ctx).Model(&model.ModelAuditResult{}).
+		Where("id = ?", res.ID).
+		Updates(map[string]any{
+			"status":        model.AuditResultPending,
+			"attempt":       1,
+			"next_retry_at": next,
+		}).Error; err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	var reread model.ModelAuditResult
+	if err := db.GetDB().WithContext(ctx).Where("id = ?", res.ID).First(&reread).Error; err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if reread.Attempt != 1 {
+		t.Fatalf("attempt 应持久化为 1，实际 %d", reread.Attempt)
+	}
+	if reread.NextRetryAt == nil {
+		t.Fatal("next_retry_at 应持久化，重启后靠它继续退避")
+	}
+}
+
+// TestAuditMaxAttemptsIsFinite 守"重试有上限"。
+//
+// 检测真打上游、真计费。若上限被改成 0 或负数，重试逻辑会退化成无限重试，
+// 一个坏渠道能被反复烧钱。这条测试是那个数字的护栏。
+func TestAuditMaxAttemptsIsFinite(t *testing.T) {
+	if AuditMaxAttempts < 2 {
+		t.Fatalf("重试上限至少 2（1 次首试 + 1 次重试），实际 %d", AuditMaxAttempts)
+	}
+	if AuditMaxAttempts > 10 {
+		t.Fatalf("重试上限不应超过 10（烧钱风险），实际 %d", AuditMaxAttempts)
+	}
+}
+
+// TestAuditEnqueueRefusesDuplicateInFlight 守"重复入队=重复花钱"这道闸门。
+//
+// 这条以前是假的：注释写着"已在队列里不重复入队"，实现却只做了同一批内部的
+// 去重，根本没查库。结果重复点击、多标签页各发一次请求，就会真的建出两个任务，
+// 同一批模型被测两遍、付两次钱。
+func TestAuditEnqueueRefusesDuplicateInFlight(t *testing.T) {
+	ctx := setupAuditQueueTest(t)
+	ch := ensureAuditChannel(t, "去重渠道")
+
+	first, err := ModelAuditEnqueue(ctx, ModelAuditEnqueueInput{
+		ChannelID: ch.ID,
+		Models:    []string{"gpt-4o"},
+	})
+	if err != nil {
+		t.Fatalf("首次入队应成功: %v", err)
+	}
+	if first <= 0 {
+		t.Fatalf("首次入队应返回任务 id")
+	}
+
+	// 同一个模型再来一次：必须被挡住，且明确告诉调用方"已经在队列里"。
+	second, err := ModelAuditEnqueue(ctx, ModelAuditEnqueueInput{
+		ChannelID: ch.ID,
+		Models:    []string{"gpt-4o"},
+	})
+	if !errors.Is(err, ErrAuditAlreadyQueued) {
+		t.Fatalf("重复入队应返回 ErrAuditAlreadyQueued，得到 err=%v jobID=%d", err, second)
+	}
+
+	// 库里必须只有一个任务、一行结果 —— 这才是"没多花钱"的硬证据。
+	jobs, err := ModelAuditJobList(ctx, 50)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("应只有 1 个任务，得到 %d", len(jobs))
+	}
+	var n int64
+	if err := db.GetDB().Model(&model.ModelAuditResult{}).Where("channel_id = ?", ch.ID).Count(&n).Error; err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("应只有 1 行结果，得到 %d", n)
+	}
+}
+
+// TestAuditEnqueueAllowsRetestAfterFinish 守另一半：跑完的模型允许再检。
+//
+// 去重只该挡"还在排队或正在跑"的，把已完成的也挡住就等于禁止复检——
+// 用户复查一个可疑模型是正当需求，拦下来是过度设计。
+func TestAuditEnqueueAllowsRetestAfterFinish(t *testing.T) {
+	ctx := setupAuditQueueTest(t)
+	ch := ensureAuditChannel(t, "复检渠道")
+
+	jobID, err := ModelAuditEnqueue(ctx, ModelAuditEnqueueInput{
+		ChannelID: ch.ID,
+		Models:    []string{"gpt-4o"},
+	})
+	if err != nil {
+		t.Fatalf("首次入队: %v", err)
+	}
+	// 把这行结果标成已完成，模拟上一轮跑完了。
+	if err := db.GetDB().Model(&model.ModelAuditResult{}).
+		Where("job_id = ?", jobID).
+		Update("status", model.AuditResultDone).Error; err != nil {
+		t.Fatalf("mark done: %v", err)
+	}
+
+	retest, err := ModelAuditEnqueue(ctx, ModelAuditEnqueueInput{
+		ChannelID: ch.ID,
+		Models:    []string{"gpt-4o"},
+	})
+	if err != nil {
+		t.Fatalf("已完成的模型应允许复检，得到 err=%v", err)
+	}
+	if retest <= 0 {
+		t.Fatalf("复检应返回新的任务 id")
+	}
+}
+
+// TestAuditEnqueueKeepsOnlyFreshModels 守混合场景：
+// 一批里有的在队列里、有的不在，只把不在的排进去，已在的不重复。
+func TestAuditEnqueueKeepsOnlyFreshModels(t *testing.T) {
+	ctx := setupAuditQueueTest(t)
+	ch := ensureAuditChannel(t, "混合渠道")
+
+	if _, err := ModelAuditEnqueue(ctx, ModelAuditEnqueueInput{
+		ChannelID: ch.ID,
+		Models:    []string{"busy-model"},
+	}); err != nil {
+		t.Fatalf("首次入队: %v", err)
+	}
+
+	jobID, err := ModelAuditEnqueue(ctx, ModelAuditEnqueueInput{
+		ChannelID: ch.ID,
+		Models:    []string{"busy-model", "fresh-model"},
+	})
+	if err != nil {
+		t.Fatalf("混合入队应成功: %v", err)
+	}
+	job, results, err := ModelAuditJobDetail(ctx, jobID)
+	if err != nil {
+		t.Fatalf("detail: %v", err)
+	}
+	if job.Total != 1 || len(results) != 1 {
+		t.Fatalf("只应排入 1 个新模型，得到 total=%d results=%d", job.Total, len(results))
+	}
+	if results[0].Model != "fresh-model" {
+		t.Fatalf("排进去的应该是 fresh-model，得到 %s", results[0].Model)
 	}
 }
