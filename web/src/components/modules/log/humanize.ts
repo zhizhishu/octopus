@@ -180,6 +180,15 @@ export function humanizeSessionSource(source: string | undefined): string | unde
  * 服务端只存原始 UA(对齐 new-api/axonhub 的做法), 映射在前端做——客户端生态
  * 漂移时改这里即可, 不动库表。识别不出的 UA 完整展示原样字符串, 不猜；换行交给卡片。
  * 顺序按「最具体的在前」: claude-cli 必须先于泛 claude, codex_cli_rs 先于 codex。
+ *
+ * 关于「不猜」的一个例外（必须说明，否则看起来像自相矛盾）：识别不出时仍展示原文，
+ * 但**先剥掉其中的网址**。理由：不少 CLI 的 UA 形如
+ * `SomeClient/1.0.0 (https://github.com/org/repo)`，原文照搬会让一个内部客户端的
+ * 名字在日志里变成一个指向外部仓库的链接——既误导（它并不是可点的资源链接），
+ * 也把第三方身份带进了自己的面板。所以保留「哪个客户端」，只切掉「它的主页在哪」。
+ *
+ * 注意：**已知 UA 不重命名、不缩短**。用户要求识别不出的完整展示，就是为了能一眼
+ * 看出是哪个客户端、哪个版本；把它折叠成 `DSH` 反而丢了信息，也让排障变难。
  */
 const CLIENT_LABELS: Array<[pattern: RegExp, label: string]> = [
     [/^claude-cli\//i, 'Claude CLI'],
@@ -204,13 +213,39 @@ const CLIENT_LABELS: Array<[pattern: RegExp, label: string]> = [
     [/^wget/i, 'wget'],
 ];
 
+/** 匹配 UA / 备注里夹带的网址：http(s)://... 或裸露的 github.com/... 等。 */
+const UA_URL_PATTERN = /\s*\(?\s*(?:https?:\/\/|www\.)[^\s)]+\s*\)?|\s*\(?\s*(?:github|gitlab|gitee)\.com\/[^\s)]+\s*\)?/gi;
+
+/**
+ * 切掉字符串里的网址，并收干净残留的空括号和多余空格。
+ * 只用于展示，不参与任何判定，也不回写数据库。
+ */
+export function stripUrls(value: string | undefined): string | undefined {
+    const raw = value?.trim();
+    if (!raw || !UA_URL_PATTERN.test(raw)) {
+        // 必须重置 lastIndex：上面用了 /g 的正则，test 会推进它。
+        UA_URL_PATTERN.lastIndex = 0;
+        return raw || undefined;
+    }
+    UA_URL_PATTERN.lastIndex = 0;
+    const cleaned = raw
+        .replace(UA_URL_PATTERN, ' ')
+        .replace(/\(\s*\)/g, ' ')   // 网址被挖走后留下的空括号
+        .replace(/\s+/g, ' ')
+        .replace(/\s*([,;:])\s*$/g, '')  // 剥完后尾随的分隔符
+        .trim();
+    // 整串只有网址（如备注里只填了个链接）时，宁可显示空也不要露出外部地址。
+    return cleaned || undefined;
+}
+
 export function humanizeClient(ua: string | undefined): string | undefined {
     const raw = ua?.trim();
     if (!raw) return undefined;
     for (const [pattern, label] of CLIENT_LABELS) {
         if (pattern.test(raw)) return label;
     }
-    return raw;
+    // 认不出来就照实展示，但先剥掉网址，避免客户端名变成一个外部链接。
+    return stripUrls(raw);
 }
 
 /**

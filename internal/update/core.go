@@ -1,106 +1,18 @@
 package update
 
-import (
-	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"runtime"
-	"syscall"
+import "fmt"
 
-	"github.com/bestruirui/octopus/internal/utils/log"
-	"github.com/bestruirui/octopus/internal/utils/safe"
-	"github.com/bestruirui/octopus/internal/utils/shutdown"
-)
-
+// UpdateCore 是"就地替换二进制"的更新入口。
+//
+// 本项目**永久禁用**这个功能，不是暂时关闭。
+//
+// 原因不是懒得支持：它要做的第一件事就是去下载某个外部的发行包并解压覆盖自己，
+// 而我们的版本只由自己的构建流水线产出。保留这条路径意味着代码里永远存在一个
+// "从别处拉一个二进制来跑"的出口——既是供应链风险，也让"版本由谁决定"这件事
+// 说不清楚。容器部署下正确做法本来就是拉新镜像重启，不需要自我替换。
+//
+// 所以这里不但拒绝执行，而且**连下载地址、解压函数都不再存在**（相关常量与
+// 辅助函数已删除），让"误走这条路"在编译期就不可能，而不是靠运行期判断兜住。
 func UpdateCore() error {
-	if IsFutureBuild() {
-		return fmt.Errorf("in-app binary update is disabled for future builds; use docker compose pull and docker compose up -d")
-	}
-
-	log.Infof("start update core")
-
-	filename, err := getDownloadFilename()
-	if err != nil {
-		log.Warnf("update core failed: %v", err)
-		return err
-	}
-
-	downloadUrl := updateUrl + "/" + filename
-	log.Infof("download url: %s", downloadUrl)
-	data, err := doRequestWithFallback(downloadUrl)
-	if err != nil {
-		log.Warnf("download failed: %v", err)
-		return err
-	}
-
-	execPath, err := os.Executable()
-	if err != nil {
-		log.Warnf("get executable path failed: %v", err)
-		return err
-	}
-
-	if err := unzip(data, filepath.Dir(execPath)); err != nil {
-		log.Warnf("unzip failed: %v", err)
-		return err
-	}
-
-	log.Infof("update core success")
-	safe.SafeGo("update-restart", func() { restartExecutable(execPath) })
-	return nil
-}
-
-func getDownloadFilename() (string, error) {
-	arch := runtime.GOARCH
-	goos := runtime.GOOS
-
-	switch goos {
-	case "windows":
-		switch arch {
-		case "386":
-			return "octopus-windows-x86.zip", nil
-		case "amd64":
-			return "octopus-windows-x86_64.zip", nil
-		}
-	case "darwin":
-		switch arch {
-		case "amd64":
-			return "octopus-darwin-x86_64.zip", nil
-		case "arm64":
-			return "octopus-darwin-arm64.zip", nil
-		}
-	case "linux":
-		switch arch {
-		case "386":
-			return "octopus-linux-x86.zip", nil
-		case "amd64":
-			return "octopus-linux-x86_64.zip", nil
-		case "arm":
-			return "octopus-linux-armv7.zip", nil
-		case "arm64":
-			return "octopus-linux-arm64.zip", nil
-		}
-	}
-	return "", fmt.Errorf("unsupported platform: %s/%s", goos, arch)
-}
-
-func restartExecutable(execPath string) {
-	shutdown.Shutdown()
-
-	log.Infof("restarting: %q %q", execPath, os.Args[1:])
-
-	if runtime.GOOS == "windows" {
-		cmd := exec.Command(execPath, os.Args[1:]...)
-		cmd.Stdin = os.Stdin
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Start(); err != nil {
-			log.Errorf("restarting failed: %v", err)
-		}
-		os.Exit(0)
-	}
-
-	if err := syscall.Exec(execPath, os.Args, os.Environ()); err != nil {
-		log.Errorf("restarting failed: %v", err)
-	}
+	return fmt.Errorf("in-app binary update is disabled; pull the new image instead: docker compose pull && docker compose up -d")
 }

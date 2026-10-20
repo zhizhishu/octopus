@@ -14,6 +14,7 @@ import {
     getLogVerdict,
     describeEchoComparison,
     humanizeClient,
+    stripUrls,
     humanizeErrorCode,
     humanizeUsageSource,
     humanizeUsageReason,
@@ -1161,7 +1162,7 @@ export const LogCard = React.memo(function LogCard({
             <PopoverContent align="start" className="w-72 p-3">
                 <p className="text-xs font-medium text-foreground">{t('client')}</p>
                 <p className="mt-1 break-all font-mono text-[11px] leading-5 text-muted-foreground">
-                    {log.request_user_agent}
+                    {stripUrls(log.request_user_agent)}
                 </p>
             </PopoverContent>
         </Popover>
@@ -1542,7 +1543,7 @@ export const LogCard = React.memo(function LogCard({
                                     )}
                                     {log.request_user_agent && (
                                         <DetailTile icon={<User className="size-3.5" />} label={t('client')}>
-                                            <MonoSafeText mode="wrap" value={log.request_user_agent} className="block text-xs text-foreground" />
+                                            <MonoSafeText mode="wrap" value={stripUrls(log.request_user_agent)} className="block text-xs text-foreground" />
                                         </DetailTile>
                                     )}
                                     {userName && (

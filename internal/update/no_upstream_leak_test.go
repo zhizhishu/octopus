@@ -73,8 +73,8 @@ func TestBuildInfoRepoComesFromConf(t *testing.T) {
 	if info.Repo != conf.Repo {
 		t.Fatalf("BuildInfo.Repo 应取自 conf.Repo，得到 %q", info.Repo)
 	}
-	if strings.Contains(info.Repo, "bestruirui") {
-		t.Fatalf("BuildInfo.Repo 不应指向上游: %q", info.Repo)
+	if info.Repo != "https://github.com/zhizhishu/octopus" {
+		t.Fatalf("BuildInfo.Repo 必须指向本项目: %q", info.Repo)
 	}
 }
 
@@ -97,14 +97,40 @@ func TestIsFutureBuildDetection(t *testing.T) {
 		{"future", "https://github.com/zhizhishu/octopus", true},
 		{"future-debf5b9", "https://github.com/zhizhishu/octopus", true},
 		{"v1.2.3", "https://github.com/zhizhishu/octopus", true},
-		{"future", "https://github.com/bestruirui/octopus", true},
-		{"v1.2.3", "https://github.com/bestruirui/octopus", false},
+		{"future", "https://github.com/other/octopus", true},
+		{"v1.2.3", "https://github.com/other/octopus", false},
 	}
 	for _, c := range cases {
 		conf.Version = c.version
 		conf.Repo = c.repo
 		if got := IsFutureBuild(); got != c.want {
 			t.Fatalf("version=%q repo=%q 期望 %v，得到 %v", c.version, c.repo, c.want, got)
+		}
+	}
+}
+
+// TestUpdateCoreAlwaysRefuses 守"永不自替换"。
+//
+// 本项目不做二进制自我更新：版本只由自己的镜像流水线产出，正确更新方式是拉新
+// 镜像重启。这里断言的是**它无条件拒绝**——包括非 future 构建形态，
+// 因为那条路原本会去下载外部发行包并覆盖自身，属于不该存在的出口。
+func TestUpdateCoreAlwaysRefuses(t *testing.T) {
+	origVersion := conf.Version
+	origRepo := conf.Repo
+	t.Cleanup(func() {
+		conf.Version = origVersion
+		conf.Repo = origRepo
+	})
+
+	for _, tc := range []struct{ version, repo string }{
+		{"future", "https://github.com/zhizhishu/octopus"},
+		{"v1.0.0", "https://github.com/zhizhishu/octopus"},
+		{"v1.0.0", "https://github.com/other/octopus"},
+	} {
+		conf.Version = tc.version
+		conf.Repo = tc.repo
+		if err := UpdateCore(); err == nil {
+			t.Fatalf("version=%q repo=%q 时 UpdateCore 必须拒绝执行", tc.version, tc.repo)
 		}
 	}
 }

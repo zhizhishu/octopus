@@ -1,15 +1,12 @@
 package update
 
 import (
-	"archive/zip"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -19,14 +16,19 @@ import (
 )
 
 const (
-	upstreamRepo         = "https://github.com/bestruirui/octopus"
+	// 本项目是独立项目，**不再引用原作者仓库**。
+	//
+	// 这两行原本指向上游作者的发布页，用途是给"非 future 构建"做官方版本更新。
+	// 但本项目永远走 future 构建（见 IsFutureBuild），那段代码在这里是死路；
+	// 更关键的是它会把上游身份带进界面与网络请求。所以整条官方更新路径一并移除：
+	// 更新只认自己的构建流水线，版本号只认自己的提交。
+	//
+	// 保留这些常量名只是为了让历史调用点编译通过，它们的值现在都指向本项目。
 	futureRepo           = "https://github.com/zhizhishu/octopus"
 	futurePackageURL     = "https://github.com/zhizhishu/octopus/pkgs/container/octopus"
 	futureImage          = "ghcr.io/zhizhishu/octopus:future"
-	updateUrl            = upstreamRepo + "/releases/latest/download"
-	updateApiUrl         = "https://api.github.com/repos/bestruirui/octopus/releases/latest"
 	futureLatestApiUrl   = "https://api.github.com/repos/zhizhishu/octopus/actions/workflows/future-build.yml/runs?branch=future&status=success&per_page=1"
-	futureUpdateBodyHint = "Future builds keep the upstream version number, but updates are published by zhizhishu/octopus. Use ghcr.io/zhizhishu/octopus:future or the fork's GitHub package page."
+	futureUpdateBodyHint = "版本由本项目自己的构建流水线发布，更新请拉取 ghcr.io/zhizhishu/octopus:future。"
 )
 
 type LatestInfo struct {
@@ -196,23 +198,25 @@ func GetLatestInfo() (*LatestInfo, error) {
 		}, nil
 	}
 
-	body, err := doRequestWithFallback(updateApiUrl)
+	body, err := doRequestWithFallback(futureLatestApiUrl)
 	if err != nil {
 		return nil, err
 	}
 
+	// 这里问的已经是本项目自己的构建记录，不再有"官方版本"这回事。
+	// future 构建在第 190 行之前就返回了，走到这里只可能是别的构建形态；
+	// 一律按本项目处理，避免任何情况下回落到上游。
 	var latestInfo LatestInfo
 	if err := json.Unmarshal(body, &latestInfo); err != nil {
 		log.Debugf("unmarshal body failed: %v", err)
 		return nil, err
 	}
-	if latestInfo.Message != "" {
-		return nil, fmt.Errorf("failed to get latest info: %s", latestInfo.Message)
-	}
-	latestInfo.SourceRepo = upstreamRepo
-	latestInfo.UpdateRepo = upstreamRepo
-	latestInfo.UpdateURL = upstreamRepo + "/releases/latest"
-	latestInfo.UpdateMethod = "release"
+	latestInfo.SourceRepo = futureRepo
+	latestInfo.UpdateRepo = futureRepo
+	latestInfo.UpdateURL = futurePackageURL
+	latestInfo.UpdateMethod = "future-ghcr"
+	latestInfo.UpdateHint = futureUpdateBodyHint
+	latestInfo.FutureBuild = true
 	return &latestInfo, nil
 }
 
@@ -262,77 +266,4 @@ func GetFutureLatestInfo() (*FutureLatestInfo, error) {
 		UpdateAvailable: updateAvailable,
 		CurrentCommit:   currentCommit,
 	}, nil
-}
-
-func unzip(data []byte, dest string) error {
-	r, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
-	if err != nil {
-		log.Debugf("new zip reader failed: %v", err)
-		return err
-	}
-
-	for _, f := range r.File {
-		fpath := filepath.Join(dest, f.Name)
-
-		if !isPathInDest(fpath, dest) {
-			log.Debugf("invalid file path: %s", fpath)
-			return fmt.Errorf("invalid file path: %s", fpath)
-		}
-
-		info := f.FileInfo()
-		if info.IsDir() {
-			os.MkdirAll(fpath, os.ModePerm)
-			continue
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			continue
-		}
-
-		if err := extractFile(f, fpath); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func extractFile(f *zip.File, fpath string) error {
-	if err := os.MkdirAll(filepath.Dir(fpath), os.ModePerm); err != nil {
-		log.Debugf("mkdir all failed: %v", err)
-		return err
-	}
-
-	outFile, err := os.OpenFile(fpath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode().Perm())
-	if err != nil {
-		if err = os.Remove(fpath); err != nil {
-			log.Debugf("remove file failed: %v", err)
-			return err
-		}
-		outFile, err = os.OpenFile(fpath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
-		if err != nil {
-			log.Debugf("open file failed: %v", err)
-			return err
-		}
-	}
-	defer outFile.Close()
-
-	rc, err := f.Open()
-	if err != nil {
-		log.Debugf("open file failed: %v", err)
-		return err
-	}
-	defer rc.Close()
-
-	if _, err = io.Copy(outFile, rc); err != nil {
-		log.Debugf("copy failed: %v", err)
-		return err
-	}
-	return nil
-}
-
-func isPathInDest(fpath, dest string) bool {
-	rel, err := filepath.Rel(dest, fpath)
-	if err != nil {
-		return false
-	}
-	return filepath.IsLocal(rel)
 }
