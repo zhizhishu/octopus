@@ -59,6 +59,7 @@ export const SettingKey = {
     UpstreamErrorPublicCode: 'upstream_error_public_code',
     CheckInEnabled: 'checkin_enabled',
     CheckInRewardMode: 'checkin_reward_mode',
+    LogPassiveProbeEnabled: 'log_passive_probe_enabled',
     RedactEnabled: 'redact_enabled',
     RedactDefaultFlags: 'redact_default_flags',
     RedactNoticeEnabled: 'redact_notice_enabled',

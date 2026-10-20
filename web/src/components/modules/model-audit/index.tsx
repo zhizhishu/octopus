@@ -52,6 +52,8 @@ import { cn } from '@/lib/utils';
 import { getSelectedChannelModels } from '@/components/modules/channel/channel-utils';
 import { sanitizeChannelTestError } from '@/lib/channel-test';
 import { ModelAuditQueue } from './Queue';
+import { Switch } from '@/components/ui/switch';
+import { useSettingList, useSetSetting, SettingKey } from '@/api/endpoints/setting';
 
 type PlanId = 'quick' | 'standard';
 type RowTone = 'pass' | 'warn' | 'info' | 'fail' | 'skip';
@@ -248,6 +250,48 @@ function evidencePairs(row: DisplayRow): Array<[string, string]> {
     if (row.result?.error) pairs.push(['错误', sanitizeChannelTestError(row.result.error)]);
     if (pairs.length === 0) pairs.push(['备注', '本次没有可展开的证据字段。']);
     return pairs.slice(0, 16);
+}
+
+/**
+ * 被动检测开关卡。
+ *
+ * 摆在检测页而不是设置页，是因为它和主动检测是同一件事的两面，用户需要放在
+ * 一起看才能理解差别：主动检测要发请求、烧 token；被动检测只读已经在流的日志，
+ * 一分钱不花。参考项目里那些检测工具多多少少都要花钱，这里明确区分开。
+ */
+function PassiveProbeCard() {
+    const { data: settings } = useSettingList();
+    const setSetting = useSetSetting();
+    const enabled = settings?.find((s) => s.key === SettingKey.LogPassiveProbeEnabled)?.value !== 'false';
+
+    const toggle = (next: boolean) =>
+        setSetting.mutate(
+            { key: SettingKey.LogPassiveProbeEnabled, value: next ? 'true' : 'false' },
+            {
+                onSuccess: () => toast.success(next ? '被动检测已开启' : '被动检测已关闭'),
+                onError: (e) =>
+                    toast.error('保存失败', {
+                        description: e instanceof Error ? e.message : String(e),
+                    }),
+            }
+        );
+
+    return (
+        <div className="rounded-2xl border border-border bg-card px-4 py-3">
+            <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                    <p className="text-sm font-medium text-foreground">被动检测</p>
+                    <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
+                        只读已经流过的日志，不发任何请求、不消耗 token。查的是账目对不对得上、分词器口径是否是同一家。
+                    </p>
+                </div>
+                <Switch checked={enabled} onCheckedChange={toggle} disabled={setSetting.isPending} />
+            </div>
+            <p className="mt-2 border-t border-border pt-2 text-[11px] leading-5 text-muted-foreground">
+                和上面的「立即检测」不同：那个会真的去打上游、花 token。被动检测永远不会。关掉它只是不再往日志里写检查结果，已有数据不受影响。
+            </p>
+        </div>
+    );
 }
 
 export function ModelAudit() {
@@ -593,6 +637,10 @@ export function ModelAudit() {
                     <p className="mt-1 text-sm text-muted-foreground">对渠道模型做一组轻量能力检查，结果仅作参考线索。</p>
                 </div>
             </div>
+
+            {/* 被动检测开关放在两种检测方式之前：它是"不花钱的那一半"，
+                用户先理解这件事，后面点「立即检测」时才知道那个是要花钱的。 */}
+            <PassiveProbeCard />
 
             {/* 两个入口是「发起检测」和「查看记录」，不是两种检测方式。
                 以前这里是「立即检测 / 批量检测」并列，看起来像两种能力，实际上

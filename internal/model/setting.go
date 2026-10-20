@@ -160,6 +160,14 @@ const (
 	// NOT re-enable auto-running (no migration is applied).
 	SettingKeyModelAuditEnabled         SettingKey = "model_audit_enabled"          // 网关模型真假检测总开关(定时快检); 已停用自动检测, 默认 false; 仅手动 run 主动调用
 	SettingKeyModelAuditFollowUpEnabled SettingKey = "model_audit_followup_enabled" // 回显不一致自动跟进检测开关; 已停用自动接线, 默认 false; 仅手动 run 主动调用
+	// Passive probe switch. Unlike the two audit keys above, this one does NOT
+	// call any upstream: it only reads the request/response bodies already on
+	// their way through the relay. That is why it defaults to TRUE — it costs
+	// no tokens and no extra latency, so there is nothing to protect the
+	// operator from. Kept switchable because an operator may still want it off
+	// (e.g. a very large log table and they would rather not pay the extra
+	// write for the probe columns).
+	SettingKeyLogPassiveProbeEnabled SettingKey = "log_passive_probe_enabled"
 	// Credential redaction (CosyRedactGateway-style). The global switch is the
 	// master gate: even channels with redact_enabled=true do nothing while it is
 	// false, so operators can kill the feature instance-wide without touching
@@ -535,6 +543,8 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyRedactNoticeEnabled, Value: "true"},        // 脱敏时向首条用户消息注入占位符说明(提高模型保真); 可关
 		{Key: SettingKeyModelAuditEnabled, Value: "false"},         // 模型真假检测(定时快检)已停用自动注册, 默认 false; 仅手动 run
 		{Key: SettingKeyModelAuditFollowUpEnabled, Value: "false"}, // 回显不一致自动跟进已停用自动接线, 默认 false; 仅手动 run
+		// 被动探针默认开: 零上游请求、零 token, 没有需要保护用户免于触发的理由。
+		{Key: SettingKeyLogPassiveProbeEnabled, Value: "true"},
 		{Key: SettingKeyCheckInEnabled, Value: "false"},
 		{Key: SettingKeyCheckInRewardMode, Value: "fixed"},
 		{Key: SettingKeyCheckInRewardAmount, Value: "100"},
@@ -695,7 +705,7 @@ func (s *Setting) Validate() error {
 		SettingKeyUserRegistrationEnabled, SettingKeyUpstreamErrorStatusPass, SettingKeyCheckInEnabled,
 		SettingKeyDebugLoadBalancer, SettingKeyEmailVerificationEnabled, SettingKeyEmailSMTPSSL,
 		SettingKeyUpstreamUTLSFingerprint, SettingKeyUpstreamHTTP1HeaderOrder, SettingKeyDiagnosticMode, SettingKeyRouteStickyCacheFirst,
-		SettingKeyModelAuditEnabled, SettingKeyModelAuditFollowUpEnabled:
+		SettingKeyModelAuditEnabled, SettingKeyModelAuditFollowUpEnabled, SettingKeyLogPassiveProbeEnabled:
 		if s.Value != "true" && s.Value != "false" {
 			return fmt.Errorf("%s must be true or false", s.Key)
 		}

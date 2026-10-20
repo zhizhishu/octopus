@@ -401,3 +401,17 @@ func computeRelayProbesForLog(relayLog model.RelayLog) []model.RelayProbeFinding
 func relayProbeFlagged(findings []model.RelayProbeFinding) bool {
 	return len(findings) > 0
 }
+
+// passiveProbeOn 读被动检测总开关。
+//
+// 默认开: 被动检测不发上游请求、不耗 token、不增延迟, 没有需要保护用户
+// 免于触发的理由, 所以默认值就是 true。读取失败同样按开处理——见下文。
+func passiveProbeOn() bool {
+	v, err := SettingGetBool(model.SettingKeyLogPassiveProbeEnabled)
+	if err != nil {
+		// 读失败按"开": 被动检测本身零成本, 因为一次配置读取抖动就把检测
+		// 静默停掉, 比多算一次更糟(用户会以为功能坏了却没有任何提示)。
+		return true
+	}
+	return v
+}
