@@ -130,6 +130,11 @@ type RelayLog struct {
 	// (见 model/log_passive.go)。nil=旧行或未观察。只存结构化特征, 不存业务正文;
 	// AutoMigrate 自动加列, 不参与路由/计费/指纹, 不判模型真假。
 	PassiveSummary     *RelayLogPassiveSummary `json:"passive_summary,omitempty" gorm:"serializer:json"`
+	// PassiveProbes 是与 PassiveSummary 同一次纯本地计算里得出的"硬事实对不上的地方"
+	// (见 op/relay_probe.go)。PassiveSummary 说"这条回复长什么样", PassiveProbes 说
+	// "这条日志里有没有自相矛盾"。两者都只证伪不认证: 空数组 = 没发现矛盾,
+	// **不等于**"这个模型是真的"。AutoMigrate 自动加列, 不参与路由/计费, 不读正文外的任何东西。
+	PassiveProbes []RelayProbeFinding `json:"passive_probes,omitempty" gorm:"serializer:json"`
 	InputTokens        int                     `json:"input_tokens"`
 	OutputTokens       int                     `json:"output_tokens"`
 	CacheHitTokens     int                     `json:"cache_hit_tokens"`

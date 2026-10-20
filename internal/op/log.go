@@ -360,6 +360,10 @@ func RelayLogAdd(ctx context.Context, relayLog model.RelayLog) error {
 	// 被动观察: 在 ID/Time 归一后、pending/SSE 之前对已脱敏副本做一次纯本地
 	// 计算(纯函数, 无外部副作用, 失败以 not_applicable 表达, 不返回业务错误)。
 	relayLog.PassiveSummary = computePassiveSummary(relayLog)
+	// 被动探针: 同一次纯本地计算里顺带查"这条日志的硬事实对不对得上"(token 加减法、
+	// 缓存是否超过输入、字符/token 比值、分词器口径)。零上游请求、只证伪不认证。
+	// 失败请求与缺字段一律跳过——"算不出来"不能报成"算出来不对"。
+	relayLog.PassiveProbes = computeRelayProbesForLog(relayLog)
 
 	if enabled {
 		relayLogAddPending(relayLog)
