@@ -204,15 +204,9 @@ export function SettingInfo() {
                                 {latestDisplayVersion || t('info.unknown')}
                             </code>
                             {isFutureBuild && hasKnownFutureLatest && (
-                                <a
-                                    href={futureLatest?.html_url}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
-                                >
+                                <span className="text-xs text-muted-foreground">
                                     #{futureLatest?.run_number}
-                                    <ExternalLink className="size-3" />
-                                </a>
+                                </span>
                             )}
                             {isFutureBuild && futureLatest?.message && (
                                 <span className="text-xs text-muted-foreground">{futureLatest.message}</span>

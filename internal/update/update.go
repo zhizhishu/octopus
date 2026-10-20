@@ -174,6 +174,28 @@ func doRequest(url string, useProxy bool) ([]byte, error) {
 }
 
 func GetLatestInfo() (*LatestInfo, error) {
+	// future 构建（也就是本项目）**不联系上游仓库**。
+	//
+	// 原因有两层：
+	//   1. 显示：上游身份一旦进入 LatestInfo，就会经 source_repo 显示在版本信息页上，
+	//      用户明确要求界面上不许出现那个仓库地址。
+	//   2. 归属：更新版本应当由自己的构建流水线决定，而不是去问原始作者的发布页。
+	//      而且 UpdateCore 对 future 构建本来就是禁用的，这条查询没有任何用处。
+	//
+	// 版本与最新提交改由 GetFutureLatestInfo（自己的仓库）提供。
+	if IsFutureBuild() {
+		return &LatestInfo{
+			TagName:      conf.Version,
+			PublishedAt:  conf.BuildTime,
+			SourceRepo:   futureRepo,
+			UpdateRepo:   futureRepo,
+			UpdateURL:    futurePackageURL,
+			UpdateMethod: "future-ghcr",
+			UpdateHint:   futureUpdateBodyHint,
+			FutureBuild:  true,
+		}, nil
+	}
+
 	body, err := doRequestWithFallback(updateApiUrl)
 	if err != nil {
 		return nil, err
@@ -191,13 +213,6 @@ func GetLatestInfo() (*LatestInfo, error) {
 	latestInfo.UpdateRepo = upstreamRepo
 	latestInfo.UpdateURL = upstreamRepo + "/releases/latest"
 	latestInfo.UpdateMethod = "release"
-	if IsFutureBuild() {
-		latestInfo.FutureBuild = true
-		latestInfo.UpdateRepo = futureRepo
-		latestInfo.UpdateURL = futurePackageURL
-		latestInfo.UpdateMethod = "future-ghcr"
-		latestInfo.UpdateHint = futureUpdateBodyHint
-	}
 	return &latestInfo, nil
 }
 
