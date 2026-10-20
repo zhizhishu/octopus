@@ -381,6 +381,14 @@ function auditPage() {
         },
         '@/components/common/PageWrapper': widgets('PageWrapper'),
         '@/components/ui/searchable-select': widgets('SearchableSelect'),
+        '@/components/ui/switch': widgets('Switch'),
+        // 检测页顶部的「被动检测」开关卡读设置项；存根只为让页面能挂载，
+        // 开关行为本身由 setting-save.test.cjs 覆盖。
+        '@/api/endpoints/setting': {
+            useSettingList: () => ({ data: [] }),
+            useSetSetting: () => ({ mutate: () => {}, isPending: false }),
+            SettingKey: { LogPassiveProbeEnabled: 'log_passive_probe_enabled' },
+        },
         '@/components/common/Toast': { toast },
         '@/components/ui/button': widgets('Button'),
         '@/components/ui/dialog': widgets('Dialog DialogContent DialogDescription DialogHeader DialogTitle'),
