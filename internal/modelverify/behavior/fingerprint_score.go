@@ -2,6 +2,7 @@ package behavior
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/zhizhishu/octopus/internal/modelverify/fingerprint"
 )
@@ -23,6 +24,13 @@ const (
 	// 但也不能给满分——参考库的家族识别在相邻版本间本来就会混
 	// （同代不同小版本几乎无法区分），给太高会把正常波动判成事故。
 	fingerprintMismatchScore = 35
+
+	// fingerprintDowngradeScore 是"同族内换了型号"的风险分。
+	//
+	// 给 25，比跨族不符（35）低一档：同族换型号是真实信号，但参考库对不同型号的
+	// 分辨力本身有限（相邻版本相似度可达 0.997），给到跟跨族一样高会把噪声判成事故。
+	// 它必须 > 0——否则"opus 被 sonnet 顶替"就跟"完全没问题"显示成一个颜色。
+	fingerprintDowngradeScore = 25
 
 	// fingerprintGapThreshold 是"前两名分差小于此值"的判定阈值。
 	//
@@ -106,7 +114,34 @@ func fingerprintFindings(res Result, requestedModel string) []Finding {
 	matchesDeclared := declaredMatches(analysis, declared)
 
 	if matchesDeclared {
-		// 对上了：这是"没发现矛盾"，不是"证明了正品"。
+		// 家族对上了，但还要看**型号**对不对得上——这是本轮新增的一段。
+		//
+		// 家族级判定有个洞：opus 被 sonnet 顶替时同属 anthropic 家族，
+		// 直接判"一致"0 分，而"同族换型号"恰恰是中转站最常见的偷法。
+		if !modelMatchesDeclared(analysis, requestedModel) {
+			predicted := displayOrID(analysis)
+			// 分差够大才敢说是"同族降级"；分差小说明榜首本身不稳。
+			if gap >= fingerprintGapThreshold {
+				return []Finding{{
+					Probe:    ProbeFingerprint,
+					Severity: SeverityMedium,
+					Score:    fingerprintDowngradeScore,
+					Title: fmt.Sprintf("声明的 %s 与实测指纹指向的具体型号不同：三条回答最接近 %s（同属 %s）%s。"+
+						"同一家族内换型号是最常见的一种掉包方式——这不代表一定有问题，"+
+						"但也**不能**当成「一致」放过。参考库只覆盖有限型号，"+
+						"若声明型号不在库内也会出现这种情况",
+						requestedModel, predicted, analysis.FamilyName, confidenceOrEmpty(confidence)),
+				}}
+			}
+			return []Finding{{
+				Probe:    ProbeFingerprint,
+				Severity: SeverityLow,
+				Score:    0,
+				Title: fmt.Sprintf("实测指纹最接近 %s（同属 %s），与第二名仅差 %.2f，难以区分；"+
+					"声明是 %s，样本不足以判断是否同型号", predicted, analysis.FamilyName, gap, requestedModel),
+			}}
+		}
+		// 型号与家族都对上了：这是"没发现矛盾"，不是"证明了正品"。
 		// 分数必须是 0——把"像"当成"是"，会让一次只能证伪的检测
 		// 被读成官方认证。
 		return []Finding{{
@@ -141,9 +176,19 @@ func fingerprintFindings(res Result, requestedModel string) []Finding {
 
 // declaredMatches 判断指纹结论是否与声明型号相容。
 //
-// 判据刻意放宽到**家族级**：参考库在相邻小版本之间本来就难分
-// （同代 opus 4.6 与 4.7 的分布余弦相似度 0.997），拿版本号去卡会大量误报。
-// 只有"连家族都不对"才是可靠信号。
+// 这里分三段，而不是简单比家族。原因是家族级比对会漏掉中转站最常见的一种偷法：
+// **同级换型号**。opus 被 sonnet 顶替时两者同属 anthropic 家族，家族级判定直接
+// 判"一致"，而现实里"100 组 Opus vs Sonnet 替换测试"恰恰是最典型的场景。
+//
+// 三段：
+//  1. 榜首**型号级**与声明一致（含别名）→ 相容，0 分。
+//  2. 同家族但型号不同，且分差 ≥ 阈值 → 视为"同族降级"，报 medium。
+//     同族降级比跨族偷换更常见也更隐蔽，必须能报出来。
+//  3. 同家族、型号不同、分差不足 → 保守判"难以区分"，不下结论。
+//
+// 为什么不再退到版本号粒度：参考库在相邻小版本之间确实难分（库内实测 opus 4.6
+// 与 4.7 的余弦相似度 0.997），混淆发生在**版本**粒度而非**型号**粒度。
+// 把判据整体退到家族，就把"本来能分的"也一起放过了。
 func declaredMatches(analysis *fingerprint.Analysis, declared []string) bool {
 	// 调用方已保证 declared 非空（空的情况在上面单独处理成"无法比较"）。
 	for _, family := range declared {
@@ -152,6 +197,56 @@ func declaredMatches(analysis *fingerprint.Analysis, declared []string) bool {
 		}
 	}
 	return false
+}
+
+// modelMatchesDeclared 判断榜首型号是否就是声明的那个型号。
+//
+// 只做宽松匹配，不做严格相等。三件必须容忍的事：
+//   - 厂商前缀：声明常带 `anthropic/claude-3-5-sonnet`，库里未必带；
+//   - 分隔符差异：声明 `claude-opus-4-6`、库里 `claude-opus-4.6` 是同一个型号；
+//   - 大小写。
+//
+// 之所以要容忍这些，是因为把"同一个型号的不同写法"判成不同型号，会产生
+// 一整批假警报——而假警报会让真警报也失去意义。
+func modelMatchesDeclared(analysis *fingerprint.Analysis, requestedModel string) bool {
+	if requestedModel == "" || analysis == nil {
+		return false
+	}
+	declared := normalizeModelName(requestedModel)
+	if declared == "" {
+		return false
+	}
+	for _, c := range []string{analysis.Prediction, analysis.PredictionName} {
+		if normalizeModelName(c) == declared {
+			return true
+		}
+	}
+	return false
+}
+
+// normalizeModelName 把型号写法归一，用于比较。
+//
+// 去掉厂商前缀、统一分隔符（`-` `.` `_` 空格都当同一个）、小写。
+// 注意：只做"写法"归一，不做"版本"归一——4.6 和 4.7 仍然是不同的东西，
+// 相邻版本本来就难以区分是已知事实，但不能因此假装它们一样。
+func normalizeModelName(name string) string {
+	s := strings.ToLower(strings.TrimSpace(name))
+	if s == "" {
+		return ""
+	}
+	if i := strings.LastIndex(s, "/"); i >= 0 {
+		s = s[i+1:]
+	}
+	var b strings.Builder
+	for _, r := range s {
+		switch r {
+		case '-', '_', '.', ' ':
+			b.WriteRune('-')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return strings.Trim(b.String(), "-")
 }
 
 // sameFamily 判断某个家族是否落在声明型号的家族范围内。

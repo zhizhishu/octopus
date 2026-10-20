@@ -1,6 +1,6 @@
 # 数据来源与许可
 
-本目录下的数据文件来自 **lm-detector**（https://github.com/xqy2006/lm-detector），
+本目录下的数据文件来自 **lm-detector**（https://github.com/Ikaleio/lm-detector，MIT），
 用于"随机数指纹"模型识别。
 
 ## 许可

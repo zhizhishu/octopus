@@ -291,3 +291,83 @@ func TestFingerprintProbeFlagsInsufficientEvidence(t *testing.T) {
 	}
 	_ = challenges
 }
+
+// TestFingerprintSameFamilyDowngradeIsFlagged 是本次改动守住的核心洞。
+//
+// 以前判定只比**家族**，所以 opus 被 sonnet 顶替时——两者同属 anthropic——
+// 直接判"一致"、0 分。而"同族内换型号"恰恰是中转站最常见的偷法
+// （参考项目的盲测原话就是「100 组 Opus vs Sonnet 替换测试」）。
+//
+// 这条测试要求：同族但型号不同、且分差明确 → 必须计风险分，不能当没事。
+func TestFingerprintSameFamilyDowngradeIsFlagged(t *testing.T) {
+	p := 0.93
+	res := fingerprintResult("scorable", "claude-sonnet-5", "anthropic", "Claude", &p,
+		fingerprint.Candidate{Model: "claude-sonnet-5", DisplayName: "Claude Sonnet 5", Family: "anthropic", FamilyName: "Claude", Score: 4.7},
+		fingerprint.Candidate{Model: "claude-haiku-4.5", DisplayName: "Claude Haiku 4.5", Family: "anthropic", FamilyName: "Claude", Score: 3.0},
+	)
+	// 声明的是 opus，实测最像 sonnet——同一个家族里的降级。
+	findings := fingerprintFindings(res, "claude-opus-4-6")
+	if len(findings) != 1 {
+		t.Fatalf("应有 1 条判定，实际 %d", len(findings))
+	}
+	if findings[0].Score == 0 {
+		t.Fatalf("同族换型号必须计风险分，不能当一致放过（这正是 opus→sonnet 掉包）")
+	}
+	if findings[0].Score != fingerprintDowngradeScore {
+		t.Fatalf("同族降级应计 %d 分，实际 %d", fingerprintDowngradeScore, findings[0].Score)
+	}
+	// 分数必须低于跨族不符：同族分辨力本身有限，不能跟跨族一个待遇。
+	if fingerprintDowngradeScore >= fingerprintMismatchScore {
+		t.Fatalf("同族降级分应低于跨族不符分（%d < %d）", fingerprintDowngradeScore, fingerprintMismatchScore)
+	}
+	if findings[0].Severity != SeverityMedium {
+		t.Fatalf("同族降级应为 medium 级别，实际 %s", findings[0].Severity)
+	}
+}
+
+// TestFingerprintModelNameSpellingsAreEquivalent 守住"别把同一个型号的写法差异
+// 当成掉包"。声明 `claude-opus-4-6`、库里叫 `claude-opus-4.6` 是同一个东西，
+// 判成不同型号会产生一整批假警报——而假警报会让真警报也失去意义。
+func TestFingerprintModelNameSpellingsAreEquivalent(t *testing.T) {
+	cases := []struct{ declared, predicted, family, familyName string }{
+		{"claude-opus-4-6", "claude-opus-4.6", "anthropic", "Claude"},
+		{"anthropic/claude-opus-4-6", "claude-opus-4.6", "anthropic", "Claude"},
+		{"Claude-Opus-4.6", "claude-opus-4-6", "anthropic", "Claude"},
+		{"openai/gpt-4o", "gpt-4o", "openai", "OpenAI"},
+	}
+	for _, c := range cases {
+		p := 0.95
+		res := fingerprintResult("scorable", c.predicted, c.family, c.familyName, &p,
+			fingerprint.Candidate{Model: c.predicted, DisplayName: c.predicted, Family: c.family, FamilyName: c.familyName, Score: 4.8},
+			fingerprint.Candidate{Model: "other", DisplayName: "other", Family: c.family, FamilyName: c.familyName, Score: 3.0},
+		)
+		findings := fingerprintFindings(res, c.declared)
+		if len(findings) != 1 {
+			t.Fatalf("%s vs %s: 应有 1 条判定，实际 %d", c.declared, c.predicted, len(findings))
+		}
+		if findings[0].Score != 0 {
+			t.Fatalf("%s 与 %s 是同一型号的不同写法，不该计风险分，实际 %d",
+				c.declared, c.predicted, findings[0].Score)
+		}
+	}
+}
+
+// TestFingerprintDowngradeNeedsRealGap 守住另一半：同族换型号也要看分差。
+// 分差不足时榜首本身就不稳，拿它定"掉包"是解读噪声。
+func TestFingerprintDowngradeNeedsRealGap(t *testing.T) {
+	p := 0.35
+	res := fingerprintResult("scorable", "claude-sonnet-5", "anthropic", "Claude", &p,
+		fingerprint.Candidate{Model: "claude-sonnet-5", DisplayName: "Claude Sonnet 5", Family: "anthropic", FamilyName: "Claude", Score: 4.00},
+		fingerprint.Candidate{Model: "claude-opus-4.6", DisplayName: "Claude Opus 4.6", Family: "anthropic", FamilyName: "Claude", Score: 3.95},
+	)
+	findings := fingerprintFindings(res, "claude-opus-4-6")
+	if len(findings) != 1 {
+		t.Fatalf("应有 1 条判定，实际 %d", len(findings))
+	}
+	if findings[0].Score != 0 {
+		t.Fatalf("分差仅 0.05 时不该定掉包，实际计了 %d 分", findings[0].Score)
+	}
+	if !strings.Contains(findings[0].Title, "难以区分") {
+		t.Fatalf("分差不足时应说明难以区分，实际: %s", findings[0].Title)
+	}
+}
