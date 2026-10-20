@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	transformerModel "github.com/bestruirui/octopus/internal/transformer/model"
+	transformerModel "github.com/zhizhishu/octopus/internal/transformer/model"
 )
 
 // 反例（§9 真机 T-D W03 WG stream 发现）：上游以 OpenAI 流式工具调用分片

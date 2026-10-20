@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/transformer/model"
+	"github.com/zhizhishu/octopus/internal/transformer/model"
 )
 
 // TestResponseOutboundCapturesCustomToolCallInput feeds the exact upstream event

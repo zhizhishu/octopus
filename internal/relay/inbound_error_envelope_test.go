@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/transformer/inbound"
+	"github.com/zhizhishu/octopus/internal/transformer/inbound"
 	"github.com/gin-gonic/gin"
 )
 

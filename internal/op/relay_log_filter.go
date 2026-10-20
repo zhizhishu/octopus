@@ -3,7 +3,7 @@ package op
 import (
 	"strings"
 
-	"github.com/bestruirui/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/model"
 )
 
 func relayLogClientEmptyRequest(relayLog model.RelayLog) bool {

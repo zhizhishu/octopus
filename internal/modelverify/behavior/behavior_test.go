@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/modelverify"
+	"github.com/zhizhishu/octopus/internal/modelverify"
 )
 
 // stubSender 用闭包应答，避免为每个探针各写一个假结构体。

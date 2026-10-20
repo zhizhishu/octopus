@@ -1,6 +1,6 @@
 package relay
 
-import dbmodel "github.com/bestruirui/octopus/internal/model"
+import dbmodel "github.com/zhizhishu/octopus/internal/model"
 
 // routeStickyEnabled 决定某次请求是否参与「会话粘性」(sticky route)。
 //

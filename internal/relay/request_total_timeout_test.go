@@ -11,8 +11,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	dbmodel "github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/transformer/inbound"
+	dbmodel "github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/transformer/inbound"
 )
 
 // The third clock pins the shape the other two cannot see: an upstream that never goes

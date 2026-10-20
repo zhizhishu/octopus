@@ -3,8 +3,8 @@ package fingerprint
 import (
 	"strings"
 
-	dbmodel "github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/op"
+	dbmodel "github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/op"
 )
 
 const (

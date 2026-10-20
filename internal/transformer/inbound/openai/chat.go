@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/bestruirui/octopus/internal/transformer/model"
+	"github.com/zhizhishu/octopus/internal/transformer/model"
 )
 
 type ChatInbound struct {

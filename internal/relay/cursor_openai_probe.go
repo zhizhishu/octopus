@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/bestruirui/octopus/internal/transformer/inbound"
-	transformerModel "github.com/bestruirui/octopus/internal/transformer/model"
+	"github.com/zhizhishu/octopus/internal/transformer/inbound"
+	transformerModel "github.com/zhizhishu/octopus/internal/transformer/model"
 	"github.com/gin-gonic/gin"
 )
 

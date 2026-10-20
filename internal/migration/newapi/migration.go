@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/model"
 	"github.com/glebarez/sqlite"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/driver/mysql"

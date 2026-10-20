@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/model"
 )
 
 // Spread (round-robin) must keep equally healthy same-priority channels rotating

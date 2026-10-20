@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/modelverify"
+	"github.com/zhizhishu/octopus/internal/modelverify"
 )
 
 // ---------------------------------------------------------------- xai 家族边界

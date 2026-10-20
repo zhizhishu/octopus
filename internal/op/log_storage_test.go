@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/db"
-	"github.com/bestruirui/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/db"
+	"github.com/zhizhishu/octopus/internal/model"
 )
 
 // 统计口径必须与 relayLogApproxBytes 一致：SQL 侧算出来的总量要能和 Go 逐行

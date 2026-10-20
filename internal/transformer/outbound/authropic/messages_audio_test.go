@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/transformer/model"
+	"github.com/zhizhishu/octopus/internal/transformer/model"
 )
 
 // TestConvertAudioToPlaceholderBlock verifies an OpenAI input_audio part degrades

@@ -3,9 +3,9 @@ package relay
 import (
 	"strings"
 
-	dbmodel "github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/op"
-	transformerModel "github.com/bestruirui/octopus/internal/transformer/model"
+	dbmodel "github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/op"
+	transformerModel "github.com/zhizhishu/octopus/internal/transformer/model"
 )
 
 type promptOverrideSnapshot struct {

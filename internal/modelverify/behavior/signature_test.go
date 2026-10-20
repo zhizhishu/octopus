@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/modelverify"
+	"github.com/zhizhishu/octopus/internal/modelverify"
 )
 
 // ---------------------------------------------------------- protobuf 构造工具

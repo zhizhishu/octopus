@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	transformerModel "github.com/bestruirui/octopus/internal/transformer/model"
+	transformerModel "github.com/zhizhishu/octopus/internal/transformer/model"
 )
 
 // P0-1: a single Gemini candidate carrying multiple thought:true parts in one

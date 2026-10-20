@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/bestruirui/octopus/internal/conf"
+	"github.com/zhizhishu/octopus/internal/conf"
 )
 
 const defaultUpstreamResponseReadMaxBytes int64 = 128 * 1024 * 1024

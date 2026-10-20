@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/model"
 )
 
 // TestDecisionTraceRendersCandidates pins that DecisionTrace renders every candidate

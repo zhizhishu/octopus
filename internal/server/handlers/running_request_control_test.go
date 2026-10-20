@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/server/middleware"
+	"github.com/zhizhishu/octopus/internal/server/middleware"
 	"github.com/gin-gonic/gin"
 )
 

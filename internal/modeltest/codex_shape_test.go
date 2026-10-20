@@ -3,9 +3,9 @@ package modeltest
 import (
 	"testing"
 
-	transformermodel "github.com/bestruirui/octopus/internal/transformer/model"
-	"github.com/bestruirui/octopus/internal/transformer/outbound"
-	dbmodel "github.com/bestruirui/octopus/internal/model"
+	transformermodel "github.com/zhizhishu/octopus/internal/transformer/model"
+	"github.com/zhizhishu/octopus/internal/transformer/outbound"
+	dbmodel "github.com/zhizhishu/octopus/internal/model"
 )
 
 // resolvedFingerprint with no profile returns the global setting value for every getter,

@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/db"
-	"github.com/bestruirui/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/db"
+	"github.com/zhizhishu/octopus/internal/model"
 )
 
 func setupAccessPlanTest(t *testing.T) context.Context {

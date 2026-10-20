@@ -3,8 +3,8 @@ package authropic
 import (
 	"testing"
 
-	anthropicModel "github.com/bestruirui/octopus/internal/transformer/inbound/anthropic"
-	"github.com/bestruirui/octopus/internal/transformer/model"
+	anthropicModel "github.com/zhizhishu/octopus/internal/transformer/inbound/anthropic"
+	"github.com/zhizhishu/octopus/internal/transformer/model"
 )
 
 // assistantContentBlocks returns the content blocks of the first assistant message

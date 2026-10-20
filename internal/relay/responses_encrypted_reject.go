@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	transformerModel "github.com/bestruirui/octopus/internal/transformer/model"
+	transformerModel "github.com/zhizhishu/octopus/internal/transformer/model"
 )
 
 // Upstreams reject encrypted reasoning content with invalid_encrypted_content when a

@@ -5,9 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/db"
-	"github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/op"
+	"github.com/zhizhishu/octopus/internal/db"
+	"github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/op"
 )
 
 // TestGetLLMPriceZeroDBEntryFallsThroughToCatalog guards the shadow fix: a zero-price

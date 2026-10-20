@@ -15,7 +15,7 @@ package mime
 import (
 	"strings"
 
-	"github.com/bestruirui/octopus/internal/utils/xurl"
+	"github.com/zhizhishu/octopus/internal/utils/xurl"
 )
 
 // extToMime maps a lowercase file extension (without the dot) to a MIME type.

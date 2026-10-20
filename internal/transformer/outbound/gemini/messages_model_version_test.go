@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	transformerModel "github.com/bestruirui/octopus/internal/transformer/model"
+	transformerModel "github.com/zhizhishu/octopus/internal/transformer/model"
 )
 
 // M2: convertGeminiToLLMResponse must carry the upstream self-declared model

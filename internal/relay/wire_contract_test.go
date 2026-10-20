@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	dbmodel "github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/transformer/inbound"
-	transformermodel "github.com/bestruirui/octopus/internal/transformer/model"
-	"github.com/bestruirui/octopus/internal/transformer/outbound"
+	dbmodel "github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/transformer/inbound"
+	transformermodel "github.com/zhizhishu/octopus/internal/transformer/model"
+	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 )
 
 func TestApplyChannelWireHeadersReassertsCodexPairAfterCustomHeaders(t *testing.T) {

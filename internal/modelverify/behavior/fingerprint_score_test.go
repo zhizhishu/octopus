@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/modelverify"
-	"github.com/bestruirui/octopus/internal/modelverify/fingerprint"
+	"github.com/zhizhishu/octopus/internal/modelverify"
+	"github.com/zhizhishu/octopus/internal/modelverify/fingerprint"
 )
 
 // 指纹判定层的测试。

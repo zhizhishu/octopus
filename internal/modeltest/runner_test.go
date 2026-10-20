@@ -13,11 +13,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/db"
-	dbmodel "github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/op"
-	transformermodel "github.com/bestruirui/octopus/internal/transformer/model"
-	"github.com/bestruirui/octopus/internal/transformer/outbound"
+	"github.com/zhizhishu/octopus/internal/db"
+	dbmodel "github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/op"
+	transformermodel "github.com/zhizhishu/octopus/internal/transformer/model"
+	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 )
 
 func setupModelTestDB(t *testing.T) context.Context {

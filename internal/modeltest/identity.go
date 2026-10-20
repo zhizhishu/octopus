@@ -1,6 +1,6 @@
 package modeltest
 
-import dbmodel "github.com/bestruirui/octopus/internal/model"
+import dbmodel "github.com/zhizhishu/octopus/internal/model"
 
 // EndpointIdentity is the resolved upstream identity a channel test presents for
 // one endpoint family. It mirrors exactly what the test/forward path sends on the

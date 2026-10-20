@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/bestruirui/octopus/internal/db"
-	"github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/utils/cache"
+	"github.com/zhizhishu/octopus/internal/db"
+	"github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/utils/cache"
 )
 
 var llmModelCache = cache.New[string, model.LLMPrice](16)

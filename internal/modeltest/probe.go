@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"strings"
 
-	dbmodel "github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/modelverify"
-	transformermodel "github.com/bestruirui/octopus/internal/transformer/model"
-	"github.com/bestruirui/octopus/internal/transformer/outbound"
+	dbmodel "github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/modelverify"
+	transformermodel "github.com/zhizhishu/octopus/internal/transformer/model"
+	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 )
 
 // defaultProbeEndpoint 未指定端点时使用的入站协议。与渠道检测的默认一致。

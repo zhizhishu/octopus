@@ -7,7 +7,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/bestruirui/octopus/internal/modelverify"
+	"github.com/zhizhishu/octopus/internal/modelverify"
 )
 
 // 签名验真的两段式流程（上游称之为 harvest → replay）：

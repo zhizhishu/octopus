@@ -3,7 +3,7 @@ package op
 import (
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/model"
 )
 
 // 选路失败留下的审计行绝不能进模型健康统计/排行榜：那是一次配置问题，

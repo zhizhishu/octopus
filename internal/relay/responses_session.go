@@ -9,14 +9,14 @@ import (
 	"sync"
 	"time"
 
-	dbmodel "github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/op"
-	"github.com/bestruirui/octopus/internal/relay/balancer"
-	"github.com/bestruirui/octopus/internal/transformer/inbound"
-	transformerModel "github.com/bestruirui/octopus/internal/transformer/model"
-	"github.com/bestruirui/octopus/internal/transformer/outbound"
-	openaiOutbound "github.com/bestruirui/octopus/internal/transformer/outbound/openai"
-	"github.com/bestruirui/octopus/internal/utils/log"
+	dbmodel "github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/op"
+	"github.com/zhizhishu/octopus/internal/relay/balancer"
+	"github.com/zhizhishu/octopus/internal/transformer/inbound"
+	transformerModel "github.com/zhizhishu/octopus/internal/transformer/model"
+	"github.com/zhizhishu/octopus/internal/transformer/outbound"
+	openaiOutbound "github.com/zhizhishu/octopus/internal/transformer/outbound/openai"
+	"github.com/zhizhishu/octopus/internal/utils/log"
 )
 
 const defaultResponsesSessionTTL = time.Hour

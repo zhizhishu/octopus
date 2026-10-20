@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/transformer/inbound"
-	openaiInbound "github.com/bestruirui/octopus/internal/transformer/inbound/openai"
-	"github.com/bestruirui/octopus/internal/transformer/model"
-	geminiOutbound "github.com/bestruirui/octopus/internal/transformer/outbound/gemini"
+	"github.com/zhizhishu/octopus/internal/transformer/inbound"
+	openaiInbound "github.com/zhizhishu/octopus/internal/transformer/inbound/openai"
+	"github.com/zhizhishu/octopus/internal/transformer/model"
+	geminiOutbound "github.com/zhizhishu/octopus/internal/transformer/outbound/gemini"
 	"github.com/gin-gonic/gin"
 )
 

@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	dbmodel "github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/op"
-	"github.com/bestruirui/octopus/internal/relay/intervention"
-	"github.com/bestruirui/octopus/internal/transformer/inbound"
+	dbmodel "github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/op"
+	"github.com/zhizhishu/octopus/internal/relay/intervention"
+	"github.com/zhizhishu/octopus/internal/transformer/inbound"
 )
 
 func TestRunningRescueCommitAndIdentityGuard(t *testing.T) {

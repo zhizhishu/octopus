@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/db"
-	"github.com/bestruirui/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/db"
+	"github.com/zhizhishu/octopus/internal/model"
 )
 
 // 模型检测队列：批量入队 + 后台串行执行 + 结果持久化。

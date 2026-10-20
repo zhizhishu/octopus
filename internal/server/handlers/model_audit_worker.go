@@ -6,13 +6,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/db"
-	"github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/modeltest"
-	"github.com/bestruirui/octopus/internal/modelverify/behavior"
-	"github.com/bestruirui/octopus/internal/op"
-	"github.com/bestruirui/octopus/internal/utils/log"
-	"github.com/bestruirui/octopus/internal/utils/safe"
+	"github.com/zhizhishu/octopus/internal/db"
+	"github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/modeltest"
+	"github.com/zhizhishu/octopus/internal/modelverify/behavior"
+	"github.com/zhizhishu/octopus/internal/op"
+	"github.com/zhizhishu/octopus/internal/utils/log"
+	"github.com/zhizhishu/octopus/internal/utils/safe"
 )
 
 // 检测队列的**执行侧**：worker 循环 + 单模型执行。

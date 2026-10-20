@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	inboundOpenAI "github.com/bestruirui/octopus/internal/transformer/inbound/openai"
-	"github.com/bestruirui/octopus/internal/transformer/model"
+	inboundOpenAI "github.com/zhizhishu/octopus/internal/transformer/inbound/openai"
+	"github.com/zhizhishu/octopus/internal/transformer/model"
 )
 
 // upstreamMsgItemID is the long, upstream-minted Responses message item id that a

@@ -3,8 +3,8 @@ package client
 import (
 	"strings"
 
-	"github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/op"
+	"github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/op"
 )
 
 // chromePseudoHeaderOrder is the HTTP/2 pseudo-header order presented on the uTLS

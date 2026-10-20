@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/model"
 )
 
 func TestStickyWithSessionKeySeparatesClientSessions(t *testing.T) {

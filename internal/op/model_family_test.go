@@ -3,8 +3,8 @@ package op
 import (
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/transformer/outbound"
+	"github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 )
 
 func TestFilterModelNamesForEndpointFamilyUsesSelectedChannelModels(t *testing.T) {

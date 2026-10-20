@@ -11,9 +11,9 @@ import (
 	"time"
 	"unicode"
 
-	dbmodel "github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/op"
-	"github.com/bestruirui/octopus/internal/utils/xredact"
+	dbmodel "github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/op"
+	"github.com/zhizhishu/octopus/internal/utils/xredact"
 )
 
 const upstreamErrorBodyLimit = 16 * 1024

@@ -11,9 +11,9 @@ import (
 
 	"github.com/samber/lo"
 
-	"github.com/bestruirui/octopus/internal/transformer/model"
-	"github.com/bestruirui/octopus/internal/utils/xredact"
-	"github.com/bestruirui/octopus/internal/utils/xurl"
+	"github.com/zhizhishu/octopus/internal/transformer/model"
+	"github.com/zhizhishu/octopus/internal/utils/xredact"
+	"github.com/zhizhishu/octopus/internal/utils/xurl"
 )
 
 // ResponseOutbound implements the Outbound interface for OpenAI Responses API.

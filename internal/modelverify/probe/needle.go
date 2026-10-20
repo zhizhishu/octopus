@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/bestruirui/octopus/internal/modelverify/stats"
+	"github.com/zhizhishu/octopus/internal/modelverify/stats"
 )
 
 // needleProbe 长上下文完整性探针：观测多埋点标记的逐位命中情况，

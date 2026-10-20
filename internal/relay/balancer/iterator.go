@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/utils/xredact"
+	"github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/utils/xredact"
 )
 
 // Iterator 统一的负载均衡迭代器

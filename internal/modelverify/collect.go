@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/bestruirui/octopus/internal/modelverify/probe"
-	"github.com/bestruirui/octopus/internal/modelverify/suite"
+	"github.com/zhizhishu/octopus/internal/modelverify/probe"
+	"github.com/zhizhishu/octopus/internal/modelverify/suite"
 )
 
 // Sender 把一条探针题目经**既有出站链路**发出去。

@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"testing"
 
-	dbmodel "github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/transformer/outbound"
+	dbmodel "github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 )
 
 // Test traffic must wear the SAME outbound identity as a real forward, otherwise the

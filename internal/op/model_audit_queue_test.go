@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/db"
-	"github.com/bestruirui/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/db"
+	"github.com/zhizhishu/octopus/internal/model"
 )
 
 func setupAuditQueueTest(t *testing.T) context.Context {

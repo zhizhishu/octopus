@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/model"
 )
 
 // 统计口径时区缓存：按配置的时区名缓存已解析的 *time.Location，

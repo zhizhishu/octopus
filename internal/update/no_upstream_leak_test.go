@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/conf"
+	"github.com/zhizhishu/octopus/internal/conf"
 )
 
 // TestFutureBuildNeverExposesUpstreamRepo 守住一条用户明确要求的边界：
@@ -48,8 +48,10 @@ func TestFutureBuildNeverExposesUpstreamRepo(t *testing.T) {
 		"UpdateMethod": info.UpdateMethod,
 	}
 	for name, value := range fields {
-		if strings.Contains(value, "bestruirui") {
-			t.Fatalf("future 构建的 %s 泄漏了上游仓库身份: %q", name, value)
+		// 正面断言：凡是带 github.com 的字段，必须是本项目自己的仓库。
+		// 这样不必在代码里写下别人的名字，也能保证任何外部仓库都进不来。
+		if strings.Contains(value, "github.com/") && !strings.Contains(value, "zhizhishu/octopus") {
+			t.Fatalf("future 构建的 %s 指向了外部仓库: %q", name, value)
 		}
 	}
 

@@ -7,12 +7,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/modeltest"
-	"github.com/bestruirui/octopus/internal/modelverify/behavior"
-	"github.com/bestruirui/octopus/internal/op"
-	"github.com/bestruirui/octopus/internal/transformer/outbound"
-	"github.com/bestruirui/octopus/internal/utils/log"
+	"github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/modeltest"
+	"github.com/zhizhishu/octopus/internal/modelverify/behavior"
+	"github.com/zhizhishu/octopus/internal/op"
+	"github.com/zhizhishu/octopus/internal/transformer/outbound"
+	"github.com/zhizhishu/octopus/internal/utils/log"
 )
 
 const (

@@ -3,8 +3,8 @@ package relay
 import (
 	"testing"
 
-	dbmodel "github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/transformer/outbound"
+	dbmodel "github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 )
 
 // TestShouldForceAnthropicStreamUpstream pins the gate that makes octopus stream to

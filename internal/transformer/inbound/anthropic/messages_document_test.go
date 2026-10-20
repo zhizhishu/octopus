@@ -3,7 +3,7 @@ package anthropic
 import (
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/transformer/model"
+	"github.com/zhizhishu/octopus/internal/transformer/model"
 )
 
 // TestConvertDocumentBlockToPartBase64 verifies an Anthropic base64 document

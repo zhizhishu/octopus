@@ -7,8 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/server/middleware"
-	anthropic "github.com/bestruirui/octopus/internal/transformer/inbound/anthropic"
+	"github.com/zhizhishu/octopus/internal/server/middleware"
+	anthropic "github.com/zhizhishu/octopus/internal/transformer/inbound/anthropic"
 	"github.com/gin-gonic/gin"
 )
 

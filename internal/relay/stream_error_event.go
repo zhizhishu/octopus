@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/server/resp"
-	"github.com/bestruirui/octopus/internal/transformer/inbound"
-	"github.com/bestruirui/octopus/internal/utils/log"
+	"github.com/zhizhishu/octopus/internal/server/resp"
+	"github.com/zhizhishu/octopus/internal/transformer/inbound"
+	"github.com/zhizhishu/octopus/internal/utils/log"
 	"github.com/gin-gonic/gin"
 )
 

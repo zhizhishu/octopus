@@ -9,14 +9,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/modelverify/behavior"
-	"github.com/bestruirui/octopus/internal/op"
-	"github.com/bestruirui/octopus/internal/price"
-	transformerModel "github.com/bestruirui/octopus/internal/transformer/model"
-	"github.com/bestruirui/octopus/internal/utils/log"
-	"github.com/bestruirui/octopus/internal/utils/tokenizer"
-	"github.com/bestruirui/octopus/internal/utils/xredact"
+	"github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/modelverify/behavior"
+	"github.com/zhizhishu/octopus/internal/op"
+	"github.com/zhizhishu/octopus/internal/price"
+	transformerModel "github.com/zhizhishu/octopus/internal/transformer/model"
+	"github.com/zhizhishu/octopus/internal/utils/log"
+	"github.com/zhizhishu/octopus/internal/utils/tokenizer"
+	"github.com/zhizhishu/octopus/internal/utils/xredact"
 )
 
 // redactLogBody 只用于写进日志的正文。出站请求体不经过这里。

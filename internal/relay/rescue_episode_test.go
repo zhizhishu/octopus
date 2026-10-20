@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/transformer/model"
+	"github.com/zhizhishu/octopus/internal/transformer/model"
 )
 
 // rescueTestClock is an injectable clock so TTL/capacity tests exercise the real

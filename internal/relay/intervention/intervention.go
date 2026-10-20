@@ -18,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/model"
 )
 
 // Action is the operator's decision for a held request.

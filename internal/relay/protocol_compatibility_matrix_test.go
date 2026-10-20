@@ -7,14 +7,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/transformer/inbound"
-	"github.com/bestruirui/octopus/internal/transformer/inbound/anthropic"
-	"github.com/bestruirui/octopus/internal/transformer/inbound/gemini"
-	openaiInbound "github.com/bestruirui/octopus/internal/transformer/inbound/openai"
-	transformerModel "github.com/bestruirui/octopus/internal/transformer/model"
-	anthropicOutbound "github.com/bestruirui/octopus/internal/transformer/outbound/authropic"
-	geminiOutbound "github.com/bestruirui/octopus/internal/transformer/outbound/gemini"
-	openaiOutbound "github.com/bestruirui/octopus/internal/transformer/outbound/openai"
+	"github.com/zhizhishu/octopus/internal/transformer/inbound"
+	"github.com/zhizhishu/octopus/internal/transformer/inbound/anthropic"
+	"github.com/zhizhishu/octopus/internal/transformer/inbound/gemini"
+	openaiInbound "github.com/zhizhishu/octopus/internal/transformer/inbound/openai"
+	transformerModel "github.com/zhizhishu/octopus/internal/transformer/model"
+	anthropicOutbound "github.com/zhizhishu/octopus/internal/transformer/outbound/authropic"
+	geminiOutbound "github.com/zhizhishu/octopus/internal/transformer/outbound/gemini"
+	openaiOutbound "github.com/zhizhishu/octopus/internal/transformer/outbound/openai"
 )
 
 func TestProtocolCompatibilityMatrix(t *testing.T) {

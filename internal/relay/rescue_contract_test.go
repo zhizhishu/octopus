@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	dbmodel "github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/op"
+	dbmodel "github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/op"
 )
 
 // A deterministic request-shape rejection is the CALLER's error, so the relay stops

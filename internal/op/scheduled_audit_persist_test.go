@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/db"
-	"github.com/bestruirui/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/db"
+	"github.com/zhizhishu/octopus/internal/model"
 )
 
 // TestRelayLogAddDoesNotTriggerAuditFollowUp 断言日志写入路径不再触发行为检测跟进——后台自动

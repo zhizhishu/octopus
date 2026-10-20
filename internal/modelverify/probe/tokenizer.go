@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/bestruirui/octopus/internal/modelverify/stats"
+	"github.com/zhizhishu/octopus/internal/modelverify/stats"
 )
 
 // tokenizerProbe 输入侧指纹探针：只看服务端上报的输入 token 数，

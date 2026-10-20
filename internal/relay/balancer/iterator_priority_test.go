@@ -4,7 +4,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/model"
 )
 
 // collectOrder drains an iterator into the ChannelID order it will attempt.

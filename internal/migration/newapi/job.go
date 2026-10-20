@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/utils/safe"
+	"github.com/zhizhishu/octopus/internal/utils/safe"
 	"gorm.io/gorm"
 )
 

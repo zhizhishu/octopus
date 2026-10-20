@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/model"
 )
 
 const (

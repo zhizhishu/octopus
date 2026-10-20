@@ -3,7 +3,7 @@ package relay
 import (
 	"testing"
 
-	dbmodel "github.com/bestruirui/octopus/internal/model"
+	dbmodel "github.com/zhizhishu/octopus/internal/model"
 )
 
 func TestRouteModeOverrideFromSetting(t *testing.T) {

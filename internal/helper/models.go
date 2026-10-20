@@ -3,7 +3,7 @@ package helper
 import (
 	"strings"
 
-	"github.com/bestruirui/octopus/internal/utils/xstrings"
+	"github.com/zhizhishu/octopus/internal/utils/xstrings"
 )
 
 // ReconcileSelectedModelsWithFetched keeps only models that were already selected.

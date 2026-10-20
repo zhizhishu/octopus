@@ -1,7 +1,7 @@
 package relay
 
 import (
-	"github.com/bestruirui/octopus/internal/redact"
+	"github.com/zhizhishu/octopus/internal/redact"
 	"net/http"
 	"os"
 	"strconv"
@@ -10,11 +10,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/conf"
-	dbmodel "github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/relay/balancer"
-	"github.com/bestruirui/octopus/internal/transformer/inbound"
-	"github.com/bestruirui/octopus/internal/transformer/model"
+	"github.com/zhizhishu/octopus/internal/conf"
+	dbmodel "github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/relay/balancer"
+	"github.com/zhizhishu/octopus/internal/transformer/inbound"
+	"github.com/zhizhishu/octopus/internal/transformer/model"
 	"github.com/gin-gonic/gin"
 )
 

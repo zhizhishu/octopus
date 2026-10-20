@@ -3,7 +3,7 @@ package openai
 import (
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/transformer/model"
+	"github.com/zhizhishu/octopus/internal/transformer/model"
 )
 
 // TestConvertFileToInputFileBase64 verifies an internal base64 "file" part is

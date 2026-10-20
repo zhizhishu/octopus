@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	transformerModel "github.com/bestruirui/octopus/internal/transformer/model"
+	transformerModel "github.com/zhizhishu/octopus/internal/transformer/model"
 )
 
 // TestRedactedThinkingInboundPreservesData verifies that a redacted_thinking

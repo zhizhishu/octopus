@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/bestruirui/octopus/internal/modelverify/stats"
+	"github.com/zhizhishu/octopus/internal/modelverify/stats"
 )
 
 // toolcallProbe agent 行为探针：观测首个工具的选择分布与参数语法合法率。

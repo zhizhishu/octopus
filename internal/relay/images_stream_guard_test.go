@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	dbmodel "github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/op"
+	dbmodel "github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/op"
 	"github.com/gin-gonic/gin"
 )
 

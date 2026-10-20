@@ -11,9 +11,9 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/bestruirui/octopus/internal/transformer/model"
-	"github.com/bestruirui/octopus/internal/utils/mime"
-	"github.com/bestruirui/octopus/internal/utils/xurl"
+	"github.com/zhizhishu/octopus/internal/transformer/model"
+	"github.com/zhizhishu/octopus/internal/utils/mime"
+	"github.com/zhizhishu/octopus/internal/utils/xurl"
 	"github.com/samber/lo"
 )
 

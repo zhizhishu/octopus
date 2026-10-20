@@ -3,7 +3,7 @@ package op
 import (
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/model"
 )
 
 // 上游回显筛选必须是三态: 上游没声明模型名的行既不属于"一致"也不属于"不一致"。

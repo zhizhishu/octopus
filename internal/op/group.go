@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/bestruirui/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/model"
 )
 
 // The model pool (groups/group_items tables, CRUD, and cache) has been removed in

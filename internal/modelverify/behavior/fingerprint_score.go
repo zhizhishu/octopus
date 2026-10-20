@@ -3,7 +3,7 @@ package behavior
 import (
 	"fmt"
 
-	"github.com/bestruirui/octopus/internal/modelverify/fingerprint"
+	"github.com/zhizhishu/octopus/internal/modelverify/fingerprint"
 )
 
 // 指纹探针的判定。

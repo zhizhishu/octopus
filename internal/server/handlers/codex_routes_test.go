@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/server/router"
+	"github.com/zhizhishu/octopus/internal/server/router"
 	"github.com/gin-gonic/gin"
 )
 

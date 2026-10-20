@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/db"
-	"github.com/bestruirui/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/db"
+	"github.com/zhizhishu/octopus/internal/model"
 )
 
 // 这些测试守的是"搜索加速没有改变语义"。

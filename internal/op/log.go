@@ -13,11 +13,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/db"
-	"github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/utils/log"
-	"github.com/bestruirui/octopus/internal/utils/safe"
-	"github.com/bestruirui/octopus/internal/utils/snowflake"
+	"github.com/zhizhishu/octopus/internal/db"
+	"github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/utils/log"
+	"github.com/zhizhishu/octopus/internal/utils/safe"
+	"github.com/zhizhishu/octopus/internal/utils/snowflake"
 	"gorm.io/gorm"
 )
 

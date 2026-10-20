@@ -1,8 +1,8 @@
 package balancer
 
 import (
-	"github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/op"
+	"github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/op"
 )
 
 // sessionKeepTimeDefault returns the global fallback sticky window (seconds) applied

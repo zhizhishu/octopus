@@ -5,9 +5,9 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/client"
-	dbmodel "github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/transformer/outbound"
+	"github.com/zhizhishu/octopus/internal/client"
+	dbmodel "github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 )
 
 // TestShapedChannelKeepsUTLSThroughProxy is the regression test for the rule that

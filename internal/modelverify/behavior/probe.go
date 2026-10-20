@@ -6,7 +6,7 @@ import (
 	"math/rand/v2"
 	"strings"
 
-	"github.com/bestruirui/octopus/internal/modelverify"
+	"github.com/zhizhishu/octopus/internal/modelverify"
 )
 
 // ProbeID 是一个行为探针的标识。

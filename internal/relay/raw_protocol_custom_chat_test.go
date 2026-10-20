@@ -3,7 +3,7 @@ package relay
 import (
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/transformer/outbound"
+	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 )
 
 func TestIsOpenAIWireChannelTypeIncludesCustomChatAndVolcengine(t *testing.T) {

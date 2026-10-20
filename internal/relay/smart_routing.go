@@ -3,9 +3,9 @@ package relay
 import (
 	"context"
 
-	dbmodel "github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/op"
-	"github.com/bestruirui/octopus/internal/relay/balancer"
+	dbmodel "github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/op"
+	"github.com/zhizhishu/octopus/internal/relay/balancer"
 )
 
 func enrichGroupForSmartRouting(ctx context.Context, group dbmodel.Group, preferStream ...bool) dbmodel.Group {

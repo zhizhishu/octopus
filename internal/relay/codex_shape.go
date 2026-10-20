@@ -4,10 +4,10 @@ import (
 	"encoding/json"
 	"strings"
 
-	dbmodel "github.com/bestruirui/octopus/internal/model"
-	transformerModel "github.com/bestruirui/octopus/internal/transformer/model"
-	"github.com/bestruirui/octopus/internal/utils/log"
-	"github.com/bestruirui/octopus/internal/transformer/outbound"
+	dbmodel "github.com/zhizhishu/octopus/internal/model"
+	transformerModel "github.com/zhizhishu/octopus/internal/transformer/model"
+	"github.com/zhizhishu/octopus/internal/utils/log"
+	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 )
 
 const codexReasoningEncryptedContentInclude = "reasoning.encrypted_content"

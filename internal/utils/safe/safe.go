@@ -5,7 +5,7 @@ package safe
 import (
 	"runtime/debug"
 
-	"github.com/bestruirui/octopus/internal/utils/log"
+	"github.com/zhizhishu/octopus/internal/utils/log"
 )
 
 // SafeGo runs fn in a new goroutine with a panic guard. gin.CustomRecovery only

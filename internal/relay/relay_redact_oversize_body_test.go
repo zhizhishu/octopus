@@ -7,11 +7,11 @@ import (
 	"sync/atomic"
 	"testing"
 
-	dbmodel "github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/op"
-	"github.com/bestruirui/octopus/internal/relay/balancer"
-	"github.com/bestruirui/octopus/internal/transformer/inbound"
-	"github.com/bestruirui/octopus/internal/transformer/outbound"
+	dbmodel "github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/op"
+	"github.com/zhizhishu/octopus/internal/relay/balancer"
+	"github.com/zhizhishu/octopus/internal/transformer/inbound"
+	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 	"github.com/gin-gonic/gin"
 )
 

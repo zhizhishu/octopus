@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/transformer/inbound"
-	openaiInbound "github.com/bestruirui/octopus/internal/transformer/inbound/openai"
-	openaiOutbound "github.com/bestruirui/octopus/internal/transformer/outbound/openai"
+	"github.com/zhizhishu/octopus/internal/transformer/inbound"
+	openaiInbound "github.com/zhizhishu/octopus/internal/transformer/inbound/openai"
+	openaiOutbound "github.com/zhizhishu/octopus/internal/transformer/outbound/openai"
 	"github.com/gin-gonic/gin"
 )
 

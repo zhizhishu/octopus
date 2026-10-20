@@ -10,7 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/bestruirui/octopus/internal/db"
+	"github.com/zhizhishu/octopus/internal/db"
 )
 
 // The field evidence: creating a channel with a fresh name returns 200, and re-sending the SAME

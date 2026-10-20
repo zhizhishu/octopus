@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/client"
-	"github.com/bestruirui/octopus/internal/conf"
-	"github.com/bestruirui/octopus/internal/utils/log"
+	"github.com/zhizhishu/octopus/internal/client"
+	"github.com/zhizhishu/octopus/internal/conf"
+	"github.com/zhizhishu/octopus/internal/utils/log"
 )
 
 const (

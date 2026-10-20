@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/bestruirui/octopus/internal/modelverify/stats"
+	"github.com/zhizhishu/octopus/internal/modelverify/stats"
 )
 
 // onetokenProbe 极短答案取值分布探针：逐 cell 算两侧分布的 JSD，

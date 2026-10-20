@@ -9,9 +9,9 @@ import (
 	"sync/atomic"
 	"testing"
 
-	dbmodel "github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/op"
-	"github.com/bestruirui/octopus/internal/transformer/outbound"
+	dbmodel "github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/op"
+	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 )
 
 // The probe budget used to be 8 tokens, widened to 256 only when the model NAME

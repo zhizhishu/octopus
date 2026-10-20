@@ -3,8 +3,8 @@ package task
 import (
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/transformer/outbound"
+	"github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 )
 
 func TestScheduledAuditEndpoint(t *testing.T) {

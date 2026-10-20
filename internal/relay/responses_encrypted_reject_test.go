@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	transformerModel "github.com/bestruirui/octopus/internal/transformer/model"
+	transformerModel "github.com/zhizhishu/octopus/internal/transformer/model"
 )
 
 // The reject store is process-wide and keyed by conversation, so every test that touches

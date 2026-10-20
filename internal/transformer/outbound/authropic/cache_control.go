@@ -3,7 +3,7 @@ package authropic
 import (
 	"strings"
 
-	anthropicModel "github.com/bestruirui/octopus/internal/transformer/inbound/anthropic"
+	anthropicModel "github.com/zhizhishu/octopus/internal/transformer/inbound/anthropic"
 )
 
 const (

@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/transformer/model"
-	openaiOutbound "github.com/bestruirui/octopus/internal/transformer/outbound/openai"
+	"github.com/zhizhishu/octopus/internal/transformer/model"
+	openaiOutbound "github.com/zhizhishu/octopus/internal/transformer/outbound/openai"
 )
 
 const raceContentTextJSON = `{"choices":[{"delta":{"content":"hello"}}]}`

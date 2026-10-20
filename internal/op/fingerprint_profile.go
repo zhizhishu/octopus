@@ -9,9 +9,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/bestruirui/octopus/internal/db"
-	"github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/utils/cache"
+	"github.com/zhizhishu/octopus/internal/db"
+	"github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/utils/cache"
 )
 
 // fingerprintProfileCache mirrors channelCache: an in-memory copy refreshed at

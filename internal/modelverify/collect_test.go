@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/modelverify/suite"
+	"github.com/zhizhishu/octopus/internal/modelverify/suite"
 )
 
 const testSuiteYAML = `suite_version: v1

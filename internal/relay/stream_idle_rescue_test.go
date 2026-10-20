@@ -13,11 +13,11 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	dbmodel "github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/op"
-	"github.com/bestruirui/octopus/internal/transformer/inbound"
-	"github.com/bestruirui/octopus/internal/transformer/outbound"
-	openaiOutbound "github.com/bestruirui/octopus/internal/transformer/outbound/openai"
+	dbmodel "github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/op"
+	"github.com/zhizhishu/octopus/internal/transformer/inbound"
+	"github.com/zhizhishu/octopus/internal/transformer/outbound"
+	openaiOutbound "github.com/zhizhishu/octopus/internal/transformer/outbound/openai"
 )
 
 // Half-streams that stop producing bytes without closing the connection are the

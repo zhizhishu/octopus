@@ -3,7 +3,7 @@ package behavior
 import (
 	"encoding/json"
 
-	"github.com/bestruirui/octopus/internal/utils/xredact"
+	"github.com/zhizhishu/octopus/internal/utils/xredact"
 )
 
 // ViewReport 是给管理面板用的只读报告。

@@ -6,7 +6,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/transformer/model"
+	"github.com/zhizhishu/octopus/internal/transformer/model"
 )
 
 func chatRequestBodyWithBase(baseUrl string, t *testing.T, request *model.InternalLLMRequest) map[string]any {

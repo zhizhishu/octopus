@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/model"
 )
 
 // TestBuiltinPresetsAreThreeUncorrelatedDevices pins the shape of the three built-in

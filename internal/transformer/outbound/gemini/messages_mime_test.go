@@ -3,7 +3,7 @@ package gemini
 import (
 	"testing"
 
-	transformerModel "github.com/bestruirui/octopus/internal/transformer/model"
+	transformerModel "github.com/zhizhishu/octopus/internal/transformer/model"
 )
 
 func geminiUserPartsRequest(parts []transformerModel.MessageContentPart) *transformerModel.InternalLLMRequest {

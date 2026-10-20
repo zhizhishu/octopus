@@ -13,11 +13,11 @@ import (
 
 	"github.com/samber/lo"
 
-	anthropicModel "github.com/bestruirui/octopus/internal/transformer/inbound/anthropic"
-	"github.com/bestruirui/octopus/internal/transformer/model"
-	"github.com/bestruirui/octopus/internal/utils/log"
-	"github.com/bestruirui/octopus/internal/utils/mime"
-	"github.com/bestruirui/octopus/internal/utils/xurl"
+	anthropicModel "github.com/zhizhishu/octopus/internal/transformer/inbound/anthropic"
+	"github.com/zhizhishu/octopus/internal/transformer/model"
+	"github.com/zhizhishu/octopus/internal/utils/log"
+	"github.com/zhizhishu/octopus/internal/utils/mime"
+	"github.com/zhizhishu/octopus/internal/utils/xurl"
 )
 
 type MessageOutbound struct {

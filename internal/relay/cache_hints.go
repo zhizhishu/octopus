@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	llmmodel "github.com/bestruirui/octopus/internal/transformer/model"
-	"github.com/bestruirui/octopus/internal/transformer/outbound"
+	llmmodel "github.com/zhizhishu/octopus/internal/transformer/model"
+	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 )
 
 const autoPromptCacheKeyPrefix = "octo_pc_"

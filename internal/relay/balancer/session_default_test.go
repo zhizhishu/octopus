@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/model"
 )
 
 // TestGlobalSessionKeepTimeDefaultEnablesSticky pins that a group with its own

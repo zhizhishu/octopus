@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	transformerModel "github.com/bestruirui/octopus/internal/transformer/model"
+	transformerModel "github.com/zhizhishu/octopus/internal/transformer/model"
 )
 
 func testGeminiRequest(stream bool) *transformerModel.InternalLLMRequest {

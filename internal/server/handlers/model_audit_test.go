@@ -7,9 +7,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/modelverify/behavior"
-	"github.com/bestruirui/octopus/internal/transformer/outbound"
+	"github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/modelverify/behavior"
+	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 	"github.com/gin-gonic/gin"
 )
 

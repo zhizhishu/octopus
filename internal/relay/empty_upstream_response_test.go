@@ -10,7 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/bestruirui/octopus/internal/transformer/inbound"
+	"github.com/zhizhishu/octopus/internal/transformer/inbound"
 )
 
 // The live anchor: an upstream answered 200 with ZERO bytes, and the relay sent the same request

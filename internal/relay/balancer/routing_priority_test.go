@@ -4,7 +4,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/model"
 )
 
 // The per-channel「渠道优先级」(ChannelPriority) is the PRIMARY routing key: even when

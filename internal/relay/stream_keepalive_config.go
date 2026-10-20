@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/conf"
-	dbmodel "github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/op"
+	"github.com/zhizhishu/octopus/internal/conf"
+	dbmodel "github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/op"
 )
 
 const (

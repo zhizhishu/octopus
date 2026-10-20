@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	anthropicModel "github.com/bestruirui/octopus/internal/transformer/inbound/anthropic"
-	"github.com/bestruirui/octopus/internal/transformer/model"
+	anthropicModel "github.com/zhizhishu/octopus/internal/transformer/inbound/anthropic"
+	"github.com/zhizhishu/octopus/internal/transformer/model"
 )
 
 // longText returns a string guaranteed to exceed the (non-haiku) min-chars gate of 4096.

@@ -5,7 +5,7 @@ import (
 	"context"
 	"testing"
 
-	transformerModel "github.com/bestruirui/octopus/internal/transformer/model"
+	transformerModel "github.com/zhizhishu/octopus/internal/transformer/model"
 )
 
 // TestTransformStreamUsesReasoningFieldFallback verifies that an upstream that

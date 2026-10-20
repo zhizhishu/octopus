@@ -3,8 +3,8 @@ package relay
 import (
 	"testing"
 
-	dbmodel "github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/op"
+	dbmodel "github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/op"
 )
 
 // TestRouteStickyEnabled 锁定「分组模式 + 会话来源」→ 是否 sticky 的分级矩阵。

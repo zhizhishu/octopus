@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	anthropicModel "github.com/bestruirui/octopus/internal/transformer/inbound/anthropic"
-	"github.com/bestruirui/octopus/internal/transformer/model"
+	anthropicModel "github.com/zhizhishu/octopus/internal/transformer/inbound/anthropic"
+	"github.com/zhizhishu/octopus/internal/transformer/model"
 )
 
 // TestMidConversationSystemMessagePlacement pins the golden claude-CLI shape:

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/transformer/model"
+	"github.com/zhizhishu/octopus/internal/transformer/model"
 )
 
 // TestTransformRequestSystemOnlyNoPanic ensures that a request whose only

@@ -23,11 +23,11 @@ readonly GIT_REPO="${GIT_REPO:-https://github.com/zhizhishu/octopus}"
 readonly GIT_VERSION="${GIT_VERSION:-future-${COMMIT_ID}}"
 
 # Build flags
-readonly LDFLAGS="-X 'github.com/bestruirui/octopus/internal/conf.Version=${GIT_VERSION}' \
-                  -X 'github.com/bestruirui/octopus/internal/conf.BuildTime=${BUILD_TIME}' \
-                  -X 'github.com/bestruirui/octopus/internal/conf.Author=${GIT_AUTHOR}' \
-                  -X 'github.com/bestruirui/octopus/internal/conf.Commit=${COMMIT_ID}' \
-                  -X 'github.com/bestruirui/octopus/internal/conf.Repo=${GIT_REPO}' \
+readonly LDFLAGS="-X 'github.com/zhizhishu/octopus/internal/conf.Version=${GIT_VERSION}' \
+                  -X 'github.com/zhizhishu/octopus/internal/conf.BuildTime=${BUILD_TIME}' \
+                  -X 'github.com/zhizhishu/octopus/internal/conf.Author=${GIT_AUTHOR}' \
+                  -X 'github.com/zhizhishu/octopus/internal/conf.Commit=${COMMIT_ID}' \
+                  -X 'github.com/zhizhishu/octopus/internal/conf.Repo=${GIT_REPO}' \
                   -s -w"
 
 # =============================================================================

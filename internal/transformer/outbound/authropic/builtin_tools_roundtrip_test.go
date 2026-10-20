@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	inboundAnthropic "github.com/bestruirui/octopus/internal/transformer/inbound/anthropic"
-	"github.com/bestruirui/octopus/internal/transformer/model"
+	inboundAnthropic "github.com/zhizhishu/octopus/internal/transformer/inbound/anthropic"
+	"github.com/zhizhishu/octopus/internal/transformer/model"
 )
 
 // roundTripTools parses an Anthropic Messages request body into the internal

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/transformer/model"
+	"github.com/zhizhishu/octopus/internal/transformer/model"
 )
 
 // capturedChatChunk mirrors the fields this replay needs from a real upstream chat

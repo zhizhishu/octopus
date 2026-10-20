@@ -27,25 +27,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Resolve upstream version
+      - name: Resolve version
         id: upstream_version
         shell: bash
         run: |
           set -euo pipefail
-          api_url="https://api.github.com/repos/bestruirui/octopus/releases/latest"
-          headers=(-H "Accept: application/vnd.github+json")
-          if [ -n "${GITHUB_TOKEN:-}" ]; then
-            headers+=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
-          fi
-          response="$(curl -fsSL "${headers[@]}" "$api_url" || true)"
-          version="$(printf '%s' "$response" | python3 -c 'import json,sys; data=json.load(sys.stdin); print(data.get("tag_name",""))' 2>/dev/null || true)"
-          if [ -z "$version" ]; then
-            version="future-${GITHUB_SHA::7}"
-          fi
+          # 版本号由本项目自己的提交决定，**不再查询任何外部仓库**。
+          #
+          # 原实现会去问上游作者的 release 接口拿版本号，把自己的构建命名成别人的
+          # 版本。这既让"我们发布的是哪个版本"说不清楚，也让每次构建都依赖一个
+          # 与我们无关的仓库是否可访问。本项目已独立演进，版本自己定。
+          #
+          # 保留 `upstream_version` 这个 step id 只是为了让后面引用它的地方不用改；
+          # 它现在的含义就是"本项目版本"。
+          version="future-${GITHUB_SHA::7}"
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "Using upstream version: $version"
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
+          echo "Building version: $version"
 
       - name: Setup Go
         uses: actions/setup-go@v6
@@ -92,7 +89,7 @@ jobs:
         run: |
           mkdir -p build
           go build \
-            -ldflags="-X 'github.com/bestruirui/octopus/internal/conf.Version=${{ steps.upstream_version.outputs.version }}' -X 'github.com/bestruirui/octopus/internal/conf.Author=zhizhishu' -X 'github.com/bestruirui/octopus/internal/conf.Commit=${GITHUB_SHA::7}' -X 'github.com/bestruirui/octopus/internal/conf.Repo=${FUTURE_REPO}'" \
+            -ldflags="-X 'github.com/zhizhishu/octopus/internal/conf.Version=${{ steps.upstream_version.outputs.version }}' -X 'github.com/zhizhishu/octopus/internal/conf.Author=zhizhishu' -X 'github.com/zhizhishu/octopus/internal/conf.Commit=${GITHUB_SHA::7}' -X 'github.com/zhizhishu/octopus/internal/conf.Repo=${FUTURE_REPO}'" \
             -o build/octopus-future .
 
       - name: Upload artifact

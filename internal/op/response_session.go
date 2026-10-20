@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/db"
-	"github.com/bestruirui/octopus/internal/model"
-	transformerModel "github.com/bestruirui/octopus/internal/transformer/model"
+	"github.com/zhizhishu/octopus/internal/db"
+	"github.com/zhizhishu/octopus/internal/model"
+	transformerModel "github.com/zhizhishu/octopus/internal/transformer/model"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )

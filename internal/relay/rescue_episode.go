@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/transformer/model"
+	"github.com/zhizhishu/octopus/internal/transformer/model"
 )
 
 // rescue_episode.go owns the per-message "machine rescue" eligibility gate.

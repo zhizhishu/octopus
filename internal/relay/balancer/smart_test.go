@@ -5,7 +5,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/model"
 )
 
 func TestIteratorDoesNotForceTrippedStickyKey(t *testing.T) {

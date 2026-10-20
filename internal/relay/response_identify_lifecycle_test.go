@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/transformer/outbound/openai"
+	"github.com/zhizhishu/octopus/internal/transformer/outbound/openai"
 	"github.com/gin-gonic/gin"
 )
 

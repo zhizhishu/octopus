@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	inboundOpenAI "github.com/bestruirui/octopus/internal/transformer/inbound/openai"
+	inboundOpenAI "github.com/zhizhishu/octopus/internal/transformer/inbound/openai"
 )
 
 // relayResponsesBody runs a Responses request body through the real inbound -> internal ->

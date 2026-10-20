@@ -7,10 +7,10 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/op"
-	"github.com/bestruirui/octopus/internal/relay"
-	"github.com/bestruirui/octopus/internal/server/middleware"
-	"github.com/bestruirui/octopus/internal/utils/safe"
+	"github.com/zhizhishu/octopus/internal/op"
+	"github.com/zhizhishu/octopus/internal/relay"
+	"github.com/zhizhishu/octopus/internal/server/middleware"
+	"github.com/zhizhishu/octopus/internal/utils/safe"
 	"github.com/gin-gonic/gin"
 )
 

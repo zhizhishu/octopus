@@ -3,7 +3,7 @@ package relay
 import (
 	"time"
 
-	dbmodel "github.com/bestruirui/octopus/internal/model"
+	dbmodel "github.com/zhizhishu/octopus/internal/model"
 )
 
 // Pacing for the automatic-rescue rounds.

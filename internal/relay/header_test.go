@@ -7,12 +7,12 @@ import (
 	"strings"
 	"testing"
 
-	dbmodel "github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/op"
-	"github.com/bestruirui/octopus/internal/transformer/inbound"
-	transformermodel "github.com/bestruirui/octopus/internal/transformer/model"
-	"github.com/bestruirui/octopus/internal/transformer/outbound"
-	"github.com/bestruirui/octopus/internal/transformer/outbound/authropic"
+	dbmodel "github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/op"
+	"github.com/zhizhishu/octopus/internal/transformer/inbound"
+	transformermodel "github.com/zhizhishu/octopus/internal/transformer/model"
+	"github.com/zhizhishu/octopus/internal/transformer/outbound"
+	"github.com/zhizhishu/octopus/internal/transformer/outbound/authropic"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )

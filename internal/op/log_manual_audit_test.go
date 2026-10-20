@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/model"
 )
 
 // 本文件是 N01 的运行时证据：日志写入路径（RelayLogAdd）不得触发行为检测跟进，

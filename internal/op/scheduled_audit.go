@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/utils/safe"
+	"github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/utils/safe"
 )
 
 const scheduledAuditDisclaimer = "定时快检结果提供参考，不等同模型真实性证明。网络失败不记为造假。"

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/bestruirui/octopus/internal/modelverify/suite"
+	"github.com/zhizhishu/octopus/internal/modelverify/suite"
 )
 
 // ObserveOnetoken 提取 onetoken 观测：答案文本按题目规则归一化 → {"value": "..."}。

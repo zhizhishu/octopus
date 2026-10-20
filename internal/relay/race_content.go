@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/transformer/model"
+	"github.com/zhizhishu/octopus/internal/transformer/model"
 	"github.com/tmaxmax/go-sse"
 )
 

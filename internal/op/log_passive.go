@@ -6,7 +6,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/bestruirui/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/model"
 )
 
 // 本文件是在 RelayLogAdd 收到的“已脱敏日志副本”上做有界纯本地被动观察的实现。

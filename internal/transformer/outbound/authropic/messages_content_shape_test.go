@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"testing"
 
-	inboundAnthropic "github.com/bestruirui/octopus/internal/transformer/inbound/anthropic"
+	inboundAnthropic "github.com/zhizhishu/octopus/internal/transformer/inbound/anthropic"
 )
 
 // Golden regression for the "outbound body must keep the caller's shape" rule (Shape 铁律).

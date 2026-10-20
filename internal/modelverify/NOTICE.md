@@ -40,7 +40,7 @@ The `stats/`, `probe/` and `suite/` packages in this directory, their tests, and
 
 移植时仅做了以下机械性改动，未改动算法与判定语义：
 
-- import 前缀改写为 `github.com/bestruirui/octopus/internal/modelverify/`
+- import 前缀改写为 `github.com/zhizhishu/octopus/internal/modelverify/`
 - YAML 依赖由 `gopkg.in/yaml.v3` 改为 `go.yaml.in/yaml/v3`（同项目新家，API 兼容）
 - 示例题库随包移动，测试中的相对路径相应调整
 

@@ -5,7 +5,7 @@ import (
 	// time.LoadLocation(如统计时区 stats_timezone)也能解析。
 	_ "time/tzdata"
 
-	"github.com/bestruirui/octopus/cmd"
+	"github.com/zhizhishu/octopus/cmd"
 )
 
 func main() {

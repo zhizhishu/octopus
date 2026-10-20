@@ -12,9 +12,9 @@ package op
 import (
 	"context"
 
-	"github.com/bestruirui/octopus/internal/db"
-	"github.com/bestruirui/octopus/internal/db/migrate"
-	"github.com/bestruirui/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/db"
+	"github.com/zhizhishu/octopus/internal/db/migrate"
+	"github.com/zhizhishu/octopus/internal/model"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )

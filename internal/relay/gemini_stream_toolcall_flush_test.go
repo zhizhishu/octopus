@@ -10,10 +10,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/bestruirui/octopus/internal/transformer/inbound"
-	geminiIn "github.com/bestruirui/octopus/internal/transformer/inbound/gemini"
-	m "github.com/bestruirui/octopus/internal/transformer/model"
-	chatOut "github.com/bestruirui/octopus/internal/transformer/outbound/openai"
+	"github.com/zhizhishu/octopus/internal/transformer/inbound"
+	geminiIn "github.com/zhizhishu/octopus/internal/transformer/inbound/gemini"
+	m "github.com/zhizhishu/octopus/internal/transformer/model"
+	chatOut "github.com/zhizhishu/octopus/internal/transformer/outbound/openai"
 )
 
 // newGeminiStreamTestAttempt builds a minimal relay attempt wired like a real

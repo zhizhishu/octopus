@@ -6,8 +6,8 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/db"
-	"github.com/bestruirui/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/db"
+	"github.com/zhizhishu/octopus/internal/model"
 )
 
 // relayLogScopeParityCorpus 是一组"专门用来挑刺"的日志行：每一行都盯着两套筛选规则里

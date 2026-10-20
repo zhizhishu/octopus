@@ -4,8 +4,8 @@ import (
 	"context"
 	"strings"
 
-	"github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/transformer/outbound"
+	"github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 )
 
 func FilterModelNamesForEndpointFamily(ctx context.Context, names []string, family model.APIKeyEndpointFamily) []string {

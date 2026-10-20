@@ -12,14 +12,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/helper"
-	"github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/op"
-	"github.com/bestruirui/octopus/internal/relay/balancer"
-	"github.com/bestruirui/octopus/internal/relay/bodycache"
-	"github.com/bestruirui/octopus/internal/server/resp"
-	"github.com/bestruirui/octopus/internal/utils/log"
-	"github.com/bestruirui/octopus/internal/utils/xurl"
+	"github.com/zhizhishu/octopus/internal/helper"
+	"github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/op"
+	"github.com/zhizhishu/octopus/internal/relay/balancer"
+	"github.com/zhizhishu/octopus/internal/relay/bodycache"
+	"github.com/zhizhishu/octopus/internal/server/resp"
+	"github.com/zhizhishu/octopus/internal/utils/log"
+	"github.com/zhizhishu/octopus/internal/utils/xurl"
 	"github.com/gin-gonic/gin"
 )
 

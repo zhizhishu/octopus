@@ -3,7 +3,7 @@ package op
 import (
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/model"
 )
 
 func TestChannelServesModel(t *testing.T) {

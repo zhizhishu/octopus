@@ -3,8 +3,8 @@ package relay
 import (
 	"strings"
 
-	dbmodel "github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/op"
+	dbmodel "github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/op"
 )
 
 // routeModeOverrideFromSetting maps the route_mode_override setting value to an

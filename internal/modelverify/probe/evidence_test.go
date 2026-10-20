@@ -3,7 +3,7 @@ package probe
 import (
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/modelverify/stats"
+	"github.com/zhizhishu/octopus/internal/modelverify/stats"
 )
 
 // evidence_test.go：CellDetail.Extra 里的证据数据（分布 / 直方图），

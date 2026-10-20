@@ -1,6 +1,6 @@
 package op
 
-import "github.com/bestruirui/octopus/internal/model"
+import "github.com/zhizhishu/octopus/internal/model"
 
 func relayLogCacheRateBase(relayLog model.RelayLog) int64 {
 	reportedBase := int64(relayLog.CacheInputTokens)

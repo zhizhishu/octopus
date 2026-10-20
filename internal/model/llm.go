@@ -1,6 +1,6 @@
 package model
 
-import "github.com/bestruirui/octopus/internal/transformer/outbound"
+import "github.com/zhizhishu/octopus/internal/transformer/outbound"
 
 type LLMPrice struct {
 	Input      float64 `json:"input"`

@@ -4,7 +4,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/model"
 )
 
 // 分层轮询的候选顺序 + 迭代推进必须合起来满足「高层整体不可用才下沉」。

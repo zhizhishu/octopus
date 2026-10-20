@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	transformerModel "github.com/bestruirui/octopus/internal/transformer/model"
+	transformerModel "github.com/zhizhishu/octopus/internal/transformer/model"
 )
 
 func TestConvertAnthropicClientUsageKeepsProviderNativeInputTokens(t *testing.T) {

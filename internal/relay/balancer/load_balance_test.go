@@ -4,7 +4,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/model"
 )
 
 // Spread (轮询) IS the load-balancing mode: within one ChannelPriority the per-item

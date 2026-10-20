@@ -1,8 +1,8 @@
 package modeltest
 
 import (
-	"github.com/bestruirui/octopus/internal/fingerprint"
-	dbmodel "github.com/bestruirui/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/fingerprint"
+	dbmodel "github.com/zhizhishu/octopus/internal/model"
 )
 
 type resolvedFingerprint = fingerprint.Resolved

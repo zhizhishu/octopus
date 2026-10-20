@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/utils/log"
+	"github.com/zhizhishu/octopus/internal/utils/log"
 )
 
 // The THIRD clock: an absolute ceiling on one whole request.

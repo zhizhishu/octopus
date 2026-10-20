@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/bestruirui/octopus/internal/modelverify"
-	"github.com/bestruirui/octopus/internal/modelverify/fingerprint"
+	"github.com/zhizhishu/octopus/internal/modelverify"
+	"github.com/zhizhishu/octopus/internal/modelverify/fingerprint"
 )
 
 // 随机数指纹探针。

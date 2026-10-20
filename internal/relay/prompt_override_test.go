@@ -3,8 +3,8 @@ package relay
 import (
 	"testing"
 
-	dbmodel "github.com/bestruirui/octopus/internal/model"
-	transformerModel "github.com/bestruirui/octopus/internal/transformer/model"
+	dbmodel "github.com/zhizhishu/octopus/internal/model"
+	transformerModel "github.com/zhizhishu/octopus/internal/transformer/model"
 )
 
 func TestApplyPromptOverridesAppendsSourcesInOrder(t *testing.T) {

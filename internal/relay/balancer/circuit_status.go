@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/model"
 )
 
 func circuitKeyChannelID(key string) (int, bool) {

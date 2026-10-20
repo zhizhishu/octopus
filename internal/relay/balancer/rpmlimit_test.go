@@ -3,7 +3,7 @@ package balancer
 import (
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/model"
 )
 
 // TestSpreadTierDemotesAtRPMCap pins the per-channel requests-per-minute cap: a

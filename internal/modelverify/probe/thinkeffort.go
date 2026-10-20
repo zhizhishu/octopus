@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/bestruirui/octopus/internal/modelverify/stats"
+	"github.com/zhizhishu/octopus/internal/modelverify/stats"
 )
 
 // thinkEffortProbe 思考行为探针：观测思考量的分布，按强度级别与协议分组。

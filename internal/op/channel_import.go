@@ -9,11 +9,11 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/transformer/outbound"
-	"github.com/bestruirui/octopus/internal/utils/xredact"
-	"github.com/bestruirui/octopus/internal/utils/xstrings"
-	"github.com/bestruirui/octopus/internal/utils/xurl"
+	"github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/transformer/outbound"
+	"github.com/zhizhishu/octopus/internal/utils/xredact"
+	"github.com/zhizhishu/octopus/internal/utils/xstrings"
+	"github.com/zhizhishu/octopus/internal/utils/xurl"
 )
 
 const (

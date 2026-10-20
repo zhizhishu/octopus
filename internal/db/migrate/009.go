@@ -5,8 +5,8 @@ import (
 	"slices"
 	"sort"
 
-	"github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/utils/log"
+	"github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/utils/log"
 	"gorm.io/gorm"
 )
 

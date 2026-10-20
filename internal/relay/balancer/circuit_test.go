@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/model"
 )
 
 func TestTransientFailuresUseGentlerBreakerPolicy(t *testing.T) {

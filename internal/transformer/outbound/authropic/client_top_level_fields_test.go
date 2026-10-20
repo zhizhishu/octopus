@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	inboundAnthropic "github.com/bestruirui/octopus/internal/transformer/inbound/anthropic"
+	inboundAnthropic "github.com/zhizhishu/octopus/internal/transformer/inbound/anthropic"
 )
 
 // relayAnthropicBody runs a Claude request body through the real inbound -> internal ->

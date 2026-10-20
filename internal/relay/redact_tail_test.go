@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	dbmodel "github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/op"
-	"github.com/bestruirui/octopus/internal/transformer/inbound"
-	openaiInbound "github.com/bestruirui/octopus/internal/transformer/inbound/openai"
-	openaiOutbound "github.com/bestruirui/octopus/internal/transformer/outbound/openai"
+	dbmodel "github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/op"
+	"github.com/zhizhishu/octopus/internal/transformer/inbound"
+	openaiInbound "github.com/zhizhishu/octopus/internal/transformer/inbound/openai"
+	openaiOutbound "github.com/zhizhishu/octopus/internal/transformer/outbound/openai"
 	"github.com/gin-gonic/gin"
 )
 

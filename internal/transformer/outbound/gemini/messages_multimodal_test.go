@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	transformerModel "github.com/bestruirui/octopus/internal/transformer/model"
+	transformerModel "github.com/zhizhishu/octopus/internal/transformer/model"
 )
 
 func ptr[T any](v T) *T { return &v }

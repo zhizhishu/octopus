@@ -3,7 +3,7 @@ package authropic
 import (
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/transformer/model"
+	"github.com/zhizhishu/octopus/internal/transformer/model"
 )
 
 // TestGetThinkingBudgetMax verifies the "max" effort level maps to a budget

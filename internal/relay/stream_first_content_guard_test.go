@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	openaiOutbound "github.com/bestruirui/octopus/internal/transformer/outbound/openai"
+	openaiOutbound "github.com/zhizhishu/octopus/internal/transformer/outbound/openai"
 )
 
 // chatContentEvent is a real content chunk: this is what disarms the guard.

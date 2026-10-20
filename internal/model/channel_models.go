@@ -3,7 +3,7 @@ package model
 import (
 	"strings"
 
-	"github.com/bestruirui/octopus/internal/utils/xstrings"
+	"github.com/zhizhishu/octopus/internal/utils/xstrings"
 )
 
 // CleanOneMillionCapabilityModelName removes old UI-facing 1M suffix aliases.

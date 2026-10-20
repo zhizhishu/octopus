@@ -4,10 +4,10 @@ import (
 	"net/http"
 	"strings"
 
-	dbmodel "github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/op"
-	"github.com/bestruirui/octopus/internal/transformer/inbound"
-	transformermodel "github.com/bestruirui/octopus/internal/transformer/model"
+	dbmodel "github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/op"
+	"github.com/zhizhishu/octopus/internal/transformer/inbound"
+	transformermodel "github.com/zhizhishu/octopus/internal/transformer/model"
 	"github.com/gin-gonic/gin"
 )
 

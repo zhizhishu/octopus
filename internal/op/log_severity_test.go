@@ -3,8 +3,8 @@ package op
 import (
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/db"
-	"github.com/bestruirui/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/db"
+	"github.com/zhizhishu/octopus/internal/model"
 )
 
 // TestRelayLogSeverityValue locks the success/warn/error rule that the SQL filter

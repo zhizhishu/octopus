@@ -3,7 +3,7 @@ package balancer
 import (
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/model"
 )
 
 // TestSpreadTierDemotesAtConcurrencyCap pins the per-channel concurrency cap: a

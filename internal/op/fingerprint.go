@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/bestruirui/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/model"
 	"github.com/google/uuid"
 )
 

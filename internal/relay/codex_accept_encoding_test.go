@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/transformer/outbound"
+	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 )
 
 // TestEnforceCodexNoAcceptEncodingStripsResponsesOverride locks the fingerprint

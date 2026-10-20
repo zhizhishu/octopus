@@ -3,8 +3,8 @@ package op
 import (
 	"strings"
 
-	dbmodel "github.com/bestruirui/octopus/internal/model"
-	transformermodel "github.com/bestruirui/octopus/internal/transformer/model"
+	dbmodel "github.com/zhizhishu/octopus/internal/model"
+	transformermodel "github.com/zhizhishu/octopus/internal/transformer/model"
 )
 
 func SupportedModelsList(value string) []string {

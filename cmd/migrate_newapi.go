@@ -7,9 +7,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/bestruirui/octopus/internal/db"
-	"github.com/bestruirui/octopus/internal/migration/newapi"
-	"github.com/bestruirui/octopus/internal/op"
+	"github.com/zhizhishu/octopus/internal/db"
+	"github.com/zhizhishu/octopus/internal/migration/newapi"
+	"github.com/zhizhishu/octopus/internal/op"
 	"github.com/spf13/cobra"
 	"gorm.io/gorm"
 )

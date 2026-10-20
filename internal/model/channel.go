@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/transformer/outbound"
-	"github.com/bestruirui/octopus/internal/utils/xurl"
+	"github.com/zhizhishu/octopus/internal/transformer/outbound"
+	"github.com/zhizhishu/octopus/internal/utils/xurl"
 )
 
 // KeySelectStrategy controls the order in which a channel's available keys are tried.

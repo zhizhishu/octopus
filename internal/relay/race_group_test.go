@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	dbmodel "github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/relay/balancer"
-	transformerModel "github.com/bestruirui/octopus/internal/transformer/model"
+	dbmodel "github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/relay/balancer"
+	transformerModel "github.com/zhizhishu/octopus/internal/transformer/model"
 	"github.com/gin-gonic/gin"
 )
 
