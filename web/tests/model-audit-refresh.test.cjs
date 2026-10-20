@@ -381,6 +381,9 @@ function auditPage() {
         '@/lib/utils': { cn: (...p) => p.filter(Boolean).join(' ') },
         '@/components/modules/channel/channel-utils': { getSelectedChannelModels: (channel) => channel.selected_models ?? [] },
         '@/lib/channel-test': { sanitizeChannelTestError: (value) => value },
+        // 批量队列页在单次模式的测试里不渲染，给个空存根即可。
+        // 它自身的 API hooks 有独立依赖，不该把单次模式的测试拖下水。
+        './Queue': { ModelAuditQueue: () => null },
     });
     return {
         calls,

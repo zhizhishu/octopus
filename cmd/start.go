@@ -5,6 +5,7 @@ import (
 	"github.com/bestruirui/octopus/internal/db"
 	"github.com/bestruirui/octopus/internal/op"
 	"github.com/bestruirui/octopus/internal/server"
+	"github.com/bestruirui/octopus/internal/server/handlers"
 	"github.com/bestruirui/octopus/internal/task"
 	"github.com/bestruirui/octopus/internal/utils/log"
 	"github.com/bestruirui/octopus/internal/utils/shutdown"
@@ -49,6 +50,10 @@ var startCmd = &cobra.Command{
 
 		task.Init()
 		go task.RUN()
+
+		// 模型检测队列 worker：检测是花钱动作，改为入队后台串行跑。
+		// 放在 server.Start 之后启动，确保任何入队请求到达时 worker 已在轮询。
+		handlers.StartModelAuditQueueWorker()
 	},
 }
 

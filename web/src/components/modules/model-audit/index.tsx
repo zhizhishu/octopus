@@ -47,6 +47,7 @@ import {
 import { cn } from '@/lib/utils';
 import { getSelectedChannelModels } from '@/components/modules/channel/channel-utils';
 import { sanitizeChannelTestError } from '@/lib/channel-test';
+import { ModelAuditQueue } from './Queue';
 
 type PlanId = 'quick' | 'standard';
 type RowTone = 'pass' | 'warn' | 'info' | 'fail' | 'skip';
@@ -256,6 +257,9 @@ export function ModelAudit() {
         [channelsData],
     );
 
+    // 视图模式：single = 守着页面跑一次；queue = 批量入队后台跑、随时回看。
+    // 后者是给"一次点一堆模型、不想守着"的场景准备的，检测结论独立落库。
+    const [mode, setMode] = useState<'single' | 'queue'>('single');
     const [channelId, setChannelId] = useState<number>(0);
     const [modelName, setModelName] = useState('');
     const [plan, setPlan] = useState<PlanId>('standard');
@@ -734,6 +738,36 @@ export function ModelAudit() {
                 </div>
             </div>
 
+            {/* 两种用法：立刻跑一次（守着结果）／批量排队（后台跑、可回看）。
+                批量模式的结论独立落库，不受日志保留期影响。 */}
+            <div className="flex gap-1 rounded-2xl border border-border bg-card p-1">
+                <button
+                    type="button"
+                    onClick={() => setMode('single')}
+                    className={cn(
+                        'flex-1 rounded-xl px-3 py-2 text-sm transition-colors',
+                        mode === 'single' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted',
+                    )}
+                >
+                    {t('modeSingle')}
+                </button>
+                <button
+                    type="button"
+                    onClick={() => setMode('queue')}
+                    className={cn(
+                        'flex-1 rounded-xl px-3 py-2 text-sm transition-colors',
+                        mode === 'queue' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted',
+                    )}
+                >
+                    {t('modeQueue')}
+                </button>
+            </div>
+
+            {mode === 'queue' && <ModelAuditQueue />}
+
+            {/* 单次模式的全部内容：未进入 queue 视图时才渲染，避免两个视图叠加。 */}
+            {mode === 'single' && (
+            <>
             <div className="md:hidden">
                 <div className="flex items-center justify-between rounded-2xl border border-border bg-card px-4 py-3">
                     <p className="text-sm">已选 {runCount} 项 · {channel?.name ?? '未选渠道'}</p>
@@ -942,6 +976,8 @@ export function ModelAudit() {
                     </dl>
                 </DialogContent>
             </Dialog>
+            </>
+            )}
         </PageWrapper>
     );
 }

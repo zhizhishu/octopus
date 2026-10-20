@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -45,7 +46,95 @@ func init() {
 		AddRoute(
 			router.NewRoute("/scheduled", http.MethodGet).
 				Handle(getScheduledAudit),
+		).
+		AddRoute(
+			router.NewRoute("/jobs", http.MethodGet).
+				Handle(listModelAuditJobs),
+		).
+		AddRoute(
+			router.NewRoute("/jobs/:id", http.MethodGet).
+				Handle(getModelAuditJob),
 		)
+
+	router.NewGroupRouter("/api/v1/model-audit").
+		Use(middleware.Auth()).
+		Use(middleware.AdminOnly()).
+		Use(middleware.RequireJSON()).
+		AddRoute(
+			router.NewRoute("/enqueue", http.MethodPost).
+				Handle(enqueueModelAudit),
+		).
+		AddRoute(
+			router.NewRoute("/jobs/:id/cancel", http.MethodPost).
+				Handle(cancelModelAuditJob),
+		)
+}
+
+// modelAuditEnqueueRequest 批量入队请求：一次提交一批模型，后台串行跑。
+type modelAuditEnqueueRequest struct {
+	ChannelID      int      `json:"channel_id"`
+	Models         []string `json:"models"`
+	Probes         []string `json:"probes"`
+	TimeoutSeconds int      `json:"timeout_seconds"`
+	LogID          int64    `json:"log_id"`
+}
+
+func enqueueModelAudit(c *gin.Context) {
+	var req modelAuditEnqueueRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		resp.Error(c, http.StatusBadRequest, resp.ErrInvalidJSON)
+		return
+	}
+	jobID, err := op.ModelAuditEnqueue(c.Request.Context(), op.ModelAuditEnqueueInput{
+		ChannelID:      req.ChannelID,
+		Models:         req.Models,
+		Probes:         req.Probes,
+		TimeoutSeconds: req.TimeoutSeconds,
+		LogID:          req.LogID,
+		Trigger:        "manual",
+	})
+	if err != nil {
+		resp.Error(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	resp.Success(c, gin.H{"job_id": jobID})
+}
+
+func listModelAuditJobs(c *gin.Context) {
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
+	jobs, err := op.ModelAuditJobList(c.Request.Context(), limit)
+	if err != nil {
+		resp.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	resp.Success(c, jobs)
+}
+
+func getModelAuditJob(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		resp.Error(c, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	job, results, err := op.ModelAuditJobDetail(c.Request.Context(), id)
+	if err != nil {
+		resp.Error(c, http.StatusNotFound, "job not found")
+		return
+	}
+	resp.Success(c, gin.H{"job": job, "results": results})
+}
+
+func cancelModelAuditJob(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		resp.Error(c, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	if err := op.ModelAuditJobCancel(c.Request.Context(), id); err != nil {
+		resp.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	resp.Success(c, gin.H{"job_id": id})
 }
 
 type modelAuditRequest struct {

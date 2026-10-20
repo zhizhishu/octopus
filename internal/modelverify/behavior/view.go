@@ -17,6 +17,12 @@ type ViewReport struct {
 	Results           []ViewResult  `json:"results"`
 	Errors            []ProbeError  `json:"errors"`
 	Disclaimer        string        `json:"disclaimer"`
+	// Plain 是同一份结论的"人话版"：标题、这意味着什么、不能说明什么、下一步。
+	// 与 Verdict/Score 并存而不是替换，机器读档位、人读措辞。
+	Plain PlainVerdict `json:"plain"`
+	// Family 是从模型名推断出的主家族（openai/anthropic/qwen...），空串表示看不出。
+	// 前端据此显示家族名并给出该家族特有的验真边界说明。
+	Family string `json:"family,omitempty"`
 }
 
 // ViewFinding 是一条风险项的 JSON 形态。
@@ -78,6 +84,19 @@ func ToView(report Report) ViewReport {
 			Error: xredact.Secrets(e.Error),
 		})
 	}
+
+	// 人话结论。usable 只数"真正拿到可判读样本"的探针：跑挂的、被拒答的
+	// 都不算，否则一个挂了三条探针的渠道会看起来像"查过了"。
+	usable := 0
+	for _, res := range report.Results {
+		if res.OK && res.Err == nil {
+			usable++
+		}
+	}
+	out.Family = PrimaryFamily(report.RequestedFamilies)
+	out.Plain = PlainVerdictFor(
+		report.Verdict, report.Score, len(report.Findings), usable, out.Family,
+	)
 	return out
 }
 
