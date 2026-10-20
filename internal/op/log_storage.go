@@ -19,6 +19,7 @@ package op
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -26,6 +27,7 @@ import (
 
 	"github.com/bestruirui/octopus/internal/db"
 	"github.com/bestruirui/octopus/internal/model"
+	"github.com/bestruirui/octopus/internal/utils/log"
 	"gorm.io/gorm"
 )
 
@@ -330,20 +332,88 @@ func relayLogStorageInfoBounded(ctx context.Context, scope *model.RelayLogScope)
 	}, nil
 }
 
+// relayLogIncrementalVacuum 尝试用 PRAGMA incremental_vacuum 把空闲页还给文件系统。
+//
+// 这是比完整 VACUUM 便宜得多的一步，也是"删了却不缩小"的根治手段：
+//   - 完整 VACUUM 要重建整个文件，峰值临时空间约等于库大小，一次几十分钟；
+//   - incremental_vacuum 只把 freelist 头部的 N 页搬走并同步截断文件，代价与
+//     回收量成正比，可以每轮清理后顺手跑一次。
+//
+// 前提是库的 auto_vacuum 模式为 INCREMENTAL。SQLite 官方规定：已有库从 none
+// 改成 incremental **必须跑一次完整 VACUUM** 才生效，光发 pragma 是静默无效的。
+// 所以这里先探测实际模式：
+//   - 已是 incremental(2) -> 直接增量回收；
+//   - 仍是 none(0)        -> 返回 needsFullVacuum，由调用方决定是否做完整 VACUUM。
+//
+// 返回 (回收页数, needsFullVacuum, error)。
+func relayLogIncrementalVacuum(ctx context.Context, maxPages int64) (int64, bool, error) {
+	var mode int64
+	if err := db.GetDB().Raw("PRAGMA auto_vacuum").Row().Scan(&mode); err != nil {
+		return 0, false, err
+	}
+	if mode != 2 { // 0=none, 1=full, 2=incremental
+		return 0, true, nil
+	}
+
+	var free int64
+	if err := db.GetDB().Raw("PRAGMA freelist_count").Row().Scan(&free); err != nil {
+		return 0, false, err
+	}
+	if free <= 0 {
+		return 0, false, nil
+	}
+	if maxPages <= 0 || maxPages > free {
+		maxPages = free
+	}
+
+	// 参数化 PRAGMA 不被支持，这里 maxPages 已经过范围钳制，且是 int64，
+	// 拼进语句不存在注入面。
+	if err := db.GetDB().WithContext(ctx).
+		Exec(fmt.Sprintf("PRAGMA incremental_vacuum(%d)", maxPages)).Error; err != nil {
+		return 0, false, err
+	}
+
+	var remain int64
+	if err := db.GetDB().Raw("PRAGMA freelist_count").Row().Scan(&remain); err != nil {
+		return 0, false, nil
+	}
+	return free - remain, false, nil
+}
+
 // relayLogVacuum 在删除后把空间真正还给文件系统。
 //
 // 为什么必须有这一步：SQLite 删除行只是把页标成空闲放进 free list，数据文件
 // 不会变小。所以"设了上限、也确实删了日志，但 db 文件还是 59GB"是预期行为，
-// 不是清理没生效。纯 Go 驱动不保证支持增量 VACUUM，这里用完整 VACUUM。
+// 不是清理没生效。
+//
+// 优先走增量回收(便宜)；只有库还没切成 incremental 模式时才退回完整 VACUUM。
 //
 // VACUUM 会重建整个数据库文件，期间需要约等于当前库大小的临时空间。
 // 因此只在**确实删掉了行**之后调用，且失败不影响清理本身(空间没还回去而已)。
 func relayLogVacuum(ctx context.Context) error {
+	// 先试增量：库已是 incremental 模式时，这一步只花几十毫秒。
+	pages, needsFull, err := relayLogIncrementalVacuum(ctx, 0)
+	if err == nil && !needsFull {
+		if pages > 0 {
+			log.Debugf("relay log incremental vacuum reclaimed %d pages", pages)
+		}
+		return nil
+	}
+
 	safe, reason := relayLogVacuumSafe()
 	if !safe {
 		return errors.New(reason)
 	}
-	return db.GetDB().WithContext(ctx).Exec("VACUUM").Error
+	if err := db.GetDB().WithContext(ctx).Exec("VACUUM").Error; err != nil {
+		return err
+	}
+	// VACUUM 会把 auto_vacuum 重置为本次连接 pragma 指定的模式。这里显式切到
+	// incremental，让后续清理都能走便宜的增量回收，不必每次都重建整个文件。
+	// (对刚 VACUUM 过的新库，这一步是生效的 —— 官方允许在新库或 VACUUM 后改模式。)
+	if err := db.GetDB().Exec("PRAGMA auto_vacuum=INCREMENTAL").Error; err != nil {
+		log.Debugf("relay log switch to incremental auto_vacuum failed: %v", err)
+	}
+	return nil
 }
 
 // relayLogVacuumSafe 判断当前是否适合做 VACUUM。

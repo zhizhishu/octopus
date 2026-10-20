@@ -446,7 +446,12 @@
       "genericUAHint": "Unified User-Agent for non Claude/Codex channels (Gemini / Volcengine / plain OpenAI Chat), which emit no UA by default. Leave empty to keep current behaviour.",
       "groups": {
         "claude": "Claude Fingerprint",
-        "codex": "Codex Fingerprint"
+        "codex": "Codex Fingerprint",
+        "generic": "Generic Fingerprint",
+        "claudeUsedBy": "Anthropic channels",
+        "codexUsedBy": "Responses channels",
+        "genericUsedBy": "Chat channels",
+        "genericFallbackNote": "Not set — uses the built-in CherryStudio desktop client identity"
       },
       "fields": {
         "name": "Name",
@@ -461,7 +466,8 @@
         "codexUserAgent": "Codex User-Agent",
         "codexOriginator": "Codex Originator",
         "codexBetaFeatures": "Codex Beta Features",
-        "genericUA": "Generic User-Agent"
+        "genericUA": "Generic User-Agent",
+        "genericUAFallback": "Built-in CherryStudio desktop client"
       },
       "placeholders": {
         "name": "A recognizable name, e.g. macOS Claude / Windows Node A",

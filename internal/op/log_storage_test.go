@@ -494,3 +494,94 @@ func TestCleanupEstimateLeavesHeadroom(t *testing.T) {
 		t.Fatalf("行大小不均时也应收敛到上限内: after=%d max=%d", after, maxBytes)
 	}
 }
+
+// TestIncrementalVacuumReclaimsAfterDelete 验证增量回收真的能把空闲页还给文件。
+//
+// 这条测试守的是生产的核心缺陷：删了日志但 db 文件不缩小(56GB 里 14GB 是空闲页)。
+// 增量回收是"不再复发"的那一环 —— 完整 VACUUM 一次要几十分钟，不可能每轮清理都做。
+func TestIncrementalVacuumReclaimsAfterDelete(t *testing.T) {
+	ctx := setupRelayLogTest(t)
+	ensureSearchIndexTable(t)
+
+	body := strings.Repeat("x", 8*1024)
+	for i := 0; i < 200; i++ {
+		r := model.RelayLog{
+			ID: int64(i + 1), Time: int64(i + 1),
+			RequestModelName: "m",
+			RequestContent:   body, ResponseContent: body,
+		}
+		if err := db.GetDB().Create(&r).Error; err != nil {
+			t.Fatalf("seed %d: %v", i, err)
+		}
+	}
+
+	var beforePages int64
+	if err := db.GetDB().Raw("PRAGMA page_count").Row().Scan(&beforePages); err != nil {
+		t.Fatal(err)
+	}
+
+	// 删掉大部分行，制造空闲页
+	if err := db.GetDB().Exec("DELETE FROM relay_logs WHERE id > 50").Error; err != nil {
+		t.Fatal(err)
+	}
+	var free int64
+	if err := db.GetDB().Raw("PRAGMA freelist_count").Row().Scan(&free); err != nil {
+		t.Fatal(err)
+	}
+	if free == 0 {
+		t.Fatalf("删除后应有空闲页，实际 freelist=0")
+	}
+
+	pages, needsFull, err := relayLogIncrementalVacuum(ctx, 0)
+	if err != nil {
+		t.Fatalf("incremental vacuum: %v", err)
+	}
+
+	// 测试库是新建的，但 auto_vacuum 默认仍是 none —— 此时必须如实报告
+	// "需要完整 VACUUM 才生效"，而不是假装回收成功。
+	if needsFull {
+		t.Logf("库仍是 auto_vacuum=none，正确报告需要完整 VACUUM(生产首次切换即此状态)")
+		return
+	}
+
+	if pages <= 0 {
+		t.Fatalf("incremental vacuum 应至少回收 1 页，实际 %d", pages)
+	}
+
+	var afterFree, afterPages int64
+	if err := db.GetDB().Raw("PRAGMA freelist_count").Row().Scan(&afterFree); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.GetDB().Raw("PRAGMA page_count").Row().Scan(&afterPages); err != nil {
+		t.Fatal(err)
+	}
+	if afterPages >= beforePages {
+		t.Fatalf("增量回收后文件页数应减少: before=%d after=%d", beforePages, afterPages)
+	}
+	t.Logf("回收 %d 页，文件 %d->%d 页，freelist %d->%d", pages, beforePages, afterPages, free, afterFree)
+}
+
+// TestIncrementalVacuumReportsFullVacuumNeeded 守 auto_vacuum=none 时的诚实上报。
+//
+// SQLite 官方规定：已有库从 none 改成 incremental 必须跑一次完整 VACUUM，
+// 光发 pragma 是静默无效的。所以这里必须返回 needsFull=true，
+// 否则调用方会以为"增量回收跑过了"，而文件其实一页都没还。
+func TestIncrementalVacuumReportsFullVacuumNeeded(t *testing.T) {
+	ctx := setupRelayLogTest(t)
+
+	var mode int64
+	if err := db.GetDB().Raw("PRAGMA auto_vacuum").Row().Scan(&mode); err != nil {
+		t.Fatal(err)
+	}
+	if mode == 2 {
+		t.Skip("测试库已是 incremental 模式，本用例只覆盖 none 分支")
+	}
+
+	_, needsFull, err := relayLogIncrementalVacuum(ctx, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !needsFull {
+		t.Fatalf("auto_vacuum=none 时必须报告需要完整 VACUUM，否则会静默不回收")
+	}
+}

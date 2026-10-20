@@ -74,6 +74,44 @@ function choiceToStabilize(choice: StabilizeChoice): boolean | null {
     return choice === 'on';
 }
 
+/**
+ * 一条出站身份的展示行：彩色家族标签 + 主值(UA) + 次要值(平台/originator) + 适用渠道提示。
+ *
+ * 为什么需要它：一个 profile 同时描述 Claude / Codex / 通用三套身份，由渠道类型决定取哪套。
+ * 平铺展示会让人以为"这个 profile 就是 claude 的"，而通用身份(实际是 Chat 渠道用的那套)
+ * 根本不显示 —— 排查"我的 Chat 渠道到底发什么 UA"时界面上查不到。
+ */
+function IdentityRow({
+    badge,
+    badgeClass,
+    primary,
+    secondary,
+    usedBy,
+}: {
+    badge: string;
+    badgeClass: string;
+    primary: string;
+    secondary: string;
+    usedBy: string;
+}) {
+    return (
+        <div className="min-w-0 rounded-xl border border-border/50 bg-background/40 px-2.5 py-1.5">
+            <div className="flex min-w-0 items-center gap-1.5">
+                <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${badgeClass}`}>{badge}</span>
+                <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-muted-foreground" title={primary}>
+                    {primary}
+                </span>
+            </div>
+            <div className="mt-0.5 flex min-w-0 items-center gap-1.5">
+                <span className="min-w-0 flex-1 truncate text-[10px] text-muted-foreground/80" title={secondary}>
+                    {secondary}
+                </span>
+                <span className="shrink-0 text-[10px] text-muted-foreground/60">{usedBy}</span>
+            </div>
+        </div>
+    );
+}
+
 function profileToDraft(profile: FingerprintProfile): ProfileDraft {
     return {
         name: profile.name,
@@ -214,24 +252,41 @@ export function SettingFingerprintProfile() {
                                     <span className="truncate text-sm font-semibold text-card-foreground">{profile.name}</span>
                                     <span className="rounded-full bg-background px-2 py-0.5 text-[11px] text-muted-foreground">#{index + 1}</span>
                                 </div>
-                                <div className="grid gap-0.5 text-[11px] leading-5 text-muted-foreground">
-                                    <div className="min-w-0 truncate">
-                                        <span className="font-mono">{t('fingerprintProfile.fields.claudeUserAgent')}</span>
-                                        {': '}
-                                        {profile.claude_user_agent || t('fingerprintProfile.followGlobal')}
-                                    </div>
-                                    <div className="min-w-0 truncate">
-                                        <span className="font-mono">{t('fingerprintProfile.fields.claudeOS')}</span>
-                                        {': '}
-                                        {profile.claude_os || t('fingerprintProfile.followGlobal')}
-                                        {' / '}
-                                        {profile.claude_arch || t('fingerprintProfile.followGlobal')}
-                                    </div>
-                                    <div className="min-w-0 truncate">
-                                        <span className="font-mono">{t('fingerprintProfile.fields.codexUserAgent')}</span>
-                                        {': '}
-                                        {profile.codex_user_agent || t('fingerprintProfile.followGlobal')}
-                                    </div>
+                                {/* 一套 profile 同时描述三种出站身份，按"哪个渠道取哪一组"分组显示：
+                                    Anthropic 渠道取 Claude 组，Responses 渠道取 Codex 组，Chat 渠道取通用组。
+                                    原来三段是不带标签的平铺(fields.claudeUserAgent / claudeOS / codexUserAgent)，
+                                    既看不出分组、也完全不显示通用 UA —— 用一个走 Chat 渠道的 profile 时，
+                                    界面上完全看不到它实际发出的身份是什么。 */}
+                                <div className="grid gap-1.5 text-[11px] leading-5">
+                                    <IdentityRow
+                                        badge={t('fingerprintProfile.groups.claude')}
+                                        badgeClass="bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                                        primary={profile.claude_user_agent || t('fingerprintProfile.followGlobal')}
+                                        secondary={[
+                                            profile.claude_os || t('fingerprintProfile.followGlobal'),
+                                            profile.claude_arch || t('fingerprintProfile.followGlobal'),
+                                        ].join(' · ')}
+                                        usedBy={t('fingerprintProfile.groups.claudeUsedBy')}
+                                    />
+                                    <IdentityRow
+                                        badge={t('fingerprintProfile.groups.codex')}
+                                        badgeClass="bg-sky-500/10 text-sky-600 dark:text-sky-400"
+                                        primary={profile.codex_user_agent || t('fingerprintProfile.followGlobal')}
+                                        secondary={[
+                                            profile.codex_originator
+                                                ? `${t('fingerprintProfile.fields.codexOriginator')} ${profile.codex_originator}`
+                                                : '',
+                                            profile.codex_beta_features || '',
+                                        ].filter(Boolean).join(' · ') || t('fingerprintProfile.followGlobal')}
+                                        usedBy={t('fingerprintProfile.groups.codexUsedBy')}
+                                    />
+                                    <IdentityRow
+                                        badge={t('fingerprintProfile.groups.generic')}
+                                        badgeClass="bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                                        primary={profile.generic_ua || t('fingerprintProfile.fields.genericUAFallback')}
+                                        secondary={profile.generic_ua ? '' : t('fingerprintProfile.groups.genericFallbackNote')}
+                                        usedBy={t('fingerprintProfile.groups.genericUsedBy')}
+                                    />
                                 </div>
                             </div>
                             <div className="flex shrink-0 items-center gap-1.5 justify-self-end">

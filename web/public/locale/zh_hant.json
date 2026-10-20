@@ -446,7 +446,12 @@
       "genericUAHint": "統一 User-Agent，作用於非 Claude/Codex 渠道（Gemini / 火山引擎 / 普通 OpenAI Chat），這些渠道預設不帶 UA。留空即保持現狀。",
       "groups": {
         "claude": "Claude 指紋",
-        "codex": "Codex 指紋"
+        "codex": "Codex 指紋",
+        "generic": "通用指紋",
+        "claudeUsedBy": "Anthropic 頻道",
+        "codexUsedBy": "Responses 頻道",
+        "genericUsedBy": "對話頻道",
+        "genericFallbackNote": "未設定，使用內建 CherryStudio 桌面客户端身份"
       },
       "fields": {
         "name": "名稱",
@@ -461,7 +466,8 @@
         "codexUserAgent": "Codex User-Agent",
         "codexOriginator": "Codex Originator",
         "codexBetaFeatures": "Codex Beta Features",
-        "genericUA": "通用 User-Agent"
+        "genericUA": "通用 User-Agent",
+        "genericUAFallback": "內建 CherryStudio 桌面客户端"
       },
       "placeholders": {
         "name": "便於辨認的名字，如 macOS Claude / Windows 節點 A",
