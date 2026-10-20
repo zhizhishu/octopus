@@ -134,34 +134,25 @@ type RelayLog struct {
 	// (见 op/relay_probe.go)。PassiveSummary 说"这条回复长什么样", PassiveProbes 说
 	// "这条日志里有没有自相矛盾"。两者都只证伪不认证: 空数组 = 没发现矛盾,
 	// **不等于**"这个模型是真的"。AutoMigrate 自动加列, 不参与路由/计费, 不读正文外的任何东西。
-	PassiveProbes []RelayProbeFinding `json:"passive_probes,omitempty" gorm:"serializer:json"`
-	// ProbeFlagged 是 PassiveProbes 非空的冗余布尔列, 只为**可索引地筛选**。
-	//
-	// 不给 PassiveProbes 直接做 SQL 过滤的原因很实际: 它是 serializer:json 的 TEXT
-	// 列, 按内容 LIKE 查询在生产库(十几 GB)上就是全表扫描, 会把日志页拖死。加一列
-	// 布尔值带索引, 写入时顺手置位, 筛选就退化成一次索引查找。
-	//
-	// 语义: true = 这条日志至少有一条硬事实校验没通过。false = 没发现问题,
-	// **不等于**模型为真(见 relay_probe.go 的"只证伪不认证")。
-	ProbeFlagged       bool             `json:"probe_flagged,omitempty" gorm:"index;default:false"`
-	InputTokens        int              `json:"input_tokens"`
-	OutputTokens       int              `json:"output_tokens"`
-	CacheHitTokens     int              `json:"cache_hit_tokens"`
-	CacheWriteTokens   int              `json:"cache_write_tokens"`
-	CacheWrite5mTokens int              `json:"cache_write_5m_tokens,omitempty"` // 5 分钟 TTL 缓存写入(Anthropic ephemeral_5m_input_tokens), CacheWriteTokens 的子集
-	CacheWrite1hTokens int              `json:"cache_write_1h_tokens,omitempty"` // 1 小时 TTL 缓存写入(Anthropic ephemeral_1h_input_tokens), 计费高于 5m
-	CacheInputTokens   int              `json:"cache_input_tokens"`
-	CacheHitRate       float64          `json:"cache_hit_rate" gorm:"type:real"`
-	Ftut               int              `json:"ftut"`
-	UseTime            int              `json:"use_time"`
-	Cost               float64          `json:"cost"`
-	RequestContent     string           `json:"request_content"`
-	ResponseContent    string           `json:"response_content"`
-	Error              string           `json:"error"`
-	ErrorCode          string           `json:"error_code"`
-	ErrorStatus        int              `json:"error_status"`
-	ErrorStrategy      string           `json:"error_strategy"`
-	Attempts           []ChannelAttempt `json:"attempts" gorm:"serializer:json"`
+	PassiveProbes      []RelayProbeFinding `json:"passive_probes,omitempty" gorm:"serializer:json"`
+	InputTokens        int                 `json:"input_tokens"`
+	OutputTokens       int                 `json:"output_tokens"`
+	CacheHitTokens     int                 `json:"cache_hit_tokens"`
+	CacheWriteTokens   int                 `json:"cache_write_tokens"`
+	CacheWrite5mTokens int                 `json:"cache_write_5m_tokens,omitempty"` // 5 分钟 TTL 缓存写入(Anthropic ephemeral_5m_input_tokens), CacheWriteTokens 的子集
+	CacheWrite1hTokens int                 `json:"cache_write_1h_tokens,omitempty"` // 1 小时 TTL 缓存写入(Anthropic ephemeral_1h_input_tokens), 计费高于 5m
+	CacheInputTokens   int                 `json:"cache_input_tokens"`
+	CacheHitRate       float64             `json:"cache_hit_rate" gorm:"type:real"`
+	Ftut               int                 `json:"ftut"`
+	UseTime            int                 `json:"use_time"`
+	Cost               float64             `json:"cost"`
+	RequestContent     string              `json:"request_content"`
+	ResponseContent    string              `json:"response_content"`
+	Error              string              `json:"error"`
+	ErrorCode          string              `json:"error_code"`
+	ErrorStatus        int                 `json:"error_status"`
+	ErrorStrategy      string              `json:"error_strategy"`
+	Attempts           []ChannelAttempt    `json:"attempts" gorm:"serializer:json"`
 	// index: 严重程度分桶(warn = total_attempts > 1)和 retried 筛选都按它过,
 	// 而它是 relay_logs 里少数高选择性的整型列。没有索引时这两个谓词要对全表
 	// 逐行求值(实测 10 万行 847ms), 有了索引降到 10ms 量级。
@@ -253,9 +244,6 @@ type RelayLogScope struct {
 	// (a retry / failover happened), regardless of final outcome — spans both the
 	// "warn" bucket (recovered) and multi-attempt errors. Orthogonal to Severity.
 	RetriedOnly bool
-	// ProbeFlagged, when non-nil, narrows to rows where the passive probe either
-	// found something (true) or found nothing (false). nil = no filtering.
-	ProbeFlagged *bool
 	// HideModelTest, when true, excludes channel-test probe rows (request_endpoint
 	// "model_test*") from the list. A repeat/stress test — or an upstream capacity
 	// bad-window — can emit many test-probe failures; this filter keeps them from

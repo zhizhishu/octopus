@@ -394,14 +394,6 @@ func computeRelayProbesForLog(relayLog model.RelayLog) []model.RelayProbeFinding
 	return out
 }
 
-// relayProbeFlagged 把探针结论折成一个可索引的布尔值。
-//
-// 单独成函数而不是在 RelayLogAdd 里内联 len(...)>0, 是为了让"什么算命中"
-// 只有一处定义——将来要按 severity 过滤时只改这里, 不会漏掉另一处。
-func relayProbeFlagged(findings []model.RelayProbeFinding) bool {
-	return len(findings) > 0
-}
-
 // passiveProbeOn 读被动检测总开关。
 //
 // 默认开: 被动检测不发上游请求、不耗 token、不增延迟, 没有需要保护用户

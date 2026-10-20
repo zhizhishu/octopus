@@ -90,14 +90,11 @@ type relayLogStreamTokenScope struct {
 	HideModelTest bool
 	// UpstreamModelMismatch 三态筛选: nil=不筛, true/false=只要上游回显不一致/一致的行。
 	UpstreamModelMismatch *bool
-	// ProbeFlagged 三态筛选: nil=不筛, true=只看硬事实校验没过关的, false=只看没发现问题的。
-	// 走 ProbeFlagged 布尔列(带索引), 不按 PassiveProbes 的 JSON 内容做 LIKE。
-	ProbeFlagged *bool
-	IsAdmin      bool
-	StartTime    int
-	EndTime      int
-	HasTimeRange bool
-	createdAt    time.Time
+	IsAdmin               bool
+	StartTime             int
+	EndTime               int
+	HasTimeRange          bool
+	createdAt             time.Time
 }
 
 var relayLogStreamTokens = make(map[string]relayLogStreamTokenScope)
@@ -125,7 +122,6 @@ func RelayLogStreamTokenCreateWithTimeRange(scope model.RelayLogScope, isAdmin b
 		HideModelTest: scope.HideModelTest,
 
 		UpstreamModelMismatch: scope.UpstreamModelMismatch,
-		ProbeFlagged:          scope.ProbeFlagged,
 		IsAdmin:               isAdmin,
 		createdAt:             time.Now(),
 	}
@@ -373,7 +369,6 @@ func RelayLogAdd(ctx context.Context, relayLog model.RelayLog) error {
 		// 缓存是否超过输入、字符/token 比值、分词器口径)。零上游请求、只证伪不认证。
 		// 失败请求与缺字段一律跳过——"算不出来"不能报成"算出来不对"。
 		relayLog.PassiveProbes = computeRelayProbesForLog(relayLog)
-		relayLog.ProbeFlagged = relayProbeFlagged(relayLog.PassiveProbes)
 	}
 
 	if enabled {
@@ -1282,9 +1277,6 @@ func relayLogMatchScope(relayLog model.RelayLog, scope *model.RelayLogScope) boo
 			return false
 		}
 	}
-	if scope.ProbeFlagged != nil && relayLog.ProbeFlagged != *scope.ProbeFlagged {
-		return false
-	}
 	if scope.Search != "" && !relayLogSearchMatches(relayLog, scope.Search) {
 		return false
 	}
@@ -1586,15 +1578,6 @@ func relayLogApplyScopeRaw(query *gorm.DB, scope *model.RelayLogScope) *gorm.DB 
 		// both buckets — a plain `= ?` comparison would already drop NULLs, but stating it
 		// makes the tri-state contract obvious to the next reader.
 		query = query.Where("upstream_model_mismatch IS NOT NULL AND upstream_model_mismatch = ?", *scope.UpstreamModelMismatch)
-	}
-	if scope.ProbeFlagged != nil {
-		// probe_flagged 带索引, 按布尔值直接走索引; 不去 LIKE 那个 JSON 文本列。
-		if *scope.ProbeFlagged {
-			query = query.Where("probe_flagged = ?", true)
-		} else {
-			// COALESCE 兜住 AutoMigrate 之前的老行(NULL 语义等同"没标过")。
-			query = query.Where("COALESCE(probe_flagged, ?) = ?", false, false)
-		}
 	}
 	return query
 }

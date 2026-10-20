@@ -138,25 +138,6 @@ func upstreamModelMismatchFromQuery(c *gin.Context) *bool {
 	}
 }
 
-// probeFlaggedFromQuery reads the optional ?probe_flagged= filter
-// ("1"/"true" → only rows where the passive probe found something to point at;
-// "0"/"false" → only rows where it found nothing).
-//
-// Absent or unrecognized means no filter. "Found nothing" is NOT a clean bill of
-// health — the probe can only falsify, never certify.
-func probeFlaggedFromQuery(c *gin.Context) *bool {
-	switch strings.ToLower(strings.TrimSpace(c.Query("probe_flagged"))) {
-	case "1", "true", "yes", "on":
-		v := true
-		return &v
-	case "0", "false", "no", "off":
-		v := false
-		return &v
-	default:
-		return nil
-	}
-}
-
 // providerFromQuery reads and normalizes ?provider=; unknown providers return "" (or rejection).
 func providerFromQuery(c *gin.Context) string {
 	p := strings.ToLower(strings.TrimSpace(c.Query("provider")))
@@ -217,7 +198,6 @@ func listLog(c *gin.Context) {
 	scope.RetriedOnly = retriedFromQuery(c)
 	scope.HideModelTest = hideModelTestFromQuery(c)
 	scope.UpstreamModelMismatch = upstreamModelMismatchFromQuery(c)
-	scope.ProbeFlagged = probeFlaggedFromQuery(c)
 	scope.Search = strings.TrimSpace(c.Query("search"))
 
 	logs, err := op.RelayLogList(c.Request.Context(), startTime, endTime, page, pageSize, &scope)
@@ -273,7 +253,6 @@ func countLog(c *gin.Context) {
 	scope.RetriedOnly = retriedFromQuery(c)
 	scope.HideModelTest = hideModelTestFromQuery(c)
 	scope.UpstreamModelMismatch = upstreamModelMismatchFromQuery(c)
-	scope.ProbeFlagged = probeFlaggedFromQuery(c)
 	scope.Search = strings.TrimSpace(c.Query("search"))
 
 	counts, err := op.RelayLogSeverityCounts(c.Request.Context(), startTime, endTime, &scope)
@@ -326,7 +305,6 @@ func exportLog(c *gin.Context) {
 	scope.RetriedOnly = retriedFromQuery(c)
 	scope.HideModelTest = hideModelTestFromQuery(c)
 	scope.UpstreamModelMismatch = upstreamModelMismatchFromQuery(c)
-	scope.ProbeFlagged = probeFlaggedFromQuery(c)
 	scope.Search = strings.TrimSpace(c.Query("search"))
 
 	// Opt-in portable NDJSON/JSONL mode. The default (json array) behavior is
@@ -522,7 +500,6 @@ func getStreamToken(c *gin.Context) {
 	scope.RetriedOnly = retriedFromQuery(c)
 	scope.HideModelTest = hideModelTestFromQuery(c)
 	scope.UpstreamModelMismatch = upstreamModelMismatchFromQuery(c)
-	scope.ProbeFlagged = probeFlaggedFromQuery(c)
 	scope.Search = strings.TrimSpace(c.Query("search"))
 	token, err := op.RelayLogStreamTokenCreateWithTimeRange(scope, middleware.CurrentUserIsAdmin(c), startTime, endTime)
 	if err != nil {
@@ -563,7 +540,6 @@ func streamLog(c *gin.Context) {
 	scope.Search = tokenScope.Search
 	scope.RetriedOnly = tokenScope.RetriedOnly
 	scope.HideModelTest = tokenScope.HideModelTest
-	scope.ProbeFlagged = tokenScope.ProbeFlagged
 	scope.UpstreamModelMismatch = tokenScope.UpstreamModelMismatch
 	var startTime, endTime *int
 	if tokenScope.HasTimeRange {
