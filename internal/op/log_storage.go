@@ -404,14 +404,37 @@ func relayLogVacuum(ctx context.Context) error {
 	if !safe {
 		return errors.New(reason)
 	}
-	if err := db.GetDB().WithContext(ctx).Exec("VACUUM").Error; err != nil {
+
+	// 顺序是硬性的，写反等于白做（2026-10-20 用 sqlite 3 实测确认）：
+	//   先 VACUUM 后设 pragma -> 新库 auto_vacuum 仍是 0，增量回收继续不生效；
+	//   先设 pragma 后 VACUUM -> 新库 auto_vacuum = 2，之后每次删行都能自动截断。
+	// SQLite 官方也这么规定：要换 auto_vacuum 模式，必须先设 pragma，再跑 VACUUM
+	// 重排整个文件。
+	//
+	// 另一个坑：auto_vacuum 是**连接级**设置，而 GORM 用的是连接池。分开两次
+	// Exec 很可能落在不同连接上，pragma 就丢了。所以这里取出同一条连接，
+	// 把两件事都钉在它上面 —— 这是这段代码唯一正确写法。
+	sqlDB, err := db.GetDB().DB()
+	if err != nil {
 		return err
 	}
-	// VACUUM 会把 auto_vacuum 重置为本次连接 pragma 指定的模式。这里显式切到
-	// incremental，让后续清理都能走便宜的增量回收，不必每次都重建整个文件。
-	// (对刚 VACUUM 过的新库，这一步是生效的 —— 官方允许在新库或 VACUUM 后改模式。)
-	if err := db.GetDB().Exec("PRAGMA auto_vacuum=INCREMENTAL").Error; err != nil {
-		log.Debugf("relay log switch to incremental auto_vacuum failed: %v", err)
+	conn, err := sqlDB.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "PRAGMA auto_vacuum=INCREMENTAL"); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, "VACUUM"); err != nil {
+		return err
+	}
+
+	// 复核：模式没切过去说明这条路仍然无效，如实记下来，不要假装成功。
+	var mode int64
+	if err := conn.QueryRowContext(ctx, "PRAGMA auto_vacuum").Scan(&mode); err == nil && mode != 2 {
+		log.Warnf("relay log vacuum finished but auto_vacuum is still %d (expected 2); space will keep growing until this is fixed", mode)
 	}
 	return nil
 }

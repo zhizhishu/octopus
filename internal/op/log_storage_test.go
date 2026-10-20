@@ -585,3 +585,88 @@ func TestIncrementalVacuumReportsFullVacuumNeeded(t *testing.T) {
 		t.Fatalf("auto_vacuum=none 时必须报告需要完整 VACUUM，否则会静默不回收")
 	}
 }
+
+// TestVacuumEnablesIncrementalAutoVacuum 守 auto_vacuum 的**顺序契约**。
+//
+// 这是 2026-10-20 用真实 sqlite 实测发现的坑，写反了等于白做：
+//
+//	先 VACUUM 后设 pragma -> 新库 auto_vacuum 仍是 0，删行依旧不还空间；
+//	先设 pragma 后 VACUUM -> 新库 auto_vacuum = 2，之后每次删行自动截断文件。
+//
+// 生产的 56GB 膨胀就是这么来的：库从建库起就是 none，删了只标记空闲。
+// 所以这条顺序必须被测试钉死，不能靠注释提醒。
+func TestVacuumEnablesIncrementalAutoVacuum(t *testing.T) {
+	ctx := setupRelayLogTest(t)
+	ensureSearchIndexTable(t)
+
+	body := strings.Repeat("y", 4*1024)
+	for i := 0; i < 50; i++ {
+		r := model.RelayLog{
+			ID: int64(i + 1), Time: int64(i + 1),
+			RequestModelName: "m",
+			RequestContent:   body,
+		}
+		if err := db.GetDB().Create(&r).Error; err != nil {
+			t.Fatalf("seed %d: %v", i, err)
+		}
+	}
+	db.GetDB().Exec("DELETE FROM relay_logs WHERE id > 10")
+
+	// 走生产路径：relayLogVacuum 应当在 VACUUM 前先把模式切到 incremental。
+	if err := relayLogVacuum(ctx); err != nil {
+		t.Skipf("VACUUM skipped (space guard or driver): %v", err)
+	}
+
+	var mode int64
+	if err := db.GetDB().Raw("PRAGMA auto_vacuum").Row().Scan(&mode); err != nil {
+		t.Fatalf("read auto_vacuum: %v", err)
+	}
+	if mode != 2 {
+		t.Fatalf("VACUUM 后 auto_vacuum 应为 2(incremental)，实际 %d —— 说明 pragma 与 VACUUM 的顺序写反了，增量回收不会生效", mode)
+	}
+
+	// 模式对了之后，增量回收必须真的能跑并回收页。
+	if _, needsFull, err := relayLogIncrementalVacuum(ctx, 0); err != nil {
+		t.Fatalf("incremental vacuum after switch: %v", err)
+	} else if needsFull {
+		t.Fatalf("已切到 incremental 模式，不应再报告需要完整 VACUUM")
+	}
+}
+
+// TestAutoVacuumPragmaMustPrecedeVacuum 直接验证顺序契约本身，绕开磁盘空间闸门。
+//
+// 上一条测试走的是生产路径（会被"可用空间不足"跳过，Windows 上 diskFreeBytes
+// 恒返回不可用），因此无法在本地证明顺序。这条用裸 SQL 把两种顺序都跑一遍，
+// 把"顺序写反会静默失效"这件事变成可断言的失败，而不是靠人记注释。
+func TestAutoVacuumPragmaMustPrecedeVacuum(t *testing.T) {
+	ctx := setupRelayLogTest(t)
+
+	sqlDB, err := db.GetDB().DB()
+	if err != nil {
+		t.Fatalf("get sql.DB: %v", err)
+	}
+
+	// 同一条连接上：先设 pragma，再 VACUUM —— 模式必须变成 2。
+	conn, err := sqlDB.Conn(ctx)
+	if err != nil {
+		t.Fatalf("get conn: %v", err)
+	}
+	if _, err := conn.ExecContext(ctx, "PRAGMA auto_vacuum=INCREMENTAL"); err != nil {
+		conn.Close()
+		t.Fatalf("set pragma: %v", err)
+	}
+	if _, err := conn.ExecContext(ctx, "VACUUM"); err != nil {
+		conn.Close()
+		t.Fatalf("vacuum: %v", err)
+	}
+	var mode int64
+	if err := conn.QueryRowContext(ctx, "PRAGMA auto_vacuum").Scan(&mode); err != nil {
+		conn.Close()
+		t.Fatalf("read mode: %v", err)
+	}
+	conn.Close()
+
+	if mode != 2 {
+		t.Fatalf("先 pragma 后 VACUUM 应得到 incremental(2)，实际 %d", mode)
+	}
+}
