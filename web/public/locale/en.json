@@ -1108,7 +1108,12 @@
       "allDetectors": "All detectors",
       "inheritedNotice": "No custom detectors on this channel; it uses the global default: {flags}.",
       "customNotice": "This channel uses custom detectors, independent of the global default.",
-      "restoreInherit": "Restore global default"
+      "restoreInherit": "Restore global default",
+      "searchPlaceholder": "Search by channel name or ID",
+      "searchResult": "{count} channel(s) found",
+      "searchEmpty": "No matching channels",
+      "groupActive": "Enabled ({count})",
+      "groupInactive": "Not enabled ({count})"
     },
     "test": {
       "title": "Redaction Test",

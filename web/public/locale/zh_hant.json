@@ -1108,7 +1108,12 @@
       "allDetectors": "全部偵測器",
       "inheritedNotice": "此頻道未自訂偵測器，實際沿用全域預設：{flags}。",
       "customNotice": "此頻道已自訂偵測器，與全域預設互不影響。",
-      "restoreInherit": "恢復繼承全域預設"
+      "restoreInherit": "恢復繼承全域預設",
+      "searchPlaceholder": "搜尋頻道名稱或編號",
+      "searchResult": "找到 {count} 個頻道",
+      "searchEmpty": "沒有符合的頻道",
+      "groupActive": "已開啟脫敏（{count}）",
+      "groupInactive": "未開啟（{count}）"
     },
     "test": {
       "title": "脱敏测试",

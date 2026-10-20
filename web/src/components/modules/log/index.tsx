@@ -692,6 +692,9 @@ export function Log() {
     // 严重程度是服务端过滤，翻页/总数都对得上。
     const [severityFilter, setSeverityFilter] = useState<LogSeverityFilter>('all');
     const [mismatchFilter, setMismatchFilter] = useState<'all' | 'mismatch' | 'match'>('all');
+    // 账目校验筛选：只看"硬事实对不上"的日志。走服务端带索引的布尔列，
+    // 不按 JSON 文本 LIKE（生产库十几 GB，那会把日志页拖死）。
+    const [probeFilter, setProbeFilter] = useState<'all' | 'flagged' | 'clean'>('all');
     const [searchKeyword, setSearchKeyword] = useState('');
     // 手机端默认只留搜索框、其余筛选控件折叠；桌面靠 sm: 断点强制常显，两种视口互不影响。
     const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
@@ -742,6 +745,7 @@ export function Log() {
         : undefined;
     const { startTime, endTime } = resolveLogTimeRange(startDate, endDate);
     const mismatchParam = isAdmin && mismatchFilter !== 'all' ? mismatchFilter === 'mismatch' : undefined;
+    const probeParam = probeFilter === 'all' ? undefined : probeFilter === 'flagged';
 
     // 全量严重程度计数（成功/警告/错误 + 总数）。与列表查询共享过滤参数，不含
     // page/page_size/severity，所以徽章数字与分页页数都是"全量"、不受当前页限制。
@@ -757,6 +761,7 @@ export function Log() {
         hideModelTest: false,
         search: deferredSearch || undefined,
         upstreamModelMismatch: mismatchParam,
+        probeFlagged: probeParam,
     });
     const LOG_PAGE_SIZE = 20;
     // 当前生效筛选下的总条数：全部→total，否则取该严重程度的计数。分页页数据此算。
@@ -794,6 +799,7 @@ export function Log() {
         hideModelTest: false,
         search: deferredSearch || undefined,
         upstreamModelMismatch: mismatchParam,
+        probeFlagged: probeParam,
         // 实时刷新只在实时模式 + 第 1 页（最新）生效；翻到历史页自然暂停，回第 1 页恢复。
         live: isLiveMode && currentPage === 1,
     });
@@ -870,6 +876,7 @@ export function Log() {
         !!effectiveSelectedAPIKeyID ||
         severityFilter !== 'all' ||
         mismatchFilter !== 'all' ||
+        probeFilter !== 'all' ||
         !!searchKeyword.trim() ||
         !isDefaultRange;
 
@@ -887,6 +894,7 @@ export function Log() {
     if (selectedModel) activePills.push({ key: 'mod', label: `模型 ${selectedModel}`, onClear: () => { setSelectedModel(''); setCurrentPage(1); } });
     if (severityFilter !== 'all') activePills.push({ key: 'sev', label: `状态 ${t(`list.filters.${severityFilter}`)}`, onClear: () => { setSeverityFilter('all'); setCurrentPage(1); } });
     if (mismatchFilter !== 'all') activePills.push({ key: 'mismatch', label: t(`list.filters.${mismatchFilter}`), onClear: () => { setMismatchFilter('all'); setCurrentPage(1); } });
+    if (probeFilter !== 'all') activePills.push({ key: 'probe', label: probeFilter === 'flagged' ? '账目有问题' : '账目未见问题', onClear: () => { setProbeFilter('all'); setCurrentPage(1); } });
     if (selectedUserID) activePills.push({ key: 'user', label: `用户 ${users.find((u) => u.id === selectedUserID)?.username ?? selectedUserID}`, onClear: () => { setSelectedUserID(undefined); setCurrentPage(1); } });
     if (effectiveSelectedAPIKeyID) activePills.push({ key: 'key', label: `Key ${selectedAPIKey?.name ?? effectiveSelectedAPIKeyID}`, onClear: () => { setSelectedAPIKeyID(undefined); setCurrentPage(1); } });
 
@@ -1168,6 +1176,20 @@ export function Log() {
                             <option value="match">{t('list.filters.match')}</option>
                         </select>
                     )}
+                    <select
+                        aria-label="账目校验"
+                        value={probeFilter}
+                        onChange={(event) => {
+                            const next = event.target.value as 'all' | 'flagged' | 'clean';
+                            setProbeFilter(next);
+                            setCurrentPage(1);
+                        }}
+                        className="h-9 min-w-0 w-full rounded-lg border border-input bg-background px-2 text-xs text-foreground outline-none sm:px-3"
+                    >
+                        <option value="all">账目：全部</option>
+                        <option value="flagged">账目：有问题</option>
+                        <option value="clean">账目：未见问题</option>
+                    </select>
                     </div>
                 </div>
 

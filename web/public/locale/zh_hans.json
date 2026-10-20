@@ -1108,7 +1108,12 @@
       "allDetectors": "全部检测器",
       "inheritedNotice": "该渠道未定制检测器，实际沿用全局默认：{flags}。",
       "customNotice": "该渠道已自定义检测器，与全局默认互不影响。",
-      "restoreInherit": "恢复继承全局默认"
+      "restoreInherit": "恢复继承全局默认",
+      "searchPlaceholder": "搜索渠道名或编号",
+      "searchResult": "找到 {count} 个渠道",
+      "searchEmpty": "没有匹配的渠道",
+      "groupActive": "已开启脱敏（{count}）",
+      "groupInactive": "未开启（{count}）"
     },
     "test": {
       "title": "脱敏测试",

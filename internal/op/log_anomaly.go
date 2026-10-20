@@ -2,6 +2,7 @@ package op
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"sort"
 	"strconv"
@@ -58,6 +59,11 @@ func ScanLogAnomalies(logs []model.RelayLog, now time.Time) model.LogAnomalyRepo
 	cutoff := now.Add(-logAnomalyLookback).Unix()
 	buckets := map[string]*logAnomalyBucket{}
 	passive := map[string]*model.LogAnomalyPassiveBucket{}
+	// 探针桶: key = channelID | model | 探针码 | severity。
+	// 同桶累计命中数与检查总数, 让界面能说"12 条里 9 条对不上"而不是只给个 9。
+	probes := map[string]*model.LogAnomalyProbeBucket{}
+	// probeChecked 按 channel|model 记"参与检查的日志条数", 作为每个探针桶的分母。
+	probeChecked := map[string]int{}
 
 	for _, relayLog := range logs {
 		if relayLog.Time < cutoff {
@@ -114,6 +120,35 @@ func ScanLogAnomalies(logs []model.RelayLog, now time.Time) model.LogAnomalyRepo
 			pb.Count++
 			pb.NoProfileCount++
 		}
+
+		// 探针汇总: 分母与分子分开累。
+		//
+		// probeChecked 记每个 channel|model 参与检查的日志条数(分母), probes 记命中
+		// (分子)。循环结束后再统一把分母写进该 channel|model 下的每个桶——不能
+		// 在循环里直接给 Total 累加, 那样同一个桶会按"该日志命中了几个码"被重复计入。
+		//
+		// 失败请求在这之前已经 continue 过, 所以分母不受错误请求污染。
+		if !relayLogProbeExcluded(relayLog) {
+			cmKey := logAnomalyChannelModelKey(relayLog.ChannelId, logAnomalyModelName(relayLog))
+			probeChecked[cmKey]++
+			modelName := logAnomalyModelName(relayLog)
+			for _, f := range relayLog.PassiveProbes {
+				pk := logAnomalyProbeBucketKey(relayLog.ChannelId, modelName, f.Code, f.Severity)
+				pb := probes[pk]
+				if pb == nil {
+					pb = &model.LogAnomalyProbeBucket{
+						Code:        f.Code,
+						Severity:    f.Severity,
+						ChannelID:   relayLog.ChannelId,
+						ChannelName: strings.TrimSpace(relayLog.ChannelName),
+						Model:       modelName,
+						Title:       f.Title,
+					}
+					probes[pk] = pb
+				}
+				pb.Count++
+			}
+		}
 	}
 
 	report.BucketCount = len(buckets)
@@ -130,6 +165,31 @@ func ScanLogAnomalies(logs []model.RelayLog, now time.Time) model.LogAnomalyRepo
 	for _, k := range pKeys {
 		report.PassiveObservations = append(report.PassiveObservations, *passive[k])
 	}
+	// 探针桶: 补分母 + 稳定排序。排序先按 severity(medium 在前)再按命中数降序,
+	// 让"确定的硬问题"永远排在"擦边的线索"前面。
+	pbKeys := make([]string, 0, len(probes))
+	for k := range probes {
+		pbKeys = append(pbKeys, k)
+	}
+	sort.Strings(pbKeys)
+	for _, k := range pbKeys {
+		b := probes[k]
+		b.Total = probeChecked[logAnomalyChannelModelKey(b.ChannelID, b.Model)]
+		report.ProbeFindings = append(report.ProbeFindings, *b)
+	}
+	sort.Slice(report.ProbeFindings, func(i, j int) bool {
+		a, b := report.ProbeFindings[i], report.ProbeFindings[j]
+		if a.Severity != b.Severity {
+			return a.Severity == model.RelayProbeSeverityMedium
+		}
+		if a.Count != b.Count {
+			return a.Count > b.Count
+		}
+		if a.ChannelID != b.ChannelID {
+			return a.ChannelID < b.ChannelID
+		}
+		return a.Code < b.Code
+	})
 	sort.Slice(report.Findings, func(i, j int) bool {
 		if report.Findings[i].Severity == report.Findings[j].Severity {
 			if report.Findings[i].ChannelID == report.Findings[j].ChannelID {
@@ -328,4 +388,34 @@ func medianInt(values []int) int {
 
 func round4(value float64) float64 {
 	return math.Round(value*10000) / 10000
+}
+
+// logAnomalyProbeBucketKey 是探针桶的稳定 key。
+func logAnomalyProbeBucketKey(channelID int, modelName, code, severity string) string {
+	return fmt.Sprintf("%d|%s|%s|%s", channelID, modelName, code, severity)
+}
+
+// logAnomalyChannelModelKey 是"分母"的 key: 同渠道同模型共用一份检查总数。
+func logAnomalyChannelModelKey(channelID int, modelName string) string {
+	return fmt.Sprintf("%d|%s", channelID, modelName)
+}
+
+// relayLogProbeExcluded 判断一条日志是否**完全没参与**探针检查。
+//
+// 分母只能是"真的被检查过的日志"。失败请求、被远端跳过的大响应、以及本进程
+// 重启前落库的旧行(没有 PassiveProbes 也没跑过)都不该进分母——否则命中率被
+// 稀释, 真问题看起来像偶发。
+//
+// 判据刻意保守: 只有明确知道"这条没检查"才排除。宁可分母偏大一点,
+// 也不要因为漏判把命中率算得虚高。
+func relayLogProbeExcluded(relayLog model.RelayLog) bool {
+	if strings.TrimSpace(relayLog.Error) != "" || relayLog.ErrorStatus >= 400 {
+		return true
+	}
+	// 两端都空 = 这条根本没有可检查的内容(旧行/未落正文)。
+	if strings.TrimSpace(relayLog.RequestContent) == "" &&
+		strings.TrimSpace(relayLog.ResponseContent) == "" {
+		return true
+	}
+	return false
 }

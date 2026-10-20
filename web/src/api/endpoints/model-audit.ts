@@ -107,11 +107,27 @@ export type LogAnomalyPassiveBucket = {
     no_profile_count: number;
 };
 
+/** 硬事实校验的聚合桶：账目/缓存/分词器口径对不上的地方。 */
+export type LogAnomalyProbeBucket = {
+    code: string;
+    severity: 'low' | 'medium';
+    channel_id: number;
+    channel_name: string;
+    model: string;
+    /** 命中条数。 */
+    count: number;
+    /** 同桶内参与检查的日志条数（分母）。只给命中数会让人误以为全部日志都出问题。 */
+    total: number;
+    title: string;
+};
+
 export type LogAnomalyReport = {
     window_hours: number;
     sample_count: number;
     bucket_count: number;
     findings: LogAnomalyFinding[];
+    /** 硬事实校验汇总，与行为类 findings 分开列（两者证据强度不同）。 */
+    probe_findings?: LogAnomalyProbeBucket[];
     /** 被动观察摘要的独立汇总（可选）：只读计数，不参与 findings 判定。 */
     passive_observations?: LogAnomalyPassiveBucket[];
     disclaimer: string;

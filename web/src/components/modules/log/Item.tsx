@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useMemo, useState, useEffect, useCallback, type ReactNode } from 'react';
+import React, { Fragment, useMemo, useState, useEffect, useCallback, type ReactNode } from 'react';
 import { Brain, Clock, Cpu, Zap, AlertCircle, ArrowDownToLine, ArrowUpFromLine, DollarSign, ArrowRight, ArrowDown, ArrowUp, Send, MessageSquare, Loader2, RotateCw, ChevronDown, ChevronUp, Pin, KeyRound, Percent, CheckCircle2, XCircle, Eye, Hash, MapPin, User, type LucideIcon } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { motion, AnimatePresence } from 'motion/react';
@@ -331,6 +331,8 @@ interface LogRouteHeaderProps {
     auditSlot?: ReactNode;
     /** card 专用槽位：B2 被动（纯本地）摘要徽标。与 auditSlot 同格，不新增轨道。 */
     passiveSlot?: ReactNode;
+    /** card 专用槽位：B2 硬事实校验徽标。与 passiveSlot 并列，不新增轨道；无命中传 null。 */
+    probeSlot?: ReactNode;
     /** card 专用槽位：C2「查看详情」。detail 忽略。 */
     detailsSlot?: ReactNode;
 }
@@ -361,6 +363,7 @@ function LogRouteHeader({
     clientSlot,
     auditSlot,
     passiveSlot,
+    probeSlot,
     detailsSlot,
 }: LogRouteHeaderProps) {
     const t = useTranslations('log.card');
@@ -620,7 +623,7 @@ function LogRouteHeader({
          * 模型名和状态、接口挤在同一行；客户端、回显、查看详情在下一行。
          * 窄屏仍按这六个格子的顺序自然往下排。
          */
-        const hasEchoEvidence = Boolean(echoGroup || auditSlot || passiveSlot);
+        const hasEchoEvidence = Boolean(echoGroup || auditSlot || passiveSlot || probeSlot);
         return (
             <div
                 data-log-header
@@ -658,6 +661,7 @@ function LogRouteHeader({
                             {echoGroup}
                             {auditSlot ? <span className="min-w-0">{auditSlot}</span> : null}
                             {passiveSlot ? <span className="min-w-0">{passiveSlot}</span> : null}
+                            {probeSlot ? <span className="min-w-0">{probeSlot}</span> : null}
                         </span>
                     ) : null}
                 </div>
@@ -682,6 +686,7 @@ function LogRouteHeader({
             {clientSlot}
             {echoGroup}
             {passiveSlot}
+            {probeSlot}
             {streamBadge}
             {stickyPin}
         </>
@@ -1238,6 +1243,65 @@ export const LogCard = React.memo(function LogCard({
             </PopoverContent>
         </Popover>
     ) : null;
+    // 硬事实校验徽标：这条日志里"账对不上"的地方。
+    //
+    // 与被动摘要徽标刻意分开：摘要说的是"回复长什么样"，这里说的是"数字自相矛盾"。
+    // 两者证据强度不同，混成一个徽标会让硬问题看着像软观察。
+    // 只有真的命中才出徽标——没命中不出"正常"徽标，避免被读成"已验真"。
+    const probes = log.passive_probes ?? [];
+    const probeSlot = probes.length > 0 ? (
+        <Popover>
+            <PopoverTrigger asChild>
+                <Badge
+                    variant="outline"
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => {
+                        e.stopPropagation();
+                        if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            e.currentTarget.click();
+                        }
+                    }}
+                    className={cn(
+                        'min-w-0 cursor-pointer overflow-visible whitespace-normal px-1.5 py-0 text-xs',
+                        probes.some((p) => p.severity === 'medium')
+                            ? 'border-amber-500/40 text-amber-600 dark:text-amber-400'
+                            : 'border-border text-muted-foreground'
+                    )}
+                >
+                    账目 {probes.length}
+                </Badge>
+            </PopoverTrigger>
+            <PopoverContent align="start" className="w-96 p-3">
+                <div className="space-y-2 text-xs">
+                    <p className="font-medium text-foreground">这条日志里对不上的地方</p>
+                    <p className="text-[11px] leading-5 text-muted-foreground">
+                        以下都是只用这条日志本身算出来的，没有额外请求、没有消耗 token。
+                        有命中值得去查；没有命中也不代表模型是真的。
+                    </p>
+                    <ul className="space-y-2">
+                        {probes.map((probe, index) => (
+                            <li key={`${probe.code}-${index}`} className="rounded-lg border border-border px-2 py-1.5">
+                                <p className="leading-5">{probe.title}</p>
+                                {probe.evidence && Object.keys(probe.evidence).length > 0 && (
+                                    <div className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
+                                        {Object.entries(probe.evidence).map(([k, v]) => (
+                                            <Fragment key={k}>
+                                                <span>{k}</span>
+                                                <span className="break-all">{String(v)}</span>
+                                            </Fragment>
+                                        ))}
+                                    </div>
+                                )}
+                            </li>
+                        ))}
+                    </ul>
+                </div>
+            </PopoverContent>
+        </Popover>
+    ) : null;
     // 被动（纯本地）摘要徽标：中性色，弹层只给版本/粗语言/六项特征与说明，不认证真伪。
     const passiveSlot = passiveBadge ? (
         <Popover>
@@ -1375,6 +1439,7 @@ export const LogCard = React.memo(function LogCard({
                                 clientSlot={clientSlot}
                                 auditSlot={auditSlot}
                                 passiveSlot={passiveSlot}
+                                probeSlot={probeSlot}
                                 detailsSlot={detailsSlot}
                             />
 
@@ -1496,6 +1561,8 @@ export const LogCard = React.memo(function LogCard({
                                 endpointTitle={endpointTitle}
                                 upstreamPaths={upstreamPaths}
                                 upstreamPathTitle={upstreamPathTitle}
+                                passiveSlot={passiveSlot}
+                                probeSlot={probeSlot}
                             />
                         </MorphingDialogTitle>
 

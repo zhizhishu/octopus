@@ -169,6 +169,13 @@ function RedactChannelCard() {
     const { data: settings } = useSettingList();
     const updateChannel = useUpdateChannel();
     const [expanded, setExpanded] = useState<number | null>(null);
+    // 搜索与折叠: 渠道一多, 满屏开关根本找不到要改的那一个。
+    // 搜索按名字/id 过滤, 折叠按"是否已开启脱敏"分组, 默认收起已开启的那组。
+    const [query, setQuery] = useState('');
+    const [collapsed, setCollapsed] = useState<{ active: boolean; inactive: boolean }>({
+        active: true,
+        inactive: false,
+    });
 
     const valueOf = (key: string, fallback: string) =>
         settings?.find((s) => s.key === key)?.value ?? fallback;
@@ -195,6 +202,29 @@ function RedactChannelCard() {
         });
     }, [channels]);
 
+    // 搜索: 名字包含关键字, 或输入纯数字时按 id 精确匹配。
+    // 只做包含匹配, 不引入模糊打分——脱敏是安全开关, 搜出来什么必须可预期。
+    const filtered = useMemo(() => {
+        const q = query.trim().toLowerCase();
+        if (!q) return sorted;
+        return sorted.filter(({ raw }) => {
+            if (raw.name.toLowerCase().includes(q)) return true;
+            return /^\d+$/.test(q) && String(raw.id) === q;
+        });
+    }, [sorted, query]);
+
+    // 两组: 已开启 / 未开启。搜索时全部展开, 否则用户搜到了却被折叠会以为没结果。
+    const groups = useMemo(() => {
+        const active = filtered.filter(({ raw }) => raw.redact_enabled);
+        const inactive = filtered.filter(({ raw }) => !raw.redact_enabled);
+        return [
+            { key: 'active' as const, items: active },
+            { key: 'inactive' as const, items: inactive },
+        ];
+    }, [filtered]);
+
+    const searching = query.trim() !== '';
+
     return (
         <div className="rounded-3xl border border-border bg-card p-6">
             <div className="flex items-center gap-3">
@@ -205,43 +235,96 @@ function RedactChannelCard() {
                 </div>
             </div>
 
+            <div className="mt-4">
+                <input
+                    type="text"
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    placeholder={t('channel.searchPlaceholder')}
+                    className="h-9 w-full rounded-lg border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none"
+                />
+                {searching && (
+                    <p className="mt-1.5 text-xs text-muted-foreground">
+                        {t('channel.searchResult', { count: filtered.length })}
+                    </p>
+                )}
+            </div>
+
             <div className="mt-5 space-y-2">
                 {sorted.length === 0 && (
                     <p className="py-6 text-center text-sm text-muted-foreground">{t('channel.empty')}</p>
                 )}
-                {sorted.map(({ raw }) => {
-                    const channelFlags = raw.redact_flags ?? '';
-                    // 空串 = 继承全局默认 (后端语义), 非空 = 该渠道自定义
-                    const inherits = channelFlags === '';
-                    // 实际生效 = 渠道自定义值, 否则全局默认值
-                    const effectiveFlags = inherits ? globalDefaultFlags : channelFlags;
-                    // 空串继承链: 渠道空 -> 全局; 全局也空才是全部检测器。展示时把空串翻成"全部检测器"。
-                    const effectiveLabel =
-                        effectiveFlags === '' ? t('channel.allDetectors') : effectiveFlags;
-                    // 三态徽章 (+ 总闸态): 未启用 / 总闸关闭 / 继承默认 / 自定义
-                    const badge = !raw.redact_enabled
-                        ? { text: t('channel.statusDisabled'), cls: 'bg-muted text-muted-foreground' }
-                        : !masterEnabled
-                          ? {
-                                text: t('channel.statusMasterDisabled'),
-                                cls: 'bg-amber-500/10 text-amber-600 dark:text-amber-400',
-                            }
-                          : inherits
-                            ? {
-                                  text: t('channel.statusInherited', { flags: effectiveLabel }),
-                                  cls: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
-                              }
-                            : {
-                                  text: t('channel.statusCustom'),
-                                  cls: 'bg-sky-500/10 text-sky-600 dark:text-sky-400',
-                              };
-                    const dotCls = !raw.redact_enabled
-                        ? 'bg-muted-foreground/30'
-                        : !masterEnabled
-                          ? 'bg-amber-500'
-                          : 'bg-emerald-500';
+                {sorted.length > 0 && filtered.length === 0 && (
+                    <p className="py-6 text-center text-sm text-muted-foreground">
+                        {t('channel.searchEmpty')}
+                    </p>
+                )}
+                {groups.map(({ key, items }) => {
+                    if (items.length === 0) return null;
+                    const isCollapsed = searching ? false : collapsed[key];
                     return (
-                        <div key={raw.id} className="rounded-xl border border-border bg-background">
+                        <div key={key} className="space-y-2">
+                            <button
+                                type="button"
+                                onClick={() =>
+                                    setCollapsed((prev) => ({ ...prev, [key]: !prev[key] }))
+                                }
+                                disabled={searching}
+                                className="flex w-full items-center gap-2 rounded-lg px-1 py-1 text-left text-xs font-medium text-muted-foreground hover:text-foreground disabled:cursor-default"
+                            >
+                                <span className={cn('transition-transform', isCollapsed ? '' : 'rotate-90')}>
+                                    ▸
+                                </span>
+                                <span>
+                                    {key === 'active'
+                                        ? t('channel.groupActive', { count: items.length })
+                                        : t('channel.groupInactive', { count: items.length })}
+                                </span>
+                            </button>
+                            {!isCollapsed &&
+                                items.map(({ raw }) => {
+                                    const channelFlags = raw.redact_flags ?? '';
+                                    // 空串 = 继承全局默认 (后端语义), 非空 = 该渠道自定义
+                                    const inherits = channelFlags === '';
+                                    // 实际生效 = 渠道自定义值, 否则全局默认值
+                                    const effectiveFlags = inherits ? globalDefaultFlags : channelFlags;
+                                    // 空串继承链: 渠道空 -> 全局; 全局也空才是全部检测器。展示时把空串翻成"全部检测器"。
+                                    const effectiveLabel =
+                                        effectiveFlags === ''
+                                            ? t('channel.allDetectors')
+                                            : effectiveFlags;
+                                    // 三态徽章 (+ 总闸态): 未启用 / 总闸关闭 / 继承默认 / 自定义
+                                    const badge = !raw.redact_enabled
+                                        ? {
+                                              text: t('channel.statusDisabled'),
+                                              cls: 'bg-muted text-muted-foreground',
+                                          }
+                                        : !masterEnabled
+                                          ? {
+                                                text: t('channel.statusMasterDisabled'),
+                                                cls: 'bg-amber-500/10 text-amber-600 dark:text-amber-400',
+                                            }
+                                          : inherits
+                                            ? {
+                                                  text: t('channel.statusInherited', {
+                                                      flags: effectiveLabel,
+                                                  }),
+                                                  cls: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
+                                              }
+                                            : {
+                                                  text: t('channel.statusCustom'),
+                                                  cls: 'bg-sky-500/10 text-sky-600 dark:text-sky-400',
+                                              };
+                                    const dotCls = !raw.redact_enabled
+                                        ? 'bg-muted-foreground/30'
+                                        : !masterEnabled
+                                          ? 'bg-amber-500'
+                                          : 'bg-emerald-500';
+                                    return (
+                                        <div
+                                            key={raw.id}
+                                            className="rounded-xl border border-border bg-background"
+                                        >
                             <div className="flex items-center justify-between gap-3 px-4 py-3">
                                 <button
                                     type="button"
@@ -337,6 +420,9 @@ function RedactChannelCard() {
                                     )}
                                 </div>
                             )}
+                        </div>
+                    );
+                                })}
                         </div>
                     );
                 })}

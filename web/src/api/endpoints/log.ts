@@ -130,6 +130,15 @@ export interface RelayLog {
             markdown_lines: number;
         };
     };
+    // 硬事实校验结论（纯本地、零上游请求）。空 = 没发现矛盾，
+    // **不等于**模型为真——这个体系只能证伪，不能认证。
+    probe_flagged?: boolean;
+    passive_probes?: Array<{
+        code: string;
+        severity: 'low' | 'medium';
+        title: string;
+        evidence?: Record<string, unknown>;
+    }>;
     input_tokens: number;        // 输入Token
     output_tokens: number;       // 输出Token
     cache_hit_tokens: number;     // 缓存命中Token
@@ -554,8 +563,9 @@ const logsInfiniteQueryKey = (
     retried?: boolean,
     hideModelTest?: boolean,
     search?: string,
-    upstreamModelMismatch?: boolean
-) => ['logs', 'infinite', pageSize, userID ?? 0, apiKeyID ?? 0, endpoint ?? '', provider ?? '', model ?? '', startTime ?? 0, endTime ?? 0, page ?? -1, severity ?? '', retried ? 1 : 0, hideModelTest ? 1 : 0, search ?? '', upstreamModelMismatch === undefined ? '' : upstreamModelMismatch ? 1 : 0] as const;
+    upstreamModelMismatch?: boolean,
+    probeFlagged?: boolean
+) => ['logs', 'infinite', pageSize, userID ?? 0, apiKeyID ?? 0, endpoint ?? '', provider ?? '', model ?? '', startTime ?? 0, endTime ?? 0, page ?? -1, severity ?? '', retried ? 1 : 0, hideModelTest ? 1 : 0, search ?? '', upstreamModelMismatch === undefined ? '' : upstreamModelMismatch ? 1 : 0, probeFlagged === undefined ? '' : probeFlagged ? 1 : 0] as const;
 
 /** queryKey 里「页码」所在的下标（顺序见 logsInfiniteQueryKey 的元素表）。 */
 const LOGS_KEY_PAGE_INDEX = 10;
@@ -579,8 +589,9 @@ const logCountQueryKey = (
     retried?: boolean,
     hideModelTest?: boolean,
     search?: string,
-    upstreamModelMismatch?: boolean
-) => ['logs', 'count', userID ?? 0, apiKeyID ?? 0, endpoint ?? '', provider ?? '', model ?? '', startTime ?? 0, endTime ?? 0, retried ? 1 : 0, hideModelTest ? 1 : 0, search ?? '', upstreamModelMismatch === undefined ? '' : upstreamModelMismatch ? 1 : 0] as const;
+    upstreamModelMismatch?: boolean,
+    probeFlagged?: boolean
+) => ['logs', 'count', userID ?? 0, apiKeyID ?? 0, endpoint ?? '', provider ?? '', model ?? '', startTime ?? 0, endTime ?? 0, retried ? 1 : 0, hideModelTest ? 1 : 0, search ?? '', upstreamModelMismatch === undefined ? '' : upstreamModelMismatch ? 1 : 0, probeFlagged === undefined ? '' : probeFlagged ? 1 : 0] as const;
 const LOG_STREAM_RECONNECT_BASE_MS = 1000;
 const LOG_STREAM_RECONNECT_MAX_MS = 15000;
 
@@ -601,11 +612,12 @@ export function useLogSeverityCounts(options: {
     hideModelTest?: boolean;
     search?: string;
     upstreamModelMismatch?: boolean;
+    probeFlagged?: boolean;
     enabled?: boolean;
 } = {}) {
-    const { userID, apiKeyID, endpoint, provider, model, startTime, endTime, retried, hideModelTest, search, upstreamModelMismatch, enabled = true } = options;
+    const { userID, apiKeyID, endpoint, provider, model, startTime, endTime, retried, hideModelTest, search, upstreamModelMismatch, probeFlagged, enabled = true } = options;
     return useQuery({
-        queryKey: logCountQueryKey(userID, apiKeyID, endpoint, provider, model, startTime, endTime, retried, hideModelTest, search, upstreamModelMismatch),
+        queryKey: logCountQueryKey(userID, apiKeyID, endpoint, provider, model, startTime, endTime, retried, hideModelTest, search, upstreamModelMismatch, probeFlagged),
         queryFn: async () => {
             const params = new URLSearchParams();
             appendOptionalParam(params, 'user_id', userID);
@@ -620,6 +632,8 @@ export function useLogSeverityCounts(options: {
             if (hideModelTest) params.set('hide_model_test', '1');
             if (upstreamModelMismatch === true) params.set('upstream_model_mismatch', '1');
             if (upstreamModelMismatch === false) params.set('upstream_model_mismatch', '0');
+            if (probeFlagged === true) params.set('probe_flagged', '1');
+            if (probeFlagged === false) params.set('probe_flagged', '0');
             return apiClient.get<RelayLogSeverityCounts>(`/api/v1/log/count?${params.toString()}`);
         },
         enabled,
@@ -648,8 +662,8 @@ export function useLogSeverityCounts(options: {
  * // 滚动到底部时加载更多
  * if (hasMore && !isLoadingMore) loadMore();
  */
-export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?: number; endpoint?: string; provider?: string; model?: string; startTime?: number; endTime?: number; live?: boolean; page?: number; severity?: string; search?: string; retried?: boolean; hideModelTest?: boolean; upstreamModelMismatch?: boolean } = {}) {
-    const { pageSize = 20, userID, apiKeyID, endpoint, provider, model, startTime, endTime, live = false, page, severity, search, retried, hideModelTest, upstreamModelMismatch } = options;
+export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?: number; endpoint?: string; provider?: string; model?: string; startTime?: number; endTime?: number; live?: boolean; page?: number; severity?: string; search?: string; retried?: boolean; hideModelTest?: boolean; upstreamModelMismatch?: boolean; probeFlagged?: boolean } = {}) {
+    const { pageSize = 20, userID, apiKeyID, endpoint, provider, model, startTime, endTime, live = false, page, severity, search, retried, hideModelTest, upstreamModelMismatch, probeFlagged } = options;
 
     const [isConnected, setIsConnected] = useState(false);
     const [error, setError] = useState<Error | null>(null);
@@ -660,8 +674,8 @@ export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?
 
     const queryClient = useQueryClient();
     const queryKey = useMemo(
-        () => logsInfiniteQueryKey(pageSize, userID, apiKeyID, endpoint, provider, model, startTime, endTime, page, severity, retried, hideModelTest, search, upstreamModelMismatch),
-        [apiKeyID, endpoint, provider, model, endTime, hideModelTest, page, pageSize, retried, search, severity, startTime, upstreamModelMismatch, userID]
+        () => logsInfiniteQueryKey(pageSize, userID, apiKeyID, endpoint, provider, model, startTime, endTime, page, severity, retried, hideModelTest, search, upstreamModelMismatch, probeFlagged),
+        [apiKeyID, endpoint, provider, model, endTime, hideModelTest, page, pageSize, retried, search, severity, startTime, upstreamModelMismatch, probeFlagged, userID]
     );
 
     const logsQuery = useInfiniteQuery({

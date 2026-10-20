@@ -660,6 +660,27 @@ export function ModelAudit() {
                                             ))}
                                         </ul>
                                     )}
+                                    {(logAnomalies.probe_findings ?? []).length > 0 && (
+                                        <div className="mt-3 border-t border-border pt-3">
+                                            <p className="text-xs font-medium text-foreground">账对不上的地方</p>
+                                            <p className="mt-0.5 text-[11px] leading-5 text-muted-foreground">
+                                                这些是日志里自相矛盾的事实，不需要额外请求就能看出来。命中不代表模型有问题，但值得去查。
+                                            </p>
+                                            <ul className="mt-2 space-y-2">
+                                                {(logAnomalies.probe_findings ?? []).slice(0, 5).map((item) => (
+                                                    <li key={`${item.channel_id}-${item.code}-${item.model}`} className="text-sm">
+                                                        <span className={item.severity === 'medium' ? 'font-medium text-amber-600 dark:text-amber-400' : 'text-foreground'}>
+                                                            {item.title}
+                                                        </span>
+                                                        <span className="mt-0.5 block text-xs text-muted-foreground">
+                                                            {item.channel_name || `渠道 ${item.channel_id}`} · {item.model}
+                                                            {item.total > 0 && ` · ${item.count}/${item.total} 条命中`}
+                                                        </span>
+                                                    </li>
+                                                ))}
+                                            </ul>
+                                        </div>
+                                    )}
                                     <p className="mt-2 text-[11px] leading-5 text-muted-foreground">{logAnomalies.disclaimer}</p>
                                     {logAnomalies.passive_observations?.length ? (
                                         <p className="mt-1 text-[11px] leading-5 text-muted-foreground">{t('passiveObserved', { count: logAnomalies.passive_observations.reduce((sum, bucket) => sum + bucket.count, 0) })}</p>
