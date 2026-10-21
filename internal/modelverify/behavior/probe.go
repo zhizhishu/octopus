@@ -197,36 +197,69 @@ func runIdentity(ctx context.Context, s modelverify.Sender, _ string) Result {
 
 // runTokenDelta 读上游自报的 prompt token 数，判断是否异常虚高。
 //
-// 手法：发一条极短的固定请求，自己按 len(prompt)/4 + 12 粗估 token 数，
-// 与上游自报值相减。虚高意味着中转站在请求前面塞了内容（隐藏提示词、路由前缀、
-// 系统提示），或者用了完全不同的分词器。
+// 手法（差分法，取代早先的 len(prompt)/4 粗估）：
 //
-// 期望值只是粗估，所以阈值必须宽松：上游取 200，只抓"异常偏高"。
-// 轻微偏差是正常的（分词器差异、脚手架附加），不该报警。
+//	Δ = 输入token(基准句 + N 个重复词) − 输入token(基准句)
+//
+// 为什么必须差分：粗估把三样东西混在一起——模型自己的分词器、脚手架的隐藏前缀、
+// 渠道注入的系统提示。三者和在一起，误差动辄几百 token，只能配一个很宽的阈值抓
+// "异常虚高"，对"换了个分词器"这种真信号基本无感。
+//
+// 差分把不变量全部减掉：同一渠道下脚手架前缀、系统提示、消息封装两次请求完全一样，
+// 相减即抵消。剩下的 Δ 只反映"这 N 个重复词是怎么被切开计数的"，也就是分词器本身。
+// 不同分词器对同一串重复词的计数是稳定的（参考项目实测：老分词器约 45~140，
+// 新分词器约 90~230），所以它比粗估可靠得多，而且完全不看模型说了什么。
+//
+// 成本：两次 max_tokens=16 的极短请求，与原来一次基本等价。
 func runTokenDelta(ctx context.Context, s modelverify.Sender, _ string) Result {
-	word := randStr(8)
-	prompt := "Return only the word: " + word
-	resp, err := s.Ask(ctx, modelverify.Ask{
-		Prompt:    prompt,
-		MaxTokens: intPtr(5),
+	base := "Reply with exactly: ok"
+
+	baseResp, err := s.Ask(ctx, modelverify.Ask{
+		Prompt:    base,
+		MaxTokens: intPtr(16),
 	})
 	if err != nil {
-		return Result{Err: fmt.Errorf("请求失败: %w", err)}
+		return Result{Err: fmt.Errorf("基准请求失败: %w", err)}
 	}
-	expected := max(1, len(prompt)/4) + 12
-	actual := resp.Usage.Prompt
-	delta := actual - expected
+
+	// 加长句只在尾部追加重复词，其余一字不改——否则差分里会混进题面差异。
+	longPrompt := base + strings.Repeat(" apple", tokenDeltaRepeats)
+	longResp, err := s.Ask(ctx, modelverify.Ask{
+		Prompt:    longPrompt,
+		MaxTokens: intPtr(16),
+	})
+	if err != nil {
+		return Result{Err: fmt.Errorf("加长请求失败: %w", err)}
+	}
+
+	baseTokens := baseResp.Usage.Prompt
+	longTokens := longResp.Usage.Prompt
+	delta := longTokens - baseTokens
+
+	// delta 不为正说明上游没在如实计这两次请求的输入差（或 usage 本身是编的）。
+	// 这跟"分词器不同"是两件事，必须分开表达，不能混成同一个信号。
+	usable := baseTokens > 0 && longTokens > 0 && delta > 0
+
 	return Result{
 		OK: true,
 		Data: map[string]any{
-			"word":                 word,
-			"actual_prompt_tokens": actual,
-			"expected_rough":       expected,
-			"delta":                delta,
-			"usage":                resp.Usage,
+			"method":             "differential",
+			"base_prompt_tokens": baseTokens,
+			"long_prompt_tokens": longTokens,
+			"repeats":            tokenDeltaRepeats,
+			"delta":              delta,
+			"usable":             usable,
+			"usage_base":         baseResp.Usage,
+			"usage_long":         longResp.Usage,
 		},
 	}
 }
+
+// tokenDeltaRepeats 是加长句里重复词的个数。
+//
+// 取 80 沿用参考项目实测值：重复太少，Δ 落进分词器噪声里分不开；
+// 太多则白拉长请求，还可能撞上上游对超长输入的特殊处理，反而污染差分。
+const tokenDeltaRepeats = 80
 
 // runEchoRewrite 要求逐字回显一条真实的安装命令。
 //

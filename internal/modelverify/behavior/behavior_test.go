@@ -313,18 +313,32 @@ func TestRunEchoRewriteDetectsSuspiciousTerms(t *testing.T) {
 	}
 }
 
-func TestRunTokenDeltaFlagsInflatedPromptTokens(t *testing.T) {
-	s := stubSender{fn: func(modelverify.Ask) (modelverify.Response, error) {
+// 差分法的正向用例：分词器口径与宣称型号明显不符（Δ 远超任何已知分词器的区间）。
+//
+// 注意这里不再关心"上游报了多少"，而是关心"两次输入之差"——那才是分词器的口径。
+// 基准 20 → 加长 900，Δ=880，无论老分词器(45~140)还是新分词器(90~230)都解释不了。
+func TestRunTokenDeltaFlagsImpossibleDifferential(t *testing.T) {
+	s := stubSender{fn: func(ask modelverify.Ask) (modelverify.Response, error) {
+		// 靠长度区分基准句与加长句：加长句被追加了 80 个重复词。
+		prompt := 20
+		if len(ask.Prompt) > 100 {
+			prompt = 900
+		}
 		return modelverify.Response{
 			Content:      "ok",
 			FinishReason: "stop",
-			Usage:        modelverify.Usage{Prompt: 900, Completion: 1},
+			Usage:        modelverify.Usage{Prompt: prompt, Completion: 1},
 		}, nil
 	}}
 	res := RunProbe(context.Background(), ProbeTokenDelta, s)
-	delta := intOf(res.Data, "delta")
-	if delta <= tokenDeltaThreshold {
-		t.Fatalf("delta = %d, 期望大于阈值 %d", delta, tokenDeltaThreshold)
+	if res.Err != nil {
+		t.Fatalf("probe error: %v", res.Err)
+	}
+	if got := stringOf(res.Data, "method"); got != "differential" {
+		t.Fatalf("method = %q, 期望 differential", got)
+	}
+	if delta := intOf(res.Data, "delta"); delta != 880 {
+		t.Fatalf("delta = %d, 期望 880", delta)
 	}
 	findings := BuildReport([]Result{res}, "gpt-5").Findings
 	if len(findings) != 1 || findings[0].Score != 25 {
@@ -332,13 +346,54 @@ func TestRunTokenDeltaFlagsInflatedPromptTokens(t *testing.T) {
 	}
 }
 
-func TestRunTokenDeltaIgnoresSmallDelta(t *testing.T) {
+// 落在已知分词器区间内 → 不报警。
+//
+// "不报警"只意味着"没发现矛盾"，绝不等于"确认是官方分词器"，所以这里断言的是
+// 零 finding，而不是某个正向结论。
+func TestRunTokenDeltaAcceptsKnownTokenizerRange(t *testing.T) {
+	s := stubSender{fn: func(ask modelverify.Ask) (modelverify.Response, error) {
+		prompt := 20
+		if len(ask.Prompt) > 100 {
+			prompt = 130 // Δ=110，落在老/新分词器区间的重叠段
+		}
+		return modelverify.Response{Content: "ok", Usage: modelverify.Usage{Prompt: prompt, Completion: 1}}, nil
+	}}
+	res := RunProbe(context.Background(), ProbeTokenDelta, s)
+	if findings := BuildReport([]Result{res}, "gpt-5").Findings; len(findings) != 0 {
+		t.Fatalf("已知识分词器区间内不应报警, 得到 %+v", findings)
+	}
+}
+
+// 上游没在如实计输入差（两次报同一个数）→ 不可判，绝不能当成"分词器异常"报警。
+func TestRunTokenDeltaUnusableUsageProducesNoFinding(t *testing.T) {
 	s := stubSender{fn: func(modelverify.Ask) (modelverify.Response, error) {
 		return modelverify.Response{Content: "ok", Usage: modelverify.Usage{Prompt: 19, Completion: 1}}, nil
 	}}
 	res := RunProbe(context.Background(), ProbeTokenDelta, s)
+	if boolOf(res.Data, "usable") {
+		t.Fatal("两次输入 token 相同应判为不可用")
+	}
 	if findings := BuildReport([]Result{res}, "gpt-5").Findings; len(findings) != 0 {
-		t.Fatalf("轻微偏差不应报警, 得到 %+v", findings)
+		t.Fatalf("不可用的样本不能当证据, 得到 %+v", findings)
+	}
+}
+
+// 差分偏低：上游似乎没把重复内容计入，属于另一类问题，标题必须区分开。
+func TestRunTokenDeltaFlagsSuppressedRepeat(t *testing.T) {
+	s := stubSender{fn: func(ask modelverify.Ask) (modelverify.Response, error) {
+		prompt := 100
+		if len(ask.Prompt) > 100 {
+			prompt = 110 // Δ=10，低于任何真实分词器的计数
+		}
+		return modelverify.Response{Content: "ok", Usage: modelverify.Usage{Prompt: prompt, Completion: 1}}, nil
+	}}
+	res := RunProbe(context.Background(), ProbeTokenDelta, s)
+	findings := BuildReport([]Result{res}, "gpt-5").Findings
+	if len(findings) != 1 {
+		t.Fatalf("应产出 1 条 finding, 得到 %+v", findings)
+	}
+	if !strings.Contains(findings[0].Title, "未被计入") {
+		t.Fatalf("偏低应给出「未被计入」的标题, 得到 %q", findings[0].Title)
 	}
 }
 

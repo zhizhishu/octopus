@@ -428,6 +428,12 @@ func findingsFor(res Result, requestedModel string, requestedFamilies []string) 
 		if !res.OK {
 			return nil
 		}
+		// 差分法产出的数据优先：它把脚手架前缀减掉了，Δ 直接反映分词器口径，
+		// 所以即便数值很小也可能是有意义的信号，判据与粗估完全不同。
+		if stringOf(res.Data, "method") == "differential" {
+			return tokenDeltaDifferentialFinding(res)
+		}
+		// 兼容旧的粗估口径（历史结果重放时仍会走到这里）。
 		delta := intOf(res.Data, "delta")
 		if delta <= tokenDeltaThreshold {
 			return nil
@@ -442,10 +448,60 @@ func findingsFor(res Result, requestedModel string, requestedFamilies []string) 
 	return nil
 }
 
-// tokenDeltaThreshold 是 token 虚高的告警阈值。
+// tokenDeltaDifferentialFinding 判读差分法的结果。
+//
+// 三条边界，都是为了不把"测不出来"说成"测出问题"：
+//   - usable=false（两次输入 token 相同、或上游没报）→ 不可判，不产生 finding。
+//     这不是证据，是工具没拿到样本。
+//   - Δ 落在已知分词器区间内 → 无异常。落区间不能说"确认官方"，只能说"没矛盾"。
+//   - Δ 落在区间外 → 分词器口径与宣称型号不符，这是行为证据。
+//
+// 区间取自参考项目实测：老分词器约 [45,140]，新分词器约 [90,230]。
+// 因为两段有重叠（90~140 属两者皆可），只要落进任一段就算无异常。
+func tokenDeltaDifferentialFinding(res Result) []Finding {
+	if !boolOf(res.Data, "usable") {
+		return nil
+	}
+	delta := intOf(res.Data, "delta")
+
+	// 80 个重复词的成本上界；超出说明上游在这串词上的计数异常高，
+	// 无论用哪种分词器都解释不了。
+	const (
+		deltaLegacyMin = 45
+		deltaLegacyMax = 140
+		deltaNewMin    = 90
+		deltaNewMax    = 230
+	)
+	inLegacy := delta >= deltaLegacyMin && delta <= deltaLegacyMax
+	inNew := delta >= deltaNewMin && delta <= deltaNewMax
+	if inLegacy || inNew {
+		return nil
+	}
+
+	// 低于下界：可能上游根本没把重复词计入（截断输入），或报了假 usage。
+	// 高于上界：可能前面塞了内容，或分词器完全不同。
+	title := "输入 token 差分与宣称型号的分词器不符"
+	rec := "疑似分词器口径与宣称型号不一致。单次结果不足以定性，建议结合其它探针与多次采样复核。"
+	if delta < deltaLegacyMin {
+		title = "输入 token 差分偏低，重复内容疑似未被计入"
+		rec = "上游可能截断了输入，或自报的输入 token 不是实数。建议重测并比对该渠道的其它长输入样本。"
+	}
+
+	return []Finding{{
+		Probe: ProbeTokenDelta, Severity: SeverityMedium, Score: 25,
+		Title:          title,
+		Evidence:       res.Data,
+		Recommendation: rec,
+	}}
+}
+
+// tokenDeltaThreshold 是**旧粗估口径**的告警阈值。
 //
 // 期望值来自 len(prompt)/4 + 12 的粗估，本身不精确，所以阈值必须宽松：
 // 只抓"异常偏高"。轻微偏差属于分词器差异与脚手架附加，是正常的。
+//
+// 新产出的结果一律走差分口径（见 tokenDeltaDifferentialFinding），这个常量只为
+// 兼容历史结果的重放而保留——删掉它会让旧报告读不出结论。
 const tokenDeltaThreshold = 200
 
 // ---------------------------------------------------------------- 取值助手

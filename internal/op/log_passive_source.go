@@ -47,35 +47,11 @@ const (
 	penaltyMissingCacheObject = 2
 )
 
-// PassiveSourceEvidence 是一条日志留下的后端来源证据。
-//
-// 刻意不含"结论"字段（不是 official/bedrock/vertex 的判定）：
-// 单条日志的字段组合不足以定源，硬给结论就是假精确。
-// 聚合层拿 Scores 做累计，才可能形成有意义的倾向。
-type PassiveSourceEvidence struct {
-	// AnthropicScore / BedrockScore / VertexScore 是按参考项目权重表累计的分数。
-	// 全 0 = 这条日志没有提供任何来源方向的证据（大多数情况）。
-	AnthropicScore int `json:"anthropic_score,omitempty"`
-	BedrockScore   int `json:"bedrock_score,omitempty"`
-	VertexScore    int `json:"vertex_score,omitempty"`
-	// CounterEvidence 记录命中的反证项（缺失了本该有的字段）。
-	// 非空说明这条日志"看着像 Anthropic 协议、但缺了官方必带的字段"。
-	CounterEvidence []string `json:"counter_evidence,omitempty"`
-	// Signals 记录命中的正向信号，便于排查"为什么给了这个分"。
-	Signals []string `json:"signals,omitempty"`
-}
-
-// Empty 表示这条日志没提供任何来源证据。
-func (e PassiveSourceEvidence) Empty() bool {
-	return e.AnthropicScore == 0 && e.BedrockScore == 0 && e.VertexScore == 0 &&
-		len(e.CounterEvidence) == 0 && len(e.Signals) == 0
-}
-
 // computePassiveSourceEvidence 从一条已落库日志推导来源证据。
 //
 // 纯函数：只读入参，无副作用，不碰数据库、不发请求。
-func computePassiveSourceEvidence(relayLog model.RelayLog) PassiveSourceEvidence {
-	var ev PassiveSourceEvidence
+func computePassiveSourceEvidence(relayLog model.RelayLog) model.RelayLogPassiveSource {
+	var ev model.RelayLogPassiveSource
 
 	// 只在 Anthropic 协议路径上做判断。
 	//

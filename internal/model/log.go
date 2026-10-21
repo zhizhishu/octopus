@@ -154,25 +154,33 @@ type RelayLog struct {
 	// (见 op/relay_probe.go)。PassiveSummary 说"这条回复长什么样", PassiveProbes 说
 	// "这条日志里有没有自相矛盾"。两者都只证伪不认证: 空数组 = 没发现矛盾,
 	// **不等于**"这个模型是真的"。AutoMigrate 自动加列, 不参与路由/计费, 不读正文外的任何东西。
-	PassiveProbes      []RelayProbeFinding `json:"passive_probes,omitempty" gorm:"serializer:json"`
-	InputTokens        int                 `json:"input_tokens"`
-	OutputTokens       int                 `json:"output_tokens"`
-	CacheHitTokens     int                 `json:"cache_hit_tokens"`
-	CacheWriteTokens   int                 `json:"cache_write_tokens"`
-	CacheWrite5mTokens int                 `json:"cache_write_5m_tokens,omitempty"` // 5 分钟 TTL 缓存写入(Anthropic ephemeral_5m_input_tokens), CacheWriteTokens 的子集
-	CacheWrite1hTokens int                 `json:"cache_write_1h_tokens,omitempty"` // 1 小时 TTL 缓存写入(Anthropic ephemeral_1h_input_tokens), 计费高于 5m
-	CacheInputTokens   int                 `json:"cache_input_tokens"`
-	CacheHitRate       float64             `json:"cache_hit_rate" gorm:"type:real"`
-	Ftut               int                 `json:"ftut"`
-	UseTime            int                 `json:"use_time"`
-	Cost               float64             `json:"cost"`
-	RequestContent     string              `json:"request_content"`
-	ResponseContent    string              `json:"response_content"`
-	Error              string              `json:"error"`
-	ErrorCode          string              `json:"error_code"`
-	ErrorStatus        int                 `json:"error_status"`
-	ErrorStrategy      string              `json:"error_strategy"`
-	Attempts           []ChannelAttempt    `json:"attempts" gorm:"serializer:json"`
+	PassiveProbes []RelayProbeFinding `json:"passive_probes,omitempty" gorm:"serializer:json"`
+	// PassiveSource 是与 PassiveSummary 同一次纯本地计算得出的"后端来源证据"
+	// (见 op/log_passive_source.go): 按 Anthropic / Bedrock / Vertex 三源累计打分,
+	// 含"官方必带字段缺失"的反证。零额外请求, 只用这条日志已有的信封字段。
+	//
+	// 只证伪不认证: 分数高 **不等于**"确认官方", 分数为 0 也 **不等于**"假的"。
+	// 单条日志的字段组合不足以定源, 这是留给聚合层的原料。
+	// AutoMigrate 自动加列, 不参与路由/计费/指纹。
+	PassiveSource      *RelayLogPassiveSource `json:"passive_source,omitempty" gorm:"serializer:json"`
+	InputTokens        int                    `json:"input_tokens"`
+	OutputTokens       int                    `json:"output_tokens"`
+	CacheHitTokens     int                    `json:"cache_hit_tokens"`
+	CacheWriteTokens   int                    `json:"cache_write_tokens"`
+	CacheWrite5mTokens int                    `json:"cache_write_5m_tokens,omitempty"` // 5 分钟 TTL 缓存写入(Anthropic ephemeral_5m_input_tokens), CacheWriteTokens 的子集
+	CacheWrite1hTokens int                    `json:"cache_write_1h_tokens,omitempty"` // 1 小时 TTL 缓存写入(Anthropic ephemeral_1h_input_tokens), 计费高于 5m
+	CacheInputTokens   int                    `json:"cache_input_tokens"`
+	CacheHitRate       float64                `json:"cache_hit_rate" gorm:"type:real"`
+	Ftut               int                    `json:"ftut"`
+	UseTime            int                    `json:"use_time"`
+	Cost               float64                `json:"cost"`
+	RequestContent     string                 `json:"request_content"`
+	ResponseContent    string                 `json:"response_content"`
+	Error              string                 `json:"error"`
+	ErrorCode          string                 `json:"error_code"`
+	ErrorStatus        int                    `json:"error_status"`
+	ErrorStrategy      string                 `json:"error_strategy"`
+	Attempts           []ChannelAttempt       `json:"attempts" gorm:"serializer:json"`
 	// index: 严重程度分桶(warn = total_attempts > 1)和 retried 筛选都按它过,
 	// 而它是 relay_logs 里少数高选择性的整型列。没有索引时这两个谓词要对全表
 	// 逐行求值(实测 10 万行 847ms), 有了索引降到 10ms 量级。

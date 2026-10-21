@@ -1,6 +1,8 @@
 package op
 
 import (
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/zhizhishu/octopus/internal/model"
@@ -60,5 +62,23 @@ func TestSourceEvidenceNoSignalNoCounter(t *testing.T) {
 	ev := computePassiveSourceEvidence(l)
 	if !ev.Empty() {
 		t.Fatalf("expected empty evidence, got %+v", ev)
+	}
+}
+
+// 这条测试守的不是算法，而是"有没有真的接进生产"。
+//
+// 上一版把 computePassiveSourceEvidence 写完了、单测也全绿，但它只被测试调用过，
+// RelayLogAdd 里根本没挂——一个永远不会跑的函数配上全绿的测试，是最难发现的假绿。
+// 所以这里读源文件本身，断言落库路径里确实存在这次调用。
+func TestPassiveSourceIsWiredIntoRelayLogAdd(t *testing.T) {
+	src, err := os.ReadFile("log.go")
+	if err != nil {
+		t.Fatalf("read log.go: %v", err)
+	}
+	if !strings.Contains(string(src), "computePassiveSourceEvidence(relayLog)") {
+		t.Fatal("computePassiveSourceEvidence is not called from log.go: the passive source scoring would be dead code with green tests")
+	}
+	if !strings.Contains(string(src), "relayLog.PassiveSource = &src") {
+		t.Fatal("log.go computes source evidence but never assigns it to relayLog.PassiveSource")
 	}
 }

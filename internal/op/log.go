@@ -365,6 +365,12 @@ func RelayLogAdd(ctx context.Context, relayLog model.RelayLog) error {
 	// 抖动就静默停掉检测, 比多算一次更糟。
 	if passiveProbeOn() {
 		relayLog.PassiveSummary = computePassiveSummary(relayLog)
+		// 后端来源证据: 同一个纯本地 pass 里按三源权重表打分（含缺失字段反证）。
+		// 零额外请求，只用这条日志已有的 service_tier / cache TTL 拆分字段。
+		// 空证据不落库：nil 明确表示"没证据"，比一个全零对象更诚实。
+		if src := computePassiveSourceEvidence(relayLog); !src.Empty() {
+			relayLog.PassiveSource = &src
+		}
 		// 被动探针: 同一次纯本地计算里顺带查"这条日志的硬事实对不对得上"(token 加减法、
 		// 缓存是否超过输入、字符/token 比值、分词器口径)。零上游请求、只证伪不认证。
 		// 失败请求与缺字段一律跳过——"算不出来"不能报成"算出来不对"。
