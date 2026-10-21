@@ -75,7 +75,41 @@ func EffortFromBudget(budgetTokens int64) string {
 	return "max"
 }
 
-// normalizeEffortKey 统一档位大小写与空白，避免 "MAX" 之类绕过映射表。
-func normalizeEffortKey(effort string) string {
-	return strings.TrimSpace(strings.ToLower(effort))
+// NormalizeEffortKey 把各种写法收敛成映射表里的规范键。
+//
+// 统一处理三类差异，缺一类就会静默掉进默认值：
+//
+//	大小写   "MAX"     → "max"
+//	首尾空白 " max "   → "max"
+//	分隔符   "x-high"  → "xhigh"   "x_high" → "xhigh"
+//
+// 分隔符这一条是实测出来的真实缺口：改动前 x-high / x_high / X-HIGH /
+// extra-high / extrahigh 五种写法全部落到默认值 32768，而正确答案是 48000
+// （xhigh）。也就是说「第二强的档位」在带分隔符时反而比 high 更省——
+// 客户端以为自己在加强推理，实际被降了一档，且全程无报错。
+//
+// 剥分隔符是安全的：映射表里没有任何一个键自身含 - 或 _，所以不会把两个
+// 不同的合法档位压成同一个键。
+func NormalizeEffortKey(effort string) string {
+	key := strings.TrimSpace(strings.ToLower(effort))
+	if key == "" {
+		return ""
+	}
+	// 只剥真正可能出现的三种分隔符。用 Replacer 一次扫完，比链式
+	// ReplaceAll 少建中间字符串。
+	return effortKeySeparators.Replace(key)
+}
+
+var effortKeySeparators = strings.NewReplacer("-", "", "_", "", " ", "")
+
+// normalizeEffortKey 是包内旧名，保留给同文件的历史调用点。
+func normalizeEffortKey(effort string) string { return NormalizeEffortKey(effort) }
+
+// IsKnownEffort 报告该写法是否能解析成映射表里的合法档位。
+//
+// 🔴 这是「这个档位我认识吗」的唯一入口。各处自己写 case 列表会漏掉大小写、
+// 空白、分隔符三种变体中的至少一种，而且共享表将来新增档位时不会自动跟上。
+func IsKnownEffort(effort string) bool {
+	_, ok := EffortBudget[NormalizeEffortKey(effort)]
+	return ok
 }

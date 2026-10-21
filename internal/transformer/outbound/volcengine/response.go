@@ -238,15 +238,14 @@ func cloneRawMessage(raw json.RawMessage) json.RawMessage {
 //
 // 按共享表判「已知/未知」而不是手写 case：共享表将来新增档位时这里自动跟上。
 func effortToThinkingType(effort string) ThinkingType {
-	key := strings.TrimSpace(strings.ToLower(effort))
-	switch key {
+	switch model.NormalizeEffortKey(effort) {
 	case "minimal", "none":
 		return ThinkingTypeDisabled
 	case "":
 		// 客户端没表达思考意图，不注入。
 		return ""
 	default:
-		if _, known := model.EffortBudget[key]; known {
+		if model.IsKnownEffort(effort) {
 			return ThinkingTypeEnabled
 		}
 		// 未知档位不猜：宁可不发，也不凭一个看不懂的字符串擅自开思考。

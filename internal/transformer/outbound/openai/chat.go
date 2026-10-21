@@ -590,20 +590,7 @@ func glmWantsThinking(request *model.InternalLLMRequest) bool {
 	// 实测确认 "max"/"MAX"/"Max" 都开思考，唯独 " max " / "MAX " 不开。
 	// 同一个值走 anthropic 通道（EffortBudgetFor 会 TrimSpace）却是正常的，
 	// 于是同一条客户端请求换个通道强度就变了。
-	if isKnownEffortLevel(request.ReasoningEffort) {
-		return true
-	}
-	return false
-}
-
-// isKnownEffortLevel 报告该档位是否是共享表里的合法档位（已归一大小写与空白）。
-func isKnownEffortLevel(effort string) bool {
-	key := strings.TrimSpace(strings.ToLower(effort))
-	if key == "" {
-		return false
-	}
-	_, known := model.EffortBudget[key]
-	return known
+	return model.IsKnownEffort(request.ReasoningEffort)
 }
 
 // glmDisablesThinking reports an explicit request to turn reasoning off.
