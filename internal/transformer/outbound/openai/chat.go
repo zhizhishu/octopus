@@ -550,14 +550,31 @@ func applyReasoningProjection(request *model.InternalLLMRequest) {
 
 	case isQwenModel(request.Model):
 		// Qwen 用布尔开关 + 独立预算，不认 reasoning_effort。
-		enabled := !wantOff && (effort != "" || budget > 0)
-		request.EnableThinking = &enabled
-		if enabled {
-			b := budget
-			if b == 0 {
-				b = model.EffortBudgetFor(effort)
+		//
+		// 🔴 客户端直接发 enable_thinking 时必须尊重它，不能用自己的推导覆盖。
+		// 实测过这个坑：客户端只发 {"enable_thinking":true} 而不发档位时，
+		// 早先的实现会算出 enabled=false 把它按关掉处理——客户端明确要开思考，
+		// 被我们自作聪明关掉了。这与"消灭静默降级"是同一件事的两面。
+		switch {
+		case request.EnableThinking != nil:
+			// 客户端已明确表态，只补预算，不碰开关。
+			if *request.EnableThinking && request.ThinkingBudget == nil {
+				b := budget
+				if b == 0 {
+					b = model.EffortBudgetFor(effort)
+				}
+				request.ThinkingBudget = &b
 			}
-			request.ThinkingBudget = &b
+		case effort != "" || budget > 0:
+			enabled := !wantOff
+			request.EnableThinking = &enabled
+			if enabled {
+				b := budget
+				if b == 0 {
+					b = model.EffortBudgetFor(effort)
+				}
+				request.ThinkingBudget = &b
+			}
 		}
 		request.ReasoningEffort = ""
 

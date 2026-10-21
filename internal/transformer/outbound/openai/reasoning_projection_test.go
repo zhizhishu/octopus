@@ -249,3 +249,53 @@ func TestModelFamilyDetectionSurvivesChannelPrefix(t *testing.T) {
 		t.Errorf("带前缀的 Qwen 仍应发出 enable_thinking，实际 %v", keysOf(body))
 	}
 }
+
+// 客户端直接发 enable_thinking 时必须尊重它，不能用自己的推导覆盖。
+//
+// 实测过这个坑：客户端只发 {"enable_thinking":true} 而不发档位时，早先的
+// 实现会算出 enabled=false 把它按关掉处理——客户端明确要开思考，被我们
+// 自作聪明关掉了。这和"静默降级"是同一件事的两面。
+func TestClientProvidedEnableThinkingIsRespected(t *testing.T) {
+	yes := true
+	body := chatRequestBody(t, &model.InternalLLMRequest{
+		Model:          "qwen3-max",
+		EnableThinking: &yes,
+		Messages:       userMessages(),
+	})
+	if got, ok := body["enable_thinking"].(bool); !ok || !got {
+		t.Fatalf("客户端明确要求开思考，出站必须仍是 true，实际 %v", body["enable_thinking"])
+	}
+	// 没给预算时应补一个，而不是留空让上游按默认走。
+	if _, ok := body["thinking_budget"]; !ok {
+		t.Errorf("客户端要开思考但没给预算时，应补上默认预算，实际 %v", keysOf(body))
+	}
+
+	no := false
+	body2 := chatRequestBody(t, &model.InternalLLMRequest{
+		Model:          "qwen3-max",
+		EnableThinking: &no,
+		Messages:       userMessages(),
+	})
+	if got, ok := body2["enable_thinking"].(bool); !ok || got {
+		t.Fatalf("客户端明确要求关思考，出站必须仍是 false，实际 %v", body2["enable_thinking"])
+	}
+	if _, ok := body2["thinking_budget"]; ok {
+		t.Errorf("关思考时不该带预算，实际 %v", keysOf(body2))
+	}
+}
+
+// 客户端没表态时，才允许由档位推导开关。
+func TestEnableThinkingDerivedOnlyWhenClientSilent(t *testing.T) {
+	on := chatRequestBody(t, &model.InternalLLMRequest{
+		Model: "qwen3-max", ReasoningEffort: "high", Messages: userMessages(),
+	})
+	if got, ok := on["enable_thinking"].(bool); !ok || !got {
+		t.Errorf("档位 high 且客户端未表态时，应推导为开启，实际 %v", on["enable_thinking"])
+	}
+	off := chatRequestBody(t, &model.InternalLLMRequest{
+		Model: "qwen3-max", ReasoningEffort: "none", Messages: userMessages(),
+	})
+	if got, ok := off["enable_thinking"].(bool); !ok || got {
+		t.Errorf("档位 none 且客户端未表态时，应推导为关闭，实际 %v", off["enable_thinking"])
+	}
+}
