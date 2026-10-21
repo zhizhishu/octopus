@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 function useDebouncedValue<T>(value: T, delayMs: number): T {
     const [debounced, setDebounced] = useState(value);
@@ -12,6 +12,7 @@ function useDebouncedValue<T>(value: T, delayMs: number): T {
 }
 
 import { type RelayLog, type RelayLogSeverity, type RequestState, useExportLogs, useLogSeverityCounts, useLogs, useRequestStateStream } from '@/api/endpoints/log';
+import { formatBytes } from '@/lib/log-export';
 import { LogCard, useSensitiveStore } from './Item';
 import { AlertCircle, AlertTriangle, Calendar as CalendarIcon, CheckCircle2, ChevronLeft, ChevronRight, Circle, Download, Eye, EyeOff, Loader2, RefreshCw, RotateCcw, RotateCw, ScrollText, Search, SlidersHorizontal, WifiOff, X } from 'lucide-react';
 import { useTranslations } from 'next-intl';
@@ -710,6 +711,10 @@ export function Log() {
     const { data: modelList = [] } = useModelList();
     const { data: channelRows = [] } = useChannelList({ enabled: isAdmin });
     const exportLogs = useExportLogs();
+    // 导出进度与中断：后端是流式的，前端边收边落盘。生产库十几 GB，
+    // 不给进度和取消就等于让用户对着转圈干等、还没法停。
+    const [exportBytes, setExportBytes] = useState<number | null>(null);
+    const exportAbortRef = useRef<AbortController | null>(null);
     const { states: requestStates, isConnected: requestStateConnected } = useRequestStateStream(isLiveMode);
     // 历史日志持久化状态：关闭时后端只留最近 ~100 条内存记录、重启即失，按日期查历史必然是空的。
     // 日志页过去对此零提示（静默显示内存缓存），用户会误以为“日志功能坏了”。这里显式暴露 + 一键开启。
@@ -966,8 +971,13 @@ export function Log() {
         void refreshCounts();
     }, [refresh, refreshCounts]);
     const handleExport = useCallback(() => {
+        const controller = new AbortController();
+        exportAbortRef.current = controller;
+        setExportBytes(0);
         exportLogs.mutate(
             {
+                onProgress: (progress) => setExportBytes(progress.bytes),
+                signal: controller.signal,
                 start_time: startTime,
                 end_time: endTime,
                 user_id: selectedUserID,
@@ -983,7 +993,15 @@ export function Log() {
             },
             {
                 onSuccess: () => toast.success('日志已导出'),
-                onError: (error) => toast.error('日志导出失败', { description: error instanceof Error ? error.message : String(error) }),
+                onError: (error) => {
+                    // 主动取消不算失败，别弹红框吓人。
+                    if (error instanceof DOMException && error.name === 'AbortError') return;
+                    toast.error('日志导出失败', { description: error instanceof Error ? error.message : String(error) });
+                },
+                onSettled: () => {
+                    setExportBytes(null);
+                    exportAbortRef.current = null;
+                },
             }
         );
     }, [deferredSearch, effectiveSelectedAPIKeyID, endTime, exportLogs, mismatchParam, selectedEndpoint, selectedModel, selectedProvider, selectedUserID, severityFilter, startTime]);
@@ -1346,13 +1364,25 @@ export function Log() {
                         <Button
                             variant="ghost"
                             size="icon"
-                            onClick={handleExport}
-                            disabled={exportLogs.isPending}
-                            title={t('list.export')}
-                            aria-label={t('list.export')}
-                            className="h-8 w-8 rounded-lg border border-border bg-background text-muted-foreground hover:text-foreground dark:bg-card"
+                            onClick={() => {
+                                // 导出中点一下 = 取消，而不是再发一次请求。
+                                if (exportLogs.isPending) {
+                                    exportAbortRef.current?.abort();
+                                    return;
+                                }
+                                handleExport();
+                            }}
+                            title={exportLogs.isPending ? '取消导出' : t('list.export')}
+                            aria-label={exportLogs.isPending ? '取消导出' : t('list.export')}
+                            className="relative h-8 w-8 rounded-lg border border-border bg-background text-muted-foreground hover:text-foreground dark:bg-card"
                         >
                             {exportLogs.isPending ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}
+                            {exportLogs.isPending && (
+                                // 角标显示已导出体积。放在按钮右下角，不挤压导航栏布局。
+                                <span className="pointer-events-none absolute -bottom-4 right-0 whitespace-nowrap text-[10px] tabular-nums text-muted-foreground">
+                                    {formatBytes(exportBytes ?? 0)}
+                                </span>
+                            )}
                         </Button>
                         <div className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-border bg-background px-2">
                             <label

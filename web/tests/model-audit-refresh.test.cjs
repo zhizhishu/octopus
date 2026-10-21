@@ -37,6 +37,12 @@ function hooks() {
                 return slots[i].value;
             },
             useState(initial) { return [typeof initial === 'function' ? initial() : initial, () => {}]; },
+            // 稳定引用：组件里拿它存 AbortController，每次渲染换新对象会丢状态。
+            useRef(initial) {
+                const i = cursor++;
+                if (!slots[i]) slots[i] = { current: initial };
+                return slots[i];
+            },
             useCallback(fn) { return fn; },
             useEffect() {},
             useDeferredValue(value) { return value; },
@@ -67,6 +73,9 @@ function logComponents() {
         '@/components/ui/popover': widgets('Popover PopoverContent PopoverTrigger'),
         '@/components/ui/dialog': widgets('Dialog DialogContent DialogDescription DialogHeader DialogTitle'),
         '@/lib/utils': { cn: (...parts) => parts.filter(Boolean).join(' ') },
+        // 导出走流式落盘（lib/log-export），这里只要形状对得上即可，
+        // 真逻辑由 tests/log-export.test.cjs 单独锁。
+        '@/lib/log-export': { saveStreamToFile: async () => 0, formatBytes: () => '0 B' },
     };
     const item = load('src/components/modules/log/Item.tsx', {
         ...common,

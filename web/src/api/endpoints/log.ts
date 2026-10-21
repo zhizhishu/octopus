@@ -3,6 +3,7 @@ import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClie
 import { apiClient, API_BASE_URL } from '../client';
 import { useAuthStore } from './user';
 import { logger } from '@/lib/logger';
+import { saveStreamToFile, type ExportProgress } from '@/lib/log-export';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 /**
@@ -260,6 +261,10 @@ export interface LogExportParams {
     retried?: boolean;
     hide_model_test?: boolean;
     upstream_model_mismatch?: boolean;
+    /** 进度回调，每收到一块调一次。 */
+    onProgress?: (progress: ExportProgress) => void;
+    /** 中断信号：用户关掉导出对话框就真停下来。 */
+    signal?: AbortSignal;
 }
 
 function getAuthHeader(): string {
@@ -430,20 +435,6 @@ function compareRelayLogsDesc(a: RelayLog, b: RelayLog) {
     return b.id - a.id;
 }
 
-async function downloadBlob(blob: Blob, filename: string) {
-    const url = URL.createObjectURL(blob);
-    try {
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-    } finally {
-        URL.revokeObjectURL(url);
-    }
-}
-
 export function useExportLogs() {
     return useMutation({
         mutationFn: async (params: LogExportParams = {}) => {
@@ -464,12 +455,20 @@ export function useExportLogs() {
             const res = await fetch(`${API_BASE_URL}/api/v1/log/export?${query.toString()}`, {
                 method: 'GET',
                 headers: { Authorization: getAuthHeader() },
+                signal: params.signal,
             });
             if (!res.ok) {
                 const text = await res.text();
                 throw new Error(text || res.statusText);
             }
-            await downloadBlob(await res.blob(), exportFilename(params.start_time, params.end_time));
+            // 边收边落盘。后端是流式的，这里 blob() 会把那份设计废掉，
+            // 十几 GB 的库一次全量导出足以让标签页 OOM。
+            await saveStreamToFile(
+                res,
+                exportFilename(params.start_time, params.end_time),
+                params.onProgress,
+                params.signal
+            );
         },
         onError: (error) => {
             logger.error('export logs failed:', error);
