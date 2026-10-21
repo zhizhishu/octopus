@@ -493,10 +493,14 @@ func convertToAnthropicRequest(req *model.InternalLLMRequest) *anthropicModel.Me
 					Effort: req.ReasoningEffort,
 				}
 			}
-		} else {
+		} else if budget := getThinkingBudget(req.ReasoningEffort, req.ReasoningBudget, result.MaxTokens); budget != nil {
+			// budget 为 nil 表示这条请求装不下合法的思考预算（max_tokens 太小），
+			// 此时**整个 thinking 都不发**。只把 budget_tokens 置空会发出
+			// {"type":"enabled"} —— 「开了思考但没给预算」同样是非法请求，
+			// 等于把一个 400 换成另一个 400。
 			result.Thinking = &anthropicModel.Thinking{
 				Type:         anthropicModel.ThinkingTypeEnabled,
-				BudgetTokens: getThinkingBudget(req.ReasoningEffort, req.ReasoningBudget, result.MaxTokens),
+				BudgetTokens: budget,
 			}
 		}
 	}
@@ -1584,8 +1588,28 @@ func getThinkingBudget(effort string, budget *int64, maxTokens int64) *int64 {
 	if maxTokens > 0 && result >= maxTokens {
 		result = maxTokens - 1
 	}
+
+	// 🔴 budget_tokens 还有一条官方下限：最小 1024，低于它 API 直接拒绝
+	// （"Minimum of 1,024 tokens. The API rejects smaller values."）。
+	//
+	// 只做上面的「小于 max_tokens」压不到这个坑：max_tokens 拿到 1024 时压出
+	// 1023，拿到 100 时压出 99，客户端只要「开了思考 + 保守的 max_tokens」
+	// 就必然 400，而日志里只看得到上游拒绝、看不出是我们自己算出来的非法值。
+	//
+	// 这里选择**不发 thinking**而不是把预算抬到 1024：
+	// 预算必须小于 max_tokens，max_tokens 本来就不够装 1024 的思考，
+	// 硬抬上去又违反前一条约束，只会把 400 从「预算太小」换成「预算太大」。
+	// 客户端要的是很短的回答，那就老老实实不思考。
+	if result < anthropicThinkingBudgetMin {
+		return nil
+	}
 	return &result
 }
+
+// anthropicThinkingBudgetMin 是 thinking.budget_tokens 的官方下限。
+// 见 https://platform.claude.com/docs/en/build-with-claude/extended-thinking
+// 「Budget rules and tuning」：Minimum of 1,024 tokens. The API rejects smaller values.
+const anthropicThinkingBudgetMin = int64(1024)
 
 // Response conversion functions
 
