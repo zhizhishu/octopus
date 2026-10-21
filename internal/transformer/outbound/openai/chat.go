@@ -595,30 +595,34 @@ func applyReasoningProjection(request *model.InternalLLMRequest) {
 // deepseek-reasoner / r1 这类自带思考，由 isDeepSeekReasonerModel 单独处理。
 func isDeepSeekThinkingCapable(model string) bool {
 	lower := strings.ToLower(strings.TrimSpace(model))
-	if idx := strings.LastIndex(lower, "/"); idx >= 0 {
-		lower = lower[idx+1:]
-	}
-	return strings.HasPrefix(lower, "deepseek-v4") || strings.HasPrefix(lower, "deepseek-flash")
+	return strings.HasPrefix(lower, "deepseek-v4") ||
+		strings.Contains(lower, "/deepseek-v4") ||
+		strings.HasPrefix(lower, "deepseek-flash") ||
+		strings.Contains(lower, "/deepseek-flash")
 }
 
 // isQwenModel reports whether the model name targets an Alibaba Qwen /
-// DashScope model. Matched on the bare model id so provider prefixes and date
-// suffixes still classify correctly.
+// DashScope model.
+//
+// 判定方式与参考项目逐字对齐（new-api relaykit/dto/openai_request.go:389-395）：
+// 前缀 qwen/qwq，或路径段里出现 /qwen、/qwq。用 Contains("/qwen") 而不是
+// 「取最后一段再比前缀」，是因为渠道前缀可能不止一层
+// （openrouter/qwen/qwen3 这种），只取最后一段会把中间那段丢掉。
 func isQwenModel(name string) bool {
 	lower := strings.ToLower(strings.TrimSpace(name))
-	if idx := strings.LastIndex(lower, "/"); idx >= 0 {
-		lower = lower[idx+1:]
-	}
-	return strings.HasPrefix(lower, "qwen") || strings.HasPrefix(lower, "qwq")
+	return strings.HasPrefix(lower, "qwen") ||
+		strings.Contains(lower, "/qwen") ||
+		strings.HasPrefix(lower, "qwq") ||
+		strings.Contains(lower, "/qwq")
 }
 
 // isKimiModel reports whether the model name targets a Moonshot / Kimi model.
 func isKimiModel(name string) bool {
 	lower := strings.ToLower(strings.TrimSpace(name))
-	if idx := strings.LastIndex(lower, "/"); idx >= 0 {
-		lower = lower[idx+1:]
-	}
-	return strings.HasPrefix(lower, "kimi") || strings.HasPrefix(lower, "moonshot")
+	return strings.HasPrefix(lower, "kimi") ||
+		strings.Contains(lower, "/kimi") ||
+		strings.HasPrefix(lower, "moonshot") ||
+		strings.Contains(lower, "/moonshot")
 }
 
 // isGLMModel reports whether the model name targets a GLM / z.ai model that

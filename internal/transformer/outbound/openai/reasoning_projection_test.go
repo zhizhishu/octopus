@@ -215,3 +215,37 @@ func keysOf(m map[string]any) []string {
 	}
 	return out
 }
+
+// 渠道前缀不能把模型族判定漏掉——同一个模型经不同中转，模型名前面会挂
+// 不同的 provider/路径前缀。判定方式与参考项目对齐
+// （new-api relaykit/dto/openai_request.go:389-395 用 Contains("/qwen")）。
+func TestModelFamilyDetectionSurvivesChannelPrefix(t *testing.T) {
+	qwen := []string{"qwen3.8-max", "Qwen3-Max", "qwq-32b", "ali/qwen3-max",
+		"dashscope/qwen-plus", "openrouter/qwen/qwen3"}
+	for _, m := range qwen {
+		if !isQwenModel(m) {
+			t.Errorf("%q 应识别为 Qwen 族", m)
+		}
+	}
+	kimi := []string{"kimi-k3", "Kimi-K3", "moonshot-v1-8k", "pro/kimi-k3"}
+	for _, m := range kimi {
+		if !isKimiModel(m) {
+			t.Errorf("%q 应识别为 Kimi 族", m)
+		}
+	}
+	deepseek := []string{"deepseek-v4-pro", "openrouter/deepseek-v4-flash", "x/deepseek-flash"}
+	for _, m := range deepseek {
+		if !isDeepSeekThinkingCapable(m) {
+			t.Errorf("%q 应识别为支持思考开关的 DeepSeek", m)
+		}
+	}
+	// 带上渠道前缀后，投影仍要落到出站报文上，而不只是识别函数为真。
+	body := chatRequestBody(t, &model.InternalLLMRequest{
+		Model:           "openrouter/qwen/qwen3-max",
+		ReasoningEffort: "high",
+		Messages:        userMessages(),
+	})
+	if _, ok := body["enable_thinking"]; !ok {
+		t.Errorf("带前缀的 Qwen 仍应发出 enable_thinking，实际 %v", keysOf(body))
+	}
+}
