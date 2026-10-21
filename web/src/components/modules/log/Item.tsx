@@ -1,7 +1,7 @@
 'use client';
 
 import React, { Fragment, useMemo, useState, useEffect, useCallback, type ReactNode } from 'react';
-import { Brain, Clock, Cpu, Zap, AlertCircle, ArrowDownToLine, ArrowUpFromLine, DollarSign, ArrowRight, ArrowDown, ArrowUp, Send, MessageSquare, Loader2, RotateCw, ChevronDown, ChevronUp, Pin, KeyRound, Percent, CheckCircle2, XCircle, Eye, Hash, MapPin, User, type LucideIcon } from 'lucide-react';
+import { Brain, Clock, Cpu, Zap, AlertCircle, ArrowDownToLine, ArrowUpFromLine, DollarSign, ArrowRight, ArrowDown, ArrowUp, Send, MessageSquare, Loader2, RotateCw, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Pin, KeyRound, Percent, CheckCircle2, XCircle, Eye, Hash, MapPin, User, type LucideIcon } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { motion, AnimatePresence } from 'motion/react';
 import JsonView from '@uiw/react-json-view';
@@ -1029,8 +1029,23 @@ function passiveBadgeForLog(log: RelayLog, t: (key: string) => string): PassiveB
 
 export const LogCard = React.memo(function LogCard({
     log,
+    detailOpen,
+    onDetailOpenChange,
+    onNavigate,
+    canNavigatePrev = false,
+    canNavigateNext = false,
 }: {
     log: RelayLog;
+    /**
+     * 受控的详情弹窗开合。传了就由外部接管——日志页用它实现「左右键连着翻」：
+     * 翻页时换 log、弹窗保持打开。不传则回到原来的各自管自己。
+     */
+    detailOpen?: boolean;
+    onDetailOpenChange?: (open: boolean) => void;
+    /** 翻到相邻一条。-1 = 上一条（更新），+1 = 下一条（更旧）。 */
+    onNavigate?: (direction: -1 | 1) => void;
+    canNavigatePrev?: boolean;
+    canNavigateNext?: boolean;
 }) {
     const t = useTranslations('log.card');
     const canViewDetails = useAuthStore((state) => state.user?.role === 'admin');
@@ -1405,7 +1420,7 @@ export const LogCard = React.memo(function LogCard({
     ) : null;
 
     return (
-            <MorphingDialog>
+            <MorphingDialog open={detailOpen} onOpenChange={onDetailOpenChange}>
                 <MorphingDialogTrigger
                     disabled={!canViewDetails}
                     className={cn(
@@ -1587,6 +1602,31 @@ export const LogCard = React.memo(function LogCard({
                                 passiveSlot={passiveSlot}
                                 probeSlot={probeSlot}
                             />
+                            {onNavigate ? (
+                                // 键盘能翻，但用户不会自己发现；给两个按钮把能力摆出来。
+                                <span className="ml-auto flex shrink-0 items-center gap-1">
+                                    <button
+                                        type="button"
+                                        onClick={() => onNavigate(-1)}
+                                        disabled={!canNavigatePrev}
+                                        aria-label="上一条（更新）"
+                                        title="上一条（← 键）"
+                                        className="grid size-8 place-items-center rounded-lg border border-border bg-background text-muted-foreground transition-colors hover:text-foreground disabled:pointer-events-none disabled:opacity-30 max-sm:size-11"
+                                    >
+                                        <ChevronLeft className="size-4" />
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => onNavigate(1)}
+                                        disabled={!canNavigateNext}
+                                        aria-label="下一条（更旧）"
+                                        title="下一条（→ 键）"
+                                        className="grid size-8 place-items-center rounded-lg border border-border bg-background text-muted-foreground transition-colors hover:text-foreground disabled:pointer-events-none disabled:opacity-30 max-sm:size-11"
+                                    >
+                                        <ChevronRight className="size-4" />
+                                    </button>
+                                </span>
+                            ) : null}
                         </MorphingDialogTitle>
 
                         <MorphingDialogDescription className="flex-1 min-h-0 overflow-y-auto">

@@ -13,6 +13,7 @@ function useDebouncedValue<T>(value: T, delayMs: number): T {
 
 import { type RelayLog, type RelayLogSeverity, type RequestState, useExportLogs, useLogSeverityCounts, useLogs, useRequestStateStream } from '@/api/endpoints/log';
 import { formatBytes } from '@/lib/log-export';
+import { useLogDetailNavigation } from './use-log-detail-navigation';
 import { LogCard, useSensitiveStore } from './Item';
 import { AlertCircle, AlertTriangle, Calendar as CalendarIcon, CheckCircle2, ChevronLeft, ChevronRight, Circle, Download, Eye, EyeOff, Loader2, RefreshCw, RotateCcw, RotateCw, ScrollText, Search, SlidersHorizontal, WifiOff, X } from 'lucide-react';
 import { useTranslations } from 'next-intl';
@@ -1006,9 +1007,24 @@ export function Log() {
         );
     }, [deferredSearch, effectiveSelectedAPIKeyID, endTime, exportLogs, mismatchParam, selectedEndpoint, selectedModel, selectedProvider, selectedUserID, severityFilter, startTime]);
 
+    // 详情弹窗的「左右键连着翻」：翻到页边界时自动拉下一页，把分页缝掉。
+    const detailNav = useLogDetailNavigation({ logs, hasMore, loadMore, isLoadingMore });
+
     const renderLogCard = useCallback(
-        (log: RelayLog) => <LogCard log={log} />,
-        [],
+        (log: RelayLog) => (
+            <LogCard
+                log={log}
+                detailOpen={detailNav.activeId === log.id}
+                onDetailOpenChange={(open) => {
+                    if (open) detailNav.open(log.id);
+                    else detailNav.close(false);
+                }}
+                onNavigate={detailNav.navigate}
+                canNavigatePrev={detailNav.activeId === log.id && detailNav.canPrev}
+                canNavigateNext={detailNav.activeId === log.id && detailNav.canNext}
+            />
+        ),
+        [detailNav],
     );
     const getLogRowKey = useCallback((log: RelayLog) => log.id, []);
 

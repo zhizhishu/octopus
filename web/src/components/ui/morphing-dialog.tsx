@@ -44,13 +44,37 @@ function useMorphingDialog() {
 export type MorphingDialogProviderProps = {
   children: React.ReactNode;
   transition?: Transition;
+  /**
+   * 受控开合。给了 `open` 就以它为准，内部 state 退居为镜像。
+   *
+   * 加这个是因为日志详情要支持「左右键连着翻上一条/下一条」：翻页时内容会
+   * 整块换掉，但弹窗必须保持打开。非受控模式下换 log 会让组件重建、弹窗
+   * 跟着关掉再开，动画闪一下还打断阅读。
+   */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 };
 
 function MorphingDialogProvider({
   children,
   transition,
+  open: openProp,
+  onOpenChange,
 }: MorphingDialogProviderProps) {
-  const [isOpen, setIsOpen] = useState(false);
+  const [internalOpen, setInternalOpen] = useState(false);
+  const isControlled = openProp !== undefined;
+  const isOpen = isControlled ? openProp : internalOpen;
+
+  const setIsOpen = useCallback<React.Dispatch<React.SetStateAction<boolean>>>(
+    (next) => {
+      const resolved = typeof next === 'function' ? next(isOpen) : next;
+      if (!isControlled) setInternalOpen(resolved);
+      // 受控时也要通知外部，否则外部永远不知道用户点了关闭。
+      onOpenChange?.(resolved);
+    },
+    [isControlled, isOpen, onOpenChange]
+  );
+
   const uniqueId = useId();
   const triggerRef = useRef<HTMLDivElement>(null!);
 
@@ -61,7 +85,7 @@ function MorphingDialogProvider({
       uniqueId,
       triggerRef,
     }),
-    [isOpen, uniqueId]
+    [isOpen, setIsOpen, uniqueId]
   );
 
   return (
@@ -74,11 +98,23 @@ function MorphingDialogProvider({
 export type MorphingDialogProps = {
   children: React.ReactNode;
   transition?: Transition;
+  /** 受控开合，见 MorphingDialogProviderProps。 */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 };
 
-function MorphingDialog({ children, transition }: MorphingDialogProps) {
+function MorphingDialog({
+  children,
+  transition,
+  open,
+  onOpenChange,
+}: MorphingDialogProps) {
   return (
-    <MorphingDialogProvider>
+    <MorphingDialogProvider
+      transition={transition}
+      open={open}
+      onOpenChange={onOpenChange}
+    >
       <MotionConfig transition={transition}>{children}</MotionConfig>
     </MorphingDialogProvider>
   );
