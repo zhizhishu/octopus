@@ -1258,6 +1258,14 @@ retryWithAdapter:
 	// TransformRequest like the other originals, so a goto re-entry and the next attempt
 	// both rebuild from the ORIGINAL instructions rather than a prior pass's placeholders.
 	originalResponsesInstructions := ra.internalRequest.ResponsesInstructions
+	// Capture Stop verbatim for the same reason as instructions: applyInboundRedaction
+	// REPLACES internalRequest.Stop with a freshly built (redacted) value, and
+	// internalRequest is shared across attempts (every relayAttempt embeds the same
+	// *relayRequest). Without this rollback, a retry would re-scan the previous pass's
+	// placeholders: the worker protects an existing token instead of re-tokenizing the
+	// original text, so the real stop sequence can never come back — a silent
+	// behaviour change where the client's stop sequences stop truncating.
+	originalStop := ra.internalRequest.Stop
 	forwardedPreviousResponseID := originalPreviousResponseID
 	if dropResponsesSessionCursor {
 		if originalPreviousResponseID != nil && ra.shouldBridgePlainResponsesCodexHistory() {
@@ -1336,6 +1344,7 @@ retryWithAdapter:
 	ra.internalRequest.Messages = originalMessages
 	ra.internalRequest.ResponsesInputRaw = originalResponsesInputRaw
 	ra.internalRequest.ResponsesInstructions = originalResponsesInstructions
+	ra.internalRequest.Stop = originalStop
 	if err != nil {
 		log.Warnf("failed to create request: %v", err)
 		return 0, fmt.Errorf("failed to create request: %w", err)

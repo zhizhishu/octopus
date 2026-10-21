@@ -23,13 +23,13 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/op"
 	"github.com/zhizhishu/octopus/internal/relay/balancer"
 	"github.com/zhizhishu/octopus/internal/transformer/inbound"
 	"github.com/zhizhishu/octopus/internal/transformer/model"
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
-	"github.com/gin-gonic/gin"
 )
 
 // #2: an ALL-racers-failed race must leave the request-level protection pinned on the
@@ -339,6 +339,103 @@ func TestRelayRedactInstructionsRolledBackAcrossAttempts(t *testing.T) {
 	}
 	if strings.Contains(rec.Body.String(), "{{Redact:") {
 		t.Fatalf("client must not see a placeholder: %s", rec.Body.String())
+	}
+}
+
+// Stop sequences must be rolled back per attempt, exactly like instructions.
+//
+// applyInboundRedaction REPLACES internalRequest.Stop with a freshly built redacted
+// value, and internalRequest is shared across attempts (every relayAttempt embeds the
+// same *relayRequest). Without a rollback the retry re-scans the PREVIOUS pass own
+// placeholder: the redaction worker protects an existing token instead of
+// re-tokenizing the original text, so the client real stop sequence can never come
+// back and stop-truncation silently stops working on that request.
+//
+// Uses a plain chat channel, not a responses/codex one: the codex shape deliberately
+// does not emit `stop` at all (it is not part of that CLI wire format), so a codex
+// channel cannot observe this field either way.
+func TestRelayRedactStopRolledBackAcrossAttempts(t *testing.T) {
+	setupRedactDB(t)
+
+	const secret = "contact a@example.com"
+
+	var mu sync.Mutex
+	var first, second string
+	readStop := func(raw []byte) string {
+		var v struct {
+			Stop json.RawMessage `json:"stop"`
+		}
+		if err := json.Unmarshal(raw, &v); err != nil {
+			t.Error(err)
+			return ""
+		}
+		if len(v.Stop) == 0 {
+			return ""
+		}
+		// `stop` is either a bare string or an array; normalize both.
+		var one string
+		if err := json.Unmarshal(v.Stop, &one); err == nil {
+			return one
+		}
+		var many []string
+		if err := json.Unmarshal(v.Stop, &many); err == nil && len(many) > 0 {
+			return many[0]
+		}
+		return ""
+	}
+
+	a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		first = readStop(body)
+		mu.Unlock()
+		http.Error(w, `{"error":{"message":"boom"}}`, http.StatusInternalServerError)
+	}))
+	t.Cleanup(a.Close)
+	b := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		second = readStop(body)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"c1","object":"chat.completion","created":1,"model":"upstream-model",` +
+			`"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	t.Cleanup(b.Close)
+
+	// A runs the email detector, B runs only the sk- detector — same split as the
+	// instructions case above. With the SAME flags on both channels this test cannot
+	// tell "the original text came back" from "attempt A's placeholder was re-sent":
+	// B would leave the placeholder untouched either way. B must be unable to redact
+	// this value by itself, so a placeholder arriving there can only be a leak.
+	newRedactChannelFull(t, "redact-stop-a", a.URL, outbound.OutboundTypeOpenAIChat, true, "E", 1)
+	newRedactChannelFull(t, "redact-stop-b", b.URL, outbound.OutboundTypeOpenAIChat, true, "S", 2)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"request-model","stream":false,"messages":[{"role":"user","content":"hi"}],"stop":"`+secret+`"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Set("api_key_id", 0)
+	c.Set("user_id", 0)
+	c.Set("request_ip", "127.0.0.1")
+
+	Handler(inbound.InboundTypeOpenAIChat, c)
+
+	mu.Lock()
+	f, s := first, second
+	mu.Unlock()
+	if f == "" || s == "" {
+		t.Fatalf("both attempts must reach upstream with a stop value: first=%q second=%q", f, s)
+	}
+	if !redactTokenRe.MatchString(f) {
+		t.Fatalf("attempt A must have redacted the stop sequence: %q", f)
+	}
+	if redactTokenRe.MatchString(s) {
+		t.Fatalf("attempt B must NOT carry attempt A stop placeholder: %q", s)
+	}
+	if !strings.Contains(s, secret) {
+		t.Fatalf("attempt B must send the ORIGINAL stop sequence, got %q", s)
 	}
 }
 

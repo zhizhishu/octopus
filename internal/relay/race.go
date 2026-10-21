@@ -271,6 +271,9 @@ func prepareRacerAttemptForTemplate(
 	// Capture the current top-level instructions verbatim (a *string) so the post-transform
 	// rollback restores the pre-redaction form (nil stays nil; "" sentinel stays non-nil).
 	originalResponsesInstructions := ra.internalRequest.ResponsesInstructions
+	// Stop is replaced (not mutated) by applyInboundRedaction; capture the pre-redaction
+	// pointer so the rollback can put it back. See forward() for the full rationale.
+	originalStop := ra.internalRequest.Stop
 
 	ra.prepareResponsesSessionCursor(adapter)
 	ra.prepareResponsesEncryptedContent(adapter)
@@ -309,6 +312,7 @@ func prepareRacerAttemptForTemplate(
 	ra.internalRequest.Messages = originalMessages
 	ra.internalRequest.ResponsesInputRaw = originalResponsesInputRaw
 	ra.internalRequest.ResponsesInstructions = originalResponsesInstructions
+	ra.internalRequest.Stop = originalStop
 	if err != nil {
 		ra.redactClose()
 		return nil, nil, nil, fmt.Errorf("failed to create request: %w", err)
