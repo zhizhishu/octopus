@@ -11,9 +11,9 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/samber/lo"
 	"github.com/zhizhishu/octopus/internal/transformer/model"
 	"github.com/zhizhishu/octopus/internal/utils/xurl"
-	"github.com/samber/lo"
 )
 
 type ChatOutbound struct{}
@@ -583,20 +583,34 @@ func glmWantsThinking(request *model.InternalLLMRequest) bool {
 	if request.ReasoningBudget != nil && *request.ReasoningBudget > 0 {
 		return true
 	}
-	switch strings.ToLower(request.ReasoningEffort) {
-	case "low", "medium", "high", "xhigh", "max":
-		// Cursor / OpenAI Responses often send xhigh|max; GLM only understands
-		// thinking:{type}, so treat these as an explicit enable intent.
+	// 用共享表的"已知档位"判断，而不是手写 case 列表。
+	//
+	// 手写 case 配 strings.ToLower 会漏掉空白：客户端发 " max " 时
+	// Lower 仍是 " max "，比不中任何 case → 静默变成"不开思考"。
+	// 实测确认 "max"/"MAX"/"Max" 都开思考，唯独 " max " / "MAX " 不开。
+	// 同一个值走 anthropic 通道（EffortBudgetFor 会 TrimSpace）却是正常的，
+	// 于是同一条客户端请求换个通道强度就变了。
+	if isKnownEffortLevel(request.ReasoningEffort) {
 		return true
 	}
 	return false
+}
+
+// isKnownEffortLevel 报告该档位是否是共享表里的合法档位（已归一大小写与空白）。
+func isKnownEffortLevel(effort string) bool {
+	key := strings.TrimSpace(strings.ToLower(effort))
+	if key == "" {
+		return false
+	}
+	_, known := model.EffortBudget[key]
+	return known
 }
 
 // glmDisablesThinking reports an explicit request to turn reasoning off.
 // Mirrors the volcengine semantics where "minimal" maps to disabled, and also
 // covers the OpenAI "none" effort.
 func glmDisablesThinking(request *model.InternalLLMRequest) bool {
-	switch strings.ToLower(request.ReasoningEffort) {
+	switch strings.TrimSpace(strings.ToLower(request.ReasoningEffort)) {
 	case "minimal", "none":
 		return true
 	}

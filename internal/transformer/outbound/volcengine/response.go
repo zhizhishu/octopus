@@ -48,13 +48,18 @@ func (o *ResponseOutbound) TransformRequest(ctx context.Context, request *model.
 	//
 	// "none"/"" stay untouched (no explicit intent), and "minimal" maps to
 	// disabled, matching the OpenAI semantics where minimal is the off-ramp.
-	switch strings.ToLower(strings.TrimSpace(request.ReasoningEffort)) {
-	case "minimal", "none":
-		responsesReq.Thinking.Type = ThinkingTypeDisabled
-	case "low", "medium", "high", "xhigh", "max":
-		responsesReq.Thinking.Type = ThinkingTypeEnabled
-	default:
-	}
+	//
+	// 🔴 这里原先是一张手写 case 表 + **空 default**。空 default 配上
+	// MarshalJSON 的 `if Thinking.Type != ""` 门控，等于「不认识的档位就
+	// 整个 thinking 字段都不发」。上一版正是因为 xhigh/max 不在 case 里，
+	// 最强的两档反而什么参数都没发（注释记着这次事故）。
+	// 但空 default 没被去掉，只是把 xhigh/max 补进了 case —— 下一个新档位
+	// （GLM 的 auto、Anthropic 的 adaptive、或共享表将来新增的任何档位）
+	// 会立刻重演同一个事故。
+	//
+	// 改成按共享表判「已知/未知」：已知档位一律 enabled，未知才不发。
+	// 这样共享表新增档位时这里自动跟上，不需要回来改 case。
+	responsesReq.Thinking.Type = effortToThinkingType(request.ReasoningEffort)
 
 	body, err := json.Marshal(responsesReq)
 	if err != nil {
@@ -224,4 +229,27 @@ func cloneRawMessage(raw json.RawMessage) json.RawMessage {
 	out := make([]byte, len(raw))
 	copy(out, raw)
 	return out
+}
+
+// effortToThinkingType 把推理强度映射成 volcengine 的二值思考开关。
+//
+// 抽成独立函数是为了能被测试直接覆盖 —— 内联在 TransformRequest 里时，
+// 测试只能复制一份同样的 switch 去"验证"，那测的是副本不是生产代码。
+//
+// 按共享表判「已知/未知」而不是手写 case：共享表将来新增档位时这里自动跟上。
+func effortToThinkingType(effort string) ThinkingType {
+	key := strings.TrimSpace(strings.ToLower(effort))
+	switch key {
+	case "minimal", "none":
+		return ThinkingTypeDisabled
+	case "":
+		// 客户端没表达思考意图，不注入。
+		return ""
+	default:
+		if _, known := model.EffortBudget[key]; known {
+			return ThinkingTypeEnabled
+		}
+		// 未知档位不猜：宁可不发，也不凭一个看不懂的字符串擅自开思考。
+		return ""
+	}
 }
