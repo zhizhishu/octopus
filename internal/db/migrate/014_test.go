@@ -4,8 +4,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/zhizhishu/octopus/internal/model"
 	"github.com/glebarez/sqlite"
+	"github.com/zhizhishu/octopus/internal/model"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
@@ -151,4 +151,98 @@ func TestMigration014AddsTotalAttemptsIndex(t *testing.T) {
 		}
 	}
 	t.Fatalf("缺少 idx_relay_logs_total_attempts(重试筛选会退回全表扫): %v", names)
+}
+
+// 014 的注释承诺「回填中途失败留待下次启动继续」，但迁移框架只有标了 AlwaysRun
+// 的迁移才会在成功记录之后重跑。014 没有标，所以只要 Up() 返回 nil（哪怕是
+// 半途而废的 return nil），这一次就被记成 success，下次启动直接跳过——
+// 补不上的行永远补不上，而日志表看着一切正常。
+//
+// 这条用例走真正的 runner（runMigrationsWithRecord），不是直接调函数，
+// 因为要验证的恰恰是"记录写成功之后还会不会重跑"。
+func TestMigration014RetriesAfterAnIncompletePass(t *testing.T) {
+	db := newMigrateDB(t)
+
+	if err := db.Create(&model.RelayLog{ID: 1, Time: 1, RequestModelName: "first"}).Error; err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// AlwaysRun 必须带上，否则测的就不是真实注册的那个迁移。
+	migrations := []Migration{{Version: 14, Up: migrateBackfillRelayLogSearchIndex, AlwaysRun: true}}
+	if err := runMigrationsWithRecord(db, migrations); err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+
+	// 这一行是"上次启动之后才写进来的"：写入路径若也失败，就只有回填能救它。
+	if err := db.Create(&model.RelayLog{ID: 2, Time: 2, RequestModelName: "second"}).Error; err != nil {
+		t.Fatalf("seed2: %v", err)
+	}
+
+	// 第二次"启动"：同一个迁移再跑一遍。
+	if err := runMigrationsWithRecord(db, []Migration{{Version: 14, Up: migrateBackfillRelayLogSearchIndex, AlwaysRun: true}}); err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+
+	var n int64
+	if err := db.Table("relay_log_search").Count(&n).Error; err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("下次启动应继续补齐投影行, 实际只有 %d 行(期望 2)", n)
+	}
+}
+
+// 014 现在每次启动都会重跑（AlwaysRun），所以"已经补齐"这条路径必须是便宜的
+// no-op：一条 LEFT JOIN 探测拿到空结果就返回，不重灌、不重复建索引。
+//
+// 这条用例挡的是把 AlwaysRun 当免费午餐的后果——如果哪天有人在循环里加了全量
+// 重灌或每轮都 AutoMigrate，启动成本就从"一次探测"变成"扫全表"，而单看
+// "回填结果对不对"的用例全都还是绿的。
+func TestMigration014FullyReconciledPassIsCheapNoOp(t *testing.T) {
+	db := newMigrateDB(t)
+
+	for i := 1; i <= 50; i++ {
+		if err := db.Create(&model.RelayLog{ID: int64(i), Time: int64(i), RequestModelName: "m"}).Error; err != nil {
+			t.Fatalf("seed %d: %v", i, err)
+		}
+	}
+	if err := migrateBackfillRelayLogSearchIndex(db); err != nil {
+		t.Fatalf("first pass: %v", err)
+	}
+
+	// 记录下补齐后的状态，再跑一遍，除了"没有缺失行"之外什么都不该变。
+	var beforeRows, beforeMaxID int64
+	if err := db.Table("relay_log_search").Count(&beforeRows).Error; err != nil {
+		t.Fatalf("count before: %v", err)
+	}
+	if err := db.Table("relay_log_search").Select("COALESCE(MAX(id),0)").Scan(&beforeMaxID).Error; err != nil {
+		t.Fatalf("max id before: %v", err)
+	}
+
+	// 数一下第二遍真正碰了多少行：让它自己报告，而不是我们猜。
+	var probed int64
+	if err := db.Raw(`
+		SELECT COUNT(*) FROM relay_logs l
+		LEFT JOIN relay_log_search s ON s.id = l.id
+		WHERE s.id IS NULL`).Scan(&probed).Error; err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if probed != 0 {
+		t.Fatalf("前置条件不成立: 补齐后仍有 %d 行缺失", probed)
+	}
+
+	if err := migrateBackfillRelayLogSearchIndex(db); err != nil {
+		t.Fatalf("second pass: %v", err)
+	}
+
+	var afterRows, afterMaxID int64
+	if err := db.Table("relay_log_search").Count(&afterRows).Error; err != nil {
+		t.Fatalf("count after: %v", err)
+	}
+	if err := db.Table("relay_log_search").Select("COALESCE(MAX(id),0)").Scan(&afterMaxID).Error; err != nil {
+		t.Fatalf("max id after: %v", err)
+	}
+	if afterRows != beforeRows || afterMaxID != beforeMaxID {
+		t.Fatalf("空转那一遍不该改动投影表: rows %d->%d, maxID %d->%d",
+			beforeRows, afterRows, beforeMaxID, afterMaxID)
+	}
 }

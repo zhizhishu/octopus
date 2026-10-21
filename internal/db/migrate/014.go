@@ -9,9 +9,18 @@ import (
 )
 
 func init() {
+	// AlwaysRun 是必需的, 不是优化。
+	//
+	// 框架对没标 AlwaysRun 的迁移只跑一次: Up() 一返回 nil 就记 success, 之后
+	// 每次启动都跳过。而本迁移的回填天生可能半途而废(行太多、库忙、进程被杀),
+	// 注释里"留待下次启动继续"的承诺只有靠每次重跑才成立。标上它之后:
+	//   - 真正跑完 = 表里已无缺失行 -> 立刻返回 nil, 每次启动只是一条 LEFT JOIN
+	//     探测, 不重灌(全量重灌在百万行上是分钟级)。
+	//   - 跑不完 -> 也该返回 nil(见下), 下次启动继续, 永远不阻断启动。
 	RegisterAfterAutoMigration(Migration{
-		Version: 14,
-		Up:      migrateBackfillRelayLogSearchIndex,
+		Version:   14,
+		Up:        migrateBackfillRelayLogSearchIndex,
+		AlwaysRun: true,
 	})
 }
 
@@ -71,8 +80,11 @@ func migrateBackfillRelayLogSearchIndex(db *gorm.DB) error {
 			ORDER BY l.id
 			LIMIT ?`, batchSize).Scan(&ids).Error
 		if err != nil {
-			// 老库可能还没有这张表的历史数据, 或视图不同; 不因此阻断启动。
-			return nil
+			// 探测缺失行这一步失败不该阻断启动(迁移层没有 logger, 抛错会把服务
+			// 挡在门外), 但也绝不能记成 success —— 那等于宣称"已经补齐了"。
+			// AlwaysRun 下记 failed 与记 success 的实际效果一样(下次启动都会重跑),
+			// 区别只在 migration_records 里留下的证据是真的。
+			return fmt.Errorf("probe missing rows: %w", err)
 		}
 		if len(ids) == 0 {
 			return nil
@@ -87,7 +99,7 @@ func migrateBackfillRelayLogSearchIndex(db *gorm.DB) error {
 				"upstream_response_model, channel_name, request_endpoint, request_path, "+
 				"session_key, error, error_code, request_user_agent, channel_id",
 		).Where("id IN ?", ids).Find(&src).Error; err != nil {
-			return nil
+			return fmt.Errorf("read relay_logs batch: %w", err)
 		}
 		for _, l := range src {
 			rows = append(rows, model.RelayLogSearchIndex{
@@ -113,7 +125,7 @@ func migrateBackfillRelayLogSearchIndex(db *gorm.DB) error {
 		// 只插不存在的: OnConflict DoNothing 在 sqlite/mysql/pg 上都可用,
 		// 避免并发写入路径同时插入时撞主键。
 		if err := db.Clauses(clause.OnConflict{DoNothing: true}).CreateInBatches(rows, 500).Error; err != nil {
-			return nil
+			return fmt.Errorf("insert relay_log_search batch: %w", err)
 		}
 		if len(ids) < batchSize {
 			return nil
