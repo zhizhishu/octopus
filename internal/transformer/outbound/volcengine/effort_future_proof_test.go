@@ -49,3 +49,32 @@ func TestVolcengineOffVersusAbsent(t *testing.T) {
 		}
 	}
 }
+
+// 火山每发一版豆包就换日期后缀。写死三个精确名字的白名单认不出新版本，
+// 会把整个 reasoning 置 nil——客户端要 max，上游收不到任何思考参数，
+// 而且因为只是"少发一个字段"，日志里看不出异常。
+//
+// 这条锁住"版本号变了也认得出"，这是白名单当时漏掉的真实演化路径。
+func TestVolcengineModelFamilySurvivesNewVersionSuffix(t *testing.T) {
+	known := []string{
+		"doubao-seed-1-8-251228", // 当时的白名单原样
+		"doubao-seed-1-6-251015", // 当时的白名单原样
+		"doubao-seed-1-6-lite-251015",
+		"doubao-seed-1-8-260301",            // 未来版本：白名单认不出，族匹配要认得
+		"doubao-seed-1-6-260101",            // 同上
+		"Doubao-Seed-1-8-260301",            // 大小写
+		"volcengine/doubao-seed-1-8-260301", // 渠道前缀
+	}
+	for _, m := range known {
+		if !supportsReasoningEffortModel(m) {
+			t.Errorf("%q 属已知支持思考的豆包族，不该被判为不支持", m)
+		}
+	}
+
+	// 边界仍需保守：不在已知族里的豆包型号不能放开。
+	for _, m := range []string{"doubao-pro-32k", "doubao-embedding", "doubao-seed-2-0-260101", "gpt-4o"} {
+		if supportsReasoningEffortModel(m) {
+			t.Errorf("%q 不在已知支持思考的族里，不该被放行", m)
+		}
+	}
+}

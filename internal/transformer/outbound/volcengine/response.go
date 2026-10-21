@@ -13,10 +13,33 @@ import (
 	"github.com/zhizhishu/octopus/internal/transformer/outbound/openai"
 )
 
-var supportedReasoningEffortModel = map[string]bool{
-	"doubao-seed-1-8-251228":      true,
-	"doubao-seed-1-6-lite-251015": true,
-	"doubao-seed-1-6-251015":      true,
+// 支持思考开关的豆包模型。
+//
+// 🔴 这里原先是三个写死日期后缀的精确字符串（doubao-seed-1-8-251228 等）。
+// 火山每发一版就换日期后缀，白名单认不出新版本 → openaiReq.Reasoning 被
+// 整个置 nil → 上游收不到任何思考参数。客户端要 max，实际静默降级，
+// 而且因为只是"少发一个字段"，日志里看不出异常。
+//
+// 改成按模型族前缀匹配：doubao-seed-1-8 / doubao-seed-1-6 之后的任何版本
+// 号都认得。仍然刻意保持"只放行已知支持思考的族"这个边界，不放开成
+// doubao-* 全量——不支持的族发过去是陌生字段，有 400 风险。
+var supportedReasoningEffortFamilies = []string{
+	"doubao-seed-1-8",
+	"doubao-seed-1-6",
+}
+
+// supportsReasoningEffortModel 报告该模型是否属于已知支持思考开关的族。
+func supportsReasoningEffortModel(modelName string) bool {
+	lower := strings.ToLower(strings.TrimSpace(modelName))
+	if idx := strings.LastIndex(lower, "/"); idx >= 0 {
+		lower = lower[idx+1:]
+	}
+	for _, family := range supportedReasoningEffortFamilies {
+		if strings.HasPrefix(lower, family) {
+			return true
+		}
+	}
+	return false
 }
 
 type ResponseOutbound struct {
@@ -31,7 +54,7 @@ func (o *ResponseOutbound) TransformRequest(ctx context.Context, request *model.
 	// Convert to Responses API request format
 	openaiReq := openai.ConvertToResponsesRequest(request)
 	openaiReq.Metadata = nil // volcengine not supported
-	if _, ok := supportedReasoningEffortModel[request.Model]; !ok {
+	if !supportsReasoningEffortModel(request.Model) {
 		openaiReq.Reasoning = nil
 	}
 	responsesReq := ResponsesRequest{
