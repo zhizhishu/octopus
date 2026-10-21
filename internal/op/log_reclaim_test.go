@@ -162,3 +162,54 @@ func TestReclaimRecordsTimestampWhenTriggered(t *testing.T) {
 		t.Fatalf("reclaim 不应返回错误: %v", err)
 	}
 }
+
+// 开关的存在理由：完整 VACUUM 会排他锁死生产库。万一它卡住了，用户必须能在
+// 管理页立刻关掉，而不是等下一次发版。所以这两条必须锁死——关掉就是真关掉。
+func TestReclaimHonorsDisabledSwitch(t *testing.T) {
+	ctx := setupRelayLogTest(t)
+	relayLogLastReclaimUnix.Store(0)
+	t.Cleanup(func() { relayLogLastReclaimUnix.Store(0) })
+
+	if err := SettingSetString(model.SettingKeyRelayLogReclaimEnabled, "false"); err != nil {
+		t.Fatalf("关闭开关: %v", err)
+	}
+
+	// 造出足以触发回收的死空间，然后确认关掉开关后既不回收、也不记时间戳。
+	var rows []model.RelayLog
+	for i := 0; i < 300; i++ {
+		rows = append(rows, model.RelayLog{
+			ID:             int64(800000 + i),
+			Time:           int64(800000 + i),
+			RequestContent: strings.Repeat("y", 1024),
+		})
+	}
+	for i := range rows {
+		if err := db.GetDB().WithContext(ctx).Create(&rows[i]).Error; err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	if err := db.GetDB().WithContext(ctx).Where("id >= ?", 800000).Delete(&model.RelayLog{}).Error; err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+
+	if err := RelayLogReclaimDeadSpace(ctx); err != nil {
+		t.Fatalf("关闭时也应安全返回: %v", err)
+	}
+	if got := relayLogLastReclaimUnix.Load(); got != 0 {
+		t.Fatalf("开关关闭时不该记录回收时间戳，实际 %d", got)
+	}
+}
+
+func TestReclaimRunsWhenSwitchEnabled(t *testing.T) {
+	ctx := setupRelayLogTest(t)
+	relayLogLastReclaimUnix.Store(0)
+	t.Cleanup(func() { relayLogLastReclaimUnix.Store(0) })
+
+	if err := SettingSetString(model.SettingKeyRelayLogReclaimEnabled, "true"); err != nil {
+		t.Fatalf("开启开关: %v", err)
+	}
+	// 只验证这条路径能正常跑通不报错；是否真的回收取决于空闲页是否过阈值。
+	if err := RelayLogReclaimDeadSpace(ctx); err != nil {
+		t.Fatalf("开启时不应报错: %v", err)
+	}
+}

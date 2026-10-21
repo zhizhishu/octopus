@@ -22,6 +22,7 @@ export const SettingKey = {
     RelayLogKeepEnabled: 'relay_log_keep_enabled',
     RelayLogKeepPeriod: 'relay_log_keep_period',
     RelayLogMaxStorageGB: 'relay_log_max_storage_gb',
+    RelayLogReclaimEnabled: 'relay_log_reclaim_enabled',
     AnthropicAutoCacheControl: 'anthropic_auto_cache_control',
     OpenAIAutoPromptCacheKey: 'openai_auto_prompt_cache_key',
     RelayStreamKeepaliveIntervalSeconds: 'relay_stream_keepalive_interval_seconds',

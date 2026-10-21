@@ -713,6 +713,10 @@
       "noBreaker": {
         "label": "Automatic rescue window (sec)",
         "hint": "Default and maximum are both 300 seconds; 0 turns automatic rescue off. It applies to channels with the circuit breaker disabled, regardless of the switch above."
+      },
+      "reclaim": {
+        "label": "Auto-reclaim disk space",
+        "hint": "Deleting logs does not shrink the file. When enabled, freed space is periodically returned to disk. VACUUM briefly locks the database; turn this off if it causes trouble."
       }
     }
   },

@@ -567,7 +567,12 @@ func RelayLogCleanupNow(ctx context.Context) (RelayLogCleanupResult, error) {
 		// 用户点"立即清理"就是想看到空间变小，所以这里也要尝试回收——
 		// 冷却期与阈值判断都在 relayLogReclaimDue 里，不会白跑。
 		result.Note = "当前占用未超过上限，未删除任何日志。"
-		due, free, total, reason := relayLogReclaimDue(ctx, time.Now())
+		// 手动触发同样服从开关：关掉自动回收的人，不该在点按钮时被静默回收。
+		enabled, _ := SettingGetBool(model.SettingKeyRelayLogReclaimEnabled)
+		due, free, total, reason := false, int64(0), int64(0), ""
+		if enabled {
+			due, free, total, reason = relayLogReclaimDue(ctx, time.Now())
+		}
 		if due {
 			relayLogLastReclaimUnix.Store(time.Now().Unix())
 			if vacuumErr := relayLogVacuum(ctx); vacuumErr != nil {
@@ -700,6 +705,20 @@ func relayLogReclaimDecision(free, total int64, lastReclaim, now time.Time) (boo
 // 但会把原因写进日志（Debugf 级别：磁盘不够时跳过是预期行为，每 10 分钟报 WARN
 // 只会把真正的问题淹掉）。
 func RelayLogReclaimDeadSpace(ctx context.Context) error {
+	// 开关优先，且必须最先判：这是用户应急关掉自动回收的唯一入口。
+	//
+	// 抄 axonhub 的做法（vacuum_enabled），但默认值相反——它默认关，让用户自己
+	// 决定要不要停服务；我们默认开，因为这个库已经躺着 11.7 GiB 死空间，
+	// 默认关等于永远不回收。开关留着是为了出事时能立刻止血，不是为了平时关着。
+	enabled, err := SettingGetBool(model.SettingKeyRelayLogReclaimEnabled)
+	if err != nil {
+		// 读不到设置不该让清理任务失败，按默认（开）继续。
+		log.Debugf("relay log reclaim: 无法读取开关，按默认开启继续: %v", err)
+	} else if !enabled {
+		log.Debugf("relay log dead-space reclaim disabled by setting")
+		return nil
+	}
+
 	now := time.Now()
 	due, free, _, reason := relayLogReclaimDue(ctx, now)
 	if !due {

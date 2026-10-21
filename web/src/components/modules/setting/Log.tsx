@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef } from 'react';
 import { useTranslations } from 'next-intl';
-import { ScrollText, Calendar, Trash2, HardDrive } from 'lucide-react';
+import { ScrollText, Calendar, Trash2, HardDrive, Database } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
@@ -39,12 +39,15 @@ export function SettingLog() {
     const [interventionEnabled, setInterventionEnabled] = useState(true);
     const [noBreakerRetryBudget, setNoBreakerRetryBudget] = useState('300');
     const [isClearing, setIsClearing] = useState(false);
+    // 死空间回收开关：关掉=只有本轮删了行才回收，用于 VACUUM 卡住时应急止血。
+    const [reclaimEnabled, setReclaimEnabled] = useState(true);
 
     const initialEnabled = useRef(true);
     const initialKeepPeriod = useRef('7');
     const initialMaxStorageGB = useRef('0');
     const initialInterventionEnabled = useRef(true);
     const initialNoBreakerRetryBudget = useRef('300');
+    const initialReclaimEnabled = useRef(true);
 
     useEffect(() => {
         if (settings) {
@@ -53,6 +56,7 @@ export function SettingLog() {
             const maxStorageSetting = settings.find(s => s.key === SettingKey.RelayLogMaxStorageGB);
             const interventionEnabledSetting = settings.find(s => s.key === SettingKey.RelayInterventionEnabled);
             const noBreakerRetryBudgetSetting = settings.find(s => s.key === SettingKey.RelayNoBreakerRetryBudgetSeconds);
+            const reclaimSetting = settings.find(s => s.key === SettingKey.RelayLogReclaimEnabled);
             if (enabledSetting) {
                 const isEnabled = enabledSetting.value === 'true';
                 queueMicrotask(() => setEnabled(isEnabled));
@@ -74,6 +78,11 @@ export function SettingLog() {
                 const isInterventionEnabled = interventionEnabledSetting.value === 'true';
                 queueMicrotask(() => setInterventionEnabled(isInterventionEnabled));
                 initialInterventionEnabled.current = isInterventionEnabled;
+            }
+            if (reclaimSetting) {
+                const isReclaimEnabled = reclaimSetting.value === 'true';
+                queueMicrotask(() => setReclaimEnabled(isReclaimEnabled));
+                initialReclaimEnabled.current = isReclaimEnabled;
             }
             if (noBreakerRetryBudgetSetting) {
                 if (noBreakerRetryBudgetSetting.value !== initialNoBreakerRetryBudget.current) {
@@ -97,6 +106,25 @@ export function SettingLog() {
                 onError: () => {
                     toast.error(t('saveFailed'));
                     setEnabled(initialEnabled.current);
+                }
+            }
+        );
+    };
+
+    const handleReclaimEnabledChange = (checked: boolean) => {
+        if (setSetting.isPending) return;
+        // 乐观更新 + 失败回滚：这是应急开关，点了必须立刻生效或立刻复位。
+        setReclaimEnabled(checked);
+        setSetting.mutate(
+            { key: SettingKey.RelayLogReclaimEnabled, value: checked ? 'true' : 'false' },
+            {
+                onSuccess: () => {
+                    toast.success(t('saved'));
+                    initialReclaimEnabled.current = checked;
+                },
+                onError: () => {
+                    toast.error(t('saveFailed'));
+                    setReclaimEnabled(initialReclaimEnabled.current);
                 }
             }
         );
@@ -209,6 +237,21 @@ export function SettingLog() {
                 <Switch
                     checked={enabled}
                     onCheckedChange={handleEnabledChange}
+                />
+            </div>
+
+            {/* 死空间回收 */}
+            <div className="flex items-center justify-between gap-4">
+                <div className="flex items-center gap-3">
+                    <Database className="h-5 w-5 text-muted-foreground" />
+                    <div className="flex flex-col">
+                        <span className="text-sm font-medium">{t('log.reclaim.label')}</span>
+                        <span className="text-xs text-muted-foreground">{t('log.reclaim.hint')}</span>
+                    </div>
+                </div>
+                <Switch
+                    checked={reclaimEnabled}
+                    onCheckedChange={handleReclaimEnabledChange}
                 />
             </div>
 
