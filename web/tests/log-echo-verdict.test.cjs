@@ -159,6 +159,7 @@ function loadCard() {
         '@/components/common/CopyButton': widgets('CopyIconButton'),
         '@/components/common/SafeText': widgets('ErrorSafeText MonoSafeText SafeText'),
         '@/components/ui/morphing-dialog': widgets('MorphingDialog MorphingDialogTrigger MorphingDialogContainer MorphingDialogContent MorphingDialogClose MorphingDialogTitle MorphingDialogDescription'),
+        '@/components/ui/dialog': widgets('Dialog DialogContent DialogHeader DialogTitle'),
         '@/api/endpoints/user': { useAuthStore: (select) => select({ user: { role: 'admin' } }) },
     });
 }

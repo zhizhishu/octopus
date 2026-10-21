@@ -830,6 +830,8 @@
       "echoMismatchHint": "Upstream reported {model}, which differs from the name we sent. This is a clue, not proof of a fake model",
       "echoAliasVariant": "echo name variant",
       "echoAliasVariantHint": "Upstream reported {model}, which differs from the name we sent only by an alias form such as a suffix/date build. This does not mean the model was swapped - a name-variant clue only",
+      "requestModelLabel": "Requested model",
+      "actualModelLabel": "Actual model",
       "upstreamEcho": "Upstream reported",
       "reasoningEffort": "Reasoning Effort",
       "userName": "User",

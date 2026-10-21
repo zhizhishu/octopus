@@ -830,6 +830,8 @@
       "echoMismatchHint": "上游自報 {model}，與送出去的名字不一致；這是線索，不是假模型證明",
       "echoAliasVariant": "回顯名稱變體",
       "echoAliasVariantHint": "上游自報 {model}，與我們送出的名字只差後綴/日期檔位等別名寫法；這不代表模型被替換，僅為名稱變體線索",
+      "requestModelLabel": "請求模型",
+      "actualModelLabel": "實際模型",
       "upstreamEcho": "上游自報",
       "reasoningEffort": "推理強度",
       "userName": "使用者",

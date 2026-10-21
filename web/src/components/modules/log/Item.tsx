@@ -25,6 +25,7 @@ import { getModelIcon } from '@/lib/model-icons';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { describeProbeEvidence } from './probe-evidence';
 import { ProbeEvidenceList } from './ProbeEvidenceList';
+import { ExpandableValue } from './ExpandableValue';
 import { marketModelName } from '@/lib/model-aliases';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
@@ -423,12 +424,18 @@ function LogRouteHeader({
         </Badge>
     ) : null;
     const requestModelText = (
-        <SafeText
-            mode={textMode}
-            value={requestModelDisplayName}
-            title={requestModelDisplayName === log.request_model_name ? undefined : log.request_model_name}
+        <ExpandableValue
+            label={t('requestModelLabel')}
+            value={log.request_model_name}
             className="font-semibold text-card-foreground"
-        />
+        >
+            <SafeText
+                mode={textMode}
+                value={requestModelDisplayName}
+                title={requestModelDisplayName === log.request_model_name ? undefined : log.request_model_name}
+                className="font-semibold text-card-foreground"
+            />
+        </ExpandableValue>
     );
     /* Channel identity is admin-only: a normal user's log carries no
        channel_name (see RelayLogUserSummary), so the header degrades to
@@ -457,12 +464,18 @@ function LogRouteHeader({
     ) : null;
     const channelGroup = log.channel_name ? (<>{channelArrow}{channelBadge}</>) : null;
     const actualModelText = (
-        <SafeText
-            mode={textMode}
-            value={actualModelDisplayName}
-            title={actualModelDisplayName === log.actual_model_name ? undefined : log.actual_model_name}
+        <ExpandableValue
+            label={t('actualModelLabel')}
+            value={log.actual_model_name}
             className="text-muted-foreground"
-        />
+        >
+            <SafeText
+                mode={textMode}
+                value={actualModelDisplayName}
+                title={actualModelDisplayName === log.actual_model_name ? undefined : log.actual_model_name}
+                className="text-muted-foreground"
+            />
+        </ExpandableValue>
     );
     // 管理员才有渠道名/自报。普通用户摘要故意不下发，这里保持空白，不能用「未自报」冒充。
     const showEcho = Boolean(log.channel_name) || Boolean(upstreamEchoName) || typeof log.upstream_model_mismatch === 'boolean';

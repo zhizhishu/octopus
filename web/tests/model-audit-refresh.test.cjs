@@ -65,6 +65,7 @@ function logComponents() {
         '@/api/endpoints/user': { useAuthStore: (select) => select({ user: { role: 'admin' } }), useUserList: () => ({ data: [] }) },
         '@/components/ui/badge': widgets('Badge'),
         '@/components/ui/popover': widgets('Popover PopoverContent PopoverTrigger'),
+        '@/components/ui/dialog': widgets('Dialog DialogContent DialogDescription DialogHeader DialogTitle'),
         '@/lib/utils': { cn: (...parts) => parts.filter(Boolean).join(' ') },
     };
     const item = load('src/components/modules/log/Item.tsx', {
