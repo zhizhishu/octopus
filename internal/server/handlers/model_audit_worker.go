@@ -89,6 +89,18 @@ func runOneAuditResult(ctx context.Context, res *model.ModelAuditResult) {
 	started := time.Now()
 	attempt := res.Attempt + 1
 
+	// 回写日志时带上真实的触发来源，而不是一律写 manual。
+	// trigger 记在 job 上（result 没这个字段），查一次；查不到就退回 manual。
+	auditTrigger := "manual"
+	{
+		var job model.ModelAuditJob
+		if err := db.GetDB().WithContext(ctx).Select("trigger").
+			Where("id = ?", res.JobID).First(&job).Error; err == nil &&
+			strings.TrimSpace(job.Trigger) != "" {
+			auditTrigger = job.Trigger
+		}
+	}
+
 	finish := func(status, verdict string, score int, findingN int, reportJSON, errMsg string) {
 		now := time.Now()
 		db.GetDB().WithContext(ctx).Model(&model.ModelAuditResult{}).
@@ -106,6 +118,23 @@ func runOneAuditResult(ctx context.Context, res *model.ModelAuditResult) {
 				"finished_at":   now,
 			})
 		op.ModelAuditJobProgress(ctx, res.JobID)
+
+		// 结论回写触发它的那行日志。
+		//
+		// 以前这里只更新 queue 表（model_audit_results），主表 relay_logs 的
+		// model_audit_* 列完全不动。而日志页的徽标只读本行字段——两边各写各的，
+		// 结果就是"检测跑完了、结论也存了，日志页却永远显示没检测过"。
+		// 这不是显示 bug，是结论有两个落点而只落了一个。
+		//
+		// 只在拿到真实结论（done）时回写：failed/retry 属于"没测出结果"，
+		// 拿它去覆盖日志会让人以为这行被验过了。RelayLogMarkAudited 自己也是
+		// 先到先得（verdict 为空才写），重复检测不会互相覆盖。
+		if res.LogID > 0 && status == model.AuditResultDone {
+			if err := op.RelayLogMarkAudited(ctx, res.LogID, verdict, score, findingN, auditTrigger, reportJSON); err != nil {
+				// 回写失败不该影响检测本身的结论，记一条警告即可。
+				log.Warnf("model audit backfill for log %d failed: %v", res.LogID, err)
+			}
+		}
 	}
 
 	// failOrRetry 记录一次失败，并决定"再试一次"还是"认输"。
