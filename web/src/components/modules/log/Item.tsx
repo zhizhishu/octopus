@@ -23,6 +23,8 @@ import {
 } from './humanize';
 import { getModelIcon } from '@/lib/model-icons';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { describeProbeEvidence } from './probe-evidence';
+import { ProbeEvidenceList } from './ProbeEvidenceList';
 import { marketModelName } from '@/lib/model-aliases';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
@@ -1282,21 +1284,29 @@ export const LogCard = React.memo(function LogCard({
                         有命中值得去查；没有命中也不代表模型是真的。
                     </p>
                     <ul className="space-y-2">
-                        {probes.map((probe, index) => (
-                            <li key={`${probe.code}-${index}`} className="rounded-lg border border-border px-2 py-1.5">
-                                <p className="leading-5">{probe.title}</p>
-                                {probe.evidence && Object.keys(probe.evidence).length > 0 && (
-                                    <div className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
-                                        {Object.entries(probe.evidence).map(([k, v]) => (
-                                            <Fragment key={k}>
-                                                <span>{k}</span>
-                                                <span className="break-all">{String(v)}</span>
-                                            </Fragment>
-                                        ))}
-                                    </div>
-                                )}
-                            </li>
-                        ))}
+                        {probes.map((probe, index) => {
+                            // 证据摊成"中文名 + 值 + 这行怎么算的"。摆原始数字而不是只给结论，
+                            // 是为了让人自己能复算——复算不了的东西不该叫证据。
+                            const rows = describeProbeEvidence(probe.code, probe.evidence);
+                            return (
+                                <li key={`${probe.code}-${index}`} className="rounded-lg border border-border px-2 py-1.5">
+                                    <p className="leading-5">{probe.title}</p>
+                                    {rows.length > 0 && (
+                                        <div className="mt-1.5 space-y-0.5 text-[11px] text-muted-foreground">
+                                            {rows.map((row) => (
+                                                <div key={row.label} className="flex flex-wrap items-baseline gap-x-1.5">
+                                                    <span className="shrink-0">{row.label}</span>
+                                                    <span className="font-mono tabular-nums text-foreground">{row.value}</span>
+                                                    {row.formula && (
+                                                        <span className="text-muted-foreground/70">（{row.formula}）</span>
+                                                    )}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </li>
+                            );
+                        })}
                     </ul>
                 </div>
             </PopoverContent>
@@ -1585,6 +1595,7 @@ export const LogCard = React.memo(function LogCard({
                                 )}>
                                     <SafeText mode="wrap" value={verdict.text} className="block" />
                                 </div>
+                                <ProbeEvidenceList probes={probes} />
                                 <div className="grid min-w-0 grid-cols-2 gap-2 md:grid-cols-6">
                                     <DetailTile icon={<Hash className="size-3.5" />} label={t('logId')}>
                                         <MonoSafeText mode="wrap" value={String(log.id)} className="block text-xs text-foreground" />

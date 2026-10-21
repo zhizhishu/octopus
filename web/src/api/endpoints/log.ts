@@ -79,6 +79,19 @@ export interface ChannelAttempt {
 /**
  * 日志数据
  */
+/**
+ * 一条硬事实校验的结论。
+ *
+ * 注意 severity 没有 high：后端目前只产出 low/medium。留 low|medium 而不是
+ * 泛化成 string，是为了新增等级时 TS 会在这里报错，逼人回来确认 UI 配色。
+ */
+export interface RelayProbeFinding {
+    code: string;
+    severity: 'low' | 'medium';
+    title: string;
+    evidence?: Record<string, unknown>;
+}
+
 export interface RelayLog {
     id: number;
     user_id: number;
@@ -132,12 +145,7 @@ export interface RelayLog {
     };
     // 硬事实校验结论（纯本地、零上游请求）。空 = 没发现矛盾，
     // **不等于**模型为真——这个体系只能证伪，不能认证。
-    passive_probes?: Array<{
-        code: string;
-        severity: 'low' | 'medium';
-        title: string;
-        evidence?: Record<string, unknown>;
-    }>;
+    passive_probes?: RelayProbeFinding[];
     input_tokens: number;        // 输入Token
     output_tokens: number;       // 输出Token
     cache_hit_tokens: number;     // 缓存命中Token
