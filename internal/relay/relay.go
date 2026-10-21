@@ -2206,7 +2206,10 @@ func claudeCLIReasoningEffort() string {
 	case "", "auto", "off", "false", "disabled":
 		// auto / unset: do not inject a forced effort, follow the client request as-is.
 		return ""
-	case "low", "medium", "high":
+	case "low", "medium", "high", "xhigh", "max":
+		// xhigh/max are passed through to output_config.effort on the adaptive
+		// path. They used to land in default and vanish without a trace, so an
+		// operator who wanted max as the fallback simply could not get it.
 		return effort
 	default:
 		return ""

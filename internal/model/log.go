@@ -94,6 +94,26 @@ type RelayLog struct {
 	// 与 ActualModelName(我们发出去的名字)比对, 用来发现"点的是 A、上游回的是 B"。
 	// 上游没声明时留空(加列之前的老记录同样为空)。纯观测, 不参与转发路径。
 	UpstreamResponseModel string `json:"upstream_response_model,omitempty" gorm:"size:200"`
+	// UpstreamSystemFingerprint 是上游响应里的 system_fingerprint 原值。
+	//
+	// 为什么值得单独存一列：这是服务端标识"后端配置"的粗指纹，官方文档说同一模型
+	// 在不同后端会给出不同值。存下来是为了给聚合分析留原料。
+	//
+	// 🔴 但它实测不可采信，绝不能单独当判据（2026-10-21 参考项目实测）：
+	//   - modelprint 观察同一条线该字段闪烁 12 次；
+	//   - stealthprint 侧 27 个响应拿到 27 个不同的值。
+	// 也就是说它可能逐请求变化，与后端身份无关。正确用法只有两种：
+	//   ① 作为"上游有没有报这个字段"的存在性事实（很多中转会整个丢掉）；
+	//   ② 在足够长的窗口里看它是否成簇——单条日志上的值没有任何判别力。
+	//
+	// 纯观测字段：不入响应体、不参与路由/计费/指纹判定。
+	UpstreamSystemFingerprint string `json:"upstream_system_fingerprint,omitempty" gorm:"size:128;default:''"`
+	// UpstreamServiceTier 是上游响应自报的服务档位（free/standard/premium/…）。
+	//
+	// 用途单一但很实在：发现"付了高级档的钱、拿到免费档的服务"。
+	// Anthropic 侧对应 service_tier，OpenAI 侧同名。上游不回就不填，绝不猜。
+	// 纯观测字段，不参与路由/计费。
+	UpstreamServiceTier string `json:"upstream_service_tier,omitempty" gorm:"size:32;default:''"`
 	// UpstreamModelMismatch 三态: nil = 无法判定(上游没声明, 或我们不知道发出去的名字),
 	// false = 一致, true = 不一致。只作线索——上游回显本身可以撒谎, 一致不等于真, 不一致不等于假。
 	UpstreamModelMismatch *bool `json:"upstream_model_mismatch,omitempty"`

@@ -251,12 +251,14 @@
     },
     "claudeCLIReasoningEffort": {
       "label": "Claude reasoning effort",
-      "hint": "Default \"Adaptive\": follows the client request — high stays high, low stays low, and if none is sent the model decides on its own; Octopus does not override. Low/Medium/High force that level when the client sent none; Off adds no effort at all.",
+      "hint": "Default \"adaptive\": follows the client request — high stays high, low stays low, and when the client sends nothing the model decides. Choosing low/medium/high/very high/max forces that level only when the client sent none; Off disables the fallback entirely.",
       "auto": "Adaptive (follow request)",
       "off": "Off",
       "low": "Low",
       "medium": "Medium",
-      "high": "High"
+      "high": "High",
+      "xhigh": "Very high",
+      "max": "Max"
     },
     "claudeBetaStripFlags": {
       "label": "Claude Beta strip flags",

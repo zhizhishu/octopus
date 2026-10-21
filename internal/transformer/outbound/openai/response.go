@@ -994,6 +994,13 @@ type ResponsesReasoning struct {
 	// shaper (ensureCodexReasoningContext) rather than here — leaving non-codex
 	// Responses channels byte-for-byte unchanged.
 	Context string `json:"context,omitempty"`
+	// MaxTokens carries reasoning.max_tokens. The inbound Responses transformer
+	// has always stored this into ReasoningBudget, but this struct had no such
+	// field, so a same-protocol Responses round trip silently dropped the
+	// caller's explicit reasoning budget. omitempty keeps the key absent for
+	// clients that never send it — including the real Codex CLI, so the codex
+	// fingerprint is unchanged.
+	MaxTokens *int64 `json:"max_tokens,omitempty"`
 }
 
 // ResponsesResponse represents the OpenAI Responses API response format.
@@ -1248,9 +1255,10 @@ func ConvertToResponsesRequest(req *model.InternalLLMRequest) *ResponsesRequest 
 	// requested, so a codex turn with no effort/summary at all still has to carry it.
 	if req.ReasoningEffort != "" || req.ReasoningSummary != "" || req.ReasoningContext != "" || req.ReasoningBudget != nil {
 		result.Reasoning = &ResponsesReasoning{
-			Effort:  req.ReasoningEffort,
-			Summary: req.ReasoningSummary,
-			Context: req.ReasoningContext,
+			Effort:    req.ReasoningEffort,
+			Summary:   req.ReasoningSummary,
+			Context:   req.ReasoningContext,
+			MaxTokens: req.ReasoningBudget,
 		}
 	}
 

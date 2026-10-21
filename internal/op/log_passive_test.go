@@ -23,8 +23,8 @@ func TestComputePassiveSummaryValidReply(t *testing.T) {
 	if s == nil || s.Status != model.PassiveStatusInsufficientEvidence || s.Reason != "no_calibrated_profile" {
 		t.Fatalf("want insufficient_evidence/no_calibrated_profile, got %#v", s)
 	}
-	if s.Version != "v1" || s.Features == nil {
-		t.Fatalf("want v1 + features, got %#v", s)
+	if s.Version != model.PassiveSummaryVersion || s.Features == nil {
+		t.Fatalf("want current version + features, got %#v", s)
 	}
 	// Seven newline characters produce eight lines, including the trailing empty line.
 	if s.Features.Chars != 40 || s.Features.Paragraphs != 2 || s.Features.CodeBlocks != 1 ||
@@ -382,5 +382,48 @@ func TestRelayLogPassiveSummaryDBRoundTrip(t *testing.T) {
 	}
 	if gotLegacy.PassiveSummary != nil {
 		t.Fatalf("legacy row must read back nil summary, got %#v", gotLegacy.PassiveSummary)
+	}
+}
+
+// v2 新增两项信封事实: 上游是否自报 system_fingerprint、自报什么 service_tier。
+// 只记事实不判定——所以这里断言的是"原样保留", 不是"判出真假"。
+func TestComputePassiveSummaryCapturesUpstreamEnvelopeFacts(t *testing.T) {
+	l := model.RelayLog{
+		RequestEndpoint:           "chat",
+		ResponseContent:           mustStopBody("hello world"),
+		UpstreamSystemFingerprint: "fp_abc123",
+		UpstreamServiceTier:       "premium",
+	}
+	got := computePassiveSummary(l)
+	if got == nil || got.Features == nil {
+		t.Fatalf("expected features, got %+v", got)
+	}
+	if got.Version != model.PassiveSummaryVersion {
+		t.Fatalf("version = %q, want %q", got.Version, model.PassiveSummaryVersion)
+	}
+	if !got.Features.UpstreamFingerprintPresent {
+		t.Fatal("expected upstream_fingerprint_present=true")
+	}
+	if got.Features.ServiceTier != "premium" {
+		t.Fatalf("service_tier = %q, want premium", got.Features.ServiceTier)
+	}
+	// 观察本身仍是"证据不足": 这两个字段是事实, 不是判据。
+	if got.Status != model.PassiveStatusInsufficientEvidence {
+		t.Fatalf("status = %q, want insufficient_evidence", got.Status)
+	}
+}
+
+// 上游不回这两个字段是常态(多数中转会丢掉), 必须如实记空, 不能猜测兜底。
+func TestComputePassiveSummaryWithoutUpstreamEnvelopeFacts(t *testing.T) {
+	l := model.RelayLog{RequestEndpoint: "chat", ResponseContent: mustStopBody("hi")}
+	got := computePassiveSummary(l)
+	if got == nil || got.Features == nil {
+		t.Fatalf("expected features, got %+v", got)
+	}
+	if got.Features.UpstreamFingerprintPresent {
+		t.Fatal("expected upstream_fingerprint_present=false when upstream omits it")
+	}
+	if got.Features.ServiceTier != "" {
+		t.Fatalf("service_tier = %q, want empty", got.Features.ServiceTier)
 	}
 }

@@ -125,17 +125,27 @@ func (o *MessagesOutbound) TransformStream(ctx context.Context, eventData []byte
 
 // reasoningToThinkingBudget maps reasoning effort levels to thinking budget in tokens
 // https://ai.google.dev/gemini-api/docs/thinking
-func reasoningToThinkingBudget(effort string) int32 {
-	switch strings.ToLower(effort) {
+//
+// The second return value reports whether the effort maps onto a real budget at
+// all. Unknown efforts must NOT fall back to -1: in Gemini's semantics -1 means
+// "dynamic, model decides", so sending it silently erases the caller's intent —
+// a client asking for max would reach the upstream asking for nothing specific.
+// xhigh/max are explicit here because they arrive legitimately from the OpenAI
+// Responses / codex side and used to land in the default branch.
+func reasoningToThinkingBudget(effort string) (int32, bool) {
+	switch strings.ToLower(strings.TrimSpace(effort)) {
 	case "low":
-		return 1024
+		return 1024, true
 	case "medium":
-		return 4096
+		return 4096, true
 	case "high":
-		return 24576
+		return 24576, true
+	case "xhigh", "max":
+		// Above "high" but kept distinct so the ladder stays monotonic:
+		// high 24576 < xhigh/max 32768.
+		return 32768, true
 	default:
-		// 防御性：未知值走动态
-		return -1
+		return 0, false
 	}
 }
 
@@ -143,6 +153,9 @@ func reasoningToThinkingBudget(effort string) int32 {
 // thinkingLevel enum (low/medium/high, case-insensitive); any other effort
 // (minimal/none/xhigh/max/…) yields "" so an invalid enum is never sent (the
 // ThinkingLevel field is omitempty, so an empty value is simply dropped).
+//
+// This is correct and must stay: max has no Gemini enum, so it is expressed
+// through thinkingBudget above, never through an invented level string.
 func geminiThinkingLevel(effort string) string {
 	switch level := strings.ToLower(strings.TrimSpace(effort)); level {
 	case "low", "medium", "high":
@@ -327,14 +340,17 @@ func convertLLMToGeminiRequest(request *model.InternalLLMRequest) *model.GeminiG
 		}
 		hasConfig = true
 	} else if request.ReasoningEffort != "" {
-		budget := reasoningToThinkingBudget(request.ReasoningEffort)
-
-		config.ThinkingConfig = &model.GeminiThinkingConfig{
-			ThinkingBudget:  &budget,
-			IncludeThoughts: includeThoughtsFromRequest(request),
-			ThinkingLevel:   geminiThinkingLevel(request.ReasoningEffort),
+		// Only build a thinkingConfig when the effort actually maps onto a
+		// budget. An unmapped effort (minimal/none/…) now yields no
+		// thinkingConfig at all instead of a bogus thinkingBudget:-1.
+		if budget, ok := reasoningToThinkingBudget(request.ReasoningEffort); ok {
+			config.ThinkingConfig = &model.GeminiThinkingConfig{
+				ThinkingBudget:  &budget,
+				IncludeThoughts: includeThoughtsFromRequest(request),
+				ThinkingLevel:   geminiThinkingLevel(request.ReasoningEffort),
+			}
+			hasConfig = true
 		}
-		hasConfig = true
 	}
 
 	// Convert ResponseFormat to ResponseMimeType and ResponseSchema

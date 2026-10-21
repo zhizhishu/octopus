@@ -111,6 +111,23 @@ func truncateUserAgentForLog(ua string) string {
 	return ua
 }
 
+// truncateRunes 按 rune 截断到 max 个字符，不追加任何标记。
+//
+// 与 truncateString 的区别：那个按字节切并加 "...(truncated)" 后缀，
+// 用在这里会污染观测值——system_fingerprint 是要跨行做等值比较的，
+// 加了后缀就把"同一个值"变成"看起来不同的值"。超长本身就是异常，
+// 截断只为保护列宽，不该改变语义。
+func truncateRunes(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	s = strings.TrimSpace(s)
+	if r := []rune(s); len(r) > max {
+		return string(r[:max])
+	}
+	return s
+}
+
 func (m *RelayMetrics) SetAccessPlan(plan *model.AccessPlan, rule *model.AccessRouteRule, routeUsed bool) {
 	m.AccessPlan = plan
 	m.AccessRouteRule = rule
@@ -885,6 +902,11 @@ func (m *RelayMetrics) saveLog(ctx context.Context, err error, duration time.Dur
 
 	// 响应内容
 	if m.InternalResponse != nil {
+		// 上游自报的后端标识与服务档位：纯观测，原样存，不做任何推断或改写。
+		// 截断是防御性的——上游理论上可以回一个超长串把列撑爆。
+		relayLog.UpstreamSystemFingerprint = truncateRunes(m.InternalResponse.SystemFingerprint, 128)
+		relayLog.UpstreamServiceTier = truncateRunes(m.InternalResponse.ServiceTier, 32)
+
 		respForLog := m.filterResponseForLog(m.InternalResponse)
 		if respJSON, jsonErr := json.Marshal(respForLog); jsonErr == nil {
 			if m.InternalResponse.Usage != nil && m.InternalResponse.Usage.AnthropicUsage {

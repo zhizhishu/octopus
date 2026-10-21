@@ -243,3 +243,59 @@ func TestGeminiOutboundReemitsThinkingLevelAndIncludeThoughts(t *testing.T) {
 		})
 	}
 }
+
+// max/xhigh used to fall into the default branch and be sent as
+// thinkingBudget:-1, which in Gemini's semantics means "dynamic, model decides"
+// — the caller's explicit intent to think hard was silently erased. These lock
+// the budget so the ladder stays expressed and monotonic.
+func TestGeminiOutboundMaxProducesRealBudget(t *testing.T) {
+	user := "hi"
+	budgetFor := func(effort string) (int32, bool) {
+		converted := convertLLMToGeminiRequest(&model.InternalLLMRequest{
+			Model:           "gemini-test",
+			Messages:        []model.Message{{Role: "user", Content: model.MessageContent{Content: &user}}},
+			ReasoningEffort: effort,
+		})
+		if converted.GenerationConfig == nil || converted.GenerationConfig.ThinkingConfig == nil ||
+			converted.GenerationConfig.ThinkingConfig.ThinkingBudget == nil {
+			return 0, false
+		}
+		return *converted.GenerationConfig.ThinkingConfig.ThinkingBudget, true
+	}
+
+	for _, effort := range []string{"xhigh", "max"} {
+		got, ok := budgetFor(effort)
+		if !ok {
+			t.Fatalf("effort %q produced no thinkingBudget at all", effort)
+		}
+		if got <= 0 {
+			t.Fatalf("effort %q produced thinkingBudget %d; -1/0 means 'dynamic' and erases intent", effort, got)
+		}
+	}
+
+	// Ladder must stay ordered: high < xhigh == max.
+	high, _ := budgetFor("high")
+	xhigh, _ := budgetFor("xhigh")
+	max, _ := budgetFor("max")
+	if !(high < xhigh) {
+		t.Fatalf("ladder not monotonic: high=%d xhigh=%d", high, xhigh)
+	}
+	if xhigh != max {
+		t.Fatalf("xhigh and max should both express 'strongest': %d vs %d", xhigh, max)
+	}
+}
+
+// An effort that maps to nothing must produce NO thinkingConfig rather than a
+// bogus -1 budget the upstream would read as "dynamic".
+func TestGeminiOutboundUnknownEffortEmitsNoThinkingConfig(t *testing.T) {
+	user := "hi"
+	converted := convertLLMToGeminiRequest(&model.InternalLLMRequest{
+		Model:           "gemini-test",
+		Messages:        []model.Message{{Role: "user", Content: model.MessageContent{Content: &user}}},
+		ReasoningEffort: "ultra",
+	})
+	if converted.GenerationConfig != nil && converted.GenerationConfig.ThinkingConfig != nil {
+		t.Fatalf("unknown effort must not produce a thinkingConfig, got %#v",
+			converted.GenerationConfig.ThinkingConfig)
+	}
+}

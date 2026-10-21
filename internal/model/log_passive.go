@@ -33,10 +33,24 @@ type RelayLogPassiveFeatures struct {
 	CodeBlocks    int     `json:"code_blocks"`
 	CodeRatio     float64 `json:"code_ratio"`
 	MarkdownLines int     `json:"markdown_lines"`
+	// UpstreamFingerprintPresent 表示这次响应里上游自报了 system_fingerprint。
+	//
+	// **只记"有没有"，故意不记值、不比较值。**
+	// 实测该字段会逐请求乱跳（参考项目里 27 个响应拿到 27 个不同值），
+	// 拿它做身份判据必假阳性。它唯一站得住的用法是"上游有没有报这个字段"——
+	// 官方会报，很多中转直接丢，这个存在性本身是事实。
+	UpstreamFingerprintPresent bool `json:"upstream_fingerprint_present,omitempty"`
+	// ServiceTier 是上游自报的服务档位原值（空=没报）。不解读、不折算、不判定
+	// "该给什么档"，只如实记录。是否降档由上层聚合比较，摘要层不做判断。
+	ServiceTier string `json:"service_tier,omitempty"`
 }
 
 // PassiveSummaryVersion 固定特征算法版本。
-const PassiveSummaryVersion = "v1"
+//
+// v1 → v2：Features 增加 upstream_fingerprint_present / service_tier 两项。
+// 必须升版本：聚合分桶按它隔离，v1 的桶里没有这两个字段，
+// 混进 v2 会把"没报指纹"和"没采这项"算成同一件事，得出相反的结论。
+const PassiveSummaryVersion = "v2"
 
 // Status 两态。
 const (

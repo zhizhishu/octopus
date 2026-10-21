@@ -198,6 +198,11 @@ func computePassiveSummary(relayLog model.RelayLog) *model.RelayLogPassiveSummar
 	}
 
 	features := passiveFeatures(text)
+	// 上游自报的后端标识/服务档位：只记事实，不参与下面的任何判定。
+	// 放在这里而不是更早，是因为它们属于"响应信封"属性，与正文是否可用无关——
+	// 即使正文被判为不可观察，这两个字段本身依然是有价值的事实。
+	features.UpstreamFingerprintPresent = strings.TrimSpace(relayLog.UpstreamSystemFingerprint) != ""
+	features.ServiceTier = strings.TrimSpace(relayLog.UpstreamServiceTier)
 	return &model.RelayLogPassiveSummary{
 		Version:  model.PassiveSummaryVersion,
 		Status:   model.PassiveStatusInsufficientEvidence,

@@ -506,9 +506,17 @@ func convertToAnthropicRequest(req *model.InternalLLMRequest) *anthropicModel.Me
 	// output_config to honor (Claude Code's own output_config always wins and is
 	// never overwritten), map the schema onto Anthropic's output_config.format so
 	// the structured-output intent survives the OpenAI -> Anthropic hop.
-	if result.OutputConfig == nil {
-		if format, ok := anthropicOutputFormatFromResponseFormat(req.ResponseFormat); ok {
+	//
+	// effort and format live on the SAME object and are allowed to coexist, so
+	// this must merge rather than test for nil: the adaptive branch above may
+	// already have created OutputConfig to carry effort, and the old `== nil`
+	// guard then threw the format away — structured output silently stopped
+	// working for any client that asked for both.
+	if format, ok := anthropicOutputFormatFromResponseFormat(req.ResponseFormat); ok {
+		if result.OutputConfig == nil {
 			result.OutputConfig = &anthropicModel.OutputConfig{Format: format}
+		} else if len(result.OutputConfig.Format) == 0 {
+			result.OutputConfig.Format = format
 		}
 	}
 
@@ -1565,16 +1573,23 @@ func getThinkingBudget(effort string, budget *int64, maxTokens int64) *int64 {
 	} else {
 		switch effort {
 		case anthropicModel.EffortLow:
-			result = 1024
+			result = model.EffortBudget["low"]
 		case anthropicModel.EffortMedium:
-			result = 8192
+			result = model.EffortBudget["medium"]
 		case anthropicModel.EffortHigh:
-			result = 32768
+			result = model.EffortBudget["high"]
+		case "xhigh":
+			// xhigh arrives legitimately from OpenAI Responses / codex clients.
+			// Without this case it fell into default and ended up four times
+			// SMALLER than high — a non-monotonic ladder that silently punished
+			// the second-strongest request.
+			result = model.EffortBudget["xhigh"]
 		case anthropicModel.EffortMax:
 			// "max" maps to a budget above "high".
-			result = 64000
+			result = model.EffortBudget["max"]
 		default:
-			result = 8192
+			// Unknown effort: prefer over-provisioning (see EffortBudgetDefault).
+			result = model.EffortBudgetDefault
 		}
 	}
 

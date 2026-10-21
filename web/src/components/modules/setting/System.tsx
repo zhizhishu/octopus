@@ -313,7 +313,7 @@ export function SettingSystem() {
             }
             if (claudeReasoningEffort) {
                 const rawValue = (claudeReasoningEffort.value || 'auto').toLowerCase();
-                const value = ['auto', 'off', 'low', 'medium', 'high'].includes(rawValue) ? rawValue : 'auto';
+                const value = ['auto', 'off', 'low', 'medium', 'high', 'xhigh', 'max'].includes(rawValue) ? rawValue : 'auto';
                 if (value !== initialClaudeCLIReasoningEffort.current) {
                     queueMicrotask(() => setClaudeCLIReasoningEffort(value));
                     initialClaudeCLIReasoningEffort.current = value;
@@ -1190,6 +1190,8 @@ export function SettingSystem() {
                                 <option value="low">{t('claudeCLIReasoningEffort.low')}</option>
                                 <option value="medium">{t('claudeCLIReasoningEffort.medium')}</option>
                                 <option value="high">{t('claudeCLIReasoningEffort.high')}</option>
+                                <option value="xhigh">{t('claudeCLIReasoningEffort.xhigh')}</option>
+                                <option value="max">{t('claudeCLIReasoningEffort.max')}</option>
                             </select>
                         </div>
                     </div>

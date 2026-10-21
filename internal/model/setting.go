@@ -768,11 +768,16 @@ func (s *Setting) Validate() error {
 		}
 		return nil
 	case SettingKeyClaudeCLIReasoningEffort:
+		// xhigh/max are accepted because the Anthropic outbound adaptive path
+		// passes effort straight into output_config.effort, whose enum includes
+		// max. Rejecting them here made the strongest levels unreachable as a
+		// fallback default — the setting page offered no such option and the
+		// relay silently swallowed the value in claudeCLIReasoningEffort().
 		switch strings.ToLower(strings.TrimSpace(s.Value)) {
-		case "", "auto", "off", "low", "medium", "high":
+		case "", "auto", "off", "low", "medium", "high", "xhigh", "max":
 			return nil
 		default:
-			return fmt.Errorf("%s must be auto, off, low, medium, or high", s.Key)
+			return fmt.Errorf("%s must be auto, off, low, medium, high, xhigh, or max", s.Key)
 		}
 	case SettingKeyUpstreamErrorBodyMode:
 		switch s.Value {

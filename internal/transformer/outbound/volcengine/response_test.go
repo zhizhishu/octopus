@@ -121,3 +121,54 @@ func jsonEqual(t *testing.T, a, b json.RawMessage) bool {
 	}
 	return string(am) == string(bm)
 }
+
+// xhigh/max used to fall into an empty default branch, leaving Thinking at its
+// zero value so omitzero dropped the whole object. The strongest effort levels
+// then sent no thinking parameter at all while "low" did — an inversion where
+// asking for more got you less.
+func TestVolcengineThinkingEnabledForStrongEfforts(t *testing.T) {
+	for _, effort := range []string{"low", "medium", "high", "xhigh", "max"} {
+		typ := volcengineThinkingTypeForTest(t, effort)
+		if typ != string(ThinkingTypeEnabled) {
+			t.Fatalf("effort %q produced thinking.type=%q, want %q", effort, typ, string(ThinkingTypeEnabled))
+		}
+	}
+
+	// minimal stays the explicit off-ramp.
+	if typ := volcengineThinkingTypeForTest(t, "minimal"); typ != string(ThinkingTypeDisabled) {
+		t.Fatalf("minimal produced thinking.type=%q, want %q", typ, string(ThinkingTypeDisabled))
+	}
+
+	// An unset effort must not be treated as an explicit request either way.
+	if typ := volcengineThinkingTypeForTest(t, ""); typ != "" {
+		t.Fatalf("empty effort produced thinking.type=%q, want empty", typ)
+	}
+}
+
+// volcengineThinkingTypeForTest drives a real request transform and reports the
+// resulting thinking.type, so the assertion covers the actual wire body rather
+// than a copy of the switch.
+func volcengineThinkingTypeForTest(t *testing.T, effort string) string {
+	t.Helper()
+	out := &ResponseOutbound{}
+	req, err := out.TransformRequest(context.Background(), &model.InternalLLMRequest{
+		Model:           "doubao-seed-1-6-251015",
+		ReasoningEffort: effort,
+	}, "https://upstream.example", "key")
+	if err != nil {
+		t.Fatalf("transform failed for effort %q: %v", effort, err)
+	}
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	var parsed struct {
+		Thinking struct {
+			Type string `json:"type"`
+		} `json:"thinking"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("unmarshal body: %v", err)
+	}
+	return parsed.Thinking.Type
+}

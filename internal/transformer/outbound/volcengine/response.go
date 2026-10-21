@@ -38,10 +38,20 @@ func (o *ResponseOutbound) TransformRequest(ctx context.Context, request *model.
 		ResponsesRequest: openaiReq,
 		Input:            convertToResponsesInput(openaiReq.Input),
 	}
-	switch request.ReasoningEffort {
-	case "minimal":
+	// Map the effort ladder onto volcengine's binary thinking switch.
+	//
+	// xhigh/max must be enabled: before this they fell into the empty default
+	// branch, Thinking stayed at its zero value, omitzero then dropped the whole
+	// object — so the *strongest* effort levels sent no thinking parameter at
+	// all while "low" did. That inversion is worse than a wrong budget: the
+	// upstream simply never learns the client asked for deep reasoning.
+	//
+	// "none"/"" stay untouched (no explicit intent), and "minimal" maps to
+	// disabled, matching the OpenAI semantics where minimal is the off-ramp.
+	switch strings.ToLower(strings.TrimSpace(request.ReasoningEffort)) {
+	case "minimal", "none":
 		responsesReq.Thinking.Type = ThinkingTypeDisabled
-	case "low", "medium", "high":
+	case "low", "medium", "high", "xhigh", "max":
 		responsesReq.Thinking.Type = ThinkingTypeEnabled
 	default:
 	}
@@ -85,6 +95,49 @@ type ResponsesRequest struct {
 	*openai.ResponsesRequest
 	Input    ResponsesInput `json:"input"`
 	Thinking Thinking       `json:"thinking,omitzero"`
+}
+
+// MarshalJSON merges volcengine's own members (thinking) into the encoded
+// inner request.
+//
+// This method MUST exist. The embedded *openai.ResponsesRequest has its own
+// MarshalJSON, and Go promotes that method onto this outer type — so without an
+// explicit override, json.Marshal(ResponsesRequest) called the INNER marshaller
+// and silently dropped every field declared out here. thinking was therefore
+// never sent to the upstream at all, for any effort level: low, high and max
+// were all equally broken, which is why the effort switch alone could not fix it.
+//
+// The inner request already carries an "input" member, so the outer Input field
+// happened to survive via that same key; thinking has no counterpart inside and
+// vanished completely.
+func (r ResponsesRequest) MarshalJSON() ([]byte, error) {
+	inner, err := json.Marshal(r.ResponsesRequest)
+	if err != nil {
+		return nil, err
+	}
+	// Reuse the inner encoding verbatim so key order and the no-HTML-escape
+	// behaviour stay identical to every other Responses outbound; only splice in
+	// the extra member.
+	members := map[string]json.RawMessage{}
+	if len(inner) > 2 { // not just "{}"
+		if err := json.Unmarshal(inner, &members); err != nil {
+			return nil, err
+		}
+	}
+	// Keep the converted input, which volcengine reshapes for its own API.
+	if encodedInput, err := json.Marshal(r.Input); err == nil && string(encodedInput) != "null" {
+		members["input"] = encodedInput
+	}
+	// thinking is zero-value when no explicit effort was requested; keep it out
+	// of the body in that case rather than sending an empty object.
+	if r.Thinking.Type != "" {
+		encodedThinking, err := json.Marshal(r.Thinking)
+		if err != nil {
+			return nil, err
+		}
+		members["thinking"] = encodedThinking
+	}
+	return json.Marshal(members)
 }
 
 type ThinkingType string
