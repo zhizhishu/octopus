@@ -2,6 +2,7 @@ package op
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -683,5 +684,81 @@ func TestRelayLogListOmitsContentBodies(t *testing.T) {
 	}
 	if detail.ModelAuditReport != big {
 		t.Fatalf("detail must keep the audit report body, got %d bytes", len(detail.ModelAuditReport))
+	}
+}
+
+// 孤儿投影行的根因守门：投影删不掉时，主表必须一起留下。
+//
+// 以前投影删除的错误被 `_ =` 吞掉、主表照删。主表一删，那条投影行就再没有
+// time 可比、没有 id 可查——保留期从主表取 id、容量只看主表字节，两条判据
+// 都够不着它，它会永久赖在库里（现场表现：投影行数一直比主表多几行，且只增不减）。
+//
+// 这里直接把删除函数换成"必定失败"的版本，模拟生产里最常见的
+// 「database is locked」，然后断言主表一行都没少。
+func TestRelayLogCleanupSkipsMainTableWhenSearchIndexDeleteFails(t *testing.T) {
+	ctx := setupRelayLogTest(t)
+
+	// 先把上一条测试遗留的待刷写队列倒空。
+	//
+	// relayLogCache 是包级变量，setupRelayLogTest 只清 DB 不清它；残留的待写行会在
+	// 本测试运行期间被后台 flusher 刷进这个新库，让行数断言凭空多出几行——
+	// 表现为"这条测试单独跑绿、跟别的测试一起跑红"。
+	if err := relayLogFlushToDB(ctx); err != nil {
+		t.Fatalf("flush pending logs: %v", err)
+	}
+	if err := db.GetDB().WithContext(ctx).Where("1 = 1").Delete(&model.RelayLog{}).Error; err != nil {
+		t.Fatalf("clear logs: %v", err)
+	}
+
+	if err := SettingSetString(model.SettingKeyRelayLogMaxStorageGB, "0.000001"); err != nil {
+		t.Fatalf("set storage limit: %v", err)
+	}
+
+	logs := []model.RelayLog{
+		{ID: 2001, Time: 2001, RequestModelName: "a", RequestContent: strings.Repeat("a", 700), ResponseContent: strings.Repeat("b", 700)},
+		{ID: 2002, Time: 2002, RequestModelName: "b", RequestContent: strings.Repeat("c", 700), ResponseContent: strings.Repeat("d", 700)},
+	}
+	if err := db.GetDB().WithContext(ctx).Create(&logs).Error; err != nil {
+		t.Fatalf("create logs: %v", err)
+	}
+
+	// 注入一次"投影删不掉"。用包级钩子而不是 drop 表：drop 会让 Ready 检查
+	// 直接短路返回，根本走不到删除分支，测的就成了另一回事。
+	//
+	// 钩子是包级变量，同包其它清理测试也在跑：不加这把锁，它们会撞上本测试
+	// 注入的失败、连带把彼此搞挂（表现为"单独跑绿、一起跑红"）。
+	// 确保投影表存在。
+	//
+	// 同包有测试会 DropTable(relay_logs) 制造落库失败，之后既不重建主表也不重建
+	// 投影表；而 db 是全局单例，状态会漏到后面的用例。投影表不存在时
+	// relayLogSearchIndexReady 直接返回 false、删除被整段跳过，本测试就走不到
+	// 要验证的分支——表现为"单独跑绿、跟别的测试一起跑红"。
+	if !db.GetDB().WithContext(ctx).Migrator().HasTable("relay_log_search") {
+		if err := db.GetDB().WithContext(ctx).AutoMigrate(&model.RelayLogSearchIndex{}); err != nil {
+			t.Fatalf("recreate search index table: %v", err)
+		}
+	}
+
+	relayLogSearchIndexDeleteHookMu.Lock()
+	prev := relayLogSearchIndexDeleteHook
+	relayLogSearchIndexDeleteHook = func() error {
+		return errors.New("database is locked")
+	}
+	defer func() {
+		relayLogSearchIndexDeleteHook = prev
+		relayLogSearchIndexDeleteHookMu.Unlock()
+	}()
+
+	if err := relayLogCleanupByStorage(ctx); err == nil {
+		t.Fatal("投影删失败必须如实返回错误，不能静默继续删主表")
+	}
+
+	var remaining int64
+	if err := db.GetDB().WithContext(ctx).Model(&model.RelayLog{}).Count(&remaining).Error; err != nil {
+		t.Fatalf("count logs: %v", err)
+	}
+	if remaining != 2 {
+		t.Fatalf("主表行数变了：期望 2 行全保留（投影删失败时整批跳过），实际 %d 行。"+
+			"这说明清理在投影删失败后仍然删了主表，会制造永久孤儿行。", remaining)
 	}
 }

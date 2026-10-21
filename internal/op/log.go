@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"math"
 	"sort"
@@ -1084,10 +1085,22 @@ func RelayLogClear(ctx context.Context, scope *model.RelayLogScope) error {
 	var clearIDs []int64
 	if err := relayLogApplyScope(db.GetDB().WithContext(ctx).Model(&model.RelayLog{}), scope).
 		Pluck("id", &clearIDs).Error; err == nil {
-		relayLogSearchIndexDeleteByIDs(db.GetDB().WithContext(ctx), clearIDs)
+		// 投影删失败就整条中止，绝不继续删主表：否则这些投影行会变成永久孤儿，
+		// 保留期与容量两条判据都只看主表，谁也管不到它们。
+		// 清空是用户显式动作，失败要如实报错让人重试，而不是装作删干净了。
+		if err := relayLogSearchIndexDeleteByIDs(db.GetDB().WithContext(ctx), clearIDs); err != nil {
+			return fmt.Errorf("清空日志投影表失败，已中止以免产生无法清理的孤儿行: %w", err)
+		}
 	} else {
-		// 条件无法下推时宁可整表重建投影, 也不要留下不一致的行。
-		_ = db.GetDB().WithContext(ctx).Where("1 = 1").Delete(&model.RelayLogSearchIndex{}).Error
+		// 条件无法下推时改走整表清空投影。
+		//
+		// 注意这里以前写作"整表重建"，实际是"清空"——投影行不会自动从主表补回来，
+		// 只能等下次启动的迁移续填。所以清空失败必须中止，不能吞掉：
+		// 万一投影清空了而主表只删了一部分，那部分主表的行就再也搜不到了。
+		if err := db.GetDB().WithContext(ctx).Where("1 = 1").
+			Delete(&model.RelayLogSearchIndex{}).Error; err != nil {
+			return fmt.Errorf("清空日志投影表失败，已中止以免搜索结果与主表不一致: %w", err)
+		}
 	}
 
 	if err := query.Delete(&model.RelayLog{}).Error; err != nil {

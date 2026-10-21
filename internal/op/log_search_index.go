@@ -11,6 +11,7 @@ package op
 
 import (
 	"context"
+	"sync"
 
 	"github.com/zhizhishu/octopus/internal/db"
 	"github.com/zhizhishu/octopus/internal/db/migrate"
@@ -59,13 +60,37 @@ func relayLogSearchIndexUpsert(tx *gorm.DB, logs []model.RelayLog) {
 	}).CreateInBatches(rows, 200).Error
 }
 
-// relayLogSearchIndexDeleteByIDs 按 id 删投影行。
-func relayLogSearchIndexDeleteByIDs(tx *gorm.DB, ids []int64) {
+// relayLogSearchIndexDeleteByIDs 按 id 删投影行，并把删除失败如实报出来。
+//
+// 这里**必须**把错误返回给调用方，不能像以前那样 `_ =` 吞掉。原因是删除顺序：
+// 所有清理路径都先删投影、再删主表，而主表删掉之后就再也没有 time 可比对，
+// 也就再也找不到这条投影行该不该删。于是「投影删失败 + 主表删成功」会留下一条
+// 谁都不认领的孤儿行——保留期从主表取 id、容量只看主表字节，两条判据都够不着它，
+// 它会永久赖在库里，还让搜索分页静默少行。
+//
+// 调用方拿到错误后应当放弃删主表（整批跳过，下一轮重试），
+// 宁可晚删一轮，也不要制造孤儿。
+func relayLogSearchIndexDeleteByIDs(tx *gorm.DB, ids []int64) error {
 	if len(ids) == 0 || !relayLogSearchIndexReady(tx) {
-		return
+		return nil
 	}
-	_ = tx.Where("id IN ?", ids).Delete(&model.RelayLogSearchIndex{}).Error
+	if relayLogSearchIndexDeleteHook != nil {
+		if err := relayLogSearchIndexDeleteHook(); err != nil {
+			return err
+		}
+	}
+	return tx.Where("id IN ?", ids).Delete(&model.RelayLogSearchIndex{}).Error
 }
+
+// relayLogSearchIndexDeleteHook 只供测试注入删除失败。
+//
+// 生产环境恒为 nil，不引入任何分支成本或行为差异。存在的理由：要验证
+// "投影删失败时不能删主表"这条契约，必须真的让删除失败一次；而 SQLite 的
+// `database is locked` 在单测里既难稳定复现，也不该为了测试去操纵锁。
+var relayLogSearchIndexDeleteHook func() error
+
+// relayLogSearchIndexDeleteHookMu 保护上面的钩子，避免同包测试互相干扰。
+var relayLogSearchIndexDeleteHookMu sync.Mutex
 
 // relayLogSearchIndexDeleteWhere 按主表同款条件删投影行。
 // 用于"按时间/按存储上限/按 scope 清空"这类批量删除 —— 这些路径删掉的行可能很多,

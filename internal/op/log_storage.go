@@ -140,7 +140,15 @@ func relayLogDeleteExpiredBefore(ctx context.Context, cutoff int64) error {
 			return nil
 		}
 
-		relayLogSearchIndexDeleteByIDs(db.GetDB().WithContext(ctx), ids)
+		// 投影删不掉就整批跳过，绝不先删主表。
+		//
+		// 主表一删，这条投影行就再没有 time 可比、没有 id 可查，变成永久孤儿：
+		// 保留期从主表取 id、容量只看主表字节，两条判据都够不着它。
+		// 宁可这一轮少删一批（下一轮 10 分钟后重试），也不要留下清不掉的垃圾。
+		if err := relayLogSearchIndexDeleteByIDs(db.GetDB().WithContext(ctx), ids); err != nil {
+			log.Warnf("relay log cleanup skipped a batch of %d: search index delete failed: %v", len(ids), err)
+			return err
+		}
 		if err := db.GetDB().WithContext(ctx).Where("id IN ?", ids).Delete(&model.RelayLog{}).Error; err != nil {
 			return err
 		}
@@ -278,7 +286,11 @@ func relayLogDeleteOldest(ctx context.Context, want int64) (int64, error) {
 		lastID = ids[len(ids)-1]
 
 		// 投影表先删：这些 id 即将从主表消失，留着就会"搜得到但打不开"。
-		relayLogSearchIndexDeleteByIDs(db.GetDB().WithContext(ctx), ids)
+		// 删不掉就跳过这一批——理由同保留期清理，见上。
+		if err := relayLogSearchIndexDeleteByIDs(db.GetDB().WithContext(ctx), ids); err != nil {
+			log.Warnf("relay log purge skipped a batch of %d: search index delete failed: %v", len(ids), err)
+			return deleted, err
+		}
 		if err := db.GetDB().WithContext(ctx).Where("id IN ?", ids).Delete(&model.RelayLog{}).Error; err != nil {
 			return deleted, err
 		}
