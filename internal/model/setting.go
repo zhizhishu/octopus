@@ -14,18 +14,15 @@ import (
 type SettingKey string
 
 const (
-	SettingKeyProxyURL                SettingKey = "proxy_url"
-	SettingKeyTrustedProxies          SettingKey = "trusted_proxies"            // 逗号分隔的可信反代 IP/CIDR; 命中时才认其 X-Forwarded-For/CF-Connecting-IP 解析真实客户端 IP。空=仅信内置 Cloudflare 段(安全默认)
-	SettingKeyStatsSaveInterval       SettingKey = "stats_save_interval"        // 将统计信息写入数据库的周期(分钟)
-	SettingKeyStatsTimezone           SettingKey = "stats_timezone"             // 统计"当天/小时"按此 IANA 时区(如 America/Los_Angeles)划分自然日; 空=跟随容器本地时区(向后兼容)。修复容器时区领先用户时区时"今天"统计被提前清零
-	SettingKeyModelInfoUpdateInterval SettingKey = "model_info_update_interval" // 模型信息更新间隔(小时)
-	SettingKeySyncLLMInterval         SettingKey = "sync_llm_interval"          // LLM 同步间隔(小时)
-	SettingKeyRelayLogKeepPeriod      SettingKey = "relay_log_keep_period"      // 日志保存时间范围(天)
-	SettingKeyRelayLogKeepEnabled     SettingKey = "relay_log_keep_enabled"     // 是否保留历史日志
-	SettingKeyRelayLogMaxStorageGB    SettingKey = "relay_log_max_storage_gb"   // 日志最大保存容量(GB), 0 表示不限制
-	// 死空间回收开关。关掉=退回旧行为(只有本轮删了行才 VACUUM)，用于应急：
-	// 万一完整 VACUUM 把生产卡住，用户可以在管理页直接关，不必等发版。
-	SettingKeyRelayLogReclaimEnabled    SettingKey = "relay_log_reclaim_enabled"
+	SettingKeyProxyURL                  SettingKey = "proxy_url"
+	SettingKeyTrustedProxies            SettingKey = "trusted_proxies"              // 逗号分隔的可信反代 IP/CIDR; 命中时才认其 X-Forwarded-For/CF-Connecting-IP 解析真实客户端 IP。空=仅信内置 Cloudflare 段(安全默认)
+	SettingKeyStatsSaveInterval         SettingKey = "stats_save_interval"          // 将统计信息写入数据库的周期(分钟)
+	SettingKeyStatsTimezone             SettingKey = "stats_timezone"               // 统计"当天/小时"按此 IANA 时区(如 America/Los_Angeles)划分自然日; 空=跟随容器本地时区(向后兼容)。修复容器时区领先用户时区时"今天"统计被提前清零
+	SettingKeyModelInfoUpdateInterval   SettingKey = "model_info_update_interval"   // 模型信息更新间隔(小时)
+	SettingKeySyncLLMInterval           SettingKey = "sync_llm_interval"            // LLM 同步间隔(小时)
+	SettingKeyRelayLogKeepPeriod        SettingKey = "relay_log_keep_period"        // 日志保存时间范围(天)
+	SettingKeyRelayLogKeepEnabled       SettingKey = "relay_log_keep_enabled"       // 是否保留历史日志
+	SettingKeyRelayLogMaxStorageGB      SettingKey = "relay_log_max_storage_gb"     // 日志最大保存容量(GB), 0 表示不限制
 	SettingKeyAnthropicAutoCacheControl SettingKey = "anthropic_auto_cache_control" // Anthropic 出站自动为稳定长前缀注入 cache_control
 	SettingKeyRelayStreamKeepaliveSec   SettingKey = "relay_stream_keepalive_interval_seconds"
 	SettingKeyOpenAIAutoPromptCacheKey  SettingKey = "openai_auto_prompt_cache_key"
@@ -205,6 +202,15 @@ const (
 	// Stored masked (secret) and injectable from the <APP>_ADMIN_TOKEN env at runtime
 	// so a public-repo deployment never hardcodes it.
 	SettingKeyAdminToken SettingKey = "admin_access_token" // secret
+)
+
+// 死空间回收开关。关掉 = 退回旧行为（只有本轮删了行才 VACUUM），用于应急：
+// 万一完整 VACUUM 把生产库卡住，用户可以在管理页立刻关掉，不必等发版。
+//
+// 单独一块是有意的：这个名字比上面那批长，混进去会让 gofmt 重排整个常量块，
+// 把一次两行的改动变成几十行空白 diff——review 时看不出真正改了什么。
+const (
+	SettingKeyRelayLogReclaimEnabled SettingKey = "relay_log_reclaim_enabled"
 )
 
 type Setting struct {
