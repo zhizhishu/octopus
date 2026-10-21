@@ -250,6 +250,13 @@ func (c *Channel) Validate() error {
 	if c == nil {
 		return nil
 	}
+	// Reject unknown detector letters instead of silently dropping them.
+	// NormalizeRedactFlags keeps only the known alphabet, so "EX" would quietly
+	// become "E" and the operator would believe a detector is on when it is not.
+	// Failing the save is the only outcome they can notice.
+	if HasInvalidRedactFlag(c.RedactFlags) {
+		return fmt.Errorf("redact_flags 含有未知检测器字母 %q，可用字母为 %s", c.RedactFlags, RedactFlagLetters)
+	}
 	if c.RaceMode {
 		concurrency := c.RaceKeyConcurrency
 		if concurrency == 0 {
@@ -265,6 +272,12 @@ func (c *Channel) Validate() error {
 func (req *ChannelUpdateRequest) Validate() error {
 	if req == nil {
 		return nil
+	}
+	// Same rule as Channel.Validate: only validate when the caller actually sets the
+	// field, otherwise a PATCH that does not mention redaction would be rejected on
+	// the stored value's behalf.
+	if req.RedactFlags != nil && HasInvalidRedactFlag(*req.RedactFlags) {
+		return fmt.Errorf("redact_flags 含有未知检测器字母 %q，可用字母为 %s", *req.RedactFlags, RedactFlagLetters)
 	}
 	concurrency := 2
 	if req.RaceKeyConcurrency != nil {

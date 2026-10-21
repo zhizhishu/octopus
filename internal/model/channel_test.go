@@ -425,3 +425,38 @@ func TestChannelUpdateRequestRaceSettingsValidation(t *testing.T) {
 		})
 	}
 }
+
+// Redact flags must be validated, not silently narrowed.
+//
+// NormalizeRedactFlags keeps only letters from the detector alphabet, so a typo like
+// "EX" silently becomes "E" — the channel saves fine and the operator believes the
+// "extra" detector is running. The only outcome a human can notice is the save
+// failing, so an unknown letter has to be an error on BOTH the create path
+// (Channel.Validate) and the update path (ChannelUpdateRequest.Validate). A PATCH
+// that does not mention redaction at all must still be accepted.
+func TestChannelRedactFlagsRejectUnknownDetectorLetters(t *testing.T) {
+	if err := (&Channel{RedactFlags: "HPSIBEG"}).Validate(); err != nil {
+		t.Fatalf("valid flag set was rejected: %v", err)
+	}
+	if err := (&Channel{RedactFlags: ""}).Validate(); err != nil {
+		t.Fatalf("empty flags (means all detectors) was rejected: %v", err)
+	}
+	for _, bad := range []string{"EX", "HZ", "HS1B"} {
+		if err := (&Channel{RedactFlags: bad}).Validate(); err == nil {
+			t.Fatalf("create accepted unknown detector letters %q", bad)
+		}
+	}
+
+	bad := "EX"
+	if err := (&ChannelUpdateRequest{RedactFlags: &bad}).Validate(); err == nil {
+		t.Fatalf("update accepted unknown detector letters %q", bad)
+	}
+	// Not mentioning redaction must stay fine: a PATCH only carries what it changes.
+	if err := (&ChannelUpdateRequest{}).Validate(); err != nil {
+		t.Fatalf("update without redact_flags was rejected: %v", err)
+	}
+	good := "HP"
+	if err := (&ChannelUpdateRequest{RedactFlags: &good}).Validate(); err != nil {
+		t.Fatalf("update rejected a valid flag set: %v", err)
+	}
+}
