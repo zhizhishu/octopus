@@ -131,7 +131,9 @@ export interface RelayLog {
     // status 只允许明确的不适用/证据不足（不得用任何字段冒充本行主动结论）。W2 落地，本轮仅类型。
     // 与 model_audit_*（主动）分开，不写回同一字段。仅管理员日志返回。
     passive_summary?: {
-        version: 'v1';
+        // v1 → v2：Features 多了 upstream_fingerprint_present / service_tier。
+        // 后端聚合按版本分桶，v1 的桶里没有这两项，所以历史行会一直是 v1。
+        version: 'v1' | 'v2';
         status: 'not_applicable' | 'insufficient_evidence';
         reason: string;
         language?: 'zh' | 'en' | 'mixed' | 'other';
@@ -142,11 +144,29 @@ export interface RelayLog {
             code_blocks: number;
             code_ratio: number;
             markdown_lines: number;
+            // 这次响应里上游有没有自报 system_fingerprint。
+            // 只记"有没有"，故意不记值——该字段逐请求乱跳，当作稳定标识会误判。
+            upstream_fingerprint_present?: boolean;
+            // 上游自报的服务档位原值（空=没报）。不做解读、不折算。
+            service_tier?: string;
         };
     };
     // 硬事实校验结论（纯本地、零上游请求）。空 = 没发现矛盾，
     // **不等于**模型为真——这个体系只能证伪，不能认证。
     passive_probes?: RelayProbeFinding[];
+    // 纯被动的"上游后端来源"证据（零额外请求，只看已经落库的字段）。
+    // 三源累计分 + 反证。全 0 / 缺省 = 这条日志没提供任何来源方向的证据。
+    // 🔴 只能证伪不能认证：分数高不等于"确认是官方"，反证非空说明看着像、
+    // 但缺了官方必带的字段。单条日志不够，要聚合多行看。
+    passive_source?: {
+        anthropic_score?: number;
+        bedrock_score?: number;
+        vertex_score?: number;
+        // 命中的反证项（缺失了本该有的字段）。
+        counter_evidence?: string[];
+        // 命中的正向信号，用于排查"为什么给了这个分"。
+        signals?: string[];
+    };
     input_tokens: number;        // 输入Token
     output_tokens: number;       // 输出Token
     cache_hit_tokens: number;     // 缓存命中Token

@@ -336,6 +336,8 @@ interface LogRouteHeaderProps {
     passiveSlot?: ReactNode;
     /** card 专用槽位：B2 硬事实校验徽标。与 passiveSlot 并列，不新增轨道；无命中传 null。 */
     probeSlot?: ReactNode;
+    /** card 专用槽位：B2 上游来源证据徽标。无证据传 null（不出"正常"占位）。 */
+    sourceSlot?: ReactNode;
     /** card 专用槽位：C2「查看详情」。detail 忽略。 */
     detailsSlot?: ReactNode;
 }
@@ -367,6 +369,7 @@ function LogRouteHeader({
     auditSlot,
     passiveSlot,
     probeSlot,
+    sourceSlot,
     detailsSlot,
 }: LogRouteHeaderProps) {
     const t = useTranslations('log.card');
@@ -638,7 +641,7 @@ function LogRouteHeader({
          * 模型名和状态、接口挤在同一行；客户端、回显、查看详情在下一行。
          * 窄屏仍按这六个格子的顺序自然往下排。
          */
-        const hasEchoEvidence = Boolean(echoGroup || auditSlot || passiveSlot || probeSlot);
+        const hasEchoEvidence = Boolean(echoGroup || auditSlot || passiveSlot || probeSlot || sourceSlot);
         return (
             <div
                 data-log-header
@@ -677,6 +680,7 @@ function LogRouteHeader({
                             {auditSlot ? <span className="min-w-0">{auditSlot}</span> : null}
                             {passiveSlot ? <span className="min-w-0">{passiveSlot}</span> : null}
                             {probeSlot ? <span className="min-w-0">{probeSlot}</span> : null}
+                            {sourceSlot ? <span className="min-w-0">{sourceSlot}</span> : null}
                         </span>
                     ) : null}
                 </div>
@@ -702,6 +706,7 @@ function LogRouteHeader({
             {echoGroup}
             {passiveSlot}
             {probeSlot}
+            {sourceSlot}
             {streamBadge}
             {stickyPin}
         </>
@@ -1278,6 +1283,81 @@ export const LogCard = React.memo(function LogCard({
     // 与被动摘要徽标刻意分开：摘要说的是"回复长什么样"，这里说的是"数字自相矛盾"。
     // 两者证据强度不同，混成一个徽标会让硬问题看着像软观察。
     // 只有真的命中才出徽标——没命中不出"正常"徽标，避免被读成"已验真"。
+    // 上游后端来源证据徽标（纯被动、零额外请求）。
+    //
+    // 与上面两个徽标分开的第三件事：摘要说"回复长什么样"，probes 说"数字自相矛盾"，
+    // 这里说"这条日志更可能来自哪种后端"。三者证据来源不同，混在一起会让人
+    // 把"看着像"读成"已确认"。
+    //
+    // 🔴 只在真的拿到证据时才出徽标（三源分全 0 且无信号无返回），而且文案里
+    // 不许出现"确认/官方"这类认证措辞——这套逻辑只能证伪。
+    const source = log.passive_source;
+    const hasSourceEvidence = Boolean(
+        source && (
+            (source.anthropic_score ?? 0) > 0 ||
+            (source.bedrock_score ?? 0) > 0 ||
+            (source.vertex_score ?? 0) > 0 ||
+            (source.counter_evidence?.length ?? 0) > 0 ||
+            (source.signals?.length ?? 0) > 0
+        ),
+    );
+    const sourceSlot = hasSourceEvidence && source ? (
+        <Popover>
+            <PopoverTrigger asChild>
+                <Badge
+                    variant="outline"
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => {
+                        e.stopPropagation();
+                        if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            e.currentTarget.click();
+                        }
+                    }}
+                    className={cn('min-w-0 cursor-pointer whitespace-normal px-1.5 py-0 text-xs', PASSIVE_NEUTRAL_CLASS)}
+                    title={t('passiveSourceTitle')}
+                >
+                    {t('passiveSourceTitle')}
+                </Badge>
+            </PopoverTrigger>
+            <PopoverContent
+                align="start"
+                className="w-72 space-y-2 text-xs"
+                onClick={(e) => e.stopPropagation()}
+            >
+                <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+                    <span className="text-muted-foreground">Anthropic</span>
+                    <span className="tabular-nums">{source.anthropic_score ?? 0}</span>
+                    <span className="text-muted-foreground">Bedrock</span>
+                    <span className="tabular-nums">{source.bedrock_score ?? 0}</span>
+                    <span className="text-muted-foreground">Vertex</span>
+                    <span className="tabular-nums">{source.vertex_score ?? 0}</span>
+                </div>
+                {(source.signals?.length ?? 0) > 0 && (
+                    <div className="border-t border-border pt-2">
+                        <div className="text-muted-foreground">{t('passiveSourceSignals')}</div>
+                        <ul className="mt-1 space-y-0.5">
+                            {source.signals!.map((sig) => (
+                                <li key={sig} className="break-all font-mono text-[11px]">{sig}</li>
+                            ))}
+                        </ul>
+                    </div>
+                )}
+                {(source.counter_evidence?.length ?? 0) > 0 && (
+                    <div className="border-t border-border pt-2">
+                        <div className="text-muted-foreground">{t('passiveSourceCounter')}</div>
+                        <ul className="mt-1 space-y-0.5">
+                            {source.counter_evidence!.map((item) => (
+                                <li key={item} className="break-all font-mono text-[11px]">{item}</li>
+                            ))}
+                        </ul>
+                    </div>
+                )}
+            </PopoverContent>
+        </Popover>
+    ) : null;
     const probes = log.passive_probes ?? [];
     const probeSlot = probes.length > 0 ? (
         <Popover>
@@ -1393,6 +1473,24 @@ export const LogCard = React.memo(function LogCard({
                                     <span className="tabular-nums">{Number(passiveBadge.summary.features.code_ratio).toFixed(2)}</span>
                                     <span className="text-muted-foreground">{t('passiveFeatureMarkdownLines')}</span>
                                     <span className="tabular-nums">{passiveBadge.summary.features.markdown_lines}</span>
+                                    {/* v2 新增两项。v1 旧行没有这两个键，此时整行不渲染——
+                                        写"否"会把"没观测"说成"观测到没有"。 */}
+                                    {typeof passiveBadge.summary.features.upstream_fingerprint_present === 'boolean' && (
+                                        <>
+                                            <span className="text-muted-foreground">{t('passiveFeatureFingerprint')}</span>
+                                            <span>
+                                                {passiveBadge.summary.features.upstream_fingerprint_present
+                                                    ? t('passiveFingerprintPresent')
+                                                    : t('passiveFingerprintAbsent')}
+                                            </span>
+                                        </>
+                                    )}
+                                    {passiveBadge.summary.features.service_tier && (
+                                        <>
+                                            <span className="text-muted-foreground">{t('passiveFeatureServiceTier')}</span>
+                                            <span className="font-mono">{passiveBadge.summary.features.service_tier}</span>
+                                        </>
+                                    )}
                                 </div>
                             )}
                         </>
@@ -1478,6 +1576,7 @@ export const LogCard = React.memo(function LogCard({
                                 auditSlot={auditSlot}
                                 passiveSlot={passiveSlot}
                                 probeSlot={probeSlot}
+                                sourceSlot={sourceSlot}
                                 detailsSlot={detailsSlot}
                             />
 
@@ -1601,6 +1700,7 @@ export const LogCard = React.memo(function LogCard({
                                 upstreamPathTitle={upstreamPathTitle}
                                 passiveSlot={passiveSlot}
                                 probeSlot={probeSlot}
+                                sourceSlot={sourceSlot}
                             />
                             {onNavigate ? (
                                 // 键盘能翻，但用户不会自己发现；给两个按钮把能力摆出来。
