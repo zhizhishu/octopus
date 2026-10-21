@@ -517,6 +517,18 @@ func relayLogCleanupByStorage(ctx context.Context) error {
 				beforeRows, afterRows, before, after, vacuumErr)
 		}
 	}
+
+	// 🔴 上面那段只在"本轮删了行"时才回收，有个真实踩到的缺口：
+	// 日志只跨 3 天、保留期 30 天 → 每轮一行都删不掉 → afterRows == beforeRows
+	// → VACUUM 永远进不去，而库里躺着 11.7 GiB 历史死空间永远不会被回收。
+	//
+	// 所以回收必须与"这轮删没删"解耦：独立看库自己的空闲页占比。日志删得越干净
+	// 这个缺口越不可能被触发——越健康越看不见，正是它藏了这么久的原因。
+	// 冷却期在 RelayLogReclaimDeadSpace 内部保证（见 log_storage.go）。
+	if err := RelayLogReclaimDeadSpace(ctx); err != nil {
+		// 回收失败不该中断清理主流程：空间没还回去不是故障，下次还会再试。
+		log.Debugf("relay log dead-space reclaim error: %v", err)
+	}
 	return nil
 }
 

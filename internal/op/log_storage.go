@@ -563,7 +563,172 @@ func RelayLogCleanupNow(ctx context.Context) (RelayLogCleanupResult, error) {
 			result.Note = "日志已收缩，磁盘空间已回收。"
 		}
 	} else {
+		// 一行都没删，但库里可能仍躺着历史死空间（删日志只标空闲、不还文件）。
+		// 用户点"立即清理"就是想看到空间变小，所以这里也要尝试回收——
+		// 冷却期与阈值判断都在 relayLogReclaimDue 里，不会白跑。
 		result.Note = "当前占用未超过上限，未删除任何日志。"
+		due, free, total, reason := relayLogReclaimDue(ctx, time.Now())
+		if due {
+			relayLogLastReclaimUnix.Store(time.Now().Unix())
+			if vacuumErr := relayLogVacuum(ctx); vacuumErr != nil {
+				result.Note += " 死空间回收失败(" + vacuumErr.Error() + ")。"
+			} else {
+				result.Vacuumed = true
+				result.Note += fmt.Sprintf(" 已回收历史死空间（空闲页 %d/%d，%s）。", free, total, reason)
+			}
+		}
 	}
 	return result, nil
+}
+
+// ───────────────────────────── 死空间回收 ─────────────────────────────
+//
+// 上面那套 relayLogVacuum 的触发条件原本是「本轮确实删掉了行」。那个判据有个
+// 致命缺口，生产上真实发生过：
+//
+//   日志只跨 3 天、保留期 30 天 → 清理任务每 10 分钟跑一次，每次一行都删不掉
+//   → afterRows == beforeRows → VACUUM 那一步永远进不去。
+//   而库里躺着 11.7 GiB 空闲页（历史大清理删掉 6 万行留下的），永远不会被回收。
+//
+// 也就是说：**回收空间的能力只在"刚好删了东西"那一次才被唤醒，历史遗留的死空间
+// 没人管**。日志删得越干净，这个 bug 越不可能被触发——越健康越看不见。
+//
+// 现在的判据改成看库自己的体检数字：空闲页占总页数超过阈值就回收。这与"这轮删没
+// 删"完全解耦，谁留下的死空间都能被收拾掉。
+
+const (
+	// relayLogReclaimFreeRatio 是触发回收的空闲页占比阈值。
+	//
+	// 取 0.20 的理由不是精确科学，是三条现实约束的交点：
+	//   - 太低（如 0.05）：日志正常写入本来就会留几 % 空闲页，天天 VACUUM 纯属浪费；
+	//   - 太高（如 0.50）：等于要等到浪费一半空间才动手，18GB 的库就是白扔 9GB；
+	//   - 0.20 意味着"浪费超过五分之一"才值得付一次重排文件的代价。
+	//
+	// 生产实测：11.7 GiB / 17.1 GiB ≈ 0.68，远超阈值，部署后立刻会被收拾。
+	relayLogReclaimFreeRatio = 0.20
+
+	// relayLogReclaimMinFreePages 是绝对下限：空闲页太少时无论占比如何都不回收。
+	//
+	// 为什么要这条：小库上占比会剧烈抖动。刚建的空库删掉一行，空闲页占比可能就到
+	// 50%，此时 VACUUM 毫无意义却要重建整个文件。设 1024 页（4 MiB，默认页大小）
+	// 把这类噪声挡掉，让阈值只在大库上生效。
+	relayLogReclaimMinFreePages = 1024
+)
+
+// relayLogReclaimCooldown 是两次回收之间的最小间隔。
+//
+// 🔴 这条不是优化，是安全阀。完整 VACUUM 要重建整个库文件：
+//   - 生产 17.1 GiB 的库，这一步要几分钟到几十分钟；
+//   - 期间 SQLite 持有排他锁，**所有读写都被挡住**；
+//   - 峰值临时空间约等于库大小。
+//
+// 没有冷却期的话，清理任务（每 10 分钟）会反复触发重排，等于把生产库持续按住。
+// 6 小时的含义：一天最多被打断 4 次，而回收一次带来的空间通常能撑很久。
+const relayLogReclaimCooldown = 6 * time.Hour
+
+// relayLogLastReclaimUnix 记录上次尝试回收的时间（Unix 秒，0 = 从未）。
+//
+// 用 atomic 而不是 mutex：这条只在清理任务里读写，但 relayLogVacuum 可能被
+// 管理页的"立即清理"并发调到，用原子操作避免为此引入一把锁。
+var relayLogLastReclaimUnix atomic.Int64
+
+// relayLogReclaimDue 判断当前是否该回收死空间，并给出人话理由。
+//
+// 返回 (是否该回收, 空闲页数, 总页数, 理由)。理由用于日志——运维看到"为什么这次
+// 没回收"比看到一片沉默有用得多，沉默会让人以为功能坏了。
+func relayLogReclaimDue(ctx context.Context, now time.Time) (bool, int64, int64, string) {
+	// 冷却期必须先判、且必须**在碰数据库之前**判。
+	//
+	// 这不是微优化：冷却期内去读 PRAGMA 是纯粹的无用功，更糟的是它要求数据库
+	// 一定可用。让"该不该回收"的答案依赖一个根本不需要的信息，会把一个纯策略
+	// 判断变成可能失败的操作。测试里正是因为顺序写反，冷却期用例直接撞了空库 panic。
+	last := time.Time{}
+	if v := relayLogLastReclaimUnix.Load(); v > 0 {
+		last = time.Unix(v, 0)
+	}
+	if !last.IsZero() && now.Sub(last) < relayLogReclaimCooldown {
+		_, reason := relayLogReclaimDecision(0, 0, last, now)
+		return false, 0, 0, reason
+	}
+
+	var free, total int64
+	if err := db.GetDB().WithContext(ctx).Raw("PRAGMA freelist_count").Row().Scan(&free); err != nil {
+		return false, 0, 0, "无法读取空闲页数: " + err.Error()
+	}
+	if err := db.GetDB().WithContext(ctx).Raw("PRAGMA page_count").Row().Scan(&total); err != nil {
+		return false, 0, 0, "无法读取总页数: " + err.Error()
+	}
+
+	due, reason := relayLogReclaimDecision(free, total, last, now)
+	return due, free, total, reason
+}
+
+// relayLogReclaimDecision 是纯粹的判定函数：不碰 DB、不读时钟，只看入参。
+//
+// 抽出来的原因很实际——阈值和冷却这两条规则最容易改错，也最需要测试，而它们与
+// 数据库一点关系都没有。测试里不必真的把一个库撑出 1024 页空闲区，只要喂数字。
+func relayLogReclaimDecision(free, total int64, lastReclaim, now time.Time) (bool, string) {
+	// 冷却期优先：最便宜，也最该短路——刚重排完再问什么都没意义。
+	if !lastReclaim.IsZero() {
+		since := now.Sub(lastReclaim)
+		if since < relayLogReclaimCooldown {
+			return false, fmt.Sprintf("距上次回收仅 %s，冷却期内(阈值 %s)", since.Truncate(time.Minute), relayLogReclaimCooldown)
+		}
+	}
+
+	if total <= 0 {
+		return false, "数据库页数为 0，跳过"
+	}
+	if free < relayLogReclaimMinFreePages {
+		return false, fmt.Sprintf("空闲页 %d 未达下限 %d，不值得重排文件", free, relayLogReclaimMinFreePages)
+	}
+
+	ratio := float64(free) / float64(total)
+	if ratio < relayLogReclaimFreeRatio {
+		return false, fmt.Sprintf("空闲页占比 %.1f%% 未达阈值 %.0f%%", ratio*100, relayLogReclaimFreeRatio*100)
+	}
+
+	return true, fmt.Sprintf("空闲页占比 %.1f%%(%d/%d) 超过阈值 %.0f%%", ratio*100, free, total, relayLogReclaimFreeRatio*100)
+}
+
+// RelayLogReclaimDeadSpace 检查并按需回收 SQLite 死空间。
+//
+// 这是一个**独立于删除**的动作：不删任何日志，只把已经被标成空闲的页还给文件系统。
+// 由清理任务在每轮删除之后调用；即使一行都没删，只要死空间够多也会回收。
+//
+// 失败不返回错误给调用方中断清理流程——空间没还回去不是故障，下次还会再试。
+// 但会把原因写进日志（Debugf 级别：磁盘不够时跳过是预期行为，每 10 分钟报 WARN
+// 只会把真正的问题淹掉）。
+func RelayLogReclaimDeadSpace(ctx context.Context) error {
+	now := time.Now()
+	due, free, _, reason := relayLogReclaimDue(ctx, now)
+	if !due {
+		log.Debugf("relay log dead-space reclaim skipped: %s", reason)
+		return nil
+	}
+
+	// 先记时间戳再动手：如果 VACUUM 把进程拖死/被 OOM 杀掉，重启后不会立刻又
+	// 扑上来重排一次。宁可晚 6 小时回收，也不要形成"重启→VACUUM→被杀"的死循环。
+	relayLogLastReclaimUnix.Store(now.Unix())
+
+	log.Infof("relay log dead-space reclaim starting: %s", reason)
+	start := time.Now()
+
+	if err := relayLogVacuum(ctx); err != nil {
+		// 磁盘不够是**预期**情况，不是故障；如实记下来但别刷 WARN。
+		log.Debugf("relay log dead-space reclaim failed after %s: %v", time.Since(start).Truncate(time.Second), err)
+		return nil
+	}
+
+	// 复核实际效果：不假装成功。这里读的是回收后的真实数字。
+	var afterFree int64
+	verifyErr := db.GetDB().WithContext(ctx).Raw("PRAGMA freelist_count").Row().Scan(&afterFree)
+	if verifyErr != nil {
+		log.Infof("relay log dead-space reclaim finished in %s (无法复核空闲页: %v)", time.Since(start).Truncate(time.Second), verifyErr)
+		return nil
+	}
+
+	log.Infof("relay log dead-space reclaim finished in %s: free pages %d → %d (reclaimed ~%s)",
+		time.Since(start).Truncate(time.Second), free, afterFree, humanBytes((free-afterFree)*4096))
+	return nil
 }
