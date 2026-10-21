@@ -1295,8 +1295,6 @@ export const LogCard = React.memo(function LogCard({
     const hasSourceEvidence = Boolean(
         source && (
             (source.anthropic_score ?? 0) > 0 ||
-            (source.bedrock_score ?? 0) > 0 ||
-            (source.vertex_score ?? 0) > 0 ||
             (source.counter_evidence?.length ?? 0) > 0 ||
             (source.signals?.length ?? 0) > 0
         ),
@@ -1330,10 +1328,6 @@ export const LogCard = React.memo(function LogCard({
                 <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
                     <span className="text-muted-foreground">Anthropic</span>
                     <span className="tabular-nums">{source.anthropic_score ?? 0}</span>
-                    <span className="text-muted-foreground">Bedrock</span>
-                    <span className="tabular-nums">{source.bedrock_score ?? 0}</span>
-                    <span className="text-muted-foreground">Vertex</span>
-                    <span className="tabular-nums">{source.vertex_score ?? 0}</span>
                 </div>
                 {(source.signals?.length ?? 0) > 0 && (
                     <div className="border-t border-border pt-2">

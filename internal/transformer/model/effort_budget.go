@@ -39,6 +39,10 @@ var EffortBudget = map[string]int64{
 const EffortBudgetDefault = int64(32768)
 
 // EffortBudgetFor 返回档位对应的预算；未知档位回落到 EffortBudgetDefault。
+//
+// 🔴 这是取预算的唯一入口。直接写 EffortBudget[...] 会绕过大小写与空白归一，
+// 客户端发 "MAX" 就会落进未知分支、拿到默认值——比 max 低一半，
+// 而且不报错、不告警，看上去完全正常。出站转换器一律走这里，别自己 switch。
 func EffortBudgetFor(effort string) int64 {
 	if b, ok := EffortBudget[normalizeEffortKey(effort)]; ok {
 		return b

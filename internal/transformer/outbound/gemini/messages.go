@@ -11,10 +11,10 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/samber/lo"
 	"github.com/zhizhishu/octopus/internal/transformer/model"
 	"github.com/zhizhishu/octopus/internal/utils/mime"
 	"github.com/zhizhishu/octopus/internal/utils/xurl"
-	"github.com/samber/lo"
 )
 
 type MessagesOutbound struct{}
@@ -130,22 +130,51 @@ func (o *MessagesOutbound) TransformStream(ctx context.Context, eventData []byte
 // all. Unknown efforts must NOT fall back to -1: in Gemini's semantics -1 means
 // "dynamic, model decides", so sending it silently erases the caller's intent —
 // a client asking for max would reach the upstream asking for nothing specific.
-// xhigh/max are explicit here because they arrive legitimately from the OpenAI
-// Responses / codex side and used to land in the default branch.
+// Gemini 的 thinkingBudget 量级与 Anthropic 不同：Gemini 这边 32768 就到顶了，
+// 而共享表（model.EffortBudget）是按 Anthropic 定的，high 就已是 32768、max 到 64000。
+//
+// 直接把共享表的数字搬过来会让档位阶梯整体塌平（high/xhigh/max 全撞上限、
+// 变成一个值），那是把一个 bug 换成另一个 bug。所以这里保留 Gemini 自己的
+// 量级，只把**档位语义**接到共享表：某个 effort 属于第几档、是否已知，
+// 一律问 EffortBudget，不再由本文件另行判断。
+const (
+	geminiBudgetLow    = 1024
+	geminiBudgetMedium = 4096
+	geminiBudgetHigh   = 24576
+	geminiBudgetTop    = 32768 // Gemini 侧上限；xhigh 与 max 都在这里
+)
+
+// reasoningToThinkingBudget 把推理强度换算成 Gemini 的 thinkingBudget。
+//
+// 分工：**哪些档位存在、谁比谁强**由 model.EffortBudget 决定（单一真源）；
+// **每一档在 Gemini 上具体给多少 token** 由本文件的量级决定。
+// 曾经这两件事都在本文件里手写，导致同一个 effort 在 Anthropic 与 Gemini
+// 两条出站路径上强度不一致，且新增档位时要改两处、漏一处就静默降级。
 func reasoningToThinkingBudget(effort string) (int32, bool) {
-	switch strings.ToLower(strings.TrimSpace(effort)) {
-	case "low":
-		return 1024, true
-	case "medium":
-		return 4096, true
-	case "high":
-		return 24576, true
-	case "xhigh", "max":
-		// Above "high" but kept distinct so the ladder stays monotonic:
-		// high 24576 < xhigh/max 32768.
-		return 32768, true
-	default:
+	key := strings.TrimSpace(strings.ToLower(effort))
+	if key == "" {
 		return 0, false
+	}
+	// 明确不支持的档位：不开思考。与模型是否认识无关，是产品决定。
+	switch key {
+	case "minimal", "none":
+		return 0, false
+	}
+	if _, known := model.EffortBudget[key]; !known {
+		// 未知档位保持"不发 thinkingConfig"，不猜。
+		return 0, false
+	}
+	switch key {
+	case "low":
+		return geminiBudgetLow, true
+	case "medium":
+		return geminiBudgetMedium, true
+	case "high":
+		return geminiBudgetHigh, true
+	default:
+		// xhigh / max，以及将来任何比 high 更强的档位：都顶到 Gemini 上限。
+		// 用 default 而不是把 xhigh/max 写死，新增档位不必再回来改这里。
+		return geminiBudgetTop, true
 	}
 }
 

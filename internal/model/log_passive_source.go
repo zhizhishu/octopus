@@ -15,11 +15,17 @@ package model
 // 刻意不含"结论"字段（不是 official/bedrock/vertex 的判定）：
 // 单条日志的字段组合不足以定源，硬给结论就是假精确。
 type RelayLogPassiveSource struct {
-	// AnthropicScore / BedrockScore / VertexScore 是按参考项目权重表累计的分数。
-	// 全 0 = 这条日志没有提供任何来源方向的证据（大多数情况）。
+	// AnthropicScore 是按参考项目权重表累计的分数。
+	// 0 = 这条日志没有提供任何来源方向的证据（大多数情况）。
+	//
+	// 🔴 这里只有 Anthropic 一源，不是三源。参考项目（cc-proxy-detector）能分
+	// Bedrock / Vertex，靠的是**上游响应头**（x-amzn-*, x-goog-*）和原始响应体
+	// 字段风格；我们的日志只存归一化后的信封字段（服务档位/模型名/指纹），
+	// 响应头根本没有落库，物理上分不出是哪家云。曾经为了"对齐参考项目"留了
+	// BedrockScore/VertexScore 两个字段，但没有任何代码给它们赋过值，
+	// 结果界面永远显示 "Bedrock 0 / Vertex 0" —— 那是假信息，比不显示更糟。
+	// 要真做多源，前提是先把响应头存进日志，而不是先摆两个空字段。
 	AnthropicScore int `json:"anthropic_score,omitempty"`
-	BedrockScore   int `json:"bedrock_score,omitempty"`
-	VertexScore    int `json:"vertex_score,omitempty"`
 	// CounterEvidence 记录命中的反证项（缺失了本该有的字段）。
 	// 非空说明这条日志"看着像 Anthropic 协议、但缺了官方必带的字段"。
 	CounterEvidence []string `json:"counter_evidence,omitempty"`
@@ -29,6 +35,6 @@ type RelayLogPassiveSource struct {
 
 // Empty 表示这条日志没提供任何来源证据。
 func (e RelayLogPassiveSource) Empty() bool {
-	return e.AnthropicScore == 0 && e.BedrockScore == 0 && e.VertexScore == 0 &&
+	return e.AnthropicScore == 0 &&
 		len(e.CounterEvidence) == 0 && len(e.Signals) == 0
 }

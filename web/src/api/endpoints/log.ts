@@ -160,8 +160,6 @@ export interface RelayLog {
     // 但缺了官方必带的字段。单条日志不够，要聚合多行看。
     passive_source?: {
         anthropic_score?: number;
-        bedrock_score?: number;
-        vertex_score?: number;
         // 命中的反证项（缺失了本该有的字段）。
         counter_evidence?: string[];
         // 命中的正向信号，用于排查"为什么给了这个分"。

@@ -1571,26 +1571,10 @@ func getThinkingBudget(effort string, budget *int64, maxTokens int64) *int64 {
 	if budget != nil {
 		result = *budget
 	} else {
-		switch effort {
-		case anthropicModel.EffortLow:
-			result = model.EffortBudget["low"]
-		case anthropicModel.EffortMedium:
-			result = model.EffortBudget["medium"]
-		case anthropicModel.EffortHigh:
-			result = model.EffortBudget["high"]
-		case "xhigh":
-			// xhigh arrives legitimately from OpenAI Responses / codex clients.
-			// Without this case it fell into default and ended up four times
-			// SMALLER than high — a non-monotonic ladder that silently punished
-			// the second-strongest request.
-			result = model.EffortBudget["xhigh"]
-		case anthropicModel.EffortMax:
-			// "max" maps to a budget above "high".
-			result = model.EffortBudget["max"]
-		default:
-			// Unknown effort: prefer over-provisioning (see EffortBudgetDefault).
-			result = model.EffortBudgetDefault
-		}
+		// 走 EffortBudgetFor 而不是自己 switch：它会把 "MAX" / " max " 这类
+		// 大小写与空白差异归一后再查表。手写 switch 拿原始字符串比小写常量，
+		// 客户端发大写就静默落进未知分支、拿到默认值（比 max 低一半）。
+		result = model.EffortBudgetFor(effort)
 	}
 
 	// Anthropic requires thinking budget_tokens < max_tokens. Clamp so a high/max
