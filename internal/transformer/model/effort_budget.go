@@ -44,7 +44,7 @@ const EffortBudgetDefault = int64(32768)
 // 客户端发 "MAX" 就会落进未知分支、拿到默认值——比 max 低一半，
 // 而且不报错、不告警，看上去完全正常。出站转换器一律走这里，别自己 switch。
 func EffortBudgetFor(effort string) int64 {
-	if b, ok := EffortBudget[normalizeEffortKey(effort)]; ok {
+	if b, ok := EffortBudget[normalizeEffortToKey(effort)]; ok {
 		return b
 	}
 	return EffortBudgetDefault
@@ -102,6 +102,37 @@ func NormalizeEffortKey(effort string) string {
 
 var effortKeySeparators = strings.NewReplacer("-", "", "_", "", " ", "")
 
+// effortAliases 把「换个说法的同一档位」归并到表里的规范键。
+//
+// 为什么需要：剥完分隔符后 "extra-high" 变成 "extrahigh"，而表里只有 "xhigh"，
+// 于是它落进未知分支拿到默认值 32768 —— 比 high 只高一点点，离 xhigh 的 48000
+// 差一大截。客户端写 extra-high 本意是「比 high 更强」，结果被降了一档还无报错。
+//
+// 🔴 只放真正同义的别名，不要在这里做「相邻档位映射」：那会让
+// IsKnownEffort 把语义不同的档位也认成已知，进而影响 GLM/volcengine
+// 的开关判断（它们靠「认不认识」决定发不发 enabled）。
+var effortAliases = map[string]string{
+	"extrahigh": "xhigh",
+	"veryhigh":  "xhigh",
+	"extralow":  "low",
+}
+
+// CanonicalEffort 返回档位的规范键（已含同义别名归并），供需要把档位
+// 写到出站报文的调用方使用。
+//
+// 🔴 出站前必须过这一层：客户端写 "extra-high"，出站就该是 "xhigh"，
+// 而不是把 "extrahigh" 这个上游不认识的字符串原样发过去。
+func CanonicalEffort(effort string) string { return normalizeEffortToKey(effort) }
+
+// normalizeEffortToKey 在剥完分隔符后再过一层同义别名。
+func normalizeEffortToKey(effort string) string {
+	key := NormalizeEffortKey(effort)
+	if alias, ok := effortAliases[key]; ok {
+		return alias
+	}
+	return key
+}
+
 // normalizeEffortKey 是包内旧名，保留给同文件的历史调用点。
 func normalizeEffortKey(effort string) string { return NormalizeEffortKey(effort) }
 
@@ -110,6 +141,6 @@ func normalizeEffortKey(effort string) string { return NormalizeEffortKey(effort
 // 🔴 这是「这个档位我认识吗」的唯一入口。各处自己写 case 列表会漏掉大小写、
 // 空白、分隔符三种变体中的至少一种，而且共享表将来新增档位时不会自动跟上。
 func IsKnownEffort(effort string) bool {
-	_, ok := EffortBudget[NormalizeEffortKey(effort)]
+	_, ok := EffortBudget[normalizeEffortToKey(effort)]
 	return ok
 }

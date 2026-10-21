@@ -34,6 +34,14 @@ func transformChatRequest(ctx context.Context, request *model.InternalLLMRequest
 	originalReasoningEffort := request.ReasoningEffort
 	originalMaxTokens := request.MaxTokens
 	originalMaxCompletionTokens := request.MaxCompletionTokens
+	// 🔴 EnableThinking / ThinkingBudget 必须一起保存恢复。
+	// 投影会写这两个字段，而 relay 在 channel/key 重试之间复用同一个 request。
+	// 漏了它们的后果实测过：第一次 Qwen 生成 enable_thinking=true + 预算，
+	// 失败后切到官方 OpenAI —— 提前 return 不做清理，这两个字段直接进 JSON；
+	// 切到 Kimi 则至少留下 Qwen 的开关。客户端会在一个根本没打算思考的
+	// 渠道上收到另一个渠道的思考配置。
+	originalEnableThinking := request.EnableThinking
+	originalThinkingBudget := request.ThinkingBudget
 	defer func() {
 		// The relay reuses one request across channel/key attempts. Keep this
 		// provider-specific projection scoped to the body built for this attempt.
@@ -42,6 +50,8 @@ func transformChatRequest(ctx context.Context, request *model.InternalLLMRequest
 		request.ReasoningEffort = originalReasoningEffort
 		request.MaxTokens = originalMaxTokens
 		request.MaxCompletionTokens = originalMaxCompletionTokens
+		request.EnableThinking = originalEnableThinking
+		request.ThinkingBudget = originalThinkingBudget
 	}()
 
 	// ClearHelpFields strips internal-only helper fields, but it also wipes each message's
@@ -531,6 +541,16 @@ func applyReasoningProjection(request *model.InternalLLMRequest) {
 			request.ThinkingBudget = nil
 			return
 		}
+		// 🔴 minimal 在 DeepSeek 上是「少量推理」，不是关闭。
+		// 参考实现 deepSeekRunEffort 明确把 minimal 映射到 low
+		// （new-api relay/channel/deepseek/adaptor.go:266-267）。早先把
+		// minimal 和 none 一起当关闭处理，等于把「请求少量推理」变成「不要推理」。
+		// 不出站换算值（那是计费口径），这里出站 minimal 本身。
+		if effort == "minimal" {
+			request.Thinking = json.RawMessage(`{"type":"enabled"}`)
+			request.ReasoningEffort = "minimal"
+			return
+		}
 		// 两个都发：thinking 管开关，reasoning_effort 管档位。
 		if wantOff {
 			request.Thinking = json.RawMessage(`{"type":"disabled"}`)
@@ -582,15 +602,35 @@ func applyReasoningProjection(request *model.InternalLLMRequest) {
 		// thinking_budget 只属于 Qwen，Kimi 收到是陌生参数。
 		request.ThinkingBudget = nil
 		// Kimi 的 thinking 自带 effort 成员，不用顶层 reasoning_effort。
-		if wantOff {
+		//
+		// 🔴 只有 none 才是关闭。minimal 是「少量推理」，和 DeepSeek 同理：
+		// 把它当关闭等于把「请求少量推理」变成「不要推理」。
+		if effort == "none" {
 			request.Thinking = json.RawMessage(`{"type":"disabled"}`)
-		} else if effort != "" {
-			if payload, err := json.Marshal(map[string]string{
-				"type":   "enabled",
-				"effort": effort,
-			}); err == nil {
-				request.Thinking = payload
-			}
+			request.ReasoningEffort = ""
+			return
+		}
+		if effort == "" {
+			request.ReasoningEffort = ""
+			return
+		}
+		// 🔴 档位必须按型号能力表夹紧，不能把归一后的字符串原样发出去。
+		// 实测参考项目的模型表：kimi-k3 的 thinking.levels 只有 low/high/max，
+		// 没有 xhigh（CLIProxyAPI internal/registry/models/models.json）。
+		// 早先把 xhigh 原样发出，等于给一个只认三档的上游塞第四档——
+		// 要么被拒，要么被忽略，两种都是静默失败。
+		level, ok := mapKimiEffort(request.Model, effort)
+		if !ok {
+			// 无法表达就明说，不猜、不硬塞。
+			request.Thinking = json.RawMessage(`{"type":"enabled"}`)
+			request.ReasoningEffort = ""
+			return
+		}
+		if payload, err := json.Marshal(map[string]string{
+			"type":   "enabled",
+			"effort": level,
+		}); err == nil {
+			request.Thinking = payload
 		}
 		request.ReasoningEffort = ""
 
@@ -616,6 +656,109 @@ func isDeepSeekThinkingCapable(model string) bool {
 		strings.Contains(lower, "/deepseek-v4") ||
 		strings.HasPrefix(lower, "deepseek-flash") ||
 		strings.Contains(lower, "/deepseek-flash")
+}
+
+// kimiEffortLevels 是各 Kimi 型号支持的思考档位。
+//
+// 取值来自参考项目的模型能力表
+// （CLIProxyAPI internal/registry/models/models.json）：k2 系列只有 low/high，
+// k2.8 之后才多一个 max。表里没有 xhigh —— xhigh 是 OpenAI Responses 侧的
+// 档位，Kimi 从来就没实现过。
+var kimiEffortLevels = map[string][]string{
+	"k2":  {"low", "high"},
+	"k28": {"low", "high", "max"},
+	"k3":  {"low", "high", "max"},
+	"k25": {"low", "high"},
+	"k26": {"low", "high"},
+	"k27": {"low", "high"},
+}
+
+// mapKimiEffort 把内部档位夹到该型号真实支持的集合里。
+//
+// 返回 ok=false 表示这个档位在该型号上无法表达（例如给 kimi-k2 要 max），
+// 调用方必须显式处理，不能悄悄降级或硬塞。
+func mapKimiEffort(modelName, effort string) (string, bool) {
+	key := model.CanonicalEffort(effort)
+	lower := strings.ToLower(strings.TrimSpace(modelName))
+	if idx := strings.LastIndex(lower, "/"); idx >= 0 {
+		lower = lower[idx+1:]
+	}
+	// 型号族前缀：kimi-k3 → k3，moonshot-v1 → v1（未知，走保守集合）。
+	var family string
+	switch {
+	case strings.Contains(lower, "k3"):
+		family = "k3"
+	case strings.Contains(lower, "k2.8"):
+		family = "k28"
+	case strings.Contains(lower, "k2.5"):
+		family = "k25"
+	case strings.Contains(lower, "k2.6"):
+		family = "k26"
+	case strings.Contains(lower, "k2.7"):
+		family = "k27"
+	case strings.Contains(lower, "k2"):
+		family = "k2"
+	default:
+		// 未知 Kimi 型号：只发最保守的两档，其余不猜。
+		if key == "low" || key == "high" {
+			return key, true
+		}
+		if key == "max" {
+			return "high", true
+		}
+		return "", false
+	}
+	allowed := kimiEffortLevels[family]
+	_ = allowed
+	for _, lv := range allowed {
+		if key == lv {
+			return key, true
+		}
+	}
+	// 不在支持列表里 → 按强弱排序夹到最近的合法档，而不是拒发或硬塞。
+	// 方向取「不低于客户端意图」的那一档：宁可多给（可恢复），
+	// 不要少给（静默降智、客户端察觉不到）。
+	rank := effortRank(key)
+	if rank == 0 {
+		return "", false
+	}
+	best := ""
+	bestRank := 0
+	for _, lv := range kimiEffortLevels[family] {
+		r := effortRank(lv)
+		if r >= rank && (best == "" || r < bestRank) {
+			best, bestRank = lv, r
+		}
+	}
+	if best == "" {
+		// 客户端要的比该型号最强档还强 → 给最强档。
+		for _, lv := range kimiEffortLevels[family] {
+			if r := effortRank(lv); r > bestRank {
+				best, bestRank = lv, r
+			}
+		}
+	}
+	return best, best != ""
+}
+
+// effortRank 把档位映射成可比较的强弱序，用于跨型号夹紧。
+// 0 表示不认识该档位。
+func effortRank(effort string) int {
+	switch model.CanonicalEffort(effort) {
+	case "minimal":
+		return 1
+	case "low":
+		return 2
+	case "medium":
+		return 3
+	case "high":
+		return 4
+	case "xhigh":
+		return 5
+	case "max":
+		return 6
+	}
+	return 0
 }
 
 // isQwenModel reports whether the model name targets an Alibaba Qwen /

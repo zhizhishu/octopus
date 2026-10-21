@@ -39,7 +39,7 @@ func TestDeepSeekSendsOriginalLevelNotConverted(t *testing.T) {
 }
 
 func TestDeepSeekOffMeansDisabled(t *testing.T) {
-	for _, level := range []string{"none", "minimal", " NONE "} {
+	for _, level := range []string{"none", " NONE "} {
 		req := &model.InternalLLMRequest{Model: "deepseek-v4-pro", ReasoningEffort: level}
 		applyReasoningProjection(req)
 		if string(req.Thinking) != `{"type":"disabled"}` {
@@ -48,6 +48,24 @@ func TestDeepSeekOffMeansDisabled(t *testing.T) {
 		if req.ReasoningEffort != "none" {
 			t.Errorf("档位 %q 应把 effort 置 none，实际 %q", level, req.ReasoningEffort)
 		}
+	}
+}
+
+// 🔴 minimal 不是 none。
+//
+// 参考实现 deepSeekRunEffort 明确把 minimal 映射到 low
+// （new-api relay/channel/deepseek/adaptor.go:266-267：「minimal to low」）。
+// 早先把 minimal 和 none 一起当关闭，等于把「请求少量推理」变成「不要推理」——
+// 客户端想省点钱，结果一点推理都没有了。
+func TestDeepSeekMinimalMeansLowNotOff(t *testing.T) {
+	req := &model.InternalLLMRequest{Model: "deepseek-v4-pro", ReasoningEffort: "minimal"}
+	applyReasoningProjection(req)
+
+	if string(req.Thinking) != `{"type":"enabled"}` {
+		t.Errorf("minimal 应保持思考开启，实际 thinking=%q", req.Thinking)
+	}
+	if req.ReasoningEffort != "minimal" {
+		t.Errorf("minimal 应原样出站（出站发的是客户端档位，不是计费换算值），实际 %q", req.ReasoningEffort)
 	}
 }
 
@@ -111,18 +129,59 @@ func TestLegacyDeepSeekReasonerStaysUntouched(t *testing.T) {
 
 // Kimi 的 thinking 自带 effort 成员。
 func TestKimiEmbedsEffortInThinking(t *testing.T) {
-	req := &model.InternalLLMRequest{Model: "kimi-k3", ReasoningEffort: "xhigh"}
+	req := &model.InternalLLMRequest{Model: "kimi-k3", ReasoningEffort: "high"}
 	applyReasoningProjection(req)
 
 	var got map[string]string
 	if err := json.Unmarshal(req.Thinking, &got); err != nil {
 		t.Fatalf("Kimi thinking 应是合法 JSON，实际 %q", req.Thinking)
 	}
-	if got["type"] != "enabled" || got["effort"] != "xhigh" {
-		t.Errorf("Kimi thinking 应为 enabled+xhigh，实际 %v", got)
+	if got["type"] != "enabled" || got["effort"] != "high" {
+		t.Errorf("Kimi thinking 应为 enabled+high，实际 %v", got)
 	}
 	if req.ReasoningEffort != "" {
 		t.Errorf("Kimi 不用顶层 reasoning_effort，应清空，实际 %q", req.ReasoningEffort)
+	}
+}
+
+// 🔴 档位必须按型号能力表夹紧，不能把归一后的字符串原样发出去。
+//
+// 参考项目的模型表（CLIProxyAPI internal/registry/models/models.json）里
+// kimi-k3 的 thinking.levels 只有 low/high/max，**没有 xhigh**。xhigh 是
+// OpenAI Responses 侧的档位，Kimi 从来没实现过。早先把 xhigh 原样发出，
+// 等于给只认三档的上游塞第四档——被拒或被忽略，两种都是静默失败。
+//
+// 这条测试同时纠正了上一版测试的错误：它把「xhigh 原样出站」锁成了正确答案。
+func TestKimiEffortClampedToModelCapability(t *testing.T) {
+	cases := []struct {
+		model string
+		in    string
+		want  string
+	}{
+		{"kimi-k3", "low", "low"},
+		{"kimi-k3", "high", "high"},
+		{"kimi-k3", "max", "max"},
+		{"kimi-k3", "xhigh", "max"},   // 超出上限 → 夹到该型号最强档
+		{"kimi-k3", "medium", "high"}, // 表中无 medium → 夹到 high
+		{"kimi-k3", "minimal", "low"}, // 表中无 minimal → 夹到 low
+		{"kimi-k2", "max", "high"},    // k2 系列最高只到 high
+		{"kimi-k2.8", "xhigh", "max"}, // k2.8 支持 max
+	}
+	for _, c := range cases {
+		req := &model.InternalLLMRequest{Model: c.model, ReasoningEffort: c.in}
+		applyReasoningProjection(req)
+		var got map[string]string
+		if err := json.Unmarshal(req.Thinking, &got); err != nil {
+			t.Errorf("%s/%s: thinking 应是合法 JSON，实际 %q", c.model, c.in, req.Thinking)
+			continue
+		}
+		if got["type"] != "enabled" {
+			t.Errorf("%s/%s: 应保持思考开启，实际 %v", c.model, c.in, got)
+			continue
+		}
+		if got["effort"] != c.want {
+			t.Errorf("%s/%s: 档位应夹到 %q，实际 %q", c.model, c.in, c.want, got["effort"])
+		}
 	}
 }
 
@@ -297,5 +356,77 @@ func TestEnableThinkingDerivedOnlyWhenClientSilent(t *testing.T) {
 	})
 	if got, ok := off["enable_thinking"].(bool); !ok || got {
 		t.Errorf("档位 none 且客户端未表态时，应推导为关闭，实际 %v", off["enable_thinking"])
+	}
+}
+
+// 🔴 重试污染：relay 在 channel/key 重试之间复用同一个 request。
+//
+// 投影会写 EnableThinking / ThinkingBudget，如果不在 TransformRequest 里
+// 保存恢复，就会出现这样的链路：第一次 Qwen 生成 true + 预算，失败后切到
+// 官方 OpenAI —— 提前 return 不做清理，这两个字段直接进 JSON；切到 Kimi
+// 则至少留下 Qwen 的开关。客户端会在一个根本没打算思考的渠道上收到另一个
+// 渠道的思考配置。
+//
+// 这是审计指出、我读码确认属实的真实缺陷（保存/恢复列表原本只有
+// ToolStream/Thinking/ReasoningEffort/MaxTokens/MaxCompletionTokens）。
+func TestQwenProjectionDoesNotPolluteSubsequentAttempt(t *testing.T) {
+	request := &model.InternalLLMRequest{
+		Model:           "qwen3-max",
+		ReasoningEffort: "high",
+		Messages:        userMessages(),
+	}
+
+	// 第一次：Qwen，投影会写 enable_thinking + thinking_budget。
+	first := chatRequestBody(t, request)
+	if _, ok := first["enable_thinking"]; !ok {
+		t.Fatalf("第一次 Qwen 尝试应发出 enable_thinking，实际 %v", keysOf(first))
+	}
+	if request.EnableThinking != nil || request.ThinkingBudget != nil {
+		t.Fatalf("投影泄漏到了共享 request：EnableThinking=%v ThinkingBudget=%v",
+			request.EnableThinking, request.ThinkingBudget)
+	}
+
+	// 第二次：切到官方 OpenAI。绝不能带 Qwen 的残留。
+	request.Model = "gpt-5.1"
+	second := chatRequestBody(t, request)
+	for _, k := range []string{"enable_thinking", "thinking_budget"} {
+		if _, ok := second[k]; ok {
+			t.Errorf("Qwen 的 %q 污染了后续官方渠道尝试：%v", k, keysOf(second))
+		}
+	}
+
+	// 第三次：切到 Kimi，同样不能带 Qwen 残留。
+	request.Model = "kimi-k3"
+	third := chatRequestBody(t, request)
+	for _, k := range []string{"enable_thinking", "thinking_budget"} {
+		if _, ok := third[k]; ok {
+			t.Errorf("Qwen 的 %q 污染了后续 Kimi 尝试：%v", k, keysOf(third))
+		}
+	}
+}
+
+// 客户端写 extra-high 本意是「比 high 更强」，剥完分隔符变成 extrahigh
+// 落进未知分支拿到 32768，比 xhigh 的 48000 差一大截——被降了一档还无报错。
+func TestExtraHighAliasLandsOnXHighBudget(t *testing.T) {
+	if got, want := model.EffortBudgetFor("extra-high"), model.EffortBudget["xhigh"]; got != want {
+		t.Errorf("extra-high 应拿到 xhigh 的预算 %d，实际 %d", want, got)
+	}
+	if got := model.CanonicalEffort("extra-high"); got != "xhigh" {
+		t.Errorf("extra-high 的规范键应为 xhigh，实际 %q", got)
+	}
+	// 出站也要发规范键，不能把 extrahigh 这个上游不认识的字符串发出去。
+	body := chatRequestBody(t, &model.InternalLLMRequest{
+		Model: "kimi-k3", ReasoningEffort: "extra-high", Messages: userMessages(),
+	})
+	var thinking map[string]string
+	raw, err := json.Marshal(body["thinking"])
+	if err != nil {
+		t.Fatalf("kimi thinking 无法序列化: %v", err)
+	}
+	if err := json.Unmarshal(raw, &thinking); err != nil {
+		t.Fatalf("kimi thinking 应是合法 JSON，实际 %v", body["thinking"])
+	}
+	if thinking["effort"] != "max" {
+		t.Errorf("extra-high 在 kimi-k3 上应夹到 max，实际 %q", thinking["effort"])
 	}
 }
