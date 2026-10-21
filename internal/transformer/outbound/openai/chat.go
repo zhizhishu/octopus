@@ -350,9 +350,19 @@ func applyThirdPartyChatParamCompat(request *model.InternalLLMRequest, baseUrl s
 	// service_tier is OpenAI Responses residue; vercel AI Gateway / z.ai chat 400
 	// on unknown top-level fields (live log id 1787047851119 carried service_tier).
 	request.ServiceTier = nil
-	// reasoning_effort is OpenAI Responses residue; strict third-party upstreams
-	// (DeepSeek serde) 400 on unknown or unaccepted parameters.
-	request.ReasoningEffort = ""
+	// 思考强度：按上游模型族分别投影，而不是一刀切清空。
+	//
+	// 这里原先是 `request.ReasoningEffort = ""` 一行到底，理由是"严格第三方
+	// 上游（DeepSeek serde）遇到不认识的参数会 400"。防 400 是真的，但代价
+	// 是所有国产模型**永远收不到强度**——DeepSeek / Qwen / Kimi / MiniMax /
+	// 百川 / 混元 / 阶跃全走这条 chat 路径，客户端要 max，上游看到的是一个
+	// 没有任何强度语义的裸请求。而且 ReasoningBudget / AdaptiveThinking 都是
+	// json:"-"，序列化时根本不出去，连兜底通道都没有。
+	//
+	// 正确做法是参考项目的共识（new-api / CLIProxyAPI 都是这个路数）：
+	// 已知厂商走显式转换；已知厂商但模型不支持就静默剥离；完全未知的不猜。
+	// 落到这里就是按模型族分三档，见 applyReasoningProjection。
+	applyReasoningProjection(request)
 
 	// Reasoning models (o1, o3, o4, gpt-5, deepseek-reasoner/r1) reject sampling parameters.
 	if isOpenAIReasoningChatModel(request.Model) || isDeepSeekReasonerModel(request.Model) {
@@ -458,6 +468,157 @@ func sanitizeToolChoiceForStrictUpstream(request *model.InternalLLMRequest) {
 	// Anything else (empty object -> null, non-function type, empty name) is
 	// invalid for the strict upstream; drop it so the request still goes through.
 	request.ToolChoice = nil
+}
+
+// applyReasoningProjection 把内部的思考意图投影成该模型族能接受的出站字段。
+//
+// 三家参考项目的共识（均已在源码核实）：
+//   - 已知厂商走显式转换（new-api 把 DeepSeek 当一等公民处理）
+//   - 已知厂商但模型不支持 → 静默剥离，不发出去让上游 400（CLIProxyAPI）
+//   - 完全未知 → 不猜、不改形（sub2api ThinkingProtocolUnknown）
+//
+// 没有一家选择"发出去让上游 400"。所以默认分支必须是**剥离**而不是透传。
+//
+// 各家接受的字段（均在参考项目源码里核实过）：
+//
+//	DeepSeek  chat 路径同时收 reasoning_effort 与 thinking:{"type":...}
+//	          （new-api relay/channel/deepseek/adaptor.go:132-136 两个都发），
+//	          所以我们也两个都发：thinking 管开关、reasoning_effort 管档位。
+//	Qwen      收顶层 enable_thinking(布尔) + thinking_budget(整数)，
+//	          注意是顶层，不在 chat_template_kwargs 里。
+//	GLM       thinking:{"type":...} 由 applyGLMThinking 单独处理，这里只清
+//	          掉 reasoning_effort 双字段（zhipu 两个都接受，但 GLM 的 thinking
+//	          是二值的，留着 reasoning_effort 只会让严格上游 400）。
+//	Kimi      收 thinking:{"type":"enabled","effort":<level>}。
+//	其余      （MiniMax / 百川 / 混元 / 阶跃 / 自建中转）参考项目里没有任何
+//	          实现 —— 属于"没处理"，默认剥离最安全。
+func applyReasoningProjection(request *model.InternalLLMRequest) {
+	if request == nil {
+		return
+	}
+	effort := model.NormalizeEffortKey(request.ReasoningEffort)
+	budget := int64(0)
+	if request.ReasoningBudget != nil && *request.ReasoningBudget > 0 {
+		budget = *request.ReasoningBudget
+	}
+	wantOff := effort == "none" || effort == "minimal"
+
+	if isGLMModel(request.Model) {
+		request.ReasoningEffort = ""
+		request.ThinkingBudget = nil
+		return
+	}
+
+	switch {
+	case isDeepSeekModel(request.Model):
+		// 老一代"自带思考"的模型（deepseek-reasoner / r1 / r2 / v4-thinking）
+		// 不接受强度参数，也无所谓开关——它们永远思考。清空是正确行为，
+		// 不是缺陷。参考项目同样只对 deepseek-v4-* / deepseek-flash 做转换
+		// （new-api relaykit/relayconvert/reasoning/suffix.go:283-285 明确
+		// 把 base 限定在这两族），别的一律不碰。
+		if isDeepSeekReasonerModel(request.Model) {
+			request.ReasoningEffort = ""
+			request.ThinkingBudget = nil
+			return
+		}
+		// thinking_budget 只属于 Qwen；发给 DeepSeek 是陌生参数，必 400
+		// （new-api relaykit/dto/openai_request.go:139-141 按模型族剥离）。
+		request.ThinkingBudget = nil
+		// 只有确认支持思考开关的型号才投影，其余（如普通 deepseek-chat）
+		// 按未知上游处理 —— 见 applyReasoningProjection 顶部注释。
+		if !isDeepSeekThinkingCapable(request.Model) {
+			request.ReasoningEffort = ""
+			request.ThinkingBudget = nil
+			return
+		}
+		// 两个都发：thinking 管开关，reasoning_effort 管档位。
+		if wantOff {
+			request.Thinking = json.RawMessage(`{"type":"disabled"}`)
+			request.ReasoningEffort = "none"
+			return
+		}
+		if effort != "" || budget > 0 {
+			request.Thinking = json.RawMessage(`{"type":"enabled"}`)
+			// 🔴 出站发**归一后的原始档位**，不是换算后的档位。
+			// new-api 的 deepSeekRunEffort 只写进日志/计费口径
+			// （adaptor.go:142 info.SetReasoningEffort），从不落到 wire 上。
+			// 把换算值发上线会和计费口径打架。
+			request.ReasoningEffort = effort
+			return
+		}
+		request.ReasoningEffort = ""
+
+	case isQwenModel(request.Model):
+		// Qwen 用布尔开关 + 独立预算，不认 reasoning_effort。
+		enabled := !wantOff && (effort != "" || budget > 0)
+		request.EnableThinking = &enabled
+		if enabled {
+			b := budget
+			if b == 0 {
+				b = model.EffortBudgetFor(effort)
+			}
+			request.ThinkingBudget = &b
+		}
+		request.ReasoningEffort = ""
+
+	case isKimiModel(request.Model):
+		// thinking_budget 只属于 Qwen，Kimi 收到是陌生参数。
+		request.ThinkingBudget = nil
+		// Kimi 的 thinking 自带 effort 成员，不用顶层 reasoning_effort。
+		if wantOff {
+			request.Thinking = json.RawMessage(`{"type":"disabled"}`)
+		} else if effort != "" {
+			if payload, err := json.Marshal(map[string]string{
+				"type":   "enabled",
+				"effort": effort,
+			}); err == nil {
+				request.Thinking = payload
+			}
+		}
+		request.ReasoningEffort = ""
+
+	default:
+		// 未知上游：不猜。剥离所有思考字段，避免陌生参数触发 400——
+		// 这正是当初那行无条件清空想解决的问题，现在只对真正未知的生效。
+		request.ReasoningEffort = ""
+		request.EnableThinking = nil
+		request.ThinkingBudget = nil
+	}
+}
+
+// isDeepSeekThinkingCapable reports whether the model exposes DeepSeek's
+// thinking switch + reasoning_effort.
+//
+// 只认 deepseek-v4-* 与 deepseek-flash：这是参考项目实际做转换的两族
+// （new-api relaykit/relayconvert/reasoning/suffix.go:283-285 把 base 明确
+// 限定在此）。普通 deepseek-chat 是非推理模型，给它发 thinking 有 400 风险；
+// deepseek-reasoner / r1 这类自带思考，由 isDeepSeekReasonerModel 单独处理。
+func isDeepSeekThinkingCapable(model string) bool {
+	lower := strings.ToLower(strings.TrimSpace(model))
+	if idx := strings.LastIndex(lower, "/"); idx >= 0 {
+		lower = lower[idx+1:]
+	}
+	return strings.HasPrefix(lower, "deepseek-v4") || strings.HasPrefix(lower, "deepseek-flash")
+}
+
+// isQwenModel reports whether the model name targets an Alibaba Qwen /
+// DashScope model. Matched on the bare model id so provider prefixes and date
+// suffixes still classify correctly.
+func isQwenModel(name string) bool {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	if idx := strings.LastIndex(lower, "/"); idx >= 0 {
+		lower = lower[idx+1:]
+	}
+	return strings.HasPrefix(lower, "qwen") || strings.HasPrefix(lower, "qwq")
+}
+
+// isKimiModel reports whether the model name targets a Moonshot / Kimi model.
+func isKimiModel(name string) bool {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	if idx := strings.LastIndex(lower, "/"); idx >= 0 {
+		lower = lower[idx+1:]
+	}
+	return strings.HasPrefix(lower, "kimi") || strings.HasPrefix(lower, "moonshot")
 }
 
 // isGLMModel reports whether the model name targets a GLM / z.ai model that

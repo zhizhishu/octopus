@@ -221,6 +221,15 @@ type InternalLLMRequest struct {
 	// EnableThinking is used by Alibaba Qwen models to enable thinking/reasoning output.
 	EnableThinking *bool `json:"enable_thinking,omitempty"`
 
+	// ThinkingBudget is the Qwen / DashScope thinking token budget, sent
+	// alongside EnableThinking. It is a TOP-LEVEL field on that platform — it
+	// does NOT live inside chat_template_kwargs.
+	//
+	// Only emitted for Qwen-family models: new-api found that sending it to any
+	// other upstream is an immediate 400, so it strips it by model family
+	// (relaykit/dto/openai_request.go:139-141).
+	ThinkingBudget *int64 `json:"thinking_budget,omitempty"`
+
 	// Thinking is used by DeepSeek to control thinking mode.
 	// e.g., {"type": "disabled"} or {"type": "enabled", "budget_tokens": 1024}
 	Thinking json.RawMessage `json:"thinking,omitempty"`
