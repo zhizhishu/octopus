@@ -21,6 +21,32 @@ export const MODEL_TEST_ENDPOINT_LABELS: Record<ModelTestEndpoint, string> = {
     openai_images_generations: 'Images',
 };
 
+/**
+ * 图片端点名（含后端 normalizeEndpoint 接受的别名）。
+ *
+ * 归一化逐条镜像 internal/modeltest/runner.go:499-506 的 normalizeEndpoint：
+ * 小写、去首尾空白、`-` 与 `/` 一律换成 `_`。少了这一步，`OpenAI-Images`、
+ * `images_generations` 这类写法会被判成"不是图片端点"，界面又开始按 codex 身份显示。
+ */
+const IMAGE_TEST_ENDPOINT_NAMES = new Set([
+    'openai_images_generations', // runner.go:73 的端点名，UI 里 Images 那颗胶囊
+    'images', // runner.go:535 的别名
+    'images_generations',
+    'openai_images',
+]);
+
+/**
+ * 本次测试是不是走图片端点（/v1/images/generations，直通 relay.ImagesHandler）。
+ *
+ * 图片端点是渠道测试里唯一"自己的转发路径"的端点：后端 runner.go:674 在能力位 /
+ * 形状逻辑**之前**就把它交给 tryImageChannel，此后所有关于流的判断都失效。
+ * 所以凡是"是否锁流式 / 什么身份"的判断，都要先问这一句。
+ */
+export function isImageTestEndpoint(endpoint?: string): boolean {
+    const name = (endpoint ?? '').toLowerCase().trim().replace(/[-/]/g, '_');
+    return IMAGE_TEST_ENDPOINT_NAMES.has(name);
+}
+
 export const DEFAULT_MODEL_TEST_TIMEOUT_SECONDS = 180;
 
 /**
@@ -78,6 +104,7 @@ export function channelCloakApplies(mode?: string): boolean {
 
 /**
  * 统一「测试是否强制流式」判断：
+ * 0) endpoint 是图片端点 → **永不**强制流式（见下面第 0 条，后端写死非流式）
  * 1) 任一 isStreamRequiredModel
  * 2) endpoint = openai_responses **且渠道真是 codex 形状**
  * 3) endpoint = anthropic_messages 且 1M
@@ -119,6 +146,15 @@ export function shouldForceChannelTestStream(args: {
     //     客户端仍可传 false。原来在这里锁死，等于把一个后端允许的选项藏起来。
     //   - `anthropic_messages && anthropicContext1M`：1M helper
     //     (runner.go:1240-1254) 的流式来自上面的 cloak 门，不来自 1M 本身。
+    //
+    // 🔴 第 0 条必须排在渠道类型判据**之前**，否则第 4 条会把图片端点重新锁死。
+    //
+    // 图片探针根本不进这条判据链：后端 runner.go:674 在能力位/形状逻辑之前就把
+    // 图片端点转给 tryImageChannel，而 image_channel.go:112 的 `stream := false`
+    // 是写死的、**不读 request.Stream**（Images 的流式响应没有统一判定口径，宁可
+    // 少测一种模式，也不许把好渠道报成"上游没给图片数据"的假红）。请求里就算带了
+    // stream=true，图片分支也不看。所以界面对图片端点宣称"强制流式"是纯撒谎。
+    if (isImageTestEndpoint(args.endpoint)) return false;
     if (args.channelType === ChannelType.OpenAIResponse) return true;
     if (args.channelType === ChannelType.Anthropic && channelCloakApplies(args.cloakMode)) return true;
     // 渠道类型未知（老调用方）：沿用旧行为，避免行为突变。
@@ -133,6 +169,8 @@ export function shouldForceChannelTestStream(args: {
  * 必须镜像后端 `header_defaults.go:78-247` 的实际判据，而不是"端点名 + 渠道类型"
  * 这种想当然的对应。逐条对照：
  *
+ *   0. endpoint 是图片端点 → 通用 UA（relay/images.go:1012 只套 genericUAForChannel，
+ *      不走 applyHeaderDefaults，也没有任何 CLI 指纹分支）。
  *   1. cloak 关了（`!shouldApplyChannelCloak`，见 header_defaults.go:81-90）：
  *      → 强制通用 UA，并剥掉 codex 头。**和渠道类型无关。**
  *   2. Anthropic 渠道 → claude CLI。
@@ -146,10 +184,23 @@ export function shouldForceChannelTestStream(args: {
  * 早先版本只看端点名，把火山标成 codex —— 界面撒谎。
  */
 export function channelTestIdentityFor(
-    endpoint: ModelTestEndpoint,
+    // 收 string 而不是 ModelTestEndpoint：后端 normalizeEndpoint 还认 'images' /
+    // 'images_generations' / 'openai_images' 这些别名，别名进来也要能被认出来。
+    endpoint: string,
     channelType?: ChannelType,
     cloak?: { mode?: string; shape?: string },
 ): 'codex' | 'claude' | 'generic' {
+    // 0. 图片端点：出站身份**固定通用 UA**，与渠道类型 / cloak.shape 无关。
+    //
+    // 图片转发走 relay.ImagesHandler，它的发请求路径没有 applyHeaderDefaults，
+    // UA 只有一句 relay/images.go:1012
+    //   setHeaderIfMissing(req.Header, "User-Agent", genericUAForChannel(channel))
+    // —— genericUAForChannel 取指纹 profile 的 GenericUA，没有任何 codex / claude
+    // 分支（images.go 全文只有一处提到 "codex"，且是 :1011 那句注释，说明
+    // /responses/compact 子路径之后会覆盖 UA，不是图片路径分支）。所以一条 Responses 渠道测图片
+    // 端点，实际发的是通用 UA：界面显示 codex CLI 是撒谎。这条同样排在渠道类型判据之前。
+    if (isImageTestEndpoint(endpoint)) return 'generic';
+
     // 1. cloak 关掉：后端明确强制通用身份，优先于一切。
     if (cloak && !channelCloakApplies(cloak.mode)) return 'generic';
 

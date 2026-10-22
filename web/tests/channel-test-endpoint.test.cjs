@@ -203,3 +203,67 @@ test('非 Chat 族渠道的残留 shape 不生效', () => {
     assert.equal(channelTestIdentityFor('openai_chat', ChannelType.OpenAIChat, stale), 'codex');
     assert.equal(channelTestIdentityFor('openai_chat', ChannelType.CustomOpenAIChat, stale), 'codex');
 });
+
+/**
+ * 图片端点：界面不许再宣称「强制流式 + codex 指纹」。
+ *
+ * 读码核实的后端事实：
+ *   runner.go:674     图片端点在能力位/形状逻辑**之前**就转给 tryImageChannel
+ *   image_channel.go:112  `stream := false` 写死，**不读** request.Stream
+ *   relay/images.go:1012  User-Agent 只套 genericUAForChannel，无任何 codex 分支
+ *
+ * 也就是说一条 Responses(codex) 渠道测图片端点时，上游实际收到的是**非流式的
+ * 通用 UA 请求**。而前端这两条判据原来只看渠道类型 → 界面锁死流式开关、还标
+ * "codex CLI"，纯撒谎；顺带把"图片其实怎么发"这件事藏了起来。
+ *
+ * 别名清单对齐 runner.go:535：openai_images_generations / images /
+ * images_generations / openai_images，且 normalizeEndpoint 会小写、去空白、
+ * 把 '-' 和 '/' 换成 '_'（runner.go:499-506）。
+ */
+const IMAGE_ENDPOINTS = ['openai_images_generations', 'images', 'images_generations', 'openai_images'];
+
+test('图片端点不锁流式，哪怕渠道是 Responses(codex) 形状', () => {
+    for (const endpoint of IMAGE_ENDPOINTS) {
+        assert.equal(
+            shouldForceChannelTestStream({ endpoint, channelType: ChannelType.OpenAIResponse }),
+            false,
+            `${endpoint} 不该锁流式`,
+        );
+        // 别名的大小写 / 连字符 / 空白写法后端也认，前端不能只认一种拼法。
+        assert.equal(
+            shouldForceChannelTestStream({ endpoint: `  ${endpoint.toUpperCase().replace(/_/g, '-')} `, channelType: ChannelType.OpenAIResponse }),
+            false,
+            `${endpoint} 的变体拼法不该锁流式`,
+        );
+        // 图片分支先于渠道类型判据，所以别的渠道类型上同样不锁。
+        assert.equal(shouldForceChannelTestStream({ endpoint, channelType: ChannelType.Anthropic }), false);
+        // 老调用方（不给渠道类型）也不锁。
+        assert.equal(shouldForceChannelTestStream({ endpoint }), false);
+    }
+});
+
+test('图片端点的身份是通用 UA，不是 codex / claude', () => {
+    for (const endpoint of IMAGE_ENDPOINTS) {
+        // relay/images.go:1012 只套 genericUAForChannel —— 与渠道类型无关。
+        assert.equal(channelTestIdentityFor(endpoint, ChannelType.OpenAIResponse), 'generic', `${endpoint} @ Responses`);
+        assert.equal(channelTestIdentityFor(endpoint, ChannelType.Anthropic), 'generic', `${endpoint} @ Anthropic`);
+        // cloak.shape=codex 也不生效：图片转发路径根本不读 shape。
+        assert.equal(channelTestIdentityFor(endpoint, ChannelType.OpenAIChat, { mode: 'auto', shape: 'codex' }), 'generic', `${endpoint} @ Chat+codex shape`);
+    }
+});
+
+/**
+ * 防回归：同一个渠道上换个端点，结论必须跟着端点变。
+ *
+ * 这条同时钉住"逐端点算"这件事：如果哪天又退回"整批套一个渠道级值"，
+ * 下面两组断言必然有一组红。
+ */
+test('同一 Responses 渠道：responses 端点仍恒流式 + codex，图片端点不锁 + generic', () => {
+    const channel = { channelType: ChannelType.OpenAIResponse, cloakMode: 'auto' };
+    assert.equal(shouldForceChannelTestStream({ ...channel, endpoint: 'openai_responses' }), true);
+    assert.equal(channelTestIdentityFor('openai_responses', channel.channelType), 'codex');
+    for (const endpoint of IMAGE_ENDPOINTS) {
+        assert.equal(shouldForceChannelTestStream({ ...channel, endpoint }), false, `${endpoint} 混测时不该被整批锁`);
+        assert.equal(channelTestIdentityFor(endpoint, channel.channelType), 'generic');
+    }
+});

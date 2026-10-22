@@ -56,6 +56,20 @@ type VideoTask struct {
 	OwnerUserID  int `json:"owner_user_id" gorm:"index;default:0"`
 
 	// Status 见 VideoTask* 常量。
+	//
+	// 【磁盘上这一列允许 NULL，且刻意不加 NOT NULL 约束】由写入侧保证不写空值
+	// （op.VideoTaskCreate 会兜底成 not_start），NULL 只是历史行/手工 SQL 留下的
+	// 第三种取值。它被当作**非终态**处理，由查询侧兜底：op 里的未完成/超时查询都写成
+	// `status IS NULL OR status NOT IN (终态)`，CAS 在 from 为空时也按 IS NULL 匹配。
+	//
+	// 为什么不加 not null tag：加了也管不到存量库。GORM 的 MigrateColumn 只在「列当前是
+	// NOT NULL、要放松成可空」时才判改列，收紧方向不判（gorm.io/gorm v1.31.1
+	// migrator/migrator.go:535-541）。实测（glebarez/sqlite v1.11.0）：已有表 + not null
+	// tag + AutoMigrate → err=nil 且列仍 nullable=true；tag 只对新建的表生效。而真去改列在
+	// SQLite 上是整表重建，存量有 NULL 时实测报 `NOT NULL constraint failed:
+	// video_tasks__temp.status`，且 AutoMigrate(db.go:70) 早于 AfterAutoMigration(db.go:101)。
+	// 所以让查询侧兜住第三种取值：覆盖「不经 ORM 写入 NULL」的整类来源，不动生产表。
+	// 详见 op.videoTaskNotTerminalWhere。
 	Status VideoTaskStatus `json:"status" gorm:"size:16;index;default:'not_start'"`
 
 	Progress string `json:"progress" gorm:"size:32;default:''"`

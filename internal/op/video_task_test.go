@@ -3,6 +3,7 @@ package op
 import (
 	"context"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 
@@ -79,6 +80,12 @@ func TestVideoTaskStatusCASRespectsFromStatus(t *testing.T) {
 
 // CAS 在并发下只能有一个赢家：两个 goroutine 拿同一个 from 同时推进，
 // 必须一个成功一个失败，否则状态机就有两条写入路径互相覆盖。
+//
+// 【必须有起跑线】两个裸 goroutine 不保证重叠：调度器完全可能让第一个先跑完，
+// 那样这条用例只验证了「顺序执行时第二次 CAS 失败」，而 CAS 存在的意义恰恰是「同时」。
+// 「读一次再写」这种非原子实现在串行时也会绿，只有真重叠才会暴露两个赢家。
+// 所以两个 goroutine 先各自报到（ready）、再由 start 一起放行：双方都就绪后才有
+// 任何一方去调 CAS，两次调用的起点被压到同一瞬间。
 func TestVideoTaskStatusCASConcurrentOnlyOneWinner(t *testing.T) {
 	newVideoTaskTestDB(t)
 	ctx := context.Background()
@@ -88,15 +95,20 @@ func TestVideoTaskStatusCASConcurrentOnlyOneWinner(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 
+	start := make(chan struct{})
 	var (
+		ready   sync.WaitGroup
 		wg      sync.WaitGroup
 		mu      sync.Mutex
 		winners int
 	)
+	ready.Add(2)
 	for i := 0; i < 2; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			ready.Done()
+			<-start
 			ok, err := VideoTaskStatusCAS(ctx, task.ID, model.VideoTaskQueued, model.VideoTaskInProgress, nil)
 			if err != nil {
 				t.Errorf("concurrent CAS err: %v", err)
@@ -109,6 +121,8 @@ func TestVideoTaskStatusCASConcurrentOnlyOneWinner(t *testing.T) {
 			}
 		}()
 	}
+	ready.Wait()
+	close(start)
 	wg.Wait()
 	if winners != 1 {
 		t.Fatalf("winners = %d, want exactly 1", winners)
@@ -185,5 +199,221 @@ func TestVideoTaskListUnfinishedExcludesTerminal(t *testing.T) {
 		if model.IsVideoTaskTerminal(task.Status) {
 			t.Fatalf("terminal task %q returned by unfinished list", task.UpstreamTaskID)
 		}
+	}
+}
+
+// CAS 成功时 updates 里的附加列必须和 status 一起落地。
+//
+// 没有这条断言的话，「CAS 只把 status 写进去、updates 被吞掉」这种错会一路静默：
+// 状态看着对，轮询器写回的 progress / result_url / fail_reason 全部消失。其中
+// submit_time 最隐蔽——没有任何状态断言覆盖它，只能显式读回来验。
+func TestVideoTaskStatusCASWritesUpdateFields(t *testing.T) {
+	newVideoTaskTestDB(t)
+	ctx := context.Background()
+
+	task := &model.VideoTask{UpstreamTaskID: "cgt-cas-updates", Status: model.VideoTaskNotStart}
+	if err := VideoTaskCreate(ctx, task); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if task.SubmitTime != 0 {
+		t.Fatalf("precondition failed: submit_time starts at %d, want 0", task.SubmitTime)
+	}
+
+	ok, err := VideoTaskStatusCAS(ctx, task.ID, model.VideoTaskNotStart, model.VideoTaskSubmitted, map[string]any{
+		"submit_time": int64(1700000123),
+		"progress":    "7%",
+	})
+	if err != nil {
+		t.Fatalf("CAS err: %v", err)
+	}
+	if !ok {
+		t.Fatalf("matching CAS reported no rows affected")
+	}
+
+	stored, err := VideoTaskGetByUpstreamID(ctx, "cgt-cas-updates")
+	if err != nil || stored == nil {
+		t.Fatalf("read back: %v %v", stored, err)
+	}
+	if stored.Status != model.VideoTaskSubmitted {
+		t.Fatalf("status = %q, want %q", stored.Status, model.VideoTaskSubmitted)
+	}
+	// submit_time 是这条用例的主角：只靠状态断言完全看不出它有没有写进去。
+	if stored.SubmitTime != 1700000123 {
+		t.Fatalf("submit_time = %d, want 1700000123 (the update payload was dropped)", stored.SubmitTime)
+	}
+	if stored.Progress != "7%" {
+		t.Fatalf("progress = %q, want %q (the update payload was dropped)", stored.Progress, "7%")
+	}
+}
+
+// 「终态不许回退」的真实保证形态：一个慢一拍的写者拿着**过时的 from** 回来写，
+// 必须一行都写不进去。
+//
+// 这是 CAS 存在的理由（见 VideoTaskStatusCAS 的注释：「一个已经 success 的任务被
+// 慢一拍的轮询写回 in_progress，用户就白等一轮」）。场景：轮询 A 读到 in_progress
+// 正准备写回进度，超时扫描 B 抢先把它收口成 success；A 的迟到写入必须失败，
+// 且行上 status / progress / finish_time 一个字节都不许变。
+func TestVideoTaskStatusCASTerminalCannotRegress(t *testing.T) {
+	newVideoTaskTestDB(t)
+	ctx := context.Background()
+
+	task := &model.VideoTask{UpstreamTaskID: "cgt-terminal-late-write", Status: model.VideoTaskInProgress}
+	if err := VideoTaskCreate(ctx, task); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// 慢写者 A 此刻读到的快照（下一步就是它要拿来回写的 from）。
+	staleFrom := task.Status
+
+	// B（超时扫描）先到，把任务收口成 success。
+	if ok, err := VideoTaskStatusCAS(ctx, task.ID, model.VideoTaskInProgress, model.VideoTaskSuccess, map[string]any{
+		"finish_time": int64(1700000999),
+		"result_url":  "https://example.com/done.mp4",
+	}); err != nil || !ok {
+		t.Fatalf("advance to success: ok=%v err=%v", ok, err)
+	}
+
+	// A 的迟到写入：from 是它当时读到的值（此刻已过期），to 是「回退」方向。
+	ok, err := VideoTaskStatusCAS(ctx, task.ID, staleFrom, model.VideoTaskInProgress, map[string]any{
+		"progress": "99%",
+	})
+	if err != nil {
+		t.Fatalf("late CAS err: %v", err)
+	}
+	if ok {
+		t.Fatalf("late write with a stale from won: a terminal task was pushed back to in_progress")
+	}
+
+	stored, err := VideoTaskGetByUpstreamID(ctx, "cgt-terminal-late-write")
+	if err != nil || stored == nil {
+		t.Fatalf("read back: %v %v", stored, err)
+	}
+	if stored.Status != model.VideoTaskSuccess {
+		t.Fatalf("status = %q, want %q (terminal regressed)", stored.Status, model.VideoTaskSuccess)
+	}
+	if stored.Progress != "" {
+		t.Fatalf("progress = %q, want untouched", stored.Progress)
+	}
+	if stored.FinishTime != 1700000999 {
+		t.Fatalf("finish_time = %d, want 1700000999 (the rejected write landed)", stored.FinishTime)
+	}
+	if stored.ResultURL != "https://example.com/done.mp4" {
+		t.Fatalf("result_url = %q, want untouched", stored.ResultURL)
+	}
+}
+
+// 【契约·当前未满足，t.Skip】终态是单向门：from 恰好等于行当前状态（success）时，
+// 把 to 写成非终态（in_progress）也必须被拒绝，行不许变。
+//
+// 上面那条 TestVideoTaskStatusCASTerminalCannotRegress 靠的是「from 已过期」，
+// 也就是把方向问题交回了调用方的诚实度。而 VideoTaskStatusCAS 本身**没有**方向校验：
+// 它的 WHERE 只有 `id = ? AND status = from`，所以 from=success → to=in_progress
+// 会真的把一行终态写回非终态（实测 ok=true、status 变成 in_progress、finish_time 保留）。
+// 本条测试就是那条契约的表达；生产侧一旦补上方向校验（to 为非终态且行已是终态时拒绝），
+// 删掉下面的 t.Skip 即转绿。
+func TestVideoTaskStatusCASTerminalRegressionAttemptRejected(t *testing.T) {
+	t.Skip("已知生产缺陷，待 supervisor 决定是否给 op.VideoTaskStatusCAS 加方向校验：" +
+		"当前 WHERE 只校验 from=行当前状态，from=success → to=in_progress 会成功把终态行写回非终态。" +
+		"本条表达的是应然契约，生产代码修好后删除这行 Skip。")
+
+	newVideoTaskTestDB(t)
+	ctx := context.Background()
+
+	task := &model.VideoTask{UpstreamTaskID: "cgt-terminal-regress", Status: model.VideoTaskInProgress}
+	if err := VideoTaskCreate(ctx, task); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if ok, err := VideoTaskStatusCAS(ctx, task.ID, model.VideoTaskInProgress, model.VideoTaskSuccess, map[string]any{
+		"finish_time": int64(1700000999),
+		"result_url":  "https://example.com/done.mp4",
+	}); err != nil || !ok {
+		t.Fatalf("advance to success: ok=%v err=%v", ok, err)
+	}
+
+	// from 就是行当前的状态：这次没有「过期」可以挡，能不能拒绝全靠生产侧有没有方向校验。
+	ok, err := VideoTaskStatusCAS(ctx, task.ID, model.VideoTaskSuccess, model.VideoTaskInProgress, map[string]any{
+		"progress": "99%",
+	})
+	if err != nil {
+		t.Fatalf("regression CAS err: %v", err)
+	}
+	if ok {
+		t.Fatalf("terminal -> non-terminal CAS was accepted; a finished task can be walked backwards")
+	}
+
+	stored, err := VideoTaskGetByUpstreamID(ctx, "cgt-terminal-regress")
+	if err != nil || stored == nil {
+		t.Fatalf("read back: %v %v", stored, err)
+	}
+	if stored.Status != model.VideoTaskSuccess {
+		t.Fatalf("status = %q, want %q (terminal regressed)", stored.Status, model.VideoTaskSuccess)
+	}
+	if stored.Progress != "" {
+		t.Fatalf("progress = %q, want untouched", stored.Progress)
+	}
+	if stored.FinishTime != 1700000999 {
+		t.Fatalf("finish_time = %d, want 1700000999 (the rejected write landed)", stored.FinishTime)
+	}
+}
+
+// 未完成列表的 limit / 排序边界：这是轮询进程的入口，limit 是保险丝、Order("id")
+// 是「这一轮从哪条开始」的唯一依据。
+//
+// 三件事必须同时成立，否则积压时会饿死任务或把同一批反复处理：
+//  1. limit 真的截断（不是忽略它把整表捞出来），且只数未完成的行——终态行不占名额；
+//  2. 顺序是按 id 升序的稳定顺序（最老的先推进），不是数据库的偶然返回顺序；
+//  3. limit <= 0 落到默认值（保险丝不能因为调用方传 0 就变成「一条都不处理」）。
+func TestVideoTaskListUnfinishedLimitAndOrder(t *testing.T) {
+	newVideoTaskTestDB(t)
+	ctx := context.Background()
+
+	// 终态行先落库，id 更小：它们若占名额/被捞出来，下面的断言立刻就能看出来。
+	seed := []model.VideoTask{
+		{UpstreamTaskID: "t-1", Status: model.VideoTaskSuccess},
+		{UpstreamTaskID: "t-2", Status: model.VideoTaskFailure},
+		{UpstreamTaskID: "u-1", Status: model.VideoTaskNotStart},
+		{UpstreamTaskID: "u-2", Status: model.VideoTaskQueued},
+		{UpstreamTaskID: "u-3", Status: model.VideoTaskSubmitted},
+		{UpstreamTaskID: "u-4", Status: model.VideoTaskInProgress},
+		{UpstreamTaskID: "u-5", Status: model.VideoTaskUnknown},
+	}
+	for i := range seed {
+		if err := VideoTaskCreate(ctx, &seed[i]); err != nil {
+			t.Fatalf("seed %s: %v", seed[i].UpstreamTaskID, err)
+		}
+	}
+
+	assertOrder := func(label string, tasks []model.VideoTask, want []string) {
+		t.Helper()
+		got := listedTaskIDs(tasks)
+		if len(got) != len(want) {
+			t.Fatalf("%s: got %v (%d rows), want %v", label, got, len(got), want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("%s: got %v, want %v (limit/order decides which tasks a round starves)", label, got, want)
+			}
+		}
+	}
+
+	limited, err := VideoTaskListUnfinished(ctx, 2)
+	if err != nil {
+		t.Fatalf("list with limit 2: %v", err)
+	}
+	// 前两条「不是终态的」行，按 id 升序：limit 作用在过滤之后，终态行不占名额。
+	assertOrder("limit=2", limited, []string{"u-1", "u-2"})
+
+	all, err := VideoTaskListUnfinished(ctx, 10)
+	if err != nil {
+		t.Fatalf("list with limit 10: %v", err)
+	}
+	assertOrder("limit=10", all, []string{"u-1", "u-2", "u-3", "u-4", "u-5"})
+
+	// 保险丝的默认值：0 和负数都该退成「默认批量」，而不是「一条都不处理」。
+	for _, limit := range []int{0, -1} {
+		tasks, err := VideoTaskListUnfinished(ctx, limit)
+		if err != nil {
+			t.Fatalf("list with limit %d: %v", limit, err)
+		}
+		assertOrder("limit="+strconv.Itoa(limit), tasks, []string{"u-1", "u-2", "u-3", "u-4", "u-5"})
 	}
 }

@@ -700,3 +700,98 @@ func TestVideoPollHandlerRejectsForeignTenantFromDB(t *testing.T) {
 		t.Fatalf("owner poll hit upstream %d times, want 1", hitsAtEnd)
 	}
 }
+
+// 创建视频时，只有 429 才进下一把 key（relay.shouldTryNextChannelKey 的唯一放行码）；
+// 400 是「这个请求本身不对」，换 key 只会把同一个必然失败的、还带花钱副作用的视频创建
+// 请求再发一次。
+//
+// 【牙在「两把 key」上】只配一把 key 时，「错误地重试下一把 key」无处可去，断言永远绿。
+// 所以同一个渠道配两把可用 key，并配一条 429 对照用例：429 那一路必须打到两把 key 上，
+// 证明它们真的都在 key 循环里可达——否则「400 只收到一次」也可能只是因为第二把 key
+// 压根没进候选列表，而不是因为代码拦住了。
+func TestVideosHandlerKeyFailoverOnlyOn429(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayErrorDB(t)
+	resetVideoTaskMemory(t)
+
+	cases := []struct {
+		name     string
+		status   int
+		wantHits int
+	}{
+		// 400：一次都不许多打，两把 key 里只能有一把被用到。
+		{name: "400_does_not_try_the_next_key", status: http.StatusBadRequest, wantHits: 1},
+		// 对照：429 是 shouldTryNextChannelKey 唯一放行的码，两把 key 都要被打到。
+		{name: "429_tries_the_next_key", status: http.StatusTooManyRequests, wantHits: 2},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var (
+				mu    sync.Mutex
+				auths []string
+			)
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				auths = append(auths, r.Header.Get("Authorization"))
+				mu.Unlock()
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(`{"error":{"message":"upstream rejected the video request"}}`))
+			}))
+			t.Cleanup(upstream.Close)
+
+			ch := dbmodel.Channel{
+				Name:         "video-two-keys-" + tc.name,
+				Type:         outbound.OutboundTypeOpenAIChat,
+				Enabled:      true,
+				Model:        "two-keys-upstream-model",
+				ModelMapping: map[string]string{"alias-two-keys-" + tc.name: "two-keys-upstream-model"},
+				Priority:     1,
+				BaseUrls:     []dbmodel.BaseUrl{{URL: upstream.URL}},
+				// 两把都可用：第二把是「不该被用到」的那一把。
+				Keys: []dbmodel.ChannelKey{
+					{Enabled: true, ChannelKey: "two-keys-secret-a"},
+					{Enabled: true, ChannelKey: "two-keys-secret-b"},
+				},
+			}
+			if err := op.ChannelCreate(&ch, ctx); err != nil {
+				t.Fatalf("create channel: %v", err)
+			}
+			// 前置条件：两把 key 都在候选集里，否则这条用例证明不了任何事。
+			available := ch.GetAvailableChannelKeys()
+			if len(available) != 2 {
+				t.Fatalf("precondition failed: channel exposes %d usable key(s), want 2 (%+v)", len(available), available)
+			}
+
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			req := httptest.NewRequest(http.MethodPost, "/v1/videos",
+				strings.NewReader(`{"model":"alias-two-keys-`+tc.name+`","prompt":"a cat"}`))
+			req.Header.Set("Content-Type", "application/json")
+			c.Request = req
+			c.Set("api_key_id", 0)
+			c.Set("user_id", 0)
+			c.Set("request_ip", "127.0.0.1")
+
+			VideosHandler(c)
+
+			mu.Lock()
+			gotAuths := append([]string(nil), auths...)
+			mu.Unlock()
+
+			if len(gotAuths) != tc.wantHits {
+				t.Fatalf("upstream received %d request(s) %v, want %d: status %d must %s",
+					len(gotAuths), gotAuths, tc.wantHits, tc.status,
+					map[int]string{
+						http.StatusBadRequest:      "not be retried on the next key",
+						http.StatusTooManyRequests: "be retried on the next key",
+					}[tc.status])
+			}
+			// 上游的错误不许被吞成成功：客户端要看到上游真实的拒绝。
+			if rec.Code != tc.status {
+				t.Fatalf("client status = %d (%s), want %d passed through", rec.Code, rec.Body.String(), tc.status)
+			}
+		})
+	}
+}

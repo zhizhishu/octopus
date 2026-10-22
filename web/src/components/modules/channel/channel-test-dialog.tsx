@@ -26,6 +26,7 @@ import {
     MODEL_TEST_ENDPOINT_LABELS,
     channelTestIdentityFor,
     defaultModelTestEndpointForChannel,
+    isImageTestEndpoint,
     makeModelTestPrompt,
     sanitizeChannelTestError,
     shouldForceChannelTestStream,
@@ -158,33 +159,51 @@ function AdvancedChannelTestDialog({
         });
     }, [open, modelsSignature]); // eslint-disable-line react-hooks/exhaustive-deps
 
-    // Shape / Stream lock: 对当前选中的 models + endpoints + 渠道配置调用 SSOT
-    const streamShapeLocked = useMemo(() => {
+    // Shape / Stream lock: 对当前选中的 models + endpoints + 渠道配置调用 SSOT，
+    // 但必须**逐端点**算，不能整批套一个渠道级的值。
+    //
+    // 为什么：图片端点固定非流式（后端 image_channel.go:112 `stream := false` 写死，
+    // 不读 request.Stream；UA 走 relay/images.go:1012 的 genericUAForChannel），而
+    // responses / claude 端点恒流式。"多个端点混测"时两种结论并存——整批套一个值，
+    // 要么把图片那一格谎报成流式，要么把 responses 那一格真发成非流式。
+    const streamLock = useMemo(() => {
         const selectedModelList = Array.from(models);
-        // 如果已选端点中有任何一个端点触发强制流式，或渠道级别触发强制流式，则强制流式
-        if (
-            shouldForceChannelTestStream({
-                channelType: channel.type,
-                cloakMode: channel.cloak?.mode,
-                anthropicContext1M: channel.anthropic_context_1m,
-            })
-        ) {
-            return true;
-        }
+        const perEndpoint = new Map<ModelTestEndpoint, boolean>();
         for (const ep of endpoints) {
-            if (
+            perEndpoint.set(
+                ep,
                 shouldForceChannelTestStream({
                     models: selectedModelList,
                     endpoint: ep,
                     anthropicContext1M: channel.anthropic_context_1m,
                     channelType: channel.type,
                     cloakMode: channel.cloak?.mode,
-                })
-            ) {
-                return true;
-            }
+                }),
+            );
         }
-        return false;
+        const selected = [...endpoints];
+        const locked = selected.filter((ep) => perEndpoint.get(ep) === true);
+        const images = selected.filter((ep) => isImageTestEndpoint(ep));
+        // 一个端点都没选时没有"逐端点"可算，开关外观沿用渠道级判据（此时按钮本来就禁用）。
+        const channelWideLock = shouldForceChannelTestStream({
+            channelType: channel.type,
+            cloakMode: channel.cloak?.mode,
+            anthropicContext1M: channel.anthropic_context_1m,
+        });
+        const allLocked = selected.length === 0 ? channelWideLock : locked.length === selected.length;
+        const imageOnly = selected.length > 0 && images.length === selected.length;
+        return {
+            // 这一端点实际该发的 stream 值：锁定端点恒 true；图片端点恒 false（后端只认
+            // 非流式，别让请求里带个 stream=true 好让人以为我们真发了流式）；其余听开关。
+            streamFor: (endpoint: ModelTestEndpoint, preferred: boolean) =>
+                perEndpoint.get(endpoint) === true ? true : isImageTestEndpoint(endpoint) ? false : preferred,
+            allLocked,
+            anyLocked: locked.length > 0,
+            imageOnly,
+            includesImage: images.length > 0,
+            // 开关被锁：要么全部恒流式，要么全部固定非流式（图片）。
+            switchLocked: allLocked || imageOnly,
+        };
     }, [channel.type, channel.cloak?.mode, channel.anthropic_context_1m, models, endpoints]);
 
     const filteredModels = useMemo(() => {
@@ -277,7 +296,7 @@ function AdvancedChannelTestDialog({
                             channel_id: channel.id,
                             endpoint,
                             prompt,
-                            stream: streamShapeLocked ? true : streamTest,
+                            stream: streamLock.streamFor(endpoint, streamTest),
                             timeout_seconds: DEFAULT_MODEL_TEST_TIMEOUT_SECONDS,
                             audit_log: !summaryMode,
                         });
@@ -419,20 +438,30 @@ function AdvancedChannelTestDialog({
                     )}
 
                     {/* 流/非流 */}
-                    <label className={cn('flex items-center gap-2 text-sm', streamShapeLocked ? 'cursor-not-allowed' : 'cursor-pointer')}>
+                    <label className={cn('flex items-center gap-2 text-sm', streamLock.switchLocked ? 'cursor-not-allowed' : 'cursor-pointer')}>
                         <Switch
-                            checked={streamShapeLocked || streamTest}
+                            checked={streamLock.switchLocked ? streamLock.allLocked : streamTest}
                             onCheckedChange={setStreamTest}
-                            disabled={streamShapeLocked}
+                            disabled={streamLock.switchLocked}
                             className="scale-90"
                         />
                         <span>流式优先</span>
-                        {streamShapeLocked ? (
+                        {streamLock.allLocked ? (
                             <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
                                 <Lock className="size-3" />codex / claude 恒流式（shape · 与真实流量一致，不可关）
                             </span>
+                        ) : streamLock.anyLocked ? (
+                            <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                                <Lock className="size-3" />responses / claude 端点恒流式（不可关），其余端点按此开关
+                            </span>
                         ) : (
-                            <span className="text-xs text-muted-foreground">（chat / gemini 真开真关；关掉后思考模型可能因非流超时，日志会如实标注）</span>
+                            <span className="text-xs text-muted-foreground">
+                                {streamLock.imageOnly
+                                    ? '图片端点固定非流式（按真实 ImagesHandler 转发；图片 SSE 判定口径未定，暂不测流式）'
+                                    : streamLock.includesImage
+                                        ? '图片端点固定非流式，其余端点按此开关（chat / gemini 真开真关）'
+                                        : '（chat / gemini 真开真关；关掉后思考模型可能因非流超时，日志会如实标注）'}
+                            </span>
                         )}
                     </label>
 

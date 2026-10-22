@@ -109,6 +109,11 @@ function logComponents() {
         '@/components/ui/calendar': widgets('Calendar'),
         '@/components/ui/button': widgets('Button'),
         '@/components/ui/switch': widgets('Switch'),
+        // 视频任务是日志页新增的第二个分类：默认停在请求日志视图，这个子组件
+        // 不会被渲染，所以这里只要模块能解析、形状对得上即可。
+        '@/api/endpoints/video-task': { VIDEO_TASK_STATUS_LABELS: {}, useVideoTaskList: () => ({}) },
+        '@/components/ui/progress': widgets('Progress'),
+        '@/components/common/CopyButton': widgets('CopyIconButton'),
         '@/components/common/Toast': { toast: {} },
         '@/components/animate-ui/components/animate/tooltip': widgets('TooltipProvider'),
     });

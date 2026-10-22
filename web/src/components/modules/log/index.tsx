@@ -15,7 +15,8 @@ import { type RelayLog, type RelayLogSeverity, type RequestState, useExportLogs,
 import { formatBytes } from '@/lib/log-export';
 import { useLogDetailNavigation } from './use-log-detail-navigation';
 import { LogCard, useSensitiveStore } from './Item';
-import { AlertCircle, AlertTriangle, Calendar as CalendarIcon, CheckCircle2, ChevronLeft, ChevronRight, Circle, Download, Eye, EyeOff, Loader2, RefreshCw, RotateCcw, RotateCw, ScrollText, Search, SlidersHorizontal, WifiOff, X } from 'lucide-react';
+import { VideoTaskPanel } from './VideoTaskPanel';
+import { AlertCircle, AlertTriangle, Calendar as CalendarIcon, CheckCircle2, ChevronLeft, ChevronRight, Circle, Download, Eye, EyeOff, Loader2, RefreshCw, RotateCcw, RotateCw, ScrollText, Search, SlidersHorizontal, Video, WifiOff, X } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { VirtualizedGrid } from '@/components/common/VirtualizedGrid';
 import { PageWrapper } from '@/components/common/PageWrapper';
@@ -682,6 +683,9 @@ export function Log() {
     // 显得「筛选无效」。近 7 天在「够聚焦」和「开屏能看到东西」之间取平衡。
     const defaultRange = useMemo(() => resolveDateRangeShortcut('last7Days', todayLabel), [todayLabel]);
     const [viewMode, setViewMode] = useState<'history' | 'live'>('history');
+    // 日志页的两个分类：请求日志（现有列表）/ 视频任务（异步视频任务的进度与结果）。
+    // 照参考项目 new-api 的做法，视频任务不是一个独立页面，而是日志的一个分类。
+    const [logPanel, setLogPanel] = useState<'requests' | 'video-tasks'>('requests');
     // 所有筛选都「即选即生效」——改了立刻查，不再需要点「搜索」。这正是过去让人觉得「筛选无效」的
     // 另一半原因：改了接口下拉/用户/Key 却要再点搜索才生效，看起来像没反应。
     const [selectedUserID, setSelectedUserID] = useState<number | undefined>();
@@ -763,6 +767,8 @@ export function Log() {
         hideModelTest: false,
         search: deferredSearch || undefined,
         upstreamModelMismatch: mismatchParam,
+        // 视频任务视图下不需要日志总数：那个查询 15 秒一轮，切过去还照跑就是白扫库。
+        enabled: logPanel === 'requests',
     });
     const LOG_PAGE_SIZE = 20;
     // 当前生效筛选下的总条数：全部→total，否则取该严重程度的计数。分页页数据此算。
@@ -1081,11 +1087,54 @@ export function Log() {
         return null;
     }, [allTimeCounts?.total, allTimeCountsError, filteredLogs.length, hasActiveFilter, hasMore, handleResetFilters, isLoading, isLoadingMore, isQueryError, loadMore, t]);
 
+    // 分类切换器。两个视图共用同一个元素，避免两份定义各自漂移。
+    const logPanelSwitcher = (
+        <div
+            role="tablist"
+            aria-label="日志分类"
+            className="flex flex-none shrink-0 items-center gap-1 self-start rounded-lg bg-muted/60 p-1"
+        >
+            {([
+                { id: 'requests' as const, label: '请求日志', Icon: ScrollText },
+                { id: 'video-tasks' as const, label: '视频任务', Icon: Video },
+            ]).map(({ id, label, Icon }) => (
+                <button
+                    key={id}
+                    type="button"
+                    role="tab"
+                    aria-selected={logPanel === id}
+                    onClick={() => setLogPanel(id)}
+                    className={cn(
+                        'inline-flex h-8 items-center justify-center gap-1.5 rounded-lg px-2.5 text-xs font-medium whitespace-nowrap transition-colors',
+                        logPanel === id
+                            ? 'bg-background text-foreground shadow-sm'
+                            : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'
+                    )}
+                >
+                    <Icon className="size-3.5" />
+                    {label}
+                </button>
+            ))}
+        </div>
+    );
+
+    // 视频任务视图有自己的查询与筛选（和请求日志的过滤维度完全不同，硬塞进同一套
+    // 筛选栏只会互相污染）。早返回放在所有 hook 之后：两种视图下 hook 顺序一致。
+    if (logPanel === 'video-tasks') {
+        return (
+            <PageWrapper className="box-border flex h-full min-h-0 flex-col gap-3 overflow-hidden rounded-t-3xl [&>*]:min-h-0 [&>*:last-child]:flex [&>*:last-child]:min-h-0 [&>*:last-child]:flex-1 [&>*:last-child]:flex-col">
+                {logPanelSwitcher}
+                <VideoTaskPanel />
+            </PageWrapper>
+        );
+    }
+
     return (
         // Bottom clearance for the fixed mobile nav lives inside VirtualizedGrid's
         // scroller (not here). Outer pb on an overflow-hidden flex shell only shrinks
         // the viewport or gets clipped — last log cards still sit under the nav pill.
         <PageWrapper className="box-border flex h-full min-h-0 flex-col gap-3 overflow-hidden rounded-t-3xl [&>*]:min-h-0 [&>*:last-child]:flex [&>*:last-child]:min-h-0 [&>*:last-child]:flex-1 [&>*:last-child]:flex-col">
+            {logPanelSwitcher}
             {persistenceOff && (
                 <div className="flex flex-none flex-col gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-sm sm:flex-row sm:items-center sm:justify-between">
                     <div className="flex items-start gap-2 text-amber-700 dark:text-amber-300">
