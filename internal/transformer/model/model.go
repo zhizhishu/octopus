@@ -477,8 +477,36 @@ func (r *InternalLLMRequest) fillMissingToolCallIDsFromToolMessages() {
 }
 
 // IsEmbeddingRequest returns true if this is an embedding request.
+//
+// 🔴 必须同时看「端点标记」和「字段」，不能只看字段。
+//
+// 事故面：入站 chat 适配器是把整个 body 直接 json.Unmarshal 进本结构体的
+// （transformer/inbound/openai/chat.go:30-32），而 EmbeddingInput 的
+// UnmarshalJSON 对任何非 null JSON 都照单全收（见下方 EmbeddingInput.UnmarshalJSON，
+// 它把原始字节塞进 Raw，不校验形状）。于是任何 chat 客户端只要在 body 里多带一个
+// 顶层 "embedding_input": <任意非 null>，就会让 EmbeddingInput != nil：
+//
+//	relay.go:419  IsEmbeddingRequest() && !IsEmbeddingChannelType → 所有 chat 渠道被跳过
+//	model.go:364  isEmbeddingRequest && isChatRequest → "cannot specify both messages and input"
+//
+// 实测复现过：一条正常 chat 请求带上该字段后 IsEmbeddingRequest 与 IsChatRequest
+// 同时为真，整条链路直接不可用。这不是理论风险，是客户端能单方面触发的拒绝服务。
+//
+// 端点标记由各入站适配器设置（embedding 入站置 APIFormatOpenAIEmbedding），
+// 是比"字段是否存在"可靠得多的判据。字段仍要判，用于覆盖没有设标记的调用方。
 func (r *InternalLLMRequest) IsEmbeddingRequest() bool {
-	return r.EmbeddingInput != nil
+	if r == nil {
+		return false
+	}
+	if r.RawAPIFormat == APIFormatOpenAIEmbedding {
+		return true
+	}
+	// 没设端点标记时（内部构造、测试、模型检测探针）才回落到字段判断。
+	// 但若同时带着 messages，那一定是 chat——宁可让 chat 走通，也不要误判。
+	if r.RawAPIFormat != "" {
+		return false
+	}
+	return r.EmbeddingInput != nil && len(r.Messages) == 0
 }
 
 // IsChatRequest returns true if this is a chat completion request.
