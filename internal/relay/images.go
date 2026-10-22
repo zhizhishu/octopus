@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/zhizhishu/octopus/internal/helper"
 	"github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/op"
@@ -27,7 +28,6 @@ import (
 	"github.com/zhizhishu/octopus/internal/utils/log"
 	"github.com/zhizhishu/octopus/internal/utils/safe"
 	"github.com/zhizhishu/octopus/internal/utils/xurl"
-	"github.com/gin-gonic/gin"
 )
 
 const imagesUpstreamErrorBodyLimit = 16 * 1024
@@ -105,6 +105,13 @@ func ImagesHandler(endpoint string, c *gin.Context) {
 	supportedModels := strings.TrimSpace(c.GetString("supported_models"))
 	if !op.IsModelSupported(supportedModels, requestModel) {
 		resp.Error(c, http.StatusBadRequest, "model not supported")
+		return
+	}
+
+	// 渠道测试（内部调用）：context 被显式钉了渠道就只转发这一个渠道，跳过分组选路。
+	// 生产请求不会带这个标记（见 images_test_entry.go 文件头），所以下面的选路照旧。
+	if testChannel, pinned := imagesChannelTestPinFor(c); pinned {
+		forwardImagesChannelTest(c, endpoint, testChannel, requestModel, stream, isMultipart, bc, boundary, jsonPayload)
 		return
 	}
 

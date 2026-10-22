@@ -7,6 +7,7 @@ export const MODEL_TEST_ENDPOINTS = [
     { value: 'anthropic_messages', label: 'Claude' },
     { value: 'gemini_generate_content', label: 'Gemini' },
     { value: 'openai_embeddings', label: 'Embeddings' },
+    { value: 'openai_images_generations', label: 'Images' },
 ] as const;
 
 export type ModelTestEndpoint = (typeof MODEL_TEST_ENDPOINTS)[number]['value'];
@@ -17,6 +18,7 @@ export const MODEL_TEST_ENDPOINT_LABELS: Record<ModelTestEndpoint, string> = {
     anthropic_messages: 'Claude',
     gemini_generate_content: 'Gemini',
     openai_embeddings: 'Embeddings',
+    openai_images_generations: 'Images',
 };
 
 export const DEFAULT_MODEL_TEST_TIMEOUT_SECONDS = 180;

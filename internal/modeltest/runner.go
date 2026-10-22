@@ -66,6 +66,11 @@ const (
 	// embeddingTestEndpointName 是嵌入探针的端点名（channel test 与模型校验探针共用）。
 	// 它不是一个 chat 形状：没有 messages/stream/思考，出站只有 model+input。
 	embeddingTestEndpointName = "openai_embeddings"
+	// imageGenerationTestEndpointName 是图片生成端点的端点名。它同样不是一个 chat
+	// 形状：没有 messages/stream/思考，出站只有 model+prompt+n+size，而且它的测试
+	// 必须走 relay 的真转发实现（见 image_channel.go），不能走本包
+	// "自建 request → 出站适配器 transform" 那条路。
+	imageGenerationTestEndpointName = "openai_images_generations"
 )
 
 var defaultPromptCounter uint64
@@ -337,6 +342,8 @@ func modelTestAuditEndpoint(endpoint string) string {
 		return "model_test_gemini"
 	case embeddingTestEndpointName:
 		return "model_test_embeddings"
+	case imageGenerationTestEndpointName:
+		return "model_test_images"
 	case "":
 		return "model_test"
 	default:
@@ -525,6 +532,16 @@ func normalizeEndpoint(value string) (testEndpoint, error) {
 			inbound:   inbound.InboundTypeOpenAIEmbedding,
 			path:      func(string) string { return "/v1/embeddings" },
 		}, nil
+	case imageGenerationTestEndpointName, "images", "images_generations", "openai_images":
+		return testEndpoint{
+			name:      imageGenerationTestEndpointName,
+			apiFormat: transformermodel.APIFormatOpenAIImageGeneration,
+			// images 没有独立的 inbound 类型：这个字段只在 testChannelKey 的
+			// ApplyChannelWireHeaders 里用，而图片分支根本不走那里（转发由 relay
+			// 的 ImagesHandler 负责）。填 OpenAI 家族里的 chat 值只是为了不留零值陷阱。
+			inbound: inbound.InboundTypeOpenAIChat,
+			path:    func(string) string { return "/v1/images/generations" },
+		}, nil
 	case "gemini_generate_content", "gemini":
 		return testEndpoint{
 			name:      "gemini_generate_content",
@@ -650,6 +667,12 @@ func (r *modelRunner) tryChannel(ctx context.Context, channel *dbmodel.Channel, 
 	if respectEnabled && !channel.Enabled {
 		r.recordAttempt(channel.ID, 0, channelName, upstreamModel, "", dbmodel.AttemptSkipped, 0, 0, "channel disabled")
 		return false
+	}
+	// 图片端点：交给真链路（relay.ImagesHandler）发，不走下面的自建请求路径。
+	// 放在能力位判定之前，是因为图片没有能力位，它的准入是"渠道类型能不能接图片"
+	// （在 tryImageChannel 里按 relay 的同一判据判）。
+	if isImageTestEndpoint(r.request.Endpoint) {
+		return r.tryImageChannel(ctx, channel, upstreamModel)
 	}
 	// 能力位判定：空 Capabilities 的存量渠道退回按渠道类型判定，行为不变。
 	// 准入按"本次要测什么"判，不能是 OR：一个普通 Chat 渠道测**嵌入**端点时，
