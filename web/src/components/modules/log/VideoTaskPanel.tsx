@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
     AlertCircle,
     ChevronLeft,
@@ -235,6 +235,19 @@ export function VideoTaskPanel() {
     const items = query.data?.items ?? [];
     const total = query.data?.total ?? 0;
     const totalPages = Math.max(1, Math.ceil(total / VIDEO_TASK_PAGE_SIZE));
+
+    // 筛选/轮询让总条数缩到本页之外时，把页码收回最后一页。
+    //
+    // 否则会停在一个已经不存在的页：本页返回空、totalPages 变 1、导航整块消失，
+    // 页面上只剩「该状态下没有视频任务」，而实际上一页还有一屏任务。空列表还会让
+    // 请求层的 5 秒轮询（video-task.ts 的 refetchInterval）停掉，于是一直空着。
+    //
+    // 只在拿到**非占位**的响应后收页：占位数据是上一页/上次筛选的，它的 total
+    // 不代表当前这一页。page 收到 totalPages 之后条件不再成立，不会来回抖。
+    useEffect(() => {
+        if (!query.data || query.isPlaceholderData) return;
+        if (page > totalPages) setPage(totalPages);
+    }, [page, totalPages, query.data, query.isPlaceholderData]);
 
     return (
         <div className="flex min-h-0 flex-1 flex-col gap-3">

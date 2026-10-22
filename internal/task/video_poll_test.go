@@ -36,8 +36,15 @@ func setupVideoPollTestDB(t *testing.T) context.Context {
 
 func createVideoPollTestChannel(t *testing.T, ctx context.Context, baseURL string) model.Channel {
 	t.Helper()
+	return createVideoPollTestChannelNamed(t, ctx, "video-poll-channel", baseURL)
+}
+
+// createVideoPollTestChannelNamed 给需要多个渠道的用例用：channels.name 上有唯一约束，
+// 同一个库里的两个渠道不能同名。
+func createVideoPollTestChannelNamed(t *testing.T, ctx context.Context, name, baseURL string) model.Channel {
+	t.Helper()
 	channel := model.Channel{
-		Name:     "video-poll-channel",
+		Name:     name,
 		Type:     outbound.OutboundTypeOpenAIChat,
 		Enabled:  true,
 		Model:    "video-upstream-model",
@@ -82,6 +89,7 @@ type upstreamStub struct {
 	hits     map[string]int
 	authSeen map[string]string
 	pathSeen map[string]string
+	hang     map[string]bool
 }
 
 func newUpstreamStub() *upstreamStub {
@@ -91,6 +99,7 @@ func newUpstreamStub() *upstreamStub {
 		hits:     make(map[string]int),
 		authSeen: make(map[string]string),
 		pathSeen: make(map[string]string),
+		hang:     make(map[string]bool),
 	}
 }
 
@@ -99,6 +108,15 @@ func (s *upstreamStub) set(id string, statusCode int, body string) {
 	defer s.mu.Unlock()
 	s.status[id] = statusCode
 	s.body[id] = body
+}
+
+// setHang 让这个上游任务 id 的查询「连得上、握手完，但永远不返回」。
+// 这是「一条慢查询拖死整轮」的真实形态：即时 500 或连接失败都会立刻返回，
+// 覆盖不到「吊着」这条路径。
+func (s *upstreamStub) setHang(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.hang[id] = true
 }
 
 func (s *upstreamStub) hitCount(id string) int {
@@ -113,10 +131,16 @@ func (s *upstreamStub) handler() http.Handler {
 		s.mu.Lock()
 		code, ok := s.status[id]
 		body := s.body[id]
+		hung := s.hang[id]
 		s.hits[id]++
 		s.authSeen[id] = r.Header.Get("Authorization")
 		s.pathSeen[id] = r.URL.Path
 		s.mu.Unlock()
+		if hung {
+			// 吊到客户端放弃为止（ctx 结束）：不发任何字节，也不是连接错误。
+			<-r.Context().Done()
+			return
+		}
 		if !ok {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusNotFound)
@@ -192,8 +216,11 @@ func TestVideoTaskPollAdvancesStatusFromUpstream(t *testing.T) {
 	}
 }
 
-// 超时扫描：提交时间早于阈值还在跑的任务必须被收口成 failure 并写明原因，
+// 超时扫描的基础语义：问不出结论的超时任务必须被收口成 failure 并写明原因，
 // 否则一条永远不收敛的任务会把「未完成」集合钉死。
+//
+// 这里刻意用 5xx：查询本身失败属于「问不出结论」那一支，仍按超时判失败。
+// 「上游其实已经成功 / 还在跑」的两种情形见下面两个用例——它们是这个用例的反面。
 func TestVideoTaskPollSweepsTimedOutTask(t *testing.T) {
 	ctx := setupVideoPollTestDB(t)
 	stub := newUpstreamStub()
@@ -201,7 +228,7 @@ func TestVideoTaskPollSweepsTimedOutTask(t *testing.T) {
 	t.Cleanup(upstream.Close)
 
 	channel := createVideoPollTestChannel(t, ctx, upstream.URL)
-	stub.set("cgt-stale", http.StatusOK, `{"id":"cgt-stale","status":"in_progress"}`)
+	stub.set("cgt-stale", http.StatusInternalServerError, `{"error":{"message":"boom"}}`)
 
 	createVideoPollTestTask(t, ctx, model.VideoTask{
 		UpstreamTaskID: "cgt-stale",
@@ -223,9 +250,10 @@ func TestVideoTaskPollSweepsTimedOutTask(t *testing.T) {
 	if stale.FinishTime == 0 {
 		t.Fatalf("finish_time not written for a timed-out task")
 	}
-	// 已经收口的任务不该再被捞去打一次上游。
-	if got := stub.hitCount("cgt-stale"); got != 0 {
-		t.Fatalf("timed-out task still polled %d time(s) upstream in the same round", got)
+	// 判死之前必须问过一次上游（而且只问这一次）：收口后它已进终态，
+	// 本轮的「未完成」批次不该再捞它。
+	if got := stub.hitCount("cgt-stale"); got != 1 {
+		t.Fatalf("timed-out task polled %d time(s) in one round, want exactly the one last look", got)
 	}
 }
 
@@ -236,9 +264,10 @@ func TestVideoTaskPollTimeoutFallsBackToCreatedAt(t *testing.T) {
 	upstream := httptest.NewServer(stub.handler())
 	t.Cleanup(upstream.Close)
 	channel := createVideoPollTestChannel(t, ctx, upstream.URL)
-	// 上游说它还在跑：这样「没超时」的唯一表现就是状态停在 in_progress，
-	// 断言不会被「上游 404」之类的旁路结果蒙对。
-	stub.set("cgt-no-submit-time", http.StatusOK, `{"id":"cgt-no-submit-time","status":"in_progress"}`)
+	// 上游 5xx：轮询主路径把它当可恢复错误（不写库），超时收口把它当「问不出结论」
+	// 而判超时失败。于是「有没有用 created_at 判超时」这件事只会体现在 fail_reason 上，
+	// 不会被「上游 404 / 上游说成功」之类的旁路结果蒙对。
+	stub.set("cgt-no-submit-time", http.StatusInternalServerError, `{"error":{"message":"boom"}}`)
 
 	task := createVideoPollTestTask(t, ctx, model.VideoTask{
 		UpstreamTaskID: "cgt-no-submit-time",
@@ -257,6 +286,179 @@ func TestVideoTaskPollTimeoutFallsBackToCreatedAt(t *testing.T) {
 	stored := loadVideoPollTestTask(t, ctx, "cgt-no-submit-time")
 	if stored.Status != model.VideoTaskFailure || !strings.Contains(stored.FailReason, "timed out") {
 		t.Fatalf("expected timeout failure via created_at fallback, got %q (%s)", stored.Status, stored.FailReason)
+	}
+}
+
+// overrideVideoTaskPollTaskTimeout 把单条上游时限压到毫秒级。
+// 「上游吊着不返回」的用例否则必须真等 20 秒（默认值见 video_poll.go）。
+func overrideVideoTaskPollTaskTimeout(t *testing.T, d time.Duration) {
+	t.Helper()
+	previous := videoTaskPollTaskTimeout
+	videoTaskPollTaskTimeout = d
+	t.Cleanup(func() { videoTaskPollTaskTimeout = previous })
+}
+
+// 【缺陷 1 - 用例 1】本地早就超时，但上游其实已经生成成功。
+//
+// 真实场景：用户提交后服务停机/重启/长时间断网，期间上游把片生成好了；两小时后重启，
+// 本地还停在 submitted。旧行为：超时扫描不查上游直接写 timeout failure →
+// op.VideoTaskListUnfinished 把 failure 排除在外 → 结果地址永远补不回来，
+// 用户付过费却看到永久失败，甚至再付一次重做。
+// 新行为：先问上游，按它给的成功结果落库（带结果地址），绝不写 failure。
+func TestVideoTaskPollTimeoutKeepsUpstreamSuccess(t *testing.T) {
+	ctx := setupVideoPollTestDB(t)
+	stub := newUpstreamStub()
+	upstream := httptest.NewServer(stub.handler())
+	t.Cleanup(upstream.Close)
+
+	channel := createVideoPollTestChannel(t, ctx, upstream.URL)
+	stub.set("cgt-late-success", http.StatusOK,
+		`{"id":"cgt-late-success","status":"success","video_url":"https://example.com/late.mp4"}`)
+
+	createVideoPollTestTask(t, ctx, model.VideoTask{
+		UpstreamTaskID: "cgt-late-success",
+		ChannelID:      channel.ID,
+		ChannelKeyID:   channel.Keys[0].ID,
+		Status:         model.VideoTaskSubmitted,
+		SubmitTime:     time.Now().Add(-3 * time.Hour).Unix(),
+	})
+
+	runVideoTaskPollOnce()
+
+	stored := loadVideoPollTestTask(t, ctx, "cgt-late-success")
+	if stored.Status == model.VideoTaskFailure {
+		t.Fatalf("a task the upstream already finished was killed as timed out (reason %q)", stored.FailReason)
+	}
+	if stored.Status != model.VideoTaskSuccess {
+		t.Fatalf("status = %q, want %q", stored.Status, model.VideoTaskSuccess)
+	}
+	if stored.ResultURL != "https://example.com/late.mp4" {
+		t.Fatalf("result url = %q, want the upstream one (a paid result that is never handed back)", stored.ResultURL)
+	}
+	if stored.FailReason != "" {
+		t.Fatalf("fail_reason must stay empty on an upstream success, got %q", stored.FailReason)
+	}
+	if stored.FinishTime == 0 {
+		t.Fatalf("finish_time not written for the recovered task")
+	}
+	if got := stub.hitCount("cgt-late-success"); got != 1 {
+		t.Fatalf("upstream queried %d time(s) in one round, want exactly the one last look", got)
+	}
+	unfinished, err := op.VideoTaskListUnfinished(ctx, 10)
+	if err != nil {
+		t.Fatalf("list unfinished: %v", err)
+	}
+	if len(unfinished) != 0 {
+		t.Fatalf("recovered task still in the unfinished set: %+v", unfinished)
+	}
+}
+
+// 【缺陷 1 - 用例 2】本地超时，但上游说它还在跑。
+//
+// 上游还在干活，本地按时间判死就是错的：判 failure 会把这一行踢出未完成集合，
+// 结果地址再也补不回来。正确行为是推进到上游的真实状态、继续留在未完成集合里。
+func TestVideoTaskPollTimeoutKeepsRunningTaskAlive(t *testing.T) {
+	ctx := setupVideoPollTestDB(t)
+	stub := newUpstreamStub()
+	upstream := httptest.NewServer(stub.handler())
+	t.Cleanup(upstream.Close)
+
+	channel := createVideoPollTestChannel(t, ctx, upstream.URL)
+	stub.set("cgt-late-running", http.StatusOK,
+		`{"id":"cgt-late-running","status":"in_progress","progress":"80%"}`)
+
+	createVideoPollTestTask(t, ctx, model.VideoTask{
+		UpstreamTaskID: "cgt-late-running",
+		ChannelID:      channel.ID,
+		ChannelKeyID:   channel.Keys[0].ID,
+		Status:         model.VideoTaskSubmitted,
+		SubmitTime:     time.Now().Add(-3 * time.Hour).Unix(),
+	})
+
+	runVideoTaskPollOnce()
+
+	stored := loadVideoPollTestTask(t, ctx, "cgt-late-running")
+	if stored.Status == model.VideoTaskFailure {
+		t.Fatalf("upstream still working, the row must not be judged failed: %q", stored.FailReason)
+	}
+	if stored.Status != model.VideoTaskInProgress || stored.Progress != "80%" {
+		t.Fatalf("status/progress = %q/%q, want %q/80%% from the upstream", stored.Status, stored.Progress, model.VideoTaskInProgress)
+	}
+	if strings.Contains(stored.FailReason, "timed out") {
+		t.Fatalf("a running task must not carry a timeout reason: %q", stored.FailReason)
+	}
+	// 这一轮只问了一次：超时收口问过之后，同一轮不该再问一遍。
+	if got := stub.hitCount("cgt-late-running"); got != 1 {
+		t.Fatalf("upstream queried %d time(s) in one round, want 1", got)
+	}
+	if unfinished, err := op.VideoTaskListUnfinished(ctx, 10); err != nil {
+		t.Fatalf("list unfinished: %v", err)
+	} else if len(unfinished) != 1 || unfinished[0].UpstreamTaskID != "cgt-late-running" {
+		t.Fatalf("still-running task dropped from the unfinished set: %+v", unfinished)
+	}
+
+	// 第二轮也不许「先留一轮、再判死」。
+	runVideoTaskPollOnce()
+	again := loadVideoPollTestTask(t, ctx, "cgt-late-running")
+	if again.Status == model.VideoTaskFailure {
+		t.Fatalf("second round judged a still-running task failed: %q", again.FailReason)
+	}
+	if again.Status != model.VideoTaskInProgress {
+		t.Fatalf("second round status = %q, want %q", again.Status, model.VideoTaskInProgress)
+	}
+}
+
+// 【缺陷 1 - 用例 4】修过头就完了：上游问不出结论时必须**仍然**按超时判失败，
+// 否则一条永远问不动的行会永久钉在未完成集合里，每轮白烧一次上游查询。
+// 三种「问不出结论」都要覆盖：查询本身失败（5xx）、上游不认这个任务（404）、根本不可达。
+func TestVideoTaskPollTimeoutFailsWhenUpstreamGivesNoAnswer(t *testing.T) {
+	ctx := setupVideoPollTestDB(t)
+
+	stub := newUpstreamStub()
+	upstream := httptest.NewServer(stub.handler())
+	t.Cleanup(upstream.Close)
+	channel := createVideoPollTestChannel(t, ctx, upstream.URL)
+	stub.set("cgt-stale-5xx", http.StatusInternalServerError, `{"error":{"message":"boom"}}`)
+	// cgt-stale-404 刻意不注册：stub 对未知 id 回 404「no such task」。
+
+	// 根本不可达：起一个 server 立刻关掉，端口上没人监听。
+	dead := httptest.NewServer(stub.handler())
+	deadURL := dead.URL
+	dead.Close()
+	deadChannel := createVideoPollTestChannelNamed(t, ctx, "video-poll-channel-unreachable", deadURL)
+
+	createVideoPollTestTask(t, ctx, model.VideoTask{
+		UpstreamTaskID: "cgt-stale-5xx",
+		ChannelID:      channel.ID,
+		ChannelKeyID:   channel.Keys[0].ID,
+		Status:         model.VideoTaskQueued,
+		SubmitTime:     time.Now().Add(-3 * time.Hour).Unix(),
+	})
+	createVideoPollTestTask(t, ctx, model.VideoTask{
+		UpstreamTaskID: "cgt-stale-404",
+		ChannelID:      channel.ID,
+		ChannelKeyID:   channel.Keys[0].ID,
+		Status:         model.VideoTaskQueued,
+		SubmitTime:     time.Now().Add(-3 * time.Hour).Unix(),
+	})
+	createVideoPollTestTask(t, ctx, model.VideoTask{
+		UpstreamTaskID: "cgt-stale-unreachable",
+		ChannelID:      deadChannel.ID,
+		ChannelKeyID:   deadChannel.Keys[0].ID,
+		Status:         model.VideoTaskQueued,
+		SubmitTime:     time.Now().Add(-3 * time.Hour).Unix(),
+	})
+
+	runVideoTaskPollOnce()
+
+	for _, upstreamID := range []string{"cgt-stale-5xx", "cgt-stale-404", "cgt-stale-unreachable"} {
+		stored := loadVideoPollTestTask(t, ctx, upstreamID)
+		if stored.Status != model.VideoTaskFailure {
+			t.Fatalf("%s: status = %q, want %q (an unanswerable task must still time out)", upstreamID, stored.Status, model.VideoTaskFailure)
+		}
+		if !strings.Contains(stored.FailReason, "timed out") {
+			t.Fatalf("%s: fail reason = %q, want the timeout explanation", upstreamID, stored.FailReason)
+		}
 	}
 }
 
@@ -308,6 +510,66 @@ func TestVideoTaskPollIsolatesSingleTaskFailure(t *testing.T) {
 	}
 	if last.ResultURL != "https://example.com/last.mp4" {
 		t.Fatalf("result url after the failing one = %q", last.ResultURL)
+	}
+}
+
+// 【缺陷 2】首条上游「连得上但一直不返回」，后面的健康任务必须照常被推进。
+//
+// 旧行为：单条查询共用整轮 2 分钟 ctx，第一条吊住就吃光预算，后面的任务全部被
+// `if ctx.Err() != nil { return }` 跳过；下一轮 Order("id") 又从同一条开始，于是
+// 一个上游故障能持续拖住其它任务。即时 500 的用例覆盖不到这一条（500 是立刻返回的）。
+func TestVideoTaskPollSkipsHangingUpstreamAndProcessesRest(t *testing.T) {
+	ctx := setupVideoPollTestDB(t)
+	overrideVideoTaskPollTaskTimeout(t, 200*time.Millisecond)
+
+	stub := newUpstreamStub()
+	upstream := httptest.NewServer(stub.handler())
+	t.Cleanup(upstream.Close)
+
+	channel := createVideoPollTestChannel(t, ctx, upstream.URL)
+	keyID := channel.Keys[0].ID
+
+	stub.setHang("cgt-hang")
+	stub.set("cgt-healthy", http.StatusOK,
+		`{"id":"cgt-healthy","status":"success","video_url":"https://example.com/healthy.mp4"}`)
+
+	// 挂起的那条先建：它的 id 更小，Order("id") 会把它排在最前面，
+	// 正是「首条慢任务挡住后面所有任务」的布局。
+	for _, upstreamID := range []string{"cgt-hang", "cgt-healthy"} {
+		createVideoPollTestTask(t, ctx, model.VideoTask{
+			UpstreamTaskID: upstreamID,
+			ChannelID:      channel.ID,
+			ChannelKeyID:   keyID,
+			Status:         model.VideoTaskQueued,
+			SubmitTime:     time.Now().Unix(),
+		})
+	}
+
+	start := time.Now()
+	runVideoTaskPollOnce()
+	elapsed := time.Since(start)
+
+	healthy := loadVideoPollTestTask(t, ctx, "cgt-healthy")
+	if healthy.Status != model.VideoTaskSuccess {
+		t.Fatalf("task behind the hanging one = %q, want %q: one slow upstream must not stop the batch", healthy.Status, model.VideoTaskSuccess)
+	}
+	if healthy.ResultURL != "https://example.com/healthy.mp4" {
+		t.Fatalf("result url behind the hanging one = %q", healthy.ResultURL)
+	}
+	if elapsed >= videoTaskPollRoundTimeout/2 {
+		t.Fatalf("the round took %s: a single hanging upstream ate the round budget", elapsed)
+	}
+
+	// 单条超时不许把任务判死：上游可能只是慢，留在未完成集合里下一轮再问。
+	if got := stub.hitCount("cgt-hang"); got != 1 {
+		t.Fatalf("hanging task polled %d time(s) in one round, want 1", got)
+	}
+	hang := loadVideoPollTestTask(t, ctx, "cgt-hang")
+	if hang.Status != model.VideoTaskQueued {
+		t.Fatalf("hanging task status = %q, want unchanged %q (a slow upstream is not a failure)", hang.Status, model.VideoTaskQueued)
+	}
+	if hang.FailReason != "" {
+		t.Fatalf("hanging task got a fail reason: %q", hang.FailReason)
 	}
 }
 
