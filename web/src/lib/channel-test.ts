@@ -42,6 +42,16 @@ export function defaultModelTestEndpointForChannel(type: ChannelType): ModelTest
     switch (type) {
         case ChannelType.OpenAIResponse:
             return 'openai_responses';
+        case ChannelType.Volcengine:
+            // 火山渠道的出站**固定**是 /responses（见 outbound/volcengine/response.go:107
+            // `parsedUrl.Path = parsedUrl.Path + "/responses"`），它根本不发
+            // /v1/chat/completions。早先落进 default 分支按 openai_chat 测，
+            // 测的是一条这个渠道永远不会走的路径——测出来的绿是假的。
+            //
+            // 注意这里用 openai_responses 只是为了对上"真实出站是 responses 形状"，
+            // 但火山渠道的 OutboundType 是 Volcengine 而不是 OpenAIResponse，
+            // 所以 runner 里那条"codex 渠道强制流式"的分支不会误伤它。
+            return 'openai_responses';
         case ChannelType.Anthropic:
             return 'anthropic_messages';
         case ChannelType.Gemini:
@@ -51,6 +61,7 @@ export function defaultModelTestEndpointForChannel(type: ChannelType): ModelTest
             // 直接拒收（EmbeddingOutbound 只认 EmbeddingInput）。
             return 'openai_embeddings';
         default:
+            // OpenAI Chat 与 Custom OpenAI Chat 都是 chat 形状。
             return 'openai_chat';
     }
 }
