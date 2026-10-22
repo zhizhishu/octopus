@@ -506,7 +506,12 @@ func applyReasoningProjection(request *model.InternalLLMRequest) {
 	if request == nil {
 		return
 	}
-	effort := model.NormalizeEffortKey(request.ReasoningEffort)
+	// 🔴 必须走 CanonicalEffort（含同义别名归并），不能只用 NormalizeEffortKey。
+	// 后者只剥分隔符：客户端发 "extra-high" 会变成 "extrahigh"，而这个值在
+	// :566 会原样写到上游的 reasoning_effort 上——上游不认识它，要么静默忽略
+	// （思考失效）要么 400。同文件的 :681 与 :747 早就走的是 CanonicalEffort，
+	// 只有这一处漏了，于是"换个通道强度就变"又被引回来。
+	effort := model.CanonicalEffort(request.ReasoningEffort)
 	budget := int64(0)
 	if request.ReasoningBudget != nil && *request.ReasoningBudget > 0 {
 		budget = *request.ReasoningBudget

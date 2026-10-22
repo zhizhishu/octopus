@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/zhizhishu/octopus/internal/db"
 	"github.com/zhizhishu/octopus/internal/model"
@@ -301,57 +302,75 @@ func TestVideoTaskStatusCASTerminalCannotRegress(t *testing.T) {
 	}
 }
 
-// 【契约·当前未满足，t.Skip】终态是单向门：from 恰好等于行当前状态（success）时，
-// 把 to 写成非终态（in_progress）也必须被拒绝，行不许变。
+// 终态回退在**生产里到不了**，所以 CAS 不加方向校验——这条测试钉的就是「到不了」。
 //
-// 上面那条 TestVideoTaskStatusCASTerminalCannotRegress 靠的是「from 已过期」，
-// 也就是把方向问题交回了调用方的诚实度。而 VideoTaskStatusCAS 本身**没有**方向校验：
-// 它的 WHERE 只有 `id = ? AND status = from`，所以 from=success → to=in_progress
-// 会真的把一行终态写回非终态（实测 ok=true、status 变成 in_progress、finish_time 保留）。
-// 本条测试就是那条契约的表达；生产侧一旦补上方向校验（to 为非终态且行已是终态时拒绝），
-// 删掉下面的 t.Skip 即转绿。
-func TestVideoTaskStatusCASTerminalRegressionAttemptRejected(t *testing.T) {
-	t.Skip("已知生产缺陷，待 supervisor 决定是否给 op.VideoTaskStatusCAS 加方向校验：" +
-		"当前 WHERE 只校验 from=行当前状态，from=success → to=in_progress 会成功把终态行写回非终态。" +
-		"本条表达的是应然契约，生产代码修好后删除这行 Skip。")
-
+// 背景：VideoTaskStatusCAS 的 WHERE 只有 `id = ? AND status = from`，没有方向校验，
+// 因此 from=success → to=in_progress 单看 CAS 是会成功的。曾有一条 t.Skip 掉的测试
+// 把这写成「已知生产缺陷」，等 supervisor 决定要不要补方向校验。决定是**不补**，
+// 理由是补了等于给不会发生的事写代码：
+//
+//   - 三个生产调用点（video_poll.go:385/398/494）传的 from 一律取自
+//     VideoTaskListUnfinished 或 VideoTaskListStale 取回的行；
+//   - 这两条查询都带 videoTaskNotTerminalWhere，终态行根本进不来；
+//   - 所以生产里不存在 from=终态 的调用，越权回退没有路径。
+//
+// 下面两个断言守的就是这个前提本身。哪天有人把那两条查询的终态过滤去掉，
+// 这里会先红——比事后补方向校验更早、也更准（方向校验只能挡住症状）。
+func TestVideoTaskTerminalRowsNeverEnterThePoller(t *testing.T) {
 	newVideoTaskTestDB(t)
 	ctx := context.Background()
 
-	task := &model.VideoTask{UpstreamTaskID: "cgt-terminal-regress", Status: model.VideoTaskInProgress}
-	if err := VideoTaskCreate(ctx, task); err != nil {
+	finished := &model.VideoTask{UpstreamTaskID: "cgt-terminal-done", Status: model.VideoTaskInProgress}
+	if err := VideoTaskCreate(ctx, finished); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if ok, err := VideoTaskStatusCAS(ctx, task.ID, model.VideoTaskInProgress, model.VideoTaskSuccess, map[string]any{
+	if ok, err := VideoTaskStatusCAS(ctx, finished.ID, model.VideoTaskInProgress, model.VideoTaskSuccess, map[string]any{
 		"finish_time": int64(1700000999),
 		"result_url":  "https://example.com/done.mp4",
 	}); err != nil || !ok {
 		t.Fatalf("advance to success: ok=%v err=%v", ok, err)
 	}
 
-	// from 就是行当前的状态：这次没有「过期」可以挡，能不能拒绝全靠生产侧有没有方向校验。
-	ok, err := VideoTaskStatusCAS(ctx, task.ID, model.VideoTaskSuccess, model.VideoTaskInProgress, map[string]any{
-		"progress": "99%",
-	})
-	if err != nil {
-		t.Fatalf("regression CAS err: %v", err)
+	failed := &model.VideoTask{UpstreamTaskID: "cgt-terminal-failed", Status: model.VideoTaskInProgress}
+	if err := VideoTaskCreate(ctx, failed); err != nil {
+		t.Fatalf("create: %v", err)
 	}
-	if ok {
-		t.Fatalf("terminal -> non-terminal CAS was accepted; a finished task can be walked backwards")
+	if ok, err := VideoTaskStatusCAS(ctx, failed.ID, model.VideoTaskInProgress, model.VideoTaskFailure, map[string]any{
+		"finish_time": int64(1700000998),
+		"fail_reason": "upstream rejected",
+	}); err != nil || !ok {
+		t.Fatalf("advance to failure: ok=%v err=%v", ok, err)
 	}
 
-	stored, err := VideoTaskGetByUpstreamID(ctx, "cgt-terminal-regress")
-	if err != nil || stored == nil {
-		t.Fatalf("read back: %v %v", stored, err)
+	running := &model.VideoTask{UpstreamTaskID: "cgt-terminal-running", Status: model.VideoTaskInProgress}
+	if err := VideoTaskCreate(ctx, running); err != nil {
+		t.Fatalf("create: %v", err)
 	}
-	if stored.Status != model.VideoTaskSuccess {
-		t.Fatalf("status = %q, want %q (terminal regressed)", stored.Status, model.VideoTaskSuccess)
+
+	unfinished, err := VideoTaskListUnfinished(ctx, 100)
+	if err != nil {
+		t.Fatalf("list unfinished: %v", err)
 	}
-	if stored.Progress != "" {
-		t.Fatalf("progress = %q, want untouched", stored.Progress)
+	for _, task := range unfinished {
+		if model.IsVideoTaskTerminal(task.Status) {
+			t.Fatalf("terminal task %q (status %q) leaked into the poller entry list; "+
+				"the CAS callers take `from` from here, so a terminal `from` would be reachable",
+				task.UpstreamTaskID, task.Status)
+		}
 	}
-	if stored.FinishTime != 1700000999 {
-		t.Fatalf("finish_time = %d, want 1700000999 (the rejected write landed)", stored.FinishTime)
+	if len(unfinished) != 1 || unfinished[0].UpstreamTaskID != "cgt-terminal-running" {
+		t.Fatalf("unfinished = %+v, want only cgt-terminal-running", unfinished)
+	}
+
+	// 超时扫描那条入口同样只取「未进终态」的行。
+	stale, err := VideoTaskListStale(ctx, time.Now().Unix()+60, 100)
+	if err != nil {
+		t.Fatalf("list stale: %v", err)
+	}
+	for _, task := range stale {
+		if model.IsVideoTaskTerminal(task.Status) {
+			t.Fatalf("terminal task %q leaked into the timeout sweep", task.UpstreamTaskID)
+		}
 	}
 }
 

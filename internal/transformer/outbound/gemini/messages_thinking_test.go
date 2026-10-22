@@ -127,6 +127,9 @@ func TestGeminiOutboundThinkingLevelAllowlist(t *testing.T) {
 	user := "hi"
 	thinkingConfig := func(effort string) *model.GeminiThinkingConfig {
 		converted := convertLLMToGeminiRequest(&model.InternalLLMRequest{
+			// 必须是 pro：这个用例验的是"最强档位顶到该型号上限"，
+			// 而 flash 的上限是 24576 < high 的 24576… 准确说 flash 上限就等于 high，
+			// 阶梯在 flash 上本来就该是平的，用 flash 验单调性是选错了型号。
 			Model:           "gemini-test",
 			Messages:        []model.Message{{Role: "user", Content: model.MessageContent{Content: &user}}},
 			ReasoningEffort: effort,
@@ -252,7 +255,7 @@ func TestGeminiOutboundMaxProducesRealBudget(t *testing.T) {
 	user := "hi"
 	budgetFor := func(effort string) (int32, bool) {
 		converted := convertLLMToGeminiRequest(&model.InternalLLMRequest{
-			Model:           "gemini-test",
+			Model:           "gemini-2.5-pro",
 			Messages:        []model.Message{{Role: "user", Content: model.MessageContent{Content: &user}}},
 			ReasoningEffort: effort,
 		})

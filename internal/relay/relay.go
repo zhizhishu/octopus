@@ -110,15 +110,24 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 	// 创建实时请求状态，立即推送 "running" 给 SSE 订阅者
 	requestState := newRequestStateWithCancel(requestModel, requestEndpoint, userID, apiKeyID, relayCancel)
 
-	baseMessages := append([]model.Message(nil), internalRequest.Messages...)
+	base := attemptBase{
+		messages:         append([]model.Message(nil), internalRequest.Messages...),
+		reasoningEffort:  internalRequest.ReasoningEffort,
+		reasoningBudget:  internalRequest.ReasoningBudget,
+		thinking:         cloneRawJSONMessage(internalRequest.Thinking),
+		enableThinking:   internalRequest.EnableThinking,
+		thinkingBudget:   internalRequest.ThinkingBudget,
+		adaptiveThinking: internalRequest.AdaptiveThinking,
+	}
+
 	// The responses history bridges (chat / Anthropic) and codex shape clear
 	// PreviousResponseID / ResponsesInputRaw on the SHARED internalRequest once they
 	// inline a prior turn's history. Capture the client's originals so every
 	// retry/failover attempt is rebuilt from the real request rather than a
 	// context-stripped one — without this, a 2nd attempt sees a nil previous_response_id,
 	// skips the bridge entirely, and silently forwards only the incremental turn.
-	basePreviousResponseID := internalRequest.PreviousResponseID
-	baseResponsesInputRaw := cloneRawJSONMessage(internalRequest.ResponsesInputRaw)
+	base.previousResponseID = internalRequest.PreviousResponseID
+	base.responsesInputRaw = cloneRawJSONMessage(internalRequest.ResponsesInputRaw)
 	// baseResponsesInstructions is the attempt-start copy of the Responses top-level
 	// instructions. applyInboundRedaction rewrites it to placeholders on the SHARED
 	// internalRequest, so each attempt/key/transient retry must be rebuilt from this
@@ -126,7 +135,7 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 	// non-nil "" sentinel stays non-nil) — otherwise a failed attempt's placeholder
 	// instructions ride into the next channel's session, whose flags may not cover the
 	// token (audit #5).
-	baseResponsesInstructions := internalRequest.ResponsesInstructions
+	base.responsesInstructions = internalRequest.ResponsesInstructions
 
 	// Episode gate (见 rescue_episode.go): 在正式遍历开始前，仅凭「原始入站请求」判定这一轮
 	// 用户消息是否允许跑机器救援。身份可识别时必得一个可观测的 lease；已被压制(同名消息已耗尽
@@ -443,11 +452,7 @@ attemptChannels:
 		// prompt/model preparation on an independent copy, before goroutines start.
 		if channel.RaceMode && req.interventionKeyID == 0 && !isVideoRequest(req) &&
 			!internalRequest.IsEmbeddingRequest() && !internalRequest.IsImageGenerationRequest() {
-			internalRequest.Model = item.ModelName
-			internalRequest.Messages = append([]model.Message(nil), baseMessages...)
-			internalRequest.PreviousResponseID = basePreviousResponseID
-			internalRequest.ResponsesInputRaw = cloneRawJSONMessage(baseResponsesInputRaw)
-			internalRequest.ResponsesInstructions = baseResponsesInstructions
+			base.restore(internalRequest, item.ModelName)
 			req.internalRequest = internalRequest
 			contenders, peers := buildGroupRaceContenders(c.Request.Context(), req, item, channel, availableKeys, routeResult, requestEndpoint)
 			if len(contenders) == 0 {
@@ -531,11 +536,7 @@ attemptChannels:
 			// so without this a second key would see the already-mapped name, miss the
 			// mapping, leave modelMapped=false, and skip the client-name restore — leaking
 			// the upstream model name to the client.
-			internalRequest.Model = item.ModelName
-			internalRequest.Messages = append([]model.Message(nil), baseMessages...)
-			internalRequest.PreviousResponseID = basePreviousResponseID
-			internalRequest.ResponsesInputRaw = cloneRawJSONMessage(baseResponsesInputRaw)
-			internalRequest.ResponsesInstructions = baseResponsesInstructions
+			base.restore(internalRequest, item.ModelName)
 			promptSnapshot := applyPromptOverrides(internalRequest, routeResult.AccessPlan, routeResult.AccessRouteRule, channel)
 			if len(promptSnapshot.Sources) > 0 {
 				clearResponsesRawPromptShape(internalRequest)
@@ -855,11 +856,7 @@ attemptChannels:
 						iter = interventionIter
 						req.stickyEnabled = false
 						triedReturnGroup = false
-						internalRequest.Model = requestModel
-						internalRequest.Messages = append([]model.Message(nil), baseMessages...)
-						internalRequest.PreviousResponseID = basePreviousResponseID
-						internalRequest.ResponsesInputRaw = cloneRawJSONMessage(baseResponsesInputRaw)
-						internalRequest.ResponsesInstructions = baseResponsesInstructions
+						base.restore(internalRequest, requestModel)
 						goto runIterator
 					}
 					// If the chosen channel had 0 items, remain in intervention loop
@@ -890,11 +887,7 @@ attemptChannels:
 					req.stickyEnabled = freshSticky
 					req.interventionKeyID = 0
 					triedReturnGroup = false
-					internalRequest.Model = requestModel
-					internalRequest.Messages = append([]model.Message(nil), baseMessages...)
-					internalRequest.PreviousResponseID = basePreviousResponseID
-					internalRequest.ResponsesInputRaw = cloneRawJSONMessage(baseResponsesInputRaw)
-					internalRequest.ResponsesInstructions = baseResponsesInstructions
+					base.restore(internalRequest, requestModel)
 					_ = intervention.UpdateAttempts(pendingInterventionID, allAttempts, lastErrStr)
 					goto runIterator
 				}
@@ -1606,6 +1599,45 @@ func cloneRawJSONMessage(raw json.RawMessage) json.RawMessage {
 	out := make([]byte, len(raw))
 	copy(out, raw)
 	return out
+}
+
+// attemptBase 是「这一轮客户端真正要什么」的不可变快照，供每次
+// channel / key / 重试尝试还原共享的 internalRequest。
+//
+// 为什么需要它：多个下游适配层会**就地**改写共享 internalRequest
+// （codex_shape 为兼容 GPT-5.6 改 ReasoningEffort；chat outbound 的
+// applyReasoningProjection 改成 "minimal" 或归一值；responses 桥接清
+// PreviousResponseID）。这些改写只对「那一跳」成立。如果不还原，首跳为兼容
+// 而改的值会骑到下一跳：客户端说"别思考"，首跳 codex 改成 low 失败后，
+// 次跳 Qwen 会按 low 真的开思考——日志里 reasoning_effort 还显示 none，
+// 用户完全看不出来。
+type attemptBase struct {
+	messages              []model.Message
+	previousResponseID    *string
+	responsesInputRaw     json.RawMessage
+	responsesInstructions *string
+	reasoningEffort       string
+	reasoningBudget       *int64
+	thinking              json.RawMessage
+	enableThinking        *bool
+	thinkingBudget        *int64
+	adaptiveThinking      bool
+}
+
+// restore 把共享 internalRequest 还原到「这一轮客户端真正要什么」。
+// model 由各调用点自己决定（有的要还原成请求名，有的要还原成映射名）。
+func (b *attemptBase) restore(internalRequest *model.InternalLLMRequest, requestModel string) {
+	internalRequest.Model = requestModel
+	internalRequest.Messages = append([]model.Message(nil), b.messages...)
+	internalRequest.PreviousResponseID = b.previousResponseID
+	internalRequest.ResponsesInputRaw = cloneRawJSONMessage(b.responsesInputRaw)
+	internalRequest.ResponsesInstructions = b.responsesInstructions
+	internalRequest.ReasoningEffort = b.reasoningEffort
+	internalRequest.ReasoningBudget = b.reasoningBudget
+	internalRequest.Thinking = cloneRawJSONMessage(b.thinking)
+	internalRequest.EnableThinking = b.enableThinking
+	internalRequest.ThinkingBudget = b.thinkingBudget
+	internalRequest.AdaptiveThinking = b.adaptiveThinking
 }
 
 func cloneRawJSONMessages(items []json.RawMessage) []json.RawMessage {

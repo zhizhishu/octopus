@@ -18,7 +18,7 @@ func TestGeminiBudgetLadderNotFlattenedBySharedTable(t *testing.T) {
 	ladder := []string{"low", "medium", "high", "xhigh"}
 	prev := int32(-1)
 	for _, effort := range ladder {
-		got, ok := reasoningToThinkingBudget(effort)
+		got, ok := reasoningToThinkingBudget(effort, "gemini-2.5-pro")
 		if !ok {
 			t.Fatalf("effort %q 应当有预算", effort)
 		}
@@ -28,15 +28,15 @@ func TestGeminiBudgetLadderNotFlattenedBySharedTable(t *testing.T) {
 		prev = got
 	}
 
-	xhigh, _ := reasoningToThinkingBudget("xhigh")
-	max, _ := reasoningToThinkingBudget("max")
+	xhigh, _ := reasoningToThinkingBudget("xhigh", "gemini-2.5-pro")
+	max, _ := reasoningToThinkingBudget("max", "gemini-2.5-pro")
 	if xhigh != max {
 		t.Fatalf("xhigh/max 应共用 Gemini 上限: %d vs %d", xhigh, max)
 	}
 
 	// Gemini 侧不得超过自己的上限，否则上游会拒。
 	for _, effort := range []string{"low", "medium", "high", "xhigh", "max"} {
-		if got, _ := reasoningToThinkingBudget(effort); got > 32768 {
+		if got, _ := reasoningToThinkingBudget(effort, "gemini-2.5-pro"); got > 32768 {
 			t.Fatalf("effort %q 的预算 %d 超过 Gemini 上限 32768", effort, got)
 		}
 	}
@@ -49,7 +49,7 @@ func TestGeminiKnowsEverySharedTableTier(t *testing.T) {
 		if effort == "minimal" || effort == "none" {
 			continue // 这两个是"关掉思考"，本就不发配置
 		}
-		if _, ok := reasoningToThinkingBudget(effort); !ok {
+		if _, ok := reasoningToThinkingBudget(effort, "gemini-2.5-pro"); !ok {
 			t.Fatalf("共享表里有档位 %q，Gemini 却当成未知、不发 thinkingConfig", effort)
 		}
 	}

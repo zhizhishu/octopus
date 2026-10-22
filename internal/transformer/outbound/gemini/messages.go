@@ -141,8 +141,30 @@ const (
 	geminiBudgetLow    = 1024
 	geminiBudgetMedium = 4096
 	geminiBudgetHigh   = 24576
-	geminiBudgetTop    = 32768 // Gemini 侧上限；xhigh 与 max 都在这里
+	// Gemini 侧上限**分型号**，不是一个 32768 通吃。
+	//
+	// 依据（参考项目 registry/models/models.json，抄它不猜）：
+	//   gemini-2.5-pro   thinking.max = 32768
+	//   gemini-2.5-flash thinking.max = 24576  (且 zero_allowed=true)
+	//
+	// 曾经这里只有一个 32768，于是 xhigh/max 在 flash 上会发 32768 —— 超出上游
+	// 允许的上限，请求直接 400；用户看到的是"想开高思考就报错"，而不是像 pro 上
+	// 那样正常工作。
+	geminiBudgetTopPro   = 32768
+	geminiBudgetTopFlash = 24576
 )
+
+// geminiBudgetCeiling 返回该模型允许的最大 thinkingBudget。
+//
+// 只有 Pro 系列能吃 32768；其余（flash / flash-lite / 未知）一律按 24576 保守取值——
+// 发小了只是思考少一点，发大了是 400 直接失败，两个方向的代价不对称。
+func geminiBudgetCeiling(modelName string) int32 {
+	name := strings.ToLower(modelName)
+	if strings.Contains(name, "pro") {
+		return geminiBudgetTopPro
+	}
+	return geminiBudgetTopFlash
+}
 
 // reasoningToThinkingBudget 把推理强度换算成 Gemini 的 thinkingBudget。
 //
@@ -150,8 +172,13 @@ const (
 // **每一档在 Gemini 上具体给多少 token** 由本文件的量级决定。
 // 曾经这两件事都在本文件里手写，导致同一个 effort 在 Anthropic 与 Gemini
 // 两条出站路径上强度不一致，且新增档位时要改两处、漏一处就静默降级。
-func reasoningToThinkingBudget(effort string) (int32, bool) {
-	key := strings.TrimSpace(strings.ToLower(effort))
+func reasoningToThinkingBudget(effort string, modelName string) (int32, bool) {
+	// 🔴 必须走 CanonicalEffort：它会剥分隔符**并归并同义别名**。
+	// 只用 TrimSpace+ToLower 会漏掉别名表——客户端写 "x-high" / "extra-high" /
+	// "very-high" 时，下面的 EffortBudget 查表查不到，于是整个 thinkingConfig
+	// 被丢掉（思考直接关掉），而不是像用户期望的那样降到 xhigh。
+	// 火山(volcengine/response.go)与 GLM 早就走共享判据了，Gemini 是最后一处手写。
+	key := model.CanonicalEffort(effort)
 	if key == "" {
 		return 0, false
 	}
@@ -172,9 +199,11 @@ func reasoningToThinkingBudget(effort string) (int32, bool) {
 	case "high":
 		return geminiBudgetHigh, true
 	default:
-		// xhigh / max，以及将来任何比 high 更强的档位：都顶到 Gemini 上限。
+		// xhigh / max，以及将来任何比 high 更强的档位：都顶到该模型的上限。
 		// 用 default 而不是把 xhigh/max 写死，新增档位不必再回来改这里。
-		return geminiBudgetTop, true
+		//
+		// 上限按型号取（见 geminiBudgetCeiling）：flash 只到 24576，发 32768 会 400。
+		return geminiBudgetCeiling(modelName), true
 	}
 }
 
@@ -372,7 +401,7 @@ func convertLLMToGeminiRequest(request *model.InternalLLMRequest) *model.GeminiG
 		// Only build a thinkingConfig when the effort actually maps onto a
 		// budget. An unmapped effort (minimal/none/…) now yields no
 		// thinkingConfig at all instead of a bogus thinkingBudget:-1.
-		if budget, ok := reasoningToThinkingBudget(request.ReasoningEffort); ok {
+		if budget, ok := reasoningToThinkingBudget(request.ReasoningEffort, request.Model); ok {
 			config.ThinkingConfig = &model.GeminiThinkingConfig{
 				ThinkingBudget:  &budget,
 				IncludeThoughts: includeThoughtsFromRequest(request),

@@ -246,3 +246,52 @@ func TestMigration014FullyReconciledPassIsCheapNoOp(t *testing.T) {
 			beforeRows, afterRows, beforeMaxID, afterMaxID)
 	}
 }
+
+// 回填失败**不许**把服务挡在门外。
+//
+// 框架契约(migrate.go:17-19)：AlwaysRun 的 Up MUST return nil — not an error —
+// when it intentionally can't finish yet, so a transient skip never aborts startup。
+// 而实际链条是：Up 返回 err → runMigrationsWithRecord 记 failed 并 return err
+// (migrate.go:117-121) → AfterAutoMigrate return err → db.InitDB return err
+// (db.go:101) → cmd/start.go 只 log.Errorf 然后 return —— 进程退出，服务起不来。
+//
+// 一个可降级的回填故障(库忙、连接抖动、列被改)不该让整个服务下线。
+func TestMigration014FillFailureDoesNotBlockStartup(t *testing.T) {
+	db := newMigrateDB(t)
+
+	seed := &model.RelayLog{RequestModelName: "gpt-x", UserName: "alice"}
+	if err := db.Create(seed).Error; err != nil {
+		t.Fatalf("seed relay_log: %v", err)
+	}
+
+	var m Migration
+	for _, candidate := range afterAutoMigrations {
+		if candidate.Version == 14 {
+			m = candidate
+			break
+		}
+	}
+	if m.Up == nil {
+		t.Skip("migration 014 is not registered in this build")
+	}
+
+	// 把回填**读批那条 Select 用到的一列**删掉。
+	//
+	// 这条 Select 显式点名了 session_key 等列，缺任何一列都会让读批那步报错——
+	// 这正是"回填可降级失败"的真实形态（列被改、方言差异、库忙等价物）。
+	// 刻意不动探测那一步：探测只用到 l.id / s.id，保持它成功，才能真正走到读批分支。
+	//
+	// 为什么不用"先把索引表造坏"：Up 开头就 AutoMigrate 建表，坏表会被顺手修好，
+	// 于是根本走不到失败分支——那样的测试永远绿，是空气测试（栽过一次）。
+	if err := db.Migrator().DropColumn(&model.RelayLog{}, "session_key"); err != nil {
+		t.Fatalf("drop session_key to force a backfill read failure: %v", err)
+	}
+
+	if err := m.Up(db); err != nil {
+		t.Fatalf("migration 014 must return nil when the backfill cannot finish "+
+			"(a returned error aborts startup), got: %v", err)
+	}
+	if !m.AlwaysRun {
+		t.Fatal("migration 014 must stay AlwaysRun so the backfill resumes on the next startup")
+	}
+}

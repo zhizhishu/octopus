@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/utils/log"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -80,11 +81,20 @@ func migrateBackfillRelayLogSearchIndex(db *gorm.DB) error {
 			ORDER BY l.id
 			LIMIT ?`, batchSize).Scan(&ids).Error
 		if err != nil {
-			// 探测缺失行这一步失败不该阻断启动(迁移层没有 logger, 抛错会把服务
-			// 挡在门外), 但也绝不能记成 success —— 那等于宣称"已经补齐了"。
-			// AlwaysRun 下记 failed 与记 success 的实际效果一样(下次启动都会重跑),
-			// 区别只在 migration_records 里留下的证据是真的。
-			return fmt.Errorf("probe missing rows: %w", err)
+			// 🔴 返回 nil，不是 err。
+			//
+			// 框架契约(migrate.go:17-19)原文：Up MUST be idempotent and MUST return
+			// nil — not an error — when it intentionally can't finish yet, so a
+			// transient skip never aborts startup. 而 runMigrationsWithRecord 一收到
+			// 非 nil 就记 failed 并 return err(migrate.go:117-121)，AfterAutoMigrate
+			// 再 return err，db.InitDB 再 return err，cmd/start.go 只 log.Errorf 然后
+			// return —— 进程直接退出，服务起不来。
+			//
+			// 一次可降级的回填故障(库忙、连接抖动、进程被杀)不该让整个服务下线。
+			// 续跑能力本来就由 AlwaysRun 提供：下次启动会再试一遍，不需要用错误去唤醒。
+			// 这里记 warn 留证据，然后放行。
+			log.Warnf("migrate 014: probe missing rows failed, will retry next startup: %v", err)
+			return nil
 		}
 		if len(ids) == 0 {
 			return nil
@@ -99,7 +109,8 @@ func migrateBackfillRelayLogSearchIndex(db *gorm.DB) error {
 				"upstream_response_model, channel_name, request_endpoint, request_path, "+
 				"session_key, error, error_code, request_user_agent, channel_id",
 		).Where("id IN ?", ids).Find(&src).Error; err != nil {
-			return fmt.Errorf("read relay_logs batch: %w", err)
+			log.Warnf("migrate 014: read relay_logs batch failed, will retry next startup: %v", err)
+			return nil
 		}
 		for _, l := range src {
 			rows = append(rows, model.RelayLogSearchIndex{
@@ -125,7 +136,8 @@ func migrateBackfillRelayLogSearchIndex(db *gorm.DB) error {
 		// 只插不存在的: OnConflict DoNothing 在 sqlite/mysql/pg 上都可用,
 		// 避免并发写入路径同时插入时撞主键。
 		if err := db.Clauses(clause.OnConflict{DoNothing: true}).CreateInBatches(rows, 500).Error; err != nil {
-			return fmt.Errorf("insert relay_log_search batch: %w", err)
+			log.Warnf("migrate 014: insert relay_log_search batch failed, will retry next startup: %v", err)
+			return nil
 		}
 		if len(ids) < batchSize {
 			return nil

@@ -430,3 +430,27 @@ func TestExtraHighAliasLandsOnXHighBudget(t *testing.T) {
 		t.Errorf("extra-high 在 kimi-k3 上应夹到 max，实际 %q", thinking["effort"])
 	}
 }
+
+// DeepSeek 支线走的是另一条路（:566 把 normalization 后的值**原样**写到上游的
+// reasoning_effort），所以它有自己的一处坑：这里如果只剥分隔符不过别名表，
+// 客户端写 "extra-high" 会变成 "extrahigh" 直接上线——上游不认识，要么静默
+// 忽略（思考整段失效）要么 400。上面那条 kimi 用例走的是 CanonicalEffort，
+// 覆盖不到这里，于是这个漏改一直没被测出来。
+func TestDeepSeekSendsCanonicalEffortNotAliasSpelling(t *testing.T) {
+	cases := map[string]string{
+		"extra-high": "xhigh",
+		"extra_high": "xhigh",
+		"very-high":  "xhigh",
+		"extra-low":  "low",
+	}
+	for input, want := range cases {
+		body := chatRequestBody(t, &model.InternalLLMRequest{
+			Model: "deepseek-v4", ReasoningEffort: input, Messages: userMessages(),
+		})
+		got, _ := body["reasoning_effort"].(string)
+		if got != want {
+			t.Errorf("reasoning_effort %q: 出站 = %q, want %q（别名必须归并，不能把 %q 发上线）",
+				input, got, want, got)
+		}
+	}
+}
