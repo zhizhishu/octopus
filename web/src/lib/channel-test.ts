@@ -101,17 +101,23 @@ export function shouldForceChannelTestStream(args: {
     cloakShape?: string;
     anthropicContext1M?: boolean;
 }): boolean {
-    if (args.models) {
-        const models = Array.isArray(args.models) ? args.models : [args.models];
-        if (models.some(isStreamRequiredModel)) return true;
-    }
-    // 🔴 强制流式的唯一来源是"真 codex 渠道"，而后端只对 OutboundTypeOpenAIResponse
-    // 这么做（runner.go:763）。它**不**看端点名，也**不**看 cloak.shape：
-    // 一个 shape=codex 的普通 Chat 渠道，后端不会强制流式。
-    // 早先这里写 `endpoint === 'openai_responses' → true`，导致把火山渠道（出站
-    // /responses 但不是 codex）的流式开关锁死，测不了非流式。
+    // 🔴 这里只返回"用户无权关闭流式"的情形，必须逐条对应 runner 里**真正覆盖
+    // 显式 Stream=false** 的分支。审计三轮把这里越修越窄，最后收敛成两条：
+    //
+    //   1. Responses 渠道（OutboundTypeOpenAIResponse）—— runner.go:763-772
+    //      无条件 `stream := true`，不看端点、不看 shape。
+    //   2. cloak 生效的 Anthropic 渠道 —— runner.go:1241-1254
+    //      forceClaudeModelTestBodyShape 里无条件 `stream := true`，其调用点是
+    //      `if shouldApplyChannelCloak(channel.Cloak)`。
+    //
+    // **不再包含**的两类，都是没有后端对应的：
+    //   - 模型名（`isStreamRequiredModel`：gpt-5.5 / [1m] / context-1m）：
+    //     runner.go:911-914 明确"显式给了 stream 就听它的"，:959 的
+    //     `if !streamExplicit { stream = true }` 只是**未指定时默认流式**，
+    //     客户端仍可传 false。原来在这里锁死，等于把一个后端允许的选项藏起来。
+    //   - `anthropic_messages && anthropicContext1M`：1M helper
+    //     (runner.go:1240-1254) 的流式来自上面的 cloak 门，不来自 1M 本身。
     if (args.channelType === ChannelType.OpenAIResponse) return true;
-    if (args.endpoint === 'anthropic_messages' && !!args.anthropicContext1M) return true;
     if (args.channelType === ChannelType.Anthropic && channelCloakApplies(args.cloakMode)) return true;
     // 渠道类型未知（老调用方）：沿用旧行为，避免行为突变。
     if ((args.channelType === undefined || args.channelType === null) &&
@@ -149,10 +155,24 @@ export function channelTestIdentityFor(
     if (channelType === ChannelType.Anthropic) return 'claude';
     if (channelType === ChannelType.OpenAIResponse) return 'codex';
 
-    // 4. Chat 族由 cloak.shape 显式 opt-in，否则通用。
-    const shape = (cloak?.shape ?? '').toLowerCase().trim();
-    if (shape === 'claude') return 'claude';
-    if (shape === 'codex') return 'codex';
+    // 4. **只有 OpenAI Chat / Custom OpenAI Chat 两类**读 cloak.shape。
+    //
+    // header_defaults.go:210 的 `case OutboundTypeOpenAIChat,
+    // OutboundTypeCustomOpenAIChat` 才进 `switch chatChannelShape(channel)`；
+    // Gemini / Volcengine / Embedding 全部落到 :239 的 default，直接走
+    // applyGenericHeaderDefaultsForChannel，根本不看 shape。
+    // channelTLSFace（:279-291）同样只让这两类读 shape。
+    //
+    // 所以不能"对剩下的渠道一律读 shape"：Form.tsx:766 切渠道类型时保留原
+    // cloak_shape，一个配过 codex 的 Chat 渠道改成火山后，shape 还留在配置里，
+    // 前端会显示 codex 而实际发的是通用 UA —— 又一次界面撒谎。
+    const isChatFamily = channelType === ChannelType.OpenAIChat ||
+        channelType === ChannelType.CustomOpenAIChat;
+    if (isChatFamily) {
+        const shape = (cloak?.shape ?? '').toLowerCase().trim();
+        if (shape === 'claude') return 'claude';
+        if (shape === 'codex') return 'codex';
+    }
 
     // 端点只影响"测的是什么协议"，不影响身份族——除非渠道类型未知
     // （老调用方），此时沿用旧的按端点推断，避免行为突变。

@@ -19,7 +19,8 @@ const ChannelType = {
 const { defaultModelTestEndpointForChannel, shouldForceChannelTestStream, channelTestIdentityFor } =
     load('src/lib/channel-test.ts', {
         '@/api/endpoints/channel': { ChannelType },
-        './model-aliases': { isStreamRequiredModel: () => false },
+        // 用真实语义的迷你替身：gpt-5.5 / [1m] / context-1m 命中。
+        './model-aliases': { isStreamRequiredModel: (m) => /^gpt-5\.5(?:$|[-_:])/i.test((m || '').trim()) || /\[1m\]|context-1m/i.test(m || '') },
     });
 
 /**
@@ -135,4 +136,70 @@ test('cloak 关掉时强制通用身份，优先于一切', () => {
     assert.equal(channelTestIdentityFor('openai_chat', ChannelType.OpenAIChat, { mode: 'never', shape: 'codex' }), 'generic');
     // auto / always 仍按正常判据。
     assert.equal(channelTestIdentityFor('openai_responses', ChannelType.OpenAIResponse, { mode: 'auto' }), 'codex');
+});
+
+/**
+ * P2-2 反例 1：模型名不该锁流式。
+ *
+ * runner.go:911-914 明确"显式给了 stream 就听它的"；:959 的
+ * `if !streamExplicit { stream = true }` 只是**未指定时默认流式**，客户端仍可传
+ * false。原来 here 按模型名锁死，等于把一个后端允许的选项藏起来。
+ */
+test('模型名不会锁死流式开关（后端允许非流式）', () => {
+    for (const m of ['gpt-5.5', 'opus[1m]', 'some-context-1m-model']) {
+        assert.equal(
+            shouldForceChannelTestStream({
+                models: [m],
+                endpoint: 'openai_chat',
+                channelType: ChannelType.OpenAIChat,
+            }),
+            false,
+            `模型 ${m} 不该锁流式`,
+        );
+    }
+});
+
+/**
+ * P2-2 反例 2：Anthropic + 1M 但 cloak 关掉，不该锁流式。
+ *
+ * 1M helper（runner.go:1240-1254）的流式来自 cloak 门（调用点是
+ * `if shouldApplyChannelCloak(...)`），不来自 1M 本身。
+ */
+test('cloak 关掉的 Anthropic 渠道即使开 1M 也不锁流式', () => {
+    assert.equal(
+        shouldForceChannelTestStream({
+            endpoint: 'anthropic_messages',
+            channelType: ChannelType.Anthropic,
+            cloakMode: 'never',
+            anthropicContext1M: true,
+        }),
+        false,
+    );
+    // cloak 生效时才锁。
+    assert.equal(
+        shouldForceChannelTestStream({
+            endpoint: 'anthropic_messages',
+            channelType: ChannelType.Anthropic,
+            cloakMode: 'auto',
+            anthropicContext1M: true,
+        }),
+        true,
+    );
+});
+
+/**
+ * P2-1 反例：非 Chat 族渠道上的残留 cloak.shape 必须被忽略。
+ *
+ * header_defaults.go:210 只有 OpenAIChat / CustomOpenAIChat 进
+ * `switch chatChannelShape(channel)`。Form.tsx:766 换类型时会保留原 cloak_shape，
+ * 所以"配过 codex 的 Chat 渠道改成火山"这条路径是真实可达的。
+ */
+test('非 Chat 族渠道的残留 shape 不生效', () => {
+    const stale = { mode: 'auto', shape: 'codex' };
+    assert.equal(channelTestIdentityFor('openai_responses', ChannelType.Volcengine, stale), 'generic');
+    assert.equal(channelTestIdentityFor('openai_chat', ChannelType.Gemini, stale), 'generic');
+    assert.equal(channelTestIdentityFor('openai_embeddings', ChannelType.OpenAIEmbedding, stale), 'generic');
+    // 但 Chat 族上 shape 必须生效（否则修过头了）。
+    assert.equal(channelTestIdentityFor('openai_chat', ChannelType.OpenAIChat, stale), 'codex');
+    assert.equal(channelTestIdentityFor('openai_chat', ChannelType.CustomOpenAIChat, stale), 'codex');
 });
