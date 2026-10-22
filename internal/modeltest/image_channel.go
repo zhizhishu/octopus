@@ -70,10 +70,11 @@ func (r *modelRunner) tryImageChannel(ctx context.Context, channel *dbmodel.Chan
 		r.recordAttempt(channel.ID, 0, channelName, upstreamModel, "", dbmodel.AttemptSkipped, 0, 0, "channel has no base url")
 		return false
 	}
-	if len(imageTestChannelKeys(channel)) == 0 {
-		r.recordAttempt(channel.ID, 0, channelName, upstreamModel, "", dbmodel.AttemptSkipped, 0, 0, "no available key")
-		return false
-	}
+	// 这里**不能**先探一次 key 再转发：GetAvailableChannelKeys 在"所有 key 都在冷却"时
+	// 会退回冷却中的 key，但那条兜底受 admitCooldownProbe 限流——每渠道每
+	// ChannelKeyProbeInterval(1s) 只发一张探测名额。先探一次就把名额吃掉，紧接着转发
+	// 那次拿到空集合直接 503，请求根本没发出上游；顺带还偷走了该渠道这一秒的生产探测名额。
+	// 所以"有没有 key"只由转发分支判一次，那边已经会返回 "no available key"。
 
 	started := time.Now()
 	outcome := r.forwardImageTest(ctx, channel, upstreamModel)
@@ -96,18 +97,6 @@ func (r *modelRunner) tryImageChannel(ctx context.Context, channel *dbmodel.Chan
 	// 所以这里给一个只带 ID 的 ChannelKey。
 	r.succeed(channel, dbmodel.ChannelKey{ID: outcome.keyID}, upstreamModel, outcome.status, duration, outcome.response)
 	return true
-}
-
-// imageTestChannelKeys 对齐生产 key 策略：关了熔断器才允许用冷却中的 key，
-// 禁用的 / 空的 key 一律不用。
-func imageTestChannelKeys(channel *dbmodel.Channel) []dbmodel.ChannelKey {
-	if channel == nil {
-		return nil
-	}
-	if channel.DisableCircuitBreaker {
-		return channel.GetAllEnabledChannelKeys()
-	}
-	return channel.GetAvailableChannelKeys()
 }
 
 // forwardImageTest 造一个 gin 上下文，设置好 ImagesHandler 依赖的四个键
@@ -165,9 +154,20 @@ func (r *modelRunner) forwardImageTest(ctx context.Context, channel *dbmodel.Cha
 		keyID:        relay.ImagesChannelTestChannelKeyID(c),
 	}
 	responseBody := recorder.Body()
+	if recorder.Overflow() {
+		outcome.err = fmt.Errorf("upstream response exceeded %d bytes; refusing to buffer it in the model test", imageTestRecorderMaxBytes)
+		return outcome
+	}
 	if outcome.status < 200 || outcome.status >= 300 {
 		outcome.errorCode = imageTestErrorCode(responseBody)
 		outcome.err = fmt.Errorf("upstream status %d: %s", outcome.status, imageTestErrorMessage(responseBody))
+		return outcome
+	}
+	// 状态码是 2xx 不等于这次转发成功了：响应头/正文可能已经写出，随后上游读取失败
+	// （典型是被截断的 body）。录下来的 JSON 看着完整，只有真链路手里的错误知道真相。
+	// 先看这个错误，再解析 body——顺序反过来就会把一次失败的转发报成成功。
+	if forwardErr := relay.ImagesChannelTestForwardErr(c); forwardErr != nil {
+		outcome.err = fmt.Errorf("upstream read failed after response was written: %w", forwardErr)
 		return outcome
 	}
 	response, err := imageTestResponseFromBody(responseBody)
@@ -293,11 +293,18 @@ func imageTestErrorCode(body []byte) string {
 // imageTestRecorder 是渠道测试用的最小 http.ResponseWriter：把真链路写给客户端的
 // 响应（状态码 + body）收进内存。用它而不是 net/http/httptest，是为了不让测试专用
 // 包出现在生产代码路径上；gin 会把它当普通 ResponseWriter 包进自己的 writermem。
+//
+// **必须设上限**：生产实现是按块转发、只扫 usage 的，内存占用与响应大小无关；探针却把
+// 整份 body 收进内存再整体 json.Unmarshal，一份超大 2xx 就能吃掉进程内存，并发测试还会放大。
+// 超限时立刻停下并记录错误，由调用方判红——宁可报"响应过大"，也不许把服务拖垮。
+const imageTestRecorderMaxBytes = 16 << 20 // 16 MiB：足够容纳 1024x1024 b64 图片，又不会失控
+
 type imageTestRecorder struct {
 	header      http.Header
 	body        bytes.Buffer
 	statusCode  int
 	wroteHeader bool
+	overflow    bool
 }
 
 func newImageTestRecorder() *imageTestRecorder {
@@ -318,8 +325,16 @@ func (r *imageTestRecorder) Write(data []byte) (int, error) {
 	if !r.wroteHeader {
 		r.WriteHeader(http.StatusOK)
 	}
+	if r.body.Len()+len(data) > imageTestRecorderMaxBytes {
+		r.overflow = true
+		// 返回错误让写入方停下；已收下的部分保留，方便报错时给出上下文。
+		return 0, fmt.Errorf("image test response exceeds %d bytes", imageTestRecorderMaxBytes)
+	}
 	return r.body.Write(data)
 }
+
+// Overflow 表示本次响应超过上限、已被截断。
+func (r *imageTestRecorder) Overflow() bool { return r.overflow }
 
 // StatusCode 返回下游状态码；真链路没显式写过状态码时按 net/http 的语义算 200。
 func (r *imageTestRecorder) StatusCode() int {

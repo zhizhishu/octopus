@@ -33,6 +33,13 @@ func Init() {
 	// 显式从这里起而不是 RelayLogAdd 里惰性起——生产必经此路, 而测试二进制绝不该有无人管
 	// 生命周期的后台写库者(会撞各用例的临时 DB, CI 实翻过)。
 	op.RelayLogFlusherStart()
+	// 视频任务轮询器同理: 它每一轮都读库写库, 绝不许在包里靠 init() 自启(见上面那段注释,
+	// 也见 VideoTaskPollStart 的注释)。放在这里而不是放到下面的 Register 序列里, 有两个理由:
+	//  1) 视频任务的状态推进和设置读取无关, 不能因为某个 SettingGetInt 失败 early-return
+	//     就整条链路停摆——那种情况下已经提交的任务会永远停在 submitted;
+	//  2) 它是自带 ticker 的独立循环(sync.Once + safe.SafeGo), 不进 task 注册表,
+	//     所以测试二进制里只要没人显式调用它, 就不会有任何后台写库者存在。
+	VideoTaskPollStart()
 	// 模型行为检测(定时快检 + 回显不一致自动跟进)已停用自动启动: 此处既不挂 RegisterAuditFollowUp,
 	// 也不注册 TaskModelAuditQuick——后台与日志写入路径不得自动启动消耗 token 的 behavior 探针。
 	// 只有检测栏手动 run(POST /api/v1/model-audit/run) 仍可主动调用; 两个旧开关默认 false, 且因

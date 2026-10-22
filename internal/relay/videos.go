@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/zhizhishu/octopus/internal/helper"
 	"github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/op"
@@ -20,7 +21,6 @@ import (
 	"github.com/zhizhishu/octopus/internal/server/resp"
 	"github.com/zhizhishu/octopus/internal/utils/log"
 	"github.com/zhizhishu/octopus/internal/utils/xurl"
-	"github.com/gin-gonic/gin"
 )
 
 // videoResponseBodyLimit caps the buffered create/poll response. These are tiny
@@ -145,6 +145,7 @@ runIterator:
 			if fwdErr == nil {
 				ids := extractVideoTaskIDs(body)
 				recordVideoTaskOwner(ids, channel.ID, usedKey.ID, item.ModelName, apiKeyID, userID)
+				recordVideoTaskRow(ctx, ids, channel.ID, usedKey.ID, item.ModelName, apiKeyID, userID, payload)
 
 				metrics.ActualModel = item.ModelName
 				metrics.ResponseContent = buildVideoResponseNote(ids)
@@ -243,7 +244,17 @@ func VideoPollHandler(c *gin.Context) {
 		return
 	}
 
+	// Two-level owner lookup: memory first (it also carries every alias id the
+	// create returned), then the row. The row is what makes a poll survive a
+	// restart; memory stays first because it is the record that was already
+	// authoritative before the table existed, so an insert that failed (see
+	// recordVideoTaskRow) cannot regress a task that memory can still serve.
 	entry, ok := videoTaskOwner(taskID)
+	if !ok {
+		entry, ok = videoTaskOwnerFromDB(ctx, taskID)
+	}
+	// The tenant check is applied to BOTH sources: a row on disk is not a licence
+	// to poll someone else's task. Fail-closed 404, same as an unknown id.
 	if !ok || !videoTaskOwnerMatches(entry, apiKeyID, userID) {
 		resp.Error(c, http.StatusNotFound, "unknown or expired video task; create the task again")
 		return
@@ -380,4 +391,159 @@ func buildVideoResponseNote(ids []string) string {
 		return "video task created"
 	}
 	return "video task created: " + strings.Join(ids, ",")
+}
+
+// recordVideoTaskRow persists the ownership of a freshly created video task.
+//
+// Why dual write (memory + DB) instead of DB only: see recordVideoTaskOwner's map
+// — before this change the in-memory map was the ONLY owner record, so deleting it
+// in the same change that introduces the DB path would remove the sole fallback the
+// moment an insert fails (DB busy, migration not run, sqlite locked). The poll
+// handler reads memory first and the row second, so a failed insert degrades to
+// exactly the pre-change behaviour instead of turning a created task into an
+// unreachable one.
+//
+// Why ONE row per create rather than one row per extracted id: extractVideoTaskIDs
+// returns the aliases of a single upstream task (task_id / video_id / id of the same
+// create response). A row per alias would make the background poller issue one paid
+// upstream GET plus one status write per alias for the same task, and could leave the
+// aliases in contradictory terminal states. The alias -> owner path that already
+// exists (the in-memory map, every alias recorded for defaultVideoTaskTTL) keeps
+// working for the process lifetime; the row covers what memory cannot: a restart.
+func recordVideoTaskRow(ctx context.Context, ids []string, channelID, channelKeyID int, modelName string, ownerTokenID, ownerUserID int, requestBody map[string]any) {
+	if channelID == 0 || channelKeyID == 0 || len(ids) == 0 {
+		return
+	}
+	upstreamID := strings.TrimSpace(ids[0])
+	if upstreamID == "" {
+		return
+	}
+
+	existing, err := op.VideoTaskGetByUpstreamID(ctx, upstreamID)
+	if err != nil {
+		log.Warnf("video task row lookup before insert failed (task %s): %v", upstreamID, err)
+		return
+	}
+	if existing != nil {
+		// An idempotent upstream (or a retried create that reused the id) must not
+		// produce a second row: the poller would then poll the same task twice.
+		return
+	}
+
+	var requestData json.RawMessage
+	if requestBody != nil {
+		if b, merr := json.Marshal(requestBody); merr == nil {
+			requestData = b
+		} else {
+			log.Warnf("video task request data marshal failed (task %s): %v", upstreamID, merr)
+		}
+	}
+
+	task := &model.VideoTask{
+		UpstreamTaskID: upstreamID,
+		ChannelID:      channelID,
+		ChannelKeyID:   channelKeyID,
+		Model:          modelName,
+		OwnerTokenID:   ownerTokenID,
+		OwnerUserID:    ownerUserID,
+		Status:         model.VideoTaskSubmitted,
+		SubmitTime:     time.Now().Unix(),
+		RequestData:    requestData,
+	}
+	if err := op.VideoTaskCreate(ctx, task); err != nil {
+		// The upstream already accepted (and will bill) this task and the client is
+		// about to receive its id: a persistence hiccup must be logged, not surfaced
+		// as a failed create. Memory still owns the poll for this process.
+		log.Warnf("video task persist failed (task %s, channel %d): %v", upstreamID, channelID, err)
+	}
+}
+
+// videoTaskOwnerFromDB is the second level of the poll's owner lookup: the row is
+// what survives a restart, when the in-memory map is empty.
+//
+// A miss AND a lookup error both return false, i.e. the caller answers 404: an
+// unreadable ownership store must never become an open door.
+func videoTaskOwnerFromDB(ctx context.Context, taskID string) (videoTaskEntry, bool) {
+	task, err := op.VideoTaskGetByUpstreamID(ctx, taskID)
+	if err != nil {
+		log.Warnf("video task owner lookup failed (task %s): %v", taskID, err)
+		return videoTaskEntry{}, false
+	}
+	if task == nil || task.ChannelID == 0 || task.ChannelKeyID == 0 {
+		return videoTaskEntry{}, false
+	}
+	// expiresAt stays zero on purpose: the row has no TTL. Where the memory map
+	// forgets a task after defaultVideoTaskTTL, the row lives until the task reaches
+	// a terminal state, and a task the upstream no longer knows simply answers with
+	// the upstream's own response instead of a locally invented expiry.
+	return videoTaskEntry{
+		channelID:    task.ChannelID,
+		channelKeyID: task.ChannelKeyID,
+		model:        task.Model,
+		ownerTokenID: task.OwnerTokenID,
+		ownerUserID:  task.OwnerUserID,
+	}, true
+}
+
+// VideoTaskPollStatus is the background poller's GET /v1/videos/{upstreamTaskID}.
+//
+// It lives in this package, not in internal/task, because every decision about the
+// OUTBOUND identity of a video call (URL join, channel HTTP client, channel
+// CustomHeader, generic UA) is made here for videoForward; a second copy of that
+// logic in the poller would drift silently and put a differently-shaped request on
+// the wire. The background poll has no inbound *gin.Context, so the client-mirrored
+// headers videoForward copies are absent by construction — the identity is the
+// channel plus its key, exactly the fields videoForward would set anyway
+// (Authorization from the key, channel CustomHeader, generic UA).
+//
+// statusCode is returned even alongside an error so the caller can tell "the
+// upstream no longer knows this task" (404 → terminal) from "try again next round"
+// (5xx / network / TLS).
+func VideoTaskPollStatus(ctx context.Context, channel *model.Channel, channelKey, upstreamTaskID string) (int, []byte, error) {
+	if channel == nil {
+		return 0, nil, fmt.Errorf("video poll: channel is nil")
+	}
+	if strings.TrimSpace(channelKey) == "" {
+		return 0, nil, fmt.Errorf("video poll: channel key is empty")
+	}
+	if strings.TrimSpace(upstreamTaskID) == "" {
+		return 0, nil, fmt.Errorf("video poll: upstream task id is empty")
+	}
+
+	targetURL, err := xurl.JoinOpenAIPath(channel.GetBaseUrl(), "/v1/videos/"+url.PathEscape(upstreamTaskID))
+	if err != nil {
+		return 0, nil, fmt.Errorf("failed to build video poll url: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+	if err != nil {
+		return 0, nil, fmt.Errorf("failed to create video poll request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+channelKey)
+	if len(channel.CustomHeader) > 0 {
+		for _, h := range channel.CustomHeader {
+			req.Header.Set(h.HeaderKey, h.HeaderValue)
+		}
+	}
+	setHeaderIfMissing(req.Header, "User-Agent", genericUAForChannel(channel))
+
+	httpClient, err := helper.ChannelHttpClient(channel)
+	if err != nil {
+		return 0, nil, err
+	}
+	respUp, err := helper.DoPreserveMethodRedirect(httpClient, req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("failed to send video poll request: %w", err)
+	}
+	defer respUp.Body.Close()
+
+	if respUp.StatusCode < 200 || respUp.StatusCode >= 300 {
+		b, _ := io.ReadAll(io.LimitReader(respUp.Body, upstreamErrorBodyLimit))
+		return respUp.StatusCode, nil, newUpstreamError(respUp.StatusCode, b)
+	}
+	body, err := io.ReadAll(io.LimitReader(respUp.Body, videoResponseBodyLimit))
+	if err != nil {
+		return respUp.StatusCode, nil, fmt.Errorf("failed to read video poll response: %w", err)
+	}
+	return respUp.StatusCode, body, nil
 }

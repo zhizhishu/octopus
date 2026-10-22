@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/op"
@@ -324,5 +325,125 @@ func TestRunChannelImageEndpointForwardsExplicitPrompt(t *testing.T) {
 	}
 	if got[0].body["prompt"] != "draw an octopus" {
 		t.Fatalf("上游 prompt = %#v, want draw an octopus", got[0].body["prompt"])
+	}
+}
+
+// 审查官 A3① 的回归：模型映射在全链路只许发生一次。
+//
+// 链式映射（public-image → gpt-image-1 → gpt-image-2）下，若转发层再映射一次，
+// 探针会发往 gpt-image-2，而生产图片入口只映射一次、发往 gpt-image-1。
+// 那会让测试测的模型与生产完全不是同一个，且报告里的模型名也是错的。
+func TestRunChannelImageEndpointAppliesModelMappingOnce(t *testing.T) {
+	ctx := setupModelTestDB(t)
+	target, requests := imageTestUpstream(t)
+
+	// 故意造一条链：请求 public-image，渠道配置两跳映射。
+	channel := dbmodel.Channel{
+		Name:     "image-chain-mapping",
+		Type:     outbound.OutboundTypeOpenAIChat,
+		Enabled:  true,
+		BaseUrls: []dbmodel.BaseUrl{{URL: target.URL}},
+		Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "image-key"}},
+		ModelMapping: map[string]string{
+			"public-image": "gpt-image-1",
+			"gpt-image-1":  "gpt-image-2",
+		},
+	}
+
+	response, err := RunChannel(ctx, channel, dbmodel.ModelTestRequest{
+		Model:    "public-image",
+		Endpoint: imageGenerationTestEndpointName,
+	})
+	if err != nil {
+		t.Fatalf("RunChannel: %v", err)
+	}
+	if response.Summary.Success != 1 {
+		t.Fatalf("image test must succeed, got %#v", response.Summary)
+	}
+
+	recorded := requests()
+	if len(recorded) != 1 {
+		t.Fatalf("upstream requests = %d, want 1", len(recorded))
+	}
+	// 生产只映射一跳：public-image → gpt-image-1。探针必须发同一个模型。
+	if got := recorded[0].body["model"]; got != "gpt-image-1" {
+		t.Fatalf("upstream model = %v, want gpt-image-1（映射只许一跳，映射两次会发到 gpt-image-2）", got)
+	}
+}
+
+// 审查官 A2 的回归：所有 key 都在冷却时，探针不许把冷却探测名额提前用掉。
+//
+// 机制：GetAvailableChannelKeys 在"全体 key 冷却"时会退回冷却中的 key，但那条兜底受
+// admitCooldownProbe 限流——每渠道每秒只发一张名额。若先探一次再转发，第二次就拿不到
+// key，探针会 503 且请求根本没发上游，顺带偷走生产这一秒的探测名额。
+//
+// **必须用已入库渠道**：admitCooldownProbe 对 channelID==0 明说不限流（草稿渠道没有
+// 稳定身份可限流）。用草稿渠道写这条测试会永远绿，是空气测试——实测过。
+func TestRunChannelImageEndpointDoesNotConsumeCooldownProbeSlot(t *testing.T) {
+	ctx := setupModelTestDB(t)
+	target, requests := imageTestUpstream(t)
+
+	channel := dbmodel.Channel{
+		Name:     "image-all-keys-cooling",
+		Type:     outbound.OutboundTypeOpenAIChat,
+		Enabled:  true,
+		BaseUrls: []dbmodel.BaseUrl{{URL: target.URL}},
+		Keys: []dbmodel.ChannelKey{{
+			Enabled:    true,
+			ChannelKey: "cooling-key",
+			// 429 + 刚刚用过 => 落在 ChannelKeyCooldown 窗口内，所有 key 都处于冷却态。
+			StatusCode:       429,
+			LastUseTimeStamp: time.Now().Unix(),
+		}},
+	}
+	// 入库拿到非 0 的 ID，限流才会真正生效。
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	if channel.ID == 0 {
+		t.Fatalf("channel must be persisted to exercise admitCooldownProbe")
+	}
+
+	response, err := RunChannel(ctx, channel, dbmodel.ModelTestRequest{
+		Model:    "gpt-image-1",
+		Endpoint: imageGenerationTestEndpointName,
+	})
+	if err != nil {
+		t.Fatalf("RunChannel: %v", err)
+	}
+	if response.Summary.Success != 1 {
+		t.Fatalf("冷却兜底应当成功一次（这正是生产行为），got %#v / %#v",
+			response.Summary, response.Results)
+	}
+	if got := len(requests()); got != 1 {
+		t.Fatalf("upstream requests = %d, want 1（名额被提前用掉时这里会是 0）", got)
+	}
+}
+
+// 审查官 A3③ 的回归：超大响应必须被拒，不许无限吃内存。
+func TestImageTestRecorderRejectsOversizedResponse(t *testing.T) {
+	recorder := newImageTestRecorder()
+	// 一次写入就超过上限。
+	huge := make([]byte, imageTestRecorderMaxBytes+1)
+	if _, err := recorder.Write(huge); err == nil {
+		t.Fatalf("recorder must reject a response larger than %d bytes", imageTestRecorderMaxBytes)
+	}
+	if !recorder.Overflow() {
+		t.Fatalf("recorder must mark itself overflowed")
+	}
+	if recorder.Body() != nil {
+		t.Fatalf("overflowed recorder must expose no body, got %d bytes", len(recorder.Body()))
+	}
+
+	// 分块写入累计超限同样要拒。
+	recorder = newImageTestRecorder()
+	chunk := make([]byte, imageTestRecorderMaxBytes/2+1)
+	for i := 0; i < 2; i++ {
+		if _, err := recorder.Write(chunk); err != nil {
+			break
+		}
+	}
+	if !recorder.Overflow() {
+		t.Fatalf("chunked writes totalling over the limit must set overflow")
 	}
 }

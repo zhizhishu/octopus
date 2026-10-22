@@ -3,7 +3,6 @@ package relay
 import (
 	"net/http"
 	"net/url"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -40,6 +39,11 @@ const imagesChannelTestPinContextKey = "octopus_images_channel_test_pin"
 const (
 	imagesChannelTestUpstreamPathContextKey = "octopus_images_channel_test_upstream_path"
 	imagesChannelTestKeyIDContextKey        = "octopus_images_channel_test_key_id"
+	// imagesChannelTestForwardErrContextKey 回传"上游读取已经失败、但响应头/正文已经提交给
+	// 下游"的那种错误。这类错误无法再改写下游响应，却必须让测试判红：
+	// 上游发完整合法 JSON 但声明更大的 Content-Length 后断开时，生产会记 unexpected EOF
+	// 失败，而探针只看录到的状态码和 JSON 就会报成功——那是一条假绿灯。
+	imagesChannelTestForwardErrContextKey = "octopus_images_channel_test_forward_err"
 )
 
 // imagesChannelTestPin 是锁定标记。故意用未导出结构体包一层而不是直接放
@@ -89,6 +93,22 @@ func imagesChannelTestString(c *gin.Context, key string) string {
 	return text
 }
 
+// ImagesChannelTestForwardErr 读回"响应已写出但上游读取失败"的那个错误（没有则 nil）。
+//
+// 单独开这个口子而不是复用状态码：状态码已经提交给下游、改不动了，但测试结论必须跟着
+// 真实读取结果走，否则一次被截断的响应会被报成成功。
+func ImagesChannelTestForwardErr(c *gin.Context) error {
+	if c == nil {
+		return nil
+	}
+	value, ok := c.Get(imagesChannelTestForwardErrContextKey)
+	if !ok {
+		return nil
+	}
+	err, _ := value.(error)
+	return err
+}
+
 // imagesChannelTestPinFor 取出本次调用的锁定渠道。第二个返回值为 false 表示这是一次
 // 正常的生产请求，调用方必须继续走原路径。
 func imagesChannelTestPinFor(c *gin.Context) (*model.Channel, bool) {
@@ -129,21 +149,22 @@ func ChannelTypeSupportsImages(channelType outbound.OutboundType) bool {
 //  2. 不写熔断器 / key 健康 / 渠道统计 / relay 日志——一次测试不许把生产渠道打进
 //     冷却，也不许在日志里造出一条计费记录；
 //  3. 不读粘性会话、不做 key 健康排序（测试只有一个渠道，排不排都一样）。
+//
+// 注意这里**不再做模型映射**：actualModel 是调用方（modeltest）已经映射过的上游模型名。
+// 早先这里又映射了一次，链式映射（public-image → gpt-image-1 → gpt-image-2）下会映射两跳，
+// 探针发往 gpt-image-2 而生产只发往 gpt-image-1——测出来的绿是假的，报告里的模型名也是错的。
+// 映射是"从下游模型名到上游模型名"的转换，全链路只许发生一次，且必须发生在最靠近下游的那层。
 func forwardImagesChannelTest(
 	c *gin.Context,
 	endpoint string,
 	channel *model.Channel,
-	requestModel string,
+	actualModel string,
 	stream bool,
 	isMultipart bool,
 	bc *bodycache.BodyCache,
 	boundary string,
 	jsonPayload map[string]any,
 ) {
-	actualModel := requestModel
-	if mapped, ok := channel.ModelMapping[actualModel]; ok && strings.TrimSpace(mapped) != "" {
-		actualModel = mapped
-	}
 
 	// key 策略对齐生产：渠道关了熔断器才允许用冷却中的 key，禁用的空 key 一律不用。
 	var keys []model.ChannelKey
@@ -158,7 +179,7 @@ func forwardImagesChannelTest(
 	}
 
 	ctx := c.Request.Context()
-	metrics := newImagesRelayMetrics(0, 0, "", requestModel, imageEndpointName(endpoint), c.Request.URL.Path)
+	metrics := newImagesRelayMetrics(0, 0, "", actualModel, imageEndpointName(endpoint), c.Request.URL.Path)
 
 	var lastErr error
 	for _, usedKey := range keys {
@@ -181,6 +202,10 @@ func forwardImagesChannelTest(
 		lastErr = fwdErr
 		if written || c.Writer.Written() {
 			// 已经写下游了，不能再换 key（否则会把两份响应拼在一起）。
+			// 但错误不能就此丢掉：上游可能先写出一段合法 JSON、再因读取失败断开
+			// （例如声明了更大的 Content-Length）。那种情况下游看到的 status/body 是完整的，
+			// 只靠录下的响应会判成成功。把真实错误挂到 context 上，让测试据此判红。
+			c.Set(imagesChannelTestForwardErrContextKey, fwdErr)
 			return
 		}
 		if !shouldTryNextChannelKey(statusCode) {

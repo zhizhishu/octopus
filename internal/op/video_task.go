@@ -88,3 +88,31 @@ func VideoTaskListUnfinished(ctx context.Context, limit int) ([]model.VideoTask,
 	}
 	return tasks, nil
 }
+
+// VideoTaskListStale 取「早于 deadline 仍未进终态」的任务，供轮询器统一判超时失败。
+//
+// 为什么单独一条查询而不是在 VideoTaskListUnfinished 的结果里筛：未完成列表被
+// limit 截断（一轮只处理最新鲜的一批），超时任务恰恰是最老的那批；混在一起筛会让
+// 「已经卡了很久的任务」看 limit 的脸色才被收口。这里按同样条件单独取一次，
+// 只多一条只读查询，收口逻辑就不依赖轮询批次的窗口。
+//
+// 时间取 COALESCE 语义：submit_time > 0 用它，否则退回 created_at。理由是
+// submit_time 是「提交给上游的时刻」，语义上正是该拿来判超时的；但它是可 0 的
+// （表默认 0，外部导入/迁移进来的老行也可能没有），此时 created_at 是唯一的时间证据。
+// deadline 为 unix 秒。
+func VideoTaskListStale(ctx context.Context, deadline int64, limit int) ([]model.VideoTask, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	var tasks []model.VideoTask
+	res := db.GetDB().WithContext(ctx).
+		Where("status NOT IN ?", []model.VideoTaskStatus{model.VideoTaskSuccess, model.VideoTaskFailure}).
+		Where("(CASE WHEN submit_time > 0 THEN submit_time ELSE created_at END) > 0 AND (CASE WHEN submit_time > 0 THEN submit_time ELSE created_at END) < ?", deadline).
+		Order("id").
+		Limit(limit).
+		Find(&tasks)
+	if res.Error != nil {
+		return nil, res.Error
+	}
+	return tasks, nil
+}

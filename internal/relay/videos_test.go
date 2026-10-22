@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/op"
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
-	"github.com/gin-gonic/gin"
 )
 
 func TestExtractVideoTaskIDs(t *testing.T) {
@@ -100,12 +100,12 @@ func TestVideosHandlerModelMappingCreateAndPoll(t *testing.T) {
 	ctx := setupRelayErrorDB(t)
 
 	var (
-		mu              sync.Mutex
-		createGotPath   string
-		createGotAuth   string
-		createGotModel  string
-		pollGotPath     string
-		pollGotAuth     string
+		mu             sync.Mutex
+		createGotPath  string
+		createGotAuth  string
+		createGotModel string
+		pollGotPath    string
+		pollGotAuth    string
 	)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
@@ -440,5 +440,263 @@ func TestVideosHandlerAccessRouteFallbackAndNone(t *testing.T) {
 	}
 	if failedLog.Attempts[0].ChannelID != routeChannel.ID {
 		t.Fatalf("expected failed attempt channel %d, got %d", routeChannel.ID, failedLog.Attempts[0].ChannelID)
+	}
+}
+
+// resetVideoTaskMemory 清空进程内的归属内存表：这是「重启」在单进程测试里的等价物。
+func resetVideoTaskMemory(t *testing.T) {
+	t.Helper()
+	videoTaskStore.Lock()
+	videoTaskStore.items = make(map[string]videoTaskEntry)
+	videoTaskStore.lastPruneAt = time.Time{}
+	videoTaskStore.Unlock()
+}
+
+// 创建成功后必须同时落一行库（双写），且这一行记的是真正用的渠道/key/映射后模型、
+// 创建人与原始请求体——这些字段是重启后能找回归属、能审计/重试的全部依据。
+func TestVideosHandlerPersistsVideoTaskRow(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayErrorDB(t)
+	resetVideoTaskMemory(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"vid_persist_1","status":"queued"}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	ch := dbmodel.Channel{
+		Name:         "video-persist-channel",
+		Type:         outbound.OutboundTypeOpenAIChat,
+		Enabled:      true,
+		Model:        "persist-upstream-model",
+		ModelMapping: map[string]string{"alias-persist": "persist-upstream-model"},
+		Priority:     1,
+		BaseUrls:     []dbmodel.BaseUrl{{URL: upstream.URL}},
+		Keys:         []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "persist-secret-key"}},
+	}
+	if err := op.ChannelCreate(&ch, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/v1/videos", strings.NewReader(`{"model":"alias-persist","prompt":"a slow sunrise"}`))
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+	// api_key_id 只能是 0：路由选择要求这把 key 在库/缓存里真实存在（AccessPlanSelect
+	// 对不存在的 id 直接报 "API key not found"），而这条用例验证的是落库字段而不是路由。
+	// token 维度的归属由 TestVideoPollHandlerRejectsForeignTenantFromDB 的 42/7 那行覆盖。
+	c.Set("api_key_id", 0)
+	c.Set("user_id", 12)
+	c.Set("request_ip", "127.0.0.1")
+
+	VideosHandler(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create failed: %d %s", rec.Code, rec.Body.String())
+	}
+
+	row, err := op.VideoTaskGetByUpstreamID(ctx, "vid_persist_1")
+	if err != nil {
+		t.Fatalf("read back row: %v", err)
+	}
+	if row == nil {
+		t.Fatal("create did not persist a video_tasks row (a restart would lose the task)")
+	}
+	if row.ChannelID != ch.ID || row.ChannelKeyID != ch.Keys[0].ID {
+		t.Fatalf("ownership mismatch: channel=%d key=%d, want %d/%d", row.ChannelID, row.ChannelKeyID, ch.ID, ch.Keys[0].ID)
+	}
+	if row.Model != "persist-upstream-model" {
+		t.Fatalf("model = %q, want the mapped upstream model", row.Model)
+	}
+	if row.OwnerUserID != 12 {
+		t.Fatalf("tenant mismatch: token=%d user=%d, want user 12", row.OwnerTokenID, row.OwnerUserID)
+	}
+	if row.Status != dbmodel.VideoTaskSubmitted {
+		t.Fatalf("status = %q, want %q", row.Status, dbmodel.VideoTaskSubmitted)
+	}
+	if row.SubmitTime == 0 {
+		t.Fatal("submit_time not recorded")
+	}
+	if !strings.Contains(string(row.RequestData), "a slow sunrise") {
+		t.Fatalf("request_data does not carry the create request: %s", string(row.RequestData))
+	}
+	// 双写：内存那套还在。
+	if _, ok := videoTaskOwner("vid_persist_1"); !ok {
+		t.Fatal("in-memory owner was not recorded (dual write expected)")
+	}
+}
+
+// 【重启场景·核心】进程重启后内存归属全空，只有库里那一行。此时 VideoPollHandler
+// 必须仍能找到归属、仍回到原来那个渠道+key 转发，并把上游原始响应一字不改地透传。
+// 这条测试是整次改造的存在理由：没有它，重启就等于让客户端重建任务、重付一次钱。
+func TestVideoPollHandlerServesTaskFromDBAfterRestart(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayErrorDB(t)
+	// 模拟重启：进程内归属内存清空。
+	resetVideoTaskMemory(t)
+
+	var (
+		mu       sync.Mutex
+		pollHits int
+		pollAuth string
+		pollPath string
+	)
+	upstreamBody := `{"id":"vid_db_1","status":"completed","video_url":"https://example.com/db.mp4"}`
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		pollHits++
+		pollAuth = r.Header.Get("Authorization")
+		pollPath = r.URL.Path
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Upstream-Marker", "keep-me")
+		_, _ = w.Write([]byte(upstreamBody))
+	}))
+	t.Cleanup(upstream.Close)
+
+	ch := dbmodel.Channel{
+		Name:     "video-db-owner-channel",
+		Type:     outbound.OutboundTypeOpenAIChat,
+		Enabled:  true,
+		Model:    "db-video-model",
+		Priority: 1,
+		BaseUrls: []dbmodel.BaseUrl{{URL: upstream.URL}},
+		Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "db-owner-secret-key"}},
+	}
+	if err := op.ChannelCreate(&ch, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+
+	// 这是「上一个进程」留下的那一行。
+	if err := op.VideoTaskCreate(ctx, &dbmodel.VideoTask{
+		UpstreamTaskID: "vid_db_1",
+		ChannelID:      ch.ID,
+		ChannelKeyID:   ch.Keys[0].ID,
+		Model:          "db-video-model",
+		OwnerTokenID:   0,
+		OwnerUserID:    0,
+		Status:         dbmodel.VideoTaskSubmitted,
+		SubmitTime:     time.Now().Unix(),
+	}); err != nil {
+		t.Fatalf("seed task row: %v", err)
+	}
+	if _, ok := videoTaskOwner("vid_db_1"); ok {
+		t.Fatal("memory must be empty for this test to prove the DB path")
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Params = []gin.Param{{Key: "id", Value: "vid_db_1"}}
+	req := httptest.NewRequest(http.MethodGet, "/v1/videos/vid_db_1", nil)
+	c.Request = req
+	c.Set("api_key_id", 0)
+	c.Set("user_id", 0)
+	c.Set("request_ip", "127.0.0.1")
+
+	VideoPollHandler(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("poll after restart = %d %s, want 200 from the DB-recorded owner", rec.Code, rec.Body.String())
+	}
+	// 返回形状不许变：客户端拿到的就是上游原始响应体。
+	if rec.Body.String() != upstreamBody {
+		t.Fatalf("response body rewritten: got %q want %q", rec.Body.String(), upstreamBody)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Fatalf("content type = %q, want application/json (upstream)", ct)
+	}
+	mu.Lock()
+	hits, gotAuth, gotPath := pollHits, pollAuth, pollPath
+	mu.Unlock()
+	if hits != 1 {
+		t.Fatalf("upstream polled %d times, want 1", hits)
+	}
+	if gotAuth != "Bearer db-owner-secret-key" {
+		t.Fatalf("poll used the wrong key: %q", gotAuth)
+	}
+	if gotPath != "/v1/videos/vid_db_1" {
+		t.Fatalf("poll path = %q", gotPath)
+	}
+}
+
+// 【租户隔离】任务落库不等于谁都查得到：库里的 OwnerTokenID/OwnerUserID 与请求方不一致
+// 时仍然 404，且绝不能把请求打到上游去（越权探针连上游都不该看见）。
+func TestVideoPollHandlerRejectsForeignTenantFromDB(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayErrorDB(t)
+	resetVideoTaskMemory(t)
+
+	var (
+		mu   sync.Mutex
+		hits int
+	)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"vid_tenant_1","status":"completed","video_url":"https://example.com/t.mp4"}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	ch := dbmodel.Channel{
+		Name:     "video-tenant-channel",
+		Type:     outbound.OutboundTypeOpenAIChat,
+		Enabled:  true,
+		Model:    "tenant-video-model",
+		Priority: 1,
+		BaseUrls: []dbmodel.BaseUrl{{URL: upstream.URL}},
+		Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "tenant-secret-key"}},
+	}
+	if err := op.ChannelCreate(&ch, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	if err := op.VideoTaskCreate(ctx, &dbmodel.VideoTask{
+		UpstreamTaskID: "vid_tenant_1",
+		ChannelID:      ch.ID,
+		ChannelKeyID:   ch.Keys[0].ID,
+		Model:          "tenant-video-model",
+		OwnerTokenID:   42,
+		OwnerUserID:    7,
+		Status:         dbmodel.VideoTaskSubmitted,
+		SubmitTime:     time.Now().Unix(),
+	}); err != nil {
+		t.Fatalf("seed task row: %v", err)
+	}
+
+	poll := func(tokenID, userID int) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Params = []gin.Param{{Key: "id", Value: "vid_tenant_1"}}
+		c.Request = httptest.NewRequest(http.MethodGet, "/v1/videos/vid_tenant_1", nil)
+		c.Set("api_key_id", tokenID)
+		c.Set("user_id", userID)
+		c.Set("request_ip", "127.0.0.1")
+		VideoPollHandler(c)
+		return rec
+	}
+
+	if rec := poll(999, 999); rec.Code != http.StatusNotFound {
+		t.Fatalf("foreign tenant poll = %d (%s), want 404", rec.Code, rec.Body.String())
+	}
+	mu.Lock()
+	hitsAfterForeign := hits
+	mu.Unlock()
+	if hitsAfterForeign != 0 {
+		t.Fatalf("a foreign poll reached the upstream %d time(s)", hitsAfterForeign)
+	}
+
+	// 反向对照：这条行本身是可服务的，所以上面的 404 只能是因为租户不匹配。
+	rec := poll(42, 7)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("owner poll = %d (%s), want 200", rec.Code, rec.Body.String())
+	}
+	mu.Lock()
+	hitsAtEnd := hits
+	mu.Unlock()
+	if hitsAtEnd != 1 {
+		t.Fatalf("owner poll hit upstream %d times, want 1", hitsAtEnd)
 	}
 }
