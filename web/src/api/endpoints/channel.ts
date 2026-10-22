@@ -6,6 +6,7 @@ import { StatsChannel, type StatsMetricsFormatted } from './stats';
 import type { PromptOverrideMode } from './access-plan';
 import type { ModelTestResponse } from './model';
 import { useAuthStore } from './user';
+import { channelCapabilitiesPayload } from '@/lib/channel-capabilities';
 
 export type { PromptOverrideMode } from './access-plan';
 /**
@@ -84,6 +85,9 @@ export type Channel = {
     redact_enabled: boolean;
     redact_flags: string;
     thinking_to_content: boolean;
+    // 非聊天流量能力位（当前只有 'embeddings'）。空/未定义 = 只接聊天，
+    // 与后端 model.Channel.Capabilities 对齐；后端空值会退回按渠道类型判定。
+    capabilities?: string[];
     proxy: boolean;
     auto_sync: boolean;
     custom_header: CustomHeader[];
@@ -94,6 +98,7 @@ export type Channel = {
     channel_proxy?: string | null;
     openai_chat_path: string;
     openai_models_path: string;
+    openai_embeddings_path?: string;
     match_regex?: string | null;
     model_mapping?: Record<string, string>;
     stats: StatsChannel;
@@ -137,6 +142,7 @@ export type CreateChannelRequest = {
     redact_enabled?: boolean;
     redact_flags?: string;
     thinking_to_content?: boolean;
+    capabilities?: string[];
     proxy?: boolean;
     auto_sync?: boolean;
     custom_header?: CustomHeader[];
@@ -144,6 +150,7 @@ export type CreateChannelRequest = {
     channel_proxy?: string | null;
     openai_chat_path?: string;
     openai_models_path?: string;
+    openai_embeddings_path?: string;
     param_override?: string | null;
     system_prompt_override?: string | null;
     prompt_override_mode?: PromptOverrideMode | null;
@@ -176,6 +183,7 @@ export type UpdateChannelRequest = {
     redact_enabled?: boolean;
     redact_flags?: string;
     thinking_to_content?: boolean;
+    capabilities?: string[];
     proxy?: boolean;
     auto_sync?: boolean;
     custom_header?: CustomHeader[];
@@ -183,6 +191,7 @@ export type UpdateChannelRequest = {
     channel_proxy?: string | null;
     openai_chat_path?: string;
     openai_models_path?: string;
+    openai_embeddings_path?: string;
     param_override?: string | null;
     system_prompt_override?: string | null;
     prompt_override_mode?: PromptOverrideMode | null;
@@ -289,8 +298,10 @@ export function useChannelList(options?: { enabled?: boolean }) {
                 redact_enabled: item.redact_enabled ?? false,
                 redact_flags: item.redact_flags ?? '',
                 thinking_to_content: item.thinking_to_content ?? false,
+                capabilities: item.capabilities ?? [],
                 openai_chat_path: item.openai_chat_path ?? '',
                 openai_models_path: item.openai_models_path ?? '',
+                openai_embeddings_path: item.openai_embeddings_path ?? '',
                 priority: item.priority ?? 0,
                 max_concurrent: item.max_concurrent ?? 0,
                 rpm_limit: item.rpm_limit ?? 0,
@@ -418,6 +429,9 @@ export function useCopyChannel() {
                 selected_models: [...(source.selected_models ?? [])],
                 anthropic_context_1m: source.anthropic_context_1m,
                 thinking_to_content: source.thinking_to_content,
+                // 复制渠道必须带上能力位：漏了会把"能接嵌入"的渠道复制成"只能聊天"。
+                // 用同一个 payload helper，空能力位仍然一个字段都不发（存量形状不变）。
+                ...channelCapabilitiesPayload(source.capabilities),
                 proxy: source.proxy,
                 auto_sync: source.auto_sync,
                 custom_header: (source.custom_header ?? []).map((h) => ({ ...h })),
@@ -425,6 +439,7 @@ export function useCopyChannel() {
                 channel_proxy: source.channel_proxy,
                 openai_chat_path: source.openai_chat_path,
                 openai_models_path: source.openai_models_path,
+                openai_embeddings_path: source.openai_embeddings_path ?? '',
                 param_override: source.param_override,
                 system_prompt_override: source.system_prompt_override,
                 prompt_override_mode: source.prompt_override_mode,

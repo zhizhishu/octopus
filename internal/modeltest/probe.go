@@ -39,10 +39,19 @@ type ProbeSender struct {
 // gemini_generate_content），空值按 openai_chat 处理。密钥选取沿用 tryChannel 的
 // 策略：关闭熔断的渠道取全部启用密钥，否则只取可用（未冷却）密钥。
 //
-// 嵌入渠道（type 5）也在准入范围：出站走 EmbeddingOutbound，请求体只有 model+input，
+// 能承接嵌入的渠道也在准入范围：出站走 EmbeddingOutbound，请求体只有 model+input，
 // 不牵涉任何 chat/claude/codex 形状（见 testChannelKey 的 embeddingProbe 分支）。
+// 判据用能力位（SupportsCapability）：空 Capabilities 的存量渠道退回按渠道类型判定，
+// 行为与改动前完全一致；勾了 embeddings 的聊天渠道（如火山）也能进来。
 func NewProbeSender(channel dbmodel.Channel, upstreamModel, endpoint string) (*ProbeSender, error) {
-	if !outbound.IsChatChannelType(channel.Type) && !outbound.IsEmbeddingChannelType(channel.Type) {
+	// 准入按"本次要测什么"判，不能是 OR：一个普通 Chat 渠道测**嵌入**端点时，
+	// relay 侧并不会调度它（能力位没有 embeddings），这里若放行就会测出一条
+	// 生产走不通的"可用"，那是假绿灯。
+	if isEmbeddingTestEndpoint(endpoint) {
+		if !channel.SupportsCapability(dbmodel.CapabilityEmbeddings) {
+			return nil, fmt.Errorf("渠道未声明 embedding 能力，无法校验嵌入端点")
+		}
+	} else if !outbound.IsChatChannelType(channel.Type) {
 		return nil, fmt.Errorf("渠道类型 %d 不支持探针校验", channel.Type)
 	}
 	if strings.TrimSpace(channel.GetBaseUrl()) == "" {
@@ -58,7 +67,7 @@ func NewProbeSender(channel dbmodel.Channel, upstreamModel, endpoint string) (*P
 	if len(keys) == 0 {
 		return nil, fmt.Errorf("渠道没有可用的密钥")
 	}
-	adapter := outbound.Get(channel.Type)
+	adapter := modelTestOutboundAdapter(channel.Type, endpoint)
 	if adapter == nil {
 		return nil, fmt.Errorf("渠道类型 %d 没有对应的出站适配器", channel.Type)
 	}

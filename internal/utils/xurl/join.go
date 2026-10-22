@@ -146,6 +146,30 @@ func JoinCustomOpenAIChatPath(baseURL string, endpoint string) (string, error) {
 	return parsed.String(), nil
 }
 
+// JoinCustomOpenAIEmbeddingsPath mirrors JoinCustomOpenAIChatPath for the
+// embeddings endpoint: a base URL that already IS an embeddings endpoint
+// (…/v1/embeddings, or a vendor path like volcengine's …/api/v3/embeddings) is
+// used verbatim instead of being re-joined, otherwise the standard /v1/embeddings
+// join applies. The chat twin exists because JoinOpenAIPath trims the endpoint
+// suffix and re-appends /v1/…, which would turn /api/v3/embeddings into
+// /api/v3/v1/embeddings.
+func JoinCustomOpenAIEmbeddingsPath(baseURL string, endpoint string) (string, error) {
+	if endpointURL, ok, err := ParseEndpointOverride(endpoint); ok || err != nil {
+		return endpointURL, err
+	}
+	if !isEmbeddingsEndpoint(endpoint) || !isEmbeddingsBaseURL(baseURL) {
+		return JoinOpenAIPath(baseURL, endpoint)
+	}
+
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil {
+		return "", err
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/")
+	parsed.RawPath = ""
+	return parsed.String(), nil
+}
+
 func JoinCustomOpenAIModelsPath(baseURL string) (string, error) {
 	parsed, err := url.Parse(strings.TrimSpace(baseURL))
 	if err != nil {
@@ -255,6 +279,24 @@ func isChatCompletionsBaseURL(baseURL string) bool {
 		strings.HasSuffix(lowerPath, "/v1/chat/completions") ||
 		lowerPath == "/chat/completions" ||
 		strings.HasSuffix(lowerPath, "/chat/completions")
+}
+
+func isEmbeddingsEndpoint(endpoint string) bool {
+	path := "/" + strings.Trim(strings.TrimSpace(endpoint), "/")
+	return strings.EqualFold(path, "/v1/embeddings") || strings.EqualFold(path, "/embeddings")
+}
+
+func isEmbeddingsBaseURL(baseURL string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil {
+		return false
+	}
+	path := "/" + strings.Trim(parsed.Path, "/")
+	lowerPath := strings.ToLower(path)
+	return lowerPath == "/v1/embeddings" ||
+		strings.HasSuffix(lowerPath, "/v1/embeddings") ||
+		lowerPath == "/embeddings" ||
+		strings.HasSuffix(lowerPath, "/embeddings")
 }
 
 func trimGeminiGenerateContentSuffix(baseURL string) (string, error) {

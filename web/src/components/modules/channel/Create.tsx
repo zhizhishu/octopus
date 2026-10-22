@@ -10,6 +10,7 @@ import { useFingerprintProfileList } from '@/api/endpoints/fingerprint-profile';
 import { useTranslations } from 'next-intl';
 import { ChannelForm, normalizeBaseUrlForChannelType, type ChannelFormData } from './Form';
 import { ChannelImportCSV } from './ImportCSV';
+import { channelCapabilitiesPayload } from '@/lib/channel-capabilities';
 
 export function CreateDialogContent() {
     const { setIsOpen } = useMorphingDialog();
@@ -48,12 +49,14 @@ export function CreateDialogContent() {
         selected_models: [],
         anthropic_context_1m: false,
         thinking_to_content: false,
+        capabilities: [],
         auto_sync: false,
         enabled: true,
         proxy: false,
         match_regex: '',
         openai_chat_path: '',
         openai_models_path: '',
+        openai_embeddings_path: '',
     });
     const t = useTranslations('channel.create');
 
@@ -106,6 +109,8 @@ export function CreateDialogContent() {
                 selected_models: formData.selected_models,
                 anthropic_context_1m: formData.anthropic_context_1m,
                 thinking_to_content: formData.thinking_to_content,
+                // 能力位只在勾选时出现：没勾的渠道请求形状与改动前逐字节一致。
+                ...channelCapabilitiesPayload(formData.capabilities),
                 proxy: formData.proxy,
                 auto_sync: formData.auto_sync,
                 custom_header: normalizedHeaders,
@@ -113,6 +118,7 @@ export function CreateDialogContent() {
                 channel_proxy: channelProxy,
                 openai_chat_path: formData.openai_chat_path.trim(),
                 openai_models_path: formData.openai_models_path.trim(),
+                openai_embeddings_path: formData.openai_embeddings_path.trim(),
                 param_override: paramOverride,
                 system_prompt_override: systemPromptOverride,
                 prompt_override_mode: formData.prompt_override_mode,
@@ -150,12 +156,14 @@ export function CreateDialogContent() {
                         selected_models: [],
                         anthropic_context_1m: false,
                         thinking_to_content: false,
+                        capabilities: [],
                         auto_sync: false,
                         enabled: true,
                         proxy: false,
                         match_regex: '',
                         openai_chat_path: '',
                         openai_models_path: '',
+                        openai_embeddings_path: '',
                     });
                     setIsOpen(false);
                 }

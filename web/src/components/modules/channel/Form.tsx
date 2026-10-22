@@ -30,6 +30,7 @@ import {
     makeModelTestPrompt,
     sanitizeChannelTestError,
 } from '@/lib/channel-test';
+import { CAPABILITY_EMBEDDINGS, hasChannelCapability, setChannelCapability } from '@/lib/channel-capabilities';
 
 function AdvancedSettingsShell({
     panel,
@@ -104,12 +105,15 @@ export interface ChannelFormData {
     selected_models: string[];
     anthropic_context_1m: boolean;
     thinking_to_content: boolean;
+    // 非聊天流量能力位（当前只有 'embeddings'）；空数组 = 只接聊天。
+    capabilities: string[];
     enabled: boolean;
     proxy: boolean;
     auto_sync: boolean;
     match_regex: string;
     openai_chat_path: string;
     openai_models_path: string;
+    openai_embeddings_path: string;
     model_mapping?: Record<string, string>;
 }
 
@@ -313,6 +317,10 @@ export function ChannelForm({
         }
     }, [sortedFingerprintProfiles, fallbackProfileId, formData, onFormDataChange]);
     const [channelTestResult, setChannelTestResult] = useState<ModelTestResult | null>(null);
+
+    // 能力位勾选态：capabilities 里有没有 'embeddings'。数组操作见 lib/channel-capabilities，
+    // 取消勾选只摘掉 'embeddings'，不会顺手清掉将来的其它能力位。
+    const embeddingsCapabilityEnabled = hasChannelCapability(formData.capabilities, CAPABILITY_EMBEDDINGS);
 
     const effectiveKey =
         formData.keys.find((k) => k.enabled && k.channel_key.trim())?.channel_key.trim() || '';
@@ -1327,6 +1335,43 @@ export function ChannelForm({
                             <span>{formData.thinking_to_content ? '已启用' : '未启用'}</span>
                         </label>
                     </div>
+                </div>
+
+                <div className="rounded-xl border border-border bg-background/70 p-3">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="min-w-0 space-y-1">
+                            <div className="text-xs font-semibold text-card-foreground">支持嵌入流量</div>
+                            <p className="text-xs leading-relaxed text-muted-foreground">
+                                对齐 sub2api 的账号能力位。开启后本渠道除聊天外还承接 /v1/embeddings——一个上游账号（如火山）既能聊天又能嵌入，不必为同一把 Key 建两个渠道。关闭＝只接聊天，与改动前完全一致。
+                            </p>
+                        </div>
+                        <label className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-border bg-muted/30 px-2.5 py-1.5 text-xs text-muted-foreground">
+                            <Switch
+                                checked={embeddingsCapabilityEnabled}
+                                onCheckedChange={(checked) => onFormDataChange({ ...formData, capabilities: setChannelCapability(formData.capabilities, CAPABILITY_EMBEDDINGS, checked) })}
+                                aria-label="支持嵌入流量"
+                            />
+                            <span>{embeddingsCapabilityEnabled ? '已支持嵌入' : '仅聊天'}</span>
+                        </label>
+                    </div>
+                    {embeddingsCapabilityEnabled && (
+                        <div className="mt-3 space-y-2">
+                            <label htmlFor={`${idPrefix}-openai-embeddings-path`} className="text-sm font-medium text-card-foreground">
+                                嵌入端点路径
+                            </label>
+                            <Input
+                                id={`${idPrefix}-openai-embeddings-path`}
+                                type="text"
+                                value={formData.openai_embeddings_path}
+                                onChange={(e) => onFormDataChange({ ...formData, openai_embeddings_path: e.target.value })}
+                                placeholder="/v1/embeddings"
+                                className="rounded-xl"
+                            />
+                            <p className="text-xs leading-relaxed text-muted-foreground">
+                                留空＝默认 /v1/embeddings。火山这类上游的嵌入路径是 /api/v3/embeddings，请填完整路径——它和聊天路径各自独立，不会被拼在一起。
+                            </p>
+                        </div>
+                    )}
                 </div>
 
                 {channelTestResult && (

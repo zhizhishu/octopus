@@ -409,14 +409,16 @@ attemptChannels:
 		availableKeys = balancer.PrioritizeChannelKeysByHealth(availableKeys, channel.ID, item.ModelName, preferredKeyID)
 
 		// 出站适配器
-		outAdapter := outbound.Get(channel.Type)
+		outAdapter := outboundAdapterFor(internalRequest, channel.Type)
 		if outAdapter == nil {
 			iter.Skip(channel.ID, 0, channel.Name, fmt.Sprintf("unsupported channel type: %d", channel.Type))
 			continue
 		}
 
 		// 类型兼容性检查
-		if internalRequest.IsEmbeddingRequest() && !outbound.IsEmbeddingChannelType(channel.Type) {
+		// 嵌入流量按「渠道能力位」判定（SupportsCapability）：空 Capabilities 的
+		// 存量渠道退回按渠道类型判定，行为与改动前完全一致。
+		if internalRequest.IsEmbeddingRequest() && !channel.SupportsCapability(dbmodel.CapabilityEmbeddings) {
 			iter.Skip(channel.ID, 0, channel.Name, "channel type not compatible with embedding request")
 			continue
 		}
@@ -1621,10 +1623,37 @@ func (ra *relayAttempt) outboundBaseURL() string {
 	if ra == nil || ra.channel == nil {
 		return ""
 	}
+	// 🔴 嵌入判断必须在渠道类型判断**之前**：CustomOpenAIChat 分支会提前返回聊天
+	// base url，于是「CustomOpenAIChat 渠道勾了 embeddings 且配了 openai_embeddings_path」
+	// 这条合法组合会用错 URL —— 嵌入请求打到聊天端点上。
+	if ra.internalRequest.IsEmbeddingRequest() {
+		return ra.channel.GetOpenAIEmbeddingsBaseUrl()
+	}
 	if ra.channel.Type == outbound.OutboundTypeCustomOpenAIChat {
 		return ra.channel.GetOpenAIChatBaseUrl()
 	}
 	return ra.channel.GetBaseUrl()
+}
+
+// outboundAdapterFor 选出本次尝试的出站适配器。
+//
+// 嵌入流量永远走通用 EmbeddingOutbound：它的报文只有 model/input/dimensions/
+// encoding_format/user 五个字段，任何 OpenAI 兼容上游都吃这一套。渠道类型决定的是
+// "能接什么"，不决定"嵌入报文长什么样"。一个被勾上 embeddings 能力位的火山渠道
+// （type 决定的是 ResponseOutbound）如果不纠正，就会拿嵌入请求序列化成 responses
+// body —— 发出去的东西是错的。
+//
+// 渠道类型本身没有出厂适配器时（outbound.Get 返回 nil）原样返回 nil，让调用点既有的
+// "unsupported channel type" 跳过逻辑继续生效。
+func outboundAdapterFor(internalRequest *model.InternalLLMRequest, channelType outbound.OutboundType) model.Outbound {
+	adapter := outbound.Get(channelType)
+	if adapter == nil || internalRequest == nil || !internalRequest.IsEmbeddingRequest() {
+		return adapter
+	}
+	if embeddingAdapter := outbound.Get(outbound.OutboundTypeOpenAIEmbedding); embeddingAdapter != nil {
+		return embeddingAdapter
+	}
+	return adapter
 }
 
 func shouldTryNextChannelKey(statusCode int) bool {
@@ -1764,6 +1793,16 @@ func (ra *relayAttempt) shouldForceAnthropicStreamUpstream() bool {
 		return false
 	}
 	if ra.channel.Type != outbound.OutboundTypeAnthropic {
+		return false
+	}
+	// 嵌入流量永不强制流式：CLI 形状是给聊天/响应类流量模拟真 CLI 的，嵌入没有
+	// CLI 可言；而且 EmbeddingOutbound.TransformStream 直接报错
+	// （embedding.go:122 "streaming is not supported for embedding API"）。一旦
+	// 被强制流式，上游返回的 JSON 会进 handleStreamResponseAsNonStream，那里对
+	// 非 SSE 内容直接判错 —— 用户看到的是一次莫名其妙的失败。
+	// ra.relayRequest 是嵌入指针，为 nil 时访问 ra.internalRequest 会先解引用它再崩。
+	// 两层都要判：relayRequest 本身、以及其中的 internalRequest。
+	if ra.relayRequest != nil && ra.internalRequest != nil && ra.internalRequest.IsEmbeddingRequest() {
 		return false
 	}
 	return shouldApplyChannelCloak(ra.channel.Cloak)

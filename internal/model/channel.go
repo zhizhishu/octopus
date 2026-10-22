@@ -2,6 +2,7 @@ package model
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -28,6 +29,9 @@ const (
 	// keys would throw the cache away on every turn.
 	KeySelectStrategySticky KeySelectStrategy = 1
 )
+
+// CapabilityEmbeddings 表示该渠道可承接 /v1/embeddings 流量。
+const CapabilityEmbeddings = "embeddings"
 
 type Channel struct {
 	ID                int                   `json:"id" gorm:"primaryKey"`
@@ -80,18 +84,26 @@ type Channel struct {
 	// on GLM with thinking + small max_tokens), fold reasoning into content so chat
 	// clients that only render message.content still see a reply. Shape-safe: only
 	// rewrites the application-layer body returned to the client, never outbound TLS.
-	ThinkingToContent    bool               `json:"thinking_to_content" gorm:"default:false"`
+	ThinkingToContent bool `json:"thinking_to_content" gorm:"default:false"`
+	// Capabilities 声明本渠道能承接哪些非聊天流量（当前只有 "embeddings"）。
+	// 空 = 只接聊天；所有存量渠道初始为空，行为与改动前完全一致。
+	// 用 JSON 切片存，将来加 images/videos/rerank 只需加字符串，不必再改表。
+	Capabilities         []string           `json:"capabilities" gorm:"serializer:json"`
 	ParamOverride        *string            `json:"param_override"`
 	SystemPromptOverride string             `json:"system_prompt_override"`
 	PromptOverrideMode   PromptOverrideMode `json:"prompt_override_mode" gorm:"default:append_system"`
 	ChannelProxy         *string            `json:"channel_proxy"`
 	OpenAIChatPath       string             `json:"openai_chat_path"`
 	OpenAIModelsPath     string             `json:"openai_models_path"`
-	Stats                *StatsChannel      `json:"stats,omitempty" gorm:"foreignKey:ChannelID"`
-	MatchRegex           *string            `json:"match_regex"`
-	CircuitTripped       bool               `json:"circuit_tripped" gorm:"-"`
-	CircuitRemainingSecs int                `json:"circuit_remaining_seconds" gorm:"-"`
-	CircuitOpenKeys      int                `json:"circuit_open_keys" gorm:"-"`
+	// OpenAIEmbeddingsPath 是嵌入端点的逃生口（与 OpenAIChatPath 同款）：火山这类
+	// 上游的嵌入路径是 /api/v3/embeddings，用 JoinOpenAIPath 拼会变成
+	// /api/v3/v1/embeddings。空 = 走标准 /v1/embeddings 拼接，存量渠道行为不变。
+	OpenAIEmbeddingsPath string        `json:"openai_embeddings_path"`
+	Stats                *StatsChannel `json:"stats,omitempty" gorm:"foreignKey:ChannelID"`
+	MatchRegex           *string       `json:"match_regex"`
+	CircuitTripped       bool          `json:"circuit_tripped" gorm:"-"`
+	CircuitRemainingSecs int           `json:"circuit_remaining_seconds" gorm:"-"`
+	CircuitOpenKeys      int           `json:"circuit_open_keys" gorm:"-"`
 }
 
 type ChannelCircuitStatus struct {
@@ -169,6 +181,7 @@ type ChannelUpdateRequest struct {
 	RedactEnabled         *bool                  `json:"redact_enabled,omitempty"`
 	RedactFlags           *string                `json:"redact_flags,omitempty"`
 	ThinkingToContent     *bool                  `json:"thinking_to_content,omitempty"`
+	Capabilities          *[]string              `json:"capabilities,omitempty"`
 	Proxy                 *bool                  `json:"proxy,omitempty"`
 	AutoSync              *bool                  `json:"auto_sync,omitempty"`
 	CustomHeader          *[]CustomHeader        `json:"custom_header,omitempty"`
@@ -181,6 +194,7 @@ type ChannelUpdateRequest struct {
 	ModelMapping          *map[string]string     `json:"model_mapping,omitempty"`
 	OpenAIChatPath        *string                `json:"openai_chat_path,omitempty"`
 	OpenAIModelsPath      *string                `json:"openai_models_path,omitempty"`
+	OpenAIEmbeddingsPath  *string                `json:"openai_embeddings_path,omitempty"`
 
 	KeysToAdd    []ChannelKeyAddRequest    `json:"keys_to_add,omitempty"`
 	KeysToUpdate []ChannelKeyUpdateRequest `json:"keys_to_update,omitempty"`
@@ -302,6 +316,24 @@ func (req *ChannelUpdateRequest) Validate() error {
 	return nil
 }
 
+// SupportsCapability 判断渠道能否承接某类非聊天流量。
+//
+// 🔴 空 Capabilities 必须退回按渠道类型判定 —— 这是上线零影响的安全带：
+// 存量渠道没填过这个字段，行为必须与改动前完全一致。
+func (c *Channel) SupportsCapability(capability string) bool {
+	if c == nil {
+		return false
+	}
+	if len(c.Capabilities) == 0 {
+		switch capability {
+		case CapabilityEmbeddings:
+			return outbound.IsEmbeddingChannelType(c.Type)
+		}
+		return false
+	}
+	return slices.Contains(c.Capabilities, capability)
+}
+
 func (c *Channel) GetBaseUrl() string {
 	if c == nil || len(c.BaseUrls) == 0 {
 		return ""
@@ -335,6 +367,24 @@ func (c *Channel) GetOpenAIChatBaseUrl() string {
 		return baseURL
 	}
 	joined, err := xurl.JoinCustomOpenAIChatPath(baseURL, chatPath)
+	if err != nil {
+		return baseURL
+	}
+	return joined
+}
+
+// GetOpenAIEmbeddingsBaseUrl 把渠道的嵌入自定义路径拼进 base url（与
+// GetOpenAIChatBaseUrl 同款拼法）。空路径 = 原样返回 base url，存量渠道行为不变。
+func (c *Channel) GetOpenAIEmbeddingsBaseUrl() string {
+	if c == nil {
+		return ""
+	}
+	baseURL := c.GetBaseUrl()
+	embeddingsPath := strings.TrimSpace(c.OpenAIEmbeddingsPath)
+	if embeddingsPath == "" {
+		return baseURL
+	}
+	joined, err := xurl.JoinCustomOpenAIEmbeddingsPath(baseURL, embeddingsPath)
 	if err != nil {
 		return baseURL
 	}

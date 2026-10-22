@@ -306,6 +306,12 @@ func ChannelUpdate(req *model.ChannelUpdateRequest, ctx context.Context) (*model
 		selectFields = append(selectFields, "thinking_to_content")
 		updates.ThinkingToContent = *req.ThinkingToContent
 	}
+	// 能力位：nil = 本次没有提到这个字段（存量前端不发它），保持库里原值不动。
+	// 传 [] 是显式清空（回到"只接聊天"，即按渠道类型判定的存量语义）。
+	if req.Capabilities != nil {
+		selectFields = append(selectFields, "capabilities")
+		updates.Capabilities = *req.Capabilities
+	}
 	if req.MaxConcurrent != nil {
 		selectFields = append(selectFields, "max_concurrent")
 		updates.MaxConcurrent = *req.MaxConcurrent
@@ -381,6 +387,10 @@ func ChannelUpdate(req *model.ChannelUpdateRequest, ctx context.Context) (*model
 	if req.OpenAIModelsPath != nil {
 		selectFields = append(selectFields, "open_ai_models_path")
 		updates.OpenAIModelsPath = *req.OpenAIModelsPath
+	}
+	if req.OpenAIEmbeddingsPath != nil {
+		selectFields = append(selectFields, "open_ai_embeddings_path")
+		updates.OpenAIEmbeddingsPath = *req.OpenAIEmbeddingsPath
 	}
 
 	// 只有当有字段需要更新时才执行 UPDATE

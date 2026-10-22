@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/tmaxmax/go-sse"
 	"github.com/zhizhishu/octopus/internal/client"
 	"github.com/zhizhishu/octopus/internal/helper"
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
@@ -24,8 +26,6 @@ import (
 	"github.com/zhizhishu/octopus/internal/utils/log"
 	"github.com/zhizhishu/octopus/internal/utils/safe"
 	"github.com/zhizhishu/octopus/internal/utils/xredact"
-	"github.com/google/uuid"
-	"github.com/tmaxmax/go-sse"
 )
 
 const (
@@ -651,7 +651,17 @@ func (r *modelRunner) tryChannel(ctx context.Context, channel *dbmodel.Channel, 
 		r.recordAttempt(channel.ID, 0, channelName, upstreamModel, "", dbmodel.AttemptSkipped, 0, 0, "channel disabled")
 		return false
 	}
-	if !outbound.IsChatChannelType(channel.Type) && !outbound.IsEmbeddingChannelType(channel.Type) {
+	// 能力位判定：空 Capabilities 的存量渠道退回按渠道类型判定，行为不变。
+	// 准入按"本次要测什么"判，不能是 OR：一个普通 Chat 渠道测**嵌入**端点时，
+	// relay 侧并不会调度它（能力位没有 embeddings），这里若放行就会测出一条
+	// 生产走不通的"可用"，那是假绿灯。
+	isEmbeddingTest := isEmbeddingTestEndpoint(r.request.Endpoint)
+	if isEmbeddingTest {
+		if !channel.SupportsCapability(dbmodel.CapabilityEmbeddings) {
+			r.recordAttempt(channel.ID, 0, channelName, upstreamModel, "", dbmodel.AttemptSkipped, 0, 0, "channel does not declare the embeddings capability")
+			return false
+		}
+	} else if !outbound.IsChatChannelType(channel.Type) {
 		r.recordAttempt(channel.ID, 0, channelName, upstreamModel, "", dbmodel.AttemptSkipped, 0, 0, fmt.Sprintf("channel type %d does not support model connectivity tests", channel.Type))
 		return false
 	}
@@ -673,7 +683,7 @@ func (r *modelRunner) tryChannel(ctx context.Context, channel *dbmodel.Channel, 
 		return false
 	}
 
-	adapter := outbound.Get(channel.Type)
+	adapter := modelTestOutboundAdapter(channel.Type, r.request.Endpoint)
 	if adapter == nil {
 		r.recordAttempt(channel.ID, 0, channelName, upstreamModel, "", dbmodel.AttemptSkipped, 0, 0, fmt.Sprintf("unsupported channel type: %d", channel.Type))
 		return false
@@ -775,7 +785,7 @@ func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermod
 		prepareCodexModelTestRequest(internalRequest, channel.Type, fp)
 	}
 
-	outboundRequest, err := adapter.TransformRequest(ctx, internalRequest, modelTestOutboundBaseURL(channel), key.ChannelKey)
+	outboundRequest, err := adapter.TransformRequest(ctx, internalRequest, modelTestOutboundBaseURL(channel, internalRequest), key.ChannelKey)
 	if err != nil {
 		return 0, nil, fmt.Errorf("build request: %w", err)
 	}
@@ -892,14 +902,53 @@ func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermod
 	return response.StatusCode, parsed, nil
 }
 
-func modelTestOutboundBaseURL(channel *dbmodel.Channel) string {
+func modelTestOutboundBaseURL(channel *dbmodel.Channel, internalRequest *transformermodel.InternalLLMRequest) string {
 	if channel == nil {
 		return ""
 	}
 	if channel.Type == outbound.OutboundTypeCustomOpenAIChat {
 		return channel.GetOpenAIChatBaseUrl()
 	}
+	// 与 relay 的 outboundBaseURL 对齐：嵌入请求用嵌入专属 base url。渠道没配
+	// openai_embeddings_path 时它就是 GetBaseUrl()，检测与真实转发同一条链路。
+	if internalRequest.IsEmbeddingRequest() {
+		return channel.GetOpenAIEmbeddingsBaseUrl()
+	}
 	return channel.GetBaseUrl()
+}
+
+// isEmbeddingTestEndpoint 判断端点名是否为嵌入端点。空值按默认端点（openai_chat）
+// 处理，与 NewProbeSender 的默认语义一致。
+func isEmbeddingTestEndpoint(endpoint string) bool {
+	normalized, err := normalizeEndpoint(endpoint)
+	if err != nil {
+		return false
+	}
+	return normalized.name == embeddingTestEndpointName
+}
+
+// modelTestOutboundAdapter 选出本次渠道检测/探针的出站适配器。
+//
+// 与 relay 侧同理：嵌入流量永远走通用 EmbeddingOutbound。它的报文只有
+// model/input/dimensions/encoding_format/user 五个字段，任何 OpenAI 兼容上游都吃这一套。
+// 渠道类型决定"能接什么"，不决定"嵌入报文长什么样"。
+//
+// 存量之所以没暴雷，是因为 EmbeddingChannelTypes 只有 OpenAIEmbedding，嵌入渠道必然是
+// type 5，outbound.Get(5) 正好拿到 EmbeddingOutbound。一旦放开能力位，这个巧合就没了：
+// 火山渠道勾上 embeddings 后测嵌入端点，adapter 还是 ResponseOutbound，会拿嵌入请求
+// 去序列化成 responses body。
+//
+// 渠道类型本身没有出厂适配器时（outbound.Get 返回 nil）原样返回 nil，让调用点既有的
+// "unsupported channel type" 跳过逻辑继续生效。
+func modelTestOutboundAdapter(channelType outbound.OutboundType, endpoint string) transformermodel.Outbound {
+	adapter := outbound.Get(channelType)
+	if adapter == nil || !isEmbeddingTestEndpoint(endpoint) {
+		return adapter
+	}
+	if embeddingAdapter := outbound.Get(outbound.OutboundTypeOpenAIEmbedding); embeddingAdapter != nil {
+		return embeddingAdapter
+	}
+	return adapter
 }
 
 func (r *modelRunner) internalRequest(upstreamModel string) *transformermodel.InternalLLMRequest {

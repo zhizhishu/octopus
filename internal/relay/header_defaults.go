@@ -110,6 +110,16 @@ func (ra *relayAttempt) applyHeaderDefaults(req *http.Request) {
 	if ra == nil || req == nil || ra.channel == nil {
 		return
 	}
+	// 嵌入流量不套任何 CLI 身份（claude/codex 指纹、cloak shape、TLS 面容）——
+	// 嵌入没有 CLI 可言。改动前 Anthropic/Responses 类渠道根本接不到嵌入请求
+	// （EmbeddingChannelTypes 只有 type 5），能力位放开后它们能接到了；若不在此
+	// 隔离，一个勾了 embeddings 的 Anthropic 渠道会让嵌入请求带上 claude CLI 的
+	// header/TLS 身份，既无意义又违反"嵌入流量不碰指纹路径"的红线。
+	// 只做通用默认（内容类型/鉴权/基础 UA），与嵌入出站自身的三个头一致。
+	if ra.internalRequest != nil && ra.internalRequest.IsEmbeddingRequest() {
+		applyGenericHeaderDefaultsForChannel(req, ra.channel)
+		return
+	}
 	clientUsedBearer := false
 	clientUsedAPIKey := false
 	inboundUserAgent := ""

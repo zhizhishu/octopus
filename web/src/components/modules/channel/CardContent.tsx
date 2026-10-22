@@ -21,6 +21,7 @@ import {
 } from '@/components/ui/morphing-dialog';
 import { Tabs, TabsContents, TabsContent } from '@/components/animate-ui/primitives/animate/tabs';
 import { type StatsMetricsFormatted } from '@/api/endpoints/stats';
+import { channelCapabilitiesUpdate } from '@/lib/channel-capabilities';
 import { useTranslations } from 'next-intl';
 import { Button } from '@/components/ui/button';
 import { ChannelForm, normalizeBaseUrlForChannelType, type ChannelFormData } from './Form';
@@ -74,11 +75,13 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
         selected_models: channel.selected_models ?? [],
         anthropic_context_1m: channel.anthropic_context_1m ?? false,
         thinking_to_content: channel.thinking_to_content ?? false,
+        capabilities: channel.capabilities ?? [],
         proxy: channel.proxy,
         auto_sync: channel.auto_sync,
         match_regex: channel.match_regex ?? '',
         openai_chat_path: channel.openai_chat_path ?? '',
         openai_models_path: channel.openai_models_path ?? '',
+        openai_embeddings_path: channel.openai_embeddings_path ?? '',
         // Load the saved mapping into the edit form so reopening a channel SHOWS the
         // mapping the user saved (previously omitted here, so the rows always rendered
         // empty on open — "点了保存 点开看不到").
@@ -182,6 +185,15 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
         if (nextOpenAIModelsPath !== curOpenAIModelsPath) {
             req.openai_models_path = nextOpenAIModelsPath;
         }
+
+        const nextOpenAIEmbeddingsPath = formData.openai_embeddings_path.trim();
+        const curOpenAIEmbeddingsPath = channel.openai_embeddings_path ?? '';
+        if (nextOpenAIEmbeddingsPath !== curOpenAIEmbeddingsPath) {
+            req.openai_embeddings_path = nextOpenAIEmbeddingsPath;
+        }
+
+        // 能力位走 patch 语义：没改不发（存量请求形状不变），取消勾选发 [] 才算清空。
+        Object.assign(req, channelCapabilitiesUpdate(channel.capabilities, formData.capabilities));
 
         // Send the model-mapping table when it changed (add / edit / clear). An empty
         // object is the explicit "clear" signal the backend maps to no mapping. Without
