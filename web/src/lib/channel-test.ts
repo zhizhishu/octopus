@@ -97,50 +97,81 @@ export function shouldForceChannelTestStream(args: {
     models?: string | string[];
     endpoint?: string;
     channelType?: ChannelType;
-    anthropicContext1M?: boolean;
     cloakMode?: string;
+    cloakShape?: string;
+    anthropicContext1M?: boolean;
 }): boolean {
     if (args.models) {
         const models = Array.isArray(args.models) ? args.models : [args.models];
         if (models.some(isStreamRequiredModel)) return true;
     }
-    if (args.endpoint === 'openai_responses' && channelUsesCodexIdentity(args.channelType)) return true;
-    if (args.endpoint === 'anthropic_messages' && !!args.anthropicContext1M) return true;
+    // 🔴 强制流式的唯一来源是"真 codex 渠道"，而后端只对 OutboundTypeOpenAIResponse
+    // 这么做（runner.go:763）。它**不**看端点名，也**不**看 cloak.shape：
+    // 一个 shape=codex 的普通 Chat 渠道，后端不会强制流式。
+    // 早先这里写 `endpoint === 'openai_responses' → true`，导致把火山渠道（出站
+    // /responses 但不是 codex）的流式开关锁死，测不了非流式。
     if (args.channelType === ChannelType.OpenAIResponse) return true;
+    if (args.endpoint === 'anthropic_messages' && !!args.anthropicContext1M) return true;
     if (args.channelType === ChannelType.Anthropic && channelCloakApplies(args.cloakMode)) return true;
+    // 渠道类型未知（老调用方）：沿用旧行为，避免行为突变。
+    if ((args.channelType === undefined || args.channelType === null) &&
+        args.endpoint === 'openai_responses') return true;
     return false;
 }
 
 /**
- * 该渠道的出站身份是不是 codex 形状（决定要不要强制流式 + 显示哪个身份）。
+ * 该渠道的真实出站身份族：'claude' | 'codex' | 'generic'。
  *
- * 对应后端 runner.go:1149-1161 的两段判据：
- *   - OutboundTypeOpenAIResponse → 永远是 codex 形状，与端点无关
- *   - OpenAIChat / CustomOpenAIChat 只在 openai_responses 端点上才是 codex 形状
- *   - Volcengine 落 default → 永远不是
+ * 必须镜像后端 `header_defaults.go:78-247` 的实际判据，而不是"端点名 + 渠道类型"
+ * 这种想当然的对应。逐条对照：
  *
- * channelType 为空（老调用方/未知）时返回 true，保持旧行为不误伤。
- */
-export function channelUsesCodexIdentity(channelType?: ChannelType): boolean {
-    if (channelType === undefined || channelType === null) return true;
-    return channelType === ChannelType.OpenAIResponse ||
-        channelType === ChannelType.OpenAIChat ||
-        channelType === ChannelType.CustomOpenAIChat;
-}
-
-/**
- * 该端点+渠道组合对外呈现的身份。响应端点只在渠道真是 codex 形状时才叫 codex，
- * 否则就是通用 UA —— 界面必须和实际出站一致，不能因为端点名而撒谎。
+ *   1. cloak 关了（`!shouldApplyChannelCloak`，见 header_defaults.go:81-90）：
+ *      → 强制通用 UA，并剥掉 codex 头。**和渠道类型无关。**
+ *   2. Anthropic 渠道 → claude CLI。
+ *   3. Responses 渠道 → codex CLI（协议本身就是 codex 的）。
+ *   4. 其它渠道（含普通 Chat / Volcengine）→ 看 `cloak.shape`：
+ *      - 'claude' → claude CLI
+ *      - 'codex'  → codex CLI
+ *      - 其它/空 → 通用 UA（header_defaults.go:240-246 的 default 分支）
+ *
+ * 注意 Volcengine 落在最后一条：它出站是 /responses 形状，但**身份是通用 UA**。
+ * 早先版本只看端点名，把火山标成 codex —— 界面撒谎。
  */
 export function channelTestIdentityFor(
     endpoint: ModelTestEndpoint,
     channelType?: ChannelType,
+    cloak?: { mode?: string; shape?: string },
 ): 'codex' | 'claude' | 'generic' {
-    if (endpoint === 'openai_responses') {
-        return channelUsesCodexIdentity(channelType) ? 'codex' : 'generic';
+    // 1. cloak 关掉：后端明确强制通用身份，优先于一切。
+    if (cloak && !channelCloakApplies(cloak.mode)) return 'generic';
+
+    // 2./3. 渠道协议本身就是某个 CLI 的，身份不可选。（Gemini 无 CLI 身份）
+    if (channelType === ChannelType.Anthropic) return 'claude';
+    if (channelType === ChannelType.OpenAIResponse) return 'codex';
+
+    // 4. Chat 族由 cloak.shape 显式 opt-in，否则通用。
+    const shape = (cloak?.shape ?? '').toLowerCase().trim();
+    if (shape === 'claude') return 'claude';
+    if (shape === 'codex') return 'codex';
+
+    // 端点只影响"测的是什么协议"，不影响身份族——除非渠道类型未知
+    // （老调用方），此时沿用旧的按端点推断，避免行为突变。
+    if (channelType === undefined || channelType === null) {
+        if (endpoint === 'openai_responses') return 'codex';
+        if (endpoint === 'anthropic_messages') return 'claude';
     }
-    if (endpoint === 'anthropic_messages') return 'claude';
     return 'generic';
+}
+
+/**
+ * 该渠道的出站身份是不是 codex 形状。
+ * 供流式判断与显示复用，避免两处各推一遍。
+ */
+export function channelUsesCodexIdentity(
+    channelType?: ChannelType,
+    cloak?: { mode?: string; shape?: string },
+): boolean {
+    return channelTestIdentityFor('openai_chat', channelType, cloak) === 'codex';
 }
 
 /**

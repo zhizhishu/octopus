@@ -17,7 +17,7 @@ func TestChatInboundDropsEmbeddingFields(t *testing.T) {
 	// 客户端能单方面发出来的最坏情况：一条合法的 chat 请求 + 一个多余的
 	// embedding 字段，值随便给（UnmarshalJSON 对任何非 null JSON 都收）。
 	body := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],` +
-		`"embedding_input":1,"dimensions":1024,"encoding_format":"float"}`)
+		`"embedding_input":1,"embedding_dimensions":1024,"embedding_encoding_format":"float"}`)
 
 	req, err := (&ChatInbound{}).TransformRequest(context.Background(), body)
 	if err != nil {
@@ -52,7 +52,7 @@ func TestChatInboundDropsEmbeddingFields(t *testing.T) {
 	if err := json.Unmarshal(raw, &wire); err != nil {
 		t.Fatalf("unmarshal 失败: %v", err)
 	}
-	for _, field := range []string{"embedding_input", "dimensions", "encoding_format"} {
+	for _, field := range []string{"embedding_input", "embedding_dimensions", "embedding_encoding_format"} {
 		if v, ok := wire[field]; ok && string(v) != "null" {
 			t.Errorf("出站报文不该含 %q，实际: %s", field, v)
 		}
@@ -60,6 +60,11 @@ func TestChatInboundDropsEmbeddingFields(t *testing.T) {
 }
 
 // 真正的 embedding 请求必须原样保留，别被上面的清理误伤。
+//
+// 注意入参名：embedding 入站走的是自己的 OpenAIEmbeddingRequest 结构体，字段是
+// OpenAI 标准的 "dimensions"/"encoding_format"；InternalLLMRequest 上的标签则是
+// "embedding_dimensions"/"embedding_encoding_format"（这是内部结构体的命名）。
+// 两边名字不一样，测试必须分别用对，否则断言打在一个根本不存在的字段上。
 func TestEmbeddingInboundKeepsItsFields(t *testing.T) {
 	body := []byte(`{"model":"text-embedding-3-small","input":"hello",` +
 		`"dimensions":256,"encoding_format":"float"}`)
@@ -72,10 +77,10 @@ func TestEmbeddingInboundKeepsItsFields(t *testing.T) {
 		t.Fatal("真正的 embedding 请求必须仍被判为 embedding")
 	}
 	if req.EmbeddingDimensions == nil || *req.EmbeddingDimensions != 256 {
-		t.Error("dimensions 必须原样保留")
+		t.Error("embedding_dimensions 必须原样保留")
 	}
 	if req.EmbeddingEncodingFormat == nil || *req.EmbeddingEncodingFormat != "float" {
-		t.Error("encoding_format 必须原样保留")
+		t.Error("embedding_encoding_format 必须原样保留")
 	}
 	if err := req.Validate(); err != nil {
 		t.Fatalf("合法 embedding 请求不该被 Validate 拒: %v", err)

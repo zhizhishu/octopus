@@ -351,9 +351,11 @@ function AdvancedChannelTestDialog({
     const identity = identityQuery.data;
     const selectedShapes = useMemo(() => {
         const kinds = new Set<'codex' | 'claude' | 'generic'>();
-        for (const e of endpoints) kinds.add(channelTestIdentityFor(e, channel.type));
+        for (const e of endpoints) kinds.add(channelTestIdentityFor(e, channel.type, channel.cloak));
         return kinds;
-    }, [endpoints]);
+        // 依赖必须含 channel.type 与 cloak：身份是按渠道配置算的，
+        // 只盯 endpoints 会在"同渠道换类型/换 shape"时沿用旧身份。
+    }, [endpoints, channel.type, channel.cloak]);
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
