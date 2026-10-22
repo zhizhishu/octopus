@@ -199,8 +199,11 @@ func (ra *relayAttempt) inboundRedactExcludedRequest() bool {
 	if ra == nil || ra.internalRequest == nil {
 		return true
 	}
+	// 🔴 用 IsEmbeddingRequest() 而不是 `EmbeddingInput != nil`：后者会被一趟
+	// chat 请求里夹带的 "embedding_input" 字段误触发，把一个本该脱敏的 chat
+	// 请求整条排除在保护之外。判据必须和 relay/model 层是同一个。
 	return ra.internalRequest.IsImageGenerationRequest() ||
-		ra.internalRequest.EmbeddingInput != nil ||
+		ra.internalRequest.IsEmbeddingRequest() ||
 		isVideoRequest(ra.relayRequest)
 }
 

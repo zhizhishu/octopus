@@ -33,6 +33,23 @@ func (i *ChatInbound) TransformRequest(ctx context.Context, body []byte) (*model
 		return nil, err
 	}
 	request.RawAPIFormat = model.APIFormatOpenAIChatCompletion
+	// 🔴 chat 端点不认 embeddings 专用字段，进来就丢掉。
+	//
+	// 这是"chat 客户端夹带 embedding_input 就把自己打成全渠道不可用"的根子：
+	// InternalLLMRequest 是所有端点共用的结构体，json.Unmarshal 会把 body 里任何
+	// 认识的字段都填进去，而 EmbeddingInput.UnmarshalJSON 对任何非 null JSON 都
+	// 照单全收（塞 Raw 不校验形状）。于是 chat body 里一个
+	// "embedding_input": 1 就能让下游三个判据全部误判：
+	//   Validate            → "cannot specify both messages and input"（400）
+	//   relay 渠道筛选       → 所有 chat 渠道被跳过
+	//   redact 排除判断      → 本该脱敏的 chat 请求被排除在保护外
+	//   chat 出站 json.Marshal → 把这个字段原样发给上游
+	//
+	// 在源头清掉比在下游四处补判据稳得多：这个端点语义上就不存在 embeddings。
+	// 真正的 embedding 请求走 EmbeddingInbound，不受影响。
+	request.EmbeddingInput = nil
+	request.EmbeddingDimensions = nil
+	request.EmbeddingEncodingFormat = nil
 	normalizeOpenAIChatToolMessages(&request)
 	// Capture the channel opt-in before the request is handed to relay; relay
 	// re-sets TransformOptions.ThinkingToContent from the channel each attempt.

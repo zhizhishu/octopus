@@ -77,10 +77,21 @@ export function channelCloakApplies(mode?: string): boolean {
 /**
  * 统一「测试是否强制流式」判断：
  * 1) 任一 isStreamRequiredModel
- * 2) endpoint = openai_responses
+ * 2) endpoint = openai_responses **且渠道真是 codex 形状**
  * 3) endpoint = anthropic_messages 且 1M
  * 4) channelType = OpenAIResponse
  * 5) channelType = Anthropic 且 cloak 生效
+ *
+ * 🔴 第 2 条为什么不能只看端点：强制流式来源于"真 codex 客户端永远流式"这条
+ * shape 约束（后端 runner.go:763 那条分支）。它绑的是 OutboundType 而不是端点名。
+ * 火山渠道的默认测试端点是 openai_responses（它的出站固定 /responses），但它的
+ * OutboundType 是 Volcengine —— 后端既不给它强制流式（runner.go:763 只匹配
+ * OutboundTypeOpenAIResponse），也不套 codex 指纹（runner.go:1156-1161 的
+ * switch 里 Volcengine 落 default 返回 false）。只看端点会让前端锁死流式开关、
+ * 还显示"codex CLI"身份，而实际出站是通用 UA 的非流式 —— 界面在撒谎。
+ *
+ * 所以判据是：端点选了 responses **并且**渠道本身是 codex 形状（或渠道类型未知，
+ * 沿用旧行为）。Volcengine / 普通 chat 渠道选 responses 端点时不锁流。
  */
 export function shouldForceChannelTestStream(args: {
     models?: string | string[];
@@ -93,11 +104,43 @@ export function shouldForceChannelTestStream(args: {
         const models = Array.isArray(args.models) ? args.models : [args.models];
         if (models.some(isStreamRequiredModel)) return true;
     }
-    if (args.endpoint === 'openai_responses') return true;
+    if (args.endpoint === 'openai_responses' && channelUsesCodexIdentity(args.channelType)) return true;
     if (args.endpoint === 'anthropic_messages' && !!args.anthropicContext1M) return true;
     if (args.channelType === ChannelType.OpenAIResponse) return true;
     if (args.channelType === ChannelType.Anthropic && channelCloakApplies(args.cloakMode)) return true;
     return false;
+}
+
+/**
+ * 该渠道的出站身份是不是 codex 形状（决定要不要强制流式 + 显示哪个身份）。
+ *
+ * 对应后端 runner.go:1149-1161 的两段判据：
+ *   - OutboundTypeOpenAIResponse → 永远是 codex 形状，与端点无关
+ *   - OpenAIChat / CustomOpenAIChat 只在 openai_responses 端点上才是 codex 形状
+ *   - Volcengine 落 default → 永远不是
+ *
+ * channelType 为空（老调用方/未知）时返回 true，保持旧行为不误伤。
+ */
+export function channelUsesCodexIdentity(channelType?: ChannelType): boolean {
+    if (channelType === undefined || channelType === null) return true;
+    return channelType === ChannelType.OpenAIResponse ||
+        channelType === ChannelType.OpenAIChat ||
+        channelType === ChannelType.CustomOpenAIChat;
+}
+
+/**
+ * 该端点+渠道组合对外呈现的身份。响应端点只在渠道真是 codex 形状时才叫 codex，
+ * 否则就是通用 UA —— 界面必须和实际出站一致，不能因为端点名而撒谎。
+ */
+export function channelTestIdentityFor(
+    endpoint: ModelTestEndpoint,
+    channelType?: ChannelType,
+): 'codex' | 'claude' | 'generic' {
+    if (endpoint === 'openai_responses') {
+        return channelUsesCodexIdentity(channelType) ? 'codex' : 'generic';
+    }
+    if (endpoint === 'anthropic_messages') return 'claude';
+    return 'generic';
 }
 
 /**

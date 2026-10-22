@@ -357,11 +357,30 @@ func (r *InternalLLMRequest) Validate() error {
 		return errors.New("model is required")
 	}
 
-	// 检查是否是 embedding 请求
-	isEmbeddingRequest := r.EmbeddingInput != nil
+	// 检查是否是 embedding 请求。
+	//
+	// 🔴 这里必须用 r.IsEmbeddingRequest()，不能重算 `r.EmbeddingInput != nil`。
+	// 审计抓到的真实漏洞：IsEmbeddingRequest 修好之后，Validate 自己又按旧判据
+	// 算了一遍，于是老的失败面原样存在——chat 客户端带 `"embedding_input": 1`
+	// 时，relay.go:419 的渠道筛选放行了，但请求在选渠前就被 relay.go:1195 的
+	// Validate 以 "cannot specify both messages and input" 拒成 400。
+	// 判据一分为二就是 bug 温床：任何"字段是否存在"的重复推导都会重新引入它。
+	isEmbeddingRequest := r.IsEmbeddingRequest()
 	isChatRequest := len(r.Messages) > 0
 
 	if isEmbeddingRequest && isChatRequest {
+		return errors.New("cannot specify both messages and input")
+	}
+
+	// 端点标记缺席时，messages 与 EmbeddingInput 同时出现是真正的"意图不明"
+	// （内部构造 / 测试 / 调用方自己拼的请求），照旧报错——这是既有的程序错误信号，
+	// 不该为了修 chat 夹带字段那个洞把它放松掉。
+	//
+	// 但**带端点标记的请求不适用**：标记已经明确说了这是 chat，那么残留的
+	// EmbeddingInput 只可能是"客户端在 body 里夹带了一个字段"，不是意图冲突。
+	// 这个区分很关键——chat 入站现在会在源头清掉这些字段
+	// （inbound/openai/chat.go），这里是第二道防线；两道都不许把正常 chat 拒掉。
+	if r.EmbeddingInput != nil && isChatRequest && r.RawAPIFormat == "" {
 		return errors.New("cannot specify both messages and input")
 	}
 

@@ -24,6 +24,7 @@ import {
     DEFAULT_MODEL_TEST_TIMEOUT_SECONDS,
     MODEL_TEST_ENDPOINTS,
     MODEL_TEST_ENDPOINT_LABELS,
+    channelTestIdentityFor,
     defaultModelTestEndpointForChannel,
     makeModelTestPrompt,
     sanitizeChannelTestError,
@@ -40,14 +41,10 @@ type CellSummary = { total: number; done: number; ok: number; capacity: number; 
 const MAX_REPEAT = 500;
 
 // 端点自动模拟的 shape（与后端 runner 的端点→shape 映射一致；测试永远用渠道真实 profile）
-const ENDPOINT_IDENTITY: Record<ModelTestEndpoint, 'codex' | 'claude' | 'generic'> = {
-    openai_chat: 'generic',
-    openai_responses: 'codex',
-    anthropic_messages: 'claude',
-    gemini_generate_content: 'generic',
-    // 嵌入流量是非 CLI 流量：不带任何 codex/claude 形状，只有通用 UA。
-    openai_embeddings: 'generic',
-};
+// 身份判定已下沉到 lib/channel-test.ts 的 channelTestIdentityFor：
+// 响应端点是否算 codex 取决于渠道类型（火山渠道出站是 /responses 但不是 codex
+// 形状，后端 runner.go:1156-1161 也返回 false）。写死成常量会让界面显示
+// 一个实际不存在的身份。
 const SHAPE_LABEL: Record<'codex' | 'claude' | 'generic', string> = {
     codex: 'codex CLI', claude: 'claude CLI', generic: '通用 UA',
 };
@@ -354,7 +351,7 @@ function AdvancedChannelTestDialog({
     const identity = identityQuery.data;
     const selectedShapes = useMemo(() => {
         const kinds = new Set<'codex' | 'claude' | 'generic'>();
-        for (const e of endpoints) kinds.add(ENDPOINT_IDENTITY[e]);
+        for (const e of endpoints) kinds.add(channelTestIdentityFor(e, channel.type));
         return kinds;
     }, [endpoints]);
 

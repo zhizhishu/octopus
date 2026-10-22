@@ -16,9 +16,11 @@ const ChannelType = {
     CustomOpenAIChat: 6,
 };
 
-const { defaultModelTestEndpointForChannel } = load('src/lib/channel-test.ts', {
-    '@/api/endpoints/channel': { ChannelType },
-});
+const { defaultModelTestEndpointForChannel, shouldForceChannelTestStream, channelTestIdentityFor } =
+    load('src/lib/channel-test.ts', {
+        '@/api/endpoints/channel': { ChannelType },
+        './model-aliases': { isStreamRequiredModel: () => false },
+    });
 
 /**
  * 渠道测试的默认端点必须对上该渠道的**真实出站协议**。
@@ -48,4 +50,56 @@ test('各渠道类型对上的端点与实际出站一致', () => {
     for (const [type, want] of cases) {
         assert.equal(defaultModelTestEndpointForChannel(type), want, `channel type ${type}`);
     }
+});
+
+/**
+ * 火山渠道选 responses 端点，**不等于**它是 codex 形状。
+ *
+ * 后端判据是渠道类型不是端点名：
+ *   runner.go:763       强制流式只匹配 OutboundTypeOpenAIResponse
+ *   runner.go:1156-1161 指纹 switch 里 Volcengine 落 default → false
+ *   header_defaults.go  Volcengine 走通用 UA
+ *
+ * 前端只看端点会导致：火山渠道的流式开关被锁死（测不了非流式），身份还标成
+ * "codex CLI" —— 而实际出站是通用 UA。界面在撒谎，且藏掉了一种可测模式。
+ */
+test('火山渠道选 responses 端点不锁流式', () => {
+    assert.equal(
+        shouldForceChannelTestStream({ endpoint: 'openai_responses', channelType: ChannelType.Volcengine }),
+        false,
+    );
+});
+
+test('真 codex 渠道选 responses 端点仍锁流式', () => {
+    assert.equal(
+        shouldForceChannelTestStream({ endpoint: 'openai_responses', channelType: ChannelType.OpenAIResponse }),
+        true,
+    );
+    // chat / custom-chat 渠道在 responses 端点上就是 codex 形状（后端同样如此）。
+    assert.equal(
+        shouldForceChannelTestStream({ endpoint: 'openai_responses', channelType: ChannelType.OpenAIChat }),
+        true,
+    );
+});
+
+test('渠道类型未知时保持旧行为，不误伤', () => {
+    assert.equal(shouldForceChannelTestStream({ endpoint: 'openai_responses' }), true);
+});
+
+test('火山渠道的身份显示为通用 UA，不是 codex CLI', () => {
+    assert.equal(channelTestIdentityFor('openai_responses', ChannelType.Volcengine), 'generic');
+    // 真 codex 渠道照旧显示 codex。
+    assert.equal(channelTestIdentityFor('openai_responses', ChannelType.OpenAIResponse), 'codex');
+    // 其它端点不受影响。
+    assert.equal(channelTestIdentityFor('openai_chat', ChannelType.Volcengine), 'generic');
+    assert.equal(channelTestIdentityFor('anthropic_messages', ChannelType.Anthropic), 'claude');
+    assert.equal(channelTestIdentityFor('openai_embeddings', ChannelType.OpenAIEmbedding), 'generic');
+});
+
+test('火山渠道的非流式不会被模型名以外的东西强行打开', () => {
+    // 火山 + chat 端点：本来就不该锁。
+    assert.equal(
+        shouldForceChannelTestStream({ endpoint: 'openai_chat', channelType: ChannelType.Volcengine }),
+        false,
+    );
 });
