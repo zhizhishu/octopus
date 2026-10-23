@@ -482,8 +482,7 @@ func TestImageAsyncRoutesRegistered(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s is not registered (contract route missing)", key)
 		}
-		trimmed := strings.TrimPrefix(handler, "github.com/zhizhishu/octopus/internal/server/handlers.")
-		if trimmed != tc.want && !strings.HasPrefix(trimmed, tc.want+".") {
+		if !handlerNameMatches(handler, tc.want) {
 			t.Fatalf("%s is handled by %q, want a %s handler", key, handler, tc.want)
 		}
 	}
