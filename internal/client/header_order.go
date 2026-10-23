@@ -182,6 +182,32 @@ func http1WireHeaderOrderForTarget(requestTarget string) []string {
 	}
 }
 
+// http1WireHeaderOrderForFace picks the genuine-CLI HTTP/1.1 header block for a
+// plaintext request. An explicit face override wins over the API path — exactly the
+// rule h2 already applies (canonicalHeaderOrderForFace). With no override the
+// historical path rule applies.
+//
+// 🔴 为什么必须这样做：TLS 已经伪装成 CLI，头块却还是 Go 的序列化，这是**自相矛盾**，
+// 比不伪装更容易被 shape check 抓。举个具体形态：chat 渠道设了 cloak.shape=claude，
+// 出站路径是 /v1/chat/completions —— 旧实现 http1WireHeaderOrderForTarget 只按路径判，
+// 落进 default 返回 nil，于是握手自称 claude-code（Node ClientHello、无 ALPN），
+// 头块却是 Host/User-Agent/Content-Length 前置 + 其余 ASCII 排序，连
+// Connection: keep-alive 都没有。真 CLI 的顺序一个都对不上。
+func http1WireHeaderOrderForFace(method, requestTarget, face string) []string {
+	if !upstreamHTTP1HeaderOrderEnabled() {
+		return nil
+	}
+	switch face {
+	case tlsFaceCodex:
+		return codexHTTP1WireHeaderOrder
+	case tlsFaceClaude:
+		return claudeHTTP1WireHeaderOrder
+	case tlsFaceChrome:
+		return nil
+	}
+	return http1WireHeaderOrderForTarget(requestTarget)
+}
+
 // http1RequestHeaderOrder is the production hook handed to every plaintext dial. The
 // switch is read PER REQUEST rather than baked into the transport, because the
 // transports themselves are cached process-wide: this way turning the setting off

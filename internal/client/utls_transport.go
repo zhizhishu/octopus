@@ -131,6 +131,18 @@ func (t *utlsRoundTripper) h1RoundTrip(req *http.Request, family string, spec *u
 	return transport.RoundTrip(req)
 }
 
+// h1OrderFuncForFace returns the plaintext header-order hook for one TLS family.
+//
+// face 必须一路传到头块：握手已经穿了这个 face 的 ClientHello，头块也得穿同一套，
+// 否则就是"TLS 说 A、头块说 Go"的自相矛盾 —— 比不伪装更容易被 shape check 抓。
+// 拆成独立函数是为了能被测试直接钉住：只测 http1WireHeaderOrderForFace 守不住
+// 拨号闭包真的用了它（变异实测：闭包退回 http1RequestHeaderOrder 时那些测试全绿）。
+func h1OrderFuncForFace(family string) requestHeaderOrderFunc {
+	return func(method, target string) []string {
+		return http1WireHeaderOrderForFace(method, target, family)
+	}
+}
+
 // h1TransportForFamily lazily builds one standard transport per CLI family. The
 // transport pools connections per host itself, so the map is keyed by family
 // only. The uTLS dial already completed the handshake, so the transport must
@@ -156,7 +168,7 @@ func (t *utlsRoundTripper) h1TransportForFamily(family string, spec *utls.Client
 		if dialErr != nil {
 			return nil, dialErr
 		}
-		return newOrderedRequestConn(uConn, http1RequestHeaderOrder), nil
+		return newOrderedRequestConn(uConn, h1OrderFuncForFace(family)), nil
 	}
 	t.h1Transports[family] = cloned
 	return cloned, nil
