@@ -1237,7 +1237,41 @@ func RelayLogMarkAudited(ctx context.Context, logID int64, verdict string, score
 	if result.Error != nil {
 		return result.Error
 	}
+	// 库里改了，内存缓存里的同一行也必须跟着改 —— 否则详情接口会返回"没检测过"。
+	//
+	// 🔴 为什么这不是可有可无的优化：RelayLogGetByID **先扫 relayLogCache，命中就
+	// 直接返回**（那条路径根本不碰数据库）。一段检测流程的实际顺序是
+	// 「日志刚产生 → 进缓存 → 检测 → MarkAudited 写库」，此时这行**必然**还在缓存里，
+	// 于是详情接口拿到的是没有 verdict、没有 report 的旧结构。
+	// 用户看到的就是：点了检测，转圈结束，弹窗里徽标和明细还是空的；
+	// 要等这行被挤出缓存（默认上限内可能几小时）或进程重启才会出现。
+	//
+	// 这里只在 RowsAffected>0 时同步：0 表示"库里已有更早的结论占位"，此时以库里
+	// 的旧结论为准，缓存不能拿新值去覆盖它 —— 那会破坏"先到先得"语义。
+	if result.RowsAffected > 0 {
+		relayLogApplyAuditToCache(logID, verdict, score, findingN, trigger, reportJSON)
+	}
 	return nil
+}
+
+// relayLogApplyAuditToCache 把一次检测结论同步到内存缓存里的对应行。
+//
+// 只动缓存里那一份副本，不碰数据库（调用方已经写过了）。找不到就什么都不做：
+// 说明这行不在缓存里，下次读取自然会走数据库拿到新值。
+func relayLogApplyAuditToCache(logID int64, verdict string, score, findingN int, trigger, reportJSON string) {
+	relayLogCacheLock.Lock()
+	defer relayLogCacheLock.Unlock()
+	for i := range relayLogCache {
+		if relayLogCache[i].ID != logID {
+			continue
+		}
+		relayLogCache[i].ModelAuditVerdict = verdict
+		relayLogCache[i].ModelAuditScore = score
+		relayLogCache[i].ModelAuditFindingN = findingN
+		relayLogCache[i].ModelAuditTrigger = trigger
+		relayLogCache[i].ModelAuditReport = reportJSON
+		return
+	}
 }
 
 func RelayLogUserSummary(relayLog model.RelayLog) model.RelayLogUserSummary {

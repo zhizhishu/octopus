@@ -25,6 +25,7 @@ import { getModelIcon } from '@/lib/model-icons';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { describeProbeEvidence } from './probe-evidence';
 import { ProbeEvidenceList } from './ProbeEvidenceList';
+import { AuditReportPanel } from './AuditReportPanel';
 import { ExpandableValue } from './ExpandableValue';
 import { marketModelName } from '@/lib/model-aliases';
 import { Badge } from '@/components/ui/badge';
@@ -916,6 +917,37 @@ function LazyLogBodies({ logId, fallbackRequest, fallbackResponse, requestLabel,
     );
 }
 
+/**
+ * 详情弹窗里的「检测明细」。
+ *
+ * 为什么这里要自己再取一次详情：`model_audit_report` 和 request/response_content 一样
+ * 只在详情接口返回，列表/实时流都被 Omit 掉了（internal/op/log.go 的 contentOmit）。
+ * 也就是说卡片上那个 `log` 对象里这一列**永远是 undefined**——直接读它面板永远不会出现，
+ * 所以必须走 GET /api/v1/log/{id}（fetchLogById）。取不到就当这行没被检测过，不摆空壳。
+ */
+function DetailAuditReport({ logId }: { logId: number }) {
+    const { isOpen } = useMorphingDialog();
+    const [fetched, setFetched] = useState<{ id: number; report?: string } | null>(null);
+
+    useEffect(() => {
+        if (!isOpen) return;
+        // 同一条日志只取一次；翻到别的日志（id 变了）才重新取。
+        if (fetched?.id === logId) return;
+        let cancelled = false;
+        fetchLogById(logId)
+            .then((full) => {
+                if (cancelled) return;
+                setFetched({ id: logId, report: full.model_audit_report });
+            })
+            .catch(() => {
+                // 详情取不到不该拖垮整个弹窗，其余内容照常显示。
+            });
+        return () => { cancelled = true; };
+    }, [isOpen, logId, fetched]);
+
+    return <AuditReportPanel report={fetched?.id === logId ? fetched.report : undefined} />;
+}
+
 type AuditHit = {
     channel_id: number;
     channel_name: string;
@@ -1743,6 +1775,7 @@ export const LogCard = React.memo(function LogCard({
                                     <SafeText mode="wrap" value={verdict.text} className="block" />
                                 </div>
                                 <ProbeEvidenceList probes={probes} />
+                                <DetailAuditReport logId={log.id} />
                                 <div className="grid min-w-0 grid-cols-2 gap-2 md:grid-cols-6">
                                     <DetailTile icon={<Hash className="size-3.5" />} label={t('logId')}>
                                         <MonoSafeText mode="wrap" value={String(log.id)} className="block text-xs text-foreground" />
