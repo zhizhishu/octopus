@@ -228,7 +228,7 @@ func pollOneVideoTask(ctx context.Context, channel *model.Channel, task model.Vi
 
 	// 单条查询自带上限（见 videoTaskPollTaskTimeout）：超时只会让这一条本轮跳过，
 	// 绝不中止整轮——上游可能只是慢，任务留在未完成集合里下一轮再问。
-	statusCode, body, err := queryVideoTaskUpstream(ctx, channel, channelKey, task.UpstreamTaskID)
+	statusCode, body, err := queryVideoTaskUpstream(ctx, channel, channelKey, task.UpstreamTaskID, task.MediaKind)
 	if err != nil {
 		if statusCode == http.StatusNotFound {
 			// 上游自己不认这个任务了：再问一万次也是 404，判失败收口。
@@ -506,12 +506,16 @@ func videoTaskChannelKey(channel *model.Channel, keyID int) (channelKey string, 
 // queryVideoTaskUpstream 是所有上游查询的唯一入口：先给单条查询套上
 // videoTaskPollTaskTimeout 的独立时限，再交给 relay。
 //
+// mediaKind 直接取自行上的 model.VideoTask.MediaKind：查询必须回到任务
+// 真正所在的子路径（generations / edits / extensions，空串 = /v1/videos），
+// 否则上游 404 → 一条还没跑完的任务被当场判死。
+//
 // 集中在一处，是为了让「单条上限」只有一份定义：分散到两个调用点迟早会漏掉一个，
 // 而漏掉的那一个正是「一条慢查询拖死整轮」的复发点。
-func queryVideoTaskUpstream(ctx context.Context, channel *model.Channel, channelKey, upstreamTaskID string) (int, []byte, error) {
+func queryVideoTaskUpstream(ctx context.Context, channel *model.Channel, channelKey, upstreamTaskID, mediaKind string) (int, []byte, error) {
 	queryCtx, cancel := context.WithTimeout(ctx, videoTaskPollTaskTimeout)
 	defer cancel()
-	return relay.VideoTaskPollStatus(queryCtx, channel, channelKey, upstreamTaskID)
+	return relay.VideoTaskPollStatus(queryCtx, channel, channelKey, upstreamTaskID, mediaKind)
 }
 
 // videoTaskPollRefTime 是判超时/判硬上限的时间基准，语义与 op.VideoTaskListStale
@@ -621,7 +625,7 @@ func videoTaskTimeoutResolvedUpstream(ctx context.Context, task model.VideoTask)
 		return false
 	}
 
-	statusCode, body, err := queryVideoTaskUpstream(ctx, channel, channelKey, task.UpstreamTaskID)
+	statusCode, body, err := queryVideoTaskUpstream(ctx, channel, channelKey, task.UpstreamTaskID, task.MediaKind)
 	if err != nil {
 		// 查询本身失败（网络、超时、5xx、上游 404 不认这个任务）：问不出结论，按超时判失败。
 		// 这一支刻意**不**改成「继续留着重试」——那就从「不查就判死」越到了另一个极端：

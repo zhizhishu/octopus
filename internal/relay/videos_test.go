@@ -42,7 +42,7 @@ func TestVideoTaskOwnerRoundTrip(t *testing.T) {
 	videoTaskStore.lastPruneAt = time.Time{}
 	videoTaskStore.Unlock()
 
-	recordVideoTaskOwner([]string{"video_abc", "task_abc"}, 7, 3, "agnes-video-v2.0", 42, 100)
+	recordVideoTaskOwner([]string{"video_abc", "task_abc"}, 7, 3, "agnes-video-v2.0", 42, 100, "")
 
 	entry, ok := videoTaskOwner("video_abc")
 	if !ok {

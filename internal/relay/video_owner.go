@@ -25,6 +25,10 @@ type videoTaskEntry struct {
 	ownerTokenID int
 	ownerUserID  int
 	expiresAt    time.Time
+	// mediaKind 是这条任务创建时用的子路径（见 videoUpstreamPath）。
+	// 零值 "" = 兼容别名 /videos，也是存量任务的老行为：查询路径不能因为
+	// 这次改动而变，否则一次重启就让所有在途任务的轮询直接 404。
+	mediaKind string
 }
 
 var videoTaskStore = struct {
@@ -38,7 +42,7 @@ var videoTaskStore = struct {
 // recordVideoTaskOwner binds every id (task_id / video_id / id) returned by a
 // successful create to the channel+key that served it, scoped to the requesting
 // token/user so another tenant cannot poll a task they did not create.
-func recordVideoTaskOwner(ids []string, channelID, channelKeyID int, model string, ownerTokenID, ownerUserID int) {
+func recordVideoTaskOwner(ids []string, channelID, channelKeyID int, model string, ownerTokenID, ownerUserID int, mediaKind string) {
 	if channelID == 0 || channelKeyID == 0 || len(ids) == 0 {
 		return
 	}
@@ -50,6 +54,7 @@ func recordVideoTaskOwner(ids []string, channelID, channelKeyID int, model strin
 		ownerTokenID: ownerTokenID,
 		ownerUserID:  ownerUserID,
 		expiresAt:    now.Add(defaultVideoTaskTTL),
+		mediaKind:    mediaKind,
 	}
 	videoTaskStore.Lock()
 	defer videoTaskStore.Unlock()

@@ -28,12 +28,61 @@ import (
 // JSON status objects (task id + url), so this is only a safety ceiling.
 const videoResponseBodyLimit = 8 << 20 // 8MB
 
+// videoMediaKind* 是「这条视频任务在哪个子路径上创建」的三个取值。
+//
+// 为什么需要它：上游是按子路径分组管理任务的 —— 在 /videos/edits 创建的任务
+// 只能回到 /videos/edits/{id} 查询，去 /videos/generations/{id} 问永远是 404。
+//
+// 空值 "" 留给兼容别名 /videos，同时也是存量任务的零值（改动前创建、库里没有
+// 这一列）：零值必须等于老行为，否则一次重启就让所有在途任务的查询路径全错。
+const (
+	VideoMediaKindGenerations = "generations"
+	VideoMediaKindEdits       = "edits"
+	VideoMediaKindExtensions  = "extensions"
+)
+
+// videoUpstreamPath 返回某个 media kind 下「创建 / 查询 / 取成品」的上游路径。
+// 三种能力共用一个 kind，是因为上游就是按 kind 分组的 —— 分开写三张表会在
+// 新增 kind 时漏掉一处（这个仓库栽过三次：header 顺序、stats 鉴权、视频计费）。
+//
+// taskID 为空表示「创建」，此时 wantContent 无意义（还没东西可取）。
+// 未知 kind **一律退回 "" 分支**：库里的行可能被手工改过，一条看不懂的 kind
+// 不许把整条轮询链拼成畸形 URL，更不许直接报错。
+func videoUpstreamPath(kind string, taskID string, wantContent bool) string {
+	base := "/v1/videos"
+	switch kind {
+	case VideoMediaKindGenerations, VideoMediaKindEdits, VideoMediaKindExtensions:
+		base += "/" + kind
+	}
+	id := strings.TrimSpace(taskID)
+	if id == "" {
+		return base
+	}
+	base += "/" + url.PathEscape(id)
+	if wantContent {
+		base += "/content"
+	}
+	return base
+}
+
 // VideosHandler relays an asynchronous video-generation create call
 // (POST /v1/videos). It routes by model exactly like the other relays, forwards
 // the request to the chosen channel/key, and on success records which
 // channel+key owns each returned task/video id so a later poll can return to
 // the same upstream account (the task only exists there).
+//
+// 这是兼容别名入口，media kind 为空（= 上游 /v1/videos）。
 func VideosHandler(c *gin.Context) {
+	VideosHandlerKind(c, "")
+}
+
+// VideosHandlerKind 是带 media kind 的创建入口：/v1/videos/generations |
+// edits | extensions 各自把 kind 一路带到内存归属、库里那一行和后台轮询上。
+//
+// 为什么 kind 必须跟着走完全程：一个任务在哪个子路径创建，后续查询就必须
+// 回到同一个子路径（见 videoUpstreamPath）。只记在创建时的局部变量里，
+// 轮询与重启后的恢复都会回到 /v1/videos/{id}，对上上游就是必然 404。
+func VideosHandlerKind(c *gin.Context, mediaKind string) {
 	ctx := c.Request.Context()
 	apiKeyID := c.GetInt("api_key_id")
 	userID := c.GetInt("user_id")
@@ -139,14 +188,14 @@ runIterator:
 			statusCode, body, upstreamCT, fwdErr := func() (int, []byte, string, error) {
 				finish := balancer.BeginRuntimeAttempt(channel.ID, usedKey.ID, item.ModelName)
 				defer finish()
-				return videoForward(ctx, c, http.MethodPost, "/v1/videos", payload, item.ModelName, channel, usedKey.ChannelKey)
+				return videoForward(ctx, c, http.MethodPost, videoUpstreamPath(mediaKind, "", false), payload, item.ModelName, channel, usedKey.ChannelKey)
 			}()
 			usedAt := time.Now().Unix()
 
 			if fwdErr == nil {
 				ids := extractVideoTaskIDs(body)
-				recordVideoTaskOwner(ids, channel.ID, usedKey.ID, item.ModelName, apiKeyID, userID)
-				recordVideoTaskRow(ctx, ids, channel.ID, usedKey.ID, item.ModelName, apiKeyID, userID, payload)
+				recordVideoTaskOwner(ids, channel.ID, usedKey.ID, item.ModelName, apiKeyID, userID, mediaKind)
+				recordVideoTaskRow(ctx, ids, channel.ID, usedKey.ID, item.ModelName, apiKeyID, userID, mediaKind, payload)
 
 				metrics.ActualModel = item.ModelName
 				metrics.ResponseContent = buildVideoResponseNote(ids)
@@ -241,15 +290,82 @@ runIterator:
 // different tenant (fail-closed).
 func VideoPollHandler(c *gin.Context) {
 	ctx := c.Request.Context()
-	apiKeyID := c.GetInt("api_key_id")
-	userID := c.GetInt("user_id")
-
 	taskID := strings.TrimSpace(c.Param("id"))
 	if taskID == "" {
 		resp.Error(c, http.StatusBadRequest, "video task id required")
 		return
 	}
 
+	entry, channel, channelKey, ok := videoTaskRelayTarget(c, ctx, taskID)
+	if !ok {
+		return
+	}
+
+	// 查询路径只认**记录下来的** kind。客户端可以用 /v1/videos/{id} 这个
+	// 兼容别名去轮询一条在 /videos/edits 创建的任务，但它在上游仍然只存在于
+	// /videos/edits/{id} 下面；反过来，存量任务（kind 为空）也不能因为客户端
+	// 走了一个新子路径就被改送到新子路径上去。
+	metrics := newRawProtocolRelayMetrics(c.GetInt("api_key_id"), c.GetInt("user_id"), c.GetString("request_ip"), entry.model, "videos_poll", c.Request.URL.Path)
+	metrics.ActualModel = entry.model
+
+	statusCode, body, upstreamCT, fwdErr := videoForward(ctx, c, http.MethodGet, videoUpstreamPath(entry.mediaKind, taskID, false), nil, entry.model, channel, channelKey)
+	if fwdErr != nil {
+		metrics.Save(ctx, false, fwdErr, nil)
+		status, code, message := relayErrorResponse(fwdErr)
+		resp.ErrorWithCode(c, status, code, message)
+		return
+	}
+	metrics.ResponseContent = "video task status"
+	writeVideoResponse(c, statusCode, upstreamCT, body)
+	metrics.Save(ctx, true, nil, nil)
+}
+
+// VideoContentHandler relays GET /v1/videos/<kind>/{id}/content：上游的成品
+// 二进制（典型是 mp4）。
+//
+// 与查询共用同一套「归属查找 + 租户校验 + 渠道/key 解析」，区别只有两点：
+// wantContent=true，以及响应体必须**流式**转发。绝不 ReadAll：
+// videoResponseBodyLimit 是给几百字节 JSON 状态对象设的 8MB 上限，套在几十 MB
+// 的视频上只会产出一个被截断的、放不出来的文件。
+//
+// 计费：取成品不计费（创建时已按次计过），但必须落一条 metrics.Save ——
+// 否则用户拿不到成品时，库里连一条痕迹都查不到。
+func VideoContentHandler(c *gin.Context) {
+	ctx := c.Request.Context()
+	taskID := strings.TrimSpace(c.Param("id"))
+	if taskID == "" {
+		resp.Error(c, http.StatusBadRequest, "video task id required")
+		return
+	}
+
+	entry, channel, channelKey, ok := videoTaskRelayTarget(c, ctx, taskID)
+	if !ok {
+		return
+	}
+
+	metrics := newRawProtocolRelayMetrics(c.GetInt("api_key_id"), c.GetInt("user_id"), c.GetString("request_ip"), entry.model, "videos_content", c.Request.URL.Path)
+	metrics.ActualModel = entry.model
+
+	statusCode, fwdErr := videoForwardContent(ctx, c, videoUpstreamPath(entry.mediaKind, taskID, true), channel, channelKey)
+	if fwdErr != nil {
+		metrics.Save(ctx, false, fwdErr, nil)
+		status, code, message := relayErrorResponse(fwdErr)
+		resp.ErrorWithCode(c, status, code, message)
+		return
+	}
+	metrics.OpaqueResponse = true
+	metrics.ResponseContent = "video content streamed"
+	metrics.Save(ctx, true, nil, nil)
+	log.Debugf("video content streamed for task %s (upstream status %d)", taskID, statusCode)
+}
+
+// videoTaskRelayTarget 是「查询」与「取成品」共用的入口：两级归属查找
+// （内存 → 库）、租户校验、渠道与 key 解析。任何一步失败都会写好响应
+// （404 / 502）并返回 false，调用方直接 return。
+//
+// 抽成一处不是为了省几行：这两条路径里任何一处少了一条校验，就是越权取别人的
+// 成品；复制两份的代码，第二份迟早会漏掉一条。
+func videoTaskRelayTarget(c *gin.Context, ctx context.Context, taskID string) (videoTaskEntry, *model.Channel, string, bool) {
 	// Two-level owner lookup: memory first (it also carries every alias id the
 	// create returned), then the row. The row is what makes a poll survive a
 	// restart; memory stays first because it is the record that was already
@@ -261,35 +377,22 @@ func VideoPollHandler(c *gin.Context) {
 	}
 	// The tenant check is applied to BOTH sources: a row on disk is not a licence
 	// to poll someone else's task. Fail-closed 404, same as an unknown id.
-	if !ok || !videoTaskOwnerMatches(entry, apiKeyID, userID) {
+	if !ok || !videoTaskOwnerMatches(entry, c.GetInt("api_key_id"), c.GetInt("user_id")) {
 		resp.Error(c, http.StatusNotFound, "unknown or expired video task; create the task again")
-		return
+		return videoTaskEntry{}, nil, "", false
 	}
 
 	channel, err := op.ChannelGet(entry.channelID, ctx)
 	if err != nil {
 		resp.Error(c, http.StatusBadGateway, "video task channel unavailable")
-		return
+		return videoTaskEntry{}, nil, "", false
 	}
 	channelKey, ok := videoChannelKeyByID(channel, entry.channelKeyID)
 	if !ok {
 		resp.Error(c, http.StatusBadGateway, "video task channel key unavailable")
-		return
+		return videoTaskEntry{}, nil, "", false
 	}
-
-	metrics := newRawProtocolRelayMetrics(apiKeyID, userID, c.GetString("request_ip"), entry.model, "videos_poll", c.Request.URL.Path)
-	metrics.ActualModel = entry.model
-
-	statusCode, body, upstreamCT, fwdErr := videoForward(ctx, c, http.MethodGet, "/v1/videos/"+url.PathEscape(taskID), nil, entry.model, channel, channelKey)
-	if fwdErr != nil {
-		metrics.Save(ctx, false, fwdErr, nil)
-		status, code, message := relayErrorResponse(fwdErr)
-		resp.ErrorWithCode(c, status, code, message)
-		return
-	}
-	metrics.ResponseContent = "video task status"
-	writeVideoResponse(c, statusCode, upstreamCT, body)
-	metrics.Save(ctx, true, nil, nil)
+	return entry, channel, channelKey, true
 }
 
 // videoForward builds and sends a single upstream request (POST create or GET
@@ -357,6 +460,70 @@ func writeVideoResponse(c *gin.Context, statusCode int, contentType string, body
 		contentType = "application/json"
 	}
 	c.Data(statusCode, contentType, body)
+}
+
+// videoForwardContent 是取成品专用的上游请求：状态码、Content-Type 和响应体
+// 原样透传，body 用 io.Copy 流式转发。
+//
+// 为什么不复用 videoForward：那条路径为了解析 task id 会把响应读进内存，并套上
+// videoResponseBodyLimit（8MB 的 JSON 上限）。视频成品套上去只有一个结果 ——
+// 一份被截断的、放不出来的 mp4。
+//
+// 返回的 error 只在「还没向客户端写过任何字节」时出现：非 2xx 的错误体在这里
+// 被读成 upstream error（与查询路径一致）；2xx 之后的读写错误只能记日志，
+// 不能再回头改响应头。
+func videoForwardContent(ctx context.Context, c *gin.Context, upstreamPath string, channel *model.Channel, channelKey string) (int, error) {
+	if channel == nil {
+		return 0, fmt.Errorf("video content: channel is nil")
+	}
+	baseURL := channel.GetBaseUrl()
+	targetURL, err := xurl.JoinOpenAIPath(baseURL, upstreamPath)
+	if err != nil {
+		return 0, fmt.Errorf("failed to build video content url: %w", err)
+	}
+	parsedURL, err := url.Parse(targetURL)
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse video content url: %w", err)
+	}
+	mergeRequestQuery(parsedURL, c.Request.URL.Query())
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsedURL.String(), nil)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create video content request: %w", err)
+	}
+	copyHeadersToUpstream(req, c, channel, channelKey, "", false)
+	// 成品是二进制，不是 JSON：客户端没带 Accept 时不能像查询那样默认要
+	// application/json，否则一部分上游会按 Accept 回一个 JSON 错误体当成品。
+	if strings.TrimSpace(c.Request.Header.Get("Accept")) == "" {
+		req.Header.Set("Accept", "*/*")
+	}
+
+	httpClient, err := helper.ChannelHttpClient(channel)
+	if err != nil {
+		return 0, err
+	}
+	respUp, err := helper.DoPreserveMethodRedirect(httpClient, req)
+	if err != nil {
+		return 0, fmt.Errorf("failed to send video content request: %w", err)
+	}
+	defer respUp.Body.Close()
+
+	if respUp.StatusCode < 200 || respUp.StatusCode >= 300 {
+		b, _ := io.ReadAll(io.LimitReader(respUp.Body, upstreamErrorBodyLimit))
+		return respUp.StatusCode, newUpstreamError(respUp.StatusCode, b)
+	}
+
+	contentType := strings.TrimSpace(respUp.Header.Get("Content-Type"))
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	c.Header("Content-Type", contentType)
+	c.Status(respUp.StatusCode)
+	if _, cerr := io.Copy(c.Writer, respUp.Body); cerr != nil {
+		// 响应头已经发出去了，这里只能留痕：客户端拿到的是一份不完整的流。
+		log.Warnf("video content stream aborted (upstream status %d): %v", respUp.StatusCode, cerr)
+	}
+	return respUp.StatusCode, nil
 }
 
 // extractVideoTaskIDs pulls every id the upstream returned (task_id / video_id /
@@ -449,7 +616,7 @@ func buildVideoResponseNote(ids []string) string {
 // aliases in contradictory terminal states. The alias -> owner path that already
 // exists (the in-memory map, every alias recorded for defaultVideoTaskTTL) keeps
 // working for the process lifetime; the row covers what memory cannot: a restart.
-func recordVideoTaskRow(ctx context.Context, ids []string, channelID, channelKeyID int, modelName string, ownerTokenID, ownerUserID int, requestBody map[string]any) {
+func recordVideoTaskRow(ctx context.Context, ids []string, channelID, channelKeyID int, modelName string, ownerTokenID, ownerUserID int, mediaKind string, requestBody map[string]any) {
 	if channelID == 0 || channelKeyID == 0 || len(ids) == 0 {
 		return
 	}
@@ -486,6 +653,7 @@ func recordVideoTaskRow(ctx context.Context, ids []string, channelID, channelKey
 		OwnerTokenID:   ownerTokenID,
 		OwnerUserID:    ownerUserID,
 		Status:         model.VideoTaskSubmitted,
+		MediaKind:      mediaKind,
 		SubmitTime:     time.Now().Unix(),
 		RequestData:    requestData,
 	}
@@ -521,6 +689,9 @@ func videoTaskOwnerFromDB(ctx context.Context, taskID string) (videoTaskEntry, b
 		model:        task.Model,
 		ownerTokenID: task.OwnerTokenID,
 		ownerUserID:  task.OwnerUserID,
+		// 库里的这一列就是「重启后查询该走哪个子路径」的唯一依据；存量行为空串，
+		// 正好回到 /v1/videos 的老行为。
+		mediaKind: task.MediaKind,
 	}, true
 }
 
@@ -538,7 +709,11 @@ func videoTaskOwnerFromDB(ctx context.Context, taskID string) (videoTaskEntry, b
 // statusCode is returned even alongside an error so the caller can tell "the
 // upstream no longer knows this task" (404 → terminal) from "try again next round"
 // (5xx / network / TLS).
-func VideoTaskPollStatus(ctx context.Context, channel *model.Channel, channelKey, upstreamTaskID string) (int, []byte, error) {
+//
+// mediaKind 是这一行创建时用的子路径（model.VideoTask.MediaKind）：后台轮询
+// 和前台轮询一样，必须回到任务真正所在的子路径，否则一条 edits 任务会在第一轮
+// 就被上游 404 判死。空串 = 兼容别名 /v1/videos，也是存量行的零值。
+func VideoTaskPollStatus(ctx context.Context, channel *model.Channel, channelKey, upstreamTaskID, mediaKind string) (int, []byte, error) {
 	if channel == nil {
 		return 0, nil, fmt.Errorf("video poll: channel is nil")
 	}
@@ -549,7 +724,7 @@ func VideoTaskPollStatus(ctx context.Context, channel *model.Channel, channelKey
 		return 0, nil, fmt.Errorf("video poll: upstream task id is empty")
 	}
 
-	targetURL, err := xurl.JoinOpenAIPath(channel.GetBaseUrl(), "/v1/videos/"+url.PathEscape(upstreamTaskID))
+	targetURL, err := xurl.JoinOpenAIPath(channel.GetBaseUrl(), videoUpstreamPath(mediaKind, upstreamTaskID, false))
 	if err != nil {
 		return 0, nil, fmt.Errorf("failed to build video poll url: %w", err)
 	}

@@ -51,6 +51,18 @@ type VideoTask struct {
 
 	Model string `json:"model" gorm:"size:255;default:''"`
 
+	// MediaKind 记录这条任务是在哪个子路径创建的（generations / edits / extensions），
+	// 空值 = 兼容别名 /videos。轮询必须回到同一个子路径，否则上游 404 ——
+	// 上游不会把 edits 的任务挂在 generations 下面。
+	//
+	// 【零值必须是 ""】存量行（这一列出现之前创建的任务）读出来就是空串，
+	// 空串等于 /v1/videos 的老行为；取任何一个非空零值都会让一次重启把所有
+	// 在途任务的查询路径改错。
+	//
+	// 不加 index：查询永远是「先按 upstream_task_id 找到那一行」，不存在
+	// 「按 kind 筛一批」，多一个索引只会在写入路径上白付代价。
+	MediaKind string `json:"media_kind" gorm:"size:16;default:''"`
+
 	// OwnerTokenID / OwnerUserID 任务的归属，用于「只能看自己的任务」。
 	OwnerTokenID int `json:"owner_token_id" gorm:"index;default:0"`
 	OwnerUserID  int `json:"owner_user_id" gorm:"index;default:0"`
