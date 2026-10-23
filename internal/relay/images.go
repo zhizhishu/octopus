@@ -766,6 +766,15 @@ func parseJSONModelAndStream(bc *bodycache.BodyCache) (payload map[string]any, m
 	if err != nil {
 		return nil, "", false, err
 	}
+	return parseJSONModelAndStreamBytes(body)
+}
+
+// parseJSONModelAndStreamBytes 是 parseJSONModelAndStream 的按字节版本。
+//
+// 拆出来只为让异步图片任务（relay/images_async.go）能用**同一套**解析规则校验
+// 它已经读进内存的 body：异步路径把 body 整段存进 image_tasks.request_body，
+// 没有 bodycache 可用。两份实现会漂——所以这里只留一份，另一份只是取字节的外壳。
+func parseJSONModelAndStreamBytes(body []byte) (payload map[string]any, modelName string, stream bool, err error) {
 	if len(bytes.TrimSpace(body)) == 0 {
 		return nil, "", false, errors.New("empty body")
 	}

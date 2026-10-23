@@ -702,6 +702,51 @@ func UserRecordUsage(userID int, cost float64, ctx context.Context) error {
 	return nil
 }
 
+// UserRefundUsage 是 UserRecordUsage 的反向操作：把一笔已经扣掉的费用退回。
+//
+// 为什么必须有它、而不是 `UserRecordUsage(userID, -cost)`：后者对 cost <= 0 直接
+// 提前返回（那是它的正确防呆），拿负数调等于什么都没做——退款会**静默失败**，
+// 用户付了钱拿不到东西还查不出原因。
+//
+// 去向与扣费严格对称：月卡有效就退回 monthly_used，否则退 balance。否则异步图片
+// 任务失败时会从余额里退、却继续占着月卡用量，两边账目永远对不上。
+//
+// 服务端管理员（IsAdmin）不记账，与 UserRecordUsage 同一条规矩。
+// 与扣费共用 lockUser：读改写的原子性与扣费是同一份保证。
+func UserRefundUsage(userID int, cost float64, ctx context.Context) error {
+	if cost <= 0 {
+		return nil
+	}
+	mu := lockUser(userID)
+	mu.Lock()
+	defer mu.Unlock()
+	user, err := UserGet(userID)
+	if err != nil {
+		return err
+	}
+	if user.IsAdmin() {
+		return nil
+	}
+	user, err = UserRefreshMonthlyWindow(user.ID, ctx)
+	if err != nil {
+		return err
+	}
+	if userMonthlyActive(user) {
+		user.MonthlyUsed = maxFloat(user.MonthlyUsed-cost, 0)
+		if err := db.GetDB().WithContext(ctx).Model(&model.User{}).Where("id = ?", user.ID).Update("monthly_used", user.MonthlyUsed).Error; err != nil {
+			return fmt.Errorf("failed to refund monthly usage: %w", err)
+		}
+		userCache.Set(user.ID, user)
+		return nil
+	}
+	user.Balance = roundBalance(user.Balance + cost)
+	if err := db.GetDB().WithContext(ctx).Model(&model.User{}).Where("id = ?", user.ID).Update("balance", user.Balance).Error; err != nil {
+		return fmt.Errorf("failed to refund balance: %w", err)
+	}
+	userCache.Set(user.ID, user)
+	return nil
+}
+
 // UserRecordRelayIP 记录用户最近一次中继的 IP 与时间。只更新内存缓存 + 挂进待落库表,
 // DB 由 UserRelayIPSaveDBTask 周期批量补齐(转发路径上不再每请求同步 UPDATE users)。
 // ctx 保留是为了调用方签名不变。

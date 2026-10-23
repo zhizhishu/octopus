@@ -66,6 +66,12 @@ func Init() {
 	//  2) 它是自带 ticker 的独立循环(sync.Once + safe.SafeGo), 不进 task 注册表,
 	//     所以测试二进制里只要没人显式调用它, 就不会有任何后台写库者存在。
 	VideoTaskPollStart()
+	// 图片异步任务执行器：它比视频轮询器更不能再被 early-return 跳过——
+	// 提交时已经按次预扣了用户的钱，执行器不起，钱就白扣了（任务会停在
+	// processing 直到 expires_at 被过期清扫判失败并退款，但那一等是 24 小时）。
+	// 同理不进 task 注册表：它是自带 ticker 的独立循环，测试二进制里没人显式
+	// 调用就不会有后台写库者。
+	ImageTaskPollStart()
 	// 模型行为检测(定时快检 + 回显不一致自动跟进)已停用自动启动: 此处既不挂 RegisterAuditFollowUp,
 	// 也不注册 TaskModelAuditQuick——后台与日志写入路径不得自动启动消耗 token 的 behavior 探针。
 	// 只有检测栏手动 run(POST /api/v1/model-audit/run) 仍可主动调用; 两个旧开关默认 false, 且因

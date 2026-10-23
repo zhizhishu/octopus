@@ -94,6 +94,7 @@ func InitDB(dbType, dsn string, debug bool) error {
 		&model.RelayLog{},
 		&model.ResponseSession{},
 		&model.VideoTask{},
+		&model.ImageTask{},
 		&migrate.MigrationRecord{},
 	); err != nil {
 		return err

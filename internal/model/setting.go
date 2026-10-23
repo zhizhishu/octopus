@@ -204,6 +204,19 @@ const (
 	SettingKeyAdminToken SettingKey = "admin_access_token" // secret
 )
 
+// 图片异步任务开关。单独一块的理由同下面的 SettingKeyRelayLogReclaimEnabled：
+// 这个名字比上面那批长，混进去会让 gofmt 重排整个常量块，把一次两行的改动变成
+// 几十行空白 diff——review 时看不出真正改了什么。
+const (
+	// SettingKeyAsyncImageEnabled 开启 POST /v1/images/{generations,edits}/async
+	// 与 GET /v1/images/tasks/{id}。
+	//
+	// 【默认 false】这个功能会因为配置不当变成「扣钱但不干活」（预扣了却没执行器
+	// 在跑、或上游一直失败），默认关着让人显式打开。关闭时两个 async 端点一律 404
+	// 而不是 403——未启用的功能对外不存在，403 等于告诉客户端「有这个功能，你没权限」。
+	SettingKeyAsyncImageEnabled SettingKey = "async_image_enabled"
+)
+
 // 死空间回收开关。关掉 = 退回旧行为（只有本轮删了行才 VACUUM），用于应急：
 // 万一完整 VACUUM 把生产库卡住，用户可以在管理页立刻关掉，不必等发版。
 //
@@ -553,6 +566,9 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyRedactNoticeEnabled, Value: "true"},        // 脱敏时向首条用户消息注入占位符说明(提高模型保真); 可关
 		{Key: SettingKeyModelAuditEnabled, Value: "false"},         // 模型真假检测(定时快检)已停用自动注册, 默认 false; 仅手动 run
 		{Key: SettingKeyModelAuditFollowUpEnabled, Value: "false"}, // 回显不一致自动跟进已停用自动接线, 默认 false; 仅手动 run
+		// 图片异步任务默认关：它是本项目唯一「先扣钱、后台再干活」的图片路径，
+		// 配置不当就会变成「扣钱但不干活」。要让运维显式打开。
+		{Key: SettingKeyAsyncImageEnabled, Value: "false"},
 		// 被动探针默认开: 零上游请求、零 token, 没有需要保护用户免于触发的理由。
 		{Key: SettingKeyLogPassiveProbeEnabled, Value: "true"},
 		{Key: SettingKeyCheckInEnabled, Value: "false"},
@@ -716,7 +732,7 @@ func (s *Setting) Validate() error {
 		SettingKeyDebugLoadBalancer, SettingKeyEmailVerificationEnabled, SettingKeyEmailSMTPSSL,
 		SettingKeyUpstreamUTLSFingerprint, SettingKeyUpstreamHTTP1HeaderOrder, SettingKeyDiagnosticMode, SettingKeyRouteStickyCacheFirst,
 		SettingKeyModelAuditEnabled, SettingKeyModelAuditFollowUpEnabled, SettingKeyLogPassiveProbeEnabled,
-		SettingKeyRelayLogReclaimEnabled:
+		SettingKeyRelayLogReclaimEnabled, SettingKeyAsyncImageEnabled:
 		if s.Value != "true" && s.Value != "false" {
 			return fmt.Errorf("%s must be true or false", s.Key)
 		}
