@@ -537,6 +537,58 @@ func TestNormalizeCodexReasoningEffort(t *testing.T) {
 	}
 }
 
+// Aliases that mean "xhigh" must be canonicalized through model.CanonicalEffort BEFORE
+// the codexEffortAllowSet membership test. With a bare ToLower they miss the set and get
+// clamped to "low": the client asks for the second-strongest level and silently gets the
+// weakest, while the Anthropic channel on the same effort yields xhigh. The canonical
+// value must also be written back so a raw "MAX" never reaches the upstream.
+func TestNormalizeCodexReasoningEffortCanonicalizesAliases(t *testing.T) {
+	cases := []struct {
+		name   string
+		model  string
+		effort string
+		want   string
+	}{
+		// Aliases of xhigh must resolve to xhigh, NOT the "low" clamp.
+		{"x-high on gpt-5.6 becomes xhigh", "gpt-5.6-sol", "x-high", "xhigh"},
+		{"x_high on gpt-5.6 becomes xhigh", "gpt-5.6-sol", "x_high", "xhigh"},
+		{"extra-high on gpt-5.6 becomes xhigh", "gpt-5.6-sol", "extra-high", "xhigh"},
+		{"very-high on gpt-5.6 becomes xhigh", "gpt-5.6-sol", "very-high", "xhigh"},
+		{"X-HIGH on gpt-5.6 becomes xhigh", "gpt-5.6-sol", "X-HIGH", "xhigh"},
+		{"x-high on gpt-6 becomes xhigh", "gpt-6-astra", "x-high", "xhigh"},
+		{"extra-high on gpt-6 becomes xhigh", "gpt-6-astra", "extra-high", "xhigh"},
+		// Uppercase canonical value: recognized, and written back lowercased.
+		{"MAX on gpt-5.6 becomes max", "gpt-5.6-sol", "MAX", "max"},
+		{"Max on gpt-5.6 becomes max", "gpt-5.6-sol", "Max", "max"},
+		{"MAX on gpt-6 becomes max", "gpt-6-astra", "MAX", "max"},
+		{"Max on gpt-6 becomes max", "gpt-6-astra", "Max", "max"},
+		// Already-canonical values stay exactly as they are.
+		{"low unchanged", "gpt-5.6-sol", "low", "low"},
+		{"medium unchanged", "gpt-5.6-sol", "medium", "medium"},
+		{"high unchanged", "gpt-5.6-sol", "high", "high"},
+		{"xhigh unchanged", "gpt-5.6-sol", "xhigh", "xhigh"},
+		{"max unchanged", "gpt-5.6-sol", "max", "max"},
+		{"low unchanged on gpt-6", "gpt-6-astra", "low", "low"},
+		{"medium unchanged on gpt-6", "gpt-6-astra", "medium", "medium"},
+		{"high unchanged on gpt-6", "gpt-6-astra", "high", "high"},
+		{"xhigh unchanged on gpt-6", "gpt-6-astra", "xhigh", "xhigh"},
+		{"max unchanged on gpt-6", "gpt-6-astra", "max", "max"},
+		// Unknown values keep the pre-existing fallback (low), untouched by this fix.
+		{"banana on gpt-5.6 still falls back to low", "gpt-5.6-sol", "banana", "low"},
+		{"banana on gpt-6 still falls back to low", "gpt-6-astra", "banana", "low"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &model.InternalLLMRequest{Model: tc.model, ReasoningEffort: tc.effort}
+			normalizeCodexReasoningEffort(req)
+			if req.ReasoningEffort != tc.want {
+				t.Fatalf("normalizeCodexReasoningEffort(effort=%q, model=%q) = %q, want %q",
+					tc.effort, tc.model, req.ReasoningEffort, tc.want)
+			}
+		})
+	}
+}
+
 func TestResponsesInputRawLooksCodexShapedRecognizesReasoningToolTurn(t *testing.T) {
 	// Incremental tool turn: reasoning (carrying encrypted_content) plus a
 	// function_call_output, with no message item. This is exactly what the

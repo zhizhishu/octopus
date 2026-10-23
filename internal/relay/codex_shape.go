@@ -303,7 +303,13 @@ func normalizeCodexReasoningEffort(req *transformerModel.InternalLLMRequest) {
 	if req == nil {
 		return
 	}
-	effort := strings.ToLower(strings.TrimSpace(req.ReasoningEffort))
+	// CanonicalEffort, not a bare ToLower: it also strips -/_/space separators and
+	// folds same-meaning aliases (x-high, x_high, extra-high, very-high => xhigh),
+	// exactly as the Anthropic path already does. With a bare ToLower those spellings
+	// miss codexEffortAllowSet and fall into the "low" clamp below, so a client asking
+	// for the second-strongest level silently receives the weakest one — and the log
+	// then shows the rewritten "low", sending RCA in the wrong direction.
+	effort := transformerModel.CanonicalEffort(req.ReasoningEffort)
 	if isGPT56Model(req.Model) {
 		if effort == "" {
 			req.ReasoningEffort = "high"
@@ -313,6 +319,10 @@ func normalizeCodexReasoningEffort(req *transformerModel.InternalLLMRequest) {
 			req.ReasoningEffort = "low"
 			return
 		}
+		// Write the canonical value back: aliases/lowercase are legal in MEANING but
+		// not on the wire, so leaving req.ReasoningEffort raw would ship "MAX" or
+		// "x-high" upstream.
+		req.ReasoningEffort = effort
 		return
 	}
 	// GPT-6 family: the upstream rejects anything outside codexEffortAllowSet with the
@@ -326,8 +336,13 @@ func normalizeCodexReasoningEffort(req *transformerModel.InternalLLMRequest) {
 	//     "max" as supported for gpt-6, so the generic non-5.6 max→xhigh remap below
 	//     must not run for this family.
 	if isGPT6Model(req.Model) {
-		if effort != "" && !codexEffortAllowSet[effort] {
-			req.ReasoningEffort = "low"
+		if effort != "" {
+			if !codexEffortAllowSet[effort] {
+				req.ReasoningEffort = "low"
+				return
+			}
+			// Same write-back as the 5.6 branch: canonical value goes on the wire.
+			req.ReasoningEffort = effort
 		}
 		return
 	}

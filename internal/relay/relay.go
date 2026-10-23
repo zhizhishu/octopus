@@ -29,6 +29,7 @@ import (
 	openaiOutbound "github.com/zhizhishu/octopus/internal/transformer/outbound/openai"
 	"github.com/zhizhishu/octopus/internal/utils/log"
 	"github.com/zhizhishu/octopus/internal/utils/safe"
+	"github.com/zhizhishu/octopus/internal/utils/xredact"
 	"github.com/gin-gonic/gin"
 	"github.com/tmaxmax/go-sse"
 )
@@ -1341,7 +1342,7 @@ retryWithAdapter:
 	ra.internalRequest.ResponsesInstructions = originalResponsesInstructions
 	ra.internalRequest.Stop = originalStop
 	if err != nil {
-		log.Warnf("failed to create request: %v", err)
+		log.Warnf("failed to create request: %v", xredact.URLSecrets(err.Error()))
 		return 0, fmt.Errorf("failed to create request: %w", err)
 	}
 	if outboundRequest != nil && outboundRequest.URL != nil && span != nil {
@@ -2431,7 +2432,7 @@ func (ra *relayAttempt) sendRequest(req *http.Request) (*http.Response, error) {
 
 	response, err := helper.DoPreserveMethodRedirect(httpClient, req)
 	if err != nil {
-		log.Warnf("failed to send request: %v", err)
+		log.Warnf("failed to send request: %v", xredact.URLSecrets(err.Error()))
 		return nil, err
 	}
 	if response == nil || response.Body == nil {

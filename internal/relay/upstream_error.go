@@ -401,12 +401,12 @@ func upstreamErrorPublicCode(fallback string) string {
 func errSafeMessage(err error) string {
 	var upErr *upstreamError
 	if errors.As(err, &upErr) {
-		return upErr.Error()
+		return xredact.URLSecrets(upErr.Error())
 	}
 	if err == nil {
 		return ""
 	}
-	return err.Error()
+	return xredact.URLSecrets(err.Error())
 }
 
 func isClientAbortError(err error) bool {

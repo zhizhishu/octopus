@@ -84,6 +84,28 @@ func GetLastUpdateTime() time.Time {
 	return lastUpdateTime
 }
 
+// SetLLMPrice 覆盖某个模型的内置价格（进程内，不落库）。
+//
+// 两个用途：
+//  1. 测试要在不起 DB、不联外网的条件下构造价格场景（例如验证视频按次计费）。
+//  2. 运维临时调整某个型号的价格而不想动 models.dev 目录。
+//
+// 注意 DB 里的 LLMInfo 行优先级更高（见 lookupLLMPrice）：这里改的是内置目录，
+// 不是"最终生效价"。传入零值等于删除这条覆盖。
+func SetLLMPrice(modelName string, p model.LLMPrice) {
+	name := strings.ToLower(strings.TrimSpace(modelName))
+	if name == "" {
+		return
+	}
+	llmPriceLock.Lock()
+	defer llmPriceLock.Unlock()
+	if p.IsZero() {
+		delete(llmPrice, name)
+		return
+	}
+	llmPrice[name] = p
+}
+
 func GetLLMPrice(modelName string) *model.LLMPrice {
 	name := strings.ToLower(strings.TrimSpace(modelName))
 	if p := lookupLLMPrice(name); p != nil {

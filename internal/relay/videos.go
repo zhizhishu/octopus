@@ -16,6 +16,7 @@ import (
 	"github.com/zhizhishu/octopus/internal/helper"
 	"github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/op"
+	"github.com/zhizhishu/octopus/internal/price"
 	"github.com/zhizhishu/octopus/internal/relay/balancer"
 	"github.com/zhizhishu/octopus/internal/relay/bodycache"
 	"github.com/zhizhishu/octopus/internal/server/resp"
@@ -149,6 +150,11 @@ runIterator:
 
 				metrics.ActualModel = item.ModelName
 				metrics.ResponseContent = buildVideoResponseNote(ids)
+				// 🔴 视频是唯一"上游按条收费、响应里却没有 token 用量"的端点。
+				// 不在这里落成本，metrics.Save 收到的 InputCost+OutputCost 就是 0，
+				// op.UserRecordUsage 第一行 `if cost <= 0 return nil` 直接返回 ——
+				// 余额、月卡、单 key 的 MaxCost 三个口子全都不动，持任意 key 可无限刷。
+				applyVideoCallCost(metrics, item.ModelName)
 				op.ChannelKeyRecordUse(usedKey, statusCode, usedAt, 0)
 				span.End(model.AttemptSuccess, statusCode, "")
 				balancer.RecordRuntimeSuccess(channel.ID, usedKey.ID, item.ModelName, balancer.AttemptRuntimeMetrics{
@@ -355,6 +361,39 @@ func writeVideoResponse(c *gin.Context, statusCode int, contentType string, body
 
 // extractVideoTaskIDs pulls every id the upstream returned (task_id / video_id /
 // id) so the poll can look up ownership regardless of which id the client keeps.
+// applyVideoCallCost 给一次成功的视频创建计入「按次」费用。
+//
+// 为什么按次而不是按 token：视频上游的创建响应只回 task_id / id，**没有任何
+// token 用量字段**（见 extractVideoTaskIDs 解析的字段）。所以按 Input/Output
+// 单价算出来的成本恒为 0。上游真正的计价单位是"生成一条片子"，按次才能对上。
+//
+// 定价从模型价格行的 PerCall 取（管理员可配，见 model.LLMPrice.PerCall）：
+//   - PerCall 为 0（默认）→ 不收费，行为与改动前完全一致，不会突然改账单。
+//   - PerCall > 0 → 每次成功创建收这么多，乘上访问计划的倍率。
+//
+// 走 AccessPlan 的倍率是刻意的：同一个模型对不同用户组可能有不同折扣，
+// 视频不该绕过这套规则自成一套。
+func applyVideoCallCost(metrics *rawProtocolRelayMetrics, actualModel string) {
+	if metrics == nil {
+		return
+	}
+	modelPrice := price.GetLLMPrice(actualModel)
+	if modelPrice == nil || modelPrice.PerCall <= 0 {
+		// 没配按次单价：保持"不计费"的既有行为，但留下可观测痕迹，
+		// 让"这个模型在收费却算不出钱"这件事能被发现，而不是静默漏计。
+		log.Warnf("video call cost: model %q has no per_call price, billing 0 for this request "+
+			"(configure per_call on the model price to bill video generation)", actualModel)
+		return
+	}
+	snapshot := metrics.currentBillingSnapshot(actualModel)
+	multiplier := snapshot.FinalMultiplier
+	if multiplier <= 0 {
+		multiplier = 1
+	}
+	metrics.BillingSnapshot = snapshot
+	metrics.Stats.OutputCost = modelPrice.PerCall * multiplier
+}
+
 func extractVideoTaskIDs(body []byte) []string {
 	var m map[string]any
 	if err := json.Unmarshal(body, &m); err != nil {

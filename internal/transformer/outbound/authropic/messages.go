@@ -1600,6 +1600,20 @@ func getThinkingBudget(effort string, budget *int64, maxTokens int64) *int64 {
 	var result int64
 	if budget != nil {
 		result = *budget
+	} else if model.CanonicalEffort(effort) == "minimal" {
+		// 🔴 "minimal" 是「尽可能少的思考」，不是「关掉」（关掉是 none/off，
+		// 在调用方走 disabled 分支）。它必须拿到**最小合法预算**，
+		// 也就是 anthropicThinkingBudgetMin(1024)。
+		//
+		// 曾经它不在 EffortBudget 表里，于是落进 EffortBudgetFor 的未知分支
+		// 拿到 EffortBudgetDefault(32768) —— 客户端要「最少思考」，出站却是
+		// {"type":"enabled","budget_tokens":32768}，与 high 一模一样，按顶格
+		// 计费。修在这里而不是往共享表加一条：共享表被 IsKnownEffort 用来判断
+		// 「认不认识这个档位」，GLM(openai/chat.go:920) 靠它决定发 enabled，
+		// 加进去会让 minimal 在 GLM 上从 disabled 翻成 enabled，
+		// 与 volcengine/gemini 明确声明的「minimal = 关」自相矛盾。
+		// 改共享表 = 修一个通道、坏掉两个通道。
+		result = anthropicThinkingBudgetMin
 	} else {
 		// 走 EffortBudgetFor 而不是自己 switch：它会把 "MAX" / " max " 这类
 		// 大小写与空白差异归一后再查表。手写 switch 拿原始字符串比小写常量，

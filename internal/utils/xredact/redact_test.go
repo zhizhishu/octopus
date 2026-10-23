@@ -49,3 +49,27 @@ func TestSecretsKeepsShortHex(t *testing.T) {
 		t.Fatalf("over-redacted short id: %s", got)
 	}
 }
+
+// TestURLSecretsRedactsQueryCredentials pins that credential-carrying URL query
+// parameters (the Gemini ?key=<channel key> shape) are replaced with ***, while
+// non-sensitive parameters, the path, and surrounding text stay intact.
+func TestURLSecretsRedactsQueryCredentials(t *testing.T) {
+	in := `Post "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse&key=AIzaSecret123&api_key=k2&api-key=k3&token=t4&access_token=t5&sig=s6&signature=s7&safe=keep": dial tcp: connection refused`
+	want := `Post "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse&key=***&api_key=***&api-key=***&token=***&access_token=***&sig=***&signature=***&safe=keep": dial tcp: connection refused`
+	if got := URLSecrets(in); got != want {
+		t.Fatalf("URLSecrets mismatch:\n got: %s\nwant: %s", got, want)
+	}
+}
+
+// TestSecretsCoversURLQueryCredentials pins that the existing Secrets scrubber
+// (used for per-attempt audit messages) inherits the URL query rule, so a Gemini
+// key in an echoed request URL cannot ride through that path either.
+func TestSecretsCoversURLQueryCredentials(t *testing.T) {
+	got := Secrets(`Post "https://x/v1?alt=sse&key=AIzaSecret123": boom`)
+	if strings.Contains(got, "AIzaSecret123") {
+		t.Fatalf("Secrets leaked URL query key: %s", got)
+	}
+	if !strings.Contains(got, "alt=sse&key=***") {
+		t.Fatalf("expected key=*** with alt=sse preserved, got: %s", got)
+	}
+}
