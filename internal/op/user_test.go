@@ -380,3 +380,113 @@ func TestRedeemMonthlyCodeUsesDailyQuotaAliasAndDailyReset(t *testing.T) {
 		t.Fatalf("expected active daily quota summary after redeem, got %#v", summary)
 	}
 }
+
+// TestUserChangeUsernameKeepsUsageDeduction 是最小复现: 用户余额 10, 改名读到 10,
+// 中继把余额扣到 7, 改名落库。旧实现(构造完整 UserUpdateRequest 走 UserUpdate)会把
+// 锁外读到的 10 整值写回, 扣掉的 3 凭空消失; 新实现只 UPDATE username, 余额必须是 7。
+func TestUserChangeUsernameKeepsUsageDeduction(t *testing.T) {
+	ctx := setupUserTest(t)
+	user, err := UserCreate(model.UserCreateRequest{
+		Username: "rename-deduction",
+		Password: "secret",
+		Role:     model.UserRoleUser,
+		Status:   model.UserStatusActive,
+		Balance:  10,
+	}, ctx)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	// 1) 改名开始时读到的用户(余额 10)。
+	before, err := UserGet(user.ID)
+	if err != nil {
+		t.Fatalf("get user before rename: %v", err)
+	}
+	if math.Abs(before.Balance-10) > 0.000001 {
+		t.Fatalf("expected starting balance 10, got %v", before.Balance)
+	}
+
+	// 2) 中继扣费 3: 数据库与缓存都变成 7。
+	if err := UserRecordUsage(user.ID, 3, ctx); err != nil {
+		t.Fatalf("record usage: %v", err)
+	}
+	charged, err := UserGet(user.ID)
+	if err != nil {
+		t.Fatalf("get user after charge: %v", err)
+	}
+	if math.Abs(charged.Balance-7) > 0.000001 {
+		t.Fatalf("expected balance 7 after charge, got %v", charged.Balance)
+	}
+
+	// 3) 固定交错顺序: 把缓存还原成改名启动时持有的那份扣费前快照。
+	// 这正是旧实现在加锁之外读到并整值写回的对象; 不还原就无法在单进程测试里稳定复现。
+	userCache.Set(user.ID, before)
+
+	// 4) 执行改名。
+	if err := UserChangeUsername(user.ID, "rename-deduction-2"); err != nil {
+		t.Fatalf("change username: %v", err)
+	}
+
+	// 5) 数据库是真相: 用户名变了, 余额必须还是扣费之后的 7, 不能被旧值 10 覆盖。
+	var stored model.User
+	if err := db.GetDB().Where("id = ?", user.ID).First(&stored).Error; err != nil {
+		t.Fatalf("reload user from db: %v", err)
+	}
+	if stored.Username != "rename-deduction-2" {
+		t.Fatalf("expected username rename-deduction-2, got %q", stored.Username)
+	}
+	if math.Abs(stored.Balance-7) > 0.000001 {
+		t.Fatalf("rename wrote a stale balance back to the db: want 7, got %v (the 3 charged was lost)", stored.Balance)
+	}
+
+	cached, err := UserGet(user.ID)
+	if err != nil {
+		t.Fatalf("get user after rename: %v", err)
+	}
+	if cached.Username != "rename-deduction-2" {
+		t.Fatalf("expected cached username rename-deduction-2, got %q", cached.Username)
+	}
+}
+
+// TestUserChangeUsernameKeepsMonthlyUsage 覆盖同类字段: 月卡用户的 monthly_used
+// 不能被改名写回旧值, 用户名索引也必须跟着换。
+func TestUserChangeUsernameKeepsMonthlyUsage(t *testing.T) {
+	ctx := setupUserTest(t)
+	user, err := UserCreate(model.UserCreateRequest{
+		Username:        "rename-monthly",
+		Password:        "secret",
+		Role:            model.UserRoleUser,
+		Status:          model.UserStatusActive,
+		MonthlyLimit:    20,
+		MonthlyExpireAt: time.Now().Add(48 * time.Hour).Unix(),
+	}, ctx)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	stale, err := UserGet(user.ID)
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	if err := UserRecordUsage(user.ID, 3, ctx); err != nil {
+		t.Fatalf("record usage: %v", err)
+	}
+	userCache.Set(user.ID, stale)
+
+	if err := UserChangeUsername(user.ID, "rename-monthly-2"); err != nil {
+		t.Fatalf("change username: %v", err)
+	}
+
+	var stored model.User
+	if err := db.GetDB().Where("id = ?", user.ID).First(&stored).Error; err != nil {
+		t.Fatalf("reload user from db: %v", err)
+	}
+	if math.Abs(stored.MonthlyUsed-3) > 0.000001 {
+		t.Fatalf("rename wrote a stale monthly_used back to the db: want 3, got %v", stored.MonthlyUsed)
+	}
+	if _, err := UserGetByUsername("rename-monthly-2"); err != nil {
+		t.Fatalf("expected new username to be resolvable: %v", err)
+	}
+	if _, err := UserGetByUsername("rename-monthly"); err == nil {
+		t.Fatalf("expected old username lookup to fail after rename")
+	}
+}

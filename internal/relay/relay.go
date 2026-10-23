@@ -505,6 +505,7 @@ attemptChannels:
 			}
 			if result.Written {
 				req.wroteBusinessData = true
+				metrics.MarkUsageDelivered()
 				metrics.Save(c.Request.Context(), false, result.Err, append(allAttempts, iter.Attempts()...))
 				return
 			}
@@ -606,6 +607,7 @@ attemptChannels:
 			}
 			if result.Written {
 				req.wroteBusinessData = true
+				metrics.MarkUsageDelivered()
 				// 已向下游提交(不可再故障转移), 记录已提交这次尝试所用 Key 的备注。
 				metrics.ChannelKeyRemark = usedKey.Remark
 				metrics.Save(c.Request.Context(), false, result.Err, append(allAttempts, iter.Attempts()...))

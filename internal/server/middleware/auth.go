@@ -117,10 +117,19 @@ func APIKeyAuth() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
-		if err := op.UserCanRelay(owner.ID, c.Request.Context()); err != nil {
+		// 准入即预留：UserCanRelay 在锁内扣下一笔在途额度，防住"N 个并发请求
+		// 在扣费发生前全部读到余额>0 而一起放行"。返回的 reservation 必须归还，
+		// 由 defer 兜住所有返回路径（含 panic）。
+		reservation, err := op.UserCanRelay(owner.ID, c.Request.Context())
+		if err != nil {
 			resp.Error(c, http.StatusPaymentRequired, err.Error())
 			c.Abort()
 			return
+		}
+		if reservation > 0 {
+			// 注意：defer 挂在 c.Next() 之前注册，因此它在整个下游 handler 链
+			// 执行完毕、实际扣费（UserRecordUsage）已经发生之后才跑 —— 正是需要的顺序。
+			defer op.UserReleaseQuota(owner.ID, reservation)
 		}
 		statsAPIKey := op.StatsAPIKeyGet(apiKeyObj.ID)
 		if apiKeyObj.MaxCost > 0 && apiKeyObj.MaxCost < statsAPIKey.StatsMetrics.OutputCost+statsAPIKey.StatsMetrics.InputCost {

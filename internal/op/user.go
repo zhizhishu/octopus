@@ -59,6 +59,54 @@ func lockUser(userID int) *sync.Mutex {
 	return &userLocks[idx]
 }
 
+// userQuotaInflight 记录每个用户**当前在途**的额度预留（金额）。
+//
+// 为什么需要它：UserCanRelay 以前只判断 `Balance > 0`，而扣费发生在请求结束时的
+// UserRecordUsage。两次读改写之间没有耦合，于是余额只剩 0.001 时并发发出 N 个请求，
+// N 个全都在扣费发生前读到「余额 > 0」而被放行 —— 实际消耗可以远超余额，且
+// `maxFloat(balance-cost, 0)` 把每次扣费都截在 0，用户最终只付掉那 0.001。
+// 用一把锁保护扣费只能防"丢更新"，防不住"已放行的 N 个请求"。
+//
+// 机制（共享单车押金）：准入时在锁内累加一笔预留，available = 余额 - 在途预留，
+// available 不足则拒绝；请求结束时（中间件的 defer）把预留减回去。于是
+// **超额被限制在"一个请求"的量级**，不再是 N 倍。
+//
+// 诚实说明边界：审批时无法预知真实成本，所以预留只是一个小额估值，
+// 它把"无上限的 N 倍超支"收敛成"有上限的、受预留额度约束的超支"，不是零超支。
+// 与 userRelayIPPending 不同，这里**必须**是内存态：进程重启即清零是正确语义
+// （重启后不存在在途请求）。
+var userQuotaInflight = make(map[int]float64)
+
+// userQuotaReserveDefault 是单次准入的预留估值。
+//
+// 取值理由：余额/月卡与 InputCost/OutputCost 同币种（按百万 token 计价），
+// 单次请求成本通常远小于 0.01。这个值小到不会串行化健康用户（余额 10 → 1000 并发），
+// 又大到足以在余额见底时只放行一个请求。定义成 var 仅为测试可压低，
+// 生产路径从不写它。
+var userQuotaReserveDefault = 0.01
+
+// userQuotaInflightEpsilon 是浮点累加残渣的归零阈值。
+// float64 在 0.01 量级上的加减误差约 1e-18~1e-16；取 1e-9 留足余量，
+// 既清得掉残渣，又远小于任何真实预留（最小预留是余额见底时的余额本身）。
+const userQuotaInflightEpsilon = 1e-9
+
+// userQuotaInflightOf 返回该用户当前在途预留总额。调用方必须已持有 lockUser。
+func userQuotaInflightOf(userID int) float64 {
+	return userQuotaInflight[userID]
+}
+
+func userQuotaReserveOf(available float64) float64 {
+	if available <= 0 {
+		return 0
+	}
+	if available < userQuotaReserveDefault {
+		// 余额比一个预留量子还小：把剩下的全部押上，保证"只剩一分钱"也还能发
+		// 最后一次请求，但绝不放行第二个。
+		return available
+	}
+	return userQuotaReserveDefault
+}
+
 func UserInit() error {
 	ctx := context.Background()
 	conn := db.GetDB().WithContext(ctx)
@@ -497,52 +545,124 @@ func UserChangePassword(userID int, oldPassword, newPassword string) error {
 	return UserResetPassword(userID, newPassword, context.Background())
 }
 
+// UserChangeUsername 只改 username 一列。绝不走 UserUpdate 的整值写回:
+// 旧实现把(在 lockUser 之外读到的)Balance / MonthlyUsed 装进一个完整
+// UserUpdateRequest 再交给 UserUpdate 落库, 于是"余额 10 → 中继扣到 7 → 改名把 10
+// 写回"这种丢失扣费的交错成立。给 UserUpdate 加锁也治不了这个 bug: 被写回的旧值
+// 在锁外就已捕获。这里只 UPDATE username, 缓存侧在 lockUser 内重新读取最新对象后
+// 只覆盖 Username 字段, 因此扣费/月卡用量字段永远不会被改名写回。
 func UserChangeUsername(userID int, newUsername string) error {
+	ctx := context.Background()
+	username := strings.TrimSpace(newUsername)
+	if username == "" {
+		return fmt.Errorf("username is required")
+	}
+	mu := lockUser(userID)
+	mu.Lock()
+	defer mu.Unlock()
 	user, err := UserGet(userID)
 	if err != nil {
 		return err
 	}
-	req := model.UserUpdateRequest{
-		ID:              user.ID,
-		Username:        newUsername,
-		Role:            user.Role,
-		Status:          user.Status,
-		Balance:         user.Balance,
-		MonthlyLimit:    user.MonthlyLimit,
-		MonthlyUsed:     user.MonthlyUsed,
-		MonthlyExpireAt: user.MonthlyExpireAt,
-		MonthlyResetAt:  user.MonthlyResetAt,
-		Note:            user.Note,
+	if err := db.GetDB().WithContext(ctx).Model(&model.User{}).Where("id = ?", user.ID).Update("username", username).Error; err != nil {
+		return fmt.Errorf("failed to update username: %w", err)
 	}
-	_, err = UserUpdate(req, userID, context.Background())
-	return err
+	oldUsername := user.Username
+	user.Username = username
+	userCache.Set(user.ID, user)
+	if oldUsername != user.Username {
+		userNameIDMap.Del(normalizeUsername(oldUsername))
+	}
+	userNameIDMap.Set(normalizeUsername(user.Username), user.ID)
+	return nil
 }
 
-func UserCanRelay(userID int, ctx context.Context) error {
+// UserCanRelay 是中继请求唯一的一道额度闸，现在是「检查 + 预留」的原子步骤。
+//
+// 返回的 reservation 必须由调用方在请求结束时交给 UserReleaseQuota 归还
+// （中间件用 defer 保证，见 middleware/auth.go）。返回 0 表示没有预留
+// （管理员或被拒绝时不占用）。
+//
+// 与旧版的区别：旧版只返回 error，不做任何记账，N 个并发请求能同时通过检查。
+// 现在在 lockUser 内一次性完成"读最新余额 → 扣掉在途预留算 available → 判定 → 记账"，
+// 同一用户的并发准入被串行化，超额从 N 倍收敛到 1 个请求的量级。
+func UserCanRelay(userID int, ctx context.Context) (float64, error) {
 	user, err := UserGet(userID)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if !user.IsActive() {
-		return fmt.Errorf("user is disabled")
+		return 0, fmt.Errorf("user is disabled")
 	}
 	if user.IsAdmin() {
-		return nil
+		return 0, nil
+	}
+
+	// 锁内重新读：锁外那次 UserGet 只为快速失败（禁用/不存在），
+	// 真正的判定必须基于锁内最新值，否则读到的余额可能是上一次扣费之前的快照。
+	mu := lockUser(userID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	user, err = UserGet(userID)
+	if err != nil {
+		return 0, err
+	}
+	if !user.IsActive() {
+		return 0, fmt.Errorf("user is disabled")
+	}
+	if user.IsAdmin() {
+		return 0, nil
 	}
 	user, err = UserRefreshMonthlyWindow(user.ID, ctx)
 	if err != nil {
-		return err
+		return 0, err
 	}
+
+	inflight := userQuotaInflightOf(user.ID)
 	if userMonthlyActive(user) {
-		if user.MonthlyUsed < user.MonthlyLimit {
-			return nil
+		available := user.MonthlyLimit - user.MonthlyUsed - inflight
+		if available <= 0 {
+			return 0, fmt.Errorf("monthly quota has been used up")
 		}
-		return fmt.Errorf("monthly quota has been used up")
+		reservation := userQuotaReserveOf(available)
+		userQuotaInflight[user.ID] = inflight + reservation
+		return reservation, nil
 	}
-	if user.Balance > 0 {
-		return nil
+	available := user.Balance - inflight
+	if available <= 0 {
+		return 0, fmt.Errorf("user quota has been used up")
 	}
-	return fmt.Errorf("user quota has been used up")
+	reservation := userQuotaReserveOf(available)
+	userQuotaInflight[user.ID] = inflight + reservation
+	return reservation, nil
+}
+
+// UserReleaseQuota 归还在 UserCanRelay 里占用的在途预留。
+//
+// 必须与 UserCanRelay 成对调用（中间件 defer）。实际扣费由 UserRecordUsage 在请求
+// 完成时独立完成，这里只负责把"在途"这个临时占用清掉 —— 两者的顺序是
+// "先扣实际费用，再退预留"，所以释放后 available 回到真实余额。
+//
+// 容错：reservation <= 0 或没有记录时是 no-op；累加结果用 maxFloat 夹到 0，
+// 避免任何异常配对把用户的在途占用变成负数（那会凭空放大可用额度）。
+func UserReleaseQuota(userID int, reservation float64) {
+	if userID <= 0 || reservation <= 0 {
+		return
+	}
+	mu := lockUser(userID)
+	mu.Lock()
+	defer mu.Unlock()
+	remaining := maxFloat(userQuotaInflight[userID]-reservation, 0)
+	// 浮点累加残渣：1000 次 0.01 的加减会留下 ~1e-16 的尾巴（实测 1.353e-16）。
+	// 不清掉的话，健康用户在高并发之后会永久残留一个微小的"在途"额度占用，
+	// 虽然量级无害，但会让 available 永远差一点点，且这种残渣会随用户数累积。
+	// 用与 float64 精度相当的 epsilon 归零。
+	if remaining <= userQuotaInflightEpsilon {
+		delete(userQuotaInflight, userID)
+		return
+	}
+	userQuotaInflight[userID] = remaining
 }
 
 func UserRecordUsage(userID int, cost float64, ctx context.Context) error {

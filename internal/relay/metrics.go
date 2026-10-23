@@ -68,6 +68,10 @@ type RelayMetrics struct {
 	// this as usage_source=local_estimate so the numbers read as an estimate.
 	usageEstimated bool
 
+	// usageDelivered 标记"本次请求已经向下游交付了实质内容", 即使最终终态是失败。
+	// 见 MarkUsageDelivered 与 Save 里的计费闸门。
+	usageDelivered bool
+
 	// ChannelKeyRemark 记录最终(成功/已提交)尝试所用渠道 Key 的备注, 仅供日志展示。
 	// 重试会切换 Key, 因此由 relay 在成功/已写出下游的那一刻回填最终 Key 的备注。
 	ChannelKeyRemark string
@@ -610,6 +614,30 @@ func applyBillingSnapshotToRelayLog(relayLog *model.RelayLog, snapshot model.Acc
 	relayLog.FinalCacheWriteCost = snapshot.FinalCacheWriteCost
 }
 
+// shouldBillUser 是用户计费闸门的唯一判据。
+//
+// 抽成独立函数不是为了好看，是为了能被两侧同时钉住：只测"该扣的扣了"会漏掉
+// "不该扣的扣了"——后者同样严重（无效请求能烧光用户余额）。
+//
+//	success=true                     → 扣（正常的成功路径，行为不变）
+//	success=false, delivered, cost>0 → 扣（已交付内容后中断：上游成本已产生）
+//	success=false, 未交付            → 不扣（选路失败/上游 4xx/首字节前取消）
+//	success=false, delivered, cost=0 → 不扣（没有可计费的金额）
+func shouldBillUser(success, delivered bool, totalCost float64) bool {
+	if success {
+		return true
+	}
+	return delivered && totalCost > 0
+}
+
+// MarkUsageDelivered 标记「本次请求已经向下游交付了实质内容」, 即使最终终态是失败。
+//
+// 必须与 attemptResult.Written == true 严格成对调用: 只有那两个出口, 客户端拿到的
+// 字节才真的回不去(不能再故障转移), 也就才存在"已经消耗了上游成本"的事实。
+func (m *RelayMetrics) MarkUsageDelivered() {
+	m.usageDelivered = true
+}
+
 func (m *RelayMetrics) Save(ctx context.Context, success bool, err error, attempts []model.ChannelAttempt) {
 	duration := time.Since(m.StartTime)
 	persistCtx, cancel := metricsPersistContext()
@@ -643,8 +671,22 @@ func (m *RelayMetrics) Save(ctx context.Context, success bool, err error, attemp
 	if err := op.UserRecordRelayIP(m.UserID, m.RequestIP, m.StartTime.Unix(), persistCtx); err != nil {
 		log.Warnf("failed to record user relay ip: %v", err)
 	}
-	if success {
-		if err := op.UserRecordUsage(m.UserID, globalStats.InputCost+globalStats.OutputCost, persistCtx); err != nil {
+	// 计费闸门: 按「实际产生的可计费用量」结算, 而不是终态成功布尔值。
+	//
+	// 流式请求可能在已经交付了大半内容之后才失败(客户端提前 cancel ->
+	// handleStreamResponse 返回 "client disconnected during stream";
+	// 上游半流读取错误 -> return error)。这类出口在 relay.go:1092-1100
+	// 返回 Success=false / Written=true: 上游成本已经产生、客户端也已经拿到
+	// 实质内容, 却一分不扣 —— 收到首 token 就 cancel 可稳定白嫖。
+	//
+	// 两个条件必须同时成立:
+	//   ① usageDelivered: relay 在 Written 出口标记过, 确有实质内容交付;
+	//   ② totalCost > 0 : 这次请求确实产生了可计费用量。
+	// 只有①没有②(没算出成本)不该扣; 只有②没有①(完全没交付: 选路失败/
+	// 上游 4xx/5xx/首字节前取消)也必须不扣, 否则无效请求就能烧掉用户余额。
+	totalCost := globalStats.InputCost + globalStats.OutputCost
+	if shouldBillUser(success, m.usageDelivered, totalCost) {
+		if err := op.UserRecordUsage(m.UserID, totalCost, persistCtx); err != nil {
 			log.Warnf("failed to record user usage: %v", err)
 		}
 	}
