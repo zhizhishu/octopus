@@ -88,6 +88,27 @@ func VideoTaskStatusCAS(ctx context.Context, id int64, from, to model.VideoTaskS
 	return res.RowsAffected > 0, nil
 }
 
+// VideoTaskTouchPolled 只推进 updated_at，不碰状态，用于「问过上游但这一行没有任何变化」。
+//
+// 【为什么必须有它】VideoTaskListUnfinished 按 updated_at 升序取「最久没被问过的」
+// 那一批（见那里的注释）。上游永报非终态的行（{"status":"running"} / 本层不认识的
+// 状态 → unknown）每轮都会被问一次、又什么都没变；若不同步推进 updated_at，它就永远
+// 停在队头，把每一轮的批次窗口占满，id 更大的新任务一条也进不来。
+//
+// 刻意用 UpdateColumn 而不是 VideoTaskStatusCAS：CAS 写同值在 MySQL（未开
+// CLIENT_FOUND_ROWS）上 RowsAffected=0，会被调用方误判成「没抢到」并告警刷屏
+// （见 videoTaskNotTerminalWhere 的 RowsAffected 段）。这里不需要 CAS 语义——
+// 只推进一个时间戳，谁赢都一样。
+func VideoTaskTouchPolled(ctx context.Context, id int64, at int64) error {
+	if id <= 0 {
+		return fmt.Errorf("invalid video task id: %d", id)
+	}
+	return db.GetDB().WithContext(ctx).
+		Model(&model.VideoTask{}).
+		Where("id = ?", id).
+		UpdateColumn("updated_at", at).Error
+}
+
 // VideoTaskCreate 落一条新任务。轮询进程靠它在重启后重新接管，所以创建即入库。
 func VideoTaskCreate(ctx context.Context, task *model.VideoTask) error {
 	if task == nil {
@@ -122,8 +143,22 @@ func VideoTaskGetByUpstreamID(ctx context.Context, upstreamTaskID string) (*mode
 	return &task, nil
 }
 
-// VideoTaskListUnfinished 取所有还没进终态的任务，供轮询进程挨个查上游。
+// VideoTaskListUnfinished 取一批还没进终态的任务，供轮询进程挨个查上游。
 // limit 是保险丝：单轮最多处理这么多条，避免积压时一轮跑到天亮。
+//
+// 【排序为什么不是 id 升序】按 id 升序 = 永远从最老的那批开始，是一种队头阻塞：
+// 上游永报非终态的行（{"status":"running"} / 本层不认识的状态 → unknown，见
+// task.mapVideoTaskUpstreamStatus）永远不会被写成 failure，它们会一直占着最老的
+// 那 limit 个位置；同轮超时扫描刚问过它们（task.sweepTimedOutVideoTasks 返回的
+// polled 集合），于是它们全被剔掉 → 本轮批次为空 → id 更大的新任务一条也进不来，
+// 永久停在 submitted，前端拿不到结果。
+//
+// 改成 updated_at 升序 = 「最久没被问过的先问」。这要求「问过」必须推进 updated_at，
+// 因此 VideoTaskTouchPolled 存在：状态/进度都没变的那次轮询不能什么都不写，否则
+// 这一行的 updated_at 一直停在创建时刻，照样盘踞队头。
+//
+// id DESC 是同一秒内的次序：问过的行和刚创建的行常常落在同一秒（unix 秒精度），
+// 平局时偏向**更新**的行，否则一次几秒内涌入的积压会按 id 升序重演同一个队头阻塞。
 func VideoTaskListUnfinished(ctx context.Context, limit int) ([]model.VideoTask, error) {
 	if limit <= 0 {
 		limit = 200
@@ -131,7 +166,8 @@ func VideoTaskListUnfinished(ctx context.Context, limit int) ([]model.VideoTask,
 	var tasks []model.VideoTask
 	res := db.GetDB().WithContext(ctx).
 		Where(videoTaskNotTerminalWhere, []model.VideoTaskStatus{model.VideoTaskSuccess, model.VideoTaskFailure}).
-		Order("id").
+		Order("updated_at").
+		Order("id DESC").
 		Limit(limit).
 		Find(&tasks)
 	if res.Error != nil {

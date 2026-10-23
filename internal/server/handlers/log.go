@@ -325,6 +325,9 @@ func exportLog(c *gin.Context) {
 		}
 		filename := fmt.Sprintf("octopus-logs-%s.ndjson", time.Now().Format("20060102-150405"))
 		c.Header("Content-Type", "application/x-ndjson; charset=utf-8")
+		// An admin export can carry full request/response bodies; never let a browser
+		// or intermediate proxy keep a copy.
+		c.Header("Cache-Control", "no-store")
 		c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
 		c.Header("X-Accel-Buffering", "no")
 		c.Status(http.StatusOK)
@@ -339,6 +342,7 @@ func exportLog(c *gin.Context) {
 
 	filename := fmt.Sprintf("octopus-logs-%s.json", time.Now().Format("20060102-150405"))
 	c.Header("Content-Type", "application/json; charset=utf-8")
+	c.Header("Cache-Control", "no-store")
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
 	c.Header("X-Accel-Buffering", "no")
 	c.Status(http.StatusOK)

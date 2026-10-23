@@ -207,6 +207,9 @@ func exportDB(c *gin.Context) {
 	}
 
 	c.Header("Content-Type", "application/json")
+	// The backup carries every plaintext secret of the site (admin token, SMTP
+	// password, channel keys); no-store keeps it out of a browser or proxy cache.
+	c.Header("Cache-Control", "no-store")
 	c.Header("Content-Disposition", "attachment; filename=\"octopus-export-"+time.Now().Format("20060102150405")+".json\"")
 	c.JSON(http.StatusOK, dump)
 }

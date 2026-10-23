@@ -9,6 +9,12 @@ const (
 	AttemptSkipped      AttemptStatus = "skipped"
 )
 
+// AttemptMsgRacedOut 标记「竞速输家」: 它与兄弟 contender 并发发出, 只因为另一个
+// contender 先赢而被取消, 不是一次真实的失败, 也不是一次故障转移/重试。
+// 它仍然留在 attempts 里(审计: 谁参与过), 但不算进 relay_logs.total_attempts,
+// 否则竞速模式下每一个成功请求都会被标成「重试过」。
+const AttemptMsgRacedOut = "raced_out"
+
 const (
 	RelayLogErrorCodeClientEmptyRequest      = "client_empty_request"
 	RelayLogErrorCodeCursorEmptyProbe        = "cursor_empty_probe"

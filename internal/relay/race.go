@@ -1070,9 +1070,10 @@ func recordLoserResults(
 		usedAt := time.Now().Unix()
 
 		// A canceled loser (another racer already won) is NOT a real upstream failure: no
-		// key use, no breaker, no stats — only the raced_out audit span.
+		// key use, no breaker, no stats — only the raced_out audit span, which is also
+		// excluded from total_attempts (see retryAttemptCount: a race loss is not a retry).
 		if res.canceled {
-			span.End(dbmodel.AttemptFailed, res.statusCode, "raced_out")
+			span.End(dbmodel.AttemptFailed, res.statusCode, dbmodel.AttemptMsgRacedOut)
 			continue
 		}
 

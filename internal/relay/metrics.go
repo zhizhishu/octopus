@@ -763,6 +763,23 @@ func finalChannel(attempts []model.ChannelAttempt) (int, string) {
 	return lastID, lastName
 }
 
+// retryAttemptCount 数的是「真实的渠道尝试次数」, 也就是 len(attempts) 去掉竞速输家。
+//
+// 竞速输家(model.AttemptMsgRacedOut)是同一次请求里并发发出的 contender, 被兄弟
+// contender 先赢而取消 —— 它既没失败也没被"重试", 却在 attempts 里留了一条 failed。
+// 直接用 len(attempts) 当 total_attempts 会让竞速模式下每一个成功请求都变成 warn /
+// 「重试过」, 于是 RetriedOnly 筛选等于全量, 真正的故障转移被淹没。
+func retryAttemptCount(attempts []model.ChannelAttempt) int {
+	count := 0
+	for _, attempt := range attempts {
+		if attempt.Status == model.AttemptFailed && attempt.Msg == model.AttemptMsgRacedOut {
+			continue
+		}
+		count++
+	}
+	return count
+}
+
 func routeStickyHit(attempts []model.ChannelAttempt) bool {
 	for _, attempt := range attempts {
 		if attempt.Sticky && attempt.Status == model.AttemptSuccess {
@@ -852,7 +869,7 @@ func (m *RelayMetrics) saveLog(ctx context.Context, err error, duration time.Dur
 		ModelVendorHint:       vendorHint,
 		UseTime:               int(duration.Milliseconds()),
 		Attempts:              attempts,
-		TotalAttempts:         len(attempts),
+		TotalAttempts:         retryAttemptCount(attempts),
 		SessionKey:            m.SessionKey,
 		SessionSource:         m.SessionSource,
 		RouteStickyHit:        routeStickyHit(attempts),

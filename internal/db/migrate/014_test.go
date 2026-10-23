@@ -295,3 +295,49 @@ func TestMigration014FillFailureDoesNotBlockStartup(t *testing.T) {
 		t.Fatal("migration 014 must stay AlwaysRun so the backfill resumes on the next startup")
 	}
 }
+
+// 014 在回填半途而废时蓄意返回 nil（不让服务起不来），框架就记 success。
+// 所以"真的补齐了吗"必须由迁移自己写标记，不能由 migration_records 推断。
+// 这条用例守两个方向：跑完 = true（否则搜索永远走慢路径），
+// 半途失败 = false（否则搜索对着缺行的表宣布空页，老日志永久搜不到）。
+func TestMigration014WritesBackfillMarkerOnlyWhenFinished(t *testing.T) {
+	t.Run("complete", func(t *testing.T) {
+		db := newMigrateDB(t)
+		if err := db.Create(&[]model.RelayLog{
+			{ID: 1, Time: 1, RequestModelName: "kimi-k3"},
+			{ID: 2, Time: 2, RequestModelName: "glm-5.3"},
+		}).Error; err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		if err := migrateBackfillRelayLogSearchIndex(db); err != nil {
+			t.Fatalf("migrate: %v", err)
+		}
+		if !RelayLogSearchBackfillComplete(db) {
+			t.Fatal("补齐之后必须置标记, 否则搜索永远退回主表 LIKE(慢)")
+		}
+		// 空库(全部补齐后再跑一遍的形态)也要保持 true, 不能把它改回 false。
+		if err := migrateBackfillRelayLogSearchIndex(db); err != nil {
+			t.Fatalf("second pass: %v", err)
+		}
+		if !RelayLogSearchBackfillComplete(db) {
+			t.Fatal("空转那一遍不该把标记改回 false")
+		}
+	})
+
+	t.Run("incomplete", func(t *testing.T) {
+		db := newMigrateDB(t)
+		if err := db.Create(&model.RelayLog{RequestModelName: "gpt-x"}).Error; err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		// 让回填读批那步失败(缺列), 走"半途而废"分支 —— 该分支返回 nil。
+		if err := db.Migrator().DropColumn(&model.RelayLog{}, "session_key"); err != nil {
+			t.Fatalf("drop column: %v", err)
+		}
+		if err := migrateBackfillRelayLogSearchIndex(db); err != nil {
+			t.Fatalf("半途而废必须返回 nil(不能挡住启动): %v", err)
+		}
+		if RelayLogSearchBackfillComplete(db) {
+			t.Fatal("回填没跑完却置了完成标记: 搜索会对着缺行的投影表直接返回空页")
+		}
+	})
+}

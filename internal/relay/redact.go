@@ -30,6 +30,7 @@ import (
 	"github.com/zhizhishu/octopus/internal/redact"
 	"github.com/zhizhishu/octopus/internal/transformer/inbound"
 	"github.com/zhizhishu/octopus/internal/transformer/model"
+	"github.com/zhizhishu/octopus/internal/utils/log"
 )
 
 const (
@@ -196,15 +197,64 @@ func (ra *relayAttempt) inboundRedactCovered() bool {
 // A nil internalRequest is treated as excluded (defensive: never scan what we cannot
 // classify).
 func (ra *relayAttempt) inboundRedactExcludedRequest() bool {
+	return ra.inboundRedactExclusionReason() != ""
+}
+
+// inboundRedactExclusionReason names WHICH exclusion applies, or "" when none does.
+// It is the single source of truth for the exclusion list: the decision
+// (inboundRedactExcludedRequest) and the audit line (noteRedactSkippedByClient) both read
+// it, so the reason printed in the log can never drift from the branch actually taken.
+func (ra *relayAttempt) inboundRedactExclusionReason() string {
 	if ra == nil || ra.internalRequest == nil {
-		return true
+		return "unclassified_request"
 	}
 	// 🔴 用 IsEmbeddingRequest() 而不是 `EmbeddingInput != nil`：后者会被一趟
 	// chat 请求里夹带的 "embedding_input" 字段误触发，把一个本该脱敏的 chat
 	// 请求整条排除在保护之外。判据必须和 relay/model 层是同一个。
-	return ra.internalRequest.IsImageGenerationRequest() ||
-		ra.internalRequest.IsEmbeddingRequest() ||
-		isVideoRequest(ra.relayRequest)
+	switch {
+	case ra.internalRequest.IsImageGenerationRequest():
+		return "image_generation"
+	case ra.internalRequest.IsEmbeddingRequest():
+		return "embedding"
+	case isVideoRequest(ra.relayRequest):
+		return "video"
+	}
+	return ""
+}
+
+// inboundRedactSkippedByClient reports the case that MUST leave an audit trail: a channel
+// the operator opted in, a covered inbound protocol, and a request the module refuses to
+// scan because of a request-SHAPE exclusion — and every one of those classifiers is
+// client-controlled (declaring an "image" modality or an image_generation tool in an
+// ordinary chat body, or targeting /videos). Without this report a client can silence
+// credential redaction for its own request and leave nothing behind anywhere. Returns the
+// exclusion reason, or "" when the skip is not client-attributable (module inactive by
+// configuration, or an uncovered protocol — both are operator-visible settings already).
+func (ra *relayAttempt) inboundRedactSkippedByClient() string {
+	if ra == nil || ra.channel == nil {
+		return ""
+	}
+	optedIn := ra.redactRequired || (redactGlobalEnabled() && ra.channel.RedactEnabled)
+	if !optedIn || !ra.inboundRedactCovered() {
+		return ""
+	}
+	return ra.inboundRedactExclusionReason()
+}
+
+// noteRedactSkippedByClient writes that audit line. Warn, not Info: for the operator this
+// is the same class of event as a channel being switched off, and it names nothing
+// sensitive (channel identity, exclusion reason, client-supplied model name only).
+func (ra *relayAttempt) noteRedactSkippedByClient() {
+	reason := ra.inboundRedactSkippedByClient()
+	if reason == "" {
+		return
+	}
+	reqModel := ""
+	if ra.internalRequest != nil {
+		reqModel = ra.internalRequest.Model
+	}
+	log.Warnf("credential redaction skipped for this request: channel %d(%s) is opted in, but the request was classified as %s, so nothing was masked (model %q)",
+		ra.channel.ID, ra.channel.Name, reason, reqModel)
 }
 
 // applyInboundRedaction redacts THIS attempt's client-protocol request payload
@@ -226,6 +276,7 @@ func (ra *relayAttempt) inboundRedactExcludedRequest() bool {
 // than sending the original text unprotected. Returns nil when redaction is
 // inactive for this attempt (pure no-op).
 func (ra *relayAttempt) applyInboundRedaction() error {
+	ra.noteRedactSkippedByClient()
 	if !ra.inboundRedactActive() || ra.redactFailed {
 		return nil
 	}

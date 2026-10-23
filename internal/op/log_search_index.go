@@ -165,10 +165,18 @@ const relayLogSearchIndexMigrationVersion = 14
 //
 // 判据用迁移记录而不是"行数相等": 行数在主表持续写入时会瞬时不等, 且大表上
 // 每次搜索都数两遍行数本身就是笔开销。
+//
+// 🔴 但 success **不等于**完整: 014 在探测/回填中途失败时蓄意返回 nil(不让一次
+// 可降级的故障把服务挡在启动之外), 框架收到 nil 就记 success。所以还要看 014
+// 自己写的标记 —— 只有它代表"探测到没有缺行"。少了这一条, 升级大表时回填跑一半
+// 就记 success, 搜索对着缺行的投影表直接返回空页, 那批老日志永久搜不到。
 func relayLogSearchIndexComplete(ctx context.Context) bool {
+	tx := db.GetDB().WithContext(ctx)
 	var rec migrate.MigrationRecord
-	err := db.GetDB().WithContext(ctx).
+	if err := tx.
 		Where("version = ? AND status = ?", relayLogSearchIndexMigrationVersion, migrate.MigrationRecordStatusSuccess).
-		Take(&rec).Error
-	return err == nil
+		Take(&rec).Error; err != nil {
+		return false
+	}
+	return migrate.RelayLogSearchBackfillComplete(tx)
 }

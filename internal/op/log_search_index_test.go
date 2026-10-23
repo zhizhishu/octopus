@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/zhizhishu/octopus/internal/db"
+	"github.com/zhizhishu/octopus/internal/db/migrate"
 	"github.com/zhizhishu/octopus/internal/model"
 )
 
@@ -211,5 +212,66 @@ func TestRelayLogSearchFallbackAndIndexAgree(t *testing.T) {
 	}
 	if len(viaIndex) != 2 {
 		t.Fatalf("应命中 9501 与 9502, 实际 %d 条", len(viaIndex))
+	}
+}
+
+// P1: 014 回填半途而废时蓄意返回 nil, 框架就记 success —— 于是"迁移成功"不等于
+// "投影表完整"。修复前 relayLogSearchIndexComplete 只看 success, 于是在缺行状态下
+// 走"直接空页"分支，只存在于主表未回填行的日志永久搜不到，而页面看着完全正常。
+//
+// 这条用例造的就是那个现场: migration_records 里 14 = success, 完成标记缺失,
+// 主表有一行而投影表没有(等于回填没跑到它)。不依赖迁移是否在本进程真跑过。
+func TestRelayLogSearchFindsUnbackfilledRowWhenBackfillIncomplete(t *testing.T) {
+	ctx := setupRelayLogTest(t)
+	ensureSearchIndexTable(t)
+
+	marker := &migrate.RelayLogSearchBackfillState{}
+	if err := db.GetDB().AutoMigrate(marker); err != nil {
+		t.Fatalf("automigrate marker: %v", err)
+	}
+	// 框架在 Up 返回 nil 时就记 success —— 半途而废也是这个结局, 正是坑的来源。
+	if err := db.GetDB().Where("version = ?", 14).Delete(&migrate.MigrationRecord{}).Error; err != nil {
+		t.Fatalf("reset migration record: %v", err)
+	}
+	if err := db.GetDB().Create(&migrate.MigrationRecord{Version: 14, Status: migrate.MigrationRecordStatusSuccess}).Error; err != nil {
+		t.Fatalf("seed migration record: %v", err)
+	}
+
+	// 正向对照: 标记为 true 时才报告完整 —— 否则下面的 false 可能来自别的路径。
+	if err := db.GetDB().Where("1 = 1").Delete(marker).Error; err != nil {
+		t.Fatalf("clear marker: %v", err)
+	}
+	if err := db.GetDB().Create(&migrate.RelayLogSearchBackfillState{ID: 1, Complete: true}).Error; err != nil {
+		t.Fatalf("seed marker: %v", err)
+	}
+	if !relayLogSearchIndexComplete(ctx) {
+		t.Fatal("迁移记录 success + 完成标记 true 时应报告完整")
+	}
+
+	// 存量行只进了主表就没了下文 —— 回填在它之前就断掉(库忙/进程被杀)。
+	if err := db.GetDB().Create(&model.RelayLog{ID: 9601, Time: 9601, RequestModelName: "legacy-only-model"}).Error; err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// 回填没跑完 = 标记缺失, 而 migration_records 那条 success 依然在。
+	if err := db.GetDB().Where("1 = 1").Delete(marker).Error; err != nil {
+		t.Fatalf("clear marker: %v", err)
+	}
+	if relayLogSearchIndexComplete(ctx) {
+		t.Fatal("回填未完成时不能报告投影表完整: 搜索会直接返回空页")
+	}
+
+	got, err := RelayLogList(ctx, nil, nil, 1, 20, &model.RelayLogScope{Search: "legacy-only-model"})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	found := false
+	for _, g := range got {
+		if g.ID == 9601 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("回填未完成时必须退回主表 LIKE, 否则未回填的老日志永久搜不到(实际 %+v)", got)
 	}
 }

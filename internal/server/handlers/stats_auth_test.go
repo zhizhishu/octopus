@@ -20,8 +20,17 @@ import (
 func TestStatsRoutesRequireAuth(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
+
+	// RegisterAll 曾把 registeredRouters 置 nil（"用后即清"），导致同进程里
+	// 第二个 engine 拿到 0 条路由、所有路径 404 —— 同包 codex_routes_test.go
+	// 也调它，谁先跑谁拿到路由，后跑的测试断言什么都与真实行为无关。
+	// 该副作用已修（路由描述表不该被消费掉），这里直接建 engine。
 	if err := router.RegisterAll(engine); err != nil {
 		t.Fatalf("register routes: %v", err)
+	}
+	if len(engine.Routes()) == 0 {
+		t.Fatal("RegisterAll 之后 engine 里一条路由都没有：路由描述表被消费了，" +
+			"下面所有断言都会退化成 404，与鉴权无关")
 	}
 
 	paths := []string{

@@ -374,26 +374,31 @@ func TestVideoTaskTerminalRowsNeverEnterThePoller(t *testing.T) {
 	}
 }
 
-// 未完成列表的 limit / 排序边界：这是轮询进程的入口，limit 是保险丝、Order("id")
+// 未完成列表的 limit / 排序边界：这是轮询进程的入口，limit 是保险丝、updated_at 升序
 // 是「这一轮从哪条开始」的唯一依据。
 //
 // 三件事必须同时成立，否则积压时会饿死任务或把同一批反复处理：
 //  1. limit 真的截断（不是忽略它把整表捞出来），且只数未完成的行——终态行不占名额；
-//  2. 顺序是按 id 升序的稳定顺序（最老的先推进），不是数据库的偶然返回顺序；
+//  2. 顺序是「最久没被问过的先问」（updated_at 升序），**不是** id 升序：按 id 升序会让
+//     上游永报非终态的老行永久占据队头，把 id 更大的新任务挤出批次（队头阻塞，见
+//     task.TestVideoTaskPollStuckTasksDoNotBlockNewOnes）；
 //  3. limit <= 0 落到默认值（保险丝不能因为调用方传 0 就变成「一条都不处理」）。
 func TestVideoTaskListUnfinishedLimitAndOrder(t *testing.T) {
 	newVideoTaskTestDB(t)
 	ctx := context.Background()
 
 	// 终态行先落库，id 更小：它们若占名额/被捞出来，下面的断言立刻就能看出来。
+	// u-1..u-5 的 updated_at 刻意与 id 升序相反（u-5 最久没被问过、u-1 最近），
+	// 这样「按 id 排」和「按 updated_at 排」的结果互不相同，排序改回 id 立刻变红。
+	base := time.Now().Add(-time.Hour).Unix()
 	seed := []model.VideoTask{
 		{UpstreamTaskID: "t-1", Status: model.VideoTaskSuccess},
 		{UpstreamTaskID: "t-2", Status: model.VideoTaskFailure},
-		{UpstreamTaskID: "u-1", Status: model.VideoTaskNotStart},
-		{UpstreamTaskID: "u-2", Status: model.VideoTaskQueued},
-		{UpstreamTaskID: "u-3", Status: model.VideoTaskSubmitted},
-		{UpstreamTaskID: "u-4", Status: model.VideoTaskInProgress},
-		{UpstreamTaskID: "u-5", Status: model.VideoTaskUnknown},
+		{UpstreamTaskID: "u-1", Status: model.VideoTaskNotStart, UpdatedAt: base + 5},
+		{UpstreamTaskID: "u-2", Status: model.VideoTaskQueued, UpdatedAt: base + 4},
+		{UpstreamTaskID: "u-3", Status: model.VideoTaskSubmitted, UpdatedAt: base + 3},
+		{UpstreamTaskID: "u-4", Status: model.VideoTaskInProgress, UpdatedAt: base + 2},
+		{UpstreamTaskID: "u-5", Status: model.VideoTaskUnknown, UpdatedAt: base + 1},
 	}
 	for i := range seed {
 		if err := VideoTaskCreate(ctx, &seed[i]); err != nil {
@@ -418,14 +423,14 @@ func TestVideoTaskListUnfinishedLimitAndOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list with limit 2: %v", err)
 	}
-	// 前两条「不是终态的」行，按 id 升序：limit 作用在过滤之后，终态行不占名额。
-	assertOrder("limit=2", limited, []string{"u-1", "u-2"})
+	// 最久没被问过的两条：limit 作用在过滤之后，终态行不占名额。
+	assertOrder("limit=2", limited, []string{"u-5", "u-4"})
 
 	all, err := VideoTaskListUnfinished(ctx, 10)
 	if err != nil {
 		t.Fatalf("list with limit 10: %v", err)
 	}
-	assertOrder("limit=10", all, []string{"u-1", "u-2", "u-3", "u-4", "u-5"})
+	assertOrder("limit=10", all, []string{"u-5", "u-4", "u-3", "u-2", "u-1"})
 
 	// 保险丝的默认值：0 和负数都该退成「默认批量」，而不是「一条都不处理」。
 	for _, limit := range []int{0, -1} {
@@ -433,6 +438,6 @@ func TestVideoTaskListUnfinishedLimitAndOrder(t *testing.T) {
 		if err != nil {
 			t.Fatalf("list with limit %d: %v", limit, err)
 		}
-		assertOrder("limit="+strconv.Itoa(limit), tasks, []string{"u-1", "u-2", "u-3", "u-4", "u-5"})
+		assertOrder("limit="+strconv.Itoa(limit), tasks, []string{"u-5", "u-4", "u-3", "u-2", "u-1"})
 	}
 }

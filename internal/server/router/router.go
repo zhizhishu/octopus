@@ -108,7 +108,15 @@ func RegisterAll(engine *gin.Engine) error {
 			registerRoute(group, route.Method, route.Path, handlers)
 		}
 	}
-	registeredRouters = nil
+	// 🔴 这里曾经是 `registeredRouters = nil`（"注册完就清空，防重复注册"）。
+	// 但 registeredRouters 是**路由描述表**，不是一次性队列：把同一份描述注册到
+	// 两个 engine 上是完全合法且必要的（子引擎、灰度引擎、测试各建一个）。
+	// 清空它带来的是纯粹的副作用：
+	//   - 同进程第二个 engine 拿到 0 条路由，所有路径 404；
+	//   - 单元测试里谁先跑谁拿到路由，后跑的测试无论断言什么都与真实行为无关
+	//     （404 既不是 200 也不是 401，会让鉴权测试"假绿"或"假红"）。
+	// 重复注册到**同一个** engine 由 gin 自己处理（同 path+method 覆盖），
+	// 不需要在这里擦状态。
 	return nil
 }
 

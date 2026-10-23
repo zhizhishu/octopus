@@ -25,6 +25,60 @@ func init() {
 	})
 }
 
+// RelayLogSearchBackfillState 是"存量到底补齐了没有"那唯一一行标记。
+//
+// 为什么不能只认 migration_records 里的 success: 014 在探测/回填中途失败时**刻意
+// 返回 nil**(不让一次可降级的回填故障把服务挡在启动之外), 而框架收到 nil 就记
+// success(migrate.go:117-121)。于是 success 只代表"这一遍跑完了", 不代表"投影表
+// 完整"。搜索侧拿它当完整性判据时会直接返回空页(internal/op/log_search_index.go),
+// 那批没回填的老日志就永久搜不到, 而页面看起来完全正常。
+//
+// 单独一张表而不是塞进 settings: settings 会被 SettingList / 备份导出带走,
+// 换一台机器导入之后"表是完整的"这个断言就是假的。
+type RelayLogSearchBackfillState struct {
+	ID       int  `gorm:"primaryKey"`
+	Complete bool `gorm:"not null"`
+}
+
+// relayLogSearchBackfillStateRowID 是单行表的主键。
+const relayLogSearchBackfillStateRowID = 1
+
+// relayLogSearchBackfillMark 写入/更新完整性标记。
+//
+// 失败只记日志: 标记写不上 = 搜索侧一直走主表 LIKE 退路, 慢但正确,
+// 不该让启动失败, 也不该让搜索变成空页。
+func relayLogSearchBackfillMark(db *gorm.DB, complete bool) {
+	if db == nil {
+		return
+	}
+	if err := db.AutoMigrate(&RelayLogSearchBackfillState{}); err != nil {
+		log.Warnf("migrate 014: ensure backfill marker table failed: %v", err)
+		return
+	}
+	row := RelayLogSearchBackfillState{ID: relayLogSearchBackfillStateRowID, Complete: complete}
+	if err := db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "id"}},
+		DoUpdates: clause.AssignmentColumns([]string{"complete"}),
+	}).Create(&row).Error; err != nil {
+		log.Warnf("migrate 014: write backfill marker (complete=%v) failed: %v", complete, err)
+	}
+}
+
+// RelayLogSearchBackfillComplete 报告存量行是否已经真的补齐。
+//
+// 表不存在(迁移还没跑到)、没有那一行、或标记为 false, 一律算"没补齐" ——
+// 宁可让搜索走慢路径, 也不能让它对着缺行的投影表宣布空页。
+func RelayLogSearchBackfillComplete(tx *gorm.DB) bool {
+	if tx == nil || !tx.Migrator().HasTable(&RelayLogSearchBackfillState{}) {
+		return false
+	}
+	var st RelayLogSearchBackfillState
+	if err := tx.Take(&st, relayLogSearchBackfillStateRowID).Error; err != nil {
+		return false
+	}
+	return st.Complete
+}
+
 // 014: 建 relay_log_search 投影表并回填存量日志的搜索列。
 //
 // 背景(实测 5 万行): 日志页搜索走 12 个字段的 LIKE '%x%'。前缀通配符注定用不上
@@ -55,6 +109,10 @@ func migrateBackfillRelayLogSearchIndex(db *gorm.DB) error {
 	if err := db.AutoMigrate(&model.RelayLogSearchIndex{}); err != nil {
 		return fmt.Errorf("create relay_log_search: %w", err)
 	}
+
+	// 先把标记置成"没补齐": 这一遍还没走完, 中途失败/被杀都不能留着一个过去的 true。
+	// 重启时这里会重跑, 探测到没有缺行再置回 true。
+	relayLogSearchBackfillMark(db, false)
 
 	// 顺带给主表的 total_attempts 建索引。
 	//
@@ -97,6 +155,9 @@ func migrateBackfillRelayLogSearchIndex(db *gorm.DB) error {
 			return nil
 		}
 		if len(ids) == 0 {
+			// 探测到"主表有、投影表没有"的行数为 0 —— 这才是真的补齐了,
+			// 也只有这里和下面"最后一批"那处可以置 true。
+			relayLogSearchBackfillMark(db, true)
 			return nil
 		}
 
@@ -140,6 +201,8 @@ func migrateBackfillRelayLogSearchIndex(db *gorm.DB) error {
 			return nil
 		}
 		if len(ids) < batchSize {
+			// 不足一批 = 缺失 id 已经取完并灌完, 同样算补齐。
+			relayLogSearchBackfillMark(db, true)
 			return nil
 		}
 	}

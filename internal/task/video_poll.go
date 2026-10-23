@@ -81,6 +81,20 @@ var videoTaskPollRoundTimeout = 2 * time.Minute
 var videoTaskPollSweepBudget = 40 * time.Second
 var videoTaskPollTaskTimeout = 20 * time.Second
 
+// videoTaskPollHardTimeout 是「上游一直报非终态」的硬上限。
+//
+// videoTaskPollTimeout（2h）只能收口「问不出结论」的行；上游每轮都老老实实回
+// {"status":"running"} 的行会一直被 videoTaskTimeoutResolvedUpstream 判成
+// 「本地判超时是错的，留着继续推进」，永远不进终态。这类行自己不花钱，却会
+// 每轮吃掉一份轮询预算/批次窗口（videoTaskListUnfinished 的队头就是这个）。
+//
+// 24h 的取值依据：比 videoTaskPollTimeout 高一个数量级，任何「真在生成」的视频
+// 都不可能跑这么久；同时内存里的归属记录（relay.defaultVideoTaskTTL = 2h）早就丢了，
+// 客户端的这次请求早已结束，再无限期保留只会在库里沉一堆永远不动的行。
+//
+// 改成 var 是为了测试能压到秒级。
+var videoTaskPollHardTimeout = 24 * time.Hour
+
 var (
 	videoTaskPollOnce   sync.Once
 	videoTaskPollStarts atomic.Int32
@@ -224,14 +238,18 @@ func pollOneVideoTask(ctx context.Context, channel *model.Channel, task model.Vi
 		// 其余错误（网络、5xx、鉴权暂时失效、渠道被临时停用）都当可恢复：
 		// 这一轮跳过这一条，下一轮再试；真的一直不行由超时扫描统一收口，
 		// 不会无限重试。
+		// 但「下一轮再试」得排到队尾去试：不同步 updated_at，一条永远 5xx 的行会每轮
+		// 占满队头，把新任务饿死——和「上游永报非终态」是同一个队头阻塞。
 		log.Warnf("video task poll: task %s upstream query failed (status=%d): %v", task.UpstreamTaskID, statusCode, err)
+		touchVideoTaskPolled(ctx, task)
 		return
 	}
 
 	result, perr := parseVideoTaskPollBody(body)
 	if perr != nil {
-		// 一条读不懂的响应不许拖垮整批，也不许静默：记下来，下一轮再试。
+		// 一条读不懂的响应不许拖垮整批，也不许静默：记下来，下一轮再试（同样要排到队尾）。
 		log.Warnf("video task poll: task %s returned an unparseable body: %v", task.UpstreamTaskID, perr)
+		touchVideoTaskPolled(ctx, task)
 		return
 	}
 	applyVideoTaskPollResult(ctx, task, result)
@@ -356,6 +374,17 @@ func truncateVideoTaskSnippet(rawStatus string, body []byte) string {
 	return snippet
 }
 
+// touchVideoTaskPolled 标记「这一轮已经问过它了」。
+//
+// 它是 op.VideoTaskListUnfinished 那个 updated_at 升序排序的时钟：任何「本轮占了一个批次
+// 名额、但一个字段都没写」的返回路径都必须调它（状态没变、查上游出错、响应读不懂），
+// 否则这一行下一轮又站在队头，把新任务再次挤出去——同一类队头阻塞，换了个触发条件。
+func touchVideoTaskPolled(ctx context.Context, task model.VideoTask) {
+	if err := op.VideoTaskTouchPolled(ctx, task.ID, time.Now().Unix()); err != nil {
+		log.Warnf("video task poll: touch polled task %s failed: %v", task.UpstreamTaskID, err)
+	}
+}
+
 // applyVideoTaskPollResult 把一次成功的上游查询结果按 CAS 写回。
 //
 // 状态没变、也没有别的字段要改时直接跳过：轮询每 30 秒一轮，每条在跑的任务都写一次
@@ -401,6 +430,10 @@ func applyVideoTaskPollResult(ctx context.Context, task model.VideoTask, result 
 	}
 
 	if result.status == task.Status && len(updates) == 0 {
+		// 什么都没变也必须推进 updated_at：这是轮询公平性的唯一依据（见
+		// op.VideoTaskListUnfinished 的排序注释）。上游永报非终态的行每轮都会走到这里，
+		// 不同步时间戳，它就永久占据队头，把新任务挤出批次窗口。
+		touchVideoTaskPolled(ctx, task)
 		return
 	}
 
@@ -481,6 +514,26 @@ func queryVideoTaskUpstream(ctx context.Context, channel *model.Channel, channel
 	return relay.VideoTaskPollStatus(queryCtx, channel, channelKey, upstreamTaskID)
 }
 
+// videoTaskPollRefTime 是判超时/判硬上限的时间基准，语义与 op.VideoTaskListStale
+// 的 WHERE 完全一致：submit_time > 0 用它，否则退回 created_at。两处必须同一口径，
+// 否则会出现「扫出来了但算不出超时」的行。
+func videoTaskPollRefTime(task model.VideoTask) int64 {
+	if task.SubmitTime > 0 {
+		return task.SubmitTime
+	}
+	return task.CreatedAt
+}
+
+// videoTaskBeyondHardTimeout 报告这一行是否已经超过「上游永报非终态」的硬上限。
+// 没有任何时间证据（refTime = 0）时不判：宁可留着，也不要凭空的时钟判死。
+func videoTaskBeyondHardTimeout(task model.VideoTask, now time.Time) bool {
+	ref := videoTaskPollRefTime(task)
+	if ref <= 0 {
+		return false
+	}
+	return float64(now.Unix()-ref) > videoTaskPollHardTimeout.Seconds()
+}
+
 // sweepTimedOutVideoTasks 收口「早于 videoTaskPollTimeout 仍未进终态」的任务。
 //
 // 【判死之前必须先问一次上游】只按本地时钟判失败是错的：服务停机/重启/长时间断网期间，
@@ -494,11 +547,16 @@ func queryVideoTaskUpstream(ctx context.Context, channel *model.Channel, channel
 //   - 问不出结论（渠道或 key 已不可用、上游 404 不认这个任务、查询本身失败/超时）
 //     → 才按超时判失败，保留原语义（一条永远问不出结论的行不能永久占着未完成集合）。
 //
+// 【唯一例外是硬上限】超过 videoTaskPollHardTimeout 仍在未完成集合里的行，不再问上游，
+// 直接判失败。上述第一条支的「留着继续推进」在「上游永远说还在跑」时没有出口：
+// 那类行永远不进终态，每轮吃掉一份批次窗口和上游配额。硬上限就是它的出口。
+//
 // 返回值是本轮「已经问过上游、而它那边仍活着或已给出真实结果」的任务 id 集合：调用方
 // 据此把这几条从本轮待推进批次里剔掉，避免同一轮对同一条上游问两遍。
 func sweepTimedOutVideoTasks(ctx context.Context) map[int64]struct{} {
 	polled := make(map[int64]struct{})
-	deadline := time.Now().Add(-videoTaskPollTimeout).Unix()
+	now := time.Now()
+	deadline := now.Add(-videoTaskPollTimeout).Unix()
 	stale, err := op.VideoTaskListStale(ctx, deadline, videoTaskPollStaleLimit)
 	if err != nil {
 		log.Warnf("video task poll: list stale tasks failed: %v", err)
@@ -514,6 +572,15 @@ func sweepTimedOutVideoTasks(ctx context.Context) map[int64]struct{} {
 				polled[rest.ID] = struct{}{}
 			}
 			return polled
+		}
+		if videoTaskBeyondHardTimeout(task, now) {
+			// 硬上限：不再问上游。已远超本地超时还连续报非终态的行，再问一次只是把同一个
+			// 「还在跑」再拿一次，问多少次也不会收敛（videoTaskTimeoutResolvedUpstream 会
+			// 一直返回 true 把它留在未完成集合里）。
+			reason := fmt.Sprintf("video task abandoned: upstream never reported a terminal status within %s after submit", videoTaskPollHardTimeout)
+			markVideoTaskFailed(ctx, task, reason)
+			log.Warnf("video task poll: task %s abandoned after the %s hard limit", task.UpstreamTaskID, videoTaskPollHardTimeout)
+			continue
 		}
 		if videoTaskTimeoutResolvedUpstream(ctx, task) {
 			polled[task.ID] = struct{}{}

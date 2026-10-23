@@ -1307,7 +1307,8 @@ func relayLogIsError(relayLog model.RelayLog) bool {
 // relayLogSeverityValue classifies a log as "error" / "warn" / "success".
 //   - error:   the request failed.
 //   - warn:    it ultimately succeeded but took more than one channel attempt
-//     (a retry/failover happened — TotalAttempts is written as len(attempts)).
+//     (a retry/failover happened — TotalAttempts counts real attempts, i.e.
+//     len(attempts) minus race losers marked AttemptMsgRacedOut).
 //   - success: first-attempt success.
 //
 // Mirror of the web getRelayLogSeverity rule so client display and server filter
