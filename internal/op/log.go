@@ -814,11 +814,48 @@ func RelayLogList(ctx context.Context, startTime, endTime *int, page, pageSize i
 					return nil, txErr
 				}
 			} else {
-				// Large limits (export / deep pages) would make the id IN(...) list exceed
-				// SQLite's parameter cap; keep the original single-query path (export streams
-				// everything and is not the interactive-page latency case the two-phase targets).
+				// 大 limit（导出 / 深翻页）不能用 id IN(...) 两段式：id 列表会超过
+				// SQLite 的参数上限，所以走单查询。
+				//
+				// 🔴 但**搜索条件必须照样生效**。这里曾经直接 `query.Order(...).Find()`，
+				// 而 relayLogApplyScopeBase 只管时间和用户范围、不管搜索词 —— 于是
+				// "搜索结果页点导出"导出的是**全库日志**：用户以为拿到的是自己筛出来的
+				// 那几十条，实际拿到全部记录（含别人的、含他没筛的时间段）。这既是数据
+				// 泄露，也让导出功能本身失去意义。
+				//
+				// 判据与交互页保持同一套：能用投影窄表就先算命中 id，再拿 id 集合过滤主表；
+				// 投影表不可用（迁移未完成/被删）时退回主表 LIKE。
+				exportQuery := query
+				useMainTableSearch := false
+				search := ""
+				if scope != nil {
+					search = strings.TrimSpace(scope.Search)
+				}
+				if search != "" {
+					if relayLogSearchReady() {
+						var ids []int64
+						if err := relayLogSearchIndexQuery(search).Select("id").Pluck("id", &ids).Error; err != nil {
+							return nil, err
+						}
+						if len(ids) == 0 && !relayLogSearchIndexComplete(ctx) {
+							// 投影表还没回填完：老日志可能只在主表里，宁可慢也不能漏。
+							useMainTableSearch = true
+						} else {
+							// 命中为空且投影表完整 → 导出就该是空集，不能退回 LIKE 全表扫。
+							if ids == nil {
+								ids = []int64{}
+							}
+							exportQuery = exportQuery.Where("id IN ?", ids)
+						}
+					} else {
+						useMainTableSearch = true
+					}
+					if useMainTableSearch {
+						exportQuery = relayLogApplySearchOnMainTable(exportQuery, search)
+					}
+				}
 				var dbLogs []model.RelayLog
-				if err := query.Order("id DESC").Limit(dbLimit).Omit("request_content", "response_content", "model_audit_report").Find(&dbLogs).Error; err != nil {
+				if err := exportQuery.Order("id DESC").Limit(dbLimit).Omit("request_content", "response_content", "model_audit_report").Find(&dbLogs).Error; err != nil {
 					return nil, err
 				}
 				result = append(result, dbLogs...)

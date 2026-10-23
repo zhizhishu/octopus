@@ -39,6 +39,20 @@ type RelayProbeInput struct {
 	CacheHitTokens   int
 	CacheWriteTokens int
 
+	// SeparateCacheInput 表示本条的 InputTokens 是**上游独占口径**的输入：
+	// 缓存命中/写入不计入 InputTokens，要另外加。Anthropic 就是这种语义
+	// （input_tokens=12 + cache_read=40000 + cache_creation=3000 是正常报文）。
+	//
+	// 为什么要单独记：所有"缓存不能超过输入"的核对都必须拿**折叠后总数**当分母，
+	// 否则每一条带缓存的 Anthropic 请求都会必然报假警（12 比 40000 小，但
+	// 43012 才是真正的输入总量）。折叠后的总数见 CacheFoldedInputTokens。
+	SeparateCacheInput bool
+
+	// CacheFoldedInputTokens 是渠道口径统一的输入总量：独占口径时等于
+	// InputTokens + 缓存命中 + 缓存写入；否则等于 InputTokens。
+	// 由 relay 侧按 usageCacheStats 的同一套规则算好传进来，探针不再自己推。
+	CacheFoldedInputTokens int
+
 	// 请求体与回复正文（均已脱敏）。只用于分词器残差与字符/token 比值。
 	RequestContent  string
 	ResponseContent string
@@ -121,11 +135,26 @@ func probeTokenArithmetic(in RelayProbeInput) []model.RelayProbeFinding {
 // 缓存命中是输入的一部分，不可能比整个输入还多。超过就是计数口径错了，
 // 或者有人把缓存数当额外收入加了进去。
 func probeCacheExceedsPrompt(in RelayProbeInput) []model.RelayProbeFinding {
-	if in.InputTokens <= 0 {
+	// 分母必须是**渠道口径统一的输入总量**，不能拿上游独占口径的 InputTokens。
+	//
+	// Anthropic 的 usage 是独占口径：input_tokens=12 表示"非缓存部分 12 个"，
+	// 缓存命中 40000、缓存写入 3000 是另外两栏。真实的输入总量是 43012。
+	// 旧代码拿 InputTokens(12) 当分母，于是 cacheTotal(43000) > 12 恒成立 ——
+	// 每一条带 prompt cache 的 Anthropic 请求都报"缓存计数超过了总输入"，
+	// 而那条请求完全正常。假警报到这个密度就等于没有告警。
+	denominator := in.CacheFoldedInputTokens
+	if denominator <= 0 {
+		// 没传折叠值（或确实为 0）：独占口径下自己折一次，其它口径直接用 InputTokens。
+		denominator = in.InputTokens
+		if in.SeparateCacheInput {
+			denominator += in.CacheHitTokens + in.CacheWriteTokens
+		}
+	}
+	if denominator <= 0 {
 		return nil
 	}
 	cacheTotal := in.CacheHitTokens + in.CacheWriteTokens
-	if cacheTotal <= 0 || cacheTotal <= in.InputTokens {
+	if cacheTotal <= 0 || cacheTotal <= denominator {
 		return nil
 	}
 	return []model.RelayProbeFinding{{
@@ -133,12 +162,13 @@ func probeCacheExceedsPrompt(in RelayProbeInput) []model.RelayProbeFinding {
 		Severity: model.RelayProbeSeverityMedium,
 		Title: fmt.Sprintf("缓存计数超过了总输入：缓存命中 %d + 缓存写入 %d = %d，比输入总数 %d 还多。"+
 			"缓存本该是输入的一部分，超过它说明计数口径不对",
-			in.CacheHitTokens, in.CacheWriteTokens, cacheTotal, in.InputTokens),
+			in.CacheHitTokens, in.CacheWriteTokens, cacheTotal, denominator),
 		Evidence: map[string]any{
 			"cache_hit":    in.CacheHitTokens,
 			"cache_write":  in.CacheWriteTokens,
 			"cache_total":  cacheTotal,
 			"input_tokens": in.InputTokens,
+			"input_folded": denominator,
 		},
 	}}
 }
@@ -475,9 +505,12 @@ func computeRelayProbesForLog(relayLog model.RelayLog) []model.RelayProbeFinding
 		OutputTokens:     relayLog.OutputTokens,
 		CacheHitTokens:   relayLog.CacheHitTokens,
 		CacheWriteTokens: relayLog.CacheWriteTokens,
-		RequestContent:   relayLog.RequestContent,
-		ResponseContent:  relayLog.ResponseContent,
-		HasError:         strings.TrimSpace(relayLog.Error) != "" || relayLog.ErrorStatus >= 400,
+		// relay 落库时 InputTokens 存的是上游原值（Anthropic 是独占口径），
+		// 折叠后的总量单独存在 CacheInputTokens 里 —— 直接用现成的，别重推。
+		CacheFoldedInputTokens: relayLog.CacheInputTokens,
+		RequestContent:         relayLog.RequestContent,
+		ResponseContent:        relayLog.ResponseContent,
+		HasError:               strings.TrimSpace(relayLog.Error) != "" || relayLog.ErrorStatus >= 400,
 	}
 	// TotalTokens 不在 RelayLog 上——日志只存了输入/输出两栏, 总数由二者相加。
 	// 所以账目检查在这里没有可用的第三个数, 跳过它而不是自己编一个再自己核对。

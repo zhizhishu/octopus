@@ -27,13 +27,25 @@ const (
 	// videoTaskPollInterval 是两轮的间隔。视频成片是分钟级的，30 秒的粒度既够快
 	// 又不至于把上游的查询配额烧在一个刚提交的任务上。
 	videoTaskPollInterval = 30 * time.Second
-	// videoTaskPollRoundTimeout 是整轮的总时限。没有它，一条卡在对端 TLS 握手上的
-	// 任务就能让这一轮永远不结束，后面所有任务一起饿死。
-	videoTaskPollRoundTimeout = 2 * time.Minute
 	// videoTaskPollBatchLimit 是单轮最多推进多少条。积压时一轮不跑到天亮。
 	videoTaskPollBatchLimit = 100
 	// videoTaskPollStaleLimit 是单轮最多收口多少条超时任务。
 	videoTaskPollStaleLimit = 200
+	// videoTaskPollSweepBudget 是超时扫描在整轮预算里最多能占多少。
+	//
+	// 为什么必须切一块给扫描、而不是让它和主轮询抢同一个整轮 ctx：
+	// 超时扫描要「判死前先问一次上游」，每条都可能撞上一个"连得上但对端不返回"
+	// 的挂起连接（单条 20s 封顶）。6 条这样的任务就能吃光 120s 整轮预算，然后
+	// op.VideoTaskListUnfinished 拿到一个已经过期的 ctx，直接
+	// `context deadline exceeded` 返回 —— 本轮一条任务都没推进。
+	//
+	// 下一轮 Order("id") 依旧从那批老任务开始，因此这个状态是**自锁**的：
+	// 所有用户的新任务永久停在 submitted，前端无限转圈，日志里只有一行
+	// "list unfinished tasks failed" 的 Warn，看起来像偶发抖动。
+	//
+	// 切出 1/3（40s）给扫描：挂起任务最多只能占掉这 40s，剩下 80s 保证主轮询
+	// 一定能推进真实任务。扫描被打断不算故障 —— 没收口的超时任务下一轮接着收。
+
 	// videoTaskPollTimeout 是「多久还没终态就判超时」。取 2h：
 	//  1) 视频生成在这些上游是分钟级，2 小时是异常而不是慢；
 	//  2) 内存里的归属记录（relay.defaultVideoTaskTTL）也是 2h，两者同一量级，
@@ -63,6 +75,10 @@ const (
 //
 // 之所以是 var 而不是 const：测试要把「上游吊着不返回」的场景压到毫秒级，否则单条
 // 用例要真等 20 秒。生产路径不写它（唯一写点是测试里的 override）。
+var videoTaskPollRoundTimeout = 2 * time.Minute
+
+// videoTaskPollSweepBudget 见上方 const 块注释；改成 var 是为了让测试压到毫秒级。
+var videoTaskPollSweepBudget = 40 * time.Second
 var videoTaskPollTaskTimeout = 20 * time.Second
 
 var (
@@ -111,7 +127,13 @@ func runVideoTaskPollOnce() {
 	ctx, cancel := context.WithTimeout(context.Background(), videoTaskPollRoundTimeout)
 	defer cancel()
 
-	polledBySweep := sweepTimedOutVideoTasks(ctx)
+	// 超时扫描用**独立的子预算**，不能和主轮询共用一个整轮 ctx：
+	// 扫描里每条都要问一次上游，挂起的连接会把整轮吃光，主轮询就再也拿不到
+	// 活着的 ctx（详见 videoTaskPollSweepBudget 的注释）。扫描超时只是"这轮没收完"，
+	// 下一轮继续收；主轮询的预算必须留住，否则新任务永远排不上。
+	sweepCtx, sweepCancel := context.WithTimeout(ctx, videoTaskPollSweepBudget)
+	polledBySweep := sweepTimedOutVideoTasks(sweepCtx)
+	sweepCancel()
 
 	tasks, err := op.VideoTaskListUnfinished(ctx, videoTaskPollBatchLimit)
 	if err != nil {
@@ -484,6 +506,13 @@ func sweepTimedOutVideoTasks(ctx context.Context) map[int64]struct{} {
 	}
 	for _, task := range stale {
 		if ctx.Err() != nil {
+			// 🔴 预算耗尽就收手，并把这些**没来得及问**的任务也登记进 polled：
+			// 它们已经占据本轮的时间和队头窗口，若再流回主轮询，就会把剩下的
+			// 预算二次花在同一批挂起连接上，健康任务永远轮不到。
+			// 登记后本轮直接跳过它们；下一轮重新开始，它们是老任务会先被扫到。
+			for _, rest := range stale {
+				polled[rest.ID] = struct{}{}
+			}
 			return polled
 		}
 		if videoTaskTimeoutResolvedUpstream(ctx, task) {
