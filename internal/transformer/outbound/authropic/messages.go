@@ -380,9 +380,20 @@ func (o *MessageOutbound) TransformStream(ctx context.Context, eventData []byte)
 	case "message_delta":
 		if streamEvent.Usage != nil {
 			usage := convertAnthropicUsage(streamEvent.Usage)
+			// 🔴 message_delta 的 usage 是**增量**：Anthropic 只在 message_start 里给
+			// cache_read_input_tokens / cache_creation_input_tokens，message_delta 一般
+			// 只带 output_tokens。旧代码用 convertAnthropicUsage(delta) **重建**整个结构，
+			// 只把 PromptTokens 从上一份补回来，于是 cache 相关字段被写成 0，
+			// 再由 `o.streamUsage = usage` 覆盖掉 message_start 里那份真值。
+			// message_stop 把它当最终 usage 发出去，后果是：
+			//   - commit 计费按 cacheRead×BaseCacheReadPrice / cacheWrite×BaseCacheWritePrice
+			//     算出来的两个成本项恒为 0（走 Anthropic 渠道的流式请求系统性少收缓存费，
+			//     而 Claude Code 默认形态就是流式 + 带 prompt cache）；
+			//   - 日志与前端显示 cache_hit=0 / cache_write=0，看着像"根本没命中缓存"；
+			//   - 客户端 total_tokens 被重算成 prompt+output，丢掉 cache 部分。
+			// 修法：合并而非重建 —— 增量里为 0 的字段保留上一份的值。
 			if o.streamUsage != nil {
-				usage.PromptTokens = o.streamUsage.PromptTokens
-				usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+				usage = mergeAnthropicStreamUsage(o.streamUsage, usage)
 			}
 			o.streamUsage = usage
 		}
@@ -1762,6 +1773,57 @@ func convertStopReason(stopReason *string) *string {
 	default:
 		return stopReason
 	}
+}
+
+// mergeAnthropicStreamUsage 把 message_delta 里的增量 usage 合并进已有的累积 usage。
+//
+// 规则：delta 里为 0/缺失的缓存字段保留 prev 的值；output/completion 以 delta 为准
+// （它是单调递增的累计值）；total 重新按 Anthropic 语义算全
+// （input + output + cache_read + cache_creation）。
+//
+// 为什么不直接取 delta：Anthropic 的 message_delta 只保证 output_tokens 有值，
+// cache_* 只在 message_start 出现。重建会把真值抹成 0。
+func mergeAnthropicStreamUsage(prev, delta *model.Usage) *model.Usage {
+	if prev == nil {
+		return delta
+	}
+	if delta == nil {
+		return prev
+	}
+	merged := *delta
+
+	if merged.PromptTokens == 0 {
+		merged.PromptTokens = prev.PromptTokens
+	}
+	if merged.CacheCreationInputTokens == 0 {
+		merged.CacheCreationInputTokens = prev.CacheCreationInputTokens
+	}
+	if merged.CacheCreation5mInputTokens == 0 {
+		merged.CacheCreation5mInputTokens = prev.CacheCreation5mInputTokens
+	}
+	if merged.CacheCreation1hInputTokens == 0 {
+		merged.CacheCreation1hInputTokens = prev.CacheCreation1hInputTokens
+	}
+
+	// cached tokens 藏在 PromptTokensDetails 里；delta 没带就继承。
+	var cached int64
+	if merged.PromptTokensDetails != nil {
+		cached = merged.PromptTokensDetails.CachedTokens
+	}
+	if cached == 0 && prev.PromptTokensDetails != nil && prev.PromptTokensDetails.CachedTokens > 0 {
+		merged.PromptTokensDetails = &model.PromptTokensDetails{
+			CachedTokens: prev.PromptTokensDetails.CachedTokens,
+		}
+		cached = prev.PromptTokensDetails.CachedTokens
+	}
+
+	// 语义标记沿用 prev（true 一旦成立就不该被 delta 的零值翻回 false）。
+	merged.AnthropicUsage = prev.AnthropicUsage || merged.AnthropicUsage
+	merged.SeparateCacheInputTokens = prev.SeparateCacheInputTokens || merged.SeparateCacheInputTokens
+
+	merged.TotalTokens = merged.PromptTokens + merged.CompletionTokens +
+		cached + merged.CacheCreationInputTokens
+	return &merged
 }
 
 func convertAnthropicUsage(usage *anthropicModel.Usage) *model.Usage {
