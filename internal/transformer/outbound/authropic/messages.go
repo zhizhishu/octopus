@@ -483,7 +483,33 @@ func convertToAnthropicRequest(req *model.InternalLLMRequest) *anthropicModel.Me
 	}
 
 	// Convert thinking/reasoning
-	if !rawThinkingPreserved && req.ReasoningEffort != "" {
+	//
+	// 🔴 "none"/"off" 是**关闭意图**，不是预算档位。
+	//
+	// 曾经这里只看 `!= ""`，于是 none/off 一路走到 getThinkingBudget，在
+	// EffortBudget 表里查不到就落到 EffortBudgetDefault(32768)，再被 max_tokens
+	// 夹到 maxTokens-1 —— 客户端明确说"别思考"，发出去的却是
+	// {"type":"enabled","budget_tokens":<顶格>}，正好反了。实测确认过：
+	// none/off/minimal 在 max_tokens=8192 下都产出 enabled+8191。
+	//
+	// 修法照参考项目的做法：关闭是一个**独立模式**，走专门的分支，不进预算换算。
+	// 参考项目 disableThinking(): thinking.type = "disabled"（或型号声明的
+	// disable_type），并删掉 output_config.effort——不能只把预算置 0，Anthropic
+	// 没有"预算 0 的 enabled"这种合法请求。
+	//
+	// 注意 disabled 放在最前面：它优先级高于 adaptive，否则管理员开的
+	// adaptive 会把客户端的"关"覆盖掉。
+	if !rawThinkingPreserved && model.IsEffortOff(req.ReasoningEffort) {
+		result.Thinking = &anthropicModel.Thinking{Type: anthropicModel.ThinkingTypeDisabled}
+		// 只清 effort；format（结构化输出）和 Extra（未识别的原始字段）不是
+		// 思考意图的一部分，不能替客户端丢掉。全空时才整个摘掉 output_config。
+		if result.OutputConfig != nil {
+			result.OutputConfig.Effort = ""
+			if len(result.OutputConfig.Format) == 0 && len(result.OutputConfig.Extra) == 0 {
+				result.OutputConfig = nil
+			}
+		}
+	} else if !rawThinkingPreserved && req.ReasoningEffort != "" {
 		if req.AdaptiveThinking {
 			result.Thinking = &anthropicModel.Thinking{
 				Type: anthropicModel.ThinkingTypeAdaptive,

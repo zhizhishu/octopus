@@ -124,6 +124,30 @@ var effortAliases = map[string]string{
 // 而不是把 "extrahigh" 这个上游不认识的字符串原样发过去。
 func CanonicalEffort(effort string) string { return normalizeEffortToKey(effort) }
 
+// effortOffSpellings 是「关掉思考」这个**意图**的几种常见写法。
+//
+// 🔴 为什么单独放这里，而不是并进 effortAliases：
+// 别名表的作用是「同一个档位的不同拼法」，它会被 IsKnownEffort 用来判断
+// 「这个值认不认识」，进而决定 GLM/火山 发不发 enabled。而 "off" 压根不是一个
+// 档位——它是「不要思考」这个开关状态。把它塞进别名表会让 IsKnownEffort("off")
+// 返回 true，于是在 GLM/火山那边被当成一个合法强度发出去，语义就错了。
+//
+// 所以这里只提供「这是不是关闭意图」这一个判断，供各出站适配层在
+// **进预算换算之前**分流。
+var effortOffSpellings = map[string]struct{}{
+	"none": {},
+	"off":  {},
+}
+
+// IsEffortOff 报告该写法是否表示「关掉思考」。
+//
+// 调用方应当在把它当预算档位查表**之前**先问这一句：否则它会落进
+// EffortBudgetFor 的未知分支拿到默认预算，把「关」变成「顶格开」。
+func IsEffortOff(effort string) bool {
+	_, ok := effortOffSpellings[CanonicalEffort(effort)]
+	return ok
+}
+
 // normalizeEffortToKey 在剥完分隔符后再过一层同义别名。
 func normalizeEffortToKey(effort string) string {
 	key := NormalizeEffortKey(effort)

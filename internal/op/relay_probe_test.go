@@ -336,3 +336,50 @@ func TestComputeRelayProbesForLogSkipsErrors(t *testing.T) {
 		t.Fatalf("失败请求不该产出结论, 实际 %d 条", len(findings))
 	}
 }
+
+// 纯工具调用 / 纯推理 / 结构化输出都不是"空回复"。
+//
+// 这条守的是一个会让用户白跑一趟的假警报：一轮正常的工具调用，正文本来就是
+// 空的（内容全在 tool_calls 里），但 output token 是真的花了。旧判据只看
+// visibleReplyText，于是把它判成"回复正文是空的，却记了 N 个输出 token"，
+// 提示用户去查上游被吃内容——实际什么都没错。
+func TestRelayProbePureToolCallIsNotEmptyOutput(t *testing.T) {
+	cases := map[string]string{
+		"openai tool_calls": `{"choices":[{"message":{"role":"assistant","content":null,` +
+			`"tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{}"}}]}}]}`,
+		"openai reasoning only": `{"choices":[{"message":{"role":"assistant","content":"",` +
+			`"reasoning_content":"先想一下这个问题该怎么拆"}}]}`,
+		"openai function_call": `{"choices":[{"message":{"role":"assistant","content":null,` +
+			`"function_call":{"name":"lookup","arguments":"{}"}}}]}`,
+		"anthropic tool_use":   `{"content":[{"type":"tool_use","id":"tu_1","name":"search","input":{"q":"x"}}]}`,
+		"anthropic thinking":   `{"content":[{"type":"thinking","thinking":"推理内容","signature":"sig"}]}`,
+		"top-level tool_calls": `{"tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}}]}`,
+	}
+	for name, body := range cases {
+		res := ComputeRelayLogProbes(RelayProbeInput{
+			RequestedModel:  "claude-opus-4-6",
+			InputTokens:     100,
+			OutputTokens:    80,
+			TotalTokens:     180,
+			ResponseContent: body,
+		})
+		if f := findCode(res, model.ProbeCodeEmptyOutputWithTokens); f != nil {
+			t.Errorf("%s: 有真实产出却被判成空回复：%s", name, f.Title)
+		}
+	}
+}
+
+// 反过来：真的什么都没有（正文空、无工具、无推理）时仍必须报。
+// 上面放宽判据之后，这条防止把探针改成永不触发的摆设。
+func TestRelayProbeTrulyEmptyOutputStillFlagged(t *testing.T) {
+	res := ComputeRelayLogProbes(RelayProbeInput{
+		RequestedModel:  "claude-opus-4-6",
+		InputTokens:     100,
+		OutputTokens:    80,
+		TotalTokens:     180,
+		ResponseContent: `{"choices":[{"message":{"role":"assistant","content":""}}]}`,
+	})
+	if f := findCode(res, model.ProbeCodeEmptyOutputWithTokens); f == nil {
+		t.Fatal("正文空、无工具、无推理，花了 80 个输出 token，必须报出来")
+	}
+}

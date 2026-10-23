@@ -154,7 +154,7 @@ func probeEmptyOutput(in RelayProbeInput) []model.RelayProbeFinding {
 	if in.OutputTokens <= 0 {
 		return nil
 	}
-	if strings.TrimSpace(visibleReplyText(in.ResponseContent)) != "" {
+	if hasAnyVisibleOutput(in.ResponseContent) {
 		return nil
 	}
 	return []model.RelayProbeFinding{{
@@ -298,6 +298,106 @@ func visibleReplyText(body string) string {
 		}
 	}
 	return ""
+}
+
+// hasAnyVisibleOutput 报告这次回复是否存在**任何**产出。
+//
+// 🔴 不能用「正文是不是空的」来判空。一轮正常的回复可以是：
+//   - 纯工具调用：正文空，全部内容在 tool_calls / tool_use 里；
+//   - 纯推理：正文空，内容在 reasoning_content / thinking block 里；
+//   - 结构化输出：正文空，内容在 function_call / json 里。
+//
+// 这三种都花了 output token 而且有真实产出。只看正文会把它们一律判成
+// "回复正文是空的，却记了 N 个输出 token" —— 一个会让用户去查上游、
+// 实际什么都没错的假警报。
+func hasAnyVisibleOutput(body string) bool {
+	if strings.TrimSpace(body) == "" {
+		return false
+	}
+	if strings.TrimSpace(visibleReplyText(body)) != "" {
+		return true
+	}
+
+	var shape struct {
+		Choices []struct {
+			Message *struct {
+				Content          json.RawMessage `json:"content"`
+				ReasoningContent json.RawMessage `json:"reasoning_content"`
+				ToolCalls        json.RawMessage `json:"tool_calls"`
+				FunctionCall     json.RawMessage `json:"function_call"`
+			} `json:"message"`
+			Delta *struct {
+				Content          json.RawMessage `json:"content"`
+				ReasoningContent json.RawMessage `json:"reasoning_content"`
+				ToolCalls        json.RawMessage `json:"tool_calls"`
+			} `json:"delta"`
+			// 有些网关把工具调用挂在 choice 级别。
+			ToolCalls json.RawMessage `json:"tool_calls"`
+		} `json:"choices"`
+		// Anthropic 原生形状：content 是 block 数组。
+		Content []struct {
+			Type     string          `json:"type"`
+			Text     string          `json:"text"`
+			Thinking string          `json:"thinking"`
+			Input    json.RawMessage `json:"input"`
+		} `json:"content"`
+		// 少数协议把工具调用放在顶层。
+		ToolCalls json.RawMessage `json:"tool_calls"`
+	}
+	if err := json.Unmarshal([]byte(body), &shape); err != nil {
+		// 解析不了就**不放行也不报警**：判"空"需要证据，解析失败不是证据。
+		// 这里返回 true 表示"无法证明它是空的"，宁可漏报也不误报。
+		return true
+	}
+
+	if rawJSONPresent(shape.ToolCalls) {
+		return true
+	}
+	for _, block := range shape.Content {
+		switch block.Type {
+		case "thinking", "redacted_thinking", "tool_use", "server_tool_use":
+			return true
+		}
+		if strings.TrimSpace(block.Thinking) != "" || rawJSONPresent(block.Input) {
+			return true
+		}
+	}
+	for _, ch := range shape.Choices {
+		if rawJSONPresent(ch.ToolCalls) {
+			return true
+		}
+		if ch.Message != nil {
+			if rawJSONPresent(ch.Message.ToolCalls) || rawJSONPresent(ch.Message.FunctionCall) ||
+				strings.TrimSpace(rawJSONString(ch.Message.ReasoningContent)) != "" {
+				return true
+			}
+		}
+		if ch.Delta != nil {
+			if rawJSONPresent(ch.Delta.ToolCalls) ||
+				strings.TrimSpace(rawJSONString(ch.Delta.ReasoningContent)) != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// rawJSONPresent 报告一段 RawMessage 是否有实质内容（空和字面 null 都不算）。
+func rawJSONPresent(raw json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(raw))
+	return trimmed != "" && trimmed != "null" && trimmed != "[]" && trimmed != `""` && trimmed != "{}"
+}
+
+// rawJSONString 把可能是 JSON 字符串的 RawMessage 解回纯文本。
+func rawJSONString(raw json.RawMessage) string {
+	if !rawJSONPresent(raw) {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	return string(raw)
 }
 
 // visibleRequestText 从请求 JSON 里取出模型真正看到的文字（所有 message 的文本）。
