@@ -7,11 +7,14 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/zhizhishu/octopus/internal/conf"
 	"github.com/zhizhishu/octopus/internal/db"
 	"github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/op"
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 func TestAPIKeyAuthAcceptsGeminiQueryKeyAndStripsIt(t *testing.T) {
@@ -360,5 +363,60 @@ func assertResponseErrorCode(t *testing.T, rec *httptest.ResponseRecorder, want 
 	}
 	if body.ErrorCode != want {
 		t.Fatalf("error_code: got %q want %q in body %s", body.ErrorCode, want, rec.Body.String())
+	}
+}
+
+// forgedJWT signs a token with the same secret the server derives for a user
+// (username + stored password hash), i.e. exactly what a caller holding an old,
+// never-expiring login token would present.
+func forgedJWT(t *testing.T, user model.User, expiresAt *time.Time) string {
+	t.Helper()
+	claims := jwt.MapClaims{
+		"user_id":  user.ID,
+		"username": user.Username,
+		"role":     string(user.Role),
+		"iat":      time.Now().Add(-time.Hour).Unix(),
+		"nbf":      time.Now().Add(-time.Hour).Unix(),
+		"iss":      conf.APP_NAME,
+	}
+	if expiresAt != nil {
+		claims["exp"] = expiresAt.Unix()
+	}
+	signed, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).
+		SignedString([]byte(user.Username + user.Password))
+	if err != nil {
+		t.Fatalf("sign forged jwt: %v", err)
+	}
+	return signed
+}
+
+// A login JWT with no exp (or an exp long in the past) must never authenticate. The
+// no-exp case is reachable from production code because a negative expire used to skip
+// the ExpiresAt assignment entirely.
+func TestAuthRejectsJWTWithoutExpirationAndExpiredJWT(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupMiddlewareAuthDB(t)
+	user := createMiddlewareAuthUser(t, ctx)
+
+	router := gin.New()
+	router.GET("/probe", Auth(), func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	probe := func(token string) int {
+		req := httptest.NewRequest(http.MethodGet, "/probe", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	if code := probe(forgedJWT(t, user, nil)); code != http.StatusUnauthorized {
+		t.Fatalf("token without exp: got %d want 401", code)
+	}
+	past := time.Now().Add(-90 * 24 * time.Hour)
+	if code := probe(forgedJWT(t, user, &past)); code != http.StatusUnauthorized {
+		t.Fatalf("token expired 90 days ago: got %d want 401", code)
+	}
+	future := time.Now().Add(time.Hour)
+	if code := probe(forgedJWT(t, user, &future)); code != http.StatusNoContent {
+		t.Fatalf("valid token with exp: got %d want 204", code)
 	}
 }

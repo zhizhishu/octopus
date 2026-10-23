@@ -23,8 +23,30 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
+// maxJWTTTL is the ceiling on how long a login/register token may live. The -1 branch
+// below already meant "30 days"; any caller-supplied expire is clamped to the same
+// ceiling so a request body can never mint a token valid for centuries (or overflow the
+// time.Duration multiplication into a garbage value).
+const maxJWTTTL = 30 * 24 * time.Hour
+
+// defaultJWTTTL is the TTL for expire omitted/0 and for any nonsense value.
+const defaultJWTTTL = 15 * time.Minute
+
 func GenerateJWTToken(user model.User, expiresMin int) (string, string, error) {
 	now := time.Now()
+	ttl := defaultJWTTTL
+	switch {
+	case expiresMin == -1:
+		ttl = maxJWTTTL
+	case expiresMin > 0:
+		// Compare in minutes BEFORE converting, so no value can overflow the
+		// time.Duration(int64) multiplication.
+		minutes := int64(expiresMin)
+		if maxMinutes := int64(maxJWTTTL / time.Minute); minutes > maxMinutes {
+			minutes = maxMinutes
+		}
+		ttl = time.Duration(minutes) * time.Minute
+	}
 	claims := &Claims{
 		UserID:   user.ID,
 		Username: user.Username,
@@ -32,16 +54,10 @@ func GenerateJWTToken(user model.User, expiresMin int) (string, string, error) {
 		RegisteredClaims: jwt.RegisteredClaims{
 			IssuedAt:  jwt.NewNumericDate(now),
 			NotBefore: jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
 			Issuer:    conf.APP_NAME,
 			Subject:   fmt.Sprintf("%d", user.ID),
 		},
-	}
-	if expiresMin == 0 {
-		claims.ExpiresAt = jwt.NewNumericDate(now.Add(15 * time.Minute))
-	} else if expiresMin > 0 {
-		claims.ExpiresAt = jwt.NewNumericDate(now.Add(time.Duration(expiresMin) * time.Minute))
-	} else if expiresMin == -1 {
-		claims.ExpiresAt = jwt.NewNumericDate(now.Add(30 * 24 * time.Hour))
 	}
 	secret := userTokenSecret(user)
 	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(secret))
@@ -64,9 +80,12 @@ func VerifyJWTToken(token string) (model.User, bool) {
 	}
 
 	claims := &Claims{}
+	// WithExpirationRequired: an exp-less token must never verify. Tokens minted before
+	// this guard (and any hand-built one) would otherwise be valid forever, because the
+	// default validator only checks exp when it is present.
 	jwtToken, err := jwt.ParseWithClaims(token, claims, func(token *jwt.Token) (interface{}, error) {
 		return []byte(userTokenSecret(user)), nil
-	})
+	}, jwt.WithExpirationRequired())
 	if err != nil || !jwtToken.Valid {
 		return model.User{}, false
 	}

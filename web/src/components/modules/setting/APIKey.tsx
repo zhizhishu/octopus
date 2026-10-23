@@ -101,6 +101,11 @@ const endpointFamilyMeta: Record<APIKeyEndpointFamily, { label: string; descript
         description: '/v1/chat/completions · /v1/responses',
         example: 'Authorization: Bearer sk-octopus-... -> /v1/chat/completions',
     },
+    video: {
+        label: 'Video',
+        description: '/v1/videos · /v1/videos/{id}',
+        example: 'Authorization: Bearer sk-octopus-... -> /v1/videos',
+    },
     gemini: {
         label: 'Gemini',
         description: '/v1beta/models/*',
@@ -190,6 +195,11 @@ ${planHeader}  -H "Content-Type: application/json" \\
 ${planHeader}  -H "anthropic-version: 2023-06-01" \\
   -H "Content-Type: application/json" \\
   -d '{"model":"claude-sonnet-4.5","max_tokens":256,"messages":[{"role":"user","content":"Hello"}]}'`;
+        case 'video':
+            return `curl "${baseUrl}/v1/videos" \
+  -H "Authorization: Bearer ${apiKey}" \
+${planHeader}  -H "Content-Type: application/json" \
+  -d '{"model":"sora-2","prompt":"A calm river at dawn"}'`;
         case 'openai-compatible':
         default:
             return `curl "${baseUrl}/v1/chat/completions" \\
@@ -205,6 +215,8 @@ function getUsageDescriptionKey(family: APIKeyEndpointFamily): string {
             return 'apiKey.guide.geminiDescription';
         case 'anthropic':
             return 'apiKey.guide.anthropicDescription';
+        case 'video':
+            return 'apiKey.guide.videoDescription';
         case 'openai-compatible':
         default:
             return 'apiKey.guide.openaiDescription';

@@ -532,6 +532,7 @@
         "openaiDescription": "For OpenAI-compatible clients, Chat Completions, and Responses.",
         "geminiDescription": "For native Gemini generateContent / streamGenerateContent.",
         "anthropicDescription": "For Claude / Anthropic Messages protocol.",
+        "videoDescription": "For asynchronous video generation (/v1/videos) and task polling.",
         "empty": "This key has no available endpoint families yet."
       },
       "form": {

@@ -532,6 +532,7 @@
         "openaiDescription": "用于 OpenAI 兼容客户端、Chat Completions 和 Responses。",
         "geminiDescription": "用于 Gemini 原生 generateContent / streamGenerateContent。",
         "anthropicDescription": "用于 Claude / Anthropic Messages 协议。",
+        "videoDescription": "用于异步视频生成（/v1/videos）与任务轮询。",
         "empty": "这个密钥暂时没有可用端点。"
       },
       "form": {

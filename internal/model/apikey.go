@@ -11,6 +11,13 @@ const (
 	APIKeyEndpointFamilyOpenAICompatible APIKeyEndpointFamily = "openai-compatible"
 	APIKeyEndpointFamilyAnthropic        APIKeyEndpointFamily = "anthropic"
 	APIKeyEndpointFamilyGemini           APIKeyEndpointFamily = "gemini"
+	// APIKeyEndpointFamilyVideo 是可配置的独立 family（/v1/videos 按次计费，
+	// 不能和 chat 共用一个 family，否则"只许聊天"的 key 也能生成视频）。
+	APIKeyEndpointFamilyVideo APIKeyEndpointFamily = "video"
+	// APIKeyEndpointFamilyUnclassified 不是可配置项：它是中间件对"未归类路径"
+	// 的返回值。NormalizeAPIKeyEndpointFamily 不认它，因此 AllowsEndpointFamily
+	// 恒为 false —— 新增 relay 端点忘记归类时是拒绝，而不是放行。
+	APIKeyEndpointFamilyUnclassified APIKeyEndpointFamily = "unclassified"
 )
 
 type APIKey struct {
@@ -35,6 +42,7 @@ func AllAPIKeyEndpointFamilies() []APIKeyEndpointFamily {
 		APIKeyEndpointFamilyOpenAICompatible,
 		APIKeyEndpointFamilyAnthropic,
 		APIKeyEndpointFamilyGemini,
+		APIKeyEndpointFamilyVideo,
 	}
 }
 
@@ -46,6 +54,8 @@ func NormalizeAPIKeyEndpointFamily(family APIKeyEndpointFamily) (APIKeyEndpointF
 		return APIKeyEndpointFamilyAnthropic, true
 	case APIKeyEndpointFamilyGemini:
 		return APIKeyEndpointFamilyGemini, true
+	case APIKeyEndpointFamilyVideo, "videos":
+		return APIKeyEndpointFamilyVideo, true
 	default:
 		return "", false
 	}

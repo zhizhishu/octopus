@@ -162,6 +162,10 @@ func apiKeyEndpointFamilyForPath(path string) model.APIKeyEndpointFamily {
 	if path == "/v1/messages" || path == "/v1/messages/count_tokens" {
 		return model.APIKeyEndpointFamilyAnthropic
 	}
+	// 视频是独立 family：异步生成按次计费，不能跟着 openai-compatible（chat）走。
+	if path == "/v1/videos" || strings.HasPrefix(path, "/v1/videos/") {
+		return model.APIKeyEndpointFamilyVideo
+	}
 	if path == "/v1/chat/completions" ||
 		path == "/v1/responses" ||
 		path == "/v1/embeddings" ||
@@ -183,7 +187,13 @@ func apiKeyEndpointFamilyForPath(path string) model.APIKeyEndpointFamily {
 		path == "/backend-api/codex/responses/compact" {
 		return model.APIKeyEndpointFamilyOpenAICompatible
 	}
-	return ""
+	// 未归类路径默认拒绝（fail-closed）：返回一个 Normalize 不认识的 family，
+	// 于是 AllowsEndpointFamily 恒为 false，新增 relay 端点忘了归类也不会放行。
+	// 唯一例外是 /api/ 下的密钥自助/管理接口，它们不属于任何 relay family。
+	if strings.HasPrefix(path, "/api/") {
+		return ""
+	}
+	return model.APIKeyEndpointFamilyUnclassified
 }
 
 func SetCurrentUser(c *gin.Context, user model.User) {

@@ -8,7 +8,7 @@ import {
     formatStatsAPIKeyUsage,
 } from './stats';
 
-export const API_KEY_ENDPOINT_FAMILIES = ['openai-compatible', 'gemini', 'anthropic'] as const;
+export const API_KEY_ENDPOINT_FAMILIES = ['openai-compatible', 'video', 'gemini', 'anthropic'] as const;
 export type APIKeyEndpointFamily = typeof API_KEY_ENDPOINT_FAMILIES[number];
 export type APIKeyEndpointFamilyValue = APIKeyEndpointFamily[] | string | null;
 

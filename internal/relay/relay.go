@@ -111,32 +111,7 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 	// 创建实时请求状态，立即推送 "running" 给 SSE 订阅者
 	requestState := newRequestStateWithCancel(requestModel, requestEndpoint, userID, apiKeyID, relayCancel)
 
-	base := attemptBase{
-		messages:         append([]model.Message(nil), internalRequest.Messages...),
-		reasoningEffort:  internalRequest.ReasoningEffort,
-		reasoningBudget:  internalRequest.ReasoningBudget,
-		thinking:         cloneRawJSONMessage(internalRequest.Thinking),
-		enableThinking:   internalRequest.EnableThinking,
-		thinkingBudget:   internalRequest.ThinkingBudget,
-		adaptiveThinking: internalRequest.AdaptiveThinking,
-	}
-
-	// The responses history bridges (chat / Anthropic) and codex shape clear
-	// PreviousResponseID / ResponsesInputRaw on the SHARED internalRequest once they
-	// inline a prior turn's history. Capture the client's originals so every
-	// retry/failover attempt is rebuilt from the real request rather than a
-	// context-stripped one — without this, a 2nd attempt sees a nil previous_response_id,
-	// skips the bridge entirely, and silently forwards only the incremental turn.
-	base.previousResponseID = internalRequest.PreviousResponseID
-	base.responsesInputRaw = cloneRawJSONMessage(internalRequest.ResponsesInputRaw)
-	// baseResponsesInstructions is the attempt-start copy of the Responses top-level
-	// instructions. applyInboundRedaction rewrites it to placeholders on the SHARED
-	// internalRequest, so each attempt/key/transient retry must be rebuilt from this
-	// original (pointer kept verbatim: nil stays nil, suppressCodexHoistedContext's
-	// non-nil "" sentinel stays non-nil) — otherwise a failed attempt's placeholder
-	// instructions ride into the next channel's session, whose flags may not cover the
-	// token (audit #5).
-	base.responsesInstructions = internalRequest.ResponsesInstructions
+	base := captureAttemptBase(internalRequest)
 
 	// Episode gate (见 rescue_episode.go): 在正式遍历开始前，仅凭「原始入站请求」判定这一轮
 	// 用户消息是否允许跑机器救援。身份可识别时必得一个可观测的 lease；已被压制(同名消息已耗尽
@@ -1625,6 +1600,59 @@ type attemptBase struct {
 	enableThinking        *bool
 	thinkingBudget        *int64
 	adaptiveThinking      bool
+	// Claude/Claude Code 的 bodyshape 成员。ensureClaudeCLIShapeTopLevelKeys 和
+	// applyClaudeOneMillionRuntimeShape 会**就地**往共享 internalRequest 上补这些
+	// 成员(只补空缺),它们表达的是「这一跳的渠道要被看成真 CLI」。不还原就会骑到下一跳:
+	// 首跳 Anthropic+cloak 补了 thinking/output_config/safeguards,次跳是 cloak=never 的
+	// 国产上游时这些东西照样发出去——对一个明确要求「别冒充 Claude」的渠道注入了伪造身份。
+	anthropicThinking          json.RawMessage
+	anthropicContextManagement json.RawMessage
+	anthropicOutputConfig      json.RawMessage
+	anthropicExtraTopLevel     map[string]json.RawMessage
+	// anthropicOneMillionBeta 是渠道级 opt-in(relay.go 里 `if channel.AnthropicContext1M`
+	// 只置 true,从不置回 false),所以首跳的 1M 标记会留在共享请求上,次跳即使渠道没开
+	// AnthropicContext1M 也会发 context-1m beta 头/模型别名。
+	anthropicOneMillionBeta bool
+}
+
+// captureAttemptBase 快照「这一轮客户端真正要什么」。构造必须集中在这里:调用点自己
+// 拼字面量时,新增字段忘了加就只是少还原一项,测试也发现不了(字段有默认零值,看起来一切正常)。
+func captureAttemptBase(internalRequest *model.InternalLLMRequest) attemptBase {
+	if internalRequest == nil {
+		return attemptBase{}
+	}
+	base := attemptBase{
+		messages:                   append([]model.Message(nil), internalRequest.Messages...),
+		reasoningEffort:            internalRequest.ReasoningEffort,
+		reasoningBudget:            internalRequest.ReasoningBudget,
+		thinking:                   cloneRawJSONMessage(internalRequest.Thinking),
+		enableThinking:             internalRequest.EnableThinking,
+		thinkingBudget:             internalRequest.ThinkingBudget,
+		adaptiveThinking:           internalRequest.AdaptiveThinking,
+		anthropicThinking:          cloneRawJSONMessage(internalRequest.AnthropicThinking),
+		anthropicContextManagement: cloneRawJSONMessage(internalRequest.AnthropicContextManagement),
+		anthropicOutputConfig:      cloneRawJSONMessage(internalRequest.AnthropicOutputConfig),
+		anthropicExtraTopLevel:     cloneRawJSONMessageMap(internalRequest.AnthropicExtraTopLevel),
+		anthropicOneMillionBeta:    internalRequest.TransformOptions.AnthropicOneMillionBeta,
+	}
+
+	// The responses history bridges (chat / Anthropic) and codex shape clear
+	// PreviousResponseID / ResponsesInputRaw on the SHARED internalRequest once they
+	// inline a prior turn's history. Capture the client's originals so every
+	// retry/failover attempt is rebuilt from the real request rather than a
+	// context-stripped one — without this, a 2nd attempt sees a nil previous_response_id,
+	// skips the bridge entirely, and silently forwards only the incremental turn.
+	base.previousResponseID = internalRequest.PreviousResponseID
+	base.responsesInputRaw = cloneRawJSONMessage(internalRequest.ResponsesInputRaw)
+	// baseResponsesInstructions is the attempt-start copy of the Responses top-level
+	// instructions. applyInboundRedaction rewrites it to placeholders on the SHARED
+	// internalRequest, so each attempt/key/transient retry must be rebuilt from this
+	// original (pointer kept verbatim: nil stays nil, suppressCodexHoistedContext's
+	// non-nil "" sentinel stays non-nil) — otherwise a failed attempt's placeholder
+	// instructions ride into the next channel's session, whose flags may not cover the
+	// token (audit #5).
+	base.responsesInstructions = internalRequest.ResponsesInstructions
+	return base
 }
 
 // restore 把共享 internalRequest 还原到「这一轮客户端真正要什么」。
@@ -1641,6 +1669,28 @@ func (b *attemptBase) restore(internalRequest *model.InternalLLMRequest, request
 	internalRequest.EnableThinking = b.enableThinking
 	internalRequest.ThinkingBudget = b.thinkingBudget
 	internalRequest.AdaptiveThinking = b.adaptiveThinking
+	// Claude 的 bodyshape 成员同样是「只对那一跳成立」的改写,必须还原。
+	//
+	// 注意 SuppressClaudeIdentity **不在这里**: applyTransformOptionsWithInboundSetter
+	// 每一跳都把它**重新赋值**(relay.go 里 `= !shouldApplyChannelCloak(...)`,无条件下发)
+	// 所以它自己就是自愈的;把它并进这一组反而会被这里的旧值盖掉,让 cloak=never 的渠道
+	// 重新收到伪造的 Claude 身份。AnthropicAutoCacheControl 同理(每跳先置 false)。
+	internalRequest.AnthropicThinking = cloneRawJSONMessage(b.anthropicThinking)
+	internalRequest.AnthropicContextManagement = cloneRawJSONMessage(b.anthropicContextManagement)
+	internalRequest.AnthropicOutputConfig = cloneRawJSONMessage(b.anthropicOutputConfig)
+	internalRequest.AnthropicExtraTopLevel = cloneRawJSONMessageMap(b.anthropicExtraTopLevel)
+	internalRequest.TransformOptions.AnthropicOneMillionBeta = b.anthropicOneMillionBeta
+}
+
+func cloneRawJSONMessageMap(in map[string]json.RawMessage) map[string]json.RawMessage {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]json.RawMessage, len(in))
+	for k, v := range in {
+		out[k] = cloneRawJSONMessage(v)
+	}
+	return out
 }
 
 func cloneRawJSONMessages(items []json.RawMessage) []json.RawMessage {
