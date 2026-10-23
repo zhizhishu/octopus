@@ -325,3 +325,50 @@ func TestJoinAnthropicPathCanonicalizesCommonBaseURLSuffixes(t *testing.T) {
 		})
 	}
 }
+
+// 用户按表单提示填「完整路径」时，拼出来的地址必须是对的。
+//
+// 两处曾经一起出错：
+//  1. TrimPathSuffixes 里列了裸的 "/v1"，把用户故意填在 base 里的版本段
+//     无条件剥掉 —— base=https://x/v1 + 端点=/embeddings 拼出
+//     https://x/embeddings，版本段消失。
+//  2. JoinPath 只去掉「第一段重名」，于是火山那种
+//     base=/api/v3 + 端点=/api/v3/embeddings 拼成 /api/v3/api/v3/embeddings。
+//
+// 这些都不是边角：表单明确推荐「火山这类上游请填完整路径」，照做就坏。
+func TestCustomPathJoinKeepsBasePathAndAvoidsDoublePrefix(t *testing.T) {
+	cases := []struct {
+		name string
+		join func(string, string) (string, error)
+		base string
+		ep   string
+		want string
+	}{
+		{"chat 端点只给后缀，base 的 /v1 必须保留", JoinCustomOpenAIChatPath,
+			"https://api.example/v1", "/chat/completions", "https://api.example/v1/chat/completions"},
+		{"chat 端点给完整路径", JoinCustomOpenAIChatPath,
+			"https://api.example/v1", "/v1/chat/completions", "https://api.example/v1/chat/completions"},
+		{"chat 端点重复 v1 不得叠成 /v1/v1", JoinCustomOpenAIChatPath,
+			"https://api.example/v1", "/v1/v1/chat/completions", "https://api.example/v1/chat/completions"},
+		{"emb 端点只给后缀，base 的 /v1 必须保留", JoinCustomOpenAIEmbeddingsPath,
+			"https://api.example/v1", "/embeddings", "https://api.example/v1/embeddings"},
+		{"emb 端点给完整路径", JoinCustomOpenAIEmbeddingsPath,
+			"https://api.example/v1", "/v1/embeddings", "https://api.example/v1/embeddings"},
+		{"火山：base 带 /api/v3 + 完整端点，不得重复前置", JoinCustomOpenAIEmbeddingsPath,
+			"https://api.volc.example/api/v3", "/api/v3/embeddings", "https://api.volc.example/api/v3/embeddings"},
+		{"火山：base 带 /api/v3 + 只给后缀", JoinCustomOpenAIEmbeddingsPath,
+			"https://api.volc.example/api/v3", "/embeddings", "https://api.volc.example/api/v3/embeddings"},
+		{"base 无路径时补上标准路径", JoinCustomOpenAIEmbeddingsPath,
+			"https://api.example", "/v1/embeddings", "https://api.example/v1/embeddings"},
+	}
+	for _, c := range cases {
+		got, err := c.join(c.base, c.ep)
+		if err != nil {
+			t.Errorf("%s: 意外错误 %v", c.name, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("%s: base=%q ep=%q -> %q, want %q", c.name, c.base, c.ep, got, c.want)
+		}
+	}
+}

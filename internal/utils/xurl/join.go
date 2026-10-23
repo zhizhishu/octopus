@@ -32,6 +32,18 @@ func JoinPath(baseURL string, endpoint string) (string, error) {
 		endpointPath = strings.TrimPrefix(endpointPath, "/"+firstEndpointSegment)
 	}
 
+	// 端点本身已经包含完整 base 路径时，直接用端点，不要再前置一遍。
+	//
+	// 火山这类上游的嵌入地址是 /api/v3/embeddings，而 base 往往就填
+	// https://…/api/v3。上面那段只去掉**第一段重名**（api ≠ v3 时不动），于是
+	// 拼出 /api/v3/api/v3/embeddings —— 用户照着表单提示填完整路径，反而拿到
+	// 一个不存在的地址。
+	if basePath != "" && strings.HasPrefix(strings.ToLower(endpointPath), strings.ToLower(basePath)+"/") {
+		parsed.Path = endpointPath
+		parsed.RawPath = ""
+		return parsed.String(), nil
+	}
+
 	if basePath == "" {
 		parsed.Path = endpointPath
 	} else {
@@ -121,7 +133,14 @@ func JoinOpenAIPath(baseURL string, endpoint string) (string, error) {
 		"/rerank",
 		"/v1/models",
 		"/models",
-		"/v1",
+		// 🔴 这里**不能**再列裸的 "/v1"。
+		//
+		// 它的本意是「base 填了 …/v1、端点又给了 /v1/chat/completions 时别叠成
+		// /v1/v1/…」。但 JoinPath 里已经有重名段去重，那件事本来就成立；而列在
+		// 这里会把用户**故意填在 base 里的** /v1 无条件剥掉，于是
+		//   base=https://x/v1 + 端点=/chat/completions
+		// 拼出 https://x/chat/completions —— 版本段被吃掉，最普通的填空方式
+		// 直接打到错地址。嵌入端点同理（/embeddings 也是一样被吃）。
 	)
 	if err != nil {
 		return "", err
