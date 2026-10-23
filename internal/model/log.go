@@ -288,6 +288,18 @@ type RelayLogScope struct {
 	// session_key, error, and error_code case-insensitively, or numeric log/channel id.
 	Search string
 	Redact bool
+	// IncludeContent 让 RelayLogList 保留 request_content / response_content 并
+	// 在 DB 查询时真的把这两列取出来。
+	//
+	// 默认 false 是**有意的**：列表页一次翻 20~5000 行，正文动辄几十 KB，
+	// 全取出来会把内存和带宽吃光，而列表页根本不显示正文。只有"导出完整内容"
+	// （handlers/log.go 的 include_content=1，仅管理员）才置 true。
+	//
+	// 之前没有这个开关，RelayLogList 无条件调 RelayLogOmitContent 清空正文，
+	// 于是 include_content=1 导出的 NDJSON 里 request_content/response_content
+	// 恒为 ""——界面承诺"完整正文"，排障人拿到空正文，会把真实事故
+	// 误判成"客户端发的是空请求"。
+	IncludeContent bool
 }
 
 // RelayLogSeverityCounts is the global severity breakdown for the current filter,

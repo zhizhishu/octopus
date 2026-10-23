@@ -211,6 +211,52 @@ func chatResponseWithMarkdownImages(resp *model.InternalLLMResponse) *model.Inte
 	return &out
 }
 
+// chatUsageWithCacheIncluded returns the client-facing copy of a usage block that follows
+// the OpenAI chat contract, where prompt_tokens INCLUDES the cached (and cache-write) prompt
+// tokens. Anthropic — and proxies that mimic it — report input_tokens with the cache excluded
+// and carry the cache in cache_read/cache_creation; model.Usage keeps those native fields
+// json:"-", so a raw marshal would hand a chat client prompt_tokens=57 alongside
+// prompt_tokens_details.cached_tokens=20000. Clients and billing plugins that recompute
+// prompt - cached then go negative (or discount the cache twice).
+//
+// Mirrors convertUsageToResponses (response.go) for the Responses inbound, and only adds to
+// the cache figures already present — pure OpenAI-semantics usage is returned untouched.
+// Returns the input pointer unchanged when nothing needs normalizing, and never mutates it:
+// the values kept for billing (relay/metrics.go usageCacheStats reads AnthropicUsage and the
+// cache fields off the same struct) must stay in the upstream-native shape.
+func chatUsageWithCacheIncluded(usage *model.Usage) *model.Usage {
+	if usage == nil {
+		return nil
+	}
+	if !usage.AnthropicUsage && !usage.SeparateCacheInputTokens {
+		return usage
+	}
+	var cachedTokens int64
+	if usage.PromptTokensDetails != nil {
+		cachedTokens = usage.PromptTokensDetails.CachedTokens
+	}
+	wire := *usage
+	wire.PromptTokens = usage.PromptTokens + cachedTokens + usage.CacheCreationInputTokens
+	return &wire
+}
+
+// chatResponseWithUsageIncluded returns a view of the response whose usage follows OpenAI
+// chat semantics (see chatUsageWithCacheIncluded). Returns the input unchanged (no copy) when
+// the usage needs no normalization, so plain OpenAI upstreams pay nothing and i.storedResponse
+// / i.streamChunks keep the original usage values.
+func chatResponseWithUsageIncluded(resp *model.InternalLLMResponse) *model.InternalLLMResponse {
+	if resp == nil {
+		return resp
+	}
+	wireUsage := chatUsageWithCacheIncluded(resp.Usage)
+	if wireUsage == resp.Usage {
+		return resp
+	}
+	out := *resp
+	out.Usage = wireUsage
+	return &out
+}
+
 func (i *ChatInbound) TransformResponse(ctx context.Context, response *model.InternalLLMResponse) ([]byte, error) {
 	// Store the (unflattened) response for later retrieval / billing.
 	i.storedResponse = response
@@ -220,6 +266,7 @@ func (i *ChatInbound) TransformResponse(ctx context.Context, response *model.Int
 	// the stored internal response used for billing / session transcript.
 	wire := chatResponseWithMarkdownImages(response)
 	wire = applyThinkingToContentNonStream(wire, i != nil && i.thinkingToContent)
+	wire = chatResponseWithUsageIncluded(wire)
 	body, err := json.Marshal(wire)
 	if err != nil {
 		return nil, err
@@ -249,6 +296,9 @@ func (i *ChatInbound) TransformStream(ctx context.Context, stream *model.Interna
 	// `choices[0].delta.content` crash on the missing object. Backfill the same
 	// minimal finish delta oct itself synthesizes (relay.go internalResponseToStreamChunks).
 	wire = ensureFinishChoiceDelta(wire)
+	// Every chunk that carries usage gets the OpenAI cache-inclusive prompt_tokens view;
+	// the stored chunk keeps the upstream-native numbers for billing.
+	wire = chatResponseWithUsageIncluded(wire)
 
 	var body []byte
 	var err error

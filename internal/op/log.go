@@ -635,7 +635,16 @@ func RelayLogStreamExportNDJSON(ctx context.Context, w io.Writer, startTime, end
 			return ctx.Err()
 		default:
 		}
-		logs, err := RelayLogList(ctx, startTime, endTime, page, pageSize, scope)
+		// 非摘要导出（include_content=1，仅管理员）必须真的把那两列取出来，
+		// 否则导出的 NDJSON 里正文恒为空，而界面承诺的是"完整正文"。
+		// 复制一份 scope 而不是就地把调用方的改掉：RelayLogStreamExportNDJSON
+		// 的 scope 可能被上层复用，就地修改会留下隐蔽副作用。
+		exportScope := model.RelayLogScope{}
+		if scope != nil {
+			exportScope = *scope
+		}
+		exportScope.IncludeContent = !userSummary
+		logs, err := RelayLogList(ctx, startTime, endTime, page, pageSize, &exportScope)
 		if err != nil {
 			return err
 		}
@@ -664,6 +673,13 @@ func RelayLogStreamExportNDJSON(ctx context.Context, w io.Writer, startTime, end
 // RelayLogList 查询日志列表，支持可选的时间范围过滤
 // startTime 和 endTime 为 nil 时表示不限制时间范围
 func RelayLogList(ctx context.Context, startTime, endTime *int, page, pageSize int, scope *model.RelayLogScope) ([]model.RelayLog, error) {
+	// 导出「完整正文」时才取那两列；列表页照旧 omitting，避免把几十 KB/行的正文
+	// 拉进内存又立刻清掉。见 model.RelayLogScope.IncludeContent 的说明。
+	keepContent := scope != nil && scope.IncludeContent
+	contentOmit := []string{"request_content", "response_content", "model_audit_report"}
+	if keepContent {
+		contentOmit = []string{"model_audit_report"}
+	}
 	enabled, err := SettingGetBool(model.SettingKeyRelayLogKeepEnabled)
 	if err != nil {
 		return nil, err
@@ -803,7 +819,7 @@ func RelayLogList(ctx context.Context, startTime, endTime *int, page, pageSize i
 					}
 					if len(ids) > 0 {
 						var dbLogs []model.RelayLog
-						if err := tx.Where("id IN ?", ids).Omit("request_content", "response_content", "model_audit_report").Find(&dbLogs).Error; err != nil {
+						if err := tx.Where("id IN ?", ids).Omit(contentOmit...).Find(&dbLogs).Error; err != nil {
 							return err
 						}
 						result = append(result, dbLogs...)
@@ -855,7 +871,7 @@ func RelayLogList(ctx context.Context, startTime, endTime *int, page, pageSize i
 					}
 				}
 				var dbLogs []model.RelayLog
-				if err := exportQuery.Order("id DESC").Limit(dbLimit).Omit("request_content", "response_content", "model_audit_report").Find(&dbLogs).Error; err != nil {
+				if err := exportQuery.Order("id DESC").Limit(dbLimit).Omit(contentOmit...).Find(&dbLogs).Error; err != nil {
 					return nil, err
 				}
 				result = append(result, dbLogs...)
@@ -879,8 +895,10 @@ func RelayLogList(ctx context.Context, startTime, endTime *int, page, pageSize i
 		}
 		result = result[offset:end]
 	}
-	for i := range result {
-		result[i] = RelayLogOmitContent(result[i])
+	if !keepContent {
+		for i := range result {
+			result[i] = RelayLogOmitContent(result[i])
+		}
 	}
 	if scope != nil && scope.Redact {
 		for i := range result {

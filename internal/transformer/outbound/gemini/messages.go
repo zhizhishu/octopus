@@ -887,6 +887,23 @@ func convertGeminiToLLMResponse(geminiResp *model.GeminiGenerateContentResponse,
 		resp.Choices = append(resp.Choices, choice)
 	}
 
+	// An upstream prompt-level block answers with promptFeedback.blockReason and
+	// an EMPTY candidates array. The loop above then never runs, so the response
+	// used to ship HTTP 200 + choices: [] — the client reads that as "the model
+	// said nothing" instead of "a safety policy stopped the request", and an
+	// agent loop silently loses the turn. Emit one empty choice carrying
+	// finish_reason=content_filter (the same value convertGeminiFinishReason
+	// reports for SAFETY, and the value convertStopReason maps Anthropic's
+	// "refusal" to). A missing/blank blockReason keeps the old empty-choices
+	// behaviour: an absence of candidates is not by itself proof of a block.
+	if len(geminiResp.Candidates) == 0 && geminiResp.PromptFeedback != nil && geminiResp.PromptFeedback.BlockReason != "" {
+		reason := "content_filter"
+		resp.Choices = append(resp.Choices, model.Choice{
+			Index:        0,
+			FinishReason: &reason,
+		})
+	}
+
 	// Convert usage metadata
 	if geminiResp.UsageMetadata != nil {
 		usage := &model.Usage{
@@ -917,17 +934,34 @@ func convertGeminiToLLMResponse(geminiResp *model.GeminiGenerateContentResponse,
 	return resp
 }
 
+// convertGeminiFinishReason maps Gemini's finishReason onto the internal enum.
+//
+// Every upstream termination that means "the model did NOT finish talking" must
+// not be reported as "stop": a caller (especially an agent loop) reads "stop"
+// as a complete answer and silently drops the step that was actually cut off.
 func convertGeminiFinishReason(reason string) string {
 	switch reason {
 	case "STOP":
 		return "stop"
 	case "MAX_TOKENS":
 		return "length"
-	case "SAFETY":
+	case "SAFETY", "RECITATION", "PROHIBITED_CONTENT", "IMAGE_SAFETY", "BLOCKLIST", "SPII":
+		// Output suppressed by a policy filter.
 		return "content_filter"
-	case "RECITATION":
-		return "content_filter"
+	case "MALFORMED_FUNCTION_CALL", "UNEXPECTED_TOOL_CALL":
+		// The generation died on a broken call, so the reply is incomplete, but
+		// it is not a policy refusal either. The signature here can only return a
+		// string (no error channel) and the switch is not the place to invent a
+		// new enum, so use the codebase's existing "upstream ended in error"
+		// finish reason: outbound/openai/response.go emits "error" for a failed
+		// response, and inbound/openai/response.go maps it to failed/incomplete
+		// rather than completed. Trade-off: a chat client sees finish_reason
+		// "error" rather than one of the four canonical OpenAI values; that is
+		// still honest (not a completed answer) and is what the passive audit
+		// treats as "unknown finish", never as a complete reply.
+		return "error"
 	default:
+		// Genuinely unknown values keep the tolerant historical fallback.
 		return "stop"
 	}
 }
