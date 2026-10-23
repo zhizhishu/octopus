@@ -16,6 +16,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"github.com/tmaxmax/go-sse"
 	"github.com/zhizhishu/octopus/internal/client"
 	"github.com/zhizhishu/octopus/internal/helper"
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
@@ -30,8 +32,6 @@ import (
 	"github.com/zhizhishu/octopus/internal/utils/log"
 	"github.com/zhizhishu/octopus/internal/utils/safe"
 	"github.com/zhizhishu/octopus/internal/utils/xredact"
-	"github.com/gin-gonic/gin"
-	"github.com/tmaxmax/go-sse"
 )
 
 // Machine rescue keeps retrying until the request's total timeout or an explicit
@@ -1375,7 +1375,10 @@ retryWithAdapter:
 
 	// 检查响应状态
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		body, err := io.ReadAll(io.LimitReader(response.Body, upstreamErrorBodyLimit))
+		// 🔴 必须走带预算的读取：LimitReader 只限字节数不限时间，上游发完头就沉默时
+		// 这里的裸 ReadAll 会把整个 relay 协程挂死（连带 defer 的 UserReleaseQuota
+		// 不执行 → 用户在途额度永久占用）。见 error_body_read.go。
+		body, err := readErrorBodyFromResponse(response)
 		if err != nil {
 			return response.StatusCode, fmt.Errorf("failed to read response body: %w", err)
 		}

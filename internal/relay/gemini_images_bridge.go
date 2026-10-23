@@ -13,11 +13,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/zhizhishu/octopus/internal/helper"
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
 	transformerModel "github.com/zhizhishu/octopus/internal/transformer/model"
 	"github.com/zhizhishu/octopus/internal/utils/xurl"
-	"github.com/gin-gonic/gin"
 )
 
 type geminiImagePredictRequest struct {
@@ -112,7 +112,7 @@ func geminiImagesAttempt(
 
 	upstreamCT = respUp.Header.Get("Content-Type")
 	if respUp.StatusCode < 200 || respUp.StatusCode >= 300 {
-		b, _ := io.ReadAll(io.LimitReader(respUp.Body, upstreamErrorBodyLimit))
+		b, _ := readErrorBodyFromResponse(respUp)
 		return respUp.StatusCode, false, nil, upstreamCT, newUpstreamError(respUp.StatusCode, b)
 	}
 

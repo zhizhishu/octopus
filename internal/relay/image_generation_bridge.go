@@ -18,12 +18,12 @@ import (
 	"github.com/zhizhishu/octopus/internal/helper"
 	"github.com/zhizhishu/octopus/internal/utils/log"
 
+	"github.com/google/uuid"
 	"github.com/zhizhishu/octopus/internal/transformer/inbound"
 	transformerModel "github.com/zhizhishu/octopus/internal/transformer/model"
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 	"github.com/zhizhishu/octopus/internal/utils/xredact"
 	"github.com/zhizhishu/octopus/internal/utils/xurl"
-	"github.com/google/uuid"
 )
 
 // maxImageGenerationN caps the bridged /v1/images/generations count so a pathological or
@@ -129,7 +129,7 @@ func (ra *relayAttempt) forwardImageGenerationViaImages(ctx context.Context, spa
 	defer respUp.Body.Close()
 
 	if respUp.StatusCode < 200 || respUp.StatusCode >= 300 {
-		b, _ := io.ReadAll(io.LimitReader(respUp.Body, upstreamErrorBodyLimit))
+		b, _ := readErrorBodyFromResponse(respUp)
 		upErr := newUpstreamError(respUp.StatusCode, b)
 		return respUp.StatusCode, upErr
 	}
@@ -198,7 +198,7 @@ func (ra *relayAttempt) forwardGeminiImageGenerationViaImages(ctx context.Contex
 	defer respUp.Body.Close()
 
 	if respUp.StatusCode < 200 || respUp.StatusCode >= 300 {
-		b, _ := io.ReadAll(io.LimitReader(respUp.Body, upstreamErrorBodyLimit))
+		b, _ := readErrorBodyFromResponse(respUp)
 		return respUp.StatusCode, newUpstreamError(respUp.StatusCode, b)
 	}
 
