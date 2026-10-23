@@ -25,6 +25,32 @@ const (
 	TaskModelAuditQuick  = "model_audit_quick"
 )
 
+// settingIntOr 读一个整数设置，读不到就用默认值继续。
+//
+// 🔴 这里以前是 `if err != nil { return }` —— 三处 early-return 会把**后面所有任务
+// 的注册整段跳过**。SettingGetInt 只在 settingCache 里查，key 缺失、值是空串、
+// 或写成 "5.5"/"5 分钟" 都会返回 err，于是：
+//   - TaskStatsSave / TaskRelayLogSave 不注册 → 统计数据永不落库
+//   - price_update 不注册 → 模型价格永不更新
+//   - base_url_delay 不注册 → 渠道延迟永不刷新
+//   - sync_llm 不注册 → 模型列表永不同步
+// 而 relayLogFlushLoop 是独立协程仍在跑，日志看着还在落库，**故障极难被发现**：
+// 服务正常收发请求，只有启动时一行 Error。
+//
+// 一个配错的值不该让整台机器半瘫。读不到就用默认值，并把问题喊出来。
+func settingIntOr(key model.SettingKey, def int) int {
+	v, err := op.SettingGetInt(key)
+	if err != nil {
+		log.Errorf("setting %q unreadable (%v); falling back to default %d and continuing task registration", key, err, def)
+		return def
+	}
+	if v <= 0 {
+		log.Errorf("setting %q is %d (invalid); falling back to default %d", key, v, def)
+		return def
+	}
+	return v
+}
+
 func Init() {
 	// 先启动异步落库者, 再读任何可能 early-return 的设置。中继日志后台刷库协程 + relay IP
 	// 审计落库任务负责排空转发热路径塞进内存的两个队列; 若排在下面的 SettingGetInt 读失败
@@ -73,12 +99,7 @@ func Init() {
 		op.RelayLogStreamTokenSweep(time.Hour)
 	})
 
-	priceUpdateIntervalHours, err := op.SettingGetInt(model.SettingKeyModelInfoUpdateInterval)
-	if err != nil {
-		log.Errorf("failed to get model info update interval: %v", err)
-		return
-	}
-	priceUpdateInterval := time.Duration(priceUpdateIntervalHours) * time.Hour
+	priceUpdateInterval := time.Duration(settingIntOr(model.SettingKeyModelInfoUpdateInterval, 24)) * time.Hour
 	// 注册价格更新任务
 	Register(string(model.SettingKeyModelInfoUpdateInterval), priceUpdateInterval, true, func() {
 		if err := price.UpdateLLMPrice(context.Background()); err != nil {
@@ -90,21 +111,11 @@ func Init() {
 	Register(TaskBaseUrlDelay, 1*time.Hour, true, ChannelBaseUrlDelayTask)
 
 	// 注册LLM同步任务
-	syncLLMIntervalHours, err := op.SettingGetInt(model.SettingKeySyncLLMInterval)
-	if err != nil {
-		log.Warnf("failed to get sync LLM interval: %v", err)
-		return
-	}
-	syncLLMInterval := time.Duration(syncLLMIntervalHours) * time.Hour
+	syncLLMInterval := time.Duration(settingIntOr(model.SettingKeySyncLLMInterval, 24)) * time.Hour
 	Register(string(model.SettingKeySyncLLMInterval), syncLLMInterval, true, SyncModelsTask)
 
 	// 注册统计保存任务
-	statsSaveIntervalMinutes, err := op.SettingGetInt(model.SettingKeyStatsSaveInterval)
-	if err != nil {
-		log.Warnf("failed to get stats save interval: %v", err)
-		return
-	}
-	statsSaveInterval := time.Duration(statsSaveIntervalMinutes) * time.Minute
+	statsSaveInterval := time.Duration(settingIntOr(model.SettingKeyStatsSaveInterval, 5)) * time.Minute
 	Register(TaskStatsSave, statsSaveInterval, false, op.StatsSaveDBTask)
 	// 注册中继日志保存任务
 	Register(TaskRelayLogSave, 10*time.Minute, false, func() {
