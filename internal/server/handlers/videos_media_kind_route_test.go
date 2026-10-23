@@ -17,6 +17,37 @@ import (
 //
 // 用 engine.Routes() 查表而不是发真实请求：这里要验的是「路由表长什么样」，
 // 发请求会连带把鉴权/DB/上游都拖进来，失败了也说不清是路由问题还是别的。
+// handlerNameMatches 判断 engine.Routes() 给出的函数名是否就是 want 那一层。
+//
+// 为什么不能只 TrimPrefix 包路径再比：gin 的 RouteInfo.Handler 在不同构建下会长成
+//
+//	github.com/zhizhishu/octopus/internal/server/handlers.createVideoWithMediaKind.func2
+//	github.com/zhizhishu/octopus/internal/server/handlers.init.22.createVideoWithMediaKind.func2
+//
+// 第二段里的 "init.22" 是**包内 init 注册序号**，会随构建/文件顺序变化。
+// 本地跑出来是前者、CI 上是后者 —— 这条测试因此在云端红而本地绿（2026-10-23 实测）。
+// 断言一个会漂的序号等于给自己埋一条随机红。
+//
+// 所以只取「最后一个非 funcN 段」当函数名比：funcN 是闭包层，init.N 是注册序号，
+// 两者都不是被测语义。
+func handlerNameMatches(full, want string) bool {
+	const pkgPrefix = "github.com/zhizhishu/octopus/internal/server/handlers."
+	name := strings.TrimPrefix(full, pkgPrefix)
+	parts := strings.Split(name, ".")
+	for i := len(parts) - 1; i >= 0; i-- {
+		part := parts[i]
+		if part == "" || strings.HasPrefix(part, "func") {
+			continue
+		}
+		if i > 0 && parts[i-1] == "init" {
+			// "init.22" 里的 22 是序号，跳过它继续往前找真实函数名。
+			continue
+		}
+		return part == want
+	}
+	return false
+}
+
 func TestVideoMediaKindRoutesRegistered(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
@@ -29,6 +60,7 @@ func TestVideoMediaKindRoutesRegistered(t *testing.T) {
 	for _, route := range engine.Routes() {
 		registered[route.Method+" "+route.Path] = route.Handler
 	}
+
 
 	// kind 子路径的创建入口必须是「带 kind 的那一层」，不能退回裸 createVideo：
 	// 后者会把 kind 记成空串，轮询于是回到 /v1/videos/{id}，上游 404。
@@ -59,8 +91,7 @@ func TestVideoMediaKindRoutesRegistered(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s is not registered (contract route missing)", key)
 		}
-		trimmed := strings.TrimPrefix(handler, "github.com/zhizhishu/octopus/internal/server/handlers.")
-		if trimmed != tc.want && !strings.HasPrefix(trimmed, tc.want+".") {
+		if !handlerNameMatches(handler, tc.want) {
 			t.Fatalf("%s is handled by %q, want a %s handler", key, handler, tc.want)
 		}
 	}
@@ -101,5 +132,67 @@ func TestVideoMediaKindRoutesMatch(t *testing.T) {
 			t.Fatalf("%s %s did not match any route", tc.method, tc.path)
 		}
 		t.Logf("%s %s -> %d %.120s", tc.method, tc.path, rec.Code, rec.Body.String())
+	}
+}
+
+// TestHandlerNameMatchesCoversBothBuildShapes 直接钉住「函数名会漂」这件事本身。
+//
+// 背景：这条 helper 存在的原因就是 CI 与本机给出的名字不同
+// （handlers.createVideoWithMediaKind.func2 vs handlers.init.22.createVideoWithMediaKind.func2）。
+// 如果只靠 TestVideoMediaKindRoutesRegistered 间接覆盖，那么下次有人把 helper 改回
+// TrimPrefix 朴素比较时，**本机依然绿**，只有云端会红 —— 又变成一条"本地绿云端红"的坑。
+// 所以把两种真实形态都写成显式用例。
+func TestHandlerNameMatchesCoversBothBuildShapes(t *testing.T) {
+	const pkg = "github.com/zhizhishu/octopus/internal/server/handlers."
+	cases := []struct {
+		name string
+		full string
+		want string
+		ok   bool
+	}{
+		{
+			name: "本机形态：包路径后直接是函数名",
+			full: pkg + "createVideoWithMediaKind.func2",
+			want: "createVideoWithMediaKind",
+			ok:   true,
+		},
+		{
+			name: "CI 形态：中间多一段 init.N（序号会漂）",
+			full: pkg + "init.22.createVideoWithMediaKind.func2",
+			want: "createVideoWithMediaKind",
+			ok:   true,
+		},
+		{
+			name: "CI 形态但序号不同（漂到别的值也得过）",
+			full: pkg + "init.7.createVideoWithMediaKind.func1",
+			want: "createVideoWithMediaKind",
+			ok:   true,
+		},
+		{
+			name: "普通函数名（非闭包）",
+			full: pkg + "getVideo",
+			want: "getVideo",
+			ok:   true,
+		},
+		{
+			name: "别的 handler 不能冒充",
+			full: pkg + "init.22.createVideo.func2",
+			want: "createVideoWithMediaKind",
+			ok:   false,
+		},
+		{
+			name: "裸 createVideo 就是裸 createVideo",
+			full: pkg + "createVideo",
+			want: "createVideoWithMediaKind",
+			ok:   false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := handlerNameMatches(tc.full, tc.want); got != tc.ok {
+				t.Fatalf("handlerNameMatches(%q, %q) = %v, want %v", tc.full, tc.want, got, tc.ok)
+			}
+		})
 	}
 }
