@@ -96,9 +96,12 @@ func codexRustlsClientHelloSpec() *utls.ClientHelloSpec {
 func claudeCodeNodeClientHelloSpec() *utls.ClientHelloSpec {
 	return &utls.ClientHelloSpec{
 		CipherSuites: []uint16{
+			// 🔴 这三个注释曾按"顺序猜测"标错：0x1301 被标成 CHACHA20、
+			// 0x1303 被标成 AES_128。按 RFC 8446 的真实映射是
+			//   0x1301 = TLS_AES_128_GCM_SHA256
 			0x1302, // TLS_AES_256_GCM_SHA384
-			0x1303, // TLS_AES_128_GCM_SHA256
-			0x1301, // TLS_CHACHA20_POLY1305_SHA256
+			0x1303, // TLS_CHACHA20_POLY1305_SHA256
+			0x1301, // TLS_AES_128_GCM_SHA256
 			0xc02c, // ECDHE-ECDSA-AES256-GCM-SHA384
 			0xc030, // ECDHE-RSA-AES256-GCM-SHA384
 			0x009f, // DHE-RSA-AES256-GCM-SHA384

@@ -1883,14 +1883,14 @@ func (ra *relayAttempt) shouldForceAnthropicStreamUpstream() bool {
 	if ra.channel.Type != outbound.OutboundTypeAnthropic {
 		return false
 	}
+	// 注意：下面用到 ra.internalRequest 之前必须先确认 ra.relayRequest 存在 ——
+	// 它是嵌入指针，nil 时连 `ra.internalRequest == nil` 这种判空都会先解引用再崩。
 	// 嵌入流量永不强制流式：CLI 形状是给聊天/响应类流量模拟真 CLI 的，嵌入没有
 	// CLI 可言；而且 EmbeddingOutbound.TransformStream 直接报错
 	// （embedding.go:122 "streaming is not supported for embedding API"）。一旦
 	// 被强制流式，上游返回的 JSON 会进 handleStreamResponseAsNonStream，那里对
 	// 非 SSE 内容直接判错 —— 用户看到的是一次莫名其妙的失败。
-	// ra.relayRequest 是嵌入指针，为 nil 时访问 ra.internalRequest 会先解引用它再崩。
-	// 两层都要判：relayRequest 本身、以及其中的 internalRequest。
-	if ra.relayRequest != nil && ra.internalRequest != nil && ra.internalRequest.IsEmbeddingRequest() {
+	if ra.embeddingRequest() {
 		return false
 	}
 	return shouldApplyChannelCloak(ra.channel.Cloak)
@@ -2426,6 +2426,54 @@ func lowercaseAnthropicCLIHeaderNames(h http.Header) {
 	}
 }
 
+// outboundTLSFace 返回这条出站请求该戴的 TLS 面容；空 = 走路径默认。
+//
+// 这是「本次出站戴什么握手身份」的**唯一判定点**。之所以抽成函数而不是在
+// sendRequest 里就地判断：判定规则有两个例外来源（渠道类型 + 流量类型），
+// 散在调用点里就没人能一眼看出它们是否都生效 —— 而这里恰好出过事：
+// header 那条路已经为嵌入流量提前 return 了，TLS 这条路却没有，
+// 于是同一条嵌入请求出现「头是通用的、握手指纹是 claude CLI」的分裂形态。
+//
+// 🔴 嵌入流量不戴任何 CLI 面容：嵌入没有 CLI 可言。改动前
+// Anthropic/Responses 类渠道根本接不到嵌入请求（EmbeddingChannelTypes 只有
+// type 5），能力位放开后它们能接到了，这个例外才变得必须显式写出来。
+// 只隔离 header 等于没隔离 —— 上游识别客户端靠的是握手那一层。
+// reqCtx 返回这次尝试的请求级上下文；没有时返回一个空壳而不是 nil。
+//
+// 🔴 存在的理由：relayAttempt 嵌入的是 *relayRequest **指针**，于是
+// `ra.internalRequest` 在 relayRequest 为 nil 时不是"读到空值"，而是**先解引用
+// nil 指针再取字段** —— 进程级 panic，连 `ra.internalRequest == nil` 这种判空
+// 写法本身都会崩（实测确认）。
+//
+// 生产路径的三处构造都老老实实传了 relayRequest，所以这个坑平时看不见；但
+// 轻量探针（只填 channel 去问"该戴什么面容/要不要强制流式"）是合理用法，
+// 一碰就崩。把"取上下文"收成这一个入口，新代码照它写就不会再踩。
+func (ra *relayAttempt) reqCtx() *relayRequest {
+	if ra == nil || ra.relayRequest == nil {
+		return &relayRequest{}
+	}
+	return ra.relayRequest
+}
+
+// embeddingRequest 报告这次尝试是不是嵌入流量；nil 安全的版本。
+func (ra *relayAttempt) embeddingRequest() bool {
+	if ra == nil || ra.relayRequest == nil {
+		return false
+	}
+	req := ra.internalRequest
+	return req != nil && req.IsEmbeddingRequest()
+}
+
+func (ra *relayAttempt) outboundTLSFace() string {
+	if ra == nil {
+		return ""
+	}
+	if ra.embeddingRequest() {
+		return ""
+	}
+	return channelTLSFace(ra.channel)
+}
+
 func (ra *relayAttempt) sendRequest(req *http.Request) (*http.Response, error) {
 	lowercaseAnthropicCLIHeaderNames(req.Header)
 	// A channel that presents a CLI identity dresses the TLS face to match the headers
@@ -2436,7 +2484,8 @@ func (ra *relayAttempt) sendRequest(req *http.Request) (*http.Response, error) {
 	// The face is decided by identity, never by transport, so it is applied here and
 	// honoured downstream even when the channel reaches the upstream through a proxy:
 	// the handshake is tunnelled through that proxy rather than dropped.
-	if face := channelTLSFace(ra.channel); face != "" {
+	//
+	if face := ra.outboundTLSFace(); face != "" {
 		req = req.WithContext(client.WithTLSFace(req.Context(), face))
 	}
 	httpClient, err := helper.ChannelHttpClientContext(req.Context(), ra.channel)

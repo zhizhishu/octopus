@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/zhizhishu/octopus/internal/client"
 	"github.com/zhizhishu/octopus/internal/helper"
 	"github.com/zhizhishu/octopus/internal/model"
@@ -30,7 +31,6 @@ import (
 	"github.com/zhizhishu/octopus/internal/utils/log"
 	"github.com/zhizhishu/octopus/internal/utils/safe"
 	"github.com/zhizhishu/octopus/internal/utils/xurl"
-	"github.com/gin-gonic/gin"
 )
 
 type RawProtocolOptions struct {
@@ -876,7 +876,26 @@ func rawProtocolAttempt(
 		return 0, false, nil, "", "", fmt.Errorf("failed to create request: %w", err)
 	}
 	copyHeadersToUpstream(req, c, channel, channelKey, contentType, stream)
-	if isResponsesCompactRawProtocol(options) {
+
+	// 🔴 身份头与握手面容必须**同生同死**，所以只留这一个接缝。
+	//
+	// 原来这是两段独立的判断：`isResponsesCompactRawProtocol(options)` 决定发不发
+	// codex 身份头，而 `channelTLSFace(channel)` 对**所有** raw endpoint 都套 codex
+	// 面容。于是 /completions、/audio/transcriptions、/rerank 这些非 compact 端点
+	// 在 Responses 类型渠道上，线上是：
+	//     ClientHello = 真 codex rustls（ALPN h2+http/1.1）
+	//     User-Agent  = 通用 Chrome 桌面 UA（copyHeadersToUpstream 只补通用 UA）
+	//     Originator  = 没有
+	// 也就是「握手声称 codex_cli_rs、头声称浏览器、还缺真 CLI 必带的身份对」——
+	// 一个自相矛盾的强指纹组合，比两边都不装更像机器。
+	//
+	// 修法取"绑在一起"而不是"收窄 face 条件"：只要戴了 CLI 面容，就必须同时具备
+	// 与之配套的身份头；不戴面容就走通用头。两种形态各自自洽，绝不会再出现
+	// 握手与头互相打脸。isResponsesCompactRawProtocol 之外的端点因此不再被单方面
+	// 套上 codex 面容 —— 它们本来也拿不到 codex 身份（这些端点不是 codex 协议）。
+	isCodexLeg := isResponsesCompactRawProtocol(options)
+	face := channelTLSFace(channel)
+	if isCodexLeg {
 		// Echo the downstream client's own codex UA on this leg too (its Originator is then
 		// derived from that UA's leading token, keeping the pair inseparable): the raw path
 		// has no relayAttempt, so read it straight off the gin request context
@@ -886,12 +905,15 @@ func rawProtocolAttempt(
 			inboundUserAgent = c.Request.UserAgent()
 		}
 		applyCodexHeaderDefaultsWithFingerprint(req, rawProtocolCodexIdentity(jsonPayload, clientSessionKey, actualModel), resolveFingerprintForChannel(channel), inboundUserAgent)
+	} else {
+		// 不戴 CLI 身份的端点不许穿 CLI 面容：那是半套伪装，反而更可疑。
+		face = ""
 	}
 
 	// This leg has no relayAttempt, so it must stamp the CLI face itself: a channel that
 	// presents a CLI identity has to keep that identity's handshake here too, or the raw
 	// path would leak a stock Go ClientHello on exactly the requests it exists to serve.
-	if face := channelTLSFace(channel); face != "" {
+	if face != "" {
 		req = req.WithContext(client.WithTLSFace(req.Context(), face))
 	}
 	httpClient, err := helper.ChannelHttpClientContext(req.Context(), channel)

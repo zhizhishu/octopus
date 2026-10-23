@@ -526,8 +526,15 @@ func convertToAnthropicRequest(req *model.InternalLLMRequest) *anthropicModel.Me
 				Type: anthropicModel.ThinkingTypeAdaptive,
 			}
 			if result.OutputConfig == nil {
-				result.OutputConfig = &anthropicModel.OutputConfig{
-					Effort: req.ReasoningEffort,
+				// 🔴 effort 必须过 anthropicOutputEffort 归一化，不能原样写。
+				// 这个字段在 Anthropic 侧是**枚举**，收到不认识的值整条请求 400，
+				// 而报错来自上游 —— 排查时看着像上游抽风，其实是我们的锅。
+				// 原来这里直接写 req.ReasoningEffort：`LOW`/`X-HIGH` 这种语义
+				// 完全合法只是拼法不同的值会被枚举挡掉，`ultra`/`turbo` 这种
+				// 自造词更是必 400。归一化后不认识的值返回空，宁可不发 effort
+				// （adaptive 仍然成立），也不拿用户的请求去撞 400。
+				if effort := anthropicOutputEffort(req.ReasoningEffort); effort != "" {
+					result.OutputConfig = &anthropicModel.OutputConfig{Effort: effort}
 				}
 			}
 		} else if budget := getThinkingBudget(req.ReasoningEffort, req.ReasoningBudget, result.MaxTokens); budget != nil {
@@ -576,6 +583,46 @@ func convertToAnthropicRequest(req *model.InternalLLMRequest) *anthropicModel.Me
 }
 
 // anthropicOutputFormatFromResponseFormat converts an OpenAI-style json_schema
+// anthropicOutputEffort 把任意写法的思考档位压成 Anthropic `output_config.effort`
+// 认的枚举值；不认识的值返回空字符串（调用方据此"不发这个字段"）。
+//
+// 【为什么要归一化，而不是原样透传】这个字段在 Anthropic 侧是枚举，
+// 收到不认识的值整条请求 400。而客户端侧的写法五花八门：
+//   - 大小写：`LOW` / `High`
+//   - 分隔符别名：`x-high` / `x_high` / `extra-high`（语义都是 xhigh）
+//   - 带空白：`" high "`
+//   - 纯自造：`ultra` / `turbo` / `highish`
+//
+// 前三种是**合法的意图、只是拼法不同**，必须收下并规范化；第四种必须挡掉 ——
+// 原样发出去等于拿用户的请求去撞一个必然的 400，而且报错来自上游，
+// 排查时看不出是我们的问题。
+//
+// 复用 transformer/model 的 CanonicalEffort：它已经处理了大小写、分隔符剥离和
+// 同义别名折叠（`x-high`/`extra-high` => `xhigh`），与 codex 那条归一化路径
+// 是同一套规则，避免两处对"同一个词"给出不同理解。
+//
+// 返回值域严格取自 OutputConfig.Effort 的枚举：low / medium / high / max，
+// 外加 xhigh —— Claude CLI 2.1.28x 之后认这个更细的强档（见
+// model.SettingKeyClaudeCLIReasoningEffort 的校验注释）。
+func anthropicOutputEffort(raw string) string {
+	switch model.CanonicalEffort(raw) {
+	case "low":
+		return "low"
+	case "medium":
+		return "medium"
+	case "high":
+		return "high"
+	case "xhigh":
+		return "xhigh"
+	case "max":
+		return "max"
+	default:
+		// 含空串、`auto`、`off`（off 由 IsEffortOff 那一支单独处理，走 disabled）、
+		// 以及一切不认识的写法。不发 effort 比发一个非法值安全。
+		return ""
+	}
+}
+
 // response_format into the Anthropic output_config.format shape
 // ({"type":"json_schema","name":...,"schema":...}). It returns ok=false for nil,
 // non-json_schema, or empty/unparseable schemas so the caller leaves

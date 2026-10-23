@@ -98,6 +98,46 @@ func RelayLogSearchBackfillComplete(tx *gorm.DB) bool {
 //     每批之间让出, 启动不会因为几百万行日志而卡住。
 //   - 可失败降级: 回填中途失败留待下次启动继续(记录只在成功后写入), 而运行时
 //     写入路径会继续补齐新行 —— 缺的行只是"暂时搜不到", 不会搜错。
+//
+// ensureRelayLogTotalAttemptsIndex 给 relay_logs.total_attempts 补索引。
+//
+// 🔴 这里原来是手写 `CREATE INDEX IF NOT EXISTS ...`。那个语法 **MySQL 不支持**
+// （MariaDB 支持，MySQL 从来没有给 CREATE INDEX 加过 IF NOT EXISTS），会直接报
+// 1064 语法错。而错误被 `_ =` 吞掉，于是 MySQL 部署上索引永远建不上、也永远没人
+// 会知道 —— 两个谓词继续全表扫（10 万行实测 847ms）。本迁移标了 AlwaysRun，
+// 每轮启动还会再报一次同样的错。
+//
+// 为什么不用 `AutoMigrate(&model.RelayLog{})`：它会顺带把**缺失的列也补回来**。
+// 本迁移的"半途而废"语义依赖"读批失败就返回 nil、标记留 false"，而测试正是用
+// 删列来制造这个失败；AutoMigrate 把列补回去，那个分支就再也走不到，
+// 一条守着"别对着缺行表宣布空页"的用例会变绿得毫无意义。
+// 索引归索引，列归列 —— 这里只碰索引。
+//
+// 三方方言分别处理：
+//   - sqlite / postgres: 原生支持 IF NOT EXISTS，一条语句即可。
+//   - mysql: 没有 IF NOT EXISTS，但 `HasIndex` 能可靠回答"建没建过"，
+//     据此决定要不要 CREATE。索引名必须与 GORM 按 struct tag 生成的保持一致
+//     （idx_relay_logs_total_attempts），否则 HasIndex 永远查不到、每次启动都重建。
+//
+// 失败只记日志：索引缺失只是慢，不影响正确性，不该把服务挡在启动之外。
+func ensureRelayLogTotalAttemptsIndex(db *gorm.DB) {
+	const indexName = "idx_relay_logs_total_attempts"
+	switch db.Dialector.Name() {
+	case "mysql":
+		// GORM 对 MySQL 的默认索引名就是 idx_<table>_<column>，与上面常量一致。
+		if db.Migrator().HasIndex(&model.RelayLog{}, indexName) {
+			return
+		}
+		if err := db.Exec("CREATE INDEX " + indexName + " ON relay_logs(total_attempts)").Error; err != nil {
+			log.Warnf("migrate 014: ensure relay_logs(total_attempts) index failed: %v", err)
+		}
+	default:
+		if err := db.Exec("CREATE INDEX IF NOT EXISTS " + indexName + " ON relay_logs(total_attempts)").Error; err != nil {
+			log.Warnf("migrate 014: ensure relay_logs(total_attempts) index failed: %v", err)
+		}
+	}
+}
+
 func migrateBackfillRelayLogSearchIndex(db *gorm.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
@@ -123,9 +163,18 @@ func migrateBackfillRelayLogSearchIndex(db *gorm.DB) error {
 	//
 	// 建索引在百万行上是秒级操作且只跑一次; 失败只记日志不阻断启动 ——
 	// 索引缺失只是慢, 不该让服务起不来。
-	// 刻意忽略错误: 迁移层没有 logger, 而索引建不上只是变慢、不影响正确性,
-	// 不该让整个迁移失败、把服务挡在启动之外。下次启动会再试一次。
-	_ = db.Exec("CREATE INDEX IF NOT EXISTS idx_relay_logs_total_attempts ON relay_logs(total_attempts)").Error
+	//
+	// 🔴 这里原来是手写 `CREATE INDEX IF NOT EXISTS ...`。那个语法 **MySQL 不支持**
+	// （MariaDB 支持，MySQL 从来没有 `IF NOT EXISTS` 用于 CREATE INDEX），会直接
+	// 报 1064 语法错。错误被这个 `_ =` 吞掉，于是 MySQL 部署上索引永远建不上、
+	// 也永远不会有人知道 —— 两个谓词继续全表扫（10 万行实测 847ms）。
+	// 而且本迁移标了 AlwaysRun，每轮启动都会再报一次同样的语法错。
+	//
+	// 改走 AutoMigrate：`model.RelayLog.TotalAttempts` 上已经有 `gorm:"index"`，
+	// GORM 会按方言生成正确语句（MySQL 走它自己的索引存在性检查 + 建索引），
+	// 跨 sqlite / postgres / mysql 都成立，也不再需要手写方言分支。
+	// 同样刻意忽略错误：索引缺失只是慢，不影响正确性，不该把服务挡在启动之外。
+	ensureRelayLogTotalAttemptsIndex(db)
 
 	// 先补齐"主表有新行、索引表没有"的部分。左连接取缺失 id, 避免每次启动都
 	// 全量重灌(全量重灌在百万行上是分钟级, 而缺行通常是 0)。
