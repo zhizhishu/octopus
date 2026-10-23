@@ -97,43 +97,13 @@ func BuildReport(results []Result, requestedModel string) Report {
 			report.Errors = append(report.Errors, ProbeError{Probe: res.ProbeID, Error: res.Err.Error()})
 			continue
 		}
-		// 自报不适用的探针（如对非 Anthropic 出站问 Claude 签名）既没跑也没
-		// 发现问题：不计 usable——否则一条只剩少数探针真正跑了的审计会显示
-		// 「全部查过没问题」。结果仍保留在 Results 里供展示。
-		if v, ok := res.Data["applicable"].(bool); ok && !v {
+		if !probeApplicable(res) {
+			// 自报不适用的探针（如对非 Anthropic 出站问 Claude 签名）既没跑也没
+			// 发现问题：不计 usable——否则一条只剩少数探针真正跑了的审计会显示
+			// 「全部查过没问题」。结果仍保留在 Results 里供展示。
 			continue
 		}
-		// 回放被上游拒绝的签名探针同样不计 usable：它既没证明签名是假的，也没
-		// 证明渠道干净，只产出一条 0 分「不可判」提示（见 signatureFindings）。
-		// 把它算成"跑通"会让一条只剩它跑完的审计落到 none——那是把"没查清"
-		// 读成"查过没问题"。它的 finding 仍照常产出：若它另带实质风险（结构
-		// 异常等），该分独立计入，不受本计数影响。
-		countsAsUsable := true
-		if res.ProbeID == ProbeSignature {
-			if rejected, _ := res.Data["replay_rejected"].(bool); rejected {
-				countsAsUsable = false
-			} else if present, ok := res.Data["signature_present"].(bool); ok && !present {
-				// 采集后无签名（insufficient_evidence）不算证据：不计 usable、
-				// 不产 finding——可能是模型不支持思考（正常），也可能是替身
-				// 不产出签名，探针层区分不了，不能定罪也不能假绿。缺
-				// signature_present 键的旧形态 Result 不新造证据，仍计 usable。
-				countsAsUsable = false
-			}
-		}
-		// 指纹探针没得出可判结论时同样不计 usable：
-		// 模型拒答、样本不足、参考库外型号，都只意味着"这次没测出来"，
-		// 把它算成跑通会让一条只剩它的审计显示成"查过没问题"。
-		if res.ProbeID == ProbeFingerprint {
-			switch stringOf(res.Data, "fingerprint_decision") {
-			case "scorable":
-				// 有完整结论，算跑通。
-			default:
-				// ""（没测成）/ unscorable（拒答）/ partial（样本不足）
-				// 都只说明这次没测出来，不能算"查过没问题"。
-				countsAsUsable = false
-			}
-		}
-		if countsAsUsable {
+		if probeCountsAsUsable(res) {
 			usable++
 		}
 		report.Findings = append(report.Findings, findingsFor(res, report.RequestedModel, report.RequestedFamilies)...)
@@ -298,6 +268,54 @@ func signatureFindings(res Result, requestedModel string) []Finding {
 //
 // 每条判定都配一条中文动作建议：结论要能直接转成"下一步做什么"，
 // 否则操作者拿到一个分数仍然不知道该怎么办。
+// probeApplicable 报告探针是否认为"这条对当前渠道适用"。
+// 不适用既没跑也没发现问题，不能进证据分母。
+func probeApplicable(res Result) bool {
+	if v, ok := res.Data["applicable"].(bool); ok && !v {
+		return false
+	}
+	return true
+}
+
+// probeCountsAsUsable 是「这条探针算不算真正拿到了可判读样本」的**唯一判据**。
+//
+// 评分（score.go）和文案（view.go）都必须用它，不能各写一遍：两套口径分裂会出现
+// 「评分说 none、文案说查过没问题」这种自相矛盾的报告。
+//
+// 判为不可用的情形，共同点是「工具没拿到样本」，而不是「查过没问题」：
+//   - 探针自报 usable=false：差分法在上游没报输入 token、或两次输入 token 相同时
+//     写这个标记。算成跑通会让「两条真跑通 + 一条没测成」凑够 minUsableProbes，
+//     一条什么都没查清的审计对外显示成"全部查过没问题"。
+//   - 回放被上游拒绝的签名探针：既没证明签名是假的，也没证明渠道干净。
+//   - 采集后无签名（insufficient_evidence）：可能是模型不支持思考（正常），
+//     也可能是替身不产签名，探针层区分不了，不能定罪也不能假绿。
+//   - 指纹探针没得出可判结论（拒答 / 样本不足 / 参考库外型号）。
+func probeCountsAsUsable(res Result) bool {
+	if res.Err != nil || !res.OK {
+		return false
+	}
+	if !probeApplicable(res) {
+		return false
+	}
+	if usableFlag, ok := res.Data["usable"].(bool); ok && !usableFlag {
+		return false
+	}
+	if res.ProbeID == ProbeSignature {
+		if rejected, _ := res.Data["replay_rejected"].(bool); rejected {
+			return false
+		}
+		if present, ok := res.Data["signature_present"].(bool); ok && !present {
+			return false
+		}
+	}
+	if res.ProbeID == ProbeFingerprint {
+		if stringOf(res.Data, "fingerprint_decision") != "scorable" {
+			return false
+		}
+	}
+	return true
+}
+
 func findingsFor(res Result, requestedModel string, requestedFamilies []string) []Finding {
 	switch res.ProbeID {
 	case ProbeSignature:

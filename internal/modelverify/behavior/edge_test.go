@@ -2,6 +2,7 @@ package behavior
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/zhizhishu/octopus/internal/modelverify"
@@ -211,5 +212,58 @@ func TestRunWithCanceledContextNeverAsks(t *testing.T) {
 		if res.Err == nil {
 			t.Fatalf("取消后每项应带 Err: %+v", res)
 		}
+	}
+}
+
+// 探针自报 usable=false 的，不能凑证据数。
+//
+// 差分法（token_delta）在上游没报输入 token、或两次输入 token 相同时会写
+// usable=false —— 那是"工具没拿到样本"。若把它算进 usable，就会出现
+// 「两条真跑通 + 一条没测成」凑够 minUsableProbes=3、结论落到 none：
+// 一条什么都没查清的审计，对外显示成"全部查过没问题"。
+func TestUnusableProbeDoesNotCountTowardThreshold(t *testing.T) {
+	clean := func(id ProbeID) Result {
+		return Result{ProbeID: id, OK: true, Data: map[string]any{}}
+	}
+	// 跑成功了（OK=true），但明确自报没拿到样本。
+	unusable := Result{ProbeID: ProbeTokenDelta, OK: true, Data: map[string]any{
+		"usable": false, "delta": 0,
+	}}
+
+	below := BuildReport([]Result{clean(ProbeLiveness), clean(ProbeEchoRewrite), unusable}, "claude-sonnet-4-5")
+	if below.Verdict != VerdictUnknown {
+		t.Fatalf("两条干净+一条没测成 = 2 条有效证据, 应判 unknown, 得到 %q"+
+			"（把没测成算成跑通，等于宣称查过没问题）", below.Verdict)
+	}
+
+	// 补两条真正干净的到阈值，才允许判 none。
+	atThreshold := BuildReport([]Result{
+		clean(ProbeLiveness), clean(ProbeEchoRewrite), clean(ProbeContextCanary), unusable,
+	}, "claude-sonnet-4-5")
+	if atThreshold.Verdict != VerdictNone {
+		t.Fatalf("三条干净探针已到阈值, 应判 none, 得到 %q", atThreshold.Verdict)
+	}
+}
+
+// 评分与文案必须用同一套可用判据。
+//
+// 曾经 score.go 与 view.go 各算一遍：view.go 只看 `res.OK && res.Err == nil`，
+// 于是同一个报告会出现「评分判 unknown（证据不足）、文案却说查过没问题」。
+func TestScoreAndPlainVerdictAgreeOnUsable(t *testing.T) {
+	clean := func(id ProbeID) Result {
+		return Result{ProbeID: id, OK: true, Data: map[string]any{}}
+	}
+	unusable := Result{ProbeID: ProbeTokenDelta, OK: true, Data: map[string]any{"usable": false}}
+	results := []Result{clean(ProbeLiveness), clean(ProbeEchoRewrite), unusable}
+
+	report := BuildReport(results, "claude-sonnet-4-5")
+	if report.Verdict != VerdictUnknown {
+		t.Fatalf("前置条件：应判 unknown，得到 %q", report.Verdict)
+	}
+
+	// 文案层的可用计数必须也只有 2（不是 3）：文案里会写"N 项检查全部跑通"。
+	plain := PlainVerdictFor(report.Verdict, report.Score, len(report.Findings), 2, PrimaryFamily(report.RequestedFamilies))
+	if !strings.Contains(plain.Meaning, "2 项") {
+		t.Fatalf("文案 = %q, 期望提到 2 项（可用项应与评分口径一致）", plain.Meaning)
 	}
 }

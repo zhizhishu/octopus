@@ -929,13 +929,18 @@ func modelTestOutboundBaseURL(channel *dbmodel.Channel, internalRequest *transfo
 	if channel == nil {
 		return ""
 	}
-	if channel.Type == outbound.OutboundTypeCustomOpenAIChat {
-		return channel.GetOpenAIChatBaseUrl()
-	}
-	// 与 relay 的 outboundBaseURL 对齐：嵌入请求用嵌入专属 base url。渠道没配
-	// openai_embeddings_path 时它就是 GetBaseUrl()，检测与真实转发同一条链路。
+	// 🔴 嵌入判断必须在渠道类型判断**之前**，与生产 relay.go 的 outboundBaseURL 逐字对齐。
+	//
+	// 这里曾经是反的：先判 CustomOpenAIChat 并提前返回聊天 base url，于是
+	// 「CustomOpenAIChat 渠道勾了 embeddings 能力 + 配了 openai_embeddings_path」
+	// 这条合法组合，**生产用嵌入地址、检测用聊天地址** —— 检测测的根本不是
+	// 真实转发那条链路，绿灯代表不了任何事。
+	// 生产那边的注释早就写了这个理由，测试这边漏了。
 	if internalRequest.IsEmbeddingRequest() {
 		return channel.GetOpenAIEmbeddingsBaseUrl()
+	}
+	if channel.Type == outbound.OutboundTypeCustomOpenAIChat {
+		return channel.GetOpenAIChatBaseUrl()
 	}
 	return channel.GetBaseUrl()
 }

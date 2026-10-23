@@ -245,3 +245,45 @@ func TestRunChannelEmbeddingProbeSucceedsWithoutCLIShape(t *testing.T) {
 		t.Fatalf("embedding probe must not present a CLI User-Agent, got %q", sawUA)
 	}
 }
+
+// 检测与生产必须选中同一个 base url，尤其是「CustomOpenAIChat + 嵌入能力」
+// 这条合法组合。
+//
+// 生产 relay 的 outboundBaseURL 先判 IsEmbeddingRequest()，再判渠道类型，注释
+// 里写明了理由；而检测入口 modelTestOutboundBaseURL 曾经是反的：先判
+// CustomOpenAIChat 并提前返回聊天 base url。于是这条组合下**生产打嵌入地址、
+// 检测打聊天地址**，检测测的不是真实链路，绿灯毫无意义。
+func TestModelTestBaseURLMatchesProductionForEmbeddings(t *testing.T) {
+	channel := &dbmodel.Channel{
+		Type: outbound.OutboundTypeCustomOpenAIChat,
+		BaseUrls: []dbmodel.BaseUrl{
+			{URL: "https://chat.example/v1"},
+		},
+		OpenAIChatPath:       "/chat/completions",
+		OpenAIEmbeddingsPath: "/embeddings",
+		Capabilities:         []string{"embeddings"},
+	}
+	chatBase := channel.GetOpenAIChatBaseUrl()
+	embedBase := channel.GetOpenAIEmbeddingsBaseUrl()
+	if chatBase == embedBase {
+		t.Fatalf("这个用例要能区分两条地址，但两者都是 %q（配置没生效，测试无效）", chatBase)
+	}
+
+	req := &transformermodel.InternalLLMRequest{
+		EmbeddingInput: &transformermodel.EmbeddingInput{Single: strPtrLocal("hi")},
+	}
+	if !req.IsEmbeddingRequest() {
+		t.Fatal("EmbeddingInput 设了但 IsEmbeddingRequest() 为假，用例前提不成立")
+	}
+
+	got := modelTestOutboundBaseURL(channel, req)
+	if got == chatBase {
+		t.Fatalf("检测选中聊天地址 %q；CustomOpenAIChat+嵌入能力这条组合下生产用的是"+
+			"嵌入地址 %q，检测必须跟生产一致，否则检测绿灯不代表真实转发可用", got, embedBase)
+	}
+	if got != embedBase {
+		t.Fatalf("检测选中 %q，want 嵌入地址 %q", got, embedBase)
+	}
+}
+
+func strPtrLocal(s string) *string { return &s }

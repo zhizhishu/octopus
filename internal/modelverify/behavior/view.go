@@ -87,9 +87,13 @@ func ToView(report Report) ViewReport {
 
 	// 人话结论。usable 只数"真正拿到可判读样本"的探针：跑挂的、被拒答的
 	// 都不算，否则一个挂了三条探针的渠道会看起来像"查过了"。
+	//
+	// 🔴 判据必须和 score.go 里算 usable 的那套一致，否则会出现
+	// 「评分按 A 口径落到 none、文案按 B 口径说'查过没问题'」的分裂。
+	// 这里刻意复用同一个函数，而不是各写一遍。
 	usable := 0
 	for _, res := range report.Results {
-		if res.OK && res.Err == nil {
+		if probeCountsAsUsable(res) {
 			usable++
 		}
 	}
