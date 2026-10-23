@@ -133,17 +133,48 @@ func (p *rpcConcurrencyProbe) max() int32 { return p.peak.Load() }
 type rpcTierWatch struct {
 	started  atomic.Int32
 	finished atomic.Int32
-	mu       sync.Mutex
-	done     []time.Time
+	// seq hands every event a strictly increasing number at the moment it happens, so
+	// "did the lower tier arrive after the higher tier settled?" can be answered WITHOUT
+	// comparing wall-clock timestamps.
+	seq atomic.Int64
+	mu  sync.Mutex
+	// done holds the seq of every finished higher-tier attempt (not a time.Time).
+	done []int64
+	// lowSeq records the seq of every lower-tier dispatch.
+	lowMu  sync.Mutex
+	lowSeq []int64
 }
 
 func (w *rpcTierWatch) enter() { w.started.Add(1) }
 
 func (w *rpcTierWatch) finish() {
 	w.mu.Lock()
-	w.done = append(w.done, time.Now())
+	w.done = append(w.done, w.seq.Add(1))
 	w.mu.Unlock()
 	w.finished.Add(1)
+}
+
+func (w *rpcTierWatch) noteLow() int64 {
+	at := w.seq.Add(1)
+	w.lowMu.Lock()
+	w.lowSeq = append(w.lowSeq, at)
+	w.lowMu.Unlock()
+	return at
+}
+
+func (w *rpcTierWatch) lastLow() (int64, bool) {
+	w.lowMu.Lock()
+	defer w.lowMu.Unlock()
+	if len(w.lowSeq) == 0 {
+		return 0, false
+	}
+	return w.lowSeq[len(w.lowSeq)-1], true
+}
+
+func (w *rpcTierWatch) lowCount() int {
+	w.lowMu.Lock()
+	defer w.lowMu.Unlock()
+	return len(w.lowSeq)
 }
 
 // settled reports that at least one higher-tier attempt ran and that every started attempt has
@@ -153,12 +184,12 @@ func (w *rpcTierWatch) settled() bool {
 	return started > 0 && started == w.finished.Load()
 }
 
-func (w *rpcTierWatch) latestFinish() time.Time {
+func (w *rpcTierWatch) latestFinishSeq() int64 {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	var latest time.Time
+	var latest int64
 	for _, at := range w.done {
-		if at.After(latest) {
+		if at > latest {
 			latest = at
 		}
 	}
@@ -482,6 +513,7 @@ func TestRescueRoutingRaceHigherTierFailsThenDescendsToLowerTier(t *testing.T) {
 	highA := rpcNewUpstream(t, highHandler)
 	highB := rpcNewUpstream(t, highHandler)
 	low := rpcNewUpstream(t, func(w http.ResponseWriter, r *http.Request, n int) {
+		watch.noteLow()
 		if !barrier.reached() || !watch.settled() {
 			violation.Store(true)
 		}
@@ -517,9 +549,17 @@ func TestRescueRoutingRaceHigherTierFailsThenDescendsToLowerTier(t *testing.T) {
 	if low.count() != 1 {
 		t.Fatalf("the lower tier must be tried exactly once after the higher tier finished, got %d", low.count())
 	}
-	lowAt := low.times()[0]
-	if !lowAt.After(watch.latestFinish()) {
-		t.Fatalf("the lower tier arrived at %s, before the higher tier finished at %s", lowAt, watch.latestFinish())
+	// 🔴 用**原子序号**比较先后，不用墙上时钟。
+	// 原实现比较 time.Time，而 Windows 的 time.Now() 分辨率约 0.5-15ms：两次紧邻的
+	// 事件会拿到**完全相同**的时间戳，`After()` 返回 false，于是一个正确的实现被判成
+	// "低tier抢跑"。实测复现：-count=20 里挂 2 次，失败信息里两个时间戳连单调时钟位
+	// （m=+8.150541701）都一模一样 —— 那不是顺序错，是时钟精度不够。
+	lowSeq, ok := watch.lastLow()
+	if !ok {
+		t.Fatalf("the lower tier was never dispatched")
+	}
+	if highSeq := watch.latestFinishSeq(); lowSeq <= highSeq {
+		t.Fatalf("the lower tier was dispatched (seq %d) before the higher tier finished (seq %d)", lowSeq, highSeq)
 	}
 	if body := rec.Body.String(); !strings.Contains(body, "LOW-TIER-DELIVERED") {
 		t.Fatalf("the lower tier's content must reach the caller, got status %d body %q", rec.Code, body)
@@ -815,6 +855,7 @@ func TestRescueRoutingRescueRoundsPreserveTierOrder(t *testing.T) {
 			// Fails on the first round and delivers content on the second, so the round in which
 			// the tier order was re-derived is observable.
 			low := rpcNewUpstream(t, func(w http.ResponseWriter, r *http.Request, n int) {
+				watch.noteLow()
 				// Each round must have settled its OWN two higher-tier attempts (one key each), so a
 				// previous round's settled state cannot stand in for this one. No ordering within
 				// the higher tier is assumed.
@@ -848,14 +889,15 @@ func TestRescueRoutingRescueRoundsPreserveTierOrder(t *testing.T) {
 			if violation.Load() {
 				t.Fatalf("a rescue round dispatched the lower tier while the higher tier was still unfinished: the canvas order was not rebuilt")
 			}
-			lowTimes := low.times()
-			if len(lowTimes) < 2 {
-				t.Fatalf("the rescue must run at least two rounds, the lower tier was dispatched %d time(s)", len(lowTimes))
+			if n := watch.lowCount(); n < 2 {
+				t.Fatalf("the rescue must run at least two rounds, the lower tier was dispatched %d time(s)", n)
 			}
-			// latestFinish() spans every round, so only the LAST round's lower-tier dispatch can be
-			// required to follow all of them.
-			if lastLow := lowTimes[len(lowTimes)-1]; !lastLow.After(watch.latestFinish()) {
-				t.Fatalf("the lower tier arrived at %s, before the higher tier settled at %s", lastLow, watch.latestFinish())
+			// latestFinishSeq() spans every round, so only the LAST round's lower-tier dispatch can
+			// be required to follow all of them. Sequence numbers, not wall clock — see the note in
+			// the preceding test about Windows time.Now() resolution.
+			lastLow, _ := watch.lastLow()
+			if highSeq := watch.latestFinishSeq(); lastLow <= highSeq {
+				t.Fatalf("the lower tier was dispatched (seq %d) before the higher tier settled (seq %d)", lastLow, highSeq)
 			}
 			if body := rec.Body.String(); !strings.Contains(body, "ROUND-2-CONTENT") {
 				t.Fatalf("the second-round rescue must deliver content, got status %d body %q", rec.Code, body)
