@@ -111,6 +111,21 @@ type episodeResult struct {
 	elapsed time.Duration
 }
 
+// episodeRequestGuard 是等一次请求跑完的护栏，**不是被测语义**。
+//
+// 它唯一的职责是"别让用例永久挂死"。原先写 10s，而一次正常救援流程实测约 4.6s
+// （三个 turn，每轮都要走满重试预算）—— 余量只有 2 倍。整个 relay 包跑满 4 分多钟
+// 之后机器被拖慢，同一段流程会超过 10s，于是用例红在一个跟代码无关的地方。
+//
+// 实测证据（2026-10-23）：go test ./internal/relay/ 全量跑红在这里（12.27s 超时），
+// 而单独 -run TestEpisode 三个用例一起跑只要 4.60s 全过；同一份改动再跑一次全量
+// 又绿（248s）。撤掉改动的基线也复现过同一条偶发。所以这不是某次改动的责任，
+// 是用例本身的余量太薄。
+//
+// 抬到 60s：仍远低于"真挂死"的观察窗口，但不再随机器负载变红。
+// 救援窗口本身的上限是 autoRescueCap=300s（见 rescue_window.go），60s 仍在其内。
+const episodeRequestGuard = 60 * time.Second
+
 // runEpisodeRequest drives one full Handler request for the given user text and waits for
 // it to finish (bounded by timeout).
 func runEpisodeRequest(t *testing.T, userText string, timeout time.Duration) episodeResult {
@@ -164,7 +179,7 @@ func TestEpisodeExhaustionMakesSameMessageFast(t *testing.T) {
 	upstream := newEpisodeUpstream(t, -1, "never") // always 502
 	newNoBreakerChannel(t, upstream.url(), "always-502", 1, true)
 
-	first := runEpisodeRequest(t, "ping", 10*time.Second)
+	first := runEpisodeRequest(t, "ping", episodeRequestGuard)
 	if first.code == http.StatusOK {
 		t.Fatalf("an always-failing upstream must not end as 200, got %q", first.body)
 	}
@@ -194,7 +209,7 @@ func TestEpisodeNormalSuccessRestores(t *testing.T) {
 	upstream := newEpisodeUpstream(t, -1, "RESTORED") // always 502 first
 	newNoBreakerChannel(t, upstream.url(), "flip-flop", 1, true)
 
-	first := runEpisodeRequest(t, "ping", 10*time.Second)
+	first := runEpisodeRequest(t, "ping", episodeRequestGuard)
 	if first.code == http.StatusOK {
 		t.Fatalf("the exhausting turn unexpectedly succeeded: %q", first.body)
 	}
@@ -202,7 +217,7 @@ func TestEpisodeNormalSuccessRestores(t *testing.T) {
 	// Now let the upstream succeed. The suppressed request forwards once and succeeds,
 	// which must restore the episode.
 	upstream.setFailures(upstream.count())
-	restore := runEpisodeRequest(t, "ping", 10*time.Second)
+	restore := runEpisodeRequest(t, "ping", episodeRequestGuard)
 	if restore.code != http.StatusOK || !strings.Contains(restore.body, "RESTORED") {
 		t.Fatalf("the suppressed request must still forward its normal candidate and succeed, got %d %q", restore.code, restore.body)
 	}
@@ -210,7 +225,7 @@ func TestEpisodeNormalSuccessRestores(t *testing.T) {
 	// The episode is restored: a failing same-message request rescues again.
 	upstream.setFailures(-1)
 	before := upstream.count()
-	third := runEpisodeRequest(t, "ping", 10*time.Second)
+	third := runEpisodeRequest(t, "ping", episodeRequestGuard)
 	if upstream.count()-before < 2 {
 		t.Fatalf("a restored episode must rescue again, but only %d upstream dispatch happened", upstream.count()-before)
 	}
@@ -228,10 +243,10 @@ func TestEpisodeNewUserMessageRestores(t *testing.T) {
 	upstream := newEpisodeUpstream(t, -1, "never")
 	newNoBreakerChannel(t, upstream.url(), "always-502", 1, true)
 
-	_ = runEpisodeRequest(t, "ping", 10*time.Second) // exhausts the "ping" episode
+	_ = runEpisodeRequest(t, "ping", episodeRequestGuard) // exhausts the "ping" episode
 
 	before := upstream.count()
-	next := runEpisodeRequest(t, "ping-pong", 10*time.Second)
+	next := runEpisodeRequest(t, "ping-pong", episodeRequestGuard)
 	if upstream.count()-before < 2 {
 		t.Fatalf("a new user message must start its own rescue, but only %d dispatch happened", upstream.count()-before)
 	}
@@ -251,7 +266,7 @@ func TestEpisodeZeroBudgetDisablesRescue(t *testing.T) {
 	upstream := newEpisodeUpstream(t, -1, "never")
 	newNoBreakerChannel(t, upstream.url(), "always-502", 1, true)
 
-	res := runEpisodeRequest(t, "ping", 10*time.Second)
+	res := runEpisodeRequest(t, "ping", episodeRequestGuard)
 	if res.elapsed > 3*time.Second {
 		t.Fatalf("budget=0 must not hold/rescue, but the request took %s", res.elapsed)
 	}

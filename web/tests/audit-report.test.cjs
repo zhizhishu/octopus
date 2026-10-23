@@ -79,6 +79,23 @@ test('errors 的元素是 {probe,error}，不是 probe_id/message', () => {
     assert.deepEqual(goTags, ['probe', 'error']);
 });
 
+test('results 的元素是 {probe_id,ok,data,error}，不是 probe/title', () => {
+    // 注意：results 用的是 probe_id（ViewResult），而 findings/errors 用的是 probe。
+    // 两边混用不会报错，只会让「原始观测」整块静默变成空白。
+    const src = readFileSync(GO_VIEW, 'utf8');
+    const goTags = goJSONTags(src, 'ViewResult');
+    assert.deepEqual(goTags, ['probe_id', 'ok', 'data', 'error']);
+
+    // 前端类型声明必须跟着这几个 tag 走，不能自己改名字。
+    const ts = readFileSync(path.resolve(__dirname, '../src/components/modules/log/audit-report.ts'), 'utf8');
+    const start = ts.indexOf('interface AuditReportResult {');
+    assert.ok(start >= 0, '前端缺少 AuditReportResult 接口 —— results 会退回 unknown[]');
+    const body = ts.slice(start, ts.indexOf('\n}', start));
+    for (const field of goTags) {
+        assert.match(body, new RegExp(`\\b${field}\\?:`), `前端 AuditReportResult 缺少字段 ${field}`);
+    }
+});
+
 // ── 解析边界 ────────────────────────────────────────────────────────────────
 
 test('空列与空串都视为"没检测过"，返回 null 而不是空壳报告', () => {
@@ -141,6 +158,31 @@ test('真实形态的报告能被解析出来，关键字段可读', () => {
     assert.equal(parsed.errors[0].error, '上游没返回首字时间');
     // caveat 必须在 —— 它是最容易被"优化"掉、又最不能丢的一段。
     assert.match(parsed.plain.caveat, /不能证明/);
+});
+
+test('带 results 的报告能解析出来，data 里的键值可读', () => {
+    const raw = JSON.stringify({
+        requested_model: 'gpt-6-astra',
+        verdict: 'low',
+        findings: [],
+        results: [
+            { probe_id: 'token_arithmetic', ok: true, data: { input: 10, output: 5, total: 99 } },
+            { probe_id: 'ttft_histogram', ok: false, error: '上游没返回首字时间' },
+        ],
+        errors: [],
+    });
+
+    const parsed = parseAuditReport(raw);
+    assert.ok(parsed);
+    assert.equal(parsed.results.length, 2);
+    // probe_id（不是 probe）—— 与 findings 的元素不同名。
+    assert.equal(parsed.results[0].probe_id, 'token_arithmetic');
+    assert.equal(parsed.results[0].ok, true);
+    // data 的每个键都要能读出来：用户查的就是「你到底测出了什么数」。
+    assert.deepEqual(parsed.results[0].data, { input: 10, output: 5, total: 99 });
+    assert.equal(parsed.results[1].ok, false);
+    assert.equal(parsed.results[1].data, undefined);
+    assert.equal(parsed.results[1].error, '上游没返回首字时间');
 });
 
 test('字段缺失的报告不抛异常（老版本数据）', () => {

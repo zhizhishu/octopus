@@ -31,13 +31,27 @@ export interface AuditReportProbeError {
     error?: string;
 }
 
+/**
+ * 后端 ViewResult 的真实形态是 `{probe_id, ok, data, error}` —— 注意是 probe_id，
+ * 与 findings/errors 里的 probe 不同名。
+ *
+ * findings 是「判出来的问题」，是结论；results 是「每个探针测出的原始数」
+ * （不管有没有问题都记），是证据。两者不能互替。
+ */
+export interface AuditReportResult {
+    probe_id?: string;
+    ok?: boolean;
+    data?: Record<string, unknown>;
+    error?: string;
+}
+
 export interface AuditReport {
     requested_model?: string;
     requested_families?: string[];
     score?: number;
     verdict?: string;
     findings?: AuditReportFinding[];
-    results?: unknown[];
+    results?: AuditReportResult[];
     errors?: AuditReportProbeError[];
     disclaimer?: string;
     plain?: AuditReportPlain;

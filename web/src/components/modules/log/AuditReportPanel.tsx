@@ -9,10 +9,11 @@ import {
     type AuditReportFinding,
     type AuditReportProbeError,
     type AuditReportPlain,
+    type AuditReportResult,
 } from './audit-report';
 
 // 这几个类型在本文件里被用作渲染签名，re-export 只为让 diff 读起来不用跳文件。
-export type { AuditReport, AuditReportFinding, AuditReportProbeError, AuditReportPlain };
+export type { AuditReport, AuditReportFinding, AuditReportProbeError, AuditReportPlain, AuditReportResult };
 
 /**
  * 详情弹窗里的「模型检测报告明细」。
@@ -23,7 +24,12 @@ export type { AuditReport, AuditReportFinding, AuditReportProbeError, AuditRepor
  *   requested_model / requested_families / score / verdict / findings / results /
  *   errors / disclaimer / plain{level,headline,meaning,caveat,next_step} / family
  * findings 每项 {probe,severity,score,title,evidence,recommendation}；
+ * results 每项 {probe_id,ok,data,error}（注意是 probe_id，不是 probe）；
  * errors 每项 {probe,error}（注意不是 probe_id/message）。
+ *
+ * findings 与 results 不是一回事：findings 是判定出的「问题」，results 是每个探针的
+ * 「原始观测」（跑通没跑的原始数字都记）。用户要能查「到底测出了什么数」，
+ * 所以 results 必须能展开看 data 的每个键值。
  *
  * 语义边界（与后端措辞一致）：这套检测只测「行为像不像官方」，不证明模型真伪。
  * 所以 caveat（"这不能说明什么"）和 disclaimer 必须留在面板里，哪怕它们让人不快——
@@ -71,6 +77,63 @@ function severityTextStyle(severity: string | undefined): string {
         default:
             return 'text-muted-foreground';
     }
+}
+
+/** 单条原始观测：probe_id + 成功/失败标记，data 可展开逐键看。 */
+function ResultRow({ result }: { result: AuditReportResult }) {
+    const t = useTranslations('log.card');
+    const [showData, setShowData] = useState(false);
+    const dataRows = useMemo(
+        () => Object.entries(result.data ?? {}).filter(([, value]) => value !== undefined),
+        [result.data]
+    );
+    const ok = result.ok === true;
+
+    return (
+        <li className="min-w-0">
+            <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[11px]">
+                <span className="min-w-0 break-words font-mono text-foreground [overflow-wrap:anywhere]">
+                    {result.probe_id ?? ''}
+                </span>
+                <span
+                    className={cn(
+                        'shrink-0 font-medium',
+                        ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'
+                    )}
+                >
+                    {ok ? t('auditReportResultOk') : t('auditReportResultFail')}
+                </span>
+                {dataRows.length > 0 && (
+                    <button
+                        type="button"
+                        onClick={() => setShowData((v) => !v)}
+                        aria-expanded={showData}
+                        className="shrink-0 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+                    >
+                        {showData ? t('auditReportResultDataHide') : t('auditReportResultDataShow')}
+                    </button>
+                )}
+            </div>
+            {/* 探针自身报错用琥珀色：与下面的 errors 块同色系，不读成高危。 */}
+            {result.error && (
+                <p className="mt-0.5 break-words text-[11px] leading-5 text-amber-700 dark:text-amber-300 [overflow-wrap:anywhere]">
+                    {result.error}
+                </p>
+            )}
+            {showData && dataRows.length > 0 && (
+                <div className="mt-1 space-y-0.5 pl-2">
+                    {dataRows.map(([key, value]) => (
+                        <div key={key} className="flex flex-wrap items-baseline gap-x-1.5 text-[11px]">
+                            <span className="shrink-0 text-muted-foreground">{key}</span>
+                            <span className="min-w-0 break-words font-mono tabular-nums text-foreground [overflow-wrap:anywhere]">
+                                {formatEvidenceValue(value)}
+                            </span>
+                        </div>
+                    ))}
+                </div>
+            )}
+        </li>
+    );
 }
 
 function formatEvidenceValue(value: unknown): string {
@@ -148,6 +211,8 @@ function FindingRow({ finding }: { finding: AuditReportFinding }) {
 export function AuditReportPanel({ report, defaultOpen = false }: { report?: string; defaultOpen?: boolean }) {
     const t = useTranslations('log.card');
     const [expanded, setExpanded] = useState(defaultOpen);
+    // 原始观测是证据，条数多、键多，默认折起来，别把请求/响应面板挤走。
+    const [showResults, setShowResults] = useState(false);
     const parsed = useMemo(() => parseAuditReport(report), [report]);
 
     // 没被检测过（空串）或报告损坏 → 整栏不渲染。摆一个空壳会被读成"检测过但没问题"。
@@ -155,6 +220,7 @@ export function AuditReportPanel({ report, defaultOpen = false }: { report?: str
 
     const plain = parsed.plain ?? {};
     const findings = parsed.findings ?? [];
+    const results = parsed.results ?? [];
     const errors = parsed.errors ?? [];
     const verdictText = verdictLabel(parsed.verdict, t);
     const metaParts = [
@@ -215,6 +281,33 @@ export function AuditReportPanel({ report, defaultOpen = false }: { report?: str
                                 <FindingRow key={`${finding.probe ?? 'finding'}-${index}`} finding={finding} />
                             ))}
                         </ul>
+                    )}
+
+                    {/* 原始观测：每个探针测出的原始数据，不管有没有问题都列（证据，不是结论）。 */}
+                    {results.length > 0 && (
+                        <div className="rounded-lg border border-border bg-background/60 px-2.5 py-2">
+                            <button
+                                type="button"
+                                onClick={() => setShowResults((v) => !v)}
+                                aria-expanded={showResults}
+                                className="flex w-full items-baseline justify-between gap-2 text-left"
+                            >
+                                <span className="text-[11px] font-medium text-foreground">
+                                    {t('auditReportResultsTitle')}
+                                </span>
+                                <span className="flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground">
+                                    {t('auditReportResultCount', { count: results.length })}
+                                    <ChevronDown className={cn('size-3 transition-transform', showResults && 'rotate-180')} />
+                                </span>
+                            </button>
+                            {showResults && (
+                                <ul className="mt-1.5 space-y-1.5">
+                                    {results.map((result, index) => (
+                                        <ResultRow key={`${result.probe_id ?? 'result'}-${index}`} result={result} />
+                                    ))}
+                                </ul>
+                            )}
+                        </div>
                     )}
 
                     {/* 探针没跑成不是"对方有问题"，用琥珀色当信息提示，不用红。 */}
