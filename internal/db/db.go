@@ -95,6 +95,8 @@ func InitDB(dbType, dsn string, debug bool) error {
 		&model.ResponseSession{},
 		&model.VideoTask{},
 		&model.ImageTask{},
+		&model.BatchImageJob{},
+		&model.BatchImageItem{},
 		&migrate.MigrationRecord{},
 	); err != nil {
 		return err

@@ -217,6 +217,27 @@ const (
 	SettingKeyAsyncImageEnabled SettingKey = "async_image_enabled"
 )
 
+// 图片批处理（/v1/images/batches*）的配置。
+//
+// 单独一块的理由同下面的死空间回收开关：这里名字都长，混进上面那批会让 gofmt
+// 重排整个常量块，把一次小改动变成几十行空白 diff。
+//
+// 【总开关默认 false】与 async_image_enabled 完全同理：这也是「先扣钱、后台再干活」
+// 的路径，配置不当就是「扣钱但不干活」。关闭时 10 条路由全部 404 而不是 403——
+// 未启用的功能对外不存在。
+const (
+	// SettingKeyBatchImageEnabled 是批处理总开关。
+	SettingKeyBatchImageEnabled SettingKey = "batch_image_enabled"
+	// SettingKeyBatchImageMaxItems 是单批条数上限。
+	SettingKeyBatchImageMaxItems SettingKey = "batch_image_max_items"
+	// SettingKeyBatchImageMaxActive 是每人同时进行的批次数上限。
+	SettingKeyBatchImageMaxActive SettingKey = "batch_image_max_active_jobs"
+	// SettingKeyBatchImageRetentionHours 是任务记录与结果的保留小时数。
+	SettingKeyBatchImageRetentionHours SettingKey = "batch_image_retention_hours"
+	// SettingKeyBatchImageUnitPrice 是每条成功图片的价格（0 = 不计费）。
+	SettingKeyBatchImageUnitPrice SettingKey = "batch_image_unit_price"
+)
+
 // 死空间回收开关。关掉 = 退回旧行为（只有本轮删了行才 VACUUM），用于应急：
 // 万一完整 VACUUM 把生产库卡住，用户可以在管理页立刻关掉，不必等发版。
 //
@@ -569,6 +590,16 @@ func DefaultSettings() []Setting {
 		// 图片异步任务默认关：它是本项目唯一「先扣钱、后台再干活」的图片路径，
 		// 配置不当就会变成「扣钱但不干活」。要让运维显式打开。
 		{Key: SettingKeyAsyncImageEnabled, Value: "false"},
+		// 图片批处理同样默认关：它也是先扣钱后干活，且一次占用上游几十分钟。
+		{Key: SettingKeyBatchImageEnabled, Value: "false"},
+		// 条数上限 1000：一条 4K 图的成本不低，一个手滑脚本提交一万条会变成一张吓人的账单。
+		{Key: SettingKeyBatchImageMaxItems, Value: "1000"},
+		// 每人同时 4 条：够用，且一个人开满也不会把上游配额吃光。
+		{Key: SettingKeyBatchImageMaxActive, Value: "4"},
+		// 保留 48 小时：与上游对结果文件的保留期对齐（上游过期后我们也取不到了）。
+		{Key: SettingKeyBatchImageRetentionHours, Value: "48"},
+		// 单价 0 = 不计费，保持与升级前行为一致；要用的人自己填。
+		{Key: SettingKeyBatchImageUnitPrice, Value: "0"},
 		// 被动探针默认开: 零上游请求、零 token, 没有需要保护用户免于触发的理由。
 		{Key: SettingKeyLogPassiveProbeEnabled, Value: "true"},
 		{Key: SettingKeyCheckInEnabled, Value: "false"},
@@ -732,9 +763,37 @@ func (s *Setting) Validate() error {
 		SettingKeyDebugLoadBalancer, SettingKeyEmailVerificationEnabled, SettingKeyEmailSMTPSSL,
 		SettingKeyUpstreamUTLSFingerprint, SettingKeyUpstreamHTTP1HeaderOrder, SettingKeyDiagnosticMode, SettingKeyRouteStickyCacheFirst,
 		SettingKeyModelAuditEnabled, SettingKeyModelAuditFollowUpEnabled, SettingKeyLogPassiveProbeEnabled,
-		SettingKeyRelayLogReclaimEnabled, SettingKeyAsyncImageEnabled:
+		SettingKeyRelayLogReclaimEnabled, SettingKeyAsyncImageEnabled, SettingKeyBatchImageEnabled:
 		if s.Value != "true" && s.Value != "false" {
 			return fmt.Errorf("%s must be true or false", s.Key)
+		}
+		return nil
+	case SettingKeyBatchImageMaxItems:
+		// 上限 10000：再大就不是"批处理"而是"批量事故"了。
+		// 下限 1：0 会让每一条提交都被拒，看起来像功能坏了。
+		value, err := strconv.Atoi(s.Value)
+		if err != nil || value < 1 || value > 10000 {
+			return fmt.Errorf("%s must be an integer between 1 and 10000", s.Key)
+		}
+		return nil
+	case SettingKeyBatchImageMaxActive:
+		value, err := strconv.Atoi(s.Value)
+		if err != nil || value < 1 || value > 100 {
+			return fmt.Errorf("%s must be an integer between 1 and 100", s.Key)
+		}
+		return nil
+	case SettingKeyBatchImageRetentionHours:
+		// 上限 720 小时（30 天）：上游对结果文件的保留期远短于此，
+		// 配更长只会让任务看起来"还在"但取不到图。
+		value, err := strconv.Atoi(s.Value)
+		if err != nil || value < 1 || value > 720 {
+			return fmt.Errorf("%s must be an integer between 1 and 720", s.Key)
+		}
+		return nil
+	case SettingKeyBatchImageUnitPrice:
+		value, err := strconv.ParseFloat(strings.TrimSpace(s.Value), 64)
+		if err != nil || value < 0 {
+			return fmt.Errorf("%s must be a non-negative number", s.Key)
 		}
 		return nil
 	case SettingKeyEmailSMTPPort:

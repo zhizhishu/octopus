@@ -34,6 +34,7 @@ const (
 //   - price_update 不注册 → 模型价格永不更新
 //   - base_url_delay 不注册 → 渠道延迟永不刷新
 //   - sync_llm 不注册 → 模型列表永不同步
+//
 // 而 relayLogFlushLoop 是独立协程仍在跑，日志看着还在落库，**故障极难被发现**：
 // 服务正常收发请求，只有启动时一行 Error。
 //
@@ -72,6 +73,11 @@ func Init() {
 	// 同理不进 task 注册表：它是自带 ticker 的独立循环，测试二进制里没人显式
 	// 调用就不会有后台写库者。
 	ImageTaskPollStart()
+	// 图片批处理推进器：和上面两个同理，它每一轮都读库写库、调上游、并且会真花用户的
+	// 钱（结算/退款）。提交时已经预扣，推进器不起就是"扣了钱不干活"。同样不进 task
+	// 注册表、不许 init() 自启：它是自带 ticker 的独立循环，测试二进制里没人显式调用
+	// 就不会存在任何后台写库者。
+	BatchImageWorkerStart()
 	// 模型行为检测(定时快检 + 回显不一致自动跟进)已停用自动启动: 此处既不挂 RegisterAuditFollowUp,
 	// 也不注册 TaskModelAuditQuick——后台与日志写入路径不得自动启动消耗 token 的 behavior 探针。
 	// 只有检测栏手动 run(POST /api/v1/model-audit/run) 仍可主动调用; 两个旧开关默认 false, 且因

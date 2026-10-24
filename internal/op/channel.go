@@ -404,6 +404,12 @@ func ChannelUpdate(req *model.ChannelUpdateRequest, ctx context.Context) (*model
 		selectFields = append(selectFields, "open_ai_tasks_path")
 		updates.OpenAITasksPath = *req.OpenAITasksPath
 	}
+	if req.BatchImage != nil {
+		// 显式 Select 这一列，理由同上面几条：GORM 的 Updates(struct) 会跳过零值，
+		// 而"把批处理配置清空"恰恰就是把它变成零值。Select 之后零值也会真的写进去。
+		selectFields = append(selectFields, "batch_image")
+		updates.BatchImage = req.BatchImage
+	}
 
 	// 只有当有字段需要更新时才执行 UPDATE
 	if len(selectFields) > 0 {

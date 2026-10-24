@@ -113,12 +113,20 @@ type Channel struct {
 	//
 	// 单独一个字段的理由：有些上游创建在 /v1/videos，查询却在 /v1/tasks/{id}，
 	// 两者不同源。硬绑成「同前缀」就接不上这类。
-	OpenAITasksPath      string        `json:"openai_tasks_path"`
-	Stats                *StatsChannel `json:"stats,omitempty" gorm:"foreignKey:ChannelID"`
-	MatchRegex           *string       `json:"match_regex"`
-	CircuitTripped       bool          `json:"circuit_tripped" gorm:"-"`
-	CircuitRemainingSecs int           `json:"circuit_remaining_seconds" gorm:"-"`
-	CircuitOpenKeys      int           `json:"circuit_open_keys" gorm:"-"`
+	OpenAITasksPath string `json:"openai_tasks_path"`
+	// BatchImage 是离线批量生图（/v1/images/batches*）的渠道级配置。
+	// 空 = 这个渠道不承接批处理流量（存量渠道全是空，行为与改动前完全一致）。
+	//
+	// 为什么用 JSON 列而不是散列几个顶层字段：批处理的上游只有 Google 两家，
+	// 两家的必填项不一样（Gemini 只要 key；Vertex 要 project/location/桶），
+	// 而且这属于**一种新流量的接入参数**，不是渠道的通用属性。散成顶层字段会让
+	// channels 表为两个上游长出五六个永远为空的列，将来再加一个上游又是一片。
+	BatchImage           *ChannelBatchImage `json:"batch_image,omitempty" gorm:"serializer:json"`
+	Stats                *StatsChannel      `json:"stats,omitempty" gorm:"foreignKey:ChannelID"`
+	MatchRegex           *string            `json:"match_regex"`
+	CircuitTripped       bool               `json:"circuit_tripped" gorm:"-"`
+	CircuitRemainingSecs int                `json:"circuit_remaining_seconds" gorm:"-"`
+	CircuitOpenKeys      int                `json:"circuit_open_keys" gorm:"-"`
 }
 
 type ChannelCircuitStatus struct {
@@ -130,6 +138,65 @@ type ChannelCircuitStatus struct {
 type BaseUrl struct {
 	URL   string `json:"url"`
 	Delay int    `json:"delay"`
+}
+
+// ChannelBatchImage 是离线批量生图（/v1/images/batches*）的渠道级接入参数。
+//
+// 【凭证在哪】不在这里。上游的密钥 / 服务账号 JSON 一律走 ChannelKey.ChannelKey
+// ——那是本仓唯一存凭证的地方，有轮换、健康、熔断一整套机制。把它俩分开放会让
+// "换一把 key"变成要改两个地方。
+//
+// 【Provider 为什么在渠道上】批处理走哪家上游，取决于这个渠道的 key 是什么：
+// 一把 AI Studio 的 API key 只能走 gemini_api，一个服务账号 JSON 只能走 Vertex。
+// 让调用方在请求里点上游，等于允许用户替我们选凭证。
+type ChannelBatchImage struct {
+	// Provider 见 model.BatchImageProvider* 常量。空 = 不承接批处理。
+	Provider string `json:"provider,omitempty"`
+	// ProjectID / Location 只对 Vertex 有意义（Gemini 开发者 API 不需要）。
+	// Vertex 的批次任务必须指定 project 与 location，且它们属于凭证的归属，
+	// 不是用户请求能决定的。
+	ProjectID string `json:"project_id,omitempty"`
+	Location  string `json:"location,omitempty"`
+	// GCSBucket / GCSPrefix 只对 Vertex 有意义：Vertex 的批处理**只认 GCS 上的
+	// JSONL**，不接受内联请求，所以必须有个桶给输入和输出用。
+	// 这是 Vertex 接入的硬前提，缺了它这一路根本发不出去（不是"可选优化"）。
+	GCSBucket string `json:"gcs_bucket,omitempty"`
+	GCSPrefix string `json:"gcs_prefix,omitempty"`
+	// Models 是这个渠道声明可承接批处理的模型白名单。
+	//
+	// 必须显式声明而不是"渠道配了就能收"：批处理是**折扣计价**的，哪些模型在上游
+	// 真的支持离线批处理由上游决定，我们猜不出来。空 = 这个渠道不报任何模型
+	// （/models 端点据此枚举，宁可少报也不报一个必然失败的）。
+	Models []string `json:"models,omitempty"`
+}
+
+// BatchImageProvider 返回渠道声明的批处理上游；未配置返回空串。
+func (c *Channel) BatchImageProvider() string {
+	if c == nil || c.BatchImage == nil {
+		return ""
+	}
+	return strings.TrimSpace(c.BatchImage.Provider)
+}
+
+// BatchImageSupportsModel 报告这个渠道是否声明承接某个模型的批处理。
+//
+// 判据只看渠道自己的白名单，不看渠道的其它模型字段（Model / SelectedModels）：
+// 后者是**聊天**流量的准入，与离线批处理不是一回事，混用会让"某个模型能聊天"
+// 被误读成"某个模型能批处理"。
+func (c *Channel) BatchImageSupportsModel(model string) bool {
+	if c == nil || c.BatchImage == nil {
+		return false
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return false
+	}
+	for _, candidate := range c.BatchImage.Models {
+		if strings.EqualFold(strings.TrimSpace(candidate), model) {
+			return true
+		}
+	}
+	return false
 }
 
 type CustomHeader struct {
@@ -213,6 +280,9 @@ type ChannelUpdateRequest struct {
 	OpenAIImagesPath      *string                `json:"openai_images_path,omitempty"`
 	OpenAIVideosPath      *string                `json:"openai_videos_path,omitempty"`
 	OpenAITasksPath       *string                `json:"openai_tasks_path,omitempty"`
+	// BatchImage 部分更新批处理接入参数。nil = 不动这一列（与其余指针字段同语义）。
+	// 传一个空对象 `{}` 则是**清空**（= 这个渠道不再承接批处理流量）。
+	BatchImage *ChannelBatchImage `json:"batch_image,omitempty"`
 
 	KeysToAdd    []ChannelKeyAddRequest    `json:"keys_to_add,omitempty"`
 	KeysToUpdate []ChannelKeyUpdateRequest `json:"keys_to_update,omitempty"`

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/zhizhishu/octopus/internal/db"
@@ -259,4 +260,17 @@ func settingRefreshCacheLocked(ctx context.Context) error {
 	}
 	settingCache.ReplaceAll(snapshot)
 	return nil
+}
+
+// SettingGetFloat 读一个浮点设置项。读不到或解析失败一律返回 (0, error)。
+//
+// 与 SettingGetInt 同规矩：**不给默认值**。调用方必须自己决定读失败时按什么算，
+// 而这个决定往往与业务后果绑定（例如批处理单价读不出来时必须当作 0 而不是
+// 某个"合理猜测"，否则一次数据库抖动就会凭空多扣钱）。
+func SettingGetFloat(key model.SettingKey) (float64, error) {
+	setting, ok := settingCache.Get(key)
+	if !ok {
+		return 0, fmt.Errorf("setting not found")
+	}
+	return strconv.ParseFloat(strings.TrimSpace(setting), 64)
 }
