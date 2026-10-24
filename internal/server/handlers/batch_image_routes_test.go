@@ -101,3 +101,43 @@ func TestBatchImageModelsIsNotSwallowedByIDParam(t *testing.T) {
 		t.Fatalf("models route was matched with id=%q, want no id param", seenParam)
 	}
 }
+
+// 未认证的批处理请求必须在鉴权层被拦下，绝不许落到 handler。
+//
+// 【为什么单测这条】上一条测试证明的是"路由注册对了"，但注册对 ≠ 挂了鉴权。
+// 一条没有 APIKeyAuth 的批处理路由意味着任何人凭 batch_id 就能读别人的图，
+// 而 batch_id 只是随机串、不是权限凭证。这里真起 engine 打一遍。
+func TestBatchImageRoutesRequireAPIKey(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	if err := router.RegisterAll(engine); err != nil {
+		t.Fatalf("register routes: %v", err)
+	}
+
+	paths := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPost, "/v1/images/batches"},
+		{http.MethodGet, "/v1/images/batches"},
+		{http.MethodGet, "/v1/images/batches/models"},
+		{http.MethodGet, "/v1/images/batches/imgbatch_abc"},
+		{http.MethodGet, "/v1/images/batches/imgbatch_abc/items"},
+		{http.MethodGet, "/v1/images/batches/imgbatch_abc/items/x/content"},
+		{http.MethodGet, "/v1/images/batches/imgbatch_abc/download"},
+		{http.MethodPost, "/v1/images/batches/imgbatch_abc/cancel"},
+		{http.MethodDelete, "/v1/images/batches/imgbatch_abc"},
+		{http.MethodDelete, "/v1/images/batches/imgbatch_abc/outputs"},
+	}
+
+	for _, target := range paths {
+		request := httptest.NewRequest(target.method, target.path, nil)
+		recorder := httptest.NewRecorder()
+		engine.ServeHTTP(recorder, request)
+
+		if recorder.Code != http.StatusUnauthorized && recorder.Code != http.StatusForbidden {
+			t.Errorf("%s %s without a key returned %d, want 401/403 (handler must not be reachable unauthenticated)",
+				target.method, target.path, recorder.Code)
+		}
+	}
+}

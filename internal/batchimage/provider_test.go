@@ -2,6 +2,7 @@ package batchimage
 
 import (
 	"bytes"
+	"context"
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
@@ -11,13 +12,19 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/zhizhishu/octopus/internal/db"
 	"github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/op"
+	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 )
 
 // 这一组测试盯的是**契约**，不是覆盖率：
@@ -192,8 +199,9 @@ func TestParseResultsHandlesShapes(t *testing.T) {
 		result ParsedResult
 	}
 	var heardLines []heard
-	err := ParseResults(strings.NewReader(body), func(lineNumber int, result ParsedResult) {
+	err := ParseResults(strings.NewReader(body), func(lineNumber int, result ParsedResult) error {
 		heardLines = append(heardLines, heard{line: lineNumber, result: result})
+		return nil
 	})
 	if err != nil {
 		t.Fatalf("ParseResults: %v", err)
@@ -241,7 +249,10 @@ func TestParseResultsHandlesShapes(t *testing.T) {
 func TestParseResultsRejectsBadBase64(t *testing.T) {
 	body := `{"key":"a","response":{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/png","data":"!!!not base64!!!"}}]}}]}}`
 	var got ParsedResult
-	err := ParseResults(strings.NewReader(body), func(_ int, result ParsedResult) { got = result })
+	err := ParseResults(strings.NewReader(body), func(_ int, result ParsedResult) error {
+		got = result
+		return nil
+	})
 	if err != nil {
 		t.Fatalf("ParseResults: %v", err)
 	}
@@ -667,4 +678,298 @@ func testPrivateKeyPEM(t *testing.T) string {
 	}
 	block := &pem.Block{Type: "PRIVATE KEY", Bytes: der}
 	return string(pem.EncodeToMemory(block))
+}
+
+// 结算必须用提交时的单价快照，不能读当时的配置。
+//
+// 【为什么这条值得单测】下单到结束可能隔几小时，中间管理员调价。
+// 若结算重新读配置：涨价会少退（甚至不退）失败条目的钱，跌价会凭空多退。
+// 两种都是"事后改价"，用户看到的账单和他下单时接受的价不一样。
+func TestSettleUsesUnitPriceSnapshot(t *testing.T) {
+	ctx := setupBatchImageServiceTest(t)
+
+	ownerID := seedBatchImageUser(t, ctx, 100)
+	job := seedBatchImageJob(t, ctx, 2.0 /* 快照单价 */, 4.0 /* 预扣 = 2 条 × 2.0 */, ownerID)
+	seedBatchImageItems(t, ctx, job.BatchID, 1 /* 成功 */, 1 /* 失败 */)
+
+	service := &Service{
+		// 当前配置单价故意设成完全不同：若代码读它，退款金额就会错。
+		Settings: func(context.Context) Settings { return Settings{Enabled: true, UnitPrice: 99} },
+	}
+	settled, err := service.Settle(ctx, job)
+	if err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	if !settled {
+		t.Fatal("settle did not claim the job")
+	}
+
+	reloaded := reloadBatchImageJob(t, ctx, job.BatchID)
+	// 1 条成功 × 快照价 2.0 = 应收 2.0；预扣 4.0 ⇒ 应退 2.0。
+	if reloaded.ChargedAmount != 2.0 {
+		t.Errorf("charged = %v, want 2.0 (snapshot price × successes, not the current config)", reloaded.ChargedAmount)
+	}
+	if reloaded.SuccessCount != 1 || reloaded.FailCount != 1 {
+		t.Errorf("counts = %d success / %d fail, want 1/1 (counts must actually be written)",
+			reloaded.SuccessCount, reloaded.FailCount)
+	}
+}
+
+// 被抢权写脏的残留行必须能被补结算救回来，且已经真正结算过的行绝不能被二次退款。
+func TestReclaimSettleOnlyTouchesUnsettled(t *testing.T) {
+	ctx := setupBatchImageServiceTest(t)
+
+	ownerID := seedBatchImageUser(t, ctx, 100)
+	dirty := seedBatchImageJob(t, ctx, 1.0, 2.0, ownerID)
+	seedBatchImageItems(t, ctx, dirty.BatchID, 1, 0)
+	// 模拟"抢权成功、退款前崩溃"：settled_at 已非零，但 charged_amount 仍是 0。
+	markSettleClaimedOnly(t, ctx, dirty.ID)
+
+	unsettled, err := op.BatchImageListUnsettledTerminal(ctx, 50)
+	if err != nil {
+		t.Fatalf("list unsettled: %v", err)
+	}
+	found := false
+	for _, candidate := range unsettled {
+		if candidate.BatchID == dirty.BatchID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("a job that was claimed but never charged must show up as unsettled")
+	}
+
+	// 真正结算过的行不得被夺权。
+	settledJob := seedBatchImageJob(t, ctx, 1.0, 1.0, ownerID)
+	seedBatchImageItems(t, ctx, settledJob.BatchID, 1, 0)
+	if err := op.BatchImageWriteSettlement(ctx, settledJob.ID, 1.0, 1.0); err != nil {
+		t.Fatalf("write settlement: %v", err)
+	}
+	if err := db.GetDB().WithContext(ctx).Model(&model.BatchImageJob{}).
+		Where("id = ?", settledJob.ID).Update("settled_at", time.Now().Unix()).Error; err != nil {
+		t.Fatalf("mark settled_at: %v", err)
+	}
+	reclaimed, err := op.BatchImageReclaimSettle(ctx, settledJob.ID)
+	if err != nil {
+		t.Fatalf("reclaim: %v", err)
+	}
+	if reclaimed {
+		t.Error("reclaim must refuse a job whose settlement amount was already written (double-refund risk)")
+	}
+}
+
+// setupBatchImageServiceTest 起一个内存库并指向 op 层（与 op 包测试同一套先例）。
+func setupBatchImageServiceTest(t *testing.T) context.Context {
+	t.Helper()
+	ctx := context.Background()
+	if err := db.InitDB("sqlite", filepath.Join(t.TempDir(), "octopus.db"), false); err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+	if err := db.GetDB().AutoMigrate(&model.BatchImageJob{}, &model.BatchImageItem{}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	// 退款要真的落到一个存在的用户身上，否则 UserRefundUsage 直接报 user not found。
+	if err := op.UserInit(); err != nil {
+		t.Fatalf("init user cache: %v", err)
+	}
+	return ctx
+}
+
+// seedBatchImageUser 造一个有余额的用户，返回其 ID。
+func seedBatchImageUser(t *testing.T, ctx context.Context, balance float64) int {
+	t.Helper()
+	user, err := op.UserCreate(model.UserCreateRequest{
+		Username: "batch-image-user-" + t.Name(),
+		Password: "test-password-123",
+		Role:     model.UserRoleUser,
+		Status:   model.UserStatusActive,
+		Balance:  balance,
+	}, ctx)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	return user.ID
+}
+
+// seedBatchImageJob 造一条已预扣、待结算的任务。
+func seedBatchImageJob(t *testing.T, ctx context.Context, unitPrice, hold float64, ownerUserID int) *model.BatchImageJob {
+	t.Helper()
+	now := time.Now()
+	job := &model.BatchImageJob{
+		BatchID:           op.BatchImageNewID(),
+		CreatedAt:         now.Unix(),
+		UpdatedAt:         now.Unix(),
+		ExpiresAt:         now.Add(time.Hour).Unix(),
+		Status:            model.BatchImageJobStatusCompleted,
+		Model:             "batch-image-test-model",
+		Provider:          model.BatchImageProviderGeminiAPI,
+		OwnerUserID:       ownerUserID,
+		OwnerTokenID:      1,
+		ChannelID:         11,
+		ChannelKeyID:      3,
+		ItemCount:         2,
+		HoldAmount:        hold,
+		UnitPriceSnapshot: unitPrice,
+		RequestJSON:       `{}`,
+	}
+	if err := op.BatchImageCreate(ctx, job); err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	return job
+}
+
+// seedBatchImageItems 造 count 条子项，其中 success 条成功。
+func seedBatchImageItems(t *testing.T, ctx context.Context, batchID string, success, failed int) {
+	t.Helper()
+	items := make([]model.BatchImageItem, 0, success+failed)
+	for index := 0; index < success; index++ {
+		items = append(items, model.BatchImageItem{
+			BatchID:          batchID,
+			CustomID:         fmt.Sprintf("ok-%d", index),
+			Status:           model.BatchImageItemStatusSuccess,
+			SourceLineNumber: len(items) + 1,
+		})
+	}
+	for index := 0; index < failed; index++ {
+		items = append(items, model.BatchImageItem{
+			BatchID:          batchID,
+			CustomID:         fmt.Sprintf("fail-%d", index),
+			Status:           model.BatchImageItemStatusFailed,
+			SourceLineNumber: len(items) + 1,
+		})
+	}
+	if err := op.BatchImageItemCreateBatch(ctx, items); err != nil {
+		t.Fatalf("create items: %v", err)
+	}
+}
+
+// markSettleClaimedOnly 复现"抢权成功、退款前崩溃"的残留行。
+func markSettleClaimedOnly(t *testing.T, ctx context.Context, id int64) {
+	t.Helper()
+	if err := db.GetDB().WithContext(ctx).Model(&model.BatchImageJob{}).
+		Where("id = ?", id).Update("settled_at", time.Now().Unix()).Error; err != nil {
+		t.Fatalf("mark claimed: %v", err)
+	}
+}
+
+// reloadBatchImageJob 重读一行。
+func reloadBatchImageJob(t *testing.T, ctx context.Context, batchID string) *model.BatchImageJob {
+	t.Helper()
+	job, err := op.BatchImageGetByBatchID(ctx, batchID)
+	if err != nil || job == nil {
+		t.Fatalf("reload %s: %v", batchID, err)
+	}
+	return job
+}
+
+// 这是整个功能能不能用的底线：推进器必须能从库里重建出**带 prompt 的** JSONL。
+//
+// 【曾经的致命 bug】Submit 只写了 PromptPreview（截断版），完整 Prompt 和参考图
+// 从未落库。于是每一条正常提交到了推进器那里都变成"空 prompt + 空参考图"——
+// 用户付了钱，拿到的是一批和提示词毫无关系的图，而且报错都不会有。
+// 光看 Submit 的单元测试发现不了，必须走"落库 → 重新加载 → 构建 JSONL"这条真链。
+func TestLoadItemsRebuildsSubmittableJSONL(t *testing.T) {
+	ctx := setupBatchImageServiceTest(t)
+	ownerID := seedBatchImageUser(t, ctx, 100)
+
+	referenceBytes := []byte("REFERENCE-IMAGE-BYTES")
+	service := &Service{
+		Settings: func(context.Context) Settings {
+			return Settings{Enabled: true, UnitPrice: 1, MaxItems: 10, MaxConcurrentJobsPerOwner: 4}
+		},
+		Resolver: staticTestResolver(t, ctx),
+	}
+	job, err := service.Submit(ctx, SubmitInput{
+		OwnerUserID:  ownerID,
+		OwnerTokenID: 1,
+		Model:        "batch-image-test-model",
+		Items: []SubmitItem{{
+			CustomID:    "first",
+			Prompt:      "a red bicycle leaning on a wall",
+			OutputCount: 2,
+			ReferenceImages: []ReferenceImage{{
+				MimeType: "image/png",
+				Data:     referenceBytes,
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+
+	// 用推进器的真实加载路径重建条目。
+	worker := &Worker{Service: service}
+	items, err := worker.loadItems(ctx, job)
+	if err != nil {
+		t.Fatalf("loadItems: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1", len(items))
+	}
+	if items[0].Prompt != "a red bicycle leaning on a wall" {
+		t.Fatalf("prompt was not persisted: got %q", items[0].Prompt)
+	}
+	if items[0].OutputCount != 2 {
+		t.Errorf("output count = %d, want 2", items[0].OutputCount)
+	}
+	if len(items[0].ReferenceImages) != 1 || string(items[0].ReferenceImages[0].Data) != string(referenceBytes) {
+		t.Fatalf("reference images were not persisted: got %d", len(items[0].ReferenceImages))
+	}
+
+	// 真正构建一次：prompt 必须出现在 JSONL 里。
+	payload, err := BuildJSONL(BuildRequest{
+		Items:            items,
+		ResponseMimeType: "image/png",
+	})
+	if err != nil {
+		t.Fatalf("build jsonl: %v", err)
+	}
+	if !bytes.Contains(payload, []byte("a red bicycle leaning on a wall")) {
+		t.Fatal("built JSONL does not contain the user prompt — the batch would generate meaningless images")
+	}
+	if !bytes.Contains(payload, []byte(base64.StdEncoding.EncodeToString(referenceBytes))) {
+		t.Fatal("built JSONL does not contain the reference image")
+	}
+}
+
+// staticTestResolver 把提交过程钉在一个测试渠道上。
+//
+// 【为什么不走 dbChannelResolver】Submit 用 op.ChannelList 选渠（真查库），
+// 但选完之后 worker/resolver 只需要"把这单的渠道和密钥取回来"。测试里直接返回
+// 同一个固定渠道即可，不必为了拿密钥再查一次库——这样这条测试只盯"prompt 有没有落库"
+// 这一件事。
+type staticChannelResolver struct {
+	channel *model.Channel
+	key     *model.ChannelKey
+}
+
+func (r staticChannelResolver) Resolve(context.Context, int, int) (*model.Channel, *model.ChannelKey, error) {
+	return r.channel, r.key, nil
+}
+
+// staticTestResolver 建好一个能承接批处理的渠道，并返回钉住它的 resolver。
+func staticTestResolver(t *testing.T, ctx context.Context) ChannelResolver {
+	t.Helper()
+	channel := &model.Channel{
+		Name:    "batch-image-test-channel",
+		Type:    outbound.OutboundTypeGemini,
+		Enabled: true,
+		BatchImage: &model.ChannelBatchImage{
+			Provider: model.BatchImageProviderGeminiAPI,
+			Models:   []string{"batch-image-test-model"},
+		},
+		Keys: []model.ChannelKey{{
+			ChannelKey: "test-api-key",
+			Enabled:    true,
+		}},
+	}
+	if err := op.ChannelCreate(channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	if len(channel.Keys) == 0 {
+		t.Fatal("channel was created without keys")
+	}
+	channelKey := channel.Keys[0]
+	return staticChannelResolver{channel: channel, key: &channelKey}
 }

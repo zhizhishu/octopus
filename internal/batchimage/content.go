@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/zhizhishu/octopus/internal/model"
 )
@@ -83,19 +84,26 @@ func OpenItemImage(ctx context.Context, resolve ContentResolver, job *model.Batc
 		mimeType string
 		found    bool
 	)
-	parseErr := ParseResults(reader, func(_ int, result ParsedResult) {
+	parseErr := ParseResults(reader, func(lineNumber int, result ParsedResult) error {
 		if found {
-			return
+			return errStopResultScan
 		}
-		if result.Key != "" && result.Key != item.CustomID {
-			return
+		// 匹配规则（两条结果流路径共用同一套，见 matchResultToItem）：
+		//   有 key → 必须精确相等，key 是唯一可信的对应关系；
+		//   无 key → 用提交时记下的物理行号定位。
+		//
+		// 🔴 以前这里是"key 为空就认下来"，无 key 的结果流里第一张图会顶替所有人：
+		// 下载 B 会拿到 A 的图。行号兜底至少是确定的、与 manifest 一致的。
+		if !matchResultToItem(lineNumber, result, *item) {
+			return nil
 		}
 		if len(result.Images) == 0 {
-			return
+			return nil
 		}
 		image = result.Images[0]
 		mimeType = image.MimeType
 		found = true
+		return errStopResultScan
 	})
 	// 关掉上游流：图已经在内存里了，继续持有连接没有意义。
 	_ = reader.Close()
@@ -178,23 +186,31 @@ func StreamAllImages(ctx context.Context, resolve ContentResolver, job *model.Ba
 	emitted := make(map[string]bool, len(wanted))
 
 	// 上游可能乱序（见 worker.go 里 indexOne 的注释），所以按 key 匹配而不是按出现顺序。
-	parseErr := ParseResults(reader, func(lineNumber int, result ParsedResult) {
+	parseErr := ParseResults(reader, func(lineNumber int, result ParsedResult) error {
 		if sendErr != nil {
-			return
+			// 客户端已经断了：继续读只会把剩余上游流白白下进内存再丢弃。
+			return errStopResultScan
 		}
 		if len(result.Images) == 0 {
-			return
+			return nil
 		}
-		customID := result.Key
-		if customID == "" && lineNumber-1 < len(order) {
-			// 没有 key 时用行号兜底（与 worker 的索引口径一致）。
-			customID = order[lineNumber-1]
+		// 与单图取图共用同一套匹配规则（key 优先、无 key 用行号兜底）。
+		item, ok := wanted[strings.TrimSpace(result.Key)]
+		if !ok {
+			// key 缺席或对不上已知条目：按行号兜底定位是哪个条目。
+			if lineNumber-1 >= len(order) {
+				return nil
+			}
+			candidate, exists := wanted[order[lineNumber-1]]
+			if !exists || !matchResultToItem(lineNumber, result, candidate) {
+				return nil
+			}
+			item, ok = candidate, true
 		}
-		item, ok := wanted[customID]
-		if !ok || emitted[customID] {
-			return
+		if !ok || emitted[item.CustomID] {
+			return nil
 		}
-		emitted[customID] = true
+		emitted[item.CustomID] = true
 		mimeType := result.Images[0].MimeType
 		if mimeType == "" {
 			mimeType = "image/png"
@@ -204,6 +220,14 @@ func StreamAllImages(ctx context.Context, resolve ContentResolver, job *model.Ba
 			MimeType: mimeType,
 			Data:     result.Images[0].Data,
 		})
+		if sendErr != nil {
+			return errStopResultScan
+		}
+		if len(emitted) == len(wanted) {
+			// 全部出图了，剩下的行不用再读。
+			return errStopResultScan
+		}
+		return nil
 	})
 
 	// 回调的错优先：它说明客户端已经走了，此时上游的读取错误没有意义。
@@ -211,4 +235,24 @@ func StreamAllImages(ctx context.Context, resolve ContentResolver, job *model.Ba
 		return sendErr
 	}
 	return parseErr
+}
+
+// matchResultToItem 判定一行结果是否属于某个子项。
+//
+// 规则只有两条，顺序固定：
+//  1. 结果带 key → 必须与 custom_id 精确相等。key 是上游唯一承诺的对应关系，
+//     对不上就是别的东西，哪怕行号碰巧对上也不能认。
+//  2. 结果不带 key → 按**提交时的物理行号**定位（SourceLineNumber）。
+//     没记行号的行只能靠顺序，此时退回"结果流的第 N 行 = 第 N 个条目"。
+//
+// 【为什么两条路径必须共用】索引（worker）与取图（content）各写一套匹配逻辑，
+// 迟早会一个按 key、一个按顺序，于是列表里显示的图和打包下载的图对不上。
+func matchResultToItem(lineNumber int, result ParsedResult, item model.BatchImageItem) bool {
+	if key := strings.TrimSpace(result.Key); key != "" {
+		return key == item.CustomID
+	}
+	if item.SourceLineNumber > 0 {
+		return lineNumber == item.SourceLineNumber
+	}
+	return false
 }

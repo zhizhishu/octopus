@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/utils/log"
 	"gorm.io/gorm"
 )
 
@@ -39,6 +40,18 @@ func migrateAddBatchImage(db *gorm.DB) error {
 	}
 	if err := db.AutoMigrate(&model.Channel{}); err != nil {
 		return fmt.Errorf("add channels batch_image column: %w", err)
+	}
+	// 幂等键的唯一性必须由数据库裁决（并发"先查再插"必然漏）。
+	// 用**部分索引**只约束非空 key：空 key 语义是"每次都是新批次"，
+	// 若用普通唯一索引，所有未传 key 的行会互相撞（它们都是 ''）。
+	//
+	// IF NOT EXISTS 让重复执行无副作用；SQLite / PostgreSQL / MySQL 8 都支持
+	// 语法子集（MySQL 不支持 partial index，故退化成普通唯一索引会误伤空串，
+	// 那里改用生成列太重——所以失败只告警，不阻断启动：业务侧仍有回读兜底）。
+	if err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_batch_image_idem_unique
+		ON batch_image_jobs (owner_user_id, owner_token_id, idempotency_key)
+		WHERE idempotency_key <> ''`).Error; err != nil {
+		log.Warnf("migrate 020: partial unique index for batch image idempotency not created (dialect may not support it): %v", err)
 	}
 	return nil
 }

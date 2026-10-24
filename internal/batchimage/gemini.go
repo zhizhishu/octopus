@@ -507,7 +507,27 @@ func (p *geminiProvider) httpClient(channel ChannelContext) *http.Client {
 		// 超时给足；轮询本身是短请求，由外层 ctx 控制。
 		timeout = 5 * time.Minute
 	}
-	return &http.Client{Timeout: timeout}
+	return &http.Client{
+		Timeout: timeout,
+		// 🔴 必须自己接管重定向，不能靠默认客户端。
+		//
+		// Go 只会自动剥掉 Authorization 这类"它认识"的凭据；x-goog-api-key 是我们
+		// 自己加的头，默认 CheckRedirect 会**原样带给重定向目标**。于是一个通过
+		// validateDownloadHost 的地址只要回 302 指向外站，API key 就跟着过去了。
+		// 这里每一跳都重新验主机，且禁止降级到 http。
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return fmt.Errorf("batch image: too many redirects")
+			}
+			if req.URL.Scheme != "https" {
+				return fmt.Errorf("batch image: refusing to follow a redirect to a non-https url")
+			}
+			if err := validateDownloadHost(req.URL.String(), channel.BaseURL); err != nil {
+				return fmt.Errorf("batch image: refusing to follow a redirect: %w", err)
+			}
+			return nil
+		},
+	}
 }
 
 // applyHeaders 统一加认证与自定义头。

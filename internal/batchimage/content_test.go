@@ -61,8 +61,8 @@ func TestStreamAllImagesLineFallbackUsesAllItemsNotJustSuccesses(t *testing.T) {
 	body := fakeResultLine("", []byte("FIRST-ITEM-IMAGE")) + fakeResultLine("", second)
 
 	items := []model.BatchImageItem{
-		{CustomID: "one", Status: model.BatchImageItemStatusFailed},
-		{CustomID: "two", Status: model.BatchImageItemStatusSuccess},
+		{CustomID: "one", Status: model.BatchImageItemStatusFailed, SourceLineNumber: 1},
+		{CustomID: "two", Status: model.BatchImageItemStatusSuccess, SourceLineNumber: 2},
 	}
 
 	var got []ItemImage
@@ -94,8 +94,8 @@ func TestStreamAllImagesMatchesByKeyWhenOutOfOrder(t *testing.T) {
 	body := fakeResultLine("beta", second) + fakeResultLine("alpha", first)
 
 	items := []model.BatchImageItem{
-		{CustomID: "alpha", Status: model.BatchImageItemStatusSuccess},
-		{CustomID: "beta", Status: model.BatchImageItemStatusSuccess},
+		{CustomID: "alpha", Status: model.BatchImageItemStatusSuccess, SourceLineNumber: 1},
+		{CustomID: "beta", Status: model.BatchImageItemStatusSuccess, SourceLineNumber: 2},
 	}
 
 	seen := map[string]string{}
@@ -124,9 +124,9 @@ func TestStreamAllImagesAbortsOnCallbackError(t *testing.T) {
 		fakeResultLine("c", []byte("C"))
 
 	items := []model.BatchImageItem{
-		{CustomID: "a", Status: model.BatchImageItemStatusSuccess},
-		{CustomID: "b", Status: model.BatchImageItemStatusSuccess},
-		{CustomID: "c", Status: model.BatchImageItemStatusSuccess},
+		{CustomID: "a", Status: model.BatchImageItemStatusSuccess, SourceLineNumber: 1},
+		{CustomID: "b", Status: model.BatchImageItemStatusSuccess, SourceLineNumber: 2},
+		{CustomID: "c", Status: model.BatchImageItemStatusSuccess, SourceLineNumber: 3},
 	}
 
 	sentinel := io.ErrClosedPipe
@@ -152,7 +152,7 @@ func TestOpenItemImage(t *testing.T) {
 	body := fakeResultLine("alpha", []byte("ALPHA-BYTES"))
 
 	reader, mimeType, err := OpenItemImage(context.Background(), fakeResolver(body), testJob(),
-		&model.BatchImageItem{CustomID: "alpha", Status: model.BatchImageItemStatusSuccess})
+		&model.BatchImageItem{CustomID: "alpha", Status: model.BatchImageItemStatusSuccess, SourceLineNumber: 1})
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestOpenItemImage(t *testing.T) {
 	}
 
 	_, _, err = OpenItemImage(context.Background(), fakeResolver(body), testJob(),
-		&model.BatchImageItem{CustomID: "nope", Status: model.BatchImageItemStatusSuccess})
+		&model.BatchImageItem{CustomID: "nope", Status: model.BatchImageItemStatusSuccess, SourceLineNumber: 9})
 	if err == nil {
 		t.Fatal("missing item did not error")
 	}

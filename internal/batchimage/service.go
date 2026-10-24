@@ -99,6 +99,9 @@ var ErrTooManyItems = errors.New("batch image job has too many items")
 // ErrTooManyActiveJobs 表示并发批次数超限。
 var ErrTooManyActiveJobs = errors.New("too many active batch image jobs")
 
+// ErrInsufficientQuota 表示账户余额/月卡额度不够预扣。
+var ErrInsufficientQuota = errors.New("insufficient quota")
+
 // ErrIdempotencyConflict 表示同一个幂等键配了不同的请求体。
 var ErrIdempotencyConflict = errors.New("idempotency key reused with a different request")
 
@@ -193,12 +196,20 @@ func (s *Service) Submit(ctx context.Context, input SubmitInput) (*model.BatchIm
 	// 按上限扣的代价是提交时手上得有这笔钱；换来的是永远不会超支。
 	holdAmount := settings.UnitPrice * float64(countOutputs(input.Items))
 	if holdAmount > 0 {
-		reserved, err := op.UserCanRelay(input.OwnerUserID, ctx)
+		// 🔴 这里**不能**用 op.UserCanRelay 的返回值当余额。
+		//
+		// UserCanRelay 是鉴权准入闸门：它按"单次请求估多少钱"（默认 0.01）在
+		// userQuotaInflight 里占一个名额，返回的是**这次允许预留多少**，不是账户余额。
+		// 拿它和 holdAmount 比大小的后果：
+		//   - 只要预扣超过 0.01，余额再充足也一律拒（功能等于全程不可用）；
+		//   - 每次被拒还漏掉一笔预留（它已经占上了，我们没配对释放）。
+		// 所以这里只查"余额够不够"这个纯事实，扣钱交给下面的 UserRecordUsage。
+		enough, err := op.UserHasBalance(input.OwnerUserID, holdAmount, ctx)
 		if err != nil {
 			return nil, err
 		}
-		if reserved < holdAmount {
-			return nil, fmt.Errorf("batch image: insufficient quota: need %.4f, reserved %.4f", holdAmount, reserved)
+		if !enough {
+			return nil, fmt.Errorf("%w: need %.4f", ErrInsufficientQuota, holdAmount)
 		}
 		// 预扣走真正的扣费动作（提交即扣），终态再按实际成功数退差额。
 		// 这样"用户提交后余额被别处花光"不会导致我们白干。
@@ -218,6 +229,13 @@ func (s *Service) Submit(ctx context.Context, input SubmitInput) (*model.BatchIm
 		return nil, err
 	}
 
+	// 🔴 建单与建子项之间有一个空窗：推进器若在这个窗口里读到这条任务，
+	// loadItems 会看到 0 条子项，于是按"没有条目可提交"abort + 退款；
+	// 而 HTTP 那边可能随后成功返回给客户端一个已经失败的任务。
+	//
+	// 这里不引入中转状态（那会污染状态机），而是让**取任务的查询**要求
+	// "该批次已有子项"：空窗里的任务对推进器不可见，子项落库后自然出现。
+	// 见 op.BatchImageListExecutable 的 EXISTS 子查询。
 	now := time.Now()
 	requestJSON, err := json.Marshal(map[string]any{
 		"model":              input.Model,
@@ -235,27 +253,49 @@ func (s *Service) Submit(ctx context.Context, input SubmitInput) (*model.BatchIm
 	}
 
 	job := &model.BatchImageJob{
-		BatchID:          op.BatchImageNewID(),
-		Status:           model.BatchImageJobStatusQueued,
-		Model:            selection.UpstreamModel,
-		RequestModel:     input.Model,
-		ChannelID:        selection.Channel.ID,
-		ChannelKeyID:     selection.ChannelKey.ID,
-		Provider:         selection.Provider,
-		OwnerUserID:      input.OwnerUserID,
-		OwnerTokenID:     input.OwnerTokenID,
-		IdempotencyKey:   strings.TrimSpace(input.IdempotencyKey),
-		RequestHash:      s.requestHash(input),
-		ItemCount:        len(input.Items),
-		ResponseMimeType: input.ResponseMimeType,
-		AspectRatio:      input.AspectRatio,
-		ImageSize:        input.ImageSize,
-		RequestJSON:      string(requestJSON),
-		HoldAmount:       holdAmount,
-		ExpiresAt:        now.Add(time.Duration(settings.RetentionHours) * time.Hour).Unix(),
-		Metadata:         input.Metadata,
+		BatchID:           op.BatchImageNewID(),
+		Status:            model.BatchImageJobStatusQueued,
+		Model:             selection.UpstreamModel,
+		RequestModel:      input.Model,
+		ChannelID:         selection.Channel.ID,
+		ChannelKeyID:      selection.ChannelKey.ID,
+		Provider:          selection.Provider,
+		OwnerUserID:       input.OwnerUserID,
+		OwnerTokenID:      input.OwnerTokenID,
+		IdempotencyKey:    strings.TrimSpace(input.IdempotencyKey),
+		RequestHash:       s.requestHash(input),
+		ItemCount:         len(input.Items),
+		ResponseMimeType:  input.ResponseMimeType,
+		AspectRatio:       input.AspectRatio,
+		ImageSize:         input.ImageSize,
+		RequestJSON:       string(requestJSON),
+		HoldAmount:        holdAmount,
+		UnitPriceSnapshot: settings.UnitPrice,
+		ExpiresAt:         now.Add(time.Duration(settings.RetentionHours) * time.Hour).Unix(),
+		Metadata:          input.Metadata,
 	}
 	if err := op.BatchImageCreate(ctx, job); err != nil {
+		// 并发同 key：两个请求都查不到旧单，数据库唯一索引裁决掉后到的那个。
+		// 此时**不该报错**——客户端语义是"同一份请求提交两次"，正确结果是拿到同一单。
+		// 先把这单预扣的钱退掉，再回读赢家那单返回。
+		if key := strings.TrimSpace(input.IdempotencyKey); key != "" && op.IsUniqueViolation(err) {
+			if holdAmount > 0 {
+				if refundErr := op.UserRefundUsage(input.OwnerUserID, holdAmount, ctx); refundErr != nil {
+					log.Errorf("batch image: refund hold after idempotency collision: %v", refundErr)
+				}
+			}
+			existing, lookupErr := op.BatchImageGetByIdempotencyKey(ctx, input.OwnerUserID, input.OwnerTokenID, key)
+			if lookupErr != nil {
+				return nil, lookupErr
+			}
+			if existing != nil {
+				if existing.RequestHash != s.requestHash(input) {
+					return nil, ErrIdempotencyConflict
+				}
+				return existing, nil
+			}
+			return nil, err
+		}
 		if holdAmount > 0 {
 			if refundErr := op.UserRefundUsage(input.OwnerUserID, holdAmount, ctx); refundErr != nil {
 				log.Errorf("batch image: refund hold after create failure: %v", refundErr)
@@ -267,14 +307,24 @@ func (s *Service) Submit(ctx context.Context, input SubmitInput) (*model.BatchIm
 	// 子项行：只存预览与偏移，不存完整 prompt（见 model.BatchImageItem 的注释）。
 	items := make([]model.BatchImageItem, 0, len(input.Items))
 	for index, item := range input.Items {
+		// 参考图快照：推进器只能从这里重建 JSONL，所以必须落库。
+		// 编码失败就整批失败（宁可拒单，不可生成"没有参考图"的图，那和用户要的不是一回事）。
+		referenceJSON, err := json.Marshal(item.ReferenceImages)
+		if err != nil {
+			s.failAndRefund(ctx, job, "batch_image_reference_encode_failed", err)
+			return nil, fmt.Errorf("batch image: encode reference images for %q: %w", item.CustomID, err)
+		}
 		items = append(items, model.BatchImageItem{
-			BatchID:           job.BatchID,
-			CustomID:          strings.TrimSpace(item.CustomID),
-			Status:            model.BatchImageItemStatusPending,
-			PromptPreview:     previewOf(item.Prompt),
-			RequestHash:       op.BatchImageRequestHash([]byte(item.Prompt)),
-			SourceLineNumber:  index + 1,
-			ProviderSourceObj: "",
+			BatchID:             job.BatchID,
+			CustomID:            strings.TrimSpace(item.CustomID),
+			Status:              model.BatchImageItemStatusPending,
+			PromptPreview:       previewOf(item.Prompt),
+			Prompt:              item.Prompt,
+			ReferenceImagesJSON: string(referenceJSON),
+			RequestHash:         op.BatchImageRequestHash([]byte(item.Prompt)),
+			SourceLineNumber:    index + 1,
+			ProviderSourceObj:   "",
+			ImageCount:          item.OutputCount,
 		})
 	}
 	if err := op.BatchImageItemCreateBatch(ctx, items); err != nil {
@@ -410,9 +460,22 @@ func (s *Service) Settle(ctx context.Context, job *model.BatchImageJob) (bool, e
 	settlementMutex.Lock()
 	defer settlementMutex.Unlock()
 
+	// 先按正常路径抢权；抢不到时再判一次"是不是被抢权写脏的残留行"。
+	//
+	// 【为什么需要第二段】抢权把 settled_at 写成非零之后、结算金额落库之前，
+	// 进程若退出，这条记录就永远"看起来已结算"而钱没退。补结算扫描
+	// （worker.reconcile）会把这种行重新交回这里，此时正常抢权必然失败，
+	// 必须走 ReclaimSettle —— 它的条件里带 charged_amount = 0，
+	// 所以绝不会覆盖真正结算过的记录、也就不会重复退款。
 	claimed, err := op.BatchImageClaimSettle(ctx, job.ID)
 	if err != nil {
 		return false, err
+	}
+	if !claimed && job.ChargedAmount == 0 && job.HoldAmount > 0 {
+		claimed, err = op.BatchImageReclaimSettle(ctx, job.ID)
+		if err != nil {
+			return false, err
+		}
 	}
 	if !claimed {
 		// 已经有人结算过了。这不是错误：三个写者撞上是设计内的。
@@ -430,9 +493,17 @@ func (s *Service) Settle(ctx context.Context, job *model.BatchImageJob) (bool, e
 		return false, err
 	}
 
-	settings := s.settings(ctx)
+	// 🔴 用**提交那一刻**的单价快照，不重新读配置。
+	//
+	// 下单到结束可能隔几小时，中间调价用新价结算等于事后改价：
+	// 涨价会少退甚至不退失败条目的钱，跌价会凭空多退。快照为 0（历史行/未记账）
+	// 时退回当前配置值——那种行本来就没预扣过钱，怎么算都不该多收。
+	unitPrice := job.UnitPriceSnapshot
+	if unitPrice <= 0 {
+		unitPrice = s.settings(ctx).UnitPrice
+	}
 	// 退单不计费：失败与取消的条目都不该收钱。
-	charged := settings.UnitPrice * float64(success)
+	charged := unitPrice * float64(success)
 	// 差额退给用户。holdAmount 是提交时实扣的金额。
 	refund := job.HoldAmount - charged
 	if refund < 0 {
@@ -458,11 +529,12 @@ func (s *Service) Settle(ctx context.Context, job *model.BatchImageJob) (bool, e
 		return false, err
 	}
 
-	if _, err := op.BatchImageStatusCAS(ctx, job.ID, job.Status, job.Status, map[string]any{
-		"success_count":   success,
-		"fail_count":      failed,
-		"cancelled_count": cancelled,
-	}); err != nil {
+	// 计数是**观测数据**，不是状态跃迁，所以直接写字段。
+	//
+	// 以前这里用 StatusCAS(job.Status → job.Status) 写计数：状态机明确拒绝同状态
+	// "推进"（那不是推进，是重复写），于是每次结算的计数写入都被自己拒掉，任务行与
+	// ZIP 清单里的 success/fail/cancelled 永远是 0。用 CAS 写非状态字段属于用错工具。
+	if err := op.BatchImageWriteCounts(ctx, job.ID, success, failed, cancelled); err != nil {
 		// 计数写不进去不影响钱的正确性（金额已经落库），记一笔就够了。
 		log.Warnf("batch image: write counts for %s failed: %v", job.BatchID, err)
 	}

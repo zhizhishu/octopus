@@ -665,6 +665,53 @@ func UserReleaseQuota(userID int, reservation float64) {
 	userQuotaInflight[userID] = remaining
 }
 
+// UserHasBalance 报告该用户是否有足够余额/月卡额度承担 amount。
+//
+// 【为什么单独一个函数，而不是复用 UserCanRelay】
+// UserCanRelay 是**鉴权准入闸门**：它按"单次请求估多少钱"（userQuotaReserveDefault）
+// 在 userQuotaInflight 里占一个名额，返回的是"这次允许预留多少"，永远 <= 0.01（或余额本身）。
+// 把它当余额用有两个必然的坑：
+//   - 任何超过 0.01 的预扣都会被判成"余额不足"，功能全程不可用；
+//   - 每次判定都会占上一笔预留，而调用方并不配对释放 → 余额被慢慢"锁死"。
+//
+// 这里只回答"够不够"这个纯事实，不占任何预留、不改任何状态。真正扣钱交给
+// UserRecordUsage（它自己按 userLocks 串行化读改写）。
+//
+// 管理员恒为 true：与 UserCanRelay / UserRecordUsage 对管理员的既有口径一致
+// （管理员的用量不参与扣费判定）。
+func UserHasBalance(userID int, amount float64, ctx context.Context) (bool, error) {
+	if amount <= 0 {
+		return true, nil
+	}
+	if userID <= 0 {
+		return false, fmt.Errorf("invalid user id: %d", userID)
+	}
+	mu := lockUser(userID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	user, err := UserGet(userID)
+	if err != nil {
+		return false, err
+	}
+	if !user.IsActive() {
+		return false, fmt.Errorf("user is disabled")
+	}
+	if user.IsAdmin() {
+		return true, nil
+	}
+	user, err = UserRefreshMonthlyWindow(user.ID, ctx)
+	if err != nil {
+		return false, err
+	}
+	// 在途预留也算占用：并发提交时，前一笔还没落成实际扣费，但那笔钱已经"许出去"了。
+	inflight := userQuotaInflightOf(user.ID)
+	if userMonthlyActive(user) {
+		return user.MonthlyLimit-user.MonthlyUsed-inflight >= amount, nil
+	}
+	return user.Balance-inflight >= amount, nil
+}
+
 func UserRecordUsage(userID int, cost float64, ctx context.Context) error {
 	if cost <= 0 {
 		return nil

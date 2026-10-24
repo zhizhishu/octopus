@@ -207,7 +207,11 @@ type BatchImageJob struct {
 
 	// 幂等：同一 (OwnerUserID, OwnerTokenID, IdempotencyKey) 只建一条。
 	// 空 key 不参与去重（存量/未传时按"每次都是新批次"处理）。
-	IdempotencyKey string `json:"idempotency_key" gorm:"size:255;index;default:''"`
+	// 🔴 唯一性由数据库裁决，不能只靠"先查再插"：两个相同 key 并发时都查不到
+	// 旧记录，于是各建一单、各扣一次钱。真正的唯一约束是**部分索引**
+	// （只约束非空 key，空 key 表示"每次都是新批次"），在 migrate/020 里用原生
+	// SQL 建，因为 GORM 的 uniqueIndex tag 表达不了 "WHERE key <> ''"。
+	IdempotencyKey string `json:"idempotency_key" gorm:"size:255;index:idx_batch_image_idem,priority:3;default:''"`
 	// RequestHash 是归一化后请求的指纹，用于判定"同一个幂等键但请求变了"。
 	RequestHash string `json:"request_hash" gorm:"size:64;default:''"`
 
@@ -234,8 +238,14 @@ type BatchImageJob struct {
 
 	// 计费。HoldAmount 是提交时预扣的，ChargedAmount 是结算后实际收的。
 	// 两者都由 op.BatchImageSettle 在 SettledAt 那一跳里定死。
-	HoldAmount    float64 `json:"hold_amount" gorm:"default:0"`
-	ChargedAmount float64 `json:"charged_amount" gorm:"default:0"`
+	HoldAmount float64 `json:"hold_amount" gorm:"default:0"`
+	// UnitPriceSnapshot 是**提交那一刻**的单价。
+	//
+	// 🔴 结算必须用这个快照，不能用当时的配置值：
+	// 用户下单到任务结束可能隔几小时，中间管理员调价，用新价结算等于
+	// 事后改价——涨了就少退（甚至不退）失败条目的钱，跌了就凭空多退。
+	UnitPriceSnapshot float64 `json:"-" gorm:"default:0"`
+	ChargedAmount     float64 `json:"charged_amount" gorm:"default:0"`
 
 	// 产物生命周期。OutputExpiresAt 过了之后上游可能已经删了结果对象，
 	// 我们据此把任务收口成 output_deleted（不再让客户端点进去拿到空）。
@@ -275,8 +285,15 @@ type BatchImageItem struct {
 
 	// PromptPreview 是截断后的 prompt，供列表页展示。
 	// Prompt 是原文，**敏感**（同 RequestJSON 的规矩：不进日志、不出对外 JSON）。
+	//
+	// 🔴 Prompt 与 ReferenceImagesJSON 是**提交时唯一的可重放输入**。
+	// 推进器不重新问客户端要 prompt——它必须能从库里重建出一模一样的 JSONL。
+	// 这两个字段任何一个没落库，整批都会生成"空 prompt 的图"，且用户已经被扣钱。
 	PromptPreview string `json:"prompt_preview" gorm:"size:256;default:''"`
 	Prompt        string `json:"-" gorm:"type:text"`
+	// ReferenceImagesJSON 是参考图快照（[]ReferenceImage 的 JSON）。
+	// 同样敏感：含 base64 图字节，绝不进对外 JSON、不进日志。
+	ReferenceImagesJSON string `json:"-" gorm:"type:text"`
 
 	RequestHash string `json:"request_hash" gorm:"size:64;default:''"`
 

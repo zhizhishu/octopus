@@ -231,6 +231,12 @@ func BatchImageListExecutable(ctx context.Context, limit int) ([]model.BatchImag
 			model.BatchImageJobStatusIndexing,
 		}).
 		Where("expires_at = 0 OR expires_at > ?", now).
+		// 只有 queued 的任务需要"已发布"这道闸：提交是先落主记录、再落子项，
+		// 中间那个空窗里推进器若捡起它，loadItems 会看到 0 条子项而 abort+退款，
+		// 客户端却可能随后收到一个成功响应。已提交给上游的任务（submitted/indexing）
+		// 必然早就过了这一步，但仍加同样的条件——语义是"没有子项的任务不可执行"，
+		// 这比"只在 queued 时检查"更难写错。
+		Where("EXISTS (SELECT 1 FROM batch_image_items WHERE batch_image_items.batch_id = batch_image_jobs.batch_id)").
 		Order("updated_at ASC").
 		Limit(limit).
 		Find(&jobs).Error
@@ -577,4 +583,94 @@ func BatchImageCursorFromString(raw string) int64 {
 		return 0
 	}
 	return value
+}
+
+// BatchImageWriteCounts 写一批的统计字段。
+//
+// 【为什么不是 CAS】计数是观测数据，不是状态推进。用 StatusCAS(from == to) 去写
+// 会被状态机以"同状态不是推进"拒掉——那正是它该做的事，错的是调用方。
+func BatchImageWriteCounts(ctx context.Context, id int64, success, failed, cancelled int) error {
+	if id <= 0 {
+		return fmt.Errorf("invalid batch image job id: %d", id)
+	}
+	return db.GetDB().WithContext(ctx).
+		Model(&model.BatchImageJob{}).
+		Where("id = ?", id).
+		Updates(map[string]any{
+			"success_count":   success,
+			"fail_count":      failed,
+			"cancelled_count": cancelled,
+			"updated_at":      time.Now().Unix(),
+		}).Error
+}
+
+// IsUniqueViolation 判断错误是否为唯一约束冲突。
+//
+// 【为什么不按具体错误类型判】三种方言说法完全不同：SQLite 是
+// "UNIQUE constraint failed"、PostgreSQL 是 "duplicate key value violates
+// unique constraint"（SQLSTATE 23505）、MySQL 是 "Duplicate entry"。
+// 这里按关键字识别，宁可漏判成普通错误（那也只是退化成"报错给客户端"），
+// 不可把普通错误误判成幂等命中（那会让两个不同请求共享一条任务）。
+func IsUniqueViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	for _, needle := range []string{
+		"unique constraint failed",
+		"duplicate key value violates unique constraint",
+		"duplicate entry",
+		"sqlite_constraint_unique",
+	} {
+		if strings.Contains(message, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// BatchImageListUnsettledTerminal 列出"已经是终态、但还没结算"的任务。
+//
+// 【为什么必须有这个查询】结算流程是"抢权 → 退款 → 写金额"。抢权那一步就把
+// settled_at 写成了非零，所以进程若在"抢权成功、退款还没写"之间退出（崩溃、重启、
+// 请求 context 被取消），那条记录看起来**已经结算过了**：settled_at 非零、
+// charged_amount 仍是 0，而退款从未发生。用户的钱就这么少了，且没有任何流程会再碰它。
+//
+// 判据用 charged_amount = 0 AND hold_amount > 0：预扣过钱、但结算金额从未落库。
+// 这比"看 settled_at"可靠——settled_at 恰恰是被抢权提前写脏的那个字段。
+func BatchImageListUnsettledTerminal(ctx context.Context, limit int) ([]model.BatchImageJob, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	var jobs []model.BatchImageJob
+	err := db.GetDB().WithContext(ctx).
+		Where("status IN ?", []string{
+			model.BatchImageJobStatusCompleted,
+			model.BatchImageJobStatusFailed,
+			model.BatchImageJobStatusCancelled,
+		}).
+		Where("charged_amount = 0 AND hold_amount > 0").
+		Order("updated_at ASC").
+		Limit(limit).
+		Find(&jobs).Error
+	return jobs, err
+}
+
+// BatchImageReclaimSettle 强制夺回一条"已抢权但从未写入结算金额"的结算权。
+//
+// 与 BatchImageClaimSettle 的区别：那个要求 settled_at = 0（正常首次抢权），
+// 这个专门对付被抢权写脏的残留行。条件里带 charged_amount = 0，保证
+// **绝不会覆盖已经真正结算过的记录**——那是重复退款的风险点。
+func BatchImageReclaimSettle(ctx context.Context, id int64) (bool, error) {
+	if id <= 0 {
+		return false, fmt.Errorf("invalid batch image job id: %d", id)
+	}
+	res := db.GetDB().WithContext(ctx).
+		Model(&model.BatchImageJob{}).
+		Where("id = ? AND charged_amount = 0 AND hold_amount > 0", id).
+		Update("settled_at", time.Now().Unix())
+	if res.Error != nil {
+		return false, res.Error
+	}
+	return res.RowsAffected > 0, nil
 }

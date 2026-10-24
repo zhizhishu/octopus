@@ -2,6 +2,7 @@ package batchimage
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -52,7 +53,9 @@ type Worker struct {
 	// stopped 用于让 Start 能在测试里干净停下。
 	stopOnce sync.Once
 	stopCh   chan struct{}
-	wg       sync.WaitGroup
+	// startOnce 保证启动只发生一次（见 Start 的注释）。
+	startOnce sync.Once
+	wg        sync.WaitGroup
 }
 
 // NewWorker 造一个推进器。**不会**自己开始跑：调用方必须显式 Start。
@@ -68,10 +71,21 @@ func NewWorker(service *Service) *Worker {
 }
 
 // Start 启动后台循环。重复调用是安全的（第二次什么都不做）。
+//
+// 🔴 幂等必须真做到，不能只"注释声明"：以前这里没有任何互斥，同一个 Worker
+// 调两次 Start 就会起两个循环，它们读到同一条 queued 任务、各提交一次上游、
+// 各扣一次钱。用 sync.Once 把"启动"这件事钉成只能发生一次。
 func (w *Worker) Start() {
 	if w == nil || w.Service == nil {
 		return
 	}
+	w.startOnce.Do(func() {
+		w.start()
+	})
+}
+
+// start 是真正的启动动作，只由 startOnce 调用。
+func (w *Worker) start() {
 	w.wg.Add(1)
 	go func() {
 		defer w.wg.Done()
@@ -117,6 +131,8 @@ func (w *Worker) RunOnce(ctx context.Context) {
 
 	w.expire(ctx)
 	w.advance(ctx)
+	// 补结算放在最后：先把在途任务推进/收口，再把历史欠账补上。
+	w.reconcile(ctx)
 }
 
 // settings 取配置。
@@ -163,13 +179,22 @@ func (w *Worker) expireOne(ctx context.Context, job *model.BatchImageJob) error 
 		//
 		// 【为什么标失败而不是取消】取消是客户端主动行为；过期是我们自己没收口，
 		// 对用户来说"我们没能在保留期内跑完"就是失败，如实说。
-		if _, err := op.BatchImageStatusCAS(ctx, job.ID, job.Status,
+		advanced, err := op.BatchImageStatusCAS(ctx, job.ID, job.Status,
 			model.BatchImageJobStatusFailed, map[string]any{
 				"error_code":    "batch_image_expired",
 				"error_message": "the job did not finish within its retention window",
 				"completed_at":  time.Now().Unix(),
-			}); err != nil {
+			})
+		if err != nil {
 			return err
+		}
+		if !advanced {
+			// 抢输了：这条任务在我们取快照之后已经被别人推进过（例如推进器刚把它
+			// 从 submitted 改成 indexing）。此时**绝不能**拿旧快照继续结算——
+			// 按旧状态算出来的成功数是过期的，会把还在出图的任务提前退款。
+			// 重读真实状态，下一轮按新状态处理。
+			log.Debugf("batch image worker: expired job %s changed under us, skipping this round", job.BatchID)
+			return nil
 		}
 		job.Status = model.BatchImageJobStatusFailed
 		if _, err := w.Service.Settle(ctx, job); err != nil {
@@ -181,6 +206,28 @@ func (w *Worker) expireOne(ctx context.Context, job *model.BatchImageJob) error 
 		return nil
 	}
 	return nil
+}
+
+// reconcile 补结算：找出"已终态但钱没结清"的任务并重跑结算。
+//
+// 【为什么需要它】结算的三步（抢权 / 退款 / 写金额）不是数据库事务，进程在中间
+// 退出就会留下"settled_at 非零、charged_amount 为 0、退款从未发生"的行。
+// 只靠错误分支还权挡不住崩溃，因为崩溃时没人执行那个分支。
+//
+// 这里每轮扫一小批，重跑结算；Settle 内部的 ReclaimSettle 保证幂等，
+// 已经真正结算过的行不会被二次退款。
+func (w *Worker) reconcile(ctx context.Context) {
+	jobs, err := op.BatchImageListUnsettledTerminal(ctx, workerExpiredLimit)
+	if err != nil {
+		log.Errorf("batch image worker: list unsettled terminal jobs: %v", err)
+		return
+	}
+	for index := range jobs {
+		job := jobs[index]
+		if _, err := w.Service.Settle(ctx, &job); err != nil {
+			log.Errorf("batch image worker: reconcile settle %s: %v", job.BatchID, err)
+		}
+	}
 }
 
 // advance 推进一批在途任务。
@@ -382,7 +429,8 @@ func (w *Worker) indexOne(ctx context.Context, job *model.BatchImageJob, provide
 	// 【为什么不只按行号】上游不保证结果顺序（官方 issue 里有乱序 bug）。
 	// 只按行号回填会把 A 的图挂到 B 的名下，是静默的数据错位。
 	var matched int
-	parseErr := ParseResults(reader, func(lineNumber int, result ParsedResult) {
+	var indexErr error
+	parseErr := ParseResults(reader, func(lineNumber int, result ParsedResult) error {
 		var item *model.BatchImageItem
 		if result.Key != "" {
 			item = byCustomID[result.Key]
@@ -394,7 +442,7 @@ func (w *Worker) indexOne(ctx context.Context, job *model.BatchImageJob, provide
 			// 不能当成任何人的结果，丢掉并记一笔。
 			log.Warnf("batch image worker: job %s result line %d has unknown key %q",
 				job.BatchID, lineNumber, result.Key)
-			return
+			return nil
 		}
 
 		fields := map[string]any{
@@ -421,9 +469,21 @@ func (w *Worker) indexOne(ctx context.Context, job *model.BatchImageJob, provide
 		}
 
 		if _, err := op.BatchImageItemIndexResult(ctx, item.ID, fields); err != nil {
-			log.Errorf("batch image worker: index item %d of job %s: %v", item.ID, job.BatchID, err)
+			// 🔴 必须记下来并让整轮失败。
+			//
+			// 只 log 就继续的后果：这一行仍是 pending，接下来的 markMissingItemsFailed
+			// 会把它写成 failed(missing_result)，任务是"完成"了、钱也按零成功退了，
+			// 但上游其实给了图——用户的图被我们永久丢掉，而且再也没有重试机会。
+			// 保持 indexing 让下一轮重来，是最便宜的正确解。
+			indexErr = fmt.Errorf("index item %d (%s) of job %s: %w", item.ID, item.CustomID, job.BatchID, err)
+			return indexErr
 		}
+		return nil
 	})
+	if indexErr != nil {
+		// 写库失败与读流失败同等对待：保持 indexing，下一轮重来。
+		return indexErr
+	}
 	if parseErr != nil {
 		// 结果读到一半断了：任务保持 indexing，下一轮重来。
 		// **不能标完成**——那样会把没数到的条目永久留在 pending，钱也按零成功结了。
@@ -530,10 +590,21 @@ func (w *Worker) loadItems(ctx context.Context, job *model.BatchImageJob) ([]Sub
 	}
 	items := make([]SubmitItem, 0, len(rows))
 	for _, row := range rows {
+		// 参考图从快照里恢复。解不开就整批失败——带着"少了几张参考图"的请求
+		// 交给上游，用户会得到和提示词不匹配的图，比失败更糟（而且钱已经扣了）。
+		var references []ReferenceImage
+		if raw := strings.TrimSpace(row.ReferenceImagesJSON); raw != "" && raw != "null" {
+			if err := json.Unmarshal([]byte(raw), &references); err != nil {
+				return nil, fmt.Errorf("batch image job %s item %q: decode reference images: %w",
+					job.BatchID, row.CustomID, err)
+			}
+		}
+		// 输出张数：0 在 JSONL 构建里表示"由上游决定"，所以缺省保持 0 而不是补 1。
 		items = append(items, SubmitItem{
-			CustomID:    row.CustomID,
-			Prompt:      row.Prompt,
-			OutputCount: row.ImageCount,
+			CustomID:        row.CustomID,
+			Prompt:          row.Prompt,
+			OutputCount:     row.ImageCount,
+			ReferenceImages: references,
 		})
 	}
 	return items, nil

@@ -214,6 +214,14 @@ func loadBatchImageJob(c *gin.Context, userID, tokenID int) (*model.BatchImageJo
 		writeBatchImageError(c, err)
 		return nil, false
 	}
+	// 🔴 必须判 nil。持久层对"不存在 / 不是你的 / 已过期"一律返回 (nil, nil)
+	// ——那是故意的，好让这三种情况对客户端不可区分（防探测）。
+	// 但只判 err 就会把 nil 当成加载成功：后续 job.BatchID 直接空指针 panic，
+	// 被 recovery 兜成 500，既不是约定的 404，也把"查不到"说成了"服务器坏了"。
+	if job == nil {
+		writeBatchImageError(c, batchimage.ErrNotFound)
+		return nil, false
+	}
 	return job, true
 }
 
@@ -269,10 +277,29 @@ func HandleBatchImageSubmit(c *gin.Context) {
 		return
 	}
 
+	// 请求体先设硬上限再绑定。
+	//
+	// 【为什么必须在上限之内绑定】ShouldBindJSON 会把整个 body 解成字符串，
+	// 之后我们再逐张 base64 解码参考图。没有上限时，一个有效 key 交一份
+	// 几百 MB 的 items，JSON 字符串 + 解码字节 + 构建出的 JSONL 会同时在内存里，
+	// 光靠 items 条数上限挡不住（条数少但单条巨大同样能打爆）。
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, batchImageMaxRequestBytes)
 	var request batchImageSubmitRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
+		if isBodyTooLarge(err) {
+			resp.OpenAIError(c, http.StatusRequestEntityTooLarge, "invalid_request_error", "request_too_large",
+				fmt.Sprintf("the request body is larger than %d bytes", batchImageMaxRequestBytes))
+			return
+		}
 		resp.OpenAIError(c, http.StatusBadRequest, "invalid_request_error", "invalid_json",
 			"the request body is not valid json")
+		return
+	}
+	// 模型白名单：与既有的图片入口（relay/images.go）同口径。
+	// 鉴权中间件只把该 key 的 allowed models 注入成字符串，检查得自己做。
+	if !op.IsModelSupported(c.GetString("supported_models"), strings.TrimSpace(request.Model)) {
+		resp.OpenAIError(c, http.StatusBadRequest, "invalid_request_error", "model_not_supported",
+			"this api key is not allowed to use the requested model")
 		return
 	}
 	if strings.TrimSpace(request.Model) == "" {
@@ -777,4 +804,23 @@ func sortStrings(values []string) {
 			values[j], values[j-1] = values[j-1], values[j]
 		}
 	}
+}
+
+// batchImageMaxRequestBytes 是提交流程的请求体硬上限。
+//
+// 取值理由：单条 prompt 上限 8000 字符、单批上限 1000 条，纯文本远小于此；
+// 参考图按 base64 算，128MB 够放十几张 4K 图。给一个**确定存在**的上限，
+// 比"没有上限、只限制条数"安全：后者挡不住"条数很少但每条巨大"的请求。
+const batchImageMaxRequestBytes int64 = 128 << 20
+
+// isBodyTooLarge 识别 http.MaxBytesReader 的超限错误。
+func isBodyTooLarge(err error) bool {
+	if err == nil {
+		return false
+	}
+	var maxBytesErr *http.MaxBytesError
+	if errors.As(err, &maxBytesErr) {
+		return true
+	}
+	return strings.Contains(err.Error(), "http: request body too large")
 }

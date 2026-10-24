@@ -330,6 +330,8 @@ func TestBatchImageListExecutableSkipsTerminalAndExpired(t *testing.T) {
 	ctx := setupQuotaTest(t)
 	live := newBatchImageTestJob(t, ctx, model.BatchImageJobStatusQueued, 1, 1)
 	done := newBatchImageTestJob(t, ctx, model.BatchImageJobStatusCompleted, 1, 1)
+	// 每条任务都要有子项：没有子项的任务对推进器不可见（见下面那个专门的测试）。
+	addBatchImageTestItem(t, ctx, live.BatchID)
 
 	// 过期时间要在落库前给，所以单独造。
 	expired := model.BatchImageJob{
@@ -348,6 +350,7 @@ func TestBatchImageListExecutableSkipsTerminalAndExpired(t *testing.T) {
 	if err := BatchImageCreate(ctx, &expired); err != nil {
 		t.Fatalf("create expired job: %v", err)
 	}
+	addBatchImageTestItem(t, ctx, expired.BatchID)
 
 	jobs, err := BatchImageListExecutable(ctx, 50)
 	if err != nil {
@@ -381,5 +384,46 @@ func TestBatchImageCountActiveForOwner(t *testing.T) {
 	}
 	if active != 2 {
 		t.Fatalf("active = %d, want 2 (completed must not count against the limit)", active)
+	}
+}
+
+// 提交是"先落主记录、再落子项"，中间有一个空窗。
+//
+// 推进器若在空窗里捡到这条任务，loadItems 会看到 0 条子项，于是按"没东西可提交"
+// abort + 退款；而 HTTP 那边可能随后成功返回，客户端拿到一个已经失败的任务。
+// 所以"没有子项 = 不可执行"必须是查询层的硬规则，不能靠时序侥幸。
+func TestBatchImageListExecutableSkipsJobsWithoutItems(t *testing.T) {
+	ctx := setupQuotaTest(t)
+	published := newBatchImageTestJob(t, ctx, model.BatchImageJobStatusQueued, 1, 1)
+	addBatchImageTestItem(t, ctx, published.BatchID)
+	halfWritten := newBatchImageTestJob(t, ctx, model.BatchImageJobStatusQueued, 1, 1)
+
+	jobs, err := BatchImageListExecutable(ctx, 50)
+	if err != nil {
+		t.Fatalf("list executable: %v", err)
+	}
+	seen := make(map[string]bool, len(jobs))
+	for _, job := range jobs {
+		seen[job.BatchID] = true
+	}
+	if !seen[published.BatchID] {
+		t.Error("a queued job with items must be executable")
+	}
+	if seen[halfWritten.BatchID] {
+		t.Error("a queued job with zero items is mid-submit and must not be executable")
+	}
+}
+
+// addBatchImageTestItem 给某批加一条 pending 子项。
+func addBatchImageTestItem(t *testing.T, ctx context.Context, batchID string) {
+	t.Helper()
+	items := []model.BatchImageItem{{
+		BatchID:          batchID,
+		CustomID:         "item-1",
+		Status:           model.BatchImageItemStatusPending,
+		SourceLineNumber: 1,
+	}}
+	if err := BatchImageItemCreateBatch(ctx, items); err != nil {
+		t.Fatalf("create item for %s: %v", batchID, err)
 	}
 }

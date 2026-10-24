@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -102,6 +103,13 @@ type BuildRequest struct {
 	ImageSize        string
 }
 
+// maxReferenceImageBytes 是**单张**参考图的字节上限（解码后）。
+//
+// 参考图会以 base64 进 JSONL，base64 会放大 4/3，再乘上"每批 1000 条 × 14 张"，
+// 一次提交理论上能到几百 GB —— 而构建 JSONL 是**整批在内存里拼**的。
+// 所以条数与单张大小必须都有上限，只限条数挡不住"条数很少但每张巨大"。
+const maxReferenceImageBytes = 8 << 20
+
 // maxReferenceImagesPerItem 是单条子请求允许的参考图数量上限。
 //
 // 定这个数不是为了省事：Gemini 对单次请求的图片数量有上限，超了上游报错；
@@ -143,6 +151,12 @@ func BuildJSONL(req BuildRequest) ([]byte, error) {
 		}
 		if item.OutputCount < 0 {
 			return nil, fmt.Errorf("batch image: item %q has negative output_count", customID)
+		}
+		for _, image := range item.ReferenceImages {
+			if len(image.Data) > maxReferenceImageBytes {
+				return nil, fmt.Errorf("batch image: item %q has a %d byte reference image, at most %d allowed",
+					customID, len(image.Data), maxReferenceImageBytes)
+			}
 		}
 		if len(item.ReferenceImages) > maxReferenceImagesPerItem {
 			return nil, fmt.Errorf("batch image: item %q has %d reference images, at most %d allowed",
@@ -301,7 +315,10 @@ type geminiResponse struct {
 //
 // onLine 回调拿到的 lineNumber 是**结果对象里的行号（1-based）**，调用方拿它做索引，
 // 也拿它做"对不上时到底哪一行坏了"的排查线索。
-func ParseResults(reader io.Reader, onLine func(lineNumber int, result ParsedResult)) error {
+// onLine 返回 errStopResultScan 可让解析**立刻停止且不算失败**。
+// 这是给"找到目标就收工"的单图取图路径用的：结果流可能几百 MB，
+// 目标行已经在手上还继续读，等于把整批下载一遍只为丢弃。
+func ParseResults(reader io.Reader, onLine func(lineNumber int, result ParsedResult) error) error {
 	if reader == nil {
 		return fmt.Errorf("batch image: nil result reader")
 	}
@@ -317,13 +334,22 @@ func ParseResults(reader io.Reader, onLine func(lineNumber int, result ParsedRes
 		if len(raw) == 0 {
 			continue
 		}
-		onLine(lineNumber, parseResultLine(raw))
+		if err := onLine(lineNumber, parseResultLine(raw)); err != nil {
+			if errors.Is(err, errStopResultScan) {
+				return nil
+			}
+			return err
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("batch image: read result line %d: %w", lineNumber+1, err)
 	}
 	return nil
 }
+
+// errStopResultScan 是 onLine 用来"提前收工"的哨兵。故意不导出：
+// 它表达的是"我已拿到想要的东西"，不是业务错误，不该出现在对外错误里。
+var errStopResultScan = errors.New("batch image: stop result scan")
 
 // maxResultLineBytes 是单行结果的上限。
 //
