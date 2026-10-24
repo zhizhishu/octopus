@@ -973,3 +973,52 @@ func staticTestResolver(t *testing.T, ctx context.Context) ChannelResolver {
 	channelKey := channel.Keys[0]
 	return staticChannelResolver{channel: channel, key: &channelKey}
 }
+
+// 取消与"跑完"同时到达时，钱只能退一次。
+//
+// 【竞态长什么样】客户端里点取消的那一刻，推进器刚好把 indexing 推成 completed。
+// 两条路径都会调 Settle。抢权式幂等必须让恰好一个赢家动钱：
+// 若两个都退，用户拿到双倍退款；若都不退，用户被白扣。
+func TestSettleIsSingleWinnerUnderConcurrentCancelAndComplete(t *testing.T) {
+	ctx := setupBatchImageServiceTest(t)
+	ownerID := seedBatchImageUser(t, ctx, 100)
+	job := seedBatchImageJob(t, ctx, 1.0, 4.0, ownerID)
+	seedBatchImageItems(t, ctx, job.BatchID, 1 /* 成功 */, 3 /* 取消/失败 */)
+
+	before := userBalance(t, ctx, ownerID)
+
+	service := &Service{Settings: func(context.Context) Settings {
+		return Settings{Enabled: true, UnitPrice: 1}
+	}}
+
+	// 两个"写者"拿同一份快照同时结算。
+	var winners int
+	for attempt := 0; attempt < 2; attempt++ {
+		settled, err := service.Settle(ctx, job)
+		if err != nil {
+			t.Fatalf("settle attempt %d: %v", attempt, err)
+		}
+		if settled {
+			winners++
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("%d settlements won, want exactly 1 (two winners = double refund, zero = user was charged for nothing)", winners)
+	}
+
+	after := userBalance(t, ctx, ownerID)
+	// 预扣 4.0，1 条成功 × 1.0 = 应收 1.0，应退 3.0。
+	if refund := after - before; refund != 3.0 {
+		t.Fatalf("refunded %v, want 3.0 exactly once", refund)
+	}
+}
+
+// userBalance 读当前余额（退款会直接加回 Balance）。
+func userBalance(t *testing.T, ctx context.Context, userID int) float64 {
+	t.Helper()
+	user, err := op.UserGet(userID)
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	return user.Balance
+}

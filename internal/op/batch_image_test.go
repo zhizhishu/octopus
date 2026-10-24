@@ -427,3 +427,54 @@ func addBatchImageTestItem(t *testing.T, ctx context.Context, batchID string) {
 		t.Fatalf("create item for %s: %v", batchID, err)
 	}
 }
+
+// 取消必须"取消即止"：正在跑的索引不能把已取消的条目改回 success。
+//
+// 【这是真的会漏钱】取消时 Settle 按当时计数退款（取消的条目不计费）。
+// 若之后索引把那条从 cancelled 改成 success，任务的 success_count 没变、
+// 钱也没再补扣——那张图白送。BatchImageItemIndexResult 的
+// `WHERE status = pending` 是唯一的挡板，所以必须钉住它。
+func TestBatchImageItemIndexResultCannotResurrectCancelledItem(t *testing.T) {
+	ctx := setupQuotaTest(t)
+	job := newBatchImageTestJob(t, ctx, model.BatchImageJobStatusIndexing, 1, 1)
+	items := []model.BatchImageItem{{
+		BatchID:          job.BatchID,
+		CustomID:         "cancelled-already",
+		Status:           model.BatchImageItemStatusCancelled,
+		SourceLineNumber: 1,
+	}}
+	if err := BatchImageItemCreateBatch(ctx, items); err != nil {
+		t.Fatalf("create items: %v", err)
+	}
+
+	ok, err := BatchImageItemIndexResult(ctx, items[0].ID, map[string]any{
+		"status": model.BatchImageItemStatusSuccess,
+	})
+	if err != nil {
+		t.Fatalf("index result: %v", err)
+	}
+	if ok {
+		t.Fatal("an already-cancelled item was overwritten by the indexer; a cancelled (unbilled) item must stay cancelled")
+	}
+
+	// 反向确认：pending 的条目仍然可以正常落结果（别把挡板做成"什么都不写"）。
+	pendingJob := newBatchImageTestJob(t, ctx, model.BatchImageJobStatusIndexing, 1, 1)
+	pendingItems := []model.BatchImageItem{{
+		BatchID:          pendingJob.BatchID,
+		CustomID:         "still-pending",
+		Status:           model.BatchImageItemStatusPending,
+		SourceLineNumber: 1,
+	}}
+	if err := BatchImageItemCreateBatch(ctx, pendingItems); err != nil {
+		t.Fatalf("create pending items: %v", err)
+	}
+	ok, err = BatchImageItemIndexResult(ctx, pendingItems[0].ID, map[string]any{
+		"status": model.BatchImageItemStatusSuccess,
+	})
+	if err != nil {
+		t.Fatalf("index pending: %v", err)
+	}
+	if !ok {
+		t.Fatal("a pending item must accept its result")
+	}
+}

@@ -170,10 +170,10 @@ type BatchImageJob struct {
 
 	CreatedAt   int64 `json:"created_at" gorm:"index"`
 	UpdatedAt   int64 `json:"updated_at"`
-	SubmittedAt int64 `json:"submitted_at;default:0"`
-	CompletedAt int64 `json:"completed_at;default:0"`
+	SubmittedAt int64 `json:"submitted_at" gorm:"default:0"`
+	CompletedAt int64 `json:"completed_at" gorm:"default:0"`
 	// SettledAt 非零 = 这一单的钱已经结清（幂等裁判，见 op.BatchImageSettle）。
-	SettledAt int64 `json:"settled_at;default:0"`
+	SettledAt int64 `json:"settled_at" gorm:"default:0"`
 
 	// ExpiresAt 之后任务一律不可见（查询 404），推进器也不再动它。
 	ExpiresAt int64 `json:"expires_at" gorm:"index"`
@@ -249,9 +249,9 @@ type BatchImageJob struct {
 
 	// 产物生命周期。OutputExpiresAt 过了之后上游可能已经删了结果对象，
 	// 我们据此把任务收口成 output_deleted（不再让客户端点进去拿到空）。
-	OutputExpiresAt int64 `json:"output_expires_at;default:0" gorm:"index"`
-	OutputDeletedAt int64 `json:"output_deleted_at;default:0"`
-	DownloadedAt    int64 `json:"downloaded_at;default:0"`
+	OutputExpiresAt int64 `json:"output_expires_at" gorm:"default:0;index"`
+	OutputDeletedAt int64 `json:"output_deleted_at" gorm:"default:0"`
+	DownloadedAt    int64 `json:"downloaded_at" gorm:"default:0"`
 
 	// 失败原因（已脱敏，见 relay/batch_image 的 sanitize）。
 	ErrorCode    string `json:"error_code" gorm:"size:64;default:''"`
@@ -309,7 +309,7 @@ type BatchImageItem struct {
 	FileExtension string `json:"file_extension" gorm:"size:16;default:''"`
 	ImageCount    int    `json:"image_count" gorm:"default:0"`
 
-	IndexedAt int64 `json:"indexed_at;default:0"`
+	IndexedAt int64 `json:"indexed_at" gorm:"default:0"`
 
 	ErrorCode    string `json:"error_code" gorm:"size:64;default:''"`
 	ErrorMessage string `json:"error_message" gorm:"type:text"`
