@@ -11,14 +11,12 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/modeltest"
 	"github.com/zhizhishu/octopus/internal/modelverify/behavior"
 	"github.com/zhizhishu/octopus/internal/op"
 	"github.com/zhizhishu/octopus/internal/server/middleware"
 	"github.com/zhizhishu/octopus/internal/server/resp"
 	"github.com/zhizhishu/octopus/internal/server/router"
-	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 	"github.com/zhizhishu/octopus/internal/utils/log"
 )
 
@@ -209,7 +207,7 @@ func runModelAudit(c *gin.Context) {
 	if mapped, ok := channel.ModelMapping[upstreamModel]; ok && mapped != "" {
 		upstreamModel = mapped
 	}
-	endpoint := auditEndpointFor(*channel)
+	endpoint := op.AuditEndpointForChannel(*channel)
 
 	// 单飞闸门：同一 (渠道, 上游模型) 同时只允许一个手动检测在跑。
 	// 放在解析出 upstreamModel 之后，因为锁的粒度就是这一对；放在任何探针发送之前，
@@ -292,17 +290,4 @@ func knownAuditProbe(id behavior.ProbeID) bool {
 	// 用“注册表里有没有”判存在，而不是拿 DefaultProbes 当白名单：
 	// 指纹探针刻意默认关闭（开销高），但手动勾选时必须能跑。
 	return behavior.IsKnownProbe(id)
-}
-
-func auditEndpointFor(ch model.Channel) string {
-	switch ch.Type {
-	case outbound.OutboundTypeAnthropic:
-		return "anthropic_messages"
-	case outbound.OutboundTypeOpenAIResponse:
-		return "openai_responses"
-	case outbound.OutboundTypeGemini:
-		return "gemini_generate_content"
-	default:
-		return "openai_chat"
-	}
 }

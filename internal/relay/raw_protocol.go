@@ -701,6 +701,36 @@ func isOpenAIWireChannelType(channelType outbound.OutboundType) bool {
 	}
 }
 
+// isVideoCapableChannelType 是**视频创建专用**的「这个渠道类型能不能接视频」判据。
+//
+// 为什么不复用上面的 isOpenAIWireChannelType：那个函数同时服务音频 speech/
+// transcriptions/translations、completions、moderations、rerank、responses_compact
+// （见 internal/server/handlers/raw_protocol.go 的 Name 表）与视频创建，两边需要的
+// 类型集合**本来就不一样**。从 isOpenAIWireChannelType 里删掉 Embedding 会顺手砍掉
+// 嵌入渠道的音频/completions 那些能力——那是扩大伤害，不是修视频。所以拆成两张表：
+// raw 那张保持原样，视频这张单独判。
+//
+// 为什么视频不该收 Embedding：嵌入渠道是算向量的账号，生成视频无意义。允许它只会把
+// 「配置错了」推迟成上游的 502，用户看到一个说不清原因的失败。
+//
+// 🔴 与图片侧的差异是**显式声明**，不是巧合：
+// 图片 isOpenAIImagesCompatibleChannelType = OpenAIChat / OpenAIResponse /
+// CustomOpenAIChat，再经 isImagesEndpointCompatibleChannelType 加上 Gemini
+// （Gemini 图片走它自己的 predict/generateContent 适配）；
+// 视频这张**刻意不含 Gemini**：视频走 Gemini 原生协议还没接。
+// 两张表的逐格差异由 channel_type_capability_matrix_test.go 的表驱动用例钉死，
+// 改这里必须同步改那张表，否则测试红。
+func isVideoCapableChannelType(channelType outbound.OutboundType) bool {
+	switch channelType {
+	case outbound.OutboundTypeOpenAIChat,
+		outbound.OutboundTypeCustomOpenAIChat,
+		outbound.OutboundTypeOpenAIResponse:
+		return true
+	default:
+		return false
+	}
+}
+
 func parseJSONModelAndStreamWithDefault(bc *bodycache.BodyCache, defaultModel string) (payload map[string]any, modelName string, stream bool, err error) {
 	r, err := bc.NewReader()
 	if err != nil {

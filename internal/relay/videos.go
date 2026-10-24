@@ -193,7 +193,9 @@ runIterator:
 			iter.Skip(channel.ID, 0, channel.Name, "channel disabled")
 			continue
 		}
-		if !isOpenAIWireChannelType(channel.Type) {
+		// 视频创建用**视频专用**判据，不是 raw 协议那张表：raw 那张含 Embedding
+		// （音频/completions/rerank 等共用），视频不许让嵌入渠道进来。
+		if !isVideoCapableChannelType(channel.Type) {
 			iter.Skip(channel.ID, 0, channel.Name, fmt.Sprintf("unsupported channel type for video: %d", channel.Type))
 			continue
 		}

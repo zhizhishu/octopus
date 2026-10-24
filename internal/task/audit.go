@@ -11,7 +11,6 @@ import (
 	"github.com/zhizhishu/octopus/internal/modeltest"
 	"github.com/zhizhishu/octopus/internal/modelverify/behavior"
 	"github.com/zhizhishu/octopus/internal/op"
-	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 	"github.com/zhizhishu/octopus/internal/utils/log"
 )
 
@@ -178,7 +177,7 @@ func runScheduledAuditTarget(ctx context.Context, target scheduledAuditTarget) m
 	if mapped, ok := target.channel.ModelMapping[upstreamModel]; ok && mapped != "" {
 		upstreamModel = mapped
 	}
-	sender, err := modeltest.NewProbeSender(target.channel, upstreamModel, scheduledAuditEndpoint(target.channel))
+	sender, err := modeltest.NewProbeSender(target.channel, upstreamModel, op.AuditEndpointForChannel(target.channel))
 	if err != nil {
 		item.Skipped = true
 		item.SkipReason = err.Error()
@@ -208,19 +207,6 @@ func runScheduledAuditTarget(ctx context.Context, target scheduledAuditTarget) m
 		}
 	}
 	return item
-}
-
-func scheduledAuditEndpoint(ch model.Channel) string {
-	switch ch.Type {
-	case outbound.OutboundTypeAnthropic:
-		return "anthropic_messages"
-	case outbound.OutboundTypeOpenAIResponse:
-		return "openai_responses"
-	case outbound.OutboundTypeGemini:
-		return "gemini_generate_content"
-	default:
-		return "openai_chat"
-	}
 }
 
 func scheduledTargetKey(channelID int, modelName string) string {

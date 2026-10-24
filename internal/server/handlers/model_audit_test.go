@@ -7,10 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/zhizhishu/octopus/internal/model"
-	"github.com/zhizhishu/octopus/internal/modelverify/behavior"
-	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 	"github.com/gin-gonic/gin"
+	"github.com/zhizhishu/octopus/internal/modelverify/behavior"
 )
 
 func setupModelAuditRouter() *gin.Engine {
@@ -100,17 +98,5 @@ func TestParseAuditProbesAcceptsOptionalProbes(t *testing.T) {
 		if len(got) != 2 || got[1] != id {
 			t.Fatalf("手动勾选 %q 的结果 = %#v", id, got)
 		}
-	}
-}
-
-func TestAuditEndpointForChannelType(t *testing.T) {
-	if got := auditEndpointFor(model.Channel{Type: outbound.OutboundTypeAnthropic}); got != "anthropic_messages" {
-		t.Fatalf("anthropic endpoint = %q", got)
-	}
-	if got := auditEndpointFor(model.Channel{Type: outbound.OutboundTypeOpenAIResponse}); got != "openai_responses" {
-		t.Fatalf("responses endpoint = %q", got)
-	}
-	if got := auditEndpointFor(model.Channel{Type: outbound.OutboundTypeOpenAIChat}); got != "openai_chat" {
-		t.Fatalf("chat endpoint = %q", got)
 	}
 }

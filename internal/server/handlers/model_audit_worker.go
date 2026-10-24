@@ -176,7 +176,7 @@ func runOneAuditResult(ctx context.Context, res *model.ModelAuditResult) {
 	if mapped, ok := channel.ModelMapping[upstreamModel]; ok && mapped != "" {
 		upstreamModel = mapped
 	}
-	endpoint := auditEndpointFor(*channel)
+	endpoint := op.AuditEndpointForChannel(*channel)
 
 	sender, err := modeltest.NewProbeSender(*channel, upstreamModel, endpoint)
 	if err != nil {
