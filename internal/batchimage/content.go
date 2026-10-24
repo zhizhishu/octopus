@@ -137,14 +137,21 @@ func StreamAllImages(ctx context.Context, resolve ContentResolver, job *model.Ba
 		return nil
 	}
 
+	// wanted = 需要出图的（成功的那些）；order = **全部**条目按提交顺序。
+	//
+	// 【为什么 order 必须是全部而不是只成功的】ParseResults 给的 lineNumber 是
+	// 结果流里的**物理行号**，而结果流是按提交顺序一行一条（含失败行）。若 order
+	// 只装成功的条目，第 5 行（成功）会被映射成 order[4]，也就是"第 5 个成功的条目"
+	// 而不是"第 5 个条目"—— 一旦前面有失败行，图就挂到别人名下了。
+	// worker.go 的 indexOne 用的是全量 items，这里必须同口径。
 	wanted := make(map[string]model.BatchImageItem, len(items))
 	order := make([]string, 0, len(items))
 	for _, item := range items {
+		order = append(order, item.CustomID)
 		if item.Status != model.BatchImageItemStatusSuccess {
 			continue
 		}
 		wanted[item.CustomID] = item
-		order = append(order, item.CustomID)
 	}
 	if len(wanted) == 0 {
 		return nil
