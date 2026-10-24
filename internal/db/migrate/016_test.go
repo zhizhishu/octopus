@@ -88,8 +88,11 @@ func TestMigration016AddsChannelCapabilityColumns(t *testing.T) {
 	if stored.OpenAIEmbeddingsPath != "" {
 		t.Fatalf("legacy channel openai_embeddings_path = %q, want empty", stored.OpenAIEmbeddingsPath)
 	}
+	// 护栏断言（必须保留）：迁移只补列，不许顺手给老渠道加能力。
+	// 这里的存量行是 type=4 —— 退役的渠道类型（火山那条线已砍掉、编号永久空着），
+	// 它读出来仍然只是一个「没填能力位的 4 号类型」，不得凭空获得 embeddings。
 	if stored.SupportsCapability(model.CapabilityEmbeddings) {
-		t.Fatalf("a legacy volcengine channel must not gain embeddings from the migration")
+		t.Fatalf("a legacy channel without capabilities (type 4, retired) must not gain embeddings from the migration")
 	}
 
 	// 幂等：重复跑不报错、结果不变。

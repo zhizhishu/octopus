@@ -11,13 +11,18 @@ import { channelCapabilitiesPayload } from '@/lib/channel-capabilities';
 export type { PromptOverrideMode } from './access-plan';
 /**
  * 渠道类型枚举
+ *
+ * 🔴 编号与后端 OutboundType（internal/transformer/outbound/register.go）逐位对应，
+ * 也是库里 channels.type 的取值。4 号位是退役的 Volcengine（火山那条线已砍掉），
+ * **永久空着，绝不复用给别的类型**：挪一位就是库里所有存量渠道错位。
+ * 存量 type=4 的渠道会显示为未知类型，交由用户自己改或删。
  */
 export enum ChannelType {
     OpenAIChat = 0,
     OpenAIResponse = 1,
     Anthropic = 2,
     Gemini = 3,
-    Volcengine = 4,
+    // 4 = 退役的 Volcengine，编号永久保留空洞。
     OpenAIEmbedding = 5,
     CustomOpenAIChat = 6,
 }

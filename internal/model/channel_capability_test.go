@@ -20,7 +20,6 @@ func TestSupportsCapabilityEmptyCapabilitiesFallsBackToChannelType(t *testing.T)
 		outbound.OutboundTypeOpenAIResponse,
 		outbound.OutboundTypeAnthropic,
 		outbound.OutboundTypeGemini,
-		outbound.OutboundTypeVolcengine,
 		outbound.OutboundTypeCustomOpenAIChat,
 	} {
 		channel := &Channel{Type: channelType}
@@ -35,7 +34,7 @@ func TestSupportsCapabilityNilAndEmptySliceAgree(t *testing.T) {
 	cases := []outbound.OutboundType{
 		outbound.OutboundTypeOpenAIEmbedding,
 		outbound.OutboundTypeOpenAIChat,
-		outbound.OutboundTypeVolcengine,
+		outbound.OutboundTypeCustomOpenAIChat,
 	}
 	for _, channelType := range cases {
 		nilCaps := &Channel{Type: channelType}
@@ -47,12 +46,12 @@ func TestSupportsCapabilityNilAndEmptySliceAgree(t *testing.T) {
 }
 
 func TestSupportsCapabilityDeclaredCapabilityWinsOverChannelType(t *testing.T) {
-	volcengine := &Channel{
-		Type:         outbound.OutboundTypeVolcengine,
+	responseChannel := &Channel{
+		Type:         outbound.OutboundTypeOpenAIResponse,
 		Capabilities: []string{CapabilityEmbeddings},
 	}
-	if !volcengine.SupportsCapability(CapabilityEmbeddings) {
-		t.Fatalf("勾了 embeddings 能力位的火山渠道必须能承接嵌入流量")
+	if !responseChannel.SupportsCapability(CapabilityEmbeddings) {
+		t.Fatalf("勾了 embeddings 能力位的 responses 渠道必须能承接嵌入流量")
 	}
 
 	chat := &Channel{
@@ -80,7 +79,7 @@ func TestSupportsCapabilityUnknownCapabilityIsFalse(t *testing.T) {
 	for _, channel := range []*Channel{
 		{Type: outbound.OutboundTypeOpenAIChat},
 		{Type: outbound.OutboundTypeOpenAIEmbedding},
-		{Type: outbound.OutboundTypeVolcengine, Capabilities: []string{CapabilityEmbeddings}},
+		{Type: outbound.OutboundTypeOpenAIResponse, Capabilities: []string{CapabilityEmbeddings}},
 	} {
 		if channel.SupportsCapability("rerank") {
 			t.Fatalf("未知能力串不得被判为支持 (channel type %d)", channel.Type)
@@ -179,7 +178,7 @@ func TestEmbeddingsCustomPathProducesVendorEndpoint(t *testing.T) {
 	}
 	for _, tt := range cases {
 		channel := &Channel{
-			Type:                 outbound.OutboundTypeVolcengine,
+			Type:                 outbound.OutboundTypeOpenAIEmbedding,
 			BaseUrls:             []BaseUrl{{URL: tt.base}},
 			OpenAIEmbeddingsPath: tt.path,
 		}

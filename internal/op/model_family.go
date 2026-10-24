@@ -89,8 +89,7 @@ func channelTypeMatchesEndpointFamily(channelType outbound.OutboundType, family 
 		case outbound.OutboundTypeOpenAIChat,
 			outbound.OutboundTypeOpenAIResponse,
 			outbound.OutboundTypeOpenAIEmbedding,
-			outbound.OutboundTypeCustomOpenAIChat,
-			outbound.OutboundTypeVolcengine:
+			outbound.OutboundTypeCustomOpenAIChat:
 			return true
 		default:
 			return false

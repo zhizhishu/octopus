@@ -98,7 +98,22 @@ type Channel struct {
 	// OpenAIEmbeddingsPath 是嵌入端点的逃生口（与 OpenAIChatPath 同款）：火山这类
 	// 上游的嵌入路径是 /api/v3/embeddings，用 JoinOpenAIPath 拼会变成
 	// /api/v3/v1/embeddings。空 = 走标准 /v1/embeddings 拼接，存量渠道行为不变。
-	OpenAIEmbeddingsPath string        `json:"openai_embeddings_path"`
+	OpenAIEmbeddingsPath string `json:"openai_embeddings_path"`
+	// OpenAIImagesPath 图片端点的上游路径覆盖。空 = 沿用 /v1/images/<endpoint>。
+	//
+	// 用途：上游不是标准 OpenAI 路径时的逃生口（例如某些中转把图片挂在
+	// /v1/images 之外的路径上）。存的是**完整路径**，不是前缀片段。
+	OpenAIImagesPath string `json:"openai_images_path"`
+	// OpenAIVideosPath 视频端点的上游路径覆盖。空 = 沿用 /v1/videos[/<kind>]。
+	//
+	// 只管**前缀段**：/generations、/edits、/extensions 子路径与 /{id}[/content]
+	// 仍然拼在它后面，否则填了逃生口之后 edits 任务会打到 generations 上去。
+	OpenAIVideosPath string `json:"openai_videos_path"`
+	// OpenAITasksPath 视频/图片任务查询的路径覆盖。空 = 与创建路径同前缀。
+	//
+	// 单独一个字段的理由：有些上游创建在 /v1/videos，查询却在 /v1/tasks/{id}，
+	// 两者不同源。硬绑成「同前缀」就接不上这类。
+	OpenAITasksPath      string        `json:"openai_tasks_path"`
 	Stats                *StatsChannel `json:"stats,omitempty" gorm:"foreignKey:ChannelID"`
 	MatchRegex           *string       `json:"match_regex"`
 	CircuitTripped       bool          `json:"circuit_tripped" gorm:"-"`
@@ -195,6 +210,9 @@ type ChannelUpdateRequest struct {
 	OpenAIChatPath        *string                `json:"openai_chat_path,omitempty"`
 	OpenAIModelsPath      *string                `json:"openai_models_path,omitempty"`
 	OpenAIEmbeddingsPath  *string                `json:"openai_embeddings_path,omitempty"`
+	OpenAIImagesPath      *string                `json:"openai_images_path,omitempty"`
+	OpenAIVideosPath      *string                `json:"openai_videos_path,omitempty"`
+	OpenAITasksPath       *string                `json:"openai_tasks_path,omitempty"`
 
 	KeysToAdd    []ChannelKeyAddRequest    `json:"keys_to_add,omitempty"`
 	KeysToUpdate []ChannelKeyUpdateRequest `json:"keys_to_update,omitempty"`
@@ -389,6 +407,62 @@ func (c *Channel) GetOpenAIEmbeddingsBaseUrl() string {
 		return baseURL
 	}
 	return joined
+}
+
+// 渠道级路径逃生口（图片/视频/任务查询）。
+//
+// 这三个方法的共同约定：返回的是**要直接传给 xurl.JoinOpenAIPath 的路径串**，
+// 字段为空时返回默认值（= 改动前的标准路径，一字节不变）。判据单一来源，
+// 调用点不用各写一遍判空。
+const (
+	openAIImagesDefaultPrefix = "/v1"
+	openAIImagesSegment       = "/images"
+	openAIVideosDefaultPrefix = "/v1/videos" // 必须与 relay.videoUpstreamPath 的前缀一致
+)
+
+// GetOpenAIImagesPath 返回图片端点的上游路径（要传给 JoinOpenAIPath 的串）。
+//
+// endpoint 是 canonical 的 /images/generations | /images/edits | /images/variations。
+//   - 字段为空："/v1" + endpoint（存量行为，一字节不变）；
+//   - 字段非空：用字段值替换 "/v1/images" 这段前缀，**操作段必须留着**
+//     （填 /openai/images 后 generations 打到 /openai/images/generations）。
+func (c *Channel) GetOpenAIImagesPath(endpoint string) string {
+	defaultPath := openAIImagesDefaultPrefix + endpoint
+	if c == nil {
+		return defaultPath
+	}
+	override := strings.TrimSpace(c.OpenAIImagesPath)
+	if override == "" {
+		return defaultPath
+	}
+	operation := strings.TrimPrefix("/"+strings.Trim(strings.TrimSpace(endpoint), "/"), openAIImagesSegment)
+	return strings.TrimRight(override, "/") + operation
+}
+
+// GetOpenAIVideosPath 返回视频创建/查询的**前缀**路径（要传给 JoinOpenAIPath 的串）。
+//
+// 空 = /v1/videos（存量行为）。非空只替换 /v1/videos 这一段前缀，
+// /generations | /edits | /extensions 子路径与 /{id}[/content] 由调用方拼在后面——
+// 丢掉 kind 子路径会让 edits 任务打到 generations 上去。
+func (c *Channel) GetOpenAIVideosPath() string {
+	if c == nil {
+		return openAIVideosDefaultPrefix
+	}
+	if override := strings.TrimSpace(c.OpenAIVideosPath); override != "" {
+		return strings.TrimRight(override, "/")
+	}
+	return openAIVideosDefaultPrefix
+}
+
+// GetOpenAITasksPath 返回任务查询/取成品的路径覆盖（要传给 JoinOpenAIPath 的串）。
+//
+// 空串 = 不覆盖：查询与创建同前缀（存量行为）。非空时查询/取成品用这个前缀 +
+// /{id}[/content]，创建仍然走 GetOpenAIVideosPath()。
+func (c *Channel) GetOpenAITasksPath() string {
+	if c == nil {
+		return ""
+	}
+	return strings.TrimRight(strings.TrimSpace(c.OpenAITasksPath), "/")
 }
 
 func (c *Channel) GetChannelKey() ChannelKey {

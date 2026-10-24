@@ -11,7 +11,7 @@ const ChannelType = {
     OpenAIResponse: 1,
     Anthropic: 2,
     Gemini: 3,
-    Volcengine: 4,
+    // 4 = 退役的 Volcengine（火山那条线已砍掉），编号永久空着。
     OpenAIEmbedding: 5,
     CustomOpenAIChat: 6,
 };
@@ -26,17 +26,11 @@ const { defaultModelTestEndpointForChannel, shouldForceChannelTestStream, channe
 /**
  * 渠道测试的默认端点必须对上该渠道的**真实出站协议**。
  *
- * 事故面：火山渠道的出站固定是 /responses（outbound/volcengine/response.go:107
- * `parsedUrl.Path = parsedUrl.Path + "/responses"`），它根本不发
- * /v1/chat/completions。早先它落进 default 分支按 openai_chat 测——测的是这条
- * 渠道永远不会走的路径，测出来的绿是假的，一条已经坏掉的火山渠道也会显示通过。
+ * 事故面（历史）：出站固定是 /responses 的渠道如果落进 default 分支按
+ * openai_chat 测，测的就是这条渠道永远不会走的路径——测出来的绿是假的。
  *
  * 这类"测了一条不存在的路"的假绿比红更危险：它把问题藏起来。
  */
-
-test('火山渠道按 responses 测，不按 chat 测', () => {
-    assert.equal(defaultModelTestEndpointForChannel(ChannelType.Volcengine), 'openai_responses');
-});
 
 test('各渠道类型对上的端点与实际出站一致', () => {
     const cases = [
@@ -44,7 +38,6 @@ test('各渠道类型对上的端点与实际出站一致', () => {
         [ChannelType.OpenAIResponse, 'openai_responses'],
         [ChannelType.Anthropic, 'anthropic_messages'],
         [ChannelType.Gemini, 'gemini_generate_content'],
-        [ChannelType.Volcengine, 'openai_responses'],
         [ChannelType.OpenAIEmbedding, 'openai_embeddings'],
         [ChannelType.CustomOpenAIChat, 'openai_chat'],
     ];
@@ -53,24 +46,10 @@ test('各渠道类型对上的端点与实际出站一致', () => {
     }
 });
 
-/**
- * 火山渠道选 responses 端点，**不等于**它是 codex 形状。
- *
- * 后端判据是渠道类型不是端点名：
- *   runner.go:763       强制流式只匹配 OutboundTypeOpenAIResponse
- *   runner.go:1156-1161 指纹 switch 里 Volcengine 落 default → false
- *   header_defaults.go  Volcengine 走通用 UA
- *
- * 前端只看端点会导致：火山渠道的流式开关被锁死（测不了非流式），身份还标成
- * "codex CLI" —— 而实际出站是通用 UA。界面在撒谎，且藏掉了一种可测模式。
- */
-test('火山渠道选 responses 端点不锁流式', () => {
-    // 后端 runner.go:763 只对 OutboundTypeOpenAIResponse 强制流式。
-    // 火山是 OutboundTypeVolcengine，不强制 —— 它的非流式模式可测。
-    assert.equal(
-        shouldForceChannelTestStream({ endpoint: 'openai_responses', channelType: ChannelType.Volcengine }),
-        false,
-    );
+/** 退役的 4 号位：没有类型、没有出厂适配器，前端也不该给它任何特殊待遇。 */
+test('退役的 4 号位按未知类型处理', () => {
+    assert.equal(defaultModelTestEndpointForChannel(4), 'openai_chat');
+    assert.equal(channelTestIdentityFor('openai_responses', 4), 'generic');
 });
 
 test('只有 Responses 渠道类型锁流式', () => {
@@ -112,10 +91,6 @@ test('渠道类型未知时保持旧行为，不误伤', () => {
 /**
  * 身份显示必须镜像后端 header_defaults.go:78-247，而不是"端点名对应身份"。
  */
-test('火山渠道的身份是通用 UA，不是 codex CLI', () => {
-    // 火山出站是 /responses 形状，但身份走 header_defaults 的 default 分支 = 通用 UA。
-    assert.equal(channelTestIdentityFor('openai_responses', ChannelType.Volcengine), 'generic');
-});
 
 test('协议本身就是 CLI 的渠道，身份不可选', () => {
     assert.equal(channelTestIdentityFor('openai_responses', ChannelType.OpenAIResponse), 'codex');
@@ -192,11 +167,11 @@ test('cloak 关掉的 Anthropic 渠道即使开 1M 也不锁流式', () => {
  *
  * header_defaults.go:210 只有 OpenAIChat / CustomOpenAIChat 进
  * `switch chatChannelShape(channel)`。Form.tsx:766 换类型时会保留原 cloak_shape，
- * 所以"配过 codex 的 Chat 渠道改成火山"这条路径是真实可达的。
+ * 所以"配过 codex 的 Chat 渠道改成 Gemini"这条路径是真实可达的。
  */
 test('非 Chat 族渠道的残留 shape 不生效', () => {
     const stale = { mode: 'auto', shape: 'codex' };
-    assert.equal(channelTestIdentityFor('openai_responses', ChannelType.Volcengine, stale), 'generic');
+    assert.equal(channelTestIdentityFor('openai_responses', ChannelType.OpenAIEmbedding, stale), 'generic');
     assert.equal(channelTestIdentityFor('openai_chat', ChannelType.Gemini, stale), 'generic');
     assert.equal(channelTestIdentityFor('openai_embeddings', ChannelType.OpenAIEmbedding, stale), 'generic');
     // 但 Chat 族上 shape 必须生效（否则修过头了）。

@@ -49,7 +49,7 @@ const (
 // 未知 kind **一律退回 "" 分支**：库里的行可能被手工改过，一条看不懂的 kind
 // 不许把整条轮询链拼成畸形 URL，更不许直接报错。
 func videoUpstreamPath(kind string, taskID string, wantContent bool) string {
-	base := "/v1/videos"
+	base := videoUpstreamDefaultPrefix
 	switch kind {
 	case VideoMediaKindGenerations, VideoMediaKindEdits, VideoMediaKindExtensions:
 		base += "/" + kind
@@ -63,6 +63,38 @@ func videoUpstreamPath(kind string, taskID string, wantContent bool) string {
 		base += "/content"
 	}
 	return base
+}
+
+// videoUpstreamDefaultPrefix 是视频端点标准路径的前缀。渠道逃生口
+// （OpenAIVideosPath）只替换**这一段**，kind/id/content 依旧拼在它后面——
+// 丢了 kind 子路径，一次 edits 任务就会打到 generations 上去。
+const videoUpstreamDefaultPrefix = "/v1/videos"
+
+// videoUpstreamPathForChannel 把渠道的路径逃生口与 videoUpstreamPath 的标准路径
+// 组合成最终要落给 JoinOpenAIPath 的路径。
+//
+// 分工是刻意的：videoUpstreamPath 保持**纯函数**（kind/id/content → canonical
+// /v1/videos… 路径），这里只做一次前缀替换。两边都空时结果与改动前逐字节相同。
+//
+// 任务查询优先走 OpenAITasksPath：有些上游创建在 /v1/videos，查询却在
+// /v1/tasks/{id}，两者不同源。那一支不带 kind（查询路径由上游自己定）。
+func videoUpstreamPathForChannel(channel *model.Channel, kind string, taskID string, wantContent bool) string {
+	id := strings.TrimSpace(taskID)
+	if id != "" && channel != nil {
+		if tasksPrefix := channel.GetOpenAITasksPath(); tasksPrefix != "" {
+			taskPath := tasksPrefix + "/" + url.PathEscape(id)
+			if wantContent {
+				taskPath += "/content"
+			}
+			return taskPath
+		}
+	}
+	standard := videoUpstreamPath(kind, id, wantContent)
+	prefix := videoUpstreamDefaultPrefix
+	if channel != nil {
+		prefix = channel.GetOpenAIVideosPath()
+	}
+	return prefix + strings.TrimPrefix(standard, videoUpstreamDefaultPrefix)
 }
 
 // VideosHandler relays an asynchronous video-generation create call
@@ -188,7 +220,7 @@ runIterator:
 			statusCode, body, upstreamCT, fwdErr := func() (int, []byte, string, error) {
 				finish := balancer.BeginRuntimeAttempt(channel.ID, usedKey.ID, item.ModelName)
 				defer finish()
-				return videoForward(ctx, c, http.MethodPost, videoUpstreamPath(mediaKind, "", false), payload, item.ModelName, channel, usedKey.ChannelKey)
+				return videoForward(ctx, c, http.MethodPost, videoUpstreamPathForChannel(channel, mediaKind, "", false), payload, item.ModelName, channel, usedKey.ChannelKey)
 			}()
 			usedAt := time.Now().Unix()
 
@@ -308,7 +340,7 @@ func VideoPollHandler(c *gin.Context) {
 	metrics := newRawProtocolRelayMetrics(c.GetInt("api_key_id"), c.GetInt("user_id"), c.GetString("request_ip"), entry.model, "videos_poll", c.Request.URL.Path)
 	metrics.ActualModel = entry.model
 
-	statusCode, body, upstreamCT, fwdErr := videoForward(ctx, c, http.MethodGet, videoUpstreamPath(entry.mediaKind, taskID, false), nil, entry.model, channel, channelKey)
+	statusCode, body, upstreamCT, fwdErr := videoForward(ctx, c, http.MethodGet, videoUpstreamPathForChannel(channel, entry.mediaKind, taskID, false), nil, entry.model, channel, channelKey)
 	if fwdErr != nil {
 		metrics.Save(ctx, false, fwdErr, nil)
 		status, code, message := relayErrorResponse(fwdErr)
@@ -346,7 +378,7 @@ func VideoContentHandler(c *gin.Context) {
 	metrics := newRawProtocolRelayMetrics(c.GetInt("api_key_id"), c.GetInt("user_id"), c.GetString("request_ip"), entry.model, "videos_content", c.Request.URL.Path)
 	metrics.ActualModel = entry.model
 
-	statusCode, fwdErr := videoForwardContent(ctx, c, videoUpstreamPath(entry.mediaKind, taskID, true), channel, channelKey)
+	statusCode, fwdErr := videoForwardContent(ctx, c, videoUpstreamPathForChannel(channel, entry.mediaKind, taskID, true), channel, channelKey)
 	if fwdErr != nil {
 		metrics.Save(ctx, false, fwdErr, nil)
 		status, code, message := relayErrorResponse(fwdErr)
@@ -724,7 +756,7 @@ func VideoTaskPollStatus(ctx context.Context, channel *model.Channel, channelKey
 		return 0, nil, fmt.Errorf("video poll: upstream task id is empty")
 	}
 
-	targetURL, err := xurl.JoinOpenAIPath(channel.GetBaseUrl(), videoUpstreamPath(mediaKind, upstreamTaskID, false))
+	targetURL, err := xurl.JoinOpenAIPath(channel.GetBaseUrl(), videoUpstreamPathForChannel(channel, mediaKind, upstreamTaskID, false))
 	if err != nil {
 		return 0, nil, fmt.Errorf("failed to build video poll url: %w", err)
 	}

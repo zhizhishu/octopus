@@ -871,8 +871,10 @@ func imagesAttempt(
 	// 构建 URL。Images 是 OpenAI-compatible API，规范化 base URL 时会清理
 	// /v1 后缀；这里必须重新补 canonical /v1/images/*，否则规范化后的
 	// https://api.openai.com 会被误打到 /images/*。
+	// 渠道的 openai_images_path 非空时，用它替换 "/v1/images" 这段前缀（操作段
+	// /generations|/edits|/variations 仍保留）；空 = 与改动前逐字节相同。
 	baseURL := channel.GetBaseUrl()
-	targetURL, err := xurl.JoinOpenAIPath(baseURL, "/v1"+endpoint)
+	targetURL, err := xurl.JoinOpenAIPath(baseURL, channel.GetOpenAIImagesPath(endpoint))
 	if err != nil {
 		return 0, false, nil, "", fmt.Errorf("failed to build upstream image url: %w", err)
 	}

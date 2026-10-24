@@ -18,7 +18,6 @@ import (
 	"github.com/zhizhishu/octopus/internal/transformer/model"
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 	openaiOutbound "github.com/zhizhishu/octopus/internal/transformer/outbound/openai"
-	"github.com/zhizhishu/octopus/internal/transformer/outbound/volcengine"
 )
 
 func newEmbeddingInternalRequest(modelName string) *model.InternalLLMRequest {
@@ -31,8 +30,8 @@ func newEmbeddingInternalRequest(modelName string) *model.InternalLLMRequest {
 }
 
 // 整条 relay 链路：POST /v1/embeddings → 选路（能力位准入 + 出站纠正）→ 上游。
-// 火山渠道勾上 embeddings 后，上游必须收到**嵌入报文**打在渠道配置的嵌入路径上，
-// 而不是被 ResponseOutbound 序列化成 responses body、也不是被类型兼容检查挡掉。
+// 一个 chat 型渠道勾上 embeddings 后，上游必须收到**嵌入报文**打在渠道配置的嵌入路径上，
+// 而不是被它自带的 ResponseOutbound 序列化成 responses body、也不是被类型兼容检查挡掉。
 func TestRelayRoutesEmbeddingToCapabilityChannel(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx := setupRelayErrorDB(t)
@@ -68,11 +67,11 @@ func TestRelayRoutesEmbeddingToCapabilityChannel(t *testing.T) {
 	t.Cleanup(upstream.Close)
 
 	channel := dbmodel.Channel{
-		Name:                 "volc-embedding-capability",
-		Type:                 outbound.OutboundTypeVolcengine,
+		Name:                 "capability-embedding-relay",
+		Type:                 outbound.OutboundTypeOpenAIResponse,
 		Enabled:              true,
 		BaseUrls:             []dbmodel.BaseUrl{{URL: upstream.URL}},
-		Keys:                 []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "sk-volc"}},
+		Keys:                 []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "sk-capability"}},
 		Model:                "doubao-embedding",
 		Capabilities:         []string{dbmodel.CapabilityEmbeddings},
 		OpenAIEmbeddingsPath: "/embeddings",
@@ -131,13 +130,13 @@ func TestGroupRaceChannelCompatibleUsesCapabilityBit(t *testing.T) {
 	if !groupRaceChannelCompatible(newEmbeddingInternalRequest("m"), raceChannel(outbound.OutboundTypeOpenAIEmbedding)) {
 		t.Fatalf("存量嵌入渠道(type 5)必须仍能进入 race 分组")
 	}
-	if groupRaceChannelCompatible(newEmbeddingInternalRequest("m"), raceChannel(outbound.OutboundTypeVolcengine)) {
-		t.Fatalf("没填能力位的火山渠道不得凭空获得嵌入流量")
+	if groupRaceChannelCompatible(newEmbeddingInternalRequest("m"), raceChannel(outbound.OutboundTypeOpenAIResponse)) {
+		t.Fatalf("没填能力位的 chat 型渠道不得凭空获得嵌入流量")
 	}
-	if !groupRaceChannelCompatible(newEmbeddingInternalRequest("m"), raceChannel(outbound.OutboundTypeVolcengine, dbmodel.CapabilityEmbeddings)) {
-		t.Fatalf("填了 embeddings 能力位的火山渠道必须能进入嵌入请求的 race 分组")
+	if !groupRaceChannelCompatible(newEmbeddingInternalRequest("m"), raceChannel(outbound.OutboundTypeOpenAIResponse, dbmodel.CapabilityEmbeddings)) {
+		t.Fatalf("填了 embeddings 能力位的 chat 型渠道必须能进入嵌入请求的 race 分组")
 	}
-	if !groupRaceChannelCompatible(newChatInternalRequest("m"), raceChannel(outbound.OutboundTypeVolcengine)) {
+	if !groupRaceChannelCompatible(newChatInternalRequest("m"), raceChannel(outbound.OutboundTypeOpenAIResponse)) {
 		t.Fatalf("存量 chat 渠道的 race 兼容判定不得变化")
 	}
 }
@@ -155,16 +154,16 @@ func newChatInternalRequest(modelName string) *model.InternalLLMRequest {
 }
 
 // 契约第四节：渠道类型决定"能接什么"，不决定"嵌入报文长什么样"。
-// 火山渠道（type 4）勾上 embeddings 能力位后，嵌入请求必须交给通用
+// 一个 chat 型渠道勾上 embeddings 能力位后，嵌入请求必须交给通用
 // EmbeddingOutbound，而不是该渠道的出厂适配器 ResponseOutbound —— 后者会把嵌入请求
 // 序列化成 responses body，发出去的东西是错的。
 func TestOutboundAdapterForEmbeddingRequestUsesEmbeddingOutbound(t *testing.T) {
-	adapter := outboundAdapterFor(newEmbeddingInternalRequest("doubao-embedding"), outbound.OutboundTypeVolcengine)
+	adapter := outboundAdapterFor(newEmbeddingInternalRequest("doubao-embedding"), outbound.OutboundTypeOpenAIResponse)
 	if _, ok := adapter.(*openaiOutbound.EmbeddingOutbound); !ok {
-		t.Fatalf("嵌入请求 + 火山渠道选出的适配器 = %T, want *openai.EmbeddingOutbound", adapter)
+		t.Fatalf("嵌入请求 + chat 型渠道选出的适配器 = %T, want *openai.EmbeddingOutbound", adapter)
 	}
-	if _, wrong := adapter.(*volcengine.ResponseOutbound); wrong {
-		t.Fatalf("嵌入请求绝不能落到 volcengine.ResponseOutbound")
+	if _, wrong := adapter.(*openaiOutbound.ResponseOutbound); wrong {
+		t.Fatalf("嵌入请求绝不能落到 ResponseOutbound")
 	}
 }
 
@@ -182,7 +181,7 @@ func TestOutboundAdapterForChatRequestKeepsChannelTypeAdapter(t *testing.T) {
 		channelType outbound.OutboundType
 		want        any
 	}{
-		{outbound.OutboundTypeVolcengine, &volcengine.ResponseOutbound{}},
+		{outbound.OutboundTypeOpenAIResponse, &openaiOutbound.ResponseOutbound{}},
 		{outbound.OutboundTypeOpenAIChat, &openaiOutbound.ChatOutbound{}},
 		{outbound.OutboundTypeOpenAIEmbedding, &openaiOutbound.EmbeddingOutbound{}},
 	}
@@ -201,7 +200,7 @@ func TestOutboundAdapterForUnknownChannelTypeStaysNil(t *testing.T) {
 	if adapter := outboundAdapterFor(newEmbeddingInternalRequest("m"), unknownType); adapter != nil {
 		t.Fatalf("未知渠道类型的嵌入请求返回了 %T, want nil", adapter)
 	}
-	if adapter := outboundAdapterFor(nil, outbound.OutboundTypeVolcengine); adapter == nil {
+	if adapter := outboundAdapterFor(nil, outbound.OutboundTypeOpenAIChat); adapter == nil {
 		t.Fatalf("nil 请求必须原样返回渠道类型对应的适配器")
 	}
 }
@@ -210,7 +209,7 @@ func TestOutboundAdapterForUnknownChannelTypeStaysNil(t *testing.T) {
 // （model + input），不能有 responses/chat 的字段。
 func TestEmbeddingOutboundSelectionProducesEmbeddingBody(t *testing.T) {
 	internalRequest := newEmbeddingInternalRequest("doubao-embedding-text-240715")
-	adapter := outboundAdapterFor(internalRequest, outbound.OutboundTypeVolcengine)
+	adapter := outboundAdapterFor(internalRequest, outbound.OutboundTypeOpenAIResponse)
 
 	outboundRequest, err := adapter.TransformRequest(context.Background(), internalRequest, "https://ark.example.com/api/v3", "sk-test")
 	if err != nil {
@@ -238,10 +237,10 @@ func TestEmbeddingOutboundSelectionProducesEmbeddingBody(t *testing.T) {
 }
 
 // 渠道配了 openai_embeddings_path 时，relay 的 base url 必须换成嵌入专属路径，
-// 出站打到上游真实端点（火山是 /api/v3/embeddings，不是 /api/v3/v1/embeddings）。
+// 出站打到上游真实端点（/api/v3/embeddings，而不是 /api/v3/v1/embeddings）。
 func TestOutboundBaseURLUsesEmbeddingsPathForEmbeddingRequests(t *testing.T) {
 	channel := &dbmodel.Channel{
-		Type:                 outbound.OutboundTypeVolcengine,
+		Type:                 outbound.OutboundTypeOpenAIResponse,
 		BaseUrls:             []dbmodel.BaseUrl{{URL: "https://ark.example.com/api/v3"}},
 		OpenAIEmbeddingsPath: "/embeddings",
 	}
@@ -254,7 +253,7 @@ func TestOutboundBaseURLUsesEmbeddingsPathForEmbeddingRequests(t *testing.T) {
 	}
 
 	// 一路走到报文：配了自定义路径时，出站必须打在上游真实端点上，
-	// 不能是 JoinOpenAIPath 拼出来的 /api/v3/v1/embeddings（火山会 404）。
+	// 不能是 JoinOpenAIPath 拼出来的 /api/v3/v1/embeddings（那是个不存在的地址）。
 	adapter := outboundAdapterFor(embeddingAttempt.internalRequest, channel.Type)
 	outboundRequest, err := adapter.TransformRequest(context.Background(), embeddingAttempt.internalRequest, embeddingAttempt.outboundBaseURL(), "sk-test")
 	if err != nil {

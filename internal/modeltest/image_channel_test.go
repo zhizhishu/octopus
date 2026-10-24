@@ -202,7 +202,7 @@ func TestRunChannelImageEndpointGoesThroughRealImagesPath(t *testing.T) {
 }
 
 // A4：不支持图片的渠道类型必须**明确跳过并记录原因**，不许硬塞一个假端点。
-// 判据是 relay 自己的调度判据：Anthropic / Volcengine / OpenAIEmbedding 三类在
+// 判据是 relay 自己的调度判据：Anthropic / 退役的 4 号位 / OpenAIEmbedding 三类在
 // ImagesHandler 里永远被 "unsupported channel type" 跳过，测它们等于测一条
 // 生产走不通的路。
 func TestRunChannelImageEndpointSkipsUnsupportedChannelTypes(t *testing.T) {
@@ -211,7 +211,9 @@ func TestRunChannelImageEndpointSkipsUnsupportedChannelTypes(t *testing.T) {
 	upstream, hits := imageTestUpstream(t)
 	for _, channelType := range []outbound.OutboundType{
 		outbound.OutboundTypeAnthropic,
-		outbound.OutboundTypeVolcengine,
+		// 4 号位是退役的渠道类型（火山那条线已砍掉，编号永久空着）：
+		// 存量行仍可能长这样，必须被 Skip 而不是被当成别的类型发出去。
+		outbound.OutboundType(4),
 		outbound.OutboundTypeOpenAIEmbedding,
 	} {
 		response, err := RunChannel(ctx, dbmodel.Channel{

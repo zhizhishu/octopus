@@ -392,6 +392,18 @@ func ChannelUpdate(req *model.ChannelUpdateRequest, ctx context.Context) (*model
 		selectFields = append(selectFields, "open_ai_embeddings_path")
 		updates.OpenAIEmbeddingsPath = *req.OpenAIEmbeddingsPath
 	}
+	if req.OpenAIImagesPath != nil {
+		selectFields = append(selectFields, "open_ai_images_path")
+		updates.OpenAIImagesPath = *req.OpenAIImagesPath
+	}
+	if req.OpenAIVideosPath != nil {
+		selectFields = append(selectFields, "open_ai_videos_path")
+		updates.OpenAIVideosPath = *req.OpenAIVideosPath
+	}
+	if req.OpenAITasksPath != nil {
+		selectFields = append(selectFields, "open_ai_tasks_path")
+		updates.OpenAITasksPath = *req.OpenAITasksPath
+	}
 
 	// 只有当有字段需要更新时才执行 UPDATE
 	if len(selectFields) > 0 {

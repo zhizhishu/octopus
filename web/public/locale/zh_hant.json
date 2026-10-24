@@ -445,7 +445,7 @@
       "dialogHint": "各欄位留空即回落對應的全域預設設定；只需填寫要區分的欄位。",
       "nameRequired": "請填寫 Profile 名稱",
       "followGlobal": "預設（跟隨全域）",
-      "genericUAHint": "統一 User-Agent，作用於非 Claude/Codex 渠道（Gemini / 火山引擎 / 普通 OpenAI Chat），這些渠道預設不帶 UA。留空即保持現狀。",
+      "genericUAHint": "統一 User-Agent，作用於非 Claude/Codex 渠道（Gemini / 普通 OpenAI Chat），這些渠道預設不帶 UA。留空即保持現狀。",
       "groups": {
         "claude": "Claude 指紋",
         "codex": "Codex 指紋",
@@ -1076,7 +1076,6 @@
       "typeOpenAIEmbedding": "OpenAI Embedding",
       "typeAnthropic": "Anthropic",
       "typeGemini": "Gemini",
-      "typeVolcengine": "火山引擎",
       "typeCustomOpenAIChat": "自訂 OpenAI Chat",
       "openaiChatPath": "Chat 端點路徑",
       "openaiModelsPath": "Models 端點路徑",

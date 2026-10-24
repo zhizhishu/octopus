@@ -14,13 +14,12 @@ import (
 	transformermodel "github.com/zhizhishu/octopus/internal/transformer/model"
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 	openaiOutbound "github.com/zhizhishu/octopus/internal/transformer/outbound/openai"
-	"github.com/zhizhishu/octopus/internal/transformer/outbound/volcengine"
 )
 
-func volcengineEmbeddingChannel() dbmodel.Channel {
+func capabilityEmbeddingChannel() dbmodel.Channel {
 	return dbmodel.Channel{
-		Name:         "volc-embed",
-		Type:         outbound.OutboundTypeVolcengine,
+		Name:         "capability-embed",
+		Type:         outbound.OutboundTypeOpenAIResponse,
 		Enabled:      true,
 		BaseUrls:     []dbmodel.BaseUrl{{URL: "https://ark.example.com/api/v3"}},
 		Keys:         []dbmodel.ChannelKey{{ID: 1, Enabled: true, ChannelKey: "sk-test"}},
@@ -29,30 +28,30 @@ func volcengineEmbeddingChannel() dbmodel.Channel {
 }
 
 // 契约第四节之二：渠道检测里同一个坑 —— 嵌入端点必须换 adapter，否则一个勾了
-// embeddings 的火山渠道会拿嵌入请求去序列化成 responses body。
+// embeddings 的 chat 型渠道会拿嵌入请求去序列化成 responses body。
 // 存量之所以没暴雷，是因为嵌入渠道必然是 type 5，outbound.Get(5) 正好是
 // EmbeddingOutbound；能力位放开后这个巧合就没了。
 func TestModelTestOutboundAdapterSwapsEmbeddingEndpoint(t *testing.T) {
-	adapter := modelTestOutboundAdapter(outbound.OutboundTypeVolcengine, embeddingTestEndpointName)
+	adapter := modelTestOutboundAdapter(outbound.OutboundTypeOpenAIResponse, embeddingTestEndpointName)
 	if _, ok := adapter.(*openaiOutbound.EmbeddingOutbound); !ok {
-		t.Fatalf("嵌入端点在火山渠道上选出 %T, want *openai.EmbeddingOutbound", adapter)
+		t.Fatalf("嵌入端点在 chat 型渠道上选出 %T, want *openai.EmbeddingOutbound", adapter)
 	}
-	if _, wrong := adapter.(*volcengine.ResponseOutbound); wrong {
-		t.Fatalf("嵌入端点绝不能落到 volcengine.ResponseOutbound")
+	if _, wrong := adapter.(*openaiOutbound.ResponseOutbound); wrong {
+		t.Fatalf("嵌入端点绝不能落到 ResponseOutbound")
 	}
 
 	// 别名端点同样要换（normalizeEndpoint 认 "embeddings"）。
-	if _, ok := modelTestOutboundAdapter(outbound.OutboundTypeVolcengine, "embeddings").(*openaiOutbound.EmbeddingOutbound); !ok {
+	if _, ok := modelTestOutboundAdapter(outbound.OutboundTypeOpenAIResponse, "embeddings").(*openaiOutbound.EmbeddingOutbound); !ok {
 		t.Fatalf("别名端点 embeddings 也必须换到 EmbeddingOutbound")
 	}
 
 	// 存量行为零变化：chat 端点仍然按渠道类型取出厂适配器。
-	chatAdapter := modelTestOutboundAdapter(outbound.OutboundTypeVolcengine, "openai_chat")
-	if got, want := fmt.Sprintf("%T", chatAdapter), "*volcengine.ResponseOutbound"; got != want {
-		t.Fatalf("chat 端点 + 火山渠道选出 %s, want %s", got, want)
+	chatAdapter := modelTestOutboundAdapter(outbound.OutboundTypeOpenAIResponse, "openai_chat")
+	if got, want := fmt.Sprintf("%T", chatAdapter), "*openai.ResponseOutbound"; got != want {
+		t.Fatalf("chat 端点 + chat 型渠道选出 %s, want %s", got, want)
 	}
 	// 空端点按默认端点（openai_chat）处理，与 NewProbeSender 的默认语义一致。
-	if got, want := fmt.Sprintf("%T", modelTestOutboundAdapter(outbound.OutboundTypeVolcengine, "")), "*volcengine.ResponseOutbound"; got != want {
+	if got, want := fmt.Sprintf("%T", modelTestOutboundAdapter(outbound.OutboundTypeOpenAIResponse, "")), "*openai.ResponseOutbound"; got != want {
 		t.Fatalf("空端点默认不是嵌入端点: got %s, want %s", got, want)
 	}
 
@@ -62,9 +61,9 @@ func TestModelTestOutboundAdapterSwapsEmbeddingEndpoint(t *testing.T) {
 	}
 }
 
-// 探针侧：勾了 embeddings 能力位的火山渠道 + 嵌入端点，适配器必须是 EmbeddingOutbound。
+// 探针侧：勾了 embeddings 能力位的 chat 型渠道 + 嵌入端点，适配器必须是 EmbeddingOutbound。
 func TestNewProbeSenderSelectsEmbeddingOutboundForCapabilityChannel(t *testing.T) {
-	sender, err := NewProbeSender(volcengineEmbeddingChannel(), "doubao-embedding", embeddingTestEndpointName)
+	sender, err := NewProbeSender(capabilityEmbeddingChannel(), "doubao-embedding", embeddingTestEndpointName)
 	if err != nil {
 		t.Fatalf("NewProbeSender: %v", err)
 	}
@@ -103,9 +102,9 @@ func TestNewProbeSenderGateUsesCapabilityBit(t *testing.T) {
 	}
 }
 
-// 端到端形态证据：火山渠道 + 嵌入端点，选出来的适配器构建出的 body 只有嵌入字段。
-func TestEmbeddingEndpointOnVolcengineChannelBuildsEmbeddingBody(t *testing.T) {
-	channel := volcengineEmbeddingChannel()
+// 端到端形态证据：chat 型渠道 + 嵌入端点，选出来的适配器构建出的 body 只有嵌入字段。
+func TestEmbeddingEndpointOnCapabilityChannelBuildsEmbeddingBody(t *testing.T) {
+	channel := capabilityEmbeddingChannel()
 	runner := &modelRunner{request: dbmodel.ModelTestRequest{
 		Endpoint: embeddingTestEndpointName,
 		Prompt:   "请只回答算式结果，不要解释：1 + 1 = ?",
@@ -168,8 +167,8 @@ func TestRunChannelEmbeddingProbeOnCapabilityChannel(t *testing.T) {
 	t.Cleanup(upstream.Close)
 
 	response, err := RunChannel(ctx, dbmodel.Channel{
-		Name:                 "volc-embedding-capability",
-		Type:                 outbound.OutboundTypeVolcengine,
+		Name:                 "capability-embedding-probe",
+		Type:                 outbound.OutboundTypeOpenAIResponse,
 		Enabled:              false,
 		BaseUrls:             []dbmodel.BaseUrl{{URL: upstream.URL}},
 		Keys:                 []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "embed-key"}},
@@ -189,7 +188,7 @@ func TestRunChannelEmbeddingProbeOnCapabilityChannel(t *testing.T) {
 	if !result.Success {
 		t.Fatalf("unexpected result: %#v", result)
 	}
-	// 自定义路径 /embeddings 直接挂在 base url 后面（火山 /api/v3/embeddings 同形），
+	// 自定义路径 /embeddings 直接挂在 base url 后面（/api/v3/embeddings 这种形态），
 	// 不能被拼成 /v1/embeddings。
 	if sawPath != "/embeddings" {
 		t.Fatalf("upstream saw path %q, want /embeddings", sawPath)
@@ -253,7 +252,7 @@ func TestRunChannelGateUsesCapabilityBit(t *testing.T) {
 // 检测与真实转发同一条链路：渠道配了 openai_embeddings_path 时，检测的 base url
 // 必须与 relay 的 outboundBaseURL 一致。
 func TestModelTestOutboundBaseURLUsesEmbeddingsPath(t *testing.T) {
-	channel := volcengineEmbeddingChannel()
+	channel := capabilityEmbeddingChannel()
 	channel.OpenAIEmbeddingsPath = "/embeddings"
 	embeddingRequest := &transformermodel.InternalLLMRequest{
 		Model:          "doubao-embedding",

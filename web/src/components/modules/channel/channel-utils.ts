@@ -7,7 +7,6 @@ export type ChannelEndpointFamilyId =
     | 'anthropic'
     | 'gemini'
     | 'embedding'
-    | 'volcengine'
     | 'custom_openai_chat';
 
 export type ChannelEndpointFilter = ChannelEndpointFamilyId | 'all';
@@ -90,17 +89,6 @@ export const CHANNEL_ENDPOINT_FAMILIES: ChannelEndpointFamily[] = [
         accent: 'bg-teal-500',
         badge: 'border-teal-500/25 bg-teal-500/10 text-teal-700 dark:text-teal-300',
         types: [ChannelType.OpenAIEmbedding],
-    },
-    {
-        id: 'volcengine',
-        label: 'Volcengine',
-        shortLabel: 'Volcengine',
-        lane: 'VOL',
-        description: '火山方舟兼容端点',
-        tone: 'from-red-500/10 via-transparent to-transparent',
-        accent: 'bg-red-500',
-        badge: 'border-red-500/25 bg-red-500/10 text-red-700 dark:text-red-300',
-        types: [ChannelType.Volcengine],
     },
 ];
 

@@ -14,8 +14,8 @@ func TestChannelCreateAndUpdatePersistCapabilities(t *testing.T) {
 	ctx := setupChannelImportTest(t)
 
 	channel := model.Channel{
-		Name:                 "volc-capability",
-		Type:                 outbound.OutboundTypeVolcengine,
+		Name:                 "capability-channel",
+		Type:                 outbound.OutboundTypeOpenAIResponse,
 		Enabled:              true,
 		BaseUrls:             []model.BaseUrl{{URL: "https://ark.example.com/api/v3"}},
 		Keys:                 []model.ChannelKey{{ChannelKey: "sk-key-1", Enabled: true}},
@@ -53,7 +53,7 @@ func TestChannelCreateAndUpdatePersistCapabilities(t *testing.T) {
 		t.Fatalf("更新后 capabilities = %v, want empty", updated.Capabilities)
 	}
 	if updated.SupportsCapability(model.CapabilityEmbeddings) {
-		t.Fatalf("清空能力位后，火山渠道必须回到「不能承接嵌入」")
+		t.Fatalf("清空能力位后，chat 型渠道必须回到「不能承接嵌入」")
 	}
 
 	// 更新：重新勾上 + 改嵌入路径。

@@ -694,8 +694,7 @@ func isOpenAIWireChannelType(channelType outbound.OutboundType) bool {
 	case outbound.OutboundTypeOpenAIChat,
 		outbound.OutboundTypeCustomOpenAIChat,
 		outbound.OutboundTypeOpenAIResponse,
-		outbound.OutboundTypeOpenAIEmbedding,
-		outbound.OutboundTypeVolcengine:
+		outbound.OutboundTypeOpenAIEmbedding:
 		return true
 	default:
 		return false

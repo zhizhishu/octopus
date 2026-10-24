@@ -70,16 +70,6 @@ export function defaultModelTestEndpointForChannel(type: ChannelType): ModelTest
     switch (type) {
         case ChannelType.OpenAIResponse:
             return 'openai_responses';
-        case ChannelType.Volcengine:
-            // 火山渠道的出站**固定**是 /responses（见 outbound/volcengine/response.go:107
-            // `parsedUrl.Path = parsedUrl.Path + "/responses"`），它根本不发
-            // /v1/chat/completions。早先落进 default 分支按 openai_chat 测，
-            // 测的是一条这个渠道永远不会走的路径——测出来的绿是假的。
-            //
-            // 注意这里用 openai_responses 只是为了对上"真实出站是 responses 形状"，
-            // 但火山渠道的 OutboundType 是 Volcengine 而不是 OpenAIResponse，
-            // 所以 runner 里那条"codex 渠道强制流式"的分支不会误伤它。
-            return 'openai_responses';
         case ChannelType.Anthropic:
             return 'anthropic_messages';
         case ChannelType.Gemini:
@@ -112,15 +102,14 @@ export function channelCloakApplies(mode?: string): boolean {
  * 5) channelType = Anthropic 且 cloak 生效
  *
  * 🔴 第 2 条为什么不能只看端点：强制流式来源于"真 codex 客户端永远流式"这条
- * shape 约束（后端 runner.go:763 那条分支）。它绑的是 OutboundType 而不是端点名。
- * 火山渠道的默认测试端点是 openai_responses（它的出站固定 /responses），但它的
- * OutboundType 是 Volcengine —— 后端既不给它强制流式（runner.go:763 只匹配
- * OutboundTypeOpenAIResponse），也不套 codex 指纹（runner.go:1156-1161 的
- * switch 里 Volcengine 落 default 返回 false）。只看端点会让前端锁死流式开关、
- * 还显示"codex CLI"身份，而实际出站是通用 UA 的非流式 —— 界面在撒谎。
+ * shape 约束（后端 runner.go:763 那条分支）。它绑的是 OutboundType 而不是端点名：
+ * 普通 chat 渠道的 OutboundType 不是 OpenAIResponse，后端既不给它强制流式
+ * （runner.go:763 只匹配 OutboundTypeOpenAIResponse），也不套 codex 指纹。
+ * 只看端点会让前端锁死流式开关、还显示"codex CLI"身份，而实际出站是通用 UA 的
+ * 非流式 —— 界面在撒谎。
  *
  * 所以判据是：端点选了 responses **并且**渠道本身是 codex 形状（或渠道类型未知，
- * 沿用旧行为）。Volcengine / 普通 chat 渠道选 responses 端点时不锁流。
+ * 沿用旧行为）。普通 chat 渠道选 responses 端点时不锁流。
  */
 export function shouldForceChannelTestStream(args: {
     models?: string | string[];
@@ -175,13 +164,13 @@ export function shouldForceChannelTestStream(args: {
  *      → 强制通用 UA，并剥掉 codex 头。**和渠道类型无关。**
  *   2. Anthropic 渠道 → claude CLI。
  *   3. Responses 渠道 → codex CLI（协议本身就是 codex 的）。
- *   4. 其它渠道（含普通 Chat / Volcengine）→ 看 `cloak.shape`：
+ *   4. 其它渠道（含普通 Chat）→ 看 `cloak.shape`：
  *      - 'claude' → claude CLI
  *      - 'codex'  → codex CLI
  *      - 其它/空 → 通用 UA（header_defaults.go:240-246 的 default 分支）
  *
- * 注意 Volcengine 落在最后一条：它出站是 /responses 形状，但**身份是通用 UA**。
- * 早先版本只看端点名，把火山标成 codex —— 界面撒谎。
+ * 注意非 Chat 族渠道落在最后一条：Gemini / Embedding 的出站身份都是通用 UA。
+ * 早先版本只看端点名，把它们标成 codex —— 界面撒谎。
  */
 export function channelTestIdentityFor(
     // 收 string 而不是 ModelTestEndpoint：后端 normalizeEndpoint 还认 'images' /
@@ -212,12 +201,12 @@ export function channelTestIdentityFor(
     //
     // header_defaults.go:210 的 `case OutboundTypeOpenAIChat,
     // OutboundTypeCustomOpenAIChat` 才进 `switch chatChannelShape(channel)`；
-    // Gemini / Volcengine / Embedding 全部落到 :239 的 default，直接走
+    // Gemini / Embedding 全部落到 :239 的 default，直接走
     // applyGenericHeaderDefaultsForChannel，根本不看 shape。
     // channelTLSFace（:279-291）同样只让这两类读 shape。
     //
     // 所以不能"对剩下的渠道一律读 shape"：Form.tsx:766 切渠道类型时保留原
-    // cloak_shape，一个配过 codex 的 Chat 渠道改成火山后，shape 还留在配置里，
+    // cloak_shape，一个配过 codex 的 Chat 渠道改成 Gemini 后，shape 还留在配置里，
     // 前端会显示 codex 而实际发的是通用 UA —— 又一次界面撒谎。
     const isChatFamily = channelType === ChannelType.OpenAIChat ||
         channelType === ChannelType.CustomOpenAIChat;
