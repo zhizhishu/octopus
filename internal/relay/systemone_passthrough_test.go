@@ -229,9 +229,15 @@ func TestSystemoneUsageIsBilledFromDecisionResponse(t *testing.T) {
 		t.Fatalf("create channel: %v", err)
 	}
 
-	// 🔴 必须显式配价。price.GetLLMPrice 返回 nil 时 buildBillingSnapshot 在
-	// 算 token 之前就 return 了（见 raw_protocol.go 里 modelPrice == nil 那条），
-	// 于是「token 记对了、钱是 0」——只断言 token 的测试会绿得毫无意义。
+	// 🔴 必须显式配价。
+	//
+	// 调用顺序（别弄反，容易说错）：SetUsage 先照抄 token —— InputToken /
+	// OutputToken 在 raw_protocol.go 的 SetUsage 开头就写进 Stats 了 —— 然后才
+	// 调 buildBillingSnapshot 算钱。而 buildBillingSnapshot 里
+	// `if modelPrice == nil { return snapshot }` 在**算钱之前**就返回。
+	// 所以缺价的后果是：**token 记对了，金额是 0**，不是两者一起清零。
+	// 只断言 token 的测试对"钱算没算"完全无感，绿得毫无意义。
+	//
 	// 配一个能整除的价：input 每百万 3.0、output 每百万 15.0，
 	// 281 输入 → 281*3*1e-6，20 输出 → 20*15*1e-6。
 	const (
