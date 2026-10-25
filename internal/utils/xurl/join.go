@@ -133,16 +133,18 @@ func JoinOpenAIPath(baseURL string, endpoint string) (string, error) {
 		"/rerank",
 		// 决策类上游（systemone）的两种端点写法都剥掉，理由同下面 /models：
 		// 用户把完整路径填进 base 是常见填法，不剥就会叠成 /v1/systemone/v1/systemone。
-		// 注意这里剥的是**以 /systemone 结尾**的路径；base 填 …/v1/systemone 时
-		// 剩下 …/v1，正是 /v1/systemone 该拼的前缀，不会被吃掉版本段。
 		//
-		// 已知副作用（和 /rerank、/models 那几条一模一样，不是本行引入的新毛病）：
-		// 后缀表只按「结尾相同」剥，不看语义，所以一个**真的把服务挂在
-		// …/my/systemone 下、又走 chat 端点**的 base，末尾那段也会被剥掉。
-		//   base=…/my/systemone + /v1/chat/completions → …/my/v1/chat/completions
-		// 判断过要不要为此加白名单：这条取舍在仓库里已经对 12 个端点做过一遍，
-		// 单独为 systemone 破例只会让表更不可预测；而这类上游文档给的就是全路径
-		// 端点（base 恰好以 /systemone 结尾），正是表要服务的场景。
+		// 机制（别照直觉猜，这里容易想错）：TrimPathSuffixes 按**表内顺序**取第一个
+		// 尾巴匹配项，命中就整段剥掉、立即返回，不再看后面的项。"/v1/systemone" 排在
+		// "/systemone" 前面，所以 base=…/v1/systemone 是被**整段**剥成 …，而不是先剥
+		// 成 …/v1 再留给下一步；补回 /v1 的是目标端点本身，不是这里剩下的残段。
+		//
+		// 已知副作用（和 /rerank、/models 那几条同源）：后缀表只按「结尾相同」剥，
+		// 不看语义，所以一个**真的把服务挂在 …/my/systemone 下**的 base 会丢掉末尾那段。
+		// 代价被限制在 systemone 自身：JoinOpenAIPath 里这张表虽然由 chat/embeddings
+		// 等端点共用，但只有 base 尾巴恰好是 /systemone 的地址会受影响——正常聊天上游
+		// 的 base 不会长这样。真要彻底消歧，得在配置层区分「服务根地址」与「完整端点
+		// 地址」，单靠字符串后缀匹配做不到，属独立改造。
 		"/v1/systemone",
 		"/systemone",
 		"/v1/models",

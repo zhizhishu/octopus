@@ -409,3 +409,54 @@ func TestCustomPathJoinKeepsBasePathAndAvoidsDoublePrefix(t *testing.T) {
 		}
 	}
 }
+
+// 新增 "/systemone" 后缀的**影响面锁定**。
+//
+// 后缀表是 chat / embeddings / images / videos / models 等端点共用的，所以任何
+// 新加的后缀都有可能顺带改变别的端点的拼接结果。2026-10-25 加 systemone 时，
+// 唯一被波及的形态是「base 尾巴恰好是 /systemone」；正常上游（根地址、…/v1、
+// 厂商前缀）拼接结果逐个钉在这里，改动一旦外溢立刻红。
+//
+// 这不是为了证明"能跑"，是为了证明**没有波及其他端点** —— 两者不是一回事。
+func TestSystemoneSuffixDoesNotDisturbOtherEndpoints(t *testing.T) {
+	// 1) 正常 base 形态：加 systemone 后缀前后必须完全不变。
+	unaffected := []struct{ base, endpoint, want string }{
+		{"https://upstream.example", "/v1/chat/completions", "https://upstream.example/v1/chat/completions"},
+		{"https://upstream.example/v1", "/v1/chat/completions", "https://upstream.example/v1/chat/completions"},
+		{"https://upstream.example/openai/v1", "/v1/chat/completions", "https://upstream.example/openai/v1/chat/completions"},
+		{"https://upstream.example/v1", "/v1/embeddings", "https://upstream.example/v1/embeddings"},
+		{"https://upstream.example/v1", "/v1/models", "https://upstream.example/v1/models"},
+		{"https://upstream.example/v1", "/v1/images/generations", "https://upstream.example/v1/images/generations"},
+		// 尾巴是常见服务段名的 base：新加任何后缀都必须不碰这里。
+		{"https://upstream.example/api", "/v1/chat/completions", "https://upstream.example/api/v1/chat/completions"},
+		{"https://upstream.example/openai", "/v1/chat/completions", "https://upstream.example/openai/v1/chat/completions"},
+		{"https://upstream.example/v1beta", "/v1/chat/completions", "https://upstream.example/v1beta/v1/chat/completions"},
+	}
+	for _, c := range unaffected {
+		got, err := JoinOpenAIPath(c.base, c.endpoint)
+		if err != nil {
+			t.Fatalf("JoinOpenAIPath(%q, %q): %v", c.base, c.endpoint, err)
+		}
+		if got != c.want {
+			t.Fatalf("base=%q endpoint=%q 拼出 %q，要 %q。说明新增的 /systemone 后缀外溢到了正常端点。",
+				c.base, c.endpoint, got, c.want)
+		}
+	}
+
+	// 2) 唯一被波及的形态：base 尾巴是 /systemone 但目标是别的端点。
+	//    这是**已知且接受**的代价（与 /rerank、/models 同源），钉在这里是为了
+	//    它不会在无人知晓的情况下扩散或加重；哪天真要消歧，这里会提醒改造范围。
+	collateral := []struct{ base, endpoint, want string }{
+		{"https://upstream.example/my/systemone", "/v1/chat/completions", "https://upstream.example/my/v1/chat/completions"},
+	}
+	for _, c := range collateral {
+		got, err := JoinOpenAIPath(c.base, c.endpoint)
+		if err != nil {
+			t.Fatalf("JoinOpenAIPath(%q, %q): %v", c.base, c.endpoint, err)
+		}
+		if got != c.want {
+			t.Fatalf("已知副作用的形态变了：base=%q endpoint=%q 现在拼出 %q，记录的是 %q。"+
+				"如果这是有意修正，请同时更新 join.go 的注释和这条用例。", c.base, c.endpoint, got, c.want)
+		}
+	}
+}

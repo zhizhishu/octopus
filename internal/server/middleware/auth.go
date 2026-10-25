@@ -154,6 +154,19 @@ func APIKeyAuth() gin.HandlerFunc {
 	}
 }
 
+// EndpointFamilyForPath 把路径映射到 API key 端点族，供路由表契约测试使用。
+//
+// 为什么需要这个导出：apiKeyEndpointFamilyForPath 是手工维护的清单，加了新 relay
+// 端点却忘了在这里登记时，该路径落到 Unclassified，于是**对所有 key 恒 403**；
+// 而大多数 handler 测试直接调 handler、绕过本中间件，同样全绿 —— 这个漏登记
+// 在测试期没有任何信号，只能等上线后由用户撞上。
+//
+// 导出它是为了让 internal/server/handlers 里的契约测试能拿到"真实注册的路由表"，
+// 逐条问族归属，把漏登记变成一条会红的断言。生产代码请直接用内部函数，别绕这个。
+func EndpointFamilyForPath(path string) model.APIKeyEndpointFamily {
+	return apiKeyEndpointFamilyForPath(path)
+}
+
 func apiKeyEndpointFamilyForPath(path string) model.APIKeyEndpointFamily {
 	path = strings.TrimSpace(path)
 	if strings.HasPrefix(path, "/v1beta/") {
