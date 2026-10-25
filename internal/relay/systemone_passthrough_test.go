@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/op"
+	"github.com/zhizhishu/octopus/internal/price"
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 )
 
@@ -227,6 +229,22 @@ func TestSystemoneUsageIsBilledFromDecisionResponse(t *testing.T) {
 		t.Fatalf("create channel: %v", err)
 	}
 
+	// 🔴 必须显式配价。price.GetLLMPrice 返回 nil 时 buildBillingSnapshot 在
+	// 算 token 之前就 return 了（见 raw_protocol.go 里 modelPrice == nil 那条），
+	// 于是「token 记对了、钱是 0」——只断言 token 的测试会绿得毫无意义。
+	// 配一个能整除的价：input 每百万 3.0、output 每百万 15.0，
+	// 281 输入 → 281*3*1e-6，20 输出 → 20*15*1e-6。
+	const (
+		inputPricePerM  = 3.0
+		outputPricePerM = 15.0
+		wantInputCost   = 281 * inputPricePerM * 1e-6
+		wantOutputCost  = 20 * outputPricePerM * 1e-6
+	)
+	price.SetLLMPrice("upstream-billed", dbmodel.LLMPrice{
+		Input:  inputPricePerM,
+		Output: outputPricePerM,
+	})
+
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	req := httptest.NewRequest(http.MethodPost, "/v1/systemone", strings.NewReader(`{
@@ -261,5 +279,19 @@ func TestSystemoneUsageIsBilledFromDecisionResponse(t *testing.T) {
 	}
 	if log.RequestEndpoint != "systemone" || log.RequestPath != "/v1/systemone" {
 		t.Fatalf("unexpected log endpoint: endpoint=%q path=%q", log.RequestEndpoint, log.RequestPath)
+	}
+
+	// 钱必须真的算出来。这一条是 pi sol 审查指出的缺口：只断言 token 不够，
+	// 因为「价格没配」同样能让整个计费静默归零。
+	if log.BillingModel != "upstream-billed" {
+		t.Fatalf("billing model = %q, want the request model %q", log.BillingModel, "upstream-billed")
+	}
+	if math.Abs(log.FinalInputCost-wantInputCost) > 1e-12 {
+		t.Fatalf("input cost = %v, want %v (input_tokens from the decision response must be charged "+
+			"at the configured price; 0 means either the usage keys or the price lookup broke)",
+			log.FinalInputCost, wantInputCost)
+	}
+	if math.Abs(log.FinalOutputCost-wantOutputCost) > 1e-12 {
+		t.Fatalf("output cost = %v, want %v", log.FinalOutputCost, wantOutputCost)
 	}
 }

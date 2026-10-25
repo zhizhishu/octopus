@@ -135,6 +135,14 @@ func JoinOpenAIPath(baseURL string, endpoint string) (string, error) {
 		// 用户把完整路径填进 base 是常见填法，不剥就会叠成 /v1/systemone/v1/systemone。
 		// 注意这里剥的是**以 /systemone 结尾**的路径；base 填 …/v1/systemone 时
 		// 剩下 …/v1，正是 /v1/systemone 该拼的前缀，不会被吃掉版本段。
+		//
+		// 已知副作用（和 /rerank、/models 那几条一模一样，不是本行引入的新毛病）：
+		// 后缀表只按「结尾相同」剥，不看语义，所以一个**真的把服务挂在
+		// …/my/systemone 下、又走 chat 端点**的 base，末尾那段也会被剥掉。
+		//   base=…/my/systemone + /v1/chat/completions → …/my/v1/chat/completions
+		// 判断过要不要为此加白名单：这条取舍在仓库里已经对 12 个端点做过一遍，
+		// 单独为 systemone 破例只会让表更不可预测；而这类上游文档给的就是全路径
+		// 端点（base 恰好以 /systemone 结尾），正是表要服务的场景。
 		"/v1/systemone",
 		"/systemone",
 		"/v1/models",
