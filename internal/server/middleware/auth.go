@@ -176,6 +176,13 @@ func apiKeyEndpointFamilyForPath(path string) model.APIKeyEndpointFamily {
 		path == "/v1/responses/compact" ||
 		path == "/v1/moderations" ||
 		path == "/v1/rerank" ||
+		// 决策类端点（systemone）。归到 openai-compatible 而不是新开一个 family：
+		// 它和 chat 共用一个上游账号、共用一个 key 额度，管理员配 key 时不会想
+		// 「聊天能过、决策不能过」这种分裂；单开 family 还要动
+		// AllAPIKeyEndpointFamilies、前端勾选框和一次迁移，收益不抵成本。
+		// 🔴 新增任何 /v1/xxx 端点都必须在这里登记，否则落到下面的 Unclassified，
+		// 对所有 key 恒 403 —— 而且绕过中间件的 handler 测试照样全绿，查不出来。
+		path == "/v1/systemone" ||
 		strings.HasPrefix(path, "/v1/images/") ||
 		strings.HasPrefix(path, "/v1/audio/") {
 		return model.APIKeyEndpointFamilyOpenAICompatible

@@ -185,3 +185,81 @@ func TestRawProtocolHandlerSystemonePassesDecisionPayloadThrough(t *testing.T) {
 		})
 	}
 }
+
+// TestSystemoneUsageIsBilledFromDecisionResponse 钉住「决策端点的用量真的进了账单」。
+//
+// 决策类上游的响应体是 {id, model, answers, usage, provider}，没有 choices、
+// 没有 chat 那套结构。会不会被计费完全取决于 usageScanner 能不能在原始响应流里
+// 找到 "usage":{...} 并认出 input_tokens / output_tokens 这两个键。
+//
+// 【为什么要专门钉】buildBillingSnapshot 在 usage == nil 时**直接返回、不计费、
+// 也不告警**（internal/relay/raw_protocol.go 里 `if usage == nil { return snapshot }`）。
+// 也就是说「上游字段名对不上 → 一分钱不算 → 日志里看不出异常」是静默发生的。
+// 这条用例把 input=281 / output=20 变成硬断言：将来谁把 usageScanner 改坏、
+// 或者上游把用量换个地方放，测试立刻红，而不是账目悄悄归零。
+func TestSystemoneUsageIsBilledFromDecisionResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayErrorDB(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// 形态照抄真实决策上游：usage 里是 input_tokens / output_tokens，
+		// 还带一个 cost 字段（oct 不采信上游自报的钱，自己按价目表算）。
+		_, _ = w.Write([]byte(`{
+			"id":"decision_billing","model":"upstream-billed",
+			"answers":{"urgent":{"type":"noul","noul":0.97}},
+			"usage":{"input_tokens":281,"output_tokens":20,"cost":5.901e-06},
+			"provider":"typesafe"
+		}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	channel := dbmodel.Channel{
+		Name:     "systemone-billing",
+		Type:     outbound.OutboundTypeCustomOpenAIChat,
+		Enabled:  true,
+		BaseUrls: []dbmodel.BaseUrl{{URL: upstream.URL}},
+		Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "xpl-billing-key"}},
+		Model:    "upstream-billed",
+		Priority: 1,
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/v1/systemone", strings.NewReader(`{
+		"model":"upstream-billed",
+		"state":"billing probe",
+		"questions":{"urgent":{"type":"noul","instructions":"urgent?"}}
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+	c.Set("api_key_id", 0)
+	c.Set("user_id", 0)
+	c.Set("request_ip", "127.0.0.1")
+
+	RawProtocolHandler(RawProtocolOptions{Endpoint: "/systemone", Name: "systemone"}, c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected success, got %d body %s", rec.Code, rec.Body.String())
+	}
+
+	logs, err := op.RelayLogList(ctx, nil, nil, 1, 10, nil)
+	if err != nil {
+		t.Fatalf("list relay logs: %v", err)
+	}
+	if len(logs) == 0 {
+		t.Fatal("expected a relay log row for the decision call")
+	}
+	log := logs[0]
+	if log.InputTokens != 281 || log.OutputTokens != 20 {
+		t.Fatalf("decision usage was not captured: input=%d output=%d, want 281/20 "+
+			"(if this is 0/0 the response usage keys no longer match usageScanner and billing silently drops to zero)",
+			log.InputTokens, log.OutputTokens)
+	}
+	if log.RequestEndpoint != "systemone" || log.RequestPath != "/v1/systemone" {
+		t.Fatalf("unexpected log endpoint: endpoint=%q path=%q", log.RequestEndpoint, log.RequestPath)
+	}
+}

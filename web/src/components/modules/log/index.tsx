@@ -73,6 +73,10 @@ const endpointFilters = [
     { value: 'edits', label: 'edits' },
     { value: 'moderations', label: 'moderations' },
     { value: 'rerank', label: 'rerank' },
+    // 决策类端点（systemone）。不加这一项的话日志页筛选器选不到，
+    // 只能在搜索框里靠文本匹配摸到 —— 但 request_endpoint 已经落成
+    // "systemone"，加一项就能像其它端点一样筛。
+    { value: 'systemone', label: 'systemone' },
     { value: 'model_test_chat', label: 'model test chat' },
     { value: 'model_test_responses', label: 'model test responses' },
     { value: 'model_test_anthropic_messages', label: 'model test messages' },
