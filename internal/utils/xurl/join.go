@@ -131,6 +131,12 @@ func JoinOpenAIPath(baseURL string, endpoint string) (string, error) {
 		"/moderations",
 		"/v1/rerank",
 		"/rerank",
+		// 决策类上游（systemone）的两种端点写法都剥掉，理由同下面 /models：
+		// 用户把完整路径填进 base 是常见填法，不剥就会叠成 /v1/systemone/v1/systemone。
+		// 注意这里剥的是**以 /systemone 结尾**的路径；base 填 …/v1/systemone 时
+		// 剩下 …/v1，正是 /v1/systemone 该拼的前缀，不会被吃掉版本段。
+		"/v1/systemone",
+		"/systemone",
 		"/v1/models",
 		"/models",
 		// 🔴 这里**不能**再列裸的 "/v1"。

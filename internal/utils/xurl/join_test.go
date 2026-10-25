@@ -115,6 +115,43 @@ func TestJoinOpenAIPathCanonicalizesCommonBaseURLSuffixes(t *testing.T) {
 			endpoint: "/v1/rerank",
 			want:     "https://api.example.test/v1/rerank",
 		},
+		// systemone（决策类上游）的四种 base 填法都必须收敛到同一个正确地址。
+		//
+		// 这些用例钉的是一个真实缺陷：渠道面板上把 base 填成
+		// https://host/v1/systemone（用户照着上游文档原样抄），旧实现只剥
+		// /v1/chat/completions 那类后缀，systemone 原样留着，于是拼出
+		// https://host/v1/systemone/v1/systemone —— 上游 404 Unsupported serving path。
+		// 修法是在 JoinOpenAIPath 的后缀表里登记 /v1/systemone 与 /systemone。
+		{
+			name:     "systemone base without path uses canonical v1 path",
+			baseURL:  "https://api.example.test",
+			endpoint: "/v1/systemone",
+			want:     "https://api.example.test/v1/systemone",
+		},
+		{
+			name:     "systemone base with v1 suffix is not doubled",
+			baseURL:  "https://api.example.test/v1",
+			endpoint: "/v1/systemone",
+			want:     "https://api.example.test/v1/systemone",
+		},
+		{
+			name:     "systemone base accidentally includes full endpoint",
+			baseURL:  "https://api.example.test/v1/systemone",
+			endpoint: "/v1/systemone",
+			want:     "https://api.example.test/v1/systemone",
+		},
+		{
+			name:     "systemone base accidentally includes bare endpoint",
+			baseURL:  "https://api.example.test/systemone",
+			endpoint: "/v1/systemone",
+			want:     "https://api.example.test/v1/systemone",
+		},
+		{
+			name:     "systemone preserves vendor path prefix",
+			baseURL:  "https://gateway.example/api/decision",
+			endpoint: "/v1/systemone",
+			want:     "https://gateway.example/api/decision/v1/systemone",
+		},
 	}
 
 	for _, tt := range tests {
