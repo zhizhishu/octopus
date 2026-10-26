@@ -3,6 +3,7 @@ package modeltest
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -14,6 +15,13 @@ import (
 
 // defaultProbeEndpoint 未指定端点时使用的入站协议。与渠道检测的默认一致。
 const defaultProbeEndpoint = "openai_chat"
+
+// ErrProbeKeysCoolingDown 渠道配了密钥，但此刻**全都处于冷却/熔断**。
+//
+// 必须和"没配密钥"分开：前者等一会儿自己会好，是**可重试的暂时状态**；
+// 后者不修配置永远跑不了。以前两者都是同一句"渠道没有可用的密钥"，
+// 于是冷却期里连点几次得到的都是"没跑成"，看着像渠道坏了。
+var ErrProbeKeysCoolingDown = errors.New("渠道密钥全部在冷却中")
 
 // ProbeSender 把模型校验探针的题目经**渠道检测的既有出站链路**发出。
 //
@@ -65,7 +73,17 @@ func NewProbeSender(channel dbmodel.Channel, upstreamModel, endpoint string) (*P
 		keys = channel.GetAllEnabledChannelKeys()
 	}
 	if len(keys) == 0 {
-		return nil, fmt.Errorf("渠道没有可用的密钥")
+		// 三种"没有密钥"要说成三句话，因为对用户的意思是三件事：
+		//   关熔断的渠道为空 → 一条启用的密钥都没有，去配；
+		//   有启用密钥但全在冷却 → 等它自己恢复（可重试）；
+		//   连启用密钥都没有 → 根本没配（确定性失败）。
+		if channel.DisableCircuitBreaker {
+			return nil, fmt.Errorf("渠道没有启用任何密钥")
+		}
+		if len(channel.GetAllEnabledChannelKeys()) == 0 {
+			return nil, fmt.Errorf("渠道没有配置密钥")
+		}
+		return nil, fmt.Errorf("%w，恢复后会自动重试", ErrProbeKeysCoolingDown)
 	}
 	adapter := modelTestOutboundAdapter(channel.Type, endpoint)
 	if adapter == nil {

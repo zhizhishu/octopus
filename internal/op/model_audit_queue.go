@@ -44,6 +44,20 @@ const (
 	// 退避的意义不是省事：上游抖动往往是短暂的，立刻重试只是把同一堵墙再撞一次，
 	// 还会让"这个渠道真的不通"这个结论迟迟定不下来。
 	auditRetryBaseBackoff = 30 * time.Second
+
+	// AuditRunLease 一条 running 结果的**租约**时长。
+	//
+	// 为什么需要租约：worker 只领取 pending，一旦进程在跑的过程中重启/崩溃，
+	// 那行就永远停在 running——任务进度按"未完成"统计，于是任务永远显示"进行中"，
+	// 用户看到的就是"点了检测却不出结果"。没有任何东西会去捡它。
+	//
+	// 这里不新增列，复用 next_retry_at 存"这行下次可以被捡走的时间"：
+	// pending 行上它是失败退避，running 行上它是租约到期时间，语义都是"到点才允许再动"。
+	AuditRunLease = 120 * time.Second
+
+	// AuditRunHeartbeat 跑的过程中续租的间隔。取租约的 1/4，
+	// 容忍连续丢两次续租而不被误判为死掉。
+	AuditRunHeartbeat = AuditRunLease / 4
 )
 
 // AuditRetryBackoff 第 attempt 次失败后该等多久再试（attempt 从 1 开始）。
@@ -202,6 +216,109 @@ func ModelAuditJobCancel(ctx context.Context, jobID int64) error {
 	return db.GetDB().WithContext(ctx).Model(&model.ModelAuditJob{}).
 		Where("id = ?", jobID).
 		Updates(map[string]any{"status": model.AuditJobCanceled, "ended_at": now}).Error
+}
+
+// AuditLeaseUntil 计算一条刚被领取的结果该持有的租约到期时间。
+func AuditLeaseUntil(now time.Time) time.Time { return now.Add(AuditRunLease) }
+
+// AuditRenewLease 给正在跑的那行续租。返回 false 表示这行已经不该由我们继续跑了
+// （被回收、被取消、或已经不是 running），调用方应当尽快收手。
+//
+// 只在 status 仍是 running 时才续：绝不把已被回收成 pending 的行重新续成"我在跑"。
+func AuditRenewLease(ctx context.Context, resultID int64, until time.Time) bool {
+	if resultID <= 0 {
+		return false
+	}
+	res := db.GetDB().WithContext(ctx).Model(&model.ModelAuditResult{}).
+		Where("id = ? AND status = ?", resultID, model.AuditResultRunning).
+		Update("next_retry_at", until)
+	return res.Error == nil && res.RowsAffected > 0
+}
+
+// AuditReclaimExpired 把租约过期仍是 running 的结果捡回来。
+//
+// 触发场景只有一个：上次跑它的进程已经不在了（重启、崩溃、被 kill），不会再有人
+// 给它续租或收尾。因此这里**只处理过期租约**，绝不无条件把所有 running 重置——
+// 多实例或滚动重启时那样做会让正在跑的那一份被重复执行，等于重复花钱。
+//
+// 处理规则：
+//   - 所属任务已取消 → 标 skipped（用户已经不要了，不该再打上游）；
+//   - 还有重试预算 → 回 pending 并让 attempt+1（和失败重试共用同一份预算）；
+//   - 预算用尽 → 终态 failed，说清楚是"执行中断"，而不是含糊的"没跑成"。
+//
+// 返回被处理的行数，供调用方决定是否刷新任务进度。
+func AuditReclaimExpired(ctx context.Context, limit int) int {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	now := time.Now()
+	var expired []model.ModelAuditResult
+	if err := db.GetDB().WithContext(ctx).
+		Where("status = ?", model.AuditResultRunning).
+		Where("next_retry_at IS NOT NULL AND next_retry_at <= ?", now).
+		Order("id ASC").Limit(limit).Find(&expired).Error; err != nil {
+		return 0
+	}
+	if len(expired) == 0 {
+		return 0
+	}
+
+	touchedJobs := make(map[int64]struct{}, len(expired))
+	for _, res := range expired {
+		// 再核一次状态：查出来到写回去之间它可能已经自己收尾了。
+		// 用 CAS 保证不把刚跑完的行改回 pending（那会重复花钱）。
+		claim := db.GetDB().WithContext(ctx).Model(&model.ModelAuditResult{}).
+			Where("id = ? AND status = ?", res.ID, model.AuditResultRunning)
+		if res.JobID > 0 {
+			touchedJobs[res.JobID] = struct{}{}
+		}
+
+		if jobCanceled(ctx, res.JobID) {
+			claim.Updates(map[string]any{
+				"status":      model.AuditResultSkipped,
+				"error_msg":   "任务已取消，执行中断的行不再重跑",
+				"finished_at": now,
+			})
+			continue
+		}
+
+		attempt := res.Attempt + 1
+		if attempt >= AuditMaxAttempts {
+			claim.Updates(map[string]any{
+				"status":      model.AuditResultFailed,
+				"error_msg":   "执行被中断（进程重启或卡住），已达重试上限",
+				"attempt":     attempt,
+				"finished_at": now,
+			})
+			continue
+		}
+		claim.Updates(map[string]any{
+			"status":        model.AuditResultPending,
+			"attempt":       attempt,
+			"next_retry_at": nil, // 立刻可跑：中断不是上游的错，不必退避
+			"error_msg":     "上次执行没结束就中断了（进程重启或卡住），已重新排队",
+			"finished_at":   nil,
+		})
+	}
+
+	for jobID := range touchedJobs {
+		ModelAuditJobProgress(ctx, jobID)
+	}
+	return len(expired)
+}
+
+// jobCanceled 判断任务是否已被用户取消。查不到任务时按"未取消"处理：
+// 宁可多跑一次能解释的重试，也不要因为一次读失败把用户的检测静默丢掉。
+func jobCanceled(ctx context.Context, jobID int64) bool {
+	if jobID <= 0 {
+		return false
+	}
+	var job model.ModelAuditJob
+	if err := db.GetDB().WithContext(ctx).Select("status").
+		Where("id = ?", jobID).First(&job).Error; err != nil {
+		return false
+	}
+	return job.Status == model.AuditJobCanceled
 }
 
 // ModelAuditJobList 返回最近的检测任务。

@@ -329,6 +329,10 @@ function ResultRow({ result, onOpenReport }: { result: AuditResult; onOpenReport
     }
 
     if (result.status === 'failed' || result.status === 'skipped') {
+        // 失败行也可能带着报告：探针真的打出去了、也真的计过费，只是全部没拿到
+        // 有效响应。后端现在会把这份"每条探针为什么失败"的结构化结果一起存下来，
+        // 所以这里要留一个入口——只显示一句"没跑成"等于把排错线索扔掉。
+        const hasReport = (result.report ?? '').trim() !== '';
         return (
             <div className="rounded-xl bg-background/50 px-2.5 py-2 text-xs">
                 <div className="flex items-center gap-2">
@@ -340,6 +344,15 @@ function ResultRow({ result, onOpenReport }: { result: AuditResult; onOpenReport
                 </div>
                 {result.error_msg && (
                     <p className="mt-1 pl-5 text-[11px] leading-4 text-muted-foreground">{result.error_msg}</p>
+                )}
+                {hasReport && onOpenReport && (
+                    <button
+                        type="button"
+                        onClick={() => onOpenReport(result)}
+                        className="mt-1 pl-5 text-[11px] font-medium text-primary underline-offset-2 hover:underline"
+                    >
+                        {t('queue.failureDetail')}
+                    </button>
                 )}
             </div>
         );

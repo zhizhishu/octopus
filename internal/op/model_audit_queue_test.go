@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -419,5 +420,219 @@ func TestAuditEnqueueKeepsOnlyFreshModels(t *testing.T) {
 	}
 	if results[0].Model != "fresh-model" {
 		t.Fatalf("排进去的应该是 fresh-model，得到 %s", results[0].Model)
+	}
+}
+
+// ---- 租约与过期回收 ----
+//
+// 这一组守的是「点了检测却永远不出结果」最隐蔽的那条路径：worker 只领取 pending，
+// 而进程一旦在跑的过程中重启/崩溃，那行就永远停在 running —— 没有任何东西会去捡它，
+// 任务进度按"未完成"统计，页面永远显示"进行中"。
+
+// markRunningWithLease 模拟 worker 抢占成功：status=running 且带一个租约到期时间。
+func markRunningWithLease(t *testing.T, ctx context.Context, resultID int64, until time.Time, attempt int) {
+	t.Helper()
+	if err := db.GetDB().WithContext(ctx).Model(&model.ModelAuditResult{}).
+		Where("id = ?", resultID).
+		Updates(map[string]any{
+			"status":        model.AuditResultRunning,
+			"next_retry_at": until,
+			"attempt":       attempt,
+		}).Error; err != nil {
+		t.Fatalf("标记 running: %v", err)
+	}
+}
+
+func loadAuditResult(t *testing.T, ctx context.Context, id int64) model.ModelAuditResult {
+	t.Helper()
+	var res model.ModelAuditResult
+	if err := db.GetDB().WithContext(ctx).Where("id = ?", id).First(&res).Error; err != nil {
+		t.Fatalf("读结果行: %v", err)
+	}
+	return res
+}
+
+// TestAuditReclaimExpiredRequeues 守主路径：租约过期 → 回到 pending、attempt+1、立即可跑。
+//
+// 选 pending 而不是直接 failed：中断不是上游的错，重跑一次通常就成功了。
+// next_retry_at 必须清空——中断不需要退避，留着它会让行白等一轮。
+func TestAuditReclaimExpiredRequeues(t *testing.T) {
+	ctx := setupAuditQueueTest(t)
+	ch := ensureAuditChannel(t, "回收渠道")
+
+	jobID, err := ModelAuditEnqueue(ctx, ModelAuditEnqueueInput{
+		ChannelID: ch.ID,
+		Models:    []string{"orphan"},
+	})
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	_, results, err := ModelAuditJobDetail(ctx, jobID)
+	if err != nil {
+		t.Fatalf("detail: %v", err)
+	}
+	resID := results[0].ID
+
+	// 租约已经过期 —— 等价于"跑它的那个进程已经不在了"。
+	markRunningWithLease(t, ctx, resID, time.Now().Add(-time.Minute), 0)
+
+	if n := AuditReclaimExpired(ctx, 50); n != 1 {
+		t.Fatalf("应回收 1 行，实际 %d", n)
+	}
+
+	got := loadAuditResult(t, ctx, resID)
+	if got.Status != model.AuditResultPending {
+		t.Fatalf("回收后应为 pending，得到 %s", got.Status)
+	}
+	if got.Attempt != 1 {
+		t.Fatalf("回收应计入一次尝试，得到 attempt=%d", got.Attempt)
+	}
+	if got.NextRetryAt != nil {
+		t.Fatalf("中断不该退避，next_retry_at 应清空，得到 %v", got.NextRetryAt)
+	}
+	if !strings.Contains(got.ErrorMsg, "中断") {
+		t.Fatalf("error_msg 应说清是中断，得到 %q", got.ErrorMsg)
+	}
+}
+
+// TestAuditReclaimLeavesLiveLeaseAlone 守反向边界：租约没过期的 running 行绝不能被回收。
+//
+// 这条是"重复花钱"的护栏：误回收一条正在跑的检测，同一次检测就会被做两遍、计两次费。
+func TestAuditReclaimLeavesLiveLeaseAlone(t *testing.T) {
+	ctx := setupAuditQueueTest(t)
+	ch := ensureAuditChannel(t, "活跃渠道")
+
+	jobID, err := ModelAuditEnqueue(ctx, ModelAuditEnqueueInput{
+		ChannelID: ch.ID,
+		Models:    []string{"busy"},
+	})
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	_, results, _ := ModelAuditJobDetail(ctx, jobID)
+	resID := results[0].ID
+
+	markRunningWithLease(t, ctx, resID, time.Now().Add(time.Minute), 0)
+
+	if n := AuditReclaimExpired(ctx, 50); n != 0 {
+		t.Fatalf("未过期的租约不该被回收，实际回收 %d 行", n)
+	}
+	if got := loadAuditResult(t, ctx, resID); got.Status != model.AuditResultRunning {
+		t.Fatalf("仍在跑的行应保持 running，得到 %s", got.Status)
+	}
+}
+
+// TestAuditReclaimFailsAfterMaxAttempts 守上限：反复中断最终要认输，且说清是中断。
+//
+// 没有这条，一个每次都把进程搞崩的渠道会让同一行无限重跑。
+func TestAuditReclaimFailsAfterMaxAttempts(t *testing.T) {
+	ctx := setupAuditQueueTest(t)
+	ch := ensureAuditChannel(t, "上限渠道")
+
+	jobID, err := ModelAuditEnqueue(ctx, ModelAuditEnqueueInput{
+		ChannelID: ch.ID,
+		Models:    []string{"crasher"},
+	})
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	_, results, _ := ModelAuditJobDetail(ctx, jobID)
+	resID := results[0].ID
+
+	markRunningWithLease(t, ctx, resID, time.Now().Add(-time.Minute), AuditMaxAttempts-1)
+
+	if n := AuditReclaimExpired(ctx, 50); n != 1 {
+		t.Fatalf("应处理 1 行，实际 %d", n)
+	}
+
+	got := loadAuditResult(t, ctx, resID)
+	if got.Status != model.AuditResultFailed {
+		t.Fatalf("重试预算用尽应落 failed，得到 %s", got.Status)
+	}
+	if !strings.Contains(got.ErrorMsg, "中断") {
+		t.Fatalf("终态原因应说明是执行中断，得到 %q", got.ErrorMsg)
+	}
+	if got.FinishedAt == nil {
+		t.Fatal("终态行必须有结束时间")
+	}
+}
+
+// TestAuditReclaimSkipsCanceledJob 守取消优先：任务已取消时，中断的行标 skipped 而不是重跑。
+//
+// 用户点取消就是不希望再打上游；把它捡回来重跑既违反意图，也白花钱。
+func TestAuditReclaimSkipsCanceledJob(t *testing.T) {
+	ctx := setupAuditQueueTest(t)
+	ch := ensureAuditChannel(t, "取消回收渠道")
+
+	jobID, err := ModelAuditEnqueue(ctx, ModelAuditEnqueueInput{
+		ChannelID: ch.ID,
+		Models:    []string{"canceled-model"},
+	})
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	_, results, _ := ModelAuditJobDetail(ctx, jobID)
+	resID := results[0].ID
+
+	// 先把行标成"正在跑"，再取消任务：取消只处理 pending，跑着的这行会留在 running。
+	markRunningWithLease(t, ctx, resID, time.Now().Add(-time.Minute), 0)
+	if err := ModelAuditJobCancel(ctx, jobID); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+
+	if n := AuditReclaimExpired(ctx, 50); n != 1 {
+		t.Fatalf("应处理 1 行，实际 %d", n)
+	}
+	if got := loadAuditResult(t, ctx, resID); got.Status != model.AuditResultSkipped {
+		t.Fatalf("已取消任务的行应标 skipped，得到 %s", got.Status)
+	}
+}
+
+// TestAuditRenewLeaseOnlyTouchesRunning 守续租的边界：
+// 只有仍在 running 的行才续得上；已被回收成 pending 的不能再被续成"我在跑"。
+func TestAuditRenewLeaseOnlyTouchesRunning(t *testing.T) {
+	ctx := setupAuditQueueTest(t)
+	ch := ensureAuditChannel(t, "续租渠道")
+
+	jobID, err := ModelAuditEnqueue(ctx, ModelAuditEnqueueInput{
+		ChannelID: ch.ID,
+		Models:    []string{"lease-model"},
+	})
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	_, results, _ := ModelAuditJobDetail(ctx, jobID)
+	resID := results[0].ID
+
+	// pending 行续不上：它不属于任何执行者。
+	if AuditRenewLease(ctx, resID, AuditLeaseUntil(time.Now())) {
+		t.Fatal("pending 行不该续租成功")
+	}
+
+	markRunningWithLease(t, ctx, resID, time.Now().Add(-time.Minute), 0)
+	until := AuditLeaseUntil(time.Now())
+	if !AuditRenewLease(ctx, resID, until) {
+		t.Fatal("running 行应能续租")
+	}
+	got := loadAuditResult(t, ctx, resID)
+	if got.NextRetryAt == nil || got.NextRetryAt.Before(time.Now()) {
+		t.Fatalf("续租后到期时间应在未来，得到 %v", got.NextRetryAt)
+	}
+}
+
+// TestAuditLeaseWindowIsSane 守租约与心跳的关系：
+// 心跳必须明显短于租约（否则一次丢心跳就被误判为死），租约也不该长到让用户干等。
+func TestAuditLeaseWindowIsSane(t *testing.T) {
+	if AuditRunLease <= AuditRunHeartbeat {
+		t.Fatalf("租约(%v)必须大于心跳(%v)", AuditRunLease, AuditRunHeartbeat)
+	}
+	if AuditRunLease < 2*AuditRunHeartbeat {
+		t.Fatalf("租约至少要容得下连续两次心跳(%v vs %v)", AuditRunLease, AuditRunHeartbeat)
+	}
+	if AuditRunLease > 10*time.Minute {
+		t.Fatalf("租约过长会让重启后的卡死行干等太久，实际 %v", AuditRunLease)
+	}
+	if AuditRunHeartbeat <= 0 {
+		t.Fatalf("心跳必须为正，实际 %v", AuditRunHeartbeat)
 	}
 }

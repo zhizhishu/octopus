@@ -87,6 +87,8 @@ function logComponents() {
         'next-themes': {},
         zustand: { create: (init) => { const state = init(() => {}); return (select) => select(state); } },
         '@/api/endpoints/log': { getRelayLogSeverity: () => 'success' },
+        '@/api/endpoints/model-audit': { useEnqueueAudit: () => ({ mutateAsync: async () => ({ job_id: 1 }), isPending: false }) },
+        '@/components/common/Toast': { toast: { success() {}, error() {} } },
         './humanize': load('src/components/modules/log/humanize.ts'),
         '@/lib/model-icons': { getModelIcon: () => ({ Avatar: 'Avatar', color: 'grey' }) },
         '@/lib/model-aliases': { marketModelName: (name) => name },

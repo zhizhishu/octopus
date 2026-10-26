@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 
@@ -25,6 +26,12 @@ const (
 	// auditQueuePollInterval worker 空转轮询间隔。没有任务时只读一条带索引的
 	// pending 行，代价可忽略，不需要引入信号量复杂度。
 	auditQueuePollInterval = 3 * time.Second
+
+	// auditReclaimInterval 回收过期租约的扫描间隔。
+	//
+	// 单独一个节拍而不是每 3 秒扫一次：回收是为了救"上次跑它的进程已经不在了"的行，
+	// 早 27 秒发现它没有任何价值，却会白白多打一次库。
+	auditReclaimInterval = 30 * time.Second
 )
 
 var auditQueueStarted bool
@@ -44,6 +51,8 @@ func auditQueueLoop(ctx context.Context) {
 	log.Debugf("model audit queue started")
 	ticker := time.NewTicker(auditQueuePollInterval)
 	defer ticker.Stop()
+	reclaim := time.NewTicker(auditReclaimInterval)
+	defer reclaim.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -51,6 +60,12 @@ func auditQueueLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			auditQueueTick(ctx)
+		case <-reclaim.C:
+			// 捡回"上次跑它的进程已经不在了"的行。没有这一步，一次重启就会让
+			// 那行永远停在 running，任务永远显示"进行中"，用户看到的是"不出结果"。
+			if n := op.AuditReclaimExpired(ctx, 50); n > 0 {
+				log.Warnf("model audit reclaimed %d expired running result(s)", n)
+			}
 		}
 	}
 }
@@ -78,13 +93,39 @@ func auditQueueTick(ctx context.Context) {
 
 // runOneAuditResult 执行单个模型的检测并把结论落库。绝不 panic 外泄。
 func runOneAuditResult(ctx context.Context, res *model.ModelAuditResult) {
-	// 先抢占成 running，避免进程重启后同一行被反复拾取。
+	// 先抢占成 running，并**同时写下租约到期时间**。
+	//
+	// 以前这里只改 status，于是进程一重启那行就永远停在 running：没有续租、
+	// 没有回收，任务进度永远差一格，页面永远显示"进行中"。现在 running 行
+	// 带着"到点可以被回收"的时间戳，进程没了就由 AuditReclaimExpired 捡回来。
 	claim := db.GetDB().WithContext(ctx).Model(&model.ModelAuditResult{}).
 		Where("id = ? AND status = ?", res.ID, model.AuditResultPending).
-		Update("status", model.AuditResultRunning)
+		Updates(map[string]any{
+			"status":        model.AuditResultRunning,
+			"next_retry_at": op.AuditLeaseUntil(time.Now()),
+		})
 	if claim.Error != nil || claim.RowsAffected == 0 {
 		return // 别人已经抢走
 	}
+
+	// 跑的过程中持续续租：检测一次最长可以跑几分钟，没有续租就会被自己人回收。
+	leaseCtx, stopLease := context.WithCancel(ctx)
+	defer stopLease()
+	safe.SafeGo("model-audit-lease", func() {
+		t := time.NewTicker(op.AuditRunHeartbeat)
+		defer t.Stop()
+		for {
+			select {
+			case <-leaseCtx.Done():
+				return
+			case <-t.C:
+				if !op.AuditRenewLease(leaseCtx, res.ID, op.AuditLeaseUntil(time.Now())) {
+					// 这行已经不属于我们（被回收/被取消），别再续了，让它自然过期。
+					return
+				}
+			}
+		}
+	})
 
 	started := time.Now()
 	attempt := res.Attempt + 1
@@ -145,8 +186,12 @@ func runOneAuditResult(ctx context.Context, res *model.ModelAuditResult) {
 	//   · 任务进度停在 100% 但有效结论少一半，看起来"跑完了"，其实没测到。
 	// 现在：失败先退避重试，试满 AuditMaxAttempts 仍未成才标 failed。
 	//
+	// reportJSON 参数是给终态用的：既然探针已经跑过、每条都有失败原因和耗时，
+	// 那就把这份结构性证据一起留下来。只写一句"没跑成"等于把用户已经付过的
+	// 调用费用和排错线索一起扔掉。
+	//
 	// 注意 finish 里把 next_retry_at 置空 —— 成功/终态不该再被调度器捡起来。
-	failOrRetry := func(errMsg string) {
+	failOrRetry := func(errMsg, reportJSON string) {
 		if attempt < op.AuditMaxAttempts {
 			next := time.Now().Add(op.AuditRetryBackoff(attempt))
 			db.GetDB().WithContext(ctx).Model(&model.ModelAuditResult{}).
@@ -162,7 +207,7 @@ func runOneAuditResult(ctx context.Context, res *model.ModelAuditResult) {
 			// 让它闪一下"失败"再变回"待跑"更不容易误解。
 			return
 		}
-		finish(model.AuditResultFailed, "", 0, 0, "", errMsg)
+		finish(model.AuditResultFailed, "", 0, 0, reportJSON, errMsg)
 	}
 
 	channel, err := op.ChannelGet(res.ChannelID, ctx)
@@ -180,7 +225,14 @@ func runOneAuditResult(ctx context.Context, res *model.ModelAuditResult) {
 
 	sender, err := modeltest.NewProbeSender(*channel, upstreamModel, endpoint)
 	if err != nil {
-		// 建 sender 失败多半是渠道配置缺失（密钥空、地址空），也是确定性失败。
+		// 密钥全在冷却里不是环境配错，是**暂时状态**：等它恢复就能跑。
+		// 以前这类也直接终态 failed，结果同一个渠道在冷却期里连点几次都是
+		// 「没跑成」，看着像渠道坏了，其实只是要等一会儿。
+		if errors.Is(err, modeltest.ErrProbeKeysCoolingDown) {
+			failOrRetry(err.Error(), "")
+			return
+		}
+		// 其余多半是渠道配置缺失（密钥空、地址空），确定性失败，重试没有意义。
 		finish(model.AuditResultFailed, "", 0, 0, "", err.Error())
 		return
 	}
@@ -237,19 +289,27 @@ func runOneAuditResult(ctx context.Context, res *model.ModelAuditResult) {
 			firstErr = r.Err.Error()
 		}
 	}
-	if usable == 0 {
-		if firstErr == "" {
-			firstErr = "所有探针均未获得有效响应"
-		}
-		failOrRetry(firstErr)
-		return
-	}
 
+	// 先把报告建出来，**无论成功失败**。
+	//
+	// 以前只在成功分支建报告，全挂时 report 写空串——于是"没跑成"只剩下一个
+	// 错误字符串，用户看不到是哪一项、为什么、花了多久。可这些探针**已经真的
+	// 打过上游、已经计过费**了，把它们的结果丢掉等于白花钱。
+	// behavior.BuildReport 本身会把每个 Err 收进 report.Errors，Results 里也逐条
+	// 保留 Error 字段，所以失败报告天然就有内容。
 	report := behavior.ToView(behavior.BuildReport(results, res.Model))
 
 	reportJSON := ""
 	if b, err := json.Marshal(report); err == nil {
 		reportJSON = string(b)
+	}
+
+	if usable == 0 {
+		if firstErr == "" {
+			firstErr = "所有探针均未获得有效响应"
+		}
+		failOrRetry(firstErr, reportJSON)
+		return
 	}
 
 	finish(model.AuditResultDone, string(report.Verdict), report.Score, len(report.Findings), reportJSON, "")

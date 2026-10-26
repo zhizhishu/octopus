@@ -1,7 +1,7 @@
 'use client';
 
 import React, { Fragment, useMemo, useState, useEffect, useCallback, type ReactNode } from 'react';
-import { Brain, Clock, Cpu, Zap, AlertCircle, ArrowDownToLine, ArrowUpFromLine, DollarSign, ArrowRight, ArrowDown, ArrowUp, Send, MessageSquare, Loader2, RotateCw, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Pin, KeyRound, Percent, CheckCircle2, XCircle, Eye, Hash, MapPin, User, Gauge, type LucideIcon } from 'lucide-react';
+import { Brain, Clock, Cpu, Zap, AlertCircle, ArrowDownToLine, ArrowUpFromLine, DollarSign, ArrowRight, ArrowDown, ArrowUp, Send, MessageSquare, Loader2, RotateCw, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Pin, KeyRound, Percent, CheckCircle2, XCircle, Eye, Hash, MapPin, User, Gauge, Play, type LucideIcon } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { motion, AnimatePresence } from 'motion/react';
 import JsonView from '@uiw/react-json-view';
@@ -27,6 +27,8 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { describeProbeEvidence } from './probe-evidence';
 import { ProbeEvidenceList } from './ProbeEvidenceList';
 import { AuditReportPanel } from './AuditReportPanel';
+import { useEnqueueAudit } from '@/api/endpoints/model-audit';
+import { toast } from '@/components/common/Toast';
 import { ExpandableValue } from './ExpandableValue';
 import { marketModelName } from '@/lib/model-aliases';
 import { Badge } from '@/components/ui/badge';
@@ -919,16 +921,28 @@ function LazyLogBodies({ logId, fallbackRequest, fallbackResponse, requestLabel,
 }
 
 /**
- * 详情弹窗里的「检测明细」。
+ * 详情弹窗里的「检测明细」，以及**从这行日志就地发起检测**。
  *
  * 为什么这里要自己再取一次详情：`model_audit_report` 和 request/response_content 一样
  * 只在详情接口返回，列表/实时流都被 Omit 掉了（internal/op/log.go 的 contentOmit）。
  * 也就是说卡片上那个 `log` 对象里这一列**永远是 undefined**——直接读它面板永远不会出现，
  * 所以必须走 GET /api/v1/log/{id}（fetchLogById）。取不到就当这行没被检测过，不摆空壳。
+ *
+ * 为什么发起检测要带 log_id：检测结果有**两个落点**——独立表 model_audit_results
+ * （长期保留、可回看）和这一行日志的 model_audit_* 五列（卡片徽标读的就是这五列）。
+ * 以前前端入队从不带 log_id，于是第二落点永远写不进去：检测明明跑完了、结论也存了，
+ * 日志页却永远显示"没检测过"。带上 log_id 才让这两个落点对上。
  */
 function DetailAuditReport({ logId }: { logId: number }) {
     const { isOpen } = useMorphingDialog();
-    const [fetched, setFetched] = useState<{ id: number; report?: string } | null>(null);
+    const t = useTranslations('log.card');
+    const enqueue = useEnqueueAudit();
+    const [fetched, setFetched] = useState<{
+        id: number;
+        report?: string;
+        channelId: number;
+        model: string;
+    } | null>(null);
 
     useEffect(() => {
         if (!isOpen) return;
@@ -938,7 +952,14 @@ function DetailAuditReport({ logId }: { logId: number }) {
         fetchLogById(logId)
             .then((full) => {
                 if (cancelled) return;
-                setFetched({ id: logId, report: full.model_audit_report });
+                setFetched({
+                    id: logId,
+                    report: full.model_audit_report,
+                    channelId: full.channel ?? 0,
+                    // 用**请求**模型名发起：渠道的 ModelMapping 由后端负责换上游名，
+                    // 这里若拿实际模型名去请求，映射会多套一层。
+                    model: (full.request_model_name ?? '').trim() || (full.actual_model_name ?? '').trim(),
+                });
             })
             .catch(() => {
                 // 详情取不到不该拖垮整个弹窗，其余内容照常显示。
@@ -946,7 +967,45 @@ function DetailAuditReport({ logId }: { logId: number }) {
         return () => { cancelled = true; };
     }, [isOpen, logId, fetched]);
 
-    return <AuditReportPanel report={fetched?.id === logId ? fetched.report : undefined} />;
+    const current = fetched?.id === logId ? fetched : null;
+    const report = current?.report;
+    const canRun = (current?.channelId ?? 0) > 0 && (current?.model ?? '') !== '';
+
+    const runAudit = async () => {
+        if (!current || !canRun) return;
+        try {
+            await enqueue.mutateAsync({
+                channel_id: current.channelId,
+                models: [current.model],
+                log_id: logId,
+            });
+            toast.success(t('auditRunQueued'));
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : t('auditRunFailed'));
+        }
+    };
+
+    return (
+        <div className="space-y-2">
+            <AuditReportPanel report={report} />
+            {canRun && (
+                <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border/70 bg-muted/20 px-3 py-2">
+                    <span className="min-w-0 flex-1 text-[11px] leading-4 text-muted-foreground">
+                        {report ? t('auditRunAgainHint') : t('auditRunHint')}
+                    </span>
+                    <button
+                        type="button"
+                        disabled={enqueue.isPending}
+                        onClick={() => void runAudit()}
+                        className="flex shrink-0 items-center gap-1 rounded-lg border border-border px-2.5 py-1 text-[11px] font-medium text-card-foreground transition-colors hover:bg-muted disabled:opacity-50"
+                    >
+                        {enqueue.isPending ? <Loader2 className="size-3 animate-spin" /> : <Play className="size-3" />}
+                        {report ? t('auditRunAgain') : t('auditRun')}
+                    </button>
+                </div>
+            )}
+        </div>
+    );
 }
 
 type AuditHit = {
