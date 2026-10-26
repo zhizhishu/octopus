@@ -45,3 +45,30 @@ func acquireModelAuditSlot(channelID int, upstreamModel string) (release func(),
 	}
 	return func() { modelAuditInFlight.Delete(key) }, true
 }
+
+// modelAuditYieldCap 是"同一渠道同一模型已有别的检测在跑"时，一条结果行最多让位几次。
+//
+// 让位不是失败：它不发请求、不消耗额度、也不涨 attempt。但排队必须有收敛上限——
+// 持有者靠 defer 释放、探针本身有超时兜底，正常情况几十秒就轮到；万一哪天出现
+// "持有者永不释放"（比如某条路径 acquire 之后忘了 defer），没有上限的话这条结果行
+// 会每 30 秒空转一次、永远停在 pending，用户看到的就是"检测卡住不动、永远没结果"。
+// 20 次 × 30 秒退避 ≈ 10 分钟，足够覆盖正常排队。
+const modelAuditYieldCap = 20
+
+// modelAuditYieldCount 记每条结果行已经让位过几次（key: result ID）。
+// 进程内即可：这里约束的是"本进程内的无限自旋"，进程重启时闸门本身也一并清空。
+var modelAuditYieldCount sync.Map // key: int64 result ID -> int
+
+// noteModelAuditYield 记一次让位并返回累计次数。
+func noteModelAuditYield(resultID int64) int {
+	stored, _ := modelAuditYieldCount.LoadOrStore(resultID, 0)
+	times, _ := stored.(int)
+	times++
+	modelAuditYieldCount.Store(resultID, times)
+	return times
+}
+
+// clearModelAuditYield 在真正拿到闸门（或放弃）后清账，避免这张小表越积越长。
+func clearModelAuditYield(resultID int64) {
+	modelAuditYieldCount.Delete(resultID)
+}

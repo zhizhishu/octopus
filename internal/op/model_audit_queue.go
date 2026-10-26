@@ -51,6 +51,10 @@ const (
 	// 那行就永远停在 running——任务进度按"未完成"统计，于是任务永远显示"进行中"，
 	// 用户看到的就是"点了检测却不出结果"。没有任何东西会去捡它。
 	//
+	// 谁去捡：worker 的回收循环（AuditReclaimExpired，30 秒一轮）只捡**租约已过期**的
+	// running 行，并且只把它们**终止**（写 failed + 原因），绝不重跑——过期只证明心跳停了，
+	// 不证明上游没收到请求，重跑就是二次计费。
+	//
 	// 这里不新增列，复用 next_retry_at 存"这行下次可以被捡走的时间"：
 	// pending 行上它是失败退避，running 行上它是租约到期时间，语义都是"到点才允许再动"。
 	AuditRunLease = 120 * time.Second
@@ -235,16 +239,21 @@ func AuditRenewLease(ctx context.Context, resultID int64, until time.Time) bool 
 	return res.Error == nil && res.RowsAffected > 0
 }
 
-// AuditReclaimExpired 把租约过期仍是 running 的结果捡回来。
+// AuditReclaimExpired 把租约过期仍是 running 的结果收敛掉。
 //
 // 触发场景只有一个：上次跑它的进程已经不在了（重启、崩溃、被 kill），不会再有人
 // 给它续租或收尾。因此这里**只处理过期租约**，绝不无条件把所有 running 重置——
 // 多实例或滚动重启时那样做会让正在跑的那一份被重复执行，等于重复花钱。
 //
+// 🔴 过期一律**终止，不自动重跑**（2026-10-26 定，astra 复核后改的）：
+// 租约过期只证明"心跳停了 120 秒"，不证明"上游没收到请求"。探针可能已经发出去、
+// 已经计费，只是我们没等到回包。自动重跑等于替用户再买一次单——而这个项目的立场是
+// 宁可这次没测成，也不悄悄花第二次钱。所以这里只写终态 + 说清原因，要不要重检由
+// 用户自己决定。
+//
 // 处理规则：
 //   - 所属任务已取消 → 标 skipped（用户已经不要了，不该再打上游）；
-//   - 还有重试预算 → 回 pending 并让 attempt+1（和失败重试共用同一份预算）；
-//   - 预算用尽 → 终态 failed，说清楚是"执行中断"，而不是含糊的"没跑成"。
+//   - 其余 → 终态 failed，原因写明"执行中断、可能已产生调用、为避免重复计费不自动重跑"。
 //
 // 返回被处理的行数，供调用方决定是否刷新任务进度。
 func AuditReclaimExpired(ctx context.Context, limit int) int {
@@ -282,22 +291,14 @@ func AuditReclaimExpired(ctx context.Context, limit int) int {
 			continue
 		}
 
-		attempt := res.Attempt + 1
-		if attempt >= AuditMaxAttempts {
-			claim.Updates(map[string]any{
-				"status":      model.AuditResultFailed,
-				"error_msg":   "执行被中断（进程重启或卡住），已达重试上限",
-				"attempt":     attempt,
-				"finished_at": now,
-			})
-			continue
-		}
+		// 不加"还有重试预算就回 pending"这一步：那正是会二次计费的地方。
+		// attempt 仍然 +1 如实记账（这一次确实跑过），但状态只往终态走。
 		claim.Updates(map[string]any{
-			"status":        model.AuditResultPending,
-			"attempt":       attempt,
-			"next_retry_at": nil, // 立刻可跑：中断不是上游的错，不必退避
-			"error_msg":     "上次执行没结束就中断了（进程重启或卡住），已重新排队",
-			"finished_at":   nil,
+			"status":        model.AuditResultFailed,
+			"attempt":       res.Attempt + 1,
+			"next_retry_at": nil, // 不再是租约，别让下一轮回收再捡到它
+			"error_msg":     "执行中断（进程重启或卡住），可能已产生调用；为避免重复计费不自动重跑，请手动重检",
+			"finished_at":   now,
 		})
 	}
 

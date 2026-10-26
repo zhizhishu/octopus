@@ -452,11 +452,12 @@ func loadAuditResult(t *testing.T, ctx context.Context, id int64) model.ModelAud
 	return res
 }
 
-// TestAuditReclaimExpiredRequeues 守主路径：租约过期 → 回到 pending、attempt+1、立即可跑。
+// TestAuditReclaimExpiredTerminatesWithoutRerun 守主路径：租约过期 → 直接终止，**绝不重跑**。
 //
-// 选 pending 而不是直接 failed：中断不是上游的错，重跑一次通常就成功了。
-// next_retry_at 必须清空——中断不需要退避，留着它会让行白等一轮。
-func TestAuditReclaimExpiredRequeues(t *testing.T) {
+// 为什么不重跑：租约过期只说明心跳停了 120 秒，不说明上游没收到请求。探针可能已经
+// 发出去、已经计费，只是我们没等到回包。自动重跑等于替用户再买一次单，而这个项目
+// 的立场是"宁可这次没测成，也不悄悄花第二次钱"。
+func TestAuditReclaimExpiredTerminatesWithoutRerun(t *testing.T) {
 	ctx := setupAuditQueueTest(t)
 	ch := ensureAuditChannel(t, "回收渠道")
 
@@ -481,17 +482,24 @@ func TestAuditReclaimExpiredRequeues(t *testing.T) {
 	}
 
 	got := loadAuditResult(t, ctx, resID)
-	if got.Status != model.AuditResultPending {
-		t.Fatalf("回收后应为 pending，得到 %s", got.Status)
+	if got.Status != model.AuditResultFailed {
+		t.Fatalf("租约过期应直接终止为 failed（不重跑），得到 %s", got.Status)
 	}
 	if got.Attempt != 1 {
-		t.Fatalf("回收应计入一次尝试，得到 attempt=%d", got.Attempt)
+		t.Fatalf("应如实记一次尝试，得到 attempt=%d", got.Attempt)
 	}
 	if got.NextRetryAt != nil {
-		t.Fatalf("中断不该退避，next_retry_at 应清空，得到 %v", got.NextRetryAt)
+		t.Fatalf("终态行不该再带租约，next_retry_at 应清空，得到 %v", got.NextRetryAt)
 	}
 	if !strings.Contains(got.ErrorMsg, "中断") {
 		t.Fatalf("error_msg 应说清是中断，得到 %q", got.ErrorMsg)
+	}
+	// 用户要能看懂"为什么没自动重跑"，否则会以为程序忘了。
+	if !strings.Contains(got.ErrorMsg, "不自动重跑") {
+		t.Fatalf("error_msg 应说明不自动重跑的原因，得到 %q", got.ErrorMsg)
+	}
+	if got.FinishedAt == nil {
+		t.Fatal("终态行必须有结束时间")
 	}
 }
 
@@ -522,38 +530,45 @@ func TestAuditReclaimLeavesLiveLeaseAlone(t *testing.T) {
 	}
 }
 
-// TestAuditReclaimFailsAfterMaxAttempts 守上限：反复中断最终要认输，且说清是中断。
+// TestAuditReclaimNeverRequeuesWhateverTheAttempt 守"永不重跑"这条底线：
+// 无论这一行之前跑过几次，租约过期都只能走向终态，不能回到 pending。
 //
-// 没有这条，一个每次都把进程搞崩的渠道会让同一行无限重跑。
-func TestAuditReclaimFailsAfterMaxAttempts(t *testing.T) {
-	ctx := setupAuditQueueTest(t)
-	ch := ensureAuditChannel(t, "上限渠道")
+// 这条是花钱的护栏。回 pending 就意味着 worker 会再打一次上游——同一次检测被计两次费。
+// 以前这里按"还有预算就重排"，astra 复核时指出：过期不等于没发请求，重排就是替用户
+// 二次买单，于是改成一律终止。
+func TestAuditReclaimNeverRequeuesWhateverTheAttempt(t *testing.T) {
+	for _, attempts := range []int{0, 1, AuditMaxAttempts - 1, AuditMaxAttempts + 5} {
+		t.Run(fmt.Sprintf("attempt_%d", attempts), func(t *testing.T) {
+			ctx := setupAuditQueueTest(t)
+			ch := ensureAuditChannel(t, fmt.Sprintf("不重跑渠道-%d", attempts))
 
-	jobID, err := ModelAuditEnqueue(ctx, ModelAuditEnqueueInput{
-		ChannelID: ch.ID,
-		Models:    []string{"crasher"},
-	})
-	if err != nil {
-		t.Fatalf("enqueue: %v", err)
-	}
-	_, results, _ := ModelAuditJobDetail(ctx, jobID)
-	resID := results[0].ID
+			jobID, err := ModelAuditEnqueue(ctx, ModelAuditEnqueueInput{
+				ChannelID: ch.ID,
+				Models:    []string{"crashy"},
+			})
+			if err != nil {
+				t.Fatalf("enqueue: %v", err)
+			}
+			_, results, _ := ModelAuditJobDetail(ctx, jobID)
+			resID := results[0].ID
 
-	markRunningWithLease(t, ctx, resID, time.Now().Add(-time.Minute), AuditMaxAttempts-1)
+			markRunningWithLease(t, ctx, resID, time.Now().Add(-time.Minute), attempts)
 
-	if n := AuditReclaimExpired(ctx, 50); n != 1 {
-		t.Fatalf("应处理 1 行，实际 %d", n)
-	}
+			if n := AuditReclaimExpired(ctx, 50); n != 1 {
+				t.Fatalf("应处理 1 行，实际 %d", n)
+			}
 
-	got := loadAuditResult(t, ctx, resID)
-	if got.Status != model.AuditResultFailed {
-		t.Fatalf("重试预算用尽应落 failed，得到 %s", got.Status)
-	}
-	if !strings.Contains(got.ErrorMsg, "中断") {
-		t.Fatalf("终态原因应说明是执行中断，得到 %q", got.ErrorMsg)
-	}
-	if got.FinishedAt == nil {
-		t.Fatal("终态行必须有结束时间")
+			got := loadAuditResult(t, ctx, resID)
+			if got.Status == model.AuditResultPending {
+				t.Fatalf("attempt=%d 被重排回 pending —— 这会二次计费", attempts)
+			}
+			if got.Status != model.AuditResultFailed {
+				t.Fatalf("attempt=%d 应落 failed，得到 %s", attempts, got.Status)
+			}
+			if got.Attempt != attempts+1 {
+				t.Fatalf("attempt 应+1 记账，期望 %d 得到 %d", attempts+1, got.Attempt)
+			}
+		})
 	}
 }
 

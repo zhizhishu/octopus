@@ -242,6 +242,16 @@ func runOneAuditResult(ctx context.Context, res *model.ModelAuditResult) {
 	if !ok {
 		// 单飞被占：**不是失败，是排队**。放回 pending 稍后再试，
 		// 否则同一模型在手动检测与队列之间会互相把对方挤成 skipped。
+		//
+		// 但排队必须有收敛上限：让位次数超过 modelAuditYieldCap 就直接终止。
+		// 让位本身不发请求、不涨 attempt，可一旦持有者卡死，无限让位就等于无限空转——
+		// 用户看到的是"一直排队、永远没结果"。到点说清楚，让他自己决定要不要重检。
+		if yields := noteModelAuditYield(res.ID); yields > modelAuditYieldCap {
+			clearModelAuditYield(res.ID)
+			finish(model.AuditResultFailed, "", 0, 0, "",
+				"同一渠道同一模型一直有另一次检测在跑，等了约 10 分钟没轮到；本次让位放弃，请稍后手动重检")
+			return
+		}
 		db.GetDB().WithContext(ctx).Model(&model.ModelAuditResult{}).
 			Where("id = ?", res.ID).
 			Updates(map[string]any{
@@ -251,6 +261,7 @@ func runOneAuditResult(ctx context.Context, res *model.ModelAuditResult) {
 			})
 		return
 	}
+	clearModelAuditYield(res.ID)
 	defer release()
 
 	timeout := op.AuditDefaultTimeoutSeconds
