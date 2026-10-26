@@ -81,6 +81,8 @@ type ProbeMeta = {
     icon: LucideIcon;
 };
 
+import { readFingerprint, describeDecision, formatProbability, type FingerprintSummary } from './fingerprint';
+
 const PROBES: ProbeMeta[] = [
     { id: 'liveness', name: '连通回显', hint: '基础', desc: '确认渠道能正常回显请求', icon: Wifi },
     { id: 'identity', name: '身份自述', hint: '仅线索', desc: '读取模型自述的供应商标识', icon: Fingerprint },
@@ -253,6 +255,67 @@ function evidencePairs(row: DisplayRow): Array<[string, string]> {
 }
 
 /**
+ * 指纹结论卡：把「随机数指纹」探针真正算出来的东西摆到页面上。
+ *
+ * 为什么必须有这一块：这项探针是唯一能**认出模型**的检查，后端早就算好了最像的
+ * 模型、家族、前五名候选和库内置信度。但页面以前只给它一行「未见异常/证据不足」，
+ * 内容全埋在证据抽屉的原始 JSON 里——用户跑完一次检测，看到的是状态，不是结论，
+ * 观感就是「检测不出东西」。
+ *
+ * 边界照抄后端措辞，一个字都不放宽：这是**参考库内的相对排名**，库外模型也会得到
+ * 一个「最像」的答案，所以它不能当「确认就是某模型」用。
+ */
+function FingerprintCard({ summary }: { summary: FingerprintSummary }) {
+    const probability = formatProbability(summary.probability);
+    return (
+        <div className="rounded-2xl border border-border bg-card px-4 py-3">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0">
+                    <p className="text-[11px] font-medium tracking-[0.16em] text-muted-foreground">随机数指纹 · 参考库比对</p>
+                    <p className="mt-1 flex flex-wrap items-baseline gap-2">
+                        <span className="text-lg font-semibold">{summary.predictionName || '参考库内无匹配'}</span>
+                        {summary.familyName && (
+                            <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">{summary.familyName}</span>
+                        )}
+                    </p>
+                    <p className="mt-0.5 text-xs leading-5 text-muted-foreground">{describeDecision(summary)}</p>
+                </div>
+                {probability && (
+                    <div className="shrink-0 rounded-xl bg-muted/50 px-3 py-2 text-center">
+                        <p className="text-[11px] text-muted-foreground">库内置信度</p>
+                        <p className="mt-0.5 text-lg font-semibold">{probability}</p>
+                    </div>
+                )}
+            </div>
+            {summary.candidates.length > 0 && (
+                <ol className="mt-3 space-y-1 border-t border-border pt-2">
+                    {summary.candidates.map((candidate, index) => (
+                        <li key={candidate.model} className="flex items-center gap-2 text-xs">
+                            <span className="w-4 shrink-0 text-muted-foreground">{index + 1}</span>
+                            <span className="min-w-0 flex-1 truncate">{candidate.displayName}</span>
+                            {candidate.familyName && (
+                                <span className="shrink-0 text-[11px] text-muted-foreground">{candidate.familyName}</span>
+                            )}
+                            <span className="w-14 shrink-0 text-right font-mono text-[11px] text-muted-foreground">
+                                {candidate.score.toFixed(3)}
+                            </span>
+                            <span className="w-12 shrink-0 text-right text-[11px] text-muted-foreground">
+                                {formatProbability(candidate.probability)}
+                            </span>
+                        </li>
+                    ))}
+                </ol>
+            )}
+            <p className="mt-2 border-t border-border pt-2 text-[11px] leading-5 text-muted-foreground">
+                这是参考库内的相对排名，不是「确认就是它」——库外的模型也会得到一个最像的答案。
+                {summary.usedOutputs > 0 && `本次用了 ${summary.usedOutputs} 条有效回答。`}
+                {summary.referenceBuiltAt && `参考库构建于 ${summary.referenceBuiltAt.slice(0, 10)}。`}
+            </p>
+        </div>
+    );
+}
+
+/**
  * 被动检测开关卡。
  *
  * 摆在检测页而不是设置页，是因为它和主动检测是同一件事的两面，用户需要放在
@@ -373,6 +436,8 @@ export function ModelAudit() {
             PROBES.filter((meta) => ran.has(meta.id)).map((meta) => rowFromResult(meta, report, t)),
         );
     }, [report, t]);
+    // 指纹结论单独读出来：它是唯一能认出模型的内容，不能只当一行状态显示。
+    const fingerprint = useMemo(() => readFingerprint(report?.report), [report]);
     const warnCount = rows.filter((row) => row.tone === 'warn').length;
     const failCount = rows.filter((row) => row.tone === 'fail').length;
     const insufficientCount = rows.filter((row) => row.insufficient).length;
@@ -810,6 +875,7 @@ export function ModelAudit() {
                                     <p className="mt-1 text-2xl font-semibold">{formatDuration(report.duration_ms)}</p>
                                 </div>
                             </div>
+                            {fingerprint && <FingerprintCard summary={fingerprint} />}
                             <div className="flex h-1.5 overflow-hidden rounded-full bg-muted">
                                 {rows.map((row) => (
                                     <span
