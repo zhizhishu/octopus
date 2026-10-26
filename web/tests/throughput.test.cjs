@@ -5,54 +5,38 @@ const { load } = require('./load-typescript.cjs');
 
 const { describeThroughput } = load('src/components/modules/log/throughput.ts');
 
-test('流式且首字有效：只算首字之后的生成窗口', () => {
+test('首字有效：只算首字之后的生成窗口', () => {
     // 1000 个输出 token，总耗时 10s，其中首字占 2s → 生成 8s → 125 t/s
-    const r = describeThroughput({
-        output_tokens: 1000,
-        use_time: 10000,
-        ftut: 2000,
-        is_stream: true,
-    });
-
+    const r = describeThroughput({ output_tokens: 1000, use_time: 10000, ftut: 2000 });
     assert.deepEqual(r, { text: '125', window: 'gen' });
 });
 
-test('非流式即使带着首字时间也不做减法：窗口仍是全程，口径必须标成 total', () => {
-    // 同样的数字，唯一区别是 is_stream=false。绝不能报 125 冒充纯生成速度。
-    const r = describeThroughput({
+test('口径与后端一致：不看 is_stream，只认 ftut > 0 且 < use_time', () => {
+    // 后端 internal/op/model_health.go 就是这么判的。多带个 is_stream:false 也不能改变结果——
+    // 否则日志卡会和首页「平均吞吐」给出两个数（ftut 本来就只在流式路径写）。
+    const withFlag = describeThroughput({
         output_tokens: 1000,
         use_time: 10000,
         ftut: 2000,
         is_stream: false,
     });
-
-    assert.deepEqual(r, { text: '100', window: 'total' });
+    assert.deepEqual(withFlag, { text: '125', window: 'gen' });
 });
 
-test('首字缺失（上游没报 / 老日志没这个标记）退回全程平均，而不是不显示', () => {
+test('首字缺失（上游没报）退回全程平均，而不是不显示', () => {
     const missing = describeThroughput({ output_tokens: 500, use_time: 5000, ftut: 0 });
     assert.deepEqual(missing, { text: '100', window: 'total' });
 
-    // 没有 is_stream 字段的老日志同理——不能因为缺标记就整块消失。
-    const noFlag = describeThroughput({ output_tokens: 500, use_time: 5000 });
-    assert.deepEqual(noFlag, { text: '100', window: 'total' });
+    // 老日志干脆没这个字段也一样。
+    const absent = describeThroughput({ output_tokens: 500, use_time: 5000 });
+    assert.deepEqual(absent, { text: '100', window: 'total' });
 });
 
 test('首字 ≥ 总耗时这种脏数据不许算出 NaN / 负数 / Infinity', () => {
-    const equal = describeThroughput({
-        output_tokens: 300,
-        use_time: 4000,
-        ftut: 4000,
-        is_stream: true,
-    });
+    const equal = describeThroughput({ output_tokens: 300, use_time: 4000, ftut: 4000 });
     assert.deepEqual(equal, { text: '75.0', window: 'total' });
 
-    const bigger = describeThroughput({
-        output_tokens: 300,
-        use_time: 4000,
-        ftut: 9000,
-        is_stream: true,
-    });
+    const bigger = describeThroughput({ output_tokens: 300, use_time: 4000, ftut: 9000 });
     assert.deepEqual(bigger, { text: '75.0', window: 'total' });
 });
 
