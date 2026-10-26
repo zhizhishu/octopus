@@ -22,6 +22,7 @@ import {
     isModelTestEndpoint,
 } from './humanize';
 import { getModelIcon } from '@/lib/model-icons';
+import { describeThroughput } from './throughput';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { describeProbeEvidence } from './probe-evidence';
 import { ProbeEvidenceList } from './ProbeEvidenceList';
@@ -83,33 +84,6 @@ function formatTime(timestamp: number): string {
 
 function formatDuration(ms: number): string {
     return `${(ms / 1000).toFixed(2)}s`;
-}
-
-/**
- * 生成速度（token/s）。日志里只有「总耗时」和「首字」，没有单独的生成时长，
- * 所以生成窗口 = 总耗时 - 首字。
- * 🔴 兜底：首字缺失（非流式请求 / 上游没报 → ftut 为 0 或 ≥ 总耗时）时退回用总耗时当窗口，
- * 结果会偏低（把等首字的时间也算进生成），但**有数总比空着强**，且绝不吐 NaN/Infinity。
- * 没有输出 token、或时间窗不成立时返回 null —— 由调用方决定整块不渲染，不要显示 0 或 --。
- */
-function formatTps(log: RelayLog): string | null {
-    const out = log.output_tokens ?? 0;
-    const total = log.use_time ?? 0;
-    const first = log.ftut ?? 0;
-
-    if (!Number.isFinite(out) || out <= 0) return null;
-    if (!Number.isFinite(total) || total <= 0) return null;
-
-    const hasFirstToken = Number.isFinite(first) && first > 0 && first < total;
-    const genMs = hasFirstToken ? total - first : total;
-    const sec = genMs / 1000;
-    if (!Number.isFinite(sec) || sec <= 0) return null;
-
-    const tps = out / sec;
-    if (!Number.isFinite(tps) || tps <= 0) return null;
-
-    // 三位数以上不再显示小数位，避免「1234.5 t/s」这种噪声宽度。
-    return tps.toFixed(tps >= 100 ? 0 : 1);
 }
 
 /**
@@ -1145,7 +1119,7 @@ export const LogCard = React.memo(function LogCard({
     // 连通性测试日志：费用/缓存/token 这些对它全是噪音，按这个标记隐掉。
     const isModelTest = isModelTestEndpoint(requestEndpoint) || isModelTestEndpoint(requestPath);
     // 生成速度（token/s）。算不出来就是 null，整块不渲染——不拿 0 / -- 占位。
-    const tpsText = useMemo(() => formatTps(log), [log]);
+    const tpsReading = useMemo(() => describeThroughput(log), [log]);
     // 列表/详情头部那个徽章显示的是「人话」接口名，不再是裸 endpoint 码。
     const requestEndpointLabel = useMemo(
         () => humanizeEndpoint(formatEndpointName(requestEndpoint || requestPath)) ?? '',
@@ -1694,15 +1668,15 @@ export const LogCard = React.memo(function LogCard({
                                         </span>
                                     </span>
                                     {/* 生成速度（token/s）：算不出来就整块不渲染，别留空占位 */}
-                                    {tpsText !== null && (
+                                    {tpsReading !== null && (
                                         <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap">
                                             <span className="text-muted-foreground/60">·</span>
                                             <span
                                                 className="inline-flex items-center gap-1 font-medium tabular-nums"
-                                                title={`${t('tps')} ${tpsText} ${t('tpsUnit')} · ${t('tpsHint')}`}
+                                                title={`${t('tps')} ${tpsReading.text} ${t('tpsUnit')} · ${tpsReading.window === 'gen' ? t('tpsHintGen') : t('tpsHintTotal')}`}
                                             >
                                                 <Gauge className="size-3.5 shrink-0 text-muted-foreground" />
-                                                <span>{t('tps')} {tpsText} {t('tpsUnit')}</span>
+                                                <span>{t('tps')} {tpsReading.text} {t('tpsUnit')}</span>
                                             </span>
                                         </span>
                                     )}
