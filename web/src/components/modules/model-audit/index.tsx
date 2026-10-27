@@ -554,7 +554,7 @@ export function ModelAudit() {
     };
 
     const renderParams = () => (
-        <aside className="flex min-h-0 flex-col gap-5 rounded-3xl border border-border bg-card p-5 md:w-[290px] md:shrink-0">
+        <aside className="flex min-h-0 flex-col gap-5 rounded-3xl border border-border bg-card p-5 md:w-[320px] md:shrink-0">
             <section>
                 <p className="mb-3 text-[11px] font-medium tracking-[0.16em] text-muted-foreground">01 目标</p>
                 <label className="mb-1 block text-xs text-muted-foreground">渠道</label>
@@ -672,9 +672,14 @@ export function ModelAudit() {
                     className="mt-4 h-11 w-full rounded-xl"
                     disabled={enqueueAudit.isPending || runCount === 0 || !channel}
                     onClick={() => void submitToQueue([activeModel])}
+                    title={activeModel ? `后台检测 · ${activeModel}` : undefined}
                 >
                     {enqueueAudit.isPending ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
-                    {enqueueAudit.isPending ? '提交中…' : `后台检测 · ${activeModel || '未选模型'}`}
+                    {/* 模型名动辄三十几个字符，不截断会硬撞到按钮边缘被拦腰切断。
+                        truncate 给个省略号，全名放 title 里悬停可见。 */}
+                    <span className="min-w-0 truncate">
+                        {enqueueAudit.isPending ? '提交中…' : `后台检测 · ${activeModel || '未选模型'}`}
+                    </span>
                 </Button>
                 <Button
                     type="button"

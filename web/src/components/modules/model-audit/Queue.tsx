@@ -157,14 +157,18 @@ function JobRow({
                         {jobProgressText(job, t)} · {formatTime(job.created_at)}
                     </div>
                 </div>
-                <div className="w-24 shrink-0">
-                    <div className="h-1.5 overflow-hidden rounded-full bg-background">
-                        <div
-                            className={cn('h-full rounded-full transition-all', active ? 'bg-primary' : 'bg-emerald-500')}
-                            style={{ width: `${pct}%` }}
-                        />
+                {/* 已取消的任务不画进度条：0% 的空轨在卡片上就是一个来历不明的灰块，
+                    看起来像没渲染完的占位符。状态文案（已取消）已经在副标题里。 */}
+                {job.status !== 'canceled' && (
+                    <div className="w-24 shrink-0">
+                        <div className="h-1.5 overflow-hidden rounded-full bg-background">
+                            <div
+                                className={cn('h-full rounded-full transition-all', active ? 'bg-primary' : 'bg-emerald-500')}
+                                style={{ width: `${pct}%` }}
+                            />
+                        </div>
                     </div>
-                </div>
+                )}
             </button>
 
             {active && (
