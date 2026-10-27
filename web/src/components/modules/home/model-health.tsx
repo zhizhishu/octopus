@@ -44,7 +44,9 @@ function formatLatency(ms: number) {
     return `${(ms / 1000).toFixed(2)}s`;
 }
 
-function formatThroughput(value: number) {
+function formatThroughput(value: number, samples?: number) {
+    // 无有效样本 = 没有可采信的窗口，显示 -- 而不是 0.0（0.0 看起来像"很慢"）。
+    if (samples !== undefined && samples <= 0) return '--';
     return `${(value || 0).toFixed(1)} tok/s`;
 }
 
@@ -56,7 +58,7 @@ function formatCacheRate(value: number) {
 function metricLine(model: ModelHealthModel, t: ReturnType<typeof useTranslations>) {
     return [
         `${t('firstTokenP90')} ${formatLatency(model.summary.first_token_p90_ms)}`,
-        `${t('avgThroughput')} ${formatThroughput(model.summary.avg_throughput)}`,
+        `${t('avgThroughput')} ${formatThroughput(model.summary.avg_throughput, model.summary.avg_throughput_samples)}`,
         `${t('cacheRate')} ${formatCacheRate(model.summary.cache_hit_rate)}`,
     ].join(' · ');
 }
@@ -219,7 +221,7 @@ export function ModelHealth() {
                                         [t('requestCount'), requestCount(tooltip.hour).toLocaleString()],
                                         [t('successFailed'), `${tooltip.hour.request_success.toLocaleString()} / ${tooltip.hour.request_failed.toLocaleString()}`],
                                         [t('firstTokenP90'), formatLatency(tooltip.hour.first_token_p90_ms)],
-                                        [t('avgThroughput'), formatThroughput(tooltip.hour.avg_throughput)],
+                                        [t('avgThroughput'), formatThroughput(tooltip.hour.avg_throughput, tooltip.hour.avg_throughput_samples)],
                                         [t('cacheRate'), formatCacheRate(tooltip.hour.cache_hit_rate)],
                                     ].map(([label, value]) => (
                                         <Fragment key={label}>

@@ -19,7 +19,7 @@ func TestModelRequestRankGroupsByRequestedModelIncludingCache(t *testing.T) {
 		RequestModelName:   "glm-5.1",
 		ActualModelName:    "claude-sonnet-4.5",
 		InputTokens:        100,
-		OutputTokens:       50,
+		OutputTokens:       500,
 		CacheHitTokens:     20,
 		CacheInputTokens:   100,
 		CacheWriteTokens:   5,
@@ -76,7 +76,7 @@ func TestModelRequestRankGroupsByRequestedModelIncludingCache(t *testing.T) {
 		RequestModelName: "glm-5.1",
 		ActualModelName:  "claude-sonnet-4.5",
 		InputTokens:      10,
-		OutputTokens:     30,
+		OutputTokens:     300,
 		Ftut:             900,
 		UseTime:          1900,
 		Cost:             0.03,
@@ -97,7 +97,7 @@ func TestModelRequestRankGroupsByRequestedModelIncludingCache(t *testing.T) {
 	if got.RequestCount != 2 || got.RequestSuccess != 2 || got.RequestFailed != 0 {
 		t.Fatalf("unexpected counts: %#v", got)
 	}
-	if got.InputToken != 110 || got.OutputToken != 80 || got.TotalToken != 190 {
+	if got.InputToken != 110 || got.OutputToken != 800 || got.TotalToken != 910 {
 		t.Fatalf("unexpected tokens: %#v", got)
 	}
 	if got.CacheHitToken != 20 || got.CacheInputToken != 100 || got.CacheWriteToken != 5 {
@@ -109,8 +109,12 @@ func TestModelRequestRankGroupsByRequestedModelIncludingCache(t *testing.T) {
 	if got.FirstTokenP90Ms != 900 {
 		t.Fatalf("expected p90 900ms, got %d", got.FirstTokenP90Ms)
 	}
-	if got.AvgThroughput != 40 {
-		t.Fatalf("expected throughput 40 tok/s, got %f", got.AvgThroughput)
+	// 中位数(500/1s, 300/1s) = 400；样本数 2 必须随报。
+	if got.AvgThroughput != 400 {
+		t.Fatalf("expected throughput median 400 tok/s, got %f", got.AvgThroughput)
+	}
+	if got.AvgThroughputSamples != 2 {
+		t.Fatalf("expected 2 throughput samples, got %d", got.AvgThroughputSamples)
 	}
 	if math.Abs(got.TotalCost-0.15) > 1e-12 {
 		t.Fatalf("expected total cost 0.15, got %f", got.TotalCost)

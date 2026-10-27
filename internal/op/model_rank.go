@@ -29,8 +29,7 @@ type modelRankAccumulator struct {
 	cacheRateBase   int64
 	totalCost       float64
 	ftutMs          []int
-	outputForTPS    int64
-	generateMs      int64
+	tpsSamples      []float64
 	actualModels    map[string]modelRankActualSample
 }
 
@@ -148,15 +147,9 @@ func modelRankAddLog(acc *modelRankAccumulator, relayLog model.RelayLog) {
 		if relayLog.Ftut > 0 {
 			acc.ftutMs = append(acc.ftutMs, relayLog.Ftut)
 		}
-		if relayLog.OutputTokens > 0 {
-			generateMs := relayLog.UseTime
-			if relayLog.Ftut > 0 && relayLog.UseTime > relayLog.Ftut {
-				generateMs = relayLog.UseTime - relayLog.Ftut
-			}
-			if generateMs > 0 {
-				acc.outputForTPS += int64(relayLog.OutputTokens)
-				acc.generateMs += int64(generateMs)
-			}
+		// 逐请求先过有效性闸门再采样，聚合取中位数（见 throughput.go）。
+		if tps, ok := relayLogTPSSample(relayLog); ok {
+			acc.tpsSamples = append(acc.tpsSamples, tps)
 		}
 	} else {
 		acc.failed++
@@ -217,9 +210,8 @@ func modelRankBuildItem(acc *modelRankAccumulator) model.ModelRankItem {
 	if acc.cacheHitToken > 0 && acc.cacheRateBase > 0 {
 		item.CacheHitRate = float64(acc.cacheHitToken) / float64(acc.cacheRateBase)
 	}
-	if acc.outputForTPS > 0 && acc.generateMs > 0 {
-		item.AvgThroughput = float64(acc.outputForTPS) / (float64(acc.generateMs) / 1000)
-	}
+	item.AvgThroughput = tpsMedian(acc.tpsSamples)
+	item.AvgThroughputSamples = len(acc.tpsSamples)
 	return item
 }
 

@@ -163,7 +163,7 @@
       "requestCount": "Requests",
       "successFailed": "Success / Failed",
       "firstTokenP90": "TTFT P90",
-      "avgThroughput": "Avg Throughput",
+      "avgThroughput": "Median Throughput",
       "cacheRate": "Cache Rate",
       "expandModels": "Show {count} more",
       "collapseModels": "Show fewer"
@@ -805,8 +805,7 @@
       "totalTime": "Total",
       "tps": "TPS",
       "tpsUnit": "t/s",
-      "tpsHintGen": "Estimated generation speed = output tokens ÷ time after the first token (same rule the backend uses); output tokens follow the upstream and may include reasoning",
-      "tpsHintTotal": "Overall average throughput = output tokens ÷ total time (no first-token time reported, or it was not earlier than the total; not pure generation speed)",
+      "tpsHintGen": "Estimate: output tokens ÷ time after first token, billed by the upstream (may include reasoning tokens); hidden when the window is not trustworthy",
       "input": "Input",
       "output": "Output",
       "cost": "Cost",

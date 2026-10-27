@@ -163,7 +163,7 @@
       "requestCount": "请求次数",
       "successFailed": "成功 / 失败",
       "firstTokenP90": "首字延迟P90",
-      "avgThroughput": "平均吞吐",
+      "avgThroughput": "吞吐中位数",
       "cacheRate": "缓存率",
       "expandModels": "展开其余 {count} 个",
       "collapseModels": "收起模型"
@@ -805,8 +805,7 @@
       "totalTime": "总耗时",
       "tps": "TPS",
       "tpsUnit": "t/s",
-      "tpsHintGen": "生成速度估算 = 输出 tokens ÷ 首字之后的耗时（与后端同一口径）；输出 token 按上游统计，可能含推理 token",
-      "tpsHintTotal": "全程平均吞吐 = 输出 tokens ÷ 总耗时（上游没报首字，或首字不早于总耗时；不等于纯生成速度）",
+      "tpsHintGen": "估算：输出 tokens ÷ 首字后耗时，按上游计费口径（含推理 token）；窗口不可信时本项不显示",
       "input": "输入",
       "output": "输出",
       "cost": "费用",

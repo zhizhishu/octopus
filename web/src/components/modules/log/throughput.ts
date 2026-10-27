@@ -1,23 +1,29 @@
 /**
  * 生成速度（token/s）——纯计算，不碰 React，方便单测。
  *
- * 日志里只有「总耗时」和「首字」，后端没存单独的生成时长，所以：
- *   首字有效（> 0 且 < 总耗时）→ 生成窗口 = 总耗时 − 首字；
- *   否则（上游没报首字 / 首字 ≥ 总耗时）→ 退回全程平均。
+ * 公式：tps = 输出 tokens ÷（总耗时 − 首字）。公式没错，错在把**不可采信的
+ * 生成窗口**也拿去算——生产实证（2026-10-27）：非流式上游的完整响应在最后一刻
+ * 才合成下推，ftut 落在 use_time−1ms，1ms 窗口把 5874 个 token 显示成
+ * 5,874,000 tok/s；3 天均值被污染到 10453 tok/s。
  *
- * 🔴 这个口径不是这里发明的，是**复用后端既有口径**，三处实现完全一致：
- *   internal/op/model_health.go:193-196、internal/op/model_rank.go:146-152、
- *   internal/relay/balancer/telemetry.go:285-296 —— 都是 `Ftut > 0 && UseTime > Ftut` 才相减。
+ * 所以不能按 is_stream 卡（IsStream 记的是客户端意图，判不出上游是否缓冲），
+ * 只能按「生成窗口是否可采信」卡。**不可采信的正确处理是不显示**（返回 null，
+ * 调用处整块不渲染），不是退回全程平均冒充生成速度——那是更隐蔽的骗法。
  *
- * 🔴 为什么不看 `is_stream`：`ftut` 只在流式读取路径上写入
- *   （internal/relay/relay.go:3151 handleStreamResponse、:3555 handleStreamResponseAsNonStream、
- *    :3673 handleNonStreamResponseAsStream），非流式的 handleResponse 从不写它。
- *   所以「首字有效」本身就等价于「内容是一点点到的」，多判一次 is_stream 只会
- *   让卡片上的数字和首页「平均吞吐」对不上——那是更难受的错。
- *
- * 🔴 这是**估算**，不是精确测量：首字可能一次吐好几个 token，总耗时也可能含重试/竞速与收尾开销，
- * 输出 token 按上游口径统计（可能含推理 token）。两种窗口分开称呼，别把"全程平均"说成"生成速度"。
+ * 🔴 本文件的阈值与后端 internal/op/throughput.go 一一对应（astra 裁决的同一套
+ * 拒绝条件），改任何一边都必须同步另一边和测试。
  */
+
+/** 短回复的窗口量的是网络冲刷不是生成速度。 */
+export const TPS_MIN_OUTPUT_TOKENS = 100;
+/** 总耗时不足 1s 没有可分辨的窗口。 */
+export const TPS_MIN_USE_TIME_MS = 1000;
+/** 窗口不足 1s 时 1ms 的窗口误差就是千倍的速度误差。 */
+export const TPS_MIN_GEN_MS = 1000;
+/** 生成窗口至少要覆盖总耗时的 25%（防 ftut 落在 98% 处的爆表形态）。 */
+export const TPS_MIN_GEN_SHARE = 0.25;
+/** 超出现实上限说明窗口测量坏了，不是上游真快。 */
+export const TPS_MAX_PLAUSIBLE = 1000;
 
 export type ThroughputInput = {
     output_tokens?: number;
@@ -28,8 +34,6 @@ export type ThroughputInput = {
 export type ThroughputReading = {
     /** 已格式化好的数字（含 '<0.01' 这种下限写法） */
     text: string;
-    /** 用的哪个时间窗，调用方据此选提示文案 */
-    window: 'gen' | 'total';
 };
 
 export function describeThroughput(log: ThroughputInput): ThroughputReading | null {
@@ -37,21 +41,20 @@ export function describeThroughput(log: ThroughputInput): ThroughputReading | nu
     const total = log.use_time ?? 0;
     const first = log.ftut ?? 0;
 
-    // 没有输出、或总耗时不成数 → 无从计算，整块不显示（不要 0、不要 Infinity）。
-    if (!Number.isFinite(out) || out <= 0) return null;
-    if (!Number.isFinite(total) || total <= 0) return null;
+    if (!Number.isFinite(out) || out < TPS_MIN_OUTPUT_TOKENS) return null;
+    if (!Number.isFinite(total) || total < TPS_MIN_USE_TIME_MS) return null;
+    if (!Number.isFinite(first) || first <= 0 || first >= total) return null;
 
-    const firstTokenValid = Number.isFinite(first) && first > 0 && first < total;
-    const genMs = firstTokenValid ? total - first : total;
-    const sec = genMs / 1000;
-    if (!Number.isFinite(sec) || sec <= 0) return null;
+    const genMs = total - first;
+    if (genMs < TPS_MIN_GEN_MS) return null;
+    if (genMs < total * TPS_MIN_GEN_SHARE) return null;
 
-    const tps = out / sec;
-    if (!Number.isFinite(tps) || tps <= 0) return null;
+    const tps = out / (genMs / 1000);
+    if (!Number.isFinite(tps) || tps <= 0 || tps > TPS_MAX_PLAUSIBLE) return null;
 
     // 别让 0.04 t/s 被舍成 "0.0"（看着像没数据）；三位数以上不要小数，免得占宽。
     const text =
         tps < 0.01 ? '<0.01' : tps < 10 ? tps.toFixed(2) : tps >= 100 ? tps.toFixed(0) : tps.toFixed(1);
 
-    return { text, window: firstTokenValid ? 'gen' : 'total' };
+    return { text };
 }

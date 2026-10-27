@@ -68,6 +68,8 @@ export interface ModelHealthSummary {
     request_failed: number;
     first_token_p90_ms: number;
     avg_throughput: number;
+    /** 参与中位数的有效样本数；0 = 无可采信样本，界面显示 --。 */
+    avg_throughput_samples?: number;
     cache_hit_rate: number;
 }
 
@@ -119,6 +121,7 @@ export interface StatsModelRank {
     cache_hit_rate?: number;
     first_token_p90_ms?: number;
     avg_throughput?: number;
+    avg_throughput_samples?: number;
     recent_actual_models?: string[];
 }
 
@@ -136,7 +139,8 @@ export interface StatsModelRankFormatted {
     cache_write_token: ReturnType<typeof formatCount>;
     cache_hit_rate: ReturnType<typeof formatPercent>;
     first_token_p90_ms: ReturnType<typeof formatTime>;
-    avg_throughput: ReturnType<typeof formatCount>;
+    /** 吞吐中位数（一位小数），无有效样本时是 '--'。 */
+    avg_throughput: string;
     recent_actual_models: string[];
 }
 
@@ -339,7 +343,9 @@ export function useStatsModelRank() {
                 cache_write_token: formatCount(item.cache_write_token),
                 cache_hit_rate: formatPercent(item.cache_hit_rate),
                 first_token_p90_ms: formatTime(item.first_token_p90_ms),
-                avg_throughput: formatCount(item.avg_throughput),
+                // 吞吐中位数：一位小数直显。formatCount 会把 10453 缩成 "10.5K"，
+                // 异常值看起来更"正常"——那是藏异常，不是展示。
+                avg_throughput: item.avg_throughput_samples === 0 ? '--' : (item.avg_throughput ?? 0).toFixed(1),
                 recent_actual_models: item.recent_actual_models ?? [],
             };
         }),

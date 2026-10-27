@@ -85,11 +85,15 @@ func NewStatsAPIKeyUsageList(stats []StatsAPIKey) []StatsAPIKeyUsage {
 }
 
 type ModelHealthSummary struct {
-	RequestSuccess  int64   `json:"request_success"`
-	RequestFailed   int64   `json:"request_failed"`
-	FirstTokenP90Ms int64   `json:"first_token_p90_ms"`
-	AvgThroughput   float64 `json:"avg_throughput"`
-	CacheHitRate    float64 `json:"cache_hit_rate"`
+	RequestSuccess  int64 `json:"request_success"`
+	RequestFailed   int64 `json:"request_failed"`
+	FirstTokenP90Ms int64 `json:"first_token_p90_ms"`
+	// AvgThroughput 是逐请求 tok/s 的中位数（先过有效性闸门，见 op/throughput.go）。
+	// AvgThroughputSamples 是参与中位数的有效样本数——0 时前端显示 --，
+	// 1 个样本的中位数不该被当成结论。
+	AvgThroughput        float64 `json:"avg_throughput"`
+	AvgThroughputSamples int     `json:"avg_throughput_samples"`
+	CacheHitRate         float64 `json:"cache_hit_rate"`
 }
 
 type ModelHealthHour struct {
@@ -114,21 +118,22 @@ type ModelHealthResponse struct {
 }
 
 type ModelRankItem struct {
-	Model              string   `json:"model"`
-	RequestCount       int64    `json:"request_count"`
-	RequestSuccess     int64    `json:"request_success"`
-	RequestFailed      int64    `json:"request_failed"`
-	InputToken         int64    `json:"input_token"`
-	OutputToken        int64    `json:"output_token"`
-	CacheHitToken      int64    `json:"cache_hit_token"`
-	CacheInputToken    int64    `json:"cache_input_token"`
-	CacheWriteToken    int64    `json:"cache_write_token"`
-	TotalToken         int64    `json:"total_token"`
-	TotalCost          float64  `json:"total_cost"`
-	CacheHitRate       float64  `json:"cache_hit_rate"`
-	FirstTokenP90Ms    int64    `json:"first_token_p90_ms"`
-	AvgThroughput      float64  `json:"avg_throughput"`
-	RecentActualModels []string `json:"recent_actual_models"`
+	Model                string   `json:"model"`
+	RequestCount         int64    `json:"request_count"`
+	RequestSuccess       int64    `json:"request_success"`
+	RequestFailed        int64    `json:"request_failed"`
+	InputToken           int64    `json:"input_token"`
+	OutputToken          int64    `json:"output_token"`
+	CacheHitToken        int64    `json:"cache_hit_token"`
+	CacheInputToken      int64    `json:"cache_input_token"`
+	CacheWriteToken      int64    `json:"cache_write_token"`
+	TotalToken           int64    `json:"total_token"`
+	TotalCost            float64  `json:"total_cost"`
+	CacheHitRate         float64  `json:"cache_hit_rate"`
+	FirstTokenP90Ms      int64    `json:"first_token_p90_ms"`
+	AvgThroughput        float64  `json:"avg_throughput"`
+	AvgThroughputSamples int      `json:"avg_throughput_samples"`
+	RecentActualModels   []string `json:"recent_actual_models"`
 }
 
 // Add aggregates another StatsMetrics into the current one.

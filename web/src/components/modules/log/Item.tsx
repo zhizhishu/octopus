@@ -1676,7 +1676,7 @@ export const LogCard = React.memo(function LogCard({
                                             <span className="text-muted-foreground/60">·</span>
                                             <span
                                                 className="inline-flex items-center gap-1 font-medium tabular-nums"
-                                                title={`${t('tps')} ${tpsReading.text} ${t('tpsUnit')} · ${tpsReading.window === 'gen' ? t('tpsHintGen') : t('tpsHintTotal')}`}
+                                                title={`${t('tps')} ${tpsReading.text} ${t('tpsUnit')} · ${t('tpsHintGen')}`}
                                             >
                                                 <Gauge className="size-3.5 shrink-0 text-muted-foreground" />
                                                 <span>{t('tps')} {tpsReading.text} {t('tpsUnit')}</span>

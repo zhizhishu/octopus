@@ -25,7 +25,7 @@ func TestModelHourlyHealthAggregatesLogExperience(t *testing.T) {
 			ChannelId:        101,
 			ActualModelName:  "claude-sonnet",
 			InputTokens:      100,
-			OutputTokens:     40,
+			OutputTokens:     400,
 			CacheHitTokens:   90,
 			CacheInputTokens: 100,
 			Ftut:             500,
@@ -38,11 +38,11 @@ func TestModelHourlyHealthAggregatesLogExperience(t *testing.T) {
 			ChannelId:        101,
 			ActualModelName:  "claude-sonnet",
 			InputTokens:      100,
-			OutputTokens:     60,
+			OutputTokens:     600,
 			CacheHitTokens:   10,
 			CacheInputTokens: 100,
 			Ftut:             900,
-			UseTime:          1900,
+			UseTime:          2900,
 		},
 		{
 			ID:               3003,
@@ -123,8 +123,12 @@ func TestModelHourlyHealthAggregatesLogExperience(t *testing.T) {
 	if claude.Summary.FirstTokenP90Ms != 900 {
 		t.Fatalf("expected p90 900ms, got %d", claude.Summary.FirstTokenP90Ms)
 	}
-	if claude.Summary.AvgThroughput != 50 {
-		t.Fatalf("expected throughput 50 tok/s, got %f", claude.Summary.AvgThroughput)
+	// 中位数(400/1s, 600/2s) = 350——与求和(700)、ratio-of-sums(333)都不同。
+	if claude.Summary.AvgThroughput != 350 {
+		t.Fatalf("expected throughput median 350 tok/s, got %f", claude.Summary.AvgThroughput)
+	}
+	if claude.Summary.AvgThroughputSamples != 2 {
+		t.Fatalf("expected 2 throughput samples, got %d", claude.Summary.AvgThroughputSamples)
 	}
 	if claude.Summary.CacheHitRate != 0.5 {
 		t.Fatalf("expected cache rate 0.5, got %f", claude.Summary.CacheHitRate)

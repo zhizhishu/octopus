@@ -25,13 +25,12 @@ var modelHealthProviderOrder = []string{
 }
 
 type modelHealthAccumulator struct {
-	success      int64
-	failed       int64
-	ftutMs       []int
-	outputTokens int64
-	generateMs   int64
-	cacheHit     int64
-	cacheInput   int64
+	success    int64
+	failed     int64
+	ftutMs     []int
+	tpsSamples []float64
+	cacheHit   int64
+	cacheInput int64
 }
 
 type modelHealthModelAccumulator struct {
@@ -192,15 +191,9 @@ func modelHealthAddLog(acc *modelHealthAccumulator, relayLog model.RelayLog) {
 		if relayLog.Ftut > 0 {
 			acc.ftutMs = append(acc.ftutMs, relayLog.Ftut)
 		}
-		if relayLog.OutputTokens > 0 {
-			generateMs := relayLog.UseTime
-			if relayLog.Ftut > 0 && relayLog.UseTime > relayLog.Ftut {
-				generateMs = relayLog.UseTime - relayLog.Ftut
-			}
-			if generateMs > 0 {
-				acc.outputTokens += int64(relayLog.OutputTokens)
-				acc.generateMs += int64(generateMs)
-			}
+		// 逐请求先过有效性闸门再采样，聚合取中位数（见 throughput.go）。
+		if tps, ok := relayLogTPSSample(relayLog); ok {
+			acc.tpsSamples = append(acc.tpsSamples, tps)
 		}
 	} else {
 		acc.failed++
@@ -234,9 +227,8 @@ func modelHealthSummary(acc modelHealthAccumulator) model.ModelHealthSummary {
 		RequestFailed:   acc.failed,
 		FirstTokenP90Ms: int64(modelHealthP90(acc.ftutMs)),
 	}
-	if acc.outputTokens > 0 && acc.generateMs > 0 {
-		summary.AvgThroughput = float64(acc.outputTokens) / (float64(acc.generateMs) / 1000)
-	}
+	summary.AvgThroughput = tpsMedian(acc.tpsSamples)
+	summary.AvgThroughputSamples = len(acc.tpsSamples)
 	if acc.cacheHit > 0 && acc.cacheInput > 0 {
 		summary.CacheHitRate = float64(acc.cacheHit) / float64(acc.cacheInput)
 	}
