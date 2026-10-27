@@ -280,7 +280,7 @@ func TestRelayProbeNeverClaimsAuthenticity(t *testing.T) {
 // localCount 在测试里复算本地分词器结果，避免把魔法数字写进测试。
 func localCount(t *testing.T, body string) int {
 	t.Helper()
-	text := visibleRequestText(body)
+	text, _ := requestBillableText(body)
 	n := tokenizer.CountTokens(text, "claude-opus-4-6")
 	if n <= 0 {
 		t.Fatalf("本地分词器应能算出正数，得到 %d", n)

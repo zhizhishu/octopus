@@ -48,10 +48,15 @@ const LABELS: Record<string, string> = {
     max: '合理上限',
     // 分词器口径
     upstream_input: '上游自报输入',
+    upstream_input_folded: '上游自报输入（含缓存）',
+    upstream_input_raw: '上游自报输入（原始栏）',
     local_recount: '本地复算输入',
     relative_diff: '相对偏差',
     tolerance: '容差',
     min_tokens: '最少样本量',
+    // 置信度附带的机器可读依据：数了哪些部分、哪些因素压了置信度。
+    counted_parts: '复算覆盖的部分',
+    confidence_factors: '置信度折减因素',
 };
 
 /**
@@ -95,8 +100,8 @@ const ORDER: Record<string, string[]> = {
     token_arithmetic: ['input', 'output', 'sum', 'total', 'diff'],
     cache_exceeds_prompt: ['cache_hit', 'cache_write', 'cache_total', 'input_tokens'],
     empty_output_with_tokens: ['output'],
-    char_token_ratio: ['chars', 'output_tokens', 'ratio', 'min', 'max'],
-    tokenizer_residual: ['upstream_input', 'local_recount', 'relative_diff', 'tolerance', 'min_tokens'],
+    char_token_ratio: ['chars', 'output_tokens', 'ratio', 'min', 'max', 'counted_parts'],
+    tokenizer_residual: ['upstream_input_folded', 'local_recount', 'relative_diff', 'tolerance', 'min_tokens', 'counted_parts', 'confidence_factors', 'upstream_input_raw'],
 };
 
 function num(v: unknown): number | undefined {
@@ -142,11 +147,33 @@ export function describeProbeEvidence(
 }
 
 /** 值转字符串。数字不加千分位——核对时不希望 1200 和 1,200 混着看。 */
+/** counted_parts / confidence_factors 里的机器码翻译成人话。认不出的码原样露出。 */
+const CODE_LABELS: Record<string, string> = {
+    // counted_parts
+    content: '消息正文',
+    system: '系统提示',
+    tool_arguments: '工具调用参数',
+    tools_schema: '工具声明',
+    reasoning: '推理内容',
+    // confidence_factors
+    upstream_templated_tools: '上游模板包装不可算',
+    tool_arguments_counted: '工具参数已计入',
+    replayed_reasoning: '含重放推理',
+    tokenizer_family_mismatch: '分词器不同族',
+    multi_choice: '多候选回复',
+    near_threshold: '偏差贴阈值',
+    folded_input_fallback: '分母回退自折',
+    log_filter_stripped_media: '日志已剥媒体',
+};
+
 function formatValue(v: unknown): string {
     if (v === null || v === undefined) return '—';
     if (typeof v === 'number') return String(v);
     if (typeof v === 'boolean') return v ? '是' : '否';
     if (typeof v === 'string') return v;
+    if (Array.isArray(v) && v.every((x) => typeof x === 'string')) {
+        return (v as string[]).map((x) => CODE_LABELS[x] ?? x).join('、');
+    }
     try {
         return JSON.stringify(v);
     } catch {

@@ -53,6 +53,12 @@ type RelayProbeInput struct {
 	// 由 relay 侧按 usageCacheStats 的同一套规则算好传进来，探针不再自己推。
 	CacheFoldedInputTokens int
 
+	// UsageSource 是这条日志 token 数字的来源（model.RelayLogUsageSource*）。
+	// 分词器残差只在 upstream_usage 时有意义：本地估算的数字是我们自己用同一个
+	// 分词器数出来的，再拿同一个分词器复算比对，残差只反映"两段文本长度差"，
+	// 结论无意义——这种情形整条检查跳过。
+	UsageSource string
+
 	// 请求体与回复正文（均已脱敏）。只用于分词器残差与字符/token 比值。
 	RequestContent  string
 	ResponseContent string
@@ -204,7 +210,10 @@ func probeCharTokenRatio(in RelayProbeInput) (model.RelayProbeFinding, bool) {
 	if in.OutputTokens <= 0 {
 		return model.RelayProbeFinding{}, false
 	}
-	text := visibleReplyText(in.ResponseContent)
+	// 分子必须与分母同源：output_tokens 实际由「可见正文 + 工具调用参数 + 不可见推理」
+	// 三部分组成，只数正文会把一切带工具调用的回复报成"token 灌水"（生产误报实证：
+	// 13 字正文 + 一条 bash 命令 = 120 token，比值 0.11 触发假警）。
+	text, meta := replyBillableText(in.ResponseContent)
 	if strings.TrimSpace(text) == "" {
 		return model.RelayProbeFinding{}, false
 	}
@@ -216,25 +225,222 @@ func probeCharTokenRatio(in RelayProbeInput) (model.RelayProbeFinding, bool) {
 	if ratio >= model.ProbeCharTokenMin && ratio <= model.ProbeCharTokenMax {
 		return model.RelayProbeFinding{}, false
 	}
+	// 方向感知：不可见推理的质量没有上界，它只会让分母虚高、比值偏低。
+	// 所以低位越界（疑似灌水）在推理型请求下不可判——整条跳过；
+	// 高位越界（字符远超 token）推理解释不了，照报。
+	reasoning := meta.hasReasoning || requestHasReasoningEffort(in.RequestContent)
+	if ratio < model.ProbeCharTokenMin && reasoning {
+		return model.RelayProbeFinding{}, false
+	}
 	severity := model.RelayProbeSeverityLow
 	// 只有明显越界才升级：擦边值多半是中文/代码这类正常但极端的文本。
-	if ratio < 1.0 || ratio > 20 {
+	farOut := ratio < 1.0 || ratio > 20
+	if farOut {
 		severity = model.RelayProbeSeverityMedium
 	}
+	// 置信度：high 要求数字完全同源（单 choice、无工具参数、无推理、越界幅度
+	// 超过阈值两倍）；有已计入的工具参数、多 choice、贴阈值，都是 medium。
+	confidence := model.RelayProbeConfidenceHigh
+	var factors []string
+	if meta.toolArgsCounted {
+		factors = append(factors, "tool_arguments_counted")
+	}
+	if meta.choiceCount > 1 {
+		factors = append(factors, "multi_choice")
+	}
+	if !farOut {
+		factors = append(factors, "near_threshold")
+	}
+	if len(factors) > 0 {
+		confidence = model.RelayProbeConfidenceMedium
+	}
+	evidence := map[string]any{
+		"chars":         chars,
+		"output_tokens": in.OutputTokens,
+		"ratio":         math.Round(ratio*100) / 100,
+		"min":           model.ProbeCharTokenMin,
+		"max":           model.ProbeCharTokenMax,
+		"counted_parts": meta.countedParts,
+	}
+	if len(factors) > 0 {
+		evidence["confidence_factors"] = factors
+	}
 	return model.RelayProbeFinding{
-		Code:     model.ProbeCodeCharTokenRatio,
-		Severity: severity,
-		Title: fmt.Sprintf("回复 %d 个字符却记了 %d 个输出 token，相当于每个 token %.2f 个字。"+
+		Code:       model.ProbeCodeCharTokenRatio,
+		Severity:   severity,
+		Confidence: confidence,
+		Title: fmt.Sprintf("回复可数文本 %d 个字符却记了 %d 个输出 token，相当于每个 token %.2f 个字。"+
 			"正常文本大约每个 token 2–5 个字，这个比例明显偏离，可能是 token 被多算或输出被截断了",
 			chars, in.OutputTokens, ratio),
-		Evidence: map[string]any{
-			"chars":         chars,
-			"output_tokens": in.OutputTokens,
-			"ratio":         math.Round(ratio*100) / 100,
-			"min":           model.ProbeCharTokenMin,
-			"max":           model.ProbeCharTokenMax,
-		},
+		Evidence: evidence,
 	}, true
+}
+
+// replyBillableMeta 记录"分子数了哪些部分"，供置信度与证据面板使用。
+type replyBillableMeta struct {
+	hasReasoning    bool
+	toolArgsCounted bool
+	choiceCount     int
+	countedParts    []string
+}
+
+// replyBillableText 汇总一次回复里"模型逐字吐出、我们看得见"的全部文本，
+// 跨所有 choice 求和（n>1 时 output_tokens 也是全部 choice 之和，只数第一个
+// 会让比值必然偏低）。返回文本与元信息。
+//
+// 数的部分：正文 content、tool_calls[].function.arguments、function_call.arguments、
+// 可见的 reasoning_content / reasoning / Anthropic thinking 文本、tool_use.input
+// 的叶子字符串。不数的部分：JSON 包装与键名。
+func replyBillableText(body string) (string, replyBillableMeta) {
+	var meta replyBillableMeta
+	if strings.TrimSpace(body) == "" {
+		return "", meta
+	}
+	var shape struct {
+		Choices []struct {
+			Message *struct {
+				Content          json.RawMessage `json:"content"`
+				ReasoningContent json.RawMessage `json:"reasoning_content"`
+				Reasoning        json.RawMessage `json:"reasoning"`
+				ToolCalls        []struct {
+					Function *struct {
+						Arguments string `json:"arguments"`
+					} `json:"function"`
+				} `json:"tool_calls"`
+				FunctionCall *struct {
+					Arguments string `json:"arguments"`
+				} `json:"function_call"`
+			} `json:"message"`
+			Content json.RawMessage `json:"content"`
+		} `json:"choices"`
+		// Anthropic 形状：顶层 content 是 block 数组。
+		Content []struct {
+			Type     string          `json:"type"`
+			Text     string          `json:"text"`
+			Thinking string          `json:"thinking"`
+			Input    json.RawMessage `json:"input"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(body), &shape); err != nil {
+		return "", meta
+	}
+	var sb strings.Builder
+	seen := map[string]bool{}
+	mark := func(part string) {
+		if !seen[part] {
+			seen[part] = true
+			meta.countedParts = append(meta.countedParts, part)
+		}
+	}
+	// Anthropic 顶层 blocks。
+	for _, block := range shape.Content {
+		switch block.Type {
+		case "text":
+			if strings.TrimSpace(block.Text) != "" {
+				sb.WriteString(block.Text)
+				mark("content")
+			}
+		case "thinking", "redacted_thinking":
+			meta.hasReasoning = true
+			if strings.TrimSpace(block.Thinking) != "" {
+				sb.WriteString(block.Thinking)
+				mark("reasoning")
+			}
+		case "tool_use", "server_tool_use":
+			if s := jsonLeafText(block.Input); s != "" {
+				sb.WriteString(s)
+				meta.toolArgsCounted = true
+				mark("tool_arguments")
+			}
+		}
+	}
+	for _, ch := range shape.Choices {
+		meta.choiceCount++
+		if ch.Message != nil {
+			if s := rawJSONText(ch.Message.Content); s != "" {
+				sb.WriteString(s)
+				mark("content")
+			}
+			if s := rawJSONString(ch.Message.ReasoningContent); strings.TrimSpace(s) != "" {
+				sb.WriteString(s)
+				meta.hasReasoning = true
+				mark("reasoning")
+			}
+			if s := rawJSONString(ch.Message.Reasoning); strings.TrimSpace(s) != "" {
+				sb.WriteString(s)
+				meta.hasReasoning = true
+				mark("reasoning")
+			}
+			for _, tc := range ch.Message.ToolCalls {
+				if tc.Function != nil && strings.TrimSpace(tc.Function.Arguments) != "" {
+					sb.WriteString(tc.Function.Arguments)
+					meta.toolArgsCounted = true
+					mark("tool_arguments")
+				}
+			}
+			if ch.Message.FunctionCall != nil && strings.TrimSpace(ch.Message.FunctionCall.Arguments) != "" {
+				sb.WriteString(ch.Message.FunctionCall.Arguments)
+				meta.toolArgsCounted = true
+				mark("tool_arguments")
+			}
+		}
+		if s := rawJSONText(ch.Content); s != "" {
+			sb.WriteString(s)
+			mark("content")
+		}
+	}
+	return sb.String(), meta
+}
+
+// requestHasReasoningEffort 报告请求是否声明了推理强度（reasoning_effort /
+// reasoning / thinking 任意形状）。低位比值在推理型请求下不可判，见
+// probeCharTokenRatio 的方向感知注释。
+func requestHasReasoningEffort(body string) bool {
+	if strings.TrimSpace(body) == "" {
+		return false
+	}
+	var shape struct {
+		ReasoningEffort json.RawMessage `json:"reasoning_effort"`
+		Reasoning       json.RawMessage `json:"reasoning"`
+		Thinking        json.RawMessage `json:"thinking"`
+	}
+	if err := json.Unmarshal([]byte(body), &shape); err != nil {
+		return false
+	}
+	return rawJSONPresent(shape.ReasoningEffort) || rawJSONPresent(shape.Reasoning) || rawJSONPresent(shape.Thinking)
+}
+
+// jsonLeafText 递归收集一段 JSON 里全部字符串**值**（键名与包装不数——
+// 那才是"模型逐字读到的文本"，键名是结构开销）。用于 tool_use.input 与
+// 顶层 tools 的 schema 描述。
+func jsonLeafText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return ""
+	}
+	var sb strings.Builder
+	collectJSONLeafStrings(v, &sb)
+	return sb.String()
+}
+
+func collectJSONLeafStrings(v any, sb *strings.Builder) {
+	switch t := v.(type) {
+	case string:
+		if strings.TrimSpace(t) != "" {
+			sb.WriteString(t)
+		}
+	case []any:
+		for _, item := range t {
+			collectJSONLeafStrings(item, sb)
+		}
+	case map[string]any:
+		for _, val := range t {
+			collectJSONLeafStrings(val, sb)
+		}
+	}
 }
 
 // probeTokenizerResidual 用本地分词器复算输入 token，与上游自报值比较。
@@ -249,10 +455,27 @@ func probeCharTokenRatio(in RelayProbeInput) (model.RelayProbeFinding, bool) {
 //  2. 请求体里只取"用户可见的文本"来算，不拿整个 JSON 去算——JSON 的引号、
 //     转义、字段名都不该计入模型真正看到的 token。
 func probeTokenizerResidual(in RelayProbeInput) (model.RelayProbeFinding, bool) {
-	if in.InputTokens < model.ProbeTokenizerMinTokens {
+	// 同源门槛：token 数字必须是上游自报的。本地估算的数字本来就是我们用同一个
+	// 分词器数出来的，再复算比对等于自己核对自己，结论无意义——整条跳过。
+	if in.UsageSource != "" && in.UsageSource != model.RelayLogUsageSourceUpstream {
 		return model.RelayProbeFinding{}, false
 	}
-	text := visibleRequestText(in.RequestContent)
+	// 分母必须用**折叠后的输入总量**：Anthropic 独占口径下 InputTokens 只是
+	// 非缓存部分（12），缓存命中 40000 才是大头。拿独占值当分母，每一条带
+	// prompt cache 的 Anthropic 请求都会报出 +300000% 的假残差。
+	upstream := in.CacheFoldedInputTokens
+	if upstream <= 0 {
+		upstream = in.InputTokens
+	}
+	if upstream < model.ProbeTokenizerMinTokens {
+		return model.RelayProbeFinding{}, false
+	}
+	text, meta := requestBillableText(in.RequestContent)
+	// 含图片/音频/文件部件：这些部件占多少 token 无法从存储正文恢复（日志只留了
+	// 占位符），不可计算且无界的量不猜——整条跳过，不用低置信度硬报。
+	if meta.hasMedia {
+		return model.RelayProbeFinding{}, false
+	}
 	if strings.TrimSpace(text) == "" {
 		return model.RelayProbeFinding{}, false
 	}
@@ -261,24 +484,230 @@ func probeTokenizerResidual(in RelayProbeInput) (model.RelayProbeFinding, bool) 
 	if local <= 0 {
 		return model.RelayProbeFinding{}, false
 	}
-	diff := float64(local-in.InputTokens) / float64(in.InputTokens)
+	diff := float64(local-upstream) / float64(upstream)
 	if math.Abs(diff) <= model.ProbeTokenizerResidualTolerance {
 		return model.RelayProbeFinding{}, false
 	}
+	// 置信度：数进去的 tools/tool_calls/重放推理，服务商注入自家模板时的包装开销
+	// 不可计算但有界（每条工具调用约 10–20 token）；本地分词器与请求模型不同族
+	// 同理（CountTokens 目前恒为 o200k 口径）。两者都是有界干扰 → medium。
+	confidence := model.RelayProbeConfidenceHigh
+	var factors []string
+	if meta.hasTools {
+		factors = append(factors, "upstream_templated_tools")
+	}
+	if meta.toolArgsCounted {
+		factors = append(factors, "tool_arguments_counted")
+	}
+	if meta.reasoningCounted {
+		factors = append(factors, "replayed_reasoning")
+	}
+	if !isO200kFamilyModel(in.RequestedModel) {
+		factors = append(factors, "tokenizer_family_mismatch")
+	}
+	if len(factors) > 0 {
+		confidence = model.RelayProbeConfidenceMedium
+	}
+	evidence := map[string]any{
+		"upstream_input_folded": upstream,
+		"upstream_input_raw":    in.InputTokens,
+		"local_recount":         local,
+		"relative_diff":         math.Round(diff*1000) / 1000,
+		"tolerance":             model.ProbeTokenizerResidualTolerance,
+		"min_tokens":            model.ProbeTokenizerMinTokens,
+		"counted_parts":         meta.countedParts,
+	}
+	if len(factors) > 0 {
+		evidence["confidence_factors"] = factors
+	}
 	return model.RelayProbeFinding{
-		Code:     model.ProbeCodeTokenizerResidual,
-		Severity: model.RelayProbeSeverityMedium,
+		Code:       model.ProbeCodeTokenizerResidual,
+		Severity:   model.RelayProbeSeverityMedium,
+		Confidence: confidence,
 		Title: fmt.Sprintf("上游报的输入是 %d 个 token，但用标准分词器复算同样的文字只有 %d 个（差 %+.0f%%）。"+
 			"偏差这么大说明背后用的很可能不是这个模型该有的分词器——不同厂商的分词口径差异恰好就在这个量级",
-			in.InputTokens, local, diff*100),
-		Evidence: map[string]any{
-			"upstream_input": in.InputTokens,
-			"local_recount":  local,
-			"relative_diff":  math.Round(diff*1000) / 1000,
-			"tolerance":      model.ProbeTokenizerResidualTolerance,
-			"min_tokens":     model.ProbeTokenizerMinTokens,
-		},
+			upstream, local, diff*100),
+		Evidence: evidence,
 	}, true
+}
+
+// isO200kFamilyModel 粗判模型是否 OpenAI o200k 口径家族。本地分词器目前只有
+// o200k 一种（见 internal/utils/tokenizer），非同族模型的复算自带系统性偏差，
+// 置信度降一档而不是当成铁证。
+func isO200kFamilyModel(name string) bool {
+	lower := strings.ToLower(name)
+	for _, marker := range []string{"gpt", "o1", "o3", "o4", "codex"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// requestBillableMeta 记录请求侧复算数了哪些部分、遇到了哪些不可计算量。
+type requestBillableMeta struct {
+	hasMedia         bool
+	hasTools         bool
+	toolArgsCounted  bool
+	reasoningCounted bool
+	countedParts     []string
+}
+
+// requestBillableText 收集请求里"模型逐字读到"的全部文本：所有 message 的正文、
+// system、prompt、assistant 历史里的 tool_calls 参数、重放的 reasoning、
+// Anthropic 的 tool_use/tool_result/thinking 块、顶层 tools 的名称/描述/schema
+// 叶子字符串。不数 JSON 包装与键名（包装开销有界，远在容差之内）。
+//
+// 媒体部件（图片/音频/文件）不数也无法数——日志只存了占位符，token 量不可恢复，
+// 通过 meta.hasMedia 告知调用方整条跳过。
+func requestBillableText(body string) (string, requestBillableMeta) {
+	var meta requestBillableMeta
+	if strings.TrimSpace(body) == "" {
+		return "", meta
+	}
+	var shape struct {
+		Messages []struct {
+			Role             string          `json:"role"`
+			Content          json.RawMessage `json:"content"`
+			ReasoningContent json.RawMessage `json:"reasoning_content"`
+			Reasoning        json.RawMessage `json:"reasoning"`
+			Images           json.RawMessage `json:"images"`
+			Audio            json.RawMessage `json:"audio"`
+			ToolCalls        []struct {
+				Function *struct {
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
+			FunctionCall *struct {
+				Arguments string `json:"arguments"`
+			} `json:"function_call"`
+		} `json:"messages"`
+		System json.RawMessage `json:"system"`
+		Prompt json.RawMessage `json:"prompt"`
+		Tools  json.RawMessage `json:"tools"`
+	}
+	if err := json.Unmarshal([]byte(body), &shape); err != nil {
+		return "", meta
+	}
+	var sb strings.Builder
+	contentCounted := false
+	systemCounted := false
+	promptCounted := false
+	if s := rawJSONText(shape.System); s != "" {
+		sb.WriteString(s)
+		systemCounted = true
+	}
+	for _, msg := range shape.Messages {
+		if messageContentBillableText(msg.Content, &meta, &sb) {
+			contentCounted = true
+		}
+		if rawJSONPresent(msg.Images) || rawJSONPresent(msg.Audio) {
+			meta.hasMedia = true
+		}
+		if s := rawJSONString(msg.ReasoningContent); strings.TrimSpace(s) != "" {
+			sb.WriteString(s)
+			meta.reasoningCounted = true
+		}
+		if s := rawJSONString(msg.Reasoning); strings.TrimSpace(s) != "" {
+			sb.WriteString(s)
+			meta.reasoningCounted = true
+		}
+		for _, tc := range msg.ToolCalls {
+			if tc.Function != nil && strings.TrimSpace(tc.Function.Arguments) != "" {
+				sb.WriteString(tc.Function.Arguments)
+				meta.toolArgsCounted = true
+			}
+		}
+		if msg.FunctionCall != nil && strings.TrimSpace(msg.FunctionCall.Arguments) != "" {
+			sb.WriteString(msg.FunctionCall.Arguments)
+			meta.toolArgsCounted = true
+		}
+	}
+	if sb.Len() == 0 {
+		if s := rawJSONText(shape.Prompt); s != "" {
+			sb.WriteString(s)
+			promptCounted = true
+		}
+	}
+	if s := jsonLeafText(shape.Tools); s != "" {
+		sb.WriteString(s)
+		meta.hasTools = true
+	}
+	// counted_parts 按真实数到的内容标注：content 块里的 tool_use / thinking
+	// 也归到各自的类目，不再笼统写成"正文"。
+	if systemCounted {
+		meta.countedParts = append(meta.countedParts, "system")
+	}
+	if contentCounted || promptCounted {
+		meta.countedParts = append(meta.countedParts, "content")
+	}
+	if meta.reasoningCounted {
+		meta.countedParts = append(meta.countedParts, "reasoning")
+	}
+	if meta.toolArgsCounted {
+		meta.countedParts = append(meta.countedParts, "tool_arguments")
+	}
+	if meta.hasTools {
+		meta.countedParts = append(meta.countedParts, "tools_schema")
+	}
+	return sb.String(), meta
+}
+
+// messageContentBillableText 把一条 message 的 content 数进 sb：纯字符串、
+// 文本部件、Anthropic 的 tool_use.input / tool_result / thinking 块。
+// 遇到媒体部件置 meta.hasMedia。返回是否数到了内容。
+func messageContentBillableText(raw json.RawMessage, meta *requestBillableMeta, sb *strings.Builder) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		if strings.TrimSpace(s) != "" {
+			sb.WriteString(s)
+			return true
+		}
+		return false
+	}
+	var parts []struct {
+		Type     string          `json:"type"`
+		Text     string          `json:"text"`
+		Thinking string          `json:"thinking"`
+		Input    json.RawMessage `json:"input"`
+		Content  json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return false
+	}
+	counted := false
+	for _, p := range parts {
+		switch p.Type {
+		case "text", "":
+			if strings.TrimSpace(p.Text) != "" {
+				sb.WriteString(p.Text)
+				counted = true
+			}
+		case "thinking", "redacted_thinking":
+			if strings.TrimSpace(p.Thinking) != "" {
+				sb.WriteString(p.Thinking)
+				meta.reasoningCounted = true
+				counted = true
+			}
+		case "tool_use", "server_tool_use":
+			if s := jsonLeafText(p.Input); s != "" {
+				sb.WriteString(s)
+				meta.toolArgsCounted = true
+				counted = true
+			}
+		case "tool_result":
+			// tool_result 的 content 还是一段部件数组，递归数它的文本。
+			if messageContentBillableText(p.Content, meta, sb) {
+				counted = true
+			}
+		case "image_url", "image", "input_audio", "audio", "input_image", "file", "video":
+			meta.hasMedia = true
+		}
+	}
+	return counted
 }
 
 // visibleReplyText 从响应 JSON 里取出助手可见的正文。
@@ -347,18 +776,29 @@ func hasAnyVisibleOutput(body string) bool {
 	if strings.TrimSpace(visibleReplyText(body)) != "" {
 		return true
 	}
+	// 日志落库时媒体数据被换成了占位符（metrics.go 的 filterResponseForLog）：
+	// 图片 URL 与音频 data 都变成 "[...data omitted for storage]"。占位符在 =
+	// 当时**确实有**媒体产出，output token 计得有理——不能报"空回复计了费"。
+	if strings.Contains(body, "omitted for storage") {
+		return true
+	}
 
 	var shape struct {
 		Choices []struct {
 			Message *struct {
 				Content          json.RawMessage `json:"content"`
 				ReasoningContent json.RawMessage `json:"reasoning_content"`
-				ToolCalls        json.RawMessage `json:"tool_calls"`
-				FunctionCall     json.RawMessage `json:"function_call"`
+				// OpenRouter/Ollama 风格的第二个推理字段，只认 reasoning_content
+				// 会把纯推理回复误报成空回复。
+				Reasoning    json.RawMessage `json:"reasoning"`
+				Refusal      string          `json:"refusal"`
+				ToolCalls    json.RawMessage `json:"tool_calls"`
+				FunctionCall json.RawMessage `json:"function_call"`
 			} `json:"message"`
 			Delta *struct {
 				Content          json.RawMessage `json:"content"`
 				ReasoningContent json.RawMessage `json:"reasoning_content"`
+				Reasoning        json.RawMessage `json:"reasoning"`
 				ToolCalls        json.RawMessage `json:"tool_calls"`
 			} `json:"delta"`
 			// 有些网关把工具调用挂在 choice 级别。
@@ -398,13 +838,16 @@ func hasAnyVisibleOutput(body string) bool {
 		}
 		if ch.Message != nil {
 			if rawJSONPresent(ch.Message.ToolCalls) || rawJSONPresent(ch.Message.FunctionCall) ||
-				strings.TrimSpace(rawJSONString(ch.Message.ReasoningContent)) != "" {
+				strings.TrimSpace(rawJSONString(ch.Message.ReasoningContent)) != "" ||
+				strings.TrimSpace(rawJSONString(ch.Message.Reasoning)) != "" ||
+				strings.TrimSpace(ch.Message.Refusal) != "" {
 				return true
 			}
 		}
 		if ch.Delta != nil {
 			if rawJSONPresent(ch.Delta.ToolCalls) ||
-				strings.TrimSpace(rawJSONString(ch.Delta.ReasoningContent)) != "" {
+				strings.TrimSpace(rawJSONString(ch.Delta.ReasoningContent)) != "" ||
+				strings.TrimSpace(rawJSONString(ch.Delta.Reasoning)) != "" {
 				return true
 			}
 		}
@@ -428,44 +871,6 @@ func rawJSONString(raw json.RawMessage) string {
 		return s
 	}
 	return string(raw)
-}
-
-// visibleRequestText 从请求 JSON 里取出模型真正看到的文字（所有 message 的文本）。
-//
-// 刻意不含 tools / system 的结构字段：各家序列化方式不同，把那部分算进来会让
-// 残差判定变成"比谁的工具声明更啰嗦"，而不是"比分词器"。
-func visibleRequestText(body string) string {
-	if strings.TrimSpace(body) == "" {
-		return ""
-	}
-	var shape struct {
-		Messages []struct {
-			Role    string          `json:"role"`
-			Content json.RawMessage `json:"content"`
-		} `json:"messages"`
-		// Anthropic 顶层 system 是独立的。
-		System json.RawMessage `json:"system"`
-		// 原生 completions 的 prompt。
-		Prompt json.RawMessage `json:"prompt"`
-	}
-	if err := json.Unmarshal([]byte(body), &shape); err != nil {
-		return ""
-	}
-	var sb strings.Builder
-	if s := rawJSONText(shape.System); s != "" {
-		sb.WriteString(s)
-	}
-	for _, msg := range shape.Messages {
-		if s := rawJSONText(msg.Content); s != "" {
-			sb.WriteString(s)
-		}
-	}
-	if sb.Len() == 0 {
-		if s := rawJSONText(shape.Prompt); s != "" {
-			sb.WriteString(s)
-		}
-	}
-	return sb.String()
 }
 
 // rawJSONText 把 content 字段的三种常见形状（字符串 / 部件数组 / 空）取成纯文本。
@@ -508,6 +913,7 @@ func computeRelayProbesForLog(relayLog model.RelayLog) []model.RelayProbeFinding
 		// relay 落库时 InputTokens 存的是上游原值（Anthropic 是独占口径），
 		// 折叠后的总量单独存在 CacheInputTokens 里 —— 直接用现成的，别重推。
 		CacheFoldedInputTokens: relayLog.CacheInputTokens,
+		UsageSource:            relayLog.UsageSource,
 		RequestContent:         relayLog.RequestContent,
 		ResponseContent:        relayLog.ResponseContent,
 		HasError:               strings.TrimSpace(relayLog.Error) != "" || relayLog.ErrorStatus >= 400,

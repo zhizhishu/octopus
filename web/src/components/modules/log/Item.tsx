@@ -1405,7 +1405,7 @@ export const LogCard = React.memo(function LogCard({
                     }}
                     className={cn(
                         'min-w-0 cursor-pointer overflow-visible whitespace-normal px-1.5 py-0 text-xs',
-                        probes.some((p) => p.severity === 'medium')
+                        probes.some((p) => p.severity === 'medium' && p.confidence !== 'low')
                             ? 'border-amber-500/40 text-amber-600 dark:text-amber-400'
                             : 'border-border text-muted-foreground'
                     )}
@@ -1428,6 +1428,9 @@ export const LogCard = React.memo(function LogCard({
                             return (
                                 <li key={`${probe.code}-${index}`} className="rounded-lg border border-border px-2 py-1.5">
                                     <p className="leading-5">{probe.title}</p>
+                                    <p className="mt-0.5 text-[11px] text-muted-foreground">
+                                        置信度：{probe.confidence === 'high' ? '高' : probe.confidence === 'medium' ? '中' : probe.confidence === 'low' ? '低' : '未评估（旧数据）'}
+                                    </p>
                                     {rows.length > 0 && (
                                         <div className="mt-1.5 space-y-0.5 text-[11px] text-muted-foreground">
                                             {rows.map((row) => (

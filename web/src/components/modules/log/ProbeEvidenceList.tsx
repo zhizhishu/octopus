@@ -14,6 +14,22 @@ import { describeProbeEvidence } from './probe-evidence';
  * 首条默认展开、其余折成「+N」：多数日志最多命中一两条，真命中多条的时候
  * 第一条通常就是最想看的那个；一次性铺开会把下面的请求/响应面板挤走。
  */
+/**
+ * 置信度文案。undefined 是升级前落库的旧行——显示"未评估"，绝不许当成"高"。
+ */
+function confidenceLabel(confidence: RelayProbeFinding['confidence']): string {
+    switch (confidence) {
+        case 'high':
+            return '高（数字全部同源可比）';
+        case 'medium':
+            return '中（存在有界的不可计算量，见下方因素）';
+        case 'low':
+            return '低（偏差贴着阈值，仅供参考）';
+        default:
+            return '未评估（旧数据）';
+    }
+}
+
 export function ProbeEvidenceList({ probes }: { probes: RelayProbeFinding[] }) {
     const [expanded, setExpanded] = useState(false);
     if (probes.length === 0) return null;
@@ -37,17 +53,22 @@ export function ProbeEvidenceList({ probes }: { probes: RelayProbeFinding[] }) {
             <ul className="mt-2 space-y-2">
                 {visible.map((probe, index) => {
                     const rows = describeProbeEvidence(probe.code, probe.evidence);
+                    // 醒目只给"严重且可信"的：低置信只是线索，不值得用告警色。
+                    const highlight = probe.severity === 'medium' && probe.confidence !== 'low';
                     return (
                         <li
                             key={`${probe.code}-${index}`}
                             className={cn(
                                 'rounded-lg border px-2.5 py-2',
-                                probe.severity === 'medium'
+                                highlight
                                     ? 'border-amber-500/40 bg-amber-500/5'
                                     : 'border-border bg-background/60'
                             )}
                         >
                             <p className="text-xs leading-5 text-foreground">{probe.title}</p>
+                            <p className="mt-1 text-[11px] text-muted-foreground">
+                                置信度：{confidenceLabel(probe.confidence)}
+                            </p>
                             {rows.length > 0 && (
                                 <div className="mt-1.5 space-y-0.5">
                                     {rows.map((row) => (

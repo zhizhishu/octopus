@@ -89,6 +89,10 @@ export interface ChannelAttempt {
 export interface RelayProbeFinding {
     code: string;
     severity: 'low' | 'medium';
+    // confidence 是"这条结论有多可能是真的"：high=数字全部同源可比；
+    // medium=存在有界的不可计算量（服务商模板包装、分词器不同族）；low=贴阈值。
+    // 旧行没有这个字段（undefined）——渲染成"未评估"，绝不许当成 high。
+    confidence?: 'high' | 'medium' | 'low';
     title: string;
     evidence?: Record<string, unknown>;
 }

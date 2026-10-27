@@ -16,6 +16,12 @@ type RelayProbeFinding struct {
 	Code string `json:"code"`
 	// Severity 与既有日志异常一致：medium（值得看）/ low（只是线索）。
 	Severity string `json:"severity"`
+	// Confidence 是"这条结论有多可能是真的"，与 Severity 正交：
+	// Severity 回答"如果是真的有多糟"，Confidence 回答"有多可能是真的"。
+	// 置信度 = 参与比较的事实有多少是同源可比的。
+	// 空串 = 旧行/未评估（升级前落库的 finding 没有这个字段）——
+	// 任何代码路径都不许把空串读成 high。
+	Confidence string `json:"confidence,omitempty"`
 	// Title 是给人看的一句话，中文，不用术语。
 	Title string `json:"title"`
 	// Evidence 是判定依据的原始数字/字符串，便于用户自己复核而不必信结论。
@@ -52,6 +58,19 @@ const (
 const (
 	RelayProbeSeverityMedium = "medium"
 	RelayProbeSeverityLow    = "low"
+)
+
+// Confidence 取值。三级，不加第四级（与前端配色一一对应，新增等级要改 UI）。
+const (
+	// RelayProbeConfidenceHigh：每个数字都同源可比（上游自报 vs 上游自报，
+	// 或本地可见全文 vs 上游自报），且无已知不可计算的质量。
+	RelayProbeConfidenceHigh = "high"
+	// RelayProbeConfidenceMedium：存在已知、有界、方向可推的不可计算量
+	// （服务商把 tools 注入自家模板的开销、本地分词器与模型不同族）。
+	RelayProbeConfidenceMedium = "medium"
+	// RelayProbeConfidenceLow：命中幅度贴着阈值。无界且方向解释不了命中的
+	// 干扰不落到这一级——那种情况整条检查跳过，不产出结论。
+	RelayProbeConfidenceLow = "low"
 )
 
 // 阈值集中在这里，改动必须连带改测试。
