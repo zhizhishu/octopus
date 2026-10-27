@@ -191,7 +191,40 @@ func UpstreamModelMismatchCode(mismatch *bool, sentModel, responseModel string) 
 	if upstreamAliasVariantMatch(sentModel, responseModel) {
 		return UpstreamMismatchCodeAliasVariant
 	}
+	if upstreamSameFamilyAliasEcho(sentModel, responseModel) {
+		return UpstreamMismatchCodeAliasVariant
+	}
 	return ""
+}
+
+// upstreamCanonicalEchoFamilies: 上游只会回自家规范 id、与请求名没有公共字符串前缀的家族。
+//
+// 当前仅 moonshot(kimi): 请求 kimi-3.1-pro, 上游常回 moonshotai/Kimi-K3 / kimi-k2.5 /
+// kimi-k3——都是同一个家族的不同叫法, 却被 upstreamAliasVariantMatch 的前缀判据漏掉
+// (kimi-3.1-pro 与 kimi-k3 在 "kimi-k" 后分叉, 与 moonshotai/Kimi-K3 更是毫无公共前缀)。
+//
+// 新增家族必须有真实回显样本支撑, 不许按"感觉"放行——这里放行的是"同族不同名"这一档,
+// 仍然只降级到 alias_variant(「名称变体」线索), **不**否认 mismatch 事实:
+// 请求 kimi-3.1-pro 真的被换成 kimi-k3, 布尔位仍为 true, 前端仍显示变体提示。
+var upstreamCanonicalEchoFamilies = map[string]struct{}{"moonshot": {}}
+
+// upstreamSameFamilyAliasEcho 判定「请求名与回显名同属一个已知规范回显家族」。
+// 只对白名单家族生效, 跨家族(请求 kimi 回 gpt/claude/deepseek)不在此放行,
+// 同族不同款(opus vs sonnet)也不在白名单内, 二者仍走各自的判据。
+func upstreamSameFamilyAliasEcho(sentModel, echoModel string) bool {
+	sentFamilies := behavior.InferFamilies(sentModel)
+	echoFamilies := behavior.InferFamilies(echoModel)
+	for _, s := range sentFamilies {
+		if _, ok := upstreamCanonicalEchoFamilies[s]; !ok {
+			continue
+		}
+		for _, e := range echoFamilies {
+			if s == e {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // upstreamCrossFamily 判定「发出去的名字」与「上游自报的名字」是否跨家族: 两者都能被

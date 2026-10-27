@@ -61,6 +61,39 @@ test('alias variant is detected separately from cross-family', () => {
     assert.equal(c.tone, 'alias-variant');
 });
 
+// astra 裁决（2026-10-27）：moonshot 家族的规范回显（kimi-3.1-pro → moonshotai/Kimi-K3）
+// 由后端降级成 alias_variant。UI 必须按 code 分档——渲染灰色「名称变体」而不是琥珀「回显不符」。
+test('kimi canonical echo: alias_variant code renders the variant tone, never 回显不符', () => {
+    const c = describeEchoComparison({
+        ...base,
+        request_model_name: 'kimi-3.1-pro',
+        actual_model_name: 'kimi-3.1-pro',
+        upstream_response_model: 'moonshotai/Kimi-K3',
+        upstream_model_mismatch: true,
+        upstream_mismatch_code: 'alias_variant',
+        model_family_verdict: 'suspect',
+    }, display);
+    assert.equal(c.tone, 'alias-variant');
+    assert.notEqual(c.tone, 'name-mismatch');
+    assert.equal(c.fromRaw, 'kimi-3.1-pro');
+    assert.equal(c.toRaw, 'moonshotai/Kimi-K3');
+});
+
+// 反向契约：同一条回显但没有 alias_variant code（= 后端认定「完全不符」），
+// 必须仍然渲染琥珀「回显不符」。证明 UI 是按 code 分档，不是把 kimi 名字一律放过。
+test('kimi canonical echo without alias code still renders 回显不符', () => {
+    const c = describeEchoComparison({
+        ...base,
+        request_model_name: 'kimi-3.1-pro',
+        actual_model_name: 'kimi-3.1-pro',
+        upstream_response_model: 'moonshotai/Kimi-K3',
+        upstream_model_mismatch: true,
+        upstream_mismatch_code: '',
+        model_family_verdict: 'suspect',
+    }, display);
+    assert.equal(c.tone, 'name-mismatch');
+});
+
 test('trusted: region/namespace prefix is not shown as a vendor', () => {
     const c = describeEchoComparison({ ...base, upstream_response_model: 'cn:deepseek-v4.1-flash', model_family_verdict: 'trusted', model_vendor_hint: 'cn' }, display);
     assert.equal(c.tone, 'trusted');

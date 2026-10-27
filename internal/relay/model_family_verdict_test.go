@@ -31,6 +31,18 @@ func TestEvalModelFamilyVerdictThreeTiers(t *testing.T) {
 			wantVerdict:  ModelFamilyVerdictTrusted,
 		},
 		{
+			// astra 裁决：同族规范回显降级为 alias_variant——仍是 suspect（线索保留），
+			// 但前端按 code 分档显示「名称变体」而非琥珀「回显不符」。
+			// vendorHint 必须仍是上游前缀 moonshotai，不被顺手改掉。
+			name:           "same-family canonical echo -> suspect with alias code",
+			requestModel:   "kimi-3.1-pro",
+			actualModel:    "kimi-3.1-pro",
+			upstreamEcho:   "moonshotai/Kimi-K3",
+			mismatchCode:   UpstreamMismatchCodeAliasVariant,
+			wantVerdict:    ModelFamilyVerdictSuspect,
+			wantVendorHint: "moonshotai",
+		},
+		{
 			name:         "consistent case/whitespace only -> trusted",
 			requestModel: "DeepSeek-V4",
 			actualModel:  " deepseek-v4 ",

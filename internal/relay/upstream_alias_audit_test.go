@@ -32,6 +32,19 @@ func TestUpstreamModelMismatchAliasVariant(t *testing.T) {
 		{name: "namespace does not hide a different model", sent: "cn:model-family-alpha", response: "cn:model-family-beta", want: true, wantCode: ""},
 		{name: "namespace does not unify versions", sent: "cn:model-family-alpha-1", response: "cn:model-family-alpha-2", want: true, wantCode: ""},
 		{name: "colon version suffix is not a namespace", sent: "model-family-alpha:free", response: "model-family-alpha", want: true, wantCode: ""},
+		// moonshot 规范回显家族 (astra 裁决 2026-10-27): 上游只回自家规范 id,
+		// 与请求名没有公共字符串前缀, 前缀判据必漏。降级到 alias_variant, 不否认 mismatch 事实。
+		{name: "kimi request, vendor-prefixed canonical echo", sent: "kimi-3.1-pro", response: "moonshotai/Kimi-K3", want: true, wantCode: UpstreamMismatchCodeAliasVariant},
+		{name: "kimi request, older version echo", sent: "kimi-3.1-pro", response: "kimi-k2.5", want: true, wantCode: UpstreamMismatchCodeAliasVariant},
+		{name: "kimi request, sibling version echo", sent: "kimi-3.1-pro", response: "kimi-k3", want: true, wantCode: UpstreamMismatchCodeAliasVariant},
+		{name: "kimi canonical echo is case insensitive", sent: "Kimi-3.1-Pro", response: "moonshotai/KIMI-K3", want: true, wantCode: UpstreamMismatchCodeAliasVariant},
+		{name: "kimi canonical echo with other vendor prefix", sent: "kimi-3.1-pro", response: "moonshot/kimi-k2.5", want: true, wantCode: UpstreamMismatchCodeAliasVariant},
+		// 白名单不外溢: 真掺假仍然跨族报; 同族不同款仍不给变体码。
+		{name: "kimi swapped for gpt still cross-family", sent: "kimi-3.1-pro", response: "gpt-5.2", want: true, wantCode: UpstreamMismatchCodeCrossFamily},
+		{name: "kimi swapped for claude still cross-family", sent: "kimi-3.1-pro", response: "claude-sonnet-4-5", want: true, wantCode: UpstreamMismatchCodeCrossFamily},
+		{name: "kimi swapped for deepseek still cross-family", sent: "kimi-3.1-pro", response: "deepseek-v4-pro", want: true, wantCode: UpstreamMismatchCodeCrossFamily},
+		{name: "claude opus versus sonnet keeps name-mismatch", sent: "claude-opus-4-8", response: "claude-sonnet-4-5", want: true, wantCode: ""},
+		{name: "deepseek pro versus lite keeps name-mismatch", sent: "deepseek-v4-pro", response: "deepseek-v4-lite", want: true, wantCode: ""},
 		// 跨族 code 优先于别名: 两名均能被家族表识别且无交集。
 		{name: "cross-family names get cross_family code", sent: "deepseek-v3", response: "gemini-2.5-pro", want: true, wantCode: UpstreamMismatchCodeCrossFamily},
 		{name: "cn namespace does not stop cross-family detection", sent: "cn:deepseek-v3", response: "gemini-2.5-pro", want: true, wantCode: UpstreamMismatchCodeCrossFamily},
