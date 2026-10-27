@@ -24,6 +24,10 @@ func TestUpstreamModelMismatchAliasVariant(t *testing.T) {
 		// 受控命名空间归一: 只剥一层 "cn:"(大小写不敏感), 之后完整 EqualFold。
 		{name: "cn namespace vs bare is the same model", sent: "cn:model-family-alpha", response: "model-family-alpha", want: false, wantCode: ""},
 		{name: "bare vs cn namespace is the same model", sent: "model-family-alpha", response: "cn:model-family-alpha", want: false, wantCode: ""},
+		// 生产误报: 请求 cn:kimi-k3.1-pro, 映射发出 global:kimi-k3.1-pro, 上游回显裸名。
+		{name: "global namespace vs bare is the same model", sent: "global:kimi-k3.1-pro", response: "kimi-k3.1-pro", want: false, wantCode: ""},
+		{name: "cn vs global namespace is the same model", sent: "cn:kimi-k3.1-pro", response: "global:kimi-k3.1-pro", want: false, wantCode: ""},
+		{name: "GLOBAL namespace is case insensitive", sent: "GLOBAL:Kimi-K3.1-Pro", response: "kimi-k3.1-pro", want: false, wantCode: ""},
 		{name: "uppercase CN namespace still the same model", sent: "CN:model-family-alpha", response: "model-family-alpha", want: false, wantCode: ""},
 		{name: "namespace does not hide a different model", sent: "cn:model-family-alpha", response: "cn:model-family-beta", want: true, wantCode: ""},
 		{name: "namespace does not unify versions", sent: "cn:model-family-alpha-1", response: "cn:model-family-alpha-2", want: true, wantCode: ""},
@@ -78,6 +82,9 @@ func TestUpstreamAliasNormalize(t *testing.T) {
 func TestModelNamespaceStripped(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
 		{"cn:deepseek-v4", "deepseek-v4"},
+		{"global:kimi-k3.1-pro", "kimi-k3.1-pro"},
+		{"GLOBAL:Kimi-K3.1-Pro", "Kimi-K3.1-Pro"},
+		{"global:", ""},
 		{"CN:deepseek-v4", "deepseek-v4"},
 		{"  cn: deepseek-v4  ", "deepseek-v4"},
 		{"cn:gpt-5:free", "gpt-5:free"},

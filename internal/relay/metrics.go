@@ -290,9 +290,10 @@ func upstreamModelMismatch(sentModel, responseModel string) *bool {
 // 刻意不做日期后缀归一进匹配本身: 上游回带日期后缀的同族变体(如 -20251101)仍记不一致,
 // 但由 UpstreamModelMismatchCode 标成 alias_variant(「别名疑似」), 与「名字完全不符」区分。
 //
-// 受控命名空间归一: 先按原样 EqualFold; 不中时, 各自剥掉**一层** "cn:" 前缀(大小写不敏感)
-// 后再完整 EqualFold。因此 "cn:gpt-5" 与 "gpt-5" 视为同一模型(合法命名空间差异不算跨家族),
-// 而 "cn:gpt-5" 与 "gpt-6" 仍不符, "gpt-5:free" 与 "gpt-5" 也不会被误合并(只剥 cn: 一层,
+// 受控命名空间归一: 先按原样 EqualFold; 不中时, 各自剥掉**一层**已知命名空间前缀
+// (cn: / global:, 大小写不敏感)后再完整 EqualFold。
+// 因此 "cn:gpt-5"、"global:kimi-k3.1-pro" 与裸名视为同一模型(合法命名空间差异不算回显不符),
+// 而 "cn:gpt-5" 与 "gpt-6" 仍不符, "gpt-5:free" 与 "gpt-5" 也不会被误合并(只剥已知前缀一层,
 // 不做通用 LastIndexAny——那会吞掉 gpt:free 这类带冒号的合法版本/档位后缀或多层模型名)。
 func upstreamModelsMatchForAudit(sentModel, responseModel string) bool {
 	sent := strings.TrimSpace(sentModel)
@@ -303,14 +304,21 @@ func upstreamModelsMatchForAudit(sentModel, responseModel string) bool {
 	return strings.EqualFold(modelNamespaceStripped(sent), modelNamespaceStripped(response))
 }
 
-// modelNamespaceStripped 去掉一层 "cn:" 命名空间前缀(trim 后大小写不敏感判断), 无该前缀则
+// modelNamespacePrefixes 是路由侧给模型名加的命名空间, 不是模型身份。
+// cn: 国内线路, global: 国际线路; 上游回显通常不带这层前缀。
+var modelNamespacePrefixes = []string{"cn:", "global:"}
+
+// modelNamespaceStripped 去掉一层已知命名空间前缀(trim 后大小写不敏感判断), 无该前缀则
 // 原样返回(已 trim)。刻意不做通用 "最后一个 '/' 或 ':' 之后" 的剥离: 那会把 "gpt-5:free" 剥成
 // "free"、把多层模型名 "a/b/c" 的中间段吞掉, 从而把不同模型/版本误判为相同。此处只做已知
-// 命名空间的一种、一层归一——仅用于比较, 落库字段仍保留原始名称(见 saveLog)。
+// 命名空间的一层归一——仅用于比较, 落库字段仍保留原始名称(见 saveLog)。
 func modelNamespaceStripped(modelName string) string {
 	name := strings.TrimSpace(modelName)
-	if len(name) >= 3 && strings.EqualFold(name[:3], "cn:") {
-		return strings.TrimSpace(name[3:])
+	lower := strings.ToLower(name)
+	for _, prefix := range modelNamespacePrefixes {
+		if strings.HasPrefix(lower, prefix) {
+			return strings.TrimSpace(name[len(prefix):])
+		}
 	}
 	return name
 }
