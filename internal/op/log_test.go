@@ -762,3 +762,21 @@ func TestRelayLogCleanupSkipsMainTableWhenSearchIndexDeleteFails(t *testing.T) {
 			"这说明清理在投影删失败后仍然删了主表，会制造永久孤儿行。", remaining)
 	}
 }
+
+// 真实出站请求体与 RequestContent 同级敏感：受限范围读取必须一起清掉，
+// 否则新列会成为绕过 RelayLogRedact 的越权读取面（2026-10-27 审核发现）。
+func TestRelayLogRedactClearsUpstreamRequestBody(t *testing.T) {
+	redacted := RelayLogRedact(model.RelayLog{
+		ID:                  9,
+		RequestContent:      `{"messages":[]}`,
+		ResponseContent:     `{"choices":[]}`,
+		UpstreamRequestBody: `{"model":"moonshotai/Kimi-K3","thinking":{"type":"enabled"}}`,
+		RequestIP:           "203.0.113.9",
+	})
+	if redacted.UpstreamRequestBody != "" {
+		t.Fatalf("受限读取必须清空真实出站请求体，实际: %q", redacted.UpstreamRequestBody)
+	}
+	if redacted.RequestContent != "" || redacted.ResponseContent != "" {
+		t.Fatal("既有字段的清空行为不能回退")
+	}
+}

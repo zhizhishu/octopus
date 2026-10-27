@@ -3,6 +3,7 @@ package relay
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -137,3 +138,42 @@ func TestUpstreamRequestBodyLogDisabledByDefault(t *testing.T) {
 
 // 编译期确认 http 包在本文件被使用（快照辅助函数签名依赖它）。
 var _ = http.MethodPost
+
+// 存储上限：超长请求体只截断**存储的那份**，发给上游的字节永远完整。
+func TestUpstreamRequestBodySnapshotIsTruncated(t *testing.T) {
+	big := strings.Repeat("x", upstreamRequestBodyLogLimit+1024)
+	metrics := NewRelayMetrics(0, 0, "", "", kimiInternalRequest())
+	metrics.SetUpstreamRequestBody([]byte(big))
+
+	if len(metrics.upstreamRequestBody) > upstreamRequestBodyLogLimit+128 {
+		t.Fatalf("快照未被截断，长度 %d", len(metrics.upstreamRequestBody))
+	}
+	if !strings.Contains(metrics.upstreamRequestBody, "truncated") {
+		t.Fatalf("截断必须显式标记，实际尾部: %q",
+			metrics.upstreamRequestBody[len(metrics.upstreamRequestBody)-60:])
+	}
+	if !strings.Contains(metrics.upstreamRequestBody, fmt.Sprintf("%d bytes total", len(big))) {
+		t.Fatal("截断标记必须写明原始总长，否则排查会误以为请求体就这么大")
+	}
+}
+
+// 截断只作用于存储；出站 body 本身必须仍完整（否则会把请求发残）。
+func TestSnapshotKeepsFullBodyWhileStorageTruncates(t *testing.T) {
+	payload := strings.Repeat("y", upstreamRequestBodyLogLimit+512)
+	req, err := http.NewRequest(http.MethodPost, "http://upstream.example/v1/chat/completions",
+		strings.NewReader(payload))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	snapshot, err := snapshotOutboundRequestBody(req)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if len(snapshot) != len(payload) {
+		t.Fatalf("快照应保留完整 body：%d != %d", len(snapshot), len(payload))
+	}
+	rest, err := io.ReadAll(req.Body)
+	if err != nil || len(rest) != len(payload) {
+		t.Fatalf("重挂后的 body 必须完整可发：%d (err=%v)", len(rest), err)
+	}
+}

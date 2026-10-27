@@ -740,6 +740,15 @@ func runRaceContenders(
 		if parentReq.metrics != nil && winner.promptOverridesApplied {
 			parentReq.metrics.PromptSnapshot = winner.promptSnapshot
 		}
+		// 出站请求体快照必须显式回写：每个 racer 的 metrics 是 parent.metrics 的
+		// **副本**（见本文件 metricsCopy := *parent.metrics），赢家分支把
+		// winnerRA.relayRequest 换成 parentReq 之后，副本里那份快照就再也回不来，
+		// 落库恒为空。PromptSnapshot 上面这条回写是同一个道理。
+		if parentReq.metrics != nil && winner.preparedAttempt != nil && winner.preparedAttempt.metrics != nil {
+			if snapshot := winner.preparedAttempt.metrics.upstreamRequestBody; snapshot != "" {
+				parentReq.metrics.upstreamRequestBody = snapshot
+			}
+		}
 
 		// Reuse the racer's OWN relayAttempt instead of building a fresh winnerRA: the
 		// total-timeout clock the racer armed (boundUpstreamLifetime) captured this exact

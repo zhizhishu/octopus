@@ -1342,9 +1342,12 @@ retryWithAdapter:
 	// 之后：只有那之后的字节才是真正写给上游的内容。RequestContent 记的是
 	// 内部结构还原后的假象，排查"我们到底发了什么参数"时会被它误导。
 	if upstreamRequestBodyLogEnabled() {
-		if snapshot, snapErr := snapshotOutboundRequestBody(outboundRequest); snapErr != nil {
-			log.Warnf("failed to snapshot upstream request body: %v", snapErr)
-		} else if len(snapshot) > 0 {
+		snapshot, snapErr := snapshotOutboundRequestBody(outboundRequest)
+		if snapErr != nil {
+			// Body 已被消费掉一部分，继续发就是残缺请求体——按尝试失败处理，走换家。
+			return 0, snapErr
+		}
+		if len(snapshot) > 0 {
 			ra.metrics.SetUpstreamRequestBody(snapshot)
 		}
 	}
@@ -1508,6 +1511,9 @@ func upstreamRequestBodyLogEnabled() bool {
 // ApplyParamOverride 里的 restoreBody 也是同一套做法（Body + GetBody +
 // ContentLength 三件一起补）。少补任何一个，请求要么发空体，要么 panic。
 //
+// 🔴 读失败必须返回 error 让调用方**中止这次尝试**，不能只 warn 后继续发：
+// 此时 Body 已被部分消费，再发出去必然是一个残缺请求体。
+//
 // 只在开关打开时调用，关闭时零开销（不读 body）。
 func snapshotOutboundRequestBody(req *http.Request) ([]byte, error) {
 	if req == nil || req.Body == nil {
@@ -1515,7 +1521,7 @@ func snapshotOutboundRequestBody(req *http.Request) ([]byte, error) {
 	}
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read outbound request body: %w", err)
 	}
 	req.Body = io.NopCloser(bytes.NewReader(body))
 	req.GetBody = func() (io.ReadCloser, error) {

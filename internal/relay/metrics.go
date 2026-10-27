@@ -409,10 +409,24 @@ func (m *RelayMetrics) SetPromptOverrideSnapshot(snapshot promptOverrideSnapshot
 	m.PromptSnapshot = snapshot
 }
 
+// upstreamRequestBodyLogLimit 是落库快照的字节上限。
+//
+// 请求体实测最大 818KB（智能体会话：880 条 messages + 43KB tools），整份存进
+// SQLite 会让日志表膨胀数倍。128KB 覆盖绝大多数请求的完整顶层结构（model /
+// thinking / reasoning_effort / tools 声明都在 messages 之前或之中），超出部分
+// 截断并标记，绝不静默丢。
+// 注意：**只有存储这份截断，真正发出去的 body 永远是完整的**。
+const upstreamRequestBodyLogLimit = 128 * 1024
+
 // SetUpstreamRequestBody 记录真实出站请求体（调用方已确认开关打开）。
 // 只存一份快照，供 saveLog 落库；不参与路由、计费、指纹。
 func (m *RelayMetrics) SetUpstreamRequestBody(body []byte) {
 	if m == nil || len(body) == 0 {
+		return
+	}
+	if len(body) > upstreamRequestBodyLogLimit {
+		head := redactLogBody(string(body[:upstreamRequestBodyLogLimit]))
+		m.upstreamRequestBody = head + fmt.Sprintf("\n...[truncated: %d bytes total]", len(body))
 		return
 	}
 	m.upstreamRequestBody = redactLogBody(string(body))

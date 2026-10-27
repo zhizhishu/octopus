@@ -1168,6 +1168,9 @@ func RelayLogClear(ctx context.Context, scope *model.RelayLogScope) error {
 func RelayLogRedact(relayLog model.RelayLog) model.RelayLog {
 	relayLog.RequestContent = ""
 	relayLog.ResponseContent = ""
+	// UpstreamRequestBody 是完整出站请求体（含 system/messages/tools），
+	// 与 RequestContent 同一敏感级别——受限 key / 非管理员读取时必须一起清掉。
+	relayLog.UpstreamRequestBody = ""
 	relayLog.RequestIP = ""
 	relayLog.Attempts = nil
 	if relayLog.Error != "" {
