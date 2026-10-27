@@ -92,6 +92,17 @@ func InitDB(dbType, dsn string, debug bool) error {
 		&model.StatsChannel{},
 		&model.StatsAPIKey{},
 		&model.RelayLog{},
+		// 🔴 检测任务/结果必须留在这份名单里，不能只靠 migrate/015 建表。
+		//
+		// 015 是一次性迁移：它建表时用的是**当时**的结构，跑完就记成"已执行"，
+		// 之后再也不会跑第二遍。于是给 ModelAuditResult 加字段（attempt /
+		// next_retry_at）时，新装的库和 CI 都正常（从零建表，字段齐），
+		// 而已经在跑的生产库那张表还是旧结构 → 每次入队 INSERT 都报
+		// "table model_audit_results has no column named attempt"，
+		// 任务建出来了、结果行一条也写不进去，队列永远空转。
+		// 生产上真栽过这一次（2026-10-27）。放在这里，每次启动都会对齐结构。
+		&model.ModelAuditJob{},
+		&model.ModelAuditResult{},
 		&model.ResponseSession{},
 		&model.VideoTask{},
 		&model.ImageTask{},

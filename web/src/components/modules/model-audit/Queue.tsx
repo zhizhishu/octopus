@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { useTranslations } from 'next-intl';
 import {
     CheckCircle2,
@@ -9,30 +9,30 @@ import {
     CircleDashed,
     HelpCircle,
     Loader2,
-    Play,
     Square,
     XCircle,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
-import { useChannelList } from '@/api/endpoints/channel';
 import {
     useAuditJobs,
     useAuditJobDetail,
     useCancelAuditJob,
-    useEnqueueAudit,
     type AuditJob,
     type AuditResult,
     type AuditVerdict,
 } from '@/api/endpoints/model-audit';
-import { toast } from '@/components/common/Toast';
 
 /**
- * 检测队列页：批量提交、后台排队跑、随时回看历史结论。
+ * 检测记录页：只看历史，不再承担提交。
  *
- * 为什么要有这一页：此前检测是同步的，点完必须守着页面等——超时、切页、
- * 断网都会白等甚至白花钱；而结论又是写回被检测的那行日志的，日志一清理
- * 就再也找不回来。这一页把"提交"和"看结果"彻底解耦。
+ * 这里以前顶上还挂着一块「批量检测」提交框（选渠道、粘模型、开始排队），
+ * 跟「发起检测」那一页是同一个动作的第二个入口——同一个动作给两个入口，
+ * 用户只会疑惑"到底点哪个"，两边校验规则还得各维护一份。
+ * 现在提交统一归「发起检测」，这一页只留记录：查询、展开、看报告、取消。
+ *
+ * 为什么记录要单独存一份：检测是花钱买来的结论。以前结论写回被检测的那行
+ * 日志，日志一清理就再也找不回来。
  */
 
 /** 档位 → 视觉与图标。颜色只做辅助，文字始终是主要载体（色盲可用）。 */
@@ -82,104 +82,13 @@ function jobProgressText(job: AuditJob, t: (k: string, v?: Record<string, string
 
 export function ModelAuditQueue({ onOpenReport }: { onOpenReport?: (result: AuditResult) => void } = {}) {
     const t = useTranslations('modelAudit');
-    const { data: channels } = useChannelList();
     const { data: jobs } = useAuditJobs(50);
-    const enqueue = useEnqueueAudit();
     const cancelJob = useCancelAuditJob();
 
-    const [channelID, setChannelID] = useState<number>(0);
-    const [modelsText, setModelsText] = useState('');
     const [openJobID, setOpenJobID] = useState<number | null>(null);
-
-    // 只列启用的渠道：给停用的渠道排检测没有意义。
-    // useChannelList 返回的是 { raw, formatted } 包装，取 raw 才是渠道本体。
-    const enabledChannels = useMemo(
-        () => (channels ?? []).map((item) => item.raw).filter((item) => item.enabled),
-        [channels],
-    );
-
-    const parsedModels = useMemo(
-        () =>
-            modelsText
-                .split(/[\n,，\s]+/)
-                .map((m) => m.trim())
-                .filter(Boolean),
-        [modelsText],
-    );
-
-    const canSubmit = channelID > 0 && parsedModels.length > 0 && !enqueue.isPending;
-
-    const handleSubmit = () => {
-        if (!canSubmit) return;
-        enqueue.mutate(
-            { channel_id: channelID, models: parsedModels },
-            {
-                onSuccess: (data) => {
-                    toast.success(t('queue.enqueued', { count: parsedModels.length }));
-                    setOpenJobID(data.job_id);
-                },
-                onError: (err) => {
-                    toast.error(err instanceof Error ? err.message : String(err));
-                },
-            },
-        );
-    };
 
     return (
         <div className="min-w-0 space-y-4">
-            {/* 提交区 */}
-            <div className="rounded-3xl border border-border bg-card p-4 sm:p-5">
-                <div className="flex flex-wrap items-center gap-2">
-                    <h2 className="text-base font-semibold text-card-foreground">{t('queue.title')}</h2>
-                    <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
-                        {t('queue.badge')}
-                    </span>
-                </div>
-                <p className="mt-1 text-xs leading-5 text-muted-foreground">{t('queue.description')}</p>
-
-                <div className="mt-3 grid gap-3 sm:grid-cols-[minmax(0,220px)_minmax(0,1fr)]">
-                    <label className="grid gap-1.5">
-                        <span className="text-xs font-medium text-card-foreground">{t('queue.channelLabel')}</span>
-                        <select
-                            className="h-9 rounded-xl border border-border bg-background px-3 text-sm"
-                            value={channelID}
-                            onChange={(e) => setChannelID(Number(e.target.value))}
-                        >
-                            <option value={0}>{t('queue.channelPlaceholder')}</option>
-                            {enabledChannels.map((c) => (
-                                <option key={c.id} value={c.id}>
-                                    {c.name}
-                                </option>
-                            ))}
-                        </select>
-                    </label>
-
-                    <label className="grid gap-1.5">
-                        <span className="text-xs font-medium text-card-foreground">{t('queue.modelsLabel')}</span>
-                        <textarea
-                            className="min-h-[72px] resize-y rounded-xl border border-border bg-background px-3 py-2 font-mono text-xs"
-                            placeholder={t('queue.modelsPlaceholder')}
-                            value={modelsText}
-                            onChange={(e) => setModelsText(e.target.value)}
-                        />
-                    </label>
-                </div>
-
-                <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-                    <p className="text-[11px] leading-5 text-muted-foreground">
-                        {parsedModels.length > 0
-                            ? t('queue.parsed', { count: parsedModels.length })
-                            : t('queue.parseHint')}
-                        {' · '}
-                        {t('queue.costWarn')}
-                    </p>
-                    <Button onClick={handleSubmit} disabled={!canSubmit} className="h-9 rounded-xl">
-                        {enqueue.isPending ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
-                        {t('queue.submit')}
-                    </Button>
-                </div>
-            </div>
-
             {/* 任务列表 */}
             <div className="rounded-3xl border border-border bg-card p-4 sm:p-5">
                 <h2 className="text-base font-semibold text-card-foreground">{t('queue.historyTitle')}</h2>

@@ -3,12 +3,13 @@ package op
 import (
 	"context"
 	"errors"
-
+	"fmt"
 	"strings"
 	"time"
 
 	"github.com/zhizhishu/octopus/internal/db"
 	"github.com/zhizhishu/octopus/internal/model"
+	"gorm.io/gorm"
 )
 
 // 模型检测队列：批量入队 + 后台串行执行 + 结果持久化。
@@ -183,22 +184,34 @@ func ModelAuditEnqueue(ctx context.Context, in ModelAuditEnqueueInput) (int64, e
 		TimeoutSeconds: timeout,
 		Trigger:        trigger,
 	}
-	if err := db.GetDB().WithContext(ctx).Create(&job).Error; err != nil {
-		return 0, err
-	}
-
-	for _, m := range models {
-		res := model.ModelAuditResult{
-			JobID:       job.ID,
-			LogID:       in.LogID,
-			ChannelID:   channel.ID,
-			ChannelName: channel.Name,
-			Model:       m,
-			Status:      model.AuditResultPending,
+	// 任务与结果行必须在**同一个事务**里落地。
+	//
+	// 以前是两次独立写入：任务先落库，结果行再逐条插。只要第二步失败（生产上真的
+	// 发生过——结果表缺列），库里就留下一个"有任务、没结果行"的空壳：它永远显示
+	// "排队中"，队列里却没有可跑的活，用户看到的就是"点了检测没反应"，
+	// 而真正的报错只在 toast 里闪一下就没了。
+	// 要么都成，要么都不留——空壳任务比明确的失败更糟。
+	if err := db.GetDB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&job).Error; err != nil {
+			return err
 		}
-		if err := db.GetDB().WithContext(ctx).Create(&res).Error; err != nil {
-			return job.ID, err
+		for _, m := range models {
+			res := model.ModelAuditResult{
+				JobID:       job.ID,
+				LogID:       in.LogID,
+				ChannelID:   channel.ID,
+				ChannelName: channel.Name,
+				Model:       m,
+				Status:      model.AuditResultPending,
+			}
+			if err := tx.Create(&res).Error; err != nil {
+				return err
+			}
 		}
+		return nil
+	}); err != nil {
+		// 不吞错、也不返回半成品的 job id：让调用方拿到一个干净的失败。
+		return 0, fmt.Errorf("检测入队失败: %w", err)
 	}
 
 	return job.ID, nil

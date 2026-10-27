@@ -651,3 +651,46 @@ func TestAuditLeaseWindowIsSane(t *testing.T) {
 		t.Fatalf("心跳必须为正，实际 %v", AuditRunHeartbeat)
 	}
 }
+
+// TestAuditEnqueueLeavesNoGhostJobWhenResultInsertFails 守入队的原子性。
+//
+// 生产上真出现过"空壳任务"：任务先落库、结果行逐条插，第二步炸了（结果表缺列），
+// 于是库里留下一个只有任务、没有结果行的壳——它永远显示"排队中"，队列里却没有可跑
+// 的活。用户看到的就是"点了检测没反应"，而真正的报错只在 toast 里闪一下就没了。
+//
+// 这里用 SQLite 触发器把"写结果行"这件事定向打炸（任务那一步仍然成功），
+// 要求：入队必须报错，并且不能留下任何任务行。
+func TestAuditEnqueueLeavesNoGhostJobWhenResultInsertFails(t *testing.T) {
+	ctx := setupAuditQueueTest(t)
+	ch := ensureAuditChannel(t, "原子性渠道")
+
+	if err := db.GetDB().Exec(
+		`CREATE TRIGGER fail_audit_result BEFORE INSERT ON model_audit_results
+		 BEGIN SELECT RAISE(ABORT, 'injected result-insert failure'); END;`,
+	).Error; err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+
+	_, err := ModelAuditEnqueue(ctx, ModelAuditEnqueueInput{ChannelID: ch.ID, Models: []string{"m-atomic"}})
+	if err == nil {
+		t.Fatal("结果行明明写不进去，入队却成功了 —— 会留下空壳任务")
+	}
+
+	var jobs int64
+	if err := db.GetDB().Model(&model.ModelAuditJob{}).
+		Where("channel_id = ?", ch.ID).Count(&jobs).Error; err != nil {
+		t.Fatalf("count jobs: %v", err)
+	}
+	if jobs != 0 {
+		t.Fatalf("写结果行失败后仍留下 %d 个任务行，事务没有回滚", jobs)
+	}
+
+	var results int64
+	if err := db.GetDB().Model(&model.ModelAuditResult{}).
+		Where("channel_id = ?", ch.ID).Count(&results).Error; err != nil {
+		t.Fatalf("count results: %v", err)
+	}
+	if results != 0 {
+		t.Fatalf("写结果行失败后仍留下 %d 行结果，事务没有回滚", results)
+	}
+}
