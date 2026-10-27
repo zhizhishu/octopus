@@ -21,6 +21,16 @@ func TestEvalModelFamilyVerdictThreeTiers(t *testing.T) {
 			wantVerdict:  ModelFamilyVerdictTrusted,
 		},
 		{
+			// 生产实证（2026-10-27，150 条）：请求 cn:kimi-k3.1-pro，渠道映射发出
+			// global:kimi-k3.1-pro，上游回显裸名。两个命名空间都是路由层加的前缀，
+			// 不是模型身份——同一模型不许判成「回显不符」。
+			name:         "cn/global namespace prefix around the same model -> trusted",
+			requestModel: "cn:kimi-k3.1-pro",
+			actualModel:  "global:kimi-k3.1-pro",
+			upstreamEcho: "kimi-k3.1-pro",
+			wantVerdict:  ModelFamilyVerdictTrusted,
+		},
+		{
 			name:         "consistent case/whitespace only -> trusted",
 			requestModel: "DeepSeek-V4",
 			actualModel:  " deepseek-v4 ",
