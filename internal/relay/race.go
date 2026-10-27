@@ -332,6 +332,15 @@ func prepareRacerAttemptForTemplate(
 		return nil, nil, nil, err
 	}
 
+	// 真实出站请求体快照（与主路径同一份开关与辅助函数；位置同样在
+	// ApplyParamOverride 之后）。竞速路径每个 racer 各自快照，最终只有赢家
+	// 的 metrics 会落库。
+	if upstreamRequestBodyLogEnabled() {
+		if snapshot, snapErr := snapshotOutboundRequestBody(outboundRequest); snapErr == nil && len(snapshot) > 0 {
+			ra.metrics.SetUpstreamRequestBody(snapshot)
+		}
+	}
+
 	ra.copyHeaders(outboundRequest)
 	return ra, outboundRequest, upstreamPaths, nil
 }

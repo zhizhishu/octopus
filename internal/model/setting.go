@@ -47,6 +47,12 @@ const (
 	// SSE body stream is unaffected, and a fired budget is an ordinary attempt
 	// failure, so failover and automatic rescue keep working.
 	SettingKeyUpstreamHeaderTimeoutSec SettingKey = "upstream_header_timeout_seconds"
+	// SettingKeyUpstreamRequestBodyLog 控制是否把**真实出站请求体**额外记进日志。
+	//
+	// RequestContent 记的是还原后的内部结构（不是出站字节），排查"我们到底给上游
+	// 发了什么参数"时会被误导。打开后每条成功尝试会多存一份出站 body（已脱敏），
+	// 存储成本与请求体同量级，所以默认关闭。
+	SettingKeyUpstreamRequestBodyLog   SettingKey = "upstream_request_body_log_enabled"
 	SettingKeyResponsesSessionTTL      SettingKey = "responses_session_ttl_seconds"
 	SettingKeyClaudeHeaderUserAgent    SettingKey = "claude_header_defaults_user_agent"
 	SettingKeyClaudeHeaderPackage      SettingKey = "claude_header_defaults_package_version"
@@ -540,6 +546,7 @@ func DefaultSettings() []Setting {
 		// 明确错误 + 终结帧)。取消合法长回答是有代价的(见 DefaultRelayRequestTotalTimeoutSeconds), 因此
 		// 取值刻意宽裕, 且可随时改回 0。初值可被 OCTOPUS_RELAY_REQUEST_TOTAL_TIMEOUT_SECONDS 影响。
 		{Key: SettingKeyRelayRequestTotalTimeoutSec, Value: defaultRelayRequestTotalTimeoutSeconds()},
+		{Key: SettingKeyUpstreamRequestBodyLog, Value: "0"},
 		// 0 = 不启用（默认，保持旧行为）：只给"等上游响应头"加时限，SSE 正文不受影响。
 		// 启用后每次尝试按预算切断，失败照常换家/进自动救援，因此可随时回退为 0。
 		// 初始值可被 OCTOPUS_UPSTREAM_HEADER_TIMEOUT_SECONDS 影响（与相邻超时设置同规矩）；

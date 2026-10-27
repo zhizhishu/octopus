@@ -49,6 +49,9 @@ type RelayMetrics struct {
 	// 请求和响应内容
 	InternalRequest  *transformerModel.InternalLLMRequest
 	InternalResponse *transformerModel.InternalLLMResponse
+	// upsteamRequestBody 是真实出站请求体快照（TransformRequest + param_override
+	// 之后的字节，已脱敏）。空 = 未采集（开关关闭或采集失败）。
+	upstreamRequestBody string
 
 	// 统计指标
 	ActualModel   string
@@ -404,6 +407,15 @@ func (m *RelayMetrics) SetClientSession(info clientSessionInfo) {
 
 func (m *RelayMetrics) SetPromptOverrideSnapshot(snapshot promptOverrideSnapshot) {
 	m.PromptSnapshot = snapshot
+}
+
+// SetUpstreamRequestBody 记录真实出站请求体（调用方已确认开关打开）。
+// 只存一份快照，供 saveLog 落库；不参与路由、计费、指纹。
+func (m *RelayMetrics) SetUpstreamRequestBody(body []byte) {
+	if m == nil || len(body) == 0 {
+		return
+	}
+	m.upstreamRequestBody = redactLogBody(string(body))
 }
 
 func (m *RelayMetrics) SetInternalResponse(resp *transformerModel.InternalLLMResponse, actualModel string) {
@@ -998,6 +1010,11 @@ func (m *RelayMetrics) saveLog(ctx context.Context, err error, duration time.Dur
 		}
 		// 入库前打码：只改写进日志的这份，发给上游的请求体一个字节不动。
 		relayLog.RequestContent = redactLogBody(relayLog.RequestContent)
+	}
+
+	// 真实出站请求体（开关打开且采集成功时才有；否则留空，不假装有值）。
+	if m.upstreamRequestBody != "" {
+		relayLog.UpstreamRequestBody = m.upstreamRequestBody
 	}
 
 	// 响应内容

@@ -181,12 +181,22 @@ type RelayLog struct {
 	UseTime            int                    `json:"use_time"`
 	Cost               float64                `json:"cost"`
 	RequestContent     string                 `json:"request_content"`
-	ResponseContent    string                 `json:"response_content"`
-	Error              string                 `json:"error"`
-	ErrorCode          string                 `json:"error_code"`
-	ErrorStatus        int                    `json:"error_status"`
-	ErrorStrategy      string                 `json:"error_strategy"`
-	Attempts           []ChannelAttempt       `json:"attempts" gorm:"serializer:json"`
+	// UpstreamRequestBody 是**真正发往上游**的请求体（TransformRequest +
+	// param_override 之后的字节），由 SettingKeyUpstreamRequestBodyLog 开关控制，
+	// 默认关闭（每条请求多存一份 body，存储成本翻倍）。
+	//
+	// 为什么需要它：RequestContent 是 json.Marshal(m.InternalRequest)，而
+	// transformChatRequest 的 defer 收尾时会把 Thinking / ReasoningEffort 还原成
+	// **客户端原始意图**——于是日志里的"请求内容"记录的是还原后的假象，不是出站
+	// body。排查"我们到底给上游发了什么"时它必然误导（2026-10-27 kimi 案例：
+	// 日志显示只发 reasoning_effort、没发 thinking，实测出站恰恰相反）。
+	UpstreamRequestBody string           `json:"upstream_request_body,omitempty"`
+	ResponseContent     string           `json:"response_content"`
+	Error               string           `json:"error"`
+	ErrorCode           string           `json:"error_code"`
+	ErrorStatus         int              `json:"error_status"`
+	ErrorStrategy       string           `json:"error_strategy"`
+	Attempts            []ChannelAttempt `json:"attempts" gorm:"serializer:json"`
 	// index: 严重程度分桶(warn = total_attempts > 1)和 retried 筛选都按它过,
 	// 而它是 relay_logs 里少数高选择性的整型列。没有索引时这两个谓词要对全表
 	// 逐行求值(实测 10 万行 847ms), 有了索引降到 10ms 量级。

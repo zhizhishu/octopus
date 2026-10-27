@@ -1338,6 +1338,17 @@ retryWithAdapter:
 		return 0, err
 	}
 
+	// 真实出站请求体快照（开关控制，默认关）。位置必须在 ApplyParamOverride
+	// 之后：只有那之后的字节才是真正写给上游的内容。RequestContent 记的是
+	// 内部结构还原后的假象，排查"我们到底发了什么参数"时会被它误导。
+	if upstreamRequestBodyLogEnabled() {
+		if snapshot, snapErr := snapshotOutboundRequestBody(outboundRequest); snapErr != nil {
+			log.Warnf("failed to snapshot upstream request body: %v", snapErr)
+		} else if len(snapshot) > 0 {
+			ra.metrics.SetUpstreamRequestBody(snapshot)
+		}
+	}
+
 	// 复制请求头
 	ra.copyHeaders(outboundRequest)
 
@@ -1479,6 +1490,39 @@ func marshalJSONNoHTMLEscape(value any) ([]byte, error) {
 		return nil, err
 	}
 	return bytes.TrimRight(buf.Bytes(), "\n"), nil
+}
+
+// upstreamRequestBodyLogEnabled 报告是否把真实出站请求体额外记进日志。
+// 默认关（0/false）：每条多存一份 body，存储成本与请求体同量级。
+func upstreamRequestBodyLogEnabled() bool {
+	raw, err := op.SettingGetInt(dbmodel.SettingKeyUpstreamRequestBodyLog)
+	if err != nil {
+		return false
+	}
+	return raw != 0
+}
+
+// snapshotOutboundRequestBody 取一份出站请求体快照，并把 Body 原样重挂回去。
+//
+// 🔴 必须重挂：outboundRequest.Body 是一次性 reader，读完就没内容可发——
+// ApplyParamOverride 里的 restoreBody 也是同一套做法（Body + GetBody +
+// ContentLength 三件一起补）。少补任何一个，请求要么发空体，要么 panic。
+//
+// 只在开关打开时调用，关闭时零开销（不读 body）。
+func snapshotOutboundRequestBody(req *http.Request) ([]byte, error) {
+	if req == nil || req.Body == nil {
+		return nil, nil
+	}
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		return nil, err
+	}
+	req.Body = io.NopCloser(bytes.NewReader(body))
+	req.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(body)), nil
+	}
+	req.ContentLength = int64(len(body))
+	return body, nil
 }
 
 // ApplyParamOverride applies a channel's top-level JSON body overrides while

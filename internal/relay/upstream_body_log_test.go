@@ -1,0 +1,139 @@
+package relay
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"strings"
+	"testing"
+
+	transformerModel "github.com/zhizhishu/octopus/internal/transformer/model"
+	openaiOutbound "github.com/zhizhishu/octopus/internal/transformer/outbound/openai"
+)
+
+// 真实出站请求体日志（2026-10-27）：RequestContent 记的是内部结构还原后的假象，
+// 不是真正发给上游的字节。这里钉死两者**必然不同**，防止有人把这份快照改回
+// 「序列化 InternalRequest」——那样排查又变成猜谜。
+
+func kimiInternalRequest() *transformerModel.InternalLLMRequest {
+	stream := true
+	content := "你好"
+	return &transformerModel.InternalLLMRequest{
+		Model:           "moonshotai/Kimi-K3",
+		ReasoningEffort: "xhigh",
+		Stream:          &stream,
+		Messages: []transformerModel.Message{{
+			Role:    "user",
+			Content: transformerModel.MessageContent{Content: &content},
+		}},
+	}
+}
+
+func TestSnapshotOutboundRequestBodyKeepsBodySendable(t *testing.T) {
+	out := &openaiOutbound.CustomChatOutbound{}
+	req, err := out.TransformRequest(context.Background(), kimiInternalRequest(), "http://upstream.example", "k")
+	if err != nil {
+		t.Fatalf("transform: %v", err)
+	}
+	wantLen := req.ContentLength
+	if wantLen <= 0 {
+		t.Fatalf("outbound body should have a length, got %d", wantLen)
+	}
+
+	snapshot, err := snapshotOutboundRequestBody(req)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if int64(len(snapshot)) != wantLen {
+		t.Fatalf("snapshot len %d != ContentLength %d", len(snapshot), wantLen)
+	}
+
+	// 🔴 快照之后请求必须还能正常发出：Body 与 GetBody 都要被重挂。
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatalf("body unreadable after snapshot: %v", err)
+	}
+	if string(body) != string(snapshot) {
+		t.Fatalf("re-mounted body differs from snapshot")
+	}
+	if req.GetBody == nil {
+		t.Fatal("GetBody must be re-mounted for redirects/retries")
+	}
+	again, err := req.GetBody()
+	if err != nil {
+		t.Fatalf("GetBody: %v", err)
+	}
+	second, err := io.ReadAll(again)
+	if err != nil || string(second) != string(snapshot) {
+		t.Fatalf("GetBody content differs from snapshot: %v", err)
+	}
+	if req.ContentLength != int64(len(snapshot)) {
+		t.Fatalf("ContentLength not restored: %d", req.ContentLength)
+	}
+}
+
+// TestUpstreamRequestBodyDiffersFromInternalSerialization 是本轮 bug 的回归锁：
+// 同一次尝试里，「真实出站 body」与「json.Marshal(InternalRequest)」（旧日志口径）
+// 必须不同——出站发了 thinking 并清掉 reasoning_effort，而内部结构还原后恰好相反。
+func TestUpstreamRequestBodyDiffersFromInternalSerialization(t *testing.T) {
+	internalReq := kimiInternalRequest()
+	out := &openaiOutbound.CustomChatOutbound{}
+	req, err := out.TransformRequest(context.Background(), internalReq, "http://upstream.example", "k")
+	if err != nil {
+		t.Fatalf("transform: %v", err)
+	}
+	snapshot, err := snapshotOutboundRequestBody(req)
+	if err != nil || len(snapshot) == 0 {
+		t.Fatalf("snapshot: %v", err)
+	}
+
+	// 旧口径：直接把共享的 InternalRequest 序列化（transform 的 defer 已还原）。
+	legacy, err := json.Marshal(internalReq)
+	if err != nil {
+		t.Fatalf("marshal internal: %v", err)
+	}
+
+	wire := string(snapshot)
+	old := string(legacy)
+	if wire == old {
+		t.Fatal("真实出站 body 不能等于内部结构序列化——那样这份快照就没有意义")
+	}
+	// 出站：thinking 在、reasoning_effort 已清。
+	if !strings.Contains(wire, `"thinking"`) {
+		t.Fatalf("出站 body 应携带 thinking 字段，实际: %s", wire)
+	}
+	if strings.Contains(wire, `"reasoning_effort"`) {
+		t.Fatalf("kimi 出站 body 不应残留 reasoning_effort，实际: %s", wire)
+	}
+	// 旧口径恰好相反——这正是它误导排查的原因。
+	if !strings.Contains(old, `"reasoning_effort"`) {
+		t.Fatalf("内部结构序列化应保留客户端原始 reasoning_effort，实际: %s", old)
+	}
+	if strings.Contains(old, `"thinking"`) {
+		t.Fatalf("内部结构序列化不该含 transform 期间注入的 thinking，实际: %s", old)
+	}
+}
+
+func TestUpstreamRequestBodySnapshotIsRedacted(t *testing.T) {
+	metrics := NewRelayMetrics(0, 0, "", "", kimiInternalRequest())
+	body := []byte(`{"model":"m","api_key":"sk-should-not-be-logged-as-is"}`)
+	metrics.SetUpstreamRequestBody(body)
+	if metrics.upstreamRequestBody == "" {
+		t.Fatal("快照应被记录")
+	}
+	if strings.Contains(metrics.upstreamRequestBody, "sk-should-not-be-logged-as-is") &&
+		metrics.upstreamRequestBody == string(body) {
+		t.Fatal("落库前必须脱敏")
+	}
+}
+
+// 开关关闭时不采集：默认行为逐字节不变。
+func TestUpstreamRequestBodyLogDisabledByDefault(t *testing.T) {
+	if upstreamRequestBodyLogEnabled() {
+		t.Fatal("默认必须是关闭，否则每条请求都会多存一份 body")
+	}
+}
+
+// 编译期确认 http 包在本文件被使用（快照辅助函数签名依赖它）。
+var _ = http.MethodPost
