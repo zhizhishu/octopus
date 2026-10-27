@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	transformerModel "github.com/zhizhishu/octopus/internal/transformer/model"
 	openaiOutbound "github.com/zhizhishu/octopus/internal/transformer/outbound/openai"
@@ -175,5 +176,39 @@ func TestSnapshotKeepsFullBodyWhileStorageTruncates(t *testing.T) {
 	rest, err := io.ReadAll(req.Body)
 	if err != nil || len(rest) != len(payload) {
 		t.Fatalf("重挂后的 body 必须完整可发：%d (err=%v)", len(rest), err)
+	}
+}
+
+// 顺序锁：必须先脱敏后截断。
+//
+// 打中的是脱敏规则里**有最小长度要求**的那一条（裸 hex 需 ≥32 位，
+// internal/utils/xredact/redact.go）。截断把 40 位密钥切成 10 位后，
+// 若先截断再脱敏，这 10 位不再匹配规则 → 半截密钥落进日志。
+func TestUpstreamRequestBodyRedactsBeforeTruncating(t *testing.T) {
+	// 前缀用非 hex 字符，避免它自己先被 hex 规则吃掉而改变截断位置。
+	// body = `{"k":"`(6) + prefix + secret + `"}`(2)。要让截断点正好落在
+	// secret 中间、只留下 10 位 hex，prefix 长度须为 limit-6-10。
+	//
+	// 🔴 prefix 必须用非 word 字符（这里用 '-'）：裸 hex 规则带词边界 ，
+	// 若前缀是字母，边界不成立、规则本来就不会命中，这条测试就测不到东西。
+	prefix := strings.Repeat("-", upstreamRequestBodyLogLimit-16)
+	secret := strings.Repeat("c", 40) // 40 位裸 hex，命中 ≥32 规则
+	metrics := NewRelayMetrics(0, 0, "", "", kimiInternalRequest())
+	metrics.SetUpstreamRequestBody([]byte(`{"k":"` + prefix + secret + `"}`))
+
+	leaked := strings.Repeat("c", 10)
+	if strings.Contains(metrics.upstreamRequestBody, leaked) {
+		t.Fatal("截断边界上的长 hex 密钥必须先被脱敏，否则留下 10 位碎片")
+	}
+}
+
+// UTF-8 边界锁：中文正文被截断时不能产生半截字符。
+func TestUpstreamRequestBodyTruncatesOnRuneBoundary(t *testing.T) {
+	// 每个汉字 3 字节；总长刻意让截断点落在字符中间。
+	body := strings.Repeat("啊", upstreamRequestBodyLogLimit)
+	metrics := NewRelayMetrics(0, 0, "", "", kimiInternalRequest())
+	metrics.SetUpstreamRequestBody([]byte(body))
+	if !utf8.ValidString(metrics.upstreamRequestBody) {
+		t.Fatal("截断后必须仍是合法 UTF-8，否则落库/渲染会乱码")
 	}
 }

@@ -424,12 +424,28 @@ func (m *RelayMetrics) SetUpstreamRequestBody(body []byte) {
 	if m == nil || len(body) == 0 {
 		return
 	}
-	if len(body) > upstreamRequestBodyLogLimit {
-		head := redactLogBody(string(body[:upstreamRequestBodyLogLimit]))
-		m.upstreamRequestBody = head + fmt.Sprintf("\n...[truncated: %d bytes total]", len(body))
-		return
+	// 🔴 顺序必须是「先脱敏、后截断」：反过来会把凭据从中间切断，断掉的碎片
+	// 可能不再匹配脱敏规则，于是半截密钥被存进日志。
+	redacted := redactLogBody(string(body))
+	if len(redacted) > upstreamRequestBodyLogLimit {
+		redacted = truncateUTF8(redacted, upstreamRequestBodyLogLimit) +
+			fmt.Sprintf("\n...[truncated: %d bytes total]", len(body))
 	}
-	m.upstreamRequestBody = redactLogBody(string(body))
+	m.upstreamRequestBody = redacted
+}
+
+// truncateUTF8 按字节上限截断，但不切在多字节字符中间
+// （半截 UTF-8 会让 JSON 落库与前端渲染出现乱码）。
+func truncateUTF8(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	cut := limit
+	// 回退到字符边界：0b10xxxxxx 是 UTF-8 续字节。
+	for cut > 0 && s[cut]&0xC0 == 0x80 {
+		cut--
+	}
+	return s[:cut]
 }
 
 func (m *RelayMetrics) SetInternalResponse(resp *transformerModel.InternalLLMResponse, actualModel string) {

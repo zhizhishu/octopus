@@ -336,7 +336,14 @@ func prepareRacerAttemptForTemplate(
 	// ApplyParamOverride 之后）。竞速路径每个 racer 各自快照，最终只有赢家
 	// 的 metrics 会落库。
 	if upstreamRequestBodyLogEnabled() {
-		if snapshot, snapErr := snapshotOutboundRequestBody(outboundRequest); snapErr == nil && len(snapshot) > 0 {
+		snapshot, snapErr := snapshotOutboundRequestBody(outboundRequest)
+		if snapErr != nil {
+			// Body 已被消费掉一部分——与主路径同口径，按本次尝试失败处理，
+			// 让竞速换人，而不是把残缺请求体发出去。
+			ra.redactClose()
+			return nil, nil, nil, snapErr
+		}
+		if len(snapshot) > 0 {
 			ra.metrics.SetUpstreamRequestBody(snapshot)
 		}
 	}
@@ -745,9 +752,9 @@ func runRaceContenders(
 		// winnerRA.relayRequest 换成 parentReq 之后，副本里那份快照就再也回不来，
 		// 落库恒为空。PromptSnapshot 上面这条回写是同一个道理。
 		if parentReq.metrics != nil && winner.preparedAttempt != nil && winner.preparedAttempt.metrics != nil {
-			if snapshot := winner.preparedAttempt.metrics.upstreamRequestBody; snapshot != "" {
-				parentReq.metrics.upstreamRequestBody = snapshot
-			}
+			// 无条件覆盖：赢家副本对本次响应才是权威。带条件会让父 metrics 挂着
+			// 上一次串行尝试的 body（错误归因，比空更糟）。
+			parentReq.metrics.upstreamRequestBody = winner.preparedAttempt.metrics.upstreamRequestBody
 		}
 
 		// Reuse the racer's OWN relayAttempt instead of building a fresh winnerRA: the

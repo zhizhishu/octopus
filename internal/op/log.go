@@ -676,7 +676,7 @@ func RelayLogList(ctx context.Context, startTime, endTime *int, page, pageSize i
 	// 导出「完整正文」时才取那两列；列表页照旧 omitting，避免把几十 KB/行的正文
 	// 拉进内存又立刻清掉。见 model.RelayLogScope.IncludeContent 的说明。
 	keepContent := scope != nil && scope.IncludeContent
-	contentOmit := []string{"request_content", "response_content", "model_audit_report"}
+	contentOmit := []string{"request_content", "response_content", "upstream_request_body", "model_audit_report"}
 	if keepContent {
 		contentOmit = []string{"model_audit_report"}
 	}
@@ -1185,6 +1185,9 @@ func RelayLogRedact(relayLog model.RelayLog) model.RelayLog {
 func RelayLogOmitContent(relayLog model.RelayLog) model.RelayLog {
 	relayLog.RequestContent = ""
 	relayLog.ResponseContent = ""
+	// 真实出站请求体与 RequestContent 同级体量（上限 128KB）：列表/实时流只给
+	// 元数据，正文留给详情弹窗，否则列表每行最多多背 128KB、导出可达 GB 级。
+	relayLog.UpstreamRequestBody = ""
 	return relayLog
 }
 

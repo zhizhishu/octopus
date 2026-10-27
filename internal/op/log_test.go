@@ -780,3 +780,19 @@ func TestRelayLogRedactClearsUpstreamRequestBody(t *testing.T) {
 		t.Fatal("既有字段的清空行为不能回退")
 	}
 }
+
+// 列表/实时流只给元数据：真实出站请求体必须一并省略，
+// 否则每行最多多背 128KB（导出上限 2 万行 → GB 级）。
+func TestRelayLogOmitContentClearsUpstreamRequestBody(t *testing.T) {
+	omitted := RelayLogOmitContent(model.RelayLog{
+		ID:                  1,
+		RequestContent:      `{"messages":[]}`,
+		UpstreamRequestBody: `{"model":"moonshotai/Kimi-K3","thinking":{"type":"enabled"}}`,
+	})
+	if omitted.UpstreamRequestBody != "" {
+		t.Fatalf("列表/流式载荷不能带真实出站请求体，实际长度 %d", len(omitted.UpstreamRequestBody))
+	}
+	if omitted.RequestContent != "" {
+		t.Fatal("既有省略行为不能回退")
+	}
+}
