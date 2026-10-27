@@ -88,7 +88,7 @@ const FORMULAS: Record<string, (ev: Record<string, unknown>) => string | undefin
         return `${c} / ${t} = ${(c / t).toFixed(2)}`;
     },
     'tokenizer_residual:relative_diff': (ev) => {
-        const u = num(ev.upstream_input);
+        const u = num(ev.upstream_input_folded);
         const l = num(ev.local_recount);
         if (u === undefined || l === undefined || u === 0) return undefined;
         return `|${u} - ${l}| / ${u} = ${(Math.abs(u - l) / u).toFixed(3)}`;
