@@ -913,7 +913,9 @@
       "vendorModelSeparator": " / ",
       "channelKey": "渠道 Key 備註",
       "thinking": "思考",
-      "basePrice": "基準單價(In/Out)"
+      "basePrice": "基準單價(In/Out)",
+      "upstreamRequestBody": "真實出站請求體",
+      "upstreamRequestBodyHint": "與\"請求內容\"不同：這是真正發給上游的位元組（可能被截斷）"
     }
   },
   "channel": {

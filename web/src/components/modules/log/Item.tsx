@@ -823,10 +823,14 @@ function DeferredJsonContent({ content, fallbackText }: { content: string | unde
 }
 
 
-function LazyLogBodies({ logId, fallbackRequest, fallbackResponse, requestLabel, responseLabel, tokensLabel, cacheHitLabel, noRequestText, noResponseText, inputTokens, outputTokens, cacheHitTokens, isModelTest }: {
+function LazyLogBodies({ logId, fallbackRequest, fallbackResponse, fallbackUpstreamRequest, requestLabel, responseLabel, upstreamRequestLabel, upstreamRequestHint, tokensLabel, cacheHitLabel, noRequestText, noResponseText, inputTokens, outputTokens, cacheHitTokens, isModelTest }: {
     logId: number;
     fallbackRequest?: string;
     fallbackResponse?: string;
+    /** 真实出站请求体（列表/流式已被 Omit，正常来自详情接口）。 */
+    fallbackUpstreamRequest?: string;
+    upstreamRequestLabel: string;
+    upstreamRequestHint: string;
     requestLabel: string;
     responseLabel: string;
     tokensLabel: string;
@@ -841,6 +845,9 @@ function LazyLogBodies({ logId, fallbackRequest, fallbackResponse, requestLabel,
     const { isOpen } = useMorphingDialog();
     const [requestContent, setRequestContent] = useState<string | undefined>(fallbackRequest);
     const [responseContent, setResponseContent] = useState<string | undefined>(fallbackResponse);
+    // 只有开了 upstream_request_body_log_enabled 的实例才有值；没有就不渲染那一块，
+    // 不摆空壳（"没采集"和"采集到空"要能区分）。
+    const [upstreamRequestBody, setUpstreamRequestBody] = useState<string | undefined>(fallbackUpstreamRequest);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const loadedRef = React.useRef(false);
@@ -860,6 +867,7 @@ function LazyLogBodies({ logId, fallbackRequest, fallbackResponse, requestLabel,
                 if (cancelled) return;
                 setRequestContent(full.request_content);
                 setResponseContent(full.response_content);
+                setUpstreamRequestBody(full.upstream_request_body);
                 loadedRef.current = true;
             })
             .catch((err: unknown) => {
@@ -914,6 +922,23 @@ function LazyLogBodies({ logId, fallbackRequest, fallbackResponse, requestLabel,
                     )}
                 </div>
             </div>
+            {/* 真实出站请求体：与上面「请求内容」并列时才能看出"我们以为发的"和
+                "实际发的"差在哪（transform 的 defer 会把 Thinking/ReasoningEffort
+                还原成客户端原意，请求内容那栏记录的是还原后的样子）。 */}
+            {upstreamRequestBody ? (
+                <div className="flex min-h-[14rem] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-muted/30 md:col-span-2 md:min-h-0">
+                    <div className="flex min-w-0 items-center gap-2 px-3 md:px-4 py-2.5 md:py-3 border-b border-border bg-muted/50 shrink-0">
+                        <ArrowUpFromLine className="size-4 shrink-0 text-muted-foreground" />
+                        <span className="truncate text-sm font-medium text-card-foreground">{upstreamRequestLabel}</span>
+                        <span className="ml-auto hidden shrink-0 text-[11px] text-muted-foreground sm:block">
+                            {upstreamRequestHint}
+                        </span>
+                    </div>
+                    <div className="flex-1 overflow-auto min-h-0">
+                        <DeferredJsonContent content={upstreamRequestBody} fallbackText={noRequestText} />
+                    </div>
+                </div>
+            ) : null}
         </div>
     );
 }
@@ -2123,8 +2148,11 @@ export const LogCard = React.memo(function LogCard({
                                         logId={log.id}
                                         fallbackRequest={log.request_content}
                                         fallbackResponse={log.response_content}
+                                        fallbackUpstreamRequest={log.upstream_request_body}
                                         requestLabel={t('requestContent')}
                                         responseLabel={t('responseContent')}
+                                        upstreamRequestLabel={t('upstreamRequestBody')}
+                                        upstreamRequestHint={t('upstreamRequestBodyHint')}
                                         tokensLabel={t('tokens')}
                                         cacheHitLabel={t('cacheHit')}
                                         noRequestText={t('noRequestContent')}

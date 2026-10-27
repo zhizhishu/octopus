@@ -913,7 +913,9 @@
       "vendorModelSeparator": " / ",
       "channelKey": "Key Remark",
       "thinking": "Thinking",
-      "basePrice": "Base Price (In/Out)"
+      "basePrice": "Base Price (In/Out)",
+      "upstreamRequestBody": "Actual upstream request body",
+      "upstreamRequestBodyHint": "Differs from Request content: the bytes really sent upstream (may be truncated)"
     }
   },
   "channel": {
