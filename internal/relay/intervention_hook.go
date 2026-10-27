@@ -13,7 +13,9 @@ import (
 
 // isEligibleForInterventionRescue evaluates whether a final error is eligible for machine-first
 // automatic rescue / manual intervention (e.g. transient 429 / 5xx / network hiccups).
-// Deterministic 4xx (except 429), context-window overflow, malformed request, and client abort are not eligible.
+// Deterministic 4xx (except 429 and 401), context-window overflow, malformed request, and client
+// abort are not eligible; 401 is rescued because flaky gateways throw spurious ones during bad
+// windows (see the StatusUnauthorized branch below).
 func isEligibleForInterventionRescue(err error) bool {
 	if err == nil {
 		return false
@@ -35,10 +37,24 @@ func isEligibleForInterventionRescue(err error) bool {
 		// 429 stays transient (rate limit). 400/422 are only rescueable when the body
 		// carries generic transient-capacity evidence (isTransientCapacityUpstreamError,
 		// which itself loses to the deterministic request-invalid / context-window
-		// exclusions already applied above). Every other 4xx (401/403/404/405/409/413/415
+		// exclusions already applied above). Every other 4xx (403/404/405/409/413/415
 		// ...) is a deterministic client error and fast-fails.
 		sc := upErr.StatusCode()
 		if sc == http.StatusTooManyRequests {
+			return true
+		}
+		// 401 也救（用户定 2026-10-27）。
+		//
+		// 生产实证：聚合型上游抽风时会把 401 混在一串 500 里甩出来（key 其实是活的，
+		// 下一分钟同一个 key 又能跑通）。把这类 401 直接透传给客户端，客户端只会把
+		// 它读成"你的密钥无效"——坏的是上游，挨骂的是用户自己的 key。
+		//
+		// 救的代价有界：401 的那把 key 已经被 ChannelKeyAuthErrorCooldown 关 15 分钟，
+		// 救援轮次只会打到**其它** key/渠道；没有替代时走"不全黑"节流探针（1 次/秒），
+		// 401 是秒回的，不烧 token。真死的 key 最坏情况是客户端在救援预算内多等一会儿，
+		// 之后照常拿到错误——这笔等待正是用户愿意付的。
+		// 403 仍然不救：权限拒绝（区域封锁/模型无权）比 401 更像真确定性，先不动。
+		if sc == http.StatusUnauthorized {
 			return true
 		}
 		if sc == http.StatusBadRequest || sc == http.StatusUnprocessableEntity {

@@ -131,6 +131,27 @@ func TestShouldHoldForOperator(t *testing.T) {
 			wantHold: false,
 		},
 		{
+			// 401 也救（2026-10-27 用户定）：聚合型上游抽风时会甩出假 401
+			// （混在一串 500 里、同一把 key 下一分钟就活），直接透传只会让
+			// 客户端误读成"你的密钥无效"。死 key 的代价有界：401 的 key 已被
+			// 关 15 分钟，救援只会试替代路线或节流探针，预算烧完照常回错。
+			name:              "401 auth failure is eligible -> true",
+			enabled:           true,
+			streamPrefers:     &streamTrue,
+			wroteBusinessData: false,
+			finalErr:          newUpstreamError(http.StatusUnauthorized, []byte(`{"error":{"message":"Invalid API key","code":"invalid_api_key"}}`)),
+			wantHold:          true,
+		},
+		{
+			// 403 不在这次放开范围：权限拒绝（区域封锁/模型无权）更像真确定性。
+			name:              "403 permission denied stays ineligible -> false",
+			enabled:           true,
+			streamPrefers:     &streamTrue,
+			wroteBusinessData: false,
+			finalErr:          newUpstreamError(http.StatusForbidden, []byte(`{"error":{"message":"country not supported"}}`)),
+			wantHold:          false,
+		},
+		{
 			name:              "transient 429 rate limit is eligible -> true",
 			enabled:           true,
 			streamPrefers:     &streamTrue,
