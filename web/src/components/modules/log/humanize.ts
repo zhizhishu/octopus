@@ -213,8 +213,14 @@ const CLIENT_LABELS: Array<[pattern: RegExp, label: string]> = [
     [/^wget/i, 'wget'],
 ];
 
-/** 匹配 UA / 备注里夹带的网址：http(s)://... 或裸露的 github.com/... 等。 */
-const UA_URL_PATTERN = /\s*\(?\s*(?:https?:\/\/|www\.)[^\s)]+\s*\)?|\s*\(?\s*(?:github|gitlab|gitee)\.com\/[^\s)]+\s*\)?/gi;
+/**
+ * 匹配 UA / 备注里夹带的网址：http(s)://... 或裸露的 github.com/... 等。
+ *
+ * `\+?` 不是可有可无的：RFC 9110 的注释语法里，括号内以 `+` 开头表示"附加信息"，
+ * 真实 UA 大量写成 `Client/1.0 (+https://github.com/org/repo)`。少了这一个字符，
+ * 剥完网址会留下一个孤零零的 `(+`，客户端名变成 `deepseek-harness/0.1.5-rc.2 (+`。
+ */
+const UA_URL_PATTERN = /\s*\(?\s*\+?\s*(?:https?:\/\/|www\.)[^\s)]+\s*\)?|\s*\(?\s*\+?\s*(?:github|gitlab|gitee)\.com\/[^\s)]+\s*\)?/gi;
 
 /**
  * 切掉字符串里的网址，并收干净残留的空括号和多余空格。

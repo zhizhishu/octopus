@@ -31,6 +31,31 @@ test('DSH 的 UA 保留完整信息，但网址被剥掉', () => {
     assert.ok(!withUrl.includes('github.com'), `不该出现仓库地址，实际: ${withUrl}`);
 });
 
+// 真实 UA 大量写成 `Client/1.0 (+https://...)`——RFC 9110 注释语法里 `+` 表示附加信息。
+// 只剥网址不剥 `+`，界面上就会留下一个孤零零的 `(+`（生产实际出现过）。
+test('括号内带 + 的附加信息形态，剥完不留残渣', () => {
+    const cases = [
+        [
+            'deepseek-harness/0.1.5-rc.2 (+https://github.com/deepseek-ai/deepseek-harness)',
+            'deepseek-harness/0.1.5-rc.2',
+        ],
+        [
+            'SomeTool/2.0 (+https://example.com/tool)',
+            'SomeTool/2.0',
+        ],
+        [
+            'SomeTool/2.0 (+ github.com/acme/tool)',
+            'SomeTool/2.0',
+        ],
+    ];
+    for (const [ua, want] of cases) {
+        const got = humanizeClient(ua);
+        assert.equal(got, want, `UA=${ua} 应精确剥成 ${want}，实际: ${got}`);
+        // 残留的 `(`、`+`、多余空格都算失败——这正是这次修的 bug。
+        assert.ok(!/[+(]\s*$/.test(got), `不该留下残渣，实际: ${got}`);
+    }
+});
+
 test('其它已知客户端名不受影响', () => {
     assert.equal(humanizeClient('claude-cli/1.2.3'), 'Claude CLI');
     assert.equal(humanizeClient('codex_cli_rs/0.144.0'), 'Codex CLI');
