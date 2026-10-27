@@ -2,6 +2,7 @@ package db_test
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/glebarez/sqlite"
@@ -12,8 +13,10 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-// 旧结构：与一次性迁移 015 当年建出来的表一致，**没有** attempt / next_retry_at。
-// 生产库就是这个形状，也是"检测永远排队中"的根源。
+// 旧结构：**逐字节抄自生产库**（2026-10-27 从 sqlite_master 取出，与 migrate/015 建出来的
+// 一致），**没有** attempt / next_retry_at。生产库就是这个形状，也是"检测永远排队中"的根源。
+// 抄真的而不是手写"差不多"的 DDL：AutoMigrate 判断要不要重建表靠逐列比对 DDL 文本，
+// 差一个默认值写法就可能把"加两列"变成"整表搬一遍"。
 const oldModelAuditResultsDDL = "CREATE TABLE `model_audit_results` (" +
 	"`id` integer PRIMARY KEY AUTOINCREMENT,`job_id` integer,`log_id` integer DEFAULT 0," +
 	"`channel_id` integer DEFAULT 0,`channel_name` text DEFAULT \"\",`model` text DEFAULT \"\"," +
@@ -39,6 +42,14 @@ func TestInitDBAlignsExistingAuditTables(t *testing.T) {
 	}
 	if err := raw.Exec(oldModelAuditResultsDDL).Error; err != nil {
 		t.Fatalf("create old-schema table: %v", err)
+	}
+	// 老库里本来就有数据。升级绝不能把它们弄丢——这是"加列"和"重建表"的分水岭：
+	// 重建表时只要有一个列的 DDL 文本对不上，glebarez 会把整表搬到新表里，
+	// 而存量值一律按新列的默认值/空值算，那就是静默的数据损坏。
+	if err := raw.Exec("INSERT INTO `model_audit_results` " +
+		"(`job_id`,`log_id`,`channel_id`,`channel_name`,`model`,`upstream_model`,`status`,`verdict`,`score`,`finding_n`,`report`,`duration_ms`) " +
+		"VALUES (77,88,9,'老渠道','老模型','uq-老模型','done','real',0.87,3,'{\"k\":1}',1234)").Error; err != nil {
+		t.Fatalf("seed a pre-existing row: %v", err)
 	}
 	// 关键：老库里 015 早就跑过、记成成功，所以它**不会再跑第二遍**。
 	// 不把这个记录补上，测试就等于在新库上跑（015 会重跑并顺手把列补齐），
@@ -79,6 +90,52 @@ func TestInitDBAlignsExistingAuditTables(t *testing.T) {
 		if !handle.Migrator().HasColumn(&model.ModelAuditResult{}, col) {
 			t.Fatalf("老库升级后仍然缺列 %q —— 入队会在写入结果行时失败，队列永远空转", col)
 		}
+	}
+	// worker 领活按 next_retry_at 排序/过滤，没有索引在大表上就是全表扫。
+	var idxCount int64
+	if err := handle.Raw("SELECT count(*) FROM sqlite_master WHERE type='index' AND tbl_name='model_audit_results' AND sql LIKE '%next_retry_at%'").
+		Scan(&idxCount).Error; err != nil {
+		t.Fatalf("查询索引: %v", err)
+	}
+	if idxCount == 0 {
+		t.Fatal("next_retry_at 的索引没建出来")
+	}
+
+	// 存量行必须原样还在，且新列有值可读：attempt 要回填 0 而不是 NULL。
+	// NULL 进 int 会在扫描时直接报 "converting NULL to int"，那等于所有历史结论都读不出来。
+	var old model.ModelAuditResult
+	if err := handle.Where("job_id = ?", 77).First(&old).Error; err != nil {
+		t.Fatalf("升级后读不出存量行（数据可能被搬表弄丢了）: %v", err)
+	}
+	if old.Model != "老模型" || old.Verdict != "real" || old.Score != 0.87 || old.FindingN != 3 || old.DurationMs != 1234 {
+		t.Fatalf("存量行内容被改动: %+v", old)
+	}
+	if old.Attempt != 0 {
+		t.Fatalf("存量行 attempt 期望回填 0，实际 %d", old.Attempt)
+	}
+	if old.NextRetryAt != nil {
+		t.Fatalf("存量行 next_retry_at 期望 NULL，实际 %v", old.NextRetryAt)
+	}
+	var attemptType string
+	if err := handle.Raw("SELECT typeof(attempt) FROM model_audit_results WHERE job_id = 77").Scan(&attemptType).Error; err != nil {
+		t.Fatalf("查 attempt 类型: %v", err)
+	}
+	if attemptType != "integer" {
+		t.Fatalf("存量行 attempt 落成了 %q（NULL/文本都会让扫描炸），期望 integer", attemptType)
+	}
+
+	// 这一条是给大表看的：ALTER TABLE ADD COLUMN 只改元数据（瞬间完成），
+	// 而"结构对不上"时 glebarez 会**重建整表**——生产这张表按几十 GB 算，
+	// 搬一遍就是几小时停机。ADD COLUMN 会把新列定义追加在原来的 SQL 尾部，
+	// 旧前缀原样保留；重建则整段文本换掉。所以比对前缀就能区分这两条路。
+	var afterDDL string
+	if err := handle.Raw("SELECT sql FROM sqlite_master WHERE type='table' AND name='model_audit_results'").
+		Scan(&afterDDL).Error; err != nil {
+		t.Fatalf("读取升级后的建表语句: %v", err)
+	}
+	oldPrefix := oldModelAuditResultsDDL[:len(oldModelAuditResultsDDL)-1] // 去掉收尾的 )
+	if !strings.HasPrefix(afterDDL, oldPrefix) {
+		t.Fatalf("原表被重建了（不是 ADD COLUMN），生产上等于整表搬家:\n旧: %s\n新: %s", oldModelAuditResultsDDL, afterDDL)
 	}
 
 	// 光有列还不够：按新结构真的写一行进去，证明入队那一步能跑通。

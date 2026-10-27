@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,9 +16,9 @@ import (
 func setupAuditQueueTest(t *testing.T) context.Context {
 	t.Helper()
 	ctx := setupRelayLogTest(t)
-	if err := db.GetDB().AutoMigrate(&model.ModelAuditJob{}, &model.ModelAuditResult{}); err != nil {
-		t.Fatalf("migrate audit tables: %v", err)
-	}
+	// 这里以前会自己 AutoMigrate 一遍这两张表——于是测试永远比生产"结构健康一档"：
+	// 生产库缺列（2026-10-27 的"检测没反应"）、而包内测试全绿。结构归初始化流程管，
+	// 测试只验收行为。
 	return ctx
 }
 
@@ -692,5 +693,66 @@ func TestAuditEnqueueLeavesNoGhostJobWhenResultInsertFails(t *testing.T) {
 	}
 	if results != 0 {
 		t.Fatalf("写结果行失败后仍留下 %d 行结果，事务没有回滚", results)
+	}
+}
+
+// TestAuditEnqueueConcurrentSubmitChargesOnce 守"并发提交也只花一次钱"。
+//
+// 查重是 SELECT、建任务是 INSERT，两个请求天然会在中间交错：双击、两个标签页、
+// 或者前端重试，都可能在同一毫秒进来。这条测试把 8 个请求同时放出去，要求
+// 只有一个成功、其余全部明确告知"已在队列"，库里也只留一个任务、一行结果。
+// 去重那一步和建任务不在同一个不可分割的动作里时，这里会建出多个任务。
+func TestAuditEnqueueConcurrentSubmitChargesOnce(t *testing.T) {
+	ctx := setupAuditQueueTest(t)
+	ch := ensureAuditChannel(t, "并发去重渠道")
+
+	// 把"查重之后、建任务之前"的空档拉长到 30ms：没有锁的话 8 个请求会全都挤过
+	// 查重（都看到"没在跑"），然后各建一个任务。不拉长这段，本机 SQLite 太快，
+	// 窗口小到测不出来——那样的测试是绿的但什么都没守。
+	auditEnqueueBetweenCheckAndInsert = func() { time.Sleep(30 * time.Millisecond) }
+	t.Cleanup(func() { auditEnqueueBetweenCheckAndInsert = nil })
+
+	const racers = 8
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	results := make([]error, racers)
+	for i := 0; i < racers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			_, results[i] = ModelAuditEnqueue(ctx, ModelAuditEnqueueInput{
+				ChannelID: ch.ID,
+				Models:    []string{"gpt-4o"},
+			})
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	okCount, queuedCount := 0, 0
+	for i, err := range results {
+		switch {
+		case err == nil:
+			okCount++
+		case errors.Is(err, ErrAuditAlreadyQueued):
+			queuedCount++
+		default:
+			t.Fatalf("第 %d 个请求返回了意料之外的错误: %v", i, err)
+		}
+	}
+	if okCount != 1 {
+		t.Fatalf("并发提交应只有一个真正入队，实际 %d 个（其余 %d 个被挡）", okCount, queuedCount)
+	}
+
+	var jobCount, resCount int64
+	if err := db.GetDB().Model(&model.ModelAuditJob{}).Where("channel_id = ?", ch.ID).Count(&jobCount).Error; err != nil {
+		t.Fatalf("count jobs: %v", err)
+	}
+	if err := db.GetDB().Model(&model.ModelAuditResult{}).Where("channel_id = ?", ch.ID).Count(&resCount).Error; err != nil {
+		t.Fatalf("count results: %v", err)
+	}
+	if jobCount != 1 || resCount != 1 {
+		t.Fatalf("并发提交建出了 %d 个任务 / %d 行结果，每多一份就是多一次上游计费", jobCount, resCount)
 	}
 }

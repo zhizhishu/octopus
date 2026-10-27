@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/zhizhishu/octopus/internal/db"
@@ -94,6 +95,13 @@ type ModelAuditEnqueueInput struct {
 	Trigger        string
 }
 
+// auditEnqueueMu 串行化「查重 + 建任务」，见 ModelAuditEnqueue 里的说明。
+var auditEnqueueMu sync.Mutex
+
+// auditEnqueueBetweenCheckAndInsert 只给测试用：允许刻意拉长"查重之后、建任务之前"
+// 那个空档，用来证明锁真的把并发提交串起来了。生产永远为 nil，判断一次就过去。
+var auditEnqueueBetweenCheckAndInsert func()
+
 // ModelAuditEnqueue 把一批模型入队，立即返回任务 id。
 //
 // 同一个 (渠道, 上游模型) 已经在队列里等待或正在跑时不重复入队——重复点击、
@@ -123,6 +131,16 @@ func ModelAuditEnqueue(ctx context.Context, in ModelAuditEnqueueInput) (int64, e
 	if err != nil {
 		return 0, errors.New("渠道不存在")
 	}
+
+	// 下面"查重 → 建任务"必须是一个不可分割的动作。
+	//
+	// 查重是一次 SELECT，建任务是一次 INSERT，中间有空档：双击提交、两个标签页
+	// 同时点，两个请求会都看到"没有在跑"，然后各建一个任务——同一批模型被真金白银
+	// 检测两遍。事务只保证"任务和结果行一起成"，管不住这道跨请求的窗口。
+	// 进程内一把锁最省事：入队本身是毫秒级、一天也点不了几次，串起来没有代价。
+	// 多副本部署时这把锁不跨进程，那时该换成库上的部分唯一索引。
+	auditEnqueueMu.Lock()
+	defer auditEnqueueMu.Unlock()
 
 	// 查库去重：同一个渠道下，已经「在排队」或「正在跑」的模型不再重复入队。
 	//
@@ -160,6 +178,10 @@ func ModelAuditEnqueue(ctx context.Context, in ModelAuditEnqueueInput) (int64, e
 			// （这些模型会被检测）已经成立，再建一个只会重复花钱。
 			return 0, ErrAuditAlreadyQueued
 		}
+	}
+
+	if auditEnqueueBetweenCheckAndInsert != nil {
+		auditEnqueueBetweenCheckAndInsert()
 	}
 
 	timeout := in.TimeoutSeconds
