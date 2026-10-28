@@ -177,8 +177,6 @@ const LARGE_JSON_COLLAPSE_DEPTH = 2;
  * 这条也纠正了一个先前的误判：把大 JSON 改成纯文本反而更慢。
  */
 const DETAIL_PREVIEW_CHARS = 128 * 1024;
-/** 用户点了"加载全部"之后，超过这个体积才默认不渲染 JSON 树（树形有折叠，本身很快）。 */
-const JSON_TREE_MAX_CHARS = 512 * 1024;
 
 /** IPv4 vs IPv6 tag for a downstream request IP (IPv6 literals contain ':'). */
 function ipFamilyLabel(ip: string): string {
@@ -751,10 +749,13 @@ function DeferredJsonContent({ content, fallbackText }: { content: string | unde
     // 默认只把前 DETAIL_PREVIEW_CHARS 个字符交给 DOM（实测 128KB≈31ms，
     // 而 1.4MB 换行排版要 4768ms）。想看全的点一下再付这个代价。
     const [expandAll, setExpandAll] = useState(false);
-    const [forceTree, setForceTree] = useState(false);
+    // 大内容除了「加载全部」，还要能看尾部（流式结尾/错误堆栈在末尾）。
+    const [showingTail, setShowingTail] = useState(false);
     const totalChars = content?.length ?? 0;
     const isTruncated = !expandAll && totalChars > DETAIL_PREVIEW_CHARS;
-    const shownContent = isTruncated && content ? content.slice(0, DETAIL_PREVIEW_CHARS) : content;
+    const shownContent = isTruncated && content
+        ? (showingTail ? content.slice(-DETAIL_PREVIEW_CHARS) : content.slice(0, DETAIL_PREVIEW_CHARS))
+        : content;
 
     const parsed = useMemo(() => {
         if (!shownContent) return { isJson: false, data: null };
@@ -771,13 +772,14 @@ function DeferredJsonContent({ content, fallbackText }: { content: string | unde
     }, [shownContent, isOpen, shouldRender]);
 
     const isLargeJson = totalChars > LARGE_JSON_CHAR_LIMIT;
-    const isHuge = totalChars > JSON_TREE_MAX_CHARS;
-    // 截断状态下不渲染树（前缀不是完整 JSON，树形没有意义）。
-    const showTree = parsed.isJson && !isTruncated && (!isHuge || forceTree);
+    // 只要是完整 JSON 就走树：树有折叠（实测 1.4MB 展开后仅 452 节点），
+    // 比把整段倒进 <pre> 让排版引擎逐行分析便宜得多。早先把「超大 JSON」
+    // 推去文本，等于"越大越用慢渲染器"，方向反了。
+    const showTree = parsed.isJson && !isTruncated;
 
     // 内容换了（切到另一条日志）就把"加载全部/强制树形"复位，避免上一条的选择带到下一条。
     useEffect(() => {
-        setForceTree(false);
+        setShowingTail(false);
         setExpandAll(false);
     }, [content]);
 
@@ -787,8 +789,9 @@ function DeferredJsonContent({ content, fallbackText }: { content: string | unde
             return () => clearTimeout(resetTimer);
         }
 
-        const timer = setTimeout(() => setShouldRender(true), 300);
-        return () => clearTimeout(timer);
+        // 只让弹窗动画先起一帧，不再空等 300ms——那 300ms 是纯延迟，1KB 的日志也要等。
+        const raf = requestAnimationFrame(() => setShouldRender(true));
+        return () => cancelAnimationFrame(raf);
     }, [isOpen]);
 
     if (!isOpen) {
@@ -803,8 +806,10 @@ function DeferredJsonContent({ content, fallbackText }: { content: string | unde
         );
     }
 
+    // 不用 mode="wait"：那会强制等 loading 的 exit 动画（150ms）跑完才渲染内容，
+    // 又多一段纯延迟。两段淡入淡出可以直接交叠。
     return (
-        <AnimatePresence mode="wait">
+        <AnimatePresence>
             {!shouldRender ? (
                 <motion.div
                     key="loading"
@@ -848,36 +853,48 @@ function DeferredJsonContent({ content, fallbackText }: { content: string | unde
                     className="min-w-0"
                 >
                     {/* 截断提示（默认态）：不塞满 DOM 才能秒开，见 DETAIL_PREVIEW_CHARS。 */}
-                    {isTruncated ? (
+                    {isTruncated || showingTail ? (
                         <div className="sticky top-0 z-10 flex flex-wrap items-center gap-2 border-b border-border bg-muted/60 px-3 py-1.5 text-[11px] text-muted-foreground backdrop-blur sm:px-4">
                             <span>
-                                内容较大，先显示前 {(DETAIL_PREVIEW_CHARS / 1024).toLocaleString()} KB（共 {totalChars.toLocaleString()} 字符）
+                                {showingTail ? '显示最后' : '先显示前'} {(DETAIL_PREVIEW_CHARS / 1024).toLocaleString()} KB
+                                （共 {totalChars.toLocaleString()} 字符）
                             </span>
-                            {/* 全量渲染要按体积付排版代价（实测 512KB≈165ms、1.4MB≈4.8s），
-                                超过 512KB 就在按钮上标出来，免得点了以为页面死了。 */}
-                            <button
-                                type="button"
-                                onClick={() => setExpandAll(true)}
-                                className="rounded border border-border px-1.5 py-0.5 text-foreground hover:bg-muted"
-                            >
-                                {totalChars > 512 * 1024 ? '加载全部（较慢）' : '加载全部'}
-                            </button>
+                            {/* 流式和错误堆栈真正要看的是尾部，"看最后 128KB"比"加载全部"更常有用，
+                                而且零成本（同样只渲染 128KB）。 */}
+                            {isTruncated ? (
+                                <>
+                                    <button
+                                        type="button"
+                                        onClick={() => { setShowingTail(true); setExpandAll(false); }}
+                                        className="rounded border border-border px-1.5 py-0.5 text-foreground hover:bg-muted"
+                                    >
+                                        看最后 {(DETAIL_PREVIEW_CHARS / 1024).toLocaleString()} KB
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => { setShowingTail(false); setExpandAll(true); }}
+                                        className="rounded border border-border px-1.5 py-0.5 text-foreground hover:bg-muted"
+                                    >
+                                        加载全部（较慢）
+                                    </button>
+                                </>
+                            ) : (
+                                <button
+                                    type="button"
+                                    onClick={() => { setShowingTail(false); setExpandAll(false); }}
+                                    className="rounded border border-border px-1.5 py-0.5 text-foreground hover:bg-muted"
+                                >
+                                    回到开头
+                                </button>
+                            )}
                         </div>
                     ) : null}
-                    {/* 已加载全部但仍超大：再给一次"切树形"的机会（树形有折叠，节点不多）。 */}
-                    {!isTruncated && isHuge && parsed.isJson ? (
-                        <div className="sticky top-0 z-10 flex flex-wrap items-center gap-2 border-b border-border bg-muted/60 px-3 py-1.5 text-[11px] text-muted-foreground backdrop-blur sm:px-4">
-                            <span>已加载全部 {totalChars.toLocaleString()} 字符，按原文显示以保证流畅</span>
-                            <button
-                                type="button"
-                                onClick={() => setForceTree(true)}
-                                className="rounded border border-border px-1.5 py-0.5 text-foreground hover:bg-muted"
-                            >
-                                格式化查看
-                            </button>
-                        </div>
-                    ) : null}
-                    <pre className="max-w-full min-w-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere] p-3 font-mono text-xs leading-relaxed text-muted-foreground sm:p-4">
+                    {/* 展开态用 whitespace-pre（不换行、外层横向滚动）：实测同一份 1.4MB
+                        换行排版 4768ms、不换行 1422ms。预览态才 wrap，因为量小且要好读。 */}
+                    <pre className={cn(
+                        'max-w-full min-w-0 p-3 font-mono text-xs leading-relaxed text-muted-foreground sm:p-4',
+                        isTruncated ? 'whitespace-pre-wrap break-words [overflow-wrap:anywhere]' : 'whitespace-pre'
+                    )}>
                         {shownContent}
                     </pre>
                 </motion.div>
@@ -1883,7 +1900,9 @@ export const LogCard = React.memo(function LogCard({
                                     <SafeText mode="wrap" value={verdict.text} className="block" />
                                 </div>
                                 <ProbeEvidenceList probes={probes} />
-                                <DetailAuditReport logId={log.id} />
+                                {/* 检测过（有 verdict）才拉审计报告。否则这是一次纯白拉：
+                                    详情接口会把三份 body 全传一遍——1.4MB 的日志等于拉两遍。 */}
+                                {log.model_audit_verdict ? <DetailAuditReport logId={log.id} /> : null}
                                 <div className="grid min-w-0 grid-cols-2 gap-2 md:grid-cols-6">
                                     <DetailTile icon={<Hash className="size-3.5" />} label={t('logId')}>
                                         <MonoSafeText mode="wrap" value={String(log.id)} className="block text-xs text-foreground" />
