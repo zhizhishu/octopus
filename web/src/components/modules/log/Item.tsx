@@ -853,12 +853,14 @@ function DeferredJsonContent({ content, fallbackText }: { content: string | unde
                             <span>
                                 内容较大，先显示前 {(DETAIL_PREVIEW_CHARS / 1024).toLocaleString()} KB（共 {totalChars.toLocaleString()} 字符）
                             </span>
+                            {/* 全量渲染要按体积付排版代价（实测 512KB≈165ms、1.4MB≈4.8s），
+                                超过 512KB 就在按钮上标出来，免得点了以为页面死了。 */}
                             <button
                                 type="button"
                                 onClick={() => setExpandAll(true)}
                                 className="rounded border border-border px-1.5 py-0.5 text-foreground hover:bg-muted"
                             >
-                                加载全部
+                                {totalChars > 512 * 1024 ? '加载全部（较慢）' : '加载全部'}
                             </button>
                         </div>
                     ) : null}
