@@ -165,6 +165,17 @@ function formatEndpointName(endpoint: string | undefined): string {
 
 const LARGE_JSON_CHAR_LIMIT = 20000;
 const LARGE_JSON_COLLAPSE_DEPTH = 2;
+/**
+ * 超过这个体积就**不再默认渲染 JSON 树**，先给纯文本。
+ *
+ * 实测（生产日志）：请求体平均 400KB、最大 3MB；树形组件即使折叠也要递归遍历
+ * 整个对象树，873KB 那条能把主线程卡住数秒——表现就是"点开详情要等很久"，
+ * 而 1.3MB 的报错日志干脆像"打不开"。同一份数据的接口请求只要 84–524ms，
+ * 所以瓶颈在渲染不在网络。
+ *
+ * 纯文本 <pre> 渲染同样的字节快得多；用户真要结构再点一下付这个代价。
+ */
+const JSON_TREE_MAX_CHARS = 128 * 1024;
 
 /** IPv4 vs IPv6 tag for a downstream request IP (IPv6 literals contain ':'). */
 function ipFamilyLabel(ip: string): string {
@@ -748,6 +759,15 @@ function DeferredJsonContent({ content, fallbackText }: { content: string | unde
     }, [content, isOpen, shouldRender]);
 
     const isLargeJson = (content?.length ?? 0) > LARGE_JSON_CHAR_LIMIT;
+    // 超大正文默认走纯文本；用户显式点「格式化」才渲染树（见 JSON_TREE_MAX_CHARS）。
+    const [forceTree, setForceTree] = useState(false);
+    const isHuge = (content?.length ?? 0) > JSON_TREE_MAX_CHARS;
+    const showTree = parsed.isJson && (!isHuge || forceTree);
+
+    // 内容换了（切到另一条日志）就把"强制树形"复位，避免上一条的选择带到下一条。
+    useEffect(() => {
+        setForceTree(false);
+    }, [content]);
 
     useEffect(() => {
         if (!isOpen) {
@@ -784,7 +804,7 @@ function DeferredJsonContent({ content, fallbackText }: { content: string | unde
                 >
                     <Loader2 className="h-5 w-5 text-muted-foreground animate-spin" />
                 </motion.div>
-            ) : parsed.isJson ? (
+            ) : showTree ? (
                 <motion.div
                     key="json"
                     initial={{ opacity: 0 }}
@@ -807,16 +827,32 @@ function DeferredJsonContent({ content, fallbackText }: { content: string | unde
                     />
                 </motion.div>
             ) : (
-                <motion.pre
+                <motion.div
                     key="text"
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                     exit={{ opacity: 0 }}
                     transition={{ duration: 0.2 }}
-                    className="max-w-full min-w-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere] p-3 font-mono text-xs leading-relaxed text-muted-foreground sm:p-4"
+                    className="min-w-0"
                 >
-                    {content}
-                </motion.pre>
+                    {/* 超大正文：默认原文（秒开），想折叠浏览再点格式化。
+                        不给按钮的话用户只能靠"内容看起来像 JSON"猜能不能展开。 */}
+                    {isHuge && parsed.isJson ? (
+                        <div className="sticky top-0 z-10 flex flex-wrap items-center gap-2 border-b border-border bg-muted/60 px-3 py-1.5 text-[11px] text-muted-foreground backdrop-blur sm:px-4">
+                            <span>内容较大（{(content?.length ?? 0).toLocaleString()} 字符），默认按原文显示以保证打开速度</span>
+                            <button
+                                type="button"
+                                onClick={() => setForceTree(true)}
+                                className="rounded border border-border px-1.5 py-0.5 text-foreground hover:bg-muted"
+                            >
+                                格式化查看
+                            </button>
+                        </div>
+                    ) : null}
+                    <pre className="max-w-full min-w-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere] p-3 font-mono text-xs leading-relaxed text-muted-foreground sm:p-4">
+                        {content}
+                    </pre>
+                </motion.div>
             )}
         </AnimatePresence>
     );
