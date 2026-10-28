@@ -166,16 +166,19 @@ function formatEndpointName(endpoint: string | undefined): string {
 const LARGE_JSON_CHAR_LIMIT = 20000;
 const LARGE_JSON_COLLAPSE_DEPTH = 2;
 /**
- * 超过这个体积就**不再默认渲染 JSON 树**，先给纯文本。
+ * 详情里默认最多渲染多少字符，超出部分先不塞进 DOM。
  *
- * 实测（生产日志）：请求体平均 400KB、最大 3MB；树形组件即使折叠也要递归遍历
- * 整个对象树，873KB 那条能把主线程卡住数秒——表现就是"点开详情要等很久"，
- * 而 1.3MB 的报错日志干脆像"打不开"。同一份数据的接口请求只要 84–524ms，
- * 所以瓶颈在渲染不在网络。
+ * 🔴 关键实测（生产 1.4MB 报错日志，真浏览器测）：
+ *   接口返回 112ms、JSON.parse 5ms、对象树只有 452 个节点（折叠后根本不多）——
+ *   **慢的不是解析也不是树形组件，而是把这个量级的内容塞进 DOM 做排版**：
+ *   换行排版 4768ms、不换行也要 1422ms。而 128KB 只要 31ms、256KB 63ms。
  *
- * 纯文本 <pre> 渲染同样的字节快得多；用户真要结构再点一下付这个代价。
+ * 所以正解是"默认只渲染一小段 + 想看全的再点"，而不是换渲染方式。
+ * 这条也纠正了一个先前的误判：把大 JSON 改成纯文本反而更慢。
  */
-const JSON_TREE_MAX_CHARS = 128 * 1024;
+const DETAIL_PREVIEW_CHARS = 128 * 1024;
+/** 用户点了"加载全部"之后，超过这个体积才默认不渲染 JSON 树（树形有折叠，本身很快）。 */
+const JSON_TREE_MAX_CHARS = 512 * 1024;
 
 /** IPv4 vs IPv6 tag for a downstream request IP (IPv6 literals contain ':'). */
 function ipFamilyLabel(ip: string): string {
@@ -745,28 +748,37 @@ function DeferredJsonContent({ content, fallbackText }: { content: string | unde
     const { isOpen } = useMorphingDialog();
     const [shouldRender, setShouldRender] = useState(false);
 
+    // 默认只把前 DETAIL_PREVIEW_CHARS 个字符交给 DOM（实测 128KB≈31ms，
+    // 而 1.4MB 换行排版要 4768ms）。想看全的点一下再付这个代价。
+    const [expandAll, setExpandAll] = useState(false);
+    const [forceTree, setForceTree] = useState(false);
+    const totalChars = content?.length ?? 0;
+    const isTruncated = !expandAll && totalChars > DETAIL_PREVIEW_CHARS;
+    const shownContent = isTruncated && content ? content.slice(0, DETAIL_PREVIEW_CHARS) : content;
+
     const parsed = useMemo(() => {
-        if (!content) return { isJson: false, data: null };
+        if (!shownContent) return { isJson: false, data: null };
         if (!isOpen || !shouldRender) return { isJson: false, data: null };
         try {
-            const data = JSON.parse(content);
+            const data = JSON.parse(shownContent);
             return data !== null && typeof data === 'object'
                 ? { isJson: true, data }
-                : { isJson: false, data: content };
+                : { isJson: false, data: shownContent };
         } catch {
-            return { isJson: false, data: content };
+            // 截断后的前缀几乎必然不是合法 JSON —— 走原文，这是预期行为。
+            return { isJson: false, data: shownContent };
         }
-    }, [content, isOpen, shouldRender]);
+    }, [shownContent, isOpen, shouldRender]);
 
-    const isLargeJson = (content?.length ?? 0) > LARGE_JSON_CHAR_LIMIT;
-    // 超大正文默认走纯文本；用户显式点「格式化」才渲染树（见 JSON_TREE_MAX_CHARS）。
-    const [forceTree, setForceTree] = useState(false);
-    const isHuge = (content?.length ?? 0) > JSON_TREE_MAX_CHARS;
-    const showTree = parsed.isJson && (!isHuge || forceTree);
+    const isLargeJson = totalChars > LARGE_JSON_CHAR_LIMIT;
+    const isHuge = totalChars > JSON_TREE_MAX_CHARS;
+    // 截断状态下不渲染树（前缀不是完整 JSON，树形没有意义）。
+    const showTree = parsed.isJson && !isTruncated && (!isHuge || forceTree);
 
-    // 内容换了（切到另一条日志）就把"强制树形"复位，避免上一条的选择带到下一条。
+    // 内容换了（切到另一条日志）就把"加载全部/强制树形"复位，避免上一条的选择带到下一条。
     useEffect(() => {
         setForceTree(false);
+        setExpandAll(false);
     }, [content]);
 
     useEffect(() => {
@@ -835,11 +847,25 @@ function DeferredJsonContent({ content, fallbackText }: { content: string | unde
                     transition={{ duration: 0.2 }}
                     className="min-w-0"
                 >
-                    {/* 超大正文：默认原文（秒开），想折叠浏览再点格式化。
-                        不给按钮的话用户只能靠"内容看起来像 JSON"猜能不能展开。 */}
-                    {isHuge && parsed.isJson ? (
+                    {/* 截断提示（默认态）：不塞满 DOM 才能秒开，见 DETAIL_PREVIEW_CHARS。 */}
+                    {isTruncated ? (
                         <div className="sticky top-0 z-10 flex flex-wrap items-center gap-2 border-b border-border bg-muted/60 px-3 py-1.5 text-[11px] text-muted-foreground backdrop-blur sm:px-4">
-                            <span>内容较大（{(content?.length ?? 0).toLocaleString()} 字符），默认按原文显示以保证打开速度</span>
+                            <span>
+                                内容较大，先显示前 {(DETAIL_PREVIEW_CHARS / 1024).toLocaleString()} KB（共 {totalChars.toLocaleString()} 字符）
+                            </span>
+                            <button
+                                type="button"
+                                onClick={() => setExpandAll(true)}
+                                className="rounded border border-border px-1.5 py-0.5 text-foreground hover:bg-muted"
+                            >
+                                加载全部
+                            </button>
+                        </div>
+                    ) : null}
+                    {/* 已加载全部但仍超大：再给一次"切树形"的机会（树形有折叠，节点不多）。 */}
+                    {!isTruncated && isHuge && parsed.isJson ? (
+                        <div className="sticky top-0 z-10 flex flex-wrap items-center gap-2 border-b border-border bg-muted/60 px-3 py-1.5 text-[11px] text-muted-foreground backdrop-blur sm:px-4">
+                            <span>已加载全部 {totalChars.toLocaleString()} 字符，按原文显示以保证流畅</span>
                             <button
                                 type="button"
                                 onClick={() => setForceTree(true)}
@@ -850,7 +876,7 @@ function DeferredJsonContent({ content, fallbackText }: { content: string | unde
                         </div>
                     ) : null}
                     <pre className="max-w-full min-w-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere] p-3 font-mono text-xs leading-relaxed text-muted-foreground sm:p-4">
-                        {content}
+                        {shownContent}
                     </pre>
                 </motion.div>
             )}
