@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"maps"
 	"regexp"
 	"strings"
 	"time"
@@ -424,9 +423,15 @@ func (m *RelayMetrics) SetUpstreamRequestBody(body []byte) {
 	if m == nil || len(body) == 0 {
 		return
 	}
-	// 🔴 顺序必须是「先脱敏、后截断」：反过来会把凭据从中间切断，断掉的碎片
-	// 可能不再匹配脱敏规则，于是半截密钥被存进日志。
-	redacted := redactLogBody(string(body))
+	// 🔴 snapshotOutboundRequestBody 把同一份 []byte 重挂回了即将发出的
+	// http.Request。这里只能读，不能改 body 的任何一个字节。
+	//
+	// 顺序必须是「先在副本上剥内联二进制、再脱敏、最后截断」：
+	//   - 先截断会把 base64 从中间切断，日志里留下一大段无用载荷，字段还可能被切掉；
+	//   - 先脱敏再剥，长 hex 形态的 base64 会被密钥规则打成碎片，占位符就对不上了。
+	// 截断标记里的总长仍是真正发出去的字节数，不是剥过之后的日志长度。
+	logged := stripInlineBinaryForLog(string(body))
+	redacted := redactLogBody(logged)
 	if len(redacted) > upstreamRequestBodyLogLimit {
 		redacted = truncateUTF8(redacted, upstreamRequestBodyLogLimit) +
 			fmt.Sprintf("\n...[truncated: %d bytes total]", len(body))
@@ -1013,33 +1018,10 @@ func (m *RelayMetrics) saveLog(ctx context.Context, err error, duration time.Dur
 		relayLog.CacheWrite1hTokens = int(m.InternalResponse.Usage.CacheCreation1hInputTokens)
 	}
 
-	// 请求内容
+	// 请求内容。marshal、ParamOverride 合并、剥二进制、打码都在副本上完成，
+	// InternalRequest 与真正发出去的 body 一个字节不动。
 	if m.InternalRequest != nil {
-		reqJSON, jsonErr := json.Marshal(m.InternalRequest)
-		if jsonErr != nil {
-			relayLog.RequestContent = string(reqJSON)
-		} else if m.ParamOverride == "" {
-			relayLog.RequestContent = string(reqJSON)
-		} else {
-			var reqMap map[string]any
-			if err := json.Unmarshal(reqJSON, &reqMap); err != nil {
-				relayLog.RequestContent = string(reqJSON)
-			} else {
-				var override map[string]any
-				if err := json.Unmarshal([]byte(m.ParamOverride), &override); err != nil {
-					relayLog.RequestContent = string(reqJSON)
-				} else {
-					maps.Copy(reqMap, override)
-					if finalJSON, err := json.Marshal(reqMap); err != nil {
-						relayLog.RequestContent = string(reqJSON)
-					} else {
-						relayLog.RequestContent = string(finalJSON)
-					}
-				}
-			}
-		}
-		// 入库前打码：只改写进日志的这份，发给上游的请求体一个字节不动。
-		relayLog.RequestContent = redactLogBody(relayLog.RequestContent)
+		relayLog.RequestContent = requestContentForLog(m.InternalRequest, m.ParamOverride)
 	}
 
 	// 真实出站请求体（开关打开且采集成功时才有；否则留空，不假装有值）。
