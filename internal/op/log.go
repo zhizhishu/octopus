@@ -975,6 +975,9 @@ func RelayLogSeverityCounts(ctx context.Context, startTime, endTime *int, scope 
 
 	if enabled {
 		query := db.GetDB().WithContext(ctx).Model(&model.RelayLog{})
+		// 一次探测同时喂给 WHERE（scope 带了 severity 时）和 SUM(CASE)。
+		// 不能让 ApplyScope 再探一次：回填刚好跑完时两边会一个走列、一个走 TRIM。
+		// scope 没带 severity 也要探——SELECT 的三桶表达式用得着，列表路径则不用。
 		mode := relayLogSeveritySQLModeOf(query)
 		if hasTimeFilter {
 			query = query.Where("time >= ? AND time <= ?", *startTime, *endTime)
@@ -1700,7 +1703,7 @@ func relayLogApplyScopeRaw(query *gorm.DB, scope *model.RelayLogScope, mode rela
 // 用于计数 / 导出 / 严重程度统计这类"本来就要全量扫"的路径:
 // 它们没有 LIMIT 可早停, 直接让 SQL 用窄表子查询取交集最省。
 func relayLogApplyScope(query *gorm.DB, scope *model.RelayLogScope) *gorm.DB {
-	return relayLogApplyScopeMode(query, scope, relayLogSeveritySQLModeOf(query))
+	return relayLogApplyScopeMode(query, scope, relayLogSeveritySQLModeForScope(query, scope))
 }
 
 // relayLogApplyScopeMode 与 relayLogApplyScope 相同，但严重程度谓词用调用方已经
@@ -1721,7 +1724,7 @@ func relayLogApplyScopeMode(query *gorm.DB, scope *model.RelayLogScope, mode rel
 // 快的两步查询"——两边重复干活, 实测反而比优化前更慢(97ms vs 1.5ms)。
 // 计数/导出等没有 LIMIT、也无需早停的路径仍走 relayLogApplyScope。
 func relayLogApplyScopeBase(query *gorm.DB, scope *model.RelayLogScope) *gorm.DB {
-	return relayLogApplyScopeRaw(query, scope, relayLogSeveritySQLModeOf(query))
+	return relayLogApplyScopeRaw(query, scope, relayLogSeveritySQLModeForScope(query, scope))
 }
 
 // relayLogSearchIndexTable 是搜索投影表名(见 model.RelayLogSearchIndex)。

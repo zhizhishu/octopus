@@ -24,6 +24,19 @@ const (
 	relayLogSeveritySQLFast
 )
 
+// relayLogSeveritySQLModeForScope probes only when this scope will actually emit a
+// severity predicate. A list/export/count-by-id with an empty severity pays nothing:
+// relayLogApplyScopeRaw ignores mode unless scope.Severity is set. The severity
+// *count* SELECT always needs a mode, so RelayLogSeverityCounts calls
+// relayLogSeveritySQLModeOf directly and passes that one result into both the
+// WHERE and the SUM(CASE).
+func relayLogSeveritySQLModeForScope(query *gorm.DB, scope *model.RelayLogScope) relayLogSeveritySQLMode {
+	if scope == nil || scope.Severity == "" {
+		return relayLogSeveritySQLLegacy
+	}
+	return relayLogSeveritySQLModeOf(query)
+}
+
 // relayLogSeveritySQLModeOf reports which predicate is safe to run right now.
 // The probe is `WHERE severity = 0 LIMIT 1` and is served by idx_relay_logs_severity.
 // It is not cached: backfill clears the last 0 between requests, and a process-global

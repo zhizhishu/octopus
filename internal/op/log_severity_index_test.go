@@ -192,6 +192,65 @@ func TestRelayLogSeverityCountsUsesCoveringIndex(t *testing.T) {
 	}
 }
 
+// TestRelayLogListWithoutSeverityDoesNotProbeMode locks the lazy probe: building
+// a list/export filter with no severity bucket must not issue
+// `SELECT 1 ... WHERE severity = 0 LIMIT 1`. Counts still probe once, and that
+// one result feeds both the optional WHERE and the SUM(CASE).
+func TestRelayLogListWithoutSeverityDoesNotProbeMode(t *testing.T) {
+	ctx := setupRelayLogTest(t)
+	if err := SettingSetString(model.SettingKeyRelayLogKeepEnabled, "true"); err != nil {
+		t.Fatalf("enable persistence: %v", err)
+	}
+	if err := db.GetDB().WithContext(ctx).Create(&model.RelayLog{
+		ID: 1, Time: 1, RequestModelName: "m", TotalAttempts: 1,
+	}).Error; err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	probes := 0
+	const hook = "test:count-severity-mode-probe"
+	// Raw().Scan goes through the Row callback (gorm's Scan uses Rows()), not Query.
+	err := db.GetDB().Callback().Row().After("gorm:row").Register(hook, func(tx *gorm.DB) {
+		if tx.Statement == nil {
+			return
+		}
+		if strings.Contains(tx.Statement.SQL.String(), "SELECT 1 AS ok FROM relay_logs WHERE severity") {
+			probes++
+		}
+	})
+	if err != nil {
+		t.Fatalf("register probe counter: %v", err)
+	}
+	t.Cleanup(func() { _ = db.GetDB().Callback().Row().Remove(hook) })
+
+	if _, err := RelayLogList(ctx, nil, nil, 1, 20, nil); err != nil {
+		t.Fatalf("list nil scope: %v", err)
+	}
+	if _, err := RelayLogList(ctx, nil, nil, 1, 20, &model.RelayLogScope{UserID: 1}); err != nil {
+		t.Fatalf("list without severity: %v", err)
+	}
+	if probes != 0 {
+		t.Fatalf("list without a severity filter issued %d severity-mode probes, want 0", probes)
+	}
+
+	// The counter has to be able to see a real probe, otherwise the assertion
+	// above would pass even if the callback never observed SQL.
+	if _, err := RelayLogList(ctx, nil, nil, 1, 20, &model.RelayLogScope{Severity: "error"}); err != nil {
+		t.Fatalf("list severity=error: %v", err)
+	}
+	if probes < 1 {
+		t.Fatal("severity-filtered list issued no mode probe; the counter is not watching the probe SQL")
+	}
+
+	before := probes
+	if _, err := RelayLogSeverityCounts(ctx, nil, nil, &model.RelayLogScope{Severity: "success"}); err != nil {
+		t.Fatalf("counts: %v", err)
+	}
+	if got := probes - before; got != 1 {
+		t.Fatalf("severity counts probed %d times, want 1 shared by WHERE and SUM(CASE)", got)
+	}
+}
+
 func explainQueryPlan(t *testing.T, sql string) string {
 	t.Helper()
 	var plans []struct {
