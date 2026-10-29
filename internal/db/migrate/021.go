@@ -39,12 +39,13 @@ func init() {
 // used to do, then cleared, so a later verbatim send does not apply it twice.
 // Channel keys are never read or written. Other channel types are untouched.
 //
-// Relative embeddings, images, and videos paths are rewritten to the absolute
-// URL the old join produced, using the original base (not the new chat URL).
-// Empty fields stay empty. Channels with an empty embeddings, images, or
-// videos field are listed at startup: those endpoints are skipped, because a
-// type-6 channel must not post non-chat traffic at the chat URL. Raw
-// protocols have no path field and are not served on type 6.
+// Relative embeddings, images, videos, and tasks paths are rewritten to the
+// absolute URL the old join produced, using the original base (not the new
+// chat URL). Empty fields stay empty. An empty tasks path is not a skip: poll
+// and content fall back to the videos prefix. Channels with an empty
+// embeddings, images, or videos field are listed at startup: those endpoints
+// are skipped, because a type-6 channel must not post non-chat traffic at the
+// chat URL. Raw protocols have no path field and are not served on type 6.
 func migrateCustomOpenAIChatVerbatimURLs(db *gorm.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
@@ -137,6 +138,10 @@ func rewriteType6ChannelURLs(tx *gorm.DB, ch *model.Channel) (bool, error) {
 		{"open_ai_embeddings_path", ch.OpenAIEmbeddingsPath, legacyType6EmbeddingsURL},
 		{"open_ai_images_path", ch.OpenAIImagesPath, legacyType6MediaPrefix},
 		{"open_ai_videos_path", ch.OpenAIVideosPath, legacyType6MediaPrefix},
+		// Poll and content prefer this prefix over the videos path when a task id
+		// is present. A relative value has to become absolute or type 6 refuses
+		// the request instead of posting it at the chat URL.
+		{"open_ai_tasks_path", ch.OpenAITasksPath, legacyType6MediaPrefix},
 	} {
 		rewritten, rewrite, err := legacyAbsolutePathField(bestBase, field.value, field.join)
 		if err != nil {

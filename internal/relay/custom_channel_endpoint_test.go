@@ -70,6 +70,34 @@ func TestCustomChannelAbsoluteMediaURLsKeepOperationSuffix(t *testing.T) {
 	}
 }
 
+func TestCustomChannelAbsoluteTasksPathKeepsPollAndContentSuffix(t *testing.T) {
+	channel := &dbmodel.Channel{
+		Type:             outbound.OutboundTypeCustomOpenAIChat,
+		BaseUrls:         []dbmodel.BaseUrl{{URL: "https://chat.example/v1/chat/completions"}},
+		OpenAIVideosPath: "https://cdn.example/openai/videos",
+		OpenAITasksPath:  "https://cdn.example/v1/tasks",
+	}
+	pollPath := videoUpstreamPathForChannel(channel, VideoMediaKindGenerations, "task_1", false)
+	poll, err := openAIUpstreamURL(channel, pollPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if poll != "https://cdn.example/v1/tasks/task_1" {
+		t.Fatalf("poll = %q (path %q), want the tasks prefix plus /{id}", poll, pollPath)
+	}
+	contentPath := videoUpstreamPathForChannel(channel, VideoMediaKindGenerations, "task_1", true)
+	content, err := openAIUpstreamURL(channel, contentPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if content != "https://cdn.example/v1/tasks/task_1/content" {
+		t.Fatalf("content = %q (path %q), want the tasks prefix plus /{id}/content", content, contentPath)
+	}
+	if strings.Contains(poll, "/openai/videos") || strings.Contains(content, "/generations") {
+		t.Fatalf("tasks poll must not use the videos prefix or the create kind: poll %q content %q", poll, content)
+	}
+}
+
 func TestCustomChannelWithoutOverrideIsSkippedForNonChat(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cases := []struct {

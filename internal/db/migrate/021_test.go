@@ -150,6 +150,7 @@ func TestMigration021ConvertsRelativeMediaPathsToLegacyURLs(t *testing.T) {
 		OpenAIEmbeddingsPath: "/embeddings",
 		OpenAIImagesPath:     "/openai/images",
 		OpenAIVideosPath:     "/custom/videos",
+		OpenAITasksPath:      "/custom/tasks",
 	}
 	empty := model.Channel{
 		Name:                 "empty-paths",
@@ -164,6 +165,7 @@ func TestMigration021ConvertsRelativeMediaPathsToLegacyURLs(t *testing.T) {
 		Type:             outbound.OutboundTypeCustomOpenAIChat,
 		BaseUrls:         []model.BaseUrl{{URL: "https://api.example.com/v1/chat/completions"}},
 		OpenAIImagesPath: "https://cdn.example/openai/images",
+		OpenAITasksPath:  "https://tasks.example/v1/tasks",
 	}
 	for _, row := range []*model.Channel{&ch, &empty, &absolute} {
 		if err := db.Create(row).Error; err != nil {
@@ -192,6 +194,13 @@ func TestMigration021ConvertsRelativeMediaPathsToLegacyURLs(t *testing.T) {
 	if wantVideos != "https://api.example.com/v1/custom/videos" {
 		t.Fatalf("legacy videos prefix = %q", wantVideos)
 	}
+	wantTasks, err := legacyType6MediaPrefix("https://api.example.com/v1", "/custom/tasks")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wantTasks != "https://api.example.com/v1/custom/tasks" {
+		t.Fatalf("legacy tasks prefix = %q", wantTasks)
+	}
 
 	if err := migrateCustomOpenAIChatVerbatimURLs(db); err != nil {
 		t.Fatal(err)
@@ -203,15 +212,15 @@ func TestMigration021ConvertsRelativeMediaPathsToLegacyURLs(t *testing.T) {
 	if got.BaseUrls[0].URL != "https://api.example.com/v1/chat/completions" {
 		t.Fatalf("chat base = %q", got.BaseUrls[0].URL)
 	}
-	if got.OpenAIEmbeddingsPath != wantEmbeddings || got.OpenAIImagesPath != wantImages || got.OpenAIVideosPath != wantVideos {
-		t.Fatalf("paths = emb %q images %q videos %q", got.OpenAIEmbeddingsPath, got.OpenAIImagesPath, got.OpenAIVideosPath)
+	if got.OpenAIEmbeddingsPath != wantEmbeddings || got.OpenAIImagesPath != wantImages || got.OpenAIVideosPath != wantVideos || got.OpenAITasksPath != wantTasks {
+		t.Fatalf("paths = emb %q images %q videos %q tasks %q", got.OpenAIEmbeddingsPath, got.OpenAIImagesPath, got.OpenAIVideosPath, got.OpenAITasksPath)
 	}
 
 	var untouched model.Channel
 	if err := db.Where("name = ?", "empty-paths").First(&untouched).Error; err != nil {
 		t.Fatal(err)
 	}
-	if untouched.OpenAIEmbeddingsPath != "" || untouched.OpenAIImagesPath != "" || untouched.OpenAIVideosPath != "" {
+	if untouched.OpenAIEmbeddingsPath != "" || untouched.OpenAIImagesPath != "" || untouched.OpenAIVideosPath != "" || untouched.OpenAITasksPath != "" {
 		t.Fatalf("empty paths were filled: %#v", untouched)
 	}
 	var kept model.Channel
@@ -221,6 +230,9 @@ func TestMigration021ConvertsRelativeMediaPathsToLegacyURLs(t *testing.T) {
 	if kept.OpenAIImagesPath != "https://cdn.example/openai/images" {
 		t.Fatalf("absolute images path changed: %q", kept.OpenAIImagesPath)
 	}
+	if kept.OpenAITasksPath != "https://tasks.example/v1/tasks" {
+		t.Fatalf("absolute tasks path changed: %q", kept.OpenAITasksPath)
+	}
 
 	if err := migrateCustomOpenAIChatVerbatimURLs(db); err != nil {
 		t.Fatal(err)
@@ -229,8 +241,8 @@ func TestMigration021ConvertsRelativeMediaPathsToLegacyURLs(t *testing.T) {
 	if err := db.Where("name = ?", "media").First(&again).Error; err != nil {
 		t.Fatal(err)
 	}
-	if again.OpenAIEmbeddingsPath != wantEmbeddings || again.OpenAIImagesPath != wantImages || again.OpenAIVideosPath != wantVideos || again.BaseUrls[0].URL != got.BaseUrls[0].URL {
-		t.Fatalf("rerun changed urls: base %q emb %q images %q videos %q", again.BaseUrls[0].URL, again.OpenAIEmbeddingsPath, again.OpenAIImagesPath, again.OpenAIVideosPath)
+	if again.OpenAIEmbeddingsPath != wantEmbeddings || again.OpenAIImagesPath != wantImages || again.OpenAIVideosPath != wantVideos || again.OpenAITasksPath != wantTasks || again.BaseUrls[0].URL != got.BaseUrls[0].URL {
+		t.Fatalf("rerun changed urls: base %q emb %q images %q videos %q tasks %q", again.BaseUrls[0].URL, again.OpenAIEmbeddingsPath, again.OpenAIImagesPath, again.OpenAIVideosPath, again.OpenAITasksPath)
 	}
 }
 
