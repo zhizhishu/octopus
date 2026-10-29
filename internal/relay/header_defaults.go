@@ -93,17 +93,33 @@ func ApplyChannelWireHeaders(req *http.Request, options ChannelWireHeaderOptions
 	// Codex CLI downstream carries its OWN self-consistent pair; that exact pair is echoed
 	// verbatim (see codexIdentityPair) so the upstream sees the same bytes a direct
 	// connection would have carried, while a non-CLI downstream still gets the profile's
-	// codex_exec pair (sub2api #3901: originator↔UA-first-token must pair).
-	if shouldUseCodexHeaderDefaults(options.Channel, options.InboundType) {
+	// pair (sub2api #3901: originator↔UA-first-token must pair).
+	//
+	// codexIdentityActive covers Responses and Chat+shape=codex. Gating this re-pair on
+	// shouldUseCodexHeaderDefaults left every Chat channel unpaired: that helper is
+	// Responses-only, so a custom User-Agent on chat-codex survived while Originator
+	// stayed on the profile token.
+	if codexIdentityActive(options.Channel) {
 		fingerprint := resolveFingerprintForChannel(options.Channel)
 		codexUserAgent, codexOriginator := codexIdentityPair(options.InboundUserAgent, fingerprint)
 		setHeaderForce(req.Header, "Originator", codexOriginator)
 		setHeaderForce(req.Header, "User-Agent", codexUserAgent)
-		applyCodexResponsesLiteHeader(req.Header, options.InternalRequest)
+		// Lite is the Responses body contract. prepareCodexRequestShape returns
+		// before any of those pins on a non-Responses channel, so a Chat body never
+		// carries them. Chat+shape=codex dresses headers only — do not advertise Lite,
+		// and do not let a custom header put it back. Responses still sends it
+		// (and still drops it for the gpt-5.5 denylist).
+		if shouldUseCodexHeaderDefaults(options.Channel, options.InboundType) {
+			applyCodexResponsesLiteHeader(req.Header, options.InternalRequest)
+		} else {
+			req.Header.Del("X-Openai-Internal-Codex-Responses-Lite")
+		}
 	}
 	// Genuine Codex CLI sends no Accept-Encoding. Re-assert this after custom
-	// headers because a channel preset can otherwise add it back.
-	enforceCodexNoAcceptEncoding(options.Channel.Type, req.Header)
+	// headers because a channel preset can otherwise add it back. Chat+shape=codex
+	// wears the same identity, so it drops Accept-Encoding too. Claude shape and
+	// generic chat do not.
+	enforceCodexNoAcceptEncoding(options.Channel, req.Header)
 }
 
 func (ra *relayAttempt) applyHeaderDefaults(req *http.Request) {
@@ -343,19 +359,43 @@ func chatChannelTLSFace(channel *dbmodel.Channel) string {
 	}
 }
 
+// codexIdentityActive reports whether this channel's outbound wears the codex CLI
+// identity: cloak on, and either the channel type is Responses or it is a Chat
+// channel (OpenAIChat / CustomOpenAIChat) whose cloak.shape is "codex".
+//
+// Chat+shape=codex dresses headers and the TLS face as codex while the body stays
+// chat format. Shape off or unknown stays the generic CherryStudio identity.
+// Claude shape is not a codex identity.
+func codexIdentityActive(channel *dbmodel.Channel) bool {
+	if channel == nil || !shouldApplyChannelCloak(channel.Cloak) {
+		return false
+	}
+	switch channel.Type {
+	case outbound.OutboundTypeOpenAIResponse:
+		return true
+	case outbound.OutboundTypeOpenAIChat, outbound.OutboundTypeCustomOpenAIChat:
+		return chatChannelShape(channel) == "codex"
+	default:
+		return false
+	}
+}
+
+// shouldUseCodexHeaderDefaults reports whether the outbound is a real Responses
+// codex leg (cloak on and type Responses). That is the only leg whose BODY is
+// shaped for the Lite header.
+//
+// Chat channels are intentionally excluded, including cloak.shape=codex. That
+// shape dresses headers and the TLS face as codex (see codexIdentityActive) while
+// the body stays chat — prepareCodexRequestShape returns before any Lite pins.
+// An older comment here claimed a Chat channel's outbound is always the generic
+// chat identity. That was already false once shape=codex existed; header
+// re-pairing and Accept-Encoding for chat-codex go through codexIdentityActive,
+// not this function.
 func shouldUseCodexHeaderDefaults(channel *dbmodel.Channel, inboundType inbound.InboundType) bool {
 	if channel == nil || !shouldApplyChannelCloak(channel.Cloak) {
 		return false
 	}
-	if channel.Type == outbound.OutboundTypeOpenAIResponse {
-		return true
-	}
-	// 2026-10-14 (user decision, "channel determines shape"): Chat channels no
-	// longer borrow the codex identity when a codex (Responses) client calls in.
-	// The old return here applied codex UA/Originator to a Chat channel's outbound,
-	// fingerprinting the request as codex-converter traffic on a chat endpoint.
-	// A Chat channel's outbound is always the generic chat identity.
-	return false
+	return channel.Type == outbound.OutboundTypeOpenAIResponse
 }
 
 // applyGenericHeaderDefaults sets a unified User-Agent on channels that have no
@@ -369,6 +409,17 @@ func (ra *relayAttempt) applyGenericHeaderDefaults(req *http.Request) {
 
 func applyGenericHeaderDefaultsForChannel(req *http.Request, channel *dbmodel.Channel) {
 	setHeaderIfMissing(req.Header, "User-Agent", genericUAForChannel(channel))
+}
+
+// ApplyGenericChannelHeaders is the embedding early-exit production uses
+// (relayAttempt.applyHeaderDefaults): the unified generic User-Agent and no CLI
+// identity. Embedding traffic has no CLI, so a model-test probe must call this
+// instead of ApplyChannelWireHeaders and must not set a TLS face.
+func ApplyGenericChannelHeaders(req *http.Request, channel *dbmodel.Channel) {
+	if req == nil || channel == nil {
+		return
+	}
+	applyGenericHeaderDefaultsForChannel(req, channel)
 }
 
 // genericUAForChannel resolves the unified non-CLI User-Agent for a channel: the

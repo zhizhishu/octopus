@@ -46,7 +46,7 @@ func TestCodexOriginatorFollowsUserAgent(t *testing.T) {
 	}
 }
 
-// 显式配了 originator 就以它为准（不覆盖用户明确设置）。
+// 显式 Originator 与 UA 首 token 一致时原样保留。
 func TestCodexOriginatorHonoursExplicitProfileValue(t *testing.T) {
 	var r Resolved
 	r = Resolved{hasProfile: true, profile: dbmodel.FingerprintProfile{
@@ -55,5 +55,35 @@ func TestCodexOriginatorHonoursExplicitProfileValue(t *testing.T) {
 	}}
 	if got := r.CodexOriginator(); got != "codex_exec" {
 		t.Fatalf("显式配置被忽略：got %q", got)
+	}
+}
+
+// 显式 Originator 与即将发出的 UA 首 token 不一致时，改成那个 token，不把错配发出去。
+// 保存路径会先改库；这里是解析时的第二道，存量错配也不会上线。
+func TestCodexOriginatorCorrectsMismatchedProfilePair(t *testing.T) {
+	cases := []struct {
+		name      string
+		ua        string
+		origin    string
+		wantToken string
+	}{
+		{"exec UA with cli originator", "codex_exec/1.0.0", "codex_cli_rs", "codex_exec"},
+		{"cli UA with exec originator", "codex_cli_rs/0.163.0 (Ubuntu)", "codex_exec", "codex_cli_rs"},
+		{"case differs from the lowercase token", "Codex_CLI_RS/1.2.3", "codex_exec", "codex_cli_rs"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := Resolved{hasProfile: true, profile: dbmodel.FingerprintProfile{
+				CodexUserAgent:  tc.ua,
+				CodexOriginator: tc.origin,
+			}}
+			if got := r.CodexOriginator(); got != tc.wantToken {
+				t.Fatalf("CodexOriginator() = %q, want %q (mismatched profile originator must follow the UA)", got, tc.wantToken)
+			}
+			first, _, _ := strings.Cut(strings.ToLower(r.CodexUserAgent()), "/")
+			if got := r.CodexOriginator(); got != first {
+				t.Fatalf("corrected Originator %q still disagrees with UA token %q", got, first)
+			}
+		})
 	}
 }

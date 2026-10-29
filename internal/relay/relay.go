@@ -2435,13 +2435,15 @@ func (ra *relayAttempt) copyHeaders(outboundRequest *http.Request) {
 	ra.applyHeaderDefaults(outboundRequest)
 }
 
-// enforceCodexNoAcceptEncoding strips Accept-Encoding from a codex (OpenAI Responses)
-// outbound request. Genuine Codex CLI (reqwest) sends none; claude and other channel
-// types are left untouched (claude legitimately advertises `gzip, deflate, br, zstd`).
-func enforceCodexNoAcceptEncoding(channelType outbound.OutboundType, header http.Header) {
-	if channelType == outbound.OutboundTypeOpenAIResponse {
-		header.Del("Accept-Encoding")
+// enforceCodexNoAcceptEncoding strips Accept-Encoding from a codex-identity outbound.
+// Genuine Codex CLI (reqwest) sends none. codexIdentityActive covers Responses
+// channels and Chat channels with cloak.shape=codex. Claude shape and generic chat
+// are left untouched (claude legitimately advertises `gzip, deflate, br, zstd`).
+func enforceCodexNoAcceptEncoding(channel *dbmodel.Channel, header http.Header) {
+	if header == nil || !codexIdentityActive(channel) {
+		return
 	}
+	header.Del("Accept-Encoding")
 }
 
 // sendRequest 发送 HTTP 请求

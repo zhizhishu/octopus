@@ -181,7 +181,7 @@ export interface RelayLog {
     base_input_price?: number;   // 日志记录的基础输入单价($/1M tokens)
     base_output_price?: number;  // 日志记录的基础输出单价($/1M tokens)
     request_content?: string;    // 请求内容, 仅管理员日志详情返回
-    // 真实出站请求体（TransformRequest + param_override 之后的字节，已脱敏）。
+    // 真实出站请求体（TransformRequest + param_override 之后的字节，按发出去的原样保存，凭据不打码）。
     // 🔴 只有详情返回；由设置项 upstream_request_body_log_enabled 开启，默认关闭。
     // 🔴 **不保证是合法 JSON**：超过 128KB 时尾部会追加"[truncated: N bytes total]"标记，
     //    引用前必须先判截断，不能直接 JSON.parse。

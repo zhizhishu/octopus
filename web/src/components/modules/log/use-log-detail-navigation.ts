@@ -30,6 +30,20 @@ export function useLogDetailNavigation({
 }) {
     const [activeId, setActiveId] = useState<number | null>(null);
     const requestInFlight = useRef(false);
+    // 回调身份保持稳定，日志卡片的默认浅比较才不会因为「列表插了一行」而整表重绘。
+    // 调用时读 ref，所以按钮上抓住的仍是打开弹窗时那个函数，看到的却是最新列表。
+    const logsRef = useRef(logs);
+    const hasMoreRef = useRef(hasMore);
+    const loadMoreRef = useRef(loadMore);
+    const isLoadingMoreRef = useRef(isLoadingMore);
+    const activeIdRef = useRef(activeId);
+    useEffect(() => {
+        logsRef.current = logs;
+        hasMoreRef.current = hasMore;
+        loadMoreRef.current = loadMore;
+        isLoadingMoreRef.current = isLoadingMore;
+        activeIdRef.current = activeId;
+    }, [activeId, hasMore, isLoadingMore, loadMore, logs]);
 
     const index = activeId === null ? -1 : logs.findIndex((log) => log.id === activeId);
     const activeLog = index >= 0 ? logs[index] : null;
@@ -45,26 +59,29 @@ export function useLogDetailNavigation({
 
     const navigate = useCallback(
         async (direction: -1 | 1) => {
-            if (index < 0) return;
-            const target = index + direction;
+            const logsNow = logsRef.current;
+            const active = activeIdRef.current;
+            const indexNow = active === null ? -1 : logsNow.findIndex((log) => log.id === active);
+            if (indexNow < 0) return;
+            const target = indexNow + direction;
 
             if (target < 0) return;
 
-            if (target >= logs.length) {
+            if (target >= logsNow.length) {
                 // 走到本页末尾：先拉下一页，等它进 logs 后再翻。
-                if (!hasMore || isLoadingMore || requestInFlight.current) return;
+                if (!hasMoreRef.current || isLoadingMoreRef.current || requestInFlight.current) return;
                 requestInFlight.current = true;
                 try {
-                    await loadMore();
+                    await loadMoreRef.current();
                 } finally {
                     requestInFlight.current = false;
                 }
                 return;
             }
 
-            setActiveId(logs[target].id);
+            setActiveId(logsNow[target].id);
         },
-        [hasMore, index, isLoadingMore, loadMore, logs]
+        []
     );
 
     useEffect(() => {

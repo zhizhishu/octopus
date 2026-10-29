@@ -8,8 +8,10 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
+	"github.com/zhizhishu/octopus/internal/op"
 	transformerModel "github.com/zhizhishu/octopus/internal/transformer/model"
 	openaiOutbound "github.com/zhizhishu/octopus/internal/transformer/outbound/openai"
 )
@@ -117,16 +119,15 @@ func TestUpstreamRequestBodyDiffersFromInternalSerialization(t *testing.T) {
 	}
 }
 
-func TestUpstreamRequestBodySnapshotIsRedacted(t *testing.T) {
+func TestUpstreamRequestBodySnapshotIsStoredVerbatim(t *testing.T) {
 	metrics := NewRelayMetrics(0, 0, "", "", kimiInternalRequest())
 	body := []byte(`{"model":"m","api_key":"sk-should-not-be-logged-as-is"}`)
 	metrics.SetUpstreamRequestBody(body)
-	if metrics.upstreamRequestBody == "" {
-		t.Fatal("快照应被记录")
+	if metrics.upstreamRequestBody != string(body) {
+		t.Fatalf("upstream snapshot must be stored as sent, got %s", metrics.upstreamRequestBody)
 	}
-	if strings.Contains(metrics.upstreamRequestBody, "sk-should-not-be-logged-as-is") &&
-		metrics.upstreamRequestBody == string(body) {
-		t.Fatal("落库前必须脱敏")
+	if strings.Contains(metrics.upstreamRequestBody, "[redacted]") {
+		t.Fatalf("upstream snapshot must not mask credentials, got %s", metrics.upstreamRequestBody)
 	}
 }
 
@@ -179,26 +180,57 @@ func TestSnapshotKeepsFullBodyWhileStorageTruncates(t *testing.T) {
 	}
 }
 
-// 顺序锁：必须先脱敏后截断。
-//
-// 打中的是脱敏规则里**有最小长度要求**的那一条（裸 hex 需 ≥32 位，
-// internal/utils/xredact/redact.go）。截断把 40 位密钥切成 10 位后，
-// 若先截断再脱敏，这 10 位不再匹配规则 → 半截密钥落进日志。
-func TestUpstreamRequestBodyRedactsBeforeTruncating(t *testing.T) {
-	// 前缀用非 hex 字符，避免它自己先被 hex 规则吃掉而改变截断位置。
-	// body = `{"k":"`(6) + prefix + secret + `"}`(2)。要让截断点正好落在
-	// secret 中间、只留下 10 位 hex，prefix 长度须为 limit-6-10。
-	//
-	// 🔴 prefix 必须用非 word 字符（这里用 '-'）：裸 hex 规则带词边界 ，
-	// 若前缀是字母，边界不成立、规则本来就不会命中，这条测试就测不到东西。
+// 截断保留原文前缀，不把凭据打成 [redacted]。标记里的总长是发出去的字节数。
+func TestUpstreamRequestBodyTruncationKeepsVerbatimPrefix(t *testing.T) {
 	prefix := strings.Repeat("-", upstreamRequestBodyLogLimit-16)
-	secret := strings.Repeat("c", 40) // 40 位裸 hex，命中 ≥32 规则
+	secret := strings.Repeat("c", 40)
+	body := []byte(`{"k":"` + prefix + secret + `"}`)
 	metrics := NewRelayMetrics(0, 0, "", "", kimiInternalRequest())
-	metrics.SetUpstreamRequestBody([]byte(`{"k":"` + prefix + secret + `"}`))
+	metrics.SetUpstreamRequestBody(body)
 
-	leaked := strings.Repeat("c", 10)
-	if strings.Contains(metrics.upstreamRequestBody, leaked) {
-		t.Fatal("截断边界上的长 hex 密钥必须先被脱敏，否则留下 10 位碎片")
+	if strings.Contains(metrics.upstreamRequestBody, "[redacted]") {
+		t.Fatal("truncated upstream snapshot must not mask credentials")
+	}
+	if !strings.Contains(metrics.upstreamRequestBody, strings.Repeat("c", 10)) {
+		t.Fatal("truncated snapshot must keep the verbatim secret prefix")
+	}
+	if !strings.Contains(metrics.upstreamRequestBody, fmt.Sprintf("%d bytes total", len(body))) {
+		t.Fatal("truncation marker must report the original byte length")
+	}
+}
+
+// request_content 仍然脱敏。同一条密钥可以出现在出站快照里，但不能出现在请求内容列。
+func TestRequestContentStaysRedactedWhenUpstreamBodyIsVerbatim(t *testing.T) {
+	ctx := setupRelayErrorDB(t)
+	const secret = "sk-should-not-be-logged-as-is"
+	text := "hello " + secret
+	req := kimiInternalRequest()
+	req.Messages[0].Content.Content = &text
+	metrics := NewRelayMetrics(0, 0, "127.0.0.1", req.Model, req)
+	wire := []byte(`{"model":"` + req.Model + `","messages":[{"role":"user","content":"hello ` + secret + `"}]}`)
+	metrics.SetUpstreamRequestBody(wire)
+
+	metrics.saveLog(ctx, nil, time.Second, nil, 0, "verbatim-body")
+
+	logs, err := op.RelayLogList(ctx, nil, nil, 1, 5, nil)
+	if err != nil {
+		t.Fatalf("list logs: %v", err)
+	}
+	if len(logs) == 0 {
+		t.Fatal("expected a relay log")
+	}
+	full, err := op.RelayLogGetByID(ctx, logs[0].ID, nil)
+	if err != nil {
+		t.Fatalf("get log: %v", err)
+	}
+	if !strings.Contains(full.UpstreamRequestBody, secret) {
+		t.Fatalf("upstream snapshot must keep the credential, got %s", full.UpstreamRequestBody)
+	}
+	if strings.Contains(full.RequestContent, secret) {
+		t.Fatalf("request_content must still redact the credential, got %s", full.RequestContent)
+	}
+	if !strings.Contains(full.RequestContent, "[redacted]") {
+		t.Fatalf("request_content must mark the redacted credential, got %s", full.RequestContent)
 	}
 }
 

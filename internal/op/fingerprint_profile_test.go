@@ -565,3 +565,71 @@ func TestFingerprintProfileRefreshRespectsDeletedBuiltins(t *testing.T) {
 		t.Fatalf("operator profile must survive, got %+v", byName)
 	}
 }
+
+// TestFingerprintProfileSaveAlignsMismatchedCodexOriginator 钉住保存时的自动纠正：
+// Codex UA 已填、Originator 非空、且不等于 UA 首 token 时，改成那个 token，不拒绝保存。
+// Originator 留空则保持留空（解析时再从 UA 推导）。
+func TestFingerprintProfileSaveAlignsMismatchedCodexOriginator(t *testing.T) {
+	ctx := setupFingerprintProfileTest(t)
+
+	profile := &model.FingerprintProfile{
+		Name:            "mismatch-on-create",
+		CodexUserAgent:  "codex_exec/1.2.3 (test)",
+		CodexOriginator: "codex_cli_rs",
+	}
+	if err := FingerprintProfileCreate(profile, ctx); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if profile.CodexOriginator != "codex_exec" {
+		t.Fatalf("create Originator = %q, want codex_exec", profile.CodexOriginator)
+	}
+	stored, ok := FingerprintProfileGet(profile.ID)
+	if !ok {
+		t.Fatal("created profile missing from cache")
+	}
+	if stored.CodexOriginator != "codex_exec" {
+		t.Fatalf("persisted Originator = %q, want codex_exec", stored.CodexOriginator)
+	}
+
+	ua := "codex_cli_rs/9.9.9 (Ubuntu)"
+	origin := "codex_exec"
+	updated, err := FingerprintProfileUpdate(&model.FingerprintProfileUpdateRequest{
+		ID:              profile.ID,
+		CodexUserAgent:  &ua,
+		CodexOriginator: &origin,
+	}, ctx)
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if updated.CodexOriginator != "codex_cli_rs" {
+		t.Fatalf("update Originator = %q, want codex_cli_rs", updated.CodexOriginator)
+	}
+
+	matchedUA := "codex_exec/0.1"
+	matchedOrigin := "codex_exec"
+	kept, err := FingerprintProfileUpdate(&model.FingerprintProfileUpdateRequest{
+		ID:              profile.ID,
+		CodexUserAgent:  &matchedUA,
+		CodexOriginator: &matchedOrigin,
+	}, ctx)
+	if err != nil {
+		t.Fatalf("update matching pair: %v", err)
+	}
+	if kept.CodexOriginator != "codex_exec" {
+		t.Fatalf("matching Originator was rewritten to %q", kept.CodexOriginator)
+	}
+
+	empty := ""
+	uaOnly := "codex_cli_rs/0.2"
+	cleared, err := FingerprintProfileUpdate(&model.FingerprintProfileUpdateRequest{
+		ID:              profile.ID,
+		CodexUserAgent:  &uaOnly,
+		CodexOriginator: &empty,
+	}, ctx)
+	if err != nil {
+		t.Fatalf("update empty originator: %v", err)
+	}
+	if cleared.CodexOriginator != "" {
+		t.Fatalf("empty Originator must stay empty, got %q", cleared.CodexOriginator)
+	}
+}

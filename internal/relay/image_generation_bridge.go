@@ -112,6 +112,20 @@ func (ra *relayAttempt) forwardImageGenerationViaImages(ctx context.Context, spa
 	}
 	copyHeadersToUpstream(req, ra.c, ra.channel, ra.usedKey.ChannelKey, "application/json", false)
 	req.Header.Set("Accept", "application/json")
+	// 真实出站请求体快照。主路径在 relay.go 里、ApplyParamOverride 之后拍；
+	// 这条 chat→images 桥在那之前就 return 了，真正发出去的是这里 marshal 的 body。
+	// 开关与 128KB 截断和主路径 / 竞速同一套（SetUpstreamRequestBody）：
+	// 按发出去的字节原样保存，凭据不打码。
+	// Gemini 图片桥在上面已经 return，不进这里。
+	if upstreamRequestBodyLogEnabled() {
+		snapshot, snapErr := snapshotOutboundRequestBody(req)
+		if snapErr != nil {
+			return 0, snapErr
+		}
+		if len(snapshot) > 0 {
+			ra.metrics.SetUpstreamRequestBody(snapshot)
+		}
+	}
 	if spanPath != nil {
 		if req.URL != nil && req.URL.Path != "" {
 			spanPath(req.URL.EscapedPath())

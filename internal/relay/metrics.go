@@ -420,18 +420,20 @@ const upstreamRequestBodyLogLimit = 128 * 1024
 
 // SetUpstreamRequestBody 记录真实出站请求体（调用方已确认开关打开）。
 // 只存一份快照，供 saveLog 落库；不参与路由、计费、指纹。
+//
+// 这一列按发出去的字节原样保存，凭据不打码。request_content、response_content、
+// 错误和 URL 仍走 redactLogBody / xredact。内联二进制剥离只在该辅助函数存在时
+// 才加在截断之前；当前版本没有它。截断只作用于存储，标记里的总长是原始字节数。
 func (m *RelayMetrics) SetUpstreamRequestBody(body []byte) {
 	if m == nil || len(body) == 0 {
 		return
 	}
-	// 🔴 顺序必须是「先脱敏、后截断」：反过来会把凭据从中间切断，断掉的碎片
-	// 可能不再匹配脱敏规则，于是半截密钥被存进日志。
-	redacted := redactLogBody(string(body))
-	if len(redacted) > upstreamRequestBodyLogLimit {
-		redacted = truncateUTF8(redacted, upstreamRequestBodyLogLimit) +
+	logged := string(body)
+	if len(logged) > upstreamRequestBodyLogLimit {
+		logged = truncateUTF8(logged, upstreamRequestBodyLogLimit) +
 			fmt.Sprintf("\n...[truncated: %d bytes total]", len(body))
 	}
-	m.upstreamRequestBody = redacted
+	m.upstreamRequestBody = logged
 }
 
 // truncateUTF8 按字节上限截断，但不切在多字节字符中间

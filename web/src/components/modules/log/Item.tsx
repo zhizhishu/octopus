@@ -9,6 +9,7 @@ import { githubDarkTheme } from '@uiw/react-json-view/githubDark';
 import { githubLightTheme } from '@uiw/react-json-view/githubLight';
 import { useTheme } from 'next-themes';
 import { create } from 'zustand';
+import { useQuery } from '@tanstack/react-query';
 import { fetchLogById, getRelayLogSeverity, type RelayLog, type ChannelAttempt } from '@/api/endpoints/log';
 import {
     getLogVerdict,
@@ -904,8 +905,38 @@ function DeferredJsonContent({ content, fallbackText }: { content: string | unde
 }
 
 
-function LazyLogBodies({ logId, fallbackRequest, fallbackResponse, fallbackUpstreamRequest, requestLabel, responseLabel, upstreamRequestLabel, upstreamRequestHint, tokensLabel, cacheHitLabel, noRequestText, noResponseText, inputTokens, outputTokens, cacheHitTokens, isModelTest }: {
-    logId: number;
+type LogDetailQueryValue = {
+    data?: RelayLog;
+    isLoading: boolean;
+    error: string | null;
+};
+
+const LogDetailQueryContext = React.createContext<LogDetailQueryValue>({
+    isLoading: false,
+    error: null,
+});
+
+/**
+ * 详情弹窗打开期间只拉一次 GET /api/v1/log/{id}。
+ * 正文和审计报告以前各拉一遍；queryKey 带 log id，翻到另一条不会复用上一条的缓存。
+ * 组件挂在弹窗内容里，关掉就卸载，下次打开再取。
+ */
+function LogDetailQuery({ logId, children }: { logId: number; children: ReactNode }) {
+    const query = useQuery({
+        queryKey: ['relay-log-detail', logId],
+        queryFn: () => fetchLogById(logId),
+        staleTime: 0,
+        refetchOnWindowFocus: false,
+    });
+    const value = useMemo<LogDetailQueryValue>(() => ({
+        data: query.data,
+        isLoading: query.isLoading,
+        error: query.error ? (query.error instanceof Error ? query.error.message : String(query.error)) : null,
+    }), [query.data, query.error, query.isLoading]);
+    return <LogDetailQueryContext.Provider value={value}>{children}</LogDetailQueryContext.Provider>;
+}
+
+function LazyLogBodies({ fallbackRequest, fallbackResponse, fallbackUpstreamRequest, requestLabel, responseLabel, upstreamRequestLabel, upstreamRequestHint, tokensLabel, cacheHitLabel, noRequestText, noResponseText, inputTokens, outputTokens, cacheHitTokens, isModelTest }: {
     fallbackRequest?: string;
     fallbackResponse?: string;
     /** 真实出站请求体（列表/流式已被 Omit，正常来自详情接口）。 */
@@ -923,43 +954,14 @@ function LazyLogBodies({ logId, fallbackRequest, fallbackResponse, fallbackUpstr
     cacheHitTokens: number;
     isModelTest: boolean;
 }) {
-    const { isOpen } = useMorphingDialog();
-    const [requestContent, setRequestContent] = useState<string | undefined>(fallbackRequest);
-    const [responseContent, setResponseContent] = useState<string | undefined>(fallbackResponse);
+    const detail = React.useContext(LogDetailQueryContext);
+    const requestContent = detail.data?.request_content ?? fallbackRequest;
+    const responseContent = detail.data?.response_content ?? fallbackResponse;
     // 只有开了 upstream_request_body_log_enabled 的实例才有值；没有就不渲染那一块，
     // 不摆空壳（"没采集"和"采集到空"要能区分）。
-    const [upstreamRequestBody, setUpstreamRequestBody] = useState<string | undefined>(fallbackUpstreamRequest);
-    const [loading, setLoading] = useState(false);
-    const [error, setError] = useState<string | null>(null);
-    const loadedRef = React.useRef(false);
-
-    useEffect(() => {
-        if (!isOpen || loadedRef.current) return;
-        // List rows intentionally omit bodies; fetch full detail once per open.
-        if ((requestContent && requestContent.length > 0) || (responseContent && responseContent.length > 0)) {
-            loadedRef.current = true;
-            return;
-        }
-        let cancelled = false;
-        setLoading(true);
-        setError(null);
-        fetchLogById(logId)
-            .then((full) => {
-                if (cancelled) return;
-                setRequestContent(full.request_content);
-                setResponseContent(full.response_content);
-                setUpstreamRequestBody(full.upstream_request_body);
-                loadedRef.current = true;
-            })
-            .catch((err: unknown) => {
-                if (cancelled) return;
-                setError(err instanceof Error ? err.message : String(err));
-            })
-            .finally(() => {
-                if (!cancelled) setLoading(false);
-            });
-        return () => { cancelled = true; };
-    }, [isOpen, logId, requestContent, responseContent]);
+    const upstreamRequestBody = detail.data?.upstream_request_body ?? fallbackUpstreamRequest;
+    const loading = detail.isLoading && !requestContent && !responseContent;
+    const error = detail.error;
 
     return (
         <div className="grid grid-cols-1 gap-4 pb-2 md:h-full md:min-h-0 md:grid-cols-2 md:pb-0">
@@ -1027,32 +1029,13 @@ function LazyLogBodies({ logId, fallbackRequest, fallbackResponse, fallbackUpstr
 /**
  * 详情弹窗里的「检测明细」。
  *
- * 为什么这里要自己再取一次详情：`model_audit_report` 和 request/response_content 一样
- * 只在详情接口返回，列表/实时流都被 Omit 掉了（internal/op/log.go 的 contentOmit）。
- * 也就是说卡片上那个 `log` 对象里这一列**永远是 undefined**——直接读它面板永远不会出现，
- * 所以必须走 GET /api/v1/log/{id}（fetchLogById）。取不到就当这行没被检测过，不摆空壳。
+ * `model_audit_report` 和 request/response_content 一样只在详情接口返回，
+ * 列表/实时流都被 Omit 掉了（internal/op/log.go 的 contentOmit）。
+ * 正文和这里共用 LogDetailQuery 的同一次 GET /api/v1/log/{id}。取不到就当这行没被检测过，不摆空壳。
  */
-function DetailAuditReport({ logId }: { logId: number }) {
-    const { isOpen } = useMorphingDialog();
-    const [fetched, setFetched] = useState<{ id: number; report?: string } | null>(null);
-
-    useEffect(() => {
-        if (!isOpen) return;
-        // 同一条日志只取一次；翻到别的日志（id 变了）才重新取。
-        if (fetched?.id === logId) return;
-        let cancelled = false;
-        fetchLogById(logId)
-            .then((full) => {
-                if (cancelled) return;
-                setFetched({ id: logId, report: full.model_audit_report });
-            })
-            .catch(() => {
-                // 详情取不到不该拖垮整个弹窗，其余内容照常显示。
-            });
-        return () => { cancelled = true; };
-    }, [isOpen, logId, fetched]);
-
-    return <AuditReportPanel report={fetched?.id === logId ? fetched.report : undefined} />;
+function DetailAuditReport() {
+    const { data, isLoading } = React.useContext(LogDetailQueryContext);
+    return <AuditReportPanel report={isLoading ? undefined : data?.model_audit_report} />;
 }
 
 type AuditHit = {
@@ -1185,7 +1168,8 @@ export const LogCard = React.memo(function LogCard({
      * 翻页时换 log、弹窗保持打开。不传则回到原来的各自管自己。
      */
     detailOpen?: boolean;
-    onDetailOpenChange?: (open: boolean) => void;
+    /** 稳定回调：父组件用 useCallback，比较器才能靠默认浅比较挡住无关重绘。 */
+    onDetailOpenChange?: (logId: number, open: boolean) => void;
     /** 翻到相邻一条。-1 = 上一条（更新），+1 = 下一条（更旧）。 */
     onNavigate?: (direction: -1 | 1) => void;
     canNavigatePrev?: boolean;
@@ -1654,9 +1638,12 @@ export const LogCard = React.memo(function LogCard({
             <span className="hidden md:inline">{t('openDetails')}</span>
         </>
     ) : null;
+    const handleDetailOpenChange = useCallback((open: boolean) => {
+        onDetailOpenChange?.(log.id, open);
+    }, [log.id, onDetailOpenChange]);
 
     return (
-            <MorphingDialog open={detailOpen} onOpenChange={onDetailOpenChange}>
+            <MorphingDialog open={detailOpen} onOpenChange={handleDetailOpenChange}>
                 <MorphingDialogTrigger
                     disabled={!canViewDetails}
                     className={cn(
@@ -1832,6 +1819,7 @@ export const LogCard = React.memo(function LogCard({
                 </MorphingDialogTrigger>
 
                 <MorphingDialogContainer>
+                    <LogDetailQuery logId={log.id}>
                     <MorphingDialogContent className="relative flex h-[calc(100dvh-1rem)] w-[calc(100vw-1rem)] max-w-[calc(100vw-1rem)] flex-col overflow-hidden rounded-3xl bg-card px-4 py-4 text-card-foreground md:w-[80vw] md:max-w-6xl md:px-6">
                         <MorphingDialogClose className="top-4 right-5 text-muted-foreground hover:text-foreground transition-colors" />
                         <MorphingDialogTitle className="mb-3 flex min-w-0 flex-wrap items-center gap-2 pr-9 text-sm">
@@ -1902,7 +1890,7 @@ export const LogCard = React.memo(function LogCard({
                                 <ProbeEvidenceList probes={probes} />
                                 {/* 检测过（有 verdict）才拉审计报告。否则这是一次纯白拉：
                                     详情接口会把三份 body 全传一遍——1.4MB 的日志等于拉两遍。 */}
-                                {log.model_audit_verdict ? <DetailAuditReport logId={log.id} /> : null}
+                                {log.model_audit_verdict ? <DetailAuditReport /> : null}
                                 <div className="grid min-w-0 grid-cols-2 gap-2 md:grid-cols-6">
                                     <DetailTile icon={<Hash className="size-3.5" />} label={t('logId')}>
                                         <MonoSafeText mode="wrap" value={String(log.id)} className="block text-xs text-foreground" />
@@ -2228,7 +2216,6 @@ export const LogCard = React.memo(function LogCard({
                                     再挤就由外层 description 滚动兜底，不再出现被压成 0 高 / 底部裁掉。 */}
                                 <div className="overflow-hidden md:flex-[1_1_55dvh] md:min-h-[20rem]">
                                     <LazyLogBodies
-                                        logId={log.id}
                                         fallbackRequest={log.request_content}
                                         fallbackResponse={log.response_content}
                                         fallbackUpstreamRequest={log.upstream_request_body}
@@ -2288,22 +2275,8 @@ export const LogCard = React.memo(function LogCard({
                             )}
                         </div>
                     </MorphingDialogContent>
+                    </LogDetailQuery>
                 </MorphingDialogContainer>
             </MorphingDialog>
     );
-}, (prevProps, nextProps) => (
-    prevProps.log.id === nextProps.log.id
-    && prevProps.log.time === nextProps.log.time
-    // 🔴 详情弹窗的开合开关必须参与比较，否则点卡片不出弹窗：
-    // 下面这些字段全没变时本函数返回 true，React 直接跳过重绘，
-    // MorphingDialog 永远收不到 open={true}，表现为「点了没反应、也不报错」。
-    && prevProps.detailOpen === nextProps.detailOpen
-    // 本行审计字段随后端回写而变化时（手动检测带 log_id 写回同一行、id/time 不变），
-    // 必须让卡片重绘，否则「模型检测」徽标不会出现/不会更新。
-    && prevProps.log.model_audit_verdict === nextProps.log.model_audit_verdict
-    && prevProps.log.model_audit_trigger === nextProps.log.model_audit_trigger
-    && prevProps.log.model_audit_score === nextProps.log.model_audit_score
-    && prevProps.log.model_audit_finding_n === nextProps.log.model_audit_finding_n
-    // 被动摘要随后端回写而变化时必须重绘（字段在同一 log 对象上，引用比较即可）。
-    && prevProps.log.passive_summary === nextProps.log.passive_summary
-));
+});

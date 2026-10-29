@@ -29,6 +29,8 @@ export type ThroughputInput = {
     output_tokens?: number;
     use_time?: number;
     ftut?: number;
+    /** 非空（trim 后）表示这次请求失败。与后端 relayLogTPSSample 一样不采样。 */
+    error?: string;
 };
 
 export type ThroughputReading = {
@@ -37,6 +39,9 @@ export type ThroughputReading = {
 };
 
 export function describeThroughput(log: ThroughputInput): ThroughputReading | null {
+    // 与 internal/op/throughput.go 的 relayLogTPSSample 一致：有错误就不显示速度。
+    if ((log.error ?? '').trim() !== '') return null;
+
     const out = log.output_tokens ?? 0;
     const total = log.use_time ?? 0;
     const first = log.ftut ?? 0;

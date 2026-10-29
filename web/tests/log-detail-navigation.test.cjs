@@ -249,6 +249,23 @@ test('输入法组合中的方向键不响应，别打断选词', () => {
     }
 });
 
+test('列表中途插入行后，打开时拿到的 navigate 仍翻到新的上一条', async () => {
+    const s = setup();
+    try {
+        let r = s.render();
+        r.open(9);
+        r = s.render();
+        const navigate = r.navigate;
+        const inserted = [{ id: 10 }, { id: 12 }, { id: 9 }, { id: 8 }];
+        r = s.render({ logs: inserted });
+        await navigate(-1);
+        r = s.render({ logs: inserted });
+        assert.equal(r.activeId, 12, '应翻到插入后的上一条，而不是打开弹窗时的旧邻居');
+    } finally {
+        s.restore();
+    }
+});
+
 test('弹窗关掉之后不再监听键盘', () => {
     const s = setup();
     try {

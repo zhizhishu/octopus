@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -194,9 +195,11 @@ func TestRawProtocolHandlerSystemonePassesDecisionPayloadThrough(t *testing.T) {
 // 没有 chat 那套结构。会不会被计费完全取决于 usageScanner 能不能在原始响应流里
 // 找到 "usage":{...} 并认出 input_tokens / output_tokens 这两个键。
 //
-// 【为什么要专门钉】buildBillingSnapshot 在 usage == nil 时**直接返回、不计费、
-// 也不告警**（internal/relay/raw_protocol.go 里 `if usage == nil { return snapshot }`）。
-// 也就是说「上游字段名对不上 → 一分钱不算 → 日志里看不出异常」是静默发生的。
+// 【为什么要专门钉】buildBillingSnapshot 在 usage == nil 时直接返回、不计费
+// （internal/relay/raw_protocol.go 里 `if usage == nil { return snapshot }`）。
+// 「上游字段名对不上 → 一分钱不算」仍然可能发生。缺价是另一条路：请求照样成功、
+// token 照记、金额是 0，但会打一条按模型去重的警告（见
+// TestSystemoneUnpricedModelWarnsOnceAndStillSucceeds）。
 // 这条用例把 input=281 / output=20 变成硬断言：将来谁把 usageScanner 改坏、
 // 或者上游把用量换个地方放，测试立刻红，而不是账目悄悄归零。
 func TestSystemoneUsageIsBilledFromDecisionResponse(t *testing.T) {
@@ -236,7 +239,10 @@ func TestSystemoneUsageIsBilledFromDecisionResponse(t *testing.T) {
 	// 调 buildBillingSnapshot 算钱。而 buildBillingSnapshot 里
 	// `if modelPrice == nil { return snapshot }` 在**算钱之前**就返回。
 	// 所以缺价的后果是：**token 记对了，金额是 0**，不是两者一起清零。
+	// 请求不因此失败；缺价且 usage>0 时另有一条按模型去重的警告
+	// （TestSystemoneUnpricedModelWarnsOnceAndStillSucceeds）。
 	// 只断言 token 的测试对"钱算没算"完全无感，绿得毫无意义。
+	// 本用例显式配了价，所以金额必须非 0。
 	//
 	// 配一个能整除的价：input 每百万 3.0、output 每百万 15.0，
 	// 281 输入 → 281*3*1e-6，20 输出 → 20*15*1e-6。
@@ -299,5 +305,97 @@ func TestSystemoneUsageIsBilledFromDecisionResponse(t *testing.T) {
 	}
 	if math.Abs(log.FinalOutputCost-wantOutputCost) > 1e-12 {
 		t.Fatalf("output cost = %v, want %v", log.FinalOutputCost, wantOutputCost)
+	}
+}
+
+// TestSystemoneUnpricedModelWarnsOnceAndStillSucceeds 钉住缺价不失败：
+// 请求成功、token 照记、金额是 0，并且同一模型在本进程里只警告一次。
+func TestSystemoneUnpricedModelWarnsOnceAndStillSucceeds(t *testing.T) {
+	const modelName = "octopus-systemone-unpriced-fixture"
+
+	var logged atomic.Int32
+	previous := missingRawProtocolPriceLogf
+	missingRawProtocolPriceLogf = func(string, ...any) { logged.Add(1) }
+	t.Cleanup(func() { missingRawProtocolPriceLogf = previous })
+
+	metrics := &rawProtocolRelayMetrics{Protocol: "systemone", RequestModel: modelName}
+	usage := &imagesUsage{InputTokens: 11, OutputTokens: 4}
+	first := metrics.buildBillingSnapshot(modelName, usage)
+	if first.FinalInputCost != 0 || first.FinalOutputCost != 0 {
+		t.Fatalf("missing price must leave cost at 0, got input %v output %v", first.FinalInputCost, first.FinalOutputCost)
+	}
+	if logged.Load() != 1 || rawProtocolUnpricedWarningCount(modelName) != 1 {
+		t.Fatalf("first positive usage must warn once, logs=%d count=%d", logged.Load(), rawProtocolUnpricedWarningCount(modelName))
+	}
+	_ = metrics.buildBillingSnapshot(modelName, usage)
+	if logged.Load() != 1 {
+		t.Fatalf("second call for the same model must not warn again, logs=%d", logged.Load())
+	}
+	_ = metrics.buildBillingSnapshot("octopus-systemone-unpriced-zero-usage", &imagesUsage{})
+	if logged.Load() != 1 {
+		t.Fatalf("zero usage must not warn, logs=%d", logged.Load())
+	}
+
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayErrorDB(t)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"decision_unpriced","model":"` + modelName + `",
+			"answers":{"urgent":{"type":"noul","noul":0.5}},
+			"usage":{"input_tokens":9,"output_tokens":3},
+			"provider":"typesafe"
+		}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	channel := dbmodel.Channel{
+		Name:     "systemone-unpriced",
+		Type:     outbound.OutboundTypeOpenAIChat,
+		Enabled:  true,
+		BaseUrls: []dbmodel.BaseUrl{{URL: upstream.URL}},
+		Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "xpl-unpriced"}},
+		Model:    modelName,
+		Priority: 1,
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+
+	for i := 0; i < 2; i++ {
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		req := httptest.NewRequest(http.MethodPost, "/v1/systemone", strings.NewReader(`{
+			"model":"`+modelName+`",
+			"state":"unpriced",
+			"questions":{"urgent":{"type":"noul","instructions":"urgent?"}}
+		}`))
+		req.Header.Set("Content-Type", "application/json")
+		c.Request = req
+		c.Set("api_key_id", 0)
+		c.Set("user_id", 0)
+		c.Set("request_ip", "127.0.0.1")
+		RawProtocolHandler(RawProtocolOptions{Endpoint: "/systemone", Name: "systemone"}, c)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("unpriced systemone request %d must succeed, got %d body %s", i, rec.Code, rec.Body.String())
+		}
+	}
+	if logged.Load() != 1 {
+		t.Fatalf("live requests must not emit a second warning, logs=%d", logged.Load())
+	}
+
+	logs, err := op.RelayLogList(ctx, nil, nil, 1, 10, nil)
+	if err != nil {
+		t.Fatalf("list relay logs: %v", err)
+	}
+	if len(logs) == 0 {
+		t.Fatal("expected a relay log for the unpriced decision call")
+	}
+	latest := logs[0]
+	if latest.InputTokens != 9 || latest.OutputTokens != 3 {
+		t.Fatalf("unpriced usage = %d/%d, want 9/3", latest.InputTokens, latest.OutputTokens)
+	}
+	if latest.FinalInputCost != 0 || latest.FinalOutputCost != 0 {
+		t.Fatalf("unpriced cost = %v/%v, want 0/0", latest.FinalInputCost, latest.FinalOutputCost)
 	}
 }

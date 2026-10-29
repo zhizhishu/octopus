@@ -2,10 +2,18 @@ package fingerprint
 
 import (
 	"strings"
+	"sync"
 
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/op"
+	"github.com/zhizhishu/octopus/internal/utils/log"
 )
+
+// warnCodexOriginatorMismatchOnce logs the first time a saved profile's explicit
+// Originator disagrees with the User-Agent that will actually be sent. The wire
+// value is corrected on every call; the log is once per process so a hot relay
+// does not repeat it.
+var warnCodexOriginatorMismatchOnce sync.Once
 
 const (
 	defaultClaudeArchitecture = "x64"
@@ -161,14 +169,25 @@ func (resolved Resolved) CodexBetaFeatures() string {
 //
 // 兜底改为从 UA 首 token 推导。这里不能反向 import relay（会造成循环依赖），
 // 所以把那一行切分逻辑就地重写，规则与 relay.codexOriginatorFromUserAgent 一致。
+//
+// 显式 Originator 只在它与即将发出的 UA 首 token 一致时原样保留。不一致就改成
+// 那个 token（保存时 op 层也会改，这里是第二道）：上游按这个等式拒绝整条渠道
+// （sub2api #3901）。第一次发现这种存量错配打一条警告，之后不再重复。
 func (resolved Resolved) CodexOriginator() string {
+	derived := codexOriginatorFromUserAgent(resolved.CodexUserAgent())
 	if profileValue := resolved.profileValue(
 		func(profile dbmodel.FingerprintProfile) string { return profile.CodexOriginator },
 	); profileValue != "" {
+		if derived != "" && profileValue != derived {
+			warnCodexOriginatorMismatchOnce.Do(func() {
+				log.Warnf("fingerprint CodexOriginator %q does not match the Codex User-Agent leading token %q; deriving Originator from the User-Agent (sub2api #3901 rejects the mismatch)", profileValue, derived)
+			})
+			return derived
+		}
 		return profileValue
 	}
 	// 没显式配 originator → 跟随实际要发出去的 UA，保证两者同家族。
-	if derived := codexOriginatorFromUserAgent(resolved.CodexUserAgent()); derived != "" {
+	if derived != "" {
 		return derived
 	}
 	return defaultCodexOriginator

@@ -49,6 +49,7 @@ func FingerprintProfileCreate(profile *model.FingerprintProfile, ctx context.Con
 	if strings.TrimSpace(profile.Seed) == "" {
 		profile.Seed = generateFingerprintSeed()
 	}
+	alignCodexOriginatorWithUserAgent(profile)
 	if err := db.GetDB().WithContext(ctx).Create(profile).Error; err != nil {
 		return err
 	}
@@ -111,6 +112,7 @@ func FingerprintProfileUpdate(req *model.FingerprintProfileUpdateRequest, ctx co
 	if req.GenericUA != nil {
 		current.GenericUA = *req.GenericUA
 	}
+	alignCodexOriginatorWithUserAgent(&current)
 
 	// Save the whole merged row (Save writes all columns for a record that has a
 	// primary key) so a field cleared back to its zero value also persists.
@@ -406,6 +408,29 @@ func fingerprintProfileRefreshCache(ctx context.Context) error {
 	}
 	fingerprintProfileCache.ReplaceAll(snapshot)
 	return nil
+}
+
+// alignCodexOriginatorWithUserAgent rewrites a non-empty Originator that does not
+// equal the Codex User-Agent's leading token. The save is not rejected: an upstream
+// (sub2api #3901) refuses the mismatched pair, so the stored row is corrected to the
+// token the UA will be paired against. An empty Originator is left empty — resolution
+// derives it from the UA. An empty User-Agent is left alone so a profile that only
+// pins Originator is not rewritten against a fallback UA it did not set.
+func alignCodexOriginatorWithUserAgent(profile *model.FingerprintProfile) {
+	if profile == nil {
+		return
+	}
+	ua := strings.TrimSpace(profile.CodexUserAgent)
+	originator := strings.TrimSpace(profile.CodexOriginator)
+	if ua == "" || originator == "" {
+		return
+	}
+	token, _, _ := strings.Cut(strings.ToLower(ua), "/")
+	token = strings.TrimSpace(token)
+	if token == "" || originator == token {
+		return
+	}
+	profile.CodexOriginator = token
 }
 
 func generateFingerprintSeed() string {
