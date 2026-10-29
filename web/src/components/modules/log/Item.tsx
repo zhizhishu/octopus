@@ -2294,6 +2294,10 @@ export const LogCard = React.memo(function LogCard({
 }, (prevProps, nextProps) => (
     prevProps.log.id === nextProps.log.id
     && prevProps.log.time === nextProps.log.time
+    // 🔴 详情弹窗的开合开关必须参与比较，否则点卡片不出弹窗：
+    // 下面这些字段全没变时本函数返回 true，React 直接跳过重绘，
+    // MorphingDialog 永远收不到 open={true}，表现为「点了没反应、也不报错」。
+    && prevProps.detailOpen === nextProps.detailOpen
     // 本行审计字段随后端回写而变化时（手动检测带 log_id 写回同一行、id/time 不变），
     // 必须让卡片重绘，否则「模型检测」徽标不会出现/不会更新。
     && prevProps.log.model_audit_verdict === nextProps.log.model_audit_verdict
