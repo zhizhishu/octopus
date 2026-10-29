@@ -21,6 +21,7 @@ func TestAuditEndpointForChannelIsPinned(t *testing.T) {
 		{"openai responses", outbound.OutboundTypeOpenAIResponse, "openai_responses"},
 		{"anthropic", outbound.OutboundTypeAnthropic, "anthropic_messages"},
 		{"gemini", outbound.OutboundTypeGemini, "gemini_generate_content"},
+		{"systemone", outbound.OutboundTypeSystemOne, "systemone"},
 		// 嵌入渠道没有自己的检测协议：落到 default 的 openai_chat。
 		// 能不能测不归这里判 —— 由 modeltest.NewProbeSender 的准入负责拒
 		// （它按渠道类型/能力位拒绝），这里只回"该探的协议名"。
@@ -45,6 +46,7 @@ func TestAuditEndpointForChannelUnknownTypesFallBack(t *testing.T) {
 		"openai_responses":        true,
 		"anthropic_messages":      true,
 		"gemini_generate_content": true,
+		"systemone":               true,
 	}
 	for i := -5; i <= 20; i++ {
 		typ := outbound.OutboundType(i)

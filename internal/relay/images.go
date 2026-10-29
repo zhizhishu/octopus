@@ -27,7 +27,6 @@ import (
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 	"github.com/zhizhishu/octopus/internal/utils/log"
 	"github.com/zhizhishu/octopus/internal/utils/safe"
-	"github.com/zhizhishu/octopus/internal/utils/xurl"
 )
 
 const imagesUpstreamErrorBodyLimit = 16 * 1024
@@ -873,8 +872,7 @@ func imagesAttempt(
 	// https://api.openai.com 会被误打到 /images/*。
 	// 渠道的 openai_images_path 非空时，用它替换 "/v1/images" 这段前缀（操作段
 	// /generations|/edits|/variations 仍保留）；空 = 与改动前逐字节相同。
-	baseURL := channel.GetBaseUrl()
-	targetURL, err := xurl.JoinOpenAIPath(baseURL, channel.GetOpenAIImagesPath(endpoint))
+	targetURL, err := openAIUpstreamURL(channel, channel.GetOpenAIImagesPath(endpoint), channelImagesOverride(channel))
 	if err != nil {
 		return 0, false, nil, "", fmt.Errorf("failed to build upstream image url: %w", err)
 	}

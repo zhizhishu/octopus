@@ -25,6 +25,7 @@ export enum ChannelType {
     // 4 = 退役的 Volcengine，编号永久保留空洞。
     OpenAIEmbedding = 5,
     CustomOpenAIChat = 6,
+    SystemOne = 7,
 }
 
 /**

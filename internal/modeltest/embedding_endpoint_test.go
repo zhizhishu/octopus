@@ -277,12 +277,18 @@ func TestModelTestBaseURLMatchesProductionForEmbeddings(t *testing.T) {
 	}
 
 	got := modelTestOutboundBaseURL(channel, req)
-	if got == chatBase {
-		t.Fatalf("检测选中聊天地址 %q；CustomOpenAIChat+嵌入能力这条组合下生产用的是"+
-			"嵌入地址 %q，检测必须跟生产一致，否则检测绿灯不代表真实转发可用", got, embedBase)
+	// type 6 原样发送：相对的 embeddings 路径不再拼接。绝对地址才覆盖。
+	if got != "https://chat.example/v1" {
+		t.Fatalf("检测选中 %q，type 6 嵌入请求应打到原样 base https://chat.example/v1", got)
 	}
-	if got != embedBase {
-		t.Fatalf("检测选中 %q，want 嵌入地址 %q", got, embedBase)
+	if got == embedBase {
+		t.Fatalf("相对嵌入路径不该再被拼上，got %q", got)
+	}
+
+	absolute := *channel
+	absolute.OpenAIEmbeddingsPath = "https://embed.example/api/v3/embeddings"
+	if got := modelTestOutboundBaseURL(&absolute, req); got != "https://embed.example/api/v3/embeddings" {
+		t.Fatalf("绝对嵌入地址应原样采用，got %q", got)
 	}
 }
 

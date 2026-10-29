@@ -28,10 +28,9 @@ import (
 //   - 只有 model 字段允许被 model_mapping 重写。
 //   - 上游按 id 返回的 answers 必须原样回到客户端。
 //
-// 同时钉住 URL：用户在渠道面板里可能把 base 抄成根域名、抄成 …/v1、也可能连着
-// 端点一起抄成 …/v1/systemone 甚至 …/systemone。四种填法都必须收敛到
-// /v1/systemone。后两种在旧实现里会叠成 …/systemone/v1/systemone（上游
-// 404 Unsupported serving path），是这条用例的靶心。
+// 同时钉住 URL：决策渠道（type 7）只填根地址。用户也可能把 base 抄成 …/v1、
+// …/v1/systemone 或 …/systemone。四种填法都必须收敛到 /v1/systemone。
+// 自定义渠道（type 6）不再走这条拼接，它按填入的地址原样发送。
 //
 // 🔴 每个子用例用**独立的模型名**建独立渠道。否则四个渠道会一起参与同一模型的
 // 路由，负载均衡可能把请求发给另一个（base 填法不同的）渠道，用例就算失败也
@@ -92,7 +91,7 @@ func TestRawProtocolHandlerSystemonePassesDecisionPayloadThrough(t *testing.T) {
 
 			channel := dbmodel.Channel{
 				Name:         "systemone-" + bf.name,
-				Type:         outbound.OutboundTypeCustomOpenAIChat,
+				Type:         outbound.OutboundTypeSystemOne,
 				Enabled:      true,
 				BaseUrls:     []dbmodel.BaseUrl{{URL: upstream.URL + bf.suffix}},
 				Keys:         []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "xpl-test-key"}},

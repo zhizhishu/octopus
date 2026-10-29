@@ -39,7 +39,8 @@ func TestChannelTypeCapabilityMatrixForImagesAndVideo(t *testing.T) {
 		{"OpenAIEmbedding", outbound.OutboundTypeOpenAIEmbedding, false, false},
 		// 4 号位是退役的 Volcengine，编号永久空着：两张表都必须拒。
 		{"退役的 Volcengine 4 号位", outbound.OutboundType(4), false, false},
-		{"未知类型 7", outbound.OutboundType(7), false, false},
+		// 决策渠道只服务 /v1/systemone，图片和视频都不接。
+		{"SystemOne", outbound.OutboundTypeSystemOne, false, false},
 	}
 
 	for _, tc := range cases {

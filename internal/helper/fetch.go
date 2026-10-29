@@ -8,10 +8,10 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/dlclark/regexp2"
 	"github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 	"github.com/zhizhishu/octopus/internal/utils/xurl"
-	"github.com/dlclark/regexp2"
 )
 
 func FetchModels(ctx context.Context, request model.Channel) ([]string, error) {
@@ -116,12 +116,24 @@ func fetchOpenAIModels(client *http.Client, ctx context.Context, request model.C
 	return models, nil
 }
 
+// errModelSyncDisabled is returned when a channel has no separate models URL.
+// Type 6 sends every request to the verbatim base URL, which is not a model
+// list. Type 7 only speaks /v1/systemone. An absolute models-path override is
+// the one exception for type 6.
+var errModelSyncDisabled = fmt.Errorf("this channel does not auto-sync a model list; enter model names by hand")
+
 func joinOpenAIModelsURL(request model.Channel) (string, error) {
-	if strings.TrimSpace(request.OpenAIModelsPath) != "" {
-		return xurl.JoinCustomOpenAIModelsOverride(request.GetBaseUrl(), request.OpenAIModelsPath)
+	if request.Type == outbound.OutboundTypeSystemOne {
+		return "", errModelSyncDisabled
 	}
 	if request.Type == outbound.OutboundTypeCustomOpenAIChat {
-		return xurl.JoinCustomOpenAIModelsPath(request.GetOpenAIChatBaseUrl())
+		if abs, ok, err := xurl.ParseEndpointOverride(request.OpenAIModelsPath); ok || err != nil {
+			return abs, err
+		}
+		return "", errModelSyncDisabled
+	}
+	if strings.TrimSpace(request.OpenAIModelsPath) != "" {
+		return xurl.JoinCustomOpenAIModelsOverride(request.GetBaseUrl(), request.OpenAIModelsPath)
 	}
 	return xurl.JoinOpenAIPath(request.GetBaseUrl(), "/v1/models")
 }

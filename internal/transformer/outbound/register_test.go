@@ -11,11 +11,12 @@ import (
 //
 //	0 OpenAIChat   1 OpenAIResponse   2 Anthropic   3 Gemini
 //	4 (退役的 Volcengine，编号永久空着)
-//	5 OpenAIEmbedding   6 CustomOpenAIChat
+//	5 OpenAIEmbedding   6 CustomOpenAIChat   7 SystemOne
 //
-// 这条测试的存在理由只有一个：钉死 5/6 两个数字。后人"顺手整理"删掉 4 号位那行
+// 这条测试的存在理由只有一个：钉死 5/6/7 三个数字。后人"顺手整理"删掉 4 号位那行
 // 占位常量，embedding 会变 4、custom 会变 5 —— 库里做嵌入的存量渠道会被当成
-// 自定义 chat 发出去。那不是代码问题，是数据事故。
+// 自定义 chat 发出去。那不是代码问题，是数据事故。SystemOne 必须紧挨在
+// CustomOpenAIChat 后面，不许插进 4 号空洞。
 func TestOutboundTypeNumberingKeepsRetiredSlotFourEmpty(t *testing.T) {
 	if got := int(OutboundTypeOpenAIChat); got != 0 {
 		t.Fatalf("OutboundTypeOpenAIChat = %d, want 0", got)
@@ -34,6 +35,9 @@ func TestOutboundTypeNumberingKeepsRetiredSlotFourEmpty(t *testing.T) {
 	}
 	if got := int(OutboundTypeCustomOpenAIChat); got != 6 {
 		t.Fatalf("OutboundTypeCustomOpenAIChat = %d, want 6 (4 号位永久空着，绝不许被挪走)", got)
+	}
+	if got := int(OutboundTypeSystemOne); got != 7 {
+		t.Fatalf("OutboundTypeSystemOne = %d, want 7 (必须接在 CustomOpenAIChat 后面，4 号位继续空着)", got)
 	}
 }
 
@@ -59,5 +63,14 @@ func TestEmbeddingAndCustomChatFactoriesUnchanged(t *testing.T) {
 	}
 	if _, ok := Get(OutboundTypeCustomOpenAIChat).(*openai.CustomChatOutbound); !ok {
 		t.Fatalf("type 6 must still build a CustomChatOutbound")
+	}
+	if adapter := Get(OutboundTypeSystemOne); adapter != nil {
+		t.Fatalf("Get(7) = %T, want nil (SystemOne 不走出站聊天适配器)", adapter)
+	}
+	if IsChatChannelType(OutboundTypeSystemOne) {
+		t.Fatal("type 7 must not be a chat channel type")
+	}
+	if IsEmbeddingChannelType(OutboundTypeSystemOne) {
+		t.Fatal("type 7 must not be an embedding channel type")
 	}
 }

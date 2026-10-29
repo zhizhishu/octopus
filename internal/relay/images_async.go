@@ -21,7 +21,6 @@ import (
 	"github.com/zhizhishu/octopus/internal/relay/balancer"
 	"github.com/zhizhishu/octopus/internal/server/resp"
 	"github.com/zhizhishu/octopus/internal/utils/log"
-	"github.com/zhizhishu/octopus/internal/utils/xurl"
 )
 
 // 图片异步任务（/v1/images/{generations,edits}/async + /v1/images/tasks/{id}）。
@@ -560,7 +559,7 @@ func ImageTaskRunUpstream(
 		return 0, nil, "", fmt.Errorf("failed to marshal upstream image payload: %w", merr)
 	}
 
-	targetURL, uerr := xurl.JoinOpenAIPath(channel.GetBaseUrl(), "/v1"+imageTaskEndpointPath(endpoint))
+	targetURL, uerr := openAIUpstreamURL(channel, "/v1"+imageTaskEndpointPath(endpoint), channelImagesOverride(channel))
 	if uerr != nil {
 		return 0, nil, "", fmt.Errorf("failed to build upstream image url: %w", uerr)
 	}

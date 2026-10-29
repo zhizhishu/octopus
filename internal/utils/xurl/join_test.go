@@ -175,10 +175,10 @@ func TestJoinCustomOpenAIChatPathAcceptsPathOrFullEndpointOverride(t *testing.T)
 		want     string
 	}{
 		{
-			name:     "custom relative endpoint keeps provider prefix",
+			name:     "relative endpoint is not appended",
 			baseURL:  "https://open.bigmodel.cn/api/coding/paas/v4",
 			endpoint: "/chat/completions",
-			want:     "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions",
+			want:     "https://open.bigmodel.cn/api/coding/paas/v4",
 		},
 		{
 			name:     "full endpoint override is used directly",
@@ -187,10 +187,16 @@ func TestJoinCustomOpenAIChatPathAcceptsPathOrFullEndpointOverride(t *testing.T)
 			want:     "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions",
 		},
 		{
-			name:     "base already includes full domestic chat endpoint",
-			baseURL:  "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions",
+			name:     "base is sent verbatim even when it is not a chat endpoint",
+			baseURL:  "https://proxy.example/custom/v1/chat/completions/",
 			endpoint: "/v1/chat/completions",
-			want:     "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions",
+			want:     "https://proxy.example/custom/v1/chat/completions/",
+		},
+		{
+			name:     "query string and trailing slash stay",
+			baseURL:  "https://proxy.example/custom?foo=1",
+			endpoint: "/v1/chat/completions",
+			want:     "https://proxy.example/custom?foo=1",
 		},
 	}
 
@@ -202,6 +208,39 @@ func TestJoinCustomOpenAIChatPathAcceptsPathOrFullEndpointOverride(t *testing.T)
 			}
 			if got != tt.want {
 				t.Fatalf("JoinCustomOpenAIChatPath() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLegacyJoinCustomOpenAIChatPathStillAppendsChatEndpoint(t *testing.T) {
+	tests := []struct {
+		name    string
+		baseURL string
+		want    string
+	}{
+		{name: "root", baseURL: "https://api.example.com", want: "https://api.example.com/v1/chat/completions"},
+		{name: "v1", baseURL: "https://api.example.com/v1", want: "https://api.example.com/v1/chat/completions"},
+		{name: "already chat", baseURL: "https://api.example.com/v1/chat/completions", want: "https://api.example.com/v1/chat/completions"},
+		{name: "trailing slash on v1", baseURL: "https://api.example.com/v1/", want: "https://api.example.com/v1/chat/completions"},
+		{name: "trailing slash on chat", baseURL: "https://api.example.com/v1/chat/completions/", want: "https://api.example.com/v1/chat/completions"},
+		{name: "query", baseURL: "https://api.example.com/v1?foo=bar", want: "https://api.example.com/v1/chat/completions?foo=bar"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := LegacyJoinCustomOpenAIChatPath(tt.baseURL, "/v1/chat/completions")
+			if err != nil {
+				t.Fatalf("LegacyJoinCustomOpenAIChatPath: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("got %q, want %q", got, tt.want)
+			}
+			again, err := LegacyJoinCustomOpenAIChatPath(got, "/v1/chat/completions")
+			if err != nil {
+				t.Fatalf("second join: %v", err)
+			}
+			if again != got {
+				t.Fatalf("legacy join is not stable: %q -> %q", got, again)
 			}
 		})
 	}
@@ -381,12 +420,12 @@ func TestCustomPathJoinKeepsBasePathAndAvoidsDoublePrefix(t *testing.T) {
 		ep   string
 		want string
 	}{
-		{"chat 端点只给后缀，base 的 /v1 必须保留", JoinCustomOpenAIChatPath,
-			"https://api.example/v1", "/chat/completions", "https://api.example/v1/chat/completions"},
-		{"chat 端点给完整路径", JoinCustomOpenAIChatPath,
-			"https://api.example/v1", "/v1/chat/completions", "https://api.example/v1/chat/completions"},
-		{"chat 端点重复 v1 不得叠成 /v1/v1", JoinCustomOpenAIChatPath,
-			"https://api.example/v1", "/v1/v1/chat/completions", "https://api.example/v1/chat/completions"},
+		{"chat 相对路径不再拼接，base 原样保留", JoinCustomOpenAIChatPath,
+			"https://api.example/v1", "/chat/completions", "https://api.example/v1"},
+		{"chat 端点给完整路径也不拼接", JoinCustomOpenAIChatPath,
+			"https://api.example/v1", "/v1/chat/completions", "https://api.example/v1"},
+		{"chat 端点重复 v1 也不拼接", JoinCustomOpenAIChatPath,
+			"https://api.example/v1", "/v1/v1/chat/completions", "https://api.example/v1"},
 		{"emb 端点只给后缀，base 的 /v1 必须保留", JoinCustomOpenAIEmbeddingsPath,
 			"https://api.example/v1", "/embeddings", "https://api.example/v1/embeddings"},
 		{"emb 端点给完整路径", JoinCustomOpenAIEmbeddingsPath,

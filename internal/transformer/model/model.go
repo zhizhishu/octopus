@@ -679,6 +679,11 @@ type TransformOptions struct {
 	// existing channels and non-chat inbounds are unchanged. Application-layer only
 	// (client-facing body); never touches outbound TLS/headers.
 	ThinkingToContent bool `json:"-"`
+
+	// VerbatimUpstreamURL tells an outbound adapter that baseUrl is already the
+	// final request URL. Custom chat (type 6) sets it so embeddings are not
+	// rejoined onto /v1/embeddings. Never serialized.
+	VerbatimUpstreamURL bool `json:"-"`
 }
 
 type StreamOptions struct {

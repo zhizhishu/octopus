@@ -10,7 +10,6 @@ import (
 	"github.com/zhizhishu/octopus/internal/relay/bodycache"
 	"github.com/zhizhishu/octopus/internal/server/resp"
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
-	"github.com/zhizhishu/octopus/internal/utils/xurl"
 )
 
 // 图片渠道测试的"钉住渠道"入口。
@@ -234,7 +233,7 @@ func imagesChannelTestUpstreamPath(channel *model.Channel, endpoint, actualModel
 		}
 		return urlPath(targetURL)
 	}
-	targetURL, err := xurl.JoinOpenAIPath(channel.GetBaseUrl(), "/v1"+endpoint)
+	targetURL, err := openAIUpstreamURL(channel, "/v1"+endpoint, channelImagesOverride(channel))
 	if err != nil {
 		return ""
 	}

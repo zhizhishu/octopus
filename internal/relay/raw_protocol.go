@@ -711,6 +711,11 @@ func isOpenAIWireChannelType(channelType outbound.OutboundType) bool {
 // rerank and responses_compact still accept Embedding (type 5). systemone is a
 // decision protocol and must not be sent to an embedding channel.
 func rawProtocolAllowsChannel(options RawProtocolOptions, channelType outbound.OutboundType) bool {
+	// Type 7 serves only systemone. Every other raw endpoint rejects it.
+	// systemone itself still accepts the previous wire types except Embedding.
+	if channelType == outbound.OutboundTypeSystemOne {
+		return isSystemoneRawProtocol(options)
+	}
 	if !isOpenAIWireChannelType(channelType) {
 		return false
 	}
@@ -718,6 +723,22 @@ func rawProtocolAllowsChannel(options RawProtocolOptions, channelType outbound.O
 		return false
 	}
 	return true
+}
+
+func rawProtocolTargetURL(channel *model.Channel, options RawProtocolOptions) (string, error) {
+	baseURL := ""
+	if channel != nil {
+		baseURL = channel.GetBaseUrl()
+	}
+	endpoint := "/v1" + options.Endpoint
+	if channel != nil && channel.Type == outbound.OutboundTypeSystemOne {
+		// Root, .../v1, and .../v1/systemone all land on /v1/systemone.
+		return xurl.JoinOpenAIPath(baseURL, "/v1/systemone")
+	}
+	if channel != nil && channel.Type == outbound.OutboundTypeCustomOpenAIChat {
+		return xurl.VerbatimRequestURL(baseURL, endpoint)
+	}
+	return xurl.JoinOpenAIPath(baseURL, endpoint)
 }
 
 func isSystemoneRawProtocol(options RawProtocolOptions) bool {
@@ -864,8 +885,7 @@ func rawProtocolAttempt(
 	clientSessionKey string,
 	forwardCompactCursor bool,
 ) (statusCode int, written bool, usage *imagesUsage, upstreamCT string, upstreamResponseID string, err error) {
-	baseURL := channel.GetBaseUrl()
-	targetURL, err := xurl.JoinOpenAIPath(baseURL, "/v1"+options.Endpoint)
+	targetURL, err := rawProtocolTargetURL(channel, options)
 	if err != nil {
 		return 0, false, nil, "", "", fmt.Errorf("failed to build raw protocol url: %w", err)
 	}

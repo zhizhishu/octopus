@@ -164,7 +164,28 @@ func JoinOpenAIPath(baseURL string, endpoint string) (string, error) {
 	return JoinPath(cleanedBaseURL, endpoint)
 }
 
+// VerbatimRequestURL is the final URL for a custom (type 6) channel.
+// The base URL the user entered is sent as-is: no path is appended and no
+// suffix is trimmed. An absolute endpoint still wins, via ParseEndpointOverride.
+func VerbatimRequestURL(baseURL string, endpoint string) (string, error) {
+	if endpointURL, ok, err := ParseEndpointOverride(endpoint); ok || err != nil {
+		return endpointURL, err
+	}
+	return strings.TrimSpace(baseURL), nil
+}
+
+// JoinCustomOpenAIChatPath resolves a custom-chat request URL.
+// Type 6 is verbatim: relative endpoints are not appended. Absolute endpoints
+// are honored by ParseEndpointOverride.
 func JoinCustomOpenAIChatPath(baseURL string, endpoint string) (string, error) {
+	return VerbatimRequestURL(baseURL, endpoint)
+}
+
+// LegacyJoinCustomOpenAIChatPath is the pre-verbatim custom-chat join.
+// The one-time startup migration calls it so an existing type-6 base URL is
+// rewritten to the exact chat URL the old logic produced. Request paths must
+// not call it.
+func LegacyJoinCustomOpenAIChatPath(baseURL string, endpoint string) (string, error) {
 	if endpointURL, ok, err := ParseEndpointOverride(endpoint); ok || err != nil {
 		return endpointURL, err
 	}

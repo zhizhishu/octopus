@@ -301,6 +301,10 @@ func prepareRacerAttemptForTemplate(
 		ra.internalRequest.Messages = normalizeChatToolCallPairing(ra.internalRequest.Messages)
 	}
 
+	previousVerbatim := ra.internalRequest.TransformOptions.VerbatimUpstreamURL
+	if ra.channel != nil {
+		ra.internalRequest.TransformOptions.VerbatimUpstreamURL = ra.channel.Type == outbound.OutboundTypeCustomOpenAIChat
+	}
 	outboundRequest, err := adapter.TransformRequest(
 		parentCtx,
 		ra.internalRequest,
@@ -313,6 +317,7 @@ func prepareRacerAttemptForTemplate(
 	ra.internalRequest.ResponsesInputRaw = originalResponsesInputRaw
 	ra.internalRequest.ResponsesInstructions = originalResponsesInstructions
 	ra.internalRequest.Stop = originalStop
+	ra.internalRequest.TransformOptions.VerbatimUpstreamURL = previousVerbatim
 	if err != nil {
 		ra.redactClose()
 		return nil, nil, nil, fmt.Errorf("failed to create request: %w", err)

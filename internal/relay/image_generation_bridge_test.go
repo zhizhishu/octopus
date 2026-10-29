@@ -10,11 +10,11 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/op"
 	"github.com/zhizhishu/octopus/internal/transformer/inbound"
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
-	"github.com/gin-gonic/gin"
 )
 
 func TestResponsesImageGenerationToolBridgesToImagesEndpoint(t *testing.T) {
@@ -359,8 +359,8 @@ func TestResponsesGrokImageGenerationBridgeSanitizesPayload(t *testing.T) {
 	mu.Lock()
 	path, body := gotPath, gotBody
 	mu.Unlock()
-	if path != "/v1/images/generations" {
-		t.Fatalf("expected canonical images path, got %q", path)
+	if path != "/v1/chat/completions" {
+		t.Fatalf("custom channel image bridge must use the verbatim base url, got %q", path)
 	}
 	for _, forbidden := range []string{"background", "quality", "size", "style", "output_format", "watermark", "stream"} {
 		if _, ok := body[forbidden]; ok {
@@ -738,8 +738,8 @@ func TestCustomOpenAIChatImageModelBridgesToImagesEndpoint(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected custom chat image bridge to succeed, got %d body %s", rec.Code, rec.Body.String())
 	}
-	if gotPath != "/v1/images/generations" {
-		t.Fatalf("expected custom OpenAI chat base to canonicalize to images path, got %q", gotPath)
+	if gotPath != "/v1/chat/completions" {
+		t.Fatalf("custom channel must send the image bridge to the verbatim base url, got %q", gotPath)
 	}
 }
 

@@ -218,6 +218,9 @@ func groupRaceChannelCompatible(req *model.InternalLLMRequest, channel *dbmodel.
 	if req.IsChatRequest() && !outbound.IsChatChannelType(channel.Type) {
 		return false
 	}
+	if channel.Type == outbound.OutboundTypeSystemOne {
+		return false
+	}
 	return true
 }
 
