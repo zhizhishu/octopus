@@ -104,7 +104,7 @@ func (ra *relayAttempt) forwardImageGenerationViaImages(ctx context.Context, spa
 
 	var targetURL string
 	if ra.channel.Type == outbound.OutboundTypeCustomOpenAIChat {
-		targetURL, err = openAIUpstreamURL(ra.channel, "/v1/images/generations", ra.channel.OpenAIImagesPath)
+		targetURL, err = openAIUpstreamURL(ra.channel, ra.channel.GetOpenAIImagesPath("/images/generations"))
 	} else {
 		targetURL, err = xurl.JoinOpenAIPath(ra.outboundBaseURL(), "/v1/images/generations")
 	}

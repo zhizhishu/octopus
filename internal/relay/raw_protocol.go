@@ -172,6 +172,10 @@ runIterator:
 			iter.Skip(channel.ID, 0, channel.Name, "channel disabled")
 			continue
 		}
+		if channel.Type == outbound.OutboundTypeCustomOpenAIChat {
+			iter.Skip(channel.ID, 0, channel.Name, CustomChannelNoFullURLReason)
+			continue
+		}
 		if !rawProtocolAllowsChannel(options, channel.Type) {
 			reason := fmt.Sprintf("unsupported channel type for raw protocol: %d", channel.Type)
 			if isSystemoneRawProtocol(options) && channel.Type == outbound.OutboundTypeOpenAIEmbedding {
@@ -736,7 +740,7 @@ func rawProtocolTargetURL(channel *model.Channel, options RawProtocolOptions) (s
 		return xurl.JoinOpenAIPath(baseURL, "/v1/systemone")
 	}
 	if channel != nil && channel.Type == outbound.OutboundTypeCustomOpenAIChat {
-		return xurl.VerbatimRequestURL(baseURL, endpoint)
+		return "", errCustomChannelNoFullURL
 	}
 	return xurl.JoinOpenAIPath(baseURL, endpoint)
 }

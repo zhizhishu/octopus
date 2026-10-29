@@ -220,7 +220,7 @@ func TestSystemoneUsageIsBilledFromDecisionResponse(t *testing.T) {
 
 	channel := dbmodel.Channel{
 		Name:     "systemone-billing",
-		Type:     outbound.OutboundTypeCustomOpenAIChat,
+		Type:     outbound.OutboundTypeSystemOne,
 		Enabled:  true,
 		BaseUrls: []dbmodel.BaseUrl{{URL: upstream.URL}},
 		Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "xpl-billing-key"}},

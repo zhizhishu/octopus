@@ -39,9 +39,12 @@ func init() {
 // used to do, then cleared, so a later verbatim send does not apply it twice.
 // Channel keys are never read or written. Other channel types are untouched.
 //
-// Non-chat raw endpoints on a type-6 channel cannot be detected from the
-// stored URL alone. After the rewrite every request kind goes to the old chat
-// URL. The startup warning lists the channel ids so the owner can check.
+// Relative embeddings, images, and videos paths are rewritten to the absolute
+// URL the old join produced, using the original base (not the new chat URL).
+// Empty fields stay empty. Channels with an empty embeddings, images, or
+// videos field are listed at startup: those endpoints are skipped, because a
+// type-6 channel must not post non-chat traffic at the chat URL. Raw
+// protocols have no path field and are not served on type 6.
 func migrateCustomOpenAIChatVerbatimURLs(db *gorm.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
@@ -61,20 +64,24 @@ func migrateCustomOpenAIChatVerbatimURLs(db *gorm.DB) error {
 			return fmt.Errorf("list type-6 channels: %w", err)
 		}
 
-		ids := make([]int, 0, len(channels))
+		var noEmbeddings, noImages, noVideos []int
 		for i := range channels {
 			ch := &channels[i]
-			ids = append(ids, ch.ID)
-			changed, err := rewriteType6ChannelURLs(tx, ch)
-			if err != nil {
+			if strings.TrimSpace(ch.OpenAIEmbeddingsPath) == "" {
+				noEmbeddings = append(noEmbeddings, ch.ID)
+			}
+			if strings.TrimSpace(ch.OpenAIImagesPath) == "" {
+				noImages = append(noImages, ch.ID)
+			}
+			if strings.TrimSpace(ch.OpenAIVideosPath) == "" {
+				noVideos = append(noVideos, ch.ID)
+			}
+			if _, err := rewriteType6ChannelURLs(tx, ch); err != nil {
 				return err
 			}
-			if !changed {
-				continue
-			}
 		}
-		if len(ids) > 0 {
-			log.Warnf("migrate 021: 自定义渠道（type 6）编号 %v 已改成按旧的聊天地址原样发送。这次迁移看不出它们有没有被拿去打过聊天以外的接口（图片、嵌入、systemone 等），请人工核对。", ids)
+		if len(noEmbeddings) > 0 || len(noImages) > 0 || len(noVideos) > 0 {
+			log.Warnf("migrate 021: type-6 channels with no embeddings/images/videos path will skip that endpoint (no full URL). embeddings %v images %v videos %v. Raw endpoints such as systemone and rerank are not served on type 6.", noEmbeddings, noImages, noVideos)
 		}
 
 		marker = model.Setting{Key: settingKeyCustomChatVerbatim, Value: "done"}
@@ -89,8 +96,9 @@ func rewriteType6ChannelURLs(tx *gorm.DB, ch *model.Channel) (bool, error) {
 	if ch == nil {
 		return false, nil
 	}
-	next := make([]model.BaseUrl, len(ch.BaseUrls))
-	copy(next, ch.BaseUrls)
+	originalBases := append([]model.BaseUrl(nil), ch.BaseUrls...)
+	bestBase := (&model.Channel{BaseUrls: originalBases}).GetBaseUrl()
+	next := append([]model.BaseUrl(nil), originalBases...)
 	changed := false
 	for i, bu := range next {
 		raw := strings.TrimSpace(bu.URL)
@@ -108,7 +116,6 @@ func rewriteType6ChannelURLs(tx *gorm.DB, ch *model.Channel) (bool, error) {
 		next[i].URL = rewritten
 		changed = true
 	}
-	path := strings.TrimSpace(ch.OpenAIChatPath)
 	updates := map[string]any{}
 	if changed {
 		raw, err := jsonMarshalBaseURLs(next)
@@ -117,9 +124,29 @@ func rewriteType6ChannelURLs(tx *gorm.DB, ch *model.Channel) (bool, error) {
 		}
 		updates["base_urls"] = raw
 	}
-	if path != "" {
+	if path := strings.TrimSpace(ch.OpenAIChatPath); path != "" {
 		log.Warnf("migrate 021: channel %d cleared openai_chat_path %s (folded into the base url)", ch.ID, redactURLForLog(path))
 		updates["open_ai_chat_path"] = ""
+		changed = true
+	}
+	for _, field := range []struct {
+		column string
+		value  string
+		join   func(base, path string) (string, error)
+	}{
+		{"open_ai_embeddings_path", ch.OpenAIEmbeddingsPath, legacyType6EmbeddingsURL},
+		{"open_ai_images_path", ch.OpenAIImagesPath, legacyType6MediaPrefix},
+		{"open_ai_videos_path", ch.OpenAIVideosPath, legacyType6MediaPrefix},
+	} {
+		rewritten, rewrite, err := legacyAbsolutePathField(bestBase, field.value, field.join)
+		if err != nil {
+			return false, fmt.Errorf("channel %d %s: %w", ch.ID, field.column, err)
+		}
+		if !rewrite {
+			continue
+		}
+		log.Warnf("migrate 021: channel %d %s %s -> %s", ch.ID, field.column, redactURLForLog(field.value), redactURLForLog(rewritten))
+		updates[field.column] = rewritten
 		changed = true
 	}
 	if !changed {
@@ -129,6 +156,44 @@ func rewriteType6ChannelURLs(tx *gorm.DB, ch *model.Channel) (bool, error) {
 		return false, fmt.Errorf("update channel %d: %w", ch.ID, err)
 	}
 	return true, nil
+}
+
+// legacyAbsolutePathField converts a non-empty relative path into the absolute
+// URL the old join produced. An empty field stays empty. An absolute field is
+// already the stored override and is left alone, so a second pass is a no-op.
+func legacyAbsolutePathField(base, path string, join func(base, path string) (string, error)) (string, bool, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", false, nil
+	}
+	if _, ok, err := xurl.ParseEndpointOverride(path); err != nil {
+		return "", false, err
+	} else if ok {
+		return path, false, nil
+	}
+	if strings.TrimSpace(base) == "" {
+		return "", false, nil
+	}
+	abs, err := join(base, path)
+	if err != nil {
+		return "", false, err
+	}
+	if abs == path {
+		return path, false, nil
+	}
+	return abs, true, nil
+}
+
+func legacyType6EmbeddingsURL(base, path string) (string, error) {
+	stage, err := xurl.JoinCustomOpenAIEmbeddingsPath(base, path)
+	if err != nil {
+		return "", err
+	}
+	return xurl.JoinCustomOpenAIEmbeddingsPath(stage, "/v1/embeddings")
+}
+
+func legacyType6MediaPrefix(base, path string) (string, error) {
+	return xurl.JoinOpenAIPath(base, strings.TrimRight(strings.TrimSpace(path), "/"))
 }
 
 // legacyType6ChatURL is the URL a chat request used to hit:

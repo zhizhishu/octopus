@@ -410,6 +410,18 @@ attemptChannels:
 		// 类型兼容性检查
 		// 嵌入流量按「渠道能力位」判定（SupportsCapability）：空 Capabilities 的
 		// 存量渠道退回按渠道类型判定，行为与改动前完全一致。
+		if internalRequest.IsEmbeddingRequest() && channel.Type == outbound.OutboundTypeCustomOpenAIChat {
+			if _, ok := customChannelAbsoluteURL(channel.OpenAIEmbeddingsPath); !ok {
+				iter.Skip(channel.ID, 0, channel.Name, CustomChannelNoFullURLReason)
+				continue
+			}
+		}
+		if internalRequest.IsImageGenerationRequest() && channel.Type == outbound.OutboundTypeCustomOpenAIChat {
+			if _, ok := customChannelAbsoluteURL(channel.OpenAIImagesPath); !ok {
+				iter.Skip(channel.ID, 0, channel.Name, CustomChannelNoFullURLReason)
+				continue
+			}
+		}
 		if internalRequest.IsEmbeddingRequest() && !channel.SupportsCapability(dbmodel.CapabilityEmbeddings) {
 			iter.Skip(channel.ID, 0, channel.Name, "channel type not compatible with embedding request")
 			continue

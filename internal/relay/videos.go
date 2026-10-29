@@ -20,6 +20,7 @@ import (
 	"github.com/zhizhishu/octopus/internal/relay/balancer"
 	"github.com/zhizhishu/octopus/internal/relay/bodycache"
 	"github.com/zhizhishu/octopus/internal/server/resp"
+	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 	"github.com/zhizhishu/octopus/internal/utils/log"
 )
 
@@ -197,6 +198,12 @@ runIterator:
 		if !isVideoCapableChannelType(channel.Type) {
 			iter.Skip(channel.ID, 0, channel.Name, fmt.Sprintf("unsupported channel type for video: %d", channel.Type))
 			continue
+		}
+		if channel.Type == outbound.OutboundTypeCustomOpenAIChat {
+			if _, ok := customChannelAbsoluteURL(channel.OpenAIVideosPath); !ok {
+				iter.Skip(channel.ID, 0, channel.Name, CustomChannelNoFullURLReason)
+				continue
+			}
 		}
 		if mapped, ok := channel.ModelMapping[item.ModelName]; ok && mapped != "" {
 			item.ModelName = mapped
@@ -433,7 +440,7 @@ func videoTaskRelayTarget(c *gin.Context, ctx context.Context, taskID string) (v
 // record task ownership) before writing it downstream. It reuses the shared
 // image/raw helpers for auth headers and the channel HTTP client.
 func videoForward(ctx context.Context, c *gin.Context, method, upstreamPath string, payload map[string]any, actualModel string, channel *model.Channel, channelKey string) (int, []byte, string, error) {
-	targetURL, err := openAIUpstreamURL(channel, upstreamPath, channelVideosOverride(channel))
+	targetURL, err := openAIUpstreamURL(channel, upstreamPath)
 	if err != nil {
 		return 0, nil, "", fmt.Errorf("failed to build video url: %w", err)
 	}
@@ -508,7 +515,7 @@ func videoForwardContent(ctx context.Context, c *gin.Context, upstreamPath strin
 	if channel == nil {
 		return 0, fmt.Errorf("video content: channel is nil")
 	}
-	targetURL, err := openAIUpstreamURL(channel, upstreamPath, channelVideosOverride(channel))
+	targetURL, err := openAIUpstreamURL(channel, upstreamPath)
 	if err != nil {
 		return 0, fmt.Errorf("failed to build video content url: %w", err)
 	}
@@ -755,7 +762,7 @@ func VideoTaskPollStatus(ctx context.Context, channel *model.Channel, channelKey
 		return 0, nil, fmt.Errorf("video poll: upstream task id is empty")
 	}
 
-	targetURL, err := openAIUpstreamURL(channel, videoUpstreamPathForChannel(channel, mediaKind, upstreamTaskID, false), channelVideosOverride(channel))
+	targetURL, err := openAIUpstreamURL(channel, videoUpstreamPathForChannel(channel, mediaKind, upstreamTaskID, false))
 	if err != nil {
 		return 0, nil, fmt.Errorf("failed to build video poll url: %w", err)
 	}

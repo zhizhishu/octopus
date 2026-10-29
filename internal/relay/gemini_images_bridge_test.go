@@ -5,14 +5,15 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/op"
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
-	"github.com/gin-gonic/gin"
 )
 
 func TestImagesHandlerGeminiImagenPredictBridge(t *testing.T) {
@@ -219,6 +220,16 @@ func createRawImagesGroupWithType(t *testing.T, ctx context.Context, upstreamURL
 	}
 	if requestModel != upstreamModel {
 		channel.ModelMapping = map[string]string{requestModel: upstreamModel}
+	}
+	if channelType == outbound.OutboundTypeCustomOpenAIChat {
+		parsed, err := url.Parse(upstreamURL)
+		if err != nil || parsed.Host == "" {
+			t.Fatalf("custom images base %q: %v", upstreamURL, err)
+		}
+		parsed.Path = "/v1/images"
+		parsed.RawPath = ""
+		parsed.RawQuery = ""
+		channel.OpenAIImagesPath = parsed.String()
 	}
 	if err := op.ChannelCreate(&channel, ctx); err != nil {
 		t.Fatalf("create channel: %v", err)

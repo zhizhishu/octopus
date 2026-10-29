@@ -445,10 +445,11 @@ func (c *Channel) GetBaseUrl() string {
 	return bestURL
 }
 
-// VerbatimRequestBaseURL is the final request URL for a type-6 channel.
-// Relative path fields are not appended. An absolute embeddings override wins
-// for embedding requests; otherwise an absolute chat-path override wins.
-// Anything else is the base URL exactly as stored.
+// VerbatimRequestBaseURL is the chat URL for a type-6 channel.
+// The stored base URL is the chat request. An absolute chat-path override
+// replaces it. Embedding requests use an absolute embeddings path only;
+// a missing or relative embeddings path returns empty so the caller can skip
+// the channel instead of posting to the chat URL.
 func (c *Channel) VerbatimRequestBaseURL(embedding bool) string {
 	if c == nil {
 		return ""
@@ -457,7 +458,9 @@ func (c *Channel) VerbatimRequestBaseURL(embedding bool) string {
 		if abs, ok, err := xurl.ParseEndpointOverride(c.OpenAIEmbeddingsPath); err == nil && ok {
 			return abs
 		}
-	} else if abs, ok, err := xurl.ParseEndpointOverride(c.OpenAIChatPath); err == nil && ok {
+		return ""
+	}
+	if abs, ok, err := xurl.ParseEndpointOverride(c.OpenAIChatPath); err == nil && ok {
 		return abs
 	}
 	return c.GetBaseUrl()

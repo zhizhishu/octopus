@@ -277,12 +277,9 @@ func TestModelTestBaseURLMatchesProductionForEmbeddings(t *testing.T) {
 	}
 
 	got := modelTestOutboundBaseURL(channel, req)
-	// type 6 原样发送：相对的 embeddings 路径不再拼接。绝对地址才覆盖。
-	if got != "https://chat.example/v1" {
-		t.Fatalf("检测选中 %q，type 6 嵌入请求应打到原样 base https://chat.example/v1", got)
-	}
-	if got == embedBase {
-		t.Fatalf("相对嵌入路径不该再被拼上，got %q", got)
+	// 相对嵌入路径不是完整地址：不能退回聊天地址。
+	if got != "" {
+		t.Fatalf("相对嵌入路径应跳过，检测却选了 %q", got)
 	}
 
 	absolute := *channel

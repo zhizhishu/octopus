@@ -1082,7 +1082,7 @@
       "typeAnthropic": "Anthropic",
       "typeGemini": "Gemini",
       "typeCustomOpenAIChat": "Custom OpenAI Chat",
-      "typeCustomOpenAIChatHint": "Enter the full request URL. It is sent exactly as written, and no path is added. Model lists are not fetched; type the model names yourself.",
+      "typeCustomOpenAIChatHint": "Enter the full chat URL. It is sent exactly as written. For embeddings, images, or video, put a full URL in that path field. Type model names yourself.",
       "typeSystemOne": "Decision model (SystemOne / Jev)",
       "typeSystemOneHint": "Enter the root URL. /v1/systemone is added automatically. Model lists are not fetched; type the model names yourself.",
       "openaiChatPath": "Chat endpoint path",

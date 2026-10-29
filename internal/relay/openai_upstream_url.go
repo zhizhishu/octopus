@@ -1,42 +1,47 @@
 package relay
 
 import (
-	"strings"
+	"errors"
 
 	"github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 	"github.com/zhizhishu/octopus/internal/utils/xurl"
 )
 
+// CustomChannelNoFullURLReason is why a type-6 channel is skipped for a
+// non-chat endpoint. Chat uses the base URL as-is. Embeddings, images, and
+// videos run only when their own path field is an absolute URL. Raw protocols
+// have no such field, so they are always skipped.
+const CustomChannelNoFullURLReason = "custom channel has no full URL for this endpoint"
+
+var errCustomChannelNoFullURL = errors.New(CustomChannelNoFullURLReason)
+
+func customChannelAbsoluteURL(raw string) (string, bool) {
+	abs, ok, err := xurl.ParseEndpointOverride(raw)
+	if err != nil || !ok {
+		return "", false
+	}
+	return abs, true
+}
+
 // openAIUpstreamURL builds the upstream URL for an OpenAI-compatible request.
-// Type 6 (custom chat) is verbatim: endpoint is ignored unless it is an
-// absolute URL (ParseEndpointOverride). verbatimOverride is the channel's
-// path field, checked first so a full URL the user stored there still wins.
-func openAIUpstreamURL(channel *model.Channel, endpoint, verbatimOverride string) (string, error) {
+//
+// Type 6 is verbatim for chat only. For images and videos the caller passes
+// the path from GetOpenAIImagesPath / videoUpstreamPathForChannel. When the
+// channel's path field is an absolute URL, that helper already replaced the
+// /v1/images or /v1/videos prefix and appended the operation suffix, so the
+// endpoint string is itself absolute and is used as the request URL. A missing
+// or relative field does not fall back to the chat URL.
+func openAIUpstreamURL(channel *model.Channel, endpoint string) (string, error) {
 	if channel != nil && channel.Type == outbound.OutboundTypeCustomOpenAIChat {
-		override := strings.TrimSpace(verbatimOverride)
-		if override == "" {
-			override = endpoint
+		if abs, ok, err := xurl.ParseEndpointOverride(endpoint); ok || err != nil {
+			return abs, err
 		}
-		return xurl.VerbatimRequestURL(channel.GetBaseUrl(), override)
+		return "", errCustomChannelNoFullURL
 	}
 	base := ""
 	if channel != nil {
 		base = channel.GetBaseUrl()
 	}
 	return xurl.JoinOpenAIPath(base, endpoint)
-}
-
-func channelImagesOverride(channel *model.Channel) string {
-	if channel == nil {
-		return ""
-	}
-	return channel.OpenAIImagesPath
-}
-
-func channelVideosOverride(channel *model.Channel) string {
-	if channel == nil {
-		return ""
-	}
-	return channel.OpenAIVideosPath
 }

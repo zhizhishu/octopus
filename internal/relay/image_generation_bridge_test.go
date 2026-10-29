@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -359,8 +360,8 @@ func TestResponsesGrokImageGenerationBridgeSanitizesPayload(t *testing.T) {
 	mu.Lock()
 	path, body := gotPath, gotBody
 	mu.Unlock()
-	if path != "/v1/chat/completions" {
-		t.Fatalf("custom channel image bridge must use the verbatim base url, got %q", path)
+	if path != "/v1/images/generations" {
+		t.Fatalf("absolute images prefix must keep the generations suffix, got %q", path)
 	}
 	for _, forbidden := range []string{"background", "quality", "size", "style", "output_format", "watermark", "stream"} {
 		if _, ok := body[forbidden]; ok {
@@ -738,8 +739,8 @@ func TestCustomOpenAIChatImageModelBridgesToImagesEndpoint(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected custom chat image bridge to succeed, got %d body %s", rec.Code, rec.Body.String())
 	}
-	if gotPath != "/v1/chat/completions" {
-		t.Fatalf("custom channel must send the image bridge to the verbatim base url, got %q", gotPath)
+	if gotPath != "/v1/images/generations" {
+		t.Fatalf("absolute images prefix must keep the generations suffix, got %q", gotPath)
 	}
 }
 
@@ -758,6 +759,16 @@ func createImageBridgeGroup(t *testing.T, ctx context.Context, baseURL, requestM
 	}
 	if requestModel != actualModel {
 		channel.ModelMapping = map[string]string{requestModel: actualModel}
+	}
+	if channelType == outbound.OutboundTypeCustomOpenAIChat {
+		parsed, err := url.Parse(baseURL)
+		if err != nil || parsed.Host == "" {
+			t.Fatalf("custom image bridge base %q: %v", baseURL, err)
+		}
+		parsed.Path = "/v1/images"
+		parsed.RawPath = ""
+		parsed.RawQuery = ""
+		channel.OpenAIImagesPath = parsed.String()
 	}
 	if err := op.ChannelCreate(&channel, ctx); err != nil {
 		t.Fatalf("create channel: %v", err)

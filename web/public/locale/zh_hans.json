@@ -1082,7 +1082,7 @@
       "typeAnthropic": "Anthropic",
       "typeGemini": "Gemini",
       "typeCustomOpenAIChat": "自定义 OpenAI Chat",
-      "typeCustomOpenAIChatHint": "填完整请求地址，原样发送，不会自动补路径。不会自动拉取模型列表，模型请手填。",
+      "typeCustomOpenAIChatHint": "填聊天接口的完整地址，原样发送。要走嵌入、图片、视频的话，在对应路径里填完整地址。模型请手填。",
       "typeSystemOne": "决策模型（SystemOne / Jev）",
       "typeSystemOneHint": "填根地址即可，自动拼 /v1/systemone。不会自动拉取模型列表，模型请手填。",
       "openaiChatPath": "Chat 端点路径",

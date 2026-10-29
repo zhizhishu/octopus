@@ -212,6 +212,18 @@ func groupRaceChannelCompatible(req *model.InternalLLMRequest, channel *dbmodel.
 		return false
 	}
 	// 能力位判定：空 Capabilities 的存量渠道退回按渠道类型判定，行为不变。
+	if channel.Type == outbound.OutboundTypeCustomOpenAIChat {
+		if req.IsEmbeddingRequest() {
+			if _, ok := customChannelAbsoluteURL(channel.OpenAIEmbeddingsPath); !ok {
+				return false
+			}
+		}
+		if req.IsImageGenerationRequest() {
+			if _, ok := customChannelAbsoluteURL(channel.OpenAIImagesPath); !ok {
+				return false
+			}
+		}
+	}
 	if req.IsEmbeddingRequest() && !channel.SupportsCapability(dbmodel.CapabilityEmbeddings) {
 		return false
 	}

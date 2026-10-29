@@ -20,6 +20,7 @@ import (
 	"github.com/zhizhishu/octopus/internal/price"
 	"github.com/zhizhishu/octopus/internal/relay/balancer"
 	"github.com/zhizhishu/octopus/internal/server/resp"
+	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 	"github.com/zhizhishu/octopus/internal/utils/log"
 )
 
@@ -353,6 +354,12 @@ func pickImageTaskChannel(iter *balancer.Iterator, ctx context.Context) (*model.
 			iter.Skip(channel.ID, 0, channel.Name, fmt.Sprintf("unsupported channel type: %d", channel.Type))
 			continue
 		}
+		if channel.Type == outbound.OutboundTypeCustomOpenAIChat {
+			if _, ok := customChannelAbsoluteURL(channel.OpenAIImagesPath); !ok {
+				iter.Skip(channel.ID, 0, channel.Name, CustomChannelNoFullURLReason)
+				continue
+			}
+		}
 		upstreamModel := item.ModelName
 		if mapped, ok := channel.ModelMapping[item.ModelName]; ok && mapped != "" {
 			upstreamModel = mapped
@@ -559,7 +566,7 @@ func ImageTaskRunUpstream(
 		return 0, nil, "", fmt.Errorf("failed to marshal upstream image payload: %w", merr)
 	}
 
-	targetURL, uerr := openAIUpstreamURL(channel, "/v1"+imageTaskEndpointPath(endpoint), channelImagesOverride(channel))
+	targetURL, uerr := openAIUpstreamURL(channel, channel.GetOpenAIImagesPath(imageTaskEndpointPath(endpoint)))
 	if uerr != nil {
 		return 0, nil, "", fmt.Errorf("failed to build upstream image url: %w", uerr)
 	}

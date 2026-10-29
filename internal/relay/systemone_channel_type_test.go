@@ -27,7 +27,6 @@ func TestSystemoneSkipsEmbeddingChannelAndKeepsChatTypes(t *testing.T) {
 	for _, typ := range []outbound.OutboundType{
 		outbound.OutboundTypeOpenAIChat,
 		outbound.OutboundTypeOpenAIResponse,
-		outbound.OutboundTypeCustomOpenAIChat,
 		outbound.OutboundTypeSystemOne,
 	} {
 		if !rawProtocolAllowsChannel(RawProtocolOptions{Name: "systemone", Endpoint: "/systemone"}, typ) {
@@ -73,7 +72,6 @@ func TestSystemoneSkipsEmbeddingChannelAndKeepsChatTypes(t *testing.T) {
 	}{
 		{"openai_chat", outbound.OutboundTypeOpenAIChat},
 		{"openai_response", outbound.OutboundTypeOpenAIResponse},
-		{"custom_openai_chat", outbound.OutboundTypeCustomOpenAIChat},
 		{"systemone", outbound.OutboundTypeSystemOne},
 	}
 	for _, tc := range allowed {
@@ -129,25 +127,25 @@ func postSystemone(t *testing.T, modelName string) *httptest.ResponseRecorder {
 	return rec
 }
 
-func TestCustomChannelSystemoneUsesVerbatimURL(t *testing.T) {
+func TestCustomChannelSystemoneIsSkipped(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx := setupRelayErrorDB(t)
-	var gotPath string
+	var hits int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"ok","answers":{"q":{"type":"noul","noul":1}}}`))
+		atomic.AddInt32(&hits, 1)
+		w.WriteHeader(http.StatusOK)
 	}))
 	t.Cleanup(upstream.Close)
 	const modelName = "verbatim-systemone"
-	newSystemoneChannel(t, ctx, "verbatim-custom", outbound.OutboundTypeCustomOpenAIChat, upstream.URL+"/custom/final", modelName)
+	newSystemoneChannel(t, ctx, "verbatim-custom", outbound.OutboundTypeCustomOpenAIChat, upstream.URL+"/v1/chat/completions", modelName)
 	rec := postSystemone(t, modelName)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("type 6 systemone got %d body %s", rec.Code, rec.Body.String())
+	if atomic.LoadInt32(&hits) != 0 {
+		t.Fatalf("type 6 systemone contacted upstream %d times", hits)
 	}
-	if gotPath != "/custom/final" {
-		t.Fatalf("type 6 path = %q, want the verbatim base path", gotPath)
+	if rec.Code == http.StatusOK {
+		t.Fatalf("type 6 must not serve systemone, body %s", rec.Body.String())
 	}
+	assertSystemoneSkip(t, ctx, CustomChannelNoFullURLReason)
 }
 
 func TestSystemOneChannelIsNotUsedForChat(t *testing.T) {

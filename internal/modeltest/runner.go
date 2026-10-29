@@ -26,6 +26,7 @@ import (
 	"github.com/zhizhishu/octopus/internal/utils/log"
 	"github.com/zhizhishu/octopus/internal/utils/safe"
 	"github.com/zhizhishu/octopus/internal/utils/xredact"
+	"github.com/zhizhishu/octopus/internal/utils/xurl"
 )
 
 const (
@@ -679,6 +680,12 @@ func (r *modelRunner) tryChannel(ctx context.Context, channel *dbmodel.Channel, 
 	// 放在能力位判定之前，是因为图片没有能力位，它的准入是"渠道类型能不能接图片"
 	// （在 tryImageChannel 里按 relay 的同一判据判）。
 	if isImageTestEndpoint(r.request.Endpoint) {
+		if channel.Type == outbound.OutboundTypeCustomOpenAIChat {
+			if _, ok, err := xurl.ParseEndpointOverride(channel.OpenAIImagesPath); err != nil || !ok {
+				r.recordAttempt(channel.ID, 0, channelName, upstreamModel, "", dbmodel.AttemptSkipped, 0, 0, relay.CustomChannelNoFullURLReason)
+				return false
+			}
+		}
 		return r.tryImageChannel(ctx, channel, upstreamModel)
 	}
 	// 能力位判定：空 Capabilities 的存量渠道退回按渠道类型判定，行为不变。
@@ -686,6 +693,12 @@ func (r *modelRunner) tryChannel(ctx context.Context, channel *dbmodel.Channel, 
 	// relay 侧并不会调度它（能力位没有 embeddings），这里若放行就会测出一条
 	// 生产走不通的"可用"，那是假绿灯。
 	isEmbeddingTest := isEmbeddingTestEndpoint(r.request.Endpoint)
+	if isEmbeddingTest && channel.Type == outbound.OutboundTypeCustomOpenAIChat {
+		if _, ok, err := xurl.ParseEndpointOverride(channel.OpenAIEmbeddingsPath); err != nil || !ok {
+			r.recordAttempt(channel.ID, 0, channelName, upstreamModel, "", dbmodel.AttemptSkipped, 0, 0, relay.CustomChannelNoFullURLReason)
+			return false
+		}
+	}
 	if isEmbeddingTest {
 		if !channel.SupportsCapability(dbmodel.CapabilityEmbeddings) {
 			r.recordAttempt(channel.ID, 0, channelName, upstreamModel, "", dbmodel.AttemptSkipped, 0, 0, "channel does not declare the embeddings capability")
@@ -695,7 +708,11 @@ func (r *modelRunner) tryChannel(ctx context.Context, channel *dbmodel.Channel, 
 		// 决策渠道测不通聊天报文。这里发一封最小的 systemone 探针。
 		return r.trySystemOneChannel(ctx, channel, upstreamModel)
 	} else if isSystemOneTestEndpoint(r.request.Endpoint) {
-		r.recordAttempt(channel.ID, 0, channelName, upstreamModel, "", dbmodel.AttemptSkipped, 0, 0, "only a systemone channel can be tested with the decision probe")
+		reason := "only a systemone channel can be tested with the decision probe"
+		if channel.Type == outbound.OutboundTypeCustomOpenAIChat {
+			reason = relay.CustomChannelNoFullURLReason
+		}
+		r.recordAttempt(channel.ID, 0, channelName, upstreamModel, "", dbmodel.AttemptSkipped, 0, 0, reason)
 		return false
 	} else if !outbound.IsChatChannelType(channel.Type) {
 		r.recordAttempt(channel.ID, 0, channelName, upstreamModel, "", dbmodel.AttemptSkipped, 0, 0, fmt.Sprintf("channel type %d does not support model connectivity tests", channel.Type))

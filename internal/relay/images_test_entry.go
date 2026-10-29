@@ -172,6 +172,12 @@ func forwardImagesChannelTest(
 	} else {
 		keys = channel.GetAvailableChannelKeys()
 	}
+	if channel.Type == outbound.OutboundTypeCustomOpenAIChat {
+		if _, ok := customChannelAbsoluteURL(channel.OpenAIImagesPath); !ok {
+			resp.Error(c, http.StatusBadRequest, CustomChannelNoFullURLReason)
+			return
+		}
+	}
 	if len(keys) == 0 {
 		resp.Error(c, http.StatusServiceUnavailable, "no available key")
 		return
@@ -233,7 +239,7 @@ func imagesChannelTestUpstreamPath(channel *model.Channel, endpoint, actualModel
 		}
 		return urlPath(targetURL)
 	}
-	targetURL, err := openAIUpstreamURL(channel, "/v1"+endpoint, channelImagesOverride(channel))
+	targetURL, err := openAIUpstreamURL(channel, channel.GetOpenAIImagesPath(endpoint))
 	if err != nil {
 		return ""
 	}
