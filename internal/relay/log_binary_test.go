@@ -18,13 +18,15 @@ import (
 const logCanaryKey = "sk-CANARYKEY00000000000000000000000000000000"
 
 func TestStripInlineBinaryShapes(t *testing.T) {
-	png := "data:image/png;base64,QUJD"   // 3 bytes
-	jpeg := "data:image/jpeg;base64,QQ==" // 1 byte
-	pdf := "data:application/pdf;base64,QUJD"
+	// 64 chars decodes to 48 bytes. Shorter fixtures are left in place: the
+	// placeholder would make the log longer than the value it replaces.
+	longRaw := strings.Repeat("A", 64)
+	png := "data:image/png;base64," + longRaw
+	jpeg := "data:image/jpeg;base64," + longRaw
+	pdf := "data:application/pdf;base64," + longRaw
 	httpsURL := "https://cdn.example.com/a.png?x=1&y=2"
 	httpURL := "http://cdn.example.com/b.png"
 	gsURL := "gs://bucket/obj.png"
-	longRaw := strings.Repeat("A", 64) // 48 bytes decoded
 
 	cases := []struct {
 		name   string
@@ -37,8 +39,8 @@ func TestStripInlineBinaryShapes(t *testing.T) {
 		{
 			name:   "openai chat image_url data url keeps detail",
 			body:   `{"model":"m","messages":[{"role":"user","content":[{"type":"text","text":"look"},{"type":"image_url","image_url":{"url":"` + png + `","detail":"high"}}]}]}`,
-			want:   []string{`[image omitted: image/png, 3B]`, `"detail":"high"`, `"text":"look"`, `"model":"m"`},
-			absent: []string{"QUJD"},
+			want:   []string{`[image omitted: image/png, 48B]`, `"detail":"high"`, `"text":"look"`, `"model":"m"`},
+			absent: []string{longRaw},
 		},
 		{
 			name:  "https image url kept with query",
@@ -66,8 +68,8 @@ func TestStripInlineBinaryShapes(t *testing.T) {
 		{
 			name:   "responses input_image string data url",
 			body:   `{"input":[{"type":"input_image","image_url":"` + jpeg + `","detail":"auto"}]}`,
-			want:   []string{`[image omitted: image/jpeg, 1B]`, `"detail":"auto"`},
-			absent: []string{"QQ=="},
+			want:   []string{`[image omitted: image/jpeg, 48B]`, `"detail":"auto"`},
+			absent: []string{longRaw},
 		},
 		{
 			name:  "responses input_image https string kept",
@@ -83,21 +85,21 @@ func TestStripInlineBinaryShapes(t *testing.T) {
 		},
 		{
 			name:   "input_audio",
-			body:   `{"type":"input_audio","input_audio":{"format":"wav","data":"QQ=="}}`,
-			want:   []string{`[audio omitted: audio/wav, 1B]`, `"format":"wav"`},
-			absent: []string{"QQ=="},
+			body:   `{"type":"input_audio","input_audio":{"format":"wav","data":"` + longRaw + `"}}`,
+			want:   []string{`[audio omitted: audio/wav, 48B]`, `"format":"wav"`},
+			absent: []string{longRaw},
 		},
 		{
 			name:   "responses input_audio",
-			body:   `{"type":"input_audio","input_audio":{"data":"QUJD","format":"mp3"}}`,
-			want:   []string{`[audio omitted: audio/mp3, 3B]`, `"format":"mp3"`},
-			absent: []string{"QUJD"},
+			body:   `{"type":"input_audio","input_audio":{"data":"` + longRaw + `","format":"mp3"}}`,
+			want:   []string{`[audio omitted: audio/mp3, 48B]`, `"format":"mp3"`},
+			absent: []string{longRaw},
 		},
 		{
 			name:   "message audio keeps id and transcript",
-			body:   `{"role":"assistant","audio":{"data":"QUJD","expires_at":9,"id":"aud_1","transcript":"hi"}}`,
-			want:   []string{`[audio omitted: unknown, 3B]`, `"id":"aud_1"`, `"transcript":"hi"`, `"expires_at":9`},
-			absent: []string{`"data":"QUJD"`},
+			body:   `{"role":"assistant","audio":{"data":"` + longRaw + `","expires_at":9,"id":"aud_1","transcript":"hi"}}`,
+			want:   []string{`[audio omitted: unknown, 48B]`, `"id":"aud_1"`, `"transcript":"hi"`, `"expires_at":9`},
+			absent: []string{`"data":"` + longRaw + `"`},
 		},
 		{
 			name:  "audio config without data is unchanged",
@@ -107,20 +109,20 @@ func TestStripInlineBinaryShapes(t *testing.T) {
 		{
 			name:   "file data url pdf keeps file_id and https file_url",
 			body:   `{"type":"file","file":{"filename":"a.pdf","file_data":"` + pdf + `","media_type":"application/pdf","file_url":"` + httpsURL + `","file_id":"file_123"}}`,
-			want:   []string{`[file omitted: application/pdf, 3B]`, `"filename":"a.pdf"`, `"file_id":"file_123"`, httpsURL, `"media_type":"application/pdf"`},
-			absent: []string{"QUJD"},
+			want:   []string{`[file omitted: application/pdf, 48B]`, `"filename":"a.pdf"`, `"file_id":"file_123"`, httpsURL, `"media_type":"application/pdf"`},
+			absent: []string{longRaw},
 		},
 		{
 			name:   "responses input_file raw base64",
-			body:   `{"type":"input_file","filename":"a.pdf","file_data":"QUJD","file_id":"file_9"}`,
-			want:   []string{`[file omitted: unknown, 3B]`, `"filename":"a.pdf"`, `"file_id":"file_9"`},
-			absent: []string{`"file_data":"QUJD"`},
+			body:   `{"type":"input_file","filename":"a.pdf","file_data":"` + longRaw + `","file_id":"file_9"}`,
+			want:   []string{`[file omitted: unknown, 48B]`, `"filename":"a.pdf"`, `"file_id":"file_9"`},
+			absent: []string{`"file_data":"` + longRaw + `"`},
 		},
 		{
 			name:   "anthropic image base64",
-			body:   `{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/webp","data":"QUJD"}}]}`,
-			want:   []string{`[image omitted: image/webp, 3B]`, `"type":"base64"`, `"media_type":"image/webp"`},
-			absent: []string{`"data":"QUJD"`},
+			body:   `{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/webp","data":"` + longRaw + `"}}]}`,
+			want:   []string{`[image omitted: image/webp, 48B]`, `"type":"base64"`, `"media_type":"image/webp"`},
+			absent: []string{`"data":"` + longRaw + `"`},
 		},
 		{
 			name:  "anthropic image url kept",
@@ -130,9 +132,9 @@ func TestStripInlineBinaryShapes(t *testing.T) {
 		},
 		{
 			name:   "anthropic document base64",
-			body:   `{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"QUJD"},"title":"spec"}`,
-			want:   []string{`[file omitted: application/pdf, 3B]`, `"title":"spec"`},
-			absent: []string{`"data":"QUJD"`},
+			body:   `{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"` + longRaw + `"},"title":"spec"}`,
+			want:   []string{`[file omitted: application/pdf, 48B]`, `"title":"spec"`},
+			absent: []string{`"data":"` + longRaw + `"`},
 		},
 		{
 			name:  "anthropic document file id kept",
@@ -142,27 +144,27 @@ func TestStripInlineBinaryShapes(t *testing.T) {
 		},
 		{
 			name:   "anthropic source data before media_type",
-			body:   `{"type":"image","source":{"data":"QUJD","media_type":"image/png","type":"base64"}}`,
-			want:   []string{`[image omitted: image/png, 3B]`},
-			absent: []string{`"data":"QUJD"`},
+			body:   `{"type":"image","source":{"data":"` + longRaw + `","media_type":"image/png","type":"base64"}}`,
+			want:   []string{`[image omitted: image/png, 48B]`},
+			absent: []string{`"data":"` + longRaw + `"`},
 		},
 		{
 			name:   "gemini inlineData",
-			body:   `{"contents":[{"parts":[{"inlineData":{"mimeType":"image/jpeg","data":"QUJD"}}]}]}`,
-			want:   []string{`[image omitted: image/jpeg, 3B]`, `"mimeType":"image/jpeg"`},
-			absent: []string{`"data":"QUJD"`},
+			body:   `{"contents":[{"parts":[{"inlineData":{"mimeType":"image/jpeg","data":"` + longRaw + `"}}]}]}`,
+			want:   []string{`[image omitted: image/jpeg, 48B]`, `"mimeType":"image/jpeg"`},
+			absent: []string{`"data":"` + longRaw + `"`},
 		},
 		{
 			name:   "gemini inline_data snake case audio",
-			body:   `{"parts":[{"inline_data":{"mime_type":"audio/wav","data":"QQ=="}}]}`,
-			want:   []string{`[audio omitted: audio/wav, 1B]`},
-			absent: []string{"QQ=="},
+			body:   `{"parts":[{"inline_data":{"mime_type":"audio/wav","data":"` + longRaw + `"}}]}`,
+			want:   []string{`[audio omitted: audio/wav, 48B]`},
+			absent: []string{longRaw},
 		},
 		{
 			name:   "gemini inline video",
-			body:   `{"inlineData":{"mimeType":"video/mp4","data":"QUJD"}}`,
-			want:   []string{`[video omitted: video/mp4, 3B]`},
-			absent: []string{`"data":"QUJD"`},
+			body:   `{"inlineData":{"mimeType":"video/mp4","data":"` + longRaw + `"}}`,
+			want:   []string{`[video omitted: video/mp4, 48B]`},
+			absent: []string{`"data":"` + longRaw + `"`},
 		},
 		{
 			name:  "gemini fileData https kept",
@@ -172,9 +174,9 @@ func TestStripInlineBinaryShapes(t *testing.T) {
 		},
 		{
 			name:   "b64_json and bytesBase64Encoded",
-			body:   `{"instances":[{"bytesBase64Encoded":"QUJD","mimeType":"image/png"}],"data":[{"b64_json":"QQ=="}]}`,
-			want:   []string{`[image omitted: image/png, 3B]`, `[image omitted: unknown, 1B]`},
-			absent: []string{`"bytesBase64Encoded":"QUJD"`, `"b64_json":"QQ=="`},
+			body:   `{"instances":[{"bytesBase64Encoded":"` + longRaw + `","mimeType":"image/png"}],"data":[{"b64_json":"` + longRaw + `"}]}`,
+			want:   []string{`[image omitted: image/png, 48B]`, `[image omitted: unknown, 48B]`},
+			absent: []string{`"bytesBase64Encoded":"` + longRaw + `"`, `"b64_json":"` + longRaw + `"`},
 		},
 		{
 			name:  "response_format enum b64_json kept",
@@ -196,14 +198,14 @@ func TestStripInlineBinaryShapes(t *testing.T) {
 		{
 			name:   "input_image_mask data url",
 			body:   `{"tools":[{"type":"image_generation","image_generation":{"input_image_mask":{"image_url":"` + png + `"}}}]}`,
-			want:   []string{`[image omitted: image/png, 3B]`},
-			absent: []string{"QUJD"},
+			want:   []string{`[image omitted: image/png, 48B]`},
+			absent: []string{longRaw},
 		},
 		{
 			name:   "pretty printed anthropic image",
-			body:   "{\n  \"type\": \"image\",\n  \"source\": {\n    \"type\": \"base64\",\n    \"media_type\": \"image/png\",\n    \"data\": \"QUJD\"\n  }\n}",
-			want:   []string{`[image omitted: image/png, 3B]`},
-			absent: []string{`"data":"QUJD"`, `"data": "QUJD"`},
+			body:   "{\n  \"type\": \"image\",\n  \"source\": {\n    \"type\": \"base64\",\n    \"media_type\": \"image/png\",\n    \"data\": \"" + longRaw + "\"\n  }\n}",
+			want:   []string{`[image omitted: image/png, 48B]`},
+			absent: []string{longRaw},
 		},
 		{
 			name:  "text that mentions a data url is kept",
@@ -220,14 +222,14 @@ func TestStripInlineBinaryShapes(t *testing.T) {
 		{
 			name:   "encrypted_content kept beside a stripped image",
 			body:   `{"encrypted_content":"` + strings.Repeat("zZ1+", 40) + `","content":[{"type":"image_url","image_url":{"url":"` + png + `"}}]}`,
-			want:   []string{strings.Repeat("zZ1+", 40), `[image omitted: image/png, 3B]`},
-			absent: []string{"QUJD"},
+			want:   []string{strings.Repeat("zZ1+", 40), `[image omitted: image/png, 48B]`},
+			absent: []string{longRaw},
 		},
 		{
 			name:   "message images array",
 			body:   `{"images":[{"type":"image_url","image_url":{"url":"` + png + `"}},{"type":"image_url","image_url":{"url":"` + httpsURL + `"}}]}`,
-			want:   []string{`[image omitted: image/png, 3B]`, httpsURL},
-			absent: []string{"QUJD"},
+			want:   []string{`[image omitted: image/png, 48B]`, httpsURL},
+			absent: []string{longRaw},
 		},
 		{
 			name:  "invalid json unchanged",
@@ -280,10 +282,11 @@ func TestStripInlineBinaryDecodedSize(t *testing.T) {
 }
 
 func TestRequestContentStripsInternalShapesAndKeepsRequest(t *testing.T) {
-	png := "data:image/png;base64,QUJD"
+	payload := strings.Repeat("A", 64)
+	png := "data:image/png;base64," + payload
 	detail := "high"
 	text := "hello " + logCanaryKey
-	audioData := "QQ=="
+	audioData := payload
 	req := &transformerModel.InternalLLMRequest{
 		Model: "gpt-img",
 		Messages: []transformerModel.Message{{
@@ -294,7 +297,7 @@ func TestRequestContentStripsInternalShapesAndKeepsRequest(t *testing.T) {
 				{Type: "input_audio", Audio: &transformerModel.Audio{Format: "wav", Data: audioData}},
 				{Type: "file", File: &transformerModel.File{
 					Filename: "a.pdf",
-					FileData: "data:application/pdf;base64,QUJD",
+					FileData: "data:application/pdf;base64," + payload,
 					FileURL:  "https://cdn.example.com/a.pdf",
 					FileID:   "file_123",
 				}},
@@ -308,9 +311,9 @@ func TestRequestContentStripsInternalShapesAndKeepsRequest(t *testing.T) {
 				ExpiresAt  int64  `json:"expires_at,omitempty"`
 				ID         string `json:"id,omitempty"`
 				Transcript string `json:"transcript,omitempty"`
-			}{Data: "QUJD", ID: "aud", Transcript: "said"},
+			}{Data: payload, ID: "aud", Transcript: "said"},
 		}},
-		ExtraBody: json.RawMessage(`{"inlineData":{"mimeType":"image/png","data":"QUJD"}}`),
+		ExtraBody: json.RawMessage(`{"inlineData":{"mimeType":"image/png","data":"` + payload + `"}}`),
 		// Not serialized into request_content. Must survive on the struct.
 		ResponsesInputRaw: json.RawMessage(`[{"type":"input_image","image_url":"` + png + `"}]`),
 	}
@@ -334,16 +337,16 @@ func TestRequestContentStripsInternalShapesAndKeepsRequest(t *testing.T) {
 	if !bytes.Equal(req.ResponsesInputRaw, rawInput) {
 		t.Fatal("ResponsesInputRaw was cleared")
 	}
-	for _, absent := range []string{"QUJD", "QQ==", logCanaryKey, "data:image/png", "data:application/pdf"} {
+	for _, absent := range []string{payload, logCanaryKey, "data:image/png", "data:application/pdf"} {
 		if strings.Contains(logged, absent) {
 			t.Fatalf("request log still contains %q: %s", absent, logged)
 		}
 	}
 	for _, want := range []string{
-		"[image omitted: image/png, 3B]",
-		"[audio omitted: audio/wav, 1B]",
-		"[file omitted: application/pdf, 3B]",
-		"[audio omitted: unknown, 3B]",
+		"[image omitted: image/png, 48B]",
+		"[audio omitted: audio/wav, 48B]",
+		"[file omitted: application/pdf, 48B]",
+		"[audio omitted: unknown, 48B]",
 		"https://cdn.example.com/a.pdf",
 		"file_123",
 		"[redacted]",
@@ -372,10 +375,11 @@ func TestRequestContentParamOverrideMerge(t *testing.T) {
 	}
 	before, _ := json.Marshal(req)
 
+	payload := strings.Repeat("A", 64)
 	override := `{
 		"temperature": 0.5,
 		"user": null,
-		"extra_body": {"inlineData":{"mimeType":"image/png","data":"QUJD"}}
+		"extra_body": {"inlineData":{"mimeType":"image/png","data":"` + payload + `"}}
 	}`
 	logged := requestContentForLog(req, override)
 	after, _ := json.Marshal(req)
@@ -391,20 +395,20 @@ func TestRequestContentParamOverrideMerge(t *testing.T) {
 	if !strings.Contains(logged, "keep-me") || !strings.Contains(logged, `"model":"m"`) {
 		t.Fatalf("original fields dropped: %s", logged)
 	}
-	if strings.Contains(logged, "QUJD") {
+	if strings.Contains(logged, payload) {
 		t.Fatalf("override image leaked: %s", logged)
 	}
-	if !strings.Contains(logged, "[image omitted: image/png, 3B]") {
+	if !strings.Contains(logged, "[image omitted: image/png, 48B]") {
 		t.Fatalf("override image not stripped: %s", logged)
 	}
 
 	// Invalid override falls back to the marshaled request, which is then stripped.
-	png := "data:image/png;base64,QUJD"
+	png := "data:image/png;base64," + payload
 	req.Messages[0].Content = transformerModel.MessageContent{MultipleContent: []transformerModel.MessageContentPart{{
 		Type: "image_url", ImageURL: &transformerModel.ImageURL{URL: png},
 	}}}
 	fallback := requestContentForLog(req, `{`)
-	if strings.Contains(fallback, "QUJD") || !strings.Contains(fallback, "[image omitted: image/png, 3B]") {
+	if strings.Contains(fallback, payload) || !strings.Contains(fallback, "[image omitted: image/png, 48B]") {
 		t.Fatalf("invalid override fallback = %s", fallback)
 	}
 
@@ -563,6 +567,97 @@ func TestStripInlineBinaryLargeInputDoesNotCopyPayload(t *testing.T) {
 	}
 	if !strings.Contains(got, "[image omitted: image/png,") || !strings.Contains(got, `"model":"m"`) {
 		t.Fatalf("unexpected log: %s", got)
+	}
+}
+
+func TestStripInlineBinaryMIMEIsSanitized(t *testing.T) {
+	if got := sanitizeLogMIME("image/svg+xml"); got != "image/svg+xml" {
+		t.Fatalf("token mime = %q", got)
+	}
+	exact := "image/" + strings.Repeat("a", maxLogMIMELen-len("image/"))
+	if len(exact) != maxLogMIMELen || sanitizeLogMIME(exact) != exact {
+		t.Fatalf("64-char mime = %q (len %d)", sanitizeLogMIME(exact), len(exact))
+	}
+	for _, bad := range []string{
+		"",
+		exact + "a",
+		"image/png;charset=utf-8",
+		"image/\npng",
+		"image/png evil",
+		strings.Repeat("M", 4000),
+	} {
+		if got := sanitizeLogMIME(bad); got != "unknown" {
+			t.Fatalf("sanitize(%q) = %q", bad, got)
+		}
+	}
+
+	payload := strings.Repeat("A", 64)
+	evil := "image/" + strings.Repeat("a", 200)
+	body := `{"image_url":"data:` + evil + `;base64,` + payload + `"}`
+	got := stripInlineBinaryForLog(body)
+	if strings.Contains(got, strings.Repeat("a", 80)) || strings.Contains(got, payload) {
+		t.Fatalf("crafted mime or payload landed in the log: %s", got)
+	}
+	if !strings.Contains(got, "[image omitted: unknown, 48B]") {
+		t.Fatalf("placeholder = %s", got)
+	}
+	// A media_type field is client-controlled too; only the placeholder copy is capped.
+	media := strings.Repeat("Z", 300)
+	body = `{"type":"image","source":{"type":"base64","media_type":"` + media + `","data":"` + payload + `"}}`
+	got = stripInlineBinaryForLog(body)
+	if strings.Contains(got, "[image omitted: "+media) || strings.Contains(got, "[file omitted: "+media) {
+		t.Fatalf("media_type copied into placeholder: %s", got)
+	}
+	if !strings.Contains(got, "omitted: unknown,") {
+		t.Fatalf("expected unknown mime, got %s", got)
+	}
+}
+
+func TestStripInlineBinaryDoesNotGrowOrRewriteTwice(t *testing.T) {
+	short := `{"image_url":"data:image/png;base64,QUJD"}`
+	if got := stripInlineBinaryForLog(short); got != short {
+		t.Fatalf("short data URL must stay, got %s", got)
+	}
+	body := `{"image_url":{"url":"data:image/png;base64,` + strings.Repeat("A", 64) + `","detail":"high"}}`
+	once := stripInlineBinaryForLog(body)
+	if len(once) > len(body) {
+		t.Fatalf("log grew %d -> %d", len(body), len(once))
+	}
+	if stripInlineBinaryForLog(once) != once {
+		t.Fatalf("not idempotent: %s", once)
+	}
+	if !json.Valid([]byte(once)) {
+		t.Fatalf("not JSON: %s", once)
+	}
+}
+
+func TestStripDeepNestDoesNotPanic(t *testing.T) {
+	var b strings.Builder
+	const depth = maxJSONWalkDepth + 100
+	b.WriteString(`{"image_url":"data:image/png;base64,`)
+	b.WriteString(strings.Repeat("A", 64))
+	b.WriteString(`","nest":`)
+	for i := 0; i < depth; i++ {
+		b.WriteString(`{"a":`)
+	}
+	b.WriteString(`1`)
+	for i := 0; i < depth; i++ {
+		b.WriteByte('}')
+	}
+	b.WriteByte('}')
+	body := b.String()
+	got := stripInlineBinaryForLog(body)
+	if len(got) > len(body) {
+		t.Fatalf("grew %d -> %d", len(body), len(got))
+	}
+	if !json.Valid([]byte(got)) {
+		t.Fatal("deep nest became invalid JSON")
+	}
+	if stripInlineBinaryForLog(got) != got {
+		t.Fatal("deep nest is not idempotent")
+	}
+	if strings.Contains(got, strings.Repeat("A", 64)) {
+		t.Fatal("top-level image was not stripped")
 	}
 }
 

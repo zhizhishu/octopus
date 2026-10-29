@@ -14,6 +14,15 @@ import (
 // keep the original text so a non-JSON snapshot is never dropped or rewritten.
 var errJSONSyntax = errors.New("json syntax")
 
+// maxJSONWalkDepth caps recursive descent. A deeper document keeps that
+// subtree raw so a hostile nest cannot overflow the stack. 256 is far past
+// any real request shape.
+const maxJSONWalkDepth = 256
+
+// maxLogMIMELen is the longest media type copied into a placeholder.
+// The data-URL header up to the first comma is client-controlled.
+const maxLogMIMELen = 64
+
 // payloadMarkers are substrings that appear in JSON carrying inline bytes.
 // A body without any of them is returned unchanged (no copy, no parse).
 //
@@ -58,6 +67,11 @@ var payloadMarkers = []string{
 //   - b64_json and bytesBase64Encoded
 //   - Responses image_generation item result
 //
+// A placeholder is used only when it is not longer than the JSON value it
+// replaces, so the stored log never grows. Media types copied into a
+// placeholder are capped at 64 characters of [A-Za-z0-9.+/-]; anything else
+// is recorded as "unknown".
+//
 // http(s), gs:// and file:// references are kept. file_id is kept.
 //
 // Deliberately left alone:
@@ -75,8 +89,12 @@ func stripInlineBinaryForLog(s string) string {
 	if s == "" || !looksLikeJSONValue(s) || !mayContainInlinePayload(s) {
 		return s
 	}
-	repl, changed, err := rewriteJSONValue("", strings.TrimSpace(s), mediaHint{})
-	if err != nil || !changed {
+	trimmed := strings.TrimSpace(s)
+	repl, changed, err := rewriteJSONValue("", trimmed, mediaHint{}, 0)
+	// Compare against the trimmed text that was actually rewritten. A longer
+	// result is discarded so strip(s) is never longer than s, and a second
+	// pass cannot depend on whitespace that the first pass already removed.
+	if err != nil || !changed || len(repl) > len(trimmed) {
 		return s
 	}
 	return repl
@@ -148,7 +166,10 @@ func mayContainInlinePayload(s string) bool {
 	return false
 }
 
-func rewriteJSONValue(key, raw string, hint mediaHint) (string, bool, error) {
+func rewriteJSONValue(key, raw string, hint mediaHint, depth int) (string, bool, error) {
+	if depth > maxJSONWalkDepth {
+		return "", false, nil
+	}
 	p := js{s: raw, n: len(raw)}
 	p.skipSpace()
 	if p.i >= p.n {
@@ -164,10 +185,10 @@ func rewriteJSONValue(key, raw string, hint mediaHint) (string, bool, error) {
 		case "source":
 			return p.rewriteSourceObject(hint)
 		default:
-			return p.rewriteObject(hint)
+			return p.rewriteObject(hint, depth)
 		}
 	case '[':
-		return p.rewriteArray(hint)
+		return p.rewriteArray(hint, depth)
 	case '"':
 		switch key {
 		case "image_url":
@@ -199,7 +220,7 @@ func rewriteJSONValue(key, raw string, hint mediaHint) (string, bool, error) {
 	}
 }
 
-func (p *js) rewriteObject(hint mediaHint) (string, bool, error) {
+func (p *js) rewriteObject(hint mediaHint, depth int) (string, bool, error) {
 	fields, err := p.splitObject()
 	if err != nil {
 		return "", false, err
@@ -213,11 +234,11 @@ func (p *js) rewriteObject(hint mediaHint) (string, bool, error) {
 	}
 	repl := make(map[int]string, 1)
 	for i, f := range fields {
-		next, changed, err := rewriteJSONValue(f.key, f.valRaw, child)
+		next, changed, err := rewriteJSONValue(f.key, f.valRaw, child, depth+1)
 		if err != nil {
 			return "", false, err
 		}
-		if changed {
+		if acceptReplacement(f.valRaw, next, changed) {
 			repl[i] = next
 		}
 	}
@@ -227,7 +248,7 @@ func (p *js) rewriteObject(hint mediaHint) (string, bool, error) {
 	return rebuildObject(fields, repl), true, nil
 }
 
-func (p *js) rewriteArray(hint mediaHint) (string, bool, error) {
+func (p *js) rewriteArray(hint mediaHint, depth int) (string, bool, error) {
 	if p.i >= p.n || p.s[p.i] != '[' {
 		return "", false, errJSONSyntax
 	}
@@ -258,11 +279,11 @@ func (p *js) rewriteArray(hint mediaHint) (string, bool, error) {
 			return "", false, err
 		}
 		rawVal := p.s[valStart:p.i]
-		next, changed, err := rewriteJSONValue("", rawVal, hint)
+		next, changed, err := rewriteJSONValue("", rawVal, hint, depth+1)
 		if err != nil {
 			return "", false, err
 		}
-		if changed {
+		if acceptReplacement(rawVal, next, changed) {
 			repl[len(raws)] = next
 		}
 		raws = append(raws, rawVal)
@@ -373,7 +394,33 @@ func jsonStringCarriesPayload(raw string) bool {
 	if len(raw) < 2 || raw[0] != '"' || raw == `""` {
 		return false
 	}
-	return true
+	// A placeholder is not a payload. Replacing it again would change the
+	// recorded size and strip(strip(x)) would not equal strip(x).
+	return !isOmissionPlaceholder(raw)
+}
+
+func isOmissionPlaceholder(raw string) bool {
+	inner, ok := jsonStringBodyStr(raw)
+	if !ok {
+		s, decoded := unquoteSimple(raw)
+		if !decoded {
+			return false
+		}
+		inner = s
+	}
+	if len(inner) < 12 || inner[0] != '[' || inner[len(inner)-1] != ']' {
+		return false
+	}
+	return strings.Contains(inner, " omitted: ")
+}
+
+// acceptReplacement reports whether next can stand in for raw without making
+// the log larger than the value it replaces.
+func acceptReplacement(raw, next string, changed bool) bool {
+	if !changed {
+		return false
+	}
+	return len(next) <= len(strings.TrimSpace(raw))
 }
 
 func (p *js) splitObject() ([]fieldSpan, error) {
@@ -890,9 +937,28 @@ func audioMime(format string) string {
 }
 
 func mimeOrUnknown(mime string) string {
+	return sanitizeLogMIME(mime)
+}
+
+// sanitizeLogMIME keeps a media type that is safe to store. The data-URL
+// type is whatever the client put before the first comma, and mimeType /
+// media_type / audio format are client-controlled too. Only a short token
+// is copied into the placeholder; everything else becomes "unknown".
+func sanitizeLogMIME(mime string) string {
 	mime = strings.TrimSpace(mime)
-	if mime == "" {
+	if mime == "" || len(mime) > maxLogMIMELen {
 		return "unknown"
+	}
+	for i := 0; i < len(mime); i++ {
+		c := mime[i]
+		switch {
+		case c >= 'A' && c <= 'Z':
+		case c >= 'a' && c <= 'z':
+		case c >= '0' && c <= '9':
+		case c == '.' || c == '+' || c == '/' || c == '-':
+		default:
+			return "unknown"
+		}
 	}
 	return mime
 }
@@ -922,9 +988,7 @@ func placeholderJSON(kind, mime string, size int) string {
 	if kind == "" {
 		kind = "file"
 	}
-	if mime == "" {
-		mime = "unknown"
-	}
+	mime = sanitizeLogMIME(mime)
 	s := fmt.Sprintf("[%s omitted: %s, %s]", kind, mime, formatByteSize(size))
 	b, err := json.Marshal(s)
 	if err != nil {
