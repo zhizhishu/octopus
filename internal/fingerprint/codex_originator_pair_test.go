@@ -87,3 +87,55 @@ func TestCodexOriginatorCorrectsMismatchedProfilePair(t *testing.T) {
 		})
 	}
 }
+
+// 推导必须和 model.CodexOriginatorFromUserAgent（op 保存、relay 出站用的同一份）一致。
+// codex-tui 不取自己的首 token，改成 Rust CLI 的 codex_cli_rs，并且发出去的 UA 也换成那一对。
+// 非 codex UA 的推导是空：显式 Originator 原样保留。
+func TestCodexOriginatorDerivationMatchesModel(t *testing.T) {
+	cases := []struct {
+		ua   string
+		want string
+	}{
+		{"codex_exec/0.161.0 (Mac OS X 15.0; arm64)", "codex_exec"},
+		{"codex_cli_rs/0.163.0 (Ubuntu 24.04.1; x86_64)", dbmodel.CodexOriginatorRustCLI},
+		{"Codex_CLI_RS/1.2.3 (Mac)", dbmodel.CodexOriginatorRustCLI},
+		{"codex-tui/0.161.0 (Mac OS X 15.0; arm64) unknown (codex-tui; 0.161.0)", dbmodel.CodexOriginatorRustCLI},
+		{"Codex-TUI/1.0", dbmodel.CodexOriginatorRustCLI},
+		{"curl/8.0.0", ""},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.ua, func(t *testing.T) {
+			if got := codexOriginatorFromUserAgent(tc.ua); got != tc.want || got != dbmodel.CodexOriginatorFromUserAgent(tc.ua) {
+				t.Fatalf("derivation %q = %q, model = %q, want %q", tc.ua, got, dbmodel.CodexOriginatorFromUserAgent(tc.ua), tc.want)
+			}
+		})
+	}
+}
+
+func TestCodexOriginatorRewritesDeprecatedTUIToRustCLI(t *testing.T) {
+	r := Resolved{hasProfile: true, profile: dbmodel.FingerprintProfile{
+		CodexUserAgent:  "codex-tui/0.161.0 (Mac OS X 15.0; arm64) unknown (codex-tui; 0.161.0)",
+		CodexOriginator: "codex-tui",
+	}}
+	if got := r.CodexUserAgent(); got != dbmodel.DefaultCodexHeaderUserAgent {
+		t.Fatalf("emitted UA = %q, want the Rust CLI default", got)
+	}
+	if got := r.CodexOriginator(); got != dbmodel.CodexOriginatorRustCLI {
+		t.Fatalf("CodexOriginator() = %q, want %q", got, dbmodel.CodexOriginatorRustCLI)
+	}
+	first, _, _ := strings.Cut(strings.ToLower(r.CodexUserAgent()), "/")
+	if r.CodexOriginator() != first {
+		t.Fatalf("rewritten pair split: originator %q ua token %q", r.CodexOriginator(), first)
+	}
+}
+
+func TestCodexOriginatorLeavesNonCodexExplicitValue(t *testing.T) {
+	r := Resolved{hasProfile: true, profile: dbmodel.FingerprintProfile{
+		CodexUserAgent:  "curl/8.0.0",
+		CodexOriginator: "keep-me",
+	}}
+	if got := r.CodexOriginator(); got != "keep-me" {
+		t.Fatalf("non-codex UA must not rewrite Originator, got %q", got)
+	}
+}

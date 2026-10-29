@@ -659,13 +659,12 @@ func isCodexFamilyUserAgent(ua string) bool {
 // Rust CLI pair below instead.
 const deprecatedCodexTUIUserAgentPrefix = "codex-tui/"
 
-// codexOriginatorFromUserAgent derives the Originator an upstream will pair a UA against:
-// the UA's own leading product token. Callers use it to keep the two headers inseparable,
-// because an unpaired Originator is exactly what a fingerprint check rejects.
+// codexOriginatorFromUserAgent derives the Originator an upstream will pair a UA against.
+// The rules live in model.CodexOriginatorFromUserAgent so profile save and fingerprint
+// resolution cannot drift: codex_exec / codex_cli_rs keep their leading token, and the
+// deprecated codex-tui family yields the Rust CLI originator. A non-codex UA yields "".
 func codexOriginatorFromUserAgent(ua string) string {
-	lower := strings.ToLower(strings.TrimSpace(ua))
-	token, _, _ := strings.Cut(lower, "/")
-	return token
+	return dbmodel.CodexOriginatorFromUserAgent(ua)
 }
 
 // isCodexFamilyOriginator reports whether an Originator header names a Codex CLI product

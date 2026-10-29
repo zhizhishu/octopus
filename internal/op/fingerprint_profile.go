@@ -410,27 +410,38 @@ func fingerprintProfileRefreshCache(ctx context.Context) error {
 	return nil
 }
 
-// alignCodexOriginatorWithUserAgent rewrites a non-empty Originator that does not
-// equal the Codex User-Agent's leading token. The save is not rejected: an upstream
-// (sub2api #3901) refuses the mismatched pair, so the stored row is corrected to the
-// token the UA will be paired against. An empty Originator is left empty — resolution
-// derives it from the UA. An empty User-Agent is left alone so a profile that only
-// pins Originator is not rewritten against a fallback UA it did not set.
+// alignCodexOriginatorWithUserAgent rewrites a Codex User-Agent / Originator pair
+// using model.CodexOriginatorFromUserAgent — the same derivation fingerprint
+// resolution and the relay use. The save is not rejected.
+//
+// codex_exec and codex_cli_rs: a non-empty Originator that is not the UA's
+// leading token is replaced with that token. An empty Originator stays empty
+// so resolution can derive it. A non-codex UA leaves Originator untouched.
+// The deprecated codex-tui family is stored as the Rust CLI pair (default
+// codex_cli_rs User-Agent, and Originator codex_cli_rs when one was set).
+// An empty User-Agent is left alone so a profile that only pins Originator is
+// not rewritten against a fallback UA it did not set.
 func alignCodexOriginatorWithUserAgent(profile *model.FingerprintProfile) {
 	if profile == nil {
 		return
 	}
 	ua := strings.TrimSpace(profile.CodexUserAgent)
+	if ua == "" {
+		return
+	}
+	if model.CodexUserAgentIsDeprecatedTUI(ua) {
+		profile.CodexUserAgent = model.DefaultCodexHeaderUserAgent
+		ua = profile.CodexUserAgent
+	}
+	derived := model.CodexOriginatorFromUserAgent(ua)
+	if derived == "" {
+		return
+	}
 	originator := strings.TrimSpace(profile.CodexOriginator)
-	if ua == "" || originator == "" {
+	if originator == "" || originator == derived {
 		return
 	}
-	token, _, _ := strings.Cut(strings.ToLower(ua), "/")
-	token = strings.TrimSpace(token)
-	if token == "" || originator == token {
-		return
-	}
-	profile.CodexOriginator = token
+	profile.CodexOriginator = derived
 }
 
 func generateFingerprintSeed() string {

@@ -633,3 +633,58 @@ func TestFingerprintProfileSaveAlignsMismatchedCodexOriginator(t *testing.T) {
 		t.Fatalf("empty Originator must stay empty, got %q", cleared.CodexOriginator)
 	}
 }
+
+// codex-tui 保存时改成 Rust CLI 那一对，而不是按 "/" 切出 codex-tui。
+// 非 codex UA 不改 Originator。推导结果必须等于 model.CodexOriginatorFromUserAgent。
+func TestFingerprintProfileSaveUsesSharedCodexOriginatorDerivation(t *testing.T) {
+	ctx := setupFingerprintProfileTest(t)
+
+	tui := &model.FingerprintProfile{
+		Name:            "tui-on-save",
+		CodexUserAgent:  "codex-tui/0.161.0 (Mac OS X 15.0; arm64) unknown (codex-tui; 0.161.0)",
+		CodexOriginator: "codex-tui",
+	}
+	if err := FingerprintProfileCreate(tui, ctx); err != nil {
+		t.Fatalf("create tui: %v", err)
+	}
+	if tui.CodexUserAgent != model.DefaultCodexHeaderUserAgent {
+		t.Fatalf("tui UA = %q, want Rust CLI default", tui.CodexUserAgent)
+	}
+	if tui.CodexOriginator != model.CodexOriginatorRustCLI {
+		t.Fatalf("tui Originator = %q, want %q", tui.CodexOriginator, model.CodexOriginatorRustCLI)
+	}
+	if got := model.CodexOriginatorFromUserAgent(tui.CodexUserAgent); got != tui.CodexOriginator {
+		t.Fatalf("saved originator %q disagrees with shared derivation %q", tui.CodexOriginator, got)
+	}
+
+	mixedUA := "Codex-TUI/1.0"
+	mixedOrigin := "codex_exec"
+	mixed, err := FingerprintProfileUpdate(&model.FingerprintProfileUpdateRequest{
+		ID:              tui.ID,
+		CodexUserAgent:  &mixedUA,
+		CodexOriginator: &mixedOrigin,
+	}, ctx)
+	if err != nil {
+		t.Fatalf("update mixed tui: %v", err)
+	}
+	if mixed.CodexUserAgent != model.DefaultCodexHeaderUserAgent || mixed.CodexOriginator != model.CodexOriginatorRustCLI {
+		t.Fatalf("mixed-case tui stored as ua=%q originator=%q", mixed.CodexUserAgent, mixed.CodexOriginator)
+	}
+
+	foreignUA := "curl/8.0.0"
+	foreignOrigin := "keep-me"
+	foreign, err := FingerprintProfileUpdate(&model.FingerprintProfileUpdateRequest{
+		ID:              tui.ID,
+		CodexUserAgent:  &foreignUA,
+		CodexOriginator: &foreignOrigin,
+	}, ctx)
+	if err != nil {
+		t.Fatalf("update non-codex: %v", err)
+	}
+	if foreign.CodexUserAgent != foreignUA || foreign.CodexOriginator != foreignOrigin {
+		t.Fatalf("non-codex UA must leave Originator untouched, got ua=%q originator=%q", foreign.CodexUserAgent, foreign.CodexOriginator)
+	}
+	if got := model.CodexOriginatorFromUserAgent(foreignUA); got != "" {
+		t.Fatalf("shared derivation of a non-codex UA = %q, want empty", got)
+	}
+}

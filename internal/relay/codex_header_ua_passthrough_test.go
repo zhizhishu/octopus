@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	dbmodel "github.com/zhizhishu/octopus/internal/model"
 )
 
 // TestApplyCodexHeaderDefaultsUserAgentPassthrough locks the codex UA passthrough: a
@@ -178,5 +180,33 @@ func TestInboundCodexDetectionCoversEveryFamily(t *testing.T) {
 	// The family judgement must be whitespace/case tolerant: headers arrive as sent.
 	if !isCodexFamilyOriginator("  Codex_CLI_RS  ") {
 		t.Fatal("originator matching must trim and ignore case")
+	}
+}
+
+// TestCodexOriginatorFromUserAgentMatchesModel pins the relay wrapper to the
+// shared derivation profile save and fingerprint resolution also use. codex-tui
+// becomes the Rust CLI originator; a non-codex UA derives nothing.
+func TestCodexOriginatorFromUserAgentMatchesModel(t *testing.T) {
+	cases := []string{
+		"codex_exec/0.161.0 (Mac OS X 15.0; arm64) unknown (codex_exec; 0.161.0)",
+		"codex_cli_rs/0.163.0 (Ubuntu 24.04.1; x86_64) unknown (codex_cli_rs; 0.163.0)",
+		"Codex_CLI_RS/1.2.3 (Mac)",
+		"codex-tui/0.161.0 (Mac OS X 15.0; arm64) unknown (codex-tui; 0.161.0)",
+		"Codex-TUI/1.0",
+		"curl/8.0.0",
+		"",
+	}
+	for _, ua := range cases {
+		got := codexOriginatorFromUserAgent(ua)
+		want := dbmodel.CodexOriginatorFromUserAgent(ua)
+		if got != want {
+			t.Fatalf("codexOriginatorFromUserAgent(%q) = %q, model = %q", ua, got, want)
+		}
+	}
+	if got := codexOriginatorFromUserAgent("codex-tui/0.161.0"); got != dbmodel.CodexOriginatorRustCLI {
+		t.Fatalf("codex-tui originator = %q, want Rust CLI %q", got, dbmodel.CodexOriginatorRustCLI)
+	}
+	if got := codexOriginatorFromUserAgent("curl/8.0.0"); got != "" {
+		t.Fatalf("non-codex UA must not derive an Originator, got %q", got)
 	}
 }

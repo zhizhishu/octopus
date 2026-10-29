@@ -137,11 +137,17 @@ func (resolved Resolved) ClaudeStabilize() bool {
 }
 
 func (resolved Resolved) CodexUserAgent() string {
-	return resolved.profileOrSetting(
+	ua := resolved.profileOrSetting(
 		func(profile dbmodel.FingerprintProfile) string { return profile.CodexUserAgent },
 		dbmodel.SettingKeyCodexHeaderUserAgent,
 		dbmodel.DefaultCodexHeaderUserAgent,
 	)
+	// The interactive-TUI family is never emitted. Resolve it to the Rust CLI
+	// User-Agent so Originator (derived from this string) stays paired.
+	if dbmodel.CodexUserAgentIsDeprecatedTUI(ua) {
+		return dbmodel.DefaultCodexHeaderUserAgent
+	}
+	return ua
 }
 
 func (resolved Resolved) CodexBetaFeatures() string {
@@ -170,9 +176,11 @@ func (resolved Resolved) CodexBetaFeatures() string {
 // 兜底改为从 UA 首 token 推导。这里不能反向 import relay（会造成循环依赖），
 // 所以把那一行切分逻辑就地重写，规则与 relay.codexOriginatorFromUserAgent 一致。
 //
-// 显式 Originator 只在它与即将发出的 UA 首 token 一致时原样保留。不一致就改成
-// 那个 token（保存时 op 层也会改，这里是第二道）：上游按这个等式拒绝整条渠道
-// （sub2api #3901）。第一次发现这种存量错配打一条警告，之后不再重复。
+// 显式 Originator 只在它与 model.CodexOriginatorFromUserAgent 一致时原样保留。
+// 那个函数和 relay.codexOriginatorFromUserAgent 是同一份：codex_exec /
+// codex_cli_rs 取小写首 token，废弃的 codex-tui 改成 Rust CLI 的 codex_cli_rs。
+// 非 codex UA 推导结果为空，显式 Originator 保持原样。不一致就改成推导值
+// （保存时 op 层也会改，这里是第二道）。第一次发现这种存量错配打一条警告。
 func (resolved Resolved) CodexOriginator() string {
 	derived := codexOriginatorFromUserAgent(resolved.CodexUserAgent())
 	if profileValue := resolved.profileValue(
@@ -186,23 +194,27 @@ func (resolved Resolved) CodexOriginator() string {
 		}
 		return profileValue
 	}
-	// 没显式配 originator → 跟随实际要发出去的 UA，保证两者同家族。
+	// 没显式配 originator → 跟随实际要发出去的 UA。codex 家族走共享推导；
+	// 非 codex（推导为空）仍取首 token，避免 UA 与 Originator 被拆开。
 	if derived != "" {
 		return derived
+	}
+	if token := codexUserAgentLeadingToken(resolved.CodexUserAgent()); token != "" {
+		return token
 	}
 	return defaultCodexOriginator
 }
 
-// codexOriginatorFromUserAgent 取 UA 的首个 "/" 之前那段（小写），
-// 与 relay.codexOriginatorFromUserAgent 保持同一规则。
-// Originator 是裸产品名、不带版本，所以这样切正好。
+// codexOriginatorFromUserAgent 与 relay.codexOriginatorFromUserAgent 都委托
+// model.CodexOriginatorFromUserAgent，避免两处各写一套（尤其是 codex-tui）。
 func codexOriginatorFromUserAgent(ua string) string {
+	return dbmodel.CodexOriginatorFromUserAgent(ua)
+}
+
+func codexUserAgentLeadingToken(ua string) string {
 	lower := strings.ToLower(strings.TrimSpace(ua))
-	if lower == "" {
-		return ""
-	}
 	token, _, _ := strings.Cut(lower, "/")
-	return token
+	return strings.TrimSpace(token)
 }
 
 func (resolved Resolved) GenericUA() string {
