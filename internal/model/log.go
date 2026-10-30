@@ -199,10 +199,10 @@ type RelayLog struct {
 	// **客户端原始意图**——于是日志里的"请求内容"记录的是还原后的假象，不是出站
 	// body。排查"我们到底给上游发了什么"时它必然误导（2026-10-27 kimi 案例：
 	// 日志显示只发 reasoning_effort、没发 thinking，实测出站恰恰相反）。
-	UpstreamRequestBody string           `json:"upstream_request_body,omitempty"`
+	UpstreamRequestBody string `json:"upstream_request_body,omitempty"`
 	// UpstreamImageHashes 是 UpstreamRequestBody 里另存成文件的图片哈希（只在内存里
 	// 随日志带到落库那一刻，写进 relay_log_images；不是 relay_logs 的列，也不出现在 API 里）。
-	UpstreamImageHashes []string `json:"-" gorm:"-"`
+	UpstreamImageHashes []string         `json:"-" gorm:"-"`
 	ResponseContent     string           `json:"response_content"`
 	Error               string           `json:"error"`
 	ErrorCode           string           `json:"error_code"`
