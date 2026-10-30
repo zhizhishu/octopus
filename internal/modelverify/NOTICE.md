@@ -1,11 +1,12 @@
 # modelverify — 来源与许可 / Provenance & License
 
-本目录包含两个独立来源的移植，外加本项目自写的桥接与采集层：
+本目录包含三个独立来源的移植，外加本项目自写的桥接与采集层：
 
 | 路径 | 来源 | 许可 |
 |---|---|---|
 | `stats/` `probe/` `suite/` `suites/v1.example.yaml` | Token-Verifier | MIT |
 | `behavior/`（含 `signature.go` `signature_probe.go`） | AI-Infra-Guard | Apache-2.0 |
+| `tokenbank/`（含 `data/tokenizer_bank.json`）、`behavior/tokenizer_probe.go` | lm-detector | MIT |
 | `types.go` `observe.go` `jsonanswer.go` `collect.go` | 本项目自写 | 同本仓库 |
 
 ---
@@ -101,6 +102,35 @@ The `stats/`, `probe/` and `suite/` packages in this directory, their tests, and
 移植边界与理由的完整记录在容器层 `_references/notes/ai-infra-guard-api-checker.md`
 （不在本仓库内，因为 `_references/` 不随仓库发布）。
 
+## 来源三：lm-detector（`tokenbank/`）
+
+`tokenbank/` 是 **lm-detector** 分词器差分探测的 Go 移植；`data/tokenizer_bank.json` 逐字节复制。
+
+- Source: <https://github.com/Ikaleio/lm-detector>
+- Revision ported: `main` @ `175355e8939c2ee7aaeeac2b22186fa5940412c3`（2026-10-30）
+- Copyright: (c) 2026 xqy2006
+- License: MIT
+
+移植对应关系（上游 TS → 本目录 Go）：
+
+| 上游 | 本目录 |
+|---|---|
+| `shared/tokenizer-bank.ts`（类型与校验） | `tokenbank/bank.go` |
+| `shared/tokenizer-posterior.ts`（`TOKENIZER_MODEL` 常量、后验、`nextProbes`、`tokenizerVerdict`） | `tokenbank/posterior.go` `plan.go` `verdict.go` |
+| `shared/tokenizer-probe.ts`（`probeTokenizer` 驱动） | `tokenbank/run.go` |
+| `shared/tokenizer-usage.ts`（输入 token 口径） | `modeltest/probe.go` `probeBilledInputTokens` |
+
+一致性：`tokenbank/testdata/reference_golden.json` 由上游 TS 源码打包后生成（93 个场景：62 个
+精确类、12 个噪声、6 个近亲、6 个库外、6 个声明核对、1 个基线漂移），Go 实现逐请求、逐后验
+（容差 1e-9）对齐。
+
+本项目新增（上游没有）：
+
+- `tokenbank/local.go`：可信渠道录的本地基线，作为第一方类合入库（闭源型号用）；
+- `behavior/tokenizer_probe.go`：接入检测链，`tokenizer_baseline` 录制探针；
+- 计分：上游把分词器结果当排名旁的参考信息；本项目报告是风险分制，"与声明不符"记 25 分
+  （medium），只在完整跑完且两次基线一致时计分，并取代 `token_delta` 的分词器不符项。
+
 ## MIT License
 
 ```
@@ -126,3 +156,27 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+---
+
+### lm-detector — MIT License
+
+Copyright (c) 2026 xqy2006
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

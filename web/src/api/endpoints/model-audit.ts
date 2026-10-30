@@ -11,9 +11,24 @@ export const AUDIT_PROBE_IDS = [
     'context_canary',
     'signature',
     'fingerprint',
+    'tokenizer_id',
+    'tokenizer_baseline',
 ] as const;
 
 export type AuditProbeId = (typeof AUDIT_PROBE_IDS)[number];
+
+/**
+ * 只能手动勾选的探针：不进「标准」方案，也不在切渠道时自动全选。
+ *
+ * - tokenizer_id：参考实现 lm-detector 的分词器探测默认关闭（CLI `--tokenizer` 才开），约 12 次请求；
+ * - tokenizer_baseline：一次扫完 72 道题 + 2 次基线 = 74 次请求，只该在你确认可信的渠道上单独跑。
+ */
+export const AUDIT_OPT_IN_PROBE_IDS: readonly AuditProbeId[] = ['tokenizer_id', 'tokenizer_baseline'];
+
+/** 「标准」方案与默认勾选用的探针（全部探针去掉手动项）。 */
+export const AUDIT_STANDARD_PROBE_IDS: AuditProbeId[] = AUDIT_PROBE_IDS.filter(
+    (id) => !AUDIT_OPT_IN_PROBE_IDS.includes(id),
+);
 
 export type AuditSeverity = 'low' | 'medium' | 'high';
 export type AuditVerdict = 'none' | 'low' | 'medium' | 'high' | 'unknown';
@@ -78,6 +93,8 @@ export type ModelAuditRequest = {
 };
 
 export type ModelAuditResponse = {
+    /** 来自队列结果时的结果行 id（保存分词器基线要用）；同步检测没有。 */
+    result_id?: number;
     channel_id: number;
     channel_name: string;
     upstream_model: string;
@@ -315,6 +332,32 @@ export function useCancelAuditJob() {
         onSuccess: (_data, jobId) => {
             void queryClient.invalidateQueries({ queryKey: ['model-audit', 'jobs'] });
             void queryClient.invalidateQueries({ queryKey: ['model-audit', 'job', jobId] });
+        },
+    });
+}
+
+export type TokenizerBaseline = {
+    id: number;
+    model: string;
+    label: string;
+    bank_generated_at: string;
+    source_channel_id: number;
+    source_channel_name: string;
+    source_result_id: number;
+    created_at: string;
+};
+
+/**
+ * 把一条「录制分词器基线」结果存成可信基线。渠道是否可信由管理员自己判断，后端无法替你验证。
+ * 同型号已有基线时后端返回 409，需 replace=true 才覆盖。
+ */
+export function useSaveTokenizerBaseline() {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: async (payload: { result_id: number; label?: string; replace?: boolean }) =>
+            apiClient.post<{ baseline: TokenizerBaseline }>('/api/v1/model-audit/tokenizer-baselines', payload),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['model-audit', 'tokenizer-baselines'] });
         },
     });
 }

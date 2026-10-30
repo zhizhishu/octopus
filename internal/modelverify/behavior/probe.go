@@ -57,6 +57,9 @@ var probeRegistry = map[ProbeID]probeFunc{
 	ProbeContextCanary: runContextCanary,
 	ProbeSignature:     runSignature,
 	ProbeFingerprint:   runFingerprint,
+	// 分词器差分计数（默认不启用，见 tokenizer_probe.go）
+	ProbeTokenizerID:       runTokenizerID,
+	ProbeTokenizerBaseline: runTokenizerBaseline,
 }
 
 // DefaultProbes 返回默认启用的探针集合。

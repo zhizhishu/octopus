@@ -254,6 +254,26 @@ func ProbeResponseFrom(resp *transformermodel.InternalLLMResponse) modelverify.R
 		if resp.Usage.PromptTokensDetails != nil {
 			out.Usage.Cached = int(resp.Usage.PromptTokensDetails.CachedTokens)
 		}
+		out.Usage.Input = probeBilledInputTokens(resp.Usage)
 	}
 	return out
+}
+
+// probeBilledInputTokens 上游计费的全部输入 token（含缓存读写）。
+//
+// Anthropic 口径（以及把 Anthropic 式缓存字段透出的 OpenAI 兼容代理）的
+// input_tokens 不含缓存读写，要加回；OpenAI 口径的 prompt_tokens 已含缓存命中，
+// 再加就重复。判据沿用 transformer 层已有的两个语义标记，不在这里另起一套。
+func probeBilledInputTokens(u *transformermodel.Usage) int {
+	if u == nil {
+		return 0
+	}
+	total := u.PromptTokens
+	if u.AnthropicUsage || u.SeparateCacheInputTokens {
+		if u.PromptTokensDetails != nil {
+			total += u.PromptTokensDetails.CachedTokens
+		}
+		total += u.CacheCreationInputTokens
+	}
+	return int(total)
 }

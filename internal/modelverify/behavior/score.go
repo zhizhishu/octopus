@@ -91,6 +91,16 @@ func BuildReport(results []Result, requestedModel string) Report {
 		Results:           results,
 	}
 
+	// 分词器差分探针（tokenizer_id）与 token_delta 测的是同一件事（上游分词器口径）：
+	// 前者有效时以它为准，token_delta 不再另外计分——同一语义两处计分会把一个
+	// 证据算成两个。token_delta 的结果仍保留在 Results 里供对照。
+	tokenizerIDUsable := false
+	for _, res := range results {
+		if res.ProbeID == ProbeTokenizerID && probeCountsAsUsable(res) {
+			tokenizerIDUsable = true
+		}
+	}
+
 	usable := 0
 	for _, res := range results {
 		if res.Err != nil {
@@ -105,6 +115,9 @@ func BuildReport(results []Result, requestedModel string) Report {
 		}
 		if probeCountsAsUsable(res) {
 			usable++
+		}
+		if tokenizerIDUsable && res.ProbeID == ProbeTokenDelta {
+			continue
 		}
 		report.Findings = append(report.Findings, findingsFor(res, report.RequestedModel, report.RequestedFamilies)...)
 	}
@@ -322,6 +335,11 @@ func findingsFor(res Result, requestedModel string, requestedFamilies []string) 
 		return signatureFindings(res, requestedModel)
 	case ProbeFingerprint:
 		return fingerprintFindings(res, requestedModel)
+	case ProbeTokenizerID:
+		return tokenizerIDFindings(res)
+	case ProbeTokenizerBaseline:
+		// 录制基线不是检测，不产生任何风险项。
+		return nil
 	case ProbeLiveness:
 		if res.OK {
 			return nil

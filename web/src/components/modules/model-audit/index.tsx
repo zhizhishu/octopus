@@ -5,8 +5,10 @@ import {
     AlertTriangle,
     Binary,
     ChevronRight,
+    Database,
     Dices,
     Fingerprint,
+    Hash,
     Loader2,
     Play,
     MessageSquareQuote,
@@ -25,7 +27,10 @@ import type { ApiError } from '@/api/types';
 import { ChannelType, useChannelList, type Channel } from '@/api/endpoints/channel';
 import {
     AUDIT_PROBE_IDS,
+    AUDIT_OPT_IN_PROBE_IDS,
+    AUDIT_STANDARD_PROBE_IDS,
     useLogAnomalies,
+    useSaveTokenizerBaseline,
     useRunModelAudit,
     useScheduledAudit,
     type AuditFinding,
@@ -82,6 +87,14 @@ type ProbeMeta = {
 };
 
 import { readFingerprint, describeDecision, formatProbability, type FingerprintSummary } from './fingerprint';
+import {
+    readTokenizer,
+    readTokenizerRecording,
+    describeTokenizer,
+    formatShare,
+    type TokenizerRecording,
+    type TokenizerSummary,
+} from './tokenizer';
 
 const PROBES: ProbeMeta[] = [
     { id: 'liveness', name: '连通回显', hint: '基础', desc: '确认渠道能正常回显请求', icon: Wifi },
@@ -94,6 +107,9 @@ const PROBES: ProbeMeta[] = [
     // 随机数指纹：要发三道题、每题几百个整数，是整套检测里最贵的一条，
     // 所以单独标"高开销"，让用户在勾选前就知道代价。
     { id: 'fingerprint', name: '随机数指纹', hint: '高开销', desc: '按取值习惯比对参考库，识别冒充', icon: Dices },
+    // 以下两项只能手动勾选（AUDIT_OPT_IN_PROBE_IDS），不进「标准」方案。
+    { id: 'tokenizer_id', name: '分词器识别', hint: '约12次', desc: '按输入 token 差分认出上游用的分词器', icon: Hash },
+    { id: 'tokenizer_baseline', name: '录制分词器基线', hint: '74次·仅可信渠道', desc: '在可信渠道上录下闭源型号的分词器计数', icon: Database },
 ];
 
 const QUICK_IDS: AuditProbeId[] = ['liveness', 'echo_rewrite', 'context_canary'];
@@ -136,7 +152,7 @@ function isApplicable(channel: Channel | undefined, id: AuditProbeId, model = ''
 }
 
 function planIds(plan: PlanId, channel: Channel | undefined, model = ''): AuditProbeId[] {
-    const base = plan === 'quick' ? QUICK_IDS : [...AUDIT_PROBE_IDS];
+    const base = plan === 'quick' ? QUICK_IDS : [...AUDIT_STANDARD_PROBE_IDS];
     return base.filter((id) => isApplicable(channel, id, model));
 }
 
@@ -189,6 +205,17 @@ function rowFromResult(meta: ProbeMeta, report: ModelAuditResponse, t: (key: str
     }
     if (findings.length > 0) {
         return { meta, tone: 'warn', status: '待复核', result, findings };
+    }
+    // 录制本身不是检查：只说明录没录成，不进 pass/warn。
+    if (meta.id === 'tokenizer_baseline' && result?.ok) {
+        return {
+            meta,
+            tone: 'info',
+            status: data.recordable === true ? '已录制，可保存为基线' : '不可录制',
+            result,
+            findings,
+            reason: typeof data.reason === 'string' ? data.reason : undefined,
+        };
     }
     if (meta.id === 'glitch' && result?.ok) {
         return { meta, tone: 'info', status: '结构可解析', result, findings };
@@ -316,6 +343,119 @@ function FingerprintCard({ summary }: { summary: FingerprintSummary }) {
 }
 
 /**
+ * 分词器结论卡（lm-detector 分词器差分探测）。
+ *
+ * 测出来的是「上游用哪套分词器」，不是「哪个模型」：同一分词器常被多个模型共用，
+ * 所以这里只说相容/不符，不说"就是某模型"。测成 o200k/cl100k 时要提示中转站本地估算的可能。
+ */
+function TokenizerCard({ summary }: { summary: TokenizerSummary }) {
+    const share = formatShare(summary.confidence);
+    const claimTone =
+        summary.claim === 'inconsistent' && summary.usable
+            ? 'bg-amber-500/15 text-amber-700 dark:text-amber-400'
+            : summary.claim === 'consistent' && summary.usable
+              ? 'bg-primary/10 text-primary'
+              : 'bg-muted text-muted-foreground';
+    const claimText =
+        !summary.usable ? '仅供参考'
+        : summary.claim === 'consistent' ? '与声明相容'
+        : summary.claim === 'inconsistent' ? '与声明不符'
+        : summary.claim === 'uncertain' ? '不确定'
+        : '无法核对';
+    return (
+        <div className="rounded-2xl border border-border bg-card px-4 py-3">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0">
+                    <p className="text-[11px] font-medium tracking-[0.16em] text-muted-foreground">分词器识别 · 输入 token 差分</p>
+                    <p className="mt-1 flex flex-wrap items-baseline gap-2">
+                        <span className="text-lg font-semibold">{summary.errorText ? '未测出' : summary.series || '库内无匹配'}</span>
+                        {summary.lab && <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">{summary.lab}</span>}
+                        {summary.local && <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">本地基线</span>}
+                        <span className={cn('rounded px-1.5 py-0.5 text-[11px]', claimTone)}>{claimText}</span>
+                    </p>
+                    <p className="mt-0.5 text-xs leading-5 text-muted-foreground">{describeTokenizer(summary)}</p>
+                </div>
+                {share && !summary.errorText && (
+                    <div className="shrink-0 rounded-xl bg-muted/50 px-3 py-2 text-center">
+                        <p className="text-[11px] text-muted-foreground">后验</p>
+                        <p className="mt-0.5 text-lg font-semibold">{share}</p>
+                    </div>
+                )}
+            </div>
+            {summary.candidates.length > 0 && (
+                <ol className="mt-3 space-y-1 border-t border-border pt-2">
+                    {summary.candidates.map((candidate, index) => (
+                        <li key={candidate.id} className="flex items-center gap-2 text-xs">
+                            <span className="w-4 shrink-0 text-muted-foreground">{index + 1}</span>
+                            <span className="min-w-0 flex-1 truncate">{candidate.series}</span>
+                            {candidate.lab && <span className="shrink-0 text-[11px] text-muted-foreground">{candidate.lab}</span>}
+                            <span className="w-12 shrink-0 text-right text-[11px] text-muted-foreground">{formatShare(candidate.exact)}</span>
+                        </li>
+                    ))}
+                </ol>
+            )}
+            <p className="mt-2 border-t border-border pt-2 text-[11px] leading-5 text-muted-foreground">
+                同一分词器常被多个模型共用，测得一致不等于原厂；也可能是中转站自己估算的用量。
+                {summary.requests > 0 && `本次 ${summary.requests} 次请求。`}
+                {summary.bankClasses > 0 && `分词器库 ${summary.bankClasses} 类`}
+                {summary.bankGeneratedAt && `（${summary.bankGeneratedAt}）`}
+                {summary.warnings.length > 0 && ` 跳过了 ${summary.warnings.length} 条本地基线。`}
+            </p>
+        </div>
+    );
+}
+
+/** 录制结果卡：可录制时给「保存为可信基线」按钮（需要队列结果 id）。 */
+function TokenizerRecordingCard({ recording, resultId }: { recording: TokenizerRecording; resultId?: number }) {
+    const save = useSaveTokenizerBaseline();
+    const [saved, setSaved] = useState(false);
+    const submit = async (replace: boolean) => {
+        if (!resultId) return;
+        try {
+            await save.mutateAsync({ result_id: resultId, replace });
+            setSaved(true);
+            toast.success('已保存为可信基线，之后的分词器识别会用到它');
+        } catch (error) {
+            const message = error instanceof Error ? error.message : '保存失败';
+            if (!replace && message.includes('已有')) {
+                if (window.confirm(`${message}。要用这次录制覆盖吗？`)) await submit(true);
+                return;
+            }
+            toast.error(message);
+        }
+    };
+    return (
+        <div className="rounded-2xl border border-border bg-card px-4 py-3">
+            <p className="text-[11px] font-medium tracking-[0.16em] text-muted-foreground">分词器基线录制</p>
+            <p className="mt-1 text-sm">
+                {recording.recordable
+                    ? `${recording.targetModel || '该型号'}：${recording.probeCount} 道题计数已录下。`
+                    : `这次录制不能用作基线：${recording.reason || '未知原因'}`}
+            </p>
+            <p className="mt-1 text-[11px] leading-5 text-muted-foreground">
+                只在你确认是官方直连/可信的渠道上保存——后台无法替你判断渠道是否可信，存错了会把冒充当成正品。
+            </p>
+            {recording.recordable && (
+                <div className="mt-2">
+                    {resultId ? (
+                        <button
+                            type="button"
+                            disabled={save.isPending || saved}
+                            onClick={() => void submit(false)}
+                            className="rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-muted disabled:opacity-50"
+                        >
+                            {saved ? '已保存' : save.isPending ? '保存中…' : '保存为可信基线'}
+                        </button>
+                    ) : (
+                        <p className="text-[11px] text-muted-foreground">从任务队列打开这条结果才能保存。</p>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+}
+
+/**
  * 被动检测开关卡。
  *
  * 摆在检测页而不是设置页，是因为它和主动检测是同一件事的两面，用户需要放在
@@ -396,7 +536,7 @@ export function ModelAudit() {
     const [channelId, setChannelId] = useState<number>(0);
     const [modelName, setModelName] = useState('');
     const [plan, setPlan] = useState<PlanId>('standard');
-    const [selected, setSelected] = useState<AuditProbeId[]>([...AUDIT_PROBE_IDS]);
+    const [selected, setSelected] = useState<AuditProbeId[]>([...AUDIT_STANDARD_PROBE_IDS]);
     const [showAdvanced, setShowAdvanced] = useState(false);
     const [showParams, setShowParams] = useState(false);
     const [pageState, setPageState] = useState<PageState>('idle');
@@ -438,6 +578,8 @@ export function ModelAudit() {
     }, [report, t]);
     // 指纹结论单独读出来：它是唯一能认出模型的内容，不能只当一行状态显示。
     const fingerprint = useMemo(() => readFingerprint(report?.report), [report]);
+    const tokenizer = useMemo(() => readTokenizer(report?.report), [report]);
+    const recording = useMemo(() => readTokenizerRecording(report?.report), [report]);
     const warnCount = rows.filter((row) => row.tone === 'warn').length;
     const failCount = rows.filter((row) => row.tone === 'fail').length;
     const insufficientCount = rows.filter((row) => row.insufficient).length;
@@ -449,18 +591,26 @@ export function ModelAudit() {
         const nextModels = next ? getSelectedChannelModels(next) : [];
         setModelName(nextModels[0] ?? '');
         if (plan === 'standard') {
-            setSelected(AUDIT_PROBE_IDS.filter((probeId) => isApplicable(next, probeId, nextModels[0] ?? '')));
+            setSelected(AUDIT_STANDARD_PROBE_IDS.filter((probeId) => isApplicable(next, probeId, nextModels[0] ?? '')));
         }
     };
 
     const choosePlan = (next: PlanId) => {
         setPlan(next);
         if (next === 'quick') setSelected(planIds('quick', channel, activeModel));
-        else setSelected(AUDIT_PROBE_IDS.filter((id) => isApplicable(channel, id, activeModel)));
+        else setSelected(AUDIT_STANDARD_PROBE_IDS.filter((id) => isApplicable(channel, id, activeModel)));
     };
 
     const toggleProbe = (id: AuditProbeId, checked: boolean) => {
         setPlan('standard');
+        // 手动项勾上时把代价说清楚：录制基线 74 次请求，和其他检查共用一个超时，最好单独跑。
+        if (checked && AUDIT_OPT_IN_PROBE_IDS.includes(id)) {
+            toast.warning(
+                id === 'tokenizer_baseline'
+                    ? '录制基线要发 74 次请求，建议单独勾选，并且只在你确认可信的渠道上跑'
+                    : '分词器识别约 12 次请求（最多 22 次），默认不跑',
+            );
+        }
         setSelected((current) => {
             if (checked) return AUDIT_PROBE_IDS.filter((item) => item === id || current.includes(item));
             return current.filter((item) => item !== id);
@@ -532,6 +682,7 @@ export function ModelAudit() {
             return;
         }
         setReport({
+            result_id: result.id,
             channel_id: result.channel_id,
             channel_name: result.channel_name,
             upstream_model: result.upstream_model,
@@ -881,6 +1032,8 @@ export function ModelAudit() {
                                 </div>
                             </div>
                             {fingerprint && <FingerprintCard summary={fingerprint} />}
+                            {tokenizer && <TokenizerCard summary={tokenizer} />}
+                            {recording && <TokenizerRecordingCard recording={recording} resultId={report.result_id} />}
                             <div className="flex h-1.5 overflow-hidden rounded-full bg-muted">
                                 {rows.map((row) => (
                                     <span
