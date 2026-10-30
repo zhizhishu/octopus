@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useLogPresetStore } from './log-preset';
+import { entryTimeRange, useLogPresetStore } from './log-preset';
 
 function useDebouncedValue<T>(value: T, delayMs: number): T {
     const [debounced, setDebounced] = useState(value);
@@ -760,7 +760,8 @@ export function Log() {
     const effectiveSelectedAPIKeyID = selectedAPIKey && (!selectedUserID || selectedAPIKey.user_id === selectedUserID)
         ? selectedAPIKeyID
         : undefined;
-    const { startTime, endTime } = resolveLogTimeRange(startDate, endDate);
+    // 从仪表盘带着统计时区的起止进来、日期没改过：按那个精确范围查，不按浏览器时区切天。
+    const { startTime, endTime } = entryTimeRange(entryPreset, startDate, endDate) ?? resolveLogTimeRange(startDate, endDate);
     const mismatchParam = isAdmin && mismatchFilter !== 'all' ? mismatchFilter === 'mismatch' : undefined;
 
     // 全量严重程度计数（成功/警告/错误 + 总数）。与列表查询共享过滤参数，不含

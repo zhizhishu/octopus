@@ -69,3 +69,43 @@ test('every dashboard key used in the page exists in zh_hans', () => {
         assert.ok(checked > 5, `${file}: no t() calls found`);
     }
 });
+
+test('log click-through uses the stats-timezone bounds while the dates are unchanged', () => {
+    const { entryTimeRange } = load('src/components/modules/log/log-preset.ts', {});
+    // 统计时区 Asia/Shanghai 的 2026-10-30 整天：[16:00Z 前一天, 16:00Z 当天)，日志接口两头都含。
+    const intent = { startDate: '2026-10-30', endDate: '2026-10-30', startTime: 1793289600, endTime: 1793375999, userId: 3 };
+    assert.deepEqual(entryTimeRange(intent, '2026-10-30', '2026-10-30'), { startTime: 1793289600, endTime: 1793375999 });
+    assert.equal(entryTimeRange(intent, '2026-10-29', '2026-10-30'), null); // 改了日期 → 交回按天换算
+    assert.equal(entryTimeRange(intent, '2026-10-30', '2026-10-31'), null);
+    assert.equal(entryTimeRange({ ...intent, startTime: undefined }, '2026-10-30', '2026-10-30'), null);
+    assert.equal(entryTimeRange({ ...intent, endTime: 1 }, '2026-10-30', '2026-10-30'), null);
+    assert.equal(entryTimeRange(null, '2026-10-30', '2026-10-30'), null);
+});
+
+test('log page and dashboard are wired to pass and use those bounds', () => {
+    const read = (p) => readFileSync(path.join(__dirname, '..', p), 'utf8');
+    const log = read('src/components/modules/log/index.tsx');
+    assert.match(log, /entryTimeRange\(entryPreset, startDate, endDate\) \?\? resolveLogTimeRange\(startDate, endDate\)/);
+    const dash = read('src/components/modules/dashboard/index.tsx');
+    assert.match(dash, /startTime: userRank\.data\.start, endTime: userRank\.data\.end - 1/);
+});
+
+test('one log preset store serves both the users page and the dashboard; user focus opens the drawer', () => {
+    const { useLogPresetStore } = load('src/components/modules/log/log-preset.ts', {});
+    const store = useLogPresetStore.getState();
+    store.setUserID(7); // 用户页「看他的日志」
+    assert.deepEqual(useLogPresetStore.getState().preset, { userId: 7 });
+    store.setPreset({ userId: 3, startDate: '2026-10-24', endDate: '2026-10-30', startTime: 1, endTime: 2 }); // 仪表盘
+    assert.equal(useLogPresetStore.getState().preset.startDate, '2026-10-24');
+    store.clear();
+    assert.equal(useLogPresetStore.getState().preset, null);
+
+    const read = (p) => readFileSync(path.join(__dirname, '..', p), 'utf8');
+    assert.equal(require('node:fs').existsSync(path.join(__dirname, '..', 'src/stores/nav-intent.ts')), false);
+    const dash = read('src/components/modules/dashboard/index.tsx');
+    assert.match(dash, /useLogPresetStore\(\(s\) => s\.setPreset\)/);
+    assert.match(dash, /useUserPresetStore\(\(s\) => s\.setFocusUserID\)/);
+    const users = read('src/components/modules/user/index.tsx');
+    assert.match(users, /const focus = useUserPresetStore\.getState\(\)\.focusUserID;\n\s*return focus \? \{ open: true, userID: focus, tab: 'profile' \}/);
+    assert.match(users, /useLogPresetStore\.getState\(\)\.setUserID\(u\.id\)/);
+});

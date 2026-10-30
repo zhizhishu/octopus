@@ -165,7 +165,11 @@ export function Dashboard() {
     };
 
     const goLogs = (intent: { userId?: number; apiKeyId?: number; model?: string; search?: string }) => {
-        openLog({ startDate: range.from, endDate: range.to, ...intent });
+        // 起止用后端按统计时区算好的（end 是开区间，日志接口两头都含，所以减 1 秒）。
+        const bounds = userRank.data && userRank.data.from === range.from && userRank.data.to === range.to
+            ? { startTime: userRank.data.start, endTime: userRank.data.end - 1 }
+            : {};
+        openLog({ startDate: range.from, endDate: range.to, ...bounds, ...intent });
         setActiveItem('log');
     };
     const goUser = (id: number) => {
