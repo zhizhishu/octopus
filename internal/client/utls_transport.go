@@ -73,10 +73,7 @@ func (t *utlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 	if req.URL.Scheme != "https" {
 		return t.fallback.RoundTrip(req)
 	}
-	spec, family := clientHelloSpecForPath(req.URL.Path)
-	if override := tlsFaceFromContext(req.Context()); override != "" {
-		spec, family = clientHelloSpecForFamily(override)
-	}
+	spec, family := tlsFamilyForDial(req.Context(), req.URL.Path)
 	host := req.URL.Hostname()
 	port := req.URL.Port()
 	if port == "" {
