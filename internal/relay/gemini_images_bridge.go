@@ -92,6 +92,10 @@ func geminiImagesAttempt(
 	if err != nil {
 		return 0, false, nil, "", fmt.Errorf("failed to create gemini image request: %w", err)
 	}
+	// 真实出站请求体快照（开关关闭时不读 body）。渠道 key 在 URL 查询串里，不在 body 里。
+	if err := captureOutboundJSONBody(req, metrics.bodyLog()); err != nil {
+		return 0, false, nil, "", err
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	for _, h := range channel.CustomHeader {

@@ -105,6 +105,16 @@ func (c *imageCapture) capture(raw string, declaredSize int) (inner, reason stri
 	if len(data) > logimage.MaxImageBytes {
 		return "", omitReasonTooLarge
 	}
+	return c.register(data, len(strings.TrimSpace(raw)))
+}
+
+// register 登记一张已解码的图。maxInnerLen >= 0 时占位符（含两侧引号）不许比它长，
+// 这是 JSON 里原地替换的规矩；multipart 摘要里没有被替换的原值，传 -1 不做这项检查。
+// 认不出是图片时两个返回值都为空。
+func (c *imageCapture) register(data []byte, maxInnerLen int) (inner, reason string) {
+	if len(data) > logimage.MaxImageBytes {
+		return "", omitReasonTooLarge
+	}
 	mime, ext, ok := logimage.Sniff(data)
 	if !ok {
 		return "", ""
@@ -123,7 +133,7 @@ func (c *imageCapture) capture(raw string, declaredSize int) (inner, reason stri
 	}
 	inner = fmt.Sprintf("[image: %s, %s, id=%s]", mime, formatByteSize(len(data)), hash)
 	// 占位符不能比原值长（acceptReplacement 的规矩）。小到这个地步的图不值得存。
-	if len(inner)+2 > len(strings.TrimSpace(raw)) {
+	if maxInnerLen >= 0 && len(inner)+2 > maxInnerLen {
 		return "", ""
 	}
 	c.byHash[hash] = &capturedImage{hash: hash, mime: mime, ext: ext, data: data, inner: inner}
