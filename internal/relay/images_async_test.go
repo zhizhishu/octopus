@@ -128,6 +128,7 @@ func TestImageTaskRunUpstreamReplaysToTheRecordedEndpoint(t *testing.T) {
 		model.ImageTaskEndpointEdits,
 		"mapped-upstream-model",
 		[]byte(`{"model":"client-alias","prompt":"a fox in snow"}`),
+		nil,
 	)
 	if err != nil || failReason != "" {
 		t.Fatalf("run upstream: err=%v failReason=%q", err, failReason)
@@ -184,7 +185,7 @@ func TestImageTaskRunUpstreamReportsUpstreamFailure(t *testing.T) {
 	}
 
 	statusCode, _, failReason, err := ImageTaskRunUpstream(
-		context.Background(), channel, "unit-key", model.ImageTaskEndpointGenerations, "m", []byte(`{"prompt":"x"}`),
+		context.Background(), channel, "unit-key", model.ImageTaskEndpointGenerations, "m", []byte(`{"prompt":"x"}`), nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected hard error: %v", err)

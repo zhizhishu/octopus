@@ -172,33 +172,39 @@ func executeOneImageTask(ctx context.Context, task model.ImageTask) {
 	taskCtx, cancel := context.WithTimeout(ctx, imageTaskRunTaskTimeout)
 	defer cancel()
 
+	// 历史日志：终态时由赢得 CAS 的那一方写恰好一行（见 relay/images_async_log.go）。
+	taskLog := relay.NewImageTaskLog(task)
+
 	channel, err := op.ChannelGet(task.ChannelID, taskCtx)
 	if err != nil {
-		failImageTask(task, fmt.Sprintf("image channel %d is unavailable: %v", task.ChannelID, err))
+		failImageTask(task, fmt.Sprintf("image channel %d is unavailable: %v", task.ChannelID, err), taskLog, 0)
 		return
 	}
+	taskLog.SetChannel(channel)
 	channelKey, found, enabled := imageTaskChannelKey(channel, task.ChannelKeyID)
 	if !found {
-		failImageTask(task, fmt.Sprintf("image channel key %d no longer exists on channel %d", task.ChannelKeyID, channel.ID))
+		failImageTask(task, fmt.Sprintf("image channel key %d no longer exists on channel %d", task.ChannelKeyID, channel.ID), taskLog, 0)
 		return
 	}
 	if !enabled {
-		failImageTask(task, fmt.Sprintf("image channel key %d on channel %d is disabled", task.ChannelKeyID, channel.ID))
+		failImageTask(task, fmt.Sprintf("image channel key %d on channel %d is disabled", task.ChannelKeyID, channel.ID), taskLog, 0)
 		return
 	}
 
+	taskLog.BeginUpstream()
 	statusCode, body, failReason, runErr := relay.ImageTaskRunUpstream(
-		taskCtx, channel, channelKey, task.Endpoint, task.Model, []byte(task.RequestBody),
+		taskCtx, channel, channelKey, task.Endpoint, task.Model, []byte(task.RequestBody), taskLog,
 	)
+	taskLog.EndUpstream()
 	if runErr != nil {
 		// 上游没给结论（网络/超时/读失败）。这类"问不出结果"不重试：
 		// 任务已经离开客户端视野很久，重试只会在同一个坏渠道上反复花钱；
 		// 判失败并退款，让用户重新发一次。
-		failImageTask(task, imageTaskRedactFailure(fmt.Sprintf("image generation request failed: %v", runErr)))
+		failImageTask(task, imageTaskRedactFailure(fmt.Sprintf("image generation request failed: %v", runErr)), taskLog, statusCode)
 		return
 	}
 	if failReason != "" {
-		failImageTask(task, imageTaskRedactFailure(failReason))
+		failImageTask(task, imageTaskRedactFailure(failReason), taskLog, statusCode)
 		return
 	}
 
@@ -206,7 +212,7 @@ func executeOneImageTask(ctx context.Context, task model.ImageTask) {
 	if resultJSON == "" && imageURL == "" {
 		// 上游 2xx 但回来的东西里既没有图也没有可用的结果形状：判失败而不是
 		// 记一个空的 completed —— 后者会让客户端拿到"成功但没有图"。
-		failImageTask(task, fmt.Sprintf("upstream returned status %d without an image result", statusCode))
+		failImageTask(task, fmt.Sprintf("upstream returned status %d without an image result", statusCode), taskLog, statusCode)
 		return
 	}
 
@@ -235,6 +241,7 @@ func executeOneImageTask(ctx context.Context, task model.ImageTask) {
 	}
 	// 成功：只归还在途预留，**不退款**（预扣的就是这一单的钱）。
 	op.ImageTaskReservationRelease(task.TaskID)
+	taskLog.Finish(true, statusCode, resultJSON, "")
 	log.Infof("image task poll: task %s completed (channel=%d, model=%s)", task.TaskID, task.ChannelID, task.Model)
 }
 
@@ -246,7 +253,10 @@ func executeOneImageTask(ctx context.Context, task model.ImageTask) {
 //
 // 顺序：先 CAS（只有一个写者能赢），赢了再退款/释放。CAS 没赢说明别的写者已经
 // 把它推进终态了，它会在自己那条路径上退款——我们这里直接返回，避免重复退。
-func failImageTask(task model.ImageTask, reason string) {
+//
+// taskLog 为 nil（过期清扫没有执行上下文）时现建一条；statusCode 是上游状态码，没打上游为 0。
+// 日志只在 CAS 赢了之后写：输掉的一方说明别的写者已收尾，它会写自己那一行。
+func failImageTask(task model.ImageTask, reason string, taskLog *relay.ImageTaskLog, statusCode int) {
 	reason = imageTaskRedactFailure(reason)
 	// 终态 + 退款用脱离整轮预算的短时限（见 imageTaskPersistTimeout）：一次
 	// "判死并退款"如果被预算取消掉，用户的钱就留在库里等下一次机会了。
@@ -268,6 +278,10 @@ func failImageTask(task model.ImageTask, reason string) {
 		log.Errorf("image task poll: refund task %s failed: %v", task.TaskID, rerr)
 	}
 	op.ImageTaskReservationRelease(task.TaskID)
+	if taskLog == nil {
+		taskLog = relay.NewImageTaskLog(task)
+	}
+	taskLog.Finish(false, statusCode, "", reason)
 	log.Warnf("image task poll: task %s marked failure: %s", task.TaskID, reason)
 }
 
@@ -286,7 +300,7 @@ func sweepExpiredImageTasks(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		failImageTask(task, "task expired before completion")
+		failImageTask(task, "task expired before completion", nil, 0)
 	}
 }
 

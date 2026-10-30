@@ -254,9 +254,13 @@ func ImagesAsyncSubmit(endpoint string, c *gin.Context) {
 		ChannelKeyID: channelKey.ID,
 		Model:        upstreamModel,
 		Endpoint:     imageTaskEndpoint(endpoint),
-		// 请求体原文（含 prompt）：只进这一列，绝不进任何日志。
-		RequestBody: string(rawBody),
-		Cost:        cost,
+		// 请求体原文（含 prompt）：供执行器重放；绝不进进程日志/错误串。
+		// 历史日志行由执行器按同步图片的同一套规则写（见 images_async_log.go）。
+		RequestBody:      string(rawBody),
+		Cost:             cost,
+		RequestModel:     requestModel,
+		RequestIP:        c.GetString("request_ip"),
+		RequestUserAgent: truncateUserAgentForLog(c.Request.UserAgent()),
 	}
 	if cerr := op.ImageTaskCreate(ctx, &task); cerr != nil {
 		op.ImageTaskReservationRelease(taskID)
@@ -540,6 +544,9 @@ func ImageTaskResultPayload(body []byte) (resultJSON string, imageURL string) {
 // 路径完全一样，多一层"异步专属指纹"反而是新的可识别面。
 //
 // 【日志红线】本函数**绝不**打印 requestBody：它含用户的 prompt。
+//
+// taskLog 非 nil 时，在请求发出前拍一份真实出站请求体快照（与同步图片同一开关、
+// 同一套规则；开关关闭时不读 body）。快照只读、原样挂回，出站字节不变。
 func ImageTaskRunUpstream(
 	ctx context.Context,
 	channel *model.Channel,
@@ -547,6 +554,7 @@ func ImageTaskRunUpstream(
 	endpoint string,
 	modelName string,
 	requestBody []byte,
+	taskLog *ImageTaskLog,
 ) (statusCode int, body []byte, failReason string, err error) {
 	if channel == nil {
 		return 0, nil, "", errors.New("channel is nil")
@@ -574,6 +582,10 @@ func ImageTaskRunUpstream(
 	req, rerr := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(upstreamBody))
 	if rerr != nil {
 		return 0, nil, "", fmt.Errorf("failed to create upstream image request: %w", rerr)
+	}
+	// 真实出站请求体快照：与同步图片路径（imagesAttempt）同一个采集函数。
+	if cerr := captureOutboundJSONBody(req, taskLog.bodyLog()); cerr != nil {
+		return 0, nil, "", cerr
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")

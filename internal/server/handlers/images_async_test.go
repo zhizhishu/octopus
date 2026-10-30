@@ -199,6 +199,10 @@ func TestImageAsyncSubmitFullChainReturns202WithPollURL(t *testing.T) {
 	if task.Model != imageAsyncTestModel {
 		t.Fatalf("stored model = %q, want %q", task.Model, imageAsyncTestModel)
 	}
+	// 执行器落历史日志要用的"客户端请求的模型名"在提交时就得记下（见 relay/images_async_log.go）。
+	if task.RequestModel != imageAsyncTestModel {
+		t.Fatalf("stored request model = %q, want %q", task.RequestModel, imageAsyncTestModel)
+	}
 	if !strings.Contains(task.RequestBody, "a quiet lake at dawn") {
 		t.Fatalf("stored request body lost the prompt: %q", task.RequestBody)
 	}
