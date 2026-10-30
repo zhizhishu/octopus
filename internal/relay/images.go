@@ -249,6 +249,13 @@ runIterator:
 				if usage != nil {
 					metrics.SetUsageFromImages(item.ModelName, *usage)
 				}
+				// 计费口径与异步生图同一份（见 images_billing.go）：配了按张价就按张收。
+				metrics.ApplyImagePricing(item.ModelName, func() int {
+					if isMultipart {
+						return multipartImageCount(bc, boundary)
+					}
+					return imageRequestCount(jsonPayload)
+				})
 				metrics.ResponseContent = buildImagesResponseContentForLog(stream, upstreamCT, usage)
 
 				costDelta := metrics.Stats.InputCost + metrics.Stats.OutputCost
@@ -589,6 +596,13 @@ func (m *imagesRelayMetrics) buildBillingSnapshot(actualModel string, usage *ima
 	if usage == nil {
 		return snapshot
 	}
+	applyImagesUsageCost(&snapshot, usage)
+	return snapshot
+}
+
+// applyImagesUsageCost 按快照里的 token 单价与倍率算出这次用量的费用，写回快照。
+// 同步路径（现查价）与异步任务结算（提交时冻结的价）共用这一份算法。
+func applyImagesUsageCost(snapshot *model.AccessPlanBillingSnapshot, usage *imagesUsage) {
 	inputTokens := usage.InputTokenCount()
 	cacheReadTokens := usage.CacheReadTokenCount()
 	cacheWriteTokens := usage.CacheWriteTokenCount()
@@ -605,7 +619,6 @@ func (m *imagesRelayMetrics) buildBillingSnapshot(actualModel string, usage *ima
 	snapshot.FinalOutputCost = float64(usage.OutputTokenCount()) * snapshot.BaseOutputPrice * snapshot.FinalMultiplier * 1e-6
 	snapshot.FinalCacheReadCost = float64(cacheReadTokens) * snapshot.BaseCacheReadPrice * snapshot.FinalMultiplier * 1e-6
 	snapshot.FinalCacheWriteCost = float64(cacheWriteTokens) * snapshot.BaseCacheWritePrice * snapshot.FinalMultiplier * 1e-6
-	return snapshot
 }
 
 func (m *imagesRelayMetrics) Save(ctx context.Context, success bool, err error, attempts []model.ChannelAttempt) {

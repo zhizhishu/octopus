@@ -17,7 +17,6 @@ import (
 	"github.com/zhizhishu/octopus/internal/helper"
 	"github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/op"
-	"github.com/zhizhishu/octopus/internal/price"
 	"github.com/zhizhishu/octopus/internal/relay/balancer"
 	"github.com/zhizhishu/octopus/internal/server/resp"
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
@@ -31,8 +30,8 @@ import (
 // goroutine 干等。异步版立刻回 202 + 任务号，真正的上游调用交给后台执行器
 // （internal/task/image_task_poll.go），客户端过几秒来问一次。
 //
-// 【本文件不碰同步路径】：ImagesHandler 一个字节都没改，新的图都从下面这几个
-// 出口进出。契约里"不许改同步图片端点行为"指的就是这条。
+// 【本文件不碰同步路径的转发】：新的图都从下面这几个出口进出。同步与异步只共用
+// 计费口径（images_billing.go：配了按张价按张收，否则按 token 收）。
 const (
 	// imageTaskTTL 是任务从提交到"再也查不到"的存活时间。
 	// 取 24h 与契约给出的示例一致（created_at → expires_at 差 86400 秒）。
@@ -177,7 +176,7 @@ func ImagesAsyncSubmit(endpoint string, c *gin.Context) {
 		return
 	}
 
-	_, requestModel, stream, perr := parseJSONModelAndStreamBytes(rawBody)
+	requestPayload, requestModel, stream, perr := parseJSONModelAndStreamBytes(rawBody)
 	if perr != nil {
 		resp.Error(c, http.StatusBadRequest, perr.Error())
 		return
@@ -219,6 +218,15 @@ func ImagesAsyncSubmit(endpoint string, c *gin.Context) {
 		return
 	}
 
+	// 0) 定价：照 new-api（ModelPriceHelperPerCall）——没价的模型直接拒绝，而不是
+	//    "先受理、按 0 收"。异步任务一旦受理就会真花上游的钱，没价等于白送。
+	//    管理员从不扣费（op.UserRecordUsage 对管理员直接返回），相当于 new-api 的自用模式，放行。
+	billing := imageTaskBillingPlan(routeResult, requestModel, upstreamModel, endpoint, c, imageRequestCount(requestPayload))
+	if !billing.priced && !imageTaskUserIsAdmin(userID) {
+		resp.Error(c, http.StatusBadRequest, imageModelPriceNotConfiguredMessage(requestModel))
+		return
+	}
+
 	taskID := imageTaskNewID()
 
 	// 1) 在途预留：走的就是 UserCanRelay（与同步图片路径、与所有中继路径同一道闸）。
@@ -230,9 +238,10 @@ func ImagesAsyncSubmit(endpoint string, c *gin.Context) {
 		return
 	}
 
-	// 2) 预扣：按次费用在创建任务时就扣掉。理由见契约——异步任务返回 202 之后
-	//    客户端可能再也不来查，等到"完成"才扣等于免费。
-	cost := imageTaskPrechargeCost(routeResult, requestModel, upstreamModel, endpoint, c)
+	// 2) 预扣：按张计费的模型在创建任务时就扣掉「单价 × 张数 × 倍率」（new-api 的
+	//    PreConsumeBilling）；按 token 计费的模型此时算不出钱，只靠上面那笔在途预留占住
+	//    余额，完成时按上游用量结算（见 relay.ImageTaskSettle）。失败/过期原路退回。
+	cost := billing.precharge
 	if cost > 0 {
 		if derr := op.UserRecordUsage(userID, cost, ctx); derr != nil {
 			op.ImageTaskReservationRelease(taskID)
@@ -261,6 +270,9 @@ func ImagesAsyncSubmit(endpoint string, c *gin.Context) {
 		RequestModel:     requestModel,
 		RequestIP:        c.GetString("request_ip"),
 		RequestUserAgent: truncateUserAgentForLog(c.Request.UserAgent()),
+		BillingMode:      billing.mode,
+		ImageCount:       billing.count,
+		BillingSnapshot:  billing.snapshotJSON(),
 	}
 	if cerr := op.ImageTaskCreate(ctx, &task); cerr != nil {
 		op.ImageTaskReservationRelease(taskID)
@@ -299,21 +311,31 @@ func imageTaskEndpoint(endpoint string) string {
 	return model.ImageTaskEndpointGenerations
 }
 
-// imageTaskPrechargeCost 算出这条任务要预扣多少。
-//
-// 定价来源是模型价格行的 PerCall（管理员可配，见 model.LLMPrice.PerCall）——
-// 项目里"按次计费"已经有这一套定义（视频创建用它），不另造一套：
-//   - PerCall 为 0（默认）→ 预扣 0，行为与不改账单一致；
-//   - PerCall > 0 → 每条任务收这么多，乘上访问计划的倍率（同一个模型对不同用户组
-//     可能有不同折扣，图片不该绕过这套规则）。
-//
-// 倍率的算法**直接复用** imagesRelayMetrics.currentBillingSnapshot：图片路径的
-// access plan / 路由规则 / 模型规则本来就在那里算，抄一份过来迟早两边不一致。
-func imageTaskPrechargeCost(routeResult routeGroupResult, requestModel, upstreamModel, endpoint string, c *gin.Context) float64 {
-	modelPrice := price.GetLLMPrice(upstreamModel)
-	if modelPrice == nil || modelPrice.PerCall <= 0 {
-		return 0
+// imageTaskBilling 是提交时定下来的计费口径，会冻结到任务行上。
+type imageTaskBilling struct {
+	mode      string // imageBillingModePerImage / imageBillingModeToken
+	count     int
+	snapshot  model.AccessPlanBillingSnapshot
+	priced    bool    // 计费模型有没有任何价格
+	precharge float64 // 提交时预扣的钱（只有按张计费才 > 0）
+}
+
+func (b imageTaskBilling) snapshotJSON() string {
+	raw, err := json.Marshal(b.snapshot)
+	if err != nil {
+		return ""
 	}
+	return string(raw)
+}
+
+// imageTaskBillingPlan 算出这条任务怎么收钱。
+//
+// 计费模型名、访问计划倍率**直接复用** imagesRelayMetrics.currentBillingSnapshot：
+// 同步图片按哪个模型名、哪套倍率收，异步就按哪个收（路由规则里的 billing_model_source
+// 也一并生效），抄一份过来迟早两边不一致。
+//   - 价格行 PerCall > 0 → 按张：预扣 PerCall × n × 倍率，完成不再结算；
+//   - 否则 → 按 token：不预扣，完成时按上游 usage 结算。
+func imageTaskBillingPlan(routeResult routeGroupResult, requestModel, upstreamModel, endpoint string, c *gin.Context, count int) imageTaskBilling {
 	path := ""
 	if c != nil && c.Request != nil && c.Request.URL != nil {
 		path = c.Request.URL.Path
@@ -321,11 +343,26 @@ func imageTaskPrechargeCost(routeResult routeGroupResult, requestModel, upstream
 	metrics := newImagesRelayMetrics(0, 0, "", requestModel, imageEndpointName(endpoint), path)
 	metrics.SetAccessPlan(routeResult.AccessPlan, routeResult.AccessRouteRule, routeResult.AccessRouteUsed)
 	snapshot := metrics.currentBillingSnapshot(upstreamModel)
-	multiplier := snapshot.FinalMultiplier
-	if multiplier <= 0 {
-		multiplier = 1
+	if count < 1 {
+		count = 1
 	}
-	return modelPrice.PerCall * multiplier
+	plan := imageTaskBilling{
+		mode:     imageBillingModeToken,
+		count:    count,
+		snapshot: snapshot,
+		priced:   imageModelPriced(snapshot.BillingModelName),
+	}
+	if unit := imagePerImagePrice(snapshot.BillingModelName); unit > 0 {
+		plan.mode = imageBillingModePerImage
+		plan.precharge = imagePerImageCost(unit, count, snapshot)
+	}
+	return plan
+}
+
+// imageTaskUserIsAdmin 报告提交者是不是管理员（管理员从不扣费，没价模型对他放行）。
+func imageTaskUserIsAdmin(userID int) bool {
+	user, err := op.UserGet(userID)
+	return err == nil && user.IsAdmin()
 }
 
 // pickImageTaskChannel 按同步图片路径**同一批判据**选出一个可用渠道 + 一把可用 key。

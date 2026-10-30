@@ -147,6 +147,8 @@ export function ModelEditOverlay({
                         className="h-9 text-sm rounded-xl"
                     />
                 </label>
+                {/* 编辑层在 z-[90] 的浮层里，tooltip 会被盖住，所以说明直接写在下面。 */}
+                <p className="col-span-2 text-[11px] leading-4 text-muted-foreground">{t('perCallTip')}</p>
             </div>
 
             {isManual && onRestore && (
