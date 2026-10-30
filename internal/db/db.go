@@ -83,6 +83,7 @@ func InitDB(dbType, dsn string, debug bool) error {
 		&model.APIKeyAccessPlan{},
 		&model.UserAccessPlan{},
 		&model.LLMInfo{},
+		&model.PriceSyncRun{},
 		&model.APIKey{},
 		&model.RedeemCode{},
 		&model.Setting{},
