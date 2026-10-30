@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useTranslations } from 'next-intl';
-import { Check, Clock, Fingerprint, Gift, Globe, HelpCircle, Loader2, Mail, Monitor, Pencil, Radio, Shield, UserPlus, X, Zap, AlertTriangle } from 'lucide-react';
+import { Check, Clock, Fingerprint, Gift, Globe, HelpCircle, Loader2, Mail, Pencil, Radio, Shield, UserPlus, X, Zap, AlertTriangle, type LucideIcon } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
@@ -33,7 +33,46 @@ type HeaderDraft = {
     codexBetaFeatures: string;
 };
 
-export function SettingSystem() {
+// 设置页按标签拆分后，「系统」大卡拆成下面这些区块，每块单独成卡：
+//   network / stats              → 系统
+//   claude / codex / claudeBetaStrip → 客户端指纹（编辑 Header 弹窗随 claude/codex 卡）
+//   stream / upstreamError       → 转发与容错
+//   registration / checkIn       → 用户与注册
+// 状态、校验和保存逻辑原样保留，只是渲染时按 section 取对应区块。
+export type SettingSystemSection =
+    | 'network'
+    | 'stats'
+    | 'claude'
+    | 'codex'
+    | 'claudeBetaStrip'
+    | 'stream'
+    | 'registration'
+    | 'checkIn'
+    | 'upstreamError';
+
+function SystemCard({
+    icon: Icon,
+    title,
+    className = '',
+    children,
+}: {
+    icon: LucideIcon;
+    title: string;
+    className?: string;
+    children: ReactNode;
+}) {
+    return (
+        <div className={`min-w-0 space-y-5 rounded-3xl border border-border bg-card p-4 sm:p-6 ${className}`}>
+            <h2 className="flex min-w-0 items-center gap-2 text-lg font-bold text-card-foreground">
+                <Icon className="h-5 w-5 shrink-0" />
+                {title}
+            </h2>
+            {children}
+        </div>
+    );
+}
+
+export function SettingSystem({ section, className = '' }: { section?: SettingSystemSection; className?: string } = {}) {
     const t = useTranslations('setting');
     const { data: settings } = useSettingList();
     const setSetting = useSetSetting();
@@ -1042,283 +1081,7 @@ export function SettingSystem() {
         }
     };
 
-    return (
-        <div className="min-w-0 space-y-5 rounded-3xl border border-border bg-card p-4 sm:p-6">
-            <h2 className="flex min-w-0 items-center gap-2 text-lg font-bold text-card-foreground">
-                <Monitor className="h-5 w-5 shrink-0" />
-                {t('system')}
-            </h2>
-
-            {/* 代理地址 */}
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex min-w-0 items-center gap-3">
-                    <Globe className="h-5 w-5 shrink-0 text-muted-foreground" />
-                    <span className="min-w-0 text-sm font-medium">{t('proxyUrl.label')}</span>
-                </div>
-                <Input
-                    value={proxyUrl}
-                    onChange={(e) => setProxyUrl(e.target.value)}
-                    onBlur={() => handleSave('proxy_url', proxyUrl, initialProxyUrl.current)}
-                    placeholder={t('proxyUrl.placeholder')}
-                    className="w-full rounded-xl sm:w-48"
-                />
-            </div>
-
-            {/* 可信反代网段（决定日志/限流用的真实客户端 IP） */}
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                <div className="flex min-w-0 items-start gap-3">
-                    <Shield className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" />
-                    <div className="flex min-w-0 flex-col">
-                        <span className="min-w-0 text-sm font-medium">{t('trustedProxies.label')}</span>
-                        <span className="text-xs text-muted-foreground">{t('trustedProxies.description')}</span>
-                    </div>
-                </div>
-                <Input
-                    value={trustedProxies}
-                    onChange={(e) => setTrustedProxies(e.target.value)}
-                    onBlur={() => handleSave('trusted_proxies', trustedProxies, initialTrustedProxies.current)}
-                    placeholder={t('trustedProxies.placeholder')}
-                    className="w-full rounded-xl sm:w-48"
-                />
-            </div>
-
-            {/* 统计保存周期 */}
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex min-w-0 items-center gap-3">
-                    <Clock className="h-5 w-5 shrink-0 text-muted-foreground" />
-                    <span className="min-w-0 text-sm font-medium">{t('statsSaveInterval.label')}</span>
-                </div>
-                <Input
-                    type="number"
-                    value={statsSaveInterval}
-                    onChange={(e) => setStatsSaveInterval(e.target.value)}
-                    onBlur={() => handleSave('stats_save_interval', statsSaveInterval, initialStatsSaveInterval.current)}
-                    placeholder={t('statsSaveInterval.placeholder')}
-                    className="w-full rounded-xl sm:w-48"
-                />
-            </div>
-
-            <div className="grid gap-3 lg:grid-cols-2">
-                <div className="grid min-w-0 gap-3 rounded-2xl border border-border/70 bg-muted/20 p-3">
-                    <div className="flex items-start justify-between gap-4">
-                        <div className="flex min-w-0 items-start gap-3">
-                            <Zap className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" />
-                            <div className="min-w-0 space-y-1">
-                                <div className="flex flex-wrap items-center gap-2">
-                                    <span className="text-sm font-semibold">{t('anthropicAutoCacheControl.label')}</span>
-                                    <TooltipProvider>
-                                        <Tooltip>
-                                            <TooltipTrigger asChild>
-                                                <HelpCircle className="size-4 text-muted-foreground cursor-help" />
-                                            </TooltipTrigger>
-                                            <TooltipContent className="max-w-xs">
-                                                {t('anthropicAutoCacheControl.hint')}
-                                            </TooltipContent>
-                                        </Tooltip>
-                                    </TooltipProvider>
-                                </div>
-                                <p className="text-xs leading-5 text-muted-foreground">{t('headerDefaults.claudeDescription')}</p>
-                            </div>
-                        </div>
-                        <Switch
-                            checked={anthropicAutoCacheControl}
-                            onCheckedChange={handleAnthropicAutoCacheControlChange}
-                            aria-label={t('anthropicAutoCacheControl.label')}
-                            className="shrink-0"
-                        />
-                    </div>
-                    <div className="grid gap-1.5 border-t border-border/60 pt-3">
-                        {claudeHeaderRows.slice(0, 5).map((header) => (
-                            <div key={header.key} className="grid min-w-0 gap-1 rounded-xl border border-border/50 bg-background/45 px-2.5 py-2 text-xs sm:grid-cols-[minmax(7.5rem,0.8fr)_minmax(0,1.2fr)] sm:gap-2 sm:border-0 sm:bg-transparent sm:px-0 sm:py-0">
-                                <span className="min-w-0 break-all font-mono text-muted-foreground sm:truncate">{header.label}</span>
-                                <span className="min-w-0 break-all font-mono text-foreground sm:truncate">{header.value}</span>
-                            </div>
-                        ))}
-                    </div>
-                    <div className="grid gap-3 border-t border-border/60 pt-3">
-                        <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0 space-y-1">
-                                <div className="flex flex-wrap items-center gap-2">
-                                    <span className="text-sm font-medium">{t('claudeCLIAutoCompact.label')}</span>
-                                    <TooltipProvider>
-                                        <Tooltip>
-                                            <TooltipTrigger asChild>
-                                                <HelpCircle className="size-4 text-muted-foreground cursor-help" />
-                                            </TooltipTrigger>
-                                            <TooltipContent className="max-w-xs">
-                                                {t('claudeCLIAutoCompact.hint')}
-                                            </TooltipContent>
-                                        </Tooltip>
-                                    </TooltipProvider>
-                                </div>
-                            </div>
-                            <Switch
-                                checked={claudeCLIAutoCompact}
-                                onCheckedChange={handleClaudeCLIAutoCompactChange}
-                                aria-label={t('claudeCLIAutoCompact.label')}
-                                className="shrink-0"
-                            />
-                        </div>
-                        <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_9rem] sm:items-center">
-                            <div className="min-w-0 space-y-1">
-                                <div className="flex flex-wrap items-center gap-2">
-                                    <span className="text-sm font-medium">{t('claudeCLIReasoningEffort.label')}</span>
-                                    <TooltipProvider>
-                                        <Tooltip>
-                                            <TooltipTrigger asChild>
-                                                <HelpCircle className="size-4 text-muted-foreground cursor-help" />
-                                            </TooltipTrigger>
-                                            <TooltipContent className="max-w-xs">
-                                                {t('claudeCLIReasoningEffort.hint')}
-                                            </TooltipContent>
-                                        </Tooltip>
-                                    </TooltipProvider>
-                                </div>
-                            </div>
-                            <select
-                                value={claudeCLIReasoningEffort}
-                                onChange={(event) => {
-                                    const value = event.target.value;
-                                    setClaudeCLIReasoningEffort(value);
-                                    handleSave(SettingKey.ClaudeCLIReasoningEffort, value, initialClaudeCLIReasoningEffort.current);
-                                }}
-                                aria-label={t('claudeCLIReasoningEffort.label')}
-                                className="h-9 w-full min-w-0 rounded-xl border border-input bg-background px-3 text-sm text-foreground"
-                            >
-                                <option value="auto">{t('claudeCLIReasoningEffort.auto')}</option>
-                                <option value="off">{t('claudeCLIReasoningEffort.off')}</option>
-                                <option value="low">{t('claudeCLIReasoningEffort.low')}</option>
-                                <option value="medium">{t('claudeCLIReasoningEffort.medium')}</option>
-                                <option value="high">{t('claudeCLIReasoningEffort.high')}</option>
-                                <option value="xhigh">{t('claudeCLIReasoningEffort.xhigh')}</option>
-                                <option value="max">{t('claudeCLIReasoningEffort.max')}</option>
-                            </select>
-                        </div>
-                    </div>
-                    <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => openHeaderEditor('claude')}
-                        className="h-8 w-fit rounded-xl"
-                    >
-                        <Pencil className="size-3.5" />
-                        {t('headerDefaults.edit')}
-                    </Button>
-                </div>
-
-                <div className="grid min-w-0 gap-3 rounded-2xl border border-border/70 bg-muted/20 p-3">
-                    <div className="flex items-start justify-between gap-4">
-                        <div className="flex min-w-0 items-start gap-3">
-                            <Fingerprint className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" />
-                            <div className="min-w-0 space-y-1">
-                                <div className="flex flex-wrap items-center gap-2">
-                                    <span className="text-sm font-semibold">{t('openAIAutoPromptCacheKey.label')}</span>
-                                    <TooltipProvider>
-                                        <Tooltip>
-                                            <TooltipTrigger asChild>
-                                                <HelpCircle className="size-4 text-muted-foreground cursor-help" />
-                                            </TooltipTrigger>
-                                            <TooltipContent className="max-w-xs">
-                                                {t('openAIAutoPromptCacheKey.hint')}
-                                            </TooltipContent>
-                                        </Tooltip>
-                                    </TooltipProvider>
-                                </div>
-                                <p className="text-xs leading-5 text-muted-foreground">{t('headerDefaults.codexDescription')}</p>
-                            </div>
-                        </div>
-                        <Switch
-                            checked={openAIAutoPromptCacheKey}
-                            onCheckedChange={handleOpenAIAutoPromptCacheKeyChange}
-                            aria-label={t('openAIAutoPromptCacheKey.label')}
-                            className="shrink-0"
-                        />
-                    </div>
-                    <div className="grid gap-1.5 border-t border-border/60 pt-3">
-                        {codexHeaderRows.map((header) => (
-                            <div key={header.key} className="grid min-w-0 gap-1 rounded-xl border border-border/50 bg-background/45 px-2.5 py-2 text-xs sm:grid-cols-[minmax(7.5rem,0.8fr)_minmax(0,1.2fr)] sm:gap-2 sm:border-0 sm:bg-transparent sm:px-0 sm:py-0">
-                                <span className="min-w-0 break-all font-mono text-muted-foreground sm:truncate">{header.label}</span>
-                                <span className="min-w-0 break-all font-mono text-foreground sm:truncate">{header.value}</span>
-                            </div>
-                        ))}
-                    </div>
-                    <div className="flex items-start justify-between gap-3 border-t border-border/60 pt-3">
-                        <div className="min-w-0 space-y-1">
-                            <div className="flex flex-wrap items-center gap-2">
-                                <span className="text-sm font-medium">{t('codexFastMode.label')}</span>
-                                <TooltipProvider>
-                                    <Tooltip>
-                                        <TooltipTrigger asChild>
-                                            <HelpCircle className="size-4 text-muted-foreground cursor-help" />
-                                        </TooltipTrigger>
-                                        <TooltipContent className="max-w-xs">
-                                            {t('codexFastMode.hint')}
-                                        </TooltipContent>
-                                    </Tooltip>
-                                </TooltipProvider>
-                            </div>
-                        </div>
-                        <Switch
-                            checked={codexFastMode}
-                            onCheckedChange={handleCodexFastModeChange}
-                            aria-label={t('codexFastMode.label')}
-                            className="shrink-0"
-                        />
-                    </div>
-                    <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => openHeaderEditor('codex')}
-                        className="h-8 w-fit rounded-xl"
-                    >
-                        <Pencil className="size-3.5" />
-                        {t('headerDefaults.edit')}
-                    </Button>
-                </div>
-            </div>
-
-            {/* Claude Beta 剥离标记（上游抽风逃生） */}
-            <div className="flex flex-col gap-3 rounded-2xl border border-border/70 bg-muted/20 p-3 sm:flex-row sm:items-start sm:justify-between">
-                <div className="flex min-w-0 items-start gap-3">
-                    <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" />
-                    <div className="min-w-0 space-y-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                            <span className="text-sm font-medium">{t('claudeBetaStripFlags.label')}</span>
-                            <span className="rounded-full bg-background px-2 py-0.5 text-[11px] text-muted-foreground">
-                                {t('claudeBetaStripFlags.defaultHint')}
-                            </span>
-                            <TooltipProvider>
-                                <Tooltip>
-                                    <TooltipTrigger asChild>
-                                        <HelpCircle className="size-4 text-muted-foreground cursor-help" />
-                                    </TooltipTrigger>
-                                    <TooltipContent className="max-w-xs">
-                                        {t('claudeBetaStripFlags.hint')}
-                                    </TooltipContent>
-                                </Tooltip>
-                            </TooltipProvider>
-                        </div>
-                        <p className="text-xs leading-5 text-muted-foreground">
-                            {t('claudeBetaStripFlags.description')}
-                        </p>
-                    </div>
-                </div>
-                <Input
-                    value={claudeBetaStripFlags}
-                    onChange={(event) => setClaudeBetaStripFlags(event.target.value)}
-                    onBlur={() => handleSave(
-                        SettingKey.ClaudeBetaStripFlags,
-                        claudeBetaStripFlags,
-                        initialClaudeBetaStripFlags.current
-                    )}
-                    placeholder={t('claudeBetaStripFlags.placeholder')}
-                    aria-label={t('claudeBetaStripFlags.label')}
-                    className="w-full min-w-0 rounded-xl font-mono text-xs sm:w-80"
-                />
-            </div>
-
+    const dialogNode = (
             <Dialog open={editingHeaderProfile !== null} onOpenChange={(open) => {
                 if (!open) setEditingHeaderProfile(null);
             }}>
@@ -1426,7 +1189,358 @@ export function SettingSystem() {
                     </DialogFooter>
                 </DialogContent>
             </Dialog>
+    );
 
+    const networkCard = (
+        <SystemCard key="network" icon={Globe} title={t('sections.network')} className={className}>
+            {/* 代理地址 */}
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex min-w-0 items-center gap-3">
+                    <Globe className="h-5 w-5 shrink-0 text-muted-foreground" />
+                    <span className="min-w-0 text-sm font-medium">{t('proxyUrl.label')}</span>
+                </div>
+                <Input
+                    value={proxyUrl}
+                    onChange={(e) => setProxyUrl(e.target.value)}
+                    onBlur={() => handleSave('proxy_url', proxyUrl, initialProxyUrl.current)}
+                    placeholder={t('proxyUrl.placeholder')}
+                    className="w-full rounded-xl sm:w-48"
+                />
+            </div>
+
+            {/* 可信反代网段（决定日志/限流用的真实客户端 IP） */}
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div className="flex min-w-0 items-start gap-3">
+                    <Shield className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" />
+                    <div className="flex min-w-0 flex-col">
+                        <span className="min-w-0 text-sm font-medium">{t('trustedProxies.label')}</span>
+                        <span className="text-xs text-muted-foreground">{t('trustedProxies.description')}</span>
+                    </div>
+                </div>
+                <Input
+                    value={trustedProxies}
+                    onChange={(e) => setTrustedProxies(e.target.value)}
+                    onBlur={() => handleSave('trusted_proxies', trustedProxies, initialTrustedProxies.current)}
+                    placeholder={t('trustedProxies.placeholder')}
+                    className="w-full rounded-xl sm:w-48"
+                />
+            </div>
+
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex min-w-0 items-center gap-3">
+                    <Shield className="h-5 w-5 shrink-0 text-muted-foreground" />
+                    <span className="min-w-0 text-sm font-medium">{t('corsAllowOrigins.label')}</span>
+                    <TooltipProvider>
+                        <Tooltip>
+                            <TooltipTrigger asChild>
+                                <HelpCircle className="size-4 text-muted-foreground cursor-help" />
+                            </TooltipTrigger>
+                            <TooltipContent>
+                                {t('corsAllowOrigins.hint')}
+                                <br />
+                                {t('corsAllowOrigins.example')}
+                            </TooltipContent>
+                        </Tooltip>
+                    </TooltipProvider>
+                </div>
+                <Popover>
+                    <PopoverTrigger asChild>
+                        <button
+                            type="button"
+                            className="border-input focus-visible:border-ring focus-visible:ring-ring/50 min-h-9 w-full rounded-xl border bg-transparent px-3 py-2 text-left text-sm shadow-xs outline-none transition-[color,box-shadow] focus-visible:ring-[3px] sm:w-48"
+                            title={corsAllowOriginsDisplay}
+                        >
+                            <span className={`block overflow-hidden text-ellipsis whitespace-nowrap ${corsAllowOriginsList.length === 0 ? 'text-muted-foreground' : ''}`}>
+                                {corsAllowOriginsDisplay}
+                            </span>
+                        </button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-[min(18rem,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] space-y-2 rounded-3xl bg-card p-3">
+                        <Input
+                            value={corsInputValue}
+                            onChange={(e) => setCorsInputValue(e.target.value)}
+                            onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    handleAddCorsOrigin();
+                                }
+                            }}
+                            placeholder={t('corsAllowOrigins.example')}
+                            className="h-9 rounded-xl"
+                            autoFocus
+                        />
+                        <div className="max-h-48 space-y-1 overflow-y-auto">
+                            {corsAllowOriginsList.length > 0 && (
+                                corsAllowOriginsList.map((origin) => (
+                                    <div key={origin} className="flex min-w-0 items-center justify-between gap-2 rounded-xl border border-border/60 px-2 py-1">
+                                        <span className="min-w-0 break-all text-xs leading-5">{origin}</span>
+                                        <button
+                                            type="button"
+                                            onClick={() => handleRemoveCorsOrigin(origin)}
+                                            className="text-muted-foreground transition-colors hover:text-destructive"
+                                            aria-label={`remove ${origin}`}
+                                        >
+                                            <X className="size-4" />
+                                        </button>
+                                    </div>
+                                ))
+                            )}
+                        </div>
+                    </PopoverContent>
+                </Popover>
+            </div>
+        </SystemCard>
+    );
+
+    const statsCard = (
+        <SystemCard key="stats" icon={Clock} title={t('sections.stats')} className={className}>
+            {/* 统计保存周期 */}
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex min-w-0 items-center gap-3">
+                    <Clock className="h-5 w-5 shrink-0 text-muted-foreground" />
+                    <span className="min-w-0 text-sm font-medium">{t('statsSaveInterval.label')}</span>
+                </div>
+                <Input
+                    type="number"
+                    value={statsSaveInterval}
+                    onChange={(e) => setStatsSaveInterval(e.target.value)}
+                    onBlur={() => handleSave('stats_save_interval', statsSaveInterval, initialStatsSaveInterval.current)}
+                    placeholder={t('statsSaveInterval.placeholder')}
+                    className="w-full rounded-xl sm:w-48"
+                />
+            </div>
+        </SystemCard>
+    );
+
+    const claudeCard = (
+        <SystemCard key="claude" icon={Zap} title={t('sections.claude')} className={className}>
+            <div className="grid min-w-0 gap-3">
+                <div className="flex items-start justify-between gap-4">
+                    <div className="flex min-w-0 items-start gap-3">
+                        <div className="min-w-0 space-y-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                                <span className="text-sm font-semibold">{t('anthropicAutoCacheControl.label')}</span>
+                                <TooltipProvider>
+                                    <Tooltip>
+                                        <TooltipTrigger asChild>
+                                            <HelpCircle className="size-4 text-muted-foreground cursor-help" />
+                                        </TooltipTrigger>
+                                        <TooltipContent className="max-w-xs">
+                                            {t('anthropicAutoCacheControl.hint')}
+                                        </TooltipContent>
+                                    </Tooltip>
+                                </TooltipProvider>
+                            </div>
+                            <p className="text-xs leading-5 text-muted-foreground">{t('headerDefaults.claudeDescription')}</p>
+                        </div>
+                    </div>
+                    <Switch
+                        checked={anthropicAutoCacheControl}
+                        onCheckedChange={handleAnthropicAutoCacheControlChange}
+                        aria-label={t('anthropicAutoCacheControl.label')}
+                        className="shrink-0"
+                    />
+                </div>
+                <div className="grid gap-1.5 border-t border-border/60 pt-3">
+                    {claudeHeaderRows.slice(0, 5).map((header) => (
+                        <div key={header.key} className="grid min-w-0 gap-1 rounded-xl border border-border/50 bg-background/45 px-2.5 py-2 text-xs sm:grid-cols-[minmax(7.5rem,0.8fr)_minmax(0,1.2fr)] sm:gap-2 sm:border-0 sm:bg-transparent sm:px-0 sm:py-0">
+                            <span className="min-w-0 break-all font-mono text-muted-foreground sm:truncate">{header.label}</span>
+                            <span className="min-w-0 break-all font-mono text-foreground sm:truncate">{header.value}</span>
+                        </div>
+                    ))}
+                </div>
+                <div className="grid gap-3 border-t border-border/60 pt-3">
+                    <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0 space-y-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                                <span className="text-sm font-medium">{t('claudeCLIAutoCompact.label')}</span>
+                                <TooltipProvider>
+                                    <Tooltip>
+                                        <TooltipTrigger asChild>
+                                            <HelpCircle className="size-4 text-muted-foreground cursor-help" />
+                                        </TooltipTrigger>
+                                        <TooltipContent className="max-w-xs">
+                                            {t('claudeCLIAutoCompact.hint')}
+                                        </TooltipContent>
+                                    </Tooltip>
+                                </TooltipProvider>
+                            </div>
+                        </div>
+                        <Switch
+                            checked={claudeCLIAutoCompact}
+                            onCheckedChange={handleClaudeCLIAutoCompactChange}
+                            aria-label={t('claudeCLIAutoCompact.label')}
+                            className="shrink-0"
+                        />
+                    </div>
+                    <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_9rem] sm:items-center">
+                        <div className="min-w-0 space-y-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                                <span className="text-sm font-medium">{t('claudeCLIReasoningEffort.label')}</span>
+                                <TooltipProvider>
+                                    <Tooltip>
+                                        <TooltipTrigger asChild>
+                                            <HelpCircle className="size-4 text-muted-foreground cursor-help" />
+                                        </TooltipTrigger>
+                                        <TooltipContent className="max-w-xs">
+                                            {t('claudeCLIReasoningEffort.hint')}
+                                        </TooltipContent>
+                                    </Tooltip>
+                                </TooltipProvider>
+                            </div>
+                        </div>
+                        <select
+                            value={claudeCLIReasoningEffort}
+                            onChange={(event) => {
+                                const value = event.target.value;
+                                setClaudeCLIReasoningEffort(value);
+                                handleSave(SettingKey.ClaudeCLIReasoningEffort, value, initialClaudeCLIReasoningEffort.current);
+                            }}
+                            aria-label={t('claudeCLIReasoningEffort.label')}
+                            className="h-9 w-full min-w-0 rounded-xl border border-input bg-background px-3 text-sm text-foreground"
+                        >
+                            <option value="auto">{t('claudeCLIReasoningEffort.auto')}</option>
+                            <option value="off">{t('claudeCLIReasoningEffort.off')}</option>
+                            <option value="low">{t('claudeCLIReasoningEffort.low')}</option>
+                            <option value="medium">{t('claudeCLIReasoningEffort.medium')}</option>
+                            <option value="high">{t('claudeCLIReasoningEffort.high')}</option>
+                            <option value="xhigh">{t('claudeCLIReasoningEffort.xhigh')}</option>
+                            <option value="max">{t('claudeCLIReasoningEffort.max')}</option>
+                        </select>
+                    </div>
+                </div>
+                <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => openHeaderEditor('claude')}
+                    className="h-8 w-fit rounded-xl"
+                >
+                    <Pencil className="size-3.5" />
+                    {t('headerDefaults.edit')}
+                </Button>
+            </div>
+        </SystemCard>
+    );
+
+    const codexCard = (
+        <SystemCard key="codex" icon={Fingerprint} title={t('sections.codex')} className={className}>
+            <div className="grid min-w-0 gap-3">
+                <div className="flex items-start justify-between gap-4">
+                    <div className="flex min-w-0 items-start gap-3">
+                        <div className="min-w-0 space-y-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                                <span className="text-sm font-semibold">{t('openAIAutoPromptCacheKey.label')}</span>
+                                <TooltipProvider>
+                                    <Tooltip>
+                                        <TooltipTrigger asChild>
+                                            <HelpCircle className="size-4 text-muted-foreground cursor-help" />
+                                        </TooltipTrigger>
+                                        <TooltipContent className="max-w-xs">
+                                            {t('openAIAutoPromptCacheKey.hint')}
+                                        </TooltipContent>
+                                    </Tooltip>
+                                </TooltipProvider>
+                            </div>
+                            <p className="text-xs leading-5 text-muted-foreground">{t('headerDefaults.codexDescription')}</p>
+                        </div>
+                    </div>
+                    <Switch
+                        checked={openAIAutoPromptCacheKey}
+                        onCheckedChange={handleOpenAIAutoPromptCacheKeyChange}
+                        aria-label={t('openAIAutoPromptCacheKey.label')}
+                        className="shrink-0"
+                    />
+                </div>
+                <div className="grid gap-1.5 border-t border-border/60 pt-3">
+                    {codexHeaderRows.map((header) => (
+                        <div key={header.key} className="grid min-w-0 gap-1 rounded-xl border border-border/50 bg-background/45 px-2.5 py-2 text-xs sm:grid-cols-[minmax(7.5rem,0.8fr)_minmax(0,1.2fr)] sm:gap-2 sm:border-0 sm:bg-transparent sm:px-0 sm:py-0">
+                            <span className="min-w-0 break-all font-mono text-muted-foreground sm:truncate">{header.label}</span>
+                            <span className="min-w-0 break-all font-mono text-foreground sm:truncate">{header.value}</span>
+                        </div>
+                    ))}
+                </div>
+                <div className="flex items-start justify-between gap-3 border-t border-border/60 pt-3">
+                    <div className="min-w-0 space-y-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-sm font-medium">{t('codexFastMode.label')}</span>
+                            <TooltipProvider>
+                                <Tooltip>
+                                    <TooltipTrigger asChild>
+                                        <HelpCircle className="size-4 text-muted-foreground cursor-help" />
+                                    </TooltipTrigger>
+                                    <TooltipContent className="max-w-xs">
+                                        {t('codexFastMode.hint')}
+                                    </TooltipContent>
+                                </Tooltip>
+                            </TooltipProvider>
+                        </div>
+                    </div>
+                    <Switch
+                        checked={codexFastMode}
+                        onCheckedChange={handleCodexFastModeChange}
+                        aria-label={t('codexFastMode.label')}
+                        className="shrink-0"
+                    />
+                </div>
+                <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => openHeaderEditor('codex')}
+                    className="h-8 w-fit rounded-xl"
+                >
+                    <Pencil className="size-3.5" />
+                    {t('headerDefaults.edit')}
+                </Button>
+            </div>
+        </SystemCard>
+    );
+
+    const betaStripCard = (
+        // Claude Beta 剥离标记（上游抽风逃生）：只有一行，整块本身就是卡片
+        <div className={`flex min-w-0 flex-col gap-3 rounded-3xl border border-border bg-card p-4 sm:flex-row sm:items-start sm:justify-between sm:p-6 ${className}`}>
+            <div className="flex min-w-0 items-start gap-3">
+                <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" />
+                <div className="min-w-0 space-y-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-sm font-medium">{t('claudeBetaStripFlags.label')}</span>
+                        <span className="rounded-full bg-background px-2 py-0.5 text-[11px] text-muted-foreground">
+                            {t('claudeBetaStripFlags.defaultHint')}
+                        </span>
+                        <TooltipProvider>
+                            <Tooltip>
+                                <TooltipTrigger asChild>
+                                    <HelpCircle className="size-4 text-muted-foreground cursor-help" />
+                                </TooltipTrigger>
+                                <TooltipContent className="max-w-xs">
+                                    {t('claudeBetaStripFlags.hint')}
+                                </TooltipContent>
+                            </Tooltip>
+                        </TooltipProvider>
+                    </div>
+                    <p className="text-xs leading-5 text-muted-foreground">
+                        {t('claudeBetaStripFlags.description')}
+                    </p>
+                </div>
+            </div>
+            <Input
+                value={claudeBetaStripFlags}
+                onChange={(event) => setClaudeBetaStripFlags(event.target.value)}
+                onBlur={() => handleSave(
+                    SettingKey.ClaudeBetaStripFlags,
+                    claudeBetaStripFlags,
+                    initialClaudeBetaStripFlags.current
+                )}
+                placeholder={t('claudeBetaStripFlags.placeholder')}
+                aria-label={t('claudeBetaStripFlags.label')}
+                className="w-full min-w-0 rounded-xl font-mono text-xs sm:w-80"
+            />
+        </div>
+    );
+
+    const streamCard = (
+        <SystemCard key="stream" icon={Radio} title={t('sections.stream')} className={className}>
             <div className="grid gap-3 rounded-2xl border border-border/70 bg-muted/20 p-3">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                     <div className="flex min-w-0 items-start gap-3">
@@ -1650,29 +1764,26 @@ export function SettingSystem() {
                     </div>
                 </div>
             </div>
+        </SystemCard>
+    );
 
+    const registrationCard = (
+        <SystemCard key="registration" icon={UserPlus} title={t('sections.registration')} className={className}>
             {/* 新用户直接注册 */}
-            <div className="flex items-center justify-between gap-4">
-                <div className="flex min-w-0 items-center gap-3">
-                    <UserPlus className="h-5 w-5 shrink-0 text-muted-foreground" />
-                    <span className="min-w-0 text-sm font-medium">{t('userRegistration.label')}</span>
-                    <TooltipProvider>
-                        <Tooltip>
-                            <TooltipTrigger asChild>
-                                <HelpCircle className="size-4 text-muted-foreground cursor-help" />
-                            </TooltipTrigger>
-                            <TooltipContent>
-                                {t('userRegistration.hint')}
-                            </TooltipContent>
-                        </Tooltip>
-                    </TooltipProvider>
+            <div className="space-y-1">
+                <div className="flex items-center justify-between gap-4">
+                    <div className="flex min-w-0 items-center gap-3">
+                        <UserPlus className="h-5 w-5 shrink-0 text-muted-foreground" />
+                        <span className="min-w-0 text-sm font-medium">{t('userRegistration.label')}</span>
+                    </div>
+                    <Switch
+                        checked={userRegistrationEnabled}
+                        onCheckedChange={handleUserRegistrationEnabledChange}
+                        aria-label={t('userRegistration.label')}
+                        className="shrink-0"
+                    />
                 </div>
-                <Switch
-                    checked={userRegistrationEnabled}
-                    onCheckedChange={handleUserRegistrationEnabledChange}
-                    aria-label={t('userRegistration.label')}
-                    className="shrink-0"
-                />
+                <p className="pl-8 text-xs leading-5 text-muted-foreground">{t('userRegistration.hint')}</p>
             </div>
 
             {/* 注册邮箱验证 */}
@@ -1887,116 +1998,104 @@ export function SettingSystem() {
                 </div>
                 )}
             </div>
+        </SystemCard>
+    );
 
-            {/* 每日签到 */}
-            <div className="grid gap-3 rounded-2xl border border-border/70 bg-muted/20 p-3">
-                <div className="flex items-center justify-between gap-4">
-                    <div className="flex min-w-0 items-center gap-3">
-                        <Gift className="h-5 w-5 shrink-0 text-muted-foreground" />
-                        <span className="min-w-0 text-sm font-medium">{t('checkIn.title')}</span>
-                        <TooltipProvider>
-                            <Tooltip>
-                                <TooltipTrigger asChild>
-                                    <HelpCircle className="size-4 text-muted-foreground cursor-help" />
-                                </TooltipTrigger>
-                                <TooltipContent>
-                                    {t('checkIn.hint')}
-                                </TooltipContent>
-                            </Tooltip>
-                        </TooltipProvider>
-                    </div>
-                    <Switch
-                        checked={checkInEnabled}
-                        onCheckedChange={handleCheckInEnabledChange}
-                        aria-label={t('checkIn.enabled')}
-                        className="shrink-0"
-                    />
-                </div>
-                <div className="grid gap-2 sm:grid-cols-[180px_minmax(0,1fr)_minmax(0,1fr)]">
-                    <select
-                        value={checkInRewardMode}
-                        onChange={(event) => {
-                            const value = event.target.value;
-                            setCheckInRewardMode(value);
-                            handleSave(SettingKey.CheckInRewardMode, value, initialCheckInRewardMode.current);
-                        }}
-                        aria-label={t('checkIn.rewardMode')}
-                        className="h-9 w-full min-w-0 rounded-xl border border-input bg-background px-3 text-sm text-foreground"
-                    >
-                        <option value="fixed">{t('checkIn.fixed')}</option>
-                        <option value="random">{t('checkIn.random')}</option>
-                    </select>
+    const checkInCard = (
+        <SystemCard key="checkIn" icon={Gift} title={t('checkIn.title')} className={className}>
+            <div className="flex items-center justify-between gap-4">
+                <span className="min-w-0 text-sm font-medium">{t('checkIn.enabled')}</span>
+                <Switch
+                    checked={checkInEnabled}
+                    onCheckedChange={handleCheckInEnabledChange}
+                    aria-label={t('checkIn.enabled')}
+                    className="shrink-0"
+                />
+            </div>
+            <p className="-mt-3 text-xs leading-5 text-muted-foreground">{t('checkIn.hint')}</p>
+            <div className="grid gap-1.5">
+                <span className="text-xs text-muted-foreground">{t('checkIn.rewardMode')}</span>
+                <select
+                    value={checkInRewardMode}
+                    onChange={(event) => {
+                        const value = event.target.value;
+                        setCheckInRewardMode(value);
+                        handleSave(SettingKey.CheckInRewardMode, value, initialCheckInRewardMode.current);
+                    }}
+                    aria-label={t('checkIn.rewardMode')}
+                    className="h-9 w-full min-w-0 rounded-xl border border-input bg-background px-3 text-sm text-foreground"
+                >
+                    <option value="fixed">{t('checkIn.fixed')}</option>
+                    <option value="random">{t('checkIn.random')}</option>
+                </select>
+            </div>
+            <div className="grid gap-1.5">
+                <span className="text-xs text-muted-foreground">{t('checkIn.fixed')}</span>
+                <Input
+                    type="number"
+                    min="0"
+                    value={checkInRewardAmount}
+                    onChange={(event) => setCheckInRewardAmount(event.target.value)}
+                    onBlur={() => handleSave(
+                        SettingKey.CheckInRewardAmount,
+                        checkInRewardAmount,
+                        initialCheckInRewardAmount.current
+                    )}
+                    placeholder={t('checkIn.amountPlaceholder')}
+                    disabled={checkInRewardMode !== 'fixed'}
+                    className="rounded-xl"
+                />
+            </div>
+            <div className="grid gap-1.5">
+                <span className="text-xs text-muted-foreground">{t('checkIn.randomRange')}</span>
+                <div className="grid min-w-0 grid-cols-2 gap-2">
                     <Input
                         type="number"
                         min="0"
-                        value={checkInRewardAmount}
-                        onChange={(event) => setCheckInRewardAmount(event.target.value)}
+                        value={checkInRewardMin}
+                        onChange={(event) => setCheckInRewardMin(event.target.value)}
                         onBlur={() => handleSave(
-                            SettingKey.CheckInRewardAmount,
-                            checkInRewardAmount,
-                            initialCheckInRewardAmount.current
+                            SettingKey.CheckInRewardMin,
+                            checkInRewardMin,
+                            initialCheckInRewardMin.current
                         )}
-                        placeholder={t('checkIn.amountPlaceholder')}
-                        disabled={checkInRewardMode !== 'fixed'}
+                        placeholder={t('checkIn.minPlaceholder')}
+                        disabled={checkInRewardMode !== 'random'}
                         className="rounded-xl"
                     />
-                    <div className="grid min-w-0 grid-cols-2 gap-2">
-                        <Input
-                            type="number"
-                            min="0"
-                            value={checkInRewardMin}
-                            onChange={(event) => setCheckInRewardMin(event.target.value)}
-                            onBlur={() => handleSave(
-                                SettingKey.CheckInRewardMin,
-                                checkInRewardMin,
-                                initialCheckInRewardMin.current
-                            )}
-                            placeholder={t('checkIn.minPlaceholder')}
-                            disabled={checkInRewardMode !== 'random'}
-                            className="rounded-xl"
-                        />
-                        <Input
-                            type="number"
-                            min="0"
-                            value={checkInRewardMax}
-                            onChange={(event) => setCheckInRewardMax(event.target.value)}
-                            onBlur={() => handleSave(
-                                SettingKey.CheckInRewardMax,
-                                checkInRewardMax,
-                                initialCheckInRewardMax.current
-                            )}
-                            placeholder={t('checkIn.maxPlaceholder')}
-                            disabled={checkInRewardMode !== 'random'}
-                            className="rounded-xl"
-                        />
-                    </div>
-                </div>
-            </div>
-
-            {/* 上游错误响应 */}
-            <div className="grid gap-3 rounded-2xl border border-border/70 bg-muted/20 p-3">
-                <div className="flex items-center justify-between gap-4">
-                    <div className="flex min-w-0 items-center gap-3">
-                        <AlertTriangle className="h-5 w-5 shrink-0 text-muted-foreground" />
-                        <span className="min-w-0 text-sm font-medium">{t('upstreamError.title')}</span>
-                        <TooltipProvider>
-                            <Tooltip>
-                                <TooltipTrigger asChild>
-                                    <HelpCircle className="size-4 text-muted-foreground cursor-help" />
-                                </TooltipTrigger>
-                                <TooltipContent>
-                                    {t('upstreamError.hint')}
-                                </TooltipContent>
-                            </Tooltip>
-                        </TooltipProvider>
-                    </div>
-                    <Switch
-                        checked={upstreamErrorStatusPassthrough}
-                        onCheckedChange={handleUpstreamErrorStatusPassthroughChange}
-                        aria-label={t('upstreamError.statusPassthrough')}
-                        className="shrink-0"
+                    <Input
+                        type="number"
+                        min="0"
+                        value={checkInRewardMax}
+                        onChange={(event) => setCheckInRewardMax(event.target.value)}
+                        onBlur={() => handleSave(
+                            SettingKey.CheckInRewardMax,
+                            checkInRewardMax,
+                            initialCheckInRewardMax.current
+                        )}
+                        placeholder={t('checkIn.maxPlaceholder')}
+                        disabled={checkInRewardMode !== 'random'}
+                        className="rounded-xl"
                     />
                 </div>
+            </div>
+        </SystemCard>
+    );
+
+    const upstreamErrorCard = (
+        <SystemCard key="upstreamError" icon={AlertTriangle} title={t('upstreamError.title')} className={className}>
+            <p className="-mt-3 text-xs leading-5 text-muted-foreground">{t('upstreamError.hint')}</p>
+            <div className="flex items-center justify-between gap-4">
+                <span className="min-w-0 text-sm font-medium">{t('upstreamError.statusPassthrough')}</span>
+                <Switch
+                    checked={upstreamErrorStatusPassthrough}
+                    onCheckedChange={handleUpstreamErrorStatusPassthroughChange}
+                    aria-label={t('upstreamError.statusPassthrough')}
+                    className="shrink-0"
+                />
+            </div>
+            <div className="grid gap-1.5">
+                <span className="text-xs text-muted-foreground">{t('upstreamError.publicCode')}</span>
                 <Input
                     value={upstreamErrorPublicCode}
                     onChange={(event) => setUpstreamErrorPublicCode(event.target.value)}
@@ -2009,6 +2108,9 @@ export function SettingSystem() {
                     aria-label={t('upstreamError.publicCode')}
                     className="rounded-xl"
                 />
+            </div>
+            <div className="grid gap-1.5">
+                <span className="text-xs text-muted-foreground">{t('upstreamError.bodyMode')}</span>
                 <div className="grid gap-2 sm:grid-cols-[180px_minmax(0,1fr)]">
                     <select
                         value={upstreamErrorBodyMode}
@@ -2038,70 +2140,35 @@ export function SettingSystem() {
                     />
                 </div>
             </div>
-
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex min-w-0 items-center gap-3">
-                    <Shield className="h-5 w-5 shrink-0 text-muted-foreground" />
-                    <span className="min-w-0 text-sm font-medium">{t('corsAllowOrigins.label')}</span>
-                    <TooltipProvider>
-                        <Tooltip>
-                            <TooltipTrigger asChild>
-                                <HelpCircle className="size-4 text-muted-foreground cursor-help" />
-                            </TooltipTrigger>
-                            <TooltipContent>
-                                {t('corsAllowOrigins.hint')}
-                                <br />
-                                {t('corsAllowOrigins.example')}
-                            </TooltipContent>
-                        </Tooltip>
-                    </TooltipProvider>
-                </div>
-                <Popover>
-                    <PopoverTrigger asChild>
-                        <button
-                            type="button"
-                            className="border-input focus-visible:border-ring focus-visible:ring-ring/50 min-h-9 w-full rounded-xl border bg-transparent px-3 py-2 text-left text-sm shadow-xs outline-none transition-[color,box-shadow] focus-visible:ring-[3px] sm:w-48"
-                            title={corsAllowOriginsDisplay}
-                        >
-                            <span className={`block overflow-hidden text-ellipsis whitespace-nowrap ${corsAllowOriginsList.length === 0 ? 'text-muted-foreground' : ''}`}>
-                                {corsAllowOriginsDisplay}
-                            </span>
-                        </button>
-                    </PopoverTrigger>
-                    <PopoverContent className="w-[min(18rem,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] space-y-2 rounded-3xl bg-card p-3">
-                        <Input
-                            value={corsInputValue}
-                            onChange={(e) => setCorsInputValue(e.target.value)}
-                            onKeyDown={(e) => {
-                                if (e.key === 'Enter') {
-                                    e.preventDefault();
-                                    handleAddCorsOrigin();
-                                }
-                            }}
-                            placeholder={t('corsAllowOrigins.example')}
-                            className="h-9 rounded-xl"
-                            autoFocus
-                        />
-                        <div className="max-h-48 space-y-1 overflow-y-auto">
-                            {corsAllowOriginsList.length > 0 && (
-                                corsAllowOriginsList.map((origin) => (
-                                    <div key={origin} className="flex min-w-0 items-center justify-between gap-2 rounded-xl border border-border/60 px-2 py-1">
-                                        <span className="min-w-0 break-all text-xs leading-5">{origin}</span>
-                                        <button
-                                            type="button"
-                                            onClick={() => handleRemoveCorsOrigin(origin)}
-                                            className="text-muted-foreground transition-colors hover:text-destructive"
-                                            aria-label={`remove ${origin}`}
-                                        >
-                                            <X className="size-4" />
-                                        </button>
-                                    </div>
-                                ))
-                            )}
-                        </div>
-                    </PopoverContent>
-                </Popover>
-            </div>
-        </div>
+        </SystemCard>
     );
+
+    switch (section) {
+        case 'network': return networkCard;
+        case 'stats': return statsCard;
+        // 编辑 Header 的弹窗跟着 Claude / Codex 卡走（各自实例各自一份，只会在点了「编辑」的那张卡里打开）。
+        case 'claude': return <>{claudeCard}{dialogNode}</>;
+        case 'codex': return <>{codexCard}{dialogNode}</>;
+        case 'claudeBetaStrip': return betaStripCard;
+        case 'stream': return streamCard;
+        case 'registration': return registrationCard;
+        case 'checkIn': return checkInCard;
+        case 'upstreamError': return upstreamErrorCard;
+        default:
+            // 不指定 section：按原顺序渲染全部区块（保持组件完整行为，供测试与独立使用）。
+            return (
+                <>
+                    {networkCard}
+                    {statsCard}
+                    {claudeCard}
+                    {codexCard}
+                    {betaStripCard}
+                    {dialogNode}
+                    {streamCard}
+                    {registrationCard}
+                    {checkInCard}
+                    {upstreamErrorCard}
+                </>
+            );
+    }
 }

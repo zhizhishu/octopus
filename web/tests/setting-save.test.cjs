@@ -829,3 +829,75 @@ test('locale: three languages carry the new keys (guards against MISSING_MESSAGE
         assert.ok(log.noBreaker?.label && log.noBreaker?.hint, `${lang}: log.noBreaker texts missing`);
     }
 });
+
+// -----------------------------------------------------------------------------
+// 「记录发给上游的实际请求」(upstream_request_body_log_enabled). Existing tests above stay untouched.
+// The relay reads this key with SettingGetInt (strconv.Atoi, non-zero = on), so the switch must
+// write "1"/"0" — "true" would fail to parse on the backend and silently mean "off".
+// -----------------------------------------------------------------------------
+
+const BODY_LOG = 'log.upstreamRequestBody.label';
+
+test('upstream body log: defaults off and reads the stored value the way the backend does', async () => {
+    const cases = [
+        [undefined, false, 'missing key → off (seed default is "0")'],
+        ['0', false, '"0" → off'],
+        ['1', true, '"1" → on'],
+        ['2', true, 'any non-zero integer is on for the backend, so show it on'],
+        ['true', false, '"true" does not parse as an int on the backend → off'],
+        ['', false, 'empty → off'],
+    ];
+    for (const [value, expected, why] of cases) {
+        const settings = [{ key: 'relay_log_keep_enabled', value: 'true' }];
+        if (value !== undefined) settings.push({ key: 'upstream_request_body_log_enabled', value });
+        const h = makeLogHarness(settings);
+        await h.render();
+        assert.equal(h.switchByLabel(BODY_LOG).props.checked, expected, why);
+    }
+});
+
+test('upstream body log: switching saves "1" / "0" on the right key', async () => {
+    const h = makeLogHarness([
+        { key: 'relay_log_keep_enabled', value: 'true' },
+        { key: 'upstream_request_body_log_enabled', value: '0' },
+    ]);
+    await h.render();
+    h.switchByLabel(BODY_LOG).props.onCheckedChange(true);
+    assert.deepEqual(h.mutation.writes.at(-1).variables, { key: 'upstream_request_body_log_enabled', value: '1' });
+    h.mutation.settle(true);
+    assert.ok(h.notes.some(([kind]) => kind === 'success'));
+    await h.render();
+    assert.equal(h.switchByLabel(BODY_LOG).props.checked, true);
+    h.switchByLabel(BODY_LOG).props.onCheckedChange(false);
+    assert.deepEqual(h.mutation.writes.at(-1).variables, { key: 'upstream_request_body_log_enabled', value: '0' });
+    assert.ok(!h.mutation.writes.some((w) => w.variables.value === 'true' || w.variables.value === 'false'),
+        'never writes a boolean string for this key');
+});
+
+test('upstream body log: a failed save toasts and rolls the switch back', async () => {
+    const h = makeLogHarness([
+        { key: 'relay_log_keep_enabled', value: 'true' },
+        { key: 'upstream_request_body_log_enabled', value: '0' },
+    ]);
+    await h.render();
+    h.switchByLabel(BODY_LOG).props.onCheckedChange(true);
+    h.mutation.settle(false);
+    assert.ok(h.notes.some(([kind]) => kind === 'error'), 'failure must be visible');
+    assert.ok(!h.notes.some(([kind]) => kind === 'success'));
+    await h.render();
+    assert.equal(h.switchByLabel(BODY_LOG).props.checked, false, 'unconfirmed value rolls back');
+});
+
+test('upstream body log: greyed out while 启用历史日志 is off, live again when it is on', async () => {
+    const off = makeLogHarness([
+        { key: 'relay_log_keep_enabled', value: 'false' },
+        { key: 'upstream_request_body_log_enabled', value: '1' },
+    ]);
+    await off.render();
+    assert.equal(off.switchByLabel(BODY_LOG).props.disabled, true, 'disabled when history logs are off');
+    assert.equal(off.switchByLabel(BODY_LOG).props.checked, true, 'still shows the stored value');
+
+    const on = makeLogHarness([{ key: 'relay_log_keep_enabled', value: 'true' }]);
+    await on.render();
+    assert.equal(on.switchByLabel(BODY_LOG).props.disabled, false);
+});

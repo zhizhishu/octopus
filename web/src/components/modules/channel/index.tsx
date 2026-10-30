@@ -5,7 +5,7 @@ import { useChannelList } from '@/api/endpoints/channel';
 import { Card } from './Card';
 import { useSearchStore, useToolbarViewOptionsStore } from '@/components/modules/toolbar';
 import { VirtualizedGrid } from '@/components/common/VirtualizedGrid';
-import { cn } from '@/lib/utils';
+import { PillTabButton as EndpointFilterButton } from '@/components/common/PillTabButton';
 import {
     CHANNEL_ENDPOINT_FAMILIES,
     type ChannelEndpointFilter,
@@ -102,41 +102,5 @@ export function Channel() {
                 )}
             </div>
         </div>
-    );
-}
-
-function EndpointFilterButton({
-    label,
-    count,
-    active,
-    disabled = false,
-    onClick,
-}: {
-    label: string;
-    count: number;
-    active: boolean;
-    disabled?: boolean;
-    onClick: () => void;
-}) {
-    return (
-        <button
-            type="button"
-            onClick={onClick}
-            disabled={disabled}
-            className={cn(
-                'group inline-flex h-8 max-w-[9.5rem] shrink-0 items-center gap-1.5 overflow-hidden whitespace-nowrap rounded-md border border-transparent px-2.5 text-xs font-medium leading-none transition-colors disabled:cursor-not-allowed disabled:opacity-40 sm:max-w-none',
-                active
-                    ? 'border-border bg-background text-foreground shadow-xs'
-                    : 'text-muted-foreground hover:bg-muted/70 hover:text-foreground'
-            )}
-        >
-            <span className="min-w-0 truncate">{label}</span>
-            <span className={cn(
-                'shrink-0 rounded-full px-1.5 py-0.5 text-[10px] tabular-nums',
-                active ? 'bg-muted text-foreground' : 'bg-muted/70 text-muted-foreground group-hover:text-foreground'
-            )}>
-                {count}
-            </span>
-        </button>
     );
 }

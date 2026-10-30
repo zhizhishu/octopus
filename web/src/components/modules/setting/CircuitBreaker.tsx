@@ -106,7 +106,7 @@ export function SettingCircuitBreaker() {
                     onChange={(e) => setThreshold(e.target.value)}
                     onBlur={() => handleSave(SettingKey.CircuitBreakerThreshold, threshold, initialThreshold.current)}
                     placeholder={t('circuitBreaker.threshold.placeholder')}
-                    className="w-48 rounded-xl"
+                    className="w-32 shrink-0 rounded-xl"
                 />
             </div>
 
@@ -122,7 +122,7 @@ export function SettingCircuitBreaker() {
                     onChange={(e) => setCooldown(e.target.value)}
                     onBlur={() => handleSave(SettingKey.CircuitBreakerCooldown, cooldown, initialCooldown.current)}
                     placeholder={t('circuitBreaker.cooldown.placeholder')}
-                    className="w-48 rounded-xl"
+                    className="w-32 shrink-0 rounded-xl"
                 />
             </div>
 
@@ -138,7 +138,7 @@ export function SettingCircuitBreaker() {
                     onChange={(e) => setMaxCooldown(e.target.value)}
                     onBlur={() => handleSave(SettingKey.CircuitBreakerMaxCooldown, maxCooldown, initialMaxCooldown.current)}
                     placeholder={t('circuitBreaker.maxCooldown.placeholder')}
-                    className="w-48 rounded-xl"
+                    className="w-32 shrink-0 rounded-xl"
                 />
             </div>
         </div>

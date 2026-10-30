@@ -395,7 +395,8 @@
       "random": "隨機區間",
       "amountPlaceholder": "固定點數，例如 100",
       "minPlaceholder": "最小點數",
-      "maxPlaceholder": "最大點數"
+      "maxPlaceholder": "最大點數",
+      "randomRange": "隨機區間（選「隨機區間」時生效）"
     },
     "upstreamError": {
       "title": "上游錯誤回應",
@@ -720,7 +721,49 @@
       "reclaim": {
         "label": "自動回收磁碟空間",
         "hint": "日誌刪除後檔案不會自動縮小，開啟後會定期把騰出的空間還給磁碟。VACUUM 期間會短暫鎖庫，如有異常可關閉。"
+      },
+      "upstreamRequestBody": {
+        "label": "記錄發給上游的實際請求",
+        "hint": "排查用，請求原樣保存（含金鑰），開啟後會增加日誌儲存"
+      },
+      "rescue": {
+        "title": "自動救援"
       }
+    },
+    "tabs": {
+      "ariaLabel": "設定分類",
+      "general": {
+        "label": "一般",
+        "description": "版本、外觀、帳戶和管理員權杖——日常最常改的幾項都在這裡。"
+      },
+      "relay": {
+        "label": "轉發與容錯",
+        "description": "渠道失敗時怎麼熔斷、怎麼救援、串流連線怎麼保活，以及出錯時給使用者看什麼。"
+      },
+      "identity": {
+        "label": "用戶端指紋",
+        "description": "出站時模仿 Claude CLI / Codex 的請求標頭與快取策略，以及多套裝置指紋。"
+      },
+      "users": {
+        "label": "使用者與註冊",
+        "description": "新使用者怎麼註冊、要不要信箱驗證，以及每日簽到獎勵。"
+      },
+      "system": {
+        "label": "系統",
+        "description": "代理、反向代理網段、跨域這些部署相關的底層設定，以及定時同步與統計。"
+      },
+      "logs": {
+        "label": "日誌與備份",
+        "description": "日誌存多久、存多大、要不要記下發給上游的原始請求，以及整庫備份還原。"
+      }
+    },
+    "sections": {
+      "network": "網路與存取",
+      "stats": "統計",
+      "claude": "Claude（Anthropic 渠道）",
+      "codex": "Codex（Responses 渠道）",
+      "stream": "串流與逾時",
+      "registration": "註冊與驗證"
     }
   },
   "model": {

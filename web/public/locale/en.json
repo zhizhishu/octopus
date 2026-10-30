@@ -395,7 +395,8 @@
       "random": "Random range",
       "amountPlaceholder": "Fixed amount, e.g. 100",
       "minPlaceholder": "Minimum",
-      "maxPlaceholder": "Maximum"
+      "maxPlaceholder": "Maximum",
+      "randomRange": "Random range (used when the mode is “Random range”)"
     },
     "upstreamError": {
       "title": "Upstream Error Response",
@@ -720,7 +721,49 @@
       "reclaim": {
         "label": "Auto-reclaim disk space",
         "hint": "Deleting logs does not shrink the file. When enabled, freed space is periodically returned to disk. VACUUM briefly locks the database; turn this off if it causes trouble."
+      },
+      "upstreamRequestBody": {
+        "label": "Record the exact request sent upstream",
+        "hint": "For troubleshooting. Saved as-is (API keys included) and uses more log storage"
+      },
+      "rescue": {
+        "title": "Auto rescue"
       }
+    },
+    "tabs": {
+      "ariaLabel": "Setting categories",
+      "general": {
+        "label": "General",
+        "description": "Version, appearance, account and admin token — the things you change most often."
+      },
+      "relay": {
+        "label": "Relay & resilience",
+        "description": "How failing channels are tripped and rescued, how streams stay alive, and what users see when something breaks."
+      },
+      "identity": {
+        "label": "Client identity",
+        "description": "Outbound Claude CLI / Codex headers and cache behavior, plus multiple device fingerprints."
+      },
+      "users": {
+        "label": "Users & sign-up",
+        "description": "How new users sign up, whether email verification is required, and daily check-in rewards."
+      },
+      "system": {
+        "label": "System",
+        "description": "Deployment plumbing — proxy, trusted proxy ranges, CORS — plus scheduled sync and stats."
+      },
+      "logs": {
+        "label": "Logs & backup",
+        "description": "How long and how much to keep, whether to record the raw upstream request, and full backup / restore."
+      }
+    },
+    "sections": {
+      "network": "Network & access",
+      "stats": "Statistics",
+      "claude": "Claude (Anthropic channels)",
+      "codex": "Codex (Responses channels)",
+      "stream": "Streaming & timeouts",
+      "registration": "Sign-up & verification"
     }
   },
   "model": {
