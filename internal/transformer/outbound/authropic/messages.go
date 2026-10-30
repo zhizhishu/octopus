@@ -572,6 +572,15 @@ func convertToAnthropicRequest(req *model.InternalLLMRequest) *anthropicModel.Me
 		applyAutomaticCacheControl(result)
 	}
 
+	// context_management we injected ourselves (clear_thinking_20251015) is only legal while
+	// thinking is enabled or adaptive; Anthropic answers 400 "`clear_thinking_20251015`
+	// strategy requires `thinking` to be enabled or adaptive" otherwise. Copy CLIProxyAPI
+	// injectClaudeCodeContextManagement: drop our own copy when the final thinking is off.
+	if req.TransformOptions.ClaudeContextManagementInjected &&
+		(result.Thinking == nil || !model.ClaudeThinkingAcceptsClearThinking(string(result.Thinking.Type))) {
+		result.ContextManagement = nil
+	}
+
 	// When thinking is enabled, Anthropic rejects custom temperature / top_p with
 	// 400 "temperature cannot be specified when thinking is enabled".
 	if result.Thinking != nil && (result.Thinking.Type == "enabled" || result.Thinking.Type == "adaptive") {

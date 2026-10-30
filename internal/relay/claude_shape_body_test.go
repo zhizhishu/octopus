@@ -37,11 +37,11 @@ func claudeShapeAttempt(t *testing.T, userAgent string, channelType outbound.Out
 		relayRequest: &relayRequest{
 			c: c,
 			internalRequest: &model.InternalLLMRequest{
-				Model:    "claude-sonnet-example",
+				Model:    "claude-sonnet-4-6",
 				Stream:   &streaming,
 				Messages: []model.Message{{Role: "user", Content: model.MessageContent{Content: &text}}},
 			},
-			requestModel: "claude-sonnet-example",
+			requestModel: "claude-sonnet-4-6",
 		},
 		channel: &dbmodel.Channel{Type: channelType},
 	}
@@ -54,6 +54,7 @@ func TestNonCLICallerGetsTheClaudeCLIShapeTopLevelKeys(t *testing.T) {
 	}
 
 	ra := claudeShapeAttempt(t, "python-requests/2.31.0", outbound.OutboundTypeAnthropic)
+	ra.applyClaudeDefaultEffort() // default 默认思考强度 = high
 	ra.ensureClaudeCLIShapeTopLevelKeys()
 
 	// Values are the measured golden ones; comparing bytes keeps an invented value from passing.
@@ -76,6 +77,7 @@ func TestNonCLICallerOutboundCarriesTheCLIShapedKeyOrder(t *testing.T) {
 	}
 
 	ra := claudeShapeAttempt(t, "python-requests/2.31.0", outbound.OutboundTypeAnthropic)
+	ra.applyClaudeDefaultEffort() // default 默认思考强度 = high
 	ra.ensureClaudeCLIShapeTopLevelKeys()
 
 	body := outboundBody(t, ra)

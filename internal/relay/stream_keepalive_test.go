@@ -496,10 +496,7 @@ data: {"type":"message_stop"}
 func TestAnthropicOneMillionPlainClientGetsClaudeCompatibleStreamShape(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx := setupRelayErrorDB(t)
-	// adaptive thinking + clear_thinking context management are now opt-in.
-	if err := op.SettingSetString(dbmodel.SettingKeyClaudeCLIAutoCompact, "true"); err != nil {
-		t.Fatalf("set auto compact: %v", err)
-	}
+	// default 默认思考强度=high; context_management comes from 补齐 Claude CLI 请求字段.
 	if err := op.SettingSetString(dbmodel.SettingKeyClaudeCLIReasoningEffort, "high"); err != nil {
 		t.Fatalf("set reasoning effort: %v", err)
 	}
@@ -730,9 +727,7 @@ data: {"type":"message_stop"}
 func TestAnthropicOneMillionPlainClientWithOwnToolKeepsToolAndGetsRuntimeShape(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx := setupRelayErrorDB(t)
-	if err := op.SettingSetString(dbmodel.SettingKeyClaudeCLIAutoCompact, "true"); err != nil {
-		t.Fatalf("set auto compact: %v", err)
-	}
+	// default 默认思考强度=high; context_management comes from 补齐 Claude CLI 请求字段.
 	if err := op.SettingSetString(dbmodel.SettingKeyClaudeCLIReasoningEffort, "high"); err != nil {
 		t.Fatalf("set reasoning effort: %v", err)
 	}

@@ -48,6 +48,9 @@ func (ra *relayAttempt) prepareCodexRequestShape() {
 	store := false
 	req.Store = &store
 	applyCodexFastMode(req)
+	if !ra.inboundLooksLikeCodexClient() {
+		applyCodexDefaultReasoningEffort(req, settingString(dbmodel.SettingKeyCodexDefaultReasoningEffort, "none"))
+	}
 	normalizeCodexReasoningEffort(req)
 	// ensureCodexReasoningSummary was removed: the real Codex CLI 0.145.0 (captured
 	// 2026-09-02 via forward_capture_proxy, forward.jsonl:31-32) sends reasoning with
@@ -124,6 +127,41 @@ func applyCodexFastMode(req *transformerModel.InternalLLMRequest) {
 	}
 	tier := "priority"
 	req.ServiceTier = &tier
+}
+
+// applyCodexDefaultReasoningEffort is "默认思考强度 (OpenAI / Codex)": it fills reasoning.effort
+// ONLY when the client sent none, on a model that takes reasoning. Client value always wins;
+// "none" (the default) never fills, keeping fresh installs byte-identical to before. Runs before
+// normalizeCodexReasoningEffort, so max still becomes xhigh on non-5.6 models and the GPT-5.6
+// "empty -> high" rule still applies when this is none. Body only; never a header.
+// Reference: claude-code-hub src/lib/codex/provider-overrides.ts applyCodexProviderOverrides
+// (reasoning.effort default), CLIProxyAPI config.example.yaml payload.default rules.
+func applyCodexDefaultReasoningEffort(req *transformerModel.InternalLLMRequest, level string) {
+	if req == nil || strings.TrimSpace(req.ReasoningEffort) != "" || req.ReasoningBudget != nil {
+		return
+	}
+	level = strings.ToLower(strings.TrimSpace(level))
+	switch level {
+	case "low", "medium", "high", "xhigh", "max":
+	default:
+		return
+	}
+	if !codexModelTakesReasoning(req.Model) {
+		return
+	}
+	req.ReasoningEffort = level
+}
+
+// codexModelTakesReasoning reports models whose Responses API accepts reasoning.effort.
+func codexModelTakesReasoning(model string) bool {
+	m := strings.ToLower(strings.TrimSpace(model))
+	if i := strings.LastIndex(m, "/"); i >= 0 {
+		m = m[i+1:]
+	}
+	if strings.Contains(m, "codex") || strings.HasPrefix(m, "gpt-5") {
+		return !strings.Contains(m, "chat-latest")
+	}
+	return len(m) > 1 && m[0] == 'o' && m[1] >= '1' && m[1] <= '9'
 }
 
 // normalizeCodexReasoningEffort adjusts the request body's reasoning.effort for two
