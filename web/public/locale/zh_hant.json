@@ -818,6 +818,7 @@
       "output": "輸出",
       "cacheRead": "快取讀取",
       "cacheWrite": "快取寫入",
+      "perCall": "按次價格",
       "save": "儲存"
     }
   },

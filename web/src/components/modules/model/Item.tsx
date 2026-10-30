@@ -11,6 +11,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/animate-ui
 import { SafeText } from '@/components/common/SafeText';
 import { ModelDeleteOverlay, ModelEditOverlay } from './ItemOverlays';
 import { cn } from '@/lib/utils';
+import { buildModelUpdatePayload, toPriceEditValues } from './price-edit';
 import { createPortal } from 'react-dom';
 
 interface ModelItemProps {
@@ -30,12 +31,7 @@ export const ModelItem = memo(function ModelItem({ model, layout = 'grid' }: Mod
     const cardRef = useRef<HTMLElement | null>(null);
     const editButtonRef = useRef<HTMLButtonElement | null>(null);
     const editOverlayRef = useRef<HTMLDivElement | null>(null);
-    const [editValues, setEditValues] = useState(() => ({
-        input: model.input.toString(),
-        output: model.output.toString(),
-        cache_read: model.cache_read.toString(),
-        cache_write: model.cache_write.toString(),
-    }));
+    const [editValues, setEditValues] = useState(() => toPriceEditValues(model));
 
     const updateModel = useUpdateModel();
     const deleteModel = useDeleteModel();
@@ -60,12 +56,7 @@ export const ModelItem = memo(function ModelItem({ model, layout = 'grid' }: Mod
 
     const handleEditClick = () => {
         setConfirmDelete(false);
-        setEditValues({
-            input: model.input.toString(),
-            output: model.output.toString(),
-            cache_read: model.cache_read.toString(),
-            cache_write: model.cache_write.toString(),
-        });
+        setEditValues(toPriceEditValues(model));
         // Ensure first open already has anchor geometry so layout animation can run.
         updateOverlayRect();
         setIsEditOpen(true);
@@ -76,13 +67,7 @@ export const ModelItem = memo(function ModelItem({ model, layout = 'grid' }: Mod
     };
 
     const handleSaveEdit = () => {
-        updateModel.mutate({
-            name: model.name,
-            input: parseFloat(editValues.input) || 0,
-            output: parseFloat(editValues.output) || 0,
-            cache_read: parseFloat(editValues.cache_read) || 0,
-            cache_write: parseFloat(editValues.cache_write) || 0,
-        }, {
+        updateModel.mutate(buildModelUpdatePayload(model.name, editValues), {
             onSuccess: () => {
                 closeEdit();
                 toast.success(t('toast.updated'));

@@ -818,6 +818,7 @@
       "output": "输出",
       "cacheRead": "缓存读取",
       "cacheWrite": "缓存写入",
+      "perCall": "按次价格",
       "save": "保存"
     }
   },

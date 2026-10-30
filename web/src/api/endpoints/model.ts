@@ -11,6 +11,8 @@ export interface LLMPrice {
     output: number;
     cache_read: number;
     cache_write: number;
+    /** 按次单价（视频等无 token 用量的端点）；0 = 不按次计费 */
+    per_call?: number;
 }
 
 /**

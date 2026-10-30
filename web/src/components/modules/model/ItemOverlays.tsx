@@ -4,13 +4,9 @@ import { Check, Loader, Trash2, X } from 'lucide-react';
 import { motion } from 'motion/react';
 import { useTranslations } from 'next-intl';
 import { Input } from '@/components/ui/input';
+import type { PriceEditValues } from './price-edit';
 
-type EditValues = {
-    input: string;
-    output: string;
-    cache_read: string;
-    cache_write: string;
-};
+type EditValues = PriceEditValues;
 
 type ModelDeleteOverlayProps = {
     layoutId: string;
@@ -127,6 +123,17 @@ export function ModelEditOverlay({
                         step="any"
                         value={editValues.cache_write}
                         onChange={(e) => onChange({ ...editValues, cache_write: e.target.value })}
+                        className="h-9 text-sm rounded-xl"
+                    />
+                </label>
+                <label className="grid gap-1 text-xs text-muted-foreground">
+                    {t('perCall')}
+                    <Input
+                        type="number"
+                        step="any"
+                        min="0"
+                        value={editValues.per_call}
+                        onChange={(e) => onChange({ ...editValues, per_call: e.target.value })}
                         className="h-9 text-sm rounded-xl"
                     />
                 </label>
