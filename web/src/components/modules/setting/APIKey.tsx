@@ -189,9 +189,9 @@ ${planHeader}  -H "anthropic-version: 2023-06-01" \\
   -H "Content-Type: application/json" \\
   -d '{"model":"claude-sonnet-4.5","max_tokens":256,"messages":[{"role":"user","content":"Hello"}]}'`;
         case 'video':
-            return `curl "${baseUrl}/v1/videos" \
-  -H "Authorization: Bearer ${apiKey}" \
-${planHeader}  -H "Content-Type: application/json" \
+            return `curl "${baseUrl}/v1/videos" \\
+  -H "Authorization: Bearer ${apiKey}" \\
+${planHeader}  -H "Content-Type: application/json" \\
   -d '{"model":"sora-2","prompt":"A calm river at dawn"}'`;
         case 'openai-compatible':
         default:
