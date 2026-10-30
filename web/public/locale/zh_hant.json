@@ -816,6 +816,20 @@
         "button": "清空",
         "clearing": "清空中..."
       },
+      "compact": {
+        "label": "壓縮資料庫",
+        "tooltip": "刪除日誌後資料庫檔案不會自動變小。壓縮會把空出來的空間還給磁碟（SQLite VACUUM）。執行期間請求可能短暫卡頓，建議在空閒時操作。",
+        "hint": "執行期間請求可能短暫卡頓",
+        "size": "目前大小",
+        "reclaimable": "可回收約 {size}",
+        "button": "壓縮",
+        "running": "壓縮中…",
+        "confirm": "壓縮資料庫期間請求可能會短暫卡頓，確定現在壓縮嗎？",
+        "done": "壓縮完成：{before} → {after}",
+        "busy": "已有壓縮或空間回收在進行，請稍後再試",
+        "failed": "壓縮失敗",
+        "fullWarning": "首次壓縮會重建整個資料庫檔案，庫越大停頓越久（GB 級可能數分鐘），請在空閒時操作"
+      },
       "clearSuccess": "日誌已清空",
       "clearFailed": "清空失敗",
       "intervention": {

@@ -816,6 +816,20 @@
         "button": "清空",
         "clearing": "清空中..."
       },
+      "compact": {
+        "label": "压缩数据库",
+        "tooltip": "删除日志后数据库文件不会自动变小。压缩会把空出来的空间还给磁盘（SQLite VACUUM）。执行期间请求可能短暂卡顿，建议在空闲时操作。",
+        "hint": "执行期间请求可能短暂卡顿",
+        "size": "当前大小",
+        "reclaimable": "可回收约 {size}",
+        "button": "压缩",
+        "running": "压缩中…",
+        "confirm": "压缩数据库期间请求可能会短暂卡顿，确定现在压缩吗？",
+        "done": "压缩完成：{before} → {after}",
+        "busy": "已有压缩或空间回收在进行，请稍后再试",
+        "failed": "压缩失败",
+        "fullWarning": "首次压缩会重建整个数据库文件，库越大停顿越久（GB 级可能数分钟），请在空闲时操作"
+      },
       "clearSuccess": "日志已清空",
       "clearFailed": "清空失败",
       "intervention": {

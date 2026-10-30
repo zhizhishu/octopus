@@ -405,18 +405,31 @@ func relayLogIncrementalVacuum(ctx context.Context, maxPages int64) (int64, bool
 // VACUUM 会重建整个数据库文件，期间需要约等于当前库大小的临时空间。
 // 因此只在**确实删掉了行**之后调用，且失败不影响清理本身(空间没还回去而已)。
 func relayLogVacuum(ctx context.Context) error {
+	// 与管理员手动「压缩数据库」共用一把锁（见 db_compact.go）：两路 VACUUM 叠在一起
+	// 只会让第二路卡在写锁上，直接跳过，下一轮再试。
+	if !dbVacuumMu.TryLock() {
+		return ErrDBCompactBusy
+	}
+	defer dbVacuumMu.Unlock()
+	_, err := sqliteVacuumLocked(ctx)
+	return err
+}
+
+// sqliteVacuumLocked 是 relayLogVacuum 的本体，调用方必须已持有 dbVacuumMu。
+// 返回实际走的路径："incremental" 或 "full"。
+func sqliteVacuumLocked(ctx context.Context) (string, error) {
 	// 先试增量：库已是 incremental 模式时，这一步只花几十毫秒。
 	pages, needsFull, err := relayLogIncrementalVacuum(ctx, 0)
 	if err == nil && !needsFull {
 		if pages > 0 {
 			log.Debugf("relay log incremental vacuum reclaimed %d pages", pages)
 		}
-		return nil
+		return "incremental", nil
 	}
 
 	safe, reason := relayLogVacuumSafe()
 	if !safe {
-		return errors.New(reason)
+		return "", errors.New(reason)
 	}
 
 	// 顺序是硬性的，写反等于白做（2026-10-20 用 sqlite 3 实测确认）：
@@ -430,19 +443,19 @@ func relayLogVacuum(ctx context.Context) error {
 	// 把两件事都钉在它上面 —— 这是这段代码唯一正确写法。
 	sqlDB, err := db.GetDB().DB()
 	if err != nil {
-		return err
+		return "", err
 	}
 	conn, err := sqlDB.Conn(ctx)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer conn.Close()
 
 	if _, err := conn.ExecContext(ctx, "PRAGMA auto_vacuum=INCREMENTAL"); err != nil {
-		return err
+		return "", err
 	}
 	if _, err := conn.ExecContext(ctx, "VACUUM"); err != nil {
-		return err
+		return "", err
 	}
 
 	// 复核：模式没切过去说明这条路仍然无效，如实记下来，不要假装成功。
@@ -450,7 +463,7 @@ func relayLogVacuum(ctx context.Context) error {
 	if err := conn.QueryRowContext(ctx, "PRAGMA auto_vacuum").Scan(&mode); err == nil && mode != 2 {
 		log.Warnf("relay log vacuum finished but auto_vacuum is still %d (expected 2); space will keep growing until this is fixed", mode)
 	}
-	return nil
+	return "full", nil
 }
 
 // relayLogVacuumSafe 判断当前是否适合做 VACUUM。

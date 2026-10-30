@@ -202,6 +202,8 @@ const logMocks = {
         useLogQueueHealth: () => ({ data: undefined }),
         useLogCleanupNow: () => ({ mutate() {}, isPending: false }),
     },
+    // 压缩数据库一行是独立组件（自带查询/变更），这里只验日志卡本身。
+    './DBCompact': { DBCompactRow: () => null },
     'lucide-react': lucide,
 };
 const makeSystemHarness = (settings) => makeHarness('src/components/modules/setting/System.tsx', 'SettingSystem', settings, systemMocks);
