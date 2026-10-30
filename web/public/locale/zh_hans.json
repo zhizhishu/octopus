@@ -868,7 +868,7 @@
       },
       "users": {
         "label": "用户与注册",
-        "description": "新用户怎么注册、要不要邮箱验证，以及每日签到奖励。"
+        "description": "新用户怎么注册、要不要邮箱验证、每日签到奖励，以及 IP / 客户端异常提示。"
       },
       "system": {
         "label": "系统",
@@ -907,6 +907,32 @@
       "high": "高",
       "xhigh": "很高",
       "max": "最高"
+    },
+    "userAccess": {
+      "title": "IP / 客户端异常提示",
+      "hint": "按选中的等级在用户页标出可疑调用（可能是 Key 被别人在用）。只提示，不拦截请求，也不影响记录。",
+      "level": "风控等级",
+      "tagline": {
+        "off": "不提示",
+        "loose": "只抓明显泄露",
+        "standard": "推荐",
+        "strict": "最敏感",
+        "custom": "自己定"
+      },
+      "flags": "会提示：",
+      "custom": {
+        "window": "时间窗（分钟）",
+        "windowHint": "5–1440",
+        "manyIPs": "不同 IP 达到",
+        "manyIPsHint": "2–100，填 0 不看",
+        "newIP": "新 IP 提示",
+        "newClient": "新客户端提示",
+        "ipv4": "IPv4 归并",
+        "ipv4Full": "按完整地址",
+        "ipv4Net": "同一 /24 算一个"
+      },
+      "outOfRange": "超出范围，没保存",
+      "note": "改了立刻生效。"
     }
   },
   "model": {
@@ -1948,7 +1974,6 @@
         "hours": "{n} 小时",
         "minutes": "{n} 分钟"
       },
-      "ruleTip": "{window}内用了 {limit} 个或更多不同 IP，或者冒出一个以前没见过的 IP / 客户端、同时旧的还在用，就会提示。同一个 IPv6 /64 网段算一个 IP；客户端只升级版本不算切换。",
       "last": "最近一次",
       "ip": "IP",
       "client": "客户端",
@@ -1967,7 +1992,24 @@
       "clientsOnIP": "客户端：{list}",
       "ipsOnClient": "IP：{list}",
       "empty": "还没有调用记录",
-      "note": "按调用方发来的 IP 和 User-Agent 记录（经可信反代时取真实客户端 IP）；{days} 天没再出现的会清掉。"
+      "note": "按调用方发来的 IP 和 User-Agent 记录（经可信反代时取真实客户端 IP）；{days} 天没再出现的会清掉。",
+      "level": {
+        "off": "关闭",
+        "loose": "宽松",
+        "standard": "标准",
+        "strict": "严格",
+        "custom": "自定义"
+      },
+      "rule": {
+        "off": "不提示（IP 和客户端照常记录）",
+        "manyIPs": "{window}内用了 {n} 个或更多不同 IP",
+        "newIP": "{window}内冒出没见过的 IP，同时旧 IP 还在用",
+        "newClient": "{window}内冒出没见过的客户端，同时旧客户端还在用（只升级版本不算）",
+        "group32": "IPv4 按完整地址算；IPv6 同一 /64 算一个",
+        "group24": "IPv4 同一 /24 网段算一个；IPv6 同一 /64 算一个",
+        "levelLine": "风控等级：{level}，会提示：",
+        "footer": "只提示，不拦截请求。在「设置 → 用户与注册」里改。"
+      }
     }
   },
   "accessPlan": {

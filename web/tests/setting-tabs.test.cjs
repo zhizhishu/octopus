@@ -80,7 +80,7 @@ test('tabs: clearing only removes a settings-tab hash', () => {
 
 const CARD_TYPES = new Set([
     'SettingInfo', 'SettingAccount', 'SettingAppearance', 'SettingAccessToken', 'SettingCircuitBreaker',
-    'SettingLog', 'SettingSystem', 'SettingFingerprintProfile', 'SettingLLMSync', 'SettingBackup',
+    'SettingLog', 'SettingSystem', 'SettingFingerprintProfile', 'SettingLLMSync', 'SettingBackup', 'SettingUserAccessAlert',
 ]);
 
 function makePage(initialHash) {
@@ -118,6 +118,7 @@ function makePage(initialHash) {
         './Log': widgets('SettingLog'),
         './Backup': widgets('SettingBackup'),
         './CircuitBreaker': widgets('SettingCircuitBreaker'),
+        './UserAccessAlert': widgets('SettingUserAccessAlert'),
     });
     let tree;
     const cleanups = [];

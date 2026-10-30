@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -25,14 +26,11 @@ import (
 //   - new-api 在 logs.ip 存每条请求的 IP（用户自己开 record_ip_log 才记），token 上有 allow_ips 白名单；
 //   - sub2api 在 usage_logs 存 ip_address + user_agent，按条展示，api_key 上有 ip_whitelist / ip_blacklist；
 //   - claude-code-hub 在用户上有 allowedClients（按 UA 限制客户端）。
-// 三家都只「记录 / 白名单限制」，没有一家做「切换检测」。所以这里的异常规则是自己定的一个
-// 最简单的版本（见 userAccessAlerts），阈值写成常量，之后要做成设置再加。
+// 三家都只「记录 / 白名单限制」，没有一家做「切换检测」。所以这里的异常规则（见 userAccessAlerts）
+// 参照账号共享 / Key 泄露检测的通行做法自己定，灵敏度做成设置「风控等级」（预设阈值和出处见
+// model.UserAccessAlertPreset）。只提示，不拦截。
 
 const (
-	// UserAccessAlertWindow 是判「异常切换」看的时间窗。
-	UserAccessAlertWindow = time.Hour
-	// UserAccessManyIPsLimit：窗口内不同 IP 数达到它就提示「IP 过多」。
-	UserAccessManyIPsLimit = 3
 	// UserAccessKeepDays：多久没再出现的组合会被清掉；「以前见过没有」也只往回看这么久。
 	UserAccessKeepDays = 90
 
@@ -196,14 +194,18 @@ func userAccessMergePending(rows []model.UserAccessSeen, keep func(model.UserAcc
 	return rows
 }
 
-// userAccessIPBucket 是判「是不是同一个地方」用的 IP 归一：IPv4 按完整地址，IPv6 按 /64。
-// IPv6 的隐私地址会在同一个 /64 里频繁换后缀，不归一的话同一台电脑也会被报成「换了 IP」。
-func userAccessIPBucket(ip string) string {
+// userAccessIPBucket 是判「是不是同一个地方」用的 IP 归一：IPv4 按 v4Prefix（32 = 完整地址，
+// 24 = 同一 /24 算一个），IPv6 固定按 /64。IPv6 的隐私地址会在同一个 /64 里频繁换后缀，
+// 不归一的话同一台电脑也会被报成「换了 IP」。
+func userAccessIPBucket(ip string, v4Prefix int) string {
 	parsed := net.ParseIP(strings.TrimSpace(ip))
 	if parsed == nil {
 		return strings.TrimSpace(ip)
 	}
 	if v4 := parsed.To4(); v4 != nil {
+		if v4Prefix > 0 && v4Prefix < 32 {
+			return v4.Mask(net.CIDRMask(v4Prefix, 32)).String() + "/" + strconv.Itoa(v4Prefix)
+		}
 		return v4.String()
 	}
 	return parsed.Mask(net.CIDRMask(64, 128)).String() + "/64"
@@ -249,24 +251,26 @@ func userAccessBuckets(rows []model.UserAccessSeen, keyOf func(model.UserAccessS
 	return out
 }
 
-// userAccessAlerts 是「异常切换」规则（rows 必须是这个用户的全部行，首次出现时间才可信）：
+// userAccessAlerts 是「异常切换」规则（rows 必须是这个用户的全部行，首次出现时间才可信），
+// 阈值取自 cfg（设置「风控等级」）：
 //
-//  1. many_ips：最近 window 内用过的不同 IP（IPv6 按 /64）≥ manyIPs 个。
-//  2. new_ip：最近 window 内用过 ≥2 个 IP，且其中有一个是 window 内才第一次出现的
+//  1. many_ips：最近 cfg.WindowSec 内用过的不同 IP（按 cfg.IPv4Prefix / IPv6 /64 归并）≥ cfg.ManyIPs 个。
+//     cfg.ManyIPs = 0 不看。
+//  2. new_ip（cfg.NewIP）：窗口内用过 ≥2 个 IP，且其中有一个是窗口内才第一次出现的
 //     （= 冒出一个从没见过的 IP，同时另一个 IP 也还在用）。已经报了 many_ips 就不再报它。
-//  3. new_client：同 2，只是把 IP 换成客户端（UA 的产品名，升级版本不算）。
+//  3. new_client（cfg.NewClient）：同 2，只是把 IP 换成客户端（UA 的产品名，升级版本不算）。
 //
-// 两个都是「以前见过」的 IP 来回换（家里 / 公司）不报；只有一个 IP 时永远不报。
-// 过了 window 没有新请求，提示自然消失。
-func userAccessAlerts(rows []model.UserAccessSeen, now int64, window time.Duration, manyIPs int) []model.UserAccessAlert {
+// 两个都是「以前见过」的 IP 来回换（家里 / 公司）不报 new_ip；只有一个 IP 时永远不报。
+// 过了窗口没有新请求，提示自然消失。cfg 全关（等级「关闭」）时什么都不报。
+func userAccessAlerts(rows []model.UserAccessSeen, now int64, cfg model.UserAccessAlertConfig) []model.UserAccessAlert {
 	alerts := make([]model.UserAccessAlert, 0)
-	if len(rows) == 0 {
+	if len(rows) == 0 || !cfg.Enabled() {
 		return alerts
 	}
-	windowSec := int64(window / time.Second)
+	windowSec := cfg.WindowSec
 	since := now - windowSec
 
-	check := func(kind string, buckets map[string]*userAccessBucket, many int) {
+	check := func(kind string, buckets map[string]*userAccessBucket, many int, reportNew bool) {
 		type item struct {
 			key string
 			b   *userAccessBucket
@@ -297,6 +301,9 @@ func userAccessAlerts(rows []model.UserAccessSeen, now int64, window time.Durati
 			})
 			return
 		}
+		if !reportNew {
+			return
+		}
 		var newest *item
 		for i := range active {
 			it := &active[i]
@@ -322,13 +329,76 @@ func userAccessAlerts(rows []model.UserAccessSeen, now int64, window time.Durati
 		})
 	}
 
-	check(model.UserAccessAlertNewIP,
-		userAccessBuckets(rows, func(r model.UserAccessSeen) string { return userAccessIPBucket(r.IP) }, func(r model.UserAccessSeen) string { return r.IP }),
-		manyIPs)
-	check(model.UserAccessAlertNewClient,
-		userAccessBuckets(rows, func(r model.UserAccessSeen) string { return userAccessClientFamily(r.UserAgent) }, func(r model.UserAccessSeen) string { return r.UserAgent }),
-		0)
+	if cfg.ManyIPs > 0 || cfg.NewIP {
+		check(model.UserAccessAlertNewIP,
+			userAccessBuckets(rows, func(r model.UserAccessSeen) string { return userAccessIPBucket(r.IP, cfg.IPv4Prefix) }, func(r model.UserAccessSeen) string { return r.IP }),
+			cfg.ManyIPs, cfg.NewIP)
+	}
+	if cfg.NewClient {
+		check(model.UserAccessAlertNewClient,
+			userAccessBuckets(rows, func(r model.UserAccessSeen) string { return userAccessClientFamily(r.UserAgent) }, func(r model.UserAccessSeen) string { return r.UserAgent }),
+			0, true)
+	}
 	return alerts
+}
+
+// UserAccessAlertConfigCurrent 读设置「风控等级」得出当前生效的阈值。预设等级直接用预设；
+// 自定义读五个数（读不到 / 不合法的那一项退回「标准」的值）；等级本身认不出时按「标准」。
+func UserAccessAlertConfigCurrent() model.UserAccessAlertConfig {
+	level, _ := SettingGetString(model.SettingKeyUserAccessAlertLevel)
+	return userAccessAlertConfigFrom(level, func(key model.SettingKey) (string, bool) {
+		v, err := SettingGetString(key)
+		return v, err == nil
+	})
+}
+
+func userAccessAlertConfigFrom(level string, get func(model.SettingKey) (string, bool)) model.UserAccessAlertConfig {
+	level = strings.TrimSpace(level)
+	if cfg, ok := model.UserAccessAlertPreset(level); ok {
+		return cfg
+	}
+	cfg, _ := model.UserAccessAlertPreset(model.UserAccessAlertLevelStandard)
+	if level != model.UserAccessAlertLevelCustom {
+		return cfg
+	}
+	cfg.Level = model.UserAccessAlertLevelCustom
+	valid := func(key model.SettingKey) (string, bool) {
+		v, ok := get(key)
+		if !ok {
+			return "", false
+		}
+		v = strings.TrimSpace(v)
+		if (&model.Setting{Key: key, Value: v}).Validate() != nil {
+			return "", false
+		}
+		return v, true
+	}
+	if v, ok := valid(model.SettingKeyUserAccessAlertWindowMin); ok {
+		n, _ := strconv.Atoi(v)
+		cfg.WindowSec = int64(n) * 60
+	}
+	if v, ok := valid(model.SettingKeyUserAccessAlertManyIPs); ok {
+		cfg.ManyIPs, _ = strconv.Atoi(v)
+	}
+	if v, ok := valid(model.SettingKeyUserAccessAlertNewIP); ok {
+		cfg.NewIP = v == "true"
+	}
+	if v, ok := valid(model.SettingKeyUserAccessAlertNewClient); ok {
+		cfg.NewClient = v == "true"
+	}
+	if v, ok := valid(model.SettingKeyUserAccessAlertIPv4Prefix); ok {
+		cfg.IPv4Prefix, _ = strconv.Atoi(v)
+	}
+	return cfg
+}
+
+// UserAccessAlertSettingsGet 给设置页：当前阈值 + 各预设阈值。
+func UserAccessAlertSettingsGet() model.UserAccessAlertSettings {
+	presets := make(map[string]model.UserAccessAlertConfig, len(model.UserAccessAlertPresetLevels))
+	for _, level := range model.UserAccessAlertPresetLevels {
+		presets[level], _ = model.UserAccessAlertPreset(level)
+	}
+	return model.UserAccessAlertSettings{Current: UserAccessAlertConfigCurrent(), Presets: presets}
 }
 
 func userAccessKeyName(id int) string {
@@ -362,7 +432,8 @@ func UserAccessSummaries(ctx context.Context) ([]model.UserAccessSummary, error)
 
 func userAccessSummariesAt(ctx context.Context, now time.Time) ([]model.UserAccessSummary, error) {
 	nowUnix := now.Unix()
-	since := nowUnix - int64(UserAccessAlertWindow/time.Second)
+	cfg := UserAccessAlertConfigCurrent()
+	since := nowUnix - cfg.WindowSec
 
 	// 每人最近的一行（相关子查询走 (user_id, last_seen) 索引）。
 	var latest []model.UserAccessSeen
@@ -419,7 +490,7 @@ func userAccessSummariesAt(ctx context.Context, now time.Time) ([]model.UserAcce
 		}
 		alerts := make([]model.UserAccessAlert, 0)
 		if _, ok := activeSet[userID]; ok {
-			alerts = userAccessAlerts(rows, nowUnix, UserAccessAlertWindow, UserAccessManyIPsLimit)
+			alerts = userAccessAlerts(rows, nowUnix, cfg)
 		}
 		out = append(out, model.UserAccessSummary{UserID: userID, Last: *last, Alerts: alerts})
 	}
@@ -446,11 +517,12 @@ func userAccessDetailAt(userID int, ctx context.Context, now time.Time) (model.U
 	}
 	rows = userAccessMergePending(rows, func(r model.UserAccessSeen) bool { return r.UserID == userID })
 
+	cfg := UserAccessAlertConfigCurrent()
 	out := model.UserAccessDetail{
-		UserID: userID, WindowSec: int64(UserAccessAlertWindow / time.Second),
-		ManyIPsLimit: UserAccessManyIPsLimit, KeepDays: UserAccessKeepDays,
+		UserID: userID, Config: cfg, WindowSec: cfg.WindowSec,
+		ManyIPsLimit: cfg.ManyIPs, KeepDays: UserAccessKeepDays,
 		Last:   userAccessLastOf(rows),
-		Alerts: userAccessAlerts(rows, now.Unix(), UserAccessAlertWindow, UserAccessManyIPsLimit),
+		Alerts: userAccessAlerts(rows, now.Unix(), cfg),
 	}
 	for _, r := range rows {
 		out.TotalRequests += r.Requests

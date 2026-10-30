@@ -868,7 +868,7 @@
       },
       "users": {
         "label": "Users & sign-up",
-        "description": "How new users sign up, whether email verification is required, and daily check-in rewards."
+        "description": "How new users sign up, whether email verification is required, daily check-in rewards, and IP / client warnings."
       },
       "system": {
         "label": "System",
@@ -907,6 +907,32 @@
       "high": "High",
       "xhigh": "Very high",
       "max": "Max"
+    },
+    "userAccess": {
+      "title": "IP / client warnings",
+      "hint": "Flags suspicious calls on the Users page at the chosen level (e.g. a key used by someone else). Warning only: requests are never blocked and recording is unaffected.",
+      "level": "Risk level",
+      "tagline": {
+        "off": "No warnings",
+        "loose": "Obvious leaks",
+        "standard": "Recommended",
+        "strict": "Most sensitive",
+        "custom": "Your numbers"
+      },
+      "flags": "Warns on:",
+      "custom": {
+        "window": "Window (minutes)",
+        "windowHint": "5–1440",
+        "manyIPs": "Different IPs",
+        "manyIPsHint": "2–100, 0 = off",
+        "newIP": "New IP warning",
+        "newClient": "New client warning",
+        "ipv4": "IPv4 grouping",
+        "ipv4Full": "Full address",
+        "ipv4Net": "Same /24 as one"
+      },
+      "outOfRange": "Out of range, not saved",
+      "note": "Takes effect immediately."
     }
   },
   "model": {
@@ -1948,7 +1974,6 @@
         "hours": "{n, plural, one {# hour} other {# hours}}",
         "minutes": "{n, plural, one {# minute} other {# minutes}}"
       },
-      "ruleTip": "Flagged when {limit} or more different IPs are used within {window}, or a never-seen IP / client shows up while an older one is still in use. One IPv6 /64 counts as one IP; a client version upgrade is not a switch.",
       "last": "Last call",
       "ip": "IP",
       "client": "Client",
@@ -1967,7 +1992,24 @@
       "clientsOnIP": "Clients: {list}",
       "ipsOnClient": "IPs: {list}",
       "empty": "No calls yet",
-      "note": "Recorded from the caller's IP and User-Agent (the real client IP when behind a trusted proxy). Entries not seen for {days} days are removed."
+      "note": "Recorded from the caller's IP and User-Agent (the real client IP when behind a trusted proxy). Entries not seen for {days} days are removed.",
+      "level": {
+        "off": "Off",
+        "loose": "Loose",
+        "standard": "Standard",
+        "strict": "Strict",
+        "custom": "Custom"
+      },
+      "rule": {
+        "off": "No warnings (IPs and clients are still recorded)",
+        "manyIPs": "{n} or more different IPs within {window}",
+        "newIP": "A never-seen IP within {window} while an old IP is still in use",
+        "newClient": "A never-seen client within {window} while the old one is still in use (version upgrades don't count)",
+        "group32": "IPv4 counted by full address; one IPv6 /64 counts as one",
+        "group24": "One IPv4 /24 counts as one; one IPv6 /64 counts as one",
+        "levelLine": "Risk level: {level}. Warns on:",
+        "footer": "Warning only, requests are never blocked. Change it in Settings → Users & sign-up."
+      }
     }
   },
   "accessPlan": {

@@ -3,9 +3,9 @@
 import type { ReactNode } from 'react';
 import { KeyRound, Loader2, MonitorSmartphone, TriangleAlert } from 'lucide-react';
 import { useTranslations } from 'next-intl';
-import { useUserAccessDetail, type User, type UserAccessAlert, type UserAccessGroup, type UserAccessSummary } from '@/api/endpoints/user';
+import { useUserAccessDetail, type User, type UserAccessAlert, type UserAccessAlertConfig, type UserAccessGroup, type UserAccessSummary } from '@/api/endpoints/user';
 import { SafeText, MonoSafeText } from '@/components/common/SafeText';
-import { accessBadge, clientLabel, lastAccess, shortList, windowParts, type AccessBadgeKind } from '../lib/access';
+import { accessBadge, accessRuleParts, clientLabel, lastAccess, shortList, windowParts, type AccessBadgeKind } from '../lib/access';
 import { formatCount, nowUnix } from '../lib/format';
 import { formatDateShort, useRelTime } from './shared';
 import { HelpTip, Pill, Tip } from './ui-bits';
@@ -16,6 +16,25 @@ function useWindowText() {
         const w = windowParts(sec);
         return w.unit === 'hours' ? t('hours', { n: w.n }) : t('minutes', { n: w.n });
     };
+}
+
+/** 一套阈值「会提示什么」的几句话（设置页和用户抽屉共用，跟后端判定一一对应）。 */
+export function useAccessRuleLines() {
+    const t = useTranslations('user.access.rule');
+    const win = useWindowText();
+    return (cfg: Pick<UserAccessAlertConfig, 'window_sec' | 'many_ips' | 'new_ip' | 'new_client' | 'ipv4_prefix'> | undefined | null): string[] =>
+        accessRuleParts(cfg).map((p) => {
+            switch (p.key) {
+                case 'manyIPs':
+                    return t('manyIPs', { window: win(p.windowSec), n: p.n });
+                case 'newIP':
+                    return t('newIP', { window: win(p.windowSec) });
+                case 'newClient':
+                    return t('newClient', { window: win(p.windowSec) });
+                default:
+                    return t(p.key);
+            }
+        });
 }
 
 function useClientText() {
@@ -125,7 +144,7 @@ export function AccessLine({ user, summary, onOpen }: { user: User; summary?: Us
     );
 }
 
-function Section({ title, tip, extra, children }: { title: ReactNode; tip?: string; extra?: ReactNode; children: ReactNode }) {
+function Section({ title, tip, extra, children }: { title: ReactNode; tip?: ReactNode; extra?: ReactNode; children: ReactNode }) {
     return (
         <section>
             <div className="mb-2 flex items-center justify-between gap-2">
@@ -174,7 +193,8 @@ export function UserAccessTab({ user }: { user: User }) {
     const t = useTranslations('user.access');
     const { data, isLoading } = useUserAccessDetail(user.id);
     const sentence = useAlertSentence();
-    const win = useWindowText();
+    const ruleLines = useAccessRuleLines();
+    const tLevel = useTranslations('user.access.level');
     const client = useClientText();
     const rel = useRelTime();
     const nowSec = nowUnix();
@@ -182,7 +202,15 @@ export function UserAccessTab({ user }: { user: User }) {
     if (isLoading || !data) {
         return <div className="flex justify-center py-16 text-muted-foreground"><Loader2 className="size-5 animate-spin" /></div>;
     }
-    const ruleTip = t('ruleTip', { window: win(data.window_sec), limit: data.many_ips_limit });
+    const ruleTip = (
+        <span className="block space-y-1">
+            <span className="block font-medium text-foreground">{t('rule.levelLine', { level: tLevel(data.config?.level ?? 'standard') })}</span>
+            {ruleLines(data.config ?? { window_sec: data.window_sec, many_ips: data.many_ips_limit, new_ip: true, new_client: true, ipv4_prefix: 32 }).map((line) => (
+                <span key={line} className="block">· {line}</span>
+            ))}
+            <span className="block">{t('rule.footer')}</span>
+        </span>
+    );
     if (!data.last) {
         return (
             <div className="space-y-3 py-10 text-center text-sm text-muted-foreground">

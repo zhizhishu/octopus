@@ -15,6 +15,7 @@ import { SettingLLMSync } from './LLMSync';
 import { SettingLog } from './Log';
 import { SettingBackup } from './Backup';
 import { SettingCircuitBreaker } from './CircuitBreaker';
+import { SettingUserAccessAlert } from './UserAccessAlert';
 import {
     DEFAULT_SETTING_TAB,
     SETTING_TAB_CARD_COUNTS,
@@ -101,6 +102,7 @@ function renderTabRows(tab: SettingTabId): ReactNode[] {
                     <SettingSystem section="registration" />
                     <SettingSystem section="checkIn" />
                 </div>,
+                <SettingUserAccessAlert key="access" />,
             ];
         case 'system':
             return [

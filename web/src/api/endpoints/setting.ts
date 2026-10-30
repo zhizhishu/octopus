@@ -25,6 +25,13 @@ export const SettingKey = {
     RelayLogKeepPeriod: 'relay_log_keep_period',
     RelayLogMaxStorageGB: 'relay_log_max_storage_gb',
     RelayLogReclaimEnabled: 'relay_log_reclaim_enabled',
+    // 用户页 IP / 客户端异常提示的风控等级（off/loose/standard/strict/custom）；后五个只在 custom 时生效。
+    UserAccessAlertLevel: 'user_access_alert_level',
+    UserAccessAlertWindowMin: 'user_access_alert_window_min',
+    UserAccessAlertManyIPs: 'user_access_alert_many_ips',
+    UserAccessAlertNewIP: 'user_access_alert_new_ip',
+    UserAccessAlertNewClient: 'user_access_alert_new_client',
+    UserAccessAlertIPv4Prefix: 'user_access_alert_ipv4_prefix',
     // 后端按整数读（非 0 即开）：只写 "1"/"0"。
     UpstreamRequestBodyLog: 'upstream_request_body_log_enabled',
     AnthropicAutoCacheControl: 'anthropic_auto_cache_control',

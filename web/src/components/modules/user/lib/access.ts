@@ -74,3 +74,32 @@ export function shortList(values: string[], max = 3): { shown: string[]; rest: n
     const clean = values.filter((v) => v !== undefined && v !== null);
     return { shown: clean.slice(0, max), rest: Math.max(0, clean.length - max) };
 }
+
+/** 风控规则里的一句（i18n key 在 user.access.rule 下）。 */
+export type AccessRulePart =
+    | { key: 'off' }
+    | { key: 'manyIPs'; windowSec: number; n: number }
+    | { key: 'newIP'; windowSec: number }
+    | { key: 'newClient'; windowSec: number }
+    | { key: 'group32' }
+    | { key: 'group24' };
+
+type AccessRuleConfig = { window_sec: number; many_ips: number; new_ip: boolean; new_client: boolean; ipv4_prefix: number };
+
+/**
+ * 把一套阈值拆成「会提示什么」的几句话，和后端 op.userAccessAlerts 一一对应：
+ *   - many_ips > 0：窗口内 n 个或更多不同 IP；
+ *   - new_ip：窗口内冒出没见过的 IP、旧 IP 还在用（many_ips = 2 时任意第 2 个 IP 已经会报，这句省掉）；
+ *   - new_client：同上，换成客户端；
+ *   - 看 IP 时再说一句 IP 怎么归并（IPv4 完整地址 / 同 /24，IPv6 同 /64）。
+ * 什么都不看时只有一句「不提示」。
+ */
+export function accessRuleParts(cfg: AccessRuleConfig | undefined | null): AccessRulePart[] {
+    if (!cfg || !(cfg.window_sec > 0) || !(cfg.many_ips > 0 || cfg.new_ip || cfg.new_client)) return [{ key: 'off' }];
+    const parts: AccessRulePart[] = [];
+    if (cfg.many_ips > 0) parts.push({ key: 'manyIPs', windowSec: cfg.window_sec, n: cfg.many_ips });
+    if (cfg.new_ip && cfg.many_ips !== 2) parts.push({ key: 'newIP', windowSec: cfg.window_sec });
+    if (cfg.new_client) parts.push({ key: 'newClient', windowSec: cfg.window_sec });
+    if (cfg.many_ips > 0 || cfg.new_ip) parts.push({ key: cfg.ipv4_prefix === 24 ? 'group24' : 'group32' });
+    return parts;
+}

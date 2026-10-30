@@ -868,7 +868,7 @@
       },
       "users": {
         "label": "使用者與註冊",
-        "description": "新使用者怎麼註冊、要不要信箱驗證，以及每日簽到獎勵。"
+        "description": "新使用者怎麼註冊、要不要信箱驗證、每日簽到獎勵，以及 IP / 用戶端異常提示。"
       },
       "system": {
         "label": "系統",
@@ -907,6 +907,32 @@
       "high": "高",
       "xhigh": "很高",
       "max": "最高"
+    },
+    "userAccess": {
+      "title": "IP / 用戶端異常提示",
+      "hint": "按選中的等級在使用者頁標出可疑呼叫（可能是 Key 被別人在用）。只提示，不攔截請求，也不影響記錄。",
+      "level": "風控等級",
+      "tagline": {
+        "off": "不提示",
+        "loose": "只抓明顯外洩",
+        "standard": "推薦",
+        "strict": "最敏感",
+        "custom": "自己定"
+      },
+      "flags": "會提示：",
+      "custom": {
+        "window": "時間窗（分鐘）",
+        "windowHint": "5–1440",
+        "manyIPs": "不同 IP 達到",
+        "manyIPsHint": "2–100，填 0 不看",
+        "newIP": "新 IP 提示",
+        "newClient": "新用戶端提示",
+        "ipv4": "IPv4 歸併",
+        "ipv4Full": "按完整位址",
+        "ipv4Net": "同一 /24 算一個"
+      },
+      "outOfRange": "超出範圍，沒儲存",
+      "note": "改了立刻生效。"
     }
   },
   "model": {
@@ -1948,7 +1974,6 @@
         "hours": "{n} 小時",
         "minutes": "{n} 分鐘"
       },
-      "ruleTip": "{window}內用了 {limit} 個或更多不同 IP，或者冒出一個以前沒見過的 IP / 用戶端、同時舊的還在用，就會提示。同一個 IPv6 /64 網段算一個 IP；用戶端只升級版本不算切換。",
       "last": "最近一次",
       "ip": "IP",
       "client": "用戶端",
@@ -1967,7 +1992,24 @@
       "clientsOnIP": "用戶端：{list}",
       "ipsOnClient": "IP：{list}",
       "empty": "還沒有呼叫記錄",
-      "note": "按呼叫方送來的 IP 和 User-Agent 記錄（經可信反代時取真實用戶端 IP）；{days} 天沒再出現的會清掉。"
+      "note": "按呼叫方送來的 IP 和 User-Agent 記錄（經可信反代時取真實用戶端 IP）；{days} 天沒再出現的會清掉。",
+      "level": {
+        "off": "關閉",
+        "loose": "寬鬆",
+        "standard": "標準",
+        "strict": "嚴格",
+        "custom": "自訂"
+      },
+      "rule": {
+        "off": "不提示（IP 和用戶端照常記錄）",
+        "manyIPs": "{window}內用了 {n} 個或更多不同 IP",
+        "newIP": "{window}內冒出沒見過的 IP，同時舊 IP 還在用",
+        "newClient": "{window}內冒出沒見過的用戶端，同時舊用戶端還在用（只升級版本不算）",
+        "group32": "IPv4 按完整位址算；IPv6 同一 /64 算一個",
+        "group24": "IPv4 同一 /24 網段算一個；IPv6 同一 /64 算一個",
+        "levelLine": "風控等級：{level}，會提示：",
+        "footer": "只提示，不攔截請求。在「設定 → 使用者與註冊」裡改。"
+      }
     }
   },
   "accessPlan": {

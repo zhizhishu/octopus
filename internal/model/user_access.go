@@ -42,6 +42,77 @@ func UserAccessSeenKey(userID, apiKeyID int, ip, ua string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// 风控等级（用户页「IP / 客户端异常切换」提示的灵敏度）。只提示，不拦截任何请求。
+const (
+	UserAccessAlertLevelOff      = "off"
+	UserAccessAlertLevelLoose    = "loose"
+	UserAccessAlertLevelStandard = "standard"
+	UserAccessAlertLevelStrict   = "strict"
+	UserAccessAlertLevelCustom   = "custom"
+
+	UserAccessAlertWindowMinMin = 5
+	UserAccessAlertWindowMinMax = 1440
+	UserAccessAlertManyIPsMax   = 100
+)
+
+// UserAccessAlertConfig 是一套判定阈值。
+//
+//   - WindowSec：看最近多长时间。
+//   - ManyIPs：窗口内不同 IP（按下面的归并）达到这个数就报「IP 过多」；0 = 不看。
+//   - NewIP / NewClient：窗口内冒出以前没见过的 IP / 客户端、同时旧的还在用，报「切换」。
+//   - IPv4Prefix：IPv4 按多长前缀算「同一个 IP」（32 = 完整地址，24 = 同一 /24）。IPv6 固定按 /64。
+type UserAccessAlertConfig struct {
+	Level      string `json:"level"`
+	WindowSec  int64  `json:"window_sec"`
+	ManyIPs    int    `json:"many_ips"`
+	NewIP      bool   `json:"new_ip"`
+	NewClient  bool   `json:"new_client"`
+	IPv4Prefix int    `json:"ipv4_prefix"`
+}
+
+// Enabled：这一套配置会不会报任何提示。
+func (c UserAccessAlertConfig) Enabled() bool {
+	return c.WindowSec > 0 && (c.ManyIPs > 0 || c.NewIP || c.NewClient)
+}
+
+// 预设阈值的出处（2026-10-30 查）：
+//   - 窗口 1 小时、按「每账号每小时不同 IP / 设备数」判共享：Castle 共享检测教程
+//     （最激进 >1，只抓严重共享 >3）https://docs.castle.io/docs/tutorial-detect-account-sharing
+//   - 「1 小时超过 10 个不同 IP」= Key 泄露：metis gateway-hardening §5（默认 3600s / 10，只告警不吊销）
+//     https://github.com/david-2814/metis/blob/main/docs/specs/gateway-hardening.md ；
+//     fce-backend 共享 Key 检测同为「1 小时 >10 个 IP」https://github.com/DishIs/fce-backend/blob/main/plans/abuse-protection.md
+//   - 「两台设备不算共享，第三台同时在线才算」：Rupt https://www.rupt.dev/solutions/account-sharing/
+//   - 「新 IP」「新设备（新浏览器 / 新 App 即新设备）」两类信号：Okta Behavior Detection
+//     https://help.okta.com/oie/en-us/content/topics/security/behavior-detection/type-behavior-detection.htm
+//   - IPv6 按 /64、IPv4 可按 /24 归并：peeringdb #427、go-chi/httprate、auth4.dev AUTH4D-335
+//     https://github.com/peeringdb/peeringdb/issues/427 https://github.com/go-chi/httprate/blob/master/README.md
+var userAccessAlertPresets = map[string]UserAccessAlertConfig{
+	// 关闭：不提示（来源照记，抽屉里照样能看）。
+	UserAccessAlertLevelOff: {Level: UserAccessAlertLevelOff, WindowSec: 3600, ManyIPs: 0, NewIP: false, NewClient: false, IPv4Prefix: 32},
+	// 宽松：只抓明显的泄露 / 转卖——1 小时超过 10 个 IP（metis / fce-backend），IPv4 同 /24 算一个（手机 / CGNAT 换地址不算）。
+	UserAccessAlertLevelLoose: {Level: UserAccessAlertLevelLoose, WindowSec: 3600, ManyIPs: 11, NewIP: false, NewClient: false, IPv4Prefix: 24},
+	// 标准（默认）：1 小时 3 个 IP（Rupt：第三台才算；Castle 严重共享 >3 设备的 IP 版），加新 IP / 新客户端切换（Okta 的两类信号）。
+	UserAccessAlertLevelStandard: {Level: UserAccessAlertLevelStandard, WindowSec: 3600, ManyIPs: 3, NewIP: true, NewClient: true, IPv4Prefix: 32},
+	// 严格：1 小时第 2 个 IP 就报（Castle 最激进的 >1），新客户端照报。
+	UserAccessAlertLevelStrict: {Level: UserAccessAlertLevelStrict, WindowSec: 3600, ManyIPs: 2, NewIP: true, NewClient: true, IPv4Prefix: 32},
+}
+
+// UserAccessAlertPreset 返回一个预设等级的阈值；custom 和认不出的返回 false。
+func UserAccessAlertPreset(level string) (UserAccessAlertConfig, bool) {
+	c, ok := userAccessAlertPresets[level]
+	return c, ok
+}
+
+// UserAccessAlertPresetLevels 是设置页按顺序展示的预设等级。
+var UserAccessAlertPresetLevels = []string{UserAccessAlertLevelOff, UserAccessAlertLevelLoose, UserAccessAlertLevelStandard, UserAccessAlertLevelStrict}
+
+// UserAccessAlertSettings 是 GET /api/v1/user/access/config 的结果：当前生效的阈值 + 各预设的阈值
+// （设置页的说明文字按这里的数拼，和判定用的是同一份）。
+type UserAccessAlertSettings struct {
+	Current UserAccessAlertConfig            `json:"current"`
+	Presets map[string]UserAccessAlertConfig `json:"presets"`
+}
+
 // 异常类型。判定规则见 op.userAccessAlerts。
 const (
 	UserAccessAlertManyIPs   = "many_ips"   // 窗口内用了太多个不同的 IP
@@ -98,13 +169,14 @@ type UserAccessGroup struct {
 
 // UserAccessDetail 是 GET /api/v1/user/access/detail 的结果。
 type UserAccessDetail struct {
-	UserID        int               `json:"user_id"`
-	WindowSec     int64             `json:"window_sec"`
-	ManyIPsLimit  int               `json:"many_ips_limit"`
-	KeepDays      int               `json:"keep_days"`
-	Last          *UserAccessLast   `json:"last,omitempty"`
-	Alerts        []UserAccessAlert `json:"alerts"`
-	IPs           []UserAccessGroup `json:"ips"`
-	Clients       []UserAccessGroup `json:"clients"`
-	TotalRequests int64             `json:"total_requests"`
+	UserID        int                   `json:"user_id"`
+	Config        UserAccessAlertConfig `json:"config"`
+	WindowSec     int64                 `json:"window_sec"`
+	ManyIPsLimit  int                   `json:"many_ips_limit"`
+	KeepDays      int                   `json:"keep_days"`
+	Last          *UserAccessLast       `json:"last,omitempty"`
+	Alerts        []UserAccessAlert     `json:"alerts"`
+	IPs           []UserAccessGroup     `json:"ips"`
+	Clients       []UserAccessGroup     `json:"clients"`
+	TotalRequests int64                 `json:"total_requests"`
 }

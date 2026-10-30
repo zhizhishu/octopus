@@ -92,6 +92,7 @@ func TestUserAdminRoutesRejectNonAdmin(t *testing.T) {
 		{http.MethodPost, "/api/v1/user/batch"},
 		{http.MethodGet, "/api/v1/user/access"},
 		{http.MethodGet, fmt.Sprintf("/api/v1/user/access/detail?id=%d", plain.ID)},
+		{http.MethodGet, "/api/v1/user/access/config"},
 	}
 	for _, c := range cases {
 		for _, token := range []string{"", userToken} {
@@ -308,5 +309,37 @@ func TestUserAccessEndpoints(t *testing.T) {
 	}
 	if rec, _ := env.do(t, http.MethodGet, "/api/v1/user/access/detail?id=0", env.token, nil); rec.Code != http.StatusBadRequest {
 		t.Fatalf("bad id must be 400, got %d", rec.Code)
+	}
+
+	// 风控等级：/access/config 报当前阈值和各预设；改成「关闭」后列表不再提示。
+	rec, data = env.do(t, http.MethodGet, "/api/v1/user/access/config", env.token, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("config: %d %s", rec.Code, rec.Body.String())
+	}
+	var cfg model.UserAccessAlertSettings
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Current.Level != model.UserAccessAlertLevelStandard || len(cfg.Presets) != 4 || cfg.Presets[model.UserAccessAlertLevelLoose].ManyIPs != 11 {
+		t.Fatalf("bad config %s", data)
+	}
+	if rec, _ := env.do(t, http.MethodPost, "/api/v1/setting/set", env.token, model.Setting{Key: model.SettingKeyUserAccessAlertLevel, Value: "paranoid"}); rec.Code != http.StatusBadRequest {
+		t.Fatalf("unknown level must be 400, got %d", rec.Code)
+	}
+	if rec, _ := env.do(t, http.MethodPost, "/api/v1/setting/set", env.token, model.Setting{Key: model.SettingKeyUserAccessAlertLevel, Value: model.UserAccessAlertLevelOff}); rec.Code != http.StatusOK {
+		t.Fatalf("set level off: %d", rec.Code)
+	}
+	t.Cleanup(func() {
+		_ = op.SettingSetString(model.SettingKeyUserAccessAlertLevel, model.UserAccessAlertLevelStandard)
+	})
+	_, data = env.do(t, http.MethodGet, "/api/v1/user/access", env.token, nil)
+	sums = nil
+	if err := json.Unmarshal(data, &sums); err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range sums {
+		if s.UserID == u.ID && (len(s.Alerts) != 0 || s.Last.IP != "198.51.100.2") {
+			t.Fatalf("level off must keep last source and drop alerts %s", data)
+		}
 	}
 }

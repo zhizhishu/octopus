@@ -1,6 +1,7 @@
 package op
 
 import (
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -34,12 +35,21 @@ func resetUserAccessPending(t *testing.T) {
 	})
 }
 
-// 异常切换规则：窗口 1 小时、3 个 IP 算多。逐条钉住「报 / 不报」。
+func accessPreset(t *testing.T, level string) model.UserAccessAlertConfig {
+	t.Helper()
+	cfg, ok := model.UserAccessAlertPreset(level)
+	if !ok {
+		t.Fatalf("no preset %q", level)
+	}
+	return cfg
+}
+
+// 异常切换规则（等级「标准」：窗口 1 小时、3 个 IP 算多）。逐条钉住「报 / 不报」。
 func TestUserAccessAlertRule(t *testing.T) {
 	const now = int64(1_800_000_000)
 	day := int64(86400)
 	cc := "claude-cli/2.0.1 (external, cli)"
-	w := UserAccessAlertWindow
+	w := accessPreset(t, model.UserAccessAlertLevelStandard)
 	cases := []struct {
 		name string
 		rows []model.UserAccessSeen
@@ -87,7 +97,7 @@ func TestUserAccessAlertRule(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := alertKinds(userAccessAlerts(tc.rows, now, w, UserAccessManyIPsLimit))
+			got := alertKinds(userAccessAlerts(tc.rows, now, w))
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("alerts = %v, want %v", got, tc.want)
 			}
@@ -98,13 +108,123 @@ func TestUserAccessAlertRule(t *testing.T) {
 		accessRow("203.0.113.1", cc, 1, now-3*day, now-120),
 		accessRow("198.51.100.2", cc, 1, now-300, now),
 	}
-	a := userAccessAlerts(rows, now, w, UserAccessManyIPsLimit)[0]
+	a := userAccessAlerts(rows, now, w)[0]
 	if a.Value != "198.51.100.2" || !reflect.DeepEqual(a.Others, []string{"203.0.113.1"}) || a.At != now-300 || a.WindowSec != 3600 || a.Count != 2 {
 		t.Fatalf("bad new_ip detail %#v", a)
 	}
 	// 过了窗口没有新请求，提示自然消失。
-	if got := userAccessAlerts(rows, now+2*3600, w, UserAccessManyIPsLimit); len(got) != 0 {
+	if got := userAccessAlerts(rows, now+2*3600, w); len(got) != 0 {
 		t.Fatalf("alert must expire after the window, got %v", got)
+	}
+}
+
+// 每个风控等级在同一组场景下报什么（预设阈值见 model.UserAccessAlertPreset）。
+func TestUserAccessAlertLevels(t *testing.T) {
+	const now = int64(1_800_000_000)
+	day := int64(86400)
+	cc := "claude-cli/2.0.1"
+	manyIPs := func(prefix string, n int) []model.UserAccessSeen {
+		rows := make([]model.UserAccessSeen, 0, n)
+		for i := 0; i < n; i++ {
+			rows = append(rows, accessRow(fmt.Sprintf(prefix, i+1), cc, 1, now-3*day, now-int64(i*60)))
+		}
+		return rows
+	}
+	scenarios := map[string][]model.UserAccessSeen{
+		// 冒出一个从没见过的 IP，旧 IP 2 分钟前还在用。
+		"new ip": {accessRow("203.0.113.1", cc, 1, now-3*day, now-120), accessRow("198.51.100.2", cc, 1, now-300, now)},
+		// 两个都是老 IP，一小时内来回换（家里 / 公司）。
+		"two known ips": {accessRow("203.0.113.1", cc, 1, now-3*day, now-60), accessRow("198.51.100.2", cc, 1, now-2*day, now)},
+		// 一小时内 3 个老 IP。
+		"3 ips": manyIPs("192.0.%d.10", 3),
+		// 一小时内 11 个不同网段的老 IP。
+		"11 ips": manyIPs("192.0.%d.10", 11),
+		// 一小时内 11 个 IP，都在同一个 /24（手机 / CGNAT 换地址）。
+		"11 ips same /24": manyIPs("203.0.113.%d", 11),
+		// 同一个 IP 换了个从没见过的客户端，旧客户端 1 分钟前还在用。
+		"new client": {accessRow("203.0.113.1", cc, 1, now-3*day, now-60), accessRow("203.0.113.1", "codex_cli_rs/0.50.0", 1, now-300, now)},
+	}
+	many, newIP, newClient := model.UserAccessAlertManyIPs, model.UserAccessAlertNewIP, model.UserAccessAlertNewClient
+	want := map[string]map[string][]string{
+		model.UserAccessAlertLevelOff: {
+			"new ip": {}, "two known ips": {}, "3 ips": {}, "11 ips": {}, "11 ips same /24": {}, "new client": {},
+		},
+		model.UserAccessAlertLevelLoose: {
+			"new ip": {}, "two known ips": {}, "3 ips": {}, "11 ips": {many}, "11 ips same /24": {}, "new client": {},
+		},
+		model.UserAccessAlertLevelStandard: {
+			"new ip": {newIP}, "two known ips": {}, "3 ips": {many}, "11 ips": {many}, "11 ips same /24": {many}, "new client": {newClient},
+		},
+		model.UserAccessAlertLevelStrict: {
+			"new ip": {many}, "two known ips": {many}, "3 ips": {many}, "11 ips": {many}, "11 ips same /24": {many}, "new client": {newClient},
+		},
+	}
+	for _, level := range model.UserAccessAlertPresetLevels {
+		cfg := accessPreset(t, level)
+		for name, rows := range scenarios {
+			got := alertKinds(userAccessAlerts(rows, now, cfg))
+			if !reflect.DeepEqual(got, want[level][name]) {
+				t.Errorf("%s / %s: alerts = %v, want %v", level, name, got, want[level][name])
+			}
+		}
+	}
+	// 宽松的「10 个以内不报」：10 个不同网段的 IP 不报，第 11 个才报。
+	if got := alertKinds(userAccessAlerts(manyIPs("192.0.%d.10", 10), now, accessPreset(t, model.UserAccessAlertLevelLoose))); len(got) != 0 {
+		t.Fatalf("loose must not flag 10 ips, got %v", got)
+	}
+
+	// 自定义：10 分钟窗口、不看 IP 数、只报新 IP、IPv4 同 /24 算一个。
+	custom := model.UserAccessAlertConfig{Level: model.UserAccessAlertLevelCustom, WindowSec: 600, ManyIPs: 0, NewIP: true, NewClient: false, IPv4Prefix: 24}
+	for _, tc := range []struct {
+		name string
+		rows []model.UserAccessSeen
+		want []string
+	}{
+		{"new ip in another /24", []model.UserAccessSeen{accessRow("203.0.113.1", cc, 1, now-3*day, now-120), accessRow("198.51.100.2", cc, 1, now-300, now)}, []string{newIP}},
+		{"new ip in the same /24", []model.UserAccessSeen{accessRow("203.0.113.1", cc, 1, now-3*day, now-120), accessRow("203.0.113.77", cc, 1, now-300, now)}, []string{}},
+		{"old ip quiet for 20 minutes", []model.UserAccessSeen{accessRow("203.0.113.1", cc, 1, now-3*day, now-1200), accessRow("198.51.100.2", cc, 1, now-300, now)}, []string{}},
+		{"new client is off", scenarios["new client"], []string{}},
+		{"11 ips not counted", scenarios["11 ips"], []string{}},
+	} {
+		if got := alertKinds(userAccessAlerts(tc.rows, now, custom)); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("custom / %s: alerts = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// 设置 → 阈值：预设直接用；自定义读五个数，坏值退回「标准」；认不出的等级按「标准」。
+func TestUserAccessAlertConfigFromSettings(t *testing.T) {
+	std := accessPreset(t, model.UserAccessAlertLevelStandard)
+	values := map[model.SettingKey]string{
+		model.SettingKeyUserAccessAlertWindowMin:  "30",
+		model.SettingKeyUserAccessAlertManyIPs:    "5",
+		model.SettingKeyUserAccessAlertNewIP:      "false",
+		model.SettingKeyUserAccessAlertNewClient:  "true",
+		model.SettingKeyUserAccessAlertIPv4Prefix: "24",
+	}
+	get := func(k model.SettingKey) (string, bool) { v, ok := values[k]; return v, ok }
+	for _, level := range model.UserAccessAlertPresetLevels {
+		if got := userAccessAlertConfigFrom(level, get); got != accessPreset(t, level) {
+			t.Fatalf("%s = %#v", level, got)
+		}
+	}
+	if got := userAccessAlertConfigFrom("", get); got != std {
+		t.Fatalf("empty level = %#v, want standard", got)
+	}
+	if got := userAccessAlertConfigFrom("paranoid", get); got != std {
+		t.Fatalf("unknown level = %#v, want standard", got)
+	}
+	want := model.UserAccessAlertConfig{Level: model.UserAccessAlertLevelCustom, WindowSec: 1800, ManyIPs: 5, NewIP: false, NewClient: true, IPv4Prefix: 24}
+	if got := userAccessAlertConfigFrom(model.UserAccessAlertLevelCustom, get); got != want {
+		t.Fatalf("custom = %#v, want %#v", got, want)
+	}
+	values[model.SettingKeyUserAccessAlertWindowMin] = "1"
+	values[model.SettingKeyUserAccessAlertManyIPs] = "1"
+	values[model.SettingKeyUserAccessAlertIPv4Prefix] = "16"
+	delete(values, model.SettingKeyUserAccessAlertNewIP)
+	want = model.UserAccessAlertConfig{Level: model.UserAccessAlertLevelCustom, WindowSec: std.WindowSec, ManyIPs: std.ManyIPs, NewIP: std.NewIP, NewClient: true, IPv4Prefix: std.IPv4Prefix}
+	if got := userAccessAlertConfigFrom(model.UserAccessAlertLevelCustom, get); got != want {
+		t.Fatalf("custom with bad values = %#v, want %#v", got, want)
 	}
 }
 
@@ -121,14 +241,21 @@ func TestUserAccessNormalizers(t *testing.T) {
 			t.Fatalf("client family %q = %q, want %q", ua, got, want)
 		}
 	}
-	for ip, want := range map[string]string{
-		"203.0.113.9":          "203.0.113.9",
-		"::ffff:203.0.113.9":   "203.0.113.9",
-		"2001:db8:1:2:3:4:5:6": "2001:db8:1:2::/64",
-		"not-an-ip":            "not-an-ip",
+	for _, tc := range []struct {
+		ip     string
+		prefix int
+		want   string
+	}{
+		{"203.0.113.9", 32, "203.0.113.9"},
+		{"::ffff:203.0.113.9", 32, "203.0.113.9"},
+		{"203.0.113.9", 24, "203.0.113.0/24"},
+		{"::ffff:203.0.113.9", 24, "203.0.113.0/24"},
+		{"2001:db8:1:2:3:4:5:6", 32, "2001:db8:1:2::/64"},
+		{"2001:db8:1:2:3:4:5:6", 24, "2001:db8:1:2::/64"},
+		{"not-an-ip", 24, "not-an-ip"},
 	} {
-		if got := userAccessIPBucket(ip); got != want {
-			t.Fatalf("ip bucket %q = %q, want %q", ip, got, want)
+		if got := userAccessIPBucket(tc.ip, tc.prefix); got != tc.want {
+			t.Fatalf("ip bucket %q /%d = %q, want %q", tc.ip, tc.prefix, got, tc.want)
 		}
 	}
 }
@@ -209,12 +336,35 @@ func TestUserAccessRecordFromRelayLogAndPersist(t *testing.T) {
 	if len(sums) != 1 || len(sums[0].Alerts) != 2 {
 		t.Fatalf("summary from db only %#v", sums)
 	}
+	// 设置「风控等级」立刻生效：关闭 → 不提示；严格 → 两个 IP 就报 IP 过多。照记不误。
+	setLevel := func(level string) {
+		t.Helper()
+		if err := SettingSetString(model.SettingKeyUserAccessAlertLevel, level); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { _ = SettingSetString(model.SettingKeyUserAccessAlertLevel, model.UserAccessAlertLevelStandard) })
+	setLevel(model.UserAccessAlertLevelOff)
+	sums, _ = UserAccessSummaries(ctx)
+	if len(sums) != 1 || len(sums[0].Alerts) != 0 || sums[0].Last.IP != "198.51.100.7" {
+		t.Fatalf("level off must keep the last source but no alerts %#v", sums)
+	}
+	setLevel(model.UserAccessAlertLevelStrict)
+	sums, _ = UserAccessSummaries(ctx)
+	if len(sums) != 1 || !reflect.DeepEqual(alertKinds(sums[0].Alerts), []string{model.UserAccessAlertManyIPs, model.UserAccessAlertNewClient}) {
+		t.Fatalf("level strict %#v", sums)
+	}
+	if d, _ := UserAccessDetailGet(u.ID, ctx); d.Config.Level != model.UserAccessAlertLevelStrict || d.ManyIPsLimit != 2 {
+		t.Fatalf("detail must carry the active config %#v", d.Config)
+	}
+	setLevel(model.UserAccessAlertLevelStandard)
 
 	detail, err := UserAccessDetailGet(u.ID, ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if detail.TotalRequests != 4 || len(detail.IPs) != 2 || len(detail.Clients) != 2 || detail.WindowSec != 3600 || detail.ManyIPsLimit != 3 {
+	if detail.TotalRequests != 4 || len(detail.IPs) != 2 || len(detail.Clients) != 2 || detail.WindowSec != 3600 || detail.ManyIPsLimit != 3 ||
+		detail.Config.Level != model.UserAccessAlertLevelStandard {
 		t.Fatalf("bad detail %#v", detail)
 	}
 	if detail.IPs[0].Value != "198.51.100.7" || detail.IPs[1].Requests != 3 || detail.IPs[1].Keys[0].APIKeyID != 11 ||

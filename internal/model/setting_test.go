@@ -341,3 +341,91 @@ func TestUpstreamRequestBodyLogValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestUserAccessAlertSettingsValidation(t *testing.T) {
+	tests := []struct {
+		key   SettingKey
+		value string
+		ok    bool
+	}{
+		{SettingKeyUserAccessAlertLevel, "off", true},
+		{SettingKeyUserAccessAlertLevel, "loose", true},
+		{SettingKeyUserAccessAlertLevel, "standard", true},
+		{SettingKeyUserAccessAlertLevel, "strict", true},
+		{SettingKeyUserAccessAlertLevel, "custom", true},
+		{SettingKeyUserAccessAlertLevel, "", false},
+		{SettingKeyUserAccessAlertLevel, "Strict", false},
+		{SettingKeyUserAccessAlertWindowMin, "5", true},
+		{SettingKeyUserAccessAlertWindowMin, "1440", true},
+		{SettingKeyUserAccessAlertWindowMin, "4", false},
+		{SettingKeyUserAccessAlertWindowMin, "1441", false},
+		{SettingKeyUserAccessAlertWindowMin, "1h", false},
+		{SettingKeyUserAccessAlertManyIPs, "0", true},
+		{SettingKeyUserAccessAlertManyIPs, "2", true},
+		{SettingKeyUserAccessAlertManyIPs, "100", true},
+		{SettingKeyUserAccessAlertManyIPs, "1", false},
+		{SettingKeyUserAccessAlertManyIPs, "101", false},
+		{SettingKeyUserAccessAlertManyIPs, "-1", false},
+		{SettingKeyUserAccessAlertNewIP, "true", true},
+		{SettingKeyUserAccessAlertNewIP, "1", false},
+		{SettingKeyUserAccessAlertNewClient, "false", true},
+		{SettingKeyUserAccessAlertIPv4Prefix, "32", true},
+		{SettingKeyUserAccessAlertIPv4Prefix, "24", true},
+		{SettingKeyUserAccessAlertIPv4Prefix, "16", false},
+	}
+	for _, tt := range tests {
+		err := (&Setting{Key: tt.key, Value: tt.value}).Validate()
+		if (err == nil) != tt.ok {
+			t.Fatalf("%s=%q: err=%v, want ok=%v", tt.key, tt.value, err, tt.ok)
+		}
+	}
+	// 自定义的默认值和「标准」一致，且都能通过校验。
+	std, _ := UserAccessAlertPreset(UserAccessAlertLevelStandard)
+	want := map[SettingKey]string{
+		SettingKeyUserAccessAlertLevel:      UserAccessAlertLevelStandard,
+		SettingKeyUserAccessAlertWindowMin:  strconv.FormatInt(std.WindowSec/60, 10),
+		SettingKeyUserAccessAlertManyIPs:    strconv.Itoa(std.ManyIPs),
+		SettingKeyUserAccessAlertNewIP:      strconv.FormatBool(std.NewIP),
+		SettingKeyUserAccessAlertNewClient:  strconv.FormatBool(std.NewClient),
+		SettingKeyUserAccessAlertIPv4Prefix: strconv.Itoa(std.IPv4Prefix),
+	}
+	for _, s := range DefaultSettings() {
+		if v, ok := want[s.Key]; ok {
+			if s.Value != v {
+				t.Fatalf("default %s = %q, want %q", s.Key, s.Value, v)
+			}
+			if err := s.Validate(); err != nil {
+				t.Fatalf("default %s invalid: %v", s.Key, err)
+			}
+			delete(want, s.Key)
+		}
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing defaults %v", want)
+	}
+}
+
+// 预设阈值钉死（web/tests/user-access.test.cjs 的 PRESETS 和 PR 说明里的表按这里写；改了要一起改）。
+func TestUserAccessAlertPresets(t *testing.T) {
+	want := map[string]UserAccessAlertConfig{
+		UserAccessAlertLevelOff:      {Level: "off", WindowSec: 3600, ManyIPs: 0, NewIP: false, NewClient: false, IPv4Prefix: 32},
+		UserAccessAlertLevelLoose:    {Level: "loose", WindowSec: 3600, ManyIPs: 11, NewIP: false, NewClient: false, IPv4Prefix: 24},
+		UserAccessAlertLevelStandard: {Level: "standard", WindowSec: 3600, ManyIPs: 3, NewIP: true, NewClient: true, IPv4Prefix: 32},
+		UserAccessAlertLevelStrict:   {Level: "strict", WindowSec: 3600, ManyIPs: 2, NewIP: true, NewClient: true, IPv4Prefix: 32},
+	}
+	if len(UserAccessAlertPresetLevels) != len(want) {
+		t.Fatalf("preset levels %v", UserAccessAlertPresetLevels)
+	}
+	for _, level := range UserAccessAlertPresetLevels {
+		got, ok := UserAccessAlertPreset(level)
+		if !ok || got != want[level] {
+			t.Fatalf("%s = %#v, want %#v", level, got, want[level])
+		}
+		if (level == UserAccessAlertLevelOff) == got.Enabled() {
+			t.Fatalf("%s enabled = %v", level, got.Enabled())
+		}
+	}
+	if _, ok := UserAccessAlertPreset(UserAccessAlertLevelCustom); ok {
+		t.Fatal("custom is not a preset")
+	}
+}

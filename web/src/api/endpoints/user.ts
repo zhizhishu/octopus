@@ -604,8 +604,28 @@ export interface UserAccessGroup {
     values?: string[];
 }
 
+/** 风控等级（设置 user_access_alert_level）。只影响用户页的提示，不拦截请求。 */
+export type UserAccessAlertLevel = 'off' | 'loose' | 'standard' | 'strict' | 'custom';
+export const USER_ACCESS_ALERT_LEVELS: readonly UserAccessAlertLevel[] = ['off', 'loose', 'standard', 'strict', 'custom'];
+
+/** 一套判定阈值（后端 model.UserAccessAlertConfig）。many_ips = 0 不看 IP 数；ipv4_prefix 32 / 24。 */
+export interface UserAccessAlertConfig {
+    level: UserAccessAlertLevel;
+    window_sec: number;
+    many_ips: number;
+    new_ip: boolean;
+    new_client: boolean;
+    ipv4_prefix: number;
+}
+
+export interface UserAccessAlertSettings {
+    current: UserAccessAlertConfig;
+    presets: Partial<Record<UserAccessAlertLevel, UserAccessAlertConfig>>;
+}
+
 export interface UserAccessDetail {
     user_id: number;
+    config?: UserAccessAlertConfig;
     window_sec: number;
     many_ips_limit: number;
     keep_days: number;
@@ -631,5 +651,14 @@ export function useUserAccessDetail(id: number | undefined) {
         queryFn: () => apiClient.get<UserAccessDetail>(`/api/v1/user/access/detail?id=${id}`),
         enabled: !!id,
         refetchInterval: 60_000,
+    });
+}
+
+/** 风控等级的当前阈值和各预设阈值（设置页说明文字按这里的数拼，和后端判定同一份）。 */
+export function useUserAccessConfig(options?: { enabled?: boolean }) {
+    return useQuery({
+        queryKey: ['users', 'access', 'config'],
+        queryFn: () => apiClient.get<UserAccessAlertSettings>('/api/v1/user/access/config'),
+        enabled: options?.enabled ?? true,
     });
 }

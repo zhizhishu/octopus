@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 
 const { load } = require('./load-typescript.cjs');
 
-const { clientLabel, accessBadge, lastAccess, windowParts, isNewInWindow, shortList } = load('src/components/modules/user/lib/access.ts');
+const { clientLabel, accessBadge, lastAccess, windowParts, isNewInWindow, shortList, accessRuleParts } = load('src/components/modules/user/lib/access.ts');
 
 test('客户端名：认得出的给名字 + 版本，认不出的照原文，没带 UA 是 undefined', () => {
     assert.equal(clientLabel('claude-cli/2.0.1 (external, cli)'), 'Claude CLI 2.0.1');
@@ -38,4 +38,34 @@ test('窗口文案与「新」标记', () => {
     assert.equal(isNewInWindow(1000, 1000 + 3600, 3600), true);
     assert.equal(isNewInWindow(1000, 1000 + 3601, 3600), false);
     assert.deepEqual(shortList(['a', 'b', 'c', 'd', 'e']), { shown: ['a', 'b', 'c'], rest: 2 });
+});
+
+// 与后端 model.UserAccessAlertPreset 相同的四档（后端 TestUserAccessAlertLevels 钉住判定，这里钉住说明文字）。
+const PRESETS = {
+    off: { window_sec: 3600, many_ips: 0, new_ip: false, new_client: false, ipv4_prefix: 32 },
+    loose: { window_sec: 3600, many_ips: 11, new_ip: false, new_client: false, ipv4_prefix: 24 },
+    standard: { window_sec: 3600, many_ips: 3, new_ip: true, new_client: true, ipv4_prefix: 32 },
+    strict: { window_sec: 3600, many_ips: 2, new_ip: true, new_client: true, ipv4_prefix: 32 },
+};
+
+test('风控等级说明：每一档列出的就是它真正会报的', () => {
+    const keys = (cfg) => accessRuleParts(cfg).map((p) => p.key);
+    assert.deepEqual(keys(PRESETS.off), ['off']);
+    assert.deepEqual(keys(PRESETS.loose), ['manyIPs', 'group24']);
+    assert.equal(accessRuleParts(PRESETS.loose)[0].n, 11);
+    assert.deepEqual(keys(PRESETS.standard), ['manyIPs', 'newIP', 'newClient', 'group32']);
+    assert.equal(accessRuleParts(PRESETS.standard)[0].n, 3);
+    // 严格：任意第 2 个 IP 已经算「IP 过多」，不再单列「新 IP」。
+    assert.deepEqual(keys(PRESETS.strict), ['manyIPs', 'newClient', 'group32']);
+    assert.equal(accessRuleParts(PRESETS.strict)[0].n, 2);
+    assert.deepEqual(keys(undefined), ['off']);
+});
+
+test('风控等级说明：自定义按填的数拼，全关等于不提示', () => {
+    const keys = (cfg) => accessRuleParts(cfg).map((p) => p.key);
+    assert.deepEqual(keys({ window_sec: 600, many_ips: 0, new_ip: true, new_client: false, ipv4_prefix: 24 }), ['newIP', 'group24']);
+    assert.equal(accessRuleParts({ window_sec: 600, many_ips: 0, new_ip: true, new_client: false, ipv4_prefix: 24 })[0].windowSec, 600);
+    assert.deepEqual(keys({ window_sec: 600, many_ips: 0, new_ip: false, new_client: true, ipv4_prefix: 24 }), ['newClient']);
+    assert.deepEqual(keys({ window_sec: 600, many_ips: 0, new_ip: false, new_client: false, ipv4_prefix: 32 }), ['off']);
+    assert.deepEqual(keys({ window_sec: 0, many_ips: 3, new_ip: true, new_client: true, ipv4_prefix: 32 }), ['off']);
 });

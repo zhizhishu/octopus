@@ -111,6 +111,10 @@ func init() {
 		AddRoute(
 			router.NewRoute("/access/detail", http.MethodGet).
 				Handle(getUserAccessDetail),
+		).
+		AddRoute(
+			router.NewRoute("/access/config", http.MethodGet).
+				Handle(getUserAccessConfig),
 		)
 }
 
@@ -409,6 +413,12 @@ func listUserAccess(c *gin.Context) {
 		return
 	}
 	resp.Success(c, summaries)
+}
+
+// getUserAccessConfig 给设置页「风控等级」：当前生效的阈值 + 各预设的阈值。仅管理员。
+// 改等级走通用的 /setting/set（user_access_alert_* 几个 key）。
+func getUserAccessConfig(c *gin.Context) {
+	resp.Success(c, op.UserAccessAlertSettingsGet())
 }
 
 // getUserAccessDetail 给用户抽屉：这个人用过的 IP、客户端（次数 / 最近时间 / 哪把 key）。仅管理员。
