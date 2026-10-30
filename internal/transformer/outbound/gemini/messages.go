@@ -177,7 +177,7 @@ func reasoningToThinkingBudget(effort string, modelName string) (int32, bool) {
 	// 只用 TrimSpace+ToLower 会漏掉别名表——客户端写 "x-high" / "extra-high" /
 	// "very-high" 时，下面的 EffortBudget 查表查不到，于是整个 thinkingConfig
 	// 被丢掉（思考直接关掉），而不是像用户期望的那样降到 xhigh。
-	// 火山(volcengine/response.go)与 GLM 早就走共享判据了，Gemini 是最后一处手写。
+	// GLM 早就走共享判据了，Gemini 是最后一处手写。
 	key := model.CanonicalEffort(effort)
 	if key == "" {
 		return 0, false

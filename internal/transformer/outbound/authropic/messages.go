@@ -1669,8 +1669,8 @@ func getThinkingBudget(effort string, budget *int64, maxTokens int64) *int64 {
 		// 计费。修在这里而不是往共享表加一条：共享表被 IsKnownEffort 用来判断
 		// 「认不认识这个档位」，GLM(openai/chat.go:920) 靠它决定发 enabled，
 		// 加进去会让 minimal 在 GLM 上从 disabled 翻成 enabled，
-		// 与 volcengine/gemini 明确声明的「minimal = 关」自相矛盾。
-		// 改共享表 = 修一个通道、坏掉两个通道。
+		// 与 gemini 明确声明的「minimal = 关」自相矛盾。
+		// 改共享表 = 修一个通道、坏掉别的通道。
 		result = anthropicThinkingBudgetMin
 	} else {
 		// 走 EffortBudgetFor 而不是自己 switch：它会把 "MAX" / " max " 这类

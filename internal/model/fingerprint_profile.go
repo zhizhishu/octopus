@@ -38,14 +38,14 @@ type FingerprintProfile struct {
 	CodexBetaFeatures string `json:"codex_beta_features"`
 
 	// GenericUA is the unified User-Agent applied to NON claude/codex channels
-	// (Gemini/Volcengine/plain OpenAI-chat). Empty now falls back to DefaultGenericUA
+	// (Gemini/plain OpenAI-chat). Empty now falls back to DefaultGenericUA
 	// (a stable Linux desktop identity) instead of leaking Go's "Go-http-client/1.1";
 	// set it to pin a different identity per profile.
 	GenericUA string `json:"generic_ua"`
 }
 
 // DefaultGenericUA is the built-in fallback User-Agent for non claude/codex channels
-// (Gemini / Volcengine / plain OpenAI-chat) when no profile pins a GenericUA. Without
+// (Gemini / plain OpenAI-chat) when no profile pins a GenericUA. Without
 // it Go's transport emits "Go-http-client/1.1", which flags the caller as a bot/proxy.
 //
 // 2026-10-14 (user decision): replaced the previous bare-Chrome identity with a

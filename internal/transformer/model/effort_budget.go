@@ -15,7 +15,7 @@ import "strings"
 // 后果是「同一条客户端请求换个通道，强度就变了」，日志里却看不出异常。
 //
 // 现在把「档位 → 预算」这一层收敛到这里。各出站转换器仍然可以有自己的
-// 表达方式（gemini 的 thinkingLevel 枚举、volcengine 的开关），但**数字只有一个来源**。
+// 表达方式（gemini 的 thinkingLevel 枚举、GLM 的开关），但**数字只有一个来源**。
 
 // EffortBudget 是各档位对应的思考预算（token）。
 //
@@ -109,8 +109,8 @@ var effortKeySeparators = strings.NewReplacer("-", "", "_", "", " ", "")
 // 差一大截。客户端写 extra-high 本意是「比 high 更强」，结果被降了一档还无报错。
 //
 // 🔴 只放真正同义的别名，不要在这里做「相邻档位映射」：那会让
-// IsKnownEffort 把语义不同的档位也认成已知，进而影响 GLM/volcengine
-// 的开关判断（它们靠「认不认识」决定发不发 enabled）。
+// IsKnownEffort 把语义不同的档位也认成已知，进而影响 GLM
+// 的开关判断（它靠「认不认识」决定发不发 enabled）。
 var effortAliases = map[string]string{
 	"extrahigh": "xhigh",
 	"veryhigh":  "xhigh",
@@ -128,9 +128,9 @@ func CanonicalEffort(effort string) string { return normalizeEffortToKey(effort)
 //
 // 🔴 为什么单独放这里，而不是并进 effortAliases：
 // 别名表的作用是「同一个档位的不同拼法」，它会被 IsKnownEffort 用来判断
-// 「这个值认不认识」，进而决定 GLM/火山 发不发 enabled。而 "off" 压根不是一个
+// 「这个值认不认识」，进而决定 GLM 发不发 enabled。而 "off" 压根不是一个
 // 档位——它是「不要思考」这个开关状态。把它塞进别名表会让 IsKnownEffort("off")
-// 返回 true，于是在 GLM/火山那边被当成一个合法强度发出去，语义就错了。
+// 返回 true，于是在 GLM 那边被当成一个合法强度发出去，语义就错了。
 //
 // 所以这里只提供「这是不是关闭意图」这一个判断，供各出站适配层在
 // **进预算换算之前**分流。

@@ -26,7 +26,7 @@ Claude/Anthropic 渠道按协议自动处理 URL 后缀。渠道 Base URL 建议
 
 - **claude-code / Codex CLI 形态保真**：对接只认官方 CLI 形态的上游时，Octopus 把出站请求重建成与真实 claude-code / Codex CLI 一字不差的形态（User-Agent、`anthropic-beta` 规范顺序、billing/metadata、Codex instructions 与默认工具集），让这类上游把 Octopus 当作正规 CLI 客户端处理。全部是代码内置默认值，**部署即生效，无需任何配置**；渠道 `cloak.mode` 可关闭。
 - **容量感知调度**：同优先级内按「健康分层 + 容量评分 + 轮转打底」分摊负载，配合三态熔断（指数退避 + 陈旧自愈）、选择期预留防并发踩踏、上游 429/5xx 分级冷却；打满并发也平稳，失败一律安全降级，绝不返回 0 可用渠道兜底。
-- **全 provider 互转 + 国产模型**：OpenAI Chat / Responses、Anthropic Messages、Gemini、Volcengine（火山）、以及 DeepSeek、GLM（智谱）等 OpenAI 兼容上游统一互转，客户端拿回自己入口协议的响应。
+- **全 provider 互转 + 国产模型**：OpenAI Chat / Responses、Anthropic Messages、Gemini、以及 DeepSeek、GLM（智谱）等 OpenAI 兼容上游统一互转，客户端拿回自己入口协议的响应。
 - **多模态贯通**：图片（base64 / 远程 URL / file_id）、文档 / PDF、音频在 claude / OpenAI / Gemini 各路进出透传；Gemini 远程图自动转 `fileData` 并按后缀推断 mime；OpenAI `json_schema` 跨协议映射到 Anthropic `output_config.format`；图像生成（OpenAI / Imagen / Gemini / Grok）统一路由。
 - **推理 / 思考透传**：claude 扩展思考（含 `max` 档 + 预算钳制到 `< max_tokens`）、Codex reasoning effort、Gemini `thinkingBudget` 回读、DeepSeek `reasoning_content`、GLM `thinking:{type}`（按 reasoning effort 自动映射）——各家推理控制与思维链输出在流式 / 非流式、跨协议下都接住，含思考块 signature 聚合。
 - **IDE 工具兼容**：`POST /v1/messages/count_tokens`、Gemini `GET /v1beta/models` 列模型、Anthropic 内置工具（computer-use / bash / text_editor）透传、raw/SSE 长会话空闲闸 + keepalive —— Cursor / Cline / Continue / Claude Code 等 IDE 内编程工具开箱即用。
@@ -242,7 +242,7 @@ Future 分支会参考 sub2api 的实用引导方式，但不搬入它的支付�
 
 ### 13. 多 provider、多模态与国产模型
 
-- **provider**：OpenAI（Chat / Responses）、Anthropic、Gemini、Volcengine（火山豆包）、以及 DeepSeek、GLM（智谱）等 OpenAI 兼容上游。
+- **provider**：OpenAI（Chat / Responses）、Anthropic、Gemini、以及 DeepSeek、GLM（智谱）等 OpenAI 兼容上游。
 - **多模态**：图片（base64 / 远程 URL / file_id）、文档 / PDF（claude `document` 块、OpenAI Responses `input_file`）、音频（`input_audio`）在各路进出透传；Gemini 远程图自动转 `fileData` 并按 URL 后缀推断 mime；OpenAI `json_schema` 结构化输出跨协议映射到 Anthropic `output_config.format`。
 - **图像生成**：OpenAI images、Gemini Imagen（`:predict`）、Gemini 原生图像（`:generateContent`）、Grok 图像统一路由；普通文本模型不会被误判成图像请求。
 - **推理 / 思考**：claude 扩展思考（`max` 档高预算并钳制到 `< max_tokens`，避免上游 400）、Gemini `thinkingBudget` 回读、DeepSeek `reasoning_content`、GLM `thinking:{type:enabled/disabled}`（按 reasoning effort 自动映射）——流式 / 非流式、跨协议都保真，含思考块 signature 在「流→非流聚合」「非流→流合成」两向补全。

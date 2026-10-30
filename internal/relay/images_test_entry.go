@@ -130,7 +130,7 @@ func imagesChannelTestPinFor(c *gin.Context) (*model.Channel, bool) {
 // 判据直接复用 relay 自己的 isImagesEndpointCompatibleChannelType（ImagesHandler
 // 里调度用的就是它）：OpenAI Chat / OpenAI Responses / Custom OpenAI Chat 走
 // OpenAI 兼容透传，Gemini 走它自己的 predict / generateContent 适配。
-// Anthropic / Volcengine / OpenAIEmbedding 三类在 ImagesHandler 里会被
+// Anthropic / OpenAIEmbedding 两类（以及没有出站适配器的类型）在 ImagesHandler 里会被
 // "unsupported channel type" 跳过，所以它们永远测不出图片——渠道测试必须提前
 // 明说跳过原因，不能送进去换一条看不懂的报错。
 func ChannelTypeSupportsImages(channelType outbound.OutboundType) bool {

@@ -7,7 +7,7 @@ import "testing"
 // 背景：本函数曾经只用 TrimSpace+ToLower 归一，然后直接查 model.EffortBudget。
 // 客户端写 "x-high"/"extra-high"/"very-high"（别名表里的写法）时查不到，
 // 于是返回 (0,false)——调用点据此**整个不发 thinkingConfig**。用户以为"比 high
-// 更强"，实际拿到的可能是模型默认行为甚至无思考。火山与 GLM 早已走共享判据。
+// 更强"，实际拿到的可能是模型默认行为甚至无思考。GLM 早已走共享判据。
 func TestReasoningToThinkingBudgetMergesAliases(t *testing.T) {
 	cases := map[string]int32{
 		"x-high":     geminiBudgetTopPro,

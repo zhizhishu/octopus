@@ -1002,7 +1002,7 @@ func isEmbeddingTestEndpoint(endpoint string) bool {
 //
 // 存量之所以没暴雷，是因为 EmbeddingChannelTypes 只有 OpenAIEmbedding，嵌入渠道必然是
 // type 5，outbound.Get(5) 正好拿到 EmbeddingOutbound。一旦放开能力位，这个巧合就没了：
-// 火山渠道勾上 embeddings 后测嵌入端点，adapter 还是 ResponseOutbound，会拿嵌入请求
+// Responses 渠道勾上 embeddings 后测嵌入端点，adapter 还是 ResponseOutbound，会拿嵌入请求
 // 去序列化成 responses body。
 //
 // 渠道类型本身没有出厂适配器时（outbound.Get 返回 nil）原样返回 nil，让调用点既有的

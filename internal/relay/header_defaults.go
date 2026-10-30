@@ -263,7 +263,7 @@ func applyChannelWireHeaderDefaults(req *http.Request, options ChannelWireHeader
 			applyGenericHeaderDefaultsForChannel(req, channel)
 		}
 	default:
-		// Non claude/codex channels (Gemini/Volcengine/plain OpenAI-chat) get no
+		// Non claude/codex channels (Gemini/plain OpenAI-chat) get no
 		// fingerprint UA today. A selected profile may pin a unified GenericUA so
 		// these channels present a consistent client identity too; with no profile
 		// (or an empty GenericUA) this is a no-op, preserving current behaviour.
@@ -399,7 +399,7 @@ func shouldUseCodexHeaderDefaults(channel *dbmodel.Channel, inboundType inbound.
 }
 
 // applyGenericHeaderDefaults sets a unified User-Agent on channels that have no
-// claude/codex fingerprint (Gemini / Volcengine / plain OpenAI-chat). The selected
+// claude/codex fingerprint (Gemini / plain OpenAI-chat). The selected
 // profile's GenericUA wins; when it is empty we fall back to model.DefaultGenericUA
 // so these channels present a stable Linux desktop identity instead of leaking Go's
 // "Go-http-client/1.1". Never touches claude/codex channels (different switch arms).
