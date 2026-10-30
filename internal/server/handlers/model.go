@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"encoding/json"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -219,9 +221,30 @@ func createLLM(c *gin.Context) {
 	resp.Success(c, model)
 }
 
+// updateLLM merges the request onto the stored price row: only the price fields
+// the client actually sent change. Binding into a zero LLMInfo and saving the
+// whole row would silently reset any field an older client does not know about
+// (per_call was wiped this way, turning off per-call billing for video models).
 func updateLLM(c *gin.Context) {
-	var model model.LLMInfo
-	if err := c.ShouldBindJSON(&model); err != nil {
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		resp.Error(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	var ident struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(body, &ident); err != nil {
+		resp.Error(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	existing, err := op.LLMGet(ident.Name)
+	if err != nil {
+		resp.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	model := model.LLMInfo{Name: ident.Name, LLMPrice: existing}
+	if err := json.Unmarshal(body, &model); err != nil {
 		resp.Error(c, http.StatusBadRequest, err.Error())
 		return
 	}

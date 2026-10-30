@@ -45,7 +45,7 @@ func LLMPriceDeleteFromDBWithNoPrice(modelNames []string, ctx context.Context) e
 		if err != nil {
 			return err
 		}
-		if modelPrice.Input != 0 || modelPrice.Output != 0 || modelPrice.CacheRead != 0 || modelPrice.CacheWrite != 0 {
+		if !modelPrice.IsZero() {
 			continue
 		}
 		needDeleteModelNames = append(needDeleteModelNames, modelName)
