@@ -1,14 +1,16 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
+	"strconv"
 
+	"github.com/gin-gonic/gin"
 	"github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/op"
 	"github.com/zhizhishu/octopus/internal/server/middleware"
 	"github.com/zhizhishu/octopus/internal/server/resp"
 	"github.com/zhizhishu/octopus/internal/server/router"
-	"github.com/gin-gonic/gin"
 )
 
 func init() {
@@ -67,6 +69,15 @@ func init() {
 		AddRoute(
 			router.NewRoute("/cache-diagnostics", http.MethodGet).
 				Handle(getCacheDiagnostics),
+		).
+		// 仪表盘（管理员）：按时间段拆分。数据来自请求日志、全站口径，所以只给管理员。
+		AddRoute(
+			router.NewRoute("/breakdown", http.MethodGet).
+				Handle(getStatsBreakdown),
+		).
+		AddRoute(
+			router.NewRoute("/user-trend", http.MethodGet).
+				Handle(getStatsUserTrend),
 		)
 }
 
@@ -191,4 +202,72 @@ func getCacheDiagnostics(c *gin.Context) {
 		return
 	}
 	resp.Success(c, diagnostics)
+}
+
+// statsRangeFromQuery 读 from / to（统计时区的日期，含首尾）。参数错回 400。
+func statsRangeFromQuery(c *gin.Context) (op.StatsRange, bool) {
+	rng, err := op.ParseStatsRange(c.Query("from"), c.Query("to"))
+	if err != nil {
+		resp.Error(c, http.StatusBadRequest, err.Error())
+		return op.StatsRange{}, false
+	}
+	return rng, true
+}
+
+func statsIntQuery(c *gin.Context, name string) (int, bool) {
+	raw := c.Query(name)
+	if raw == "" {
+		return 0, true
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 0 {
+		resp.Error(c, http.StatusBadRequest, name+" 要是非负整数")
+		return 0, false
+	}
+	return value, true
+}
+
+func statsRespondErr(c *gin.Context, err error) {
+	var rangeErr *op.StatsRangeError
+	if errors.As(err, &rangeErr) {
+		resp.Error(c, http.StatusBadRequest, rangeErr.Msg)
+		return
+	}
+	resp.Error(c, http.StatusInternalServerError, err.Error())
+}
+
+// GET /api/v1/stats/breakdown?from=2026-10-24&to=2026-10-30&by=model|channel|plan|user|apikey|hour&limit=50
+func getStatsBreakdown(c *gin.Context) {
+	rng, ok := statsRangeFromQuery(c)
+	if !ok {
+		return
+	}
+	limit, ok := statsIntQuery(c, "limit")
+	if !ok {
+		return
+	}
+	result, err := op.StatsBreakdownGet(c.Request.Context(), rng, c.Query("by"), limit)
+	if err != nil {
+		statsRespondErr(c, err)
+		return
+	}
+	resp.Success(c, result)
+}
+
+// GET /api/v1/stats/user-trend?from=2026-10-24&to=2026-10-30&top=5
+func getStatsUserTrend(c *gin.Context) {
+	rng, ok := statsRangeFromQuery(c)
+	if !ok {
+		return
+	}
+	top, ok := statsIntQuery(c, "top")
+	if !ok {
+		return
+	}
+	result, err := op.StatsUserTrendGet(c.Request.Context(), rng, top)
+	if err != nil {
+		statsRespondErr(c, err)
+		return
+	}
+	resp.Success(c, result)
 }
