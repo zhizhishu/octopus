@@ -488,46 +488,46 @@ func TestRelayLogScopeRuleParityAtVolume(t *testing.T) {
 	}
 }
 
-// TestRelayLogSeverityTabOnlyResidualDifference 记录两套规则**仅剩**的一处差异，钉住它
-// 而不是假装不存在——有人哪天顺手修了它会看到这个测试红，从而知道要同步改这边。
+// TestRelayLogSeverityTabOnlyAgreesWithGo 锁住「tab/换行只是空白」在 Go 和 SQL
+// 上是同一个答案。
 //
-// 差异：Go 的 strings.TrimSpace / 前端的 String.trim() 都吃掉 \t \n \r \f \v，而
-// SQL 的 TRIM()（SQLite/MySQL/Postgres 一致）只吃空格。所以一个字面值为 "\t\n" 的
-// error 会被 Go/前端判成"成功"、被 SQL 判成"错误"。
-//
-// 为什么现在不修：没有任何生产路径能写出这种值——上游 body 抽出来的 code/msg 全部过
-// stringValue()→TrimSpace，抽不出东西时退回的是 octopus 自己的模板文案（
-// "Upstream request failed (status %d, code %s)."），本地错误也都是有字的模板。
-// 三个数据库方言也没有可移植的"去全部空白"表达式（Postgres 要 btrim(x,E' \t\n')、
-// MySQL 要 TRIM(BOTH '\t' FROM x)、SQLite 要 char(9)，写法互不兼容）。
-//
-// ponytail: 天花板 = 手写 SQL 谓词天生只能逼近 Go 的字符串语义。
-// 升级路径 = 落一列由 relayLogSeverityValue 唯一计算出来的 severity 持久列，
-// 过滤/计数都改成 severity = ?：这类差异整类消失，顺带让 severity 过滤走索引
-// （relayLogApplyScope 上方那段注释里抱怨的 ~64s severity=success 慢页也正是它）。
-func TestRelayLogSeverityTabOnlyResidualDifference(t *testing.T) {
+// 以前 SQL TRIM() 只剥空格，"\t\n" 在 SQL 里是错误、在 Go TrimSpace 和前端 trim()
+// 里是成功。桶改成落库时用 ClassifyRelayLogSeverity 写进 severity 之后，过滤和
+// 计数都读这一列，这个分歧不再存在。未回填行（severity=0）仍走旧 TRIM，那条
+// 路径的差异由 TestRelayLogSeverityUnsetRowsMatchLegacySQL 单独守着。
+func TestRelayLogSeverityTabOnlyAgreesWithGo(t *testing.T) {
 	ctx := setupRelayLogTest(t)
 
 	row := model.RelayLog{ID: 2001, Time: 2001, RequestModelName: "tab-only", Error: "\t\n", TotalAttempts: 1}
 	if err := db.GetDB().WithContext(ctx).Create(&row).Error; err != nil {
 		t.Fatalf("create row: %v", err)
 	}
+	if row.Severity != model.RelayLogSeveritySuccess {
+		t.Fatalf("BeforeCreate severity = %d, want success (%d)", row.Severity, model.RelayLogSeveritySuccess)
+	}
 
 	goSev := relayLogSeverityValue(row)
 	if goSev != "success" {
-		t.Errorf("Go 侧应把 tab-only 错误当成功: got %q", goSev)
+		t.Fatalf("Go 侧应把 tab-only 错误当成功: got %q", goSev)
 	}
 
 	var errorIDs []int64
 	q := relayLogApplyScope(db.GetDB().WithContext(ctx).Model(&model.RelayLog{}),
 		&model.RelayLogScope{Severity: "error"})
 	if err := q.Pluck("id", &errorIDs).Error; err != nil {
-		t.Fatalf("pluck: %v", err)
+		t.Fatalf("pluck error: %v", err)
 	}
-	sqlSaysError := len(errorIDs) == 1 && errorIDs[0] == 2001
-	if !sqlSaysError {
-		t.Fatalf("SQL 侧现在把 tab-only 判成什么变了 (error ids=%v)。"+
-			"如果你刚修好了 whitespace 语义，请删除本测试并同步 relayLogErrorSQLCond 的注释", errorIDs)
+	if len(errorIDs) != 0 {
+		t.Fatalf("已回填的 tab-only 行不应再被 SQL 当成错误: ids=%v", errorIDs)
 	}
-	t.Logf("已知残留差异（不可达，见函数注释）: Go=%s vs SQL=error, id=%d", goSev, row.ID)
+
+	var successIDs []int64
+	q = relayLogApplyScope(db.GetDB().WithContext(ctx).Model(&model.RelayLog{}),
+		&model.RelayLogScope{Severity: "success"})
+	if err := q.Pluck("id", &successIDs).Error; err != nil {
+		t.Fatalf("pluck success: %v", err)
+	}
+	if len(successIDs) != 1 || successIDs[0] != 2001 {
+		t.Fatalf("success ids=%v, want [2001]", successIDs)
+	}
 }

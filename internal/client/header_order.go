@@ -208,12 +208,15 @@ func http1WireHeaderOrderForFace(method, requestTarget, face string) []string {
 	return http1WireHeaderOrderForTarget(requestTarget)
 }
 
-// http1RequestHeaderOrder is the production hook handed to every plaintext dial. The
-// switch is read PER REQUEST rather than baked into the transport, because the
-// transports themselves are cached process-wide: this way turning the setting off
-// takes effect immediately, including on connections already sitting in the pool. Off
-// (or unset) returns nil == the header block is left exactly as Go serialised it, which
-// is byte-for-byte today's outbound request.
+// http1RequestHeaderOrder is the face-less path rule. Production plaintext dials do
+// not call it directly: tlsFamilyForDial (the same function the uTLS dial uses)
+// resolves claude, codex, or chrome, and the dial closure passes that family to
+// http1WireHeaderOrderForFace. An empty face is what still falls through to this
+// path rule. The setting is read PER REQUEST rather than baked into the transport,
+// because the transports themselves are cached process-wide: turning the setting off
+// takes effect immediately, including on connections already sitting in the pool.
+// Off returns nil == the header block is left exactly as Go serialised it. Unset is
+// on (see upstreamHTTP1HeaderOrderEnabled).
 func http1RequestHeaderOrder(method, requestTarget string) []string {
 	if !upstreamHTTP1HeaderOrderEnabled() {
 		return nil

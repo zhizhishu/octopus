@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"maps"
 	"regexp"
 	"strings"
 	"time"
@@ -422,13 +421,19 @@ const upstreamRequestBodyLogLimit = 128 * 1024
 // 只存一份快照，供 saveLog 落库；不参与路由、计费、指纹。
 //
 // 这一列按发出去的字节原样保存，凭据不打码。request_content、response_content、
-// 错误和 URL 仍走 redactLogBody / xredact。内联二进制剥离只在该辅助函数存在时
-// 才加在截断之前；当前版本没有它。截断只作用于存储，标记里的总长是原始字节数。
+// 错误和 URL 仍走 redactLogBody / xredact。内联二进制先剥成占位符，再截断；
+// 截断只作用于存储，标记里的总长是原始字节数。
 func (m *RelayMetrics) SetUpstreamRequestBody(body []byte) {
 	if m == nil || len(body) == 0 {
 		return
 	}
-	logged := string(body)
+	// 🔴 snapshotOutboundRequestBody 把同一份 []byte 重挂回了即将发出的
+	// http.Request。这里只能读，不能改 body 的任何一个字节。
+	//
+	// 按用户决定，这个字段原样记录、不脱敏。只做两件事，顺序是「先在副本上剥内联二进制、再截断」：
+	// 先截断会把 base64 从中间切断，日志里留下一大段无用载荷。
+	// 截断标记里的总长仍是真正发出去的字节数，不是剥过之后的日志长度。
+	logged := stripInlineBinaryForLog(string(body))
 	if len(logged) > upstreamRequestBodyLogLimit {
 		logged = truncateUTF8(logged, upstreamRequestBodyLogLimit) +
 			fmt.Sprintf("\n...[truncated: %d bytes total]", len(body))
@@ -1015,33 +1020,10 @@ func (m *RelayMetrics) saveLog(ctx context.Context, err error, duration time.Dur
 		relayLog.CacheWrite1hTokens = int(m.InternalResponse.Usage.CacheCreation1hInputTokens)
 	}
 
-	// 请求内容
+	// 请求内容。marshal、ParamOverride 合并、剥二进制、打码都在副本上完成，
+	// InternalRequest 与真正发出去的 body 一个字节不动。
 	if m.InternalRequest != nil {
-		reqJSON, jsonErr := json.Marshal(m.InternalRequest)
-		if jsonErr != nil {
-			relayLog.RequestContent = string(reqJSON)
-		} else if m.ParamOverride == "" {
-			relayLog.RequestContent = string(reqJSON)
-		} else {
-			var reqMap map[string]any
-			if err := json.Unmarshal(reqJSON, &reqMap); err != nil {
-				relayLog.RequestContent = string(reqJSON)
-			} else {
-				var override map[string]any
-				if err := json.Unmarshal([]byte(m.ParamOverride), &override); err != nil {
-					relayLog.RequestContent = string(reqJSON)
-				} else {
-					maps.Copy(reqMap, override)
-					if finalJSON, err := json.Marshal(reqMap); err != nil {
-						relayLog.RequestContent = string(reqJSON)
-					} else {
-						relayLog.RequestContent = string(finalJSON)
-					}
-				}
-			}
-		}
-		// 入库前打码：只改写进日志的这份，发给上游的请求体一个字节不动。
-		relayLog.RequestContent = redactLogBody(relayLog.RequestContent)
+		relayLog.RequestContent = requestContentForLog(m.InternalRequest, m.ParamOverride)
 	}
 
 	// 真实出站请求体（开关打开且采集成功时才有；否则留空，不假装有值）。

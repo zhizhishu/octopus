@@ -1,234 +1,323 @@
 package migrate
 
 import (
-	"encoding/json"
-	"errors"
 	"fmt"
-	"net/url"
-	"strings"
+	"time"
 
 	"github.com/zhizhishu/octopus/internal/model"
-	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 	"github.com/zhizhishu/octopus/internal/utils/log"
-	"github.com/zhizhishu/octopus/internal/utils/xredact"
-	"github.com/zhizhishu/octopus/internal/utils/xurl"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
-// settingKeyCustomChatVerbatim marks the one-time rewrite of type-6 base URLs.
-// The migration record (version 21) is a second guard; this row makes the
-// rewrite itself idempotent inside the same transaction as the URL updates.
-const settingKeyCustomChatVerbatim model.SettingKey = "migrate_custom_openai_chat_verbatim_urls_v1"
-
 func init() {
+	// AlwaysRun 是必需的，不是优化。
+	//
+	// 回填按批走，单次启动只做一小段（见 relayLogSeverityStartupBudget），
+	// 剩下的交给后台续跑；进程在某一批中途被杀掉也一样。框架对没标 AlwaysRun
+	// 的迁移只跑一次：Up() 返回 nil 就记 success，之后每次启动都跳过，
+	// 没写完的行就永远停在 severity=0。标上之后：
+	//   - 真的跑完 = 表里已无 severity=0 -> 立刻返回，每次启动只是一次索引探测。
+	//   - 还没跑完 = 也返回 nil（见下），下次启动接着跑，永远不阻断启动。
 	RegisterAfterAutoMigration(Migration{
-		Version: 21,
-		Up:      migrateCustomOpenAIChatVerbatimURLs,
+		Version:   21,
+		Up:        migrateBackfillRelayLogSeverity,
+		AlwaysRun: true,
 	})
 }
 
-// migrateCustomOpenAIChatVerbatimURLs rewrites every type-6 base URL to the
-// chat URL the old JoinCustomOpenAIChatPath logic would have produced.
+// RelayLogSeverityBackfillState 是「存量 severity 到底补齐了没有」那一行标记。
 //
-// Type 6 is now verbatim: the stored URL is the request URL. Without this
-// rewrite, a base of https://host/v1 would start hitting /v1 instead of
-// /v1/chat/completions. A URL that already ends in /chat/completions is left
-// unchanged (the old join trims one trailing slash and then stops).
+// migration_records 的 success 只表示「这一遍 Up 返回了 nil」。本迁移在预算用完
+// 或读批失败时故意返回 nil，所以 success ≠ 补齐。计数热路径不读这张表（它直接
+// 探测 severity=0，探测本身走索引），标记给后台循环和测试用。
+type RelayLogSeverityBackfillState struct {
+	ID       int  `gorm:"primaryKey"`
+	Complete bool `gorm:"not null"`
+}
+
+const relayLogSeverityBackfillStateRowID = 1
+
+// relayLogSeverityBackfillBatch 是一批回填的行数。
 //
-// OpenAIChatPath is folded in with the same old two-step join the chat relay
-// used to do, then cleared, so a later verbatim send does not apply it twice.
-// Channel keys are never read or written. Other channel types are untouched.
+// 一批要读 error/error_code/error_status/total_attempts。这几列在大 TEXT
+// （request_content / upstream_request_body / response_content）后面，SQLite
+// 读它们会顺着溢出页走一遍，随后 UPDATE 还要把整行写回去。几千行一批把锁和
+// WAL 切成小段：中断只丢掉当前这一批（已提交的留下），下一次从 severity=0 接着做。
+const relayLogSeverityBackfillBatch = 2000
+
+// relayLogSeverityStartupBudget 是启动阶段最多花在回填上的时间。
 //
-// Relative embeddings, images, videos, and tasks paths are rewritten to the
-// absolute URL the old join produced, using the original base (not the new
-// chat URL). Empty fields stay empty. An empty tasks path is not a skip: poll
-// and content fall back to the videos prefix. Channels with an empty
-// embeddings, images, or videos field are listed at startup: those endpoints
-// are skipped, because a type-6 channel must not post non-chat traffic at the
-// chat URL. Raw protocols have no path field and are not served on type 6.
-func migrateCustomOpenAIChatVerbatimURLs(db *gorm.DB) error {
+// 18GB 的库把每一行的正文都读一遍再写回去，不是启动该等的事情。预算用完就返回，
+// 服务先起来；同一进程里的后台循环（op.RelayLogSeverityBackfillStart）继续跑，
+// 下次启动 AlwaysRun 也会接着跑。小库在预算内就能补完，测试不用等后台。
+const relayLogSeverityStartupBudget = 3 * time.Second
+
+// RelayLogSeverityBackfillOptions 控制一次回填调用做多少。
+//
+// MaxRows / Budget 为 0 表示不设该上限。两者都为 0 时一直跑到没有 severity=0 为止。
+type RelayLogSeverityBackfillOptions struct {
+	MaxRows int
+	Budget  time.Duration
+}
+
+// RelayLogSeverityBackfillComplete 报告标记是否为「已补齐」。
+// 表不存在、没有那一行、或标记为 false，一律算没补齐。
+func RelayLogSeverityBackfillComplete(tx *gorm.DB) bool {
+	if tx == nil || !tx.Migrator().HasTable(&RelayLogSeverityBackfillState{}) {
+		return false
+	}
+	var st RelayLogSeverityBackfillState
+	if err := tx.Take(&st, relayLogSeverityBackfillStateRowID).Error; err != nil {
+		return false
+	}
+	return st.Complete
+}
+
+func relayLogSeverityBackfillMark(db *gorm.DB, complete bool) {
+	if db == nil {
+		return
+	}
+	if err := db.AutoMigrate(&RelayLogSeverityBackfillState{}); err != nil {
+		log.Warnf("migrate 021: ensure backfill marker table failed: %v", err)
+		return
+	}
+	row := RelayLogSeverityBackfillState{ID: relayLogSeverityBackfillStateRowID, Complete: complete}
+	// OnConflict 在 sqlite / mysql / postgres 上都能生成正确的 upsert。
+	if err := db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "id"}},
+		DoUpdates: clause.AssignmentColumns([]string{"complete"}),
+	}).Create(&row).Error; err != nil {
+		log.Warnf("migrate 021: write backfill marker (complete=%v) failed: %v", complete, err)
+	}
+}
+
+func migrateBackfillRelayLogSeverity(db *gorm.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
-	return db.Transaction(func(tx *gorm.DB) error {
-		var marker model.Setting
-		err := tx.Where("key = ?", settingKeyCustomChatVerbatim).Take(&marker).Error
-		if err == nil && marker.Value == "done" {
-			return nil
-		}
-		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-			return fmt.Errorf("read verbatim-url marker: %w", err)
-		}
+	// 列加不上去是结构性故障：没有 severity，计数无法切换，应该让启动失败被看见。
+	// 回填本身的失败不是——见下面 Backfill 的错误处理。
+	if err := ensureRelayLogSeverityColumn(db); err != nil {
+		return err
+	}
+	// 索引缺失只是慢。建索引失败记日志，不挡启动；计数会一直走能出正确答案的路径。
+	ensureRelayLogSeverityIndexes(db)
 
-		var channels []model.Channel
-		if err := tx.Where("type = ?", outbound.OutboundTypeCustomOpenAIChat).Find(&channels).Error; err != nil {
-			return fmt.Errorf("list type-6 channels: %w", err)
-		}
-
-		var noEmbeddings, noImages, noVideos []int
-		for i := range channels {
-			ch := &channels[i]
-			if strings.TrimSpace(ch.OpenAIEmbeddingsPath) == "" {
-				noEmbeddings = append(noEmbeddings, ch.ID)
-			}
-			if strings.TrimSpace(ch.OpenAIImagesPath) == "" {
-				noImages = append(noImages, ch.ID)
-			}
-			if strings.TrimSpace(ch.OpenAIVideosPath) == "" {
-				noVideos = append(noVideos, ch.ID)
-			}
-			if _, err := rewriteType6ChannelURLs(tx, ch); err != nil {
-				return err
-			}
-		}
-		if len(noEmbeddings) > 0 || len(noImages) > 0 || len(noVideos) > 0 {
-			log.Warnf("migrate 021: type-6 channels with no embeddings/images/videos path will skip that endpoint (no full URL). embeddings %v images %v videos %v. Raw endpoints such as systemone and rerank are not served on type 6.", noEmbeddings, noImages, noVideos)
-		}
-
-		marker = model.Setting{Key: settingKeyCustomChatVerbatim, Value: "done"}
-		if err := tx.Save(&marker).Error; err != nil {
-			return fmt.Errorf("write verbatim-url marker: %w", err)
-		}
+	if _, err := BackfillRelayLogSeverity(db, RelayLogSeverityBackfillOptions{
+		Budget: relayLogSeverityStartupBudget,
+	}); err != nil {
+		// 框架契约：Up 在「这回做不完」时必须返回 nil，非 nil 会记 failed 并让
+		// InitDB 失败、进程退出。读批失败（库忙、列被改、进程将死）留下
+		// severity=0，下次启动 / 后台循环继续。计数在此期间走旧 TRIM 条件，数字仍对。
+		log.Warnf("migrate 021: severity backfill stopped, will retry: %v", err)
 		return nil
-	})
+	}
+	return nil
 }
 
-func rewriteType6ChannelURLs(tx *gorm.DB, ch *model.Channel) (bool, error) {
-	if ch == nil {
-		return false, nil
+func ensureRelayLogSeverityColumn(db *gorm.DB) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
 	}
-	originalBases := append([]model.BaseUrl(nil), ch.BaseUrls...)
-	bestBase := (&model.Channel{BaseUrls: originalBases}).GetBaseUrl()
-	next := append([]model.BaseUrl(nil), originalBases...)
-	changed := false
-	for i, bu := range next {
-		raw := strings.TrimSpace(bu.URL)
-		if raw == "" {
-			continue
-		}
-		rewritten, err := legacyType6ChatURL(raw, ch.OpenAIChatPath)
-		if err != nil {
-			return false, fmt.Errorf("channel %d base url: %w", ch.ID, err)
-		}
-		if rewritten == bu.URL {
-			continue
-		}
-		log.Warnf("migrate 021: channel %d base url %s -> %s", ch.ID, redactURLForLog(bu.URL), redactURLForLog(rewritten))
-		next[i].URL = rewritten
-		changed = true
+	if !db.Migrator().HasTable(&model.RelayLog{}) {
+		return nil
 	}
-	updates := map[string]any{}
-	if changed {
-		raw, err := jsonMarshalBaseURLs(next)
+	if db.Migrator().HasColumn(&model.RelayLog{}, "Severity") {
+		return nil
+	}
+	if err := db.Migrator().AddColumn(&model.RelayLog{}, "Severity"); err != nil {
+		return fmt.Errorf("add relay_logs.severity: %w", err)
+	}
+	return nil
+}
+
+// ensureRelayLogSeverityIndexes 建两条索引：
+//   - idx_relay_logs_severity：探测「还有没有 severity=0」、回填的 WHERE severity=0、
+//     以及按桶过滤的列表。
+//   - idx_relay_logs_time_severity：(time, severity) 覆盖索引，计数只读索引。
+//
+// MySQL 没有 CREATE INDEX IF NOT EXISTS（MariaDB 有，MySQL 没有）。错误若被吞掉，
+// 索引就永远建不上。mysql 先 HasIndex 再裸 CREATE；sqlite / postgres 用 IF NOT EXISTS。
+// 名字必须和 struct tag 里 GORM 生成的一致，否则 HasIndex 对不上、每次启动都重建。
+func ensureRelayLogSeverityIndexes(db *gorm.DB) {
+	if db == nil || db.Dialector == nil || !db.Migrator().HasTable(&model.RelayLog{}) {
+		return
+	}
+	specs := []struct {
+		name string
+		cols string
+	}{
+		{"idx_relay_logs_severity", "severity"},
+		{"idx_relay_logs_time_severity", "time, severity"},
+	}
+	for _, spec := range specs {
+		switch db.Dialector.Name() {
+		case "mysql":
+			if db.Migrator().HasIndex(&model.RelayLog{}, spec.name) {
+				continue
+			}
+			if err := db.Exec("CREATE INDEX " + spec.name + " ON relay_logs(" + spec.cols + ")").Error; err != nil {
+				log.Warnf("migrate 021: ensure %s failed: %v", spec.name, err)
+			}
+		default:
+			if err := db.Exec("CREATE INDEX IF NOT EXISTS " + spec.name + " ON relay_logs(" + spec.cols + ")").Error; err != nil {
+				log.Warnf("migrate 021: ensure %s failed: %v", spec.name, err)
+			}
+		}
+	}
+}
+
+// BackfillRelayLogSeverity 把 severity=0 的行按 id 升序分批写成
+// ClassifyRelayLogSeverity 的结果。
+//
+// 返回 complete=true 表示表里已经没有 severity=0。complete=false 且 err=nil
+// 表示这回碰到了 MaxRows / Budget，调用方应稍后再调。err != nil 是读或写失败，
+// 已提交的批留在库里，未提交的下回重做。
+//
+// 分类在 Go 里做，而不是一条 UPDATE ... CASE TRIM()。SQL TRIM 只剥空格，
+// 和 Go TrimSpace / 前端 trim 不一致；回填如果用 SQL，会把这个分歧写进永久列。
+func BackfillRelayLogSeverity(db *gorm.DB, opt RelayLogSeverityBackfillOptions) (bool, error) {
+	if db == nil {
+		return false, fmt.Errorf("db is nil")
+	}
+	if !db.Migrator().HasTable("relay_logs") {
+		relayLogSeverityBackfillMark(db, true)
+		return true, nil
+	}
+	if !db.Migrator().HasColumn(&model.RelayLog{}, "Severity") {
+		return false, fmt.Errorf("relay_logs.severity is missing")
+	}
+
+	pending, err := relayLogSeverityUnsetPending(db)
+	if err != nil {
+		return false, err
+	}
+	if !pending {
+		relayLogSeverityBackfillMark(db, true)
+		return true, nil
+	}
+	// 只有真的还有未回填行才把标记打成 false。已经补齐的库不要先写 false
+	// 再写回 true——那一窗口里崩了，标记会撒谎。
+	relayLogSeverityBackfillMark(db, false)
+
+	batch := relayLogSeverityBackfillBatch
+	updated := 0
+	started := time.Now()
+	for {
+		n := batch
+		if opt.MaxRows > 0 {
+			left := opt.MaxRows - updated
+			if left <= 0 {
+				return false, nil
+			}
+			if left < n {
+				n = left
+			}
+		}
+		got, err := backfillRelayLogSeverityBatch(db, n)
 		if err != nil {
 			return false, err
 		}
-		updates["base_urls"] = raw
-	}
-	if path := strings.TrimSpace(ch.OpenAIChatPath); path != "" {
-		log.Warnf("migrate 021: channel %d cleared openai_chat_path %s (folded into the base url)", ch.ID, redactURLForLog(path))
-		updates["open_ai_chat_path"] = ""
-		changed = true
-	}
-	for _, field := range []struct {
-		column string
-		value  string
-		join   func(base, path string) (string, error)
-	}{
-		{"open_ai_embeddings_path", ch.OpenAIEmbeddingsPath, legacyType6EmbeddingsURL},
-		{"open_ai_images_path", ch.OpenAIImagesPath, legacyType6MediaPrefix},
-		{"open_ai_videos_path", ch.OpenAIVideosPath, legacyType6MediaPrefix},
-		// Poll and content prefer this prefix over the videos path when a task id
-		// is present. A relative value has to become absolute or type 6 refuses
-		// the request instead of posting it at the chat URL.
-		{"open_ai_tasks_path", ch.OpenAITasksPath, legacyType6MediaPrefix},
-	} {
-		rewritten, rewrite, err := legacyAbsolutePathField(bestBase, field.value, field.join)
-		if err != nil {
-			return false, fmt.Errorf("channel %d %s: %w", ch.ID, field.column, err)
+		if got == 0 {
+			relayLogSeverityBackfillMark(db, true)
+			return true, nil
 		}
-		if !rewrite {
-			continue
+		updated += got
+		relayLogSeverityCheckpoint(db)
+		// 不足一批 = 未回填的行已经取完。
+		if got < n {
+			relayLogSeverityBackfillMark(db, true)
+			return true, nil
 		}
-		log.Warnf("migrate 021: channel %d %s %s -> %s", ch.ID, field.column, redactURLForLog(field.value), redactURLForLog(rewritten))
-		updates[field.column] = rewritten
-		changed = true
-	}
-	if !changed {
-		return false, nil
-	}
-	if err := tx.Table("channels").Where("id = ?", ch.ID).Updates(updates).Error; err != nil {
-		return false, fmt.Errorf("update channel %d: %w", ch.ID, err)
-	}
-	return true, nil
-}
-
-// legacyAbsolutePathField converts a non-empty relative path into the absolute
-// URL the old join produced. An empty field stays empty. An absolute field is
-// already the stored override and is left alone, so a second pass is a no-op.
-func legacyAbsolutePathField(base, path string, join func(base, path string) (string, error)) (string, bool, error) {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return "", false, nil
-	}
-	if _, ok, err := xurl.ParseEndpointOverride(path); err != nil {
-		return "", false, err
-	} else if ok {
-		return path, false, nil
-	}
-	if strings.TrimSpace(base) == "" {
-		return "", false, nil
-	}
-	abs, err := join(base, path)
-	if err != nil {
-		return "", false, err
-	}
-	if abs == path {
-		return path, false, nil
-	}
-	return abs, true, nil
-}
-
-func legacyType6EmbeddingsURL(base, path string) (string, error) {
-	stage, err := xurl.JoinCustomOpenAIEmbeddingsPath(base, path)
-	if err != nil {
-		return "", err
-	}
-	return xurl.JoinCustomOpenAIEmbeddingsPath(stage, "/v1/embeddings")
-}
-
-func legacyType6MediaPrefix(base, path string) (string, error) {
-	return xurl.JoinOpenAIPath(base, strings.TrimRight(strings.TrimSpace(path), "/"))
-}
-
-// legacyType6ChatURL is the URL a chat request used to hit:
-// GetOpenAIChatBaseUrl (join OpenAIChatPath when set) then
-// JoinCustomOpenAIChatPath(that, "/v1/chat/completions").
-func legacyType6ChatURL(baseURL, chatPath string) (string, error) {
-	stage := strings.TrimSpace(baseURL)
-	if path := strings.TrimSpace(chatPath); path != "" {
-		next, err := xurl.LegacyJoinCustomOpenAIChatPath(stage, path)
-		if err != nil {
-			return "", err
+		if opt.MaxRows > 0 && updated >= opt.MaxRows {
+			return false, nil
 		}
-		stage = next
+		if opt.Budget > 0 && time.Since(started) >= opt.Budget {
+			log.Infof("migrate 021: severity backfill paused after %d rows (budget %s); it resumes in the background and on next startup", updated, opt.Budget)
+			return false, nil
+		}
 	}
-	return xurl.LegacyJoinCustomOpenAIChatPath(stage, "/v1/chat/completions")
 }
 
-func jsonMarshalBaseURLs(values []model.BaseUrl) (string, error) {
-	raw, err := json.Marshal(values)
+func relayLogSeverityUnsetPending(db *gorm.DB) (bool, error) {
+	var probe []struct {
+		OK int
+	}
+	err := db.Raw("SELECT 1 AS ok FROM relay_logs WHERE severity = ? LIMIT 1", model.RelayLogSeverityUnset).Scan(&probe).Error
 	if err != nil {
-		return "", err
+		return false, err
 	}
-	return string(raw), nil
+	return len(probe) > 0, nil
 }
 
-func redactURLForLog(raw string) string {
-	trimmed := strings.TrimSpace(raw)
-	if parsed, err := url.Parse(trimmed); err == nil && parsed != nil && parsed.User != nil {
-		parsed.User = url.User("redacted")
-		trimmed = parsed.String()
+type relayLogSeverityBackfillRow struct {
+	ID            int64
+	Error         *string
+	ErrorCode     *string
+	ErrorStatus   *int
+	TotalAttempts *int
+}
+
+func severityBackfillString(v *string) string {
+	if v == nil {
+		return ""
 	}
-	return xredact.Secrets(xredact.URLSecrets(trimmed))
+	return *v
+}
+
+func severityBackfillInt(v *int) int {
+	if v == nil {
+		return 0
+	}
+	return *v
+}
+
+func backfillRelayLogSeverityBatch(db *gorm.DB, n int) (int, error) {
+	if n <= 0 {
+		return 0, nil
+	}
+	var rows []relayLogSeverityBackfillRow
+	// 只取分类要用的列。正文仍然会在磁盘上被跳过（它们排在这些列前面），
+	// 但不会进到 Go 的内存里。
+	err := db.Table("relay_logs").
+		Select("id, error, error_code, error_status, total_attempts").
+		Where("severity = ?", model.RelayLogSeverityUnset).
+		Order("id ASC").
+		Limit(n).
+		Find(&rows).Error
+	if err != nil {
+		return 0, err
+	}
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	buckets := map[int][]int64{}
+	for _, row := range rows {
+		sev := model.ClassifyRelayLogSeverity(model.RelayLog{
+			Error:         severityBackfillString(row.Error),
+			ErrorCode:     severityBackfillString(row.ErrorCode),
+			ErrorStatus:   severityBackfillInt(row.ErrorStatus),
+			TotalAttempts: severityBackfillInt(row.TotalAttempts),
+		})
+		buckets[sev] = append(buckets[sev], row.ID)
+	}
+	for sev, ids := range buckets {
+		// 带上 severity=0，避免把并发插入、已经写好桶的行覆盖掉。
+		if err := db.Table("relay_logs").
+			Where("id IN ? AND severity = ?", ids, model.RelayLogSeverityUnset).
+			Update("severity", sev).Error; err != nil {
+			return 0, err
+		}
+	}
+	return len(rows), nil
+}
+
+func relayLogSeverityCheckpoint(db *gorm.DB) {
+	if db == nil || db.Dialector == nil || db.Dialector.Name() != "sqlite" {
+		return
+	}
+	// 每批提交后做一次被动 checkpoint，避免回填把 WAL 撑到整表那么大。
+	// PASSIVE 不等待其他读者，做不完就留下，下一轮再试。
+	_ = db.Exec("PRAGMA wal_checkpoint(PASSIVE)").Error
 }

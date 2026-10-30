@@ -377,6 +377,9 @@ func RelayLogAdd(ctx context.Context, relayLog model.RelayLog) error {
 		// 失败请求与缺字段一律跳过——"算不出来"不能报成"算出来不对"。
 		relayLog.PassiveProbes = computeRelayProbesForLog(relayLog)
 	}
+	// 桶在入队前就算好。落库时 BeforeCreate 会再算一次（备份导入等不经这里的
+	// 路径也盖得住）；这里写上是为了内存里的副本和即将入库的行是同一个值。
+	relayLog.Severity = model.ClassifyRelayLogSeverity(relayLog)
 
 	if enabled {
 		relayLogAddPending(relayLog)
@@ -738,14 +741,15 @@ func RelayLogList(ctx context.Context, startTime, endTime *int, page, pageSize i
 			if dbLimit <= relayLogTwoPhaseMaxIDs {
 				// Two-phase read for interactive pages: first pluck ONLY the ids that match the
 				// filter (ORDER+LIMIT), then fetch the full rows for just those ids. A
-				// severity-filtered list (WHERE on the non-indexed error/total_attempts predicate)
-				// walks past many non-matching rows to collect a page; doing that walk with
-				// SELECT * pulls each walked row's large request_content/response_content (overflow
-				// pages) off disk — the cause of the ~64s severity=success page. Plucking id only
-				// skips those overflow reads during the walk; the full-row fetch touches just the
-				// matching rows. Order is reapplied by the caller's stable sort below, so the id-IN
-				// fetch need not preserve it. Guarded by relayLogTwoPhaseMaxIDs so the IN(...) list
-				// never approaches SQLite's bound-parameter cap.
+				// severity-filtered list used to WHERE on TRIM(error)/total_attempts, which sits
+				// after the big TEXT bodies, so the walk pulled overflow pages for every row it
+				// skipped — the ~64s severity=success page. The persisted severity column (and
+				// idx_relay_logs_severity) lets that filter stay on the index; plucking id only
+				// still skips body reads for whatever the planner does have to visit. The
+				// full-row fetch touches just the matching rows. Order is reapplied by the
+				// caller's stable sort below, so the id-IN fetch need not preserve it. Guarded
+				// by relayLogTwoPhaseMaxIDs so the IN(...) list never approaches SQLite's
+				// bound-parameter cap.
 				// Phase 1 (pluck ids) + phase 2 (fetch rows) run in ONE read transaction so they
 				// see a single consistent snapshot; without it a concurrent delete between them
 				// could underfill the page (and make an export loop mistake the short page for EOF).
@@ -952,13 +956,13 @@ func RelayLogCount(ctx context.Context, startTime, endTime *int, scope *model.Re
 // filters, so the client can render accurate global badges (成功 / Warn / Error)
 // independent of the current page.
 //
-// 改写前这里对 success/warn/error 各调一次 RelayLogCount —— 同一份谓词在 DB 上串行
-// 全表扫 3 次（error 谓词落在非索引字段上，大表成本 ×3），持久化关闭时内存缓存也要
-// 遍历 3 遍。现在两条路径都一次算齐：
-//   - DB 路径：一条查询，用与 relayLogApplyScope 完全相同的条件式把每行归入
-//     success/warn/error 三桶（SUM(CASE)），谓词逐字复用 relayLogErrorSQLCond，
-//     与 List/Count 路径不会漂移；
-//   - 内存路径：遍历 relayLogCache 一次，按 relayLogSeverityValue 归桶。
+// DB 路径一条查询算齐三桶，谓词与列表过滤共用 relayLogSeverityBucketSQL：
+//   - 行都已回填：只碰 severity。SQLite 会选 idx_relay_logs_time_severity 做覆盖
+//     扫描，不读正文溢出页；
+//   - 还有 severity=0：已回填的行用列，没回填的行用旧的 TRIM 条件，回填中途
+//     数字与改列之前一致；
+//
+// 内存路径仍按 relayLogSeverityValue 归桶。
 //
 // 每条日志恰好归入一个桶，因此 total 恒等于 success+warn+error（两条路径都成立）。
 func RelayLogSeverityCounts(ctx context.Context, startTime, endTime *int, scope *model.RelayLogScope) (model.RelayLogSeverityCounts, error) {
@@ -971,28 +975,28 @@ func RelayLogSeverityCounts(ctx context.Context, startTime, endTime *int, scope 
 
 	if enabled {
 		query := db.GetDB().WithContext(ctx).Model(&model.RelayLog{})
+		// 一次探测同时喂给 WHERE（scope 带了 severity 时）和 SUM(CASE)。
+		// 不能让 ApplyScope 再探一次：回填刚好跑完时两边会一个走列、一个走 TRIM。
+		// scope 没带 severity 也要探——SELECT 的三桶表达式用得着，列表路径则不用。
+		mode := relayLogSeveritySQLModeOf(query)
 		if hasTimeFilter {
 			query = query.Where("time >= ? AND time <= ?", *startTime, *endTime)
 		}
-		query = relayLogApplyScope(query, scope)
+		query = relayLogApplyScopeMode(query, scope, mode)
 
-		// 三桶条件式与 relayLogApplyScope 的 severity 分支逐字对齐：
-		//   error = relayLogErrorSQLCond
-		//   warn  = NOT error AND total_attempts > 1
-		//   success = NOT error AND total_attempts <= 1
-		// 每个 CASE 的 WHEN 互斥且并集为全集，SUM 即 total。
+		// 三桶与列表的 severity 过滤共用同一个谓词，不会各写一套。
+		// 不写 INDEXED BY：fast 路径只引用 time/severity 时，SQLite 自己会选
+		// idx_relay_logs_time_severity 做覆盖扫描（见 EXPLAIN 测试）。钉死这条
+		// 索引会让「搜索 id IN (...)」的计数也被迫按时间扫一遍。
+		// fast / hybrid 下每个 CASE 的 WHEN 互斥且并集为全集，SUM 即 total。
+		sel, args := relayLogSeverityCountSelect(mode)
 		var row struct {
 			Total        int64
 			SuccessError int64
 			Warn         int64
 			SuccessOK    int64
 		}
-		err := query.Select(
-			"COUNT(*) AS total, " +
-				"COALESCE(SUM(CASE WHEN " + relayLogErrorSQLCond + " THEN 1 ELSE 0 END),0) AS success_error, " +
-				"COALESCE(SUM(CASE WHEN NOT " + relayLogErrorSQLCond + " AND COALESCE(total_attempts,0) > 1 THEN 1 ELSE 0 END),0) AS warn, " +
-				"COALESCE(SUM(CASE WHEN NOT " + relayLogErrorSQLCond + " AND COALESCE(total_attempts,0) <= 1 THEN 1 ELSE 0 END),0) AS success_ok",
-		).Scan(&row).Error
+		err := query.Select(sel, args...).Scan(&row).Error
 		if err != nil {
 			return model.RelayLogSeverityCounts{}, err
 		}
@@ -1322,26 +1326,21 @@ func RelayLogUserSummary(relayLog model.RelayLog) model.RelayLogUserSummary {
 	}
 }
 
-// relayLogErrorSQLCond is the SQL predicate for an "error" severity log. It is
-// kept in lockstep with relayLogIsError (Go) and getRelayLogSeverity (web) so the
-// server-side severity filter, the severity counts, and the client badges never
-// diverge. A request "failed" when it carries an error message/code or a >=400
-// upstream status.
-// COALESCE guards against nullable columns: NOT (NULL OR ...) is NULL, which would
+// relayLogErrorSQLCond is the legacy SQL predicate for an "error" severity log.
+// It is only used for rows whose persisted severity is still 0 (backfill has not
+// reached them). Classified rows — and every new write — use
+// model.ClassifyRelayLogSeverity instead, which is Go's TrimSpace and matches
+// the web getRelayLogSeverity. SQL TRIM strips spaces only, so this predicate
+// is NOT identical to TrimSpace for tab/newline; that gap closes as each row
+// is backfilled, and it never applied to strings the relay actually stores
+// (those already passed TrimSpace on the way in).
+// COALESCE guards nullable columns: NOT (NULL OR ...) is NULL, which would
 // silently drop such rows from the warn/success filters and undercount them.
-// TRIM is NOT optional: relayLogIsError and the web getRelayLogSeverity both
-// compare strings.TrimSpace(...) != "", so a whitespace-only error/error_code is a
-// *success* on both of those sides. Without TRIM here the same row is an error in
-// SQL and a success in the list/badge classification — i.e. filtering by "error"
-// returned rows the page then painted as 成功, and the 成功/警告/错误 badges
-// disagreed with the rows under them.
 const relayLogErrorSQLCond = "(TRIM(COALESCE(error,'')) <> '' OR TRIM(COALESCE(error_code,'')) <> '' OR COALESCE(error_status,0) >= 400)"
 
 // relayLogIsError reports whether a log counts as an error (the request failed).
 func relayLogIsError(relayLog model.RelayLog) bool {
-	return strings.TrimSpace(relayLog.Error) != "" ||
-		strings.TrimSpace(relayLog.ErrorCode) != "" ||
-		relayLog.ErrorStatus >= 400
+	return model.ClassifyRelayLogSeverity(relayLog) == model.RelayLogSeverityError
 }
 
 // relayLogSeverityValue classifies a log as "error" / "warn" / "success".
@@ -1354,13 +1353,7 @@ func relayLogIsError(relayLog model.RelayLog) bool {
 // Mirror of the web getRelayLogSeverity rule so client display and server filter
 // agree. Every log maps to exactly one bucket, so the three counts sum to total.
 func relayLogSeverityValue(relayLog model.RelayLog) string {
-	if relayLogIsError(relayLog) {
-		return "error"
-	}
-	if relayLog.TotalAttempts > 1 {
-		return "warn"
-	}
-	return "success"
+	return model.RelayLogSeverityLabel(model.ClassifyRelayLogSeverity(relayLog))
 }
 
 // RelayLogSeverityValue is the shared success/warn/error bucket used by list,
@@ -1600,7 +1593,7 @@ func escapeLogEndpointLike(s string) string {
 // identical row invisible to the DB path.
 var relayLogModelFilterCols = []string{"LOWER(TRIM(actual_model_name))", "LOWER(TRIM(request_model_name))"}
 
-func relayLogApplyScopeRaw(query *gorm.DB, scope *model.RelayLogScope) *gorm.DB {
+func relayLogApplyScopeRaw(query *gorm.DB, scope *model.RelayLogScope, mode relayLogSeveritySQLMode) *gorm.DB {
 	if scope == nil {
 		return query
 	}
@@ -1680,13 +1673,9 @@ func relayLogApplyScopeRaw(query *gorm.DB, scope *model.RelayLogScope) *gorm.DB 
 			}
 		}
 	}
-	switch scope.Severity {
-	case "error":
-		query = query.Where(relayLogErrorSQLCond)
-	case "warn":
-		query = query.Where("NOT " + relayLogErrorSQLCond + " AND COALESCE(total_attempts,0) > 1")
-	case "success":
-		query = query.Where("NOT " + relayLogErrorSQLCond + " AND COALESCE(total_attempts,0) <= 1")
+	if scope.Severity != "" {
+		expr, args := relayLogSeverityBucketSQL(mode, scope.Severity)
+		query = query.Where(expr, args...)
 	}
 	if scope.RetriedOnly {
 		// 不写 COALESCE(total_attempts,0) > 1: 那会把列变成表达式, 索引直接失效
@@ -1714,7 +1703,14 @@ func relayLogApplyScopeRaw(query *gorm.DB, scope *model.RelayLogScope) *gorm.DB 
 // 用于计数 / 导出 / 严重程度统计这类"本来就要全量扫"的路径:
 // 它们没有 LIMIT 可早停, 直接让 SQL 用窄表子查询取交集最省。
 func relayLogApplyScope(query *gorm.DB, scope *model.RelayLogScope) *gorm.DB {
-	query = relayLogApplyScopeRaw(query, scope)
+	return relayLogApplyScopeMode(query, scope, relayLogSeveritySQLModeForScope(query, scope))
+}
+
+// relayLogApplyScopeMode 与 relayLogApplyScope 相同，但严重程度谓词用调用方已经
+// 定好的 mode。计数把 WHERE 和 SUM(CASE) 放在同一条 SQL 里，两边必须是同一次
+// 探测的结果，不能各探一次（回填刚好跑完时会一个走列、一个走 TRIM）。
+func relayLogApplyScopeMode(query *gorm.DB, scope *model.RelayLogScope, mode relayLogSeveritySQLMode) *gorm.DB {
+	query = relayLogApplyScopeRaw(query, scope, mode)
 	if scope == nil {
 		return query
 	}
@@ -1728,7 +1724,7 @@ func relayLogApplyScope(query *gorm.DB, scope *model.RelayLogScope) *gorm.DB {
 // 快的两步查询"——两边重复干活, 实测反而比优化前更慢(97ms vs 1.5ms)。
 // 计数/导出等没有 LIMIT、也无需早停的路径仍走 relayLogApplyScope。
 func relayLogApplyScopeBase(query *gorm.DB, scope *model.RelayLogScope) *gorm.DB {
-	return relayLogApplyScopeRaw(query, scope)
+	return relayLogApplyScopeRaw(query, scope, relayLogSeveritySQLModeForScope(query, scope))
 }
 
 // relayLogSearchIndexTable 是搜索投影表名(见 model.RelayLogSearchIndex)。

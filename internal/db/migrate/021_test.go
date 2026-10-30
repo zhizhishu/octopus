@@ -1,274 +1,190 @@
 package migrate
 
 import (
-	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/glebarez/sqlite"
 	"github.com/zhizhishu/octopus/internal/model"
-	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
 )
 
-func new021DB(t *testing.T) *gorm.DB {
+func unsetSeverity(t *testing.T, db *gorm.DB, rows []model.RelayLog) {
 	t.Helper()
-	dsn := filepath.Join(t.TempDir(), "octopus.db")
-	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{Logger: logger.Discard})
-	if err != nil {
-		t.Fatalf("open: %v", err)
+	if err := db.Session(&gorm.Session{SkipHooks: true}).Create(&rows).Error; err != nil {
+		t.Fatalf("seed: %v", err)
 	}
-	if sqlDB, dberr := db.DB(); dberr == nil {
-		t.Cleanup(func() { _ = sqlDB.Close() })
+	if err := db.Model(&model.RelayLog{}).Where("1 = 1").Update("severity", model.RelayLogSeverityUnset).Error; err != nil {
+		t.Fatalf("zero severity: %v", err)
 	}
-	if err := db.AutoMigrate(&model.Channel{}, &model.ChannelKey{}, &model.Setting{}); err != nil {
-		t.Fatalf("automigrate: %v", err)
-	}
-	return db
 }
 
-func TestMigration021RewritesType6BaseURLsOnce(t *testing.T) {
-	db := new021DB(t)
+func TestMigration021BackfillsByIDAndIsResumable(t *testing.T) {
+	db := newMigrateDB(t)
+	rows := []model.RelayLog{
+		{ID: 1, Time: 1, TotalAttempts: 1},
+		{ID: 2, Time: 2, Error: "boom", TotalAttempts: 1},
+		{ID: 3, Time: 3, TotalAttempts: 4},
+		{ID: 4, Time: 4, Error: "   ", TotalAttempts: 2},  // spaces + retries = warn
+		{ID: 5, Time: 5, Error: "\t\n", TotalAttempts: 1}, // tab-only = success, not SQL TRIM's error
+	}
+	unsetSeverity(t, db, rows)
 
-	root := model.Channel{
-		Name: "root",
-		Type: outbound.OutboundTypeCustomOpenAIChat,
-		BaseUrls: []model.BaseUrl{
-			{URL: "https://api.example.com", Delay: 3},
-			{URL: "https://backup.example.com/v1/", Delay: 9},
-		},
+	complete, err := BackfillRelayLogSeverity(db, RelayLogSeverityBackfillOptions{MaxRows: 2})
+	if err != nil {
+		t.Fatalf("first pass: %v", err)
 	}
-	withV1 := model.Channel{
-		Name:     "v1",
-		Type:     outbound.OutboundTypeCustomOpenAIChat,
-		BaseUrls: []model.BaseUrl{{URL: "https://api.example.com/v1"}},
+	if complete {
+		t.Fatal("first pass stopped at 2 rows but reported complete")
 	}
-	already := model.Channel{
-		Name:     "already",
-		Type:     outbound.OutboundTypeCustomOpenAIChat,
-		BaseUrls: []model.BaseUrl{{URL: "https://api.example.com/v1/chat/completions"}},
+	if RelayLogSeverityBackfillComplete(db) {
+		t.Fatal("marker must stay false while severity=0 rows remain")
 	}
-	query := model.Channel{
-		Name: "query",
-		Type: outbound.OutboundTypeCustomOpenAIChat,
-		BaseUrls: []model.BaseUrl{{
-			URL: "https://user:s3cret@api.example.com/v1?api_key=sk-live&foo=bar",
-		}},
-		OpenAIChatPath: "/chat/completions",
+
+	var filled []int64
+	if err := db.Table("relay_logs").Where("severity <> ?", model.RelayLogSeverityUnset).Order("id").Pluck("id", &filled).Error; err != nil {
+		t.Fatalf("pluck filled: %v", err)
 	}
-	other := model.Channel{
-		Name:     "chat",
-		Type:     outbound.OutboundTypeOpenAIChat,
-		BaseUrls: []model.BaseUrl{{URL: "https://api.example.com"}},
+	if len(filled) != 2 || filled[0] != 1 || filled[1] != 2 {
+		t.Fatalf("id-ordered batch filled %v, want [1 2]", filled)
 	}
-	for _, ch := range []*model.Channel{&root, &withV1, &already, &query, &other} {
-		if err := db.Create(ch).Error; err != nil {
-			t.Fatalf("seed %s: %v", ch.Name, err)
+	var sev2 int
+	if err := db.Raw("SELECT severity FROM relay_logs WHERE id = 2").Scan(&sev2).Error; err != nil {
+		t.Fatalf("read id 2: %v", err)
+	}
+	if sev2 != model.RelayLogSeverityError {
+		t.Fatalf("id 2 severity=%d, want error", sev2)
+	}
+
+	complete, err = BackfillRelayLogSeverity(db, RelayLogSeverityBackfillOptions{})
+	if err != nil || !complete {
+		t.Fatalf("second pass complete=%v err=%v", complete, err)
+	}
+	if !RelayLogSeverityBackfillComplete(db) {
+		t.Fatal("marker must be true once no unset rows remain")
+	}
+
+	var got []int
+	if err := db.Table("relay_logs").Order("id").Pluck("severity", &got).Error; err != nil {
+		t.Fatalf("pluck severity: %v", err)
+	}
+	want := []int{
+		model.RelayLogSeveritySuccess,
+		model.RelayLogSeverityError,
+		model.RelayLogSeverityWarn,
+		model.RelayLogSeverityWarn,
+		model.RelayLogSeveritySuccess,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("id %d severity=%d, want %d (all %v)", i+1, got[i], want[i], got)
 		}
 	}
-	secretKey := "sk-do-not-log"
-	if err := db.Create(&model.ChannelKey{ChannelID: root.ID, Enabled: true, ChannelKey: secretKey}).Error; err != nil {
-		t.Fatalf("seed key: %v", err)
+
+	// A finished pass is a probe, not a rewrite.
+	complete, err = BackfillRelayLogSeverity(db, RelayLogSeverityBackfillOptions{})
+	if err != nil || !complete {
+		t.Fatalf("third pass complete=%v err=%v", complete, err)
+	}
+	var again []int
+	if err := db.Table("relay_logs").Order("id").Pluck("severity", &again).Error; err != nil {
+		t.Fatalf("pluck again: %v", err)
+	}
+	for i := range want {
+		if again[i] != want[i] {
+			t.Fatalf("rerun changed id %d from %d to %d", i+1, want[i], again[i])
+		}
+	}
+}
+
+func TestMigration021EmptyDatabase(t *testing.T) {
+	db := newMigrateDB(t)
+	if err := migrateBackfillRelayLogSeverity(db); err != nil {
+		t.Fatalf("empty db: %v", err)
+	}
+	if !RelayLogSeverityBackfillComplete(db) {
+		t.Fatal("empty table is complete")
+	}
+	var names []string
+	if err := db.Raw("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'relay_logs'").Scan(&names).Error; err != nil {
+		t.Fatalf("list indexes: %v", err)
+	}
+	joined := strings.Join(names, " ")
+	for _, want := range []string{"idx_relay_logs_severity", "idx_relay_logs_time_severity"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("missing %s in %v", want, names)
+		}
+	}
+}
+
+func TestMigration021ReadFailureDoesNotBlockStartup(t *testing.T) {
+	db := newMigrateDB(t)
+	unsetSeverity(t, db, []model.RelayLog{{ID: 1, Time: 1, Error: "boom", TotalAttempts: 1}})
+
+	// 删掉回填 SELECT 点名的列，让读批失败。不走 AutoMigrate 把列补回来——
+	// 那样失败分支永远跑不到。
+	if err := db.Migrator().DropColumn(&model.RelayLog{}, "error"); err != nil {
+		t.Fatalf("drop error: %v", err)
 	}
 
-	if err := migrateCustomOpenAIChatVerbatimURLs(db); err != nil {
-		t.Fatalf("migrate: %v", err)
+	var m Migration
+	for _, candidate := range afterAutoMigrations {
+		if candidate.Version == 21 {
+			m = candidate
+			break
+		}
 	}
+	if m.Up == nil {
+		t.Fatal("migration 021 is not registered")
+	}
+	if !m.AlwaysRun {
+		t.Fatal("migration 021 must be AlwaysRun so an unfinished backfill resumes")
+	}
+	if err := m.Up(db); err != nil {
+		t.Fatalf("Up must return nil when the backfill cannot finish, got %v", err)
+	}
+	if RelayLogSeverityBackfillComplete(db) {
+		t.Fatal("a failed read must not mark the backfill complete")
+	}
+}
 
-	got := map[string]model.Channel{}
-	var rows []model.Channel
-	if err := db.Find(&rows).Error; err != nil {
+func TestMigration021BackfillsNullErrorColumns(t *testing.T) {
+	db := newMigrateDB(t)
+	// 旧行的 error/error_code/error_status/total_attempts 可以是 NULL。
+	// 扫进 Go 的 string 若直接接 NULL 会失败，回填就会永远停在这一行上。
+	if err := db.Exec(`INSERT INTO relay_logs (id, time, error, error_code, error_status, total_attempts, severity)
+		VALUES (1, 1, NULL, NULL, NULL, NULL, 0)`).Error; err != nil {
+		t.Fatalf("insert nulls: %v", err)
+	}
+	complete, err := BackfillRelayLogSeverity(db, RelayLogSeverityBackfillOptions{})
+	if err != nil || !complete {
+		t.Fatalf("backfill complete=%v err=%v", complete, err)
+	}
+	var stored int
+	if err := db.Raw("SELECT severity FROM relay_logs WHERE id = 1").Scan(&stored).Error; err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	for _, row := range rows {
-		got[row.Name] = row
-	}
-
-	if urls := baseURLStrings(got["root"].BaseUrls); urls[0] != "https://api.example.com/v1/chat/completions" || urls[1] != "https://backup.example.com/v1/chat/completions" {
-		t.Fatalf("multiple base urls = %#v", got["root"].BaseUrls)
-	}
-	if got["root"].BaseUrls[0].Delay != 3 || got["root"].BaseUrls[1].Delay != 9 {
-		t.Fatalf("delays were not preserved: %#v", got["root"].BaseUrls)
-	}
-	if got["v1"].BaseUrls[0].URL != "https://api.example.com/v1/chat/completions" {
-		t.Fatalf("v1 base = %q", got["v1"].BaseUrls[0].URL)
-	}
-	if got["already"].BaseUrls[0].URL != "https://api.example.com/v1/chat/completions" {
-		t.Fatalf("chat completions url changed: %q", got["already"].BaseUrls[0].URL)
-	}
-	wantQuery, err := legacyType6ChatURL("https://user:s3cret@api.example.com/v1?api_key=sk-live&foo=bar", "/chat/completions")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got["query"].BaseUrls[0].URL != wantQuery {
-		t.Fatalf("query base = %q, want %q", got["query"].BaseUrls[0].URL, wantQuery)
-	}
-	if got["query"].OpenAIChatPath != "" {
-		t.Fatalf("chat path was not cleared: %q", got["query"].OpenAIChatPath)
-	}
-	if !strings.Contains(wantQuery, "foo=bar") {
-		t.Fatalf("query string dropped: %q", wantQuery)
-	}
-	if got["chat"].BaseUrls[0].URL != "https://api.example.com" || got["chat"].Type != outbound.OutboundTypeOpenAIChat {
-		t.Fatalf("non-type-6 channel was rewritten: %#v", got["chat"])
-	}
-
-	var storedKey model.ChannelKey
-	if err := db.Where("channel_id = ?", root.ID).First(&storedKey).Error; err != nil {
-		t.Fatal(err)
-	}
-	if storedKey.ChannelKey != secretKey {
-		t.Fatalf("channel key changed")
-	}
-
-	// Rerun is a no-op, including when a URL is later edited by hand.
-	if err := db.Model(&model.Channel{}).Where("id = ?", root.ID).Update("base_urls", `[{"url":"https://hand-edited.example/keep","delay":3}]`).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := migrateCustomOpenAIChatVerbatimURLs(db); err != nil {
-		t.Fatalf("second migrate: %v", err)
-	}
-	var reread model.Channel
-	if err := db.First(&reread, root.ID).Error; err != nil {
-		t.Fatal(err)
-	}
-	if reread.BaseUrls[0].URL != "https://hand-edited.example/keep" {
-		t.Fatalf("rerun rewrote a url after the marker was set: %q", reread.BaseUrls[0].URL)
+	if stored != model.RelayLogSeveritySuccess {
+		t.Fatalf("NULL error columns severity=%d, want success", stored)
 	}
 }
 
-func TestMigration021ConvertsRelativeMediaPathsToLegacyURLs(t *testing.T) {
-	db := new021DB(t)
-	ch := model.Channel{
-		Name: "media",
-		Type: outbound.OutboundTypeCustomOpenAIChat,
-		BaseUrls: []model.BaseUrl{{
-			URL:   "https://api.example.com/v1",
-			Delay: 1,
-		}},
-		OpenAIEmbeddingsPath: "/embeddings",
-		OpenAIImagesPath:     "/openai/images",
-		OpenAIVideosPath:     "/custom/videos",
-		OpenAITasksPath:      "/custom/tasks",
+func TestMigration021CreateStampsSeverity(t *testing.T) {
+	db := newMigrateDB(t)
+	row := model.RelayLog{ID: 7, Time: 7, Error: "  x ", TotalAttempts: 3}
+	if err := db.Create(&row).Error; err != nil {
+		t.Fatalf("create: %v", err)
 	}
-	empty := model.Channel{
-		Name:                 "empty-paths",
-		Type:                 outbound.OutboundTypeCustomOpenAIChat,
-		BaseUrls:             []model.BaseUrl{{URL: "https://api.example.com"}},
-		OpenAIEmbeddingsPath: "",
-		OpenAIImagesPath:     "",
-		OpenAIVideosPath:     "",
+	if row.Severity != model.RelayLogSeverityError {
+		t.Fatalf("hook severity=%d, want error", row.Severity)
 	}
-	absolute := model.Channel{
-		Name:             "already-absolute",
-		Type:             outbound.OutboundTypeCustomOpenAIChat,
-		BaseUrls:         []model.BaseUrl{{URL: "https://api.example.com/v1/chat/completions"}},
-		OpenAIImagesPath: "https://cdn.example/openai/images",
-		OpenAITasksPath:  "https://tasks.example/v1/tasks",
+	var stored int
+	if err := db.Raw("SELECT severity FROM relay_logs WHERE id = 7").Scan(&stored).Error; err != nil {
+		t.Fatalf("read: %v", err)
 	}
-	for _, row := range []*model.Channel{&ch, &empty, &absolute} {
-		if err := db.Create(row).Error; err != nil {
-			t.Fatalf("seed %s: %v", row.Name, err)
-		}
+	if stored != model.RelayLogSeverityError {
+		t.Fatalf("stored severity=%d, want error (success must not collapse to the unset sentinel)", stored)
 	}
-
-	wantEmbeddings, err := legacyType6EmbeddingsURL("https://api.example.com/v1", "/embeddings")
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantImages, err := legacyType6MediaPrefix("https://api.example.com/v1", "/openai/images")
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantVideos, err := legacyType6MediaPrefix("https://api.example.com/v1", "/custom/videos")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if wantEmbeddings != "https://api.example.com/v1/embeddings" {
-		t.Fatalf("legacy embeddings URL = %q", wantEmbeddings)
-	}
-	if wantImages != "https://api.example.com/v1/openai/images" {
-		t.Fatalf("legacy images prefix = %q (must keep /v1 from the original base, not the chat URL)", wantImages)
-	}
-	if wantVideos != "https://api.example.com/v1/custom/videos" {
-		t.Fatalf("legacy videos prefix = %q", wantVideos)
-	}
-	wantTasks, err := legacyType6MediaPrefix("https://api.example.com/v1", "/custom/tasks")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if wantTasks != "https://api.example.com/v1/custom/tasks" {
-		t.Fatalf("legacy tasks prefix = %q", wantTasks)
-	}
-
-	if err := migrateCustomOpenAIChatVerbatimURLs(db); err != nil {
-		t.Fatal(err)
-	}
-	var got model.Channel
-	if err := db.Where("name = ?", "media").First(&got).Error; err != nil {
-		t.Fatal(err)
-	}
-	if got.BaseUrls[0].URL != "https://api.example.com/v1/chat/completions" {
-		t.Fatalf("chat base = %q", got.BaseUrls[0].URL)
-	}
-	if got.OpenAIEmbeddingsPath != wantEmbeddings || got.OpenAIImagesPath != wantImages || got.OpenAIVideosPath != wantVideos || got.OpenAITasksPath != wantTasks {
-		t.Fatalf("paths = emb %q images %q videos %q tasks %q", got.OpenAIEmbeddingsPath, got.OpenAIImagesPath, got.OpenAIVideosPath, got.OpenAITasksPath)
-	}
-
-	var untouched model.Channel
-	if err := db.Where("name = ?", "empty-paths").First(&untouched).Error; err != nil {
-		t.Fatal(err)
-	}
-	if untouched.OpenAIEmbeddingsPath != "" || untouched.OpenAIImagesPath != "" || untouched.OpenAIVideosPath != "" || untouched.OpenAITasksPath != "" {
-		t.Fatalf("empty paths were filled: %#v", untouched)
-	}
-	var kept model.Channel
-	if err := db.Where("name = ?", "already-absolute").First(&kept).Error; err != nil {
-		t.Fatal(err)
-	}
-	if kept.OpenAIImagesPath != "https://cdn.example/openai/images" {
-		t.Fatalf("absolute images path changed: %q", kept.OpenAIImagesPath)
-	}
-	if kept.OpenAITasksPath != "https://tasks.example/v1/tasks" {
-		t.Fatalf("absolute tasks path changed: %q", kept.OpenAITasksPath)
-	}
-
-	if err := migrateCustomOpenAIChatVerbatimURLs(db); err != nil {
-		t.Fatal(err)
-	}
-	var again model.Channel
-	if err := db.Where("name = ?", "media").First(&again).Error; err != nil {
-		t.Fatal(err)
-	}
-	if again.OpenAIEmbeddingsPath != wantEmbeddings || again.OpenAIImagesPath != wantImages || again.OpenAIVideosPath != wantVideos || again.OpenAITasksPath != wantTasks || again.BaseUrls[0].URL != got.BaseUrls[0].URL {
-		t.Fatalf("rerun changed urls: base %q emb %q images %q videos %q tasks %q", again.BaseUrls[0].URL, again.OpenAIEmbeddingsPath, again.OpenAIImagesPath, again.OpenAIVideosPath, again.OpenAITasksPath)
-	}
-}
-
-func TestMigration021RedactsCredentialsInLogText(t *testing.T) {
-	raw := "https://user:s3cret@api.example.com/v1/chat/completions?api_key=sk-live&foo=bar"
-	got := redactURLForLog(raw)
-	for _, secret := range []string{"s3cret", "sk-live", "user:s3cret"} {
-		if strings.Contains(got, secret) {
-			t.Fatalf("log text still contains %q: %s", secret, got)
-		}
-	}
-	if !strings.Contains(got, "api.example.com/v1/chat/completions") {
-		t.Fatalf("redacted log dropped the host or path: %s", got)
-	}
-}
-
-func TestMigration021NilDB(t *testing.T) {
-	if err := migrateCustomOpenAIChatVerbatimURLs(nil); err == nil {
-		t.Fatal("nil db must error")
-	}
-}
-
-func baseURLStrings(values []model.BaseUrl) []string {
-	out := make([]string, len(values))
-	for i, value := range values {
-		out[i] = value.URL
-	}
-	return out
 }

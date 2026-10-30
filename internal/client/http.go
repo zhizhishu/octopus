@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -60,7 +61,10 @@ func GetHTTPClientUTLSDirect() (*http.Client, error) {
 	fallback.Proxy = nil
 
 	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
-	utlsDirectClient = &http.Client{Transport: newUTLSRoundTripper(dialer.DialContext, fallback)}
+	// http:// (and the chrome-face h1 fallback) share this transport across every
+	// direct uTLS client. Key it by face so a chat channel dressed as claude does
+	// not reuse a connection opened for a codex-shaped request.
+	utlsDirectClient = &http.Client{Transport: newUTLSRoundTripper(dialer.DialContext, newFaceKeyedPlainTransport(fallback))}
 	return utlsDirectClient, nil
 }
 
@@ -124,7 +128,7 @@ func GetHTTPClientUTLSForProxy(proxyURL *url.URL) (*http.Client, error) {
 		dialContext = tunnel
 	}
 
-	built := &http.Client{Transport: newUTLSRoundTripper(dialContext, fallback)}
+	built := &http.Client{Transport: newUTLSRoundTripper(dialContext, newFaceKeyedPlainTransport(fallback))}
 	utlsProxyClients[key] = built
 	return built, nil
 }
@@ -242,34 +246,111 @@ func clonedDefaultTransport() (*http.Transport, error) {
 	// keep a real per-host pool. Pool sizing only; nothing here touches the handshake
 	// or any header, so the outbound fingerprint is unchanged.
 	cloned.MaxIdleConnsPerHost = 32
-	// Byte-exact HTTP/1.1 header order for the plaintext leg. Go serialises the request
-	// header block in its own canonical order (`Host`, `User-Agent`, `Content-Length`
-	// first, then the rest ASCII-sorted) and never emits `Connection`; a genuine
-	// claude-cli writes a different block (claudeHTTP1WireHeaderOrder). Go has no hook
-	// for that, so wrap the DIAL — not the transport — and rewrite the already
-	// serialised block on its way to the socket. Pooling, timeouts, redirects, proxy
-	// handling, response decoding and TLS all stay exactly the standard library's.
-	// ordered_conn.go documents why a TLS or h2 stream can never enter the rewriter.
-	// Opt-in (upstream_http1_header_order, default off) and evaluated per request, so
-	// while it is off the outbound request is byte-for-byte what it is today.
-	cloned.DialContext = plainHTTP1OrderingDial(cloned.DialContext)
+	// Header order is NOT installed here. This transport is a template: plaintext
+	// clients wrap it in faceKeyedPlainTransport, which clones one pool per CLI face
+	// and only then wraps the dial. Installing the rewriter on the template would
+	// pin a single order onto every request that later reused a cached connection.
 	return cloned, nil
 }
 
-// plainHTTP1OrderingDial wraps a transport dial function so the connection it returns
-// rewrites HTTP/1.1 request header blocks. A nil inner dial (the transport would then
-// dial with the package default) falls back to net.Dialer, which is what net/http uses
-// in that case anyway.
-func plainHTTP1OrderingDial(inner func(ctx context.Context, network, addr string) (net.Conn, error)) func(ctx context.Context, network, addr string) (net.Conn, error) {
+// faceKeyedPlainTransport is the plaintext (and standard-HTTPS) RoundTripper behind
+// every cached HTTP client. utlsRoundTripper already keeps one HTTP/1.1 transport
+// per CLI family because its dial closure captures the face; a process-wide
+// *http.Transport cannot do that — the next request pulled from the idle pool
+// would keep the first request's header order.
+//
+// The family comes from tlsFamilyForDial, the same function the uTLS dial uses:
+// WithTLSFace (relay channelTLSFace) wins, otherwise the URL path. Each family
+// gets its own *http.Transport, and that transport's dial closure captures the
+// family and calls http1WireHeaderOrderForFace.
+type faceKeyedPlainTransport struct {
+	base   *http.Transport
+	mu     sync.Mutex
+	byFace map[string]*http.Transport
+}
+
+func newFaceKeyedPlainTransport(base *http.Transport) *faceKeyedPlainTransport {
+	return &faceKeyedPlainTransport{
+		base:   base,
+		byFace: make(map[string]*http.Transport),
+	}
+}
+
+func (p *faceKeyedPlainTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if p == nil || p.base == nil {
+		return nil, fmt.Errorf("client: plaintext transport is not configured")
+	}
+	path := ""
+	ctx := context.Background()
+	if req != nil {
+		if req.URL != nil {
+			path = req.URL.Path
+		}
+		if req.Context() != nil {
+			ctx = req.Context()
+		}
+	}
+	_, family := tlsFamilyForDial(ctx, path)
+	return p.transportFor(family).RoundTrip(req)
+}
+
+// transportFor returns the cached *http.Transport for family, building it on
+// first use. The dial closure captures family the same way
+// utlsRoundTripper.h1TransportForFamily does.
+func (p *faceKeyedPlainTransport) transportFor(family string) *http.Transport {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if tr, ok := p.byFace[family]; ok {
+		return tr
+	}
+	cloned := p.base.Clone()
+	cloned.DialContext = plainHTTP1OrderingDial(cloned.DialContext, family)
+	p.byFace[family] = cloned
+	return cloned
+}
+
+// plainHTTP1HeaderOrder is the order func a plaintext dial closure must use.
+// family is the tlsFamilyForDial result captured by that closure — not read
+// from the dial context, which belongs only to the request that opened the
+// connection. A reused connection would otherwise keep the first request's face.
+//
+// CONNECT is left untouched. Its request target is "host:port", and a CLI face
+// order would rewrite the proxy handshake (and synthesize Connection: keep-alive).
+// The historical path rule returns nil for that target; keep those bytes. The
+// tunneled request, if it is plaintext, is a later write on the same conn and
+// still goes through http1WireHeaderOrderForFace.
+func plainHTTP1HeaderOrder(family string) requestHeaderOrderFunc {
+	order := h1OrderFuncForFace(family)
+	return func(method, target string) []string {
+		if strings.EqualFold(method, http.MethodConnect) {
+			return nil
+		}
+		return order(method, target)
+	}
+}
+
+// plainHTTP1OrderingDial wraps a transport dial function so the connection it
+// returns rewrites HTTP/1.1 request header blocks for family. A nil inner dial
+// (the transport would then dial with the package default) falls back to
+// net.Dialer, which is what net/http uses in that case anyway.
+//
+// family is part of the transport cache key (see faceKeyedPlainTransport). The
+// setting inside http1WireHeaderOrderForFace is still read per request, so
+// turning upstream_http1_header_order off takes effect on pooled connections.
+func plainHTTP1OrderingDial(inner func(ctx context.Context, network, addr string) (net.Conn, error), family string) func(ctx context.Context, network, addr string) (net.Conn, error) {
 	if inner == nil {
 		inner = (&net.Dialer{}).DialContext
 	}
+	// Captured here, not inside the dial func from ctx: DialContext runs only
+	// when a connection is opened, and the ordered conn then serves every later
+	// request the pool reuses it for.
+	order := plainHTTP1HeaderOrder(family)
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		conn, err := inner(ctx, network, addr)
 		if err != nil {
 			return nil, err
 		}
-		return newOrderedRequestConn(conn, http1RequestHeaderOrder), nil
+		return newOrderedRequestConn(conn, order), nil
 	}
 }
 
@@ -279,7 +360,7 @@ func newHTTPClientNoProxy() (*http.Client, error) {
 		return nil, err
 	}
 	cloned.Proxy = nil
-	return &http.Client{Transport: cloned}, nil
+	return &http.Client{Transport: newFaceKeyedPlainTransport(cloned)}, nil
 }
 
 func newHTTPClientCustomProxy(proxyURLStr string) (*http.Client, error) {
@@ -302,15 +383,16 @@ func newHTTPClientCustomProxy(proxyURLStr string) (*http.Client, error) {
 			return nil, fmt.Errorf("invalid socks proxy: %w", err)
 		}
 		cloned.Proxy = nil
-		// Keep the plaintext HTTP/1.1 wire-order rewriter in the chain: this branch
-		// replaces the dial function clonedDefaultTransport installed, so without this
-		// the capability would silently not apply on socks channels.
-		cloned.DialContext = plainHTTP1OrderingDial(func(ctx context.Context, network, addr string) (net.Conn, error) {
+		// Socks replaces the dial. Leave it unwrapped: faceKeyedPlainTransport
+		// clones this transport per face and installs plainHTTP1OrderingDial on
+		// the clone, so the rewriter stays in the chain without pinning one face
+		// onto every request that shares the proxy.
+		cloned.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return socksDialer.Dial(network, addr)
-		})
+		}
 	default:
 		return nil, fmt.Errorf("unsupported proxy scheme: %s", proxyURL.Scheme)
 	}
 
-	return &http.Client{Transport: cloned}, nil
+	return &http.Client{Transport: newFaceKeyedPlainTransport(cloned)}, nil
 }
