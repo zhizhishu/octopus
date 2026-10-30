@@ -102,13 +102,36 @@ func realtimeWSURL(srv *httptest.Server, query string) string {
 	return "ws" + strings.TrimPrefix(srv.URL, "http") + "/v1/realtime" + query
 }
 
-func waitRealtimeLog(t *testing.T, ctx context.Context) dbmodel.RelayLog {
+// realtimeLogWatcher 只认本测试里新写出的 audio_realtime 日志：日志列表在整包测试里会带着
+// 前面用例留下的行（含写入缓冲），直接取 logs[0] 在全量跑时会拿错。
+type realtimeLogWatcher struct {
+	ctx  context.Context
+	seen map[int64]bool
+}
+
+func newRealtimeLogWatcher(t *testing.T, ctx context.Context) *realtimeLogWatcher {
+	t.Helper()
+	w := &realtimeLogWatcher{ctx: ctx, seen: map[int64]bool{}}
+	if logs, err := op.RelayLogList(ctx, nil, nil, 1, 200, nil); err == nil {
+		for _, l := range logs {
+			w.seen[l.ID] = true
+		}
+	}
+	return w
+}
+
+func (w *realtimeLogWatcher) next(t *testing.T) dbmodel.RelayLog {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		logs, err := op.RelayLogList(ctx, nil, nil, 1, 10, nil)
-		if err == nil && len(logs) > 0 {
-			return logs[0]
+		logs, err := op.RelayLogList(w.ctx, nil, nil, 1, 200, nil)
+		if err == nil {
+			for _, l := range logs {
+				if !w.seen[l.ID] && l.RequestEndpoint == grokRealtimeProtocol {
+					w.seen[l.ID] = true
+					return l
+				}
+			}
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -118,6 +141,7 @@ func waitRealtimeLog(t *testing.T, ctx context.Context) dbmodel.RelayLog {
 
 func TestGrokRealtimeRelaysBothDirectionsAndLogsUsage(t *testing.T) {
 	ctx := setupRelayErrorDB(t)
+	rtLogs := newRealtimeLogWatcher(t, ctx)
 	t.Cleanup(func() { _ = op.RelayLogClear(context.Background(), nil) })
 
 	audioOut := []byte{0x01, 0x02, 0x03, 0xFF}
@@ -194,7 +218,7 @@ func TestGrokRealtimeRelaysBothDirectionsAndLogsUsage(t *testing.T) {
 	_ = client.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "bye"), time.Now().Add(time.Second))
 	_ = client.Close()
 
-	entry := waitRealtimeLog(t, ctx)
+	entry := rtLogs.next(t)
 
 	upstream.mu.Lock()
 	defer upstream.mu.Unlock()
@@ -250,6 +274,7 @@ func TestGrokRealtimeRelaysBothDirectionsAndLogsUsage(t *testing.T) {
 
 func TestGrokRealtimePerMinuteBillingWhenPerCallConfigured(t *testing.T) {
 	ctx := setupRelayErrorDB(t)
+	rtLogs := newRealtimeLogWatcher(t, ctx)
 	t.Cleanup(func() { _ = op.RelayLogClear(context.Background(), nil) })
 
 	upstream := newFakeRealtimeUpstream(t, 0, nil, func(conn *websocket.Conn, mt int, data []byte) {
@@ -278,7 +303,7 @@ func TestGrokRealtimePerMinuteBillingWhenPerCallConfigured(t *testing.T) {
 	_ = client.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
 	_ = client.Close()
 
-	entry := waitRealtimeLog(t, ctx)
+	entry := rtLogs.next(t)
 	// 60/分钟 = 1/秒，金额≈会话秒数，必然 > 0 且远小于按 token 算出来的 (2+3)*1000/1e6=0.005 以外的量级无关；
 	// 只需确认按时长计费、没有把 token 金额叠加进去。
 	if entry.Cost <= 0 {
@@ -313,6 +338,7 @@ func TestGrokRealtimeCostUnits(t *testing.T) {
 
 func TestGrokRealtimeDialFailureFailsOverBeforeUpgrade(t *testing.T) {
 	ctx := setupRelayErrorDB(t)
+	rtLogs := newRealtimeLogWatcher(t, ctx)
 	t.Cleanup(func() { _ = op.RelayLogClear(context.Background(), nil) })
 
 	bad := newFakeRealtimeUpstream(t, http.StatusInternalServerError, nil, nil)
@@ -335,7 +361,7 @@ func TestGrokRealtimeDialFailureFailsOverBeforeUpgrade(t *testing.T) {
 			t.Fatalf("round %d: expected session.created from good upstream, got %s err=%v", i, data, err)
 		}
 		_ = client.Close()
-		entry := waitRealtimeLog(t, ctx)
+		entry := rtLogs.next(t)
 		if entry.ChannelName != "rt-good" {
 			t.Fatalf("round %d: want final channel rt-good, got %q attempts=%d", i, entry.ChannelName, entry.TotalAttempts)
 		}
@@ -355,6 +381,7 @@ func TestGrokRealtimeDialFailureFailsOverBeforeUpgrade(t *testing.T) {
 
 func TestGrokRealtimeAllUpstreamsRejectReturnsHTTPError(t *testing.T) {
 	ctx := setupRelayErrorDB(t)
+	rtLogs := newRealtimeLogWatcher(t, ctx)
 	t.Cleanup(func() { _ = op.RelayLogClear(context.Background(), nil) })
 
 	bad := newFakeRealtimeUpstream(t, http.StatusUnauthorized, nil, nil)
@@ -368,7 +395,7 @@ func TestGrokRealtimeAllUpstreamsRejectReturnsHTTPError(t *testing.T) {
 	if resp == nil || resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("client should get the upstream status as a plain HTTP error before any upgrade, got %v", resp)
 	}
-	entry := waitRealtimeLog(t, ctx)
+	entry := rtLogs.next(t)
 	if entry.Error == "" || entry.Cost != 0 {
 		t.Fatalf("failed handshake must be logged as an error and not billed: err=%q cost=%f", entry.Error, entry.Cost)
 	}
@@ -389,6 +416,7 @@ func TestGrokRealtimeRequiresUpgrade(t *testing.T) {
 
 func TestGrokRealtimeUpstreamCloseIsForwarded(t *testing.T) {
 	ctx := setupRelayErrorDB(t)
+	rtLogs := newRealtimeLogWatcher(t, ctx)
 	t.Cleanup(func() { _ = op.RelayLogClear(context.Background(), nil) })
 
 	upstream := newFakeRealtimeUpstream(t, 0, func(conn *websocket.Conn) {
@@ -407,7 +435,7 @@ func TestGrokRealtimeUpstreamCloseIsForwarded(t *testing.T) {
 	if !errorsAsClose(err, &ce) || ce.Code != 4001 || ce.Text != "idle timeout" {
 		t.Fatalf("upstream close code/reason must reach the client, got %v", err)
 	}
-	entry := waitRealtimeLog(t, ctx)
+	entry := rtLogs.next(t)
 	if entry.Cost != 0 {
 		t.Fatalf("no audio, no usage → no cost, got %f", entry.Cost)
 	}
