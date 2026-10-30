@@ -1228,7 +1228,18 @@
       "testNeedFields": "Fill in the URL, key and model first",
       "headerNoneParsed": "No headers found",
       "headerImported": "Imported {count} headers",
-      "customHeaderBulkImport": "Import"
+      "customHeaderBulkImport": "Import",
+      "mobileSection": {
+        "scheduling": "Routing & failover",
+        "capabilities": "Model features",
+        "proxy": "Proxy",
+        "identity": "Client identity",
+        "pathsHeaders": "Paths & headers",
+        "rewrite": "Rewrite rules",
+        "summaryOn": "{count} on",
+        "summaryNone": "Not set",
+        "summaryHeaders": "{count} headers"
+      }
     },
     "list": {
       "endpointFilter": "Protocol",

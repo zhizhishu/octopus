@@ -15,7 +15,8 @@ import { Badge } from '@/components/ui/badge';
 import { toast } from '@/components/common/Toast';
 import { useTranslations } from 'next-intl';
 import { useEffect, useRef, useState, type ReactNode, useLayoutEffect} from 'react';
-import { Loader2, Play, RefreshCw, X, Plus, Timer, Fingerprint, HelpCircle } from 'lucide-react';
+import { Loader2, Play, RefreshCw, X, Plus, Timer, Fingerprint, HelpCircle, ChevronDown } from 'lucide-react';
+import { useIsMobile } from '@/hooks/useIsMobile';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/animate-ui/components/animate/tooltip';
 import {
     Accordion,
@@ -40,6 +41,30 @@ import {
     sanitizeChannelTestError,
 } from '@/lib/channel-test';
 import { CAPABILITY_EMBEDDINGS, hasChannelCapability, setChannelCapability } from '@/lib/channel-capabilities';
+
+/** 手机端的折叠分组：标题 + 一行当前状态，点开再看字段。收起时字段只是隐藏、不卸载。 */
+function MobileSection({ title, summary, children }: { title: string; summary?: string; children: ReactNode }) {
+    const [open, setOpen] = useState(false);
+    return (
+        <section className="rounded-2xl border border-border bg-card">
+            <button
+                type="button"
+                aria-expanded={open}
+                onClick={() => setOpen((v) => !v)}
+                className="flex min-h-12 w-full items-center justify-between gap-3 rounded-2xl px-4 py-3 text-left"
+            >
+                <span className="min-w-0">
+                    <span className="block text-sm font-medium text-card-foreground">{title}</span>
+                    {summary && <span className="mt-0.5 block truncate text-xs text-muted-foreground">{summary}</span>}
+                </span>
+                <ChevronDown className={cn('size-4 shrink-0 text-muted-foreground transition-transform', open && 'rotate-180')} />
+            </button>
+            <div hidden={!open} className="space-y-4 border-t border-border/60 px-4 pb-4 pt-4">
+                {children}
+            </div>
+        </section>
+    );
+}
 
 /** 小问号：主界面只留一行白话，细节点开/悬停再看。 */
 function HelpTip({ text, label }: { text: string; label: string }) {
@@ -156,6 +181,9 @@ export interface ChannelFormProps {
     advancedOpen?: boolean;
     /** 已有渠道 id：给已启用模型芯片画检测圆点（新建渠道没有）。 */
     channelId?: number;
+    /** 手机端由外层弹窗提供吸底的保存/取消按钮时传入：表单用这个 id 关联外部提交按钮。 */
+    formId?: string;
+    hideMobileActions?: boolean;
 }
 
 const CHANNEL_BASE_URL_SUFFIXES: Partial<Record<ChannelType, string[]>> = {
@@ -288,8 +316,11 @@ export function ChannelForm({
     advancedMode = 'accordion',
     advancedOpen = false,
     channelId,
+    formId,
+    hideMobileActions = false,
 }: ChannelFormProps) {
     const t = useTranslations('channel.form');
+    const isMobile = useIsMobile();
 
     // Ensure the form always shows at least 1 row for base_urls / keys / custom_header.
     // This avoids "empty list" UI and also keeps URL + APIKEY layout consistent.
@@ -781,17 +812,8 @@ export function ChannelForm({
     const isAdvancedPanel = advancedMode === 'panel';
     const showAdvanced = !isAdvancedPanel || advancedOpen;
 
-    return (
-        <form
-            onSubmit={onSubmit}
-            className={cn(
-                "px-1",
-                isAdvancedPanel && advancedOpen
-                    ? "relative space-y-4 md:pr-[28rem]"
-                    : "space-y-4"
-            )}
-        >
-            <div className={cn("grid grid-cols-1 md:grid-cols-2 gap-4")}>
+    const nameField = (
+        <>
                 <div className="space-y-2">
                     <label htmlFor={`${idPrefix}-name`} className="text-sm font-medium text-card-foreground">
                         {t('name')}
@@ -805,7 +827,11 @@ export function ChannelForm({
                         required
                     />
                 </div>
+        </>
+    );
 
+    const typeField = (
+        <>
                 <div className="space-y-2">
                     <label htmlFor={`${idPrefix}-type`} className="text-sm font-medium text-card-foreground">
                         {t('type')}
@@ -835,7 +861,11 @@ export function ChannelForm({
                         </SelectContent>
                     </Select>
                 </div>
+        </>
+    );
 
+    const priorityField = (
+        <>
                 <div className="space-y-2">
                     <label htmlFor={`${idPrefix}-priority`} className="text-sm font-medium text-card-foreground">
                         {t('priority')}
@@ -854,7 +884,11 @@ export function ChannelForm({
                     />
                     <p className="text-xs text-muted-foreground">{t('priorityHint')}</p>
                 </div>
+        </>
+    );
 
+    const maxConcurrentField = (
+        <>
                 <div className="space-y-2">
                     <label htmlFor={`${idPrefix}-max-concurrent`} className="text-sm font-medium text-card-foreground">
                         {t('maxConcurrent')}
@@ -874,7 +908,11 @@ export function ChannelForm({
                     />
                     <p className="text-xs text-muted-foreground">{t('maxConcurrentHint')}</p>
                 </div>
+        </>
+    );
 
+    const raceField = (
+        <>
                 {/* 多 Key 竞速：同时打多把 key，最快回来的赢，其余标 raced_out 取消。
                     需要 >=2 把可用 key，且只对普通文本 relay 生效（embedding/图片/视频走原路）。 */}
                 <div className="space-y-2 sm:col-span-2">
@@ -939,7 +977,11 @@ export function ChannelForm({
                         </div>
                     )}
                 </div>
+        </>
+    );
 
+    const rpmField = (
+        <>
                 <div className="space-y-2">
                     <label htmlFor={`${idPrefix}-rpm-limit`} className="text-sm font-medium text-card-foreground">
                         {t('rpmLimit')}
@@ -959,7 +1001,11 @@ export function ChannelForm({
                     />
                     <p className="text-xs text-muted-foreground">{t('rpmLimitHint')}</p>
                 </div>
+        </>
+    );
 
+    const keyStrategyField = (
+        <>
                 <div className="space-y-2">
                     <label htmlFor={`${idPrefix}-key-select-strategy`} className="text-sm font-medium text-card-foreground">
                         {t('keySelectStrategy')}
@@ -977,8 +1023,11 @@ export function ChannelForm({
                         </SelectContent>
                     </Select>
                 </div>
-            </div>
+        </>
+    );
 
+    const baseUrlsBlock = (
+        <>
             <div className={cn("space-y-2")}>
                 <div className="flex items-center justify-between">
                     <label className="text-sm font-medium text-card-foreground">
@@ -1034,7 +1083,11 @@ export function ChannelForm({
                     <p className="text-xs leading-relaxed text-muted-foreground">{t('typeSystemOneHint')}</p>
                 )}
             </div>
+        </>
+    );
 
+    const keysBlock = (
+        <>
             <div className={cn("space-y-2")}>
                 <div className="flex items-center justify-between">
                     <label className="text-sm font-medium text-card-foreground">
@@ -1102,11 +1155,12 @@ export function ChannelForm({
                                 value={k.remark ?? ''}
                                 onChange={(e) => handleUpdateKey(idx, { remark: e.target.value })}
                                 placeholder={t('remark')}
-                                className="col-span-3 min-w-0 rounded-xl sm:col-span-1"
+                                className="min-w-0 rounded-xl"
                             />
                             <Switch
                                 checked={k.enabled}
                                 onCheckedChange={(checked) => handleUpdateKey(idx, { enabled: checked })}
+                                aria-label={t('enabled')}
                             />
                             <Button
                                 type="button"
@@ -1124,8 +1178,11 @@ export function ChannelForm({
                 </div>
                 <p className="text-xs text-muted-foreground">{t('apiKeyBulkHint')}</p>
             </div>
+        </>
+    );
 
-            <div className={cn("space-y-2")}>
+    const modelsCore = (
+        <>
                 <div className="flex items-center justify-between">
                     <label className="text-sm font-medium text-card-foreground">{t('model')}</label>
                     <div className="flex items-center gap-1">
@@ -1355,7 +1412,11 @@ export function ChannelForm({
                         </AccordionContent>
                     </AccordionItem>
                 </Accordion>
+        </>
+    );
 
+    const capabilitiesBlock = (
+        <>
                 {formData.type === ChannelType.Anthropic && (
                     <div className="rounded-xl border border-border bg-background/70 p-3">
                         <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1432,7 +1493,11 @@ export function ChannelForm({
                         </div>
                     )}
                 </div>
+        </>
+    );
 
+    const testResultBlock = (
+        <>
                 {channelTestResult && (
                     <div className={`rounded-xl border p-2.5 text-xs ${channelTestResult.success ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'border-destructive/30 bg-destructive/10 text-destructive'}`}>
                         <span className="font-medium">{channelTestResult.success ? t('testOk') : t('testFail')}</span>
@@ -1441,14 +1506,11 @@ export function ChannelForm({
                         )}
                     </div>
                 )}
-            </div>
+        </>
+    );
 
-            {showAdvanced && (
-                <AdvancedSettingsShell panel={isAdvancedPanel} title={t('advanced')}>
-                        {/* Vertical stack: auto-group and proxy each take a full row; the two
-                            fingerprint controls (mode + profile) are grouped into one titled card
-                            below so they read as one coherent section, not two floating selects. */}
-                        <div className="space-y-4">
+    const proxyBlock = (
+        <>
                             <div className="space-y-2">
                                 <div className="flex flex-wrap items-center justify-between gap-2">
                                     <label htmlFor={`${idPrefix}-channel-proxy`} className="text-sm font-medium text-card-foreground">
@@ -1503,7 +1565,11 @@ export function ChannelForm({
                                     </p>
                                 )}
                             </div>
+        </>
+    );
 
+    const cloakBlock = (
+        <>
                             {/* Client-fingerprint group: mode + profile under one titled card so the
                                 section reads as one coherent unit instead of two stray selects. */}
                             <div className="space-y-3 rounded-xl border border-border bg-background/50 p-4">
@@ -1579,8 +1645,11 @@ export function ChannelForm({
                                     </div>
                                 <p className="text-xs leading-relaxed text-muted-foreground">{t('cloakProfileHint')}</p>
                             </div>
-                        </div>
+        </>
+    );
 
+    const breakerBlock = (
+        <>
                         <div className="rounded-xl border border-border bg-background/70 p-3">
                             <div className="flex flex-wrap items-start justify-between gap-3">
                                 <div className="min-w-0 space-y-1">
@@ -1599,7 +1668,11 @@ export function ChannelForm({
                                 </label>
                             </div>
                         </div>
+        </>
+    );
 
+    const pathsBlock = (
+        <>
                         {isCustomOpenAIChat(formData.type) && (
                             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                                 <div className="space-y-2">
@@ -1630,7 +1703,11 @@ export function ChannelForm({
                                 </div>
                             </div>
                         )}
+        </>
+    );
 
+    const headersBlock = (
+        <>
                         <div className="space-y-2">
                             <div className="flex flex-wrap items-center justify-between gap-2">
                                 <label className="text-sm font-medium text-card-foreground">
@@ -1701,7 +1778,11 @@ export function ChannelForm({
                                 ))}
                             </div>
                         </div>
+        </>
+    );
 
+    const regexBlock = (
+        <>
                         <div className="space-y-2">
                             <label htmlFor={`${idPrefix}-match-regex`} className="text-sm font-medium text-card-foreground">
                                 {t('matchRegex')}
@@ -1715,7 +1796,11 @@ export function ChannelForm({
                                 className="rounded-xl"
                             />
                         </div>
+        </>
+    );
 
+    const paramBlock = (
+        <>
                         <div className="space-y-2">
                             <div className="flex flex-wrap items-center justify-between gap-2">
                                 <label htmlFor={`${idPrefix}-param-override`} className="text-sm font-medium text-card-foreground">
@@ -1785,7 +1870,11 @@ export function ChannelForm({
                                 );
                             })()}
                         </div>
+        </>
+    );
 
+    const promptBlock = (
+        <>
                         <div className="space-y-2">
                             <div className="flex flex-wrap items-center justify-between gap-2">
                                 <label htmlFor={`${idPrefix}-system-prompt-override`} className="text-sm font-medium text-card-foreground">
@@ -1812,9 +1901,11 @@ export function ChannelForm({
                                 className="min-h-28 w-full rounded-xl border border-border bg-background px-3 py-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                             />
                         </div>
-                </AdvancedSettingsShell>
-            )}
+        </>
+    );
 
+    const enabledRow = (
+        <>
             <div className={cn("flex flex-wrap items-center justify-between gap-4 p-4 rounded-xl bg-muted/20 border border-border/50")}>
                 <label className="flex items-center gap-2 cursor-pointer">
                     <Switch
@@ -1841,7 +1932,11 @@ export function ChannelForm({
                     </label>
                 </div>
             </div>
+        </>
+    );
 
+    const actionsBlock = (
+        <>
             <div className={cn(`flex flex-col gap-3 pt-2 ${onCancel ? 'sm:flex-row' : ''}`)}>
                 {onCancel && cancelText && (
                     <Button
@@ -1861,6 +1956,133 @@ export function ChannelForm({
                     {isPending ? pendingText : submitText}
                 </Button>
             </div>
+        </>
+    );
+
+    if (!isMobile) {
+        return (
+        <form
+            onSubmit={onSubmit}
+            className={cn(
+                "px-1",
+                isAdvancedPanel && advancedOpen
+                    ? "relative space-y-4 md:pr-[28rem]"
+                    : "space-y-4"
+            )}
+        >
+            <div className={cn("grid grid-cols-1 md:grid-cols-2 gap-4")}>
+                {nameField}
+                {typeField}
+                {priorityField}
+                {maxConcurrentField}
+                {raceField}
+                {rpmField}
+                {keyStrategyField}
+            </div>
+
+            {baseUrlsBlock}
+
+            {keysBlock}
+
+            <div className={cn("space-y-2")}>
+                {modelsCore}
+                {capabilitiesBlock}
+                {testResultBlock}
+            </div>
+
+            {showAdvanced && (
+                <AdvancedSettingsShell panel={isAdvancedPanel} title={t('advanced')}>
+                        <div className="space-y-4">
+                            {proxyBlock}
+                            {cloakBlock}
+                        </div>
+                        {breakerBlock}
+                        {pathsBlock}
+                        {headersBlock}
+                        {regexBlock}
+                        {paramBlock}
+                        {promptBlock}
+                </AdvancedSettingsShell>
+            )}
+
+            {enabledRow}
+
+            {actionsBlock}
+        </form>
+        );
+    }
+
+    // 手机端：只把常用的（名称、类型、地址、Key、模型）摊开，其余按用途收进可折叠分组。
+    // 只换排版和分组，每个字段的控件与效果和桌面端完全相同。
+    const capabilityOnCount = [
+        formData.type === ChannelType.Anthropic && formData.anthropic_context_1m,
+        formData.thinking_to_content,
+        embeddingsCapabilityEnabled,
+    ].filter(Boolean).length;
+    const rewriteOnCount = [
+        formData.match_regex.trim(),
+        formData.param_override.trim(),
+        formData.system_prompt_override.trim(),
+    ].filter(Boolean).length;
+    const headerCount = (formData.custom_header ?? []).filter((h) => h.header_key.trim()).length;
+    const strategyLabel = (formData.key_select_strategy ?? 0) === 1 ? t('keySelectStrategySticky') : t('keySelectStrategyCostBalanced');
+    return (
+        <form
+            id={formId}
+            onSubmit={onSubmit}
+            className="space-y-4 px-1"
+        >
+            <div className="grid grid-cols-1 gap-4">
+                {nameField}
+                {typeField}
+            </div>
+
+            {baseUrlsBlock}
+
+            {keysBlock}
+
+            <div className="space-y-2">
+                {modelsCore}
+                {testResultBlock}
+            </div>
+
+            {enabledRow}
+
+            <MobileSection title={t('mobileSection.scheduling')} summary={`${t('priority')} ${formData.priority ?? 0} · ${strategyLabel}`}>
+                <div className="grid grid-cols-1 gap-4">
+                    {priorityField}
+                    {maxConcurrentField}
+                    {raceField}
+                    {rpmField}
+                    {keyStrategyField}
+                </div>
+                {breakerBlock}
+            </MobileSection>
+
+            <MobileSection title={t('mobileSection.capabilities')} summary={capabilityOnCount > 0 ? t('mobileSection.summaryOn', { count: capabilityOnCount }) : t('mobileSection.summaryNone')}>
+                {capabilitiesBlock}
+            </MobileSection>
+
+            <MobileSection title={t('mobileSection.proxy')} summary={formData.proxy ? t('switchOn') : t('switchOff')}>
+                {proxyBlock}
+            </MobileSection>
+
+            <MobileSection title={t('mobileSection.identity')} summary={(formData.cloak_mode || 'auto') !== 'never' ? t('cloakModeOn') : t('cloakModeOff')}>
+                {cloakBlock}
+            </MobileSection>
+
+            <MobileSection title={t('mobileSection.pathsHeaders')} summary={headerCount > 0 ? t('mobileSection.summaryHeaders', { count: headerCount }) : t('mobileSection.summaryNone')}>
+                {pathsBlock}
+                {headersBlock}
+            </MobileSection>
+
+            <MobileSection title={t('mobileSection.rewrite')} summary={rewriteOnCount > 0 ? t('mobileSection.summaryOn', { count: rewriteOnCount }) : t('mobileSection.summaryNone')}>
+                {regexBlock}
+                {paramBlock}
+                {promptBlock}
+            </MobileSection>
+
+            {!hideMobileActions && actionsBlock}
         </form>
     );
 }

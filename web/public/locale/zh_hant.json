@@ -1043,7 +1043,7 @@
         "requests": "請求詳情",
         "tokens": "Token 使用",
         "costs": "成本詳情",
-        "baseUrls": "Base URLs",
+        "baseUrls": "介面地址",
         "keys": "金鑰",
         "modelAudits": "模型 · 最近一次檢測"
       },
@@ -1104,7 +1104,7 @@
       "raceKeyConcurrencyHint": "2 到 5 把。",
       "raceDelayMs": "錯峰間隔（毫秒）",
       "raceDelayMsHint": "0 = 一起發；大於 0 = 每多一把就晚這麼久再發。",
-      "baseUrls": "Base URLs",
+      "baseUrls": "介面地址",
       "baseUrlUrl": "地址",
       "baseUrlDelay": "延遲(ms)",
       "advanced": "進階設定",
@@ -1228,7 +1228,18 @@
       "testNeedFields": "請先填寫地址、Key 和模型",
       "headerNoneParsed": "沒有識別到請求頭",
       "headerImported": "已匯入 {count} 個請求頭",
-      "customHeaderBulkImport": "批次匯入"
+      "customHeaderBulkImport": "批次匯入",
+      "mobileSection": {
+        "scheduling": "排程與容錯",
+        "capabilities": "模型能力",
+        "proxy": "代理",
+        "identity": "客戶端身份",
+        "pathsHeaders": "介面路徑與請求頭",
+        "rewrite": "改寫規則",
+        "summaryOn": "已開啟 {count} 項",
+        "summaryNone": "未設定",
+        "summaryHeaders": "{count} 個請求頭"
+      }
     },
     "list": {
       "endpointFilter": "協議",

@@ -259,7 +259,7 @@ export function Card({ channel, stats, layout = 'list' }: { channel: Channel; st
             </MorphingDialogTrigger>
 
             <MorphingDialogContainer>
-                <MorphingDialogContent className="w-full bg-card text-card-foreground px-4 py-3 rounded-3xl max-h-[92vh] overflow-y-auto md:max-w-6xl">
+                <MorphingDialogContent className="w-full bg-card text-card-foreground px-4 py-3 rounded-3xl max-h-[92vh] overflow-y-auto md:max-w-6xl max-md:fixed max-md:inset-0 max-md:max-w-none max-md:h-[100dvh] max-md:max-h-none max-md:rounded-none max-md:pt-0 max-md:pb-0 max-md:overscroll-contain">
                     <CardContent channel={channel} stats={stats} />
                 </MorphingDialogContent>
             </MorphingDialogContainer>

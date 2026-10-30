@@ -1043,7 +1043,7 @@
         "requests": "请求详情",
         "tokens": "Token 使用",
         "costs": "成本详情",
-        "baseUrls": "Base URLs",
+        "baseUrls": "接口地址",
         "keys": "密钥",
         "modelAudits": "模型 · 最近一次检测"
       },
@@ -1104,7 +1104,7 @@
       "raceKeyConcurrencyHint": "2 到 5 把。",
       "raceDelayMs": "错峰间隔（毫秒）",
       "raceDelayMsHint": "0 = 一起发；大于 0 = 每多一把就晚这么久再发。",
-      "baseUrls": "Base URLs",
+      "baseUrls": "接口地址",
       "baseUrlUrl": "地址",
       "baseUrlDelay": "延迟(ms)",
       "advanced": "高级设置",
@@ -1228,7 +1228,18 @@
       "testNeedFields": "请先填写地址、Key 和模型",
       "headerNoneParsed": "没有识别到请求头",
       "headerImported": "已导入 {count} 个请求头",
-      "customHeaderBulkImport": "批量导入"
+      "customHeaderBulkImport": "批量导入",
+      "mobileSection": {
+        "scheduling": "调度与容错",
+        "capabilities": "模型能力",
+        "proxy": "代理",
+        "identity": "客户端身份",
+        "pathsHeaders": "接口路径与请求头",
+        "rewrite": "改写规则",
+        "summaryOn": "已开启 {count} 项",
+        "summaryNone": "未设置",
+        "summaryHeaders": "{count} 个请求头"
+      }
     },
     "list": {
       "endpointFilter": "协议",
