@@ -31,8 +31,8 @@ import { useNavStore } from '../navbar/nav-store';
 import { cn } from '@/lib/utils';
 
 const modeLabels: Record<PromptOverrideMode, string> = {
-    append_system: '追加 system',
-    replace_system: '替换 system',
+    append_system: '另加一条 system',
+    replace_system: '替换原有 system',
 };
 
 function apiErrorMessage(error: unknown): string | undefined {
@@ -121,7 +121,7 @@ function UserPromptView() {
                 <LayerCard
                     icon={ShieldCheck}
                     title="管理员策略"
-                    description="管理员可按全局、方案、模型映射、渠道四层追加或替换 system 提示词。"
+                    description="管理员可在全局、方案、模型映射、渠道四层另加或替换 system 提示词。"
                     enabled
                 />
                 <LayerCard
@@ -323,11 +323,11 @@ function AdminPromptView() {
                     <div>
                         <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-border bg-muted/30 px-3 py-1 text-xs text-muted-foreground">
                             <MessageSquareText className="size-3.5" />
-                            设置 / 提示词管理
+                            提示词
                         </div>
                         <h2 className="text-2xl font-bold">提示词管理</h2>
                         <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-                            当前覆盖顺序为：全局默认、方案、模型映射、渠道。默认追加 system，只有显式选择替换时才替换用户原始 system。
+                            按 全局 → 方案 → 模型映射 → 渠道 依次生效，越往后越优先。默认另加一条 system；选「替换原有」会先删掉已有的 system。
                         </p>
                     </div>
                     <Button type="button" variant="outline" className="rounded-xl" onClick={() => setActiveItem('access-plan')}>

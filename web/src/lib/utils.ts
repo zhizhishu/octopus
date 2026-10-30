@@ -16,8 +16,13 @@ function formatNumber(num: number | undefined, compare: number[], units: string[
 }
 
 export function formatCount(num: number | undefined): { raw: number, formatted: { value: string, unit: string } } {
+  const raw = num ?? 0;
+  // 次数/Token 是整数：不到 1000 时直接显示整数，别显示成 "56.00"。
+  if (Math.abs(raw) < 1000) {
+    return { raw, formatted: { value: String(Math.round(raw)), unit: '' } };
+  }
   return {
-    raw: num ?? 0,
+    raw,
     formatted: formatNumber(num, [1000000000, 1000000, 1000, 1], ['', 'B', 'M', 'K', '', '']),
   };
 }

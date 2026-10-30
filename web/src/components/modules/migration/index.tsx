@@ -44,7 +44,7 @@ import { cn } from '@/lib/utils';
 const STAGES = [
     { id: 'scan_users', label: '扫描用户' },
     { id: 'scan_logs', label: '扫描日志' },
-    { id: 'dry_run', label: 'dry-run 报告' },
+    { id: 'dry_run', label: '试运行报告' },
     { id: 'import', label: '正式导入' },
     { id: 'complete', label: '完成' },
 ] as const;
@@ -136,7 +136,7 @@ function ReportSummary({ summary }: { summary?: NewAPIMigrationSummary }) {
     if (!summary) {
         return (
             <div className="rounded-2xl border border-dashed border-border px-4 py-10 text-center text-sm text-muted-foreground">
-                先运行 dry-run，完成后这里会出现可导入用户、余额和用量摘要。
+                先点「试运行」，完成后这里会显示可导入的用户、余额和用量。
             </div>
         );
     }
@@ -254,10 +254,10 @@ export function Migration() {
                 if (!apply) {
                     setConfirmText('');
                 }
-                toast.success(apply ? '正式导入已进入后台任务' : 'dry-run 已进入后台任务');
+                toast.success(apply ? '正式导入已开始，在后台进行' : '试运行已开始，在后台进行');
             },
             onError: (error) => {
-                toast.error(apply ? '正式导入启动失败' : 'dry-run 启动失败', {
+                toast.error(apply ? '正式导入启动失败' : '试运行启动失败', {
                     description: apiErrorMessage(error),
                 });
             },
@@ -431,7 +431,7 @@ export function Migration() {
                                 onClick={() => start(false)}
                             >
                                 {startJob.isPending ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
-                                运行 dry-run
+                                试运行
                             </Button>
 
                             <label className="grid gap-2 text-sm">
@@ -452,7 +452,7 @@ export function Migration() {
                                 onClick={() => start(true)}
                             >
                                 {startJob.isPending ? <Loader2 className="size-4 animate-spin" /> : <ShieldCheck className="size-4" />}
-                                按 dry-run 结果正式导入
+                                按试运行结果正式导入
                             </Button>
 
                             <div className="rounded-2xl border border-amber-500/30 bg-amber-500/5 p-3 text-xs leading-5 text-amber-800 dark:text-amber-200">
@@ -471,7 +471,7 @@ export function Migration() {
                                     后台任务
                                 </h3>
                                 <div className="mt-1 text-xs text-muted-foreground">
-                                    {activeJob ? `${activeJob.id} · ${activeJob.apply ? '正式导入' : 'dry-run'}` : '暂无任务'}
+                                    {activeJob ? `${activeJob.id} · ${activeJob.apply ? '正式导入' : '试运行'}` : '暂无任务'}
                                 </div>
                             </div>
                             <div className="flex items-center gap-2">
@@ -487,7 +487,7 @@ export function Migration() {
                         <div className="grid gap-4">
                             <Progress value={activeJob?.percent ?? 0} className="h-2.5" />
                             <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-muted-foreground">
-                                <span>{activeJob?.message || '等待 dry-run'}</span>
+                                <span>{activeJob?.message || '等待试运行'}</span>
                                 <span className="tabular-nums">{activeJob?.percent ?? 0}%</span>
                             </div>
                             <StageTimeline job={activeJob} />
@@ -546,7 +546,7 @@ export function Migration() {
                                             >
                                                 <TableCell>
                                                     <Badge variant={job.apply ? 'secondary' : 'outline'}>
-                                                        {job.apply ? 'apply' : 'dry-run'}
+                                                        {job.apply ? '正式导入' : '试运行'}
                                                     </Badge>
                                                 </TableCell>
                                                 <TableCell>{statusLabels[job.status]}</TableCell>

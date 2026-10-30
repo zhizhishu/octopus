@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useSyncExternalStore } from 'react';
-import { BookOpen, KeyRound, Loader2, ShieldCheck, Terminal, Ticket } from 'lucide-react';
+import { BookOpen, KeyRound, Loader2, Terminal, Ticket } from 'lucide-react';
 import { PageWrapper } from '@/components/common/PageWrapper';
 import { SettingAPIKey } from '@/components/modules/setting/APIKey';
 import { Input } from '@/components/ui/input';
@@ -78,16 +78,9 @@ function APIKeyIntro({ isAdmin }: { isAdmin: boolean }) {
                     <h2 className="text-xl font-bold md:text-2xl">{isAdmin ? 'API Key 管理' : '我的 API Key'}</h2>
                     <p className="mt-2 text-sm leading-6 text-muted-foreground">
                         {isAdmin
-                            ? '管理员可在这里集中管理所有用户密钥、端点协议、可用方案和限额。'
-                            : '在这里创建和复制自己的密钥，按需选择 OpenAI / Gemini / Anthropic 协议端点。'}
+                            ? '管理所有用户的密钥：可用协议、方案和额度。'
+                            : '创建并复制自己的密钥，可选 OpenAI / Gemini / Anthropic 协议。'}
                     </p>
-                </div>
-                <div className="min-w-0 rounded-2xl border border-border bg-muted/20 px-4 py-3 text-sm text-muted-foreground">
-                    <div className="flex items-center gap-2 font-medium text-foreground">
-                        <ShieldCheck className="size-4" />
-                        独立页面
-                    </div>
-                    <p className="mt-1 text-xs">不再混在系统设置里。</p>
                 </div>
             </div>
         </section>

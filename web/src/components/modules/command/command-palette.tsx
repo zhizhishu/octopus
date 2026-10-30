@@ -2,7 +2,7 @@
 
 import * as React from 'react';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
-import { Search } from 'lucide-react';
+import { Compass, Search } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { cn } from '@/lib/utils';
 import { useNavStore, type NavItem } from '@/components/modules/navbar/nav-store';
@@ -28,8 +28,8 @@ export function CommandSearchButton() {
     return (
         <button
             type="button"
-            aria-label="全局搜索"
-            title="全局搜索 (Ctrl/⌘ + K)"
+            aria-label="快速跳转"
+            title="快速跳转到页面或渠道（Ctrl/⌘ + K）"
             onClick={() => setOpen(true)}
             className={buttonVariants({
                 variant: 'ghost',
@@ -37,7 +37,7 @@ export function CommandSearchButton() {
                 className: 'rounded-xl transition-none hover:bg-transparent text-muted-foreground hover:text-foreground',
             })}
         >
-            <Search className="size-4 transition-colors duration-300" />
+            <Compass className="size-4 transition-colors duration-300" />
         </button>
     );
 }

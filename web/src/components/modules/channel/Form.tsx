@@ -15,7 +15,8 @@ import { Badge } from '@/components/ui/badge';
 import { toast } from '@/components/common/Toast';
 import { useTranslations } from 'next-intl';
 import { useEffect, useRef, useState, type ReactNode, useLayoutEffect} from 'react';
-import { Loader2, Play, RefreshCw, X, Plus, Timer, Fingerprint } from 'lucide-react';
+import { Loader2, Play, RefreshCw, X, Plus, Timer, Fingerprint, HelpCircle } from 'lucide-react';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/animate-ui/components/animate/tooltip';
 import {
     Accordion,
     AccordionContent,
@@ -39,6 +40,22 @@ import {
     sanitizeChannelTestError,
 } from '@/lib/channel-test';
 import { CAPABILITY_EMBEDDINGS, hasChannelCapability, setChannelCapability } from '@/lib/channel-capabilities';
+
+/** 小问号：主界面只留一行白话，细节点开/悬停再看。 */
+function HelpTip({ text, label }: { text: string; label: string }) {
+    return (
+        <TooltipProvider>
+            <Tooltip>
+                <TooltipTrigger asChild>
+                    <button type="button" aria-label={label} className="inline-flex size-6 shrink-0 items-center justify-center rounded-full align-middle text-muted-foreground hover:text-foreground">
+                        <HelpCircle className="size-3.5" />
+                    </button>
+                </TooltipTrigger>
+                <TooltipContent className="max-w-72">{text}</TooltipContent>
+            </Tooltip>
+        </TooltipProvider>
+    );
+}
 
 function AdvancedSettingsShell({
     panel,
@@ -445,7 +462,7 @@ export function ChannelForm({
 
     const handleTestCurrentChannel = () => {
         if (!formData.base_urls?.[0]?.url || !effectiveKey || !testModel) {
-            toast.error('请先填写 Base URL、API Key 和模型');
+            toast.error(t('testNeedFields'));
             return;
         }
         channelTest.mutate(
@@ -462,10 +479,10 @@ export function ChannelForm({
                     const result = data.results[0] ?? null;
                     setChannelTestResult(result);
                     if (result?.success) {
-                        toast.success('测试成功');
+                        toast.success(t('testOk'));
                         return;
                     }
-                    toast.error('测试失败', { description: sanitizeChannelTestError(result?.error || '无可用结果') });
+                    toast.error(t('testFail'), { description: sanitizeChannelTestError(result?.error || t('testNoResult')) });
                 },
                 onError: (error) => {
                     setChannelTestResult({
@@ -476,7 +493,7 @@ export function ChannelForm({
                         duration_ms: 0,
                         error: error.message,
                     });
-                    toast.error('测试失败', { description: sanitizeChannelTestError(error.message) });
+                    toast.error(t('testFail'), { description: sanitizeChannelTestError(error.message) });
                 },
             }
         );
@@ -721,7 +738,7 @@ export function ChannelForm({
     const handleImportHeaders = () => {
         const imported = parseBulkHeaders(bulkHeaderText);
         if (imported.length === 0) {
-            toast.error('没有解析到 Header');
+            toast.error(t('headerNoneParsed'));
             return;
         }
         const next = new Map<string, Channel['custom_header'][number]>();
@@ -735,7 +752,7 @@ export function ChannelForm({
         }
         onFormDataChange({ ...formData, custom_header: Array.from(next.values()) });
         setBulkHeaderText('');
-        toast.success(`已导入 ${imported.length} 个 Header`);
+        toast.success(t('headerImported', { count: imported.length }));
     };
 
     const updateMappingRows = (rows: Array<{ client: string; upstream: string }>) => {
@@ -864,10 +881,11 @@ export function ChannelForm({
                     <div className="flex items-center justify-between gap-3 rounded-xl border border-border/60 px-3 py-2.5">
                         <div className="min-w-0">
                             <label htmlFor={`${idPrefix}-race-mode`} className="text-sm font-medium text-card-foreground">
-                                多 Key 竞速
+                                {t('raceMode')}
                             </label>
+                            <HelpTip text={t('raceModeTip')} label={t('raceMode')} />
                             <p className="mt-0.5 text-xs text-muted-foreground">
-                                同一渠道内并发打多把 Key，最快返回的胜出，其余立即取消。需要至少 2 把可用 Key。
+                                {t('raceModeHint')}
                             </p>
                         </div>
                         <Switch
@@ -880,7 +898,7 @@ export function ChannelForm({
                         <div className="grid gap-3 sm:grid-cols-2">
                             <div className="space-y-2">
                                 <label htmlFor={`${idPrefix}-race-key-concurrency`} className="text-sm font-medium text-card-foreground">
-                                    竞速并发数
+                                    {t('raceKeyConcurrency')}
                                 </label>
                                 <Input
                                     className='rounded-xl'
@@ -896,11 +914,11 @@ export function ChannelForm({
                                         onFormDataChange({ ...formData, race_key_concurrency: Number.isFinite(n) ? Math.min(5, Math.max(2, n)) : 2 });
                                     }}
                                 />
-                                <p className="text-xs text-muted-foreground">同时参赛的 Key 数量，2-5。</p>
+                                <p className="text-xs text-muted-foreground">{t('raceKeyConcurrencyHint')}</p>
                             </div>
                             <div className="space-y-2">
                                 <label htmlFor={`${idPrefix}-race-delay-ms`} className="text-sm font-medium text-card-foreground">
-                                    对冲延迟 (ms)
+                                    {t('raceDelayMs')}
                                 </label>
                                 <Input
                                     className='rounded-xl'
@@ -916,7 +934,7 @@ export function ChannelForm({
                                         onFormDataChange({ ...formData, race_delay_ms: Number.isFinite(n) ? Math.min(5000, Math.max(0, n)) : 0 });
                                     }}
                                 />
-                                <p className="text-xs text-muted-foreground">0 = 全部同时发；&gt;0 则第一把先发、其余延后，首发够快就不浪费额度。</p>
+                                <p className="text-xs text-muted-foreground">{t('raceDelayMsHint')}</p>
                             </div>
                         </div>
                     )}
@@ -1120,7 +1138,7 @@ export function ChannelForm({
                             className="h-6 px-2 text-xs text-muted-foreground/60 hover:text-muted-foreground hover:bg-transparent"
                         >
                             {channelTest.isPending ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Play className="h-3 w-3 mr-1" />}
-                            测试
+                            {t('modelTest')}
                         </Button>
                         <Button
                             type="button"
@@ -1146,7 +1164,7 @@ export function ChannelForm({
                         value={inputValue}
                         onChange={(e) => setInputValue(e.target.value)}
                         onKeyDown={handleInputKeyDown}
-                        placeholder="可手输模型，例如 claude-fable-5 / claude-opus-4-8 / gpt-5.5"
+                        placeholder={t('modelInputPlaceholder')}
                         className="pr-10 rounded-xl"
                     />
                     {inputValue.trim() && !autoModels.includes(inputValue.trim()) && (
@@ -1167,7 +1185,7 @@ export function ChannelForm({
                     <div className="rounded-xl border border-border bg-muted/20 p-2.5">
                         <div className="mb-2 flex items-center justify-between gap-2">
                             <label className="text-xs font-medium text-card-foreground">
-                                同步发现候选 ({fetchedModels.length})
+                                {t('modelFetchedCandidates', { count: fetchedModels.length })}
                             </label>
                             <div className="flex items-center gap-1">
                                 <Button
@@ -1225,7 +1243,7 @@ export function ChannelForm({
                 <div className="space-y-2">
                     <div className="flex items-center justify-between">
                         <label className="text-xs font-medium text-card-foreground">
-                            已启用模型 {autoModels.length > 0 && `(${autoModels.length})`}
+                            {t('modelEnabledList')} {autoModels.length > 0 && `(${autoModels.length})`}
                         </label>
                         {autoModels.length > 0 && (
                             <Button
@@ -1342,18 +1360,18 @@ export function ChannelForm({
                     <div className="rounded-xl border border-border bg-background/70 p-3">
                         <div className="flex flex-wrap items-start justify-between gap-3">
                             <div className="min-w-0 space-y-1">
-                                <div className="text-xs font-semibold text-card-foreground">Claude 1M 上下文能力</div>
+                                <div className="text-xs font-semibold text-card-foreground">{t('context1m')}<HelpTip text={t('context1mTip')} label={t('context1m')} /></div>
                                 <p className="text-xs leading-relaxed text-muted-foreground">
-                                    模型名保持干净，例如 claude-fable-5；开启后出站自动附加 Anthropic-Beta: context-1m-2025-08-07。
+                                    {t('context1mHint')}
                                 </p>
                             </div>
                             <label className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-border bg-muted/30 px-2.5 py-1.5 text-xs text-muted-foreground">
                                 <Switch
                                     checked={formData.anthropic_context_1m}
                                     onCheckedChange={(checked) => onFormDataChange({ ...formData, anthropic_context_1m: checked })}
-                                    aria-label="启用 Claude 1M 上下文能力"
+                                    aria-label={t('context1m')}
                                 />
-                                <span>{formData.anthropic_context_1m ? '已启用 1M' : '未启用'}</span>
+                                <span>{formData.anthropic_context_1m ? t('switchOn') : t('switchOff')}</span>
                             </label>
                         </div>
                     </div>
@@ -1362,18 +1380,18 @@ export function ChannelForm({
                 <div className="rounded-xl border border-border bg-background/70 p-3">
                     <div className="flex flex-wrap items-start justify-between gap-3">
                         <div className="min-w-0 space-y-1">
-                            <div className="text-xs font-semibold text-card-foreground">思考内容并入正文</div>
+                            <div className="text-xs font-semibold text-card-foreground">{t('thinkingToContent')}<HelpTip text={t('thinkingToContentTip')} label={t('thinkingToContent')} /></div>
                             <p className="text-xs leading-relaxed text-muted-foreground">
-                                对齐 new-api 的 thinking_to_content。开启后，当上游只填 reasoning_content、content 为空时（常见于 GLM 开 thinking 且 max_tokens 偏小），把思考链折叠进 content，方便只渲染正文的客户端。默认关闭，不改出站指纹。
+                                {t('thinkingToContentHint')}
                             </p>
                         </div>
                         <label className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-border bg-muted/30 px-2.5 py-1.5 text-xs text-muted-foreground">
                             <Switch
                                 checked={formData.thinking_to_content}
                                 onCheckedChange={(checked) => onFormDataChange({ ...formData, thinking_to_content: checked })}
-                                aria-label="启用思考内容并入正文"
+                                aria-label={t('thinkingToContent')}
                             />
-                            <span>{formData.thinking_to_content ? '已启用' : '未启用'}</span>
+                            <span>{formData.thinking_to_content ? t('switchOn') : t('switchOff')}</span>
                         </label>
                     </div>
                 </div>
@@ -1381,24 +1399,24 @@ export function ChannelForm({
                 <div className="rounded-xl border border-border bg-background/70 p-3">
                     <div className="flex flex-wrap items-start justify-between gap-3">
                         <div className="min-w-0 space-y-1">
-                            <div className="text-xs font-semibold text-card-foreground">支持嵌入流量</div>
+                            <div className="text-xs font-semibold text-card-foreground">{t('embeddingsCapability')}<HelpTip text={t('embeddingsCapabilityTip')} label={t('embeddingsCapability')} /></div>
                             <p className="text-xs leading-relaxed text-muted-foreground">
-                                对齐 sub2api 的账号能力位。开启后本渠道除聊天外还承接 /v1/embeddings——一个上游账号（如火山）既能聊天又能嵌入，不必为同一把 Key 建两个渠道。关闭＝只接聊天，与改动前完全一致。
+                                {t('embeddingsCapabilityHint')}
                             </p>
                         </div>
                         <label className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-border bg-muted/30 px-2.5 py-1.5 text-xs text-muted-foreground">
                             <Switch
                                 checked={embeddingsCapabilityEnabled}
                                 onCheckedChange={(checked) => onFormDataChange({ ...formData, capabilities: setChannelCapability(formData.capabilities, CAPABILITY_EMBEDDINGS, checked) })}
-                                aria-label="支持嵌入流量"
+                                aria-label={t('embeddingsCapability')}
                             />
-                            <span>{embeddingsCapabilityEnabled ? '已支持嵌入' : '仅聊天'}</span>
+                            <span>{embeddingsCapabilityEnabled ? t('embeddingsCapabilityOn') : t('embeddingsCapabilityOff')}</span>
                         </label>
                     </div>
                     {embeddingsCapabilityEnabled && (
                         <div className="mt-3 space-y-2">
                             <label htmlFor={`${idPrefix}-openai-embeddings-path`} className="text-sm font-medium text-card-foreground">
-                                嵌入端点路径
+                                {t('embeddingsPath')}
                             </label>
                             <Input
                                 id={`${idPrefix}-openai-embeddings-path`}
@@ -1409,7 +1427,7 @@ export function ChannelForm({
                                 className="rounded-xl"
                             />
                             <p className="text-xs leading-relaxed text-muted-foreground">
-                                留空＝默认 /v1/embeddings。火山这类上游的嵌入路径是 /api/v3/embeddings，请填完整路径——它和聊天路径各自独立，不会被拼在一起。
+                                {t('embeddingsPathHint')}
                             </p>
                         </div>
                     )}
@@ -1417,9 +1435,9 @@ export function ChannelForm({
 
                 {channelTestResult && (
                     <div className={`rounded-xl border p-2.5 text-xs ${channelTestResult.success ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'border-destructive/30 bg-destructive/10 text-destructive'}`}>
-                        <span className="font-medium">{channelTestResult.success ? '测试成功' : '测试失败'}</span>
+                        <span className="font-medium">{channelTestResult.success ? t('testOk') : t('testFail')}</span>
                         {!channelTestResult.success && (
-                            <p className="mt-1 break-words">{sanitizeChannelTestError(channelTestResult.error || '无可用结果')}</p>
+                            <p className="mt-1 break-words">{sanitizeChannelTestError(channelTestResult.error || t('testNoResult'))}</p>
                         )}
                     </div>
                 )}
@@ -1647,7 +1665,7 @@ export function ChannelForm({
                                         disabled={bulkHeaderText.trim().length === 0}
                                         className="h-8 rounded-xl px-3 text-xs"
                                     >
-                                        批量导入
+                                        {t('customHeaderBulkImport')}
                                     </Button>
                                 </div>
                             </div>

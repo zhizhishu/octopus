@@ -133,7 +133,7 @@ export function Card({ channel, stats, layout = 'list' }: { channel: Channel; st
                         <div className="min-w-0">
                             <dt className="flex items-center gap-1 text-[11px] text-muted-foreground">
                                 <Layers className="size-3.5 text-primary" />
-                                模型
+                                {t('models')}
                             </dt>
                             <dd className="text-sm font-semibold">{modelCount}</dd>
                         </div>
@@ -195,23 +195,23 @@ export function Card({ channel, stats, layout = 'list' }: { channel: Channel; st
                             <TooltipTrigger asChild>
                                 <button
                                     type="button"
-                                    className="inline-flex h-8 max-w-full items-center gap-1 overflow-hidden rounded-lg border border-border px-2 text-xs font-medium leading-none text-muted-foreground hover:bg-accent hover:text-accent-foreground disabled:opacity-50"
+                                    className="inline-flex h-8 max-md:h-10 max-w-full items-center gap-1 overflow-hidden rounded-lg border border-border px-2 text-xs font-medium leading-none text-muted-foreground hover:bg-accent hover:text-accent-foreground disabled:opacity-50"
                                     onClick={(event) => { event.preventDefault(); event.stopPropagation(); setTestDialogOpen(true); }}
                                     disabled={!firstModel}
-                                    aria-label="测试模型"
+                                    aria-label={t('testModel')}
                                 >
                                     <Play className="size-3.5" />
-                                    <span className="min-w-0 truncate">测试</span>
+                                    <span className="min-w-0 truncate">{t('test')}</span>
                                 </button>
                             </TooltipTrigger>
-                            <TooltipContent>{firstModel ? `测试 ${firstModel}` : '请先配置模型'}</TooltipContent>
+                            <TooltipContent>{firstModel ? t('testTooltip', { model: firstModel }) : t('testNeedModel')}</TooltipContent>
                         </Tooltip>
                         <ChannelTestDialog channel={channel} open={testDialogOpen} onOpenChange={setTestDialogOpen} />
                         <Tooltip side="top" sideOffset={10} align="center">
                             <TooltipTrigger asChild>
                                 <button
                                     type="button"
-                                    className="inline-flex h-8 max-w-full items-center gap-1 overflow-hidden rounded-lg border border-border px-2 text-xs font-medium leading-none text-muted-foreground hover:bg-accent hover:text-accent-foreground disabled:opacity-50"
+                                    className="inline-flex h-8 max-md:h-10 max-w-full items-center gap-1 overflow-hidden rounded-lg border border-border px-2 text-xs font-medium leading-none text-muted-foreground hover:bg-accent hover:text-accent-foreground disabled:opacity-50"
                                     onClick={handleCopyChannel}
                                     disabled={copyChannel.isPending}
                                     aria-label={t('copy')}
@@ -227,7 +227,7 @@ export function Card({ channel, stats, layout = 'list' }: { channel: Channel; st
                                 <TooltipTrigger asChild>
                                     <button
                                         type="button"
-                                        className="inline-flex h-8 max-w-[13rem] items-center gap-1 overflow-hidden rounded-lg border border-destructive/40 px-2 text-xs font-medium leading-none text-destructive hover:bg-destructive/10 disabled:opacity-50"
+                                        className="inline-flex h-8 max-md:h-10 max-w-[13rem] items-center gap-1 overflow-hidden rounded-lg border border-destructive/40 px-2 text-xs font-medium leading-none text-destructive hover:bg-destructive/10 disabled:opacity-50"
                                         onClick={handleResetCircuit}
                                         disabled={resetCircuit.isPending}
                                         aria-label={t('circuit.reset')}
@@ -242,17 +242,17 @@ export function Card({ channel, stats, layout = 'list' }: { channel: Channel; st
                         )}
                         <Tooltip side="top" sideOffset={10} align="center">
                             <TooltipTrigger asChild>
-                                <div className="inline-flex h-8 max-w-full items-center gap-2 overflow-hidden rounded-lg border border-border bg-background px-2 text-xs leading-none text-muted-foreground">
+                                <div className="inline-flex h-8 max-md:h-10 max-w-full items-center gap-2 overflow-hidden rounded-lg border border-border bg-background px-2 text-xs leading-none text-muted-foreground">
                                     <Activity className={cn('size-3.5', channel.enabled ? 'text-emerald-500' : 'text-muted-foreground')} />
                                     <Switch
                                         checked={channel.enabled}
                                         onCheckedChange={handleEnableChange}
                                         disabled={enableChannel.isPending}
-                                        aria-label="启用渠道"
+                                        aria-label={t('enableSwitch')}
                                     />
                                 </div>
                             </TooltipTrigger>
-                            <TooltipContent>{channel.enabled ? '禁用后会自动排到列表后面。' : '启用后会回到可用通道队列。'}</TooltipContent>
+                            <TooltipContent>{channel.enabled ? t('enabledTooltip') : t('disabledTooltip')}</TooltipContent>
                         </Tooltip>
                     </div>
                 </article>

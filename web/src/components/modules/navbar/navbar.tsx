@@ -1,5 +1,6 @@
 "use client"
 
+import { useEffect, useRef } from "react"
 import { motion } from "motion/react"
 import { cn } from "@/lib/utils"
 import { useNavStore, type NavItem } from "./nav-store"
@@ -22,6 +23,15 @@ export function NavBar({ activeItem: controlledActiveItem, setActiveItem: contro
     const role = useAuthStore((state) => state.user?.role)
     const routes = routesForRole(role)
     const t = useTranslations('navbar')
+    const navRef = useRef<HTMLElement>(null)
+
+    // 手机底栏放不下全部图标、会横向滚动：切页后把当前项滚进可视区，免得高亮的那一项被挡在屏幕外。
+    useEffect(() => {
+        const nav = navRef.current
+        if (!nav || nav.scrollWidth <= nav.clientWidth) return
+        const active = nav.querySelector<HTMLElement>('[aria-current="page"]')
+        active?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+    }, [activeItem])
     const handleRouteSelect = (item: NavItem) => {
         void preload(item).catch(() => undefined).finally(() => setActiveItem(item))
     }
@@ -29,6 +39,7 @@ export function NavBar({ activeItem: controlledActiveItem, setActiveItem: contro
     return (
         <div className="relative z-50 md:min-h-screen">
             <motion.nav
+                ref={navRef}
                 aria-label="Main Navigation"
                 className={cn(
                     "fixed bottom-[calc(1rem+env(safe-area-inset-bottom))] left-1/2 flex max-w-[calc(100vw-1rem)] -translate-x-1/2 items-center gap-1 overflow-x-auto p-2",
@@ -50,6 +61,7 @@ export function NavBar({ activeItem: controlledActiveItem, setActiveItem: contro
                             onClick={() => handleRouteSelect(route.id as NavItem)}
                             onMouseEnter={() => preload(route.id)}
                             aria-label={label}
+                            aria-current={isActive ? 'page' : undefined}
                             title={label}
                             className={cn(
                                 "relative z-20 flex h-10 w-10 shrink-0 items-center justify-center gap-2 overflow-hidden rounded-2xl p-0 text-left md:h-auto md:w-32 md:justify-start md:px-3 md:py-2.5",

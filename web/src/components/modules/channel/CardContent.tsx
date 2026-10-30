@@ -567,7 +567,7 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
                                     className="h-8 rounded-lg"
                                 >
                                     <SlidersHorizontal className="mr-1.5 size-3.5" />
-                                    高级设定
+                                    {t('actions.advanced')}
                                 </Button>
                             </div>
                             <ChannelForm

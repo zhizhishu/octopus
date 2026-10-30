@@ -1,6 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import { useTranslations } from 'next-intl';
 import { useChannelList } from '@/api/endpoints/channel';
 import { Card } from './Card';
 import { useSearchStore, useToolbarViewOptionsStore } from '@/components/modules/toolbar';
@@ -14,6 +15,7 @@ import {
 } from './channel-utils';
 
 export function Channel() {
+    const t = useTranslations('channel.list');
     const { data: channelsData } = useChannelList();
     const pageKey = 'channel' as const;
     const searchTerm = useSearchStore((s) => s.getSearchTerm(pageKey));
@@ -64,14 +66,14 @@ export function Channel() {
         <div className="flex h-full min-h-0 flex-col gap-3">
             <div className="shrink-0 overflow-x-auto pb-1">
                 <div className="flex w-max min-w-full items-center gap-1 rounded-lg border border-border bg-card px-1.5 py-1 shadow-xs">
-                    <span className="shrink-0 px-2 text-[11px] font-medium text-muted-foreground">端点筛选</span>
+                    <span className="shrink-0 px-2 text-[11px] font-medium text-muted-foreground">{t('endpointFilter')}</span>
                     <EndpointFilterButton
-                        label="全部"
+                        label={t('all')}
                         count={endpointOptions.get('all') ?? 0}
                         active={endpointFilter === 'all'}
                         onClick={() => setEndpointFilter('all')}
                     />
-                    {CHANNEL_ENDPOINT_FAMILIES.map((family) => (
+                    {CHANNEL_ENDPOINT_FAMILIES.filter((family) => (endpointOptions.get(family.id) ?? 0) > 0 || endpointFilter === family.id).map((family) => (
                         <EndpointFilterButton
                             key={family.id}
                             label={family.shortLabel}
@@ -87,8 +89,14 @@ export function Channel() {
             <div className="min-h-0 flex-1">
                 {endpointFilteredChannels.length === 0 ? (
                     <div className="rounded-3xl border border-dashed border-border bg-card p-10 text-center">
-                        <p className="text-sm font-semibold text-foreground">没有命中的渠道</p>
-                        <p className="mt-1 text-sm text-muted-foreground">换个搜索词、状态筛选或端点筛选再看，别和空列表较劲。</p>
+                        <p className="text-sm font-semibold text-foreground">
+                            {!channelsData ? t('loading') : channelsData.length === 0 ? t('emptyTitle') : t('noMatchTitle')}
+                        </p>
+                        {channelsData && (
+                            <p className="mt-1 text-sm text-muted-foreground">
+                                {channelsData.length === 0 ? t('emptyHint') : t('noMatchHint')}
+                            </p>
+                        )}
                     </div>
                 ) : (
                     <VirtualizedGrid
