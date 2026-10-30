@@ -143,7 +143,7 @@ func APIKeyAuth() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
-		endpointFamily := apiKeyEndpointFamilyForPath(c.Request.URL.Path)
+		endpointFamily := apiKeyEndpointFamilyForRequest(c.Request.Method, c.Request.URL.Path)
 		if endpointFamily != "" && !apiKeyObj.AllowsEndpointFamily(endpointFamily) {
 			resp.ErrorWithCode(c, http.StatusForbidden, "endpoint_not_allowed", "API key is not allowed to access "+string(endpointFamily)+" endpoints")
 			c.Abort()
@@ -152,6 +152,8 @@ func APIKeyAuth() gin.HandlerFunc {
 		c.Set("request_type", requestType)
 		c.Set("endpoint_family", string(endpointFamily))
 		c.Set("supported_models", apiKeyObj.SupportedModels)
+		// 统一任务查询（GET /v1/tasks*）跨族：中间件不按族拦，由 handler 按这份清单只给 key 能看的任务类型。
+		c.Set(APIKeyEndpointFamiliesContextKey, apiKeyObj.EffectiveEndpointFamilies())
 		c.Set("api_key_id", apiKeyObj.ID)
 		c.Set("user_id", owner.ID)
 		c.Set("request_ip", ResolveClientIP(c))
@@ -227,6 +229,28 @@ func EndpointFamilyForPath(path string) model.APIKeyEndpointFamily {
 	return apiKeyEndpointFamilyForPath(path)
 }
 
+// APIKeyEndpointFamiliesContextKey 与 relay.APIKeyEndpointFamiliesContextKey 同值（relay 测试里有断言）。
+const APIKeyEndpointFamiliesContextKey = "api_key_endpoint_families"
+
+// apiKeyEndpointFamilyForRequest 在路径分类之上只多一条按方法的例外：
+// 统一任务接口的**查询**（GET /v1/tasks、GET /v1/tasks/:id）一次覆盖视频 / 图片 / MJ 三类任务，
+// 不属于任何单一族；中间件不拦（返回 ""），由 relay.TaskGetHandler / TaskListHandler 按 key 的族
+// 过滤可见的任务类型（只开 video 族的 key 只看得到视频任务，依此类推）。提交仍按路径分族。
+func apiKeyEndpointFamilyForRequest(method, path string) model.APIKeyEndpointFamily {
+	if method == http.MethodGet && isUnifiedTaskQueryPath(strings.TrimSpace(path)) {
+		return ""
+	}
+	return apiKeyEndpointFamilyForPath(path)
+}
+
+func isUnifiedTaskQueryPath(path string) bool {
+	if path == "/v1/tasks" {
+		return true
+	}
+	rest, ok := strings.CutPrefix(path, "/v1/tasks/")
+	return ok && rest != "" && !strings.Contains(rest, "/")
+}
+
 func apiKeyEndpointFamilyForPath(path string) model.APIKeyEndpointFamily {
 	path = strings.TrimSpace(path)
 	if strings.HasPrefix(path, "/v1beta/") {
@@ -238,6 +262,16 @@ func apiKeyEndpointFamilyForPath(path string) model.APIKeyEndpointFamily {
 	// 视频是独立 family：异步生成按次计费，不能跟着 openai-compatible（chat）走。
 	if path == "/v1/videos" || strings.HasPrefix(path, "/v1/videos/") {
 		return model.APIKeyEndpointFamilyVideo
+	}
+	// new-api 的视频路由别名（/v1/video/generations[/:task_id]）与统一任务接口的视频提交
+	// （POST /v1/tasks/video[-generations|-edits|-extensions]）同属视频族。
+	if strings.HasPrefix(path, "/v1/video/") || strings.HasPrefix(path, "/v1/tasks/video") {
+		return model.APIKeyEndpointFamilyVideo
+	}
+	// 统一任务接口的其余提交（image / midjourney）与 /v1/images/*、/mj/* 同族。
+	// 查询的 GET 例外见 apiKeyEndpointFamilyForRequest。
+	if path == "/v1/tasks" || strings.HasPrefix(path, "/v1/tasks/") {
+		return model.APIKeyEndpointFamilyOpenAICompatible
 	}
 	if path == "/v1/chat/completions" ||
 		path == "/v1/responses" ||
