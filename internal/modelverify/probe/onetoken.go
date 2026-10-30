@@ -13,18 +13,20 @@ type onetokenProbe struct{}
 
 // MinN 是双侧各至少多少个有效样本才参与 JSD。
 //
-// 维持 10（对齐参考实现），**刻意没有改成 30**。
+// 定为 10，**照抄参考实现的官方配置，不改成 30**（2026-10-30 复核后的决定）：
+//   - Token-Verifier config.example.yaml:119 缺省 `min_n: 10`（repeats 10）；
+//   - 官方基线发布（chaterm/Token-Verifier-Data，suite v4）的两份采集配置
+//     config.claudeopus5.aws.yaml:40 与 config.gpt56sol.azure.yaml:46 都是
+//     `repeats: 12, min_n: 10`。基线是按这个口径采的，比较侧改成 30 就和基线不可比。
 //
-// 曾经想按 PAMELA 的实测把它提到 30（N≥30 才能让 JSD 的 EER 阈值 0.073 可靠；
-// N 偏小时单次 JSD 标准误 0.03–0.05 已大于判定间距 0.0402）。改完发现这是
-// **在给一段还没上线的代码调参**：Judge / CollectProbe / PairSamples 三个函数
-// 除 collect_test.go 外没有任何生产调用，整条探针层没接进检测链，改这个数字
-// 既不改变任何真实结论，又会误导后来人以为它已经在生效。
+// "30" 来自 PAMELA（pamela-model-id README：N≥30 时 JSD 的 EER 阈值 0.073 才可靠），
+// 那是另一个项目、另一套题与阈值，不能嫁接到 Token-Verifier 的阈值体系上。
 //
-// 真要接线时再一起定，届时必须连带扩题库（现只有 3 题，N=30 需要 8–12 题）
-// 并配基线存储。在那之前，这个常量就是个摆设，别把它当成"已提升精度"。
-//
-// 实际生效值以采集计划的 min_n 为准（Compare 参数传入），这里只是缺省值。
+// 另外，这一层（Judge / CollectProbe / PairSamples）至今**没有接进检测链**：
+// Token-Verifier 的比较需要同一出站形态下采的两侧原始 prompt_tokens / 回答分布，
+// 而本项目出站带 CLI 形态的隐藏前缀，官方基线（直连 API 采的）与之不可比。
+// 分词器识别改走 lm-detector 的差分计数（behavior/tokenizer_probe.go，前缀在差分里
+// 相消）。这里的常量只是缺省值，实际生效值以采集计划的 min_n 为准（Compare 参数传入）。
 const onetokenMinN = 10
 
 func (onetokenProbe) Meta() ProbeMeta {

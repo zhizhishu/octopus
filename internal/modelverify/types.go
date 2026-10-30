@@ -62,6 +62,13 @@ type Usage struct {
 	Completion int
 	Reasoning  int
 	Cached     int
+	// Input 是上游计费的**全部**输入 token（含缓存读写），分词器差分探针用。
+	//
+	// 口径照抄 lm-detector shared/tokenizer-usage.ts：Chat Completions 的 prompt_tokens、
+	// Responses 的 input_tokens 本来就含缓存命中；Messages 的 input_tokens 不含，
+	// 要加上 cache_creation_input_tokens + cache_read_input_tokens。只用 Prompt 的话，
+	// 同一段文本一旦命中缓存，计数就会忽大忽小，差分立刻失真。
+	Input int
 	// ReasoningReported 区分「上游明确上报思考用量为 0」与「上游没报这个
 	// 字段」：前者是可判定的观测，后者不能当 0 参与评分，否则不报该字段的
 	// 正常渠道会被扣「思考 token 为 0」的分。只影响观测口径，不影响计费字段。

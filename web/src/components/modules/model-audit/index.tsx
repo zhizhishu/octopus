@@ -5,8 +5,10 @@ import {
     AlertTriangle,
     Binary,
     ChevronRight,
+    Database,
     Dices,
     Fingerprint,
+    Hash,
     Loader2,
     Play,
     MessageSquareQuote,
@@ -25,7 +27,10 @@ import type { ApiError } from '@/api/types';
 import { ChannelType, useChannelList, type Channel } from '@/api/endpoints/channel';
 import {
     AUDIT_PROBE_IDS,
+    AUDIT_OPT_IN_PROBE_IDS,
+    AUDIT_STANDARD_PROBE_IDS,
     useLogAnomalies,
+    useSaveTokenizerBaseline,
     useRunModelAudit,
     useScheduledAudit,
     type AuditFinding,
@@ -82,6 +87,15 @@ type ProbeMeta = {
 };
 
 import { readFingerprint, describeDecision, formatProbability, type FingerprintSummary } from './fingerprint';
+import {
+    readTokenizer,
+    readTokenizerRecording,
+    describeTokenizer,
+    formatShare,
+    tokenizerRowStatus,
+    type TokenizerRecording,
+    type TokenizerSummary,
+} from './tokenizer';
 
 const PROBES: ProbeMeta[] = [
     { id: 'liveness', name: '连通回显', hint: '基础', desc: '确认渠道能正常回显请求', icon: Wifi },
@@ -94,7 +108,18 @@ const PROBES: ProbeMeta[] = [
     // 随机数指纹：要发三道题、每题几百个整数，是整套检测里最贵的一条，
     // 所以单独标"高开销"，让用户在勾选前就知道代价。
     { id: 'fingerprint', name: '随机数指纹', hint: '高开销', desc: '按取值习惯比对参考库，识别冒充', icon: Dices },
+    // 以下两项只能手动勾选（AUDIT_OPT_IN_PROBE_IDS），不进「标准」方案。
+    // 分词器识别默认拿内置 lm-detector 分词器库当基线，不需要先录基线。
+    { id: 'tokenizer_id', name: '分词器识别', hint: '约12次', desc: '对照内置分词器库（来自 lm-detector），看上游用的哪套分词器。不用先录基线；只作参考，不计分。', icon: Hash },
+    // 录基线放在「02 检查」底下默认收起的高级区，主列表里不出现（见 ADVANCED_PROBE_IDS）。
+    { id: 'tokenizer_baseline', name: '录制分词器基线', hint: '74次', desc: '发 74 次请求录下这个型号的分词器计数；保存后分词器识别会把它和内置库一起对照。', icon: Database },
 ];
+
+/** 只在高级区里出现的检查项：主检测列表不渲染它们。 */
+const ADVANCED_PROBE_IDS: readonly AuditProbeId[] = ['tokenizer_baseline'];
+const ADVANCED_SUMMARY = '高级：用你确定是正品的渠道录一份自己的基线（库里没有的新模型才需要）';
+const ADVANCED_TOOLTIP =
+    '分词器识别默认对照内置库，不录也能用。库里没有的新型号（如 Claude、Grok）才需要：在确定是正品的渠道上发 74 次请求录一份，到检测记录里保存后，之后的分词器识别会一起对照。后台没法判断渠道真假，录错会把冒牌当正品。';
 
 const QUICK_IDS: AuditProbeId[] = ['liveness', 'echo_rewrite', 'context_canary'];
 
@@ -136,7 +161,7 @@ function isApplicable(channel: Channel | undefined, id: AuditProbeId, model = ''
 }
 
 function planIds(plan: PlanId, channel: Channel | undefined, model = ''): AuditProbeId[] {
-    const base = plan === 'quick' ? QUICK_IDS : [...AUDIT_PROBE_IDS];
+    const base = plan === 'quick' ? QUICK_IDS : [...AUDIT_STANDARD_PROBE_IDS];
     return base.filter((id) => isApplicable(channel, id, model));
 }
 
@@ -184,11 +209,27 @@ function rowFromResult(meta: ProbeMeta, report: ModelAuditResponse, t: (key: str
             findings,
         };
     }
+    // 分词器识别只作参考（照抄 lm-detector）：后端 0 分，这里也不进「待复核」。
+    if (meta.id === 'tokenizer_id' && result?.ok) {
+        const summary = readTokenizer(report.report);
+        return { meta, tone: 'info', status: summary ? tokenizerRowStatus(summary) : '仅供参考', result, findings };
+    }
     if (findings.some((item) => item.severity === 'medium' || item.severity === 'high')) {
         return { meta, tone: 'warn', status: '待复核', result, findings };
     }
     if (findings.length > 0) {
         return { meta, tone: 'warn', status: '待复核', result, findings };
+    }
+    // 录制本身不是检查：只说明录没录成，不进 pass/warn。
+    if (meta.id === 'tokenizer_baseline' && result?.ok) {
+        return {
+            meta,
+            tone: 'info',
+            status: data.recordable === true ? '已录制，可保存为基线' : '不可录制',
+            result,
+            findings,
+            reason: typeof data.reason === 'string' ? data.reason : undefined,
+        };
     }
     if (meta.id === 'glitch' && result?.ok) {
         return { meta, tone: 'info', status: '结构可解析', result, findings };
@@ -316,6 +357,127 @@ function FingerprintCard({ summary }: { summary: FingerprintSummary }) {
 }
 
 /**
+ * 分词器结论卡（lm-detector 分词器差分探测）。
+ *
+ * 测出来的是「上游用哪套分词器」，不是「哪个模型」：同一分词器常被多个模型共用，
+ * 所以这里只说相容/不符，不说"就是某模型"。测成 o200k/cl100k 时要提示中转站本地估算的可能。
+ */
+function TokenizerCard({ summary }: { summary: TokenizerSummary }) {
+    const share = formatShare(summary.confidence);
+    const claimTone =
+        summary.claim === 'inconsistent' && summary.usable
+            ? 'bg-amber-500/15 text-amber-700 dark:text-amber-400'
+            : summary.claim === 'consistent' && summary.usable
+              ? 'bg-primary/10 text-primary'
+              : 'bg-muted text-muted-foreground';
+    const claimText =
+        !summary.usable ? '仅供参考'
+        : summary.claim === 'consistent' ? '与声明相容'
+        : summary.claim === 'inconsistent' ? '与声明不符（仅供参考）'
+        : summary.claim === 'uncertain' ? '不确定'
+        : '无法核对';
+    return (
+        <div className="rounded-2xl border border-border bg-card px-4 py-3">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0">
+                    <p className="text-[11px] font-medium tracking-[0.16em] text-muted-foreground">分词器识别 · 输入 token 差分</p>
+                    <p className="mt-1 flex flex-wrap items-baseline gap-2">
+                        <span className="text-lg font-semibold">{summary.errorText ? '未测出' : summary.series || '库内无匹配'}</span>
+                        {summary.lab && <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">{summary.lab}</span>}
+                        {summary.local && <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">本地基线</span>}
+                        <span className={cn('rounded px-1.5 py-0.5 text-[11px]', claimTone)}>{claimText}</span>
+                    </p>
+                    <p className="mt-0.5 text-xs leading-5 text-muted-foreground">{describeTokenizer(summary)}</p>
+                </div>
+                {share && !summary.errorText && (
+                    <div className="shrink-0 rounded-xl bg-muted/50 px-3 py-2 text-center">
+                        <p className="text-[11px] text-muted-foreground">后验</p>
+                        <p className="mt-0.5 text-lg font-semibold">{share}</p>
+                    </div>
+                )}
+            </div>
+            {summary.candidates.length > 0 && (
+                <ol className="mt-3 space-y-1 border-t border-border pt-2">
+                    {summary.candidates.map((candidate, index) => (
+                        <li key={candidate.id} className="flex items-center gap-2 text-xs">
+                            <span className="w-4 shrink-0 text-muted-foreground">{index + 1}</span>
+                            <span className="min-w-0 flex-1 truncate">{candidate.series}</span>
+                            {candidate.lab && <span className="shrink-0 text-[11px] text-muted-foreground">{candidate.lab}</span>}
+                            <span className="w-12 shrink-0 text-right text-[11px] text-muted-foreground">{formatShare(candidate.exact)}</span>
+                        </li>
+                    ))}
+                </ol>
+            )}
+            <p
+                className="mt-2 truncate border-t border-border pt-2 text-[11px] leading-5 text-muted-foreground"
+                title={[
+                    '也可能是中转站自己估算的用量。',
+                    summary.requests > 0 ? `本次 ${summary.requests} 次请求。` : '',
+                    summary.bankClasses > 0 ? `对照分词器库 ${summary.bankClasses} 类${summary.bankGeneratedAt ? `（${summary.bankGeneratedAt}）` : ''}。` : '',
+                    ...summary.warnings,
+                ].filter(Boolean).join('\n')}
+            >
+                {TOKENIZER_FOOTNOTE}
+                {summary.warnings.length > 0 && ` 跳过了 ${summary.warnings.length} 条本地基线。`}
+            </p>
+        </div>
+    );
+}
+
+const TOKENIZER_FOOTNOTE = '只作参考：同一分词器常被多个模型共用，测得一致不等于原厂。';
+const RECORDING_SUMMARY = '高级：这次录的基线，确定渠道是正品再保存';
+const RECORDING_TOOLTIP = '保存后，之后的分词器识别会把它和内置库一起对照。后台没法判断渠道真假，录错会把冒牌当正品。';
+
+/** 录制结果卡：默认收起；可录制时给「保存为可信基线」按钮（需要队列结果 id）。 */
+function TokenizerRecordingCard({ recording, resultId }: { recording: TokenizerRecording; resultId?: number }) {
+    const save = useSaveTokenizerBaseline();
+    const [saved, setSaved] = useState(false);
+    const submit = async (replace: boolean) => {
+        if (!resultId) return;
+        try {
+            await save.mutateAsync({ result_id: resultId, replace });
+            setSaved(true);
+            toast.success('已保存为可信基线，之后的分词器识别会用到它');
+        } catch (error) {
+            const message = error instanceof Error ? error.message : '保存失败';
+            if (!replace && message.includes('已有')) {
+                if (window.confirm(`${message}。要用这次录制覆盖吗？`)) await submit(true);
+                return;
+            }
+            toast.error(message);
+        }
+    };
+    return (
+        <details className="rounded-2xl border border-border bg-card px-4 py-3">
+            <summary className="cursor-pointer text-[11px] leading-5 text-muted-foreground" title={RECORDING_TOOLTIP}>
+                {RECORDING_SUMMARY}
+            </summary>
+            <p className="mt-1 text-sm">
+                {recording.recordable
+                    ? `${recording.targetModel || '该型号'}：${recording.probeCount} 道题计数已录下。`
+                    : `这次录制不能用作基线：${recording.reason || '未知原因'}`}
+            </p>
+            {recording.recordable && (
+                <div className="mt-2">
+                    {resultId ? (
+                        <button
+                            type="button"
+                            disabled={save.isPending || saved}
+                            onClick={() => void submit(false)}
+                            className="rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-muted disabled:opacity-50"
+                        >
+                            {saved ? '已保存' : save.isPending ? '保存中…' : '保存为可信基线'}
+                        </button>
+                    ) : (
+                        <p className="text-[11px] text-muted-foreground">从「检测记录」打开这条结果才能保存。</p>
+                    )}
+                </div>
+            )}
+        </details>
+    );
+}
+
+/**
  * 被动检测开关卡。
  *
  * 摆在检测页而不是设置页，是因为它和主动检测是同一件事的两面，用户需要放在
@@ -396,7 +558,7 @@ export function ModelAudit() {
     const [channelId, setChannelId] = useState<number>(0);
     const [modelName, setModelName] = useState('');
     const [plan, setPlan] = useState<PlanId>('standard');
-    const [selected, setSelected] = useState<AuditProbeId[]>([...AUDIT_PROBE_IDS]);
+    const [selected, setSelected] = useState<AuditProbeId[]>([...AUDIT_STANDARD_PROBE_IDS]);
     const [showAdvanced, setShowAdvanced] = useState(false);
     const [showParams, setShowParams] = useState(false);
     const [pageState, setPageState] = useState<PageState>('idle');
@@ -438,6 +600,11 @@ export function ModelAudit() {
     }, [report, t]);
     // 指纹结论单独读出来：它是唯一能认出模型的内容，不能只当一行状态显示。
     const fingerprint = useMemo(() => readFingerprint(report?.report), [report]);
+    const tokenizer = useMemo(() => readTokenizer(report?.report), [report]);
+    // 高级区默认收起；勾着高级项时强制展开，免得「看不见但会跑」。
+    const [advancedOpen, setAdvancedOpen] = useState(false);
+    const advancedSelected = selected.some((id) => ADVANCED_PROBE_IDS.includes(id));
+    const recording = useMemo(() => readTokenizerRecording(report?.report), [report]);
     const warnCount = rows.filter((row) => row.tone === 'warn').length;
     const failCount = rows.filter((row) => row.tone === 'fail').length;
     const insufficientCount = rows.filter((row) => row.insufficient).length;
@@ -449,18 +616,26 @@ export function ModelAudit() {
         const nextModels = next ? getSelectedChannelModels(next) : [];
         setModelName(nextModels[0] ?? '');
         if (plan === 'standard') {
-            setSelected(AUDIT_PROBE_IDS.filter((probeId) => isApplicable(next, probeId, nextModels[0] ?? '')));
+            setSelected(AUDIT_STANDARD_PROBE_IDS.filter((probeId) => isApplicable(next, probeId, nextModels[0] ?? '')));
         }
     };
 
     const choosePlan = (next: PlanId) => {
         setPlan(next);
         if (next === 'quick') setSelected(planIds('quick', channel, activeModel));
-        else setSelected(AUDIT_PROBE_IDS.filter((id) => isApplicable(channel, id, activeModel)));
+        else setSelected(AUDIT_STANDARD_PROBE_IDS.filter((id) => isApplicable(channel, id, activeModel)));
     };
 
     const toggleProbe = (id: AuditProbeId, checked: boolean) => {
         setPlan('standard');
+        // 手动项勾上时把代价说清楚：录制基线 74 次请求（整单超时已按请求数放大，见 op.AuditTimeoutFor），最好单独跑。
+        if (checked && AUDIT_OPT_IN_PROBE_IDS.includes(id)) {
+            toast.warning(
+                id === 'tokenizer_baseline'
+                    ? '录基线要发 74 次请求，建议单独跑，只用确定是正品的渠道'
+                    : '分词器识别约 12 次请求（最多 22 次）',
+            );
+        }
         setSelected((current) => {
             if (checked) return AUDIT_PROBE_IDS.filter((item) => item === id || current.includes(item));
             return current.filter((item) => item !== id);
@@ -532,6 +707,7 @@ export function ModelAudit() {
             return;
         }
         setReport({
+            result_id: result.id,
             channel_id: result.channel_id,
             channel_name: result.channel_name,
             upstream_model: result.upstream_model,
@@ -551,6 +727,23 @@ export function ModelAudit() {
         link.download = `model-audit-${report.channel_id}.json`;
         link.click();
         URL.revokeObjectURL(url);
+    };
+
+    const renderProbeRow = (probe: ProbeMeta) => {
+        const disabled = !isApplicable(channel, probe.id, activeModel);
+        const checked = selected.includes(probe.id) && !disabled;
+        return (
+            <label key={probe.id} title={probe.desc} className={cn('flex items-center gap-2 rounded-xl px-1 py-1.5 text-sm', disabled && 'opacity-40')}>
+                <input
+                    type="checkbox"
+                    checked={checked}
+                    disabled={disabled || pageState === 'running'}
+                    onChange={(event) => toggleProbe(probe.id, event.target.checked)}
+                />
+                <span className="min-w-0 flex-1 truncate">{probe.name}</span>
+                <span className="text-[11px] text-muted-foreground">{probe.hint}</span>
+            </label>
+        );
     };
 
     const renderParams = () => (
@@ -616,23 +809,20 @@ export function ModelAudit() {
             <section className="border-t border-border pt-4">
                 <p className="mb-3 text-[11px] font-medium tracking-[0.16em] text-muted-foreground">02 检查</p>
                 <div className="grid gap-1">
-                    {PROBES.map((probe) => {
-                        const disabled = !isApplicable(channel, probe.id, activeModel);
-                        const checked = selected.includes(probe.id) && !disabled;
-                        return (
-                            <label key={probe.id} className={cn('flex items-center gap-2 rounded-xl px-1 py-1.5 text-sm', disabled && 'opacity-40')}>
-                                <input
-                                    type="checkbox"
-                                    checked={checked}
-                                    disabled={disabled || pageState === 'running'}
-                                    onChange={(event) => toggleProbe(probe.id, event.target.checked)}
-                                />
-                                <span className="min-w-0 flex-1 truncate">{probe.name}</span>
-                                <span className="text-[11px] text-muted-foreground">{probe.hint}</span>
-                            </label>
-                        );
-                    })}
+                    {PROBES.filter((probe) => !ADVANCED_PROBE_IDS.includes(probe.id)).map(renderProbeRow)}
                 </div>
+                <details
+                    className="mt-2 rounded-xl bg-muted/30 px-2 py-1.5"
+                    open={advancedOpen || advancedSelected}
+                    onToggle={(event) => setAdvancedOpen((event.currentTarget as HTMLDetailsElement).open)}
+                >
+                    <summary className="cursor-pointer text-[11px] leading-5 text-muted-foreground" title={ADVANCED_TOOLTIP}>
+                        {ADVANCED_SUMMARY}
+                    </summary>
+                    <div className="mt-1 grid gap-1">
+                        {PROBES.filter((probe) => ADVANCED_PROBE_IDS.includes(probe.id)).map(renderProbeRow)}
+                    </div>
+                </details>
             </section>
 
             <section className="border-t border-border pt-4">
@@ -881,6 +1071,8 @@ export function ModelAudit() {
                                 </div>
                             </div>
                             {fingerprint && <FingerprintCard summary={fingerprint} />}
+                            {tokenizer && <TokenizerCard summary={tokenizer} />}
+                            {recording && <TokenizerRecordingCard recording={recording} resultId={report.result_id} />}
                             <div className="flex h-1.5 overflow-hidden rounded-full bg-muted">
                                 {rows.map((row) => (
                                     <span

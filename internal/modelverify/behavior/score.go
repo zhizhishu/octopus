@@ -91,6 +91,11 @@ func BuildReport(results []Result, requestedModel string) Report {
 		Results:           results,
 	}
 
+	// 分词器差分探针（tokenizer_id）与 token_delta 测的是同一件事（上游分词器口径），
+	// 但 tokenizer_id 只作参考、不计分（tokenizer_score.go）。token_delta 的发现项
+	// 全是计分项（25 分），用 0 分的参考项取代它只会把已有风险分压低——所以两条都保留，
+	// 各自展示，不做去重。
+
 	usable := 0
 	for _, res := range results {
 		if res.Err != nil {
@@ -103,7 +108,7 @@ func BuildReport(results []Result, requestedModel string) Report {
 			// 「全部查过没问题」。结果仍保留在 Results 里供展示。
 			continue
 		}
-		if probeCountsAsUsable(res) {
+		if probeCountsTowardVerdict(res) {
 			usable++
 		}
 		report.Findings = append(report.Findings, findingsFor(res, report.RequestedModel, report.RequestedFamilies)...)
@@ -277,6 +282,19 @@ func probeApplicable(res Result) bool {
 	return true
 }
 
+// referenceOnlyProbe 只作参考的探针：结论照常展示，但既不计分，也不进 verdict 的
+// "跑通"分母——否则一条参考信息会把 unknown（没查清）抬成 none（没问题）。
+// 分词器两项照抄 lm-detector：分词器结果不改变排名与置信度。
+func referenceOnlyProbe(id ProbeID) bool {
+	return id == ProbeTokenizerID || id == ProbeTokenizerBaseline
+}
+
+// probeCountsTowardVerdict 进 verdict 分母的探针：拿到了可判读样本，且不是参考项。
+// score.go 与 view.go 共用，口径不许分裂。
+func probeCountsTowardVerdict(res Result) bool {
+	return probeCountsAsUsable(res) && !referenceOnlyProbe(res.ProbeID)
+}
+
 // probeCountsAsUsable 是「这条探针算不算真正拿到了可判读样本」的**唯一判据**。
 //
 // 评分（score.go）和文案（view.go）都必须用它，不能各写一遍：两套口径分裂会出现
@@ -322,6 +340,11 @@ func findingsFor(res Result, requestedModel string, requestedFamilies []string) 
 		return signatureFindings(res, requestedModel)
 	case ProbeFingerprint:
 		return fingerprintFindings(res, requestedModel)
+	case ProbeTokenizerID:
+		return tokenizerIDFindings(res)
+	case ProbeTokenizerBaseline:
+		// 录制基线不是检测，不产生任何风险项。
+		return nil
 	case ProbeLiveness:
 		if res.OK {
 			return nil

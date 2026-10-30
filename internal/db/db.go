@@ -112,6 +112,8 @@ func InitDB(dbType, dsn string, debug bool) error {
 		// 生产上真栽过这一次（2026-10-27）。放在这里，每次启动都会对齐结构。
 		&model.ModelAuditJob{},
 		&model.ModelAuditResult{},
+		// 分词器可信基线：同理只走这份名单，不另写一次性迁移。
+		&model.TokenizerBaseline{},
 		&model.ResponseSession{},
 		&model.VideoTask{},
 		&model.MidjourneyTask{},
