@@ -1,10 +1,10 @@
 'use client';
 
 import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { Pencil, Trash2, ArrowDownToLine, ArrowUpFromLine } from 'lucide-react';
+import { Pencil, Trash2, ArrowDownToLine, ArrowUpFromLine, Lock, Timer } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useTranslations } from 'next-intl';
-import { useUpdateModel, useDeleteModel, type LLMInfo } from '@/api/endpoints/model';
+import { useUpdateModel, useDeleteModel, useRestoreModelPrice, type LLMInfo } from '@/api/endpoints/model';
 import { getModelIcon } from '@/lib/model-icons';
 import { toast } from '@/components/common/Toast';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/animate-ui/components/animate/tooltip';
@@ -12,6 +12,8 @@ import { SafeText } from '@/components/common/SafeText';
 import { ModelDeleteOverlay, ModelEditOverlay } from './ItemOverlays';
 import { cn } from '@/lib/utils';
 import { buildModelUpdatePayload, toPriceEditValues } from './price-edit';
+import { displaySource, isZeroPrice, libraryPlaceholder } from './price-sync';
+import { Hint } from './price-sync-ui';
 import { createPortal } from 'react-dom';
 
 interface ModelItemProps {
@@ -35,6 +37,12 @@ export const ModelItem = memo(function ModelItem({ model, layout = 'grid' }: Mod
 
     const updateModel = useUpdateModel();
     const deleteModel = useDeleteModel();
+    const restorePrice = useRestoreModelPrice();
+    const source = displaySource(model);
+    const placeholder = libraryPlaceholder(model);
+    const shown = placeholder ?? model;
+    const perCall = model.per_call ?? 0;
+    const perCallOnly = perCall > 0 && isZeroPrice(model);
 
     const { Avatar: ModelAvatar, color: brandColor } = useMemo(() => getModelIcon(model.name), [model.name]);
 
@@ -75,6 +83,18 @@ export const ModelItem = memo(function ModelItem({ model, layout = 'grid' }: Mod
             onError: (error) => {
                 toast.error(t('toast.updateFailed'), { description: error.message });
             }
+        });
+    };
+
+    const handleRestore = () => {
+        restorePrice.mutate(model.name, {
+            onSuccess: () => {
+                closeEdit();
+                toast.success(t('overlay.toastRestored'));
+            },
+            onError: (error) => {
+                toast.error(t('overlay.toastRestoreFailed'), { description: error.message });
+            },
         });
     };
 
@@ -138,41 +158,74 @@ export const ModelItem = memo(function ModelItem({ model, layout = 'grid' }: Mod
             <ModelAvatar size={52} />
 
             <div className="flex-1 min-w-0 flex flex-col justify-center gap-2">
-                <Tooltip side="top" sideOffset={10} align="start">
-                    <TooltipTrigger className='min-w-0 text-base font-semibold text-card-foreground leading-tight'>
-                        <SafeText value={model.name} className="block" />
-                    </TooltipTrigger>
-                    <TooltipContent key={model.name}>
-                        <SafeText value={model.name} mode="wrap" className="max-w-72" />
-                    </TooltipContent>
-                </Tooltip>
+                <div className="flex min-w-0 items-center gap-1.5">
+                    {source === 'manual' && (
+                        <Hint content={t('card.sourceManualTip')}>
+                            <span
+                                aria-label={t('card.sourceManual')}
+                                className="inline-flex size-5 shrink-0 items-center justify-center rounded-full bg-amber-500/12 text-amber-700 ring-1 ring-amber-500/25 dark:text-amber-400"
+                            >
+                                <Lock className="size-3" />
+                            </span>
+                        </Hint>
+                    )}
+                    <Tooltip side="top" sideOffset={10} align="start">
+                        <TooltipTrigger className='min-w-0 text-base font-semibold text-card-foreground leading-tight'>
+                            <SafeText value={model.name} className="block" />
+                        </TooltipTrigger>
+                        <TooltipContent key={model.name}>
+                            <SafeText value={model.name} mode="wrap" className="max-w-72" />
+                        </TooltipContent>
+                    </Tooltip>
+                </div>
 
-                {isListLayout ? (
+                {source === 'none' ? (
+                    <div className="min-w-0">
+                        <p className="text-sm font-medium text-destructive">{t('card.noPrice')}</p>
+                        {!isListLayout && <p className="truncate text-xs text-muted-foreground">{t('card.noPriceSub')}</p>}
+                    </div>
+                ) : perCallOnly ? (
+                    <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                        <Timer className="size-3.5" style={{ color: brandColor }} />
+                        {t('card.perCall')}
+                        <span className="tabular-nums">${perCall.toFixed(2)}{t('card.perCallUnit')}</span>
+                    </p>
+                ) : isListLayout ? (
                     <p className="flex items-center gap-2 overflow-hidden text-sm text-muted-foreground whitespace-nowrap">
                         <span className="inline-flex items-center gap-1">
                             <ArrowDownToLine className="size-3.5 shrink-0" style={{ color: brandColor }} />
                             {t('card.inputCache')}
-                            <span className="tabular-nums">{model.input.toFixed(2)}/{model.cache_read.toFixed(2)}$</span>
+                            <span className="tabular-nums">{shown.input.toFixed(2)}/{shown.cache_read.toFixed(2)}$</span>
                         </span>
                         <span className="text-muted-foreground/60">|</span>
                         <span className="inline-flex items-center gap-1 overflow-hidden">
                             <ArrowUpFromLine className="size-3.5 shrink-0" style={{ color: brandColor }} />
                             {t('card.outputCache')}
-                            <span className="tabular-nums truncate">{model.output.toFixed(2)}/{model.cache_write.toFixed(2)}$</span>
+                            <span className="tabular-nums truncate">{shown.output.toFixed(2)}/{shown.cache_write.toFixed(2)}$</span>
                         </span>
+                        {placeholder && (
+                            <Hint content={t('card.placeholderTip')}>
+                                <span className="text-xs text-muted-foreground/80 underline decoration-dotted">{t('card.placeholder')}</span>
+                            </Hint>
+                        )}
                     </p>
                 ) : (
                     <>
                         <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
                             <ArrowDownToLine className="size-3.5" style={{ color: brandColor }} />
                             {t('card.inputCache')}
-                            <span className="tabular-nums">{model.input.toFixed(2)}/{model.cache_read.toFixed(2)}$</span>
+                            <span className="tabular-nums">{shown.input.toFixed(2)}/{shown.cache_read.toFixed(2)}$</span>
                         </p>
 
                         <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
                             <ArrowUpFromLine className="size-3.5" style={{ color: brandColor }} />
                             {t('card.outputCache')}
-                            <span className="tabular-nums">{model.output.toFixed(2)}/{model.cache_write.toFixed(2)}$</span>
+                            <span className="tabular-nums">{shown.output.toFixed(2)}/{shown.cache_write.toFixed(2)}$</span>
+                            {placeholder && (
+                                <Hint content={t('card.placeholderTip')}>
+                                    <span className="ml-1 text-xs text-muted-foreground/80 underline decoration-dotted">{t('card.placeholder')}</span>
+                                </Hint>
+                            )}
                         </p>
                     </>
                 )}
@@ -240,7 +293,10 @@ export const ModelItem = memo(function ModelItem({ model, layout = 'grid' }: Mod
                                         modelName={model.name}
                                         brandColor={brandColor}
                                         editValues={editValues}
-                                        isPending={updateModel.isPending}
+                                        isPending={updateModel.isPending || restorePrice.isPending}
+                                        isManual={source === 'manual'}
+                                        library={model.library ?? null}
+                                        onRestore={handleRestore}
                                         onChange={setEditValues}
                                         onCancel={handleCancelEdit}
                                         onSave={handleSaveEdit}

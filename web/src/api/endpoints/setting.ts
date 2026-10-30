@@ -18,6 +18,8 @@ export const SettingKey = {
     TrustedProxies: 'trusted_proxies',
     StatsSaveInterval: 'stats_save_interval',
     ModelInfoUpdateInterval: 'model_info_update_interval',
+    PriceAutoSyncEnabled: 'price_auto_sync_enabled',
+    PriceSyncHoldBigChange: 'price_sync_hold_big_change',
     SyncLLMInterval: 'sync_llm_interval',
     RelayLogKeepEnabled: 'relay_log_keep_enabled',
     RelayLogKeepPeriod: 'relay_log_keep_period',

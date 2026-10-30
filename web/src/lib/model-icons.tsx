@@ -40,8 +40,15 @@ import {
     Microsoft,
     KwaiKAT,
 } from '@lobehub/icons';
+import type { ComponentType, CSSProperties } from 'react';
 
-type AvatarComponent = typeof OpenAI.Avatar;
+/**
+ * Vendor logos come from @lobehub/icons (MIT, already a dependency; inline SVG React
+ * components, nothing is fetched at runtime). This is the same package new-api uses for
+ * its model/vendor icons. Unknown vendors get a neutral letter avatar instead of a
+ * borrowed logo. Logos are trademarks of their owners and only identify the vendor.
+ */
+export type AvatarComponent = ComponentType<{ size: number; className?: string; style?: CSSProperties }>;
 
 type ModelIconConfig = {
     prefixes: string[];
@@ -118,8 +125,35 @@ const MODEL_ICON_PATTERNS: ModelIconConfig[] = [
     { prefixes: ['kat'], Avatar: KwaiKAT.Avatar, color: '#1969FC' },
 ];
 
-// Default configuration
-const DEFAULT_CONFIG = { Avatar: OpenAI.Avatar, color: '#10A37F' };
+// Neutral fallback for vendors we do not know: the model's first letter on a muted
+// circle (new-api renders unknown icons the same way). Cached per letter so callers that
+// resolve the icon during render keep a stable component type.
+const NEUTRAL_COLOR = '#71717A';
+const letterAvatars = new Map<string, AvatarComponent>();
+
+export function modelInitial(modelName: string): string {
+    const cleaned = (modelName || '').trim().replace(/^[^/:]*[/:]/, '');
+    const match = cleaned.match(/[\p{L}\p{N}]/u);
+    return match ? match[0].toUpperCase() : '?';
+}
+
+function letterAvatar(letter: string): AvatarComponent {
+    const cached = letterAvatars.get(letter);
+    if (cached) return cached;
+    const LetterAvatar: AvatarComponent = ({ size, className, style }) => (
+        <span
+            aria-hidden="true"
+            data-letter-avatar={letter}
+            className={['inline-flex shrink-0 select-none items-center justify-center rounded-full bg-muted font-semibold text-muted-foreground', className].filter(Boolean).join(' ')}
+            style={{ width: size, height: size, fontSize: Math.max(10, Math.round(size * 0.42)), lineHeight: 1, ...style }}
+        >
+            {letter}
+        </span>
+    );
+    LetterAvatar.displayName = `LetterAvatar(${letter})`;
+    letterAvatars.set(letter, LetterAvatar);
+    return LetterAvatar;
+}
 
 /**
  * Get the Avatar component and color for a given model name
@@ -141,5 +175,5 @@ export function getModelIcon(modelName: string): { Avatar: AvatarComponent; colo
             return { Avatar, color };
         }
     }
-    return DEFAULT_CONFIG;
+    return { Avatar: letterAvatar(modelInitial(modelName)), color: NEUTRAL_COLOR };
 }

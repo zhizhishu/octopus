@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiClient } from '../client';
 import { logger } from '@/lib/logger';
 import type { ChannelType } from './channel';
+import type { SyncItem, TokenPrice } from '@/components/modules/model/price-sync';
 
 /**
  * LLM 价格信息
@@ -20,6 +21,10 @@ export interface LLMPrice {
  */
 export interface LLMInfo extends LLMPrice {
     name: string;
+    /** 'library' = 跟价库；'manual' = 手动改过；'' = 老数据，下次拿到价库时归类 */
+    source?: string;
+    /** 价库(models.dev)里这个模型的 token 价；没有就不带 */
+    library?: TokenPrice | null;
 }
 
 /**
@@ -324,5 +329,86 @@ export function useLastUpdateTime() {
             return apiClient.get<string>('/api/v1/model/last-update-time');
         },
         refetchInterval: 15000,
+    });
+}
+
+export interface PriceSyncPreview {
+    fetched_at: string;
+    total: number;
+    no_library: number;
+    items: SyncItem[];
+}
+
+export interface PriceSyncChange {
+    name: string;
+    source: string;
+    exists: boolean;
+    current: TokenPrice;
+    next: TokenPrice;
+}
+
+export interface PriceSyncRun {
+    id: number;
+    at: string;
+    trigger: 'auto' | 'manual';
+    status: 'ok' | 'failed' | 'aborted' | 'conflict';
+    added: number;
+    changed: number;
+    held: number;
+    held_models: string;
+    message: string;
+}
+
+export interface PriceSyncStatus {
+    auto_enabled: boolean;
+    hold_big_change: boolean;
+    interval_hours: number;
+    last_fetch_at: string;
+    next_run_at?: string;
+    runs: PriceSyncRun[] | null;
+    held_pending: string[] | null;
+}
+
+/** 拉 models.dev 并对比你渠道里的模型；不写任何价格。 */
+export function usePriceSyncPreview() {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: async () => apiClient.post<PriceSyncPreview>('/api/v1/model/price-sync/preview', {}),
+        onSettled: () => {
+            queryClient.invalidateQueries({ queryKey: ['models', 'list'] });
+            queryClient.invalidateQueries({ queryKey: ['models', 'price-sync-status'] });
+        },
+    });
+}
+
+/** 写入勾选的行；预览之后价格变了会返回 409。 */
+export function usePriceSyncApply() {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: async (changes: PriceSyncChange[]) =>
+            apiClient.post<{ added: number; changed: number }>('/api/v1/model/price-sync/apply', { changes }),
+        onSettled: () => {
+            queryClient.invalidateQueries({ queryKey: ['models', 'list'] });
+            queryClient.invalidateQueries({ queryKey: ['models', 'price-sync-status'] });
+        },
+    });
+}
+
+export function usePriceSyncStatus() {
+    return useQuery({
+        queryKey: ['models', 'price-sync-status'],
+        queryFn: async () => apiClient.get<PriceSyncStatus>('/api/v1/model/price-sync/status'),
+        refetchInterval: 30000,
+    });
+}
+
+/** 恢复上游价：换回价库的价，之后跟着价库走（按次价不动）。 */
+export function useRestoreModelPrice() {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: async (name: string) => apiClient.post<LLMInfo>('/api/v1/model/restore-price', { name }),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['models', 'list'] });
+        },
     });
 }

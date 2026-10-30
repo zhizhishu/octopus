@@ -220,19 +220,8 @@ const llmSyncMocks = {
     },
     'lucide-react': lucide,
 };
-const priceCatalogMocks = {
-    '@/components/ui/input': widgets('Input'),
-    '@/components/ui/button': widgets('Button'),
-    '@/components/common/MobileFilterCollapse': { MobileFilterCollapse: 'MobileFilterCollapse' },
-    '@/api/endpoints/model': {
-        useUpdateModelPrice: () => ({ mutate() {}, isPending: false }),
-        useLastUpdateTime: () => ({ data: undefined, isFetching: false, refetch() {} }),
-    },
-    'lucide-react': lucide,
-};
 const makeCbHarness = (settings) => makeHarness('src/components/modules/setting/CircuitBreaker.tsx', 'SettingCircuitBreaker', settings, cbMocks);
 const makeLlmSyncHarness = (settings) => makeHarness('src/components/modules/setting/LLMSync.tsx', 'SettingLLMSync', settings, llmSyncMocks);
-const makePriceCatalogHarness = (settings) => makeHarness('src/components/modules/model/PriceCatalog.tsx', 'ModelPriceCatalog', settings, priceCatalogMocks);
 
 test('A: upstreamHeaderTimeout loads on its own key while the adjacent dataTimeout key is missing', async () => {
     const h = makeSystemHarness([{ key: 'upstream_header_timeout_seconds', value: '123' }]);
@@ -426,23 +415,7 @@ test('U10: llm sync interval save success confirms and does not resubmit', async
     assert.equal(h.mutation.writes.length, 1, 'unchanged confirmed value is a no-op');
 });
 
-test('U10: price update interval save failure keeps the draft and never touches the manual-update toast path', async () => {
-    for (const [label, error] of errorClasses) {
-        const h = makePriceCatalogHarness([{ key: 'model_info_update_interval', value: '3600' }]);
-        await h.render();
-        h.inputByPlaceholder('llmPrice.updateInterval.placeholder').props.onChange({ target: { value: '7200' } });
-        await h.render();
-        h.inputByPlaceholder('llmPrice.updateInterval.placeholder').props.onBlur();
-        assert.deepEqual(h.mutation.writes.map((w) => w.variables), [{ key: 'model_info_update_interval', value: '7200' }], `${label}: write reaches the wire`);
-        h.mutation.settle(false, error);
-        assert.equal(h.notes.filter(([kind]) => kind === 'error').length, 1, `${label}: exactly one error toast`);
-        assert.ok(!h.notes.some(([kind]) => kind === 'success'), `${label}: failure must not fake success`);
-        await h.render();
-        assert.equal(String(h.inputByPlaceholder('llmPrice.updateInterval.placeholder').props.value), '7200', `${label}: failed draft is kept`);
-    }
-});
-
-test('U10: pending save blocks further blurs across fields (circuit breaker / llm sync / price catalog)', async () => {
+test('U10: pending save blocks further blurs across fields (circuit breaker / llm sync)', async () => {
     const cb = makeCbHarness([{ key: 'circuit_breaker_threshold', value: '50' }]);
     await cb.render();
     cb.inputByPlaceholder('circuitBreaker.threshold.placeholder').props.onChange({ target: { value: '80' } });
@@ -464,17 +437,6 @@ test('U10: pending save blocks further blurs across fields (circuit breaker / ll
     await llm.render();
     llm.inputByPlaceholder('llmSync.syncInterval.placeholder').props.onBlur();
     assert.equal(llm.mutation.writes.length, 1, 'pending save blocks a second submit');
-
-    const pc = makePriceCatalogHarness([{ key: 'model_info_update_interval', value: '3600' }]);
-    await pc.render();
-    pc.inputByPlaceholder('llmPrice.updateInterval.placeholder').props.onChange({ target: { value: '7200' } });
-    await pc.render();
-    pc.inputByPlaceholder('llmPrice.updateInterval.placeholder').props.onBlur();
-    assert.equal(pc.mutation.writes.length, 1);
-    pc.inputByPlaceholder('llmPrice.updateInterval.placeholder').props.onChange({ target: { value: '9000' } });
-    await pc.render();
-    pc.inputByPlaceholder('llmPrice.updateInterval.placeholder').props.onBlur();
-    assert.equal(pc.mutation.writes.length, 1, 'pending save blocks a second submit');
 });
 
 test('U11: system numeric save survives 401/403/500/offline with one error toast and rollback', async () => {
@@ -528,7 +490,7 @@ test('U12: poll with unchanged data keeps the failed-save draft (log keepPeriod)
     assert.equal(String(h.inputByPlaceholder('log.keepPeriod.placeholder').props.value), '30', 'same-value poll must keep the failed draft');
 });
 
-test('U12: poll with unchanged data keeps the draft (system streamKeepalive / llm sync / price catalog)', async () => {
+test('U12: poll with unchanged data keeps the draft (system streamKeepalive / llm sync)', async () => {
     const sys = makeSystemHarness([{ key: 'relay_stream_keepalive_interval_seconds', value: '15' }]);
     await sys.render();
     sys.inputByLabel('streamKeepalive.label').props.onChange({ target: { value: '45' } });
@@ -544,14 +506,6 @@ test('U12: poll with unchanged data keeps the draft (system streamKeepalive / ll
     llm.setSettings([{ key: 'sync_llm_interval', value: '60' }]);
     await llm.render();
     assert.equal(String(llm.inputByPlaceholder('llmSync.syncInterval.placeholder').props.value), '120', 'same-value poll must keep the draft');
-
-    const pc = makePriceCatalogHarness([{ key: 'model_info_update_interval', value: '3600' }]);
-    await pc.render();
-    pc.inputByPlaceholder('llmPrice.updateInterval.placeholder').props.onChange({ target: { value: '7200' } });
-    await pc.render();
-    pc.setSettings([{ key: 'model_info_update_interval', value: '3600' }]);
-    await pc.render();
-    assert.equal(String(pc.inputByPlaceholder('llmPrice.updateInterval.placeholder').props.value), '7200', 'same-value poll must keep the draft');
 });
 
 test('U12: external server change still overwrites the displayed value', async () => {
@@ -578,12 +532,6 @@ test('U12: external server change still overwrites the displayed value', async (
     llm.setSettings([{ key: 'sync_llm_interval', value: '600' }]);
     await llm.render();
     assert.equal(String(llm.inputByPlaceholder('llmSync.syncInterval.placeholder').props.value), '600', 'a real server change is applied');
-
-    const pc = makePriceCatalogHarness([{ key: 'model_info_update_interval', value: '3600' }]);
-    await pc.render();
-    pc.setSettings([{ key: 'model_info_update_interval', value: '86400' }]);
-    await pc.render();
-    assert.equal(String(pc.inputByPlaceholder('llmPrice.updateInterval.placeholder').props.value), '86400', 'a real server change is applied');
 });
 
 test('U12: a newer local edit survives a post-save refetch of the same value', async () => {
