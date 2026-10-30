@@ -419,6 +419,10 @@ const upstreamRequestBodyLogLimit = 128 * 1024
 
 // SetUpstreamRequestBody 记录真实出站请求体（调用方已确认开关打开）。
 // 只存一份快照，供 saveLog 落库；不参与路由、计费、指纹。
+//
+// 这一列按发出去的字节原样保存，凭据不打码。request_content、response_content、
+// 错误和 URL 仍走 redactLogBody / xredact。内联二进制先剥成占位符，再截断；
+// 截断只作用于存储，标记里的总长是原始字节数。
 func (m *RelayMetrics) SetUpstreamRequestBody(body []byte) {
 	if m == nil || len(body) == 0 {
 		return
@@ -426,17 +430,15 @@ func (m *RelayMetrics) SetUpstreamRequestBody(body []byte) {
 	// 🔴 snapshotOutboundRequestBody 把同一份 []byte 重挂回了即将发出的
 	// http.Request。这里只能读，不能改 body 的任何一个字节。
 	//
-	// 顺序必须是「先在副本上剥内联二进制、再脱敏、最后截断」：
-	//   - 先截断会把 base64 从中间切断，日志里留下一大段无用载荷，字段还可能被切掉；
-	//   - 先脱敏再剥，长 hex 形态的 base64 会被密钥规则打成碎片，占位符就对不上了。
+	// 按用户决定，这个字段原样记录、不脱敏。只做两件事，顺序是「先在副本上剥内联二进制、再截断」：
+	// 先截断会把 base64 从中间切断，日志里留下一大段无用载荷。
 	// 截断标记里的总长仍是真正发出去的字节数，不是剥过之后的日志长度。
 	logged := stripInlineBinaryForLog(string(body))
-	redacted := redactLogBody(logged)
-	if len(redacted) > upstreamRequestBodyLogLimit {
-		redacted = truncateUTF8(redacted, upstreamRequestBodyLogLimit) +
+	if len(logged) > upstreamRequestBodyLogLimit {
+		logged = truncateUTF8(logged, upstreamRequestBodyLogLimit) +
 			fmt.Sprintf("\n...[truncated: %d bytes total]", len(body))
 	}
-	m.upstreamRequestBody = redacted
+	m.upstreamRequestBody = logged
 }
 
 // truncateUTF8 按字节上限截断，但不切在多字节字符中间

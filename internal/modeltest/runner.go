@@ -823,12 +823,20 @@ func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermod
 	if err != nil {
 		return 0, nil, err
 	}
-	relay.ApplyChannelWireHeaders(outboundRequest, relay.ChannelWireHeaderOptions{
-		Channel:         channel,
-		InboundType:     endpoint.inbound,
-		InternalRequest: internalRequest,
-		ClaudeSessionID: modelTestClaudeSessionID(internalRequest),
-	})
+	if embeddingProbe {
+		// 生产 applyHeaderDefaults 对嵌入请求提前返回，只补通用 UA，不走
+		// ApplyChannelWireHeaders。能力位放开后 Anthropic/Responses 渠道也能接到
+		// 嵌入；若这里仍套渠道 CLI 身份，检测请求会带上 Originator / Anthropic-Beta，
+		// 和真实转发不一致。
+		relay.ApplyGenericChannelHeaders(outboundRequest, channel)
+	} else {
+		relay.ApplyChannelWireHeaders(outboundRequest, relay.ChannelWireHeaderOptions{
+			Channel:         channel,
+			InboundType:     endpoint.inbound,
+			InternalRequest: internalRequest,
+			ClaudeSessionID: modelTestClaudeSessionID(internalRequest),
+		})
+	}
 	if err := relay.ApplyParamOverride(outboundRequest, channel.ParamOverride); err != nil {
 		return 0, nil, err
 	}
@@ -852,9 +860,13 @@ func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermod
 	// client 构造，正是 relay 已有的做法，复用同一条通道 —— 检测与转发因此不可能漂移。
 	relay.LowercaseAnthropicCLIHeaderNames(outboundRequest.Header)
 	clientCtx := outboundRequest.Context()
-	if face := relay.ChannelTLSFace(channel); face != "" {
-		clientCtx = client.WithTLSFace(clientCtx, face)
-		outboundRequest = outboundRequest.WithContext(clientCtx)
+	// 生产 outboundTLSFace 对嵌入流量返回空面容。检测路径必须同样留空，
+	// 否则头是通用的、握手却是 claude/codex CLI。
+	if !embeddingProbe {
+		if face := relay.ChannelTLSFace(channel); face != "" {
+			clientCtx = client.WithTLSFace(clientCtx, face)
+			outboundRequest = outboundRequest.WithContext(clientCtx)
+		}
 	}
 
 	client, err := helper.ChannelHttpClientContext(clientCtx, channel)

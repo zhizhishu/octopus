@@ -27,7 +27,7 @@ const (
 	SettingKeyRelayStreamKeepaliveSec   SettingKey = "relay_stream_keepalive_interval_seconds"
 	SettingKeyOpenAIAutoPromptCacheKey  SettingKey = "openai_auto_prompt_cache_key"
 	SettingKeyUpstreamUTLSFingerprint   SettingKey = "upstream_utls_fingerprint"   // 直连上游用 Chrome uTLS ClientHello (JA3); opt-in, 默认关, 启用前须过 the relay 复验
-	SettingKeyUpstreamHTTP1HeaderOrder  SettingKey = "upstream_http1_header_order" // 明文 HTTP/1.1 出站按真 CLI 的 21 项逐字节头序(含头名大小写与 Connection: keep-alive)重写; opt-in, 默认关, 关闭=与今天逐字节相同
+	SettingKeyUpstreamHTTP1HeaderOrder  SettingKey = "upstream_http1_header_order" // 明文 HTTP/1.1 出站按真 CLI 的 21 项逐字节头序(含头名大小写与 Connection: keep-alive)重写; 默认开(种子 "true", 读失败也当开), 设为 false 才回到 Go 自己的头序
 	SettingKeyRelayStreamDataTimeoutSec SettingKey = "relay_stream_data_interval_timeout_seconds"
 	// SettingKeyRelayRequestTotalTimeoutSec is the THIRD clock: an absolute ceiling on
 	// the whole request, measured from the moment the request arrived and never fed by
@@ -49,8 +49,13 @@ const (
 	SettingKeyUpstreamHeaderTimeoutSec SettingKey = "upstream_header_timeout_seconds"
 	// SettingKeyUpstreamRequestBodyLog 控制是否把**真实出站请求体**额外记进日志。
 	//
+	// 采集范围只有三条：标准 relay、竞速（race）、以及 chat→images 桥。
+	// 图片直连、异步图片、视频、Gemini 图片桥、raw 透传都不采集。
+	//
 	// RequestContent 记的是还原后的内部结构（不是出站字节），排查"我们到底给上游
-	// 发了什么参数"时会被误导。打开后每条成功尝试会多存一份出站 body（已脱敏），
+	// 发了什么参数"时会被误导。打开后上述路径的每次尝试会多存一份出站 body：
+	// 按发出去的字节原样保存（凭据不打码），超过 128KB 截断并标明原始长度。
+	// request_content、response_content、错误和 URL 仍然脱敏。
 	// 存储成本与请求体同量级，所以默认关闭。
 	SettingKeyUpstreamRequestBodyLog   SettingKey = "upstream_request_body_log_enabled"
 	SettingKeyResponsesSessionTTL      SettingKey = "responses_session_ttl_seconds"

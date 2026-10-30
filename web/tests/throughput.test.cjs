@@ -42,6 +42,16 @@ test('超出现实上限（测量坏了不是上游快）→ 不显示', () => {
     assert.equal(describeThroughput({ output_tokens: 5000, use_time: 3000, ftut: 1000 }), null);
 });
 
+test('有错误的日志不显示生成速度，与后端 relayLogTPSSample 一致', () => {
+    const ok = { output_tokens: 1000, use_time: 10000, ftut: 2000 };
+    assert.deepEqual(describeThroughput(ok), { text: '125' });
+    assert.equal(describeThroughput({ ...ok, error: 'upstream failed' }), null);
+    assert.equal(describeThroughput({ ...ok, error: '  boom  ' }), null);
+    // 空白错误等于没错误，和 strings.TrimSpace 一样。
+    assert.deepEqual(describeThroughput({ ...ok, error: '   ' }), { text: '125' });
+    assert.deepEqual(describeThroughput({ ...ok, error: '' }), { text: '125' });
+});
+
 test('算不出来就返回 null，让界面整块不渲染——不拿 0 占位', () => {
     assert.equal(describeThroughput({ output_tokens: 0, use_time: 5000 }), null);
     assert.equal(describeThroughput({ output_tokens: 100, use_time: 0 }), null);

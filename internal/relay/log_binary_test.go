@@ -486,14 +486,15 @@ func TestUpstreamRequestBodyStripsWithoutMutatingOutbound(t *testing.T) {
 	if strings.Contains(metrics.upstreamRequestBody, strings.Repeat("A", 40)) {
 		t.Fatal("upstream log still has the image")
 	}
-	if strings.Contains(metrics.upstreamRequestBody, logCanaryKey) {
-		t.Fatal("upstream log still has the key")
+	// 这一列按用户决定原样记录：凭据不打码，只把图片换成占位符。
+	if !strings.Contains(metrics.upstreamRequestBody, logCanaryKey) {
+		t.Fatalf("upstream log should keep the text verbatim: %s", metrics.upstreamRequestBody)
 	}
 	if !strings.Contains(metrics.upstreamRequestBody, "[image omitted: image/png,") {
 		t.Fatalf("upstream log placeholder missing: %s", metrics.upstreamRequestBody)
 	}
-	if !strings.Contains(metrics.upstreamRequestBody, "[redacted]") {
-		t.Fatalf("redaction missing: %s", metrics.upstreamRequestBody)
+	if strings.Contains(metrics.upstreamRequestBody, "[redacted]") {
+		t.Fatalf("upstream log must not be redacted: %s", metrics.upstreamRequestBody)
 	}
 }
 

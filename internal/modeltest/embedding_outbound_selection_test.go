@@ -140,10 +140,12 @@ func TestEmbeddingEndpointOnCapabilityChannelBuildsEmbeddingBody(t *testing.T) {
 func TestRunChannelEmbeddingProbeOnCapabilityChannel(t *testing.T) {
 	ctx := setupModelTestDB(t)
 
-	var sawPath, sawInput string
+	var sawPath, sawInput, sawOriginator, sawAnthropicBeta string
 	var sawMessages, sawInstructions, sawContentType bool
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sawPath = r.URL.Path
+		sawOriginator = r.Header.Get("Originator")
+		sawAnthropicBeta = r.Header.Get("Anthropic-Beta")
 		sawContentType = r.Header.Get("Content-Type") == "application/json"
 		var payload map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -205,8 +207,63 @@ func TestRunChannelEmbeddingProbeOnCapabilityChannel(t *testing.T) {
 	if sawMessages || sawInstructions {
 		t.Fatalf("嵌入报文里出现了 chat/responses 字段: messages=%v instructions=%v", sawMessages, sawInstructions)
 	}
+	// 生产对嵌入流量提前退出 CLI 身份：通用头、空 TLS 面容。Responses 渠道若仍走
+	// ApplyChannelWireHeaders 会带上 Originator；Anthropic 渠道会带上 Anthropic-Beta。
+	if sawOriginator != "" {
+		t.Fatalf("嵌入探针不得带 Originator，got %q", sawOriginator)
+	}
+	if sawAnthropicBeta != "" {
+		t.Fatalf("嵌入探针不得带 Anthropic-Beta，got %q", sawAnthropicBeta)
+	}
 	if result.ResponsePreview != "1 embedding(s) x 4 dims" {
 		t.Fatalf("response preview = %q, want the vector summary", result.ResponsePreview)
+	}
+}
+
+// Anthropic 渠道勾了 embeddings 时，检测探针同样不得穿 claude CLI 身份。
+// Responses 那条用例锁 Originator；这条锁 Anthropic-Beta（ApplyChannelWireHeaders
+// 在 Anthropic 渠道上会写它，嵌入提前退出则不会）。
+func TestRunChannelEmbeddingProbeOnAnthropicDropsCLIIdentity(t *testing.T) {
+	ctx := setupModelTestDB(t)
+
+	var sawOriginator, sawAnthropicBeta string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawOriginator = r.Header.Get("Originator")
+		sawAnthropicBeta = r.Header.Get("Anthropic-Beta")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"object":"list",
+			"data":[{"object":"embedding","index":0,"embedding":[0.1,0.2]}],
+			"model":"embed-anthropic",
+			"usage":{"prompt_tokens":1,"total_tokens":1}
+		}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	response, err := RunChannel(ctx, dbmodel.Channel{
+		Name:                 "anthropic-embedding-probe",
+		Type:                 outbound.OutboundTypeAnthropic,
+		Enabled:              false,
+		BaseUrls:             []dbmodel.BaseUrl{{URL: upstream.URL}},
+		Keys:                 []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "embed-key"}},
+		Capabilities:         []string{dbmodel.CapabilityEmbeddings},
+		OpenAIEmbeddingsPath: "/embeddings",
+		Cloak:                dbmodel.ChannelCloak{Mode: "always", Shape: "claude"},
+	}, dbmodel.ModelTestRequest{
+		Model:    "embed-anthropic",
+		Endpoint: embeddingTestEndpointName,
+	})
+	if err != nil {
+		t.Fatalf("run channel test: %v", err)
+	}
+	if response.Summary.Success != 1 {
+		t.Fatalf("Anthropic 能力位渠道的嵌入检测必须成功, got %#v", response)
+	}
+	if sawOriginator != "" {
+		t.Fatalf("Anthropic 嵌入探针不得带 Originator，got %q", sawOriginator)
+	}
+	if sawAnthropicBeta != "" {
+		t.Fatalf("Anthropic 嵌入探针不得带 Anthropic-Beta，got %q", sawAnthropicBeta)
 	}
 }
 

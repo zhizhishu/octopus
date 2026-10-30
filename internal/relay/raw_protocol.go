@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -171,8 +172,12 @@ runIterator:
 			iter.Skip(channel.ID, 0, channel.Name, "channel disabled")
 			continue
 		}
-		if !isOpenAIWireChannelType(channel.Type) {
-			iter.Skip(channel.ID, 0, channel.Name, fmt.Sprintf("unsupported channel type for raw protocol: %d", channel.Type))
+		if !rawProtocolAllowsChannel(options, channel.Type) {
+			reason := fmt.Sprintf("unsupported channel type for raw protocol: %d", channel.Type)
+			if isSystemoneRawProtocol(options) && channel.Type == outbound.OutboundTypeOpenAIEmbedding {
+				reason = fmt.Sprintf("unsupported channel type for systemone: %d", channel.Type)
+			}
+			iter.Skip(channel.ID, 0, channel.Name, reason)
 			continue
 		}
 
@@ -701,6 +706,26 @@ func isOpenAIWireChannelType(channelType outbound.OutboundType) bool {
 	}
 }
 
+// rawProtocolAllowsChannel is the per-endpoint channel-type gate. The shared
+// isOpenAIWireChannelType stays unchanged: audio, completions, moderations,
+// rerank and responses_compact still accept Embedding (type 5). systemone is a
+// decision protocol and must not be sent to an embedding channel.
+func rawProtocolAllowsChannel(options RawProtocolOptions, channelType outbound.OutboundType) bool {
+	if !isOpenAIWireChannelType(channelType) {
+		return false
+	}
+	if isSystemoneRawProtocol(options) && channelType == outbound.OutboundTypeOpenAIEmbedding {
+		return false
+	}
+	return true
+}
+
+func isSystemoneRawProtocol(options RawProtocolOptions) bool {
+	name := strings.ToLower(strings.Trim(strings.TrimSpace(options.Name), "/"))
+	endpoint := strings.ToLower(strings.Trim(strings.TrimSpace(options.Endpoint), "/"))
+	return name == "systemone" || endpoint == "systemone"
+}
+
 // isVideoCapableChannelType 是**视频创建专用**的「这个渠道类型能不能接视频」判据。
 //
 // 为什么不复用上面的 isOpenAIWireChannelType：那个函数同时服务音频 speech/
@@ -1169,6 +1194,11 @@ func (m *rawProtocolRelayMetrics) buildBillingSnapshot(actualModel string, usage
 
 	modelPrice := price.GetLLMPrice(snapshot.BillingModelName)
 	if modelPrice == nil {
+		// 缺价不拒绝请求：用量照记，金额保持 0。usage>0 时打一条按模型去重的警告，
+		// 否则账是 0 且日志里看不出「没配价」。
+		if rawProtocolUsagePositive(usage) {
+			warnMissingRawProtocolPrice(m.Protocol, snapshot.BillingModelName)
+		}
 		return snapshot
 	}
 	snapshot.BaseInputPrice = modelPrice.Input
@@ -1197,6 +1227,50 @@ func (m *rawProtocolRelayMetrics) buildBillingSnapshot(actualModel string, usage
 	snapshot.FinalCacheReadCost = float64(cacheReadTokens) * snapshot.BaseCacheReadPrice * snapshot.FinalMultiplier * 1e-6
 	snapshot.FinalCacheWriteCost = float64(cacheWriteTokens) * snapshot.BaseCacheWritePrice * snapshot.FinalMultiplier * 1e-6
 	return snapshot
+}
+
+func rawProtocolUsagePositive(usage *imagesUsage) bool {
+	if usage == nil {
+		return false
+	}
+	return usage.InputTokenCount() > 0 || usage.OutputTokenCount() > 0 ||
+		usage.CacheReadTokenCount() > 0 || usage.CacheWriteTokenCount() > 0 ||
+		usage.TotalTokens > 0
+}
+
+// unpricedRawProtocolWarned records models that already emitted the missing-price
+// warning. One warning per model per process; later usage of the same model stays
+// silent so a busy unpriced model cannot flood the log.
+var unpricedRawProtocolWarned sync.Map
+
+// unpricedRawProtocolWarnCount is how many times the warning was actually logged
+// for a model (0 or 1). Tests use it to lock the rate limit.
+var unpricedRawProtocolWarnCount sync.Map
+
+// missingRawProtocolPriceLogf is the warning sink. Tests replace it to count logs
+// without depending on the global zap logger.
+var missingRawProtocolPriceLogf = log.Warnf
+
+func warnMissingRawProtocolPrice(protocol, modelName string) {
+	name := strings.ToLower(strings.TrimSpace(modelName))
+	if name == "" {
+		return
+	}
+	if _, loaded := unpricedRawProtocolWarned.LoadOrStore(name, struct{}{}); loaded {
+		return
+	}
+	unpricedRawProtocolWarnCount.Store(name, 1)
+	missingRawProtocolPriceLogf("raw protocol %s recorded usage with cost 0: model %q has no price configured", protocol, strings.TrimSpace(modelName))
+}
+
+func rawProtocolUnpricedWarningCount(modelName string) int {
+	name := strings.ToLower(strings.TrimSpace(modelName))
+	value, ok := unpricedRawProtocolWarnCount.Load(name)
+	if !ok {
+		return 0
+	}
+	count, _ := value.(int)
+	return count
 }
 
 func (m *rawProtocolRelayMetrics) Save(ctx context.Context, success bool, err error, attempts []model.ChannelAttempt) {

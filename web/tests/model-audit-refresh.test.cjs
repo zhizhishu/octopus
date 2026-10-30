@@ -43,7 +43,12 @@ function hooks() {
                 if (!slots[i]) slots[i] = { current: initial };
                 return slots[i];
             },
-            useCallback(fn) { return fn; },
+            // 与 React 一致：deps 不变就返回同一个函数引用（LogCard 比较器按引用比回调）。
+            useCallback(fn, deps) {
+                const i = cursor++;
+                if (!slots[i] || !deps || deps.some((value, j) => !Object.is(value, slots[i].deps[j]))) slots[i] = { deps: deps ?? [], value: fn };
+                return slots[i].value;
+            },
             useEffect() {},
             useDeferredValue(value) { return value; },
         },
@@ -61,6 +66,8 @@ function text(node) {
     if (typeof node !== 'object') return String(node);
     return text(node.props?.children);
 }
+let lastItemModule;
+function logComponentsItem() { logComponents(); return lastItemModule; }
 function logComponents() {
     let queryResult = { data: undefined, isError: false };
     const pageHooks = hooks();
@@ -94,6 +101,7 @@ function logComponents() {
         '@/components/common/SafeText': widgets('ErrorSafeText MonoSafeText SafeText'),
         '@/components/ui/morphing-dialog': widgets('MorphingDialog MorphingDialogTrigger MorphingDialogContainer MorphingDialogContent MorphingDialogClose MorphingDialogTitle MorphingDialogDescription'),
     });
+    lastItemModule = item;
     const { Log } = load('src/components/modules/log/index.tsx', {
         ...common,
         react: pageHooks.react,
@@ -624,4 +632,29 @@ test('starting a new run clears the previous report so it cannot be exported as 
     tree = page.render();
     assert.equal(text(tree).includes('本次报告'), false, 'old report is cleared as soon as a new run starts');
     assert.equal(findElement(tree, (n) => text(n).includes('导出 JSON')), undefined, 'no stale export button after starting a new run');
+});
+
+test('LogCard comparator: unchanged polled log is skipped; open, navigation and audit changes redraw', () => {
+    const { LogCard, logCardPropsEqual } = logComponentsItem();
+    assert.strictEqual(LogCard.compare, logCardPropsEqual, 'LogCard must keep its explicit comparator');
+    const onOpen = () => {};
+    const onNav = () => {};
+    const base = { log, detailOpen: false, onDetailOpenChange: onOpen, onNavigate: onNav, canNavigatePrev: false, canNavigateNext: false };
+    assert.equal(logCardPropsEqual(base, { ...base, log: { ...log } }), true, 'a fresh but identical polled log object must not redraw');
+    for (const [label, next] of [
+        ['detailOpen', { ...base, detailOpen: true }],
+        ['onDetailOpenChange', { ...base, onDetailOpenChange: () => {} }],
+        ['onNavigate', { ...base, onNavigate: () => {} }],
+        ['canNavigatePrev', { ...base, canNavigatePrev: true }],
+        ['canNavigateNext', { ...base, canNavigateNext: true }],
+        ['model_audit_verdict', { ...base, log: { ...log, model_audit_verdict: 'high' } }],
+        ['model_audit_trigger', { ...base, log: { ...log, model_audit_trigger: 'echo_mismatch' } }],
+        ['model_audit_score', { ...base, log: { ...log, model_audit_score: 90 } }],
+        ['model_audit_finding_n', { ...base, log: { ...log, model_audit_finding_n: 2 } }],
+        ['passive_summary', { ...base, log: { ...log, passive_summary: '{}' } }],
+        ['log.id', { ...base, log: { ...log, id: 43 } }],
+        ['log.time', { ...base, log: { ...log, time: 101 } }],
+    ]) {
+        assert.equal(logCardPropsEqual(base, next), false, `${label} change must redraw`);
+    }
 });

@@ -1022,23 +1022,32 @@ export function Log() {
     }, [deferredSearch, effectiveSelectedAPIKeyID, endTime, exportLogs, mismatchParam, selectedEndpoint, selectedModel, selectedProvider, selectedUserID, severityFilter, startTime]);
 
     // 详情弹窗的「左右键连着翻」：翻到页边界时自动拉下一页，把分页缝掉。
-    const detailNav = useLogDetailNavigation({ logs, hasMore, loadMore, isLoadingMore });
+    const {
+        activeId: detailActiveId,
+        open: openDetail,
+        close: closeDetail,
+        navigate: navigateDetail,
+        canPrev: detailCanPrev,
+        canNext: detailCanNext,
+    } = useLogDetailNavigation({ logs, hasMore, loadMore, isLoadingMore });
+
+    const onDetailOpenChange = useCallback((logId: number, open: boolean) => {
+        if (open) openDetail(logId);
+        else closeDetail(false);
+    }, [closeDetail, openDetail]);
 
     const renderLogCard = useCallback(
         (log: RelayLog) => (
             <LogCard
                 log={log}
-                detailOpen={detailNav.activeId === log.id}
-                onDetailOpenChange={(open) => {
-                    if (open) detailNav.open(log.id);
-                    else detailNav.close(false);
-                }}
-                onNavigate={detailNav.navigate}
-                canNavigatePrev={detailNav.activeId === log.id && detailNav.canPrev}
-                canNavigateNext={detailNav.activeId === log.id && detailNav.canNext}
+                detailOpen={detailActiveId === log.id}
+                onDetailOpenChange={onDetailOpenChange}
+                onNavigate={navigateDetail}
+                canNavigatePrev={detailActiveId === log.id && detailCanPrev}
+                canNavigateNext={detailActiveId === log.id && detailCanNext}
             />
         ),
-        [detailNav],
+        [detailActiveId, detailCanNext, detailCanPrev, navigateDetail, onDetailOpenChange],
     );
     const getLogRowKey = useCallback((log: RelayLog) => log.id, []);
 
