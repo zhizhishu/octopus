@@ -92,6 +92,7 @@ import {
     readTokenizerRecording,
     describeTokenizer,
     formatShare,
+    tokenizerRowStatus,
     type TokenizerRecording,
     type TokenizerSummary,
 } from './tokenizer';
@@ -199,6 +200,11 @@ function rowFromResult(meta: ProbeMeta, report: ModelAuditResponse, t: (key: str
             result,
             findings,
         };
+    }
+    // 分词器识别只作参考（照抄 lm-detector）：后端 0 分，这里也不进「待复核」。
+    if (meta.id === 'tokenizer_id' && result?.ok) {
+        const summary = readTokenizer(report.report);
+        return { meta, tone: 'info', status: summary ? tokenizerRowStatus(summary) : '仅供参考', result, findings };
     }
     if (findings.some((item) => item.severity === 'medium' || item.severity === 'high')) {
         return { meta, tone: 'warn', status: '待复核', result, findings };
@@ -359,7 +365,7 @@ function TokenizerCard({ summary }: { summary: TokenizerSummary }) {
     const claimText =
         !summary.usable ? '仅供参考'
         : summary.claim === 'consistent' ? '与声明相容'
-        : summary.claim === 'inconsistent' ? '与声明不符'
+        : summary.claim === 'inconsistent' ? '与声明不符（仅供参考）'
         : summary.claim === 'uncertain' ? '不确定'
         : '无法核对';
     return (
@@ -603,7 +609,7 @@ export function ModelAudit() {
 
     const toggleProbe = (id: AuditProbeId, checked: boolean) => {
         setPlan('standard');
-        // 手动项勾上时把代价说清楚：录制基线 74 次请求，和其他检查共用一个超时，最好单独跑。
+        // 手动项勾上时把代价说清楚：录制基线 74 次请求（整单超时已按请求数放大，见 op.AuditTimeoutFor），最好单独跑。
         if (checked && AUDIT_OPT_IN_PROBE_IDS.includes(id)) {
             toast.warning(
                 id === 'tokenizer_baseline'

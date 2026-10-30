@@ -234,6 +234,12 @@ func runModelAudit(c *gin.Context) {
 	if timeout > auditMaxTimeoutSeconds {
 		timeout = auditMaxTimeoutSeconds
 	}
+	// 与队列同口径：分词器等大请求量探针按计划请求数放大超时（封顶 30 分钟）。
+	probeNames := make([]string, len(ids))
+	for i, id := range ids {
+		probeNames[i] = string(id)
+	}
+	timeout = op.AuditTimeoutFor(probeNames, timeout)
 	ctx, cancel := context.WithTimeout(c.Request.Context(), time.Duration(timeout)*time.Second)
 	defer cancel()
 

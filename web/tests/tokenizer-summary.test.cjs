@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 
 const { load } = require('./load-typescript.cjs');
 
-const { readTokenizer, readTokenizerRecording, describeTokenizer, formatShare } = load(
+const { readTokenizer, readTokenizerRecording, describeTokenizer, formatShare, tokenizerRowStatus } = load(
     'src/components/modules/model-audit/tokenizer.ts',
 );
 const posted = [];
@@ -44,6 +44,17 @@ test('不一致：给出测得的分词器与中转估算提示', () => {
     assert.match(text, /o200k（OpenAI）/);
     assert.match(text, /不符/);
     assert.match(text, /中转站本地估算/);
+    assert.match(text, /仅供参考，不计入风险分/);
+    assert.equal(tokenizerRowStatus(s), '与声明不符 · 仅供参考');
+});
+
+test('行状态：一律是参考口径', () => {
+    const mk = (data, extra) => readTokenizer(reportWith('tokenizer_id', data, extra));
+    assert.equal(tokenizerRowStatus(mk({ usable: true, claim_status: 'consistent' })), '与声明相容');
+    assert.equal(tokenizerRowStatus(mk({ usable: true, claim_status: 'uncertain' })), '相容性不确定');
+    assert.equal(tokenizerRowStatus(mk({ usable: true })), '无法核对');
+    assert.equal(tokenizerRowStatus(mk({ usable: false, claim_status: 'inconsistent' })), '仅供参考');
+    assert.equal(tokenizerRowStatus(mk({}, { ok: false, error: 'x' })), '执行未完成');
 });
 
 test('漂移/中途失败：只作参考，不报不符', () => {

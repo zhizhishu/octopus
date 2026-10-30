@@ -220,3 +220,23 @@ func runTokenizerBaseline(ctx context.Context, s modelverify.Sender, targetModel
 	res.Data["counts"] = counts
 	return res
 }
+
+// ExtraPlannedRequests 某探针在"默认整单超时"之外还需要预留的请求数。
+//
+// 其余探针每条只发几次请求，默认整单超时（300 秒）就装得下；分词器两项按参考实现的
+// 请求量规划，远超这个量级，必须单独加预算，否则跑到一半就被整单超时掐掉：
+//   - tokenizer_baseline：72 道题全扫 + 首尾两次基线 = 74 次；
+//   - tokenizer_id：最多 MaximumProbes(20) + 2 次基线 = 22 次（lm-detector cli/tokenizer.en.mdx:17）。
+//
+// 数字从内置库与参考常量现算，不手抄：库换了题数，预算跟着变。
+func ExtraPlannedRequests(id ProbeID) int {
+	switch id {
+	case ProbeTokenizerBaseline:
+		if b, err := tokenbank.Builtin(); err == nil {
+			return len(b.Probes) + 2
+		}
+	case ProbeTokenizerID:
+		return tokenbank.Model.MaximumProbes + 2
+	}
+	return 0
+}

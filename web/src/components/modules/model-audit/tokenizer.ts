@@ -8,6 +8,8 @@ import type { AuditProbeResult } from '@/api/endpoints/model-audit';
  * 62 类做贝叶斯后验。语义边界与参考实现一致，展示层不放宽：
  * - 一个分词器常被多个模型共用，测出来的是「上游用的哪套分词器」，不是「哪个模型」；
  * - 测成 o200k / cl100k 时，也可能是中转站用 tiktoken 在本地估算用量。
+ * - 结果只作参考（lm-detector principles/tokenizer.en.mdx:83）：后端 0 分、不改变结论，
+ *   页面上也不算「需要复核」的一项。
  */
 
 export type TokenizerKind = 'exact' | 'related' | 'unknown';
@@ -141,7 +143,7 @@ export function describeTokenizer(summary: TokenizerSummary): string {
         case 'consistent':
             return `${head}，与声明型号相容。`;
         case 'inconsistent':
-            return `${head}，与声明型号不符${summary.relayEstimate ? '（也可能是中转站本地估算用量）' : ''}。`;
+            return `${head}，与声明型号不符${summary.relayEstimate ? '（也可能是中转站本地估算用量）' : ''}。仅供参考，不计入风险分。`;
         case 'uncertain':
             return `${head}，与声明型号是否相容不确定。`;
         default:
@@ -154,4 +156,23 @@ export function formatShare(value: number | undefined): string {
     if (value >= 0.995) return '>99%';
     if (value < 0.005) return '<1%';
     return `${Math.round(value * 100)}%`;
+}
+
+/**
+ * 检测行的状态文字。分词器只作参考：行一律是 info，不进「待复核」计数，
+ * 否则 0 分的参考提示会在页面上被数成「发现 N 项需要复核」。
+ */
+export function tokenizerRowStatus(summary: TokenizerSummary): string {
+    if (summary.errorText) return '执行未完成';
+    if (!summary.usable) return '仅供参考';
+    switch (summary.claim) {
+        case 'consistent':
+            return '与声明相容';
+        case 'inconsistent':
+            return '与声明不符 · 仅供参考';
+        case 'uncertain':
+            return '相容性不确定';
+        default:
+            return '无法核对';
+    }
 }

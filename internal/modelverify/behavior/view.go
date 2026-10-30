@@ -93,7 +93,7 @@ func ToView(report Report) ViewReport {
 	// 这里刻意复用同一个函数，而不是各写一遍。
 	usable := 0
 	for _, res := range report.Results {
-		if probeCountsAsUsable(res) {
+		if probeCountsTowardVerdict(res) {
 			usable++
 		}
 	}

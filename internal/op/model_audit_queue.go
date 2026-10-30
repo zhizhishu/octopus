@@ -10,6 +10,7 @@ import (
 
 	"github.com/zhizhishu/octopus/internal/db"
 	"github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/modelverify/behavior"
 	"gorm.io/gorm"
 )
 
@@ -34,6 +35,12 @@ const (
 	auditResultRetention       = 90 * 24 * time.Hour
 	AuditDefaultTimeoutSeconds = 300
 	AuditMaxTimeoutSeconds     = 300
+
+	// auditSecondsPerPlannedRequest 请求量大的探针每次计划请求追加的秒数（见 AuditTimeoutFor）。
+	auditSecondsPerPlannedRequest = 10
+	// AuditScaledMaxTimeoutSeconds 按请求量放大后的整单超时上限（30 分钟）。
+	// 单 worker 串行：一单跑太久会堵住后面所有任务，所以放大也要封顶。
+	AuditScaledMaxTimeoutSeconds = 1800
 
 	// AuditMaxAttempts 单条结果最多试几次（含第一次）。
 	//
@@ -83,6 +90,30 @@ func AuditRetryBackoff(attempt int) time.Duration {
 		d = 10 * time.Minute
 	}
 	return d
+}
+
+// AuditTimeoutFor 按计划请求量放大整单超时。
+//
+// base 是调用方原有口径算出的超时（入队/同步接口各自的缺省值与 300 秒上限照旧），
+// 这里只对请求量远超默认预算的探针（behavior.ExtraPlannedRequests，目前是分词器两项）
+// 每次计划请求追加 auditSecondsPerPlannedRequest 秒，总数封顶 AuditScaledMaxTimeoutSeconds。
+// 其余探针组合结果与 base 完全相同——不改变既有任务的超时。
+//
+// 租约不需要跟着改：worker 跑的过程中每 AuditRunHeartbeat 续一次租（见 AuditRunLease），
+// 跑得再久，只要心跳在，回收循环就不会捡走它；真正掐断长任务的只有这个整单超时。
+func AuditTimeoutFor(probes []string, base int) int {
+	extra := 0
+	for _, p := range probes {
+		extra += behavior.ExtraPlannedRequests(behavior.ProbeID(strings.TrimSpace(p))) * auditSecondsPerPlannedRequest
+	}
+	if extra == 0 {
+		return base
+	}
+	total := base + extra
+	if total > AuditScaledMaxTimeoutSeconds {
+		total = AuditScaledMaxTimeoutSeconds
+	}
+	return total
 }
 
 // ModelAuditEnqueueInput 一次入队请求。
@@ -191,6 +222,7 @@ func ModelAuditEnqueue(ctx context.Context, in ModelAuditEnqueueInput) (int64, e
 	if timeout > AuditMaxTimeoutSeconds {
 		timeout = AuditMaxTimeoutSeconds
 	}
+	timeout = AuditTimeoutFor(in.Probes, timeout)
 
 	trigger := in.Trigger
 	if trigger == "" {

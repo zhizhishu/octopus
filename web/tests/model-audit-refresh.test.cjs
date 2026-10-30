@@ -691,3 +691,42 @@ test('standard plan and default selection never include the opt-in tokenizer pro
         cleanup();
     }
 });
+
+// 分词器识别只作参考（照抄 lm-detector）：「与声明不符」要显示出来，但不算「需要复核」，
+// 也不能把页面标题改成「发现 N 项需要复核」。
+test('tokenizer mismatch is shown as reference info and never counted as a review item', async () => {
+    const page = auditPage();
+    page.setChannels(grokChannel);
+    let tree = page.render();
+    const cleanup = page.mount();
+    findElement(tree, (n) => n.type === 'button' && text(n).includes('检测记录')).props.onClick();
+    tree = page.render();
+    mountQueueStub(tree, page);
+    const data = {
+        kind: 'exact', top_class: 'qwen3.5', top_series: 'Qwen3.5 and later', top_lab: 'Alibaba Qwen',
+        claim_status: 'inconsistent', usable: true, complete: true, requests: 12, confidence: 0.99,
+    };
+    const view = {
+        requested_model: 'gpt-5.5', score: 0, verdict: 'none', errors: [], disclaimer: 'x',
+        findings: [{ probe: 'tokenizer_id', severity: 'low', score: 0, title: '上游分词器与声明型号不符（仅供参考）：测得 Qwen3.5', evidence: data }],
+        results: [
+            { probe_id: 'liveness', ok: true, data: {} },
+            { probe_id: 'echo_rewrite', ok: true, data: {} },
+            { probe_id: 'tokenizer_id', ok: true, data },
+        ],
+    };
+    page.queueView.onOpenReport({
+        id: 3, job_id: 1, log_id: 0, channel_id: 7, channel_name: 'c', model: 'gpt-5.5', upstream_model: '',
+        status: 'done', verdict: 'none', score: 0, finding_n: 1, report: JSON.stringify(view), error_msg: '',
+        duration_ms: 12, created_at: new Date().toISOString(),
+    });
+    tree = page.render();
+    findElement(tree, (n) => n.type === 'button' && text(n).includes('发起检测')).props.onClick();
+    tree = page.render();
+    const body = text(tree);
+    assert.ok(body.includes('与声明不符 · 仅供参考'), 'row shows the reference-only status');
+    // 卡片文案（含「不计入风险分」）由 tokenizer-summary.test.cjs 覆盖：这里的假渲染不展开子组件。
+    assert.equal(body.includes('项需要复核'), false, 'headline must not count it as a review item');
+    assert.ok(body.includes('未见需要复核的项'), 'headline stays the clean one (the backend verdict is none)');
+    cleanup();
+});

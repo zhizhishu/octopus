@@ -2,18 +2,17 @@ package behavior
 
 import "fmt"
 
-// tokenizerMismatchScore 是"上游分词器与声明型号不符"的风险分。
+// 分词器结论**只作参考，不计分**——照抄参考实现。
 //
-// 参考实现（lm-detector）把分词器结果当作排名旁的参考信息、不改排名；我们的报告是
-// 风险分制，只能给它一个分值。取 25（medium 一档），与它取代的 token_delta 分词器
-// 不符项同分：这是行为证据（看的是上游计费口径，不看模型说了什么），但一个分词器
-// 常被多个模型共用、中转站本地估算用量也会触发，单凭它不足以判高危。
-const tokenizerMismatchScore = 25
+// lm-detector docs/content/docs/principles/tokenizer.en.mdx:83：分词器结果是排名旁的
+// 参考信息，不改变候选排名和置信度；同一分词器常被多个模型共用，中转站也可能在本地
+// 估算用量，所以计数只回答"上游分词器与输入的型号是否相符"这一个问题。
+// 因此这里所有分支都是 0 分、low（本评分体系里最低、且不计分的一档），不改变 verdict；
+// 探针本身也不进 verdict 的"跑通"分母（见 score.go probeCountsTowardVerdict）。
 
 // tokenizerIDFindings 判读分词器差分探针。
 //
-// 只在"完整跑完 + 两次基线一致 + 声明可核对且后验 ≤ 0.1"时计分；其余情形要么不出
-// 结论，要么出 0 分的参考提示——测不准不能报成测出问题。
+// 一律 0 分：不一致时给带边界说明的参考提示；测不准（中途失败/基线漂移）时提示仅供参考。
 func tokenizerIDFindings(res Result) []Finding {
 	if !res.OK {
 		return nil
@@ -44,14 +43,14 @@ func tokenizerIDFindings(res Result) []Finding {
 		// 没有矛盾 ≠ 正品证明：同一分词器常被多个模型共用。不产风险项。
 		return nil
 	case "inconsistent":
-		rec := "分词器只看上游计费的输入 token 口径，不看回答内容；同一分词器常被多个模型共用，" +
-			"需结合指纹/签名等探针佐证。"
+		rec := "仅供参考，不计入风险分。分词器只看上游计费的输入 token 口径，不看回答内容；" +
+			"同一分词器常被多个模型共用，需结合指纹/签名等探针佐证。"
 		if boolOf(res.Data, "relay_estimate_possible") {
 			rec = "测成 o200k/cl100k 时，也可能是中转站用 tiktoken 在本地估算用量（用量数字并非上游给出）。" + rec
 		}
 		return []Finding{{
-			Probe: ProbeTokenizerID, Severity: SeverityMedium, Score: tokenizerMismatchScore,
-			Title:          fmt.Sprintf("上游分词器与声明型号不符：测得 %s", measured),
+			Probe: ProbeTokenizerID, Severity: SeverityLow, Score: 0,
+			Title:          fmt.Sprintf("上游分词器与声明型号不符（仅供参考）：测得 %s", measured),
 			Evidence:       res.Data,
 			Recommendation: rec,
 		}}

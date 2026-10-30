@@ -135,16 +135,20 @@ func TestTokenizerIDConsistentClaimProducesNoFinding(t *testing.T) {
 	}
 }
 
-func TestTokenizerIDInconsistentClaimScores25(t *testing.T) {
+func TestTokenizerIDInconsistentClaimIsReferenceOnly(t *testing.T) {
 	s := newTokenizerSender(t, "qwen3.5")
 	res := runProbe(context.Background(), ProbeTokenizerID, s, "gpt-5.5")
 	if res.Data["claim_status"] != "inconsistent" {
 		t.Fatalf("data = %+v", res.Data)
 	}
 	got := findingsFor(res, "gpt-5.5", nil)
-	// 25 写死：与它取代的 token_delta 分词器不符项同分（tokenizer_score.go 的取值理由）。
-	if len(got) != 1 || got[0].Score != 25 || got[0].Severity != SeverityMedium {
+	// 照抄 lm-detector：分词器结果只作参考——展示、带边界说明，但 0 分、最低档。
+	if len(got) != 1 || got[0].Score != 0 || got[0].Severity != SeverityLow {
 		t.Fatalf("findings = %+v", got)
+	}
+	if !strings.Contains(got[0].Title, "仅供参考") || !strings.Contains(got[0].Recommendation, "不计入风险分") ||
+		!strings.Contains(got[0].Recommendation, "多个模型共用") {
+		t.Fatalf("reference-only caveat missing: %+v", got[0])
 	}
 	if !strings.Contains(got[0].Title, "Qwen3.5") {
 		t.Fatalf("title should name the measured tokenizer: %q", got[0].Title)
@@ -162,7 +166,7 @@ func TestTokenizerIDRelayEstimateHint(t *testing.T) {
 		t.Fatalf("data = %+v", res.Data)
 	}
 	got := findingsFor(res, "claude-opus-5", nil)
-	if len(got) != 1 || got[0].Score != tokenizerMismatchScore || !strings.Contains(got[0].Recommendation, "tiktoken") {
+	if len(got) != 1 || got[0].Score != 0 || !strings.Contains(got[0].Recommendation, "tiktoken") {
 		t.Fatalf("findings = %+v", got)
 	}
 }
@@ -219,31 +223,55 @@ func TestTokenizerIDFallsBackToPromptUsage(t *testing.T) {
 	}
 }
 
-func TestTokenizerIDSupersedesTokenDelta(t *testing.T) {
+// 分词器结论不改变 verdict：不一致时不加分，一致时也不把"没查清"抬成"没问题"。
+func TestTokenizerIDNeverChangesVerdict(t *testing.T) {
+	// 恰好比 minUsableProbes 少一条干净探针：tokenizer_id 若被算进分母，就会把 unknown 抬成 none。
+	clean := []Result{}
+	for _, id := range []ProbeID{ProbeLiveness, ProbeEchoRewrite, ProbeContextCanary}[:minUsableProbes-1] {
+		clean = append(clean, Result{ProbeID: id, OK: true, Data: map[string]any{}})
+	}
+	mismatch := runProbe(context.Background(), ProbeTokenizerID, newTokenizerSender(t, "qwen3.5"), "gpt-5.5")
+	match := runProbe(context.Background(), ProbeTokenizerID, newTokenizerSender(t, "o200k"), "gpt-5.5")
+	if !probeCountsAsUsable(mismatch) || !probeCountsAsUsable(match) {
+		t.Fatal("precondition: both tokenizer runs are complete")
+	}
+	base := BuildReport(clean, "gpt-5.5")
+	for name, extra := range map[string]Result{"mismatch": mismatch, "match": match} {
+		rep := BuildReport(append(append([]Result(nil), clean...), extra), "gpt-5.5")
+		if rep.Score != base.Score || rep.Verdict != base.Verdict {
+			t.Fatalf("%s: tokenizer_id changed the verdict: %s/%d → %s/%d", name, base.Verdict, base.Score, rep.Verdict, rep.Score)
+		}
+		view := ToView(rep)
+		if view.Plain.Headline != ToView(base).Plain.Headline {
+			t.Fatalf("%s: plain headline changed: %q", name, view.Plain.Headline)
+		}
+	}
+	if base.Verdict != VerdictUnknown {
+		t.Fatalf("precondition: minUsableProbes-1 clean probes are not enough evidence, got %s", base.Verdict)
+	}
+}
+
+// token_delta 的发现项都计分；0 分的 tokenizer_id 取代它会压低已有风险分，所以两条都保留。
+func TestTokenizerIDKeepsTokenDeltaScore(t *testing.T) {
 	tokenizer := runProbe(context.Background(), ProbeTokenizerID, newTokenizerSender(t, "qwen3.5"), "gpt-5.5")
 	delta := Result{ProbeID: ProbeTokenDelta, OK: true, Data: map[string]any{
 		"method": "differential", "usable": true, "delta": 400,
 	}}
-	if len(findingsFor(delta, "gpt-5.5", nil)) == 0 {
+	alone := BuildReport([]Result{delta}, "gpt-5.5")
+	if alone.Score == 0 {
 		t.Fatal("precondition: this token_delta result scores on its own")
 	}
-	alone := BuildReport([]Result{delta}, "gpt-5.5")
 	both := BuildReport([]Result{tokenizer, delta}, "gpt-5.5")
+	if both.Score != alone.Score || both.Verdict != alone.Verdict {
+		t.Fatalf("tokenizer_id must not lower token_delta's score: alone=%d/%s both=%d/%s", alone.Score, alone.Verdict, both.Score, both.Verdict)
+	}
+	var sawDelta, sawTokenizer bool
 	for _, f := range both.Findings {
-		if f.Probe == ProbeTokenDelta {
-			t.Fatalf("token_delta must not score when tokenizer_id is usable: %+v", both.Findings)
-		}
+		sawDelta = sawDelta || f.Probe == ProbeTokenDelta
+		sawTokenizer = sawTokenizer || f.Probe == ProbeTokenizerID
 	}
-	if both.Score != tokenizerMismatchScore || alone.Score == 0 {
-		t.Fatalf("scores alone=%d both=%d", alone.Score, both.Score)
-	}
-	// tokenizer_id 不可用（漂移）时，token_delta 照常计分。
-	s := newTokenizerSender(t, "qwen3.5")
-	s.drift = 1
-	drifted := runProbe(context.Background(), ProbeTokenizerID, s, "gpt-5.5")
-	mixed := BuildReport([]Result{drifted, delta}, "gpt-5.5")
-	if mixed.Score != alone.Score {
-		t.Fatalf("unusable tokenizer_id must not suppress token_delta: %d vs %d", mixed.Score, alone.Score)
+	if !sawDelta || !sawTokenizer {
+		t.Fatalf("both findings must be kept: %+v", both.Findings)
 	}
 }
 
@@ -312,7 +340,7 @@ func TestTokenizerIDUsesLocalBaselines(t *testing.T) {
 	if fake.Data["claim_status"] != "inconsistent" {
 		t.Fatalf("substitution against local baseline should be inconsistent: %+v", fake.Data)
 	}
-	if got := findingsFor(fake, "claude-x", nil); len(got) != 1 || got[0].Score != tokenizerMismatchScore {
+	if got := findingsFor(fake, "claude-x", nil); len(got) != 1 || got[0].Score != 0 || !strings.Contains(got[0].Title, "不符") {
 		t.Fatalf("findings = %+v", got)
 	}
 	// 没有本地基线时照参考实现：claude 映射到"未公开分词器"（class null），核对概率取
@@ -351,7 +379,7 @@ func TestTokenizerIDFindingsByStatus(t *testing.T) {
 		}
 	}
 	got := tokenizerIDFindings(base("inconsistent"))
-	if len(got) != 1 || got[0].Score != tokenizerMismatchScore || !strings.Contains(got[0].Title, "Qwen3.5 and later（Alibaba Qwen）") {
+	if len(got) != 1 || got[0].Score != 0 || got[0].Severity != SeverityLow || !strings.Contains(got[0].Title, "Qwen3.5 and later（Alibaba Qwen）") {
 		t.Fatalf("inconsistent: %+v", got)
 	}
 	notOK := base("inconsistent")
@@ -363,5 +391,43 @@ func TestTokenizerIDFindingsByStatus(t *testing.T) {
 	unusable.Data["usable"] = false
 	if got := tokenizerIDFindings(unusable); len(got) != 1 || got[0].Score != 0 {
 		t.Fatalf("unusable: %+v", got)
+	}
+}
+
+func TestExtraPlannedRequests(t *testing.T) {
+	b, _ := tokenbank.Builtin()
+	if got := ExtraPlannedRequests(ProbeTokenizerBaseline); got != len(b.Probes)+2 || got != 74 {
+		t.Fatalf("baseline = %d", got)
+	}
+	if got := ExtraPlannedRequests(ProbeTokenizerID); got != 22 {
+		t.Fatalf("tokenizer_id = %d (reference: at most --max-probes + 2 = 22)", got)
+	}
+	for _, id := range DefaultProbes() {
+		if ExtraPlannedRequests(id) != 0 {
+			t.Fatalf("%s should fit the default budget", id)
+		}
+	}
+	// 真实录制的请求数必须等于预算里规划的数。
+	s := newTokenizerSender(t, "glm-5")
+	runProbe(context.Background(), ProbeTokenizerBaseline, s, "claude-x")
+	if len(s.asks) != ExtraPlannedRequests(ProbeTokenizerBaseline) {
+		t.Fatalf("recording sent %d requests, budget plans %d", len(s.asks), ExtraPlannedRequests(ProbeTokenizerBaseline))
+	}
+}
+
+// 人话结论里的"N 项检查全部跑通"与 verdict 同口径：参考项不算一项检查。
+func TestTokenizerIDNotCountedInPlainVerdict(t *testing.T) {
+	results := []Result{}
+	for _, id := range []ProbeID{ProbeLiveness, ProbeEchoRewrite, ProbeContextCanary} {
+		results = append(results, Result{ProbeID: id, OK: true, Data: map[string]any{}})
+	}
+	base := ToView(BuildReport(results, "gpt-5.5"))
+	match := runProbe(context.Background(), ProbeTokenizerID, newTokenizerSender(t, "o200k"), "gpt-5.5")
+	with := ToView(BuildReport(append(results, match), "gpt-5.5"))
+	if base.Verdict != VerdictNone || with.Verdict != VerdictNone {
+		t.Fatalf("verdicts %s / %s", base.Verdict, with.Verdict)
+	}
+	if with.Plain.Meaning != base.Plain.Meaning || !strings.Contains(with.Plain.Meaning, "3 项") {
+		t.Fatalf("plain meaning changed: %q vs %q", with.Plain.Meaning, base.Plain.Meaning)
 	}
 }

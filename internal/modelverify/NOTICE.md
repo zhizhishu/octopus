@@ -128,8 +128,10 @@ The `stats/`, `probe/` and `suite/` packages in this directory, their tests, and
 
 - `tokenbank/local.go`：可信渠道录的本地基线，作为第一方类合入库（闭源型号用）；
 - `behavior/tokenizer_probe.go`：接入检测链，`tokenizer_baseline` 录制探针；
-- 计分：上游把分词器结果当排名旁的参考信息；本项目报告是风险分制，"与声明不符"记 25 分
-  （medium），只在完整跑完且两次基线一致时计分，并取代 `token_delta` 的分词器不符项。
+- 计分：照抄上游，分词器结果只作参考——"与声明不符"以 0 分、low 的参考项展示（带边界说明），
+  不计入风险分、不进 verdict 的"跑通"分母，也不取代 `token_delta` 的计分项（两条都保留）。
+- 超时：两项分词器探针按计划请求数（74 / 22 次）放大整单超时，每次 10 秒，封顶 30 分钟
+  （`op.AuditTimeoutFor`）。
 
 ## MIT License
 

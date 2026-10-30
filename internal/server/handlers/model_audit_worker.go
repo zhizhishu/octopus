@@ -264,20 +264,12 @@ func runOneAuditResult(ctx context.Context, res *model.ModelAuditResult) {
 	clearModelAuditYield(res.ID)
 	defer release()
 
-	timeout := op.AuditDefaultTimeoutSeconds
 	var job model.ModelAuditJob
-	if err := db.GetDB().WithContext(ctx).Where("id = ?", res.JobID).First(&job).Error; err == nil {
-		if job.TimeoutSeconds > 0 {
-			timeout = job.TimeoutSeconds
-		}
-	}
-	if timeout > op.AuditMaxTimeoutSeconds {
-		timeout = op.AuditMaxTimeoutSeconds
-	}
-	runCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+	_ = db.GetDB().WithContext(ctx).Where("id = ?", res.JobID).First(&job).Error
+	ids := parseAuditProbesOrEmpty(job.Probes)
+	runCtx, cancel := context.WithTimeout(ctx, auditRunTimeout(job.TimeoutSeconds, ids))
 	defer cancel()
 
-	ids := parseAuditProbesOrEmpty(job.Probes)
 	results := behavior.Run(runCtx, ids, sender, upstreamModel)
 
 	// 关键判断：**一个探针都没成功，就不算"检测完成"**。
@@ -324,6 +316,26 @@ func runOneAuditResult(ctx context.Context, res *model.ModelAuditResult) {
 	}
 
 	finish(model.AuditResultDone, string(report.Verdict), report.Score, len(report.Findings), reportJSON, "")
+}
+
+// auditRunTimeout 一条结果的整单超时。
+//
+// 任务行里存的是入队时按 op.AuditTimeoutFor 放大过的值；这里再按同一口径封顶
+// （默认上限 300 秒，含分词器等大请求量探针时按计划请求数放大，最多 30 分钟），
+// 防止库里的脏值或旧任务把单 worker 堵死。没有存值时用缺省值并同样放大。
+func auditRunTimeout(stored int, ids []behavior.ProbeID) time.Duration {
+	probes := make([]string, len(ids))
+	for i, id := range ids {
+		probes[i] = string(id)
+	}
+	timeout := stored
+	if timeout <= 0 {
+		timeout = op.AuditTimeoutFor(probes, op.AuditDefaultTimeoutSeconds)
+	}
+	if limit := op.AuditTimeoutFor(probes, op.AuditMaxTimeoutSeconds); timeout > limit {
+		timeout = limit
+	}
+	return time.Duration(timeout) * time.Second
 }
 
 // parseAuditProbesOrEmpty 把逗号分隔的探针串还原成 ID 列表；空/无效则用默认集合。
