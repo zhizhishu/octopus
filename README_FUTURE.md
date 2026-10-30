@@ -202,6 +202,7 @@ Future 分支在保留原有 Chat / Responses / Anthropic / Embeddings 转换链
 - 缓存、协议、日志、权限、额度和安全相关改动都应配套回归检查，避免影响命中率与一致性。
 - Gemini 原生：`/v1beta/models/:model:generateContent`、`/v1beta/models/:model:streamGenerateContent`。
 - 生图：`/v1/images/generations`、`/v1/images/edits`、`/v1/images/variations`。
+- Midjourney（midjourney-proxy 协议，与 new-api 的 `/mj` 中转同形）：`/mj/submit/{imagine,change,simple-change,describe,blend,edits,video,action,modal,shorten,upload-discord-images}`、`/mj/insight-face/swap`、`/mj/task/:id/fetch`、`/mj/task/:id/image-seed`、`/mj/task/list-by-condition`。客户端可用 `mj-api-secret` 头带 Octopus key（仅 `/mj/` 下生效）。按动作模型名选渠道（`mj_imagine`、`mj_upscale`、`mj_variation`、`swap_face`……，渠道模型列表里要写上这些名字），渠道类型用 OpenAI 兼容 / OpenAI Response，base 填 mj-proxy 根地址（末尾 `/v1` 会自动去掉）；上游鉴权头为 `mj-api-secret: <渠道 key>`。放大/变换等后续动作与 fetch 一律回到创建任务的渠道和 key，只有任务创建者能查/续操作。受理（code 1/21/22）后按价格行 `per_call` 计次，INPAINT / CUSTOM_ZOOM 不计费；日志端点记为 `images_midjourney*`。
 - Codex/TOML 兼容别名：`/responses`、`/responses/compact`、`/backend-api/codex/responses`、`/backend-api/codex/responses/compact`。普通 Responses 别名仍走 Octopus 协议转换，`compact` 别名走 OpenAI 原样转发；流已经开始后如上游失败，会补发 `response.failed`，避免 Codex 客户端遇到 silent EOF。
 - 原样转发：`/v1/completions`、`/v1/edits`、`/v1/responses/compact`、`/responses/compact`、`/backend-api/codex/responses/compact`、`/v1/audio/speech`、`/v1/audio/transcriptions`、`/v1/audio/translations`、`/v1/moderations`、`/v1/rerank`；xAI（Grok）语音 REST `/v1/tts`（文字转语音，正文无 model 时按 `grok-tts` 选渠道且不往上游补 model）、`/v1/stt`（语音转文字，无 model 时按 `grok-voice-transcribe-2.0`），两者成功后按价格行 `per_call` 计次。
 

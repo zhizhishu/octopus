@@ -46,7 +46,8 @@ func TestEveryRegisteredRelayRouteHasAnEndpointFamily(t *testing.T) {
 			path == "/chat/completions" ||
 			path == "/responses" ||
 			path == "/responses/compact" ||
-			strings.HasPrefix(path, "/backend-api/")
+			strings.HasPrefix(path, "/backend-api/") ||
+			strings.HasPrefix(path, "/mj/")
 		if !isRelayPath {
 			continue
 		}

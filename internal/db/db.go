@@ -114,6 +114,7 @@ func InitDB(dbType, dsn string, debug bool) error {
 		&model.ModelAuditResult{},
 		&model.ResponseSession{},
 		&model.VideoTask{},
+		&model.MidjourneyTask{},
 		&model.ImageTask{},
 		&model.BatchImageJob{},
 		&model.BatchImageItem{},
