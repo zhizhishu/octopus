@@ -33,9 +33,48 @@ func (p LLMPrice) IsZero() bool {
 	return p.Input == 0 && p.Output == 0 && p.CacheRead == 0 && p.CacheWrite == 0 && p.PerCall == 0
 }
 
+// SameTokenPrice reports whether two prices carry the same four token rates. PerCall is
+// left out on purpose: the price library (models.dev) never has a per-call price, so the
+// library sync compares and writes token rates only and never touches PerCall.
+func (p LLMPrice) SameTokenPrice(o LLMPrice) bool {
+	return priceNearlyEqual(p.Input, o.Input) && priceNearlyEqual(p.Output, o.Output) &&
+		priceNearlyEqual(p.CacheRead, o.CacheRead) && priceNearlyEqual(p.CacheWrite, o.CacheWrite)
+}
+
+// TokenPriceIsZero reports whether none of the four token rates is set.
+func (p LLMPrice) TokenPriceIsZero() bool {
+	return p.Input == 0 && p.Output == 0 && p.CacheRead == 0 && p.CacheWrite == 0
+}
+
+func priceNearlyEqual(a, b float64) bool {
+	d := a - b
+	if d < 0 {
+		d = -d
+	}
+	return d <= 1e-9
+}
+
+// Where a price row's token rates come from.
+//
+//   - LLMSourceLibrary: follows the price library (models.dev). The library sync may
+//     rewrite its token rates.
+//   - LLMSourceManual: an admin typed these rates. The automatic sync never touches it;
+//     the manual preview lists it unticked.
+//   - "" (legacy): a row from before sources existed. It is classified on the next
+//     successful library fetch: equal to the library or zero becomes library, anything
+//     else becomes manual.
+//
+// "No price" (没价) is not stored: it is a library row whose token rates are zero while
+// the library has no price for it either, so it bills at 0.
+const (
+	LLMSourceLibrary = "library"
+	LLMSourceManual  = "manual"
+)
+
 type LLMInfo struct {
 	Name string `json:"name" gorm:"primaryKey;not null"`
 	LLMPrice
+	Source string `json:"source" gorm:"not null;default:''"`
 }
 
 type LLMChannel struct {

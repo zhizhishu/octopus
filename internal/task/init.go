@@ -118,10 +118,12 @@ func Init() {
 
 	priceUpdateInterval := time.Duration(settingIntOr(model.SettingKeyModelInfoUpdateInterval, 24)) * time.Hour
 	// 注册价格更新任务
+	// 价格任务: 每次都刷新 models.dev 价库; 开了 price_auto_sync_enabled 时再把跟随价库的
+	// 行(新增/变了)写进价格表, 手动改过的不动, 大改动按 price_sync_hold_big_change 先放着。
 	Register(string(model.SettingKeyModelInfoUpdateInterval), priceUpdateInterval, true, func() {
-		if err := price.UpdateLLMPrice(context.Background()); err != nil {
-			log.Warnf("failed to update price info: %v", err)
-		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		price.AutoSync(ctx)
 	})
 
 	// 注册基础URL延迟任务

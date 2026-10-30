@@ -14,12 +14,17 @@ import (
 type SettingKey string
 
 const (
-	SettingKeyProxyURL                  SettingKey = "proxy_url"
-	SettingKeyTrustedProxies            SettingKey = "trusted_proxies"              // 逗号分隔的可信反代 IP/CIDR; 命中时才认其 X-Forwarded-For/CF-Connecting-IP 解析真实客户端 IP。空=仅信内置 Cloudflare 段(安全默认)
-	SettingKeyStatsSaveInterval         SettingKey = "stats_save_interval"          // 将统计信息写入数据库的周期(分钟)
-	SettingKeyStatsTimezone             SettingKey = "stats_timezone"               // 统计"当天/小时"按此 IANA 时区(如 America/Los_Angeles)划分自然日; 空=跟随容器本地时区(向后兼容)。修复容器时区领先用户时区时"今天"统计被提前清零
-	SettingKeyModelInfoUpdateInterval   SettingKey = "model_info_update_interval"   // 模型信息更新间隔(小时)
-	SettingKeySyncLLMInterval           SettingKey = "sync_llm_interval"            // LLM 同步间隔(小时)
+	SettingKeyProxyURL                SettingKey = "proxy_url"
+	SettingKeyTrustedProxies          SettingKey = "trusted_proxies"            // 逗号分隔的可信反代 IP/CIDR; 命中时才认其 X-Forwarded-For/CF-Connecting-IP 解析真实客户端 IP。空=仅信内置 Cloudflare 段(安全默认)
+	SettingKeyStatsSaveInterval       SettingKey = "stats_save_interval"        // 将统计信息写入数据库的周期(分钟)
+	SettingKeyStatsTimezone           SettingKey = "stats_timezone"             // 统计"当天/小时"按此 IANA 时区(如 America/Los_Angeles)划分自然日; 空=跟随容器本地时区(向后兼容)。修复容器时区领先用户时区时"今天"统计被提前清零
+	SettingKeyModelInfoUpdateInterval SettingKey = "model_info_update_interval" // 模型信息更新间隔(小时)
+	SettingKeySyncLLMInterval         SettingKey = "sync_llm_interval"          // LLM 同步间隔(小时)
+	// 价格自动更新: 每隔 model_info_update_interval 小时拉一次 models.dev 后, 是否把
+	// 跟随价库的行(新增 / 变了)直接写进价格表。手动改过的行永远不动。
+	SettingKeyPriceAutoSyncEnabled SettingKey = "price_auto_sync_enabled"
+	// 自动更新时, 涨跌超过一半的改动先不写, 页面上提醒管理员确认。
+	SettingKeyPriceSyncHoldBigChange    SettingKey = "price_sync_hold_big_change"
 	SettingKeyRelayLogKeepPeriod        SettingKey = "relay_log_keep_period"        // 日志保存时间范围(天)
 	SettingKeyRelayLogKeepEnabled       SettingKey = "relay_log_keep_enabled"       // 是否保留历史日志
 	SettingKeyRelayLogMaxStorageGB      SettingKey = "relay_log_max_storage_gb"     // 日志最大保存容量(GB), 0 表示不限制
@@ -544,6 +549,8 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyCORSAllowOrigins, Value: ""},              // CORS 默认不允许跨域，设置为 "*" 才允许所有来源
 		{Key: SettingKeyModelInfoUpdateInterval, Value: "24"},     // 默认24小时更新一次模型信息
 		{Key: SettingKeySyncLLMInterval, Value: "24"},             // 默认24小时同步一次LLM
+		{Key: SettingKeyPriceAutoSyncEnabled, Value: "true"},      // 默认开: 跟随价库的行按时跟上游价走(手动改过的不动)
+		{Key: SettingKeyPriceSyncHoldBigChange, Value: "true"},    // 默认开: 涨跌超过一半的先不自动改
 		{Key: SettingKeyRelayLogKeepPeriod, Value: "30"},          // 默认日志保存30天(与日志页“1个月”快捷范围对齐；旧版7天会让“1个月”只查到7天)
 		{Key: SettingKeyRelayLogKeepEnabled, Value: "true"},       // 默认保留历史日志
 		{Key: SettingKeyRelayLogMaxStorageGB, Value: "0"},         // 默认不按容量裁剪，避免升级后意外删除日志
@@ -791,7 +798,8 @@ func (s *Setting) Validate() error {
 		SettingKeyDebugLoadBalancer, SettingKeyEmailVerificationEnabled, SettingKeyEmailSMTPSSL,
 		SettingKeyUpstreamUTLSFingerprint, SettingKeyUpstreamHTTP1HeaderOrder, SettingKeyDiagnosticMode, SettingKeyRouteStickyCacheFirst,
 		SettingKeyModelAuditEnabled, SettingKeyModelAuditFollowUpEnabled, SettingKeyLogPassiveProbeEnabled,
-		SettingKeyRelayLogReclaimEnabled, SettingKeyAsyncImageEnabled, SettingKeyBatchImageEnabled:
+		SettingKeyRelayLogReclaimEnabled, SettingKeyAsyncImageEnabled, SettingKeyBatchImageEnabled,
+		SettingKeyPriceAutoSyncEnabled, SettingKeyPriceSyncHoldBigChange:
 		if s.Value != "true" && s.Value != "false" {
 			return fmt.Errorf("%s must be true or false", s.Key)
 		}

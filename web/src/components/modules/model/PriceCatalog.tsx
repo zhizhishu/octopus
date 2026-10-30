@@ -1,168 +1,155 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useTranslations } from 'next-intl';
-import { Clock, Database, DollarSign, ExternalLink, RefreshCw } from 'lucide-react';
-import { Input } from '@/components/ui/input';
+import { BadgeDollarSign, Clock, CloudDownload, ExternalLink, Lock, RefreshCw, Settings2, TriangleAlert } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { useSettingList, useSetSetting, SettingKey } from '@/api/endpoints/setting';
-import { useUpdateModelPrice, useLastUpdateTime } from '@/api/endpoints/model';
-import { toast } from '@/components/common/Toast';
-import { MobileFilterCollapse } from '@/components/common/MobileFilterCollapse';
+import { useModelList, usePriceSyncStatus, useLastUpdateTime } from '@/api/endpoints/model';
+import { parseServerTime, sourceCounts, type SyncTab } from './price-sync';
+import { Chip, Hint, useDayTime } from './price-sync-ui';
+import { PriceSyncDialog } from './PriceSyncDialog';
+import { AutoSyncDialog, RunSummary } from './AutoSyncDialog';
 
 export function ModelPriceCatalog() {
-    const t = useTranslations('setting');
-    const { data: settings } = useSettingList();
-    const setSetting = useSetSetting();
-    const updatePrice = useUpdateModelPrice();
-    const lastUpdateQuery = useLastUpdateTime();
-    const { data: lastUpdateTime } = lastUpdateQuery;
+    const t = useTranslations('model.priceSync');
+    const dayTime = useDayTime();
+    const { data: models } = useModelList();
+    const { data: status } = usePriceSyncStatus();
+    const { data: lastFetch } = useLastUpdateTime();
+    const [previewOpen, setPreviewOpen] = useState(false);
+    const [previewTab, setPreviewTab] = useState<SyncTab>('pending');
+    const [autoOpen, setAutoOpen] = useState(false);
 
-    const [updateInterval, setUpdateInterval] = useState('');
-    const initialUpdateInterval = useRef('');
+    const counts = useMemo(() => sourceCounts(models ?? []), [models]);
+    const lastRun = status?.runs?.[0];
+    const lastRunAt = parseServerTime(lastRun?.at);
+    const fetchedAt = parseServerTime(status?.last_fetch_at ?? lastFetch);
+    const nextRunAt = parseServerTime(status?.next_run_at);
+    const held = status?.held_pending ?? [];
+    const interval = status?.interval_hours ?? 24;
+    const autoOn = status?.auto_enabled ?? true;
 
-    useEffect(() => {
-        if (!settings) return;
-
-        const interval = settings.find((s) => s.key === SettingKey.ModelInfoUpdateInterval);
-        if (!interval || interval.value === initialUpdateInterval.current) return;
-
-        queueMicrotask(() => setUpdateInterval(interval.value));
-        initialUpdateInterval.current = interval.value;
-    }, [settings]);
-
-    const handleSave = (key: string, value: string, initialValue: string) => {
-        if (value === initialValue) return;
-        if (setSetting.isPending) return;
-
-        setSetting.mutate({ key, value }, {
-            onSuccess: () => {
-                toast.success(t('saved'));
-                initialUpdateInterval.current = value;
-            },
-            onError: () => {
-                // 保留草稿不回滚：再次失焦即可重试。
-                toast.error(t('saveFailed'));
-            },
-        });
+    const openPreview = (tab: SyncTab) => {
+        setPreviewTab(tab);
+        setPreviewOpen(true);
     };
 
-    const handleManualUpdate = () => {
-        updatePrice.mutate(undefined, {
-            onSuccess: () => {
-                void lastUpdateQuery.refetch();
-                toast.success(t('llmPrice.updateSuccess'));
-            },
-            onError: () => {
-                toast.error(t('llmPrice.updateFailed'));
-            },
-        });
-    };
+    const sourceTip = (
+        <div className="space-y-0.5">
+            <div>{t('tipLibrary')}</div>
+            <div>{t('tipManual')}</div>
+            <div>{t('tipNone')}</div>
+            <div>{t('tipEdit')}</div>
+        </div>
+    );
 
-    const formatLastUpdateTime = (timeStr: string | undefined) => {
-        if (!timeStr) return t('llmPrice.neverUpdated');
+    const sourceChips = (
+        <div className="flex flex-wrap items-center gap-1.5">
+            <Chip tone="library">{t('chipLibrary', { n: counts.library })}</Chip>
+            <Chip tone="manual"><Lock className="size-3" />{t('chipManual', { n: counts.manual })}</Chip>
+            <Chip tone="none">{t('chipNone', { n: counts.none })}</Chip>
+        </div>
+    );
 
-        const date = new Date(timeStr);
-        if (date.getFullYear() === 1) return t('llmPrice.neverUpdated');
-
-        return date.toLocaleString();
-    };
+    const lastUpdateLabel = lastRunAt ? dayTime(lastRunAt) : fetchedAt ? dayTime(fetchedAt) : t('never');
 
     return (
         <section className="rounded-3xl border border-border bg-card p-4 sm:p-6">
-            <MobileFilterCollapse
-                layout="plain"
-                label={t('llmPrice.title')}
-                trailing={
-                    <span className="ml-auto min-w-0 truncate text-xs text-muted-foreground">
-                        {lastUpdateQuery.isFetching ? t('llmPrice.checking') : formatLastUpdateTime(lastUpdateTime)}
-                    </span>
-                }
-            >
-            <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="flex min-w-0 items-start justify-between gap-3">
                 <div className="min-w-0">
-                    <h2 className="flex min-w-0 items-center gap-2 text-lg font-bold text-card-foreground max-sm:hidden">
-                        <DollarSign className="h-5 w-5 shrink-0" />
-                        <span className="min-w-0 break-words">{t('llmPrice.title')}</span>
+                    <h2 className="flex items-center gap-2 text-lg font-bold text-card-foreground">
+                        <BadgeDollarSign className="size-5 shrink-0" />
+                        {t('title')}
                     </h2>
-                    <p className="mt-1 text-xs leading-5 text-muted-foreground">{t('llmPrice.description')}</p>
+                    <p className="mt-1 flex items-center gap-1 text-xs leading-5 text-muted-foreground">
+                        <span>{t('description')}</span>
+                        <Hint content={t('descriptionTip')} />
+                    </p>
                 </div>
                 <a
                     href="https://models.dev"
                     target="_blank"
                     rel="noreferrer"
-                    className="inline-flex w-fit max-w-full items-center gap-1.5 rounded-full border border-border bg-muted/30 px-3 py-1 text-xs text-muted-foreground hover:text-foreground"
+                    className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-muted/30 px-3 py-1 text-xs text-muted-foreground hover:text-foreground max-sm:border-0 max-sm:bg-transparent max-sm:px-0"
                 >
-                    <span className="truncate">{t('llmPrice.sourceName')}</span>
-                    <ExternalLink className="size-3 shrink-0" />
+                    {t('sourceLink')}
+                    <ExternalLink className="size-3 max-sm:hidden" />
                 </a>
             </div>
 
-            <div className="mt-4 grid gap-3 md:grid-cols-3">
+            {/* desktop / tablet tiles */}
+            <div className="mt-4 grid gap-3 max-sm:hidden md:grid-cols-3">
                 <div className="min-w-0 rounded-2xl border border-border/70 bg-muted/20 px-4 py-3">
-                    <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
-                        <Database className="size-4 shrink-0" />
-                        <span className="min-w-0 break-words">{t('llmPrice.source')}</span>
+                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                        <Clock className="size-3.5" />
+                        {t('lastUpdate')}
                     </div>
-                    <div className="mt-1 min-w-0 break-words text-sm font-semibold">{t('llmPrice.sourceName')}</div>
+                    <div className="mt-1 text-sm font-semibold tabular-nums">{lastUpdateLabel}</div>
+                    <div className="mt-0.5 text-xs text-muted-foreground">
+                        {lastRun ? <RunSummary run={lastRun} /> : fetchedAt ? t('fetchedOnly', { time: dayTime(fetchedAt) }) : null}
+                    </div>
                 </div>
-                <div className="min-w-0 rounded-2xl border border-border/70 bg-muted/20 px-4 py-3 md:col-span-2">
-                    <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
-                        <Clock className="size-4 shrink-0" />
-                        <span className="min-w-0 break-words">{t('llmPrice.lastUpdate')}</span>
+                <div className="min-w-0 rounded-2xl border border-border/70 bg-muted/20 px-4 py-3">
+                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                        <RefreshCw className="size-3.5" />
+                        {t('autoTile')}
                     </div>
-                    <div className="mt-1 min-w-0 break-words text-sm font-semibold">
-                        {lastUpdateQuery.isFetching ? t('llmPrice.checking') : formatLastUpdateTime(lastUpdateTime)}
+                    <div className="mt-1 text-sm font-semibold">{autoOn ? t('autoOn', { h: interval }) : t('autoOff')}</div>
+                    <div className="mt-0.5 text-xs text-muted-foreground">
+                        {autoOn ? (nextRunAt ? t('nextRun', { time: dayTime(nextRunAt) }) : t('nextRunSoon')) : t('autoOffHint')}
                     </div>
+                </div>
+                <div className="min-w-0 rounded-2xl border border-border/70 bg-muted/20 px-4 py-3">
+                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                        <BadgeDollarSign className="size-3.5" />
+                        {t('sourceTile')}
+                        <Hint content={sourceTip} side="bottom" />
+                    </div>
+                    <div className="mt-1.5">{sourceChips}</div>
                 </div>
             </div>
 
-            <div className="mt-4 flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex min-w-0 items-center gap-3">
-                    <Clock className="h-5 w-5 shrink-0 text-muted-foreground" />
-                    <span className="min-w-0 break-words text-sm font-medium">{t('llmPrice.updateInterval.label')}</span>
+            {/* phone: one compact line + chips */}
+            <div className="mt-3 space-y-2 sm:hidden">
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                    <span className="inline-flex items-center gap-1"><Clock className="size-3.5" />{t('updatedAt', { time: lastUpdateLabel })}</span>
+                    <span className="inline-flex items-center gap-1"><RefreshCw className="size-3.5" />{autoOn ? t('autoShort', { h: interval }) : t('autoOff')}</span>
                 </div>
-                <Input
-                    type="number"
-                    value={updateInterval}
-                    onChange={(e) => setUpdateInterval(e.target.value)}
-                    onBlur={() => handleSave(SettingKey.ModelInfoUpdateInterval, updateInterval, initialUpdateInterval.current)}
-                    placeholder={t('llmPrice.updateInterval.placeholder')}
-                    className="w-full rounded-xl sm:w-48"
-                />
+                <div className="flex items-center gap-1.5">
+                    {sourceChips}
+                    <Hint content={sourceTip} side="bottom" />
+                </div>
             </div>
 
-            <div className="mt-4 flex min-w-0 flex-col gap-3 rounded-2xl border border-border/70 bg-muted/20 p-4 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex min-w-0 flex-col gap-1">
-                    <div className="flex min-w-0 items-center gap-3">
-                        <RefreshCw className="h-5 w-5 shrink-0 text-muted-foreground" />
-                        <span className="min-w-0 break-words text-sm font-medium">{t('llmPrice.manualUpdate.label')}</span>
-                    </div>
-                    <span className="min-w-0 break-words text-xs leading-5 text-muted-foreground sm:ml-8">
-                        {t('llmPrice.manualUpdate.hint')}
-                    </span>
+            {held.length > 0 && (
+                <div className="mt-4 flex flex-wrap items-center gap-2 rounded-2xl border border-amber-500/30 bg-amber-500/8 px-4 py-2.5 text-sm">
+                    <TriangleAlert className="size-4 shrink-0 text-amber-600" />
+                    <Hint content={t('bannerTip', { models: held.join(', ') })}>
+                        <span className="min-w-0 flex-1">
+                            <span className="max-sm:hidden">{t('banner', { n: held.length })}</span>
+                            <span className="sm:hidden">{t('bannerMobile', { n: held.length })}</span>
+                        </span>
+                    </Hint>
+                    <button type="button" className="ml-auto text-sm font-medium text-primary hover:underline" onClick={() => openPreview('changed')}>
+                        {t('bannerAction')}
+                    </button>
                 </div>
-                <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handleManualUpdate}
-                    disabled={updatePrice.isPending}
-                    className="w-full rounded-xl sm:w-auto"
-                >
-                    {updatePrice.isPending ? (
-                        <>
-                            <RefreshCw className="size-4 animate-spin" />
-                            {t('llmPrice.manualUpdate.updating')}
-                        </>
-                    ) : (
-                        <>
-                            <RefreshCw className="size-4" />
-                            {t('llmPrice.manualUpdate.button')}
-                        </>
-                    )}
+            )}
+
+            <div className="mt-4 flex items-center gap-2">
+                <Button className="h-9 rounded-xl max-sm:h-11 max-sm:flex-1" onClick={() => openPreview('pending')}>
+                    <CloudDownload className="size-4" />
+                    {t('syncButton')}
                 </Button>
+                <Button variant="outline" className="h-9 rounded-xl max-sm:size-11 max-sm:px-0" onClick={() => setAutoOpen(true)} aria-label={t('autoButton')}>
+                    <Settings2 className="size-4" />
+                    <span className="max-sm:hidden">{t('autoButton')}</span>
+                </Button>
+                <span className="ml-1 text-xs text-muted-foreground max-sm:hidden">{t('syncHint')}</span>
             </div>
-            </MobileFilterCollapse>
+
+            <PriceSyncDialog open={previewOpen} onOpenChange={setPreviewOpen} initialTab={previewTab} />
+            <AutoSyncDialog open={autoOpen} onOpenChange={setAutoOpen} status={status} />
         </section>
     );
 }

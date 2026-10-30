@@ -20,9 +20,10 @@ func LLMPriceAddToDB(modelNames []string, ctx context.Context) error {
 			newLLMInfos = append(newLLMInfos, model.LLMInfo{
 				Name:     modelName,
 				LLMPrice: *modelPrice,
+				Source:   model.LLMSourceLibrary,
 			})
 		} else {
-			newLLMInfos = append(newLLMInfos, model.LLMInfo{Name: modelName})
+			newLLMInfos = append(newLLMInfos, model.LLMInfo{Name: modelName, Source: model.LLMSourceLibrary})
 		}
 		newLLMNames = append(newLLMNames, modelName)
 	}
