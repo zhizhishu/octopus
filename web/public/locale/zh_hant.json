@@ -63,6 +63,7 @@
   },
   "navbar": {
     "home": "主頁",
+    "dashboard": "儀表盤",
     "user": "使用者",
     "channel": "供應源",
     "access-plan": "方案",
@@ -191,6 +192,134 @@
       "successDescription": "已獲得 {amount} 點餘額",
       "failed": "簽到失敗"
     }
+  },
+  "dashboard": {
+    "subtitle": "選一段時間，看誰用了、用了什麼、花了多少。",
+    "updatedAt": "{time} 更新",
+    "range": {
+      "today": "今天",
+      "yesterday": "昨天",
+      "7d": "7 天",
+      "30d": "30 天",
+      "month": "本月",
+      "custom": "自訂"
+    },
+    "rangeLabel": {
+      "today": "今天",
+      "yesterday": "昨天",
+      "oneDay": "這天",
+      "days": "{days} 天"
+    },
+    "granularity": {
+      "label": "按",
+      "hour": "小時",
+      "day": "天",
+      "hourOnlyOneDay": "按小時只能看一天；多天按天看。"
+    },
+    "refresh": "重新整理",
+    "custom": {
+      "from": "從",
+      "to": "到",
+      "last14": "近 14 天",
+      "lastMonth": "上個月",
+      "last30": "近 30 天",
+      "last90": "近 90 天",
+      "max": "最多選 {days} 天",
+      "apply": "用這段",
+      "problem": {
+        "format": "日期寫錯了",
+        "order": "結束早於開始",
+        "future": "不能選今天以後",
+        "tooLong": "最多選 {days} 天"
+      }
+    },
+    "card": {
+      "requests": "請求",
+      "requestsSub": "成功 {rate}",
+      "requestsTip": "這段時間的請求數（成功 + 失敗）。來自全站每日統計，和主頁同一口徑。",
+      "cost": "花費",
+      "costTip": "這段時間的總花費。來自全站每日統計，和主頁同一口徑。",
+      "tokens": "Tokens",
+      "tokensSub": "其中輸出 {value}",
+      "tokensTip": "輸入（含快取）+ 輸出，和主頁的 Tokens 同一口徑。",
+      "cache": "快取命中",
+      "cacheSub": "命中 {value} Tokens",
+      "cacheTip": "命中快取的輸入 Tokens ÷ 可快取的輸入 Tokens，和主頁同一口徑。",
+      "active": "活躍使用者",
+      "activeSub": "期間新註冊 {count} 人",
+      "activeTip": "這段時間發過請求的使用者數 / 全部使用者數。按請求日誌算：日誌被清理的日子算不進來。",
+      "avg": "平均用時",
+      "avgSub": "每次請求從發出到結束",
+      "avgTip": "總用時 ÷ 請求數。包括失敗的請求。",
+      "vsToday": "比昨天這時",
+      "vsOneDay": "比前一天",
+      "vsDays": "比前 {days} 天",
+      "noPrev": "上一段沒數據",
+      "compareTip": "和緊挨著的上一段（一樣長）比。看今天時，只和昨天同一鐘點之前比，兩邊都按請求日誌算。"
+    },
+    "trend": {
+      "title": "趨勢",
+      "cost": "花費",
+      "count": "請求",
+      "tokens": "Tokens",
+      "success": "成功率",
+      "current": "這段",
+      "previous": "上一段",
+      "currentDays": "這 {days} 天",
+      "previousDays": "前 {days} 天",
+      "previousDay": "前一天",
+      "tip": "實線是這一段，虛線是緊挨著的上一段。按天來自每日統計；按小時來自請求日誌（日誌被清理的日子沒有數）。"
+    },
+    "share": {
+      "title": "花在哪",
+      "model": "模型",
+      "channel": "供應源",
+      "plan": "方案",
+      "center": "{period}花費",
+      "others": "其他 {count} 個",
+      "footer": "點一項去看它的日誌",
+      "planNoLink": "日誌頁不能按方案篩，所以方案不能點。",
+      "empty": "這段沒有花費",
+      "noPlan": "沒有方案",
+      "noChannel": "沒走供應源",
+      "tip": "按請求日誌算。日誌被清理的日子算不進來，所以合計可能比上面的「花費」少。"
+    },
+    "users": {
+      "title": "誰花得多",
+      "goto": "去使用者頁",
+      "user": "使用者",
+      "requests": "請求",
+      "tokens": "Tokens",
+      "cost": "花費",
+      "noUser": "未歸屬",
+      "deleted": "已刪",
+      "viewLogs": "看日誌",
+      "openUser": "去使用者頁看 {name}",
+      "tip": "這段時間花費最多的使用者。按請求日誌算，日誌被清理的日子算不進來。點名字去使用者頁，點右邊去看他的日誌。"
+    },
+    "keys": {
+      "title": "哪個 Key 用得多",
+      "goto": "去 API Key",
+      "key": "API Key",
+      "tip": "這段時間花費最多的 API Key。按請求日誌算，日誌被清理的日子算不進來。點 Key 去看它的日誌，點主人去使用者頁。"
+    },
+    "topTrend": {
+      "title": "前 5 名每天花多少",
+      "cost": "花費",
+      "tokens": "Tokens",
+      "tip": "這段時間花費最多的 5 個使用者，每天各花多少。按請求日誌算，日誌被清理的日子算不進來。",
+      "empty": "這段沒有使用者用量"
+    },
+    "mobile": {
+      "users": "使用者",
+      "keys": "Key"
+    },
+    "cleaned": "{date} 前的日誌已清理，那幾天算不進來",
+    "cleanedTip": "花在哪、兩張排行、活躍使用者、前 5 名都按請求日誌算。日誌按保留天數或容量被清理過，那些日子沒有原料，算不出來；上面的請求、花費、Tokens 來自每日統計，不受影響。",
+    "noLogs": "還沒有請求日誌",
+    "loading": "載入中…",
+    "error": "沒拿到數據：{message}",
+    "empty": "這段沒有數據"
   },
   "setting": {
     "appearance": "外觀",

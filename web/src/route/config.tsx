@@ -1,7 +1,7 @@
 import { lazyWithPreload } from './lazy-with-preload';
 import { lazy, ComponentType } from 'react';
 import type { LucideIcon } from 'lucide-react';
-import { BadgeDollarSign, Home, Radio, Settings, Logs, KeyRound, Users, GitBranch, MessageSquareText, Database, Shield, EyeOff } from 'lucide-react';
+import { BadgeDollarSign, ChartColumn, Home, Radio, Settings, Logs, KeyRound, Users, GitBranch, MessageSquareText, Database, Shield, EyeOff } from 'lucide-react';
 
 export type LazyComponent = ReturnType<typeof lazy> & {
     preload: () => Promise<{ default: ComponentType<Record<string, never>> }>
@@ -15,6 +15,7 @@ export interface RouteConfig {
 }
 
 const Home_Module = lazyWithPreload(() => import('@/components/modules/home').then(m => ({ default: m.Home })));
+const Dashboard_Module = lazyWithPreload(() => import('@/components/modules/dashboard').then(m => ({ default: m.Dashboard })));
 const Channel_Module = lazyWithPreload(() => import('@/components/modules/channel').then(m => ({ default: m.Channel })));
 const Redact_Module = lazyWithPreload(() => import('@/components/modules/redact').then(m => ({ default: m.Redact })));
 const Model_Module = lazyWithPreload(() => import('@/components/modules/model').then(m => ({ default: m.Model })));
@@ -29,6 +30,7 @@ const User_Module = lazyWithPreload(() => import('@/components/modules/user').th
 
 export const ROUTES: RouteConfig[] = [
     { id: 'home', label: 'Home', icon: Home, component: Home_Module },
+    { id: 'dashboard', label: 'Dashboard', icon: ChartColumn, component: Dashboard_Module },
     { id: 'user', label: 'Users', icon: Users, component: User_Module },
     { id: 'key', label: 'API Key', icon: KeyRound, component: Key_Module },
     { id: 'channel', label: 'Channel', icon: Radio, component: Channel_Module },
@@ -47,7 +49,8 @@ export const CONTENT_MAP = ROUTES.reduce((acc, route) => {
     return acc;
 }, {} as Record<string, LazyComponent>);
 
-export const ADMIN_ROUTE_IDS = ['home', 'user', 'key', 'channel', 'redact', 'access-plan', 'model', 'migration', 'prompt', 'audit', 'log', 'setting'] as const;
+// 'dashboard'（仪表盘）只给管理员：它的接口是全站口径、AdminOnly。
+export const ADMIN_ROUTE_IDS = ['home', 'dashboard', 'user', 'key', 'channel', 'redact', 'access-plan', 'model', 'migration', 'prompt', 'audit', 'log', 'setting'] as const;
 export const USER_ROUTE_IDS = ['home', 'key', 'log'] as const;
 
 export function routeIdsForRole(role?: string | null) {
