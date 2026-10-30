@@ -8,6 +8,7 @@ import (
 	"github.com/glebarez/sqlite"
 	"github.com/zhizhishu/octopus/internal/db/migrate"
 	"github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/utils/log"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -93,6 +94,13 @@ func InitDB(dbType, dsn string, debug bool) error {
 		&model.StatsAPIKey{},
 		&model.RelayLog{},
 		&model.RelayLogImage{},
+		// 🔴 日志搜索投影表与它的回填标记同样必须在这份名单里，理由与下面的检测表相同：
+		// 只靠 migrate/014 建表，等于把"表在不在"押在一次性迁移的执行历史上。
+		// 名单里有它，任何老库（014 记成已执行而表不在、表被删过、标记表是旧结构）
+		// 每次启动都会先把结构对齐；表是空的由 014 发现并从头回填（分批、有预算、
+		// 剩下的交给后台循环，见 migrate/014.go 与 op.RelayLogSearchBackfillStart）。
+		&model.RelayLogSearchIndex{},
+		&migrate.RelayLogSearchBackfillState{},
 		// 🔴 检测任务/结果必须留在这份名单里，不能只靠 migrate/015 建表。
 		//
 		// 015 是一次性迁移：它建表时用的是**当时**的结构，跑完就记成"已执行"，
@@ -112,6 +120,12 @@ func InitDB(dbType, dsn string, debug bool) error {
 		&migrate.MigrationRecord{},
 	); err != nil {
 		return err
+	}
+	// 搜索投影表的"已补齐"标记要在任何迁移/搜索读它之前核对一次: 表若是刚被上面的
+	// AutoMigrate 重新建出来的空表, 旧标记的 complete=true 就是假的。失败只记日志——
+	// 核对不了时 014 与后台回填还会再核对, 不该为此挡住启动。
+	if _, err := migrate.ReconcileRelayLogSearchBackfillMarker(db); err != nil {
+		log.Warnf("relay_log_search marker check failed: %v", err)
 	}
 	if err := migrate.AfterAutoMigrate(db); err != nil {
 		return err

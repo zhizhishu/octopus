@@ -171,12 +171,27 @@ const relayLogSearchIndexMigrationVersion = 14
 // 自己写的标记 —— 只有它代表"探测到没有缺行"。少了这一条, 升级大表时回填跑一半
 // 就记 success, 搜索对着缺行的投影表直接返回空页, 那批老日志永久搜不到。
 func relayLogSearchIndexComplete(ctx context.Context) bool {
+	complete, _ := relayLogSearchIndexState(ctx)
+	return complete
+}
+
+// relayLogSearchIndexState 返回(投影表是否完整, 回填游标)。
+//
+// 完整 = 迁移 014 记录为 success 且它写的完成标记为 true(理由见上)。
+// 不完整时游标仍然有意义: id <= cursor 的主表行已确认在投影表里(回填按 id 升序
+// 走过它们; 之后的写入/删除由写入路径和清理路径同步维护), 搜索只需在主表上补
+// id > cursor 那一段。没有标记行时游标为 0, 即整段走主表 LIKE —— 与修复前的退路相同。
+func relayLogSearchIndexState(ctx context.Context) (bool, int64) {
 	tx := db.GetDB().WithContext(ctx)
+	complete, cursor := migrate.RelayLogSearchBackfillProgress(tx)
+	if !complete {
+		return false, cursor
+	}
 	var rec migrate.MigrationRecord
 	if err := tx.
 		Where("version = ? AND status = ?", relayLogSearchIndexMigrationVersion, migrate.MigrationRecordStatusSuccess).
 		Take(&rec).Error; err != nil {
-		return false
+		return false, cursor
 	}
-	return migrate.RelayLogSearchBackfillComplete(tx)
+	return true, cursor
 }

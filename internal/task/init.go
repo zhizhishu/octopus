@@ -63,6 +63,8 @@ func Init() {
 	// 日志严重程度回填：启动迁移只做一小段，剩下的在监听之后继续。和 flusher
 	// 一样从这里显式启动，不在包 init 里自启——测试二进制不该有后台写库者。
 	op.RelayLogSeverityBackfillStart()
+	// 日志搜索投影表回填：同一个取舍——启动迁移（014）只补 3 秒，剩下的在这里续上。
+	op.RelayLogSearchBackfillStart()
 	// 视频任务轮询器同理: 它每一轮都读库写库, 绝不许在包里靠 init() 自启(见上面那段注释,
 	// 也见 VideoTaskPollStart 的注释)。放在这里而不是放到下面的 Register 序列里, 有两个理由:
 	//  1) 视频任务的状态推进和设置读取无关, 不能因为某个 SettingGetInt 失败 early-return
