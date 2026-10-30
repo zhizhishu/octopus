@@ -91,6 +91,7 @@ function renderTabRows(tab: SettingTabId): ReactNode[] {
                     <SettingSystem section="claude" />
                     <SettingSystem section="codex" />
                 </div>,
+                <SettingSystem key="cache" section="cache" />,
                 <SettingSystem key="beta" section="claudeBetaStrip" />,
                 <SettingFingerprintProfile key="profiles" />,
             ];

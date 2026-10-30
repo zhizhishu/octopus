@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useTranslations } from 'next-intl';
-import { Check, Clock, Fingerprint, Gift, Globe, HelpCircle, Loader2, Mail, Pencil, Radio, Shield, UserPlus, X, Zap, AlertTriangle, type LucideIcon } from 'lucide-react';
+import { Check, Clock, Coins, Fingerprint, Gift, Globe, HelpCircle, Loader2, Mail, Pencil, Radio, Shield, UserPlus, X, Zap, AlertTriangle, type LucideIcon } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
@@ -45,10 +45,43 @@ export type SettingSystemSection =
     | 'claude'
     | 'codex'
     | 'claudeBetaStrip'
+    | 'cache'
     | 'stream'
     | 'registration'
     | 'checkIn'
     | 'upstreamError';
+
+// 「默认思考强度」两个下拉框共用的档位。存储值与后端一致：none = 不补。
+const DEFAULT_EFFORT_VALUES = ['none', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
+
+// 和后端 normalizeClaudeDefaultEffort / 迁移 023 同一套读法：旧值 auto → 回退默认，off → none。
+export function normalizeDefaultEffort(raw: string | undefined, fallback: 'high' | 'none'): string {
+    const value = (raw ?? '').trim().toLowerCase();
+    if (value === 'off' || value === 'false' || value === 'disabled') return 'none';
+    return (DEFAULT_EFFORT_VALUES as readonly string[]).includes(value) ? value : fallback;
+}
+
+// 一行设置的文字部分：短标签 + 一句话说明，细节放进问号提示里（最多三短行）。
+function SettingText({ label, description, hint, strong = false }: { label: string; description: string; hint: string; strong?: boolean }) {
+    return (
+        <div className="min-w-0 space-y-1">
+            <div className="flex flex-wrap items-center gap-2">
+                <span className={`text-sm ${strong ? 'font-semibold' : 'font-medium'}`}>{label}</span>
+                <TooltipProvider>
+                    <Tooltip>
+                        <TooltipTrigger asChild>
+                            <HelpCircle className="size-4 text-muted-foreground cursor-help" />
+                        </TooltipTrigger>
+                        <TooltipContent className="max-w-xs whitespace-pre-line">
+                            {hint}
+                        </TooltipContent>
+                    </Tooltip>
+                </TooltipProvider>
+            </div>
+            <p className="text-xs leading-5 text-muted-foreground">{description}</p>
+        </div>
+    );
+}
 
 function SystemCard({
     icon: Icon,
@@ -96,12 +129,13 @@ export function SettingSystem({ section, className = '' }: { section?: SettingSy
     const [claudeHeaderArch, setClaudeHeaderArch] = useState('x64');
     const [claudeHeaderTimeout, setClaudeHeaderTimeout] = useState('600');
     const [claudeHeaderStabilizeDeviceProfile, setClaudeHeaderStabilizeDeviceProfile] = useState(true);
-    const [claudeCLIAutoCompact, setClaudeCLIAutoCompact] = useState(false);
-    const [claudeCLIReasoningEffort, setClaudeCLIReasoningEffort] = useState('auto');
+    const [claudeCLIReasoningEffort, setClaudeCLIReasoningEffort] = useState('high');
+    const [relayClaudeCLIShapeKeys, setRelayClaudeCLIShapeKeys] = useState(true);
     const [claudeBetaStripFlags, setClaudeBetaStripFlags] = useState('');
     const [codexHeaderUserAgent, setCodexHeaderUserAgent] = useState('codex_cli_rs/0.156.1 (Ubuntu 24.04.1; x86_64) unknown (codex_cli_rs; 0.156.1)');
     const [codexHeaderBetaFeatures, setCodexHeaderBetaFeatures] = useState('remote_compaction_v2');
     const [codexFastMode, setCodexFastMode] = useState(false);
+    const [codexDefaultReasoningEffort, setCodexDefaultReasoningEffort] = useState('none');
     const [editingHeaderProfile, setEditingHeaderProfile] = useState<HeaderProfile | null>(null);
     const [headerDraft, setHeaderDraft] = useState<HeaderDraft>({
         claudeUserAgent: 'claude-cli/2.1.281 (external, sdk-cli)',
@@ -156,12 +190,13 @@ export function SettingSystem({ section, className = '' }: { section?: SettingSy
     const initialClaudeHeaderArch = useRef('x64');
     const initialClaudeHeaderTimeout = useRef('600');
     const initialClaudeHeaderStabilizeDeviceProfile = useRef(true);
-    const initialClaudeCLIAutoCompact = useRef(false);
-    const initialClaudeCLIReasoningEffort = useRef('auto');
+    const initialClaudeCLIReasoningEffort = useRef('high');
+    const initialRelayClaudeCLIShapeKeys = useRef(true);
     const initialClaudeBetaStripFlags = useRef('');
     const initialCodexHeaderUserAgent = useRef('codex_cli_rs/0.156.1 (Ubuntu 24.04.1; x86_64) unknown (codex_cli_rs; 0.156.1)');
     const initialCodexHeaderBetaFeatures = useRef('remote_compaction_v2');
     const initialCodexFastMode = useRef(false);
+    const initialCodexDefaultReasoningEffort = useRef('none');
     const initialUserRegistrationEnabled = useRef(false);
     const initialUpstreamErrorStatusPassthrough = useRef(true);
     const initialUpstreamErrorBodyMode = useRef('redacted_upstream');
@@ -206,7 +241,8 @@ export function SettingSystem({ section, className = '' }: { section?: SettingSy
             const claudeArch = settings.find(s => s.key === SettingKey.ClaudeHeaderArch);
             const claudeTimeout = settings.find(s => s.key === SettingKey.ClaudeHeaderTimeout);
             const claudeStabilize = settings.find(s => s.key === SettingKey.ClaudeHeaderStabilizeDeviceProfile);
-            const claudeAutoCompact = settings.find(s => s.key === SettingKey.ClaudeCLIAutoCompact);
+            const claudeShapeKeys = settings.find(s => s.key === SettingKey.RelayClaudeCLIShapeKeys);
+            const codexDefaultEffort = settings.find(s => s.key === SettingKey.CodexDefaultReasoningEffort);
             const claudeReasoningEffort = settings.find(s => s.key === SettingKey.ClaudeCLIReasoningEffort);
             const claudeBetaStrip = settings.find(s => s.key === SettingKey.ClaudeBetaStripFlags);
             const codexUA = settings.find(s => s.key === SettingKey.CodexHeaderUserAgent);
@@ -345,17 +381,24 @@ export function SettingSystem({ section, className = '' }: { section?: SettingSy
                 queueMicrotask(() => setClaudeHeaderStabilizeDeviceProfile(enabled));
                 initialClaudeHeaderStabilizeDeviceProfile.current = enabled;
             }
-            if (claudeAutoCompact) {
-                const enabled = claudeAutoCompact.value !== 'false';
-                queueMicrotask(() => setClaudeCLIAutoCompact(enabled));
-                initialClaudeCLIAutoCompact.current = enabled;
+            if (claudeShapeKeys) {
+                const enabled = claudeShapeKeys.value !== 'false';
+                queueMicrotask(() => setRelayClaudeCLIShapeKeys(enabled));
+                initialRelayClaudeCLIShapeKeys.current = enabled;
             }
             if (claudeReasoningEffort) {
-                const rawValue = (claudeReasoningEffort.value || 'auto').toLowerCase();
-                const value = ['auto', 'off', 'low', 'medium', 'high', 'xhigh', 'max'].includes(rawValue) ? rawValue : 'auto';
+                // Same reading as the backend (and migration 023): auto/unknown → high, off → none.
+                const value = normalizeDefaultEffort(claudeReasoningEffort.value, 'high');
                 if (value !== initialClaudeCLIReasoningEffort.current) {
                     queueMicrotask(() => setClaudeCLIReasoningEffort(value));
                     initialClaudeCLIReasoningEffort.current = value;
+                }
+            }
+            if (codexDefaultEffort) {
+                const value = normalizeDefaultEffort(codexDefaultEffort.value, 'none');
+                if (value !== initialCodexDefaultReasoningEffort.current) {
+                    queueMicrotask(() => setCodexDefaultReasoningEffort(value));
+                    initialCodexDefaultReasoningEffort.current = value;
                 }
             }
             if (claudeBetaStrip) {
@@ -599,6 +642,8 @@ export function SettingSystem({ section, className = '' }: { section?: SettingSy
                     initialClaudeHeaderTimeout.current = value;
                 } else if (key === SettingKey.ClaudeCLIReasoningEffort) {
                     initialClaudeCLIReasoningEffort.current = value;
+                } else if (key === SettingKey.CodexDefaultReasoningEffort) {
+                    initialCodexDefaultReasoningEffort.current = value;
                 } else if (key === SettingKey.ClaudeBetaStripFlags) {
                     initialClaudeBetaStripFlags.current = value;
                 } else if (key === SettingKey.CodexHeaderUserAgent) {
@@ -747,19 +792,19 @@ export function SettingSystem({ section, className = '' }: { section?: SettingSy
         });
     };
 
-    const handleClaudeCLIAutoCompactChange = (checked: boolean) => {
+    const handleRelayClaudeCLIShapeKeysChange = (checked: boolean) => {
         if (setSetting.isPending) return;
-        setClaudeCLIAutoCompact(checked);
-        if (checked === initialClaudeCLIAutoCompact.current) return;
+        setRelayClaudeCLIShapeKeys(checked);
+        if (checked === initialRelayClaudeCLIShapeKeys.current) return;
 
-        setSetting.mutate({ key: SettingKey.ClaudeCLIAutoCompact, value: checked ? 'true' : 'false' }, {
+        setSetting.mutate({ key: SettingKey.RelayClaudeCLIShapeKeys, value: checked ? 'true' : 'false' }, {
             onSuccess: () => {
                 toast.success(t('saved'));
-                initialClaudeCLIAutoCompact.current = checked;
+                initialRelayClaudeCLIShapeKeys.current = checked;
             },
             onError: () => {
                 toast.error(t('saveFailed'));
-                setClaudeCLIAutoCompact(initialClaudeCLIAutoCompact.current);
+                setRelayClaudeCLIShapeKeys(initialRelayClaudeCLIShapeKeys.current);
             }
         });
     };
@@ -1312,103 +1357,40 @@ export function SettingSystem({ section, className = '' }: { section?: SettingSy
         </SystemCard>
     );
 
+    const effortSelect = (
+        value: string,
+        onChange: (value: string) => void,
+        label: string,
+        optionPrefix: 'claudeCLIReasoningEffort' | 'codexDefaultReasoningEffort',
+    ) => (
+        <select
+            value={value}
+            onChange={(event) => onChange(event.target.value)}
+            aria-label={label}
+            className="h-9 w-full min-w-0 rounded-xl border border-input bg-background px-3 text-sm text-foreground"
+        >
+            {DEFAULT_EFFORT_VALUES.map((level) => (
+                <option key={level} value={level}>{t(`${optionPrefix}.${level}`)}</option>
+            ))}
+        </select>
+    );
+
+    const headerRows = (rows: typeof claudeHeaderRows) => (
+        <div className="grid gap-1.5">
+            {rows.map((header) => (
+                <div key={header.key} className="grid min-w-0 gap-1 rounded-xl border border-border/50 bg-background/45 px-2.5 py-2 text-xs sm:grid-cols-[minmax(7.5rem,0.8fr)_minmax(0,1.2fr)] sm:gap-2 sm:border-0 sm:bg-transparent sm:px-0 sm:py-0">
+                    <span className="min-w-0 break-all font-mono text-muted-foreground sm:truncate">{header.label}</span>
+                    <span className="min-w-0 break-all font-mono text-foreground sm:truncate">{header.value}</span>
+                </div>
+            ))}
+        </div>
+    );
+
     const claudeCard = (
         <SystemCard key="claude" icon={Zap} title={t('sections.claude')} className={className}>
             <div className="grid min-w-0 gap-3">
-                <div className="flex items-start justify-between gap-4">
-                    <div className="flex min-w-0 items-start gap-3">
-                        <div className="min-w-0 space-y-1">
-                            <div className="flex flex-wrap items-center gap-2">
-                                <span className="text-sm font-semibold">{t('anthropicAutoCacheControl.label')}</span>
-                                <TooltipProvider>
-                                    <Tooltip>
-                                        <TooltipTrigger asChild>
-                                            <HelpCircle className="size-4 text-muted-foreground cursor-help" />
-                                        </TooltipTrigger>
-                                        <TooltipContent className="max-w-xs">
-                                            {t('anthropicAutoCacheControl.hint')}
-                                        </TooltipContent>
-                                    </Tooltip>
-                                </TooltipProvider>
-                            </div>
-                            <p className="text-xs leading-5 text-muted-foreground">{t('headerDefaults.claudeDescription')}</p>
-                        </div>
-                    </div>
-                    <Switch
-                        checked={anthropicAutoCacheControl}
-                        onCheckedChange={handleAnthropicAutoCacheControlChange}
-                        aria-label={t('anthropicAutoCacheControl.label')}
-                        className="shrink-0"
-                    />
-                </div>
-                <div className="grid gap-1.5 border-t border-border/60 pt-3">
-                    {claudeHeaderRows.slice(0, 5).map((header) => (
-                        <div key={header.key} className="grid min-w-0 gap-1 rounded-xl border border-border/50 bg-background/45 px-2.5 py-2 text-xs sm:grid-cols-[minmax(7.5rem,0.8fr)_minmax(0,1.2fr)] sm:gap-2 sm:border-0 sm:bg-transparent sm:px-0 sm:py-0">
-                            <span className="min-w-0 break-all font-mono text-muted-foreground sm:truncate">{header.label}</span>
-                            <span className="min-w-0 break-all font-mono text-foreground sm:truncate">{header.value}</span>
-                        </div>
-                    ))}
-                </div>
-                <div className="grid gap-3 border-t border-border/60 pt-3">
-                    <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0 space-y-1">
-                            <div className="flex flex-wrap items-center gap-2">
-                                <span className="text-sm font-medium">{t('claudeCLIAutoCompact.label')}</span>
-                                <TooltipProvider>
-                                    <Tooltip>
-                                        <TooltipTrigger asChild>
-                                            <HelpCircle className="size-4 text-muted-foreground cursor-help" />
-                                        </TooltipTrigger>
-                                        <TooltipContent className="max-w-xs">
-                                            {t('claudeCLIAutoCompact.hint')}
-                                        </TooltipContent>
-                                    </Tooltip>
-                                </TooltipProvider>
-                            </div>
-                        </div>
-                        <Switch
-                            checked={claudeCLIAutoCompact}
-                            onCheckedChange={handleClaudeCLIAutoCompactChange}
-                            aria-label={t('claudeCLIAutoCompact.label')}
-                            className="shrink-0"
-                        />
-                    </div>
-                    <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_9rem] sm:items-center">
-                        <div className="min-w-0 space-y-1">
-                            <div className="flex flex-wrap items-center gap-2">
-                                <span className="text-sm font-medium">{t('claudeCLIReasoningEffort.label')}</span>
-                                <TooltipProvider>
-                                    <Tooltip>
-                                        <TooltipTrigger asChild>
-                                            <HelpCircle className="size-4 text-muted-foreground cursor-help" />
-                                        </TooltipTrigger>
-                                        <TooltipContent className="max-w-xs">
-                                            {t('claudeCLIReasoningEffort.hint')}
-                                        </TooltipContent>
-                                    </Tooltip>
-                                </TooltipProvider>
-                            </div>
-                        </div>
-                        <select
-                            value={claudeCLIReasoningEffort}
-                            onChange={(event) => {
-                                const value = event.target.value;
-                                setClaudeCLIReasoningEffort(value);
-                                handleSave(SettingKey.ClaudeCLIReasoningEffort, value, initialClaudeCLIReasoningEffort.current);
-                            }}
-                            aria-label={t('claudeCLIReasoningEffort.label')}
-                            className="h-9 w-full min-w-0 rounded-xl border border-input bg-background px-3 text-sm text-foreground"
-                        >
-                            <option value="auto">{t('claudeCLIReasoningEffort.auto')}</option>
-                            <option value="off">{t('claudeCLIReasoningEffort.off')}</option>
-                            <option value="low">{t('claudeCLIReasoningEffort.low')}</option>
-                            <option value="medium">{t('claudeCLIReasoningEffort.medium')}</option>
-                            <option value="high">{t('claudeCLIReasoningEffort.high')}</option>
-                            <option value="xhigh">{t('claudeCLIReasoningEffort.xhigh')}</option>
-                            <option value="max">{t('claudeCLIReasoningEffort.max')}</option>
-                        </select>
-                    </div>
-                </div>
+                <p className="text-xs leading-5 text-muted-foreground">{t('headerDefaults.claudeDescription')}</p>
+                {headerRows(claudeHeaderRows.slice(0, 5))}
                 <Button
                     type="button"
                     variant="outline"
@@ -1419,6 +1401,32 @@ export function SettingSystem({ section, className = '' }: { section?: SettingSy
                     <Pencil className="size-3.5" />
                     {t('headerDefaults.edit')}
                 </Button>
+                <div className="grid gap-3 border-t border-border/60 pt-3">
+                    <div className="flex items-start justify-between gap-3">
+                        <SettingText
+                            label={t('relayClaudeCLIShapeKeys.label')}
+                            description={t('relayClaudeCLIShapeKeys.description')}
+                            hint={t('relayClaudeCLIShapeKeys.hint')}
+                        />
+                        <Switch
+                            checked={relayClaudeCLIShapeKeys}
+                            onCheckedChange={handleRelayClaudeCLIShapeKeysChange}
+                            aria-label={t('relayClaudeCLIShapeKeys.label')}
+                            className="shrink-0"
+                        />
+                    </div>
+                    <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_10rem] sm:items-center">
+                        <SettingText
+                            label={t('claudeCLIReasoningEffort.label')}
+                            description={t('claudeCLIReasoningEffort.description')}
+                            hint={t('claudeCLIReasoningEffort.hint')}
+                        />
+                        {effortSelect(claudeCLIReasoningEffort, (value) => {
+                            setClaudeCLIReasoningEffort(value);
+                            handleSave(SettingKey.ClaudeCLIReasoningEffort, value, initialClaudeCLIReasoningEffort.current);
+                        }, t('claudeCLIReasoningEffort.label'), 'claudeCLIReasoningEffort')}
+                    </div>
+                </div>
             </div>
         </SystemCard>
     );
@@ -1426,63 +1434,8 @@ export function SettingSystem({ section, className = '' }: { section?: SettingSy
     const codexCard = (
         <SystemCard key="codex" icon={Fingerprint} title={t('sections.codex')} className={className}>
             <div className="grid min-w-0 gap-3">
-                <div className="flex items-start justify-between gap-4">
-                    <div className="flex min-w-0 items-start gap-3">
-                        <div className="min-w-0 space-y-1">
-                            <div className="flex flex-wrap items-center gap-2">
-                                <span className="text-sm font-semibold">{t('openAIAutoPromptCacheKey.label')}</span>
-                                <TooltipProvider>
-                                    <Tooltip>
-                                        <TooltipTrigger asChild>
-                                            <HelpCircle className="size-4 text-muted-foreground cursor-help" />
-                                        </TooltipTrigger>
-                                        <TooltipContent className="max-w-xs">
-                                            {t('openAIAutoPromptCacheKey.hint')}
-                                        </TooltipContent>
-                                    </Tooltip>
-                                </TooltipProvider>
-                            </div>
-                            <p className="text-xs leading-5 text-muted-foreground">{t('headerDefaults.codexDescription')}</p>
-                        </div>
-                    </div>
-                    <Switch
-                        checked={openAIAutoPromptCacheKey}
-                        onCheckedChange={handleOpenAIAutoPromptCacheKeyChange}
-                        aria-label={t('openAIAutoPromptCacheKey.label')}
-                        className="shrink-0"
-                    />
-                </div>
-                <div className="grid gap-1.5 border-t border-border/60 pt-3">
-                    {codexHeaderRows.map((header) => (
-                        <div key={header.key} className="grid min-w-0 gap-1 rounded-xl border border-border/50 bg-background/45 px-2.5 py-2 text-xs sm:grid-cols-[minmax(7.5rem,0.8fr)_minmax(0,1.2fr)] sm:gap-2 sm:border-0 sm:bg-transparent sm:px-0 sm:py-0">
-                            <span className="min-w-0 break-all font-mono text-muted-foreground sm:truncate">{header.label}</span>
-                            <span className="min-w-0 break-all font-mono text-foreground sm:truncate">{header.value}</span>
-                        </div>
-                    ))}
-                </div>
-                <div className="flex items-start justify-between gap-3 border-t border-border/60 pt-3">
-                    <div className="min-w-0 space-y-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                            <span className="text-sm font-medium">{t('codexFastMode.label')}</span>
-                            <TooltipProvider>
-                                <Tooltip>
-                                    <TooltipTrigger asChild>
-                                        <HelpCircle className="size-4 text-muted-foreground cursor-help" />
-                                    </TooltipTrigger>
-                                    <TooltipContent className="max-w-xs">
-                                        {t('codexFastMode.hint')}
-                                    </TooltipContent>
-                                </Tooltip>
-                            </TooltipProvider>
-                        </div>
-                    </div>
-                    <Switch
-                        checked={codexFastMode}
-                        onCheckedChange={handleCodexFastModeChange}
-                        aria-label={t('codexFastMode.label')}
-                        className="shrink-0"
-                    />
-                </div>
+                <p className="text-xs leading-5 text-muted-foreground">{t('headerDefaults.codexDescription')}</p>
+                {headerRows(codexHeaderRows)}
                 <Button
                     type="button"
                     variant="outline"
@@ -1493,6 +1446,71 @@ export function SettingSystem({ section, className = '' }: { section?: SettingSy
                     <Pencil className="size-3.5" />
                     {t('headerDefaults.edit')}
                 </Button>
+                <div className="grid gap-3 border-t border-border/60 pt-3">
+                    <div className="flex items-start justify-between gap-3">
+                        <SettingText
+                            label={t('codexFastMode.label')}
+                            description={t('codexFastMode.description')}
+                            hint={t('codexFastMode.hint')}
+                        />
+                        <Switch
+                            checked={codexFastMode}
+                            onCheckedChange={handleCodexFastModeChange}
+                            aria-label={t('codexFastMode.label')}
+                            className="shrink-0"
+                        />
+                    </div>
+                    <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_10rem] sm:items-center">
+                        <SettingText
+                            label={t('codexDefaultReasoningEffort.label')}
+                            description={t('codexDefaultReasoningEffort.description')}
+                            hint={t('codexDefaultReasoningEffort.hint')}
+                        />
+                        {effortSelect(codexDefaultReasoningEffort, (value) => {
+                            setCodexDefaultReasoningEffort(value);
+                            handleSave(SettingKey.CodexDefaultReasoningEffort, value, initialCodexDefaultReasoningEffort.current);
+                        }, t('codexDefaultReasoningEffort.ariaLabel'), 'codexDefaultReasoningEffort')}
+                    </div>
+                </div>
+            </div>
+        </SystemCard>
+    );
+
+    // 省钱缓存：只改请求里的缓存标记，和上面的身份伪装（请求头 / 指纹）互不影响，所以单独一张卡。
+    const cacheCard = (
+        <SystemCard key="cache" icon={Coins} title={t('sections.cache')} className={className}>
+            <div className="grid min-w-0 gap-3">
+                <p className="text-xs leading-5 text-muted-foreground">{t('cacheCard.description')}</p>
+                <div className="grid gap-3 md:grid-cols-2">
+                    <div className="flex items-start justify-between gap-3 rounded-2xl border border-border/70 bg-muted/20 p-3">
+                        <SettingText
+                            strong
+                            label={t('openAIAutoPromptCacheKey.label')}
+                            description={t('openAIAutoPromptCacheKey.description')}
+                            hint={t('openAIAutoPromptCacheKey.hint')}
+                        />
+                        <Switch
+                            checked={openAIAutoPromptCacheKey}
+                            onCheckedChange={handleOpenAIAutoPromptCacheKeyChange}
+                            aria-label={t('openAIAutoPromptCacheKey.label')}
+                            className="shrink-0"
+                        />
+                    </div>
+                    <div className="flex items-start justify-between gap-3 rounded-2xl border border-border/70 bg-muted/20 p-3">
+                        <SettingText
+                            strong
+                            label={t('anthropicAutoCacheControl.label')}
+                            description={t('anthropicAutoCacheControl.description')}
+                            hint={t('anthropicAutoCacheControl.hint')}
+                        />
+                        <Switch
+                            checked={anthropicAutoCacheControl}
+                            onCheckedChange={handleAnthropicAutoCacheControlChange}
+                            aria-label={t('anthropicAutoCacheControl.label')}
+                            className="shrink-0"
+                        />
+                    </div>
+                </div>
             </div>
         </SystemCard>
     );
@@ -2150,6 +2168,7 @@ export function SettingSystem({ section, className = '' }: { section?: SettingSy
         case 'claude': return <>{claudeCard}{dialogNode}</>;
         case 'codex': return <>{codexCard}{dialogNode}</>;
         case 'claudeBetaStrip': return betaStripCard;
+        case 'cache': return cacheCard;
         case 'stream': return streamCard;
         case 'registration': return registrationCard;
         case 'checkIn': return checkInCard;
@@ -2162,6 +2181,7 @@ export function SettingSystem({ section, className = '' }: { section?: SettingSy
                     {statsCard}
                     {claudeCard}
                     {codexCard}
+                    {cacheCard}
                     {betaStripCard}
                     {dialogNode}
                     {streamCard}

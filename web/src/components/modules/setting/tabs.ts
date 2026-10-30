@@ -11,7 +11,7 @@ export const DEFAULT_SETTING_TAB: SettingTabId = 'general';
 export const SETTING_TAB_CARD_COUNTS: Record<SettingTabId, number> = {
     general: 4,
     relay: 5,
-    identity: 4,
+    identity: 5,
     users: 2,
     system: 3,
     logs: 2,

@@ -145,7 +145,7 @@ test('page: opens on the tab named in the URL hash', () => {
     assert.equal(page.activeTab(), 'identity');
     assert.equal(page.description(), 'tabs.identity.description');
     const types = page.cards().map((n) => n.props.section ? `${n.type}:${n.props.section}` : n.type);
-    assert.deepEqual(types, ['SettingSystem:claude', 'SettingSystem:codex', 'SettingSystem:claudeBetaStrip', 'SettingFingerprintProfile']);
+    assert.deepEqual(types, ['SettingSystem:claude', 'SettingSystem:codex', 'SettingSystem:cache', 'SettingSystem:claudeBetaStrip', 'SettingFingerprintProfile']);
     page.unmount();
 });
 
@@ -272,8 +272,10 @@ test('system sections: each card carries only its own settings; header dialog ri
     const expectations = {
         network: { has: ['sections.network', 'proxyUrl.placeholder', 'trustedProxies.placeholder', 'corsAllowOrigins.label'], not: ['statsSaveInterval.placeholder', 'streamKeepalive.label'] },
         stats: { has: ['sections.stats', 'statsSaveInterval.placeholder'], not: ['proxyUrl.placeholder'] },
-        claude: { has: ['sections.claude', 'anthropicAutoCacheControl.label', 'claudeCLIReasoningEffort.label'], not: ['openAIAutoPromptCacheKey.label'] },
-        codex: { has: ['sections.codex', 'openAIAutoPromptCacheKey.label', 'codexFastMode.label'], not: ['anthropicAutoCacheControl.label'] },
+        // 缓存开关和身份伪装分开：Claude / Codex 卡里只有身份与思考 / 速度设置，缓存单独一张卡。
+        claude: { has: ['sections.claude', 'claudeCLIReasoningEffort.label', 'relayClaudeCLIShapeKeys.label'], not: ['openAIAutoPromptCacheKey.label', 'anthropicAutoCacheControl.label', 'claudeCLIAutoCompact.label'] },
+        codex: { has: ['sections.codex', 'codexFastMode.label', 'codexDefaultReasoningEffort.ariaLabel'], not: ['anthropicAutoCacheControl.label', 'openAIAutoPromptCacheKey.label'] },
+        cache: { has: ['sections.cache', 'cacheCard.description', 'openAIAutoPromptCacheKey.label', 'anthropicAutoCacheControl.label'], not: ['codexFastMode.label', 'claudeCLIReasoningEffort.label', 'headerDefaults.edit'] },
         claudeBetaStrip: { has: ['claudeBetaStripFlags.label'], not: ['anthropicAutoCacheControl.label'] },
         stream: { has: ['sections.stream', 'streamKeepalive.label', 'firstByteKeepalive.label', 'streamDataTimeout.label', 'upstreamHeaderTimeout.label', 'responsesSessionTTL.label'], not: ['upstreamError.statusPassthrough'] },
         registration: { has: ['sections.registration', 'userRegistration.label', 'emailVerification.enabled', 'emailVerification.provider'], not: ['checkIn.enabled'] },

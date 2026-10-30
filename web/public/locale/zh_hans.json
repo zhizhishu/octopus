@@ -221,12 +221,14 @@
       "placeholder": "请输入周期（分钟）"
     },
     "anthropicAutoCacheControl": {
-      "label": "Anthropic 稳定前缀缓存",
-      "hint": "为长 system、工具定义或首条长用户上下文自动注入 cache_control"
+      "label": "自动省钱缓存（Claude）",
+      "description": "长提示词和对话前文自动标记缓存，再发时更快更省。客户端自己标过就不动。",
+      "hint": "仅 Anthropic 渠道，且请求里没有任何缓存标记时才加。\n开头（系统提示 / 工具 / 首条消息）够长才标，另标最近两条用户消息。\n太短不加；真 Claude Code 自带标记，不受影响。"
     },
     "openAIAutoPromptCacheKey": {
-      "label": "OpenAI 稳定缓存键",
-      "hint": "客户端未传 prompt_cache_key 时，根据用户、请求模型、system/工具锚点和首条用户消息生成不含明文的稳定 key；客户端显式值永远优先。"
+      "label": "自动省钱缓存（OpenAI）",
+      "description": "同一段对话重复的长开头让上游直接复用，更快更省。客户端自己设置过就不动。",
+      "hint": "仅 OpenAI Chat / Responses 渠道。\n按用户、模型和对话开头算一个缓存编号，只发哈希，不发原文。\n真 Codex 自带编号，不受影响。"
     },
     "headerDefaults": {
       "title": "Header 默认值",
@@ -237,28 +239,24 @@
       "packageVersion": "Package Version",
       "runtimeVersion": "Runtime Version",
       "stabilizeDeviceProfile": "稳定设备指纹",
-      "claudeDescription": "Anthropic 缓存开关和 Claude CLI 指纹一起管理，适合长 system / 工具定义前缀。",
-      "codexDescription": "OpenAI 缓存键和 Codex Responses 指纹一起管理，转发时保持 stream 与 SSE 形态。",
+      "claudeDescription": "对 Anthropic 渠道生效：扮成 Claude CLI 的请求头，以及思考相关设置。",
+      "codexDescription": "对 OpenAI Responses 渠道生效：扮成 Codex 的请求头，以及速度和思考设置。",
       "edit": "编辑",
       "fixed": "固定",
       "editable": "可编辑",
       "cancel": "取消",
       "save": "保存"
     },
-    "claudeCLIAutoCompact": {
-      "label": "Claude CLI 自动压缩",
-      "hint": "默认关闭，按 Claude CLI 原生行为透传。开启后才会在客户端未传 context_management 时补 clear_thinking 清理思考内容，用于降低多轮长聊越聊越慢和 CLI 卡住风险。"
-    },
     "claudeCLIReasoningEffort": {
-      "label": "Claude 思考强度",
-      "hint": "默认「自适应」：跟随客户端请求，带高就高、带低就低，没带就交给模型自行决定，不强制覆盖。选低/中/高/极高/最高则在客户端未传时强制该档；关闭表示完全不补思考强度。",
-      "auto": "自适应（跟随请求）",
-      "off": "关闭",
+      "label": "默认思考强度",
+      "description": "客户端没指定时按这个强度思考。客户端自己选过就不动。",
+      "hint": "只对非 Claude Code 客户端生效，真 Claude Code 不受影响。\n模型不支持这一档会降一档；老模型、带了温度等采样参数或强制调用工具时不补。\n强度越高越慢，用量也越多。",
+      "none": "不补（跟客户端）",
       "low": "低",
       "medium": "中",
-      "high": "高",
-      "xhigh": "极高",
-      "max": "最高（max）"
+      "high": "高（默认）",
+      "xhigh": "很高",
+      "max": "最高"
     },
     "claudeBetaStripFlags": {
       "label": "Claude Beta 剥离标记",
@@ -268,8 +266,9 @@
       "placeholder": "prompt-caching-scope-2026-01-05"
     },
     "codexFastMode": {
-      "label": "Codex fast 模式",
-      "hint": "默认关闭。开启后仅在客户端未指定时补 service_tier=priority，用于适配支持 Fast 的上游；上游不支持就不要开。不会降低思考强度。"
+      "label": "Codex 快速模式",
+      "description": "让上游优先处理、回得更快，但通常按约 2 倍计费。客户端自己选过就不动。",
+      "hint": "客户端没指定服务等级时，补上 service_tier=priority。\n上游不支持就别开。不会降低思考强度。"
     },
     "streamKeepalive": {
       "label": "流式保活间隔",
@@ -742,7 +741,7 @@
       },
       "identity": {
         "label": "客户端指纹",
-        "description": "出站时模仿 Claude CLI / Codex 的请求头与缓存策略，以及多套设备指纹。"
+        "description": "出站时扮成 Claude CLI / Codex（请求头、设备指纹），以及思考强度、快速模式和省钱缓存。"
       },
       "users": {
         "label": "用户与注册",
@@ -763,7 +762,28 @@
       "claude": "Claude（Anthropic 渠道）",
       "codex": "Codex（Responses 渠道）",
       "stream": "流式与超时",
-      "registration": "注册与验证"
+      "registration": "注册与验证",
+      "cache": "省钱缓存"
+    },
+    "cacheCard": {
+      "description": "只给请求加缓存标记，不改请求头，也不影响身份伪装。"
+    },
+    "relayClaudeCLIShapeKeys": {
+      "label": "补齐 Claude CLI 请求字段",
+      "description": "让其他客户端的请求和真 Claude Code 长得一样。客户端自己发过的字段不动。",
+      "hint": "只在开了伪装的 Anthropic 渠道生效；真 Claude Code 不受影响。\n思考字段跟着「默认思考强度」走，选「不补」就不加；思考关着时不加上下文清理。\n关掉就按客户端原样发送。"
+    },
+    "codexDefaultReasoningEffort": {
+      "label": "默认思考强度",
+      "ariaLabel": "Codex 默认思考强度",
+      "description": "客户端没指定时按这个强度思考。客户端自己选过就不动。",
+      "hint": "只对 GPT-5 / Codex / o 系列模型生效，真 Codex 不受影响。\nGPT-5.6 没指定时本来就按「高」；不支持「最高」的模型会改成「很高」。\n强度越高越慢，用量也越多。",
+      "none": "不补（默认）",
+      "low": "低",
+      "medium": "中",
+      "high": "高",
+      "xhigh": "很高",
+      "max": "最高"
     }
   },
   "model": {
