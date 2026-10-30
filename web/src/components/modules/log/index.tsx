@@ -960,7 +960,7 @@ export function Log() {
     // 空状态智能提示的依据：列表真空时，查一下「不限日期」下总共有多少历史，
     // 好把「不是坏了、是被日期/筛选挡住了」说破。仅在真的空时才发这个请求。
     const listIsEmpty = !isLoading && !isQueryError && filteredLogs.length === 0;
-    const { data: allTimeCounts, isError: allTimeCountsError } = useLogSeverityCounts({
+    const { data: allTimeCounts, isError: allTimeCountsError, refetch: refreshAllTimeCounts } = useLogSeverityCounts({
         userID: selectedUserID,
         apiKeyID: effectiveSelectedAPIKeyID,
         endpoint: selectedEndpoint || undefined,
@@ -969,7 +969,10 @@ export function Log() {
         retried: false,
         hideModelTest: false,
         upstreamModelMismatch: mismatchParam,
-        enabled: listIsEmpty,
+        // 列表真空时才需要「不限日期一共有多少」。只取一次：这条查询没有时间范围，
+        // 跟着 60 秒轮询会把整表再扫一遍。筛选一变 queryKey 会自己再要；手动刷新也重取。
+        enabled: logPanel === 'requests' && listIsEmpty,
+        poll: false,
     });
 
     const canLoadMore = hasMore && !isLoading && !isLoadingMore && logs.length > 0;
@@ -980,7 +983,8 @@ export function Log() {
     const handleRefresh = useCallback(() => {
         void refresh();
         void refreshCounts();
-    }, [refresh, refreshCounts]);
+        if (listIsEmpty) void refreshAllTimeCounts();
+    }, [listIsEmpty, refresh, refreshAllTimeCounts, refreshCounts]);
     const handleExport = useCallback(() => {
         const controller = new AbortController();
         exportAbortRef.current = controller;

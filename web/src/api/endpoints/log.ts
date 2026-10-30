@@ -5,6 +5,7 @@ import { useAuthStore } from './user';
 import { logger } from '@/lib/logger';
 import { saveStreamToFile, type ExportProgress } from '@/lib/log-export';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { classifyRelayLogSeverity, logSeverityCountQueryOptions } from './log-severity';
 
 /**
  * 尝试状态
@@ -234,19 +235,9 @@ export interface RelayLogSeverityCounts {
 }
 
 export function getRelayLogSeverity(log: RelayLog): RelayLogSeverity {
-    const hasError =
-        !!log.error?.trim() ||
-        !!log.error_code?.trim() ||
-        ((log.error_status ?? 0) >= 400);
-
-    if (hasError) return 'error';
-
-    // Warn == the request ultimately succeeded but took more than one channel
-    // attempt (a retry/failover). Mirrors the server relayLogSeverityValue rule so
-    // a client-side filter never hides a row the server returned for that severity.
-    const attemptCount = log.total_attempts ?? log.attempts?.length ?? 0;
-    if (attemptCount > 1) return 'warn';
-    return 'success';
+    // 与后端 model.ClassifyRelayLogSeverity（Go strings.TrimSpace）同一条规则。
+    // trim() 吃掉空格和 \t \n \r \f \v；不要改成只剥空格，否则和落库的 severity 列分叉。
+    return classifyRelayLogSeverity(log);
 }
 
 /**
@@ -644,8 +635,14 @@ export function useLogSeverityCounts(options: {
     search?: string;
     upstreamModelMismatch?: boolean;
     enabled?: boolean;
+    /**
+     * false：只取一次（筛选变化或手动 refetch 才再要）。空列表的「不限日期」
+     * 总数用这个，避免一条没有时间范围的计数在后台反复扫全表。
+     * 默认 true：60 秒一轮。筛选变化和手动刷新仍然立刻重取。
+     */
+    poll?: boolean;
 } = {}) {
-    const { userID, apiKeyID, endpoint, provider, model, startTime, endTime, retried, hideModelTest, search, upstreamModelMismatch, enabled = true } = options;
+    const { userID, apiKeyID, endpoint, provider, model, startTime, endTime, retried, hideModelTest, search, upstreamModelMismatch, enabled = true, poll = true } = options;
     return useQuery({
         queryKey: logCountQueryKey(userID, apiKeyID, endpoint, provider, model, startTime, endTime, retried, hideModelTest, search, upstreamModelMismatch),
         queryFn: async () => {
@@ -665,13 +662,9 @@ export function useLogSeverityCounts(options: {
             return apiClient.get<RelayLogSeverityCounts>(`/api/v1/log/count?${params.toString()}`);
         },
         enabled,
-        staleTime: 0,
-        refetchOnMount: 'always',
         // 筛选变化时不要把徽章数字清空重算（保留上一份计数，避免 0/— 闪一下）。
         placeholderData: keepPreviousData,
-        // SSE 只推日志列表、不推计数；计数降到每 15 秒重取（后端对 error/warn 谓词是
-        // 非索引字段判断，3s 全表扫×3 成本过高；徽章数字最长陈旧 15s 可接受）。
-        refetchInterval: 15000,
+        ...logSeverityCountQueryOptions(poll),
     });
 }
 

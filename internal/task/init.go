@@ -60,6 +60,9 @@ func Init() {
 	// 显式从这里起而不是 RelayLogAdd 里惰性起——生产必经此路, 而测试二进制绝不该有无人管
 	// 生命周期的后台写库者(会撞各用例的临时 DB, CI 实翻过)。
 	op.RelayLogFlusherStart()
+	// 日志严重程度回填：启动迁移只做一小段，剩下的在监听之后继续。和 flusher
+	// 一样从这里显式启动，不在包 init 里自启——测试二进制不该有后台写库者。
+	op.RelayLogSeverityBackfillStart()
 	// 视频任务轮询器同理: 它每一轮都读库写库, 绝不许在包里靠 init() 自启(见上面那段注释,
 	// 也见 VideoTaskPollStart 的注释)。放在这里而不是放到下面的 Register 序列里, 有两个理由:
 	//  1) 视频任务的状态推进和设置读取无关, 不能因为某个 SettingGetInt 失败 early-return
