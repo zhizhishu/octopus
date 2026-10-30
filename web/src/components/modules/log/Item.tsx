@@ -1154,6 +1154,49 @@ function passiveBadgeForLog(log: RelayLog, t: (key: string) => string): PassiveB
     return { state: 'not_applicable', label: t('passiveBadgeNotApplicable'), summary };
 }
 
+type LogCardProps = {
+    log: RelayLog;
+    /**
+     * 受控的详情弹窗开合。传了就由外部接管——日志页用它实现「左右键连着翻」：
+     * 翻页时换 log、弹窗保持打开。不传则回到原来的各自管自己。
+     */
+    detailOpen?: boolean;
+    /** 稳定回调：父组件用 useCallback，logCardPropsEqual 按引用比较它。 */
+    onDetailOpenChange?: (logId: number, open: boolean) => void;
+    /** 翻到相邻一条。-1 = 上一条（更新），+1 = 下一条（更旧）。 */
+    onNavigate?: (direction: -1 | 1) => void;
+    canNavigatePrev?: boolean;
+    canNavigateNext?: boolean;
+};
+
+/**
+ * LogCard 的 memo 比较器。
+ *
+ * 列表轮询/实时流每次都会给出新的 log 对象，默认浅比较会让没变的卡片每轮都重绘，
+ * 所以 log 只比会变的字段。其余 props 全部按引用比：
+ * - detailOpen 漏掉会让受控弹窗点不开（89107cd 修过的那个坑）；
+ * - onDetailOpenChange / onNavigate 是父层 useCallback 的稳定引用，换了就必须重绘；
+ * - canNavigatePrev / canNavigateNext 漏掉会让翻页按钮状态不更新。
+ * 新增 prop 时记得同时加到这里。
+ */
+export function logCardPropsEqual(prev: LogCardProps, next: LogCardProps): boolean {
+    return prev.log.id === next.log.id
+        && prev.log.time === next.log.time
+        && prev.detailOpen === next.detailOpen
+        && prev.onDetailOpenChange === next.onDetailOpenChange
+        && prev.onNavigate === next.onNavigate
+        && (prev.canNavigatePrev ?? false) === (next.canNavigatePrev ?? false)
+        && (prev.canNavigateNext ?? false) === (next.canNavigateNext ?? false)
+        // 本行审计字段随后端回写而变化时（手动检测带 log_id 写回同一行、id/time 不变），
+        // 必须让卡片重绘，否则「模型检测」徽标不会出现/不会更新。
+        && prev.log.model_audit_verdict === next.log.model_audit_verdict
+        && prev.log.model_audit_trigger === next.log.model_audit_trigger
+        && prev.log.model_audit_score === next.log.model_audit_score
+        && prev.log.model_audit_finding_n === next.log.model_audit_finding_n
+        // 被动摘要随后端回写而变化时必须重绘。
+        && prev.log.passive_summary === next.log.passive_summary;
+}
+
 export const LogCard = React.memo(function LogCard({
     log,
     detailOpen,
@@ -1161,20 +1204,7 @@ export const LogCard = React.memo(function LogCard({
     onNavigate,
     canNavigatePrev = false,
     canNavigateNext = false,
-}: {
-    log: RelayLog;
-    /**
-     * 受控的详情弹窗开合。传了就由外部接管——日志页用它实现「左右键连着翻」：
-     * 翻页时换 log、弹窗保持打开。不传则回到原来的各自管自己。
-     */
-    detailOpen?: boolean;
-    /** 稳定回调：父组件用 useCallback，比较器才能靠默认浅比较挡住无关重绘。 */
-    onDetailOpenChange?: (logId: number, open: boolean) => void;
-    /** 翻到相邻一条。-1 = 上一条（更新），+1 = 下一条（更旧）。 */
-    onNavigate?: (direction: -1 | 1) => void;
-    canNavigatePrev?: boolean;
-    canNavigateNext?: boolean;
-}) {
+}: LogCardProps) {
     const t = useTranslations('log.card');
     const canViewDetails = useAuthStore((state) => state.user?.role === 'admin');
     const modelNameToDisplay = log.actual_model_name?.trim() || log.request_model_name?.trim() || '';
@@ -2279,4 +2309,4 @@ export const LogCard = React.memo(function LogCard({
                 </MorphingDialogContainer>
             </MorphingDialog>
     );
-});
+}, logCardPropsEqual);
