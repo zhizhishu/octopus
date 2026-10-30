@@ -60,10 +60,18 @@ func AccessPlanCreate(plan *model.AccessPlan, ctx context.Context) error {
 	if plan.IsDefault {
 		plan.Enabled = true
 	}
+	wantEnabled := plan.Enabled
 	tx := db.GetDB().WithContext(ctx).Begin()
 	if err := tx.Omit("RouteProfile", "BillingProfile").Create(plan).Error; err != nil {
 		tx.Rollback()
 		return err
+	}
+	if !wantEnabled {
+		if err := persistDisabledAfterCreate(tx, &model.AccessPlan{}, []int{plan.ID}); err != nil {
+			tx.Rollback()
+			return err
+		}
+		plan.Enabled = false
 	}
 	if plan.IsDefault {
 		if err := tx.Model(&model.AccessPlan{}).Where("id <> ?", plan.ID).Update("is_default", false).Error; err != nil {

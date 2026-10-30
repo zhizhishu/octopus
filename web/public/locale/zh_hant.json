@@ -673,6 +673,7 @@
         "unlimited": "無限制",
         "expireAt": "過期日期",
         "selectDate": "選擇日期",
+        "expirePast": "過期時間不能早於現在",
         "neverExpire": "永不過期",
         "supportedModels": "支援的模型",
         "noModels": "暫無可選模型",

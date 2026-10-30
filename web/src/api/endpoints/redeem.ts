@@ -33,6 +33,8 @@ export interface GenerateRedeemCodeRequest {
     monthly_days?: number;
     daily_quota?: number;
     valid_days?: number;
+    // 不传 = 生成即可用；false = 生成即停用。
+    enabled?: boolean;
     note?: string;
 }
 

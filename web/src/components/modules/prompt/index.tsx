@@ -29,6 +29,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { useNavStore } from '../navbar/nav-store';
 import { cn } from '@/lib/utils';
+import { routePromptRows as buildRoutePromptRows, sortChannelsStable } from './prompt-rows';
 
 const modeLabels: Record<PromptOverrideMode, string> = {
     append_system: '另加一条 system',
@@ -300,20 +301,11 @@ function AdminPromptView() {
     const { data: settings, isLoading: settingsLoading } = useSettingList();
     const { data: plans = [], isLoading: plansLoading } = useAccessPlanList();
     const { data: channelItems = [], isLoading: channelsLoading } = useChannelList();
-    const channels = channelItems.map((item) => item.raw);
+    const channels = useMemo(() => sortChannelsStable(channelItems.map((item) => item.raw)), [channelItems]);
 
     const globalPrompt = settings?.find((item) => item.key === SettingKey.PromptOverrideSystem)?.value ?? '';
     const planPromptCount = plans.filter((plan) => (plan.system_prompt_override ?? '').trim()).length;
-    const routePromptRows = useMemo(() => (
-        plans.flatMap((plan) => (
-            plan.route_targets
-                .filter((target) => (target.system_prompt_override ?? '').trim())
-                .map((target) => ({
-                    plan,
-                    target,
-                }))
-        ))
-    ), [plans]);
+    const routePromptRows = useMemo(() => buildRoutePromptRows(plans), [plans]);
     const channelPromptCount = channels.filter((channel) => (channel.system_prompt_override ?? '').trim()).length;
 
     return (
@@ -405,13 +397,14 @@ function AdminPromptView() {
                     </div>
                 ) : (
                     <div className="grid gap-2">
-                        {routePromptRows.slice(0, 8).map(({ plan, target }) => (
-                            <div key={`${plan.id}-${target.request_model}-${target.channel_id}-${target.upstream_model}`} className="flex flex-wrap items-center gap-2 rounded-2xl border border-border bg-background/50 px-3 py-2 text-sm">
+                        {routePromptRows.slice(0, 8).map(({ plan, requestModel, upstreamModels, targetCount, mode }) => (
+                            <div key={`${plan.id}-${requestModel}`} className="flex flex-wrap items-center gap-2 rounded-2xl border border-border bg-background/50 px-3 py-2 text-sm">
                                 <Badge>{plan.display_name || plan.slug}</Badge>
-                                <span className="font-mono">{target.request_model}</span>
+                                <span className="font-mono">{requestModel}</span>
                                 <ArrowRight className="size-3 text-muted-foreground" />
-                                <span className="font-mono">{target.upstream_model}</span>
-                                <Badge variant="outline">{modeLabels[target.prompt_override_mode ?? 'append_system']}</Badge>
+                                <span className="font-mono">{upstreamModels.join(' / ') || '-'}</span>
+                                {targetCount > 1 && <span className="text-xs text-muted-foreground">{targetCount} 个目标</span>}
+                                <Badge variant="outline">{modeLabels[mode]}</Badge>
                             </div>
                         ))}
                         {routePromptRows.length > 8 && (

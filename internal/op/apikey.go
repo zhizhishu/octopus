@@ -2,16 +2,26 @@ package op
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/zhizhishu/octopus/internal/db"
 	"github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/utils/cache"
+	"gorm.io/gorm"
 )
 
 var apiKeyCache = cache.New[int, model.APIKey](16)
 var apiKeyIDMap = cache.New[string, int](16)
+
+var errAPIKeyExpirePast = errors.New("API key expire time must be in the future")
+
+// ExpireAt 是 Unix 秒，0 = 永不过期。鉴权中间件按 ExpireAt < now 判过期。
+func apiKeyExpireInPast(expireAt int64) bool {
+	return expireAt > 0 && expireAt <= time.Now().Unix()
+}
 
 func APIKeyCreate(key *model.APIKey, ctx context.Context) error {
 	if key.UserID <= 0 {
@@ -28,12 +38,27 @@ func APIKeyCreate(key *model.APIKey, ctx context.Context) error {
 	if key.Name == "" {
 		return fmt.Errorf("API key name is required")
 	}
+	if apiKeyExpireInPast(key.ExpireAt) {
+		return errAPIKeyExpirePast
+	}
 	endpointFamilies, err := model.NormalizeAPIKeyEndpointFamilies(key.EndpointFamilies)
 	if err != nil {
 		return err
 	}
 	key.EndpointFamilies = endpointFamilies
-	if err := db.GetDB().WithContext(ctx).Create(key).Error; err != nil {
+	wantEnabled := key.Enabled
+	if err := db.GetDB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(key).Error; err != nil {
+			return err
+		}
+		if !wantEnabled {
+			if err := persistDisabledAfterCreate(tx, &model.APIKey{}, []int{key.ID}); err != nil {
+				return err
+			}
+			key.Enabled = false
+		}
+		return nil
+	}); err != nil {
 		return fmt.Errorf("failed to create API key: %w", err)
 	}
 	apiKeyCache.Set(key.ID, *key)
@@ -64,6 +89,10 @@ func APIKeyUpdate(key *model.APIKey, actor model.User, ctx context.Context) erro
 	key.Name = strings.TrimSpace(key.Name)
 	if key.Name == "" {
 		return fmt.Errorf("API key name is required")
+	}
+	// 只拦"新设的"过去时间；已过期的 Key 不改过期时间、只改别的字段照常保存。
+	if key.ExpireAt != existing.ExpireAt && apiKeyExpireInPast(key.ExpireAt) {
+		return errAPIKeyExpirePast
 	}
 	if key.EndpointFamilies == nil {
 		key.EndpointFamilies = existing.EndpointFamilies

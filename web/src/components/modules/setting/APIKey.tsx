@@ -41,14 +41,7 @@ import { toast } from '@/components/common/Toast';
 import { CopyIconButton } from '@/components/common/CopyButton';
 import { MonoSafeText, SafeText } from '@/components/common/SafeText';
 import type { ApiError } from '@/api/types';
-
-function toExpireAt(date: Date, time: string): number {
-    const t = /^\d{2}:\d{2}$/.test(time) ? time : '00:00';
-    const [hh, mm] = t.split(':').map(Number);
-    const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate(), hh, mm, 0));
-    // 返回 Unix 时间戳（秒）
-    return Math.floor(d.getTime() / 1000);
-}
+import { defaultExpireAt, expireTimeOf, isPastExpire, startOfLocalDay, toExpireAt } from './apikey-expire';
 
 function parseExpireDate(expireAt?: number): Date | undefined {
     if (!expireAt) return undefined;
@@ -196,9 +189,9 @@ ${planHeader}  -H "anthropic-version: 2023-06-01" \\
   -H "Content-Type: application/json" \\
   -d '{"model":"claude-sonnet-4.5","max_tokens":256,"messages":[{"role":"user","content":"Hello"}]}'`;
         case 'video':
-            return `curl "${baseUrl}/v1/videos" \
-  -H "Authorization: Bearer ${apiKey}" \
-${planHeader}  -H "Content-Type: application/json" \
+            return `curl "${baseUrl}/v1/videos" \\
+  -H "Authorization: Bearer ${apiKey}" \\
+${planHeader}  -H "Content-Type: application/json" \\
   -d '{"model":"sora-2","prompt":"A calm river at dawn"}'`;
         case 'openai-compatible':
         default:
@@ -253,15 +246,8 @@ function APIKeyForm({ apiKey, isPending, submitLabel, onSubmit, onClose }: APIKe
     const [maxCostInput, setMaxCostInput] = useState(() =>
         apiKey?.max_cost != null ? String(apiKey.max_cost) : ''
     );
-    const [expireTime, setExpireTime] = useState(() => {
-        if (apiKey?.expire_at) {
-            const d = new Date(apiKey.expire_at * 1000);
-            if (!isNaN(d.getTime())) {
-                return `${d.getUTCHours().toString().padStart(2, '0')}:${d.getUTCMinutes().toString().padStart(2, '0')}`;
-            }
-        }
-        return '00:00';
-    });
+    // 时分和日期一样按本地时区显示（以前读的是 UTC 时分）。
+    const [expireTime, setExpireTime] = useState(() => expireTimeOf(apiKey?.expire_at));
     const [expireOpen, setExpireOpen] = useState(false);
 
     const [modelSearch, setModelSearch] = useState('');
@@ -329,12 +315,15 @@ function APIKeyForm({ apiKey, isPending, submitLabel, onSubmit, onClose }: APIKe
 
     const handleToggleNeverExpire = useCallback(() => {
         if (neverExpire) {
-            updateForm({ expire_at: toExpireAt(new Date(), expireTime) });
+            // 以前是"今天 + 当前时分"，常常已经是过去时间，一保存就过期。改成 30 天后本地 23:59。
+            const next = defaultExpireAt();
+            setExpireTime(expireTimeOf(next));
+            updateForm({ expire_at: next });
         } else {
             updateForm({ expire_at: undefined });
             setExpireOpen(false);
         }
-    }, [neverExpire, expireTime, updateForm]);
+    }, [neverExpire, updateForm]);
 
     const handleMaxCostChange = useCallback((val: string) => {
         const normalized = normalizeMoneyInput(val);
@@ -351,6 +340,11 @@ function APIKeyForm({ apiKey, isPending, submitLabel, onSubmit, onClose }: APIKe
     const handleSubmit = useCallback((e: React.FormEvent) => {
         e.preventDefault();
         if (!form.name.trim()) return;
+        // 新设的过期时间不能早于现在；没改过的老值（比如已过期的 Key 只改名字）照常保存。
+        if (form.expire_at !== apiKey?.expire_at && isPastExpire(form.expire_at)) {
+            toast.error(t('apiKey.form.expirePast'));
+            return;
+        }
         const payload = { ...form };
         payload.endpoint_families = normalizeEndpointFamilies(payload.endpoint_families);
         if (isAdmin && payload.access_plan_ids?.length && !payload.default_access_plan_id) {
@@ -365,7 +359,7 @@ function APIKeyForm({ apiKey, isPending, submitLabel, onSubmit, onClose }: APIKe
             }
         }
         onSubmit(payload);
-    }, [availableAccessPlans, form, isAdmin, onSubmit]);
+    }, [apiKey?.expire_at, availableAccessPlans, form, isAdmin, onSubmit, t]);
 
     return (
         <form onSubmit={handleSubmit} className="grid gap-2">
@@ -470,13 +464,14 @@ function APIKeyForm({ apiKey, isPending, submitLabel, onSubmit, onClose }: APIKe
                             align="start"
                             side="bottom"
                             sideOffset={8}
-                            className="w-fit rounded-2xl border border-border/60 shadow-xl overflow-hidden bg-card p-0"
+                            className="z-[70] w-fit rounded-2xl border border-border/60 shadow-xl overflow-hidden bg-card p-0"
                         >
                             <Calendar
                                 mode="single"
                                 selected={expireDate}
+                                defaultMonth={expireDate}
                                 onSelect={handleSelectDate}
-                                disabled={isPending}
+                                disabled={isPending ? true : { before: startOfLocalDay() }}
                                 classNames={{ today: '' }}
                             />
                         </PopoverContent>
