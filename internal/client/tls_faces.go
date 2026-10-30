@@ -233,6 +233,26 @@ func tlsFaceFromContext(ctx context.Context) string {
 	return v
 }
 
+// tlsFamilyForDial resolves the CLI face one outbound dial must wear.
+//
+// This is the single source of truth shared by the uTLS ClientHello path and the
+// plaintext HTTP/1.1 header-order path. An explicit override on ctx — the relay's
+// channelTLSFace, stored by WithTLSFace — wins over the URL path; otherwise the
+// historical path rule applies (/responses codex, /messages claude, anything else
+// chrome). Callers that need a per-connection pool key use the returned family:
+// transports are cached process-wide, so the face cannot be closed over from the
+// first request that happened to dial.
+func tlsFamilyForDial(ctx context.Context, path string) (spec *utls.ClientHelloSpec, family string) {
+	spec, family = clientHelloSpecForPath(path)
+	if ctx == nil {
+		return spec, family
+	}
+	if override := tlsFaceFromContext(ctx); override != "" {
+		spec, family = clientHelloSpecForFamily(override)
+	}
+	return spec, family
+}
+
 // TLSFaceFromContext exposes the per-request face to packages that must choose a
 // transport before the request is built (the helper picks the HTTP client, and a
 // face-carrying channel needs the uTLS transport regardless of its proxy).
