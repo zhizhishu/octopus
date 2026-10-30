@@ -729,6 +729,9 @@ func RelayLogList(ctx context.Context, startTime, endTime *int, page, pageSize i
 	result := make([]model.RelayLog, 0, len(cachedLogs)+pageSize)
 	result = append(result, cachedLogs...)
 
+	// windowed: 大 limit 分支已经直接算出了这一页(见 relayLogFetchWindow), 下面不再合并/排序/切片。
+	windowed := false
+
 	// 如果启用了日志保存，读取足够覆盖当前页的 DB 日志，再与内存缓存合并去重后统一分页。
 	// 不能先按 cacheCount 偏移 DB；刷新/flush 后 cacheCount 会变，页面上的旧日志就会“消失”。
 	if enabled {
@@ -737,14 +740,6 @@ func RelayLogList(ctx context.Context, startTime, endTime *int, page, pageSize i
 			dbLimit = pageSize
 		}
 		if dbLimit > 0 {
-			query := db.GetDB().WithContext(ctx)
-			if hasTimeFilter {
-				query = query.Where("time >= ? AND time <= ?", *startTime, *endTime)
-			}
-			// 用 Base 版本: 关键词搜索在下面用"窄表取 id + 主表取行"单独处理,
-			// 这里再套一遍只会变成慢路径(id IN 子查询)白白多跑一次。
-			query = relayLogApplyScopeBase(query, scope)
-
 			if dbLimit <= relayLogTwoPhaseMaxIDs {
 				// Two-phase read for interactive pages: first pluck ONLY the ids that match the
 				// filter (ORDER+LIMIT), then fetch the full rows for just those ids. A
@@ -788,35 +783,18 @@ func RelayLogList(ctx context.Context, startTime, endTime *int, page, pageSize i
 						search = strings.TrimSpace(scope.Search)
 					}
 					if search != "" && relayLogSearchReady() {
-						if err := relayLogSearchIndexQuery(search).
-							Select("id").Order("id DESC").Limit(dbLimit).
-							Pluck("id", &ids).Error; err != nil {
+						newIDQuery := func() *gorm.DB {
+							q := tx.Model(&model.RelayLog{})
+							if hasTimeFilter {
+								q = q.Where("time >= ? AND time <= ?", *startTime, *endTime)
+							}
+							return relayLogApplyScopeBase(q, scope)
+						}
+						found, err := relayLogSearchTopIDs(ctx, newIDQuery, search, dbLimit)
+						if err != nil {
 							return err
 						}
-						if len(ids) > 0 {
-							// 投影表给的是候选; time/severity 等条件只有主表有,
-							// 用 id 列表再过滤一次, 保持与历史结果一致。
-							var filtered []int64
-							if err := idQuery.Where("id IN ?", ids).
-								Order("id DESC").Limit(dbLimit).Pluck("id", &filtered).Error; err != nil {
-								return err
-							}
-							ids = filtered
-						} else if relayLogSearchIndexComplete(ctx) {
-							// 投影表是完整的, 那么"没命中"就是真的没命中 —— 直接空页。
-							// 不能在这里退回主表 LIKE: 那等于"搜不到时反而全表扫一遍",
-							// 而搜不到恰恰是最常见的场景(实测会从 2ms 劣化到 944ms)。
-							ids = nil
-						} else {
-							// 投影表还没回填完(迁移进行中/历史上失败过): 老日志可能
-							// 只有主表里有。此时退回主表 LIKE, 宁可慢也不能让老日志
-							// "突然搜不到"。这种情况只在迁移未完成期间发生。
-							ids = nil
-							if err := relayLogApplySearchOnMainTable(idQuery, search).
-								Order("id DESC").Limit(dbLimit).Pluck("id", &ids).Error; err != nil {
-								return err
-							}
-						}
+						ids = found
 					} else {
 						// 没有搜索词, 或投影表不可用(迁移未完成/被删): 搜索条件在
 						// 这两种情况下都必须仍然生效 —— 早先这里漏了 else 里的搜索,
@@ -852,59 +830,45 @@ func RelayLogList(ctx context.Context, startTime, endTime *int, page, pageSize i
 				//
 				// 判据与交互页保持同一套：能用投影窄表就先算命中 id，再拿 id 集合过滤主表；
 				// 投影表不可用（迁移未完成/被删）时退回主表 LIKE。
-				exportQuery := query
-				useMainTableSearch := false
-				search := ""
-				if scope != nil {
-					search = strings.TrimSpace(scope.Search)
-				}
-				if search != "" {
-					if relayLogSearchReady() {
-						var ids []int64
-						if err := relayLogSearchIndexQuery(search).Select("id").Pluck("id", &ids).Error; err != nil {
-							return nil, err
-						}
-						if len(ids) == 0 && !relayLogSearchIndexComplete(ctx) {
-							// 投影表还没回填完：老日志可能只在主表里，宁可慢也不能漏。
-							useMainTableSearch = true
-						} else {
-							// 命中为空且投影表完整 → 导出就该是空集，不能退回 LIKE 全表扫。
-							if ids == nil {
-								ids = []int64{}
-							}
-							exportQuery = exportQuery.Where("id IN ?", ids)
-						}
-					} else {
-						useMainTableSearch = true
+				//
+				// 这里不能像以前那样先把投影表的全部命中 id Pluck 出来再 `id IN (列表)`:
+				// 宽泛的搜索词(比如 "gpt")在大库上命中几十万行, 列表一长就超过 SQLite
+				// 的绑定参数上限(32766), 导出直接报 "too many SQL variables"。
+				// 与计数共用 relayLogApplySearch: 投影表走子查询, 回填未完成时游标之后
+				// 那段补主表 LIKE, 投影表不可用时整段主表 LIKE。
+				build := func(base *gorm.DB) *gorm.DB {
+					q := base.Model(&model.RelayLog{})
+					if hasTimeFilter {
+						q = q.Where("time >= ? AND time <= ?", *startTime, *endTime)
 					}
-					if useMainTableSearch {
-						exportQuery = relayLogApplySearchOnMainTable(exportQuery, search)
+					q = relayLogApplyScopeBase(q, scope)
+					if scope != nil && strings.TrimSpace(scope.Search) != "" {
+						q = relayLogApplySearch(q, scope.Search)
 					}
+					return q
 				}
-				var dbLogs []model.RelayLog
-				if err := exportQuery.Order("id DESC").Limit(dbLimit).Omit(contentOmit...).Find(&dbLogs).Error; err != nil {
+				windowRows, err := relayLogFetchWindow(ctx, build, result, dbLimit, offset, pageSize, contentOmit)
+				if err != nil {
 					return nil, err
 				}
-				result = append(result, dbLogs...)
+				result = windowRows
+				windowed = true
 			}
 		}
 	}
 
-	result = relayLogDedupe(result)
-	sort.SliceStable(result, func(i, j int) bool {
-		if result[i].Time != result[j].Time {
-			return result[i].Time > result[j].Time
+	if !windowed {
+		result = relayLogDedupe(result)
+		sort.SliceStable(result, relayLogPageLess(result))
+		if offset >= len(result) {
+			result = nil
+		} else {
+			end := offset + pageSize
+			if end > len(result) {
+				end = len(result)
+			}
+			result = result[offset:end]
 		}
-		return result[i].ID > result[j].ID
-	})
-	if offset >= len(result) {
-		result = nil
-	} else {
-		end := offset + pageSize
-		if end > len(result) {
-			end = len(result)
-		}
-		result = result[offset:end]
 	}
 	if !keepContent {
 		for i := range result {
@@ -918,6 +882,115 @@ func RelayLogList(ctx context.Context, startTime, endTime *int, page, pageSize i
 	}
 
 	return result, nil
+}
+
+// relayLogPageLess 是列表的最终排序: time 降序, 同秒内 id 降序。
+func relayLogPageLess(logs []model.RelayLog) func(i, j int) bool {
+	return func(i, j int) bool {
+		if logs[i].Time != logs[j].Time {
+			return logs[i].Time > logs[j].Time
+		}
+		return logs[i].ID > logs[j].ID
+	}
+}
+
+// relayLogFetchWindow 是大 limit(深翻页 / 导出)分支: 结果与"把前 dbLimit 行整行读出来、
+// 和缓存合并去重、排序、切出 [offset, offset+pageSize)"逐行一致, 但只为**这一页**读整行。
+//
+// 以前这里把前 dbLimit 行的全部列(除正文外还有 attempts / passive_* 等 JSON)读进内存再切片:
+// 16 万行的库上翻到第 8000 页(每页 20)要 3.9s、分配 1.3GB, 而页面只要其中 20 行。
+// 现在先只取 (id, time) 这两列定位窗口, 再按 id 取这一页的整行。排序键、去重规则
+// (缓存在前、缓存副本优先、id 为 0 不去重)和稳定排序的初始顺序都与原来相同。
+//
+// 两步在同一个读事务里: 中间若有并发删除, 页面不会少行(导出循环会把短页当成结尾)。
+func relayLogFetchWindow(ctx context.Context, build func(*gorm.DB) *gorm.DB, cached []model.RelayLog, dbLimit, offset, pageSize int, omit []string) ([]model.RelayLog, error) {
+	type pageKey struct {
+		ID   int64
+		Time int64
+	}
+	type entry struct {
+		id, time int64
+		cacheIdx int // >= 0: 来自缓存; -1: 来自数据库
+	}
+	var out []model.RelayLog
+	err := db.GetDB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var keys []pageKey
+		if err := build(tx).Select("id, time").Order("id DESC").Limit(dbLimit).Scan(&keys).Error; err != nil {
+			return err
+		}
+		entries := make([]entry, 0, len(cached)+len(keys))
+		seen := make(map[int64]bool, len(cached)+len(keys))
+		keep := func(id int64) bool {
+			if id == 0 {
+				return true
+			}
+			if seen[id] {
+				return false
+			}
+			seen[id] = true
+			return true
+		}
+		for i := range cached {
+			if keep(cached[i].ID) {
+				entries = append(entries, entry{id: cached[i].ID, time: cached[i].Time, cacheIdx: i})
+			}
+		}
+		for _, k := range keys {
+			if keep(k.ID) {
+				entries = append(entries, entry{id: k.ID, time: k.Time, cacheIdx: -1})
+			}
+		}
+		sort.SliceStable(entries, func(i, j int) bool {
+			if entries[i].time != entries[j].time {
+				return entries[i].time > entries[j].time
+			}
+			return entries[i].id > entries[j].id
+		})
+		if offset >= len(entries) {
+			return nil
+		}
+		end := offset + pageSize
+		if end > len(entries) {
+			end = len(entries)
+		}
+		window := entries[offset:end]
+
+		ids := make([]int64, 0, len(window))
+		for _, e := range window {
+			if e.cacheIdx < 0 {
+				ids = append(ids, e.id)
+			}
+		}
+		rows := make(map[int64]model.RelayLog, len(ids))
+		for start := 0; start < len(ids); start += relayLogTwoPhaseMaxIDs {
+			stop := start + relayLogTwoPhaseMaxIDs
+			if stop > len(ids) {
+				stop = len(ids)
+			}
+			var chunk []model.RelayLog
+			if err := tx.Where("id IN ?", ids[start:stop]).Omit(omit...).Find(&chunk).Error; err != nil {
+				return err
+			}
+			for _, l := range chunk {
+				rows[l.ID] = l
+			}
+		}
+		out = make([]model.RelayLog, 0, len(window))
+		for _, e := range window {
+			if e.cacheIdx >= 0 {
+				out = append(out, cached[e.cacheIdx])
+				continue
+			}
+			if l, ok := rows[e.id]; ok {
+				out = append(out, l)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func RelayLogCount(ctx context.Context, startTime, endTime *int, scope *model.RelayLogScope) (int64, error) {
@@ -1760,14 +1833,12 @@ const relayLogSearchIndexTable = "relay_log_search"
 // 最多两次查询, 且第二次只在真的缺行时发生。
 const relayLogSearchLikeCond = "LOWER(user_name) LIKE ? ESCAPE '\\' OR LOWER(request_api_key_name) LIKE ? ESCAPE '\\' OR LOWER(request_model_name) LIKE ? ESCAPE '\\' OR LOWER(actual_model_name) LIKE ? ESCAPE '\\' OR LOWER(upstream_response_model) LIKE ? ESCAPE '\\' OR LOWER(channel_name) LIKE ? ESCAPE '\\' OR LOWER(request_endpoint) LIKE ? ESCAPE '\\' OR LOWER(request_path) LIKE ? ESCAPE '\\' OR LOWER(session_key) LIKE ? ESCAPE '\\' OR LOWER(error) LIKE ? ESCAPE '\\' OR LOWER(error_code) LIKE ? ESCAPE '\\' OR LOWER(request_user_agent) LIKE ? ESCAPE '\\'"
 
-// relayLogSearchIndexQuery 返回"在投影表里按关键词匹配"的查询, 由调用方决定
-// 取多少条、怎么排序。
-func relayLogSearchIndexQuery(search string) *gorm.DB {
-	trimmed := strings.TrimSpace(search)
+// relayLogSearchCond 返回 12 列 LIKE(数字时再加 id / channel_id 精确匹配)的条件与参数。
+// 投影表与主表列名相同, 两边共用这一份, 保证两条路径的匹配规则逐字一致。
+func relayLogSearchCond(trimmed string) (string, []any) {
 	pattern := "%" + escapeLogEndpointLike(strings.ToLower(trimmed)) + "%"
 	args := make([]any, 0, 14)
 	cond := relayLogSearchLikeCond
-	q := db.GetDB().Table(relayLogSearchIndexTable)
 	if num, err := strconv.ParseInt(trimmed, 10, 64); err == nil && num > 0 {
 		// 数字既可能是日志 id 也可能是渠道号, 两者在投影表里都有列。
 		cond = "id = ? OR channel_id = ? OR (" + relayLogSearchLikeCond + ")"
@@ -1776,7 +1847,14 @@ func relayLogSearchIndexQuery(search string) *gorm.DB {
 	for i := 0; i < 12; i++ {
 		args = append(args, pattern)
 	}
-	return q.Where(cond, args...)
+	return cond, args
+}
+
+// relayLogSearchIndexQuery 返回"在投影表里按关键词匹配"的查询, 由调用方决定
+// 取多少条、怎么排序。
+func relayLogSearchIndexQuery(search string) *gorm.DB {
+	cond, args := relayLogSearchCond(strings.TrimSpace(search))
+	return db.GetDB().Table(relayLogSearchIndexTable).Where(cond, args...)
 }
 
 // relayLogSearchReady 报告投影表是否可用于加速。
@@ -1786,28 +1864,138 @@ func relayLogSearchReady() bool {
 
 // relayLogApplySearchOnMainTable 是退路(投影表不可用): 与历史行为逐字一致。
 func relayLogApplySearchOnMainTable(query *gorm.DB, trimmed string) *gorm.DB {
-	pattern := "%" + escapeLogEndpointLike(strings.ToLower(trimmed)) + "%"
-	args := make([]any, 0, 14)
-	cond := relayLogSearchLikeCond
-	if num, err := strconv.ParseInt(trimmed, 10, 64); err == nil && num > 0 {
-		cond = "id = ? OR channel_id = ? OR (" + relayLogSearchLikeCond + ")"
-		args = append(args, num, int(num))
-	}
-	for i := 0; i < 12; i++ {
-		args = append(args, pattern)
-	}
+	cond, args := relayLogSearchCond(trimmed)
 	return query.Where(cond, args...)
 }
 
-// relayLogApplySearch 用于 Count / SeverityCounts 这类"要全量数字"的场景:
+// relayLogSearchMaxIndexRounds 是列表搜索在投影表上最多翻几轮候选。
+//
+// 投影表没有 user_id / time / severity 等列, 候选 id 要回主表按范围再过滤一次。
+// 范围很窄时(普通用户只看自己的日志、选了时间段), 最新那一批命中可能全被过滤掉。
+// 翻到这么多轮还凑不满一页, 剩下的直接交给主表 LIKE(带范围、带 LIMIT 早停)。
+const relayLogSearchMaxIndexRounds = 8
+
+// relayLogSearchTopIDs 返回满足搜索词 + 范围的最新 limit 个 id(降序)。
+//
+// 结果与"主表上 LIKE + 范围 + ORDER BY id DESC LIMIT limit"逐行一致, 只是尽量
+// 让扫描落在窄的投影表上:
+//
+//  1. 投影表按关键词取一批候选(id 降序, 带 LIMIT 能早停), 回主表按范围过滤;
+//     凑不满就以上一批最小 id 为界继续翻, 最多 relayLogSearchMaxIndexRounds 轮,
+//     之后余下的区间交给主表 LIKE。修复前只取一轮: 最新那批命中若都属于别的用户/
+//     别的时间段, 页面直接显示"没有匹配"。
+//  2. 投影表回填未完成时, 它只对 id <= cursor 负责; 大于游标的那段再在主表上 LIKE
+//     一次并合并。修复前只要投影表给出了 >0 个命中就只用它们, 回填期间只在主表里的
+//     老日志被静默漏掉(补表那段时间新日志也会命中, 所以这是常态而非边角)。
+func relayLogSearchTopIDs(ctx context.Context, newIDQuery func() *gorm.DB, search string, limit int) ([]int64, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	complete, cursor := relayLogSearchIndexState(ctx)
+
+	seen := make(map[int64]struct{}, limit)
+	out := make([]int64, 0, limit)
+	add := func(ids []int64) {
+		for _, id := range ids {
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			out = append(out, id)
+		}
+	}
+
+	if !complete {
+		var tail []int64
+		tq := relayLogApplySearchOnMainTable(newIDQuery(), search)
+		if cursor > 0 {
+			tq = tq.Where("id > ?", cursor)
+		}
+		if err := tq.Order("id DESC").Limit(limit).Pluck("id", &tail).Error; err != nil {
+			return nil, err
+		}
+		add(tail)
+	}
+
+	batch := limit
+	if batch < 100 {
+		batch = 100
+	}
+	if batch > relayLogTwoPhaseMaxIDs {
+		batch = relayLogTwoPhaseMaxIDs
+	}
+	fromIndex := 0
+	var before int64 // 0 = 不设上界
+	for round := 0; fromIndex < limit; round++ {
+		if round >= relayLogSearchMaxIndexRounds {
+			// 投影表翻够了还凑不满: 余下的区间(id < before)整段交给主表 LIKE。
+			var rest []int64
+			if err := relayLogApplySearchOnMainTable(newIDQuery(), search).
+				Where("id < ?", before).
+				Order("id DESC").Limit(limit-fromIndex).Pluck("id", &rest).Error; err != nil {
+				return nil, err
+			}
+			add(rest)
+			break
+		}
+		q := relayLogSearchIndexQuery(search).Select("id")
+		if before > 0 {
+			q = q.Where("id < ?", before)
+		}
+		var cand []int64
+		if err := q.Order("id DESC").Limit(batch).Pluck("id", &cand).Error; err != nil {
+			return nil, err
+		}
+		if len(cand) == 0 {
+			break
+		}
+		// 投影表给的是候选; time/severity/用户等条件只有主表有, 用 id 列表再过滤一次。
+		var filtered []int64
+		if err := newIDQuery().Where("id IN ?", cand).
+			Order("id DESC").Limit(limit).Pluck("id", &filtered).Error; err != nil {
+			return nil, err
+		}
+		fromIndex += len(filtered)
+		add(filtered)
+		before = cand[len(cand)-1]
+		if len(cand) < batch {
+			break // 投影表里已经没有更多命中
+		}
+	}
+
+	sort.Slice(out, func(i, j int) bool { return out[i] > out[j] })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+// relayLogApplySearch 用于 Count / SeverityCounts / 导出这类"要全量结果"的场景:
 // 这些地方本来就没有 LIMIT, 早停无从谈起, 直接走窄表取子查询更省。
+//
+// 投影表回填未完成时只信它 id <= cursor 的那段, 游标之后的行在主表上 LIKE。
+// 修复前这里无条件 id IN (投影表子查询): 补表期间徽章/总数少算老日志。
 func relayLogApplySearch(query *gorm.DB, search string) *gorm.DB {
-	if strings.TrimSpace(search) == "" {
+	trimmed := strings.TrimSpace(search)
+	if trimmed == "" {
 		return query
 	}
 	if !relayLogSearchReady() {
-		return relayLogApplySearchOnMainTable(query, strings.TrimSpace(search))
+		return relayLogApplySearchOnMainTable(query, trimmed)
 	}
-	sub := relayLogSearchIndexQuery(search).Select("id")
-	return query.Where("id IN (?)", sub)
+	ctx := context.Background()
+	if query.Statement != nil && query.Statement.Context != nil {
+		ctx = query.Statement.Context
+	}
+	sub := relayLogSearchIndexQuery(trimmed).Select("id")
+	complete, cursor := relayLogSearchIndexState(ctx)
+	if complete {
+		return query.Where("id IN (?)", sub)
+	}
+	if cursor <= 0 {
+		// 投影表对任何 id 都还不担保: 整段走主表 LIKE(与投影表缺失时同一条退路)。
+		return relayLogApplySearchOnMainTable(query, trimmed)
+	}
+	cond, args := relayLogSearchCond(trimmed)
+	return query.Where("id IN (?) OR (id > ? AND ("+cond+"))", append([]any{sub, cursor}, args...)...)
 }
