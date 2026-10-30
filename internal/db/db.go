@@ -92,6 +92,7 @@ func InitDB(dbType, dsn string, debug bool) error {
 		&model.StatsChannel{},
 		&model.StatsAPIKey{},
 		&model.RelayLog{},
+		&model.RelayLogImage{},
 		// 🔴 检测任务/结果必须留在这份名单里，不能只靠 migrate/015 建表。
 		//
 		// 015 是一次性迁移：它建表时用的是**当时**的结构，跑完就记成"已执行"，

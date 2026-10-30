@@ -231,6 +231,8 @@ func relayLogFlushToDB(ctx context.Context) error {
 
 	// 搜索投影表跟着主表一起补: 少了这一步, 新落库的日志能列表显示却搜不到。
 	relayLogSearchIndexUpsert(db.GetDB().WithContext(ctx), batch)
+	// 另存图片的引用行：清理任务靠它判断文件还有没有日志在用。
+	relayLogImageRefsInsert(db.GetDB().WithContext(ctx), batch)
 
 	relayLogRemoveFlushed(batch)
 	return nil
@@ -422,8 +424,13 @@ func RelayLogSaveDBTask(ctx context.Context) error {
 		if err := relayLogFlushToDB(ctx); err != nil {
 			return err
 		}
-		return relayLogCleanup(ctx)
+		err := relayLogCleanup(ctx)
+		// 日志删完再清扫图片：刚失去最后一条引用的文件这一轮就能看到。
+		relayLogImageSweepLogged(ctx, RelayLogImageOrphanGrace)
+		return err
 	}
+	// 不落库时不会再存新图，但以前存的照样要过期、照样受容量上限约束。
+	relayLogImageSweepLogged(ctx, RelayLogImageOrphanGrace)
 
 	// 如果未启用日志保存，检查缓存大小，如果超过限制则清理旧日志
 	relayLogCacheLock.Lock()
@@ -1150,6 +1157,7 @@ func RelayLogClear(ctx context.Context, scope *model.RelayLogScope) error {
 		if err := relayLogSearchIndexDeleteByIDs(db.GetDB().WithContext(ctx), clearIDs); err != nil {
 			return fmt.Errorf("清空日志投影表失败，已中止以免产生无法清理的孤儿行: %w", err)
 		}
+		relayLogImageRefsDeleteByLogIDs(db.GetDB().WithContext(ctx), clearIDs)
 	} else {
 		// 条件无法下推时改走整表清空投影。
 		//
@@ -1166,6 +1174,9 @@ func RelayLogClear(ctx context.Context, scope *model.RelayLogScope) error {
 		return err
 	}
 	invalidateModelTelemetryCache()
+	// 清空是用户想立刻腾出空间：没了引用的图片马上删（只给正在落库的留一分钟）。
+	// 清扫开头会删掉指向已不存在日志的引用行，上面 Pluck 失败的分支也一样兜得住。
+	relayLogImageSweepLogged(ctx, relayLogImageClearGrace)
 	return nil
 }
 

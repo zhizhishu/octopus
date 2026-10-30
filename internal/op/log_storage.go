@@ -149,6 +149,7 @@ func relayLogDeleteExpiredBefore(ctx context.Context, cutoff int64) error {
 			log.Warnf("relay log cleanup skipped a batch of %d: search index delete failed: %v", len(ids), err)
 			return err
 		}
+		relayLogImageRefsDeleteByLogIDs(db.GetDB().WithContext(ctx), ids)
 		if err := db.GetDB().WithContext(ctx).Where("id IN ?", ids).Delete(&model.RelayLog{}).Error; err != nil {
 			return err
 		}
@@ -291,6 +292,7 @@ func relayLogDeleteOldest(ctx context.Context, want int64) (int64, error) {
 			log.Warnf("relay log purge skipped a batch of %d: search index delete failed: %v", len(ids), err)
 			return deleted, err
 		}
+		relayLogImageRefsDeleteByLogIDs(db.GetDB().WithContext(ctx), ids)
 		if err := db.GetDB().WithContext(ctx).Where("id IN ?", ids).Delete(&model.RelayLog{}).Error; err != nil {
 			return deleted, err
 		}
