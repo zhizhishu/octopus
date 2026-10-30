@@ -729,6 +729,9 @@ func RelayLogList(ctx context.Context, startTime, endTime *int, page, pageSize i
 	result := make([]model.RelayLog, 0, len(cachedLogs)+pageSize)
 	result = append(result, cachedLogs...)
 
+	// windowed: 大 limit 分支已经直接算出了这一页(见 relayLogFetchWindow), 下面不再合并/排序/切片。
+	windowed := false
+
 	// 如果启用了日志保存，读取足够覆盖当前页的 DB 日志，再与内存缓存合并去重后统一分页。
 	// 不能先按 cacheCount 偏移 DB；刷新/flush 后 cacheCount 会变，页面上的旧日志就会“消失”。
 	if enabled {
@@ -737,14 +740,6 @@ func RelayLogList(ctx context.Context, startTime, endTime *int, page, pageSize i
 			dbLimit = pageSize
 		}
 		if dbLimit > 0 {
-			query := db.GetDB().WithContext(ctx)
-			if hasTimeFilter {
-				query = query.Where("time >= ? AND time <= ?", *startTime, *endTime)
-			}
-			// 用 Base 版本: 关键词搜索在下面用"窄表取 id + 主表取行"单独处理,
-			// 这里再套一遍只会变成慢路径(id IN 子查询)白白多跑一次。
-			query = relayLogApplyScopeBase(query, scope)
-
 			if dbLimit <= relayLogTwoPhaseMaxIDs {
 				// Two-phase read for interactive pages: first pluck ONLY the ids that match the
 				// filter (ORDER+LIMIT), then fetch the full rows for just those ids. A
@@ -841,34 +836,39 @@ func RelayLogList(ctx context.Context, startTime, endTime *int, page, pageSize i
 				// 的绑定参数上限(32766), 导出直接报 "too many SQL variables"。
 				// 与计数共用 relayLogApplySearch: 投影表走子查询, 回填未完成时游标之后
 				// 那段补主表 LIKE, 投影表不可用时整段主表 LIKE。
-				exportQuery := query
-				if scope != nil && strings.TrimSpace(scope.Search) != "" {
-					exportQuery = relayLogApplySearch(exportQuery, scope.Search)
+				build := func(base *gorm.DB) *gorm.DB {
+					q := base.Model(&model.RelayLog{})
+					if hasTimeFilter {
+						q = q.Where("time >= ? AND time <= ?", *startTime, *endTime)
+					}
+					q = relayLogApplyScopeBase(q, scope)
+					if scope != nil && strings.TrimSpace(scope.Search) != "" {
+						q = relayLogApplySearch(q, scope.Search)
+					}
+					return q
 				}
-				var dbLogs []model.RelayLog
-				if err := exportQuery.Order("id DESC").Limit(dbLimit).Omit(contentOmit...).Find(&dbLogs).Error; err != nil {
+				windowRows, err := relayLogFetchWindow(ctx, build, result, dbLimit, offset, pageSize, contentOmit)
+				if err != nil {
 					return nil, err
 				}
-				result = append(result, dbLogs...)
+				result = windowRows
+				windowed = true
 			}
 		}
 	}
 
-	result = relayLogDedupe(result)
-	sort.SliceStable(result, func(i, j int) bool {
-		if result[i].Time != result[j].Time {
-			return result[i].Time > result[j].Time
+	if !windowed {
+		result = relayLogDedupe(result)
+		sort.SliceStable(result, relayLogPageLess(result))
+		if offset >= len(result) {
+			result = nil
+		} else {
+			end := offset + pageSize
+			if end > len(result) {
+				end = len(result)
+			}
+			result = result[offset:end]
 		}
-		return result[i].ID > result[j].ID
-	})
-	if offset >= len(result) {
-		result = nil
-	} else {
-		end := offset + pageSize
-		if end > len(result) {
-			end = len(result)
-		}
-		result = result[offset:end]
 	}
 	if !keepContent {
 		for i := range result {
@@ -882,6 +882,115 @@ func RelayLogList(ctx context.Context, startTime, endTime *int, page, pageSize i
 	}
 
 	return result, nil
+}
+
+// relayLogPageLess 是列表的最终排序: time 降序, 同秒内 id 降序。
+func relayLogPageLess(logs []model.RelayLog) func(i, j int) bool {
+	return func(i, j int) bool {
+		if logs[i].Time != logs[j].Time {
+			return logs[i].Time > logs[j].Time
+		}
+		return logs[i].ID > logs[j].ID
+	}
+}
+
+// relayLogFetchWindow 是大 limit(深翻页 / 导出)分支: 结果与"把前 dbLimit 行整行读出来、
+// 和缓存合并去重、排序、切出 [offset, offset+pageSize)"逐行一致, 但只为**这一页**读整行。
+//
+// 以前这里把前 dbLimit 行的全部列(除正文外还有 attempts / passive_* 等 JSON)读进内存再切片:
+// 16 万行的库上翻到第 8000 页(每页 20)要 3.9s、分配 1.3GB, 而页面只要其中 20 行。
+// 现在先只取 (id, time) 这两列定位窗口, 再按 id 取这一页的整行。排序键、去重规则
+// (缓存在前、缓存副本优先、id 为 0 不去重)和稳定排序的初始顺序都与原来相同。
+//
+// 两步在同一个读事务里: 中间若有并发删除, 页面不会少行(导出循环会把短页当成结尾)。
+func relayLogFetchWindow(ctx context.Context, build func(*gorm.DB) *gorm.DB, cached []model.RelayLog, dbLimit, offset, pageSize int, omit []string) ([]model.RelayLog, error) {
+	type pageKey struct {
+		ID   int64
+		Time int64
+	}
+	type entry struct {
+		id, time int64
+		cacheIdx int // >= 0: 来自缓存; -1: 来自数据库
+	}
+	var out []model.RelayLog
+	err := db.GetDB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var keys []pageKey
+		if err := build(tx).Select("id, time").Order("id DESC").Limit(dbLimit).Scan(&keys).Error; err != nil {
+			return err
+		}
+		entries := make([]entry, 0, len(cached)+len(keys))
+		seen := make(map[int64]bool, len(cached)+len(keys))
+		keep := func(id int64) bool {
+			if id == 0 {
+				return true
+			}
+			if seen[id] {
+				return false
+			}
+			seen[id] = true
+			return true
+		}
+		for i := range cached {
+			if keep(cached[i].ID) {
+				entries = append(entries, entry{id: cached[i].ID, time: cached[i].Time, cacheIdx: i})
+			}
+		}
+		for _, k := range keys {
+			if keep(k.ID) {
+				entries = append(entries, entry{id: k.ID, time: k.Time, cacheIdx: -1})
+			}
+		}
+		sort.SliceStable(entries, func(i, j int) bool {
+			if entries[i].time != entries[j].time {
+				return entries[i].time > entries[j].time
+			}
+			return entries[i].id > entries[j].id
+		})
+		if offset >= len(entries) {
+			return nil
+		}
+		end := offset + pageSize
+		if end > len(entries) {
+			end = len(entries)
+		}
+		window := entries[offset:end]
+
+		ids := make([]int64, 0, len(window))
+		for _, e := range window {
+			if e.cacheIdx < 0 {
+				ids = append(ids, e.id)
+			}
+		}
+		rows := make(map[int64]model.RelayLog, len(ids))
+		for start := 0; start < len(ids); start += relayLogTwoPhaseMaxIDs {
+			stop := start + relayLogTwoPhaseMaxIDs
+			if stop > len(ids) {
+				stop = len(ids)
+			}
+			var chunk []model.RelayLog
+			if err := tx.Where("id IN ?", ids[start:stop]).Omit(omit...).Find(&chunk).Error; err != nil {
+				return err
+			}
+			for _, l := range chunk {
+				rows[l.ID] = l
+			}
+		}
+		out = make([]model.RelayLog, 0, len(window))
+		for _, e := range window {
+			if e.cacheIdx >= 0 {
+				out = append(out, cached[e.cacheIdx])
+				continue
+			}
+			if l, ok := rows[e.id]; ok {
+				out = append(out, l)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func RelayLogCount(ctx context.Context, startTime, endTime *int, scope *model.RelayLogScope) (int64, error) {
