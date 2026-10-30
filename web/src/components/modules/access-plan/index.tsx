@@ -72,6 +72,15 @@ import {
     type NodeTypes,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
+import {
+    canvasViewSignature,
+    decideCanvasViewport,
+    rememberCanvasViewport,
+    routeTargetsServerVersion,
+    savedCanvasViewport,
+    shouldResyncRouteTargets,
+    type CanvasViewKey,
+} from './canvas-viewport';
 
 const DEFAULT_PLAN_TEMPLATES = [
     { slug: 'vip', display_name: 'VIP' },
@@ -1624,22 +1633,31 @@ function RouteFlowCanvasInner({
     const targetCount = rows.reduce((sum, row) => sum + row.targets.length, 0);
 
     // ── ReactFlow 无限画布 ──
-    const { fitView, setCenter } = useReactFlow();
+    const { fitView, setCenter, setViewport, getViewport } = useReactFlow();
 
-    // ── 全屏清屏切换（f0ba588 · 手机端拥挤优化 / 807e22b 双 rAF fitView）──
+    // 全屏/清屏切换后容器尺寸变了要重新自适应。ReactFlow 靠 ResizeObserver 异步拿新尺寸，
+    // 单个 rAF 会读到旧尺寸导致 fitView 对不齐，故用双 rAF 等布局与观察器都落定后再 fit（807e22b）。
+    const fitSoon = useCallback(() => {
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+            fitView({ padding: 0.14, maxZoom: 1, duration: 220 });
+        }));
+    }, [fitView]);
+
+    // ── 全屏清屏切换（f0ba588 · 手机端拥挤优化）──
     const [canvasFullscreen, setCanvasFullscreen] = useState(false);
+    const toggleFullscreen = useCallback((next?: boolean) => {
+        setCanvasFullscreen((v) => (next === undefined ? !v : next));
+        fitSoon();
+    }, [fitSoon]);
 
     useEffect(() => {
         if (!canvasFullscreen) return;
         const handler = (event: KeyboardEvent) => {
-            if (event.key === 'Escape') {
-                setCanvasFullscreen(false);
-                requestAnimationFrame(() => fitView({ padding: 0.14, maxZoom: 1, duration: 220 }));
-            }
+            if (event.key === 'Escape') toggleFullscreen(false);
         };
         window.addEventListener('keydown', handler);
         return () => window.removeEventListener('keydown', handler);
-    }, [canvasFullscreen, fitView]);
+    }, [canvasFullscreen, toggleFullscreen]);
 
     const flow = useMemo(
         () => buildRouteFlow(plan, filteredRows, channelNameByID, onEditRequest, filteredMappings, onPriorityChange),
@@ -1649,12 +1667,47 @@ function RouteFlowCanvasInner({
     const [nodes, setNodes, onNodesChange] = useNodesState<FlowNode>(flow.nodes);
     const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>(flow.edges);
 
+    // 视口只在「换视图」时自动 fit（首次挂载 / 换方案 / 换筛选 / 由空变有），
+    // 数据编辑（+1/−1、弹窗保存、增删映射、保存后回刷）只原地换节点，平移和缩放保持不动。
+    // 判定见 canvas-viewport.ts 的 decideCanvasViewport（有单测）。
+    const viewSignature = canvasViewSignature(viewMode, selectedChannelId, selectedMappingModel, query);
+    const flowEmpty = flow.nodes.length === 0;
+    const lastViewKeyRef = useRef<CanvasViewKey | null>(null);
+    // 同方案重挂载时直接以已存视口起步，避免先闪一帧默认视口再跳。
+    const [initialViewport] = useState(() => savedCanvasViewport(plan.id) ?? undefined);
     useEffect(() => {
         setNodes(flow.nodes);
         setEdges(flow.edges);
-        const raf = requestAnimationFrame(() => fitView({ padding: 0.14, maxZoom: 1, duration: 220 }));
+        const nextKey: CanvasViewKey = { planId: plan.id, view: viewSignature, empty: flowEmpty };
+        const saved = savedCanvasViewport(plan.id);
+        const action = decideCanvasViewport(lastViewKeyRef.current, nextKey, saved !== null);
+        if (action === 'keep') {
+            lastViewKeyRef.current = nextKey;
+            return;
+        }
+        // 视图键在真正执行时才落账：被取消（StrictMode 双跑 / 紧接着又一次变化）时下次仍会重新判定。
+        const raf = requestAnimationFrame(() => {
+            lastViewKeyRef.current = nextKey;
+            if (action === 'restore' && saved) {
+                void setViewport(saved);
+            } else {
+                void fitView({ padding: 0.14, maxZoom: 1, duration: 220 });
+            }
+        });
         return () => cancelAnimationFrame(raf);
-    }, [flow, setNodes, setEdges, fitView]);
+    }, [flow, flowEmpty, plan.id, viewSignature, setNodes, setEdges, fitView, setViewport]);
+
+    // 视口兜底：平移/缩放结束和卸载时记下当前方案的视口，同方案重挂载时原位恢复。
+    const planIdRef = useRef(plan.id);
+    planIdRef.current = plan.id;
+    const rememberViewport = useCallback((_event: unknown, viewport: { x: number; y: number; zoom: number }) => {
+        rememberCanvasViewport(planIdRef.current, viewport);
+    }, []);
+    useEffect(() => () => {
+        if (lastViewKeyRef.current && !lastViewKeyRef.current.empty) {
+            rememberCanvasViewport(lastViewKeyRef.current.planId, getViewport());
+        }
+    }, [getViewport]);
 
     const showAll = useCallback(() => fitView({ padding: 0.12, duration: 400 }), [fitView]);
 
@@ -1795,8 +1848,8 @@ function RouteFlowCanvasInner({
                         onEdgesChange={onEdgesChange}
                         nodeTypes={flowNodeTypes}
                         colorMode="system"
-                        fitView
-                        fitViewOptions={{ padding: 0.14, maxZoom: 1 }}
+                        onMoveEnd={rememberViewport}
+                        defaultViewport={initialViewport}
                         minZoom={0.15}
                         maxZoom={1.8}
                         nodesDraggable={false}
@@ -1809,10 +1862,7 @@ function RouteFlowCanvasInner({
                         <Background variant={BackgroundVariant.Dots} gap={32} size={1} />
                         <Controls showInteractive={false} showFitView={false}>
                             <ControlButton
-                                onClick={() => {
-                                    setCanvasFullscreen((v) => !v);
-                                    requestAnimationFrame(() => fitView({ padding: 0.14, maxZoom: 1, duration: 220 }));
-                                }}
+                                onClick={() => toggleFullscreen()}
                                 title={canvasFullscreen ? '退出全屏（Esc）' : '清屏（全屏画布）'}
                                 aria-label={canvasFullscreen ? '退出全屏（Esc）' : '清屏（全屏画布）'}
                             >
@@ -2091,6 +2141,14 @@ function RouteTargetsEditor({
     const t = accessPlanText;
     const updateRoutes = useUpdateAccessPlanRouteTargets();
     const [targets, setTargets] = useState<AccessPlanRouteTarget[]>(() => plan.route_targets.map(cleanRouteTargetModels));
+    // 服务器数据变了就以服务器为准重置本地 targets（见 routeTargetsServerVersion 的说明：
+    // 父级 key 里的 updated_at 后端从不返回，原来那套刷新从未生效）。原地同步，画布节点按同 id 更新、视口不动。
+    const serverVersion = useMemo(() => routeTargetsServerVersion(plan), [plan]);
+    const [syncedServerVersion, setSyncedServerVersion] = useState(serverVersion);
+    if (shouldResyncRouteTargets(syncedServerVersion, serverVersion, updateRoutes.isPending)) {
+        setSyncedServerVersion(serverVersion);
+        setTargets(plan.route_targets.map(cleanRouteTargetModels));
+    }
     const [jsonText, setJsonText] = useState('');
     const [editingRequestModel, setEditingRequestModel] = useState<string | null>(null);
     const requestModelListId = `access-plan-request-models-${plan.id}`;
@@ -2774,7 +2832,9 @@ export function AccessPlan() {
 
                 {selectedPlan ? (
                     <RouteTargetsEditor
-                        key={`routes-${selectedPlan.id}-${selectedPlan.updated_at ?? 0}`}
+                        // 只按方案 id 换实例，绝不能带随保存变化的字段（会重挂载画布、视口跳回 fit-all）。
+                        // 服务器数据刷新由 RouteTargetsEditor 内部按路由内容原地同步。
+                        key={`routes-${selectedPlan.id}`}
                         plan={selectedPlan}
                         channels={channels}
                         channelMappings={channelMappings}
