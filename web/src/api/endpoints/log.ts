@@ -249,6 +249,14 @@ export async function fetchLogById(id: number): Promise<RelayLog> {
     return apiClient.get<RelayLog>(`/api/v1/log/${id}`);
 }
 
+/**
+ * 取「真实出站请求体」里另存的原图（只有管理员能取）。hash 是占位符里的 64 位 id，
+ * 调用方先校验过格式再来取。
+ */
+export async function fetchLogImage(hash: string, signal?: AbortSignal): Promise<Blob> {
+    return apiClient.getBlob(`/api/v1/log/image/${hash}`, { signal });
+}
+
 export interface LogListParams {
     page?: number;
     page_size?: number;

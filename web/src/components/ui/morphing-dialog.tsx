@@ -272,6 +272,10 @@ function MorphingDialogContent({
       if (target?.closest('[data-slot="popover-content"]')) {
         return true;
       }
+      // 挂在 body 上、但逻辑上属于这个弹窗的浮层（如日志原图灯箱）。
+      if (target?.closest('[data-morphing-dialog-ignore-outside]')) {
+        return true;
+      }
       const openPopoverContent = document.querySelector('[data-slot="popover-content"]');
       if (openPopoverContent) {
         return true;

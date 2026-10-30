@@ -98,6 +98,8 @@ function logComponents() {
         '@/lib/model-icons': { getModelIcon: () => ({ Avatar: 'Avatar', color: 'grey' }) },
         '@/lib/model-aliases': { marketModelName: (name) => name },
         '@/components/common/CopyButton': widgets('CopyIconButton'),
+        // 图片占位符卡片有自己的测试（log-image.test.cjs）；这里只要形状对得上。
+        './LogImagePlaceholder': { LogImagePlaceholderText: 'LogImagePlaceholderText', renderLogImageJsonString: () => undefined },
         '@/components/common/SafeText': widgets('ErrorSafeText MonoSafeText SafeText'),
         '@/components/ui/morphing-dialog': widgets('MorphingDialog MorphingDialogTrigger MorphingDialogContainer MorphingDialogContent MorphingDialogClose MorphingDialogTitle MorphingDialogDescription'),
     });

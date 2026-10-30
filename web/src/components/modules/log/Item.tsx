@@ -29,6 +29,8 @@ import { describeProbeEvidence } from './probe-evidence';
 import { ProbeEvidenceList } from './ProbeEvidenceList';
 import { AuditReportPanel } from './AuditReportPanel';
 import { ExpandableValue } from './ExpandableValue';
+import { LogImagePlaceholderText, renderLogImageJsonString } from './LogImagePlaceholder';
+import { containsSavedImagePlaceholder } from './log-image';
 import { marketModelName } from '@/lib/model-aliases';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
@@ -742,7 +744,12 @@ function DetailTile({ icon, label, children }: { icon: ReactNode; label: ReactNo
     );
 }
 
-function DeferredJsonContent({ content, fallbackText }: { content: string | undefined; fallbackText: string }) {
+function DeferredJsonContent({ content, fallbackText, imagePlaceholders = false }: {
+    content: string | undefined;
+    fallbackText: string;
+    /** 只给「真实出站请求体」开：图片占位符渲染成缩略图卡片（见 LogImagePlaceholder）。 */
+    imagePlaceholders?: boolean;
+}) {
     const { resolvedTheme } = useTheme();
     const { isOpen } = useMorphingDialog();
     const [shouldRender, setShouldRender] = useState(false);
@@ -842,7 +849,9 @@ function DeferredJsonContent({ content, fallbackText }: { content: string | unde
                         displayDataTypes={false}
                         displayObjectSize={false}
                         collapsed={isLargeJson ? LARGE_JSON_COLLAPSE_DEPTH : false}
-                    />
+                    >
+                        {imagePlaceholders ? <JsonView.String render={renderLogImageJsonString} /> : null}
+                    </JsonView>
                 </motion.div>
             ) : (
                 <motion.div
@@ -896,7 +905,9 @@ function DeferredJsonContent({ content, fallbackText }: { content: string | unde
                         'max-w-full min-w-0 p-3 font-mono text-xs leading-relaxed text-muted-foreground sm:p-4',
                         isTruncated ? 'whitespace-pre-wrap break-words [overflow-wrap:anywhere]' : 'whitespace-pre'
                     )}>
-                        {shownContent}
+                        {imagePlaceholders && shownContent && containsSavedImagePlaceholder(shownContent)
+                            ? <LogImagePlaceholderText text={shownContent} />
+                            : shownContent}
                     </pre>
                 </motion.div>
             )}
@@ -1018,7 +1029,7 @@ function LazyLogBodies({ fallbackRequest, fallbackResponse, fallbackUpstreamRequ
                         </span>
                     </div>
                     <div className="flex-1 overflow-auto min-h-0">
-                        <DeferredJsonContent content={upstreamRequestBody} fallbackText={noRequestText} />
+                        <DeferredJsonContent content={upstreamRequestBody} fallbackText={noRequestText} imagePlaceholders />
                     </div>
                 </div>
             ) : null}

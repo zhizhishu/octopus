@@ -80,6 +80,35 @@ async function handleResponse<T>(response: Response): Promise<T> {
     return data as T;
 }
 
+/** 带上登录 token 的请求头（从 zustand store 取）。 */
+function authHeaders(): Headers {
+    const headers = new Headers();
+    if (typeof window !== 'undefined' && getAuthStore) {
+        const store = getAuthStore();
+        if (store.token) {
+            headers.set('Authorization', `Bearer ${store.token}`);
+        }
+    }
+    return headers;
+}
+
+/**
+ * 以 Blob 取回二进制资源（如日志里另存的图片）。
+ * `<img src>` 带不了 Authorization 头，所以要先这样拉下来再转 object URL。
+ * 出错时与 JSON 请求一样抛 ApiError（401 照样触发登出）。
+ */
+async function requestBlob(path: string, options?: { signal?: AbortSignal }): Promise<Blob> {
+    const response = await fetch(`${API_BASE_URL}${path}`, {
+        method: 'GET',
+        headers: authHeaders(),
+        signal: options?.signal,
+    });
+    if (!response.ok) {
+        return handleResponse<never>(response);
+    }
+    return response.blob();
+}
+
 /**
  * 发送请求
  */
@@ -98,19 +127,11 @@ async function request<T>(
     const url = `${API_BASE_URL}${path}${searchParams ? `?${searchParams}` : ''}`;
 
     // 构建请求头
-    const headers = new Headers();
+    const headers = authHeaders();
 
     // 只在有 body 时设置 Content-Type
     if (body) {
         headers.set('Content-Type', 'application/json');
-    }
-
-    // 添加 Authorization - 从 zustand store 获取 token
-    if (typeof window !== 'undefined' && getAuthStore) {
-        const store = getAuthStore();
-        if (store.token) {
-            headers.set('Authorization', `Bearer ${store.token}`);
-        }
     }
 
     // 发送请求
@@ -133,6 +154,12 @@ export const apiClient = {
      */
     get: <T>(path: string, params?: Record<string, string | number | boolean>, options?: { signal?: AbortSignal }): Promise<T> =>
         request<T>('GET', path, undefined, params, options),
+
+    /**
+     * GET 二进制（Blob），带登录 token。
+     */
+    getBlob: (path: string, options?: { signal?: AbortSignal }): Promise<Blob> =>
+        requestBlob(path, options),
 
     /**
      * POST 请求
