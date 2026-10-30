@@ -104,7 +104,7 @@ func migrateCreateModelAuditJobs(db *gorm.DB) error {
 			WHERE id > ? AND model_audit_verdict IS NOT NULL AND model_audit_verdict != ''
 			ORDER BY id LIMIT ?`, lastID, batchSize).Scan(&rows).Error
 		if err != nil {
-			return nil // 列不存在或查询失败：放弃回填，不影响新表可用
+			break // 列不存在或查询失败：放弃回填，不影响新表可用（已建的空任务在下面删掉）
 		}
 		if len(rows) == 0 {
 			break
@@ -127,7 +127,7 @@ func migrateCreateModelAuditJobs(db *gorm.DB) error {
 			})
 		}
 		if err := db.CreateInBatches(out, 500).Error; err != nil {
-			return nil
+			break // 按已搬的数量收尾；一条都没搬成时下面会把空任务删掉
 		}
 		moved += len(out)
 		if len(rows) < batchSize {
@@ -135,6 +135,12 @@ func migrateCreateModelAuditJobs(db *gorm.DB) error {
 		}
 	}
 
+	// 一条都没搬成（查询失败/写入失败）就不留这个任务：空壳任务没有任何可看的内容，
+	// 只会在结果页里显示成一条永远打不开的记录。历史结论仍原样留在 relay_logs 的旧列上，不丢。
+	if moved == 0 {
+		db.Where("id = ?", job.ID).Delete(&model.ModelAuditJob{})
+		return nil
+	}
 	// 回填数量与预估不符时以实际为准，免得进度永远是半截。
 	if moved != int(total) {
 		db.Model(&model.ModelAuditJob{}).Where("id = ?", job.ID).
