@@ -958,7 +958,27 @@
       "thinking": "Thinking",
       "basePrice": "Base Price (In/Out)",
       "upstreamRequestBody": "Actual upstream request body",
-      "upstreamRequestBodyHint": "Differs from Request content: the bytes really sent upstream (may be truncated)"
+      "upstreamRequestBodyHint": "Differs from Request content: the bytes really sent upstream (may be truncated)",
+      "logImage": {
+        "viewOriginal": "View original",
+        "thumbAlt": "Image thumbnail",
+        "originalAlt": "Original image",
+        "lightboxTitle": "Original image",
+        "escHint": "press Esc to close",
+        "close": "Close",
+        "copyId": "Copy ID",
+        "copied": "Image ID copied",
+        "copyFailed": "Copy failed",
+        "download": "Download original",
+        "cleaned": "Original image was cleaned up",
+        "loadFailed": "Couldn't load the original image",
+        "omitTooLarge": "Image not saved: larger than 10MB",
+        "omitTooMany": "Image not saved: up to 16 images per request",
+        "omitOverBudget": "Image not saved: up to 40MB per request",
+        "omitQueueFull": "Image not saved: the save queue was busy",
+        "omitNotSaved": "Image not saved",
+        "omitMedia": "Content not saved"
+      }
     }
   },
   "channel": {

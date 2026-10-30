@@ -199,7 +199,10 @@ type RelayLog struct {
 	// **客户端原始意图**——于是日志里的"请求内容"记录的是还原后的假象，不是出站
 	// body。排查"我们到底给上游发了什么"时它必然误导（2026-10-27 kimi 案例：
 	// 日志显示只发 reasoning_effort、没发 thinking，实测出站恰恰相反）。
-	UpstreamRequestBody string           `json:"upstream_request_body,omitempty"`
+	UpstreamRequestBody string `json:"upstream_request_body,omitempty"`
+	// UpstreamImageHashes 是 UpstreamRequestBody 里另存成文件的图片哈希（只在内存里
+	// 随日志带到落库那一刻，写进 relay_log_images；不是 relay_logs 的列，也不出现在 API 里）。
+	UpstreamImageHashes []string         `json:"-" gorm:"-"`
 	ResponseContent     string           `json:"response_content"`
 	Error               string           `json:"error"`
 	ErrorCode           string           `json:"error_code"`
@@ -335,4 +338,17 @@ type RelayLogSeverityCounts struct {
 	Success int64 `json:"success"`
 	Warn    int64 `json:"warn"`
 	Error   int64 `json:"error"`
+}
+
+// RelayLogImage 记录「哪条日志引用了哪张另存的图片」（真实出站请求体里的内联图片，
+// 文件在 data/log_images/，见 internal/logimage）。
+//
+// 一张图按内容哈希去重，可能被很多条日志共用，所以不能「删一行删一张」：
+// 日志被保留期 / 容量 / 手动清空删掉时，先删这里对应的行；清理任务再把
+// 一条引用都没有的文件删掉。
+type RelayLogImage struct {
+	ID    int64  `json:"id" gorm:"primaryKey;autoIncrement"`
+	LogID int64  `json:"log_id" gorm:"not null;index:idx_relay_log_images_log_id"`
+	Hash  string `json:"hash" gorm:"size:64;not null;index:idx_relay_log_images_hash"`
+	Time  int64  `json:"time" gorm:"not null;default:0"`
 }

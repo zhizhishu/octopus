@@ -86,11 +86,17 @@ var payloadMarkers = []string{
 //     this walk strips the shapes above inside that body.
 //   - non-JSON snapshots (multipart is already summarized elsewhere)
 func stripInlineBinaryForLog(s string) string {
+	return stripInlineBinaryWith(s, nil)
+}
+
+// stripInlineBinaryWith 与 stripInlineBinaryForLog 相同；c 非空时可保存的图片
+// 会登记进 c，占位符带上内容哈希。c 收到的只是解码后的副本，s 本身不变。
+func stripInlineBinaryWith(s string, c *imageCapture) string {
 	if s == "" || !looksLikeJSONValue(s) || !mayContainInlinePayload(s) {
 		return s
 	}
 	trimmed := strings.TrimSpace(s)
-	repl, changed, err := rewriteJSONValue("", trimmed, mediaHint{}, 0)
+	repl, changed, err := rewriteJSONValue("", trimmed, mediaHint{capture: c}, 0)
 	// Compare against the trimmed text that was actually rewritten. A longer
 	// result is discarded so strip(s) is never longer than s, and a second
 	// pass cannot depend on whitespace that the first pass already removed.
@@ -131,6 +137,9 @@ func requestContentForLog(req *transformerModel.InternalLLMRequest, paramOverrid
 type mediaHint struct {
 	mime      string
 	blockType string
+	// capture 非空时，可保存的内联图片换成带 id 的占位符并暂存字节
+	// （只有真实出站请求体这一路会传；request_content 永远是 nil）。
+	capture *imageCapture
 }
 
 type fieldSpan struct {
@@ -179,9 +188,9 @@ func rewriteJSONValue(key, raw string, hint mediaHint, depth int) (string, bool,
 	case '{':
 		switch key {
 		case "audio", "input_audio":
-			return p.rewriteAudioObject()
+			return p.rewriteAudioObject(hint.capture)
 		case "inlineData", "inline_data":
-			return p.rewriteInlineObject()
+			return p.rewriteInlineObject(hint.capture)
 		case "source":
 			return p.rewriteSourceObject(hint)
 		default:
@@ -192,24 +201,24 @@ func rewriteJSONValue(key, raw string, hint mediaHint, depth int) (string, bool,
 	case '"':
 		switch key {
 		case "image_url":
-			if repl, ok := replaceImageURLString(raw); ok {
+			if repl, ok := replaceImageURLString(raw, hint.capture); ok {
 				return repl, true, nil
 			}
 		case "url", "file_url", "fileUri", "file_uri", "image_uri", "imageUri":
-			if repl, ok := replaceReferenceOrDataURL(raw); ok {
+			if repl, ok := replaceReferenceOrDataURL(raw, hint.capture); ok {
 				return repl, true, nil
 			}
 		case "file_data":
-			if repl, ok := replaceFileDataString(raw); ok {
+			if repl, ok := replaceFileDataString(raw, hint.capture); ok {
 				return repl, true, nil
 			}
 		case "b64_json", "bytesBase64Encoded":
-			if repl, ok := replaceDeclaredBlob(raw, "image", hint.mime); ok {
+			if repl, ok := replaceDeclaredBlob(raw, "image", hint.mime, hint.capture); ok {
 				return repl, true, nil
 			}
 		case "result":
 			if hint.blockType == "image_generation" {
-				if repl, ok := replaceDeclaredBlob(raw, "image", hint.mime); ok {
+				if repl, ok := replaceDeclaredBlob(raw, "image", hint.mime, hint.capture); ok {
 					return repl, true, nil
 				}
 			}
@@ -317,16 +326,16 @@ func (p *js) rewriteArray(hint mediaHint, depth int) (string, bool, error) {
 	return b.String(), true, nil
 }
 
-func (p *js) rewriteAudioObject() (string, bool, error) {
+func (p *js) rewriteAudioObject(c *imageCapture) (string, bool, error) {
 	fields, err := p.splitObject()
 	if err != nil {
 		return "", false, err
 	}
 	format, _ := unquoteField(fields, "format")
-	return replaceDataFields(fields, "audio", audioMime(format))
+	return replaceDataFields(fields, "audio", audioMime(format), c)
 }
 
-func (p *js) rewriteInlineObject() (string, bool, error) {
+func (p *js) rewriteInlineObject(c *imageCapture) (string, bool, error) {
 	fields, err := p.splitObject()
 	if err != nil {
 		return "", false, err
@@ -336,7 +345,7 @@ func (p *js) rewriteInlineObject() (string, bool, error) {
 	if strings.TrimSpace(mime) == "" {
 		kind = "image"
 	}
-	return replaceDataFields(fields, kind, mimeOrUnknown(mime))
+	return replaceDataFields(fields, kind, mimeOrUnknown(mime), c)
 }
 
 func (p *js) rewriteSourceObject(hint mediaHint) (string, bool, error) {
@@ -352,7 +361,7 @@ func (p *js) rewriteSourceObject(hint mediaHint) (string, bool, error) {
 			if f.key != "url" && f.key != "file_url" {
 				continue
 			}
-			if next, ok := replaceReferenceOrDataURL(f.valRaw); ok {
+			if next, ok := replaceReferenceOrDataURL(f.valRaw, hint.capture); ok {
 				repl[i] = next
 			}
 		}
@@ -367,7 +376,7 @@ func (p *js) rewriteSourceObject(hint mediaHint) (string, bool, error) {
 		if f.key != "data" || !jsonStringCarriesPayload(f.valRaw) {
 			continue
 		}
-		repl[i] = placeholderJSON(kind, mimeLabel, payloadSizeStr(f.valRaw))
+		repl[i] = hint.capture.placeholder(kind, mimeLabel, payloadSizeStr(f.valRaw), f.valRaw)
 	}
 	if len(repl) == 0 {
 		return "", false, nil
@@ -375,13 +384,13 @@ func (p *js) rewriteSourceObject(hint mediaHint) (string, bool, error) {
 	return rebuildObject(fields, repl), true, nil
 }
 
-func replaceDataFields(fields []fieldSpan, kind, mime string) (string, bool, error) {
+func replaceDataFields(fields []fieldSpan, kind, mime string, c *imageCapture) (string, bool, error) {
 	repl := make(map[int]string)
 	for i, f := range fields {
 		if f.key != "data" || !jsonStringCarriesPayload(f.valRaw) {
 			continue
 		}
-		repl[i] = placeholderJSON(kind, mimeOrUnknown(mime), payloadSizeStr(f.valRaw))
+		repl[i] = c.placeholder(kind, mimeOrUnknown(mime), payloadSizeStr(f.valRaw), f.valRaw)
 	}
 	if len(repl) == 0 {
 		return "", false, nil
@@ -411,7 +420,7 @@ func isOmissionPlaceholder(raw string) bool {
 	if len(inner) < 12 || inner[0] != '[' || inner[len(inner)-1] != ']' {
 		return false
 	}
-	return strings.Contains(inner, " omitted: ")
+	return strings.Contains(inner, " omitted: ") || isSavedImagePlaceholder(inner)
 }
 
 // acceptReplacement reports whether next can stand in for raw without making
@@ -805,13 +814,13 @@ func isB64Char(c byte) bool {
 	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '+' || c == '/'
 }
 
-func replaceImageURLString(raw string) (string, bool) {
+func replaceImageURLString(raw string, c *imageCapture) (string, bool) {
 	raw = strings.TrimSpace(raw)
 	if isKeepReference(raw) {
 		return "", false
 	}
 	if mime, size, ok := dataURLInfoStr(raw); ok {
-		return placeholderJSON(kindForImageURL(mime), mimeOrUnknown(mime), size), true
+		return c.placeholder(kindForImageURL(mime), mimeOrUnknown(mime), size, raw), true
 	}
 	inner, ok := jsonStringBodyStr(raw)
 	if !ok {
@@ -823,18 +832,18 @@ func replaceImageURLString(raw string) (string, bool) {
 	// Short non-URL tokens (file ids, "auto") are not payloads. Real inline
 	// base64 without a data: prefix is much longer than 64 characters.
 	if len(inner) >= 64 && isBase64Str(inner) {
-		return placeholderJSON("image", "unknown", decodedBase64SizeStr(inner)), true
+		return c.placeholder("image", "unknown", decodedBase64SizeStr(inner), raw), true
 	}
 	return "", false
 }
 
-func replaceReferenceOrDataURL(raw string) (string, bool) {
+func replaceReferenceOrDataURL(raw string, c *imageCapture) (string, bool) {
 	raw = strings.TrimSpace(raw)
 	if isKeepReference(raw) {
 		return "", false
 	}
 	if mime, size, ok := dataURLInfoStr(raw); ok {
-		return placeholderJSON(kindForImageURL(mime), mimeOrUnknown(mime), size), true
+		return c.placeholder(kindForImageURL(mime), mimeOrUnknown(mime), size, raw), true
 	}
 	inner, ok := jsonStringBodyStr(raw)
 	if ok && strings.HasPrefix(inner, "data:") {
@@ -843,7 +852,7 @@ func replaceReferenceOrDataURL(raw string) (string, bool) {
 	return "", false
 }
 
-func replaceFileDataString(raw string) (string, bool) {
+func replaceFileDataString(raw string, c *imageCapture) (string, bool) {
 	raw = strings.TrimSpace(raw)
 	if isKeepReference(raw) {
 		return "", false
@@ -853,7 +862,7 @@ func replaceFileDataString(raw string) (string, bool) {
 		if mime != "" {
 			kind = kindFromMime(mime)
 		}
-		return placeholderJSON(kind, mimeOrUnknown(mime), size), true
+		return c.placeholder(kind, mimeOrUnknown(mime), size, raw), true
 	}
 	inner, ok := jsonStringBodyStr(raw)
 	if !ok {
@@ -868,7 +877,7 @@ func replaceFileDataString(raw string) (string, bool) {
 	return "", false
 }
 
-func replaceDeclaredBlob(raw, kind, mime string) (string, bool) {
+func replaceDeclaredBlob(raw, kind, mime string, c *imageCapture) (string, bool) {
 	raw = strings.TrimSpace(raw)
 	if isKeepReference(raw) || !jsonStringCarriesPayload(raw) {
 		return "", false
@@ -878,12 +887,12 @@ func replaceDeclaredBlob(raw, kind, mime string) (string, bool) {
 			mime = m
 			kind = kindForImageURL(m)
 		}
-		return placeholderJSON(kind, mimeOrUnknown(mime), size), true
+		return c.placeholder(kind, mimeOrUnknown(mime), size, raw), true
 	}
 	if kind == "" {
 		kind = "image"
 	}
-	return placeholderJSON(kind, mimeOrUnknown(mime), payloadSizeStr(raw)), true
+	return c.placeholder(kind, mimeOrUnknown(mime), payloadSizeStr(raw), raw), true
 }
 
 func kindFromMime(mime string) string {

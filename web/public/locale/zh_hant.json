@@ -958,7 +958,27 @@
       "thinking": "思考",
       "basePrice": "基準單價(In/Out)",
       "upstreamRequestBody": "真實出站請求體",
-      "upstreamRequestBodyHint": "與\"請求內容\"不同：這是真正發給上游的位元組（可能被截斷）"
+      "upstreamRequestBodyHint": "與\"請求內容\"不同：這是真正發給上游的位元組（可能被截斷）",
+      "logImage": {
+        "viewOriginal": "檢視原圖",
+        "thumbAlt": "圖片縮圖",
+        "originalAlt": "原圖",
+        "lightboxTitle": "原圖預覽",
+        "escHint": "按 Esc 關閉",
+        "close": "關閉",
+        "copyId": "複製 ID",
+        "copied": "圖片 ID 已複製",
+        "copyFailed": "複製失敗",
+        "download": "下載原圖",
+        "cleaned": "原圖已清除",
+        "loadFailed": "原圖載入失敗",
+        "omitTooLarge": "圖片未儲存：超過 10MB",
+        "omitTooMany": "圖片未儲存：單次請求最多存 16 張",
+        "omitOverBudget": "圖片未儲存：單次請求最多存 40MB",
+        "omitQueueFull": "圖片未儲存：當時儲存佇列太忙",
+        "omitNotSaved": "圖片未儲存",
+        "omitMedia": "內容未儲存"
+      }
     }
   },
   "channel": {
