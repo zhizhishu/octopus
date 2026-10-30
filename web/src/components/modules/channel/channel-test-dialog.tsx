@@ -43,8 +43,7 @@ const MAX_REPEAT = 500;
 
 // 端点自动模拟的 shape（与后端 runner 的端点→shape 映射一致；测试永远用渠道真实 profile）
 // 身份判定已下沉到 lib/channel-test.ts 的 channelTestIdentityFor：
-// 响应端点是否算 codex 取决于渠道类型（火山渠道出站是 /responses 但不是 codex
-// 形状，后端 runner.go:1156-1161 也返回 false）。写死成常量会让界面显示
+// 响应端点是否算 codex 取决于渠道类型（与后端 runner 的判定一致）。写死成常量会让界面显示
 // 一个实际不存在的身份。
 const SHAPE_LABEL: Record<'codex' | 'claude' | 'generic', string> = {
     codex: 'codex CLI', claude: 'claude CLI', generic: '通用 UA',

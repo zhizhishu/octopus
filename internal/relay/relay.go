@@ -1804,7 +1804,7 @@ func (ra *relayAttempt) outboundBaseURL() string {
 //
 // 嵌入流量永远走通用 EmbeddingOutbound：它的报文只有 model/input/dimensions/
 // encoding_format/user 五个字段，任何 OpenAI 兼容上游都吃这一套。渠道类型决定的是
-// "能接什么"，不决定"嵌入报文长什么样"。一个被勾上 embeddings 能力位的火山渠道
+// "能接什么"，不决定"嵌入报文长什么样"。一个被勾上 embeddings 能力位的 Responses 渠道
 // （type 决定的是 ResponseOutbound）如果不纠正，就会拿嵌入请求序列化成 responses
 // body —— 发出去的东西是错的。
 //

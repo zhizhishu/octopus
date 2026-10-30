@@ -924,7 +924,7 @@ func glmWantsThinking(request *model.InternalLLMRequest) bool {
 }
 
 // glmDisablesThinking reports an explicit request to turn reasoning off.
-// Mirrors the volcengine semantics where "minimal" maps to disabled, and also
+// Treats "minimal" as disabled (same as gemini), and also
 // covers the OpenAI "none" effort.
 func glmDisablesThinking(request *model.InternalLLMRequest) bool {
 	switch strings.TrimSpace(strings.ToLower(request.ReasoningEffort)) {
