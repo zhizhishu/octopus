@@ -67,9 +67,17 @@ type ImageTask struct {
 	// 空值 = generations（存量/默认），保持向后兼容。
 	Endpoint string `json:"endpoint" gorm:"size:32;default:''"`
 
-	// 请求体原文，供后台执行器重放。**含用户 prompt**，属敏感数据，
-	// 不许出现在任何日志/错误串里。
+	// 请求体原文，供后台执行器重放。**含用户 prompt**，属敏感数据：
+	// 不许出现在进程日志（stdout）与错误串里。历史日志（relay_logs）按与同步图片
+	// 完全相同的规则记录它（请求内容脱敏密钥、出站请求体受开关控制原样记录）。
 	RequestBody string `json:"-" gorm:"type:text"`
+
+	// 以下三列只为执行器落历史日志：任务在后台跑完时已经没有原始 HTTP 请求可读，
+	// 不在提交时记下来，日志行就缺"客户端请求的模型名 / 来源 IP / UA"，
+	// 与同步图片日志对不齐。只进 relay_logs，对外接口不返回（json:"-"）。
+	RequestModel     string `json:"-" gorm:"size:255;default:''"`
+	RequestIP        string `json:"-" gorm:"size:128;default:''"`
+	RequestUserAgent string `json:"-" gorm:"size:512;default:''"`
 
 	// 上游原始返回，完成后填。诊断用，别在前端直接展示（可能含上游内网信息）。
 	// 写入侧会剔除 b64_json 图像数据（见 relay.imageTaskResultPayload），
