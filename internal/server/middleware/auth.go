@@ -71,6 +71,9 @@ func APIKeyAuth() gin.HandlerFunc {
 		} else if key := c.Request.Header.Get("x-goog-api-key"); key != "" {
 			apiKey = key
 			requestType = "gemini"
+		} else if key, ok := midjourneyClientKey(c.Request); ok {
+			apiKey = key
+			requestType = "openai"
 		} else if auth := c.Request.Header.Get("Authorization"); auth != "" {
 			apiKey = strings.TrimPrefix(auth, "Bearer ")
 			requestType = "openai"
@@ -154,6 +157,30 @@ func APIKeyAuth() gin.HandlerFunc {
 	}
 }
 
+// midjourneyClientKey 只在 /mj/ 路径上认 mj-api-secret 头，照 new-api middleware/auth.go:559：
+// Authorization 为空、或是 midjourney-proxy 客户端惯用的占位值 "midjourney-proxy" 时，
+// 改从 mj-api-secret 取 key。Authorization 带着真 key 时仍以它为准（返回 false，走原分支）。
+func midjourneyClientKey(r *http.Request) (string, bool) {
+	if r == nil || !strings.HasPrefix(r.URL.Path, "/mj/") {
+		return "", false
+	}
+	auth := strings.TrimSpace(r.Header.Get("Authorization"))
+	if len(auth) >= 7 && strings.EqualFold(auth[:7], "Bearer ") {
+		auth = strings.TrimSpace(auth[7:])
+	}
+	if auth != "" && auth != "midjourney-proxy" {
+		return "", false
+	}
+	key := strings.TrimSpace(r.Header.Get("mj-api-secret"))
+	if len(key) >= 7 && strings.EqualFold(key[:7], "Bearer ") {
+		key = strings.TrimSpace(key[7:])
+	}
+	if key == "" {
+		return "", false
+	}
+	return key, true
+}
+
 // EndpointFamilyForPath 把路径映射到 API key 端点族，供路由表契约测试使用。
 //
 // 为什么需要这个导出：apiKeyEndpointFamilyForPath 是手工维护的清单，加了新 relay
@@ -197,7 +224,14 @@ func apiKeyEndpointFamilyForPath(path string) model.APIKeyEndpointFamily {
 		// 对所有 key 恒 403 —— 而且绕过中间件的 handler 测试照样全绿，查不出来。
 		path == "/v1/systemone" ||
 		strings.HasPrefix(path, "/v1/images/") ||
-		strings.HasPrefix(path, "/v1/audio/") {
+		strings.HasPrefix(path, "/v1/audio/") ||
+		// xAI（Grok）语音 REST。与 /v1/audio/* 同族：同是音频、同走 raw 透传、
+		// 同一个上游账号。
+		path == "/v1/tts" ||
+		path == "/v1/stt" ||
+		// Midjourney（midjourney-proxy 协议，见 handlers/midjourney.go）。与 /v1/images/* 同族：
+		// 同是出图、同按次计费、同走 OpenAI 兼容渠道；单开 family 要动前端勾选框和迁移。
+		strings.HasPrefix(path, "/mj/") {
 		return model.APIKeyEndpointFamilyOpenAICompatible
 	}
 	if path == "/chat/completions" ||

@@ -41,6 +41,16 @@ type RawProtocolOptions struct {
 	BinaryResponse  bool
 	NonBilling      bool
 	ResponseLogNote string
+	// OmitAbsentModel：客户端 JSON 正文里**没有** model 字段时，上游正文也不补。
+	//
+	// 为什么需要：xAI 语音 REST（POST /v1/tts）的正文是 {text, voice_id, language…}，
+	// 协议里根本没有 model（模型由端点本身决定）。raw 默认会把路由用的模型名写进
+	// 正文，对这类上游就是往请求里凭空塞一个它不认识的字段。客户端自己带了 model
+	// 时仍照旧改写（model_mapping 照常生效）。零值 = 改动前行为，存量端点字节不变。
+	OmitAbsentModel bool
+	// PerCallBilling：成功但响应里没有任何 token 用量时，按模型价格行的 per_call
+	// 计一次费（与 /v1/videos、异步图片同一口径）。零值 = 改动前行为。
+	PerCallBilling bool
 }
 
 func RawProtocolHandler(options RawProtocolOptions, c *gin.Context) {
@@ -233,6 +243,9 @@ runIterator:
 				metrics.ActualModel = item.ModelName
 				if usage != nil && !options.NonBilling {
 					metrics.SetUsage(item.ModelName, *usage)
+				}
+				if options.PerCallBilling && !options.NonBilling && !rawProtocolUsagePositive(usage) {
+					applyRawProtocolPerCallCost(metrics, item.ModelName)
 				}
 				metrics.ResponseContent = buildRawProtocolResponseContent(options, stream, upstreamCT, usage)
 				if isResponsesCompactRawProtocol(options) && strings.TrimSpace(upstreamResponseID) != "" {
@@ -934,7 +947,9 @@ func rawProtocolAttempt(
 		for k, v := range jsonPayload {
 			attemptPayload[k] = v
 		}
-		attemptPayload["model"] = actualModel
+		if _, hadModel := jsonPayload["model"]; hadModel || !options.OmitAbsentModel {
+			attemptPayload["model"] = actualModel
+		}
 		if isResponsesCompactRawProtocol(options) && !forwardCompactCursor {
 			delete(attemptPayload, "previous_response_id")
 		}

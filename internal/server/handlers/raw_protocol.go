@@ -36,6 +36,18 @@ func init() {
 			router.NewRoute("/audio/translations", http.MethodPost).
 				Handle(audioTranslations),
 		).
+		// xAI（Grok）语音 REST：文字转语音 / 语音转文字。照 sub2api
+		// routes/gateway.go 的 /v1/tts、/v1/stt 与 CLIProxyAPI server_routes.go
+		// 的 /v1/tts。上游路径与客户端路径同名（<base>/v1/tts、<base>/v1/stt），
+		// 渠道选择、重试、熔断、日志全部复用 RawProtocolHandler。
+		AddRoute(
+			router.NewRoute("/tts", http.MethodPost).
+				Handle(grokTTS),
+		).
+		AddRoute(
+			router.NewRoute("/stt", http.MethodPost).
+				Handle(grokSTT),
+		).
 		AddRoute(
 			router.NewRoute("/moderations", http.MethodPost).
 				Handle(moderations),
@@ -116,6 +128,46 @@ func audioTranslations(c *gin.Context) {
 	relay.RawProtocolHandler(relay.RawProtocolOptions{
 		Endpoint: "/audio/translations",
 		Name:     "audio_translations",
+	}, c)
+}
+
+// grokTTSDefaultModel 是 /v1/tts 正文不带 model 时用来**选渠道与计费**的模型名。
+// xAI 的 TTS 正文协议里没有 model 字段；名字照 CLIProxyAPI
+// openai_speech_handlers.go 的 defaultXAISpeechModel。管理员要把它（或映射）配到
+// 承接 Grok 语音的渠道上，否则「model not supported / no available channel」。
+const grokTTSDefaultModel = "grok-tts"
+
+// grokSTTDefaultModel 同理：xAI STT REST 的多段表单里没有 model，默认模型是
+// grok-voice-transcribe-2.0（xAI 文档 STT 默认值）。
+const grokSTTDefaultModel = "grok-voice-transcribe-2.0"
+
+// grokTTS 转发 xAI POST /v1/tts（JSON → 音频二进制；with_timestamps=true 时上游
+// 回 JSON，同样原样透传）。
+//
+//   - OmitAbsentModel：客户端没写 model 就不往上游正文里补（xAI 协议里没有这个字段）。
+//   - BinaryResponse：音频不进日志，Content-Type 原样透传。
+//   - PerCallBilling：音频响应没有 token 用量，按价格行 per_call 计次（与视频同口径）。
+func grokTTS(c *gin.Context) {
+	relay.RawProtocolHandler(relay.RawProtocolOptions{
+		Endpoint:        "/tts",
+		Name:            "audio_tts",
+		DefaultModel:    grokTTSDefaultModel,
+		BinaryResponse:  true,
+		ResponseLogNote: "audio response omitted for storage",
+		OmitAbsentModel: true,
+		PerCallBilling:  true,
+	}, c)
+}
+
+// grokSTT 转发 xAI POST /v1/stt（multipart，file 必须是最后一段 → raw 的多段复制
+// 保持原顺序、只替换已有的 model 段、从不追加，满足这个约束）。
+func grokSTT(c *gin.Context) {
+	relay.RawProtocolHandler(relay.RawProtocolOptions{
+		Endpoint:        "/stt",
+		Name:            "audio_stt",
+		DefaultModel:    grokSTTDefaultModel,
+		OmitAbsentModel: true,
+		PerCallBilling:  true,
 	}, c)
 }
 
