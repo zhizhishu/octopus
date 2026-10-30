@@ -875,13 +875,8 @@ func TestResolveTimeoutSecondsUsesEndpointDefaults(t *testing.T) {
 
 func TestRunAnthropicMessagesUsesStreamConnectivityTest(t *testing.T) {
 	ctx := setupModelTestDB(t)
-	// This test asserts the Claude CLI-like 1M body shape, which is now opt-in.
-	if err := op.SettingSetString(dbmodel.SettingKeyClaudeCLIAutoCompact, "true"); err != nil {
-		t.Fatalf("set auto compact: %v", err)
-	}
-	if err := op.SettingSetString(dbmodel.SettingKeyClaudeCLIReasoningEffort, "high"); err != nil {
-		t.Fatalf("set reasoning effort: %v", err)
-	}
+	// Default settings: 默认思考强度=high fills adaptive thinking (the test request sends none),
+	// and context_management follows because thinking is on.
 
 	var sawStream bool
 	var sawBeta string

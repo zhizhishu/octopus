@@ -1309,11 +1309,12 @@ func prepareClaudeOneMillionModelTestShape(req *transformermodel.InternalLLMRequ
 	}
 	maxTokens := int64(64000)
 	req.MaxTokens = &maxTokens
-	if effort := claudeCLIReasoningEffort(); effort != "" && req.ReasoningEffort == "" && !req.AdaptiveThinking {
-		req.ReasoningEffort = effort
-		req.AdaptiveThinking = true
-	}
-	if settingBool(dbmodel.SettingKeyClaudeCLIAutoCompact, false) && len(req.AnthropicContextManagement) == 0 {
+	// Same rule and model guards as the relay forward path (client wins, fill only when the
+	// test request carries no thinking choice), so a channel test matches real traffic.
+	// context_management mirrors the relay's 补齐 Claude CLI 请求字段 switch, and like there it
+	// is only added while thinking is on (clear_thinking 400s otherwise).
+	if filled, _ := transformermodel.ApplyClaudeDefaultEffort(req, relay.ClaudeDefaultEffortSetting()); filled != "" &&
+		len(req.AnthropicContextManagement) == 0 && settingBool(dbmodel.SettingKeyRelayClaudeCLIShapeKeys, true) {
 		req.AnthropicContextManagement = json.RawMessage(`{"edits":[{"type":"clear_thinking_20251015","keep":"all"}]}`)
 	}
 	sessionID := ""
@@ -1528,18 +1529,6 @@ func codexModelTestTurnMetadata(sessionID, installationID string) string {
 	return transformermodel.BuildCodexTurnMetadata(
 		installationID, sessionID, uuid.NewString(), transformermodel.CodexDefaultSandbox, time.Now().UnixMilli(),
 	)
-}
-
-func claudeCLIReasoningEffort() string {
-	effort := strings.ToLower(strings.TrimSpace(settingString(dbmodel.SettingKeyClaudeCLIReasoningEffort, "auto")))
-	switch effort {
-	case "", "auto", "off", "false", "disabled":
-		return ""
-	case "low", "medium", "high":
-		return effort
-	default:
-		return ""
-	}
 }
 
 func settingString(key dbmodel.SettingKey, fallback string) string {

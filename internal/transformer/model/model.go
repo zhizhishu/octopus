@@ -644,6 +644,13 @@ type TransformOptions struct {
 	// injection for stable Anthropic prompt prefixes.
 	AnthropicAutoCacheControl bool `json:"-"`
 
+	// ClaudeContextManagementInjected records that context_management was filled by the
+	// relay (relay_claude_cli_shape_keys), not sent by the client. The Anthropic outbound
+	// drops an injected one when the final thinking is not enabled/adaptive, because
+	// clear_thinking_20251015 is rejected with 400 otherwise. A client's own value is never
+	// touched.
+	ClaudeContextManagementInjected bool `json:"-"`
+
 	// AnthropicOneMillionBeta records that the client requested a Claude 1M
 	// compatibility alias such as opus[1m]. Routing can later replace Model with
 	// the provider's real model id, so the beta flag must not depend only on the

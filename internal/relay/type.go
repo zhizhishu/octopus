@@ -302,6 +302,11 @@ type relayAttempt struct {
 	// in the model field returned to the client.
 	modelMapped bool
 
+	// claudeDefaultEffort is the effort applyClaudeDefaultEffort filled on THIS attempt
+	// ("" = nothing filled: client chose, setting is 不补, or a guard skipped it). The CLI
+	// shape-keys completion reuses it so its output_config never disagrees with the setting.
+	claudeDefaultEffort string
+
 	// upstreamDeclaredModel is THIS attempt's own observation of the upstream's
 	// self-declared response model (captured before the model_mapping rewrite,
 	// first non-empty wins within the attempt — stream chunks repeat the same

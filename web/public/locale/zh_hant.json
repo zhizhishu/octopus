@@ -221,12 +221,14 @@
       "placeholder": "請輸入週期（分鐘）"
     },
     "anthropicAutoCacheControl": {
-      "label": "Anthropic 穩定前綴快取",
-      "hint": "為長 system、工具定義或首條長使用者上下文自動注入 cache_control"
+      "label": "自動省錢快取（Claude）",
+      "description": "長提示詞和對話前文自動標記快取，再送時更快更省。用戶端自己標過就不動。",
+      "hint": "僅 Anthropic 渠道，且請求裡沒有任何快取標記時才加。\n開頭（系統提示 / 工具 / 首則訊息）夠長才標，另標最近兩則使用者訊息。\n太短不加；真 Claude Code 自帶標記，不受影響。"
     },
     "openAIAutoPromptCacheKey": {
-      "label": "OpenAI 穩定快取鍵",
-      "hint": "客戶端未傳 prompt_cache_key 時，根據使用者、請求模型、system/工具錨點和首條使用者訊息生成不含明文的穩定 key；客戶端顯式值永遠優先。"
+      "label": "自動省錢快取（OpenAI）",
+      "description": "同一段對話重複的長開頭讓上游直接重用，更快更省。用戶端自己設定過就不動。",
+      "hint": "僅 OpenAI Chat / Responses 渠道。\n依使用者、模型和對話開頭算一個快取編號，只送雜湊，不送原文。\n真 Codex 自帶編號，不受影響。"
     },
     "headerDefaults": {
       "title": "Header 預設值",
@@ -237,28 +239,24 @@
       "packageVersion": "Package Version",
       "runtimeVersion": "Runtime Version",
       "stabilizeDeviceProfile": "穩定設備指紋",
-      "claudeDescription": "Anthropic 快取開關和 Claude CLI 指紋一起管理，適合長 system / 工具定義前綴。",
-      "codexDescription": "OpenAI 快取鍵和 Codex Responses 指紋一起管理，轉發時保持 stream 與 SSE 形態。",
+      "claudeDescription": "對 Anthropic 渠道生效：扮成 Claude CLI 的請求標頭，以及思考相關設定。",
+      "codexDescription": "對 OpenAI Responses 渠道生效：扮成 Codex 的請求標頭，以及速度和思考設定。",
       "edit": "編輯",
       "fixed": "固定",
       "editable": "可編輯",
       "cancel": "取消",
       "save": "儲存"
     },
-    "claudeCLIAutoCompact": {
-      "label": "Claude CLI 自動壓縮",
-      "hint": "預設關閉，按 Claude CLI 原生行為透傳。開啟後才會在客戶端未傳 context_management 時補 clear_thinking 清理思考內容，用於降低多輪長聊越聊越慢和 CLI 卡住風險。"
-    },
     "claudeCLIReasoningEffort": {
-      "label": "Claude 思考強度",
-      "hint": "預設「自適應」：跟隨客戶端請求，帶高就高、帶低就低，沒帶就交給模型自行決定，不強制覆蓋。選低/中/高/極高/最高則在客戶端未傳時強制該檔；關閉表示完全不補思考強度。",
-      "auto": "自適應（跟隨請求）",
-      "off": "關閉",
+      "label": "預設思考強度",
+      "description": "用戶端沒指定時依這個強度思考。用戶端自己選過就不動。",
+      "hint": "只對非 Claude Code 用戶端生效，真 Claude Code 不受影響。\n模型不支援這一檔會降一檔；舊模型、帶了溫度等取樣參數或強制呼叫工具時不補。\n強度越高越慢，用量也越多。",
+      "none": "不補（跟用戶端）",
       "low": "低",
       "medium": "中",
-      "high": "高",
-      "xhigh": "極高",
-      "max": "最高（max）"
+      "high": "高（預設）",
+      "xhigh": "很高",
+      "max": "最高"
     },
     "claudeBetaStripFlags": {
       "label": "Claude Beta 剝離標記",
@@ -268,8 +266,9 @@
       "placeholder": "prompt-caching-scope-2026-01-05"
     },
     "codexFastMode": {
-      "label": "Codex fast 模式",
-      "hint": "預設關閉。開啟後僅在客戶端未指定時補 service_tier=priority，用來適配支援 Fast 的上游；上游不支援就不要開。不會降低思考強度。"
+      "label": "Codex 快速模式",
+      "description": "讓上游優先處理、回得更快，但通常按約 2 倍計費。用戶端自己選過就不動。",
+      "hint": "用戶端沒指定服務等級時，補上 service_tier=priority。\n上游不支援就別開。不會降低思考強度。"
     },
     "streamKeepalive": {
       "label": "串流保活間隔",
@@ -742,7 +741,7 @@
       },
       "identity": {
         "label": "用戶端指紋",
-        "description": "出站時模仿 Claude CLI / Codex 的請求標頭與快取策略，以及多套裝置指紋。"
+        "description": "出站時扮成 Claude CLI / Codex（請求標頭、裝置指紋），以及思考強度、快速模式和省錢快取。"
       },
       "users": {
         "label": "使用者與註冊",
@@ -763,7 +762,28 @@
       "claude": "Claude（Anthropic 渠道）",
       "codex": "Codex（Responses 渠道）",
       "stream": "串流與逾時",
-      "registration": "註冊與驗證"
+      "registration": "註冊與驗證",
+      "cache": "省錢快取"
+    },
+    "cacheCard": {
+      "description": "只給請求加快取標記，不改請求標頭，也不影響身分偽裝。"
+    },
+    "relayClaudeCLIShapeKeys": {
+      "label": "補齊 Claude CLI 請求欄位",
+      "description": "讓其他用戶端的請求和真 Claude Code 長得一樣。用戶端自己送過的欄位不動。",
+      "hint": "只在開了偽裝的 Anthropic 渠道生效；真 Claude Code 不受影響。\n思考欄位跟著「預設思考強度」走，選「不補」就不加；思考關著時不加上下文清理。\n關掉就依用戶端原樣送出。"
+    },
+    "codexDefaultReasoningEffort": {
+      "label": "預設思考強度",
+      "ariaLabel": "Codex 預設思考強度",
+      "description": "用戶端沒指定時依這個強度思考。用戶端自己選過就不動。",
+      "hint": "只對 GPT-5 / Codex / o 系列模型生效，真 Codex 不受影響。\nGPT-5.6 沒指定時本來就按「高」；不支援「最高」的模型會改成「很高」。\n強度越高越慢，用量也越多。",
+      "none": "不補（預設）",
+      "low": "低",
+      "medium": "中",
+      "high": "高",
+      "xhigh": "很高",
+      "max": "最高"
     }
   },
   "model": {

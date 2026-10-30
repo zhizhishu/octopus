@@ -901,3 +901,97 @@ test('upstream body log: greyed out while 启用历史日志 is off, live again 
     await on.render();
     assert.equal(on.switchByLabel(BODY_LOG).props.disabled, false);
 });
+
+// -----------------------------------------------------------------------------
+// 默认思考强度 / 补齐 Claude CLI 请求字段 / Codex 默认思考强度 / 省钱缓存文案
+// -----------------------------------------------------------------------------
+
+const EFFORT_VALUES = ['none', 'low', 'medium', 'high', 'xhigh', 'max'];
+const optionValues = (select) => {
+    const out = [];
+    const walk = (n) => {
+        if (Array.isArray(n)) return n.forEach(walk);
+        if (!n || typeof n !== 'object') return;
+        if (n.type === 'option') out.push(n.props.value);
+        walk(n.props?.children);
+    };
+    walk(select.props.children);
+    return out;
+};
+
+test('claude default effort: options are none..max, default high, legacy values read like the backend', async () => {
+    const cases = [
+        [undefined, 'high', 'missing key → shipped default high'],
+        ['auto', 'high', 'legacy auto → high (migration 023)'],
+        ['off', 'none', 'legacy off → none'],
+        ['none', 'none', 'none stays'],
+        ['xhigh', 'xhigh', 'xhigh stays'],
+        ['bogus', 'high', 'unknown → high'],
+    ];
+    for (const [value, expected, why] of cases) {
+        const h = makeSystemHarness(value === undefined ? [] : [{ key: 'claude_cli_reasoning_effort', value }]);
+        await h.render();
+        const select = h.selectByLabel('claudeCLIReasoningEffort.label');
+        assert.deepEqual(optionValues(select), EFFORT_VALUES);
+        assert.equal(select.props.value, expected, why);
+    }
+});
+
+test('claude default effort: picking a level writes it; "none" is a real stored value', async () => {
+    const h = makeSystemHarness([{ key: 'claude_cli_reasoning_effort', value: 'high' }]);
+    await h.render();
+    h.selectByLabel('claudeCLIReasoningEffort.label').props.onChange({ target: { value: 'none' } });
+    assert.deepEqual(h.mutation.writes.at(-1).variables, { key: 'claude_cli_reasoning_effort', value: 'none' });
+});
+
+test('codex default effort: default none (no change on fresh install) and writes its own key', async () => {
+    const h = makeSystemHarness([]);
+    await h.render();
+    const select = h.selectByLabel('codexDefaultReasoningEffort.ariaLabel');
+    assert.deepEqual(optionValues(select), EFFORT_VALUES);
+    assert.equal(select.props.value, 'none');
+    select.props.onChange({ target: { value: 'high' } });
+    assert.deepEqual(h.mutation.writes.at(-1).variables, { key: 'codex_default_reasoning_effort', value: 'high' });
+});
+
+test('shape keys switch: defaults on, writes true/false, the auto-compact switch is gone', async () => {
+    const h = makeSystemHarness([]);
+    await h.render();
+    const sw = () => h.switchByLabel('relayClaudeCLIShapeKeys.label');
+    assert.equal(sw().props.checked, true);
+    sw().props.onCheckedChange(false);
+    assert.deepEqual(h.mutation.writes.at(-1).variables, { key: 'relay_claude_cli_shape_keys', value: 'false' });
+    assert.equal(h.switchByLabel('claudeCLIAutoCompact.label'), undefined);
+    const off = makeSystemHarness([{ key: 'relay_claude_cli_shape_keys', value: 'false' }]);
+    await off.render();
+    assert.equal(off.switchByLabel('relayClaudeCLIShapeKeys.label').props.checked, false);
+});
+
+test('locale: think / fast / cache strings exist in all three languages and stay short and plain', () => {
+    const groups = ['openAIAutoPromptCacheKey', 'anthropicAutoCacheControl', 'claudeCLIReasoningEffort',
+        'relayClaudeCLIShapeKeys', 'codexFastMode', 'codexDefaultReasoningEffort'];
+    // Field names belong in the tooltip only, never in the label or the one-line description.
+    const jargon = /[a-z]+_[a-z_]+|reasoning\.effort|\bpriority\b/;
+    const zhKeys = JSON.stringify(Object.keys(JSON.parse(readFileSync(path.join(__dirname, '..', 'public', 'locale', 'zh_hans.json'), 'utf8')).setting.claudeCLIReasoningEffort).sort());
+    for (const lang of ['zh_hans', 'zh_hant', 'en']) {
+        const s = JSON.parse(readFileSync(path.join(__dirname, '..', 'public', 'locale', `${lang}.json`), 'utf8')).setting;
+        assert.equal(s.claudeCLIAutoCompact, undefined, `${lang}: removed auto-compact strings must stay removed`);
+        assert.ok(s.sections.cache && s.cacheCard?.description, `${lang}: cache card title/description`);
+        for (const g of groups) {
+            const e = s[g];
+            assert.ok(e?.label && e?.description && e?.hint, `${lang}: ${g} label/description/hint`);
+            assert.ok(!jargon.test(e.label) && !jargon.test(e.description), `${lang}: ${g} label/description must not carry field names`);
+            assert.ok(e.hint.split('\n').length <= 3, `${lang}: ${g} hint is at most 3 short lines`);
+        }
+        for (const g of ['claudeCLIReasoningEffort', 'codexDefaultReasoningEffort']) {
+            for (const v of EFFORT_VALUES) assert.ok(s[g][v], `${lang}: ${g}.${v}`);
+            assert.equal(s[g].auto, undefined, `${lang}: ${g}.auto is gone`);
+            assert.equal(s[g].off, undefined, `${lang}: ${g}.off is gone`);
+        }
+        assert.equal(JSON.stringify(Object.keys(s.claudeCLIReasoningEffort).sort()), zhKeys, `${lang}: same keys as zh_hans`);
+    }
+    const zh = JSON.parse(readFileSync(path.join(__dirname, '..', 'public', 'locale', 'zh_hans.json'), 'utf8')).setting;
+    assert.equal(zh.openAIAutoPromptCacheKey.label, '自动省钱缓存（OpenAI）');
+    assert.equal(zh.openAIAutoPromptCacheKey.description, '同一段对话重复的长开头让上游直接复用，更快更省。客户端自己设置过就不动。');
+    assert.equal(zh.relayClaudeCLIShapeKeys.label, '补齐 Claude CLI 请求字段');
+});

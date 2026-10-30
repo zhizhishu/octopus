@@ -1678,7 +1678,7 @@ type attemptBase struct {
 	thinkingBudget        *int64
 	adaptiveThinking      bool
 	// Claude/Claude Code 的 bodyshape 成员。ensureClaudeCLIShapeTopLevelKeys 和
-	// applyClaudeOneMillionRuntimeShape 会**就地**往共享 internalRequest 上补这些
+	// applyClaudeDefaultEffort 会**就地**往共享 internalRequest 上补这些
 	// 成员(只补空缺),它们表达的是「这一跳的渠道要被看成真 CLI」。不还原就会骑到下一跳:
 	// 首跳 Anthropic+cloak 补了 thinking/output_config/safeguards,次跳是 cloak=never 的
 	// 国产上游时这些东西照样发出去——对一个明确要求「别冒充 Claude」的渠道注入了伪造身份。
@@ -2357,8 +2357,8 @@ func (ra *relayAttempt) prepareClaudePlainClientShape() {
 	}
 	plainClient := !isNativeAnthropicClaudeShape(ra.internalRequest)
 	model.ApplyClaudeCodeFallbackTools(ra.internalRequest, ra.channel != nil && shouldApplyChannelCloak(ra.channel.Cloak), plainClient)
-	if plainClient && model.AnthropicRequestWantsOneMillionBeta(ra.internalRequest) {
-		applyClaudeOneMillionRuntimeShape(ra.internalRequest)
+	if plainClient && (ra.c == nil || !clientIsCLIShaped(ra.c.Request)) {
+		ra.applyClaudeDefaultEffort()
 	}
 }
 
@@ -2398,35 +2398,6 @@ func isBenignUpstreamStreamEnd(err error) bool {
 	}
 	normalized := strings.ToLower(err.Error())
 	return strings.Contains(normalized, "unexpected end of input") || strings.Contains(normalized, "eof")
-}
-
-func applyClaudeOneMillionRuntimeShape(req *model.InternalLLMRequest) {
-	if req == nil {
-		return
-	}
-	if effort := claudeCLIReasoningEffort(); effort != "" && req.ReasoningEffort == "" && !req.AdaptiveThinking {
-		req.ReasoningEffort = effort
-		req.AdaptiveThinking = true
-	}
-	if settingBool(dbmodel.SettingKeyClaudeCLIAutoCompact, false) && len(req.AnthropicContextManagement) == 0 {
-		req.AnthropicContextManagement = json.RawMessage(`{"edits":[{"type":"clear_thinking_20251015","keep":"all"}]}`)
-	}
-}
-
-func claudeCLIReasoningEffort() string {
-	effort := strings.ToLower(strings.TrimSpace(settingString(dbmodel.SettingKeyClaudeCLIReasoningEffort, "auto")))
-	switch effort {
-	case "", "auto", "off", "false", "disabled":
-		// auto / unset: do not inject a forced effort, follow the client request as-is.
-		return ""
-	case "low", "medium", "high", "xhigh", "max":
-		// xhigh/max are passed through to output_config.effort on the adaptive
-		// path. They used to land in default and vanish without a trace, so an
-		// operator who wanted max as the fallback simply could not get it.
-		return effort
-	default:
-		return ""
-	}
 }
 
 func messagesContainClaudeCodeSystemPrompt(messages []model.Message) bool {

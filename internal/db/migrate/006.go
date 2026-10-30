@@ -34,9 +34,9 @@ func migrateFollowClientCLIDefaults(db *gorm.DB) error {
 		old string
 		new string
 	}{
-		model.SettingKeyClaudeCLIReasoningEffort: {old: "high", new: "auto"},
-		model.SettingKeyClaudeCLIAutoCompact:     {old: "true", new: "false"},
-		model.SettingKeyCodexFastMode:            {old: "true", new: "false"},
+		model.SettingKeyClaudeCLIReasoningEffort:    {old: "high", new: "auto"},
+		model.SettingKey("claude_cli_auto_compact"): {old: "true", new: "false"}, // key removed by 023
+		model.SettingKeyCodexFastMode:               {old: "true", new: "false"},
 	}
 	for key, item := range replacements {
 		if err := db.Model(&model.Setting{}).

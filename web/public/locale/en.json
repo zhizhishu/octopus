@@ -221,12 +221,14 @@
       "placeholder": "Enter interval in minutes"
     },
     "anthropicAutoCacheControl": {
-      "label": "Anthropic Stable Prefix Cache",
-      "hint": "Automatically add cache_control to long system prompts, tools, or the first long user context"
+      "label": "Auto cache (Claude)",
+      "description": "Marks long prompts and earlier turns for caching, so resending is faster and cheaper. Skipped if the client marked any.",
+      "hint": "Anthropic channels only, and only when the request has no cache markers.\nMarks the start (system / tools / first message) if long enough, plus the last two user messages.\nToo short: nothing added. Real Claude Code marks its own and is left alone."
     },
     "openAIAutoPromptCacheKey": {
-      "label": "OpenAI Stable Cache Key",
-      "hint": "When the client omits prompt_cache_key, generate an opaque stable key from the user, request model, system/tool anchors, and first user message. Client values always win."
+      "label": "Auto cache (OpenAI)",
+      "description": "Lets the upstream reuse a long repeated conversation start: faster and cheaper. Skipped if the client set its own.",
+      "hint": "OpenAI Chat / Responses channels only.\nBuilds a cache ID from user, model and conversation start; only a hash is sent, never the text.\nReal Codex sends its own ID and is left alone."
     },
     "headerDefaults": {
       "title": "Header Defaults",
@@ -237,26 +239,22 @@
       "packageVersion": "Package Version",
       "runtimeVersion": "Runtime Version",
       "stabilizeDeviceProfile": "Stable device profile",
-      "claudeDescription": "Manage Anthropic prefix caching together with Claude CLI identity headers for long system/tool prefixes.",
-      "codexDescription": "Manage OpenAI cache keys together with Codex Responses identity headers while preserving stream/SSE forwarding.",
+      "claudeDescription": "For Anthropic channels: Claude CLI identity headers and thinking settings.",
+      "codexDescription": "For OpenAI Responses channels: Codex identity headers, speed and thinking settings.",
       "edit": "Edit",
       "fixed": "Fixed",
       "editable": "Editable",
       "cancel": "Cancel",
       "save": "Save"
     },
-    "claudeCLIAutoCompact": {
-      "label": "Claude CLI auto compact",
-      "hint": "Off by default; passes through Claude CLI native behavior. When on, adds context_management clear_thinking only if the client did not send it, reducing slow long chats and CLI hangs."
-    },
     "claudeCLIReasoningEffort": {
-      "label": "Claude reasoning effort",
-      "hint": "Default \"adaptive\": follows the client request — high stays high, low stays low, and when the client sends nothing the model decides. Choosing low/medium/high/very high/max forces that level only when the client sent none; Off disables the fallback entirely.",
-      "auto": "Adaptive (follow request)",
-      "off": "Off",
+      "label": "Default thinking effort",
+      "description": "Used when the client does not pick one. A client's own choice is never changed.",
+      "hint": "Non-Claude-Code clients only; real Claude Code is left alone.\nSteps down if the model lacks the level; skipped on older models, with temperature-style sampling, or a forced tool call.\nHigher is slower and uses more.",
+      "none": "Don't add (follow client)",
       "low": "Low",
       "medium": "Medium",
-      "high": "High",
+      "high": "High (default)",
       "xhigh": "Very high",
       "max": "Max"
     },
@@ -269,7 +267,8 @@
     },
     "codexFastMode": {
       "label": "Codex fast mode",
-      "hint": "Off by default. When on, sets service_tier=priority only if the client omitted it, so Fast-capable upstreams can accelerate. Leave it off if the upstream does not support Fast. It does not lower reasoning effort."
+      "description": "Asks the upstream to serve you first: faster replies, usually about 2x the price. Skipped if the client chose.",
+      "hint": "Adds service_tier=priority when the client sent no service tier.\nLeave off if the upstream does not support it. Does not lower thinking effort."
     },
     "streamKeepalive": {
       "label": "Stream keepalive interval",
@@ -742,7 +741,7 @@
       },
       "identity": {
         "label": "Client identity",
-        "description": "Outbound Claude CLI / Codex headers and cache behavior, plus multiple device fingerprints."
+        "description": "Look like Claude CLI / Codex upstream (headers, device fingerprints), plus thinking effort, fast mode and money-saving cache."
       },
       "users": {
         "label": "Users & sign-up",
@@ -763,7 +762,28 @@
       "claude": "Claude (Anthropic channels)",
       "codex": "Codex (Responses channels)",
       "stream": "Streaming & timeouts",
-      "registration": "Sign-up & verification"
+      "registration": "Sign-up & verification",
+      "cache": "Money-saving cache"
+    },
+    "cacheCard": {
+      "description": "Only adds cache markers to the request. Headers and identity are not changed."
+    },
+    "relayClaudeCLIShapeKeys": {
+      "label": "Complete Claude CLI request fields",
+      "description": "Makes other clients' requests look like real Claude Code. Fields the client sent are kept.",
+      "hint": "Cloaked Anthropic channels only; real Claude Code is left alone.\nThinking fields follow \"Default thinking effort\" (none if \"Don't add\"); no context cleanup while thinking is off.\nTurn off to send exactly what the client sent."
+    },
+    "codexDefaultReasoningEffort": {
+      "label": "Default thinking effort",
+      "ariaLabel": "Codex default thinking effort",
+      "description": "Used when the client does not pick one. A client's own choice is never changed.",
+      "hint": "GPT-5 / Codex / o-series models only; real Codex is left alone.\nGPT-5.6 already defaults to High; models without Max get Very high.\nHigher is slower and uses more.",
+      "none": "Don't add (default)",
+      "low": "Low",
+      "medium": "Medium",
+      "high": "High",
+      "xhigh": "Very high",
+      "max": "Max"
     }
   },
   "model": {

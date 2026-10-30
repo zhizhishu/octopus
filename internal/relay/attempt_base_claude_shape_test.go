@@ -18,7 +18,7 @@ import (
 
 // 这条测的是**调用点**,不是纯函数: 它按尝试循环的真实顺序跑
 // captureAttemptBase -> base.restore -> applyTransformOptionsWithInboundSetter,
-// 让 ensureClaudeCLIShapeTopLevelKeys / applyClaudeOneMillionRuntimeShape 这两个
+// 让 ensureClaudeCLIShapeTopLevelKeys / applyClaudeDefaultEffort 这两个
 // 「就地改写共享 internalRequest」的写入者真的跑起来。只单测 restore() 的话,
 // 漏掉的字段会安静地留在默认零值上,红不了。
 func TestFailedCloakedAttemptLeavesNoClaudeShapeForTheNextAttempt(t *testing.T) {
@@ -30,7 +30,7 @@ func TestFailedCloakedAttemptLeavesNoClaudeShapeForTheNextAttempt(t *testing.T) 
 	text := "ping"
 	stream := true
 	internalRequest := &model.InternalLLMRequest{
-		Model:        "request-model",
+		Model:        "claude-opus-4-7",
 		RawAPIFormat: model.APIFormatAnthropicMessage,
 		Stream:       &stream,
 		Messages:     []model.Message{{Role: "user", Content: model.MessageContent{Content: &text}}},
@@ -86,11 +86,34 @@ func TestFailedCloakedAttemptLeavesNoClaudeShapeForTheNextAttempt(t *testing.T) 
 		t.Error("cloak=never 的次跳 SuppressClaudeIdentity = false: 它就是被上一跳的残留盖掉的")
 	}
 
-	// 真正出站的那份 body: 这四样一个都不能有。
+	// 真正出站的那份 body: 首跳补的 CLI 成员一个都不能有。thinking/output_config 允许以
+	// 「这一跳自己的默认思考强度」形式出现({"type":"adaptive"} + 同一档 effort), 但不能是首跳
+	// 那份 CLI 原样值(display:omitted); context_management / safeguards 必须没有。
 	body := string(outboundBody(t, second))
-	for _, key := range []string{"thinking", "context_management", "output_config", "safeguards"} {
+	for _, key := range []string{"context_management", "safeguards"} {
 		if strings.Contains(body, `"`+key+`"`) {
 			t.Errorf("次跳出站 body 带着首跳的 %q: %s", key, body)
+		}
+	}
+	if strings.Contains(body, `"display":"omitted"`) {
+		t.Errorf("次跳出站 body 带着首跳的 CLI thinking: %s", body)
+	}
+	if !strings.Contains(body, `"thinking":{"type":"adaptive"}`) || !strings.Contains(body, `"output_config":{"effort":"high"}`) {
+		t.Errorf("次跳仍是非 Claude Code 客户端+Anthropic 渠道, 应按默认思考强度 high 补: %s", body)
+	}
+
+	// 默认思考强度=不补: 次跳什么都不加。
+	if err := op.SettingSetString(dbmodel.SettingKeyClaudeCLIReasoningEffort, "none"); err != nil {
+		t.Fatalf("set effort none: %v", err)
+	}
+	third := runAttemptStep(t, internalRequest, &base, &dbmodel.Channel{
+		Type:  outbound.OutboundTypeAnthropic,
+		Cloak: dbmodel.ChannelCloak{Mode: "never"},
+	})
+	body = string(outboundBody(t, third))
+	for _, key := range []string{"thinking", "context_management", "output_config", "safeguards"} {
+		if strings.Contains(body, `"`+key+`"`) {
+			t.Errorf("默认思考强度=不补 时出站 body 不该有 %q: %s", key, body)
 		}
 	}
 }
@@ -111,7 +134,7 @@ func TestCallerSuppliedClaudeShapeSurvivesAFailedCloakedAttempt(t *testing.T) {
 	text := "ping"
 	stream := true
 	internalRequest := &model.InternalLLMRequest{
-		Model:                      "request-model",
+		Model:                      "claude-opus-4-7",
 		RawAPIFormat:               model.APIFormatAnthropicMessage,
 		Stream:                     &stream,
 		AnthropicThinking:          json.RawMessage(callerThinking),
@@ -170,11 +193,11 @@ func runAttemptStep(t *testing.T, req *model.InternalLLMRequest, base *attemptBa
 			c:               c,
 			internalRequest: req,
 			inboundType:     inbound.InboundTypeAnthropic,
-			requestModel:    "request-model",
+			requestModel:    "claude-opus-4-7",
 		},
 		channel: channel,
 	}
-	base.restore(req, "request-model")
+	base.restore(req, "claude-opus-4-7")
 	if err := ra.applyTransformOptionsWithInboundSetter(false); err != nil {
 		t.Fatalf("applyTransformOptions: %v", err)
 	}

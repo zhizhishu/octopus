@@ -57,16 +57,19 @@ const (
 	// 按发出去的字节原样保存（凭据不打码），超过 128KB 截断并标明原始长度。
 	// request_content、response_content、错误和 URL 仍然脱敏。
 	// 存储成本与请求体同量级，所以默认关闭。
-	SettingKeyUpstreamRequestBodyLog   SettingKey = "upstream_request_body_log_enabled"
-	SettingKeyResponsesSessionTTL      SettingKey = "responses_session_ttl_seconds"
-	SettingKeyClaudeHeaderUserAgent    SettingKey = "claude_header_defaults_user_agent"
-	SettingKeyClaudeHeaderPackage      SettingKey = "claude_header_defaults_package_version"
-	SettingKeyClaudeHeaderRuntime      SettingKey = "claude_header_defaults_runtime_version"
-	SettingKeyClaudeHeaderOS           SettingKey = "claude_header_defaults_os"
-	SettingKeyClaudeHeaderArch         SettingKey = "claude_header_defaults_arch"
-	SettingKeyClaudeHeaderTimeout      SettingKey = "claude_header_defaults_timeout"
-	SettingKeyClaudeHeaderStabilize    SettingKey = "claude_header_defaults_stabilize_device_profile"
-	SettingKeyClaudeCLIAutoCompact     SettingKey = "claude_cli_auto_compact"
+	SettingKeyUpstreamRequestBodyLog SettingKey = "upstream_request_body_log_enabled"
+	SettingKeyResponsesSessionTTL    SettingKey = "responses_session_ttl_seconds"
+	SettingKeyClaudeHeaderUserAgent  SettingKey = "claude_header_defaults_user_agent"
+	SettingKeyClaudeHeaderPackage    SettingKey = "claude_header_defaults_package_version"
+	SettingKeyClaudeHeaderRuntime    SettingKey = "claude_header_defaults_runtime_version"
+	SettingKeyClaudeHeaderOS         SettingKey = "claude_header_defaults_os"
+	SettingKeyClaudeHeaderArch       SettingKey = "claude_header_defaults_arch"
+	SettingKeyClaudeHeaderTimeout    SettingKey = "claude_header_defaults_timeout"
+	SettingKeyClaudeHeaderStabilize  SettingKey = "claude_header_defaults_stabilize_device_profile"
+	// SettingKeyClaudeCLIReasoningEffort is "默认思考强度 (Claude)": the effort filled for a
+	// non-Claude-Code client on an Anthropic channel ONLY when the client sent no thinking /
+	// effort of its own. none = never fill. Default high. Real Claude Code is never touched.
+	// (claude_cli_auto_compact used to sit next to it; removed by migration 023.)
 	SettingKeyClaudeCLIReasoningEffort SettingKey = "claude_cli_reasoning_effort"
 	// SettingKeyClaudeBetaStripFlags is an OPT-IN escape hatch (default empty = OFF).
 	// When empty, octopus faithfully forwards the downstream claude-cli's anthropic-beta
@@ -80,19 +83,23 @@ const (
 	// (claude device_id / codex installation id) for ALL relayed traffic — uniform
 	// across users/api-keys/upstreams so an upstream never sees multiple devices just
 	// because requests pass through octopus.
-	SettingKeyFingerprintInstanceID     SettingKey = "fingerprint_instance_id"
-	SettingKeyCodexHeaderUserAgent      SettingKey = "codex_header_defaults_user_agent"
-	SettingKeyCodexHeaderBetaFeatures   SettingKey = "codex_header_defaults_beta_features"
-	SettingKeyCodexFastMode             SettingKey = "codex_fast_mode"
-	SettingKeyUserRegistrationEnabled   SettingKey = "user_registration_enabled"    // 是否允许无邀请码直接注册
-	SettingKeyCORSAllowOrigins          SettingKey = "cors_allow_origins"           // 跨域白名单(逗号分隔, 如 "example.com,example2.com"). 为空不允许跨域, "*"允许所有
-	SettingKeyCircuitBreakerThreshold   SettingKey = "circuit_breaker_threshold"    // 熔断触发阈值（连续失败次数）
-	SettingKeyCircuitBreakerCooldown    SettingKey = "circuit_breaker_cooldown"     // 熔断基础冷却时间（秒）
-	SettingKeyCircuitBreakerMaxCooldown SettingKey = "circuit_breaker_max_cooldown" // 熔断最大冷却时间（秒），指数退避上限
-	SettingKeyDebugLoadBalancer         SettingKey = "debug_load_balancer"          // 开启后每次选路打印候选排序决策(tier/rank/容量输入)，便于排障"为啥走这条/为啥慢"
-	SettingKeyDiagnosticMode            SettingKey = "diagnostic_mode"              // 开启后每次请求额外打印各阶段耗时(等响应头/首字/生成)与逐次尝试原因，便于排障"卡在哪一层"；默认关
-	SettingKeySessionKeepTimeDefault    SettingKey = "session_keep_time_default"    // 分组会话保持时间全局默认(秒)，分组级为0时回退用它，0=不启用全局粘性
-	SettingKeyFirstTokenTimeOutDefault  SettingKey = "first_token_time_out_default" // 分组首字超时全局默认(秒)，分组级为0时回退用它，0=不启用全局默认
+	SettingKeyFingerprintInstanceID   SettingKey = "fingerprint_instance_id"
+	SettingKeyCodexHeaderUserAgent    SettingKey = "codex_header_defaults_user_agent"
+	SettingKeyCodexHeaderBetaFeatures SettingKey = "codex_header_defaults_beta_features"
+	SettingKeyCodexFastMode           SettingKey = "codex_fast_mode"
+	// SettingKeyCodexDefaultReasoningEffort is "默认思考强度 (OpenAI / Codex)": reasoning.effort
+	// filled on a Responses request ONLY when the client sent none. none (default) = never fill,
+	// so a fresh install behaves exactly as before. Real Codex CLI requests are never touched.
+	SettingKeyCodexDefaultReasoningEffort SettingKey = "codex_default_reasoning_effort"
+	SettingKeyUserRegistrationEnabled     SettingKey = "user_registration_enabled"    // 是否允许无邀请码直接注册
+	SettingKeyCORSAllowOrigins            SettingKey = "cors_allow_origins"           // 跨域白名单(逗号分隔, 如 "example.com,example2.com"). 为空不允许跨域, "*"允许所有
+	SettingKeyCircuitBreakerThreshold     SettingKey = "circuit_breaker_threshold"    // 熔断触发阈值（连续失败次数）
+	SettingKeyCircuitBreakerCooldown      SettingKey = "circuit_breaker_cooldown"     // 熔断基础冷却时间（秒）
+	SettingKeyCircuitBreakerMaxCooldown   SettingKey = "circuit_breaker_max_cooldown" // 熔断最大冷却时间（秒），指数退避上限
+	SettingKeyDebugLoadBalancer           SettingKey = "debug_load_balancer"          // 开启后每次选路打印候选排序决策(tier/rank/容量输入)，便于排障"为啥走这条/为啥慢"
+	SettingKeyDiagnosticMode              SettingKey = "diagnostic_mode"              // 开启后每次请求额外打印各阶段耗时(等响应头/首字/生成)与逐次尝试原因，便于排障"卡在哪一层"；默认关
+	SettingKeySessionKeepTimeDefault      SettingKey = "session_keep_time_default"    // 分组会话保持时间全局默认(秒)，分组级为0时回退用它，0=不启用全局粘性
+	SettingKeyFirstTokenTimeOutDefault    SettingKey = "first_token_time_out_default" // 分组首字超时全局默认(秒)，分组级为0时回退用它，0=不启用全局默认
 	// SettingKeyFirstByteKeepaliveDelaySeconds defaults to "20" (ON). When >0, stream
 	// requests that have not yet received the first upstream response byte start injecting
 	// ignorable SSE comment heartbeats (":\n\n") to the downstream client after this many
@@ -121,18 +128,17 @@ const (
 	// told to continue; holding the connection keeps it in "working" instead. Off by
 	// default because a held request pins a connection until someone resolves it.
 	SettingKeyRelayInterventionEnabled SettingKey = "relay_intervention_enabled"
-	// SettingKeyRelayClaudeCLIShapeKeys defaults to "true". When on, a request to an
-	// Anthropic channel whose caller is NOT a CLI-shaped client gets the three top-level
-	// members every genuine Claude CLI sends — thinking, context_management, output_config —
-	// filled in from the measured golden values, because without them the outbound body is
-	// missing keys the upstream expects from a CLI-shaped client.
-	//
-	// Semantic consequence (deliberate): filling thinking genuinely enables thinking upstream
-	// and output_config carries effort=high. That is the "match the real CLI" side of the
-	// trade-off; turn this off to send exactly what the caller asked for instead.
-	// safeguards is never synthesised (the CLI sends it in only 45.5% of captures, so it stays
-	// pass-through: present if the caller sent it, absent otherwise). tool_choice / temperature
-	// / top_p are never added (the CLI sends them in 0% of captures).
+	// SettingKeyRelayClaudeCLIShapeKeys defaults to "true" ("补齐 Claude CLI 请求字段"). When on,
+	// a request to a cloaked Anthropic channel whose caller is NOT a CLI-shaped client gets the
+	// top-level members a genuine Claude CLI sends, from the measured golden values:
+	//   - thinking + output_config: only when "默认思考强度" filled an effort for this request,
+	//     and with THAT effort (never a hard-coded high);
+	//   - context_management (clear_thinking keep=all): dropped again by the outbound when the
+	//     final thinking is not enabled/adaptive, since Anthropic 400s on it otherwise;
+	//   - safeguards: filled from the golden template when absent (logged as not the caller's
+	//     real state).
+	// tool_choice / temperature / top_p are never added (the CLI sends them in 0% of captures).
+	// Turn this off to send exactly the members the caller sent.
 	SettingKeyRelayClaudeCLIShapeKeys SettingKey = "relay_claude_cli_shape_keys"
 
 	// SettingKeyRelayCodexTextVerbosity defaults to "true". When on, a request routed to the
@@ -526,6 +532,9 @@ const (
 	LegacyDefaultCodexHeaderBetaFeaturesTerminalResizeReflow = "terminal_resize_reflow"
 )
 
+// ClaudeDefaultEffortDefault is the shipped value of SettingKeyClaudeCLIReasoningEffort.
+const ClaudeDefaultEffortDefault = "high"
+
 func DefaultSettings() []Setting {
 	return []Setting{
 		{Key: SettingKeyProxyURL, Value: ""},
@@ -565,12 +574,12 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyClaudeHeaderArch, Value: "x64"},
 		{Key: SettingKeyClaudeHeaderTimeout, Value: "600"},
 		{Key: SettingKeyClaudeHeaderStabilize, Value: "true"},
-		{Key: SettingKeyClaudeCLIAutoCompact, Value: "false"},
-		{Key: SettingKeyClaudeCLIReasoningEffort, Value: "auto"},
+		{Key: SettingKeyClaudeCLIReasoningEffort, Value: ClaudeDefaultEffortDefault},
 		{Key: SettingKeyClaudeBetaStripFlags, Value: ""}, // 默认空=关：忠实透传 claude-cli 的 anthropic-beta；配置了才剥离指定 flag（the relay 抽风逃生）
 		{Key: SettingKeyCodexHeaderUserAgent, Value: DefaultCodexHeaderUserAgent},
 		{Key: SettingKeyCodexHeaderBetaFeatures, Value: DefaultCodexHeaderBetaFeatures},
 		{Key: SettingKeyCodexFastMode, Value: "false"},
+		{Key: SettingKeyCodexDefaultReasoningEffort, Value: "none"},
 		{Key: SettingKeyUserRegistrationEnabled, Value: "false"},                                        // 默认只允许邀请码注册
 		{Key: SettingKeyCircuitBreakerThreshold, Value: "10"},                                           // 默认连续失败10次触发熔断
 		{Key: SettingKeyCircuitBreakerCooldown, Value: "30"},                                            // 默认基础冷却30秒
@@ -777,7 +786,7 @@ func (s *Setting) Validate() error {
 			return fmt.Errorf("%s must be spread or fill_first (empty uses the default)", s.Key)
 		}
 	case SettingKeyRelayLogKeepEnabled, SettingKeyAnthropicAutoCacheControl, SettingKeyOpenAIAutoPromptCacheKey,
-		SettingKeyClaudeHeaderStabilize, SettingKeyClaudeCLIAutoCompact, SettingKeyCodexFastMode,
+		SettingKeyClaudeHeaderStabilize, SettingKeyCodexFastMode, SettingKeyRelayClaudeCLIShapeKeys,
 		SettingKeyUserRegistrationEnabled, SettingKeyUpstreamErrorStatusPass, SettingKeyCheckInEnabled,
 		SettingKeyDebugLoadBalancer, SettingKeyEmailVerificationEnabled, SettingKeyEmailSMTPSSL,
 		SettingKeyUpstreamUTLSFingerprint, SettingKeyUpstreamHTTP1HeaderOrder, SettingKeyDiagnosticMode, SettingKeyRouteStickyCacheFirst,
@@ -861,17 +870,14 @@ func (s *Setting) Validate() error {
 			return fmt.Errorf("%s must not contain newlines", s.Key)
 		}
 		return nil
-	case SettingKeyClaudeCLIReasoningEffort:
-		// xhigh/max are accepted because the Anthropic outbound adaptive path
-		// passes effort straight into output_config.effort, whose enum includes
-		// max. Rejecting them here made the strongest levels unreachable as a
-		// fallback default — the setting page offered no such option and the
-		// relay silently swallowed the value in claudeCLIReasoningEffort().
+	case SettingKeyClaudeCLIReasoningEffort, SettingKeyCodexDefaultReasoningEffort:
+		// none = never fill (follow the client). The legacy auto/off spellings are rewritten by
+		// migration 023 (auto -> high, off -> none) and no longer accepted on write.
 		switch strings.ToLower(strings.TrimSpace(s.Value)) {
-		case "", "auto", "off", "low", "medium", "high", "xhigh", "max":
+		case "none", "low", "medium", "high", "xhigh", "max":
 			return nil
 		default:
-			return fmt.Errorf("%s must be auto, off, low, medium, high, xhigh, or max", s.Key)
+			return fmt.Errorf("%s must be none, low, medium, high, xhigh, or max", s.Key)
 		}
 	case SettingKeyUpstreamErrorBodyMode:
 		switch s.Value {
