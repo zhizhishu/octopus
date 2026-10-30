@@ -15,7 +15,12 @@ import (
 
 var lastSyncModelsTime = time.Now()
 
-// SyncModelsTask 同步模型任务
+// SyncModelsTask 同步模型任务。
+//
+// 它只补缺的价格占位行，从不删除价格行——启动、定时、管理员点「同步」都一样。
+// 以前它把不在「自动同步渠道模型」里的无价行全删了，于是只挂在没开自动同步的渠道上的
+// 模型、管理员手建的空行，每次重启都被删一遍。参考 new-api / sub2api：价格从不自动删除，
+// 只有管理员在价格页显式删除。
 func SyncModelsTask() {
 	log.Debugf("sync models task started")
 	startTime := time.Now()
@@ -44,6 +49,11 @@ func SyncModelsTask() {
 	}
 	for _, channel := range channels {
 		if !channel.AutoSync {
+			// Not synced from upstream, but its models are in use: give them a
+			// placeholder price row like every other channel model.
+			for _, m := range model.ChannelSelectedModelNames(channel) {
+				addTotalModel(m)
+			}
 			continue
 		}
 		fetchModels, err := helper.FetchModels(ctx, channel)
@@ -90,12 +100,8 @@ func SyncModelsTask() {
 		llmPriceNames = append(llmPriceNames, price.Name)
 	}
 
-	deletedNorm, addedNorm := diff.Diff(llmPriceNames, totalNewModels)
-	if len(deletedNorm) > 0 {
-		if err := helper.LLMPriceDeleteFromDBWithNoPrice(deletedNorm, ctx); err != nil {
-			log.Errorf("failed to batch delete models price: %v", err)
-		}
-	}
+	// Only add: a price row an admin may have created or edited is never removed here.
+	_, addedNorm := diff.Diff(llmPriceNames, totalNewModels)
 	if len(addedNorm) > 0 {
 		if err := helper.LLMPriceAddToDB(addedNorm, ctx); err != nil {
 			log.Errorf("failed to add models price: %v", err)

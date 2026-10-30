@@ -32,27 +32,3 @@ func LLMPriceAddToDB(modelNames []string, ctx context.Context) error {
 	}
 	return nil
 }
-
-func LLMPriceDeleteFromDBWithNoPrice(modelNames []string, ctx context.Context) error {
-	if len(modelNames) == 0 {
-		return nil
-	}
-	needDeleteModelNames := make([]string, 0, len(modelNames))
-	for _, modelName := range modelNames {
-		if modelName == "" {
-			continue
-		}
-		modelPrice, err := op.LLMGet(modelName)
-		if err != nil {
-			return err
-		}
-		if !modelPrice.IsZero() {
-			continue
-		}
-		needDeleteModelNames = append(needDeleteModelNames, modelName)
-	}
-	if len(needDeleteModelNames) > 0 {
-		return op.LLMBatchDelete(needDeleteModelNames, ctx)
-	}
-	return nil
-}
