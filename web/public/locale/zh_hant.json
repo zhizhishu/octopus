@@ -635,86 +635,6 @@
         "result": "匯入結果"
       }
     },
-    "apiKey": {
-      "title": "API 金鑰",
-      "empty": "暫無 API 金鑰",
-      "add": "新增金鑰",
-      "loadFailed": "載入失敗",
-      "list": {
-        "plans": "方案",
-        "endpoints": "端點",
-        "defaultPlan": "預設方案",
-        "morePlans": "還有 {count} 個方案"
-      },
-      "guide": {
-        "button": "使用教學",
-        "title": "API Key 使用教學",
-        "description": "複製下面的 Base URL 和金鑰配置到客戶端。",
-        "baseUrl": "Base URL",
-        "allowedEndpoints": "允許端點",
-        "accessPlan": "存取方案",
-        "currentPlan": "目前方案",
-        "defaultPlan": "預設",
-        "planHint": "選擇本次教學要走的方案，請求會按該方案的模型映射和計費策略執行。",
-        "requestHeader": "請求頭",
-        "groupAlias": "相容別名",
-        "openaiDescription": "用於 OpenAI 相容客戶端、Chat Completions 和 Responses。",
-        "geminiDescription": "用於 Gemini 原生 generateContent / streamGenerateContent。",
-        "anthropicDescription": "用於 Claude / Anthropic Messages 協議。",
-        "videoDescription": "用於非同步影片生成（/v1/videos）與任務輪詢。",
-        "empty": "這個金鑰暫時沒有可用端點。"
-      },
-      "form": {
-        "name": "名稱",
-        "owner": "歸屬使用者",
-        "currentAdmin": "目前管理員",
-        "maxCost": "最大金額",
-        "maxCostPlaceholder": "請輸入金額",
-        "unlimited": "無限制",
-        "expireAt": "過期日期",
-        "selectDate": "選擇日期",
-        "expirePast": "過期時間不能早於現在",
-        "neverExpire": "永不過期",
-        "supportedModels": "支援的模型",
-        "noModels": "暫無可選模型",
-        "modelsHint": "留空表示不限制模型；需要精準控制時可手動勾選或全選。",
-        "selectAllModels": "全選",
-        "unlimitedModels": "不限",
-        "searchModels": "搜尋模型",
-        "noMatchedModels": "沒有符合的模型",
-        "accessPlans": "可用方案",
-        "noAccessPlans": "暫無可選方案",
-        "defaultAccessPlan": "預設方案",
-        "accessPlansHint": "管理員可限制該金鑰只能使用用戶被授權的方案；請求頭只能在已選方案內切換。",
-        "selectAllPlans": "全選",
-        "defaultOnly": "預設",
-        "endpointFamilies": "可用協議端點",
-        "endpointFamiliesHint": "預設全選以相容舊金鑰；取消某類後，該金鑰無法存取對應協議端點。",
-        "endpointUsage": "調用範例",
-        "enabled": "是否啟用",
-        "cancel": "取消",
-        "create": "建立",
-        "save": "儲存",
-        "confirm": "確認"
-      },
-      "stats": {
-        "noData": "暫無統計數據",
-        "inputToken": "輸入 Token",
-        "outputToken": "輸出 Token",
-        "inputCost": "輸入費用",
-        "outputCost": "輸出費用",
-        "requestSuccess": "成功請求",
-        "requestFailed": "失敗請求"
-      },
-      "toast": {
-        "createSuccess": "API 金鑰建立成功",
-        "createError": "API 金鑰建立失敗",
-        "updateSuccess": "API 金鑰更新成功",
-        "updateError": "API 金鑰更新失敗",
-        "deleteSuccess": "API 金鑰刪除成功",
-        "deleteError": "API 金鑰刪除失敗"
-      }
-    },
     "llmSync": {
       "title": "供應源同步",
       "syncInterval": {
@@ -2018,6 +1938,262 @@
       "description": "改動還沒儲存，確定要關？",
       "keepEditing": "繼續編輯",
       "discard": "不儲存，關掉"
+    }
+  },
+  "keys": {
+    "page": {
+      "leadAdmin": "每把 Key 能用什麼、用了多少，都在這裡。",
+      "leadUser": "複製 Key，填進客戶端就能用。",
+      "guide": "接入說明",
+      "redeem": "兌換碼",
+      "add": "新建 Key",
+      "empty": "還沒有 API Key",
+      "noMatch": "沒有符合條件的 Key",
+      "pager": "共 {total} 把 · 每頁 {size} 把"
+    },
+    "family": {
+      "openai-compatible": "OpenAI 相容",
+      "anthropic": "Claude",
+      "gemini": "Gemini",
+      "video": "影片"
+    },
+    "status": {
+      "ok": "能用",
+      "off": "停用",
+      "expired": "已過期",
+      "used_up": "額度用完",
+      "okTip": "請求正常放行。",
+      "offTip": "關掉了，用這把 Key 的請求都會被拒絕。開啟就恢復。",
+      "expiredTip": "過了有效期，請求會被拒絕。把有效期往後改就恢復。",
+      "used_upTip": "累計花費超過了這把 Key 的上限，請求會被拒絕。調高上限或改成不限就恢復。"
+    },
+    "toolbar": {
+      "all": "全部",
+      "search": "名稱或 Key 末 4 位",
+      "searchAdmin": "名稱、使用者或 Key 末 4 位",
+      "searchShort": "搜 Key",
+      "owner": "使用者",
+      "plan": "方案",
+      "protocol": "協議",
+      "reset": "清除篩選"
+    },
+    "table": {
+      "selectPage": "選中本頁",
+      "selectRow": "選中 {name}",
+      "name": "名稱",
+      "status": "狀態",
+      "spend": "已用 / 上限",
+      "spendHelp": "從建立起這把 Key 累計花了多少。到上限後這把 Key 的請求會被拒絕，只管這把 Key，不動使用者餘額和月卡。",
+      "spendTip": "已用 {spent}，上限 {cap}，還剩 {left}",
+      "noCap": "不限",
+      "expiry": "有效期",
+      "access": "能用",
+      "accessHelp": "能調哪些模型、走哪些協議。「全部模型」以後新加的模型也能用。",
+      "allModels": "全部模型",
+      "allModelsTip": "不限模型，以後新加的也能用。",
+      "nModels": "{n} 個模型",
+      "allProtocols": "全部協議",
+      "plans": "方案",
+      "plansHelp": "這把 Key 走哪些方案。實心的是預設，請求頭 X-Octopus-Plan 可以換成別的。",
+      "lastUsed": "最近使用",
+      "neverUsed": "沒用過",
+      "actions": "操作",
+      "edit": "編輯",
+      "maskedTip": "只顯示末 4 位；點旁邊的按鈕複製完整 Key"
+    },
+    "expiry": {
+      "forever": "永久",
+      "leftDays": "還剩 {n} 天",
+      "pastDays": "過期 {n} 天",
+      "at": "到 {at}（本機時間）"
+    },
+    "menu": {
+      "more": "更多",
+      "guide": "接入說明",
+      "copy": "複製完整 Key",
+      "usage": "看用量",
+      "logs": "看它的請求",
+      "disable": "停用",
+      "enable": "啟用",
+      "delete": "刪除"
+    },
+    "bulk": {
+      "selected": "選了 {n} 把",
+      "enable": "啟用",
+      "disable": "停用",
+      "delete": "刪除",
+      "clear": "取消選擇",
+      "doneAll": "{n} 把都改好了",
+      "donePartly": "改好 {done} 把，{failed} 把沒成功",
+      "failed": "操作失敗",
+      "deleteTitle": "刪除這 {n} 把 Key？",
+      "deleteDesc": "刪了就不能再用，這些 Key 的累計花費也一起清掉；請求日誌還在。",
+      "deleteConfirm": "刪除"
+    },
+    "delete": {
+      "title": "刪除「{name}」？",
+      "desc": "刪了這把 Key 就不能再用，它的累計花費也一起清掉；請求日誌還在。",
+      "confirm": "刪除"
+    },
+    "toast": {
+      "enabled": "已啟用 {name}",
+      "disabled": "已停用 {name}",
+      "deleted": "已刪除 {name}",
+      "copied": "已複製 {name} 的完整 Key",
+      "failed": "操作失敗"
+    },
+    "strip": {
+      "endpoint": "接入地址",
+      "guide": "接入說明",
+      "balance": "餘額",
+      "cardToday": "月卡今天",
+      "redeem": "兌換碼"
+    },
+    "redeem": {
+      "title": "兌換碼",
+      "desc": "兌換管理員發的餘額或月卡。",
+      "placeholder": "輸入兌換碼",
+      "submit": "兌換",
+      "done": "兌換成功",
+      "failed": "兌換失敗"
+    },
+    "drawer": {
+      "createTitle": "新建 Key",
+      "createHint": "建好後在列表裡複製完整 Key。",
+      "close": "關閉",
+      "settings": "設定",
+      "usage": "用量",
+      "guide": "接入說明",
+      "ownedBy": "{name} 的 Key",
+      "lastUsed": "{when}用過（{ip}）",
+      "neverUsed": "還沒用過",
+      "name": "名稱",
+      "namePlaceholder": "比如：筆記本、伺服器",
+      "owner": "歸屬使用者",
+      "ownerTip": "Key 算誰的：花費扣他的餘額 / 月卡，方案和能選的模型也跟著他。",
+      "roleAdmin": "管理員",
+      "enabledOn": "能用",
+      "enabledOff": "已停用",
+      "enabledHint": "關掉後這把 Key 立刻不能用，開啟就恢復",
+      "keyLabel": "Key",
+      "copy": "複製",
+      "copied": "已複製完整 Key",
+      "cap": "花費上限",
+      "capTip": "從建立起累計花到這個數，這把 Key 的請求就會被拒絕。只管這把 Key，不動使用者餘額和月卡。",
+      "capPlaceholder": "不填 = 不限",
+      "noCap": "不限",
+      "spentOnly": "已用 {spent}",
+      "spentLeft": "已用 {spent} · 還剩 {left}",
+      "usedUp": "已用完",
+      "nearCap": "快用完了",
+      "expire": "有效期",
+      "expireTip": "過了這個時間，這把 Key 的請求會被拒絕。時間按你這臺電腦的時區。",
+      "plusDays": "+{n} 天",
+      "foreverHint": "永久有效，不會自己過期。",
+      "pastHint": "這個時間已經過了，儲存前請改到以後。",
+      "expireHint": "按本機時間（{tz}）· 還剩 {n} 天",
+      "models": "能用的模型",
+      "modelsTip": "「全部模型」= 不限，以後新加的模型也能用。「只限這些」= 只放行勾選的，以後新加的不會自動加進來。",
+      "modelsAll": "全部模型",
+      "modelsOnly": "只限這些",
+      "modelsAllHint": "不限模型，以後新加的模型也能用。",
+      "modelsSearch": "搜模型",
+      "modelsPicked": "已選 {n} 個",
+      "modelsClear": "清空",
+      "modelsNone": "這個使用者的方案裡現在沒有能用的模型",
+      "modelsNoMatch": "沒有匹配的模型",
+      "modelGone": "現在用不了",
+      "modelsOnlyHint": "列出的是歸屬使用者的方案裡現在能用的模型。",
+      "families": "能用的協議",
+      "familiesTip": "按請求的介面分：OpenAI 相容（/v1/chat/completions、/v1/responses）、Claude（/v1/messages）、Gemini（/v1beta/models）、影片（/v1/videos）。沒勾的介面會被拒絕。",
+      "familiesAll": "全部",
+      "familiesSome": "開了 {n} 個",
+      "familiesHint": "至少留一個。",
+      "familyPath": {
+        "openai-compatible": "/v1/chat/completions · /v1/responses",
+        "anthropic": "/v1/messages",
+        "gemini": "/v1beta/models/*",
+        "video": "/v1/videos"
+      },
+      "plans": "方案",
+      "plansTip": "這把 Key 能走哪些方案，平時走「預設」那個；請求頭 X-Octopus-Plan 可以換到別的已選方案。",
+      "plansTipUser": "管理員給這把 Key 配的方案，實心的是預設。",
+      "plansHint": "可多選，預設在下面選",
+      "plansAuto": "跟帳號的預設方案",
+      "delete": "刪除 Key",
+      "cancel": "取消",
+      "save": "儲存",
+      "create": "建立",
+      "needName": "請填名稱",
+      "badCap": "花費上限要填數字",
+      "needModel": "至少選一個模型，或改回「全部模型」",
+      "needFamily": "至少留一個協議",
+      "pastExpire": "有效期不能是已經過去的時間",
+      "saved": "已儲存 {name}",
+      "created": "已建立 {name}",
+      "createdHint": "在列表裡點 Key 旁邊的按鈕複製。",
+      "saveFailed": "儲存失敗",
+      "total": "累計花費",
+      "totalTip": "從建立到現在，不隨上面的時間段變。上限按這個數算。",
+      "lastUsedTitle": "最近使用",
+      "viewLogs": "看它最近的請求"
+    },
+    "guide": {
+      "title": "接入說明",
+      "titleFor": "接入說明 · {name}",
+      "desc": "選你用的客戶端，複製下面這段。",
+      "noKey": "先新建一把 Key。",
+      "endpoint": "接入地址",
+      "key": "Key",
+      "plan": "方案",
+      "planDefault": "（預設）",
+      "client": {
+        "curl": "curl",
+        "claude": "Claude Code",
+        "codex": "Codex CLI",
+        "gemini": "Gemini CLI",
+        "video": "影片"
+      },
+      "clientHint": {
+        "curl": "直接在終端裡試一下。",
+        "claude": "設好環境變數後執行 claude。",
+        "codex": "寫好配置檔案，再設環境變數執行 codex。",
+        "gemini": "設好環境變數後執行 gemini。",
+        "video": "先提交任務，再用返回的 id 查進度。"
+      },
+      "shellUnix": "macOS / Linux",
+      "shellPowershell": "Windows PowerShell",
+      "block": {
+        "curl": {
+          "request": "發一個請求"
+        },
+        "claude": {
+          "env": "在終端裡執行",
+          "settings": "或者寫進配置檔案，以後不用再設"
+        },
+        "codex": {
+          "config": "寫進配置檔案",
+          "env": "在終端裡執行"
+        },
+        "gemini": {
+          "env": "在終端裡執行"
+        },
+        "video": {
+          "request": "提交影片任務",
+          "status": "查進度（把 <id> 換成上面返回的 id）"
+        }
+      },
+      "statusWarn": {
+        "off": "這把 Key 現在停用了，照著配好也會被拒絕；先在設定裡開啟。",
+        "expired": "這把 Key 已過期，請求會被拒絕；先把有效期往後改。",
+        "used_up": "這把 Key 的額度用完了，請求會被拒絕；先調高上限。"
+      },
+      "familyOff": "這把 Key 沒開「{family}」協議，在 Key 的設定裡開啟後才能用。",
+      "geminiNoPlan": "Gemini CLI 加不了自定義請求頭，會走這把 Key 的預設方案。",
+      "modelsLimited": "示例裡的模型是從這把 Key 限定的模型裡挑的。",
+      "modelsHint": "示例裡的模型名只是舉例，換成你能用的模型。",
+      "copy": "複製",
+      "copied": "已複製（含完整 Key）"
     }
   }
 }
