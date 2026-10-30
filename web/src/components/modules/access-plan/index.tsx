@@ -1,11 +1,13 @@
 'use client';
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useTranslations } from 'next-intl';
 import {
     ArrowUpToLine,
     BadgeDollarSign,
     Check,
     GitBranch,
+    MapIcon,
     Loader2,
     Maximize2,
     Minimize2,
@@ -81,6 +83,59 @@ import {
     shouldResyncRouteTargets,
     type CanvasViewKey,
 } from './canvas-viewport';
+import {
+    applyFrozenOrder,
+    captureOrder,
+    createLatestSaveQueue,
+    decideDialogClose,
+    FROZEN_ORDER_IDLE_MS,
+    sameDraft,
+    shouldReleaseFrozenOrder,
+    shouldResyncDraft,
+    type FrozenOrder,
+    type SaveOutcome,
+} from './edit-state';
+
+type UpdateRoutesPayload = Parameters<ReturnType<typeof useUpdateAccessPlanRouteTargets>['mutateAsync']>[0];
+type AccessPlanRouteSaveResult = Awaited<ReturnType<ReturnType<typeof useUpdateAccessPlanRouteTargets>['mutateAsync']>>;
+type RouteSaveJob = {
+    payload: UpdateRoutesPayload;
+    /** 这次整表是从哪份本地 targets 来的：回包时本地还是它，才拿回包覆盖本地。 */
+    sourceTargets: AccessPlanRouteTarget[];
+    successMessage: string;
+    onSuccess?: () => void;
+    restoreOnError: boolean;
+};
+
+/**
+ * 关编辑弹窗时有没保存的改动：问一句再关。文案走 next-intl（accessPlan.unsaved）。
+ * 叠在原弹窗上面的小弹窗：点外面 / Esc = 继续编辑，只有点「不保存」才真关。
+ */
+function UnsavedChangesConfirm({ open, onKeepEditing, onDiscard }: { open: boolean; onKeepEditing: () => void; onDiscard: () => void }) {
+    const t = useTranslations('accessPlan.unsaved');
+    return (
+        <Dialog open={open} onOpenChange={(next) => { if (!next) onKeepEditing(); }}>
+            <DialogContent
+                showCloseButton={false}
+                data-testid="unsaved-confirm"
+                className="w-[calc(100vw-2rem)] max-w-sm gap-3 rounded-2xl border-border bg-card p-5 sm:max-w-sm"
+            >
+                <DialogHeader className="text-left">
+                    <DialogTitle className="text-base">{t('title')}</DialogTitle>
+                    <DialogDescription>{t('description')}</DialogDescription>
+                </DialogHeader>
+                <DialogFooter className="flex-row justify-end gap-2">
+                    <Button type="button" variant="outline" className="rounded-xl" onClick={onKeepEditing} autoFocus>
+                        {t('keepEditing')}
+                    </Button>
+                    <Button type="button" variant="destructive" className="rounded-xl" onClick={onDiscard}>
+                        {t('discard')}
+                    </Button>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
+    );
+}
 
 const DEFAULT_PLAN_TEMPLATES = [
     { slug: 'vip', display_name: 'VIP' },
@@ -351,6 +406,8 @@ function groupedRouteTargets(targets: AccessPlanRouteTarget[]) {
                 requestKey,
                 requestModel: cleanOneMillionModelName(routeTargets[0]?.request_model ?? '') || accessPlanText('routes.unset'),
                 mode: rowMode,
+                // 冻结排序期间每张卡的真实顺位（见 edit-state.ts 的 applyFrozenOrder）；平时为空 = 按下标。
+                ranks: undefined as number[] | undefined,
                 targets: [...routeTargets].sort((a, b) => {
                     const byPriority = tiered
                         ? (b.priority || 0) - (a.priority || 0)
@@ -664,6 +721,36 @@ function PlanBasicsEditor({ plan }: { plan: AccessPlan }) {
     const [enabled, setEnabled] = useState(plan.enabled);
     const [isDefault, setIsDefault] = useState(plan.is_default);
     const [confirmDelete, setConfirmDelete] = useState(false);
+    const [confirmCloseOpen, setConfirmCloseOpen] = useState(false);
+    // 打开弹窗那一刻的值：草稿从它起步，也拿它判断改没改（列表回刷不会改到正在编辑的草稿）。
+    const draftOf = (p: AccessPlan) => ({ displayName: p.display_name, slug: p.slug, enabled: p.enabled, isDefault: p.is_default });
+    const [openedWith, setOpenedWith] = useState(() => draftOf(plan));
+    const dirty = open && !sameDraft({ displayName, slug, enabled, isDefault }, openedWith);
+    const openEditor = () => {
+        const base = draftOf(plan);
+        setOpenedWith(base);
+        setDisplayName(base.displayName);
+        setSlug(base.slug);
+        setEnabled(base.enabled);
+        setIsDefault(base.isDefault);
+        setConfirmDelete(false);
+        setOpen(true);
+    };
+    const onOpenChange = (next: boolean) => {
+        if (next) {
+            openEditor();
+            return;
+        }
+        if (decideDialogClose(dirty) === 'confirm') {
+            setConfirmCloseOpen(true);
+            return;
+        }
+        setOpen(false);
+    };
+    const closeEditor = () => {
+        setConfirmCloseOpen(false);
+        setOpen(false);
+    };
 
     const save = () => {
         updatePlan.mutate(
@@ -678,7 +765,7 @@ function PlanBasicsEditor({ plan }: { plan: AccessPlan }) {
             },
             {
                 onSuccess: () => {
-                    setOpen(false);
+                    closeEditor();
                     toast.success(t('toast.updated'));
                 },
                 onError: (error) => {
@@ -696,7 +783,7 @@ function PlanBasicsEditor({ plan }: { plan: AccessPlan }) {
 
         deletePlan.mutate(plan.id, {
             onSuccess: () => {
-                setOpen(false);
+                closeEditor();
                 toast.success(t('toast.deleted'));
             },
             onError: (error) => {
@@ -708,7 +795,8 @@ function PlanBasicsEditor({ plan }: { plan: AccessPlan }) {
     const canSave = displayName.trim().length > 0 && normalizeSlug(slug).length > 0;
 
     return (
-        <Dialog open={open} onOpenChange={setOpen}>
+        <Dialog open={open} onOpenChange={onOpenChange}>
+            <UnsavedChangesConfirm open={confirmCloseOpen} onKeepEditing={() => setConfirmCloseOpen(false)} onDiscard={closeEditor} />
             <div className="rounded-3xl border border-border bg-card p-5">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                     <div className="min-w-0">
@@ -801,17 +889,38 @@ function PlanBasicsEditor({ plan }: { plan: AccessPlan }) {
     );
 }
 
+function billingServerVersion(plan: Pick<AccessPlan, 'id' | 'default_multiplier' | 'billing_rules'>): string {
+    return `${plan.id}:${JSON.stringify({ d: plan.default_multiplier, r: plan.billing_rules ?? [] })}`;
+}
+
 function BillingRulesEditor({
     plan,
     modelNames,
+    onDirtyChange,
 }: {
     plan: AccessPlan;
     modelNames: string[];
+    onDirtyChange?: (dirty: boolean) => void;
 }) {
     const t = accessPlanText;
     const updateBilling = useUpdateAccessPlanBillingRules();
     const [defaultMultiplier, setDefaultMultiplier] = useState(plan.default_multiplier);
     const [rules, setRules] = useState<AccessPlanBillingRule[]>(plan.billing_rules);
+    // baseline = 最近一次和服务器对齐的值；草稿和它不同 = 有没保存的改动。
+    const [baseline, setBaseline] = useState(() => ({ defaultMultiplier: plan.default_multiplier, rules: plan.billing_rules }));
+    const dirty = !sameDraft({ defaultMultiplier, rules }, baseline);
+    // 服务器数据变了（别处保存 / 列表回刷）：只在没改动、没在保存时跟上，绝不冲掉正在改的草稿。
+    const serverVersion = billingServerVersion(plan);
+    const [syncedVersion, setSyncedVersion] = useState(serverVersion);
+    if (shouldResyncDraft(syncedVersion, serverVersion, updateBilling.isPending, dirty)) {
+        setSyncedVersion(serverVersion);
+        setDefaultMultiplier(plan.default_multiplier);
+        setRules(plan.billing_rules);
+        setBaseline({ defaultMultiplier: plan.default_multiplier, rules: plan.billing_rules });
+    }
+    useEffect(() => {
+        onDirtyChange?.(dirty);
+    }, [dirty, onDirtyChange]);
     const [jsonText, setJsonText] = useState('');
     const modelListId = `access-plan-billing-models-${plan.id}`;
 
@@ -844,7 +953,15 @@ function BillingRulesEditor({
                 })),
             },
             {
-                onSuccess: () => toast.success(t('toast.billingUpdated')),
+                onSuccess: (data) => {
+                    const savedRules = data.billing_rules ?? [];
+                    const savedDefault = data.default_multiplier ?? defaultMultiplier;
+                    setDefaultMultiplier(savedDefault);
+                    setRules(savedRules);
+                    setBaseline({ defaultMultiplier: savedDefault, rules: savedRules });
+                    setSyncedVersion(billingServerVersion({ id: plan.id, default_multiplier: savedDefault, billing_rules: savedRules }));
+                    toast.success(t('toast.billingUpdated'));
+                },
                 onError: (error) => {
                     toast.error(t('toast.billingUpdateFailed'), { description: apiErrorMessage(error) });
                 },
@@ -1082,6 +1199,8 @@ type TargetNodeData = {
     multiplier: number | string;
     billingSource: string;
     onPriorityChange?: (targetId: number, priority: number) => void;
+    /** 鼠标停在 +/− 上：冻结的排序先不放开（触屏没有悬停，松手即算离开）。 */
+    onPriorityHover?: (hovering: boolean) => void;
 };
 type FamilyBandData = { family: ModelFamilyKey; label: string; modelCount: number; targetCount: number; width: number; height: number };
 // 渠道级 model_mapping：客户端请求 fromModel 这个名，发上游时改成 toModel 这个名（与方案路由无关，只读展示）
@@ -1185,6 +1304,8 @@ const TargetFlowCard = memo(function TargetFlowCard({ data }: NodeProps<TargetFl
                             <div
                                 className="nodrag nopan pointer-events-auto ml-0.5 inline-flex shrink-0 items-center gap-0.5"
                                 onPointerDown={(event) => event.stopPropagation()}
+                                onPointerEnter={(event) => { if (event.pointerType === 'mouse') data.onPriorityHover?.(true); }}
+                                onPointerLeave={() => data.onPriorityHover?.(false)}
                             >
                                 <button
                                     type="button"
@@ -1223,6 +1344,8 @@ const TargetFlowCard = memo(function TargetFlowCard({ data }: NodeProps<TargetFl
                             <div
                                 className="nodrag nopan pointer-events-auto ml-0.5 inline-flex shrink-0 items-center gap-0.5"
                                 onPointerDown={(event) => event.stopPropagation()}
+                                onPointerEnter={(event) => { if (event.pointerType === 'mouse') data.onPriorityHover?.(true); }}
+                                onPointerLeave={() => data.onPriorityHover?.(false)}
                             >
                                 <button
                                     type="button"
@@ -1373,6 +1496,7 @@ function buildRouteFlow(
     onEditRequest: (requestModel: string) => void,
     channelMappings: ChannelModelMapping[] = [],
     onPriorityChange?: (targetId: number, priority: number) => void,
+    onPriorityHover?: (hovering: boolean) => void,
 ): { nodes: FlowNode[]; edges: Edge[] } {
     const nodes: FlowNode[] = [];
     const edges: Edge[] = [];
@@ -1440,7 +1564,7 @@ function buildRouteFlow(
                         targetId: target.id,
                         laneId: reqId,
                         priority: clampRoutePriority(target.priority || 1),
-                        orderIndex: targetIndex + 1,
+                        orderIndex: row.ranks?.[targetIndex] ?? targetIndex + 1,
                         showPriority,
                         fillFirst: isFillFirstMode,
                         spreadFamily: !isFillFirstMode,
@@ -1451,6 +1575,7 @@ function buildRouteFlow(
                         multiplier: billing.multiplier,
                         billingSource: billingSourceLabel(target.billing_model_source),
                         onPriorityChange,
+                        onPriorityHover,
                     },
                 });
                 edges.push({
@@ -1554,13 +1679,25 @@ type RouteFlowCanvasProps = {
     channelModelsReady: boolean;
     onEditRequest: (requestModel: string) => void;
     onPriorityChange?: (targetId: number, priority: number) => void;
+    onPriorityHover?: (hovering: boolean) => void;
     onOpenJson?: () => void;
 };
 
 type RouteViewMode = 'all' | 'channel' | 'mapping';
 
+// 宽屏（≥ sm）判定：小地图默认开关跟它走。服务端快照 = 窄屏（不画小地图），水合后按真实宽度。
+const WIDE_QUERY = '(min-width: 640px)';
+function subscribeWide(onChange: () => void) {
+    const mq = window.matchMedia(WIDE_QUERY);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+}
+function useIsWideScreen(): boolean {
+    return useSyncExternalStore(subscribeWide, () => window.matchMedia(WIDE_QUERY).matches, () => false);
+}
+
 function RouteFlowCanvasInner({
-    plan, rows, channels, channelMappings, modelNames, channelModels, channelModelsReady, onEditRequest, onPriorityChange, onOpenJson,
+    plan, rows, channels, channelMappings, modelNames, channelModels, channelModelsReady, onEditRequest, onPriorityChange, onPriorityHover, onOpenJson,
 }: RouteFlowCanvasProps) {
     const t = accessPlanText;
     const channelNameByID = useMemo(() => new Map(channels.map((channel) => [channel.id, channel.name])), [channels]);
@@ -1660,8 +1797,8 @@ function RouteFlowCanvasInner({
     }, [canvasFullscreen, toggleFullscreen]);
 
     const flow = useMemo(
-        () => buildRouteFlow(plan, filteredRows, channelNameByID, onEditRequest, filteredMappings, onPriorityChange),
-        [plan, filteredRows, channelNameByID, onEditRequest, filteredMappings, onPriorityChange],
+        () => buildRouteFlow(plan, filteredRows, channelNameByID, onEditRequest, filteredMappings, onPriorityChange, onPriorityHover),
+        [plan, filteredRows, channelNameByID, onEditRequest, filteredMappings, onPriorityChange, onPriorityHover],
     );
 
     const [nodes, setNodes, onNodesChange] = useNodesState<FlowNode>(flow.nodes);
@@ -1711,6 +1848,12 @@ function RouteFlowCanvasInner({
 
     const showAll = useCallback(() => fitView({ padding: 0.12, duration: 400 }), [fitView]);
 
+    // 小地图：照 React Flow 的惯例放右下角，但缩小一圈，并且可以收起（控制栏里的地图按钮）。
+    // 宽屏默认展开，手机默认收起——390 宽的屏上它会正好压住右边那一列目标卡片。
+    const isWide = useIsWideScreen();
+    const [minimapPref, setMinimapPref] = useState<boolean | null>(null);
+    const showMinimap = minimapPref ?? isWide;
+
     const focusReadable = useCallback(() => {
         if (nodes.length === 0) return;
         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -1725,7 +1868,7 @@ function RouteFlowCanvasInner({
     }, [nodes, setCenter]);
 
     return (
-        <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-border/70 bg-background/70">
+        <section className="flex shrink-0 flex-col overflow-hidden rounded-2xl border border-border/70 bg-background/70 sm:min-h-0 sm:flex-1 sm:shrink">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/70 px-4 py-3">
                 <div className="min-w-0">
                     <div className="flex items-center gap-2 text-sm font-black">
@@ -1838,7 +1981,9 @@ function RouteFlowCanvasInner({
                 <div className={cn(
                     canvasFullscreen
                         ? 'fixed inset-0 z-50 h-[100dvh] w-screen bg-background p-2 sm:p-4'
-                        : 'min-h-0 flex-1 h-[clamp(300px,calc(100dvh-26rem),820px)] sm:h-[clamp(340px,calc(100dvh-22rem),860px)]',
+                        // 手机：整页一起滚，画布本身拿到「视口减去顶栏和底部导航」那么高（390×844 上约 590px），
+                        // 往上一滑画布就占满屏；不再挤在上下两块之间只剩 300px。宽屏照旧。
+                        : 'h-[max(360px,calc(100dvh-16rem))] shrink-0 sm:min-h-0 sm:flex-1 sm:shrink sm:h-[clamp(340px,calc(100dvh-22rem),860px)]',
                     'transition-[height]',
                 )}>
                     <ReactFlow<FlowNode, Edge>
@@ -1870,15 +2015,30 @@ function RouteFlowCanvasInner({
                                     ? <Minimize2 style={{ width: 14, height: 14 }} />
                                     : <Maximize2 style={{ width: 14, height: 14 }} />}
                             </ControlButton>
+                            <ControlButton
+                                onClick={() => setMinimapPref(!showMinimap)}
+                                title={showMinimap ? '收起小地图' : '展开小地图'}
+                                aria-label={showMinimap ? '收起小地图' : '展开小地图'}
+                                aria-pressed={showMinimap}
+                                data-testid="minimap-toggle"
+                            >
+                                <MapIcon style={{ width: 14, height: 14 }} />
+                            </ControlButton>
                         </Controls>
-                        <MiniMap
-                            pannable
-                            zoomable
-                            onClick={(_event, position) => setCenter(position.x, position.y, { zoom: 1, duration: 400 })}
-                            nodeColor={miniMapNodeColor}
-                            nodeStrokeWidth={2}
-                            className="!hidden sm:!block"
-                        />
+                        {showMinimap ? (
+                            <MiniMap
+                                pannable
+                                zoomable
+                                position="bottom-right"
+                                onClick={(_event, position) => setCenter(position.x, position.y, { zoom: 1, duration: 400 })}
+                                nodeColor={miniMapNodeColor}
+                                nodeStrokeWidth={2}
+                                ariaLabel="小地图"
+                                // 默认 200×150 太占地方；缩到 150×100（手机 120×80），贴边留 8px。
+                                style={isWide ? { width: 150, height: 100, margin: 8 } : { width: 120, height: 80, margin: 6 }}
+                                className="!rounded-lg !border !border-border/70 !bg-background/80 opacity-90 hover:opacity-100"
+                            />
+                        ) : null}
                         <Panel position="top-right" className="flex gap-1.5">
                             <button
                                 type="button"
@@ -2141,16 +2301,27 @@ function RouteTargetsEditor({
     const t = accessPlanText;
     const updateRoutes = useUpdateAccessPlanRouteTargets();
     const [targets, setTargets] = useState<AccessPlanRouteTarget[]>(() => plan.route_targets.map(cleanRouteTargetModels));
+    // baseline = 最近一次和服务器对齐的 targets（列表回刷或保存回包）。本地和它不一样 = 有没保存的改动。
+    const [baseline, setBaseline] = useState<AccessPlanRouteTarget[]>(() => plan.route_targets.map(cleanRouteTargetModels));
+    // 保存排队里还有活（在飞或排着）。比 updateRoutes.isPending 准：那个只看最后一次 mutate。
+    const [saveBusy, setSaveBusy] = useState(false);
+    const localDirty = useMemo(() => !sameDraft(targets, baseline), [targets, baseline]);
     // 服务器数据变了就以服务器为准重置本地 targets（见 routeTargetsServerVersion 的说明：
     // 父级 key 里的 updated_at 后端从不返回，原来那套刷新从未生效）。原地同步，画布节点按同 id 更新、视口不动。
+    // 保存在路上或本地有没保存的改动时不重置，免得列表回刷把正在改的东西冲掉。
     const serverVersion = useMemo(() => routeTargetsServerVersion(plan), [plan]);
     const [syncedServerVersion, setSyncedServerVersion] = useState(serverVersion);
-    if (shouldResyncRouteTargets(syncedServerVersion, serverVersion, updateRoutes.isPending)) {
+    if (shouldResyncRouteTargets(syncedServerVersion, serverVersion, saveBusy, localDirty)) {
+        const fresh = plan.route_targets.map(cleanRouteTargetModels);
         setSyncedServerVersion(serverVersion);
-        setTargets(plan.route_targets.map(cleanRouteTargetModels));
+        setTargets(fresh);
+        setBaseline(fresh);
     }
     const [jsonText, setJsonText] = useState('');
     const [editingRequestModel, setEditingRequestModel] = useState<string | null>(null);
+    // 弹窗打开那一刻的 targets：关窗时拿它判断改没改，选「不保存」时退回它。
+    const [dialogSnapshot, setDialogSnapshot] = useState<AccessPlanRouteTarget[] | null>(null);
+    const [confirmCloseOpen, setConfirmCloseOpen] = useState(false);
     const requestModelListId = `access-plan-request-models-${plan.id}`;
     const channelModelIndex = useMemo(
         () => buildChannelModelIndex(channelModels, channelModelsReady),
@@ -2158,7 +2329,24 @@ function RouteTargetsEditor({
     );
     const editableTargets = useMemo(() => activeRouteTargets(targets, channelModelIndex), [targets, channelModelIndex]);
     // 画布展示全部映射（含已失效的），失效项在渲染层打「已失效」标，不再静默隐藏。
-    const canvasRows = useMemo(() => groupedRouteTargets(targets), [targets]);
+    const sortedCanvasRows = useMemo(() => groupedRouteTargets(targets), [targets]);
+    // 点 +/− 期间卡片先不换位（见 edit-state.ts）：松手、停手一会儿、保存落定后再按新数字重排。
+    const [frozenOrder, setFrozenOrder] = useState<FrozenOrder | null>(null);
+    const [lastPriorityChangeAt, setLastPriorityChangeAt] = useState(0);
+    const [priorityHover, setPriorityHover] = useState(false);
+    const canvasRows = useMemo(() => applyFrozenOrder(sortedCanvasRows, frozenOrder), [sortedCanvasRows, frozenOrder]);
+    const canvasRowsRef = useRef(canvasRows);
+    canvasRowsRef.current = canvasRows;
+    useEffect(() => {
+        if (!frozenOrder || saveBusy || priorityHover) return;
+        const wait = Math.max(0, FROZEN_ORDER_IDLE_MS - (Date.now() - lastPriorityChangeAt));
+        const timer = setTimeout(() => {
+            if (shouldReleaseFrozenOrder({ now: Date.now(), lastChangeAt: lastPriorityChangeAt, saving: false, hovering: false })) {
+                setFrozenOrder(null);
+            }
+        }, wait + 16);
+        return () => clearTimeout(timer);
+    }, [frozenOrder, saveBusy, priorityHover, lastPriorityChangeAt]);
     const staleTargetCount = targets.length - editableTargets.length;
     const editingRequestKey = editingRequestModel ? cleanOneMillionModelName(editingRequestModel).toLowerCase() : '';
     const editingTargets = useMemo(() => (
@@ -2175,7 +2363,13 @@ function RouteTargetsEditor({
             .sort((a, b) => a.localeCompare(b))
     );
 
+    const openRequestEditor = useCallback((requestModel: string) => {
+        setDialogSnapshot(targetsRef.current);
+        setEditingRequestModel(requestModel);
+    }, []);
+
     const addTarget = () => {
+        setDialogSnapshot(targets);
         const channelId = channels[0]?.id ?? 0;
         const upstreamModel = modelsForChannel(channelId)[0] ?? '';
 
@@ -2241,7 +2435,7 @@ function RouteTargetsEditor({
         nextTargets: AccessPlanRouteTarget[],
         successMessage = t('toast.routesUpdated'),
         onSuccess?: () => void,
-        restoreOnError?: AccessPlanRouteTarget[],
+        restoreOnError = false,
     ) => {
         // 按 request_model 分组归一化：
         // 1. 同一 request_model 下 targets 统一 mode（以组内首个明确设置的 mode 为准，默认 fill_first 即 mode=3）
@@ -2286,8 +2480,12 @@ function RouteTargetsEditor({
             }
         });
 
-        updateRoutes.mutate(
-            {
+        saveQueue.submit({
+            sourceTargets: nextTargets,
+            successMessage,
+            onSuccess,
+            restoreOnError,
+            payload: {
                 access_plan_id: plan.id,
                 targets: normalizedTargets.map((target, index) => ({
                     ...target,
@@ -2305,19 +2503,41 @@ function RouteTargetsEditor({
                     prompt_override_mode: target.prompt_override_mode ?? 'append_system',
                 })),
             },
-            {
-                onSuccess: (data) => {
-                    setTargets((data.route_targets ?? []).map(cleanRouteTargetModels));
-                    toast.success(successMessage);
-                    onSuccess?.();
-                },
-                onError: (error) => {
-                    if (restoreOnError) setTargets(restoreOnError);
-                    toast.error(t('toast.routesUpdateFailed'), { description: apiErrorMessage(error) });
-                },
-            }
-        );
+        });
     };
+
+    // 保存排队：同一时间只发一个，排着的只留最新整表；只有最后一次的结果覆盖本地（见 edit-state.ts）。
+    const mutateRoutesRef = useRef(updateRoutes.mutateAsync);
+    mutateRoutesRef.current = updateRoutes.mutateAsync;
+    const settleSaveRef = useRef<(outcome: SaveOutcome<RouteSaveJob, AccessPlanRouteSaveResult>) => void>(() => {});
+    const [saveQueue] = useState(() => createLatestSaveQueue<RouteSaveJob, AccessPlanRouteSaveResult>(
+        (job) => mutateRoutesRef.current(job.payload),
+        (outcome) => settleSaveRef.current(outcome),
+        setSaveBusy,
+    ));
+    settleSaveRef.current = (outcome) => {
+        // 后面还有更新的整表在排队：这次的结果不覆盖本地，也不提示，等最后一次。
+        if (outcome.superseded) return;
+        const job = outcome.payload;
+        // 发出去之后本地又改了（比如保存在路上时打开弹窗改了东西）：只更新 baseline，不冲掉本地。
+        const untouchedSince = sameDraft(targetsRef.current, job.sourceTargets);
+        if (outcome.ok) {
+            const fresh = (outcome.value.route_targets ?? []).map(cleanRouteTargetModels);
+            setBaseline(fresh);
+            setSyncedServerVersion(routeTargetsServerVersion({ id: plan.id, route_targets: outcome.value.route_targets ?? [] }));
+            if (untouchedSince) {
+                setTargets(fresh);
+                setDialogSnapshot((snapshot) => (snapshot ? fresh : snapshot));
+            }
+            toast.success(job.successMessage);
+            job.onSuccess?.();
+            return;
+        }
+        if (job.restoreOnError && untouchedSince) setTargets(baselineRef.current);
+        toast.error(t('toast.routesUpdateFailed'), { description: apiErrorMessage(outcome.error) });
+    };
+    const baselineRef = useRef(baseline);
+    baselineRef.current = baseline;
 
     const saveTargetsRef = useRef(saveTargets);
     saveTargetsRef.current = saveTargets;
@@ -2352,12 +2572,14 @@ function RouteTargetsEditor({
             }
             return target;
         });
+        setFrozenOrder((frozen) => frozen ?? captureOrder(canvasRowsRef.current));
+        setLastPriorityChangeAt(Date.now());
         setTargets(next);
         saveTargetsRef.current(
             next,
             t('toast.routesUpdated'),
             undefined,
-            current,
+            true,
         );
     }, [t]);
 
@@ -2365,10 +2587,28 @@ function RouteTargetsEditor({
         const current = targetsRef.current;
         const next = moveRouteTargetToTop(current, targetIndex);
         setTargets(next);
-        saveTargetsRef.current(next, t('toast.routesUpdated'), undefined, current);
+        saveTargetsRef.current(next, t('toast.routesUpdated'), undefined, true);
     }, [t]);
 
     const save = (onSuccess?: () => void) => saveTargets(targets, t('toast.routesUpdated'), onSuccess);
+
+    const closeRequestEditor = () => {
+        setConfirmCloseOpen(false);
+        setEditingRequestModel(null);
+        setDialogSnapshot(null);
+    };
+    const dialogDirty = editingRequestModel !== null && dialogSnapshot !== null && !sameDraft(targets, dialogSnapshot);
+    const requestCloseEditor = () => {
+        if (decideDialogClose(dialogDirty) === 'confirm') {
+            setConfirmCloseOpen(true);
+            return;
+        }
+        closeRequestEditor();
+    };
+    const discardRequestEditor = () => {
+        if (dialogSnapshot) setTargets(dialogSnapshot);
+        closeRequestEditor();
+    };
 
     // 分流模式只在「高级编辑」的分流模式下拉里改（updateTarget 会把同一条 request_model 的
     // 所有 target 一起同步，因为 mode 是规则级字段）。旧的画布行内下拉是死代码，已删除。
@@ -2426,7 +2666,7 @@ function RouteTargetsEditor({
     };
 
     return (
-        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1 pb-24 md:pb-4">
+        <div className="flex flex-none flex-col gap-3 pr-1 pb-24 sm:min-h-0 sm:flex-1 sm:overflow-y-auto md:pb-4">
             <div className="flex shrink-0 flex-col gap-2 rounded-2xl border border-border/70 bg-card/70 p-2 sm:flex-row sm:items-center sm:justify-between">
                 <div className="hidden min-w-0 items-center gap-2 px-1 text-xs text-muted-foreground sm:flex">
                     <GitBranch className="size-4 shrink-0 text-primary" />
@@ -2446,10 +2686,10 @@ function RouteTargetsEditor({
                     <Button
                         type="button"
                         className="rounded-xl"
-                        disabled={invalid || updateRoutes.isPending}
+                        disabled={invalid || saveBusy}
                         onClick={() => save()}
                     >
-                        {updateRoutes.isPending ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
+                        {saveBusy ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
                         <span className="min-w-0 truncate">{t('actions.save')}</span>
                     </Button>
                 </div>
@@ -2463,8 +2703,9 @@ function RouteTargetsEditor({
                 modelNames={modelNames}
                 channelModels={channelModels}
                 channelModelsReady={channelModelsReady}
-                onEditRequest={setEditingRequestModel}
+                onEditRequest={openRequestEditor}
                 onPriorityChange={changeCanvasPriority}
+                onPriorityHover={setPriorityHover}
                 onOpenJson={openJson}
             />
 
@@ -2502,7 +2743,7 @@ function RouteTargetsEditor({
                 </div>
             </details>
 
-            <Dialog open={editingRequestModel !== null} onOpenChange={(open) => !open && setEditingRequestModel(null)}>
+            <Dialog open={editingRequestModel !== null} onOpenChange={(open) => { if (!open) requestCloseEditor(); }}>
                 <DialogContent className="w-[calc(100vw-1rem)] max-w-full overflow-hidden rounded-3xl border-border bg-card p-0 sm:max-w-4xl">
                     <DialogHeader className="border-b border-border px-4 py-4 pr-12 sm:px-5">
                         <DialogTitle className="flex min-w-0 flex-wrap items-center gap-2">
@@ -2640,15 +2881,21 @@ function RouteTargetsEditor({
                         <Button
                             type="button"
                             className="rounded-xl"
-                            disabled={invalid || updateRoutes.isPending}
-                            onClick={() => save(() => setEditingRequestModel(null))}
+                            disabled={invalid || saveBusy}
+                            onClick={() => save(closeRequestEditor)}
                         >
-                            {updateRoutes.isPending ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
+                            {saveBusy ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
                             <span className="min-w-0 truncate">{t('actions.save')}</span>
                         </Button>
                     </DialogFooter>
                 </DialogContent>
             </Dialog>
+
+            <UnsavedChangesConfirm
+                open={confirmCloseOpen}
+                onKeepEditing={() => setConfirmCloseOpen(false)}
+                onDiscard={discardRequestEditor}
+            />
 
             <datalist id={requestModelListId}>
                 {modelNames.map((model) => <option key={model} value={model} />)}
@@ -2693,9 +2940,29 @@ function PlanSettingsDialog({
     modelNames: string[];
 }) {
     const t = accessPlanText;
+    const [open, setOpen] = useState(false);
+    const [billingDirty, setBillingDirty] = useState(false);
+    const [confirmCloseOpen, setConfirmCloseOpen] = useState(false);
+    const close = () => {
+        setConfirmCloseOpen(false);
+        setBillingDirty(false);
+        setOpen(false);
+    };
+    const onOpenChange = (next: boolean) => {
+        if (next) {
+            setOpen(true);
+            return;
+        }
+        if (decideDialogClose(billingDirty) === 'confirm') {
+            setConfirmCloseOpen(true);
+            return;
+        }
+        close();
+    };
 
     return (
-        <Dialog>
+        <Dialog open={open} onOpenChange={onOpenChange}>
+            <UnsavedChangesConfirm open={confirmCloseOpen} onKeepEditing={() => setConfirmCloseOpen(false)} onDiscard={close} />
             <DialogTrigger asChild>
                 <Button type="button" variant="outline" className="rounded-xl">
                     <PencilLine className="size-4" />
@@ -2713,11 +2980,14 @@ function PlanSettingsDialog({
                     <DialogDescription>{t('routes.manageHint')}</DialogDescription>
                 </DialogHeader>
                 <div className="grid max-h-[calc(100dvh-10rem)] gap-3 overflow-y-auto px-4 py-4 sm:px-5 lg:grid-cols-2">
-                    <PlanBasicsEditor key={`basic-${plan.id}-${plan.updated_at ?? 0}`} plan={plan} />
+                    {/* 只按方案 id 换实例：带 updated_at 的 key 会在保存/回刷时整块重挂载，正在改的草稿当场丢掉。
+                        服务器数据由编辑器内部在「没改动、没在保存」时原地跟上。 */}
+                    <PlanBasicsEditor key={`basic-${plan.id}`} plan={plan} />
                     <BillingRulesEditor
-                        key={`billing-${plan.id}-${plan.updated_at ?? 0}`}
+                        key={`billing-${plan.id}`}
                         plan={plan}
                         modelNames={modelNames}
+                        onDirtyChange={setBillingDirty}
                     />
                 </div>
             </DialogContent>
@@ -2772,7 +3042,8 @@ export function AccessPlan() {
 
     return (
         <PageWrapper className="h-full min-h-0 rounded-t-3xl [&>*]:h-full [&>*]:min-h-0">
-            <div className="flex h-full min-h-0 flex-col gap-3 overflow-hidden">
+            {/* 手机上整页一起滚（画布才能拿到接近一屏的高度）；宽屏照旧固定、编辑区内部滚。 */}
+            <div className="flex h-full min-h-0 flex-col gap-3 overflow-y-auto overscroll-contain sm:overflow-hidden">
                 <div className="shrink-0 rounded-2xl border border-border/70 bg-card/70 p-2 shadow-sm">
                     <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
                         <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:items-center">
@@ -2809,7 +3080,7 @@ export function AccessPlan() {
                             <CreatePlanPanel plans={orderedPlans} onCreated={setSelectedId} />
                             {selectedPlan ? (
                                 <PlanSettingsDialog
-                                    key={`settings-${selectedPlan.id}-${selectedPlan.updated_at ?? 0}`}
+                                    key={`settings-${selectedPlan.id}`}
                                     plan={selectedPlan}
                                     modelNames={modelNames}
                                 />

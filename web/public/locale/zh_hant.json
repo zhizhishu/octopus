@@ -1913,5 +1913,13 @@
       "keyOff": "停用",
       "viewLogs": "看他最近的請求"
     }
+  },
+  "accessPlan": {
+    "unsaved": {
+      "title": "還沒儲存",
+      "description": "改動還沒儲存，確定要關？",
+      "keepEditing": "繼續編輯",
+      "discard": "不儲存，關掉"
+    }
   }
 }

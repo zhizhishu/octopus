@@ -80,7 +80,9 @@ export function routeTargetsServerVersion(plan: { id: number; updated_at?: numbe
 /**
  * 是否该把本地 targets 重置为服务器数据。保存请求进行中时先不动（保存成功回调会写入服务器结果，
  * 中途的列表回刷可能还是旧数据，立刻重置会把用户刚连点的第二下闪回去）。
+ * 本地有没保存的改动（弹窗里改到一半、加了一行还没存）时也不动：列表回刷不能把人家正在改的东西冲掉，
+ * 等保存或放弃之后再对齐。
  */
-export function shouldResyncRouteTargets(syncedVersion: string, serverVersion: string, savePending: boolean): boolean {
-    return !savePending && syncedVersion !== serverVersion;
+export function shouldResyncRouteTargets(syncedVersion: string, serverVersion: string, savePending: boolean, localDirty = false): boolean {
+    return !savePending && !localDirty && syncedVersion !== serverVersion;
 }
