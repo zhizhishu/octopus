@@ -197,7 +197,11 @@ func apiKeyEndpointFamilyForPath(path string) model.APIKeyEndpointFamily {
 		// 对所有 key 恒 403 —— 而且绕过中间件的 handler 测试照样全绿，查不出来。
 		path == "/v1/systemone" ||
 		strings.HasPrefix(path, "/v1/images/") ||
-		strings.HasPrefix(path, "/v1/audio/") {
+		strings.HasPrefix(path, "/v1/audio/") ||
+		// xAI（Grok）语音 REST。与 /v1/audio/* 同族：同是音频、同走 raw 透传、
+		// 同一个上游账号。
+		path == "/v1/tts" ||
+		path == "/v1/stt" {
 		return model.APIKeyEndpointFamilyOpenAICompatible
 	}
 	if path == "/chat/completions" ||

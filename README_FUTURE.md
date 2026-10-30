@@ -203,7 +203,7 @@ Future 分支在保留原有 Chat / Responses / Anthropic / Embeddings 转换链
 - Gemini 原生：`/v1beta/models/:model:generateContent`、`/v1beta/models/:model:streamGenerateContent`。
 - 生图：`/v1/images/generations`、`/v1/images/edits`、`/v1/images/variations`。
 - Codex/TOML 兼容别名：`/responses`、`/responses/compact`、`/backend-api/codex/responses`、`/backend-api/codex/responses/compact`。普通 Responses 别名仍走 Octopus 协议转换，`compact` 别名走 OpenAI 原样转发；流已经开始后如上游失败，会补发 `response.failed`，避免 Codex 客户端遇到 silent EOF。
-- 原样转发：`/v1/completions`、`/v1/edits`、`/v1/responses/compact`、`/responses/compact`、`/backend-api/codex/responses/compact`、`/v1/audio/speech`、`/v1/audio/transcriptions`、`/v1/audio/translations`、`/v1/moderations`、`/v1/rerank`。
+- 原样转发：`/v1/completions`、`/v1/edits`、`/v1/responses/compact`、`/responses/compact`、`/backend-api/codex/responses/compact`、`/v1/audio/speech`、`/v1/audio/transcriptions`、`/v1/audio/translations`、`/v1/moderations`、`/v1/rerank`；xAI（Grok）语音 REST `/v1/tts`（文字转语音，正文无 model 时按 `grok-tts` 选渠道且不往上游补 model）、`/v1/stt`（语音转文字，无 model 时按 `grok-voice-transcribe-2.0`），两者成功后按价格行 `per_call` 计次。
 
 这些端点仍然走 Octopus 的 API Key、方案组路由、模型映射、失败重试、错误策略、计费快照和日志审计。音频等二进制响应会转发给客户端，但不会把大文件写进日志；multipart 上传只记录摘要，避免把文件内容落库。
 
