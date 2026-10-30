@@ -49,7 +49,7 @@ type RelayMetrics struct {
 	InternalRequest  *transformerModel.InternalLLMRequest
 	InternalResponse *transformerModel.InternalLLMResponse
 	// upsteamRequestBody 是真实出站请求体快照（TransformRequest + param_override
-	// 之后的字节，已脱敏）。空 = 未采集（开关关闭或采集失败）。
+	// 之后的字节，按用户决定原样记录、不脱敏）。空 = 未采集（开关关闭或采集失败）。
 	upstreamRequestBody string
 	// upstreamImageHashes 是 upstreamRequestBody 里带 id 占位符、且已交给写盘队列的
 	// 图片哈希；落库时写进 relay_log_images 引用表，清理任务据此判断文件还要不要。

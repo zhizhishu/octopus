@@ -222,11 +222,11 @@ func TestRelayLogImageTotalCapEvictsUnreferencedFirst(t *testing.T) {
 	if err := db.GetDB().Create(&model.RelayLog{ID: 9001, Time: time.Now().Unix()}).Error; err != nil {
 		t.Fatal(err)
 	}
-	// 4 × 1000 字节，上限 2500：要删两张。无引用的先删（即使它更新），
+	// 4 × 1000 字节，上限 2500：要删两张。过了一分钟的无引用文件先删（即使它更新），
 	// 再删有引用里最旧的，并删掉它的引用行。
 	refOldest := putImage(t, "ref-oldest", 1000, 4*time.Hour)
 	refNewer := putImage(t, "ref-newer", 1000, 3*time.Hour)
-	unrefYoung := putImage(t, "unref-young", 1000, time.Minute)
+	unrefYoung := putImage(t, "unref-young", 1000, 10*time.Minute)
 	refNewest := putImage(t, "ref-newest", 1000, 2*time.Hour)
 	for _, im := range []testImage{refOldest, refNewer, refNewest} {
 		db.GetDB().Create(&model.RelayLogImage{LogID: 9001, Hash: im.hash})
@@ -258,5 +258,33 @@ func TestRelayLogImageSweepEmptyDirIsNoop(t *testing.T) {
 	t.Cleanup(logimage.SetDir(filepath.Join(t.TempDir(), "missing")))
 	if n, err := RelayLogImageSweep(ctx, 0); err != nil || n != 0 {
 		t.Fatalf("sweep on missing dir: n=%d err=%v", n, err)
+	}
+}
+
+func TestRelayLogImageTotalCapSparesJustWrittenUnreferenced(t *testing.T) {
+	ctx := setupLogImageTest(t)
+	t.Setenv("OCTOPUS_LOG_IMAGE_MAX_BYTES", "2500")
+	if err := db.GetDB().Create(&model.RelayLog{ID: 9101, Time: time.Now().Unix()}).Error; err != nil {
+		t.Fatal(err)
+	}
+	// 刚写盘、日志还没落库的图（无引用、不到一分钟）要排在有引用的旧图后面删。
+	refOldest := putImage(t, "ref-oldest-2", 1000, 4*time.Hour)
+	refNewer := putImage(t, "ref-newer-2", 1000, 3*time.Hour)
+	justWritten := putImage(t, "just-written-2", 1000, 0)
+	for _, im := range []testImage{refOldest, refNewer} {
+		db.GetDB().Create(&model.RelayLogImage{LogID: 9101, Hash: im.hash})
+	}
+	n, err := RelayLogImageSweep(ctx, RelayLogImageOrphanGrace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("removed %d, want 1", n)
+	}
+	if exists(refOldest.path) {
+		t.Fatal("oldest referenced image should be evicted first")
+	}
+	if !exists(justWritten.path) || !exists(refNewer.path) {
+		t.Fatal("just-written image and newer referenced image must stay")
 	}
 }

@@ -119,12 +119,24 @@ func RelayLogImageSweep(ctx context.Context, minAge time.Duration) (int, error) 
 	if total <= maxBytes {
 		return removed, nil
 	}
-	// 超容量：无引用的排前面，各自按 mtime 从旧到新。
+	// 超容量时的删除顺序（各档内按 mtime 从旧到新）：
+	//  0. 无引用、且已过 relayLogImageClearGrace 的旧文件；
+	//  1. 有引用的文件（日志还在，点开会显示「原图已清理」）；
+	//  2. 无引用但刚写盘不到一分钟的——它们多半属于还在内存里、马上就落库的日志，
+	//     先删掉会让刚发生的请求一张图都看不到，所以放到最后。
+	tier := func(f logimage.File) int {
+		if _, ok := referenced[f.Hash]; ok {
+			return 1
+		}
+		if now.Sub(f.ModTime) < relayLogImageClearGrace {
+			return 2
+		}
+		return 0
+	}
 	sort.SliceStable(keep, func(i, j int) bool {
-		_, ri := referenced[keep[i].Hash]
-		_, rj := referenced[keep[j].Hash]
-		if ri != rj {
-			return !ri
+		ti, tj := tier(keep[i]), tier(keep[j])
+		if ti != tj {
+			return ti < tj
 		}
 		return keep[i].ModTime.Before(keep[j].ModTime)
 	})
