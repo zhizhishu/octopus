@@ -55,6 +55,9 @@ func NewProbeSender(channel dbmodel.Channel, upstreamModel, endpoint string) (*P
 	// 准入按"本次要测什么"判，不能是 OR：一个普通 Chat 渠道测**嵌入**端点时，
 	// relay 侧并不会调度它（能力位没有 embeddings），这里若放行就会测出一条
 	// 生产走不通的"可用"，那是假绿灯。
+	if channel.Type == outbound.OutboundTypeSystemOne {
+		return nil, fmt.Errorf("决策模型渠道不走模型校验探针，请用渠道里的「测试」")
+	}
 	if isEmbeddingTestEndpoint(endpoint) {
 		if !channel.SupportsCapability(dbmodel.CapabilityEmbeddings) {
 			return nil, fmt.Errorf("渠道未声明 embedding 能力，无法校验嵌入端点")

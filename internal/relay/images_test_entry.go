@@ -10,7 +10,6 @@ import (
 	"github.com/zhizhishu/octopus/internal/relay/bodycache"
 	"github.com/zhizhishu/octopus/internal/server/resp"
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
-	"github.com/zhizhishu/octopus/internal/utils/xurl"
 )
 
 // 图片渠道测试的"钉住渠道"入口。
@@ -173,6 +172,12 @@ func forwardImagesChannelTest(
 	} else {
 		keys = channel.GetAvailableChannelKeys()
 	}
+	if channel.Type == outbound.OutboundTypeCustomOpenAIChat {
+		if _, ok := customChannelAbsoluteURL(channel.OpenAIImagesPath); !ok {
+			resp.Error(c, http.StatusBadRequest, CustomChannelNoFullURLReason)
+			return
+		}
+	}
 	if len(keys) == 0 {
 		resp.Error(c, http.StatusServiceUnavailable, "no available key")
 		return
@@ -234,7 +239,7 @@ func imagesChannelTestUpstreamPath(channel *model.Channel, endpoint, actualModel
 		}
 		return urlPath(targetURL)
 	}
-	targetURL, err := xurl.JoinOpenAIPath(channel.GetBaseUrl(), "/v1"+endpoint)
+	targetURL, err := openAIUpstreamURL(channel, channel.GetOpenAIImagesPath(endpoint))
 	if err != nil {
 		return ""
 	}

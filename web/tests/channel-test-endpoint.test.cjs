@@ -14,6 +14,7 @@ const ChannelType = {
     // 4 = 退役的 Volcengine（火山那条线已砍掉），编号永久空着。
     OpenAIEmbedding: 5,
     CustomOpenAIChat: 6,
+    SystemOne: 7,
 };
 
 const { defaultModelTestEndpointForChannel, shouldForceChannelTestStream, channelTestIdentityFor } =
@@ -40,6 +41,7 @@ test('各渠道类型对上的端点与实际出站一致', () => {
         [ChannelType.Gemini, 'gemini_generate_content'],
         [ChannelType.OpenAIEmbedding, 'openai_embeddings'],
         [ChannelType.CustomOpenAIChat, 'openai_chat'],
+        [ChannelType.SystemOne, 'systemone'],
     ];
     for (const [type, want] of cases) {
         assert.equal(defaultModelTestEndpointForChannel(type), want, `channel type ${type}`);

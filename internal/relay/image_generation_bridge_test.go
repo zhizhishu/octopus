@@ -6,15 +6,16 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/op"
 	"github.com/zhizhishu/octopus/internal/transformer/inbound"
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
-	"github.com/gin-gonic/gin"
 )
 
 func TestResponsesImageGenerationToolBridgesToImagesEndpoint(t *testing.T) {
@@ -360,7 +361,7 @@ func TestResponsesGrokImageGenerationBridgeSanitizesPayload(t *testing.T) {
 	path, body := gotPath, gotBody
 	mu.Unlock()
 	if path != "/v1/images/generations" {
-		t.Fatalf("expected canonical images path, got %q", path)
+		t.Fatalf("absolute images prefix must keep the generations suffix, got %q", path)
 	}
 	for _, forbidden := range []string{"background", "quality", "size", "style", "output_format", "watermark", "stream"} {
 		if _, ok := body[forbidden]; ok {
@@ -739,7 +740,7 @@ func TestCustomOpenAIChatImageModelBridgesToImagesEndpoint(t *testing.T) {
 		t.Fatalf("expected custom chat image bridge to succeed, got %d body %s", rec.Code, rec.Body.String())
 	}
 	if gotPath != "/v1/images/generations" {
-		t.Fatalf("expected custom OpenAI chat base to canonicalize to images path, got %q", gotPath)
+		t.Fatalf("absolute images prefix must keep the generations suffix, got %q", gotPath)
 	}
 }
 
@@ -758,6 +759,16 @@ func createImageBridgeGroup(t *testing.T, ctx context.Context, baseURL, requestM
 	}
 	if requestModel != actualModel {
 		channel.ModelMapping = map[string]string{requestModel: actualModel}
+	}
+	if channelType == outbound.OutboundTypeCustomOpenAIChat {
+		parsed, err := url.Parse(baseURL)
+		if err != nil || parsed.Host == "" {
+			t.Fatalf("custom image bridge base %q: %v", baseURL, err)
+		}
+		parsed.Path = "/v1/images"
+		parsed.RawPath = ""
+		parsed.RawQuery = ""
+		channel.OpenAIImagesPath = parsed.String()
 	}
 	if err := op.ChannelCreate(&channel, ctx); err != nil {
 		t.Fatalf("create channel: %v", err)

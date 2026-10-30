@@ -8,13 +8,13 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/op"
 	"github.com/zhizhishu/octopus/internal/transformer/inbound"
 	geminiInbound "github.com/zhizhishu/octopus/internal/transformer/inbound/gemini"
 	transformerModel "github.com/zhizhishu/octopus/internal/transformer/model"
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
-	"github.com/gin-gonic/gin"
 )
 
 func TestGeminiNativeRequestConvertsThroughOpenAIChannel(t *testing.T) {
@@ -203,7 +203,7 @@ func TestCustomOpenAIChatChannelUsesConfiguredEndpointPath(t *testing.T) {
 	mu.Lock()
 	path, auth, modelName := gotPath, gotAuth, gotModel
 	mu.Unlock()
-	if path != "/api/coding/paas/v4/chat/completions" {
+	if path != "/api/coding/paas/v4" {
 		t.Fatalf("unexpected upstream path: %q", path)
 	}
 	if auth != "Bearer custom-key" {
@@ -220,7 +220,7 @@ func TestCustomOpenAIChatChannelUsesConfiguredEndpointPath(t *testing.T) {
 	if len(logs) == 0 || len(logs[0].Attempts) == 0 {
 		t.Fatalf("expected relay log attempt")
 	}
-	if logs[0].Attempts[0].UpstreamPath != "/api/coding/paas/v4/chat/completions" {
+	if logs[0].Attempts[0].UpstreamPath != "/api/coding/paas/v4" {
 		t.Fatalf("expected audited custom upstream path, got %+v", logs[0].Attempts)
 	}
 }

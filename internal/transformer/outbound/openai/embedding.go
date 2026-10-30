@@ -73,12 +73,15 @@ func (o *EmbeddingOutbound) TransformRequest(ctx context.Context, request *model
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "Bearer "+key)
 
-	// 自定义嵌入路径（渠道配了 openai_embeddings_path 时 baseUrl 已经是完整端点，
-	// 例如火山 /api/v3/embeddings）：JoinCustomOpenAIEmbeddingsPath 认得这种 base，
-	// 原样使用；否则退回标准的 /v1/embeddings 拼接 —— 与 chat outbound 的
-	// JoinCustomOpenAIChatPath 同一套拼法。存量渠道（未配路径）走 else 分支，
-	// 与改动前逐字节一致。
-	targetURL, err := xurl.JoinCustomOpenAIEmbeddingsPath(baseUrl, "/v1/embeddings")
+	// 自定义渠道（type 6）的 baseUrl 已经是最终地址，不再拼接 /v1/embeddings。
+	// 其它渠道：配了 openai_embeddings_path 且 base 本身就是嵌入端点时原样使用，
+	// 否则走标准 /v1/embeddings 拼接。存量渠道走 else，与改动前逐字节一致。
+	var targetURL string
+	if request.TransformOptions.VerbatimUpstreamURL {
+		targetURL, err = xurl.VerbatimRequestURL(baseUrl, "/v1/embeddings")
+	} else {
+		targetURL, err = xurl.JoinCustomOpenAIEmbeddingsPath(baseUrl, "/v1/embeddings")
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to join openai embeddings url: %w", err)
 	}

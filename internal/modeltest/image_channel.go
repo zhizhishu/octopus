@@ -14,7 +14,9 @@ import (
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/relay"
 	transformermodel "github.com/zhizhishu/octopus/internal/transformer/model"
+	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 	"github.com/zhizhishu/octopus/internal/utils/xredact"
+	"github.com/zhizhishu/octopus/internal/utils/xurl"
 )
 
 const (
@@ -61,6 +63,12 @@ func (r *modelRunner) tryImageChannel(ctx context.Context, channel *dbmodel.Chan
 	// 准入：只允许 relay 真的会把图片流量调度过去的渠道类型。图片没有能力位，
 	// 判据就是 ImagesHandler 调度时用的同一个函数（relay.ChannelTypeSupportsImages）。
 	// 不支持的类型明确跳过并记录原因，不硬塞一个假端点换一条看不懂的报错。
+	if channel.Type == outbound.OutboundTypeCustomOpenAIChat {
+		if _, ok, err := xurl.ParseEndpointOverride(channel.OpenAIImagesPath); err != nil || !ok {
+			r.recordAttempt(channel.ID, 0, channelName, upstreamModel, "", dbmodel.AttemptSkipped, 0, 0, relay.CustomChannelNoFullURLReason)
+			return false
+		}
+	}
 	if !relay.ChannelTypeSupportsImages(channel.Type) {
 		r.recordAttempt(channel.ID, 0, channelName, upstreamModel, "", dbmodel.AttemptSkipped, 0, 0,
 			fmt.Sprintf("channel type %d does not support the images endpoint", channel.Type))

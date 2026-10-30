@@ -23,6 +23,9 @@ const (
 	_obsoleteVolcengineSlot
 	OutboundTypeOpenAIEmbedding
 	OutboundTypeCustomOpenAIChat
+	// 7 号位：决策模型（systemone / jev）。只服务 /v1/systemone，
+	// 不进聊天、嵌入、responses 的选路表。4 号位继续空着。
+	OutboundTypeSystemOne
 )
 
 // EmbeddingChannelTypes 定义支持 embedding 请求的 channel 类型集合

@@ -20,8 +20,8 @@ import (
 	"github.com/zhizhishu/octopus/internal/price"
 	"github.com/zhizhishu/octopus/internal/relay/balancer"
 	"github.com/zhizhishu/octopus/internal/server/resp"
+	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 	"github.com/zhizhishu/octopus/internal/utils/log"
-	"github.com/zhizhishu/octopus/internal/utils/xurl"
 )
 
 // 图片异步任务（/v1/images/{generations,edits}/async + /v1/images/tasks/{id}）。
@@ -354,6 +354,12 @@ func pickImageTaskChannel(iter *balancer.Iterator, ctx context.Context) (*model.
 			iter.Skip(channel.ID, 0, channel.Name, fmt.Sprintf("unsupported channel type: %d", channel.Type))
 			continue
 		}
+		if channel.Type == outbound.OutboundTypeCustomOpenAIChat {
+			if _, ok := customChannelAbsoluteURL(channel.OpenAIImagesPath); !ok {
+				iter.Skip(channel.ID, 0, channel.Name, CustomChannelNoFullURLReason)
+				continue
+			}
+		}
 		upstreamModel := item.ModelName
 		if mapped, ok := channel.ModelMapping[item.ModelName]; ok && mapped != "" {
 			upstreamModel = mapped
@@ -560,7 +566,7 @@ func ImageTaskRunUpstream(
 		return 0, nil, "", fmt.Errorf("failed to marshal upstream image payload: %w", merr)
 	}
 
-	targetURL, uerr := xurl.JoinOpenAIPath(channel.GetBaseUrl(), "/v1"+imageTaskEndpointPath(endpoint))
+	targetURL, uerr := openAIUpstreamURL(channel, channel.GetOpenAIImagesPath(imageTaskEndpointPath(endpoint)))
 	if uerr != nil {
 		return 0, nil, "", fmt.Errorf("failed to build upstream image url: %w", uerr)
 	}

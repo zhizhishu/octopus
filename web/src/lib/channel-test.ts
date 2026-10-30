@@ -8,6 +8,7 @@ export const MODEL_TEST_ENDPOINTS = [
     { value: 'gemini_generate_content', label: 'Gemini' },
     { value: 'openai_embeddings', label: 'Embeddings' },
     { value: 'openai_images_generations', label: 'Images' },
+    { value: 'systemone', label: '决策' },
 ] as const;
 
 export type ModelTestEndpoint = (typeof MODEL_TEST_ENDPOINTS)[number]['value'];
@@ -19,6 +20,7 @@ export const MODEL_TEST_ENDPOINT_LABELS: Record<ModelTestEndpoint, string> = {
     gemini_generate_content: 'Gemini',
     openai_embeddings: 'Embeddings',
     openai_images_generations: 'Images',
+    systemone: '决策',
 };
 
 /**
@@ -78,6 +80,9 @@ export function defaultModelTestEndpointForChannel(type: ChannelType): ModelTest
             // 嵌入渠道只有 /v1/embeddings 一个可用端点：chat 形状会被出站适配器
             // 直接拒收（EmbeddingOutbound 只认 EmbeddingInput）。
             return 'openai_embeddings';
+        case ChannelType.SystemOne:
+            // 决策渠道发的是 {model, state, questions}，不能拿聊天报文去测。
+            return 'systemone';
         default:
             // OpenAI Chat 与 Custom OpenAI Chat 都是 chat 形状。
             return 'openai_chat';

@@ -83,9 +83,9 @@ func TestCustomChatOutboundTransformRequestPreservesFullChatEndpoint(t *testing.
 			want:    "/custom/v1/chat/completions",
 		},
 		{
-			name:    "base without chat endpoint still uses standard openai chat path",
+			name:    "base without chat endpoint is sent verbatim",
 			baseURL: "https://proxy.example/custom",
-			want:    "/custom/v1/chat/completions",
+			want:    "/custom",
 		},
 	}
 

@@ -143,6 +143,16 @@ function isCustomOpenAIChat(type: ChannelType) {
     return type === ChannelType.CustomOpenAIChat;
 }
 
+function isSystemOneChannel(type: ChannelType) {
+    return type === ChannelType.SystemOne;
+}
+
+// 这两种渠道都没有可推导的模型列表地址：自定义渠道按原样地址发送，
+// 决策渠道只打 /v1/systemone。
+function modelListSyncDisabled(type: ChannelType) {
+    return isCustomOpenAIChat(type) || isSystemOneChannel(type);
+}
+
 // Chat-family channels (OpenAI Chat + Custom OpenAI Chat) are the only ones that
 // accept a cloak shape: their body stays chat format while the outbound identity
 // can be dressed as claude/codex. Anthropic/Responses channels' shape IS their
@@ -771,7 +781,14 @@ export function ChannelForm({
                     </label>
                     <Select
                         value={String(formData.type)}
-                        onValueChange={(value) => onFormDataChange({ ...formData, type: Number(value) as ChannelType })}
+                        onValueChange={(value) => {
+                            const type = Number(value) as ChannelType;
+                            onFormDataChange({
+                                ...formData,
+                                type,
+                                auto_sync: modelListSyncDisabled(type) ? false : formData.auto_sync,
+                            });
+                        }}
                     >
                         <SelectTrigger id={`${idPrefix}-type`} className="rounded-xl w-full border border-border px-4 py-2 text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
                             <SelectValue />
@@ -783,6 +800,7 @@ export function ChannelForm({
                             <SelectItem className='rounded-xl' value={String(ChannelType.Gemini)}>{t('typeGemini')}</SelectItem>
                             <SelectItem className='rounded-xl' value={String(ChannelType.OpenAIEmbedding)}>{t('typeOpenAIEmbedding')}</SelectItem>
                             <SelectItem className='rounded-xl' value={String(ChannelType.CustomOpenAIChat)}>{t('typeCustomOpenAIChat')}</SelectItem>
+                            <SelectItem className='rounded-xl' value={String(ChannelType.SystemOne)}>{t('typeSystemOne')}</SelectItem>
                         </SelectContent>
                     </Select>
                 </div>
@@ -977,6 +995,12 @@ export function ChannelForm({
                         </div>
                     ))}
                 </div>
+                {isCustomOpenAIChat(formData.type) && (
+                    <p className="text-xs leading-relaxed text-muted-foreground">{t('typeCustomOpenAIChatHint')}</p>
+                )}
+                {isSystemOneChannel(formData.type) && (
+                    <p className="text-xs leading-relaxed text-muted-foreground">{t('typeSystemOneHint')}</p>
+                )}
             </div>
 
             <div className={cn("space-y-2")}>
@@ -1089,7 +1113,8 @@ export function ChannelForm({
                             variant="ghost"
                             size="sm"
                             onClick={handleRefreshModels}
-                            disabled={!formData.base_urls?.[0]?.url || !effectiveKey || fetchModel.isPending}
+                            disabled={modelListSyncDisabled(formData.type) || !formData.base_urls?.[0]?.url || !effectiveKey || fetchModel.isPending}
+                            title={modelListSyncDisabled(formData.type) ? t(isSystemOneChannel(formData.type) ? 'typeSystemOneHint' : 'typeCustomOpenAIChatHint') : undefined}
                             className="h-6 px-2 text-xs text-muted-foreground/50 hover:text-muted-foreground hover:bg-transparent"
                         >
                             <RefreshCw className={`h-3 w-3 mr-1 ${fetchModel.isPending ? 'animate-spin' : ''}`} />
@@ -1766,12 +1791,17 @@ export function ChannelForm({
                 <div className="flex min-w-0 flex-wrap items-center gap-3 sm:gap-6">
                     <label className="flex min-w-0 items-center gap-2 cursor-pointer">
                         <Switch
-                            checked={formData.auto_sync}
+                            checked={modelListSyncDisabled(formData.type) ? false : formData.auto_sync}
+                            disabled={modelListSyncDisabled(formData.type)}
                             onCheckedChange={(checked) => onFormDataChange({ ...formData, auto_sync: checked })}
                         />
                         <span className="min-w-0">
                             <span className="block text-sm text-card-foreground">{t('autoSync')}</span>
-                            <span className="block max-w-[18rem] text-xs text-muted-foreground">{t('autoSyncHint')}</span>
+                            <span className="block max-w-[18rem] text-xs text-muted-foreground">
+                                {modelListSyncDisabled(formData.type)
+                                    ? t(isSystemOneChannel(formData.type) ? 'typeSystemOneHint' : 'typeCustomOpenAIChatHint')
+                                    : t('autoSyncHint')}
+                            </span>
                         </span>
                     </label>
                 </div>

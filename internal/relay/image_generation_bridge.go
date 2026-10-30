@@ -102,7 +102,12 @@ func (ra *relayAttempt) forwardImageGenerationViaImages(ctx context.Context, spa
 		return 0, fmt.Errorf("failed to marshal image generation payload: %w", err)
 	}
 
-	targetURL, err := xurl.JoinOpenAIPath(ra.outboundBaseURL(), "/v1/images/generations")
+	var targetURL string
+	if ra.channel.Type == outbound.OutboundTypeCustomOpenAIChat {
+		targetURL, err = openAIUpstreamURL(ra.channel, ra.channel.GetOpenAIImagesPath("/images/generations"))
+	} else {
+		targetURL, err = xurl.JoinOpenAIPath(ra.outboundBaseURL(), "/v1/images/generations")
+	}
 	if err != nil {
 		return 0, fmt.Errorf("failed to build image generation upstream url: %w", err)
 	}

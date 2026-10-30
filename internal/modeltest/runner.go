@@ -26,6 +26,7 @@ import (
 	"github.com/zhizhishu/octopus/internal/utils/log"
 	"github.com/zhizhishu/octopus/internal/utils/safe"
 	"github.com/zhizhishu/octopus/internal/utils/xredact"
+	"github.com/zhizhishu/octopus/internal/utils/xurl"
 )
 
 const (
@@ -542,6 +543,13 @@ func normalizeEndpoint(value string) (testEndpoint, error) {
 			inbound: inbound.InboundTypeOpenAIChat,
 			path:    func(string) string { return "/v1/images/generations" },
 		}, nil
+	case "systemone":
+		return testEndpoint{
+			name:      "systemone",
+			apiFormat: transformermodel.APIFormatOpenAIChatCompletion,
+			inbound:   inbound.InboundTypeOpenAIChat,
+			path:      func(string) string { return "/v1/systemone" },
+		}, nil
 	case "gemini_generate_content", "gemini":
 		return testEndpoint{
 			name:      "gemini_generate_content",
@@ -672,6 +680,12 @@ func (r *modelRunner) tryChannel(ctx context.Context, channel *dbmodel.Channel, 
 	// 放在能力位判定之前，是因为图片没有能力位，它的准入是"渠道类型能不能接图片"
 	// （在 tryImageChannel 里按 relay 的同一判据判）。
 	if isImageTestEndpoint(r.request.Endpoint) {
+		if channel.Type == outbound.OutboundTypeCustomOpenAIChat {
+			if _, ok, err := xurl.ParseEndpointOverride(channel.OpenAIImagesPath); err != nil || !ok {
+				r.recordAttempt(channel.ID, 0, channelName, upstreamModel, "", dbmodel.AttemptSkipped, 0, 0, relay.CustomChannelNoFullURLReason)
+				return false
+			}
+		}
 		return r.tryImageChannel(ctx, channel, upstreamModel)
 	}
 	// 能力位判定：空 Capabilities 的存量渠道退回按渠道类型判定，行为不变。
@@ -679,11 +693,27 @@ func (r *modelRunner) tryChannel(ctx context.Context, channel *dbmodel.Channel, 
 	// relay 侧并不会调度它（能力位没有 embeddings），这里若放行就会测出一条
 	// 生产走不通的"可用"，那是假绿灯。
 	isEmbeddingTest := isEmbeddingTestEndpoint(r.request.Endpoint)
+	if isEmbeddingTest && channel.Type == outbound.OutboundTypeCustomOpenAIChat {
+		if _, ok, err := xurl.ParseEndpointOverride(channel.OpenAIEmbeddingsPath); err != nil || !ok {
+			r.recordAttempt(channel.ID, 0, channelName, upstreamModel, "", dbmodel.AttemptSkipped, 0, 0, relay.CustomChannelNoFullURLReason)
+			return false
+		}
+	}
 	if isEmbeddingTest {
 		if !channel.SupportsCapability(dbmodel.CapabilityEmbeddings) {
 			r.recordAttempt(channel.ID, 0, channelName, upstreamModel, "", dbmodel.AttemptSkipped, 0, 0, "channel does not declare the embeddings capability")
 			return false
 		}
+	} else if channel.Type == outbound.OutboundTypeSystemOne {
+		// 决策渠道测不通聊天报文。这里发一封最小的 systemone 探针。
+		return r.trySystemOneChannel(ctx, channel, upstreamModel)
+	} else if isSystemOneTestEndpoint(r.request.Endpoint) {
+		reason := "only a systemone channel can be tested with the decision probe"
+		if channel.Type == outbound.OutboundTypeCustomOpenAIChat {
+			reason = relay.CustomChannelNoFullURLReason
+		}
+		r.recordAttempt(channel.ID, 0, channelName, upstreamModel, "", dbmodel.AttemptSkipped, 0, 0, reason)
+		return false
 	} else if !outbound.IsChatChannelType(channel.Type) {
 		r.recordAttempt(channel.ID, 0, channelName, upstreamModel, "", dbmodel.AttemptSkipped, 0, 0, fmt.Sprintf("channel type %d does not support model connectivity tests", channel.Type))
 		return false
@@ -808,6 +838,7 @@ func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermod
 		prepareCodexModelTestRequest(internalRequest, channel.Type, fp)
 	}
 
+	internalRequest.TransformOptions.VerbatimUpstreamURL = channel.Type == outbound.OutboundTypeCustomOpenAIChat
 	outboundRequest, err := adapter.TransformRequest(ctx, internalRequest, modelTestOutboundBaseURL(channel, internalRequest), key.ChannelKey)
 	if err != nil {
 		return 0, nil, fmt.Errorf("build request: %w", err)
@@ -941,18 +972,14 @@ func modelTestOutboundBaseURL(channel *dbmodel.Channel, internalRequest *transfo
 	if channel == nil {
 		return ""
 	}
-	// 🔴 嵌入判断必须在渠道类型判断**之前**，与生产 relay.go 的 outboundBaseURL 逐字对齐。
-	//
-	// 这里曾经是反的：先判 CustomOpenAIChat 并提前返回聊天 base url，于是
-	// 「CustomOpenAIChat 渠道勾了 embeddings 能力 + 配了 openai_embeddings_path」
-	// 这条合法组合，**生产用嵌入地址、检测用聊天地址** —— 检测测的根本不是
-	// 真实转发那条链路，绿灯代表不了任何事。
-	// 生产那边的注释早就写了这个理由，测试这边漏了。
-	if internalRequest.IsEmbeddingRequest() {
-		return channel.GetOpenAIEmbeddingsBaseUrl()
-	}
+	// 与生产 relay.outboundBaseURL 对齐：type 6 的地址是最终地址，
+	// 嵌入请求只在嵌入路径是绝对网址时改用那条地址。
 	if channel.Type == outbound.OutboundTypeCustomOpenAIChat {
-		return channel.GetOpenAIChatBaseUrl()
+		embedding := internalRequest != nil && internalRequest.IsEmbeddingRequest()
+		return channel.VerbatimRequestBaseURL(embedding)
+	}
+	if internalRequest != nil && internalRequest.IsEmbeddingRequest() {
+		return channel.GetOpenAIEmbeddingsBaseUrl()
 	}
 	return channel.GetBaseUrl()
 }

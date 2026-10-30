@@ -112,7 +112,7 @@ export function CreateDialogContent() {
                 // 能力位只在勾选时出现：没勾的渠道请求形状与改动前逐字节一致。
                 ...channelCapabilitiesPayload(formData.capabilities),
                 proxy: formData.proxy,
-                auto_sync: formData.auto_sync,
+                auto_sync: formData.type === ChannelType.CustomOpenAIChat || formData.type === ChannelType.SystemOne ? false : formData.auto_sync,
                 custom_header: normalizedHeaders,
                 cloak: { mode: formData.cloak_mode || 'auto', profile_id: formData.cloak_profile_id ?? 0, shape: formData.cloak_shape || '' },
                 channel_proxy: channelProxy,

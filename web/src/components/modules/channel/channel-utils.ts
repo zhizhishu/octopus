@@ -7,7 +7,8 @@ export type ChannelEndpointFamilyId =
     | 'anthropic'
     | 'gemini'
     | 'embedding'
-    | 'custom_openai_chat';
+    | 'custom_openai_chat'
+    | 'systemone';
 
 export type ChannelEndpointFilter = ChannelEndpointFamilyId | 'all';
 
@@ -62,7 +63,7 @@ export const CHANNEL_ENDPOINT_FAMILIES: ChannelEndpointFamily[] = [
         label: 'Custom OpenAI Chat',
         shortLabel: 'Custom Chat',
         lane: 'CUS',
-        description: '自定义 OpenAI-compatible 路径',
+        description: '填完整请求地址，原样发送',
         tone: 'from-amber-500/10 via-transparent to-transparent',
         accent: 'bg-amber-500',
         badge: 'border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300',
@@ -89,6 +90,17 @@ export const CHANNEL_ENDPOINT_FAMILIES: ChannelEndpointFamily[] = [
         accent: 'bg-teal-500',
         badge: 'border-teal-500/25 bg-teal-500/10 text-teal-700 dark:text-teal-300',
         types: [ChannelType.OpenAIEmbedding],
+    },
+    {
+        id: 'systemone',
+        label: '决策模型（SystemOne / Jev）',
+        shortLabel: '决策',
+        lane: 'DEC',
+        description: '填根地址即可，自动拼 /v1/systemone',
+        tone: 'from-orange-500/10 via-transparent to-transparent',
+        accent: 'bg-orange-500',
+        badge: 'border-orange-500/25 bg-orange-500/10 text-orange-700 dark:text-orange-300',
+        types: [ChannelType.SystemOne],
     },
 ];
 

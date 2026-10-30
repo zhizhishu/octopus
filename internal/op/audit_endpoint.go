@@ -21,6 +21,8 @@ func AuditEndpointForChannel(ch model.Channel) string {
 		return "openai_responses"
 	case outbound.OutboundTypeGemini:
 		return "gemini_generate_content"
+	case outbound.OutboundTypeSystemOne:
+		return "systemone"
 	default:
 		// 未知类型（含退役的 4 号位）与零值一律落 openai_chat：检测本身由
 		// modeltest 的准入判定负责拒，这里不 panic、不猜协议。

@@ -12,7 +12,7 @@ import {
     Key,
     SlidersHorizontal
 } from 'lucide-react';
-import { useUpdateChannel, useDeleteChannel, type Channel, type UpdateChannelRequest } from '@/api/endpoints/channel';
+import { useUpdateChannel, useDeleteChannel, ChannelType, type Channel, type UpdateChannelRequest } from '@/api/endpoints/channel';
 import {
     MorphingDialogTitle,
     MorphingDialogDescription,
@@ -126,7 +126,12 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
         if (formData.anthropic_context_1m !== (channel.anthropic_context_1m ?? false)) req.anthropic_context_1m = formData.anthropic_context_1m;
         if (formData.thinking_to_content !== (channel.thinking_to_content ?? false)) req.thinking_to_content = formData.thinking_to_content;
         if (formData.proxy !== channel.proxy) req.proxy = formData.proxy;
-        if (formData.auto_sync !== channel.auto_sync) req.auto_sync = formData.auto_sync;
+        const modelSyncOff = formData.type === ChannelType.CustomOpenAIChat || formData.type === ChannelType.SystemOne;
+        if (modelSyncOff) {
+            if (channel.auto_sync) req.auto_sync = false;
+        } else if (formData.auto_sync !== channel.auto_sync) {
+            req.auto_sync = formData.auto_sync;
+        }
 
         if (!headersEqual(formData.custom_header, channel.custom_header)) {
             req.custom_header = (formData.custom_header ?? [])

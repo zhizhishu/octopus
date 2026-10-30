@@ -393,6 +393,13 @@ attemptChannels:
 		}
 		availableKeys = balancer.PrioritizeChannelKeysByHealth(availableKeys, channel.ID, item.ModelName, preferredKeyID)
 
+		// 决策渠道只服务 /v1/systemone。聊天、嵌入、responses 都走这里，
+		// 必须在取出站适配器之前丢掉，避免以后有人给 type 7 注册适配器后被选中。
+		if channel.Type == outbound.OutboundTypeSystemOne {
+			iter.Skip(channel.ID, 0, channel.Name, "systemone channels only serve /v1/systemone")
+			continue
+		}
+
 		// 出站适配器
 		outAdapter := outboundAdapterFor(internalRequest, channel.Type)
 		if outAdapter == nil {
@@ -403,6 +410,18 @@ attemptChannels:
 		// 类型兼容性检查
 		// 嵌入流量按「渠道能力位」判定（SupportsCapability）：空 Capabilities 的
 		// 存量渠道退回按渠道类型判定，行为与改动前完全一致。
+		if internalRequest.IsEmbeddingRequest() && channel.Type == outbound.OutboundTypeCustomOpenAIChat {
+			if _, ok := customChannelAbsoluteURL(channel.OpenAIEmbeddingsPath); !ok {
+				iter.Skip(channel.ID, 0, channel.Name, CustomChannelNoFullURLReason)
+				continue
+			}
+		}
+		if internalRequest.IsImageGenerationRequest() && channel.Type == outbound.OutboundTypeCustomOpenAIChat {
+			if _, ok := customChannelAbsoluteURL(channel.OpenAIImagesPath); !ok {
+				iter.Skip(channel.ID, 0, channel.Name, CustomChannelNoFullURLReason)
+				continue
+			}
+		}
 		if internalRequest.IsEmbeddingRequest() && !channel.SupportsCapability(dbmodel.CapabilityEmbeddings) {
 			iter.Skip(channel.ID, 0, channel.Name, "channel type not compatible with embedding request")
 			continue
@@ -1305,6 +1324,10 @@ retryWithAdapter:
 		ra.internalRequest.Messages = normalizeChatToolCallPairing(ra.internalRequest.Messages)
 	}
 
+	// 自定义渠道的嵌入适配器看到这个标记就不再拼接 /v1/embeddings。
+	// 只包住这一次 TransformRequest，下一跳渠道不会继承。
+	previousVerbatim := ra.internalRequest.TransformOptions.VerbatimUpstreamURL
+	ra.internalRequest.TransformOptions.VerbatimUpstreamURL = ra.channel.Type == outbound.OutboundTypeCustomOpenAIChat
 	// 构建出站请求
 	outboundRequest, err := outAdapter.TransformRequest(
 		ctx,
@@ -1318,6 +1341,7 @@ retryWithAdapter:
 	ra.internalRequest.ResponsesInputRaw = originalResponsesInputRaw
 	ra.internalRequest.ResponsesInstructions = originalResponsesInstructions
 	ra.internalRequest.Stop = originalStop
+	ra.internalRequest.TransformOptions.VerbatimUpstreamURL = previousVerbatim
 	if err != nil {
 		log.Warnf("failed to create request: %v", xredact.URLSecrets(err.Error()))
 		return 0, fmt.Errorf("failed to create request: %w", err)
@@ -1761,14 +1785,17 @@ func (ra *relayAttempt) outboundBaseURL() string {
 	if ra == nil || ra.channel == nil {
 		return ""
 	}
-	// 🔴 嵌入判断必须在渠道类型判断**之前**：CustomOpenAIChat 分支会提前返回聊天
-	// base url，于是「CustomOpenAIChat 渠道勾了 embeddings 且配了 openai_embeddings_path」
-	// 这条合法组合会用错 URL —— 嵌入请求打到聊天端点上。
-	if ra.internalRequest.IsEmbeddingRequest() {
-		return ra.channel.GetOpenAIEmbeddingsBaseUrl()
-	}
+	// 自定义渠道（type 6）的地址是最终请求地址：不拼聊天路径，也不拼嵌入路径。
+	// 绝对地址覆盖（ParseEndpointOverride）仍然生效。嵌入判断留在这个分支里面，
+	// 这样「勾了 embeddings 且配了绝对嵌入地址」不会被聊天地址盖掉。
 	if ra.channel.Type == outbound.OutboundTypeCustomOpenAIChat {
-		return ra.channel.GetOpenAIChatBaseUrl()
+		embedding := ra.internalRequest != nil && ra.internalRequest.IsEmbeddingRequest()
+		return ra.channel.VerbatimRequestBaseURL(embedding)
+	}
+	// 🔴 嵌入判断必须在其它渠道类型判断**之前**：否则一个勾了 embeddings、
+	// 又配了 openai_embeddings_path 的渠道会把嵌入请求打到聊天地址上。
+	if ra.internalRequest != nil && ra.internalRequest.IsEmbeddingRequest() {
+		return ra.channel.GetOpenAIEmbeddingsBaseUrl()
 	}
 	return ra.channel.GetBaseUrl()
 }
