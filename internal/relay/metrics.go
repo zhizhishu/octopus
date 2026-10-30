@@ -48,12 +48,9 @@ type RelayMetrics struct {
 	// 请求和响应内容
 	InternalRequest  *transformerModel.InternalLLMRequest
 	InternalResponse *transformerModel.InternalLLMResponse
-	// upsteamRequestBody 是真实出站请求体快照（TransformRequest + param_override
-	// 之后的字节，按用户决定原样记录、不脱敏）。空 = 未采集（开关关闭或采集失败）。
-	upstreamRequestBody string
-	// upstreamImageHashes 是 upstreamRequestBody 里带 id 占位符、且已交给写盘队列的
-	// 图片哈希；落库时写进 relay_log_images 引用表，清理任务据此判断文件还要不要。
-	upstreamImageHashes []string
+	// 真实出站请求体快照（TransformRequest + param_override 之后的字节，按用户决定
+	// 原样记录、不脱敏）。字段与写入规则见 upstream_body_log.go；空 = 未采集。
+	upstreamBodyLog
 
 	// 统计指标
 	ActualModel   string
@@ -421,35 +418,12 @@ func (m *RelayMetrics) SetPromptOverrideSnapshot(snapshot promptOverrideSnapshot
 const upstreamRequestBodyLogLimit = 128 * 1024
 
 // SetUpstreamRequestBody 记录真实出站请求体（调用方已确认开关打开）。
-// 只存一份快照，供 saveLog 落库；不参与路由、计费、指纹。
-//
-// 这一列按发出去的字节原样保存，凭据不打码。request_content、response_content、
-// 错误和 URL 仍走 redactLogBody / xredact。内联二进制先剥成占位符，再截断；
-// 截断只作用于存储，标记里的总长是原始字节数。
+// 只存一份快照，供 saveLog 落库；不参与路由、计费、指纹。规则见 upstreamBodyLog.set。
 func (m *RelayMetrics) SetUpstreamRequestBody(body []byte) {
-	if m == nil || len(body) == 0 {
+	if m == nil {
 		return
 	}
-	// 🔴 snapshotOutboundRequestBody 把同一份 []byte 重挂回了即将发出的
-	// http.Request。这里只能读，不能改 body 的任何一个字节。
-	//
-	// 按用户决定，这个字段原样记录、不脱敏。只做两件事，顺序是「先在副本上剥内联二进制、再截断」：
-	// 先截断会把 base64 从中间切断，日志里留下一大段无用载荷。
-	// 截断标记里的总长仍是真正发出去的字节数，不是剥过之后的日志长度。
-	//
-	// 图片另存（见 log_image_capture.go）：历史日志落库时，能识别的内联图片换成带
-	// 哈希的占位符，原图交给后台写盘。顺序是「剥离 → 截断 → 只存截断后还看得见的」。
-	var capture *imageCapture
-	if logImageCaptureEnabled() {
-		capture = newImageCapture()
-	}
-	logged := stripInlineBinaryWith(string(body), capture)
-	if len(logged) > upstreamRequestBodyLogLimit {
-		logged = truncateUTF8(logged, upstreamRequestBodyLogLimit) +
-			fmt.Sprintf("\n...[truncated: %d bytes total]", len(body))
-	}
-	logged, m.upstreamImageHashes = capture.commit(logged)
-	m.upstreamRequestBody = logged
+	m.upstreamBodyLog.set(body)
 }
 
 // truncateUTF8 按字节上限截断，但不切在多字节字符中间
@@ -1038,10 +1012,7 @@ func (m *RelayMetrics) saveLog(ctx context.Context, err error, duration time.Dur
 	}
 
 	// 真实出站请求体（开关打开且采集成功时才有；否则留空，不假装有值）。
-	if m.upstreamRequestBody != "" {
-		relayLog.UpstreamRequestBody = m.upstreamRequestBody
-		relayLog.UpstreamImageHashes = m.upstreamImageHashes
-	}
+	m.upstreamBodyLog.applyTo(&relayLog)
 
 	// 响应内容
 	if m.InternalResponse != nil {
