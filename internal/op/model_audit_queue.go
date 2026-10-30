@@ -2,6 +2,7 @@ package op
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -470,4 +471,151 @@ func ModelAuditJobProgress(ctx context.Context, jobID int64) {
 		}
 	}
 	db.GetDB().WithContext(ctx).Model(&model.ModelAuditJob{}).Where("id = ?", jobID).Updates(updates)
+}
+
+// ModelAuditJobSummary 是列表页一行的汇总：不必再展开任务就能看到结论。
+type ModelAuditJobSummary struct {
+	model.ModelAuditJob
+	// Preset 快速 / 全面 / 自定义（按探针集合推断）。
+	Preset string `json:"preset,omitempty"`
+	// SingleModel 单模型任务时的模型名。
+	SingleModel string `json:"single_model,omitempty"`
+	// SingleVerdict 单模型任务时的结论档。
+	SingleVerdict string `json:"single_verdict,omitempty"`
+	// SingleStatus 单模型任务时的结果状态。
+	SingleStatus string `json:"single_status,omitempty"`
+	// PlainHeadline 单模型时的人话标题（来自 report.plain）。
+	PlainHeadline string `json:"plain_headline,omitempty"`
+	// PlainSummary 单模型时的一句话摘要。
+	PlainSummary string `json:"plain_summary,omitempty"`
+	// VerdictCounts 批量任务各档计数：none/low/medium/high/unknown/failed。
+	VerdictCounts map[string]int `json:"verdict_counts,omitempty"`
+	// ReportAt 最新一条结果的完成时间（ISO）。
+	ReportAt *time.Time `json:"report_at,omitempty"`
+	// Retrying 正在退避重试的行数。
+	Retrying int `json:"retrying,omitempty"`
+}
+
+// ModelAuditJobListSummaries 返回带汇总的任务列表。
+func ModelAuditJobListSummaries(ctx context.Context, limit int) ([]ModelAuditJobSummary, error) {
+	jobs, err := ModelAuditJobList(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ModelAuditJobSummary, 0, len(jobs))
+	for _, job := range jobs {
+		sum := ModelAuditJobSummary{ModelAuditJob: job, Preset: inferPreset(job.Probes)}
+		var results []model.ModelAuditResult
+		_ = db.GetDB().WithContext(ctx).Where("job_id = ?", job.ID).Order("id ASC").Find(&results).Error
+		counts := map[string]int{}
+		var latest *time.Time
+		for _, r := range results {
+			if r.Status == model.AuditResultPending && r.NextRetryAt != nil {
+				sum.Retrying++
+			}
+			switch r.Status {
+			case model.AuditResultDone:
+				key := r.Verdict
+				if key == "" {
+					key = "unknown"
+				}
+				counts[key]++
+			case model.AuditResultFailed, model.AuditResultSkipped:
+				counts["failed"]++
+			}
+			if r.FinishedAt != nil && (latest == nil || r.FinishedAt.After(*latest)) {
+				t := *r.FinishedAt
+				latest = &t
+			}
+		}
+		sum.VerdictCounts = counts
+		sum.ReportAt = latest
+		if len(results) == 1 {
+			r := results[0]
+			sum.SingleModel = r.Model
+			sum.SingleVerdict = r.Verdict
+			sum.SingleStatus = r.Status
+			if r.Report != "" {
+				var view struct {
+					Plain struct {
+						Headline string `json:"headline"`
+						Summary  string `json:"summary"`
+					} `json:"plain"`
+				}
+				if json.Unmarshal([]byte(r.Report), &view) == nil {
+					sum.PlainHeadline = view.Plain.Headline
+					sum.PlainSummary = view.Plain.Summary
+				}
+			}
+			if sum.PlainHeadline == "" {
+				sum.PlainHeadline = behavior.PlainVerdictFor(
+					behavior.Verdict(r.Verdict), int(r.Score), r.FindingN, 0, "",
+				).Headline
+			}
+		}
+		out = append(out, sum)
+	}
+	return out, nil
+}
+
+func inferPreset(probesCSV string) string {
+	probes := strings.Split(probesCSV, ",")
+	set := map[string]struct{}{}
+	for _, p := range probes {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			set[p] = struct{}{}
+		}
+	}
+	match := func(ids []behavior.ProbeID) bool {
+		if len(set) != len(ids) {
+			return false
+		}
+		for _, id := range ids {
+			if _, ok := set[string(id)]; !ok {
+				return false
+			}
+		}
+		return true
+	}
+	if probesCSV == "" || match(behavior.DefaultProbes()) {
+		return "标准"
+	}
+	if match(behavior.QuickProbeIDs()) {
+		return "快速"
+	}
+	if match(behavior.FullProbeIDs()) {
+		return "全面"
+	}
+	return "自定义"
+}
+
+// ModelAuditLatestByChannel 返回某渠道每个模型的最近一次检测结果。
+//
+// 按 finished_at 降序、同模型只留第一条；从未检测过的模型不在结果里
+// （前端用渠道 selected_models 补"没检测过"）。
+func ModelAuditLatestByChannel(ctx context.Context, channelID int) ([]model.ModelAuditResult, error) {
+	if channelID <= 0 {
+		return nil, errors.New("渠道不能为空")
+	}
+	var rows []model.ModelAuditResult
+	// 只取终态：pending/running 不算"最近一次结论"。
+	err := db.GetDB().WithContext(ctx).
+		Where("channel_id = ? AND status IN ?", channelID,
+			[]string{model.AuditResultDone, model.AuditResultFailed, model.AuditResultSkipped}).
+		Order("finished_at DESC, id DESC").
+		Find(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]struct{}{}
+	out := make([]model.ModelAuditResult, 0, len(rows))
+	for _, r := range rows {
+		if _, ok := seen[r.Model]; ok {
+			continue
+		}
+		seen[r.Model] = struct{}{}
+		out = append(out, r)
+	}
+	return out, nil
 }

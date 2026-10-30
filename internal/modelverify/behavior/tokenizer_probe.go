@@ -231,12 +231,8 @@ func runTokenizerBaseline(ctx context.Context, s modelverify.Sender, targetModel
 // 数字从内置库与参考常量现算，不手抄：库换了题数，预算跟着变。
 func ExtraPlannedRequests(id ProbeID) int {
 	switch id {
-	case ProbeTokenizerBaseline:
-		if b, err := tokenbank.Builtin(); err == nil {
-			return len(b.Probes) + 2
-		}
-	case ProbeTokenizerID:
-		return tokenbank.Model.MaximumProbes + 2
+	case ProbeTokenizerBaseline, ProbeTokenizerID:
+		return PlannedRequests(id)
 	}
 	return 0
 }

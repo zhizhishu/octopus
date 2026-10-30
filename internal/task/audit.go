@@ -191,7 +191,7 @@ func runScheduledAuditTarget(ctx context.Context, target scheduledAuditTarget) m
 	item.DurationMs = int(time.Since(started).Milliseconds())
 	item.Verdict = string(report.Verdict)
 	item.Score = report.Score
-	item.FindingN = len(report.Findings)
+	item.FindingN = behavior.CountScoredViewFindings(report.Findings)
 	item.ErrorN = len(report.Errors)
 
 	// 结论落库: 钉回触发它的那行日志, 先到先得(空 verdict 才写), 重启不再丢。
@@ -201,7 +201,7 @@ func runScheduledAuditTarget(ctx context.Context, target scheduledAuditTarget) m
 			trigger = "schedule"
 		}
 		if reportJSON, err := json.Marshal(report); err == nil {
-			if err := op.RelayLogMarkAudited(ctx, target.logID, string(report.Verdict), report.Score, len(report.Findings), trigger, string(reportJSON)); err != nil {
+			if err := op.RelayLogMarkAudited(ctx, target.logID, string(report.Verdict), report.Score, behavior.CountScoredViewFindings(report.Findings), trigger, string(reportJSON)); err != nil {
 				log.Warnf("model audit persist for log %d failed: %v", target.logID, err)
 			}
 		}

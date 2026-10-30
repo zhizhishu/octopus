@@ -40,6 +40,7 @@ export type AuditFinding = {
     title: string;
     evidence?: Record<string, unknown>;
     recommendation?: string;
+    plain_evidence?: string;
 };
 
 export type AuditProbeResult = {
@@ -67,6 +68,8 @@ export type AuditPlainVerdict = {
     meaning: string;
     caveat: string;
     next_step: string;
+    confidence?: string;
+    summary?: string;
 };
 
 export type AuditViewReport = {
@@ -101,6 +104,10 @@ export type ModelAuditResponse = {
     endpoint: string;
     duration_ms: number;
     report: AuditViewReport;
+    /** 报告自身完成时间（打开历史报告时带上，禁止用墙钟冒充）。 */
+    finished_at?: string;
+    model?: string;
+    preset?: string;
 };
 
 export type LogAnomalyFinding = {
@@ -148,6 +155,8 @@ export type LogAnomalyReport = {
     /** 被动观察摘要的独立汇总（可选）：只读计数，不参与 findings 判定。 */
     passive_observations?: LogAnomalyPassiveBucket[];
     disclaimer: string;
+    /** 样本太少：前端必须说"样本不够"，不许说"没异常"。 */
+    too_few_samples?: boolean;
 };
 
 export type ScheduledAuditResult = {
@@ -241,6 +250,15 @@ export type AuditJob = {
     created_at: string;
     started_at?: string;
     ended_at?: string;
+    preset?: string;
+    single_model?: string;
+    single_verdict?: string;
+    single_status?: string;
+    plain_headline?: string;
+    plain_summary?: string;
+    verdict_counts?: Record<string, number>;
+    report_at?: string;
+    retrying?: number;
 };
 
 export type AuditResult = {
@@ -351,6 +369,54 @@ export type TokenizerBaseline = {
  * 把一条「录制分词器基线」结果存成可信基线。渠道是否可信由管理员自己判断，后端无法替你验证。
  * 同型号已有基线时后端返回 409，需 replace=true 才覆盖。
  */
+
+export type AuditProbePlan = {
+    id: AuditProbeId;
+    requests: number;
+    applicable: boolean;
+    skip_reason?: string;
+    reference_only?: boolean;
+    advanced?: boolean;
+};
+
+export type AuditPlanResponse = {
+    protocol: string;
+    model: string;
+    probes: AuditProbePlan[];
+    quick: { ids: AuditProbeId[]; requests: number };
+    full: { ids: AuditProbeId[]; requests: number };
+};
+
+export function useAuditPlan(channelId: number, model: string, enabled = true) {
+    return useQuery({
+        queryKey: ['model-audit', 'plan', channelId, model],
+        queryFn: async () =>
+            apiClient.get<AuditPlanResponse>(
+                `/api/v1/model-audit/plan?channel_id=${channelId}&model=${encodeURIComponent(model)}`,
+            ),
+        enabled: enabled && channelId > 0,
+        staleTime: 30_000,
+    });
+}
+
+export type ChannelLatestAudit = AuditResult & {
+    chip: 'ok' | 'warn' | 'fail' | 'none';
+    chip_label: string;
+    headline?: string;
+    summary?: string;
+    points?: string[];
+};
+
+export function useChannelLatestAudits(channelId: number, enabled = true) {
+    return useQuery({
+        queryKey: ['model-audit', 'channel-latest', channelId],
+        queryFn: async () =>
+            apiClient.get<ChannelLatestAudit[]>(`/api/v1/model-audit/channels/${channelId}/latest`),
+        enabled: enabled && channelId > 0,
+        staleTime: 15_000,
+    });
+}
+
 export function useSaveTokenizerBaseline() {
     const queryClient = useQueryClient();
     return useMutation({

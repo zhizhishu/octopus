@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
+import { historyBucket, verdictHeadline, formatReportTime } from '@/lib/model-audit-verdict';
 import {
     useAuditJobs,
     useAuditJobDetail,
@@ -86,21 +87,67 @@ export function ModelAuditQueue({ onOpenReport }: { onOpenReport?: (result: Audi
     const cancelJob = useCancelAuditJob();
 
     const [openJobID, setOpenJobID] = useState<number | null>(null);
+    const [filter, setFilter] = useState<'all' | 'suspect' | 'failed'>('all');
+    const [query, setQuery] = useState('');
+
+    const suspectN = (jobs ?? []).filter((j) =>
+        j.single_verdict === 'medium' || j.single_verdict === 'high' ||
+        (j.verdict_counts?.medium ?? 0) + (j.verdict_counts?.high ?? 0) > 0
+    ).length;
+    const failedN = (jobs ?? []).filter((j) =>
+        j.single_status === 'failed' || j.single_verdict === 'unknown' || (j.verdict_counts?.failed ?? 0) > 0
+    ).length;
+
+    const filtered = (jobs ?? []).filter((job) => {
+        const q = query.trim().toLowerCase();
+        if (q) {
+            const hay = `${job.channel_name} ${job.single_model ?? ''}`.toLowerCase();
+            if (!hay.includes(q)) return false;
+        }
+        if (filter === 'all') return true;
+        if (filter === 'suspect') {
+            return job.single_verdict === 'medium' || job.single_verdict === 'high' ||
+                (job.verdict_counts?.medium ?? 0) + (job.verdict_counts?.high ?? 0) > 0;
+        }
+        return job.single_status === 'failed' || job.single_verdict === 'unknown' || (job.verdict_counts?.failed ?? 0) > 0;
+    });
 
     return (
         <div className="min-w-0 space-y-4">
-            {/* 任务列表 */}
             <div className="rounded-3xl border border-border bg-card p-4 sm:p-5">
-                <h2 className="text-base font-semibold text-card-foreground">{t('queue.historyTitle')}</h2>
-                <p className="mt-1 text-xs leading-5 text-muted-foreground">{t('queue.historyDescription')}</p>
+                <div className="flex flex-wrap items-center gap-2">
+                    {([
+                        ['all', `全部`],
+                        ['suspect', `可疑 ${suspectN}`],
+                        ['failed', `没测成 ${failedN}`],
+                    ] as const).map(([key, label]) => (
+                        <button
+                            key={key}
+                            type="button"
+                            onClick={() => setFilter(key)}
+                            className={cn(
+                                'rounded-full px-3 py-1 text-xs',
+                                filter === key ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground',
+                            )}
+                        >
+                            {label}
+                        </button>
+                    ))}
+                    <input
+                        value={query}
+                        onChange={(e) => setQuery(e.target.value)}
+                        placeholder="搜模型或渠道"
+                        className="ml-auto h-8 min-w-[140px] rounded-lg border border-border bg-background px-2.5 text-xs"
+                    />
+                </div>
 
-                {(jobs ?? []).length === 0 ? (
+                {filtered.length === 0 ? (
                     <div className="mt-3 rounded-2xl border border-dashed border-border/70 bg-muted/20 p-6 text-center text-sm text-muted-foreground">
                         {t('queue.empty')}
                     </div>
                 ) : (
                     <div className="mt-3 space-y-2">
-                        {(jobs ?? []).map((job) => (
+                        {filtered.map((job) => (
                             <JobRow
                                 key={job.id}
                                 job={job}
@@ -116,6 +163,21 @@ export function ModelAuditQueue({ onOpenReport }: { onOpenReport?: (result: Audi
             </div>
         </div>
     );
+}
+
+function batchSummary(job: AuditJob): string {
+    const c = job.verdict_counts ?? {};
+    const ok = (c.none ?? 0) + (c.low ?? 0);
+    const warn = (c.medium ?? 0) + (c.high ?? 0);
+    const unknown = c.unknown ?? 0;
+    const failed = c.failed ?? 0;
+    const parts: string[] = [];
+    if (ok) parts.push(`${ok} 个没问题`);
+    if (warn) parts.push(`${warn} 个可疑`);
+    if (unknown) parts.push(`${unknown} 个数据不够`);
+    if (failed) parts.push(`${failed} 个没测成`);
+    if (parts.length === 0) return `${job.channel_name} · ${job.total} 个模型`;
+    return `${job.channel_name} · ${job.total} 个模型 · ${parts.join('，')}`;
 }
 
 function JobRow({
@@ -154,7 +216,15 @@ function JobRow({
                         {active && <Loader2 className="size-3 animate-spin text-primary" />}
                     </div>
                     <div className="mt-0.5 truncate text-[11px] text-muted-foreground">
-                        {jobProgressText(job, t)} · {formatTime(job.created_at)}
+                        {active
+                            ? jobProgressText(job, t)
+                            : job.single_model
+                              ? `${job.single_model} · ${job.plain_headline || ''}`
+                              : job.total > 1
+                                ? batchSummary(job)
+                                : jobProgressText(job, t)}
+                        {' · '}
+                        {formatTime(job.report_at || job.created_at)}
                     </div>
                 </div>
                 {/* 已取消的任务不画进度条：0% 的空轨在卡片上就是一个来历不明的灰块，

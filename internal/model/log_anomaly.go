@@ -57,4 +57,6 @@ type LogAnomalyReport struct {
 	// findings 分开列, 因为两者证据强度不同, 混在一起会拉低硬结论的可信度。
 	ProbeFindings []LogAnomalyProbeBucket `json:"probe_findings,omitempty"`
 	Disclaimer    string                  `json:"disclaimer"`
+	// TooFewSamples 样本太少时为 true：前端必须说"样本不够"，不许说"没异常"。
+	TooFewSamples bool `json:"too_few_samples,omitempty"`
 }

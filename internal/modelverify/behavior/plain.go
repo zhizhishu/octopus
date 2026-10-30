@@ -29,6 +29,12 @@ type PlainVerdict struct {
 
 	// NextStep 建议的下一步动作。
 	NextStep string `json:"next_step"`
+
+	// Confidence 把握档：高 / 中 / 低。证据少或跑挂多时降档。
+	Confidence string `json:"confidence,omitempty"`
+
+	// Summary 一句话摘要，给历史行与渠道卡片用。
+	Summary string `json:"summary,omitempty"`
 }
 
 // PlainVerdictFor 把判定档位翻译成人话。
@@ -36,62 +42,67 @@ type PlainVerdict struct {
 // family 是被测模型的家族名（openai/anthropic/google/xai/qwen/deepseek...），
 // 只用于在 Caveat 里点明"这个家族本来就无法验真"这类关键差异，
 // 不参与任何判定。
-func PlainVerdictFor(v Verdict, score int, findingN int, usableProbes int, family string) PlainVerdict {
+// scoredFindings 只计 Score>0 的项（0 分参考项不进"有疑点"文案）。
+func PlainVerdictFor(v Verdict, score int, scoredFindings int, usableProbes int, family string) PlainVerdict {
+	conf := confidenceFor(v, usableProbes, scoredFindings)
 	switch v {
 	case VerdictNone:
 		return PlainVerdict{
-			Level:    string(VerdictNone),
-			Headline: "没查出问题",
-			Meaning: fmt.Sprintf(
-				"%d 项检查全部跑通，没有发现异常特征。", usableProbes),
-			Caveat:   caveatFor(family, "none"),
-			NextStep: "可以正常使用；隔一段时间再抽查一次即可。",
+			Level:      string(VerdictNone),
+			Headline:   "没发现问题",
+			Meaning:    fmt.Sprintf("%d 项检查都正常。", usableProbes),
+			Caveat:     caveatFor(family, "none"),
+			NextStep:   "可以正常用，隔段时间再抽查一次。这只说明没查出矛盾，不是原厂证明。",
+			Confidence: conf,
+			Summary:    fmt.Sprintf("%d 项检查都正常。", usableProbes),
 		}
 
 	case VerdictLow:
 		return PlainVerdict{
-			Level:    string(VerdictLow),
-			Headline: "有轻微疑点",
-			Meaning: fmt.Sprintf(
-				"%d 项检查发现 %d 处轻微异常。多数情况是上游做了限流、截断或型号别名解析，不一定有问题。",
-				usableProbes, findingN),
-			Caveat:   caveatFor(family, "low"),
-			NextStep: "先照常用；如果同一渠道反复出现，再展开下面的明细逐条看。",
+			Level:      string(VerdictLow),
+			Headline:   "有小疑点",
+			Meaning:    fmt.Sprintf("%d 项检查发现 %d 处轻微异常。多数情况是上游做了限流、截断或型号别名解析，不一定有问题。", usableProbes, scoredFindings),
+			Caveat:     caveatFor(family, "low"),
+			NextStep:   "先照常用；如果同一渠道反复出现，再展开下面的明细逐条看。",
+			Confidence: conf,
+			Summary:    fmt.Sprintf("%d 处小疑点。", scoredFindings),
 		}
 
-	case VerdictMedium:
+	case VerdictMedium, VerdictHigh:
 		return PlainVerdict{
-			Level:    string(VerdictMedium),
-			Headline: "疑点比较明显",
-			Meaning: fmt.Sprintf(
-				"%d 项检查发现 %d 处异常，累计可疑度 %d 分。建议当成「需要留意」来对待，而不是直接停用。",
-				usableProbes, findingN, score),
-			Caveat:   caveatFor(family, "medium"),
-			NextStep: "展开明细看具体是哪几项；涉及回显被改写或 token 虚高的，建议换个渠道做对照。",
-		}
-
-	case VerdictHigh:
-		return PlainVerdict{
-			Level:    string(VerdictHigh),
-			Headline: "疑点很多",
-			Meaning: fmt.Sprintf(
-				"%d 项检查发现 %d 处异常，累计可疑度 %d 分。这个渠道的实际行为与官方模型差距较大。",
-				usableProbes, findingN, score),
-			Caveat:   caveatFor(family, "high"),
-			NextStep: "建议用另一条已知正常的渠道跑同一批题做对照，再决定是否继续使用。",
+			Level:      string(v),
+			Headline:   "有可疑点，建议复核",
+			Meaning:    fmt.Sprintf("%d 项检查发现 %d 处异常，累计可疑度 %d 分。", usableProbes, scoredFindings, score),
+			Caveat:     caveatFor(family, string(v)),
+			NextStep:   "找一条你信得过的渠道，测同一个模型对比一下，再决定要不要停用。",
+			Confidence: conf,
+			Summary:    fmt.Sprintf("%d 项对不上。", scoredFindings),
 		}
 
 	default: // VerdictUnknown
 		return PlainVerdict{
-			Level:    string(VerdictUnknown),
-			Headline: "没测出结果",
-			Meaning: fmt.Sprintf(
-				"%d 项检查里只有 %d 项真正跑通，其余没能拿到可用样本，所以给不出结论。",
-				usableProbes+0, usableProbes),
-			Caveat:   "这不是「没问题」，也不是「有问题」——就是没查到东西。常见原因是上游限流、超时，或该型号不支持某些检查项。",
-			NextStep: "换个时间重测，或减少检查项后重跑；也可以先看明细里哪些项标了「证据不足」。",
+			Level:      string(VerdictUnknown),
+			Headline:   "数据不够，没法判断",
+			Meaning:    fmt.Sprintf("跑通的检查太少（%d 项），给不出结论。", usableProbes),
+			Caveat:     "这不是「没问题」，也不是「有问题」——就是没查到东西。常见原因是上游限流、超时，或该型号不支持某些检查项。",
+			NextStep:   "换个时间重测，或减少检查项后重跑；也可以先看明细里哪些项标了「没查」。",
+			Confidence: "低",
+			Summary:    "跑通的检查太少，没法判断。",
 		}
 	}
+}
+
+func confidenceFor(v Verdict, usable, scored int) string {
+	if v == VerdictUnknown {
+		return "低"
+	}
+	if usable >= 5 && scored == 0 {
+		return "高"
+	}
+	if usable >= 3 {
+		return "中"
+	}
+	return "低"
 }
 
 // caveatFor 给出**按家族区分**的"这个结论不能说明什么"。
@@ -174,4 +185,74 @@ func PrimaryFamily(families []string) string {
 		}
 	}
 	return ""
+}
+
+// ChipKind 是渠道页芯片的机器可读档：ok / warn / fail / none。
+// Tokenizer 等参考项绝不会把 chip 推成 warn。
+type ChipKind string
+
+const (
+	ChipOK   ChipKind = "ok"
+	ChipWarn ChipKind = "warn"
+	ChipFail ChipKind = "fail"
+	ChipNone ChipKind = "none"
+)
+
+// ChipForResult 把一条结果行映射成渠道页芯片。
+// status 用 model.AuditResult* 常量；verdict 用 Verdict 常量。
+func ChipForResult(status, verdict string) ChipKind {
+	switch status {
+	case "failed", "skipped":
+		return ChipFail
+	case "done":
+		switch Verdict(verdict) {
+		case VerdictNone, VerdictLow:
+			return ChipOK
+		case VerdictMedium, VerdictHigh:
+			return ChipWarn
+		case VerdictUnknown:
+			return ChipFail // 没测成 / 数据不够 → 检测失败色
+		default:
+			return ChipNone
+		}
+	default:
+		return ChipNone
+	}
+}
+
+// ChipLabel 返回芯片的短中文。
+func ChipLabel(k ChipKind) string {
+	switch k {
+	case ChipOK:
+		return "正常"
+	case ChipWarn:
+		return "待复核"
+	case ChipFail:
+		return "检测失败"
+	default:
+		return "没检测过"
+	}
+}
+
+// CountScoredFindings 只计 Score>0 的风险项。0 分参考项（签名拒收提示、
+// 指纹"一致"提示、分词器不一致等）不进"需要复核"的计数。
+func CountScoredFindings(findings []Finding) int {
+	n := 0
+	for _, f := range findings {
+		if f.Score > 0 {
+			n++
+		}
+	}
+	return n
+}
+
+// CountScoredViewFindings 同上，对 ViewFinding。
+func CountScoredViewFindings(findings []ViewFinding) int {
+	n := 0
+	for _, f := range findings {
+		if f.Score > 0 {
+			n++
+		}
+	}
+	return n
 }

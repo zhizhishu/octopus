@@ -315,7 +315,7 @@ func runOneAuditResult(ctx context.Context, res *model.ModelAuditResult) {
 		return
 	}
 
-	finish(model.AuditResultDone, string(report.Verdict), report.Score, len(report.Findings), reportJSON, "")
+	finish(model.AuditResultDone, string(report.Verdict), report.Score, behavior.CountScoredViewFindings(report.Findings), reportJSON, "")
 }
 
 // auditRunTimeout 一条结果的整单超时。

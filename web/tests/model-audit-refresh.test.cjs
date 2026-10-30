@@ -347,7 +347,7 @@ function enqueueAndStart(tree, page) {
     //    才能看到队列渲染出来 —— 假 hooks 不重建树，和真实 React 的时序不同。
     //    2026-10-20 起：前端队列已并入后端真队列，不再有"加入队列"这一步。
     //    现在点一次「后台检测」= 一次 enqueue POST，所以这里只找那一个按钮。
-    const startBtn = findElement(tree, (n) => n.type === 'Button' && text(n).includes('后台检测'));
+    const startBtn = findElement(tree, (n) => (n.type === 'Button' || n.type === 'button') && text(n).includes('开始检测'));
     if (!startBtn) throw new Error('start button not found');
     startBtn.props.onClick();
     return tree;
@@ -406,6 +406,16 @@ function auditPage() {
                 isPending: false,
                 mutateAsync: (vars) => { enqueued.push(vars); return Promise.resolve({ job_id: 1 }); },
             }),
+            useAuditPlan: () => ({
+                data: {
+                    protocol: 'openai-chat',
+                    model: 'grok-4.7',
+                    probes: [],
+                    quick: { ids: ['liveness', 'echo_rewrite', 'context_canary'], requests: 3 },
+                    full: { ids: ['liveness', 'identity', 'glitch', 'token_delta', 'echo_rewrite', 'context_canary', 'fingerprint'], requests: 10 },
+                },
+            }),
+            useAuditJobs: () => ({ data: [] }),
             useScheduledAudit: () => ({ data: undefined }),
         },
         '@/components/common/PageWrapper': widgets('PageWrapper'),
@@ -464,6 +474,10 @@ test('active audit page: mount and option changes never call upstream; one click
     // 改变渠道/计划/探针勾选：均只改本地状态，不发请求、不入队。
     findElement(tree, (n) => n.type === 'SearchableSelect' && typeof n.props?.onValueChange === 'function').props.onValueChange('7');
     findElement(tree, (n) => n.type === 'button' && text(n).includes('快速')).props.onClick();
+    tree = page.render();
+    // 自定义默认收起；展开后再勾选项。
+    findElement(tree, (n) => n.type === 'button' && text(n).includes('自定义')).props.onClick();
+    tree = page.render();
     findElement(tree, (n) => n.type === 'input' && n.props?.type === 'checkbox').props.onChange({ target: { checked: true } });
     assert.equal(page.calls.length, 0, 'option changes never call upstream');
     assert.equal(page.enqueued.length, 0, 'option changes never enqueue');
@@ -582,7 +596,7 @@ test('insufficient-evidence rows show their reason and headline no longer claims
     const cleanup = page.mount();
 
     // 切到「检测记录」，让队列页渲染出来并拿到 onOpenReport 回调。
-    findElement(tree, (n) => n.type === 'button' && text(n).includes('检测记录')).props.onClick();
+    findElement(tree, (n) => n.type === 'button' && text(n).includes('记录')).props.onClick();
     tree = page.render();
     mountQueueStub(tree, page);
 
@@ -596,7 +610,7 @@ test('insufficient-evidence rows show their reason and headline no longer claims
     });
     tree = page.render();
     // 点开报告后要切回详情视图才会渲染它（mode 决定渲染哪一侧）。
-    findElement(tree, (n) => n.type === 'button' && text(n).includes('发起检测')).props.onClick();
+    findElement(tree, (n) => n.type === 'button' && /^\s*检测\s*$/.test(text(n))).props.onClick();
     tree = page.render();
 
     const body = text(tree);
@@ -615,7 +629,7 @@ test('starting a new run clears the previous report so it cannot be exported as 
     const cleanup = page.mount();
 
     // 先从队列回看一份历史报告：此时详情面板是「有报告」状态。
-    findElement(tree, (n) => n.type === 'button' && text(n).includes('检测记录')).props.onClick();
+    findElement(tree, (n) => n.type === 'button' && text(n).includes('记录')).props.onClick();
     tree = page.render();
     mountQueueStub(tree, page);
     page.queueView.onOpenReport({
@@ -626,13 +640,13 @@ test('starting a new run clears the previous report so it cannot be exported as 
         created_at: new Date().toISOString(),
     });
     tree = page.render();
-    mountQueueStub(tree, page);
-    findElement(tree, (n) => n.type === 'button' && text(n).includes('发起检测')).props.onClick();
+    // openStoredReport 会切到报告页（single），队列组件已卸载。
+    findElement(tree, (n) => n.type === 'button' && /^\s*检测\s*$/.test(text(n))).props.onClick();
     tree = page.render();
     assert.ok(findElement(tree, (n) => text(n).includes('导出 JSON')), 'export visible while a report is open');
 
     // 回到「发起检测」并提交新一轮：旧报告必须立刻消失。
-    findElement(tree, (n) => n.type === 'button' && text(n).includes('发起检测')).props.onClick();
+    findElement(tree, (n) => n.type === 'button' && /^\s*检测\s*$/.test(text(n))).props.onClick();
     tree = page.render();
     enqueueAndStart(tree, page);
     // 提交是异步的：清报告发生在 await 之后，必须让微任务跑完再看。
@@ -680,7 +694,7 @@ test('standard plan and default selection never include the opt-in tokenizer pro
         if (step === 'standard') {
             findElement(tree, (n) => n.type === 'button' && text(n).includes('快速')).props.onClick();
             tree = page.render();
-            findElement(tree, (n) => n.type === 'button' && text(n).includes('标准')).props.onClick();
+            findElement(tree, (n) => n.type === 'button' && text(n).includes('全面')).props.onClick();
         }
         tree = page.render();
         enqueueAndStart(tree, page);
@@ -699,7 +713,7 @@ test('tokenizer mismatch is shown as reference info and never counted as a revie
     page.setChannels(grokChannel);
     let tree = page.render();
     const cleanup = page.mount();
-    findElement(tree, (n) => n.type === 'button' && text(n).includes('检测记录')).props.onClick();
+    findElement(tree, (n) => n.type === 'button' && text(n).includes('记录')).props.onClick();
     tree = page.render();
     mountQueueStub(tree, page);
     const data = {
@@ -721,7 +735,7 @@ test('tokenizer mismatch is shown as reference info and never counted as a revie
         duration_ms: 12, created_at: new Date().toISOString(),
     });
     tree = page.render();
-    findElement(tree, (n) => n.type === 'button' && text(n).includes('发起检测')).props.onClick();
+    findElement(tree, (n) => n.type === 'button' && /^\s*检测\s*$/.test(text(n))).props.onClick();
     tree = page.render();
     const body = text(tree);
     assert.ok(body.includes('与声明不符 · 仅供参考'), 'row shows the reference-only status');

@@ -3,7 +3,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
     AlertTriangle,
+    TriangleAlert,
+    CircleHelp,
+    Check,
     Binary,
+    ChevronDown,
     ChevronRight,
     Database,
     Dices,
@@ -14,9 +18,7 @@ import {
     MessageSquareQuote,
     Radar,
     Repeat2,
-    Shield,
     Signature,
-    SlidersHorizontal,
     TextQuote,
     Wifi,
     XCircle,
@@ -31,8 +33,6 @@ import {
     AUDIT_STANDARD_PROBE_IDS,
     useLogAnomalies,
     useSaveTokenizerBaseline,
-    useRunModelAudit,
-    useScheduledAudit,
     type AuditFinding,
     type AuditProbeId,
     type AuditProbeResult,
@@ -41,6 +41,9 @@ import {
     type AuditViewReport,
     type ModelAuditResponse,
     useEnqueueAudit,
+    useAuditPlan,
+    useAuditJobs,
+    type AuditJob,
 } from '@/api/endpoints/model-audit';
 import { PageWrapper } from '@/components/common/PageWrapper';
 import { SearchableSelect } from '@/components/ui/searchable-select';
@@ -98,21 +101,21 @@ import {
 } from './tokenizer';
 
 const PROBES: ProbeMeta[] = [
-    { id: 'liveness', name: '连通回显', hint: '基础', desc: '确认渠道能正常回显请求', icon: Wifi },
-    { id: 'identity', name: '身份自述', hint: '仅线索', desc: '读取模型自述的供应商标识', icon: Fingerprint },
-    { id: 'glitch', name: '词元指纹', hint: '仅线索', desc: '比对分词边界的已知特征', icon: Binary },
-    { id: 'token_delta', name: '用量偏差', hint: '仅线索', desc: '核对返回用量与请求估算', icon: Radar },
-    { id: 'echo_rewrite', name: '输出改写', hint: '基础', desc: '检查指定文本是否被原样回传', icon: Repeat2 },
-    { id: 'context_canary', name: '上下文完整性', hint: '基础', desc: '确认上下文标记未被截断', icon: TextQuote },
-    { id: 'signature', name: '思考签名', hint: '仅Claude', desc: '检查思考块是否附带签名字段', icon: Signature },
+    { id: 'liveness', name: '连通', hint: '1次', desc: '看渠道能不能正常回话', icon: Wifi },
+    { id: 'identity', name: '自报身份', hint: '仅参考', desc: '问它自己是谁，口供可改，只作参考', icon: Fingerprint },
+    { id: 'glitch', name: '生僻词反应', hint: '仅参考', desc: '看生僻词反应像哪家，只作参考', icon: Binary },
+    { id: 'token_delta', name: '用量虚报', hint: '2次', desc: '核对上游自报的输入用量是否虚高', icon: Radar },
+    { id: 'echo_rewrite', name: '回复改写', hint: '1次', desc: '检查指定文本是否被原样回传', icon: Repeat2 },
+    { id: 'context_canary', name: '长内容截断', hint: '1次', desc: '确认长上下文尾部标记未被截断', icon: TextQuote },
+    { id: 'signature', name: 'Claude 签名', hint: '仅Claude', desc: '检查思考块是否附带可验证签名', icon: Signature },
     // 随机数指纹：要发三道题、每题几百个整数，是整套检测里最贵的一条，
     // 所以单独标"高开销"，让用户在勾选前就知道代价。
-    { id: 'fingerprint', name: '随机数指纹', hint: '高开销', desc: '按取值习惯比对参考库，识别冒充', icon: Dices },
-    // 以下两项只能手动勾选（AUDIT_OPT_IN_PROBE_IDS），不进「标准」方案。
+    { id: 'fingerprint', name: '模型指纹', hint: '3次', desc: '按取值习惯比对参考库，看最像谁', icon: Dices },
+    // 以下两项只能手动勾选（AUDIT_OPT_IN_PROBE_IDS），不进「全面」方案。
     // 分词器识别默认拿内置 lm-detector 分词器库当基线，不需要先录基线。
-    { id: 'tokenizer_id', name: '分词器识别', hint: '约12次', desc: '对照内置分词器库（来自 lm-detector），看上游用的哪套分词器。不用先录基线；只作参考，不计分。', icon: Hash },
+    { id: 'tokenizer_id', name: '生僻词反应（分词器）', hint: '约12次', desc: '对照内置分词器库看上游用哪套；只作参考，不计分', icon: Hash },
     // 录基线放在「02 检查」底下默认收起的高级区，主列表里不出现（见 ADVANCED_PROBE_IDS）。
-    { id: 'tokenizer_baseline', name: '录制分词器基线', hint: '74次', desc: '发 74 次请求录下这个型号的分词器计数；保存后分词器识别会把它和内置库一起对照。', icon: Database },
+    { id: 'tokenizer_baseline', name: '录一份正品基线', hint: '74次', desc: '在正品渠道上录分词器基线；后台无法判断渠道真假', icon: Database },
 ];
 
 /** 只在高级区里出现的检查项：主检测列表不渲染它们。 */
@@ -214,11 +217,16 @@ function rowFromResult(meta: ProbeMeta, report: ModelAuditResponse, t: (key: str
         const summary = readTokenizer(report.report);
         return { meta, tone: 'info', status: summary ? tokenizerRowStatus(summary) : '仅供参考', result, findings };
     }
-    if (findings.some((item) => item.severity === 'medium' || item.severity === 'high')) {
-        return { meta, tone: 'warn', status: '待复核', result, findings };
+    const scored = findings.filter((item) => (item.score ?? 0) > 0);
+    if (scored.some((item) => item.severity === 'medium' || item.severity === 'high')) {
+        return { meta, tone: 'warn', status: '待复核', result, findings: scored };
     }
+    if (scored.length > 0) {
+        return { meta, tone: 'warn', status: '待复核', result, findings: scored };
+    }
+    // 仅有 0 分参考项：展示但不进复核。
     if (findings.length > 0) {
-        return { meta, tone: 'warn', status: '待复核', result, findings };
+        return { meta, tone: 'info', status: '仅参考', result, findings };
     }
     // 录制本身不是检查：只说明录没录成，不进 pass/warn。
     if (meta.id === 'tokenizer_baseline' && result?.ok) {
@@ -484,16 +492,28 @@ function TokenizerRecordingCard({ recording, resultId }: { recording: TokenizerR
  * 一起看才能理解差别：主动检测要发请求、烧 token；被动检测只读已经在流的日志，
  * 一分钱不花。参考项目里那些检测工具多多少少都要花钱，这里明确区分开。
  */
-function PassiveProbeCard() {
+/** 窗口小时数 → 人话「近 N 天」。不足一天也按 1 天说。 */
+function windowDays(hours: number | undefined): number {
+    if (!hours || hours <= 0) return 7;
+    return Math.max(1, Math.round(hours / 24));
+}
+
+function PassiveProbeCard({ onOpenFindings }: { onOpenFindings?: () => void } = {}) {
     const { data: settings } = useSettingList();
+    const { data: logAnomalies } = useLogAnomalies();
     const setSetting = useSetSetting();
     const enabled = settings?.find((s) => s.key === SettingKey.LogPassiveProbeEnabled)?.value !== 'false';
+    const probeN = (logAnomalies?.probe_findings ?? []).length + (logAnomalies?.findings ?? []).length;
+    const days = windowDays(logAnomalies?.window_hours);
+    const disclaimer =
+        logAnomalies?.disclaimer
+        || '检查结果提供参考，不等同模型真实性证明。输出塌陷、延迟变形、回显不符都只是线索。';
 
     const toggle = (next: boolean) =>
         setSetting.mutate(
             { key: SettingKey.LogPassiveProbeEnabled, value: next ? 'true' : 'false' },
             {
-                onSuccess: () => toast.success(next ? '被动检测已开启' : '被动检测已关闭'),
+                onSuccess: () => toast.success(next ? '日志查账已开启' : '日志查账已关闭'),
                 onError: (e) =>
                     toast.error('保存失败', {
                         description: e instanceof Error ? e.message : String(e),
@@ -505,17 +525,143 @@ function PassiveProbeCard() {
         <div className="rounded-2xl border border-border bg-card px-4 py-3">
             <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                    <p className="text-sm font-medium text-foreground">被动检测</p>
+                    <p className="flex items-center gap-1.5 text-sm font-medium text-foreground">
+                        日志查账
+                        <span className="rounded-full bg-primary/12 px-1.5 py-px text-[10px] font-medium text-primary">免费</span>
+                        <span
+                            className="cursor-help text-muted-foreground/80"
+                            title={disclaimer}
+                            aria-label={disclaimer}
+                        >
+                            ⓘ
+                        </span>
+                    </p>
                     <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
-                        只读已经流过的日志，不发任何请求、不消耗 token。查的是账目对不对得上、分词器口径是否是同一家。
+                        从日常调用里找对不上账的地方，不额外发请求。
                     </p>
                 </div>
                 <Switch checked={enabled} onCheckedChange={toggle} disabled={setSetting.isPending} />
             </div>
-            <p className="mt-2 border-t border-border pt-2 text-[11px] leading-5 text-muted-foreground">
-                和上面的「立即检测」不同：那个会真的去打上游、花 token。被动检测永远不会。关掉它只是不再往日志里写检查结果，已有数据不受影响。
-            </p>
+            {enabled && logAnomalies?.too_few_samples && (
+                <p className="mt-2 rounded-xl bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+                    近 {days} 天调用太少，暂时看不出问题
+                </p>
+            )}
+            {enabled && !logAnomalies?.too_few_samples && probeN > 0 && (
+                <button
+                    type="button"
+                    onClick={onOpenFindings}
+                    className="mt-2 flex w-full items-center justify-between rounded-xl bg-amber-500/10 px-3 py-2 text-left text-xs text-amber-800 dark:text-amber-300"
+                >
+                    <span>⚠ 近 {days} 天发现 {probeN} 处用量对不上</span>
+                    <ChevronRight className="size-4" />
+                </button>
+            )}
         </div>
+    );
+}
+
+function recentJobLabel(job: AuditJob): { title: string; sub: string; status: string; tone: 'ok' | 'warn' | 'ref' | 'run' } {
+    const running = job.status === 'running' || job.status === 'queued';
+    if (running) {
+        return {
+            title: `${job.channel_name || '渠道'} · 全部 ${job.total} 个`,
+            sub: '',
+            status: `${job.finished}/${job.total}`,
+            tone: 'run',
+        };
+    }
+    const model = job.single_model || (job.total > 1 ? `${job.total} 个模型` : '检测');
+    const headline = job.plain_headline || '';
+    let tone: 'ok' | 'warn' | 'ref' = 'ok';
+    let status = headline || '已完成';
+    if (/可疑|复核/.test(headline) || job.single_verdict === 'medium' || job.single_verdict === 'high') {
+        tone = 'warn';
+        status = headline.includes('可疑') ? '有可疑点' : (headline || '有可疑点');
+    } else if (/不够|没测成|失败|没法判断/.test(headline) || job.single_status === 'failed' || job.single_verdict === 'unknown') {
+        tone = 'ref';
+        status = /不够|没法判断/.test(headline) ? '数据不够' : (headline || '没测成');
+    } else if (/没发现|正常/.test(headline) || job.single_verdict === 'none' || job.single_verdict === 'low') {
+        tone = 'ok';
+        status = '没发现问题';
+    }
+    const when = job.report_at || job.ended_at || job.created_at;
+    let whenLabel = '';
+    if (when) {
+        const d = new Date(when);
+        const now = new Date();
+        const sameDay = d.toDateString() === now.toDateString();
+        whenLabel = sameDay
+            ? d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })
+            : '昨天';
+    }
+    return {
+        title: model,
+        sub: [job.channel_name, whenLabel].filter(Boolean).join(' · '),
+        status,
+        tone,
+    };
+}
+
+function RecentAudits({ onOpenAll }: { onOpenAll: () => void }) {
+    const { data: jobs } = useAuditJobs(8);
+    const items = (jobs ?? []).slice(0, 4);
+    if (items.length === 0) return null;
+    return (
+        <section className="rounded-3xl border border-border bg-card p-5">
+            <div className="flex items-center justify-between">
+                <h3 className="text-sm font-semibold">最近检测</h3>
+                <button
+                    type="button"
+                    onClick={onOpenAll}
+                    className="flex items-center gap-0.5 text-xs text-muted-foreground hover:text-foreground"
+                >
+                    全部记录
+                    <ChevronRight className="size-3.5" />
+                </button>
+            </div>
+            <ul className="mt-3 space-y-1">
+                {items.map((job) => {
+                    const row = recentJobLabel(job);
+                    const pct = job.total > 0 ? Math.min(100, Math.round((job.finished / job.total) * 100)) : 0;
+                    return (
+                        <li key={job.id} className="flex items-center gap-2.5 rounded-xl px-2 py-2">
+                            <span className={cn(
+                                'flex size-6 shrink-0 items-center justify-center rounded-full',
+                                row.tone === 'ok' && 'bg-primary/15 text-primary',
+                                row.tone === 'warn' && 'bg-amber-500/15 text-amber-700 dark:text-amber-300',
+                                row.tone === 'ref' && 'bg-muted text-muted-foreground',
+                                row.tone === 'run' && 'bg-primary/10 text-primary',
+                            )}>
+                                {row.tone === 'run' && <Loader2 className="size-3.5 animate-spin" />}
+                                {row.tone === 'ok' && <Check className="size-3.5" />}
+                                {row.tone === 'warn' && <TriangleAlert className="size-3.5" />}
+                                {row.tone === 'ref' && <CircleHelp className="size-3.5" />}
+                            </span>
+                            <div className="min-w-0 flex-1">
+                                <p className={cn('truncate text-sm', job.single_model && 'font-mono text-[13px]')}>{row.title}</p>
+                                {row.tone === 'run' ? (
+                                    <div className="mt-1 h-1 overflow-hidden rounded-full bg-muted">
+                                        <div className="h-full rounded-full bg-primary" style={{ width: `${pct}%` }} />
+                                    </div>
+                                ) : (
+                                    <p className="truncate text-xs text-muted-foreground">{row.sub}</p>
+                                )}
+                            </div>
+                            <span className={cn(
+                                'shrink-0 text-xs',
+                                row.tone === 'ok' && 'text-primary',
+                                row.tone === 'warn' && 'text-amber-700 dark:text-amber-300',
+                                row.tone === 'ref' && 'text-muted-foreground',
+                                row.tone === 'run' && 'text-muted-foreground',
+                            )}>
+                                {row.status}
+                            </span>
+                        </li>
+                    );
+                })}
+            </ul>
+        </section>
     );
 }
 
@@ -523,8 +669,6 @@ export function ModelAudit() {
     const t = useTranslations('modelAudit');
     const { data: channelsData, isLoading } = useChannelList();
     const { data: logAnomalies } = useLogAnomalies();
-    const { data: scheduledAudit } = useScheduledAudit();
-    const runAudit = useRunModelAudit();
     // 后台队列入口：提交后立刻返回 job_id，进度与结果由队列页轮询呈现。
     // 这是「立即检测」现在的真实实现——不守着页面等。
     const enqueueAudit = useEnqueueAudit();
@@ -559,8 +703,7 @@ export function ModelAudit() {
     const [modelName, setModelName] = useState('');
     const [plan, setPlan] = useState<PlanId>('standard');
     const [selected, setSelected] = useState<AuditProbeId[]>([...AUDIT_STANDARD_PROBE_IDS]);
-    const [showAdvanced, setShowAdvanced] = useState(false);
-    const [showParams, setShowParams] = useState(false);
+    const [customOpen, setCustomOpen] = useState(false);
     const [pageState, setPageState] = useState<PageState>('idle');
     const [report, setReport] = useState<ModelAuditResponse | null>(null);
     const [errorText, setErrorText] = useState('');
@@ -586,10 +729,42 @@ export function ModelAudit() {
         const nextModel = models[0] ?? '';
         if (!models.includes(modelName) && modelName !== nextModel) setModelName(nextModel);
     }, [channel, channelId, modelName, models]);
+    // 从渠道页芯片点过来：自动打开对应任务。
+    useEffect(() => {
+        try {
+            const store = typeof window !== 'undefined' ? window.sessionStorage : null;
+            const job = store?.getItem('octopus.audit.openJob');
+            if (!job) return;
+            store?.removeItem('octopus.audit.openJob');
+            store?.removeItem('octopus.audit.openResult');
+            setMode('queue');
+            setPageState('idle');
+        } catch {
+            // 测试环境可能没有 sessionStorage。
+        }
+    }, []);
+
     // 卸载时不再需要 abort：请求已经交给后端队列，关页面不会让后台停下
     // （这正是"点了就走"的意义）。要停就去队列页取消任务。
     const applicableSelected = selected.filter((id) => isApplicable(channel, id, activeModel));
     const runCount = plan === 'quick' ? planIds('quick', channel, activeModel).length : applicableSelected.length;
+    const { data: auditPlan } = useAuditPlan(channel?.id ?? 0, activeModel, !!channel && !!activeModel);
+    const quickReq = auditPlan?.quick?.requests ?? planIds('quick', channel, activeModel).length;
+    const fullReq = auditPlan?.full?.requests ?? planIds('standard', channel, activeModel).length;
+    const quickCount = (auditPlan?.quick?.ids ?? QUICK_IDS).filter((id) => isApplicable(channel, id, activeModel)).length;
+    const fullCount = (auditPlan?.full?.ids ?? AUDIT_STANDARD_PROBE_IDS).filter((id) => isApplicable(channel, id, activeModel)).length;
+    const customReq = useMemo(() => {
+        if (!auditPlan?.probes) {
+            return applicableSelected.length;
+        }
+        const byId = new Map(auditPlan.probes.map((p) => [p.id, p]));
+        return selected.reduce((sum, id) => {
+            if (!isApplicable(channel, id, activeModel)) return sum;
+            const row = byId.get(id);
+            return sum + (row?.applicable === false ? 0 : (row?.requests ?? 1));
+        }, 0);
+    }, [auditPlan, selected, channel, activeModel]);
+
 
     const rows = useMemo(() => {
         if (!report) return [];
@@ -605,10 +780,15 @@ export function ModelAudit() {
     const [advancedOpen, setAdvancedOpen] = useState(false);
     const advancedSelected = selected.some((id) => ADVANCED_PROBE_IDS.includes(id));
     const recording = useMemo(() => readTokenizerRecording(report?.report), [report]);
-    const warnCount = rows.filter((row) => row.tone === 'warn').length;
+    // 复核数只计 Score>0；tokenizer 等参考项（tone=info）永不进「需要复核」。
+    const warnCount = report ? (report.report.findings ?? []).filter((f) => (f.score ?? 0) > 0).length : 0;
     const failCount = rows.filter((row) => row.tone === 'fail').length;
     const insufficientCount = rows.filter((row) => row.insufficient).length;
-    const copy = report ? headline(report.report.verdict, warnCount, failCount, insufficientCount, t) : null;
+    const copy = report
+        ? (report.report.plain?.headline
+            ? { title: report.report.plain.headline, sub: report.report.plain.meaning || report.report.plain.summary || '' }
+            : headline(report.report.verdict, warnCount, failCount, insufficientCount, t))
+        : null;
 
     const chooseChannel = (id: number) => {
         setChannelId(id);
@@ -622,12 +802,14 @@ export function ModelAudit() {
 
     const choosePlan = (next: PlanId) => {
         setPlan(next);
+        setCustomOpen(false);
         if (next === 'quick') setSelected(planIds('quick', channel, activeModel));
         else setSelected(AUDIT_STANDARD_PROBE_IDS.filter((id) => isApplicable(channel, id, activeModel)));
     };
 
     const toggleProbe = (id: AuditProbeId, checked: boolean) => {
         setPlan('standard');
+        setCustomOpen(true);
         // 手动项勾上时把代价说清楚：录制基线 74 次请求（整单超时已按请求数放大，见 op.AuditTimeoutFor），最好单独跑。
         if (checked && AUDIT_OPT_IN_PROBE_IDS.includes(id)) {
             toast.warning(
@@ -714,7 +896,11 @@ export function ModelAudit() {
             endpoint: '',
             duration_ms: result.duration_ms,
             report: view,
+            finished_at: result.finished_at,
+            model: result.model,
         });
+        // 「完整报告」必须切回报告页，不能停在记录列表。
+        setMode('single');
         setPageState('report');
     };
 
@@ -747,29 +933,40 @@ export function ModelAudit() {
     };
 
     const renderParams = () => (
-        <aside className="flex min-h-0 flex-col gap-5 rounded-3xl border border-border bg-card p-5 md:w-[320px] md:shrink-0">
+        <aside className="flex min-h-0 w-full flex-col gap-5 rounded-3xl border border-border bg-card p-5">
             <section>
-                <p className="mb-3 text-[11px] font-medium tracking-[0.16em] text-muted-foreground">01 目标</p>
-                <label className="mb-1 block text-xs text-muted-foreground">渠道</label>
-                {/* 渠道多时原生 select 是平铺长列表：换 SearchableSelect 带内联模糊搜索
-                    （名称/编号/模型名都可搜），键盘上下+回车提交。 */}
-                <SearchableSelect
-                    value={channel ? String(channel.id) : ''}
-                    onValueChange={(value) => chooseChannel(Number(value))}
-                    options={visibleChannels.map((item) => ({
-                        value: String(item.id),
-                        label: item.enabled ? item.name : `${item.name}（未启用）`,
-                        // 搜索词带上"未启用"，让人能直接搜这一批，不用先切筛选。
-                        keywords: `#${item.id} ${item.enabled ? '启用' : '未启用'} ${(item.selected_models ?? []).join(' ')}`,
-                    }))}
-                    placeholder={channels.length === 0 ? '暂无渠道' : '选择渠道'}
-                    searchPlaceholder="搜渠道名 / 编号 / 模型…"
-                    emptyText="没有匹配的渠道"
-                    className="h-10 w-full"
-                    disabled={visibleChannels.length === 0}
-                />
-                {/* 启用/未启用筛选。默认「全部」——既能看到未启用渠道，又不至于
-                    让它们淹没常用的那几个。切成「仅启用」就是原来的行为。 */}
+                <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-1 lg:grid-cols-2">
+                    <div>
+                        <label className="mb-1 block text-xs text-muted-foreground">渠道</label>
+                        <SearchableSelect
+                            value={channel ? String(channel.id) : ''}
+                            onValueChange={(value) => chooseChannel(Number(value))}
+                            options={visibleChannels.map((item) => ({
+                                value: String(item.id),
+                                label: item.enabled ? item.name : `${item.name}（未启用）`,
+                                keywords: `#${item.id} ${item.enabled ? '启用' : '未启用'} ${(item.selected_models ?? []).join(' ')}`,
+                            }))}
+                            placeholder={channels.length === 0 ? '暂无渠道' : '选择渠道'}
+                            searchPlaceholder="搜渠道名 / 编号 / 模型…"
+                            emptyText="没有匹配的渠道"
+                            className="h-10 w-full"
+                            disabled={visibleChannels.length === 0}
+                        />
+                    </div>
+                    <div>
+                        <label className="mb-1 block text-xs text-muted-foreground">模型</label>
+                        <SearchableSelect
+                            value={activeModel}
+                            onValueChange={setModelName}
+                            options={models.map((item) => ({ value: item, label: item }))}
+                            placeholder={models.length === 0 ? '该渠道没有可选模型' : '选择模型'}
+                            searchPlaceholder="搜模型名…"
+                            emptyText="没有匹配的模型"
+                            className="h-10 w-full"
+                            disabled={models.length === 0}
+                        />
+                    </div>
+                </div>
                 <div className="mt-2 flex items-center gap-1 rounded-xl border border-border bg-muted/40 p-0.5 text-xs">
                     {([
                         ['all', `全部 ${channels.length}`],
@@ -789,236 +986,168 @@ export function ModelAudit() {
                         </button>
                     ))}
                 </div>
-                <label className="mb-1 mt-3 block text-xs text-muted-foreground">模型</label>
-                <SearchableSelect
-                    value={activeModel}
-                    onValueChange={setModelName}
-                    options={models.map((item) => ({ value: item, label: item }))}
-                    placeholder={models.length === 0 ? '该渠道没有可选模型' : '选择模型'}
-                    searchPlaceholder="搜模型名…"
-                    emptyText="没有匹配的模型"
-                    className="h-10 w-full"
-                    disabled={models.length === 0}
-                />
-                {/* 旧的前端队列 UI 已删除。原来这里有「加入队列 / 全部加入」
-                    两个按钮和一个逐项状态列表——它和后端真队列是两套东西，
-                    用户在两边看到的进度并不一致。现在统一由下面的「后台检测」
-                    提交到后端，进度和回看都在「检测记录」里。 */}
             </section>
 
-            <section className="border-t border-border pt-4">
-                <p className="mb-3 text-[11px] font-medium tracking-[0.16em] text-muted-foreground">02 检查</p>
-                <div className="grid gap-1">
-                    {PROBES.filter((probe) => !ADVANCED_PROBE_IDS.includes(probe.id)).map(renderProbeRow)}
+            <section>
+                <p className="mb-3 text-xs font-medium text-muted-foreground">查多细</p>
+                <div className="grid gap-3">
+                    <button
+                        type="button"
+                        onClick={() => choosePlan('quick')}
+                        className={cn(
+                            'rounded-2xl border px-4 py-3.5 text-left transition-colors',
+                            plan === 'quick' ? 'border-2 border-primary bg-primary/5 -m-px' : 'border-border',
+                        )}
+                    >
+                        <div className="flex items-center gap-2">
+                            <span className={cn(
+                                'flex size-4 items-center justify-center rounded-full',
+                                plan === 'quick' ? 'bg-primary' : 'border-2 border-border',
+                            )}>
+                                {plan === 'quick' && <span className="size-1.5 rounded-full bg-white" />}
+                            </span>
+                            <span className="text-sm font-semibold">快速</span>
+                            <span className="ml-auto text-xs text-muted-foreground">{quickCount} 项 · 约 {quickReq} 次请求</span>
+                        </div>
+                        <p className="mt-1.5 pl-6 text-xs leading-5 text-muted-foreground">
+                            通不通、回复有没有被改、长内容有没有被截断。
+                        </p>
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => choosePlan('standard')}
+                        className={cn(
+                            'rounded-2xl border px-4 py-3.5 text-left transition-colors',
+                            plan === 'standard' && !customOpen ? 'border-2 border-primary bg-primary/5 -m-px' : 'border-border',
+                        )}
+                    >
+                        <div className="flex items-center gap-2">
+                            <span className={cn(
+                                'flex size-4 items-center justify-center rounded-full',
+                                plan === 'standard' && !customOpen ? 'bg-primary' : 'border-2 border-border',
+                            )}>
+                                {plan === 'standard' && !customOpen && <span className="size-1.5 rounded-full bg-white" />}
+                            </span>
+                            <span className="text-sm font-semibold">全面</span>
+                            <span className="rounded-full bg-primary/15 px-1.5 py-px text-[10px] font-medium text-primary">推荐</span>
+                            <span className="ml-auto text-xs text-muted-foreground">{fullCount} 项 · 约 {fullReq} 次请求</span>
+                        </div>
+                        <p className="mt-1.5 pl-6 text-xs leading-5 text-muted-foreground">
+                            再加上：认出背后是哪个模型、查用量有没有虚报。
+                        </p>
+                    </button>
                 </div>
-                <details
-                    className="mt-2 rounded-xl bg-muted/30 px-2 py-1.5"
-                    open={advancedOpen || advancedSelected}
-                    onToggle={(event) => setAdvancedOpen((event.currentTarget as HTMLDetailsElement).open)}
-                >
-                    <summary className="cursor-pointer text-[11px] leading-5 text-muted-foreground" title={ADVANCED_TOOLTIP}>
-                        {ADVANCED_SUMMARY}
-                    </summary>
-                    <div className="mt-1 grid gap-1">
-                        {PROBES.filter((probe) => ADVANCED_PROBE_IDS.includes(probe.id)).map(renderProbeRow)}
-                    </div>
-                </details>
-            </section>
 
-            <section className="border-t border-border pt-4">
-                <p className="mb-3 text-[11px] font-medium tracking-[0.16em] text-muted-foreground">03 执行</p>
-                <div className="grid grid-cols-2 gap-1 rounded-xl bg-muted/40 p-1">
-                    {(['quick', 'standard'] as const).map((item) => (
-                        <button
-                            key={item}
-                            type="button"
-                            onClick={() => choosePlan(item)}
-                            className={cn(
-                                'h-8 rounded-lg text-xs font-medium',
-                                plan === item ? 'bg-background shadow-xs' : 'text-muted-foreground',
-                            )}
-                        >
-                            {item === 'quick' ? '快速' : '标准'}
-                        </button>
-                    ))}
-                </div>
                 <button
                     type="button"
-                    className="mt-3 text-xs text-muted-foreground"
-                    onClick={() => setShowAdvanced((value) => !value)}
+                    className="mt-3 flex w-full items-center gap-1.5 px-1 text-xs text-muted-foreground"
+                    onClick={() => setCustomOpen((v) => !v)}
                 >
-                    {showAdvanced ? '收起高级参数' : '高级参数'}
+                    {customOpen ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+                    自定义：自己挑检查项
+                    <span className="ml-1 text-muted-foreground/70">
+                        {customOpen
+                            ? ''
+                            : `（共 ${PROBES.length} 项，现在选了 ${applicableSelected.length} 项）`}
+                    </span>
+                    {customOpen && (
+                        <span className="ml-auto">已选 {applicableSelected.length} 项 · 约 {customReq} 次请求</span>
+                    )}
                 </button>
-                {showAdvanced && (
-                    <p className="mt-2 text-xs leading-5 text-muted-foreground">
-                        超时跟随渠道检测上限。签名、身份、词元只作线索，不作为原厂证明。
-                    </p>
+                {customOpen && (
+                    <div className="mt-2 rounded-2xl border border-border bg-muted/20 px-2 py-2">
+                        <div className="grid gap-1">
+                            {PROBES.filter((probe) => !ADVANCED_PROBE_IDS.includes(probe.id)).map(renderProbeRow)}
+                        </div>
+                        <details
+                            className="mt-2 rounded-xl bg-muted/30 px-2 py-1.5"
+                            open={advancedOpen || advancedSelected}
+                            onToggle={(event) => setAdvancedOpen((event.currentTarget as HTMLDetailsElement).open)}
+                        >
+                            <summary className="cursor-pointer text-[11px] leading-5 text-muted-foreground" title={ADVANCED_TOOLTIP}>
+                                {ADVANCED_SUMMARY}
+                            </summary>
+                            <div className="mt-1 grid gap-1">
+                                {PROBES.filter((probe) => ADVANCED_PROBE_IDS.includes(probe.id)).map(renderProbeRow)}
+                            </div>
+                        </details>
+                    </div>
                 )}
-                {/* 唯一的执行入口：提交到后台队列后立刻返回。
-                    点一个模型和点一批模型走的是同一条路——这就是把原来
-                    「立即检测 / 批量检测」两个模式合并掉的结果。 */}
+            </section>
+
+            <section className="border-t border-border pt-4">
                 <Button
                     type="button"
-                    className="mt-4 h-11 w-full rounded-xl"
+                    className="h-12 w-full rounded-xl text-base font-semibold"
                     disabled={enqueueAudit.isPending || runCount === 0 || !channel}
                     onClick={() => void submitToQueue([activeModel])}
-                    title={activeModel ? `后台检测 · ${activeModel}` : undefined}
+                    title={activeModel ? `开始检测 · ${activeModel}` : undefined}
                 >
-                    {enqueueAudit.isPending ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
-                    {/* 模型名动辄三十几个字符，不截断会硬撞到按钮边缘被拦腰切断。
-                        truncate 给个省略号，全名放 title 里悬停可见。 */}
+                    {enqueueAudit.isPending ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4 fill-current" />}
                     <span className="min-w-0 truncate">
-                        {enqueueAudit.isPending ? '提交中…' : `后台检测 · ${activeModel || '未选模型'}`}
+                        {enqueueAudit.isPending ? '提交中…' : '开始检测'}
                     </span>
                 </Button>
-                <Button
+                <p className="mt-2.5 flex items-center justify-center gap-1 text-center text-xs text-muted-foreground">
+                    会真的调用上游，按正常价格计费。提交后可以离开本页。
+                    <span className="cursor-help text-muted-foreground/80" title="次数是估算：个别检查会多轮或重试，实际以记录为准。超时跟随渠道检测设置。">ⓘ</span>
+                </p>
+                <button
                     type="button"
-                    variant="outline"
-                    className="mt-2 h-9 w-full rounded-xl"
+                    className="mt-2 w-full text-center text-xs text-primary underline-offset-2 hover:underline disabled:opacity-50"
                     disabled={enqueueAudit.isPending || models.length === 0 || !channel}
                     onClick={() => void submitToQueue(models)}
                 >
-                    检测该渠道全部模型（{models.length}）
-                </Button>
-                <p className="mt-2 text-center text-[11px] leading-5 text-muted-foreground">
-                    提交后可离开本页，进度和结果都在「检测记录」里
-                </p>
-                <p className="mt-2 text-center text-[11px] leading-5 text-muted-foreground">{t('manualGate', { count: runCount })}</p>
+                    或者，一次测完这个渠道的全部 {models.length} 个模型
+                </button>
             </section>
         </aside>
     );
 
     return (
         <PageWrapper className="h-full min-h-0 space-y-4 overflow-y-auto overscroll-contain rounded-t-3xl pb-24 md:pb-4">
-            <div className="flex flex-wrap items-end justify-between gap-3 px-1">
-                <div>
-                    <p className="text-[11px] font-medium tracking-[0.18em] text-muted-foreground">OCTOPUS</p>
-                    <h2 className="text-2xl font-bold tracking-tight">模型检测</h2>
-                    <p className="mt-1 text-sm text-muted-foreground">对渠道模型做一组轻量能力检查，结果仅作参考线索。</p>
+            {/* 顶栏已有「检测」标题，这里只留副标题 + 检测/记录切换，避免手机上标题说两遍。 */}
+            <div className="flex flex-wrap items-center justify-between gap-3 px-1">
+                <p className="min-w-0 flex-1 text-sm text-muted-foreground">
+                    看看渠道给你的模型，是不是它说的那个。
+                </p>
+                <div className="flex shrink-0 gap-1 rounded-2xl border border-border bg-card p-1">
+                    <button
+                        type="button"
+                        onClick={() => setMode('single')}
+                        className={cn(
+                            'rounded-xl px-3 py-1.5 text-sm transition-colors',
+                            mode === 'single' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted',
+                        )}
+                    >
+                        检测
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => setMode('queue')}
+                        className={cn(
+                            'rounded-xl px-3 py-1.5 text-sm transition-colors',
+                            mode === 'queue' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted',
+                        )}
+                    >
+                        记录
+                    </button>
                 </div>
-            </div>
-
-            {/* 被动检测开关放在两种检测方式之前：它是"不花钱的那一半"，
-                用户先理解这件事，后面点「立即检测」时才知道那个是要花钱的。 */}
-            <PassiveProbeCard />
-
-            {/* 两个入口是「发起检测」和「查看记录」，不是两种检测方式。
-                以前这里是「立即检测 / 批量检测」并列，看起来像两种能力，实际上
-                底层都打同一个上游、都花钱，区别只在等不等——所以合并成
-                「去检测」和「看记录」，语义才对得上。 */}
-            <div className="flex gap-1 rounded-2xl border border-border bg-card p-1">
-                <button
-                    type="button"
-                    onClick={() => setMode('single')}
-                    className={cn(
-                        'flex-1 rounded-xl px-3 py-2 text-sm transition-colors',
-                        mode === 'single' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted',
-                    )}
-                >
-                    发起检测
-                </button>
-                <button
-                    type="button"
-                    onClick={() => setMode('queue')}
-                    className={cn(
-                        'flex-1 rounded-xl px-3 py-2 text-sm transition-colors',
-                        mode === 'queue' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted',
-                    )}
-                >
-                    检测记录
-                </button>
             </div>
 
             {mode === 'queue' && <ModelAuditQueue onOpenReport={openStoredReport} />}
 
-            {/* 单次模式的全部内容：未进入 queue 视图时才渲染，避免两个视图叠加。 */}
             {mode === 'single' && (
             <>
-            <div className="md:hidden">
-                <div className="flex items-center justify-between rounded-2xl border border-border bg-card px-4 py-3">
-                    <p className="text-sm">已选 {runCount} 项 · {channel?.name ?? '未选渠道'}</p>
-                    <Button type="button" variant="outline" size="sm" className="rounded-xl" onClick={() => setShowParams(true)}>
-                        <SlidersHorizontal className="size-4" />
-                        调整参数
-                    </Button>
-                </div>
-            </div>
+            {/* 手机：单列表单（渠道/模型/快速全面/开始检测），不再用「调整参数」折叠卡。 */}
+            <div className="md:hidden">{renderParams()}</div>
 
             <div className="flex min-h-0 flex-col gap-4 md:flex-row">
-                <div className="hidden md:block">{renderParams()}</div>
+                <div className="hidden md:block md:w-[min(100%,420px)] md:shrink-0">{renderParams()}</div>
 
+                {/* 有结果才展示结果面板；空闲时桌面右侧放最近检测 + 日志查账。 */}
+                {pageState !== 'idle' ? (
                 <section className="min-w-0 flex-1 rounded-3xl border border-border bg-card p-5">
-                    {pageState === 'idle' && (
-                        <div className="flex min-h-80 flex-col items-center justify-center text-center">
-                            <Shield className="mb-3 size-8 text-muted-foreground" />
-                            <h3 className="text-lg font-semibold">未开始检测</h3>
-                            <p className="mt-1 max-w-sm text-sm text-muted-foreground">选好渠道和模型后开始。结果只作线索，不证明真假。</p>
-                            {logAnomalies && (
-                                <div className="mt-6 w-full max-w-lg rounded-2xl border border-border bg-muted/30 px-4 py-3 text-left">
-                                    <p className="text-xs text-muted-foreground">近 {logAnomalies.window_hours} 小时真实调用扫描 · {logAnomalies.sample_count} 条成功样本</p>
-                                    {(logAnomalies.findings ?? []).length === 0 ? (
-                                        <p className="mt-2 text-sm">近期日志未见需要复核的统计异常。</p>
-                                    ) : (
-                                        <ul className="mt-2 space-y-2">
-                                            {(logAnomalies.findings ?? []).slice(0, 4).map((item) => (
-                                                <li key={`${item.channel_id}-${item.code}-${item.model}`} className="text-sm">
-                                                    <span className="font-medium">{item.title}</span>
-                                                    <span className="mt-0.5 block text-xs text-muted-foreground">{item.channel_name || `渠道 ${item.channel_id}`} · {item.model}</span>
-                                                </li>
-                                            ))}
-                                        </ul>
-                                    )}
-                                    {(logAnomalies.probe_findings ?? []).length > 0 && (
-                                        <div className="mt-3 border-t border-border pt-3">
-                                            <p className="text-xs font-medium text-foreground">账对不上的地方</p>
-                                            <p className="mt-0.5 text-[11px] leading-5 text-muted-foreground">
-                                                这些是日志里自相矛盾的事实，不需要额外请求就能看出来。命中不代表模型有问题，但值得去查。
-                                            </p>
-                                            <ul className="mt-2 space-y-2">
-                                                {(logAnomalies.probe_findings ?? []).slice(0, 5).map((item) => (
-                                                    <li key={`${item.channel_id}-${item.code}-${item.model}`} className="text-sm">
-                                                        <span className={item.severity === 'medium' ? 'font-medium text-amber-600 dark:text-amber-400' : 'text-foreground'}>
-                                                            {item.title}
-                                                        </span>
-                                                        <span className="mt-0.5 block text-xs text-muted-foreground">
-                                                            {item.channel_name || `渠道 ${item.channel_id}`} · {item.model}
-                                                            {item.total > 0 && ` · ${item.count}/${item.total} 条命中`}
-                                                        </span>
-                                                    </li>
-                                                ))}
-                                            </ul>
-                                        </div>
-                                    )}
-                                    <p className="mt-2 text-[11px] leading-5 text-muted-foreground">{logAnomalies.disclaimer}</p>
-                                    {logAnomalies.passive_observations?.length ? (
-                                        <p className="mt-1 text-[11px] leading-5 text-muted-foreground">{t('passiveObserved', { count: logAnomalies.passive_observations.reduce((sum, bucket) => sum + bucket.count, 0) })}</p>
-                                    ) : null}
-                                </div>
-                            )}
-                            {scheduledAudit && (
-                                <div className="mt-3 w-full max-w-lg rounded-2xl border border-border bg-muted/30 px-4 py-3 text-left">
-                                    <p className="text-xs text-muted-foreground">
-                                        历史主动检测记录 · {scheduledAudit.last_run_unix ? new Date(scheduledAudit.last_run_unix * 1000).toLocaleString('zh-CN') : '还没跑过'}
-                                        {scheduledAudit.last_run_unix ? ` · 跑了 ${scheduledAudit.ran_count}/${scheduledAudit.target_count}` : ''}
-                                    </p>
-                                    {(scheduledAudit.results ?? []).length === 0 ? (
-                                        <p className="mt-2 text-sm">后台自动检测已停用，不再定期打上游；仅手动检测会调用上游。</p>
-                                    ) : (
-                                        <ul className="mt-2 space-y-2">
-                                            {(scheduledAudit.results ?? []).slice(0, 4).map((item) => (
-                                                <li key={`${item.channel_id}-${item.model}-${item.trigger}`} className="text-sm">
-                                                    <span className="font-medium">{triggerLabel(item.trigger, t)}：{item.skipped ? (item.skip_reason || '本轮跳过') : (item.verdict === 'none' ? '未见异常' : item.verdict === 'unknown' ? '证据不足' : '待复核')}</span>
-                                                    <span className="mt-0.5 block text-xs text-muted-foreground">{item.channel_name || `渠道 ${item.channel_id}`} · {item.model}</span>
-                                                </li>
-                                            ))}
-                                        </ul>
-                                    )}
-                                    <p className="mt-2 text-[11px] leading-5 text-muted-foreground">{scheduledAudit.disclaimer}</p>
-                                </div>
-                            )}
-                        </div>
-                    )}
-
                     {pageState === 'running' && (
                         <div className="flex min-h-80 flex-col items-center justify-center text-center">
                             <Loader2 className="mb-3 size-8 animate-spin text-primary" />
@@ -1046,7 +1175,7 @@ export function ModelAudit() {
                     {pageState === 'report' && report && copy && (
                         <div className="space-y-5">
                             <div className="flex flex-wrap items-start justify-between gap-3">
-                                <p className="text-xs text-muted-foreground">本次报告 {new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</p>
+                                <p className="text-xs text-muted-foreground">本次报告 {report.finished_at ? new Date(report.finished_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }) : '—'}</p>
                                 <Button type="button" variant="outline" size="sm" className="rounded-full" onClick={exportJson}>导出 JSON</Button>
                             </div>
                             <div>
@@ -1131,21 +1260,23 @@ export function ModelAudit() {
                         </div>
                     )}
                 </section>
+                ) : (
+                <div className="hidden min-w-0 flex-1 flex-col gap-4 md:flex">
+                    <RecentAudits onOpenAll={() => setMode('queue')} />
+                    <PassiveProbeCard />
+                </div>
+                )}
+            </div>
+
+            {/* 手机：表单下方接日志查账 + 最近检测（对齐 mobile 稿）。 */}
+            <div className="grid gap-4 md:hidden">
+                <PassiveProbeCard />
+                <RecentAudits onOpenAll={() => setMode('queue')} />
             </div>
 
             {isLoading && (
                 <p className="px-1 text-xs text-muted-foreground">正在读取渠道列表…</p>
             )}
-
-            <Dialog open={showParams} onOpenChange={setShowParams}>
-                <DialogContent className="max-w-md p-0 sm:max-w-md">
-                    <DialogHeader className="px-5 pt-5">
-                        <DialogTitle>检查参数</DialogTitle>
-                        <DialogDescription>选渠道、模型和要跑的检查。</DialogDescription>
-                    </DialogHeader>
-                    <div className="px-2 pb-4">{renderParams()}</div>
-                </DialogContent>
-            </Dialog>
 
             <Dialog open={!!openRow} onOpenChange={(open) => { if (!open) setOpenRow(null); }}>
                 <DialogContent className="max-w-lg">

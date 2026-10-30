@@ -1036,7 +1036,8 @@
         "tokens": "Token 使用",
         "costs": "成本詳情",
         "baseUrls": "Base URLs",
-        "keys": "金鑰"
+        "keys": "金鑰",
+        "modelAudits": "模型 · 最近一次檢測"
       },
       "noBaseUrls": "暫無 Base URL",
       "noKeys": "暫無金鑰",
@@ -1253,7 +1254,7 @@
     }
   },
   "modelAudit": {
-    "manualGate": "只有點「開始檢查」才呼叫上游，會消耗 token、可能計費。當前 {count} 項檢查≠{count} 次請求：簽名等探針可能多輪/重用，實際呼叫與用量以後台記錄為準。超時跟隨渠道檢測上限。",
+    "manualGate": "會打真上游，按平常價計費。不適用的檢查不會發請求。",
     "cancelCheck": "取消檢查",
     "cancelling": "正在取消",
     "cancelledTitle": "已取消",
@@ -1275,7 +1276,7 @@
       "statusRunning": "檢測中 {done}/{total}",
       "statusDone": "已完成 {done}/{total}",
       "statusCanceled": "已取消",
-      "cancel": "取消剩餘",
+      "cancel": "停止剩下的",
       "loading": "載入中…",
       "noResults": "這次任務沒有結果記錄",
       "resultPending": "等待中",
