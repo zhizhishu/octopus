@@ -5,13 +5,13 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/gin-gonic/gin"
 	"github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/op"
 	"github.com/zhizhishu/octopus/internal/server/auth"
 	"github.com/zhizhishu/octopus/internal/server/middleware"
 	"github.com/zhizhishu/octopus/internal/server/resp"
 	"github.com/zhizhishu/octopus/internal/server/router"
-	"github.com/gin-gonic/gin"
 )
 
 func init() {
@@ -87,6 +87,22 @@ func init() {
 		AddRoute(
 			router.NewRoute("/delete/:id", http.MethodDelete).
 				Handle(deleteUser),
+		).
+		AddRoute(
+			router.NewRoute("/balance", http.MethodPost).
+				Handle(adjustUserBalance),
+		).
+		AddRoute(
+			router.NewRoute("/balance-log", http.MethodGet).
+				Handle(listUserBalanceLog),
+		).
+		AddRoute(
+			router.NewRoute("/usage", http.MethodGet).
+				Handle(getUserUsage),
+		).
+		AddRoute(
+			router.NewRoute("/batch", http.MethodPost).
+				Handle(batchUser),
 		)
 }
 
@@ -243,13 +259,15 @@ func createUser(c *gin.Context) {
 	resp.Success(c, model.NewUserResponse(user))
 }
 
+// updateUser 是部分更新：请求里没带的字段保持原值（见 model.UserPatchRequest）。
+// 旧客户端整条发，结果与以前一样；新的用户页只发改了的字段。
 func updateUser(c *gin.Context) {
-	var req model.UserUpdateRequest
+	var req model.UserPatchRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		resp.Error(c, http.StatusBadRequest, resp.ErrInvalidJSON)
 		return
 	}
-	user, err := op.UserUpdate(req, middleware.CurrentUserID(c), c.Request.Context())
+	user, err := op.UserPatch(req, middleware.CurrentUserID(c), c.Request.Context())
 	if err != nil {
 		resp.Error(c, http.StatusBadRequest, err.Error())
 		return
@@ -270,34 +288,29 @@ func resetUserPassword(c *gin.Context) {
 	resp.Success(c, nil)
 }
 
+// updateUserQuota 是旧的「直接改成」接口：把余额和月卡几项设成请求里的值。
+// 只写余额 / 月卡这几列（用户名、身份、状态、备注、方案都不碰），余额有变化会记一条流水。
 func updateUserQuota(c *gin.Context) {
 	var req model.UserQuotaUpdateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		resp.Error(c, http.StatusBadRequest, resp.ErrInvalidJSON)
 		return
 	}
-	current, err := op.UserGet(req.ID)
-	if err != nil {
-		resp.Error(c, http.StatusBadRequest, err.Error())
-		return
-	}
-	user, err := op.UserUpdate(model.UserUpdateRequest{
+	reason := "直接改成（/user/quota）"
+	user, err := op.UserPatch(model.UserPatchRequest{
 		ID:                 req.ID,
-		Username:           current.Username,
-		Role:               current.Role,
-		Status:             current.Status,
-		Balance:            req.Balance,
-		MonthlyLimit:       req.MonthlyLimit,
-		MonthlyUsed:        req.MonthlyUsed,
-		MonthlyExpireAt:    req.MonthlyExpireAt,
-		MonthlyResetAt:     req.MonthlyResetAt,
+		Balance:            &req.Balance,
+		BalanceReason:      &reason,
+		MonthlyLimit:       &req.MonthlyLimit,
+		MonthlyUsed:        &req.MonthlyUsed,
+		MonthlyExpireAt:    &req.MonthlyExpireAt,
+		MonthlyResetAt:     &req.MonthlyResetAt,
 		DailyLimit:         req.DailyLimit,
 		DailyQuota:         req.DailyQuota,
 		DailyUsed:          req.DailyUsed,
-		MonthlyExpireAtISO: req.MonthlyExpireAtISO,
-		MonthlyResetAtISO:  req.MonthlyResetAtISO,
-		NextResetAtISO:     req.NextResetAtISO,
-		Note:               current.Note,
+		MonthlyExpireAtISO: &req.MonthlyExpireAtISO,
+		MonthlyResetAtISO:  &req.MonthlyResetAtISO,
+		NextResetAtISO:     &req.NextResetAtISO,
 	}, middleware.CurrentUserID(c), c.Request.Context())
 	if err != nil {
 		resp.Error(c, http.StatusBadRequest, err.Error())
@@ -317,4 +330,65 @@ func deleteUser(c *gin.Context) {
 		return
 	}
 	resp.Success(c, nil)
+}
+
+// adjustUserBalance 加 / 减 / 直接改成一个用户的余额，并记一条流水。
+// 加和减在库里是一条 balance = balance ± ? 的 UPDATE，不会盖掉同时发生的扣费。
+func adjustUserBalance(c *gin.Context) {
+	var req model.UserBalanceAdjustRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		resp.Error(c, http.StatusBadRequest, resp.ErrInvalidJSON)
+		return
+	}
+	user, entry, err := op.UserBalanceAdjust(req, middleware.CurrentUserID(c), c.Request.Context())
+	if err != nil {
+		resp.Error(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	resp.Success(c, model.UserBalanceAdjustResponse{User: model.NewUserResponse(user), Log: entry})
+}
+
+func listUserBalanceLog(c *gin.Context) {
+	id, err := strconv.Atoi(c.Query("id"))
+	if err != nil || id <= 0 {
+		resp.Error(c, http.StatusBadRequest, resp.ErrInvalidParam)
+		return
+	}
+	limit, _ := strconv.Atoi(c.Query("limit"))
+	logs, err := op.UserBalanceLogList(id, limit, c.Request.Context())
+	if err != nil {
+		resp.Error(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	resp.Success(c, logs)
+}
+
+// getUserUsage 返回一个用户在 today / 7d / 30d / all 里的用量（总数、每天花费、常用模型）。
+func getUserUsage(c *gin.Context) {
+	id, err := strconv.Atoi(c.Query("id"))
+	if err != nil || id <= 0 {
+		resp.Error(c, http.StatusBadRequest, resp.ErrInvalidParam)
+		return
+	}
+	usage, err := op.UserUsage(id, c.Query("range"), c.Request.Context())
+	if err != nil {
+		resp.Error(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	resp.Success(c, usage)
+}
+
+// batchUser 对一批用户做同一件事（启用 / 停用 / 加余额 / 改方案 / 删除），逐个报结果。
+func batchUser(c *gin.Context) {
+	var req model.UserBatchRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		resp.Error(c, http.StatusBadRequest, resp.ErrInvalidJSON)
+		return
+	}
+	result, err := op.UserBatch(req, middleware.CurrentUserID(c), c.Request.Context())
+	if err != nil {
+		resp.Error(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	resp.Success(c, result)
 }
