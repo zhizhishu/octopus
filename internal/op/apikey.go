@@ -8,6 +8,7 @@ import (
 	"github.com/zhizhishu/octopus/internal/db"
 	"github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/utils/cache"
+	"gorm.io/gorm"
 )
 
 var apiKeyCache = cache.New[int, model.APIKey](16)
@@ -33,7 +34,19 @@ func APIKeyCreate(key *model.APIKey, ctx context.Context) error {
 		return err
 	}
 	key.EndpointFamilies = endpointFamilies
-	if err := db.GetDB().WithContext(ctx).Create(key).Error; err != nil {
+	wantEnabled := key.Enabled
+	if err := db.GetDB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(key).Error; err != nil {
+			return err
+		}
+		if !wantEnabled {
+			if err := persistDisabledAfterCreate(tx, &model.APIKey{}, []int{key.ID}); err != nil {
+				return err
+			}
+			key.Enabled = false
+		}
+		return nil
+	}); err != nil {
 		return fmt.Errorf("failed to create API key: %w", err)
 	}
 	apiKeyCache.Set(key.ID, *key)

@@ -13,6 +13,7 @@ import (
 	"github.com/zhizhishu/octopus/internal/utils/cache"
 	"github.com/zhizhishu/octopus/internal/utils/log"
 	"github.com/zhizhishu/octopus/internal/utils/xstrings"
+	"gorm.io/gorm"
 )
 
 var channelCache = cache.New[int, model.Channel](16)
@@ -30,7 +31,30 @@ func ChannelList(ctx context.Context) ([]model.Channel, error) {
 
 func ChannelCreate(channel *model.Channel, ctx context.Context) error {
 	normalizeChannelCreateModels(channel)
-	if err := db.GetDB().WithContext(ctx).Create(channel).Error; err != nil {
+	wantEnabled := channel.Enabled
+	disabledKeys := make([]int, 0)
+	for i, k := range channel.Keys {
+		if !k.Enabled {
+			disabledKeys = append(disabledKeys, i)
+		}
+	}
+	if err := db.GetDB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(channel).Error; err != nil {
+			return err
+		}
+		if !wantEnabled {
+			if err := persistDisabledAfterCreate(tx, &model.Channel{}, []int{channel.ID}); err != nil {
+				return err
+			}
+			channel.Enabled = false
+		}
+		keyIDs := make([]int, 0, len(disabledKeys))
+		for _, i := range disabledKeys {
+			keyIDs = append(keyIDs, channel.Keys[i].ID)
+			channel.Keys[i].Enabled = false
+		}
+		return persistDisabledAfterCreate(tx, &model.ChannelKey{}, keyIDs)
+	}); err != nil {
 		return err
 	}
 	channelCache.Set(channel.ID, *channel)
@@ -464,6 +488,16 @@ func ChannelUpdate(req *model.ChannelUpdateRequest, ctx context.Context) (*model
 			})
 		}
 		if err := tx.Create(&newKeys).Error; err != nil {
+			tx.Rollback()
+			return nil, fmt.Errorf("failed to create channel keys: %w", err)
+		}
+		disabledKeyIDs := make([]int, 0)
+		for i, ka := range req.KeysToAdd {
+			if !ka.Enabled {
+				disabledKeyIDs = append(disabledKeyIDs, newKeys[i].ID)
+			}
+		}
+		if err := persistDisabledAfterCreate(tx, &model.ChannelKey{}, disabledKeyIDs); err != nil {
 			tx.Rollback()
 			return nil, fmt.Errorf("failed to create channel keys: %w", err)
 		}

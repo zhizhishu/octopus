@@ -23,10 +23,7 @@ func RedeemCodeGenerate(req model.RedeemCodeGenerateRequest, creatorID int, ctx 
 	if err := validateRedeemCodeRequest(req); err != nil {
 		return nil, err
 	}
-	enabled := req.Enabled
-	if !enabled {
-		enabled = true
-	}
+	enabled := req.Enabled == nil || *req.Enabled
 	dailyQuota := resolveRedeemDailyQuota(req)
 	validDays := resolveRedeemValidDays(req)
 
@@ -47,7 +44,20 @@ func RedeemCodeGenerate(req model.RedeemCodeGenerateRequest, creatorID int, ctx 
 			Note:            req.Note,
 		})
 	}
-	if err := db.GetDB().WithContext(ctx).Create(&codes).Error; err != nil {
+	if err := db.GetDB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&codes).Error; err != nil {
+			return err
+		}
+		if enabled {
+			return nil
+		}
+		ids := make([]int, 0, len(codes))
+		for i := range codes {
+			ids = append(ids, codes[i].ID)
+			codes[i].Enabled = false
+		}
+		return persistDisabledAfterCreate(tx, &model.RedeemCode{}, ids)
+	}); err != nil {
 		return nil, fmt.Errorf("failed to create redeem codes: %w", err)
 	}
 	return codes, nil

@@ -38,8 +38,9 @@ type RedeemCodeGenerateRequest struct {
 	MonthlyDays   int            `json:"monthly_days"`
 	DailyQuota    *float64       `json:"daily_quota,omitempty"`
 	ValidDays     *int           `json:"valid_days,omitempty"`
-	Enabled       bool           `json:"enabled"`
-	Note          string         `json:"note"`
+	// Enabled 不传 = 启用（老客户端都不传）；显式 false = 生成即停用。
+	Enabled *bool  `json:"enabled,omitempty"`
+	Note    string `json:"note"`
 }
 
 type RedeemCodeUpdateRequest struct {
