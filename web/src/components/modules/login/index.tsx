@@ -134,7 +134,7 @@ export function LoginForm({ onLoginSuccess }: { onLoginSuccess?: () => void }) {
               <TabsHighlightItem value="user" className="flex-1">
                 <TabsTrigger
                   value="user"
-                  className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-sm font-medium transition-colors data-[state=active]:text-foreground data-[state=inactive]:text-muted-foreground data-[state=inactive]:hover:text-foreground"
+                  className="w-full flex items-center justify-center gap-1.5 whitespace-nowrap py-2.5 px-2 sm:gap-2 sm:px-4 rounded-xl text-sm font-medium transition-colors data-[state=active]:text-foreground data-[state=inactive]:text-muted-foreground data-[state=inactive]:hover:text-foreground"
                 >
                   <User className="w-4 h-4" />
                   {t('mode.user')}
@@ -143,7 +143,7 @@ export function LoginForm({ onLoginSuccess }: { onLoginSuccess?: () => void }) {
               <TabsHighlightItem value="register" className="flex-1">
                 <TabsTrigger
                   value="register"
-                  className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-sm font-medium transition-colors data-[state=active]:text-foreground data-[state=inactive]:text-muted-foreground data-[state=inactive]:hover:text-foreground"
+                  className="w-full flex items-center justify-center gap-1.5 whitespace-nowrap py-2.5 px-2 sm:gap-2 sm:px-4 rounded-xl text-sm font-medium transition-colors data-[state=active]:text-foreground data-[state=inactive]:text-muted-foreground data-[state=inactive]:hover:text-foreground"
                 >
                   <UserPlus className="w-4 h-4" />
                   {t('mode.register')}
@@ -152,7 +152,7 @@ export function LoginForm({ onLoginSuccess }: { onLoginSuccess?: () => void }) {
               <TabsHighlightItem value="apikey" className="flex-1">
                 <TabsTrigger
                   value="apikey"
-                  className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-sm font-medium transition-colors data-[state=active]:text-foreground data-[state=inactive]:text-muted-foreground data-[state=inactive]:hover:text-foreground"
+                  className="w-full flex items-center justify-center gap-1.5 whitespace-nowrap py-2.5 px-2 sm:gap-2 sm:px-4 rounded-xl text-sm font-medium transition-colors data-[state=active]:text-foreground data-[state=inactive]:text-muted-foreground data-[state=inactive]:hover:text-foreground"
                 >
                   <KeyRound className="w-4 h-4" />
                   {t('mode.apikey')}

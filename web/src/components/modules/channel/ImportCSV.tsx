@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react';
+import { useTranslations } from 'next-intl';
 import { ChevronDown, FileSpreadsheet, HelpCircle, Loader2, Upload } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -15,6 +16,7 @@ deepseek_anthropic,DeepSeek Anthropic,https://api.deepseek.com/anthropic,sk-xxx,
 
 export function ChannelImportCSV() {
     const inputRef = useRef<HTMLInputElement | null>(null);
+    const t = useTranslations('channel.importCSV');
     const importCSV = useImportChannelCSV();
     const [file, setFile] = useState<File | null>(null);
     const [replaceKey, setReplaceKey] = useState(false);
@@ -23,17 +25,17 @@ export function ChannelImportCSV() {
 
     const handleImport = async () => {
         if (!file) {
-            toast.warning('先选 CSV 文件，别空手套渠道啦');
+            toast.warning(t('needFile'));
             return;
         }
         try {
             const data = await importCSV.mutateAsync({ file, replaceKey });
             setResult(data);
-            toast.success(`CSV 导入完成：新增 ${data.created}，更新 ${data.updated}，失败 ${data.failed}`);
+            toast.success(t('done', { created: data.created, updated: data.updated, failed: data.failed }));
             if (inputRef.current) inputRef.current.value = '';
             setFile(null);
         } catch (error) {
-            toast.error(error instanceof Error ? error.message : 'CSV 导入失败');
+            toast.error(error instanceof Error ? error.message : t('failed'));
         }
     };
 
@@ -48,14 +50,14 @@ export function ChannelImportCSV() {
                 <div className="min-w-0 flex-1">
                     {/* Title + help toggle */}
                     <div className="flex flex-wrap items-center justify-between gap-2">
-                        <h3 className="text-sm font-semibold text-card-foreground">CSV 批量导入渠道</h3>
+                        <h3 className="text-sm font-semibold text-card-foreground">{t('title')}</h3>
                         <button
                             type="button"
                             onClick={() => setShowHelp(!showHelp)}
                             className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
                         >
                             <HelpCircle className="size-3" />
-                            <span>说明</span>
+                            <span>{t('help')}</span>
                             <ChevronDown className={cn('size-3 transition-transform duration-200', showHelp && 'rotate-180')} />
                         </button>
                     </div>
@@ -64,20 +66,20 @@ export function ChannelImportCSV() {
                     {showHelp && (
                         <div className="mt-2 rounded-xl border border-border/60 bg-muted/20 p-3 space-y-2">
                             <p className="text-xs leading-relaxed text-muted-foreground">
-                                每行一个渠道：type,name,baseURL,apiKey,supportedModels,defaultTestModel；多个模型用 | 分隔。CSV 里的 supportedModels 会作为已启用模型写入；后续同步发现只进候选，不会自动扩权。
+                                {t('formatHint')}
                             </p>
                             <div className="flex justify-end">
                                 <Button
                                     type="button"
                                     variant="outline"
                                     size="sm"
-                                    onClick={() => navigator.clipboard?.writeText(SAMPLE_CSV).then(() => toast.success('示例 CSV 已复制'))}
+                                    onClick={() => navigator.clipboard?.writeText(SAMPLE_CSV).then(() => toast.success(t('sampleCopied')))}
                                 >
-                                    复制示例
+                                    {t('copySample')}
                                 </Button>
                             </div>
                             <p className="text-xs leading-relaxed text-muted-foreground">
-                                导入完成后只基于已启用模型刷新价格占位与模型池；自动同步拿到的新模型会留在候选区，管理员手动选择后才可进入方案和路由。
+                                {t('afterImportHint')}
                             </p>
                         </div>
                     )}
@@ -95,26 +97,26 @@ export function ChannelImportCSV() {
                         />
                         <Button type="button" onClick={handleImport} disabled={importCSV.isPending}>
                             {importCSV.isPending ? <Loader2 className="size-4 animate-spin" /> : <Upload className="size-4" />}
-                            {importCSV.isPending ? '导入中' : '开始导入'}
+                            {importCSV.isPending ? t('importing') : t('start')}
                         </Button>
                     </div>
 
                     <label className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
                         <Switch checked={replaceKey} onCheckedChange={setReplaceKey} />
-                        替换同名渠道旧 key（默认关闭，避免把线上 key 一键扫没）
+                        {t('replaceKey')}
                     </label>
 
                     {result && (
                         <div className="mt-4 rounded-xl border bg-background/60 p-3 text-xs">
                             <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
                                 {[
-                                    ['总行数', result.total],
-                                    ['新增', result.created],
-                                    ['更新', result.updated],
-                                    ['跳过', result.skipped],
-                                    ['失败', result.failed],
+                                    [t('total'), result.total],
+                                    [t('created'), result.created],
+                                    [t('updated'), result.updated],
+                                    [t('skipped'), result.skipped],
+                                    [t('failedCount'), result.failed],
                                 ].map(([label, value]) => (
-                                    <div key={label} className={cn('rounded-lg border px-3 py-2', label === '失败' && result.failed > 0 ? 'border-destructive/30 text-destructive' : 'border-border')}>
+                                    <div key={label} className={cn('rounded-lg border px-3 py-2', label === t('failedCount') && result.failed > 0 ? 'border-destructive/30 text-destructive' : 'border-border')}>
                                         <div className="text-muted-foreground">{label}</div>
                                         <div className="mt-1 text-base font-semibold">{value}</div>
                                     </div>
@@ -123,9 +125,9 @@ export function ChannelImportCSV() {
                             {failedRows.length > 0 && (
                                 <div className="mt-3 space-y-1 text-destructive">
                                     {failedRows.slice(0, 5).map((row) => (
-                                        <div key={`${row.row}-${row.name}`}>第 {row.row} 行 {row.name || '(未命名)'}：{row.error}</div>
+                                        <div key={`${row.row}-${row.name}`}>{t('rowError', { row: row.row, name: row.name || t('unnamed'), error: row.error ?? '' })}</div>
                                     ))}
-                                    {failedRows.length > 5 && <div>还有 {failedRows.length - 5} 行失败，先别装看不见。</div>}
+                                    {failedRows.length > 5 && <div>{t('moreFailed', { count: failedRows.length - 5 })}</div>}
                                 </div>
                             )}
                         </div>

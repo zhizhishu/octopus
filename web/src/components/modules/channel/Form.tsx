@@ -15,7 +15,9 @@ import { Badge } from '@/components/ui/badge';
 import { toast } from '@/components/common/Toast';
 import { useTranslations } from 'next-intl';
 import { useEffect, useRef, useState, type ReactNode, useLayoutEffect} from 'react';
-import { Loader2, Play, RefreshCw, X, Plus, Timer, Fingerprint } from 'lucide-react';
+import { Loader2, Play, RefreshCw, X, Plus, Timer, Fingerprint, HelpCircle, ChevronDown } from 'lucide-react';
+import { useIsMobile } from '@/hooks/useIsMobile';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/animate-ui/components/animate/tooltip';
 import {
     Accordion,
     AccordionContent,
@@ -39,6 +41,46 @@ import {
     sanitizeChannelTestError,
 } from '@/lib/channel-test';
 import { CAPABILITY_EMBEDDINGS, hasChannelCapability, setChannelCapability } from '@/lib/channel-capabilities';
+
+/** 手机端的折叠分组：标题 + 一行当前状态，点开再看字段。收起时字段只是隐藏、不卸载。 */
+function MobileSection({ title, summary, children }: { title: string; summary?: string; children: ReactNode }) {
+    const [open, setOpen] = useState(false);
+    return (
+        <section className="rounded-2xl border border-border bg-card">
+            <button
+                type="button"
+                aria-expanded={open}
+                onClick={() => setOpen((v) => !v)}
+                className="flex min-h-12 w-full items-center justify-between gap-3 rounded-2xl px-4 py-3 text-left"
+            >
+                <span className="min-w-0">
+                    <span className="block text-sm font-medium text-card-foreground">{title}</span>
+                    {summary && <span className="mt-0.5 block truncate text-xs text-muted-foreground">{summary}</span>}
+                </span>
+                <ChevronDown className={cn('size-4 shrink-0 text-muted-foreground transition-transform', open && 'rotate-180')} />
+            </button>
+            <div hidden={!open} className="space-y-4 border-t border-border/60 px-4 pb-4 pt-4">
+                {children}
+            </div>
+        </section>
+    );
+}
+
+/** 小问号：主界面只留一行白话，细节点开/悬停再看。 */
+function HelpTip({ text, label }: { text: string; label: string }) {
+    return (
+        <TooltipProvider>
+            <Tooltip>
+                <TooltipTrigger asChild>
+                    <button type="button" aria-label={label} className="inline-flex size-6 shrink-0 items-center justify-center rounded-full align-middle text-muted-foreground hover:text-foreground">
+                        <HelpCircle className="size-3.5" />
+                    </button>
+                </TooltipTrigger>
+                <TooltipContent className="max-w-72">{text}</TooltipContent>
+            </Tooltip>
+        </TooltipProvider>
+    );
+}
 
 function AdvancedSettingsShell({
     panel,
@@ -139,6 +181,9 @@ export interface ChannelFormProps {
     advancedOpen?: boolean;
     /** 已有渠道 id：给已启用模型芯片画检测圆点（新建渠道没有）。 */
     channelId?: number;
+    /** 手机端由外层弹窗提供吸底的保存/取消按钮时传入：表单用这个 id 关联外部提交按钮。 */
+    formId?: string;
+    hideMobileActions?: boolean;
 }
 
 const CHANNEL_BASE_URL_SUFFIXES: Partial<Record<ChannelType, string[]>> = {
@@ -271,8 +316,11 @@ export function ChannelForm({
     advancedMode = 'accordion',
     advancedOpen = false,
     channelId,
+    formId,
+    hideMobileActions = false,
 }: ChannelFormProps) {
     const t = useTranslations('channel.form');
+    const isMobile = useIsMobile();
 
     // Ensure the form always shows at least 1 row for base_urls / keys / custom_header.
     // This avoids "empty list" UI and also keeps URL + APIKEY layout consistent.
@@ -445,7 +493,7 @@ export function ChannelForm({
 
     const handleTestCurrentChannel = () => {
         if (!formData.base_urls?.[0]?.url || !effectiveKey || !testModel) {
-            toast.error('请先填写 Base URL、API Key 和模型');
+            toast.error(t('testNeedFields'));
             return;
         }
         channelTest.mutate(
@@ -462,10 +510,10 @@ export function ChannelForm({
                     const result = data.results[0] ?? null;
                     setChannelTestResult(result);
                     if (result?.success) {
-                        toast.success('测试成功');
+                        toast.success(t('testOk'));
                         return;
                     }
-                    toast.error('测试失败', { description: sanitizeChannelTestError(result?.error || '无可用结果') });
+                    toast.error(t('testFail'), { description: sanitizeChannelTestError(result?.error || t('testNoResult')) });
                 },
                 onError: (error) => {
                     setChannelTestResult({
@@ -476,7 +524,7 @@ export function ChannelForm({
                         duration_ms: 0,
                         error: error.message,
                     });
-                    toast.error('测试失败', { description: sanitizeChannelTestError(error.message) });
+                    toast.error(t('testFail'), { description: sanitizeChannelTestError(error.message) });
                 },
             }
         );
@@ -721,7 +769,7 @@ export function ChannelForm({
     const handleImportHeaders = () => {
         const imported = parseBulkHeaders(bulkHeaderText);
         if (imported.length === 0) {
-            toast.error('没有解析到 Header');
+            toast.error(t('headerNoneParsed'));
             return;
         }
         const next = new Map<string, Channel['custom_header'][number]>();
@@ -735,7 +783,7 @@ export function ChannelForm({
         }
         onFormDataChange({ ...formData, custom_header: Array.from(next.values()) });
         setBulkHeaderText('');
-        toast.success(`已导入 ${imported.length} 个 Header`);
+        toast.success(t('headerImported', { count: imported.length }));
     };
 
     const updateMappingRows = (rows: Array<{ client: string; upstream: string }>) => {
@@ -764,17 +812,8 @@ export function ChannelForm({
     const isAdvancedPanel = advancedMode === 'panel';
     const showAdvanced = !isAdvancedPanel || advancedOpen;
 
-    return (
-        <form
-            onSubmit={onSubmit}
-            className={cn(
-                "px-1",
-                isAdvancedPanel && advancedOpen
-                    ? "relative space-y-4 md:pr-[28rem]"
-                    : "space-y-4"
-            )}
-        >
-            <div className={cn("grid grid-cols-1 md:grid-cols-2 gap-4")}>
+    const nameField = (
+        <>
                 <div className="space-y-2">
                     <label htmlFor={`${idPrefix}-name`} className="text-sm font-medium text-card-foreground">
                         {t('name')}
@@ -788,7 +827,11 @@ export function ChannelForm({
                         required
                     />
                 </div>
+        </>
+    );
 
+    const typeField = (
+        <>
                 <div className="space-y-2">
                     <label htmlFor={`${idPrefix}-type`} className="text-sm font-medium text-card-foreground">
                         {t('type')}
@@ -818,7 +861,11 @@ export function ChannelForm({
                         </SelectContent>
                     </Select>
                 </div>
+        </>
+    );
 
+    const priorityField = (
+        <>
                 <div className="space-y-2">
                     <label htmlFor={`${idPrefix}-priority`} className="text-sm font-medium text-card-foreground">
                         {t('priority')}
@@ -837,7 +884,11 @@ export function ChannelForm({
                     />
                     <p className="text-xs text-muted-foreground">{t('priorityHint')}</p>
                 </div>
+        </>
+    );
 
+    const maxConcurrentField = (
+        <>
                 <div className="space-y-2">
                     <label htmlFor={`${idPrefix}-max-concurrent`} className="text-sm font-medium text-card-foreground">
                         {t('maxConcurrent')}
@@ -857,17 +908,22 @@ export function ChannelForm({
                     />
                     <p className="text-xs text-muted-foreground">{t('maxConcurrentHint')}</p>
                 </div>
+        </>
+    );
 
+    const raceField = (
+        <>
                 {/* 多 Key 竞速：同时打多把 key，最快回来的赢，其余标 raced_out 取消。
                     需要 >=2 把可用 key，且只对普通文本 relay 生效（embedding/图片/视频走原路）。 */}
                 <div className="space-y-2 sm:col-span-2">
                     <div className="flex items-center justify-between gap-3 rounded-xl border border-border/60 px-3 py-2.5">
                         <div className="min-w-0">
                             <label htmlFor={`${idPrefix}-race-mode`} className="text-sm font-medium text-card-foreground">
-                                多 Key 竞速
+                                {t('raceMode')}
                             </label>
+                            <HelpTip text={t('raceModeTip')} label={t('raceMode')} />
                             <p className="mt-0.5 text-xs text-muted-foreground">
-                                同一渠道内并发打多把 Key，最快返回的胜出，其余立即取消。需要至少 2 把可用 Key。
+                                {t('raceModeHint')}
                             </p>
                         </div>
                         <Switch
@@ -880,7 +936,7 @@ export function ChannelForm({
                         <div className="grid gap-3 sm:grid-cols-2">
                             <div className="space-y-2">
                                 <label htmlFor={`${idPrefix}-race-key-concurrency`} className="text-sm font-medium text-card-foreground">
-                                    竞速并发数
+                                    {t('raceKeyConcurrency')}
                                 </label>
                                 <Input
                                     className='rounded-xl'
@@ -896,11 +952,11 @@ export function ChannelForm({
                                         onFormDataChange({ ...formData, race_key_concurrency: Number.isFinite(n) ? Math.min(5, Math.max(2, n)) : 2 });
                                     }}
                                 />
-                                <p className="text-xs text-muted-foreground">同时参赛的 Key 数量，2-5。</p>
+                                <p className="text-xs text-muted-foreground">{t('raceKeyConcurrencyHint')}</p>
                             </div>
                             <div className="space-y-2">
                                 <label htmlFor={`${idPrefix}-race-delay-ms`} className="text-sm font-medium text-card-foreground">
-                                    对冲延迟 (ms)
+                                    {t('raceDelayMs')}
                                 </label>
                                 <Input
                                     className='rounded-xl'
@@ -916,12 +972,16 @@ export function ChannelForm({
                                         onFormDataChange({ ...formData, race_delay_ms: Number.isFinite(n) ? Math.min(5000, Math.max(0, n)) : 0 });
                                     }}
                                 />
-                                <p className="text-xs text-muted-foreground">0 = 全部同时发；&gt;0 则第一把先发、其余延后，首发够快就不浪费额度。</p>
+                                <p className="text-xs text-muted-foreground">{t('raceDelayMsHint')}</p>
                             </div>
                         </div>
                     )}
                 </div>
+        </>
+    );
 
+    const rpmField = (
+        <>
                 <div className="space-y-2">
                     <label htmlFor={`${idPrefix}-rpm-limit`} className="text-sm font-medium text-card-foreground">
                         {t('rpmLimit')}
@@ -941,7 +1001,11 @@ export function ChannelForm({
                     />
                     <p className="text-xs text-muted-foreground">{t('rpmLimitHint')}</p>
                 </div>
+        </>
+    );
 
+    const keyStrategyField = (
+        <>
                 <div className="space-y-2">
                     <label htmlFor={`${idPrefix}-key-select-strategy`} className="text-sm font-medium text-card-foreground">
                         {t('keySelectStrategy')}
@@ -959,8 +1023,11 @@ export function ChannelForm({
                         </SelectContent>
                     </Select>
                 </div>
-            </div>
+        </>
+    );
 
+    const baseUrlsBlock = (
+        <>
             <div className={cn("space-y-2")}>
                 <div className="flex items-center justify-between">
                     <label className="text-sm font-medium text-card-foreground">
@@ -1016,7 +1083,11 @@ export function ChannelForm({
                     <p className="text-xs leading-relaxed text-muted-foreground">{t('typeSystemOneHint')}</p>
                 )}
             </div>
+        </>
+    );
 
+    const keysBlock = (
+        <>
             <div className={cn("space-y-2")}>
                 <div className="flex items-center justify-between">
                     <label className="text-sm font-medium text-card-foreground">
@@ -1084,11 +1155,12 @@ export function ChannelForm({
                                 value={k.remark ?? ''}
                                 onChange={(e) => handleUpdateKey(idx, { remark: e.target.value })}
                                 placeholder={t('remark')}
-                                className="col-span-3 min-w-0 rounded-xl sm:col-span-1"
+                                className="min-w-0 rounded-xl"
                             />
                             <Switch
                                 checked={k.enabled}
                                 onCheckedChange={(checked) => handleUpdateKey(idx, { enabled: checked })}
+                                aria-label={t('enabled')}
                             />
                             <Button
                                 type="button"
@@ -1106,8 +1178,11 @@ export function ChannelForm({
                 </div>
                 <p className="text-xs text-muted-foreground">{t('apiKeyBulkHint')}</p>
             </div>
+        </>
+    );
 
-            <div className={cn("space-y-2")}>
+    const modelsCore = (
+        <>
                 <div className="flex items-center justify-between">
                     <label className="text-sm font-medium text-card-foreground">{t('model')}</label>
                     <div className="flex items-center gap-1">
@@ -1120,7 +1195,7 @@ export function ChannelForm({
                             className="h-6 px-2 text-xs text-muted-foreground/60 hover:text-muted-foreground hover:bg-transparent"
                         >
                             {channelTest.isPending ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Play className="h-3 w-3 mr-1" />}
-                            测试
+                            {t('modelTest')}
                         </Button>
                         <Button
                             type="button"
@@ -1146,7 +1221,7 @@ export function ChannelForm({
                         value={inputValue}
                         onChange={(e) => setInputValue(e.target.value)}
                         onKeyDown={handleInputKeyDown}
-                        placeholder="可手输模型，例如 claude-fable-5 / claude-opus-4-8 / gpt-5.5"
+                        placeholder={t('modelInputPlaceholder')}
                         className="pr-10 rounded-xl"
                     />
                     {inputValue.trim() && !autoModels.includes(inputValue.trim()) && (
@@ -1167,7 +1242,7 @@ export function ChannelForm({
                     <div className="rounded-xl border border-border bg-muted/20 p-2.5">
                         <div className="mb-2 flex items-center justify-between gap-2">
                             <label className="text-xs font-medium text-card-foreground">
-                                同步发现候选 ({fetchedModels.length})
+                                {t('modelFetchedCandidates', { count: fetchedModels.length })}
                             </label>
                             <div className="flex items-center gap-1">
                                 <Button
@@ -1225,7 +1300,7 @@ export function ChannelForm({
                 <div className="space-y-2">
                     <div className="flex items-center justify-between">
                         <label className="text-xs font-medium text-card-foreground">
-                            已启用模型 {autoModels.length > 0 && `(${autoModels.length})`}
+                            {t('modelEnabledList')} {autoModels.length > 0 && `(${autoModels.length})`}
                         </label>
                         {autoModels.length > 0 && (
                             <Button
@@ -1337,23 +1412,27 @@ export function ChannelForm({
                         </AccordionContent>
                     </AccordionItem>
                 </Accordion>
+        </>
+    );
 
+    const capabilitiesBlock = (
+        <>
                 {formData.type === ChannelType.Anthropic && (
                     <div className="rounded-xl border border-border bg-background/70 p-3">
                         <div className="flex flex-wrap items-start justify-between gap-3">
                             <div className="min-w-0 space-y-1">
-                                <div className="text-xs font-semibold text-card-foreground">Claude 1M 上下文能力</div>
+                                <div className="text-xs font-semibold text-card-foreground">{t('context1m')}<HelpTip text={t('context1mTip')} label={t('context1m')} /></div>
                                 <p className="text-xs leading-relaxed text-muted-foreground">
-                                    模型名保持干净，例如 claude-fable-5；开启后出站自动附加 Anthropic-Beta: context-1m-2025-08-07。
+                                    {t('context1mHint')}
                                 </p>
                             </div>
                             <label className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-border bg-muted/30 px-2.5 py-1.5 text-xs text-muted-foreground">
                                 <Switch
                                     checked={formData.anthropic_context_1m}
                                     onCheckedChange={(checked) => onFormDataChange({ ...formData, anthropic_context_1m: checked })}
-                                    aria-label="启用 Claude 1M 上下文能力"
+                                    aria-label={t('context1m')}
                                 />
-                                <span>{formData.anthropic_context_1m ? '已启用 1M' : '未启用'}</span>
+                                <span>{formData.anthropic_context_1m ? t('switchOn') : t('switchOff')}</span>
                             </label>
                         </div>
                     </div>
@@ -1362,18 +1441,18 @@ export function ChannelForm({
                 <div className="rounded-xl border border-border bg-background/70 p-3">
                     <div className="flex flex-wrap items-start justify-between gap-3">
                         <div className="min-w-0 space-y-1">
-                            <div className="text-xs font-semibold text-card-foreground">思考内容并入正文</div>
+                            <div className="text-xs font-semibold text-card-foreground">{t('thinkingToContent')}<HelpTip text={t('thinkingToContentTip')} label={t('thinkingToContent')} /></div>
                             <p className="text-xs leading-relaxed text-muted-foreground">
-                                对齐 new-api 的 thinking_to_content。开启后，当上游只填 reasoning_content、content 为空时（常见于 GLM 开 thinking 且 max_tokens 偏小），把思考链折叠进 content，方便只渲染正文的客户端。默认关闭，不改出站指纹。
+                                {t('thinkingToContentHint')}
                             </p>
                         </div>
                         <label className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-border bg-muted/30 px-2.5 py-1.5 text-xs text-muted-foreground">
                             <Switch
                                 checked={formData.thinking_to_content}
                                 onCheckedChange={(checked) => onFormDataChange({ ...formData, thinking_to_content: checked })}
-                                aria-label="启用思考内容并入正文"
+                                aria-label={t('thinkingToContent')}
                             />
-                            <span>{formData.thinking_to_content ? '已启用' : '未启用'}</span>
+                            <span>{formData.thinking_to_content ? t('switchOn') : t('switchOff')}</span>
                         </label>
                     </div>
                 </div>
@@ -1381,24 +1460,24 @@ export function ChannelForm({
                 <div className="rounded-xl border border-border bg-background/70 p-3">
                     <div className="flex flex-wrap items-start justify-between gap-3">
                         <div className="min-w-0 space-y-1">
-                            <div className="text-xs font-semibold text-card-foreground">支持嵌入流量</div>
+                            <div className="text-xs font-semibold text-card-foreground">{t('embeddingsCapability')}<HelpTip text={t('embeddingsCapabilityTip')} label={t('embeddingsCapability')} /></div>
                             <p className="text-xs leading-relaxed text-muted-foreground">
-                                对齐 sub2api 的账号能力位。开启后本渠道除聊天外还承接 /v1/embeddings——一个上游账号（如火山）既能聊天又能嵌入，不必为同一把 Key 建两个渠道。关闭＝只接聊天，与改动前完全一致。
+                                {t('embeddingsCapabilityHint')}
                             </p>
                         </div>
                         <label className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-border bg-muted/30 px-2.5 py-1.5 text-xs text-muted-foreground">
                             <Switch
                                 checked={embeddingsCapabilityEnabled}
                                 onCheckedChange={(checked) => onFormDataChange({ ...formData, capabilities: setChannelCapability(formData.capabilities, CAPABILITY_EMBEDDINGS, checked) })}
-                                aria-label="支持嵌入流量"
+                                aria-label={t('embeddingsCapability')}
                             />
-                            <span>{embeddingsCapabilityEnabled ? '已支持嵌入' : '仅聊天'}</span>
+                            <span>{embeddingsCapabilityEnabled ? t('embeddingsCapabilityOn') : t('embeddingsCapabilityOff')}</span>
                         </label>
                     </div>
                     {embeddingsCapabilityEnabled && (
                         <div className="mt-3 space-y-2">
                             <label htmlFor={`${idPrefix}-openai-embeddings-path`} className="text-sm font-medium text-card-foreground">
-                                嵌入端点路径
+                                {t('embeddingsPath')}
                             </label>
                             <Input
                                 id={`${idPrefix}-openai-embeddings-path`}
@@ -1409,28 +1488,29 @@ export function ChannelForm({
                                 className="rounded-xl"
                             />
                             <p className="text-xs leading-relaxed text-muted-foreground">
-                                留空＝默认 /v1/embeddings。火山这类上游的嵌入路径是 /api/v3/embeddings，请填完整路径——它和聊天路径各自独立，不会被拼在一起。
+                                {t('embeddingsPathHint')}
                             </p>
                         </div>
                     )}
                 </div>
+        </>
+    );
 
+    const testResultBlock = (
+        <>
                 {channelTestResult && (
                     <div className={`rounded-xl border p-2.5 text-xs ${channelTestResult.success ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'border-destructive/30 bg-destructive/10 text-destructive'}`}>
-                        <span className="font-medium">{channelTestResult.success ? '测试成功' : '测试失败'}</span>
+                        <span className="font-medium">{channelTestResult.success ? t('testOk') : t('testFail')}</span>
                         {!channelTestResult.success && (
-                            <p className="mt-1 break-words">{sanitizeChannelTestError(channelTestResult.error || '无可用结果')}</p>
+                            <p className="mt-1 break-words">{sanitizeChannelTestError(channelTestResult.error || t('testNoResult'))}</p>
                         )}
                     </div>
                 )}
-            </div>
+        </>
+    );
 
-            {showAdvanced && (
-                <AdvancedSettingsShell panel={isAdvancedPanel} title={t('advanced')}>
-                        {/* Vertical stack: auto-group and proxy each take a full row; the two
-                            fingerprint controls (mode + profile) are grouped into one titled card
-                            below so they read as one coherent section, not two floating selects. */}
-                        <div className="space-y-4">
+    const proxyBlock = (
+        <>
                             <div className="space-y-2">
                                 <div className="flex flex-wrap items-center justify-between gap-2">
                                     <label htmlFor={`${idPrefix}-channel-proxy`} className="text-sm font-medium text-card-foreground">
@@ -1485,7 +1565,11 @@ export function ChannelForm({
                                     </p>
                                 )}
                             </div>
+        </>
+    );
 
+    const cloakBlock = (
+        <>
                             {/* Client-fingerprint group: mode + profile under one titled card so the
                                 section reads as one coherent unit instead of two stray selects. */}
                             <div className="space-y-3 rounded-xl border border-border bg-background/50 p-4">
@@ -1561,8 +1645,11 @@ export function ChannelForm({
                                     </div>
                                 <p className="text-xs leading-relaxed text-muted-foreground">{t('cloakProfileHint')}</p>
                             </div>
-                        </div>
+        </>
+    );
 
+    const breakerBlock = (
+        <>
                         <div className="rounded-xl border border-border bg-background/70 p-3">
                             <div className="flex flex-wrap items-start justify-between gap-3">
                                 <div className="min-w-0 space-y-1">
@@ -1581,7 +1668,11 @@ export function ChannelForm({
                                 </label>
                             </div>
                         </div>
+        </>
+    );
 
+    const pathsBlock = (
+        <>
                         {isCustomOpenAIChat(formData.type) && (
                             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                                 <div className="space-y-2">
@@ -1612,7 +1703,11 @@ export function ChannelForm({
                                 </div>
                             </div>
                         )}
+        </>
+    );
 
+    const headersBlock = (
+        <>
                         <div className="space-y-2">
                             <div className="flex flex-wrap items-center justify-between gap-2">
                                 <label className="text-sm font-medium text-card-foreground">
@@ -1647,7 +1742,7 @@ export function ChannelForm({
                                         disabled={bulkHeaderText.trim().length === 0}
                                         className="h-8 rounded-xl px-3 text-xs"
                                     >
-                                        批量导入
+                                        {t('customHeaderBulkImport')}
                                     </Button>
                                 </div>
                             </div>
@@ -1683,7 +1778,11 @@ export function ChannelForm({
                                 ))}
                             </div>
                         </div>
+        </>
+    );
 
+    const regexBlock = (
+        <>
                         <div className="space-y-2">
                             <label htmlFor={`${idPrefix}-match-regex`} className="text-sm font-medium text-card-foreground">
                                 {t('matchRegex')}
@@ -1697,7 +1796,11 @@ export function ChannelForm({
                                 className="rounded-xl"
                             />
                         </div>
+        </>
+    );
 
+    const paramBlock = (
+        <>
                         <div className="space-y-2">
                             <div className="flex flex-wrap items-center justify-between gap-2">
                                 <label htmlFor={`${idPrefix}-param-override`} className="text-sm font-medium text-card-foreground">
@@ -1767,7 +1870,11 @@ export function ChannelForm({
                                 );
                             })()}
                         </div>
+        </>
+    );
 
+    const promptBlock = (
+        <>
                         <div className="space-y-2">
                             <div className="flex flex-wrap items-center justify-between gap-2">
                                 <label htmlFor={`${idPrefix}-system-prompt-override`} className="text-sm font-medium text-card-foreground">
@@ -1794,9 +1901,11 @@ export function ChannelForm({
                                 className="min-h-28 w-full rounded-xl border border-border bg-background px-3 py-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                             />
                         </div>
-                </AdvancedSettingsShell>
-            )}
+        </>
+    );
 
+    const enabledRow = (
+        <>
             <div className={cn("flex flex-wrap items-center justify-between gap-4 p-4 rounded-xl bg-muted/20 border border-border/50")}>
                 <label className="flex items-center gap-2 cursor-pointer">
                     <Switch
@@ -1823,7 +1932,11 @@ export function ChannelForm({
                     </label>
                 </div>
             </div>
+        </>
+    );
 
+    const actionsBlock = (
+        <>
             <div className={cn(`flex flex-col gap-3 pt-2 ${onCancel ? 'sm:flex-row' : ''}`)}>
                 {onCancel && cancelText && (
                     <Button
@@ -1843,6 +1956,138 @@ export function ChannelForm({
                     {isPending ? pendingText : submitText}
                 </Button>
             </div>
+        </>
+    );
+
+    if (!isMobile) {
+        return (
+        <form
+            onSubmit={onSubmit}
+            className={cn(
+                "px-1",
+                isAdvancedPanel && advancedOpen
+                    ? "relative space-y-4 md:pr-[28rem]"
+                    : "space-y-4"
+            )}
+        >
+            <div className={cn("grid grid-cols-1 md:grid-cols-2 gap-4")}>
+                {nameField}
+                {typeField}
+                {priorityField}
+                {maxConcurrentField}
+                {raceField}
+                {rpmField}
+                {keyStrategyField}
+            </div>
+
+            {baseUrlsBlock}
+
+            {keysBlock}
+
+            <div className={cn("space-y-2")}>
+                {modelsCore}
+                {capabilitiesBlock}
+                {testResultBlock}
+            </div>
+
+            {showAdvanced && (
+                <AdvancedSettingsShell panel={isAdvancedPanel} title={t('advanced')}>
+                        <div className="space-y-4">
+                            {proxyBlock}
+                            {cloakBlock}
+                        </div>
+                        {breakerBlock}
+                        {pathsBlock}
+                        {headersBlock}
+                        {regexBlock}
+                        {paramBlock}
+                        {promptBlock}
+                </AdvancedSettingsShell>
+            )}
+
+            {enabledRow}
+
+            {actionsBlock}
+        </form>
+        );
+    }
+
+    // 手机端：只把常用的（名称、类型、地址、Key、模型）摊开，其余按用途收进可折叠分组。
+    // 只换排版和分组，每个字段的控件与效果和桌面端完全相同。
+    const capabilityOnCount = [
+        formData.type === ChannelType.Anthropic && formData.anthropic_context_1m,
+        formData.thinking_to_content,
+        embeddingsCapabilityEnabled,
+    ].filter(Boolean).length;
+    const rewriteOnCount = [
+        formData.match_regex.trim(),
+        formData.param_override.trim(),
+        formData.system_prompt_override.trim(),
+    ].filter(Boolean).length;
+    const headerCount = (formData.custom_header ?? []).filter((h) => h.header_key.trim()).length;
+    const strategyLabel = (formData.key_select_strategy ?? 0) === 1 ? t('keySelectStrategySticky') : t('keySelectStrategyCostBalanced');
+    return (
+        <form
+            id={formId}
+            onSubmit={onSubmit}
+            className="space-y-4 px-1"
+        >
+            <div className="grid grid-cols-1 gap-4">
+                {nameField}
+                {typeField}
+            </div>
+
+            {baseUrlsBlock}
+
+            {keysBlock}
+
+            <div className="space-y-2">
+                {modelsCore}
+                {testResultBlock}
+            </div>
+
+            {enabledRow}
+
+            <MobileSection title={t('mobileSection.scheduling')} summary={`${t('priority')} ${formData.priority ?? 0} · ${strategyLabel}`}>
+                <div className="grid grid-cols-1 gap-4">
+                    {priorityField}
+                    {maxConcurrentField}
+                    {raceField}
+                    {rpmField}
+                    {keyStrategyField}
+                </div>
+                {breakerBlock}
+            </MobileSection>
+
+            <MobileSection title={t('mobileSection.capabilities')} summary={capabilityOnCount > 0 ? t('mobileSection.summaryOn', { count: capabilityOnCount }) : t('mobileSection.summaryNone')}>
+                {capabilitiesBlock}
+            </MobileSection>
+
+            <MobileSection title={t('mobileSection.proxy')} summary={formData.proxy ? t('switchOn') : t('switchOff')}>
+                {proxyBlock}
+            </MobileSection>
+
+            <MobileSection title={t('mobileSection.identity')} summary={(formData.cloak_mode || 'auto') !== 'never' ? t('cloakModeOn') : t('cloakModeOff')}>
+                {cloakBlock}
+            </MobileSection>
+
+            <MobileSection title={t('mobileSection.pathsHeaders')} summary={headerCount > 0 ? t('mobileSection.summaryHeaders', { count: headerCount }) : t('mobileSection.summaryNone')}>
+                {pathsBlock}
+                {headersBlock}
+            </MobileSection>
+
+            <MobileSection title={t('mobileSection.rewrite')} summary={rewriteOnCount > 0 ? t('mobileSection.summaryOn', { count: rewriteOnCount }) : t('mobileSection.summaryNone')}>
+                {regexBlock}
+                {paramBlock}
+                {promptBlock}
+            </MobileSection>
+
+            {!hideMobileActions && (
+                // 新建弹窗没有外层吸底栏：手机端让提交按钮贴在滚动区底部，随时能点到。
+                <div className="sticky bottom-0 z-10 -mx-1 border-t border-border/50 bg-card px-1 pb-1">
+                    {actionsBlock}
+                </div>
+            )}
         </form>
     );
 }

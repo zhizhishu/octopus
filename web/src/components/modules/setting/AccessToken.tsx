@@ -235,9 +235,9 @@ export function SettingAccessToken() {
                     管理员访问令牌
                 </h2>
                 <p className="text-xs leading-5 text-muted-foreground">
-                    给 AI / 脚本 / CLI 直连后台用：请求头带{' '}
+                    让脚本或 AI 工具不登录也能管理后台：请求头带{' '}
                     <span className="rounded bg-background px-1 font-mono">Authorization: Bearer &lt;令牌&gt;</span>{' '}
-                    即获管理员权限，不必再走浏览器登录态。至少 {MIN_LEN} 位；留空即禁用（空值不是后门）。
+                    即可。至少 {MIN_LEN} 位；留空 = 关闭。
                 </p>
             </div>
 

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
     Trash2,
     CheckCircle2,
@@ -23,6 +23,7 @@ import { Tabs, TabsContents, TabsContent } from '@/components/animate-ui/primiti
 import { type StatsMetricsFormatted } from '@/api/endpoints/stats';
 import { channelCapabilitiesUpdate } from '@/lib/channel-capabilities';
 import { useTranslations } from 'next-intl';
+import { useIsMobile } from '@/hooks/useIsMobile';
 import { Button } from '@/components/ui/button';
 import { ChannelForm, normalizeBaseUrlForChannelType, type ChannelFormData } from './Form';
 import { formatMoney } from '@/lib/utils';
@@ -90,6 +91,15 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
         model_mapping: channel.model_mapping,
     });
     const t = useTranslations('channel.detail');
+    const isMobile = useIsMobile();
+    const titleRef = useRef<HTMLDivElement>(null);
+    // 从详情点「编辑」时，弹窗可能还停在详情页底部；切到编辑后回到顶部，先看到名称等常用字段。
+    useEffect(() => {
+        if (!isEditing) return;
+        let el: HTMLElement | null = titleRef.current?.parentElement ?? null;
+        while (el && !/(auto|scroll)/.test(getComputedStyle(el).overflowY)) el = el.parentElement;
+        el?.scrollTo({ top: 0 });
+    }, [isEditing]);
 
     const currentView = isEditing ? 'editing' : 'viewing';
 
@@ -259,8 +269,9 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
 
     return (
         <>
-            <MorphingDialogTitle>
-                <header className="mb-6 flex items-center justify-between">
+            <div ref={titleRef} aria-hidden className="h-0" />
+            <MorphingDialogTitle className="max-md:sticky max-md:top-0 max-md:z-30 max-md:-mx-4 max-md:mb-4 max-md:border-b max-md:border-border/60 max-md:bg-card max-md:px-4 max-md:pt-[env(safe-area-inset-top)]">
+                <header className="mb-6 flex items-center justify-between max-md:mb-0 max-md:min-h-14">
                     <h2 className="whitespace-nowrap text-2xl font-bold tabular-nums text-card-foreground">
                         {isEditing ? t('title.edit') : t('title.view')}
                     </h2>
@@ -522,7 +533,7 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
                             </div>
 
                             {/* 操作按钮 */}
-                            <div className="grid gap-3 sm:grid-cols-2 pt-2">
+                            <div className="grid gap-3 sm:grid-cols-2 pt-2 max-md:pb-4">
                                 <Button
                                     onClick={() => {
                                         if (isConfirmingDelete) {
@@ -554,7 +565,7 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
                         </TabsContent>
 
                         <TabsContent value="editing">
-                            <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-muted/20 px-3 py-2">
+                            <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-muted/20 px-3 py-2 max-md:hidden">
                                 <div className="min-w-0">
                                     <div className="truncate text-sm font-medium text-card-foreground">{channel.name}</div>
                                     <div className="text-xs text-muted-foreground">#{channel.id}</div>
@@ -567,7 +578,7 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
                                     className="h-8 rounded-lg"
                                 >
                                     <SlidersHorizontal className="mr-1.5 size-3.5" />
-                                    高级设定
+                                    {t('actions.advanced')}
                                 </Button>
                             </div>
                             <ChannelForm
@@ -586,11 +597,38 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
                                 advancedMode="panel"
                                 advancedOpen={advancedOpen}
                                 channelId={channel.id}
+                                formId={`channel-edit-form-${channel.id}`}
+                                hideMobileActions
                             />
                         </TabsContent>
                     </TabsContents>
                 </Tabs>
             </MorphingDialogDescription>
+
+            {/* 手机端编辑：保存/取消吸在屏幕底部，长表单滚到哪都能直接保存。桌面端仍用表单底部的按钮。 */}
+            {isEditing && isMobile && (
+                <div className="sticky bottom-0 z-30 -mx-4 mt-4 flex gap-3 border-t border-border/60 bg-card px-4 pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]">
+                    <Button
+                        type="button"
+                        variant="secondary"
+                        onClick={() => {
+                            setAdvancedOpen(false);
+                            setIsEditing(false);
+                        }}
+                        className="h-12 flex-1 rounded-2xl"
+                    >
+                        {t('actions.cancel')}
+                    </Button>
+                    <Button
+                        type="submit"
+                        form={`channel-edit-form-${channel.id}`}
+                        disabled={updateChannel.isPending}
+                        className="h-12 flex-1 rounded-2xl"
+                    >
+                        {updateChannel.isPending ? t('actions.saving') : t('actions.save')}
+                    </Button>
+                </div>
+            )}
         </>
     );
 }
