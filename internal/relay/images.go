@@ -451,6 +451,17 @@ type imagesRelayMetrics struct {
 	SessionKey      string
 	SessionSource   string
 	UsageSeen       bool
+
+	// 真实出站请求体快照（与聊天主路径同一开关、同一套规则，见 upstream_body_log.go）。
+	upstreamBodyLog
+}
+
+// bodyLog 返回出站 body 快照的存放处；m 为 nil 时返回 nil（采集函数据此直接跳过）。
+func (m *imagesRelayMetrics) bodyLog() *upstreamBodyLog {
+	if m == nil {
+		return nil
+	}
+	return &m.upstreamBodyLog
 }
 
 func newImagesRelayMetrics(apiKeyID int, userID int, requestIP string, requestModel string, requestEndpoint string, requestPath string) *imagesRelayMetrics {
@@ -671,6 +682,7 @@ func (m *imagesRelayMetrics) saveLog(ctx context.Context, err error, duration ti
 		RequestContent:   m.RequestContent,
 		ResponseContent:  m.ResponseContent,
 	}
+	m.upstreamBodyLog.applyTo(&relayLog)
 	applyBillingSnapshotToRelayLog(&relayLog, billingSnapshot)
 
 	if apiKey, getErr := op.APIKeyGet(m.APIKeyID, ctx); getErr == nil {
@@ -889,11 +901,13 @@ func imagesAttempt(
 
 	var bodyReader io.Reader
 	var contentType string
+	var outBoundary string
 
 	if isMultipart {
 		pr, pw := io.Pipe()
 		mw := multipart.NewWriter(pw)
 		contentType = mw.FormDataContentType()
+		outBoundary = mw.Boundary()
 		bodyReader = pr
 
 		safe.SafeGo("images-multipart-writer", func() {
@@ -952,6 +966,15 @@ func imagesAttempt(
 	}
 	req.URL = parsedURL
 	req.Method = http.MethodPost
+
+	// 真实出站请求体快照（开关关闭时不读 body，零影响）。JSON 按发出去的字节原样记，
+	// 内联图片照图片另存规则换成带 id 的占位符；multipart（edits / variations 上传图）
+	// 只记摘要，图片存文件、其它二进制只留短占位符。
+	if isMultipart {
+		captureOutboundMultipartBody(metrics.bodyLog(), bc, boundary, outBoundary, actualModel)
+	} else if err := captureOutboundJSONBody(req, metrics.bodyLog()); err != nil {
+		return 0, false, nil, "", err
+	}
 
 	// Header 透传：复制下游 header，过滤 hop-by-hop 与鉴权相关
 	copyHeadersToUpstream(req, c, channel, channelKey, contentType, stream)

@@ -14,8 +14,8 @@ import (
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 )
 
-// 出站 body 快照只覆盖标准 relay、竞速、以及这条 chat→images 桥。
-// Gemini 图片桥在同一函数里提前返回，不许被顺手采进去。
+// chat→images 桥的出站 body 快照。同一函数里提前返回的 Gemini 图片桥由
+// upstream_body_log_paths_test.go 的 TestChatGeminiImageBridgeSnapshotsUpstreamBody 覆盖。
 func TestChatImageBridgeSnapshotsUpstreamBodyWhenEnabled(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx := setupRelayErrorDB(t)
@@ -84,45 +84,6 @@ func TestChatImageBridgeOmitsUpstreamBodyWhenDisabled(t *testing.T) {
 	}
 	if body := latestUpstreamRequestBody(t, ctx); body != "" {
 		t.Fatalf("disabled setting must not store an upstream body, got %s", body)
-	}
-}
-
-func TestGeminiImageBridgeDoesNotSnapshotUpstreamBody(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	ctx := setupRelayErrorDB(t)
-	if err := op.SettingSetInt(dbmodel.SettingKeyUpstreamRequestBodyLog, 1); err != nil {
-		t.Fatalf("enable body log: %v", err)
-	}
-
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{
-			"candidates":[{
-				"content":{"role":"model","parts":[{"inlineData":{"mimeType":"image/png","data":"Z2VtaW5pLWltZw=="}}]},
-				"finishReason":"STOP"
-			}]
-		}`))
-	}))
-	t.Cleanup(upstream.Close)
-	createImageBridgeGroup(t, ctx, upstream.URL, "gemini-image-chat", "gemini-2.5-flash-image", outbound.OutboundTypeGemini)
-
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
-		"model":"gemini-image-chat",
-		"messages":[{"role":"user","content":"Create a gemini image"}]
-	}`))
-	req.Header.Set("Content-Type", "application/json")
-	c.Request = req
-	c.Set("api_key_id", 0)
-	c.Set("user_id", 0)
-	c.Set("request_ip", "127.0.0.1")
-	Handler(inbound.InboundTypeOpenAIChat, c)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("gemini bridge failed: %d %s", rec.Code, rec.Body.String())
-	}
-	if body := latestUpstreamRequestBody(t, ctx); body != "" {
-		t.Fatalf("gemini image bridge must not capture an upstream body, got %s", body)
 	}
 }
 

@@ -228,7 +228,7 @@ runIterator:
 			statusCode, body, upstreamCT, fwdErr := func() (int, []byte, string, error) {
 				finish := balancer.BeginRuntimeAttempt(channel.ID, usedKey.ID, item.ModelName)
 				defer finish()
-				return videoForward(ctx, c, http.MethodPost, videoUpstreamPathForChannel(channel, mediaKind, "", false), payload, item.ModelName, channel, usedKey.ChannelKey)
+				return videoForward(ctx, c, http.MethodPost, videoUpstreamPathForChannel(channel, mediaKind, "", false), payload, item.ModelName, channel, usedKey.ChannelKey, metrics.bodyLog())
 			}()
 			usedAt := time.Now().Unix()
 
@@ -348,7 +348,7 @@ func VideoPollHandler(c *gin.Context) {
 	metrics := newRawProtocolRelayMetrics(c.GetInt("api_key_id"), c.GetInt("user_id"), c.GetString("request_ip"), entry.model, "videos_poll", c.Request.URL.Path)
 	metrics.ActualModel = entry.model
 
-	statusCode, body, upstreamCT, fwdErr := videoForward(ctx, c, http.MethodGet, videoUpstreamPathForChannel(channel, entry.mediaKind, taskID, false), nil, entry.model, channel, channelKey)
+	statusCode, body, upstreamCT, fwdErr := videoForward(ctx, c, http.MethodGet, videoUpstreamPathForChannel(channel, entry.mediaKind, taskID, false), nil, entry.model, channel, channelKey, nil)
 	if fwdErr != nil {
 		metrics.Save(ctx, false, fwdErr, nil)
 		status, code, message := relayErrorResponse(fwdErr)
@@ -439,7 +439,8 @@ func videoTaskRelayTarget(c *gin.Context, ctx context.Context, taskID string) (v
 // poll), buffering the small JSON response so the caller can inspect it (to
 // record task ownership) before writing it downstream. It reuses the shared
 // image/raw helpers for auth headers and the channel HTTP client.
-func videoForward(ctx context.Context, c *gin.Context, method, upstreamPath string, payload map[string]any, actualModel string, channel *model.Channel, channelKey string) (int, []byte, string, error) {
+// bodyLog 非 nil 时（视频创建）记录真实出站请求体快照；轮询是无 body 的 GET，传 nil。
+func videoForward(ctx context.Context, c *gin.Context, method, upstreamPath string, payload map[string]any, actualModel string, channel *model.Channel, channelKey string, bodyLog *upstreamBodyLog) (int, []byte, string, error) {
 	targetURL, err := openAIUpstreamURL(channel, upstreamPath)
 	if err != nil {
 		return 0, nil, "", fmt.Errorf("failed to build video url: %w", err)
@@ -469,6 +470,12 @@ func videoForward(ctx context.Context, c *gin.Context, method, upstreamPath stri
 	req, err := http.NewRequestWithContext(ctx, method, parsedURL.String(), bodyReader)
 	if err != nil {
 		return 0, nil, "", fmt.Errorf("failed to create video request: %w", err)
+	}
+	// 真实出站请求体快照（开关关闭时不读 body）。只有带 JSON body 的创建请求有东西可拍。
+	if bodyReader != nil {
+		if err := captureOutboundJSONBody(req, bodyLog); err != nil {
+			return 0, nil, "", err
+		}
 	}
 	copyHeadersToUpstream(req, c, channel, channelKey, contentType, false)
 

@@ -914,11 +914,13 @@ func rawProtocolAttempt(
 
 	var bodyReader io.Reader
 	var contentType string
+	var outBoundary string
 
 	if isMultipart {
 		pr, pw := io.Pipe()
 		mw := multipart.NewWriter(pw)
 		contentType = mw.FormDataContentType()
+		outBoundary = mw.Boundary()
 		bodyReader = pr
 
 		safe.SafeGo("raw-multipart-writer", func() {
@@ -967,6 +969,13 @@ func rawProtocolAttempt(
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, parsedURL.String(), bodyReader)
 	if err != nil {
 		return 0, false, nil, "", "", fmt.Errorf("failed to create request: %w", err)
+	}
+	// 真实出站请求体快照（开关关闭时不读 body，零影响）。JSON 按发出去的字节原样记；
+	// multipart（音频转写等）只记摘要，二进制不落库。
+	if isMultipart {
+		captureOutboundMultipartBody(metrics.bodyLog(), bc, boundary, outBoundary, actualModel)
+	} else if err := captureOutboundJSONBody(req, metrics.bodyLog()); err != nil {
+		return 0, false, nil, "", "", err
 	}
 	copyHeadersToUpstream(req, c, channel, channelKey, contentType, stream)
 
@@ -1126,6 +1135,17 @@ type rawProtocolRelayMetrics struct {
 	SessionSource   string
 	UsageSeen       bool
 	OpaqueResponse  bool
+
+	// 真实出站请求体快照（与聊天主路径同一开关、同一套规则，见 upstream_body_log.go）。
+	upstreamBodyLog
+}
+
+// bodyLog 返回出站 body 快照的存放处；m 为 nil 时返回 nil（采集函数据此直接跳过）。
+func (m *rawProtocolRelayMetrics) bodyLog() *upstreamBodyLog {
+	if m == nil {
+		return nil
+	}
+	return &m.upstreamBodyLog
 }
 
 func newRawProtocolRelayMetrics(apiKeyID int, userID int, requestIP string, requestModel string, protocol string, requestPath string) *rawProtocolRelayMetrics {
@@ -1386,6 +1406,7 @@ func (m *rawProtocolRelayMetrics) saveLog(ctx context.Context, err error, durati
 		RequestContent:   m.RequestContent,
 		ResponseContent:  m.ResponseContent,
 	}
+	m.upstreamBodyLog.applyTo(&relayLog)
 	applyBillingSnapshotToRelayLog(&relayLog, billingSnapshot)
 
 	if apiKey, getErr := op.APIKeyGet(m.APIKeyID, ctx); getErr == nil {

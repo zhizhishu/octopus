@@ -121,7 +121,7 @@ func (ra *relayAttempt) forwardImageGenerationViaImages(ctx context.Context, spa
 	// 这条 chat→images 桥在那之前就 return 了，真正发出去的是这里 marshal 的 body。
 	// 开关与 128KB 截断和主路径 / 竞速同一套（SetUpstreamRequestBody）：
 	// 按发出去的字节原样保存，凭据不打码。
-	// Gemini 图片桥在上面已经 return，不进这里。
+	// Gemini 图片桥在上面已经 return，它在 forwardGeminiImageGenerationViaImages 里自己拍。
 	if upstreamRequestBodyLogEnabled() {
 		snapshot, snapErr := snapshotOutboundRequestBody(req)
 		if snapErr != nil {
@@ -191,6 +191,13 @@ func (ra *relayAttempt) forwardGeminiImageGenerationViaImages(ctx context.Contex
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
 	if err != nil {
 		return 0, fmt.Errorf("failed to create gemini image generation request: %w", err)
+	}
+	// 真实出站请求体快照：chat→Gemini 图片桥同样在主路径快照点之前 return，
+	// 真正发出去的是这里的 body。开关与规则同主路径（SetUpstreamRequestBody）。
+	if ra.metrics != nil {
+		if err := captureOutboundJSONBody(req, &ra.metrics.upstreamBodyLog); err != nil {
+			return 0, err
+		}
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
