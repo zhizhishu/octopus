@@ -51,6 +51,9 @@ type RelayMetrics struct {
 	// upsteamRequestBody 是真实出站请求体快照（TransformRequest + param_override
 	// 之后的字节，已脱敏）。空 = 未采集（开关关闭或采集失败）。
 	upstreamRequestBody string
+	// upstreamImageHashes 是 upstreamRequestBody 里带 id 占位符、且已交给写盘队列的
+	// 图片哈希；落库时写进 relay_log_images 引用表，清理任务据此判断文件还要不要。
+	upstreamImageHashes []string
 
 	// 统计指标
 	ActualModel   string
@@ -433,11 +436,19 @@ func (m *RelayMetrics) SetUpstreamRequestBody(body []byte) {
 	// 按用户决定，这个字段原样记录、不脱敏。只做两件事，顺序是「先在副本上剥内联二进制、再截断」：
 	// 先截断会把 base64 从中间切断，日志里留下一大段无用载荷。
 	// 截断标记里的总长仍是真正发出去的字节数，不是剥过之后的日志长度。
-	logged := stripInlineBinaryForLog(string(body))
+	//
+	// 图片另存（见 log_image_capture.go）：历史日志落库时，能识别的内联图片换成带
+	// 哈希的占位符，原图交给后台写盘。顺序是「剥离 → 截断 → 只存截断后还看得见的」。
+	var capture *imageCapture
+	if logImageCaptureEnabled() {
+		capture = newImageCapture()
+	}
+	logged := stripInlineBinaryWith(string(body), capture)
 	if len(logged) > upstreamRequestBodyLogLimit {
 		logged = truncateUTF8(logged, upstreamRequestBodyLogLimit) +
 			fmt.Sprintf("\n...[truncated: %d bytes total]", len(body))
 	}
+	logged, m.upstreamImageHashes = capture.commit(logged)
 	m.upstreamRequestBody = logged
 }
 
@@ -1029,6 +1040,7 @@ func (m *RelayMetrics) saveLog(ctx context.Context, err error, duration time.Dur
 	// 真实出站请求体（开关打开且采集成功时才有；否则留空，不假装有值）。
 	if m.upstreamRequestBody != "" {
 		relayLog.UpstreamRequestBody = m.upstreamRequestBody
+		relayLog.UpstreamImageHashes = m.upstreamImageHashes
 	}
 
 	// 响应内容

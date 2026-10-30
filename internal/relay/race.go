@@ -760,6 +760,7 @@ func runRaceContenders(
 			// 无条件覆盖：赢家副本对本次响应才是权威。带条件会让父 metrics 挂着
 			// 上一次串行尝试的 body（错误归因，比空更糟）。
 			parentReq.metrics.upstreamRequestBody = winner.preparedAttempt.metrics.upstreamRequestBody
+			parentReq.metrics.upstreamImageHashes = winner.preparedAttempt.metrics.upstreamImageHashes
 		}
 
 		// Reuse the racer's OWN relayAttempt instead of building a fresh winnerRA: the
