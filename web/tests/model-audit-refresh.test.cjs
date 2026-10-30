@@ -415,6 +415,7 @@ function auditPage() {
                     full: { ids: ['liveness', 'identity', 'glitch', 'token_delta', 'echo_rewrite', 'context_canary', 'fingerprint'], requests: 10 },
                 },
             }),
+            useAuditJobs: () => ({ data: [] }),
             useScheduledAudit: () => ({ data: undefined }),
         },
         '@/components/common/PageWrapper': widgets('PageWrapper'),

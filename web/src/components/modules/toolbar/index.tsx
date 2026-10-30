@@ -131,6 +131,9 @@ export function Toolbar() {
                     {!searchExpanded ? (
                         <motion.button
                             layoutId="search-box"
+                            type="button"
+                            aria-label={toolbarItem === 'channel' ? '搜索渠道' : toolbarItem === 'model' ? '搜索模型' : '搜索'}
+                            title={toolbarItem === 'channel' ? '搜索本页渠道' : toolbarItem === 'model' ? '搜索本页模型' : '搜索本页'}
                             onClick={() => setExpandedSearchItem(toolbarItem)}
                             className={buttonVariants({ variant: "ghost", size: "icon", className: "absolute inset-0 rounded-xl transition-none hover:bg-transparent text-muted-foreground hover:text-foreground" })}
                         >
