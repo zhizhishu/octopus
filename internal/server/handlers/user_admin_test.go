@@ -90,6 +90,8 @@ func TestUserAdminRoutesRejectNonAdmin(t *testing.T) {
 		{http.MethodGet, fmt.Sprintf("/api/v1/user/balance-log?id=%d", plain.ID)},
 		{http.MethodGet, fmt.Sprintf("/api/v1/user/usage?id=%d", plain.ID)},
 		{http.MethodPost, "/api/v1/user/batch"},
+		{http.MethodGet, "/api/v1/user/access"},
+		{http.MethodGet, fmt.Sprintf("/api/v1/user/access/detail?id=%d", plain.ID)},
 	}
 	for _, c := range cases {
 		for _, token := range []string{"", userToken} {
@@ -251,5 +253,46 @@ func TestUserUsageEndpoint(t *testing.T) {
 	}
 	if rec, _ := env.do(t, http.MethodGet, fmt.Sprintf("/api/v1/user/usage?id=%d&range=forever", u.ID), env.token, nil); rec.Code != http.StatusBadRequest {
 		t.Fatalf("bad range must be 400, got %d", rec.Code)
+	}
+}
+
+// 用户页的 IP / 客户端：列表接口给每人最近一次 + 异常提示，详情接口按 IP / 客户端分组。
+func TestUserAccessEndpoints(t *testing.T) {
+	env := setupUserAdminEnv(t)
+	u := env.newUser(t, "roamer", 1)
+	now := time.Now().Unix()
+	op.UserAccessRecord(u.ID, 5, "203.0.113.1", "claude-cli/2.0.1", now-3*86400)
+	if err := op.UserAccessSaveDB(env.ctx); err != nil {
+		t.Fatal(err)
+	}
+	op.UserAccessRecord(u.ID, 5, "203.0.113.1", "claude-cli/2.0.1", now-60)
+	op.UserAccessRecord(u.ID, 5, "198.51.100.2", "claude-cli/2.0.1", now-10)
+	t.Cleanup(func() { _ = op.UserAccessSaveDB(context.Background()) })
+
+	rec, data := env.do(t, http.MethodGet, "/api/v1/user/access", env.token, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list: %d %s", rec.Code, rec.Body.String())
+	}
+	var sums []model.UserAccessSummary
+	if err := json.Unmarshal(data, &sums); err != nil {
+		t.Fatal(err)
+	}
+	if len(sums) != 1 || sums[0].UserID != u.ID || sums[0].Last.IP != "198.51.100.2" || len(sums[0].Alerts) != 1 || sums[0].Alerts[0].Kind != model.UserAccessAlertNewIP {
+		t.Fatalf("bad summaries %s", data)
+	}
+
+	rec, data = env.do(t, http.MethodGet, fmt.Sprintf("/api/v1/user/access/detail?id=%d", u.ID), env.token, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("detail: %d %s", rec.Code, rec.Body.String())
+	}
+	var detail model.UserAccessDetail
+	if err := json.Unmarshal(data, &detail); err != nil {
+		t.Fatal(err)
+	}
+	if len(detail.IPs) != 2 || len(detail.Clients) != 1 || detail.Clients[0].Requests != 3 || detail.TotalRequests != 3 {
+		t.Fatalf("bad detail %s", data)
+	}
+	if rec, _ := env.do(t, http.MethodGet, "/api/v1/user/access/detail?id=0", env.token, nil); rec.Code != http.StatusBadRequest {
+		t.Fatalf("bad id must be 400, got %d", rec.Code)
 	}
 }

@@ -360,6 +360,9 @@ func RelayLogAdd(ctx context.Context, relayLog model.RelayLog) error {
 	if relayLog.Time <= 0 {
 		relayLog.Time = time.Now().Unix()
 	}
+	// 用户页「IP / 客户端」：只读这条日志已有的入站 IP / UA（纯内存，周期落库），
+	// 不看日志保留开关——关了日志也要知道这个人从哪来、用什么客户端。
+	UserAccessRecord(relayLog.UserID, relayLog.APIKeyID, relayLog.RequestIP, relayLog.RequestUserAgent, relayLog.Time)
 	// 被动观察: 在 ID/Time 归一后、pending/SSE 之前对已脱敏副本做一次纯本地
 	// 计算(纯函数, 无外部副作用, 失败以 not_applicable 表达, 不返回业务错误)。
 	//

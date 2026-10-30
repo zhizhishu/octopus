@@ -639,6 +639,7 @@ func MidjourneySubmitHandler(c *gin.Context, mode string) {
 	}
 
 	metrics := newRawProtocolRelayMetrics(apiKeyID, userID, c.GetString("request_ip"), plan.model, midjourneySubmitLogName, c.Request.URL.Path)
+	metrics.RequestUserAgent = c.Request.UserAgent() // 仅入站 UA 快照，供日志 / 用户页识别客户端
 	metrics.RequestContent = redactLogBody(buildRawProtocolRequestContent(false, bc, payload, midjourneySubmitLogName))
 	upstreamPath := midjourneySubmitUpstreamPath(mode)
 
@@ -890,6 +891,7 @@ func MidjourneyTaskFetchHandler(c *gin.Context, suffix string) {
 		return
 	}
 	metrics := newRawProtocolRelayMetrics(c.GetInt("api_key_id"), c.GetInt("user_id"), c.GetString("request_ip"), entry.model, midjourneyTaskLogName, c.Request.URL.Path)
+	metrics.RequestUserAgent = c.Request.UserAgent() // 仅入站 UA 快照，供日志 / 用户页识别客户端
 	metrics.ActualModel = entry.model
 	started := time.Now()
 	statusCode, body, upstreamCT, fwdErr := midjourneyForward(ctx, c, http.MethodGet, "/mj/task/"+url.PathEscape(taskID)+"/"+suffix, nil, channel, channelKey)
@@ -943,6 +945,7 @@ func MidjourneyTaskListByConditionHandler(c *gin.Context) {
 	}
 
 	metrics := newRawProtocolRelayMetrics(c.GetInt("api_key_id"), c.GetInt("user_id"), c.GetString("request_ip"), "", midjourneyTaskLogName, c.Request.URL.Path)
+	metrics.RequestUserAgent = c.Request.UserAgent() // 仅入站 UA 快照，供日志 / 用户页识别客户端
 	results := make([]json.RawMessage, 0)
 	var attempts []model.ChannelAttempt
 	for _, k := range order {

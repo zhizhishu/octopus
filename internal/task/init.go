@@ -17,6 +17,7 @@ const (
 	TaskStatsSave        = "stats_save"
 	TaskRelayLogSave     = "relay_log_save"
 	TaskUserRelayIPSave  = "user_relay_ip_save"
+	TaskUserAccessSave   = "user_access_save"
 	TaskChannelKeySave   = "channel_key_save"
 	TaskMaintenanceSweep = "maintenance_sweep"
 	TaskSyncLLM          = "sync_llm"
@@ -88,6 +89,7 @@ func Init() {
 	// 只有检测栏手动 run(POST /api/v1/model-audit/run) 仍可主动调用; 两个旧开关默认 false, 且因
 	// 不再接线, 即使部署里残留 true 也不会再自动跑。
 	Register(TaskUserRelayIPSave, 1*time.Minute, false, op.UserRelayIPSaveDBTask)
+	Register(TaskUserAccessSave, 1*time.Minute, false, op.UserAccessSaveDBTask)
 
 	// 渠道 key 的计费(TotalCost)/401 隔离态(DisabledReason/At)/末次使用原本只在优雅退出的
 	// SaveCache 里落库, 崩溃/OOM/docker kill 会丢掉自启动以来累计的全部渠道 key 账目(含把坏
