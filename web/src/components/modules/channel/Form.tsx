@@ -2082,7 +2082,12 @@ export function ChannelForm({
                 {promptBlock}
             </MobileSection>
 
-            {!hideMobileActions && actionsBlock}
+            {!hideMobileActions && (
+                // 新建弹窗没有外层吸底栏：手机端让提交按钮贴在滚动区底部，随时能点到。
+                <div className="sticky bottom-0 z-10 -mx-1 border-t border-border/50 bg-card px-1 pb-1">
+                    {actionsBlock}
+                </div>
+            )}
         </form>
     );
 }
