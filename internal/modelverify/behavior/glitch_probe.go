@@ -160,6 +160,21 @@ func glitchSignatureFamilies() map[string]struct{} {
 	return out
 }
 
+// GlitchApplicable 是 glitch 探针"发不发题"的唯一判据：探针本身与检测计划
+// （PlanFor，页面上灰掉的那几项）都用它，口径不许分裂。
+func GlitchApplicable(targetModel string) (bool, string) {
+	if targetModel == "" {
+		return false, "missing_model"
+	}
+	sigFamilies := glitchSignatureFamilies()
+	for _, f := range InferFamilies(targetModel) {
+		if _, ok := sigFamilies[f]; ok {
+			return true, ""
+		}
+	}
+	return false, "目标型号无法识别为有 glitch 签名的家族，发送前判定不适用"
+}
+
 // runGlitch 执行 glitch 弱指纹探针。
 // targetModel 是被测目标型号（只读元数据）：请求家族未知、或请求家族
 // 在签名表里没有本族签名时，这条探针不可能产出有意义的信号——发送前
@@ -167,33 +182,15 @@ func glitchSignatureFamilies() map[string]struct{} {
 // 同样按不适用处理（reason=missing_model）：不保留旧行为，不能在不知道
 // 被测对象是谁的情况下发题。
 func runGlitch(ctx context.Context, s modelverify.Sender, targetModel string) Result {
-	if targetModel == "" {
-		return Result{
-			OK: true,
-			Data: map[string]any{
-				"applicable":            false,
-				"not_applicable_reason": "missing_model",
-			},
+	if ok, reason := GlitchApplicable(targetModel); !ok {
+		data := map[string]any{
+			"applicable":            false,
+			"not_applicable_reason": reason,
 		}
-	}
-	requestedFamilies := InferFamilies(targetModel)
-	sigFamilies := glitchSignatureFamilies()
-	hasKnownFamily := false
-	for _, f := range requestedFamilies {
-		if _, ok := sigFamilies[f]; ok {
-			hasKnownFamily = true
-			break
+		if targetModel != "" {
+			data["requested_families"] = InferFamilies(targetModel)
 		}
-	}
-	if !hasKnownFamily {
-		return Result{
-			OK: true,
-			Data: map[string]any{
-				"applicable":            false,
-				"not_applicable_reason": "目标型号无法识别为有 glitch 签名的家族，发送前判定不适用",
-				"requested_families":    requestedFamilies,
-			},
-		}
+		return Result{OK: true, Data: data}
 	}
 	resp, err := s.Ask(ctx, modelverify.Ask{Prompt: glitchPrompt(), MaxTokens: intPtr(glitchMaxTokens)})
 	if err != nil {

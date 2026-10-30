@@ -33,6 +33,8 @@ type ViewFinding struct {
 	Title          string         `json:"title"`
 	Evidence       map[string]any `json:"evidence,omitempty"`
 	Recommendation string         `json:"recommendation,omitempty"`
+	// PlainEvidence 一两句人话证据，给 tooltip / 行展开用；空则前端退回 Title。
+	PlainEvidence string `json:"plain_evidence,omitempty"`
 }
 
 // ViewResult 是单探针原始结果的 JSON 形态。
@@ -65,6 +67,7 @@ func ToView(report Report) ViewReport {
 			Title:          f.Title,
 			Evidence:       jsonSafeMap(f.Evidence),
 			Recommendation: f.Recommendation,
+			PlainEvidence:  plainEvidenceFor(f),
 		})
 	}
 	for _, res := range report.Results {
@@ -99,9 +102,17 @@ func ToView(report Report) ViewReport {
 	}
 	out.Family = PrimaryFamily(report.RequestedFamilies)
 	out.Plain = PlainVerdictFor(
-		report.Verdict, report.Score, len(report.Findings), usable, out.Family,
+		report.Verdict, report.Score, CountScoredFindings(report.Findings), usable, out.Family,
 	)
 	return out
+}
+
+// plainEvidenceFor 把一条 Finding 收成一两句人话（不重复 Title）。
+func plainEvidenceFor(f Finding) string {
+	if f.Recommendation != "" {
+		return f.Recommendation
+	}
+	return f.Title
 }
 
 func jsonSafeMap(in map[string]any) map[string]any {

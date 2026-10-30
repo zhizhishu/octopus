@@ -34,7 +34,7 @@ func TestPlainVerdictAlwaysFillsFourFields(t *testing.T) {
 	verdicts := []Verdict{VerdictNone, VerdictLow, VerdictMedium, VerdictHigh, VerdictUnknown}
 	for _, v := range verdicts {
 		p := PlainVerdictFor(v, 0, 0, 0, "")
-		if p.Headline == "" || p.Meaning == "" || p.Caveat == "" || p.NextStep == "" {
+		if p.Headline == "" || p.Meaning == "" || p.Caveat == "" || p.NextStep == "" || p.Confidence == "" {
 			t.Fatalf("verdict=%s 有字段为空: %#v", v, p)
 		}
 		if p.Level != string(v) {
@@ -108,10 +108,68 @@ func TestFamilyDisplayNameCoversReferenceFamilies(t *testing.T) {
 // 这个档位最容易被误解成"没问题"，必须明确写出它既不是好也不是坏。
 func TestPlainVerdictUnknownExplainsInsufficient(t *testing.T) {
 	p := PlainVerdictFor(VerdictUnknown, 0, 0, 1, "openai")
-	if p.Headline != "没测出结果" {
+	if p.Headline != "数据不够，没法判断" {
 		t.Fatalf("unknown 的标题应直白，实际 %q", p.Headline)
+	}
+	if p.Confidence != "低" {
+		t.Fatalf("unknown 把握应为低，实际 %q", p.Confidence)
 	}
 	if !strings.Contains(p.Caveat, "没问题") || !strings.Contains(p.Caveat, "有问题") {
 		t.Fatalf("必须同时否定「没问题」和「有问题」，实际: %s", p.Caveat)
+	}
+}
+
+// TestPlainVerdictHeadlineMapping 钉死 UI 大标题口径（Design 1）。
+func TestPlainVerdictHeadlineMapping(t *testing.T) {
+	cases := []struct {
+		v        Verdict
+		headline string
+	}{
+		{VerdictNone, "没发现问题"},
+		{VerdictLow, "有小疑点"},
+		{VerdictMedium, "有可疑点，建议复核"},
+		{VerdictHigh, "有可疑点，建议复核"},
+		{VerdictUnknown, "数据不够，没法判断"},
+	}
+	for _, c := range cases {
+		p := PlainVerdictFor(c.v, 50, 2, 5, "openai")
+		if p.Headline != c.headline {
+			t.Fatalf("%s → %q, want %q", c.v, p.Headline, c.headline)
+		}
+	}
+}
+
+// TestCountScoredFindingsIgnoresZero 0 分参考项不计进复核数。
+func TestCountScoredFindingsIgnoresZero(t *testing.T) {
+	fs := []Finding{
+		{Score: 0, Title: "仅供参考"},
+		{Score: 25, Title: "真风险"},
+		{Score: 0, Title: "分词器不符"},
+	}
+	if n := CountScoredFindings(fs); n != 1 {
+		t.Fatalf("scored = %d, want 1", n)
+	}
+}
+
+// TestChipForResultMapping 钉死渠道页芯片口径；tokenizer 0 分项不影响（verdict 已过滤）。
+func TestChipForResultMapping(t *testing.T) {
+	cases := []struct {
+		status, verdict string
+		want            ChipKind
+	}{
+		{"done", "none", ChipOK},
+		{"done", "low", ChipOK},
+		{"done", "medium", ChipWarn},
+		{"done", "high", ChipWarn},
+		{"done", "unknown", ChipFail},
+		{"failed", "", ChipFail},
+		{"skipped", "", ChipFail},
+		{"pending", "", ChipNone},
+		{"", "", ChipNone},
+	}
+	for _, c := range cases {
+		if got := ChipForResult(c.status, c.verdict); got != c.want {
+			t.Fatalf("%s/%s → %s, want %s", c.status, c.verdict, got, c.want)
+		}
 	}
 }

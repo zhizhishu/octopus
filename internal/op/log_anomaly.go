@@ -156,6 +156,10 @@ func ScanLogAnomalies(logs []model.RelayLog, now time.Time) model.LogAnomalyRepo
 		report.SampleCount += len(acc.times)
 		report.Findings = append(report.Findings, scanLogAnomalyBucket(acc)...)
 	}
+	// 全窗样本太少：不能把"没扫出 finding"说成"没异常"。
+	if report.SampleCount < logAnomalyMinSamples {
+		report.TooFewSamples = true
+	}
 	// passive 桶按 key 稳定排序输出, 保证报告可复现。
 	pKeys := make([]string, 0, len(passive))
 	for k := range passive {

@@ -1036,7 +1036,8 @@
         "tokens": "Token Usage",
         "costs": "Cost Details",
         "baseUrls": "Base URLs",
-        "keys": "Keys"
+        "keys": "Keys",
+        "modelAudits": "Models · Latest audit"
       },
       "noBaseUrls": "No Base URLs",
       "noKeys": "No Keys",
@@ -1253,7 +1254,7 @@
     }
   },
   "modelAudit": {
-    "manualGate": "Upstream is only called when you click Start; it consumes tokens and may be billed. The current {count} checks ≠ {count} requests: probes such as signature may take multiple rounds or be reused, so actual calls and usage are per the server records. Timeout follows the channel test limit.",
+    "manualGate": "Real upstream calls at normal rates. Inapplicable checks send nothing.",
     "cancelCheck": "Cancel check",
     "cancelling": "Cancelling",
     "cancelledTitle": "Cancelled",
@@ -1268,14 +1269,14 @@
     "headlineInsufficientSub": "{count} checks have insufficient evidence: this is neither a clean result nor a claim about the model being real or fake.",
     "passiveObserved": "{count} locally observed, no baseline",
     "queue": {
-      "historyTitle": "Audit history",
+      "historyTitle": "Detection history",
       "historyDescription": "Results are stored separately from logs, so you can come back to them anytime.",
       "empty": "No audits yet",
       "statusQueued": "Queued",
       "statusRunning": "Running {done}/{total}",
       "statusDone": "Done {done}/{total}",
       "statusCanceled": "Canceled",
-      "cancel": "Cancel remaining",
+      "cancel": "Stop remaining",
       "loading": "Loading…",
       "noResults": "This job has no result rows",
       "resultPending": "Pending",

@@ -14,7 +14,7 @@ import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { toast } from '@/components/common/Toast';
 import { useTranslations } from 'next-intl';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode, useLayoutEffect} from 'react';
 import { Loader2, Play, RefreshCw, X, Plus, Timer, Fingerprint } from 'lucide-react';
 import {
     Accordion,
@@ -23,6 +23,14 @@ import {
     AccordionTrigger,
 } from "@/components/ui/accordion";
 import { cn } from '@/lib/utils';
+import {
+    ModelAuditChipDot,
+    ModelAuditChipExpand,
+    ModelAuditChipToolbar,
+    filterAuditChips,
+    useModelAuditChips,
+} from './audit/ModelChipDots';
+import type { ChipFilter } from './audit/types';
 import { cleanOneMillionModelName, expandOneMillionModelAliases } from '@/lib/model-aliases';
 import {
     DEFAULT_MODEL_TEST_TIMEOUT_SECONDS,
@@ -129,6 +137,8 @@ export interface ChannelFormProps {
     idPrefix?: string;
     advancedMode?: 'accordion' | 'panel';
     advancedOpen?: boolean;
+    /** 已有渠道 id：给已启用模型芯片画检测圆点（新建渠道没有）。 */
+    channelId?: number;
 }
 
 const CHANNEL_BASE_URL_SUFFIXES: Partial<Record<ChannelType, string[]>> = {
@@ -260,6 +270,7 @@ export function ChannelForm({
     idPrefix = 'channel',
     advancedMode = 'accordion',
     advancedOpen = false,
+    channelId,
 }: ChannelFormProps) {
     const t = useTranslations('channel.form');
 
@@ -294,6 +305,9 @@ export function ChannelForm({
     const [bulkKeyText, setBulkKeyText] = useState('');
     const [showBulkKey, setShowBulkKey] = useState(false);
     const [modelFilter, setModelFilter] = useState('');
+    const [auditChipQuery, setAuditChipQuery] = useState('');
+    const [auditChipFilter, setAuditChipFilter] = useState<ChipFilter>('all');
+    const [auditChipsExpanded, setAuditChipsExpanded] = useState(false);
     const [mappingRows, setMappingRows] = useState<Array<{ client: string; upstream: string }>>(() =>
         Object.entries(formData.model_mapping ?? {}).map(([client, upstream]) => ({ client, upstream }))
     );
@@ -1227,24 +1241,27 @@ export function ChannelForm({
                             </Button>
                         )}
                     </div>
-                    <div className="rounded-xl border border-border bg-muted/30 p-2.5 max-h-40 min-h-12 overflow-y-auto">
+                    <EnabledModelsToolbar
+                        channelId={channelId}
+                        models={autoModels}
+                        query={auditChipQuery}
+                        setQuery={setAuditChipQuery}
+                        filter={auditChipFilter}
+                        setFilter={setAuditChipFilter}
+                    />
+                    <div className="min-h-12 max-h-40 overflow-y-auto rounded-xl border border-border bg-muted/30 p-2.5">
                         {autoModels.length > 0 ? (
-                            <div className="flex min-w-0 flex-wrap gap-1.5">
-                                {autoModels.map((model) => (
-                                    <Badge key={model} variant="secondary" className="max-w-full bg-muted hover:bg-muted/80">
-                                        <span className="min-w-0 truncate" title={model}>{model}</span>
-                                        <button
-                                            type="button"
-                                            onClick={() => handleRemoveAutoModel(model)}
-                                            className="ml-1 shrink-0 rounded-sm opacity-70 hover:opacity-100 focus:outline-none focus:ring-1 focus:ring-ring"
-                                        >
-                                            <X className="h-3 w-3" />
-                                        </button>
-                                    </Badge>
-                                ))}
-                            </div>
+                            <EnabledModelsWithAudit
+                                channelId={channelId}
+                                models={autoModels}
+                                query={auditChipQuery}
+                                filter={auditChipFilter}
+                                expanded={auditChipsExpanded}
+                                onToggleExpand={() => setAuditChipsExpanded((v) => !v)}
+                                onRemove={handleRemoveAutoModel}
+                            />
                         ) : (
-                            <div className="flex items-center justify-center h-8 text-xs text-muted-foreground">
+                            <div className="flex h-8 items-center justify-center text-xs text-muted-foreground">
                                 {t('modelNoSelected')}
                             </div>
                         )}
@@ -1827,5 +1844,109 @@ export function ChannelForm({
                 </Button>
             </div>
         </form>
+    );
+}
+
+function EnabledModelsToolbar({
+    channelId, models, query, setQuery, filter, setFilter,
+}: {
+    channelId?: number; models: string[]; query: string; setQuery: (v: string) => void;
+    filter: ChipFilter; setFilter: (v: ChipFilter) => void;
+}) {
+    const items = useModelAuditChips(channelId, models);
+    if (!channelId) return null;
+    return (
+        <ModelAuditChipToolbar
+            items={items}
+            query={query}
+            setQuery={setQuery}
+            filter={filter}
+            setFilter={setFilter}
+        />
+    );
+}
+
+
+function EnabledModelsWithAudit({
+    channelId,
+    models,
+    query,
+    filter,
+    expanded,
+    onToggleExpand,
+    onRemove,
+}: {
+    channelId?: number;
+    models: string[];
+    query: string;
+    filter: ChipFilter;
+    expanded: boolean;
+    onToggleExpand: () => void;
+    onRemove: (model: string) => void;
+}) {
+    const items = useModelAuditChips(channelId, models);
+    const shown = filterAuditChips(items, query, filter);
+    const wrapRef = useRef<HTMLDivElement>(null);
+    const [needsExpand, setNeedsExpand] = useState(false);
+    const collapse = !expanded && !query.trim() && filter === 'all';
+
+    useLayoutEffect(() => {
+        const el = wrapRef.current;
+        if (!el) return;
+        if (!collapse) {
+            el.style.maxHeight = '';
+            el.style.overflow = '';
+            setNeedsExpand(false);
+            return;
+        }
+        const badges = Array.from(el.querySelectorAll<HTMLElement>('[data-slot=badge]'));
+        if (badges.length === 0) {
+            el.style.maxHeight = '';
+            setNeedsExpand(false);
+            return;
+        }
+        const tops = [...new Set(badges.map((b) => b.offsetTop))].sort((a, b) => a - b);
+        if (tops.length <= 2) {
+            el.style.maxHeight = '';
+            el.style.overflow = '';
+            setNeedsExpand(false);
+            return;
+        }
+        // 折叠到两行：第三行顶到第一行顶的高度差。
+        const h = tops[2]! - tops[0]!;
+        el.style.maxHeight = `${Math.max(h - 4, 1)}px`;
+        el.style.overflow = 'hidden';
+        setNeedsExpand(true);
+    }, [collapse, shown, models.length, query, filter, expanded]);
+
+    return (
+        <>
+            <div ref={wrapRef} className="flex min-w-0 flex-wrap gap-1.5">
+                {shown.map((item) => (
+                    <Badge key={item.model} variant="secondary" className="max-w-full bg-muted hover:bg-muted/80">
+                        {channelId ? (
+                            <ModelAuditChipDot channelId={channelId} model={item.model}>
+                                <span className="min-w-0 truncate" title={item.model}>{item.model}</span>
+                            </ModelAuditChipDot>
+                        ) : (
+                            <span className="min-w-0 truncate" title={item.model}>{item.model}</span>
+                        )}
+                        <button
+                            type="button"
+                            onClick={() => onRemove(item.model)}
+                            className="ml-1 shrink-0 rounded-sm opacity-70 hover:opacity-100 focus:outline-none focus:ring-1 focus:ring-ring"
+                        >
+                            <X className="h-3 w-3" />
+                        </button>
+                    </Badge>
+                ))}
+            </div>
+            <ModelAuditChipExpand
+                total={shown.length}
+                needsExpand={needsExpand}
+                expanded={expanded}
+                onToggle={onToggleExpand}
+            />
+        </>
     );
 }

@@ -29,6 +29,8 @@ import { formatMoney } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
 import { MonoSafeText, SafeText } from '@/components/common/SafeText';
 import { cn } from '@/lib/utils';
+import { ModelAuditList } from './audit/ModelAuditList';
+import { getSelectedChannelModels } from './channel-utils';
 
 export function CardContent({ channel, stats }: { channel: Channel; stats: StatsMetricsFormatted }) {
     const { setIsOpen } = useMorphingDialog();
@@ -409,6 +411,8 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
                                     </dl>
                                 </section>
 
+                                <ModelAuditList channelId={channel.id} models={getSelectedChannelModels(channel)} />
+
                                 {/* Base URLs */}
                                 <section className="space-y-3">
                                     <h4 className="flex items-center gap-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
@@ -581,6 +585,7 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
                                 idPrefix="channel"
                                 advancedMode="panel"
                                 advancedOpen={advancedOpen}
+                                channelId={channel.id}
                             />
                         </TabsContent>
                     </TabsContents>

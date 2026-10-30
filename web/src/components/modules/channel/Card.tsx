@@ -14,6 +14,7 @@ import { toast } from '@/components/common/Toast';
 import { Switch } from '@/components/ui/switch';
 import { useMemo, useState, type MouseEvent } from 'react';
 import { cn } from '@/lib/utils';
+import { ChannelAuditSummary } from './audit/ChannelAuditSummary';
 import { ChannelTestDialog } from './channel-test-dialog';
 import {
     getChannelEndpointFamily,
@@ -175,9 +176,17 @@ export function Card({ channel, stats, layout = 'list' }: { channel: Channel; st
                         </div>
                     </dl>
 
+                    {isGridLayout && (
+                        <ChannelAuditSummary
+                            channelId={channel.id}
+                            models={testModels}
+                            className="mt-auto border-t border-border/40 pt-2"
+                        />
+                    )}
+
                     <div className={cn(
                         'flex shrink-0 flex-wrap items-center gap-2',
-                        isGridLayout ? 'mt-auto justify-between border-t border-border/60 pt-3' : 'justify-start md:justify-end'
+                        isGridLayout ? 'justify-between border-t border-border/60 pt-3' : 'justify-start md:justify-end'
                     )}
                         onClick={(event) => event.stopPropagation()}
                         onPointerDown={(event) => event.stopPropagation()}

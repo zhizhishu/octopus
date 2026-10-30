@@ -233,6 +233,7 @@ function loadQueue({ jobs = [], detail = null } = {}) {
         'next-intl': { useTranslations: () => translate },
         '@/components/ui/button': new Proxy({}, { get: (_, key) => key }),
         '@/lib/utils': { cn: (...p) => p.filter(Boolean).join(' ') },
+        '@/lib/model-audit-verdict': { historyBucket: () => 'all', verdictHeadline: (v) => v, formatReportTime: (x) => x || '' },
         '@/components/common/Toast': { toast: { success() {}, error() {}, warning() {}, info() {} } },
         '@/api/endpoints/channel': {
             ChannelType: { Chat: 0, Anthropic: 2 },

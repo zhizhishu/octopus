@@ -77,6 +77,23 @@ type ProtocolNamer interface {
 // runSignature 执行签名验真探针。
 // targetModel 是被测目标型号（只读元数据）：仅用于发送前判断适用性，
 // 不改变任何出站请求参数。
+// SignatureApplicable 是签名探针"发不发题"的唯一判据（探针与检测计划共用）。
+// protocol 为空表示发送器没自报出站协议。
+func SignatureApplicable(protocol, targetModel string) (bool, string) {
+	switch {
+	case protocol == "":
+		return false, "发送器未自报出站协议，无法判断签名适用性"
+	case protocol != "anthropic-messages":
+		return false, "非 Anthropic 出站协议，无 thinking 签名"
+	}
+	// 型号必须**单一且明确**落在 anthropic 家族：识别出多个家族
+	// （含 anthropic 在内）视为 ambiguous，同样不发题。
+	if families := InferFamilies(targetModel); len(families) != 1 || families[0] != "anthropic" {
+		return false, "目标型号不是单一明确的 anthropic 家族，不主动发题"
+	}
+	return true, ""
+}
+
 func runSignature(ctx context.Context, s modelverify.Sender, targetModel string) Result {
 	res := Result{ProbeID: ProbeSignature, Data: map[string]any{}}
 
@@ -85,23 +102,12 @@ func runSignature(ctx context.Context, s modelverify.Sender, targetModel string)
 	// 零请求——这不是"探针跑不动"，是"对这条渠道问错了问题"。
 	// 型号元数据缺失时也按不适用处理：宁可少查，不能把没有签名的情况
 	// 当成异常去定罪。明确的 anthropic 家族目标保留既有的主动签名检查。
-	applicable := false
-	reason := ""
+	proto := ""
 	if p, ok := s.(ProtocolNamer); ok {
-		proto := p.Protocol()
+		proto = p.Protocol()
 		res.Data["protocol"] = proto
-		if proto != "anthropic-messages" {
-			reason = "非 Anthropic 出站协议，无 thinking 签名"
-			// 型号必须**单一且明确**落在 anthropic 家族：识别出多个家族
-			// （含 anthropic 在内）视为 ambiguous，同样不发题。
-		} else if families := InferFamilies(targetModel); len(families) != 1 || families[0] != "anthropic" {
-			reason = "目标型号不是单一明确的 anthropic 家族，不主动发题"
-		} else {
-			applicable = true
-		}
-	} else {
-		reason = "发送器未自报出站协议，无法判断签名适用性"
 	}
+	applicable, reason := SignatureApplicable(proto, targetModel)
 	if !applicable {
 		res.OK = true
 		res.Data["applicable"] = false

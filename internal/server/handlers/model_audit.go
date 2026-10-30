@@ -11,12 +11,14 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/modeltest"
 	"github.com/zhizhishu/octopus/internal/modelverify/behavior"
 	"github.com/zhizhishu/octopus/internal/op"
 	"github.com/zhizhishu/octopus/internal/server/middleware"
 	"github.com/zhizhishu/octopus/internal/server/resp"
 	"github.com/zhizhishu/octopus/internal/server/router"
+	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 	"github.com/zhizhishu/octopus/internal/utils/log"
 )
 
@@ -53,6 +55,14 @@ func init() {
 		AddRoute(
 			router.NewRoute("/jobs/:id", http.MethodGet).
 				Handle(getModelAuditJob),
+		).
+		AddRoute(
+			router.NewRoute("/plan", http.MethodGet).
+				Handle(getModelAuditPlan),
+		).
+		AddRoute(
+			router.NewRoute("/channels/:id/latest", http.MethodGet).
+				Handle(getChannelLatestAudits),
 		)
 
 	router.NewGroupRouter("/api/v1/model-audit").
@@ -108,12 +118,110 @@ func enqueueModelAudit(c *gin.Context) {
 
 func listModelAuditJobs(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
-	jobs, err := op.ModelAuditJobList(c.Request.Context(), limit)
+	jobs, err := op.ModelAuditJobListSummaries(c.Request.Context(), limit)
 	if err != nil {
 		resp.Error(c, http.StatusInternalServerError, err.Error())
 		return
 	}
 	resp.Success(c, jobs)
+}
+
+// getModelAuditPlan 返回每项检查的适用性与真实计划请求数（前端展示用，零上游请求）。
+func getModelAuditPlan(c *gin.Context) {
+	channelID, _ := strconv.Atoi(c.Query("channel_id"))
+	modelName := strings.TrimSpace(c.Query("model"))
+	protocol := "openai-chat"
+	if channelID > 0 {
+		if ch, err := op.ChannelGet(channelID, c.Request.Context()); err == nil {
+			protocol = probeProtocolName(ch.Type)
+		}
+	}
+	plan := behavior.PlanFor(protocol, modelName)
+	resp.Success(c, gin.H{
+		"protocol": protocol,
+		"model":    modelName,
+		"probes":   plan,
+		"quick": gin.H{
+			"ids":      behavior.QuickProbeIDs(),
+			"requests": behavior.SumPlannedRequests(plan, behavior.QuickProbeIDs()),
+		},
+		"full": gin.H{
+			"ids":      behavior.FullProbeIDs(),
+			"requests": behavior.SumPlannedRequests(plan, behavior.FullProbeIDs()),
+		},
+	})
+}
+
+func probeProtocolName(t outbound.OutboundType) string {
+	switch t {
+	case outbound.OutboundTypeAnthropic:
+		return "anthropic-messages"
+	case outbound.OutboundTypeOpenAIResponse:
+		return "openai-responses"
+	case outbound.OutboundTypeGemini:
+		return "gemini-generate-content"
+	default:
+		return "openai-chat"
+	}
+}
+
+func getChannelLatestAudits(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil || id <= 0 {
+		resp.Error(c, http.StatusBadRequest, "invalid channel id")
+		return
+	}
+	rows, err := op.ModelAuditLatestByChannel(c.Request.Context(), id)
+	if err != nil {
+		resp.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// 附带芯片档位 + 人话，前端不用再猜。
+	type item struct {
+		model.ModelAuditResult
+		Chip      string   `json:"chip"`
+		ChipLabel string   `json:"chip_label"`
+		Headline  string   `json:"headline,omitempty"`
+		Summary   string   `json:"summary,omitempty"`
+		Points    []string `json:"points,omitempty"`
+	}
+	out := make([]item, 0, len(rows))
+	for _, r := range rows {
+		chip := behavior.ChipForResult(r.Status, r.Verdict)
+		it := item{
+			ModelAuditResult: r,
+			Chip:             string(chip),
+			ChipLabel:        behavior.ChipLabel(chip),
+		}
+		if r.Report != "" {
+			var view behavior.ViewReport
+			if json.Unmarshal([]byte(r.Report), &view) == nil {
+				it.Headline = view.Plain.Headline
+				it.Summary = view.Plain.Summary
+				for _, f := range view.Findings {
+					if f.Score <= 0 {
+						continue // tokenizer / 参考项不上 tip 的待复核点
+					}
+					line := f.Title
+					if f.PlainEvidence != "" {
+						line = f.PlainEvidence
+					}
+					it.Points = append(it.Points, line)
+					if len(it.Points) >= 3 {
+						break
+					}
+				}
+			}
+		}
+		if it.Headline == "" && r.Status == model.AuditResultFailed {
+			it.Headline = "检测失败"
+			if r.ErrorMsg != "" {
+				it.Points = []string{r.ErrorMsg}
+			}
+		}
+		out = append(out, it)
+	}
+	resp.Success(c, out)
 }
 
 func getModelAuditJob(c *gin.Context) {
@@ -250,7 +358,7 @@ func runModelAudit(c *gin.Context) {
 	// 结论落库: 仅当请求显式带 log_id 时才写回那行(trigger=manual, 先到先得)。
 	if req.LogID > 0 {
 		if reportJSON, err := json.Marshal(report); err == nil {
-			if err := op.RelayLogMarkAudited(c.Request.Context(), req.LogID, string(report.Verdict), report.Score, len(report.Findings), "manual", string(reportJSON)); err != nil {
+			if err := op.RelayLogMarkAudited(c.Request.Context(), req.LogID, string(report.Verdict), report.Score, behavior.CountScoredViewFindings(report.Findings), "manual", string(reportJSON)); err != nil {
 				log.Warnf("manual model audit persist for log %d failed: %v", req.LogID, err)
 			}
 		}
