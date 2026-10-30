@@ -673,6 +673,7 @@
         "unlimited": "Unlimited",
         "expireAt": "Expire Date",
         "selectDate": "Select date",
+        "expirePast": "Expiry must be in the future",
         "neverExpire": "Never Expire",
         "supportedModels": "Supported Models",
         "noModels": "No models available",
