@@ -1913,5 +1913,13 @@
       "keyOff": "Off",
       "viewLogs": "See their recent requests"
     }
+  },
+  "accessPlan": {
+    "unsaved": {
+      "title": "Not saved yet",
+      "description": "You have unsaved changes. Close anyway?",
+      "keepEditing": "Keep editing",
+      "discard": "Discard and close"
+    }
   }
 }

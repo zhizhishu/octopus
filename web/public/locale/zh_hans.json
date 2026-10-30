@@ -1913,5 +1913,13 @@
       "keyOff": "停用",
       "viewLogs": "看他最近的请求"
     }
+  },
+  "accessPlan": {
+    "unsaved": {
+      "title": "还没保存",
+      "description": "改动还没保存，确定要关？",
+      "keepEditing": "继续编辑",
+      "discard": "不保存，关掉"
+    }
   }
 }
