@@ -254,6 +254,8 @@ const logMocks = {
         useLogQueueHealth: () => ({ data: undefined }),
         useLogCleanupNow: () => ({ mutate() {}, isPending: false }),
     },
+    // 压缩数据库一行是独立组件（自带查询/变更），这里只验日志卡本身。
+    './DBCompact': { DBCompactRow: () => null },
 };
 
 // Translation keys used by a rendered subtree, as a cheap "what is on this card" fingerprint.

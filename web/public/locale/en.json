@@ -816,6 +816,20 @@
         "button": "Clear",
         "clearing": "Clearing..."
       },
+      "compact": {
+        "label": "Compact database",
+        "tooltip": "Deleting logs does not shrink the database file. Compacting returns the free space to disk (SQLite VACUUM). Requests may pause briefly while it runs; prefer a quiet time.",
+        "hint": "Requests may pause briefly while it runs",
+        "size": "Current size",
+        "reclaimable": "~{size} reclaimable",
+        "button": "Compact",
+        "running": "Compacting…",
+        "confirm": "Requests may pause briefly while the database is compacted. Compact now?",
+        "done": "Compacted: {before} → {after}",
+        "busy": "A compaction or space reclaim is already running, try again later",
+        "failed": "Compaction failed",
+        "fullWarning": "The first compaction rebuilds the whole database file; the bigger it is the longer requests pause (minutes for GB-sized files). Run it at a quiet time"
+      },
       "clearSuccess": "Logs cleared",
       "clearFailed": "Failed to clear logs",
       "intervention": {

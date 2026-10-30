@@ -10,6 +10,7 @@ import { Progress } from '@/components/ui/progress';
 import { useSettingList, useSetSetting, SettingKey } from '@/api/endpoints/setting';
 import { useClearLogs, useLogStorage, useLogQueueHealth, useLogCleanupNow } from '@/api/endpoints/log';
 import { toast } from '@/components/common/Toast';
+import { DBCompactRow } from './DBCompact';
 
 function formatBytes(bytes: number): string {
     if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
@@ -425,6 +426,9 @@ export function SettingLog({ section }: { section?: SettingLogSection } = {}) {
                     )}
                 </div>
             </div>
+
+            {/* 压缩数据库（仅 SQLite；MySQL/PostgreSQL 不显示）。独立组件：自带查询/变更，不和本卡的设置保存混在一起。 */}
+            <DBCompactRow />
 
             {/* 清空历史日志 */}
             <div className="flex items-center justify-between gap-4">

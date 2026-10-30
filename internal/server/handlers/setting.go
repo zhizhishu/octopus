@@ -72,7 +72,38 @@ func init() {
 		AddRoute(
 			router.NewRoute("/import", http.MethodPost).
 				Handle(importDB),
+		).
+		AddRoute(
+			// 压缩数据库：只读大小信息 + 手动触发一次 VACUUM（仅 SQLite）。
+			router.NewRoute("/database", http.MethodGet).
+				Handle(getDBCompactInfo),
+		).
+		AddRoute(
+			router.NewRoute("/database/compact", http.MethodPost).
+				Handle(runDBCompact),
 		)
+}
+
+func getDBCompactInfo(c *gin.Context) {
+	resp.Success(c, op.DBCompactInfoGet(c.Request.Context()))
+}
+
+// runDBCompact 立即压缩一次数据库。已有压缩/回收在跑时回 409，不排队；
+// 非 SQLite 回 400（前端本来就不显示按钮，这里是兜底）。
+func runDBCompact(c *gin.Context) {
+	result, err := op.DBCompactNow(c.Request.Context())
+	switch {
+	case errors.Is(err, op.ErrDBCompactBusy):
+		resp.Error(c, http.StatusConflict, err.Error())
+		return
+	case errors.Is(err, op.ErrDBCompactUnsupported):
+		resp.Error(c, http.StatusBadRequest, err.Error())
+		return
+	case err != nil:
+		resp.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	resp.Success(c, result)
 }
 
 func getSettingList(c *gin.Context) {

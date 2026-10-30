@@ -344,3 +344,46 @@ export function useImportDB() {
         },
     });
 }
+
+/** 数据库大小信息（压缩按钮用）。非 SQLite 时 supported=false，前端隐藏按钮。 */
+export interface DBCompactInfo {
+    dialect: string;
+    supported: boolean;
+    file_bytes: number;
+    free_bytes: number;
+    running: boolean;
+    /** 下一次压缩要完整 VACUUM（重建整个文件，库越大停顿越久）。 */
+    needs_full: boolean;
+}
+
+/** 一次手动压缩的结果：前后真实磁盘占用。 */
+export interface DBCompactResult {
+    before_bytes: number;
+    after_bytes: number;
+    freed_bytes: number;
+    duration_ms: number;
+    mode: 'incremental' | 'full';
+}
+
+export function useDBCompactInfo() {
+    return useQuery({
+        queryKey: ['settings', 'database'],
+        queryFn: async () => apiClient.get<DBCompactInfo>('/api/v1/setting/database'),
+        refetchInterval: 60000,
+        refetchOnMount: 'always',
+    });
+}
+
+/**
+ * 立即压缩数据库（仅 SQLite、仅管理员）。后端单飞：已有压缩或自动回收在跑时回 409。
+ */
+export function useDBCompactNow() {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: async () => apiClient.post<DBCompactResult>('/api/v1/setting/database/compact'),
+        onSettled: () => {
+            queryClient.invalidateQueries({ queryKey: ['settings', 'database'] });
+            queryClient.invalidateQueries({ queryKey: ['logs', 'storage'] });
+        },
+    });
+}
