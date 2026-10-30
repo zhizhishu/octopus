@@ -1,7 +1,7 @@
 'use client';
 
 import { useTranslations } from 'next-intl';
-import type { User } from '@/api/endpoints/user';
+import type { User, UserAccessSummary } from '@/api/endpoints/user';
 import type { AccessPlan } from '@/api/endpoints/access-plan';
 import { SafeText } from '@/components/common/SafeText';
 import { cn } from '@/lib/utils';
@@ -10,11 +10,13 @@ import { cardState } from '../lib/user-filters';
 import { planLabel, userPlans, useRelTime } from './shared';
 import { DataTableRowActions, type UserRowHandlers } from './data-table-row-actions';
 import { Bar, Pill } from './ui-bits';
+import { AccessLine } from './user-access';
 
 // 手机：每人一张卡（名字 / 状态 / ⋯，余额 + 月卡一行，进度条，方案 + 最近用过）。点卡片打开编辑。
-export function UsersMobileList({ users, plans, nowSec, handlers }: {
+export function UsersMobileList({ users, plans, access, nowSec, handlers }: {
     users: User[];
     plans: AccessPlan[];
+    access: Map<number, UserAccessSummary>;
     nowSec: number;
     handlers: UserRowHandlers;
 }) {
@@ -24,6 +26,8 @@ export function UsersMobileList({ users, plans, nowSec, handlers }: {
         <div className="space-y-2.5">
             {users.map((u) => {
                 const state = cardState(u, nowSec);
+                const summary = access.get(u.id);
+                const lastAt = Math.max(u.last_relay_at || 0, summary?.last.at ?? 0);
                 const limit = Math.max(0, u.monthly_limit);
                 const used = Math.max(0, u.monthly_used);
                 let cardLine: string;
@@ -60,8 +64,9 @@ export function UsersMobileList({ users, plans, nowSec, handlers }: {
                         )}
                         <div className="mt-2 flex items-center justify-between gap-2 text-xs text-muted-foreground">
                             <span className="min-w-0 truncate">{userPlans(u, plans).map(planLabel).join(' · ') || '—'}</span>
-                            <span className="shrink-0">{u.last_relay_at > 0 ? t('mobile.usedAt', { when: rel(u.last_relay_at, nowSec) }) : t('table.neverUsed')}</span>
+                            <span className="shrink-0">{lastAt > 0 ? t('mobile.usedAt', { when: rel(lastAt, nowSec) }) : t('table.neverUsed')}</span>
                         </div>
+                        <AccessLine user={u} summary={summary} onOpen={() => handlers.onEdit(u, 'access')} />
                     </div>
                 );
             })}

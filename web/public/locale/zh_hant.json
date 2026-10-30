@@ -1729,7 +1729,8 @@
       "times": "{n} 次",
       "neverUsed": "沒用過",
       "edit": "編輯",
-      "adjustBalance": "調餘額"
+      "adjustBalance": "調餘額",
+      "lastRelayTip": "最近一次呼叫的時間、IP 和用戶端。黃色標籤表示 IP 或用戶端異常切換，懸停看詳情。"
     },
     "mobile": {
       "balance": "餘額",
@@ -1926,6 +1927,47 @@
       "keyOn": "啟用",
       "keyOff": "停用",
       "viewLogs": "看他最近的請求"
+    },
+    "access": {
+      "tab": "IP 與用戶端",
+      "alertTitle": "IP / 用戶端異常切換",
+      "badge": {
+        "manyIPs": "IP 過多",
+        "newIP": "IP 切換",
+        "newClient": "用戶端切換",
+        "ipAndClient": "IP 和用戶端切換"
+      },
+      "alert": {
+        "manyIPs": "{window}內從 {n} 個不同 IP 呼叫：{list}",
+        "newIP": "{time} 出現新 IP {value}，{window}內 {others} 也在用",
+        "newClient": "{time} 出現新用戶端 {value}，{window}內 {others} 也在用",
+        "more": "{list} 等 {n} 個",
+        "hint": "可能是換了網路或裝置，也可能是 Key 被別人在用。"
+      },
+      "window": {
+        "hours": "{n} 小時",
+        "minutes": "{n} 分鐘"
+      },
+      "ruleTip": "{window}內用了 {limit} 個或更多不同 IP，或者冒出一個以前沒見過的 IP / 用戶端、同時舊的還在用，就會提示。同一個 IPv6 /64 網段算一個 IP；用戶端只升級版本不算切換。",
+      "last": "最近一次",
+      "ip": "IP",
+      "client": "用戶端",
+      "key": "API Key",
+      "noKey": "沒有 Key",
+      "keyDeleted": "已刪除的 Key #{id}",
+      "noUA": "沒帶 User-Agent",
+      "ips": "用過的 IP",
+      "clients": "用過的用戶端",
+      "count": "{n} 個",
+      "times": "{n} 次",
+      "lastSeen": "{when}用過",
+      "firstSeen": "首次 {date}",
+      "newPill": "新",
+      "newPillTip": "就是上面提示裡新出現的那個",
+      "clientsOnIP": "用戶端：{list}",
+      "ipsOnClient": "IP：{list}",
+      "empty": "還沒有呼叫記錄",
+      "note": "按呼叫方送來的 IP 和 User-Agent 記錄（經可信反代時取真實用戶端 IP）；{days} 天沒再出現的會清掉。"
     }
   },
   "accessPlan": {

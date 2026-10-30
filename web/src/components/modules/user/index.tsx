@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { ChevronLeft, ChevronRight, Loader2, Search, Ticket, UserPlus } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { toast } from '@/components/common/Toast';
-import { useDeleteUser, usePatchUser, useResetUserPassword, useUserList, type User } from '@/api/endpoints/user';
+import { useDeleteUser, usePatchUser, useResetUserPassword, useUserAccessList, useUserList, type User } from '@/api/endpoints/user';
 import { useAccessPlanList } from '@/api/endpoints/access-plan';
 import { useUserUsageRank } from '@/api/endpoints/stats';
 import { useNavStore } from '@/components/modules/navbar/nav-store';
@@ -32,6 +32,7 @@ export function UserManagement() {
     const { data: users = [], isLoading } = useUserList();
     const { data: accessPlans = [] } = useAccessPlanList();
     const { data: rank = [] } = useUserUsageRank();
+    const { data: accessList = [] } = useUserAccessList();
     const patch = usePatchUser();
     const deleteUser = useDeleteUser();
     const resetPassword = useResetUserPassword();
@@ -60,6 +61,7 @@ export function UserManagement() {
     const counts = useMemo(() => statusCounts(users, filters, nowSec), [users, filters, nowSec]);
     const paged = paginate(filtered, page, PAGE_SIZE);
     const usage = useMemo(() => new Map(rank.map((r) => [r.user_id, r])), [rank]);
+    const access = useMemo(() => new Map(accessList.map((a) => [a.user_id, a])), [accessList]);
     const liveSelected = [...selected].filter((id) => users.some((u) => u.id === id));
     const drawerUser = drawer.userID ? users.find((u) => u.id === drawer.userID) ?? null : null;
     const balanceUser = balanceUserID ? users.find((u) => u.id === balanceUserID) ?? null : null;
@@ -121,13 +123,13 @@ export function UserManagement() {
                             ? <DataTableBulkActions selected={liveSelected} users={users} plans={accessPlans} onClear={() => setSelected(new Set())} />
                             : <UsersToolbar filters={filters} setFilters={setFilters} counts={counts} plans={accessPlans} />}
                         <div className="w-full overflow-x-auto">
-                            <UsersTable users={paged.items} plans={accessPlans} usage={usage} nowSec={nowSec} selected={selected} onSelect={toggleOne} onSelectPage={togglePage} handlers={handlers} />
+                            <UsersTable users={paged.items} plans={accessPlans} usage={usage} access={access} nowSec={nowSec} selected={selected} onSelect={toggleOne} onSelectPage={togglePage} handlers={handlers} />
                         </div>
                         {paged.total === 0 && <div className="py-12 text-center text-sm text-muted-foreground">{users.length === 0 ? t('page.empty') : t('page.noMatch')}</div>}
                         <Pager page={paged.page} pages={paged.pages} total={paged.total} onPage={setPage} />
                     </div>
                     <div className="md:hidden">
-                        <UsersMobileList users={paged.items} plans={accessPlans} nowSec={nowSec} handlers={handlers} />
+                        <UsersMobileList users={paged.items} plans={accessPlans} access={access} nowSec={nowSec} handlers={handlers} />
                         {paged.total === 0 && <div className="py-12 text-center text-sm text-muted-foreground">{users.length === 0 ? t('page.empty') : t('page.noMatch')}</div>}
                         {paged.pages > 1 && <Pager page={paged.page} pages={paged.pages} total={paged.total} onPage={setPage} />}
                     </div>
@@ -145,6 +147,7 @@ export function UserManagement() {
                 onBalance={handlers.onBalance}
                 onDelete={handlers.onDelete}
                 onViewLogs={handlers.onViewLogs}
+                alertCount={drawerUser ? access.get(drawerUser.id)?.alerts.length ?? 0 : 0}
             />
             <UserQuotaDialog user={balanceUser} open={balanceUser !== null} onOpenChange={(o) => { if (!o) setBalanceUserID(null); }} />
             <RedeemDialog open={redeemOpen} onOpenChange={setRedeemOpen} />

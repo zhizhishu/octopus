@@ -1729,7 +1729,8 @@
       "times": "{n} calls",
       "neverUsed": "Never used",
       "edit": "Edit",
-      "adjustBalance": "Adjust balance"
+      "adjustBalance": "Adjust balance",
+      "lastRelayTip": "Time, IP and client of the most recent call. A yellow tag means an unusual IP or client switch; hover for details."
     },
     "mobile": {
       "balance": "Balance",
@@ -1926,6 +1927,47 @@
       "keyOn": "On",
       "keyOff": "Off",
       "viewLogs": "See their recent requests"
+    },
+    "access": {
+      "tab": "IPs & clients",
+      "alertTitle": "Unusual IP / client switch",
+      "badge": {
+        "manyIPs": "Many IPs",
+        "newIP": "IP switch",
+        "newClient": "Client switch",
+        "ipAndClient": "IP & client switch"
+      },
+      "alert": {
+        "manyIPs": "Called from {n} different IPs within {window}: {list}",
+        "newIP": "New IP {value} since {time}; {others} also used within {window}",
+        "newClient": "New client {value} since {time}; {others} also used within {window}",
+        "more": "{list} and {n} more",
+        "hint": "Could be a new network or device, or someone else using the key."
+      },
+      "window": {
+        "hours": "{n, plural, one {# hour} other {# hours}}",
+        "minutes": "{n, plural, one {# minute} other {# minutes}}"
+      },
+      "ruleTip": "Flagged when {limit} or more different IPs are used within {window}, or a never-seen IP / client shows up while an older one is still in use. One IPv6 /64 counts as one IP; a client version upgrade is not a switch.",
+      "last": "Last call",
+      "ip": "IP",
+      "client": "Client",
+      "key": "API key",
+      "noKey": "No key",
+      "keyDeleted": "Deleted key #{id}",
+      "noUA": "No User-Agent",
+      "ips": "IPs used",
+      "clients": "Clients used",
+      "count": "{n}",
+      "times": "{n} calls",
+      "lastSeen": "Used {when}",
+      "firstSeen": "First {date}",
+      "newPill": "New",
+      "newPillTip": "The new one named in the warning above",
+      "clientsOnIP": "Clients: {list}",
+      "ipsOnClient": "IPs: {list}",
+      "empty": "No calls yet",
+      "note": "Recorded from the caller's IP and User-Agent (the real client IP when behind a trusted proxy). Entries not seen for {days} days are removed."
     }
   },
   "accessPlan": {

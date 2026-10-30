@@ -559,3 +559,77 @@ export function useBatchUsers() {
         },
     });
 }
+
+// ---- IP / 客户端（用户页，仅管理员）----
+
+export type UserAccessAlertKind = 'many_ips' | 'new_ip' | 'new_client';
+
+/** 一条「异常切换」提示。value 是新冒出来的 IP / 客户端 UA，others 是同一时间窗里也在用的其它 IP / UA。 */
+export interface UserAccessAlert {
+    kind: UserAccessAlertKind;
+    window_sec: number;
+    count: number;
+    value?: string;
+    others?: string[];
+    at: number;
+}
+
+export interface UserAccessLast {
+    ip: string;
+    user_agent: string;
+    api_key_id: number;
+    api_key_name?: string;
+    at: number;
+}
+
+export interface UserAccessSummary {
+    user_id: number;
+    last: UserAccessLast;
+    alerts: UserAccessAlert[];
+}
+
+export interface UserAccessKeyUse {
+    api_key_id: number;
+    api_key_name?: string;
+    requests: number;
+    last_seen: number;
+}
+
+export interface UserAccessGroup {
+    value: string;
+    first_seen: number;
+    last_seen: number;
+    requests: number;
+    keys: UserAccessKeyUse[];
+    values?: string[];
+}
+
+export interface UserAccessDetail {
+    user_id: number;
+    window_sec: number;
+    many_ips_limit: number;
+    keep_days: number;
+    last?: UserAccessLast;
+    alerts: UserAccessAlert[];
+    ips: UserAccessGroup[];
+    clients: UserAccessGroup[];
+    total_requests: number;
+}
+
+export function useUserAccessList(options?: { enabled?: boolean }) {
+    return useQuery({
+        queryKey: ['users', 'access'],
+        queryFn: () => apiClient.get<UserAccessSummary[]>('/api/v1/user/access'),
+        enabled: options?.enabled ?? true,
+        refetchInterval: 60_000,
+    });
+}
+
+export function useUserAccessDetail(id: number | undefined) {
+    return useQuery({
+        queryKey: ['users', 'access', 'detail', id],
+        queryFn: () => apiClient.get<UserAccessDetail>(`/api/v1/user/access/detail?id=${id}`),
+        enabled: !!id,
+        refetchInterval: 60_000,
+    });
+}
