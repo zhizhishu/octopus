@@ -306,3 +306,31 @@ func TestNoBreakerRetryBudgetValidation(t *testing.T) {
 		})
 	}
 }
+
+// upstream_request_body_log_enabled 由 relay 用 SettingGetInt 读取（非 0 即开），
+// 前端开关写 "1"/"0"。"true"/"false" 会被 Atoi 拒掉、静默当成关闭，所以在入口就拦下。
+func TestUpstreamRequestBodyLogValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{name: "off", value: "0"},
+		{name: "on", value: "1"},
+		{name: "bool true rejected", value: "true", wantErr: true},
+		{name: "bool false rejected", value: "false", wantErr: true},
+		{name: "other integer rejected", value: "2", wantErr: true},
+		{name: "empty rejected", value: "", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := (&Setting{Key: SettingKeyUpstreamRequestBodyLog, Value: tt.value}).Validate()
+			if tt.wantErr && err == nil {
+				t.Fatalf("expected validation error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected validation error: %v", err)
+			}
+		})
+	}
+}

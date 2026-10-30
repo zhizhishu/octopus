@@ -23,6 +23,8 @@ export const SettingKey = {
     RelayLogKeepPeriod: 'relay_log_keep_period',
     RelayLogMaxStorageGB: 'relay_log_max_storage_gb',
     RelayLogReclaimEnabled: 'relay_log_reclaim_enabled',
+    // 后端按整数读（非 0 即开）：只写 "1"/"0"。
+    UpstreamRequestBodyLog: 'upstream_request_body_log_enabled',
     AnthropicAutoCacheControl: 'anthropic_auto_cache_control',
     OpenAIAutoPromptCacheKey: 'openai_auto_prompt_cache_key',
     RelayStreamKeepaliveIntervalSeconds: 'relay_stream_keepalive_interval_seconds',

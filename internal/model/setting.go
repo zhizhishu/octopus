@@ -762,6 +762,13 @@ func (s *Setting) Validate() error {
 			return fmt.Errorf("%s must be an integer between 0 and %d", s.Key, MaxRelayNoBreakerRetryBudgetSeconds)
 		}
 		return nil
+	case SettingKeyUpstreamRequestBodyLog:
+		// 后端用 SettingGetInt 读取（非 0 即开）。只收 "0"/"1"：
+		// 写成 "true" 会被 Atoi 解析失败、静默当成关闭，等于开关失灵。
+		if s.Value != "0" && s.Value != "1" {
+			return fmt.Errorf("%s must be 0 or 1", s.Key)
+		}
+		return nil
 	case SettingKeyRouteModeOverride:
 		switch strings.ToLower(strings.TrimSpace(s.Value)) {
 		case "", "spread", "fill_first":
