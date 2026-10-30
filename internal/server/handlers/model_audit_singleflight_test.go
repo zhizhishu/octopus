@@ -160,11 +160,14 @@ func TestModelAuditSlotConcurrentAcquireYieldsExactlyOneWinner(t *testing.T) {
 			}
 			mu.Unlock()
 
-			release()
-
+			// 先把自己记成「已离开」，再真正释放闸门。
+			// 反过来的话，release 之后、计数减一之前，下一个人已经能合法拿到闸门，
+			// 测试会把这个正常的交接误判成「两人同时持有」。
 			mu.Lock()
 			currentlyHolding--
 			mu.Unlock()
+
+			release()
 		}()
 	}
 	wg.Wait()
