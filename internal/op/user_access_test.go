@@ -142,6 +142,13 @@ func TestUserAccessRecordFromRelayLogAndPersist(t *testing.T) {
 	if err := SettingSetString(model.SettingKeyRelayLogKeepEnabled, "false"); err != nil {
 		t.Fatal(err)
 	}
+	// 关了日志保存时 RelayLogAdd 会把日志留在进程级的 relayLogCache 里；不清掉会漏进同包别的用例
+	// （它们按 user_id 统计内存日志，新库里的用户 ID 会和这里的重复）。
+	t.Cleanup(func() {
+		relayLogCacheLock.Lock()
+		relayLogCache = nil
+		relayLogCacheLock.Unlock()
+	})
 	now := time.Now().Unix()
 	add := func(ip, ua string, key int, at int64) {
 		t.Helper()

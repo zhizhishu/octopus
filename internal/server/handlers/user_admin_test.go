@@ -260,6 +260,13 @@ func TestUserUsageEndpoint(t *testing.T) {
 func TestUserAccessEndpoints(t *testing.T) {
 	env := setupUserAdminEnv(t)
 	u := env.newUser(t, "roamer", 1)
+	// 内存里的来源记录是进程级的：先把同包别的用例留下的刷进这个临时库再清空，免得混进来。
+	if err := op.UserAccessSaveDB(env.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.GetDB().Where("1 = 1").Delete(&model.UserAccessSeen{}).Error; err != nil {
+		t.Fatal(err)
+	}
 	now := time.Now().Unix()
 	op.UserAccessRecord(u.ID, 5, "203.0.113.1", "claude-cli/2.0.1", now-3*86400)
 	if err := op.UserAccessSaveDB(env.ctx); err != nil {
@@ -277,7 +284,14 @@ func TestUserAccessEndpoints(t *testing.T) {
 	if err := json.Unmarshal(data, &sums); err != nil {
 		t.Fatal(err)
 	}
-	if len(sums) != 1 || sums[0].UserID != u.ID || sums[0].Last.IP != "198.51.100.2" || len(sums[0].Alerts) != 1 || sums[0].Alerts[0].Kind != model.UserAccessAlertNewIP {
+	// 只看这个用户（别的用例的请求可能在这之后又进了内存）。
+	var mine *model.UserAccessSummary
+	for i := range sums {
+		if sums[i].UserID == u.ID {
+			mine = &sums[i]
+		}
+	}
+	if mine == nil || mine.Last.IP != "198.51.100.2" || len(mine.Alerts) != 1 || mine.Alerts[0].Kind != model.UserAccessAlertNewIP {
 		t.Fatalf("bad summaries %s", data)
 	}
 
