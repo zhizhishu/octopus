@@ -176,7 +176,7 @@ export type RouteModeOverrideValue = 'spread' | 'fill_first';
 export const ROUTE_MODE_OVERRIDE_VALUES: readonly RouteModeOverrideValue[] = ['spread', 'fill_first'];
 
 export function routeModeOverrideLabel(value: RouteModeOverrideValue): string {
-    return value === 'spread' ? '轮询' : '优先填充';
+    return value === 'spread' ? '轮流' : '按顺序';
 }
 
 export function useRouteModeOverrideSetting() {
@@ -193,7 +193,7 @@ export function useRouteModeOverrideSetting() {
 
     useEffect(() => {
         if (isError || (isSuccess && !isFetching && !valid)) {
-            toast.error('默认分流模式读取失败');
+            toast.error('默认分配方式读取失败');
         }
     }, [isError, isSuccess, isFetching, valid]);
 
@@ -205,10 +205,10 @@ export function useRouteModeOverrideSetting() {
                 onSuccess: (saved) => {
                     queryClient.setQueryData<Setting[]>(['settings', 'list'], (current) =>
                         current?.map((setting) => setting.key === saved.key ? saved : setting));
-                    toast.success('默认分流模式已保存');
+                    toast.success('默认分配方式已保存');
                 },
                 // 不改查询缓存：失败后自然回到最后确认的服务端值。
-                onError: () => toast.error('默认分流模式保存失败'),
+                onError: () => toast.error('默认分配方式保存失败'),
             },
         );
     };

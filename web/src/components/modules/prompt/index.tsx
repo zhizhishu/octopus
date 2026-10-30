@@ -108,7 +108,7 @@ function UserPromptView() {
                         </div>
                         <h2 className="text-2xl font-bold">提示词由管理员统一管理</h2>
                         <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                            你的请求仍然可以自带 system / developer 提示词；Octopus 会在管理员配置的全局、方案、模型映射、渠道规则之后统一处理。为避免泄露管理策略，普通用户不展示完整覆盖内容。
+                            你的请求仍然可以自带 system / developer 提示词；Octopus 会在管理员配置的全局、方案、模型路由、渠道规则之后统一处理。为避免泄露管理策略，普通用户不展示完整覆盖内容。
                         </p>
                     </div>
                     <Button type="button" className="rounded-xl" onClick={() => setActiveItem('key')}>
@@ -122,12 +122,12 @@ function UserPromptView() {
                 <LayerCard
                     icon={ShieldCheck}
                     title="管理员策略"
-                    description="管理员可在全局、方案、模型映射、渠道四层另加或替换 system 提示词。"
+                    description="管理员可在全局、方案、模型路由、渠道四层另加或替换 system 提示词。"
                     enabled
                 />
                 <LayerCard
                     icon={GitBranch}
-                    title="模型映射"
+                    title="模型路由"
                     description="如果你的 API Key 绑定了不同方案，同一个请求模型可能应用不同的提示词策略。"
                     enabled
                 />
@@ -319,11 +319,11 @@ function AdminPromptView() {
                         </div>
                         <h2 className="text-2xl font-bold">提示词管理</h2>
                         <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-                            按 全局 → 方案 → 模型映射 → 渠道 依次生效，越往后越优先。默认另加一条 system；选「替换原有」会先删掉已有的 system。
+                            按 全局 → 方案 → 模型路由 → 渠道 依次生效，越往后越优先。默认另加一条 system；选「替换原有」会先删掉已有的 system。
                         </p>
                     </div>
                     <Button type="button" variant="outline" className="rounded-xl" onClick={() => setActiveItem('access-plan')}>
-                        打开模型映射
+                        打开模型路由
                         <ArrowRight className="size-4" />
                     </Button>
                 </div>
@@ -332,7 +332,7 @@ function AdminPromptView() {
             <div className="grid gap-4 md:grid-cols-4">
                 <LayerCard icon={ShieldCheck} title="全局默认" description="全站第一层规则。" enabled={globalPrompt.trim().length > 0} />
                 <LayerCard icon={Layers3} title="方案" description={`${planPromptCount} 个方案已配置。`} enabled={planPromptCount > 0} />
-                <LayerCard icon={GitBranch} title="模型映射" description={`${routePromptRows.length} 条映射已配置。`} enabled={routePromptRows.length > 0} />
+                <LayerCard icon={GitBranch} title="模型路由" description={`${routePromptRows.length} 条路由已配置。`} enabled={routePromptRows.length > 0} />
                 <LayerCard icon={Radio} title="渠道" description={`${channelPromptCount} 个渠道已配置。`} enabled={channelPromptCount > 0} />
             </div>
 
@@ -383,9 +383,9 @@ function AdminPromptView() {
                     <div>
                         <h3 className="flex items-center gap-2 text-base font-semibold">
                             <GitBranch className="size-5" />
-                            模型映射提示词
+                            模型路由提示词
                         </h3>
-                        <p className="mt-1 text-xs text-muted-foreground">模型映射级提示词仍在「方案」页面的矩阵里编辑，这里集中展示已有覆盖。</p>
+                        <p className="mt-1 text-xs text-muted-foreground">模型路由的提示词在「方案」页点模型的「编辑」里改，这里集中展示已有的。</p>
                     </div>
                     <Button type="button" variant="outline" size="sm" className="rounded-xl" onClick={() => setActiveItem('access-plan')}>
                         去映射矩阵编辑
@@ -393,7 +393,7 @@ function AdminPromptView() {
                 </div>
                 {routePromptRows.length === 0 ? (
                     <div className="rounded-2xl border border-dashed border-border px-4 py-8 text-center text-sm text-muted-foreground">
-                        暂无模型映射提示词
+                        暂无模型路由提示词
                     </div>
                 ) : (
                     <div className="grid gap-2">
@@ -408,7 +408,7 @@ function AdminPromptView() {
                             </div>
                         ))}
                         {routePromptRows.length > 8 && (
-                            <p className="text-xs text-muted-foreground">还有 {routePromptRows.length - 8} 条，请进入模型映射查看。</p>
+                            <p className="text-xs text-muted-foreground">还有 {routePromptRows.length - 8} 条，请到「方案」页查看。</p>
                         )}
                     </div>
                 )}

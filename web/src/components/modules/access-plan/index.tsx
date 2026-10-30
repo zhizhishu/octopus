@@ -144,17 +144,26 @@ const DEFAULT_PLAN_TEMPLATES = [
     { slug: 'custom', display_name: 'Custom' },
 ] as const;
 
+/**
+ * 方案页文案（用户 2026-10-30：「候选渠道 / 发送模型」不够产品化）。统一词表，跟设置页 / 渠道页 / 日志一致：
+ * - 请求模型：用户调用时写的模型名（日志同名）。
+ * - 实际模型：转发给渠道时用的模型名（日志同名；可与请求模型不同）。
+ * - 模型路由：一条 = 一个请求模型 → 它能用的渠道 + 顺序 + 都失败时怎么办；一个渠道一条「线路」。
+ * - 分配方式：按顺序（fill_first, 3）/ 轮流（spread, 1）/ 分层轮流（6）。
+ * - 模型重定向：渠道自己的 model_mapping（请求名 → 实际名），与方案路由无关，画布只读展示。
+ * 主屏一句话，细节放 title 悬停提示。每条文案都要和后端真实效果一致（见 internal/relay、balancer）。
+ */
 const ACCESS_PLAN_TEXT = {
     list: {
-        title: '方案管理',
+        title: '正在加载方案…',
         loadFailed: '加载失败',
-        empty: '暂无方案',
-        selectOrCreate: '选择或创建一个方案',
+        empty: '还没有方案',
+        selectOrCreate: '选一个方案，或新建一个',
     },
     create: {
         title: '新建方案',
-        displayName: '显示名称',
-        slug: '调用代号（如 vip，接口里用它选择方案）',
+        displayName: '名称',
+        slug: '调用代号（如 vip，调用时用它选方案）',
         submit: '创建',
     },
     status: {
@@ -163,83 +172,137 @@ const ACCESS_PLAN_TEXT = {
         disabled: '停用',
     },
     basic: {
-        title: '基础信息',
-        displayName: '显示名称',
+        title: '基本信息',
+        displayName: '名称',
         slug: '调用代号',
         enabled: '启用',
-        defaultPlan: '默认方案',
+        defaultPlan: '设为默认方案',
     },
     billing: {
         title: '计费倍率',
-        jsonTitle: 'JSON 批量修改倍率',
-        jsonApply: '应用 JSON',
-        jsonCopy: '生成当前 JSON',
+        jsonTitle: '用 JSON 批量改倍率',
+        jsonApply: '导入',
+        jsonCopy: '填入当前配置',
         jsonPlaceholder: '{\n  "default_multiplier": 1,\n  "rules": [\n    {"model_name": "gpt-4", "multiplier": 1.2, "enabled": true}\n  ]\n}',
         defaultMultiplier: '默认倍率',
-        ruleCount: '倍率 {count} 条',
-        modelName: '模型名称',
+        ruleCount: '{count} 个单独倍率',
+        modelName: '模型名',
         multiplier: '倍率',
-        empty: '暂无单模型倍率',
+        empty: '还没有单独设倍率的模型',
         defaultSource: '默认倍率',
-        modelRuleSource: '单模型倍率',
+        modelRuleSource: '单独倍率',
     },
     routes: {
-        title: '模型映射',
-        manageTitle: '方案画布',
-        manageHint: '方案设置收进弹窗，主视图只看请求、候选渠道、调度和发送模型。',
-        tabBasic: '基础信息',
-        tabBilling: '倍率',
-        tabRoutes: '模型映射',
-        jsonTitle: 'JSON 批量修改映射',
-        jsonApply: '应用 JSON',
-        jsonCopy: '生成当前 JSON',
+        title: '模型路由',
+        manageTitle: '方案设置',
+        manageHint: '名称、调用代号和计费倍率。模型走哪些渠道在主画布上改。',
+        jsonTitle: '用 JSON 批量改路由',
+        jsonApply: '导入到画布',
+        jsonCopy: '填入当前配置',
         jsonPlaceholder: '[\n  {\n    "request_model": "claude-fable-5",\n    "channel_id": 1,\n    "upstream_model": "claude-fable-5",\n    "priority": 1,\n    "weight": 1,\n    "enabled": true\n  }\n]',
-        targetCount: '映射 {count} 条',
-        requestModel: '原请求模型',
-        modeSpread: '轮询',
-        modeSpreadTiered: '分层轮询',
-        modeFillFirst: '优先填充',
-        upstreamModel: '发送模型',
-        priority: '优先级',
-        weight: '同级轮询权重',
-        noChannels: '暂无渠道',
-        missingChannel: '渠道 #{id} 已不存在',
-        empty: '暂无映射目标',
-        canvasTitle: '模型顺序',
-        canvasHint: '谁在上面谁先用；优先填充看顺位（越小越先），分层轮询看数字（越大越先）。',
-        canvasEmpty: '暂无可视化链路，渠道、模型或映射变更后会自动同步到此方案。',
-        targetSummary: '候选渠道 / 发送模型',
-        setupTitle: '调用前先确认模型池 / 方案',
-        setupHint: '模型池负责兜底，当前方案负责映射和计费。渠道、模型或映射变更后会自动同步到此方案。',
-        groupRouteHint: '用户扣费按“用户计费”列计算，实际请求会发送到下方渠道与模型。流式响应一旦写出，就不会中途硬切。',
+        targetCount: '{count} 条线路',
+        requestModel: '请求模型',
+        requestModelHint: '用户调用时写的模型名',
+        modeSpread: '轮流',
+        modeSpreadTiered: '分层轮流',
+        modeFillFirst: '按顺序',
+        modeLabel: '分配方式',
+        modeFillFirstOption: '按顺序（一直用第一个，出错才换）',
+        modeSpreadOption: '轮流（在这些渠道间轮流分配）',
+        modeSpreadTieredOption: '分层轮流（数字大的一层先用，层内轮流）',
+        modeSpreadHint: '轮流：请求在这些渠道间轮流分配，分摊压力；出错的会被跳过（渠道自身的「渠道优先级」仍然先看）。',
+        modeSpreadTieredHint: '分层轮流：数字大的一层先用，同一层里轮流；整层都不可用才换下一层。',
+        modeFillFirstHint: '按顺序：一直用排第一的渠道，它出错、限流或冷却时才换下一个（上游缓存命中最好）。',
+        upstreamModel: '实际模型',
+        upstreamModelHint: '转发给这个渠道时用的模型名，可以和请求模型不同',
+        orderPrefix: '排第',
+        orderValueHint: '排序值 {value}：越小越靠前',
+        noChannels: '还没有渠道',
+        missingChannel: '渠道 #{id} 已删除',
+        empty: '这个模型还没有渠道，用上方「添加渠道」加一个',
+        canvasTitle: '模型路由',
+        canvasHint: '左边是用户请求的模型，右边是它会用到的渠道；点「编辑」调整。',
+        canvasEmpty: '还没有路由。渠道启用模型后会自动出现在这里。',
+        filterEmpty: '没有符合筛选的模型或渠道',
+        targetSummary: '渠道',
+        setupTitle: '怎么生效',
+        setupHint: '用户调用某个模型时，按这里的路由挑渠道；这里没有的模型，直接用所有提供它的渠道。渠道或模型有变化会自动同步。',
+        groupRouteHint: '扣费按每条线路显示的计费模型和倍率算。流式回复一旦开始输出，就不会再换渠道。',
         quickEdit: '编辑',
-        quickEditTitle: '编辑模型映射',
-        quickEditDescription: '直接编辑当前请求模型要走的渠道、发送模型、计费方式和提示词，不用滑到下方长列表。',
-        targetMore: '+{count} 个目标',
+        quickEditTitle: '编辑路由',
+        quickEditDescription: '这个模型用哪些渠道、谁先谁后、转发时用什么模型名。',
+        addChannel: '添加渠道：',
+        addChannelPlaceholder: '选择渠道…',
         close: '关闭',
-        hiddenStale: '发现 {count} 个已失效映射，画布已标出。',
-        fallback: '备用处理',
-        billingModel: '用户计费',
+        hiddenStale: '{count} 条线路已失效（渠道已删除或不再提供该模型）',
+        fallback: '都失败时',
         multiplier: '倍率',
         unset: '未设置',
-        noRoute: '未配置',
-        disabledTarget: '停用目标',
-        billingSourceRequest: '请求模型',
-        billingSourceUpstream: '发送模型',
-        billingSourceOverride: '覆盖模型',
-        fallbackNone: '失败后直接报错',
-        fallbackFailover: '尝试下一个目标',
-        fallbackReturnGroup: '尝试同能力默认模型池',
-        billingBy: '用户计费',
-        upstreamTarget: '发送模型',
-        billingHint: '用户扣费按这里显示的模型计算，和实际发送到哪个渠道分开。',
-        routeFailureHint: '一般保持“尝试同能力默认模型池”就行；流式响应一旦开始输出，就不会中途硬切。',
+        billingSourceRequest: '按请求模型计费',
+        billingSourceUpstream: '按实际模型计费',
+        billingSourceOverride: '按指定模型计费',
+        fallbackNone: '直接报错',
+        fallbackNoneHint: '只在这里列出的渠道里试，全部失败就报错',
+        fallbackReturnGroup: '再试其他有此模型的渠道',
+        fallbackReturnGroupHint: '这里的渠道都失败后，再试其他提供同名模型、还没试过的渠道',
+        fallbackCardNone: '不换其他渠道',
+        fallbackCardReturnGroup: '可换其他渠道',
         promptOverride: '提示词',
         promptAppend: '另加一条 system',
         promptReplace: '替换原有 system',
-        promptPlaceholder: '可选：仅此请求模型映射生效的 system 提示词',
-        advancedTitle: '高级（可选）',
-        advancedHint: '失败兜底、系统提示词',
+        promptPlaceholder: '可选：只对这个模型生效的 system 提示词',
+        advancedTitle: '更多设置',
+        advancedHint: '分配方式、都失败时、提示词',
+        moveToTopFillFirst: '排到第一',
+        moveToTopTiered: '升到最高层',
+        moveToTopFillFirstHint: '把这个渠道排到第 1 个，优先使用',
+        moveToTopTieredHint: '把这个渠道单独放到最高一层（其他渠道的数字不变）',
+        moveToTopAtTop: '已经在最高层',
+        moveToTopSpreadHint: '「轮流」不分先后。要排先后，先在「更多设置」里改成「按顺序」或「分层轮流」',
+        orderFillFirstHint: '第 {order} 个用。＋ 往前排，− 往后排',
+        orderTieredHint: '第 {tier} 层：数字越大越先用，同一层里轮流。＋ 升一层，− 降一层',
+        orderSpreadHint: '现在所有渠道轮流。点 ＋ / − 会改成「分层轮流」，数字大的先用',
+        moveUp: '往前排',
+        moveDown: '往后排',
+        tierUp: '升一层',
+        tierDown: '降一层',
+        tierLabel: '层',
+        batchTitle: '批量编辑（JSON）',
+        batchHint: '一次导入或导出整个方案的路由',
+        batchButtonHint: '用 JSON 批量导入 / 导出路由',
+        viewAll: '全部',
+        viewByChannel: '按渠道',
+        viewByModel: '按模型',
+        filterChannel: '筛选渠道',
+        filterChannelAll: '全部渠道',
+        filterModel: '筛选模型',
+        filterModelAll: '全部模型',
+        searchPlaceholder: '搜模型或渠道…',
+        fullscreen: '全屏',
+        exitFullscreen: '退出全屏（Esc）',
+        minimapShow: '显示小地图',
+        minimapHide: '隐藏小地图',
+        minimap: '小地图',
+        fitAll: '看全部',
+        zoomReadable: '放大',
+        familyModels: '{count} 个模型',
+        familyTargets: '{count} 条线路',
+        redirectBand: '渠道里的模型重定向（只读，去渠道页修改）',
+        redirectCount: '{count} 条',
+        redirectFrom: '请求模型',
+        redirectTo: '实际模型',
+        planDefaultMultiplier: '默认倍率 {multiplier}x',
+        channelSearch: '搜渠道名或 #ID…',
+        channelSearchEmpty: '没有匹配的渠道',
+        planLabel: '方案',
+        planSearch: '搜方案名或代号…',
+        planSearchEmpty: '没有匹配的方案',
+        settingsButton: '方案设置',
+        defaultModeLabel: '默认分配方式',
+        defaultModeUnavailable: '默认分配方式暂时读不到',
+        defaultModeHint: '新出现的模型路由、以及没配路由的模型，用哪种方式挑渠道；已经单独设过的路由不受影响',
+        displayNameHint: '名称：给人看的，可以写中文',
+        slugHint: '调用时用这个代号选方案（请求头 X-Octopus-Plan）；建议英文、数字、-、_。',
     },
     actions: {
         save: '保存',
@@ -251,15 +314,15 @@ const ACCESS_PLAN_TEXT = {
     toast: {
         created: '方案已创建',
         createFailed: '创建失败',
-        updated: '方案已更新',
-        updateFailed: '更新失败',
+        updated: '方案已保存',
+        updateFailed: '保存失败',
         deleted: '方案已删除',
         deleteFailed: '删除失败',
-        billingUpdated: '计费规则已更新',
-        billingUpdateFailed: '计费规则更新失败',
-        routesUpdated: '模型映射已更新',
-        routesUpdateFailed: '模型映射更新失败',
-        jsonApplied: 'JSON 已应用，记得保存',
+        billingUpdated: '计费倍率已保存',
+        billingUpdateFailed: '计费倍率保存失败',
+        routesUpdated: '路由已保存',
+        routesUpdateFailed: '路由保存失败',
+        jsonApplied: '已导入，记得保存',
         jsonInvalid: 'JSON 格式不对',
     },
 } as const;
@@ -351,18 +414,17 @@ function billingSourceLabel(source: AccessPlanRouteTarget['billing_model_source'
     }
 }
 
-function fallbackModeLabel(mode: AccessPlanRouteTarget['fallback_mode']) {
+/**
+ * 「都失败时」：后端 failover（旧默认）与 return_group 现在效果一样 —— 方案里的渠道都失败后，
+ * 再去试其他提供同名模型、还没试过的渠道（relay.shouldReturnToOriginalGroup）；只有 none 不外溢、直接报错。
+ * 所以两者显示同一句，不再出现「尝试下一个目标」这种和实际不符的说法。
+ */
+function fallbackModeLabel(mode: AccessPlanRouteTarget['fallback_mode'], variant: 'select' | 'card' | 'hint' = 'select') {
     const t = accessPlanText;
-
-    switch (mode ?? 'failover') {
-        case 'none':
-            return t('routes.fallbackNone');
-        case 'return_group':
-            return t('routes.fallbackReturnGroup');
-        case 'failover':
-        default:
-            return t('routes.fallbackFailover');
-    }
+    const none = mode === 'none';
+    if (variant === 'card') return t(none ? 'routes.fallbackCardNone' : 'routes.fallbackCardReturnGroup');
+    if (variant === 'hint') return t(none ? 'routes.fallbackNoneHint' : 'routes.fallbackReturnGroupHint');
+    return t(none ? 'routes.fallbackNone' : 'routes.fallbackReturnGroup');
 }
 
 function billingModelName(target: AccessPlanRouteTarget) {
@@ -671,7 +733,7 @@ function CreatePlanPanel({
 
                     <div className="grid gap-3">
                         <label className="grid gap-1 text-xs text-muted-foreground">
-                            显示名称：给人看的名字，可以写中文
+                            {t('routes.displayNameHint')}
                             <Input
                                 value={displayName}
                                 onChange={(event) => setDisplayName(event.target.value)}
@@ -846,7 +908,7 @@ function PlanBasicsEditor({ plan }: { plan: AccessPlan }) {
                             onChange={(event) => setSlug(event.target.value)}
                             className="rounded-xl font-mono"
                         />
-                        <span>接口调用用这个代号，不是展示名；展示名可以中文，这里建议英文/数字/-/_。</span>
+                        <span>{t('routes.slugHint')}</span>
                     </label>
                     <label className="flex items-center justify-between gap-3 rounded-2xl border border-border/70 bg-muted/20 px-3 py-2 text-sm">
                         <span>{t('basic.enabled')}</span>
@@ -1196,6 +1258,7 @@ type TargetNodeData = {
     upstreamModel: string;
     enabled: boolean;
     fallback: string;
+    fallbackHint: string;
     multiplier: number | string;
     billingSource: string;
     onPriorityChange?: (targetId: number, priority: number) => void;
@@ -1225,29 +1288,31 @@ const PlanFlowCard = memo(function PlanFlowCard({ data }: NodeProps<PlanFlowNode
         <div className="rounded-2xl border border-primary/25 bg-primary/10 p-3" style={{ width: PLAN_W, height: PLAN_H }}>
             <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-primary">{data.slug}</div>
             <div className="mt-1 truncate text-sm font-black text-foreground">{data.name}</div>
-            <div className="mt-2 text-xs text-muted-foreground">默认倍率 {data.multiplier}x</div>
+            <div className="mt-2 text-xs text-muted-foreground">{accessPlanText('routes.planDefaultMultiplier', { multiplier: data.multiplier })}</div>
             <Handle type="source" position={Position.Right} className="!size-2 !border-2 !border-background !bg-primary" />
         </div>
     );
 });
 
 const RequestFlowCard = memo(function RequestFlowCard({ data }: NodeProps<RequestFlowNode>) {
-    const modeLabel = data.mode !== undefined
+    const modeKey = data.mode !== undefined
         ? (Number(data.mode) === SPREAD_TIERED_MODE
-            ? accessPlanText('routes.modeSpreadTiered')
+            ? 'routes.modeSpreadTiered'
             : isSpreadMode(data.mode)
-                ? accessPlanText('routes.modeSpread')
-                : accessPlanText('routes.modeFillFirst'))
+                ? 'routes.modeSpread'
+                : 'routes.modeFillFirst')
         : null;
+    const modeLabel = modeKey ? accessPlanText(modeKey) : null;
+    const modeHint = modeKey ? accessPlanText(`${modeKey}Hint`) : undefined;
     return (
         <div className="rounded-2xl border border-amber-500/25 bg-amber-500/10 px-3 py-2.5" style={{ width: REQ_W, height: REQ_H }}>
             <Handle type="target" position={Position.Left} className="!size-2 !border-2 !border-background !bg-amber-500" />
             <div className="flex items-center justify-between gap-2">
                 <span className="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.16em] text-amber-600 dark:text-amber-300">
                     <span className="size-1.5 rounded-full bg-amber-500" />
-                    原请求模型
+                    <span title={accessPlanText('routes.requestModelHint')}>{accessPlanText('routes.requestModel')}</span>
                     {modeLabel !== null && (
-                        <span className="ml-0.5 rounded-full bg-muted/60 px-1.5 py-px font-normal normal-case tracking-normal text-muted-foreground">
+                        <span title={modeHint} className="ml-0.5 cursor-help rounded-full bg-muted/60 px-1.5 py-px font-normal normal-case tracking-normal text-muted-foreground">
                             {modeLabel}
                         </span>
                     )}
@@ -1278,10 +1343,10 @@ const TargetFlowCard = memo(function TargetFlowCard({ data }: NodeProps<TargetFl
         data.onPriorityChange(data.targetId, next);
     };
     const priorityTitle = data.fillFirst
-        ? `第 ${data.orderIndex} 顺位 · ${accessPlanText('routes.priority')} P${priority}`
+        ? accessPlanText('routes.orderFillFirstHint', { order: data.orderIndex })
         : data.spreadTiered
-            ? `分层轮询：数字越大越先尝试（当前 ${priority}）；同一数字内继续轮询`
-            : `同级轮询：所有目标平等轮转（当前 ${priority}）；用 + 抬数字即可变成分层`;
+            ? accessPlanText('routes.orderTieredHint', { tier: priority })
+            : accessPlanText('routes.orderSpreadHint');
     return (
         <div
             className={cn('grid grid-cols-[minmax(84px,1.1fr)_minmax(96px,1.4fr)_auto] items-center gap-3 rounded-2xl border bg-card/90 px-3 py-2', data.enabled ? 'border-emerald-500/25' : 'border-border opacity-65')}
@@ -1298,9 +1363,7 @@ const TargetFlowCard = memo(function TargetFlowCard({ data }: NodeProps<TargetFl
                     <span className="shrink-0">·</span>
                     {data.fillFirst ? (
                         <>
-                            <span className="shrink-0 font-medium text-foreground/80">第 {data.orderIndex} 顺位</span>
-                            <span className="shrink-0 text-muted-foreground/60">/</span>
-                            <span className="shrink-0">{data.showPriority ? `P${priority}` : accessPlanText('routes.priority')}</span>
+                            <span className="shrink-0 font-medium text-foreground/80">{accessPlanText('routes.orderPrefix')} {data.orderIndex}</span>
                             <div
                                 className="nodrag nopan pointer-events-auto ml-0.5 inline-flex shrink-0 items-center gap-0.5"
                                 onPointerDown={(event) => event.stopPropagation()}
@@ -1311,7 +1374,8 @@ const TargetFlowCard = memo(function TargetFlowCard({ data }: NodeProps<TargetFl
                                     type="button"
                                     className="flex size-4 items-center justify-center rounded border border-border/70 bg-background leading-none text-foreground hover:bg-muted disabled:opacity-40"
                                     disabled={!data.targetId || priority >= Number.MAX_SAFE_INTEGER}
-                                    aria-label={`${accessPlanText('routes.priority')} demote`}
+                                    aria-label={accessPlanText('routes.moveDown')}
+                                    title={accessPlanText('routes.moveDown')}
                                     onClick={(event) => {
                                         event.stopPropagation();
                                         bumpPriority(1);
@@ -1319,12 +1383,16 @@ const TargetFlowCard = memo(function TargetFlowCard({ data }: NodeProps<TargetFl
                                 >
                                     −
                                 </button>
-                                <span className="min-w-3.5 text-center font-semibold text-foreground">{priority}</span>
+                                {/* 排序值和「排第 N」一样时不重复显示；有空档（如 1/5/9）才露出来，免得点了 ＋ 看不出变化。 */}
+                            {priority !== data.orderIndex ? (
+                                <span className="min-w-3.5 text-center font-semibold text-foreground" title={accessPlanText('routes.orderValueHint', { value: priority })}>{priority}</span>
+                            ) : null}
                                 <button
                                     type="button"
                                     className="flex size-4 items-center justify-center rounded border border-border/70 bg-background leading-none text-foreground hover:bg-muted disabled:opacity-40"
                                     disabled={!data.targetId || priority <= 1}
-                                    aria-label={`${accessPlanText('routes.priority')} promote`}
+                                    aria-label={accessPlanText('routes.moveUp')}
+                                    title={accessPlanText('routes.moveUp')}
                                     onClick={(event) => {
                                         event.stopPropagation();
                                         bumpPriority(-1);
@@ -1339,7 +1407,7 @@ const TargetFlowCard = memo(function TargetFlowCard({ data }: NodeProps<TargetFl
                         // 这里 + 是「抬数字」= 更优先，与上面优先填充的顺位语义相反（顺位越小越先）。
                         <>
                             <span className="shrink-0 rounded bg-emerald-500/10 px-1 py-0.5 font-medium text-emerald-600 dark:text-emerald-400">
-                                {data.spreadTiered ? '分层轮询' : '同级轮询'}
+                                {data.spreadTiered ? accessPlanText('routes.modeSpreadTiered') : accessPlanText('routes.modeSpread')}
                             </span>
                             <div
                                 className="nodrag nopan pointer-events-auto ml-0.5 inline-flex shrink-0 items-center gap-0.5"
@@ -1351,7 +1419,8 @@ const TargetFlowCard = memo(function TargetFlowCard({ data }: NodeProps<TargetFl
                                     type="button"
                                     className="flex size-4 items-center justify-center rounded border border-border/70 bg-background leading-none text-foreground hover:bg-muted disabled:opacity-40"
                                     disabled={!data.targetId || priority <= 1}
-                                    aria-label="降低该渠道优先级"
+                                    aria-label={accessPlanText('routes.tierDown')}
+                                    title={accessPlanText('routes.tierDown')}
                                     onClick={(event) => {
                                         event.stopPropagation();
                                         bumpPriority(-1);
@@ -1364,7 +1433,8 @@ const TargetFlowCard = memo(function TargetFlowCard({ data }: NodeProps<TargetFl
                                     type="button"
                                     className="flex size-4 items-center justify-center rounded border border-border/70 bg-background leading-none text-foreground hover:bg-muted disabled:opacity-40"
                                     disabled={!data.targetId || priority >= Number.MAX_SAFE_INTEGER}
-                                    aria-label="提高该渠道优先级"
+                                    aria-label={accessPlanText('routes.tierUp')}
+                                    title={accessPlanText('routes.tierUp')}
                                     onClick={(event) => {
                                         event.stopPropagation();
                                         bumpPriority(1);
@@ -1377,20 +1447,20 @@ const TargetFlowCard = memo(function TargetFlowCard({ data }: NodeProps<TargetFl
                     ) : (
                         // 兜底：spreadFamily = !fillFirst，正常构造下走不到这里。留着只是为了
                         // 万一有别的构造点忘了传 spreadFamily 时不至于整行空白。
-                        <span className="shrink-0 rounded bg-emerald-500/10 px-1 py-0.5 font-medium text-emerald-600 dark:text-emerald-400">轮询</span>
+                        <span className="shrink-0 rounded bg-emerald-500/10 px-1 py-0.5 font-medium text-emerald-600 dark:text-emerald-400">{accessPlanText('routes.modeSpread')}</span>
                     )}
                 </div>
             </div>
             <div className="min-w-0">
-                <div className="text-[9px] font-bold uppercase tracking-[0.14em] text-muted-foreground">{accessPlanText('routes.upstreamTarget')}</div>
+                <div className="text-[9px] font-bold uppercase tracking-[0.14em] text-muted-foreground" title={accessPlanText('routes.upstreamModelHint')}>{accessPlanText('routes.upstreamModel')}</div>
                 <div className="mt-0.5 truncate font-mono text-xs font-semibold text-foreground">
                     {data.upstreamModel}
                 </div>
             </div>
             <div className="text-xs text-muted-foreground">
                 <div className="font-bold text-foreground">{data.multiplier}x</div>
-                <div className="truncate text-[10px]">{data.billingSource}</div>
-                <div className="truncate text-[10px]">{data.fallback}</div>
+                <div className="truncate text-[10px]" title={data.billingSource}>{data.billingSource}</div>
+                <div className="truncate text-[10px]" title={data.fallbackHint}>{data.fallback}</div>
             </div>
         </div>
     );
@@ -1403,8 +1473,8 @@ const FamilyBandCard = memo(function FamilyBandCard({ data }: NodeProps<FamilyBa
             <div className="flex items-center gap-2.5 px-4 py-2.5">
                 <span className={cn('size-2.5 shrink-0 rounded-full', s.dot)} />
                 <span className={cn('text-sm font-black', s.text)}>{data.label}</span>
-                <Badge variant="secondary" className="rounded-full">{data.modelCount} 模型</Badge>
-                <Badge variant="outline" className="rounded-full">{data.targetCount} 映射</Badge>
+                <Badge variant="secondary" className="rounded-full">{accessPlanText('routes.familyModels', { count: data.modelCount })}</Badge>
+                <Badge variant="outline" className="rounded-full">{accessPlanText('routes.familyTargets', { count: data.targetCount })}</Badge>
             </div>
         </div>
     );
@@ -1416,7 +1486,7 @@ const MapFromCard = memo(function MapFromCard({ data }: NodeProps<MapFromFlowNod
         <div className="rounded-2xl border border-amber-500/25 bg-amber-500/10 px-3 py-2.5" style={{ width: REQ_W, height: REQ_H }}>
             <div className="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.16em] text-amber-600 dark:text-amber-300">
                 <span className="size-1.5 rounded-full bg-amber-500" />
-                客户端请求名
+                {accessPlanText('routes.redirectFrom')}
             </div>
             <div className="mt-1.5 break-all font-mono text-[13px] font-black leading-snug text-foreground line-clamp-2">{data.fromModel}</div>
             <Handle type="source" position={Position.Right} className="!size-2 !border-2 !border-background !bg-amber-500" />
@@ -1437,7 +1507,7 @@ const MapToCard = memo(function MapToCard({ data }: NodeProps<MapToFlowNode>) {
                 <div className="mt-0.5 text-[10px] text-muted-foreground">#{data.channelId}</div>
             </div>
             <div className="min-w-0">
-                <div className="text-[9px] font-bold uppercase tracking-[0.14em] text-muted-foreground">发送上游名</div>
+                <div className="text-[9px] font-bold uppercase tracking-[0.14em] text-muted-foreground">{accessPlanText('routes.redirectTo')}</div>
                 <div className="mt-0.5 truncate font-mono text-xs font-semibold text-foreground">{data.toModel}</div>
             </div>
         </div>
@@ -1451,7 +1521,7 @@ const ChannelMapBandCard = memo(function ChannelMapBandCard({ data }: NodeProps<
             <div className="flex items-center gap-2.5 px-4 py-2.5">
                 <span className="size-2.5 shrink-0 rounded-full bg-cyan-500" />
                 <span className="text-sm font-black text-cyan-600 dark:text-cyan-300">{data.label}</span>
-                <Badge variant="secondary" className="rounded-full">{data.count} 映射</Badge>
+                <Badge variant="secondary" className="rounded-full">{accessPlanText('routes.redirectCount', { count: data.count })}</Badge>
             </div>
         </div>
     );
@@ -1571,7 +1641,8 @@ function buildRouteFlow(
                         spreadTiered,
                         upstreamModel: cleanOneMillionModelName(target.upstream_model || accessPlanText('routes.unset')),
                         enabled: target.enabled,
-                        fallback: fallbackModeLabel(target.fallback_mode),
+                        fallback: fallbackModeLabel(target.fallback_mode, 'card'),
+                        fallbackHint: fallbackModeLabel(target.fallback_mode, 'hint'),
                         multiplier: billing.multiplier,
                         billingSource: billingSourceLabel(target.billing_model_source),
                         onPriorityChange,
@@ -1662,7 +1733,7 @@ function buildRouteFlow(
             draggable: false,
             width: BAND_W,
             height: bandHeight,
-            data: { label: '渠道模型映射（发送改名）', count: channelMappings.length, width: BAND_W, height: bandHeight },
+            data: { label: accessPlanText('routes.redirectBand'), count: channelMappings.length, width: BAND_W, height: bandHeight },
         });
     }
 
@@ -1881,7 +1952,7 @@ function RouteFlowCanvasInner({
                                 size="sm"
                                 className="h-6 rounded-full px-2.5 text-xs font-medium"
                                 onClick={onOpenJson}
-                                title="管理当前画布 JSON（展开高级编辑）"
+                                title={t('routes.batchButtonHint')}
                             >
                                 JSON
                             </Button>
@@ -1899,7 +1970,7 @@ function RouteFlowCanvasInner({
                             )}
                             onClick={() => setViewMode('all')}
                         >
-                            全部
+                            {t('routes.viewAll')}
                         </button>
                         <button
                             type="button"
@@ -1909,7 +1980,7 @@ function RouteFlowCanvasInner({
                             )}
                             onClick={() => setViewMode('channel')}
                         >
-                            按渠道
+                            {t('routes.viewByChannel')}
                         </button>
                         <button
                             type="button"
@@ -1919,7 +1990,7 @@ function RouteFlowCanvasInner({
                             )}
                             onClick={() => setViewMode('mapping')}
                         >
-                            按映射
+                            {t('routes.viewByModel')}
                         </button>
                     </div>
 
@@ -1927,10 +1998,10 @@ function RouteFlowCanvasInner({
                         <select
                             value={selectedChannelId}
                             onChange={(e) => setSelectedChannelId(e.target.value)}
-                            aria-label="筛选渠道"
+                            aria-label={t('routes.filterChannel')}
                             className="h-7 rounded-full border border-border/70 bg-background/60 px-2.5 text-xs text-foreground outline-none focus:border-primary/50 max-w-[160px]"
                         >
-                            <option value="">全部渠道</option>
+                            <option value="">{t('routes.filterChannelAll')}</option>
                             {channels.map((ch) => (
                                 <option key={ch.id} value={String(ch.id)}>
                                     #{ch.id} {ch.name}
@@ -1943,10 +2014,10 @@ function RouteFlowCanvasInner({
                         <select
                             value={selectedMappingModel}
                             onChange={(e) => setSelectedMappingModel(e.target.value)}
-                            aria-label="筛选映射模型"
+                            aria-label={t('routes.filterModel')}
                             className="h-7 rounded-full border border-border/70 bg-background/60 px-2.5 text-xs text-foreground outline-none focus:border-primary/50 max-w-[160px]"
                         >
-                            <option value="">全部请求模型</option>
+                            <option value="">{t('routes.filterModelAll')}</option>
                             {mappingModelOptions.map((model) => (
                                 <option key={model} value={model}>
                                     {model}
@@ -1960,7 +2031,7 @@ function RouteFlowCanvasInner({
                         <input
                             value={query}
                             onChange={(event) => setQuery(event.target.value)}
-                            placeholder="搜模型 / 渠道 / 上游…"
+                            placeholder={t('routes.searchPlaceholder')}
                             className="h-7 w-full rounded-full border border-border/70 bg-background/60 pl-7 pr-2 text-xs text-foreground outline-none focus:border-primary/50 sm:w-48"
                         />
                     </div>
@@ -1974,7 +2045,7 @@ function RouteFlowCanvasInner({
                     {rows.length === 0 ? (
                         t('routes.canvasEmpty')
                     ) : (
-                        `没有匹配当前筛选条件的模型或渠道`
+                        t('routes.filterEmpty')
                     )}
                 </div>
             ) : (
@@ -2008,8 +2079,8 @@ function RouteFlowCanvasInner({
                         <Controls showInteractive={false} showFitView={false}>
                             <ControlButton
                                 onClick={() => toggleFullscreen()}
-                                title={canvasFullscreen ? '退出全屏（Esc）' : '清屏（全屏画布）'}
-                                aria-label={canvasFullscreen ? '退出全屏（Esc）' : '清屏（全屏画布）'}
+                                title={canvasFullscreen ? t('routes.exitFullscreen') : t('routes.fullscreen')}
+                                aria-label={canvasFullscreen ? t('routes.exitFullscreen') : t('routes.fullscreen')}
                             >
                                 {canvasFullscreen
                                     ? <Minimize2 style={{ width: 14, height: 14 }} />
@@ -2017,8 +2088,8 @@ function RouteFlowCanvasInner({
                             </ControlButton>
                             <ControlButton
                                 onClick={() => setMinimapPref(!showMinimap)}
-                                title={showMinimap ? '收起小地图' : '展开小地图'}
-                                aria-label={showMinimap ? '收起小地图' : '展开小地图'}
+                                title={showMinimap ? t('routes.minimapHide') : t('routes.minimapShow')}
+                                aria-label={showMinimap ? t('routes.minimapHide') : t('routes.minimapShow')}
                                 aria-pressed={showMinimap}
                                 data-testid="minimap-toggle"
                             >
@@ -2033,7 +2104,7 @@ function RouteFlowCanvasInner({
                                 onClick={(_event, position) => setCenter(position.x, position.y, { zoom: 1, duration: 400 })}
                                 nodeColor={miniMapNodeColor}
                                 nodeStrokeWidth={2}
-                                ariaLabel="小地图"
+                                ariaLabel={t('routes.minimap')}
                                 // 默认 200×150 太占地方；缩到 150×100（手机 120×80），贴边留 8px。
                                 style={isWide ? { width: 150, height: 100, margin: 8 } : { width: 120, height: 80, margin: 6 }}
                                 className="!rounded-lg !border !border-border/70 !bg-background/80 opacity-90 hover:opacity-100"
@@ -2045,14 +2116,14 @@ function RouteFlowCanvasInner({
                                 onClick={showAll}
                                 className="rounded-full border border-border/70 bg-background/85 px-2.5 py-1 text-[11px] font-medium text-foreground shadow-sm backdrop-blur hover:bg-muted"
                             >
-                                显示全部
+                                {t('routes.fitAll')}
                             </button>
                             <button
                                 type="button"
                                 onClick={focusReadable}
                                 className="rounded-full border border-border/70 bg-background/85 px-2.5 py-1 text-[11px] font-medium text-foreground shadow-sm backdrop-blur hover:bg-muted"
                             >
-                                看得清
+                                {t('routes.zoomReadable')}
                             </button>
                         </Panel>
                     </ReactFlow>
@@ -2117,11 +2188,11 @@ function RouteTargetEditorCard({
         || pureSpreadMode
         || atTopTier;
     const moveToTopTitle = pureSpreadMode
-        ? '纯轮询不看数字：先在画布上按 + 把这条规则变成分层轮询'
+        ? t('routes.moveToTopSpreadHint')
         : tieredMode
-            ? (atTopTier ? '已经在最高层' : '点一下，把这个渠道抬到比全场更高的一层（其余候选的数字不动）')
-            : '谁在上面谁先用：点一下，这个模型排到第 1 顺位';
-    const moveToTopLabel = tieredMode ? '抬到最高层' : '加一到顶';
+            ? (atTopTier ? t('routes.moveToTopAtTop') : t('routes.moveToTopTieredHint'))
+            : t('routes.moveToTopFillFirstHint');
+    const moveToTopLabel = tieredMode ? t('routes.moveToTopTiered') : t('routes.moveToTopFillFirst');
 
     return (
         <div className={cn('min-w-0 rounded-xl border border-border/80 bg-muted/15', compact ? 'p-2.5' : 'p-3')}>
@@ -2130,7 +2201,7 @@ function RouteTargetEditorCard({
                     the title), so the redundant per-target request-model input is hidden;
                     it stays editable only in the full list where a new mapping is added. */}
                 {!lockRequestModel && (
-                    <label className="grid min-w-0 gap-1 text-xs text-muted-foreground">
+                    <label className="grid min-w-0 gap-1 text-xs text-muted-foreground" title={t('routes.requestModelHint')}>
                         {t('routes.requestModel')}
                         <Input
                             value={target.request_model}
@@ -2169,15 +2240,15 @@ function RouteTargetEditorCard({
                                 })),
                         ]}
                         placeholder={t('routes.targetSummary')}
-                        searchPlaceholder="搜索渠道名或 #ID…"
-                        emptyText="没有匹配的渠道"
+                        searchPlaceholder={t('routes.channelSearch')}
+                        emptyText={t('routes.channelSearchEmpty')}
                         className="h-9 w-full"
                     />
                 </label>
                 <datalist id={upstreamListId}>
                     {upstreamModels.map((model) => <option key={model} value={model} />)}
                 </datalist>
-                <label className="grid min-w-0 gap-1 text-xs text-muted-foreground">
+                <label className="grid min-w-0 gap-1 text-xs text-muted-foreground" title={t('routes.upstreamModelHint')}>
                     {t('routes.upstreamModel')}
                     <Input
                         value={target.upstream_model}
@@ -2220,7 +2291,7 @@ function RouteTargetEditorCard({
                 </div>
             </div>
 
-            {/* 高级（可选）：失败兜底、系统提示词覆盖 —— 默认折叠 */}
+            {/* 更多设置：分配方式、都失败时、提示词 —— 默认折叠 */}
             <details className="mt-2 min-w-0 rounded-xl border border-border/60 bg-background/40">
                 <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-2.5 py-2 text-xs font-medium text-foreground [&::-webkit-details-marker]:hidden">
                     <span className="min-w-0 truncate">{t('routes.advancedTitle')}</span>
@@ -2229,16 +2300,17 @@ function RouteTargetEditorCard({
                 <div className="grid min-w-0 gap-2 border-t border-border/60 p-2.5">
                     <div className="grid min-w-0 gap-2 sm:grid-cols-[minmax(150px,1fr)]">
                         <label className="grid min-w-0 gap-1 text-xs text-muted-foreground">
-                            分流模式
+                            {t('routes.modeLabel')}
                             <select
                                 value={normalizeRouteMode(target.mode)}
                                 onChange={(event) => updateTarget(index, { mode: Number(event.target.value) as 1 | 3 | 6 })}
-                                aria-label="分流模式"
+                                aria-label={t('routes.modeLabel')}
+                                title={t(normalizeRouteMode(target.mode) === 3 ? 'routes.modeFillFirstHint' : normalizeRouteMode(target.mode) === SPREAD_TIERED_MODE ? 'routes.modeSpreadTieredHint' : 'routes.modeSpreadHint')}
                                 className="h-9 w-full min-w-0 rounded-xl border border-input bg-background px-3 text-sm text-foreground"
                             >
-                                <option value={1}>轮询（所有目标同级轮转）</option>
-                                <option value={6}>分层轮询（数字越大越先尝试，同数字内轮转）</option>
-                                <option value={3}>优先填充（fill_first / 默认）</option>
+                                <option value={3}>{t('routes.modeFillFirstOption')}</option>
+                                <option value={1}>{t('routes.modeSpreadOption')}</option>
+                                <option value={6}>{t('routes.modeSpreadTieredOption')}</option>
                             </select>
                         </label>
                     </div>
@@ -2251,6 +2323,7 @@ function RouteTargetEditorCard({
                                     fallback_mode: event.target.value as AccessPlanRouteTarget['fallback_mode'],
                                 })}
                                 aria-label={t('routes.fallback')}
+                                title={t((target.fallback_mode ?? 'return_group') === 'none' ? 'routes.fallbackNoneHint' : 'routes.fallbackReturnGroupHint')}
                                 className="h-9 w-full min-w-0 rounded-xl border border-input bg-background px-3 text-sm text-foreground"
                             >
                                 <option value="none">{t('routes.fallbackNone')}</option>
@@ -2711,8 +2784,8 @@ function RouteTargetsEditor({
 
             <details ref={advancedRef} className="shrink-0 rounded-2xl border border-border/70 bg-card/70">
                 <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 text-sm font-medium text-foreground">
-                    <span className="min-w-0 truncate">高级编辑</span>
-                    <span className="min-w-0 truncate text-xs font-normal text-muted-foreground">JSON 批量导入导出收在这里，不抢主画布</span>
+                    <span className="min-w-0 truncate">{t('routes.batchTitle')}</span>
+                    <span className="min-w-0 truncate text-xs font-normal text-muted-foreground">{t('routes.batchHint')}</span>
                 </summary>
                 <div className="grid gap-3 border-t border-border/70 p-3">
                     <div className="grid gap-2 rounded-2xl border border-border/70 bg-muted/15 p-3">
@@ -2801,7 +2874,7 @@ function RouteTargetsEditor({
                             if (availableChannelsWithUpstream.length === 0) return null;
                             return (
                                 <div className="flex items-center gap-2 rounded-xl border border-dashed border-border/80 bg-muted/20 p-2 text-xs">
-                                    <span className="shrink-0 text-muted-foreground">添加可用渠道:</span>
+                                    <span className="shrink-0 text-muted-foreground">{t('routes.addChannel')}</span>
                                     <select
                                         value=""
                                         onChange={(e) => {
@@ -2835,7 +2908,7 @@ function RouteTargetsEditor({
                                         }}
                                         className="h-7 min-w-36 rounded-lg border border-border/70 bg-background px-2 text-xs text-foreground outline-none focus:border-primary/50"
                                     >
-                                        <option value="">选择要添加的渠道...</option>
+                                        <option value="">{t('routes.addChannelPlaceholder')}</option>
                                         {availableChannelsWithUpstream.map(({ channel: ch }) => (
                                             <option key={ch.id} value={ch.id}>
                                                 {ch.name} (#{ch.id})
@@ -2908,18 +2981,18 @@ function RouteTargetsEditor({
 function GlobalRouteModeSelect({ className }: { className?: string }) {
     const { value, update, isPending, isReady } = useRouteModeOverrideSetting();
     if (!ROUTE_MODE_OVERRIDE_VALUES.includes(value as RouteModeOverrideValue)) {
-        return <span className={cn('text-xs text-muted-foreground', className)} role="status">路由默认模式暂不可用</span>;
+        return <span className={cn('text-xs text-muted-foreground', className)} role="status">{accessPlanText('routes.defaultModeUnavailable')}</span>;
     }
 
     return (
         <label className={cn('flex min-w-0 items-center gap-2 text-xs text-muted-foreground', className)}>
-            <span className="shrink-0 whitespace-nowrap">路由默认模式</span>
+            <span className="shrink-0 whitespace-nowrap" title={accessPlanText('routes.defaultModeHint')}>{accessPlanText('routes.defaultModeLabel')}</span>
             <select
                 value={value}
                 onChange={(event) => update(event.target.value as RouteModeOverrideValue)}
                 disabled={isPending || !isReady}
-                aria-label="路由默认模式"
-                title="新建规则与未单独指定模式的模型组用哪一档选渠道；已有独立模式的规则保持自己的选择"
+                aria-label={accessPlanText('routes.defaultModeLabel')}
+                title={accessPlanText('routes.defaultModeHint')}
                 className="h-8 min-w-0 rounded-full border border-border/70 bg-background/60 px-2.5 text-xs text-foreground outline-none focus:border-primary/50"
             >
                 {ROUTE_MODE_OVERRIDE_VALUES.map((option) => (
@@ -2966,7 +3039,7 @@ function PlanSettingsDialog({
             <DialogTrigger asChild>
                 <Button type="button" variant="outline" className="rounded-xl">
                     <PencilLine className="size-4" />
-                    <span className="min-w-0 truncate">方案设置</span>
+                    <span className="min-w-0 truncate">{t('routes.settingsButton')}</span>
                 </Button>
             </DialogTrigger>
             <DialogContent className="w-[calc(100vw-1rem)] max-w-full overflow-hidden rounded-3xl border-border bg-card p-0 sm:max-w-5xl">
@@ -3047,7 +3120,7 @@ export function AccessPlan() {
                 <div className="shrink-0 rounded-2xl border border-border/70 bg-card/70 p-2 shadow-sm">
                     <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
                         <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:items-center">
-                            <span className="shrink-0 px-1 text-xs font-medium text-muted-foreground">方案</span>
+                            <span className="shrink-0 px-1 text-xs font-medium text-muted-foreground">{t('routes.planLabel')}</span>
                             <SearchableSelect
                                 value={activeSelectedId != null ? String(activeSelectedId) : ''}
                                 onValueChange={(value) => setSelectedId(Number(value))}
@@ -3057,8 +3130,8 @@ export function AccessPlan() {
                                     keywords: `${plan.slug ?? ''} ${plan.display_name ?? ''}`,
                                 }))}
                                 placeholder={orderedPlans.length === 0 ? t('list.empty') : t('list.selectOrCreate')}
-                                searchPlaceholder="搜索方案名或代号…"
-                                emptyText="没有匹配的方案"
+                                searchPlaceholder={t('routes.planSearch')}
+                                emptyText={t('routes.planSearchEmpty')}
                                 disabled={orderedPlans.length === 0}
                                 className="h-9 min-w-0 max-w-full flex-1 sm:max-w-[22rem]"
                             />
