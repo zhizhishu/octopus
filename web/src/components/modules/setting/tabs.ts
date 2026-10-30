@@ -23,7 +23,14 @@ export function isSettingTabId(value: string): value is SettingTabId {
 
 /** '#relay' / 'relay' / '#/relay' → 'relay'；认不出的一律回到默认标签。 */
 export function parseSettingTabHash(hash: string | null | undefined): SettingTabId {
-    const raw = decodeURIComponent((hash ?? '').replace(/^#\/?/, '')).trim().toLowerCase();
+    let raw = (hash ?? '').replace(/^#\/?/, '');
+    // 手改地址栏可能带坏掉的 % 编码（如 #%E0），decodeURIComponent 会抛错把整页弄崩，这里兜住。
+    try {
+        raw = decodeURIComponent(raw);
+    } catch {
+        return DEFAULT_SETTING_TAB;
+    }
+    raw = raw.trim().toLowerCase();
     return isSettingTabId(raw) ? raw : DEFAULT_SETTING_TAB;
 }
 

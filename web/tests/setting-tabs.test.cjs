@@ -53,7 +53,7 @@ test('tabs: hash parsing accepts the six ids and falls back to general', () => {
     assert.equal(tabs.parseSettingTabHash('relay'), 'relay');
     assert.equal(tabs.parseSettingTabHash('#/logs'), 'logs');
     assert.equal(tabs.parseSettingTabHash('#LOGS'), 'logs');
-    for (const junk of ['', '#', '#nope', undefined, null, '#general-x']) {
+    for (const junk of ['', '#', '#nope', undefined, null, '#general-x', '#%E0%A4%A', '#%']) {
         assert.equal(tabs.parseSettingTabHash(junk), 'general', `${String(junk)} falls back`);
     }
     assert.equal(tabs.settingTabHash('identity'), '#identity');
