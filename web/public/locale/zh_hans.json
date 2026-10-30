@@ -63,6 +63,7 @@
   },
   "navbar": {
     "home": "主页",
+    "dashboard": "仪表盘",
     "user": "用户",
     "channel": "渠道",
     "access-plan": "方案",
@@ -191,6 +192,134 @@
       "successDescription": "已获得 {amount} 点余额",
       "failed": "签到失败"
     }
+  },
+  "dashboard": {
+    "subtitle": "选一段时间，看谁用了、用了什么、花了多少。",
+    "updatedAt": "{time} 更新",
+    "range": {
+      "today": "今天",
+      "yesterday": "昨天",
+      "7d": "7 天",
+      "30d": "30 天",
+      "month": "本月",
+      "custom": "自定义"
+    },
+    "rangeLabel": {
+      "today": "今天",
+      "yesterday": "昨天",
+      "oneDay": "这天",
+      "days": "{days} 天"
+    },
+    "granularity": {
+      "label": "按",
+      "hour": "小时",
+      "day": "天",
+      "hourOnlyOneDay": "按小时只能看一天；多天按天看。"
+    },
+    "refresh": "刷新",
+    "custom": {
+      "from": "从",
+      "to": "到",
+      "last14": "近 14 天",
+      "lastMonth": "上个月",
+      "last30": "近 30 天",
+      "last90": "近 90 天",
+      "max": "最多选 {days} 天",
+      "apply": "用这段",
+      "problem": {
+        "format": "日期写错了",
+        "order": "结束早于开始",
+        "future": "不能选今天以后",
+        "tooLong": "最多选 {days} 天"
+      }
+    },
+    "card": {
+      "requests": "请求",
+      "requestsSub": "成功 {rate}",
+      "requestsTip": "这段时间的请求数（成功 + 失败）。来自全站每日统计，和主页同一口径。",
+      "cost": "花费",
+      "costTip": "这段时间的总花费。来自全站每日统计，和主页同一口径。",
+      "tokens": "Tokens",
+      "tokensSub": "其中输出 {value}",
+      "tokensTip": "输入（含缓存）+ 输出，和主页的 Tokens 同一口径。",
+      "cache": "缓存命中",
+      "cacheSub": "命中 {value} Tokens",
+      "cacheTip": "命中缓存的输入 Tokens ÷ 可缓存的输入 Tokens，和主页同一口径。",
+      "active": "活跃用户",
+      "activeSub": "期间新注册 {count} 人",
+      "activeTip": "这段时间发过请求的用户数 / 全部用户数。按请求日志算：日志被清理的日子算不进来。",
+      "avg": "平均用时",
+      "avgSub": "每次请求从发出到结束",
+      "avgTip": "总用时 ÷ 请求数。包括失败的请求。",
+      "vsToday": "比昨天这时",
+      "vsOneDay": "比前一天",
+      "vsDays": "比前 {days} 天",
+      "noPrev": "上一段没数据",
+      "compareTip": "和紧挨着的上一段（一样长）比。看今天时，只和昨天同一钟点之前比，两边都按请求日志算。"
+    },
+    "trend": {
+      "title": "趋势",
+      "cost": "花费",
+      "count": "请求",
+      "tokens": "Tokens",
+      "success": "成功率",
+      "current": "这段",
+      "previous": "上一段",
+      "currentDays": "这 {days} 天",
+      "previousDays": "前 {days} 天",
+      "previousDay": "前一天",
+      "tip": "实线是这一段，虚线是紧挨着的上一段。按天来自每日统计；按小时来自请求日志（日志被清理的日子没有数）。"
+    },
+    "share": {
+      "title": "花在哪",
+      "model": "模型",
+      "channel": "渠道",
+      "plan": "方案",
+      "center": "{period}花费",
+      "others": "其他 {count} 个",
+      "footer": "点一项去看它的日志",
+      "planNoLink": "日志页不能按方案筛，所以方案不能点。",
+      "empty": "这段没有花费",
+      "noPlan": "没有方案",
+      "noChannel": "没走渠道",
+      "tip": "按请求日志算。日志被清理的日子算不进来，所以合计可能比上面的「花费」少。"
+    },
+    "users": {
+      "title": "谁花得多",
+      "goto": "去用户页",
+      "user": "用户",
+      "requests": "请求",
+      "tokens": "Tokens",
+      "cost": "花费",
+      "noUser": "未归属",
+      "deleted": "已删",
+      "viewLogs": "看日志",
+      "openUser": "去用户页看 {name}",
+      "tip": "这段时间花费最多的用户。按请求日志算，日志被清理的日子算不进来。点名字去用户页，点右边去看他的日志。"
+    },
+    "keys": {
+      "title": "哪个 Key 用得多",
+      "goto": "去 API Key",
+      "key": "API Key",
+      "tip": "这段时间花费最多的 API Key。按请求日志算，日志被清理的日子算不进来。点 Key 去看它的日志，点主人去用户页。"
+    },
+    "topTrend": {
+      "title": "前 5 名每天花多少",
+      "cost": "花费",
+      "tokens": "Tokens",
+      "tip": "这段时间花费最多的 5 个用户，每天各花多少。按请求日志算，日志被清理的日子算不进来。",
+      "empty": "这段没有用户用量"
+    },
+    "mobile": {
+      "users": "用户",
+      "keys": "Key"
+    },
+    "cleaned": "{date} 前的日志已清理，那几天算不进来",
+    "cleanedTip": "花在哪、两张排行、活跃用户、前 5 名都按请求日志算。日志按保留天数或容量被清理过，那些日子没有原料，算不出来；上面的请求、花费、Tokens 来自每日统计，不受影响。",
+    "noLogs": "还没有请求日志",
+    "loading": "加载中…",
+    "error": "没拿到数据：{message}",
+    "empty": "这段没有数据"
   },
   "setting": {
     "appearance": "外观",

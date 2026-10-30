@@ -693,21 +693,22 @@ export function Log() {
     const [logPanel, setLogPanel] = useState<'requests' | 'video-tasks'>('requests');
     // 所有筛选都「即选即生效」——改了立刻查，不再需要点「搜索」。这正是过去让人觉得「筛选无效」的
     // 另一半原因：改了接口下拉/用户/Key 却要再点搜索才生效，看起来像没反应。
-    // 从用户页「看他的日志」跳过来时，带着那个用户的筛选打开；读完就清掉，下次进来不再带。
-    const [selectedUserID, setSelectedUserID] = useState<number | undefined>(() => useLogPresetStore.getState().userID);
+    // 别的页面带着「先选好的筛选」跳过来（用户页「看他的日志」、仪表盘点一行）：读一次就清掉，下次进来不再带。
+    const [entryPreset] = useState(() => useLogPresetStore.getState().preset);
     useEffect(() => {
         useLogPresetStore.getState().clear();
     }, []);
-    const [selectedAPIKeyID, setSelectedAPIKeyID] = useState<number | undefined>();
+    const [selectedUserID, setSelectedUserID] = useState<number | undefined>(entryPreset?.userId);
+    const [selectedAPIKeyID, setSelectedAPIKeyID] = useState<number | undefined>(entryPreset?.apiKeyId);
     const [selectedEndpoint, setSelectedEndpoint] = useState('');
     const [selectedProvider, setSelectedProvider] = useState('');
-    const [selectedModel, setSelectedModel] = useState('');
-    const [startDate, setStartDate] = useState(defaultRange.startDate);
-    const [endDate, setEndDate] = useState(defaultRange.endDate);
+    const [selectedModel, setSelectedModel] = useState(entryPreset?.model ?? '');
+    const [startDate, setStartDate] = useState(entryPreset?.startDate ?? defaultRange.startDate);
+    const [endDate, setEndDate] = useState(entryPreset?.endDate ?? defaultRange.endDate);
     // 严重程度是服务端过滤，翻页/总数都对得上。
     const [severityFilter, setSeverityFilter] = useState<LogSeverityFilter>('all');
     const [mismatchFilter, setMismatchFilter] = useState<'all' | 'mismatch' | 'match'>('all');
-    const [searchKeyword, setSearchKeyword] = useState('');
+    const [searchKeyword, setSearchKeyword] = useState(entryPreset?.search ?? '');
     // 手机端默认只留搜索框、其余筛选控件折叠；桌面靠 sm: 断点强制常显，两种视口互不影响。
     const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
     // 网络层 debounce（300ms）：真节流，替代 useDeferredValue（那只是渲染优先级，

@@ -527,7 +527,7 @@ func StatsBreakdownGet(ctx context.Context, rng StatsRange, by string, limit int
 		return model.StatsBreakdown{}, err
 	}
 
-	result := model.StatsBreakdown{From: rng.FromDate, To: rng.ToDate, By: by, Days: rng.Days, OldestLogTime: oldest}
+	result := model.StatsBreakdown{From: rng.FromDate, To: rng.ToDate, By: by, Days: rng.Days, Start: rng.Start, End: rng.End, OldestLogTime: oldest}
 	for _, g := range groups {
 		result.Total.Add(g.usage)
 	}

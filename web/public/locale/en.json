@@ -63,6 +63,7 @@
   },
   "navbar": {
     "home": "Home",
+    "dashboard": "Dashboard",
     "user": "Users",
     "channel": "Channel",
     "access-plan": "Plans",
@@ -191,6 +192,134 @@
       "successDescription": "{amount} points added to your balance",
       "failed": "Check-in failed"
     }
+  },
+  "dashboard": {
+    "subtitle": "Pick a period: who used what, and what it cost.",
+    "updatedAt": "Updated {time}",
+    "range": {
+      "today": "Today",
+      "yesterday": "Yesterday",
+      "7d": "7 days",
+      "30d": "30 days",
+      "month": "This month",
+      "custom": "Custom"
+    },
+    "rangeLabel": {
+      "today": "Today",
+      "yesterday": "Yesterday",
+      "oneDay": "This day",
+      "days": "{days} days"
+    },
+    "granularity": {
+      "label": "By",
+      "hour": "Hour",
+      "day": "Day",
+      "hourOnlyOneDay": "Hourly view needs a single day; multi-day ranges are daily."
+    },
+    "refresh": "Refresh",
+    "custom": {
+      "from": "From",
+      "to": "To",
+      "last14": "Last 14 days",
+      "lastMonth": "Last month",
+      "last30": "Last 30 days",
+      "last90": "Last 90 days",
+      "max": "Up to {days} days",
+      "apply": "Apply",
+      "problem": {
+        "format": "Invalid date",
+        "order": "End is before start",
+        "future": "Can't go past today",
+        "tooLong": "Up to {days} days"
+      }
+    },
+    "card": {
+      "requests": "Requests",
+      "requestsSub": "{rate} succeeded",
+      "requestsTip": "Requests in this period (succeeded + failed). From the site-wide daily stats, same as Home.",
+      "cost": "Cost",
+      "costTip": "Total cost in this period. From the site-wide daily stats, same as Home.",
+      "tokens": "Tokens",
+      "tokensSub": "{value} output",
+      "tokensTip": "Input (incl. cache) + output, same as Tokens on Home.",
+      "cache": "Cache hits",
+      "cacheSub": "{value} tokens hit",
+      "cacheTip": "Cached input tokens ÷ cacheable input tokens, same as Home.",
+      "active": "Active users",
+      "activeSub": "{count} signed up in period",
+      "activeTip": "Users who sent requests in this period / all users. Counted from request logs: days whose logs were cleaned can't be counted.",
+      "avg": "Avg. time",
+      "avgSub": "Per request, start to finish",
+      "avgTip": "Total time ÷ requests, failed ones included.",
+      "vsToday": "vs. yesterday so far",
+      "vsOneDay": "vs. day before",
+      "vsDays": "vs. previous {days} days",
+      "noPrev": "No data before",
+      "compareTip": "Compared with the period right before, same length. For today, only up to the same hour yesterday; both sides come from request logs."
+    },
+    "trend": {
+      "title": "Trend",
+      "cost": "Cost",
+      "count": "Requests",
+      "tokens": "Tokens",
+      "success": "Success",
+      "current": "This period",
+      "previous": "Previous",
+      "currentDays": "These {days} days",
+      "previousDays": "Previous {days} days",
+      "previousDay": "Day before",
+      "tip": "Solid: this period. Dashed: the period right before. Daily points come from daily stats; hourly points come from request logs (cleaned days have none)."
+    },
+    "share": {
+      "title": "Where the money went",
+      "model": "Model",
+      "channel": "Channel",
+      "plan": "Plan",
+      "center": "{period} cost",
+      "others": "{count} others",
+      "footer": "Click one to see its logs",
+      "planNoLink": "The log page can't filter by plan, so plans aren't clickable.",
+      "empty": "No cost in this period",
+      "noPlan": "No plan",
+      "noChannel": "No channel",
+      "tip": "Counted from request logs. Days whose logs were cleaned can't be counted, so this total may be lower than Cost above."
+    },
+    "users": {
+      "title": "Top spenders",
+      "goto": "Users",
+      "user": "User",
+      "requests": "Requests",
+      "tokens": "Tokens",
+      "cost": "Cost",
+      "noUser": "Unassigned",
+      "deleted": "Deleted",
+      "viewLogs": "View logs",
+      "openUser": "Open {name} on Users",
+      "tip": "Users who spent the most in this period. Counted from request logs; cleaned days can't be counted. Click a name for the Users page, the icon for their logs."
+    },
+    "keys": {
+      "title": "Top API keys",
+      "goto": "API Keys",
+      "key": "API Key",
+      "tip": "API keys that spent the most in this period. Counted from request logs; cleaned days can't be counted. Click a key for its logs, the owner for the Users page."
+    },
+    "topTrend": {
+      "title": "Top 5 users per day",
+      "cost": "Cost",
+      "tokens": "Tokens",
+      "tip": "The 5 users who spent the most in this period, per day. Counted from request logs; cleaned days can't be counted.",
+      "empty": "No user usage in this period"
+    },
+    "mobile": {
+      "users": "Users",
+      "keys": "Keys"
+    },
+    "cleaned": "Logs before {date} were cleaned; those days aren't counted",
+    "cleanedTip": "Where the money went, both rankings, active users and the top 5 come from request logs. Logs cleaned by retention or size limits leave nothing to count for those days. Requests, cost and tokens above come from daily stats and are not affected.",
+    "noLogs": "No request logs yet",
+    "loading": "Loading…",
+    "error": "Couldn't load: {message}",
+    "empty": "No data in this period"
   },
   "setting": {
     "appearance": "Appearance",

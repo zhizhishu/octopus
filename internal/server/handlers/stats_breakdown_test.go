@@ -304,6 +304,9 @@ func TestStatsBreakdownSumsPerDimensionToday(t *testing.T) {
 	if !plans.Items[1].Missing || plans.Items[0].Missing || plans.Items[2].ID != 0 {
 		t.Errorf("plan missing flags wrong: %+v", plans.Items)
 	}
+	if plans.Start != f.at(0, 0) || plans.End != f.at(1, 0) || plans.Days != 1 {
+		t.Errorf("range echo: start=%d end=%d days=%d", plans.Start, plans.End, plans.Days)
+	}
 	if plans.OldestLogTime != f.at(-100, time.Hour) {
 		t.Errorf("oldest log time = %d, want %d", plans.OldestLogTime, f.at(-100, time.Hour))
 	}

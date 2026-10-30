@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ChevronLeft, ChevronRight, Loader2, Search, Ticket, UserPlus } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { toast } from '@/components/common/Toast';
@@ -9,6 +9,7 @@ import { useAccessPlanList } from '@/api/endpoints/access-plan';
 import { useUserUsageRank } from '@/api/endpoints/stats';
 import { useNavStore } from '@/components/modules/navbar/nav-store';
 import { useLogPresetStore } from '@/components/modules/log/log-preset';
+import { useUserPresetStore } from './user-preset';
 import { cn } from '@/lib/utils';
 import { nowUnix } from './lib/format';
 import { EMPTY_FILTERS, filterUsers, pageButtons, paginate, statusCounts, type UserFilters } from './lib/user-filters';
@@ -39,7 +40,14 @@ export function UserManagement() {
     const [filters, setFiltersState] = useState<UserFilters>(EMPTY_FILTERS);
     const [page, setPage] = useState(1);
     const [selected, setSelected] = useState<Set<number>>(new Set());
-    const [drawer, setDrawer] = useState<{ open: boolean; userID: number | null; tab: DrawerTab }>({ open: false, userID: null, tab: 'profile' });
+    // 从仪表盘点用户名跳过来：直接打开他的抽屉（用户列表加载完就能显示）；读一次就清掉。
+    const [drawer, setDrawer] = useState<{ open: boolean; userID: number | null; tab: DrawerTab }>(() => {
+        const focus = useUserPresetStore.getState().focusUserID;
+        return focus ? { open: true, userID: focus, tab: 'profile' } : { open: false, userID: null, tab: 'profile' };
+    });
+    useEffect(() => {
+        useUserPresetStore.getState().clear();
+    }, []);
     const [balanceUserID, setBalanceUserID] = useState<number | null>(null);
     const [redeemOpen, setRedeemOpen] = useState(false);
     const [deleteTarget, setDeleteTarget] = useState<User | null>(null);
@@ -127,7 +135,8 @@ export function UserManagement() {
             )}
 
             <UsersMutateDrawer
-                open={drawer.open}
+                // 带着某个用户打开、但列表还没加载到他时先不弹，免得闪一下「添加用户」的空表单。
+                open={drawer.open && (drawer.userID === null || drawerUser !== null)}
                 onOpenChange={(open) => setDrawer((d) => ({ ...d, open }))}
                 user={drawerUser}
                 plans={accessPlans}

@@ -57,6 +57,9 @@ type StatsBreakdown struct {
 	To   string `json:"to"`
 	By   string `json:"by"`
 	Days int    `json:"days"`
+	// Start / End 是这段时间的 [起, 止) unix 秒（按统计时区的整天切），页面拿它算「期间新注册」。
+	Start int64 `json:"start"`
+	End   int64 `json:"end"`
 	// Total 是整个时间段的合计（不受 limit 影响）。
 	Total StatsUsage           `json:"total"`
 	Items []StatsBreakdownItem `json:"items"`
