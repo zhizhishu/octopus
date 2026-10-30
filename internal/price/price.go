@@ -122,12 +122,11 @@ func parseLibrary(raw modelsDevCatalog) map[string]model.LLMPrice {
 	return out
 }
 
-// FetchLibrary downloads models.dev through the system-proxy HTTP client (no channel
-// key or other credential is sent), checks that the answer is not abnormally small,
-// and merges it into the in-memory catalog. On any error the catalog is left as is.
-func FetchLibrary(ctx context.Context) (map[string]model.LLMPrice, error) {
-	fetchMu.Lock()
-	defer fetchMu.Unlock()
+// fetchSnapshot downloads models.dev through the system-proxy HTTP client (no channel
+// key or other credential is sent), parses it, and checks that the answer is not
+// abnormally small. It changes nothing: the billing catalog is left as is.
+// Callers hold fetchMu.
+func fetchSnapshot(ctx context.Context) (map[string]model.LLMPrice, error) {
 	// The app's system-proxy client: through proxy_url when one is set, direct otherwise.
 	proxyURL, _ := op.SettingGetString(model.SettingKeyProxyURL)
 	httpClient, err := client.GetHTTPClientSystemProxy(strings.TrimSpace(proxyURL) != "")
@@ -159,14 +158,84 @@ func FetchLibrary(ctx context.Context) (map[string]model.LLMPrice, error) {
 	if len(lib) < MinLibraryModels || (lastFetchedCount > 0 && len(lib) < lastFetchedCount/2) {
 		return nil, fmt.Errorf("%w: got %d", ErrLibraryTooSmall, len(lib))
 	}
+	return lib, nil
+}
+
+// latestLibrary is the newest good models.dev fetch, whether it came from a preview
+// (not merged) or from a merge. Apply checks the ticked prices against it, so a
+// library that moved after the preview is a conflict. Guarded by fetchMu.
+var (
+	latestLibrary   map[string]model.LLMPrice
+	latestLibraryAt time.Time
+)
+
+// FetchSnapshot fetches models.dev without touching the billing catalog (a preview).
+func FetchSnapshot(ctx context.Context) (map[string]model.LLMPrice, time.Time, error) {
+	fetchMu.Lock()
+	defer fetchMu.Unlock()
+	lib, err := fetchSnapshot(ctx)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	latestLibrary, latestLibraryAt = lib, time.Now()
+	return lib, latestLibraryAt, nil
+}
+
+// LatestLibraryPrice is what the billing catalog would hold for name once the newest
+// fetch were merged into it: the newest fetch wins, the catalog fills the rest. The
+// lookup order matches CatalogPrice on a merged map (full name first, then the last
+// "/" or ":" segment).
+func LatestLibraryPrice(modelName string) (model.LLMPrice, bool) {
+	fetchMu.Lock()
+	lib := latestLibrary
+	fetchMu.Unlock()
+	return libraryViewPrice(lib, modelName)
+}
+
+func libraryViewPrice(lib map[string]model.LLMPrice, modelName string) (model.LLMPrice, bool) {
+	name := strings.ToLower(strings.TrimSpace(modelName))
+	keys := []string{name}
+	if i := strings.LastIndexAny(name, "/:"); i >= 0 && i+1 < len(name) {
+		keys = append(keys, name[i+1:])
+	}
+	llmPriceLock.RLock()
+	defer llmPriceLock.RUnlock()
+	for _, k := range keys {
+		if p, ok := lib[k]; ok && !p.TokenPriceIsZero() {
+			return p, true
+		}
+		if p, ok := llmPrice[k]; ok && !p.TokenPriceIsZero() {
+			return p, true
+		}
+	}
+	return model.LLMPrice{}, false
+}
+
+// FetchLibrary fetches models.dev and merges it into the billing catalog. Only the
+// auto-sync task and the old "refresh library" endpoint call it; a preview uses
+// FetchSnapshot instead. On any error the catalog is left as is.
+func FetchLibrary(ctx context.Context) (map[string]model.LLMPrice, error) {
+	fetchMu.Lock()
+	defer fetchMu.Unlock()
+	lib, err := fetchSnapshot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	mergeCatalog(lib)
+	lastFetchedCount = len(lib)
+	lastUpdateTime = time.Now()
+	latestLibrary, latestLibraryAt = lib, lastUpdateTime
+	return lib, nil
+}
+
+// mergeCatalog writes prices into the billing catalog in one critical section, so
+// billing never reads a half-merged map.
+func mergeCatalog(prices map[string]model.LLMPrice) {
 	llmPriceLock.Lock()
-	for id, cost := range lib {
+	for id, cost := range prices {
 		llmPrice[id] = cost
 	}
 	llmPriceLock.Unlock()
-	lastFetchedCount = len(lib)
-	lastUpdateTime = time.Now()
-	return lib, nil
 }
 
 // UpdateLLMPrice refreshes the in-memory catalog only. It never writes price rows.

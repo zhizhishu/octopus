@@ -308,12 +308,74 @@ func TestPriceSyncApplyConflictAndPerCall(t *testing.T) {
 	}
 }
 
+// Opening the preview must not change any billed price ("先给你看改了啥，你勾了才改").
+// A zero-price row bills at the library price, so a preview that merged models.dev
+// into the billing catalog would change it before anything was ticked.
+func TestPriceSyncPreviewDoesNotChangeBilling(t *testing.T) {
+	ctx, f := setupPriceSync(t)
+	price.SetLLMPrice("ps-bill", p4(1, 2, 0, 0))
+	price.SetLLMPrice("ps-bill-unticked", p4(1, 2, 0, 0))
+	t.Cleanup(func() {
+		price.SetLLMPrice("ps-bill", model.LLMPrice{})
+		price.SetLLMPrice("ps-bill-unticked", model.LLMPrice{})
+	})
+	f.set("openai", "ps-bill", p4(3, 6, 0.3, 0))
+	f.set("openai", "ps-bill-unticked", p4(3, 6, 0.3, 0))
+	createPriceSyncChannel(t, ctx, "ps-bill", "ps-bill-unticked")
+	putRow(t, ctx, "ps-bill", model.LLMPrice{}, model.LLMSourceLibrary)
+	putRow(t, ctx, "ps-bill-unticked", model.LLMPrice{}, model.LLMSourceLibrary)
+
+	billed := func(name string) model.LLMPrice {
+		t.Helper()
+		p := price.GetLLMPrice(name)
+		if p == nil {
+			t.Fatalf("%s has no billed price", name)
+		}
+		return *p
+	}
+	if got := billed("ps-bill"); !got.SameTokenPrice(p4(1, 2, 0, 0)) {
+		t.Fatalf("billed before preview = %+v, want 1/2", got)
+	}
+
+	items := itemsByName(previewViaHandler(t))
+	it, ok := items["ps-bill"]
+	if !ok || it.Kind != price.SyncKindNew || !p4(it.Next.Input, it.Next.Output, it.Next.CacheRead, it.Next.CacheWrite).SameTokenPrice(p4(3, 6, 0.3, 0)) {
+		t.Fatalf("preview item %+v, want new with the fresh library price", it)
+	}
+	for _, name := range []string{"ps-bill", "ps-bill-unticked"} {
+		if got := billed(name); !got.SameTokenPrice(p4(1, 2, 0, 0)) {
+			t.Fatalf("%s billed after preview = %+v; the preview changed billing", name, got)
+		}
+		if lib, _ := price.CatalogPrice(name); !lib.SameTokenPrice(p4(1, 2, 0, 0)) {
+			t.Fatalf("%s catalog after preview = %+v; the preview changed the catalog", name, lib)
+		}
+	}
+
+	// Ticking ps-bill and applying is what changes its billed price.
+	if w := callHandler(t, applyPriceSync, http.MethodPost, "", applyBody(t, it)); w.Code != http.StatusOK {
+		t.Fatalf("apply: status %d body=%s", w.Code, w.Body.String())
+	}
+	if got := billed("ps-bill"); !got.SameTokenPrice(p4(3, 6, 0.3, 0)) {
+		t.Fatalf("billed after apply = %+v, want 3/6/0.3", got)
+	}
+	if lib, _ := price.CatalogPrice("ps-bill"); !lib.SameTokenPrice(p4(3, 6, 0.3, 0)) {
+		t.Fatalf("catalog after apply = %+v, want the applied library price", lib)
+	}
+	// The unticked row still bills the old price.
+	if got := billed("ps-bill-unticked"); !got.SameTokenPrice(p4(1, 2, 0, 0)) {
+		t.Fatalf("unticked row billed after apply = %+v, want 1/2", got)
+	}
+}
+
 func TestPriceEditMarksManualAndRestore(t *testing.T) {
 	ctx, f := setupPriceSync(t)
 	f.set("anthropic", "claude-ps", p4(5, 25, 0.5, 6.25))
 	createPriceSyncChannel(t, ctx, "claude-ps")
 	putRow(t, ctx, "claude-ps", model.LLMPrice{Input: 5, Output: 25, CacheRead: 0.5, CacheWrite: 6.25, PerCall: 0.1}, model.LLMSourceLibrary)
-	previewViaHandler(t) // loads the library into the catalog
+	// The catalog refresh (auto-sync's fetch) loads the library; a preview would not.
+	if _, err := price.FetchLibrary(ctx); err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
 
 	// Editing only per_call keeps the source.
 	if w := postUpdateLLM(t, `{"name":"claude-ps","per_call":0.2}`); w.Code != http.StatusOK {

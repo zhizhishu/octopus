@@ -165,15 +165,15 @@ func channelModelNames(ctx context.Context) ([]string, error) {
 	return names, nil
 }
 
-// buildPreview compares the stored rows of every channel model with the catalog.
-func buildPreview(ctx context.Context) (SyncPreview, error) {
+// buildPreview compares the stored rows of every channel model with a library view.
+func buildPreview(ctx context.Context, library func(string) (model.LLMPrice, bool), fetchedAt time.Time) (SyncPreview, error) {
 	names, err := channelModelNames(ctx)
 	if err != nil {
 		return SyncPreview{}, err
 	}
-	out := SyncPreview{FetchedAt: GetLastUpdateTime(), Total: len(names), Items: make([]SyncItem, 0, len(names))}
+	out := SyncPreview{FetchedAt: fetchedAt, Total: len(names), Items: make([]SyncItem, 0, len(names))}
 	for _, name := range names {
-		next, ok := CatalogPrice(name)
+		next, ok := library(name)
 		if !ok {
 			out.NoLibrary++
 			continue
@@ -206,19 +206,21 @@ func buildPreview(ctx context.Context) (SyncPreview, error) {
 	return out, nil
 }
 
-// Preview fetches models.dev, classifies legacy rows, and returns the diff for the
-// models in your channels. It writes no price row.
+// Preview fetches models.dev into a separate snapshot, classifies legacy rows, and
+// returns the diff for the models in your channels. It is read-only for billing: it
+// writes no price row and leaves the in-memory catalog alone ("你勾了才改"). Only
+// Apply (for the ticked rows) and the auto-sync run change what is billed.
 func Preview(ctx context.Context) (SyncPreview, error) {
 	syncMu.Lock()
 	defer syncMu.Unlock()
-	lib, err := FetchLibrary(ctx)
+	lib, at, err := FetchSnapshot(ctx)
 	if err != nil {
 		return SyncPreview{}, err
 	}
 	if _, err := ClassifyLegacySources(ctx, lib); err != nil {
 		return SyncPreview{}, err
 	}
-	return buildPreview(ctx)
+	return buildPreview(ctx, func(name string) (model.LLMPrice, bool) { return libraryViewPrice(lib, name) }, at)
 }
 
 // Apply writes the ticked preview rows. Every row must still look the way the preview
@@ -227,7 +229,7 @@ func Preview(ctx context.Context) (SyncPreview, error) {
 func Apply(ctx context.Context, changes []SyncApplyChange) (SyncApplyResult, error) {
 	syncMu.Lock()
 	defer syncMu.Unlock()
-	res, err := applyLocked(ctx, changes)
+	res, err := applyLocked(ctx, changes, LatestLibraryPrice)
 	if err != nil {
 		return res, err
 	}
@@ -237,11 +239,14 @@ func Apply(ctx context.Context, changes []SyncApplyChange) (SyncApplyResult, err
 	return res, nil
 }
 
-func applyLocked(ctx context.Context, changes []SyncApplyChange) (SyncApplyResult, error) {
+// applyLocked writes the ticked rows, checked against the library view, then puts
+// their library prices into the billing catalog (only those names). Callers hold syncMu.
+func applyLocked(ctx context.Context, changes []SyncApplyChange, library func(string) (model.LLMPrice, bool)) (SyncApplyResult, error) {
 	var res SyncApplyResult
 	ops := make([]op.LLMLibraryChange, 0, len(changes))
+	applied := make(map[string]model.LLMPrice, len(changes))
 	for _, c := range changes {
-		lib, ok := CatalogPrice(c.Name)
+		lib, ok := library(c.Name)
 		if !ok || !lib.SameTokenPrice(c.Next.llm()) {
 			return SyncApplyResult{}, errors.Join(op.ErrLLMPriceConflict, errors.New("the library price changed; reload the preview"))
 		}
@@ -252,6 +257,7 @@ func applyLocked(ctx context.Context, changes []SyncApplyChange) (SyncApplyResul
 			ExpectedExists: c.Exists,
 			Next:           lib,
 		})
+		applied[strings.ToLower(strings.TrimSpace(c.Name))] = lib
 		if !c.Exists || c.Current.llm().TokenPriceIsZero() {
 			res.Added++
 		} else {
@@ -261,6 +267,9 @@ func applyLocked(ctx context.Context, changes []SyncApplyChange) (SyncApplyResul
 	if err := op.LLMApplyLibraryPrices(ctx, ops); err != nil {
 		return SyncApplyResult{}, err
 	}
+	fetchMu.Lock()
+	mergeCatalog(applied)
+	fetchMu.Unlock()
 	return res, nil
 }
 
@@ -337,7 +346,7 @@ func AutoSync(ctx context.Context) model.PriceSyncRun {
 	if !enabled {
 		return run
 	}
-	preview, err := buildPreview(ctx)
+	preview, err := buildPreview(ctx, CatalogPrice, GetLastUpdateTime())
 	if err != nil {
 		run.Status = model.PriceSyncStatusFailed
 		run.Message = err.Error()
@@ -360,7 +369,7 @@ func AutoSync(ctx context.Context) model.PriceSyncRun {
 		}
 		changes = append(changes, SyncApplyChange{Name: it.Name, Source: it.Source, Exists: it.Exists, Current: it.Current, Next: it.Next})
 	}
-	res, err := applyLocked(ctx, changes)
+	res, err := applyLocked(ctx, changes, CatalogPrice)
 	if err != nil {
 		run.Status = model.PriceSyncStatusFailed
 		if errors.Is(err, op.ErrLLMPriceConflict) {
