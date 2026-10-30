@@ -74,6 +74,9 @@ func APIKeyAuth() gin.HandlerFunc {
 		} else if key, ok := midjourneyClientKey(c.Request); ok {
 			apiKey = key
 			requestType = "openai"
+		} else if key, ok := realtimeSubprotocolKey(c.Request); ok {
+			apiKey = key
+			requestType = "openai"
 		} else if auth := c.Request.Header.Get("Authorization"); auth != "" {
 			apiKey = strings.TrimPrefix(auth, "Bearer ")
 			requestType = "openai"
@@ -181,6 +184,36 @@ func midjourneyClientKey(r *http.Request) (string, bool) {
 	return key, true
 }
 
+// realtimeSubprotocolKey 只在 /v1/realtime 上、且没带 Authorization 时，从 WebSocket 子协议里取 key。
+// 浏览器的 WebSocket 不能带自定义头，只能把凭证放进 Sec-WebSocket-Protocol：
+//   - openai-insecure-api-key.<key>：OpenAI SDK 浏览器写法，new-api middleware/auth.go
+//     apiKeyFromWebSocketSubprotocol 同款；
+//   - xai-client-secret.<key>：xAI 文档的浏览器写法（上游那边放的是临时 token，到 octopus
+//     这里放的是 octopus 的 key）。
+//
+// Authorization 带着值时以它为准（返回 false），存量鉴权顺序不变。
+func realtimeSubprotocolKey(r *http.Request) (string, bool) {
+	if r == nil || r.URL.Path != "/v1/realtime" {
+		return "", false
+	}
+	if strings.TrimSpace(r.Header.Get("Authorization")) != "" {
+		return "", false
+	}
+	for _, value := range r.Header.Values("Sec-WebSocket-Protocol") {
+		for _, part := range strings.Split(value, ",") {
+			part = strings.TrimSpace(part)
+			for _, prefix := range []string{"openai-insecure-api-key.", "xai-client-secret."} {
+				if strings.HasPrefix(part, prefix) {
+					if key := strings.TrimSpace(strings.TrimPrefix(part, prefix)); key != "" {
+						return key, true
+					}
+				}
+			}
+		}
+	}
+	return "", false
+}
+
 // EndpointFamilyForPath 把路径映射到 API key 端点族，供路由表契约测试使用。
 //
 // 为什么需要这个导出：apiKeyEndpointFamilyForPath 是手工维护的清单，加了新 relay
@@ -229,6 +262,8 @@ func apiKeyEndpointFamilyForPath(path string) model.APIKeyEndpointFamily {
 		// 同一个上游账号。
 		path == "/v1/tts" ||
 		path == "/v1/stt" ||
+		// xAI（Grok）实时语音 WebSocket（handlers/realtime.go）。同是语音、同一个上游账号。
+		path == "/v1/realtime" ||
 		// Midjourney（midjourney-proxy 协议，见 handlers/midjourney.go）。与 /v1/images/* 同族：
 		// 同是出图、同按次计费、同走 OpenAI 兼容渠道；单开 family 要动前端勾选框和迁移。
 		strings.HasPrefix(path, "/mj/") {

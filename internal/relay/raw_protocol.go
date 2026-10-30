@@ -1427,6 +1427,10 @@ func (m *rawProtocolRelayMetrics) saveLog(ctx context.Context, err error, durati
 		relayLog.CacheInputTokens = int(m.Stats.CacheInputToken)
 		relayLog.CacheHitRate = cacheHitRate(m.Stats.CacheHitToken, m.Stats.CacheInputToken)
 		relayLog.Cost = m.Stats.InputCost + m.Stats.OutputCost
+	} else if cost := m.Stats.InputCost + m.Stats.OutputCost; cost > 0 {
+		// 按次 / 按分钟计费的端点（视频、Grok 语音、/v1/realtime）没有 token，
+		// 但确实扣了钱；日志的金额列要与扣费一致，不能显示 0。
+		relayLog.Cost = cost
 	}
 	if err != nil {
 		relayLog.Error = errSafeMessage(err)
