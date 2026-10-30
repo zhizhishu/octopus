@@ -826,6 +826,8 @@ func UserRelayIPSaveDBTask() {
 	if err := UserRelayIPSaveDB(ctx); err != nil {
 		log.Warnf("user relay ip save db error: %v", err)
 	}
+	// Key 的「最近使用」同一类审计字段，跟着同一个周期任务落库。
+	apiKeyLastUsedSaveDBTask()
 }
 
 func UserApplyBalance(userID int, amount float64, ctx context.Context) (model.User, error) {

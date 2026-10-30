@@ -1362,6 +1362,7 @@ func (m *rawProtocolRelayMetrics) Save(ctx context.Context, success bool, err er
 	if err := op.UserRecordRelayIP(m.UserID, m.RequestIP, m.StartTime.Unix(), persistCtx); err != nil {
 		log.Warnf("failed to record user relay ip: %v", err)
 	}
+	op.APIKeyRecordUse(m.APIKeyID, m.RequestIP, m.StartTime.Unix())
 	if success {
 		if err := op.UserRecordUsage(m.UserID, globalStats.InputCost+globalStats.OutputCost, persistCtx); err != nil {
 			log.Warnf("failed to record user usage: %v", err)

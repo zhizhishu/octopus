@@ -459,6 +459,22 @@ func userUsageAt(userID int, rangeKey string, now time.Time, ctx context.Context
 	if _, err := UserGet(userID); err != nil {
 		return model.UserUsageResponse{}, err
 	}
+	out, err := relayUsageAt("user_id", userID, rangeKey, now, ctx)
+	out.UserID = userID
+	return out, err
+}
+
+// relayUsageAt 按日志的某一列（user_id / api_key_id）汇总一段时间的用量。
+// 用户「用量」页和 Key「用量」页共用这一套口径。
+func relayUsageAt(column string, id int, rangeKey string, now time.Time, ctx context.Context) (model.UserUsageResponse, error) {
+	match := func(l model.RelayLog) bool { return l.UserID == id }
+	switch column {
+	case "user_id":
+	case "api_key_id":
+		match = func(l model.RelayLog) bool { return l.APIKeyID == id }
+	default:
+		return model.UserUsageResponse{}, fmt.Errorf("invalid usage column %q", column)
+	}
 	start, chartDays, err := userUsageWindow(rangeKey, now)
 	if err != nil {
 		return model.UserUsageResponse{}, err
@@ -475,9 +491,9 @@ func userUsageAt(userID int, rangeKey string, now time.Time, ctx context.Context
 			"request_model_name", "actual_model_name", "billing_model",
 			"input_tokens", "output_tokens",
 			"cost", "final_input_cost", "final_output_cost", "final_cache_read_cost", "final_cache_write_cost",
-			"error", "error_code", "error_strategy",
+			"error", "error_code", "error_strategy", "api_key_id",
 		).
-		Where("user_id = ?", userID)
+		Where(column+" = ?", id)
 	if start > 0 {
 		query = query.Where("time >= ?", start)
 	}
@@ -493,7 +509,7 @@ func userUsageAt(userID int, rangeKey string, now time.Time, ctx context.Context
 	}
 	relayLogCacheLock.Lock()
 	for _, l := range relayLogCache {
-		if l.UserID != userID || l.Time < start {
+		if !match(l) || l.Time < start {
 			continue
 		}
 		if _, ok := seen[l.ID]; ok {
@@ -513,7 +529,7 @@ func userUsageAt(userID int, rangeKey string, now time.Time, ctx context.Context
 		dayIndex[d] = i
 	}
 
-	out := model.UserUsageResponse{UserID: userID, Range: rangeKey, Start: start, End: now.Unix()}
+	out := model.UserUsageResponse{Range: rangeKey, Start: start, End: now.Unix()}
 	models := make(map[string]*model.UserUsageModel)
 	for _, l := range logs {
 		if relayLogExcludedFromModelTelemetry(l) {

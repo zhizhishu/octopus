@@ -31,11 +31,29 @@ type APIKey struct {
 	MaxCost          float64                `json:"max_cost,omitempty"`
 	SupportedModels  string                 `json:"supported_models,omitempty"`
 	EndpointFamilies []APIKeyEndpointFamily `json:"endpoint_families,omitempty" gorm:"serializer:json"`
+	// LastUsedAt / LastUsedIP：这把 Key 最近一次转发请求的时间和来源 IP（与 User.LastRelayAt/IP 同口径，
+	// 纯审计字段：转发路径只写内存，周期任务批量落库）。更新 Key 时不随请求体覆盖。
+	LastUsedAt int64  `json:"last_used_at" gorm:"default:0"`
+	LastUsedIP string `json:"last_used_ip,omitempty" gorm:"size:128"`
 
 	AccessPlanIDs       []int        `json:"access_plan_ids,omitempty" gorm:"-"`
 	DefaultAccessPlanID int          `json:"default_access_plan_id,omitempty" gorm:"-"`
 	AccessPlans         []AccessPlan `json:"access_plans,omitempty" gorm:"-"`
 }
+
+// API Key 批量操作（POST /api/v1/apikey/batch）。请求和结果的形状与 /user/batch 一致。
+const (
+	APIKeyBatchEnable  = "enable"
+	APIKeyBatchDisable = "disable"
+	APIKeyBatchDelete  = "delete"
+)
+
+type APIKeyBatchRequest struct {
+	IDs    []int  `json:"ids"`
+	Action string `json:"action"`
+}
+
+type APIKeyBatchResult = UserBatchResult
 
 func AllAPIKeyEndpointFamilies() []APIKeyEndpointFamily {
 	return []APIKeyEndpointFamily{

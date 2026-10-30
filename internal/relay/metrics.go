@@ -746,6 +746,7 @@ func (m *RelayMetrics) Save(ctx context.Context, success bool, err error, attemp
 	if err := op.UserRecordRelayIP(m.UserID, m.RequestIP, m.StartTime.Unix(), persistCtx); err != nil {
 		log.Warnf("failed to record user relay ip: %v", err)
 	}
+	op.APIKeyRecordUse(m.APIKeyID, m.RequestIP, m.StartTime.Unix())
 	// 计费闸门: 按「实际产生的可计费用量」结算, 而不是终态成功布尔值。
 	//
 	// 流式请求可能在已经交付了大半内容之后才失败(客户端提前 cancel ->
