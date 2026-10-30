@@ -408,81 +408,44 @@ func UserCreate(req model.UserCreateRequest, ctx context.Context) (model.User, e
 	return user, nil
 }
 
+// UserUpdate 是旧的「整条」更新：请求里的每个字段都当作要写的值。
+// 现在它只是把整条请求翻成 UserPatchRequest（全部字段都带上）交给 UserPatch，
+// 于是和部分更新共用同一把用户锁、同一套校验，也会给余额变动记流水。
 func UserUpdate(req model.UserUpdateRequest, actorID int, ctx context.Context) (model.User, error) {
-	user, err := UserGet(req.ID)
-	if err != nil {
-		return model.User{}, err
-	}
-	username := strings.TrimSpace(req.Username)
-	if username == "" {
+	if strings.TrimSpace(req.Username) == "" {
 		return model.User{}, fmt.Errorf("username is required")
 	}
-	role := req.Role
-	if role == "" {
-		role = model.UserRoleUser
+	patch := model.UserPatchRequest{
+		ID:                 req.ID,
+		Username:           &req.Username,
+		Role:               &req.Role,
+		Status:             &req.Status,
+		Balance:            &req.Balance,
+		MonthlyLimit:       &req.MonthlyLimit,
+		MonthlyUsed:        &req.MonthlyUsed,
+		MonthlyExpireAt:    &req.MonthlyExpireAt,
+		MonthlyResetAt:     &req.MonthlyResetAt,
+		DailyLimit:         req.DailyLimit,
+		DailyQuota:         req.DailyQuota,
+		DailyUsed:          req.DailyUsed,
+		MonthlyExpireAtISO: &req.MonthlyExpireAtISO,
+		MonthlyResetAtISO:  &req.MonthlyResetAtISO,
+		NextResetAtISO:     &req.NextResetAtISO,
+		Note:               &req.Note,
 	}
-	status := req.Status
-	if status == "" {
-		status = model.UserStatusActive
+	if req.AccessPlanIDs != nil {
+		patch.AccessPlanIDs = &req.AccessPlanIDs
 	}
-	if err := validateUserRoleStatus(role, status); err != nil {
-		return model.User{}, err
+	if req.DefaultAccessPlanID > 0 {
+		patch.DefaultAccessPlanID = &req.DefaultAccessPlanID
 	}
-	if err := ensureAdminKeepsAccess(user, role, status, actorID, ctx); err != nil {
-		return model.User{}, err
-	}
-
-	oldUsername := user.Username
-	user.Username = username
-	user.Role = role
-	user.Status = status
-	user.Balance = maxFloat(req.Balance, 0)
-	monthlyLimit := resolveMonthlyLimit(req.MonthlyLimit, req.DailyLimit, req.DailyQuota)
-	monthlyUsed := resolveMonthlyUsed(req.MonthlyUsed, req.DailyUsed)
-	monthlyExpireAt, err := resolveUnixSeconds(req.MonthlyExpireAt, req.MonthlyExpireAtISO)
-	if err != nil {
-		return model.User{}, err
-	}
-	monthlyResetAt, err := resolveUnixSeconds(req.MonthlyResetAt, req.NextResetAtISO, req.MonthlyResetAtISO)
-	if err != nil {
-		return model.User{}, err
-	}
-	monthlyResetAt = ensureMonthlyResetAt(monthlyLimit, monthlyExpireAt, monthlyResetAt, time.Now())
-
-	user.MonthlyLimit = monthlyLimit
-	user.MonthlyUsed = monthlyUsed
-	user.MonthlyExpireAt = monthlyExpireAt
-	user.MonthlyResetAt = monthlyResetAt
-	user.Note = req.Note
-
-	if err := db.GetDB().WithContext(ctx).Model(&model.User{}).Where("id = ?", user.ID).Updates(map[string]any{
-		"username":          user.Username,
-		"role":              user.Role,
-		"status":            user.Status,
-		"balance":           user.Balance,
-		"monthly_limit":     user.MonthlyLimit,
-		"monthly_used":      user.MonthlyUsed,
-		"monthly_expire_at": user.MonthlyExpireAt,
-		"monthly_reset_at":  user.MonthlyResetAt,
-		"note":              user.Note,
-	}).Error; err != nil {
-		return model.User{}, fmt.Errorf("failed to update user: %w", err)
-	}
-	userCache.Set(user.ID, user)
-	if oldUsername != user.Username {
-		userNameIDMap.Del(normalizeUsername(oldUsername))
-	}
-	userNameIDMap.Set(normalizeUsername(user.Username), user.ID)
-	if req.AccessPlanIDs != nil || req.DefaultAccessPlanID > 0 {
-		if err := UserAccessPlanSet(user.ID, req.AccessPlanIDs, req.DefaultAccessPlanID, ctx); err != nil {
-			return model.User{}, err
-		}
-	}
-	attachUserAccessPlans(&user)
-	return user, nil
+	return UserPatch(patch, actorID, ctx)
 }
 
 func UserDelete(id int, actorID int, ctx context.Context) error {
+	// 检查「最后一个管理员」和删除要在同一把锁里，见 userAdminAccessMu。
+	userAdminAccessMu.Lock()
+	defer userAdminAccessMu.Unlock()
 	user, err := UserGet(id)
 	if err != nil {
 		return err
@@ -864,12 +827,18 @@ func UserApplyBalance(userID int, amount float64, ctx context.Context) (model.Us
 	if amount <= 0 {
 		return model.User{}, fmt.Errorf("balance amount must be positive")
 	}
+	mu := lockUser(userID)
+	mu.Lock()
+	defer mu.Unlock()
 	user, err := UserGet(userID)
 	if err != nil {
 		return model.User{}, err
 	}
-	user.Balance += amount
-	if err := db.GetDB().WithContext(ctx).Model(&model.User{}).Where("id = ?", user.ID).Update("balance", user.Balance).Error; err != nil {
+	conn := db.GetDB().WithContext(ctx).Model(&model.User{}).Where("id = ?", user.ID)
+	if err := conn.Update("balance", gorm.Expr("balance + ?", amount)).Error; err != nil {
+		return model.User{}, fmt.Errorf("failed to apply balance: %w", err)
+	}
+	if err := db.GetDB().WithContext(ctx).Model(&model.User{}).Where("id = ?", user.ID).Pluck("balance", &user.Balance).Error; err != nil {
 		return model.User{}, fmt.Errorf("failed to apply balance: %w", err)
 	}
 	userCache.Set(user.ID, user)
@@ -930,6 +899,10 @@ func UserCheckInAt(userID int, now time.Time, ctx context.Context) (model.UserCh
 		return model.UserCheckInResponse{}, fmt.Errorf("check-in reward must be positive")
 	}
 
+	// 与扣费同一把用户锁，余额用 balance = balance + ? 写入，不会盖掉同时发生的扣费。
+	mu := lockUser(userID)
+	mu.Lock()
+	defer mu.Unlock()
 	var checkedUser model.User
 	var checkedAt int64
 	err := db.GetDB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -961,8 +934,10 @@ func UserCheckInAt(userID int, now time.Time, ctx context.Context) (model.UserCh
 		}
 		checkedAt = checkIn.CreatedAt
 
-		user.Balance = roundBalance(user.Balance + reward)
-		if err := tx.Model(&model.User{}).Where("id = ?", user.ID).Update("balance", user.Balance).Error; err != nil {
+		if err := tx.Model(&model.User{}).Where("id = ?", user.ID).Update("balance", gorm.Expr("balance + ?", reward)).Error; err != nil {
+			return fmt.Errorf("failed to apply check-in reward: %w", err)
+		}
+		if err := tx.Model(&model.User{}).Where("id = ?", user.ID).Pluck("balance", &user.Balance).Error; err != nil {
 			return fmt.Errorf("failed to apply check-in reward: %w", err)
 		}
 		checkedUser = user
@@ -971,7 +946,7 @@ func UserCheckInAt(userID int, now time.Time, ctx context.Context) (model.UserCh
 	if err != nil {
 		return model.UserCheckInResponse{}, err
 	}
-	userCache.Set(checkedUser.ID, checkedUser)
+	checkedUser = userCacheMergeMoney(checkedUser)
 
 	status := model.UserCheckInStatus{
 		Enabled:       cfg.enabled,
@@ -1000,6 +975,9 @@ func UserApplyMonthly(userID int, monthlyLimit float64, days int, ctx context.Co
 	if monthlyLimit <= 0 {
 		return model.User{}, fmt.Errorf("monthly limit must be positive")
 	}
+	mu := lockUser(userID)
+	mu.Lock()
+	defer mu.Unlock()
 	user, err := UserGet(userID)
 	if err != nil {
 		return model.User{}, err
@@ -1103,6 +1081,24 @@ func checkInDay(now time.Time) string {
 func nextCheckInAt(now time.Time) time.Time {
 	local := now.Local()
 	return time.Date(local.Year(), local.Month(), local.Day()+1, 0, 0, 0, 0, local.Location())
+}
+
+// userCacheMergeMoney 把库里刚写好的余额 / 月卡字段合进缓存里的最新用户对象。
+// 只覆盖这几列：缓存里还有没落库的审计字段（最近调用 IP / 时间），不能被库里的旧值盖掉。
+// 调用方必须持有 lockUser。
+func userCacheMergeMoney(src model.User) model.User {
+	user, ok := userCache.Get(src.ID)
+	if !ok {
+		user = src
+	}
+	user.Balance = src.Balance
+	user.MonthlyLimit = src.MonthlyLimit
+	user.MonthlyUsed = src.MonthlyUsed
+	user.MonthlyExpireAt = src.MonthlyExpireAt
+	user.MonthlyResetAt = src.MonthlyResetAt
+	user.Normalize()
+	userCache.Set(user.ID, user)
+	return user
 }
 
 func UserRefreshMonthlyWindow(userID int, ctx context.Context) (model.User, error) {

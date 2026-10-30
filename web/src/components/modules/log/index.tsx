@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useLogPresetStore } from './log-preset';
 
 function useDebouncedValue<T>(value: T, delayMs: number): T {
     const [debounced, setDebounced] = useState(value);
@@ -692,7 +693,11 @@ export function Log() {
     const [logPanel, setLogPanel] = useState<'requests' | 'video-tasks'>('requests');
     // 所有筛选都「即选即生效」——改了立刻查，不再需要点「搜索」。这正是过去让人觉得「筛选无效」的
     // 另一半原因：改了接口下拉/用户/Key 却要再点搜索才生效，看起来像没反应。
-    const [selectedUserID, setSelectedUserID] = useState<number | undefined>();
+    // 从用户页「看他的日志」跳过来时，带着那个用户的筛选打开；读完就清掉，下次进来不再带。
+    const [selectedUserID, setSelectedUserID] = useState<number | undefined>(() => useLogPresetStore.getState().userID);
+    useEffect(() => {
+        useLogPresetStore.getState().clear();
+    }, []);
     const [selectedAPIKeyID, setSelectedAPIKeyID] = useState<number | undefined>();
     const [selectedEndpoint, setSelectedEndpoint] = useState('');
     const [selectedProvider, setSelectedProvider] = useState('');

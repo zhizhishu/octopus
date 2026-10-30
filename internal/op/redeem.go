@@ -94,6 +94,10 @@ func RedeemCodeRedeem(rawCode string, userID int, ctx context.Context) (model.Us
 		return model.User{}, fmt.Errorf("redeem code is required")
 	}
 
+	// 与扣费同一把用户锁：兑换写的余额 / 月卡和中继扣费不会互相盖掉（见 userLocks）。
+	mu := lockUser(userID)
+	mu.Lock()
+	defer mu.Unlock()
 	var redeemedUser model.User
 	err := db.GetDB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var user model.User
@@ -111,8 +115,7 @@ func RedeemCodeRedeem(rawCode string, userID int, ctx context.Context) (model.Us
 	if err != nil {
 		return model.User{}, err
 	}
-	userCache.Set(redeemedUser.ID, redeemedUser)
-	return redeemedUser, nil
+	return userCacheMergeMoney(redeemedUser), nil
 }
 
 func applyRedeemCodeTx(tx *gorm.DB, codeValue string, user model.User) (model.User, error) {
@@ -133,7 +136,13 @@ func applyRedeemCodeTx(tx *gorm.DB, codeValue string, user model.User) (model.Us
 		if code.BalanceAmount <= 0 {
 			return model.User{}, fmt.Errorf("invalid balance redeem code")
 		}
-		user.Balance += code.BalanceAmount
+		// 一条 balance = balance + ? 的 UPDATE，再读回库里的真实值。
+		if err := tx.Model(&model.User{}).Where("id = ?", user.ID).Update("balance", gorm.Expr("balance + ?", code.BalanceAmount)).Error; err != nil {
+			return model.User{}, fmt.Errorf("failed to apply redeem code: %w", err)
+		}
+		if err := tx.Model(&model.User{}).Where("id = ?", user.ID).Pluck("balance", &user.Balance).Error; err != nil {
+			return model.User{}, fmt.Errorf("failed to apply redeem code: %w", err)
+		}
 	case model.RedeemCodeTypeMonthly:
 		if code.MonthlyDays <= 0 || code.MonthlyLimit <= 0 {
 			return model.User{}, fmt.Errorf("invalid monthly redeem code")
@@ -147,18 +156,17 @@ func applyRedeemCodeTx(tx *gorm.DB, codeValue string, user model.User) (model.Us
 		user.MonthlyUsed = 0
 		user.MonthlyExpireAt = expireAt
 		user.MonthlyResetAt = nextMonthlyReset(now).Unix()
+		// 只写月卡这几列，不碰余额。
+		if err := tx.Model(&model.User{}).Where("id = ?", user.ID).Updates(map[string]any{
+			"monthly_limit":     user.MonthlyLimit,
+			"monthly_used":      user.MonthlyUsed,
+			"monthly_expire_at": user.MonthlyExpireAt,
+			"monthly_reset_at":  user.MonthlyResetAt,
+		}).Error; err != nil {
+			return model.User{}, fmt.Errorf("failed to apply redeem code: %w", err)
+		}
 	default:
 		return model.User{}, fmt.Errorf("invalid redeem code type")
-	}
-
-	if err := tx.Model(&model.User{}).Where("id = ?", user.ID).Updates(map[string]any{
-		"balance":           user.Balance,
-		"monthly_limit":     user.MonthlyLimit,
-		"monthly_used":      user.MonthlyUsed,
-		"monthly_expire_at": user.MonthlyExpireAt,
-		"monthly_reset_at":  user.MonthlyResetAt,
-	}).Error; err != nil {
-		return model.User{}, fmt.Errorf("failed to apply redeem code: %w", err)
 	}
 
 	now := time.Now().Unix()

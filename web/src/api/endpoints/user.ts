@@ -51,6 +51,8 @@ export interface User {
     last_relay_ip?: string;
     last_relay_at: number;
     note?: string;
+    email?: string;
+    email_verified?: boolean;
     access_plan_ids?: number[];
     default_access_plan_id?: number;
     access_plans?: AccessPlan[];
@@ -421,7 +423,7 @@ export function useCreateUser() {
     return useMutation({
         mutationFn: (data: CreateUserRequest) => apiClient.post<User>('/api/v1/user/create', data),
         onSuccess: () => {
-            queryClient.invalidateQueries({ queryKey: ['users', 'list'] });
+            queryClient.invalidateQueries({ queryKey: ['users'] });
         },
     });
 }
@@ -447,8 +449,113 @@ export function useDeleteUser() {
     return useMutation({
         mutationFn: (id: number) => apiClient.delete<null>(`/api/v1/user/delete/${id}`),
         onSuccess: () => {
-            queryClient.invalidateQueries({ queryKey: ['users', 'list'] });
+            queryClient.invalidateQueries({ queryKey: ['users'] });
         },
     });
 }
 
+
+/** 部分更新：只发改了的字段，没发的后端保持原值。 */
+export type PatchUserRequest = { id: number } & Partial<{
+    username: string;
+    role: UserRole;
+    status: UserStatus;
+    note: string;
+    monthly_limit: number;
+    monthly_used: number;
+    monthly_expire_at: number;
+    access_plan_ids: number[];
+    default_access_plan_id: number;
+}>;
+
+export function usePatchUser() {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: (data: PatchUserRequest) => apiClient.post<User>('/api/v1/user/update', data),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['users'] });
+        },
+    });
+}
+
+export type UserBalanceMode = 'add' | 'subtract' | 'set';
+
+export interface UserBalanceLog {
+    id: number;
+    user_id: number;
+    actor_id: number;
+    actor_name: string;
+    mode: UserBalanceMode;
+    delta: number;
+    balance_before: number;
+    balance_after: number;
+    reason: string;
+    created_at: number;
+}
+
+export function useAdjustUserBalance() {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: (data: { id: number; mode: UserBalanceMode; amount: number; reason?: string }) =>
+            apiClient.post<{ user: User; log: UserBalanceLog }>('/api/v1/user/balance', data),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['users'] });
+        },
+    });
+}
+
+export function useUserBalanceLog(id: number | undefined, limit = 10) {
+    return useQuery({
+        queryKey: ['users', 'balance-log', id, limit],
+        queryFn: () => apiClient.get<UserBalanceLog[]>(`/api/v1/user/balance-log?id=${id}&limit=${limit}`),
+        enabled: !!id,
+    });
+}
+
+export type UserUsageRange = 'today' | '7d' | '30d' | 'all';
+
+export interface UserUsage {
+    user_id: number;
+    range: UserUsageRange;
+    start: number;
+    end: number;
+    request_success: number;
+    request_failed: number;
+    input_tokens: number;
+    output_tokens: number;
+    total_cost: number;
+    daily: { date: string; requests: number; cost: number }[];
+    top_models: { model: string; requests: number; tokens: number; cost: number }[];
+}
+
+export function useUserUsage(id: number | undefined, range: UserUsageRange) {
+    return useQuery({
+        queryKey: ['users', 'usage', id, range],
+        queryFn: () => apiClient.get<UserUsage>(`/api/v1/user/usage?id=${id}&range=${range}`),
+        enabled: !!id,
+    });
+}
+
+export type UserBatchAction = 'enable' | 'disable' | 'add_balance' | 'set_plans' | 'delete';
+
+export interface UserBatchResult {
+    done: number[];
+    failed: { id: number; error: string }[];
+}
+
+export function useBatchUsers() {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: (data: {
+            ids: number[];
+            action: UserBatchAction;
+            amount?: number;
+            reason?: string;
+            access_plan_ids?: number[];
+            default_access_plan_id?: number;
+        }) => apiClient.post<UserBatchResult>('/api/v1/user/batch', data),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['users'] });
+        },
+    });
+}
