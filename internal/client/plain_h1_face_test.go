@@ -187,7 +187,7 @@ func TestPlaintextFaceKeyedRoundTripIsolatesFaces(t *testing.T) {
 	base.Proxy = nil
 	rt := newFaceKeyedPlainTransport(base)
 
-	addr, blocks := startKeepAliveCapture(t, 5)
+	addr, blocks := startKeepAliveCapture(t, 5, nil)
 	client := &http.Client{Transport: rt, Timeout: 5 * time.Second}
 
 	do := func(path, face string) {
@@ -214,10 +214,16 @@ func TestPlaintextFaceKeyedRoundTripIsolatesFaces(t *testing.T) {
 		claudeChatWireNames,
 		codexChatWireNames,
 	}
+	// 每条服务端连接只能见到一种头序：不同 face 共用一条连接就是指纹串味。
+	faceByConn := make(map[int][]string)
 	for i, names := range want {
 		select {
-		case lines := <-blocks:
-			assertWireNames(t, lines, names)
+		case b := <-blocks:
+			assertWireNames(t, b.lines, names)
+			if prev, ok := faceByConn[b.conn]; ok && !reflect.DeepEqual(prev, names) {
+				t.Fatalf("request %d reused server conn %d that already carried %v, now %v", i, b.conn, prev, names)
+			}
+			faceByConn[b.conn] = names
 		case <-time.After(5 * time.Second):
 			t.Fatalf("timed out waiting for request %d", i)
 		}
@@ -254,7 +260,27 @@ func TestProductionShapedClientPlaintextUsesFace(t *testing.T) {
 	assertWireNames(t, lines, claudeChatWireNames)
 }
 
-func startKeepAliveCapture(t *testing.T, n int) (string, <-chan []string) {
+// capturedBlock is one request header block and the server-side connection
+// (numbered by accept order, from 1) it arrived on.
+type capturedBlock struct {
+	conn  int
+	lines []string
+}
+
+// startKeepAliveCapture serves n requests over keep-alive connections and emits
+// each header block in the order the client sent them.
+//
+// The block is queued BEFORE the response is written. The client cannot send its
+// next request until it reads this response, so queue order equals send order
+// even when consecutive requests ride different connections (different faces
+// always do, and the transport may also dial a fresh conn for the same face).
+// Queuing after the write let the next connection's goroutine overtake this one,
+// which reordered blocks and failed the face assertions under CI load although
+// every block carried its own request's correct face.
+//
+// afterReply, if non-nil, runs after each response is written; tests use it to
+// stall a handler goroutine at exactly that point.
+func startKeepAliveCapture(t *testing.T, n int, afterReply func(conn int)) (string, <-chan capturedBlock) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -262,16 +288,16 @@ func startKeepAliveCapture(t *testing.T, n int) (string, <-chan []string) {
 	}
 	t.Cleanup(func() { _ = ln.Close() })
 
-	out := make(chan []string, n)
+	out := make(chan capturedBlock, n)
 	var mu sync.Mutex
 	got := 0
 	go func() {
-		for {
+		for id := 1; ; id++ {
 			conn, err := ln.Accept()
 			if err != nil {
 				return
 			}
-			go func(conn net.Conn) {
+			go func(conn net.Conn, id int) {
 				defer conn.Close()
 				br := bufio.NewReader(conn)
 				for {
@@ -281,10 +307,13 @@ func startKeepAliveCapture(t *testing.T, n int) (string, <-chan []string) {
 						return
 					}
 					discardCapturedBody(br, lines)
+					out <- capturedBlock{conn: id, lines: lines}
 					if _, err := conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")); err != nil {
 						return
 					}
-					out <- lines
+					if afterReply != nil {
+						afterReply(id)
+					}
 					mu.Lock()
 					got++
 					done := got >= n
@@ -293,10 +322,47 @@ func startKeepAliveCapture(t *testing.T, n int) (string, <-chan []string) {
 						return
 					}
 				}
-			}(conn)
+			}(conn, id)
 		}
 	}()
 	return ln.Addr().String(), out
+}
+
+// TestKeepAliveCaptureKeepsSendOrderAcrossConns pins the capture helper itself.
+// Two faces force two connections; the first connection's handler stalls right
+// after replying. Blocks must still come out in send order. With the block
+// queued after the write (the old helper), the second connection's block is
+// queued first every time and this test fails.
+func TestKeepAliveCaptureKeepsSendOrderAcrossConns(t *testing.T) {
+	base, err := clonedDefaultTransport()
+	if err != nil {
+		t.Fatalf("clonedDefaultTransport: %v", err)
+	}
+	base.Proxy = nil
+	rt := newFaceKeyedPlainTransport(base)
+
+	addr, blocks := startKeepAliveCapture(t, 2, func(conn int) {
+		if conn == 1 {
+			time.Sleep(200 * time.Millisecond)
+		}
+	})
+	client := &http.Client{Transport: rt, Timeout: 5 * time.Second}
+	for _, face := range []string{tlsFaceClaude, tlsFaceCodex} {
+		resp, err := client.Do(chatOrderRequest(t, "http://"+addr+"/v1/chat/completions", face))
+		if err != nil {
+			t.Fatalf("do face=%q: %v", face, err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}
+	for i, names := range [][]string{claudeChatWireNames, codexChatWireNames} {
+		select {
+		case b := <-blocks:
+			assertWireNames(t, b.lines, names)
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out waiting for request %d", i)
+		}
+	}
 }
 
 func discardCapturedBody(br *bufio.Reader, lines []string) {
