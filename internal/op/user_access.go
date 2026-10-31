@@ -159,6 +159,10 @@ func UserAccessSaveDBTask() {
 	if err := UserAccessSaveDB(ctx); err != nil {
 		log.Warnf("user access save db error: %v", err)
 	}
+	// 客户端指纹（user_client_fingerprints）同一个周期落库。
+	if err := UserClientSaveDB(ctx); err != nil {
+		log.Warnf("user client fingerprint save db error: %v", err)
+	}
 }
 
 // userAccessMergePending 把还没落库的记录合进查出来的行（同 seen_key 累加），

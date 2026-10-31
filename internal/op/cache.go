@@ -73,6 +73,9 @@ func SaveCache() error {
 	if err := UserAccessSaveDB(ctx); err != nil {
 		return err
 	}
+	if err := UserClientSaveDB(ctx); err != nil {
+		return err
+	}
 	if err := APIKeyLastUsedSaveDB(ctx); err != nil {
 		return err
 	}

@@ -6,10 +6,10 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/gin-gonic/gin"
 	"github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/op"
 	"github.com/zhizhishu/octopus/internal/utils/log"
-	"github.com/gin-gonic/gin"
 )
 
 // cloudflareTrustedProxies is Cloudflare's published edge IP ranges
@@ -122,6 +122,14 @@ func trustedProxyNets() []*net.IPNet {
 // app needs the client IP so audit logging and per-IP rate limiting agree.
 func ResolveClientIP(c *gin.Context) string {
 	return resolveClientIP(c.RemoteIP(), c.GetHeader, trustedProxyNets())
+}
+
+// PeerIsTrustedProxy reports whether the direct TCP peer is a trusted proxy (same
+// set as ResolveClientIP). Only then are proxy-supplied headers such as X-JA3 /
+// X-JA4 / CF-IPCountry believed; from anyone else they are client-forgeable.
+func PeerIsTrustedProxy(c *gin.Context) bool {
+	peer := net.ParseIP(c.RemoteIP())
+	return peer != nil && ipInNets(peer, trustedProxyNets())
 }
 
 // resolveClientIP is the pure core of ResolveClientIP: given the direct peer, a

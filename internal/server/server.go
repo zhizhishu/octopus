@@ -12,6 +12,7 @@ import (
 	"github.com/zhizhishu/octopus/internal/server/middleware"
 	"github.com/zhizhishu/octopus/internal/server/resp"
 	"github.com/zhizhishu/octopus/internal/server/router"
+	"github.com/zhizhishu/octopus/internal/telemetry"
 	"github.com/zhizhishu/octopus/internal/utils/log"
 	"github.com/zhizhishu/octopus/internal/utils/safe"
 	"github.com/zhizhishu/octopus/static"
@@ -58,7 +59,11 @@ func Start() error {
 	router.RegisterAll(r)
 
 	httpSrv.Addr = fmt.Sprintf("%s:%d", conf.AppConfig.Server.Host, conf.AppConfig.Server.Port)
-	httpSrv.Handler = r
+	// 入站客户端指纹：给每条入站连接挂一个旁路记录器，记下请求头的原始顺序和大小写
+	// （net/http 解析成 map 后就丢了）。只观察入站字节、原样交给 http.Server，
+	// 与出站（internal/client）无关。见 internal/telemetry。
+	httpSrv.Handler = telemetry.Handler(r)
+	httpSrv.ConnContext = telemetry.ConnContext
 
 	// 🔴 先**同步**拿 listener，失败就把错误交回调用方。
 	//
@@ -77,7 +82,7 @@ func Start() error {
 	// 绑定成功后再起服务：这里 Serve 的错误只可能是运行期问题（如 listener
 	// 被外部关闭），值得记 error 但已经不影响「服务是否可用」的判断。
 	safe.SafeGo("http-server-serve", func() {
-		if err := httpSrv.Serve(ln); err != nil && err != http.ErrServerClosed {
+		if err := httpSrv.Serve(telemetry.Listener{Listener: ln}); err != nil && err != http.ErrServerClosed {
 			log.Errorf("http server serve error: %v", err)
 		}
 	})

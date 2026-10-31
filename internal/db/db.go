@@ -73,6 +73,8 @@ func InitDB(dbType, dsn string, debug bool) error {
 		&model.UserCheckIn{},
 		&model.UserBalanceLog{},
 		&model.UserAccessSeen{},
+		// 客户端指纹：新表只走这份名单（不另写一次性迁移，理由见下面检测表的注释）。
+		&model.UserClientFingerprint{},
 		&model.Channel{},
 		&model.ChannelKey{},
 		&model.FingerprintProfile{},
