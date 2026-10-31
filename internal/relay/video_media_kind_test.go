@@ -188,7 +188,7 @@ func TestVideoMediaKindCreateAndPollHitMatchingSubPath(t *testing.T) {
 			reqCreate.Header.Set("Content-Type", "application/json")
 			cCreate.Request = reqCreate
 			cCreate.Set("api_key_id", 0)
-			cCreate.Set("user_id", 0)
+			cCreate.Set("user_id", videoTestOwnerUserID)
 			cCreate.Set("request_ip", "127.0.0.1")
 
 			VideosHandlerKind(cCreate, tc.kind)
@@ -204,7 +204,7 @@ func TestVideoMediaKindCreateAndPollHitMatchingSubPath(t *testing.T) {
 			reqPoll := httptest.NewRequest(http.MethodGet, "/v1/videos/"+tc.kind+"/vid_kind_1", nil)
 			cPoll.Request = reqPoll
 			cPoll.Set("api_key_id", 0)
-			cPoll.Set("user_id", 0)
+			cPoll.Set("user_id", videoTestOwnerUserID)
 			cPoll.Set("request_ip", "127.0.0.1")
 
 			VideoPollHandler(cPoll)
@@ -276,6 +276,7 @@ func TestVideoMediaKindPollAfterRestartUsesRowKind(t *testing.T) {
 	// 「上一个进程」留下的那一行。
 	if err := op.VideoTaskCreate(ctx, &dbmodel.VideoTask{
 		UpstreamTaskID: "vid_edit_db",
+		OwnerUserID:    videoTestOwnerUserID,
 		ChannelID:      ch.ID,
 		ChannelKeyID:   ch.Keys[0].ID,
 		Model:          "restart-upstream-model",
@@ -294,7 +295,7 @@ func TestVideoMediaKindPollAfterRestartUsesRowKind(t *testing.T) {
 	c.Params = []gin.Param{{Key: "id", Value: "vid_edit_db"}}
 	c.Request = httptest.NewRequest(http.MethodGet, "/v1/videos/edits/vid_edit_db", nil)
 	c.Set("api_key_id", 0)
-	c.Set("user_id", 0)
+	c.Set("user_id", videoTestOwnerUserID)
 	c.Set("request_ip", "127.0.0.1")
 
 	VideoPollHandler(c)
@@ -353,6 +354,7 @@ func TestVideoContentHandlerStreamsUpstreamContent(t *testing.T) {
 	}
 	if err := op.VideoTaskCreate(ctx, &dbmodel.VideoTask{
 		UpstreamTaskID: "vid_content_1",
+		OwnerUserID:    videoTestOwnerUserID,
 		ChannelID:      ch.ID,
 		ChannelKeyID:   ch.Keys[0].ID,
 		Model:          "content-upstream-model",
@@ -369,7 +371,7 @@ func TestVideoContentHandlerStreamsUpstreamContent(t *testing.T) {
 	c.Params = []gin.Param{{Key: "id", Value: "vid_content_1"}}
 	c.Request = httptest.NewRequest(http.MethodGet, "/v1/videos/edits/vid_content_1/content", nil)
 	c.Set("api_key_id", 0)
-	c.Set("user_id", 0)
+	c.Set("user_id", videoTestOwnerUserID)
 	c.Set("request_ip", "127.0.0.1")
 
 	VideoContentHandler(c)

@@ -4,6 +4,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/zhizhishu/octopus/internal/model"
 )
 
 // Video generation on the Agnes-style upstream is asynchronous: a create call
@@ -100,16 +103,33 @@ func maybePruneVideoTasksLocked(now time.Time) {
 	}
 }
 
-// videoTaskOwnerMatches applies the same fail-closed tenant check as the
-// responses-session owner map: a task with a recorded identity may only be
-// polled by the same token (else the same user); a task with no recorded
-// identity (0/0) is treated as unrestricted for backward compatibility.
+// videoTaskOwnerMatches applies the fail-closed tenant check: a task with a
+// recorded identity may only be polled by the same token (else the same user).
+//
+// 没有记录归属的旧任务（0/0，隔离上线前写的行）以前对谁都放行——任何 Key 只要猜到 / 拿到
+// 任务 id 就能查结果、拿下载地址。现在一律不给（fail-closed）；只有管理员的控制台登录会话
+// 能看（见 taskOwnerMatchesRequest），API Key 请求（包括管理员自己的 Key、访客 Key）都不行。
 func videoTaskOwnerMatches(entry videoTaskEntry, reqTokenID, reqUserID int) bool {
 	if entry.ownerTokenID == 0 && entry.ownerUserID == 0 {
-		return true
+		return false
 	}
 	if entry.ownerTokenID > 0 {
 		return entry.ownerTokenID == reqTokenID
 	}
 	return entry.ownerUserID == reqUserID
+}
+
+// taskRequestIsAdminSession：这次请求是不是管理员的控制台登录会话（JWT，不是任何 API Key）。
+// API Key 请求一定带 api_key_id；访客 Key 的上下文角色是 guest_key，也不是管理员。
+func taskRequestIsAdminSession(c *gin.Context) bool {
+	return c.GetInt("api_key_id") <= 0 && c.GetString("user_role") == string(model.UserRoleAdmin)
+}
+
+// taskOwnerMatchesRequest 是按请求上下文判断能不能碰这条视频 / MJ 任务：
+// 有归属的按 videoTaskOwnerMatches；无归属（0/0）的旧任务只给管理员控制台会话。
+func taskOwnerMatchesRequest(c *gin.Context, ownerTokenID, ownerUserID int) bool {
+	if ownerTokenID == 0 && ownerUserID == 0 {
+		return taskRequestIsAdminSession(c)
+	}
+	return videoTaskOwnerMatches(videoTaskEntry{ownerTokenID: ownerTokenID, ownerUserID: ownerUserID}, c.GetInt("api_key_id"), taskOwnerUserID(c))
 }

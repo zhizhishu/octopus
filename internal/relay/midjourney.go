@@ -531,16 +531,13 @@ func midjourneyTaskOwner(ctx context.Context, taskID string) (midjourneyTaskEntr
 	}, true
 }
 
-// midjourneyTaskOwnerMatches 与视频任务同一套租户规则（fail-closed）：
-// 有 token 归属就只认同一个 token，否则认同一个用户。
-func midjourneyTaskOwnerMatches(entry midjourneyTaskEntry, reqTokenID, reqUserID int) bool {
-	return videoTaskOwnerMatches(videoTaskEntry{ownerTokenID: entry.ownerTokenID, ownerUserID: entry.ownerUserID}, reqTokenID, reqUserID)
-}
+// MJ 任务与视频任务同一套租户规则（fail-closed，见 taskOwnerMatchesRequest）：
+// 有 token 归属就只认同一个 token，否则认同一个用户；无归属的旧任务只给管理员控制台会话。
 
 // midjourneyTaskTarget 解析一条已有任务的归属渠道与 key。失败时已写好响应。
 func midjourneyTaskTarget(c *gin.Context, ctx context.Context, taskID string) (midjourneyTaskEntry, *model.Channel, string, bool) {
 	entry, ok := midjourneyTaskOwner(ctx, taskID)
-	if !ok || !midjourneyTaskOwnerMatches(entry, c.GetInt("api_key_id"), taskOwnerUserID(c)) {
+	if !ok || !taskOwnerMatchesRequest(c, entry.ownerTokenID, entry.ownerUserID) {
 		writeMidjourneyError(c, http.StatusBadRequest, "task_not_found")
 		return midjourneyTaskEntry{}, nil, "", false
 	}
@@ -936,7 +933,7 @@ func MidjourneyTaskListByConditionHandler(c *gin.Context) {
 		}
 		seen[id] = true
 		entry, ok := midjourneyTaskOwner(ctx, id)
-		if !ok || !midjourneyTaskOwnerMatches(entry, c.GetInt("api_key_id"), taskOwnerUserID(c)) {
+		if !ok || !taskOwnerMatchesRequest(c, entry.ownerTokenID, entry.ownerUserID) {
 			continue
 		}
 		k := groupKey{entry.channelID, entry.channelKeyID}
