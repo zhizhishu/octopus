@@ -73,6 +73,7 @@ export const SettingKey = {
     CheckInEnabled: 'checkin_enabled',
     CheckInRewardMode: 'checkin_reward_mode',
     LogPassiveProbeEnabled: 'log_passive_probe_enabled',
+    ModelAuditFingerprintRandomPrompts: 'model_audit_fingerprint_random_prompts',
     RedactEnabled: 'redact_enabled',
     RedactDefaultFlags: 'redact_default_flags',
     RedactNoticeEnabled: 'redact_notice_enabled',

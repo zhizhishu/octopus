@@ -118,3 +118,74 @@ test('概率文案：极小值不显示成 0%', () => {
     assert.equal(formatProbability(0.045), '4.5%');
     assert.equal(formatProbability(1), '100%');
 });
+
+test('新字段：样本体检、像不像模型手写、声明名次、近邻（id 换成人话名）、低置信度', () => {
+    const summary = readFingerprint(
+        reportWith({
+            fingerprint_decision: 'scorable',
+            fingerprint_prediction: 'claude-opus-4.6',
+            fingerprint_prediction_name: 'Claude Opus 4.6',
+            fingerprint_probability: 0.62,
+            fingerprint_model_count: 64,
+            fingerprint_prompt_mode: 'random',
+            fingerprint_model_like: true,
+            fingerprint_samples: [
+                { index: 1, parsed: 311, minimum: 171, expected: 311, accepted: true, anomalous: true, language: '日本語' },
+                { index: 0, parsed: 298, minimum: 164, expected: 298, accepted: true, anomalous: false, language: '中文' },
+            ],
+            fingerprint_anomalous_samples: [1],
+            fingerprint_neighbors: ['claude-opus-4.5', 'unknown-x'],
+            fingerprint_declared_model: 'claude-opus-4.5',
+            fingerprint_declared_rank: 2,
+            fingerprint_declared_probability: 0.2,
+            fingerprint_candidates: [
+                { model: 'claude-opus-4.6', display_name: 'Claude Opus 4.6', family_name: 'Claude', score: 0.7, probability: 0.62 },
+                { model: 'claude-opus-4.5', display_name: 'Claude Opus 4.5', family_name: 'Claude', score: 0.6, probability: 0.2 },
+            ],
+        }),
+    );
+    assert.equal(summary.modelCount, 64);
+    assert.equal(summary.promptMode, 'random');
+    assert.equal(summary.modelLike, true);
+    assert.deepEqual(summary.samples.map((s) => s.index), [0, 1]);
+    assert.equal(summary.samples[1].anomalous, true);
+    assert.equal(summary.samples[0].language, '中文');
+    assert.deepEqual(summary.anomalousSamples, [1]);
+    assert.deepEqual(summary.neighbors, ['Claude Opus 4.5', 'unknown-x']);
+    assert.equal(summary.declaredRank, 2);
+    assert.equal(summary.declaredModel, 'claude-opus-4.5');
+    assert.equal(summary.lowConfidence, true, '62% < 75% 要提示再测一轮');
+    assert.equal(summary.insufficient, false);
+});
+
+test('回答像脚本生成：算证据不足，不给排名', () => {
+    const summary = readFingerprint(
+        reportWith({
+            fingerprint_decision: 'not_model',
+            fingerprint_model_like: false,
+            fingerprint_reason: '回答不像模型手写',
+            insufficient_evidence: true,
+        }),
+    );
+    assert.equal(summary.decision, 'not_model');
+    assert.equal(summary.insufficient, true);
+    assert.equal(summary.modelLike, false);
+    assert.equal(summary.candidates.length, 0);
+    assert.equal(summary.lowConfidence, false);
+    assert.match(describeDecision(summary), /不像模型手写/);
+    assert.match(describeDecision(summary), /不说明渠道有问题/);
+});
+
+test('旧报告没有 low_confidence 位：按概率自己算', () => {
+    const summary = readFingerprint(
+        reportWith({
+            fingerprint_decision: 'scorable',
+            fingerprint_prediction_name: 'GLM-5',
+            fingerprint_probability: 0.9,
+            fingerprint_candidates: [{ model: 'glm-5', display_name: 'GLM-5', family_name: 'GLM', score: 0.5, probability: 0.9 }],
+        }),
+    );
+    assert.equal(summary.lowConfidence, false);
+    assert.deepEqual(summary.samples, []);
+    assert.equal(summary.modelLike, undefined);
+});
