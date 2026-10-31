@@ -162,6 +162,27 @@ var reverseProxyHeaders = map[string]bool{
 	"via":                   true,
 }
 
+// cdnInfraHeaders are added by a CDN / load balancer IN FRONT of Octopus (Cloudflare,
+// AWS ALB, nginx ingress), not by the caller. Octopus does not read them, so they are not
+// in telemetry.ReverseProxyHeaders(), but a genuine Claude / Codex CLI never sends them
+// either: forwarding them upstream is a shape deviation and leaks our own edge (CF-Ray /
+// CDN-Loop also make a Cloudflare-fronted upstream see a CDN loop). Stripped on every path.
+var cdnInfraHeaders = map[string]bool{
+	"cf-ray":                   true,
+	"cdn-loop":                 true,
+	"cf-visitor":               true,
+	"cf-worker":                true,
+	"cf-ew-via":                true,
+	"cf-connecting-ipv6":       true,
+	"cf-pseudo-ipv4":           true,
+	"x-forwarded-scheme":       true,
+	"x-forwarded-ssl":          true,
+	"x-original-forwarded-for": true,
+	"x-real-port":              true,
+	"x-scheme":                 true,
+	"x-amzn-trace-id":          true,
+}
+
 // shouldForwardClientHeaderForCaller is shouldForwardClientHeader with one scoped
 // exception: a CLI-shaped caller's own SDK timeout declarations are forwarded verbatim,
 // because that is the one wire shape Octopus imitates (2026-10 probes: the caller sent
@@ -219,6 +240,9 @@ func shouldForwardClientHeader(key string) bool {
 		return false
 	}
 	if reverseProxyHeaders[lower] {
+		return false
+	}
+	if cdnInfraHeaders[lower] {
 		return false
 	}
 	if strings.HasPrefix(lower, "x-stainless-") {
