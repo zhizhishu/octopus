@@ -829,10 +829,9 @@ func TestRescueRoutingRescueRoundsPreserveTierOrder(t *testing.T) {
 	}{
 		// Tiered spread: the item priority is the outer boundary and the larger number goes first.
 		{name: "spread-tiered", mode: dbmodel.GroupModeSpreadTiered, highItemPriority: 2, lowItemPriority: 1},
-		// Round-robin: the item priority is deliberately NOT a boundary; only the channel
-		// priority is. The lower tier therefore carries the LARGER item priority to prove the
-		// item number is ignored.
-		{name: "spread", mode: dbmodel.GroupModeSpread, lowChannelPriority: 5, highItemPriority: 1, lowItemPriority: 2},
+		// 纯轮询（mode 1）不在这里测：这些规则走方案路由，方案路由不看渠道页优先级
+		// （relay.enrichGroupForSmartRouting 对 PlanRoute 把 ChannelPriority 清零），
+		// mode 1 在方案里只有一层、整组轮流，没有「高一层先跑完」可言。见 balancer/plan_route_test.go。
 		// Fill-first: channel priority first, item priority second.
 		{name: "fill-first", mode: dbmodel.GroupModeFillFirst, highItemPriority: 1, lowItemPriority: 2},
 	}

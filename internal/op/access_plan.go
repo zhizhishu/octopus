@@ -477,6 +477,7 @@ func AccessPlanGroupForModel(plan *model.AccessPlan, requestModel string, ctx co
 			Name:       model.CleanOneMillionCapabilityModelName(requestModel),
 			Mode:       ruleCopy.Mode,
 			ModeLocked: true,
+			PlanRoute:  true,
 			Items:      items,
 		}, &ruleCopy, true, nil
 	}
