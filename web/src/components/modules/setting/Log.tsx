@@ -601,7 +601,8 @@ export function LogModeRow() {
                 debugOn ? 'border-amber-500/40 bg-amber-500/[0.06]' : 'border-border bg-muted/20'
             )}
         >
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+            {/* 设置卡在桌面上也只有一栏宽，所以各宽度都上下排：说明一整行，开关一整行。 */}
+            <div className="flex flex-col gap-3">
                 <div className="flex min-w-0 items-start gap-3">
                     <Bug className={cn('mt-0.5 h-5 w-5 shrink-0', debugOn ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground')} />
                     <div className="flex min-w-0 flex-col gap-0.5">
@@ -614,7 +615,7 @@ export function LogModeRow() {
                 <div
                     role="radiogroup"
                     aria-label={t('log.mode.label')}
-                    className="grid w-full shrink-0 grid-cols-2 gap-1 rounded-xl border border-border bg-background p-1 sm:w-48"
+                    className="grid w-full grid-cols-2 gap-1 rounded-xl border border-border bg-background p-1"
                 >
                     {(['normal', 'debug'] as const).map((option) => {
                         const active = (debugOn ? 'debug' : 'normal') === option;
@@ -643,10 +644,10 @@ export function LogModeRow() {
             </div>
 
             {debugOn && (
-                <div className="space-y-2 border-t border-amber-500/20 pt-3 sm:pl-8">
-                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
-                        <span className="shrink-0 text-sm font-medium">{t('log.mode.autoOff')}</span>
-                        <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label={t('log.mode.autoOff')}>
+                <div className="space-y-2 border-t border-amber-500/20 pt-3">
+                    <div className="flex flex-col gap-2">
+                        <span className="text-sm font-medium">{t('log.mode.autoOff')}</span>
+                        <div className="grid grid-cols-3 gap-1.5" role="radiogroup" aria-label={t('log.mode.autoOff')}>
                             {LOG_DEBUG_AUTO_OFF_CHOICES.map((choice) => {
                                 const active = choice === hours;
                                 return (
@@ -658,7 +659,7 @@ export function LogModeRow() {
                                         onClick={() => saveHours(choice)}
                                         disabled={setSetting.isPending}
                                         className={cn(
-                                            'h-8 rounded-lg border px-2.5 text-xs transition-colors disabled:opacity-60',
+                                            'h-8 rounded-lg border px-2 text-xs transition-colors disabled:opacity-60',
                                             active
                                                 ? 'border-amber-500 bg-amber-500/15 font-medium text-amber-800 dark:text-amber-200'
                                                 : 'border-border bg-background text-muted-foreground hover:text-foreground'
