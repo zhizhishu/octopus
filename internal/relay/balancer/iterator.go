@@ -49,15 +49,14 @@ func NewIteratorWithSession(group model.Group, apiKeyID int, requestModel, clien
 	stickyIdx := -1
 	stickyKeyID := 0
 	// Effective sticky window: a group's own SessionKeepTime wins; when unset (<=0)
-	// fall back to the global session_keep_time_default; when that is unset too, a
-	// request carrying a client session key still gets DefaultSessionAffinityTTL so a
-	// conversation stays on the channel/key holding its upstream prompt cache. No
-	// session key + nothing configured = sticky off (legacy behavior).
-	stickyTTL := time.Duration(0)
-	if stickyEnabled {
-		stickyTTL = effectiveStickyTTL(group.SessionKeepTime, clientSessionKey)
+	// fall back to the global session_keep_time_default so new/unconfigured groups can
+	// still stick without per-group setup. 0 on both = sticky off (legacy behavior).
+	keepTime := group.SessionKeepTime
+	if keepTime <= 0 {
+		keepTime = sessionKeepTimeDefault()
 	}
-	if stickyTTL > 0 {
+	if stickyEnabled && keepTime > 0 {
+		stickyTTL := time.Duration(keepTime) * time.Second
 		if sticky := GetStickyWithSessionKey(apiKeyID, requestModel, clientSessionKey, stickyTTL); sticky != nil {
 			for i, item := range candidates {
 				if item.ChannelID == sticky.ChannelID {
