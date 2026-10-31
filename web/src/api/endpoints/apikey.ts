@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiClient } from '../client';
 import { logger } from '@/lib/logger';
-import { useAuthStore } from './user';
+import { useAuthStore, type UserUsage, type UserUsageRange, type UserBatchResult } from './user';
 import {
     StatsAPIKeyUsage,
     StatsAPIKeyUsageFormatted,
@@ -31,6 +31,9 @@ export interface APIKey {
     allowed_endpoint_families?: APIKeyEndpointFamilyValue;
     endpoint_family_scopes?: APIKeyEndpointFamilyValue;
     default_access_plan_id?: number;
+    /** 最近一次转发的时间（Unix 秒，0 = 没用过）和来源 IP。 */
+    last_used_at?: number;
+    last_used_ip?: string;
     access_plans?: Array<{
         id: number;
         slug: string;
@@ -220,5 +223,44 @@ export function useAPIKeyStats() {
         select: formatStatsAPIKeyUsage,
         refetchInterval: 30000,
         refetchOnMount: 'always',
+    });
+}
+
+export type APIKeyBatchAction = 'enable' | 'disable' | 'delete';
+
+/** 批量启用 / 停用 / 删除。逐个执行，谁没成功、为什么都会报出来（形状同 /user/batch）。 */
+export function useBatchAPIKeys() {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: (data: { ids: number[]; action: APIKeyBatchAction }) =>
+            apiClient.post<UserBatchResult>('/api/v1/apikey/batch', data),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['apikeys'] });
+            queryClient.invalidateQueries({ queryKey: ['stats', 'apikey'] });
+        },
+    });
+}
+
+/** 一把 Key 在某段时间的用量（形状同用户用量，多一个 api_key_id）。 */
+export type APIKeyUsage = UserUsage & { api_key_id?: number };
+
+export function useAPIKeyUsage(id: number | undefined, range: UserUsageRange) {
+    return useQuery({
+        queryKey: ['apikeys', 'usage', id, range],
+        queryFn: () => apiClient.get<APIKeyUsage>(`/api/v1/apikey/usage?id=${id}&range=${range}`),
+        enabled: !!id,
+    });
+}
+
+/**
+ * 某个用户的 Key 能限定的模型：他的方案里当前有可用渠道的模型。
+ * 普通用户只能看自己的（userID 会被后端忽略）；管理员给别人建 Key 时带上那个人的 id。
+ */
+export function useAPIKeyModels(userID: number | undefined, options?: { enabled?: boolean }) {
+    return useQuery({
+        queryKey: ['apikeys', 'models', userID ?? 0],
+        queryFn: () => apiClient.get<string[] | null>(`/api/v1/apikey/models${userID ? `?user_id=${userID}` : ''}`),
+        select: (data) => data ?? [],
+        enabled: options?.enabled ?? true,
     });
 }

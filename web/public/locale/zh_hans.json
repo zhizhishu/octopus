@@ -635,86 +635,6 @@
         "result": "导入结果"
       }
     },
-    "apiKey": {
-      "title": "API 密钥",
-      "empty": "暂无 API 密钥",
-      "add": "添加密钥",
-      "loadFailed": "加载失败",
-      "list": {
-        "plans": "方案",
-        "endpoints": "端点",
-        "defaultPlan": "默认方案",
-        "morePlans": "还有 {count} 个方案"
-      },
-      "guide": {
-        "button": "使用教程",
-        "title": "API Key 使用教程",
-        "description": "复制下面的 Base URL 和密钥配置到客户端。",
-        "baseUrl": "Base URL",
-        "allowedEndpoints": "允许端点",
-        "accessPlan": "访问方案",
-        "currentPlan": "当前方案",
-        "defaultPlan": "默认",
-        "planHint": "选择本次教程要走的方案，请求会按该方案的模型映射和计费策略执行。",
-        "requestHeader": "请求头",
-        "groupAlias": "兼容别名",
-        "openaiDescription": "用于 OpenAI 兼容客户端、Chat Completions 和 Responses。",
-        "geminiDescription": "用于 Gemini 原生 generateContent / streamGenerateContent。",
-        "anthropicDescription": "用于 Claude / Anthropic Messages 协议。",
-        "videoDescription": "用于异步视频生成（/v1/videos）与任务轮询。",
-        "empty": "这个密钥暂时没有可用端点。"
-      },
-      "form": {
-        "name": "名称",
-        "owner": "归属用户",
-        "currentAdmin": "当前管理员",
-        "maxCost": "最大金额",
-        "maxCostPlaceholder": "请输入金额",
-        "unlimited": "无限制",
-        "expireAt": "过期日期",
-        "selectDate": "选择日期",
-        "expirePast": "过期时间不能早于现在",
-        "neverExpire": "永不过期",
-        "supportedModels": "支持的模型",
-        "noModels": "暂无可选模型",
-        "modelsHint": "留空表示不限制模型；需要精确控制时可手动勾选或全选。",
-        "selectAllModels": "全选",
-        "unlimitedModels": "不限",
-        "searchModels": "搜索模型",
-        "noMatchedModels": "没有匹配的模型",
-        "accessPlans": "可用方案",
-        "noAccessPlans": "暂无可选方案",
-        "defaultAccessPlan": "默认方案",
-        "accessPlansHint": "管理员可限制该密钥只能使用用户被授权的方案；请求头只能在已选方案内切换。",
-        "selectAllPlans": "全选",
-        "defaultOnly": "默认",
-        "endpointFamilies": "可用协议端点",
-        "endpointFamiliesHint": "默认全选以兼容旧密钥；取消某类后，该密钥无法访问对应协议端点。",
-        "endpointUsage": "调用示例",
-        "enabled": "是否启用",
-        "cancel": "取消",
-        "create": "创建",
-        "save": "保存",
-        "confirm": "确认"
-      },
-      "stats": {
-        "noData": "暂无统计数据",
-        "inputToken": "输入 Token",
-        "outputToken": "输出 Token",
-        "inputCost": "输入费用",
-        "outputCost": "输出费用",
-        "requestSuccess": "成功请求",
-        "requestFailed": "失败请求"
-      },
-      "toast": {
-        "createSuccess": "API 密钥创建成功",
-        "createError": "API 密钥创建失败",
-        "updateSuccess": "API 密钥更新成功",
-        "updateError": "API 密钥更新失败",
-        "deleteSuccess": "API 密钥删除成功",
-        "deleteError": "API 密钥删除失败"
-      }
-    },
     "llmSync": {
       "title": "渠道同步",
       "syncInterval": {
@@ -2018,6 +1938,262 @@
       "description": "改动还没保存，确定要关？",
       "keepEditing": "继续编辑",
       "discard": "不保存，关掉"
+    }
+  },
+  "keys": {
+    "page": {
+      "leadAdmin": "每把 Key 能用什么、用了多少，都在这里。",
+      "leadUser": "复制 Key，填进客户端就能用。",
+      "guide": "接入说明",
+      "redeem": "兑换码",
+      "add": "新建 Key",
+      "empty": "还没有 API Key",
+      "noMatch": "没有符合条件的 Key",
+      "pager": "共 {total} 把 · 每页 {size} 把"
+    },
+    "family": {
+      "openai-compatible": "OpenAI 兼容",
+      "anthropic": "Claude",
+      "gemini": "Gemini",
+      "video": "视频"
+    },
+    "status": {
+      "ok": "能用",
+      "off": "停用",
+      "expired": "已过期",
+      "used_up": "额度用完",
+      "okTip": "请求正常放行。",
+      "offTip": "关掉了，用这把 Key 的请求都会被拒绝。打开就恢复。",
+      "expiredTip": "过了有效期，请求会被拒绝。把有效期往后改就恢复。",
+      "used_upTip": "累计花费超过了这把 Key 的上限，请求会被拒绝。调高上限或改成不限就恢复。"
+    },
+    "toolbar": {
+      "all": "全部",
+      "search": "名称或 Key 末 4 位",
+      "searchAdmin": "名称、用户或 Key 末 4 位",
+      "searchShort": "搜 Key",
+      "owner": "用户",
+      "plan": "方案",
+      "protocol": "协议",
+      "reset": "清除筛选"
+    },
+    "table": {
+      "selectPage": "选中本页",
+      "selectRow": "选中 {name}",
+      "name": "名称",
+      "status": "状态",
+      "spend": "已用 / 上限",
+      "spendHelp": "从创建起这把 Key 累计花了多少。到上限后这把 Key 的请求会被拒绝，只管这把 Key，不动用户余额和月卡。",
+      "spendTip": "已用 {spent}，上限 {cap}，还剩 {left}",
+      "noCap": "不限",
+      "expiry": "有效期",
+      "access": "能用",
+      "accessHelp": "能调哪些模型、走哪些协议。「全部模型」以后新加的模型也能用。",
+      "allModels": "全部模型",
+      "allModelsTip": "不限模型，以后新加的也能用。",
+      "nModels": "{n} 个模型",
+      "allProtocols": "全部协议",
+      "plans": "方案",
+      "plansHelp": "这把 Key 走哪些方案。实心的是默认，请求头 X-Octopus-Plan 可以换成别的。",
+      "lastUsed": "最近使用",
+      "neverUsed": "没用过",
+      "actions": "操作",
+      "edit": "编辑",
+      "maskedTip": "只显示末 4 位；点旁边的按钮复制完整 Key"
+    },
+    "expiry": {
+      "forever": "永久",
+      "leftDays": "还剩 {n} 天",
+      "pastDays": "过期 {n} 天",
+      "at": "到 {at}（本机时间）"
+    },
+    "menu": {
+      "more": "更多",
+      "guide": "接入说明",
+      "copy": "复制完整 Key",
+      "usage": "看用量",
+      "logs": "看它的请求",
+      "disable": "停用",
+      "enable": "启用",
+      "delete": "删除"
+    },
+    "bulk": {
+      "selected": "选了 {n} 把",
+      "enable": "启用",
+      "disable": "停用",
+      "delete": "删除",
+      "clear": "取消选择",
+      "doneAll": "{n} 把都改好了",
+      "donePartly": "改好 {done} 把，{failed} 把没成功",
+      "failed": "操作失败",
+      "deleteTitle": "删除这 {n} 把 Key？",
+      "deleteDesc": "删了就不能再用，这些 Key 的累计花费也一起清掉；请求日志还在。",
+      "deleteConfirm": "删除"
+    },
+    "delete": {
+      "title": "删除「{name}」？",
+      "desc": "删了这把 Key 就不能再用，它的累计花费也一起清掉；请求日志还在。",
+      "confirm": "删除"
+    },
+    "toast": {
+      "enabled": "已启用 {name}",
+      "disabled": "已停用 {name}",
+      "deleted": "已删除 {name}",
+      "copied": "已复制 {name} 的完整 Key",
+      "failed": "操作失败"
+    },
+    "strip": {
+      "endpoint": "接入地址",
+      "guide": "接入说明",
+      "balance": "余额",
+      "cardToday": "月卡今天",
+      "redeem": "兑换码"
+    },
+    "redeem": {
+      "title": "兑换码",
+      "desc": "兑换管理员发的余额或月卡。",
+      "placeholder": "输入兑换码",
+      "submit": "兑换",
+      "done": "兑换成功",
+      "failed": "兑换失败"
+    },
+    "drawer": {
+      "createTitle": "新建 Key",
+      "createHint": "建好后在列表里复制完整 Key。",
+      "close": "关闭",
+      "settings": "设置",
+      "usage": "用量",
+      "guide": "接入说明",
+      "ownedBy": "{name} 的 Key",
+      "lastUsed": "{when}用过（{ip}）",
+      "neverUsed": "还没用过",
+      "name": "名称",
+      "namePlaceholder": "比如：笔记本、服务器",
+      "owner": "归属用户",
+      "ownerTip": "Key 算谁的：花费扣他的余额 / 月卡，方案和能选的模型也跟着他。",
+      "roleAdmin": "管理员",
+      "enabledOn": "能用",
+      "enabledOff": "已停用",
+      "enabledHint": "关掉后这把 Key 立刻不能用，打开就恢复",
+      "keyLabel": "Key",
+      "copy": "复制",
+      "copied": "已复制完整 Key",
+      "cap": "花费上限",
+      "capTip": "从创建起累计花到这个数，这把 Key 的请求就会被拒绝。只管这把 Key，不动用户余额和月卡。",
+      "capPlaceholder": "不填 = 不限",
+      "noCap": "不限",
+      "spentOnly": "已用 {spent}",
+      "spentLeft": "已用 {spent} · 还剩 {left}",
+      "usedUp": "已用完",
+      "nearCap": "快用完了",
+      "expire": "有效期",
+      "expireTip": "过了这个时间，这把 Key 的请求会被拒绝。时间按你这台电脑的时区。",
+      "plusDays": "+{n} 天",
+      "foreverHint": "永久有效，不会自己过期。",
+      "pastHint": "这个时间已经过了，保存前请改到以后。",
+      "expireHint": "按本机时间（{tz}）· 还剩 {n} 天",
+      "models": "能用的模型",
+      "modelsTip": "「全部模型」= 不限，以后新加的模型也能用。「只限这些」= 只放行勾选的，以后新加的不会自动加进来。",
+      "modelsAll": "全部模型",
+      "modelsOnly": "只限这些",
+      "modelsAllHint": "不限模型，以后新加的模型也能用。",
+      "modelsSearch": "搜模型",
+      "modelsPicked": "已选 {n} 个",
+      "modelsClear": "清空",
+      "modelsNone": "这个用户的方案里现在没有能用的模型",
+      "modelsNoMatch": "没有匹配的模型",
+      "modelGone": "现在用不了",
+      "modelsOnlyHint": "列出的是归属用户的方案里现在能用的模型。",
+      "families": "能用的协议",
+      "familiesTip": "按请求的接口分：OpenAI 兼容（/v1/chat/completions、/v1/responses）、Claude（/v1/messages）、Gemini（/v1beta/models）、视频（/v1/videos）。没勾的接口会被拒绝。",
+      "familiesAll": "全部",
+      "familiesSome": "开了 {n} 个",
+      "familiesHint": "至少留一个。",
+      "familyPath": {
+        "openai-compatible": "/v1/chat/completions · /v1/responses",
+        "anthropic": "/v1/messages",
+        "gemini": "/v1beta/models/*",
+        "video": "/v1/videos"
+      },
+      "plans": "方案",
+      "plansTip": "这把 Key 能走哪些方案，平时走「默认」那个；请求头 X-Octopus-Plan 可以换到别的已选方案。",
+      "plansTipUser": "管理员给这把 Key 配的方案，实心的是默认。",
+      "plansHint": "可多选，默认在下面选",
+      "plansAuto": "跟账号的默认方案",
+      "delete": "删除 Key",
+      "cancel": "取消",
+      "save": "保存",
+      "create": "创建",
+      "needName": "请填名称",
+      "badCap": "花费上限要填数字",
+      "needModel": "至少选一个模型，或改回「全部模型」",
+      "needFamily": "至少留一个协议",
+      "pastExpire": "有效期不能是已经过去的时间",
+      "saved": "已保存 {name}",
+      "created": "已创建 {name}",
+      "createdHint": "在列表里点 Key 旁边的按钮复制。",
+      "saveFailed": "保存失败",
+      "total": "累计花费",
+      "totalTip": "从创建到现在，不随上面的时间段变。上限按这个数算。",
+      "lastUsedTitle": "最近使用",
+      "viewLogs": "看它最近的请求"
+    },
+    "guide": {
+      "title": "接入说明",
+      "titleFor": "接入说明 · {name}",
+      "desc": "选你用的客户端，复制下面这段。",
+      "noKey": "先新建一把 Key。",
+      "endpoint": "接入地址",
+      "key": "Key",
+      "plan": "方案",
+      "planDefault": "（默认）",
+      "client": {
+        "curl": "curl",
+        "claude": "Claude Code",
+        "codex": "Codex CLI",
+        "gemini": "Gemini CLI",
+        "video": "视频"
+      },
+      "clientHint": {
+        "curl": "直接在终端里试一下。",
+        "claude": "设好环境变量后运行 claude。",
+        "codex": "写好配置文件，再设环境变量运行 codex。",
+        "gemini": "设好环境变量后运行 gemini。",
+        "video": "先提交任务，再用返回的 id 查进度。"
+      },
+      "shellUnix": "macOS / Linux",
+      "shellPowershell": "Windows PowerShell",
+      "block": {
+        "curl": {
+          "request": "发一个请求"
+        },
+        "claude": {
+          "env": "在终端里运行",
+          "settings": "或者写进配置文件，以后不用再设"
+        },
+        "codex": {
+          "config": "写进配置文件",
+          "env": "在终端里运行"
+        },
+        "gemini": {
+          "env": "在终端里运行"
+        },
+        "video": {
+          "request": "提交视频任务",
+          "status": "查进度（把 <id> 换成上面返回的 id）"
+        }
+      },
+      "statusWarn": {
+        "off": "这把 Key 现在停用了，照着配好也会被拒绝；先在设置里打开。",
+        "expired": "这把 Key 已过期，请求会被拒绝；先把有效期往后改。",
+        "used_up": "这把 Key 的额度用完了，请求会被拒绝；先调高上限。"
+      },
+      "familyOff": "这把 Key 没开「{family}」协议，在 Key 的设置里打开后才能用。",
+      "geminiNoPlan": "Gemini CLI 加不了自定义请求头，会走这把 Key 的默认方案。",
+      "modelsLimited": "示例里的模型是从这把 Key 限定的模型里挑的。",
+      "modelsHint": "示例里的模型名只是举例，换成你能用的模型。",
+      "copy": "复制",
+      "copied": "已复制（含完整 Key）"
     }
   }
 }

@@ -17,7 +17,7 @@ function runIn(tz) {
 
 if (process.argv.includes('--child')) {
     const { load } = require('./load-typescript.cjs');
-    const m = load('src/components/modules/setting/apikey-expire.ts');
+    const m = load('src/components/modules/key/lib/expire.ts');
     const now = new Date(2026, 9, 30, 11, 48); // 本地 2026-10-30 11:48
     const at = m.toExpireAt(new Date(2026, 10, 1), '00:00'); // 选「11/1 00:00」
     const back = new Date(at * 1000);
@@ -60,10 +60,11 @@ for (const [tz, expectedUTC] of [
     });
 }
 
-test('APIKey 表单不再按 UTC 拼/读时分，且用同一组本地时间工具', () => {
-    const src = readFileSync(path.resolve(__dirname, '../src/components/modules/setting/APIKey.tsx'), 'utf8');
-    assert.doesNotMatch(src, /Date\.UTC\(|getUTCHours|getUTCMinutes/);
-    assert.match(src, /from '\.\/apikey-expire'/);
-    assert.match(src, /defaultExpireAt\(\)/, '取消永不过期用默认的未来时间');
-    assert.match(src, /isPastExpire\(/, '保存前拦过去时间');
+test('API Key 抽屉不再按 UTC 拼/读时分，且用同一组本地时间工具', () => {
+    const drawer = readFileSync(path.resolve(__dirname, '../src/components/modules/key/components/key-drawer.tsx'), 'utf8');
+    const lib = readFileSync(path.resolve(__dirname, '../src/components/modules/key/lib/key-filters.ts'), 'utf8');
+    for (const src of [drawer, lib]) assert.doesNotMatch(src, /Date\.UTC\(|getUTCHours|getUTCMinutes/);
+    assert.match(lib, /from '\.\/expire'/);
+    assert.match(drawer, /expireAfterDays\(30, nowSec\)/, '新建默认 30 天后');
+    assert.match(drawer, /isPastExpire\(/, '保存前拦过去时间');
 });

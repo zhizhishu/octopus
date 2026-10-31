@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { ChevronLeft, ChevronRight, Loader2, Search, Ticket, UserPlus } from 'lucide-react';
+import { Loader2, Search, Ticket, UserPlus } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { toast } from '@/components/common/Toast';
 import { useDeleteUser, usePatchUser, useResetUserPassword, useUserAccessList, useUserList, type User } from '@/api/endpoints/user';
@@ -12,7 +12,7 @@ import { useLogPresetStore } from '@/components/modules/log/log-preset';
 import { useUserPresetStore } from './user-preset';
 import { cn } from '@/lib/utils';
 import { nowUnix } from './lib/format';
-import { EMPTY_FILTERS, filterUsers, pageButtons, paginate, statusCounts, type UserFilters } from './lib/user-filters';
+import { EMPTY_FILTERS, filterUsers, paginate, statusCounts, type UserFilters } from './lib/user-filters';
 import { ConfirmDialog } from './components/confirm-dialog';
 import { DataTableBulkActions } from './components/data-table-bulk-actions';
 import type { UserRowHandlers } from './components/data-table-row-actions';
@@ -22,7 +22,8 @@ import { UsersMobileList } from './components/users-mobile-list';
 import { UsersMutateDrawer, type DrawerTab } from './components/users-mutate-drawer';
 import { UsersTable } from './components/users-table';
 import { UsersToolbar } from './components/users-toolbar';
-import { btn, btnPrimary, iconBtn } from './components/ui-bits';
+import { Pager } from './components/pager';
+import { btn, btnPrimary } from './components/ui-bits';
 
 const PAGE_SIZE = 20;
 
@@ -126,12 +127,12 @@ export function UserManagement() {
                             <UsersTable users={paged.items} plans={accessPlans} usage={usage} access={access} nowSec={nowSec} selected={selected} onSelect={toggleOne} onSelectPage={togglePage} handlers={handlers} />
                         </div>
                         {paged.total === 0 && <div className="py-12 text-center text-sm text-muted-foreground">{users.length === 0 ? t('page.empty') : t('page.noMatch')}</div>}
-                        <Pager page={paged.page} pages={paged.pages} total={paged.total} onPage={setPage} />
+                        <Pager size={PAGE_SIZE} page={paged.page} pages={paged.pages} total={paged.total} onPage={setPage} />
                     </div>
                     <div className="md:hidden">
                         <UsersMobileList users={paged.items} plans={accessPlans} access={access} nowSec={nowSec} handlers={handlers} />
                         {paged.total === 0 && <div className="py-12 text-center text-sm text-muted-foreground">{users.length === 0 ? t('page.empty') : t('page.noMatch')}</div>}
-                        {paged.pages > 1 && <Pager page={paged.page} pages={paged.pages} total={paged.total} onPage={setPage} />}
+                        {paged.pages > 1 && <Pager size={PAGE_SIZE} page={paged.page} pages={paged.pages} total={paged.total} onPage={setPage} />}
                     </div>
                 </>
             )}
@@ -182,24 +183,6 @@ export function UserManagement() {
             >
                 <input autoFocus type="password" autoComplete="new-password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder={t('password.placeholder')} className="flex h-9 w-full rounded-xl border border-input bg-background px-3 text-sm outline-none focus:border-ring" />
             </ConfirmDialog>
-        </div>
-    );
-}
-
-function Pager({ page, pages, total, onPage }: { page: number; pages: number; total: number; onPage: (p: number) => void }) {
-    const t = useTranslations('user.pager');
-    return (
-        <div className="flex items-center justify-between gap-3 px-4 py-3 text-xs text-muted-foreground">
-            <span>{t('summary', { total, size: PAGE_SIZE })}</span>
-            <div className="flex items-center gap-1">
-                <button type="button" aria-label={t('prev')} className={iconBtn} disabled={page <= 1} onClick={() => onPage(page - 1)}><ChevronLeft className="size-4" /></button>
-                {pageButtons(page, pages).map((n, i) => n === 0
-                    ? <span key={`gap-${i}`} className="px-1">…</span>
-                    : (
-                        <button key={n} type="button" onClick={() => onPage(n)} className={cn('inline-flex size-8 items-center justify-center rounded-lg', n === page ? 'bg-muted font-medium text-foreground' : 'hover:bg-muted/60')}>{n}</button>
-                    ))}
-                <button type="button" aria-label={t('next')} className={iconBtn} disabled={page >= pages} onClick={() => onPage(page + 1)}><ChevronRight className="size-4" /></button>
-            </div>
         </div>
     );
 }

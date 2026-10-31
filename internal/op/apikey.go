@@ -103,10 +103,19 @@ func APIKeyUpdate(key *model.APIKey, actor model.User, ctx context.Context) erro
 		}
 		key.EndpointFamilies = endpointFamilies
 	}
-	if err := db.GetDB().WithContext(ctx).Omit("api_key").Save(key).Error; err != nil {
+	// last_used_* 是转发路径写的审计字段，请求体里没有（或是旧值），保存时不覆盖。
+	if err := db.GetDB().WithContext(ctx).Omit("api_key", "last_used_at", "last_used_ip").Save(key).Error; err != nil {
 		return fmt.Errorf("failed to update API key: %w", err)
 	}
 	key.APIKey = existing.APIKey
+	apiKeyCacheLock.Lock()
+	defer apiKeyCacheLock.Unlock()
+	latest, ok := apiKeyCache.Get(key.ID)
+	if !ok {
+		latest = existing
+	}
+	key.LastUsedAt = latest.LastUsedAt
+	key.LastUsedIP = latest.LastUsedIP
 	apiKeyCache.Set(key.ID, *key)
 	return nil
 }
@@ -215,7 +224,10 @@ func apiKeyRefreshCache(ctx context.Context) error {
 		byID[apiKey.ID] = apiKey
 		byKey[apiKey.APIKey] = apiKey.ID
 	}
+	apiKeyOverlayPendingLastUsed(byID)
+	apiKeyCacheLock.Lock()
 	apiKeyCache.ReplaceAll(byID)
+	apiKeyCacheLock.Unlock()
 	apiKeyIDMap.ReplaceAll(byKey)
 	return nil
 }

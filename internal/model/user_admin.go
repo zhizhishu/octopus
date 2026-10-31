@@ -110,7 +110,9 @@ type UserUsageModel struct {
 // UserUsageResponse 是 GET /api/v1/user/usage 的结果：一个用户在一段时间里的用量。
 // 口径与 /stats/model-rank 相同（同一套日志、同一个排除规则、同一个花费算法）。
 type UserUsageResponse struct {
-	UserID         int              `json:"user_id"`
+	UserID int `json:"user_id"`
+	// APIKeyID 只在 GET /api/v1/apikey/usage 里有值：这时统计的是这一把 Key，UserID 是它的主人。
+	APIKeyID       int              `json:"api_key_id,omitempty"`
 	Range          string           `json:"range"`
 	Start          int64            `json:"start"`
 	End            int64            `json:"end"`

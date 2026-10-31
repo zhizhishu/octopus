@@ -635,86 +635,6 @@
         "result": "Import result"
       }
     },
-    "apiKey": {
-      "title": "API Keys",
-      "empty": "No API keys",
-      "add": "Add Key",
-      "loadFailed": "Failed to load",
-      "list": {
-        "plans": "Plans",
-        "endpoints": "Endpoints",
-        "defaultPlan": "Default plan",
-        "morePlans": "{count} more plans"
-      },
-      "guide": {
-        "button": "Usage Guide",
-        "title": "API Key Usage Guide",
-        "description": "Copy the Base URL and key below into your client.",
-        "baseUrl": "Base URL",
-        "allowedEndpoints": "Allowed endpoints",
-        "accessPlan": "Access plan",
-        "currentPlan": "Current plan",
-        "defaultPlan": "Default",
-        "planHint": "Choose which plan this tutorial should use. Requests follow that plan's model mapping and billing policy.",
-        "requestHeader": "Request header",
-        "groupAlias": "Compatible alias",
-        "openaiDescription": "For OpenAI-compatible clients, Chat Completions, and Responses.",
-        "geminiDescription": "For native Gemini generateContent / streamGenerateContent.",
-        "anthropicDescription": "For Claude / Anthropic Messages protocol.",
-        "videoDescription": "For asynchronous video generation (/v1/videos) and task polling.",
-        "empty": "This key has no available endpoint families yet."
-      },
-      "form": {
-        "name": "Name",
-        "owner": "Owner",
-        "currentAdmin": "Current admin",
-        "maxCost": "Max Cost",
-        "maxCostPlaceholder": "Enter amount",
-        "unlimited": "Unlimited",
-        "expireAt": "Expire Date",
-        "selectDate": "Select date",
-        "expirePast": "Expiry must be in the future",
-        "neverExpire": "Never Expire",
-        "supportedModels": "Supported Models",
-        "noModels": "No models available",
-        "modelsHint": "Leave empty for unlimited models; select models or use Select all for stricter control.",
-        "selectAllModels": "Select all",
-        "unlimitedModels": "Unlimited",
-        "searchModels": "Search models",
-        "noMatchedModels": "No matching models",
-        "accessPlans": "Plans",
-        "noAccessPlans": "No plans available",
-        "defaultAccessPlan": "Default Plan",
-        "accessPlansHint": "Admins can limit this key to plans allowed by the owner; request headers may only switch among selected plans.",
-        "selectAllPlans": "Select all",
-        "defaultOnly": "Default",
-        "endpointFamilies": "Endpoint Families",
-        "endpointFamiliesHint": "All families are selected by default for existing key compatibility. Uncheck a family to block that protocol.",
-        "endpointUsage": "Usage Examples",
-        "enabled": "Enabled",
-        "cancel": "Cancel",
-        "create": "Create",
-        "save": "Save",
-        "confirm": "Confirm"
-      },
-      "stats": {
-        "noData": "No statistics available",
-        "inputToken": "Input Token",
-        "outputToken": "Output Token",
-        "inputCost": "Input Cost",
-        "outputCost": "Output Cost",
-        "requestSuccess": "Request Success",
-        "requestFailed": "Request Failed"
-      },
-      "toast": {
-        "createSuccess": "API key created",
-        "createError": "Failed to create API key",
-        "updateSuccess": "API key updated",
-        "updateError": "Failed to update API key",
-        "deleteSuccess": "API key deleted",
-        "deleteError": "Failed to delete API key"
-      }
-    },
     "llmSync": {
       "title": "Channel Sync",
       "syncInterval": {
@@ -2018,6 +1938,262 @@
       "description": "You have unsaved changes. Close anyway?",
       "keepEditing": "Keep editing",
       "discard": "Discard and close"
+    }
+  },
+  "keys": {
+    "page": {
+      "leadAdmin": "What each key can use and how much it has spent.",
+      "leadUser": "Copy a key into your client and you're set.",
+      "guide": "Setup guide",
+      "redeem": "Redeem code",
+      "add": "New key",
+      "empty": "No API keys yet",
+      "noMatch": "No keys match",
+      "pager": "{total} keys · {size} per page"
+    },
+    "family": {
+      "openai-compatible": "OpenAI-compatible",
+      "anthropic": "Claude",
+      "gemini": "Gemini",
+      "video": "Video"
+    },
+    "status": {
+      "ok": "Active",
+      "off": "Disabled",
+      "expired": "Expired",
+      "used_up": "Cap reached",
+      "okTip": "Requests go through.",
+      "offTip": "Turned off: every request with this key is rejected. Turn it back on to restore.",
+      "expiredTip": "Past its expiry, so requests are rejected. Move the expiry later to restore.",
+      "used_upTip": "Total spend went over this key's cap, so requests are rejected. Raise the cap or remove it to restore."
+    },
+    "toolbar": {
+      "all": "All",
+      "search": "Name or last 4 of key",
+      "searchAdmin": "Name, user or last 4 of key",
+      "searchShort": "Search keys",
+      "owner": "User",
+      "plan": "Plan",
+      "protocol": "Protocol",
+      "reset": "Clear filters"
+    },
+    "table": {
+      "selectPage": "Select this page",
+      "selectRow": "Select {name}",
+      "name": "Name",
+      "status": "Status",
+      "spend": "Spent / cap",
+      "spendHelp": "Total spent by this key since it was created. Once it passes the cap, requests with this key are rejected. Only this key is affected, not the user's balance or card.",
+      "spendTip": "Spent {spent} of {cap}, {left} left",
+      "noCap": "No cap",
+      "expiry": "Expires",
+      "access": "Access",
+      "accessHelp": "Which models and protocols the key can use. \"All models\" includes models added later.",
+      "allModels": "All models",
+      "allModelsTip": "No model limit; models added later work too.",
+      "nModels": "{n} models",
+      "allProtocols": "All protocols",
+      "plans": "Plans",
+      "plansHelp": "Plans this key can use. The filled one is the default; the X-Octopus-Plan header can pick another.",
+      "lastUsed": "Last used",
+      "neverUsed": "Never",
+      "actions": "Actions",
+      "edit": "Edit",
+      "maskedTip": "Only the last 4 characters are shown; use the button next to it to copy the full key"
+    },
+    "expiry": {
+      "forever": "Never",
+      "leftDays": "{n} days left",
+      "pastDays": "Expired {n} days ago",
+      "at": "Until {at} (your local time)"
+    },
+    "menu": {
+      "more": "More",
+      "guide": "Setup guide",
+      "copy": "Copy full key",
+      "usage": "Usage",
+      "logs": "View its requests",
+      "disable": "Disable",
+      "enable": "Enable",
+      "delete": "Delete"
+    },
+    "bulk": {
+      "selected": "{n} selected",
+      "enable": "Enable",
+      "disable": "Disable",
+      "delete": "Delete",
+      "clear": "Clear selection",
+      "doneAll": "Updated {n} keys",
+      "donePartly": "Updated {done}, {failed} failed",
+      "failed": "Action failed",
+      "deleteTitle": "Delete {n} keys?",
+      "deleteDesc": "Deleted keys stop working right away and their total spend is cleared. Request logs are kept.",
+      "deleteConfirm": "Delete"
+    },
+    "delete": {
+      "title": "Delete \"{name}\"?",
+      "desc": "This key stops working right away and its total spend is cleared. Request logs are kept.",
+      "confirm": "Delete"
+    },
+    "toast": {
+      "enabled": "Enabled {name}",
+      "disabled": "Disabled {name}",
+      "deleted": "Deleted {name}",
+      "copied": "Copied the full key of {name}",
+      "failed": "Action failed"
+    },
+    "strip": {
+      "endpoint": "Endpoint",
+      "guide": "Setup guide",
+      "balance": "Balance",
+      "cardToday": "Card today",
+      "redeem": "Redeem code"
+    },
+    "redeem": {
+      "title": "Redeem code",
+      "desc": "Redeem balance or a card issued by an admin.",
+      "placeholder": "Enter code",
+      "submit": "Redeem",
+      "done": "Redeemed",
+      "failed": "Redeem failed"
+    },
+    "drawer": {
+      "createTitle": "New key",
+      "createHint": "Copy the full key from the list once it's created.",
+      "close": "Close",
+      "settings": "Settings",
+      "usage": "Usage",
+      "guide": "Setup guide",
+      "ownedBy": "{name}'s key",
+      "lastUsed": "Used {when} ({ip})",
+      "neverUsed": "Never used",
+      "name": "Name",
+      "namePlaceholder": "e.g. Laptop, Server",
+      "owner": "Owner",
+      "ownerTip": "Whose key this is: spend is charged to their balance / card, and plans and selectable models follow them.",
+      "roleAdmin": "admin",
+      "enabledOn": "Active",
+      "enabledOff": "Disabled",
+      "enabledHint": "Turning it off blocks this key right away; turn it on to restore",
+      "keyLabel": "Key",
+      "copy": "Copy",
+      "copied": "Copied the full key",
+      "cap": "Spend cap",
+      "capTip": "Once this key's total spend since creation reaches this amount, its requests are rejected. Only this key is affected, not the user's balance or card.",
+      "capPlaceholder": "Empty = no cap",
+      "noCap": "No cap",
+      "spentOnly": "Spent {spent}",
+      "spentLeft": "Spent {spent} · {left} left",
+      "usedUp": "Cap reached",
+      "nearCap": "Almost at cap",
+      "expire": "Expires",
+      "expireTip": "After this time, requests with this key are rejected. Uses your computer's time zone.",
+      "plusDays": "+{n} d",
+      "foreverHint": "Never expires.",
+      "pastHint": "This time has already passed; pick a later one before saving.",
+      "expireHint": "Your local time ({tz}) · {n} days left",
+      "models": "Models",
+      "modelsTip": "\"All models\" = no limit, including models added later. \"Only these\" = only the checked ones; new models are not added automatically.",
+      "modelsAll": "All models",
+      "modelsOnly": "Only these",
+      "modelsAllHint": "No model limit; models added later work too.",
+      "modelsSearch": "Search models",
+      "modelsPicked": "{n} picked",
+      "modelsClear": "Clear",
+      "modelsNone": "This user's plans have no usable models right now",
+      "modelsNoMatch": "No matching models",
+      "modelGone": "Not available now",
+      "modelsOnlyHint": "Lists the models currently usable under the owner's plans.",
+      "families": "Protocols",
+      "familiesTip": "By request API: OpenAI-compatible (/v1/chat/completions, /v1/responses), Claude (/v1/messages), Gemini (/v1beta/models), Video (/v1/videos). Unchecked APIs are rejected.",
+      "familiesAll": "All",
+      "familiesSome": "{n} on",
+      "familiesHint": "Keep at least one.",
+      "familyPath": {
+        "openai-compatible": "/v1/chat/completions · /v1/responses",
+        "anthropic": "/v1/messages",
+        "gemini": "/v1beta/models/*",
+        "video": "/v1/videos"
+      },
+      "plans": "Plans",
+      "plansTip": "Plans this key can use. Requests use the default one; the X-Octopus-Plan header can switch to another selected plan.",
+      "plansTipUser": "Plans an admin set for this key. The filled one is the default.",
+      "plansHint": "Pick one or more; choose the default below",
+      "plansAuto": "Your account's default plan",
+      "delete": "Delete key",
+      "cancel": "Cancel",
+      "save": "Save",
+      "create": "Create",
+      "needName": "Enter a name",
+      "badCap": "Spend cap must be a number",
+      "needModel": "Pick at least one model, or switch back to \"All models\"",
+      "needFamily": "Keep at least one protocol",
+      "pastExpire": "Expiry can't be in the past",
+      "saved": "Saved {name}",
+      "created": "Created {name}",
+      "createdHint": "Copy it with the button next to the key in the list.",
+      "saveFailed": "Save failed",
+      "total": "Total spent",
+      "totalTip": "Since creation; doesn't follow the range above. The cap uses this number.",
+      "lastUsedTitle": "Last used",
+      "viewLogs": "View its recent requests"
+    },
+    "guide": {
+      "title": "Setup guide",
+      "titleFor": "Setup guide · {name}",
+      "desc": "Pick your client and copy the snippet.",
+      "noKey": "Create a key first.",
+      "endpoint": "Endpoint",
+      "key": "Key",
+      "plan": "Plan",
+      "planDefault": " (default)",
+      "client": {
+        "curl": "curl",
+        "claude": "Claude Code",
+        "codex": "Codex CLI",
+        "gemini": "Gemini CLI",
+        "video": "Video"
+      },
+      "clientHint": {
+        "curl": "Try it right in a terminal.",
+        "claude": "Set the variables, then run claude.",
+        "codex": "Write the config file, set the variable, then run codex.",
+        "gemini": "Set the variables, then run gemini.",
+        "video": "Submit a job, then check it with the returned id."
+      },
+      "shellUnix": "macOS / Linux",
+      "shellPowershell": "Windows PowerShell",
+      "block": {
+        "curl": {
+          "request": "Send a request"
+        },
+        "claude": {
+          "env": "Run in a terminal",
+          "settings": "Or save it in the settings file"
+        },
+        "codex": {
+          "config": "Save in the config file",
+          "env": "Run in a terminal"
+        },
+        "gemini": {
+          "env": "Run in a terminal"
+        },
+        "video": {
+          "request": "Submit a video job",
+          "status": "Check progress (replace <id> with the returned id)"
+        }
+      },
+      "statusWarn": {
+        "off": "This key is disabled, so requests will be rejected; turn it on in its settings first.",
+        "expired": "This key has expired, so requests will be rejected; move its expiry later first.",
+        "used_up": "This key reached its spend cap, so requests will be rejected; raise the cap first."
+      },
+      "familyOff": "This key doesn't allow the {family} protocol. Turn it on in the key's settings first.",
+      "geminiNoPlan": "Gemini CLI can't send custom headers, so it uses this key's default plan.",
+      "modelsLimited": "The model in the example is picked from this key's allowed models.",
+      "modelsHint": "The model names are examples; replace them with models you can use.",
+      "copy": "Copy",
+      "copied": "Copied (with the full key)"
     }
   }
 }

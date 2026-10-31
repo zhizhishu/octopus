@@ -5,14 +5,14 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+	"github.com/samber/lo"
 	"github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/op"
 	"github.com/zhizhishu/octopus/internal/server/auth"
 	"github.com/zhizhishu/octopus/internal/server/middleware"
 	"github.com/zhizhishu/octopus/internal/server/resp"
 	"github.com/zhizhishu/octopus/internal/server/router"
-	"github.com/gin-gonic/gin"
-	"github.com/samber/lo"
 )
 
 func init() {
@@ -34,6 +34,18 @@ func init() {
 		AddRoute(
 			router.NewRoute("/delete/:id", http.MethodDelete).
 				Handle(deleteAPIKey),
+		).
+		AddRoute(
+			router.NewRoute("/batch", http.MethodPost).
+				Handle(batchAPIKey),
+		).
+		AddRoute(
+			router.NewRoute("/usage", http.MethodGet).
+				Handle(getAPIKeyUsage),
+		).
+		AddRoute(
+			router.NewRoute("/models", http.MethodGet).
+				Handle(listAPIKeyModels),
 		)
 	router.NewGroupRouter("/api/v1/apikey").
 		Use(middleware.APIKeyAuth()).
@@ -176,4 +188,69 @@ func getStatsAPIKeyById(c *gin.Context) {
 
 func loginAPIKey(c *gin.Context) {
 	resp.Success(c, nil)
+}
+
+// batchAPIKey 对一批 Key 做同一件事（启用 / 停用 / 删除），逐个报结果。形状同 /user/batch。
+// 普通用户只能动自己的 Key：别人的 id 会出现在 failed 里（"API key not found"）。
+func batchAPIKey(c *gin.Context) {
+	var req model.APIKeyBatchRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		resp.Error(c, http.StatusBadRequest, resp.ErrInvalidJSON)
+		return
+	}
+	actor, ok := middleware.CurrentUser(c)
+	if !ok {
+		resp.Error(c, http.StatusUnauthorized, resp.ErrUnauthorized)
+		return
+	}
+	result, err := op.APIKeyBatch(req, actor, c.Request.Context())
+	if err != nil {
+		resp.Error(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	resp.Success(c, result)
+}
+
+// getAPIKeyUsage 返回一把 Key 在 today / 7d / 30d / all 里的用量（形状同 /user/usage）。
+func getAPIKeyUsage(c *gin.Context) {
+	id, err := strconv.Atoi(c.Query("id"))
+	if err != nil || id <= 0 {
+		resp.Error(c, http.StatusBadRequest, resp.ErrInvalidParam)
+		return
+	}
+	actor, ok := middleware.CurrentUser(c)
+	if !ok {
+		resp.Error(c, http.StatusUnauthorized, resp.ErrUnauthorized)
+		return
+	}
+	usage, err := op.APIKeyUsage(id, c.Query("range"), actor, c.Request.Context())
+	if err != nil {
+		resp.Error(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	resp.Success(c, usage)
+}
+
+// listAPIKeyModels 列出某个用户的 Key 能限定的模型。普通用户只看自己的；管理员可带 user_id 看别人的。
+func listAPIKeyModels(c *gin.Context) {
+	actor, ok := middleware.CurrentUser(c)
+	if !ok {
+		resp.Error(c, http.StatusUnauthorized, resp.ErrUnauthorized)
+		return
+	}
+	userID := actor.ID
+	if raw := c.Query("user_id"); raw != "" && actor.IsAdmin() {
+		id, err := strconv.Atoi(raw)
+		if err != nil || id <= 0 {
+			resp.Error(c, http.StatusBadRequest, resp.ErrInvalidParam)
+			return
+		}
+		userID = id
+	}
+	models, err := op.APIKeyModelsForUser(userID, c.Request.Context())
+	if err != nil {
+		resp.Error(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	resp.Success(c, models)
 }
