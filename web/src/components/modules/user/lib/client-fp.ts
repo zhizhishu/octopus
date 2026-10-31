@@ -49,6 +49,16 @@ export function hasTLSFingerprint(fps: Array<Pick<UserClientFingerprint, 'ja3' |
     return fps.some((f) => !!(f.ja3 || f.ja4));
 }
 
+/** 卡片里要显示的 JA3 / JA4 行：只给有值的那几行，没值的整行不显示（不放「—」）。 */
+export function tlsRows(fp: Pick<UserClientFingerprint, 'ja3' | 'ja4'>): Array<{ label: 'JA3' | 'JA4'; value: string }> {
+    const rows: Array<{ label: 'JA3' | 'JA4'; value: string }> = [];
+    const ja3 = fp.ja3?.trim();
+    const ja4 = fp.ja4?.trim();
+    if (ja3) rows.push({ label: 'JA3', value: ja3 });
+    if (ja4) rows.push({ label: 'JA4', value: ja4 });
+    return rows;
+}
+
 /** 按 Key 筛（0 = 全部）。 */
 export function filterByKey<T extends Pick<UserClientFingerprint, 'api_key_id'>>(fps: T[], keyID: number): T[] {
     return keyID > 0 ? fps.filter((f) => f.api_key_id === keyID) : fps;

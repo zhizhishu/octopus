@@ -6,7 +6,7 @@ import { useTranslations } from 'next-intl';
 import { useUserClientTelemetry, type UserClientFingerprint, type UserClientKeyInfo } from '@/api/endpoints/user';
 import { SafeText, MonoSafeText } from '@/components/common/SafeText';
 import { cn } from '@/lib/utils';
-import { filterByKey, fpTitle, hasTLSFingerprint, headerNames, isSecretHeader, notableEntries, shortHash } from '../lib/client-fp';
+import { filterByKey, fpTitle, hasTLSFingerprint, headerNames, isSecretHeader, notableEntries, shortHash, tlsRows } from '../lib/client-fp';
 import { formatCount, nowUnix } from '../lib/format';
 import { formatDateShort, useRelTime } from './shared';
 import { HelpTip, Pill, chip, chipOn } from './ui-bits';
@@ -94,8 +94,9 @@ function FpCard({ fp, keyName, nowSec, defaultOpen }: { fp: UserClientFingerprin
                             </div>
                         )}
                     </Row>
-                    <Row label="JA3">{fp.ja3 ? <MonoSafeText value={fp.ja3} mode="wrap" className="block text-xs" /> : <Dash />}</Row>
-                    <Row label="JA4">{fp.ja4 ? <MonoSafeText value={fp.ja4} mode="wrap" className="block text-xs" /> : <Dash />}</Row>
+                    {tlsRows(fp).map(({ label, value }) => (
+                        <Row key={label} label={label}><MonoSafeText value={value} mode="wrap" className="block text-xs" /></Row>
+                    ))}
                     <Row label="JA4H" tip={t('ja4hTip')}>{fp.ja4h ? <MonoSafeText value={fp.ja4h} mode="wrap" className="block text-xs" /> : <Dash />}</Row>
                     <Row label={t('path')}>{fp.last_path ? <MonoSafeText value={fp.last_path} className="block text-xs" /> : <Dash />}</Row>
                     <Row label={t('seen')}>

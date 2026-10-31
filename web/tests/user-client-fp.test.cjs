@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 
 const { load } = require('./load-typescript.cjs');
 
-const { isSecretHeader, headerNames, notableEntries, fpTitle, hasTLSFingerprint, filterByKey, shortHash } = load('src/components/modules/user/lib/client-fp.ts');
+const { isSecretHeader, headerNames, notableEntries, fpTitle, hasTLSFingerprint, filterByKey, shortHash, tlsRows } = load('src/components/modules/user/lib/client-fp.ts');
 
 test('秘密头：和后端同一套规则（只记名字的那些给锁）', () => {
     for (const n of ['Authorization', 'x-api-key', 'Cookie', 'X-Goog-Api-Key', 'X-Custom-Token', 'mj-api-secret', 'Sec-WebSocket-Protocol']) {
@@ -38,4 +38,13 @@ test('TLS 指纹有无、按 Key 筛、短指纹号', () => {
     assert.equal(filterByKey(fps, 1).length, 2);
     assert.equal(shortHash('0123456789abcdef'), '01234567');
     assert.equal(shortHash(undefined), '');
+});
+
+test('JA3 / JA4：没值的整行不显示，有值的才出现', () => {
+    assert.deepEqual(tlsRows({ ja3: '', ja4: '' }), []);
+    assert.deepEqual(tlsRows({}), []);
+    assert.deepEqual(tlsRows({ ja3: '  ', ja4: undefined }), []);
+    assert.deepEqual(tlsRows({ ja3: 'e7d705a3286e19ea42f587b344ee6865', ja4: '' }), [{ label: 'JA3', value: 'e7d705a3286e19ea42f587b344ee6865' }]);
+    assert.deepEqual(tlsRows({ ja3: '', ja4: 't13d1516h2_8daaf6152771_02713d6af862' }), [{ label: 'JA4', value: 't13d1516h2_8daaf6152771_02713d6af862' }]);
+    assert.deepEqual(tlsRows({ ja3: 'a', ja4: 'b' }).map((r) => r.label), ['JA3', 'JA4']);
 });
