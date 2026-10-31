@@ -25,9 +25,10 @@ import { cardState, userPlanIDs } from '../lib/user-filters';
 import { PlanPicker } from './plan-picker';
 import { formatDateShort, useRelTime } from './shared';
 import { UserUsageTab, UsageRangeSeg } from './user-usage-tab';
+import { UserAccessTab } from './user-access';
 import { Bar, HelpTip, Pill, Seg, btn, btnDanger, btnPrimary, chip, iconBtn, label } from './ui-bits';
 
-export type DrawerTab = 'profile' | 'usage';
+export type DrawerTab = 'profile' | 'usage' | 'access';
 
 const input = 'flex h-9 w-full rounded-xl border border-input bg-background px-3 text-sm outline-none focus:border-ring disabled:opacity-60';
 
@@ -68,7 +69,7 @@ function sameIDs(a: number[], b: number[]) {
 
 // 右侧抽屉（new-api 的 users-mutate-drawer）：「资料」改人，「用量」看这个人用了多少。
 // user=null 时是「添加用户」。
-export function UsersMutateDrawer({ open, onOpenChange, user, plans, tab, onTabChange, onBalance, onDelete, onViewLogs }: {
+export function UsersMutateDrawer({ open, onOpenChange, user, plans, tab, onTabChange, onBalance, onDelete, onViewLogs, alertCount = 0 }: {
     open: boolean;
     onOpenChange: (open: boolean) => void;
     user: User | null;
@@ -78,6 +79,8 @@ export function UsersMutateDrawer({ open, onOpenChange, user, plans, tab, onTabC
     onBalance: (user: User) => void;
     onDelete: (user: User) => void;
     onViewLogs: (user: User) => void;
+    /** 这个人当前有几条 IP / 客户端异常提示（抽屉标签上点个小点）。 */
+    alertCount?: number;
 }) {
     return (
         <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
@@ -98,6 +101,7 @@ export function UsersMutateDrawer({ open, onOpenChange, user, plans, tab, onTabC
                             onBalance={onBalance}
                             onDelete={onDelete}
                             onViewLogs={onViewLogs}
+                            alertCount={alertCount}
                         />
                     )}
                 </DialogPrimitive.Content>
@@ -106,7 +110,7 @@ export function UsersMutateDrawer({ open, onOpenChange, user, plans, tab, onTabC
     );
 }
 
-function DrawerBody({ user, plans, tab, onTabChange, onClose, onBalance, onDelete, onViewLogs }: {
+function DrawerBody({ user, plans, tab, onTabChange, onClose, onBalance, onDelete, onViewLogs, alertCount }: {
     user: User | null;
     plans: AccessPlan[];
     tab: DrawerTab;
@@ -115,6 +119,7 @@ function DrawerBody({ user, plans, tab, onTabChange, onClose, onBalance, onDelet
     onBalance: (user: User) => void;
     onDelete: (user: User) => void;
     onViewLogs: (user: User) => void;
+    alertCount: number;
 }) {
     const t = useTranslations('user');
     const [draft, setDraft] = useState<Draft>(() => draftFrom(user, plans));
@@ -190,13 +195,19 @@ function DrawerBody({ user, plans, tab, onTabChange, onClose, onBalance, onDelet
         <>
             <DrawerHead user={user} />
             {user && (
-                <div className="flex items-center justify-between gap-2 px-6 pt-4">
-                    <Seg value={tab} onChange={onTabChange} options={[{ value: 'profile', label: t('drawer.profile') }, { value: 'usage', label: t('drawer.usage') }]} />
+                <div className="flex flex-wrap items-center justify-between gap-2 px-6 pt-4">
+                    <Seg value={tab} onChange={onTabChange} options={[
+                        { value: 'profile', label: t('drawer.profile') },
+                        { value: 'usage', label: t('drawer.usage') },
+                        { value: 'access', label: <span className="inline-flex items-center gap-1">{t('access.tab')}{alertCount > 0 && <span aria-label={t('access.alertTitle')} className="size-1.5 rounded-full bg-amber-500" />}</span> },
+                    ]} />
                     {tab === 'usage' && <UsageRangeSeg value={range} onChange={setRange} />}
                 </div>
             )}
             <div className="min-h-0 flex-1 overflow-y-auto px-6 pt-5 pb-6">
-                {user && tab === 'usage' ? (
+                {user && tab === 'access' ? (
+                    <UserAccessTab user={user} />
+                ) : user && tab === 'usage' ? (
                     <UserUsageTab user={user} range={range} onViewLogs={() => onViewLogs(user)} />
                 ) : (
                     <div className="space-y-4">

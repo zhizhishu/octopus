@@ -9,7 +9,7 @@ import { cn } from '@/lib/utils';
 import { iconBtn } from './ui-bits';
 
 export interface UserRowHandlers {
-    onEdit: (user: User, tab?: 'profile' | 'usage') => void;
+    onEdit: (user: User, tab?: 'profile' | 'usage' | 'access') => void;
     onBalance: (user: User) => void;
     onToggleStatus: (user: User) => void;
     onToggleRole: (user: User) => void;

@@ -2,24 +2,26 @@
 
 import { Pencil, Wallet } from 'lucide-react';
 import { useTranslations } from 'next-intl';
-import type { User } from '@/api/endpoints/user';
+import type { User, UserAccessSummary } from '@/api/endpoints/user';
 import type { AccessPlan } from '@/api/endpoints/access-plan';
 import type { UserUsageSummary } from '@/api/endpoints/stats';
-import { SafeText, MonoSafeText } from '@/components/common/SafeText';
+import { SafeText } from '@/components/common/SafeText';
 import { cn } from '@/lib/utils';
 import { formatUSD } from '../lib/balance-preview';
 import { formatCount } from '../lib/format';
-import { CardCell, planLabel, userPlans, useRelTime } from './shared';
+import { CardCell, planLabel, userPlans } from './shared';
 import { DataTableRowActions, type UserRowHandlers } from './data-table-row-actions';
 import { Checkbox, HelpTip, Pill, iconBtn } from './ui-bits';
+import { AccessCell } from './user-access';
 
 const th = 'h-10 px-3 text-left align-middle text-xs font-medium whitespace-nowrap text-muted-foreground';
 const td = 'px-3 py-3 align-middle';
 
-export function UsersTable({ users, plans, usage, nowSec, selected, onSelect, onSelectPage, handlers }: {
+export function UsersTable({ users, plans, usage, access, nowSec, selected, onSelect, onSelectPage, handlers }: {
     users: User[];
     plans: AccessPlan[];
     usage: Map<number, UserUsageSummary>;
+    access: Map<number, UserAccessSummary>;
     nowSec: number;
     selected: Set<number>;
     onSelect: (id: number, on: boolean) => void;
@@ -28,7 +30,6 @@ export function UsersTable({ users, plans, usage, nowSec, selected, onSelect, on
 }) {
     const t = useTranslations('user');
     const enabledPlanCount = plans.filter((p) => p.enabled).length;
-    const rel = useRelTime();
     const pageSelected = users.filter((u) => selected.has(u.id)).length;
     return (
         <table className="w-full text-sm">
@@ -48,7 +49,7 @@ export function UsersTable({ users, plans, usage, nowSec, selected, onSelect, on
                     <th className={th}><span className="inline-flex items-center gap-1">{t('table.card')}<HelpTip content={t('table.cardTip')} /></span></th>
                     <th className={th}>{t('table.plans')}</th>
                     <th className={th}><span className="inline-flex items-center gap-1">{t('table.usage')}<HelpTip content={t('table.usageTip')} /></span></th>
-                    <th className={th}>{t('table.lastRelay')}</th>
+                    <th className={th}><span className="inline-flex items-center gap-1">{t('table.lastRelay')}<HelpTip content={t('table.lastRelayTip')} align="end" /></span></th>
                     <th className={cn(th, 'w-28')}><span className="sr-only">{t('table.actions')}</span></th>
                 </tr>
             </thead>
@@ -97,13 +98,8 @@ export function UsersTable({ users, plans, usage, nowSec, selected, onSelect, on
                                 <div className="font-medium text-foreground">{formatUSD(used?.total_cost ?? 0)}</div>
                                 <div className="mt-0.5 text-muted-foreground">{t('table.times', { n: formatCount((used?.request_success ?? 0) + (used?.request_failed ?? 0)) })}</div>
                             </td>
-                            <td className={cn(td, dim, 'text-xs whitespace-nowrap')}>
-                                {u.last_relay_at > 0 ? (
-                                    <>
-                                        <div>{rel(u.last_relay_at, nowSec)}</div>
-                                        <MonoSafeText value={u.last_relay_ip || ''} className="mt-0.5 block max-w-[8rem] text-[11px] text-muted-foreground" />
-                                    </>
-                                ) : <span className="text-muted-foreground">{t('table.neverUsed')}</span>}
+                            <td className={cn(td, dim, 'text-xs')}>
+                                <AccessCell user={u} summary={access.get(u.id)} nowSec={nowSec} onOpen={() => handlers.onEdit(u, 'access')} />
                             </td>
                             <td className={cn(td, 'w-28 pl-0')}>
                                 <div className="flex items-center justify-end gap-0.5">

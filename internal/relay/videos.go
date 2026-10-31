@@ -163,6 +163,7 @@ func VideosHandlerKind(c *gin.Context, mediaKind string) {
 	}
 
 	metrics := newRawProtocolRelayMetrics(apiKeyID, userID, c.GetString("request_ip"), requestModel, "videos", c.Request.URL.Path)
+	metrics.RequestUserAgent = c.Request.UserAgent() // 仅入站 UA 快照，供日志 / 用户页识别客户端
 	metrics.SetAccessPlan(routeResult.AccessPlan, routeResult.AccessRouteRule, routeResult.AccessRouteUsed)
 	metrics.RequestContent = redactLogBody(buildRawProtocolRequestContent(false, bc, payload, "videos"))
 
@@ -346,6 +347,7 @@ func VideoPollHandler(c *gin.Context) {
 	// /videos/edits/{id} 下面；反过来，存量任务（kind 为空）也不能因为客户端
 	// 走了一个新子路径就被改送到新子路径上去。
 	metrics := newRawProtocolRelayMetrics(c.GetInt("api_key_id"), c.GetInt("user_id"), c.GetString("request_ip"), entry.model, "videos_poll", c.Request.URL.Path)
+	metrics.RequestUserAgent = c.Request.UserAgent() // 仅入站 UA 快照，供日志 / 用户页识别客户端
 	metrics.ActualModel = entry.model
 
 	statusCode, body, upstreamCT, fwdErr := videoForward(ctx, c, http.MethodGet, videoUpstreamPathForChannel(channel, entry.mediaKind, taskID, false), nil, entry.model, channel, channelKey, nil)
@@ -384,6 +386,7 @@ func VideoContentHandler(c *gin.Context) {
 	}
 
 	metrics := newRawProtocolRelayMetrics(c.GetInt("api_key_id"), c.GetInt("user_id"), c.GetString("request_ip"), entry.model, "videos_content", c.Request.URL.Path)
+	metrics.RequestUserAgent = c.Request.UserAgent() // 仅入站 UA 快照，供日志 / 用户页识别客户端
 	metrics.ActualModel = entry.model
 
 	statusCode, fwdErr := videoForwardContent(ctx, c, videoUpstreamPathForChannel(channel, entry.mediaKind, taskID, true), channel, channelKey)

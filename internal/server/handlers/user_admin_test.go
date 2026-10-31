@@ -90,6 +90,9 @@ func TestUserAdminRoutesRejectNonAdmin(t *testing.T) {
 		{http.MethodGet, fmt.Sprintf("/api/v1/user/balance-log?id=%d", plain.ID)},
 		{http.MethodGet, fmt.Sprintf("/api/v1/user/usage?id=%d", plain.ID)},
 		{http.MethodPost, "/api/v1/user/batch"},
+		{http.MethodGet, "/api/v1/user/access"},
+		{http.MethodGet, fmt.Sprintf("/api/v1/user/access/detail?id=%d", plain.ID)},
+		{http.MethodGet, "/api/v1/user/access/config"},
 	}
 	for _, c := range cases {
 		for _, token := range []string{"", userToken} {
@@ -251,5 +254,92 @@ func TestUserUsageEndpoint(t *testing.T) {
 	}
 	if rec, _ := env.do(t, http.MethodGet, fmt.Sprintf("/api/v1/user/usage?id=%d&range=forever", u.ID), env.token, nil); rec.Code != http.StatusBadRequest {
 		t.Fatalf("bad range must be 400, got %d", rec.Code)
+	}
+}
+
+// 用户页的 IP / 客户端：列表接口给每人最近一次 + 异常提示，详情接口按 IP / 客户端分组。
+func TestUserAccessEndpoints(t *testing.T) {
+	env := setupUserAdminEnv(t)
+	u := env.newUser(t, "roamer", 1)
+	// 内存里的来源记录是进程级的：先把同包别的用例留下的刷进这个临时库再清空，免得混进来。
+	if err := op.UserAccessSaveDB(env.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.GetDB().Where("1 = 1").Delete(&model.UserAccessSeen{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Unix()
+	op.UserAccessRecord(u.ID, 5, "203.0.113.1", "claude-cli/2.0.1", now-3*86400)
+	if err := op.UserAccessSaveDB(env.ctx); err != nil {
+		t.Fatal(err)
+	}
+	op.UserAccessRecord(u.ID, 5, "203.0.113.1", "claude-cli/2.0.1", now-60)
+	op.UserAccessRecord(u.ID, 5, "198.51.100.2", "claude-cli/2.0.1", now-10)
+	t.Cleanup(func() { _ = op.UserAccessSaveDB(context.Background()) })
+
+	rec, data := env.do(t, http.MethodGet, "/api/v1/user/access", env.token, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list: %d %s", rec.Code, rec.Body.String())
+	}
+	var sums []model.UserAccessSummary
+	if err := json.Unmarshal(data, &sums); err != nil {
+		t.Fatal(err)
+	}
+	// 只看这个用户（别的用例的请求可能在这之后又进了内存）。
+	var mine *model.UserAccessSummary
+	for i := range sums {
+		if sums[i].UserID == u.ID {
+			mine = &sums[i]
+		}
+	}
+	if mine == nil || mine.Last.IP != "198.51.100.2" || len(mine.Alerts) != 1 || mine.Alerts[0].Kind != model.UserAccessAlertNewIP {
+		t.Fatalf("bad summaries %s", data)
+	}
+
+	rec, data = env.do(t, http.MethodGet, fmt.Sprintf("/api/v1/user/access/detail?id=%d", u.ID), env.token, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("detail: %d %s", rec.Code, rec.Body.String())
+	}
+	var detail model.UserAccessDetail
+	if err := json.Unmarshal(data, &detail); err != nil {
+		t.Fatal(err)
+	}
+	if len(detail.IPs) != 2 || len(detail.Clients) != 1 || detail.Clients[0].Requests != 3 || detail.TotalRequests != 3 {
+		t.Fatalf("bad detail %s", data)
+	}
+	if rec, _ := env.do(t, http.MethodGet, "/api/v1/user/access/detail?id=0", env.token, nil); rec.Code != http.StatusBadRequest {
+		t.Fatalf("bad id must be 400, got %d", rec.Code)
+	}
+
+	// 风控等级：/access/config 报当前阈值和各预设；改成「关闭」后列表不再提示。
+	rec, data = env.do(t, http.MethodGet, "/api/v1/user/access/config", env.token, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("config: %d %s", rec.Code, rec.Body.String())
+	}
+	var cfg model.UserAccessAlertSettings
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Current.Level != model.UserAccessAlertLevelStandard || len(cfg.Presets) != 4 || cfg.Presets[model.UserAccessAlertLevelLoose].ManyIPs != 11 {
+		t.Fatalf("bad config %s", data)
+	}
+	if rec, _ := env.do(t, http.MethodPost, "/api/v1/setting/set", env.token, model.Setting{Key: model.SettingKeyUserAccessAlertLevel, Value: "paranoid"}); rec.Code != http.StatusBadRequest {
+		t.Fatalf("unknown level must be 400, got %d", rec.Code)
+	}
+	if rec, _ := env.do(t, http.MethodPost, "/api/v1/setting/set", env.token, model.Setting{Key: model.SettingKeyUserAccessAlertLevel, Value: model.UserAccessAlertLevelOff}); rec.Code != http.StatusOK {
+		t.Fatalf("set level off: %d", rec.Code)
+	}
+	t.Cleanup(func() {
+		_ = op.SettingSetString(model.SettingKeyUserAccessAlertLevel, model.UserAccessAlertLevelStandard)
+	})
+	_, data = env.do(t, http.MethodGet, "/api/v1/user/access", env.token, nil)
+	sums = nil
+	if err := json.Unmarshal(data, &sums); err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range sums {
+		if s.UserID == u.ID && (len(s.Alerts) != 0 || s.Last.IP != "198.51.100.2") {
+			t.Fatalf("level off must keep last source and drop alerts %s", data)
+		}
 	}
 }

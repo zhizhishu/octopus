@@ -103,6 +103,18 @@ func init() {
 		AddRoute(
 			router.NewRoute("/batch", http.MethodPost).
 				Handle(batchUser),
+		).
+		AddRoute(
+			router.NewRoute("/access", http.MethodGet).
+				Handle(listUserAccess),
+		).
+		AddRoute(
+			router.NewRoute("/access/detail", http.MethodGet).
+				Handle(getUserAccessDetail),
+		).
+		AddRoute(
+			router.NewRoute("/access/config", http.MethodGet).
+				Handle(getUserAccessConfig),
 		)
 }
 
@@ -391,4 +403,35 @@ func batchUser(c *gin.Context) {
 		return
 	}
 	resp.Success(c, result)
+}
+
+// listUserAccess 给用户列表：每个有记录的用户最近一次的 IP / 客户端，以及「异常切换」提示。仅管理员。
+func listUserAccess(c *gin.Context) {
+	summaries, err := op.UserAccessSummaries(c.Request.Context())
+	if err != nil {
+		resp.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	resp.Success(c, summaries)
+}
+
+// getUserAccessConfig 给设置页「风控等级」：当前生效的阈值 + 各预设的阈值。仅管理员。
+// 改等级走通用的 /setting/set（user_access_alert_* 几个 key）。
+func getUserAccessConfig(c *gin.Context) {
+	resp.Success(c, op.UserAccessAlertSettingsGet())
+}
+
+// getUserAccessDetail 给用户抽屉：这个人用过的 IP、客户端（次数 / 最近时间 / 哪把 key）。仅管理员。
+func getUserAccessDetail(c *gin.Context) {
+	id, err := strconv.Atoi(c.Query("id"))
+	if err != nil || id <= 0 {
+		resp.Error(c, http.StatusBadRequest, resp.ErrInvalidParam)
+		return
+	}
+	detail, err := op.UserAccessDetailGet(id, c.Request.Context())
+	if err != nil {
+		resp.Error(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	resp.Success(c, detail)
 }

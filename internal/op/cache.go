@@ -69,5 +69,9 @@ func SaveCache() error {
 	if err := UserRelayIPSaveDB(ctx); err != nil {
 		return err
 	}
+	// 用户 IP / 客户端来源记录同理：退出前把内存里攒的刷进 DB。
+	if err := UserAccessSaveDB(ctx); err != nil {
+		return err
+	}
 	return nil
 }

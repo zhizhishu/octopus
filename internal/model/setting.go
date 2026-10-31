@@ -269,6 +269,17 @@ const (
 	SettingKeyRelayLogReclaimEnabled SettingKey = "relay_log_reclaim_enabled"
 )
 
+// 用户页「IP / 客户端异常切换」提示的风控等级（只提示，不拦截）。等级和预设阈值见
+// model.UserAccessAlertPreset；自定义（custom）时才读下面五个数。单独一块，理由同上。
+const (
+	SettingKeyUserAccessAlertLevel      SettingKey = "user_access_alert_level"
+	SettingKeyUserAccessAlertWindowMin  SettingKey = "user_access_alert_window_min"
+	SettingKeyUserAccessAlertManyIPs    SettingKey = "user_access_alert_many_ips"
+	SettingKeyUserAccessAlertNewIP      SettingKey = "user_access_alert_new_ip"
+	SettingKeyUserAccessAlertNewClient  SettingKey = "user_access_alert_new_client"
+	SettingKeyUserAccessAlertIPv4Prefix SettingKey = "user_access_alert_ipv4_prefix"
+)
+
 type Setting struct {
 	Key   SettingKey `json:"key" gorm:"primaryKey"`
 	Value string     `json:"value" gorm:"not null"`
@@ -649,6 +660,13 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyEmailHTTPAdminAuth, Value: ""},
 		{Key: SettingKeyEmailHTTPSiteAuth, Value: ""},
 		{Key: SettingKeyAdminToken, Value: ""},
+		// 用户页 IP / 客户端异常提示：默认「标准」；后五个只在「自定义」时生效，默认值同「标准」。
+		{Key: SettingKeyUserAccessAlertLevel, Value: UserAccessAlertLevelStandard},
+		{Key: SettingKeyUserAccessAlertWindowMin, Value: "60"},
+		{Key: SettingKeyUserAccessAlertManyIPs, Value: "3"},
+		{Key: SettingKeyUserAccessAlertNewIP, Value: "true"},
+		{Key: SettingKeyUserAccessAlertNewClient, Value: "true"},
+		{Key: SettingKeyUserAccessAlertIPv4Prefix, Value: "32"},
 	}
 }
 
@@ -799,7 +817,8 @@ func (s *Setting) Validate() error {
 		SettingKeyUpstreamUTLSFingerprint, SettingKeyUpstreamHTTP1HeaderOrder, SettingKeyDiagnosticMode, SettingKeyRouteStickyCacheFirst,
 		SettingKeyModelAuditEnabled, SettingKeyModelAuditFollowUpEnabled, SettingKeyLogPassiveProbeEnabled,
 		SettingKeyRelayLogReclaimEnabled, SettingKeyAsyncImageEnabled, SettingKeyBatchImageEnabled,
-		SettingKeyPriceAutoSyncEnabled, SettingKeyPriceSyncHoldBigChange:
+		SettingKeyPriceAutoSyncEnabled, SettingKeyPriceSyncHoldBigChange,
+		SettingKeyUserAccessAlertNewIP, SettingKeyUserAccessAlertNewClient:
 		if s.Value != "true" && s.Value != "false" {
 			return fmt.Errorf("%s must be true or false", s.Key)
 		}
@@ -967,6 +986,28 @@ func (s *Setting) Validate() error {
 		}
 		if _, err := time.LoadLocation(trimmed); err != nil {
 			return fmt.Errorf("%s must be empty or a valid IANA timezone (e.g. America/Los_Angeles): %w", s.Key, err)
+		}
+		return nil
+	case SettingKeyUserAccessAlertLevel:
+		if _, ok := UserAccessAlertPreset(s.Value); !ok && s.Value != UserAccessAlertLevelCustom {
+			return fmt.Errorf("%s must be off, loose, standard, strict or custom", s.Key)
+		}
+		return nil
+	case SettingKeyUserAccessAlertWindowMin:
+		value, err := strconv.Atoi(s.Value)
+		if err != nil || value < UserAccessAlertWindowMinMin || value > UserAccessAlertWindowMinMax {
+			return fmt.Errorf("%s must be an integer between %d and %d", s.Key, UserAccessAlertWindowMinMin, UserAccessAlertWindowMinMax)
+		}
+		return nil
+	case SettingKeyUserAccessAlertManyIPs:
+		value, err := strconv.Atoi(s.Value)
+		if err != nil || (value != 0 && (value < 2 || value > UserAccessAlertManyIPsMax)) {
+			return fmt.Errorf("%s must be 0 (off) or an integer between 2 and %d", s.Key, UserAccessAlertManyIPsMax)
+		}
+		return nil
+	case SettingKeyUserAccessAlertIPv4Prefix:
+		if s.Value != "32" && s.Value != "24" {
+			return fmt.Errorf("%s must be 32 or 24", s.Key)
 		}
 		return nil
 	case SettingKeyTrustedProxies:

@@ -72,6 +72,7 @@ func InitDB(dbType, dsn string, debug bool) error {
 		&model.User{},
 		&model.UserCheckIn{},
 		&model.UserBalanceLog{},
+		&model.UserAccessSeen{},
 		&model.Channel{},
 		&model.ChannelKey{},
 		&model.FingerprintProfile{},
