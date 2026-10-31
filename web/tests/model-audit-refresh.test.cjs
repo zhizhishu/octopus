@@ -83,6 +83,8 @@ function logComponents() {
         // 导出走流式落盘（lib/log-export），这里只要形状对得上即可，
         // 真逻辑由 tests/log-export.test.cjs 单独锁。
         '@/lib/log-export': { saveStreamToFile: async () => 0, formatBytes: () => '0 B' },
+        // 日志页自动刷新的纯逻辑（无依赖），直接用真模块；行为由 tests/log-auto-refresh.test.cjs 锁。
+        '@/lib/log-auto-refresh': load('src/lib/log-auto-refresh.ts'),
     };
     const item = load('src/components/modules/log/Item.tsx', {
         ...common,

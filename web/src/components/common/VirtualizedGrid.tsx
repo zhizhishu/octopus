@@ -41,6 +41,10 @@ interface VirtualizedGridProps<T> {
     onReachEnd?: () => void;
     reachEndEnabled?: boolean;
     reachEndOffset?: number;
+    /** 拿到列表自己的滚动容器（只读：日志页据此判断「已往下翻」并在需要时回顶）。 */
+    scrollerRef?: { current: HTMLDivElement | null };
+    /** 给某一项的外层格子加 class（日志页用来给自动刷新新插入的行一个淡高亮），不碰 renderItem 的产物。 */
+    getItemClassName?: (item: T) => string | undefined;
 }
 
 function getColumnsForWidth(
@@ -68,6 +72,8 @@ export function VirtualizedGrid<T>({
     onReachEnd,
     reachEndEnabled = false,
     reachEndOffset = 1,
+    scrollerRef,
+    getItemClassName,
 }: VirtualizedGridProps<T>) {
     'use no memo';
 
@@ -76,6 +82,11 @@ export function VirtualizedGrid<T>({
     );
     const containerRef = useRef<HTMLDivElement | null>(null);
     const reachEndTriggeredRef = useRef(false);
+    // 两种渲染路径共用一个回调 ref：同时喂给内部 containerRef 和调用方的 scrollerRef。
+    const setContainerRef = useCallback((el: HTMLDivElement | null) => {
+        containerRef.current = el;
+        if (scrollerRef) scrollerRef.current = el;
+    }, [scrollerRef]);
 
     useEffect(() => {
         const el = containerRef.current;
@@ -175,7 +186,7 @@ export function VirtualizedGrid<T>({
         return (
             <div className="relative h-full min-h-0 w-full">
                 <div
-                    ref={containerRef}
+                    ref={setContainerRef}
                     onScroll={handlePlainScroll}
                     className="relative h-full w-full overflow-y-auto overscroll-contain rounded-t-3xl"
                 >
@@ -188,7 +199,7 @@ export function VirtualizedGrid<T>({
                             }}
                         >
                             {items.map((item, index) => (
-                                <div key={String(getItemKey(item, index))} className="min-w-0">
+                                <div key={String(getItemKey(item, index))} className={['min-w-0', getItemClassName?.(item)].filter(Boolean).join(' ')}>
                                     {renderItem(item, index)}
                                 </div>
                             ))}
@@ -213,7 +224,7 @@ export function VirtualizedGrid<T>({
     return (
         <div className="relative h-full min-h-0 w-full">
             <div
-                ref={containerRef}
+                ref={setContainerRef}
                 className="relative h-full w-full overflow-y-auto overscroll-contain rounded-t-3xl"
             >
                 {rowCount === 0 ? null : (
@@ -266,7 +277,7 @@ export function VirtualizedGrid<T>({
                                         {rowItems.map((item, columnIndex) => {
                                             const itemIndex = rowStartIndex + columnIndex;
                                             return (
-                                                <div key={String(getItemKey(item, itemIndex))} className="min-w-0">
+                                                <div key={String(getItemKey(item, itemIndex))} className={['min-w-0', getItemClassName?.(item)].filter(Boolean).join(' ')}>
                                                     {renderItem(item, itemIndex)}
                                                 </div>
                                             );

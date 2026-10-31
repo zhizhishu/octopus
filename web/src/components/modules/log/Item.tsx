@@ -671,7 +671,7 @@ function LogRouteHeader({
                     {endpointBadge}
                     {upstreamPathBadge}
                 </div>
-                <div data-log-row="1" data-log-cell="2" className="flex min-w-0 flex-nowrap items-center gap-2 overflow-hidden">
+                <div data-log-row="1" data-log-cell="2" className="flex min-w-0 flex-wrap items-center gap-x-2 max-md:[&>*]:max-w-full md:flex-nowrap md:overflow-hidden">
                     {requestModelText}
                     {channelGroup}
                     {actualModelText}
@@ -904,7 +904,9 @@ function DeferredJsonContent({ content, fallbackText, imagePlaceholders = false 
                         换行排版 4768ms、不换行 1422ms。预览态才 wrap，因为量小且要好读。 */}
                     <pre className={cn(
                         'max-w-full min-w-0 p-3 font-mono text-xs leading-relaxed text-muted-foreground sm:p-4',
-                        isTruncated ? 'whitespace-pre-wrap break-words [overflow-wrap:anywhere]' : 'whitespace-pre'
+                        // 预览态或本身就不大（≤ 预览上限）都换行：手机上一行几千像素没法读；
+                        // 只有「加载全部」后的超大内容才不换行、在框内横向滚（排版快 3 倍）。
+                        isTruncated || totalChars <= DETAIL_PREVIEW_CHARS ? 'whitespace-pre-wrap break-words [overflow-wrap:anywhere]' : 'whitespace-pre'
                     )}>
                         {imagePlaceholders && shownContent && containsSavedImagePlaceholder(shownContent)
                             ? <LogImagePlaceholderText text={shownContent} />
@@ -977,7 +979,7 @@ function LazyLogBodies({ fallbackRequest, fallbackResponse, fallbackUpstreamRequ
 
     return (
         <div className="grid grid-cols-1 gap-4 pb-2 md:h-full md:min-h-0 md:grid-cols-2 md:pb-0">
-            <div className="flex min-h-[18rem] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-muted/30 md:min-h-0">
+            <div className="flex min-h-[18rem] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-muted/30 max-md:max-h-[70dvh] md:min-h-0">
                 <div className="flex min-w-0 items-center gap-2 px-3 md:px-4 py-2.5 md:py-3 border-b border-border bg-muted/50 shrink-0">
                     <Send className="size-4 shrink-0 text-muted-foreground" />
                     <span className="truncate text-sm font-medium text-card-foreground">{requestLabel}</span>
@@ -997,7 +999,7 @@ function LazyLogBodies({ fallbackRequest, fallbackResponse, fallbackUpstreamRequ
                     )}
                 </div>
             </div>
-            <div className="flex min-h-[18rem] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-muted/30 md:min-h-0">
+            <div className="flex min-h-[18rem] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-muted/30 max-md:max-h-[70dvh] md:min-h-0">
                 <div className="flex min-w-0 items-center gap-2 px-3 md:px-4 py-2.5 md:py-3 border-b border-border bg-muted/50 shrink-0">
                     <MessageSquare className="size-4 shrink-0 text-muted-foreground" />
                     <span className="truncate text-sm font-medium text-card-foreground">{responseLabel}</span>
@@ -1021,7 +1023,7 @@ function LazyLogBodies({ fallbackRequest, fallbackResponse, fallbackUpstreamRequ
                 "实际发的"差在哪（transform 的 defer 会把 Thinking/ReasoningEffort
                 还原成客户端原意，请求内容那栏记录的是还原后的样子）。 */}
             {upstreamRequestBody ? (
-                <div className="flex min-h-[14rem] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-muted/30 md:col-span-2 md:min-h-0">
+                <div className="flex min-h-[14rem] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-muted/30 max-md:max-h-[70dvh] md:col-span-2 md:min-h-0">
                     <div className="flex min-w-0 items-center gap-2 px-3 md:px-4 py-2.5 md:py-3 border-b border-border bg-muted/50 shrink-0">
                         <ArrowUpFromLine className="size-4 shrink-0 text-muted-foreground" />
                         <span className="truncate text-sm font-medium text-card-foreground">{upstreamRequestLabel}</span>
@@ -1868,9 +1870,38 @@ export const LogCard = React.memo(function LogCard({
 
                 <MorphingDialogContainer>
                     <LogDetailQuery logId={log.id}>
-                    <MorphingDialogContent className="relative flex h-[calc(100dvh-1rem)] w-[calc(100vw-1rem)] max-w-[calc(100vw-1rem)] flex-col overflow-hidden rounded-3xl bg-card px-4 py-4 text-card-foreground md:w-[80vw] md:max-w-6xl md:px-6">
-                        <MorphingDialogClose className="top-4 right-5 text-muted-foreground hover:text-foreground transition-colors" />
-                        <MorphingDialogTitle className="mb-3 flex min-w-0 flex-wrap items-center gap-2 pr-9 text-sm">
+                    {/* 手机（<md）：整块抽屉只有一个滚动源——标题、详情、底部信息一起滚，
+                        顶部留一条吸顶小栏放 ✕ 和上一条/下一条（44px 触控）。以前标题和底部信息
+                        都钉死，长模型名一换行就只剩半屏能看内容。桌面保持原布局。 */}
+                    <MorphingDialogContent className="relative flex h-[calc(100dvh-1rem)] w-[calc(100vw-1rem)] max-w-[calc(100vw-1rem)] flex-col overflow-hidden rounded-3xl bg-card px-4 py-4 text-card-foreground max-md:overflow-y-auto max-md:overscroll-contain max-md:pt-0 md:w-[80vw] md:max-w-6xl md:px-6">
+                        <div className="sticky top-0 z-20 -mx-4 mb-1 flex items-center gap-1 border-b border-border/60 bg-card/95 px-3 py-1.5 backdrop-blur md:hidden">
+                            <span className="min-w-0 flex-1 truncate pl-1 font-mono text-xs text-muted-foreground">#{log.id}</span>
+                            {onNavigate ? (
+                                <>
+                                    <button
+                                        type="button"
+                                        onClick={() => onNavigate(-1)}
+                                        disabled={!canNavigatePrev}
+                                        aria-label="上一条（更新）"
+                                        className="grid size-11 place-items-center rounded-lg text-muted-foreground transition-colors hover:text-foreground disabled:pointer-events-none disabled:opacity-30"
+                                    >
+                                        <ChevronLeft className="size-5" />
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => onNavigate(1)}
+                                        disabled={!canNavigateNext}
+                                        aria-label="下一条（更旧）"
+                                        className="grid size-11 place-items-center rounded-lg text-muted-foreground transition-colors hover:text-foreground disabled:pointer-events-none disabled:opacity-30"
+                                    >
+                                        <ChevronRight className="size-5" />
+                                    </button>
+                                </>
+                            ) : null}
+                            <MorphingDialogClose className="static grid size-11 place-items-center rounded-lg text-muted-foreground transition-colors hover:text-foreground" />
+                        </div>
+                        <MorphingDialogClose className="top-4 right-5 text-muted-foreground hover:text-foreground transition-colors max-md:hidden" />
+                        <MorphingDialogTitle className="mb-3 flex min-w-0 flex-wrap items-center gap-2 text-sm max-md:mt-2 md:pr-9">
                             <ModelAvatar size={28} />
                             <LogRouteHeader
                                 variant="detail"
@@ -1890,8 +1921,8 @@ export const LogCard = React.memo(function LogCard({
                                 sourceSlot={sourceSlot}
                             />
                             {onNavigate ? (
-                                // 键盘能翻，但用户不会自己发现；给两个按钮把能力摆出来。
-                                <span className="ml-auto flex shrink-0 items-center gap-1">
+                                // 键盘能翻，但用户不会自己发现；给两个按钮把能力摆出来。（手机上在吸顶小栏里）
+                                <span className="ml-auto flex shrink-0 items-center gap-1 max-md:hidden">
                                     <button
                                         type="button"
                                         onClick={() => onNavigate(-1)}
@@ -1916,7 +1947,7 @@ export const LogCard = React.memo(function LogCard({
                             ) : null}
                         </MorphingDialogTitle>
 
-                        <MorphingDialogDescription className="flex-1 min-h-0 overflow-y-auto">
+                        <MorphingDialogDescription className="flex-1 min-h-0 overflow-y-auto max-md:flex-none max-md:overflow-visible">
                             {/* 单一滚动源=本层。正常情况内部 min-h-full + flex-1 布局撑满、不出滚动条；
                                 当徽标行/诊断区把纵向空间挤爆时（多行 tiles、展开的错误详情），内容
                                 自然下沉超高 → 这里滚动，而不是像旧版 md:overflow-hidden 那样把
@@ -2285,7 +2316,7 @@ export const LogCard = React.memo(function LogCard({
                             </div>
                         </MorphingDialogDescription>
 
-                        <div className="mt-auto flex max-h-24 min-w-0 shrink-0 flex-wrap items-center gap-3 overflow-y-auto pt-4 text-xs text-muted-foreground md:max-h-none md:gap-4 md:overflow-visible">
+                        <div className="mt-auto flex min-w-0 shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 pt-4 pb-[env(safe-area-inset-bottom,0px)] text-xs text-muted-foreground md:gap-4 md:pb-0">
                             <div className="flex items-center gap-1.5">
                                 <Clock className="size-3.5 text-muted-foreground" />
                                 <span className="tabular-nums">{formatTime(log.time)}</span>

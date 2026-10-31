@@ -1057,7 +1057,31 @@
       "channel": "选择渠道",
       "key": "自动选 Key",
       "model": "模型覆盖",
-      "retry": "指定重试"
+      "retry": "指定重试",
+      "collapse": "收起实时请求",
+      "expand": "展开实时请求",
+      "collapsedRescue": "救援 {count}",
+      "collapsedRetrying": "重试中 {count}"
+    },
+    "autoRefresh": {
+      "label": "自动刷新",
+      "off": "关闭",
+      "live": "实时",
+      "s5": "5 秒",
+      "s10": "10 秒",
+      "s30": "30 秒",
+      "running": "自动刷新中",
+      "runningLive": "实时插入中",
+      "reconnecting": "实时流断开，按间隔重取中",
+      "paused": "已暂停",
+      "pausedHidden": "页面在后台",
+      "pausedDetail": "正在看详情",
+      "pausedSelecting": "正在选文字",
+      "pausedScrolled": "已往下翻",
+      "newCount": "{count} 条新日志",
+      "showNew": "显示",
+      "onlyFirstPage": "回到第 1 页才会自动刷新",
+      "hint": "新日志按所选间隔插到顶部；看详情、往下翻、选文字或切到后台时自动暂停，不打乱正在看的位置。"
     },
     "list": {
       "search": "搜索",

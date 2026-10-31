@@ -1057,7 +1057,31 @@
       "channel": "選擇通道",
       "key": "自動選 Key",
       "model": "模型覆寫",
-      "retry": "指定重試"
+      "retry": "指定重試",
+      "collapse": "收起即時請求",
+      "expand": "展開即時請求",
+      "collapsedRescue": "救援 {count}",
+      "collapsedRetrying": "重試中 {count}"
+    },
+    "autoRefresh": {
+      "label": "自動重新整理",
+      "off": "關閉",
+      "live": "即時",
+      "s5": "5 秒",
+      "s10": "10 秒",
+      "s30": "30 秒",
+      "running": "自動重新整理中",
+      "runningLive": "即時插入中",
+      "reconnecting": "即時串流中斷，按間隔重新取得中",
+      "paused": "已暫停",
+      "pausedHidden": "頁面在背景",
+      "pausedDetail": "正在看詳情",
+      "pausedSelecting": "正在選取文字",
+      "pausedScrolled": "已往下捲動",
+      "newCount": "{count} 筆新日誌",
+      "showNew": "顯示",
+      "onlyFirstPage": "回到第 1 頁才會自動重新整理",
+      "hint": "新日誌按所選間隔插到頂部；看詳情、往下捲、選取文字或切到背景時自動暫停，不打亂正在看的位置。"
     },
     "list": {
       "search": "搜尋",

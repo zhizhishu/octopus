@@ -4,6 +4,7 @@ import { apiClient, API_BASE_URL } from '../client';
 import { useAuthStore } from './user';
 import { logger } from '@/lib/logger';
 import { saveStreamToFile, type ExportProgress } from '@/lib/log-export';
+import { bufferLog, prependLogBatch } from '@/lib/log-auto-refresh';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { classifyRelayLogSeverity, logSeverityCountQueryOptions } from './log-severity';
 
@@ -693,8 +694,21 @@ export function useLogSeverityCounts(options: {
  * // 滚动到底部时加载更多
  * if (hasMore && !isLoadingMore) loadMore();
  */
-export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?: number; endpoint?: string; provider?: string; model?: string; startTime?: number; endTime?: number; live?: boolean; page?: number; severity?: string; search?: string; retried?: boolean; hideModelTest?: boolean; upstreamModelMismatch?: boolean } = {}) {
-    const { pageSize = 20, userID, apiKeyID, endpoint, provider, model, startTime, endTime, live = false, page, severity, search, retried, hideModelTest, upstreamModelMismatch } = options;
+export function useLogs(options: {
+    pageSize?: number; userID?: number; apiKeyID?: number; endpoint?: string; provider?: string; model?: string; startTime?: number; endTime?: number; live?: boolean; page?: number; severity?: string; search?: string; retried?: boolean; hideModelTest?: boolean; upstreamModelMismatch?: boolean;
+    /**
+     * live 推来的新日志多久合并插入一次（毫秒）。0=来一条插一条（默认，等同旧「实时动态」）。
+     * >0 时先进缓冲，按节奏批量插到第 1 页顶部。
+     */
+    liveFlushMs?: number;
+    /** 为 true 时新日志只进缓冲不插列表（用户在看详情 / 往下翻 / 选文字 / 切后台）。 */
+    livePaused?: boolean;
+    /** SSE 断开时按此间隔兜底重取第 1 页（毫秒，未给=不兜底）；暂停时也不取。 */
+    livePollFallbackMs?: number;
+    /** 自动刷新真的往列表里插了新行时回调（插入的 id，新的在前），用来给新行一个淡淡的高亮。 */
+    onLiveInserted?: (ids: number[]) => void;
+} = {}) {
+    const { pageSize = 20, userID, apiKeyID, endpoint, provider, model, startTime, endTime, live = false, page, severity, search, retried, hideModelTest, upstreamModelMismatch, liveFlushMs = 0, livePaused = false, livePollFallbackMs, onLiveInserted } = options;
 
     const [isConnected, setIsConnected] = useState(false);
     const [error, setError] = useState<Error | null>(null);
@@ -702,12 +716,26 @@ export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?
     const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const reconnectAttemptRef = useRef(0);
     const latestLogIDRef = useRef(0);
+    // 自动刷新的缓冲：SSE 推来的新日志先放这里，没暂停时按 liveFlushMs 合并插入。
+    const pendingRef = useRef<RelayLog[]>([]);
+    // 计数带上所属列表的签名：筛选/页码一换，旧计数自然作废，不必在 effect 里 setState 清零。
+    const [pendingState, setPendingState] = useState<{ key: string; count: number }>({ key: '', count: 0 });
+    const liveFlushMsRef = useRef(liveFlushMs);
+    const livePausedRef = useRef(livePaused);
+    const onLiveInsertedRef = useRef(onLiveInserted);
+    useEffect(() => {
+        liveFlushMsRef.current = liveFlushMs;
+        livePausedRef.current = livePaused;
+        onLiveInsertedRef.current = onLiveInserted;
+    }, [liveFlushMs, livePaused, onLiveInserted]);
 
     const queryClient = useQueryClient();
     const queryKey = useMemo(
         () => logsInfiniteQueryKey(pageSize, userID, apiKeyID, endpoint, provider, model, startTime, endTime, page, severity, retried, hideModelTest, search, upstreamModelMismatch),
         [apiKeyID, endpoint, provider, model, endTime, hideModelTest, page, pageSize, retried, search, severity, startTime, upstreamModelMismatch, userID]
     );
+    const pendingKey = useMemo(() => `${live ? 1 : 0}:${JSON.stringify(queryKey)}`, [live, queryKey]);
+    const pendingCount = live && pendingState.key === pendingKey ? pendingState.count : 0;
 
     const logsQuery = useInfiniteQuery({
         queryKey,
@@ -756,7 +784,11 @@ export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?
         //   2) 翻页时 placeholderData 会先用上一页数据渲染，轮询一插进来容易让
         //      刚翻到的页被旧数据顶掉(revalidate 覆盖)。
         // 实时性由 live(SSE) 模式负责；非 live 的无限滚动仍保留轮询。
-        refetchInterval: live || page !== undefined ? false : 3000,
+        // 自动刷新开着但 SSE 断了：按所选节奏兜底重取（暂停时不取，免得列表在用户眼皮底下变）。
+        refetchInterval: live
+            ? (!isConnected && !livePaused && livePollFallbackMs ? livePollFallbackMs : false)
+            : page !== undefined ? false : 3000,
+        refetchIntervalInBackground: false,
     });
 
     const logs = useMemo(() => {
@@ -802,6 +834,48 @@ export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?
         }
     }, [logsQuery]);
 
+    // 把缓冲里的新日志一次性插到第 1 页顶部（已在列表里的跳过）。返回实际插入条数。
+    const flushPending = useCallback((): number => {
+        const batch = pendingRef.current;
+        if (batch.length === 0) return 0;
+        pendingRef.current = [];
+        setPendingState({ key: pendingKey, count: 0 });
+        let inserted: number[] = [];
+        queryClient.setQueryData(
+            queryKey,
+            (old: InfiniteData<RelayLog[], number> | undefined) => {
+                if (!old) {
+                    const fresh = batch.slice().sort(compareRelayLogsDesc);
+                    inserted = fresh.map((item) => item.id);
+                    return { pages: [fresh], pageParams: [1] };
+                }
+                const merged = prependLogBatch(old.pages, batch);
+                inserted = merged.inserted;
+                if (inserted.length === 0) return old;
+                return {
+                    ...old,
+                    pages: merged.pages,
+                    pageParams: old.pageParams.length === merged.pages.length ? old.pageParams : [1],
+                };
+            }
+        );
+        if (inserted.length > 0) onLiveInsertedRef.current?.(inserted);
+        return inserted.length;
+    }, [pendingKey, queryClient, queryKey]);
+    const flushPendingRef = useRef(flushPending);
+    useEffect(() => {
+        flushPendingRef.current = flushPending;
+    }, [flushPending]);
+
+    // 定时合并：没暂停时每 liveFlushMs 插一次；暂停解除时立即补插一次。
+    useEffect(() => {
+        if (!live || livePaused) return;
+        flushPendingRef.current();
+        if (liveFlushMs <= 0) return;
+        const timer = setInterval(() => flushPendingRef.current(), liveFlushMs);
+        return () => clearInterval(timer);
+    }, [live, liveFlushMs, livePaused]);
+
     useEffect(() => {
         let cancelled = false;
 
@@ -815,6 +889,9 @@ export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?
             eventSourceRef.current?.close();
             eventSourceRef.current = null;
         };
+
+        // 筛选/页码一变（本 effect 依赖 queryKey）旧缓冲就不属于新列表了：丢掉。
+        pendingRef.current = [];
 
         if (!live) {
             clearReconnectTimer();
@@ -867,8 +944,9 @@ export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?
                 if (cancelled) return;
 
                 const streamParams = new URLSearchParams({ token });
-                if (latestLogIDRef.current > 0) {
-                    streamParams.set('since_id', String(latestLogIDRef.current));
+                const sinceID = Math.max(latestLogIDRef.current, pendingRef.current[0]?.id ?? 0);
+                if (sinceID > 0) {
+                    streamParams.set('since_id', String(sinceID));
                 }
                 const eventSource = new EventSource(`${API_BASE_URL}/api/v1/log/stream?${streamParams.toString()}`);
                 eventSourceRef.current = eventSource;
@@ -892,26 +970,13 @@ export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?
                         const log: RelayLog = JSON.parse(event.data);
                         if (!logMatchesTimeRange(log, startTime, endTime)) return;
                         if (!logMatchesLiveFilters(log, { endpoint, provider, model, severity, search, retried, hideModelTest, upstreamModelMismatch })) return;
-                        queryClient.setQueryData(
-                            queryKey,
-                            (old: InfiniteData<RelayLog[], number> | undefined) => {
-                                if (!old) {
-                                    return { pages: [[log]], pageParams: [1] };
-                                }
-
-                                const exists = old.pages.some((p) => p?.some((x) => x.id === log.id));
-                                if (exists) return old;
-
-                                const pages = old.pages.length > 0
-                                    ? [[log, ...(old.pages[0] ?? [])], ...old.pages.slice(1)]
-                                    : [[log]];
-                                return {
-                                    ...old,
-                                    pages,
-                                    pageParams: old.pageParams.length === pages.length ? old.pageParams : [1],
-                                };
-                            }
-                        );
+                        // 先进缓冲；「来一条插一条」且没暂停时立刻插，其余交给定时合并。
+                        pendingRef.current = bufferLog(pendingRef.current, log);
+                        if (liveFlushMsRef.current <= 0 && !livePausedRef.current) {
+                            flushPendingRef.current();
+                        } else {
+                            setPendingState({ key: pendingKey, count: pendingRef.current.length });
+                        }
                     } catch (e) {
                         logger.error('解析日志数据失败:', e);
                     }
@@ -943,7 +1008,7 @@ export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?
             reconnectAttemptRef.current = 0;
             setIsConnected(false);
         };
-    }, [apiKeyID, endpoint, hideModelTest, live, model, page, pageSize, provider, queryClient, queryKey, retried, search, severity, startTime, endTime, upstreamModelMismatch, userID]);
+    }, [apiKeyID, endpoint, hideModelTest, live, model, page, pageSize, pendingKey, provider, queryClient, queryKey, retried, search, severity, startTime, endTime, upstreamModelMismatch, userID]);
 
     const clear = useCallback(() => {
         queryClient.removeQueries({ queryKey, exact: true });
@@ -963,6 +1028,10 @@ export function useLogs(options: { pageSize?: number; userID?: number; apiKeyID?
         loadMore,
         refresh,
         clear,
+        /** 缓冲里等着插入的新日志条数（自动刷新暂停时累积）。 */
+        pendingCount,
+        /** 立即把缓冲插进列表（「显示 N 条新日志」按钮）。 */
+        flushPending,
     };
 }
 

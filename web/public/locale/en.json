@@ -1057,7 +1057,31 @@
       "channel": "Select channel",
       "key": "Automatic key",
       "model": "Model override",
-      "retry": "Retry on channel"
+      "retry": "Retry on channel",
+      "collapse": "Collapse live requests",
+      "expand": "Expand live requests",
+      "collapsedRescue": "Rescue {count}",
+      "collapsedRetrying": "Retrying {count}"
+    },
+    "autoRefresh": {
+      "label": "Auto refresh",
+      "off": "Off",
+      "live": "Live",
+      "s5": "5s",
+      "s10": "10s",
+      "s30": "30s",
+      "running": "Auto refreshing",
+      "runningLive": "Inserting live",
+      "reconnecting": "Stream down, polling on interval",
+      "paused": "Paused",
+      "pausedHidden": "tab in background",
+      "pausedDetail": "viewing details",
+      "pausedSelecting": "selecting text",
+      "pausedScrolled": "scrolled down",
+      "newCount": "{count} new",
+      "showNew": "Show",
+      "onlyFirstPage": "Auto refresh runs on page 1 only",
+      "hint": "New logs are inserted at the top on the chosen interval. Pauses while a detail is open, you scroll down, select text or the tab is hidden, so your place never jumps."
     },
     "list": {
       "search": "Search",

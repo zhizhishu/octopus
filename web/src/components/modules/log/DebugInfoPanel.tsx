@@ -114,7 +114,7 @@ function RouteBlock({ route }: { route: NonNullable<RelayLogDebugInfo['routes']>
                     <button
                         type="button"
                         onClick={() => setShowTrace(!showTrace)}
-                        className="mt-1.5 text-[11px] text-primary hover:underline"
+                        className="mt-1.5 text-[11px] text-primary hover:underline max-sm:-ml-1 max-sm:inline-flex max-sm:h-9 max-sm:items-center max-sm:px-1"
                     >
                         {showTrace ? '收起排序原因' : '看排序原因'}
                     </button>
@@ -201,7 +201,8 @@ function HeaderToggle({ label, headers, compact = false }: { label: string; head
                 aria-expanded={open}
                 className={cn(
                     'inline-flex items-center gap-1 rounded-md border border-border/70 bg-background/60 px-2 text-[11px] text-muted-foreground transition-colors hover:text-foreground',
-                    compact ? 'h-7' : 'h-8',
+                    // 手机上至少 36px 高，拇指好点。
+                    compact ? 'h-7 max-sm:h-9' : 'h-8 max-sm:h-9',
                 )}
             >
                 {label}（{headers.length}）
