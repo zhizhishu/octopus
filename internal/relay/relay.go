@@ -101,6 +101,9 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 	metrics.SetRequestEndpoint(requestEndpoint, c.Request.URL.Path)
 	metrics.SetAccessPlan(routeResult.AccessPlan, routeResult.AccessRouteRule, routeResult.AccessRouteUsed)
 	metrics.SetClientSession(clientSession)
+	// 调试模式：记入站请求头（凭据隐藏）和这次选路的原因。关闭时两行都是空操作。
+	metrics.enableDebugCapture(c.Request.Header)
+	metrics.debugRoute("primary", group, iter, stickyEnabled)
 
 	// 派生可被管理员或内部终止的请求上下文
 	clientRequest := c.Request
@@ -647,6 +650,7 @@ attemptChannels:
 				fallbackIter := balancer.NewIteratorWithSession(fallbackGroup, apiKeyID, requestModel, clientSessionKey, fallbackSticky)
 				fallbackIter.PrioritizeChannels(nativeProtocolChannelIDs(c.Request.Context(), inboundType, fallbackGroup.Items))
 				prioritizeResponsesSessionOwner(c.Request.Context(), fallbackIter, internalRequest, apiKeyID, userID)
+				metrics.debugRoute("fallback", fallbackGroup, fallbackIter, fallbackSticky)
 				if fallbackIter.Len() > 0 {
 					// Spilling to the model pool re-attempts targets that have just failed, so
 					// an upstream Retry-After applies here exactly as it does inside the rescue
@@ -1395,7 +1399,7 @@ retryWithAdapter:
 	if ra.metrics != nil {
 		ra.metrics.RequestSentTime = time.Now()
 	}
-	response, err := ra.sendRequest(outboundRequest)
+	response, err := ra.sendRequestObserved(outboundRequest)
 	if stopFirstByteKeepalive != nil {
 		stopFirstByteKeepalive()
 	}
@@ -1420,6 +1424,7 @@ retryWithAdapter:
 		if err != nil {
 			return response.StatusCode, fmt.Errorf("failed to read response body: %w", err)
 		}
+		ra.debugErrorBody(body)
 		upErr := newUpstreamError(response.StatusCode, body)
 		if d, ok := retryAfterFromHeader(response.Header); ok {
 			upErr.retryAfter = d
@@ -1431,6 +1436,7 @@ retryWithAdapter:
 			dropResponsesSessionCursor = true
 			_ = response.Body.Close()
 			log.Infof("openai responses upstream could not find previous_response_id on channel %s; retrying same key once without cursor", ra.channel.Name)
+			ra.debugNote("同一 Key 去掉 previous_response_id 再发一次")
 			goto retryWithAdapter
 		}
 		if !responsesEncryptedContentRecoveryTried && ra.shouldRecoverOpenAIResponsesInvalidEncryptedContent(response.StatusCode, upErr) {
@@ -1442,6 +1448,7 @@ retryWithAdapter:
 			dropResponsesEncryptedContent = true
 			_ = response.Body.Close()
 			log.Infof("openai responses upstream rejected encrypted reasoning content on channel %s; retrying same key once without encrypted content", ra.channel.Name)
+			ra.debugNote("同一 Key 去掉加密推理内容再发一次")
 			goto retryWithAdapter
 		}
 		if !streamAsNonStreamTried && ra.shouldFallbackAnthropicStreamToNonStream(response.StatusCode) {
@@ -1449,6 +1456,7 @@ retryWithAdapter:
 			forceNonStreamUpstream = true
 			_ = response.Body.Close()
 			log.Infof("anthropic stream upstream returned status %d on channel %s; retrying same key as non-stream and re-emitting SSE", response.StatusCode, ra.channel.Name)
+			ra.debugNote("同一 Key 改用非流式再发一次")
 			goto retryWithAdapter
 		}
 		if !fallbackTried && ra.shouldFallbackOpenAIResponsesToChat(response.StatusCode, upErr) {
@@ -1472,6 +1480,7 @@ retryWithAdapter:
 					return http.StatusBadRequest, bridgeErr
 				}
 				log.Infof("openai responses upstream returned compatibility status %d on channel %s; retrying same key via chat completions", response.StatusCode, ra.channel.Name)
+				ra.debugNote("同一 Key 改走 chat/completions 再发一次")
 				goto retryWithAdapter
 			}
 		}
@@ -2522,6 +2531,16 @@ func (ra *relayAttempt) outboundTLSFace() string {
 		return ""
 	}
 	return channelTLSFace(ra.channel)
+}
+
+// sendRequestObserved 是 sendRequest 外面的一层观察：调试模式下发之前只记时间，
+// 发完再只读地看一眼请求头/响应头。sendRequest 本身一个字节不改；
+// 关闭时 call == nil，两个钩子立即返回。
+func (ra *relayAttempt) sendRequestObserved(req *http.Request) (*http.Response, error) {
+	call := ra.debugBeginCall()
+	resp, err := ra.sendRequest(req)
+	ra.debugEndCall(call, req, resp, err)
+	return resp, err
 }
 
 func (ra *relayAttempt) sendRequest(req *http.Request) (*http.Response, error) {

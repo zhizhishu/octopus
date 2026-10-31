@@ -595,6 +595,9 @@ func DefaultSettings() []Setting {
 		// 取值刻意宽裕, 且可随时改回 0。初值可被 OCTOPUS_RELAY_REQUEST_TOTAL_TIMEOUT_SECONDS 影响。
 		{Key: SettingKeyRelayRequestTotalTimeoutSec, Value: defaultRelayRequestTotalTimeoutSeconds()},
 		{Key: SettingKeyUpstreamRequestBodyLog, Value: "0"},
+		{Key: SettingKeyLogMode, Value: LogModeNormal},                            // 默认普通：运行日志 warn 级
+		{Key: SettingKeyLogDebugAutoOffHours, Value: DefaultLogDebugAutoOffHours}, // 调试默认 24 小时后自动关
+		{Key: SettingKeyLogDebugSince, Value: "0"},
 		// 0 = 不启用（默认，保持旧行为）：只给"等上游响应头"加时限，SSE 正文不受影响。
 		// 启用后每次尝试按预算切断，失败照常换家/进自动救援，因此可随时回退为 0。
 		// 初始值可被 OCTOPUS_UPSTREAM_HEADER_TIMEOUT_SECONDS 影响（与相邻超时设置同规矩）；
@@ -819,6 +822,23 @@ func (s *Setting) Validate() error {
 		// 写成 "true" 会被 Atoi 解析失败、静默当成关闭，等于开关失灵。
 		if s.Value != "0" && s.Value != "1" {
 			return fmt.Errorf("%s must be 0 or 1", s.Key)
+		}
+		return nil
+	case SettingKeyLogMode:
+		if s.Value != LogModeNormal && s.Value != LogModeDebug {
+			return fmt.Errorf("%s must be %s or %s", s.Key, LogModeNormal, LogModeDebug)
+		}
+		return nil
+	case SettingKeyLogDebugAutoOffHours:
+		value, err := strconv.Atoi(s.Value)
+		if err != nil || value < 0 || value > MaxLogDebugAutoOffHours {
+			return fmt.Errorf("%s must be an integer between 0 and %d", s.Key, MaxLogDebugAutoOffHours)
+		}
+		return nil
+	case SettingKeyLogDebugSince:
+		value, err := strconv.ParseInt(s.Value, 10, 64)
+		if err != nil || value < 0 {
+			return fmt.Errorf("%s must be a non-negative unix timestamp", s.Key)
 		}
 		return nil
 	case SettingKeyRouteModeOverride:

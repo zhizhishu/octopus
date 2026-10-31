@@ -112,6 +112,8 @@ func ImportAndInitCache(ctx context.Context, dump *model.DBDump) (*model.DBImpor
 	if err != nil {
 		return res, err
 	}
+	// 备份里可能带着另一种日志模式：导入后让运行日志级别跟上（到点的调试会被自动关掉）。
+	LogModeApply()
 	refreshCtx, cancel := context.WithTimeout(context.Background(), cacheOperationTimeout)
 	defer cancel()
 	if err := refreshRuntimeCaches(refreshCtx); err != nil {
