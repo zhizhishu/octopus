@@ -176,7 +176,7 @@ export type RouteModeOverrideValue = 'spread' | 'fill_first';
 export const ROUTE_MODE_OVERRIDE_VALUES: readonly RouteModeOverrideValue[] = ['spread', 'fill_first'];
 
 export function routeModeOverrideLabel(value: RouteModeOverrideValue): string {
-    return value === 'spread' ? '轮流' : '按顺序';
+    return value === 'spread' ? '轮询' : '优先';
 }
 
 export function useRouteModeOverrideSetting() {

@@ -1,18 +1,22 @@
 'use client';
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { DragDropContext, Draggable, Droppable, type DropResult } from '@hello-pangea/dnd';
 import { useTranslations } from 'next-intl';
 import {
     ArrowUpToLine,
     BadgeDollarSign,
     Check,
     GitBranch,
+    GripVertical,
+    ListOrdered,
     MapIcon,
     Loader2,
     Maximize2,
     Minimize2,
     PencilLine,
     Plus,
+    Repeat,
     Save,
     Search,
     ShieldCheck,
@@ -95,6 +99,19 @@ import {
     type FrozenOrder,
     type SaveOutcome,
 } from './edit-state';
+import {
+    displayPriority,
+    moveItem,
+    renumberFirst,
+    rotatePeers,
+    setRotatePriority,
+    simpleModeOf,
+    sortByTryOrder,
+    switchToFirst,
+    switchToRotate,
+    tryLevels,
+    type SimpleRouteMode,
+} from './route-mode';
 
 type UpdateRoutesPayload = Parameters<ReturnType<typeof useUpdateAccessPlanRouteTargets>['mutateAsync']>[0];
 type AccessPlanRouteSaveResult = Awaited<ReturnType<ReturnType<typeof useUpdateAccessPlanRouteTargets>['mutateAsync']>>;
@@ -203,20 +220,25 @@ const ACCESS_PLAN_TEXT = {
         targetCount: '{count} 条线路',
         requestModel: '请求模型',
         requestModelHint: '用户调用时写的模型名',
-        modeSpread: '轮流',
-        modeSpreadTiered: '分层轮流',
-        modeFillFirst: '按顺序',
+        modeSpread: '轮询',
+        modeFillFirst: '优先',
         modeLabel: '分配方式',
-        modeFillFirstOption: '按顺序（一直用第一个，出错才换）',
-        modeSpreadOption: '轮流（在这些渠道间轮流分配）',
-        modeSpreadTieredOption: '分层轮流（数字大的一层先用，层内轮流）',
-        modeSpreadHint: '轮流：请求在这些渠道间轮流分配，分摊压力；出错的会被跳过（渠道自身的「渠道优先级」仍然先看）。',
-        modeSpreadTieredHint: '分层轮流：数字大的一层先用，同一层里轮流；整层都不可用才换下一层。',
-        modeFillFirstHint: '按顺序：一直用排第一的渠道，它出错、限流或冷却时才换下一个（上游缓存命中最好）。',
+        modeFillFirstShort: '从上往下依次用，出错才换',
+        modeSpreadShort: '数字大的先用，一样的轮流',
+        modeSpreadHint: '轮询：优先级数字大的先用，数字一样的轮流；这一级都不能用，才换数字小的。',
+        modeFillFirstHint: '优先：从上往下依次用，出错、限流或冷却才换下一个（上游缓存命中最好）。',
+        tryOrder: '实际顺序',
+        tryOrderThen: '都不能用时',
+        tryOrderRotate: '轮流',
+        tryOrderNone: '没有开着的渠道',
+        priorityLabel: '优先级',
+        dragHint: '拖 ⠿ 调整先后',
+        lineSwitchHint: '不想用这个渠道就关掉（渠道和实际模型跟着渠道页自动同步，这里不改）',
+        dragHandle: '拖动调整先后',
+        priorityInputHint: '优先级：数字大的先用，一样的轮流',
         upstreamModel: '实际模型',
         upstreamModelHint: '转发给这个渠道时用的模型名，可以和请求模型不同',
-        orderPrefix: '排第',
-        orderValueHint: '排序值 {value}：越小越靠前',
+        orderLabel: '第 {order} 个',
         noChannels: '还没有渠道',
         missingChannel: '渠道 #{id} 已删除',
         empty: '这个模型还没有渠道，用上方「添加渠道」加一个',
@@ -230,12 +252,12 @@ const ACCESS_PLAN_TEXT = {
         groupRouteHint: '扣费按每条线路显示的计费模型和倍率算。流式回复一旦开始输出，就不会再换渠道。',
         quickEdit: '编辑',
         quickEditTitle: '编辑路由',
-        quickEditDescription: '这个模型用哪些渠道、谁先谁后、转发时用什么模型名。',
+        quickEditDescription: '这个模型用哪些渠道、谁先用、转发时用什么模型名。',
         addChannel: '添加渠道：',
         addChannelPlaceholder: '选择渠道…',
         close: '关闭',
         hiddenStale: '{count} 条线路已失效（渠道已删除或不再提供该模型）',
-        fallback: '都失败时',
+        fallback: '都不能用时',
         multiplier: '倍率',
         unset: '未设置',
         billingSourceRequest: '按请求模型计费',
@@ -252,21 +274,19 @@ const ACCESS_PLAN_TEXT = {
         promptReplace: '替换原有 system',
         promptPlaceholder: '可选：只对这个模型生效的 system 提示词',
         advancedTitle: '更多设置',
-        advancedHint: '分配方式、都失败时、提示词',
+        advancedHint: '都不能用时、提示词',
         moveToTopFillFirst: '排到第一',
-        moveToTopTiered: '升到最高层',
-        moveToTopFillFirstHint: '把这个渠道排到第 1 个，优先使用',
-        moveToTopTieredHint: '把这个渠道单独放到最高一层（其他渠道的数字不变）',
-        moveToTopAtTop: '已经在最高层',
-        moveToTopSpreadHint: '「轮流」不分先后。要排先后，先在「更多设置」里改成「按顺序」或「分层轮流」',
-        orderFillFirstHint: '第 {order} 个用。＋ 往前排，− 往后排',
-        orderTieredHint: '第 {tier} 层：数字越大越先用，同一层里轮流。＋ 升一层，− 降一层',
-        orderSpreadHint: '现在所有渠道轮流。点 ＋ / − 会改成「分层轮流」，数字大的先用',
-        moveUp: '往前排',
-        moveDown: '往后排',
-        tierUp: '升一层',
-        tierDown: '降一层',
-        tierLabel: '层',
+        moveToTopTiered: '调到最高',
+        moveToTopFillFirstHint: '把这个渠道排到第 1 个，最先用',
+        moveToTopTieredHint: '把它的优先级调到比其他都大，最先用（其他渠道不变）',
+        moveToTopAtTop: '已经是最高',
+        orderFillFirstHint: '第 {order} 个用：从上往下依次用，出错才换。＋ 往前，− 往后',
+        orderTieredHint: '优先级 {tier}：数字大的先用，一样的轮流。＋ 调高，− 调低',
+        orderTieredPeersHint: '优先级 {tier}：和 {peers} 轮流。数字大的先用。＋ 调高，− 调低',
+        moveUp: '往前',
+        moveDown: '往后',
+        tierUp: '调高（更先用）',
+        tierDown: '调低',
         batchTitle: '批量编辑（JSON）',
         batchHint: '一次导入或导出整个方案的路由',
         batchButtonHint: '用 JSON 批量导入 / 导出路由',
@@ -463,19 +483,13 @@ function groupedRouteTargets(targets: AccessPlanRouteTarget[]) {
             // 画布必须按「谁先被尝试」从上往下画，否则同一个 + 会让节点往下掉、看起来被贬到队尾，
             // 而选路其实先打它 —— 这正是审查抓到的「画布和选路对穿」。
             const rowMode = normalizeRouteMode(routeTargets.find((target) => target.mode !== undefined)?.mode);
-            const tiered = rowMode === SPREAD_TIERED_MODE;
             return {
                 requestKey,
                 requestModel: cleanOneMillionModelName(routeTargets[0]?.request_model ?? '') || accessPlanText('routes.unset'),
                 mode: rowMode,
                 // 冻结排序期间每张卡的真实顺位（见 edit-state.ts 的 applyFrozenOrder）；平时为空 = 按下标。
                 ranks: undefined as number[] | undefined,
-                targets: [...routeTargets].sort((a, b) => {
-                    const byPriority = tiered
-                        ? (b.priority || 0) - (a.priority || 0)
-                        : (a.priority || 0) - (b.priority || 0);
-                    return byPriority !== 0 ? byPriority : (a.channel_id || 0) - (b.channel_id || 0);
-                }),
+                targets: sortByTryOrder(routeTargets, rowMode),
             };
         })
         .sort((a, b) => a.requestModel.localeCompare(b.requestModel));
@@ -561,51 +575,52 @@ function activeRouteTargets(targets: AccessPlanRouteTarget[], index: ReturnType<
     return targets.filter((target) => !isPersistedStaleTarget(target, index));
 }
 
+/** 同一条规则（同请求模型）的候选在 targets 里的下标。 */
+function ruleIndexes(targets: AccessPlanRouteTarget[], requestModel: string): number[] {
+    const key = cleanOneMillionModelName(requestModel).toLowerCase();
+    return targets.flatMap((target, index) => (cleanOneMillionModelName(target.request_model).toLowerCase() === key ? [index] : []));
+}
+
+/** 用 fn 改写一整条规则（fn 收到这条规则的候选、返回同样多个），其他规则原样不动。 */
+function mapRule(
+    targets: AccessPlanRouteTarget[],
+    requestModel: string,
+    fn: (group: AccessPlanRouteTarget[]) => AccessPlanRouteTarget[],
+): AccessPlanRouteTarget[] {
+    const indexes = ruleIndexes(targets, requestModel);
+    if (indexes.length === 0) return targets;
+    const group = indexes.map((index) => targets[index]);
+    const changed = fn(group);
+    const byOld = new Map(group.map((target, i) => [target, changed[i]]));
+    // fn 可能重新排过序：按「旧对象 → 新对象」对回去，保持 targets 里的位置不变。
+    const sortedChanged = new Map<AccessPlanRouteTarget, AccessPlanRouteTarget>();
+    changed.forEach((next) => {
+        const old = group.find((target) => target.id !== undefined ? target.id === next.id : target.channel_id === next.channel_id && target.upstream_model === next.upstream_model);
+        if (old) sortedChanged.set(old, next);
+    });
+    return targets.map((target, index) => (
+        indexes.includes(index) ? (sortedChanged.get(target) ?? byOld.get(target) ?? target) : target
+    ));
+}
+
 /**
- * 「到顶」。两档语义相反，必须分开处理：
- * - 优先填充：数字是顺位，越小越先 → 重编号 1..N，让被点项拿到 1。
- * - 分层轮询：数字是层级，越大越先 → 只把被点项抬到「比全场最大值再高一档」，
- *   其余候选的数字一个都不动（全行重编号会把「同一层」的关系抹掉，同层轮询就没了）。
+ * 「到顶」。两种方式语义相反，分开处理：
+ * - 优先：按现在的顺序把被点项挪到第一个，重编 1..N。
+ * - 轮询：只把被点项的数字调到「比别的都大 1」，其余候选的数字一个都不动（同级轮流关系保留）。
  */
 function moveRouteTargetToTop(targets: AccessPlanRouteTarget[], targetIndex: number) {
     const selectedTarget = targets[targetIndex];
     if (!selectedTarget) return targets;
-
-    const requestKey = cleanOneMillionModelName(selectedTarget.request_model).toLowerCase();
-    const peers = targets
-        .map((target, index) => ({ target, index }))
-        .filter((item) => cleanOneMillionModelName(item.target.request_model).toLowerCase() === requestKey)
-        .sort((a, b) => (
-            (a.target.priority || 0) - (b.target.priority || 0)
-            || (a.target.channel_id || 0) - (b.target.channel_id || 0)
-            || a.index - b.index
-        ));
-    if (peers.length === 0) return targets;
-
-    if (normalizeRouteMode(peers[0].target.mode) === SPREAD_TIERED_MODE) {
-        const maxPriority = peers.reduce(
-            (max, item) => Math.max(max, clampRoutePriority(item.target.priority)),
-            1,
-        );
-        // 已经顶到数值上限就没法再「严格更高」，原样返回（按钮侧同步禁用，不假装成功）。
-        if (maxPriority >= Number.MAX_SAFE_INTEGER) return targets;
-        return targets.map((target, index) => (
-            index === targetIndex
-                ? { ...target, priority: maxPriority + 1, priority_overridden: true, mode: SPREAD_TIERED_MODE }
-                : target
-        ));
-    }
-
-    const ordered = [
-        { target: selectedTarget, index: targetIndex },
-        ...peers.filter((item) => item.index !== targetIndex),
-    ];
-
-    return targets.map((target, index) => {
-        const position = ordered.findIndex((item) => item.index === index);
-        return position >= 0
-            ? { ...target, priority: clampRoutePriority(position + 1), priority_overridden: true }
-            : target;
+    return mapRule(targets, selectedTarget.request_model, (group) => {
+        const mode = normalizeRouteMode(group.find((target) => target.mode !== undefined)?.mode);
+        const own = group.indexOf(selectedTarget);
+        if (simpleModeOf(mode) === 'rotate') {
+            const maxPriority = group.reduce((max, target) => Math.max(max, displayPriority(target, mode)), 1);
+            if (maxPriority >= Number.MAX_SAFE_INTEGER) return group;
+            return setRotatePriority(group, own, maxPriority + 1);
+        }
+        const ordered = sortByTryOrder(group, mode);
+        return renumberFirst([selectedTarget, ...ordered.filter((target) => target !== selectedTarget)]);
     });
 }
 
@@ -614,46 +629,16 @@ function moveRouteTargetToTop(targets: AccessPlanRouteTarget[], targetIndex: num
  * 优先填充恒为 false（它的「到顶」总能通过重编号达成）。
  */
 function isRouteTargetAtTopTier(target: AccessPlanRouteTarget, peers: AccessPlanRouteTarget[]) {
-    if (normalizeRouteMode(peers[0]?.mode ?? target.mode) !== SPREAD_TIERED_MODE) return false;
+    const mode = normalizeRouteMode(peers[0]?.mode ?? target.mode);
+    if (simpleModeOf(mode) !== 'rotate') return false;
     const maxPriority = peers.reduce(
-        (max, item) => Math.max(max, clampRoutePriority(item.priority)),
+        (max, item) => Math.max(max, displayPriority(item, mode)),
         1,
     );
     if (maxPriority >= Number.MAX_SAFE_INTEGER) return true;
-    const own = clampRoutePriority(target.priority);
-    const sameTier = peers.filter((item) => clampRoutePriority(item.priority) === own);
+    const own = displayPriority(target, mode);
+    const sameTier = peers.filter((item) => displayPriority(item, mode) === own);
     return own === maxPriority && sameTier.length === 1;
-}
-
-// 上移一位：同一请求模型组内，把点中的候选与它前一个互换，其余 priority 顺延。
-// 这是新手最直观的「谁在上面谁先用」手势：点一下往上一格，连点几下就到顶。
-// ⚠️ 目前没有接到界面上（grep 只有定义、无调用点）。若将来要接，必须按模式分岔：
-// 分层轮询的数字是层级（越大越先），不能像优先填充那样「重编号 1..N」——那会把同层关系抹掉。
-function moveRouteTargetUpOne(targets: AccessPlanRouteTarget[], targetIndex: number) {
-    const selectedTarget = targets[targetIndex];
-    if (!selectedTarget) return targets;
-
-    const requestKey = cleanOneMillionModelName(selectedTarget.request_model).toLowerCase();
-    const peers = targets
-        .map((target, index) => ({ target, index }))
-        .filter((item) => cleanOneMillionModelName(item.target.request_model).toLowerCase() === requestKey)
-        .sort((a, b) => (
-            (a.target.priority || 0) - (b.target.priority || 0)
-            || (a.target.channel_id || 0) - (b.target.channel_id || 0)
-            || a.index - b.index
-        ));
-    const position = peers.findIndex((item) => item.index === targetIndex);
-    if (position <= 0) return targets;
-
-    const ordered = [...peers];
-    [ordered[position - 1], ordered[position]] = [ordered[position], ordered[position - 1]];
-
-    return targets.map((target, index) => {
-        const nextPosition = ordered.findIndex((item) => item.index === index);
-        return nextPosition >= 0
-            ? { ...target, priority: clampRoutePriority(nextPosition + 1), priority_overridden: true }
-            : target;
-    });
 }
 
 function CreatePlanPanel({
@@ -1251,10 +1236,8 @@ type TargetNodeData = {
     fillFirst: boolean;
     // 轮询家族（纯轮询或分层轮询）：显示数字 + −/+ 步进器，数字越大越先尝试。
     spreadFamily: boolean;
-    // 轮询家族里具体是哪一档：true = 分层轮询(6)，false = 纯轮询(1)。
-    // 徽标只认模式本身，不按「数字是否全都相同」推断 —— 否则把两个数字设成一样时
-    // 徽标会从「分层轮询」翻成「同级轮询」，看起来像模式被改回去了。
-    spreadTiered: boolean;
+    /** 轮询里和它数字一样、会轮流的其他渠道名（悬停提示用）；没有就是空串。 */
+    rotatePeers: string;
     upstreamModel: string;
     enabled: boolean;
     fallback: string;
@@ -1296,11 +1279,7 @@ const PlanFlowCard = memo(function PlanFlowCard({ data }: NodeProps<PlanFlowNode
 
 const RequestFlowCard = memo(function RequestFlowCard({ data }: NodeProps<RequestFlowNode>) {
     const modeKey = data.mode !== undefined
-        ? (Number(data.mode) === SPREAD_TIERED_MODE
-            ? 'routes.modeSpreadTiered'
-            : isSpreadMode(data.mode)
-                ? 'routes.modeSpread'
-                : 'routes.modeFillFirst')
+        ? (isSpreadMode(data.mode) ? 'routes.modeSpread' : 'routes.modeFillFirst')
         : null;
     const modeLabel = modeKey ? accessPlanText(modeKey) : null;
     const modeHint = modeKey ? accessPlanText(`${modeKey}Hint`) : undefined;
@@ -1344,9 +1323,9 @@ const TargetFlowCard = memo(function TargetFlowCard({ data }: NodeProps<TargetFl
     };
     const priorityTitle = data.fillFirst
         ? accessPlanText('routes.orderFillFirstHint', { order: data.orderIndex })
-        : data.spreadTiered
-            ? accessPlanText('routes.orderTieredHint', { tier: priority })
-            : accessPlanText('routes.orderSpreadHint');
+        : data.rotatePeers
+            ? accessPlanText('routes.orderTieredPeersHint', { tier: priority, peers: data.rotatePeers })
+            : accessPlanText('routes.orderTieredHint', { tier: priority });
     return (
         <div
             className={cn('grid grid-cols-[minmax(84px,1.1fr)_minmax(96px,1.4fr)_auto] items-center gap-3 rounded-2xl border bg-card/90 px-3 py-2', data.enabled ? 'border-emerald-500/25' : 'border-border opacity-65')}
@@ -1363,7 +1342,7 @@ const TargetFlowCard = memo(function TargetFlowCard({ data }: NodeProps<TargetFl
                     <span className="shrink-0">·</span>
                     {data.fillFirst ? (
                         <>
-                            <span className="shrink-0 font-medium text-foreground/80">{accessPlanText('routes.orderPrefix')} {data.orderIndex}</span>
+                            <span className="shrink-0 font-medium text-foreground/80">{accessPlanText('routes.orderLabel', { order: data.orderIndex })}</span>
                             <div
                                 className="nodrag nopan pointer-events-auto ml-0.5 inline-flex shrink-0 items-center gap-0.5"
                                 onPointerDown={(event) => event.stopPropagation()}
@@ -1383,10 +1362,6 @@ const TargetFlowCard = memo(function TargetFlowCard({ data }: NodeProps<TargetFl
                                 >
                                     −
                                 </button>
-                                {/* 排序值和「排第 N」一样时不重复显示；有空档（如 1/5/9）才露出来，免得点了 ＋ 看不出变化。 */}
-                            {priority !== data.orderIndex ? (
-                                <span className="min-w-3.5 text-center font-semibold text-foreground" title={accessPlanText('routes.orderValueHint', { value: priority })}>{priority}</span>
-                            ) : null}
                                 <button
                                     type="button"
                                     className="flex size-4 items-center justify-center rounded border border-border/70 bg-background leading-none text-foreground hover:bg-muted disabled:opacity-40"
@@ -1403,12 +1378,10 @@ const TargetFlowCard = memo(function TargetFlowCard({ data }: NodeProps<TargetFl
                             </div>
                         </>
                     ) : data.spreadFamily ? (
-                        // 分层轮询：数字就是优先级，越大越先被尝试；同数字内仍然轮询。
-                        // 这里 + 是「抬数字」= 更优先，与上面优先填充的顺位语义相反（顺位越小越先）。
+                        // 轮询：数字就是优先级，越大越先被尝试；数字一样的轮流。
+                        // 这里 + 是「抬数字」= 更优先，与上面「优先」的顺位语义相反（顺位越小越先）。
                         <>
-                            <span className="shrink-0 rounded bg-emerald-500/10 px-1 py-0.5 font-medium text-emerald-600 dark:text-emerald-400">
-                                {data.spreadTiered ? accessPlanText('routes.modeSpreadTiered') : accessPlanText('routes.modeSpread')}
-                            </span>
+                            <span className="shrink-0 font-medium text-foreground/80">{accessPlanText('routes.priorityLabel')}</span>
                             <div
                                 className="nodrag nopan pointer-events-auto ml-0.5 inline-flex shrink-0 items-center gap-0.5"
                                 onPointerDown={(event) => event.stopPropagation()}
@@ -1443,11 +1416,16 @@ const TargetFlowCard = memo(function TargetFlowCard({ data }: NodeProps<TargetFl
                                     +
                                 </button>
                             </div>
+                            {data.rotatePeers ? (
+                                <span className="inline-flex shrink-0 items-center gap-0.5 font-medium text-emerald-600 dark:text-emerald-400">
+                                    <Repeat className="size-2.5" />{accessPlanText('routes.tryOrderRotate')}
+                                </span>
+                            ) : null}
                         </>
                     ) : (
                         // 兜底：spreadFamily = !fillFirst，正常构造下走不到这里。留着只是为了
                         // 万一有别的构造点忘了传 spreadFamily 时不至于整行空白。
-                        <span className="shrink-0 rounded bg-emerald-500/10 px-1 py-0.5 font-medium text-emerald-600 dark:text-emerald-400">{accessPlanText('routes.modeSpread')}</span>
+                        <span className="shrink-0 font-medium text-foreground/80">{accessPlanText('routes.modeSpread')}</span>
                     )}
                 </div>
             </div>
@@ -1613,7 +1591,6 @@ function buildRouteFlow(
             // 取首项会变成「看哪个渠道恰好排第一」，模式的判定不该跟着排序跑。
             const rowMode = row.mode;
             const isFillFirstMode = !isSpreadMode(rowMode);
-            const spreadTiered = rowMode === SPREAD_TIERED_MODE;
             const prioritySet = new Set(row.targets.map((tgt) => tgt.priority || 0));
             const showPriority = prioritySet.size > 1;
             const startY = rowY + (rowH - targetsH) / 2;
@@ -1633,12 +1610,14 @@ function buildRouteFlow(
                         channelId: target.channel_id,
                         targetId: target.id,
                         laneId: reqId,
-                        priority: clampRoutePriority(target.priority || 1),
+                        priority: displayPriority(target, rowMode),
                         orderIndex: row.ranks?.[targetIndex] ?? targetIndex + 1,
                         showPriority,
                         fillFirst: isFillFirstMode,
                         spreadFamily: !isFillFirstMode,
-                        spreadTiered,
+                        rotatePeers: rotatePeers(target, row.targets, rowMode)
+                            .map((peer) => channelNameByID.get(peer.channel_id) ?? `#${peer.channel_id}`)
+                            .join('、'),
                         upstreamModel: cleanOneMillionModelName(target.upstream_model || accessPlanText('routes.unset')),
                         enabled: target.enabled,
                         fallback: fallbackModeLabel(target.fallback_mode, 'card'),
@@ -2141,217 +2120,158 @@ function RouteFlowCanvas(props: RouteFlowCanvasProps) {
     );
 }
 
+/**
+ * 编辑弹窗里的一行。渠道、实际模型只读：渠道一有变化（启用 / 停用 / 改模型）后端就会自动同步
+ * （op.AccessPlanSyncEnabledChannels），在这里改渠道、改实际模型、删掉一行，下次同步都会被改回来
+ * （删掉的还会以「开着」的状态加回来），所以只留真正存得住的：先后（拖动 / 数字）、开关、到顶。
+ */
 function RouteTargetEditorCard({
-    planId,
     target,
     index,
     peerTargets,
-    channels,
-    requestModelListId,
-    upstreamModels,
-    modelsForChannel,
+    channelName,
     updateTarget,
-    removeTarget,
     moveTargetToTop,
-    compact = false,
-    idPrefix = 'access-plan-upstream-models',
-    lockRequestModel = false,
+    leading,
+    dragging = false,
 }: {
-    planId: number;
     target: AccessPlanRouteTarget;
     index: number;
-    /** 同一条规则（同 request_model）的全部候选，用来判断分层下是否已经在最高层。 */
+    /** 同一条规则（同 request_model）的全部候选，用来判断是否已经最先用。 */
     peerTargets?: AccessPlanRouteTarget[];
-    channels: Array<{ id: number; name: string; enabled: boolean }>;
-    requestModelListId: string;
-    upstreamModels: string[];
-    modelsForChannel: (channelId: number) => string[];
+    channelName: string;
     updateTarget: (index: number, patch: Partial<AccessPlanRouteTarget>) => void;
-    removeTarget: (index: number) => void;
     moveTargetToTop?: (index: number) => void;
-    compact?: boolean;
-    idPrefix?: string;
-    lockRequestModel?: boolean;
+    /** 行首：优先 = 拖动手柄 + 第 N 个；轮询 = 优先级步进器。 */
+    leading?: React.ReactNode;
+    dragging?: boolean;
 }) {
     const t = accessPlanText;
-    const upstreamListId = `${idPrefix}-${planId}-${index}`;
-    const selectedChannelKnown = target.channel_id <= 0 || channels.some((channel) => channel.id === target.channel_id);
-    // 「到顶」按钮在三档里的含义不同，文案和可用性都必须跟着走，否则就是审查抓到的
-    // 「点了提示已更新、回读全是 1」的假按钮。
     const rowMode = normalizeRouteMode(target.mode);
-    const pureSpreadMode = rowMode === 1;
-    const tieredMode = rowMode === SPREAD_TIERED_MODE;
+    const tieredMode = simpleModeOf(rowMode) === 'rotate';
     const tierPeers = peerTargets && peerTargets.length > 0 ? peerTargets : [target];
     const atTopTier = tieredMode && isRouteTargetAtTopTier(target, tierPeers);
+    const firstInOrder = !tieredMode && sortByTryOrder(tierPeers, rowMode)[0] === target;
     const moveToTopDisabled = !moveTargetToTop
         || cleanOneMillionModelName(target.request_model).length === 0
-        || pureSpreadMode
-        || atTopTier;
-    const moveToTopTitle = pureSpreadMode
-        ? t('routes.moveToTopSpreadHint')
-        : tieredMode
-            ? (atTopTier ? t('routes.moveToTopAtTop') : t('routes.moveToTopTieredHint'))
-            : t('routes.moveToTopFillFirstHint');
+        || atTopTier
+        || firstInOrder;
+    const moveToTopTitle = tieredMode
+        ? (atTopTier ? t('routes.moveToTopAtTop') : t('routes.moveToTopTieredHint'))
+        : t('routes.moveToTopFillFirstHint');
     const moveToTopLabel = tieredMode ? t('routes.moveToTopTiered') : t('routes.moveToTopFillFirst');
+    const upstream = cleanOneMillionModelName(target.upstream_model);
 
     return (
-        <div className={cn('min-w-0 rounded-xl border border-border/80 bg-muted/15', compact ? 'p-2.5' : 'p-3')}>
-            <div className={cn('grid min-w-0 gap-2 xl:items-end', lockRequestModel ? 'xl:grid-cols-[minmax(120px,0.9fr)_minmax(0,1fr)_auto]' : 'xl:grid-cols-[minmax(0,1fr)_minmax(120px,0.8fr)_minmax(0,1fr)_auto]')}>
-                {/* In the per-model quick-edit modal the request model is fixed (shown in
-                    the title), so the redundant per-target request-model input is hidden;
-                    it stays editable only in the full list where a new mapping is added. */}
-                {!lockRequestModel && (
-                    <label className="grid min-w-0 gap-1 text-xs text-muted-foreground" title={t('routes.requestModelHint')}>
-                        {t('routes.requestModel')}
-                        <Input
-                            value={target.request_model}
-                            list={requestModelListId}
-                            onChange={(event) => updateTarget(index, { request_model: cleanOneMillionModelName(event.target.value) })}
-                            placeholder={t('routes.requestModel')}
-                            disabled={lockRequestModel}
-                            className="h-9 min-w-0 rounded-xl"
-                        />
-                    </label>
-                )}
-                <label className="grid min-w-0 gap-1 text-xs text-muted-foreground">
-                    {t('routes.targetSummary')}
-                    <SearchableSelect
-                        value={String(target.channel_id)}
-                        onValueChange={(value) => {
-                            const channelId = Number(value);
-                            updateTarget(index, {
-                                channel_id: channelId,
-                                upstream_model: modelsForChannel(channelId)[0] ?? '',
-                            });
-                        }}
-                        options={[
-                            ...(!selectedChannelKnown
-                                ? [{ value: String(target.channel_id), label: t('routes.missingChannel', { id: target.channel_id }) }]
-                                : []),
-                            ...(channels.length === 0
-                                ? [{ value: '0', label: t('routes.noChannels'), disabled: true }]
-                                : []),
-                            ...channels
-                                .filter((channel) => channel.enabled !== false || channel.id === target.channel_id)
-                                .map((channel) => ({
-                                    value: String(channel.id),
-                                    label: `#${channel.id} ${channel.name}`,
-                                    keywords: channel.name,
-                                })),
-                        ]}
-                        placeholder={t('routes.targetSummary')}
-                        searchPlaceholder={t('routes.channelSearch')}
-                        emptyText={t('routes.channelSearchEmpty')}
-                        className="h-9 w-full"
-                    />
-                </label>
-                <datalist id={upstreamListId}>
-                    {upstreamModels.map((model) => <option key={model} value={model} />)}
-                </datalist>
-                <label className="grid min-w-0 gap-1 text-xs text-muted-foreground" title={t('routes.upstreamModelHint')}>
-                    {t('routes.upstreamModel')}
-                    <Input
-                        value={target.upstream_model}
-                        list={upstreamListId}
-                        onChange={(event) => updateTarget(index, { upstream_model: cleanOneMillionModelName(event.target.value) })}
-                        placeholder={t('routes.upstreamModel')}
-                        className="h-9 min-w-0 rounded-xl"
-                    />
-                </label>
-                <div className="flex min-w-0 flex-wrap items-center gap-2 xl:justify-end">
-                    <label className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
-                        <Switch
-                            checked={target.enabled}
-                            onCheckedChange={(enabled) => updateTarget(index, { enabled })}
-                        />
-                        {t('status.enabled')}
-                    </label>
-                    <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="h-8 shrink-0 gap-1 rounded-xl text-xs"
-                        disabled={moveToTopDisabled}
-                        onClick={() => moveTargetToTop?.(index)}
-                        title={moveToTopTitle}
-                    >
-                        <ArrowUpToLine className="size-3.5" />
-                        {moveToTopLabel}
-                    </Button>
-                    <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        className="shrink-0 rounded-xl text-muted-foreground hover:text-destructive"
-                        onClick={() => removeTarget(index)}
-                        aria-label={t('actions.delete')}
-                    >
-                        <Trash2 className="size-4" />
-                    </Button>
+        <div className={cn(
+            'grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 rounded-xl border border-border/80 bg-muted/15 p-2.5 sm:grid-cols-[auto_minmax(0,1fr)_auto]',
+            !target.enabled && 'opacity-70',
+            dragging && 'border-primary/50 bg-card shadow-lg',
+        )}>
+            {leading ? <div className="col-span-2 flex min-w-0 items-center gap-2 sm:col-span-1">{leading}</div> : null}
+            <div className="min-w-0">
+                <div className="flex min-w-0 items-center gap-1.5">
+                    <span className={cn('size-2 shrink-0 rounded-full', target.enabled ? 'bg-emerald-500' : 'bg-muted-foreground')} />
+                    <span className="truncate text-sm font-bold text-foreground">{channelName}</span>
+                    <span className="shrink-0 text-[11px] text-muted-foreground">#{target.channel_id}</span>
+                </div>
+                <div className="mt-0.5 truncate text-[11px] text-muted-foreground" title={t('routes.upstreamModelHint')}>
+                    {t('routes.upstreamModel')} <span className="font-mono text-foreground/80">{upstream || t('routes.unset')}</span>
                 </div>
             </div>
+            <div className="flex shrink-0 items-center gap-2">
+                <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 shrink-0 gap-1 rounded-xl px-2 text-xs"
+                    disabled={moveToTopDisabled}
+                    onClick={() => moveTargetToTop?.(index)}
+                    title={moveToTopTitle}
+                    aria-label={moveToTopLabel}
+                >
+                    <ArrowUpToLine className="size-3.5" />
+                    <span className="hidden md:inline">{moveToTopLabel}</span>
+                </Button>
+                <label className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground" title={t('routes.lineSwitchHint')}>
+                    <Switch
+                        checked={target.enabled}
+                        onCheckedChange={(enabled) => updateTarget(index, { enabled })}
+                    />
+                    {t('status.enabled')}
+                </label>
+            </div>
+        </div>
+    );
+}
 
-            {/* 更多设置：分配方式、都失败时、提示词 —— 默认折叠 */}
-            <details className="mt-2 min-w-0 rounded-xl border border-border/60 bg-background/40">
-                <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-2.5 py-2 text-xs font-medium text-foreground [&::-webkit-details-marker]:hidden">
-                    <span className="min-w-0 truncate">{t('routes.advancedTitle')}</span>
-                    <span className="min-w-0 truncate text-[11px] font-normal text-muted-foreground">{t('routes.advancedHint')}</span>
-                </summary>
-                <div className="grid min-w-0 gap-2 border-t border-border/60 p-2.5">
-                    <div className="grid min-w-0 gap-2 sm:grid-cols-[minmax(150px,1fr)]">
-                        <label className="grid min-w-0 gap-1 text-xs text-muted-foreground">
-                            {t('routes.modeLabel')}
-                            <select
-                                value={normalizeRouteMode(target.mode)}
-                                onChange={(event) => updateTarget(index, { mode: Number(event.target.value) as 1 | 3 | 6 })}
-                                aria-label={t('routes.modeLabel')}
-                                title={t(normalizeRouteMode(target.mode) === 3 ? 'routes.modeFillFirstHint' : normalizeRouteMode(target.mode) === SPREAD_TIERED_MODE ? 'routes.modeSpreadTieredHint' : 'routes.modeSpreadHint')}
-                                className="h-9 w-full min-w-0 rounded-xl border border-input bg-background px-3 text-sm text-foreground"
-                            >
-                                <option value={3}>{t('routes.modeFillFirstOption')}</option>
-                                <option value={1}>{t('routes.modeSpreadOption')}</option>
-                                <option value={6}>{t('routes.modeSpreadTieredOption')}</option>
-                            </select>
-                        </label>
-                    </div>
-                    <div className="grid min-w-0 gap-2 sm:grid-cols-[minmax(150px,1fr)]">
-                        <label className="grid min-w-0 gap-1 text-xs text-muted-foreground">
-                            {t('routes.fallback')}
-                            <select
-                                value={target.fallback_mode === 'failover' ? 'return_group' : target.fallback_mode ?? 'return_group'}
-                                onChange={(event) => updateTarget(index, {
-                                    fallback_mode: event.target.value as AccessPlanRouteTarget['fallback_mode'],
-                                })}
-                                aria-label={t('routes.fallback')}
-                                title={t((target.fallback_mode ?? 'return_group') === 'none' ? 'routes.fallbackNoneHint' : 'routes.fallbackReturnGroupHint')}
-                                className="h-9 w-full min-w-0 rounded-xl border border-input bg-background px-3 text-sm text-foreground"
-                            >
-                                <option value="none">{t('routes.fallbackNone')}</option>
-                                <option value="return_group">{t('routes.fallbackReturnGroup')}</option>
-                            </select>
-                        </label>
-                    </div>
-                    <div className="grid min-w-0 gap-2 lg:grid-cols-[170px_minmax(0,1fr)]">
-                        <select
-                            value={target.prompt_override_mode ?? 'append_system'}
-                            onChange={(event) => updateTarget(index, {
-                                prompt_override_mode: event.target.value as AccessPlanRouteTarget['prompt_override_mode'],
-                            })}
-                            aria-label={t('routes.promptOverride')}
-                            className="h-9 w-full min-w-0 rounded-xl border border-input bg-background px-3 text-sm text-foreground"
-                        >
-                            <option value="append_system">{t('routes.promptAppend')}</option>
-                            <option value="replace_system">{t('routes.promptReplace')}</option>
-                        </select>
-                        <textarea
-                            value={target.system_prompt_override ?? ''}
-                            onChange={(event) => updateTarget(index, { system_prompt_override: event.target.value })}
-                            placeholder={t('routes.promptPlaceholder')}
-                            className="min-h-14 w-full min-w-0 rounded-xl border border-input bg-background px-3 py-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                        />
-                    </div>
-                </div>
-            </details>
+function RouteModeCards({ value, onChange }: { value: SimpleRouteMode; onChange: (next: SimpleRouteMode) => void }) {
+    const t = accessPlanText;
+    const options = [
+        { key: 'first' as const, icon: ListOrdered, title: t('routes.modeFillFirst'), short: t('routes.modeFillFirstShort'), hint: t('routes.modeFillFirstHint') },
+        { key: 'rotate' as const, icon: Repeat, title: t('routes.modeSpread'), short: t('routes.modeSpreadShort'), hint: t('routes.modeSpreadHint') },
+    ];
+    return (
+        <div role="radiogroup" aria-label={t('routes.modeLabel')} className="grid grid-cols-2 gap-2">
+            {options.map((option) => {
+                const active = value === option.key;
+                const Icon = option.icon;
+                return (
+                    <button
+                        key={option.key}
+                        type="button"
+                        role="radio"
+                        aria-checked={active}
+                        title={option.hint}
+                        onClick={() => onChange(option.key)}
+                        className={cn(
+                            'flex min-w-0 flex-col items-start gap-1 rounded-2xl border px-3 py-2.5 text-left transition-colors',
+                            active
+                                ? 'border-primary/60 bg-primary/10 text-foreground ring-1 ring-primary/30'
+                                : 'border-border/80 bg-background/60 text-foreground hover:bg-muted/40',
+                        )}
+                    >
+                        <span className="flex items-center gap-1.5 text-sm font-bold">
+                            <span className={cn('flex size-4 items-center justify-center rounded-full border', active ? 'border-primary bg-primary text-primary-foreground' : 'border-muted-foreground/40')}>
+                                {active ? <Check className="size-3" /> : null}
+                            </span>
+                            <Icon className={cn('size-4', active ? 'text-primary' : 'text-muted-foreground')} />
+                            {option.title}
+                        </span>
+                        <span className="text-xs leading-snug text-muted-foreground">{option.short}</span>
+                    </button>
+                );
+            })}
+        </div>
+    );
+}
+
+/** 「实际顺序」：一级一级写出来，比如 官方直连 → 都不能用时 → 中转 A、中转 B 轮流。 */
+function TryOrderSummary({ levels, nameOf }: { levels: AccessPlanRouteTarget[][]; nameOf: (channelId: number) => string }) {
+    const t = accessPlanText;
+    return (
+        <div className="rounded-2xl border border-border/70 bg-background/40 px-3 py-2.5">
+            <div className="text-xs font-medium text-muted-foreground">{t('routes.tryOrder')}</div>
+            {levels.length === 0 ? (
+                <div className="mt-1 text-sm text-muted-foreground">{t('routes.tryOrderNone')}</div>
+            ) : (
+                <ol className="mt-1.5 grid gap-1">
+                    {levels.map((level, index) => (
+                        <li key={index} className="grid gap-1">
+                            {index > 0 ? <span className="pl-7 text-[11px] text-muted-foreground">↓ {t('routes.tryOrderThen')}</span> : null}
+                            <span className="flex min-w-0 items-center gap-2 text-sm">
+                                <span className={cn('flex size-5 shrink-0 items-center justify-center rounded-full text-[11px] font-bold', level.length > 1 ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300' : 'bg-primary/12 text-primary')}>{index + 1}</span>
+                                <span className="min-w-0 truncate font-semibold text-foreground">{level.map((target) => nameOf(target.channel_id)).join('、')}</span>
+                                {level.length > 1 ? (
+                                    <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-emerald-500/12 px-1.5 py-0.5 text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">
+                                        <Repeat className="size-3" />{t('routes.tryOrderRotate')}
+                                    </span>
+                                ) : null}
+                            </span>
+                        </li>
+                    ))}
+                </ol>
+            )}
         </div>
     );
 }
@@ -2395,6 +2315,9 @@ function RouteTargetsEditor({
     // 弹窗打开那一刻的 targets：关窗时拿它判断改没改，选「不保存」时退回它。
     const [dialogSnapshot, setDialogSnapshot] = useState<AccessPlanRouteTarget[] | null>(null);
     const [confirmCloseOpen, setConfirmCloseOpen] = useState(false);
+    // 轮询里改数字时行不跟着跳：第一次改数字时记下顺序，之后按它排（新加的放最后）；重新打开 / 切换方式时清掉。
+    const [dialogOrder, setDialogOrder] = useState<string[] | null>(null);
+    const [draggingLine, setDraggingLine] = useState(false);
     const requestModelListId = `access-plan-request-models-${plan.id}`;
     const channelModelIndex = useMemo(
         () => buildChannelModelIndex(channelModels, channelModelsReady),
@@ -2438,32 +2361,9 @@ function RouteTargetsEditor({
 
     const openRequestEditor = useCallback((requestModel: string) => {
         setDialogSnapshot(targetsRef.current);
+        setDialogOrder(null);
         setEditingRequestModel(requestModel);
     }, []);
-
-    const addTarget = () => {
-        setDialogSnapshot(targets);
-        const channelId = channels[0]?.id ?? 0;
-        const upstreamModel = modelsForChannel(channelId)[0] ?? '';
-
-        setTargets((current) => [
-            ...current,
-            {
-                request_model: '',
-                channel_id: channelId,
-                upstream_model: upstreamModel,
-                priority: current.length + 1,
-                weight: 1,
-                enabled: true,
-                billing_model_source: 'request_model',
-                mode: 3,
-                fallback_mode: 'return_group',
-                system_prompt_override: '',
-                prompt_override_mode: 'append_system',
-            },
-        ]);
-        setEditingRequestModel('');
-    };
 
     const updateTarget = (index: number, patch: Partial<AccessPlanRouteTarget>) => {
         setTargets((current) => {
@@ -2484,10 +2384,6 @@ function RouteTargetsEditor({
             }
             return next;
         });
-    };
-
-    const removeTarget = (index: number) => {
-        setTargets((current) => current.filter((_, currentIndex) => currentIndex !== index));
     };
 
     // save() submits the full `targets` array, so validation must cover the same
@@ -2619,32 +2515,31 @@ function RouteTargetsEditor({
     const targetsRef = useRef(targets);
     targetsRef.current = targets;
 
-    // 画布节点上的 +/−：改的是「这条规则内、这个渠道」的分层数字。
-    // 关键一步：轮询家族的规则（纯轮询 1 或分层 6）在这里统一升级为分层轮询(6)，
-    // 否则保存归一化会把数字清回 1 —— 那就是用户说的「按钮没用」。
-    // 同一条规则（同 request_model）的所有 target 一起换成 mode=6，因为 mode 是规则级字段。
+    // 画布节点上的 +/−：
+    // - 轮询：改这个渠道的优先级数字；整条规则升级成 mode 6（数字真正起作用，见 route-mode.ts）。
+    // - 优先：和上一个 / 下一个换位置，重编 1..N（原版是 ±1 改顺位值，会和邻居撞成同一个数字，
+    //   撞了以后按渠道 ID 定先后，点了 ＋ 经常看不出变化）。
     const changeCanvasPriority = useCallback((targetId: number, nextPriorityRaw: number) => {
-        const nextPriority = clampRoutePriority(nextPriorityRaw);
         const current = targetsRef.current;
         const index = current.findIndex((target) => target.id === targetId);
         if (index < 0) return;
-        if (clampRoutePriority(current[index].priority) === nextPriority) return;
-        const editedKey = cleanOneMillionModelName(current[index].request_model).toLowerCase();
-        const next = current.map((target, currentIndex) => {
-            const sameRule = cleanOneMillionModelName(target.request_model).toLowerCase() === editedKey;
-            if (currentIndex === index) {
-                return {
-                    ...target,
-                    priority: nextPriority,
-                    priority_overridden: true,
-                    mode: isSpreadMode(target.mode) ? SPREAD_TIERED_MODE : target.mode,
-                };
+        const selected = current[index];
+        const next = mapRule(current, selected.request_model, (group) => {
+            const mode = normalizeRouteMode(group.find((target) => target.mode !== undefined)?.mode);
+            const own = group.indexOf(selected);
+            if (simpleModeOf(mode) === 'rotate') {
+                const nextPriority = clampRoutePriority(nextPriorityRaw);
+                if (displayPriority(selected, mode) === nextPriority) return group;
+                return setRotatePriority(group, own, nextPriority);
             }
-            if (sameRule && isSpreadMode(target.mode)) {
-                return { ...target, mode: SPREAD_TIERED_MODE, priority_overridden: true };
-            }
-            return target;
+            const ordered = sortByTryOrder(group, mode);
+            const at = ordered.indexOf(selected);
+            const delta = nextPriorityRaw < clampRoutePriority(selected.priority) ? -1 : 1;
+            const to = at + delta;
+            if (to < 0 || to >= ordered.length) return group;
+            return renumberFirst(moveItem(ordered, at, to));
         });
+        if (next === current || sameDraft(next, current)) return;
         setFrozenOrder((frozen) => frozen ?? captureOrder(canvasRowsRef.current));
         setLastPriorityChangeAt(Date.now());
         setTargets(next);
@@ -2669,7 +2564,56 @@ function RouteTargetsEditor({
         setConfirmCloseOpen(false);
         setEditingRequestModel(null);
         setDialogSnapshot(null);
+        setDialogOrder(null);
+        setDraggingLine(false);
     };
+
+    // ── 编辑弹窗：分配方式 / 顺序 / 数字 —— 都是规则级的，改的是整条规则 ──
+    const editingMode = normalizeRouteMode(editingTargets.find((target) => target.mode !== undefined)?.mode);
+    const editingSimpleMode = simpleModeOf(editingMode);
+    const lineKey = (target: AccessPlanRouteTarget) => (target.id !== undefined ? `id:${target.id}` : `ch:${target.channel_id}:${target.upstream_model}`);
+    const editingLines = (() => {
+        const ordered = sortByTryOrder(editingTargets, editingMode);
+        if (editingSimpleMode === 'first' || !dialogOrder) return ordered;
+        const rank = new Map(dialogOrder.map((key, index) => [key, index]));
+        return [...ordered].sort((a, b) => (rank.get(lineKey(a)) ?? Infinity) - (rank.get(lineKey(b)) ?? Infinity));
+    })();
+    const editingLinesRef = useRef(editingLines);
+    editingLinesRef.current = editingLines;
+    const updateEditingRule = (fn: (group: AccessPlanRouteTarget[]) => AccessPlanRouteTarget[]) => {
+        if (editingRequestModel === null) return;
+        setTargets((current) => mapRule(current, editingRequestModel, fn));
+    };
+    const setEditingMode = (next: SimpleRouteMode) => {
+        if (next === editingSimpleMode) return;
+        setDialogOrder(null);
+        updateEditingRule((group) => (next === 'first' ? switchToFirst(group) : switchToRotate(group)));
+    };
+    const setEditingPriority = (target: AccessPlanRouteTarget, priority: number) => {
+        if (editingSimpleMode !== 'rotate') return;
+        setDialogOrder((order) => order ?? editingLinesRef.current.map(lineKey));
+        updateEditingRule((group) => {
+            const own = group.findIndex((item) => lineKey(item) === lineKey(target));
+            return own < 0 ? group : setRotatePriority(group, own, priority);
+        });
+    };
+    const onLineDragEnd = (result: DropResult) => {
+        setDraggingLine(false);
+        if (!result.destination || result.destination.index === result.source.index) return;
+        const orderedKeys = editingLinesRef.current.map(lineKey);
+        const movedKeys = moveItem(orderedKeys, result.source.index, result.destination.index);
+        updateEditingRule((group) => {
+            const byKey = new Map(group.map((target) => [lineKey(target), target]));
+            const ordered = movedKeys.map((key) => byKey.get(key)).filter((target): target is AccessPlanRouteTarget => Boolean(target));
+            const renumbered = renumberFirst(ordered);
+            const next = new Map(renumbered.map((target) => [lineKey(target), target]));
+            return group.map((target) => next.get(lineKey(target)) ?? target);
+        });
+    };
+    const editingRuleHead = editingTargets[0];
+    const setEditingRuleField = (patch: Partial<AccessPlanRouteTarget>) => updateEditingRule((group) => group.map((target) => ({ ...target, ...patch })));
+    const channelNameOf = (channelId: number) => channels.find((channel) => channel.id === channelId)?.name ?? t('routes.missingChannel', { id: channelId });
+
     const dialogDirty = editingRequestModel !== null && dialogSnapshot !== null && !sameDraft(targets, dialogSnapshot);
     const requestCloseEditor = () => {
         if (decideDialogClose(dialogDirty) === 'confirm') {
@@ -2752,10 +2696,6 @@ function RouteTargetsEditor({
                     ) : null}
                 </div>
                 <div className="flex min-w-0 flex-wrap items-center gap-2 sm:justify-end">
-                    <Button type="button" variant="outline" className="rounded-xl" onClick={addTarget}>
-                        <Plus className="size-4" />
-                        <span className="min-w-0 truncate">{t('actions.add')}</span>
-                    </Button>
                     <Button
                         type="button"
                         className="rounded-xl"
@@ -2817,8 +2757,10 @@ function RouteTargetsEditor({
             </details>
 
             <Dialog open={editingRequestModel !== null} onOpenChange={(open) => { if (!open) requestCloseEditor(); }}>
-                <DialogContent className="w-[calc(100vw-1rem)] max-w-full overflow-hidden rounded-3xl border-border bg-card p-0 sm:max-w-4xl">
-                    <DialogHeader className="border-b border-border px-4 py-4 pr-12 sm:px-5">
+                {/* 弹窗不用 translate 居中（inset-0 + m-auto + h-fit）：@hello-pangea/dnd 拖动时用 position:fixed，
+                    祖先有 transform 会让拖着的行偏到别处；也不用 renderClone —— 它会卸载原节点，触屏就拖不动了。 */}
+                <DialogContent className="top-0 right-0 bottom-0 left-0 m-auto flex h-fit max-h-[calc(100dvh-1rem)] w-[calc(100vw-1rem)] max-w-full translate-none flex-col gap-0 overflow-hidden rounded-3xl border-border bg-card p-0 sm:max-h-[calc(100dvh-3rem)] sm:max-w-[min(72rem,calc(100vw-3rem))]">
+                    <DialogHeader className="shrink-0 border-b border-border px-4 py-4 pr-12 sm:px-5">
                         <DialogTitle className="flex min-w-0 flex-wrap items-center gap-2">
                             {t('routes.quickEditTitle')}
                             {editingRequestModel ? (
@@ -2833,7 +2775,63 @@ function RouteTargetsEditor({
                         </DialogTitle>
                         <DialogDescription>{t('routes.quickEditDescription')}</DialogDescription>
                     </DialogHeader>
-                    <div className="max-h-[calc(100dvh-12rem)] min-w-0 space-y-2 overflow-y-auto px-4 py-3 sm:px-5">
+                    <div className="grid min-h-0 flex-1 gap-4 overflow-y-auto px-4 py-3 sm:px-5 lg:grid-cols-[minmax(17rem,20rem)_minmax(0,1fr)]">
+                        <div className="grid min-w-0 content-start gap-3">
+                            <div className="grid gap-1.5">
+                                <div className="text-xs font-medium text-muted-foreground">{t('routes.modeLabel')}</div>
+                                <RouteModeCards value={editingSimpleMode} onChange={setEditingMode} />
+                            </div>
+                            <TryOrderSummary levels={tryLevels(editingTargets, editingMode)} nameOf={channelNameOf} />
+                            {editingRuleHead ? (
+                                <details
+                                    className="rounded-2xl border border-border/70 bg-background/40"
+                                    open={(editingRuleHead.system_prompt_override ?? '').trim().length > 0 || editingRuleHead.fallback_mode === 'none' ? true : undefined}
+                                >
+                                    <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-2.5 text-sm font-medium [&::-webkit-details-marker]:hidden">
+                                        <span>{t('routes.advancedTitle')}</span>
+                                        <span className="truncate text-xs font-normal text-muted-foreground">{t('routes.advancedHint')}</span>
+                                    </summary>
+                                    <div className="grid gap-2 border-t border-border/60 p-3">
+                                        <label className="grid min-w-0 gap-1 text-xs text-muted-foreground">
+                                            {t('routes.fallback')}
+                                            <select
+                                                value={editingRuleHead.fallback_mode === 'none' ? 'none' : 'return_group'}
+                                                onChange={(event) => setEditingRuleField({ fallback_mode: event.target.value as AccessPlanRouteTarget['fallback_mode'] })}
+                                                aria-label={t('routes.fallback')}
+                                                title={t(editingRuleHead.fallback_mode === 'none' ? 'routes.fallbackNoneHint' : 'routes.fallbackReturnGroupHint')}
+                                                className="h-9 w-full min-w-0 rounded-xl border border-input bg-background px-3 text-sm text-foreground"
+                                            >
+                                                <option value="return_group">{t('routes.fallbackReturnGroup')}</option>
+                                                <option value="none">{t('routes.fallbackNone')}</option>
+                                            </select>
+                                        </label>
+                                        <label className="grid min-w-0 gap-1 text-xs text-muted-foreground">
+                                            {t('routes.promptOverride')}
+                                            <select
+                                                value={editingRuleHead.prompt_override_mode ?? 'append_system'}
+                                                onChange={(event) => setEditingRuleField({ prompt_override_mode: event.target.value as AccessPlanRouteTarget['prompt_override_mode'] })}
+                                                aria-label={t('routes.promptOverride')}
+                                                className="h-9 w-full min-w-0 rounded-xl border border-input bg-background px-3 text-sm text-foreground"
+                                            >
+                                                <option value="append_system">{t('routes.promptAppend')}</option>
+                                                <option value="replace_system">{t('routes.promptReplace')}</option>
+                                            </select>
+                                        </label>
+                                        <textarea
+                                            value={editingRuleHead.system_prompt_override ?? ''}
+                                            onChange={(event) => setEditingRuleField({ system_prompt_override: event.target.value })}
+                                            placeholder={t('routes.promptPlaceholder')}
+                                            className="min-h-16 w-full min-w-0 rounded-xl border border-input bg-background px-3 py-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                        />
+                                    </div>
+                                </details>
+                            ) : null}
+                        </div>
+                        <div className="grid min-w-0 content-start gap-2">
+                            <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                                <span className="font-medium">{t('routes.targetSummary')}</span>
+                                <span className="truncate">{editingSimpleMode === 'first' ? t('routes.dragHint') : t('routes.priorityInputHint')}</span>
+                            </div>
                         {editingRequestModel && (() => {
                             const currentChannelIds = new Set(editingTargets.map((t) => t.channel_id));
                             const reqKey = cleanOneMillionModelName(editingRequestModel).toLowerCase();
@@ -2882,7 +2880,7 @@ function RouteTargetsEditor({
                                             if (!channelId) return;
                                             const match = availableChannelsWithUpstream.find((item) => item.channel.id === channelId);
                                             if (!match) return;
-                                            const groupMode = editingTargets[0]?.mode ?? 3;
+                                            const groupMode = editingMode;
                                             const maxPriority = editingTargets.reduce((max, t) => Math.max(max, t.priority ?? 0), 0);
                                             // 轮询家族新渠道进「最低层」（数字 1）：不抢现有分层；分层轮询保持 6，
                                             // 否则列表里加个渠道就把这条规则悄悄降级回纯轮询。
@@ -2918,34 +2916,88 @@ function RouteTargetsEditor({
                                 </div>
                             );
                         })()}
-                        {editingTargets.length === 0 ? (
+                        {editingLines.length === 0 ? (
                             <div className="rounded-xl border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">
                                 {t('routes.empty')}
                             </div>
-                        ) : editingTargets.map((target) => {
-                            const index = targets.indexOf(target);
-                            return (
-                                <RouteTargetEditorCard
-                                    key={`dialog-${target.id ?? 'new'}-${index}`}
-                                    planId={plan.id}
-                                    target={target}
-                                    index={index}
-                                    peerTargets={editingTargets}
-                                    channels={channels}
-                                    requestModelListId={requestModelListId}
-                                    upstreamModels={modelsForChannel(target.channel_id)}
-                                    modelsForChannel={modelsForChannel}
-                                    updateTarget={updateTarget}
-                                    removeTarget={removeTarget}
-                                    moveTargetToTop={moveEditorTargetToTop}
-                                    compact
-                                    idPrefix="access-plan-upstream-dialog"
-                                    lockRequestModel
-                                />
-                            );
-                        })}
+                        ) : (
+                            <DragDropContext onBeforeCapture={() => setDraggingLine(true)} onDragEnd={onLineDragEnd}>
+                                <Droppable droppableId="lines" isDropDisabled={editingSimpleMode !== 'first'}>
+                                    {(dropProvided) => (
+                                        <div ref={dropProvided.innerRef} {...dropProvided.droppableProps} className="grid gap-2">
+                                            {editingLines.map((target, lineIndex) => {
+                                                const index = targets.indexOf(target);
+                                                const shown = displayPriority(target, editingMode);
+                                                return (
+                                                    <Draggable key={lineKey(target)} draggableId={lineKey(target)} index={lineIndex} isDragDisabled={editingSimpleMode !== 'first'}>
+                                                        {(dragProvided, dragSnapshot) => (
+                                                            <div ref={dragProvided.innerRef} {...dragProvided.draggableProps}>
+                                                                <RouteTargetEditorCard
+                                                                    target={target}
+                                                                    index={index}
+                                                                    peerTargets={editingTargets}
+                                                                    channelName={channelNameOf(target.channel_id)}
+                                                                    updateTarget={updateTarget}
+                                                                    moveTargetToTop={moveEditorTargetToTop}
+                                                                    dragging={dragSnapshot.isDragging}
+                                                                    leading={editingSimpleMode === 'first' ? (
+                                                                        <>
+                                                                            <span
+                                                                                {...dragProvided.dragHandleProps}
+                                                                                aria-label={t('routes.dragHandle')}
+                                                                                title={t('routes.dragHandle')}
+                                                                                className="flex size-8 shrink-0 cursor-grab touch-none items-center justify-center rounded-lg text-muted-foreground hover:bg-muted active:cursor-grabbing"
+                                                                            >
+                                                                                <GripVertical className="size-4" />
+                                                                            </span>
+                                                                            <span className="shrink-0 whitespace-nowrap text-xs font-semibold text-foreground" title={t('routes.orderFillFirstHint', { order: lineIndex + 1 })}>
+                                                                                {t('routes.orderLabel', { order: lineIndex + 1 })}
+                                                                            </span>
+                                                                        </>
+                                                                    ) : (
+                                                                        <span className="inline-flex shrink-0 items-center gap-1" title={t('routes.priorityInputHint')}>
+                                                                            <span className="whitespace-nowrap text-xs font-medium text-muted-foreground">{t('routes.priorityLabel')}</span>
+                                                                            <button
+                                                                                type="button"
+                                                                                className="flex size-7 items-center justify-center rounded-lg border border-border/70 bg-background text-sm hover:bg-muted disabled:opacity-40"
+                                                                                disabled={shown <= 1}
+                                                                                aria-label={t('routes.tierDown')}
+                                                                                title={t('routes.tierDown')}
+                                                                                onClick={() => setEditingPriority(target, shown - 1)}
+                                                                            >−</button>
+                                                                            <Input
+                                                                                type="number"
+                                                                                inputMode="numeric"
+                                                                                min={1}
+                                                                                value={shown}
+                                                                                aria-label={t('routes.priorityLabel')}
+                                                                                onChange={(event) => setEditingPriority(target, Number(event.target.value))}
+                                                                                className="h-7 w-12 rounded-lg px-1 text-center text-sm font-semibold [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                                                                            />
+                                                                            <button
+                                                                                type="button"
+                                                                                className="flex size-7 items-center justify-center rounded-lg border border-border/70 bg-background text-sm hover:bg-muted"
+                                                                                aria-label={t('routes.tierUp')}
+                                                                                title={t('routes.tierUp')}
+                                                                                onClick={() => setEditingPriority(target, shown + 1)}
+                                                                            >+</button>
+                                                                        </span>
+                                                                    )}
+                                                                />
+                                                            </div>
+                                                        )}
+                                                    </Draggable>
+                                                );
+                                            })}
+                                            {dropProvided.placeholder}
+                                        </div>
+                                    )}
+                                </Droppable>
+                            </DragDropContext>
+                        )}
+                        </div>
                     </div>
-                    <DialogFooter className="flex-col gap-2 border-t border-border px-4 py-3 sm:flex-row sm:px-5">
+                    <DialogFooter className="shrink-0 flex-col gap-2 border-t border-border px-4 py-3 sm:flex-row sm:px-5">
                         <DialogClose asChild>
                             <Button type="button" variant="outline" className="rounded-xl">
                                 <span className="min-w-0 truncate">{t('routes.close')}</span>
@@ -2954,7 +3006,7 @@ function RouteTargetsEditor({
                         <Button
                             type="button"
                             className="rounded-xl"
-                            disabled={invalid || saveBusy}
+                            disabled={invalid || saveBusy || draggingLine}
                             onClick={() => save(closeRequestEditor)}
                         >
                             {saveBusy ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}

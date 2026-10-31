@@ -190,3 +190,35 @@ func TestGetBalancerMapsTieredMode(t *testing.T) {
 		t.Fatalf("GroupModeFillFirst 必须保持故障转移")
 	}
 }
+
+// 方案页「轮询」（用户 2026-10-30 的例子：A 优先级 3，B、C 优先级 1）= mode 6。
+// 真实选路必须是：数字大的 A 每次最先试；A 不行时 B、C 轮流顶上；三个都在候选里（逐个失败逐个往下）。
+func TestSpreadTieredPlanExampleAThenBCRotate(t *testing.T) {
+	roundRobinCounters = sync.Map{}
+	smoothWeightedStates = sync.Map{}
+	ResetRuntimeTelemetry()
+
+	group := model.Group{
+		Mode: model.GroupModeSpreadTiered,
+		Items: []model.GroupItem{
+			{ChannelID: 2, ModelName: "m", Priority: 1, Weight: 1}, // B
+			{ChannelID: 1, ModelName: "m", Priority: 3, Weight: 1}, // A
+			{ChannelID: 3, ModelName: "m", Priority: 1, Weight: 1}, // C
+		},
+	}
+	secondSeen := map[int]int{}
+	for round := 0; round < 6; round++ {
+		it := NewIteratorWithSession(group, 0, "m", "", false)
+		order := make([]int, 0, 3)
+		for it.Next() {
+			order = append(order, it.Item().ChannelID)
+		}
+		if len(order) != 3 || order[0] != 1 {
+			t.Fatalf("round %d: 优先级最大的 A(1) 必须每次最先试, got %v", round, order)
+		}
+		secondSeen[order[1]]++
+	}
+	if secondSeen[2] == 0 || secondSeen[3] == 0 {
+		t.Fatalf("优先级一样的 B(2)、C(3) 应该轮流排在第二个, got %v", secondSeen)
+	}
+}
