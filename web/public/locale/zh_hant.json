@@ -2219,6 +2219,147 @@
       "modelsHint": "示例裡的模型名只是舉例，換成你能用的模型。",
       "copy": "複製",
       "copied": "已複製（含完整 Key）"
+    },
+    "sections": {
+      "keys": "API Key",
+      "guest": "訪客"
+    },
+    "guest": {
+      "lead": "臨時給客人用：只能調勾選的模型，到期自動失效，進不了控制檯。只有管理員能看到。",
+      "add": "新建訪客 Key",
+      "search": "搜名稱、備註、模型或 Key 末 4 位",
+      "empty": "還沒有訪客 Key",
+      "emptyHint": "新建一把，把接入地址和 Key 發給客人就能用。",
+      "noMatch": "沒有符合條件的訪客 Key",
+      "revokedKey": "已作廢",
+      "moreModels": "+{n}",
+      "at": "到 {at}（本機時間）",
+      "left": {
+        "days": "還剩 {n} 天",
+        "hours": "還剩 {n} 小時",
+        "minutes": "還剩 {n} 分鐘"
+      },
+      "past": {
+        "days": "過期 {n} 天",
+        "hours": "過期 {n} 小時",
+        "minutes": "過期 {n} 分鐘"
+      },
+      "col": {
+        "name": "名稱",
+        "status": "狀態",
+        "models": "能調的模型",
+        "expiry": "到期",
+        "spend": "已用 / 上限",
+        "lastUsed": "最近使用",
+        "actions": "操作"
+      },
+      "status": {
+        "ok": "能用",
+        "off": "停用",
+        "expired": "已過期",
+        "used_up": "額度用完",
+        "revoked": "已作廢",
+        "okTip": "請求正常放行（只限勾選的模型）。",
+        "offTip": "停用了，請求會被拒絕。啟用就恢復。",
+        "expiredTip": "過了有效期，請求會被拒絕。把有效期往後改就恢復。",
+        "used_upTip": "累計花費超過上限，請求會被拒絕。調高上限就恢復。",
+        "revokedTip": "已作廢，永遠不能再用。記錄和日誌還在。"
+      },
+      "menu": {
+        "more": "更多",
+        "edit": "編輯",
+        "detail": "用量和 IP",
+        "logs": "看請求日誌",
+        "copy": "複製 Key",
+        "disable": "停用",
+        "enable": "啟用",
+        "revoke": "作廢",
+        "delete": "刪除"
+      },
+      "dialog": {
+        "createTitle": "新建訪客 Key",
+        "editTitle": "編輯訪客 Key",
+        "desc": "客人只能用這把 Key 調勾選的模型，進不了控制檯，也改不了任何設定。",
+        "name": "名稱",
+        "namePh": "比如：張三 · 展會試用",
+        "note": "備註",
+        "notePh": "給誰、幹什麼（可不填）",
+        "expire": "有效期",
+        "expireTip": "到點自動失效。最長 365 天，不能設成永久。",
+        "presets": {
+          "1h": "1 小時",
+          "1d": "1 天",
+          "3d": "3 天",
+          "7d": "7 天",
+          "30d": "30 天",
+          "custom": "自定義"
+        },
+        "expireHint": "到 {at} 失效（本機時間）",
+        "needExpire": "請選有效期",
+        "cap": "花費上限",
+        "capPh": "不填 = 不限",
+        "capTip": "這把 Key 累計花到這個數就停。",
+        "billing": "費用記在你（管理員）名下，不扣任何人的餘額；用上限管住它。",
+        "enabledOn": "建好就能用",
+        "enabledOff": "先停用，之後再開",
+        "models": "能調的模型",
+        "modelsTip": "只放行勾選的模型，以後新加的模型不會自動放行。至少選一個。",
+        "modelsSearch": "搜模型",
+        "modelsPicked": "已選 {n} 個",
+        "modelsClear": "清空",
+        "modelsNone": "現在沒有能用的模型",
+        "modelsNoMatch": "沒有匹配的模型",
+        "modelGone": "現在用不了",
+        "modelsHint": "列出的是你現在能用的模型。",
+        "cancel": "取消",
+        "create": "建立",
+        "save": "儲存",
+        "saved": "已儲存 {name}",
+        "saveFailed": "儲存失敗",
+        "err": {
+          "needName": "請填名稱",
+          "needModel": "至少選一個模型",
+          "needExpire": "請選有效期",
+          "pastExpire": "有效期不能是過去的時間",
+          "tooFar": "有效期最長 365 天",
+          "badCap": "上限要填數字"
+        },
+        "createdTitle": "已建立「{name}」",
+        "createdHint": "把接入地址和 Key 發給客人。之後也能在列表裡複製。",
+        "createdModels": "能調：{list}",
+        "baseUrl": "接入地址",
+        "copy": "複製",
+        "copyBoth": "複製地址和 Key",
+        "copied": "已複製",
+        "done": "完成"
+      },
+      "detail": {
+        "usage": "用量",
+        "access": "IP 與客戶端",
+        "logs": "看這把 Key 的請求日誌",
+        "total": "累計花費",
+        "noCap": "不限",
+        "billing": "記在管理員名下，不扣餘額；到上限就停。",
+        "totalRequests": "共 {n} 次"
+      },
+      "revoke": {
+        "title": "作廢「{name}」？",
+        "desc": "作廢後立刻失效，不能再啟用。用量、IP 和日誌會保留。",
+        "confirm": "作廢"
+      },
+      "delete": {
+        "title": "刪除「{name}」？",
+        "desc": "刪掉後立刻失效，這把 Key 的記錄一起刪掉（日誌裡的請求還在）。只想停掉請用「作廢」。",
+        "confirm": "刪除"
+      },
+      "toast": {
+        "copied": "已複製 {name} 的 Key",
+        "enabled": "已啟用 {name}",
+        "disabled": "已停用 {name}",
+        "revoked": "已作廢 {name}",
+        "deleted": "已刪除 {name}",
+        "failed": "操作失敗"
+      }
     }
   }
 }
