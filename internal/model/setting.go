@@ -103,8 +103,7 @@ const (
 	SettingKeyCircuitBreakerMaxCooldown   SettingKey = "circuit_breaker_max_cooldown" // 熔断最大冷却时间（秒），指数退避上限
 	SettingKeyDebugLoadBalancer           SettingKey = "debug_load_balancer"          // 开启后每次选路打印候选排序决策(tier/rank/容量输入)，便于排障"为啥走这条/为啥慢"
 	SettingKeyDiagnosticMode              SettingKey = "diagnostic_mode"              // 开启后每次请求额外打印各阶段耗时(等响应头/首字/生成)与逐次尝试原因，便于排障"卡在哪一层"；默认关
-	SettingKeySessionKeepTimeDefault      SettingKey = "session_keep_time_default"    // 分组会话保持时间全局默认(秒)，分组级为0时回退用它；0=无全局值(带会话标识的请求仍按 session_affinity_enabled 默认粘 1 小时，无会话标识的不粘)
-	SettingKeySessionAffinityEnabled      SettingKey = "session_affinity_enabled"     // 带会话标识的请求在分组/全局都没配保持时间时, 默认粘 1 小时(同会话同渠道同 Key, 保上游缓存); false=退回旧行为(没配就不粘)
+	SettingKeySessionKeepTimeDefault      SettingKey = "session_keep_time_default"    // 分组会话保持时间全局默认(秒)，分组级为0时回退用它，0=不启用全局粘性
 	SettingKeyFirstTokenTimeOutDefault    SettingKey = "first_token_time_out_default" // 分组首字超时全局默认(秒)，分组级为0时回退用它，0=不启用全局默认
 	// SettingKeyFirstByteKeepaliveDelaySeconds defaults to "20" (ON). When >0, stream
 	// requests that have not yet received the first upstream response byte start injecting
@@ -605,8 +604,7 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyCircuitBreakerMaxCooldown, Value: "120"},                                        // 默认最大冷却120秒（指数退避上限；旧 600s 过长会把偶发 403 渠道黑很久）
 		{Key: SettingKeyDebugLoadBalancer, Value: "false"},                                              // 默认关闭选路决策日志
 		{Key: SettingKeyDiagnosticMode, Value: "false"},                                                 // 默认关闭诊断模式(各阶段耗时+逐次尝试日志)
-		{Key: SettingKeySessionKeepTimeDefault, Value: "0"},                                             // 默认0=无全局值(无会话标识的请求不粘, 向后兼容); 设正数则覆盖内置 1 小时, 分组级 SessionKeepTime 仍优先
-		{Key: SettingKeySessionAffinityEnabled, Value: "true"},                                          // 默认开: 有会话标识的请求默认粘 1 小时(分组/全局保持时间优先); 关=没配保持时间就不粘(旧行为)
+		{Key: SettingKeySessionKeepTimeDefault, Value: "0"},                                             // 默认0=不启用全局粘性(向后兼容); 管理员设为如3600才全局开, 分组级 SessionKeepTime 仍优先
 		{Key: SettingKeyFirstTokenTimeOutDefault, Value: DefaultFirstTokenTimeOutSeconds},               // 非0=启用全局首内容绝对死线(参考实现同值); 分组级 FirstTokenTimeOut 仍优先, 设0可退回旧行为
 		{Key: SettingKeyFirstByteKeepaliveDelaySeconds, Value: defaultFirstByteKeepaliveDelaySeconds()}, // 默认20=开启: 上游首字节>20s才向下游注入SSE心跳(防前置反代/客户端60s空闲掐断); 0=关闭
 		{Key: SettingKeyInterventionKeepaliveDelaySeconds, Value: "2"},                                  // 默认2=hold期间2秒后即向下游注入SSE心跳: hold轮次寿命受backoff封顶15s约束,20s首字delay在轮内永远死胎; 0=关闭
@@ -816,7 +814,7 @@ func (s *Setting) Validate() error {
 		SettingKeyClaudeHeaderStabilize, SettingKeyCodexFastMode, SettingKeyRelayClaudeCLIShapeKeys,
 		SettingKeyUserRegistrationEnabled, SettingKeyUpstreamErrorStatusPass, SettingKeyCheckInEnabled,
 		SettingKeyDebugLoadBalancer, SettingKeyEmailVerificationEnabled, SettingKeyEmailSMTPSSL,
-		SettingKeyUpstreamUTLSFingerprint, SettingKeyUpstreamHTTP1HeaderOrder, SettingKeyDiagnosticMode, SettingKeyRouteStickyCacheFirst, SettingKeySessionAffinityEnabled,
+		SettingKeyUpstreamUTLSFingerprint, SettingKeyUpstreamHTTP1HeaderOrder, SettingKeyDiagnosticMode, SettingKeyRouteStickyCacheFirst,
 		SettingKeyModelAuditEnabled, SettingKeyModelAuditFollowUpEnabled, SettingKeyLogPassiveProbeEnabled,
 		SettingKeyRelayLogReclaimEnabled, SettingKeyAsyncImageEnabled, SettingKeyBatchImageEnabled,
 		SettingKeyPriceAutoSyncEnabled, SettingKeyPriceSyncHoldBigChange,
