@@ -3,6 +3,7 @@ package balancer
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -15,6 +16,19 @@ type SessionEntry struct {
 
 // 全局会话存储
 var globalSession sync.Map // key: string -> value: *SessionEntry
+
+// maxSessionEntries bounds the in-memory sticky store. Every client session now gets an
+// entry (see DefaultSessionAffinityTTL), so a busy instance could otherwise grow the map
+// until the 24h maintenance sweep. Past the cap a write triggers a trim: entries older
+// than DefaultSessionAffinityTTL go first, then the oldest-looking remainder until the
+// store is back under the low-water mark. Dropping an entry is harmless — that
+// conversation just re-picks a channel on its next turn. Var so tests can shrink it.
+var maxSessionEntries int64 = 200_000
+
+var (
+	sessionEntryCount atomic.Int64 // approximate live entry count (Store adds, Delete subtracts)
+	sessionTrimming   atomic.Bool  // single-flight guard for trimSessionStore
+)
 
 // sessionKey 生成会话键：apiKeyID:requestModel[:clientSessionKey]
 func sessionKey(apiKeyID int, requestModel, clientSessionKey string) string {
@@ -41,7 +55,7 @@ func GetStickyWithSessionKey(apiKeyID int, requestModel, clientSessionKey string
 
 	if time.Since(entry.Timestamp) > ttl {
 		// 过期，惰性清除
-		globalSession.Delete(key)
+		deleteSessionEntry(key)
 		return nil
 	}
 
@@ -56,16 +70,54 @@ func SetSticky(apiKeyID int, requestModel string, channelID, keyID int) {
 // SetStickyWithSessionKey 写入/更新客户端会话级粘性记录。clientSessionKey 为空时保持旧行为。
 func SetStickyWithSessionKey(apiKeyID int, requestModel, clientSessionKey string, channelID, keyID int) {
 	key := sessionKey(apiKeyID, requestModel, clientSessionKey)
-	globalSession.Store(key, &SessionEntry{
+	_, loaded := globalSession.Swap(key, &SessionEntry{
 		ChannelID:    channelID,
 		ChannelKeyID: keyID,
 		Timestamp:    time.Now(),
 	})
+	if !loaded && sessionEntryCount.Add(1) > maxSessionEntries {
+		trimSessionStore()
+	}
 }
 
 func ClearStickyWithSessionKey(apiKeyID int, requestModel, clientSessionKey string) {
 	key := sessionKey(apiKeyID, requestModel, clientSessionKey)
-	globalSession.Delete(key)
+	deleteSessionEntry(key)
+}
+
+func deleteSessionEntry(key any) {
+	if _, loaded := globalSession.LoadAndDelete(key); loaded {
+		sessionEntryCount.Add(-1)
+	}
+}
+
+// trimSessionStore brings the sticky store back under ~90% of maxSessionEntries.
+// Single-flight: concurrent writers past the cap do not all range the map.
+func trimSessionStore() {
+	if !sessionTrimming.CompareAndSwap(false, true) {
+		return
+	}
+	defer sessionTrimming.Store(false)
+	SweepExpired(DefaultSessionAffinityTTL)
+	lowWater := maxSessionEntries * 9 / 10
+	if sessionEntryCount.Load() <= lowWater {
+		return
+	}
+	// Still over: every entry is fresh. Drop the oldest ones. A full sort would be
+	// O(n log n) on a hot write; instead evict everything older than the median-ish
+	// cutoff found by halving the age window until we are under the low-water mark.
+	window := DefaultSessionAffinityTTL / 2
+	for window >= time.Second && sessionEntryCount.Load() > lowWater {
+		SweepExpired(window)
+		window /= 2
+	}
+	if sessionEntryCount.Load() > lowWater {
+		// Pathological burst inside one second: drop arbitrary entries.
+		globalSession.Range(func(k, _ any) bool {
+			deleteSessionEntry(k)
+			return sessionEntryCount.Load() > lowWater
+		})
+	}
 }
 
 // SweepExpired removes sticky entries not refreshed within olderThan and returns how many
@@ -84,8 +136,10 @@ func SweepExpired(olderThan time.Duration) int {
 	globalSession.Range(func(k, v any) bool {
 		entry, ok := v.(*SessionEntry)
 		if !ok || entry.Timestamp.Before(cutoff) {
-			globalSession.Delete(k)
-			removed++
+			if _, loaded := globalSession.LoadAndDelete(k); loaded {
+				sessionEntryCount.Add(-1)
+				removed++
+			}
 		}
 		return true
 	})
