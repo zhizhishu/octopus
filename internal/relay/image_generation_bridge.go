@@ -141,7 +141,9 @@ func (ra *relayAttempt) forwardImageGenerationViaImages(ctx context.Context, spa
 	if err != nil {
 		return 0, err
 	}
+	debugCall := ra.debugBeginCall()
 	respUp, err := httpClient.Do(req)
+	ra.debugEndCall(debugCall, req, respUp, err)
 	if err != nil {
 		return 0, fmt.Errorf("failed to send image generation request: %w", err)
 	}
@@ -149,6 +151,7 @@ func (ra *relayAttempt) forwardImageGenerationViaImages(ctx context.Context, spa
 
 	if respUp.StatusCode < 200 || respUp.StatusCode >= 300 {
 		b, _ := readErrorBodyFromResponse(respUp)
+		ra.debugErrorBody(b)
 		upErr := newUpstreamError(respUp.StatusCode, b)
 		return respUp.StatusCode, upErr
 	}
@@ -217,7 +220,9 @@ func (ra *relayAttempt) forwardGeminiImageGenerationViaImages(ctx context.Contex
 	if err != nil {
 		return 0, err
 	}
+	debugCall := ra.debugBeginCall()
 	respUp, err := httpClient.Do(req)
+	ra.debugEndCall(debugCall, req, respUp, err)
 	if err != nil {
 		return 0, fmt.Errorf("failed to send gemini image generation request: %w", err)
 	}
@@ -225,6 +230,7 @@ func (ra *relayAttempt) forwardGeminiImageGenerationViaImages(ctx context.Contex
 
 	if respUp.StatusCode < 200 || respUp.StatusCode >= 300 {
 		b, _ := readErrorBodyFromResponse(respUp)
+		ra.debugErrorBody(b)
 		return respUp.StatusCode, newUpstreamError(respUp.StatusCode, b)
 	}
 

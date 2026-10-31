@@ -31,7 +31,9 @@ import (
 // 做法与 telemetry_outbound_unchanged_test.go 相同：假上游用 telemetry.Listener 记下
 // **原始**出站头名顺序 + 大小写。同一组请求先在「普通」下跑两遍（找出本来就每次不同的
 // 头，只在比较值时跳过；头序和 body 不跳过任何东西），再在「调试」下跑一遍逐项比对。
-// 覆盖：OpenAI chat、Anthropic messages、以及「第一家 503 → 换第二家」的换家链。
+// 覆盖：OpenAI chat、Anthropic messages、聊天换家链（503 → 第二家），以及其余几条
+// 自己发请求的路径：图片（含换家）、聊天里的图片生成、原样转发（rerank）、视频创建、
+// Midjourney 提交、异步图片任务的执行器。
 
 const (
 	debugTestChannelKey = "sk-debug-chan-secret-0123456789abcdef"
@@ -92,6 +94,21 @@ func startDebugUpstream(t *testing.T, fail bool) *debugUpstream {
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
+			switch {
+			case strings.HasPrefix(r.URL.Path, "/v1/images/"):
+				// 内联 b64（不给 URL）：聊天→图片桥收到 URL 会去下载，测试里不许出网。
+				_, _ = w.Write([]byte(`{"created":1,"data":[{"b64_json":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="}]}`))
+				return
+			case strings.HasPrefix(r.URL.Path, "/v1/videos"):
+				_, _ = w.Write([]byte(`{"id":"vid_debug_1","object":"video","status":"queued"}`))
+				return
+			case strings.HasPrefix(r.URL.Path, "/mj/"):
+				_, _ = w.Write([]byte(`{"code":1,"description":"submitted","result":"1730000000000001"}`))
+				return
+			case strings.HasPrefix(r.URL.Path, "/v1/rerank"):
+				_, _ = w.Write([]byte(`{"id":"rr-1","results":[{"index":0,"relevance_score":0.9}],"usage":{"total_tokens":3}}`))
+				return
+			}
 			_, _ = w.Write([]byte(`{"id":"chatcmpl-1","object":"chat.completion","model":"gpt-debug","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
 		})),
 	}
@@ -115,6 +132,16 @@ type debugScenario struct {
 	path        string
 	body        string
 	failFirst   bool
+	// handler 为空时走聊天主入口 Handler(inbound, c)。
+	handler func(c *gin.Context)
+	// asyncImage：不走 HTTP 入口，直接按执行器的顺序跑 NewImageTaskLog → ImageTaskRunUpstream → Finish。
+	asyncImage bool
+	// noRoutes：这条路径本身不选路（异步任务执行器直接用提交时定下的渠道）。
+	noRoutes bool
+	// secretHeaders：入站额外带的凭据头（名 → 值），调试详情里必须是「[已隐藏]」。
+	secretHeaders map[string]string
+	// upstreamPath：上游必须收到的路径前缀（证明真的走了这条路径，而不是别的入口）。
+	upstreamPath string
 }
 
 func setLogModeForTest(t *testing.T, mode string) {
@@ -162,6 +189,11 @@ func runDebugScenario(t *testing.T, sc debugScenario, mode string) ([]debugShot,
 	}
 	ups = append(ups, ok)
 
+	if sc.asyncImage {
+		runDebugAsyncImageTask(t, ctx, ok.url)
+		return collectDebugRun(t, ctx, ups)
+	}
+
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	req := httptest.NewRequest(http.MethodPost, sc.path, strings.NewReader(sc.body))
@@ -170,15 +202,56 @@ func runDebugScenario(t *testing.T, sc debugScenario, mode string) ([]debugShot,
 	req.Header.Set("X-Api-Key", debugTestInboundKey)
 	req.Header.Set("Cookie", debugTestCookie)
 	req.Header.Set("User-Agent", "debug-test-client/1.0")
+	for k, v := range sc.secretHeaders {
+		req.Header.Set(k, v)
+	}
 	c.Request = req
 	c.Set("api_key_id", 0)
 	c.Set("user_id", 0)
 	c.Set("request_ip", "127.0.0.1")
-	Handler(sc.inbound, c)
+	if sc.handler != nil {
+		sc.handler(c)
+	} else {
+		Handler(sc.inbound, c)
+	}
 	if rec.Code != http.StatusOK {
 		t.Fatalf("%s/%s: status %d body %s", sc.name, mode, rec.Code, rec.Body.String())
 	}
+	return collectDebugRun(t, ctx, ups)
+}
 
+// runDebugAsyncImageTask 按执行器（internal/task/image_task_poll.go）的顺序跑一条异步图片任务。
+func runDebugAsyncImageTask(t *testing.T, ctx context.Context, upstreamURL string) {
+	t.Helper()
+	channels, err := op.ChannelList(ctx)
+	if err != nil || len(channels) == 0 {
+		t.Fatalf("list channels: %v (n=%d)", err, len(channels))
+	}
+	ch := channels[0]
+	task := dbmodel.ImageTask{
+		TaskID:       "imgtask-debug-1",
+		CreatedAt:    1,
+		ChannelID:    ch.ID,
+		ChannelKeyID: ch.Keys[0].ID,
+		Model:        "img-debug",
+		RequestModel: "img-debug",
+		Endpoint:     dbmodel.ImageTaskEndpointGenerations,
+		RequestBody:  `{"model":"img-debug","prompt":"a fox <b>&&</b>"}`,
+	}
+	taskLog := NewImageTaskLog(task)
+	taskLog.SetChannel(&ch)
+	taskLog.BeginUpstream()
+	status, body, failReason, runErr := ImageTaskRunUpstream(ctx, &ch, debugTestChannelKey, task.Endpoint, task.Model, []byte(task.RequestBody), taskLog)
+	taskLog.EndUpstream()
+	if runErr != nil || failReason != "" || status != http.StatusOK {
+		t.Fatalf("async image upstream: status=%d fail=%q err=%v", status, failReason, runErr)
+	}
+	result, _ := ImageTaskResultPayload(body)
+	taskLog.Finish(true, status, result, "")
+}
+
+func collectDebugRun(t *testing.T, ctx context.Context, ups []*debugUpstream) ([]debugShot, *dbmodel.RelayLog) {
+	t.Helper()
 	var shots []debugShot
 	for _, u := range ups {
 		shots = append(shots, u.all()...)
@@ -200,19 +273,65 @@ func runDebugScenario(t *testing.T, sc debugScenario, mode string) ([]debugShot,
 func debugScenarios() []debugScenario {
 	return []debugScenario{
 		{
-			name: "openai chat", inbound: inbound.InboundTypeOpenAIChat, channelType: outbound.OutboundTypeOpenAIChat,
+			name: "openai chat", upstreamPath: "/v1/chat/completions", inbound: inbound.InboundTypeOpenAIChat, channelType: outbound.OutboundTypeOpenAIChat,
 			model: "gpt-debug", path: "/v1/chat/completions",
 			body: `{"model":"gpt-debug","messages":[{"role":"user","content":"hi <b>&&</b>"}]}`,
 		},
 		{
-			name: "anthropic messages", inbound: inbound.InboundTypeAnthropic, channelType: outbound.OutboundTypeAnthropic,
+			name: "anthropic messages", upstreamPath: "/v1/messages", inbound: inbound.InboundTypeAnthropic, channelType: outbound.OutboundTypeAnthropic,
 			model: "claude-debug", path: "/v1/messages",
 			body: `{"model":"claude-debug","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`,
 		},
 		{
-			name: "failover chain", inbound: inbound.InboundTypeOpenAIChat, channelType: outbound.OutboundTypeOpenAIChat,
+			name: "failover chain", upstreamPath: "/v1/chat/completions", inbound: inbound.InboundTypeOpenAIChat, channelType: outbound.OutboundTypeOpenAIChat,
 			model: "gpt-debug", path: "/v1/chat/completions", failFirst: true,
 			body: `{"model":"gpt-debug","messages":[{"role":"user","content":"hi"}]}`,
+		},
+		{
+			name: "images generations", upstreamPath: "/v1/images/generations", channelType: outbound.OutboundTypeOpenAIChat,
+			model: "img-debug", path: "/v1/images/generations",
+			body:    `{"model":"img-debug","prompt":"a fox <b>&&</b>","size":"1024x1024"}`,
+			handler: func(c *gin.Context) { ImagesHandler("/images/generations", c) },
+		},
+		{
+			name: "images failover", upstreamPath: "/v1/images/generations", channelType: outbound.OutboundTypeOpenAIChat,
+			model: "img-debug", path: "/v1/images/generations", failFirst: true,
+			body:    `{"model":"img-debug","prompt":"a fox"}`,
+			handler: func(c *gin.Context) { ImagesHandler("/images/generations", c) },
+		},
+		{
+			name: "chat image bridge", upstreamPath: "/v1/images/generations", inbound: inbound.InboundTypeOpenAIChat, channelType: outbound.OutboundTypeOpenAIChat,
+			model: "gpt-debug", path: "/v1/chat/completions",
+			body: `{"model":"gpt-debug","modalities":["image"],"messages":[{"role":"user","content":"draw a fox <b>&&</b>"}]}`,
+		},
+		{
+			name: "raw passthrough rerank", upstreamPath: "/v1/rerank", channelType: outbound.OutboundTypeOpenAIChat,
+			model: "rerank-debug", path: "/v1/rerank",
+			body:    `{"model":"rerank-debug","query":"hi <b>&&</b>","documents":["a","b"]}`,
+			handler: func(c *gin.Context) { RawProtocolHandler(RawProtocolOptions{Endpoint: "/rerank", Name: "rerank"}, c) },
+		},
+		{
+			name: "raw passthrough failover", upstreamPath: "/v1/rerank", channelType: outbound.OutboundTypeOpenAIChat,
+			model: "rerank-debug", path: "/v1/rerank", failFirst: true,
+			body:    `{"model":"rerank-debug","query":"hi","documents":["a"]}`,
+			handler: func(c *gin.Context) { RawProtocolHandler(RawProtocolOptions{Endpoint: "/rerank", Name: "rerank"}, c) },
+		},
+		{
+			name: "videos create", upstreamPath: "/v1/videos", channelType: outbound.OutboundTypeOpenAIChat,
+			model: "video-debug", path: "/v1/videos",
+			body:    `{"model":"video-debug","prompt":"a sunset <b>&&</b>"}`,
+			handler: VideosHandler,
+		},
+		{
+			name: "midjourney imagine", upstreamPath: "/mj/submit/imagine", channelType: outbound.OutboundTypeOpenAIChat,
+			model: "mj_imagine", path: "/mj/submit/imagine",
+			body:          `{"prompt":"a cat <b>&&</b>"}`,
+			handler:       func(c *gin.Context) { MidjourneySubmitHandler(c, MidjourneyModeImagine) },
+			secretHeaders: map[string]string{"mj-api-secret": debugTestInboundKey},
+		},
+		{
+			name: "async image task", upstreamPath: "/v1/images/generations", channelType: outbound.OutboundTypeOpenAIChat,
+			model: "img-debug", asyncImage: true, noRoutes: true,
 		},
 	}
 }
@@ -234,6 +353,11 @@ func TestLogDebugModeOutboundIsByteIdentical(t *testing.T) {
 			}
 			if len(off1) != wantCalls || len(off2) != wantCalls || len(on) != wantCalls {
 				t.Fatalf("upstream call count: normal=%d/%d debug=%d, want %d", len(off1), len(off2), len(on), wantCalls)
+			}
+			for i := range on {
+				if !strings.HasPrefix(on[i].path, sc.upstreamPath) {
+					t.Fatalf("call %d went to %q, want %s* (wrong path exercised)", i, on[i].path, sc.upstreamPath)
+				}
 			}
 			for i := range off1 {
 				a1, a2, b := off1[i], off2[i], on[i]
@@ -275,12 +399,19 @@ func TestLogDebugModeOutboundIsByteIdentical(t *testing.T) {
 			if len(info.Calls) != wantCalls || info.Timing.UpstreamCalls != wantCalls {
 				t.Fatalf("debug calls = %d (timing %d), want %d", len(info.Calls), info.Timing.UpstreamCalls, wantCalls)
 			}
-			if len(info.Routes) == 0 || info.Routes[0].Stage != "primary" || info.Routes[0].Mode != "fill_first" || info.Routes[0].Trace == "" {
+			if sc.noRoutes {
+				if len(info.Routes) != 0 {
+					t.Fatalf("path without routing must not invent a routing record: %+v", info.Routes)
+				}
+			} else if len(info.Routes) == 0 || info.Routes[0].Stage != "primary" || info.Routes[0].Mode != "fill_first" || info.Routes[0].Trace == "" {
 				t.Fatalf("routing decision missing or wrong: %+v", info.Routes)
 			}
 			last := info.Calls[len(info.Calls)-1]
 			if last.Status != http.StatusOK || len(last.RequestHeaders) == 0 || len(last.ResponseHeaders) == 0 || last.URL == "" {
 				t.Fatalf("last call not fully captured: %+v", last)
+			}
+			if last.ChannelKeyID == 0 || last.ChannelID == 0 {
+				t.Fatalf("call must name its channel and key id: %+v", last)
 			}
 			if sc.failFirst {
 				first := info.Calls[0]
@@ -315,12 +446,19 @@ func TestLogDebugModeOutboundIsByteIdentical(t *testing.T) {
 					}
 				}
 			}
-			for _, name := range []string{"Authorization", "X-Api-Key", "Cookie"} {
+			if !sc.asyncImage {
+				// 异步任务执行时，提交请求早已结束：没有入站头可记。
+				for _, name := range []string{"Authorization", "X-Api-Key", "Cookie"} {
+					assertHidden("inbound", info.InboundHeaders, name)
+				}
+			}
+			for name := range sc.secretHeaders {
 				assertHidden("inbound", info.InboundHeaders, name)
 			}
 			for _, call := range info.Calls {
 				assertHidden("outbound", call.RequestHeaders, "Authorization")
 				assertHidden("outbound", call.RequestHeaders, "x-api-key")
+				assertHidden("outbound", call.RequestHeaders, "mj-api-secret")
 				assertHidden("response", call.ResponseHeaders, "Set-Cookie")
 			}
 			if len(raw) > dbmodel.RelayLogDebugMaxTotalBytes {

@@ -11,6 +11,7 @@ package relay
 // 其余头值、URL、错误原文再过一遍 xredact 打码。每一项都有上限，整份再有总上限。
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"sort"
@@ -26,35 +27,60 @@ import (
 )
 
 // debugRecorder 在一次请求内共享（竞速的每个 racer 拿到的是 metrics 副本，
-// 但这个指针是同一个），所以所有写入都要加锁。
+// 但这个指针是同一个），所以所有写入都要加锁。所有方法都接受 nil 接收者
+// （= 调试模式关着），什么都不做。
 type debugRecorder struct {
-	mu      sync.Mutex
-	start   time.Time
-	inbound []dbmodel.RelayLogDebugHeader
-	routes  []dbmodel.RelayLogDebugRoute
-	calls   []*debugCall
-	dropped int
+	mu            sync.Mutex
+	start         time.Time
+	inbound       []dbmodel.RelayLogDebugHeader
+	routes        []dbmodel.RelayLogDebugRoute
+	routesDropped int
+	calls         []*debugCall
+	dropped       int
+
+	// 图片 / 原样转发 / 视频 / MJ 这些路径的发送函数拿不到 Key 编号，
+	// 由选路循环在每次尝试前用 target 告诉记录器「下一发属于谁」。这些路径都是
+	// 串行尝试，不存在两发同时在途。
+	targetChannelID   int
+	targetChannelName string
+	targetKeyID       int
 }
 
 type debugCall struct {
+	d      *debugRecorder
 	rec    dbmodel.RelayLogDebugCall
 	sentAt time.Time
 }
 
+// newDebugRecorder 只在调试模式打开时返回记录器；关着返回 nil。
+func newDebugRecorder(start time.Time, inbound http.Header) *debugRecorder {
+	if !op.LogModeDebugActive() {
+		return nil
+	}
+	if start.IsZero() {
+		start = time.Now()
+	}
+	return &debugRecorder{start: start, inbound: debugHeaders(inbound)}
+}
+
 // enableDebugCapture 在调试模式打开时给本次请求挂上记录器。关闭时什么都不做。
 func (m *RelayMetrics) enableDebugCapture(inbound http.Header) {
-	if m == nil || !op.LogModeDebugActive() {
+	if m == nil {
 		return
 	}
-	m.debug = &debugRecorder{
-		start:   m.StartTime,
-		inbound: debugHeaders(inbound),
-	}
+	m.debug = newDebugRecorder(m.StartTime, inbound)
 }
 
 // debugRoute 记下一次选路：分组、模式（优先/轮询）、候选顺序与原因。
 func (m *RelayMetrics) debugRoute(stage string, group dbmodel.Group, iter *balancer.Iterator, sticky bool) {
-	if m == nil || m.debug == nil {
+	if m == nil {
+		return
+	}
+	m.debug.route(stage, group, iter, sticky)
+}
+
+func (d *debugRecorder) route(stage string, group dbmodel.Group, iter *balancer.Iterator, sticky bool) {
+	if d == nil {
 		return
 	}
 	route := dbmodel.RelayLogDebugRoute{
@@ -68,9 +94,13 @@ func (m *RelayMetrics) debugRoute(stage string, group dbmodel.Group, iter *balan
 		route.Candidates = iter.Len()
 		route.Trace = truncateUTF8(iter.DecisionTrace(), dbmodel.RelayLogDebugMaxRouteTrace)
 	}
-	m.debug.mu.Lock()
-	m.debug.routes = append(m.debug.routes, route)
-	m.debug.mu.Unlock()
+	d.mu.Lock()
+	if len(d.routes) >= dbmodel.RelayLogDebugMaxRoutes {
+		d.routesDropped++
+	} else {
+		d.routes = append(d.routes, route)
+	}
+	d.mu.Unlock()
 }
 
 func debugGroupModeName(mode dbmodel.GroupMode) string {
@@ -86,39 +116,84 @@ func debugGroupModeName(mode dbmodel.GroupMode) string {
 	}
 }
 
-// debugBeginCall 在发往上游之前调用，只记时间和渠道，不碰请求。
-func (ra *relayAttempt) debugBeginCall() *debugCall {
-	if ra == nil || ra.relayRequest == nil || ra.metrics == nil || ra.metrics.debug == nil {
+// target 告诉记录器下一次上游调用属于哪个渠道、哪把 Key（只记编号，不碰 Key 本身）。
+func (d *debugRecorder) target(channel *dbmodel.Channel, keyID int) {
+	if d == nil {
+		return
+	}
+	d.mu.Lock()
+	d.targetChannelID, d.targetChannelName, d.targetKeyID = 0, "", keyID
+	if channel != nil {
+		d.targetChannelID, d.targetChannelName = channel.ID, channel.Name
+	}
+	d.mu.Unlock()
+}
+
+// begin 在发往上游之前调用，只记时间和渠道，不碰请求。超过次数上限返回 nil。
+func (d *debugRecorder) begin(channelID int, channelName string, keyID int) *debugCall {
+	if d == nil {
 		return nil
 	}
-	d := ra.metrics.debug
 	now := time.Now()
-	call := &debugCall{sentAt: now}
+	call := &debugCall{d: d, sentAt: now}
 	call.rec.StartMs = now.Sub(d.start).Milliseconds()
-	if ra.channel != nil {
-		call.rec.ChannelID = ra.channel.ID
-		call.rec.ChannelName = ra.channel.Name
-	}
-	call.rec.ChannelKeyID = ra.usedKey.ID
+	call.rec.ChannelID = channelID
+	call.rec.ChannelName = channelName
+	call.rec.ChannelKeyID = keyID
 	d.mu.Lock()
+	defer d.mu.Unlock()
 	if len(d.calls) >= dbmodel.RelayLogDebugMaxCalls {
 		d.dropped++
-		d.mu.Unlock()
 		return nil
 	}
 	d.calls = append(d.calls, call)
-	d.mu.Unlock()
-	ra.debugCall = call
 	return call
 }
 
-// debugEndCall 在发送返回之后调用：读（只读）已经发出去的请求头、响应头和状态。
-func (ra *relayAttempt) debugEndCall(call *debugCall, req *http.Request, resp *http.Response, err error) {
-	if call == nil {
+func (d *debugRecorder) beginTarget() *debugCall {
+	if d == nil {
+		return nil
+	}
+	d.mu.Lock()
+	id, name, key := d.targetChannelID, d.targetChannelName, d.targetKeyID
+	d.mu.Unlock()
+	return d.begin(id, name, key)
+}
+
+type debugRecorderKey struct{}
+
+// withDebugRecorder 把记录器挂在 ctx 上，让拿不到 metrics 的发送函数也能记。
+// context 里的值不会出现在线上（不进头、不进 body），关着时原样返回 ctx。
+func withDebugRecorder(ctx context.Context, d *debugRecorder) context.Context {
+	if d == nil || ctx == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, debugRecorderKey{}, d)
+}
+
+func debugRecorderFrom(ctx context.Context) *debugRecorder {
+	if ctx == nil {
+		return nil
+	}
+	d, _ := ctx.Value(debugRecorderKey{}).(*debugRecorder)
+	return d
+}
+
+// debugBegin 给「拿不到 metrics、只有 req」的发送点用：从 req 的 ctx 取记录器，
+// 渠道 / Key 用选路循环 target 进来的那一份。调试关着时返回 nil。
+func debugBegin(req *http.Request) *debugCall {
+	if req == nil {
+		return nil
+	}
+	return debugRecorderFrom(req.Context()).beginTarget()
+}
+
+// end 在发送返回之后调用：读（只读）已经发出去的请求头、响应头和状态。
+func (c *debugCall) end(req *http.Request, resp *http.Response, err error) {
+	if c == nil {
 		return
 	}
-	d := ra.metrics.debug
-	headerMs := time.Since(call.sentAt).Milliseconds()
+	headerMs := time.Since(c.sentAt).Milliseconds()
 	var method, url string
 	var reqHeaders []dbmodel.RelayLogDebugHeader
 	if req != nil {
@@ -138,54 +213,98 @@ func (ra *relayAttempt) debugEndCall(call *debugCall, req *http.Request, resp *h
 	if err != nil {
 		errText = truncateUTF8(xredact.URLSecrets(xredact.Secrets(err.Error())), 1024)
 	}
-	d.mu.Lock()
-	call.rec.Method = method
-	call.rec.URL = url
-	call.rec.HeaderMs = headerMs
-	call.rec.Status = status
-	call.rec.RequestHeaders = reqHeaders
-	call.rec.ResponseHeaders = respHeaders
-	call.rec.Error = errText
-	d.mu.Unlock()
+	c.d.mu.Lock()
+	c.rec.Method = method
+	c.rec.URL = url
+	c.rec.HeaderMs = headerMs
+	c.rec.Status = status
+	c.rec.RequestHeaders = reqHeaders
+	c.rec.ResponseHeaders = respHeaders
+	c.rec.Error = errText
+	c.d.mu.Unlock()
 }
 
-// debugErrorBody 记下上游非 2xx 的原文（打码、上限 8KB）。body 是已经读出来的副本。
-func (ra *relayAttempt) debugErrorBody(body []byte) {
-	if ra == nil || ra.debugCall == nil || len(body) == 0 {
+// errorBody 记下上游非 2xx 的原文（打码、上限 8KB）。body 是已经读出来的副本。
+func (c *debugCall) errorBody(body []byte) {
+	if c == nil || len(body) == 0 {
 		return
 	}
 	text := truncateUTF8(xredact.URLSecrets(xredact.Secrets(string(body))), dbmodel.RelayLogDebugMaxErrorBody)
-	d := ra.metrics.debug
-	d.mu.Lock()
-	ra.debugCall.rec.ErrorBody = text
-	d.mu.Unlock()
+	c.d.mu.Lock()
+	c.rec.ErrorBody = text
+	c.d.mu.Unlock()
 }
 
-// debugNote 给当前这次上游调用追加一句「网关接下来做了什么」。
-func (ra *relayAttempt) debugNote(note string) {
-	if ra == nil || ra.debugCall == nil || note == "" {
+// note 给这次上游调用追加一句「网关接下来做了什么」。
+func (c *debugCall) note(note string) {
+	if c == nil || note == "" {
 		return
 	}
-	d := ra.metrics.debug
-	d.mu.Lock()
-	if len(ra.debugCall.rec.Notes) < dbmodel.RelayLogDebugMaxNotes {
-		ra.debugCall.rec.Notes = append(ra.debugCall.rec.Notes, truncateUTF8(note, 256))
+	c.d.mu.Lock()
+	if len(c.rec.Notes) < dbmodel.RelayLogDebugMaxNotes {
+		c.rec.Notes = append(c.rec.Notes, truncateUTF8(note, 256))
 	}
-	d.mu.Unlock()
+	c.d.mu.Unlock()
+}
+
+// debugBeginCall 是聊天主路径的入口：渠道和 Key 由 relayAttempt 直接给出。
+func (ra *relayAttempt) debugBeginCall() *debugCall {
+	if ra == nil || ra.relayRequest == nil || ra.metrics == nil || ra.metrics.debug == nil {
+		return nil
+	}
+	var id int
+	var name string
+	if ra.channel != nil {
+		id, name = ra.channel.ID, ra.channel.Name
+	}
+	call := ra.metrics.debug.begin(id, name, ra.usedKey.ID)
+	// 超过次数上限时 call 为 nil：同样覆盖掉，免得报错原文写到上一发的记录里。
+	ra.debugCall = call
+	return call
+}
+
+func (ra *relayAttempt) debugEndCall(call *debugCall, req *http.Request, resp *http.Response, err error) {
+	call.end(req, resp, err)
+}
+
+func (ra *relayAttempt) debugErrorBody(body []byte) {
+	if ra == nil {
+		return
+	}
+	ra.debugCall.errorBody(body)
+}
+
+func (ra *relayAttempt) debugNote(note string) {
+	if ra == nil {
+		return
+	}
+	ra.debugCall.note(note)
 }
 
 // buildDebugInfo 在落库前组装调试详情，并保证整份不超过总上限。
 func (m *RelayMetrics) buildDebugInfo(duration time.Duration) *dbmodel.RelayLogDebugInfo {
-	if m == nil || m.debug == nil {
+	if m == nil {
 		return nil
 	}
-	d := m.debug
+	return m.debug.build(duration, m.FirstTokenTime)
+}
+
+func (d *debugRecorder) build(duration time.Duration, firstToken time.Time) *dbmodel.RelayLogDebugInfo {
+	if d == nil {
+		return nil
+	}
 	d.mu.Lock()
+	if len(d.calls) == 0 && len(d.routes) == 0 && len(d.inbound) == 0 && d.dropped == 0 {
+		// 什么都没记到（例如异步任务过期、根本没打上游）：不落空壳。
+		d.mu.Unlock()
+		return nil
+	}
 	info := &dbmodel.RelayLogDebugInfo{
 		InboundHeaders: append([]dbmodel.RelayLogDebugHeader(nil), d.inbound...),
 		Routes:         append([]dbmodel.RelayLogDebugRoute(nil), d.routes...),
 		DroppedCalls:   d.dropped,
 	}
+	routesDropped := d.routesDropped
 	for _, c := range d.calls {
 		rec := c.rec
 		rec.RequestHeaders = append([]dbmodel.RelayLogDebugHeader(nil), c.rec.RequestHeaders...)
@@ -193,18 +312,19 @@ func (m *RelayMetrics) buildDebugInfo(duration time.Duration) *dbmodel.RelayLogD
 		rec.Notes = append([]string(nil), c.rec.Notes...)
 		info.Calls = append(info.Calls, rec)
 	}
+	start := d.start
 	d.mu.Unlock()
 	sort.SliceStable(info.Calls, func(i, j int) bool { return info.Calls[i].StartMs < info.Calls[j].StartMs })
 
-	info.Timing = m.debugTiming(duration, info.Calls)
-	if info.DroppedCalls > 0 {
+	info.Timing = debugTiming(duration, start, firstToken, info.Calls)
+	if info.DroppedCalls > 0 || routesDropped > 0 {
 		info.Truncated = true
 	}
 	capDebugInfo(info)
 	return info
 }
 
-func (m *RelayMetrics) debugTiming(duration time.Duration, calls []dbmodel.RelayLogDebugCall) dbmodel.RelayLogDebugTiming {
+func debugTiming(duration time.Duration, start, firstToken time.Time, calls []dbmodel.RelayLogDebugCall) dbmodel.RelayLogDebugTiming {
 	t := dbmodel.RelayLogDebugTiming{
 		TotalMs:       duration.Milliseconds(),
 		BeforeSendMs:  -1,
@@ -217,8 +337,8 @@ func (m *RelayMetrics) debugTiming(duration time.Duration, calls []dbmodel.Relay
 		t.BeforeSendMs = calls[0].StartMs
 		t.HeaderWaitMs = calls[len(calls)-1].HeaderMs
 	}
-	if !m.FirstTokenTime.IsZero() {
-		t.FirstTokenMs = m.FirstTokenTime.Sub(m.StartTime).Milliseconds()
+	if !firstToken.IsZero() && !start.IsZero() && !firstToken.Before(start) {
+		t.FirstTokenMs = firstToken.Sub(start).Milliseconds()
 		if gen := duration.Milliseconds() - t.FirstTokenMs; gen >= 0 {
 			t.GenerationMs = gen
 		}

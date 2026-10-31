@@ -154,6 +154,9 @@ func RawProtocolHandler(options RawProtocolOptions, c *gin.Context) {
 	metrics.RequestContent = metrics.upstreamBodyLog.contentWithImages(func(capture *imageCapture) string {
 		return buildRawProtocolRequestContentWith(isMultipart, bc, jsonPayload, options.Name, capture)
 	})
+	// 调试模式：挂记录器（只读观察，关着时 ctx 原样）并记下这次选路。
+	ctx = metrics.enableDebugCapture(ctx, c.Request.Header)
+	metrics.debug.route("primary", group, iter, stickyEnabled)
 
 	var (
 		lastErr          error
@@ -230,6 +233,7 @@ runIterator:
 
 			span := iter.StartAttempt(channel.ID, usedKey.ID, channel.Name)
 			recordAttemptProxy(span, channel)
+			metrics.debug.target(channel, usedKey.ID)
 			forwardCompactCursor := true
 			if isResponsesCompactRawProtocol(options) && strings.TrimSpace(compactPreviousResponseID) != "" {
 				forwardCompactCursor = shouldForwardRawProtocolResponsesCursor(ctx, iter, compactPreviousResponseID, channel.ID, usedKey.ID, clientSession.Source, apiKeyID, userID)
@@ -334,6 +338,7 @@ runIterator:
 			if isResponsesCompactRawProtocol(options) {
 				prioritizeRawProtocolResponsesOwner(ctx, fallbackIter, compactPreviousResponseID, apiKeyID, userID)
 			}
+			metrics.debug.route("fallback", fallbackGroup, fallbackIter, stickyEnabled)
 			if fallbackIter.Len() > 0 {
 				group = fallbackGroup
 				iter = fallbackIter
@@ -1042,7 +1047,9 @@ func rawProtocolAttempt(
 	if stream && !options.BinaryResponse && isResponsesInboundPath(c.Request.URL.Path) {
 		stopFirstByteKeepalive = startDownstreamFirstByteKeepalive(ctx, c)
 	}
+	debugCall := debugBegin(req)
 	respUp, err := helper.DoPreserveMethodRedirect(httpClient, req)
+	debugCall.end(req, respUp, err)
 	if stopFirstByteKeepalive != nil {
 		stopFirstByteKeepalive()
 	}
@@ -1054,6 +1061,7 @@ func rawProtocolAttempt(
 	upstreamCT = respUp.Header.Get("Content-Type")
 	if respUp.StatusCode < 200 || respUp.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(respUp.Body, upstreamErrorBodyLimit))
+		debugCall.errorBody(b)
 		upErr := newUpstreamError(respUp.StatusCode, b)
 		log.Warnf("raw protocol upstream returned non-2xx: protocol=%s status=%d code=%s strategy=%s", options.Name, upErr.StatusCode(), upErr.ErrorCode(), upErr.Strategy())
 		return respUp.StatusCode, false, nil, upstreamCT, "", upErr
@@ -1143,6 +1151,20 @@ type rawProtocolRelayMetrics struct {
 
 	// 真实出站请求体快照（与聊天主路径同一开关、同一套规则，见 upstream_body_log.go）。
 	upstreamBodyLog
+
+	// 调试详情记录器：只在「日志模式 = 调试」时非 nil（见 debug_capture.go）。
+	// 原样转发、视频、MJ、统一任务查询共用这一个 metrics 类型。
+	debug *debugRecorder
+}
+
+// enableDebugCapture 调试模式打开时挂上记录器，并返回带记录器的 ctx
+// （发送函数从 req 的 ctx 取）。关着时原样返回 ctx。
+func (m *rawProtocolRelayMetrics) enableDebugCapture(ctx context.Context, inbound http.Header) context.Context {
+	if m == nil {
+		return ctx
+	}
+	m.debug = newDebugRecorder(m.StartTime, inbound)
+	return withDebugRecorder(ctx, m.debug)
 }
 
 // bodyLog 返回出站 body 快照的存放处；m 为 nil 时返回 nil（采集函数据此直接跳过）。
@@ -1415,6 +1437,7 @@ func (m *rawProtocolRelayMetrics) saveLog(ctx context.Context, err error, durati
 		ResponseContent:  m.ResponseContent,
 	}
 	m.upstreamBodyLog.applyTo(&relayLog)
+	relayLog.DebugInfo = m.debug.build(duration, m.FirstToken)
 	applyBillingSnapshotToRelayLog(&relayLog, billingSnapshot)
 
 	if apiKey, getErr := op.APIKeyGet(m.APIKeyID, ctx); getErr == nil {

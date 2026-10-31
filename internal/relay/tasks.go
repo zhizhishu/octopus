@@ -359,6 +359,9 @@ func fetchMidjourneyStatus(c *gin.Context, ctx context.Context, view *TaskView, 
 	}
 	metrics := newRawProtocolRelayMetrics(c.GetInt("api_key_id"), c.GetInt("user_id"), c.GetString("request_ip"), entry.model, midjourneyTaskLogName, c.Request.URL.Path)
 	metrics.ActualModel = entry.model
+	// 调试模式：挂记录器（只读观察，关着时 ctx 原样）。
+	ctx = metrics.enableDebugCapture(ctx, c.Request.Header)
+	metrics.debug.target(channel, entry.channelKeyID)
 	started := time.Now()
 	// c 传 nil：不把 /v1/tasks 的查询参数（kind= 之类）带到上游。
 	_, body, _, err := midjourneyForward(ctx, nil, http.MethodGet, "/mj/task/"+url.PathEscape(view.TaskID)+"/fetch", nil, channel, key)
@@ -650,6 +653,8 @@ func fillMidjourneyStatuses(c *gin.Context, ctx context.Context, page []TaskView
 		return
 	}
 	metrics := newRawProtocolRelayMetrics(c.GetInt("api_key_id"), c.GetInt("user_id"), c.GetString("request_ip"), "", midjourneyTaskLogName, c.Request.URL.Path)
+	// 调试模式：挂记录器（只读观察，关着时 ctx 原样）。
+	ctx = metrics.enableDebugCapture(ctx, c.Request.Header)
 	var attempts []model.ChannelAttempt
 	var lastErr error
 	for _, k := range order {
@@ -667,6 +672,7 @@ func fillMidjourneyStatuses(c *gin.Context, ctx context.Context, page []TaskView
 			ids = append(ids, page[i].TaskID)
 		}
 		body, _ := json.Marshal(map[string]any{"ids": ids})
+		metrics.debug.target(channel, k.keyID)
 		_, respBody, _, err := midjourneyForward(ctx, nil, http.MethodPost, "/mj/task/list-by-condition", body, channel, key)
 		if err != nil {
 			lastErr = err

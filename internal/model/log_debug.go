@@ -36,6 +36,7 @@ const (
 	RelayLogDebugMaxErrorBody    = 8 * 1024  // 单次上游错误原文最多 8KB
 	RelayLogDebugMaxRouteTrace   = 4 * 1024  // 选路说明最多 4KB
 	RelayLogDebugMaxNotes        = 8         // 每次调用最多 8 条备注
+	RelayLogDebugMaxRoutes       = 8         // 最多记 8 次选路（正常 / 回退 / 救援重选）
 	RelayLogDebugMaxTotalBytes   = 48 * 1024 // 整份调试详情序列化后最多 48KB
 	RelayLogDebugRetentionDays   = 3         // 调试详情只留 3 天，过期只清这一列，日志本身照常保留
 	RelayLogDebugHeaderHiddenTag = "[已隐藏]"

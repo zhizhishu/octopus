@@ -164,6 +164,9 @@ func VideosHandlerKind(c *gin.Context, mediaKind string) {
 
 	metrics := newRawProtocolRelayMetrics(apiKeyID, userID, c.GetString("request_ip"), requestModel, "videos", c.Request.URL.Path)
 	metrics.RequestUserAgent = c.Request.UserAgent() // 仅入站 UA 快照，供日志 / 用户页识别客户端
+	// 调试模式：挂记录器（只读观察，关着时 ctx 原样）。
+	ctx = metrics.enableDebugCapture(ctx, c.Request.Header)
+	metrics.debug.route("primary", group, iter, false)
 	metrics.SetAccessPlan(routeResult.AccessPlan, routeResult.AccessRouteRule, routeResult.AccessRouteUsed)
 	metrics.RequestContent = metrics.upstreamBodyLog.contentWithImages(func(capture *imageCapture) string {
 		return buildRawProtocolRequestContentWith(false, bc, payload, "videos", capture)
@@ -228,6 +231,7 @@ runIterator:
 
 			span := iter.StartAttempt(channel.ID, usedKey.ID, channel.Name)
 			recordAttemptProxy(span, channel)
+			metrics.debug.target(channel, usedKey.ID)
 			statusCode, body, upstreamCT, fwdErr := func() (int, []byte, string, error) {
 				finish := balancer.BeginRuntimeAttempt(channel.ID, usedKey.ID, item.ModelName)
 				defer finish()
@@ -310,6 +314,7 @@ runIterator:
 		} else {
 			fallbackGroup = enrichGroupForSmartRouting(ctx, fallbackGroup, false)
 			fallbackIter := balancer.NewIteratorWithSession(fallbackGroup, apiKeyID, requestModel, "", false)
+			metrics.debug.route("fallback", fallbackGroup, fallbackIter, false)
 			if fallbackIter.Len() > 0 {
 				group = fallbackGroup
 				iter = fallbackIter
@@ -350,7 +355,10 @@ func VideoPollHandler(c *gin.Context) {
 	// 走了一个新子路径就被改送到新子路径上去。
 	metrics := newRawProtocolRelayMetrics(c.GetInt("api_key_id"), c.GetInt("user_id"), c.GetString("request_ip"), entry.model, "videos_poll", c.Request.URL.Path)
 	metrics.RequestUserAgent = c.Request.UserAgent() // 仅入站 UA 快照，供日志 / 用户页识别客户端
+	// 调试模式：挂记录器（只读观察，关着时 ctx 原样）。
+	ctx = metrics.enableDebugCapture(ctx, c.Request.Header)
 	metrics.ActualModel = entry.model
+	metrics.debug.target(channel, entry.channelKeyID)
 
 	statusCode, body, upstreamCT, fwdErr := videoForward(ctx, c, http.MethodGet, videoUpstreamPathForChannel(channel, entry.mediaKind, taskID, false), nil, entry.model, channel, channelKey, nil)
 	if fwdErr != nil {
@@ -389,7 +397,10 @@ func VideoContentHandler(c *gin.Context) {
 
 	metrics := newRawProtocolRelayMetrics(c.GetInt("api_key_id"), c.GetInt("user_id"), c.GetString("request_ip"), entry.model, "videos_content", c.Request.URL.Path)
 	metrics.RequestUserAgent = c.Request.UserAgent() // 仅入站 UA 快照，供日志 / 用户页识别客户端
+	// 调试模式：挂记录器（只读观察，关着时 ctx 原样）。
+	ctx = metrics.enableDebugCapture(ctx, c.Request.Header)
 	metrics.ActualModel = entry.model
+	metrics.debug.target(channel, entry.channelKeyID)
 
 	statusCode, fwdErr := videoForwardContent(ctx, c, videoUpstreamPathForChannel(channel, entry.mediaKind, taskID, true), channel, channelKey)
 	if fwdErr != nil {
@@ -488,7 +499,9 @@ func videoForward(ctx context.Context, c *gin.Context, method, upstreamPath stri
 	if err != nil {
 		return 0, nil, "", err
 	}
+	debugCall := debugBegin(req)
 	respUp, err := helper.DoPreserveMethodRedirect(httpClient, req)
+	debugCall.end(req, respUp, err)
 	if err != nil {
 		return 0, nil, "", fmt.Errorf("failed to send video request: %w", err)
 	}
@@ -497,6 +510,7 @@ func videoForward(ctx context.Context, c *gin.Context, method, upstreamPath stri
 	upstreamCT := respUp.Header.Get("Content-Type")
 	if respUp.StatusCode < 200 || respUp.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(respUp.Body, upstreamErrorBodyLimit))
+		debugCall.errorBody(b)
 		return respUp.StatusCode, nil, upstreamCT, newUpstreamError(respUp.StatusCode, b)
 	}
 	body, err := io.ReadAll(io.LimitReader(respUp.Body, videoResponseBodyLimit))
@@ -552,7 +566,9 @@ func videoForwardContent(ctx context.Context, c *gin.Context, upstreamPath strin
 	if err != nil {
 		return 0, err
 	}
+	debugCall := debugBegin(req)
 	respUp, err := helper.DoPreserveMethodRedirect(httpClient, req)
+	debugCall.end(req, respUp, err)
 	if err != nil {
 		return 0, fmt.Errorf("failed to send video content request: %w", err)
 	}
@@ -560,6 +576,7 @@ func videoForwardContent(ctx context.Context, c *gin.Context, upstreamPath strin
 
 	if respUp.StatusCode < 200 || respUp.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(respUp.Body, upstreamErrorBodyLimit))
+		debugCall.errorBody(b)
 		return respUp.StatusCode, newUpstreamError(respUp.StatusCode, b)
 	}
 

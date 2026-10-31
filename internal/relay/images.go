@@ -148,6 +148,9 @@ func ImagesHandler(endpoint string, c *gin.Context) {
 	metrics.RequestContent = metrics.upstreamBodyLog.contentWithImages(func(capture *imageCapture) string {
 		return buildImagesRequestContentForLogWith(isMultipart, bc, jsonPayload, capture)
 	})
+	// 调试模式：挂记录器（只读观察，关着时 ctx 原样）并记下这次选路。
+	ctx = metrics.enableDebugCapture(ctx, c.Request.Header)
+	metrics.debug.route("primary", group, iter, stickyEnabled)
 
 	var (
 		lastErr          error
@@ -224,6 +227,7 @@ runIterator:
 
 			span := iter.StartAttempt(channel.ID, usedKey.ID, channel.Name)
 			recordAttemptProxy(span, channel)
+			metrics.debug.target(channel, usedKey.ID)
 
 			// 尝试一次转发
 			var (
@@ -333,6 +337,7 @@ runIterator:
 			fallbackGroup = enrichGroupForSmartRouting(ctx, fallbackGroup, stream)
 			stickyEnabled = routeStickyEnabled(fallbackGroup.Mode, clientSession.Source)
 			fallbackIter := balancer.NewIteratorWithSession(fallbackGroup, apiKeyID, requestModel, clientSessionKey, stickyEnabled)
+			metrics.debug.route("fallback", fallbackGroup, fallbackIter, stickyEnabled)
 			if fallbackIter.Len() > 0 {
 				group = fallbackGroup
 				iter = fallbackIter
@@ -463,6 +468,19 @@ type imagesRelayMetrics struct {
 
 	// 真实出站请求体快照（与聊天主路径同一开关、同一套规则，见 upstream_body_log.go）。
 	upstreamBodyLog
+
+	// 调试详情记录器：只在「日志模式 = 调试」时非 nil（见 debug_capture.go）。
+	debug *debugRecorder
+}
+
+// enableDebugCapture 调试模式打开时挂上记录器，并返回带记录器的 ctx
+// （发送函数从 req 的 ctx 取）。关着时原样返回 ctx。
+func (m *imagesRelayMetrics) enableDebugCapture(ctx context.Context, inbound http.Header) context.Context {
+	if m == nil {
+		return ctx
+	}
+	m.debug = newDebugRecorder(m.StartTime, inbound)
+	return withDebugRecorder(ctx, m.debug)
 }
 
 // bodyLog 返回出站 body 快照的存放处；m 为 nil 时返回 nil（采集函数据此直接跳过）。
@@ -699,6 +717,7 @@ func (m *imagesRelayMetrics) saveLog(ctx context.Context, err error, duration ti
 		ResponseContent:  m.ResponseContent,
 	}
 	m.upstreamBodyLog.applyTo(&relayLog)
+	relayLog.DebugInfo = m.debug.build(duration, m.FirstToken)
 	applyBillingSnapshotToRelayLog(&relayLog, billingSnapshot)
 
 	if apiKey, getErr := op.APIKeyGet(m.APIKeyID, ctx); getErr == nil {
@@ -1008,7 +1027,9 @@ func imagesAttempt(
 		return 0, false, nil, "", err
 	}
 
+	debugCall := debugBegin(req)
 	respUp, err := httpClient.Do(req)
+	debugCall.end(req, respUp, err)
 	if err != nil {
 		return 0, false, nil, "", fmt.Errorf("failed to send request: %w", err)
 	}
@@ -1020,6 +1041,7 @@ func imagesAttempt(
 	if stream {
 		if respUp.StatusCode < 200 || respUp.StatusCode >= 300 {
 			b, _ := io.ReadAll(io.LimitReader(respUp.Body, upstreamErrorBodyLimit))
+			debugCall.errorBody(b)
 			upErr := newUpstreamError(respUp.StatusCode, b)
 			log.Warnf("images upstream returned non-2xx: status=%d, code=%s, strategy=%s", upErr.StatusCode(), upErr.ErrorCode(), upErr.Strategy())
 			return respUp.StatusCode, false, nil, upstreamCT, upErr
@@ -1031,6 +1053,7 @@ func imagesAttempt(
 	// 非流式：2xx 透传，否则读取限长错误体用于错误信息与重试判定
 	if respUp.StatusCode < 200 || respUp.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(respUp.Body, upstreamErrorBodyLimit))
+		debugCall.errorBody(b)
 		upErr := newUpstreamError(respUp.StatusCode, b)
 		log.Warnf("images upstream returned non-2xx: status=%d, code=%s, strategy=%s", upErr.StatusCode(), upErr.ErrorCode(), upErr.Strategy())
 		return respUp.StatusCode, false, nil, upstreamCT, upErr

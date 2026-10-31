@@ -47,6 +47,8 @@ test('debug info: route mode names match the literal 优先 / 轮询 wording', (
     assert.equal(debug.debugRouteModeLabel('spread'), '轮询');
     assert.equal(debug.debugRouteStageLabel('primary'), '正常选路');
     assert.equal(debug.debugRouteStageLabel('fallback'), '回退池');
+    assert.equal(debug.debugRouteStageLabel('rescue'), '救援重选');
+    assert.equal(debug.debugRouteStageLabel('manual'), '人工指定');
 });
 
 test('debug info: ms formatting, -1 means not measured', () => {

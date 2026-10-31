@@ -16,7 +16,16 @@ export function debugRouteModeLabel(mode: RelayLogDebugRoute['mode']): string {
 }
 
 export function debugRouteStageLabel(stage: string): string {
-    return stage === 'fallback' ? '回退池' : '正常选路';
+    switch (stage) {
+        case 'fallback':
+            return '回退池';
+        case 'rescue':
+            return '救援重选';
+        case 'manual':
+            return '人工指定';
+        default:
+            return '正常选路';
+    }
 }
 
 /** 毫秒 → 短文案；-1（没测到）显示「—」。 */

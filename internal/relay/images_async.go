@@ -654,7 +654,9 @@ func ImageTaskRunUpstream(
 	if herr != nil {
 		return 0, nil, "", herr
 	}
+	debugCall := taskLog.debugBegin(channel)
 	respUp, derr := httpClient.Do(req)
+	debugCall.end(req, respUp, derr)
 	if derr != nil {
 		return 0, nil, "", fmt.Errorf("failed to send upstream image request: %w", derr)
 	}
@@ -667,6 +669,7 @@ func ImageTaskRunUpstream(
 	respBody, readErr := io.ReadAll(io.LimitReader(respUp.Body, imageTaskUpstreamReadLimit))
 
 	if respUp.StatusCode < 200 || respUp.StatusCode >= 300 {
+		debugCall.errorBody(respBody)
 		// 上游错误体的摘要（经 xredact 脱敏 + 截断）留给运维诊断；
 		// 它进的是 image_tasks.error_message 与本次 Warn 日志，不是 result_json。
 		summary := upstreamBodySummary(string(respBody))

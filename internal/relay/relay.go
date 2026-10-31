@@ -847,6 +847,7 @@ attemptChannels:
 					interventionGroup = enrichGroupForSmartRouting(c.Request.Context(), interventionGroup, preferStreamRouting)
 					interventionIter := balancer.NewIteratorWithSession(interventionGroup, apiKeyID, requestModel, "", false)
 					interventionIter.PrioritizeChannels(nativeProtocolChannelIDs(c.Request.Context(), inboundType, interventionGroup.Items))
+					metrics.debugRoute("manual", interventionGroup, interventionIter, false)
 					if interventionIter.Len() > 0 {
 						// 停止旧心跳协程，避免并发写 gin.Writer
 						if stopInterventionKeepalive != nil {
@@ -876,6 +877,7 @@ attemptChannels:
 				freshIter := balancer.NewIteratorWithSession(freshGroup, apiKeyID, requestModel, clientSessionKey, freshSticky)
 				freshIter.PrioritizeChannels(nativeProtocolChannelIDs(c.Request.Context(), inboundType, freshGroup.Items))
 				prioritizeResponsesSessionOwner(c.Request.Context(), freshIter, internalRequest, apiKeyID, userID)
+				metrics.debugRoute("rescue", freshGroup, freshIter, freshSticky)
 				if freshIter.Len() > 0 {
 					// 停止旧心跳协程，避免并发写 gin.Writer
 					if stopInterventionKeepalive != nil {

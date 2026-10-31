@@ -87,7 +87,22 @@ func NewImageTaskLog(task model.ImageTask) *ImageTaskLog {
 			return buildImagesRequestContentForLogWith(false, nil, payload, capture)
 		})
 	}
+	// 调试模式：执行器这一次上游调用的明细。耗时以「开始执行」为起点（不含排队）；
+	// 异步任务没有入站请求头可记（提交时的请求早就结束了）。
+	m.debug = newDebugRecorder(time.Now(), nil)
 	return &ImageTaskLog{metrics: m, task: task, channelID: task.ChannelID, keyID: task.ChannelKeyID}
+}
+
+// debugBegin 在执行器发往上游之前调用；调试模式关着时返回 nil（后续调用全部空操作）。
+func (l *ImageTaskLog) debugBegin(channel *model.Channel) *debugCall {
+	if l == nil || l.metrics == nil || l.metrics.debug == nil {
+		return nil
+	}
+	id, name := l.channelID, l.channelName
+	if channel != nil {
+		id, name = channel.ID, channel.Name
+	}
+	return l.metrics.debug.begin(id, name, l.keyID)
 }
 
 // bodyLog 返回出站请求体快照的存放处；nil 接收者返回 nil（采集函数据此跳过）。
@@ -202,6 +217,7 @@ func (l *ImageTaskLog) Finish(success bool, statusCode int, resultJSON string, f
 		Cost:             cost,
 	}
 	m.upstreamBodyLog.applyTo(&relayLog)
+	relayLog.DebugInfo = m.debug.build(l.callDur, time.Time{})
 	if m.BillingSnapshot.BillingModelName != "" || m.BillingSnapshot.AccessPlanID != 0 {
 		applyBillingSnapshotToRelayLog(&relayLog, m.BillingSnapshot)
 	}
