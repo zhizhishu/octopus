@@ -2259,11 +2259,13 @@
         "off": "Off",
         "expired": "Expired",
         "used_up": "Cap reached",
+        "no_cap": "No cap",
         "revoked": "Revoked",
         "okTip": "Requests go through (ticked models only).",
         "offTip": "Turned off; requests are refused. Turn on to restore.",
         "expiredTip": "Past its expiry; requests are refused. Move the expiry later to restore.",
-        "used_upTip": "Total spend is over the cap; requests are refused. Raise the cap to restore.",
+        "used_upTip": "Total spend reached the cap; requests are refused. Raise the cap to restore.",
+        "no_capTip": "Made before a cap was required. Requests are refused until you edit it and set a spend cap.",
         "revokedTip": "Revoked for good. Usage and logs are kept."
       },
       "menu": {
@@ -2298,9 +2300,9 @@
         "expireHint": "Stops at {at} (local time)",
         "needExpire": "Pick an expiry",
         "cap": "Spend cap",
-        "capPh": "Empty = no cap",
-        "capTip": "The key stops once its total spend reaches this.",
-        "billing": "Cost is booked to you (admin); nobody's balance is charged. Use the cap to limit it.",
+        "capPh": "Required, e.g. 5",
+        "capTip": "Required. The key stops once its total spend reaches this.",
+        "billing": "Cost is booked to you (admin); nobody's balance is charged. The cap is what limits it.",
         "enabledOn": "Active right away",
         "enabledOff": "Start turned off",
         "models": "Models",
@@ -2323,7 +2325,8 @@
           "needExpire": "Pick an expiry",
           "pastExpire": "Expiry can't be in the past",
           "tooFar": "Max 365 days",
-          "badCap": "Cap must be a number"
+          "needCap": "Set a spend cap",
+          "badCap": "Cap must be a number above 0"
         },
         "createdTitle": "Created “{name}”",
         "createdHint": "Send the guest the endpoint and key. You can copy it from the list later too.",
@@ -2339,7 +2342,7 @@
         "access": "IPs & clients",
         "logs": "Request logs for this key",
         "total": "Total spent",
-        "noCap": "No cap",
+        "noCap": "No cap (paused)",
         "billing": "Booked to the admin, no balance charged; stops at the cap.",
         "totalRequests": "{n} requests",
         "fingerprint": "Fingerprint"

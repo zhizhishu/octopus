@@ -10,12 +10,16 @@ const H = 3600;
 const D = 86400;
 const key = (over) => ({ id: 1, name: '客人', api_key: 'sk-octopus-AbCdHm4q', enabled: true, expire_at: NOW + D, supported_models: 'gpt-4o', ...over });
 
-test('状态顺序和后端鉴权一样：作废 > 停用 > 过期 > 用完 > 能用', () => {
+test('状态顺序和后端鉴权一样：作废 > 停用 > 过期 > 没设上限 > 用完 > 能用', () => {
     assert.equal(g.guestStatus(key({ revoked_at: NOW - 1, enabled: false, expire_at: NOW - 1 }), 0, NOW), 'revoked');
     assert.equal(g.guestStatus(key({ enabled: false, expire_at: NOW - 1 }), 0, NOW), 'off');
     assert.equal(g.guestStatus(key({ expire_at: NOW - 1, max_cost: 1 }), 5, NOW), 'expired');
+    assert.equal(g.guestStatus(key({ max_cost: 0 }), 0, NOW), 'no_cap');
+    assert.equal(g.guestStatus(key({}), 0, NOW), 'no_cap');
     assert.equal(g.guestStatus(key({ max_cost: 1 }), 1.01, NOW), 'used_up');
-    assert.equal(g.guestStatus(key({ max_cost: 1 }), 1, NOW), 'ok');
+    // 与后端一致：花到上限（等于）就拒绝。
+    assert.equal(g.guestStatus(key({ max_cost: 1 }), 1, NOW), 'used_up');
+    assert.equal(g.guestStatus(key({ max_cost: 1 }), 0.99, NOW), 'ok');
 });
 
 test('有效期预设：从现在起算；自定义不给值', () => {
@@ -32,8 +36,8 @@ test('剩余时长按最大单位显示：几小时的访客 Key 不显示「0 �
     assert.deepEqual(g.timeLeft(NOW - 2 * H, NOW), { unit: 'hours', n: 2, past: true });
 });
 
-test('保存前检查和后端同口径：必须有名称、模型、未来且不超过 365 天的有效期、非负上限', () => {
-    const ok = { name: 'a', note: '', models: ['m'], expireAt: NOW + H, cap: '', enabled: true };
+test('保存前检查和后端同口径：必须有名称、模型、未来且不超过 365 天的有效期、大于 0 的花费上限', () => {
+    const ok = { name: 'a', note: '', models: ['m'], expireAt: NOW + H, cap: '5', enabled: true };
     assert.equal(g.validateGuestDraft(ok, NOW), null);
     assert.equal(g.validateGuestDraft({ ...ok, name: ' ' }, NOW), 'needName');
     assert.equal(g.validateGuestDraft({ ...ok, models: [' '] }, NOW), 'needModel');
@@ -41,6 +45,10 @@ test('保存前检查和后端同口径：必须有名称、模型、未来且�
     assert.equal(g.validateGuestDraft({ ...ok, expireAt: NOW - 1 }, NOW), 'pastExpire');
     assert.equal(g.validateGuestDraft({ ...ok, expireAt: NOW + 366 * D }, NOW), 'tooFar');
     assert.equal(g.validateGuestDraft({ ...ok, cap: 'x' }, NOW), 'badCap');
+    assert.equal(g.validateGuestDraft({ ...ok, cap: '' }, NOW), 'needCap');
+    assert.equal(g.validateGuestDraft({ ...ok, cap: ' ' }, NOW), 'needCap');
+    assert.equal(g.validateGuestDraft({ ...ok, cap: '0' }, NOW), 'badCap');
+    assert.equal(g.validateGuestDraft({ ...ok, cap: '0.5' }, NOW), null);
     // 已过期的 Key 不改有效期、只改别的：放行（后端同样只拦「新设的」过去时间）。
     assert.equal(g.validateGuestDraft({ ...ok, expireAt: NOW - D }, NOW, false), null);
 });

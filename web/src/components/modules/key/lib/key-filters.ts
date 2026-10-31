@@ -45,7 +45,8 @@ export const EMPTY_KEY_FILTERS: KeyFilters = { status: 'all', search: '', owners
 export function keyStatus(key: Pick<FilterableKey, 'enabled' | 'expire_at' | 'max_cost'>, spent: number, nowSec: number): KeyStatus {
     if (!key.enabled) return 'off';
     if ((key.expire_at ?? 0) > 0 && (key.expire_at as number) < nowSec) return 'expired';
-    if ((key.max_cost ?? 0) > 0 && (key.max_cost as number) < spent) return 'used_up';
+    // 与后端一致：花到上限（等于也算）就拒绝。
+    if ((key.max_cost ?? 0) > 0 && (key.max_cost as number) <= spent) return 'used_up';
     return 'ok';
 }
 
@@ -136,7 +137,7 @@ export function spendState(spent: number, cap: number | undefined) {
     const c = cap ?? 0;
     if (c <= 0) return { limited: false as const, pct: 0, left: 0, level: 'ok' as const };
     const pct = Math.min(100, (Math.max(0, spent) / c) * 100);
-    const level = spent > c ? ('over' as const) : pct >= 80 ? ('near' as const) : ('ok' as const);
+    const level = spent >= c ? ('over' as const) : pct >= 80 ? ('near' as const) : ('ok' as const);
     return { limited: true as const, pct, left: Math.max(0, c - spent), level };
 }
 

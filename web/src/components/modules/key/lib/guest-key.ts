@@ -14,7 +14,7 @@ export const GUEST_EXPIRE_PRESETS = [
 export type GuestExpirePreset = typeof GUEST_EXPIRE_PRESETS[number]['id'] | 'custom';
 export const DEFAULT_GUEST_PRESET: GuestExpirePreset = '1d';
 
-export type GuestStatus = 'ok' | 'off' | 'expired' | 'used_up' | 'revoked';
+export type GuestStatus = 'ok' | 'off' | 'expired' | 'no_cap' | 'used_up' | 'revoked';
 
 export interface GuestKeyLike {
     id: number;
@@ -28,12 +28,13 @@ export interface GuestKeyLike {
     revoked_at?: number;
 }
 
-/** 状态和后端鉴权顺序一致：作废 > 停用 > 过期 > 用完 > 能用。 */
+/** 状态和后端鉴权顺序一致：作废 > 停用 > 过期 > 没设上限（旧 Key，后端拒绝）> 用完（花到上限就拒绝）> 能用。 */
 export function guestStatus(key: Pick<GuestKeyLike, 'enabled' | 'expire_at' | 'max_cost' | 'revoked_at'>, spent: number, nowSec: number): GuestStatus {
     if ((key.revoked_at ?? 0) > 0) return 'revoked';
     if (!key.enabled) return 'off';
     if ((key.expire_at ?? 0) > 0 && (key.expire_at as number) < nowSec) return 'expired';
-    if ((key.max_cost ?? 0) > 0 && (key.max_cost as number) < spent) return 'used_up';
+    if (!((key.max_cost ?? 0) > 0)) return 'no_cap';
+    if ((key.max_cost as number) <= spent) return 'used_up';
     return 'ok';
 }
 
@@ -65,7 +66,7 @@ export interface GuestDraft {
     enabled: boolean;
 }
 
-export type GuestDraftError = 'needName' | 'needModel' | 'needExpire' | 'pastExpire' | 'tooFar' | 'badCap';
+export type GuestDraftError = 'needName' | 'needModel' | 'needExpire' | 'pastExpire' | 'tooFar' | 'needCap' | 'badCap';
 
 /** 保存前的检查，返回第一条错误（与后端同口径）；没问题返回 null。expireChanged=false 时不查过期（改别的字段时已过期的 Key 也能保存）。 */
 export function validateGuestDraft(d: GuestDraft, nowSec: number, expireChanged = true): GuestDraftError | null {
@@ -76,7 +77,9 @@ export function validateGuestDraft(d: GuestDraft, nowSec: number, expireChanged 
         if (d.expireAt <= nowSec) return 'pastExpire';
         if (d.expireAt > nowSec + GUEST_MAX_DAYS * 86400) return 'tooFar';
     }
-    if (d.cap.trim() !== '' && !(Number(d.cap) >= 0)) return 'badCap';
+    // 花费上限必填且 > 0（访客 Key 不扣余额，上限是唯一的闸；后端同样拒绝 0 / 空）。
+    if (d.cap.trim() === '') return 'needCap';
+    if (!(Number(d.cap) > 0)) return 'badCap';
     return null;
 }
 

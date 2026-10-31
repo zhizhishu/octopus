@@ -214,6 +214,10 @@ func ImageTaskRefund(ctx context.Context, task model.ImageTask) (bool, error) {
 type imageTaskReservation struct {
 	userID int
 	amount float64
+	// keyID / keyAmount：在 API Key 花费上限里占的那一笔（见 apikey_quota.go）。
+	// 访客 Key 的归属是管理员、amount 恒为 0，上限只靠这一笔管住。
+	keyID     int
+	keyAmount float64
 }
 
 // imageTaskReservations 记录每个异步图片任务占用的**在途额度**（task_id → 预留）。
@@ -266,9 +270,39 @@ func ImageTaskReservationRelease(taskID string) bool {
 		delete(imageTaskReservations, taskID)
 	}
 	imageTaskReservationsLock.Unlock()
-	if !ok || held.amount <= 0 {
+	if !ok {
 		return false
+	}
+	if held.keyAmount > 0 {
+		APIKeyReleaseReserve(held.keyID, held.keyAmount)
+	}
+	if held.amount <= 0 {
+		return held.keyAmount > 0
 	}
 	UserReleaseQuota(held.userID, held.amount)
 	return true
+}
+
+// ImageTaskKeyReservationTake 在 API Key 的花费上限里为这条异步任务占一笔，一直占到任务终态
+// （ImageTaskReservationRelease 一并归还）。amount 是已知的预扣金额（按张计费），
+// <= 0 时按默认量子占。Key 没设上限时不占。拿不到就返回错误，调用方必须拒绝提交。
+func ImageTaskKeyReservationTake(taskID string, key model.APIKey, amount float64) (float64, error) {
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		return 0, fmt.Errorf("image task_id is required")
+	}
+	reservation, err := APIKeyReserve(key, amount)
+	if err != nil || reservation <= 0 {
+		return 0, err
+	}
+	imageTaskReservationsLock.Lock()
+	held := imageTaskReservations[taskID]
+	if held.keyAmount > 0 {
+		// 同一 task_id 不会占两次；万一发生，先还掉旧的，不让占用越积越多。
+		APIKeyReleaseReserve(held.keyID, held.keyAmount)
+	}
+	held.keyID, held.keyAmount = key.ID, reservation
+	imageTaskReservations[taskID] = held
+	imageTaskReservationsLock.Unlock()
+	return reservation, nil
 }

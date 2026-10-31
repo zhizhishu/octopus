@@ -159,11 +159,17 @@ func APIKeyAuth() gin.HandlerFunc {
 			// 执行完毕、实际扣费（UserRecordUsage）已经发生之后才跑 —— 正是需要的顺序。
 			defer op.UserReleaseQuota(owner.ID, reservation)
 		}
-		statsAPIKey := op.StatsAPIKeyGet(apiKeyObj.ID)
-		if apiKeyObj.MaxCost > 0 && apiKeyObj.MaxCost < statsAPIKey.StatsMetrics.OutputCost+statsAPIKey.StatsMetrics.InputCost {
-			resp.Error(c, http.StatusUnauthorized, "API key has reached the max cost")
+		// Key 的花费上限：与上面同一个思路，准入时在锁内占一笔在途额度（已花 + 在途 >= 上限就拒绝），
+		// 并发请求不会在落账前一起冲过上限。访客 Key 归属管理员、不扣余额，这是它唯一的闸。
+		keyReservation, err := op.APIKeyReserve(apiKeyObj, 0)
+		if err != nil {
+			resp.Error(c, http.StatusUnauthorized, err.Error())
 			c.Abort()
 			return
+		}
+		c.Set(APIKeyReservationContextKey, keyReservation)
+		if keyReservation > 0 {
+			defer op.APIKeyReleaseReserve(apiKeyObj.ID, keyReservation)
 		}
 		endpointFamily := apiKeyEndpointFamilyForRequest(c.Request.Method, c.Request.URL.Path)
 		if endpointFamily != "" && !apiKeyObj.AllowsEndpointFamily(endpointFamily) {
@@ -287,6 +293,10 @@ func EndpointFamilyForPath(path string) model.APIKeyEndpointFamily {
 // QuotaReservationContextKey 存本次请求在 UserCanRelay 里占的在途预留金额（float64）。
 // 与 relay.quotaReservationContextKey 同值（relay 测试里有断言）。
 const QuotaReservationContextKey = "quota_reservation"
+
+// APIKeyReservationContextKey 存本次请求在 Key 花费上限里占的在途预留（float64，见 op.APIKeyReserve）。
+// 与 relay.apiKeyReservationContextKey 同值。
+const APIKeyReservationContextKey = "api_key_quota_reservation"
 
 // APIKeyEndpointFamiliesContextKey 与 relay.APIKeyEndpointFamiliesContextKey 同值（relay 测试里有断言）。
 const APIKeyEndpointFamiliesContextKey = "api_key_endpoint_families"
