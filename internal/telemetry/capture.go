@@ -134,6 +134,19 @@ var (
 	countryRe      = regexp.MustCompile(`^[A-Z]{2}$`)
 )
 
+// ReverseProxyHeaders 是反代（Caddy / nginx / Cloudflare 等）在入站请求上加的、只给本服务看的头：
+// 转交的 JA3 / JA4 / HTTP 版本 / 国家，以及 Via。真 Claude / Codex CLI 自己从来不发这些，
+// 所以出站绝不能把它们转给上游（relay 的 shouldForwardClientHeader 剥掉同一批）。
+// relay 不许 import 本包，所以那边另列一份；relay 的测试拿这份对照，指纹这里多读一个头而那边没剥就会失败。
+func ReverseProxyHeaders() []string {
+	out := make([]string, 0, len(ja3Headers)+len(ja4Headers)+len(httpVerHeaders)+2)
+	out = append(out, ja3Headers...)
+	out = append(out, ja4Headers...)
+	out = append(out, httpVerHeaders...)
+	out = append(out, "CF-IPCountry", "Via")
+	return out
+}
+
 // Capture 读一个入站请求的特征。viaTrustedProxy：直接连进来的是不是可信反代
 // （与 middleware.ResolveClientIP 同一套名单）。只读 req，不改 req.Header、不读 body。
 func Capture(req *http.Request, viaTrustedProxy bool) Snapshot {
