@@ -12,7 +12,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// 「真实出站请求体」另存图片的引用与清理。
+// 日志正文（请求内容 / 响应内容 / 真实出站请求体）里另存图片的引用与清理。
 //
 // 文件按内容哈希去重，一张图可能被多条日志共用，所以清理分两步：
 //
@@ -42,11 +42,11 @@ func relayLogImageTableReady(tx *gorm.DB) bool {
 func relayLogImageRefsInsert(tx *gorm.DB, batch []model.RelayLog) {
 	var rows []model.RelayLogImage
 	for _, l := range batch {
-		if len(l.UpstreamImageHashes) == 0 {
+		if len(l.ImageHashes) == 0 {
 			continue
 		}
-		seen := make(map[string]struct{}, len(l.UpstreamImageHashes))
-		for _, h := range l.UpstreamImageHashes {
+		seen := make(map[string]struct{}, len(l.ImageHashes))
+		for _, h := range l.ImageHashes {
 			if !logimage.ValidHash(h) {
 				continue
 			}

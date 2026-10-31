@@ -7,6 +7,7 @@ import (
 	"maps"
 	"strings"
 
+	"github.com/zhizhishu/octopus/internal/logimage"
 	transformerModel "github.com/zhizhishu/octopus/internal/transformer/model"
 )
 
@@ -42,7 +43,36 @@ var payloadMarkers = []string{
 	// Responses image_generation items carry raw base64 in `result` with no
 	// data: prefix and no "data" key, so the key itself has to be a marker.
 	`"image_generation"`,
+	// Image-endpoint / Midjourney style bodies put the picture straight under
+	// one of these keys (see genericImageKeys), sometimes as raw base64.
+	`"image"`,
+	`"images"`,
+	`"mask"`,
+	`"init_image"`,
+	`"reference_image"`,
+	`"reference_images"`,
+	`"base64Array"`,
 }
+
+// genericImageKeys are keys whose string value (or each string element of an
+// array value) is, by convention of the image / video / Midjourney endpoints,
+// either a reference (http(s) URL, file id) or the picture itself. Only a
+// data:image URL, or raw base64 whose decoded bytes start with a known image
+// header, is replaced; everything else under these keys is left as is.
+var genericImageKeys = map[string]bool{
+	"image":            true,
+	"images":           true,
+	"mask":             true,
+	"init_image":       true,
+	"reference_image":  true,
+	"reference_images": true,
+	"base64Array":      true,
+}
+
+// minGenericRawBase64 is the shortest raw (no data: prefix) base64 string under
+// a genericImageKeys key that is considered a payload. Any real picture is far
+// longer; ids and short tokens are not touched.
+const minGenericRawBase64 = 256
 
 // stripInlineBinaryForLog replaces inline binary payloads in a JSON log body
 // with a short placeholder. It returns s itself when there is nothing to
@@ -114,6 +144,12 @@ func stripInlineBinaryWith(s string, c *imageCapture) string {
 // contract). Marshal / merge failures fall back to the previous successful
 // JSON, then inline bytes are stripped and redactLogBody still runs.
 func requestContentForLog(req *transformerModel.InternalLLMRequest, paramOverride string) string {
+	return requestContentForLogWith(req, paramOverride, nil)
+}
+
+// requestContentForLogWith 与 requestContentForLog 相同；c 非空时可保存的内联图片
+// 换成带 id 的占位符（打码时占位符原样保留），调用方之后要 c.commit。
+func requestContentForLogWith(req *transformerModel.InternalLLMRequest, paramOverride string, c *imageCapture) string {
 	if req == nil {
 		return ""
 	}
@@ -131,14 +167,14 @@ func requestContentForLog(req *transformerModel.InternalLLMRequest, paramOverrid
 			}
 		}
 	}
-	return redactLogBody(stripInlineBinaryForLog(content))
+	return redactKeepingImages(stripInlineBinaryWith(content, c), c)
 }
 
 type mediaHint struct {
 	mime      string
 	blockType string
 	// capture 非空时，可保存的内联图片换成带 id 的占位符并暂存字节
-	// （只有真实出站请求体这一路会传；request_content 永远是 nil）。
+	// （历史日志落库时才会传；见 log_image_capture.go）。
 	capture *imageCapture
 }
 
@@ -197,7 +233,13 @@ func rewriteJSONValue(key, raw string, hint mediaHint, depth int) (string, bool,
 			return p.rewriteObject(hint, depth)
 		}
 	case '[':
-		return p.rewriteArray(hint, depth)
+		// String elements of an array under a generic image key are checked
+		// the same way as a single string value under that key.
+		elemKey := ""
+		if genericImageKeys[key] {
+			elemKey = key
+		}
+		return p.rewriteArray(hint, depth, elemKey)
 	case '"':
 		switch key {
 		case "image_url":
@@ -219,6 +261,12 @@ func rewriteJSONValue(key, raw string, hint mediaHint, depth int) (string, bool,
 		case "result":
 			if hint.blockType == "image_generation" {
 				if repl, ok := replaceDeclaredBlob(raw, "image", hint.mime, hint.capture); ok {
+					return repl, true, nil
+				}
+			}
+		default:
+			if genericImageKeys[key] {
+				if repl, ok := replaceGenericImageString(raw, hint.capture); ok {
 					return repl, true, nil
 				}
 			}
@@ -257,7 +305,7 @@ func (p *js) rewriteObject(hint mediaHint, depth int) (string, bool, error) {
 	return rebuildObject(fields, repl), true, nil
 }
 
-func (p *js) rewriteArray(hint mediaHint, depth int) (string, bool, error) {
+func (p *js) rewriteArray(hint mediaHint, depth int, elemKey string) (string, bool, error) {
 	if p.i >= p.n || p.s[p.i] != '[' {
 		return "", false, errJSONSyntax
 	}
@@ -288,7 +336,7 @@ func (p *js) rewriteArray(hint mediaHint, depth int) (string, bool, error) {
 			return "", false, err
 		}
 		rawVal := p.s[valStart:p.i]
-		next, changed, err := rewriteJSONValue("", rawVal, hint, depth+1)
+		next, changed, err := rewriteJSONValue(elemKey, rawVal, hint, depth+1)
 		if err != nil {
 			return "", false, err
 		}
@@ -835,6 +883,37 @@ func replaceImageURLString(raw string, c *imageCapture) (string, bool) {
 		return c.placeholder("image", "unknown", decodedBase64SizeStr(inner), raw), true
 	}
 	return "", false
+}
+
+// replaceGenericImageString handles a string under a genericImageKeys key.
+// Unlike image_url it is conservative: a data: URL must be an image (or carry
+// no media type), and raw base64 must be long and decode to a known image
+// header. References, ids, prompts and anything unrecognised stay untouched.
+func replaceGenericImageString(raw string, c *imageCapture) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	if isKeepReference(raw) || !jsonStringCarriesPayload(raw) {
+		return "", false
+	}
+	if mime, size, ok := dataURLInfoStr(raw); ok {
+		if mime != "" && kindFromMime(mime) != "image" {
+			return "", false
+		}
+		return c.placeholder("image", mimeOrUnknown(mime), size, raw), true
+	}
+	inner, ok := jsonStringBodyStr(raw)
+	if !ok || len(inner) < minGenericRawBase64 || !isBase64Str(inner) {
+		return "", false
+	}
+	head := inner[:64]
+	b, err := decodeLogBase64(head)
+	if err != nil {
+		return "", false
+	}
+	mime, _, ok := logimage.Sniff(b)
+	if !ok {
+		return "", false
+	}
+	return c.placeholder("image", mime, decodedBase64SizeStr(inner), raw), true
 }
 
 func replaceReferenceOrDataURL(raw string, c *imageCapture) (string, bool) {

@@ -26,7 +26,12 @@ import (
 //	"[image omitted: image/png, 12MB, too large]"
 //
 // 🔴 所有解码都在 string(body) 这份副本上做，真正发出去的 []byte 一个字节不动。
-// request_content 那一列不走这里（capture 恒为 nil），占位符格式保持不变。
+//
+// 2026-10-31 起「请求内容」(request_content) 和「响应内容」(response_content)
+// 也走同一套：客户端发来的图、模型回出来的图同样换成带 id 的占位符，文件按哈希
+// 去重（和出站请求体里的同一张图共用一个文件）。这两列落库前还要过
+// redactLogBody，而 64 位十六进制会被当成密钥打掉，所以用 redactKeepingImages
+// 先把占位符换成不会被打码的临时记号、打码完再换回来。
 
 const (
 	omitReasonTooLarge   = "too large"
@@ -241,4 +246,62 @@ func quoteLogString(s string) string {
 		return `""`
 	}
 	return string(b)
+}
+
+// redactKeepingImages 对一份日志正文打码（redactLogBody），但保留 c 里登记过的
+// 占位符原文：占位符里的 sha256 长得像密钥，直接打码会变成 id=[redacted]。
+// c 为 nil 或没有登记任何图时就是 redactLogBody(s)。
+func redactKeepingImages(s string, c *imageCapture) string {
+	if c == nil || len(c.order) == 0 {
+		return redactLogBody(s)
+	}
+	type swap struct{ token, inner string }
+	swaps := make([]swap, 0, len(c.order))
+	for i, h := range c.order {
+		e := c.byHash[h]
+		if e == nil || !strings.Contains(s, e.inner) {
+			continue
+		}
+		// 记号只含字母和连字符，打码规则不会碰它；正文里本来就有同样文字的概率可以忽略。
+		token := fmt.Sprintf("[octopus-log-image-ref-%c%c]", 'a'+rune(i/26), 'a'+rune(i%26))
+		if strings.Contains(s, token) {
+			// 极端情况：正文里恰好有这个记号。宁可让这张图的 id 被打码（commit 时
+			// 看不见占位符，就不存文件），也不能把客户端的原文换掉。
+			continue
+		}
+		s = strings.ReplaceAll(s, e.inner, token)
+		swaps = append(swaps, swap{token: token, inner: e.inner})
+	}
+	s = redactLogBody(s)
+	for _, sw := range swaps {
+		s = strings.ReplaceAll(s, sw.token, sw.inner)
+	}
+	return s
+}
+
+// contentWithImages 生成一列落库正文（请求内容 / 响应内容）：build 在副本上产出
+// 已剥离（可传 capture 登记图片）、已截断的文本，这里再打码、把截断后仍看得见的
+// 图片交给写盘队列，并把哈希记进 l，落库时一并写引用行。
+//
+// 图片另存关闭（历史日志不落库）时 capture 为 nil，结果与以前
+// redactLogBody(build(nil)) 完全一样。
+func (l *upstreamBodyLog) contentWithImages(build func(c *imageCapture) string) string {
+	capture := newLogImageCapture()
+	content := redactKeepingImages(build(capture), capture)
+	content, saved := capture.commit(content)
+	if l != nil && len(saved) > 0 {
+		l.contentImageHashes = append(l.contentImageHashes, saved...)
+	}
+	return content
+}
+
+// captureDataURL 给一个已解码的 Go 字符串（不是 JSON 文本）里的 data:image/...;base64,
+// 登记图片，成功返回占位符本体。认不出、存不了都返回空串（调用方退回旧占位）。
+func (c *imageCapture) captureDataURL(u string) string {
+	if c == nil || !strings.HasPrefix(u, "data:") {
+		return ""
+	}
+	raw := quoteLogString(u)
+	inner, _ := c.capture(raw, 0)
+	return inner
 }

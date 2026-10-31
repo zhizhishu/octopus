@@ -747,7 +747,7 @@ function DetailTile({ icon, label, children }: { icon: ReactNode; label: ReactNo
 function DeferredJsonContent({ content, fallbackText, imagePlaceholders = false }: {
     content: string | undefined;
     fallbackText: string;
-    /** 只给「真实出站请求体」开：图片占位符渲染成缩略图卡片（见 LogImagePlaceholder）。 */
+    /** 图片占位符渲染成缩略图卡片（见 LogImagePlaceholder）。请求内容、响应内容、真实出站请求体三栏都开。 */
     imagePlaceholders?: boolean;
 }) {
     const { resolvedTheme } = useTheme();
@@ -992,7 +992,7 @@ function LazyLogBodies({ fallbackRequest, fallbackResponse, fallbackUpstreamRequ
                     ) : error ? (
                         <div className="p-4 text-xs text-destructive">{error}</div>
                     ) : (
-                        <DeferredJsonContent content={requestContent} fallbackText={noRequestText} />
+                        <DeferredJsonContent content={requestContent} fallbackText={noRequestText} imagePlaceholders />
                     )}
                 </div>
             </div>
@@ -1012,7 +1012,7 @@ function LazyLogBodies({ fallbackRequest, fallbackResponse, fallbackUpstreamRequ
                     ) : error ? (
                         <div className="p-4 text-xs text-destructive">{error}</div>
                     ) : (
-                        <DeferredJsonContent content={responseContent} fallbackText={noResponseText} />
+                        <DeferredJsonContent content={responseContent} fallbackText={noResponseText} imagePlaceholders />
                     )}
                 </div>
             </div>

@@ -1009,11 +1009,10 @@ func (m *RelayMetrics) saveLog(ctx context.Context, err error, duration time.Dur
 	// 请求内容。marshal、ParamOverride 合并、剥二进制、打码都在副本上完成，
 	// InternalRequest 与真正发出去的 body 一个字节不动。
 	if m.InternalRequest != nil {
-		relayLog.RequestContent = requestContentForLog(m.InternalRequest, m.ParamOverride)
+		relayLog.RequestContent = m.upstreamBodyLog.contentWithImages(func(c *imageCapture) string {
+			return requestContentForLogWith(m.InternalRequest, m.ParamOverride, c)
+		})
 	}
-
-	// 真实出站请求体（开关打开且采集成功时才有；否则留空，不假装有值）。
-	m.upstreamBodyLog.applyTo(&relayLog)
 
 	// 响应内容
 	if m.InternalResponse != nil {
@@ -1022,17 +1021,25 @@ func (m *RelayMetrics) saveLog(ctx context.Context, err error, duration time.Dur
 		relayLog.UpstreamSystemFingerprint = truncateRunes(m.InternalResponse.SystemFingerprint, 128)
 		relayLog.UpstreamServiceTier = truncateRunes(m.InternalResponse.ServiceTier, 32)
 
-		respForLog := m.filterResponseForLog(m.InternalResponse)
-		if respJSON, jsonErr := json.Marshal(respForLog); jsonErr == nil {
+		relayLog.ResponseContent = m.upstreamBodyLog.contentWithImages(func(c *imageCapture) string {
+			respForLog := filterResponseForLogWith(m.InternalResponse, c)
+			respJSON, jsonErr := json.Marshal(respForLog)
+			if jsonErr != nil {
+				return ""
+			}
 			if m.InternalResponse.Usage != nil && m.InternalResponse.Usage.AnthropicUsage {
 				respStr := string(respJSON)
 				old := `"usage":{`
 				insert := fmt.Sprintf(`"usage":{"cache_creation_input_tokens":%d,`, m.InternalResponse.Usage.CacheCreationInputTokens)
 				respJSON = []byte(strings.Replace(respStr, old, insert, 1))
 			}
-			relayLog.ResponseContent = redactLogBody(string(respJSON))
-		}
+			return string(respJSON)
+		})
 	}
+
+	// 真实出站请求体（开关打开且采集成功时才有；否则留空，不假装有值）。
+	// 放在请求 / 响应内容之后：那两列另存的图片哈希也要一起带进 ImageHashes。
+	m.upstreamBodyLog.applyTo(&relayLog)
 
 	// 错误信息
 	if err != nil {
@@ -1076,6 +1083,14 @@ func cacheHitRate(hitTokens, inputTokens int64) float64 {
 
 // filterResponseForLog 创建响应的浅拷贝，过滤掉 images、MultipleContent 中的图片数据和 Audio.Data 以减少存储压力
 func (m *RelayMetrics) filterResponseForLog(resp *transformerModel.InternalLLMResponse) *transformerModel.InternalLLMResponse {
+	return filterResponseForLogWith(resp, nil)
+}
+
+// filterResponseForLogWith 与 filterResponseForLog 相同；c 非空时，MultipleContent
+// 里 data:image/...;base64 的图片换成带 id 的占位符（原图另存，见
+// log_image_capture.go），其余图片仍是 "[image data omitted for storage]"。
+// 只改日志副本，resp 与发给客户端的响应一个字节不动。
+func filterResponseForLogWith(resp *transformerModel.InternalLLMResponse, capture *imageCapture) *transformerModel.InternalLLMResponse {
 	if resp == nil {
 		return nil
 	}
@@ -1085,14 +1100,34 @@ func (m *RelayMetrics) filterResponseForLog(resp *transformerModel.InternalLLMRe
 			return nil
 		}
 		c := *msg
-		c.Images = nil
+		// Images（OpenRouter / Gemini 兼容的生图回包）：以前整段丢掉。图片另存打开时
+		// 换成带 id 的占位符留下来，详情页能看到模型画了什么；存不了的那张照旧丢。
+		var images []transformerModel.MessageContentPart
+		if capture != nil {
+			for _, p := range msg.Images {
+				if p.ImageURL == nil {
+					continue
+				}
+				if stored := capture.captureDataURL(p.ImageURL.URL); stored != "" {
+					images = append(images, transformerModel.MessageContentPart{
+						Type:     "image_url",
+						ImageURL: &transformerModel.ImageURL{URL: stored},
+					})
+				}
+			}
+		}
+		c.Images = images
 		if len(c.Content.MultipleContent) > 0 {
 			parts := make([]transformerModel.MessageContentPart, 0, len(c.Content.MultipleContent))
 			for _, p := range c.Content.MultipleContent {
 				if p.Type == "image_url" && p.ImageURL != nil {
+					stored := capture.captureDataURL(p.ImageURL.URL)
+					if stored == "" {
+						stored = "[image data omitted for storage]"
+					}
 					parts = append(parts, transformerModel.MessageContentPart{
 						Type:     "image_url",
-						ImageURL: &transformerModel.ImageURL{URL: "[image data omitted for storage]"},
+						ImageURL: &transformerModel.ImageURL{URL: stored},
 					})
 				} else {
 					parts = append(parts, p)

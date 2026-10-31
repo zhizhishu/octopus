@@ -782,6 +782,11 @@ func hasAnyVisibleOutput(body string) bool {
 	if strings.Contains(body, "omitted for storage") {
 		return true
 	}
+	// 图片另存后，响应里的图是 "[image: image/png, 245KB, id=<sha256>]"（见
+	// relay/log_image_capture.go），同样说明当时确实有图片产出。
+	if strings.Contains(body, `"[image: `) && strings.Contains(body, ", id=") {
+		return true
+	}
 
 	var shape struct {
 		Choices []struct {

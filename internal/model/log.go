@@ -200,15 +200,16 @@ type RelayLog struct {
 	// body。排查"我们到底给上游发了什么"时它必然误导（2026-10-27 kimi 案例：
 	// 日志显示只发 reasoning_effort、没发 thinking，实测出站恰恰相反）。
 	UpstreamRequestBody string `json:"upstream_request_body,omitempty"`
-	// UpstreamImageHashes 是 UpstreamRequestBody 里另存成文件的图片哈希（只在内存里
-	// 随日志带到落库那一刻，写进 relay_log_images；不是 relay_logs 的列，也不出现在 API 里）。
-	UpstreamImageHashes []string         `json:"-" gorm:"-"`
-	ResponseContent     string           `json:"response_content"`
-	Error               string           `json:"error"`
-	ErrorCode           string           `json:"error_code"`
-	ErrorStatus         int              `json:"error_status"`
-	ErrorStrategy       string           `json:"error_strategy"`
-	Attempts            []ChannelAttempt `json:"attempts" gorm:"serializer:json"`
+	// ImageHashes 是这条日志正文（真实出站请求体 / 请求内容 / 响应内容）里另存成
+	// 文件的图片哈希（只在内存里随日志带到落库那一刻，写进 relay_log_images；
+	// 不是 relay_logs 的列，也不出现在 API 里）。可能有重复，写引用行时去重。
+	ImageHashes     []string         `json:"-" gorm:"-"`
+	ResponseContent string           `json:"response_content"`
+	Error           string           `json:"error"`
+	ErrorCode       string           `json:"error_code"`
+	ErrorStatus     int              `json:"error_status"`
+	ErrorStrategy   string           `json:"error_strategy"`
+	Attempts        []ChannelAttempt `json:"attempts" gorm:"serializer:json"`
 	// index: 严重程度分桶(warn = total_attempts > 1)和 retried 筛选都按它过,
 	// 而它是 relay_logs 里少数高选择性的整型列。没有索引时这两个谓词要对全表
 	// 逐行求值(实测 10 万行 847ms), 有了索引降到 10ms 量级。
@@ -340,7 +341,7 @@ type RelayLogSeverityCounts struct {
 	Error   int64 `json:"error"`
 }
 
-// RelayLogImage 记录「哪条日志引用了哪张另存的图片」（真实出站请求体里的内联图片，
+// RelayLogImage 记录「哪条日志引用了哪张另存的图片」（请求内容 / 响应内容 / 真实出站请求体里的内联图片，
 // 文件在 data/log_images/，见 internal/logimage）。
 //
 // 一张图按内容哈希去重，可能被很多条日志共用，所以不能「删一行删一张」：

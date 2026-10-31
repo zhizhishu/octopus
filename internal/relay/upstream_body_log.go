@@ -29,6 +29,9 @@ type upstreamBodyLog struct {
 	// upstreamImageHashes 是 upstreamRequestBody 里带 id 占位符、且已交给写盘队列的
 	// 图片哈希；落库时写进 relay_log_images 引用表，清理任务据此判断文件还要不要。
 	upstreamImageHashes []string
+	// contentImageHashes 是请求内容 / 响应内容两列里另存的图片哈希（见
+	// contentWithImages）。和上面分开放：竞速时出站 body 跟着赢家换，这两列不换。
+	contentImageHashes []string
 }
 
 // set 记录一份 JSON（或其它文本）出站请求体。
@@ -62,12 +65,19 @@ func (l *upstreamBodyLog) store(logged string, totalBytes int64, capture *imageC
 }
 
 // applyTo 把快照写进日志行。没采到就什么都不写，不假装有值。
+//
+// 图片哈希（出站请求体 + 请求/响应内容）追加到 ImageHashes，不覆盖调用方已经
+// 放进去的；重复的哈希在写引用行时去重。
 func (l *upstreamBodyLog) applyTo(relayLog *model.RelayLog) {
-	if l == nil || relayLog == nil || l.upstreamRequestBody == "" {
+	if l == nil || relayLog == nil {
+		return
+	}
+	relayLog.ImageHashes = append(relayLog.ImageHashes, l.contentImageHashes...)
+	if l.upstreamRequestBody == "" {
 		return
 	}
 	relayLog.UpstreamRequestBody = l.upstreamRequestBody
-	relayLog.UpstreamImageHashes = l.upstreamImageHashes
+	relayLog.ImageHashes = append(relayLog.ImageHashes, l.upstreamImageHashes...)
 }
 
 // newLogImageCapture 在「图片另存」可用时返回一个收集器，否则返回 nil（占位符

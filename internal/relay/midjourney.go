@@ -640,7 +640,9 @@ func MidjourneySubmitHandler(c *gin.Context, mode string) {
 
 	metrics := newRawProtocolRelayMetrics(apiKeyID, userID, c.GetString("request_ip"), plan.model, midjourneySubmitLogName, c.Request.URL.Path)
 	metrics.RequestUserAgent = c.Request.UserAgent() // 仅入站 UA 快照，供日志 / 用户页识别客户端
-	metrics.RequestContent = redactLogBody(buildRawProtocolRequestContent(false, bc, payload, midjourneySubmitLogName))
+	metrics.RequestContent = metrics.upstreamBodyLog.contentWithImages(func(capture *imageCapture) string {
+		return buildRawProtocolRequestContentWith(false, bc, payload, midjourneySubmitLogName, capture)
+	})
 	upstreamPath := midjourneySubmitUpstreamPath(mode)
 
 	if plan.originTaskID != "" {

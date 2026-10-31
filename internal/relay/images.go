@@ -145,7 +145,9 @@ func ImagesHandler(endpoint string, c *gin.Context) {
 	metrics.RequestUserAgent = c.Request.UserAgent()
 	metrics.SetAccessPlan(routeResult.AccessPlan, routeResult.AccessRouteRule, routeResult.AccessRouteUsed)
 	metrics.SetClientSession(clientSession)
-	metrics.RequestContent = redactLogBody(buildImagesRequestContentForLog(isMultipart, bc, jsonPayload))
+	metrics.RequestContent = metrics.upstreamBodyLog.contentWithImages(func(capture *imageCapture) string {
+		return buildImagesRequestContentForLogWith(isMultipart, bc, jsonPayload, capture)
+	})
 
 	var (
 		lastErr          error
@@ -738,6 +740,13 @@ func (m *imagesRelayMetrics) saveLog(ctx context.Context, err error, duration ti
 }
 
 func buildImagesRequestContentForLog(isMultipart bool, bc *bodycache.BodyCache, jsonPayload map[string]any) string {
+	return buildImagesRequestContentForLogWith(isMultipart, bc, jsonPayload, nil)
+}
+
+// buildImagesRequestContentForLogWith 先在 JSON 副本上剥内联图片（capture 非空时
+// 换成带 id 的占位符），再截到 8KB：先截断会把 base64 从中间切开，8KB 全是乱码，
+// 后面的参数一个也看不到。
+func buildImagesRequestContentForLogWith(isMultipart bool, bc *bodycache.BodyCache, jsonPayload map[string]any, capture *imageCapture) string {
 	if isMultipart {
 		// multipart 可能包含图片文件，避免落库
 		return fmt.Sprintf(`{"content_type":"multipart/form-data","size_bytes":%d,"note":"multipart request content omitted for storage"}`, bc.Size())
@@ -749,7 +758,7 @@ func buildImagesRequestContentForLog(isMultipart bool, bc *bodycache.BodyCache, 
 	if err != nil {
 		return ""
 	}
-	return truncateString(string(b), 8*1024)
+	return truncateString(stripInlineBinaryWith(string(b), capture), 8*1024)
 }
 
 func buildImagesResponseContentForLog(stream bool, upstreamCT string, usage *imagesUsage) string {

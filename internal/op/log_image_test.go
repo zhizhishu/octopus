@@ -83,7 +83,7 @@ func TestRelayLogFlushWritesImageRefs(t *testing.T) {
 		RequestModelName:    "m",
 		UpstreamRequestBody: "x",
 		// 重复与非法哈希都不该写进引用表。
-		UpstreamImageHashes: []string{a.hash, b.hash, a.hash, "../etc/passwd"},
+		ImageHashes: []string{a.hash, b.hash, a.hash, "../etc/passwd"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -93,10 +93,10 @@ func TestRelayLogFlushWritesImageRefs(t *testing.T) {
 	if n := refCount(t, ""); n != 2 {
 		t.Fatalf("refs = %d, want 2", n)
 	}
-	// UpstreamImageHashes 不是列，也不出现在 API 里。
+	// ImageHashes 不是列，也不出现在 API 里。
 	var logs []model.RelayLog
 	db.GetDB().Find(&logs)
-	if len(logs) != 1 || len(logs[0].UpstreamImageHashes) != 0 {
+	if len(logs) != 1 || len(logs[0].ImageHashes) != 0 {
 		t.Fatalf("hashes must not round-trip through relay_logs: %+v", logs)
 	}
 }

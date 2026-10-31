@@ -151,7 +151,9 @@ func RawProtocolHandler(options RawProtocolOptions, c *gin.Context) {
 	metrics.RequestUserAgent = c.Request.UserAgent()
 	metrics.SetAccessPlan(routeResult.AccessPlan, routeResult.AccessRouteRule, routeResult.AccessRouteUsed)
 	metrics.SetClientSession(clientSession)
-	metrics.RequestContent = redactLogBody(buildRawProtocolRequestContent(isMultipart, bc, jsonPayload, options.Name))
+	metrics.RequestContent = metrics.upstreamBodyLog.contentWithImages(func(capture *imageCapture) string {
+		return buildRawProtocolRequestContentWith(isMultipart, bc, jsonPayload, options.Name, capture)
+	})
 
 	var (
 		lastErr          error
@@ -1453,6 +1455,12 @@ func (m *rawProtocolRelayMetrics) saveLog(ctx context.Context, err error, durati
 }
 
 func buildRawProtocolRequestContent(isMultipart bool, bc *bodycache.BodyCache, jsonPayload map[string]any, protocol string) string {
+	return buildRawProtocolRequestContentWith(isMultipart, bc, jsonPayload, protocol, nil)
+}
+
+// buildRawProtocolRequestContentWith：剥内联图片在截断之前（理由同
+// buildImagesRequestContentForLogWith）。
+func buildRawProtocolRequestContentWith(isMultipart bool, bc *bodycache.BodyCache, jsonPayload map[string]any, protocol string, capture *imageCapture) string {
 	if isMultipart {
 		return fmt.Sprintf(`{"protocol":%q,"content_type":"multipart/form-data","size_bytes":%d,"note":"multipart request content omitted for storage"}`, protocol, bc.Size())
 	}
@@ -1463,7 +1471,7 @@ func buildRawProtocolRequestContent(isMultipart bool, bc *bodycache.BodyCache, j
 	if err != nil {
 		return ""
 	}
-	return truncateString(string(b), 8*1024)
+	return truncateString(stripInlineBinaryWith(string(b), capture), 8*1024)
 }
 
 func buildRawProtocolResponseContent(options RawProtocolOptions, stream bool, upstreamCT string, usage *imagesUsage) string {

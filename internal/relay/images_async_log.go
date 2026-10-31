@@ -83,7 +83,9 @@ func NewImageTaskLog(task model.ImageTask) *ImageTaskLog {
 
 	var payload map[string]any
 	if err := json.Unmarshal([]byte(task.RequestBody), &payload); err == nil {
-		m.RequestContent = redactLogBody(buildImagesRequestContentForLog(false, nil, payload))
+		m.RequestContent = m.upstreamBodyLog.contentWithImages(func(capture *imageCapture) string {
+			return buildImagesRequestContentForLogWith(false, nil, payload, capture)
+		})
 	}
 	return &ImageTaskLog{metrics: m, task: task, channelID: task.ChannelID, keyID: task.ChannelKeyID}
 }
