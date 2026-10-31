@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	"github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/op"
 	"github.com/zhizhishu/octopus/internal/server/middleware"
 	"github.com/zhizhishu/octopus/internal/server/router"
 )
@@ -90,5 +91,41 @@ func TestRealtimeRouteAuthAndFamily(t *testing.T) {
 	engine.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUpgradeRequired {
 		t.Fatalf("plain GET: %d, want 426", rec.Code)
+	}
+}
+
+// 用完断开的准入一侧：走真实 APIKeyAuth，余额为 0 的普通用户在升级前就被 402 挡下，
+// 与其它端点同一道闸（op.UserCanRelay），不会先连上再断。
+func TestRealtimeRouteRejectsZeroBalanceUser(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupGeminiModelsDB(t)
+	_ = createGeminiModelsUser(t, ctx) // 第一个用户是管理员
+	broke, err := op.UserCreate(model.UserCreateRequest{
+		Username: "realtime-broke",
+		Password: "password-123",
+		Role:     model.UserRoleUser,
+		Status:   model.UserStatusActive,
+		Balance:  0,
+	}, ctx)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	key := createVideosFamilyAPIKey(t, ctx, broke, "broke", "sk-octopus-realtime-broke", []model.APIKeyEndpointFamily{
+		model.APIKeyEndpointFamilyOpenAICompatible,
+	})
+	engine := gin.New()
+	if err := router.RegisterAll(engine); err != nil {
+		t.Fatalf("register routes: %v", err)
+	}
+	srv := httptest.NewServer(engine)
+	t.Cleanup(srv.Close)
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/v1/realtime?model=grok-voice-latest"
+	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, http.Header{"Authorization": {"Bearer " + key.APIKey}})
+	if err == nil {
+		_ = conn.Close()
+		t.Fatalf("zero balance must not get a websocket")
+	}
+	if resp == nil || resp.StatusCode != http.StatusPaymentRequired {
+		t.Fatalf("want 402, got resp=%v err=%v", resp, err)
 	}
 }

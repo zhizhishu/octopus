@@ -680,6 +680,42 @@ func UserHasBalance(userID int, amount float64, ctx context.Context) (bool, erro
 	return user.Balance-inflight >= amount, nil
 }
 
+// UserRelayRemaining 返回该用户此刻还能花多少（余额或月卡剩余，再减去所有在途预留），
+// 以及是否管理员（管理员不扣费，也就没有"用完"一说，调用方据此永不断开）。
+//
+// 给长连接用：/v1/realtime 一次会话可能持续几十分钟，准入时的 UserCanRelay 只管"进门"，
+// 会话中途每结算一份就要问一次"剩下的还够不够下一份"。与 UserHasBalance 同口径
+// （同一把 lockUser、同样先刷新月卡窗口、同样扣掉在途预留），只是把差值本身交回去，
+// 让调用方按"下一份"的大小自己判断。不占预留、不改余额。
+func UserRelayRemaining(userID int, ctx context.Context) (float64, bool, error) {
+	if userID <= 0 {
+		return 0, false, fmt.Errorf("invalid user id: %d", userID)
+	}
+	mu := lockUser(userID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	user, err := UserGet(userID)
+	if err != nil {
+		return 0, false, err
+	}
+	if user.IsAdmin() {
+		return 0, true, nil
+	}
+	if !user.IsActive() {
+		return 0, false, fmt.Errorf("user is disabled")
+	}
+	user, err = UserRefreshMonthlyWindow(user.ID, ctx)
+	if err != nil {
+		return 0, false, err
+	}
+	inflight := userQuotaInflightOf(user.ID)
+	if userMonthlyActive(user) {
+		return user.MonthlyLimit - user.MonthlyUsed - inflight, false, nil
+	}
+	return user.Balance - inflight, false, nil
+}
+
 func UserRecordUsage(userID int, cost float64, ctx context.Context) error {
 	if cost <= 0 {
 		return nil

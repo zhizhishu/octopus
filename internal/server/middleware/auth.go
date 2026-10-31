@@ -132,6 +132,9 @@ func APIKeyAuth() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
+		// 长连接（/v1/realtime）会话中途要判断"剩下的还够不够下一份"，而这笔在途预留是它自己占的，
+		// 不能算成别人的占用；把金额交给下游，见 relay.grokRealtimeBiller。
+		c.Set(QuotaReservationContextKey, reservation)
 		if reservation > 0 {
 			// 注意：defer 挂在 c.Next() 之前注册，因此它在整个下游 handler 链
 			// 执行完毕、实际扣费（UserRecordUsage）已经发生之后才跑 —— 正是需要的顺序。
@@ -228,6 +231,10 @@ func realtimeSubprotocolKey(r *http.Request) (string, bool) {
 func EndpointFamilyForPath(path string) model.APIKeyEndpointFamily {
 	return apiKeyEndpointFamilyForPath(path)
 }
+
+// QuotaReservationContextKey 存本次请求在 UserCanRelay 里占的在途预留金额（float64）。
+// 与 relay.quotaReservationContextKey 同值（relay 测试里有断言）。
+const QuotaReservationContextKey = "quota_reservation"
 
 // APIKeyEndpointFamiliesContextKey 与 relay.APIKeyEndpointFamiliesContextKey 同值（relay 测试里有断言）。
 const APIKeyEndpointFamiliesContextKey = "api_key_endpoint_families"

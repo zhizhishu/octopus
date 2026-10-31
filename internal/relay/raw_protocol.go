@@ -1135,6 +1135,9 @@ type rawProtocolRelayMetrics struct {
 	SessionSource   string
 	UsageSeen       bool
 	OpaqueResponse  bool
+	// PreCharged 是会话进行中已经从用户账上扣掉的金额（目前只有 /v1/realtime 中途分段扣费）。
+	// Save 只扣 总价 - PreCharged，统计与日志仍记整段总价。
+	PreCharged float64
 
 	// 真实出站请求体快照（与聊天主路径同一开关、同一套规则，见 upstream_body_log.go）。
 	upstreamBodyLog
@@ -1364,8 +1367,10 @@ func (m *rawProtocolRelayMetrics) Save(ctx context.Context, success bool, err er
 	}
 	op.APIKeyRecordUse(m.APIKeyID, m.RequestIP, m.StartTime.Unix())
 	if success {
-		if err := op.UserRecordUsage(m.UserID, globalStats.InputCost+globalStats.OutputCost, persistCtx); err != nil {
-			log.Warnf("failed to record user usage: %v", err)
+		if charge := globalStats.InputCost + globalStats.OutputCost - m.PreCharged; charge > 0 {
+			if err := op.UserRecordUsage(m.UserID, charge, persistCtx); err != nil {
+				log.Warnf("failed to record user usage: %v", err)
+			}
 		}
 	}
 
