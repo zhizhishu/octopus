@@ -46,8 +46,12 @@ func TestGlobalSessionKeepTimeDefaultEnablesSticky(t *testing.T) {
 func TestZeroSessionKeepTimeDefaultKeepsLegacyBehavior(t *testing.T) {
 	globalSession = sync.Map{}
 	prev := sessionKeepTimeDefault
-	defer func() { sessionKeepTimeDefault = prev }()
+	prevAffinity := sessionAffinityEnabled
+	defer func() { sessionKeepTimeDefault, sessionAffinityEnabled = prev, prevAffinity }()
 	sessionKeepTimeDefault = func() int { return 0 }
+	// session_affinity_enabled=false is the switch that restores this legacy shape; with
+	// it on, a session-keyed request gets DefaultSessionAffinityTTL (session_affinity_test.go).
+	sessionAffinityEnabled = func() bool { return false }
 
 	group := model.Group{
 		SessionKeepTime: 0,
