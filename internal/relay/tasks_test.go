@@ -297,6 +297,13 @@ func TestTaskSubmitImageDelegatesToAsyncImages(t *testing.T) {
 		t.Fatalf("setting: %v", err)
 	}
 	t.Cleanup(func() { _ = op.SettingSetString(dbmodel.SettingKeyAsyncImageEnabled, "false") })
+	// 异步生图对没配价格的模型直接拒绝（同 /v1/images/generations?async=true），统一入口也一样。
+	price.SetLLMPrice("unified-image-model", dbmodel.LLMPrice{})
+	if rec := submit(); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "no price configured") {
+		t.Fatalf("unpriced model must be rejected for async image tasks: %d %s", rec.Code, rec.Body.String())
+	}
+	price.SetLLMPrice("unified-image-model", dbmodel.LLMPrice{Input: 5, Output: 40})
+	t.Cleanup(func() { price.SetLLMPrice("unified-image-model", dbmodel.LLMPrice{}) })
 	rec := submit()
 	if rec.Code != http.StatusOK {
 		t.Fatalf("submit: %d %s", rec.Code, rec.Body.String())
