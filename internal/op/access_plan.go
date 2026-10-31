@@ -102,6 +102,9 @@ func AccessPlanUpdate(plan *model.AccessPlan, ctx context.Context) error {
 	if plan.Sort == 0 {
 		plan.Sort = existing.Sort
 	}
+	// 方案保存只管方案和路由：系统提示词三列一律沿用库里的值（改提示词走 AccessPlanUpdatePrompt）。
+	// 方案页不再带这些字段，整行 Save 时不能把它们清空。
+	keepPlanPrompt(plan, existing)
 	if err := normalizeAccessPlan(plan); err != nil {
 		return err
 	}
@@ -224,6 +227,12 @@ func AccessRouteRuleUpdate(rule *model.AccessRouteRule, ctx context.Context) err
 	if rule.ID <= 0 {
 		return fmt.Errorf("invalid route rule id")
 	}
+	// 同方案保存：路由规则保存不改系统提示词（改提示词走 AccessRouteRuleUpdatePrompt）。
+	var existing model.AccessRouteRule
+	if err := db.GetDB().WithContext(ctx).First(&existing, rule.ID).Error; err != nil {
+		return err
+	}
+	keepRulePrompt(rule, existing)
 	normalizeAccessRouteRule(rule)
 	if err := validateAccessRouteRule(rule); err != nil {
 		return err
@@ -780,7 +789,7 @@ func AccessPlanSyncEnabledChannels(ctx context.Context) error {
 				PriorityOverridden: false,
 				FallbackMode:       model.AccessRouteFallbackReturnGroup,
 				BillingModelSource: model.AccessBillingModelSourceRequest,
-				PromptOverrideMode: model.PromptOverrideModeAppendSystem,
+				PromptOverrideMode: model.PromptOverrideModeBefore,
 			}
 			if err := tx.Create(&newRule).Error; err != nil {
 				tx.Rollback()
@@ -1248,14 +1257,20 @@ func AccessPlanUpdateRouteTargets(accessPlanID int, targets []model.AccessRouteT
 				mode = model.GroupModeFillFirst
 			}
 			rule := model.AccessRouteRule{
-				RouteProfileID:       plan.RouteProfileID,
-				RequestModel:         cleanRequest,
-				Mode:                 mode,
-				BillingModelSource:   target.BillingModelSource,
-				BillingModelOverride: model.CleanOneMillionCapabilityModelName(target.BillingModelOverride),
-				FallbackMode:         target.FallbackMode,
-				SystemPromptOverride: strings.TrimSpace(target.SystemPromptOverride),
-				PromptOverrideMode:   target.PromptOverrideMode,
+				RouteProfileID:        plan.RouteProfileID,
+				RequestModel:          cleanRequest,
+				Mode:                  mode,
+				BillingModelSource:    target.BillingModelSource,
+				BillingModelOverride:  model.CleanOneMillionCapabilityModelName(target.BillingModelOverride),
+				FallbackMode:          target.FallbackMode,
+				SystemPromptOverride:  strings.TrimSpace(target.SystemPromptOverride),
+				PromptOverrideMode:    target.PromptOverrideMode,
+				PromptOverrideEnabled: target.PromptOverrideEnabled,
+			}
+			// 整表保存会删掉重建规则。已有的请求模型沿用原来的系统提示词（方案页不再带），
+			// 只有这次新加的请求模型才用请求里带的值。
+			if existing, ok := existingRuleByModel[key]; ok {
+				keepRulePrompt(&rule, existing)
 			}
 			normalizeAccessRouteRule(&rule)
 			bucket = &routeBucket{
@@ -1777,6 +1792,7 @@ func flattenAccessPlan(plan *model.AccessPlan) {
 				target.FallbackMode = rule.FallbackMode
 				target.SystemPromptOverride = rule.SystemPromptOverride
 				target.PromptOverrideMode = rule.PromptOverrideMode
+				target.PromptOverrideEnabled = rule.PromptOverrideEnabled
 				target.PriorityOverridden = rule.PriorityOverridden
 				normalizeAccessRouteTarget(&target)
 				plan.RouteTargets = append(plan.RouteTargets, target)
@@ -1807,7 +1823,7 @@ func normalizeAccessPlan(plan *model.AccessPlan) error {
 		plan.DisplayName = plan.Slug
 	}
 	plan.SystemPromptOverride = strings.TrimSpace(plan.SystemPromptOverride)
-	plan.PromptOverrideMode = normalizePromptOverrideMode(plan.PromptOverrideMode)
+	model.NormalizePromptOverride(&plan.PromptOverrideEnabled, &plan.PromptOverrideMode, plan.SystemPromptOverride)
 	return nil
 }
 
@@ -1883,7 +1899,7 @@ func normalizeAccessRouteRule(rule *model.AccessRouteRule) {
 	if rule.FallbackMode == "" {
 		rule.FallbackMode = model.AccessRouteFallbackGroup
 	}
-	rule.PromptOverrideMode = normalizePromptOverrideMode(rule.PromptOverrideMode)
+	model.NormalizePromptOverride(&rule.PromptOverrideEnabled, &rule.PromptOverrideMode, rule.SystemPromptOverride)
 }
 
 func validateAccessRouteRule(rule *model.AccessRouteRule) error {
@@ -1925,7 +1941,7 @@ func normalizeAccessRouteTarget(target *model.AccessRouteTarget) {
 	} else if target.Weight > 1000 {
 		target.Weight = 1000
 	}
-	target.PromptOverrideMode = normalizePromptOverrideMode(target.PromptOverrideMode)
+	model.NormalizePromptOverride(&target.PromptOverrideEnabled, &target.PromptOverrideMode, target.SystemPromptOverride)
 }
 
 func validateAccessRouteTarget(target *model.AccessRouteTarget) error {
@@ -1944,24 +1960,11 @@ func validateAccessRouteTarget(target *model.AccessRouteTarget) error {
 	return nil
 }
 
-func normalizePromptOverrideMode(mode model.PromptOverrideMode) model.PromptOverrideMode {
-	switch mode {
-	case "", model.PromptOverrideModeAppendSystem:
-		return model.PromptOverrideModeAppendSystem
-	case model.PromptOverrideModeReplaceSystem:
-		return model.PromptOverrideModeReplaceSystem
-	default:
-		return mode
-	}
-}
-
 func validatePromptOverrideMode(mode model.PromptOverrideMode) error {
-	switch mode {
-	case "", model.PromptOverrideModeAppendSystem, model.PromptOverrideModeReplaceSystem:
+	if model.ValidPromptOverrideMode(mode) {
 		return nil
-	default:
-		return fmt.Errorf("invalid prompt override mode")
 	}
+	return fmt.Errorf("invalid prompt override mode")
 }
 
 func normalizeAccessBillingProfile(profile *model.AccessBillingProfile) {
@@ -2005,4 +2008,101 @@ func validateAccessBillingModelRule(rule *model.AccessBillingModelRule) error {
 		return fmt.Errorf("model name is required")
 	}
 	return nil
+}
+
+// keepPlanPrompt copies the stored system prompt columns onto a plan being saved from the
+// 方案 page, which no longer edits prompts.
+func keepPlanPrompt(plan *model.AccessPlan, existing model.AccessPlan) {
+	plan.SystemPromptOverride = existing.SystemPromptOverride
+	plan.PromptOverrideMode = existing.PromptOverrideMode
+	plan.PromptOverrideEnabled = existing.PromptOverrideEnabled
+}
+
+// keepRulePrompt is keepPlanPrompt for a route rule.
+func keepRulePrompt(rule *model.AccessRouteRule, existing model.AccessRouteRule) {
+	rule.SystemPromptOverride = existing.SystemPromptOverride
+	rule.PromptOverrideMode = existing.PromptOverrideMode
+	rule.PromptOverrideEnabled = existing.PromptOverrideEnabled
+}
+
+func promptPatchColumns(patch model.PromptOverridePatch, text string, mode model.PromptOverrideMode, enabled bool) (map[string]any, error) {
+	text, mode, enabled, err := patch.Apply(text, mode, enabled)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"system_prompt_override":  text,
+		"prompt_override_mode":    mode,
+		"prompt_override_enabled": enabled,
+	}, nil
+}
+
+// AccessPlanUpdatePrompt writes only a plan's system prompt columns (提示词 page).
+// Routing, billing and every other column are left exactly as stored.
+func AccessPlanUpdatePrompt(planID int, patch model.PromptOverridePatch, ctx context.Context) (model.AccessPlan, error) {
+	if planID <= 0 {
+		return model.AccessPlan{}, fmt.Errorf("invalid access plan id")
+	}
+	var existing model.AccessPlan
+	if err := db.GetDB().WithContext(ctx).First(&existing, planID).Error; err != nil {
+		return model.AccessPlan{}, err
+	}
+	cols, err := promptPatchColumns(patch, existing.SystemPromptOverride, existing.PromptOverrideMode, existing.PromptOverrideEnabled)
+	if err != nil {
+		return model.AccessPlan{}, err
+	}
+	if err := db.GetDB().WithContext(ctx).Model(&model.AccessPlan{}).Where("id = ?", planID).Updates(cols).Error; err != nil {
+		return model.AccessPlan{}, err
+	}
+	if err := accessPlanRefreshCache(ctx); err != nil {
+		return model.AccessPlan{}, err
+	}
+	return accessPlanGetCached(planID, ctx)
+}
+
+// AccessRouteRuleUpdatePrompt writes only a route rule's system prompt columns.
+func AccessRouteRuleUpdatePrompt(ruleID int, patch model.PromptOverridePatch, ctx context.Context) error {
+	if ruleID <= 0 {
+		return fmt.Errorf("invalid route rule id")
+	}
+	var existing model.AccessRouteRule
+	if err := db.GetDB().WithContext(ctx).First(&existing, ruleID).Error; err != nil {
+		return err
+	}
+	cols, err := promptPatchColumns(patch, existing.SystemPromptOverride, existing.PromptOverrideMode, existing.PromptOverrideEnabled)
+	if err != nil {
+		return err
+	}
+	if err := db.GetDB().WithContext(ctx).Model(&model.AccessRouteRule{}).Where("id = ?", ruleID).Updates(cols).Error; err != nil {
+		return err
+	}
+	return accessPlanRefreshCache(ctx)
+}
+
+// AccessPlanUpdateRoutePrompt writes the system prompt of one route (a plan's request model)
+// from the 提示词 page. Rule ids change every time the 方案 page saves the route table, so the
+// route is addressed by plan + request model. Only the three prompt columns are written.
+func AccessPlanUpdateRoutePrompt(planID int, requestModel string, patch model.PromptOverridePatch, ctx context.Context) (model.AccessPlan, error) {
+	plan, err := accessPlanLoadForWrite(planID, ctx)
+	if err != nil {
+		return model.AccessPlan{}, err
+	}
+	key := strings.ToLower(model.CleanOneMillionCapabilityModelName(strings.TrimSpace(requestModel)))
+	if key == "" {
+		return model.AccessPlan{}, fmt.Errorf("request_model is required")
+	}
+	var rules []model.AccessRouteRule
+	if err := db.GetDB().WithContext(ctx).Where("route_profile_id = ?", plan.RouteProfileID).Find(&rules).Error; err != nil {
+		return model.AccessPlan{}, err
+	}
+	for _, rule := range rules {
+		if strings.ToLower(model.CleanOneMillionCapabilityModelName(rule.RequestModel)) != key {
+			continue
+		}
+		if err := AccessRouteRuleUpdatePrompt(rule.ID, patch, ctx); err != nil {
+			return model.AccessPlan{}, err
+		}
+		return accessPlanGetCached(planID, ctx)
+	}
+	return model.AccessPlan{}, fmt.Errorf("route %q not found in this plan", requestModel)
 }

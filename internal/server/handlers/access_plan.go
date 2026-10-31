@@ -4,13 +4,13 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
 	"github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/op"
 	"github.com/zhizhishu/octopus/internal/server/middleware"
 	"github.com/zhizhishu/octopus/internal/server/resp"
 	"github.com/zhizhishu/octopus/internal/server/router"
-	"github.com/gin-gonic/gin"
-	"github.com/gin-gonic/gin/binding"
 )
 
 func init() {
@@ -23,6 +23,8 @@ func init() {
 		AddRoute(router.NewRoute("/billing-profile/list", http.MethodGet).Handle(listAccessBillingProfiles)).
 		AddRoute(router.NewRoute("/create", http.MethodPost).Handle(createAccessPlan)).
 		AddRoute(router.NewRoute("/update", http.MethodPost).Handle(updateAccessPlan)).
+		AddRoute(router.NewRoute("/prompt/update", http.MethodPost).Handle(updateAccessPlanPrompt)).
+		AddRoute(router.NewRoute("/route-prompt/update", http.MethodPost).Handle(updateAccessPlanRoutePrompt)).
 		AddRoute(router.NewRoute("/delete/:id", http.MethodDelete).Handle(deleteAccessPlan)).
 		AddRoute(router.NewRoute("/route-profile/create", http.MethodPost).Handle(createAccessRouteProfile)).
 		AddRoute(router.NewRoute("/route-profile/update", http.MethodPost).Handle(updateAccessRouteProfile)).
@@ -86,15 +88,65 @@ func createAccessPlan(c *gin.Context) {
 
 func updateAccessPlan(c *gin.Context) {
 	var plan model.AccessPlan
-	if err := c.ShouldBindJSON(&plan); err != nil {
+	if err := c.ShouldBindBodyWith(&plan, binding.JSON); err != nil {
 		resp.Error(c, http.StatusBadRequest, err.Error())
 		return
 	}
+	// 方案保存不动系统提示词；老客户端显式带了提示词字段时，再单独只写那几列（兼容）。
+	var patch model.PromptOverridePatch
+	_ = c.ShouldBindBodyWith(&patch, binding.JSON)
 	if err := op.AccessPlanUpdate(&plan, c.Request.Context()); err != nil {
 		resp.Error(c, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if !patch.Empty() {
+		updated, err := op.AccessPlanUpdatePrompt(plan.ID, patch, c.Request.Context())
+		if err != nil {
+			resp.Error(c, http.StatusBadRequest, err.Error())
+			return
+		}
+		plan.SystemPromptOverride = updated.SystemPromptOverride
+		plan.PromptOverrideMode = updated.PromptOverrideMode
+		plan.PromptOverrideEnabled = updated.PromptOverrideEnabled
+	}
 	scheduleAccessPlanChannelSync()
+	resp.Success(c, plan)
+}
+
+// updateAccessPlanPrompt: 提示词页保存方案层系统提示词，只写提示词三列。
+func updateAccessPlanPrompt(c *gin.Context) {
+	var req struct {
+		ID int `json:"id"`
+		model.PromptOverridePatch
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		resp.Error(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	plan, err := op.AccessPlanUpdatePrompt(req.ID, req.PromptOverridePatch, c.Request.Context())
+	if err != nil {
+		resp.Error(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	resp.Success(c, plan)
+}
+
+// updateAccessPlanRoutePrompt: 提示词页保存某个方案里某个请求模型（路由）的系统提示词，只写提示词三列。
+func updateAccessPlanRoutePrompt(c *gin.Context) {
+	var req struct {
+		AccessPlanID int    `json:"access_plan_id"`
+		RequestModel string `json:"request_model"`
+		model.PromptOverridePatch
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		resp.Error(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	plan, err := op.AccessPlanUpdateRoutePrompt(req.AccessPlanID, req.RequestModel, req.PromptOverridePatch, c.Request.Context())
+	if err != nil {
+		resp.Error(c, http.StatusBadRequest, err.Error())
+		return
+	}
 	resp.Success(c, plan)
 }
 
@@ -165,13 +217,22 @@ func createAccessRouteRule(c *gin.Context) {
 
 func updateAccessRouteRule(c *gin.Context) {
 	var rule model.AccessRouteRule
-	if err := c.ShouldBindJSON(&rule); err != nil {
+	if err := c.ShouldBindBodyWith(&rule, binding.JSON); err != nil {
 		resp.Error(c, http.StatusBadRequest, err.Error())
 		return
 	}
+	var patch model.PromptOverridePatch
+	_ = c.ShouldBindBodyWith(&patch, binding.JSON)
 	if err := op.AccessRouteRuleUpdate(&rule, c.Request.Context()); err != nil {
 		resp.Error(c, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if !patch.Empty() {
+		if err := op.AccessRouteRuleUpdatePrompt(rule.ID, patch, c.Request.Context()); err != nil {
+			resp.Error(c, http.StatusBadRequest, err.Error())
+			return
+		}
+		rule.SystemPromptOverride, rule.PromptOverrideMode, rule.PromptOverrideEnabled, _ = patch.Apply(rule.SystemPromptOverride, rule.PromptOverrideMode, rule.PromptOverrideEnabled)
 	}
 	resp.Success(c, rule)
 }

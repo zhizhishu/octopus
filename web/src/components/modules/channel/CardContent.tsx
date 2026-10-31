@@ -59,8 +59,6 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
         cloak_shape: channel.cloak?.shape ?? '',
         channel_proxy: channel.channel_proxy ?? '',
         param_override: channel.param_override ?? '',
-        system_prompt_override: channel.system_prompt_override ?? '',
-        prompt_override_mode: channel.prompt_override_mode ?? 'append_system',
         keys: channel.keys.length > 0
             ? channel.keys.map((k) => ({
                 id: k.id,
@@ -175,14 +173,7 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
             req.param_override = nextParamOverride;
         }
 
-        const nextSystemPromptOverride = formData.system_prompt_override.trim();
-        const curSystemPromptOverride = channel.system_prompt_override ?? '';
-        if (nextSystemPromptOverride !== curSystemPromptOverride) {
-            req.system_prompt_override = nextSystemPromptOverride;
-        }
-        if (formData.prompt_override_mode !== (channel.prompt_override_mode ?? 'append_system')) {
-            req.prompt_override_mode = formData.prompt_override_mode;
-        }
+        // 系统提示词只在「提示词」页改：渠道表单不发这些字段，后端按部分更新保留原值。
 
         const nextMatchRegex = formData.match_regex.trim();
         const curMatchRegex = channel.match_regex ?? '';

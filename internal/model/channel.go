@@ -92,9 +92,11 @@ type Channel struct {
 	ParamOverride        *string            `json:"param_override"`
 	SystemPromptOverride string             `json:"system_prompt_override"`
 	PromptOverrideMode   PromptOverrideMode `json:"prompt_override_mode" gorm:"default:append_system"`
-	ChannelProxy         *string            `json:"channel_proxy"`
-	OpenAIChatPath       string             `json:"openai_chat_path"`
-	OpenAIModelsPath     string             `json:"openai_models_path"`
+	// PromptOverrideEnabled is the 启用 switch of this channel's system prompt layer.
+	PromptOverrideEnabled bool    `json:"prompt_override_enabled" gorm:"not null;default:false"`
+	ChannelProxy          *string `json:"channel_proxy"`
+	OpenAIChatPath        string  `json:"openai_chat_path"`
+	OpenAIModelsPath      string  `json:"openai_models_path"`
 	// OpenAIEmbeddingsPath 是嵌入端点的逃生口（与 OpenAIChatPath 同款）：火山这类
 	// 上游的嵌入路径是 /api/v3/embeddings，用 JoinOpenAIPath 拼会变成
 	// /api/v3/v1/embeddings。空 = 走标准 /v1/embeddings 拼接，存量渠道行为不变。
@@ -272,6 +274,7 @@ type ChannelUpdateRequest struct {
 	ParamOverride         *string                `json:"param_override,omitempty"`
 	SystemPromptOverride  *string                `json:"system_prompt_override,omitempty"`
 	PromptOverrideMode    *PromptOverrideMode    `json:"prompt_override_mode,omitempty"`
+	PromptOverrideEnabled *bool                  `json:"prompt_override_enabled,omitempty"`
 	MatchRegex            *string                `json:"match_regex,omitempty"`
 	ModelMapping          *map[string]string     `json:"model_mapping,omitempty"`
 	OpenAIChatPath        *string                `json:"openai_chat_path,omitempty"`

@@ -31,6 +31,10 @@ func ChannelList(ctx context.Context) ([]model.Channel, error) {
 
 func ChannelCreate(channel *model.Channel, ctx context.Context) error {
 	normalizeChannelCreateModels(channel)
+	if !model.ValidPromptOverrideMode(channel.PromptOverrideMode) {
+		return fmt.Errorf("invalid prompt override mode")
+	}
+	model.NormalizePromptOverride(&channel.PromptOverrideEnabled, &channel.PromptOverrideMode, channel.SystemPromptOverride)
 	wantEnabled := channel.Enabled
 	disabledKeys := make([]int, 0)
 	for i, k := range channel.Keys {
@@ -248,6 +252,9 @@ func ChannelUpdate(req *model.ChannelUpdateRequest, ctx context.Context) (*model
 	if !ok {
 		return nil, fmt.Errorf("channel not found")
 	}
+	if req.PromptOverrideMode != nil && !model.ValidPromptOverrideMode(*req.PromptOverrideMode) {
+		return nil, fmt.Errorf("invalid prompt override mode")
+	}
 	resetRuntimeStats := channelRuntimeIdentityChanged(oldChannel, req)
 
 	tx := db.GetDB().WithContext(ctx).Begin()
@@ -393,8 +400,22 @@ func ChannelUpdate(req *model.ChannelUpdateRequest, ctx context.Context) (*model
 		updates.SystemPromptOverride = *req.SystemPromptOverride
 	}
 	if req.PromptOverrideMode != nil {
+		mode := *req.PromptOverrideMode
+		if model.IsLegacyPromptOverrideMode(mode) && req.PromptOverrideEnabled == nil {
+			// Old client without the switch: a legacy mode meant "on" whenever there is text.
+			text := oldChannel.SystemPromptOverride
+			if req.SystemPromptOverride != nil {
+				text = *req.SystemPromptOverride
+			}
+			enabled := model.PromptOverrideActive(false, mode, text)
+			req.PromptOverrideEnabled = &enabled
+		}
 		selectFields = append(selectFields, "prompt_override_mode")
-		updates.PromptOverrideMode = *req.PromptOverrideMode
+		updates.PromptOverrideMode = model.NormalizePromptOverrideMode(mode)
+	}
+	if req.PromptOverrideEnabled != nil {
+		selectFields = append(selectFields, "prompt_override_enabled")
+		updates.PromptOverrideEnabled = *req.PromptOverrideEnabled
 	}
 	if req.MatchRegex != nil {
 		selectFields = append(selectFields, "match_regex")

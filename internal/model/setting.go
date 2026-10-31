@@ -170,6 +170,7 @@ const (
 	SettingKeyRouteStickyCacheFirst   SettingKey = "route_sticky_cache_first" // 轮询类分组里纯优化型会话(prompt_cache_key/user/safety_identifier/oct 自造指纹)的粘性取舍: false=分摊优先(默认, 不粘、真轮转), true=缓存优先(非空来源也粘, 换上游 prompt-cache 命中)。语义详见 internal/relay/route_sticky.go
 	SettingKeyPromptOverrideSystem    SettingKey = "prompt_override_system"
 	SettingKeyPromptOverrideMode      SettingKey = "prompt_override_mode"
+	SettingKeyPromptOverrideEnabled   SettingKey = "prompt_override_enabled"
 	SettingKeyUpstreamErrorStatusPass SettingKey = "upstream_error_status_passthrough"
 	SettingKeyUpstreamErrorBodyMode   SettingKey = "upstream_error_body_mode"
 	SettingKeyUpstreamErrorCustom     SettingKey = "upstream_error_custom_message"
@@ -616,7 +617,8 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyRouteModeOverride, Value: DefaultRouteModeOverride},                             // 默认优先填充；已有独立模式的规则不受影响
 		{Key: SettingKeyRouteStickyCacheFirst, Value: "false"},                                          // 默认 false=分摊优先(现行为不变); 设 true 切「缓存优先」: 轮询分组里非空的纯优化型会话也保留粘性
 		{Key: SettingKeyPromptOverrideSystem, Value: ""},
-		{Key: SettingKeyPromptOverrideMode, Value: string(PromptOverrideModeAppendSystem)},
+		{Key: SettingKeyPromptOverrideMode, Value: string(PromptOverrideModeBefore)},
+		{Key: SettingKeyPromptOverrideEnabled, Value: "false"}, // 全局提示词开关: 默认关; 开=按 prompt_override_mode(before/after)加 prompt_override_system
 		{Key: SettingKeyUpstreamErrorStatusPass, Value: "false"},
 		{Key: SettingKeyUpstreamErrorBodyMode, Value: "redacted_upstream"},
 		{Key: SettingKeyUpstreamErrorCustom, Value: "Upstream request failed. Please try again later."},
@@ -952,12 +954,15 @@ func (s *Setting) Validate() error {
 		}
 		return nil
 	case SettingKeyPromptOverrideMode:
-		switch PromptOverrideMode(s.Value) {
-		case "", PromptOverrideModeAppendSystem, PromptOverrideModeReplaceSystem:
+		if ValidPromptOverrideMode(PromptOverrideMode(s.Value)) {
 			return nil
-		default:
-			return fmt.Errorf("invalid prompt override mode")
 		}
+		return fmt.Errorf("invalid prompt override mode")
+	case SettingKeyPromptOverrideEnabled:
+		if s.Value == "true" || s.Value == "false" {
+			return nil
+		}
+		return fmt.Errorf("prompt override enabled must be true or false")
 	case SettingKeyProxyURL:
 		if s.Value == "" {
 			return nil
