@@ -41,7 +41,8 @@ export function CreateDialogContent() {
         channel_proxy: '',
         param_override: '',
         system_prompt_override: '',
-        prompt_override_mode: 'append_system',
+        prompt_override_mode: 'before',
+        prompt_override_enabled: false,
         keys: [{ enabled: true, channel_key: '', remark: '' }],
         model: '',
         custom_model: '',
@@ -122,6 +123,7 @@ export function CreateDialogContent() {
                 param_override: paramOverride,
                 system_prompt_override: systemPromptOverride,
                 prompt_override_mode: formData.prompt_override_mode,
+                prompt_override_enabled: formData.prompt_override_enabled,
                 match_regex: formData.match_regex.trim(),
                 // Persist the model-mapping table on create — without this the mapping the
                 // user typed in the form was silently dropped and never saved.
@@ -148,7 +150,8 @@ export function CreateDialogContent() {
                         channel_proxy: '',
                         param_override: '',
                         system_prompt_override: '',
-                        prompt_override_mode: 'append_system',
+                        prompt_override_mode: 'before',
+        prompt_override_enabled: false,
                         keys: [{ enabled: true, channel_key: '', remark: '' }],
                         model: '',
                         custom_model: '',

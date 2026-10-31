@@ -81,6 +81,7 @@ export const SettingKey = {
     CheckInRewardMax: 'checkin_reward_max',
     PromptOverrideSystem: 'prompt_override_system',
     PromptOverrideMode: 'prompt_override_mode',
+    PromptOverrideEnabled: 'prompt_override_enabled',
     EmailVerificationEnabled: 'email_verification_enabled',
     EmailProvider: 'email_provider',
     EmailSMTPHost: 'email_smtp_host',

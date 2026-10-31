@@ -1,4 +1,5 @@
 import type { AccessPlan, PromptOverrideMode } from '@/api/endpoints/access-plan';
+import { normalizePromptMode, promptEnabledFromSaved } from './prompt-mode';
 
 // 提示词页的纯数据整理，单独放这里方便测。
 
@@ -8,6 +9,9 @@ export type RoutePromptRow = {
     upstreamModels: string[];
     targetCount: number;
     mode: PromptOverrideMode;
+    /** 这条路由的提示词开关（旧数据有文字算开）。关着也列出来，标「已关闭」。 */
+    enabled: boolean;
+    text: string;
 };
 
 /**
@@ -28,7 +32,13 @@ export function routePromptRows(plans: AccessPlan[]): RoutePromptRow[] {
                     requestModel: target.request_model,
                     upstreamModels: [],
                     targetCount: 0,
-                    mode: target.prompt_override_mode ?? 'append_system',
+                    mode: normalizePromptMode(target.prompt_override_mode),
+                    enabled: promptEnabledFromSaved(
+                        target.prompt_override_enabled,
+                        target.prompt_override_mode,
+                        target.system_prompt_override
+                    ),
+                    text: target.system_prompt_override ?? '',
                 };
                 byModel.set(target.request_model, row);
                 rows.push(row);

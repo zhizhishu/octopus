@@ -111,6 +111,14 @@ func settingSetStringLocked(key model.SettingKey, value string) error {
 		}
 		value = model.NormalizeRouteModeOverride(value)
 	}
+	if key == model.SettingKeyPromptOverrideMode || key == model.SettingKeyPromptOverrideEnabled {
+		if err := (&model.Setting{Key: key, Value: value}).Validate(); err != nil {
+			return err
+		}
+	}
+	if key == model.SettingKeyPromptOverrideMode {
+		value = string(model.NormalizePromptOverrideMode(model.PromptOverrideMode(value)))
+	}
 	if _, ok := settingCache.Get(key); !ok {
 		return fmt.Errorf("setting not found")
 	}

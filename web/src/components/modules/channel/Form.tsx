@@ -25,6 +25,7 @@ import {
     AccordionTrigger,
 } from "@/components/ui/accordion";
 import { cn } from '@/lib/utils';
+import { PromptLayerControls } from '../prompt/PromptLayerControls';
 import {
     ModelAuditChipDot,
     ModelAuditChipExpand,
@@ -148,6 +149,7 @@ export interface ChannelFormData {
     param_override: string;
     system_prompt_override: string;
     prompt_override_mode: PromptOverrideMode;
+    prompt_override_enabled: boolean;
     keys: ChannelKeyFormItem[];
     model: string;
     custom_model: string;
@@ -488,6 +490,7 @@ export function ChannelForm({
         param_override: formData.param_override.trim() || null,
         system_prompt_override: formData.system_prompt_override,
         prompt_override_mode: formData.prompt_override_mode,
+        prompt_override_enabled: formData.prompt_override_enabled,
         match_regex: formData.match_regex.trim() || null,
     });
 
@@ -1880,25 +1883,35 @@ export function ChannelForm({
                                 <label htmlFor={`${idPrefix}-system-prompt-override`} className="text-sm font-medium text-card-foreground">
                                     {t('promptOverride')}
                                 </label>
-                                <select
-                                    value={formData.prompt_override_mode}
-                                    onChange={(e) => onFormDataChange({
-                                        ...formData,
-                                        prompt_override_mode: e.target.value as PromptOverrideMode,
-                                    })}
-                                    aria-label={t('promptOverrideMode')}
-                                    className="h-9 rounded-xl border border-input bg-background px-3 text-sm text-foreground"
-                                >
-                                    <option value="append_system">{t('promptAppend')}</option>
-                                    <option value="replace_system">{t('promptReplace')}</option>
-                                </select>
+                                <PromptLayerControls
+                                    enabled={formData.prompt_override_enabled}
+                                    onEnabledChange={(value) => onFormDataChange({ ...formData, prompt_override_enabled: value })}
+                                    mode={formData.prompt_override_mode}
+                                    onModeChange={(value) => onFormDataChange({ ...formData, prompt_override_mode: value })}
+                                    label={t('promptOverride')}
+                                    text={{
+                                        enabled: t('promptEnabled'),
+                                        enabledHintOn: t('promptEnabledHintOn'),
+                                        enabledHintOff: t('promptEnabledHintOff'),
+                                        before: t('promptBefore'),
+                                        beforeHint: t('promptBeforeHint'),
+                                        after: t('promptAfter'),
+                                        afterHint: t('promptAfterHint'),
+                                        position: t('promptOverrideMode'),
+                                    }}
+                                />
                             </div>
                             <textarea
                                 id={`${idPrefix}-system-prompt-override`}
                                 value={formData.system_prompt_override}
                                 onChange={(e) => onFormDataChange({ ...formData, system_prompt_override: e.target.value })}
                                 placeholder={t('promptOverridePlaceholder')}
-                                className="min-h-28 w-full rounded-xl border border-border bg-background px-3 py-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                disabled={!formData.prompt_override_enabled}
+                                title={formData.prompt_override_enabled ? undefined : t('promptOffTextHint')}
+                                className={cn(
+                                    'min-h-28 w-full rounded-xl border border-border bg-background px-3 py-2 text-sm text-foreground transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                                    !formData.prompt_override_enabled && 'bg-muted/40 text-muted-foreground opacity-60'
+                                )}
                             />
                         </div>
         </>
@@ -2022,7 +2035,8 @@ export function ChannelForm({
     const rewriteOnCount = [
         formData.match_regex.trim(),
         formData.param_override.trim(),
-        formData.system_prompt_override.trim(),
+        // 系统提示词关着时文字保留但不生效，不算「已开启」。
+        formData.prompt_override_enabled && formData.system_prompt_override.trim(),
     ].filter(Boolean).length;
     const headerCount = (formData.custom_header ?? []).filter((h) => h.header_key.trim()).length;
     const strategyLabel = (formData.key_select_strategy ?? 0) === 1 ? t('keySelectStrategySticky') : t('keySelectStrategyCostBalanced');

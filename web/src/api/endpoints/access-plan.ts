@@ -4,7 +4,10 @@ import { logger } from '@/lib/logger';
 
 export type BillingModelSource = 'request_model' | 'upstream_model' | 'override_model';
 export type RouteFallbackMode = 'none' | 'failover' | 'return_group';
-export type PromptOverrideMode = 'append_system' | 'replace_system';
+// 系统提示词每层 = 开关 prompt_override_enabled + 位置 prompt_override_mode。
+// 旧值 append_system / replace_system 已由后端 migration 026 改成「开 + before」（有文字时）。
+/** 系统提示词位置：before = 放在请求自带的系统提示词前面，after = 放在后面。是否生效看 prompt_override_enabled。 */
+export type PromptOverrideMode = 'before' | 'after';
 
 export interface AccessPlanBillingRule {
     id?: number;
@@ -32,6 +35,7 @@ export interface AccessPlanRouteTarget {
     fallback_mode?: RouteFallbackMode;
     system_prompt_override?: string;
     prompt_override_mode?: PromptOverrideMode;
+    prompt_override_enabled?: boolean;
 }
 
 export interface AccessPlan {
@@ -44,6 +48,7 @@ export interface AccessPlan {
     default_multiplier: number;
     system_prompt_override?: string;
     prompt_override_mode?: PromptOverrideMode;
+    prompt_override_enabled?: boolean;
     sort?: number;
     billing_rules: AccessPlanBillingRule[];
     route_targets: AccessPlanRouteTarget[];
@@ -71,6 +76,7 @@ export type UpdateAccessPlanRequest = Partial<Omit<CreateAccessPlanRequest, 'slu
     auto_sync_channels?: boolean;
     system_prompt_override?: string;
     prompt_override_mode?: PromptOverrideMode;
+    prompt_override_enabled?: boolean;
 };
 
 export type UpdateAccessPlanBillingRulesRequest = {

@@ -5,9 +5,9 @@ const { load } = require('./load-typescript.cjs');
 
 const { routePromptRows, sortChannelsStable } = load('src/components/modules/prompt/prompt-rows.ts');
 
-const target = (request_model, channel_id, upstream_model, prompt = '', mode) => ({
+const target = (request_model, channel_id, upstream_model, prompt = '', mode, promptEnabled) => ({
     request_model, channel_id, upstream_model, priority: 1, weight: 1, enabled: true,
-    system_prompt_override: prompt, prompt_override_mode: mode,
+    system_prompt_override: prompt, prompt_override_mode: mode, prompt_override_enabled: promptEnabled,
 });
 
 test('模型映射提示词一条规则一行，计数按规则算', () => {
@@ -15,10 +15,11 @@ test('模型映射提示词一条规则一行，计数按规则算', () => {
         {
             id: 1, slug: 'vip', display_name: 'VIP',
             route_targets: [
-                target('gpt-4o', 11, 'gpt-4o', '只用中文', 'append_system'),
-                target('gpt-4o', 12, 'gpt-4o-2024', '只用中文', 'append_system'),
-                target('gpt-4o', 13, 'gpt-4o', '只用中文', 'append_system'),
+                target('gpt-4o', 11, 'gpt-4o', '只用中文', 'before', true),
+                target('gpt-4o', 12, 'gpt-4o-2024', '只用中文', 'before', true),
+                target('gpt-4o', 13, 'gpt-4o', '只用中文', 'before', true),
                 target('claude', 11, 'claude-sonnet', ''),
+                target('gemini', 15, 'gemini-pro', '补一句', 'after', false),
             ],
         },
         {
@@ -30,10 +31,13 @@ test('模型映射提示词一条规则一行，计数按规则算', () => {
         },
     ];
     const rows = routePromptRows(plans);
-    assert.equal(rows.length, 2, '3 个目标同一规则 + 另一方案 1 条 = 2 行');
-    assert.deepEqual(rows.map((r) => [r.plan.id, r.requestModel, r.targetCount, r.upstreamModels, r.mode]), [
-        [1, 'gpt-4o', 3, ['gpt-4o', 'gpt-4o-2024'], 'append_system'],
-        [2, 'gpt-4o', 1, ['gpt-4o'], 'replace_system'],
+    assert.equal(rows.length, 3, '3 个目标同一规则 + gemini 1 条 + 另一方案 1 条 = 3 行');
+    assert.deepEqual(rows.map((r) => [r.plan.id, r.requestModel, r.targetCount, r.upstreamModels, r.mode, r.enabled]), [
+        [1, 'gpt-4o', 3, ['gpt-4o', 'gpt-4o-2024'], 'before', true],
+        // 关着的也列出来（标「已关闭」），文字保留
+        [1, 'gemini', 1, ['gemini-pro'], 'after', false],
+        // 旧的 replace_system、没有开关字段：有文字算「开 + 前面」（后端同样按它处理）
+        [2, 'gpt-4o', 1, ['gpt-4o'], 'before', true],
     ]);
 });
 

@@ -101,6 +101,7 @@ export type Channel = {
     param_override?: string | null;
     system_prompt_override?: string | null;
     prompt_override_mode?: PromptOverrideMode | null;
+    prompt_override_enabled?: boolean | null;
     channel_proxy?: string | null;
     openai_chat_path: string;
     openai_models_path: string;
@@ -160,6 +161,7 @@ export type CreateChannelRequest = {
     param_override?: string | null;
     system_prompt_override?: string | null;
     prompt_override_mode?: PromptOverrideMode | null;
+    prompt_override_enabled?: boolean | null;
     match_regex?: string | null;
     model_mapping?: Record<string, string>;
 };
@@ -201,6 +203,7 @@ export type UpdateChannelRequest = {
     param_override?: string | null;
     system_prompt_override?: string | null;
     prompt_override_mode?: PromptOverrideMode | null;
+    prompt_override_enabled?: boolean | null;
     match_regex?: string | null;
     model_mapping?: Record<string, string>;
     // keys diff
@@ -244,6 +247,7 @@ export type ChannelTestConfig = {
     param_override?: string | null;
     system_prompt_override?: string | null;
     prompt_override_mode?: PromptOverrideMode | null;
+    prompt_override_enabled?: boolean | null;
     match_regex?: string | null;
     model_mapping?: Record<string, string>;
 };
@@ -449,6 +453,7 @@ export function useCopyChannel() {
                 param_override: source.param_override,
                 system_prompt_override: source.system_prompt_override,
                 prompt_override_mode: source.prompt_override_mode,
+                prompt_override_enabled: source.prompt_override_enabled,
                 match_regex: source.match_regex,
                 model_mapping: source.model_mapping ? { ...source.model_mapping } : undefined,
             };

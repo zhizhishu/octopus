@@ -30,35 +30,27 @@ import { Button } from '@/components/ui/button';
 import { useNavStore } from '../navbar/nav-store';
 import { cn } from '@/lib/utils';
 import { routePromptRows as buildRoutePromptRows, sortChannelsStable } from './prompt-rows';
-
-const modeLabels: Record<PromptOverrideMode, string> = {
-    append_system: '另加一条 system',
-    replace_system: '替换原有 system',
-};
+import { normalizePromptMode, promptEnabledFromSaved, promptLayerActive, promptStatus } from './prompt-mode';
+import { PromptLayerControls } from './PromptLayerControls';
 
 function apiErrorMessage(error: unknown): string | undefined {
     return (error as ApiError | undefined)?.message;
 }
 
-function PromptModeSelect({
-    value,
-    onChange,
-    label,
-}: {
-    value: PromptOverrideMode;
-    onChange: (value: PromptOverrideMode) => void;
-    label: string;
-}) {
+function PromptStatusBadge({ enabled, mode, text }: { enabled: boolean; mode: PromptOverrideMode; text: string }) {
+    const status = promptStatus(enabled, mode, text);
     return (
-        <select
-            value={value}
-            onChange={(event) => onChange(event.target.value as PromptOverrideMode)}
-            aria-label={label}
-            className="h-9 rounded-xl border border-input bg-background px-3 text-sm text-foreground"
-        >
-            <option value="append_system">{modeLabels.append_system}</option>
-            <option value="replace_system">{modeLabels.replace_system}</option>
-        </select>
+        <Badge variant={status.tone === 'on' ? 'secondary' : 'outline'} title={status.hint}>
+            {status.label}
+        </Badge>
+    );
+}
+
+function promptTextareaClass(enabled: boolean, size: string) {
+    return cn(
+        size,
+        'w-full rounded-xl border border-border bg-background px-3 py-2 text-sm text-foreground transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+        !enabled && 'bg-muted/40 text-muted-foreground opacity-60'
     );
 }
 
@@ -85,7 +77,7 @@ function LayerCard({
                 <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                         <h3 className="text-sm font-semibold">{title}</h3>
-                        <Badge variant={enabled ? 'default' : 'outline'}>{enabled ? '已配置' : '未配置'}</Badge>
+                        <Badge variant={enabled ? 'default' : 'outline'}>{enabled ? '已启用' : '未启用'}</Badge>
                     </div>
                     <p className="mt-1 text-xs leading-5 text-muted-foreground">{description}</p>
                 </div>
@@ -108,7 +100,7 @@ function UserPromptView() {
                         </div>
                         <h2 className="text-2xl font-bold">提示词由管理员统一管理</h2>
                         <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                            你的请求仍然可以自带 system / developer 提示词；Octopus 会在管理员配置的全局、方案、模型路由、渠道规则之后统一处理。为避免泄露管理策略，普通用户不展示完整覆盖内容。
+                            你的请求仍然可以自带 system / developer 提示词；管理员可以在全局、方案、模型路由、渠道四层把提示词放在你的提示词前面或后面，你自带的不会被删。为避免泄露管理策略，普通用户不展示完整覆盖内容。
                         </p>
                     </div>
                     <Button type="button" className="rounded-xl" onClick={() => setActiveItem('key')}>
@@ -122,7 +114,7 @@ function UserPromptView() {
                 <LayerCard
                     icon={ShieldCheck}
                     title="管理员策略"
-                    description="管理员可在全局、方案、模型路由、渠道四层另加或替换 system 提示词。"
+                    description="管理员可在全局、方案、模型路由、渠道四层给请求加系统提示词，不会删掉你自带的。"
                     enabled
                 />
                 <LayerCard
@@ -134,7 +126,7 @@ function UserPromptView() {
                 <LayerCard
                     icon={Radio}
                     title="渠道约束"
-                    description="最终转发到不同上游渠道时，渠道级提示词会作为最后一层约束。"
+                    description="最终转发到不同上游渠道时，渠道级提示词排在最外面。"
                     enabled
                 />
             </div>
@@ -149,14 +141,17 @@ function GlobalPromptEditor({
 }) {
     const setSetting = useSetSetting();
     const initialPrompt = settings?.find((item) => item.key === SettingKey.PromptOverrideSystem)?.value ?? '';
-    const initialMode = (settings?.find((item) => item.key === SettingKey.PromptOverrideMode)?.value as PromptOverrideMode | undefined) ?? 'append_system';
+    const savedMode = settings?.find((item) => item.key === SettingKey.PromptOverrideMode)?.value;
+    const savedEnabled = settings?.find((item) => item.key === SettingKey.PromptOverrideEnabled)?.value === 'true';
     const [prompt, setPrompt] = useState(initialPrompt);
-    const [mode, setMode] = useState<PromptOverrideMode>(initialMode);
+    const [mode, setMode] = useState<PromptOverrideMode>(normalizePromptMode(savedMode));
+    const [enabled, setEnabled] = useState(promptEnabledFromSaved(savedEnabled, savedMode, initialPrompt));
 
     const save = async () => {
         try {
             await setSetting.mutateAsync({ key: SettingKey.PromptOverrideMode, value: mode });
             await setSetting.mutateAsync({ key: SettingKey.PromptOverrideSystem, value: prompt.trim() });
+            await setSetting.mutateAsync({ key: SettingKey.PromptOverrideEnabled, value: enabled ? 'true' : 'false' });
             toast.success('全局提示词已保存');
         } catch (error) {
             toast.error('全局提示词保存失败', { description: apiErrorMessage(error) });
@@ -170,11 +165,12 @@ function GlobalPromptEditor({
                     <h3 className="flex items-center gap-2 text-base font-semibold">
                         <ShieldCheck className="size-5" />
                         全局默认提示词
+                        <PromptStatusBadge enabled={enabled} mode={mode} text={prompt} />
                     </h3>
-                    <p className="mt-1 text-xs text-muted-foreground">最先应用，全站默认；留空表示不注入全局提示词。</p>
+                    <p className="mt-1 text-xs text-muted-foreground">全站所有请求都会带上，离请求自带的提示词最近。</p>
                 </div>
-                <div className="flex items-center gap-2">
-                    <PromptModeSelect value={mode} onChange={setMode} label="全局提示词模式" />
+                <div className="flex flex-wrap items-center gap-2">
+                    <PromptLayerControls enabled={enabled} onEnabledChange={setEnabled} mode={mode} onModeChange={setMode} label="全局提示词" />
                     <Button type="button" className="rounded-xl" disabled={setSetting.isPending} onClick={save}>
                         {setSetting.isPending ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
                         保存
@@ -185,7 +181,9 @@ function GlobalPromptEditor({
                 value={prompt}
                 onChange={(event) => setPrompt(event.target.value)}
                 placeholder="可选：全站默认 system 提示词"
-                className="min-h-36 w-full rounded-2xl border border-border bg-background px-3 py-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                disabled={!enabled}
+                title={enabled ? undefined : '已关闭，文字保留；打开「启用」后才能改、才会生效。'}
+                className={promptTextareaClass(enabled, 'min-h-36 rounded-2xl')}
             />
         </section>
     );
@@ -194,7 +192,10 @@ function GlobalPromptEditor({
 function PlanPromptRow({ plan }: { plan: AccessPlan }) {
     const updatePlan = useUpdateAccessPlan();
     const [prompt, setPrompt] = useState(plan.system_prompt_override ?? '');
-    const [mode, setMode] = useState<PromptOverrideMode>(plan.prompt_override_mode ?? 'append_system');
+    const [mode, setMode] = useState<PromptOverrideMode>(normalizePromptMode(plan.prompt_override_mode));
+    const [enabled, setEnabled] = useState(
+        promptEnabledFromSaved(plan.prompt_override_enabled, plan.prompt_override_mode, plan.system_prompt_override)
+    );
 
     const save = () => {
         updatePlan.mutate(
@@ -207,6 +208,7 @@ function PlanPromptRow({ plan }: { plan: AccessPlan }) {
                 sort: plan.sort,
                 system_prompt_override: prompt.trim(),
                 prompt_override_mode: mode,
+                prompt_override_enabled: enabled,
             },
             {
                 onSuccess: () => toast.success(`${plan.display_name || plan.slug} 提示词已保存`),
@@ -222,14 +224,12 @@ function PlanPromptRow({ plan }: { plan: AccessPlan }) {
                     <div className="flex items-center gap-2">
                         <span className="truncate text-sm font-semibold">{plan.display_name || plan.slug}</span>
                         {plan.is_default && <Badge>默认</Badge>}
-                        <Badge variant={prompt.trim() ? 'secondary' : 'outline'}>
-                            {prompt.trim() ? '已配置' : '未配置'}
-                        </Badge>
+                        <PromptStatusBadge enabled={enabled} mode={mode} text={prompt} />
                     </div>
                     <p className="mt-1 font-mono text-xs text-muted-foreground">{plan.slug}</p>
                 </div>
-                <div className="flex items-center gap-2">
-                    <PromptModeSelect value={mode} onChange={setMode} label={`${plan.slug} 提示词模式`} />
+                <div className="flex flex-wrap items-center gap-2">
+                    <PromptLayerControls enabled={enabled} onEnabledChange={setEnabled} mode={mode} onModeChange={setMode} label={`${plan.slug} 提示词`} />
                     <Button type="button" size="sm" className="rounded-xl" disabled={updatePlan.isPending} onClick={save}>
                         {updatePlan.isPending ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
                         保存
@@ -240,7 +240,9 @@ function PlanPromptRow({ plan }: { plan: AccessPlan }) {
                 value={prompt}
                 onChange={(event) => setPrompt(event.target.value)}
                 placeholder="可选：该方案默认 system 提示词"
-                className="min-h-24 w-full rounded-xl border border-border bg-background px-3 py-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                disabled={!enabled}
+                title={enabled ? undefined : '已关闭，文字保留；打开「启用」后才能改、才会生效。'}
+                className={promptTextareaClass(enabled, 'min-h-24')}
             />
         </div>
     );
@@ -249,7 +251,10 @@ function PlanPromptRow({ plan }: { plan: AccessPlan }) {
 function ChannelPromptRow({ channel }: { channel: Channel }) {
     const updateChannel = useUpdateChannel();
     const [prompt, setPrompt] = useState(channel.system_prompt_override ?? '');
-    const [mode, setMode] = useState<PromptOverrideMode>(channel.prompt_override_mode ?? 'append_system');
+    const [mode, setMode] = useState<PromptOverrideMode>(normalizePromptMode(channel.prompt_override_mode));
+    const [enabled, setEnabled] = useState(
+        promptEnabledFromSaved(channel.prompt_override_enabled, channel.prompt_override_mode, channel.system_prompt_override)
+    );
 
     const save = () => {
         updateChannel.mutate(
@@ -257,6 +262,7 @@ function ChannelPromptRow({ channel }: { channel: Channel }) {
                 id: channel.id,
                 system_prompt_override: prompt.trim(),
                 prompt_override_mode: mode,
+                prompt_override_enabled: enabled,
             },
             {
                 onSuccess: () => toast.success(`${channel.name} 渠道提示词已保存`),
@@ -272,14 +278,12 @@ function ChannelPromptRow({ channel }: { channel: Channel }) {
                     <div className="flex items-center gap-2">
                         <span className="truncate text-sm font-semibold">#{channel.id} {channel.name}</span>
                         <Badge variant={channel.enabled ? 'secondary' : 'outline'}>{channel.enabled ? '启用' : '停用'}</Badge>
-                        <Badge variant={prompt.trim() ? 'secondary' : 'outline'}>
-                            {prompt.trim() ? '已配置' : '未配置'}
-                        </Badge>
+                        <PromptStatusBadge enabled={enabled} mode={mode} text={prompt} />
                     </div>
-                    <p className="mt-1 text-xs text-muted-foreground">最终上游渠道层，优先级最高。</p>
+                    <p className="mt-1 text-xs text-muted-foreground">最终上游渠道层，排在最外面。</p>
                 </div>
-                <div className="flex items-center gap-2">
-                    <PromptModeSelect value={mode} onChange={setMode} label={`${channel.name} 提示词模式`} />
+                <div className="flex flex-wrap items-center gap-2">
+                    <PromptLayerControls enabled={enabled} onEnabledChange={setEnabled} mode={mode} onModeChange={setMode} label={`${channel.name} 提示词`} />
                     <Button type="button" size="sm" className="rounded-xl" disabled={updateChannel.isPending} onClick={save}>
                         {updateChannel.isPending ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
                         保存
@@ -290,7 +294,9 @@ function ChannelPromptRow({ channel }: { channel: Channel }) {
                 value={prompt}
                 onChange={(event) => setPrompt(event.target.value)}
                 placeholder="可选：该渠道最终注入的 system 提示词"
-                className="min-h-24 w-full rounded-xl border border-border bg-background px-3 py-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                disabled={!enabled}
+                title={enabled ? undefined : '已关闭，文字保留；打开「启用」后才能改、才会生效。'}
+                className={promptTextareaClass(enabled, 'min-h-24')}
             />
         </div>
     );
@@ -304,9 +310,17 @@ function AdminPromptView() {
     const channels = useMemo(() => sortChannelsStable(channelItems.map((item) => item.raw)), [channelItems]);
 
     const globalPrompt = settings?.find((item) => item.key === SettingKey.PromptOverrideSystem)?.value ?? '';
-    const planPromptCount = plans.filter((plan) => (plan.system_prompt_override ?? '').trim()).length;
+    const globalMode = settings?.find((item) => item.key === SettingKey.PromptOverrideMode)?.value ?? '';
+    const globalEnabled = settings?.find((item) => item.key === SettingKey.PromptOverrideEnabled)?.value ?? '';
+    const globalActive = promptLayerActive(globalEnabled === 'true', globalMode, globalPrompt);
+    const planPromptCount = plans.filter((plan) =>
+        promptLayerActive(plan.prompt_override_enabled, plan.prompt_override_mode, plan.system_prompt_override)
+    ).length;
     const routePromptRows = useMemo(() => buildRoutePromptRows(plans), [plans]);
-    const channelPromptCount = channels.filter((channel) => (channel.system_prompt_override ?? '').trim()).length;
+    const routeActiveCount = routePromptRows.filter((row) => row.enabled).length;
+    const channelPromptCount = channels.filter((channel) =>
+        promptLayerActive(channel.prompt_override_enabled, channel.prompt_override_mode, channel.system_prompt_override)
+    ).length;
 
     return (
         <PageWrapper className="h-full min-h-0 overflow-y-auto overscroll-contain space-y-5 rounded-t-3xl pb-24 md:pb-4">
@@ -319,7 +333,7 @@ function AdminPromptView() {
                         </div>
                         <h2 className="text-2xl font-bold">提示词管理</h2>
                         <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-                            按 全局 → 方案 → 模型路由 → 渠道 依次生效，越往后越优先。默认另加一条 system；选「替换原有」会先删掉已有的 system。
+                            每层都能单独开关，并选「放在前面」或「放在后面」——放在请求自带的系统提示词前面或后面，原内容不删；请求没带就直接用这段。几层叠加时越具体的层排得越靠外：渠道 › 路由 › 方案 › 全局 › 请求自带 › 全局 › 方案 › 路由 › 渠道。
                         </p>
                     </div>
                     <Button type="button" variant="outline" className="rounded-xl" onClick={() => setActiveItem('access-plan')}>
@@ -330,10 +344,10 @@ function AdminPromptView() {
             </section>
 
             <div className="grid gap-4 md:grid-cols-4">
-                <LayerCard icon={ShieldCheck} title="全局默认" description="全站第一层规则。" enabled={globalPrompt.trim().length > 0} />
-                <LayerCard icon={Layers3} title="方案" description={`${planPromptCount} 个方案已配置。`} enabled={planPromptCount > 0} />
-                <LayerCard icon={GitBranch} title="模型路由" description={`${routePromptRows.length} 条路由已配置。`} enabled={routePromptRows.length > 0} />
-                <LayerCard icon={Radio} title="渠道" description={`${channelPromptCount} 个渠道已配置。`} enabled={channelPromptCount > 0} />
+                <LayerCard icon={ShieldCheck} title="全局默认" description="全站所有请求。" enabled={globalActive} />
+                <LayerCard icon={Layers3} title="方案" description={`${planPromptCount} 个方案已启用。`} enabled={planPromptCount > 0} />
+                <LayerCard icon={GitBranch} title="模型路由" description={`${routeActiveCount} 条路由已启用。`} enabled={routeActiveCount > 0} />
+                <LayerCard icon={Radio} title="渠道" description={`${channelPromptCount} 个渠道已启用。`} enabled={channelPromptCount > 0} />
             </div>
 
             {settingsLoading ? (
@@ -342,7 +356,7 @@ function AdminPromptView() {
                 </div>
             ) : (
                 <GlobalPromptEditor
-                    key={`${globalPrompt}-${settings?.find((item) => item.key === SettingKey.PromptOverrideMode)?.value ?? 'append_system'}`}
+                    key={`${globalPrompt}-${globalMode}-${globalEnabled}`}
                     settings={settings}
                 />
             )}
@@ -370,7 +384,7 @@ function AdminPromptView() {
                     <div className="grid gap-3">
                         {plans.map((plan) => (
                             <PlanPromptRow
-                                key={`${plan.id}-${plan.system_prompt_override ?? ''}-${plan.prompt_override_mode ?? 'append_system'}`}
+                                key={`${plan.id}-${plan.system_prompt_override ?? ''}-${plan.prompt_override_mode ?? ''}-${plan.prompt_override_enabled ? 1 : 0}`}
                                 plan={plan}
                             />
                         ))}
@@ -397,14 +411,14 @@ function AdminPromptView() {
                     </div>
                 ) : (
                     <div className="grid gap-2">
-                        {routePromptRows.slice(0, 8).map(({ plan, requestModel, upstreamModels, targetCount, mode }) => (
+                        {routePromptRows.slice(0, 8).map(({ plan, requestModel, upstreamModels, targetCount, mode, enabled, text }) => (
                             <div key={`${plan.id}-${requestModel}`} className="flex flex-wrap items-center gap-2 rounded-2xl border border-border bg-background/50 px-3 py-2 text-sm">
                                 <Badge>{plan.display_name || plan.slug}</Badge>
                                 <span className="font-mono">{requestModel}</span>
                                 <ArrowRight className="size-3 text-muted-foreground" />
                                 <span className="font-mono">{upstreamModels.join(' / ') || '-'}</span>
                                 {targetCount > 1 && <span className="text-xs text-muted-foreground">{targetCount} 个目标</span>}
-                                <Badge variant="outline">{modeLabels[mode]}</Badge>
+                                <PromptStatusBadge enabled={enabled} mode={mode} text={text} />
                             </div>
                         ))}
                         {routePromptRows.length > 8 && (
@@ -437,7 +451,7 @@ function AdminPromptView() {
                     <div className="grid gap-3">
                         {channels.map((channel) => (
                             <ChannelPromptRow
-                                key={`${channel.id}-${channel.system_prompt_override ?? ''}-${channel.prompt_override_mode ?? 'append_system'}`}
+                                key={`${channel.id}-${channel.system_prompt_override ?? ''}-${channel.prompt_override_mode ?? ''}-${channel.prompt_override_enabled ? 1 : 0}`}
                                 channel={channel}
                             />
                         ))}

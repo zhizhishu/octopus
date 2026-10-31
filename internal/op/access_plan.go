@@ -780,7 +780,7 @@ func AccessPlanSyncEnabledChannels(ctx context.Context) error {
 				PriorityOverridden: false,
 				FallbackMode:       model.AccessRouteFallbackReturnGroup,
 				BillingModelSource: model.AccessBillingModelSourceRequest,
-				PromptOverrideMode: model.PromptOverrideModeAppendSystem,
+				PromptOverrideMode: model.PromptOverrideModeBefore,
 			}
 			if err := tx.Create(&newRule).Error; err != nil {
 				tx.Rollback()
@@ -1248,14 +1248,15 @@ func AccessPlanUpdateRouteTargets(accessPlanID int, targets []model.AccessRouteT
 				mode = model.GroupModeFillFirst
 			}
 			rule := model.AccessRouteRule{
-				RouteProfileID:       plan.RouteProfileID,
-				RequestModel:         cleanRequest,
-				Mode:                 mode,
-				BillingModelSource:   target.BillingModelSource,
-				BillingModelOverride: model.CleanOneMillionCapabilityModelName(target.BillingModelOverride),
-				FallbackMode:         target.FallbackMode,
-				SystemPromptOverride: strings.TrimSpace(target.SystemPromptOverride),
-				PromptOverrideMode:   target.PromptOverrideMode,
+				RouteProfileID:        plan.RouteProfileID,
+				RequestModel:          cleanRequest,
+				Mode:                  mode,
+				BillingModelSource:    target.BillingModelSource,
+				BillingModelOverride:  model.CleanOneMillionCapabilityModelName(target.BillingModelOverride),
+				FallbackMode:          target.FallbackMode,
+				SystemPromptOverride:  strings.TrimSpace(target.SystemPromptOverride),
+				PromptOverrideMode:    target.PromptOverrideMode,
+				PromptOverrideEnabled: target.PromptOverrideEnabled,
 			}
 			normalizeAccessRouteRule(&rule)
 			bucket = &routeBucket{
@@ -1777,6 +1778,7 @@ func flattenAccessPlan(plan *model.AccessPlan) {
 				target.FallbackMode = rule.FallbackMode
 				target.SystemPromptOverride = rule.SystemPromptOverride
 				target.PromptOverrideMode = rule.PromptOverrideMode
+				target.PromptOverrideEnabled = rule.PromptOverrideEnabled
 				target.PriorityOverridden = rule.PriorityOverridden
 				normalizeAccessRouteTarget(&target)
 				plan.RouteTargets = append(plan.RouteTargets, target)
@@ -1807,7 +1809,7 @@ func normalizeAccessPlan(plan *model.AccessPlan) error {
 		plan.DisplayName = plan.Slug
 	}
 	plan.SystemPromptOverride = strings.TrimSpace(plan.SystemPromptOverride)
-	plan.PromptOverrideMode = normalizePromptOverrideMode(plan.PromptOverrideMode)
+	model.NormalizePromptOverride(&plan.PromptOverrideEnabled, &plan.PromptOverrideMode, plan.SystemPromptOverride)
 	return nil
 }
 
@@ -1883,7 +1885,7 @@ func normalizeAccessRouteRule(rule *model.AccessRouteRule) {
 	if rule.FallbackMode == "" {
 		rule.FallbackMode = model.AccessRouteFallbackGroup
 	}
-	rule.PromptOverrideMode = normalizePromptOverrideMode(rule.PromptOverrideMode)
+	model.NormalizePromptOverride(&rule.PromptOverrideEnabled, &rule.PromptOverrideMode, rule.SystemPromptOverride)
 }
 
 func validateAccessRouteRule(rule *model.AccessRouteRule) error {
@@ -1925,7 +1927,7 @@ func normalizeAccessRouteTarget(target *model.AccessRouteTarget) {
 	} else if target.Weight > 1000 {
 		target.Weight = 1000
 	}
-	target.PromptOverrideMode = normalizePromptOverrideMode(target.PromptOverrideMode)
+	model.NormalizePromptOverride(&target.PromptOverrideEnabled, &target.PromptOverrideMode, target.SystemPromptOverride)
 }
 
 func validateAccessRouteTarget(target *model.AccessRouteTarget) error {
@@ -1944,24 +1946,11 @@ func validateAccessRouteTarget(target *model.AccessRouteTarget) error {
 	return nil
 }
 
-func normalizePromptOverrideMode(mode model.PromptOverrideMode) model.PromptOverrideMode {
-	switch mode {
-	case "", model.PromptOverrideModeAppendSystem:
-		return model.PromptOverrideModeAppendSystem
-	case model.PromptOverrideModeReplaceSystem:
-		return model.PromptOverrideModeReplaceSystem
-	default:
-		return mode
-	}
-}
-
 func validatePromptOverrideMode(mode model.PromptOverrideMode) error {
-	switch mode {
-	case "", model.PromptOverrideModeAppendSystem, model.PromptOverrideModeReplaceSystem:
+	if model.ValidPromptOverrideMode(mode) {
 		return nil
-	default:
-		return fmt.Errorf("invalid prompt override mode")
 	}
+	return fmt.Errorf("invalid prompt override mode")
 }
 
 func normalizeAccessBillingProfile(profile *model.AccessBillingProfile) {
