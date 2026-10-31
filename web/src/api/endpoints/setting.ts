@@ -34,6 +34,12 @@ export const SettingKey = {
     UserAccessAlertIPv4Prefix: 'user_access_alert_ipv4_prefix',
     // 后端按整数读（非 0 即开）：只写 "1"/"0"。
     UpstreamRequestBodyLog: 'upstream_request_body_log_enabled',
+    // 日志模式：normal（普通，默认 warn）/ debug（调试）。切换即时生效。
+    LogMode: 'log_mode',
+    // 调试模式多少小时后自动切回普通（0 = 不自动，最多 168）。
+    LogDebugAutoOffHours: 'log_debug_auto_off_hours',
+    // 服务端在切到调试时写入的开始时间（Unix 秒）。前端只读，用来显示还剩多久。
+    LogDebugSince: 'log_debug_since',
     AnthropicAutoCacheControl: 'anthropic_auto_cache_control',
     OpenAIAutoPromptCacheKey: 'openai_auto_prompt_cache_key',
     RelayStreamKeepaliveIntervalSeconds: 'relay_stream_keepalive_interval_seconds',

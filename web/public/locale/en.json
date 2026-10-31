@@ -768,6 +768,27 @@
         "label": "Record the exact request sent upstream",
         "hint": "For troubleshooting. Saved as-is (API keys included) and uses more log storage"
       },
+      "mode": {
+        "label": "Log mode",
+        "normal": "Normal",
+        "debug": "Debug",
+        "normalHint": "Runtime log keeps warnings and errors only; request logs are recorded as usual.",
+        "debugHint": "Request logs also keep headers (keys hidden), timing, the retry/failover chain, why a channel was picked and raw upstream errors; the runtime log keeps everything. Recording only — forwarding is unchanged.",
+        "autoOff": "Back to normal after",
+        "offInHours": "Back to normal in {hours} h {minutes} min",
+        "offInMinutes": "Back to normal in {minutes} min",
+        "neverOff": "Won't switch back by itself — remember to turn it off",
+        "switchedDebug": "Debug on — new requests now record details",
+        "switchedNormal": "Back to normal",
+        "choice": {
+          "1h": "1 h",
+          "6h": "6 h",
+          "24h": "24 h",
+          "3d": "3 days",
+          "7d": "7 days",
+          "never": "Never"
+        }
+      },
       "rescue": {
         "title": "Auto rescue"
       }

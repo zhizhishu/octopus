@@ -187,6 +187,8 @@ export interface RelayLog {
     // 🔴 **不保证是合法 JSON**：超过 128KB 时尾部会追加"[truncated: N bytes total]"标记，
     //    引用前必须先判截断，不能直接 JSON.parse。
     upstream_request_body?: string;
+    // 调试详情：只有「日志模式 = 调试」期间的请求才有，只在详情接口返回。
+    debug_info?: RelayLogDebugInfo;
     response_content?: string;   // 响应内容, 仅管理员日志详情返回
     error?: string;              // 错误信息, 普通用户只接收 error_code/error_status
     error_code?: string;
@@ -1095,4 +1097,55 @@ export function useRequestStateStream(enabled = true) {
         isConnected,
         runningCount: states.filter((state) => state.status === 'running').length,
     };
+}
+
+/** 调试模式下额外记录的请求明细（后端 model.RelayLogDebugInfo）。凭据类头的值恒为「[已隐藏]」。 */
+export interface RelayLogDebugHeader {
+    name: string;
+    value: string;
+}
+
+export interface RelayLogDebugRoute {
+    stage: 'primary' | 'fallback' | string;
+    group_id?: number;
+    group_name?: string;
+    /** fill_first = 优先；spread = 轮询；spread_tiered = 分层轮询。 */
+    mode: string;
+    sticky?: boolean;
+    candidates: number;
+    trace?: string;
+}
+
+export interface RelayLogDebugCall {
+    channel_id: number;
+    channel_name?: string;
+    channel_key_id?: number;
+    method?: string;
+    url?: string;
+    start_ms: number;
+    header_ms: number;
+    status?: number;
+    request_headers?: RelayLogDebugHeader[];
+    response_headers?: RelayLogDebugHeader[];
+    error?: string;
+    error_body?: string;
+    notes?: string[];
+}
+
+export interface RelayLogDebugTiming {
+    total_ms: number;
+    before_send_ms: number;
+    header_wait_ms: number;
+    first_token_ms: number;
+    generation_ms: number;
+    upstream_calls: number;
+}
+
+export interface RelayLogDebugInfo {
+    inbound_headers?: RelayLogDebugHeader[];
+    routes?: RelayLogDebugRoute[];
+    calls?: RelayLogDebugCall[];
+    timing: RelayLogDebugTiming;
+    truncated?: boolean;
+    dropped_calls?: number;
 }

@@ -28,6 +28,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { describeProbeEvidence } from './probe-evidence';
 import { ProbeEvidenceList } from './ProbeEvidenceList';
 import { AuditReportPanel } from './AuditReportPanel';
+import { DebugInfoPanel } from './DebugInfoPanel';
 import { ExpandableValue } from './ExpandableValue';
 import { LogImagePlaceholderText, renderLogImageJsonString } from './LogImagePlaceholder';
 import { containsSavedImagePlaceholder } from './log-image';
@@ -1044,6 +1045,12 @@ function LazyLogBodies({ fallbackRequest, fallbackResponse, fallbackUpstreamRequ
  * 列表/实时流都被 Omit 掉了（internal/op/log.go 的 contentOmit）。
  * 正文和这里共用 LogDetailQuery 的同一次 GET /api/v1/log/{id}。取不到就当这行没被检测过，不摆空壳。
  */
+function DetailDebugInfo() {
+    // 调试详情只在详情接口返回；只有「日志模式 = 调试」期间的请求才有，没有就不渲染。
+    const { data } = React.useContext(LogDetailQueryContext);
+    return <DebugInfoPanel info={data?.debug_info} />;
+}
+
 function DetailAuditReport() {
     const { data, isLoading } = React.useContext(LogDetailQueryContext);
     return <AuditReportPanel report={isLoading ? undefined : data?.model_audit_report} />;
@@ -2251,6 +2258,7 @@ export const LogCard = React.memo(function LogCard({
                                         </AnimatePresence>
                                     </div>
                                 )}
+                                <DetailDebugInfo />
                                 {/* 移动端：外层 description 已 overflow-y-auto，此区域自然高度不约束；
                                     桌面端 flex-[1_1_55dvh]：空间富余时从 55dvh 基准长高填满剩余（同旧 flex-1 观感），
                                     上方内容挤压时最多缩到 20rem 保底——请求/响应面板永远保有可用高度做内部滚动，
