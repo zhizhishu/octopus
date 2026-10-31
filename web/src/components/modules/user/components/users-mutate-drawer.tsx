@@ -26,9 +26,10 @@ import { PlanPicker } from './plan-picker';
 import { formatDateShort, useRelTime } from './shared';
 import { UserUsageTab, UsageRangeSeg } from './user-usage-tab';
 import { UserAccessTab } from './user-access';
+import { ClientTelemetryPanel } from './user-client';
 import { Bar, HelpTip, Pill, Seg, btn, btnDanger, btnPrimary, chip, iconBtn, label } from './ui-bits';
 
-export type DrawerTab = 'profile' | 'usage' | 'access';
+export type DrawerTab = 'profile' | 'usage' | 'access' | 'client';
 
 const input = 'flex h-9 w-full rounded-xl border border-input bg-background px-3 text-sm outline-none focus:border-ring disabled:opacity-60';
 
@@ -88,7 +89,11 @@ export function UsersMutateDrawer({ open, onOpenChange, user, plans, tab, onTabC
                 <DialogPrimitive.Overlay className="data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 fixed inset-0 z-50 bg-black/40" />
                 <DialogPrimitive.Content
                     aria-describedby={undefined}
-                    className="data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:slide-out-to-right data-[state=open]:slide-in-from-right fixed inset-y-0 right-0 z-50 flex w-full flex-col border-l border-border bg-background shadow-2xl duration-200 sm:w-[520px]"
+                    className={cn(
+                        'data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:slide-out-to-right data-[state=open]:slide-in-from-right fixed inset-y-0 right-0 z-50 flex w-full flex-col border-l border-border bg-background shadow-2xl duration-200 sm:w-[520px]',
+                        // 客户端指纹的内容（头顺序、身份头）比较宽，桌面上把抽屉拉宽。
+                        user && tab === 'client' && 'lg:w-[800px]',
+                    )}
                 >
                     {open && (
                         <DrawerBody
@@ -200,12 +205,15 @@ function DrawerBody({ user, plans, tab, onTabChange, onClose, onBalance, onDelet
                         { value: 'profile', label: t('drawer.profile') },
                         { value: 'usage', label: t('drawer.usage') },
                         { value: 'access', label: <span className="inline-flex items-center gap-1">{t('access.tab')}{alertCount > 0 && <span aria-label={t('access.alertTitle')} className="size-1.5 rounded-full bg-amber-500" />}</span> },
+                        { value: 'client', label: t('client.tab') },
                     ]} />
                     {tab === 'usage' && <UsageRangeSeg value={range} onChange={setRange} />}
                 </div>
             )}
             <div className="min-h-0 flex-1 overflow-y-auto px-6 pt-5 pb-6">
-                {user && tab === 'access' ? (
+                {user && tab === 'client' ? (
+                    <ClientTelemetryPanel userId={user.id} />
+                ) : user && tab === 'access' ? (
                     <UserAccessTab user={user} />
                 ) : user && tab === 'usage' ? (
                     <UserUsageTab user={user} range={range} onViewLogs={() => onViewLogs(user)} />

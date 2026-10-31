@@ -1928,6 +1928,33 @@
         "levelLine": "Risk level: {level}. Warns on:",
         "footer": "Warning only, requests are never blocked. Change it in Settings → Users & sign-up."
       }
+    },
+    "client": {
+      "tab": "Fingerprint",
+      "unknown": "Unknown client",
+      "times": "{n} calls",
+      "lastSeen": "Used {when}",
+      "ua": "User-Agent",
+      "http": "HTTP version",
+      "httpProxyTip": "Behind a reverse proxy this is the proxy-to-Octopus hop; if the proxy sends X-HTTP-Version, the client's version is shown.",
+      "viaProxy": "Via proxy",
+      "order": "Header order",
+      "orderTip": "Original order and casing as sent. Behind a proxy it is the order after the proxy.",
+      "orderUnknown": "Original order not captured; sorted A–Z",
+      "orderUnknownTip": "This connection's original order could not be captured (e.g. not HTTP/1.1); only the header names are listed.",
+      "secretTip": "Name only, value not stored",
+      "headers": "Identity headers",
+      "headersTip": "Values are kept only for non-secret headers; Authorization, x-api-key, Cookie etc. are stored by name only.",
+      "ja4hTip": "HTTP fingerprint from request headers (FoxIO JA4H). Cookie values are not used; the last part is always 0.",
+      "path": "Last path",
+      "seen": "Seen",
+      "seenRange": "First {first} · last {last}",
+      "allKeys": "All keys",
+      "empty": "No client fingerprints yet",
+      "noTLS": "Octopus does not terminate HTTPS itself, so it cannot see the TLS fingerprint (JA3/JA4). Have the reverse proxy pass it in X-JA3 / X-JA4 headers (the proxy must be a trusted proxy) and it will show here.",
+      "note": "Recorded from incoming requests; the same fingerprint from a new IP is not a new entry. Key and cookie values are never stored. Entries unseen for {days} days are removed; up to 100 per key.",
+      "more": "{n} more",
+      "less": "Show less"
     }
   },
   "accessPlan": {

@@ -115,6 +115,10 @@ func init() {
 		AddRoute(
 			router.NewRoute("/access/config", http.MethodGet).
 				Handle(getUserAccessConfig),
+		).
+		AddRoute(
+			router.NewRoute("/telemetry", http.MethodGet).
+				Handle(getUserClientTelemetry),
 		)
 }
 
@@ -429,6 +433,38 @@ func getUserAccessDetail(c *gin.Context) {
 		return
 	}
 	detail, err := op.UserAccessDetailGet(id, c.Request.Context())
+	if err != nil {
+		resp.Error(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	resp.Success(c, detail)
+}
+
+// getUserClientTelemetry 给用户抽屉「客户端指纹」：?id=用户 [&key=Key]，或只给 ?key=Key
+// （按 Key 看，比如管理员名下发给别人用的 Key）。仅管理员。
+func getUserClientTelemetry(c *gin.Context) {
+	userID, apiKeyID := 0, 0
+	if v := c.Query("id"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			resp.Error(c, http.StatusBadRequest, resp.ErrInvalidParam)
+			return
+		}
+		userID = n
+	}
+	if v := c.Query("key"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			resp.Error(c, http.StatusBadRequest, resp.ErrInvalidParam)
+			return
+		}
+		apiKeyID = n
+	}
+	if userID == 0 && apiKeyID == 0 {
+		resp.Error(c, http.StatusBadRequest, resp.ErrInvalidParam)
+		return
+	}
+	detail, err := op.UserClientDetailGet(c.Request.Context(), userID, apiKeyID)
 	if err != nil {
 		resp.Error(c, http.StatusBadRequest, err.Error())
 		return

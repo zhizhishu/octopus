@@ -5,12 +5,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/zhizhishu/octopus/internal/conf"
 	"github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/op"
 	"github.com/zhizhishu/octopus/internal/server/auth"
 	"github.com/zhizhishu/octopus/internal/server/resp"
-	"github.com/gin-gonic/gin"
+	"github.com/zhizhishu/octopus/internal/telemetry"
 )
 
 func Auth() gin.HandlerFunc {
@@ -159,7 +160,11 @@ func APIKeyAuth() gin.HandlerFunc {
 		c.Set(APIKeyEndpointFamiliesContextKey, apiKeyObj.EffectiveEndpointFamilies())
 		c.Set("api_key_id", apiKeyObj.ID)
 		c.Set("user_id", owner.ID)
-		c.Set("request_ip", ResolveClientIP(c))
+		clientIP := ResolveClientIP(c)
+		c.Set("request_ip", clientIP)
+		// 用户页「客户端指纹」：只读入站请求（头名顺序 / UA / 非秘密身份头 / 反代转交的 JA3/JA4），
+		// 只动内存。不改 c.Request、不读 body，出站请求与它无关。
+		op.UserClientRecord(owner.ID, apiKeyObj.ID, clientIP, telemetry.Capture(c.Request, PeerIsTrustedProxy(c)), 0)
 		SetCurrentUser(c, owner)
 		c.Next()
 	}

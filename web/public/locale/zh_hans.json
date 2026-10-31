@@ -1928,6 +1928,33 @@
         "levelLine": "风控等级：{level}，会提示：",
         "footer": "只提示，不拦截请求。在「设置 → 用户与注册」里改。"
       }
+    },
+    "client": {
+      "tab": "指纹",
+      "unknown": "认不出的客户端",
+      "times": "{n} 次",
+      "lastSeen": "{when}用过",
+      "ua": "User-Agent",
+      "http": "HTTP 版本",
+      "httpProxyTip": "经反代进来时，这是反代到本服务这一段的版本；反代用 X-HTTP-Version 头转交时显示客户端的版本。",
+      "viaProxy": "经反代",
+      "order": "请求头顺序",
+      "orderTip": "调用方发来的原始顺序和大小写。经反代时是反代转发后的顺序。",
+      "orderUnknown": "没拿到原始顺序，按字母排",
+      "orderUnknownTip": "这条连接没能记下原始顺序（比如不是 HTTP/1.1），只列出带了哪些头。",
+      "secretTip": "只记名字，不存值",
+      "headers": "身份头",
+      "headersTip": "只存不含密钥的头的值；Authorization、x-api-key、Cookie 等只记名字。",
+      "ja4hTip": "按请求头算的 HTTP 指纹（FoxIO JA4H）。Cookie 的值不参与，最后一段固定为 0。",
+      "path": "最近路径",
+      "seen": "时间",
+      "seenRange": "首次 {first} · 最近 {last}",
+      "allKeys": "全部 Key",
+      "empty": "还没有客户端指纹",
+      "noTLS": "本服务不直接处理 HTTPS，拿不到 TLS 指纹（JA3/JA4）。让前面的反代把它放进 X-JA3 / X-JA4 头转过来（反代需在「可信反代」里），这里就会显示。",
+      "note": "按调用方发来的请求记录，同一个指纹换 IP 不另记；Key、Cookie 的值不保存。{days} 天没再出现的会清掉，每把 Key 最多留 100 个。",
+      "more": "还有 {n} 个",
+      "less": "收起"
     }
   },
   "accessPlan": {

@@ -469,6 +469,10 @@ func UserDelete(id int, actorID int, ctx context.Context) error {
 		tx.Rollback()
 		return fmt.Errorf("failed to delete user access records: %w", err)
 	}
+	if err := tx.Where("user_id = ?", id).Delete(&model.UserClientFingerprint{}).Error; err != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to delete user client fingerprints: %w", err)
+	}
 	if err := tx.Delete(&model.User{}, id).Error; err != nil {
 		tx.Rollback()
 		return fmt.Errorf("failed to delete user: %w", err)
@@ -479,6 +483,7 @@ func UserDelete(id int, actorID int, ctx context.Context) error {
 	userCache.Del(id)
 	userNameIDMap.Del(normalizeUsername(user.Username))
 	userAccessForgetPending(id)
+	userClientForgetPending(id)
 	_ = accessPlanRefreshCache(ctx)
 	return nil
 }

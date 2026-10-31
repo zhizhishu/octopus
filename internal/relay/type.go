@@ -10,12 +10,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/zhizhishu/octopus/internal/conf"
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/relay/balancer"
 	"github.com/zhizhishu/octopus/internal/transformer/inbound"
 	"github.com/zhizhishu/octopus/internal/transformer/model"
-	"github.com/gin-gonic/gin"
 )
 
 // maxSSEEventSize 定义 SSE 事件的最大大小。
@@ -139,6 +139,29 @@ var clientIdentityHeaders = map[string]bool{
 	"x-client-app":  true,
 }
 
+// reverseProxyHeaders are added by OUR reverse proxy (Caddy / nginx / Cloudflare) for
+// Octopus's own inbound telemetry: forwarded JA3 / JA4 / HTTP version / country, plus Via.
+// A genuine Claude / Codex CLI never sends any of them, so forwarding them upstream is
+// both a shape deviation and a leak of the real client's TLS fingerprint / location.
+// Stripped on every path (copyHeaders and copyHeadersToUpstream).
+//
+// relay must not import internal/telemetry (telemetry's boundary test pins that), so the
+// names are listed here; TestReverseProxyHeaderListCoversTelemetryReads (test-only import)
+// fails if telemetry.ReverseProxyHeaders() ever reads one this list does not strip.
+var reverseProxyHeaders = map[string]bool{
+	"x-ja3":                 true,
+	"x-ja3-hash":            true,
+	"cf-ja3-hash":           true,
+	"x-tls-ja3":             true,
+	"x-ja4":                 true,
+	"cf-ja4":                true,
+	"x-tls-ja4":             true,
+	"x-http-version":        true,
+	"x-client-http-version": true,
+	"cf-ipcountry":          true,
+	"via":                   true,
+}
+
 // shouldForwardClientHeaderForCaller is shouldForwardClientHeader with one scoped
 // exception: a CLI-shaped caller's own SDK timeout declarations are forwarded verbatim,
 // because that is the one wire shape Octopus imitates (2026-10 probes: the caller sent
@@ -193,6 +216,9 @@ func shouldForwardClientHeader(key string) bool {
 		return false
 	}
 	if clientIdentityHeaders[lower] {
+		return false
+	}
+	if reverseProxyHeaders[lower] {
 		return false
 	}
 	if strings.HasPrefix(lower, "x-stainless-") {
