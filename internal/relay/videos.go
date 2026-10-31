@@ -165,7 +165,9 @@ func VideosHandlerKind(c *gin.Context, mediaKind string) {
 	metrics := newRawProtocolRelayMetrics(apiKeyID, userID, c.GetString("request_ip"), requestModel, "videos", c.Request.URL.Path)
 	metrics.RequestUserAgent = c.Request.UserAgent() // 仅入站 UA 快照，供日志 / 用户页识别客户端
 	metrics.SetAccessPlan(routeResult.AccessPlan, routeResult.AccessRouteRule, routeResult.AccessRouteUsed)
-	metrics.RequestContent = redactLogBody(buildRawProtocolRequestContent(false, bc, payload, "videos"))
+	metrics.RequestContent = metrics.upstreamBodyLog.contentWithImages(func(capture *imageCapture) string {
+		return buildRawProtocolRequestContentWith(false, bc, payload, "videos", capture)
+	})
 
 	var (
 		lastErr          error

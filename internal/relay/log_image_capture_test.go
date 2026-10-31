@@ -394,8 +394,13 @@ func TestUpstreamBodyImageEndToEnd(t *testing.T) {
 			logimage.WaitIdle()
 			files, _ := logimage.List()
 			if !enabled {
-				if body != "" || len(files) != 0 {
-					t.Fatalf("toggle off must store nothing (body=%q files=%d)", body, len(files))
+				// 出站请求体开关关着：那一栏什么都不存。但「请求内容」那栏照样把图另存
+				// （2026-10-31 起，只看历史日志是否落库），所以磁盘上仍是这一张。
+				if body != "" {
+					t.Fatalf("toggle off must not store the upstream body (body=%q)", body)
+				}
+				if len(files) != 1 || files[0].Hash != sha(img) {
+					t.Fatalf("request_content should still save the image once, got %+v", files)
 				}
 				return
 			}

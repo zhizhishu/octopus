@@ -138,3 +138,13 @@ test('三种语言的文案都齐', () => {
         assert.deepEqual(Object.keys(dict).sort(), [...keys].sort(), `${loc} 缺文案`);
     }
 });
+
+test('请求内容、响应内容、真实出站请求体三栏都把图片占位符渲染成缩略图', () => {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src/components/modules/log/Item.tsx'), 'utf8');
+    for (const content of ['requestContent', 'responseContent', 'upstreamRequestBody']) {
+        const re = new RegExp(`<DeferredJsonContent content=\\{${content}\\}[^>]*\\bimagePlaceholders\\b[^>]*/>`);
+        assert.match(src, re, `${content} 栏缺少 imagePlaceholders`);
+    }
+});
