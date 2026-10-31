@@ -118,9 +118,27 @@ func APIKeyAuth() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
+		if apiKeyObj.IsRevoked() {
+			resp.Error(c, http.StatusUnauthorized, "API key has been revoked")
+			c.Abort()
+			return
+		}
+		// 访客 Key 只能调模型转发端点：/api/* 下的一切（包括 /api/v1/apikey/login|stats，
+		// 也就是控制台的「用 Key 登录」）一律 403。管理接口本来就只认 JWT / 管理员令牌（Auth()），
+		// 这里是把 APIKeyAuth 自己挂着的那几条 /api/ 路由也关上。
+		if apiKeyObj.Guest && isAPIManagementPath(c.Request.URL.Path) {
+			resp.ErrorWithCode(c, http.StatusForbidden, "guest_key_forbidden", "guest key can only call model endpoints")
+			c.Abort()
+			return
+		}
 		owner, err := op.UserGet(apiKeyObj.UserID)
 		if err != nil || !owner.IsActive() {
 			resp.Error(c, http.StatusUnauthorized, "API key owner is disabled")
+			c.Abort()
+			return
+		}
+		if err := op.GuestKeyAuthCheck(apiKeyObj, owner); err != nil {
+			resp.Error(c, http.StatusUnauthorized, "guest key is not usable: "+err.Error())
 			c.Abort()
 			return
 		}
@@ -159,15 +177,44 @@ func APIKeyAuth() gin.HandlerFunc {
 		// 统一任务查询（GET /v1/tasks*）跨族：中间件不按族拦，由 handler 按这份清单只给 key 能看的任务类型。
 		c.Set(APIKeyEndpointFamiliesContextKey, apiKeyObj.EffectiveEndpointFamilies())
 		c.Set("api_key_id", apiKeyObj.ID)
-		c.Set("user_id", owner.ID)
 		clientIP := ResolveClientIP(c)
 		c.Set("request_ip", clientIP)
 		// 用户页「客户端指纹」：只读入站请求（头名顺序 / UA / 非秘密身份头 / 反代转交的 JA3/JA4），
 		// 只动内存。不改 c.Request、不读 body，出站请求与它无关。
+		// 访客 Key 也记：归属是管理员（user_id = 管理员），按 api_key_id 区分是哪把访客 Key。
 		op.UserClientRecord(owner.ID, apiKeyObj.ID, clientIP, telemetry.Capture(c.Request, PeerIsTrustedProxy(c)), 0)
-		SetCurrentUser(c, owner)
+		if apiKeyObj.Guest {
+			// 访客 Key 的归属是管理员（计费、日志、IP 记录都按 user_id = 管理员走，api_key_id 区分是哪把访客 Key），
+			// 但上下文里的「当前用户」降成非管理员：任何下游用 CurrentUserIsAdmin 判权限的地方都拿不到管理员身份。
+			c.Set(model.APIKeyGuestContextKey, true)
+			SetCurrentUser(c, guestContextUser(owner))
+		} else {
+			SetCurrentUser(c, owner)
+		}
+		c.Set("user_id", owner.ID)
 		c.Next()
 	}
+}
+
+// GuestKeyRole 是访客 Key 请求在上下文里的角色（不是可分配的用户角色，库里没有这个值）。
+const GuestKeyRole model.UserRole = "guest_key"
+
+func guestContextUser(owner model.User) model.User {
+	u := owner
+	u.Role = GuestKeyRole
+	u.Password = ""
+	return u
+}
+
+// IsGuestKeyRequest：这次请求是不是访客 Key。
+func IsGuestKeyRequest(c *gin.Context) bool {
+	return c.GetBool(model.APIKeyGuestContextKey)
+}
+
+// isAPIManagementPath：/api/ 开头的都是控制台 / 管理 / 自助接口，不是模型转发。
+func isAPIManagementPath(path string) bool {
+	path = strings.TrimSpace(path)
+	return path == "/api" || strings.HasPrefix(path, "/api/")
 }
 
 // midjourneyClientKey 只在 /mj/ 路径上认 mj-api-secret 头，照 new-api middleware/auth.go:559：

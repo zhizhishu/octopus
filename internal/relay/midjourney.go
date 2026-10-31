@@ -540,7 +540,7 @@ func midjourneyTaskOwnerMatches(entry midjourneyTaskEntry, reqTokenID, reqUserID
 // midjourneyTaskTarget 解析一条已有任务的归属渠道与 key。失败时已写好响应。
 func midjourneyTaskTarget(c *gin.Context, ctx context.Context, taskID string) (midjourneyTaskEntry, *model.Channel, string, bool) {
 	entry, ok := midjourneyTaskOwner(ctx, taskID)
-	if !ok || !midjourneyTaskOwnerMatches(entry, c.GetInt("api_key_id"), c.GetInt("user_id")) {
+	if !ok || !midjourneyTaskOwnerMatches(entry, c.GetInt("api_key_id"), taskOwnerUserID(c)) {
 		writeMidjourneyError(c, http.StatusBadRequest, "task_not_found")
 		return midjourneyTaskEntry{}, nil, "", false
 	}
@@ -936,7 +936,7 @@ func MidjourneyTaskListByConditionHandler(c *gin.Context) {
 		}
 		seen[id] = true
 		entry, ok := midjourneyTaskOwner(ctx, id)
-		if !ok || !midjourneyTaskOwnerMatches(entry, c.GetInt("api_key_id"), c.GetInt("user_id")) {
+		if !ok || !midjourneyTaskOwnerMatches(entry, c.GetInt("api_key_id"), taskOwnerUserID(c)) {
 			continue
 		}
 		k := groupKey{entry.channelID, entry.channelKeyID}

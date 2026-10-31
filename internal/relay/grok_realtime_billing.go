@@ -147,8 +147,10 @@ type grokRealtimeBiller struct {
 	reservation float64
 	keyMaxCost  float64
 
-	mu       sync.Mutex
-	admin    bool
+	mu    sync.Mutex
+	admin bool
+	// guest：访客 Key（归属管理员，不扣余额），但 Key 上限照样要中途结算断开。
+	guest    bool
 	charged  float64
 	lastUnit float64
 }
@@ -169,6 +171,7 @@ func newGrokRealtimeBiller(c *gin.Context, metrics *rawProtocolRelayMetrics, act
 	if user, err := op.UserGet(b.userID); err == nil && user.IsAdmin() {
 		b.admin = true
 	}
+	b.guest = isGuestKeyRequest(c)
 	if b.apiKeyID > 0 {
 		if key, err := op.APIKeyGet(b.apiKeyID, b.ctx); err == nil {
 			b.keyMaxCost = key.MaxCost
@@ -210,7 +213,7 @@ func (b *grokRealtimeBiller) settle(usage imagesUsage, usageSeen, audio bool, el
 		}
 	}
 	if admin {
-		return nil, next
+		return b.guestKeyCapCutoff(total), next
 	}
 
 	pricing := grokRealtimePricingFor(b.metrics, b.actualModel)
@@ -237,7 +240,7 @@ func (b *grokRealtimeBiller) settle(usage imagesUsage, usageSeen, audio bool, el
 		b.mu.Lock()
 		b.admin = true
 		b.mu.Unlock()
-		return nil, next
+		return b.guestKeyCapCutoff(total), next
 	}
 	// 自己在准入时占的在途预留不算别人的占用。
 	remaining += b.reservation
@@ -267,13 +270,31 @@ func (b *grokRealtimeBiller) settle(usage imagesUsage, usageSeen, audio bool, el
 	return nil, next
 }
 
+// guestKeyCapCutoff：访客 Key（归属管理员）不看余额，只看这把 Key 的花费上限。
+// sessionCost 是本次会话到此刻的总价（管理员不扣费，b.charged 恒为 0，所以用总价而不是已扣）。
+// 不是访客 Key、或没设上限时返回 nil（与原来管理员「永不断开」一致）。
+func (b *grokRealtimeBiller) guestKeyCapCutoff(sessionCost float64) *grokRealtimeCutoff {
+	if b == nil || !b.guest || b.keyMaxCost <= 0 || b.apiKeyID <= 0 {
+		return nil
+	}
+	stats := op.StatsAPIKeyGet(b.apiKeyID)
+	left := b.keyMaxCost - (stats.StatsMetrics.InputCost + stats.StatsMetrics.OutputCost + sessionCost)
+	if left <= grokRealtimeChargeEpsilon {
+		return newGrokRealtimeKeyCapCutoff(fmt.Sprintf("guest api_key=%d max_cost=%f left=%f session=%f", b.apiKeyID, b.keyMaxCost, left, sessionCost))
+	}
+	return nil
+}
+
 // grokRealtimePreflight 是升级前的"够不够第一份"检查；返回非 nil 表示拒绝（HTTP 402）。
 // 余额 <= 0 已经被 APIKeyAuth 的 UserCanRelay 挡在门外，这里同口径再查一次（测试与非中间件调用方也安全），
 // 并补上按分钟计价至少要够 1 秒音频、以及 key 花费上限。
 func grokRealtimePreflight(c *gin.Context, metrics *rawProtocolRelayMetrics, billingModel string) *grokRealtimeCutoff {
 	b := newGrokRealtimeBiller(c, metrics, billingModel)
-	if b == nil || b.admin {
+	if b == nil {
 		return nil
+	}
+	if b.admin {
+		return b.guestKeyCapCutoff(0)
 	}
 	remaining, isAdmin, err := op.UserRelayRemaining(b.userID, b.ctx)
 	if err != nil || isAdmin {

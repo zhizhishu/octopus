@@ -1931,6 +1931,7 @@
     },
     "client": {
       "tab": "Fingerprint",
+      "guestKey": "Guest",
       "unknown": "Unknown client",
       "times": "{n} calls",
       "lastSeen": "Used {when}",
@@ -2219,6 +2220,148 @@
       "modelsHint": "The model names are examples; replace them with models you can use.",
       "copy": "Copy",
       "copied": "Copied (with the full key)"
+    },
+    "sections": {
+      "keys": "API Keys",
+      "guest": "Guest"
+    },
+    "guest": {
+      "lead": "Temporary keys for guests: only the models you tick, expire on their own, no console access. Admins only.",
+      "add": "New guest key",
+      "search": "Search name, note, model or last 4",
+      "empty": "No guest keys yet",
+      "emptyHint": "Create one and send the guest the endpoint and key.",
+      "noMatch": "No guest keys match",
+      "revokedKey": "Revoked",
+      "moreModels": "+{n}",
+      "at": "Until {at} (local time)",
+      "left": {
+        "days": "{n}d left",
+        "hours": "{n}h left",
+        "minutes": "{n}m left"
+      },
+      "past": {
+        "days": "Expired {n}d ago",
+        "hours": "Expired {n}h ago",
+        "minutes": "Expired {n}m ago"
+      },
+      "col": {
+        "name": "Name",
+        "status": "Status",
+        "models": "Models",
+        "expiry": "Expires",
+        "spend": "Spent / cap",
+        "lastUsed": "Last used",
+        "actions": "Actions"
+      },
+      "status": {
+        "ok": "Active",
+        "off": "Off",
+        "expired": "Expired",
+        "used_up": "Cap reached",
+        "revoked": "Revoked",
+        "okTip": "Requests go through (ticked models only).",
+        "offTip": "Turned off; requests are refused. Turn on to restore.",
+        "expiredTip": "Past its expiry; requests are refused. Move the expiry later to restore.",
+        "used_upTip": "Total spend is over the cap; requests are refused. Raise the cap to restore.",
+        "revokedTip": "Revoked for good. Usage and logs are kept."
+      },
+      "menu": {
+        "more": "More",
+        "edit": "Edit",
+        "detail": "Usage & IPs",
+        "logs": "Request logs",
+        "copy": "Copy key",
+        "disable": "Turn off",
+        "enable": "Turn on",
+        "revoke": "Revoke",
+        "delete": "Delete"
+      },
+      "dialog": {
+        "createTitle": "New guest key",
+        "editTitle": "Edit guest key",
+        "desc": "The guest can only call the ticked models with this key. No console, no settings.",
+        "name": "Name",
+        "namePh": "e.g. Alex · expo trial",
+        "note": "Note",
+        "notePh": "Who it's for, what for (optional)",
+        "expire": "Valid for",
+        "expireTip": "Stops working at that time. Max 365 days; never permanent.",
+        "presets": {
+          "1h": "1 hour",
+          "1d": "1 day",
+          "3d": "3 days",
+          "7d": "7 days",
+          "30d": "30 days",
+          "custom": "Custom"
+        },
+        "expireHint": "Stops at {at} (local time)",
+        "needExpire": "Pick an expiry",
+        "cap": "Spend cap",
+        "capPh": "Empty = no cap",
+        "capTip": "The key stops once its total spend reaches this.",
+        "billing": "Cost is booked to you (admin); nobody's balance is charged. Use the cap to limit it.",
+        "enabledOn": "Active right away",
+        "enabledOff": "Start turned off",
+        "models": "Models",
+        "modelsTip": "Only ticked models are allowed; new models are not added later. Pick at least one.",
+        "modelsSearch": "Search models",
+        "modelsPicked": "{n} picked",
+        "modelsClear": "Clear",
+        "modelsNone": "No models available right now",
+        "modelsNoMatch": "No matching models",
+        "modelGone": "Unavailable now",
+        "modelsHint": "These are the models you can use right now.",
+        "cancel": "Cancel",
+        "create": "Create",
+        "save": "Save",
+        "saved": "Saved {name}",
+        "saveFailed": "Save failed",
+        "err": {
+          "needName": "Enter a name",
+          "needModel": "Pick at least one model",
+          "needExpire": "Pick an expiry",
+          "pastExpire": "Expiry can't be in the past",
+          "tooFar": "Max 365 days",
+          "badCap": "Cap must be a number"
+        },
+        "createdTitle": "Created “{name}”",
+        "createdHint": "Send the guest the endpoint and key. You can copy it from the list later too.",
+        "createdModels": "Models: {list}",
+        "baseUrl": "Endpoint",
+        "copy": "Copy",
+        "copyBoth": "Copy endpoint & key",
+        "copied": "Copied",
+        "done": "Done"
+      },
+      "detail": {
+        "usage": "Usage",
+        "access": "IPs & clients",
+        "logs": "Request logs for this key",
+        "total": "Total spent",
+        "noCap": "No cap",
+        "billing": "Booked to the admin, no balance charged; stops at the cap.",
+        "totalRequests": "{n} requests",
+        "fingerprint": "Fingerprint"
+      },
+      "revoke": {
+        "title": "Revoke “{name}”?",
+        "desc": "It stops working now and can't be turned back on. Usage, IPs and logs are kept.",
+        "confirm": "Revoke"
+      },
+      "delete": {
+        "title": "Delete “{name}”?",
+        "desc": "It stops working now and the key record is removed (request logs stay). To just stop it, use Revoke.",
+        "confirm": "Delete"
+      },
+      "toast": {
+        "copied": "Copied {name}'s key",
+        "enabled": "Turned on {name}",
+        "disabled": "Turned off {name}",
+        "revoked": "Revoked {name}",
+        "deleted": "Deleted {name}",
+        "failed": "Something went wrong"
+      }
     }
   }
 }

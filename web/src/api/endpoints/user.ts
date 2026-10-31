@@ -684,6 +684,8 @@ export interface UserClientFingerprint {
 export interface UserClientKeyInfo {
     api_key_id: number;
     api_key_name?: string;
+    /** 管理员名下的访客 Key。 */
+    guest?: boolean;
     fingerprints: number;
     requests: number;
     last_seen: number;

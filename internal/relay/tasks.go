@@ -99,7 +99,7 @@ func taskError(c *gin.Context, status int, errType, message string) {
 // ---------- 归属与端点族 ----------
 
 func taskScope(c *gin.Context) op.TaskOwnerScope {
-	return op.TaskOwnerScope{TokenID: c.GetInt("api_key_id"), UserID: c.GetInt("user_id")}
+	return op.TaskOwnerScope{TokenID: c.GetInt("api_key_id"), UserID: taskOwnerUserID(c)}
 }
 
 // allowedTaskKinds 按 key 的端点族决定能看哪些任务。上下文里没有族信息 → 一个都不给（fail-closed）。
@@ -313,7 +313,7 @@ func lookupOwnedVideoTask(ctx context.Context, c *gin.Context, id string) (*mode
 		return nil, err
 	}
 	entry := videoTaskEntry{ownerTokenID: row.OwnerTokenID, ownerUserID: row.OwnerUserID}
-	if !videoTaskOwnerMatches(entry, c.GetInt("api_key_id"), c.GetInt("user_id")) {
+	if !videoTaskOwnerMatches(entry, c.GetInt("api_key_id"), taskOwnerUserID(c)) {
 		return nil, nil
 	}
 	return row, nil
@@ -336,7 +336,7 @@ func lookupOwnedImageTask(ctx context.Context, c *gin.Context, id string) (*mode
 
 func lookupOwnedMidjourneyTask(ctx context.Context, c *gin.Context, id string) (*model.MidjourneyTask, midjourneyTaskEntry, bool) {
 	entry, ok := midjourneyTaskOwner(ctx, id)
-	if !ok || !midjourneyTaskOwnerMatches(entry, c.GetInt("api_key_id"), c.GetInt("user_id")) {
+	if !ok || !midjourneyTaskOwnerMatches(entry, c.GetInt("api_key_id"), taskOwnerUserID(c)) {
 		return nil, midjourneyTaskEntry{}, false
 	}
 	row, err := op.MidjourneyTaskGetByUpstreamID(ctx, id)

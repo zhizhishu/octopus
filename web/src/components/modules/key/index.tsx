@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { BookOpen, Loader2, Plus, Search, Ticket } from 'lucide-react';
+import { BookOpen, Loader2, Plus, Search, Ticket, UserRound } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { useQuery } from '@tanstack/react-query';
 import { useCopyToClipboard } from '@uidotdev/usehooks';
@@ -17,7 +17,7 @@ import { useLogPresetStore } from '@/components/modules/log/log-preset';
 import { cn } from '@/lib/utils';
 import { ConfirmDialog } from '@/components/modules/user/components/confirm-dialog';
 import { Pager } from '@/components/modules/user/components/pager';
-import { btn, btnPrimary } from '@/components/modules/user/components/ui-bits';
+import { Seg, btn, btnPrimary } from '@/components/modules/user/components/ui-bits';
 import { formatUSD } from '@/components/modules/user/lib/balance-preview';
 import { nowUnix } from '@/components/modules/user/lib/format';
 import { cardState, paginate } from '@/components/modules/user/lib/user-filters';
@@ -30,6 +30,7 @@ import { KeysMobileList } from './components/keys-mobile-list';
 import { KeysTable } from './components/keys-table';
 import { KeysToolbar } from './components/keys-toolbar';
 import { RedeemCodeDialog } from './components/redeem-code-dialog';
+import { GuestKeys } from './guest';
 
 const PAGE_SIZE = 20;
 
@@ -56,6 +57,7 @@ export function Key() {
     const [deleteTarget, setDeleteTarget] = useState<APIKey | null>(null);
     const [redeemOpen, setRedeemOpen] = useState(false);
     const [nowSec] = useState(nowUnix);
+    const [section, setSection] = useState<'keys' | 'guest'>('keys');
 
     const setFilters = (f: KeyFilters) => { setFiltersState(f); setPage(1); };
     const spent = useMemo(() => new Map(keyStats.map((s) => [s.api_key_id, s.total_cost.raw])), [keyStats]);
@@ -116,6 +118,16 @@ export function Key() {
 
     return (
         <div className="h-full min-h-0 space-y-4 overflow-y-auto overscroll-contain rounded-t-3xl pb-24 md:pb-4">
+            {/* 管理员多一个「访客」页签：临时发给客人的 Key，和普通 Key 分开管。普通用户看不到。 */}
+            {isAdmin && (
+                <div className="px-1" data-key-sections>
+                    <Seg value={section} onChange={setSection} options={[
+                        { value: 'keys', label: t('sections.keys') },
+                        { value: 'guest', label: <span className="inline-flex items-center gap-1.5"><UserRound className="size-3.5" />{t('sections.guest')}</span> },
+                    ]} />
+                </div>
+            )}
+            {isAdmin && section === 'guest' ? <GuestKeys /> : (<>
             {/* 桌面：一句话 + 接入说明 / 兑换码 / 新建 */}
             <div className="hidden flex-wrap items-center justify-between gap-3 px-1 md:flex">
                 <p className="text-sm text-muted-foreground">{isAdmin ? t('page.leadAdmin') : t('page.leadUser')}</p>
@@ -162,6 +174,8 @@ export function Key() {
                     </div>
                 </>
             )}
+
+            </>)}
 
             <KeyDrawer
                 open={drawer.open && (drawer.keyID === null || drawerKey !== null)}

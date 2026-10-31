@@ -73,6 +73,11 @@ func createAPIKey(c *gin.Context) {
 	if !actor.IsAdmin() || req.UserID <= 0 {
 		req.UserID = actor.ID
 	}
+	// 这里只建普通 Key。访客 Key 只能走 /api/v1/guestkey/create（AdminOnly）；
+	// 请求体里带 guest / revoked_at 一律忽略，谁都不能经这里建出访客 Key。
+	req.Guest = false
+	req.RevokedAt = 0
+	req.Note = ""
 	req.APIKey = auth.GenerateAPIKey()
 	if err := op.APIKeyCreate(&req, c.Request.Context()); err != nil {
 		resp.Error(c, http.StatusInternalServerError, err.Error())
