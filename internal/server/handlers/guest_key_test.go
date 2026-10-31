@@ -34,6 +34,7 @@ func setupGuestKeyEnv(t *testing.T) guestKeyEnv {
 	if err := op.APIKeyCreate(&plainKey, env.ctx); err != nil {
 		t.Fatal(err)
 	}
+	seedGuestAvailableModels(t, env, "gpt-allowed", "gpt-other", "m")
 	rec, data := env.do(t, http.MethodPost, "/api/v1/guestkey/create", env.token, map[string]any{
 		"name": "客人 A", "note": "展会试用", "models": []string{"gpt-allowed"},
 		"expire_at": time.Now().Add(24 * time.Hour).Unix(), "max_cost": 2,
@@ -49,6 +50,49 @@ func setupGuestKeyEnv(t *testing.T) guestKeyEnv {
 		t.Fatalf("bad guest key %#v", guest)
 	}
 	return guestKeyEnv{userAdminEnv: env, plain: plain, plainJWT: jwtBearer(t, plain), plainKey: plainKey, guest: guest, guestToken: guest.APIKey}
+}
+
+// seedGuestAvailableModels 让这些模型出现在「当前可用模型」里：一条启用的渠道（上游是本机假服务，
+// 回一个固定的最小 chat 回复，绝不连外网）+ 每个方案各一条路由。访客 Key 只能限定这份列表里的模型。
+func seedGuestAvailableModels(t *testing.T, env userAdminEnv, models ...string) {
+	t.Helper()
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-seed","object":"chat.completion","created":1,"model":"gpt-allowed","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	t.Cleanup(fake.Close)
+	ch := model.Channel{Name: "guest-seed", Enabled: true, Model: strings.Join(models, ","),
+		BaseUrls: []model.BaseUrl{{URL: fake.URL}}, Keys: []model.ChannelKey{{ChannelKey: "sk-fake", Enabled: true}}}
+	if err := op.ChannelCreate(&ch, env.ctx); err != nil {
+		t.Fatal(err)
+	}
+	plans, err := op.AccessPlanList(env.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range plans {
+		targets := make([]model.AccessRouteTarget, 0, len(models))
+		for _, m := range models {
+			targets = append(targets, model.AccessRouteTarget{AccessPlanID: p.ID, RequestModel: m, ChannelID: ch.ID, UpstreamModel: m,
+				Priority: 1, Weight: 1, Enabled: true, BillingModelSource: "request_model", Mode: 3, FallbackMode: "none"})
+		}
+		if _, err := op.AccessPlanUpdateRouteTargets(p.ID, targets, env.ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := op.GuestKeyModels(env.admin, env.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range models {
+		found := false
+		for _, g := range got {
+			found = found || g == m
+		}
+		if !found {
+			t.Fatalf("seeded model %q not in available list %v", m, got)
+		}
+	}
 }
 
 func (e guestKeyEnv) doHeaders(t *testing.T, method, target string, headers map[string]string, body string) *httptest.ResponseRecorder {
@@ -256,7 +300,7 @@ func TestGuestKeyRelayModelAllowListAndAccessLog(t *testing.T) {
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "model_not_supported") {
 		t.Fatalf("non-allowed model: want 400 model_not_supported, got %d %s", rec.Code, rec.Body.String())
 	}
-	// 白名单里的模型过了白名单这一关（测试库没有渠道，所以停在选路，不会有任何上游请求）。
+	// 白名单里的模型过了白名单这一关（渠道上游是本机假服务，不会有任何外网请求）。
 	rec = env.chat(t, env.guestToken, "gpt-allowed")
 	if strings.Contains(rec.Body.String(), "model_not_supported") || rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden {
 		t.Fatalf("allowed model must pass auth + allow-list, got %d %s", rec.Code, rec.Body.String())
@@ -380,5 +424,61 @@ func TestGuestKeyCreateValidation(t *testing.T) {
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("%s: want 400, got %d %s", name, rec.Code, rec.Body.String())
 		}
+	}
+}
+
+// 限定的模型必须在当前可用模型里：新建、编辑都校验，不认识的名字给一句看得懂的中文错误，什么都不改。
+func TestGuestKeyModelsMustBeAvailable(t *testing.T) {
+	env := setupGuestKeyEnv(t)
+	exp := time.Now().Add(time.Hour).Unix()
+	errMsg := func(rec *httptest.ResponseRecorder) string {
+		var e struct {
+			Message string `json:"message"`
+		}
+		_ = json.Unmarshal(rec.Body.Bytes(), &e)
+		return e.Message + " " + rec.Body.String()
+	}
+
+	// 新建：一个不存在的模型，整把拒掉，并点名是哪个。
+	before, _ := op.GuestKeyList(env.admin, env.ctx)
+	rec, _ := env.do(t, http.MethodPost, "/api/v1/guestkey/create", env.token, map[string]any{
+		"name": "b", "models": []string{"gpt-allowed", "gpt-ghost"}, "expire_at": exp,
+	})
+	if rec.Code != http.StatusBadRequest || !strings.Contains(errMsg(rec), "这些模型现在不在可用模型列表里：gpt-ghost") {
+		t.Fatalf("unknown model on create: want 400 with Chinese message naming gpt-ghost, got %d %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(errMsg(rec), "gpt-allowed、") || strings.Contains(errMsg(rec), "：gpt-allowed") {
+		t.Fatalf("available model must not be listed as missing: %s", rec.Body.String())
+	}
+	after, _ := op.GuestKeyList(env.admin, env.ctx)
+	if len(after) != len(before) {
+		t.Fatalf("rejected create must not add a key: %d -> %d", len(before), len(after))
+	}
+
+	// 可用的（大小写不同、带 [1m] 也认，和转发时判白名单同一口径）照常能建。
+	rec, _ = env.do(t, http.MethodPost, "/api/v1/guestkey/create", env.token, map[string]any{
+		"name": "c", "models": []string{"GPT-Other", "m[1m]"}, "expire_at": exp,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("available models on create: want 200, got %d %s", rec.Code, rec.Body.String())
+	}
+
+	// 编辑：换成不存在的模型被拒，原来的白名单不变。
+	rec, _ = env.do(t, http.MethodPost, "/api/v1/guestkey/update", env.token, map[string]any{
+		"id": env.guest.ID, "name": "客人 A", "models": []string{"gpt-ghost", "gpt-ghost-2"}, "expire_at": env.guest.ExpireAt, "max_cost": 2,
+	})
+	if rec.Code != http.StatusBadRequest || !strings.Contains(errMsg(rec), "这些模型现在不在可用模型列表里：gpt-ghost、gpt-ghost-2") {
+		t.Fatalf("unknown model on update: want 400 naming both, got %d %s", rec.Code, rec.Body.String())
+	}
+	k, err := op.GuestKeyGet(env.guest.ID, env.admin, env.ctx)
+	if err != nil || k.SupportedModels != "gpt-allowed" {
+		t.Fatalf("rejected update must not change models: %q %v", k.SupportedModels, err)
+	}
+	// 编辑成可用的照常通过。
+	rec, _ = env.do(t, http.MethodPost, "/api/v1/guestkey/update", env.token, map[string]any{
+		"id": env.guest.ID, "name": "客人 A", "models": []string{"gpt-allowed", "gpt-other"}, "expire_at": env.guest.ExpireAt, "max_cost": 2,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("available models on update: want 200, got %d %s", rec.Code, rec.Body.String())
 	}
 }

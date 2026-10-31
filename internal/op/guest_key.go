@@ -81,6 +81,34 @@ func guestKeyNormalizeModels(models []string) (string, error) {
 	return strings.Join(out, ","), nil
 }
 
+// guestKeyCheckModelsAvailable：访客 Key 限定的每个模型都必须在「当前可用模型」里
+// （和 GuestKeyModels / 新建对话框里能选的是同一份：管理员自己能用的、有可用渠道的路由模型）。
+// 比较口径和转发时判白名单一样（去掉 [1m] 后缀、不分大小写），所以这里放行的名字转发时一定认。
+func guestKeyCheckModelsAvailable(models string, actor model.User, ctx context.Context) error {
+	available, err := APIKeyModelsForUser(actor.ID, ctx)
+	if err != nil {
+		return fmt.Errorf("读取当前可用模型失败：%w", err)
+	}
+	have := make(map[string]struct{}, len(available))
+	for _, m := range available {
+		have[strings.ToLower(model.CleanOneMillionCapabilityModelName(m))] = struct{}{}
+	}
+	var missing []string
+	for _, m := range strings.Split(models, ",") {
+		name := strings.TrimSpace(m)
+		if name == "" {
+			continue
+		}
+		if _, ok := have[strings.ToLower(model.CleanOneMillionCapabilityModelName(name))]; !ok {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("这些模型现在不在可用模型列表里：%s。请从可用模型里重新选。", strings.Join(missing, "、"))
+	}
+	return nil
+}
+
 func guestKeyValidateExpire(expireAt int64, now time.Time) error {
 	if expireAt <= 0 {
 		return errGuestKeyExpire
@@ -161,6 +189,9 @@ func GuestKeyCreate(req model.GuestKeyRequest, secret string, actor model.User, 
 	if err != nil {
 		return model.APIKey{}, err
 	}
+	if err := guestKeyCheckModelsAvailable(models, actor, ctx); err != nil {
+		return model.APIKey{}, err
+	}
 	if err := guestKeyValidateExpire(req.ExpireAt, time.Now()); err != nil {
 		return model.APIKey{}, err
 	}
@@ -204,6 +235,9 @@ func GuestKeyUpdate(req model.GuestKeyRequest, actor model.User, ctx context.Con
 	}
 	models, err := guestKeyNormalizeModels(req.Models)
 	if err != nil {
+		return model.APIKey{}, err
+	}
+	if err := guestKeyCheckModelsAvailable(models, actor, ctx); err != nil {
 		return model.APIKey{}, err
 	}
 	// 和普通 Key 一样：没改过期时间就不拦（已过期的 Key 还能改别的）。

@@ -17,6 +17,21 @@ func TestAPIKeyAuthGuestKeyContextIsNotAdmin(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx := setupMiddlewareAuthDB(t)
 	admin := createMiddlewareAuthUser(t, ctx)
+	// 访客 Key 只能限定「当前可用模型」：先让 m1 可用（一条渠道 + 每个方案一条路由；这里不转发，不碰任何上游）。
+	ch := model.Channel{Name: "guest-ctx-seed", Enabled: true, Model: "m1", BaseUrls: []model.BaseUrl{{URL: "http://127.0.0.1:9"}}}
+	if err := op.ChannelCreate(&ch, ctx); err != nil {
+		t.Fatal(err)
+	}
+	plans, err := op.AccessPlanList(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range plans {
+		if _, err := op.AccessPlanUpdateRouteTargets(p.ID, []model.AccessRouteTarget{{AccessPlanID: p.ID, RequestModel: "m1", ChannelID: ch.ID,
+			UpstreamModel: "m1", Priority: 1, Weight: 1, Enabled: true, BillingModelSource: "request_model", Mode: 3, FallbackMode: "none"}}, ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
 	guest, err := op.GuestKeyCreate(model.GuestKeyRequest{Name: "g", Models: []string{"m1"}, ExpireAt: time.Now().Add(time.Hour).Unix()}, "sk-octopus-guest-ctx-test", admin, ctx)
 	if err != nil {
 		t.Fatal(err)
