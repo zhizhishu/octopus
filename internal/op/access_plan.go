@@ -255,8 +255,15 @@ func AccessRouteTargetCreate(target *model.AccessRouteTarget, ctx context.Contex
 	if err := validateAccessRouteTarget(target); err != nil {
 		return err
 	}
+	wantDisabled := !target.Enabled
 	if err := db.GetDB().WithContext(ctx).Create(target).Error; err != nil {
 		return err
+	}
+	if wantDisabled {
+		target.Enabled = false
+		if err := restoreDisabledRouteTargets(db.GetDB().WithContext(ctx), []model.AccessRouteTarget{*target}, []int{0}); err != nil {
+			return err
+		}
 	}
 	return accessPlanRefreshCache(ctx)
 }
@@ -328,8 +335,15 @@ func AccessBillingModelRuleCreate(rule *model.AccessBillingModelRule, ctx contex
 	if err := validateAccessBillingModelRule(rule); err != nil {
 		return err
 	}
+	wantDisabled := !rule.Enabled
 	if err := db.GetDB().WithContext(ctx).Create(rule).Error; err != nil {
 		return err
+	}
+	if wantDisabled {
+		rule.Enabled = false
+		if err := restoreDisabledBillingRules(db.GetDB().WithContext(ctx), []model.AccessBillingModelRule{*rule}, []int{0}); err != nil {
+			return err
+		}
 	}
 	return accessPlanRefreshCache(ctx)
 }
@@ -1132,7 +1146,12 @@ func AccessPlanUpdateBillingRules(accessPlanID int, defaultMultiplier float64, r
 		newRules = append(newRules, rule)
 	}
 	if len(newRules) > 0 {
+		disabled := disabledBillingRuleIndexes(newRules)
 		if err := tx.Create(&newRules).Error; err != nil {
+			tx.Rollback()
+			return model.AccessPlan{}, err
+		}
+		if err := restoreDisabledBillingRules(tx, newRules, disabled); err != nil {
 			tx.Rollback()
 			return model.AccessPlan{}, err
 		}
@@ -1288,7 +1307,12 @@ func AccessPlanUpdateRouteTargets(accessPlanID int, targets []model.AccessRouteT
 			bucket.targets[i].RouteRuleID = bucket.rule.ID
 		}
 		if len(bucket.targets) > 0 {
+			disabled := disabledRouteTargetIndexes(bucket.targets)
 			if err := tx.Create(&bucket.targets).Error; err != nil {
+				tx.Rollback()
+				return model.AccessPlan{}, err
+			}
+			if err := restoreDisabledRouteTargets(tx, bucket.targets, disabled); err != nil {
 				tx.Rollback()
 				return model.AccessPlan{}, err
 			}
