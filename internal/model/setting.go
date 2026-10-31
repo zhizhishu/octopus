@@ -9,7 +9,18 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"gorm.io/gorm/clause"
 )
+
+// SettingKeyIs 是 settings 表「key = ?」的可移植写法。
+//
+// key 在 MySQL 里是保留字，裸写 Where("key = ?") 在 MySQL 上直接 1064 语法错误
+// （SQLite / PostgreSQL 不报错，所以测试里看不出来）。这里交给 GORM 按当前方言给列名加引号：
+// MySQL 出 `key`，PostgreSQL / SQLite 出 "key"。凡是按 key 查 settings（或同形的 options 表）都用它。
+func SettingKeyIs(key any) clause.Expression {
+	return clause.Eq{Column: clause.Column{Name: "key"}, Value: key}
+}
 
 type SettingKey string
 

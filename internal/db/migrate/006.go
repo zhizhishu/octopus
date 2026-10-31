@@ -40,7 +40,7 @@ func migrateFollowClientCLIDefaults(db *gorm.DB) error {
 	}
 	for key, item := range replacements {
 		if err := db.Model(&model.Setting{}).
-			Where("key = ? AND value = ?", key, item.old).
+			Where(model.SettingKeyIs(key)).Where("value = ?", item.old).
 			Update("value", item.new).Error; err != nil {
 			return err
 		}
