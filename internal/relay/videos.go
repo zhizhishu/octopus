@@ -422,7 +422,7 @@ func videoTaskRelayTarget(c *gin.Context, ctx context.Context, taskID string) (v
 	}
 	// The tenant check is applied to BOTH sources: a row on disk is not a licence
 	// to poll someone else's task. Fail-closed 404, same as an unknown id.
-	if !ok || !videoTaskOwnerMatches(entry, c.GetInt("api_key_id"), c.GetInt("user_id")) {
+	if !ok || !videoTaskOwnerMatches(entry, c.GetInt("api_key_id"), taskOwnerUserID(c)) {
 		resp.Error(c, http.StatusNotFound, "unknown or expired video task; create the task again")
 		return videoTaskEntry{}, nil, "", false
 	}

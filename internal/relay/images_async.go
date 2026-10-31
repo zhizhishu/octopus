@@ -222,7 +222,8 @@ func ImagesAsyncSubmit(endpoint string, c *gin.Context) {
 	//    "先受理、按 0 收"。异步任务一旦受理就会真花上游的钱，没价等于白送。
 	//    管理员从不扣费（op.UserRecordUsage 对管理员直接返回），相当于 new-api 的自用模式，放行。
 	billing := imageTaskBillingPlan(routeResult, requestModel, upstreamModel, endpoint, c, imageRequestCount(requestPayload))
-	if !billing.priced && !imageTaskUserIsAdmin(userID) {
+	// 访客 Key 虽然归属管理员，但有自己的花费上限：没价的模型按 0 记，上限形同虚设，所以照普通用户拒绝。
+	if !billing.priced && (isGuestKeyRequest(c) || !imageTaskUserIsAdmin(userID)) {
 		resp.Error(c, http.StatusBadRequest, imageModelPriceNotConfiguredMessage(requestModel))
 		return
 	}

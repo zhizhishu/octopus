@@ -101,6 +101,10 @@ func APIKeySetEnabled(id int, enabled bool, actor model.User, ctx context.Contex
 	if !ok || (!actor.IsAdmin() && existing.UserID != actor.ID) {
 		return fmt.Errorf("API key not found")
 	}
+	// 作废是终态：不能再启用（停用照常放行，本来就是停的）。
+	if enabled && existing.IsRevoked() {
+		return errAPIKeyRevoked
+	}
 	if err := db.GetDB().WithContext(ctx).Model(&model.APIKey{}).Where("id = ?", id).Update("enabled", enabled).Error; err != nil {
 		return fmt.Errorf("failed to update API key: %w", err)
 	}

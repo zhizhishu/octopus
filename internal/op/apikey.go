@@ -78,6 +78,17 @@ func APIKeyUpdate(key *model.APIKey, actor model.User, ctx context.Context) erro
 	if !actor.IsAdmin() && existing.UserID != actor.ID {
 		return fmt.Errorf("API key not found")
 	}
+	// 访客 Key 只走 /api/v1/guestkey/update：这里改不了它（防止经普通接口改归属 / 去掉模型白名单）。
+	// 普通 Key 也不能经这里变成访客 Key、不能撤销作废。
+	if existing.Guest {
+		if !actor.IsAdmin() {
+			return fmt.Errorf("API key not found")
+		}
+		return errGuestKeyUseGuestAPI
+	}
+	key.Guest = false
+	key.RevokedAt = existing.RevokedAt
+	key.Note = existing.Note
 	if !actor.IsAdmin() {
 		key.UserID = existing.UserID
 	} else if key.UserID <= 0 {
@@ -104,7 +115,7 @@ func APIKeyUpdate(key *model.APIKey, actor model.User, ctx context.Context) erro
 		key.EndpointFamilies = endpointFamilies
 	}
 	// last_used_* 是转发路径写的审计字段，请求体里没有（或是旧值），保存时不覆盖。
-	if err := db.GetDB().WithContext(ctx).Omit("api_key", "last_used_at", "last_used_ip").Save(key).Error; err != nil {
+	if err := db.GetDB().WithContext(ctx).Omit("api_key", "last_used_at", "last_used_ip", "guest", "revoked_at", "note").Save(key).Error; err != nil {
 		return fmt.Errorf("failed to update API key: %w", err)
 	}
 	key.APIKey = existing.APIKey
@@ -124,6 +135,10 @@ func APIKeyList(ctx context.Context, actor model.User) ([]model.APIKey, error) {
 	keys := make([]model.APIKey, 0, apiKeyCache.Len())
 	for _, apiKey := range apiKeyCache.GetAll() {
 		if !actor.IsAdmin() && apiKey.UserID != actor.ID {
+			continue
+		}
+		// 访客 Key 只在「访客」页（/api/v1/guestkey/list）列出，普通 Key 列表里不出现。
+		if apiKey.Guest {
 			continue
 		}
 		attachAPIKeyUserName(&apiKey)
