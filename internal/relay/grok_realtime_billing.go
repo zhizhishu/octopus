@@ -43,6 +43,10 @@ import (
 // quotaReservationContextKey 与 middleware.QuotaReservationContextKey 同值（grok_realtime_cutoff_test.go 里有断言）。
 const quotaReservationContextKey = "quota_reservation"
 
+// apiKeyReservationContextKey 与 middleware.APIKeyReservationContextKey 同值：本次连接在 Key 花费上限里
+// 自己占的在途预留（算「Key 还剩多少」时要从在途合计里扣掉，不能当成别人的占用）。
+const apiKeyReservationContextKey = "api_key_quota_reservation"
+
 // grokRealtimeBillingInterval 是按分钟计价时的中途结算周期（也是按 token 计价时复查余额的周期）。
 // 定义成 var 只为测试可压低，生产路径从不写它。
 var grokRealtimeBillingInterval = time.Minute
@@ -146,6 +150,8 @@ type grokRealtimeBiller struct {
 	apiKeyID    int
 	reservation float64
 	keyMaxCost  float64
+	// keyReservation：本连接在 Key 上限里自己占的在途预留（见 apiKeyReservationContextKey）。
+	keyReservation float64
 
 	mu    sync.Mutex
 	admin bool
@@ -167,6 +173,8 @@ func newGrokRealtimeBiller(c *gin.Context, metrics *rawProtocolRelayMetrics, act
 		userID:      metrics.UserID,
 		apiKeyID:    metrics.APIKeyID,
 		reservation: c.GetFloat64(quotaReservationContextKey),
+		// 同上：Key 上限里自己占的那一笔。
+		keyReservation: c.GetFloat64(apiKeyReservationContextKey),
 	}
 	if user, err := op.UserGet(b.userID); err == nil && user.IsAdmin() {
 		b.admin = true
@@ -212,11 +220,11 @@ func (b *grokRealtimeBiller) settle(usage imagesUsage, usageSeen, audio bool, el
 			b.mu.Unlock()
 		}
 	}
+	pricing := grokRealtimePricingFor(b.metrics, b.actualModel)
 	if admin {
-		return b.guestKeyCapCutoff(total), next
+		return b.guestKeyCapSettle(total, pricing, audio)
 	}
 
-	pricing := grokRealtimePricingFor(b.metrics, b.actualModel)
 	// 下一份多少钱：按分钟 → 1 秒音频（还没出现音频时不计时，不会产生费用）；按 token → 上一次回复的价。
 	var unit, perSecond float64
 	if pricing.perMinute {
@@ -240,7 +248,7 @@ func (b *grokRealtimeBiller) settle(usage imagesUsage, usageSeen, audio bool, el
 		b.mu.Lock()
 		b.admin = true
 		b.mu.Unlock()
-		return b.guestKeyCapCutoff(total), next
+		return b.guestKeyCapSettle(total, pricing, audio)
 	}
 	// 自己在准入时占的在途预留不算别人的占用。
 	remaining += b.reservation
@@ -250,8 +258,7 @@ func (b *grokRealtimeBiller) settle(usage imagesUsage, usageSeen, audio bool, el
 	}
 	limitLeft := math.Inf(1)
 	if b.keyMaxCost > 0 {
-		stats := op.StatsAPIKeyGet(b.apiKeyID)
-		limitLeft = b.keyMaxCost - (stats.StatsMetrics.InputCost + stats.StatsMetrics.OutputCost + charged)
+		limitLeft = b.keyCapLeft(charged)
 		if limitLeft <= grokRealtimeChargeEpsilon || limitLeft < unit {
 			return newGrokRealtimeKeyCapCutoff(fmt.Sprintf("api_key=%d max_cost=%f left=%f next_unit=%f charged=%f", b.apiKeyID, b.keyMaxCost, limitLeft, unit, charged)), 0
 		}
@@ -270,19 +277,55 @@ func (b *grokRealtimeBiller) settle(usage imagesUsage, usageSeen, audio bool, el
 	return nil, next
 }
 
+// keyCapLeft：Key 花费上限还剩多少 = 上限 - 已落账 - 本会话（还没落账的部分）- 别的请求的在途预留。
+// 自己在准入时占的那笔在途预留不算别人的占用，所以从在途合计里扣掉。
+func (b *grokRealtimeBiller) keyCapLeft(sessionCost float64) float64 {
+	others := op.APIKeyInflight(b.apiKeyID) - b.keyReservation
+	if others < 0 {
+		others = 0
+	}
+	return b.keyMaxCost - (op.APIKeySpent(b.apiKeyID) + sessionCost + others)
+}
+
 // guestKeyCapCutoff：访客 Key（归属管理员）不看余额，只看这把 Key 的花费上限。
 // sessionCost 是本次会话到此刻的总价（管理员不扣费，b.charged 恒为 0，所以用总价而不是已扣）。
+// unit 是「下一份」的价（按分钟计价 = 1 秒音频）：剩下的连一份都不够就断，不让它再超出去。
 // 不是访客 Key、或没设上限时返回 nil（与原来管理员「永不断开」一致）。
-func (b *grokRealtimeBiller) guestKeyCapCutoff(sessionCost float64) *grokRealtimeCutoff {
+func (b *grokRealtimeBiller) guestKeyCapCutoff(sessionCost, unit float64) *grokRealtimeCutoff {
 	if b == nil || !b.guest || b.keyMaxCost <= 0 || b.apiKeyID <= 0 {
 		return nil
 	}
-	stats := op.StatsAPIKeyGet(b.apiKeyID)
-	left := b.keyMaxCost - (stats.StatsMetrics.InputCost + stats.StatsMetrics.OutputCost + sessionCost)
-	if left <= grokRealtimeChargeEpsilon {
-		return newGrokRealtimeKeyCapCutoff(fmt.Sprintf("guest api_key=%d max_cost=%f left=%f session=%f", b.apiKeyID, b.keyMaxCost, left, sessionCost))
+	left := b.keyCapLeft(sessionCost)
+	if left <= grokRealtimeChargeEpsilon || left < unit {
+		return newGrokRealtimeKeyCapCutoff(fmt.Sprintf("guest api_key=%d max_cost=%f left=%f session=%f next_unit=%f", b.apiKeyID, b.keyMaxCost, left, sessionCost, unit))
 	}
 	return nil
+}
+
+// guestKeyCapSettle 是管理员归属会话（含访客 Key）的结算后判断：管理员不扣余额、永不断；
+// 访客 Key 按上限断，并且和普通用户一样把下次结算挪到「刚好花到上限」的时刻——
+// 以前固定 1 分钟后才复查，最多会多花将近 1 分钟。
+func (b *grokRealtimeBiller) guestKeyCapSettle(total float64, pricing grokRealtimePricing, audio bool) (*grokRealtimeCutoff, time.Duration) {
+	next := grokRealtimeBillingInterval
+	var unit, perSecond float64
+	if pricing.perMinute && audio {
+		perSecond = pricing.perMinuteCost / 60
+		unit = perSecond * grokRealtimeMinUnit.Seconds()
+	}
+	if cut := b.guestKeyCapCutoff(total, unit); cut != nil {
+		return cut, 0
+	}
+	if b == nil || !b.guest || b.keyMaxCost <= 0 || perSecond <= 0 {
+		return nil, next
+	}
+	untilCap := time.Duration(b.keyCapLeft(total) / perSecond * float64(time.Second))
+	if untilCap < next {
+		next = untilCap
+	}
+	if next < grokRealtimeMinUnit {
+		next = grokRealtimeMinUnit
+	}
+	return nil, next
 }
 
 // grokRealtimePreflight 是升级前的"够不够第一份"检查；返回非 nil 表示拒绝（HTTP 402）。
@@ -293,24 +336,23 @@ func grokRealtimePreflight(c *gin.Context, metrics *rawProtocolRelayMetrics, bil
 	if b == nil {
 		return nil
 	}
+	var unit float64
+	if pricing := grokRealtimePricingFor(metrics, billingModel); pricing.perMinute {
+		unit = pricing.perMinuteCost / 60 * grokRealtimeMinUnit.Seconds()
+	}
 	if b.admin {
-		return b.guestKeyCapCutoff(0)
+		return b.guestKeyCapCutoff(0, unit)
 	}
 	remaining, isAdmin, err := op.UserRelayRemaining(b.userID, b.ctx)
 	if err != nil || isAdmin {
 		return nil
 	}
 	remaining += b.reservation
-	var unit float64
-	if pricing := grokRealtimePricingFor(metrics, billingModel); pricing.perMinute {
-		unit = pricing.perMinuteCost / 60 * grokRealtimeMinUnit.Seconds()
-	}
 	if remaining <= grokRealtimeChargeEpsilon || remaining < unit {
 		return newGrokRealtimeBalanceCutoff(fmt.Sprintf("user=%d remaining=%f first_unit=%f", b.userID, remaining, unit))
 	}
 	if b.keyMaxCost > 0 {
-		stats := op.StatsAPIKeyGet(b.apiKeyID)
-		left := b.keyMaxCost - (stats.StatsMetrics.InputCost + stats.StatsMetrics.OutputCost)
+		left := b.keyCapLeft(0)
 		if left <= grokRealtimeChargeEpsilon || left < unit {
 			return newGrokRealtimeKeyCapCutoff(fmt.Sprintf("api_key=%d max_cost=%f left=%f first_unit=%f", b.apiKeyID, b.keyMaxCost, left, unit))
 		}

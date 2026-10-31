@@ -52,12 +52,16 @@ type Group struct {
 	// TotalTimeOut is the per-group override for the whole-request ceiling
 	// (relay_request_total_timeout_seconds). 0 = fall back to the global default; a
 	// negative value is treated the same way. Unit: seconds.
-	TotalTimeOut    int         `json:"total_time_out"`                  // 分组级整次请求时长上限(秒), 0=用全局默认
-	SessionKeepTime int         `json:"session_keep_time"`               // 会话保持时间(秒) 0 为禁用
-	MaxConcurrent   int         `json:"max_concurrent" gorm:"default:0"` // 分组级并发上限(整组在途请求数), 0=不限. 到顶硬拒(429)以保护上游
-	RPMLimit        int         `json:"rpm_limit" gorm:"default:0"`      // 分组级每分钟请求上限(整组近60s请求数), 0=不限. 到顶硬拒(429), 保护上游不被打满
-	AutoCreated     bool        `json:"auto_created" gorm:"default:false"`
-	Items           []GroupItem `json:"items,omitempty" gorm:"foreignKey:GroupID"`
+	TotalTimeOut    int  `json:"total_time_out"`                  // 分组级整次请求时长上限(秒), 0=用全局默认
+	SessionKeepTime int  `json:"session_keep_time"`               // 会话保持时间(秒) 0 为禁用
+	MaxConcurrent   int  `json:"max_concurrent" gorm:"default:0"` // 分组级并发上限(整组在途请求数), 0=不限. 到顶硬拒(429)以保护上游
+	RPMLimit        int  `json:"rpm_limit" gorm:"default:0"`      // 分组级每分钟请求上限(整组近60s请求数), 0=不限. 到顶硬拒(429), 保护上游不被打满
+	AutoCreated     bool `json:"auto_created" gorm:"default:false"`
+	// PlanRoute 标记这个分组是从「方案」路由规则临时拼出来的（op.AccessPlanGroupForModel），
+	// 不是库里的分组。方案路由只认方案页上的顺序 / 数字：不看渠道页的「渠道优先级」，
+	// 轮询时同一个数字里按顺序轮流（健康状况只用来跳过不能用的渠道，不给能用的渠道重新排序）。
+	PlanRoute bool        `json:"-" gorm:"-"`
+	Items     []GroupItem `json:"items,omitempty" gorm:"foreignKey:GroupID"`
 }
 
 type GroupItem struct {

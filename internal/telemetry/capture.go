@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
+	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -179,7 +180,11 @@ func Capture(req *http.Request, viaTrustedProxy bool) Snapshot {
 		if !keep || len(vs) == 0 || lower == "user-agent" {
 			continue
 		}
-		if v := cleanValue(strings.Join(vs, ", "), maxValueRunes); v != "" {
+		joined := strings.Join(vs, ", ")
+		if urlValuedHeaders[lower] {
+			joined = stripURLQuery(joined)
+		}
+		if v := cleanValue(joined, maxValueRunes); v != "" {
 			s.Notable[lower] = v
 		}
 	}
@@ -348,4 +353,30 @@ func cleanValue(v string, maxRunes int) string {
 		v = string(r[:maxRunes])
 	}
 	return v
+}
+
+// urlValuedHeaders 是值为 URL 的白名单头。只留「从哪个页面来」（scheme + host + path），
+// 查询串和 # 片段一律去掉：那里常带 token、code、邮箱、搜索词之类，不该进指纹记录。
+var urlValuedHeaders = map[string]bool{
+	"referer":      true,
+	"http-referer": true,
+	"origin":       true,
+}
+
+// stripURLQuery 去掉 URL 里的查询串、片段和 user:pass@。解析不了的值按第一个 ? / # 截断。
+func stripURLQuery(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if u, err := url.Parse(raw); err == nil && u.Scheme != "" && u.Host != "" {
+		u.RawQuery, u.ForceQuery = "", false
+		u.Fragment, u.RawFragment = "", ""
+		u.User = nil
+		return u.String()
+	}
+	if i := strings.IndexAny(raw, "?#"); i >= 0 {
+		raw = raw[:i]
+	}
+	return raw
 }

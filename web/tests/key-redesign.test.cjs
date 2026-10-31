@@ -13,7 +13,8 @@ test('状态和后端鉴权一样：停用 > 过期 > 用完 > 能用', () => {
     assert.equal(f.keyStatus(key({ enabled: false, expire_at: NOW - 1, max_cost: 1 }), 5, NOW), 'off');
     assert.equal(f.keyStatus(key({ expire_at: NOW - 1, max_cost: 1 }), 5, NOW), 'expired');
     assert.equal(f.keyStatus(key({ max_cost: 1 }), 1.01, NOW), 'used_up');
-    assert.equal(f.keyStatus(key({ max_cost: 1 }), 1, NOW), 'ok', '正好等于上限还没超');
+    assert.equal(f.keyStatus(key({ max_cost: 1 }), 1, NOW), 'used_up', '与后端一致：花到上限（等于）就拒绝');
+    assert.equal(f.keyStatus(key({ max_cost: 1 }), 0.99, NOW), 'ok');
     assert.equal(f.keyStatus(key({ expire_at: 0, max_cost: 0 }), 999, NOW), 'ok', '0 = 永久 / 不限');
 });
 

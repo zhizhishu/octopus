@@ -3,6 +3,7 @@ package relay
 import (
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/zhizhishu/octopus/internal/model"
@@ -51,19 +52,85 @@ func TestGuestKeyTaskOwnershipIsTokenOnly(t *testing.T) {
 // 实时语音：访客 Key 归属管理员（不看余额），但 Key 上限照样会断；普通管理员 Key 仍然不断。
 func TestGuestKeyRealtimeCapCutoff(t *testing.T) {
 	b := &grokRealtimeBiller{admin: true, guest: true, apiKeyID: 99, keyMaxCost: 1}
-	if cut := b.guestKeyCapCutoff(0.5); cut != nil {
+	if cut := b.guestKeyCapCutoff(0.5, 0); cut != nil {
 		t.Fatalf("under cap must not cut: %+v", cut)
 	}
-	cut := b.guestKeyCapCutoff(1.2)
+	cut := b.guestKeyCapCutoff(1.2, 0)
 	if cut == nil || cut.Code != grokRealtimeCutoffCodeKeyCap {
 		t.Fatalf("over cap must cut with key-cap code, got %+v", cut)
 	}
 	adminPlain := &grokRealtimeBiller{admin: true, apiKeyID: 99, keyMaxCost: 1}
-	if cut := adminPlain.guestKeyCapCutoff(5); cut != nil {
+	if cut := adminPlain.guestKeyCapCutoff(5, 0); cut != nil {
 		t.Fatal("non-guest admin key behaviour must stay unchanged")
 	}
 	noCap := &grokRealtimeBiller{admin: true, guest: true, apiKeyID: 99}
-	if cut := noCap.guestKeyCapCutoff(5); cut != nil {
+	if cut := noCap.guestKeyCapCutoff(5, 0); cut != nil {
 		t.Fatal("guest key without max_cost has no cap")
+	}
+}
+
+// 实时语音（按分钟计价）：访客 Key 的下次结算挪到「刚好花到上限」的时刻，不再固定等 1 分钟。
+// 上限 1、每分钟 0.6（每秒 0.01）：已花 0.5 → 还剩 0.5 = 50 秒；已花 0.995 → 不够 1 秒，当场断。
+func TestGuestKeyRealtimeNextSettleStopsAtCap(t *testing.T) {
+	pricing := grokRealtimePricing{perMinute: true, perMinuteCost: 0.6}
+	b := &grokRealtimeBiller{admin: true, guest: true, apiKeyID: 98, keyMaxCost: 1}
+
+	cut, next := b.guestKeyCapSettle(0.5, pricing, true)
+	if cut != nil {
+		t.Fatalf("under cap must not cut: %+v", cut)
+	}
+	if next < 49*time.Second || next > 50*time.Second {
+		t.Fatalf("next settle should be ~50s (until cap), got %v", next)
+	}
+
+	if cut, _ := b.guestKeyCapSettle(0.995, pricing, true); cut == nil || cut.Code != grokRealtimeCutoffCodeKeyCap {
+		t.Fatalf("less than one second left must cut now, got %+v", cut)
+	}
+
+	// 普通管理员 Key：不断，仍然 1 分钟复查。
+	plain := &grokRealtimeBiller{admin: true, apiKeyID: 98, keyMaxCost: 1}
+	if cut, next := plain.guestKeyCapSettle(5, pricing, true); cut != nil || next != grokRealtimeBillingInterval {
+		t.Fatalf("plain admin session unchanged: cut=%+v next=%v", cut, next)
+	}
+}
+
+// 无归属（0/0）的旧视频 / MJ 任务：任何 API Key（普通、管理员自己的、访客）都碰不到；
+// 只有管理员控制台登录会话（没有 api_key_id、角色 admin）能看。有归属的任务规则不变。
+func TestOwnerlessLegacyTaskOnlyForAdminSession(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	newCtx := func(apiKeyID int, role string, guest bool) *gin.Context {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		if apiKeyID > 0 {
+			c.Set("api_key_id", apiKeyID)
+		}
+		c.Set("user_id", 1)
+		c.Set("user_role", role)
+		if guest {
+			c.Set(model.APIKeyGuestContextKey, true)
+		}
+		return c
+	}
+	cases := []struct {
+		name string
+		c    *gin.Context
+		want bool
+	}{
+		{"admin console session", newCtx(0, string(model.UserRoleAdmin), false), true},
+		{"admin's own API key", newCtx(7, string(model.UserRoleAdmin), false), false},
+		{"plain user key", newCtx(8, string(model.UserRoleUser), false), false},
+		{"guest key", newCtx(9, "guest_key", true), false},
+		{"plain user session", newCtx(0, string(model.UserRoleUser), false), false},
+	}
+	for _, tc := range cases {
+		if got := taskOwnerMatchesRequest(tc.c, 0, 0); got != tc.want {
+			t.Fatalf("%s: ownerless task visible=%v, want %v", tc.name, got, tc.want)
+		}
+	}
+	// 有归属的任务：同一把 Key 能看，管理员会话也不能越权看别人的 Key 的任务。
+	if !taskOwnerMatchesRequest(newCtx(7, string(model.UserRoleAdmin), false), 7, 1) {
+		t.Fatal("owner key must still see its own task")
+	}
+	if taskOwnerMatchesRequest(newCtx(0, string(model.UserRoleAdmin), false), 7, 1) {
+		t.Fatal("admin session must not bypass token-owned task scope")
 	}
 }

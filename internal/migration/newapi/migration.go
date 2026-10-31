@@ -478,7 +478,7 @@ func resolveQuotaPerUnit(ctx context.Context, sourceDB *gorm.DB, override float6
 	}
 	if sourceDB.Migrator().HasTable("options") {
 		var option sourceOption
-		err := sourceDB.WithContext(ctx).First(&option, "key = ?", "QuotaPerUnit").Error
+		err := sourceDB.WithContext(ctx).Where(model.SettingKeyIs("QuotaPerUnit")).First(&option).Error
 		if err == nil {
 			if parsed, parseErr := strconv.ParseFloat(strings.TrimSpace(option.Value), 64); parseErr == nil && parsed > 0 {
 				return parsed, "new-api options.QuotaPerUnit", nil

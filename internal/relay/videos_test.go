@@ -74,8 +74,8 @@ func TestVideoTaskOwnerExpires(t *testing.T) {
 }
 
 func TestVideoTaskOwnerMatches(t *testing.T) {
-	if !videoTaskOwnerMatches(videoTaskEntry{}, 1, 2) {
-		t.Fatal("0/0 owner should be unrestricted")
+	if videoTaskOwnerMatches(videoTaskEntry{}, 1, 2) {
+		t.Fatal("0/0 (ownerless legacy) task must not match any API key")
 	}
 	tokenScoped := videoTaskEntry{ownerTokenID: 5}
 	if !videoTaskOwnerMatches(tokenScoped, 5, 0) {
@@ -162,7 +162,7 @@ func TestVideosHandlerModelMappingCreateAndPoll(t *testing.T) {
 	reqCreate.Header.Set("Content-Type", "application/json")
 	cCreate.Request = reqCreate
 	cCreate.Set("api_key_id", 0)
-	cCreate.Set("user_id", 0)
+	cCreate.Set("user_id", videoTestOwnerUserID)
 	cCreate.Set("request_ip", "127.0.0.1")
 
 	VideosHandler(cCreate)
@@ -204,7 +204,7 @@ func TestVideosHandlerModelMappingCreateAndPoll(t *testing.T) {
 	reqPoll := httptest.NewRequest(http.MethodGet, "/v1/videos/vid_task_123", nil)
 	cPoll.Request = reqPoll
 	cPoll.Set("api_key_id", 0)
-	cPoll.Set("user_id", 0)
+	cPoll.Set("user_id", videoTestOwnerUserID)
 	cPoll.Set("request_ip", "127.0.0.1")
 
 	VideoPollHandler(cPoll)
@@ -576,7 +576,7 @@ func TestVideoPollHandlerServesTaskFromDBAfterRestart(t *testing.T) {
 		ChannelKeyID:   ch.Keys[0].ID,
 		Model:          "db-video-model",
 		OwnerTokenID:   0,
-		OwnerUserID:    0,
+		OwnerUserID:    videoTestOwnerUserID,
 		Status:         dbmodel.VideoTaskSubmitted,
 		SubmitTime:     time.Now().Unix(),
 	}); err != nil {
@@ -592,7 +592,7 @@ func TestVideoPollHandlerServesTaskFromDBAfterRestart(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/v1/videos/vid_db_1", nil)
 	c.Request = req
 	c.Set("api_key_id", 0)
-	c.Set("user_id", 0)
+	c.Set("user_id", videoTestOwnerUserID)
 	c.Set("request_ip", "127.0.0.1")
 
 	VideoPollHandler(c)

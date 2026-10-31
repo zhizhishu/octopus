@@ -38,6 +38,10 @@ func enrichGroupForSmartRouting(ctx context.Context, group dbmodel.Group, prefer
 			// behaviour change until an operator actually sets a channel priority.
 			items[i].ChannelPriority = channel.Priority
 		}
+		if group.PlanRoute {
+			// 方案路由只看方案页的顺序 / 数字，渠道页的「渠道优先级」一律不参与。
+			items[i].ChannelPriority = 0
+		}
 		if fillFirst {
 			continue
 		}

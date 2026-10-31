@@ -52,14 +52,14 @@ func migratePromptOverrideSwitch(db *gorm.DB) error {
 		return nil
 	}
 	var mode model.Setting
-	if err := db.Where("key = ?", model.SettingKeyPromptOverrideMode).Limit(1).Find(&mode).Error; err != nil {
+	if err := db.Where(model.SettingKeyIs(model.SettingKeyPromptOverrideMode)).Limit(1).Find(&mode).Error; err != nil {
 		return fmt.Errorf("read %s: %w", model.SettingKeyPromptOverrideMode, err)
 	}
 	if mode.Key == "" || !isLegacyPromptMode(mode.Value) {
 		return nil
 	}
 	var text model.Setting
-	if err := db.Where("key = ?", model.SettingKeyPromptOverrideSystem).Limit(1).Find(&text).Error; err != nil {
+	if err := db.Where(model.SettingKeyIs(model.SettingKeyPromptOverrideSystem)).Limit(1).Find(&text).Error; err != nil {
 		return fmt.Errorf("read %s: %w", model.SettingKeyPromptOverrideSystem, err)
 	}
 	enabled := "false"
@@ -67,19 +67,19 @@ func migratePromptOverrideSwitch(db *gorm.DB) error {
 		enabled = "true"
 	}
 	return db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&model.Setting{}).Where("key = ?", model.SettingKeyPromptOverrideMode).
+		if err := tx.Model(&model.Setting{}).Where(model.SettingKeyIs(model.SettingKeyPromptOverrideMode)).
 			Update("value", string(model.PromptOverrideModeBefore)).Error; err != nil {
 			return fmt.Errorf("update %s: %w", model.SettingKeyPromptOverrideMode, err)
 		}
 		var count int64
-		if err := tx.Model(&model.Setting{}).Where("key = ?", model.SettingKeyPromptOverrideEnabled).Count(&count).Error; err != nil {
+		if err := tx.Model(&model.Setting{}).Where(model.SettingKeyIs(model.SettingKeyPromptOverrideEnabled)).Count(&count).Error; err != nil {
 			return err
 		}
 		if count == 0 {
 			if err := tx.Create(&model.Setting{Key: model.SettingKeyPromptOverrideEnabled, Value: enabled}).Error; err != nil {
 				return fmt.Errorf("create %s: %w", model.SettingKeyPromptOverrideEnabled, err)
 			}
-		} else if err := tx.Model(&model.Setting{}).Where("key = ?", model.SettingKeyPromptOverrideEnabled).
+		} else if err := tx.Model(&model.Setting{}).Where(model.SettingKeyIs(model.SettingKeyPromptOverrideEnabled)).
 			Update("value", enabled).Error; err != nil {
 			return fmt.Errorf("update %s: %w", model.SettingKeyPromptOverrideEnabled, err)
 		}

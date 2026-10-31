@@ -345,7 +345,7 @@ func TestGuestKeyExpiredRevokedDisabledRefused(t *testing.T) {
 	}
 
 	// 过期（直接改库 + 刷缓存，模拟时间走过了过期点）。
-	expired := model.GuestKeyRequest{Name: "过期", Models: []string{"gpt-allowed"}, ExpireAt: time.Now().Add(time.Hour).Unix()}
+	expired := model.GuestKeyRequest{Name: "过期", Models: []string{"gpt-allowed"}, ExpireAt: time.Now().Add(time.Hour).Unix(), MaxCost: 2}
 	ek, err := op.GuestKeyCreate(expired, "sk-octopus-expiredguest000000", env.admin, env.ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -395,7 +395,7 @@ func TestGuestKeyOwnerDemotedRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	k, err := op.GuestKeyCreate(model.GuestKeyRequest{Name: "g2", Models: []string{"gpt-allowed"}, ExpireAt: time.Now().Add(time.Hour).Unix()}, "sk-octopus-demotedguest000000", other, env.ctx)
+	k, err := op.GuestKeyCreate(model.GuestKeyRequest{Name: "g2", Models: []string{"gpt-allowed"}, ExpireAt: time.Now().Add(time.Hour).Unix(), MaxCost: 2}, "sk-octopus-demotedguest000000", other, env.ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -407,7 +407,7 @@ func TestGuestKeyOwnerDemotedRefused(t *testing.T) {
 	}
 }
 
-// 校验：必须有模型、必须有过期时间、不能超过最长期限、不能负上限。
+// 校验：必须有模型、必须有过期时间、不能超过最长期限、花费上限必填且 > 0。
 func TestGuestKeyCreateValidation(t *testing.T) {
 	env := setupGuestKeyEnv(t)
 	now := time.Now()
@@ -418,6 +418,8 @@ func TestGuestKeyCreateValidation(t *testing.T) {
 		"past":        {"name": "a", "models": []string{"m"}, "expire_at": now.Add(-time.Hour).Unix()},
 		"too far":     {"name": "a", "models": []string{"m"}, "expire_at": now.AddDate(2, 0, 0).Unix()},
 		"neg cost":    {"name": "a", "models": []string{"m"}, "expire_at": now.Add(time.Hour).Unix(), "max_cost": -1},
+		"no cost":     {"name": "a", "models": []string{"gpt-allowed"}, "expire_at": now.Add(time.Hour).Unix()},
+		"zero cost":   {"name": "a", "models": []string{"gpt-allowed"}, "expire_at": now.Add(time.Hour).Unix(), "max_cost": 0},
 		"comma model": {"name": "a", "models": []string{"a,b"}, "expire_at": now.Add(time.Hour).Unix()},
 	} {
 		rec, _ := env.do(t, http.MethodPost, "/api/v1/guestkey/create", env.token, body)
@@ -457,7 +459,7 @@ func TestGuestKeyModelsMustBeAvailable(t *testing.T) {
 
 	// 可用的（大小写不同、带 [1m] 也认，和转发时判白名单同一口径）照常能建。
 	rec, _ = env.do(t, http.MethodPost, "/api/v1/guestkey/create", env.token, map[string]any{
-		"name": "c", "models": []string{"GPT-Other", "m[1m]"}, "expire_at": exp,
+		"name": "c", "models": []string{"GPT-Other", "m[1m]"}, "expire_at": exp, "max_cost": 1,
 	})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("available models on create: want 200, got %d %s", rec.Code, rec.Body.String())
@@ -554,5 +556,37 @@ func TestGuestKeyShowsInClientTelemetryPerKey(t *testing.T) {
 	// 访客 Key 自己打不了指纹接口（管理接口一律拒）。
 	if rec := env.doHeaders(t, http.MethodGet, fmt.Sprintf("/api/v1/user/telemetry?key=%d", env.guest.ID), map[string]string{"Authorization": "Bearer " + env.guestToken}, ""); rec.Code == http.StatusOK {
 		t.Fatalf("guest key must not read telemetry: %d", rec.Code)
+	}
+}
+
+// 花费上限必填：编辑时清成 0 被拒；库里留着上限为 0 的旧访客 Key（以前允许「不限」）在鉴权时一律拒绝，
+// 管理员补上上限后立刻恢复可用。
+func TestGuestKeyRequiresSpendCap(t *testing.T) {
+	env := setupGuestKeyEnv(t)
+	rec, _ := env.do(t, http.MethodPost, "/api/v1/guestkey/update", env.token, map[string]any{
+		"id": env.guest.ID, "name": "客人 A", "models": []string{"gpt-allowed"}, "expire_at": env.guest.ExpireAt, "max_cost": 0,
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("update to cap 0: want 400, got %d %s", rec.Code, rec.Body.String())
+	}
+
+	if err := db.GetDB().Model(&model.APIKey{}).Where("id = ?", env.guest.ID).Update("max_cost", 0).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := op.InitCache(); err != nil {
+		t.Fatal(err)
+	}
+	if rec := env.chat(t, env.guestToken, "gpt-allowed"); rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), "spend cap") {
+		t.Fatalf("legacy guest key without cap: want 401 spend cap, got %d %s", rec.Code, rec.Body.String())
+	}
+
+	rec, _ = env.do(t, http.MethodPost, "/api/v1/guestkey/update", env.token, map[string]any{
+		"id": env.guest.ID, "name": "客人 A", "models": []string{"gpt-allowed"}, "expire_at": env.guest.ExpireAt, "max_cost": 1.5,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("set cap: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := env.chat(t, env.guestToken, "gpt-allowed"); rec.Code != http.StatusOK {
+		t.Fatalf("after cap set the key works again: %d %s", rec.Code, rec.Body.String())
 	}
 }

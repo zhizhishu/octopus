@@ -238,6 +238,22 @@ func ImagesAsyncSubmit(endpoint string, c *gin.Context) {
 		resp.Error(c, http.StatusPaymentRequired, rerr.Error())
 		return
 	}
+	// 1b) Key 花费上限也要为任务本身占一笔，一直占到终态（与上面同一个 taskID 一起归还）。
+	//    访客 Key 归属管理员、上面那笔恒为 0，没有这一笔就能一次提交 N 个任务冲过上限。
+	//    按张计费的占预扣金额（事先就知道要花多少），按 token 计费的占默认量子。
+	if apiKeyID > 0 {
+		keyObj, kerr := op.APIKeyGet(apiKeyID, ctx)
+		if kerr != nil {
+			op.ImageTaskReservationRelease(taskID)
+			resp.Error(c, http.StatusUnauthorized, resp.ErrUnauthorized)
+			return
+		}
+		if _, kerr := op.ImageTaskKeyReservationTake(taskID, keyObj, billing.precharge); kerr != nil {
+			op.ImageTaskReservationRelease(taskID)
+			resp.Error(c, http.StatusUnauthorized, kerr.Error())
+			return
+		}
+	}
 
 	// 2) 预扣：按张计费的模型在创建任务时就扣掉「单价 × 张数 × 倍率」（new-api 的
 	//    PreConsumeBilling）；按 token 计费的模型此时算不出钱，只靠上面那笔在途预留占住

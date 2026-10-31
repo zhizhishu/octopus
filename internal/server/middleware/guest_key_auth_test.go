@@ -32,7 +32,7 @@ func TestAPIKeyAuthGuestKeyContextIsNotAdmin(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	guest, err := op.GuestKeyCreate(model.GuestKeyRequest{Name: "g", Models: []string{"m1"}, ExpireAt: time.Now().Add(time.Hour).Unix()}, "sk-octopus-guest-ctx-test", admin, ctx)
+	guest, err := op.GuestKeyCreate(model.GuestKeyRequest{Name: "g", Models: []string{"m1"}, ExpireAt: time.Now().Add(time.Hour).Unix(), MaxCost: 1}, "sk-octopus-guest-ctx-test", admin, ctx)
 	if err != nil {
 		t.Fatal(err)
 	}

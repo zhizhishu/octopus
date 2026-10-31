@@ -17,6 +17,8 @@ type Iterator struct {
 	stickyKeyID int
 	modelName   string // 请求模型名（用于熔断检查）
 	mode        model.GroupMode
+	// planRoute：方案路由。顺序完全由方案页决定，PrioritizeChannels（原生协议优先）不再重排。
+	planRoute bool
 
 	// 内嵌追踪
 	attempts []model.ChannelAttempt
@@ -43,7 +45,7 @@ func NewIteratorWithSessionKey(group model.Group, apiKeyID int, requestModel, cl
 // 需要跨轮正确性的来源（previous_response_id / thread / trace / codex session）仍传 true。
 // clientSessionKey 始终照传（指纹合成与日志复用它），stickyEnabled 只决定它是否参与选路。
 func NewIteratorWithSession(group model.Group, apiKeyID int, requestModel, clientSessionKey string, stickyEnabled bool) *Iterator {
-	b := GetBalancer(group.Mode)
+	b := GetBalancerForGroup(group)
 	candidates := b.Candidates(group.Items)
 
 	stickyIdx := -1
@@ -99,6 +101,7 @@ func NewIteratorWithSession(group model.Group, apiKeyID int, requestModel, clien
 		stickyKeyID: stickyKeyID,
 		modelName:   requestModel,
 		mode:        group.Mode,
+		planRoute:   group.PlanRoute,
 	}
 	// Optional decision-trace hook (set by the relay layer when the debug setting is
 	// on). Kept as an injected hook so this package needs no logger/settings import.
@@ -144,7 +147,8 @@ func SameRoutingTier(mode model.GroupMode, a, b model.GroupItem) bool {
 // win its own tier. The global owner exception (which IS allowed to cross tiers) lives in
 // PrioritizeOwnerChannel instead.
 func (it *Iterator) PrioritizeChannels(preferred map[int]bool) {
-	if it == nil || len(preferred) == 0 || len(it.candidates) < 2 {
+	// 方案路由：方案页写的顺序 / 「数字一样的轮流」就是实际顺序，不按协议再排。
+	if it == nil || it.planRoute || len(preferred) == 0 || len(it.candidates) < 2 {
 		return
 	}
 

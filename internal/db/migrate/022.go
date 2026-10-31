@@ -52,7 +52,7 @@ func migrateCustomOpenAIChatVerbatimURLs(db *gorm.DB) error {
 	}
 	return db.Transaction(func(tx *gorm.DB) error {
 		var marker model.Setting
-		err := tx.Where("key = ?", settingKeyCustomChatVerbatim).Take(&marker).Error
+		err := tx.Where(model.SettingKeyIs(settingKeyCustomChatVerbatim)).Take(&marker).Error
 		if err == nil && marker.Value == "done" {
 			return nil
 		}

@@ -14,8 +14,8 @@ import (
 //
 // 归属规则与各自的查询端点**逐字一致**，不另起一套：
 //   - 视频 / Midjourney：relay.videoTaskOwnerMatches —— 记录了 token 的任务只认同一把 key，
-//     没记录 token（存量行）才按用户认；两者都没记录的行（0/0）在 by-id 查询里是放行的，
-//     但**列表里一律不出现**：列表回答的是「我的任务」，不能把无主行塞给每个人。
+//     没记录 token（存量行）才按用户认；两者都没记录的行（0/0）谁的 Key 都看不到——
+//     by-id 查询只放行管理员控制台会话（relay.taskOwnerMatchesRequest），列表里一律不出现。
 //   - 异步图片：op.ImageTaskGetForOwner —— token 与用户两个条件同时满足；已过期的不可见。
 //
 // 【红线】与 VideoTaskListByOwner 一样，归属缺失直接报错，绝不退化成全表。

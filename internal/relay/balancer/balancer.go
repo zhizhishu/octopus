@@ -55,6 +55,80 @@ func GetBalancer(mode model.GroupMode) Balancer {
 	}
 }
 
+// GetBalancerForGroup 与 GetBalancer 相同，只多一条：方案路由的轮询（mode 1 / 6）
+// 用 PlanRotate —— 同一个数字里严格按顺序轮流，不按负载 / 延迟给能用的渠道重新排序。
+// 方案路由的「优先」(mode 3) 仍是 Failover：渠道优先级已在上层清零，所以就是方案页顺序。
+func GetBalancerForGroup(group model.Group) Balancer {
+	if group.PlanRoute && group.Mode.IsSpreadFamily() {
+		return &PlanRotate{Tiered: group.Mode == model.GroupModeSpreadTiered}
+	}
+	return GetBalancer(group.Mode)
+}
+
+// PlanRotate 是方案页「轮询」的真实选路：
+//   - Tiered（mode 6）：条目 Priority 是硬边界，数字大的一级先试，这一级都不行才往下一级；
+//     不分层（mode 1）：全部算一级。
+//   - 同一级里按渠道 ID 排好，每来一个请求起点往后挪一个（纯轮流，不看权重）。
+//   - 健康状况只用来「跳过」：熔断 / 冷却 / 连续失败 / 到并发或 RPM 上限 / 没有可用 Key 的
+//     渠道挪到这一级末尾（仍是最后的兜底），能用的渠道之间的顺序只由轮流决定，
+//     不按在途数、延迟重排。
+type PlanRotate struct {
+	Tiered bool
+}
+
+func (b *PlanRotate) Candidates(items []model.GroupItem) []model.GroupItem {
+	if len(items) == 0 {
+		return nil
+	}
+	sorted := make([]model.GroupItem, len(items))
+	copy(sorted, items)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		if b.Tiered && sorted[i].Priority != sorted[j].Priority {
+			return sorted[i].Priority > sorted[j].Priority
+		}
+		if sorted[i].ChannelID != sorted[j].ChannelID {
+			return sorted[i].ChannelID < sorted[j].ChannelID
+		}
+		return sorted[i].ModelName < sorted[j].ModelName
+	})
+	result := make([]model.GroupItem, 0, len(sorted))
+	for start := 0; start < len(sorted); {
+		end := start + 1
+		for end < len(sorted) && (!b.Tiered || sorted[end].Priority == sorted[start].Priority) {
+			end++
+		}
+		result = append(result, planRotateLevel(sorted[start:end])...)
+		start = end
+	}
+	return result
+}
+
+// planRotateHealthy：spreadTier 0（空闲）和 1（有在途请求）都算能用，一视同仁。
+func planRotateHealthy(item model.GroupItem) bool {
+	return spreadTier(item) <= 1
+}
+
+// planRotateLevel 轮流一级。计数器按这一级的全部成员（含暂时不能用的）取，
+// 所以某个渠道临时不能用时，其余渠道的轮流节奏不会被打乱。
+func planRotateLevel(level []model.GroupItem) []model.GroupItem {
+	if len(level) <= 1 {
+		return append([]model.GroupItem(nil), level...)
+	}
+	start := int((atomic.AddUint64(roundRobinCounterForItems(level), 1) - 1) % uint64(len(level)))
+	healthy := make([]model.GroupItem, 0, len(level))
+	unhealthy := make([]model.GroupItem, 0)
+	for offset := 0; offset < len(level); offset++ {
+		item := level[(start+offset)%len(level)]
+		if planRotateHealthy(item) {
+			healthy = append(healthy, item)
+		} else {
+			unhealthy = append(unhealthy, item)
+		}
+	}
+	sort.SliceStable(unhealthy, func(i, j int) bool { return spreadTier(unhealthy[i]) < spreadTier(unhealthy[j]) })
+	return append(healthy, unhealthy...)
+}
+
 func roundRobinCounterForItems(items []model.GroupItem) *uint64 {
 	key := roundRobinSignature(items)
 	counter := new(uint64)

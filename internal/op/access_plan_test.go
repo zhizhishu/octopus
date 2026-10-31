@@ -223,6 +223,10 @@ func TestAccessPlanRouteBuildsGroupTargets(t *testing.T) {
 	if !ok || matchedRule == nil {
 		t.Fatalf("expected access route to match")
 	}
+	// 方案路由：只按方案里的数字排，渠道页的优先级不参与（relay.enrichGroupForSmartRouting 看这个标记）。
+	if !group.PlanRoute {
+		t.Fatalf("plan route group must be marked PlanRoute")
+	}
 	if len(group.Items) != 1 {
 		t.Fatalf("expected one route target, got %d", len(group.Items))
 	}

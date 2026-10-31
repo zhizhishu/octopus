@@ -77,7 +77,7 @@ function Body({ apiKey, nowSec, onClose }: { apiKey: GuestKey | null; nowSec: nu
     const submit = () => {
         // 预设按「点保存的这一刻」算，不按打开对话框的时刻。
         const expireAt = preset === 'custom' ? draft.expireAt : presetExpireAt(preset, Math.floor(Date.now() / 1000)) ?? draft.expireAt;
-        const body = { name: draft.name.trim(), note: draft.note.trim(), models: draft.models, expire_at: expireAt, max_cost: draft.cap.trim() ? Number(draft.cap) : 0, enabled: draft.enabled };
+        const body = { name: draft.name.trim(), note: draft.note.trim(), models: draft.models, expire_at: expireAt, max_cost: Number(draft.cap), enabled: draft.enabled };
         const onError = (e: unknown) => toast.error(t('saveFailed'), { description: (e as { message?: string } | null)?.message });
         if (apiKey) {
             update.mutate({ ...body, id: apiKey.id }, { onSuccess: () => { toast.success(t('saved', { name: body.name })); onClose(); }, onError });
@@ -126,7 +126,7 @@ function Body({ apiKey, nowSec, onClose }: { apiKey: GuestKey | null; nowSec: nu
                             <div className={label}>{t('cap')}<HelpTip content={t('capTip')} /></div>
                             <div className="relative">
                                 <span className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-sm text-muted-foreground">$</span>
-                                <input inputMode="decimal" value={draft.cap} onChange={(e) => set({ cap: normalizeMoneyInput(e.target.value) })} placeholder={t('capPh')} className={cn(inputCls, 'pl-6')} />
+                                <input data-guest-cap inputMode="decimal" required aria-required value={draft.cap} onChange={(e) => set({ cap: normalizeMoneyInput(e.target.value) })} placeholder={t('capPh')} className={cn(inputCls, 'pl-6')} />
                             </div>
                             <div className="mt-1.5 text-xs text-muted-foreground">{t('billing')}</div>
                         </div>

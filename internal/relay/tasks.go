@@ -313,7 +313,7 @@ func lookupOwnedVideoTask(ctx context.Context, c *gin.Context, id string) (*mode
 		return nil, err
 	}
 	entry := videoTaskEntry{ownerTokenID: row.OwnerTokenID, ownerUserID: row.OwnerUserID}
-	if !videoTaskOwnerMatches(entry, c.GetInt("api_key_id"), taskOwnerUserID(c)) {
+	if !taskOwnerMatchesRequest(c, entry.ownerTokenID, entry.ownerUserID) {
 		return nil, nil
 	}
 	return row, nil
@@ -336,7 +336,7 @@ func lookupOwnedImageTask(ctx context.Context, c *gin.Context, id string) (*mode
 
 func lookupOwnedMidjourneyTask(ctx context.Context, c *gin.Context, id string) (*model.MidjourneyTask, midjourneyTaskEntry, bool) {
 	entry, ok := midjourneyTaskOwner(ctx, id)
-	if !ok || !midjourneyTaskOwnerMatches(entry, c.GetInt("api_key_id"), taskOwnerUserID(c)) {
+	if !ok || !taskOwnerMatchesRequest(c, entry.ownerTokenID, entry.ownerUserID) {
 		return nil, midjourneyTaskEntry{}, false
 	}
 	row, err := op.MidjourneyTaskGetByUpstreamID(ctx, id)

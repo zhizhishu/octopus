@@ -134,7 +134,7 @@ func settingSetStringLocked(key model.SettingKey, value string) error {
 		// Some drivers report 0 rows for an UPDATE that stores the existing value, so a
 		// missing row is the only real error: confirm before claiming the key is gone.
 		var count int64
-		if err := db.GetDB().Model(&model.Setting{}).Where("key = ?", key).Count(&count).Error; err != nil {
+		if err := db.GetDB().Model(&model.Setting{}).Where(model.SettingKeyIs(key)).Count(&count).Error; err != nil {
 			return fmt.Errorf("failed to set setting: %w", err)
 		}
 		if count == 0 {
@@ -185,7 +185,7 @@ func settingSetIntLocked(key model.SettingKey, value int) error {
 	}
 	if result.RowsAffected == 0 {
 		var count int64
-		if err := db.GetDB().Model(&model.Setting{}).Where("key = ?", key).Count(&count).Error; err != nil {
+		if err := db.GetDB().Model(&model.Setting{}).Where(model.SettingKeyIs(key)).Count(&count).Error; err != nil {
 			return fmt.Errorf("failed to set setting: %w", err)
 		}
 		if count == 0 {

@@ -194,3 +194,34 @@ func TestIdentifyClient(t *testing.T) {
 		}
 	}
 }
+
+// Referer / Origin / HTTP-Referer 只留 scheme + host + path：查询串、# 片段、user:pass@ 都不进记录。
+func TestCaptureStripsQueryFromURLHeaders(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req.Header.Set("Referer", "https://app.example.com/chat/42?token=abc123&email=a%40b.c#frag-secret")
+	req.Header.Set("HTTP-Referer", "https://user:pw@openrouter-app.example/page?code=xyz")
+	req.Header.Set("Origin", "https://app.example.com")
+	s := Capture(req, false)
+	if got := s.Notable["referer"]; got != "https://app.example.com/chat/42" {
+		t.Fatalf("referer = %q", got)
+	}
+	if got := s.Notable["http-referer"]; got != "https://openrouter-app.example/page" {
+		t.Fatalf("http-referer = %q", got)
+	}
+	if got := s.Notable["origin"]; got != "https://app.example.com" {
+		t.Fatalf("origin = %q", got)
+	}
+	for k, v := range s.Notable {
+		for _, bad := range []string{"abc123", "xyz", "frag-secret", "pw@", "email="} {
+			if strings.Contains(v, bad) {
+				t.Fatalf("%s kept %q: %q", k, bad, v)
+			}
+		}
+	}
+	if got := stripURLQuery("not a url?x=1#y"); got != "not a url" {
+		t.Fatalf("unparsable value must still be cut at ?/#, got %q", got)
+	}
+	if req.Header.Get("Referer") != "https://app.example.com/chat/42?token=abc123&email=a%40b.c#frag-secret" {
+		t.Fatal("capture must not modify the request")
+	}
+}

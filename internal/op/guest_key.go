@@ -25,8 +25,8 @@ import (
 //   - 作废（RevokedAt）是终态，不能再启用。
 //
 // 计费：归属是管理员，管理员本身不扣余额（UserRecordUsage 对管理员不记账），
-// 所以花的是「管理员的池子」；真正的闸是这把 Key 自己的 MaxCost（按 StatsAPIKey 累计花费判，
-// 与普通 Key 同一个判据）。每次请求的费用照常算、照常记进日志和这把 Key 的用量。
+// 所以花的是「管理员的池子」；真正的闸是这把 Key 自己的 MaxCost（必填、> 0；按 StatsAPIKey 累计花费
+// 加上在途预留判，见 apikey_quota.go）。每次请求的费用照常算、照常记进日志和这把 Key 的用量。
 
 var (
 	errGuestKeyAdminOnly    = errors.New("only admin can manage guest keys")
@@ -36,7 +36,7 @@ var (
 	errGuestKeyModels       = errors.New("guest key needs at least one model")
 	errGuestKeyExpire       = errors.New("guest key needs an expire time")
 	errGuestKeyExpireTooFar = fmt.Errorf("guest key can last at most %d days", GuestKeyMaxDays)
-	errGuestKeyMaxCost      = errors.New("max cost must not be negative")
+	errGuestKeyMaxCost      = errors.New("guest key needs a spend cap greater than 0")
 	errGuestKeyRevokedEdit  = errors.New("guest key has been revoked")
 )
 
@@ -145,6 +145,12 @@ func GuestKeyAuthCheck(key model.APIKey, owner model.User) error {
 	if len(SupportedModelsList(key.SupportedModels)) == 0 {
 		return errGuestKeyModels
 	}
+	// 花费上限是访客 Key 唯一的闸（管理员不扣余额）。现在建 / 改都要求 > 0；
+	// 以前建的、上限留空（0 = 不限）的旧访客 Key 一律拒绝，直到管理员给它设上一个上限——
+	// 宁可先停用，也不让一把「不限额、花管理员钱」的 Key 继续跑。
+	if key.MaxCost <= 0 {
+		return errGuestKeyMaxCost
+	}
 	return nil
 }
 
@@ -195,7 +201,7 @@ func GuestKeyCreate(req model.GuestKeyRequest, secret string, actor model.User, 
 	if err := guestKeyValidateExpire(req.ExpireAt, time.Now()); err != nil {
 		return model.APIKey{}, err
 	}
-	if req.MaxCost < 0 {
+	if req.MaxCost <= 0 {
 		return model.APIKey{}, errGuestKeyMaxCost
 	}
 	enabled := true
@@ -246,7 +252,7 @@ func GuestKeyUpdate(req model.GuestKeyRequest, actor model.User, ctx context.Con
 			return model.APIKey{}, err
 		}
 	}
-	if req.MaxCost < 0 {
+	if req.MaxCost <= 0 {
 		return model.APIKey{}, errGuestKeyMaxCost
 	}
 	families := existing.EndpointFamilies

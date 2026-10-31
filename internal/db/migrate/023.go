@@ -41,7 +41,7 @@ func migrateClaudeDefaultEffortSettings(db *gorm.DB) error {
 		return nil
 	}
 	var effort model.Setting
-	err := db.Where("key = ?", model.SettingKeyClaudeCLIReasoningEffort).Take(&effort).Error
+	err := db.Where(model.SettingKeyIs(model.SettingKeyClaudeCLIReasoningEffort)).Take(&effort).Error
 	switch {
 	case errors.Is(err, gorm.ErrRecordNotFound):
 	case err != nil:
@@ -49,7 +49,7 @@ func migrateClaudeDefaultEffortSettings(db *gorm.DB) error {
 	default:
 		next := migratedClaudeDefaultEffort(effort.Value)
 		if next != effort.Value {
-			if err := db.Model(&model.Setting{}).Where("key = ?", model.SettingKeyClaudeCLIReasoningEffort).
+			if err := db.Model(&model.Setting{}).Where(model.SettingKeyIs(model.SettingKeyClaudeCLIReasoningEffort)).
 				Update("value", next).Error; err != nil {
 				return fmt.Errorf("update %s: %w", model.SettingKeyClaudeCLIReasoningEffort, err)
 			}
@@ -59,7 +59,7 @@ func migrateClaudeDefaultEffortSettings(db *gorm.DB) error {
 	}
 
 	var compact model.Setting
-	err = db.Where("key = ?", settingKeyLegacyClaudeCLIAutoCompact).Take(&compact).Error
+	err = db.Where(model.SettingKeyIs(settingKeyLegacyClaudeCLIAutoCompact)).Take(&compact).Error
 	switch {
 	case errors.Is(err, gorm.ErrRecordNotFound):
 		return nil
@@ -71,7 +71,7 @@ func migrateClaudeDefaultEffortSettings(db *gorm.DB) error {
 			"which keeps everything on current Claude models and caused 400 when thinking was off; nothing replaces it",
 			settingKeyLegacyClaudeCLIAutoCompact)
 	}
-	if err := db.Where("key = ?", settingKeyLegacyClaudeCLIAutoCompact).Delete(&model.Setting{}).Error; err != nil {
+	if err := db.Where(model.SettingKeyIs(settingKeyLegacyClaudeCLIAutoCompact)).Delete(&model.Setting{}).Error; err != nil {
 		return fmt.Errorf("delete %s: %w", settingKeyLegacyClaudeCLIAutoCompact, err)
 	}
 	return nil

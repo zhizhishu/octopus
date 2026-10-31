@@ -84,8 +84,13 @@ func newPathTestGin(method, target, body string) (*httptest.ResponseRecorder, *g
 func newVideoPollGin(taskID string) (*httptest.ResponseRecorder, *gin.Context) {
 	rec, c := newPathTestGin(http.MethodGet, "/v1/videos/"+taskID, "")
 	c.Params = []gin.Param{{Key: "id", Value: taskID}}
+	c.Set("user_id", videoTestOwnerUserID)
 	return rec, c
 }
+
+// videoTestOwnerUserID：视频测试里创建 / 轮询用的同一个归属用户。无归属（0/0）的任务现在
+// 对任何 API Key 请求都不可见（只给管理员控制台会话），所以测试必须带一个真实归属。
+const videoTestOwnerUserID = 4243
 
 // ---------------------------------------------------------------------------
 // 契约第四节第 1 条：默认行为零变化。三个字段都空时，打出去的上游 URL 与改动前
@@ -122,6 +127,7 @@ func TestVideosUpstreamPathsUnchangedWhenOverrideEmpty(t *testing.T) {
 	createPathTestChannel(t, ctx, "videos-default-path", outbound.OutboundTypeOpenAIChat, upstream.URL, "video-default-model", nil)
 
 	rec, c := newPathTestGin(http.MethodPost, "/v1/videos/edits", `{"model":"video-default-model","prompt":"a slow sunrise"}`)
+	c.Set("user_id", videoTestOwnerUserID)
 	VideosHandlerKind(c, VideoMediaKindEdits)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("video create failed: %d %s", rec.Code, rec.Body.String())
@@ -215,6 +221,7 @@ func TestVideosPathOverrideKeepsMediaKind(t *testing.T) {
 		func(ch *dbmodel.Channel) { ch.OpenAIVideosPath = "/kling/v1/videos" })
 
 	rec, c := newPathTestGin(http.MethodPost, "/v1/videos/edits", `{"model":"video-custom-model","prompt":"a slow sunrise"}`)
+	c.Set("user_id", videoTestOwnerUserID)
 	VideosHandlerKind(c, VideoMediaKindEdits)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("video create failed: %d %s", rec.Code, rec.Body.String())
@@ -258,6 +265,7 @@ func TestTasksPathOverrideIsIndependentOfVideosPath(t *testing.T) {
 		})
 
 	rec, c := newPathTestGin(http.MethodPost, "/v1/videos/edits", `{"model":"video-tasks-model","prompt":"a slow sunrise"}`)
+	c.Set("user_id", videoTestOwnerUserID)
 	VideosHandlerKind(c, VideoMediaKindEdits)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("video create failed: %d %s", rec.Code, rec.Body.String())
