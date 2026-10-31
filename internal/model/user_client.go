@@ -57,11 +57,13 @@ func UserClientSeenKey(userID, apiKeyID int, fpHash string) string {
 
 // UserClientKeyInfo 是抽屉里「按 Key 看」的一个选项。
 type UserClientKeyInfo struct {
-	APIKeyID     int    `json:"api_key_id"`
-	APIKeyName   string `json:"api_key_name,omitempty"`
-	Fingerprints int    `json:"fingerprints"`
-	Requests     int64  `json:"requests"`
-	LastSeen     int64  `json:"last_seen"`
+	APIKeyID   int    `json:"api_key_id"`
+	APIKeyName string `json:"api_key_name,omitempty"`
+	// Guest：这是管理员名下的访客 Key（指纹页给它标「访客」）。
+	Guest        bool  `json:"guest,omitempty"`
+	Fingerprints int   `json:"fingerprints"`
+	Requests     int64 `json:"requests"`
+	LastSeen     int64 `json:"last_seen"`
 }
 
 // UserClientDetail 是 GET /api/v1/user/telemetry 的结果。

@@ -17,8 +17,9 @@ import { Bar, Seg } from '@/components/modules/user/components/ui-bits';
 import { spendState } from '../lib/key-filters';
 import { guestStatus } from '../lib/guest-key';
 import { GuestExpiry, GuestStatusPill } from './bits';
+import { ClientTelemetryPanel } from '@/components/modules/user/components/user-client';
 
-type Tab = 'usage' | 'access';
+type Tab = 'usage' | 'access' | 'fingerprint';
 
 // 一把访客 Key 的用量和来源：用量（同 API Key 抽屉）+ IP / 客户端（同用户页，按这把 Key 取）+ 跳到请求日志。
 export function GuestKeyDetail({ open, onOpenChange, apiKey, spent, nowSec, onLogs }: {
@@ -48,12 +49,12 @@ export function GuestKeyDetail({ open, onOpenChange, apiKey, spent, nowSec, onLo
                                 <GuestExpiry expireAt={apiKey.expire_at} nowSec={nowSec} className="text-xs" />
                             </DialogDescription>
                             <div className="flex flex-wrap items-center justify-between gap-2 pt-2">
-                                <Seg size="sm" value={tab} onChange={setTab} options={[{ value: 'usage', label: t('usage') }, { value: 'access', label: t('access') }]} />
+                                <Seg size="sm" value={tab} onChange={setTab} options={[{ value: 'usage', label: t('usage') }, { value: 'access', label: t('access') }, { value: 'fingerprint', label: t('fingerprint') }]} />
                                 {tab === 'usage' && <UsageRangeSeg value={range} onChange={setRange} />}
                             </div>
                         </DialogHeader>
                         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4 sm:px-6">
-                            {tab === 'usage' ? <UsagePane apiKey={apiKey} spent={spent} range={range} /> : <AccessPane apiKey={apiKey} nowSec={nowSec} />}
+                            {tab === 'usage' ? <UsagePane apiKey={apiKey} spent={spent} range={range} /> : tab === 'access' ? <AccessPane apiKey={apiKey} nowSec={nowSec} /> : <ClientTelemetryPanel apiKeyId={apiKey.id} />}
                         </div>
                         <div className="border-t border-border/70 px-5 py-3 max-sm:pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-6">
                             <button type="button" onClick={() => onLogs(apiKey)} className="flex w-full items-center justify-between rounded-2xl bg-muted/40 px-3 py-2.5 text-sm hover:bg-muted/70">

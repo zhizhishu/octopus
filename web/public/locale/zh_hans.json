@@ -1931,6 +1931,7 @@
     },
     "client": {
       "tab": "指纹",
+      "guestKey": "访客",
       "unknown": "认不出的客户端",
       "times": "{n} 次",
       "lastSeen": "{when}用过",
@@ -2340,7 +2341,8 @@
         "total": "累计花费",
         "noCap": "不限",
         "billing": "记在管理员名下，不扣余额；到上限就停。",
-        "totalRequests": "共 {n} 次"
+        "totalRequests": "共 {n} 次",
+        "fingerprint": "指纹"
       },
       "revoke": {
         "title": "作废「{name}」？",

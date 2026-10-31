@@ -482,3 +482,77 @@ func TestGuestKeyModelsMustBeAvailable(t *testing.T) {
 		t.Fatalf("available models on update: want 200, got %d %s", rec.Code, rec.Body.String())
 	}
 }
+
+// 访客 Key 的请求也进「客户端指纹」：按这把 Key 看（访客详情的「指纹」页）能看到，
+// 在管理员的用户抽屉「指纹」页里也单独成一个 Key，并标成访客；普通 Key 的指纹不会混进来。
+func TestGuestKeyShowsInClientTelemetryPerKey(t *testing.T) {
+	env := setupGuestKeyEnv(t)
+	adminKey := model.APIKey{UserID: env.admin.ID, Name: "admin-own", APIKey: "sk-octopus-adminown000000000000", Enabled: true}
+	if err := op.APIKeyCreate(&adminKey, env.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if rec := env.chat(t, env.guestToken, "gpt-allowed"); rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden {
+		t.Fatalf("guest chat: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := env.doHeaders(t, http.MethodPost, "/v1/chat/completions", map[string]string{
+		"Authorization": "Bearer " + adminKey.APIKey, "User-Agent": "admin-tool/2.0",
+	}, `{"model":"gpt-allowed","messages":[{"role":"user","content":"hi"}]}`); rec.Code == http.StatusUnauthorized {
+		t.Fatalf("admin key chat: %d", rec.Code)
+	}
+
+	// 只按访客 Key 看。
+	rec, data := env.do(t, http.MethodGet, fmt.Sprintf("/api/v1/user/telemetry?key=%d", env.guest.ID), env.token, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("telemetry by key: %d %s", rec.Code, rec.Body.String())
+	}
+	var byKey model.UserClientDetail
+	if err := json.Unmarshal(data, &byKey); err != nil {
+		t.Fatal(err)
+	}
+	if len(byKey.Fingerprints) == 0 {
+		t.Fatalf("guest key request not in telemetry: %s", data)
+	}
+	// 指纹缓冲是进程级的，同包别的测试（各自新库、Key id 会重复）可能留下同 id 的记录，
+	// 所以这里按 UA 认：访客的请求必须在，管理员自己那把 Key 的请求不许混进来。
+	sawGuest := false
+	for _, fp := range byKey.Fingerprints {
+		if fp.APIKeyID != env.guest.ID || fp.UserID != env.admin.ID {
+			t.Fatalf("foreign fingerprint in guest key view: %+v", fp)
+		}
+		if fp.UserAgent == "admin-tool/2.0" {
+			t.Fatalf("admin's own key request leaked into guest key view: %+v", fp)
+		}
+		sawGuest = sawGuest || fp.UserAgent == "guest-cli/1.0"
+	}
+	if !sawGuest {
+		t.Fatalf("guest request (guest-cli/1.0) not found in guest key view: %s", data)
+	}
+	if len(byKey.Keys) != 1 || byKey.Keys[0].APIKeyID != env.guest.ID || !byKey.Keys[0].Guest || byKey.Keys[0].APIKeyName != "客人 A" {
+		t.Fatalf("guest key info: %+v", byKey.Keys)
+	}
+
+	// 管理员的用户抽屉：访客 Key 和管理员自己的 Key 分开列，访客那个标 guest。
+	rec, data = env.do(t, http.MethodGet, fmt.Sprintf("/api/v1/user/telemetry?id=%d", env.admin.ID), env.token, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("telemetry by user: %d %s", rec.Code, rec.Body.String())
+	}
+	var byUser model.UserClientDetail
+	if err := json.Unmarshal(data, &byUser); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[int]bool{}
+	for _, k := range byUser.Keys {
+		seen[k.APIKeyID] = true
+		if k.Guest != (k.APIKeyID == env.guest.ID) {
+			t.Fatalf("guest flag wrong for key %d: %+v", k.APIKeyID, k)
+		}
+	}
+	if !seen[env.guest.ID] || !seen[adminKey.ID] {
+		t.Fatalf("admin drawer must list guest key and own key separately: %+v", byUser.Keys)
+	}
+
+	// 访客 Key 自己打不了指纹接口（管理接口一律拒）。
+	if rec := env.doHeaders(t, http.MethodGet, fmt.Sprintf("/api/v1/user/telemetry?key=%d", env.guest.ID), map[string]string{"Authorization": "Bearer " + env.guestToken}, ""); rec.Code == http.StatusOK {
+		t.Fatalf("guest key must not read telemetry: %d", rec.Code)
+	}
+}

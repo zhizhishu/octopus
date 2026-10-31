@@ -263,6 +263,9 @@ func UserClientDetailGet(ctx context.Context, userID, apiKeyID int) (model.UserC
 		k := keys[r.APIKeyID]
 		if k == nil {
 			k = &model.UserClientKeyInfo{APIKeyID: r.APIKeyID, APIKeyName: userAccessKeyName(r.APIKeyID)}
+			if ak, ok := apiKeyCache.Get(r.APIKeyID); ok {
+				k.Guest = ak.Guest
+			}
 			keys[r.APIKeyID] = k
 		}
 		k.Fingerprints++

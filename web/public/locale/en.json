@@ -1931,6 +1931,7 @@
     },
     "client": {
       "tab": "Fingerprint",
+      "guestKey": "Guest",
       "unknown": "Unknown client",
       "times": "{n} calls",
       "lastSeen": "Used {when}",
@@ -2340,7 +2341,8 @@
         "total": "Total spent",
         "noCap": "No cap",
         "billing": "Booked to the admin, no balance charged; stops at the cap.",
-        "totalRequests": "{n} requests"
+        "totalRequests": "{n} requests",
+        "fingerprint": "Fingerprint"
       },
       "revoke": {
         "title": "Revoke “{name}”?",

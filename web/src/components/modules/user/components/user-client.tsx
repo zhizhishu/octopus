@@ -118,6 +118,7 @@ function KeyChips({ keys, value, onChange, total }: { keys: UserClientKeyInfo[];
                 <button key={k.api_key_id} type="button" className={cn(chip, 'max-w-[14rem]', value === k.api_key_id && chipOn)} onClick={() => onChange(k.api_key_id)}>
                     <KeyRound className="size-3 shrink-0" />
                     <span className="truncate">{keyName(k.api_key_id, k.api_key_name)}</span>
+                    {k.guest && <span data-guest-key className="shrink-0 rounded-full bg-amber-500/15 px-1.5 text-[10px] text-amber-700 dark:text-amber-300">{t('guestKey')}</span>}
                     <span className="shrink-0 tabular-nums">· {k.fingerprints}</span>
                 </button>
             ))}
