@@ -216,11 +216,16 @@ func executeOneImageTask(ctx context.Context, task model.ImageTask) {
 		return
 	}
 
+	// 结算（纯计算）：按任务行上冻结的口径算出这一单最终收多少。最终价格跟着终态
+	// 一起写进 CAS（同一条 UPDATE），差额在赢得 CAS 之后才动钱——只有一个写者会动。
+	settlement := relay.ImageTaskSettle(task, body)
+
 	now := time.Now().Unix()
 	updates := map[string]any{
 		"completed_at":  now,
 		"result_json":   resultJSON,
 		"error_message": "",
+		"cost":          settlement.Cost,
 	}
 	// 见 imageTaskPersistTimeout：结果必须落库，不跟着整轮预算一起取消。
 	persistCtx, persistCancel := context.WithTimeout(context.Background(), imageTaskPersistTimeout)
@@ -239,8 +244,13 @@ func executeOneImageTask(ctx context.Context, task model.ImageTask) {
 		log.Warnf("image task poll: task %s was already advanced by another writer", task.TaskID)
 		return
 	}
-	// 成功：只归还在途预留，**不退款**（预扣的就是这一单的钱）。
+	// 成功：按结算补扣/退回差额（按张计费差额为 0，不动钱），再归还在途预留。
+	// 不走失败退款：预扣的就是这一单的钱。
+	if cerr := settlement.Charge(persistCtx, task.OwnerUserID); cerr != nil {
+		log.Errorf("image task poll: settle task %s (delta %.6f) failed: %v", task.TaskID, settlement.Delta, cerr)
+	}
 	op.ImageTaskReservationRelease(task.TaskID)
+	taskLog.SetSettlement(settlement)
 	taskLog.Finish(true, statusCode, resultJSON, "")
 	log.Infof("image task poll: task %s completed (channel=%d, model=%s)", task.TaskID, task.ChannelID, task.Model)
 }

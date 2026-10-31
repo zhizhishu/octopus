@@ -25,10 +25,11 @@ import (
 //     内联图片按「图片另存」规则存文件；开关关闭时不读 body；
 //   - 结果：落库的 result_json（b64_json 已在 ImageTaskResultPayload 里剔除）；
 //     失败写错误原因（已脱敏）；
-//   - 费用：任务提交时实际预扣的那一笔（task.Cost）。失败/过期已退款，记 0。
+//   - 费用：完成时结算出来的最终价格（按张 = 提交时的预扣；按 token = 上游用量 × 冻结的价，
+//     见 ImageTaskSettle）。失败/过期已退款，记 0。
 //
-// 【不扣钱】这里只记账给人看。钱在提交时已经预扣、失败时已经退回；这里如果像同步
-// 路径的 Save 那样再调 UserRecordUsage 就是重复扣费。
+// 【不扣钱】这里只记账给人看。钱由提交时的预扣 + 完成时的差额结算（ImageTaskSettlement.Charge）
+// 收齐、失败时已经退回；这里如果像同步路径的 Save 那样再调 UserRecordUsage 就是重复扣费。
 //
 // 【用时】UseTime 只算执行器那一次上游调用的耗时，不含排队等待：渠道测速/吞吐统计
 // 读的就是这一列，把排队时间算进去会让一个快渠道看起来很慢。
@@ -49,6 +50,18 @@ type ImageTaskLog struct {
 	callStart   time.Time
 	callDur     time.Duration
 	called      bool
+
+	settlement    ImageTaskSettlement
+	hasSettlement bool
+}
+
+// SetSettlement 记下完成时结算出来的最终价格与用量（成功路径在 Finish 之前调用）。
+func (l *ImageTaskLog) SetSettlement(s ImageTaskSettlement) {
+	if l == nil {
+		return
+	}
+	l.settlement = s
+	l.hasSettlement = true
 }
 
 // NewImageTaskLog 按任务行准备一条日志。
@@ -125,9 +138,28 @@ func (l *ImageTaskLog) Finish(success bool, statusCode int, resultJSON string, f
 
 	m := l.metrics
 	cost := 0.0
+	usageSeen := false
 	if success {
 		cost = l.task.Cost
 		m.ResponseContent = resultJSON
+		if l.hasSettlement {
+			// 最终价格以结算为准（按 token 计费的任务在完成时才算出钱）。
+			cost = l.settlement.Cost
+			if l.settlement.usage != nil {
+				m.SetUsageFromImages(m.ActualModel, *l.settlement.usage)
+				usageSeen = true
+			}
+			if l.settlement.hasSnapshot {
+				m.BillingSnapshot = l.settlement.snapshot
+			}
+		}
+	} else if strings.TrimSpace(l.task.BillingSnapshot) != "" {
+		// 失败/过期：钱已退回，价格信息（计费模型、单价、倍率）照样展示，费用一律 0。
+		var snap model.AccessPlanBillingSnapshot
+		if err := json.Unmarshal([]byte(l.task.BillingSnapshot), &snap); err == nil {
+			snap.FinalInputCost, snap.FinalOutputCost, snap.FinalCacheReadCost, snap.FinalCacheWriteCost = 0, 0, 0, 0
+			m.BillingSnapshot = snap
+		}
 	}
 
 	var attempts []model.ChannelAttempt
@@ -168,7 +200,18 @@ func (l *ImageTaskLog) Finish(success bool, statusCode int, resultJSON string, f
 		Cost:             cost,
 	}
 	m.upstreamBodyLog.applyTo(&relayLog)
-	relayLog.UsageSource, relayLog.UsageMissingReason = usageAuditFromStats(m.Stats, false, nil, false)
+	if m.BillingSnapshot.BillingModelName != "" || m.BillingSnapshot.AccessPlanID != 0 {
+		applyBillingSnapshotToRelayLog(&relayLog, m.BillingSnapshot)
+	}
+	relayLog.UsageSource, relayLog.UsageMissingReason = usageAuditFromStats(m.Stats, usageSeen, nil, false)
+	if usageSeen {
+		relayLog.InputTokens = int(m.Stats.InputToken)
+		relayLog.OutputTokens = int(m.Stats.OutputToken)
+		relayLog.CacheHitTokens = int(m.Stats.CacheHitToken)
+		relayLog.CacheWriteTokens = int(m.Stats.CacheWriteToken)
+		relayLog.CacheInputTokens = int(m.Stats.CacheInputToken)
+		relayLog.CacheHitRate = cacheHitRate(m.Stats.CacheHitToken, m.Stats.CacheInputToken)
+	}
 	if !success {
 		relayLog.Error = failReason
 		if statusCode > 0 {
@@ -185,6 +228,13 @@ func (l *ImageTaskLog) Finish(success bool, statusCode int, resultJSON string, f
 	// 统计口径与同步图片一致（请求数、等待时间、费用），但**不**调 UserRecordUsage：
 	// 这一单的钱提交时已经扣过（失败已退）。
 	stats := model.StatsMetrics{WaitTime: int64(relayLog.UseTime), OutputCost: cost}
+	if usageSeen {
+		stats.InputToken = m.Stats.InputToken
+		stats.OutputToken = m.Stats.OutputToken
+		stats.CacheHitToken = m.Stats.CacheHitToken
+		stats.CacheWriteToken = m.Stats.CacheWriteToken
+		stats.CacheInputToken = m.Stats.CacheInputToken
+	}
 	if success {
 		stats.RequestSuccess = 1
 	} else {

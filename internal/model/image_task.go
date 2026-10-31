@@ -87,11 +87,23 @@ type ImageTask struct {
 	// 失败原因（已脱敏）。前端展示这一列，不展示 ResultJSON。
 	ErrorMessage string `json:"error_message" gorm:"type:text"`
 
-	// 计费：创建时按次预扣，完成不再扣。金额单位与项目其余部分一致。
+	// 计费：处理中 = 提交时预扣的钱（按张计费的模型）；完成后 = 这一单最终收的钱
+	// （按 token 计费的模型在完成时按上游用量结算，见 relay.ImageTaskSettle）。
+	// 金额单位与项目其余部分一致。
 	//
 	// 它同时是退款幂等的凭据：退款路径用 `UPDATE ... SET cost = 0 WHERE id = ? AND cost > 0`
 	// 抢这一笔，抢到的那一次才真退（见 op.ImageTaskClaimRefund）。
 	Cost float64 `json:"cost" gorm:"default:0"`
+
+	// 以下三列是提交时冻结的计费口径（与 new-api 的 Task.PrivateData.BillingContext 同义）：
+	// 任务可能排队、跑很久，期间管理员改价不该改变一条已经受理的任务的价格。
+	//   - BillingMode：per_image（按张，提交即预扣，完成不再结算）/ token（完成时按
+	//     上游用量结算）/ 空（改动前提交的存量任务：只认预扣，不结算）。
+	//   - ImageCount：请求的张数 n。
+	//   - BillingSnapshot：访问计划倍率 + token 单价（JSON，model.AccessPlanBillingSnapshot）。
+	BillingMode     string `json:"-" gorm:"size:16;default:''"`
+	ImageCount      int    `json:"-" gorm:"default:0"`
+	BillingSnapshot string `json:"-" gorm:"type:text"`
 }
 
 // TableName 固定表名，避免 GORM 复数化规则将来变动导致迁移与运行时错位。
