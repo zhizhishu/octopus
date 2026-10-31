@@ -275,14 +275,16 @@ func TestFilterResponseForLogImages(t *testing.T) {
 	}}}
 	before, _ := json.Marshal(resp)
 
+	const httpURL = `"image_url":{"url":"https://cdn.example.com/x.png"}`
 	legacy, _ := json.Marshal(filterResponseForLogWith(resp, nil))
-	if strings.Count(string(legacy), "[image data omitted for storage]") != 2 {
-		t.Fatalf("nil capture must keep the legacy output: %s", legacy)
+	if strings.Count(string(legacy), "[image data omitted for storage]") != 1 || !strings.Contains(string(legacy), httpURL) {
+		t.Fatalf("nil capture: inline image omitted, http link kept as text: %s", legacy)
 	}
 	c := newImageCapture()
 	got, _ := json.Marshal(filterResponseForLogWith(resp, c))
-	if !strings.Contains(string(got), "id="+sha(img)+"]") || strings.Count(string(got), "[image data omitted for storage]") != 1 {
-		t.Fatalf("data URL should be referenced, URL image stays legacy: %s", got)
+	if !strings.Contains(string(got), "id="+sha(img)+"]") || !strings.Contains(string(got), httpURL) ||
+		strings.Contains(string(got), "omitted for storage") {
+		t.Fatalf("data URL should be referenced and the http link kept verbatim: %s", got)
 	}
 	// Images 字段（生图回包）：nil capture 照旧丢掉，打开时留下带 id 的占位符。
 	resp.Choices[0].Message.Images = []transformerModel.MessageContentPart{{Type: "image_url", ImageURL: &transformerModel.ImageURL{URL: "data:image/png;base64," + b64(img)}}}
@@ -300,3 +302,41 @@ func TestFilterResponseForLogImages(t *testing.T) {
 }
 
 func ptrStr(s string) *string { return &s }
+
+// 响应里的 http(s) 图片链接：原样记成文字，绝不去下载或访问它。
+func TestResponseHTTPImageURLKeptAsTextNoFetch(t *testing.T) {
+	withLogImages(t)
+	var hits int
+	var mu sync.Mutex
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits++
+		mu.Unlock()
+		w.WriteHeader(http.StatusTeapot)
+	}))
+	t.Cleanup(cdn.Close)
+	link := cdn.URL + "/gen/cat.png?sig=abc"
+	resp := &transformerModel.InternalLLMResponse{Choices: []transformerModel.Choice{{
+		Message: &transformerModel.Message{
+			Role:    "assistant",
+			Content: transformerModel.MessageContent{MultipleContent: []transformerModel.MessageContentPart{{Type: "image_url", ImageURL: &transformerModel.ImageURL{URL: link}}}},
+			Images:  []transformerModel.MessageContentPart{{Type: "image_url", ImageURL: &transformerModel.ImageURL{URL: link}}},
+		},
+	}}}
+	c := newImageCapture()
+	out, _ := json.Marshal(filterResponseForLogWith(resp, c))
+	if got := strings.Count(string(out), `"url":"`+link+`"`); got != 2 {
+		t.Fatalf("http link should appear verbatim in content and images (got %d): %s", got, out)
+	}
+	if strings.Contains(string(out), "omitted for storage") {
+		t.Fatalf("http link must not be replaced by the omitted text: %s", out)
+	}
+	if n := countFiles(t); n != 0 || len(c.order) != 0 {
+		t.Fatalf("http link must not be saved as a file (files=%d registered=%d)", n, len(c.order))
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if hits != 0 {
+		t.Fatalf("http link was fetched %d times", hits)
+	}
+}

@@ -1088,7 +1088,8 @@ func (m *RelayMetrics) filterResponseForLog(resp *transformerModel.InternalLLMRe
 
 // filterResponseForLogWith 与 filterResponseForLog 相同；c 非空时，MultipleContent
 // 里 data:image/...;base64 的图片换成带 id 的占位符（原图另存，见
-// log_image_capture.go），其余图片仍是 "[image data omitted for storage]"。
+// log_image_capture.go）。http(s) 图片链接原样保留（只记文字，不下载、不访问）。
+// 其余图片仍是 "[image data omitted for storage]"。
 // 只改日志副本，resp 与发给客户端的响应一个字节不动。
 func filterResponseForLogWith(resp *transformerModel.InternalLLMResponse, capture *imageCapture) *transformerModel.InternalLLMResponse {
 	if resp == nil {
@@ -1108,7 +1109,7 @@ func filterResponseForLogWith(resp *transformerModel.InternalLLMResponse, captur
 				if p.ImageURL == nil {
 					continue
 				}
-				if stored := capture.captureDataURL(p.ImageURL.URL); stored != "" {
+				if stored := responseImageURLForLog(p.ImageURL.URL, capture); stored != "" {
 					images = append(images, transformerModel.MessageContentPart{
 						Type:     "image_url",
 						ImageURL: &transformerModel.ImageURL{URL: stored},
@@ -1121,7 +1122,7 @@ func filterResponseForLogWith(resp *transformerModel.InternalLLMResponse, captur
 			parts := make([]transformerModel.MessageContentPart, 0, len(c.Content.MultipleContent))
 			for _, p := range c.Content.MultipleContent {
 				if p.Type == "image_url" && p.ImageURL != nil {
-					stored := capture.captureDataURL(p.ImageURL.URL)
+					stored := responseImageURLForLog(p.ImageURL.URL, capture)
 					if stored == "" {
 						stored = "[image data omitted for storage]"
 					}
@@ -1151,4 +1152,15 @@ func filterResponseForLogWith(resp *transformerModel.InternalLLMResponse, captur
 		filtered.Choices[i].Delta = filterMsg(choice.Delta)
 	}
 	return &filtered
+}
+
+// responseImageURLForLog 决定响应里一张图在日志里记成什么：http(s) 链接原样记下
+// （只是一段文字，不下载、不请求它；之后仍会过 redactLogBody），内联图交给
+// capture 换成带 id 的占位符。都不是时返回空串，调用方退回旧的省略文字。
+func responseImageURLForLog(u string, capture *imageCapture) string {
+	trimmed := strings.TrimSpace(u)
+	if strings.HasPrefix(trimmed, "https://") || strings.HasPrefix(trimmed, "http://") {
+		return u
+	}
+	return capture.captureDataURL(u)
 }

@@ -9,6 +9,9 @@ func TestHasAnyVisibleOutputSeesSavedImagePlaceholder(t *testing.T) {
 	if !hasAnyVisibleOutput(body) {
 		t.Fatal("saved image placeholder must count as visible output")
 	}
+	if !hasAnyVisibleOutput(`{"choices":[{"index":0,"message":{"role":"assistant","content":[{"type":"image_url","image_url":{"url":"https://cdn.example.com/x.png"}}]}}]}`) {
+		t.Fatal("kept http image link must count as visible output")
+	}
 	if hasAnyVisibleOutput(`{"choices":[{"index":0,"message":{"role":"assistant","content":""}}]}`) {
 		t.Fatal("empty reply must stay empty")
 	}

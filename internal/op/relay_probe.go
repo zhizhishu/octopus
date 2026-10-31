@@ -787,6 +787,10 @@ func hasAnyVisibleOutput(body string) bool {
 	if strings.Contains(body, `"[image: `) && strings.Contains(body, ", id=") {
 		return true
 	}
+	// http(s) 图片链接现在原样记在 image_url 里，同样是图片产出。
+	if strings.Contains(body, `"image_url":{"url":"http`) {
+		return true
+	}
 
 	var shape struct {
 		Choices []struct {
