@@ -31,6 +31,7 @@ type fakeRealtimeUpstream struct {
 	subprotocol []string
 	userAgent   string
 	received    []fakeRealtimeMsg
+	readErr     error
 }
 
 type fakeRealtimeMsg struct {
@@ -67,6 +68,9 @@ func newFakeRealtimeUpstream(t *testing.T, rejectStatus int, onOpen func(*websoc
 		for {
 			mt, data, err := conn.ReadMessage()
 			if err != nil {
+				f.mu.Lock()
+				f.readErr = err
+				f.mu.Unlock()
 				return
 			}
 			f.mu.Lock()

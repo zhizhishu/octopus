@@ -45,6 +45,8 @@ import (
 //     （elapsed.Minutes()，且只在会话里真的出现过音频时计）一致。
 //   - per_call = 0：按上游 response.done 里的 usage token 用 Input/Output/CacheRead 单价计
 //     （new-api 口径）。两种都没配 → 0 元并留警告，与其它 raw 端点一致。
+//   - 会话进行中分段扣费，余额 / key 花费上限不够下一份就发 error 事件并 1008 断开（"用完断开"），
+//     收尾只补差，见 grok_realtime_billing.go。
 //
 // 出站：自带 gorilla/websocket 拨号器，只沿用渠道的代理选择（helper.ChannelProxyURL）、
 // 渠道 key、渠道自定义头与统一的非 CLI UA。不碰 cloak / shape / TLS 面容代码，也不带任何
@@ -142,6 +144,13 @@ func GrokRealtimeHandler(c *gin.Context) {
 	metrics.SetClientSession(clientSession)
 	metrics.RequestContent = grokRealtimeRequestLog(requestModel, c.Request.URL.Query())
 
+	// 用完断开（见 grok_realtime_billing.go）：升级前先看够不够第一份，不够直接回 HTTP 错误。
+	if cut := grokRealtimePreflight(c, metrics, requestModel); cut != nil {
+		log.Infof("realtime rejected before connect: %s", cut.Detail)
+		resp.ErrorWithCode(c, grokRealtimePreflightStatus(cut), cut.Code, cut.Message)
+		return
+	}
+
 	var (
 		lastErr          error
 		allAttempts      []model.ChannelAttempt
@@ -224,13 +233,16 @@ runIterator:
 				return
 			}
 
-			session := runGrokRealtimeSession(ctx, clientConn, upstream, metrics)
+			biller := newGrokRealtimeBiller(c, metrics, item.ModelName)
+			session := runGrokRealtimeSession(ctx, clientConn, upstream, metrics, biller)
 			finishRuntimeAttempt()
 			usedAt := time.Now().Unix()
 
 			metrics.ActualModel = item.ModelName
 			applyGrokRealtimeCost(metrics, item.ModelName, session)
 			metrics.ResponseContent = session.logContent()
+			// 中途已经扣掉的部分，收尾只补差（rawProtocolRelayMetrics.Save）。
+			metrics.PreCharged = biller.Charged()
 
 			costDelta := metrics.Stats.InputCost + metrics.Stats.OutputCost
 			op.ChannelKeyRecordUse(usedKey, http.StatusSwitchingProtocols, usedAt, costDelta)
@@ -411,6 +423,8 @@ type grokRealtimeSession struct {
 	CloseCode      int
 	CloseSide      string
 	CloseText      string
+	// Cutoff 非空表示是因为余额 / key 花费上限用完被服务端断开的。
+	Cutoff *grokRealtimeCutoff
 }
 
 func (s *grokRealtimeSession) logContent() string {
@@ -425,6 +439,7 @@ func (s *grokRealtimeSession) logContent() string {
 		ClosedBy        string       `json:"closed_by,omitempty"`
 		CloseCode       int          `json:"close_code,omitempty"`
 		CloseReason     string       `json:"close_reason,omitempty"`
+		CutoffCode      string       `json:"cutoff,omitempty"`
 		Note            string       `json:"note"`
 	}
 	obj := sessionLog{
@@ -442,6 +457,9 @@ func (s *grokRealtimeSession) logContent() string {
 	if s.UsageSeen {
 		u := s.Usage
 		obj.Usage = &u
+	}
+	if s.Cutoff != nil {
+		obj.CutoffCode = s.Cutoff.Code
 	}
 	b, _ := json.Marshal(obj)
 	return string(b)
@@ -494,8 +512,10 @@ func grokRealtimeEventHasAudio(ev *grokRealtimeEvent) bool {
 }
 
 // runGrokRealtimeSession 双向转发直到任一端关闭，原样保留消息类型（文本/二进制）。
-// 每个连接只有一个 goroutine 写数据帧；收尾的 close 帧走 WriteControl（gorilla 允许并发）。
-func runGrokRealtimeSession(ctx context.Context, client, upstream *websocket.Conn, metrics *rawProtocolRelayMetrics) *grokRealtimeSession {
+// 发往上游的数据帧只有客户端→上游这一个泵在写；发往客户端的数据帧由上游→客户端的泵与
+// "用完断开"的 error 事件共用 clientWriteMu。收尾的 close 帧走 WriteControl（gorilla 允许并发）。
+// biller 为 nil 时不做中途结算（没有用户可扣的场景），行为与以前一致。
+func runGrokRealtimeSession(ctx context.Context, client, upstream *websocket.Conn, metrics *rawProtocolRelayMetrics, biller *grokRealtimeBiller) *grokRealtimeSession {
 	client.SetReadLimit(grokRealtimeReadLimit)
 	s := &grokRealtimeSession{Started: time.Now()}
 	var (
@@ -503,7 +523,22 @@ func runGrokRealtimeSession(ctx context.Context, client, upstream *websocket.Con
 		audio                                   atomic.Bool
 		usageMu                                 sync.Mutex
 		firstOnce                               sync.Once
+		clientWriteMu                           sync.Mutex
+		// billKick 让结算 goroutine 立刻结一次（response.done、第一次出现音频）；容量 1、非阻塞，
+		// 连着来的多次合并成一次即可，结算总是按"到此刻的累计"算。
+		billKick = make(chan struct{}, 1)
 	)
+	kick := func() {
+		select {
+		case billKick <- struct{}{}:
+		default:
+		}
+	}
+	markAudio := func() {
+		if !audio.Swap(true) {
+			kick()
+		}
+	}
 
 	type endReason struct {
 		side string
@@ -520,14 +555,17 @@ func runGrokRealtimeSession(ctx context.Context, client, upstream *websocket.Con
 				return
 			}
 			upstreamMsgs.Add(1)
+			// 带 usage 的 response.done 先原样交给客户端、再结算：真要断开时，客户端先拿到这条回复，
+			// 再拿到"余额用完"的 error 事件，顺序与事实一致。
+			billAfterWrite := false
 			firstOnce.Do(func() { metrics.SetFirstTokenTime(time.Now()) })
 			if mt == websocket.BinaryMessage {
-				audio.Store(true)
+				markAudio()
 			} else if mt == websocket.TextMessage {
 				var ev grokRealtimeEvent
 				if json.Unmarshal(msg, &ev) == nil {
 					if grokRealtimeEventHasAudio(&ev) {
-						audio.Store(true)
+						markAudio()
 					}
 					if ev.Type == "response.done" {
 						responsesDone.Add(1)
@@ -545,13 +583,20 @@ func runGrokRealtimeSession(ctx context.Context, client, upstream *websocket.Con
 								s.Usage.InputTokensDetails.CachedTokens += u.InputTokenDetails.CachedTokens
 							}
 							usageMu.Unlock()
+							billAfterWrite = true
 						}
 					}
 				}
 			}
-			if err := client.WriteMessage(mt, msg); err != nil {
+			clientWriteMu.Lock()
+			err = client.WriteMessage(mt, msg)
+			clientWriteMu.Unlock()
+			if err != nil {
 				done <- endReason{"client", err}
 				return
+			}
+			if billAfterWrite {
+				kick()
 			}
 		}
 	}()
@@ -566,11 +611,11 @@ func runGrokRealtimeSession(ctx context.Context, client, upstream *websocket.Con
 			}
 			clientMsgs.Add(1)
 			if mt == websocket.BinaryMessage {
-				audio.Store(true)
+				markAudio()
 			} else if mt == websocket.TextMessage && !audio.Load() {
 				var ev grokRealtimeEvent
 				if json.Unmarshal(msg, &ev) == nil && grokRealtimeEventHasAudio(&ev) {
-					audio.Store(true)
+					markAudio()
 				}
 			}
 			if err := upstream.WriteMessage(mt, msg); err != nil {
@@ -580,11 +625,56 @@ func runGrokRealtimeSession(ctx context.Context, client, upstream *websocket.Con
 		}
 	}()
 
-	var first endReason
+	// 中途结算：只有这一个 goroutine 调 biller.settle（会写库扣费），泵里只做非阻塞的 kick。
+	cutCh := make(chan *grokRealtimeCutoff, 1)
+	stopBilling := make(chan struct{})
+	billingDone := make(chan struct{})
+	if biller != nil {
+		go func() {
+			defer close(billingDone)
+			timer := time.NewTimer(grokRealtimeBillingInterval)
+			defer timer.Stop()
+			for {
+				select {
+				case <-stopBilling:
+					return
+				case <-billKick:
+				case <-timer.C:
+				}
+				usageMu.Lock()
+				usage, usageSeen := s.Usage, s.UsageSeen
+				if usage.InputTokensDetails != nil {
+					d := *usage.InputTokensDetails
+					usage.InputTokensDetails = &d
+				}
+				usageMu.Unlock()
+				cut, next := biller.settle(usage, usageSeen, audio.Load(), time.Since(s.Started))
+				if cut != nil {
+					cutCh <- cut
+					return
+				}
+				timer.Stop()
+				select {
+				case <-timer.C:
+				default:
+				}
+				timer.Reset(next)
+			}
+		}()
+	} else {
+		close(billingDone)
+	}
+
+	var (
+		first  endReason
+		cutoff *grokRealtimeCutoff
+	)
 	select {
 	case first = <-done:
 	case <-ctx.Done():
 		first = endReason{"server", ctx.Err()}
+	case cutoff = <-cutCh:
+		first = endReason{"server", cutoff}
 	}
 
 	// 把关闭原因原样转给另一端，然后两边都关掉；另一个泵会因读错误退出。
@@ -601,10 +691,14 @@ func runGrokRealtimeSession(ctx context.Context, client, upstream *websocket.Con
 	}
 	deadline := time.Now().Add(grokRealtimeCloseGrace)
 	msg := websocket.FormatCloseMessage(code, text)
-	switch first.side {
-	case "upstream":
+	switch {
+	case cutoff != nil:
+		// 用完断开：先告诉客户端为什么，再 1008 关两边。
+		log.Warnf("realtime session cut off by server: reason=%s %s", cutoff.Code, cutoff.Detail)
+		grokRealtimeSendCutoff(client, upstream, &clientWriteMu, cutoff)
+	case first.side == "upstream":
 		_ = client.WriteControl(websocket.CloseMessage, msg, deadline)
-	case "client":
+	case first.side == "client":
 		_ = upstream.WriteControl(websocket.CloseMessage, msg, deadline)
 	default:
 		_ = client.WriteControl(websocket.CloseMessage, msg, deadline)
@@ -613,6 +707,11 @@ func runGrokRealtimeSession(ctx context.Context, client, upstream *websocket.Con
 	_ = upstream.Close()
 	_ = client.Close()
 	<-done // 等另一个泵退出，保证下面读到的计数是终值
+	if cutoff != nil {
+		<-done // 断开是服务端发起的，两个泵都还在跑，都要等
+	}
+	close(stopBilling)
+	<-billingDone // 结算 goroutine 退出后 biller.Charged() 才是终值
 
 	s.Duration = time.Since(s.Started)
 	s.ClientMessages = clientMsgs.Load()
@@ -620,7 +719,10 @@ func runGrokRealtimeSession(ctx context.Context, client, upstream *websocket.Con
 	s.ResponsesDone = responsesDone.Load()
 	s.AudioObserved = audio.Load()
 	s.CloseSide = first.side
-	if ce != nil {
+	if cutoff != nil {
+		s.Cutoff = cutoff
+		s.CloseCode, s.CloseText = websocket.ClosePolicyViolation, cutoff.CloseReason
+	} else if ce != nil {
 		s.CloseCode, s.CloseText = ce.Code, ce.Text
 	} else if first.err != nil {
 		s.CloseText = errSafeMessage(first.err)
