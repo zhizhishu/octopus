@@ -40,9 +40,6 @@ export function CreateDialogContent() {
         cloak_shape: '',
         channel_proxy: '',
         param_override: '',
-        system_prompt_override: '',
-        prompt_override_mode: 'before',
-        prompt_override_enabled: false,
         keys: [{ enabled: true, channel_key: '', remark: '' }],
         model: '',
         custom_model: '',
@@ -88,7 +85,6 @@ export function CreateDialogContent() {
 
         const channelProxy = formData.channel_proxy.trim();
         const paramOverride = formData.param_override.trim();
-        const systemPromptOverride = formData.system_prompt_override.trim();
         createChannel.mutate(
             {
                 name: formData.name,
@@ -121,9 +117,6 @@ export function CreateDialogContent() {
                 openai_models_path: formData.openai_models_path.trim(),
                 openai_embeddings_path: formData.openai_embeddings_path.trim(),
                 param_override: paramOverride,
-                system_prompt_override: systemPromptOverride,
-                prompt_override_mode: formData.prompt_override_mode,
-                prompt_override_enabled: formData.prompt_override_enabled,
                 match_regex: formData.match_regex.trim(),
                 // Persist the model-mapping table on create — without this the mapping the
                 // user typed in the form was silently dropped and never saved.
@@ -149,9 +142,6 @@ export function CreateDialogContent() {
                         cloak_shape: '',
                         channel_proxy: '',
                         param_override: '',
-                        system_prompt_override: '',
-                        prompt_override_mode: 'before',
-        prompt_override_enabled: false,
                         keys: [{ enabled: true, channel_key: '', remark: '' }],
                         model: '',
                         custom_model: '',

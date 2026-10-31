@@ -171,6 +171,6 @@ test('route dialog source: two modes, drag order in 优先, numbers in 轮询, t
     assert.ok(!src.includes('renderClone='), 'renderClone unmounts the source node and breaks touch drag');
     assert.ok(!src.includes('modeSpreadTiered'), 'only 优先 / 轮询 in the UI');
     assert.ok(src.includes('setEditingRuleField({ fallback_mode:'), 'fallback is rule-level in the dialog (backend keeps only the first target\'s value)');
-    assert.ok(src.includes('setEditingRuleField({ system_prompt_override:'), 'prompt is rule-level in the dialog');
+    assert.ok(!src.includes('setEditingRuleField({ system_prompt_override') && !src.includes('PromptLayerControls'), 'no prompt in the route dialog: prompts are edited only on the 提示词 page');
     assert.ok(!src.includes('onClick={() => removeTarget(index)}'), 'no delete: channel sync re-adds deleted lines (enabled)');
 });

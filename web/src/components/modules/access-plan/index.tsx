@@ -112,8 +112,14 @@ import {
     tryLevels,
     type SimpleRouteMode,
 } from './route-mode';
-import { normalizePromptMode, promptEnabledFromSaved } from '../prompt/prompt-mode';
-import { PromptLayerControls } from '../prompt/PromptLayerControls';
+
+/** 方案页只管路由：列表里每个目标带着所属规则的系统提示词（只读回显），保存时不发回去。
+ *  后端整表保存也会沿用已有规则的提示词，提示词只在「提示词」页改。 */
+function withoutPromptFields(target: AccessPlanRouteTarget): AccessPlanRouteTarget {
+    const { system_prompt_override: _text, prompt_override_mode: _mode, prompt_override_enabled: _enabled, ...rest } = target;
+    void _text; void _mode; void _enabled;
+    return rest;
+}
 
 type UpdateRoutesPayload = Parameters<ReturnType<typeof useUpdateAccessPlanRouteTargets>['mutateAsync']>[0];
 type AccessPlanRouteSaveResult = Awaited<ReturnType<ReturnType<typeof useUpdateAccessPlanRouteTargets>['mutateAsync']>>;
@@ -271,10 +277,8 @@ const ACCESS_PLAN_TEXT = {
         fallbackReturnGroupHint: '这里的渠道都失败后，再试其他提供同名模型、还没试过的渠道',
         fallbackCardNone: '不换其他渠道',
         fallbackCardReturnGroup: '可换其他渠道',
-        promptOverride: '提示词',
-        promptPlaceholder: '可选：只对这个模型生效的系统提示词',
         advancedTitle: '更多设置',
-        advancedHint: '都不能用时、提示词',
+        advancedHint: '都不能用时',
         moveToTopFillFirst: '排到第一',
         moveToTopTiered: '调到最高',
         moveToTopFillFirstHint: '把这个渠道排到第 1 个，最先用',
@@ -807,9 +811,6 @@ function PlanBasicsEditor({ plan }: { plan: AccessPlan }) {
                 slug: normalizeSlug(slug),
                 enabled,
                 is_default: isDefault,
-                system_prompt_override: plan.system_prompt_override ?? '',
-                prompt_override_mode: normalizePromptMode(plan.prompt_override_mode),
-                prompt_override_enabled: promptEnabledFromSaved(plan.prompt_override_enabled, plan.prompt_override_mode, plan.system_prompt_override),
             },
             {
                 onSuccess: () => {
@@ -2458,7 +2459,7 @@ function RouteTargetsEditor({
             payload: {
                 access_plan_id: plan.id,
                 targets: normalizedTargets.map((target, index) => ({
-                    ...target,
+                    ...withoutPromptFields(target),
                     request_model: cleanOneMillionModelName(target.request_model),
                     upstream_model: cleanOneMillionModelName(target.upstream_model),
                     priority: Number.isFinite(target.priority) ? clampRoutePriority(target.priority) : clampRoutePriority(index + 1),
@@ -2469,9 +2470,6 @@ function RouteTargetsEditor({
                     mode: isSpreadMode(target.mode) ? spreadModeValue(target.mode) : 3,
                     priority_overridden: target.priority_overridden,
                     fallback_mode: target.fallback_mode ?? 'return_group',
-                    system_prompt_override: target.system_prompt_override?.trim() || undefined,
-                    prompt_override_mode: normalizePromptMode(target.prompt_override_mode),
-                    prompt_override_enabled: promptEnabledFromSaved(target.prompt_override_enabled, target.prompt_override_mode, target.system_prompt_override),
                 })),
             },
         });
@@ -2613,9 +2611,6 @@ function RouteTargetsEditor({
         });
     };
     const editingRuleHead = editingTargets[0];
-    const editingRulePromptEnabled = editingRuleHead
-        ? promptEnabledFromSaved(editingRuleHead.prompt_override_enabled, editingRuleHead.prompt_override_mode, editingRuleHead.system_prompt_override)
-        : false;
     const setEditingRuleField = (patch: Partial<AccessPlanRouteTarget>) => updateEditingRule((group) => group.map((target) => ({ ...target, ...patch })));
     const channelNameOf = (channelId: number) => channels.find((channel) => channel.id === channelId)?.name ?? t('routes.missingChannel', { id: channelId });
 
@@ -2646,9 +2641,6 @@ function RouteTargetsEditor({
             billing_model_override: cleanOneMillionModelName(target.billing_model_override ?? ''),
             mode: isSpreadMode(target.mode) ? spreadModeValue(target.mode) : 3,
             fallback_mode: target.fallback_mode ?? 'return_group',
-            prompt_override_enabled: promptEnabledFromSaved(target.prompt_override_enabled, target.prompt_override_mode, target.system_prompt_override),
-            prompt_override_mode: normalizePromptMode(target.prompt_override_mode),
-            system_prompt_override: target.system_prompt_override ?? '',
         })), null, 2));
     };
 
@@ -2678,9 +2670,6 @@ function RouteTargetsEditor({
                 billing_model_override: cleanOneMillionModelName(target.billing_model_override ?? '') || undefined,
                 mode: Number(target.mode) === 1 ? 1 : (Number(target.mode) === SPREAD_TIERED_MODE ? SPREAD_TIERED_MODE : 3),
                 fallback_mode: target.fallback_mode ?? 'return_group',
-                system_prompt_override: target.system_prompt_override?.trim() || undefined,
-                prompt_override_mode: normalizePromptMode(target.prompt_override_mode),
-                prompt_override_enabled: promptEnabledFromSaved(target.prompt_override_enabled, target.prompt_override_mode, target.system_prompt_override),
             }));
             setTargets(nextTargets);
             toast.success(t('toast.jsonApplied'));
@@ -2792,7 +2781,7 @@ function RouteTargetsEditor({
                             {editingRuleHead ? (
                                 <details
                                     className="rounded-2xl border border-border/70 bg-background/40"
-                                    open={(editingRuleHead.system_prompt_override ?? '').trim().length > 0 || editingRuleHead.fallback_mode === 'none' ? true : undefined}
+                                    open={editingRuleHead.fallback_mode === 'none' ? true : undefined}
                                 >
                                     <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-2.5 text-sm font-medium [&::-webkit-details-marker]:hidden">
                                         <span>{t('routes.advancedTitle')}</span>
@@ -2812,27 +2801,6 @@ function RouteTargetsEditor({
                                                 <option value="none">{t('routes.fallbackNone')}</option>
                                             </select>
                                         </label>
-                                        <div className="grid min-w-0 gap-1 text-xs text-muted-foreground">
-                                            {t('routes.promptOverride')}
-                                            <PromptLayerControls
-                                                enabled={editingRulePromptEnabled}
-                                                onEnabledChange={(value) => setEditingRuleField({ prompt_override_enabled: value, prompt_override_mode: normalizePromptMode(editingRuleHead.prompt_override_mode) })}
-                                                mode={editingRuleHead.prompt_override_mode}
-                                                onModeChange={(value) => setEditingRuleField({ prompt_override_mode: value, prompt_override_enabled: editingRulePromptEnabled })}
-                                                label={t('routes.promptOverride')}
-                                            />
-                                        </div>
-                                        <textarea
-                                            value={editingRuleHead.system_prompt_override ?? ''}
-                                            onChange={(event) => setEditingRuleField({ system_prompt_override: event.target.value })}
-                                            placeholder={t('routes.promptPlaceholder')}
-                                            disabled={!editingRulePromptEnabled}
-                                            title={editingRulePromptEnabled ? undefined : '已关闭，文字保留；打开「启用」后才能改、才会生效。'}
-                                            className={cn(
-                                                'min-h-16 w-full min-w-0 rounded-xl border border-input bg-background px-3 py-2 text-sm text-foreground transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                                                !editingRulePromptEnabled && 'bg-muted/40 text-muted-foreground opacity-60'
-                                            )}
-                                        />
                                     </div>
                                 </details>
                             ) : null}
@@ -2909,9 +2877,6 @@ function RouteTargetsEditor({
                                                     mode: rowMode,
                                                     priority_overridden: rowMode !== 1,
                                                     fallback_mode: 'return_group',
-                                                    system_prompt_override: '',
-                                                    prompt_override_mode: 'before',
-                                                    prompt_override_enabled: false,
                                                 },
                                             ]);
                                         }}

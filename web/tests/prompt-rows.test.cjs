@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 
 const { load } = require('./load-typescript.cjs');
 
-const { routePromptRows, sortChannelsStable } = load('src/components/modules/prompt/prompt-rows.ts');
+const { routePromptRows, planRouteRows, matchesPromptSearch, sortChannelsStable } = load('src/components/modules/prompt/prompt-rows.ts');
 
 const target = (request_model, channel_id, upstream_model, prompt = '', mode, promptEnabled) => ({
     request_model, channel_id, upstream_model, priority: 1, weight: 1, enabled: true,
@@ -51,4 +51,28 @@ test('渠道按 id 升序，与接口返回顺序无关，且不改原数组', (
     assert.deepEqual(sortChannelsStable(a).map((c) => c.id), [1, 2, 3]);
     assert.deepEqual(sortChannelsStable(b).map((c) => c.id), [1, 2, 3]);
     assert.deepEqual(a.map((c) => c.id), [3, 1, 2]);
+});
+
+test('planRouteRows：一个方案的所有路由都列出来（没写提示词的也在，方便在提示词页补）', () => {
+    const plan = {
+        id: 1, slug: 'vip', route_targets: [
+            target('gpt-4o', 11, 'gpt-4o', '只用中文', 'after', true),
+            target('GPT-4o', 12, 'gpt-4o-2024', '只用中文', 'after', true),
+            target('claude', 11, 'claude-sonnet', ''),
+            target('', 11, 'x', ''),
+        ],
+    };
+    const rows = planRouteRows(plan);
+    assert.deepEqual(rows.map((r) => [r.requestModel, r.targetCount, r.upstreamModels, r.mode, r.enabled, r.text]), [
+        ['gpt-4o', 2, ['gpt-4o', 'gpt-4o-2024'], 'after', true, '只用中文'],
+        ['claude', 1, ['claude-sonnet'], 'before', false, ''],
+    ]);
+});
+
+test('matchesPromptSearch：每个词都要命中某个字段，不分大小写', () => {
+    assert.equal(matchesPromptSearch('', 'a'), true);
+    assert.equal(matchesPromptSearch('VIP gpt', 'vip', 'gpt-4o'), true);
+    assert.equal(matchesPromptSearch('vip claude', 'vip', 'gpt-4o'), false);
+    assert.equal(matchesPromptSearch('中文', null, undefined, '只用中文回答'), true);
+    assert.equal(matchesPromptSearch('#3', 'Codex', '#3'), true);
 });

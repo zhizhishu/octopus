@@ -1,6 +1,9 @@
 package model
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 type AccessBillingModelSource string
 
@@ -211,4 +214,39 @@ type AccessPlanBillingSnapshot struct {
 
 func NormalizeAccessPlanSlug(slug string) string {
 	return strings.ToLower(strings.TrimSpace(slug))
+}
+
+// PromptOverridePatch is a partial write of one layer's system prompt (the 提示词 page).
+// Nil fields keep the stored value. It only ever touches the three prompt columns, so a
+// prompt save cannot change routing, and routing saves never carry it.
+type PromptOverridePatch struct {
+	SystemPromptOverride  *string             `json:"system_prompt_override,omitempty"`
+	PromptOverrideMode    *PromptOverrideMode `json:"prompt_override_mode,omitempty"`
+	PromptOverrideEnabled *bool               `json:"prompt_override_enabled,omitempty"`
+}
+
+// Empty reports whether the patch changes nothing.
+func (p PromptOverridePatch) Empty() bool {
+	return p.SystemPromptOverride == nil && p.PromptOverrideMode == nil && p.PromptOverrideEnabled == nil
+}
+
+// Apply merges the patch onto the stored (text, mode, enabled) triple and returns the
+// normalized result. A legacy mode sent without the switch turns it on when there is text.
+func (p PromptOverridePatch) Apply(text string, mode PromptOverrideMode, enabled bool) (string, PromptOverrideMode, bool, error) {
+	if p.SystemPromptOverride != nil {
+		text = strings.TrimSpace(*p.SystemPromptOverride)
+	}
+	if p.PromptOverrideMode != nil {
+		if !ValidPromptOverrideMode(*p.PromptOverrideMode) {
+			return "", "", false, fmt.Errorf("invalid prompt_override_mode %q", *p.PromptOverrideMode)
+		}
+		mode = *p.PromptOverrideMode
+		if IsLegacyPromptOverrideMode(mode) && p.PromptOverrideEnabled == nil {
+			enabled = strings.TrimSpace(text) != ""
+		}
+	}
+	if p.PromptOverrideEnabled != nil {
+		enabled = *p.PromptOverrideEnabled
+	}
+	return text, NormalizePromptOverrideMode(mode), enabled, nil
 }

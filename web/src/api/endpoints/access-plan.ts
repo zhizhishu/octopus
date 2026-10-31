@@ -70,13 +70,26 @@ export type CreateAccessPlanRequest = {
     sort?: number;
 };
 
+/** 方案页保存方案：只管方案本身。系统提示词不在这里改（后端也会保留库里的值）。 */
 export type UpdateAccessPlanRequest = Partial<Omit<CreateAccessPlanRequest, 'slug'>> & {
     id: number;
     slug?: string;
     auto_sync_channels?: boolean;
+};
+
+/** 提示词页的一层系统提示词。没传的字段保留原值；后端只写这三列，不碰路由。 */
+export type PromptOverridePatch = {
     system_prompt_override?: string;
     prompt_override_mode?: PromptOverrideMode;
     prompt_override_enabled?: boolean;
+};
+
+export type UpdateAccessPlanPromptRequest = PromptOverridePatch & { id: number };
+
+/** 路由用「方案 + 请求模型」定位：方案页每次整表保存都会重建规则，规则 id 会变。 */
+export type UpdateAccessPlanRoutePromptRequest = PromptOverridePatch & {
+    access_plan_id: number;
+    request_model: string;
 };
 
 export type UpdateAccessPlanBillingRulesRequest = {
@@ -146,6 +159,34 @@ export function useUpdateAccessPlan() {
         },
         onError: (error) => {
             logger.error('Access plan update failed:', error);
+        },
+    });
+}
+
+export function useUpdateAccessPlanPrompt() {
+    const queryClient = useQueryClient();
+
+    return useMutation({
+        mutationFn: (data: UpdateAccessPlanPromptRequest) => (
+            apiClient.post<AccessPlanServer>('/api/v1/access-plan/prompt/update', data)
+        ),
+        onSuccess: () => invalidateAccessPlans(queryClient),
+        onError: (error) => {
+            logger.error('Access plan prompt update failed:', error);
+        },
+    });
+}
+
+export function useUpdateAccessPlanRoutePrompt() {
+    const queryClient = useQueryClient();
+
+    return useMutation({
+        mutationFn: (data: UpdateAccessPlanRoutePromptRequest) => (
+            apiClient.post<AccessPlanServer>('/api/v1/access-plan/route-prompt/update', data)
+        ),
+        onSuccess: () => invalidateAccessPlans(queryClient),
+        onError: (error) => {
+            logger.error('Access plan route prompt update failed:', error);
         },
     });
 }
