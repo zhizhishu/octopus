@@ -654,6 +654,65 @@ export function useUserAccessDetail(id: number | undefined) {
     });
 }
 
+/** 一个客户端指纹（后端 model.UserClientFingerprint）。只来自入站请求；秘密头只有名字没有值。 */
+export interface UserClientFingerprint {
+    id: number;
+    user_id: number;
+    api_key_id: number;
+    fp_hash: string;
+    client_name: string;
+    client_version: string;
+    user_agent: string;
+    /** 头名，逗号拼接；header_order=true 时是原始顺序和大小写，否则按字母排。 */
+    header_names: string;
+    header_order: boolean;
+    /** 留了值的非秘密头（JSON 对象字符串）。 */
+    notable: string;
+    http_version: string;
+    ja3: string;
+    ja4: string;
+    ja4h: string;
+    via_proxy: boolean;
+    country: string;
+    last_ip: string;
+    last_path: string;
+    first_seen: number;
+    last_seen: number;
+    requests: number;
+}
+
+export interface UserClientKeyInfo {
+    api_key_id: number;
+    api_key_name?: string;
+    fingerprints: number;
+    requests: number;
+    last_seen: number;
+}
+
+export interface UserClientDetail {
+    user_id: number;
+    api_key_id?: number;
+    keep_days: number;
+    per_key_max: number;
+    tls_terminated: boolean;
+    keys: UserClientKeyInfo[];
+    fingerprints: UserClientFingerprint[];
+}
+
+/** 客户端指纹：按用户看（userId），或只按 Key 看（apiKeyId，比如管理员名下发给别人用的 Key）。 */
+export function useUserClientTelemetry(params: { userId?: number; apiKeyId?: number }) {
+    const { userId, apiKeyId } = params;
+    const qs = new URLSearchParams();
+    if (userId) qs.set('id', String(userId));
+    else if (apiKeyId) qs.set('key', String(apiKeyId));
+    return useQuery({
+        queryKey: ['users', 'telemetry', userId ?? 0, userId ? 0 : apiKeyId ?? 0],
+        queryFn: () => apiClient.get<UserClientDetail>(`/api/v1/user/telemetry?${qs.toString()}`),
+        enabled: !!(userId || apiKeyId),
+        refetchInterval: 60_000,
+    });
+}
+
 /** 风控等级的当前阈值和各预设阈值（设置页说明文字按这里的数拼，和后端判定同一份）。 */
 export function useUserAccessConfig(options?: { enabled?: boolean }) {
     return useQuery({

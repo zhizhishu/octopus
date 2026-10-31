@@ -188,4 +188,3 @@ func TestRecorderLineCap(t *testing.T) {
 		t.Fatalf("%v %v", n, ok)
 	}
 }
-
