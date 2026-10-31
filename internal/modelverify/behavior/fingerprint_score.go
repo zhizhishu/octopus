@@ -12,7 +12,7 @@ import (
 // 判定原则与其它探针一致，但这里要额外守一条：**只证伪，不认证**。
 //
 //   - 指纹与声明的型号对得上 → 无风险，但**不能**写成"确认是正品"：
-//     参考库只有 59 个候选，中转站用库里某个相近型号冒充也会对上。
+//     参考库只有几十个候选，中转站用库里某个相近型号冒充也会对上。
 //   - 指纹与声明的型号对不上 → 这才是真信号。声明是 A、怎么看都不像 A，
 //     说明背后大概率不是 A。这与"问你是谁"得到的口供不同，是行为证据。
 //   - 证据不足（样本不够、库外型号、结论本身不成立）→ 0 分「不可判」，
@@ -47,7 +47,7 @@ func fingerprintFindings(res Result, requestedModel string) []Finding {
 		return nil
 	}
 	// 结论已在探针层算好并发布到 Data：这里直接读，避免在评分路径上
-	// 把 59 个候选重算一遍。
+	// 把全部候选重算一遍。
 	if errText := stringOf(res.Data, "fingerprint_error"); errText != "" {
 		// 分析失败（数据不配套等）属于工具问题，记为不可判，不当证据。
 		return []Finding{{
@@ -72,6 +72,16 @@ func fingerprintFindings(res Result, requestedModel string) []Finding {
 				"（这不等于有问题：有的模型会拒绝这类任务）",
 		}}
 
+	case fingerprint.DecisionNotModel:
+		// 形态筛选只能说明"不像"，不能证明数字从哪来：记为证据不足，0 分，绝不定罪。
+		return []Finding{{
+			Probe:    ProbeFingerprint,
+			Severity: SeverityLow,
+			Score:    0,
+			Title: "回答像脚本生成（排序、打乱或程序随机数），不像模型手写，未做指纹比对" +
+				"（这只是证据不足，不据此判定渠道有问题；建议再测一轮）",
+		}}
+
 	case fingerprint.DecisionPartial:
 		// 只有排名没有置信度：可以提示"最像谁"，但**不产风险分**。
 		// 样本不足时排名本身就不稳，拿它定罪是过度解读。
@@ -89,6 +99,17 @@ func fingerprintFindings(res Result, requestedModel string) []Finding {
 	}
 
 	// ---- DecisionScorable：三条有效样本，有排名也有置信度 ----
+
+	// 有样本分布异常（取值整体挤在 200 以上）时，排名不可靠：只提示，不计分。
+	if anomalous, ok := res.Data["fingerprint_anomalous_samples"].([]int); ok && len(anomalous) > 0 {
+		return []Finding{{
+			Probe:    ProbeFingerprint,
+			Severity: SeverityLow,
+			Score:    0,
+			Title: fmt.Sprintf("有 %d 条回答取值分布异常（全部不低于 200），这一轮指纹结论不可靠，"+
+				"最接近 %s 仅供参考；建议再测一轮", len(anomalous), displayOrID(analysis)),
+		}}
+	}
 	gap := 0.0
 	if hint := fingerprint.DistanceHint(analysis.Results); hint != nil {
 		gap = *hint

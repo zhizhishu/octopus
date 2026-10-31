@@ -35,13 +35,14 @@ SOFTWARE.
 | --- | --- | --- |
 | `detector.bin` | `data/shared_detector.bin` | 排名器与校准参数（4.3 MB，106 万个 float32）。运行时唯一的大件。 |
 | `suite.json` | `data/enrollment-suite.json` | 36 道固定挑战题。必须**原题重放**：参考库的分布是在这些具体措辞下采集的。 |
-| `models.json` | 由 `data/unified_bank.json` 裁剪 | 只保留 59 个模型的名称/家族/样本数，以及"库与检测器是否配套"的校验字段。原始 12.8 MB 统计库里的逐模型频次表在推理阶段用不到，故不打包。 |
+| `neighbors.json` | 本项目离线计算（不是上游文件） | 每个模型最难分开的 5 个近邻（相对距离），由 `TestRegenerateNeighbors` 从 `detector.bin` 的参考回答算出，绑定 `bank_built_at`。 |
+| `models.json` | 由 `data/unified_bank.json` 裁剪 | 只保留 64 个模型的名称/家族/样本数，以及"库与检测器是否配套"的校验字段。原始 12.8 MB 统计库里的逐模型频次表在推理阶段用不到，故不打包。 |
 
-参考库版本：`2026-10-13T16:21:11.776799+00:00`（见 `models.json` 的 `built_at`）。
+参考库版本：`2026-10-27T05:02:50.758637+00:00`（见 `models.json` 的 `built_at`），取自上游 `main` @ `175355e8939c2ee7aaeeac2b22186fa5940412c3`（2026-10-30）。
 
 ## 能力边界（照抄上游文档的表述，务必保留）
 
-- 输出的概率是**参考库内的闭集相对值**，只在库内 59 个候选之间分配，合计 100%。
+- 输出的概率是**参考库内的闭集相对值**，只在库内 64 个候选之间分配，合计 100%。
 - 它**不包含库外模型**，因此**不代表"确实是该模型"的概率**。库外模型同样会得到
   一个"最像"的候选。
 - 相邻小版本之间几乎无法区分（同代 opus 4.6 与 4.7 的分布余弦相似度约 0.997）。
@@ -50,7 +51,9 @@ SOFTWARE.
 
 ## 如何更新
 
-换参考库时必须三件一起换（`detector.bin`、`suite.json`、`models.json`），
+换参考库时必须三件一起换（`detector.bin`、`suite.json`、`models.json`），并重算 `neighbors.json`
+（`OCTOPUS_REGEN_FP_NEIGHBORS=1 go test ./internal/modelverify/fingerprint -run TestRegenerateNeighbors`）与
+`../testdata/` 黄金数据（用上游 TS 源码重新导出），
 且 `models.json` 的 `built_at` 必须等于 `detector.bin` 里的 `bank_built_at`，
 否则 `Analyze` 会直接报"参考库与检测器不配套"并拒绝出结论——错配的库会让排名
 错得很隐蔽，照样给出一个很像样的答案。

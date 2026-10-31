@@ -269,6 +269,7 @@ func runOneAuditResult(ctx context.Context, res *model.ModelAuditResult) {
 	ids := parseAuditProbesOrEmpty(job.Probes)
 	runCtx, cancel := context.WithTimeout(ctx, auditRunTimeout(job.TimeoutSeconds, ids))
 	defer cancel()
+	runCtx = withAuditFingerprintPromptMode(runCtx)
 
 	results := behavior.Run(runCtx, ids, sender, upstreamModel)
 

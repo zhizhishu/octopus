@@ -24,7 +24,7 @@ func buildCentres(n int) []float64 {
 	return out
 }
 
-// positionalDecision 计算单条回答在 59 个候选上的判别值。
+// positionalDecision 计算单条回答在参考库全部候选上的判别值。
 //
 // 输入是 4 个特征块拼成 751 维，按权重与标准化参数线性投影到候选数。
 func positionalDecision(numbers []int, head PositionalHead) []float64 {
