@@ -1,7 +1,7 @@
 // Package fingerprint 是"随机数指纹"检测：让模型凭第一反应挑一串整数，
 // 用这串数字的分布去比对已知模型的参考分布，从而判断这条渠道背后到底是哪个模型。
 //
-// 移植自 lm-detector（https://github.com/xqy2006/lm-detector，MIT License）。
+// 移植自 lm-detector（https://github.com/Ikaleio/lm-detector，MIT License，Copyright (c) 2026 xqy2006）。
 // 数据文件（detector.bin / suite.json / models.json）同样来自该项目，见 data/README.md。
 //
 // 为什么值得再做一个探针：现有的 identity 探针问"你是谁"，拿到的是**口供**——

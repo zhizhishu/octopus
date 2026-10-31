@@ -7,7 +7,8 @@
 | `stats/` `probe/` `suite/` `suites/v1.example.yaml` | Token-Verifier | MIT |
 | `behavior/`（含 `signature.go` `signature_probe.go`） | AI-Infra-Guard | Apache-2.0 |
 | `tokenbank/`（含 `data/tokenizer_bank.json`）、`behavior/tokenizer_probe.go` | lm-detector | MIT |
-| `types.go` `observe.go` `jsonanswer.go` `collect.go` | 本项目自写 | 同本仓库 |
+| `fingerprint/`（含 `data/detector.bin` `suite.json` `models.json`）、`behavior/fingerprint_probe.go` | lm-detector | MIT |
+| `types.go` `observe.go` `jsonanswer.go` `collect.go`；`fingerprint/generator.go` `neighbors.go` `data/neighbors.json` | 本项目自写 | 同本仓库 |
 
 ---
 
@@ -132,6 +133,34 @@ The `stats/`, `probe/` and `suite/` packages in this directory, their tests, and
   不计入风险分、不进 verdict 的"跑通"分母，也不取代 `token_delta` 的计分项（两条都保留）。
 - 超时：两项分词器探针按计划请求数（74 / 22 次）放大整单超时，每次 10 秒，封顶 30 分钟
   （`op.AuditTimeoutFor`）。
+
+## 来源三（续）：lm-detector 随机数指纹（`fingerprint/`）
+
+`fingerprint/` 是 lm-detector「随机数指纹」排名器与校准的 Go 移植；数据文件逐字节复制（`models.json` 由
+`data/unified_bank.json` 裁剪）。详见 `fingerprint/data/README.md`。
+
+- Source: <https://github.com/Ikaleio/lm-detector>
+- Revision: `main` @ `175355e8939c2ee7aaeeac2b22186fa5940412c3`（2026-10-30），参考库 64 个模型，`built_at` 2026-10-27
+- Copyright: (c) 2026 xqy2006
+- License: MIT（全文见本文件末尾）
+
+一致性：`fingerprint/testdata/` 的黄金数据由上游 TS 源码（`shared/shared-detector.ts` 等）对同一份
+`shared_detector.bin` 现场导出，Go 实现逐项对齐（容差 1e-7）。
+
+移植的判定语义：解析规则、`max(80, ceil(0.55N))` 采信门槛、两路排名、温度校准、
+「序列形态」把关（相邻自相关 > −0.23 且小步占比 > 5% 才判不像模型手写，界限取自上游公布的
+参考库统计）、「分布异常样本」（最小值 ≥ 200）提示。
+
+本项目自写（上游没有或只学概念）：
+
+- `fingerprint/generator.go`：随机出题器。概念来自上游网页检测的随机题，措辞、语言集、数量区间都是自己写的；
+  固定 36 题保留为对照模式（设置 `model_audit_fingerprint_random_prompts=false`）。
+- `fingerprint/neighbors.go` + `data/neighbors.json`：离线近邻表（相对距离口径与上游 `nearestModels` 相同，
+  实现为 Go 自写，结果与上游逐个模型前三名一致）。
+- 计分：「不像模型手写」与「分布异常」一律按证据不足处理（0 分，不定罪）。
+
+刻意不学：上游的出站方式（浏览器直连 / 代理 / 自建 Worker、`reasoning_effort` 注入、读够数量就掐断流）。
+本项目的探针只换题目文字，出站一律走渠道检测的同一条 shape 链路。
 
 ## MIT License
 

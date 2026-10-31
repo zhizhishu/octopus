@@ -352,6 +352,7 @@ func runModelAudit(c *gin.Context) {
 	defer cancel()
 
 	started := time.Now()
+	ctx = withAuditFingerprintPromptMode(ctx)
 	results := behavior.Run(ctx, ids, sender, upstreamModel)
 	report := behavior.ToView(behavior.BuildReport(results, modelName))
 
@@ -404,4 +405,15 @@ func knownAuditProbe(id behavior.ProbeID) bool {
 	// 用“注册表里有没有”判存在，而不是拿 DefaultProbes 当白名单：
 	// 指纹探针刻意默认关闭（开销高），但手动勾选时必须能跑。
 	return behavior.IsKnownProbe(id)
+}
+
+// withAuditFingerprintPromptMode 按设置决定指纹探针的出题方式（默认随机出题）。
+//
+// 只决定题目文字；出站仍走渠道检测的同一条 shape 链路。设置读不到时按默认（随机）。
+func withAuditFingerprintPromptMode(ctx context.Context) context.Context {
+	mode := behavior.FingerprintPromptRandom
+	if random, err := op.SettingGetBool(model.SettingKeyModelAuditFingerprintRandomPrompts); err == nil && !random {
+		mode = behavior.FingerprintPromptFixed
+	}
+	return behavior.WithFingerprintPromptMode(ctx, mode)
 }

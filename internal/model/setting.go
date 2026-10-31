@@ -191,6 +191,10 @@ const (
 	// (e.g. a very large log table and they would rather not pay the extra
 	// write for the probe columns).
 	SettingKeyLogPassiveProbeEnabled SettingKey = "log_passive_probe_enabled"
+	// SettingKeyModelAuditFingerprintRandomPrompts 指纹探针的出题方式：true（默认）= 每次随机出题
+	// （语言/措辞/数量随机，中转站无法靠字面认出检测题）；false = 重放参考库 36 道固定题，作对照。
+	// 只改题目文字，不碰出站形状。
+	SettingKeyModelAuditFingerprintRandomPrompts SettingKey = "model_audit_fingerprint_random_prompts"
 	// Credential redaction (CosyRedactGateway-style). The global switch is the
 	// master gate: even channels with redact_enabled=true do nothing while it is
 	// false, so operators can kill the feature instance-wide without touching
@@ -643,6 +647,7 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyBatchImageUnitPrice, Value: "0"},
 		// 被动探针默认开: 零上游请求、零 token, 没有需要保护用户免于触发的理由。
 		{Key: SettingKeyLogPassiveProbeEnabled, Value: "true"},
+		{Key: SettingKeyModelAuditFingerprintRandomPrompts, Value: "true"}, // 指纹探针默认随机出题; false=固定 36 题对照
 		{Key: SettingKeyCheckInEnabled, Value: "false"},
 		{Key: SettingKeyCheckInRewardMode, Value: "fixed"},
 		{Key: SettingKeyCheckInRewardAmount, Value: "100"},
@@ -818,6 +823,7 @@ func (s *Setting) Validate() error {
 		SettingKeyDebugLoadBalancer, SettingKeyEmailVerificationEnabled, SettingKeyEmailSMTPSSL,
 		SettingKeyUpstreamUTLSFingerprint, SettingKeyUpstreamHTTP1HeaderOrder, SettingKeyDiagnosticMode, SettingKeyRouteStickyCacheFirst,
 		SettingKeyModelAuditEnabled, SettingKeyModelAuditFollowUpEnabled, SettingKeyLogPassiveProbeEnabled,
+		SettingKeyModelAuditFingerprintRandomPrompts,
 		SettingKeyRelayLogReclaimEnabled, SettingKeyAsyncImageEnabled, SettingKeyBatchImageEnabled,
 		SettingKeyPriceAutoSyncEnabled, SettingKeyPriceSyncHoldBigChange,
 		SettingKeyUserAccessAlertNewIP, SettingKeyUserAccessAlertNewClient:

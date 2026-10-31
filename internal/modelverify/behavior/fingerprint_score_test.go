@@ -2,6 +2,7 @@ package behavior
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -213,16 +214,12 @@ func TestFingerprintProbeUsesRealChallenges(t *testing.T) {
 }
 
 // TestFingerprintProbeEndToEnd 用伪造的 Sender 跑完整探针，校验采集与结论贯通。
+//
+// 回答用参考实现黄金数据里的真模型回答（claude-opus-4.6）：脚本凑的数字会被
+// 序列形态把关挡掉（见 TestFingerprintProbeScriptRepliesAreInsufficient）。
 func TestFingerprintProbeEndToEnd(t *testing.T) {
-	challenges, err := fingerprint.PickChallenges(fingerprintChallenges)
-	if err != nil {
-		t.Fatalf("选题失败: %v", err)
-	}
-	// 造一条足够长的数字串：数量超过最低要求，才能被采信。
-	sender := &scriptedSender{respond: func(call int) string {
-		count := challenges[call].ExpectedCount
-		return numberList(count)
-	}}
+	texts := goldenReplies(t)
+	sender := &scriptedSender{respond: func(call int) string { return texts[call%len(texts)] }}
 	res := runFingerprint(t.Context(), sender, "claude-opus-4-6")
 	if res.Err != nil {
 		t.Fatalf("探针执行失败: %v", res.Err)
@@ -237,17 +234,95 @@ func TestFingerprintProbeEndToEnd(t *testing.T) {
 	if sender.calls != fingerprintChallenges {
 		t.Fatalf("应发 %d 题，实际 %d", fingerprintChallenges, sender.calls)
 	}
+	// 默认随机出题。
+	if got := stringOf(res.Data, "fingerprint_prompt_mode"); got != FingerprintPromptRandom {
+		t.Fatalf("默认应随机出题，实际 %q", got)
+	}
+	// 声明型号的名次：真 opus-4.6 回答，声明 claude-opus-4-6 → 第 1 名。
+	if rank, _ := res.Data["fingerprint_declared_rank"].(int); rank != 1 {
+		t.Fatalf("声明型号应排第 1，实际 %v", res.Data["fingerprint_declared_rank"])
+	}
+	if names, _ := res.Data["fingerprint_neighbors"].([]string); len(names) != fingerprintNeighborCount {
+		t.Fatalf("应给出 %d 个近邻，实际 %v", fingerprintNeighborCount, res.Data["fingerprint_neighbors"])
+	}
+	if like, ok := res.Data["fingerprint_model_like"].(bool); !ok || !like {
+		t.Fatalf("真模型回答应判像模型手写: %v", res.Data["fingerprint_model_like"])
+	}
+	if samples, _ := res.Data["fingerprint_samples"].([]map[string]any); len(samples) != 3 || samples[0]["language"] == nil {
+		t.Fatalf("样本小卡数据不全: %v", res.Data["fingerprint_samples"])
+	}
+	if candidates, _ := res.Data["fingerprint_candidates"].([]map[string]any); len(candidates) != 64 {
+		t.Fatalf("应带上全部 64 个候选，实际 %d", len(candidates))
+	}
+	// 三条题目互不相同（随机出题）。
+	if sender.prompts[0] == sender.prompts[1] || sender.prompts[1] == sender.prompts[2] {
+		t.Fatal("随机出题时三道题不应相同")
+	}
+}
+
+// TestFingerprintProbeFixedModeReplaysSuite：对照模式必须原题重放固定题库。
+func TestFingerprintProbeFixedModeReplaysSuite(t *testing.T) {
+	texts := goldenReplies(t)
+	want, _ := fingerprint.PickChallenges(fingerprintChallenges)
+	sender := &scriptedSender{respond: func(call int) string { return texts[call%len(texts)] }}
+	ctx := WithFingerprintPromptMode(t.Context(), FingerprintPromptFixed)
+	res := runFingerprint(ctx, sender, "claude-opus-4-6")
+	if got := stringOf(res.Data, "fingerprint_prompt_mode"); got != FingerprintPromptFixed {
+		t.Fatalf("应为固定题模式，实际 %q", got)
+	}
+	for i, c := range want {
+		if sender.prompts[i] != c.PromptWithPrefix() {
+			t.Fatalf("第 %d 题不是固定题原文", i+1)
+		}
+	}
+}
+
+// TestFingerprintProbeScriptRepliesAreInsufficient：脚本凑的数字 → 证据不足、0 分，绝不定罪。
+func TestFingerprintProbeScriptRepliesAreInsufficient(t *testing.T) {
+	sender := &scriptedSender{respond: func(int) string { return numberList(300) }}
+	res := runFingerprint(t.Context(), sender, "claude-opus-4-6")
+	if got := stringOf(res.Data, "fingerprint_decision"); got != fingerprint.DecisionNotModel {
+		t.Fatalf("脚本数字应判 not_model，实际 %q", got)
+	}
+	if !boolOf(res.Data, "insufficient_evidence") {
+		t.Fatal("not_model 必须标证据不足")
+	}
+	if like, ok := res.Data["fingerprint_model_like"].(bool); !ok || like {
+		t.Fatal("应标出 model_like=false")
+	}
+	for _, f := range fingerprintFindings(res, "claude-opus-4-6") {
+		if f.Score != 0 {
+			t.Fatalf("not_model 不得产生风险分: %+v", f)
+		}
+	}
+}
+
+func goldenReplies(t *testing.T) []string {
+	t.Helper()
+	blob, err := os.ReadFile("../fingerprint/testdata/g_full.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var golden []struct {
+		Texts []string `json:"texts"`
+	}
+	if err := json.Unmarshal(blob, &golden); err != nil || len(golden) == 0 {
+		t.Fatalf("黄金数据不可用: %v", err)
+	}
+	return golden[0].Texts
 }
 
 // scriptedSender 是一个按次序返回预设回答的假 Sender。
 type scriptedSender struct {
 	respond func(call int) string
 	calls   int
+	prompts []string
 }
 
-func (s *scriptedSender) Ask(_ context.Context, _ modelverify.Ask) (modelverify.Response, error) {
+func (s *scriptedSender) Ask(_ context.Context, ask modelverify.Ask) (modelverify.Response, error) {
 	index := s.calls
 	s.calls++
+	s.prompts = append(s.prompts, ask.Prompt)
 	return modelverify.Response{Content: s.respond(index), FinishReason: "stop"}, nil
 }
 
@@ -369,5 +444,24 @@ func TestFingerprintDowngradeNeedsRealGap(t *testing.T) {
 	}
 	if !strings.Contains(findings[0].Title, "难以区分") {
 		t.Fatalf("分差不足时应说明难以区分，实际: %s", findings[0].Title)
+	}
+}
+
+// TestFingerprintAnomalousSamplesNeverAccuse：样本分布异常时，即便榜首与声明不符也只提示、不计分。
+func TestFingerprintAnomalousSamplesNeverAccuse(t *testing.T) {
+	p := 0.92
+	res := Result{ProbeID: ProbeFingerprint, OK: true, Data: map[string]any{
+		"fingerprint_decision":          fingerprint.DecisionScorable,
+		"fingerprint_prediction":        "gpt-5.5",
+		"fingerprint_prediction_name":   "gpt-5.5",
+		"fingerprint_family":            "gpt",
+		"fingerprint_family_name":       "GPT",
+		"fingerprint_probability":       p,
+		"fingerprint_gap":               2.0,
+		"fingerprint_anomalous_samples": []int{1},
+	}}
+	findings := fingerprintFindings(res, "claude-opus-4-7")
+	if len(findings) != 1 || findings[0].Score != 0 || !strings.Contains(findings[0].Title, "分布异常") {
+		t.Fatalf("分布异常时应只提示不计分: %+v", findings)
 	}
 }

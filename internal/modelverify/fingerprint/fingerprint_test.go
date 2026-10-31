@@ -292,11 +292,10 @@ func TestInsufficientEvidenceIsNotAGuess(t *testing.T) {
 		t.Fatalf("证据不足时不应给出预测，实际 %q", analysis.Prediction)
 	}
 
-	// 只有一条有效回答：给排名，但**不给**置信度。
-	suite, _ := LoadSuite()
-	one := make([]Output, 1)
-	one[0] = Output{Text: numberSequence(240), ExpectedCount: suite[0].ExpectedCount}
-	single, err := Analyze(one)
+	// 只有一条有效回答：给排名，但**不给**置信度。用真模型回答——脚本数字会被
+	// 序列形态把关挡成 not_model（见下）。
+	texts, expected := goldenTexts(t)
+	single, err := Analyze([]Output{{Text: texts[0], ExpectedCount: expected[0]}})
 	if err != nil {
 		t.Fatalf("分析失败: %v", err)
 	}
@@ -305,6 +304,15 @@ func TestInsufficientEvidenceIsNotAGuess(t *testing.T) {
 	}
 	if single.Probability != nil {
 		t.Fatal("单条样本不应给出置信度")
+	}
+
+	// 线性同余脚本凑出的数字：形态不像模型手写，不给排名（证据不足，不是定罪）。
+	scripted, err := Analyze([]Output{{Text: numberSequence(240), ExpectedCount: 240}})
+	if err != nil {
+		t.Fatalf("分析失败: %v", err)
+	}
+	if scripted.Decision != DecisionNotModel || len(scripted.Results) != 0 {
+		t.Fatalf("脚本数字应判 not_model 且无排名，实际 %q / %d 名", scripted.Decision, len(scripted.Results))
 	}
 }
 

@@ -89,7 +89,8 @@ type ProbeMeta = {
     icon: LucideIcon;
 };
 
-import { readFingerprint, describeDecision, formatProbability, type FingerprintSummary } from './fingerprint';
+import { readFingerprint } from './fingerprint';
+import { FingerprintCard } from './FingerprintCard';
 import {
     readTokenizer,
     readTokenizerRecording,
@@ -304,67 +305,6 @@ function evidencePairs(row: DisplayRow): Array<[string, string]> {
 }
 
 /**
- * 指纹结论卡：把「随机数指纹」探针真正算出来的东西摆到页面上。
- *
- * 为什么必须有这一块：这项探针是唯一能**认出模型**的检查，后端早就算好了最像的
- * 模型、家族、前五名候选和库内置信度。但页面以前只给它一行「未见异常/证据不足」，
- * 内容全埋在证据抽屉的原始 JSON 里——用户跑完一次检测，看到的是状态，不是结论，
- * 观感就是「检测不出东西」。
- *
- * 边界照抄后端措辞，一个字都不放宽：这是**参考库内的相对排名**，库外模型也会得到
- * 一个「最像」的答案，所以它不能当「确认就是某模型」用。
- */
-function FingerprintCard({ summary }: { summary: FingerprintSummary }) {
-    const probability = formatProbability(summary.probability);
-    return (
-        <div className="rounded-2xl border border-border bg-card px-4 py-3">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-                <div className="min-w-0">
-                    <p className="text-[11px] font-medium tracking-[0.16em] text-muted-foreground">随机数指纹 · 参考库比对</p>
-                    <p className="mt-1 flex flex-wrap items-baseline gap-2">
-                        <span className="text-lg font-semibold">{summary.predictionName || '参考库内无匹配'}</span>
-                        {summary.familyName && (
-                            <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">{summary.familyName}</span>
-                        )}
-                    </p>
-                    <p className="mt-0.5 text-xs leading-5 text-muted-foreground">{describeDecision(summary)}</p>
-                </div>
-                {probability && (
-                    <div className="shrink-0 rounded-xl bg-muted/50 px-3 py-2 text-center">
-                        <p className="text-[11px] text-muted-foreground">库内置信度</p>
-                        <p className="mt-0.5 text-lg font-semibold">{probability}</p>
-                    </div>
-                )}
-            </div>
-            {summary.candidates.length > 0 && (
-                <ol className="mt-3 space-y-1 border-t border-border pt-2">
-                    {summary.candidates.map((candidate, index) => (
-                        <li key={candidate.model} className="flex items-center gap-2 text-xs">
-                            <span className="w-4 shrink-0 text-muted-foreground">{index + 1}</span>
-                            <span className="min-w-0 flex-1 truncate">{candidate.displayName}</span>
-                            {candidate.familyName && (
-                                <span className="shrink-0 text-[11px] text-muted-foreground">{candidate.familyName}</span>
-                            )}
-                            <span className="w-14 shrink-0 text-right font-mono text-[11px] text-muted-foreground">
-                                {candidate.score.toFixed(3)}
-                            </span>
-                            <span className="w-12 shrink-0 text-right text-[11px] text-muted-foreground">
-                                {formatProbability(candidate.probability)}
-                            </span>
-                        </li>
-                    ))}
-                </ol>
-            )}
-            <p className="mt-2 border-t border-border pt-2 text-[11px] leading-5 text-muted-foreground">
-                这是参考库内的相对排名，不是「确认就是它」——库外的模型也会得到一个最像的答案。
-                {summary.usedOutputs > 0 && `本次用了 ${summary.usedOutputs} 条有效回答。`}
-                {summary.referenceBuiltAt && `参考库构建于 ${summary.referenceBuiltAt.slice(0, 10)}。`}
-            </p>
-        </div>
-    );
-}
-
-/**
  * 分词器结论卡（lm-detector 分词器差分探测）。
  *
  * 测出来的是「上游用哪套分词器」，不是「哪个模型」：同一分词器常被多个模型共用，
@@ -496,6 +436,30 @@ function TokenizerRecordingCard({ recording, resultId }: { recording: TokenizerR
 function windowDays(hours: number | undefined): number {
     if (!hours || hours <= 0) return 7;
     return Math.max(1, Math.round(hours / 24));
+}
+
+/**
+ * 指纹题目：随机出题（默认）还是固定 36 题。随机题防止中转站认出公开的固定题；
+ * 固定题留作对照。只换题目文字，出站形状一模一样。
+ */
+function FingerprintPromptToggle() {
+    const { data: settings } = useSettingList();
+    const setSetting = useSetSetting();
+    const random = settings?.find((s) => s.key === SettingKey.ModelAuditFingerprintRandomPrompts)?.value !== 'false';
+    const toggle = (next: boolean) =>
+        setSetting.mutate(
+            { key: SettingKey.ModelAuditFingerprintRandomPrompts, value: next ? 'true' : 'false' },
+            {
+                onSuccess: () => toast.success(next ? '指纹改为随机出题' : '指纹改为固定题（对照）'),
+                onError: (e) => toast.error('保存失败', { description: e instanceof Error ? e.message : String(e) }),
+            },
+        );
+    return (
+        <div className="ml-6 flex items-center justify-between gap-2 rounded-lg bg-muted/40 px-2 py-1.5 text-[11px] text-muted-foreground">
+            <span className="min-w-0">{random ? '随机出题：每次换语言和措辞，防被认出' : '固定题：对照用，题目公开'}</span>
+            <Switch checked={random} onCheckedChange={toggle} disabled={setSetting.isPending} aria-label="指纹随机出题" />
+        </div>
+    );
 }
 
 function PassiveProbeCard({ onOpenFindings }: { onOpenFindings?: () => void } = {}) {
@@ -863,6 +827,27 @@ export function ModelAudit() {
         }
     };
 
+    // 再测一轮：只重跑指纹这一项，同一渠道、同一型号；题目由后端重新随机生成。
+    // 由用户点按钮触发，不在后台自动重测——每一轮都要真实发请求、花 token。
+    const retestFingerprint = async () => {
+        if (!report) return;
+        const model = report.model || report.upstream_model;
+        if (!model) return;
+        try {
+            const res = await enqueueAudit.mutateAsync({
+                channel_id: report.channel_id,
+                models: [model],
+                probes: ['fingerprint'],
+            });
+            toast.success(`已提交再测一轮（任务 #${res.job_id}），结果在「记录」里看`);
+            setReport(null);
+            setPageState('idle');
+            setMode('queue');
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : '提交失败');
+        }
+    };
+
     // 原来的 enqueue / runQueue / removeFromQueue / clearQueue / cancel 已整块删除。
     //
     // 它们把"检测"实现成浏览器里的 for 循环 + 同步请求，是本次合并掉的另一半。
@@ -918,6 +903,18 @@ export function ModelAudit() {
     const renderProbeRow = (probe: ProbeMeta) => {
         const disabled = !isApplicable(channel, probe.id, activeModel);
         const checked = selected.includes(probe.id) && !disabled;
+        if (probe.id === 'fingerprint' && checked) {
+            return (
+                <div key={probe.id}>
+                    {renderProbeLabel(probe, disabled, checked)}
+                    <FingerprintPromptToggle />
+                </div>
+            );
+        }
+        return renderProbeLabel(probe, disabled, checked);
+    };
+
+    const renderProbeLabel = (probe: ProbeMeta, disabled: boolean, checked: boolean) => {
         return (
             <label key={probe.id} title={probe.desc} className={cn('flex items-center gap-2 rounded-xl px-1 py-1.5 text-sm', disabled && 'opacity-40')}>
                 <input
@@ -1199,7 +1196,14 @@ export function ModelAudit() {
                                     <p className="mt-1 text-2xl font-semibold">{formatDuration(report.duration_ms)}</p>
                                 </div>
                             </div>
-                            {fingerprint && <FingerprintCard summary={fingerprint} />}
+                            {fingerprint && (
+                                <FingerprintCard
+                                    summary={fingerprint}
+                                    declared={report.model || report.upstream_model}
+                                    onRetest={retestFingerprint}
+                                    retesting={enqueueAudit.isPending}
+                                />
+                            )}
                             {tokenizer && <TokenizerCard summary={tokenizer} />}
                             {recording && <TokenizerRecordingCard recording={recording} resultId={report.result_id} />}
                             <div className="flex h-1.5 overflow-hidden rounded-full bg-muted">

@@ -426,7 +426,10 @@ function auditPage() {
         '@/api/endpoints/setting': {
             useSettingList: () => ({ data: [] }),
             useSetSetting: () => ({ mutate: () => {}, isPending: false }),
-            SettingKey: { LogPassiveProbeEnabled: 'log_passive_probe_enabled' },
+            SettingKey: {
+                LogPassiveProbeEnabled: 'log_passive_probe_enabled',
+                ModelAuditFingerprintRandomPrompts: 'model_audit_fingerprint_random_prompts',
+            },
         },
         '@/components/common/Toast': { toast },
         '@/components/ui/button': widgets('Button'),
@@ -437,6 +440,8 @@ function auditPage() {
         // 队列页自身的渲染在这里不测（有独立的 model-audit-queue.test.cjs）。
         // 但它现在是报告的唯一来源：用户在队列里点开某条结果，报告才回到本页，
         // 所以给一个能触发回调的存根，测试才能走完整的"回看"路径。
+        // 指纹卡自身的展示由 fingerprint-summary.test.cjs 覆盖读数；这里只要页面能挂载。
+        './FingerprintCard': { FingerprintCard: () => null },
         './Queue': {
             ModelAuditQueue: ({ onOpenReport } = {}) => {
                 queueView.onOpenReport = onOpenReport;

@@ -1,0 +1,1414 @@
+{
+ "schema": "octopus-fingerprint-neighbors-v1",
+ "bank_built_at": "2026-10-27T05:02:50.758637+00:00",
+ "models": {
+  "claude-fable-5": [
+   {
+    "model": "claude-opus-5",
+    "distance": 1.085
+   },
+   {
+    "model": "claude-opus-4.8",
+    "distance": 1.094
+   },
+   {
+    "model": "claude-sonnet-5",
+    "distance": 1.111
+   },
+   {
+    "model": "claude-fable-5.1",
+    "distance": 1.122
+   },
+   {
+    "model": "claude-opus-4.7",
+    "distance": 1.167
+   }
+  ],
+  "claude-fable-5.1": [
+   {
+    "model": "claude-fable-5",
+    "distance": 1.054
+   },
+   {
+    "model": "claude-opus-5",
+    "distance": 1.074
+   },
+   {
+    "model": "claude-sonnet-5",
+    "distance": 1.113
+   },
+   {
+    "model": "claude-opus-4.8",
+    "distance": 1.125
+   },
+   {
+    "model": "claude-sonnet-5.5",
+    "distance": 1.148
+   }
+  ],
+  "claude-haiku-4.5": [
+   {
+    "model": "hy4-preview",
+    "distance": 1.118
+   },
+   {
+    "model": "glm-5.2",
+    "distance": 1.13
+   },
+   {
+    "model": "mimo-v2.5",
+    "distance": 1.134
+   },
+   {
+    "model": "deepseek-v3.2",
+    "distance": 1.136
+   },
+   {
+    "model": "grok-4.5",
+    "distance": 1.142
+   }
+  ],
+  "claude-haiku-5.5": [
+   {
+    "model": "muse-spark-1.3",
+    "distance": 1.186
+   },
+   {
+    "model": "claude-fable-5.1",
+    "distance": 1.19
+   },
+   {
+    "model": "claude-opus-5.5",
+    "distance": 1.192
+   },
+   {
+    "model": "kimi-k2.8-preview",
+    "distance": 1.194
+   },
+   {
+    "model": "deepseek-v4-flash-0731",
+    "distance": 1.195
+   }
+  ],
+  "claude-opus-4.6": [
+   {
+    "model": "qwen3.8-omni-flash",
+    "distance": 1.143
+   },
+   {
+    "model": "qwen3.8-27b",
+    "distance": 1.144
+   },
+   {
+    "model": "grok-4.7",
+    "distance": 1.153
+   },
+   {
+    "model": "grok-4.5",
+    "distance": 1.163
+   },
+   {
+    "model": "claude-sonnet-4.6",
+    "distance": 1.164
+   }
+  ],
+  "claude-opus-4.7": [
+   {
+    "model": "claude-opus-4.8",
+    "distance": 1.305
+   },
+   {
+    "model": "claude-sonnet-5",
+    "distance": 1.484
+   },
+   {
+    "model": "claude-opus-5",
+    "distance": 1.52
+   },
+   {
+    "model": "claude-fable-5",
+    "distance": 1.597
+   },
+   {
+    "model": "hy4-preview",
+    "distance": 1.671
+   }
+  ],
+  "claude-opus-4.8": [
+   {
+    "model": "claude-opus-4.7",
+    "distance": 1.011
+   },
+   {
+    "model": "claude-opus-5",
+    "distance": 1.13
+   },
+   {
+    "model": "claude-sonnet-5",
+    "distance": 1.143
+   },
+   {
+    "model": "claude-fable-5",
+    "distance": 1.207
+   },
+   {
+    "model": "hy4-preview",
+    "distance": 1.302
+   }
+  ],
+  "claude-opus-5": [
+   {
+    "model": "claude-opus-4.8",
+    "distance": 1.08
+   },
+   {
+    "model": "claude-opus-4.7",
+    "distance": 1.126
+   },
+   {
+    "model": "claude-fable-5",
+    "distance": 1.161
+   },
+   {
+    "model": "claude-sonnet-5",
+    "distance": 1.189
+   },
+   {
+    "model": "claude-fable-5.1",
+    "distance": 1.21
+   }
+  ],
+  "claude-opus-5.5": [
+   {
+    "model": "kimi-k3.1-pro",
+    "distance": 1.05
+   },
+   {
+    "model": "kimi-k3",
+    "distance": 1.078
+   },
+   {
+    "model": "gpt-5.4",
+    "distance": 1.079
+   },
+   {
+    "model": "claude-fable-5.1",
+    "distance": 1.08
+   },
+   {
+    "model": "deepseek-v3.2",
+    "distance": 1.105
+   }
+  ],
+  "claude-sonnet-4.6": [
+   {
+    "model": "qwen3.8-max-0902",
+    "distance": 1.161
+   },
+   {
+    "model": "mimo-v2.6-flash",
+    "distance": 1.175
+   },
+   {
+    "model": "seed-2.0-lite",
+    "distance": 1.193
+   },
+   {
+    "model": "mimo-v2.5-pro",
+    "distance": 1.199
+   },
+   {
+    "model": "claude-opus-4.7",
+    "distance": 1.199
+   }
+  ],
+  "claude-sonnet-5": [
+   {
+    "model": "claude-opus-4.8",
+    "distance": 1.172
+   },
+   {
+    "model": "claude-opus-4.7",
+    "distance": 1.219
+   },
+   {
+    "model": "claude-fable-5",
+    "distance": 1.234
+   },
+   {
+    "model": "claude-opus-5",
+    "distance": 1.274
+   },
+   {
+    "model": "claude-fable-5.1",
+    "distance": 1.325
+   }
+  ],
+  "claude-sonnet-5.5": [
+   {
+    "model": "claude-fable-5.1",
+    "distance": 1.083
+   },
+   {
+    "model": "claude-opus-5",
+    "distance": 1.111
+   },
+   {
+    "model": "gpt-6-astra",
+    "distance": 1.113
+   },
+   {
+    "model": "claude-fable-5",
+    "distance": 1.114
+   },
+   {
+    "model": "deepseek-v4-flash-0731",
+    "distance": 1.12
+   }
+  ],
+  "deepseek-v3.2": [
+   {
+    "model": "grok-4.5",
+    "distance": 1.041
+   },
+   {
+    "model": "grok-4.6",
+    "distance": 1.061
+   },
+   {
+    "model": "gpt-5.4",
+    "distance": 1.064
+   },
+   {
+    "model": "claude-opus-5",
+    "distance": 1.071
+   },
+   {
+    "model": "claude-haiku-4.5",
+    "distance": 1.077
+   }
+  ],
+  "deepseek-v4-flash": [
+   {
+    "model": "deepseek-v4-flash-0731",
+    "distance": 1.042
+   },
+   {
+    "model": "kimi-k3.1-pro",
+    "distance": 1.088
+   },
+   {
+    "model": "kimi-k3",
+    "distance": 1.088
+   },
+   {
+    "model": "claude-sonnet-5.5",
+    "distance": 1.09
+   },
+   {
+    "model": "gemini-3.6-flash",
+    "distance": 1.091
+   }
+  ],
+  "deepseek-v4-flash-0731": [
+   {
+    "model": "kimi-k3",
+    "distance": 1.009
+   },
+   {
+    "model": "kimi-k3.1-pro",
+    "distance": 1.019
+   },
+   {
+    "model": "gpt-6-astra",
+    "distance": 1.026
+   },
+   {
+    "model": "deepseek-v4-flash",
+    "distance": 1.034
+   },
+   {
+    "model": "gpt-5.6-sol",
+    "distance": 1.058
+   }
+  ],
+  "deepseek-v4-pro": [
+   {
+    "model": "deepseek-v4-pro-0813",
+    "distance": 1.001
+   },
+   {
+    "model": "deepseek-v4-flash-0731",
+    "distance": 1.061
+   },
+   {
+    "model": "seed-2.0-mini",
+    "distance": 1.064
+   },
+   {
+    "model": "gpt-6-astra",
+    "distance": 1.066
+   },
+   {
+    "model": "muse-spark-1.2",
+    "distance": 1.068
+   }
+  ],
+  "deepseek-v4-pro-0813": [
+   {
+    "model": "deepseek-v4-pro",
+    "distance": 1.005
+   },
+   {
+    "model": "qwen3.8-max-0902",
+    "distance": 1.073
+   },
+   {
+    "model": "gpt-6-astra",
+    "distance": 1.077
+   },
+   {
+    "model": "muse-spark-1.2",
+    "distance": 1.083
+   },
+   {
+    "model": "gpt-5.5",
+    "distance": 1.084
+   }
+  ],
+  "deepseek-v4.1-flash": [
+   {
+    "model": "deepseek-v4.1-flash-1017",
+    "distance": 1.053
+   },
+   {
+    "model": "gpt-6-astra",
+    "distance": 1.062
+   },
+   {
+    "model": "gpt-5.5",
+    "distance": 1.066
+   },
+   {
+    "model": "muse-spark-1.3",
+    "distance": 1.073
+   },
+   {
+    "model": "gpt-6.1-terra",
+    "distance": 1.077
+   }
+  ],
+  "deepseek-v4.1-flash-1017": [
+   {
+    "model": "gpt-6-astra",
+    "distance": 1.054
+   },
+   {
+    "model": "deepseek-v4.1-flash",
+    "distance": 1.054
+   },
+   {
+    "model": "gpt-6-sol",
+    "distance": 1.065
+   },
+   {
+    "model": "qwen3.8-max-0902",
+    "distance": 1.086
+   },
+   {
+    "model": "gpt-5.5",
+    "distance": 1.088
+   }
+  ],
+  "gemini-2.5-pro": [
+   {
+    "model": "kimi-k3.1-pro",
+    "distance": 1.096
+   },
+   {
+    "model": "kimi-k3",
+    "distance": 1.107
+   },
+   {
+    "model": "seed-2.0-mini",
+    "distance": 1.151
+   },
+   {
+    "model": "gemini-3.7-flash",
+    "distance": 1.162
+   },
+   {
+    "model": "gemini-3.6-flash",
+    "distance": 1.165
+   }
+  ],
+  "gemini-3.1-pro-preview": [
+   {
+    "model": "gemini-3.5-flash",
+    "distance": 1.064
+   },
+   {
+    "model": "gemini-3.5-flash-lite",
+    "distance": 1.091
+   },
+   {
+    "model": "gemini-3.6-flash",
+    "distance": 1.098
+   },
+   {
+    "model": "gemini-4-argon",
+    "distance": 1.102
+   },
+   {
+    "model": "deepseek-v3.2",
+    "distance": 1.103
+   }
+  ],
+  "gemini-3.5-flash": [
+   {
+    "model": "gemini-3.8-flash",
+    "distance": 1.135
+   },
+   {
+    "model": "seed-2.0-lite",
+    "distance": 1.14
+   },
+   {
+    "model": "gemini-3.6-flash",
+    "distance": 1.157
+   },
+   {
+    "model": "gemini-3.7-flash",
+    "distance": 1.164
+   },
+   {
+    "model": "gemini-3.5-flash-lite",
+    "distance": 1.169
+   }
+  ],
+  "gemini-3.5-flash-lite": [
+   {
+    "model": "gemini-3.5-flash",
+    "distance": 1.039
+   },
+   {
+    "model": "gemini-3.8-flash",
+    "distance": 1.065
+   },
+   {
+    "model": "seed-2.0-mini",
+    "distance": 1.072
+   },
+   {
+    "model": "gemini-3.1-pro-preview",
+    "distance": 1.072
+   },
+   {
+    "model": "gemini-3.7-flash",
+    "distance": 1.084
+   }
+  ],
+  "gemini-3.6-flash": [
+   {
+    "model": "gemini-3.8-flash",
+    "distance": 1.035
+   },
+   {
+    "model": "gemini-3.7-flash",
+    "distance": 1.046
+   },
+   {
+    "model": "gemini-3.5-flash",
+    "distance": 1.048
+   },
+   {
+    "model": "kimi-k3",
+    "distance": 1.054
+   },
+   {
+    "model": "kimi-k3.1-pro",
+    "distance": 1.056
+   }
+  ],
+  "gemini-3.7-flash": [
+   {
+    "model": "gemini-3.8-flash",
+    "distance": 1.005
+   },
+   {
+    "model": "gemini-3.6-flash",
+    "distance": 1.043
+   },
+   {
+    "model": "gemini-3.5-flash",
+    "distance": 1.067
+   },
+   {
+    "model": "seed-2.0-mini",
+    "distance": 1.092
+   },
+   {
+    "model": "gemini-4-argon",
+    "distance": 1.095
+   }
+  ],
+  "gemini-3.8-flash": [
+   {
+    "model": "gemini-3.7-flash",
+    "distance": 0.997
+   },
+   {
+    "model": "gemini-3.6-flash",
+    "distance": 1.039
+   },
+   {
+    "model": "gemini-3.5-flash",
+    "distance": 1.045
+   },
+   {
+    "model": "glm-5.2",
+    "distance": 1.088
+   },
+   {
+    "model": "gemini-3.5-flash-lite",
+    "distance": 1.09
+   }
+  ],
+  "gemini-4-argon": [
+   {
+    "model": "gemini-3.7-flash",
+    "distance": 1.068
+   },
+   {
+    "model": "gemini-3.8-flash",
+    "distance": 1.086
+   },
+   {
+    "model": "seed-2.1-turbo",
+    "distance": 1.087
+   },
+   {
+    "model": "seed-2.0-lite",
+    "distance": 1.091
+   },
+   {
+    "model": "gemini-3.1-pro-preview",
+    "distance": 1.1
+   }
+  ],
+  "glm-5.2": [
+   {
+    "model": "seed-2.0-lite",
+    "distance": 1.214
+   },
+   {
+    "model": "mimo-v2.5-pro",
+    "distance": 1.274
+   },
+   {
+    "model": "seed-2.0-mini",
+    "distance": 1.288
+   },
+   {
+    "model": "glm-5.3",
+    "distance": 1.292
+   },
+   {
+    "model": "claude-haiku-4.5",
+    "distance": 1.298
+   }
+  ],
+  "glm-5.3": [
+   {
+    "model": "claude-opus-5",
+    "distance": 1.078
+   },
+   {
+    "model": "claude-fable-5",
+    "distance": 1.083
+   },
+   {
+    "model": "glm-5.3-flash",
+    "distance": 1.087
+   },
+   {
+    "model": "glm-5.2",
+    "distance": 1.088
+   },
+   {
+    "model": "glm-5.3-flashx",
+    "distance": 1.09
+   }
+  ],
+  "glm-5.3-flash": [
+   {
+    "model": "glm-5.3-flashx",
+    "distance": 0.99
+   },
+   {
+    "model": "claude-opus-5",
+    "distance": 1.031
+   },
+   {
+    "model": "claude-fable-5",
+    "distance": 1.042
+   },
+   {
+    "model": "claude-opus-4.8",
+    "distance": 1.044
+   },
+   {
+    "model": "hy4-preview",
+    "distance": 1.049
+   }
+  ],
+  "glm-5.3-flashx": [
+   {
+    "model": "glm-5.3-flash",
+    "distance": 1
+   },
+   {
+    "model": "claude-opus-5",
+    "distance": 1.054
+   },
+   {
+    "model": "hy4-preview",
+    "distance": 1.068
+   },
+   {
+    "model": "glm-5.3",
+    "distance": 1.071
+   },
+   {
+    "model": "claude-fable-5",
+    "distance": 1.072
+   }
+  ],
+  "gpt-4o": [
+   {
+    "model": "deepseek-v3.2",
+    "distance": 1.036
+   },
+   {
+    "model": "glm-5.2",
+    "distance": 1.036
+   },
+   {
+    "model": "gemini-3.5-flash",
+    "distance": 1.041
+   },
+   {
+    "model": "gpt-5.4",
+    "distance": 1.052
+   },
+   {
+    "model": "gemini-2.5-pro",
+    "distance": 1.054
+   }
+  ],
+  "gpt-5.4": [
+   {
+    "model": "kimi-k3.1-pro",
+    "distance": 1.078
+   },
+   {
+    "model": "kimi-k3",
+    "distance": 1.094
+   },
+   {
+    "model": "claude-opus-5.5",
+    "distance": 1.097
+   },
+   {
+    "model": "gpt-6-astra",
+    "distance": 1.109
+   },
+   {
+    "model": "deepseek-v3.2",
+    "distance": 1.112
+   }
+  ],
+  "gpt-5.5": [
+   {
+    "model": "gpt-5.6-sol",
+    "distance": 1.085
+   },
+   {
+    "model": "gpt-6-luna",
+    "distance": 1.085
+   },
+   {
+    "model": "kimi-k3.1-pro",
+    "distance": 1.09
+   },
+   {
+    "model": "gpt-6-astra",
+    "distance": 1.093
+   },
+   {
+    "model": "gpt-6-sol",
+    "distance": 1.094
+   }
+  ],
+  "gpt-5.6-luna": [
+   {
+    "model": "gpt-6-luna",
+    "distance": 1.161
+   },
+   {
+    "model": "gpt-6-astra",
+    "distance": 1.18
+   },
+   {
+    "model": "gpt-5.6-terra",
+    "distance": 1.18
+   },
+   {
+    "model": "gpt-5.6-sol",
+    "distance": 1.184
+   },
+   {
+    "model": "gpt-5.5",
+    "distance": 1.191
+   }
+  ],
+  "gpt-5.6-sol": [
+   {
+    "model": "kimi-k3.1-pro",
+    "distance": 1.017
+   },
+   {
+    "model": "kimi-k3",
+    "distance": 1.045
+   },
+   {
+    "model": "gpt-5.5",
+    "distance": 1.057
+   },
+   {
+    "model": "gpt-5.6-luna",
+    "distance": 1.063
+   },
+   {
+    "model": "gpt-6-astra",
+    "distance": 1.067
+   }
+  ],
+  "gpt-5.6-terra": [
+   {
+    "model": "gpt-5.6-luna",
+    "distance": 1.061
+   },
+   {
+    "model": "gpt-6-astra",
+    "distance": 1.063
+   },
+   {
+    "model": "gpt-5.5",
+    "distance": 1.064
+   },
+   {
+    "model": "gpt-5.6-sol",
+    "distance": 1.071
+   },
+   {
+    "model": "gpt-6-sol",
+    "distance": 1.074
+   }
+  ],
+  "gpt-6-astra": [
+   {
+    "model": "kimi-k3.1-pro",
+    "distance": 1.092
+   },
+   {
+    "model": "kimi-k3",
+    "distance": 1.106
+   },
+   {
+    "model": "gpt-6.1-terra",
+    "distance": 1.111
+   },
+   {
+    "model": "gpt-6-sol",
+    "distance": 1.115
+   },
+   {
+    "model": "gpt-5.6-sol",
+    "distance": 1.122
+   }
+  ],
+  "gpt-6-luna": [
+   {
+    "model": "gpt-5.6-luna",
+    "distance": 1.165
+   },
+   {
+    "model": "gpt-5.5",
+    "distance": 1.167
+   },
+   {
+    "model": "gpt-6-astra",
+    "distance": 1.191
+   },
+   {
+    "model": "gpt-6.1-terra",
+    "distance": 1.198
+   },
+   {
+    "model": "qwen3.8-omni-flash",
+    "distance": 1.2
+   }
+  ],
+  "gpt-6-sol": [
+   {
+    "model": "gpt-6-astra",
+    "distance": 1.043
+   },
+   {
+    "model": "gpt-5.6-sol",
+    "distance": 1.064
+   },
+   {
+    "model": "gpt-5.6-terra",
+    "distance": 1.072
+   },
+   {
+    "model": "gpt-5.5",
+    "distance": 1.078
+   },
+   {
+    "model": "gemini-4-argon",
+    "distance": 1.085
+   }
+  ],
+  "gpt-6.1-terra": [
+   {
+    "model": "gpt-6-astra",
+    "distance": 1.035
+   },
+   {
+    "model": "gpt-6-luna",
+    "distance": 1.059
+   },
+   {
+    "model": "gpt-5.4",
+    "distance": 1.07
+   },
+   {
+    "model": "kimi-k3.1-pro",
+    "distance": 1.072
+   },
+   {
+    "model": "gpt-5.6-terra",
+    "distance": 1.074
+   }
+  ],
+  "grok-4.5": [
+   {
+    "model": "grok-4.6",
+    "distance": 1.053
+   },
+   {
+    "model": "qwen3.8-27b",
+    "distance": 1.059
+   },
+   {
+    "model": "deepseek-v3.2",
+    "distance": 1.092
+   },
+   {
+    "model": "grok-4.7",
+    "distance": 1.092
+   },
+   {
+    "model": "mimo-v2.5",
+    "distance": 1.123
+   }
+  ],
+  "grok-4.6": [
+   {
+    "model": "grok-4.5",
+    "distance": 1.009
+   },
+   {
+    "model": "qwen3.8-27b",
+    "distance": 1.037
+   },
+   {
+    "model": "deepseek-v3.2",
+    "distance": 1.052
+   },
+   {
+    "model": "grok-4.7",
+    "distance": 1.062
+   },
+   {
+    "model": "qwen3.8-omni-flash",
+    "distance": 1.069
+   }
+  ],
+  "grok-4.7": [
+   {
+    "model": "grok-4.5",
+    "distance": 1.136
+   },
+   {
+    "model": "grok-4.6",
+    "distance": 1.151
+   },
+   {
+    "model": "qwen3.8-27b",
+    "distance": 1.16
+   },
+   {
+    "model": "qwen3.8-omni-flash",
+    "distance": 1.168
+   },
+   {
+    "model": "claude-opus-4.6",
+    "distance": 1.188
+   }
+  ],
+  "hy4-preview": [
+   {
+    "model": "claude-opus-5",
+    "distance": 1.161
+   },
+   {
+    "model": "claude-opus-4.8",
+    "distance": 1.242
+   },
+   {
+    "model": "glm-5.3",
+    "distance": 1.268
+   },
+   {
+    "model": "mimo-v2.6-flash",
+    "distance": 1.271
+   },
+   {
+    "model": "glm-5.3-flash",
+    "distance": 1.272
+   }
+  ],
+  "kimi-k2.8-preview": [
+   {
+    "model": "claude-opus-5",
+    "distance": 1.051
+   },
+   {
+    "model": "claude-fable-5.1",
+    "distance": 1.063
+   },
+   {
+    "model": "hy4-preview",
+    "distance": 1.065
+   },
+   {
+    "model": "grok-4.7",
+    "distance": 1.072
+   },
+   {
+    "model": "gpt-5.4",
+    "distance": 1.077
+   }
+  ],
+  "kimi-k3": [
+   {
+    "model": "kimi-k3.1-pro",
+    "distance": 0.955
+   },
+   {
+    "model": "seed-2.0-lite",
+    "distance": 1.385
+   },
+   {
+    "model": "muse-spark-1.3",
+    "distance": 1.415
+   },
+   {
+    "model": "deepseek-v3.2",
+    "distance": 1.415
+   },
+   {
+    "model": "gemini-3.6-flash",
+    "distance": 1.422
+   }
+  ],
+  "kimi-k3.1-pro": [
+   {
+    "model": "kimi-k3",
+    "distance": 1.384
+   },
+   {
+    "model": "claude-opus-5.5",
+    "distance": 2.791
+   },
+   {
+    "model": "deepseek-v3.2",
+    "distance": 2.807
+   },
+   {
+    "model": "claude-fable-5.1",
+    "distance": 2.841
+   },
+   {
+    "model": "gemini-2.5-pro",
+    "distance": 2.881
+   }
+  ],
+  "mimo-v2.5": [
+   {
+    "model": "mimo-v2.6-flash",
+    "distance": 1.025
+   },
+   {
+    "model": "claude-sonnet-4.6",
+    "distance": 1.027
+   },
+   {
+    "model": "glm-5.2",
+    "distance": 1.038
+   },
+   {
+    "model": "qwen3.8-27b",
+    "distance": 1.038
+   },
+   {
+    "model": "qwen3.8-flash",
+    "distance": 1.041
+   }
+  ],
+  "mimo-v2.5-pro": [
+   {
+    "model": "seed-2.0-mini",
+    "distance": 1.037
+   },
+   {
+    "model": "claude-sonnet-4.6",
+    "distance": 1.084
+   },
+   {
+    "model": "qwen3.8-27b",
+    "distance": 1.088
+   },
+   {
+    "model": "mimo-v2.6-flash",
+    "distance": 1.091
+   },
+   {
+    "model": "qwen3.8-flash",
+    "distance": 1.091
+   }
+  ],
+  "mimo-v2.6-flash": [
+   {
+    "model": "seed-2.0-lite",
+    "distance": 1.065
+   },
+   {
+    "model": "hy4-preview",
+    "distance": 1.066
+   },
+   {
+    "model": "mimo-v2.5",
+    "distance": 1.078
+   },
+   {
+    "model": "claude-sonnet-4.6",
+    "distance": 1.079
+   },
+   {
+    "model": "qwen3.8-max-0902",
+    "distance": 1.098
+   }
+  ],
+  "mimo-v2.6-pro": [
+   {
+    "model": "seed-2.0-mini",
+    "distance": 1.154
+   },
+   {
+    "model": "mimo-v2.5-pro",
+    "distance": 1.167
+   },
+   {
+    "model": "claude-sonnet-4.6",
+    "distance": 1.182
+   },
+   {
+    "model": "qwen3.8-flash",
+    "distance": 1.187
+   },
+   {
+    "model": "deepseek-v4-pro",
+    "distance": 1.187
+   }
+  ],
+  "minimax-m3.1-flash": [
+   {
+    "model": "seed-2.1-turbo",
+    "distance": 1.155
+   },
+   {
+    "model": "qwen3.8-27b",
+    "distance": 1.167
+   },
+   {
+    "model": "glm-5.2",
+    "distance": 1.175
+   },
+   {
+    "model": "deepseek-v4.1-flash-1017",
+    "distance": 1.182
+   },
+   {
+    "model": "gpt-6-sol",
+    "distance": 1.184
+   }
+  ],
+  "muse-spark-1.2": [
+   {
+    "model": "muse-spark-1.3",
+    "distance": 1.039
+   },
+   {
+    "model": "kimi-k3.1-pro",
+    "distance": 1.069
+   },
+   {
+    "model": "kimi-k3",
+    "distance": 1.075
+   },
+   {
+    "model": "deepseek-v4-pro",
+    "distance": 1.076
+   },
+   {
+    "model": "seed-2.1-turbo",
+    "distance": 1.078
+   }
+  ],
+  "muse-spark-1.3": [
+   {
+    "model": "kimi-k3.1-pro",
+    "distance": 1.03
+   },
+   {
+    "model": "kimi-k3",
+    "distance": 1.031
+   },
+   {
+    "model": "muse-spark-1.2",
+    "distance": 1.063
+   },
+   {
+    "model": "gpt-6-astra",
+    "distance": 1.098
+   },
+   {
+    "model": "deepseek-v4.1-flash",
+    "distance": 1.11
+   }
+  ],
+  "muse-wonder": [
+   {
+    "model": "glm-5.2",
+    "distance": 1.107
+   },
+   {
+    "model": "seed-2.0-lite",
+    "distance": 1.119
+   },
+   {
+    "model": "gemini-3.6-flash",
+    "distance": 1.136
+   },
+   {
+    "model": "seed-2.1-turbo",
+    "distance": 1.137
+   },
+   {
+    "model": "kimi-k3",
+    "distance": 1.149
+   }
+  ],
+  "qwen3.8-27b": [
+   {
+    "model": "grok-4.5",
+    "distance": 1.063
+   },
+   {
+    "model": "qwen3.8-omni-flash",
+    "distance": 1.065
+   },
+   {
+    "model": "qwen3.8-flash",
+    "distance": 1.071
+   },
+   {
+    "model": "grok-4.6",
+    "distance": 1.09
+   },
+   {
+    "model": "grok-4.7",
+    "distance": 1.114
+   }
+  ],
+  "qwen3.8-flash": [
+   {
+    "model": "qwen3.8-27b",
+    "distance": 0.978
+   },
+   {
+    "model": "qwen3.8-omni-flash",
+    "distance": 0.996
+   },
+   {
+    "model": "mimo-v2.5",
+    "distance": 1.002
+   },
+   {
+    "model": "mimo-v2.5-pro",
+    "distance": 1.011
+   },
+   {
+    "model": "seed-2.0-mini",
+    "distance": 1.018
+   }
+  ],
+  "qwen3.8-max-0902": [
+   {
+    "model": "glm-5.2",
+    "distance": 1.135
+   },
+   {
+    "model": "claude-sonnet-4.6",
+    "distance": 1.147
+   },
+   {
+    "model": "gpt-6-sol",
+    "distance": 1.165
+   },
+   {
+    "model": "deepseek-v4.1-flash-1017",
+    "distance": 1.177
+   },
+   {
+    "model": "mimo-v2.6-flash",
+    "distance": 1.184
+   }
+  ],
+  "qwen3.8-omni-flash": [
+   {
+    "model": "qwen3.8-27b",
+    "distance": 1.075
+   },
+   {
+    "model": "grok-4.7",
+    "distance": 1.11
+   },
+   {
+    "model": "qwen3.8-flash",
+    "distance": 1.117
+   },
+   {
+    "model": "gemini-4-argon",
+    "distance": 1.123
+   },
+   {
+    "model": "seed-2.1-turbo",
+    "distance": 1.134
+   }
+  ],
+  "seed-2.0-lite": [
+   {
+    "model": "seed-2.1-turbo",
+    "distance": 1.093
+   },
+   {
+    "model": "seed-2.0-mini",
+    "distance": 1.144
+   },
+   {
+    "model": "glm-5.2",
+    "distance": 1.145
+   },
+   {
+    "model": "claude-sonnet-4.6",
+    "distance": 1.148
+   },
+   {
+    "model": "mimo-v2.6-flash",
+    "distance": 1.153
+   }
+  ],
+  "seed-2.0-mini": [
+   {
+    "model": "mimo-v2.5-pro",
+    "distance": 1.109
+   },
+   {
+    "model": "seed-2.1-turbo",
+    "distance": 1.128
+   },
+   {
+    "model": "seed-2.0-lite",
+    "distance": 1.151
+   },
+   {
+    "model": "glm-5.2",
+    "distance": 1.159
+   },
+   {
+    "model": "gemini-3.8-flash",
+    "distance": 1.173
+   }
+  ],
+  "seed-2.1-turbo": [
+   {
+    "model": "seed-2.0-mini",
+    "distance": 1.054
+   },
+   {
+    "model": "seed-2.0-lite",
+    "distance": 1.063
+   },
+   {
+    "model": "gemini-4-argon",
+    "distance": 1.068
+   },
+   {
+    "model": "qwen3.8-omni-flash",
+    "distance": 1.077
+   },
+   {
+    "model": "minimax-m3.1-flash",
+    "distance": 1.086
+   }
+  ],
+  "step-5-preview": [
+   {
+    "model": "qwen3.8-omni-flash",
+    "distance": 1.013
+   },
+   {
+    "model": "claude-fable-5.1",
+    "distance": 1.017
+   },
+   {
+    "model": "qwen3.8-27b",
+    "distance": 1.026
+   },
+   {
+    "model": "deepseek-v4-flash",
+    "distance": 1.029
+   },
+   {
+    "model": "gpt-6-luna",
+    "distance": 1.031
+   }
+  ]
+ }
+}

@@ -1,7 +1,7 @@
 {
  "schema": "octopus-fingerprint-models-v1",
- "built_at": "2026-10-13T16:21:11.776799+00:00",
- "reference_sha256": "8af405bf4f7fa3de6e00a86fd67424e6d629db5a27a9e94295bdc7977f0e8faf",
+ "built_at": "2026-10-27T05:02:50.758637+00:00",
+ "reference_sha256": "4021dc55d37c56ad0e35655184767f6665ae829df7f93b4067974830f02cbdd9",
  "minimum_valid_numbers": 80,
  "recommended_queries": 3,
  "models": [
@@ -416,6 +416,41 @@
    "display_name": "gemini-4-argon",
    "family": "gemini",
    "family_name": "Gemini",
+   "response_count": 36
+  },
+  {
+   "id": "deepseek-v4.1-flash-1017",
+   "display_name": "deepseek-v4.1-flash-1017",
+   "family": "deepseek",
+   "family_name": "DeepSeek",
+   "response_count": 36
+  },
+  {
+   "id": "kimi-k3.1-pro",
+   "display_name": "kimi-k3.1-pro",
+   "family": "kimi",
+   "family_name": "Kimi",
+   "response_count": 36
+  },
+  {
+   "id": "gemini-3.5-flash-lite",
+   "display_name": "gemini-3.5-flash-lite",
+   "family": "gemini",
+   "family_name": "Gemini",
+   "response_count": 36
+  },
+  {
+   "id": "minimax-m3.1-flash",
+   "display_name": "minimax-m3.1-flash",
+   "family": "minimax",
+   "family_name": "MiniMax",
+   "response_count": 36
+  },
+  {
+   "id": "gpt-6.1-terra",
+   "display_name": "gpt-6.1-terra",
+   "family": "gpt",
+   "family_name": "GPT",
    "response_count": 36
   }
  ]

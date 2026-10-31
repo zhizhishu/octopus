@@ -58,6 +58,8 @@ type Challenge struct {
 	CHALLENGEID   string `json:"challenge_id"`
 	ExpectedCount int    `json:"expected_count"`
 	Prompt        string `json:"prompt"`
+	// Language 只有随机题才有（zh/en/ja/fr/es），固定题为空。
+	Language string `json:"language,omitempty"`
 }
 
 // PromptWithPrefix 返回实际发送的提示词。

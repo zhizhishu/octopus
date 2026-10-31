@@ -18,6 +18,10 @@ type Diagnostic struct {
 	ParsedNumbers  int  `json:"parsed_numbers"`
 	MinimumNumbers int  `json:"minimum_numbers"`
 	Accepted       bool `json:"accepted"`
+	// MinimumValue 是这条回答里最小的有效整数（没有整数时为 0）。
+	MinimumValue int `json:"minimum_value"`
+	// Anomalous：有效整数全都 ≥ 200，分布异常，这条样本不可靠。
+	Anomalous bool `json:"anomalous"`
 }
 
 // Candidate 是一个候选模型的排名结果。
@@ -38,6 +42,9 @@ const (
 	DecisionPartial = "partial"
 	// DecisionUnscorable 有效回答太少，连排名都不该给。
 	DecisionUnscorable = "unscorable"
+	// DecisionNotModel 序列形态不像模型手写（像脚本生成、排序或打乱），不给排名。
+	// 这是"证据不足"，不是"造假"：形态筛选不能证明数字的来源。
+	DecisionNotModel = "not_model"
 )
 
 // Analysis 是一次指纹检测的完整结论。
@@ -57,6 +64,12 @@ type Analysis struct {
 	Reason string `json:"reason"`
 	// ReferenceBuiltAt 暴露参考库版本，方便判断结论是否已经过时。
 	ReferenceBuiltAt string `json:"reference_built_at"`
+	// Sequence 是有效回答的序列形态；没有有效回答时为 nil。
+	Sequence *SequenceShape `json:"sequence,omitempty"`
+	// AnomalousSamples 是分布异常的回答下标（从 0 起）。
+	AnomalousSamples []int `json:"anomalous_samples,omitempty"`
+	// ModelCount 是参考库里的候选总数。
+	ModelCount int `json:"model_count"`
 }
 
 // minimumAccepted 是单条回答被采信所需的最少整数个数。
@@ -112,17 +125,37 @@ func Analyze(outputs []Output) (*Analysis, error) {
 		if accepted {
 			usable = append(usable, nums)
 		}
+		if len(nums) > 0 {
+			diagnostics[i].MinimumValue = minimumOf(nums)
+			diagnostics[i].Anomalous = diagnostics[i].MinimumValue >= anomalousMinimum
+		}
 	}
 
 	base := &Analysis{
 		UsedOutputs:      len(usable),
 		Diagnostics:      diagnostics,
 		ReferenceBuiltAt: det.BankBuiltAt,
+		ModelCount:       len(det.ModelIDs),
+	}
+	for _, d := range diagnostics {
+		if d.Anomalous {
+			base.AnomalousSamples = append(base.AnomalousSamples, d.Index)
+		}
 	}
 
 	if len(usable) == 0 {
 		base.Decision = DecisionUnscorable
 		base.Reason = "没有一条回答含足够多的合法整数，无法比对"
+		return base, nil
+	}
+
+	// 排名之前先看形态：脚本凑出来的数字照样能排出一个"最像"的候选，
+	// 那种排名只会误导人。
+	shape := sequenceShape(usable)
+	base.Sequence = &shape
+	if !shape.ModelLike {
+		base.Decision = DecisionNotModel
+		base.Reason = "回答不像模型手写：相邻数字的变化方式更像脚本生成、排序或打乱过的数字，未生成排名"
 		return base, nil
 	}
 
