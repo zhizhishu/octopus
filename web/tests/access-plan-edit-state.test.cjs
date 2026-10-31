@@ -158,3 +158,19 @@ test('canvas source: stable dialog keys, guarded closes, collapsible minimap, mo
     assert.ok(src.includes('applyFrozenOrder(sortedCanvasRows, frozenOrder)'));
     assert.ok(src.includes('createLatestSaveQueue'));
 });
+
+test('route dialog source: two modes, drag order in 优先, numbers in 轮询, touch-safe dialog', () => {
+    const src = source();
+    assert.ok(src.includes("from '@hello-pangea/dnd'"));
+    assert.ok(src.includes('<RouteModeCards value={editingSimpleMode} onChange={setEditingMode} />'));
+    assert.ok(src.includes("isDragDisabled={editingSimpleMode !== 'first'}"));
+    assert.ok(src.includes('setRotatePriority(group, own, priority)'));
+    assert.ok(src.includes('sm:max-w-[min(72rem,calc(100vw-3rem))]'), 'wide dialog on desktop');
+    assert.ok(src.includes('top-0 right-0 bottom-0 left-0 m-auto flex h-fit'), 'no translate centering (breaks dnd fixed positioning)');
+    assert.ok(src.includes('translate-none'), 'CSS translate (even 0 0) makes the dialog the containing block for position:fixed');
+    assert.ok(!src.includes('renderClone='), 'renderClone unmounts the source node and breaks touch drag');
+    assert.ok(!src.includes('modeSpreadTiered'), 'only 优先 / 轮询 in the UI');
+    assert.ok(src.includes('setEditingRuleField({ fallback_mode:'), 'fallback is rule-level in the dialog (backend keeps only the first target\'s value)');
+    assert.ok(src.includes('setEditingRuleField({ system_prompt_override:'), 'prompt is rule-level in the dialog');
+    assert.ok(!src.includes('onClick={() => removeTarget(index)}'), 'no delete: channel sync re-adds deleted lines (enabled)');
+});

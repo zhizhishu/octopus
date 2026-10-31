@@ -61,7 +61,7 @@ test('only two choices; mounting or refetching never writes a default', () => {
         const h = harness(raw);
         assert.deepEqual(h.module.ROUTE_MODE_OVERRIDE_VALUES, ['spread', 'fill_first']);
         assert.equal(h.module.routeModeOverrideLabel('spread'), '轮询');
-        assert.equal(h.module.routeModeOverrideLabel('fill_first'), '优先填充');
+        assert.equal(h.module.routeModeOverrideLabel('fill_first'), '优先');
         h.render();
         h.state.query.isFetching = true;
         h.render();

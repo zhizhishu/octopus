@@ -23,7 +23,7 @@ export interface AccessPlanRouteTarget {
     priority: number;
     weight: number;
     enabled: boolean;
-    /** 分流模式（JSON number）：1=spread 轮询（均摊）；3=fill_first 优先填充（默认）。挂在规则（request_model 级）上。 */
+    /** 分配方式（JSON number）：3=fill_first 优先（默认，从上往下依次用）；1/6=轮询（6 = 数字大的先用、一样的轮流；1 = 数字全一样）。挂在规则（request_model 级）上。 */
     mode?: number;
     /** 请求模型 rule 级人工优先级覆盖回显：true 表示用户曾手动调整过优先级顺序，系统自动 sync 时锁定不再按渠道 ID 重置。 */
     priority_overridden?: boolean;
