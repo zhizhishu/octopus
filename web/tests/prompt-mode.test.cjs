@@ -90,3 +90,16 @@ test('方案 API 类型：方案保存不带提示词，提示词走单独的接
     assert.ok(!update.includes('prompt'), 'UpdateAccessPlanRequest 不该有提示词字段');
     assert.ok(src.includes("'/api/v1/access-plan/prompt/update'") && src.includes("'/api/v1/access-plan/route-prompt/update'"));
 });
+
+test('提示词页主屏只留短句，细节放进 ? 里', () => {
+    const root = path.join(__dirname, '..');
+    const src = readFileSync(path.join(root, 'src/components/modules/prompt/index.tsx'), 'utf8');
+    assert.ok(!/<h2[^>]*>\s*提示词\s*<\/h2>/.test(src), '页头已经写着「提示词」，卡片里不再重复大标题');
+    assert.ok(!src.includes('ORDER_CHIPS') && !src.includes('最终顺序'), '9 个顺序小标签换成「拼接顺序」弹出图');
+    assert.ok(src.includes('拼接顺序') && src.includes('<OrderPopover'), '要有拼接顺序图示');
+    assert.ok(!/`\$\{planOn\}\+\$\{routeOn\}`/.test(src), '筛选数量只显示一个数');
+    assert.ok(!src.includes('方案层 · ') && !src.includes('路由层 · '), '小标题只写「方案」「路由」，解释放进 ?');
+    assert.ok(src.includes("variant={dirty ? 'default' : 'outline'}"), '没改动时保存按钮是灰的，改了才是主按钮');
+    const form = readFileSync(path.join(root, 'src/components/modules/channel/Form.tsx'), 'utf8');
+    assert.ok(form.includes("setActiveNavItem('prompt')"), '渠道表单的说明可以点过去提示词页');
+});

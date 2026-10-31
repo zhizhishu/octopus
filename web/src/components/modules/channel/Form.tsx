@@ -25,6 +25,7 @@ import {
     AccordionTrigger,
 } from "@/components/ui/accordion";
 import { cn } from '@/lib/utils';
+import { useNavStore } from '../navbar/nav-store';
 import {
     ModelAuditChipDot,
     ModelAuditChipExpand,
@@ -1869,9 +1870,19 @@ export function ChannelForm({
         </>
     );
 
-    // 系统提示词统一在「提示词」页设置；这里只留一句只读说明，告诉用户去哪改。
+    // 系统提示词统一在「提示词」页设置；这里只留一句只读说明和跳转。
+    const setActiveNavItem = useNavStore((state) => state.setActiveItem);
     const promptBlock = (
-        <p className="text-xs leading-5 text-muted-foreground">{t('promptMovedHint')}</p>
+        <p className="flex flex-wrap items-center gap-x-1 text-xs leading-5 text-muted-foreground/80">
+            <span>{t('promptMovedHint')}</span>
+            <button
+                type="button"
+                onClick={() => setActiveNavItem('prompt')}
+                className="rounded text-muted-foreground underline decoration-dotted underline-offset-2 transition-colors hover:text-foreground"
+            >
+                {t('promptMovedLink')}
+            </button>
+        </p>
     );
 
     const enabledRow = (
