@@ -14,7 +14,8 @@ test('秘密头：和后端同一套规则（只记名字的那些给锁）', ()
     }
 });
 
-test('头名按逗号拆，保持原顺序；身份头 JSON 按名字排，坏 JSON 返回空', () => {
+test('头名按逗号拆，保持原顺序；身份头 JSON 身份类在前、通用头在后，坏 JSON 返回空', () => {
+    assert.deepEqual(notableEntries({ notable: '{"accept":"*/*","x-app":"cli","sec-fetch-mode":"cors","anthropic-version":"1"}' }).map(([k]) => k), ['anthropic-version', 'x-app', 'accept', 'sec-fetch-mode']);
     assert.deepEqual(headerNames({ header_names: 'host,User-Agent, x-api-key,' }), ['host', 'User-Agent', 'x-api-key']);
     assert.deepEqual(headerNames({ header_names: '' }), []);
     assert.deepEqual(notableEntries({ notable: '{"x-stainless-os":"MacOS","anthropic-version":"2023-06-01"}' }), [['anthropic-version', '2023-06-01'], ['x-stainless-os', 'MacOS']]);

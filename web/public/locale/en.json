@@ -1952,7 +1952,9 @@
       "allKeys": "All keys",
       "empty": "No client fingerprints yet",
       "noTLS": "Octopus does not terminate HTTPS itself, so it cannot see the TLS fingerprint (JA3/JA4). Have the reverse proxy pass it in X-JA3 / X-JA4 headers (the proxy must be a trusted proxy) and it will show here.",
-      "note": "Recorded from incoming requests; the same fingerprint from a new IP is not a new entry. Key and cookie values are never stored. Entries unseen for {days} days are removed; up to 100 per key."
+      "note": "Recorded from incoming requests; the same fingerprint from a new IP is not a new entry. Key and cookie values are never stored. Entries unseen for {days} days are removed; up to 100 per key.",
+      "more": "{n} more",
+      "less": "Show less"
     }
   },
   "accessPlan": {

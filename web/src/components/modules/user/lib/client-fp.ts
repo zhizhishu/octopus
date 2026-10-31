@@ -15,7 +15,10 @@ export function headerNames(fp: Pick<UserClientFingerprint, 'header_names'>): st
     return (fp.header_names ?? '').split(',').map((s) => s.trim()).filter(Boolean);
 }
 
-/** 留了值的身份头，按名字排。解析失败返回空。 */
+// 通用的协商头（几乎每个客户端都带，区分度低），排到后面。
+const GENERIC_HEADERS = new Set(['accept', 'accept-encoding', 'accept-language', 'connection', 'content-type', 'te', 'priority', 'via', 'x-forwarded-proto', 'origin', 'referer']);
+
+/** 留了值的身份头：先身份类（originator、x-stainless-*、anthropic-*、会话 id…），通用协商头在后；同类按名字排。解析失败返回空。 */
 export function notableEntries(fp: Pick<UserClientFingerprint, 'notable'>): Array<[string, string]> {
     if (!fp.notable) return [];
     try {
@@ -23,7 +26,11 @@ export function notableEntries(fp: Pick<UserClientFingerprint, 'notable'>): Arra
         return Object.entries(obj)
             .filter(([, v]) => typeof v === 'string')
             .map(([k, v]) => [k, v as string] as [string, string])
-            .sort(([a], [b]) => a.localeCompare(b));
+            .sort(([a], [b]) => {
+                const ga = GENERIC_HEADERS.has(a) || a.startsWith('sec-fetch-') ? 1 : 0;
+                const gb = GENERIC_HEADERS.has(b) || b.startsWith('sec-fetch-') ? 1 : 0;
+                return ga - gb || a.localeCompare(b);
+            });
     } catch {
         return [];
     }

@@ -11,6 +11,8 @@ import { formatCount, nowUnix } from '../lib/format';
 import { formatDateShort, useRelTime } from './shared';
 import { HelpTip, Pill, chip, chipOn } from './ui-bits';
 
+const NOTABLE_PREVIEW = 8;
+
 function useKeyName() {
     const t = useTranslations('user.access');
     return (id: number, name?: string) => name || (id > 0 ? t('keyDeleted', { id }) : t('noKey'));
@@ -20,7 +22,7 @@ function Row({ label, children, tip }: { label: string; children: React.ReactNod
     return (
         <>
             <dt className="flex items-start gap-1 pt-0.5 text-xs text-muted-foreground">{label}{tip && <HelpTip content={tip} />}</dt>
-            <dd className="min-w-0 text-sm">{children}</dd>
+            <dd className="mb-2 min-w-0 text-sm sm:mb-0">{children}</dd>
         </>
     );
 }
@@ -33,6 +35,7 @@ function FpCard({ fp, keyName, nowSec, defaultOpen }: { fp: UserClientFingerprin
     const t = useTranslations('user.client');
     const rel = useRelTime();
     const [open, setOpen] = useState(defaultOpen);
+    const [allHeaders, setAllHeaders] = useState(false);
     const names = headerNames(fp);
     const notable = notableEntries(fp);
     const title = fpTitle(fp) ?? t('unknown');
@@ -56,7 +59,7 @@ function FpCard({ fp, keyName, nowSec, defaultOpen }: { fp: UserClientFingerprin
                 <ChevronDown className={cn('mt-0.5 size-4 shrink-0 text-muted-foreground transition-transform', open && 'rotate-180')} />
             </button>
             {open && (
-                <dl className="mt-3 grid grid-cols-[5.5rem_1fr] gap-x-3 gap-y-2 rounded-xl bg-muted/30 px-3 py-3 sm:grid-cols-[7rem_1fr]">
+                <dl className="mt-3 grid grid-cols-1 gap-y-1 rounded-xl bg-muted/30 px-3 py-3 sm:grid-cols-[7rem_1fr] sm:gap-x-3 sm:gap-y-2">
                     <Row label={t('ua')}>{fp.user_agent ? <SafeText value={fp.user_agent} mode="wrap" className="block font-mono text-xs" /> : <Dash />}</Row>
                     <Row label={t('http')} tip={fp.via_proxy ? t('httpProxyTip') : undefined}>
                         <span className="font-mono text-xs">{fp.http_version || '—'}</span>
@@ -77,12 +80,17 @@ function FpCard({ fp, keyName, nowSec, defaultOpen }: { fp: UserClientFingerprin
                     <Row label={t('headers')} tip={t('headersTip')}>
                         {notable.length === 0 ? <Dash /> : (
                             <div className="space-y-1">
-                                {notable.map(([k, v]) => (
+                                {(allHeaders ? notable : notable.slice(0, NOTABLE_PREVIEW)).map(([k, v]) => (
                                     <div key={k} className="grid min-w-0 grid-cols-1 gap-x-2 sm:grid-cols-[minmax(0,13rem)_1fr]">
                                         <MonoSafeText value={k} className="block text-[11px] text-muted-foreground" />
                                         <SafeText value={v} mode="wrap" className="block font-mono text-[11px]" />
                                     </div>
                                 ))}
+                                {notable.length > NOTABLE_PREVIEW && (
+                                    <button type="button" className="text-xs font-medium text-primary hover:underline" onClick={() => setAllHeaders((v) => !v)}>
+                                        {allHeaders ? t('less') : t('more', { n: notable.length - NOTABLE_PREVIEW })}
+                                    </button>
+                                )}
                             </div>
                         )}
                     </Row>
