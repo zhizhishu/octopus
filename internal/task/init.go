@@ -13,17 +13,18 @@ import (
 )
 
 const (
-	TaskPriceUpdate      = "price_update"
-	TaskStatsSave        = "stats_save"
-	TaskRelayLogSave     = "relay_log_save"
-	TaskUserRelayIPSave  = "user_relay_ip_save"
-	TaskUserAccessSave   = "user_access_save"
-	TaskChannelKeySave   = "channel_key_save"
-	TaskMaintenanceSweep = "maintenance_sweep"
-	TaskSyncLLM          = "sync_llm"
-	TaskCleanLLM         = "clean_llm"
-	TaskBaseUrlDelay     = "base_url_delay"
-	TaskModelAuditQuick  = "model_audit_quick"
+	TaskPriceUpdate         = "price_update"
+	TaskStatsSave           = "stats_save"
+	TaskRelayLogSave        = "relay_log_save"
+	TaskUserRelayIPSave     = "user_relay_ip_save"
+	TaskUserAccessSave      = "user_access_save"
+	TaskChannelKeySave      = "channel_key_save"
+	TaskMaintenanceSweep    = "maintenance_sweep"
+	TaskSQLiteWALCheckpoint = "sqlite_wal_checkpoint"
+	TaskSyncLLM             = "sync_llm"
+	TaskCleanLLM            = "clean_llm"
+	TaskBaseUrlDelay        = "base_url_delay"
+	TaskModelAuditQuick     = "model_audit_quick"
 )
 
 // settingIntOr 读一个整数设置，读不到就用默认值继续。
@@ -116,6 +117,18 @@ func Init() {
 		balancer.SweepExpired(24 * time.Hour)
 		relay.PruneResponsesSessionsExpired()
 		op.RelayLogStreamTokenSweep(time.Hour)
+	})
+
+	// SQLite WAL 检查点: 让被撑大过的 data.db-wal 自己缩回去(生产上停在 9.48GB 不动)。
+	// PASSIVE 不挡任何人; 只有 -wal 超过阈值且 PASSIVE 已全部搬完时才用 200ms 预算试 TRUNCATE,
+	// 有读者/写者就放弃等下一轮; 与 VACUUM 共用 dbVacuumMu, 不会重叠。非 SQLite 直接返回。
+	// 详见 internal/op/db_wal_checkpoint.go 与 internal/op/sqlite_wal_checkpoint.md。
+	// 同样放在设置读取之前, 避免被 early-return 跳过; 启动时不立刻跑——那时回填/迁移的长读者
+	// 正多, 截也截不成, 5 分钟后再来。
+	Register(TaskSQLiteWALCheckpoint, 5*time.Minute, false, func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		op.SQLiteWALCheckpointTask(ctx)
 	})
 
 	priceUpdateInterval := time.Duration(settingIntOr(model.SettingKeyModelInfoUpdateInterval, 24)) * time.Hour

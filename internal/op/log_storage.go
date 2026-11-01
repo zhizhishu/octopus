@@ -412,8 +412,18 @@ func relayLogVacuum(ctx context.Context) error {
 		return ErrDBCompactBusy
 	}
 	defer dbVacuumMu.Unlock()
-	_, err := sqliteVacuumLocked(ctx)
-	return err
+	if _, err := sqliteVacuumLocked(ctx); err != nil {
+		return err
+	}
+	// 回收/VACUUM 写下的页都在 -wal 里，-wal 不会自己变小。趁还持有 dbVacuumMu 顺手截一次：
+	// 先 PASSIVE、全部搬完才用 200ms 预算试 TRUNCATE，忙就放弃（见 db_wal_checkpoint.go），
+	// 代价很小。失败不算回收失败——周期 WAL 检查点任务之后还会再试。
+	if res, err := sqliteWALCheckpointLocked(ctx, true); err != nil {
+		log.Debugf("relay log vacuum: wal checkpoint failed: %v", err)
+	} else {
+		logSQLiteWALCheckpoint("after vacuum", res)
+	}
+	return nil
 }
 
 // sqliteVacuumLocked 是 relayLogVacuum 的本体，调用方必须已持有 dbVacuumMu。
