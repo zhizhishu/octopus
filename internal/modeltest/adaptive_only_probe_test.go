@@ -60,8 +60,8 @@ func adaptiveTestChannel(url string) dbmodel.Channel {
 func TestModelTestThinkingOffFollowsModel(t *testing.T) {
 	ctx := setupModelTestDB(t)
 	for modelName, want := range map[string][2]string{
-		"claude-opus-5-5":   {`{"type":"adaptive"}`, `{"effort":"low"}`},
-		"claude-sonnet-5-5": {`{"type":"between_tools"}`, `{"effort":"low"}`},
+		"claude-opus-5-5":   {`{"type":"adaptive","display":"omitted"}`, `{"effort":"low"}`},
+		"claude-sonnet-5-5": {`{"type":"adaptive","display":"omitted"}`, `{"effort":"low"}`},
 		"claude-haiku-5-5":  {`{"type":"disabled"}`, ``},
 		"claude-opus-4-5":   {`{"type":"disabled"}`, ``},
 	} {
@@ -86,13 +86,14 @@ func TestModelTestThinkingOffFollowsModel(t *testing.T) {
 	}
 }
 
-// The signature probe asks for thinking. Adaptive-only models get adaptive + display summarized
-// (thinking text is needed for replay); other models keep the CLI-legal enabled+budget form.
+// The signature probe asks for thinking. Adaptive-only models get adaptive + display omitted
+// (Claude Code golden shape; signature still round-trips with empty text); other models keep
+// the CLI-legal enabled+budget form.
 func TestSignatureProbeThinkingFollowsModel(t *testing.T) {
 	setupModelTestDB(t)
 	for modelName, want := range map[string][2]string{
-		"claude-opus-5-5": {`{"type":"adaptive","display":"summarized"}`, `{"effort":"high"}`},
-		"claude-opus-4-7": {`{"type":"adaptive","display":"summarized"}`, `{"effort":"high"}`},
+		"claude-opus-5-5": {`{"type":"adaptive","display":"omitted"}`, `{"effort":"high"}`},
+		"claude-opus-4-7": {`{"type":"adaptive","display":"omitted"}`, `{"effort":"high"}`},
 		"claude-opus-4-5": {`{"type":"enabled","budget_tokens":8000}`, ``},
 	} {
 		t.Run(modelName, func(t *testing.T) {

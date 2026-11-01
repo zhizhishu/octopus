@@ -781,12 +781,17 @@ func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermod
 	//
 	// adaptive-only 模型（opus-4-7+/opus-5*/sonnet-5*/haiku-5*/fable-5/mythos-5，见
 	// transformermodel.ClaudeEffortCapabilityFor）对 enabled+budget_tokens 一律 400，
-	// 探针在这些模型上改发 adaptive：display=summarized 才会返回思考正文（回放探针需要
-	// 正文+签名，omitted 只给签名），effort=high 让模型在一道简单题上也大概率真的思考，
-	// 拿得到签名。8000 预算按换算表本是 medium，这里刻意抬一档，换取探针稳定性。
+	// 探针在这些模型上改发 adaptive + display=omitted（与真 Claude Code 黄金形状一致）。
+	// omitted 仍返回带 signature 的 thinking 块（正文为空）；回放只靠签名解封。
+	// effort=high 让模型在一道简单题上也大概率真的思考，拿得到签名。
 	if r.probeThinking && channel.Type == outbound.OutboundTypeAnthropic {
 		if transformermodel.ClaudeEffortCapabilityFor(upstreamModel).NoManual {
-			internalRequest.AnthropicThinking = json.RawMessage(`{"type":"adaptive","display":"summarized"}`)
+			// Match the measured Claude Code golden shape (relay/claude_shape_body.go
+			// claudeCLIShapeThinking; Claude Code 2.1.316 print/-p path). display:omitted
+			// still returns a thinking block with signature (text empty); the signature
+			// probe round-trips that pair. summarized is also CLI-legal (interactive /
+			// showThinkingSummaries / --thinking-display) but is not the golden capture.
+			internalRequest.AnthropicThinking = json.RawMessage(`{"type":"adaptive","display":"omitted"}`)
 			internalRequest.AnthropicOutputConfig = json.RawMessage(`{"effort":"high"}`)
 		} else {
 			internalRequest.AnthropicThinking = json.RawMessage(
@@ -1115,9 +1120,10 @@ func (r *modelRunner) internalRequest(upstreamModel string) *transformermodel.In
 			// 所以这里不必再判渠道——入站端点是 anthropic_messages 但渠道是别家时，
 			// 标志恒为假，走的仍是下面这条 disabled 路径。
 			//
-			// 「不思考」的写法按模型取（transformermodel.ClaudeThinkingOff）：opus-5-5 等不能关
-			// 思考的模型收到 disabled 一律 400，改发 adaptive+effort low；sonnet-5-5 用
-			// between_tools+low；其余模型仍是原来的 {"type":"disabled"}，形状不变。
+			// 「不思考」的写法按模型取（transformermodel.ClaudeThinkingOff）：opus-5-5 /
+			// sonnet-5-5 等不能关思考的模型收到 disabled 一律 400，改发 -p 画像
+			// adaptive+display omitted+effort low（真 CLI 从不发 between_tools）；
+			// 其余模型仍是原来的 {"type":"disabled"}，形状不变。
 			internalRequest.AnthropicThinking, internalRequest.AnthropicOutputConfig = transformermodel.ClaudeThinkingOff(upstreamModel)
 		}
 	}
@@ -1388,7 +1394,7 @@ func forceClaudeModelTestBodyShape(req *transformermodel.InternalLLMRequest, req
 	// is {"type":"disabled"}. The 1M path may already have set adaptive thinking
 	// (AdaptiveThinking), so only fill the default when neither is present.
 	// The "off" spelling follows the model (transformermodel.ClaudeThinkingOff): disabled where
-	// accepted (unchanged shape), adaptive+low / between_tools+low where disabled 400s.
+	// accepted (unchanged shape); adaptive+omitted+low where disabled 400s (CLI /-p form).
 	if len(req.AnthropicThinking) == 0 && !req.AdaptiveThinking {
 		thinking, outputConfig := transformermodel.ClaudeThinkingOff(req.Model)
 		req.AnthropicThinking = thinking

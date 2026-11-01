@@ -894,38 +894,37 @@ func TestExtractCOT(t *testing.T) {
 	}
 }
 
-// 普通签名但拿不到同块思考正文：无法构成合法无损回放（出站护栏会丢弃无
-// 正文的 thinking 块）。按「证据不足」走 Err 通道：不发伪造回放、不扣解封
-// 失败的分、也不计成有效验真。
-func TestRunSignatureNoThinkingTextIsInsufficient(t *testing.T) {
+// display:omitted returns a signature with empty thinking text. That pair is legal
+// (Anthropic docs; Claude Code golden shape) and must still be replayed — the outbound
+// leadingReasoningBlock round-trips empty text + signature. Missing signature alone
+// remains insufficient evidence (covered elsewhere).
+func TestRunSignatureEmptyThinkingTextStillReplays(t *testing.T) {
 	sig := makeSignature("claude-sonnet-4-5", 2, 256, false)
-	stub := &signatureStub{respond: func(call int, _ modelverify.Ask) (modelverify.Response, error) {
+	stub := &signatureStub{respond: func(call int, ask modelverify.Ask) (modelverify.Response, error) {
 		if call == 1 {
-			// 有签名、无思考正文。
 			return modelverify.Response{Signature: sig, FinishReason: "end_turn"}, nil
 		}
-		t.Error("证据不足时不应发出回放请求")
-		return modelverify.Response{}, nil
+		if len(ask.Turns) == 0 || ask.Turns[0].Signature != sig {
+			t.Fatalf("replay must carry the harvest signature, got %+v", ask.Turns)
+		}
+		if ask.Turns[0].Thinking != "" {
+			t.Fatalf("omitted harvest has empty thinking text, got %q", ask.Turns[0].Thinking)
+		}
+		return modelverify.Response{Content: "<cot>17*23=391</cot>", FinishReason: "end_turn"}, nil
 	}}
 
 	res := RunProbe(context.Background(), ProbeSignature, stub)
-	if res.Err == nil {
-		t.Fatal("应按证据不足记 Err")
+	if res.Err != nil {
+		t.Fatalf("empty thinking + signature must replay, got Err=%v", res.Err)
 	}
-	if stub.calls != 1 {
-		t.Fatalf("只应发一次采集请求, 实际 %d 次", stub.calls)
+	if stub.calls != 2 {
+		t.Fatalf("want harvest+replay, got %d calls", stub.calls)
 	}
-	report := BuildReport([]Result{res}, "claude-sonnet-4-5")
-	if len(report.Findings) != 0 {
-		t.Fatalf("证据不足不应产生风险项, 得到 %+v", report.Findings)
-	}
-	if len(report.Errors) != 1 {
-		t.Fatalf("应记录 1 条探针错误, 得到 %d", len(report.Errors))
+	if !res.OK || res.Data["unsealed"] != true {
+		t.Fatalf("want successful unseal, got OK=%v data=%+v", res.OK, res.Data)
 	}
 }
 
-// 普通英文词不得命中平台痕迹词：裸子串匹配时 "draws"/"flaws" 含 "aws" 即
-// 误报；整词边界下真实平台词仍命中（大小写不敏感、多词短语）。
 func TestMatchSuspectWordBoundary(t *testing.T) {
 	kws := []string{"kiro", "amazon q", "bedrock", "nova", "titan", "guardrails", "aws", "firewall"}
 
