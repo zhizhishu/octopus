@@ -261,3 +261,63 @@ func TestOfficialBaseDisabledDropUnchanged(t *testing.T) {
 		t.Fatalf("official opus-5-5 off: thinking=%s output_config=%s", thinking, outputConfig)
 	}
 }
+
+func TestNativeDisabledRewriteOnlyForNonCLICaller(t *testing.T) {
+	const disabled = `{"type":"disabled"}`
+	temperature, topP := 0.2, 0.5
+	tests := []struct {
+		name             string
+		model            string
+		nonCLI           bool
+		baseURL          string
+		outputConfig     string
+		wantThinking     string
+		wantOutputConfig string
+	}{
+		{"non-CLI opus-5-5 -> adaptive low", "claude-opus-5-5", true, adaptiveTestThirdPartyBase, "", `{"type":"adaptive"}`, `{"effort":"low"}`},
+		{"non-CLI opus-5-5 paired effort is overridden to low", "claude-opus-5-5", true, adaptiveTestThirdPartyBase, `{"effort":"max"}`, `{"type":"adaptive"}`, `{"effort":"low"}`},
+		{"non-CLI fable-5 -> adaptive low", "claude-fable-5", true, adaptiveTestThirdPartyBase, "", `{"type":"adaptive"}`, `{"effort":"low"}`},
+		{"non-CLI sonnet-5-5 -> between_tools low", "claude-sonnet-5-5", true, adaptiveTestThirdPartyBase, `{"effort":"xhigh"}`, `{"type":"between_tools"}`, `{"effort":"low"}`},
+		{"non-CLI haiku-5-5 keeps disabled", "claude-haiku-5-5", true, adaptiveTestThirdPartyBase, "", disabled, ""},
+		{"non-CLI opus-4-5 keeps disabled", "claude-opus-4-5", true, adaptiveTestThirdPartyBase, "", disabled, ""},
+		{"CLI opus-5-5 untouched", "claude-opus-5-5", false, adaptiveTestThirdPartyBase, "", disabled, ""},
+		{"CLI sonnet-5-5 untouched", "claude-sonnet-5-5", false, adaptiveTestThirdPartyBase, `{"effort":"high"}`, disabled, `{"effort":"high"}`},
+		{"official base still drops disabled (non-CLI)", "claude-opus-5-5", true, "https://api.anthropic.com", "", "", ""},
+		{"official base still drops disabled (CLI)", "claude-opus-5-5", false, "https://api.anthropic.com", "", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := model.InternalLLMRequest{Model: tt.model, AnthropicThinking: json.RawMessage(disabled), Temperature: &temperature, TopP: &topP}
+			if tt.outputConfig != "" {
+				req.AnthropicOutputConfig = json.RawMessage(tt.outputConfig)
+			}
+			req.TransformOptions.ClaudeNonCLICaller = tt.nonCLI
+			body := adaptiveTestBody(t, &req, tt.baseURL)
+			thinking, outputConfig := adaptiveTestMembers(t, body)
+			if thinking != tt.wantThinking || outputConfig != tt.wantOutputConfig {
+				t.Fatalf("thinking=%s output_config=%s, want %s %s\nbody=%s", thinking, outputConfig, tt.wantThinking, tt.wantOutputConfig, body)
+			}
+			rewritten := tt.wantThinking == `{"type":"adaptive"}` || tt.wantThinking == `{"type":"between_tools"}`
+			hasSampling := strings.Contains(body, `"temperature"`) || strings.Contains(body, `"top_p"`)
+			if rewritten && hasSampling {
+				t.Fatalf("rewritten off form must drop temperature/top_p: %s", body)
+			}
+			if !rewritten && tt.wantThinking == disabled && !hasSampling {
+				t.Fatalf("untouched disabled body lost the caller's sampling params: %s", body)
+			}
+		})
+	}
+}
+
+func TestNativeDisabledCLIBodyByteIdentical(t *testing.T) {
+	build := func(modelName string) string {
+		temperature := 0.2
+		req := model.InternalLLMRequest{Model: modelName, AnthropicThinking: json.RawMessage(`{"type":"disabled"}`), Temperature: &temperature}
+		return adaptiveTestBody(t, &req, adaptiveTestThirdPartyBase)
+	}
+	got := build("claude-opus-5-5")
+	want := strings.Replace(build("claude-opus-4-5"), `"claude-opus-4-5"`, `"claude-opus-5-5"`, 1)
+	if got != want {
+		t.Fatalf("CLI disabled body changed:\n got %s\nwant %s", got, want)
+	}
+}

@@ -48,6 +48,8 @@ func (o *MessageOutbound) TransformRequest(ctx context.Context, request *model.I
 	if isOfficialAnthropicBase(baseUrl) && anthropicReq.Thinking != nil &&
 		anthropicReq.Thinking.Type == anthropicModel.ThinkingTypeDisabled {
 		anthropicReq.Thinking = nil
+	} else {
+		rewriteNativeDisabledForNoDisableModel(request, anthropicReq)
 	}
 
 	// Use a JSON encoder with HTML escaping disabled to match the real Claude
@@ -592,8 +594,8 @@ func convertToAnthropicRequest(req *model.InternalLLMRequest) *anthropicModel.Me
 	// rewrite it to adaptive + output_config.effort (budget -> effort, the client's own effort
 	// wins if it sent one). A CLI-shaped caller (or any caller the relay did not classify,
 	// e.g. model tests) is never touched: ClaudeNonCLICaller is false for them, so the body
-	// stays byte-identical to what the CLI sent. Raw disabled is left alone here (official
-	// bases drop it in TransformRequest; the requirement only covers enabled).
+	// stays byte-identical to what the CLI sent. Raw disabled is handled in TransformRequest
+	// (rewriteNativeDisabledForNoDisableModel) because the official-base drop lives there.
 	if rawThinkingPreserved && req.TransformOptions.ClaudeNonCLICaller && thinkingCapability.NoManual &&
 		result.Thinking != nil && result.Thinking.Type == anthropicModel.ThinkingTypeEnabled {
 		budget := result.Thinking.BudgetTokens
@@ -649,6 +651,43 @@ func convertToAnthropicRequest(req *model.InternalLLMRequest) *anthropicModel.Me
 	}
 
 	return result
+}
+
+// rewriteNativeDisabledForNoDisableModel turns a native raw {"type":"disabled"} into the
+// model's own "off" spelling on a model that cannot turn thinking off (opus-5-5, fable-5,
+// mythos-5, sonnet-5-5 ...): adaptive + effort low, or between_tools + effort low on sonnet-5-5.
+// Upstreams answer 400 for disabled there ("claude-opus-5-5 requires adaptive thinking").
+//
+// Scope, all required:
+//   - the thinking object is the caller's raw native one (conversion paths already pick the
+//     per-model form in convertToAnthropicRequest; this never sees those);
+//   - the relay positively marked the caller non-CLI (TransformOptions.ClaudeNonCLICaller):
+//     a CLI-shaped or unclassified caller (model tests included) stays byte-identical;
+//   - non-official base: the caller (TransformRequest) only reaches here when the official
+//     api.anthropic.com drop-disabled rule did not apply, so that behaviour is unchanged.
+//
+// The off intent is expressed as effort low (overriding any effort the caller paired with
+// disabled: "off" must not become "adaptive at high"); low also satisfies between_tools'
+// "high or below" limit. temperature / top_p are dropped as on every adaptive/between_tools
+// body, since these models reject non-default sampling.
+func rewriteNativeDisabledForNoDisableModel(request *model.InternalLLMRequest, result *anthropicModel.MessageRequest) {
+	if request == nil || result == nil || result.Thinking == nil ||
+		result.Thinking.Type != anthropicModel.ThinkingTypeDisabled ||
+		!request.TransformOptions.ClaudeNonCLICaller || !rawJSONPresent(request.AnthropicThinking) {
+		return
+	}
+	capability := model.ClaudeEffortCapabilityFor(request.Model)
+	switch {
+	case capability.DisableAsBetweenTools:
+		result.Thinking = &anthropicModel.Thinking{Type: anthropicModel.ThinkingTypeBetweenTools}
+	case capability.NoDisable:
+		result.Thinking = &anthropicModel.Thinking{Type: anthropicModel.ThinkingTypeAdaptive}
+	default:
+		return
+	}
+	setAnthropicOutputEffort(result, anthropicModel.EffortLow)
+	result.Temperature = nil
+	result.TopP = nil
 }
 
 // setAnthropicOutputEffort sets output_config.effort, creating output_config when absent and
