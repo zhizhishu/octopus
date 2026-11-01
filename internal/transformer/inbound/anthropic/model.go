@@ -516,6 +516,9 @@ const (
 	ThinkingTypeEnabled  = "enabled"
 	ThinkingTypeDisabled = "disabled"
 	ThinkingTypeAdaptive = "adaptive"
+	// ThinkingTypeBetweenTools is claude-sonnet-5-5's "thinking off" setting (it rejects
+	// disabled). Outbound only: the Anthropic outbound emits it for an off intent on that model.
+	ThinkingTypeBetweenTools = "between_tools"
 )
 
 // Effort level constants for OutputConfig

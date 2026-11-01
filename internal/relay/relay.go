@@ -2269,6 +2269,10 @@ func (ra *relayAttempt) applyTransformOptionsWithInboundSetter(updateInboundSett
 	// the same decision into the Anthropic outbound transformer so it skips the
 	// synthetic billing-header / agent-identity system blocks too.
 	ra.internalRequest.TransformOptions.SuppressClaudeIdentity = !shouldApplyChannelCloak(ra.channel.Cloak)
+	// Attempt-scoped: only a caller positively known not to be a Claude Code CLI lets the
+	// Anthropic outbound rewrite a native thinking object the target model rejects
+	// (enabled+budget_tokens on an adaptive-only model). A CLI-shaped caller stays byte-identical.
+	ra.internalRequest.TransformOptions.ClaudeNonCLICaller = ra.c != nil && ra.c.Request != nil && !clientIsCLIShaped(ra.c.Request)
 
 	// Channel-level opt-in: fold empty-content reasoning into content on the chat
 	// inbound wire (new-api thinking_to_content). Default false = no behaviour change.

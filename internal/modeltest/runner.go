@@ -778,9 +778,20 @@ func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermod
 	// 探针索要 extended thinking（签名验真用）。用显式的 enabled 形态：它自洽于
 	// AnthropicThinking 一个字段，不牵连 output_config/effort，也不依赖 1M adaptive
 	// 那条路径。rawThinking 的优先级高于 adaptive，所以放在 1M 分支之后不会失效。
+	//
+	// adaptive-only 模型（opus-4-7+/opus-5*/sonnet-5*/haiku-5*/fable-5/mythos-5，见
+	// transformermodel.ClaudeEffortCapabilityFor）对 enabled+budget_tokens 一律 400，
+	// 探针在这些模型上改发 adaptive：display=summarized 才会返回思考正文（回放探针需要
+	// 正文+签名，omitted 只给签名），effort=high 让模型在一道简单题上也大概率真的思考，
+	// 拿得到签名。8000 预算按换算表本是 medium，这里刻意抬一档，换取探针稳定性。
 	if r.probeThinking && channel.Type == outbound.OutboundTypeAnthropic {
-		internalRequest.AnthropicThinking = json.RawMessage(
-			fmt.Sprintf(`{"type":"enabled","budget_tokens":%d}`, probeThinkingBudget))
+		if transformermodel.ClaudeEffortCapabilityFor(upstreamModel).NoManual {
+			internalRequest.AnthropicThinking = json.RawMessage(`{"type":"adaptive","display":"summarized"}`)
+			internalRequest.AnthropicOutputConfig = json.RawMessage(`{"effort":"high"}`)
+		} else {
+			internalRequest.AnthropicThinking = json.RawMessage(
+				fmt.Sprintf(`{"type":"enabled","budget_tokens":%d}`, probeThinkingBudget))
+		}
 	}
 	// 探针自带多轮会话（签名回放）。仅 Anthropic 渠道——回放的对象就是 Claude 自己。
 	if len(r.probeMessages) > 0 && channel.Type == outbound.OutboundTypeAnthropic {
@@ -1103,7 +1114,11 @@ func (r *modelRunner) internalRequest(upstreamModel string) *transformermodel.In
 			// 前提：该标志只在 Anthropic **渠道**上被置真（签名探针按 Protocol() 把关），
 			// 所以这里不必再判渠道——入站端点是 anthropic_messages 但渠道是别家时，
 			// 标志恒为假，走的仍是下面这条 disabled 路径。
-			internalRequest.AnthropicThinking = json.RawMessage(`{"type":"disabled"}`)
+			//
+			// 「不思考」的写法按模型取（transformermodel.ClaudeThinkingOff）：opus-5-5 等不能关
+			// 思考的模型收到 disabled 一律 400，改发 adaptive+effort low；sonnet-5-5 用
+			// between_tools+low；其余模型仍是原来的 {"type":"disabled"}，形状不变。
+			internalRequest.AnthropicThinking, internalRequest.AnthropicOutputConfig = transformermodel.ClaudeThinkingOff(upstreamModel)
 		}
 	}
 	return internalRequest
@@ -1372,8 +1387,14 @@ func forceClaudeModelTestBodyShape(req *transformermodel.InternalLLMRequest, req
 	// Genuine claude-cli always carries an explicit thinking object; on a plain turn it
 	// is {"type":"disabled"}. The 1M path may already have set adaptive thinking
 	// (AdaptiveThinking), so only fill the default when neither is present.
+	// The "off" spelling follows the model (transformermodel.ClaudeThinkingOff): disabled where
+	// accepted (unchanged shape), adaptive+low / between_tools+low where disabled 400s.
 	if len(req.AnthropicThinking) == 0 && !req.AdaptiveThinking {
-		req.AnthropicThinking = json.RawMessage(`{"type":"disabled"}`)
+		thinking, outputConfig := transformermodel.ClaudeThinkingOff(req.Model)
+		req.AnthropicThinking = thinking
+		if len(outputConfig) > 0 && len(req.AnthropicOutputConfig) == 0 {
+			req.AnthropicOutputConfig = outputConfig
+		}
 	}
 	sessionID := ""
 	if req.PromptCacheKey != nil {
