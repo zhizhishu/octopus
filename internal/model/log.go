@@ -241,6 +241,11 @@ type RelayLog struct {
 	FinalOutputCost       float64  `json:"final_output_cost" gorm:"type:real"`
 	FinalCacheReadCost    float64  `json:"final_cache_read_cost" gorm:"type:real"`
 	FinalCacheWriteCost   float64  `json:"final_cache_write_cost" gorm:"type:real"`
+	// DebugInfo 只在「日志模式 = 调试」时才有值（见 log_debug.go）：完整请求/响应头
+	// （凭据隐藏）、分段耗时、重试换家链、选路原因、上游错误原文。总量有上限，
+	// 3 天后只清这一列。与正文同级：列表/实时流 Omit，非管理员读取时清空。
+	// AutoMigrate 自动加列，旧行为 NULL。
+	DebugInfo *RelayLogDebugInfo `json:"debug_info,omitempty" gorm:"serializer:json"`
 }
 
 type RelayLogUserSummary struct {

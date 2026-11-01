@@ -15,9 +15,12 @@ function useDebouncedValue<T>(value: T, delayMs: number): T {
 import { type RelayLog, type RelayLogSeverity, type RequestState, useExportLogs, useLogSeverityCounts, useLogs, useRequestStateStream } from '@/api/endpoints/log';
 import { formatBytes } from '@/lib/log-export';
 import { useLogDetailNavigation } from './use-log-detail-navigation';
+import { useLogAutoRefresh } from './use-log-auto-refresh';
+import { LIVE_ACTIVITY_COLLAPSED_STORAGE_KEY, logAutoRefreshFlushMs, logAutoRefreshPollMs } from '@/lib/log-auto-refresh';
+import { AutoRefreshControl, AutoRefreshStatus, PendingLogsPill } from './AutoRefreshControl';
 import { LogCard, useSensitiveStore } from './Item';
 import { VideoTaskPanel } from './VideoTaskPanel';
-import { AlertCircle, AlertTriangle, Calendar as CalendarIcon, CheckCircle2, ChevronLeft, ChevronRight, Circle, Download, Eye, EyeOff, Loader2, RefreshCw, RotateCcw, RotateCw, ScrollText, Search, SlidersHorizontal, Video, WifiOff, X } from 'lucide-react';
+import { AlertCircle, AlertTriangle, Calendar as CalendarIcon, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Circle, Download, Eye, EyeOff, Loader2, RefreshCw, RotateCcw, RotateCw, ScrollText, Search, SlidersHorizontal, Video, WifiOff, X } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { VirtualizedGrid } from '@/components/common/VirtualizedGrid';
 import { PageWrapper } from '@/components/common/PageWrapper';
@@ -31,7 +34,6 @@ import { useAbortIntervention, useAbortRunningRequest, useRescueRunningRequest, 
 import { useAuthStore, useUserList } from '@/api/endpoints/user';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Switch } from '@/components/ui/switch';
 import { cn } from '@/lib/utils';
 import { toast } from '@/components/common/Toast';
 import { TooltipProvider } from '@/components/animate-ui/components/animate/tooltip';
@@ -243,6 +245,26 @@ function LiveActivityPanel({
     const [rescuingIDs, setRescuingIDs] = useState<Set<number>>(() => new Set());
     const [abortingIDs, setAbortingIDs] = useState<Set<number>>(() => new Set());
     const [drafts, setDrafts] = useState<Record<string, InterventionDraft>>({});
+    // 可折叠，本地记住：手机上三五条实时请求就能占掉三分之一屏，收起后只留一行计数。
+    const [collapsed, setCollapsedState] = useState<boolean>(() => {
+        if (typeof window === 'undefined') return false;
+        try {
+            return window.localStorage.getItem(LIVE_ACTIVITY_COLLAPSED_STORAGE_KEY) === '1';
+        } catch {
+            return false;
+        }
+    });
+    const toggleCollapsed = () => {
+        setCollapsedState((previous) => {
+            const next = !previous;
+            try {
+                window.localStorage.setItem(LIVE_ACTIVITY_COLLAPSED_STORAGE_KEY, next ? '1' : '0');
+            } catch {
+                // 写不进本地存储时只在本次会话生效。
+            }
+            return next;
+        });
+    };
 
     useEffect(() => {
         if (!enabled || !isSuccess) return;
@@ -359,19 +381,35 @@ function LiveActivityPanel({
     };
 
     const totalCount = runningStates.length + activeInterventions.length;
+    const rescueCount = activeInterventions.length;
+    const retryingCount = runningStates.filter((state) => Boolean(state.intervention_id) || state.round > 1).length;
 
     return (
-        <section aria-label={t('activeActivity')} className="live-activity-panel flex min-h-0 flex-none flex-col gap-2 rounded-lg border border-border bg-card p-3">
-            <div className="flex items-center justify-between gap-2 border-b border-border pb-2">
-                <div className="flex items-center gap-2 text-sm font-medium">
-                    <Loader2 className="size-4 animate-spin text-sky-500" />
-                    <span>{t('activeActivity')}</span>
-                    <Badge variant="secondary" className="tabular-nums px-1.5 py-0 text-xs">
+        <section aria-label={t('activeActivity')} className={cn('live-activity-panel flex min-h-0 flex-none flex-col rounded-lg border border-border bg-card', collapsed ? 'px-3 py-1' : 'gap-2 p-3')}>
+            <div className={cn('flex items-center justify-between gap-2', !collapsed && 'border-b border-border pb-2')}>
+                <button
+                    type="button"
+                    onClick={toggleCollapsed}
+                    aria-expanded={!collapsed}
+                    aria-label={collapsed ? t('expand') : t('collapse')}
+                    title={collapsed ? t('expand') : t('collapse')}
+                    className="-mx-1 flex min-h-9 min-w-0 flex-1 items-center gap-2 rounded-md px-1 text-left text-sm font-medium outline-none transition-colors hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring max-sm:min-h-10"
+                >
+                    <ChevronDown className={cn('size-4 shrink-0 text-muted-foreground transition-transform duration-200', collapsed && '-rotate-90')} aria-hidden />
+                    <Loader2 className="size-4 shrink-0 animate-spin text-sky-500" aria-hidden />
+                    <span className="shrink-0">{t('activeActivity')}</span>
+                    <Badge variant="secondary" className="shrink-0 tabular-nums px-1.5 py-0 text-xs">
                         {totalCount}
                     </Badge>
-                </div>
+                    {collapsed && (rescueCount > 0 || retryingCount > 0) && (
+                        <span className="flex min-w-0 items-center gap-1.5 truncate text-xs font-normal text-amber-700 dark:text-amber-300">
+                            {rescueCount > 0 && <span className="shrink-0">{t('collapsedRescue', { count: rescueCount })}</span>}
+                            {retryingCount > 0 && <span className="shrink-0">{t('collapsedRetrying', { count: retryingCount })}</span>}
+                        </span>
+                    )}
+                </button>
                 {!requestStateConnected && (
-                    <span className="flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400">
+                    <span className="flex shrink-0 items-center gap-1 text-xs text-amber-600 dark:text-amber-400">
                         <WifiOff className="size-3" />
                         {t('reconnecting')}
                     </span>
@@ -420,6 +458,7 @@ function LiveActivityPanel({
                     }
                 }
             `}</style>
+            {!collapsed && (
             <div className="max-h-60 space-y-1.5 overflow-y-auto overscroll-contain divide-y divide-border/60 sm:max-h-48">
                 {/* 救援中请求 (仅管理员可见) */}
                 {activeInterventions.map((intervention) => {
@@ -434,7 +473,7 @@ function LiveActivityPanel({
                                 <summary className="grid min-h-10 min-w-0 cursor-pointer list-none grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1 rounded-md px-2 py-1.5 transition-[background-color,box-shadow,transform] duration-200 hover:bg-muted/70 hover:shadow-sm active:scale-[0.99] outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-8 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:gap-x-3 sm:px-1.5 sm:py-1">
                                     <span className="flex min-w-0 items-center gap-1.5">
                                         <ChevronRight className="size-3.5 shrink-0 text-muted-foreground transition-transform duration-200 ease-out group-open:rotate-90 group-hover:text-foreground" />
-                                        <Badge variant="outline" className="border-amber-500/40 bg-amber-500/10 text-[10px] text-amber-700 dark:text-amber-300">
+                                        <Badge variant="outline" className="shrink-0 border-amber-500/40 bg-amber-500/10 text-[10px] text-amber-700 dark:text-amber-300">
                                             {t('rescue')}
                                         </Badge>
                                         <span className="truncate font-mono text-xs" title={intervention.request_model}>
@@ -551,11 +590,11 @@ function LiveActivityPanel({
                                     <span className="flex min-w-0 items-center gap-1.5">
                                         <ChevronRight className="size-3.5 shrink-0 text-muted-foreground transition-transform duration-200 ease-out group-open:rotate-90 group-hover:text-foreground" />
                                         {isRescue ? (
-                                            <Badge variant="outline" className="border-amber-500/40 bg-amber-500/10 text-[10px] text-amber-700 dark:text-amber-300">
+                                            <Badge variant="outline" className="shrink-0 border-amber-500/40 bg-amber-500/10 text-[10px] text-amber-700 dark:text-amber-300">
                                                 {t('autoRescue')}
                                             </Badge>
                                         ) : (
-                                            <Badge variant="outline" className="border-sky-500/40 bg-sky-500/10 text-[10px] text-sky-700 dark:text-sky-300 animate-pulse">
+                                            <Badge variant="outline" className="shrink-0 border-sky-500/40 bg-sky-500/10 text-[10px] text-sky-700 dark:text-sky-300 animate-pulse">
                                                 {t('running')}
                                             </Badge>
                                         )}
@@ -668,6 +707,7 @@ function LiveActivityPanel({
                     );
                 })}
             </div>
+            )}
         </section>
     );
 }
@@ -687,7 +727,24 @@ export function Log() {
     // 默认区间放宽到「近 7 天」而非「今天」：日志常是前一两天产生的，默认只查今天会让页面一开屏就空、
     // 显得「筛选无效」。近 7 天在「够聚焦」和「开屏能看到东西」之间取平衡。
     const defaultRange = useMemo(() => resolveDateRangeShortcut('last7Days', todayLabel), [todayLabel]);
-    const [viewMode, setViewMode] = useState<'history' | 'live'>('history');
+    // 自动刷新（关闭 / 实时 / 5·10·30 秒），本地记住。复用日志 SSE：新日志先进缓冲，
+    // 没被打扰（没开详情/弹窗、列表在顶部、没在选字、标签页在前台）时才按节奏插到顶部。
+    const listScrollerRef = useRef<HTMLDivElement | null>(null);
+    const autoRefresh = useLogAutoRefresh({ scrollerRef: listScrollerRef });
+    const autoRefreshFlushMs = logAutoRefreshFlushMs(autoRefresh.mode);
+    const autoRefreshPollMs = logAutoRefreshPollMs(autoRefresh.mode);
+    // 刚插进来的新行：淡淡高亮几秒再褪掉。
+    const [freshLogIDs, setFreshLogIDs] = useState<ReadonlySet<number>>(() => new Set());
+    const handleLiveInserted = useCallback((ids: number[]) => {
+        setFreshLogIDs((previous) => new Set([...previous, ...ids]));
+        window.setTimeout(() => {
+            setFreshLogIDs((previous) => {
+                const next = new Set(previous);
+                for (const id of ids) next.delete(id);
+                return next;
+            });
+        }, 6000);
+    }, []);
     // 日志页的两个分类：请求日志（现有列表）/ 视频任务（异步视频任务的进度与结果）。
     // 照参考项目 new-api 的做法，视频任务不是一个独立页面，而是日志的一个分类。
     const [logPanel, setLogPanel] = useState<'requests' | 'video-tasks'>('requests');
@@ -715,7 +772,7 @@ export function Log() {
     // 每个键入仍会改 queryKey 立即发请求）。参考 clearTimeout+setTimeout 模式。
     const debouncedSearch = useDebouncedValue(searchKeyword.trim(), 300);
     const deferredSearch = debouncedSearch;
-    const isLiveMode = viewMode === 'live';
+    const isLiveMode = autoRefresh.enabled;
     // 分页状态：当前页（从 1 开始）+ 跳页输入框草稿值。
     const [currentPage, setCurrentPage] = useState(1);
     const [pageJumpInput, setPageJumpInput] = useState('');
@@ -800,6 +857,8 @@ export function Log() {
         error: streamError,
         loadMore,
         refresh,
+        pendingCount: pendingLogCount,
+        flushPending: flushPendingLogs,
     } = useLogs({
         pageSize: LOG_PAGE_SIZE,
         // 始终分页；实时刷新只是往第 1 页实时插入新日志，分页导航永远保留。
@@ -817,8 +876,12 @@ export function Log() {
         hideModelTest: false,
         search: deferredSearch || undefined,
         upstreamModelMismatch: mismatchParam,
-        // 实时刷新只在实时模式 + 第 1 页（最新）生效；翻到历史页自然暂停，回第 1 页恢复。
+        // 自动刷新只在第 1 页（最新）生效；翻到历史页自然暂停，回第 1 页恢复。
         live: isLiveMode && currentPage === 1,
+        liveFlushMs: autoRefreshFlushMs ?? 0,
+        livePaused: autoRefresh.pauseReason !== null,
+        livePollFallbackMs: autoRefreshPollMs ?? undefined,
+        onLiveInserted: handleLiveInserted,
     });
 
     // 收集当前可用模型候选：来自 modelList、channelRows、当前选中的模型、以及当前已经拉到的日志里的模型名
@@ -1056,6 +1119,16 @@ export function Log() {
         ),
         [detailActiveId, detailCanNext, detailCanPrev, navigateDetail, onDetailOpenChange],
     );
+    // 自动刷新新插进来的行：只给列表格子加一次性的淡高亮 class，卡片本身（及其 memo 比较）不受影响。
+    const getLogRowClassName = useCallback(
+        (log: RelayLog) => (freshLogIDs.has(log.id) ? 'log-row-fresh' : undefined),
+        [freshLogIDs],
+    );
+    // 「显示 N 条新日志」：回到列表顶部并立即插入缓冲（用户主动要看，就不再等暂停解除）。
+    const showPendingLogs = useCallback(() => {
+        listScrollerRef.current?.scrollTo({ top: 0 });
+        flushPendingLogs();
+    }, [flushPendingLogs]);
     const getLogRowKey = useCallback((log: RelayLog) => log.id, []);
 
     const footer = useMemo(() => {
@@ -1191,14 +1264,14 @@ export function Log() {
                             onChange={(e) => { setSearchKeyword(e.target.value); setCurrentPage(1); }}
                             placeholder="搜索请求 ID / 令牌 / 错误信息…"
                             title="可搜索用户名、API Key 名、请求/实际模型名、渠道名、端点名、路径、会话 Key、错误信息及错误码；输入纯数字时额外精准匹配日志 ID 或渠道 ID"
-                            className="h-9 w-full rounded-lg border border-input bg-background pl-8 pr-7 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+                            className="h-10 w-full rounded-lg border border-input bg-background pl-8 pr-9 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring sm:h-9 sm:pr-7"
                         />
                         {searchKeyword && (
                             <button
                                 type="button"
                                 onClick={() => { setSearchKeyword(''); setCurrentPage(1); }}
                                 aria-label="清空搜索"
-                                className="absolute right-2 top-1/2 grid size-4 -translate-y-1/2 place-items-center rounded-full text-muted-foreground transition-colors hover:text-foreground"
+                                className="absolute right-1 top-1/2 grid size-8 -translate-y-1/2 place-items-center rounded-full text-muted-foreground transition-colors hover:text-foreground sm:right-1.5 sm:size-5"
                             >
                                 <X className="size-3" />
                             </button>
@@ -1210,7 +1283,7 @@ export function Log() {
                         aria-expanded={mobileFiltersOpen}
                         aria-label={mobileFiltersOpen ? '收起筛选' : '展开筛选'}
                         className={cn(
-                            'inline-flex h-9 shrink-0 items-center gap-1 rounded-lg border px-2.5 text-xs transition-colors sm:hidden',
+                            'inline-flex h-10 shrink-0 items-center gap-1 rounded-lg border px-3 text-xs transition-colors sm:hidden',
                             mobileFiltersOpen || hasActiveFilter
                                 ? 'border-primary/40 bg-primary/10 text-primary'
                                 : 'border-input bg-background text-muted-foreground'
@@ -1226,7 +1299,7 @@ export function Log() {
                         aria-label="端点"
                         value={selectedEndpoint}
                         onChange={(event) => handleSelectEndpoint(event.target.value)}
-                        className="h-9 min-w-0 w-full rounded-lg border border-input bg-background px-2 text-xs text-foreground outline-none sm:px-3"
+                        className="h-10 sm:h-9 min-w-0 w-full rounded-lg border border-input bg-background px-2 text-xs text-foreground outline-none sm:px-3"
                     >
                         {endpointFilters.map((endpoint) => (
                             <option key={endpoint.value || 'all'} value={endpoint.value}>
@@ -1238,7 +1311,7 @@ export function Log() {
                         aria-label="厂商"
                         value={selectedProvider}
                         onChange={(event) => handleSelectProvider(event.target.value)}
-                        className="h-9 min-w-0 w-full rounded-lg border border-input bg-background px-2 text-xs text-foreground outline-none sm:px-3"
+                        className="h-10 sm:h-9 min-w-0 w-full rounded-lg border border-input bg-background px-2 text-xs text-foreground outline-none sm:px-3"
                     >
                         {providerFilters.map((provider) => (
                             <option key={provider.value || 'all'} value={provider.value}>
@@ -1250,7 +1323,7 @@ export function Log() {
                         aria-label="模型"
                         value={selectedModel}
                         onChange={(event) => handleSelectModel(event.target.value)}
-                        className="h-9 min-w-0 w-full rounded-lg border border-input bg-background px-2 text-xs text-foreground outline-none sm:px-3"
+                        className="h-10 sm:h-9 min-w-0 w-full rounded-lg border border-input bg-background px-2 text-xs text-foreground outline-none sm:px-3"
                     >
                         <option value="">全部模型</option>
                         {availableModelOptions.map((modelName) => (
@@ -1268,7 +1341,7 @@ export function Log() {
                                 setMismatchFilter(next);
                                 setCurrentPage(1);
                             }}
-                            className="h-9 min-w-0 w-full rounded-lg border border-input bg-background px-2 text-xs text-foreground outline-none sm:px-3"
+                            className="h-10 sm:h-9 min-w-0 w-full rounded-lg border border-input bg-background px-2 text-xs text-foreground outline-none sm:px-3"
                         >
                             <option value="all">{t('list.filters.echoAll')}</option>
                             <option value="mismatch">{t('list.filters.mismatch')}</option>
@@ -1292,7 +1365,7 @@ export function Log() {
                                         aria-pressed={active}
                                         onClick={() => applyDateRangeShortcut(shortcut.id)}
                                         className={cn(
-                                            'inline-flex h-8 flex-1 items-center justify-center rounded-lg px-2 text-xs font-medium whitespace-nowrap transition-colors sm:flex-none sm:px-2.5',
+                                            'inline-flex h-9 flex-1 items-center justify-center rounded-lg px-2 text-xs font-medium whitespace-nowrap transition-colors sm:h-8 sm:flex-none sm:px-2.5',
                                             active
                                                 ? 'bg-background text-foreground shadow-sm'
                                                 : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'
@@ -1311,7 +1384,7 @@ export function Log() {
                                     title={startDate && endDate ? `${startDate} ~ ${endDate}` : '选择日期（最长 90 天）'}
                                     aria-label="选择日期范围"
                                     className={cn(
-                                        'h-8 w-8 shrink-0 rounded-lg',
+                                        'h-9 w-9 shrink-0 rounded-lg sm:h-8 sm:w-8',
                                         !activeDateShortcut && startDate ? 'border-foreground/25 bg-foreground/[0.06]' : ''
                                     )}
                                 >
@@ -1347,7 +1420,7 @@ export function Log() {
                                         setCurrentPage(1);
                                     }}
                                     className={cn(
-                                        'inline-flex h-8 min-w-0 items-center gap-1 rounded-lg px-1.5 text-xs font-medium whitespace-nowrap transition-colors sm:gap-1.5 sm:px-2',
+                                        'inline-flex h-9 min-w-0 flex-1 items-center justify-center gap-1 rounded-lg px-1.5 text-xs font-medium whitespace-nowrap transition-colors sm:h-8 sm:flex-none sm:gap-1.5 sm:px-2',
                                         active
                                             ? 'bg-background text-foreground shadow-sm'
                                             : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'
@@ -1377,7 +1450,14 @@ export function Log() {
                     <span role="status" aria-live="polite" className="min-w-0 text-xs text-muted-foreground">
                         {isLoading ? '加载中…' : isFetching ? '更新中…' : ''}
                     </span>
-                    {isLiveMode && currentPage === 1 && <span className="text-xs text-emerald-700 dark:text-emerald-300">实时插入中</span>}
+                    <AutoRefreshStatus
+                        mode={autoRefresh.mode}
+                        onFirstPage={currentPage === 1}
+                        connected={isConnected}
+                        pauseReason={autoRefresh.pauseReason}
+                        pendingCount={pendingLogCount}
+                        onShowPending={showPendingLogs}
+                    />
                     {/* 重置跟计数同行，右下角只留 眼睛/下载/实时动态 */}
                     {hasActiveFilter && (
                         <Button
@@ -1446,7 +1526,7 @@ export function Log() {
                             onClick={() => setSensitiveVisible(!sensitiveVisible)}
                             title={sensitiveVisible ? t('list.hideSensitive') : t('list.showSensitive')}
                             aria-label={sensitiveVisible ? t('list.hideSensitive') : t('list.showSensitive')}
-                            className="h-8 w-8 rounded-lg border border-border bg-background text-muted-foreground hover:text-foreground dark:bg-card"
+                            className="h-8 w-8 rounded-lg border border-border bg-background text-muted-foreground hover:text-foreground dark:bg-card max-sm:h-10 max-sm:w-10"
                         >
                             {sensitiveVisible ? <Eye className="size-4" /> : <EyeOff className="size-4" />}
                         </Button>
@@ -1463,7 +1543,7 @@ export function Log() {
                             }}
                             title={exportLogs.isPending ? '取消导出' : t('list.export')}
                             aria-label={exportLogs.isPending ? '取消导出' : t('list.export')}
-                            className="relative h-8 w-8 rounded-lg border border-border bg-background text-muted-foreground hover:text-foreground dark:bg-card"
+                            className="relative h-8 w-8 rounded-lg border border-border bg-background text-muted-foreground hover:text-foreground dark:bg-card max-sm:h-10 max-sm:w-10"
                         >
                             {exportLogs.isPending ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}
                             {exportLogs.isPending && (
@@ -1473,39 +1553,16 @@ export function Log() {
                                 </span>
                             )}
                         </Button>
-                        <div className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-border bg-background px-2">
-                            <label
-                                htmlFor="live-mode-switch"
-                                className="inline-flex cursor-pointer select-none items-center gap-1.5 text-xs text-muted-foreground"
-                            >
-                                <span className="hidden sm:inline">实时动态</span>
-                                {isLiveMode && (
-                                    <span className="relative flex size-2 shrink-0">
-                                        {isConnected && (
-                                            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-                                        )}
-                                        <span
-                                            className={cn(
-                                                'relative inline-flex size-2 rounded-full',
-                                                isConnected
-                                                    ? 'bg-emerald-500'
-                                                    : streamError
-                                                        ? 'bg-destructive'
-                                                        : 'bg-amber-500'
-                                            )}
-                                        />
-                                    </span>
-                                )}
-                            </label>
-                            <Switch
-                                id="live-mode-switch"
-                                checked={isLiveMode}
-                                onCheckedChange={(checked) => {
-                                    setViewMode(checked ? 'live' : 'history');
-                                    setCurrentPage(1);
-                                }}
-                            />
-                        </div>
+                        <AutoRefreshControl
+                            mode={autoRefresh.mode}
+                            onChange={(next) => {
+                                autoRefresh.setMode(next);
+                                setCurrentPage(1);
+                            }}
+                            connected={isConnected}
+                            errored={!!streamError}
+                            paused={autoRefresh.pauseReason !== null}
+                        />
                     </div>
                 </div>
 
@@ -1562,9 +1619,16 @@ export function Log() {
                 requestStateConnected={requestStateConnected}
                 historyLogIDs={historyLogIDs}
             />
-            <div className="min-h-0 flex-1" aria-busy={isFetching}>
+            <div className="relative min-h-0 flex-1" aria-busy={isFetching}>
+                <PendingLogsPill
+                    count={pendingLogCount}
+                    visible={currentPage === 1 && (autoRefresh.pauseReason === 'scrolled' || autoRefresh.pauseReason === 'selecting')}
+                    onClick={showPendingLogs}
+                />
                 <TooltipProvider>
                 <VirtualizedGrid
+                    scrollerRef={listScrollerRef}
+                    getItemClassName={getLogRowClassName}
                     items={filteredLogs}
                     layout="list"
                     columns={{ default: 1 }}

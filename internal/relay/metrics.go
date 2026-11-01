@@ -85,6 +85,10 @@ type RelayMetrics struct {
 	AccessRouteUsed bool
 	BillingSnapshot model.AccessPlanBillingSnapshot
 	PromptSnapshot  promptOverrideSnapshot
+
+	// debug 只在「日志模式 = 调试」时非空（见 debug_capture.go）。竞速的 metrics
+	// 副本共享同一个指针，记录器内部自己加锁。
+	debug *debugRecorder
 }
 
 func NewRelayMetrics(apiKeyID int, userID int, requestIP string, requestModel string, req *transformerModel.InternalLLMRequest) *RelayMetrics {
@@ -785,8 +789,10 @@ func (m *RelayMetrics) Save(ctx context.Context, success bool, err error, attemp
 // 与 debug_load_balancer 同源。所有字段皆为内部计时/下游日志, 不触上游出站字节(shape 安全)。
 // header_wait / first_token / gen_start 为 -1 表示该阶段未测到(如请求在拿到响应头前就失败)。
 func (m *RelayMetrics) logDiagnostics(success bool, duration time.Duration, attempts []model.ChannelAttempt, channelID int, channelName string) {
-	enabled, err := op.SettingGetBool(model.SettingKeyDiagnosticMode)
-	if err != nil || !enabled {
+	legacy, err := op.SettingGetBool(model.SettingKeyDiagnosticMode)
+	legacy = err == nil && legacy
+	debugMode := op.LogModeDebugActive()
+	if !legacy && !debugMode {
 		return
 	}
 
@@ -814,7 +820,7 @@ func (m *RelayMetrics) logDiagnostics(success bool, duration time.Duration, atte
 		}
 	}
 
-	log.Infof("[diag] model=%s channel=%d(%s) success=%t total=%dms header_wait=%dms first_token=%dms gen_start=%dms attempts=%d | %s",
+	diagLogf(legacy && !debugMode, "[diag] model=%s channel=%d(%s) success=%t total=%dms header_wait=%dms first_token=%dms gen_start=%dms attempts=%d | %s",
 		m.RequestModel, channelID, channelName, success, duration.Milliseconds(),
 		headerWaitMs, firstTokenMs, genStartMs, len(attempts), b.String())
 }
@@ -1040,6 +1046,9 @@ func (m *RelayMetrics) saveLog(ctx context.Context, err error, duration time.Dur
 	// 真实出站请求体（开关打开且采集成功时才有；否则留空，不假装有值）。
 	// 放在请求 / 响应内容之后：那两列另存的图片哈希也要一起带进 ImageHashes。
 	m.upstreamBodyLog.applyTo(&relayLog)
+
+	// 调试详情（只在调试模式下采集；关闭时为 nil，不落任何东西）。
+	relayLog.DebugInfo = m.buildDebugInfo(duration)
 
 	// 错误信息
 	if err != nil {

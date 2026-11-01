@@ -539,7 +539,7 @@ func runRaceContenders(
 			if outboundReq != nil {
 				outboundReq = outboundReq.WithContext(ra.boundUpstreamLifetime(racerCtx))
 			}
-			resp, sendErr = ra.sendRequest(outboundReq)
+			resp, sendErr = ra.sendRequestObserved(outboundReq)
 			duration := time.Since(startTime)
 
 			if sendErr != nil {
@@ -698,6 +698,7 @@ func runRaceContenders(
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, upstreamErrorBodyLimit))
 			_ = resp.Body.Close()
 			cleanedUp = true
+			ra.debugErrorBody(body)
 			finishAttempt()
 			racerCancel()
 			upErr := newUpstreamError(resp.StatusCode, body)

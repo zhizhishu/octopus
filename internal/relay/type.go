@@ -378,6 +378,9 @@ type relayAttempt struct {
 	// decision.
 	upstreamResponded bool
 
+	// debugCall 是本次尝试最近一次上游调用的调试记录（调试模式关闭时恒为 nil）。
+	debugCall *debugCall
+
 	// prewarmMu/prewarmStopped guard the first-byte keepalive goroutine so the
 	// injected heartbeat writes and the main response writes never race.
 	prewarmMu      sync.Mutex

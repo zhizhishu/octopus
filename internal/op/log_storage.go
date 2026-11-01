@@ -42,7 +42,7 @@ const relayLogRowStructOverhead = 256
 //	len(RequestModelName) + len(RequestEndpoint) + len(RequestPath) +
 //	len(RequestAPIKeyName) + len(ChannelName) + len(ActualModelName) +
 //	len(RequestContent) + len(ResponseContent) + len(Error) +
-//	json.Marshal(Attempts) 的长度 + 256
+//	json.Marshal(Attempts) 的长度 + json.Marshal(DebugInfo) 的长度 + 256
 //
 // LENGTH() 在 SQLite 对文本返回字符数、对 BLOB 返回字节数；日志正文是 UTF-8
 // 文本，字符数会小于字节数，但 Go 侧用的是 len(string) 即字节数。为保持两者一致，
@@ -62,6 +62,7 @@ func relayLogBytesSQL() string {
 		" + " + col("response_content") +
 		" + " + col("error") +
 		" + " + col("attempts") +
+		" + " + col("debug_info") +
 		")"
 }
 

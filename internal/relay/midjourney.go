@@ -394,7 +394,9 @@ func midjourneyForward(ctx context.Context, c *gin.Context, method, upstreamPath
 	if err != nil {
 		return 0, nil, "", err
 	}
+	debugCall := debugBegin(req)
 	respUp, err := helper.DoPreserveMethodRedirect(httpClient, req)
+	debugCall.end(req, respUp, err)
 	if err != nil {
 		return 0, nil, "", fmt.Errorf("failed to send midjourney request: %w", err)
 	}
@@ -403,6 +405,7 @@ func midjourneyForward(ctx context.Context, c *gin.Context, method, upstreamPath
 	upstreamCT := respUp.Header.Get("Content-Type")
 	if respUp.StatusCode < 200 || respUp.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(respUp.Body, upstreamErrorBodyLimit))
+		debugCall.errorBody(b)
 		return respUp.StatusCode, nil, upstreamCT, newUpstreamError(respUp.StatusCode, b)
 	}
 	respBody, err := io.ReadAll(io.LimitReader(respUp.Body, midjourneyResponseBodyLimit))
@@ -637,6 +640,8 @@ func MidjourneySubmitHandler(c *gin.Context, mode string) {
 
 	metrics := newRawProtocolRelayMetrics(apiKeyID, userID, c.GetString("request_ip"), plan.model, midjourneySubmitLogName, c.Request.URL.Path)
 	metrics.RequestUserAgent = c.Request.UserAgent() // 仅入站 UA 快照，供日志 / 用户页识别客户端
+	// 调试模式：挂记录器（只读观察，关着时 ctx 原样）。
+	ctx = metrics.enableDebugCapture(ctx, c.Request.Header)
 	metrics.RequestContent = metrics.upstreamBodyLog.contentWithImages(func(capture *imageCapture) string {
 		return buildRawProtocolRequestContentWith(false, bc, payload, midjourneySubmitLogName, capture)
 	})
@@ -662,6 +667,7 @@ func midjourneySubmitPinned(c *gin.Context, ctx context.Context, plan midjourney
 		actualModel = mapped
 	}
 	started := time.Now()
+	metrics.debug.target(channel, entry.channelKeyID)
 	statusCode, respBody, upstreamCT, fwdErr := midjourneyForward(ctx, c, http.MethodPost, upstreamPath, body, channel, channelKey)
 	if fwdErr != nil {
 		metrics.Save(ctx, false, fwdErr, midjourneySingleAttempt(channel, entry.channelKeyID, actualModel, false, started, auditErrorMessage(fwdErr)))
@@ -691,6 +697,7 @@ func midjourneySubmitRouted(c *gin.Context, ctx context.Context, plan midjourney
 	metrics.SetAccessPlan(routeResult.AccessPlan, routeResult.AccessRouteRule, routeResult.AccessRouteUsed)
 	group := enrichGroupForSmartRouting(ctx, routeResult.Group, false)
 	iter := balancer.NewIteratorWithSession(group, apiKeyID, plan.model, "", false)
+	metrics.debug.route("primary", group, iter, false)
 	if iter.Len() == 0 {
 		writeMidjourneyError(c, http.StatusServiceUnavailable, "no available channel")
 		return
@@ -747,6 +754,7 @@ runIterator:
 				plan.action, plan.model, channel.Name, item.ModelName, iter.Index()+1, iter.Len(), keyIndex+1, len(availableKeys))
 			span := iter.StartAttempt(channel.ID, usedKey.ID, channel.Name)
 			recordAttemptProxy(span, channel)
+			metrics.debug.target(channel, usedKey.ID)
 			statusCode, respBody, upstreamCT, fwdErr := func() (int, []byte, string, error) {
 				finish := balancer.BeginRuntimeAttempt(channel.ID, usedKey.ID, item.ModelName)
 				defer finish()
@@ -813,6 +821,7 @@ runIterator:
 		} else {
 			fallbackGroup = enrichGroupForSmartRouting(ctx, fallbackGroup, false)
 			fallbackIter := balancer.NewIteratorWithSession(fallbackGroup, apiKeyID, plan.model, "", false)
+			metrics.debug.route("fallback", fallbackGroup, fallbackIter, false)
 			if fallbackIter.Len() > 0 {
 				iter = fallbackIter
 				goto runIterator
@@ -891,8 +900,11 @@ func MidjourneyTaskFetchHandler(c *gin.Context, suffix string) {
 	}
 	metrics := newRawProtocolRelayMetrics(c.GetInt("api_key_id"), c.GetInt("user_id"), c.GetString("request_ip"), entry.model, midjourneyTaskLogName, c.Request.URL.Path)
 	metrics.RequestUserAgent = c.Request.UserAgent() // 仅入站 UA 快照，供日志 / 用户页识别客户端
+	// 调试模式：挂记录器（只读观察，关着时 ctx 原样）。
+	ctx = metrics.enableDebugCapture(ctx, c.Request.Header)
 	metrics.ActualModel = entry.model
 	started := time.Now()
+	metrics.debug.target(channel, entry.channelKeyID)
 	statusCode, body, upstreamCT, fwdErr := midjourneyForward(ctx, c, http.MethodGet, "/mj/task/"+url.PathEscape(taskID)+"/"+suffix, nil, channel, channelKey)
 	if fwdErr != nil {
 		metrics.Save(ctx, false, fwdErr, midjourneySingleAttempt(channel, entry.channelKeyID, entry.model, false, started, auditErrorMessage(fwdErr)))
@@ -945,6 +957,8 @@ func MidjourneyTaskListByConditionHandler(c *gin.Context) {
 
 	metrics := newRawProtocolRelayMetrics(c.GetInt("api_key_id"), c.GetInt("user_id"), c.GetString("request_ip"), "", midjourneyTaskLogName, c.Request.URL.Path)
 	metrics.RequestUserAgent = c.Request.UserAgent() // 仅入站 UA 快照，供日志 / 用户页识别客户端
+	// 调试模式：挂记录器（只读观察，关着时 ctx 原样）。
+	ctx = metrics.enableDebugCapture(ctx, c.Request.Header)
 	results := make([]json.RawMessage, 0)
 	var attempts []model.ChannelAttempt
 	for _, k := range order {
@@ -958,6 +972,7 @@ func MidjourneyTaskListByConditionHandler(c *gin.Context) {
 			continue
 		}
 		body, _ := json.Marshal(map[string]any{"ids": groups[k]})
+		metrics.debug.target(channel, k.keyID)
 		_, respBody, _, fwdErr := midjourneyForward(ctx, c, http.MethodPost, "/mj/task/list-by-condition", body, channel, key)
 		if fwdErr != nil {
 			log.Warnf("midjourney list-by-condition on channel %d failed: %v", channel.ID, fwdErr)

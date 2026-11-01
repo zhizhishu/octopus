@@ -58,3 +58,8 @@ func Warnf(template string, args ...interface{}) {
 func Debugf(template string, args ...interface{}) {
 	Logger.Debugf(template, args...)
 }
+
+// GetLevel 返回当前运行日志级别（debug/info/warn/error…），供日志模式切换与测试核对。
+func GetLevel() string {
+	return atomicLevel.Level().String()
+}

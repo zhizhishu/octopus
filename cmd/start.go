@@ -55,6 +55,11 @@ var startCmd = &cobra.Command{
 		}
 		shutdown.Register(op.SaveCache)
 
+		// 日志模式（普通 = warn / 调试 = debug）：设置读出来之后立刻应用，并在后台
+		// 盯着调试模式的自动关闭时间。
+		op.LogModeApply()
+		op.LogModeStartWatcher()
+
 		if err := server.Start(); err != nil {
 			fatal("server start error", err)
 		}

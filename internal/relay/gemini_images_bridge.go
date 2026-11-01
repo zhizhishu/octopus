@@ -108,7 +108,9 @@ func geminiImagesAttempt(
 	if err != nil {
 		return 0, false, nil, "", err
 	}
+	debugCall := debugBegin(req)
 	respUp, err := httpClient.Do(req)
+	debugCall.end(req, respUp, err)
 	if err != nil {
 		return 0, false, nil, "", fmt.Errorf("failed to send gemini image request: %w", err)
 	}
@@ -117,6 +119,7 @@ func geminiImagesAttempt(
 	upstreamCT = respUp.Header.Get("Content-Type")
 	if respUp.StatusCode < 200 || respUp.StatusCode >= 300 {
 		b, _ := readErrorBodyFromResponse(respUp)
+		debugCall.errorBody(b)
 		return respUp.StatusCode, false, nil, upstreamCT, newUpstreamError(respUp.StatusCode, b)
 	}
 

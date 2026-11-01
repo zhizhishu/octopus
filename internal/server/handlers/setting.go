@@ -214,6 +214,9 @@ func setSetting(c *gin.Context) {
 			resp.Error(c, http.StatusInternalServerError, err.Error())
 			return
 		}
+	case model.SettingKeyLogMode, model.SettingKeyLogDebugAutoOffHours, model.SettingKeyLogDebugSince:
+		// 日志模式即时生效：记下调试开始时间、切换运行日志级别。
+		op.LogModeOnSettingChanged(setting.Key)
 	}
 	resp.Success(c, setting)
 }

@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef } from 'react';
 import { useTranslations } from 'next-intl';
-import { ScrollText, Calendar, Trash2, HardDrive, Database, Send, LifeBuoy } from 'lucide-react';
+import { ScrollText, Calendar, Trash2, HardDrive, Database, Send, LifeBuoy, Bug } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
@@ -11,6 +11,16 @@ import { useSettingList, useSetSetting, SettingKey } from '@/api/endpoints/setti
 import { useClearLogs, useLogStorage, useLogQueueHealth, useLogCleanupNow } from '@/api/endpoints/log';
 import { toast } from '@/components/common/Toast';
 import { DBCompactRow } from './DBCompact';
+import {
+    LOG_DEBUG_AUTO_OFF_CHOICES,
+    autoOffChoiceKey,
+    logDebugExpiresAtMs,
+    nowMs,
+    parseAutoOffHours,
+    parseLogMode,
+    remainingParts,
+    type LogMode,
+} from './log-mode';
 
 function formatBytes(bytes: number): string {
     if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
@@ -276,6 +286,9 @@ export function SettingLog({ section }: { section?: SettingLogSection } = {}) {
                 {t('log.title')}
             </h2>
 
+            {/* 日志模式：普通 / 调试。放在最上面——排查问题时第一个要找的就是它。 */}
+            <LogModeRow />
+
             {/* 是否启用历史日志 */}
             <div className="flex items-center justify-between gap-4">
                 <div className="flex items-center gap-3">
@@ -493,5 +506,174 @@ export function SettingLog({ section }: { section?: SettingLogSection } = {}) {
             {logCard}
             {rescueCard}
         </>
+    );
+}
+
+/**
+ * 「日志模式」一行：普通 / 调试 二选一，调试时再选多久后自动切回普通。
+ *
+ * 切换即时生效（后端改运行日志级别 + 中继开始/停止记调试详情），不用重启。
+ * 乐观更新 + 失败回滚，与本卡其它开关一致。
+ */
+// 本文件只需要简单拼类名；不引 @/lib/utils，保持设置页测试的依赖面不变。
+function cn(...classes: Array<string | false | null | undefined>): string {
+    return classes.filter(Boolean).join(' ');
+}
+
+export function LogModeRow() {
+    const t = useTranslations('setting');
+    const { data: settings } = useSettingList();
+    const setSetting = useSetSetting();
+    const valueOf = (key: string) => settings?.find((s) => s.key === key)?.value;
+
+    const serverMode = parseLogMode(valueOf(SettingKey.LogMode));
+    const serverHours = parseAutoOffHours(valueOf(SettingKey.LogDebugAutoOffHours));
+    const since = valueOf(SettingKey.LogDebugSince);
+
+    const [mode, setMode] = useState<LogMode>(serverMode);
+    const [hours, setHours] = useState<number>(serverHours);
+    const [now, setNow] = useState(() => Date.now());
+
+    useEffect(() => {
+        queueMicrotask(() => setMode(serverMode));
+    }, [serverMode]);
+    useEffect(() => {
+        queueMicrotask(() => setHours(serverHours));
+    }, [serverHours]);
+    // 调试开着时每 30 秒刷新一次「还剩多久」。
+    useEffect(() => {
+        if (mode !== 'debug') return;
+        const timer = setInterval(() => setNow(Date.now()), 30000);
+        return () => clearInterval(timer);
+    }, [mode]);
+
+    // 刚切到调试、开始时间还没从服务端回来时，按「现在」估算。
+    const expiresAt = mode === 'debug'
+        ? logDebugExpiresAtMs(since, hours) ?? (hours > 0 ? now + hours * 3600 * 1000 : null)
+        : null;
+    const debugOn = mode === 'debug' && (expiresAt === null || expiresAt > now);
+
+    const saveMode = (next: LogMode) => {
+        if (setSetting.isPending || next === mode) return;
+        const previous = mode;
+        setMode(next);
+        setNow(nowMs());
+        setSetting.mutate(
+            { key: SettingKey.LogMode, value: next },
+            {
+                onSuccess: () => toast.success(next === 'debug' ? t('log.mode.switchedDebug') : t('log.mode.switchedNormal')),
+                onError: () => {
+                    toast.error(t('saveFailed'));
+                    setMode(previous);
+                },
+            }
+        );
+    };
+
+    const saveHours = (next: number) => {
+        if (setSetting.isPending || next === hours) return;
+        const previous = hours;
+        setHours(next);
+        setSetting.mutate(
+            { key: SettingKey.LogDebugAutoOffHours, value: String(next) },
+            {
+                onSuccess: () => toast.success(t('saved')),
+                onError: () => {
+                    toast.error(t('saveFailed'));
+                    setHours(previous);
+                },
+            }
+        );
+    };
+
+    let remaining = t('log.mode.neverOff');
+    if (expiresAt !== null) {
+        const left = remainingParts(expiresAt, now);
+        remaining = left.hours > 0
+            ? t('log.mode.offInHours', { hours: left.hours, minutes: left.minutes })
+            : t('log.mode.offInMinutes', { minutes: left.minutes });
+    }
+
+    return (
+        <div
+            className={cn(
+                'space-y-3 rounded-2xl border p-3.5 transition-colors sm:p-4',
+                debugOn ? 'border-amber-500/40 bg-amber-500/[0.06]' : 'border-border bg-muted/20'
+            )}
+        >
+            {/* 设置卡在桌面上也只有一栏宽，所以各宽度都上下排：说明一整行，开关一整行。 */}
+            <div className="flex flex-col gap-3">
+                <div className="flex min-w-0 items-start gap-3">
+                    <Bug className={cn('mt-0.5 h-5 w-5 shrink-0', debugOn ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground')} />
+                    <div className="flex min-w-0 flex-col gap-0.5">
+                        <span className="text-sm font-medium">{t('log.mode.label')}</span>
+                        <span className="text-xs leading-5 text-muted-foreground">
+                            {debugOn ? t('log.mode.debugHint') : t('log.mode.normalHint')}
+                        </span>
+                    </div>
+                </div>
+                <div
+                    role="radiogroup"
+                    aria-label={t('log.mode.label')}
+                    className="grid w-full grid-cols-2 gap-1 rounded-xl border border-border bg-background p-1"
+                >
+                    {(['normal', 'debug'] as const).map((option) => {
+                        const active = (debugOn ? 'debug' : 'normal') === option;
+                        return (
+                            <button
+                                key={option}
+                                type="button"
+                                role="radio"
+                                aria-checked={active}
+                                onClick={() => saveMode(option)}
+                                disabled={setSetting.isPending}
+                                className={cn(
+                                    'h-9 rounded-lg text-sm font-medium transition-colors disabled:opacity-60',
+                                    active
+                                        ? option === 'debug'
+                                            ? 'bg-amber-500 text-white shadow-sm'
+                                            : 'bg-primary text-primary-foreground shadow-sm'
+                                        : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                                )}
+                            >
+                                {option === 'debug' ? t('log.mode.debug') : t('log.mode.normal')}
+                            </button>
+                        );
+                    })}
+                </div>
+            </div>
+
+            {debugOn && (
+                <div className="space-y-2 border-t border-amber-500/20 pt-3">
+                    <div className="flex flex-col gap-2">
+                        <span className="text-sm font-medium">{t('log.mode.autoOff')}</span>
+                        <div className="grid grid-cols-3 gap-1.5" role="radiogroup" aria-label={t('log.mode.autoOff')}>
+                            {LOG_DEBUG_AUTO_OFF_CHOICES.map((choice) => {
+                                const active = choice === hours;
+                                return (
+                                    <button
+                                        key={choice}
+                                        type="button"
+                                        role="radio"
+                                        aria-checked={active}
+                                        onClick={() => saveHours(choice)}
+                                        disabled={setSetting.isPending}
+                                        className={cn(
+                                            'h-8 rounded-lg border px-2 text-xs transition-colors disabled:opacity-60',
+                                            active
+                                                ? 'border-amber-500 bg-amber-500/15 font-medium text-amber-800 dark:text-amber-200'
+                                                : 'border-border bg-background text-muted-foreground hover:text-foreground'
+                                        )}
+                                    >
+                                        {t(`log.mode.choice.${autoOffChoiceKey(choice)}`)}
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    </div>
+                    <p className="text-xs text-amber-700 dark:text-amber-300">{remaining}</p>
+                </div>
+            )}
+        </div>
     );
 }

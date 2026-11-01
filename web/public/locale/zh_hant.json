@@ -768,6 +768,27 @@
         "label": "記錄發給上游的實際請求",
         "hint": "排查用，請求原樣保存（含金鑰），開啟後會增加日誌儲存"
       },
+      "mode": {
+        "label": "日誌模式",
+        "normal": "普通",
+        "debug": "除錯",
+        "normalHint": "執行日誌只記警告和錯誤，請求日誌照常記錄。",
+        "debugHint": "請求日誌多記：請求標頭（密鑰已隱藏）、各段耗時、重試和換渠道經過、選路原因、上游報錯原文；執行日誌記全部細節。只多記錄，不影響轉發。",
+        "autoOff": "自動切回普通",
+        "offInHours": "{hours} 小時 {minutes} 分後切回普通",
+        "offInMinutes": "{minutes} 分鐘後切回普通",
+        "neverOff": "不會自動切回，用完記得手動切回普通",
+        "switchedDebug": "已切到除錯，新的請求開始記錄詳情",
+        "switchedNormal": "已切回普通",
+        "choice": {
+          "1h": "1 小時",
+          "6h": "6 小時",
+          "24h": "24 小時",
+          "3d": "3 天",
+          "7d": "7 天",
+          "never": "不自動"
+        }
+      },
       "rescue": {
         "title": "自動救援"
       }
@@ -1036,7 +1057,31 @@
       "channel": "選擇通道",
       "key": "自動選 Key",
       "model": "模型覆寫",
-      "retry": "指定重試"
+      "retry": "指定重試",
+      "collapse": "收起即時請求",
+      "expand": "展開即時請求",
+      "collapsedRescue": "救援 {count}",
+      "collapsedRetrying": "重試中 {count}"
+    },
+    "autoRefresh": {
+      "label": "自動重新整理",
+      "off": "關閉",
+      "live": "即時",
+      "s5": "5 秒",
+      "s10": "10 秒",
+      "s30": "30 秒",
+      "running": "自動重新整理中",
+      "runningLive": "即時插入中",
+      "reconnecting": "即時串流中斷，按間隔重新取得中",
+      "paused": "已暫停",
+      "pausedHidden": "頁面在背景",
+      "pausedDetail": "正在看詳情",
+      "pausedSelecting": "正在選取文字",
+      "pausedScrolled": "已往下捲動",
+      "newCount": "{count} 筆新日誌",
+      "showNew": "顯示",
+      "onlyFirstPage": "回到第 1 頁才會自動重新整理",
+      "hint": "新日誌按所選間隔插到頂部；看詳情、往下捲、選取文字或切到背景時自動暫停，不打亂正在看的位置。"
     },
     "list": {
       "search": "搜尋",
