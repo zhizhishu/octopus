@@ -16,15 +16,17 @@ type ChatInbound struct {
 	// storedResponse stores the non-stream response
 	storedResponse *model.InternalLLMResponse
 	// thinkingToContent mirrors new-api's thinking_to_content (channel opt-in).
-	// When true, reasoning_content is folded into message.content so clients that
-	// only render content still see a reply when the upstream fills only reasoning
-	// (common on GLM with thinking + small max_tokens).
+	// When true, reasoning is always folded into content as <think>…</think> for
+	// clients that only render content (see applyThinkingToContentNonStream).
 	thinkingToContent bool
 	// streamThinkingOpen tracks whether the stream path has already opened a
 	// <think> block for a given choice index (new-api ThinkingContentInfo).
 	streamThinkingOpen map[int]bool
 	// streamThinkingClosed tracks whether the </think> close tag was sent for a choice.
 	streamThinkingClosed map[int]bool
+	// streamToolCallTurn marks choices that have emitted tool_calls: their later
+	// reasoning is not folded into content (tool-call turns are skipped).
+	streamToolCallTurn map[int]bool
 }
 
 func (i *ChatInbound) TransformRequest(ctx context.Context, body []byte) (*model.InternalLLMRequest, error) {
@@ -261,8 +263,8 @@ func (i *ChatInbound) TransformResponse(ctx context.Context, response *model.Int
 	// Store the (unflattened) response for later retrieval / billing.
 	i.storedResponse = response
 
-	// Wire view: Markdown-flatten image_url parts, then optionally fold empty
-	// content + reasoning into content (thinking_to_content). Neither mutates
+	// Wire view: Markdown-flatten image_url parts, then optionally fold reasoning
+	// into content (thinking_to_content). Neither mutates
 	// the stored internal response used for billing / session transcript.
 	wire := chatResponseWithMarkdownImages(response)
 	wire = applyThinkingToContentNonStream(wire, i != nil && i.thinkingToContent)
@@ -550,29 +552,32 @@ func mergeToolCall(toolCalls []model.ToolCall, delta model.ToolCall) []model.Too
 	return append(toolCalls, delta)
 }
 
-// applyThinkingToContentNonStream folds reasoning into content when the channel
-// has thinking_to_content enabled and the assistant message has no visible text.
-// Matches new-api's non-stream intent: clients that only render content still
-// see a reply when the upstream only filled reasoning (GLM thinking + small max_tokens).
-// Does not mutate the input when disabled or when content is already non-empty.
+// thinking_to_content（渠道开关，默认关）——2026-10-31 需求决定（internal/model/channel_toggles.md）：
+//   - 跟 new-api 一样：开了就**总是**把思考用 <think>…</think> 放进正文，流式和非流式一致，
+//     两边都去掉 reasoning_content / reasoning（不再只在正文为空时才折）。
+//   - 工具调用轮不折：非流式消息带 tool_calls 就原样返回；流式里一旦某个 choice 出现
+//     tool_calls，这个 chunk 及之后的思考都不再并入正文（照常走 reasoning_content）。
+//     流式在看到 tool_calls 之前已经发出去的思考没法撤回，已打开的 <think> 照常在
+//     finish / [DONE] 时闭合。
+//   - 只改发给客户端的那一份；上游请求不变，存下来用于计费/日志的响应也不变。
+
+// applyThinkingToContentNonStream folds reasoning into content as
+// "<think>\n" + reasoning + "\n</think>\n" + content (the exact bytes the stream
+// path emits) and clears reasoning_content/reasoning. Messages that carry tool
+// calls are left untouched. Never mutates the input.
 func applyThinkingToContentNonStream(resp *model.InternalLLMResponse, enabled bool) *model.InternalLLMResponse {
 	if !enabled || resp == nil || len(resp.Choices) == 0 {
 		return resp
 	}
+	foldable := func(msg *model.Message) bool {
+		return msg != nil && !messageIsToolCallTurn(msg) && strings.TrimSpace(msg.GetReasoningContent()) != ""
+	}
 	needsCopy := false
 	for i := range resp.Choices {
-		msg := resp.Choices[i].Message
-		if msg == nil {
-			continue
+		if foldable(resp.Choices[i].Message) {
+			needsCopy = true
+			break
 		}
-		if messageHasVisibleText(msg) {
-			continue
-		}
-		if strings.TrimSpace(msg.GetReasoningContent()) == "" {
-			continue
-		}
-		needsCopy = true
-		break
 	}
 	if !needsCopy {
 		return resp
@@ -582,22 +587,27 @@ func applyThinkingToContentNonStream(resp *model.InternalLLMResponse, enabled bo
 	copy(out.Choices, resp.Choices)
 	for i := range out.Choices {
 		msg := out.Choices[i].Message
-		if msg == nil || messageHasVisibleText(msg) {
+		if !foldable(msg) {
 			continue
 		}
-		reasoning := strings.TrimSpace(msg.GetReasoningContent())
-		if reasoning == "" {
-			continue
+		prefix := "<think>\n" + msg.GetReasoningContent() + "\n</think>\n"
+		text := ""
+		if msg.Content.Content != nil {
+			text = *msg.Content.Content
 		}
-		// new-api wraps with <think>…</think> so clients that strip think tags
-		// can still separate "reasoning" from "answer" when both later appear.
-		folded := "<think>\n" + reasoning + "\n</think>\n"
 		copied := *msg
-		copied.Content = model.MessageContent{Content: &folded}
-		// Keep reasoning_content for clients that render both columns.
+		copied.Content = foldedWireContent(prefix, text, msg)
+		copied.ReasoningContent = nil
+		copied.Reasoning = nil
 		out.Choices[i].Message = &copied
 	}
 	return &out
+}
+
+// messageIsToolCallTurn reports whether an assistant message / delta belongs to a
+// tool-call turn (tool_calls or legacy function_call).
+func messageIsToolCallTurn(msg *model.Message) bool {
+	return msg != nil && (len(msg.ToolCalls) > 0 || msg.FunctionCall != nil)
 }
 
 // applyThinkingToContentStream folds reasoning before content, closing each block
@@ -639,6 +649,19 @@ func applyThinkingToContentStream(chunk *model.InternalLLMResponse, inbound *Cha
 			hasReasoning = reasoning != ""
 		}
 
+		// Tool-call turn: from the first tool_calls delta on, this choice's reasoning
+		// is no longer folded (it stays reasoning_content). An already-open <think>
+		// still closes on content / finish here, or at [DONE] in syntheticDoneClosers.
+		if messageIsToolCallTurn(delta) {
+			if inbound.streamToolCallTurn == nil {
+				inbound.streamToolCallTurn = make(map[int]bool)
+			}
+			inbound.streamToolCallTurn[idx] = true
+		}
+		if inbound.streamToolCallTurn[idx] {
+			hasReasoning = false
+		}
+
 		openUnclosed := inbound.streamThinkingOpen[idx] && !inbound.streamThinkingClosed[idx]
 		if !hasReasoning && !(openUnclosed && (hasText || hasMultipart || hasFinish)) {
 			continue
@@ -668,8 +691,10 @@ func applyThinkingToContentStream(chunk *model.InternalLLMResponse, inbound *Cha
 			rewritten = *delta
 		}
 		rewritten.Content = foldedWireContent(prefix.String(), text, delta)
-		rewritten.ReasoningContent = nil
-		rewritten.Reasoning = nil
+		if hasReasoning { // folded: drop the reasoning aliases; tool-call turns keep them
+			rewritten.ReasoningContent = nil
+			rewritten.Reasoning = nil
+		}
 		choice.Delta = &rewritten
 	}
 	return &out

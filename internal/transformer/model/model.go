@@ -680,8 +680,9 @@ type TransformOptions struct {
 	// the relay requires. A genuine client's own system blocks always pass through.
 	SuppressClaudeIdentity bool `json:"-"`
 
-	// ThinkingToContent (channel opt-in) folds reasoning_content into message.content
-	// on the chat inbound wire when content is empty. Mirrors new-api's
+	// ThinkingToContent (channel opt-in) always folds reasoning_content into
+	// message.content as <think>…</think> on the chat inbound wire (stream and
+	// non-stream; tool-call turns skipped). Mirrors new-api's
 	// thinking_to_content for clients that only render content. Default false:
 	// existing channels and non-chat inbounds are unchanged. Application-layer only
 	// (client-facing body); never touches outbound TLS/headers.
