@@ -3,33 +3,39 @@ package model
 import (
 	"strings"
 
+	transformermodel "github.com/zhizhishu/octopus/internal/transformer/model"
+
 	"github.com/zhizhishu/octopus/internal/utils/xstrings"
 )
 
 // CleanOneMillionCapabilityModelName removes old UI-facing 1M suffix aliases.
 // 1M is a channel capability (AnthropicContext1M), not part of the public model
 // name that is shown in model pools, access plans, or channel selections.
+//
+// Uses the single shared [1m] rule (transformermodel.StripOneMillionSuffix:
+// trailing, case-insensitive, repeated). Claude names go through the same alias
+// normalisation as requests (opus[1m] -> claude-opus-4-8, fable[1m] ->
+// claude-fable-5); any other name just loses the trailing suffix.
 func CleanOneMillionCapabilityModelName(modelName string) string {
 	trimmed := strings.TrimSpace(modelName)
 	if trimmed == "" {
 		return ""
 	}
-	lower := strings.ToLower(trimmed)
-	switch lower {
-	case "opus[1m]", "claude-opus-4-7[1m]", "claude-opus-4.7[1m]", "claude-opus-4-8[1m]", "claude-opus-4.8[1m]":
-		return "claude-opus-4-8"
-	case "fable[1m]", "claude-fable-5[1m]":
-		return "claude-fable-5"
+	base, hadSuffix := transformermodel.StripOneMillionSuffix(trimmed)
+	if !hadSuffix {
+		return trimmed
 	}
-	if strings.HasSuffix(lower, "[1m]") {
-		return strings.TrimSpace(trimmed[:len(trimmed)-len("[1m]")])
+	if normalized := transformermodel.NormalizeAnthropicModelAlias(trimmed); normalized != trimmed {
+		return normalized
 	}
-	return trimmed
+	return base
 }
 
+// ModelNameWantsAnthropicContext1M: same rule as the request path
+// (transformermodel.AnthropicModelWantsOneMillionBeta) so a channel model list
+// entry and a request model agree on what "wants 1M" means. Haiku never does.
 func ModelNameWantsAnthropicContext1M(modelName string) bool {
-	lower := strings.ToLower(strings.TrimSpace(modelName))
-	return strings.Contains(lower, "[1m]") && (strings.Contains(lower, "claude") || strings.Contains(lower, "opus") || strings.Contains(lower, "fable"))
+	return transformermodel.AnthropicModelWantsOneMillionBeta(modelName)
 }
 
 func ModelNamesWantAnthropicContext1M(modelNames []string) bool {

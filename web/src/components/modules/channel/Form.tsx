@@ -41,7 +41,7 @@ import {
     makeModelTestPrompt,
     sanitizeChannelTestError,
 } from '@/lib/channel-test';
-import { CAPABILITY_EMBEDDINGS, hasChannelCapability, setChannelCapability } from '@/lib/channel-capabilities';
+import { CAPABILITY_EMBEDDINGS, channelCapabilityOnCount, channelToggleVisibility, hasChannelCapability, setChannelCapability } from '@/lib/channel-capabilities';
 
 /** 手机端的折叠分组：标题 + 一行当前状态，点开再看字段。收起时字段只是隐藏、不卸载。 */
 function MobileSection({ title, summary, children }: { title: string; summary?: string; children: ReactNode }) {
@@ -392,6 +392,11 @@ export function ChannelForm({
     // 能力位勾选态：capabilities 里有没有 'embeddings'。数组操作见 lib/channel-capabilities，
     // 取消勾选只摘掉 'embeddings'，不会顺手清掉将来的其它能力位。
     const embeddingsCapabilityEnabled = hasChannelCapability(formData.capabilities, CAPABILITY_EMBEDDINGS);
+    // 三个能力开关按渠道类型显示/隐藏，规则见 lib/channel-capabilities 的 channelToggleVisibility。
+    const toggleVisibility = channelToggleVisibility(formData.type);
+    // 决策渠道(7)一个能力项都没有：手机端整个「模型能力」分组不出现，免得留个空折叠。
+    const hasCapabilityItems = toggleVisibility.context1m || toggleVisibility.thinkingToContent
+        || toggleVisibility.embeddings || toggleVisibility.embeddingsPathOnly;
 
     const effectiveKey =
         formData.keys.find((k) => k.enabled && k.channel_key.trim())?.channel_key.trim() || '';
@@ -1412,9 +1417,28 @@ export function ChannelForm({
         </>
     );
 
+    const embeddingsPathField = (
+        <>
+                            <label htmlFor={`${idPrefix}-openai-embeddings-path`} className="text-sm font-medium text-card-foreground">
+                                {t('embeddingsPath')}
+                            </label>
+                            <Input
+                                id={`${idPrefix}-openai-embeddings-path`}
+                                type="text"
+                                value={formData.openai_embeddings_path}
+                                onChange={(e) => onFormDataChange({ ...formData, openai_embeddings_path: e.target.value })}
+                                placeholder="/v1/embeddings"
+                                className="rounded-xl"
+                            />
+                            <p className="text-xs leading-relaxed text-muted-foreground">
+                                {t('embeddingsPathHint')}
+                            </p>
+        </>
+    );
+
     const capabilitiesBlock = (
         <>
-                {formData.type === ChannelType.Anthropic && (
+                {toggleVisibility.context1m && (
                     <div className="rounded-xl border border-border bg-background/70 p-3">
                         <div className="flex flex-wrap items-start justify-between gap-3">
                             <div className="min-w-0 space-y-1">
@@ -1435,6 +1459,7 @@ export function ChannelForm({
                     </div>
                 )}
 
+                {toggleVisibility.thinkingToContent && (
                 <div className="rounded-xl border border-border bg-background/70 p-3">
                     <div className="flex flex-wrap items-start justify-between gap-3">
                         <div className="min-w-0 space-y-1">
@@ -1453,7 +1478,9 @@ export function ChannelForm({
                         </label>
                     </div>
                 </div>
+                )}
 
+                {toggleVisibility.embeddings && (
                 <div className="rounded-xl border border-border bg-background/70 p-3">
                     <div className="flex flex-wrap items-start justify-between gap-3">
                         <div className="min-w-0 space-y-1">
@@ -1461,6 +1488,11 @@ export function ChannelForm({
                             <p className="text-xs leading-relaxed text-muted-foreground">
                                 {t('embeddingsCapabilityHint')}
                             </p>
+                            {toggleVisibility.embeddingsAnthropicNote && (
+                                <p className="text-xs leading-relaxed text-amber-700 dark:text-amber-400">
+                                    {t('embeddingsCapabilityAnthropicNote')}
+                                </p>
+                            )}
                         </div>
                         <label className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-border bg-muted/30 px-2.5 py-1.5 text-xs text-muted-foreground">
                             <Switch
@@ -1473,23 +1505,17 @@ export function ChannelForm({
                     </div>
                     {embeddingsCapabilityEnabled && (
                         <div className="mt-3 space-y-2">
-                            <label htmlFor={`${idPrefix}-openai-embeddings-path`} className="text-sm font-medium text-card-foreground">
-                                {t('embeddingsPath')}
-                            </label>
-                            <Input
-                                id={`${idPrefix}-openai-embeddings-path`}
-                                type="text"
-                                value={formData.openai_embeddings_path}
-                                onChange={(e) => onFormDataChange({ ...formData, openai_embeddings_path: e.target.value })}
-                                placeholder="/v1/embeddings"
-                                className="rounded-xl"
-                            />
-                            <p className="text-xs leading-relaxed text-muted-foreground">
-                                {t('embeddingsPathHint')}
-                            </p>
+                            {embeddingsPathField}
                         </div>
                     )}
                 </div>
+                )}
+
+                {toggleVisibility.embeddingsPathOnly && (
+                    <div className="rounded-xl border border-border bg-background/70 p-3 space-y-2">
+                        {embeddingsPathField}
+                    </div>
+                )}
         </>
     );
 
@@ -1995,11 +2021,7 @@ export function ChannelForm({
 
     // 手机端：只把常用的（名称、类型、地址、Key、模型）摊开，其余按用途收进可折叠分组。
     // 只换排版和分组，每个字段的控件与效果和桌面端完全相同。
-    const capabilityOnCount = [
-        formData.type === ChannelType.Anthropic && formData.anthropic_context_1m,
-        formData.thinking_to_content,
-        embeddingsCapabilityEnabled,
-    ].filter(Boolean).length;
+    const capabilityOnCount = channelCapabilityOnCount(formData);
     const rewriteOnCount = [
         formData.match_regex.trim(),
         formData.param_override.trim(),
@@ -2039,9 +2061,11 @@ export function ChannelForm({
                 {breakerBlock}
             </MobileSection>
 
+            {hasCapabilityItems && (
             <MobileSection title={t('mobileSection.capabilities')} summary={capabilityOnCount > 0 ? t('mobileSection.summaryOn', { count: capabilityOnCount }) : t('mobileSection.summaryNone')}>
                 {capabilitiesBlock}
             </MobileSection>
+            )}
 
             <MobileSection title={t('mobileSection.proxy')} summary={formData.proxy ? t('switchOn') : t('switchOff')}>
                 {proxyBlock}

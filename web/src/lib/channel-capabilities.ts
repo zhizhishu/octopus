@@ -60,3 +60,59 @@ export function channelCapabilitiesUpdate(
     const unchanged = cur.length === nxt.length && cur.every((c, i) => c === nxt[i]);
     return unchanged ? {} : { capabilities: nxt };
 }
+
+/**
+ * 渠道表单里三个能力开关在哪些渠道类型上显示（2026-10-31 需求决定，见 internal/model/channel_toggles.md）。
+ *
+ * 类型编号与后端 OutboundType / 前端 ChannelType 逐位对应（这里写数字是为了让本文件
+ * 保持无 @/ 导入，node 测试能直接加载）：
+ *   0 OpenAIChat · 1 OpenAIResponse · 2 Anthropic · 3 Gemini · 5 OpenAIEmbedding ·
+ *   6 CustomOpenAIChat · 7 SystemOne
+ *
+ * - Claude 1M：只有 Anthropic（只有它出站带 anthropic-beta）。
+ * - 思考内容放进正文：所有聊天类渠道；嵌入渠道(5)和决策渠道(7)不出聊天回复，隐藏。
+ * - 也接嵌入请求：聊天类渠道显示；嵌入渠道(5)本来就只做嵌入（后端「类型默认 OR 勾选」），
+ *   决策渠道(7)只服务 /v1/systemone，都隐藏。Anthropic 显示，但附一句提示——官方
+ *   Anthropic 没有嵌入接口，只有上游中转也提供时才有用。
+ * - 嵌入渠道(5)不显示开关，但「嵌入接口路径」照常单独显示（火山这类要填 /api/v3/embeddings），
+ *   否则隐藏开关会顺带把它的路径逃生口藏掉。
+ */
+const CHANNEL_TYPE_ANTHROPIC = 2;
+const CHANNEL_TYPE_OPENAI_EMBEDDING = 5;
+const CHANNEL_TYPE_SYSTEM_ONE = 7;
+
+export type ChannelToggleVisibility = {
+    context1m: boolean;
+    thinkingToContent: boolean;
+    embeddings: boolean;
+    embeddingsAnthropicNote: boolean;
+    /** 不显示开关、只显示「嵌入接口路径」输入框（嵌入渠道本来就接嵌入）。 */
+    embeddingsPathOnly: boolean;
+};
+
+export function channelToggleVisibility(channelType: number): ChannelToggleVisibility {
+    const noChatReply = channelType === CHANNEL_TYPE_OPENAI_EMBEDDING || channelType === CHANNEL_TYPE_SYSTEM_ONE;
+    const isAnthropic = channelType === CHANNEL_TYPE_ANTHROPIC;
+    return {
+        context1m: isAnthropic,
+        thinkingToContent: !noChatReply,
+        embeddings: !noChatReply,
+        embeddingsAnthropicNote: isAnthropic,
+        embeddingsPathOnly: channelType === CHANNEL_TYPE_OPENAI_EMBEDDING,
+    };
+}
+
+/** 手机端「模型能力」分组摘要里「已开启 N 项」：只数当前类型上看得见、且开着的开关。 */
+export function channelCapabilityOnCount(input: {
+    type: number;
+    anthropic_context_1m?: boolean;
+    thinking_to_content?: boolean;
+    capabilities?: readonly string[];
+}): number {
+    const v = channelToggleVisibility(input.type);
+    return [
+        v.context1m && !!input.anthropic_context_1m,
+        v.thinkingToContent && !!input.thinking_to_content,
+        v.embeddings && hasChannelCapability(input.capabilities, CAPABILITY_EMBEDDINGS),
+    ].filter(Boolean).length;
+}

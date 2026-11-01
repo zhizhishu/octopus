@@ -142,13 +142,18 @@ func TestChatThinkingClosersAndRawAggregation(t *testing.T) {
 		!reflect.DeepEqual(events[0].Choices[1].Delta.ToolCalls, chunk.Choices[1].Delta.ToolCalls) {
 		t.Fatal("wire metadata lost")
 	}
+	// index 2 is a tool-call turn (reasoning + tool_calls in one chunk): not folded,
+	// reasoning stays reasoning_content and no <think> is opened for it.
+	if got := events[0].Choices[1].Delta.GetReasoningContent(); got != "a" {
+		t.Fatalf("tool-call turn reasoning must stay reasoning_content, got %q", got)
+	}
 	closers := thinkingWire(t, in, thinkingChoice(t, "DONE"))
 	if len(closers) != 1 {
 		t.Fatalf("closers = %+v", closers)
 	}
 	c := closers[0]
-	if len(c.Choices) != 2 || c.Choices[0].Index != 2 || c.Choices[1].Index != 7 {
-		t.Fatal("non-deterministic sparse choice closure")
+	if len(c.Choices) != 1 || c.Choices[0].Index != 7 {
+		t.Fatal("only the non-tool-call choice should need a closer")
 	}
 	if c.ID != chunk.ID || c.Created != chunk.Created || c.Model != chunk.Model || c.SystemFingerprint != chunk.SystemFingerprint || c.ServiceTier != chunk.ServiceTier {
 		t.Fatal("closing metadata lost")

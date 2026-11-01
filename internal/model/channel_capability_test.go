@@ -62,13 +62,14 @@ func TestSupportsCapabilityDeclaredCapabilityWinsOverChannelType(t *testing.T) {
 		t.Fatalf("勾了 embeddings 能力位的 chat 渠道必须能承接嵌入流量")
 	}
 
-	// 显式清空 = 回到按渠道类型判定（存量语义），而不是「什么都没有」。
+	// 2026-10-31 改为「类型默认 OR 勾选」：嵌入渠道(type 5)另外勾了别的能力位，
+	// 本职的嵌入不能被悄悄顶掉。
 	explicitCapabilityEmbedding := &Channel{
 		Type:         outbound.OutboundTypeOpenAIEmbedding,
 		Capabilities: []string{"images"},
 	}
-	if explicitCapabilityEmbedding.SupportsCapability(CapabilityEmbeddings) {
-		t.Fatalf("非空能力位列表必须被如实采用：只声明了 images 的渠道不得承接 embeddings")
+	if !explicitCapabilityEmbedding.SupportsCapability(CapabilityEmbeddings) {
+		t.Fatalf("类型默认 OR 勾选：只另外声明了 images 的嵌入渠道仍须承接 embeddings")
 	}
 	if !explicitCapabilityEmbedding.SupportsCapability("images") {
 		t.Fatalf("声明的 images 能力位必须生效")

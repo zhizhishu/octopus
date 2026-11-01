@@ -99,13 +99,12 @@ func isReducedBetaModel(modelName string) bool {
 // channel/model test). Per-model: Haiku gets the reduced set, everything else the
 // flagship set. When 1M is wanted, context-1m-2025-08-07 is inserted in its real wire
 // slot (immediately after claude-code-20250219), never as a stray leading beta.
+// Haiku never gets context-1m (AnthropicModelSupportsOneMillion), matching real
+// Claude Code, even when the channel's 1M switch is on.
 func claudeCodeSynthesisBetas(modelName string, wantsOneMillion bool) []string {
 	if isReducedBetaModel(modelName) {
 		base := make([]string, len(anthropicClaudeCodeHaikuBetas))
 		copy(base, anthropicClaudeCodeHaikuBetas)
-		if wantsOneMillion {
-			return insertOneMillionAfterClaudeCode(base)
-		}
 		return base
 	}
 	return AnthropicClaudeCodeBetas(wantsOneMillion)
@@ -235,7 +234,7 @@ func BuildClaudeCodeBetaHeader(modelName string, wantsOneMillion bool, existing 
 	// matches what a real 1M-enabled CLI sends on the wire. Haiku (the reduced model)
 	// works without 1M and its captured shape carries none, so it is left untouched.
 	// insertOneMillionAfterClaudeCode is idempotent when context-1m is already present.
-	if wantsOneMillion && !isReducedBetaModel(modelName) {
+	if wantsOneMillion && AnthropicModelSupportsOneMillion(modelName) {
 		result = insertOneMillionAfterClaudeCode(result)
 	}
 	return result
@@ -284,27 +283,87 @@ func BuildClaudeMetadataUserID(deviceID, sessionID string) string {
 	return `{"device_id":"` + deviceID + `","account_uuid":"","session_id":"` + sessionID + `"}`
 }
 
+// ---- 1M 上下文：统一规则（2026-10-31 需求决定，见 internal/model/channel_toggles.md）----
+//
+//   - 模型名后缀：只认**结尾**的 "[1m]"，大小写不敏感，可重复（"x[1M][1m]"），全部剥掉；
+//     中间出现的 "[1m]" 不算（与 sub2api 的归一一致）。
+//   - 认得的 Claude 名：含 "claude" 的完整 id，以及 Claude Code 短名 opus / sonnet / fable。
+//   - Haiku 不支持 1M：真 Claude Code 从不给 haiku 发 context-1m，所以任何路径
+//     （CLI 形状合成、客户端 beta 保留、关形状、出站 transformer）都不给 haiku 加。
+//
+// 这四个函数是唯一判据：NormalizeAnthropicModelAlias / AnthropicModelWantsOneMillionBeta /
+// AnthropicModelSupportsOneMillion，以及 internal/model 里渠道模型名清洗调用的
+// StripOneMillionSuffix。别处不要再自己写 strings.Contains(x, "[1m]")。
+
+const oneMillionModelSuffix = "[1m]"
+
+// StripOneMillionSuffix removes every trailing "[1m]" (case-insensitive, repeated)
+// and reports whether any was removed. A name that is ONLY the suffix is returned
+// unchanged (there is no model left to address).
+func StripOneMillionSuffix(modelName string) (string, bool) {
+	trimmed := strings.TrimSpace(modelName)
+	base := trimmed
+	stripped := false
+	for len(base) > len(oneMillionModelSuffix) &&
+		strings.EqualFold(base[len(base)-len(oneMillionModelSuffix):], oneMillionModelSuffix) {
+		base = strings.TrimSpace(base[:len(base)-len(oneMillionModelSuffix)])
+		stripped = true
+	}
+	if base == "" {
+		return trimmed, false
+	}
+	return base, stripped
+}
+
+// isClaudeFamilyModelName: a full claude-* id, or a Claude Code short name.
+func isClaudeFamilyModelName(base string) bool {
+	lower := strings.ToLower(strings.TrimSpace(base))
+	if strings.Contains(lower, "claude") {
+		return true
+	}
+	switch lower {
+	case "opus", "sonnet", "fable":
+		return true
+	}
+	return false
+}
+
+// AnthropicModelSupportsOneMillion is the single "may this model carry
+// context-1m-2025-08-07" check. Haiku never does (real Claude Code never sends it
+// for haiku). Everything else is allowed; an empty model is allowed so a request
+// whose model is unknown keeps the explicit channel opt-in.
+func AnthropicModelSupportsOneMillion(modelName string) bool {
+	base, _ := StripOneMillionSuffix(modelName)
+	return !isReducedBetaModel(base)
+}
+
 // NormalizeAnthropicModelAlias maps client-facing Claude/Claude Code shortcuts
 // to the provider model id that should be sent upstream. In particular, current
 // the relay exposes/logs claude-opus-4-8, while Claude Code users commonly pass
-// opus[1m] and older configs may still point at claude-opus-4-7.
+// opus[1m] and older configs may still point at claude-opus-4-7. A trailing [1m]
+// on a Claude name is always stripped (1M travels as a beta header, never in the
+// model id). Short names: opus -> claude-opus-4-8, fable[1m] -> claude-fable-5;
+// sonnet has no fixed current id here, so sonnet[1m] -> sonnet (model mapping /
+// access plans decide the real id).
 func NormalizeAnthropicModelAlias(modelName string) string {
 	trimmed := strings.TrimSpace(modelName)
 	if trimmed == "" {
 		return trimmed
 	}
-	lower := strings.ToLower(trimmed)
-	noOneMillionSuffix := strings.TrimSpace(strings.ReplaceAll(lower, "[1m]", ""))
+	base, hadSuffix := StripOneMillionSuffix(trimmed)
+	lowerBase := strings.ToLower(base)
 
-	switch noOneMillionSuffix {
+	switch lowerBase {
 	case "opus", "claude-opus", "claude-opus-4-7", "claude-opus-4.7", "claude-opus-4-8", "claude-opus-4.8":
 		return "claude-opus-4-8"
-	default:
-		if strings.Contains(lower, "[1m]") && strings.HasPrefix(noOneMillionSuffix, "claude-") {
-			return noOneMillionSuffix
-		}
+	}
+	if !hadSuffix || !isClaudeFamilyModelName(base) {
 		return trimmed
 	}
+	if lowerBase == "fable" {
+		return "claude-fable-5"
+	}
+	return base
 }
 
 func AnthropicModelAliasCandidates(modelName string) []string {
@@ -344,16 +403,22 @@ func AnthropicModelAliasCandidates(modelName string) []string {
 	return candidates
 }
 
+// AnthropicModelWantsOneMillionBeta: the model id carries a trailing [1m] on a
+// Claude name (full claude-* id or opus/sonnet/fable short name) AND the model
+// supports 1M (not haiku).
 func AnthropicModelWantsOneMillionBeta(modelName string) bool {
-	lower := strings.ToLower(strings.TrimSpace(modelName))
-	if !strings.Contains(lower, "[1m]") {
-		return false
-	}
-	return strings.Contains(lower, "claude") || strings.Contains(lower, "opus")
+	base, hadSuffix := StripOneMillionSuffix(modelName)
+	return hadSuffix && isClaudeFamilyModelName(base) && AnthropicModelSupportsOneMillion(base)
 }
 
+// AnthropicRequestWantsOneMillionBeta: the channel opt-in or a [1m] model id asks
+// for 1M, and the request model supports it (haiku never gets context-1m, even
+// with the channel switch on).
 func AnthropicRequestWantsOneMillionBeta(req *InternalLLMRequest) bool {
 	if req == nil {
+		return false
+	}
+	if !AnthropicModelSupportsOneMillion(req.Model) {
 		return false
 	}
 	return req.TransformOptions.AnthropicOneMillionBeta || AnthropicModelWantsOneMillionBeta(req.Model)

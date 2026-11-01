@@ -40,7 +40,9 @@ func TestThinkingToContentNonStreamFoldsEmptyContent(t *testing.T) {
 	}
 }
 
-func TestThinkingToContentNonStreamSkipsWhenContentPresent(t *testing.T) {
+// new-api style (2026-10-31): fold even when content is present, and drop
+// reasoning_content — same bytes as the stream path.
+func TestThinkingToContentNonStreamFoldsWhenContentPresent(t *testing.T) {
 	reasoning := "secret plan"
 	text := "OK"
 	resp := &model.InternalLLMResponse{
@@ -53,8 +55,15 @@ func TestThinkingToContentNonStreamSkipsWhenContentPresent(t *testing.T) {
 		}},
 	}
 	out := applyThinkingToContentNonStream(resp, true)
-	if out != resp {
-		t.Fatalf("when content already present, response must be returned unchanged (no copy)")
+	msg := out.Choices[0].Message
+	if msg.Content.Content == nil || *msg.Content.Content != "<think>\nsecret plan\n</think>\nOK" {
+		t.Fatalf("folded content = %v", msg.Content.Content)
+	}
+	if msg.ReasoningContent != nil || msg.Reasoning != nil {
+		t.Fatal("folded message must drop reasoning_content")
+	}
+	if *resp.Choices[0].Message.Content.Content != "OK" || resp.Choices[0].Message.ReasoningContent == nil {
+		t.Fatal("stored response must not be mutated")
 	}
 }
 

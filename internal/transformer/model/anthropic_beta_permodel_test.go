@@ -2,7 +2,6 @@ package model
 
 import (
 	"reflect"
-	"strings"
 	"testing"
 )
 
@@ -96,20 +95,18 @@ func TestClientBetaFlagshipGetsOneMillionHaikuDoesNot(t *testing.T) {
 	}
 }
 
-// Even a (practically unreachable) haiku[1m] synthesis must not leave context-1m at
-// position 1 and must include it exactly once.
-func TestSynthesizedHaikuOneMillionSlot(t *testing.T) {
-	got := BuildClaudeCodeBetaHeader("claude-haiku-4-5[1m]", true, nil, nil)
-	if len(got) == 0 || strings.EqualFold(got[0], AnthropicOneMillionBeta) {
-		t.Fatalf("context-1m must not sit at position 1: %v", got)
-	}
-	count := 0
-	for _, b := range got {
-		if strings.EqualFold(b, AnthropicOneMillionBeta) {
-			count++
+// Haiku never carries context-1m. This IS reachable: a channel with the 1M switch
+// on (TransformOptions.AnthropicOneMillionBeta) serving a haiku request from a
+// non-CLI client used to synthesise the haiku set + context-1m, which real Claude
+// Code never sends. The synthesis must now be the plain haiku set, both for a
+// haiku[1m] id and for the channel opt-in (with or without a lone transformer 1m).
+func TestSynthesizedHaikuNeverGetsOneMillion(t *testing.T) {
+	for _, existing := range [][]string{nil, {""}, {AnthropicOneMillionBeta}} {
+		for _, model := range []string{"claude-haiku-4-5[1m]", "claude-haiku-4-5-20251001"} {
+			got := BuildClaudeCodeBetaHeader(model, true, existing, nil)
+			if !reflect.DeepEqual(got, anthropicClaudeCodeHaikuBetas) {
+				t.Fatalf("%s existing=%v: haiku synthesis must be the plain haiku set:\n got=%v\nwant=%v", model, existing, got, anthropicClaudeCodeHaikuBetas)
+			}
 		}
-	}
-	if count != 1 {
-		t.Fatalf("context-1m must appear exactly once, got %d: %v", count, got)
 	}
 }

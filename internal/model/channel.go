@@ -79,11 +79,11 @@ type Channel struct {
 	AutoSync     bool           `json:"auto_sync" gorm:"default:false"`
 	CustomHeader []CustomHeader `json:"custom_header" gorm:"serializer:json"`
 	Cloak        ChannelCloak   `json:"cloak" gorm:"serializer:json"`
-	// ThinkingToContent (opt-in, default false) mirrors new-api's thinking_to_content:
-	// when the upstream only fills reasoning_content and leaves content empty (common
-	// on GLM with thinking + small max_tokens), fold reasoning into content so chat
-	// clients that only render message.content still see a reply. Shape-safe: only
-	// rewrites the application-layer body returned to the client, never outbound TLS.
+	// ThinkingToContent (opt-in, default false), new-api style: on /v1/chat/completions
+	// responses, reasoning is always folded into content as <think>…</think> (stream
+	// and non-stream alike) and reasoning_content is dropped; tool-call turns are not
+	// folded. Only the copy sent to the client changes — never the upstream request,
+	// never the stored response used for billing/logs. See internal/model/channel_toggles.md.
 	ThinkingToContent bool `json:"thinking_to_content" gorm:"default:false"`
 	// Capabilities 声明本渠道能承接哪些非聊天流量（当前只有 "embeddings"）。
 	// 空 = 只接聊天；所有存量渠道初始为空，行为与改动前完全一致。
@@ -411,16 +411,19 @@ func (req *ChannelUpdateRequest) Validate() error {
 //
 // 🔴 空 Capabilities 必须退回按渠道类型判定 —— 这是上线零影响的安全带：
 // 存量渠道没填过这个字段，行为必须与改动前完全一致。
+// SupportsCapability: 渠道类型自带的能力 OR 能力位里勾选的（2026-10-31 决定）。
+// 以前非空 Capabilities 会整体替换类型默认值——将来给嵌入渠道（type 5）加个别的能力位
+// （例如 "rerank"）就会悄悄丢掉它本职的嵌入。现在类型默认值永远保留，勾选只做加法。
+// 空 Capabilities 的存量渠道行为不变。
 func (c *Channel) SupportsCapability(capability string) bool {
 	if c == nil {
 		return false
 	}
-	if len(c.Capabilities) == 0 {
-		switch capability {
-		case CapabilityEmbeddings:
-			return outbound.IsEmbeddingChannelType(c.Type)
+	switch capability {
+	case CapabilityEmbeddings:
+		if outbound.IsEmbeddingChannelType(c.Type) {
+			return true
 		}
-		return false
 	}
 	return slices.Contains(c.Capabilities, capability)
 }
