@@ -147,6 +147,32 @@ func InitDB(dbType, dsn string, debug bool) error {
 	return nil
 }
 
+// SQLiteBusyTimeoutMs 是每条 SQLite 连接的默认 busy_timeout（DSN 里设置）。
+// 后台 WAL 检查点会在借来的连接上临时调低它，用完必须恢复成这个值再还回连接池。
+const SQLiteBusyTimeoutMs = 5000
+
+// SQLiteJournalSizeLimitBytes 是 PRAGMA journal_size_limit 的取值：128 MiB。
+//
+// 为什么必须设：WAL 模式下 SQLite 检查点之后**不会**截短 -wal 文件，而是从头覆盖复用
+// （覆盖比追加快）。默认值 -1 = 不限，所以 -wal 只要被撑大过一次（启动回填/迁移期间有
+// 长读者挡住检查点回绕、日志全表扫描等），就会永远停在历史最高水位——生产上 data.db-wal
+// 一直是 9.48 GB 就是这样来的。设了上限后，每次 WAL 回绕（reset）或提交时，SQLite 会
+// 把超出上限的部分截掉。
+//
+// 为什么是 128 MiB（不是 0，也不是更大）：
+//   - wal_autocheckpoint 保持默认 1000 页（4 KiB 页 ≈ 4 MiB），正常写入下 WAL 只有几 MiB，
+//     128 MiB 对稳态没有任何影响；
+//   - 设成 0 会让每次回绕都把文件截到最小，下一批写入再重新扩展文件——日志写入密集的
+//     库上是白白的 ftruncate + 扩容 I/O；留 128 MiB 余量吸收一次批量回填/incremental_vacuum
+//     的突发，不必反复伸缩；
+//   - 同类项目的取值都在这个量级：PocketBase 200 MB，Litestream 的紧急截断阈值 ~500 MB；
+//     本库日志体量大、磁盘曾被挤满过，取偏小的 128 MiB，把 WAL 的"常驻占用"压在主库的
+//     千分之几以内。
+//
+// 注意它只在 WAL 回绕时生效：有长读者让 WAL 一直回绕不了时它也无能为力，
+// 那种情况由 op 包的周期 WAL 检查点任务（TRUNCATE，短超时、忙就跳过）兜底。
+const SQLiteJournalSizeLimitBytes = 128 << 20
+
 func initSQLite(path string, config *gorm.Config) (*gorm.DB, error) {
 	// The driver is glebarez/sqlite (modernc, pure-Go), NOT mattn/go-sqlite3. modernc only
 	// honours the "_pragma=name(value)" DSN dialect — it silently ignores the mattn-style
@@ -167,12 +193,15 @@ func initSQLite(path string, config *gorm.Config) (*gorm.DB, error) {
 	// decision. auto_vacuum / locking_mode dropped too: a DSN pragma cannot change auto_vacuum
 	// without a full VACUUM, and locking_mode NORMAL is already the default (EXCLUSIVE would
 	// defeat WAL's multi-reader benefit).
+	//
+	//   journal_size_limit: WAL 文件"缩回去"的上限，见 SQLiteJournalSizeLimitBytes 的注释。
 	params := []string{
 		"_pragma=journal_mode(WAL)",
 		"_pragma=synchronous(NORMAL)",
-		"_pragma=busy_timeout(5000)",
+		fmt.Sprintf("_pragma=busy_timeout(%d)", SQLiteBusyTimeoutMs),
 		"_pragma=cache_size(10000)",
 		"_pragma=mmap_size(268435456)",
+		fmt.Sprintf("_pragma=journal_size_limit(%d)", SQLiteJournalSizeLimitBytes),
 	}
 	return gorm.Open(sqlite.Open(path+"?"+strings.Join(params, "&")), config)
 }
