@@ -61,9 +61,9 @@ func TestClaudeAdaptiveEffortFromBudget(t *testing.T) {
 
 func TestClaudeThinkingOff(t *testing.T) {
 	cases := map[string][2]string{
-		"claude-opus-5-5":   {`{"type":"adaptive"}`, `{"effort":"low"}`},
-		"claude-fable-5":    {`{"type":"adaptive"}`, `{"effort":"low"}`},
-		"claude-sonnet-5-5": {`{"type":"between_tools"}`, `{"effort":"low"}`},
+		"claude-opus-5-5":   {`{"type":"adaptive","display":"omitted"}`, `{"effort":"low"}`},
+		"claude-fable-5":    {`{"type":"adaptive","display":"omitted"}`, `{"effort":"low"}`},
+		"claude-sonnet-5-5": {`{"type":"adaptive","display":"omitted"}`, `{"effort":"low"}`},
 		"claude-haiku-5-5":  {`{"type":"disabled"}`, ``},
 		"claude-opus-4-7":   {`{"type":"disabled"}`, ``},
 		"claude-opus-4-5":   {`{"type":"disabled"}`, ``},

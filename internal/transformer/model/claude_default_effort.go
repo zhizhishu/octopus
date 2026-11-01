@@ -95,7 +95,9 @@ func NormalizeClaudeModelID(model string) string {
 //	fable-5, mythos-5          adaptive only, cannot disable          (xhigh, max)
 //	mythos-preview             adaptive + manual, cannot disable      (max)
 //	opus-5-5                   adaptive only, cannot disable, default medium   (xhigh, max)
-//	sonnet-5-5                 adaptive only, off = between_tools (effort <= high) (xhigh, max)
+//	sonnet-5-5                 adaptive only; API also accepts between_tools as "off", but
+//	                           real Claude Code never sends it — CLI/-p uses adaptive+omitted
+//	                           (effort <= high when off) (xhigh, max)
 //	opus-5, sonnet-5, haiku-5, adaptive only, disabled allowed        (xhigh, max)
 //	opus-4-8, opus-4-7           (opus-5*/haiku-5* only at effort <= high when off;
 //	                              haiku-5* default medium)
@@ -155,19 +157,21 @@ func ClaudeAdaptiveEffortFromBudget(model string, budget int64) string {
 }
 
 // ClaudeThinkingOff describes how to say "no thinking" to a model, for callers that must send an
-// explicit thinking object (model-test probes mirroring the CLI shape). Thinking is the raw
-// thinking member; OutputConfig is the raw output_config to pair with it (nil = none).
+// explicit thinking object (model-test probes mirroring the CLI /-p print-mode shape). Thinking
+// is the raw thinking member; OutputConfig is the raw output_config to pair with it (nil = none).
+//
+// Real Claude Code never sends between_tools (wire capture 2.1.316). On sonnet-5-5 / opus-5-5 /
+// fable / mythos it says "off" as adaptive + display omitted + effort (medium by default, or
+// low via --effort low). Probes use low — a CLI-producible value — so the body stays
+// CLI-plausible without inventing a non-CLI type.
 //
 //	default (disabled allowed)  {"type":"disabled"}
-//	sonnet-5-5                  {"type":"between_tools"} + {"effort":"low"}
-//	cannot disable (opus-5-5)   {"type":"adaptive"}      + {"effort":"low"}
+//	sonnet-5-5 / cannot disable {"type":"adaptive","display":"omitted"} + {"effort":"low"}
 func ClaudeThinkingOff(model string) (thinking, outputConfig json.RawMessage) {
 	capability := ClaudeEffortCapabilityFor(model)
 	switch {
-	case capability.DisableAsBetweenTools:
-		return json.RawMessage(`{"type":"between_tools"}`), json.RawMessage(`{"effort":"low"}`)
-	case capability.NoDisable:
-		return json.RawMessage(`{"type":"adaptive"}`), json.RawMessage(`{"effort":"low"}`)
+	case capability.DisableAsBetweenTools, capability.NoDisable:
+		return json.RawMessage(`{"type":"adaptive","display":"omitted"}`), json.RawMessage(`{"effort":"low"}`)
 	default:
 		return json.RawMessage(`{"type":"disabled"}`), nil
 	}

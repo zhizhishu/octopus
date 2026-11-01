@@ -4,12 +4,12 @@ import (
 	"encoding/json"
 	"strings"
 
+	"github.com/samber/lo"
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/op"
 	"github.com/zhizhishu/octopus/internal/transformer/model"
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 	"github.com/zhizhishu/octopus/internal/utils/log"
-	"github.com/samber/lo"
 )
 
 // The three top-level members a genuine Claude CLI puts on every POST /v1/messages, measured
@@ -32,6 +32,8 @@ import (
 // context_management (clear_thinking_20251015, keep=all) is only legal while thinking is
 // enabled or adaptive; it is marked as injected so the Anthropic outbound drops it otherwise
 // (CLIProxyAPI injectClaudeCodeContextManagement).
+// See claude_adaptive_display.md for why "omitted" (golden / print mode) and when the
+// real CLI sends "summarized" instead.
 var (
 	claudeCLIShapeThinking          = json.RawMessage(`{"type":"adaptive","display":"omitted"}`)
 	claudeCLIShapeContextManagement = json.RawMessage(`{"edits":[{"type":"clear_thinking_20251015","keep":"all"}]}`)
@@ -122,8 +124,8 @@ func (ra *relayAttempt) ensureClaudeCLIShapeTopLevelKeys() {
 		lo.Ternary(thinkingFilled, "thinking/output_config/", ""), lo.Ternary(safeguardsDefaulted, "/safeguards", ""),
 		lo.Ternary(thinkingFilled, ra.claudeDefaultEffort, "unchanged"), dbmodel.SettingKeyClaudeCLIReasoningEffort, dbmodel.SettingKeyRelayClaudeCLIShapeKeys)
 	if safeguardsDefaulted {
-		log.Warnf("claude CLI shape: the filled safeguards is NOT the caller's real state — platform is derived from our advertised fingerprint, "+
-			"while permission_mode/live_cwd/home_dir/git_state/rules keep the golden sample's defaults (measured: a genuine CLI sends safeguards on "+
+		log.Warnf("claude CLI shape: the filled safeguards is NOT the caller's real state — platform is derived from our advertised fingerprint, " +
+			"while permission_mode/live_cwd/home_dir/git_state/rules keep the golden sample's defaults (measured: a genuine CLI sends safeguards on " +
 			"12 of 22 captured requests, so it is conditional, not universal)")
 	}
 }

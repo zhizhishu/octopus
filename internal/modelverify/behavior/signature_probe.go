@@ -179,15 +179,12 @@ func runSignature(ctx context.Context, s modelverify.Sender, targetModel string)
 	// 正文等于没回放。harvest 的思考正文与签名同块采集，原样配对还回去——
 	// 这也是参考实现的既定回放形态（原 thinking 块 + 文本）。
 	replayText := strings.TrimSpace(harvest.ReasoningContent)
-	if !usedRedacted && replayText == "" {
-		// 没有同块正文就无法构成合法、无损的回放。按「证据不足」明确记
-		// 进 Errors 通道：不发伪造/不完整的回放，不扣解封失败的分，也不把
-		// 这次算成有效验真。
-		res.Err = fmt.Errorf("签名缺少同块思考正文，无法构成合法无损回放（证据不足）")
-		return res
-	}
-	// assistant 轮里 thinking 文本留空、只带签名，是 redacted 形态的既定回放
-	// 形态：服务端解封的是密文本身，不需要我们提供明文（我们也提供不了）。
+	// display:omitted (Claude Code's common / golden shape) returns thinking blocks
+	// with empty text + a signature. Anthropic docs: the signature holds the encrypted
+	// full thinking and must be passed back unchanged; empty text is legal. The
+	// outbound leadingReasoningBlock round-trips that pair. Only a missing signature
+	// (already handled above) is evidence-insufficient.
+	// redacted 形态同样只带密文：服务端解封的是密文本身，不需要明文。
 	replay, err := s.Ask(ctx, modelverify.Ask{
 		MaxTokens: intPtr(signatureBudget),
 		// 回放的会话里带着 thinking 块，真实客户端在这种续轮上保持思考开启；

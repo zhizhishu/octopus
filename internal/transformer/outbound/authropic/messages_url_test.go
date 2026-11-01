@@ -191,7 +191,7 @@ func TestMessageOutboundTransformRequestPreservesClaudeContextManagement(t *test
 	for _, want := range []string{
 		`"model":"claude-opus-4-8"`,
 		`"service_tier":"auto"`,
-		`"thinking":{"type":"adaptive"}`,
+		`"thinking":{"type":"adaptive","display":"omitted"}`,
 		`"output_config":{"effort":"high"}`,
 		`"context_management":{"edits":[{"type":"clear_thinking_20251015","keep":"all"}]}`,
 	} {

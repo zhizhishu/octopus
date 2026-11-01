@@ -187,8 +187,10 @@ func TestClaudeShapeCompletionDoesNotOverrideCallerEffort(t *testing.T) {
 	if !strings.Contains(body, `"effort":"medium"`) {
 		t.Errorf("the caller's effort must survive: %s", body)
 	}
-	if strings.Contains(body, `"display":"omitted"`) {
-		t.Errorf("the golden thinking must not pre-empt the caller's effort form: %s", body)
+	// Cloaked conversion synthesizes the CLI golden adaptive form (display:omitted)
+	// around the caller's effort; that is shape completion, not effort pre-emption.
+	if !strings.Contains(body, `"thinking":{"type":"adaptive","display":"omitted"}`) {
+		t.Errorf("cloaked conversion should emit CLI golden adaptive thinking: %s", body)
 	}
 }
 

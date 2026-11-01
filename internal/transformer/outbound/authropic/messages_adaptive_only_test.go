@@ -59,66 +59,73 @@ func TestAdaptiveOnlyConversionPaths(t *testing.T) {
 		{
 			name:             "openai chat reasoning_effort on opus-5-5",
 			req:              model.InternalLLMRequest{Model: "claude-opus-5-5", ReasoningEffort: "high"},
-			wantThinking:     `{"type":"adaptive"}`,
+			wantThinking:     `{"type":"adaptive","display":"omitted"}`,
 			wantOutputConfig: `{"effort":"high"}`,
 		},
 		{
 			name:             "chat xhigh on opus-4-7 keeps xhigh",
 			req:              model.InternalLLMRequest{Model: "claude-opus-4-7", ReasoningEffort: "X-High"},
-			wantThinking:     `{"type":"adaptive"}`,
+			wantThinking:     `{"type":"adaptive","display":"omitted"}`,
 			wantOutputConfig: `{"effort":"xhigh"}`,
 		},
 		{
 			name:             "chat minimal maps to low",
 			req:              model.InternalLLMRequest{Model: "claude-opus-5-5", ReasoningEffort: "minimal"},
-			wantThinking:     `{"type":"adaptive"}`,
+			wantThinking:     `{"type":"adaptive","display":"omitted"}`,
 			wantOutputConfig: `{"effort":"low"}`,
 		},
 		{
 			name:             "responses reasoning.max_tokens only -> effort from budget",
 			req:              model.InternalLLMRequest{Model: "claude-opus-5-5", ReasoningBudget: int64Ptr(10000)},
-			wantThinking:     `{"type":"adaptive"}`,
+			wantThinking:     `{"type":"adaptive","display":"omitted"}`,
 			wantOutputConfig: `{"effort":"high"}`,
 		},
 		{
 			name:             "responses budget 4096 -> medium",
 			req:              model.InternalLLMRequest{Model: "claude-opus-5-5", ReasoningBudget: int64Ptr(4096)},
-			wantThinking:     `{"type":"adaptive"}`,
+			wantThinking:     `{"type":"adaptive","display":"omitted"}`,
 			wantOutputConfig: `{"effort":"medium"}`,
 		},
 		{
 			name:             "responses explicit effort wins over budget",
 			req:              model.InternalLLMRequest{Model: "claude-opus-5-5", ReasoningEffort: "low", ReasoningBudget: int64Ptr(60000)},
-			wantThinking:     `{"type":"adaptive"}`,
+			wantThinking:     `{"type":"adaptive","display":"omitted"}`,
 			wantOutputConfig: `{"effort":"low"}`,
 		},
 		{
 			name:             "unknown effort word falls back to budget",
 			req:              model.InternalLLMRequest{Model: "claude-opus-5-5", ReasoningEffort: "ultra", ReasoningBudget: int64Ptr(1024)},
-			wantThinking:     `{"type":"adaptive"}`,
+			wantThinking:     `{"type":"adaptive","display":"omitted"}`,
 			wantOutputConfig: `{"effort":"low"}`,
 		},
 		{
 			name:             "gemini thinkingLevel on sonnet-5-5",
 			req:              model.InternalLLMRequest{Model: "claude-sonnet-5-5", ReasoningEffort: "medium"},
-			wantThinking:     `{"type":"adaptive"}`,
+			wantThinking:     `{"type":"adaptive","display":"omitted"}`,
 			wantOutputConfig: `{"effort":"medium"}`,
 		},
 		{
 			name:             "dotted -thinking alias resolves as opus-5-5",
 			req:              model.InternalLLMRequest{Model: "claude-opus-5.5-thinking", ReasoningEffort: "max"},
-			wantThinking:     `{"type":"adaptive"}`,
+			wantThinking:     `{"type":"adaptive","display":"omitted"}`,
 			wantOutputConfig: `{"effort":"max"}`,
 		},
 		{
 			name:             "off on opus-5-5 -> adaptive low",
 			req:              model.InternalLLMRequest{Model: "claude-opus-5-5", ReasoningEffort: "none"},
-			wantThinking:     `{"type":"adaptive"}`,
+			wantThinking:     `{"type":"adaptive","display":"omitted"}`,
 			wantOutputConfig: `{"effort":"low"}`,
 		},
 		{
-			name:             "off on sonnet-5-5 -> between_tools low",
+			name:             "off on sonnet-5-5 cloaked -> adaptive omitted low (-p profile)",
 			req:              model.InternalLLMRequest{Model: "claude-sonnet-5-5", ReasoningEffort: "off"},
+			wantThinking:     `{"type":"adaptive","display":"omitted"}`,
+			wantOutputConfig: `{"effort":"low"}`,
+		},
+		{
+			name: "off on sonnet-5-5 cloak=never -> between_tools low",
+			req: model.InternalLLMRequest{Model: "claude-sonnet-5-5", ReasoningEffort: "off",
+				TransformOptions: model.TransformOptions{SuppressClaudeIdentity: true}},
 			wantThinking:     `{"type":"between_tools"}`,
 			wantOutputConfig: `{"effort":"low"}`,
 		},
@@ -187,8 +194,13 @@ func TestAdaptiveOnlyConversionClearsSampling(t *testing.T) {
 	}
 	req = model.InternalLLMRequest{Model: "claude-sonnet-5-5", ReasoningEffort: "none", Temperature: &temperature}
 	body = adaptiveTestBody(t, &req, adaptiveTestThirdPartyBase)
+	if strings.Contains(body, `"temperature"`) || !strings.Contains(body, `"display":"omitted"`) {
+		t.Fatalf("cloaked sonnet-5-5 adaptive off must drop temperature: %s", body)
+	}
+	req.TransformOptions.SuppressClaudeIdentity = true
+	body = adaptiveTestBody(t, &req, adaptiveTestThirdPartyBase)
 	if strings.Contains(body, `"temperature"`) || !strings.Contains(body, `"between_tools"`) {
-		t.Fatalf("sonnet-5-5 between_tools must drop temperature: %s", body)
+		t.Fatalf("cloak=never sonnet-5-5 between_tools must drop temperature: %s", body)
 	}
 }
 
@@ -199,7 +211,7 @@ func TestNativeEnabledRewriteOnlyForNonCLICaller(t *testing.T) {
 		req := model.InternalLLMRequest{Model: "claude-opus-5-5", AnthropicThinking: json.RawMessage(enabled)}
 		req.TransformOptions.ClaudeNonCLICaller = true
 		thinking, outputConfig := adaptiveTestMembers(t, adaptiveTestBody(t, &req, adaptiveTestThirdPartyBase))
-		if thinking != `{"type":"adaptive"}` || outputConfig != `{"effort":"high"}` {
+		if thinking != `{"type":"adaptive","display":"omitted"}` || outputConfig != `{"effort":"high"}` {
 			t.Fatalf("thinking=%s output_config=%s", thinking, outputConfig)
 		}
 	})
@@ -209,7 +221,7 @@ func TestNativeEnabledRewriteOnlyForNonCLICaller(t *testing.T) {
 			AnthropicOutputConfig: json.RawMessage(`{"effort":"low"}`)}
 		req.TransformOptions.ClaudeNonCLICaller = true
 		thinking, outputConfig := adaptiveTestMembers(t, adaptiveTestBody(t, &req, adaptiveTestThirdPartyBase))
-		if thinking != `{"type":"adaptive"}` || outputConfig != `{"effort":"low"}` {
+		if thinking != `{"type":"adaptive","display":"omitted"}` || outputConfig != `{"effort":"low"}` {
 			t.Fatalf("thinking=%s output_config=%s", thinking, outputConfig)
 		}
 	})
@@ -257,7 +269,7 @@ func TestOfficialBaseDisabledDropUnchanged(t *testing.T) {
 	}
 	// Off intent on opus-5-5 via conversion on the official base: adaptive+low survives.
 	req = model.InternalLLMRequest{Model: "claude-opus-5-5", ReasoningEffort: "none"}
-	if thinking, outputConfig := adaptiveTestMembers(t, adaptiveTestBody(t, &req, "https://api.anthropic.com")); thinking != `{"type":"adaptive"}` || outputConfig != `{"effort":"low"}` {
+	if thinking, outputConfig := adaptiveTestMembers(t, adaptiveTestBody(t, &req, "https://api.anthropic.com")); thinking != `{"type":"adaptive","display":"omitted"}` || outputConfig != `{"effort":"low"}` {
 		t.Fatalf("official opus-5-5 off: thinking=%s output_config=%s", thinking, outputConfig)
 	}
 }
@@ -274,10 +286,10 @@ func TestNativeDisabledRewriteOnlyForNonCLICaller(t *testing.T) {
 		wantThinking     string
 		wantOutputConfig string
 	}{
-		{"non-CLI opus-5-5 -> adaptive low", "claude-opus-5-5", true, adaptiveTestThirdPartyBase, "", `{"type":"adaptive"}`, `{"effort":"low"}`},
-		{"non-CLI opus-5-5 paired effort is overridden to low", "claude-opus-5-5", true, adaptiveTestThirdPartyBase, `{"effort":"max"}`, `{"type":"adaptive"}`, `{"effort":"low"}`},
-		{"non-CLI fable-5 -> adaptive low", "claude-fable-5", true, adaptiveTestThirdPartyBase, "", `{"type":"adaptive"}`, `{"effort":"low"}`},
-		{"non-CLI sonnet-5-5 -> between_tools low", "claude-sonnet-5-5", true, adaptiveTestThirdPartyBase, `{"effort":"xhigh"}`, `{"type":"between_tools"}`, `{"effort":"low"}`},
+		{"non-CLI opus-5-5 -> adaptive low", "claude-opus-5-5", true, adaptiveTestThirdPartyBase, "", `{"type":"adaptive","display":"omitted"}`, `{"effort":"low"}`},
+		{"non-CLI opus-5-5 paired effort is overridden to low", "claude-opus-5-5", true, adaptiveTestThirdPartyBase, `{"effort":"max"}`, `{"type":"adaptive","display":"omitted"}`, `{"effort":"low"}`},
+		{"non-CLI fable-5 -> adaptive low", "claude-fable-5", true, adaptiveTestThirdPartyBase, "", `{"type":"adaptive","display":"omitted"}`, `{"effort":"low"}`},
+		{"non-CLI cloaked sonnet-5-5 -> adaptive omitted low", "claude-sonnet-5-5", true, adaptiveTestThirdPartyBase, `{"effort":"xhigh"}`, `{"type":"adaptive","display":"omitted"}`, `{"effort":"low"}`},
 		{"non-CLI haiku-5-5 keeps disabled", "claude-haiku-5-5", true, adaptiveTestThirdPartyBase, "", disabled, ""},
 		{"non-CLI opus-4-5 keeps disabled", "claude-opus-4-5", true, adaptiveTestThirdPartyBase, "", disabled, ""},
 		{"CLI opus-5-5 untouched", "claude-opus-5-5", false, adaptiveTestThirdPartyBase, "", disabled, ""},
@@ -297,7 +309,7 @@ func TestNativeDisabledRewriteOnlyForNonCLICaller(t *testing.T) {
 			if thinking != tt.wantThinking || outputConfig != tt.wantOutputConfig {
 				t.Fatalf("thinking=%s output_config=%s, want %s %s\nbody=%s", thinking, outputConfig, tt.wantThinking, tt.wantOutputConfig, body)
 			}
-			rewritten := tt.wantThinking == `{"type":"adaptive"}` || tt.wantThinking == `{"type":"between_tools"}`
+			rewritten := tt.wantThinking == `{"type":"adaptive","display":"omitted"}` || tt.wantThinking == `{"type":"between_tools"}`
 			hasSampling := strings.Contains(body, `"temperature"`) || strings.Contains(body, `"top_p"`)
 			if rewritten && hasSampling {
 				t.Fatalf("rewritten off form must drop temperature/top_p: %s", body)
@@ -306,6 +318,17 @@ func TestNativeDisabledRewriteOnlyForNonCLICaller(t *testing.T) {
 				t.Fatalf("untouched disabled body lost the caller's sampling params: %s", body)
 			}
 		})
+	}
+}
+
+func TestNativeDisabledSonnetCloakNeverKeepsBetweenTools(t *testing.T) {
+	const disabled = `{"type":"disabled"}`
+	req := model.InternalLLMRequest{Model: "claude-sonnet-5-5", AnthropicThinking: json.RawMessage(disabled)}
+	req.TransformOptions.ClaudeNonCLICaller = true
+	req.TransformOptions.SuppressClaudeIdentity = true
+	thinking, outputConfig := adaptiveTestMembers(t, adaptiveTestBody(t, &req, adaptiveTestThirdPartyBase))
+	if thinking != `{"type":"between_tools"}` || outputConfig != `{"effort":"low"}` {
+		t.Fatalf("cloak=never sonnet-5-5: thinking=%s output_config=%s", thinking, outputConfig)
 	}
 }
 
@@ -319,5 +342,101 @@ func TestNativeDisabledCLIBodyByteIdentical(t *testing.T) {
 	want := strings.Replace(build("claude-opus-4-5"), `"claude-opus-4-5"`, `"claude-opus-5-5"`, 1)
 	if got != want {
 		t.Fatalf("CLI disabled body changed:\n got %s\nwant %s", got, want)
+	}
+}
+
+// display:omitted returns thinking blocks with empty text + signature. Those must
+// round-trip on the next turn (Anthropic docs; Claude Code golden shape).
+func TestOmittedThinkingSignatureRoundTrips(t *testing.T) {
+	empty := ""
+	sig := "EosnCkYICxIMMb3LzNrMuTESTSIG"
+	text := "Done."
+	hi := "hi"
+	again := "again"
+	maxTokens := int64(1024)
+	req := &model.InternalLLMRequest{
+		Model:        "claude-opus-4-8",
+		MaxTokens:    &maxTokens,
+		RawAPIFormat: model.APIFormatAnthropicMessage,
+		Messages: []model.Message{
+			{Role: "user", Content: model.MessageContent{Content: &hi}},
+			{
+				Role:               "assistant",
+				Content:            model.MessageContent{Content: &text},
+				ReasoningContent:   &empty,
+				ReasoningSignature: &sig,
+			},
+			{Role: "user", Content: model.MessageContent{Content: &again}},
+		},
+	}
+	body := adaptiveTestBody(t, req, adaptiveTestThirdPartyBase)
+	wantBlock := `{"type":"thinking","thinking":"","signature":"EosnCkYICxIMMb3LzNrMuTESTSIG"}`
+	if !strings.Contains(body, wantBlock) {
+		t.Fatalf("empty+signature block not byte-identical (type,thinking,signature):\nwant %s\nbody %s", wantBlock, body)
+	}
+	// Also: signature-only (ReasoningContent nil) must round-trip.
+	req.Messages[1].ReasoningContent = nil
+	body = adaptiveTestBody(t, req, adaptiveTestThirdPartyBase)
+	if !strings.Contains(body, `"signature":"EosnCkYICxIMMb3LzNrMuTESTSIG"`) {
+		t.Fatalf("nil-text+signature thinking block dropped:\n%s", body)
+	}
+}
+
+// A genuine Claude Code /v1/messages turn that carries a prior assistant thinking
+// block with empty text + signature (display:omitted response shape) must leave that
+// history byte-shaped on the outbound: the thinking config the CLI sent stays raw,
+// and the empty+signature block is echoed (not dropped, not rewritten). This is the
+// iron-rule check for the signature-only round-trip fix.
+func TestCLIEmptyThinkingSignatureHistoryPassthrough(t *testing.T) {
+	empty := ""
+	sig := "EosnCkYICxIMMb3LzNrMuCLISIG"
+	done := "Done."
+	hi := "hi"
+	again := "again"
+	maxTokens := int64(64000)
+	thinkingCfg := `{"type":"adaptive","display":"omitted"}`
+	outputCfg := `{"effort":"high"}`
+	req := &model.InternalLLMRequest{
+		Model:                 "claude-opus-4-8",
+		MaxTokens:             &maxTokens,
+		RawAPIFormat:          model.APIFormatAnthropicMessage,
+		AnthropicThinking:     json.RawMessage(thinkingCfg),
+		AnthropicOutputConfig: json.RawMessage(outputCfg),
+		// CLI-shaped caller: ClaudeNonCLICaller stays false (zero value).
+		Messages: []model.Message{
+			{Role: "user", Content: model.MessageContent{Content: &hi}},
+			{
+				Role:               "assistant",
+				Content:            model.MessageContent{Content: &done},
+				ReasoningContent:   &empty,
+				ReasoningSignature: &sig,
+			},
+			{Role: "user", Content: model.MessageContent{Content: &again}},
+		},
+	}
+	body := adaptiveTestBody(t, req, adaptiveTestThirdPartyBase)
+	thinking, outputConfig := adaptiveTestMembers(t, body)
+	if thinking != thinkingCfg {
+		t.Fatalf("CLI thinking config rewritten: got %s want %s", thinking, thinkingCfg)
+	}
+	if outputConfig != outputCfg {
+		t.Fatalf("CLI output_config rewritten: got %s want %s", outputConfig, outputCfg)
+	}
+	// Wire capture (2.1.316 multi-turn): key order type, thinking, signature; empty
+	// thinking string is present (not omitted). encoding/json struct order on
+	// MessageContentBlock matches that (Type → Thinking → Signature).
+	wantBlock := `{"type":"thinking","thinking":"","signature":"EosnCkYICxIMMb3LzNrMuCLISIG"}`
+	if !strings.Contains(body, wantBlock) {
+		t.Fatalf("CLI empty+signature thinking history not byte-identical:\nwant substring %s\nbody %s", wantBlock, body)
+	}
+	// Same body with ReasoningContent nil (inbound path for omitted) must also round-trip.
+	req.Messages[1].ReasoningContent = nil
+	body2 := adaptiveTestBody(t, req, adaptiveTestThirdPartyBase)
+	if !strings.Contains(body2, `"signature":"EosnCkYICxIMMb3LzNrMuCLISIG"`) {
+		t.Fatalf("CLI nil-text+signature history dropped:\n%s", body2)
+	}
+	thinking2, _ := adaptiveTestMembers(t, body2)
+	if thinking2 != thinkingCfg {
+		t.Fatalf("CLI thinking config changed on nil-text path: %s", thinking2)
 	}
 }

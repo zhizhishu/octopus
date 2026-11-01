@@ -517,19 +517,21 @@ func convertToAnthropicRequest(req *model.InternalLLMRequest) *anthropicModel.Me
 	// **出站模型**决定，不由客户端协议决定。opus-5-5 这类模型对 enabled+budget_tokens 与
 	// disabled 一律 400（sub2api: "claude-opus-5-5 requires adaptive thinking; omit thinking
 	// or use thinking.type=adaptive and output_config.effort"）。所以转换路径上：
-	//   - 「关」在不能关的模型上降到最低可表达档：adaptive + effort low；
-	//     sonnet-5-5 的「关」是 between_tools（只收 high 及以下 effort，这里给 low）；
+	//   - 「关」在不能关的模型上降到最低可表达档：adaptive + effort low（-p 打印模式画像）；
+	//     sonnet-5-5：伪装时同样 adaptive+omitted+low（真 CLI 从不发 between_tools）；
+	//     cloak=never 仍可用 between_tools（API 合法、非 CLI 体）。
 	//   - 「开」在不收手动预算的模型上走 adaptive + output_config.effort，
 	//     effort 取客户端显式档位，否则由预算换算（model.ClaudeAdaptiveEffortFromBudget）。
-	// 形状沿用既有的 plain {"type":"adaptive"} 与 output_config，不引入新的顶层 key。
+	// 伪装形状 = -p 打印模式画像：{"type":"adaptive","display":"omitted"} + output_config.effort。
 	thinkingCapability := model.ClaudeEffortCapabilityFor(req.Model)
 	if !rawThinkingPreserved && model.IsEffortOff(req.ReasoningEffort) {
 		switch {
-		case thinkingCapability.DisableAsBetweenTools:
+		case thinkingCapability.DisableAsBetweenTools && req.TransformOptions.SuppressClaudeIdentity:
+			// cloak=never: API "off" form for sonnet-5-5; real CLI never sends this.
 			result.Thinking = &anthropicModel.Thinking{Type: anthropicModel.ThinkingTypeBetweenTools}
 			setAnthropicOutputEffort(result, anthropicModel.EffortLow)
-		case thinkingCapability.NoDisable:
-			result.Thinking = &anthropicModel.Thinking{Type: anthropicModel.ThinkingTypeAdaptive}
+		case thinkingCapability.DisableAsBetweenTools, thinkingCapability.NoDisable:
+			result.Thinking = claudeAdaptiveThinking(req)
 			setAnthropicOutputEffort(result, anthropicModel.EffortLow)
 		default:
 			result.Thinking = &anthropicModel.Thinking{Type: anthropicModel.ThinkingTypeDisabled}
@@ -547,7 +549,7 @@ func convertToAnthropicRequest(req *model.InternalLLMRequest) *anthropicModel.Me
 		// 转换路径 + 不收手动预算的模型：enabled+budget_tokens 必 400，改发 adaptive。
 		// 显式档位优先（minimal 视作 low），认不出档位时才用预算换算；都没有就只发
 		// adaptive（模型按自身默认 effort 跑），不拿一个非法 effort 去撞 400。
-		result.Thinking = &anthropicModel.Thinking{Type: anthropicModel.ThinkingTypeAdaptive}
+		result.Thinking = claudeAdaptiveThinking(req)
 		effort := anthropicOutputEffort(req.ReasoningEffort)
 		if model.CanonicalEffort(req.ReasoningEffort) == "minimal" {
 			effort = anthropicModel.EffortLow
@@ -562,9 +564,7 @@ func convertToAnthropicRequest(req *model.InternalLLMRequest) *anthropicModel.Me
 		}
 	} else if !rawThinkingPreserved && req.ReasoningEffort != "" {
 		if req.AdaptiveThinking {
-			result.Thinking = &anthropicModel.Thinking{
-				Type: anthropicModel.ThinkingTypeAdaptive,
-			}
+			result.Thinking = claudeAdaptiveThinking(req)
 			if result.OutputConfig == nil {
 				// 🔴 effort 必须过 anthropicOutputEffort 归一化，不能原样写。
 				// 这个字段在 Anthropic 侧是**枚举**，收到不认识的值整条请求 400，
@@ -599,7 +599,7 @@ func convertToAnthropicRequest(req *model.InternalLLMRequest) *anthropicModel.Me
 	if rawThinkingPreserved && req.TransformOptions.ClaudeNonCLICaller && thinkingCapability.NoManual &&
 		result.Thinking != nil && result.Thinking.Type == anthropicModel.ThinkingTypeEnabled {
 		budget := result.Thinking.BudgetTokens
-		result.Thinking = &anthropicModel.Thinking{Type: anthropicModel.ThinkingTypeAdaptive}
+		result.Thinking = claudeAdaptiveThinking(req)
 		if (result.OutputConfig == nil || result.OutputConfig.Effort == "") && budget != nil {
 			if effort := model.ClaudeAdaptiveEffortFromBudget(req.Model, *budget); effort != "" {
 				setAnthropicOutputEffort(result, effort)
@@ -655,8 +655,11 @@ func convertToAnthropicRequest(req *model.InternalLLMRequest) *anthropicModel.Me
 
 // rewriteNativeDisabledForNoDisableModel turns a native raw {"type":"disabled"} into the
 // model's own "off" spelling on a model that cannot turn thinking off (opus-5-5, fable-5,
-// mythos-5, sonnet-5-5 ...): adaptive + effort low, or between_tools + effort low on sonnet-5-5.
-// Upstreams answer 400 for disabled there ("claude-opus-5-5 requires adaptive thinking").
+// mythos-5, sonnet-5-5 ...). Upstreams answer 400 for disabled there.
+//
+// Cloaked (-p print-mode profile): adaptive + display omitted + effort low — what real
+// Claude Code 2.1.316 sends for think-off on those models (never between_tools).
+// cloak=never + sonnet-5-5: between_tools + effort low (API form; not a CLI body).
 //
 // Scope, all required:
 //   - the thinking object is the caller's raw native one (conversion paths already pick the
@@ -666,10 +669,11 @@ func convertToAnthropicRequest(req *model.InternalLLMRequest) *anthropicModel.Me
 //   - non-official base: the caller (TransformRequest) only reaches here when the official
 //     api.anthropic.com drop-disabled rule did not apply, so that behaviour is unchanged.
 //
-// The off intent is expressed as effort low (overriding any effort the caller paired with
-// disabled: "off" must not become "adaptive at high"); low also satisfies between_tools'
-// "high or below" limit. temperature / top_p are dropped as on every adaptive/between_tools
-// body, since these models reject non-default sampling.
+// Effort low overrides any effort the caller paired with disabled ("off" must not become
+// "adaptive at high"); low is CLI-producible (--effort low) and satisfies sonnet-5-5's
+// "high or below when off" limit. temperature / top_p are dropped: adaptive and
+// between_tools both reject non-default sampling on these models (sub2api
+// validateClaude55Request / new-api strictSampling).
 func rewriteNativeDisabledForNoDisableModel(request *model.InternalLLMRequest, result *anthropicModel.MessageRequest) {
 	if request == nil || result == nil || result.Thinking == nil ||
 		result.Thinking.Type != anthropicModel.ThinkingTypeDisabled ||
@@ -678,10 +682,10 @@ func rewriteNativeDisabledForNoDisableModel(request *model.InternalLLMRequest, r
 	}
 	capability := model.ClaudeEffortCapabilityFor(request.Model)
 	switch {
-	case capability.DisableAsBetweenTools:
+	case capability.DisableAsBetweenTools && request.TransformOptions.SuppressClaudeIdentity:
 		result.Thinking = &anthropicModel.Thinking{Type: anthropicModel.ThinkingTypeBetweenTools}
-	case capability.NoDisable:
-		result.Thinking = &anthropicModel.Thinking{Type: anthropicModel.ThinkingTypeAdaptive}
+	case capability.DisableAsBetweenTools, capability.NoDisable:
+		result.Thinking = claudeAdaptiveThinking(request)
 	default:
 		return
 	}
@@ -698,6 +702,21 @@ func setAnthropicOutputEffort(result *anthropicModel.MessageRequest, effort stri
 		return
 	}
 	result.OutputConfig.Effort = effort
+}
+
+// claudeAdaptiveThinking is the adaptive thinking object the outbound synthesizes.
+// Cloaked channels use the "-p print-mode profile": {"type":"adaptive","display":"omitted"}
+// — byte-identical to Claude Code 2.1.281 golden captures and 2.1.316 -p text/json
+// (see relay/claude_adaptive_display.md). That profile does NOT send
+// thinking-display-updates / redact-thinking betas, so "updates" must never be
+// synthesized here (rule: never emit a display value without its matching beta).
+// cloak=never keeps plain {"type":"adaptive"} — no CLI body members.
+func claudeAdaptiveThinking(req *model.InternalLLMRequest) *anthropicModel.Thinking {
+	t := &anthropicModel.Thinking{Type: anthropicModel.ThinkingTypeAdaptive}
+	if req != nil && !req.TransformOptions.SuppressClaudeIdentity {
+		t.Display = "omitted"
+	}
+	return t
 }
 
 // anthropicOutputFormatFromResponseFormat converts an OpenAI-style json_schema
@@ -1486,7 +1505,14 @@ func buildMessageContent(msg model.Message) anthropicModel.MessageContent {
 }
 
 func hasThinkingContent(msg model.Message) bool {
-	return msg.ReasoningContent != nil && *msg.ReasoningContent != ""
+	// Non-empty thinking text, OR a signature-only thinking block (display:omitted
+	// returns thinking:"" + signature; Anthropic docs require that pair to round-trip).
+	if msg.ReasoningContent != nil && *msg.ReasoningContent != "" {
+		return true
+	}
+	return anthropicThinkingSignaturePresent(msg.ReasoningSignature) &&
+		!model.IsRedactedThinkingSignature(msg.ReasoningSignature) &&
+		!model.HasProviderReasoningTag(msg.ReasoningSignature)
 }
 
 // anthropicThinkingSignaturePresent reports whether a captured reasoning signature can be
@@ -1517,14 +1543,24 @@ func leadingReasoningBlock(msg model.Message) (anthropicModel.MessageContentBloc
 	if model.HasProviderReasoningTag(msg.ReasoningSignature) {
 		return anthropicModel.MessageContentBlock{}, false
 	}
-	if msg.ReasoningContent != nil && *msg.ReasoningContent != "" && anthropicThinkingSignaturePresent(msg.ReasoningSignature) {
-		return anthropicModel.MessageContentBlock{
-			Type:      "thinking",
-			Thinking:  msg.ReasoningContent,
-			Signature: msg.ReasoningSignature,
-		}, true
+	// A signed thinking block must round-trip even when the text is empty: display:omitted
+	// (Claude Code's common print-mode / golden shape) returns thinking:"" + signature,
+	// and Anthropic docs require that pair to be sent back unchanged. Dropping it on
+	// multi-turn (and on the signature-probe replay) is a shape/continuity bug.
+	// An unsigned thinking block is still dropped — Anthropic 400s on that.
+	if !anthropicThinkingSignaturePresent(msg.ReasoningSignature) {
+		return anthropicModel.MessageContentBlock{}, false
 	}
-	return anthropicModel.MessageContentBlock{}, false
+	thinking := msg.ReasoningContent
+	if thinking == nil {
+		empty := ""
+		thinking = &empty
+	}
+	return anthropicModel.MessageContentBlock{
+		Type:      "thinking",
+		Thinking:  thinking,
+		Signature: msg.ReasoningSignature,
+	}, true
 }
 
 func buildMultipleContentWithThinking(msg model.Message) anthropicModel.MessageContent {

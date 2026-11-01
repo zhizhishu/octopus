@@ -83,8 +83,10 @@ func TestAdaptiveOnlyNativeEnabledNonCLICallerRewritten(t *testing.T) {
 	if !ra.internalRequest.TransformOptions.ClaudeNonCLICaller {
 		t.Fatal("non-CLI caller not classified")
 	}
+	// runAdaptiveCallerStep uses cloak=never, so the rewrite is plain adaptive
+	// (display:omitted is only for cloaked channels — see CloakedGetsDisplayOmitted).
 	if got := string(body["thinking"]); got != `{"type":"adaptive"}` {
-		t.Fatalf("thinking = %s, want adaptive", got)
+		t.Fatalf("thinking = %s, want plain adaptive (cloak=never)", got)
 	}
 	if got := string(body["output_config"]); got != `{"effort":"high"}` {
 		t.Fatalf("output_config = %s, want effort high (budget 10000)", got)
@@ -94,6 +96,39 @@ func TestAdaptiveOnlyNativeEnabledNonCLICallerRewritten(t *testing.T) {
 // Native raw disabled on a model that cannot turn thinking off: rewritten to the model's own
 // off form only for a positively non-CLI caller; CLI-shaped callers keep disabled verbatim.
 // (outboundBody targets a non-official base, so the api.anthropic.com drop does not apply.)
+// Same rewrite on a cloaked channel must carry the CLI golden display:omitted.
+func TestAdaptiveOnlyNativeEnabledNonCLICallerCloakedGetsDisplayOmitted(t *testing.T) {
+	setupRescueDeadlineDB(t)
+	gin.SetMode(gin.TestMode)
+	httpReq := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	httpReq.Header.Set("User-Agent", "python-requests/2.31.0")
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httpReq
+	text := "ping"
+	stream := true
+	req := &model.InternalLLMRequest{
+		Model:             "claude-opus-5-5",
+		RawAPIFormat:      model.APIFormatAnthropicMessage,
+		Stream:            &stream,
+		Messages:          []model.Message{{Role: "user", Content: model.MessageContent{Content: &text}}},
+		AnthropicThinking: json.RawMessage(`{"type":"enabled","budget_tokens":10000}`),
+	}
+	ra := &relayAttempt{
+		relayRequest: &relayRequest{c: c, internalRequest: req, inboundType: inbound.InboundTypeAnthropic, requestModel: "claude-opus-5-5"},
+		channel:      &dbmodel.Channel{Type: outbound.OutboundTypeAnthropic, Cloak: dbmodel.ChannelCloak{Mode: "auto"}},
+	}
+	if err := ra.applyTransformOptionsWithInboundSetter(false); err != nil {
+		t.Fatalf("applyTransformOptions: %v", err)
+	}
+	var decoded map[string]json.RawMessage
+	if err := json.Unmarshal(outboundBody(t, ra), &decoded); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got := string(decoded["thinking"]); got != `{"type":"adaptive","display":"omitted"}` {
+		t.Fatalf("cloaked rewrite thinking = %s, want display omitted", got)
+	}
+}
+
 func TestAdaptiveOnlyNativeDisabledByCaller(t *testing.T) {
 	setupRescueDeadlineDB(t)
 	cli := map[string]string{"User-Agent": "claude-cli/2.1.296 (external, cli)"}

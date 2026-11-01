@@ -530,11 +530,14 @@ const (
 )
 
 type Thinking struct {
-	Type string `json:"type"                    validate:"required,oneof=enabled disabled adaptive"`
-	// Display preserves the adaptive-thinking display preference a real Claude CLI
-	// sends (packet-verified 2.1.281: {"type":"adaptive","display":"omitted"}).
-	// Dropping it changes the outbound body shape vs a genuine CLI request.
-	Display      string `json:"display,omitempty"       validate:"omitempty,oneof=omitted"`
+	Type string `json:"type"                    validate:"required,oneof=enabled disabled adaptive between_tools"`
+	// Display is the adaptive/enabled thinking display preference. Real Claude Code
+	// (packet-verified 2.1.281 / 2.1.316) usually sends "omitted" (print / -p /
+	// non-interactive); interactive sessions with showThinkingSummaries or
+	// --thinking-display summarized send "summarized". Dropping an explicit display
+	// changes the outbound body vs a genuine CLI request that always includes it
+	// when the interleaved-thinking / display path is active.
+	Display      string `json:"display,omitempty"       validate:"omitempty,oneof=omitted summarized updates highlights"`
 	BudgetTokens *int64 `json:"budget_tokens,omitempty" validate:"required_if=Type enabled"`
 }
 
