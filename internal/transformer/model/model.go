@@ -651,6 +651,14 @@ type TransformOptions struct {
 	// touched.
 	ClaudeContextManagementInjected bool `json:"-"`
 
+	// ClaudeNonCLICaller is set by the relay (per attempt) when the downstream caller is
+	// positively known NOT to be a Claude Code CLI (no claude-cli/ User-Agent, no claude-code
+	// beta). Only then may the Anthropic outbound rewrite a native raw thinking object the
+	// target model rejects ({"type":"enabled","budget_tokens":N} on an adaptive-only model).
+	// Zero value = do not touch: model tests, unknown callers and genuine CLI callers keep
+	// their thinking byte-identical, so a missed assignment can never alter a CLI body.
+	ClaudeNonCLICaller bool `json:"-"`
+
 	// AnthropicOneMillionBeta records that the client requested a Claude 1M
 	// compatibility alias such as opus[1m]. Routing can later replace Model with
 	// the provider's real model id, so the beta flag must not depend only on the

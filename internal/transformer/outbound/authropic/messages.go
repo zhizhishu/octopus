@@ -48,6 +48,8 @@ func (o *MessageOutbound) TransformRequest(ctx context.Context, request *model.I
 	if isOfficialAnthropicBase(baseUrl) && anthropicReq.Thinking != nil &&
 		anthropicReq.Thinking.Type == anthropicModel.ThinkingTypeDisabled {
 		anthropicReq.Thinking = nil
+	} else {
+		rewriteNativeDisabledForNoDisableModel(request, anthropicReq)
 	}
 
 	// Use a JSON encoder with HTML escaping disabled to match the real Claude
@@ -510,15 +512,53 @@ func convertToAnthropicRequest(req *model.InternalLLMRequest) *anthropicModel.Me
 	//
 	// 注意 disabled 放在最前面：它优先级高于 adaptive，否则管理员开的
 	// adaptive 会把客户端的"关"覆盖掉。
+	//
+	// 🔴 adaptive-only 模型（见 model.ClaudeEffortCapabilityFor）：thinking 的合法形态由
+	// **出站模型**决定，不由客户端协议决定。opus-5-5 这类模型对 enabled+budget_tokens 与
+	// disabled 一律 400（sub2api: "claude-opus-5-5 requires adaptive thinking; omit thinking
+	// or use thinking.type=adaptive and output_config.effort"）。所以转换路径上：
+	//   - 「关」在不能关的模型上降到最低可表达档：adaptive + effort low；
+	//     sonnet-5-5 的「关」是 between_tools（只收 high 及以下 effort，这里给 low）；
+	//   - 「开」在不收手动预算的模型上走 adaptive + output_config.effort，
+	//     effort 取客户端显式档位，否则由预算换算（model.ClaudeAdaptiveEffortFromBudget）。
+	// 形状沿用既有的 plain {"type":"adaptive"} 与 output_config，不引入新的顶层 key。
+	thinkingCapability := model.ClaudeEffortCapabilityFor(req.Model)
 	if !rawThinkingPreserved && model.IsEffortOff(req.ReasoningEffort) {
-		result.Thinking = &anthropicModel.Thinking{Type: anthropicModel.ThinkingTypeDisabled}
-		// 只清 effort；format（结构化输出）和 Extra（未识别的原始字段）不是
-		// 思考意图的一部分，不能替客户端丢掉。全空时才整个摘掉 output_config。
-		if result.OutputConfig != nil {
-			result.OutputConfig.Effort = ""
-			if len(result.OutputConfig.Format) == 0 && len(result.OutputConfig.Extra) == 0 {
-				result.OutputConfig = nil
+		switch {
+		case thinkingCapability.DisableAsBetweenTools:
+			result.Thinking = &anthropicModel.Thinking{Type: anthropicModel.ThinkingTypeBetweenTools}
+			setAnthropicOutputEffort(result, anthropicModel.EffortLow)
+		case thinkingCapability.NoDisable:
+			result.Thinking = &anthropicModel.Thinking{Type: anthropicModel.ThinkingTypeAdaptive}
+			setAnthropicOutputEffort(result, anthropicModel.EffortLow)
+		default:
+			result.Thinking = &anthropicModel.Thinking{Type: anthropicModel.ThinkingTypeDisabled}
+			// 只清 effort；format（结构化输出）和 Extra（未识别的原始字段）不是
+			// 思考意图的一部分，不能替客户端丢掉。全空时才整个摘掉 output_config。
+			if result.OutputConfig != nil {
+				result.OutputConfig.Effort = ""
+				if len(result.OutputConfig.Format) == 0 && len(result.OutputConfig.Extra) == 0 {
+					result.OutputConfig = nil
+				}
 			}
+		}
+	} else if !rawThinkingPreserved && !req.AdaptiveThinking && thinkingCapability.NoManual &&
+		(req.ReasoningEffort != "" || (req.ReasoningBudget != nil && *req.ReasoningBudget > 0)) {
+		// 转换路径 + 不收手动预算的模型：enabled+budget_tokens 必 400，改发 adaptive。
+		// 显式档位优先（minimal 视作 low），认不出档位时才用预算换算；都没有就只发
+		// adaptive（模型按自身默认 effort 跑），不拿一个非法 effort 去撞 400。
+		result.Thinking = &anthropicModel.Thinking{Type: anthropicModel.ThinkingTypeAdaptive}
+		effort := anthropicOutputEffort(req.ReasoningEffort)
+		if model.CanonicalEffort(req.ReasoningEffort) == "minimal" {
+			effort = anthropicModel.EffortLow
+		}
+		if effort != "" {
+			effort = model.ClampClaudeEffort(req.Model, effort)
+		} else if req.ReasoningBudget != nil {
+			effort = model.ClaudeAdaptiveEffortFromBudget(req.Model, *req.ReasoningBudget)
+		}
+		if effort != "" {
+			setAnthropicOutputEffort(result, effort)
 		}
 	} else if !rawThinkingPreserved && req.ReasoningEffort != "" {
 		if req.AdaptiveThinking {
@@ -545,6 +585,24 @@ func convertToAnthropicRequest(req *model.InternalLLMRequest) *anthropicModel.Me
 			result.Thinking = &anthropicModel.Thinking{
 				Type:         anthropicModel.ThinkingTypeEnabled,
 				BudgetTokens: budget,
+			}
+		}
+	}
+
+	// Native /v1/messages from a caller positively known NOT to be a Claude Code CLI: a raw
+	// {"type":"enabled","budget_tokens":N} is a guaranteed 400 on an adaptive-only model, so
+	// rewrite it to adaptive + output_config.effort (budget -> effort, the client's own effort
+	// wins if it sent one). A CLI-shaped caller (or any caller the relay did not classify,
+	// e.g. model tests) is never touched: ClaudeNonCLICaller is false for them, so the body
+	// stays byte-identical to what the CLI sent. Raw disabled is handled in TransformRequest
+	// (rewriteNativeDisabledForNoDisableModel) because the official-base drop lives there.
+	if rawThinkingPreserved && req.TransformOptions.ClaudeNonCLICaller && thinkingCapability.NoManual &&
+		result.Thinking != nil && result.Thinking.Type == anthropicModel.ThinkingTypeEnabled {
+		budget := result.Thinking.BudgetTokens
+		result.Thinking = &anthropicModel.Thinking{Type: anthropicModel.ThinkingTypeAdaptive}
+		if (result.OutputConfig == nil || result.OutputConfig.Effort == "") && budget != nil {
+			if effort := model.ClaudeAdaptiveEffortFromBudget(req.Model, *budget); effort != "" {
+				setAnthropicOutputEffort(result, effort)
 			}
 		}
 	}
@@ -583,12 +641,63 @@ func convertToAnthropicRequest(req *model.InternalLLMRequest) *anthropicModel.Me
 
 	// When thinking is enabled, Anthropic rejects custom temperature / top_p with
 	// 400 "temperature cannot be specified when thinking is enabled".
-	if result.Thinking != nil && (result.Thinking.Type == "enabled" || result.Thinking.Type == "adaptive") {
+	// between_tools (sonnet-5-5's "off") is included: that model rejects any non-default
+	// temperature / top_p regardless of thinking mode (sub2api validateClaude55Request,
+	// new-api strictSampling), so keeping them only trades one 400 for another.
+	if result.Thinking != nil && (result.Thinking.Type == "enabled" || result.Thinking.Type == "adaptive" ||
+		result.Thinking.Type == anthropicModel.ThinkingTypeBetweenTools) {
 		result.Temperature = nil
 		result.TopP = nil
 	}
 
 	return result
+}
+
+// rewriteNativeDisabledForNoDisableModel turns a native raw {"type":"disabled"} into the
+// model's own "off" spelling on a model that cannot turn thinking off (opus-5-5, fable-5,
+// mythos-5, sonnet-5-5 ...): adaptive + effort low, or between_tools + effort low on sonnet-5-5.
+// Upstreams answer 400 for disabled there ("claude-opus-5-5 requires adaptive thinking").
+//
+// Scope, all required:
+//   - the thinking object is the caller's raw native one (conversion paths already pick the
+//     per-model form in convertToAnthropicRequest; this never sees those);
+//   - the relay positively marked the caller non-CLI (TransformOptions.ClaudeNonCLICaller):
+//     a CLI-shaped or unclassified caller (model tests included) stays byte-identical;
+//   - non-official base: the caller (TransformRequest) only reaches here when the official
+//     api.anthropic.com drop-disabled rule did not apply, so that behaviour is unchanged.
+//
+// The off intent is expressed as effort low (overriding any effort the caller paired with
+// disabled: "off" must not become "adaptive at high"); low also satisfies between_tools'
+// "high or below" limit. temperature / top_p are dropped as on every adaptive/between_tools
+// body, since these models reject non-default sampling.
+func rewriteNativeDisabledForNoDisableModel(request *model.InternalLLMRequest, result *anthropicModel.MessageRequest) {
+	if request == nil || result == nil || result.Thinking == nil ||
+		result.Thinking.Type != anthropicModel.ThinkingTypeDisabled ||
+		!request.TransformOptions.ClaudeNonCLICaller || !rawJSONPresent(request.AnthropicThinking) {
+		return
+	}
+	capability := model.ClaudeEffortCapabilityFor(request.Model)
+	switch {
+	case capability.DisableAsBetweenTools:
+		result.Thinking = &anthropicModel.Thinking{Type: anthropicModel.ThinkingTypeBetweenTools}
+	case capability.NoDisable:
+		result.Thinking = &anthropicModel.Thinking{Type: anthropicModel.ThinkingTypeAdaptive}
+	default:
+		return
+	}
+	setAnthropicOutputEffort(result, anthropicModel.EffortLow)
+	result.Temperature = nil
+	result.TopP = nil
+}
+
+// setAnthropicOutputEffort sets output_config.effort, creating output_config when absent and
+// otherwise merging into it (format / unknown members a client sent are kept).
+func setAnthropicOutputEffort(result *anthropicModel.MessageRequest, effort string) {
+	if result.OutputConfig == nil {
+		result.OutputConfig = &anthropicModel.OutputConfig{Effort: effort}
+		return
+	}
+	result.OutputConfig.Effort = effort
 }
 
 // anthropicOutputFormatFromResponseFormat converts an OpenAI-style json_schema

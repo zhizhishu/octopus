@@ -51,16 +51,60 @@ export function isImageTestEndpoint(endpoint?: string): boolean {
 
 export const DEFAULT_MODEL_TEST_TIMEOUT_SECONDS = 180;
 
+const SANITIZE_FILE_EXTENSIONS = new Set(
+    'js|mjs|cjs|jsx|ts|tsx|go|py|rs|rb|php|java|kt|c|h|cc|cpp|hpp|cs|swift|json|yml|yaml|toml|ini|env|md|txt|csv|log|htm|html|css|scss|sh|bash|zsh|sql|proto|lock|png|jpg|jpeg|gif|svg|webp|ico|pdf|zip|tar|gz|exe|dll|so|dylib|bin|db|sqlite'.split('|'),
+);
+
+/**
+ * 真实主机名才会出现的顶级域。错误文本里的「点分词」绝大多数是字段路径
+ * （thinking.type、output_config.effort、messages.0.content），它们的最后一段
+ * 是英文单词而不是 TLD。只有 TLD 命中这张表（或带 :port / 位于 URL 里）才当主机隐藏，
+ * 否则会把上游的提示改坏：曾把 "use thinking.type=adaptive" 显示成 "use 上游=adaptive"。
+ */
+const SANITIZE_HOST_TLDS = new Set(
+    // 刻意不收 id / is / in / to / it / me / one / link / test 等常见英文字段词，否则
+    // request.id、content.link 这类路径又会被当成主机吞掉。
+    ('com|net|org|edu|gov|io|ai|dev|app|co|cn|uk|us|de|jp|kr|hk|tw|sg|ru|fr|eu|nl|ca|au|nz|br|mx|ch|se|es|pl|vn|th|my|ph|' +
+        'tr|ua|za|ae|sa|cc|tv|xyz|top|info|biz|cloud|site|online|tech|pro|vip|club|shop|ltd|wang|ink|gg|im|ly|vc|ws|' +
+        'asia|global|icu|cyou|bond|buzz|xin|art|website|local|localhost|internal|lan|example|invalid|onion')
+        .split('|'),
+);
+
+// 点分候选（可带 :port）。左右不得紧贴字母数字、`_`、`.`：output_config.effort 里的
+// config.effort 不算独立候选，否则字段路径会被半截吞掉。
+const SANITIZE_DOTTED_CANDIDATE =
+    /(?<![A-Za-z0-9_.-])((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z0-9-]*[a-z][a-z0-9-]*)(:\d{2,5})?(?![A-Za-z0-9_])/gi;
+
+// 不带点但带端口的主机（relay-host:443、localhost:8080）。必须含字母，排除 12:30 这类时间；
+// status:400 / line:42 这类「键:数字」不是主机，见 SANITIZE_BARE_PORT_KEYS。
+const SANITIZE_BARE_HOST_PORT = /(?<![A-Za-z0-9_.:-])((?=[a-z0-9-]*[a-z])[a-z0-9](?:[a-z0-9-]*[a-z0-9])?):\d{2,5}(?![A-Za-z0-9_.:])/gi;
+const SANITIZE_BARE_PORT_KEYS = new Set(['status', 'code', 'line', 'col', 'column', 'error', 'err', 'retry', 'timeout', 'attempt', 'http', 'https']);
+
+function sanitizeDottedCandidate(match: string, name: string, port: string | undefined, offset: number, whole: string): string {
+    const labels = name.toLowerCase().split('.');
+    const last = labels[labels.length - 1];
+    // 文件名（runner.go、channel-test.ts:12）保持可读。
+    if (SANITIZE_FILE_EXTENSIONS.has(last)) return match;
+    // 有端口就是 host:port。
+    if (port) return '上游';
+    // 纯数字段（messages.0.content）是数组下标，不是主机名；IPv4 交给后面的规则。
+    if (labels.some((label) => /^\d+$/.test(label))) return match;
+    // 紧跟 = 或 ( 的是参数/调用（thinking.type=adaptive、json.Marshal(...)）。
+    const next = whole.charAt(offset + match.length);
+    if (next === '=' || next === '(') return match;
+    return SANITIZE_HOST_TLDS.has(last) ? '上游' : match;
+}
+
 /**
  * Sanitize provider error text before channel/model-test UI exposure.
- * Keep code-like filenames readable while redacting upstream identity and credentials.
+ * Keep code-like filenames and field paths readable while redacting upstream identity and credentials.
  */
 export function sanitizeChannelTestError(text: string): string {
-    const fileExtensions = 'js|mjs|cjs|jsx|ts|tsx|go|py|rs|rb|php|java|kt|c|h|cc|cpp|hpp|cs|swift|json|ya?ml|toml|ini|env|md|txt|csv|log|html?|css|scss|sh|bash|zsh|sql|proto|lock|png|jpe?g|gif|svg|webp|ico|pdf|zip|tar|gz|exe|dll|so|dylib|bin|db|sqlite';
     return text
         .replace(/https?:\/\/[^\s"'）)\]]+/gi, '上游')
-        .replace(new RegExp(`\\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\.)+(?!(?:${fileExtensions})\\b)[a-z]{2,}(?::\\d{2,5})?\\b`, 'gi'), '上游')
         .replace(/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d{2,5})?\b/g, '上游')
+        .replace(SANITIZE_DOTTED_CANDIDATE, sanitizeDottedCandidate)
+        .replace(SANITIZE_BARE_HOST_PORT, (match: string, name: string) => (SANITIZE_BARE_PORT_KEYS.has(name.toLowerCase()) ? match : '上游'))
         .replace(/(authorization\s*:\s*bearer|x-api-key|api[_-]?key|token|secret)\s*[=:]?\s*[^\s,;]+/gi, '$1 [已隐藏]')
         .replace(/\bsk-[a-z0-9_-]+\b/gi, '[已隐藏]')
         .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, '[已隐藏]')

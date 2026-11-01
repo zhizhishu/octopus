@@ -32,17 +32,42 @@ const (
 	ClaudeEffortSkipInvalidConfig = "invalid_setting"
 )
 
-// ClaudeEffortCapability describes what a Claude model accepts for adaptive thinking.
+// ClaudeEffortCapability describes what a Claude model accepts for thinking.
+//
+// Adaptive/XHigh/Max drive the "默认思考强度" fill (unchanged). The remaining fields are the
+// adaptive-only requirements the Anthropic outbound must honour when it CONVERTS a request
+// (OpenAI Chat / Responses / Gemini -> Anthropic, or a non-CLI native caller), because the
+// upstream answers 400 otherwise, e.g. sub2api validateClaude55Request:
+// "claude-opus-5-5 requires adaptive thinking; omit thinking or use thinking.type=adaptive and
+// output_config.effort".
 type ClaudeEffortCapability struct {
 	Adaptive bool
 	XHigh    bool
 	Max      bool
+	// NoManual: {"type":"enabled","budget_tokens":N} is rejected; thinking must be adaptive
+	// with output_config.effort (new-api supportsManual=false).
+	NoManual bool
+	// NoDisable: {"type":"disabled"} is rejected; the lowest representable setting is adaptive
+	// at effort low (new-api supportsDisable=false).
+	NoDisable bool
+	// DisableAsBetweenTools: the model's "thinking off" is {"type":"between_tools"} instead of
+	// disabled (sonnet-5-5), and that mode takes effort high or below only.
+	DisableAsBetweenTools bool
+	// OffEffortAtMostHigh: while thinking is off (disabled / between_tools) the model accepts
+	// effort high or below only (opus-5*, haiku-5*, sonnet-5-5).
+	OffEffortAtMostHigh bool
+	// DefaultEffort is the effort the model runs at when the request names none (Anthropic
+	// effort doc): medium on opus-5-5 and haiku-5*, high elsewhere; "" for non-adaptive models.
+	DefaultEffort string
 }
 
 // NormalizeClaudeModelID lowercases a model id and strips provider prefixes / suffixes so the
 // capability table can match by prefix: "anthropic/claude-opus-4.7" -> "claude-opus-4-7",
 // "us.anthropic.claude-sonnet-4-6" -> "claude-sonnet-4-6", "claude-opus-4-7@20260101" ->
-// "claude-opus-4-7", "claude-opus-4-7[1m]" -> "claude-opus-4-7".
+// "claude-opus-4-7", "claude-opus-4-7[1m]" -> "claude-opus-4-7", "claude-opus-5.5" ->
+// "claude-opus-5-5" (OpenRouter-style dotted minor), "claude-opus-5-5-thinking" ->
+// "claude-opus-5-5" (the -thinking alias suffix some relays expose; sub2api
+// normalizeEffortModelID strips it the same way, so it must not hide an adaptive-only model).
 func NormalizeClaudeModelID(model string) string {
 	m := strings.ToLower(strings.TrimSpace(model))
 	if i := strings.LastIndex(m, "/"); i >= 0 {
@@ -54,31 +79,98 @@ func NormalizeClaudeModelID(model string) string {
 	if i := strings.IndexAny(m, "@["); i >= 0 {
 		m = m[:i]
 	}
+	m = strings.TrimSuffix(m, "-thinking")
 	return strings.ReplaceAll(m, ".", "-")
 }
 
-// ClaudeEffortCapabilityFor returns the adaptive-thinking capability of a (normalized or raw)
-// model id. Unknown and non-Claude models report Adaptive=false: nothing is filled for them.
+// ClaudeEffortCapabilityFor returns the thinking capability of a (normalized or raw) model id.
+// Unknown and non-Claude models report the zero value: nothing is filled and nothing is
+// rewritten for them (they keep the legacy enabled+budget_tokens conversion).
+//
+// Requirement decisions (mirror new-api relaykit/relayconvert/reasoning/claude.go
+// claudeCapabilitiesFor, cross-checked with sub2api validateClaude55Request /
+// sanitizeBedrockThinking; order matters because prefixes nest, e.g. claude-opus-5-5 before
+// claude-opus-5):
+//
+//	fable-5, mythos-5          adaptive only, cannot disable          (xhigh, max)
+//	mythos-preview             adaptive + manual, cannot disable      (max)
+//	opus-5-5                   adaptive only, cannot disable, default medium   (xhigh, max)
+//	sonnet-5-5                 adaptive only, off = between_tools (effort <= high) (xhigh, max)
+//	opus-5, sonnet-5, haiku-5, adaptive only, disabled allowed        (xhigh, max)
+//	opus-4-8, opus-4-7           (opus-5*/haiku-5* only at effort <= high when off;
+//	                              haiku-5* default medium)
+//	opus-4-6, sonnet-4-6       adaptive + manual                      (max)
+//	everything else            manual (enabled+budget_tokens) only
 func ClaudeEffortCapabilityFor(model string) ClaudeEffortCapability {
 	m := NormalizeClaudeModelID(model)
-	full := ClaudeEffortCapability{Adaptive: true, XHigh: true, Max: true}
-	for _, prefix := range []string{
-		"claude-fable-5", "claude-mythos-5",
-		"claude-opus-5", "claude-sonnet-5", "claude-haiku-5",
-		"claude-opus-4-8", "claude-opus-4-7",
-	} {
-		if strings.HasPrefix(m, prefix) {
-			return full
+	has := func(prefixes ...string) bool {
+		for _, prefix := range prefixes {
+			if strings.HasPrefix(m, prefix) {
+				return true
+			}
 		}
+		return false
 	}
-	for _, prefix := range []string{"claude-mythos-preview", "claude-opus-4-6", "claude-sonnet-4-6"} {
-		if strings.HasPrefix(m, prefix) {
-			return ClaudeEffortCapability{Adaptive: true, Max: true}
+	switch {
+	case has("claude-fable-5", "claude-mythos-5"):
+		return ClaudeEffortCapability{Adaptive: true, XHigh: true, Max: true, NoManual: true, NoDisable: true, DefaultEffort: "high"}
+	case has("claude-mythos-preview"):
+		return ClaudeEffortCapability{Adaptive: true, Max: true, NoDisable: true, DefaultEffort: "high"}
+	case has("claude-opus-5-5"):
+		return ClaudeEffortCapability{Adaptive: true, XHigh: true, Max: true, NoManual: true, NoDisable: true, DefaultEffort: "medium"}
+	case has("claude-sonnet-5-5"):
+		return ClaudeEffortCapability{Adaptive: true, XHigh: true, Max: true, NoManual: true, NoDisable: true,
+			DisableAsBetweenTools: true, OffEffortAtMostHigh: true, DefaultEffort: "high"}
+	case has("claude-opus-5", "claude-haiku-5"):
+		effort := "high"
+		if strings.HasPrefix(m, "claude-haiku-5") {
+			effort = "medium"
 		}
+		return ClaudeEffortCapability{Adaptive: true, XHigh: true, Max: true, NoManual: true, OffEffortAtMostHigh: true, DefaultEffort: effort}
+	case has("claude-sonnet-5", "claude-opus-4-8", "claude-opus-4-7"):
+		return ClaudeEffortCapability{Adaptive: true, XHigh: true, Max: true, NoManual: true, DefaultEffort: "high"}
+	case has("claude-opus-4-6", "claude-sonnet-4-6"):
+		return ClaudeEffortCapability{Adaptive: true, Max: true, DefaultEffort: "high"}
 	}
 	// claude-opus-4-5, claude-sonnet-4-5, claude-haiku-4-5, claude-opus-4-1 and earlier,
 	// claude-3*: extended thinking only — {"type":"adaptive"} returns 400.
 	return ClaudeEffortCapability{}
+}
+
+// ClaudeAdaptiveEffortFromBudget converts a manual thinking budget into the adaptive effort an
+// adaptive-only model accepts: <=1024 low, <=8192 medium, otherwise high (new-api
+// reasoning.EffortFromBudget), then clamped to what the model takes. A budget is a token CAP,
+// not a request for the xhigh/max cost tiers, so it never maps above high even though
+// EffortFromBudget's wider table would. Returns "" for a non-positive budget or a model that
+// takes no adaptive effort.
+func ClaudeAdaptiveEffortFromBudget(model string, budget int64) string {
+	effort := EffortFromBudget(budget)
+	switch effort {
+	case "":
+		return ""
+	case "xhigh", "max":
+		effort = "high"
+	}
+	return ClampClaudeEffort(model, effort)
+}
+
+// ClaudeThinkingOff describes how to say "no thinking" to a model, for callers that must send an
+// explicit thinking object (model-test probes mirroring the CLI shape). Thinking is the raw
+// thinking member; OutputConfig is the raw output_config to pair with it (nil = none).
+//
+//	default (disabled allowed)  {"type":"disabled"}
+//	sonnet-5-5                  {"type":"between_tools"} + {"effort":"low"}
+//	cannot disable (opus-5-5)   {"type":"adaptive"}      + {"effort":"low"}
+func ClaudeThinkingOff(model string) (thinking, outputConfig json.RawMessage) {
+	capability := ClaudeEffortCapabilityFor(model)
+	switch {
+	case capability.DisableAsBetweenTools:
+		return json.RawMessage(`{"type":"between_tools"}`), json.RawMessage(`{"effort":"low"}`)
+	case capability.NoDisable:
+		return json.RawMessage(`{"type":"adaptive"}`), json.RawMessage(`{"effort":"low"}`)
+	default:
+		return json.RawMessage(`{"type":"disabled"}`), nil
+	}
 }
 
 // ClampClaudeEffort returns the level the model accepts in place of the requested one, or ""
