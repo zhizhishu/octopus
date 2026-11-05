@@ -398,13 +398,6 @@ func (i *MessagesInbound) TransformRequest(ctx context.Context, body []byte) (*m
 			if anthropicReq.OutputConfig != nil && anthropicReq.OutputConfig.Effort != "" {
 				effort = anthropicReq.OutputConfig.Effort
 			}
-			// The last per-message output_config (mid-conversation-output-config beta) is the
-			// effort the current turn runs at; pi-ai / DSH pin the top-level one at "high".
-			// Only the internal view changes (logs, cross-protocol hops); the Anthropic
-			// outbound re-emits both raw objects untouched.
-			if turn := lastMessageOutputEffort(anthropicReq.Messages); turn != "" {
-				effort = turn
-			}
 			chatReq.ReasoningEffort = effort
 			chatReq.AdaptiveThinking = true
 		case ThinkingTypeDisabled:
@@ -414,22 +407,6 @@ func (i *MessagesInbound) TransformRequest(ctx context.Context, body []byte) (*m
 		}
 	}
 	return chatReq, nil
-}
-
-// lastMessageOutputEffort returns output_config.effort of the last message carrying one, or "".
-func lastMessageOutputEffort(messages []MessageParam) string {
-	for i := len(messages) - 1; i >= 0; i-- {
-		if !rawJSONPresent(messages[i].OutputConfig) {
-			continue
-		}
-		var cfg struct {
-			Effort string `json:"effort"`
-		}
-		if json.Unmarshal(messages[i].OutputConfig, &cfg) == nil && strings.TrimSpace(cfg.Effort) != "" {
-			return strings.TrimSpace(cfg.Effort)
-		}
-	}
-	return ""
 }
 
 func rawJSONPresent(raw json.RawMessage) bool {
