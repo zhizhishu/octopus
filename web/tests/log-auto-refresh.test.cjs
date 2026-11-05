@@ -1,5 +1,5 @@
 // Run from web/: node --test tests/log-auto-refresh.test.cjs
-// 日志页自动刷新（关闭 / 实时 / 5·10·30 秒）：
+// 日志页「实时」开关（点一下开、再点一下关）：
 //   - 选项解析 + 本地记忆的 key
 //   - 暂停判定（后台 > 弹窗 > 选字 > 已下滚）
 //   - 新日志缓冲去重、合并插入第 1 页顶部
@@ -13,10 +13,12 @@ const { load } = require('./load-typescript.cjs');
 
 const ar = load('src/lib/log-auto-refresh.ts');
 
-test('auto refresh: choices, parsing and default off', () => {
-    assert.deepEqual([...ar.LOG_AUTO_REFRESH_CHOICES], ['off', 'live', '5s', '10s', '30s']);
-    for (const v of ['off', 'live', '5s', '10s', '30s']) assert.equal(ar.parseLogAutoRefresh(v), v);
-    assert.equal(ar.parseLogAutoRefresh(' 10s '), '10s');
+test('auto refresh: one on/off toggle, legacy interval values stay on', () => {
+    assert.deepEqual([...ar.LOG_AUTO_REFRESH_CHOICES], ['off', 'live']);
+    assert.equal(ar.parseLogAutoRefresh('off'), 'off');
+    assert.equal(ar.parseLogAutoRefresh('live'), 'live');
+    // 旧下拉存过的按秒档位：升级后仍是「开着」，不悄悄关掉。
+    for (const v of ['5s', '10s', '30s', ' 10s ']) assert.equal(ar.parseLogAutoRefresh(v), 'live', v);
     for (const v of [null, undefined, '', '3s', 'LIVE', 'true', 5]) assert.equal(ar.parseLogAutoRefresh(v), 'off', String(v));
     assert.equal(ar.LOG_AUTO_REFRESH_STORAGE_KEY, 'octopus.log.autoRefresh');
     assert.equal(ar.LIVE_ACTIVITY_COLLAPSED_STORAGE_KEY, 'octopus.log.liveActivityCollapsed');
@@ -25,13 +27,16 @@ test('auto refresh: choices, parsing and default off', () => {
 test('auto refresh: flush cadence and polling fallback', () => {
     assert.equal(ar.logAutoRefreshFlushMs('off'), null);
     assert.equal(ar.logAutoRefreshFlushMs('live'), 0);
-    assert.equal(ar.logAutoRefreshFlushMs('5s'), 5000);
-    assert.equal(ar.logAutoRefreshFlushMs('10s'), 10000);
-    assert.equal(ar.logAutoRefreshFlushMs('30s'), 30000);
     assert.equal(ar.logAutoRefreshPollMs('off'), null);
     // 实时模式断流时也不每秒扫库：最少 5 秒。
     assert.equal(ar.logAutoRefreshPollMs('live'), 5000);
-    assert.equal(ar.logAutoRefreshPollMs('30s'), 30000);
+});
+
+test('auto refresh: control is a single toggle button, not a dropdown', () => {
+    const src = readFileSync(path.join(__dirname, '..', 'src', 'components', 'modules', 'log', 'AutoRefreshControl.tsx'), 'utf8');
+    assert.doesNotMatch(src, /<select/);
+    assert.match(src, /aria-pressed=\{on\}/);
+    assert.match(src, /onChange\(on \? 'off' : 'live'\)/);
 });
 
 test('auto refresh: pause reasons and their priority', () => {
@@ -72,7 +77,7 @@ test('auto refresh: batch goes on top of page 1, existing rows skipped', () => {
 });
 
 test('auto refresh: all three locales carry the labels', () => {
-    const keys = ['label', 'off', 'live', 's5', 's10', 's30', 'running', 'runningLive', 'reconnecting', 'paused',
+    const keys = ['live', 'runningLive', 'reconnecting', 'paused',
         'pausedHidden', 'pausedDetail', 'pausedSelecting', 'pausedScrolled', 'newCount', 'showNew', 'onlyFirstPage', 'hint'];
     for (const lang of ['zh_hans', 'zh_hant', 'en']) {
         const json = JSON.parse(readFileSync(path.join(__dirname, '..', 'public', 'locale', `${lang}.json`), 'utf8'));

@@ -7,24 +7,22 @@
 export const LOG_AUTO_REFRESH_STORAGE_KEY = 'octopus.log.autoRefresh';
 export const LIVE_ACTIVITY_COLLAPSED_STORAGE_KEY = 'octopus.log.liveActivityCollapsed';
 
-/** off=不自动刷新；live=来一条插一条（原「实时动态」）；其余=每 N 秒合并插入一次。 */
-export const LOG_AUTO_REFRESH_CHOICES = ['off', 'live', '5s', '10s', '30s'] as const;
+/** off=不自动刷新；live=来一条插一条。只有一个开关：点一下开，再点一下关。 */
+export const LOG_AUTO_REFRESH_CHOICES = ['off', 'live'] as const;
 export type LogAutoRefresh = (typeof LOG_AUTO_REFRESH_CHOICES)[number];
+
+/** 旧版下拉存过的按秒档位：本地记忆里遇到就当「开着」，用户不会因升级被悄悄关掉。 */
+const LEGACY_INTERVAL_CHOICES = ['5s', '10s', '30s'];
 
 export function parseLogAutoRefresh(raw: unknown): LogAutoRefresh {
     const value = typeof raw === 'string' ? raw.trim() : '';
-    return (LOG_AUTO_REFRESH_CHOICES as readonly string[]).includes(value) ? (value as LogAutoRefresh) : 'off';
+    if (value === 'live' || LEGACY_INTERVAL_CHOICES.includes(value)) return 'live';
+    return 'off';
 }
 
 /** 合并插入的节奏（毫秒）。live=0 表示来了就插；off=null 表示不连流。 */
 export function logAutoRefreshFlushMs(mode: LogAutoRefresh): number | null {
-    switch (mode) {
-        case 'live': return 0;
-        case '5s': return 5_000;
-        case '10s': return 10_000;
-        case '30s': return 30_000;
-        default: return null;
-    }
+    return mode === 'live' ? 0 : null;
 }
 
 /** SSE 断开时的兜底轮询间隔：同所选节奏，「实时」按 5 秒，避免断线时每秒扫库。 */
