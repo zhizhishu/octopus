@@ -923,9 +923,16 @@ func systemPromptHasClaudeAgentIdentity(parts []anthropicModel.SystemPromptPart)
 // then does the outbound keep such messages in place; without the beta the
 // historical hoist-into-system-array behavior is kept (safe for chat clients
 // whose interleaved system messages Anthropic would otherwise reject).
+//
+// "mid-conversation-output-config" (pi-ai / DSH for claude-opus-5.5 class models) is the same
+// contract: the client puts the turn's REAL effort on a trailing {"role":"system","content":[],
+// "output_config":{"effort":...}} message and pins the top-level output_config at "high".
+// Hoisting that message drops its output_config and leaves an empty text block in system,
+// so the upstream silently ran at "high" whatever the client chose.
 func requestKeepsMidConversationSystem(req *model.InternalLLMRequest) bool {
 	for _, beta := range req.TransformOptions.AnthropicBetas {
-		if strings.HasPrefix(strings.TrimSpace(beta), "mid-conversation-system") {
+		beta = strings.TrimSpace(beta)
+		if strings.HasPrefix(beta, "mid-conversation-system") || strings.HasPrefix(beta, "mid-conversation-output-config") {
 			return true
 		}
 	}
