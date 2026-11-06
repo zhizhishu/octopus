@@ -85,10 +85,14 @@ func Init() {
 	// 注册表、不许 init() 自启：它是自带 ticker 的独立循环，测试二进制里没人显式调用
 	// 就不会存在任何后台写库者。
 	BatchImageWorkerStart()
-	// 模型行为检测(定时快检 + 回显不一致自动跟进)已停用自动启动: 此处既不挂 RegisterAuditFollowUp,
-	// 也不注册 TaskModelAuditQuick——后台与日志写入路径不得自动启动消耗 token 的 behavior 探针。
-	// 只有检测栏手动 run(POST /api/v1/model-audit/run) 仍可主动调用; 两个旧开关默认 false, 且因
-	// 不再接线, 即使部署里残留 true 也不会再自动跑。
+	// 模型行为抽检（定时抽样 + 可疑日志跟查）重新接线，但两条路径在运行时都被
+	// model_audit_enabled 挡在钱前面：
+	//   - TaskModelAuditQuick 第一件事读开关，不是明确的 true（含读失败）就立即 return；
+	//   - 跟查回调先过 model_audit_enabled + model_audit_followup_enabled 两道明确 true。
+	// 两个开关默认都是 false，所以接上不等于会跑；每次真发题还要扣当日额度
+	// （op.ModelAuditBudgetReserve，全站默认 200 次/天）。
+	Register(TaskModelAuditQuick, scheduledAuditInterval, false, ModelAuditQuickTask)
+	RegisterAuditFollowUp()
 	Register(TaskUserRelayIPSave, 1*time.Minute, false, op.UserRelayIPSaveDBTask)
 	Register(TaskUserAccessSave, 1*time.Minute, false, op.UserAccessSaveDBTask)
 

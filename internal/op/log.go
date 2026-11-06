@@ -385,6 +385,10 @@ func RelayLogAdd(ctx context.Context, relayLog model.RelayLog) error {
 	// 桶在入队前就算好。落库时 BeforeCreate 会再算一次（备份导入等不经这里的
 	// 路径也盖得住）；这里写上是为了内存里的副本和即将入库的行是同一个值。
 	relayLog.Severity = model.ClassifyRelayLogSeverity(relayLog)
+	// 可疑日志跟查：放在被动来源证据算好之后（要看 PassiveSource 的强/中线索）。
+	// 抽检与跟查两道开关都明确开着才会派发，读开关失败一律按关（见 AuditFollowUpTrigger）；
+	// 派发是异步的（safe.SafeGo），这里只做判断，不阻塞写日志，也不直接打上游。
+	maybeTriggerAuditFollowUp(relayLog)
 
 	if enabled {
 		relayLogAddPending(relayLog)
