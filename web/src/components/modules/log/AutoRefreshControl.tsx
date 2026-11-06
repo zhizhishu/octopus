@@ -1,22 +1,9 @@
 'use client';
 
-import { ArrowUp, ChevronDown, PauseCircle, RefreshCw } from 'lucide-react';
+import { ArrowUp, PauseCircle, Radio } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { cn } from '@/lib/utils';
-import {
-    LOG_AUTO_REFRESH_CHOICES,
-    parseLogAutoRefresh,
-    type LogAutoRefresh,
-    type LogAutoRefreshPauseReason,
-} from '@/lib/log-auto-refresh';
-
-const CHOICE_LABEL_KEY: Record<LogAutoRefresh, string> = {
-    off: 'off',
-    live: 'live',
-    '5s': 's5',
-    '10s': 's10',
-    '30s': 's30',
-};
+import type { LogAutoRefresh, LogAutoRefreshPauseReason } from '@/lib/log-auto-refresh';
 
 const PAUSE_LABEL_KEY: Record<LogAutoRefreshPauseReason, string> = {
     hidden: 'pausedHidden',
@@ -26,8 +13,8 @@ const PAUSE_LABEL_KEY: Record<LogAutoRefreshPauseReason, string> = {
 };
 
 /**
- * 自动刷新开关：一个原生下拉（手机上弹系统选择器，拇指好点），左侧圆点表示连接状态。
- * 取代原来的「实时动态」开关：「实时」= 原开关打开时的行为。
+ * 「实时」开关：点一下开、再点一下关（aria-pressed 表示状态）。
+ * 外观与旁边的导出/隐藏按钮同一套描边方块；开着时变绿，圆点表示连接状态。
  */
 export function AutoRefreshControl({
     mode,
@@ -43,13 +30,18 @@ export function AutoRefreshControl({
     paused: boolean;
 }) {
     const t = useTranslations('log.autoRefresh');
-    const on = mode !== 'off';
+    const on = mode === 'live';
     return (
-        <label
+        <button
+            type="button"
+            aria-pressed={on}
             title={t('hint')}
+            onClick={() => onChange(on ? 'off' : 'live')}
             className={cn(
-                'relative inline-flex h-8 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg border px-2 text-xs transition-colors max-sm:h-10 max-sm:px-2.5',
-                on ? 'border-emerald-500/40 bg-emerald-500/[0.06] text-emerald-700 dark:text-emerald-300' : 'border-border bg-background text-muted-foreground'
+                'inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring max-sm:h-10 max-sm:px-3',
+                on
+                    ? 'border-emerald-500/40 bg-emerald-500/[0.08] text-emerald-700 hover:bg-emerald-500/[0.14] dark:text-emerald-300'
+                    : 'border-border bg-background text-muted-foreground hover:text-foreground dark:bg-card'
             )}
         >
             {on ? (
@@ -65,24 +57,10 @@ export function AutoRefreshControl({
                     />
                 </span>
             ) : (
-                <RefreshCw className="size-3.5 shrink-0" aria-hidden />
+                <Radio className="size-3.5 shrink-0" aria-hidden />
             )}
-            <span className="hidden sm:inline">{t('label')}</span>
-            <select
-                aria-label={t('label')}
-                value={mode}
-                onChange={(event) => onChange(parseLogAutoRefresh(event.target.value))}
-                // 透明原生下拉叠在文字上：保留系统选择器（移动端好点），视觉上只露出当前值。
-                className="cursor-pointer appearance-none bg-transparent pr-3.5 text-xs font-medium text-current outline-none focus-visible:underline"
-            >
-                {LOG_AUTO_REFRESH_CHOICES.map((choice) => (
-                    <option key={choice} value={choice}>
-                        {t(CHOICE_LABEL_KEY[choice])}
-                    </option>
-                ))}
-            </select>
-            <ChevronDown className="pointer-events-none absolute right-1.5 size-3 opacity-60 max-sm:right-2" aria-hidden />
-        </label>
+            <span>{t('live')}</span>
+        </button>
     );
 }
 
@@ -126,7 +104,7 @@ export function AutoRefreshStatus({
     }
     return (
         <span className="text-xs text-emerald-700 dark:text-emerald-300">
-            {!connected ? t('reconnecting') : mode === 'live' ? t('runningLive') : t('running')}
+            {connected ? t('runningLive') : t('reconnecting')}
         </span>
     );
 }

@@ -1081,7 +1081,7 @@
       "newCount": "{count} new",
       "showNew": "Show",
       "onlyFirstPage": "Auto refresh runs on page 1 only",
-      "hint": "New logs are inserted at the top on the chosen interval. Pauses while a detail is open, you scroll down, select text or the tab is hidden, so your place never jumps."
+      "hint": "Click to turn live updates on, click again to turn them off. New logs appear at the top as they arrive; updates pause while a detail is open, you scroll down, select text or the tab is hidden, so your place never jumps."
     },
     "list": {
       "search": "Search",
