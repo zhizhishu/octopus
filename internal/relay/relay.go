@@ -1417,6 +1417,14 @@ retryWithAdapter:
 	}
 	defer response.Body.Close()
 
+	// 收上游回复之后顺手抄下响应头类别（只看头名，不看值，见
+	// dbmodel.ClassifyUpstreamHeaderFamilies）。位置必须在状态码判断之前，
+	// 但只认 2xx：非 2xx 的头是网关/CDN 回的错误页，不代表模型后端。
+	// 纯观测：只读 response.Header，不改任何出站/下行字节。
+	if response.StatusCode >= 200 && response.StatusCode < 300 {
+		ra.upstreamEnvelope.HeaderFamilies = dbmodel.ClassifyUpstreamHeaderFamilies(response.Header)
+	}
+
 	// 检查响应状态
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		// 🔴 必须走带预算的读取：LimitReader 只限字节数不限时间，上游发完头就沉默时
@@ -2626,6 +2634,10 @@ func (ra *relayAttempt) sendRequest(req *http.Request) (*http.Response, error) {
 
 // handleStreamResponse 处理流式响应
 func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http.Response, outAdapter model.Outbound) error {
+	// 这条新流从零开始记「首个自报模型名」：换模型判定只在同一条流内部成立，
+	// 同一 attempt 里 goto 重试换适配器会合法地换名字，不能把上一条流的名字带进来。
+	ra.resetUpstreamEnvelopeForNewResponse()
+
 	if ct := response.Header.Get("Content-Type"); ct != "" && !strings.Contains(strings.ToLower(ct), "text/event-stream") {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 16*1024))
 		return fmt.Errorf("upstream returned non-SSE content-type %q for stream request: %s", ct, string(body))
@@ -3357,6 +3369,9 @@ const firstTokenHandoffFloor = 100 * time.Millisecond
 // aggregation does not get a fresh full window on top of the identification
 // wait (F8).
 func (ra *relayAttempt) handleStreamResponseAsNonStream(ctx context.Context, response *http.Response, outAdapter model.Outbound, identifyElapsed time.Duration) error {
+	// 同 handleStreamResponse：换模型只在同一条流内部比，每条新流从零开始记。
+	ra.resetUpstreamEnvelopeForNewResponse()
+
 	if ct := response.Header.Get("Content-Type"); ct != "" && !strings.Contains(strings.ToLower(ct), "text/event-stream") {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 16*1024))
 		return fmt.Errorf("upstream returned non-SSE content-type %q for forced responses stream request: %s", ct, string(body))
@@ -3690,6 +3705,10 @@ readLoop:
 }
 
 func (ra *relayAttempt) handleNonStreamResponseAsStream(ctx context.Context, response *http.Response, outAdapter model.Outbound) error {
+	// 单响应路径：这条"流"只有一个分片，标记从头开始，永远判不出换模型。
+	// 必须清：同一个 attempt 可能先跑过一条真流（goto 重试）才走到这里。
+	ra.resetUpstreamEnvelopeForNewResponse()
+
 	limitUpstreamResponseBody(response)
 	// Decompress any upstream Content-Encoding before the outbound parses the body. The
 	// claude/anthropic outbound advertises gzip,deflate,br,zstd and the shared transport has
@@ -3707,6 +3726,8 @@ func (ra *relayAttempt) handleNonStreamResponseAsStream(ctx context.Context, res
 		return fmt.Errorf("failed to transform fallback non-stream response: %w", err)
 	}
 	ra.captureUpstreamDeclaredModel(internalResponse)
+	// 同一份响应上顺手抄标识位（响应头家族在收回复时已采、这里拿编号/签名/换模型）。
+	ra.captureUpstreamEnvelope(internalResponse)
 	// When model_mapping remapped the request model, restore the client-visible name
 	// before converting the non-stream response to SSE chunks.
 	if ra.modelMapped && internalResponse != nil {
@@ -3964,6 +3985,8 @@ func (ra *relayAttempt) transformStreamChunk(ctx context.Context, data string, o
 		return nil, nil, nil
 	}
 	ra.captureUpstreamDeclaredModel(internalStream)
+	// 同一份分片上顺手抄标识位：编号/签名只采首个非空，换模型只在同一条流内部比。
+	ra.captureUpstreamEnvelope(internalStream)
 	// When model_mapping remapped the request model, restore the client-visible name
 	// in the response chunk so the upstream name is never leaked to the client.
 	if ra.modelMapped && internalStream.Model != "" {
@@ -4563,6 +4586,9 @@ func (ra *relayAttempt) responseBodyLooksLikeSSE(ctx context.Context, response *
 
 // handleResponse 处理非流式响应
 func (ra *relayAttempt) handleResponse(ctx context.Context, response *http.Response, outAdapter model.Outbound) error {
+	// 单响应路径：同 handleNonStreamResponseAsStream，清标记以防上一次尝试的流名串进来。
+	ra.resetUpstreamEnvelopeForNewResponse()
+
 	limitUpstreamResponseBody(response)
 	// SSE self-heal: some upstreams (web-chat bridges) ignore "stream": false and
 	// reply with an SSE body. Detect it by content-type first and hand the untouched
@@ -4601,6 +4627,8 @@ func (ra *relayAttempt) handleResponse(ctx context.Context, response *http.Respo
 		return fmt.Errorf("failed to transform outbound response: %w", err)
 	}
 	ra.captureUpstreamDeclaredModel(internalResponse)
+	// 同一份响应上顺手抄标识位（响应头家族在收回复时已采、这里拿编号/签名/换模型）。
+	ra.captureUpstreamEnvelope(internalResponse)
 	// When model_mapping remapped the request model, restore the client-visible name
 	// so the upstream name is never leaked to the client.
 	if ra.modelMapped && internalResponse != nil {
@@ -4641,6 +4669,8 @@ func (ra *relayAttempt) collectResponse() {
 	// 自报型号与 ActualModel 同点提交: 都归属「产出这次内部响应的尝试」。
 	// 失败尝试的声明留在尝试级不落请求级, 赢家不自报就是未知(F10)。
 	ra.metrics.CommitUpstreamDeclaredModel(ra.upstreamDeclaredModel)
+	// 标识位与自报型号同点提交：都归属「产出这次内部响应的尝试」。
+	ra.metrics.CommitUpstreamEnvelope(ra.upstreamEnvelope)
 	ra.recordResponsesSessionFromInbound(internalResponse)
 }
 
@@ -4668,6 +4698,116 @@ func (ra *relayAttempt) captureUpstreamDeclaredModel(resp *model.InternalLLMResp
 		return
 	}
 	ra.upstreamDeclaredModel = name
+}
+
+// captureUpstreamEnvelope 记录这次尝试收到的上游回复里几个「号码形态」标识位。
+//
+// 采集范围（全部是收到回复之后才读到的东西，不改任何出站/下行字节）：
+//   - HeaderFamilies：在 forward()/竞速路径收到 2xx 头部时就抄好了，这里不重复；
+//   - ResponseID / FirstToolCallID / SignatureClaudeHash：只对 Anthropic 出站路径采，
+//     因为只有那条路径上这些值是上游原文——见
+//     transformer/outbound/authropic/messages.go 的 TransformResponse（ID: resp.ID）、
+//     TransformStream（o.streamID = streamEvent.Message.ID；ToolCall.ID =
+//     streamEvent.ContentBlock.ID）。其它出站适配器可能自己重写编号，拿它们当云端
+//     线索就是凭空的证据；
+//   - ModelSwitchedTo：同一条流里第二个不同的自报模型名。所有协议都记——它说明的
+//     是「这条回复内部自相矛盾」，与协议无关。
+//
+// 采集粒度同 captureUpstreamDeclaredModel：首个非空胜出，流式分片重复回显不算新值。
+func (ra *relayAttempt) captureUpstreamEnvelope(resp *model.InternalLLMResponse) {
+	if ra == nil || resp == nil {
+		return
+	}
+	env := &ra.upstreamEnvelope
+	if ra.channel != nil && ra.channel.Type == outbound.OutboundTypeAnthropic {
+		if id := strings.TrimSpace(resp.ID); id != "" && env.ResponseID == "" {
+			env.ResponseID = id
+		}
+		if env.FirstToolCallID == "" {
+			env.FirstToolCallID = firstNonEmptyToolCallID(resp)
+		}
+		if !env.SignatureClaudeHash {
+			if sig := responseThinkingSignature(resp); strings.HasPrefix(sig, "claude#") {
+				env.SignatureClaudeHash = true
+			}
+		}
+	}
+
+	// 换模型只在「同一条流」内部比：streamFirstDeclaredModel 在每个响应入口被清空
+	// （见 handleStreamResponse / handleStreamResponseAsNonStream /
+	// handleNonStreamResponseAsStream / handleResponse 开头），所以同一个 attempt 里
+	// goto 重试换适配器不会被当成流中途换模型。
+	// 取名口径同 captureUpstreamDeclaredModel：先看审计专用字段（Gemini 只写这里），再看 Model。
+	name := strings.TrimSpace(resp.UpstreamDeclaredModel)
+	if name == "" {
+		name = strings.TrimSpace(resp.Model)
+	}
+	if name != "" {
+		switch {
+		case ra.streamFirstDeclaredModel == "":
+			ra.streamFirstDeclaredModel = name
+		case env.ModelSwitchedTo == "" && !sameDeclaredModelName(ra.streamFirstDeclaredModel, name):
+			// 只写一次：第三个名字不再覆盖，聚合看的是「换过没有」。
+			env.ModelSwitchedTo = name
+		}
+	}
+}
+
+// resetUpstreamEnvelopeForNewResponse 在每个响应入口清掉上一条回复留下的观测：
+// 同一个 attempt 里 goto 重试换适配器会收到第二份回复，编号/签名/换模型都得从零记，
+// 否则上一份回复的编号会被当成这一份的线索。HeaderFamilies 保留——它在调用本函数
+// 之前、收到这一份回复的 2xx 头时就已写好（forward() / 竞速路径）。
+func (ra *relayAttempt) resetUpstreamEnvelopeForNewResponse() {
+	ra.upstreamEnvelope = dbmodel.RelayLogUpstreamEnvelope{HeaderFamilies: ra.upstreamEnvelope.HeaderFamilies}
+	ra.streamFirstDeclaredModel = ""
+}
+
+// firstNonEmptyToolCallID 返回响应里第一个非空 tool call id（Message 与 Delta 都看）。
+func firstNonEmptyToolCallID(resp *model.InternalLLMResponse) string {
+	if resp == nil {
+		return ""
+	}
+	for i := range resp.Choices {
+		for _, msg := range []*model.Message{resp.Choices[i].Message, resp.Choices[i].Delta} {
+			if msg == nil {
+				continue
+			}
+			for _, toolCall := range msg.ToolCalls {
+				if id := strings.TrimSpace(toolCall.ID); id != "" {
+					return id
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// responseThinkingSignature 返回响应里第一个非空 thinking 签名原文。
+// 只用于判前缀形态，返回值不落库、不出 API。
+func responseThinkingSignature(resp *model.InternalLLMResponse) string {
+	if resp == nil {
+		return ""
+	}
+	for i := range resp.Choices {
+		for _, msg := range []*model.Message{resp.Choices[i].Message, resp.Choices[i].Delta} {
+			if msg == nil || msg.ReasoningSignature == nil {
+				continue
+			}
+			if sig := *msg.ReasoningSignature; strings.TrimSpace(sig) != "" {
+				return sig
+			}
+		}
+	}
+	return ""
+}
+
+// sameDeclaredModelName 比对两个自报模型名：先按原样 EqualFold，再去掉所有空白后
+// EqualFold（上游分片有时会在名字里塞空格/换行，那不算换模型）。
+func sameDeclaredModelName(a, b string) bool {
+	if strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b)) {
+		return true
+	}
+	return strings.EqualFold(strings.Join(strings.Fields(a), ""), strings.Join(strings.Fields(b), ""))
 }
 
 func paramOverrideValue(ptr *string) string {

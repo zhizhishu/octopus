@@ -33,6 +33,10 @@ import { ExpandableValue } from './ExpandableValue';
 import { LogImagePlaceholderText, renderLogImageJsonString } from './LogImagePlaceholder';
 import { containsSavedImagePlaceholder } from './log-image';
 import { marketModelName } from '@/lib/model-aliases';
+// 相对路径（而非 @/lib/…）：日志卡片的测试靠 load-typescript 解析真实 TS 模块，
+// 别名在 node 里解析不到（其它测试还要额外 mock 一行）。同时与 modules/user/lib/access.ts
+// 引用 humanize 的写法一致。
+import { PASSIVE_REASON_PROBE_KEY, passiveReasonLabelKey, passiveVerdict, sortPassiveHints } from '../../../lib/passive-verdict';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import { CopyIconButton } from '@/components/common/CopyButton';
@@ -350,12 +354,8 @@ interface LogRouteHeaderProps {
     clientSlot?: ReactNode;
     /** card 专用槽位：B2 模型检测徽标。无结果时传 null，不造假占位。 */
     auditSlot?: ReactNode;
-    /** card 专用槽位：B2 被动（纯本地）摘要徽标。与 auditSlot 同格，不新增轨道。 */
+    /** card 专用槽位：B2 被动结论徽标（含弹层证据）。与 auditSlot 同格，不新增轨道；无结论传 null。 */
     passiveSlot?: ReactNode;
-    /** card 专用槽位：B2 硬事实校验徽标。与 passiveSlot 并列，不新增轨道；无命中传 null。 */
-    probeSlot?: ReactNode;
-    /** card 专用槽位：B2 上游来源证据徽标。无证据传 null（不出"正常"占位）。 */
-    sourceSlot?: ReactNode;
     /** card 专用槽位：C2「查看详情」。detail 忽略。 */
     detailsSlot?: ReactNode;
 }
@@ -386,8 +386,6 @@ function LogRouteHeader({
     clientSlot,
     auditSlot,
     passiveSlot,
-    probeSlot,
-    sourceSlot,
     detailsSlot,
 }: LogRouteHeaderProps) {
     const t = useTranslations('log.card');
@@ -659,7 +657,7 @@ function LogRouteHeader({
          * 模型名和状态、接口挤在同一行；客户端、回显、查看详情在下一行。
          * 窄屏仍按这六个格子的顺序自然往下排。
          */
-        const hasEchoEvidence = Boolean(echoGroup || auditSlot || passiveSlot || probeSlot || sourceSlot);
+        const hasEchoEvidence = Boolean(echoGroup || auditSlot || passiveSlot);
         return (
             <div
                 data-log-header
@@ -697,8 +695,6 @@ function LogRouteHeader({
                             {echoGroup}
                             {auditSlot ? <span className="min-w-0">{auditSlot}</span> : null}
                             {passiveSlot ? <span className="min-w-0">{passiveSlot}</span> : null}
-                            {probeSlot ? <span className="min-w-0">{probeSlot}</span> : null}
-                            {sourceSlot ? <span className="min-w-0">{sourceSlot}</span> : null}
                         </span>
                     ) : null}
                 </div>
@@ -723,8 +719,6 @@ function LogRouteHeader({
             {clientSlot}
             {echoGroup}
             {passiveSlot}
-            {probeSlot}
-            {sourceSlot}
             {streamBadge}
             {stickyPin}
         </>
@@ -1148,31 +1142,12 @@ function auditSourceLabel(trigger: string, t: (key: string) => string): string {
     return t('auditSourceUnknown');
 }
 
-type PassiveState = 'missing' | 'insufficient' | 'not_applicable';
-type PassiveSummary = NonNullable<RelayLog['passive_summary']>;
-type PassiveBadge = {
-    state: PassiveState;
-    label: string;
-    summary?: PassiveSummary;
-};
-
-/** 被动摘要微标永远是中性色（不风险、不认证），与 model_audit_* 主动字段互不混合。 */
-const PASSIVE_NEUTRAL_CLASS = 'border-border/60 bg-muted/30 font-normal text-muted-foreground';
-
 /**
- * 被动（纯本地）摘要徽标：有特征→「证据不足」，范围外→「未评估」，nil→「未分析」。
- * 只读 passive_summary，不拿任何主动字段/快照当样本。
+ * 被动徽标两套配色：干净=中性灰（不风险、不认证，与 model_audit_* 主动字段互不混合）；
+ * 可疑=琥珀（照本文件现有警告徽标的写法，不新造颜色）。
  */
-function passiveBadgeForLog(log: RelayLog, t: (key: string) => string): PassiveBadge {
-    const summary = log.passive_summary;
-    if (!summary || !summary.status) {
-        return { state: 'missing', label: t('passiveBadgeMissing') };
-    }
-    if (summary.status === 'insufficient_evidence') {
-        return { state: 'insufficient', label: t('passiveBadgeInsufficient'), summary };
-    }
-    return { state: 'not_applicable', label: t('passiveBadgeNotApplicable'), summary };
-}
+const PASSIVE_NEUTRAL_CLASS = 'border-border/60 bg-muted/30 font-normal text-muted-foreground';
+const PASSIVE_SUSPICIOUS_CLASS = 'border-amber-500/40 bg-amber-500/10 font-normal text-amber-700 dark:text-amber-300';
 
 type LogCardProps = {
     log: RelayLog;
@@ -1213,8 +1188,12 @@ export function logCardPropsEqual(prev: LogCardProps, next: LogCardProps): boole
         && prev.log.model_audit_trigger === next.log.model_audit_trigger
         && prev.log.model_audit_score === next.log.model_audit_score
         && prev.log.model_audit_finding_n === next.log.model_audit_finding_n
-        // 被动摘要随后端回写而变化时必须重绘。
-        && prev.log.passive_summary === next.log.passive_summary;
+        // 被动摘要/来源证据/硬事实探针随后端回写而变化时必须重绘。
+        // 🔴 passive_source / passive_probes 必须按引用一起比：漏一个就会出现
+        // 「被动结论没跟着新证据变 / 点了没反应」——这个比较器漏字段出过事故。
+        && prev.log.passive_summary === next.log.passive_summary
+        && prev.log.passive_source === next.log.passive_source
+        && prev.log.passive_probes === next.log.passive_probes;
 }
 
 export const LogCard = React.memo(function LogCard({
@@ -1249,10 +1228,11 @@ export const LogCard = React.memo(function LogCard({
         () => auditBadgeForLog(log, t),
         [log, t],
     );
-    // 本行有无正文的被动摘要时可读；管理员另显示旧行尚未分析的状态。
-    const passiveBadge = useMemo(
-        () => ((canViewDetails || log.passive_summary) ? passiveBadgeForLog(log, t) : null),
-        [log, t, canViewDetails],
+    // 被动结论（纯逻辑在 lib/passive-verdict.ts）：徽章文字与弹层证据共用这一份判定。
+    // 权限沿用旧行为——非管理员且本行没有 passive_summary 时不出这个徽标。
+    const passiveVerdictResult = useMemo(
+        () => ((canViewDetails || log.passive_summary) ? passiveVerdict(log) : null),
+        [log, canViewDetails],
     );
     const requestEndpoint = useMemo(() => log.request_endpoint?.trim() ?? '', [log.request_endpoint]);
     const requestPath = useMemo(() => log.request_path?.trim() ?? '', [log.request_path]);
@@ -1453,19 +1433,9 @@ export const LogCard = React.memo(function LogCard({
             </PopoverContent>
         </Popover>
     ) : null;
-    // 硬事实校验徽标：这条日志里"账对不上"的地方。
-    //
-    // 与被动摘要徽标刻意分开：摘要说的是"回复长什么样"，这里说的是"数字自相矛盾"。
-    // 两者证据强度不同，混成一个徽标会让硬问题看着像软观察。
-    // 只有真的命中才出徽标——没命中不出"正常"徽标，避免被读成"已验真"。
-    // 上游后端来源证据徽标（纯被动、零额外请求）。
-    //
-    // 与上面两个徽标分开的第三件事：摘要说"回复长什么样"，probes 说"数字自相矛盾"，
-    // 这里说"这条日志更可能来自哪种后端"。三者证据来源不同，混在一起会让人
-    // 把"看着像"读成"已确认"。
-    //
-    // 🔴 只在真的拿到证据时才出徽标（三源分全 0 且无信号无返回），而且文案里
-    // 不许出现"确认/官方"这类认证措辞——这套逻辑只能证伪。
+    // 上游来源证据 / 硬事实探针 / 被动摘要：三处证据不再各自出徽标（手机上三个并排
+    // 徽标挤成一坨、还看不出结论）。现在只留一个「被动结论」徽标，证据全摊进弹层。
+    // 🔴 弹层里只列证据、只证伪：文案不许出现"确认/官方"这类认证措辞。
     const source = log.passive_source;
     const hasSourceEvidence = Boolean(
         source && (
@@ -1474,61 +1444,26 @@ export const LogCard = React.memo(function LogCard({
             (source.signals?.length ?? 0) > 0
         ),
     );
-    const sourceSlot = hasSourceEvidence && source ? (
-        <Popover>
-            <PopoverTrigger asChild>
-                <Badge
-                    variant="outline"
-                    role="button"
-                    tabIndex={0}
-                    onClick={(e) => e.stopPropagation()}
-                    onKeyDown={(e) => {
-                        e.stopPropagation();
-                        if (e.key === 'Enter' || e.key === ' ') {
-                            e.preventDefault();
-                            e.currentTarget.click();
-                        }
-                    }}
-                    className={cn('min-w-0 cursor-pointer whitespace-normal px-1.5 py-0 text-xs', PASSIVE_NEUTRAL_CLASS)}
-                    title={t('passiveSourceTitle')}
-                >
-                    {t('passiveSourceTitle')}
-                </Badge>
-            </PopoverTrigger>
-            <PopoverContent
-                align="start"
-                className="w-72 space-y-2 text-xs"
-                onClick={(e) => e.stopPropagation()}
-            >
-                <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
-                    <span className="text-muted-foreground">Anthropic</span>
-                    <span className="tabular-nums">{source.anthropic_score ?? 0}</span>
-                </div>
-                {(source.signals?.length ?? 0) > 0 && (
-                    <div className="border-t border-border pt-2">
-                        <div className="text-muted-foreground">{t('passiveSourceSignals')}</div>
-                        <ul className="mt-1 space-y-0.5">
-                            {source.signals!.map((sig) => (
-                                <li key={sig} className="break-all font-mono text-[11px]">{sig}</li>
-                            ))}
-                        </ul>
-                    </div>
-                )}
-                {(source.counter_evidence?.length ?? 0) > 0 && (
-                    <div className="border-t border-border pt-2">
-                        <div className="text-muted-foreground">{t('passiveSourceCounter')}</div>
-                        <ul className="mt-1 space-y-0.5">
-                            {source.counter_evidence!.map((item) => (
-                                <li key={item} className="break-all font-mono text-[11px]">{item}</li>
-                            ))}
-                        </ul>
-                    </div>
-                )}
-            </PopoverContent>
-        </Popover>
-    ) : null;
+    const summary = log.passive_summary;
+    // hints 按强度排（strong 在前）：徽章只取第一条，弹层按这个顺序列。
+    const passiveHints = sortPassiveHints(source?.hints);
+    const headerFamilies = source?.header_families ?? [];
     const probes = log.passive_probes ?? [];
-    const probeSlot = probes.length > 0 ? (
+    // 被动结论徽标：徽章只说结论（没发现问题 / 可疑·原因），证据全摊在弹层里。
+    // 三处证据（hints / 响应头类别 / Anthropic 三源分 / 探针明细）合进这一个弹层。
+    const passiveBadgeLabel = !passiveVerdictResult
+        ? ''
+        : passiveVerdictResult.kind === 'clean'
+            ? t('passiveVerdictClean')
+            : t('passiveVerdictSuspicious', {
+                reason: passiveVerdictResult.reasons.length > 0
+                    ? t(passiveReasonLabelKey(passiveVerdictResult.reasons[0]))
+                    : t(PASSIVE_REASON_PROBE_KEY),
+            });
+    const passiveBadgeClass = passiveVerdictResult && passiveVerdictResult.kind === 'suspicious'
+        ? PASSIVE_SUSPICIOUS_CLASS
+        : PASSIVE_NEUTRAL_CLASS;
+    const passiveSlot = passiveVerdictResult ? (
         <Popover>
             <PopoverTrigger asChild>
                 <Badge
@@ -1543,142 +1478,169 @@ export const LogCard = React.memo(function LogCard({
                             e.currentTarget.click();
                         }
                     }}
-                    className={cn(
-                        'min-w-0 cursor-pointer overflow-visible whitespace-normal px-1.5 py-0 text-xs',
-                        probes.some((p) => p.severity === 'medium' && p.confidence !== 'low')
-                            ? 'border-amber-500/40 text-amber-600 dark:text-amber-400'
-                            : 'border-border text-muted-foreground'
-                    )}
+                    className={cn('min-w-0 cursor-pointer overflow-visible whitespace-normal px-1.5 py-0 text-xs', passiveBadgeClass)}
                 >
-                    账目 {probes.length}
+                    {passiveBadgeLabel}
                 </Badge>
             </PopoverTrigger>
-            <PopoverContent align="start" className="w-96 p-3">
-                <div className="space-y-2 text-xs">
-                    <p className="font-medium text-foreground">这条日志里对不上的地方</p>
-                    <p className="text-[11px] leading-5 text-muted-foreground">
-                        以下都是只用这条日志本身算出来的，没有额外请求、没有消耗 token。
-                        有命中值得去查；没有命中也不代表模型是真的。
-                    </p>
-                    <ul className="space-y-2">
-                        {probes.map((probe, index) => {
-                            // 证据摊成"中文名 + 值 + 这行怎么算的"。摆原始数字而不是只给结论，
-                            // 是为了让人自己能复算——复算不了的东西不该叫证据。
-                            const rows = describeProbeEvidence(probe.code, probe.evidence);
-                            return (
-                                <li key={`${probe.code}-${index}`} className="rounded-lg border border-border px-2 py-1.5">
-                                    <p className="leading-5">{probe.title}</p>
-                                    <p className="mt-0.5 text-[11px] text-muted-foreground">
-                                        置信度：{probe.confidence === 'high' ? '高' : probe.confidence === 'medium' ? '中' : probe.confidence === 'low' ? '低' : '未评估（旧数据）'}
-                                    </p>
-                                    {rows.length > 0 && (
-                                        <div className="mt-1.5 space-y-0.5 text-[11px] text-muted-foreground">
-                                            {rows.map((row) => (
-                                                <div key={row.label} className="flex flex-wrap items-baseline gap-x-1.5">
-                                                    <span className="shrink-0">{row.label}</span>
-                                                    <span className="font-mono tabular-nums text-foreground">{row.value}</span>
-                                                    {row.formula && (
-                                                        <span className="text-muted-foreground/70">（{row.formula}）</span>
-                                                    )}
-                                                </div>
-                                            ))}
-                                        </div>
+            <PopoverContent align="start" className="w-80 space-y-2 p-3 text-xs" onClick={(e) => e.stopPropagation()}>
+                {/* 结论一句。其余全是证据，摆出来让人能自己复算。 */}
+                <div className="space-y-1">
+                    <p className="font-medium text-foreground">{passiveBadgeLabel}</p>
+                    <p className="text-[11px] leading-5 text-muted-foreground">{t('passiveExplain')}</p>
+                </div>
+                {/* 特征线索。weak 也列出来，只是它不够格触发徽章。 */}
+                {passiveHints.length > 0 && (
+                    <div className="border-t border-border pt-2">
+                        <ul className="space-y-1">
+                            {passiveHints.map((hint, index) => (
+                                <li key={`${hint.code}-${index}`}>
+                                    <p className="leading-5">{t(passiveReasonLabelKey(hint.code))}</p>
+                                    {hint.evidence && (
+                                        <p className="break-all font-mono text-[11px] text-muted-foreground">{hint.evidence}</p>
                                     )}
                                 </li>
-                            );
-                        })}
-                    </ul>
-                </div>
-            </PopoverContent>
-        </Popover>
-    ) : null;
-    // 被动（纯本地）摘要徽标：中性色，弹层只给版本/粗语言/六项特征与说明，不认证真伪。
-    const passiveSlot = passiveBadge ? (
-        <Popover>
-            <PopoverTrigger asChild>
-                <Badge
-                    variant="outline"
-                    role="button"
-                    tabIndex={0}
-                    onClick={(e) => e.stopPropagation()}
-                    onKeyDown={(e) => {
-                        e.stopPropagation();
-                        if (e.key === 'Enter' || e.key === ' ') {
-                            e.preventDefault();
-                            e.currentTarget.click();
-                        }
-                    }}
-                    className={cn('min-w-0 cursor-pointer overflow-visible whitespace-normal px-1.5 py-0 text-xs', PASSIVE_NEUTRAL_CLASS)}
-                >
-                    {passiveBadge.label}
-                </Badge>
-            </PopoverTrigger>
-            <PopoverContent align="start" className="w-80 p-3">
-                <div className="space-y-2 text-xs">
-                    <p className="font-medium text-foreground">{t('passiveTitle')} · {passiveBadge.label}</p>
-                    <p className="text-[11px] leading-5 text-muted-foreground">{t('passiveExplain')}</p>
-                    {passiveBadge.state === 'insufficient' && passiveBadge.summary && (
-                        <>
-                            <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
-                                <span className="text-muted-foreground">{t('passiveStatus')}</span>
-                                <span>{t('passiveStatusInsufficient')}</span>
-                                <span className="text-muted-foreground">{t('passiveVersion')}</span>
-                                <span className="tabular-nums">{passiveBadge.summary.version}</span>
-                                {passiveBadge.summary.language && (
+                            ))}
+                        </ul>
+                    </div>
+                )}
+                {/* 响应头类别：只列类别，不是原值。 */}
+                {headerFamilies.length > 0 && (
+                    <div className="border-t border-border pt-2">
+                        <div className="text-muted-foreground">{t('passiveHeaderFamilies')}</div>
+                        <p className="mt-1 break-all font-mono text-[11px]">{headerFamilies.join(' · ')}</p>
+                    </div>
+                )}
+                {/* 被动摘要原始细节（保留旧面板那段，不认证真伪）。 */}
+                {summary && summary.status === 'insufficient_evidence' && (
+                    <>
+                        <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 border-t border-border pt-2">
+                            <span className="text-muted-foreground">{t('passiveStatus')}</span>
+                            <span>{t('passiveStatusInsufficient')}</span>
+                            <span className="text-muted-foreground">{t('passiveVersion')}</span>
+                            <span className="tabular-nums">{summary.version}</span>
+                            {summary.language && (
+                                <>
+                                    <span className="text-muted-foreground">{t('passiveLanguage')}</span>
+                                    <span>{summary.language}</span>
+                                </>
+                            )}
+                        </div>
+                        {summary.features && (
+                            <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 border-t border-border pt-2">
+                                <span className="text-muted-foreground">{t('passiveFeatureChars')}</span>
+                                <span className="tabular-nums">{summary.features.chars}</span>
+                                <span className="text-muted-foreground">{t('passiveFeatureLines')}</span>
+                                <span className="tabular-nums">{summary.features.lines}</span>
+                                <span className="text-muted-foreground">{t('passiveFeatureParagraphs')}</span>
+                                <span className="tabular-nums">{summary.features.paragraphs}</span>
+                                <span className="text-muted-foreground">{t('passiveFeatureCodeBlocks')}</span>
+                                <span className="tabular-nums">{summary.features.code_blocks}</span>
+                                <span className="text-muted-foreground">{t('passiveFeatureCodeRatio')}</span>
+                                <span className="tabular-nums">{Number(summary.features.code_ratio).toFixed(2)}</span>
+                                <span className="text-muted-foreground">{t('passiveFeatureMarkdownLines')}</span>
+                                <span className="tabular-nums">{summary.features.markdown_lines}</span>
+                                {/* v2 新增两项。v1 旧行没有这两个键，此时整行不渲染——
+                                    写"否"会把"没观测"说成"观测到没有"。 */}
+                                {typeof summary.features.upstream_fingerprint_present === 'boolean' && (
                                     <>
-                                        <span className="text-muted-foreground">{t('passiveLanguage')}</span>
-                                        <span>{passiveBadge.summary.language}</span>
+                                        <span className="text-muted-foreground">{t('passiveFeatureFingerprint')}</span>
+                                        <span>
+                                            {summary.features.upstream_fingerprint_present
+                                                ? t('passiveFingerprintPresent')
+                                                : t('passiveFingerprintAbsent')}
+                                        </span>
+                                    </>
+                                )}
+                                {summary.features.service_tier && (
+                                    <>
+                                        <span className="text-muted-foreground">{t('passiveFeatureServiceTier')}</span>
+                                        <span className="font-mono">{summary.features.service_tier}</span>
                                     </>
                                 )}
                             </div>
-                            {passiveBadge.summary.features && (
-                                <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 border-t border-border pt-2">
-                                    <span className="text-muted-foreground">{t('passiveFeatureChars')}</span>
-                                    <span className="tabular-nums">{passiveBadge.summary.features.chars}</span>
-                                    <span className="text-muted-foreground">{t('passiveFeatureLines')}</span>
-                                    <span className="tabular-nums">{passiveBadge.summary.features.lines}</span>
-                                    <span className="text-muted-foreground">{t('passiveFeatureParagraphs')}</span>
-                                    <span className="tabular-nums">{passiveBadge.summary.features.paragraphs}</span>
-                                    <span className="text-muted-foreground">{t('passiveFeatureCodeBlocks')}</span>
-                                    <span className="tabular-nums">{passiveBadge.summary.features.code_blocks}</span>
-                                    <span className="text-muted-foreground">{t('passiveFeatureCodeRatio')}</span>
-                                    <span className="tabular-nums">{Number(passiveBadge.summary.features.code_ratio).toFixed(2)}</span>
-                                    <span className="text-muted-foreground">{t('passiveFeatureMarkdownLines')}</span>
-                                    <span className="tabular-nums">{passiveBadge.summary.features.markdown_lines}</span>
-                                    {/* v2 新增两项。v1 旧行没有这两个键，此时整行不渲染——
-                                        写"否"会把"没观测"说成"观测到没有"。 */}
-                                    {typeof passiveBadge.summary.features.upstream_fingerprint_present === 'boolean' && (
-                                        <>
-                                            <span className="text-muted-foreground">{t('passiveFeatureFingerprint')}</span>
-                                            <span>
-                                                {passiveBadge.summary.features.upstream_fingerprint_present
-                                                    ? t('passiveFingerprintPresent')
-                                                    : t('passiveFingerprintAbsent')}
-                                            </span>
-                                        </>
-                                    )}
-                                    {passiveBadge.summary.features.service_tier && (
-                                        <>
-                                            <span className="text-muted-foreground">{t('passiveFeatureServiceTier')}</span>
-                                            <span className="font-mono">{passiveBadge.summary.features.service_tier}</span>
-                                        </>
-                                    )}
-                                </div>
-                            )}
-                        </>
-                    )}
-                    {passiveBadge.state === 'not_applicable' && passiveBadge.summary && (
-                        <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
-                            <span className="text-muted-foreground">{t('passiveStatus')}</span>
-                            <span>{t('passiveStatusNotApplicable')}</span>
-                            <span className="text-muted-foreground">{t('passiveReason')}</span>
-                            <span className="break-all">{passiveBadge.summary.reason}</span>
+                        )}
+                    </>
+                )}
+                {summary && summary.status === 'not_applicable' && (
+                    <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 border-t border-border pt-2">
+                        <span className="text-muted-foreground">{t('passiveStatus')}</span>
+                        <span>{t('passiveStatusNotApplicable')}</span>
+                        <span className="text-muted-foreground">{t('passiveReason')}</span>
+                        <span className="break-all">{summary.reason}</span>
+                    </div>
+                )}
+                {/* 上游来源证据：Anthropic 三源分 + 命中信号 + 反证。 */}
+                {hasSourceEvidence && source && (
+                    <>
+                        <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 border-t border-border pt-2">
+                            <span className="text-muted-foreground">Anthropic</span>
+                            <span className="tabular-nums">{source.anthropic_score ?? 0}</span>
                         </div>
-                    )}
-                    {passiveBadge.state === 'missing' && (
-                        <p className="text-[11px] leading-5 text-muted-foreground">{t('passiveLegacyHint')}</p>
-                    )}
-                </div>
+                        {(source.signals?.length ?? 0) > 0 && (
+                            <div className="border-t border-border pt-2">
+                                <div className="text-muted-foreground">{t('passiveSourceSignals')}</div>
+                                <ul className="mt-1 space-y-0.5">
+                                    {source.signals!.map((sig) => (
+                                        <li key={sig} className="break-all font-mono text-[11px]">{sig}</li>
+                                    ))}
+                                </ul>
+                            </div>
+                        )}
+                        {(source.counter_evidence?.length ?? 0) > 0 && (
+                            <div className="border-t border-border pt-2">
+                                <div className="text-muted-foreground">{t('passiveSourceCounter')}</div>
+                                <ul className="mt-1 space-y-0.5">
+                                    {source.counter_evidence!.map((item) => (
+                                        <li key={item} className="break-all font-mono text-[11px]">{item}</li>
+                                    ))}
+                                </ul>
+                            </div>
+                        )}
+                    </>
+                )}
+                {/* 硬事实探针明细：摊原始数字而不是只给结论，复算不了的东西不该叫证据。 */}
+                {probes.length > 0 && (
+                    <div className="space-y-2 border-t border-border pt-2">
+                        <p className="font-medium text-foreground">这条日志里对不上的地方</p>
+                        <p className="text-[11px] leading-5 text-muted-foreground">
+                            以下都是只用这条日志本身算出来的，没有额外请求、没有消耗 token。
+                            有命中值得去查；没有命中也不代表模型是真的。
+                        </p>
+                        <ul className="space-y-2">
+                            {probes.map((probe, index) => {
+                                // 证据摊成"中文名 + 值 + 这行怎么算的"。摆原始数字而不是只给结论，
+                                // 是为了让人自己能复算——复算不了的东西不该叫证据。
+                                const rows = describeProbeEvidence(probe.code, probe.evidence);
+                                return (
+                                    <li key={`${probe.code}-${index}`} className="rounded-lg border border-border px-2 py-1.5">
+                                        <p className="leading-5">{probe.title}</p>
+                                        <p className="mt-0.5 text-[11px] text-muted-foreground">
+                                            置信度：{probe.confidence === 'high' ? '高' : probe.confidence === 'medium' ? '中' : probe.confidence === 'low' ? '低' : '未评估（旧数据）'}
+                                        </p>
+                                        {rows.length > 0 && (
+                                            <div className="mt-1.5 space-y-0.5 text-[11px] text-muted-foreground">
+                                                {rows.map((row) => (
+                                                    <div key={row.label} className="flex flex-wrap items-baseline gap-x-1.5">
+                                                        <span className="shrink-0">{row.label}</span>
+                                                        <span className="font-mono tabular-nums text-foreground">{row.value}</span>
+                                                        {row.formula && (
+                                                            <span className="text-muted-foreground/70">（{row.formula}）</span>
+                                                        )}
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </li>
+                                );
+                            })}
+                        </ul>
+                    </div>
+                )}
+                {/* 最后一行：把被动检测的边界说清楚，别让「没发现问题」读成「已验真」。 */}
+                <p className="border-t border-border pt-2 text-[11px] leading-5 text-muted-foreground/80">
+                    {t('passiveVerdictCaveat')}
+                </p>
             </PopoverContent>
         </Popover>
     ) : null;
@@ -1750,8 +1712,6 @@ export const LogCard = React.memo(function LogCard({
                                 clientSlot={clientSlot}
                                 auditSlot={auditSlot}
                                 passiveSlot={passiveSlot}
-                                probeSlot={probeSlot}
-                                sourceSlot={sourceSlot}
                                 detailsSlot={detailsSlot}
                             />
 
@@ -1917,8 +1877,6 @@ export const LogCard = React.memo(function LogCard({
                                 upstreamPaths={upstreamPaths}
                                 upstreamPathTitle={upstreamPathTitle}
                                 passiveSlot={passiveSlot}
-                                probeSlot={probeSlot}
-                                sourceSlot={sourceSlot}
                             />
                             {onNavigate ? (
                                 // 键盘能翻，但用户不会自己发现；给两个按钮把能力摆出来。（手机上在吸顶小栏里）

@@ -571,6 +571,12 @@ func runRaceContenders(
 
 			// Check response status
 			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				// 2xx 才抄响应头类别（只看头名，不看值）：非 2xx 的头是网关/CDN 回的错误页。
+				// 竞速路径必须单独采：这一路自己发请求、自己拿 resp，不走 forward()。
+				// 采到的是 racer 自己的 attempt，赢家复用同一个 relayAttempt 对象
+				// （见下面 winnerRA := winner.preparedAttempt），所以值会跟着赢家走到
+				// collectResponse 的提交点。纯观测，不改任何字节。
+				ra.upstreamEnvelope.HeaderFamilies = dbmodel.ClassifyUpstreamHeaderFamilies(resp.Header)
 				forceNonStream := ra.shouldPreferAnthropicNonStreamUpstream()
 				forceStream := (ra.shouldForceOpenAIResponsesStreamUpstream(ra.outAdapter) || ra.shouldForceAnthropicStreamUpstream()) && !forceNonStream
 				// A non-stream upstream returns JSON; never reject it as a "non-SSE for stream" 200.

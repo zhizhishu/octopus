@@ -246,6 +246,12 @@ type RelayLog struct {
 	// 3 天后只清这一列。与正文同级：列表/实时流 Omit，非管理员读取时清空。
 	// AutoMigrate 自动加列，旧行为 NULL。
 	DebugInfo *RelayLogDebugInfo `json:"debug_info,omitempty" gorm:"serializer:json"`
+
+	// UpstreamEnvelope 是收上游回复之后顺手抄下的标识位（响应头家族 / 响应 id /
+	// 首个 tool call id / thinking 签名形态 / 流内换模型），见 upstream_envelope.go。
+	// 它只是 PassiveSource 的输入：这条日志至少命中一条来源线索时才被读进去。
+	// 不落库、不出 API（gorm:"-" / json:"-"）——里面是上游原文前缀，长期留存没价值。
+	UpstreamEnvelope RelayLogUpstreamEnvelope `json:"-" gorm:"-"`
 }
 
 type RelayLogUserSummary struct {

@@ -170,6 +170,16 @@ export interface RelayLog {
         counter_evidence?: string[];
         // 命中的正向信号，用于排查"为什么给了这个分"。
         signals?: string[];
+        // 逐条特征线索。strength=strong/medium 才算「够格出结论」，weak 只做弹层备查；
+        // code 的翻译映射见 web/src/lib/passive-verdict.ts 的 PASSIVE_REASON_LABEL_KEY。
+        hints?: {
+            platform: string;
+            strength: 'strong' | 'medium' | 'weak';
+            code: string;
+            evidence?: string;
+        }[];
+        // 这条响应出现过的响应头类别（如 openai/anthropic），只列类别、不存原值。
+        header_families?: string[];
     };
     input_tokens: number;        // 输入Token
     output_tokens: number;       // 输出Token
