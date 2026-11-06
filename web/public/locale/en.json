@@ -1134,6 +1134,8 @@
       "successStatus": "Success",
       "warnStatus": "Success with warnings",
       "failedStatus": "Failed",
+      "outputIncomplete": "Output incomplete",
+      "outputIncompleteExplain": "The upstream sent no recognizable ending marker, so the reply may be incomplete.",
       "warningInfo": "Warning Details",
       "openDetails": "View Details",
       "auditStatus": "Status",

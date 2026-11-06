@@ -1134,6 +1134,8 @@
       "successStatus": "成功",
       "warnStatus": "成功但有告警",
       "failedStatus": "失敗",
+      "outputIncomplete": "輸出不完整",
+      "outputIncompleteExplain": "上游未發送可辨識的結束標記，回覆可能不完整。",
       "warningInfo": "告警詳情",
       "openDetails": "查看詳情",
       "auditStatus": "狀態",

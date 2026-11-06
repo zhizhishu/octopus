@@ -170,7 +170,7 @@ function text(node) {
     return text(node.props?.children);
 }
 
-function loadCard() {
+function loadCard(severity = 'success') {
     const cardHooks = hooks();
     return load('src/components/modules/log/Item.tsx', {
         react: cardHooks.react,
@@ -182,7 +182,7 @@ function loadCard() {
         '@uiw/react-json-view/githubLight': {},
         'next-themes': {},
         zustand: { create: (init) => { const state = init(() => {}); return (select) => select(state); } },
-        '@/api/endpoints/log': { getRelayLogSeverity: () => 'success' },
+        '@/api/endpoints/log': { getRelayLogSeverity: () => severity },
         './humanize': load('src/components/modules/log/humanize.ts'),
         '@/lib/model-icons': { getModelIcon: () => ({ Avatar: 'Avatar', color: '#000' }) },
         '@/lib/model-aliases': { marketModelName: (name) => name },
@@ -554,4 +554,97 @@ test('known cross-family stays visible with both sides of the comparison', () =>
     assert.ok(collect(grid.props.children, (node) => node.type === 'Badge' && node.props?.children === 'familyReplaced')[0], 'cross-family badge still rendered');
     assert.ok(findElement(grid, (node) => node.props?.value === 'deepseek-v4.1-flash'), 'echo side visible');
     assert.ok(findElement(grid, (node) => node.props?.value === 'gpt-5.5'), 'source side visible');
+});
+
+// --- 输出不完整：中性事实徽标，不参与严重等级 ---------------------------------
+// 上游未发可识别结束标记时，只在最终成功尝试上标「输出不完整」；成功/警告/失败
+// 的措词与配色一律不变，竞速落选/失败的尝试不得污染整行。
+
+function renderHeader(LogCard, log, variant) {
+    const tree = LogCard.type({ log });
+    const headerEl = findElement(tree, (node) => typeof node.type === 'function' && node.type.name === 'LogRouteHeader' && node.props?.variant === variant);
+    assert.ok(headerEl, `${variant} variant LogRouteHeader element must exist`);
+    return headerEl.type(headerEl.props);
+}
+
+const incompleteBadges = (header) => collect(header.props.children, (node) => node.type === 'Badge' && node.props?.['data-output-incomplete'] !== undefined);
+
+test('output-incomplete badge is neutral and additive next to the status badge', () => {
+    const { LogCard } = loadCard();
+    const grid = renderCardHeader(LogCard, sampleLog({ output_incomplete: true }));
+    const badges = incompleteBadges(grid);
+    assert.equal(badges.length, 1, 'exactly one marker');
+    assert.equal(text(badges[0]), 'outputIncomplete');
+    const cls = String(badges[0].props.className);
+    assert.match(cls, /text-muted-foreground/, 'neutral wording');
+    assert.doesNotMatch(cls, /amber-|destructive|red-/, 'never borrows warning/error colour');
+    assert.ok(findElement(grid, (node) => node.type === 'Badge' && node.props?.children === 'successStatus'), 'status badge still rendered beside it');
+});
+
+test('a marked row keeps its original status: success stays success, error stays error', () => {
+    const okGrid = renderCardHeader(loadCard().LogCard, sampleLog({ output_incomplete: true }));
+    const okStatus = collect(okGrid.props.children, (node) => node.type === 'Badge' && node.props?.children === 'successStatus')[0];
+    assert.ok(okStatus, 'success wording untouched');
+    assert.match(String(okStatus.props.className), /emerald/, 'success tint untouched');
+    assert.ok(findElement(okGrid, (node) => node.type === 'CheckCircle2'), 'success icon untouched');
+    assert.equal(incompleteBadges(okGrid).length, 1, 'the marker is additive');
+
+    const errGrid = renderCardHeader(loadCard('error').LogCard, sampleLog({ output_incomplete: true, error_code: 'upstream_error' }));
+    const errStatus = collect(errGrid.props.children, (node) => node.type === 'Badge' && node.props?.children === 'failedStatus')[0];
+    assert.ok(errStatus, 'failure wording untouched');
+    assert.match(String(errStatus.props.className), /destructive/, 'failure tint untouched');
+    assert.equal(incompleteBadges(errGrid).length, 1, 'a failure is never softened into “incomplete” only');
+});
+
+test('old rows and race losers never show the marker', () => {
+    const { LogCard } = loadCard();
+    assert.equal(incompleteBadges(renderCardHeader(LogCard, sampleLog())).length, 0, 'old row without either field: no marker');
+
+    // 竞速：只在落选那次写了原因，最终那次成功没写 -> 整行不算不完整
+    const race = sampleLog({
+        attempts: [
+            { status: 'success', channel_name: 'a', duration: 1, model_name: 'deepseek-v4.1-flash', attempt_num: 1, output_incomplete_reason: 'upstream_missing_terminal' },
+            { status: 'success', channel_name: 'b', duration: 1, model_name: 'deepseek-v4.1-flash', attempt_num: 2 },
+        ],
+    });
+    const raceGrid = renderCardHeader(LogCard, race);
+    assert.equal(incompleteBadges(raceGrid).length, 0, 'losing attempt never marks the row');
+    const raceRetry = findElement(raceGrid, (node) => typeof node.type === 'function' && node.type.name === 'RetryBadgeWithPopover');
+    assert.ok(raceRetry, 'retry trail present for two attempts');
+    assert.equal(collect(raceRetry.type(raceRetry.props), (node) => node.props?.['data-output-incomplete'] !== undefined).length, 0, 'and no attempt row is annotated either');
+
+    // 只有失败尝试带原因 -> 失败不适用这条规则
+    const failedMarked = sampleLog({
+        attempts: [
+            { status: 'failed', channel_name: 'a', duration: 1, model_name: 'deepseek-v4.1-flash', attempt_num: 1, output_incomplete_reason: 'upstream_missing_terminal' },
+            { status: 'success', channel_name: 'b', duration: 1, model_name: 'deepseek-v4.1-flash', attempt_num: 2 },
+        ],
+    });
+    assert.equal(incompleteBadges(renderCardHeader(LogCard, failedMarked)).length, 0, 'a failed attempt is not an incomplete success');
+});
+
+test('fallback: the selected successful attempt marks the header and only its own row', () => {
+    const { LogCard } = loadCard();
+    const grid = renderCardHeader(LogCard, sampleLog({
+        attempts: [
+            { status: 'failed', channel_name: 'a', duration: 1, model_name: 'deepseek-v4.1-flash', attempt_num: 1 },
+            { status: 'success', channel_name: 'b', duration: 1, model_name: 'deepseek-v4.1-flash', attempt_num: 2, output_incomplete_reason: 'upstream_missing_terminal' },
+        ],
+    }));
+    assert.equal(incompleteBadges(grid).length, 1, 'no top-level boolean -> falls back to the selected attempt');
+    const retry = findElement(grid, (node) => typeof node.type === 'function' && node.type.name === 'RetryBadgeWithPopover');
+    const rows = collect(retry.type(retry.props), (node) => node.props?.['data-output-incomplete'] !== undefined);
+    assert.equal(rows.length, 1, 'only the attempt that caused it is annotated, not the whole trail');
+});
+
+test('detail view explains the incomplete output, leaving the verdict colour alone', () => {
+    const { LogCard } = loadCard();
+    const marked = LogCard.type({ log: sampleLog({ output_incomplete: true }) });
+    assert.equal(incompleteBadges(renderHeader(LogCard, sampleLog({ output_incomplete: true }), 'detail')).length, 1, 'detail header carries the same marker');
+    const note = findElement(marked, (node) => node.props?.['data-output-incomplete-explain'] !== undefined);
+    assert.ok(note, 'detail explains it in words');
+    assert.equal(text(note), 'outputIncompleteExplain');
+    assert.ok(findElement(marked, (node) => /bg-emerald-500\/10/.test(String(node.props?.className))), 'verdict box keeps its success tint');
+    const plain = LogCard.type({ log: sampleLog() });
+    assert.equal(findElement(plain, (node) => node.props?.['data-output-incomplete-explain'] !== undefined), undefined, 'no note on a complete row');
 });

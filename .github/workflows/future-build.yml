@@ -9,6 +9,11 @@ on:
       - future
   workflow_dispatch:
 
+# 同一 ref 上只保留最新一次构建，旧构建被取消，避免它最后覆盖新镜像
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   packages: write
@@ -83,7 +88,7 @@ jobs:
           mv web/out static/out
 
       - name: Run Go tests
-        run: go test ./...
+        run: go test -count=1 ./...
 
       - name: Build binary
         run: |
@@ -101,7 +106,8 @@ jobs:
   image:
     name: Build and push future images
     needs: validate
-    if: github.event_name != 'pull_request'
+    # 只在 future 分支上发布镜像；PR 与非 future 的手动触发都不写注册表
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/future'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -144,9 +150,8 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.IMAGE_NAME }}
+          # 共享标签由 Promote 按 digest 发布；这里只推 per-commit 的 sha 标签（re-run 可覆盖）
           tags: |
-            type=raw,value=future
-            type=raw,value=future-debian
             type=sha,prefix=future-
 
       - name: Docker meta (Alpine)
@@ -155,7 +160,6 @@ jobs:
         with:
           images: ${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=future-alpine
             type=sha,prefix=future-alpine-
 
       - name: Set up QEMU
@@ -172,6 +176,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push (Alpine)
+        id: build-alpine
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -184,6 +189,7 @@ jobs:
             TARGETPLATFORM
 
       - name: Build and push (Debian)
+        id: build-debian
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -194,3 +200,64 @@ jobs:
           labels: ${{ steps.meta-debian.outputs.labels }}
           build-args: |
             TARGETPLATFORM
+
+      # 取消与 head 守卫都不是注册表事务：OCI 没有 tag 级 compare-and-swap。
+      - name: Promote shared tags
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          head_sha() {
+            local sha
+            sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/future" --jq .sha)" || return 1
+            if [ -z "${sha}" ]; then
+              echo "::error::cannot resolve future head" >&2
+              return 1
+            fi
+            printf '%s\n' "${sha}"
+          }
+
+          require_digest() {
+            if [[ ! "$1" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::unexpected digest '$1'"
+              exit 1
+            fi
+          }
+
+          publish() {
+            local expected="$1"
+            shift
+            local args=() tag observed
+            for tag in "$@"; do
+              args+=(--tag "${IMAGE_NAME}:${tag}")
+            done
+            docker buildx imagetools create "${args[@]}" "${IMAGE_NAME}@${expected}"
+            for tag in "$@"; do
+              observed="$(docker buildx imagetools inspect "${IMAGE_NAME}:${tag}" --format '{{.Manifest.Digest}}')"
+              if [ "${observed}" != "${expected}" ]; then
+                echo "::error::${IMAGE_NAME}:${tag} is '${observed}', expected '${expected}'"
+                return 1
+              fi
+            done
+          }
+
+          debian_digest='${{ steps.build-debian.outputs.digest }}'
+          alpine_digest='${{ steps.build-alpine.outputs.digest }}'
+          require_digest "${debian_digest}"
+          require_digest "${alpine_digest}"
+
+          # head 读取紧贴在每次 publish 之前；查询或发布失败都是失败，不会被当成“已过期”。
+          head="$(head_sha)"
+          if [ "${head}" != "${GITHUB_SHA}" ]; then
+            echo "::notice::future head is ${head}; skipping shared tags for ${GITHUB_SHA}"
+            exit 0
+          fi
+          publish "${debian_digest}" future future-debian
+
+          head="$(head_sha)"
+          if [ "${head}" != "${GITHUB_SHA}" ]; then
+            echo "::notice::future head is ${head}; skipping shared tags for ${GITHUB_SHA}"
+            exit 0
+          fi
+          publish "${alpine_digest}" future-alpine

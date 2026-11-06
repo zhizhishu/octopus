@@ -385,6 +385,9 @@ func RelayLogAdd(ctx context.Context, relayLog model.RelayLog) error {
 	// 桶在入队前就算好。落库时 BeforeCreate 会再算一次（备份导入等不经这里的
 	// 路径也盖得住）；这里写上是为了内存里的副本和即将入库的行是同一个值。
 	relayLog.Severity = model.ClassifyRelayLogSeverity(relayLog)
+	// 输出完整性同理: 内存副本与落库行共用同一个值。OutputIncomplete 没有列
+	// (gorm:"-"), attempts JSON 是它唯一的持久来源 (读回时由 AfterFind 重算)。
+	relayLog.OutputIncomplete = model.RelayLogOutputIncomplete(relayLog.Attempts)
 	// 可疑日志跟查：放在被动来源证据算好之后（要看 PassiveSource 的强/中线索）。
 	// 抽检与跟查两道开关都明确开着才会派发，读开关失败一律按关（见 AuditFollowUpTrigger）；
 	// 派发是异步的（safe.SafeGo），这里只做判断，不阻塞写日志，也不直接打上游。
@@ -1276,6 +1279,8 @@ func RelayLogRedact(relayLog model.RelayLog) model.RelayLog {
 	// 调试详情含请求头、上游地址、错误原文：同样只给管理员。
 	relayLog.DebugInfo = nil
 	relayLog.RequestIP = ""
+	// 先算再清: Attempts 一旦置空就再也算不出输出完整性, 而非管理员只看得到摘要。
+	relayLog.OutputIncomplete = relayLog.OutputIncomplete || model.RelayLogOutputIncomplete(relayLog.Attempts)
 	relayLog.Attempts = nil
 	if relayLog.Error != "" {
 		relayLog.Error = "[redacted]"
@@ -1417,6 +1422,7 @@ func RelayLogUserSummary(relayLog model.RelayLog) model.RelayLogUserSummary {
 		SessionKey:         relayLog.SessionKey,
 		SessionSource:      relayLog.SessionSource,
 		RouteStickyHit:     relayLog.RouteStickyHit,
+		OutputIncomplete:   relayLog.OutputIncomplete,
 		IsStream:           relayLog.IsStream,
 		UsageSource:        relayLog.UsageSource,
 		UsageMissingReason: relayLog.UsageMissingReason,

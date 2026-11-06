@@ -1017,6 +1017,8 @@ func (ra *relayAttempt) attempt() attemptResult {
 		costDelta := ra.metrics.Stats.InputCost + ra.metrics.Stats.OutputCost
 		op.ChannelKeyRecordUse(ra.usedKey, statusCode, usedAt, costDelta)
 
+		// 纯观测: 流式分支若已记下输出不完整, 带到审计 span 上; 状态/消息/返回值一律不变。
+		span.SetOutputIncompleteReason(ra.outputIncompleteReason)
 		span.End(dbmodel.AttemptSuccess, statusCode, "")
 		balancer.RecordRuntimeSuccess(ra.channel.ID, ra.usedKey.ID, runtimeModel, balancer.AttemptRuntimeMetrics{
 			Duration:     span.Duration(),
@@ -3058,6 +3060,8 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 					if err := flushRedactRestore(); err != nil {
 						return err
 					}
+					// 观测: 本条尝试交付的输出不完整(上游缺终止事件), 但状态仍是 success。
+					ra.outputIncompleteReason = dbmodel.RelayLogOutputIncompleteUpstreamMissingTerminal
 					ra.writeTruncatedStreamTerminal()
 					log.Warnf("upstream stream truncated before terminal event; wrote in-band failure frame (inbound=%v)", ra.inboundType)
 					return nil
@@ -3090,6 +3094,8 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 							if err := flushRedactRestore(); err != nil {
 								return err
 							}
+							// 观测: 同上 — 输出不完整但这次尝试仍记为 success。
+							ra.outputIncompleteReason = dbmodel.RelayLogOutputIncompleteUpstreamMissingTerminal
 							ra.writeTruncatedStreamTerminal()
 							log.Warnf("upstream stream truncated before terminal event; wrote in-band failure frame (inbound=%v)", ra.inboundType)
 							return nil

@@ -1,5 +1,7 @@
 package model
 
+import "gorm.io/gorm"
+
 type AttemptStatus string
 
 const (
@@ -14,6 +16,12 @@ const (
 // 它仍然留在 attempts 里(审计: 谁参与过), 但不算进 relay_logs.total_attempts,
 // 否则竞速模式下每一个成功请求都会被标成「重试过」。
 const AttemptMsgRacedOut = "raced_out"
+
+// RelayLogOutputIncompleteUpstreamMissingTerminal is the only output-incomplete reason
+// produced today: the upstream stream ended before its protocol's terminal marker, so the
+// relay wrote its in-band failure frame instead of a synthesized success tail. Protocol
+// fact only — no host, channel, key or account identity.
+const RelayLogOutputIncompleteUpstreamMissingTerminal = "upstream_missing_terminal"
 
 const (
 	RelayLogErrorCodeClientEmptyRequest      = "client_empty_request"
@@ -73,6 +81,25 @@ type ChannelAttempt struct {
 	ProxyTarget  string        `json:"proxy_target,omitempty"`
 	ProxyStatus  int           `json:"proxy_status,omitempty"`
 	Msg          string        `json:"msg,omitempty"`
+	// OutputIncompleteReason marks an attempt whose output reached the caller but is not
+	// complete, even though the attempt is recorded as AttemptSuccess. Empty = nothing
+	// observed (the normal case). Observation only: it changes no status, message,
+	// severity, error, billing figure or downstream byte.
+	OutputIncompleteReason string `json:"output_incomplete_reason,omitempty"`
+}
+
+// RelayLogOutputIncomplete derives the neutral top-level boolean from one row's attempts.
+// Only the FINAL selected successful attempt counts — the same backward scan
+// relay.finalChannel uses to pick the channel label — so a raced-out loser, a failed or
+// skipped attempt can never flag the request, and unknown reasons are ignored.
+func RelayLogOutputIncomplete(attempts []ChannelAttempt) bool {
+	for i := len(attempts) - 1; i >= 0; i-- {
+		if attempts[i].Status != AttemptSuccess {
+			continue
+		}
+		return attempts[i].OutputIncompleteReason == RelayLogOutputIncompleteUpstreamMissingTerminal
+	}
+	return false
 }
 
 type RelayLog struct {
@@ -213,10 +240,15 @@ type RelayLog struct {
 	// index: 严重程度分桶(warn = total_attempts > 1)和 retried 筛选都按它过,
 	// 而它是 relay_logs 里少数高选择性的整型列。没有索引时这两个谓词要对全表
 	// 逐行求值(实测 10 万行 847ms), 有了索引降到 10ms 量级。
-	TotalAttempts         int      `json:"total_attempts" gorm:"index"`
-	SessionKey            string   `json:"session_key,omitempty" gorm:"size:96;index"`
-	SessionSource         string   `json:"session_source,omitempty" gorm:"size:64"`
-	RouteStickyHit        bool     `json:"route_sticky_hit,omitempty"`
+	TotalAttempts  int    `json:"total_attempts" gorm:"index"`
+	SessionKey     string `json:"session_key,omitempty" gorm:"size:96;index"`
+	SessionSource  string `json:"session_source,omitempty" gorm:"size:64"`
+	RouteStickyHit bool   `json:"route_sticky_hit,omitempty"`
+	// OutputIncomplete mirrors "the final selected successful attempt reported an
+	// incomplete output" (see RelayLogOutputIncomplete). Derived, never stored: the only
+	// durable source is the attempts JSON, which the non-admin summary path drops
+	// (op.RelayLogRedact), hence the derivation also runs there. No channel identity.
+	OutputIncomplete      bool     `json:"output_incomplete,omitempty" gorm:"-"`
 	IsStream              bool     `json:"is_stream"`
 	UsageSource           string   `json:"usage_source,omitempty" gorm:"size:64"`
 	UsageMissingReason    string   `json:"usage_missing_reason,omitempty" gorm:"size:128"`
@@ -283,6 +315,7 @@ type RelayLogUserSummary struct {
 	SessionKey         string  `json:"session_key,omitempty"`
 	SessionSource      string  `json:"session_source,omitempty"`
 	RouteStickyHit     bool    `json:"route_sticky_hit,omitempty"`
+	OutputIncomplete   bool    `json:"output_incomplete,omitempty"`
 	IsStream           bool    `json:"is_stream,omitempty"`
 	UsageSource        string  `json:"usage_source,omitempty"`
 	UsageMissingReason string  `json:"usage_missing_reason,omitempty"`
@@ -291,6 +324,17 @@ type RelayLogUserSummary struct {
 	BillingModel       string  `json:"billing_model"`
 	BaseInputPrice     float64 `json:"base_input_price,omitempty"`
 	BaseOutputPrice    float64 `json:"base_output_price,omitempty"`
+}
+
+// AfterFind derives OutputIncomplete on every row coming back from the DB: the field is
+// gorm:"-" (no column), so the attempts JSON is its only durable source and a hydrated
+// row would otherwise always report false.
+func (l *RelayLog) AfterFind(_ *gorm.DB) error {
+	if l == nil {
+		return nil
+	}
+	l.OutputIncomplete = RelayLogOutputIncomplete(l.Attempts)
+	return nil
 }
 
 type RelayLogStorage struct {

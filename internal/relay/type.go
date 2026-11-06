@@ -366,6 +366,12 @@ type relayAttempt struct {
 	// to the channel that later succeeded (F10).
 	upstreamDeclaredModel string
 
+	// outputIncompleteReason is THIS attempt's own record that what it delivered is not
+	// complete even though the attempt ends as a success: the upstream stream stopped
+	// before its protocol's terminal marker. Attempt-local on purpose — every racer has its
+	// own relayAttempt, so a loser can never mark the winner's row. Observation only.
+	outputIncompleteReason string
+
 	// upstreamEnvelope 是这次尝试「收到上游回复之后」顺手抄下的标识位：响应头家族
 	// （仅 2xx）、响应 id / 首个 tool call id / thinking 签名形态（仅 Anthropic 出站
 	// 路径，该路径这些值是上游原文）、同一条流里的换模型名。

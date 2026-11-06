@@ -844,6 +844,8 @@ func runRaceContenders(
 			costDelta := winnerRA.metrics.Stats.InputCost + winnerRA.metrics.Stats.OutputCost
 			op.ChannelKeyRecordUse(winnerRA.usedKey, winner.statusCode, usedAt, costDelta)
 
+			// 纯观测: 赢家自己那条 attempt 的输出完整性标记; 输家的标记不可能写到这里。
+			span.SetOutputIncompleteReason(winnerRA.outputIncompleteReason)
 			span.End(dbmodel.AttemptSuccess, winner.statusCode, "")
 			balancer.RecordRuntimeSuccess(winner.channel.ID, winnerRA.usedKey.ID, winner.runtimeModel, balancer.AttemptRuntimeMetrics{
 				Duration:     span.Duration(),

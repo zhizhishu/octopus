@@ -701,6 +701,20 @@ test('LogCard comparator: unchanged polled log is skipped; open, navigation and 
     }
 });
 
+// 输出不完整可能在后端补算/回写之后才出现：比较器必须按取值比，否则中性徽标永远不出现。
+test('LogCard comparator: output-incomplete appearing (or vanishing) still redraws the row', () => {
+    const { logCardPropsEqual } = logComponentsItem();
+    const base = { log, detailOpen: false, onDetailOpenChange: () => {}, onNavigate: () => {}, canNavigatePrev: false, canNavigateNext: false };
+    assert.equal(logCardPropsEqual(base, { ...base, log: { ...log, output_incomplete: true } }), false, 'top-level boolean appearing must redraw');
+
+    const attempts = [{ status: 'success', channel_name: 'c', model_name: 'm', attempt_num: 1, duration: 1 }];
+    const withoutReason = { ...base, log: { ...log, attempts } };
+    const withReason = { ...base, log: { ...log, attempts: [{ ...attempts[0], output_incomplete_reason: 'upstream_missing_terminal' }] } };
+    assert.equal(logCardPropsEqual(withoutReason, withReason), false, 'fallback marker appearing must redraw');
+    assert.equal(logCardPropsEqual(withReason, withoutReason), false, 'and so must it disappearing');
+    assert.equal(logCardPropsEqual(withReason, { ...withReason, log: { ...withReason.log } }), true, 'an unchanged row is still skipped');
+});
+
 // 分词器两项（约 12 次 / 74 次请求）只能手动勾选：默认勾选、切渠道、点「标准」都不能把它们带上。
 test('standard plan and default selection never include the opt-in tokenizer probes', () => {
     for (const step of ['default', 'channel', 'standard']) {

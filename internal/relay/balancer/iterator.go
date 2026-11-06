@@ -473,6 +473,17 @@ func (s *AttemptSpan) SetModelName(modelName string) {
 	s.attempt.ModelName = modelName
 }
 
+// SetOutputIncompleteReason records that what this attempt delivered is not complete even
+// though it ends (or will end) as a success — today only the upstream-missing-terminal
+// case. Must be called BEFORE End: End appends a copy of the attempt, so a later set would
+// be silently dropped (guarded here, like the other setters).
+func (s *AttemptSpan) SetOutputIncompleteReason(reason string) {
+	if s == nil || s.ended {
+		return
+	}
+	s.attempt.OutputIncompleteReason = reason
+}
+
 func (s *AttemptSpan) SetRouteScope(endpoint, capability string) {
 	if s == nil || s.ended {
 		return

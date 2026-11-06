@@ -77,6 +77,7 @@ export interface ChannelAttempt {
     proxy_scheme?: string;  // 代理协议: http / socks5
     proxy_target?: string;  // 代理地址(host:port), 含 SOCKS
     msg?: string;
+    output_incomplete_reason?: string;  // 上游未发可识别结束标记(upstream_missing_terminal)；仅被选中的那次成功尝试会带
 }
 
 /**
@@ -207,6 +208,7 @@ export interface RelayLog {
     error_strategy?: string;
     attempts?: ChannelAttempt[]; // 所有尝试记录
     total_attempts?: number;     // 总尝试次数
+    output_incomplete?: boolean; // 输出可能不完整；后端计算，完整与摘要 JSON 都带。只描述输出完整性，不参与 severity
     session_key?: string;
     session_source?: string;
     route_sticky_hit?: boolean;

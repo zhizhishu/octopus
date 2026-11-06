@@ -24,6 +24,7 @@ import {
 } from './humanize';
 import { getModelIcon } from '@/lib/model-icons';
 import { describeThroughput } from './throughput';
+import { attemptShowsOutputIncomplete, logOutputIncomplete } from './output-incomplete';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { describeProbeEvidence } from './probe-evidence';
 import { ProbeEvidenceList } from './ProbeEvidenceList';
@@ -148,6 +149,9 @@ function attemptStatusBadgeClass(status: ChannelAttempt['status']): string {
     if (status === 'failed') return 'bg-destructive/15 text-destructive';
     return 'bg-amber-500/15 text-amber-600 dark:text-amber-400';
 }
+
+/** 「输出不完整」是事实徽标，不是严重等级：中性灰，不借成功绿也不借失败红。 */
+const OUTPUT_INCOMPLETE_BADGE_CLASS = 'border-border/60 bg-muted/30 font-normal text-muted-foreground';
 
 function formatEndpointName(endpoint: string | undefined): string {
     let value = endpoint?.trim() ?? '';
@@ -318,6 +322,15 @@ function RetryBadgeWithPopover({ channelName, brandColor, attempts }: RetryBadge
                                             className="text-[10px] text-amber-600 dark:text-amber-400"
                                         />
                                     )}
+                                    {attemptShowsOutputIncomplete(attempts, idx) && (
+                                        <Badge
+                                            variant="outline"
+                                            data-output-incomplete=""
+                                            className="h-5 w-fit shrink-0 border-0 bg-muted px-1.5 text-[10px] font-normal text-muted-foreground"
+                                        >
+                                            {t('outputIncomplete')}
+                                        </Badge>
+                                    )}
                                 </div>
                             </div>
                             {
@@ -344,6 +357,8 @@ interface LogRouteHeaderProps {
     StatusIcon: LucideIcon;
     statusLabel: string;
     statusToneClass: string;
+    /** 输出不完整：与状态徽标并列的中性徽标，不改变状态徽标的语义/配色。 */
+    outputIncomplete?: boolean;
     requestEndpointLabel: string;
     endpointTitle: string;
     upstreamPaths: string[];
@@ -378,6 +393,7 @@ function LogRouteHeader({
     StatusIcon,
     statusLabel,
     statusToneClass,
+    outputIncomplete,
     requestEndpointLabel,
     endpointTitle,
     upstreamPaths,
@@ -414,6 +430,20 @@ function LogRouteHeader({
             {statusLabel}
         </Badge>
     );
+    const outputIncompleteBadge = outputIncomplete ? (
+        <Badge
+            variant="outline"
+            data-output-incomplete=""
+            title={t('outputIncompleteExplain')}
+            className={cn(
+                "shrink-0 whitespace-nowrap text-xs",
+                OUTPUT_INCOMPLETE_BADGE_CLASS,
+                isCard ? "px-1.5 py-0" : "px-2 py-0.5"
+            )}
+        >
+            {t('outputIncomplete')}
+        </Badge>
+    ) : null;
     const endpointBadge = requestEndpointLabel ? (
         <Badge
             variant="outline"
@@ -665,6 +695,7 @@ function LogRouteHeader({
             >
                 <div data-log-row="1" data-log-cell="1" className="flex min-w-0 flex-wrap items-center gap-2">
                     <span className="inline-flex shrink-0 items-center">{statusBadge}</span>
+                    {outputIncompleteBadge}
                     {autoRescueSlot}
                     {endpointBadge}
                     {upstreamPathBadge}
@@ -710,7 +741,7 @@ function LogRouteHeader({
     // 不随后面文本的 flex-wrap 漂移。其余元素保持原有顺序。
     return (
         <>
-            <span className="inline-flex shrink-0 items-center order-first">{statusBadge}</span>
+            <span className="inline-flex shrink-0 items-center gap-1.5 order-first">{statusBadge}{outputIncompleteBadge}</span>
             {endpointBadge}
             {upstreamPathBadge}
             {requestModelText}
@@ -1193,7 +1224,9 @@ export function logCardPropsEqual(prev: LogCardProps, next: LogCardProps): boole
         // 「被动结论没跟着新证据变 / 点了没反应」——这个比较器漏字段出过事故。
         && prev.log.passive_summary === next.log.passive_summary
         && prev.log.passive_source === next.log.passive_source
-        && prev.log.passive_probes === next.log.passive_probes;
+        && prev.log.passive_probes === next.log.passive_probes
+        // 输出不完整可能在后端补算/回写后才出现，按取值比才不会被冻住。
+        && logOutputIncomplete(prev.log) === logOutputIncomplete(next.log);
 }
 
 export const LogCard = React.memo(function LogCard({
@@ -1276,6 +1309,7 @@ export const LogCard = React.memo(function LogCard({
     const hasMultipleAttempts = attempts.length > 1;
     const shouldShowAttempts = attempts.length > 0 && (hasError || hasPartialFailure || hasMultipleAttempts);
     const attemptCount = log.total_attempts || attempts.length || 1;
+    const outputIncomplete = logOutputIncomplete(log);
     const usageSource = log.usage_source?.trim() ?? '';
     const usageMissingReason = log.usage_missing_reason?.trim() ?? '';
     const sessionSource = log.session_source?.trim() ?? '';
@@ -1704,6 +1738,7 @@ export const LogCard = React.memo(function LogCard({
                                 StatusIcon={StatusIcon}
                                 statusLabel={statusLabel}
                                 statusToneClass={statusToneClass}
+                                outputIncomplete={outputIncomplete}
                                 requestEndpointLabel={requestEndpointLabel}
                                 endpointTitle={endpointTitle}
                                 upstreamPaths={upstreamPaths}
@@ -1872,6 +1907,7 @@ export const LogCard = React.memo(function LogCard({
                                 StatusIcon={StatusIcon}
                                 statusLabel={statusLabel}
                                 statusToneClass={statusToneClass}
+                                outputIncomplete={outputIncomplete}
                                 requestEndpointLabel={requestEndpointLabel}
                                 endpointTitle={endpointTitle}
                                 upstreamPaths={upstreamPaths}
@@ -1923,6 +1959,11 @@ export const LogCard = React.memo(function LogCard({
                                             : "border-destructive/30 bg-destructive/10 text-destructive",
                                 )}>
                                     <SafeText mode="wrap" value={verdict.text} className="block" />
+                                    {outputIncomplete && (
+                                        <p data-output-incomplete-explain className="mt-1 text-xs font-normal leading-5 text-muted-foreground">
+                                            {t('outputIncompleteExplain')}
+                                        </p>
+                                    )}
                                 </div>
                                 <ProbeEvidenceList probes={probes} />
                                 {/* 检测过（有 verdict）才拉审计报告。否则这是一次纯白拉：
@@ -2167,6 +2208,15 @@ export const LogCard = React.memo(function LogCard({
                                                                             >
                                                                                 {formatAttemptStatus(attempt.status, t)}
                                                                             </Badge>
+                                                                            {attemptShowsOutputIncomplete(attempts, idx) && (
+                                                                                <Badge
+                                                                                    variant="outline"
+                                                                                    data-output-incomplete=""
+                                                                                    className="h-5 w-fit shrink-0 border-0 bg-muted px-1.5 text-[10px] font-normal text-muted-foreground"
+                                                                                >
+                                                                                    {t('outputIncomplete')}
+                                                                                </Badge>
+                                                                            )}
                                                                             <SafeText
                                                                                 mode="wrap"
                                                                                 value={attempt.channel_name}
