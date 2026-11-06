@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"strings"
+	"sync"
 
 	"github.com/zhizhishu/octopus/internal/modelverify"
 )
@@ -57,6 +58,8 @@ var probeRegistry = map[ProbeID]probeFunc{
 	ProbeContextCanary: runContextCanary,
 	ProbeSignature:     runSignature,
 	ProbeFingerprint:   runFingerprint,
+	// 复述系统提示词（见 system_prompt_probe.go）
+	ProbeSystemPrompt: runSystemPrompt,
 	// 分词器差分计数（默认不启用，见 tokenizer_probe.go）
 	ProbeTokenizerID:       runTokenizerID,
 	ProbeTokenizerBaseline: runTokenizerBaseline,
@@ -75,6 +78,7 @@ func DefaultProbes() []ProbeID {
 		ProbeSignature,
 		ProbeLiveness,
 		ProbeIdentity,
+		ProbeSystemPrompt,
 		ProbeGlitch,
 		ProbeTokenDelta,
 		ProbeEchoRewrite,
@@ -122,10 +126,23 @@ func runProbe(ctx context.Context, id ProbeID, s modelverify.Sender, targetModel
 // 可选的最后一位参数是被测目标型号（只读元数据）：传了之后，适用性依赖
 // 型号的探针（signature/glitch）会在发送前判断是否适用，不适用的直接
 // 自报 applicable=false，零请求。不传则尝试从 Sender 的 ModelNamer 取。
+//
+// 发送器在整个过程中被一个记录型 Sender 包住：每次 Ask 成功就抄下一份
+// 「信封」（自报模型名 / 编号前缀形态 / 头家族，见 provenance.go）。跑完汇总成
+// ProvenanceSummary，挂在第一条结果上交给 BuildReport。这一步不改任何出站字节——
+// 它只读 Ask 已经拿回来的东西。
 func Run(ctx context.Context, ids []ProbeID, s modelverify.Sender, upstreamModel ...string) []Result {
 	targetModel := senderTargetModel(s)
 	if len(upstreamModel) > 0 && upstreamModel[0] != "" {
 		targetModel = upstreamModel[0]
+	}
+	// s 为空时保持原有行为（每个探针自报「没有可用的发送器」），不要造一个包着
+	// nil 的包装器——那会让探针跑到 Ask 里才 panic。
+	sender := s
+	var recorder *recordingSender
+	if s != nil {
+		recorder = &recordingSender{inner: s, requestModel: targetModel}
+		sender = recorder
 	}
 	results := make([]Result, 0, len(ids))
 	for _, id := range ids {
@@ -133,9 +150,128 @@ func Run(ctx context.Context, ids []ProbeID, s modelverify.Sender, upstreamModel
 			results = append(results, Result{ProbeID: id, Err: err})
 			continue
 		}
-		results = append(results, runProbe(ctx, id, s, targetModel))
+		results = append(results, runProbe(ctx, id, sender, targetModel))
+	}
+	if recorder != nil {
+		attachProvenance(results, recorder.summary())
 	}
 	return results
+}
+
+// provenanceDataKey 是 Run 把信封汇总交给 BuildReport 的通道键。
+//
+// 为什么走 Result.Data 而不是给 BuildReport 再加一个参数：BuildReport 的调用点有四处
+// （手动检测、队列 worker、定时任务、测试），它们都拿不到 Sender，也不该为这件事
+// 各改一遍签名。Run 拿得到 Sender，就在自己这一层把东西交出去。
+//
+// 这个键不会下发：BuildReport 会把它取出来升格成 Report.Provenance，并从展示用的
+// 结果副本里摘掉（见 takeProvenance）。
+const provenanceDataKey = "provenance"
+
+// attachProvenance 把汇总挂到第一条结果上。Observed 为 0 时什么都不挂：
+// 一条信封都没记到，说明这次就没跑到出站成功那一步，没东西可汇总。
+func attachProvenance(results []Result, summary ProvenanceSummary) {
+	if len(results) == 0 || summary.Observed == 0 {
+		return
+	}
+	if results[0].Data == nil {
+		results[0].Data = make(map[string]any, 1)
+	}
+	results[0].Data[provenanceDataKey] = summary
+}
+
+// takeProvenance 从结果里取出信封汇总，并返回一份去掉了该键的展示副本。
+//
+// 必须复制 Data 而不是就地 delete：调用方（worker / handler）手里还拿着同一个
+// results 切片，就地删会悄悄改掉别人的数据。
+func takeProvenance(results []Result) (ProvenanceSummary, []Result) {
+	for i := range results {
+		if results[i].Data == nil {
+			continue
+		}
+		summary, ok := results[i].Data[provenanceDataKey].(ProvenanceSummary)
+		if !ok {
+			continue
+		}
+		cleaned := make([]Result, len(results))
+		copy(cleaned, results)
+		data := make(map[string]any, len(results[i].Data))
+		for key, value := range results[i].Data {
+			if key == provenanceDataKey {
+				continue
+			}
+			data[key] = value
+		}
+		cleaned[i].Data = data
+		return summary, cleaned
+	}
+	return ProvenanceSummary{}, results
+}
+
+// recordingSender 包住真实 Sender，把每次成功 Ask 的信封抄下来。
+//
+// 为什么记录必须加锁：探针之间是串行的，但同一进程里手动检测与后台队列会并发跑
+// 各自的审计，Run 本身也可能被并发调用；共享的 []ProvenanceInput 被并发 append
+// 会丢记录、甚至撕碎底层数组。
+type recordingSender struct {
+	inner        modelverify.Sender
+	requestModel string
+
+	mu        sync.Mutex
+	envelopes []ProvenanceInput
+}
+
+func (s *recordingSender) Ask(ctx context.Context, ask modelverify.Ask) (modelverify.Response, error) {
+	resp, err := s.inner.Ask(ctx, ask)
+	if err != nil {
+		// 失败的请求没有信封：错误响应的头和正文来自网关 / 前置层，不是模型后端。
+		// 这条门与日志侧共用同一套口径（op 的 passiveSourceLogFailed）。
+		return resp, err
+	}
+	s.mu.Lock()
+	s.envelopes = append(s.envelopes, ProvenanceInput{
+		UpstreamModel:       resp.DeclaredModel,
+		RequestModel:        s.requestModel,
+		ResponseID:          resp.ResponseID,
+		FirstToolCallID:     resp.FirstToolCallID,
+		SignatureClaudeHash: resp.SignatureClaudeHash,
+		HeaderFamilies:      resp.HeaderFamilies,
+	})
+	s.mu.Unlock()
+	return resp, nil
+}
+
+// summary 取一份当前记录的汇总快照（复制后无锁计算，不长时间占锁）。
+func (s *recordingSender) summary() ProvenanceSummary {
+	s.mu.Lock()
+	envelopes := append([]ProvenanceInput(nil), s.envelopes...)
+	s.mu.Unlock()
+	return summarizeProvenance(envelopes)
+}
+
+// 包装器必须把内层 Sender 的可选接口原样转发出去，否则探针里的类型断言
+// （ProtocolNamer / ModelNamer / InjectedFamiliesNamer）会全部失效：
+// 签名与分词器探针会把 Anthropic 渠道误判成「不知道协议」而跳过，
+// 复述探针则会把自家注入的身份当成中转站痕迹。
+func (s *recordingSender) TargetModel() string {
+	if namer, ok := s.inner.(ModelNamer); ok {
+		return namer.TargetModel()
+	}
+	return ""
+}
+
+func (s *recordingSender) Protocol() string {
+	if namer, ok := s.inner.(ProtocolNamer); ok {
+		return namer.Protocol()
+	}
+	return ""
+}
+
+func (s *recordingSender) InjectedFamilies() []string {
+	if namer, ok := s.inner.(InjectedFamiliesNamer); ok {
+		return namer.InjectedFamilies()
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------- 探针实现

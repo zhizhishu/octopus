@@ -27,6 +27,29 @@ type Response struct {
 	// RedactedSignature 是 redacted_thinking.data 原文。同样是服务端产物、
 	// 同样不可伪造，但内容不可读（本来就是密文），只能做结构与回放判定。
 	RedactedSignature string
+
+	// ---- 信封：只用于来源判断，不落库原值 ----
+	//
+	// 下面五个字段全部是「收到回复之后才读得到」的东西，与 Content / Usage 同批
+	// 产生。它们只服务于行为审计的来源规则表（behavior/provenance.go）：
+	// 不发任何新请求、不改请求字节、不参与评分，也不会被写进任何持久化列。
+	//
+	// 采集口径（为何只有部分字段有值）见 modeltest.ProbeSender.Ask：编号只在
+	// Anthropic 出站路径上是上游原文，其余适配器可能自己重写，所以那里不填。
+
+	// DeclaredModel 是上游自报的模型名（优先审计专用字段，空则回落 Model）。
+	DeclaredModel string
+	// ResponseID 是回复顶层 id 的原值。只用于判前缀形态（req_vrtx_ / msg_bdrk_，
+	// 见 behavior/provenance.go），不随报告下发。
+	ResponseID string
+	// FirstToolCallID 是第一个非空 tool call id 的原值。同样只判形态。
+	FirstToolCallID string
+	// SignatureClaudeHash 表示 thinking 签名原文以 "claude#" 开头（Vertex 侧形态）。
+	// 只存这个布尔位，签名原文一概不留。
+	SignatureClaudeHash bool
+	// HeaderFamilies 是响应头**名字**命中的基础设施家族类别
+	// （只记类别不记原值，见 model.ClassifyUpstreamHeaderFamilies）。
+	HeaderFamilies []string
 }
 
 // Turn 探针多轮会话中的一轮。

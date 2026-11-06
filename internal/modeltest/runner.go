@@ -120,6 +120,15 @@ type modelRunner struct {
 	// 这是合法的客户端行为，不是凭空多出来的字段。默认 false = 沿用既有的
 	// {"type":"disabled"}（普通轮的真 CLI 形态）。
 	probeThinking bool
+	// lastHeaderFamilies 是本次出站收到 2xx 回复时抄下的响应头家族类别
+	// （只读头名，见 model.ClassifyUpstreamHeaderFamilies）。
+	//
+	// 它只用于行为审计的来源判断（behavior/provenance.go），不落库、不下发；
+	// 非 2xx 不抄：错误页的头来自网关/前置层，不能当模型后端的证据。
+	lastHeaderFamilies []string
+	// lastStreamEnvelope 是流式回复里的上游编号原文（旁路，见 transformModelTestStreamWithEnvelope）。
+	// 非流式回复的编号由 adapter.TransformResponse 直接放在 parsed 上，这里留空。
+	lastStreamEnvelope modelTestStreamEnvelope
 }
 
 // probeThinkingBudget 探针索要的思考预算。
@@ -951,9 +960,15 @@ func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermod
 		return response.StatusCode, nil, fmt.Errorf("upstream status %d: %s", response.StatusCode, message)
 	}
 
+	// 2xx：顺手抄下响应头的**名字**命中的基础设施家族类别（x-amz* → aws 等）。
+	// 只看头名、不留原值，供探针的来源判断（behavior/provenance.go）。
+	// 放在状态码判定之后，而非收到回应时立刻抄：非 2xx 的头来自网关/前置层，
+	// 不是模型后端的证据。
+	r.lastHeaderFamilies = dbmodel.ClassifyUpstreamHeaderFamilies(response.Header)
+
 	var parsed *transformermodel.InternalLLMResponse
 	if internalRequest.Stream != nil && *internalRequest.Stream {
-		parsed, err = transformModelTestStream(ctx, adapter, response)
+		parsed, err = transformModelTestStreamWithEnvelope(ctx, adapter, response, &r.lastStreamEnvelope)
 	} else {
 		parsed, err = adapter.TransformResponse(ctx, response)
 	}
@@ -1629,7 +1644,38 @@ func isBenignUpstreamStreamEnd(err error) bool {
 	return strings.Contains(normalized, "unexpected end of input") || strings.Contains(normalized, "eof")
 }
 
+// firstStreamToolCallID 取一条流式分片里的首个非空 tool call id。
+//
+// Anthropic 的 tool_use 在 content_block_start 里给出完整 id，后续
+// input_json_delta 分片也带同一个 id——首个非空胜出即可。
+func firstStreamToolCallID(msg *transformermodel.Message) string {
+	if msg == nil {
+		return ""
+	}
+	for _, toolCall := range msg.ToolCalls {
+		if id := strings.TrimSpace(toolCall.ID); id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
+// modelTestStreamEnvelope 是流式回复里「合成消息不带、但来源判断要看」的两个编号原文。
+// 只在内存里交给探针（behavior/provenance.go 判前缀形态），不落库、不下发。
+type modelTestStreamEnvelope struct {
+	ResponseID      string
+	FirstToolCallID string
+	// DeclaredModel 是流里第一个非空的上游自报模型名（先看审计专用字段，Gemini 只写那里）。
+	DeclaredModel string
+}
+
 func transformModelTestStream(ctx context.Context, adapter transformermodel.Outbound, response *http.Response) (*transformermodel.InternalLLMResponse, error) {
+	return transformModelTestStreamWithEnvelope(ctx, adapter, response, nil)
+}
+
+// transformModelTestStreamWithEnvelope 同 transformModelTestStream，另把流里的上游编号写进 envelope
+// （可为 nil）。合成消息与原版逐字节一致：编号走旁路，不改变渠道测试和探针看到的观测结果。
+func transformModelTestStreamWithEnvelope(ctx context.Context, adapter transformermodel.Outbound, response *http.Response, envelope *modelTestStreamEnvelope) (*transformermodel.InternalLLMResponse, error) {
 	if response == nil || response.Body == nil {
 		return nil, fmt.Errorf("response is nil")
 	}
@@ -1650,6 +1696,14 @@ func transformModelTestStream(ctx context.Context, adapter transformermodel.Outb
 	signatureSeen := 0
 	lastSignature := ""
 	finishReason := ""
+	// 顶层 id 与首个 tool call id 单独收：合成消息原本不带它们（探针不看），
+	// 但来源判断要判它们的**前缀形态**（req_vrtx_ / msg_bdrk_ / tool_<n> /
+	// tooluse_ / toolu_bdrk_，见 behavior/provenance.go）。流式分支是探针的
+	// 常走路径（Anthropic 渠道强制 Stream=true），不在这里带出去，
+	// 信封里就永远只有自报模型名。
+	streamID := ""
+	firstToolCallID := ""
+	streamModel := ""
 	readCfg := &sse.ReadConfig{MaxEventSize: 1024 * 1024}
 	for ev, err := range sse.Read(response.Body, readCfg) {
 		if err != nil {
@@ -1674,6 +1728,15 @@ func transformModelTestStream(ctx context.Context, adapter transformermodel.Outb
 		if streamResp.Usage != nil {
 			usage = streamResp.Usage
 		}
+		if streamID == "" && strings.TrimSpace(streamResp.ID) != "" {
+			streamID = strings.TrimSpace(streamResp.ID)
+		}
+		if streamModel == "" {
+			streamModel = strings.TrimSpace(streamResp.UpstreamDeclaredModel)
+			if streamModel == "" {
+				streamModel = strings.TrimSpace(streamResp.Model)
+			}
+		}
 		for _, choice := range streamResp.Choices {
 			if choice.Message != nil {
 				if content := messageText(choice.Message); content != "" {
@@ -1686,6 +1749,9 @@ func transformModelTestStream(ctx context.Context, adapter transformermodel.Outb
 					signatureSeen++
 					lastSignature = *choice.Message.ReasoningSignature
 				}
+				if firstToolCallID == "" {
+					firstToolCallID = firstStreamToolCallID(choice.Message)
+				}
 			}
 			if choice.Delta != nil {
 				if content := messageText(choice.Delta); content != "" {
@@ -1697,6 +1763,9 @@ func transformModelTestStream(ctx context.Context, adapter transformermodel.Outb
 				if choice.Delta.ReasoningSignature != nil && *choice.Delta.ReasoningSignature != "" {
 					signatureSeen++
 					lastSignature = *choice.Delta.ReasoningSignature
+				}
+				if firstToolCallID == "" {
+					firstToolCallID = firstStreamToolCallID(choice.Delta)
 				}
 			}
 			if choice.FinishReason != nil && *choice.FinishReason != "" {
@@ -1737,6 +1806,14 @@ func transformModelTestStream(ctx context.Context, adapter transformermodel.Outb
 	// 让探针按「无签名」如实处理，而不是挑一个冒充（不盲拼）。
 	if signatureSeen == 1 {
 		message.ReasoningSignature = &lastSignature
+	}
+	// 顶层 id 与首个 tool call id 走旁路交给调用方（envelope），**不写进合成消息**：
+	// 合成消息是渠道「测试」按钮和全部探针共用的观测结果，往里塞一个只有 id 的
+	// ToolCalls 元素会改变别的消费者看到的东西。来源判断只要编号形态，旁路足够。
+	if envelope != nil {
+		envelope.ResponseID = streamID
+		envelope.FirstToolCallID = firstToolCallID
+		envelope.DeclaredModel = streamModel
 	}
 	// 真实结束原因；流没给出（如中途断开）就留空，不猜 stop——空值在
 	// glitch 探针里不会触发早停豁免，是保守且诚实的「未知」。

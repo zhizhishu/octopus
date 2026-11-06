@@ -1,6 +1,9 @@
 package behavior
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // 评分层：把若干探针结果折算成一份可读的审计报告。
 //
@@ -79,6 +82,10 @@ type Report struct {
 	Findings []Finding
 	// Results 是全部探针的原始结果，供展示与复核。
 	Results []Result
+	// Provenance 是主动检测侧的来源线索汇总（自报模型名 / 编号前缀形态 / 响应头
+	// 家族类别，见 provenance.go）。它**不进风险分**：这是证据原料，判定仍按
+	// 各探针自己的规矩来。Observed=0 表示这次没抄到任何信封（跑没跑通要分开看）。
+	Provenance ProvenanceSummary
 	// Errors 是未能完成判定的探针。
 	Errors []ProbeError
 }
@@ -90,6 +97,10 @@ func BuildReport(results []Result, requestedModel string) Report {
 		RequestedFamilies: InferFamilies(requestedModel),
 		Results:           results,
 	}
+	// 信封汇总：主动检测侧的来源线索（自报模型名 / 编号形态 / 响应头家族）由 Run
+	// 在跑探针时顺手抄下，按 Code 去重后挂在这份报告上。它不进风险分——它是证据
+	// 原料，判定仍按现有各探针的规矩来。
+	report.Provenance, report.Results = takeProvenance(results)
 
 	// 分词器差分探针（tokenizer_id）与 token_delta 测的是同一件事（上游分词器口径），
 	// 但 tokenizer_id 只作参考、不计分（tokenizer_score.go）。token_delta 的发现项
@@ -465,6 +476,9 @@ func findingsFor(res Result, requestedModel string, requestedFamilies []string) 
 			Recommendation: "版本相关的弱指纹，需结合统计指纹或其他探针佐证。",
 		}}
 
+	case ProbeSystemPrompt:
+		return systemPromptFindings(res)
+
 	case ProbeTokenDelta:
 		if !res.OK {
 			return nil
@@ -545,6 +559,55 @@ func tokenDeltaDifferentialFinding(res Result) []Finding {
 // 兼容历史结果的重放而保留——删掉它会让旧报告读不出结论。
 const tokenDeltaThreshold = 200
 
+// systemPromptFindings 是「复述系统提示词」探针的判定。
+//
+// 判据只有一条：复述出来的系统提示词里出现了**别家平台**的品牌词，而且那个家族
+// 既不是请求模型的、也不是我们自己注入的（扣除已在探针层做完，见
+// system_prompt_probe.go）。
+//
+// 为什么不定成高危：系统提示词可能被上游改写，也可能是多平台共用的措辞（一个
+// 网关自己写的中文提示里提到“OpenAI 兼容”很正常）。它指向的是「这条回复经过了
+// 谁」，不是「模型是假的」——和签名解封出的 AWS 系痕迹同性质，但证据强度低一档。
+//
+// 拒答 / 空回复 / 没命中：三条都不出 Finding。拒答是模型的合法选择，不是证据。
+func systemPromptFindings(res Result) []Finding {
+	if res.Err != nil || !res.OK {
+		return nil
+	}
+	if boolOf(res.Data, "refused") {
+		return nil
+	}
+	suspects := stringSliceOf(res.Data, "suspect_brands")
+	if len(suspects) == 0 {
+		return nil
+	}
+
+	// AWS 系单独换一句话：它不是“别家平台”，而是“经 AWS 系转售”，
+	// 与签名探针里那条强特征同一个语义，用户看的不是同一个问题。
+	var awsSuspects []string
+	for _, label := range suspects {
+		if systemPromptBrandFamily(label) == ProvenancePlatformAWS {
+			awsSuspects = append(awsSuspects, label)
+		}
+	}
+	title := fmt.Sprintf("复述的系统提示词里出现别家平台：%s", strings.Join(suspects, "、"))
+	if len(awsSuspects) > 0 {
+		title = fmt.Sprintf("疑似经 AWS 系转售（复述的系统提示词里出现 %s）", strings.Join(awsSuspects, "、"))
+	}
+	return []Finding{{
+		Probe:    ProbeSystemPrompt,
+		Severity: SeverityMedium,
+		Score:    40,
+		Title:    title,
+		Evidence: map[string]any{
+			"suspect_brands": suspects,
+			"recited_text":   prefixRunes(stringOf(res.Data, "recited_text"), 200),
+		},
+		Recommendation: "复述出的系统提示词里带了别家平台的措辞，说明上游不是直连，" +
+			"更可能是经第三方平台转售；建议结合来源线索与签名结果人工复核。",
+	}}
+}
+
 // ---------------------------------------------------------------- 取值助手
 //
 // 探针结果走 map[string]any，取值必须防御式：缺字段、类型不符都要
@@ -571,6 +634,14 @@ func intOf(data map[string]any, key string) int {
 		return v
 	}
 	return 0
+}
+
+func floatOf(data map[string]any, key string) (float64, bool) {
+	if data == nil {
+		return 0, false
+	}
+	v, ok := data[key].(float64)
+	return v, ok
 }
 
 func stringSliceOf(data map[string]any, key string) []string {

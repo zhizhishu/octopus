@@ -5,6 +5,8 @@ import { logger } from '@/lib/logger';
 export const AUDIT_PROBE_IDS = [
     'liveness',
     'identity',
+    // 复述系统提示词：1 次请求，看它收到的系统提示词里有没有别家平台的字样。
+    'system_prompt',
     'glitch',
     'token_delta',
     'echo_rewrite',
@@ -72,6 +74,35 @@ export type AuditPlainVerdict = {
     summary?: string;
 };
 
+/**
+ * 结论下面那几行短句（后端算好的「人话要点」）。
+ *
+ * percent 只有后端给了才展示，前端绝不自己算百分比；tone 未知按 info 处理。
+ */
+export type AuditHighlight = {
+    kind: string;
+    text: string;
+    tone: 'ok' | 'warn' | 'info';
+    /** 后端算好的百分比（0-100）。没有就不显示数字。 */
+    percent?: number;
+};
+
+/** 一条渠道来源线索：只提示「疑似」，不能证明是官方正品。 */
+export type AuditProvenanceHint = {
+    platform: string;
+    strength: 'strong' | 'medium' | 'weak';
+    /** 机器码，翻译映射见 lib/passive-verdict 的 PASSIVE_REASON_LABEL_KEY。 */
+    code: string;
+    evidence?: string;
+};
+
+/** 渠道来源（被动观察汇总）：observed 是看过多少份回复，为 0 时前端不出这张卡。 */
+export type AuditProvenance = {
+    hints?: AuditProvenanceHint[];
+    header_families?: string[];
+    observed?: number;
+};
+
 export type AuditViewReport = {
     requested_model: string;
     requested_families?: string[];
@@ -84,6 +115,10 @@ export type AuditViewReport = {
     plain?: AuditPlainVerdict;
     /** 从模型名推断的主家族（openai/anthropic/qwen...），空表示看不出来。 */
     family?: string;
+    /** 结论下方的要点短句（可选；旧报告没有）。 */
+    highlights?: AuditHighlight[];
+    /** 渠道来源线索（可选；旧报告或样本不足时没有）。 */
+    provenance?: AuditProvenance;
 };
 
 export type ModelAuditRequest = {

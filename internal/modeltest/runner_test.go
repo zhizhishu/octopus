@@ -1659,3 +1659,52 @@ func TestTransformModelTestStreamMultiSignatureNotBlindlyMerged(t *testing.T) {
 		t.Fatalf("finish reason mismatch: %q", obs.FinishReason)
 	}
 }
+
+// TestTransformModelTestStreamEnvelopeIsSideChannelOnly：流里的上游编号/模型名只走旁路交给来源判断，
+// 合成消息与原版逐字节一致——渠道「测试」按钮和所有探针看到的东西不能因为来源判断而变。
+func TestTransformModelTestStreamEnvelopeIsSideChannelOnly(t *testing.T) {
+	adapter := outbound.Get(outbound.OutboundTypeAnthropic)
+	if adapter == nil {
+		t.Fatal("anthropic outbound adapter unavailable")
+	}
+	events := []string{
+		`{"type":"message_start","message":{"id":"msg_bdrk_01ABC","type":"message","role":"assistant","model":"claude-opus-4-8","content":[],"usage":{"input_tokens":5,"output_tokens":1}}}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_bdrk_01XYZ","name":"write","input":{}}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{}"}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"content_block_start","index":1,"content_block":{"type":"text"}}`,
+		`{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"done"}}`,
+		`{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":3}}`,
+		`{"type":"message_stop"}`,
+	}
+	build := func() *http.Response {
+		blocks := make([]string, 0, len(events))
+		for _, ev := range events {
+			blocks = append(blocks, anthropicSSE(t, ev))
+		}
+		return &http.Response{
+			Header: http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:   io.NopCloser(strings.NewReader(strings.Join(blocks, "\n\n") + "\n\n")),
+		}
+	}
+	plain, err := transformModelTestStream(context.Background(), adapter, build())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env modelTestStreamEnvelope
+	withEnv, err := transformModelTestStreamWithEnvelope(context.Background(), adapter, build(), &env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, _ := json.Marshal(plain)
+	b, _ := json.Marshal(withEnv)
+	if string(a) != string(b) {
+		t.Fatalf("synthesized message must not change when the envelope is collected:\nplain=%s\nwith =%s", a, b)
+	}
+	if plain.ID != "" || len(plain.Choices[0].Message.ToolCalls) != 0 {
+		t.Fatalf("synthesized message must not carry the side-channel ids: %s", a)
+	}
+	if env.ResponseID != "msg_bdrk_01ABC" || env.FirstToolCallID != "toolu_bdrk_01XYZ" || env.DeclaredModel != "claude-opus-4-8" {
+		t.Fatalf("envelope = %+v, want the upstream ids and model", env)
+	}
+}
