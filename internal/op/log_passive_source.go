@@ -165,8 +165,10 @@ func passiveSourceIsAnthropicPath(relayLog model.RelayLog) bool {
 //  1. 模型名以 kiro- 开头                              → aws_kiro     / strong / model_prefix_kiro
 //  2. 模型名以 anthropic. 开头或含 .anthropic.claude    → aws_bedrock  / medium / model_prefix_bedrock
 //  3. 响应 id 以 req_vrtx_ 开头                         → gcp_vertex   / strong / response_id_vertex
+//     3b. 响应 id 以 msg_bdrk_ 开头                        → aws_bedrock  / strong / response_id_bedrock
 //  4. 首个 tool call id 完全匹配 ^tool_[0-9]+$           → gcp_vertex   / strong / tool_id_vertex
 //  5. 首个 tool call id 以 tooluse_ 开头                → aws          / medium / tool_id_bedrock
+//     5b. 首个 tool call id 以 toolu_bdrk_ 开头            → aws_bedrock  / strong / tool_id_bedrock_messages
 //  6. thinking 签名以 claude# 开头                      → gcp_vertex   / strong / signature_vertex
 //  7. 头家族含 aws                                      → aws          / medium / header_aws
 //  8. 头家族含 openai 且请求模型是别的家族              → openai       / medium / header_openai_cross_vendor
@@ -207,16 +209,24 @@ func computePassiveSourceHints(relayLog model.RelayLog) []model.RelayLogSourceHi
 		add(passiveSourcePlatformAWSBedrock, passiveSourceStrengthMedium, "model_prefix_bedrock", upstreamModel)
 	}
 
-	// 规则 3：Vertex 原生响应 id 前缀。
+	// 规则 3：Vertex 原生响应 id 前缀；规则 3b：Bedrock 的 Anthropic 消息格式响应 id `msg_bdrk_`。
 	if strings.HasPrefix(env.ResponseID, "req_vrtx_") {
 		add(passiveSourcePlatformGCPVertex, passiveSourceStrengthStrong, "response_id_vertex", "req_vrtx_")
+	} else if strings.HasPrefix(env.ResponseID, "msg_bdrk_") {
+		add(passiveSourcePlatformAWSBedrock, passiveSourceStrengthStrong, "response_id_bedrock", "msg_bdrk_")
 	}
 
-	// 规则 4-5：tool call id 形态（同一份 id 上互斥）。
+	// 规则 4-5b：tool call id 形态（同一份 id 上互斥）。
+	// `toolu_bdrk_`：Bedrock 走 Anthropic 消息格式时的工具编号。参考项目矩阵只列了 Converse 格式的
+	// `tooluse_`；这一条是 2026-11-06 生产实测补的（一个 Claude 渠道 3 小时 195/195 个工具编号都是它）。
+	// 中转要伪造它得主动把 `bdrk` 写进去，所以按强证据算；反过来没有它不说明不是 Bedrock。
 	toolID := strings.TrimSpace(env.FirstToolCallID)
-	if passiveVertexToolIDPattern.MatchString(toolID) {
+	switch {
+	case passiveVertexToolIDPattern.MatchString(toolID):
 		add(passiveSourcePlatformGCPVertex, passiveSourceStrengthStrong, "tool_id_vertex", "tool_<n>")
-	} else if strings.HasPrefix(toolID, "tooluse_") {
+	case strings.HasPrefix(toolID, "toolu_bdrk_"):
+		add(passiveSourcePlatformAWSBedrock, passiveSourceStrengthStrong, "tool_id_bedrock_messages", "toolu_bdrk_")
+	case strings.HasPrefix(toolID, "tooluse_"):
 		add(passiveSourcePlatformAWS, passiveSourceStrengthMedium, "tool_id_bedrock", "tooluse_")
 	}
 

@@ -98,6 +98,55 @@ func TestPassiveSourceHintRules(t *testing.T) {
 			}},
 		},
 		{
+			// 规则 5b：Bedrock 走 Anthropic 消息格式的工具编号 toolu_bdrk_*（2026-11-06 生产实测）。
+			// 必须先于普通 toolu_ 判断：它也以 toolu_ 开头，但普通 toolu_ 不算任何线索。
+			name: "rule5b tool id bedrock messages format",
+			relayLog: model.RelayLog{
+				RequestEndpoint:  "messages",
+				RequestModelName: "claude-opus-4-8",
+				UpstreamEnvelope: model.RelayLogUpstreamEnvelope{
+					FirstToolCallID: "toolu_bdrk_01DXLNojQXabpu5QtCXdKDGw",
+				},
+			},
+			want: []model.RelayLogSourceHint{{
+				Platform: "aws_bedrock",
+				Strength: "strong",
+				Code:     "tool_id_bedrock_messages",
+				Evidence: "toolu_bdrk_",
+			}},
+		},
+		{
+			// 规则 3b：Bedrock 的 Anthropic 消息格式响应 id msg_bdrk_*。
+			name: "rule3b response id bedrock",
+			relayLog: model.RelayLog{
+				RequestEndpoint:  "messages",
+				RequestModelName: "claude-opus-4-8",
+				UpstreamEnvelope: model.RelayLogUpstreamEnvelope{
+					ResponseID: "msg_bdrk_01ABCdef",
+				},
+			},
+			want: []model.RelayLogSourceHint{{
+				Platform: "aws_bedrock",
+				Strength: "strong",
+				Code:     "response_id_bedrock",
+				Evidence: "msg_bdrk_",
+			}},
+		},
+		{
+			// 官方 Anthropic 的普通 toolu_ / msg_ 编号：不给任何线索（没有 bdrk 不说明不是 Bedrock，
+			// 但也绝不能把官方形态当成可疑）。
+			name: "plain toolu and msg ids give no hint",
+			relayLog: model.RelayLog{
+				RequestEndpoint:  "messages",
+				RequestModelName: "claude-opus-4-8",
+				UpstreamEnvelope: model.RelayLogUpstreamEnvelope{
+					ResponseID:      "msg_01ABCdef",
+					FirstToolCallID: "toolu_01DXLNojQXabpu5QtCXdKDGw",
+				},
+			},
+			want: nil,
+		},
+		{
 			// 规则 6：thinking 签名以 claude# 开头（Vertex 侧形态）。只记形态。
 			name: "rule6 signature vertex",
 			relayLog: model.RelayLog{
@@ -194,8 +243,12 @@ func TestPassiveSourceHintRules(t *testing.T) {
 				!reflect.DeepEqual(ev.HeaderFamilies, tc.relayLog.UpstreamEnvelope.HeaderFamilies) {
 				t.Fatalf("header families = %v, want %v", ev.HeaderFamilies, tc.relayLog.UpstreamEnvelope.HeaderFamilies)
 			}
-			if ev.Empty() {
+			// 有线索 → 证据非空；没线索（官方形态）→ 证据必须为空，不落库。
+			if len(tc.want) > 0 && ev.Empty() {
 				t.Fatalf("evidence must not be empty when a hint fired: %+v", ev)
+			}
+			if len(tc.want) == 0 && !ev.Empty() {
+				t.Fatalf("no hint expected, evidence must stay empty: %+v", ev)
 			}
 		})
 	}

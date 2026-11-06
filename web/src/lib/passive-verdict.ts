@@ -57,6 +57,8 @@ export const PASSIVE_REASON_LABEL_KEY: Record<string, string> = {
     model_prefix_kiro: 'passiveReasonKiro',
     model_prefix_bedrock: 'passiveReasonBedrock',
     tool_id_bedrock: 'passiveReasonAws',
+    tool_id_bedrock_messages: 'passiveReasonBedrock',
+    response_id_bedrock: 'passiveReasonBedrock',
     header_aws: 'passiveReasonAws',
     response_id_vertex: 'passiveReasonVertex',
     tool_id_vertex: 'passiveReasonVertex',
