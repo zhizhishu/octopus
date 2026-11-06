@@ -1,7 +1,6 @@
 package op
 
 import (
-	"regexp"
 	"strings"
 
 	"github.com/zhizhishu/octopus/internal/model"
@@ -55,30 +54,6 @@ const (
 	penaltyMissingServiceTier = 3
 	penaltyMissingCacheObject = 2
 )
-
-// passiveSourceHints 的取值域（写进 model.RelayLogSourceHint，改字等于改数据契约）。
-const (
-	passiveSourcePlatformAWSKiro    = "aws_kiro"
-	passiveSourcePlatformAWSBedrock = "aws_bedrock"
-	passiveSourcePlatformAWS        = "aws"
-	passiveSourcePlatformGCPVertex  = "gcp_vertex"
-	passiveSourcePlatformOpenAI     = "openai"
-	passiveSourcePlatformAnthropic  = "anthropic"
-
-	passiveSourceStrengthStrong = "strong"
-	passiveSourceStrengthMedium = "medium"
-)
-
-// passiveSourceHintEvidenceLimit 是 model.RelayLogSourceHint.Evidence 的字符上限。
-// 只放前缀或模型名，超长本身就是异常，截断只为保护落库体积（不加标记）。
-const passiveSourceHintEvidenceLimit = 64
-
-// passiveSourceHintModelPartLimit 是「流内换模型」那条线索里每个模型名的上限。
-const passiveSourceHintModelPartLimit = 30
-
-// passiveVertexToolIDPattern 匹配 Vertex 侧的 tool_use id 形态（tool_<数字>）。
-// 出处：cc-proxy-detector references/fingerprint-matrix.md:14-34。
-var passiveVertexToolIDPattern = regexp.MustCompile(`^tool_[0-9]+$`)
 
 // computePassiveSourceEvidence 从一条日志推导来源证据。
 //
@@ -155,154 +130,62 @@ func passiveSourceIsAnthropicPath(relayLog model.RelayLog) bool {
 
 // computePassiveSourceHints 从一条日志里算出逐条来源线索。
 //
+// 规则本身已搬到 behavior/provenance.go：主动检测侧（behavior.Run 汇总信封）与这里
+// 跑的是**同一份**规则表。同一份数据的两个消费者各写一遍，结果就是漂移——
+// 同一条 `msg_bdrk_` 前缀在日志里报 Bedrock、在检测页不报，用户看到两个矛盾结论。
+//
+// 本函数只做两件本地事：
+//   - 门一「失败日志不加线索」：错误响应是网关回的错误页，头和正文反映的是前置层，
+//     不是模型后端。把它当来源证据等于给聚合层灌噪音；
+//   - 把日志字段翻成 behavior.ProvenanceInput，再把结果翻回 model.RelayLogSourceHint。
+//
 // 输入全部是「收到上游回复之后才拿得到」的东西，一条都不改出站/下行字节：
 //   - RelayLog.UpstreamResponseModel：上游自报的模型名（首个非空）；
 //   - RelayLog.UpstreamEnvelope：响应头类别、响应 id、首个 tool call id、
 //     thinking 签名形态、流内换模型后的第二个名字。
 //
-// 规则表（evidence 列就是写进 RelayLogSourceHint.Evidence 的内容）：
-//
-//  1. 模型名以 kiro- 开头                              → aws_kiro     / strong / model_prefix_kiro
-//  2. 模型名以 anthropic. 开头或含 .anthropic.claude    → aws_bedrock  / medium / model_prefix_bedrock
-//  3. 响应 id 以 req_vrtx_ 开头                         → gcp_vertex   / strong / response_id_vertex
-//     3b. 响应 id 以 msg_bdrk_ 开头                        → aws_bedrock  / strong / response_id_bedrock
-//  4. 首个 tool call id 完全匹配 ^tool_[0-9]+$           → gcp_vertex   / strong / tool_id_vertex
-//  5. 首个 tool call id 以 tooluse_ 开头                → aws          / medium / tool_id_bedrock
-//     5b. 首个 tool call id 以 toolu_bdrk_ 开头            → aws_bedrock  / strong / tool_id_bedrock_messages
-//  6. thinking 签名以 claude# 开头                      → gcp_vertex   / strong / signature_vertex
-//  7. 头家族含 aws                                      → aws          / medium / header_aws
-//  8. 头家族含 openai 且请求模型是别的家族              → openai       / medium / header_openai_cross_vendor
-//  9. 头家族含 anthropic_ratelimit 且请求模型不是 anthropic → anthropic / medium / header_anthropic_cross_vendor
-//  10. 同一条流里换过模型名                             → (空)         / medium / model_switch_mid_stream
-//
-// 出处：规则 1-6 来自 cc-proxy-detector references/fingerprint-matrix.md:14-34；
-// 规则 10 来自 AI-Infra-Guard 的流完整性检查（项目笔记
-// ai-infra-guard-api-checker.md:285）；规则 7-9 来自 modelprint 的头家族表
-// （probes/net-headerdna.js:13-42）。
+// 规则表、顺序、Evidence 截断与出处注释见 behavior/provenance.go 的 ProvenanceHints。
 func computePassiveSourceHints(relayLog model.RelayLog) []model.RelayLogSourceHint {
-	// 失败日志一条线索都不加：错误响应是网关回的错误页，头和正文反映的是前置层，
-	// 不是模型后端。把它当来源证据等于给聚合层灌噪音。
+	// 门一：失败日志一条线索都不加（理由见上）。
 	if passiveSourceLogFailed(relayLog) {
 		return nil
 	}
 
 	env := relayLog.UpstreamEnvelope
-	upstreamModel := strings.TrimSpace(relayLog.UpstreamResponseModel)
-	lowerModel := strings.ToLower(upstreamModel)
-	// 请求侧家族只看名字，不需要任何上游数据；识别不出时是空切片（保持沉默）。
-	requestFamilies := behavior.InferFamilies(relayLog.RequestModelName)
-
-	var hints []model.RelayLogSourceHint
-	add := func(platform, strength, code, evidence string) {
-		hints = append(hints, model.RelayLogSourceHint{
-			Platform: platform,
-			Strength: strength,
-			Code:     code,
-			Evidence: passiveSourceHintEvidence(evidence),
+	hints := behavior.ProvenanceHints(behavior.ProvenanceInput{
+		UpstreamModel:       relayLog.UpstreamResponseModel,
+		RequestModel:        relayLog.RequestModelName,
+		ResponseID:          env.ResponseID,
+		FirstToolCallID:     env.FirstToolCallID,
+		SignatureClaudeHash: env.SignatureClaudeHash,
+		HeaderFamilies:      env.HeaderFamilies,
+		ModelSwitchedTo:     env.ModelSwitchedTo,
+	})
+	if len(hints) == 0 {
+		return nil
+	}
+	// 落库结构仍用 model.RelayLogSourceHint（数据契约不变，只是规则来源换了一处）。
+	out := make([]model.RelayLogSourceHint, 0, len(hints))
+	for _, hint := range hints {
+		out = append(out, model.RelayLogSourceHint{
+			Platform: hint.Platform,
+			Strength: hint.Strength,
+			Code:     hint.Code,
+			Evidence: hint.Evidence,
 		})
 	}
-
-	// 规则 1-2：模型名前缀（同一份模型名字段上互斥）。
-	if strings.HasPrefix(lowerModel, "kiro-") {
-		add(passiveSourcePlatformAWSKiro, passiveSourceStrengthStrong, "model_prefix_kiro", upstreamModel)
-	} else if strings.HasPrefix(lowerModel, "anthropic.") || strings.Contains(lowerModel, ".anthropic.claude") {
-		add(passiveSourcePlatformAWSBedrock, passiveSourceStrengthMedium, "model_prefix_bedrock", upstreamModel)
-	}
-
-	// 规则 3：Vertex 原生响应 id 前缀；规则 3b：Bedrock 的 Anthropic 消息格式响应 id `msg_bdrk_`。
-	if strings.HasPrefix(env.ResponseID, "req_vrtx_") {
-		add(passiveSourcePlatformGCPVertex, passiveSourceStrengthStrong, "response_id_vertex", "req_vrtx_")
-	} else if strings.HasPrefix(env.ResponseID, "msg_bdrk_") {
-		add(passiveSourcePlatformAWSBedrock, passiveSourceStrengthStrong, "response_id_bedrock", "msg_bdrk_")
-	}
-
-	// 规则 4-5b：tool call id 形态（同一份 id 上互斥）。
-	// `toolu_bdrk_`：Bedrock 走 Anthropic 消息格式时的工具编号。参考项目矩阵只列了 Converse 格式的
-	// `tooluse_`；这一条是 2026-11-06 生产实测补的（一个 Claude 渠道 3 小时 195/195 个工具编号都是它）。
-	// 中转要伪造它得主动把 `bdrk` 写进去，所以按强证据算；反过来没有它不说明不是 Bedrock。
-	toolID := strings.TrimSpace(env.FirstToolCallID)
-	switch {
-	case passiveVertexToolIDPattern.MatchString(toolID):
-		add(passiveSourcePlatformGCPVertex, passiveSourceStrengthStrong, "tool_id_vertex", "tool_<n>")
-	case strings.HasPrefix(toolID, "toolu_bdrk_"):
-		add(passiveSourcePlatformAWSBedrock, passiveSourceStrengthStrong, "tool_id_bedrock_messages", "toolu_bdrk_")
-	case strings.HasPrefix(toolID, "tooluse_"):
-		add(passiveSourcePlatformAWS, passiveSourceStrengthMedium, "tool_id_bedrock", "tooluse_")
-	}
-
-	// 规则 6：thinking 签名形态（只记形态，签名原文不落库）。
-	if env.SignatureClaudeHash {
-		add(passiveSourcePlatformGCPVertex, passiveSourceStrengthStrong, "signature_vertex", "claude#")
-	}
-
-	// 规则 7：任意 AWS 家族响应头（x-amzn-* / x-amz-*）。
-	// 只说明"这条回复经过了某个 AWS 前置层"，既不证明是 Bedrock，也不证明不是中转。
-	if passiveSourceListHas(env.HeaderFamilies, "aws") {
-		add(passiveSourcePlatformAWS, passiveSourceStrengthMedium, "header_aws", "x-amz*")
-	}
-
-	// 规则 8-9：头家族与请求模型家族**跨厂商**。请求侧家族识别不出时不提
-	// （缺一边不是信号，与 behavior 包的既有口径一致），否则等于把一条
-	// "猜不到"的请求当成"换过家"。右边那个 "openai"/"anthropic" 是 behavior
-	// 包的家族名（InferFamilies 的返回值），不是 Platform 取值。
-	if passiveSourceListHas(env.HeaderFamilies, "openai") &&
-		len(requestFamilies) > 0 && !passiveSourceListHas(requestFamilies, "openai") {
-		add(passiveSourcePlatformOpenAI, passiveSourceStrengthMedium, "header_openai_cross_vendor", "openai-*")
-	}
-	if passiveSourceListHas(env.HeaderFamilies, "anthropic_ratelimit") &&
-		len(requestFamilies) > 0 && !passiveSourceListHas(requestFamilies, "anthropic") {
-		add(passiveSourcePlatformAnthropic, passiveSourceStrengthMedium, "header_anthropic_cross_vendor", "anthropic-ratelimit-*")
-	}
-
-	// 规则 10：同一条流里换过自报模型名。首个名字在 UpstreamResponseModel 列里
-	// （captureUpstreamDeclaredModel 的首个非空），第二个在 UpstreamEnvelope 里。
-	// platform 留空：这条线索说的是"回复内部自相矛盾"，不指向任何一家。
-	if switched := strings.TrimSpace(env.ModelSwitchedTo); switched != "" {
-		evidence := passiveSourceHintRunes(switched, passiveSourceHintModelPartLimit)
-		if upstreamModel != "" {
-			evidence = passiveSourceHintRunes(upstreamModel, passiveSourceHintModelPartLimit) +
-				" → " + passiveSourceHintRunes(switched, passiveSourceHintModelPartLimit)
-		}
-		add("", passiveSourceStrengthMedium, "model_switch_mid_stream", evidence)
-	}
-
-	return hints
+	return out
 }
 
 // passiveSourceLogFailed 判断这条日志是不是一次失败。
 //
 // 三种失败标记任一非零即算：错误正文、错误码、>=400 的状态码。失败日志的
 // 响应头和正文来自错误页/前置层，不能当后端来源证据。
+//
+// 这是本文件自己的一道门（规则本身在 behavior）：主动检测侧只在 Ask 成功时才抄信封，
+// 这里对应日志侧的失败判定——两边都是「失败的回复不产生来源证据」。
 func passiveSourceLogFailed(relayLog model.RelayLog) bool {
 	return strings.TrimSpace(relayLog.Error) != "" ||
 		strings.TrimSpace(relayLog.ErrorCode) != "" ||
 		relayLog.ErrorStatus >= 400
-}
-
-// passiveSourceListHas 报告一个字符串集合里有没有精确等于 want 的项（大小写不敏感）。
-func passiveSourceListHas(values []string, want string) bool {
-	for _, value := range values {
-		if strings.EqualFold(strings.TrimSpace(value), want) {
-			return true
-		}
-	}
-	return false
-}
-
-// passiveSourceHintEvidence 把 evidence 收敛成「前缀/模型名 + 最多 64 字符」。
-func passiveSourceHintEvidence(evidence string) string {
-	return passiveSourceHintRunes(evidence, passiveSourceHintEvidenceLimit)
-}
-
-// passiveSourceHintRunes 按 rune 截断，不追加任何标记（截断只保护落库体积，
-// 不能改变"这是同一个值"的语义）。
-func passiveSourceHintRunes(s string, max int) string {
-	s = strings.TrimSpace(s)
-	if max <= 0 {
-		return ""
-	}
-	if r := []rune(s); len(r) > max {
-		return string(r[:max])
-	}
-	return s
 }

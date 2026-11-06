@@ -437,6 +437,14 @@ function auditPage() {
         '@/components/ui/button': widgets('Button'),
         '@/components/ui/dialog': widgets('Dialog DialogContent DialogDescription DialogHeader DialogTitle'),
         '@/lib/utils': { cn: (...p) => p.filter(Boolean).join(' ') },
+        // 第三期的要点行/渠道来源卡：真逻辑由 audit-highlights.test.cjs 覆盖（纯函数，
+        // 直接加载 src/lib/audit-highlights.ts）；这里只给能让页面挂载的替身，
+        // 因为 @/ 别名走不到真 require。
+        '@/lib/audit-highlights': {
+            highlightRows: () => [],
+            provenanceView: () => null,
+            TONE_DOT_CLASS: { ok: '', warn: '', info: '' },
+        },
         '@/components/modules/channel/channel-utils': { getSelectedChannelModels: (channel) => channel.selected_models ?? [] },
         '@/lib/channel-test': { sanitizeChannelTestError: (value) => value },
         // 队列页自身的渲染在这里不测（有独立的 model-audit-queue.test.cjs）。
@@ -444,6 +452,8 @@ function auditPage() {
         // 所以给一个能触发回调的存根，测试才能走完整的"回看"路径。
         // 指纹卡自身的展示由 fingerprint-summary.test.cjs 覆盖读数；这里只要页面能挂载。
         './FingerprintCard': { FingerprintCard: () => null },
+        // 渠道来源卡自身的渲染由 audit-highlights.test.cjs 覆盖源码契约。
+        './ProvenanceCard': { ProvenanceCard: () => null },
         './Queue': {
             ModelAuditQueue: ({ onOpenReport } = {}) => {
                 queueView.onOpenReport = onOpenReport;

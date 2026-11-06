@@ -18,6 +18,7 @@ import {
     MessageSquareQuote,
     Radar,
     Repeat2,
+    ScrollText,
     Signature,
     TextQuote,
     Wifi,
@@ -57,6 +58,7 @@ import {
     DialogTitle,
 } from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
+import { highlightRows, provenanceView, TONE_DOT_CLASS } from '@/lib/audit-highlights';
 import { getSelectedChannelModels } from '@/components/modules/channel/channel-utils';
 import { sanitizeChannelTestError } from '@/lib/channel-test';
 import { ModelAuditQueue } from './Queue';
@@ -91,6 +93,7 @@ type ProbeMeta = {
 
 import { readFingerprint } from './fingerprint';
 import { FingerprintCard } from './FingerprintCard';
+import { ProvenanceCard } from './ProvenanceCard';
 import {
     readTokenizer,
     readTokenizerRecording,
@@ -104,6 +107,9 @@ import {
 const PROBES: ProbeMeta[] = [
     { id: 'liveness', name: '连通', hint: '1次', desc: '看渠道能不能正常回话', icon: Wifi },
     { id: 'identity', name: '自报身份', hint: '仅参考', desc: '问它自己是谁，口供可改，只作参考', icon: Fingerprint },
+    // 复述系统提示词：问它收到的系统提示词长什么样。中转站常在系统提示词里写别家平台的名字，
+    // 这比「自报身份」难改，但同样只是线索（提示词可以被删掉再重写）。
+    { id: 'system_prompt', name: '复述系统提示词', hint: '1次', desc: '让模型复述它收到的系统提示词，看里面有没有别家平台的字样', icon: ScrollText },
     { id: 'glitch', name: '生僻词反应', hint: '仅参考', desc: '看生僻词反应像哪家，只作参考', icon: Binary },
     { id: 'token_delta', name: '用量虚报', hint: '2次', desc: '核对上游自报的输入用量是否虚高', icon: Radar },
     { id: 'echo_rewrite', name: '回复改写', hint: '1次', desc: '检查指定文本是否被原样回传', icon: Repeat2 },
@@ -744,6 +750,9 @@ export function ModelAudit() {
     const [advancedOpen, setAdvancedOpen] = useState(false);
     const advancedSelected = selected.some((id) => ADVANCED_PROBE_IDS.includes(id));
     const recording = useMemo(() => readTokenizerRecording(report?.report), [report]);
+    // 要点行与渠道来源卡都只读后端算好的结论（百分比不自己算、线索不自己判）。
+    const highlights = useMemo(() => highlightRows(report?.report), [report]);
+    const provenance = useMemo(() => provenanceView(report?.report), [report]);
     // 复核数只计 Score>0；tokenizer 等参考项（tone=info）永不进「需要复核」。
     const warnCount = report ? (report.report.findings ?? []).filter((f) => (f.score ?? 0) > 0).length : 0;
     const failCount = rows.filter((row) => row.tone === 'fail').length;
@@ -1181,6 +1190,20 @@ export function ModelAudit() {
                                     {copy.title}
                                 </h3>
                                 <p className="mt-1 text-sm text-muted-foreground">{copy.sub}</p>
+                                {/* 要点行：后端给几条短句就列几条；没有就整块不渲染。 */}
+                                {highlights.length > 0 && (
+                                    <ul className="mt-2 grid gap-1">
+                                        {highlights.map((row) => (
+                                            <li key={row.key} className="flex items-start gap-1.5 text-xs leading-5">
+                                                <span className={cn('mt-1.5 size-1.5 shrink-0 rounded-full', TONE_DOT_CLASS[row.tone])} />
+                                                <span className="min-w-0 flex-1">{row.text}</span>
+                                                {row.percentText && (
+                                                    <span className="shrink-0 tabular-nums text-muted-foreground">{row.percentText}</span>
+                                                )}
+                                            </li>
+                                        ))}
+                                    </ul>
+                                )}
                             </div>
                             <div className="grid grid-cols-3 gap-2">
                                 <div className="rounded-2xl bg-muted/40 px-3 py-3">
@@ -1206,6 +1229,8 @@ export function ModelAudit() {
                             )}
                             {tokenizer && <TokenizerCard summary={tokenizer} />}
                             {recording && <TokenizerRecordingCard recording={recording} resultId={report.result_id} />}
+                            {/* 渠道来源：observed>0 才出，看不够样本时宁可不说。 */}
+                            {provenance && <ProvenanceCard view={provenance} />}
                             <div className="flex h-1.5 overflow-hidden rounded-full bg-muted">
                                 {rows.map((row) => (
                                     <span

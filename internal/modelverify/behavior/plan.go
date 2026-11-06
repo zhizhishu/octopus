@@ -15,7 +15,7 @@ type ProbePlan struct {
 
 // PlannedRequests 返回探针"打算发几次请求"。数字来自真实实现：
 //
-//	liveness/identity/echo_rewrite/context_canary/glitch = 1
+//	liveness/identity/system_prompt/echo_rewrite/context_canary/glitch = 1
 //	token_delta = 2（基准 + 加长）
 //	signature = 2（harvest + replay；不适用时 0）
 //	fingerprint = 3（三道题）
@@ -26,7 +26,7 @@ type ProbePlan struct {
 // 展示的是完整计划量，所以分词器两项直接用同一套常量，其它项手写真实次数。
 func PlannedRequests(id ProbeID) int {
 	switch id {
-	case ProbeLiveness, ProbeIdentity, ProbeEchoRewrite, ProbeContextCanary, ProbeGlitch:
+	case ProbeLiveness, ProbeIdentity, ProbeSystemPrompt, ProbeEchoRewrite, ProbeContextCanary, ProbeGlitch:
 		return 1
 	case ProbeTokenDelta:
 		return 2
@@ -55,6 +55,7 @@ func AllProbeIDs() []ProbeID {
 		ProbeTokenDelta,
 		ProbeFingerprint,
 		ProbeIdentity,
+		ProbeSystemPrompt,
 		ProbeTokenizerID,
 		ProbeGlitch,
 		ProbeSignature,
@@ -76,6 +77,7 @@ func FullProbeIDs() []ProbeID {
 		ProbeTokenDelta,
 		ProbeFingerprint,
 		ProbeIdentity,
+		ProbeSystemPrompt,
 		ProbeGlitch,
 		ProbeSignature,
 	}

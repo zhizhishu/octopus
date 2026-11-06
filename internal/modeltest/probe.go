@@ -135,7 +135,68 @@ func (s *ProbeSender) Ask(ctx context.Context, ask modelverify.Ask) (modelverify
 		// 回放探针是判定级观测）与「网络/5xx 没跑成」（不算证据）。
 		return modelverify.Response{}, &modelverify.UpstreamStatusError{Status: status, Err: err}
 	}
-	return ProbeResponseFrom(parsed), nil
+	resp := ProbeResponseFrom(parsed)
+	// ---- 信封 ----
+	//
+	// 全部是收到回复之后才读得到的东西，不改任何出站字节（见 modelverify.Response
+	// 里那一节注释）。它们只给来源规则表用（behavior/provenance.go）。
+	//
+	// 自报模型名优先取审计专用字段（Gemini 只写那里），空则回落 Model——
+	// 与 relay 侧 captureUpstreamDeclaredModel 同一口径。
+	// 流式回复的合成消息不带模型名，走旁路；非流式就在 parsed 上。
+	resp.DeclaredModel = strings.TrimSpace(r.lastStreamEnvelope.DeclaredModel)
+	if resp.DeclaredModel == "" {
+		resp.DeclaredModel = strings.TrimSpace(parsed.UpstreamDeclaredModel)
+	}
+	if resp.DeclaredModel == "" {
+		resp.DeclaredModel = strings.TrimSpace(parsed.Model)
+	}
+	// 编号与签名形态只在 Anthropic 出站路径上取：只有那条路径上的 id / tool id
+	// 是上游原文（见 transformer/outbound/authropic 的 TransformResponse /
+	// TransformStream）。其它出站适配器可能自己重写编号，拿它们当云端线索
+	// 就是凭空的证据。
+	if s.channel.Type == outbound.OutboundTypeAnthropic {
+		// 流式回复的编号走旁路（runner 的 lastStreamEnvelope，合成消息里没有）；
+		// 非流式回复的编号就在 parsed 上。
+		resp.ResponseID = strings.TrimSpace(r.lastStreamEnvelope.ResponseID)
+		if resp.ResponseID == "" {
+			resp.ResponseID = strings.TrimSpace(parsed.ID)
+		}
+		resp.FirstToolCallID = strings.TrimSpace(r.lastStreamEnvelope.FirstToolCallID)
+		if resp.FirstToolCallID == "" {
+			resp.FirstToolCallID = probeFirstNonEmptyToolCallID(parsed)
+		}
+		// 只看形态：签名原文（redacted 解码之前那一串）是否以 claude# 开头。
+		// ProbeResponseFrom 已经将 redacted / 别家密文分流掉了，剩下的
+		// resp.Signature 就是上游原文。
+		resp.SignatureClaudeHash = strings.HasPrefix(resp.Signature, "claude#")
+	}
+	// 响应头家族：runner 在收到 2xx 回复时抄好的（只记类别、不记原值）。
+	resp.HeaderFamilies = r.lastHeaderFamilies
+	return resp, nil
+}
+
+// probeFirstNonEmptyToolCallID 取响应里第一个非空 tool call id（Message 与 Delta 都看）。
+//
+// 与 relay 侧 firstNonEmptyToolCallID 同口径（那里未导出，且不在可 import 的公共面，
+// 所以本地实现一份；两边要一致时以 relay 侧为准）。
+func probeFirstNonEmptyToolCallID(resp *transformermodel.InternalLLMResponse) string {
+	if resp == nil {
+		return ""
+	}
+	for i := range resp.Choices {
+		for _, msg := range []*transformermodel.Message{resp.Choices[i].Message, resp.Choices[i].Delta} {
+			if msg == nil {
+				continue
+			}
+			for _, toolCall := range msg.ToolCalls {
+				if id := strings.TrimSpace(toolCall.ID); id != "" {
+					return id
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // probeMessagesFrom 把探针的轮次翻成内部消息形态。
@@ -175,6 +236,56 @@ func probeMessagesFrom(turns []modelverify.Turn) []transformermodel.Message {
 // 单位判定错位，而同一 cell 内两侧单位必须一致，否则秩检验失效。
 func (s *ProbeSender) Protocol() string {
 	return probeProtocolOf(s.channel.Type)
+}
+
+// InjectedFamilies 报告本次出站会注入的「别家身份」所属家族。
+//
+// 用途只有一处：复述系统提示词探针要扣掉 oct 自己注入的文字（见
+// behavior/system_prompt_probe.go）。伪装生效时，出站会带上 Claude CLI / Codex
+// 的身份提示（system 段的身份声明、指令），模型复述系统提示词时会把它们原样
+// 带出来——不扣掉的话，一个正常的伪装渠道会被自己的伪装判成“别家平台痕迹”。
+//
+// 哪些算“注入”：
+//   - 渠道类型本身就是那家协议（Anthropic → anthropic，Responses → openai），
+//     这条与是否伪装无关，协议身份是出站形状的一部分；
+//   - 伪装形状（Cloak.Shape）：claude → anthropic，codex → openai。
+//
+// 装扮开关关掉（cloak=never）时一律空：那时既没有 CLI 身份头，也没有
+// 身份注入，不该扣任何东西。
+//
+// 注：model-test 路径不会把渠道 / 接入方案的 system prompt 覆盖（SystemPromptOverride）
+// 加进探针请求——那些层只在 relay 正向转发里应用（internal/relay/prompt_override.go:39
+// 的 applyPromptOverrides，调用点只有 relay/relay.go:539 与 relay/race_group.go:129）。
+// 所以这里不需为它额外并入家族。
+func (s *ProbeSender) InjectedFamilies() []string {
+	if !shouldApplyChannelCloak(s.channel.Cloak) {
+		return nil
+	}
+	families := make([]string, 0, 2)
+	add := func(family string) {
+		for _, existing := range families {
+			if existing == family {
+				return
+			}
+		}
+		families = append(families, family)
+	}
+	switch s.channel.Type {
+	case outbound.OutboundTypeAnthropic:
+		add("anthropic")
+	case outbound.OutboundTypeOpenAIResponse:
+		add("openai")
+	}
+	switch strings.ToLower(strings.TrimSpace(s.channel.Cloak.Shape)) {
+	case "claude":
+		add("anthropic")
+	case "codex":
+		add("openai")
+	}
+	if len(families) == 0 {
+		return nil
+	}
+	return families
 }
 
 func probeProtocolOf(t outbound.OutboundType) string {
