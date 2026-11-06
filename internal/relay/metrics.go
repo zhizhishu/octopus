@@ -65,6 +65,12 @@ type RelayMetrics struct {
 	// CommitUpstreamDeclaredModel)。
 	UpstreamDeclaredModel string
 
+	// UpstreamEnvelope 是「产出最终响应的那次尝试」收回复时抄下的标识位（响应头
+	// 家族 / 响应 id / 首个 tool call id / 签名形态 / 流内换模型），只在内存里
+	// 传给被动来源计算（op/log_passive_source.go），不落库、不出 API。
+	// 归属规则同 UpstreamDeclaredModel：只记赢家（见 CommitUpstreamEnvelope）。
+	UpstreamEnvelope model.RelayLogUpstreamEnvelope
+
 	// usageEstimated is true when Stats' token/cost figures were counted locally
 	// because the upstream omitted usage (see SetInternalResponse). saveLog surfaces
 	// this as usage_source=local_estimate so the numbers read as an estimate.
@@ -164,6 +170,19 @@ func (m *RelayMetrics) CommitUpstreamDeclaredModel(name string) {
 		return
 	}
 	m.UpstreamDeclaredModel = strings.TrimSpace(name)
+}
+
+// CommitUpstreamEnvelope 把「产出最终响应的那次尝试」抄下的标识位写进请求级观测。
+//
+// 调用时机与 CommitUpstreamDeclaredModel 完全一致（collectResponse 里并排），
+// 因为两者都是「赢家才有资格上报」的尝试级事实：失败尝试的观测不落日志。
+// 无条件覆盖：赢家没拿到任何标识位就是空，不沿用先前失败尝试的那份。
+// 纯观测——不参与、不改变任何转发字节。
+func (m *RelayMetrics) CommitUpstreamEnvelope(e model.RelayLogUpstreamEnvelope) {
+	if m == nil {
+		return
+	}
+	m.UpstreamEnvelope = e
 }
 
 // upstreamModelMismatch 三态比对"上游自报的模型名"与"我们发出去的模型名"。
@@ -945,6 +964,7 @@ func (m *RelayMetrics) saveLog(ctx context.Context, err error, duration time.Dur
 		ChannelKeyRemark:      m.ChannelKeyRemark,
 		ActualModelName:       actualModel,
 		UpstreamResponseModel: m.UpstreamDeclaredModel,
+		UpstreamEnvelope:      m.UpstreamEnvelope,
 		UpstreamModelMismatch: mismatch,
 		UpstreamMismatchCode:  mismatchCode,
 		ModelFamilyVerdict:    familyVerdict,

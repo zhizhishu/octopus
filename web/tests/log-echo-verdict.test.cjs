@@ -331,17 +331,37 @@ test('echo evidence cell pins the down arrow and wraps the echo group on an inne
     assert.ok(findElement(inner, (node) => node.props?.children === 'echoMismatch'), 'echo group lives inside the inner container');
 });
 
-test('admin row keeps the passive summary chip and the down arrow even without echo/audit', () => {
+test('row without any passive data shows no passive chip (old rows / passive off stay quiet)', () => {
     const { LogCard } = loadCard();
-    // 无回显/无主动字段；nil 被动字段 -> 「未分析」，不伪造样本。
+    // 无回显/无主动字段；nil 被动字段 -> 不出徽章（旧记录或没开被动检测，不再显示「未分析」）。
     const grid = renderCardHeader(LogCard, sampleLog({
         channel_name: '', upstream_response_model: '', upstream_model_mismatch: undefined,
         upstream_mismatch_code: '', model_family_verdict: '',
     }));
     const cell = findElement(grid, (node) => node.props?.['data-log-cell'] === '2' && node.props?.['data-log-row'] === '2');
     assert.ok(cell, 'row2 col2 cell still exists as a layout slot');
-    assert.equal(cell.props.children[0]?.type, 'ArrowDown', 'passive summary keeps the down arrow');
-    assert.ok(findElement(cell, (node) => node.props?.children === 'passiveBadgeMissing'), 'nil passive -> not-analyzed chip');
+    for (const key of ['passiveBadgeMissing', 'passiveVerdictClean', 'passiveVerdictSuspicious']) {
+        assert.equal(findElement(grid, (node) => node.props?.children === key), undefined, `nil passive -> no ${key} chip`);
+    }
+});
+
+test('passive badge turns amber with the strongest reason when a hint fires', () => {
+    const { LogCard } = loadCard();
+    const grid = renderCardHeader(LogCard, sampleLog({
+        passive_summary: { version: 'v1', status: 'not_applicable', reason: 'tool_output' },
+        passive_source: { hints: [
+            { platform: 'aws', strength: 'medium', code: 'header_aws', evidence: 'x-amz*' },
+            { platform: 'aws_kiro', strength: 'strong', code: 'model_prefix_kiro', evidence: 'kiro-claude-sonnet' },
+        ] },
+    }));
+    const badge = collect(grid.props.children, (node) => node.type === 'Badge' && node.props?.children === 'passiveVerdictSuspicious')[0];
+    assert.ok(badge, 'suspicious passive badge exists');
+    assert.match(String(badge.props.className), /amber-/, 'suspicious badge is amber');
+    const popover = findElement(grid, (node) => node.type === 'Popover' && text(node).includes('passiveVerdictSuspicious'));
+    assert.ok(popover, 'suspicious popover exists');
+    const content = text(popover);
+    assert.ok(content.includes('kiro-claude-sonnet'), 'hint evidence shown');
+    assert.ok(content.includes('passiveVerdictCaveat'), 'caveat shown: passive can only disprove');
 });
 
 test('passive summary badge shows the six features and stays neutral (never a risk colour)', () => {
@@ -352,13 +372,13 @@ test('passive summary badge shows the six features and stays neutral (never a ri
             features: { chars: 120, lines: 4, paragraphs: 2, code_blocks: 0, code_ratio: 0, markdown_lines: 1 },
         },
     }));
-    const badge = collect(grid.props.children, (node) => node.type === 'Badge' && node.props?.children === 'passiveBadgeInsufficient')[0];
-    assert.ok(badge, 'insufficient passive badge exists');
+    const badge = collect(grid.props.children, (node) => node.type === 'Badge' && node.props?.children === 'passiveVerdictClean')[0];
+    assert.ok(badge, 'no-issue passive badge exists');
     const cls = String(badge.props.className);
     assert.doesNotMatch(cls, /amber-/, 'passive badge never amber');
     assert.doesNotMatch(cls, /red-/, 'passive badge never red');
     assert.match(cls, /text-muted-foreground/, 'passive badge is neutral');
-    const popover = findElement(grid, (node) => node.type === 'Popover' && text(node).includes('passiveBadgeInsufficient'));
+    const popover = findElement(grid, (node) => node.type === 'Popover' && text(node).includes('passiveVerdictClean'));
     assert.ok(popover, 'passive popover exists');
     const content = text(popover);
     assert.match(content, /passiveFeatureChars/);
@@ -373,12 +393,13 @@ test('not_applicable passive summary is neutral and shows its reason, never a wa
     const grid = renderCardHeader(LogCard, sampleLog({
         passive_summary: { version: 'v1', status: 'not_applicable', reason: 'tool_output' },
     }));
-    const badge = collect(grid.props.children, (node) => node.type === 'Badge' && node.props?.children === 'passiveBadgeNotApplicable')[0];
-    assert.ok(badge, 'not-applicable passive badge exists');
+    // 工具调用回复：正文统计不适用，但不是失败——按「没发现问题」出中性徽章，原因仍在弹层里。
+    const badge = collect(grid.props.children, (node) => node.type === 'Badge' && node.props?.children === 'passiveVerdictClean')[0];
+    assert.ok(badge, 'tool-output row still gets the neutral no-issue badge');
     const cls = String(badge.props.className);
     assert.doesNotMatch(cls, /amber-/, 'not a warning colour');
     assert.doesNotMatch(cls, /red-/, 'not a risk colour');
-    const popover = findElement(grid, (node) => node.type === 'Popover' && text(node).includes('passiveBadgeNotApplicable'));
+    const popover = findElement(grid, (node) => node.type === 'Popover' && text(node).includes('passiveVerdictClean'));
     assert.ok(popover, 'not-applicable popover exists');
     assert.ok(text(popover).includes('tool_output'), 'reason shown in the popover');
 });
@@ -436,8 +457,8 @@ test('echo comparison text wraps and risk badges override the Badge overflow cli
 
 test('interactive badges activate on Enter/Space in place, and ignore other keys', () => {
     const { LogCard } = loadCard();
-    // name-mismatch 渲染「回显不符」Popover 徽标 + 客户端徽标 + 被动摘要徽标（grid 内 3 个）+ 重试渠道徽标（retryTree 1 个）。
-    // 该行没有本行审计字段 → 无 detect 触发器（快照不冒充本行）；被动摘要与主动字段隔离。
+    // name-mismatch 渲染「回显不符」Popover 徽标 + 客户端徽标（grid 内 2 个）+ 重试渠道徽标（retryTree 1 个）。
+    // 该行没有被动字段 → 不出被动徽章；也没有本行审计字段 → 无 detect 触发器（快照不冒充本行）。
     const grid = renderCardHeader(LogCard, mismatchLog());
 
     const retry = findElement(grid, (node) => typeof node.type === 'function' && node.type.name === 'RetryBadgeWithPopover');
@@ -445,7 +466,7 @@ test('interactive badges activate on Enter/Space in place, and ignore other keys
     const retryTree = retry.type(retry.props);
 
     const triggers = [grid, retryTree].flatMap((source) => collect(source, (node) => typeof node.props?.onKeyDown === 'function'));
-    assert.equal(triggers.length, 4, 'client + echo-mismatch + passive summary + retry; a row without own audit fields has no detect trigger');
+    assert.equal(triggers.length, 3, 'client + echo-mismatch + retry; no passive data -> no passive trigger; no own audit fields -> no detect trigger');
     const handlers = triggers.map((node) => node.props.onKeyDown);
     for (const trigger of triggers) {
         let bubbled = 1;

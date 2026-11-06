@@ -366,6 +366,24 @@ type relayAttempt struct {
 	// to the channel that later succeeded (F10).
 	upstreamDeclaredModel string
 
+	// upstreamEnvelope 是这次尝试「收到上游回复之后」顺手抄下的标识位：响应头家族
+	// （仅 2xx）、响应 id / 首个 tool call id / thinking 签名形态（仅 Anthropic 出站
+	// 路径，该路径这些值是上游原文）、同一条流里的换模型名。
+	//
+	// 与 upstreamDeclaredModel 一样是尝试级：请求级 metrics 只在 collectResponse 由
+	// 「产出最终响应的那次尝试」提交（见 RelayMetrics.CommitUpstreamEnvelope），失败
+	// 尝试的观测不会沾到赢家的日志上。纯观测：只读收到的回复，不改任何出站/下行字节。
+	upstreamEnvelope dbmodel.RelayLogUpstreamEnvelope
+
+	// streamFirstDeclaredModel 是**这一条流**里第一个非空的自报模型名。
+	//
+	// 为什么不去借 upstreamDeclaredModel 比对：那个字段是 attempt 级的首个非空，
+	// 而同一个 attempt 里 goto 重试换适配器会合法地换名字，跨流比较会造出假的
+	// 「流中途换模型」。所以每个响应入口都先清空它（见 handleStreamResponse /
+	// handleStreamResponseAsNonStream / handleNonStreamResponseAsStream / handleResponse
+	// 开头），只在同一条流内部比。
+	streamFirstDeclaredModel string
+
 	// upstreamResponded records that THIS attempt got an HTTP response back from
 	// the upstream. Receiving a response does NOT mean the request was executed:
 	// a deterministic 4xx rejection (e.g. 400/422) is an explicit refusal where
