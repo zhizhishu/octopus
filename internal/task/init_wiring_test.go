@@ -9,13 +9,21 @@ import (
 	"testing"
 )
 
-// TestInitDoesNotWireAutoAudit 静态(AST)断言 Init 不再接线任何会自动打上游的检测路径:
-// 既不调用 RegisterAuditFollowUp(回显不一致自动跟进), 也不注册 TaskModelAuditQuick(周期快检)。
-// 这是"后台不得自动启动消耗 token 的 behavior 探针"的接线面证据, 与默认值面(DefaultSettings)
-// 互为补充——只断言默认 false 而漏接线不算覆盖。
+// TestInitWiresAutoAuditBehindRuntimeSwitches 静态(AST)断言 Init **接线了**两条会花钱的
+// 检测路径，且接线方式仍然是"运行时由开关挡住"：
+//   - 注册 TaskModelAuditQuick（周期抽检），间隔用 scheduledAuditInterval，且 runOnStart=false
+//     （启动那一刻不该打上游）；
+//   - 调用 RegisterAuditFollowUp（可疑日志跟查）。
 //
-// 用 AST 而非运行时调用 Init: Init 会启动后台协程并读设置缓存, 在单测二进制里不该被真跑。
-func TestInitDoesNotWireAutoAudit(t *testing.T) {
+// 为什么这条断言的形式变了：上一期为了"后台绝不自动打上游"，把两条路径整段拆掉了——
+// 那样一来开关再打开也什么都不会发生，开关本身成了摆设。现在接回来，但真正的闸门在
+// 运行时：ModelAuditQuickTask 第一件事读 model_audit_enabled，跟查回调先过
+// model_audit_enabled + model_audit_followup_enabled 两道明确 true（见 op.AuditFollowUpTrigger），
+// 且每次真发题还要扣当日额度。"接线了但开关关着时零入队、零上游请求"由
+// audit_test.go 的运行时用例证明，这里只证明接线面本身。
+//
+// 用 AST 而非运行时调用 Init：Init 会启动后台协程并读设置缓存，在单测二进制里不该被真跑。
+func TestInitWiresAutoAuditBehindRuntimeSwitches(t *testing.T) {
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("cannot resolve test file path")
@@ -38,6 +46,9 @@ func TestInitDoesNotWireAutoAudit(t *testing.T) {
 		t.Fatal("func Init not found in init.go")
 	}
 
+	followUpWired := false
+	quickAuditRegistered := false
+	quickAuditRunOnStart := true // 只有真的看到 false 实参才放过
 	ast.Inspect(initFn.Body, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
@@ -46,18 +57,35 @@ func TestInitDoesNotWireAutoAudit(t *testing.T) {
 		switch fn := call.Fun.(type) {
 		case *ast.Ident:
 			if fn.Name == "RegisterAuditFollowUp" {
-				t.Errorf("Init must not call RegisterAuditFollowUp (auto follow-up disconnected)")
+				followUpWired = true
 			}
 			if fn.Name == "Register" && len(call.Args) > 0 {
 				if first, ok := call.Args[0].(*ast.Ident); ok && first.Name == "TaskModelAuditQuick" {
-					t.Errorf("Init must not register TaskModelAuditQuick (scheduled quick audit disconnected)")
+					quickAuditRegistered = true
+					if len(call.Args) < 4 {
+						t.Errorf("Register(TaskModelAuditQuick, ...) should pass name, interval, runOnStart and fn; got %d args", len(call.Args))
+						return true
+					}
+					if ident, ok := call.Args[2].(*ast.Ident); ok && ident.Name == "false" {
+						quickAuditRunOnStart = false
+					}
 				}
 			}
 		case *ast.SelectorExpr:
 			if fn.Sel.Name == "RegisterAuditFollowUp" {
-				t.Errorf("Init must not call RegisterAuditFollowUp (auto follow-up disconnected)")
+				followUpWired = true
 			}
 		}
 		return true
 	})
+
+	if !quickAuditRegistered {
+		t.Error("Init must register TaskModelAuditQuick (runtime switch model_audit_enabled keeps it from spending anything when off)")
+	}
+	if quickAuditRegistered && quickAuditRunOnStart {
+		t.Error("TaskModelAuditQuick must be registered with runOnStart=false: the moment the process boots is not a moment to bill upstream")
+	}
+	if !followUpWired {
+		t.Error("Init must call RegisterAuditFollowUp (runtime switches keep it from spending anything when off)")
+	}
 }

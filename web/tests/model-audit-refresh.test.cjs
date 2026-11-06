@@ -454,6 +454,9 @@ function auditPage() {
         './FingerprintCard': { FingerprintCard: () => null },
         // 渠道来源卡自身的渲染由 audit-highlights.test.cjs 覆盖源码契约。
         './ProvenanceCard': { ProvenanceCard: () => null },
+        // 后台检测面板（第三期）自身读设置项、自己保存：渲染与键名由
+        // tests/audit-budget.test.cjs 锁，这里只要页面能挂载（照 ProvenanceCard 的补法）。
+        './BackgroundAuditPanel': { BackgroundAuditPanel: () => null },
         './Queue': {
             ModelAuditQueue: ({ onOpenReport } = {}) => {
                 queueView.onOpenReport = onOpenReport;

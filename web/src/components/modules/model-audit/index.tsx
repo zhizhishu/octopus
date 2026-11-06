@@ -94,6 +94,7 @@ type ProbeMeta = {
 import { readFingerprint } from './fingerprint';
 import { FingerprintCard } from './FingerprintCard';
 import { ProvenanceCard } from './ProvenanceCard';
+import { BackgroundAuditPanel } from './BackgroundAuditPanel';
 import {
     readTokenizer,
     readTokenizerRecording,
@@ -1079,6 +1080,13 @@ export function ModelAudit() {
                         </details>
                     </div>
                 )}
+            </section>
+
+            {/* 后台检测的长期策略（被动开关 / 抽检额度）：摆进检测表单这一列，
+                不放进单次报告结果区——这些设置跟「这一次测什么」无关，
+                换渠道、看报告时也要能改。 */}
+            <section className="border-t border-border pt-4">
+                <BackgroundAuditPanel />
             </section>
 
             <section className="border-t border-border pt-4">

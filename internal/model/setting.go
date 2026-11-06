@@ -186,14 +186,22 @@ const (
 	SettingKeyUpstreamErrorBodyMode   SettingKey = "upstream_error_body_mode"
 	SettingKeyUpstreamErrorCustom     SettingKey = "upstream_error_custom_message"
 	SettingKeyUpstreamErrorPublicCode SettingKey = "upstream_error_public_code"
-	// Model audit switches (gateway model authenticity detection). Both default to FALSE and
-	// BOTH auto paths are disconnected (see task.Init / op.RelayLogAdd): the scheduled quick
-	// audit and the echo-mismatch follow-up no longer auto-start, so no token-consuming behavior
-	// probe is fired without an operator. Only the manual run (POST /api/v1/model-audit/run)
-	// actively calls probes. The keys are kept for compatibility/UI; a stored legacy "true" does
-	// NOT re-enable auto-running (no migration is applied).
-	SettingKeyModelAuditEnabled         SettingKey = "model_audit_enabled"          // 网关模型真假检测总开关(定时快检); 已停用自动检测, 默认 false; 仅手动 run 主动调用
-	SettingKeyModelAuditFollowUpEnabled SettingKey = "model_audit_followup_enabled" // 回显不一致自动跟进检测开关; 已停用自动接线, 默认 false; 仅手动 run 主动调用
+	// Model audit switches (gateway model authenticity detection). Both default to FALSE: every
+	// probe below really hits the upstream and really costs money, so nothing auto-runs until an
+	// operator turns it on. ModelAuditEnabled is the MASTER gate — with it off (or unreadable)
+	// neither the scheduled sampling audit nor the suspicious-log follow-up fires anything.
+	SettingKeyModelAuditEnabled         SettingKey = "model_audit_enabled"          // 少量 token 抽检总开关，默认关
+	SettingKeyModelAuditFollowUpEnabled SettingKey = "model_audit_followup_enabled" // 抽检开着时，可疑日志是否自动跟查；默认关
+	// The two wallet gates of the sampling audit. Every question it sends is a real, billed
+	// upstream request, so the ceilings live in code with hard defaults (200 requests/day for
+	// the whole site, 1 round/day per channel) instead of depending on someone remembering to
+	// configure them.
+	SettingKeyModelAuditDailyRequestLimit  SettingKey = "model_audit_daily_request_limit"  // 全站每日抽检上游请求上限，默认 200
+	SettingKeyModelAuditChannelDailyRounds SettingKey = "model_audit_channel_daily_rounds" // 每渠道每天抽检轮数，读取时夹到 1..4，默认 1
+	// SettingKeyModelAuditBudgetUsage is today's spend ledger, stored as JSON
+	// ({"date":"YYYY-MM-DD","requests":n}). Written ONLY by op.ModelAuditBudgetReserve —
+	// hand-editing it in the settings page would corrupt the day's accounting.
+	SettingKeyModelAuditBudgetUsage SettingKey = "model_audit_budget_usage" // 抽检当日用量账本（只由预算模块写）
 	// Passive probe switch. Unlike the two audit keys above, this one does NOT
 	// call any upstream: it only reads the request/response bodies already on
 	// their way through the relay. That is why it defaults to TRUE — it costs
@@ -644,8 +652,13 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyRedactEnabled, Value: "false"},             // 凭据脱敏总闸: 默认关; 开启后 redact_enabled=true 的渠道才会在出站 body 上做密钥→占位符替换+响应还原(指纹路径零改动)
 		{Key: SettingKeyRedactDefaultFlags, Value: "HPSIBEG"},      // 渠道未自定义 flags 时的默认检测器: H高熵 P电话 S密钥 I身份证 B银行卡 E邮箱 G gitleaks
 		{Key: SettingKeyRedactNoticeEnabled, Value: "true"},        // 脱敏时向首条用户消息注入占位符说明(提高模型保真); 可关
-		{Key: SettingKeyModelAuditEnabled, Value: "false"},         // 模型真假检测(定时快检)已停用自动注册, 默认 false; 仅手动 run
-		{Key: SettingKeyModelAuditFollowUpEnabled, Value: "false"}, // 回显不一致自动跟进已停用自动接线, 默认 false; 仅手动 run
+		{Key: SettingKeyModelAuditEnabled, Value: "false"},         // 少量 token 抽检总开关: 默认关; 关着时定时抽检与可疑日志跟查都不打上游
+		{Key: SettingKeyModelAuditFollowUpEnabled, Value: "false"}, // 抽检开着时, 可疑日志是否自动跟查: 默认关
+		// 抽检的两道钱包闸门: 全站每天 200 次上游请求 / 每渠道每天 1 轮。
+		{Key: SettingKeyModelAuditDailyRequestLimit, Value: "200"},
+		{Key: SettingKeyModelAuditChannelDailyRounds, Value: "1"},
+		// 当日用量账本由预算模块初始化/覆盖, 这里只给一个空的种子值。
+		{Key: SettingKeyModelAuditBudgetUsage, Value: "{\"date\":\"\",\"requests\":0}"},
 		// 图片异步任务默认关：它是本项目唯一「先扣钱、后台再干活」的图片路径，
 		// 配置不当就会变成「扣钱但不干活」。要让运维显式打开。
 		{Key: SettingKeyAsyncImageEnabled, Value: "false"},
@@ -861,6 +874,25 @@ func (s *Setting) Validate() error {
 		if s.Value != "true" && s.Value != "false" {
 			return fmt.Errorf("%s must be true or false", s.Key)
 		}
+		return nil
+	case SettingKeyModelAuditDailyRequestLimit:
+		// 上限 100000 只是防溢出/防手滑: 抽检的每一道题都真的计费, 填成 1e9 等于给上游
+		// 开一张空白支票。下限 1: 0 会让抽检永远跑不起来, 看起来像功能坏了。
+		value, err := strconv.Atoi(s.Value)
+		if err != nil || value < 1 || value > 100000 {
+			return fmt.Errorf("%s must be an integer between 1 and 100000", s.Key)
+		}
+		return nil
+	case SettingKeyModelAuditChannelDailyRounds:
+		// 1..4 与读取侧（op 的轮数夹取）同一口径: 写进来的值读出去还是同一个意思。
+		value, err := strconv.Atoi(s.Value)
+		if err != nil || value < 1 || value > 4 {
+			return fmt.Errorf("%s must be an integer between 1 and 4", s.Key)
+		}
+		return nil
+	case SettingKeyModelAuditBudgetUsage:
+		// 账本只由预算模块写（见 op/model_audit_budget.go）。这里不做格式校验: 无论是谁把它写脏,
+		// 读取侧都会把解析失败当成“今天还没用”, 校验拦不拦都不影响预算的正确性。
 		return nil
 	case SettingKeyBatchImageMaxItems:
 		// 上限 10000：再大就不是"批处理"而是"批量事故"了。
