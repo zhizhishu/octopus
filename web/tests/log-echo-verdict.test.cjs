@@ -578,19 +578,19 @@ test('output-incomplete badge is neutral and additive next to the status badge',
     const cls = String(badges[0].props.className);
     assert.match(cls, /text-muted-foreground/, 'neutral wording');
     assert.doesNotMatch(cls, /amber-|destructive|red-/, 'never borrows warning/error colour');
-    assert.ok(findElement(grid, (node) => node.type === 'Badge' && node.props?.children === 'successStatus'), 'status badge still rendered beside it');
+    assert.ok(findElement(grid, (node) => node.type === 'Badge' && text(node).trim() === 'successStatus'), 'status badge still rendered beside it');
 });
 
 test('a marked row keeps its original status: success stays success, error stays error', () => {
     const okGrid = renderCardHeader(loadCard().LogCard, sampleLog({ output_incomplete: true }));
-    const okStatus = collect(okGrid.props.children, (node) => node.type === 'Badge' && node.props?.children === 'successStatus')[0];
+    const okStatus = collect(okGrid.props.children, (node) => node.type === 'Badge' && text(node).trim() === 'successStatus')[0];
     assert.ok(okStatus, 'success wording untouched');
     assert.match(String(okStatus.props.className), /emerald/, 'success tint untouched');
     assert.ok(findElement(okGrid, (node) => node.type === 'CheckCircle2'), 'success icon untouched');
     assert.equal(incompleteBadges(okGrid).length, 1, 'the marker is additive');
 
     const errGrid = renderCardHeader(loadCard('error').LogCard, sampleLog({ output_incomplete: true, error_code: 'upstream_error' }));
-    const errStatus = collect(errGrid.props.children, (node) => node.type === 'Badge' && node.props?.children === 'failedStatus')[0];
+    const errStatus = collect(errGrid.props.children, (node) => node.type === 'Badge' && text(node).trim() === 'failedStatus')[0];
     assert.ok(errStatus, 'failure wording untouched');
     assert.match(String(errStatus.props.className), /destructive/, 'failure tint untouched');
     assert.equal(incompleteBadges(errGrid).length, 1, 'a failure is never softened into “incomplete” only');
