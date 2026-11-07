@@ -423,16 +423,13 @@ func (f *hlwyFakeSender) Ask(ctx context.Context, req modelverify.Ask) (modelver
 // hlwyHTTPLegacyBaseline 造一份旧格式基准文件（对象形态）。
 func hlwyHTTPLegacyBaseline(t *testing.T, name string, numbers []int) []byte {
 	t.Helper()
-	bins := make([]string, numberdist.DistLength)
+	bins := make([]float64, numberdist.DistLength)
 	counts := map[int]int{}
 	for _, n := range numbers {
 		counts[n]++
 	}
-	for i := range bins {
-		bins[i] = "0"
-	}
 	for n, c := range counts {
-		bins[n-1] = strconv.FormatFloat(float64(c)/float64(len(numbers)), 'g', 17, 64)
+		bins[n-1] = float64(c) / float64(len(numbers))
 	}
 	body := map[string]any{
 		"name": name, "model": name, "iterations": len(numbers),

@@ -4011,8 +4011,13 @@ func (ra *relayAttempt) transformStreamChunk(ctx context.Context, data string, o
 	return inStream, internalStream, nil
 }
 
+// setFirstTokenTime 给本次响应盖首字时间戳；没有 metrics 就什么也不做。
+//
+// metrics 是嵌入的 *relayRequest 上的字段：relayRequest 为 nil 时读 ra.metrics 本身
+// 就是一次空指针解引用（envelope-only 的 relayAttempt —— 只建 attempt、不建
+// relayRequest 的单测 fixture 就是这样），所以先挡 relayRequest，再挡 metrics。
 func (ra *relayAttempt) setFirstTokenTime(t time.Time) {
-	if ra == nil || ra.metrics == nil {
+	if ra == nil || ra.relayRequest == nil || ra.metrics == nil {
 		return
 	}
 	ra.metrics.SetFirstTokenTime(t)

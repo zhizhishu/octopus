@@ -53,10 +53,26 @@ func hlwyQueueEnqueueOne(t *testing.T, ctx context.Context, ch *model.Channel, u
 }
 
 // hlwyQueuePending 直接落一条可领取的 hlwy 结果行。
+//
+// 行必须长得像「刚入队、还没跑过」：任务排队中且未结束，结果 attempt=0、
+// finished_at 为空。共享夹具默认落的是已结束的行，直接拿来领取会让 attempt
+// 从 2 起跳，所有权代号与「开不了跑」这两类不变量就无从验起。
 func hlwyQueuePending(t *testing.T, opts model.HlwyOptions) (model.ModelAuditResult, model.ModelAuditJob) {
 	t.Helper()
 	job := hlwyOpSeedJob(t, model.AuditKindHlwy, ptrOptions(opts))
+	job.Status = model.AuditJobQueued
+	job.EndedAt = nil
+	if err := db.GetDB().Model(&model.ModelAuditJob{}).Where("id = ?", job.ID).
+		Updates(map[string]any{"status": job.Status, "ended_at": nil}).Error; err != nil {
+		t.Fatalf("reset job %d: %v", job.ID, err)
+	}
 	res := hlwyOpSeedResult(t, job.ID, model.AuditResultPending, "")
+	res.Attempt = 0
+	res.FinishedAt = nil
+	if err := db.GetDB().Model(&model.ModelAuditResult{}).Where("id = ?", res.ID).
+		Updates(map[string]any{"attempt": 0, "finished_at": nil}).Error; err != nil {
+		t.Fatalf("reset result %d: %v", res.ID, err)
+	}
 	return res, job
 }
 
@@ -67,6 +83,13 @@ func hlwyQueuePending(t *testing.T, opts model.HlwyOptions) (model.ModelAuditRes
 func hlwyQueueSeedRunning(t *testing.T, opts model.HlwyOptions, rep model.HlwyAuditReport) (model.ModelAuditResult, HlwyClaim) {
 	t.Helper()
 	job := hlwyOpSeedJob(t, model.AuditKindHlwy, ptrOptions(opts))
+	// 任务行也要真的处于「正在跑」：收尾与进度都以任务状态为准，拿一条已结束的
+	// 任务行来验执行侧，验的就不是想要的那条路径。
+	job.Status = model.AuditJobRunning
+	if err := db.GetDB().Model(&model.ModelAuditJob{}).Where("id = ?", job.ID).
+		Update("status", job.Status).Error; err != nil {
+		t.Fatalf("mark job %d running: %v", job.ID, err)
+	}
 	token := hlwyOpEncodeReport(t, rep)
 	now := time.Now().UTC()
 	lease := now.Add(2 * time.Minute)
@@ -672,6 +695,13 @@ func TestHlwyCancelJobSkipsPendingKeepsRunning(t *testing.T) {
 	base := hlwyOpImportBaseline(t, ctx, "cancel-scope-base", hlwyOpNumbers(100, 58))
 	opts := hlwyOpOptionsFor(t, base.ID, base)
 	job := hlwyOpSeedJob(t, model.AuditKindHlwy, ptrOptions(opts))
+	// 取消只对排队中/正在跑的任务生效（跑完的任务不能被改成 canceled），
+	// 所以这条任务行必须先真的处于 running。
+	job.Status = model.AuditJobRunning
+	if err := db.GetDB().Model(&model.ModelAuditJob{}).Where("id = ?", job.ID).
+		Update("status", job.Status).Error; err != nil {
+		t.Fatalf("mark job running: %v", err)
+	}
 	pending := hlwyOpSeedResult(t, job.ID, model.AuditResultPending, "")
 	running := hlwyOpSeedResult(t, job.ID, model.AuditResultRunning, "")
 

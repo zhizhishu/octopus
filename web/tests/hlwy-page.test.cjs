@@ -34,7 +34,7 @@ const PLAN_OK = {
     kind: 'hlwy_compare',
     enabled: true,
     samples: 100,
-    max_calls: 200,
+    max_calls: 100,
     timeout_seconds: 1300,
     sample_timeout_seconds: 60,
     protocol_id: 'hlwy-number355-v1',
@@ -127,7 +127,10 @@ function page(options = {}) {
         '@/lib/audit-budget': {
             settingBool: (value, fallback) => (value === 'true' ? true : value === 'false' ? false : fallback),
         },
-        '@/components/modules/channel/channel-utils': { getSelectedChannelModels: (channel) => channel?.raw?.selected_models ?? [] },
+        // 生产代码先 map 成裸渠道（index.tsx 的 channels = channelsData.map(item => item.raw)），
+        // 再把裸渠道交给 getSelectedChannelModels。替身必须按同一个入参读，否则
+        // activeModel 恒为空，所有「有计划就该能提交」的断言都会假失败。
+        '@/components/modules/channel/channel-utils': { getSelectedChannelModels: (channel) => channel?.selected_models ?? [] },
         '@/lib/channel-test': { sanitizeChannelTestError: (value) => value },
         './FingerprintCard': { FingerprintCard: () => null },
         './ProvenanceCard': { ProvenanceCard: () => null },
@@ -238,7 +241,7 @@ test('a loaded plan shows its call cap and enables the button', () => {
 
     const button = submitButton(tree, '开始基准对照');
     assert.equal(button.props.disabled, false);
-    assert.match(squash(tree), /会真的调用上游最多 200 次，按正常价格计费/);
+    assert.match(squash(tree), /会真的调用上游最多 100 次，按正常价格计费/);
 });
 
 test('the comparison submission carries only the comparison fields', async () => {

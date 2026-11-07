@@ -247,7 +247,7 @@ func TestCaptureUpstreamEnvelopeUsesAuditDeclaredModel(t *testing.T) {
 
 // 同一个 attempt 里 goto 重试会收到第二份回复：上一份回复盖的首字时间必须清掉，
 // 否则后一份回复的 IsZero 守卫永远不成立，ftut 从输的那一次借来、output_tokens
-// 算赢的这一份——“生成窗口”横跨两次尝试（2026-11-06 生产实证的污染源）。
+// 算赢的这一份——“生成窗口”横跨两次尝试（不同响应间的观测隔离）。
 func TestResetResponseObservationClearsStaleFirstTokenTime(t *testing.T) {
 	metrics := NewRelayMetrics(1, 1, "127.0.0.1", "m", nil)
 	first := time.Now().Add(-3 * time.Second)
@@ -280,6 +280,26 @@ func TestResetResponseObservationToleratesNilMetrics(t *testing.T) {
 	ra.upstreamEnvelope.HeaderFamilies = []string{"anthropic"}
 	ra.streamFirstDeclaredModel = "leftover"
 	ra.resetResponseObservationForNewResponse()
+	if ra.streamFirstDeclaredModel != "" {
+		t.Fatalf("streamFirstDeclaredModel = %q, want empty", ra.streamFirstDeclaredModel)
+	}
+	if len(ra.upstreamEnvelope.HeaderFamilies) != 1 {
+		t.Fatalf("HeaderFamilies = %v, want kept", ra.upstreamEnvelope.HeaderFamilies)
+	}
+}
+
+// envelope-only 的 fixture（只建 relayAttempt、没有嵌 relayRequest）也会走四个响应入口的
+// 清场：metrics 是 Promoted 字段，ra.relayRequest == nil 时读 ra.metrics 就是空指针解引用，
+// 所以 setFirstTokenTime 必须先挡这一层。
+func TestResetResponseObservationToleratesNilRelayRequest(t *testing.T) {
+	ra := &relayAttempt{channel: &dbmodel.Channel{Type: outbound.OutboundTypeAnthropic}}
+	ra.upstreamEnvelope.HeaderFamilies = []string{"anthropic"}
+	ra.streamFirstDeclaredModel = "leftover"
+
+	// 不包 recover：一旦解引用空指针，这个用例当场 panic 失败。
+	ra.resetResponseObservationForNewResponse()
+	ra.setFirstTokenTime(time.Now())
+
 	if ra.streamFirstDeclaredModel != "" {
 		t.Fatalf("streamFirstDeclaredModel = %q, want empty", ra.streamFirstDeclaredModel)
 	}
