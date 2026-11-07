@@ -295,6 +295,7 @@ test('an enabled flag is read from the same key', () => {
     const runtime = createRuntime();
     const mocks = {
         react: runtime.react,
+        '@tanstack/react-query': { useQueryClient: () => ({ invalidateQueries: () => {} }) },
         '@/components/ui/button': widgets('Button'),
         '@/components/ui/switch': widgets('Switch'),
         '@/components/ui/searchable-select': widgets('SearchableSelect'),
