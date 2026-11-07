@@ -262,7 +262,7 @@ function JobRow({
                         </span>
                         {hlwy && (
                             <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
-                                基准对照
+                                数字习惯对照
                             </span>
                         )}
                         {active && <Loader2 className="size-3 animate-spin text-primary" />}

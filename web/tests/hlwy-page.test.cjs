@@ -164,7 +164,7 @@ function page(options = {}) {
         },
         /** 点「基准对照」这张方案卡。页面上有手机/桌面两份，点任意一份即可。 */
         chooseHlwy(tree) {
-            findElement(tree, (node) => node.type === 'button' && text(node).includes('基准对照')).props.onClick();
+            findElement(tree, (node) => node.type === 'button' && text(node).includes('数字习惯对照')).props.onClick();
         },
         panel() {
             return state.panelProps[state.panelProps.length - 1];
@@ -198,12 +198,12 @@ test('switching to comparison mode swaps the one submit button instead of adding
     const p = page();
     let tree = p.render();
     assert.ok(submitButton(tree, '开始检测'), 'probe mode has its own submit action');
-    assert.equal(submitButtons(tree, '开始基准对照').length, 0);
+    assert.equal(submitButtons(tree, '开始采样').length, 0);
 
     p.chooseHlwy(tree);
     tree = p.render();
     assert.equal(submitButtons(tree, '开始检测').length, 0, 'the probe button is gone, not left inert');
-    assert.ok(submitButtons(tree, '开始基准对照').length >= 1);
+    assert.ok(submitButtons(tree, '开始采样').length >= 1);
     assert.equal(p.state.planCalls.at(-1).enabled, true, 'the plan is read only after entering the mode');
     assert.equal(
         findElement(tree, (node) => node.type === 'button' && text(node).includes('一次测完这个渠道')),
@@ -219,13 +219,13 @@ test('without a readable plan the button stays off and says why', () => {
     p.chooseHlwy(tree);
     tree = p.render();
 
-    const button = submitButton(tree, '开始基准对照');
+    const button = submitButton(tree, '开始采样');
     assert.equal(button.props.disabled, true, 'no plan, no promise, no submit');
     const body = squash(tree);
     assert.match(body, /计划没读出来：boom/);
     // 没读到计划就没有调用上限可写：不拿旧数字、也不写「约 N 次」。
     assert.match(body, /计划读取后可查看调用上限，按正常价格计费/);
-    assert.equal(/会真的调用上游最多 \d+ 次/.test(body), false, 'no invented call count is shown');
+    assert.equal(/最多调用\d+次/.test(body), false, 'no invented call count is shown');
 });
 
 test('a loaded plan shows its call cap and enables the button', () => {
@@ -239,9 +239,9 @@ test('a loaded plan shows its call cap and enables the button', () => {
     p.panel().onBaselineChange('hlwy:base@abc123456789');
     tree = p.render();
 
-    const button = submitButton(tree, '开始基准对照');
+    const button = submitButton(tree, '开始采样');
     assert.equal(button.props.disabled, false);
-    assert.match(squash(tree), /会真的调用上游最多 100 次，按正常价格计费/);
+    assert.match(squash(tree), /最多调用100次，会消耗渠道额度/);
 });
 
 test('the comparison submission carries only the comparison fields', async () => {
@@ -254,7 +254,7 @@ test('the comparison submission carries only the comparison fields', async () =>
     tree = p.render();
 
     // 没选基准之前不能提交：这不是能靠默认值猜的东西。
-    assert.equal(submitButton(tree, '开始基准对照').props.disabled, true);
+    assert.equal(submitButton(tree, '开始采样').props.disabled, true);
     assert.match(squash(tree), /先选一份基准/);
 
     p.panel().onBaselineChange('hlwy:base@abc123456789');
@@ -263,7 +263,7 @@ test('the comparison submission carries only the comparison fields', async () =>
     p.panel().onSamplesChange(200);
     tree = p.render();
 
-    submitButton(tree, '开始基准对照').props.onClick();
+    submitButton(tree, '开始采样').props.onClick();
     await setImmediate();
 
     assert.equal(p.state.enqueued.length, 1, 'one click = one submission');
@@ -291,7 +291,7 @@ test('the feature flag off blocks only new submissions, and says so', () => {
     p.panel().onBaselineChange('hlwy:base@abc123456789');
     tree = p.render();
 
-    const button = submitButton(tree, '开始基准对照');
+    const button = submitButton(tree, '开始采样');
     assert.equal(button.props.disabled, true);
     assert.match(squash(tree), /基准对照已在设置里关闭/);
     assert.equal(p.state.enqueued.length, 0);
@@ -335,7 +335,7 @@ test('a picked baseline that the server now rejects blocks submission', () => {
     p.panel().onBaselineChange('hlwy:base@abc123456789');
     tree = p.render();
 
-    assert.equal(submitButton(tree, '开始基准对照').props.disabled, true);
+    assert.equal(submitButton(tree, '开始采样').props.disabled, true);
     assert.match(squash(tree), /选中的基准现在不能用/);
     assert.equal(p.state.enqueued.length, 0);
 });
@@ -433,7 +433,7 @@ test('a rerun whose original channel is gone is blocked, not quietly moved elsew
 
     // 渠道选择器只能落到现存渠道上，所以光看选择器「有值」发现不了这件事。
     assert.equal(p.panel().baselineId, 'hlwy:base@aaa111', 'the rest of the form is still refilled');
-    assert.equal(submitButton(tree, '开始基准对照').props.disabled, true, 'do not spend money on a channel nobody chose');
+    assert.equal(submitButton(tree, '开始采样').props.disabled, true, 'do not spend money on a channel nobody chose');
     assert.match(squash(tree), /上一轮用的渠道（#9）已经不在渠道列表里了，请重新选一个渠道再提交/);
     assert.equal(p.state.enqueued.length, 0);
 
@@ -441,6 +441,6 @@ test('a rerun whose original channel is gone is blocked, not quietly moved elsew
     findAll(tree, (node) => node.type === 'SearchableSelect').find((node) => node.props.value === '7')
         .props.onValueChange('7');
     tree = p.render();
-    assert.equal(submitButton(tree, '开始基准对照').props.disabled, false, 'an explicitly chosen channel unblocks it');
+    assert.equal(submitButton(tree, '开始采样').props.disabled, false, 'an explicitly chosen channel unblocks it');
     assert.equal(squash(tree).includes('已经不在渠道列表里了'), false);
 });

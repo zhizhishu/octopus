@@ -75,7 +75,7 @@ export function HlwyModePanel({
                 value: entry.id,
                 label: hlwyBaselineOptionLabel(entry),
                 // keywords 是搜索用的**一串文本**，不是字符串数组。
-                keywords: [entry.label, entry.source_kind, entry.declared_model ?? ''].filter(Boolean).join(' '),
+                keywords: [entry.label, entry.source_kind, hlwySourceLabel(entry.source_kind), entry.declared_model, entry.collected_at, entry.valid_count].filter((value) => value != null).join(' '),
                 // 校验没过的件照样列出来（用户要知道它存在），但选不中：
                 // SearchableSelect 的 disabled 是真支持的（不触发 onValueChange）。
                 disabled: entry.unavailable === true,
@@ -92,7 +92,7 @@ export function HlwyModePanel({
             {
                 onSuccess: () => {
                     queryClient.invalidateQueries({ queryKey: ['model-audit', 'hlwy-plan'] });
-                    toast.success(next ? '基准对照可提交了' : '基准对照已关闭提交');
+                    toast.success(next ? '数字习惯对照已开启' : '数字习惯对照已关闭提交');
                 },
                 onError: (e) =>
                     toast.error('保存失败', { description: e instanceof Error ? e.message : String(e) }),
@@ -130,10 +130,9 @@ export function HlwyModePanel({
     };
 
     return (
-        <div className="rounded-xl border border-border bg-muted/20 p-3">
+        <div className="w-full min-w-0 max-w-full rounded-xl border border-border bg-muted/20 p-3 [overflow-wrap:anywhere]">
             <div className="flex flex-wrap items-center gap-2">
-                <span className="text-sm font-semibold">基准对照</span>
-                <span className="rounded-full bg-muted px-1.5 py-px text-[10px] text-muted-foreground">hlwy 1–355</span>
+                <span className="text-sm font-semibold">数字习惯对照</span>
                 <label className="ml-auto flex items-center gap-1.5 text-[11px] text-muted-foreground">
                     <span>{flagEnabled ? '允许提交' : '已关闭提交'}</span>
                     {/* 设置没读出来就不知道开关到底什么状态，这时不让点：改开关得写对键。 */}
@@ -141,7 +140,7 @@ export function HlwyModePanel({
                         checked={flagEnabled}
                         onCheckedChange={toggleFlag}
                         disabled={settingsLoading || setSetting.isPending || !settings}
-                        aria-label="允许提交新的基准对照"
+                        aria-label="允许提交新的数字习惯对照"
                     />
                 </label>
             </div>
@@ -152,8 +151,7 @@ export function HlwyModePanel({
             )}
 
             <p className="mt-1.5 text-xs leading-5 text-muted-foreground">
-                同一个问题问 100 或 200 次，只统计回答里 1–355 这些数字的分布，再和基准比分布相似度。
-                它不判定模型真假，也不参与上面那套风险计分。
+                让模型多次选数字，看看回答习惯更接近哪份参考。仅供参考，不能证明模型身份。
             </p>
 
             {!flagEnabled && (
@@ -175,9 +173,9 @@ export function HlwyModePanel({
                 {catalogLoading && !catalog && !catalogError && (
                     <p className="text-[11px] leading-5 text-muted-foreground">正在读取基准目录…</p>
                 )}
-                <div>
-                    <div className="mb-1 flex items-center justify-between gap-2">
-                        <span className="text-xs font-medium">主对照基准</span>
+                <div className="w-full min-w-0 max-w-full">
+                    <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+                        <span className="text-xs font-medium">对照谁</span>
                         {/* 目录没读出来的时候不写「0 份可选」：那会读成「一份基准都没有」。 */}
                         <span className="text-[11px] text-muted-foreground">
                             {!catalog
@@ -191,21 +189,19 @@ export function HlwyModePanel({
                         value={baselineId}
                         onValueChange={onBaselineChange}
                         options={options}
-                        placeholder="选一份基准"
-                        searchPlaceholder="搜名称 / 来源"
-                        emptyText="没有匹配的基准"
+                        className="w-full min-w-0 max-w-full"
+                        placeholder="选一份参考"
+                        searchPlaceholder="搜名称 / 来源 / 日期"
+                        emptyText="没有匹配的参考"
                     />
                 </div>
 
                 {/* 元数据一直摆在选择器下面，不藏在 hover 里：360px 也能一眼看到来源和日期。 */}
-                <div className="flex flex-wrap gap-x-3 gap-y-1 rounded-lg bg-background/60 px-2 py-1.5 text-[11px] leading-5 text-muted-foreground">
+                <div className="flex w-full min-w-0 max-w-full flex-wrap gap-x-3 gap-y-1 rounded-lg bg-background/60 px-2 py-1.5 text-[11px] leading-5 text-muted-foreground [&>span]:min-w-0 [&>span]:max-w-full [&>span]:break-all">
                     <span>来源：{selected ? hlwySourceLabel(selected.source_kind) : '还没选'}</span>
                     <span>采集日期：{selected?.collected_at ? selected.collected_at.slice(0, 10) : '日期未知'}</span>
-                    <span>有效样本：{selected ? `${selected.valid_count} 个` : '未知'}</span>
+                    <span>有效样本：{selected?.valid_count != null ? `${selected.valid_count} 个` : '未知'}</span>
                     <span>声明模型：{selected?.declared_model || '未标注'}</span>
-                    {/* 接口协议和题目协议是两件事：合成一项会把等题版本读成请求协议。 */}
-                    <span>接口协议：{selected?.conditions?.protocol || '未标注'}</span>
-                    <span>题目协议：{selected?.conditions?.protocol_id || '未标注'}</span>
                 </div>
 
                 {/* 不可用的件在看得到的地方说明原因；健康件不受影响。 */}
@@ -225,8 +221,8 @@ export function HlwyModePanel({
                 )}
 
                 <div>
-                    <span className="mb-1 block text-xs font-medium">采样次数</span>
-                    <div className="flex flex-wrap gap-2" role="group" aria-label="采样次数">
+                    <span className="mb-1 block text-xs font-medium">问多少次</span>
+                    <div className="flex flex-wrap gap-2" role="group" aria-label="问多少次">
                         {SAMPLE_OPTIONS.map((option) => (
                             <button
                                 key={option}
@@ -246,36 +242,30 @@ export function HlwyModePanel({
                     </div>
                 </div>
 
-                <div className="rounded-lg bg-background/60 px-2 py-1.5 text-[11px] leading-5">
-                    {planError ? (
-                        <p className="text-red-600">计划没读出来：{planError}（读不到计划就不给提交）</p>
-                    ) : plan ? (
-                        <>
-                            <div className="flex flex-wrap gap-x-3 gap-y-1 text-muted-foreground">
-                                <span className="text-foreground">这一单最多 {plan.max_calls} 次真实调用</span>
-                                <span>单个样本超时 {plan.sample_timeout_seconds} 秒</span>
-                                <span>整单超时 {plan.timeout_seconds} 秒</span>
-                                <span>{plan.enabled ? '服务端已启用' : '服务端未启用'}</span>
-                                <span>题目协议 {plan.protocol_id}</span>
-                            </div>
-                            {plan.conditions_note && (
-                                <p className="mt-1 text-muted-foreground">{plan.conditions_note}</p>
-                            )}
-                            <p className="mt-1 text-muted-foreground">
-                                按上游正常价格计费；提交后可以离开本页，回来在「检测记录」里看。
-                            </p>
-                        </>
-                    ) : (
-                        <p className="text-muted-foreground">
-                            {planLoading ? '正在读取这一单的计划…' : '还没读到计划：选好基准后会自动读取'}
-                        </p>
-                    )}
-                </div>
+                {(planError || !plan) && (
+                    <p className={cn('rounded-lg bg-background/60 px-2 py-1.5 text-[11px] leading-5', planError ? 'text-red-600' : 'text-muted-foreground')}>
+                        {planError
+                            ? `暂时无法读取采样安排：${planError}`
+                            : planLoading ? '正在读取采样安排…' : '选好参考后，会显示调用次数和预计时限'}
+                    </p>
+                )}
             </div>
 
             <details className="mt-3 rounded-lg bg-background/60 px-2 py-1.5">
-                <summary className="cursor-pointer list-none text-[11px] font-medium text-muted-foreground">
-                    导入旧 hlwy JSON（最多 1 MiB）
+                <summary className="cursor-pointer text-[11px] font-medium text-muted-foreground">采样设置</summary>
+                <div className="mt-2 space-y-1 text-[11px] leading-5 text-muted-foreground break-all">
+                    <p>采样方法：hlwy 1–355 数字对照</p>
+                    <p>参考接口协议：{selected?.conditions?.protocol || '未知'}</p>
+                    <p>参考题目协议：{selected?.conditions?.protocol_id || '未知'}</p>
+                    <p>本次题目协议：{plan?.protocol_id || '未知'}</p>
+                    <p>单次超时：{plan?.sample_timeout_seconds ?? '未知'} 秒 · 整轮超时：{plan?.timeout_seconds ?? '未知'} 秒</p>
+                    {plan?.conditions_note && <p>{plan.conditions_note}</p>}
+                </div>
+            </details>
+
+            <details className="mt-3 rounded-lg bg-background/60 px-2 py-1.5">
+                <summary className="cursor-pointer text-[11px] font-medium text-muted-foreground">
+                    导入参考文件（旧 hlwy JSON，最多 1 MiB）
                 </summary>
                 <div className="mt-2 space-y-1.5">
                     <input
@@ -293,7 +283,7 @@ export function HlwyModePanel({
                     {importedTip && <p className="text-[11px] text-emerald-700">{importedTip}</p>}
                     {importError && <p className="text-[11px] text-red-600">{importError}</p>}
                     <p className="text-[11px] leading-5 text-muted-foreground">
-                        文件里的 distribution 会按 rawData 重算核对，对不上就不入库。
+                        会核对原始回答与统计结果，对不上就不保存。
                     </p>
                 </div>
             </details>

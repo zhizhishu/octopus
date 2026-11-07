@@ -128,33 +128,32 @@ const PLAN = {
 test('a missing plan shows no invented call count', () => {
     const { tree } = panel({ plan: null, planLoading: false });
     const body = squash(tree);
-    assert.match(body, /还没读到计划/);
-    assert.equal(body.includes('这一单最多'), false, 'no plan means no price promise, not a guessed number');
+    assert.match(body, /选好参考后，会显示调用次数和预计时限/);
+    assert.equal(body.includes('最多调用'), false, 'no plan means no price promise, not a guessed number');
     assert.equal(/\d+ 次真实调用/.test(body), false);
 });
 
 test('a plan that failed to load says so and still shows no count', () => {
     const { tree } = panel({ plan: null, planError: '渠道不存在' });
     const body = squash(tree);
-    assert.match(body, /计划没读出来：渠道不存在/);
-    assert.match(body, /读不到计划就不给提交/);
-    assert.equal(body.includes('这一单最多'), false);
+    assert.match(body, /暂时无法读取采样安排：渠道不存在/);
+    assert.equal(body.includes('最多调用'), false);
 });
 
 test('a loaded plan shows the cap, both timeouts and the protocol', () => {
     const { tree } = panel({ plan: PLAN });
     const body = squash(tree);
-    assert.match(body, /这一单最多 200 次真实调用/);
-    assert.match(body, /单个样本超时 60 秒/);
-    assert.match(body, /整单超时 1300 秒/);
-    assert.match(body, /服务端已启用/);
-    assert.match(body, /题目协议 hlwy-number355-v1/);
-    assert.match(body, /题目与参数按基准冻结/);
+    assert.equal(body.includes('会消耗渠道额度'), false, 'the single cost warning belongs beside submit');
+    const settings = findElement(tree, (node) => node.type === 'details' && text(node).includes('采样设置'));
+    assert.match(squash(settings), /单次超时：60 秒/);
+    assert.match(squash(settings), /整轮超时：1300 秒/);
+    assert.match(squash(settings), /本次题目协议：hlwy-number355-v1/);
+    assert.match(squash(settings), /题目与参数按基准冻结/);
 });
 
 test('the panel never owns a submit button', () => {
     const { tree } = panel({ plan: PLAN });
-    assert.equal(findAll(tree, (node) => text(node).includes('开始基准对照')).length, 0);
+    assert.equal(findAll(tree, (node) => text(node).includes('开始采样')).length, 0);
     assert.equal(findAll(tree, (node) => text(node).includes('开始检测')).length, 0);
 });
 
@@ -178,7 +177,12 @@ test('baseline metadata is on the page, not behind a hover', () => {
     assert.match(body, /声明模型：some-model/);
     assert.match(body, /接口协议：hlwy-number355-v1/);
     // 接口协议和题目协议分开写：把两者合成一项会让等题版本被读成请求协议。
-    assert.match(body, /题目协议：未标注/);
+    assert.match(body, /参考题目协议：未知/);
+    const select = findElement(tree, (node) => node.type === 'SearchableSelect');
+    assert.equal(select.props.options[0].label, '社区基准 A');
+    assert.match(select.props.options[0].keywords, /2026-01-02/);
+    assert.match(select.props.options[0].keywords, /200/);
+    assert.equal(select.props.className, 'w-full min-w-0 max-w-full');
 });
 
 test('a baseline without a collection date says 日期未知', () => {
@@ -227,7 +231,7 @@ test('a corrupt local baseline is greyed out with a reason and does not block th
     const options = findElement(tree, (node) => node.type === 'SearchableSelect').props.options;
     const brokenOption = options.find((option) => option.value === 'hlwy:bad@zzz999');
     assert.equal(brokenOption.disabled, true, 'a corrupt entry cannot be picked');
-    assert.match(brokenOption.label, /暂不可用/);
+    assert.equal(brokenOption.label, '坏掉的本地件');
     assert.equal(
         options.find((option) => option.value === 'hlwy:base@aaa111').disabled,
         false,

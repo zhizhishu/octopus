@@ -1692,6 +1692,7 @@ type attemptBase struct {
 	previousResponseID    *string
 	responsesInputRaw     json.RawMessage
 	responsesInstructions *string
+	serviceTier           *string
 	reasoningEffort       string
 	reasoningBudget       *int64
 	thinking              json.RawMessage
@@ -1721,6 +1722,7 @@ func captureAttemptBase(internalRequest *model.InternalLLMRequest) attemptBase {
 	}
 	base := attemptBase{
 		messages:                   append([]model.Message(nil), internalRequest.Messages...),
+		serviceTier:                internalRequest.ServiceTier,
 		reasoningEffort:            internalRequest.ReasoningEffort,
 		reasoningBudget:            internalRequest.ReasoningBudget,
 		thinking:                   cloneRawJSONMessage(internalRequest.Thinking),
@@ -1761,6 +1763,7 @@ func (b *attemptBase) restore(internalRequest *model.InternalLLMRequest, request
 	internalRequest.PreviousResponseID = b.previousResponseID
 	internalRequest.ResponsesInputRaw = cloneRawJSONMessage(b.responsesInputRaw)
 	internalRequest.ResponsesInstructions = b.responsesInstructions
+	internalRequest.ServiceTier = b.serviceTier
 	internalRequest.ReasoningEffort = b.reasoningEffort
 	internalRequest.ReasoningBudget = b.reasoningBudget
 	internalRequest.Thinking = cloneRawJSONMessage(b.thinking)

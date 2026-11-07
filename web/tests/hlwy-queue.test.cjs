@@ -113,7 +113,7 @@ test('a canceled or timed-out comparison is not counted as failed either', () =>
 test('the row is labelled as a comparison, with the sample ledger instead of a verdict', () => {
     const { render } = mount([hlwyJob()]);
     const body = squash(render());
-    assert.match(body, /基准对照/);
+    assert.match(body, /数字习惯对照/);
     // 调用数是上限，不是「一定有 100 个有效样本」。
     assert.match(body, /gpt-test · 对照完成 · 最多 100 次调用 · 已发起 100 · 有效 100/);
     assert.equal(body.includes('开槽'), false);
@@ -241,5 +241,5 @@ test('legacy multi-probe rows keep their old rendering', () => {
     openRow(tree, '渠道D');
     tree = render();
     assert.match(squash(tree), /上游是别家/);
-    assert.equal(squash(tree).includes('基准对照'), false, 'a plain audit job is not badged as a comparison');
+    assert.equal(squash(tree).includes('数字习惯对照'), false, 'a plain audit job is not badged as a comparison');
 });

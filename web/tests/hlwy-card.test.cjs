@@ -111,18 +111,21 @@ test('a scorable comparison shows the chosen similarity and its provenance side 
     const body = squash(tree);
 
     assert.match(body, /86\.50%/);
-    assert.match(body, /与主对照的数字分布相似度/);
-    // 元数据与分数同一屏：不看 hover 也能判断这份基准够不够格。
-    assert.match(body, /基准：社区基准 A/);
+    assert.match(body, /相似度/);
+    // 元数据与分数同一屏：不看 hover 也能判断这份参考够不够格。
+    assert.match(body, /社区基准 A/);
     assert.match(body, /来源：hlwy 社区基准/);
     assert.match(body, /采集日期：2026-01-02/);
-    assert.match(body, /基准样本：200 个/);
-    assert.match(body, /本次有效样本：100 个/);
+    assert.match(body, /参考样本：200 个/);
+    assert.match(body, /收到100个有效回答/);
 });
 
 test('the sample ledger keeps every count separate', () => {
     const { render } = mount();
-    const body = squash(render());
+    const tree = render();
+    const details = findElement(tree, (node) => node.type === 'details' && text(node).includes('计算详情'));
+    const body = squash(details);
+    assert.match(squash(tree), /收到100个有效回答/);
     // 调用数是上限，不是「一定会拿到 100 个有效样本」的承诺。
     assert.match(body, /最多 100 次调用/);
     assert.match(body, /已发起 100/);
@@ -167,11 +170,11 @@ test('incompatible comparisons show neither a score nor a ranking', () => {
     );
     assert.equal(body.includes('#1'), false);
     assert.equal(body.includes('与上一名差'), false);
-    assert.equal(body.includes('最接近的 3 份基准'), false);
+    assert.equal(body.includes('最接近的 3 份参考'), false);
     assert.equal(body.includes('不给分'), false);
     // 基准本身的来源/日期/样本量照旧可见。
-    assert.match(body, /基准：社区基准 A/);
-    assert.match(body, /基准样本：200 个/);
+    assert.match(body, /社区基准 A/);
+    assert.match(body, /参考样本：200 个/);
     // 为什么不可比，用人话说，不摆枚举串。
     assert.match(body, /两边题目协议不同，分布不能放在一起比/);
     assert.equal(body.includes('protocol_mismatch'), false);
@@ -212,7 +215,7 @@ test('insufficient samples and scorable=false each have their own explanation', 
 
 test('the score is never offered as a probability of being genuine', () => {
     const body = squash(mount().render());
-    assert.match(body, /分布相似度，不是真品概率；高相似度不能证明模型身份/);
+    assert.match(body, /这是回答习惯的相似度，不是模型真伪概率/);
 });
 
 test('an unknown condition set still shows the score', () => {
@@ -220,6 +223,7 @@ test('an unknown condition set still shows the score', () => {
     const body = squash(mount({ view: viewFixture({ comparability: 'unknown' }) }).render());
     assert.match(body, /86\.50%/);
     assert.match(body, /采样条件没有完整记录/);
+    assert.match(body, /参考资料的采样设置不完整，结果仅供参考/);
 });
 
 test('a self-compare is labelled as not independent evidence', () => {
@@ -239,8 +243,7 @@ test('a partial run says so and keeps the counts', () => {
 test('a report with a missing ledger says the sample size is unknown', () => {
     const { render } = mount({ view: viewFixture({ counts: undefined }) });
     const body = squash(render());
-    assert.match(body, /采样计数缺失，这一轮的实际样本量未知/);
-    assert.match(body, /本次有效样本：未知/);
+    assert.match(body, /有效回答数量未知/);
     assert.match(body, /报告只能部分读取/);
 });
 
@@ -305,7 +308,7 @@ test('the chart axis names the actual digit positions', () => {
 
 test('the score components, baseline fingerprint and reasons are inspectable', () => {
     const body = squash(mount().render());
-    assert.match(body, /这一分是怎么算的（成分、基准快照指纹、原因）/);
+    assert.match(body, /计算详情/);
     assert.match(body, /余弦相似0\.9000/);
     assert.match(body, /JS 距离（越小越像）0\.1200/);
     assert.match(body, /众数一致度0\.5000/);
@@ -330,7 +333,7 @@ test('reason codes are translated into human sentences', () => {
 test('sampling conditions are compared against the chosen baseline row by row', () => {
     const tree = mount().render();
     const body = squash(tree);
-    assert.match(body, /采样条件对照（本渠道 \/ 基准；缺的写「未知」，不拿默认值凑）/);
+    assert.match(body, /采样设置/);
     // 表头 + 每行三层：项目 / 本渠道 / 基准 / 判定。
     assert.match(body, /项目本渠道基准对照/);
     assert.match(body, /接口协议hlwy-number355-v1hlwy-number355-v1一致/);
@@ -375,7 +378,7 @@ test('recompare is a preview with a way back', () => {
 test('the recompare action needs a pick before it fires', () => {
     const { render, calls } = mount();
     let tree = render();
-    const button = () => findElement(tree, (node) => node.type === 'Button' && text(node) === '重算');
+    const button = () => findElement(tree, (node) => node.type === 'Button' && text(node) === '比较');
     assert.equal(button().props.disabled, true, 'no baseline picked yet');
 
     findElement(tree, (node) => node.type === 'SearchableSelect').props.onValueChange('hlwy:b@bbb222');
@@ -394,7 +397,8 @@ test('a corrupt catalog entry cannot be picked for recompare', () => {
         true,
         'a corrupt entry would only fail on the server, so it is greyed out up front'
     );
-    assert.match(options.find((option) => option.value === 'hlwy:e@eee555').label, /暂不可用/);
+    assert.equal(options.find((option) => option.value === 'hlwy:e@eee555').label, '坏掉的本地件');
+    assert.equal(select.props.className, 'w-full min-w-0 max-w-full');
     assert.equal(options.find((option) => option.value === 'hlwy:b@bbb222').disabled, false);
 });
 
@@ -404,7 +408,7 @@ test('a pick that turned out unusable blocks recompare with a reason', () => {
     let tree = render();
     findElement(tree, (node) => node.type === 'SearchableSelect').props.onValueChange('hlwy:e@eee555');
     tree = render();
-    const button = findElement(tree, (node) => node.type === 'Button' && text(node) === '重算');
+    const button = findElement(tree, (node) => node.type === 'Button' && text(node) === '比较');
     assert.equal(button.props.disabled, true);
     assert.match(
         squash(tree),
@@ -428,17 +432,17 @@ test('buttons that cannot work explain themselves instead of looking clickable',
 
     assert.equal(findElement(tree, (node) => node.type === 'Button' && text(node) === '导出旧 hlwy 格式').props.disabled, true);
     assert.match(body, /没有原始数字，导不出旧格式/);
-    assert.equal(findElement(tree, (node) => node.type === 'Button' && text(node) === '存成我的基准').props.disabled, true);
+    assert.equal(findElement(tree, (node) => node.type === 'Button' && text(node) === '保存这次结果作参考').props.disabled, true);
     assert.match(body, /还有 2 个采样槽位没确认结果/);
 });
 
 test('export and rerun callbacks stay hand-offs, never inline work', () => {
     const { render, calls } = mount();
     const tree = render();
-    findElement(tree, (node) => node.type === 'Button' && text(node) === '导出完整报告 JSON').props.onClick();
+    findElement(tree, (node) => node.type === 'Button' && text(node) === '导出数据').props.onClick();
     findElement(tree, (node) => node.type === 'Button' && text(node) === '导出旧 hlwy 格式').props.onClick();
-    findElement(tree, (node) => node.type === 'Button' && text(node) === '存成我的基准').props.onClick();
-    findElement(tree, (node) => node.type === 'Button' && text(node) === '用同样设置再跑一轮').props.onClick();
+    findElement(tree, (node) => node.type === 'Button' && text(node) === '保存这次结果作参考').props.onClick();
+    findElement(tree, (node) => node.type === 'Button' && text(node) === '重新采样').props.onClick();
     assert.deepEqual(calls, { recompare: [], restore: 0, save: 1, rerun: 1, full: 1, legacy: 1 });
 });
 
@@ -449,7 +453,7 @@ test('a recompare pick does not follow the card to another report', () => {
 
     findElement(tree, (node) => node.type === 'SearchableSelect').props.onValueChange('hlwy:b@bbb222');
     tree = render();
-    const recompare = (node) => node.type === 'Button' && text(node) === '重算';
+    const recompare = (node) => node.type === 'Button' && text(node) === '比较';
     assert.equal(findElement(tree, recompare).props.disabled, false, 'picked once, 重算 is armed');
 
     // 打开另一份报告：A 选的基准不是 B 的意图，不能预先填好。

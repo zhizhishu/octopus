@@ -395,9 +395,9 @@
       "placeholder": "prompt-caching-scope-2026-01-05"
     },
     "codexFastMode": {
-      "label": "Codex 快速模式",
-      "description": "让上游优先处理、回得更快，但通常按约 2 倍计费。客户端自己选过就不动。",
-      "hint": "客户端没指定服务等级时，补上 service_tier=priority。\n上游不支持就别开。不会降低思考强度。"
+      "label": "Codex 优先处理（Fast）",
+      "description": "向支持的上游申请优先处理，可能加价；不保证提速。",
+      "hint": "仅在启用 Codex 伪装的 Responses 渠道生效。客户端未指定处理档位时才补上 priority；客户端已指定 auto、default 或其他档位时保持原值。上游不支持或不接受时可能报错或等待；不会降低思考强度，也不会自动重发。"
     },
     "streamKeepalive": {
       "label": "流式保活间隔",

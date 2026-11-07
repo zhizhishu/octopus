@@ -395,9 +395,9 @@
       "placeholder": "prompt-caching-scope-2026-01-05"
     },
     "codexFastMode": {
-      "label": "Codex 快速模式",
-      "description": "讓上游優先處理、回得更快，但通常按約 2 倍計費。用戶端自己選過就不動。",
-      "hint": "用戶端沒指定服務等級時，補上 service_tier=priority。\n上游不支援就別開。不會降低思考強度。"
+      "label": "Codex 優先處理（Fast）",
+      "description": "向支援的上游申請優先處理，可能加價；不保證加速。",
+      "hint": "僅在啟用 Codex 偽裝的 Responses 渠道生效。用戶端未指定處理等級時才補上 priority；用戶端已指定 auto、default 或其他等級時保留原值。上游不支援或不接受時可能報錯或等待；不會降低思考強度，也不會自動重送。"
     },
     "streamKeepalive": {
       "label": "串流保活間隔",

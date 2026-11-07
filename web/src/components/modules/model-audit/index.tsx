@@ -974,7 +974,7 @@ export function ModelAudit() {
             setReport(null);
             setRecompare(null);
             setPageState('idle');
-            toast.success(`已提交基准对照（任务 #${res.job_id}），可以先去干别的，回来在「记录」里看`);
+            toast.success(`已提交数字习惯对照（任务 #${res.job_id}），可在「记录」里查看结果`);
             setMode('queue');
         } catch (error) {
             toast.error(error instanceof Error ? error.message : '提交失败');
@@ -1003,7 +1003,7 @@ export function ModelAudit() {
         setPageState('idle');
         setReport(null);
         setRecompare(null);
-        toast.success('参数已按上一轮填好，再点一次「开始基准对照」才会真的发请求');
+        toast.success('参数已按上一轮填好，再点一次「开始采样」才会真的发请求');
     };
 
     // 把这次结果存成基准。前端只做一次粗筛，服务端还会独立再校验一遍。
@@ -1322,11 +1322,11 @@ export function ModelAudit() {
                             )}>
                                 {plan === 'hlwy' && <span className="size-1.5 rounded-full bg-white" />}
                             </span>
-                            <span className="text-sm font-semibold">基准对照</span>
+                            <span className="text-sm font-semibold">数字习惯对照</span>
                             <span className="ml-auto text-xs text-muted-foreground">{hlwySamples} 次采样</span>
                         </div>
                         <p className="mt-1.5 pl-6 text-xs leading-5 text-muted-foreground">
-                            同一题问很多次，只比数字分布和基准像不像；不判定真假，也不进风险计分。
+                            多次选数字，对照回答习惯。
                         </p>
                     </button>
                 </div>
@@ -1403,7 +1403,7 @@ export function ModelAudit() {
                     className="h-12 w-full rounded-xl text-base font-semibold"
                     disabled={hlwyMode ? hlwyStart.disabled : (enqueueAudit.isPending || runCount === 0 || !channel)}
                     onClick={() => void (hlwyMode ? submitHlwy() : submitToQueue([activeModel]))}
-                    title={activeModel ? (hlwyMode ? `开始基准对照 · ${activeModel}` : `开始检测 · ${activeModel}`) : undefined}
+                    title={activeModel ? (hlwyMode ? `开始采样 · ${activeModel}` : `开始检测 · ${activeModel}`) : undefined}
                 >
                     {(hlwyMode ? enqueueHlwy.isPending : enqueueAudit.isPending)
                         ? <Loader2 className="size-4 animate-spin" />
@@ -1411,7 +1411,7 @@ export function ModelAudit() {
                     <span className="min-w-0 truncate">
                         {(hlwyMode ? enqueueHlwy.isPending : enqueueAudit.isPending)
                             ? '提交中…'
-                            : hlwyMode ? '开始基准对照' : '开始检测'}
+                            : hlwyMode ? '开始采样' : '开始检测'}
                     </span>
                 </Button>
                 {hlwyMode && hlwyStart.disabled && hlwyStart.reason && (
@@ -1420,7 +1420,7 @@ export function ModelAudit() {
                 <p className="mt-2.5 flex items-center justify-center gap-1 text-center text-xs text-muted-foreground">
                     {hlwyMode
                         ? `${hlwyPlan
-                              ? `会真的调用上游最多 ${hlwyPlan.max_calls} 次，按正常价格计费。`
+                              ? `最多调用${hlwyPlan.max_calls ?? '未知'}次，会消耗渠道额度。`
                               : '计划读取后可查看调用上限，按正常价格计费。'}提交后可以离开本页。`
                         : '会真的调用上游，按正常价格计费。提交后可以离开本页。'}
                     <span className="cursor-help text-muted-foreground/80" title="次数是估算：个别检查会多轮或重试，实际以记录为准。超时跟随渠道检测设置。">ⓘ</span>
@@ -1524,7 +1524,7 @@ export function ModelAudit() {
                                         : <AlertTriangle className={cn('size-5', warnCount > 0 ? 'text-amber-600' : 'text-muted-foreground')} />}
                                     {copy.title}
                                 </h3>
-                                <p className="mt-1 text-sm text-muted-foreground">{copy.sub}</p>
+                                <p className="mt-1 min-w-0 text-sm text-muted-foreground [overflow-wrap:anywhere]">{copy.sub}</p>
                                 {/* 要点行：后端给几条短句就列几条；没有就整块不渲染。 */}
                                 {highlights.length > 0 && (
                                     <ul className="mt-2 grid gap-1">

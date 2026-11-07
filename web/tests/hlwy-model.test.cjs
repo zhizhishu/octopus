@@ -558,16 +558,33 @@ test('labels stay neutral and honest about unknown values', () => {
     assert.match(hlwy.hlwySourceLabel('weird'), /来源未识别/);
 });
 
-test('baseline option label carries source, date and sample count', () => {
-    const label = hlwy.hlwyBaselineOptionLabel(baselineEntryFixture());
-    assert.match(label, /社区基准 A/);
-    assert.match(label, /hlwy 社区基准/);
-    assert.match(label, /2026-01-02/);
-    assert.match(label, /200 个样本/);
-    const noDate = hlwy.hlwyBaselineOptionLabel(baselineEntryFixture({ collected_at: null }));
-    assert.match(noDate, /日期未知/, 'a missing date is said out loud, never replaced by today');
-    const broken = hlwy.hlwyBaselineOptionLabel(baselineEntryFixture({ unavailable: true, reason_code: 'hash_mismatch' }));
-    assert.match(broken, /暂不可用/, 'an unusable entry says so in the list itself');
+test('baseline option labels contain only the human name', () => {
+    assert.equal(hlwy.hlwyBaselineOptionLabel(baselineEntryFixture()), '社区基准 A');
+    assert.equal(hlwy.hlwyBaselineOptionLabel(baselineEntryFixture({ collected_at: null })), '社区基准 A');
+    assert.equal(hlwy.hlwyBaselineOptionLabel(baselineEntryFixture({ unavailable: true, reason_code: 'hash_mismatch' })), '社区基准 A');
+});
+
+test('report display ignores historic backend summaries and internal identifiers', () => {
+    const view = hlwy.readHlwyComparison(reportFixture({
+        plain: { headline: 'old internal headline', summary: 'hlwy-builtin:id@hash' },
+    }));
+    assert.match(view.headline, /数字习惯对照/);
+    assert.match(view.summary, /收到100个有效回答/);
+    assert.match(view.summary, /社区基准 A/);
+    assert.doesNotMatch(view.headline + view.summary, /internal|hlwy-builtin|@hash/);
+    const missing = hlwy.readHlwyComparison(reportFixture({
+        baseline_comparison: comparisonFixture({ baseline_snapshots: [], counts: undefined }),
+    }));
+    assert.match(missing.summary, /有效回答数量未知/);
+    assert.doesNotMatch(missing.summary, /hlwy:|@/);
+});
+
+test('stop reasons show readable explanations without leaking internal codes', () => {
+    assert.equal(hlwy.hlwyStopReasonLabel(''), '');
+    assert.equal(hlwy.hlwyStopReasonLabel('run_timeout'), '采样时间已到，提前结束');
+    assert.match(hlwy.hlwyStopReasonLabel('http_401'), /认证失败/);
+    assert.match(hlwy.hlwyStopReasonLabel('http_418'), /请求未被接受/);
+    assert.equal(hlwy.hlwyStopReasonLabel('new_internal_code'), '采样未能继续，具体原因未记录');
 });
 
 test('an unusable catalog entry explains itself in human words', () => {

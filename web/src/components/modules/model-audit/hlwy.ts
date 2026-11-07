@@ -120,7 +120,7 @@ export type HlwyComparisonView = {
     hasScore: boolean;
     /** 是否只有部分样本（失败/取消/中断后仍保留了能描述的结果）。 */
     partial: boolean;
-    /** 报告里自带的 headline / summary（用于报告页标题）。 */
+    /** 由已解析的状态、名称与计数生成的展示文案，不透传后端摘要。 */
     headline: string;
     summary: string;
     /** 解析中遇到的问题；非空表示「只能展示能确认的部分」。 */
@@ -266,6 +266,39 @@ export function hlwyExecutionLabel(execution: string): string {
         default:
             return '状态未知';
     }
+}
+
+/** 仅翻译本项目已有的停止原因；原始码仍由完整导出保留。 */
+export function hlwyStopReasonLabel(code: string): string {
+    if (!code) return '';
+    const labels: Record<string, string> = {
+        canceled: '已取消采样',
+        interrupted: '采样意外中断',
+        run_timeout: '采样时间已到，提前结束',
+        consecutive_failures: '连续多次调用失败，已停止采样',
+        reserve_failed: '无法登记下一次调用，已停止采样',
+        settle_failed: '无法保存本次回答，已停止采样',
+        prompt_mismatch: '采样题目发生变化，已停止采样',
+        protocol_mismatch: '采样方法不一致，已停止采样',
+        conditions_changed: '采样设置发生变化，已停止采样',
+        request_rejected: '请求未被接受，已停止采样',
+        compare_failed: '未能完成比较，已保留采样结果',
+        temperature_changed: '随机性设置发生变化，已停止采样',
+        top_p_changed: '选词范围设置发生变化，已停止采样',
+        stream_changed: '回复方式发生变化，已停止采样',
+        max_tokens_changed: '回复长度上限发生变化，已停止采样',
+        thinking_changed: '思考设置发生变化，已停止采样',
+        reasoning_effort_changed: '思考强度发生变化，已停止采样',
+        system_changed: '系统提示发生变化，已停止采样',
+        tools_changed: '工具设置发生变化，已停止采样',
+        http_401: '渠道认证失败，已停止采样',
+        http_403: '渠道拒绝访问，已停止采样',
+        http_404: '请求的模型或接口不可用，已停止采样',
+        http_429: '调用过于频繁或额度受限，已停止采样',
+    };
+    return labels[code] || (/^http_4\d{2}$/.test(code)
+        ? '请求未被接受，已停止采样'
+        : '采样未能继续，具体原因未记录');
 }
 
 export function hlwyComparabilityLabel(comparability: string): string {
@@ -557,7 +590,7 @@ function readSnapshots(value: unknown): HlwySnapshotView[] {
         }
         out.push({
             id,
-            label: strOrEmpty(item.label) || id,
+            label: strOrEmpty(item.label) || '未命名参考',
             sourceKind,
             sourceText: hlwySourceLabel(sourceKind),
             declaredModel: strOrEmpty(item.declared_model),
@@ -602,7 +635,7 @@ function readMatches(value: unknown, snapshots: HlwySnapshotView[]): HlwyMatchVi
             modeScore: numOrNull(item.mode_score),
             gapPoints: gap === null ? null : Math.round(gap * 10000) / 100,
             gapText: gap === null ? null : `${(gap * 100).toFixed(2)} 个百分点`,
-            label: snap ? snap.label : baselineId,
+            label: snap ? snap.label : '参考名称未知',
             sourceKind,
             sourceText: hlwySourceLabel(sourceKind),
             collectedAt: snap ? snap.collectedAt : null,
@@ -626,7 +659,6 @@ export function readHlwyComparison(report: unknown): HlwyComparisonView | null {
     const raw = report.baseline_comparison;
     if (!isRecord(raw) && kind !== 'hlwy_compare') return null;
 
-    const plain = isRecord(report.plain) ? report.plain : null;
     const data = isRecord(raw) ? raw : null;
 
     const problems: string[] = [];
@@ -691,8 +723,11 @@ export function readHlwyComparison(report: unknown): HlwyComparisonView | null {
         scorable,
         hasScore,
         partial,
-        headline: plain ? strOrEmpty(plain.headline) : '',
-        summary: plain ? strOrEmpty(plain.summary) : '',
+        headline: `数字习惯对照 · ${hlwyExecutionLabel(execution)}`,
+        summary: [
+            counts ? `收到${counts.valid}个有效回答` : '有效回答数量未知',
+            chosen ? `对照参考：${chosen.label}` : '参考名称未知',
+        ].join(' · '),
         problem: problems.join('；'),
     };
 }
@@ -1175,11 +1210,9 @@ export function downloadJson(filename: string, payload: unknown): void {
     URL.revokeObjectURL(url);
 }
 
-/** 基准选择器的选项文案：把「来源 + 日期 + 样本量」放在标签里，不靠 hover。 */
+/** 选项只显示名称；来源、日期与样本数由选择器下面的资料行展示。 */
 export function hlwyBaselineOptionLabel(entry: HlwyBaselineEntry): string {
-    const date = entry.collected_at ? entry.collected_at.slice(0, 10) : '日期未知';
-    const base = `${entry.label} · ${hlwySourceLabel(entry.source_kind)} · ${date} · ${entry.valid_count} 个样本`;
-    return entry.unavailable ? `${base} · 暂不可用` : base;
+    return entry.label || '未命名参考';
 }
 
 /**

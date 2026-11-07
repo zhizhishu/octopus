@@ -17,6 +17,8 @@ import {
     hlwyExecutionLabel,
     hlwyBaselineOptionLabel,
     hlwyReasonMessages,
+    hlwySourceLabel,
+    hlwyStopReasonLabel,
     type HlwyComparisonView,
     type HlwySaveEligibility,
 } from './hlwy';
@@ -85,12 +87,10 @@ export type BaselineComparisonCardProps = {
 function MetaLine({ view }: { view: HlwyComparisonView }) {
     const chosen = view.chosen;
     return (
-        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px] leading-5 text-muted-foreground">
-            <span>基准：{chosen ? chosen.label : '未知'}</span>
+        <div className="mt-1 flex min-w-0 max-w-full flex-wrap gap-x-3 gap-y-1 text-[11px] leading-5 text-muted-foreground [&>span]:min-w-0 [&>span]:max-w-full [&>span]:break-all">
             <span>来源：{chosen ? chosen.sourceText : '未知'}</span>
             <span>采集日期：{chosen?.collectedAt ? chosen.collectedAt.slice(0, 10) : '日期未知'}</span>
-            <span>基准样本：{chosen?.validCount ?? '未知'} 个</span>
-            <span>本次有效样本：{view.counts ? `${view.counts.valid} 个` : '未知'}</span>
+            <span>参考样本：{chosen?.validCount ?? '未知'} 个</span>
         </div>
     );
 }
@@ -166,7 +166,7 @@ function DistributionChart({ view }: { view: HlwyComparisonView }) {
                 <summary className="cursor-pointer list-none text-[11px] font-medium text-muted-foreground">
                     看数字表（36 段，共 355 个数）
                 </summary>
-                <table className="mt-1.5 w-full border-collapse text-[11px]">
+                <table className="mt-1.5 w-full table-fixed border-collapse text-[11px] break-all">
                     <thead>
                         <tr className="text-muted-foreground">
                             <th className="py-1 text-left font-medium">区间</th>
@@ -231,12 +231,12 @@ export function BaselineComparisonCard({
     const recompareOptions: SearchableSelectOption[] = catalog.map((entry) => ({
         value: entry.id,
         label: hlwyBaselineOptionLabel(entry),
-        keywords: [entry.label, entry.source_kind].filter(Boolean).join(' '),
+        keywords: [entry.label, entry.source_kind, hlwySourceLabel(entry.source_kind), entry.declared_model, entry.collected_at, entry.valid_count].filter((value) => value != null).join(' '),
         disabled: entry.unavailable === true,
     }));
 
     return (
-        <div className="space-y-3 rounded-xl border border-border p-3">
+        <div className="w-full min-w-0 max-w-full space-y-3 rounded-xl border border-border p-3 [overflow-wrap:anywhere]">
             {recompareActive && (
                 <div className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] leading-5 text-amber-900">
                     <span>下面是本地重算的预览，存下来的原报告没有改动。</span>
@@ -247,7 +247,7 @@ export function BaselineComparisonCard({
             )}
 
             <div className="flex flex-wrap items-center gap-2">
-                <span className="text-sm font-semibold">基准对照（hlwy 1–355）</span>
+                <span className="text-sm font-semibold">数字习惯对照</span>
                 <span className="rounded-full border border-border bg-muted px-1.5 py-px text-[10px] text-muted-foreground">
                     {hlwyExecutionLabel(view.execution)}
                 </span>
@@ -267,44 +267,40 @@ export function BaselineComparisonCard({
                 </p>
             )}
 
-            {/* 采样账目：调用上限/已发起/有效/无效/失败/未确认，一个都不合并。 */}
+            {/* 常态只报有效回答；完整计数保留在计算详情。 */}
             <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] leading-5">
                 {view.counts ? (
                     <>
-                        <span>最多 {view.counts.planned_calls} 次调用</span>
-                        <span className="text-muted-foreground">已发起 {view.counts.started_slots}</span>
-                        <span className="font-medium">有效 {view.counts.valid}</span>
-                        <span className="text-muted-foreground">无效 {view.counts.invalid}</span>
-                        <span className="text-muted-foreground">失败 {view.counts.failed}</span>
-                        <span className={view.counts.unresolved > 0 ? 'text-amber-700' : 'text-muted-foreground'}>
-                            未确认 {view.counts.unresolved}
-                        </span>
+                        <span className="font-medium">收到{view.counts.valid}个有效回答</span>
+                        {view.counts.invalid > 0 && <span className="text-muted-foreground">无效 {view.counts.invalid}</span>}
+                        {view.counts.failed > 0 && <span className="text-muted-foreground">失败 {view.counts.failed}</span>}
+                        {view.counts.unresolved > 0 && <span className="text-amber-700">未确认 {view.counts.unresolved}</span>}
                     </>
                 ) : (
-                    <span className="text-muted-foreground">采样计数缺失，这一轮的实际样本量未知</span>
+                    <span className="text-muted-foreground">有效回答数量未知</span>
                 )}
             </div>
 
             {view.stopReason && (
-                <p className="text-[11px] leading-5 text-amber-800">{view.stopReason}</p>
+                <p className="text-[11px] leading-5 text-amber-800">{hlwyStopReasonLabel(view.stopReason)}</p>
             )}
             {view.partial && (
                 <p className="rounded-lg bg-muted/40 px-2 py-1.5 text-[11px] leading-5 text-muted-foreground">
-                    这一轮提前结束了，下面是已经采到的部分。样本量见上面的账目，别当成完整的一轮。
+                    这一轮提前结束了，下面保留了已收到的回答。
                 </p>
             )}
 
             {/* 分数 + 旁边就是来源/日期/样本量：光看分数不足以判断这份基准够不够格。 */}
-            <div className="rounded-lg bg-muted/30 px-3 py-2">
+            <div className="min-w-0 rounded-lg bg-muted/30 px-3 py-2">
+                <p className="mb-1 text-sm font-medium break-all">{view.chosen?.label || chosenSnapshot?.label || '参考名称未知'}</p>
                 {view.hasScore && view.chosen?.percent ? (
                     <>
                         <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-                            <span className="text-2xl font-semibold">{view.chosen.percent}</span>
-                            <span className="text-xs text-muted-foreground">与主对照的数字分布相似度</span>
+                            <span className="shrink-0 text-2xl font-semibold tabular-nums">{view.chosen.percent}</span>
+                            <span className="text-xs text-muted-foreground">相似度</span>
                         </div>
-                        {/* 分数很客易被当成「真品概率」读；这句必须和数字排在一起，不能只写在注释里。 */}
                         <p className="mt-0.5 text-[11px] leading-5 text-muted-foreground">
-                            分布相似度，不是真品概率；高相似度不能证明模型身份。
+                            这是回答习惯的相似度，不是模型真伪概率
                         </p>
                         <MetaLine view={view} />
                     </>
@@ -329,7 +325,7 @@ export function BaselineComparisonCard({
                 <div>
                     <div className="flex flex-wrap items-center justify-between gap-2">
                         <span className="text-xs font-medium">
-                            {expandAll ? `全部候选（${view.matches.length} 份）` : '最接近的 3 份基准'}
+                            {expandAll ? `全部候选（${view.matches.length} 份）` : '最接近的 3 份参考'}
                         </span>
                         {view.matches.length > view.top.length && (
                             <button
@@ -341,6 +337,9 @@ export function BaselineComparisonCard({
                             </button>
                         )}
                     </div>
+                    {view.comparability === 'unknown' && (
+                        <p className="mt-1 text-[11px] leading-5 text-muted-foreground">参考资料的采样设置不完整，结果仅供参考</p>
+                    )}
                     {view.matches.length === 0 ? (
                         <p className="mt-1 text-[11px] text-muted-foreground">报告里没有候选匹配。</p>
                     ) : (
@@ -355,12 +354,12 @@ export function BaselineComparisonCard({
                                             : 'border-border bg-background'
                                     )}
                                 >
-                                    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-                                        <span className="text-muted-foreground">#{match.rank}</span>
-                                        <span className="font-medium">{match.label}</span>
-                                        <span className="ml-auto tabular-nums">{match.percent ?? '不给分'}</span>
+                                    <div className="flex min-w-0 items-baseline gap-x-2 gap-y-1">
+                                        <span className="shrink-0 text-muted-foreground">#{match.rank}</span>
+                                        <span className="min-w-0 flex-1 break-all font-medium">{match.label}</span>
+                                        <span className="ml-auto shrink-0 tabular-nums">{match.percent ?? '不给分'}</span>
                                     </div>
-                                    <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-1 text-muted-foreground">
+                                    <div className="mt-0.5 flex min-w-0 flex-wrap gap-x-3 gap-y-1 text-muted-foreground [&>span]:min-w-0 [&>span]:max-w-full [&>span]:break-all">
                                         <span>{match.sourceText}</span>
                                         <span>{match.collectedAt ? match.collectedAt.slice(0, 10) : '日期未知'}</span>
                                         <span>{match.validCount ?? '未知'} 个样本</span>
@@ -379,8 +378,13 @@ export function BaselineComparisonCard({
             {/* 分数成分 + 基准快照指纹：只给一个总分等于让人无从复核。 */}
             <details className="rounded-lg bg-muted/30 px-2 py-1.5">
                 <summary className="cursor-pointer list-none text-[11px] font-medium text-muted-foreground">
-                    这一分是怎么算的（成分、基准快照指纹、原因）
+                    计算详情
                 </summary>
+                {view.counts && (
+                    <p className="mt-1.5 text-[11px] leading-5 text-muted-foreground">
+                        最多 {view.counts.planned_calls} 次调用 · 已发起 {view.counts.started_slots} · 有效 {view.counts.valid} · 无效 {view.counts.invalid} · 失败 {view.counts.failed} · 未确认 {view.counts.unresolved}
+                    </p>
+                )}
                 <dl className="mt-1.5 grid grid-cols-1 gap-x-3 gap-y-1 text-[11px] sm:grid-cols-2">
                     {view.hasScore && view.chosen ? (
                         <>
@@ -438,11 +442,22 @@ export function BaselineComparisonCard({
                         ))}
                     </ul>
                 )}
+                {(view.stats || view.quality) && (
+                    <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-[11px] leading-5 text-muted-foreground">
+                        {view.stats?.median != null && <span>中位数 {view.stats.median}</span>}
+                        {view.stats?.mean != null && <span>均值 {view.stats.mean.toFixed(2)}</span>}
+                        {view.stats?.mode != null && (
+                            <span>众数 {view.stats.mode}{view.stats.modeCount != null ? `（${view.stats.modeCount} 次）` : ''}</span>
+                        )}
+                        {view.quality?.strictInteger != null && <span>严格整数回答 {view.quality.strictInteger} 个</span>}
+                        {view.quality?.truncated != null && <span>被截断 {view.quality.truncated} 个</span>}
+                    </div>
+                )}
             </details>
 
             <details className="rounded-lg bg-muted/30 px-2 py-1.5">
                 <summary className="cursor-pointer list-none text-[11px] font-medium text-muted-foreground">
-                    采样条件对照（本渠道 / 基准；缺的写「未知」，不拿默认值凑）
+                    采样设置
                 </summary>
                 {conditionCompare.length === 0 ? (
                     <>
@@ -459,7 +474,7 @@ export function BaselineComparisonCard({
                         </dl>
                     </>
                 ) : (
-                    <table className="mt-1.5 w-full border-collapse text-[11px]">
+                    <table className="mt-1.5 w-full table-fixed border-collapse text-[11px] break-all">
                         <thead>
                             <tr className="text-muted-foreground">
                                 <th className="py-1 text-left font-medium">项目</th>
@@ -486,81 +501,64 @@ export function BaselineComparisonCard({
                 )}
             </details>
 
-            {(view.stats || view.quality) && (
-                <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] leading-5 text-muted-foreground">
-                    {view.stats?.median !== null && view.stats?.median !== undefined && (
-                        <span>中位数 {view.stats.median}</span>
-                    )}
-                    {view.stats?.mean !== null && view.stats?.mean !== undefined && (
-                        <span>均值 {view.stats.mean.toFixed(2)}</span>
-                    )}
-                    {view.stats?.mode !== null && view.stats?.mode !== undefined && (
-                        <span>
-                            众数 {view.stats.mode}
-                            {view.stats.modeCount !== null && view.stats.modeCount !== undefined
-                                ? `（${view.stats.modeCount} 次）`
-                                : ''}
-                        </span>
-                    )}
-                    {view.quality?.strictInteger !== null && view.quality?.strictInteger !== undefined && (
-                        <span>严格整数回答 {view.quality.strictInteger} 个</span>
-                    )}
-                    {view.quality?.truncated !== null && view.quality?.truncated !== undefined && (
-                        <span>被截断 {view.quality.truncated} 个</span>
-                    )}
-                </div>
-            )}
-
             {/* 导出：一个完整报告（白名单），一个旧格式（能被别的 hlwy 工具读）。 */}
             <div className="space-y-2 border-t border-border pt-2">
                 <div className="flex flex-wrap gap-2">
                     <Button variant="outline" size="sm" onClick={onExportFull}>
-                        导出完整报告 JSON
+                        导出数据
                     </Button>
-                    <Button variant="outline" size="sm" onClick={onExportLegacy} disabled={!canExportLegacy}>
-                        导出旧 hlwy 格式
-                    </Button>
-                    {!canExportLegacy && (
-                        <span className="self-center text-[11px] text-muted-foreground">
-                            没有原始数字，导不出旧格式
-                        </span>
-                    )}
+                    <details className="min-w-0 self-center text-[11px] text-muted-foreground">
+                        <summary className="cursor-pointer">更多导出格式</summary>
+                        <Button className="mt-1" variant="outline" size="sm" onClick={onExportLegacy} disabled={!canExportLegacy}>
+                            导出旧 hlwy 格式
+                        </Button>
+                        {!canExportLegacy && <p className="mt-1">没有原始数字，导不出旧格式</p>}
+                    </details>
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2">
                     <Button variant="outline" size="sm" onClick={onSave} disabled={!saveEligibility.eligible || saving}>
-                        {saving ? '保存中…' : '存成我的基准'}
+                        {saving ? '保存中…' : '保存这次结果作参考'}
                     </Button>
                     <span className="text-[11px] text-muted-foreground">
-                        {saveEligibility.eligible ? '存成基准后可以给别的模型当对照' : saveEligibility.reason}
+                        {!saveEligibility.eligible && saveEligibility.reason}
                     </span>
                 </div>
 
-                <div>
+                <div className="w-full min-w-0 max-w-full">
                     <div className="flex flex-wrap items-center gap-2">
-                        <span className="text-xs font-medium">换一份基准重算</span>
-                        <span className="text-[11px] text-muted-foreground">离线重算，不发请求、不改原报告</span>
+                        <span className="text-xs font-medium">换个参考比较</span>
+                        <span className="text-[11px] text-muted-foreground">使用已有回答，不消耗渠道额度</span>
                     </div>
-                    <div className="mt-1 flex flex-wrap items-center gap-2">
-                        <div className="min-w-0 flex-1">
+                    <div className="mt-1 flex w-full min-w-0 max-w-full items-center gap-2">
+                        <div className="w-full min-w-0 max-w-full flex-1">
                             <SearchableSelect
                                 value={recomparePick}
                                 onValueChange={setRecomparePick}
                                 options={recompareOptions}
-                                placeholder="选一份基准来重算"
-                                searchPlaceholder="搜名称 / 来源"
-                                emptyText="没有可选基准"
+                                className="w-full min-w-0 max-w-full"
+                                placeholder="选一份参考"
+                                searchPlaceholder="搜名称 / 来源 / 日期"
+                                emptyText="没有可选参考"
                             />
                         </div>
                         <Button
+                            className="shrink-0"
                             variant="outline"
                             size="sm"
                             disabled={!recomparePick || recomparePending || recompareBlocked}
                             onClick={() => onRecompare(recomparePick)}
                         >
-                            {recomparePending ? '重算中…' : '重算'}
+                            {recomparePending ? '比较中…' : '比较'}
                         </Button>
                     </div>
+                    {recomparePickEntry && (
+                        <div className="mt-1 flex min-w-0 max-w-full flex-wrap gap-x-3 gap-y-1 text-[11px] leading-5 text-muted-foreground [&>span]:min-w-0 [&>span]:max-w-full [&>span]:break-all">
+                            <span>来源：{hlwySourceLabel(recomparePickEntry.source_kind)}</span>
+                            <span>采集日期：{recomparePickEntry.collected_at?.slice(0, 10) || '日期未知'}</span>
+                            <span>有效样本：{recomparePickEntry.valid_count ?? '未知'} 个</span>
+                        </div>
+                    )}
                     {recompareBlocked && recomparePickEntry && (
                         <p className="mt-1 text-[11px] leading-5 text-amber-700">
                             选中的「{recomparePickEntry.label}」现在不能用：{hlwyEntryUnavailableText(recomparePickEntry)}。换一份再重算。
@@ -571,9 +569,9 @@ export function BaselineComparisonCard({
 
                 <div className="flex flex-wrap items-center gap-2">
                     <Button variant="outline" size="sm" onClick={onRerun}>
-                        用同样设置再跑一轮
+                        重新采样
                     </Button>
-                    <span className="text-[11px] text-muted-foreground">会回到提交页，还要再点一次开始</span>
+                    <span className="text-[11px] text-muted-foreground">只回填表单，点击「开始采样」后才会调用渠道</span>
                 </div>
             </div>
         </div>
