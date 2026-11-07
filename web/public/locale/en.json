@@ -395,8 +395,8 @@
       "placeholder": "prompt-caching-scope-2026-01-05"
     },
     "codexFastMode": {
-      "label": "Codex priority processing (Fast)",
-      "description": "Requests priority processing from supported upstreams. May cost more; faster replies are not guaranteed.",
+      "label": "Codex faster processing (Fast)",
+      "description": "Asks supported upstreams for faster processing. May cost more; faster replies are not guaranteed.",
       "hint": "Only applies to Responses channels with Codex cloaking enabled. Adds priority only when the client has not specified a service tier; keeps auto, default, or any other client-selected tier unchanged. Unsupported or rejected requests may fail or wait. Does not lower thinking effort or automatically resend requests."
     },
     "streamKeepalive": {

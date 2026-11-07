@@ -136,7 +136,7 @@ function DistributionChart({ view }: { view: HlwyComparisonView }) {
                 {HLWY_AXIS_TICKS.map((tick) => (
                     <span
                         key={tick.digit}
-                        className="absolute top-0"
+                        className="absolute top-0 whitespace-nowrap"
                         style={{
                             left: `${tick.pct}%`,
                             transform:
