@@ -34,6 +34,9 @@ function panel(overrides = {}) {
         settingsLoading,
         imported: [],
         writes: [],
+        setOptions: [],
+        writeFails: false,
+        invalidated: [],
         toasts: [],
         refetches: 0,
     };
@@ -53,11 +56,23 @@ function panel(overrides = {}) {
         '@/lib/audit-budget': {
             settingBool: (raw, fallback) => (raw === 'true' ? true : raw === 'false' ? false : fallback),
         },
+        // 计划缓存靠这个客户端刷新：开关一改，'hlwy-plan' 那批查询必须作废，
+        // 否则服务端已经 enabled=true，页面上还挂着上一次的 enabled=false。
+        '@tanstack/react-query': {
+            useQueryClient: () => ({
+                invalidateQueries: (arg) => state.invalidated.push(arg),
+            }),
+        },
         '@/api/endpoints/setting': {
             useSettingList: () => ({ data: state.settings, isLoading: state.settingsLoading }),
             useSetSetting: () => ({
                 mutate: (payload, options) => {
                     state.writes.push(payload);
+                    state.setOptions.push(options);
+                    if (state.writeFails) {
+                        options?.onError?.(new Error('boom'));
+                        return;
+                    }
                     options?.onSuccess?.();
                 },
                 isPending: false,
@@ -176,6 +191,7 @@ test('a baseline without a collection date says 日期未知', () => {
         '@/components/common/Toast': { toast: { success: () => {}, error: () => {} } },
         '@/lib/utils': { cn: (...args) => args.filter(Boolean).join(' ') },
         '@/lib/audit-budget': { settingBool: (raw, fallback) => (raw === 'true' ? true : raw === 'false' ? false : fallback) },
+        '@tanstack/react-query': { useQueryClient: () => ({ invalidateQueries: () => {} }) },
         '@/api/endpoints/setting': { useSettingList: () => ({ data: [] }), useSetSetting: () => ({ mutate: () => {} }) },
         '@/api/endpoints/model-audit': {
             useHlwyBaselines: () => ({
@@ -247,6 +263,32 @@ test('the submit switch is off by default and writes the literal setting key', (
     assert.equal(toggle.props.checked, false);
     toggle.props.onCheckedChange(true);
     assert.deepEqual(state.writes, [{ key: 'model_audit_hlwy_enabled', value: 'true' }]);
+});
+
+test('flipping the switch drops the cached plan, so the button is not left greyed out', () => {
+    // 实测过的坑：开关关着时读到的是 enabled=false 的计划，打开开关以后只刷新了
+    // settings，计划缓存还是那一份，按钮就一直按不动——直到切焦点或者键变了才重读。
+    const { tree, state } = panel({ plan: PLAN });
+    assert.deepEqual(state.invalidated, [], 'nothing is invalidated before the switch is touched');
+
+    findElement(tree, (node) => node.type === 'Switch').props.onCheckedChange(true);
+    assert.deepEqual(state.invalidated, [{ queryKey: ['model-audit', 'hlwy-plan'] }]);
+    assert.deepEqual(
+        state.toasts.map((entry) => entry[0]),
+        ['success'],
+        'the existing confirmation is still shown'
+    );
+});
+
+test('a failed write leaves the cached plan alone', () => {
+    // 写失败时按钮的状态没变，此时刷计划只会白跑一次请求、还会把「为什么按不动」
+    // 的现场擦掉。
+    const { tree, state } = panel({ plan: PLAN });
+    state.writeFails = true;
+
+    findElement(tree, (node) => node.type === 'Switch').props.onCheckedChange(true);
+    assert.deepEqual(state.invalidated, [], 'no invalidation on error');
+    assert.deepEqual(state.toasts.map((entry) => entry[0]), ['error']);
 });
 
 test('an enabled flag is read from the same key', () => {

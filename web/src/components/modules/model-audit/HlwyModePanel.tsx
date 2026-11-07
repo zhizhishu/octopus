@@ -1,6 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { Switch } from '@/components/ui/switch';
 import { SearchableSelect, type SearchableSelectOption } from '@/components/ui/searchable-select';
 import { toast } from '@/components/common/Toast';
@@ -53,6 +54,10 @@ export function HlwyModePanel({
     const importBaseline = useImportHlwyBaseline();
     const { data: settings, isLoading: settingsLoading } = useSettingList();
     const setSetting = useSetSetting();
+    // 开关改的是服务端行为，而 `useHlwyPlan` 的缓存里带着上一次的 enabled。
+    // settings 缓存被 useSetSetting 自己刷过了，计划缓存不会跟着失效：不刷的话
+    // 打开开关后要等焦点切换/键变了才重读，按钮一直是灰的。
+    const queryClient = useQueryClient();
     const [importError, setImportError] = useState('');
     const [importedTip, setImportedTip] = useState('');
 
@@ -85,7 +90,10 @@ export function HlwyModePanel({
         setSetting.mutate(
             { key: KEY_HLWY_ENABLED, value: next ? 'true' : 'false' },
             {
-                onSuccess: () => toast.success(next ? '基准对照可提交了' : '基准对照已关闭提交'),
+                onSuccess: () => {
+                    queryClient.invalidateQueries({ queryKey: ['model-audit', 'hlwy-plan'] });
+                    toast.success(next ? '基准对照可提交了' : '基准对照已关闭提交');
+                },
                 onError: (e) =>
                     toast.error('保存失败', { description: e instanceof Error ? e.message : String(e) }),
             },
