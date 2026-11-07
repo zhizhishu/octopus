@@ -2637,8 +2637,9 @@ func (ra *relayAttempt) sendRequest(req *http.Request) (*http.Response, error) {
 // handleStreamResponse 处理流式响应
 func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http.Response, outAdapter model.Outbound) error {
 	// 这条新流从零开始记「首个自报模型名」：换模型判定只在同一条流内部成立，
-	// 同一 attempt 里 goto 重试换适配器会合法地换名字，不能把上一条流的名字带进来。
-	ra.resetUpstreamEnvelopeForNewResponse()
+	// 同一 attempt 里 goto 重试换适配器会合法地换名字，不能把上一条流的名字带进来；
+	// 首字时间同理，上一条流的时间戳不能继续挂在这次响应上。
+	ra.resetResponseObservationForNewResponse()
 
 	if ct := response.Header.Get("Content-Type"); ct != "" && !strings.Contains(strings.ToLower(ct), "text/event-stream") {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 16*1024))
@@ -3375,8 +3376,9 @@ const firstTokenHandoffFloor = 100 * time.Millisecond
 // aggregation does not get a fresh full window on top of the identification
 // wait (F8).
 func (ra *relayAttempt) handleStreamResponseAsNonStream(ctx context.Context, response *http.Response, outAdapter model.Outbound, identifyElapsed time.Duration) error {
-	// 同 handleStreamResponse：换模型只在同一条流内部比，每条新流从零开始记。
-	ra.resetUpstreamEnvelopeForNewResponse()
+	// 同 handleStreamResponse：换模型只在同一条流内部比，每条新流从零开始记；
+	// 首字时间也在这里清——非流式客户端聚合 SSE 时，失败尝试已盖的首字不能留。
+	ra.resetResponseObservationForNewResponse()
 
 	if ct := response.Header.Get("Content-Type"); ct != "" && !strings.Contains(strings.ToLower(ct), "text/event-stream") {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 16*1024))
@@ -3712,8 +3714,9 @@ readLoop:
 
 func (ra *relayAttempt) handleNonStreamResponseAsStream(ctx context.Context, response *http.Response, outAdapter model.Outbound) error {
 	// 单响应路径：这条"流"只有一个分片，标记从头开始，永远判不出换模型。
-	// 必须清：同一个 attempt 可能先跑过一条真流（goto 重试）才走到这里。
-	ra.resetUpstreamEnvelopeForNewResponse()
+	// 必须清：同一个 attempt 可能先跑过一条真流（goto 重试）才走到这里，同时清掉
+	// 那次流的首字时间（否则 3774 的 IsZero 守卫会拒绝给本份回复盖章）。
+	ra.resetResponseObservationForNewResponse()
 
 	limitUpstreamResponseBody(response)
 	// Decompress any upstream Content-Encoding before the outbound parses the body. The
@@ -4592,8 +4595,9 @@ func (ra *relayAttempt) responseBodyLooksLikeSSE(ctx context.Context, response *
 
 // handleResponse 处理非流式响应
 func (ra *relayAttempt) handleResponse(ctx context.Context, response *http.Response, outAdapter model.Outbound) error {
-	// 单响应路径：同 handleNonStreamResponseAsStream，清标记以防上一次尝试的流名串进来。
-	ra.resetUpstreamEnvelopeForNewResponse()
+	// 单响应路径：同 handleNonStreamResponseAsStream，清标记以防上一次尝试的流名串进来；
+	// 首字时间一并清（纯非流式不盖章，所以这条路径的 ftut 保持 0）。
+	ra.resetResponseObservationForNewResponse()
 
 	limitUpstreamResponseBody(response)
 	// SSE self-heal: some upstreams (web-chat bridges) ignore "stream": false and
@@ -4759,13 +4763,26 @@ func (ra *relayAttempt) captureUpstreamEnvelope(resp *model.InternalLLMResponse)
 	}
 }
 
-// resetUpstreamEnvelopeForNewResponse 在每个响应入口清掉上一条回复留下的观测：
-// 同一个 attempt 里 goto 重试换适配器会收到第二份回复，编号/签名/换模型都得从零记，
-// 否则上一份回复的编号会被当成这一份的线索。HeaderFamilies 保留——它在调用本函数
-// 之前、收到这一份回复的 2xx 头时就已写好（forward() / 竞速路径）。
-func (ra *relayAttempt) resetUpstreamEnvelopeForNewResponse() {
+// resetResponseObservationForNewResponse 在每个响应入口清掉上一条回复留下的观测：
+// 同一个 attempt 里 goto 重试换适配器会收到第二份回复，编号/签名/换模型/**首字时间**
+// 都得从零记，否则上一份回复的观测会被当成这一份的线索。
+//
+// 为什么首字时间也必须清（2026-11-06 时序修正）：FirstTokenTime 是**尝试级写入、
+// 请求级存储**（m.FirstTokenTime 在 metrics.Save 里当作 ftut 落库），而三条聚合路径
+// （本文件的 3650 / 3774 两个写入点）都带 IsZero 守卫：只要上一条流已经盖过章，
+// 后一条回复就永远盖不上自己的。于是失败那一次的首字留在那里，胜出的这一份回复
+// 只贡献 output_tokens，ftut 来自 A、用量来自 B，算出来的“生成窗口”横跨两次尝试。
+// 清掉之后，本份回复的写入会自己盖章；没盖章的（纯非流式 handleResponse）保持 0，
+// 日志卡片显示中性的「TPS —」，而不是一个错的数。
+//
+// HeaderFamilies 保留——它在调用本函数之前、收到这一份回复的 2xx 头时就已写好
+// （forward() / 竞速路径）。
+func (ra *relayAttempt) resetResponseObservationForNewResponse() {
 	ra.upstreamEnvelope = dbmodel.RelayLogUpstreamEnvelope{HeaderFamilies: ra.upstreamEnvelope.HeaderFamilies}
 	ra.streamFirstDeclaredModel = ""
+	// 用量/费用等请求级字段不动：那些是请求的累计，不是“这份回复”的观测。
+	// setFirstTokenTime 自带 nil 守卫，这里写零值就是清空。
+	ra.setFirstTokenTime(time.Time{})
 }
 
 // firstNonEmptyToolCallID 返回响应里第一个非空 tool call id（Message 与 Delta 都看）。

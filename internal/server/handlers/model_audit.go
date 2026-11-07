@@ -1,10 +1,12 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -86,12 +88,63 @@ type modelAuditEnqueueRequest struct {
 	Probes         []string `json:"probes"`
 	TimeoutSeconds int      `json:"timeout_seconds"`
 	LogID          int64    `json:"log_id"`
+	// Kind 任务种类。这里保留它只为了把未知种类显式拒绝掉；hlwy 对照有自己
+	// 一套严格参数（见 hlwyEnqueueRequest），不会从这个结构体里解开。
+	Kind string `json:"kind"`
+	// Hlwy 同理：出现在这里就说明调用方把两套参数搞混了，必须报错而不是忽略。
+	Hlwy json.RawMessage `json:"hlwy"`
+}
+
+// hlwyEnqueueRequest 是 hlwy 对照的入队参数，只接受这些字段。
+//
+// 严格解码（hlwyBindStrictJSON）不是洁癖：多传一个 probes 或 log_id 却被告知
+// “成功入队”时，用户有理由以为自己要的那件事发生了。宁可报错让他看清楚。
+type hlwyEnqueueRequest struct {
+	ChannelID int      `json:"channel_id"`
+	Kind      string   `json:"kind"`
+	Models    []string `json:"models"`
+	Hlwy      struct {
+		// Samples 必须显式给（指针），不允许“不给就默认 100”：
+		// 一百次与两百次差一倍的钱，不能靠默认值决定。
+		Samples    *int   `json:"samples"`
+		BaselineID string `json:"baseline_id"`
+		ProtocolID string `json:"protocol_id"`
+	} `json:"hlwy"`
 }
 
 func enqueueModelAudit(c *gin.Context) {
+	// 先只认“种类”，再按种类走各自的解码器。
+	//
+	// 两套参数没有交集（旧的是探针集合，hlwy 是采样次数+基准），用同一个宽容
+	// binder 解一定会在某个字段上默默改变用户意图。所以这里自己读一次 body
+	// 看一眼 kind，再决定交给谁；body 读出来要放回去。
+	raw, err := io.ReadAll(io.LimitReader(c.Request.Body, hlwyRequestBodyLimit))
+	if err != nil {
+		resp.Error(c, http.StatusBadRequest, resp.ErrInvalidJSON)
+		return
+	}
+	c.Request.Body = io.NopCloser(bytes.NewReader(raw))
+
+	var kindPeek struct {
+		Kind string `json:"kind"`
+	}
+	_ = json.Unmarshal(raw, &kindPeek)
+	if strings.TrimSpace(kindPeek.Kind) == model.AuditKindHlwy {
+		enqueueHlwyAudit(c)
+		return
+	}
+
 	var req modelAuditEnqueueRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		resp.Error(c, http.StatusBadRequest, resp.ErrInvalidJSON)
+		return
+	}
+	if kind := strings.TrimSpace(req.Kind); kind != "" && kind != model.AuditKindProbe {
+		resp.Error(c, http.StatusBadRequest, fmt.Sprintf("未知的检测任务种类 %q", kind))
+		return
+	}
+	if len(bytes.TrimSpace(req.Hlwy)) > 0 && string(bytes.TrimSpace(req.Hlwy)) != "null" {
+		resp.Error(c, http.StatusBadRequest, "hlwy 参数需要 kind=hlwy_compare")
 		return
 	}
 	jobID, err := op.ModelAuditEnqueue(c.Request.Context(), op.ModelAuditEnqueueInput{
@@ -116,6 +169,49 @@ func enqueueModelAudit(c *gin.Context) {
 	resp.Success(c, gin.H{"job_id": jobID})
 }
 
+// enqueueHlwyAudit 入队一轮 hlwy 基准对照（kind=hlwy_compare）。
+//
+// 这是**唯一**能开一轮对照的入口。没有「直接跑一次」的同步接口：对照一次是上百个
+// 真实请求、上百笔钱，必须进队列（可取消、可看进度、可回收），否则任何页面上的
+// 一次误点都变成一笔不受任何约束的账单。
+func enqueueHlwyAudit(c *gin.Context) {
+	var req hlwyEnqueueRequest
+	if err := hlwyBindStrictJSON(c, &req); err != nil {
+		resp.Error(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	if strings.TrimSpace(req.Kind) != model.AuditKindHlwy {
+		resp.Error(c, http.StatusBadRequest, "kind 必须是 "+model.AuditKindHlwy)
+		return
+	}
+	if req.Hlwy.Samples == nil {
+		resp.Error(c, http.StatusBadRequest, "samples 必须显式指定（"+
+			strconv.Itoa(model.HlwyDefaultSamples)+" 或 "+strconv.Itoa(model.HlwyMaxSamples)+"）")
+		return
+	}
+	jobID, err := op.ModelAuditEnqueue(c.Request.Context(), op.ModelAuditEnqueueInput{
+		ChannelID: req.ChannelID,
+		Models:    req.Models,
+		Kind:      model.AuditKindHlwy,
+		Hlwy: &op.HlwyEnqueueInput{
+			Samples:    *req.Hlwy.Samples,
+			BaselineID: strings.TrimSpace(req.Hlwy.BaselineID),
+			ProtocolID: strings.TrimSpace(req.Hlwy.ProtocolID),
+		},
+		Trigger: "manual",
+	})
+	if err != nil {
+		// 已在队列里不算错误（用户要的效果已成立），与旧路径一致用 409。
+		if errors.Is(err, op.ErrAuditAlreadyQueued) {
+			resp.Error(c, http.StatusConflict, err.Error())
+			return
+		}
+		resp.Error(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	resp.Success(c, gin.H{"job_id": jobID})
+}
+
 func listModelAuditJobs(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
 	jobs, err := op.ModelAuditJobListSummaries(c.Request.Context(), limit)
@@ -128,6 +224,18 @@ func listModelAuditJobs(c *gin.Context) {
 
 // getModelAuditPlan 返回每项检查的适用性与真实计划请求数（前端展示用，零上游请求）。
 func getModelAuditPlan(c *gin.Context) {
+	// kind 决定这份计划回答的是哪一类检测。hlwy 对照的计划是另一套字段（采样格数/
+	// 基准/协议），与多探针计划形状完全不同，因此先分流，绝不给旧计划硬塞一个
+	// 嵌套的 hlwy 字段：页面读不到顶层字段就会把「开始」永久置灰。
+	switch kind := strings.TrimSpace(c.Query("kind")); kind {
+	case "", model.AuditKindProbe:
+	case model.AuditKindHlwy:
+		hlwyPlan(c)
+		return
+	default:
+		resp.Error(c, http.StatusBadRequest, "未知的检测任务种类 "+kind)
+		return
+	}
 	channelID, _ := strconv.Atoi(c.Query("channel_id"))
 	modelName := strings.TrimSpace(c.Query("model"))
 	protocol := "openai-chat"

@@ -3,6 +3,7 @@ package relay
 import (
 	"net/http"
 	"testing"
+	"time"
 
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/transformer/model"
@@ -192,7 +193,7 @@ func TestCaptureUpstreamEnvelopeModelSwitchIsPerStream(t *testing.T) {
 	}
 
 	// 新的一条流（四个响应入口开头都调这个）：同一个"不同名字"不再算换。
-	ra.resetUpstreamEnvelopeForNewResponse()
+	ra.resetResponseObservationForNewResponse()
 	ra.captureUpstreamEnvelope(&model.InternalLLMResponse{Model: "claude-opus-4-8"})
 	ra.captureUpstreamEnvelope(&model.InternalLLMResponse{Model: "claude-opus-4-8"})
 	if ra.upstreamEnvelope.ModelSwitchedTo != "" {
@@ -215,7 +216,7 @@ func TestResetUpstreamEnvelopeDropsPreviousResponseButKeepsHeaders(t *testing.T)
 	})
 	ra.upstreamEnvelope.HeaderFamilies = []string{"aws"}
 
-	ra.resetUpstreamEnvelopeForNewResponse()
+	ra.resetResponseObservationForNewResponse()
 	ra.captureUpstreamEnvelope(&model.InternalLLMResponse{ID: "msg_second", Model: "claude-opus-4-8"})
 
 	env := ra.upstreamEnvelope
@@ -241,5 +242,48 @@ func TestCaptureUpstreamEnvelopeUsesAuditDeclaredModel(t *testing.T) {
 	ra.captureUpstreamEnvelope(&model.InternalLLMResponse{UpstreamDeclaredModel: "gemini-2-flash", Model: "client-name"})
 	if ra.upstreamEnvelope.ModelSwitchedTo != "gemini-2-flash" {
 		t.Fatalf("ModelSwitchedTo = %q, want gemini-2-flash", ra.upstreamEnvelope.ModelSwitchedTo)
+	}
+}
+
+// 同一个 attempt 里 goto 重试会收到第二份回复：上一份回复盖的首字时间必须清掉，
+// 否则后一份回复的 IsZero 守卫永远不成立，ftut 从输的那一次借来、output_tokens
+// 算赢的这一份——“生成窗口”横跨两次尝试（2026-11-06 生产实证的污染源）。
+func TestResetResponseObservationClearsStaleFirstTokenTime(t *testing.T) {
+	metrics := NewRelayMetrics(1, 1, "127.0.0.1", "m", nil)
+	first := time.Now().Add(-3 * time.Second)
+	metrics.SetFirstTokenTime(first)
+	ra := &relayAttempt{
+		relayRequest: &relayRequest{metrics: metrics},
+		channel:      &dbmodel.Channel{Type: outbound.OutboundTypeAnthropic},
+	}
+	ra.upstreamEnvelope.HeaderFamilies = []string{"anthropic"}
+
+	ra.resetResponseObservationForNewResponse()
+
+	if !metrics.FirstTokenTime.IsZero() {
+		t.Fatalf("FirstTokenTime = %v, want cleared so the new response stamps its own", metrics.FirstTokenTime)
+	}
+	if len(ra.upstreamEnvelope.HeaderFamilies) != 1 || ra.upstreamEnvelope.HeaderFamilies[0] != "anthropic" {
+		t.Fatalf("HeaderFamilies = %v, want kept (written at 2xx before the handler runs)", ra.upstreamEnvelope.HeaderFamilies)
+	}
+	// 盖新章不能被旧值拦住：新回复的写入直接生效。
+	second := time.Now()
+	ra.setFirstTokenTime(second)
+	if !metrics.FirstTokenTime.Equal(second) {
+		t.Fatalf("FirstTokenTime = %v, want the second response's stamp %v", metrics.FirstTokenTime, second)
+	}
+}
+
+// 没有 metrics（纯观测关掉的路径）时清场不得 panic。
+func TestResetResponseObservationToleratesNilMetrics(t *testing.T) {
+	ra := &relayAttempt{relayRequest: &relayRequest{}}
+	ra.upstreamEnvelope.HeaderFamilies = []string{"anthropic"}
+	ra.streamFirstDeclaredModel = "leftover"
+	ra.resetResponseObservationForNewResponse()
+	if ra.streamFirstDeclaredModel != "" {
+		t.Fatalf("streamFirstDeclaredModel = %q, want empty", ra.streamFirstDeclaredModel)
+	}
+	if len(ra.upstreamEnvelope.HeaderFamilies) != 1 {
+		t.Fatalf("HeaderFamilies = %v, want kept", ra.upstreamEnvelope.HeaderFamilies)
 	}
 }

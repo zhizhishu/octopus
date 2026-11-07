@@ -3,6 +3,9 @@ data
 # 打进二进制的，仓库里没有它们，云端构建会直接报 "pattern data/detector.bin:
 # no matching files found"。上面的 data 规则是按名匹配任意层级，故在此显式放行。
 !internal/modelverify/fingerprint/data/
+# 同一 embed 规则适用于 numberdist：基准 JSON 以 go:embed data/hlwy/*.json 打二进制，
+# 且按 sha256 清单逐字节校验，必须入库。
+!internal/modelverify/numberdist/data/
 build
 .codex-runtime/
 test-results/

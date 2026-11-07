@@ -39,6 +39,19 @@ const (
 	AuditResultSkipped = "skipped"
 )
 
+// 检测任务种类。
+//
+// 为什么不另建一套队列表：排队、租约、回收、进度、取消这些语义与「这批要跑几个模型」
+// 无关，只与「怎么跑一个结果」有关。种类落在同一张表上，旧路径（kind 空/audit）的
+// 行为逐字节不变，新模式只替换执行体。
+const (
+	// AuditKindProbe 是原有的多探针检测，也是所有存量行与旧调用方的缺省值。
+	AuditKindProbe = "audit"
+	// AuditKindHlwy 是 hlwy「1–355 单数字」基准对照：不参与风险计分，
+	// 报告用独立的 baseline_comparison 字段承载（见 HlwyAuditReport）。
+	AuditKindHlwy = "hlwy_compare"
+)
+
 // ModelAuditJob 是一次批量检测任务。
 //
 // 排队单位定在"任务"而不是"模型"，是因为用户的心智模型是"我点了一批模型让它去跑"：
@@ -62,6 +75,17 @@ type ModelAuditJob struct {
 	Probes string `json:"probes" gorm:"size:255;default:''"`
 	// TimeoutSeconds 单模型超时上限。
 	TimeoutSeconds int `json:"timeout_seconds" gorm:"default:0"`
+
+	// Kind 任务种类，见 AuditKind* 常量。列默认值兜底为 audit，
+	// 于是加列之前入队的行、以及不带 kind 的旧调用方，都还是普通检测。
+	Kind string `json:"kind" gorm:"size:32;not null;default:'audit';index"`
+	// OptionsJSON 是该种类的**有界**结构化选项（hlwy 见 HlwyOptions，上限
+	// HlwyMaxOptionsBytes）。
+	//
+	// 为什么把选项落在任务行上：一轮对照的比较对象必须在入队那一刻定死。
+	// 若运行期再去基准确认，管理员中途导入/删除一份基准就会悄悄换掉这一轮的
+	// 比较对象，历史报告也就无法复现。旧 audit 任务此列为空。
+	OptionsJSON string `json:"options_json" gorm:"type:text"`
 
 	// Trigger 来源：manual（手动）/ schedule（定时）。
 	Trigger string `json:"trigger" gorm:"size:32;default:'manual'"`

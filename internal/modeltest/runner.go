@@ -930,6 +930,12 @@ func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermod
 		return 0, nil, err
 	}
 
+	// 条件观察点：此刻 outboundRequest 已经吸收了参数覆盖、wire header 与 TLS face，
+	// 正是即将发出的最终请求；proto 与实际出站一致。观察器只经 GetBody 读克隆体，
+	// 不消费 Body，且只有调用方通过 ctx 显式 opt-in 时才读取（无 observer 时连
+	// GetBody 都不碰）。用原始的 Ask ctx，保证 opt-in 沿调用链传递。
+	observeFinalOutboundConditions(ctx, probeProtocolOf(channel.Type), outboundRequest)
+
 	response, err := helper.DoPreserveMethodRedirect(client, outboundRequest)
 	if err != nil {
 		return 0, nil, fmt.Errorf("send request: %w", err)

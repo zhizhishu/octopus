@@ -419,6 +419,17 @@ function auditPage() {
             }),
             useAuditJobs: () => ({ data: [] }),
             useScheduledAudit: () => ({ data: undefined }),
+            // hlwy 基准对照的入口。这个文件测的是"页面会不会多打上游"，
+            // 所以每个 hook 都给一个不发请求的替身：计划给 null（等于还没读到），
+            // 目录给空，提交入口记下调用但不真的入队。
+            useHlwyBaselines: () => ({ data: { baselines: [] }, isLoading: false }),
+            useHlwyPlan: () => ({ data: undefined, error: undefined, isLoading: false }),
+            useEnqueueHlwyCompare: () => ({
+                isPending: false,
+                mutateAsync: (vars) => { enqueued.push(vars); return Promise.resolve({ job_id: 2 }); },
+            }),
+            useRecompareHlwy: () => ({ isPending: false, mutate: () => {} }),
+            useSaveHlwyBaselineFromResult: () => ({ isPending: false, mutate: () => {} }),
         },
         '@/components/common/PageWrapper': widgets('PageWrapper'),
         '@/components/ui/searchable-select': widgets('SearchableSelect'),
@@ -440,6 +451,10 @@ function auditPage() {
         // 第三期的要点行/渠道来源卡：真逻辑由 audit-highlights.test.cjs 覆盖（纯函数，
         // 直接加载 src/lib/audit-highlights.ts）；这里只给能让页面挂载的替身，
         // 因为 @/ 别名走不到真 require。
+        // 提交开关的读数工具：真逻辑由 audit-budget.test.cjs 覆盖，这里只要页面能挂载。
+        '@/lib/audit-budget': {
+            settingBool: (value, fallback) => (value === 'true' ? true : value === 'false' ? false : fallback),
+        },
         '@/lib/audit-highlights': {
             highlightRows: () => [],
             provenanceView: () => null,
@@ -454,6 +469,10 @@ function auditPage() {
         './FingerprintCard': { FingerprintCard: () => null },
         // 渠道来源卡自身的渲染由 audit-highlights.test.cjs 覆盖源码契约。
         './ProvenanceCard': { ProvenanceCard: () => null },
+        // hlwy 对照的选择区与对照报告卡：各自有独立测试文件（hlwy-mode / hlwy-card），
+        // 这里只需要页面能挂载。
+        './HlwyModePanel': { HlwyModePanel: () => null },
+        './BaselineComparisonCard': { BaselineComparisonCard: () => null },
         // 后台检测面板（第三期）自身读设置项、自己保存：渲染与键名由
         // tests/audit-budget.test.cjs 锁，这里只要页面能挂载（照 ProvenanceCard 的补法）。
         './BackgroundAuditPanel': { BackgroundAuditPanel: () => null },

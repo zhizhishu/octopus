@@ -125,6 +125,10 @@ type ModelAuditEnqueueInput struct {
 	TimeoutSeconds int
 	LogID          int64
 	Trigger        string
+	// Kind 任务种类：空/audit = 原有探针检测，hlwy_compare = hlwy 基准对照。
+	Kind string
+	// Hlwy 仅 kind=hlwy_compare 使用；其他种类必须为 nil（由入队处拒绝）。
+	Hlwy *HlwyEnqueueInput
 }
 
 // auditEnqueueMu 串行化「查重 + 建任务」，见 ModelAuditEnqueue 里的说明。
@@ -138,7 +142,21 @@ var auditEnqueueBetweenCheckAndInsert func()
 //
 // 同一个 (渠道, 上游模型) 已经在队列里等待或正在跑时不重复入队——重复点击、
 // 多标签页都会走到这里，而每一次都是钱。已有则一并返回其任务 id。
+//
+// 这里只是按种类分流：kind 空/audit 走下面的旧路径（行为逐字节不变），
+// kind=hlwy_compare 整轮交给 ModelAuditEnqueueHlwy（它的参数与校验完全不同），
+// 其余未知种类直接拒绝——默默当成普通检测会给用户跑一个他没要的检测。
 func ModelAuditEnqueue(ctx context.Context, in ModelAuditEnqueueInput) (int64, error) {
+	switch kind := strings.TrimSpace(in.Kind); kind {
+	case "", model.AuditKindProbe:
+		if in.Hlwy != nil {
+			return 0, errors.New("hlwy 参数只能用于 kind=hlwy_compare 的任务")
+		}
+	case model.AuditKindHlwy:
+		return ModelAuditEnqueueHlwy(ctx, in)
+	default:
+		return 0, fmt.Errorf("未知的检测任务种类 %q", kind)
+	}
 	if in.ChannelID <= 0 {
 		return 0, errors.New("渠道不能为空")
 	}
@@ -278,6 +296,19 @@ func ModelAuditJobCancel(ctx context.Context, jobID int64) error {
 	if jobID <= 0 {
 		return errors.New("任务 id 无效")
 	}
+	// hlwy 对照的取消多两件事：先把任务本身定格成 canceled（正在采样的线程在
+	// 下一次预留时就能看到），再给待跑的行写一份初始报告——否则列表上会出现
+	// 一个 finished 却没有任何报告的任务。存量种类仍走下面的旧路径。
+	//
+	// 读任务失败就报错返回：宁可不取消，也不能把一条 hlwy 任务当旧任务取消
+	// （那条路径不会把任务写成 canceled，正在采样的线程看不到停止信号）。
+	kind, err := hlwyJobKindOfID(ctx, jobID)
+	if err != nil {
+		return err
+	}
+	if kind == model.AuditKindHlwy {
+		return hlwyCancelJob(ctx, jobID, time.Now())
+	}
 	now := time.Now()
 	res := db.GetDB().WithContext(ctx).Model(&model.ModelAuditResult{}).
 		Where("job_id = ? AND status = ?", jobID, model.AuditResultPending).
@@ -342,6 +373,14 @@ func AuditReclaimExpired(ctx context.Context, limit int) int {
 
 	touchedJobs := make(map[int64]struct{}, len(expired))
 	for _, res := range expired {
+		// hlwy 对照行先自己收尾：它要把已采到的证据写回报告、不碰 attempt，
+		// 并且要区分任务已取消（skipped）与中断（failed）。处理过就跳过旧逻辑。
+		if handled, touched := hlwyReclaimExpiredResult(ctx, res, now); handled {
+			if touched && res.JobID > 0 {
+				touchedJobs[res.JobID] = struct{}{}
+			}
+			continue
+		}
 		// 再核一次状态：查出来到写回去之间它可能已经自己收尾了。
 		// 用 CAS 保证不把刚跑完的行改回 pending（那会重复花钱）。
 		claim := db.GetDB().WithContext(ctx).Model(&model.ModelAuditResult{}).
@@ -494,6 +533,9 @@ type ModelAuditJobSummary struct {
 	ReportAt *time.Time `json:"report_at,omitempty"`
 	// Retrying 正在退避重试的行数。
 	Retrying int `json:"retrying,omitempty"`
+	// HlwySummary 仅 hlwy 对照任务且报告可解析时有值：采样账目与可比性，
+	// 全部来自那份唯一的报告，列表不重算。
+	HlwySummary *HlwyJobSummary `json:"hlwy_summary,omitempty"`
 }
 
 // ModelAuditJobListSummaries 返回带汇总的任务列表。
@@ -504,7 +546,14 @@ func ModelAuditJobListSummaries(ctx context.Context, limit int) ([]ModelAuditJob
 	}
 	out := make([]ModelAuditJobSummary, 0, len(jobs))
 	for _, job := range jobs {
+		isHlwy := hlwyJobKind(job) == model.AuditKindHlwy
 		sum := ModelAuditJobSummary{ModelAuditJob: job, Preset: inferPreset(job.Probes)}
+		if isHlwy {
+			// hlwy 对照没有「探针预设」；也不该把冻结的候选快照（几十 KB 的
+			// options_json）随列表下发。详情接口仍能看到它。
+			sum.Preset = ""
+			sum.OptionsJSON = ""
+		}
 		var results []model.ModelAuditResult
 		_ = db.GetDB().WithContext(ctx).Where("job_id = ?", job.ID).Order("id ASC").Find(&results).Error
 		counts := map[string]int{}
@@ -513,15 +562,19 @@ func ModelAuditJobListSummaries(ctx context.Context, limit int) ([]ModelAuditJob
 			if r.Status == model.AuditResultPending && r.NextRetryAt != nil {
 				sum.Retrying++
 			}
-			switch r.Status {
-			case model.AuditResultDone:
-				key := r.Verdict
-				if key == "" {
-					key = "unknown"
+			// 对照模式不产出风险判定，所以不往 verdict_counts 里塞
+			// “1 个 unknown”——那会被读成“查了但没查清”。
+			if !isHlwy {
+				switch r.Status {
+				case model.AuditResultDone:
+					key := r.Verdict
+					if key == "" {
+						key = "unknown"
+					}
+					counts[key]++
+				case model.AuditResultFailed, model.AuditResultSkipped:
+					counts["failed"]++
 				}
-				counts[key]++
-			case model.AuditResultFailed, model.AuditResultSkipped:
-				counts["failed"]++
 			}
 			if r.FinishedAt != nil && (latest == nil || r.FinishedAt.After(*latest)) {
 				t := *r.FinishedAt
@@ -533,8 +586,12 @@ func ModelAuditJobListSummaries(ctx context.Context, limit int) ([]ModelAuditJob
 		if len(results) == 1 {
 			r := results[0]
 			sum.SingleModel = r.Model
-			sum.SingleVerdict = r.Verdict
 			sum.SingleStatus = r.Status
+			if isHlwy {
+				sum.HlwySummary = HlwyJobSummaryOf(r.Report)
+			} else {
+				sum.SingleVerdict = r.Verdict
+			}
 			if r.Report != "" {
 				var view struct {
 					Plain struct {
@@ -547,7 +604,7 @@ func ModelAuditJobListSummaries(ctx context.Context, limit int) ([]ModelAuditJob
 					sum.PlainSummary = view.Plain.Summary
 				}
 			}
-			if sum.PlainHeadline == "" {
+			if sum.PlainHeadline == "" && !isHlwy {
 				sum.PlainHeadline = behavior.PlainVerdictFor(
 					behavior.Verdict(r.Verdict), int(r.Score), r.FindingN, 0, "",
 				).Headline
@@ -599,10 +656,17 @@ func ModelAuditLatestByChannel(ctx context.Context, channelID int) ([]model.Mode
 		return nil, errors.New("渠道不能为空")
 	}
 	var rows []model.ModelAuditResult
-	// 只取终态：pending/running 不算"最近一次结论"。
+	// 只取终态：pending/running 不算“最近一次结论”。
+	//
+	// hlwy 对照不参与风险判定，不能顶掉旧检测留给该模型的结论：否则渠道卡片上
+	// 原本的“高危”会被一次常规对照替换成“没查清”。因此先在 SQL 里把 hlwy 任务
+	// 的结果整个排除（种类在任务行上，不在结果行上）。
+	hlwyJobs := db.GetDB().WithContext(ctx).Model(&model.ModelAuditJob{}).
+		Select("id").Where("kind = ?", model.AuditKindHlwy)
 	err := db.GetDB().WithContext(ctx).
 		Where("channel_id = ? AND status IN ?", channelID,
 			[]string{model.AuditResultDone, model.AuditResultFailed, model.AuditResultSkipped}).
+		Where("job_id NOT IN (?)", hlwyJobs).
 		Order("finished_at DESC, id DESC").
 		Find(&rows).Error
 	if err != nil {

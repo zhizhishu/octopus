@@ -1,0 +1,3 @@
+# hlwy 基准 JSON 是上游原始字节，以 go:embed 打入二进制并按 sha256 清单逐字节校验。
+# 无论本地 core.autocrlf 设置如何，检出时都必须保持上游 CRLF 字节，否则校验失败、构建中断。
+internal/modelverify/numberdist/data/hlwy/*.json -text whitespace=cr-at-eol

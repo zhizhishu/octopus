@@ -192,6 +192,12 @@ const (
 	// neither the scheduled sampling audit nor the suspicious-log follow-up fires anything.
 	SettingKeyModelAuditEnabled         SettingKey = "model_audit_enabled"          // 少量 token 抽检总开关，默认关
 	SettingKeyModelAuditFollowUpEnabled SettingKey = "model_audit_followup_enabled" // 抽检开着时，可疑日志是否自动跟查；默认关
+	// SettingKeyModelAuditHlwyEnabled 只控制**新的** hlwy 基准对照能否入队，出厂 false。
+	//
+	// 它不冒充对已在途任务的取消：关掉之后，排队中/运行中的对照继续跑到终态，
+	// 历史与已保存基准仍然可读、可本地重算（那些动作都不打上游）。
+	// 也不并入后台抽检的两个钱包闸门——hlwy 不进定时/可疑日志跟查。
+	SettingKeyModelAuditHlwyEnabled SettingKey = "model_audit_hlwy_enabled"
 	// The two wallet gates of the sampling audit. Every question it sends is a real, billed
 	// upstream request, so the ceilings live in code with hard defaults (200 requests/day for
 	// the whole site, 1 round/day per channel) instead of depending on someone remembering to
@@ -654,6 +660,7 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyRedactNoticeEnabled, Value: "true"},        // 脱敏时向首条用户消息注入占位符说明(提高模型保真); 可关
 		{Key: SettingKeyModelAuditEnabled, Value: "false"},         // 少量 token 抽检总开关: 默认关; 关着时定时抽检与可疑日志跟查都不打上游
 		{Key: SettingKeyModelAuditFollowUpEnabled, Value: "false"}, // 抽检开着时, 可疑日志是否自动跟查: 默认关
+		{Key: SettingKeyModelAuditHlwyEnabled, Value: "false"},     // hlwy 基准对照入队开关: 出厂关; 只拦新入队, 不拦历史查看/导入/本地重算
 		// 抽检的两道钱包闸门: 全站每天 200 次上游请求 / 每渠道每天 1 轮。
 		{Key: SettingKeyModelAuditDailyRequestLimit, Value: "200"},
 		{Key: SettingKeyModelAuditChannelDailyRounds, Value: "1"},
@@ -867,6 +874,7 @@ func (s *Setting) Validate() error {
 		SettingKeyDebugLoadBalancer, SettingKeyEmailVerificationEnabled, SettingKeyEmailSMTPSSL,
 		SettingKeyUpstreamUTLSFingerprint, SettingKeyUpstreamHTTP1HeaderOrder, SettingKeyDiagnosticMode, SettingKeyRouteStickyCacheFirst,
 		SettingKeyModelAuditEnabled, SettingKeyModelAuditFollowUpEnabled, SettingKeyLogPassiveProbeEnabled,
+		SettingKeyModelAuditHlwyEnabled,
 		SettingKeyModelAuditFingerprintRandomPrompts,
 		SettingKeyRelayLogReclaimEnabled, SettingKeyAsyncImageEnabled, SettingKeyBatchImageEnabled,
 		SettingKeyPriceAutoSyncEnabled, SettingKeyPriceSyncHoldBigChange,

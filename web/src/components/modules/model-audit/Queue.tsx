@@ -8,6 +8,7 @@ import {
     ChevronRight,
     CircleDashed,
     HelpCircle,
+    Hash,
     Loader2,
     Square,
     XCircle,
@@ -23,6 +24,19 @@ import {
     type AuditResult,
     type AuditVerdict,
 } from '@/api/endpoints/model-audit';
+import {
+    hlwyComparabilityLabel,
+    hlwyExecutionLabel,
+    hlwyInFlightNote,
+    hlwyJobBucket,
+    hlwyJobHeadline,
+    hlwyJobLedger,
+    hlwyProgressPercent,
+    hlwySkippedText,
+    isHlwyJob,
+    readHlwyComparison,
+    readStoredReport,
+} from './hlwy';
 
 /**
  * 检测记录页：只看历史，不再承担提交。
@@ -67,6 +81,34 @@ function formatDuration(ms: number): string {
     return `${Math.floor(s / 60)}m${s % 60}s`;
 }
 
+/**
+ * 「可疑」只看多探针结论。基准对照不参与风险计分，把它算进可疑等于凭空造了一个结论。
+ */
+function jobIsSuspect(job: AuditJob): boolean {
+    if (isHlwyJob(job)) return false;
+    return (
+        job.single_verdict === 'medium' ||
+        job.single_verdict === 'high' ||
+        (job.verdict_counts?.medium ?? 0) + (job.verdict_counts?.high ?? 0) > 0
+    );
+}
+
+/**
+ * 「没测成」对基准对照的另一条口径：只有真失败算。
+ *
+ * 旧的判据是 `single_verdict === 'unknown'`——对照结论本来就不是风险档位，
+ * 套上去会把一次跑满 100 个样本、报告齐全的对照显示成「没测成」。
+ * 取消/超时/中断也不算没测成：它们保留了已有结果，只是提前停了。
+ */
+function jobIsFailed(job: AuditJob): boolean {
+    if (isHlwyJob(job)) return hlwyJobBucket(job) === 'failed';
+    return (
+        job.single_status === 'failed' ||
+        job.single_verdict === 'unknown' ||
+        (job.verdict_counts?.failed ?? 0) > 0
+    );
+}
+
 /** 任务状态 → 进度条文案。 */
 function jobProgressText(job: AuditJob, t: (k: string, v?: Record<string, string | number>) => string): string {
     switch (job.status) {
@@ -90,13 +132,8 @@ export function ModelAuditQueue({ onOpenReport }: { onOpenReport?: (result: Audi
     const [filter, setFilter] = useState<'all' | 'suspect' | 'failed'>('all');
     const [query, setQuery] = useState('');
 
-    const suspectN = (jobs ?? []).filter((j) =>
-        j.single_verdict === 'medium' || j.single_verdict === 'high' ||
-        (j.verdict_counts?.medium ?? 0) + (j.verdict_counts?.high ?? 0) > 0
-    ).length;
-    const failedN = (jobs ?? []).filter((j) =>
-        j.single_status === 'failed' || j.single_verdict === 'unknown' || (j.verdict_counts?.failed ?? 0) > 0
-    ).length;
+    const suspectN = (jobs ?? []).filter((j) => jobIsSuspect(j)).length;
+    const failedN = (jobs ?? []).filter((j) => jobIsFailed(j)).length;
 
     const filtered = (jobs ?? []).filter((job) => {
         const q = query.trim().toLowerCase();
@@ -105,11 +142,8 @@ export function ModelAuditQueue({ onOpenReport }: { onOpenReport?: (result: Audi
             if (!hay.includes(q)) return false;
         }
         if (filter === 'all') return true;
-        if (filter === 'suspect') {
-            return job.single_verdict === 'medium' || job.single_verdict === 'high' ||
-                (job.verdict_counts?.medium ?? 0) + (job.verdict_counts?.high ?? 0) > 0;
-        }
-        return job.single_status === 'failed' || job.single_verdict === 'unknown' || (job.verdict_counts?.failed ?? 0) > 0;
+        if (filter === 'suspect') return jobIsSuspect(job);
+        return jobIsFailed(job);
     });
 
     return (
@@ -197,7 +231,20 @@ function JobRow({
 }) {
     const t = useTranslations('modelAudit');
     const active = job.status === 'queued' || job.status === 'running';
-    const pct = job.total > 0 ? Math.round((job.finished / job.total) * 100) : 0;
+    const hlwy = isHlwyJob(job);
+    // 对照任务的进度是「落定槽位 / 计划上限」，不是「已发起 / 计划上限」，也不是
+    // 「几个模型跑完了」：一个模型跑完不等于 100 个样本到齐。用已发起当分子，
+    // 最后一个样本还在飞的时候进度条就停在 100%，看起来像跑完了却没有结果。
+    const hlwyPct = hlwy ? hlwyProgressPercent(job) : null;
+    const pct = hlwy
+        ? (hlwyPct ?? 0)
+        : job.total > 0
+          ? Math.round((job.finished / job.total) * 100)
+          : 0;
+    const ledger = hlwy ? hlwyJobLedger(job) : '';
+    // 还有样本没回：说「正在收尾」，不把它当成 100%。
+    const inFlight = hlwy ? hlwyInFlightNote(job) : '';
+    const bucket = hlwy ? hlwyJobBucket(job) : null;
 
     return (
         <div className="rounded-2xl border border-border/70 bg-muted/20">
@@ -213,16 +260,23 @@ function JobRow({
                         <span className="rounded bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground">
                             #{job.id}
                         </span>
+                        {hlwy && (
+                            <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                                基准对照
+                            </span>
+                        )}
                         {active && <Loader2 className="size-3 animate-spin text-primary" />}
                     </div>
                     <div className="mt-0.5 truncate text-[11px] text-muted-foreground">
-                        {active
-                            ? jobProgressText(job, t)
-                            : job.single_model
-                              ? `${job.single_model} · ${job.plain_headline || ''}`
-                              : job.total > 1
-                                ? batchSummary(job)
-                                : jobProgressText(job, t)}
+                        {hlwy
+                            ? `${job.single_model || '本轮模型'} · ${hlwyJobHeadline(job)}${inFlight ? ` · ${inFlight}` : ''}${ledger ? ` · ${ledger}` : ''}`
+                            : active
+                              ? jobProgressText(job, t)
+                              : job.single_model
+                                ? `${job.single_model} · ${job.plain_headline || ''}`
+                                : job.total > 1
+                                  ? batchSummary(job)
+                                  : jobProgressText(job, t)}
                         {' · '}
                         {formatTime(job.report_at || job.created_at)}
                     </div>
@@ -233,7 +287,16 @@ function JobRow({
                     <div className="w-24 shrink-0">
                         <div className="h-1.5 overflow-hidden rounded-full bg-background">
                             <div
-                                className={cn('h-full rounded-full transition-all', active ? 'bg-primary' : 'bg-emerald-500')}
+                                className={cn(
+                                    'h-full rounded-full transition-all',
+                                    bucket === 'failed'
+                                        ? 'bg-destructive/70'
+                                        : bucket === 'stopped' || bucket === 'insufficient'
+                                          ? 'bg-amber-500'
+                                          : active
+                                            ? 'bg-primary'
+                                            : 'bg-emerald-500',
+                                )}
                                 style={{ width: `${pct}%` }}
                             />
                         </div>
@@ -256,12 +319,22 @@ function JobRow({
                 </div>
             )}
 
-            {open && <JobResults jobID={job.id} onOpenReport={onOpenReport} />}
+            {open && <JobResults jobID={job.id} hlwy={hlwy} jobStatus={job.status} onOpenReport={onOpenReport} />}
         </div>
     );
 }
 
-function JobResults({ jobID, onOpenReport }: { jobID: number; onOpenReport?: (result: AuditResult) => void }) {
+function JobResults({
+    jobID,
+    hlwy,
+    jobStatus,
+    onOpenReport,
+}: {
+    jobID: number;
+    hlwy?: boolean;
+    jobStatus?: string;
+    onOpenReport?: (result: AuditResult) => void;
+}) {
     const t = useTranslations('modelAudit');
     const { data, isLoading } = useAuditJobDetail(jobID);
 
@@ -281,13 +354,23 @@ function JobResults({ jobID, onOpenReport }: { jobID: number; onOpenReport?: (re
     return (
         <div className="space-y-1.5 border-t border-border/60 p-3">
             {results.map((r) => (
-                <ResultRow key={r.id} result={r} onOpenReport={onOpenReport} />
+                <ResultRow key={r.id} result={r} hlwy={hlwy} jobStatus={jobStatus} onOpenReport={onOpenReport} />
             ))}
         </div>
     );
 }
 
-function ResultRow({ result, onOpenReport }: { result: AuditResult; onOpenReport?: (result: AuditResult) => void }) {
+function ResultRow({
+    result,
+    hlwy,
+    jobStatus,
+    onOpenReport,
+}: {
+    result: AuditResult;
+    hlwy?: boolean;
+    jobStatus?: string;
+    onOpenReport?: (result: AuditResult) => void;
+}) {
     const t = useTranslations('modelAudit');
     const [expanded, setExpanded] = useState(false);
 
@@ -305,7 +388,11 @@ function ResultRow({ result, onOpenReport }: { result: AuditResult; onOpenReport
                         ? t('queue.resultRetrying', { attempt: result.attempt ?? 1 })
                         : result.status === 'pending'
                           ? t('queue.resultPending')
-                          : t('queue.resultRunning')}
+                          : // 任务被取消但这一次已经发出去了：说清楚它还在收尾，
+                            // 否则用户会以为取消以后还会再扣一次钱。
+                            hlwy && jobStatus === 'canceled'
+                            ? '任务已停，这一次在收尾'
+                            : t('queue.resultRunning')}
                 </span>
             </div>
         );
@@ -314,7 +401,7 @@ function ResultRow({ result, onOpenReport }: { result: AuditResult; onOpenReport
     if (result.status === 'failed' || result.status === 'skipped') {
         // 失败行也可能带着报告：探针真的打出去了、也真的计过费，只是全部没拿到
         // 有效响应。后端现在会把这份"每条探针为什么失败"的结构化结果一起存下来，
-        // 所以这里要留一个入口——只显示一句"没跑成"等于把排错线索扔掉。
+        // 所以这里要留一个入口——只显示一句"失败"等于把排错线索扔掉。
         const hasReport = (result.report ?? '').trim() !== '';
         return (
             <div className="rounded-xl bg-background/50 px-2.5 py-2 text-xs">
@@ -322,7 +409,15 @@ function ResultRow({ result, onOpenReport }: { result: AuditResult; onOpenReport
                     <XCircle className="size-3 shrink-0 text-muted-foreground" />
                     <span className="min-w-0 flex-1 truncate font-mono">{result.model}</span>
                     <span className="shrink-0 text-muted-foreground">
-                        {result.status === 'skipped' ? t('queue.resultSkipped') : t('queue.resultFailed')}
+                        {hlwy
+                            ? result.status === 'skipped'
+                                ? // 被跳过的行不一定没开始：取消时已经发出去的那一次
+                                  // 也标成 skipped，但它花过钱、也有部分结果。
+                                  hlwySkippedText(result.report)
+                                : '失败'
+                            : result.status === 'skipped'
+                              ? t('queue.resultSkipped')
+                              : t('queue.resultFailed')}
                     </span>
                 </div>
                 {result.error_msg && (
@@ -334,8 +429,63 @@ function ResultRow({ result, onOpenReport }: { result: AuditResult; onOpenReport
                         onClick={() => onOpenReport(result)}
                         className="mt-1 pl-5 text-[11px] font-medium text-primary underline-offset-2 hover:underline"
                     >
-                        {t('queue.failureDetail')}
+                        {hlwy ? '看已采到的部分' : t('queue.failureDetail')}
                     </button>
+                )}
+            </div>
+        );
+    }
+
+    // 基准对照的完成行：没有风险档位，也不该套用「证据不足」那套标题。
+    // 状态、相似度、采样账目从报告里读，读不出来就说读不出来。
+    if (hlwy) {
+        const read = readStoredReport(result.report || '');
+        const view = read.ok ? readHlwyComparison(read.view) : null;
+        const headline = view
+            ? hlwyExecutionLabel(view.execution)
+            : result.status === 'done'
+              ? '对照完成（细节读不出）'
+              : '结果未完成';
+        // 计划数是上限：写「最多 N 次调用」，不把它读成「一定有 100 个有效样本」。
+        const ledger = view?.counts
+            ? `最多 ${view.counts.planned_calls} 次调用 · 有效 ${view.counts.valid} · 未确认 ${view.counts.unresolved}`
+            : '';
+        const scoreText = view && view.hasScore && view.chosen?.percent ? view.chosen.percent : '';
+        return (
+            <div className="rounded-xl bg-background/50 px-2.5 py-2">
+                <div className="flex w-full items-center gap-2">
+                    <button
+                        type="button"
+                        onClick={() => setExpanded(!expanded)}
+                        className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                    >
+                        <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-muted">
+                            <Hash className="size-3 text-muted-foreground" />
+                        </span>
+                        <span className="min-w-0 flex-1 truncate font-mono text-xs text-card-foreground">{result.model}</span>
+                        <span className="shrink-0 text-[11px] font-medium text-muted-foreground">{headline}</span>
+                        {expanded ? <ChevronDown className="size-3 shrink-0" /> : <ChevronRight className="size-3 shrink-0" />}
+                    </button>
+                    {onOpenReport && (
+                        <button
+                            type="button"
+                            onClick={() => onOpenReport(result)}
+                            className="shrink-0 text-[11px] text-muted-foreground underline-offset-2 hover:underline"
+                            title="查看完整对照报告"
+                        >
+                            {t('queue.openReport')}
+                        </button>
+                    )}
+                </div>
+                {expanded && (
+                    <div className="mt-2 space-y-1 border-t border-border/40 pt-2 pl-7 text-[11px] leading-5">
+                        {scoreText && <p className="text-card-foreground">与主对照的数字分布相似度 {scoreText}</p>}
+                        {ledger && <p className="text-muted-foreground">采样账目：{ledger}</p>}
+                        {view && <p className="text-muted-foreground">{hlwyComparabilityLabel(view.comparability)}</p>}
+                        {!read.ok && <p className="text-muted-foreground">{read.error}</p>}
+                        {view?.problem && <p className="text-muted-foreground">报告只能部分读取：{view.problem}</p>}
+                        <p className="text-muted-foreground/70">时长 {formatDuration(result.duration_ms) || '-'}</p>
+                    </div>
                 )}
             </div>
         );

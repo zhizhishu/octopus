@@ -93,6 +93,22 @@ func auditQueueTick(ctx context.Context) {
 
 // runOneAuditResult 执行单个模型的检测并把结论落库。绝不 panic 外泄。
 func runOneAuditResult(ctx context.Context, res *model.ModelAuditResult) {
+	// hlwy 基准对照走完全不同的执行体，必须在这里先分流：旧路径会立刻把行改成
+	// running 并写下租约，那之后 hlwy 那套记账（attempt + 租约 + report 三元组）
+	// 就被占住了，再也分不清"这一格有没有花过钱"。
+	//
+	// 任务行读不到时这一轮谁都不跑：退回旧路径等于把一条 hlwy 的结算交给旧执行体，
+	// 它不知道 planned/counts 那套账，写出来的报告永远自相矛盾。
+	job, isHlwy, err := hlwyDispatchJob(ctx, res)
+	if err != nil {
+		log.Warnf("model audit result %d dispatch failed: %v", res.ID, err)
+		return
+	}
+	if isHlwy {
+		runHlwyResult(ctx, res, job)
+		return
+	}
+
 	// 先抢占成 running，并**同时写下租约到期时间**。
 	//
 	// 以前这里只改 status，于是进程一重启那行就永远停在 running：没有续租、
@@ -131,15 +147,10 @@ func runOneAuditResult(ctx context.Context, res *model.ModelAuditResult) {
 	attempt := res.Attempt + 1
 
 	// 回写日志时带上真实的触发来源，而不是一律写 manual。
-	// trigger 记在 job 上（result 没这个字段），查一次；查不到就退回 manual。
-	auditTrigger := "manual"
-	{
-		var job model.ModelAuditJob
-		if err := db.GetDB().WithContext(ctx).Select("trigger").
-			Where("id = ?", res.JobID).First(&job).Error; err == nil &&
-			strings.TrimSpace(job.Trigger) != "" {
-			auditTrigger = job.Trigger
-		}
+	// trigger 记在 job 上（result 没这个字段），分派时已经读过整行了。
+	auditTrigger := strings.TrimSpace(job.Trigger)
+	if auditTrigger == "" {
+		auditTrigger = "manual"
 	}
 
 	finish := func(status, verdict string, score int, findingN int, reportJSON, errMsg string) {
@@ -264,8 +275,7 @@ func runOneAuditResult(ctx context.Context, res *model.ModelAuditResult) {
 	clearModelAuditYield(res.ID)
 	defer release()
 
-	var job model.ModelAuditJob
-	_ = db.GetDB().WithContext(ctx).Where("id = ?", res.JobID).First(&job).Error
+	// 任务行在分派时已经读过（hlwyDispatchJob）：这里直接用，不再查一遍。
 	ids := parseAuditProbesOrEmpty(job.Probes)
 	runCtx, cancel := context.WithTimeout(ctx, auditRunTimeout(job.TimeoutSeconds, ids))
 	defer cancel()

@@ -104,6 +104,16 @@ export type AuditProvenance = {
 };
 
 export type AuditViewReport = {
+    /**
+     * 报告种类。历史报告没有这个键（等值于 'audit'），hlwy 基准对照是
+     * 'hlwy_compare'：它不参与风险计分，结论放在 baseline_comparison 里。
+     *
+     * 刻意**可选**：旧报文的读取路径必须原样可用，不能因为多了一个键就要求
+     * 所有存量报告重新生成。
+     */
+    kind?: string;
+    /** hlwy 对照结果（见 HlwyBaselineComparison）。非本模式为 undefined。 */
+    baseline_comparison?: Record<string, unknown>;
     requested_model: string;
     requested_families?: string[];
     score: number;
@@ -143,6 +153,13 @@ export type ModelAuditResponse = {
     finished_at?: string;
     model?: string;
     preset?: string;
+    /**
+     * 来源结果行的状态（从「检测记录」打开时带上）。
+     *
+     * 「能不能存成基准」必须看这个：同样的报告，正常跑完和中断后保留的结果，
+     * 可信度完全不同。前端不猜，只用结果行上写着的事实。
+     */
+    result_status?: string;
 };
 
 export type LogAnomalyFinding = {
@@ -272,6 +289,32 @@ export function useRunModelAudit() {
 export type AuditJobStatus = 'queued' | 'running' | 'done' | 'canceled';
 export type AuditResultStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped';
 
+/** 任务种类。缺省/空串 = 原有的多探针检测。 */
+export type AuditJobKind = 'audit' | 'hlwy_compare';
+
+/**
+ * 队列行上的 hlwy 样本账目摘要。
+ *
+ * 与任务的 finished/total 是两件事：后者是「几个模型跑完了」，这里是「这一轮
+ * 100/200 次采样走到哪」。混用会直接说错话（1/1 个模型跑完 ≠ 100 个样本到齐）。
+ */
+export type HlwyJobSummary = {
+    execution: string;
+    sufficiency: string;
+    comparability: string;
+    counts?: HlwyCounts;
+    stop_reason?: string;
+};
+
+export type HlwyCounts = {
+    planned_calls: number;
+    started_slots: number;
+    valid: number;
+    invalid: number;
+    failed: number;
+    unresolved: number;
+};
+
 export type AuditJob = {
     id: number;
     channel_id: number;
@@ -294,6 +337,10 @@ export type AuditJob = {
     verdict_counts?: Record<string, number>;
     report_at?: string;
     retrying?: number;
+    /** 任务种类：'audit'（旧的多探针检测）或 'hlwy_compare'。 */
+    kind?: AuditJobKind | string;
+    /** hlwy 对照任务的采样摘要；其它种类为空。 */
+    hlwy_summary?: HlwyJobSummary;
 };
 
 export type AuditResult = {
@@ -350,7 +397,15 @@ export function useAuditJobDetail(jobId: number | null) {
             // 任务跑完就停止轮询，避免空转。
             const data = query.state.data as AuditJobDetail | undefined;
             if (!data) return 3_000;
-            return data.job.status === 'done' || data.job.status === 'canceled' ? false : 3_000;
+            if (data.job.status === 'done') return false;
+            if (data.job.status === 'canceled') {
+                // 取消只阻止**新的**采样：已经发出去的那一次还在上游跑着，它的结果
+                // 仍会落库。此刻停掉轮询，用户看到的就是一行永远停在「检测中」
+                // 的结果——取消不能变成「结果不给你了」。
+                const stillRunning = (data.results ?? []).some((item) => item.status === 'running');
+                return stillRunning ? 3_000 : false;
+            }
+            return 3_000;
         },
     });
 }
@@ -459,6 +514,200 @@ export function useSaveTokenizerBaseline() {
             apiClient.post<{ baseline: TokenizerBaseline }>('/api/v1/model-audit/tokenizer-baselines', payload),
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ['model-audit', 'tokenizer-baselines'] });
+        },
+    });
+}
+
+/* ------------------------------------------------------------------ *
+ * hlwy「1–355 单数字」基准对照
+ *
+ * 与上面的多探针检测是同一张任务表上的另一种 kind，但语义完全不同：
+ * 它发同一个题目 N 次（100/200）、只统计数字分布，不参与风险计分。
+ * 请求侧只允许三个字段（samples / baseline_id / protocol_id），候选基准由
+ * 服务端在入队那一刻固化——客户端能注入候选，就能把相似度刷到自己想要的位置。
+ * ------------------------------------------------------------------ */
+
+/** 首版只允许 100 或 200：样本量直接决定费用，也决定「够不够当参考」。 */
+export type HlwySampleCount = 100 | 200;
+
+/** 采样条件（三态：unknown 未观测 / absent 观测到最终请求体省略 / value 显式值）。 */
+export type HlwyConditions = {
+    protocol?: string;
+    protocol_id?: string;
+    parser_version?: string;
+    prompt_sha256?: string;
+    transport_profile?: string;
+    temperature_state?: string;
+    temperature?: number;
+    top_p_state?: string;
+    top_p?: number;
+    stream?: boolean;
+    max_token_field?: string;
+    max_tokens?: number;
+    thinking?: string;
+    reasoning_effort?: string;
+    system_injected?: boolean;
+    tools_injected?: boolean;
+    completeness?: string;
+    unknown_fields?: string[];
+};
+
+/**
+ * 基准目录里的一条（catalog Entry）。
+ *
+ * 刻意不带 raw_numbers/counts：目录只回答「有哪些基准、它们从哪来、采了多少」。
+ * 完整分布跟着任务选项冻结、跟着报告快照回放，不在列表里重复一遍重量级数据。
+ */
+export type HlwyBaselineEntry = {
+    id: string;
+    label: string;
+    /** 'builtin_hlwy' | 'imported_hlwy' | 'local_capture'（后端权威，前端只映射文案）。 */
+    source_kind: string;
+    declared_model?: string;
+    api_type?: string;
+    /** 采集日期。旧文件缺失/无效时为 null —— 前端只能说「日期未知」，不能补今天。 */
+    collected_at?: string | null;
+    imported_at?: string;
+    valid_count: number;
+    payload_sha256: string;
+    builtin?: boolean;
+    source_result_id?: number;
+    conditions?: HlwyConditions;
+    /**
+     * 服务端重读时没通过自洽校验的本地件（哈希/计数/统计对不上、内容读不出）。
+     *
+     * 这类件**只是自己不能选**：它不阻断内置件和别的健康件，也不隐藏已有历史。
+     * 前端据此禁用该选项并把 `reason_code` 翻成人话；不在这里猜原因。
+     */
+    unavailable?: boolean;
+    reason_code?: string;
+};
+
+export type HlwyBaselinesResponse = { baselines: HlwyBaselineEntry[] };
+
+export type HlwyBaselineResponse = { baseline: HlwyBaselineEntry; existed: boolean };
+
+/**
+ * 服务器给出的计划（零请求、零费用）。
+ *
+ * 失败时**没有**计划：界面不许自己编一个「约 N 次」占位数字——那是拿猜测冒充
+ * 价格承诺。没有计划就不给开始。
+ */
+export type HlwyPlanResponse = {
+    kind: string;
+    enabled: boolean;
+    samples: HlwySampleCount;
+    max_calls: number;
+    timeout_seconds: number;
+    sample_timeout_seconds: number;
+    protocol_id: string;
+    baseline: HlwyBaselineEntry;
+    conditions_note: string;
+};
+
+export function useHlwyBaselines(enabled = true) {
+    return useQuery({
+        queryKey: ['model-audit', 'hlwy-baselines'],
+        queryFn: async () => apiClient.get<HlwyBaselinesResponse>('/api/v1/model-audit/hlwy-baselines'),
+        enabled,
+        staleTime: 60_000,
+        retry: false,
+    });
+}
+
+/**
+ * 读「这一单会花多少钱/多少时间」的计划。
+ *
+ * baseline_id 是必填的查询条件：同一轮里换了主对照，超时与调用上限可能不同，
+ * 而计划正是给用户看「这一单」的账。
+ */
+export function useHlwyPlan(input: {
+    channelId: number;
+    model: string;
+    samples: HlwySampleCount;
+    baselineId: string;
+    enabled?: boolean;
+}) {
+    const ready =
+        input.channelId > 0 && input.model.trim() !== '' && input.baselineId.trim() !== '';
+    return useQuery({
+        queryKey: ['model-audit', 'hlwy-plan', input.channelId, input.model, input.samples, input.baselineId],
+        queryFn: async () =>
+            apiClient.get<HlwyPlanResponse>('/api/v1/model-audit/plan', {
+                kind: 'hlwy_compare',
+                channel_id: input.channelId,
+                model: input.model,
+                samples: input.samples,
+                baseline_id: input.baselineId,
+            }),
+        enabled: (input.enabled ?? true) && ready,
+        // 计划只是一次本地计算，但没必要每敲一个字都重读；换了基准/样本量键就变了。
+        staleTime: 15_000,
+        retry: false,
+    });
+}
+
+/** 提交一轮基准对照。请求体里**没有** probes / log_id：多探针与日志回填都不适用于本模式。 */
+export type EnqueueHlwyInput = {
+    channel_id: number;
+    /** 一轮只允许一个模型：采样账目与「哪个模型」必须一一对应。 */
+    models: [string];
+    kind: 'hlwy_compare';
+    hlwy: { samples: HlwySampleCount; baseline_id: string; protocol_id: string };
+};
+
+export function useEnqueueHlwyCompare() {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: async (payload: EnqueueHlwyInput) =>
+            apiClient.post<{ job_id: number }>('/api/v1/model-audit/enqueue', payload),
+        onSuccess: () => {
+            void queryClient.invalidateQueries({ queryKey: ['model-audit', 'jobs'] });
+        },
+        onError: (error) => {
+            logger.error('基准对照入队失败:', error);
+        },
+    });
+}
+
+/** 导入一份旧 hlwy JSON（最多 1 MiB，服务端还会计数校验）。 */
+export function useImportHlwyBaseline() {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: async (payload: Record<string, unknown>) =>
+            apiClient.post<HlwyBaselineResponse>('/api/v1/model-audit/hlwy-baselines/import', payload),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['model-audit', 'hlwy-baselines'] });
+        },
+    });
+}
+
+/** 把一条已完成的对照结果存成「我的基准」（服务端还会再核一遍资格）。 */
+export function useSaveHlwyBaselineFromResult() {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: async (payload: { result_id: number; label?: string }) =>
+            apiClient.post<HlwyBaselineResponse>('/api/v1/model-audit/hlwy-baselines/from-result', payload),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['model-audit', 'hlwy-baselines'] });
+        },
+    });
+}
+
+/**
+ * 换一份基准重算：完全离线，不发请求、不写库、不改原报告。
+ *
+ * 因此这里刻意不 invalidate 任何列表——它没有改变任何服务端事实，
+ * 只是把同一批已存数字重新算了一遍。
+ */
+export type HlwyRecompareInput = { result_id: number; baseline_id: string };
+
+export function useRecompareHlwy() {
+    return useMutation({
+        mutationFn: async (payload: HlwyRecompareInput) =>
+            apiClient.post<{ report: Record<string, unknown> }>('/api/v1/model-audit/hlwy-compare', payload),
+        onError: (error) => {
+            logger.error('换基准重算失败:', error);
         },
     });
 }

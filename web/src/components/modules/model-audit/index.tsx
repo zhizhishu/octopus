@@ -45,6 +45,12 @@ import {
     useAuditPlan,
     useAuditJobs,
     type AuditJob,
+    useEnqueueHlwyCompare,
+    useHlwyBaselines,
+    useHlwyPlan,
+    useRecompareHlwy,
+    useSaveHlwyBaselineFromResult,
+    type HlwySampleCount,
 } from '@/api/endpoints/model-audit';
 import { PageWrapper } from '@/components/common/PageWrapper';
 import { SearchableSelect } from '@/components/ui/searchable-select';
@@ -62,10 +68,27 @@ import { highlightRows, provenanceView, TONE_DOT_CLASS } from '@/lib/audit-highl
 import { getSelectedChannelModels } from '@/components/modules/channel/channel-utils';
 import { sanitizeChannelTestError } from '@/lib/channel-test';
 import { ModelAuditQueue } from './Queue';
+import { HlwyModePanel } from './HlwyModePanel';
+import { BaselineComparisonCard } from './BaselineComparisonCard';
+import {
+    downloadJson,
+    hlwyComparabilityLabel,
+    hlwyExecutionLabel,
+    hlwyExportFull,
+    hlwyExportLegacy,
+    hlwySaveEligibility,
+    hlwyStartState,
+    readHlwyComparison,
+    readStoredReport,
+} from './hlwy';
+import { settingBool } from '@/lib/audit-budget';
 import { Switch } from '@/components/ui/switch';
 import { useSettingList, useSetSetting, SettingKey } from '@/api/endpoints/setting';
 
-type PlanId = 'quick' | 'standard';
+// 'hlwy' 不是「更多探针」的一种：它换的是问题本身（同一个数字题问 100/200 次、
+// 只看数字分布）。放在同一个 PlanId 里是为了「只有一个提交按钮」——切换模式就
+// 切换按钮的意义，而不是页面上多出一个没人管的旧按钮。
+type PlanId = 'quick' | 'standard' | 'hlwy';
 type RowTone = 'pass' | 'warn' | 'info' | 'fail' | 'skip';
 type PageState = 'idle' | 'running' | 'report' | 'error' | 'cancelling' | 'cancelled';
 
@@ -679,6 +702,19 @@ export function ModelAudit() {
     const [report, setReport] = useState<ModelAuditResponse | null>(null);
     const [errorText, setErrorText] = useState('');
     const [openRow, setOpenRow] = useState<DisplayRow | null>(null);
+    // hlwy 基准对照的选择状态。
+    //
+    // 特意不放进 `selected`（探针列表）：探针是「查几项」，这里是「和谁比」。
+    // 混在一起，切回探针模式时就会莫名地带上一轮对照的残留。
+    const [hlwyBaselineId, setHlwyBaselineId] = useState('');
+    const [hlwySamples, setHlwySamples] = useState<HlwySampleCount>(100);
+    // 「再跑一轮」填回去的那个渠道 id。它只是「上次用的是谁」的记录，不是当前选择；
+    // 渠道被删掉以后，靠它把「现在选的已经不是那个渠道」说出口。
+    const [rerunChannelId, setRerunChannelId] = useState<number | null>(null);
+    // 换基准重算的结果：只在内存里预览，不覆盖存下来的原报告。
+    const [recompare, setRecompare] = useState<{ baselineId: string; report: Record<string, unknown> } | null>(null);
+    // 当前正在看的结果 id。用来丢掉「换了报告以后才回来」的重算响应。
+    const reportResultIdRef = useRef<number | null>(null);
     // 前端不再持有"队列"状态。
     //
     // 这里原本有一整套内存队列（queue / reports / runningModel / inFlight /
@@ -736,6 +772,59 @@ export function ModelAudit() {
         }, 0);
     }, [auditPlan, selected, channel, activeModel]);
 
+    /* ---------------- hlwy 基准对照 ---------------- */
+    // 同一个页面上的第二种检测：不发探针，只问同一题 N 次看数字分布。
+    const hlwyMode = plan === 'hlwy';
+    const { data: hlwyCatalog } = useHlwyBaselines();
+    const enqueueHlwy = useEnqueueHlwyCompare();
+    const recompareHlwy = useRecompareHlwy();
+    const saveHlwyBaseline = useSaveHlwyBaselineFromResult();
+    const { data: hlwySettings } = useSettingList();
+    // 开关写字面量、与 BackgroundAuditPanel 同一套做法：键由后端同期实现，
+    // 本次不动 setting.ts 的 SettingKey 表。默认关。
+    const hlwyFlagEnabled = settingBool(
+        hlwySettings?.find((item) => item.key === 'model_audit_hlwy_enabled')?.value,
+        false,
+    );
+    const hlwyPlanQuery = useHlwyPlan({
+        channelId: channel?.id ?? 0,
+        model: activeModel,
+        samples: hlwySamples,
+        baselineId: hlwyBaselineId,
+        // 不在本模式就不发这个请求：读一份不用的计划也是白白多一次往返。
+        enabled: hlwyMode,
+    });
+    const hlwyPlan = hlwyPlanQuery.data ?? null;
+    const hlwyPlanError = hlwyPlanQuery.error
+        ? hlwyPlanQuery.error instanceof Error
+            ? hlwyPlanQuery.error.message
+            : String(hlwyPlanQuery.error)
+        : '';
+    // 选中的那份基准现在还在不在目录里、是不是被标成不可用。
+    // 目录刷新后 baselineId 可能指向一份校验没过的件，这时照样不能提交。
+    const hlwySelectedEntry = hlwyCatalog?.baselines.find((entry) => entry.id === hlwyBaselineId) ?? null;
+    // 「再跑一轮」把上一轮的渠道填回来，但那个渠道可能已经被删掉/停用了。
+    // 渠道选择器会退到第一个渠道（看起来像没事），提交就会真的花在另一个渠道上。
+    // 所以这里记住「上一轮用的是哪个渠道」，不见了就抦住按钮并说清楚。
+    const rerunChannelMissing =
+        rerunChannelId !== null && channels.length > 0 && !channels.some((item) => item.id === rerunChannelId);
+    const rerunChannelMissingReason = rerunChannelMissing
+        ? `上一轮用的渠道（#${rerunChannelId}）已经不在渠道列表里了，请重新选一个渠道再提交`
+        : '';
+    // 按钮能不能按、为什么不能按，全部由一个函数回答：页面上只有一个提交动作，
+    // 说明也就只能有一处。
+    const hlwyStart = hlwyStartState({
+        hasTarget: !!channel && !!activeModel,
+        channelMissing: rerunChannelMissingReason,
+        baselineId: hlwyBaselineId,
+        baselineUnavailable: hlwySelectedEntry?.unavailable === true,
+        flagEnabled: hlwyFlagEnabled,
+        plan: hlwyPlan,
+        planError: hlwyPlanError,
+        planLoading: hlwyPlanQuery.isLoading === true,
+        pending: enqueueHlwy.isPending,
+    });
+
 
     const rows = useMemo(() => {
         if (!report) return [];
@@ -758,7 +847,17 @@ export function ModelAudit() {
     const warnCount = report ? (report.report.findings ?? []).filter((f) => (f.score ?? 0) > 0).length : 0;
     const failCount = rows.filter((row) => row.tone === 'fail').length;
     const insufficientCount = rows.filter((row) => row.insufficient).length;
-    const copy = report
+    const hlwyView = useMemo(() => readHlwyComparison(report?.report), [report]);
+    // 换基准重算的视图优先展示，但它只活在内存里：
+    // 顶部的「本地重算，原报告未变」提示条就是这个事实的可见形态。
+    const recompareView = useMemo(() => readHlwyComparison(recompare?.report), [recompare]);
+    const activeView = recompareView ?? hlwyView;
+    const copy = activeView
+        ? {
+            title: activeView.headline || hlwyExecutionLabel(activeView.execution),
+            sub: activeView.summary || hlwyComparabilityLabel(activeView.comparability),
+        }
+        : report
         ? (report.report.plain?.headline
             ? { title: report.report.plain.headline, sub: report.report.plain.meaning || report.report.plain.summary || '' }
             : headline(report.report.verdict, warnCount, failCount, insufficientCount, t))
@@ -766,6 +865,8 @@ export function ModelAudit() {
 
     const chooseChannel = (id: number) => {
         setChannelId(id);
+        // 用户自己重新选了渠道：上一条「原来的渠道不见了」的提醒就失效了。
+        setRerunChannelId(null);
         const next = channels.find((item) => item.id === id);
         const nextModels = next ? getSelectedChannelModels(next) : [];
         setModelName(nextModels[0] ?? '');
@@ -778,7 +879,9 @@ export function ModelAudit() {
         setPlan(next);
         setCustomOpen(false);
         if (next === 'quick') setSelected(planIds('quick', channel, activeModel));
-        else setSelected(AUDIT_STANDARD_PROBE_IDS.filter((id) => isApplicable(channel, id, activeModel)));
+        // 切到 hlwy 时不动探针选择：切回来时用户刚刚勾的还在，而这一轮也不会
+        // 因为“选择还在”就偷偷跑探针——提交走的是另一条路。
+        else if (next === 'standard') setSelected(AUDIT_STANDARD_PROBE_IDS.filter((id) => isApplicable(channel, id, activeModel)));
     };
 
     const toggleProbe = (id: AuditProbeId, checked: boolean) => {
@@ -837,6 +940,165 @@ export function ModelAudit() {
         }
     };
 
+    /* ---------------- hlwy 基准对照的四个动作 ---------------- */
+
+    // 提交一轮对照。请求体里只有 samples / baseline_id / protocol_id：
+    // 带 probes 就是另一回事，带 log_id 就成了日志回填，两者都不是这个模式。
+    const submitHlwy = async () => {
+        if (!channel || !activeModel) {
+            toast.warning('先选渠道和模型');
+            return;
+        }
+        if (!hlwyPlan) {
+            // 没计划就不发：计划里写着这一单最多几次调用、超时多少，
+            // 没有它就没有价格承诺，提交等于让人裸点一次。
+            toast.error('还没读到这一单的计划，先别提交');
+            return;
+        }
+        if (!hlwyBaselineId) {
+            toast.warning('先选一份基准');
+            return;
+        }
+        try {
+            const res = await enqueueHlwy.mutateAsync({
+                channel_id: channel.id,
+                models: [activeModel] as [string],
+                kind: 'hlwy_compare',
+                hlwy: {
+                    samples: hlwySamples,
+                    baseline_id: hlwyBaselineId,
+                    protocol_id: hlwyPlan.protocol_id,
+                },
+            });
+            // 与探针提交同一口径：提交成功就丢掉上一轮报告，免得导错文件。
+            setReport(null);
+            setRecompare(null);
+            setPageState('idle');
+            toast.success(`已提交基准对照（任务 #${res.job_id}），可以先去干别的，回来在「记录」里看`);
+            setMode('queue');
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : '提交失败');
+        }
+    };
+
+    // 再跑一轮：把上一轮的渠道、型号、基准、样本量全部填回去，然后**回到提交页**。
+    // 不直接入队：再跑一轮会真的再花一次钱，必须让用户自己按下那个按钮。
+    const rerunHlwy = () => {
+        if (!activeView) return;
+        // 渠道/型号也要跟着回来：报告可能是从记录里打开的、跟当前选择不是同一个渠道，
+        // 只填基准就等于让下一轮跑在错的渠道上。
+        // 记下这个 id：它如果已经不在列表里，提交会被抦住并说明原因，而不是
+        // 静静地退到列表第一个渠道上花掉一次钱。
+        if (report?.channel_id) {
+            setChannelId(report.channel_id);
+            setRerunChannelId(report.channel_id);
+        }
+        const rerunModel = report?.model || report?.upstream_model || '';
+        if (rerunModel) setModelName(rerunModel);
+        if (activeView.chosenBaselineId) setHlwyBaselineId(activeView.chosenBaselineId);
+        const planned = activeView.counts?.planned_calls;
+        if (planned === 100 || planned === 200) setHlwySamples(planned);
+        setPlan('hlwy');
+        setMode('single');
+        setPageState('idle');
+        setReport(null);
+        setRecompare(null);
+        toast.success('参数已按上一轮填好，再点一次「开始基准对照」才会真的发请求');
+    };
+
+    // 把这次结果存成基准。前端只做一次粗筛，服务端还会独立再校验一遍。
+    const saveHlwyResult = () => {
+        if (!report || !activeView) return;
+        if (!hlwySaveCheck.eligible) {
+            toast.warning(hlwySaveCheck.reason);
+            return;
+        }
+        // 资格判断只能担保「保存这件事本身合理」，担保不了这个 id 一定存在：
+        // 拿到一个真正的正整数结果编号才发请求。不拿非空断言坑自己，也不
+        // 用 0 充数——那会把请求发到一条不存在的记录上。
+        const resultId = report.result_id;
+        if (typeof resultId !== 'number' || !Number.isInteger(resultId) || resultId <= 0) {
+            toast.warning('这条结果没有可用的编号，存不成基准（请从「检测记录」里重新打开它）');
+            return;
+        }
+        const label = `${report.model || report.upstream_model || '模型'} · 自采`;
+        saveHlwyBaseline.mutate(
+            { result_id: resultId, label },
+            {
+                onSuccess: (data) => {
+                    toast.success(`已存成基准：${data.baseline.label}`);
+                    setHlwyBaselineId(data.baseline.id);
+                },
+                onError: (error) =>
+                    toast.error('存成基准失败', {
+                        description: error instanceof Error ? error.message : String(error),
+                    }),
+            },
+        );
+    };
+
+    // 换一份基准重算：离线，不发请求、不写库、不改原报告。
+    const recompareWith = (baselineId: string) => {
+        // 同上：重算要拿着一个真实的结果编号去问服务端，没有就不发。
+        const resultId = report?.result_id;
+        if (typeof resultId !== 'number' || !Number.isInteger(resultId) || resultId <= 0) {
+            toast.warning('要从「检测记录」打开这条结果才能重算');
+            return;
+        }
+        // 重算是异步的：等回来时用户可能已经打开另一份报告了。旧请求的响应
+        // 千万不能盖到新报告上——那会把 A 的数字当成 B 的预览。
+        const stillCurrent = () => reportResultIdRef.current === resultId;
+        recompareHlwy.mutate(
+            { result_id: resultId, baseline_id: baselineId },
+            {
+                onSuccess: (data) => {
+                    if (!stillCurrent()) return;
+                    setRecompare({ baselineId, report: data.report });
+                },
+                onError: (error) => {
+                    if (!stillCurrent()) return;
+                    toast.error('重算失败', {
+                        description: error instanceof Error ? error.message : String(error),
+                    });
+                },
+            },
+        );
+    };
+
+    // 当前报告的 id 跟着 report 走：重算响应用它判断自己是不是过期了。
+    useEffect(() => {
+        reportResultIdRef.current = report?.result_id ?? null;
+    }, [report]);
+
+    const exportHlwyFull = () => {
+        if (!report) return;
+        const payload = hlwyExportFull(report.report);
+        if (!payload) {
+            toast.error('这份报告里没有对照细节，导不出来');
+            return;
+        }
+        downloadJson(`hlwy-compare-${report.result_id ?? 'report'}.json`, payload);
+    };
+
+    const exportHlwyLegacy = () => {
+        if (!report) return;
+        const payload = hlwyExportLegacy(activeView, {
+            model: report.model || report.upstream_model,
+            timestamp: report.finished_at,
+        });
+        if (!payload) {
+            toast.error('没有原始数字，导不出旧格式');
+            return;
+        }
+        downloadJson(`hlwy-${report.result_id ?? 'report'}-legacy.json`, payload);
+    };
+
+    // 「能不能存成基准」只看两个事实：这条结果真的跑完了，报告里的计数也齐。
+    const hlwySaveCheck = hlwySaveEligibility(activeView, {
+        resultId: report?.result_id,
+        resultStatus: report?.result_status,
+    });
+
     // 再测一轮：只重跑指纹这一项，同一渠道、同一型号；题目由后端重新随机生成。
     // 由用户点按钮触发，不在后台自动重测——每一轮都要真实发请求、花 token。
     const retestFingerprint = async () => {
@@ -872,17 +1134,15 @@ export function ModelAudit() {
     //
     // 解析失败要明确报错，不能静默显示空报告：空报告会被读成"查过没问题"。
     const openStoredReport = (result: AuditResult) => {
-        let view: AuditViewReport;
-        try {
-            view = JSON.parse(result.report || '{}') as AuditViewReport;
-        } catch {
-            toast.error('这份报告解析失败，可能已损坏');
+        // 报告能不能打开，看它能不能**读**，不看它有没有 results 数组。
+        // hlwy 对照本来就没有多探针结论：旧门槛会让一份完整报告显示成
+        // 「这份报告不完整」——报告其实好着，是门槛错了。
+        const read = readStoredReport(result.report || '');
+        if (!read.ok) {
+            toast.error(read.error);
             return;
         }
-        if (!view || !Array.isArray(view.results)) {
-            toast.error('这份报告不完整，无法展示');
-            return;
-        }
+        const view = read.view as unknown as AuditViewReport;
         setReport({
             result_id: result.id,
             channel_id: result.channel_id,
@@ -893,7 +1153,11 @@ export function ModelAudit() {
             report: view,
             finished_at: result.finished_at,
             model: result.model,
+            // 「能不能存成基准」得看这条结果是不是真的跑完了，不是看报告长得像不像。
+            result_status: result.status,
         });
+        // 换一个结果就是换一份报告，上一轮的重算预览不能跟过来。
+        setRecompare(null);
         // 「完整报告」必须切回报告页，不能停在记录列表。
         setMode('single');
         setPageState('report');
@@ -1043,8 +1307,48 @@ export function ModelAudit() {
                             再加上：认出背后是哪个模型、查用量有没有虚报。
                         </p>
                     </button>
+                    <button
+                        type="button"
+                        onClick={() => choosePlan('hlwy')}
+                        className={cn(
+                            'rounded-2xl border px-4 py-3.5 text-left transition-colors',
+                            plan === 'hlwy' ? 'border-2 border-primary bg-primary/5 -m-px' : 'border-border',
+                        )}
+                    >
+                        <div className="flex items-center gap-2">
+                            <span className={cn(
+                                'flex size-4 items-center justify-center rounded-full',
+                                plan === 'hlwy' ? 'bg-primary' : 'border-2 border-border',
+                            )}>
+                                {plan === 'hlwy' && <span className="size-1.5 rounded-full bg-white" />}
+                            </span>
+                            <span className="text-sm font-semibold">基准对照</span>
+                            <span className="ml-auto text-xs text-muted-foreground">{hlwySamples} 次采样</span>
+                        </div>
+                        <p className="mt-1.5 pl-6 text-xs leading-5 text-muted-foreground">
+                            同一题问很多次，只比数字分布和基准像不像；不判定真假，也不进风险计分。
+                        </p>
+                    </button>
                 </div>
 
+                {hlwyMode && (
+                    <div className="mt-3">
+                        <HlwyModePanel
+                            baselineId={hlwyBaselineId}
+                            onBaselineChange={setHlwyBaselineId}
+                            samples={hlwySamples}
+                            onSamplesChange={setHlwySamples}
+                            plan={hlwyPlan}
+                            planLoading={hlwyPlanQuery.isLoading === true}
+                            planError={hlwyPlanError}
+                        />
+                    </div>
+                )}
+
+                {/* 探针自选只属于探针模式：切到基准对照后把它整块拿掉，
+                    否则屏幕上会同时存在两套「要测什么」。 */}
+                {!hlwyMode && (
+                <>
                 <button
                     type="button"
                     className="mt-3 flex w-full items-center gap-1.5 px-1 text-xs text-muted-foreground"
@@ -1080,6 +1384,8 @@ export function ModelAudit() {
                         </details>
                     </div>
                 )}
+                </>
+                )}
             </section>
 
             {/* 后台检测的长期策略（被动开关 / 抽检额度）：摆进检测表单这一列，
@@ -1090,30 +1396,45 @@ export function ModelAudit() {
             </section>
 
             <section className="border-t border-border pt-4">
+                {/* 全页只有一个提交动作：模式决定它的含义，旧按钮不会在切模式后
+                    还亮着、点下去却按老规矩跑一轮探针。 */}
                 <Button
                     type="button"
                     className="h-12 w-full rounded-xl text-base font-semibold"
-                    disabled={enqueueAudit.isPending || runCount === 0 || !channel}
-                    onClick={() => void submitToQueue([activeModel])}
-                    title={activeModel ? `开始检测 · ${activeModel}` : undefined}
+                    disabled={hlwyMode ? hlwyStart.disabled : (enqueueAudit.isPending || runCount === 0 || !channel)}
+                    onClick={() => void (hlwyMode ? submitHlwy() : submitToQueue([activeModel]))}
+                    title={activeModel ? (hlwyMode ? `开始基准对照 · ${activeModel}` : `开始检测 · ${activeModel}`) : undefined}
                 >
-                    {enqueueAudit.isPending ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4 fill-current" />}
+                    {(hlwyMode ? enqueueHlwy.isPending : enqueueAudit.isPending)
+                        ? <Loader2 className="size-4 animate-spin" />
+                        : hlwyMode ? <Binary className="size-4" /> : <Play className="size-4 fill-current" />}
                     <span className="min-w-0 truncate">
-                        {enqueueAudit.isPending ? '提交中…' : '开始检测'}
+                        {(hlwyMode ? enqueueHlwy.isPending : enqueueAudit.isPending)
+                            ? '提交中…'
+                            : hlwyMode ? '开始基准对照' : '开始检测'}
                     </span>
                 </Button>
+                {hlwyMode && hlwyStart.disabled && hlwyStart.reason && (
+                    <p className="mt-2 text-center text-xs leading-5 text-amber-700">{hlwyStart.reason}</p>
+                )}
                 <p className="mt-2.5 flex items-center justify-center gap-1 text-center text-xs text-muted-foreground">
-                    会真的调用上游，按正常价格计费。提交后可以离开本页。
+                    {hlwyMode
+                        ? `${hlwyPlan
+                              ? `会真的调用上游最多 ${hlwyPlan.max_calls} 次，按正常价格计费。`
+                              : '计划读取后可查看调用上限，按正常价格计费。'}提交后可以离开本页。`
+                        : '会真的调用上游，按正常价格计费。提交后可以离开本页。'}
                     <span className="cursor-help text-muted-foreground/80" title="次数是估算：个别检查会多轮或重试，实际以记录为准。超时跟随渠道检测设置。">ⓘ</span>
                 </p>
-                <button
-                    type="button"
-                    className="mt-2 w-full text-center text-xs text-primary underline-offset-2 hover:underline disabled:opacity-50"
-                    disabled={enqueueAudit.isPending || models.length === 0 || !channel}
-                    onClick={() => void submitToQueue(models)}
-                >
-                    或者，一次测完这个渠道的全部 {models.length} 个模型
-                </button>
+                {!hlwyMode && (
+                    <button
+                        type="button"
+                        className="mt-2 w-full text-center text-xs text-primary underline-offset-2 hover:underline disabled:opacity-50"
+                        disabled={enqueueAudit.isPending || models.length === 0 || !channel}
+                        onClick={() => void submitToQueue(models)}
+                    >
+                        或者，一次测完这个渠道的全部 {models.length} 个模型
+                    </button>
+                )}
             </section>
         </aside>
     );
@@ -1190,11 +1511,17 @@ export function ModelAudit() {
                         <div className="space-y-5">
                             <div className="flex flex-wrap items-start justify-between gap-3">
                                 <p className="text-xs text-muted-foreground">本次报告 {report.finished_at ? new Date(report.finished_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }) : '—'}</p>
-                                <Button type="button" variant="outline" size="sm" className="rounded-full" onClick={exportJson}>导出 JSON</Button>
+                                {/* hlwy 报告的导出在卡片内部（一份完整、一份旧格式），
+                                    这里不再放一个“整份 spread 出去”的按钮。 */}
+                                {!activeView && (
+                                    <Button type="button" variant="outline" size="sm" className="rounded-full" onClick={exportJson}>导出 JSON</Button>
+                                )}
                             </div>
                             <div>
                                 <h3 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
-                                    <AlertTriangle className={cn('size-5', warnCount > 0 ? 'text-amber-600' : 'text-muted-foreground')} />
+                                    {activeView
+                                        ? <Binary className="size-5 text-muted-foreground" />
+                                        : <AlertTriangle className={cn('size-5', warnCount > 0 ? 'text-amber-600' : 'text-muted-foreground')} />}
                                     {copy.title}
                                 </h3>
                                 <p className="mt-1 text-sm text-muted-foreground">{copy.sub}</p>
@@ -1213,6 +1540,34 @@ export function ModelAudit() {
                                     </ul>
                                 )}
                             </div>
+                            {activeView ? (
+                                <BaselineComparisonCard
+                                    // 报告身份跟着结果走：换一份报告就是另一张卡片，
+                                    // 上一份选的「用哪个基准重算」不会带过来。
+                                    reportKey={report.result_id ?? report.finished_at ?? ''}
+                                    view={activeView}
+                                    recompareActive={recompareView !== null}
+                                    catalog={hlwyCatalog?.baselines ?? []}
+                                    onRecompare={recompareWith}
+                                    recomparePending={recompareHlwy.isPending}
+                                    recompareError={
+                                        recompareHlwy.error
+                                            ? recompareHlwy.error instanceof Error
+                                                ? recompareHlwy.error.message
+                                                : String(recompareHlwy.error)
+                                            : ''
+                                    }
+                                    onRestoreOriginal={() => setRecompare(null)}
+                                    saveEligibility={hlwySaveCheck}
+                                    onSave={saveHlwyResult}
+                                    saving={saveHlwyBaseline.isPending}
+                                    onRerun={rerunHlwy}
+                                    onExportFull={exportHlwyFull}
+                                    onExportLegacy={exportHlwyLegacy}
+                                    canExportLegacy={!!activeView.rawNumbers}
+                                />
+                            ) : (
+                            <>
                             <div className="grid grid-cols-3 gap-2">
                                 <div className="rounded-2xl bg-muted/40 px-3 py-3">
                                     <p className="text-[11px] text-muted-foreground">已完成检查</p>
@@ -1294,6 +1649,8 @@ export function ModelAudit() {
                             <p className="text-xs leading-5 text-muted-foreground">
                                 {report.report.disclaimer || '检查结果提供参考，不等同模型真实性证明；身份、词元、签名仅为线索。'}
                             </p>
+                            </>
+                            )}
                         </div>
                     )}
                 </section>

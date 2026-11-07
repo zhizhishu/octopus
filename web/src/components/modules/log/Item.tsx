@@ -23,7 +23,12 @@ import {
     isModelTestEndpoint,
 } from './humanize';
 import { getModelIcon } from '@/lib/model-icons';
-import { describeThroughput } from './throughput';
+import {
+    assessThroughput,
+    throughputEndpointEligible,
+    throughputOutputIsEstimated,
+    throughputReasonLabelKey,
+} from './throughput';
 import { attemptShowsOutputIncomplete, logOutputIncomplete } from './output-incomplete';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { describeProbeEvidence } from './probe-evidence';
@@ -1271,8 +1276,15 @@ export const LogCard = React.memo(function LogCard({
     const requestPath = useMemo(() => log.request_path?.trim() ?? '', [log.request_path]);
     // 连通性测试日志：费用/缓存/token 这些对它全是噪音，按这个标记隐掉。
     const isModelTest = isModelTestEndpoint(requestEndpoint) || isModelTestEndpoint(requestPath);
-    // 生成速度（token/s）。算不出来就是 null，整块不渲染——不拿 0 / -- 占位。
-    const tpsReading = useMemo(() => describeThroughput(log), [log]);
+    // 生成速度（token/s）：文本生成行**恒给徽标**——算得出给数字，算不出给中性的
+    // 「TPS —」+ 原因（不拿 0 冒充速度，也不假装这一行没有速度概念）。图/视频/音频/
+    // 向量/审核/重排端点的 token 数不是生成量，整块不出（见 throughputEndpointEligible）。
+    const tpsAssessment = useMemo(() => assessThroughput(log), [log]);
+    const tpsEstimated = useMemo(() => throughputOutputIsEstimated(log), [log]);
+    const tpsEligible = useMemo(
+        () => !isModelTest && throughputEndpointEligible(requestEndpoint),
+        [isModelTest, requestEndpoint],
+    );
     // 列表/详情头部那个徽章显示的是「人话」接口名，不再是裸 endpoint 码。
     const requestEndpointLabel = useMemo(
         () => humanizeEndpoint(formatEndpointName(requestEndpoint || requestPath)) ?? '',
@@ -1678,6 +1690,66 @@ export const LogCard = React.memo(function LogCard({
             </PopoverContent>
         </Popover>
     ) : null;
+    // 生成速度徽标：悬停 title 只是锦上添花，真正可读的说明在 Popover 里——点按 /
+    // Enter / Space 可达、移动端手指可触，不把「为什么没有」藏在只有鼠标看得见的地方。
+    // 触发元素用原生 <button type="button">（不是给 span 手工按 role/tabIndex/keyDown）：
+    // Enter/Space 由浏览器转换成 click，不需要自己 preventDefault + click() 补一套。
+    // 外层是 MorphingDialogTrigger（morphing-dialog.tsx:140-154 在 click 和 Enter/Space
+    // keydown 上开关整卡弹窗），所以两种事件都要就地 stopPropagation，否则会同时开整卡；
+    // 这不影响按钮本身的激活（stopPropagation 不拦同元素上的处理）。
+    // 原因码在这里翻成人话（tpsReason*），机器码不外露。
+    const tpsTitle = tpsAssessment.available
+        ? `${t('tps')} ${tpsAssessment.text} ${t('tpsUnit')} · ${t('tpsHintGen')}`
+        : `${t('tps')} — · ${t('tpsUnavailableHint')}`;
+    const tpsSlot = tpsEligible ? (
+        <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap">
+            <span className="text-muted-foreground/60">·</span>
+            <Popover>
+                <PopoverTrigger asChild>
+                    <button
+                        type="button"
+                        onClick={(e) => e.stopPropagation()}
+                        onKeyDown={(e) => e.stopPropagation()}
+                        title={tpsTitle}
+                        className="inline-flex min-w-0 shrink-0 cursor-pointer items-center rounded-full bg-transparent p-0 text-left outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                    >
+                        <Badge
+                            variant="outline"
+                            className={cn(
+                                'min-w-0 gap-1 overflow-visible whitespace-normal border-border/60 bg-muted/30 px-1.5 py-0 text-xs text-muted-foreground',
+                                tpsAssessment.available ? 'font-medium tabular-nums' : 'font-normal',
+                            )}
+                        >
+                            <Gauge className="size-3 shrink-0 opacity-70" />
+                            <span>
+                                {tpsAssessment.available
+                                    ? `${t('tps')} ${tpsAssessment.text} ${t('tpsUnit')}`
+                                    : `${t('tps')} —`}
+                            </span>
+                        </Badge>
+                    </button>
+                </PopoverTrigger>
+                <PopoverContent align="start" className="w-72 space-y-1.5 p-3 text-xs" onClick={(e) => e.stopPropagation()}>
+                    <p className="font-medium text-foreground">{t('tps')}</p>
+                    {tpsAssessment.available ? (
+                        <>
+                            <p className="text-[11px] leading-5 text-muted-foreground">{t('tpsHintGen')}</p>
+                            {tpsEstimated && (
+                                <p className="text-[11px] leading-5 text-muted-foreground">{t('tpsEstimateCaveat')}</p>
+                            )}
+                        </>
+                    ) : (
+                        <>
+                            <p className="text-[11px] leading-5 text-muted-foreground">{t('tpsUnavailableHint')}</p>
+                            <p className="text-[11px] leading-5 text-foreground">
+                                {t(throughputReasonLabelKey(tpsAssessment.reason))}
+                            </p>
+                        </>
+                    )}
+                </PopoverContent>
+            </Popover>
+        </span>
+    ) : null;
     const detailsSlot = canViewDetails ? (
         <>
             <Eye className="size-3.5" />
@@ -1808,19 +1880,8 @@ export const LogCard = React.memo(function LogCard({
                                             <span>{t('totalTime')} {formatDuration(log.use_time)}</span>
                                         </span>
                                     </span>
-                                    {/* 生成速度（token/s）：算不出来就整块不渲染，别留空占位 */}
-                                    {tpsReading !== null && (
-                                        <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap">
-                                            <span className="text-muted-foreground/60">·</span>
-                                            <span
-                                                className="inline-flex items-center gap-1 font-medium tabular-nums"
-                                                title={`${t('tps')} ${tpsReading.text} ${t('tpsUnit')} · ${t('tpsHintGen')}`}
-                                            >
-                                                <Gauge className="size-3.5 shrink-0 text-muted-foreground" />
-                                                <span>{t('tps')} {tpsReading.text} {t('tpsUnit')}</span>
-                                            </span>
-                                        </span>
-                                    )}
+                                    {/* 生成速度（token/s）：文本生成行恒有徽标，算不出给「TPS —」+ 原因 */}
+                                    {tpsSlot}
                                     {!isModelTest && (
                                         <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap">
                                             <span className="text-muted-foreground/60">·</span>
