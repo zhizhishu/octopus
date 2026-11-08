@@ -461,10 +461,10 @@ function AdvancedChannelTestDialog({
                             disabled={testing || streamLock.switchLocked}
                             className="scale-90"
                         />
-                        <span>流式优先</span>
+                        <span className="shrink-0 whitespace-nowrap">流式优先</span>
                         {streamLock.allLocked ? (
                             <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-                                <Lock className="size-3" />codex / claude 恒流式（shape · 与真实流量一致，不可关）
+                                <Lock className="size-3" />所选接口使用流式返回，不能关闭
                             </span>
                         ) : streamLock.anyLocked ? (
                             <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
@@ -473,7 +473,7 @@ function AdvancedChannelTestDialog({
                         ) : (
                             <span className="text-xs text-muted-foreground">
                                 {streamLock.imageOnly
-                                    ? '图片端点固定非流式（按真实 ImagesHandler 转发；图片 SSE 判定口径未定，暂不测流式）'
+                                    ? '图片会一次返回，当前不测试逐步出图。'
                                     : streamLock.includesImage
                                         ? '图片端点固定非流式，其余端点按此开关（chat / gemini 真开真关）'
                                         : '（chat / gemini 真开真关；关掉后思考模型可能因非流超时，日志会如实标注）'}
@@ -530,7 +530,7 @@ function AdvancedChannelTestDialog({
 
                     {/* 汇总结果（重复次数 > 1） */}
                     {summaryRows.length > 0 && (
-                        <div className="overflow-hidden rounded-xl border border-border/60">
+                        <div className="overflow-hidden rounded-xl border border-border/60 [&_thead]:max-sm:hidden [&_tbody]:max-sm:block [&_tr]:max-sm:grid [&_tr]:max-sm:grid-cols-2 [&_td]:max-sm:block [&_td]:max-sm:min-w-0 [&_td:last-child]:max-sm:col-span-2">
                             <Table>
                                 <TableHeader>
                                     <TableRow>
@@ -549,7 +549,7 @@ function AdvancedChannelTestDialog({
                                         return (
                                             <TableRow key={`sum|${endpoint}|${model}`}>
                                                 <TableCell className="text-xs text-muted-foreground">{MODEL_TEST_ENDPOINT_LABELS[endpoint]}</TableCell>
-                                                <TableCell className="max-w-[15rem] break-all align-top font-mono text-xs">{cleanOneMillionModelName(model)}</TableCell>
+                                                <TableCell className="max-w-[15rem] break-all align-top font-mono text-xs max-sm:max-w-none max-sm:whitespace-normal">{cleanOneMillionModelName(model)}</TableCell>
                                                 <TableCell>
                                                     <div className="flex items-center gap-1.5">
                                                         <span className={cn('text-xs font-semibold', rateColor)}>{s.ok}/{s.total}</span>
@@ -608,7 +608,7 @@ function AdvancedChannelTestDialog({
 
                     {/* 结果 */}
                     {resultRows.length > 0 && (
-                        <div className="overflow-hidden rounded-xl border border-border/60">
+                        <div className="overflow-hidden rounded-xl border border-border/60 [&_thead]:max-sm:hidden [&_tbody]:max-sm:block [&_tr]:max-sm:grid [&_tr]:max-sm:grid-cols-2 [&_td]:max-sm:block [&_td]:max-sm:min-w-0 [&_td:last-child]:max-sm:col-span-2">
                             <Table>
                                 <TableHeader>
                                     <TableRow>
@@ -622,7 +622,7 @@ function AdvancedChannelTestDialog({
                                     {resultRows.map(({ endpoint, model, result }) => (
                                         <TableRow key={`${endpoint}|${model}`}>
                                             <TableCell className="text-xs text-muted-foreground">{MODEL_TEST_ENDPOINT_LABELS[endpoint]}</TableCell>
-                                            <TableCell className="max-w-[15rem] break-all align-top font-mono text-xs">{cleanOneMillionModelName(model)}</TableCell>
+                                            <TableCell className="max-w-[15rem] break-all align-top font-mono text-xs max-sm:max-w-none max-sm:whitespace-normal">{cleanOneMillionModelName(model)}</TableCell>
                                             <TableCell>
                                                 {result.status === 'testing' ? (
                                                     <span className="inline-flex items-center gap-1 text-xs text-muted-foreground"><Loader2 className="size-3 animate-spin" />测试中</span>
