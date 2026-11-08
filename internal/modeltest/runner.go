@@ -685,6 +685,15 @@ func (r *modelRunner) tryChannel(ctx context.Context, channel *dbmodel.Channel, 
 		r.recordAttempt(channel.ID, 0, channelName, upstreamModel, "", dbmodel.AttemptSkipped, 0, 0, "channel disabled")
 		return false
 	}
+	if r.request.TestUpstreamEndpoint {
+		selected, err := channelForTestEndpoint(channel, r.request.Endpoint)
+		if err != nil {
+			r.recordAttempt(channel.ID, 0, channelName, upstreamModel, "", dbmodel.AttemptSkipped, 0, 0, err.Error())
+			r.result.Error = err.Error()
+			return false
+		}
+		channel = selected
+	}
 	// 图片端点：交给真链路（relay.ImagesHandler）发，不走下面的自建请求路径。
 	// 放在能力位判定之前，是因为图片没有能力位，它的准入是"渠道类型能不能接图片"
 	// （在 tryImageChannel 里按 relay 的同一判据判）。

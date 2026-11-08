@@ -106,6 +106,7 @@ export type Channel = {
     openai_chat_path: string;
     openai_models_path: string;
     openai_embeddings_path?: string;
+    openai_images_path?: string;
     match_regex?: string | null;
     model_mapping?: Record<string, string>;
     stats: StatsChannel;
@@ -158,6 +159,7 @@ export type CreateChannelRequest = {
     openai_chat_path?: string;
     openai_models_path?: string;
     openai_embeddings_path?: string;
+    openai_images_path?: string;
     param_override?: string | null;
     system_prompt_override?: string | null;
     prompt_override_mode?: PromptOverrideMode | null;
@@ -200,6 +202,7 @@ export type UpdateChannelRequest = {
     openai_chat_path?: string;
     openai_models_path?: string;
     openai_embeddings_path?: string;
+    openai_images_path?: string;
     param_override?: string | null;
     system_prompt_override?: string | null;
     prompt_override_mode?: PromptOverrideMode | null;
@@ -225,6 +228,9 @@ export type FetchModelRequest = {
 };
 
 export type ChannelTestConfig = {
+    capabilities?: string[];
+    openai_embeddings_path?: string;
+    openai_images_path?: string;
     id?: number;
     name?: string;
     type: ChannelType;
@@ -253,6 +259,7 @@ export type ChannelTestConfig = {
 };
 
 export type ChannelTestRequest = {
+    test_upstream_endpoint?: boolean;
     channel: ChannelTestConfig;
     model?: string;
     endpoint?: string;
@@ -312,6 +319,7 @@ export function useChannelList(options?: { enabled?: boolean }) {
                 openai_chat_path: item.openai_chat_path ?? '',
                 openai_models_path: item.openai_models_path ?? '',
                 openai_embeddings_path: item.openai_embeddings_path ?? '',
+                openai_images_path: item.openai_images_path ?? '',
                 priority: item.priority ?? 0,
                 max_concurrent: item.max_concurrent ?? 0,
                 rpm_limit: item.rpm_limit ?? 0,
@@ -450,6 +458,7 @@ export function useCopyChannel() {
                 openai_chat_path: source.openai_chat_path,
                 openai_models_path: source.openai_models_path,
                 openai_embeddings_path: source.openai_embeddings_path ?? '',
+                openai_images_path: source.openai_images_path ?? '',
                 param_override: source.param_override,
                 system_prompt_override: source.system_prompt_override,
                 prompt_override_mode: source.prompt_override_mode,

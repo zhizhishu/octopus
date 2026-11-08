@@ -17,7 +17,7 @@ const ChannelType = {
     SystemOne: 7,
 };
 
-const { defaultModelTestEndpointForChannel, shouldForceChannelTestStream, channelTestIdentityFor } =
+const { defaultModelTestEndpointForChannel, shouldForceChannelTestStream, channelTestIdentityFor, makeModelTestPrompt, channelTypeForTestEndpoint, channelTestUpstreamPath, MODEL_TEST_ENDPOINTS } =
     load('src/lib/channel-test.ts', {
         '@/api/endpoints/channel': { ChannelType },
         // 用真实语义的迷你替身：gpt-5.5 / [1m] / context-1m 命中。
@@ -198,6 +198,33 @@ test('非 Chat 族渠道的残留 shape 不生效', () => {
  * 把 '-' 和 '/' 换成 '_'（runner.go:499-506）。
  */
 const IMAGE_ENDPOINTS = ['openai_images_generations', 'images', 'images_generations', 'openai_images'];
+
+test('image prompts describe an image; all other endpoints retain arithmetic and no-arg compatibility', () => {
+    for (const endpoint of IMAGE_ENDPOINTS) assert.equal(makeModelTestPrompt(endpoint), 'a cute cat');
+    for (const { value } of MODEL_TEST_ENDPOINTS.filter((e) => e.value !== 'openai_images_generations')) {
+        assert.match(makeModelTestPrompt(value), /请只回答算式结果，不要解释：\d{4} \+ \d{4} = \?/);
+    }
+    assert.match(makeModelTestPrompt(), /算式结果/);
+});
+
+test('explicit upstream tests remap only ordinary chat protocol types', () => {
+    const targets = { openai_chat: 0, openai_responses: 1, anthropic_messages: 2, gemini_generate_content: 3 };
+    for (const source of [0, 1, 2, 3]) {
+        for (const [endpoint, target] of Object.entries(targets)) assert.equal(channelTypeForTestEndpoint(source, endpoint), target);
+        for (const endpoint of ['openai_embeddings', 'openai_images_generations', 'systemone']) assert.equal(channelTypeForTestEndpoint(source, endpoint), source);
+    }
+    for (const source of [5, 6, 7]) {
+        for (const endpoint of Object.keys(targets)) assert.equal(channelTypeForTestEndpoint(source, endpoint), source);
+    }
+});
+
+test('actual upstream path excludes hosts, credentials, query strings and fragments', () => {
+    assert.equal(channelTestUpstreamPath('https://user:pass@upstream.example/v1/images/generations?token=private#secret'), '/v1/images/generations');
+    assert.equal(channelTestUpstreamPath('/v1/messages?api_key=private'), '/v1/messages');
+    assert.equal(channelTestUpstreamPath('//upstream.example/v1/embeddings'), '/v1/embeddings');
+    assert.equal(channelTestUpstreamPath('javascript:alert(1)'), '');
+    assert.equal(channelTestUpstreamPath(), '');
+});
 
 test('图片端点不锁流式，哪怕渠道是 Responses(codex) 形状', () => {
     for (const endpoint of IMAGE_ENDPOINTS) {

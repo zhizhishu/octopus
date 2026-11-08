@@ -83,6 +83,7 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
         openai_chat_path: channel.openai_chat_path ?? '',
         openai_models_path: channel.openai_models_path ?? '',
         openai_embeddings_path: channel.openai_embeddings_path ?? '',
+        openai_images_path: channel.openai_images_path ?? '',
         // Load the saved mapping into the edit form so reopening a channel SHOWS the
         // mapping the user saved (previously omitted here, so the rows always rendered
         // empty on open — "点了保存 点开看不到").
@@ -198,6 +199,11 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
         const curOpenAIEmbeddingsPath = channel.openai_embeddings_path ?? '';
         if (nextOpenAIEmbeddingsPath !== curOpenAIEmbeddingsPath) {
             req.openai_embeddings_path = nextOpenAIEmbeddingsPath;
+        }
+
+        const nextOpenAIImagesPath = formData.openai_images_path.trim();
+        if (nextOpenAIImagesPath !== (channel.openai_images_path ?? '')) {
+            req.openai_images_path = nextOpenAIImagesPath;
         }
 
         // 能力位走 patch 语义：没改不发（存量请求形状不变），取消勾选发 [] 才算清空。

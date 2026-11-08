@@ -55,6 +55,7 @@ export function CreateDialogContent() {
         openai_chat_path: '',
         openai_models_path: '',
         openai_embeddings_path: '',
+        openai_images_path: '',
     });
     const t = useTranslations('channel.create');
 
@@ -116,6 +117,7 @@ export function CreateDialogContent() {
                 openai_chat_path: formData.openai_chat_path.trim(),
                 openai_models_path: formData.openai_models_path.trim(),
                 openai_embeddings_path: formData.openai_embeddings_path.trim(),
+                openai_images_path: formData.openai_images_path.trim(),
                 param_override: paramOverride,
                 match_regex: formData.match_regex.trim(),
                 // Persist the model-mapping table on create — without this the mapping the
@@ -157,6 +159,7 @@ export function CreateDialogContent() {
                         openai_chat_path: '',
                         openai_models_path: '',
                         openai_embeddings_path: '',
+                        openai_images_path: '',
                     });
                     setIsOpen(false);
                 }

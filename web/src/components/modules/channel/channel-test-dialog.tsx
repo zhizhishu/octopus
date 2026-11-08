@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { CheckCircle2, Fingerprint, Loader2, Lock, Play, RotateCw, XCircle } from 'lucide-react';
-import type { Channel } from '@/api/endpoints/channel';
+import { ChannelType, type Channel } from '@/api/endpoints/channel';
 import { useChannelTestIdentity, useModelTest, type EndpointIdentity } from '@/api/endpoints/model';
 import type { ApiError } from '@/api/types';
 import { toast } from '@/components/common/Toast';
@@ -25,6 +25,8 @@ import {
     MODEL_TEST_ENDPOINTS,
     MODEL_TEST_ENDPOINT_LABELS,
     channelTestIdentityFor,
+    channelTestUpstreamPath,
+    channelTypeForTestEndpoint,
     defaultModelTestEndpointForChannel,
     isImageTestEndpoint,
     makeModelTestPrompt,
@@ -35,16 +37,13 @@ import {
 import { getSelectedChannelModels } from './channel-utils';
 
 type CellStatus = 'testing' | 'success' | 'error';
-type CellResult = { status: CellStatus; ms?: number; error?: string };
+type CellResult = { status: CellStatus; ms?: number; error?: string; upstream_path?: string; response_preview?: string };
 // 重复次数 > 1 时的逐格汇总（治日志刷屏：不逐条落库、对话框看统计）
 type CellSummary = { total: number; done: number; ok: number; capacity: number; timeout: number; other: number; msSum: number; capacityError?: string; timeoutError?: string; otherError?: string };
 
 const MAX_REPEAT = 500;
 
-// 端点自动模拟的 shape（与后端 runner 的端点→shape 映射一致；测试永远用渠道真实 profile）
-// 身份判定已下沉到 lib/channel-test.ts 的 channelTestIdentityFor：
-// 响应端点是否算 codex 取决于渠道类型（与后端 runner 的判定一致）。写死成常量会让界面显示
-// 一个实际不存在的身份。
+// 测试沿用渠道 profile，身份族按本次测试的有效渠道类型显示。
 const SHAPE_LABEL: Record<'codex' | 'claude' | 'generic', string> = {
     codex: 'codex CLI', claude: 'claude CLI', generic: '通用 UA',
 };
@@ -175,7 +174,7 @@ function AdvancedChannelTestDialog({
                     models: selectedModelList,
                     endpoint: ep,
                     anthropicContext1M: channel.anthropic_context_1m,
-                    channelType: channel.type,
+                    channelType: channelTypeForTestEndpoint(channel.type, ep),
                     cloakMode: channel.cloak?.mode,
                 }),
             );
@@ -243,7 +242,6 @@ function AdvancedChannelTestDialog({
         const times = Math.max(1, Math.min(Math.floor(repeat) || 1, MAX_REPEAT));
         const summaryMode = times > 1;
         setTesting(true);
-        const prompt = makeModelTestPrompt();
 
         if (summaryMode) {
             // 汇总模式：探针不逐条落审计日志（audit_log:false，治刷屏），对话框看成功率 + 失败分类。
@@ -287,12 +285,14 @@ function AdvancedChannelTestDialog({
 
         const jobs: Array<() => Promise<void>> = [];
         for (const endpoint of eps) {
+            const prompt = makeModelTestPrompt(endpoint);
             for (const model of mods) {
                 const runOnce = async () => {
                     try {
                         const data = await modelTest.mutateAsync({
                             models: [model],
                             channel_id: channel.id,
+                            test_upstream_endpoint: true,
                             endpoint,
                             prompt,
                             stream: streamLock.streamFor(endpoint, streamTest),
@@ -306,12 +306,18 @@ function AdvancedChannelTestDialog({
                             setResults((prev) => ({
                                 ...prev,
                                 [cellKey(endpoint, model)]: r
-                                    ? (r.success ? { status: 'success', ms: r.duration_ms } : { status: 'error', error: r.error ? sanitizeChannelTestError(r.error) : r.error })
+                                    ? {
+                                        status: r.success ? 'success' : 'error',
+                                        ms: r.duration_ms,
+                                        error: r.error ? sanitizeChannelTestError(r.error) : undefined,
+                                        upstream_path: channelTestUpstreamPath(r.upstream_path),
+                                        response_preview: r.success && isImageTestEndpoint(endpoint) && r.response_preview ? sanitizeChannelTestError(r.response_preview) : undefined,
+                                    }
                                     : { status: 'error', error: '无结果' },
                             }));
                         }
                     } catch (error: unknown) {
-                        const msg = apiErrorMessage(error) || '测试失败';
+                        const msg = sanitizeChannelTestError(apiErrorMessage(error) || '测试失败');
                         if (summaryMode) bump(endpoint, model, false, 0, msg);
                         else setResults((prev) => ({ ...prev, [cellKey(endpoint, model)]: { status: 'error', error: msg } }));
                     }
@@ -369,7 +375,7 @@ function AdvancedChannelTestDialog({
     const identity = identityQuery.data;
     const selectedShapes = useMemo(() => {
         const kinds = new Set<'codex' | 'claude' | 'generic'>();
-        for (const e of endpoints) kinds.add(channelTestIdentityFor(e, channel.type, channel.cloak));
+        for (const e of endpoints) kinds.add(channelTestIdentityFor(e, channelTypeForTestEndpoint(channel.type, e), channel.cloak));
         return kinds;
         // 依赖必须含 channel.type 与 cloak：身份是按渠道配置算的，
         // 只盯 endpoints 会在"同渠道换类型/换 shape"时沿用旧身份。
@@ -388,17 +394,28 @@ function AdvancedChannelTestDialog({
                 <div className="max-h-[74vh] space-y-4 overflow-y-auto px-5 py-4">
                     {/* 端点多选 */}
                     <div className="space-y-1.5">
-                        <div className="text-xs font-bold tracking-[0.14em] text-muted-foreground">测试端点（多选）</div>
+                        <div className="text-xs font-bold tracking-[0.14em] text-muted-foreground">测试接口（多选）</div>
+                        <p className="text-xs text-muted-foreground">选择这次要访问的上游接口，不会修改渠道配置。</p>
+                        <p className="text-xs text-muted-foreground">当前渠道类型：{channel.type === ChannelType.CustomOpenAIChat ? '自定义 Chat' : MODEL_TEST_ENDPOINT_LABELS[defaultEndpoint]}</p>
                         <div className="flex flex-wrap gap-2">
                             {MODEL_TEST_ENDPOINTS.map((e) => (
-                                <button key={e.value} type="button" className={pillClass(endpoints.has(e.value))} onClick={() => toggleEndpoint(e.value)}>
+                                <button key={e.value} type="button" className={pillClass(endpoints.has(e.value))} aria-pressed={endpoints.has(e.value)} disabled={testing} onClick={() => toggleEndpoint(e.value)}>
                                     {e.label}
                                 </button>
                             ))}
                         </div>
+                        {streamLock.includesImage && (
+                            <p className="text-xs text-amber-700 dark:text-amber-400">会真实生成1张图片并消耗额度；当前只测生成，不测图片编辑。多模型或重复测试会按请求次数生成。</p>
+                        )}
+                        {channel.type === ChannelType.CustomOpenAIChat && (
+                            <p className="text-xs text-muted-foreground">
+                                自定义渠道使用配置的完整网址，不会自动切换聊天协议。
+                                {streamLock.includesImage && !channel.openai_images_path?.trim() && '图片测试需先填写完整的图片接口前缀，留空不支持。'}
+                            </p>
+                        )}
                     </div>
 
-                    {/* 身份 / Shape（只读，端点自动配 shape · 用渠道真实 profile 不可覆盖） */}
+                    {/* 只读身份：使用渠道配置的 profile */}
                     {endpoints.size > 0 && (
                         <div className="space-y-1.5">
                             <div className="flex flex-wrap items-center gap-2 text-xs font-bold tracking-[0.14em] text-muted-foreground">
@@ -426,7 +443,7 @@ function AdvancedChannelTestDialog({
                                                 );
                                             })}
                                         <div className="pt-0.5 text-[10.5px] text-muted-foreground">
-                                            按端点自动取{identity.profile_name ? <> profile <span className="font-mono text-foreground">{identity.profile_name}</span></> : ' 全局默认身份'}的对应字段 · 与真实流量一字节一致
+                                            使用渠道配置的上游身份{identity.profile_name && <> · profile <span className="font-mono text-foreground">{identity.profile_name}</span></>}；CLI 身份随所选接口变化
                                         </div>
                                     </>
                                 ) : (
@@ -441,7 +458,7 @@ function AdvancedChannelTestDialog({
                         <Switch
                             checked={streamLock.switchLocked ? streamLock.allLocked : streamTest}
                             onCheckedChange={setStreamTest}
-                            disabled={streamLock.switchLocked}
+                            disabled={testing || streamLock.switchLocked}
                             className="scale-90"
                         />
                         <span>流式优先</span>
@@ -468,7 +485,7 @@ function AdvancedChannelTestDialog({
                     <div className="space-y-1.5">
                         <div className="flex items-center justify-between gap-2">
                             <span className="text-xs font-bold tracking-[0.14em] text-muted-foreground">模型（{models.size}/{allModels.length}）</span>
-                            <Button type="button" variant="outline" size="sm" className="h-6 rounded-lg px-2 text-xs" onClick={toggleAllModels} disabled={filteredModels.length === 0}>
+                            <Button type="button" variant="outline" size="sm" className="h-6 rounded-lg px-2 text-xs" onClick={toggleAllModels} disabled={testing || filteredModels.length === 0}>
                                 {allFilteredSelected ? '全不选' : '全选'}
                             </Button>
                         </div>
@@ -478,7 +495,7 @@ function AdvancedChannelTestDialog({
                                 <span className="p-2 text-xs text-muted-foreground">该渠道没有可测模型</span>
                             ) : (
                                 filteredModels.map((m) => (
-                                    <button key={m} type="button" className={pillClass(models.has(m))} onClick={() => toggleModel(m)}>
+                                    <button key={m} type="button" className={pillClass(models.has(m))} aria-pressed={models.has(m)} disabled={testing} onClick={() => toggleModel(m)}>
                                         {cleanOneMillionModelName(m)}
                                     </button>
                                 ))
@@ -494,6 +511,7 @@ function AdvancedChannelTestDialog({
                             type="number"
                             min={1}
                             max={MAX_REPEAT}
+                            disabled={testing}
                             value={repeatInput}
                             onChange={(event) => setRepeatInput(event.target.value)}
                             onBlur={() => setRepeatInput(String(repeat))}
@@ -616,6 +634,8 @@ function AdvancedChannelTestDialog({
                                             </TableCell>
                                             <TableCell className="whitespace-pre-wrap break-words align-top text-xs text-muted-foreground" title={result.error}>
                                                 {result.status === 'success' ? (result.ms != null ? `${(result.ms / 1000).toFixed(2)}s` : '-') : (result.error || '-')}
+                                                {result.upstream_path && <div className="mt-1 break-all font-mono">实际路径：{result.upstream_path}</div>}
+                                                {result.response_preview && <div className="mt-1">{result.response_preview}</div>}
                                             </TableCell>
                                         </TableRow>
                                     ))}
@@ -641,6 +661,6 @@ export function ChannelTestDialog({
     // 渠道卡片「测试」直接打开完整高级模型测试界面（保留原有全部能力、默认选择与渠道绑定），
     // 不再显示自动测试当前渠道的简化中转层，也不再显示「高级模型测试」二次入口按钮。
     return (
-        <AdvancedChannelTestDialog channel={channel} open={open} onOpenChange={onOpenChange} />
+        <AdvancedChannelTestDialog key={`${channel.id}:${channel.type}`} channel={channel} open={open} onOpenChange={onOpenChange} />
     );
 }

@@ -1,27 +1,29 @@
 package model
 
 type ModelTestRequest struct {
-	Model          string   `json:"model,omitempty"`
-	Models         []string `json:"models,omitempty"`
-	ChannelID      int      `json:"channel_id,omitempty"`
-	AccessPlanSlug string   `json:"access_plan_slug,omitempty"`
-	Endpoint       string   `json:"endpoint,omitempty"`
-	Prompt         string   `json:"prompt,omitempty"`
-	Stream         *bool    `json:"stream,omitempty"`
-	Concurrency    int      `json:"concurrency,omitempty"`
-	TimeoutSeconds int      `json:"timeout_seconds,omitempty"`
-	UserID         int      `json:"user_id,omitempty"`
-	APIKeyID       int      `json:"api_key_id,omitempty"`
-	AuditLog       bool     `json:"audit_log,omitempty"`
+	Model                string   `json:"model,omitempty"`
+	Models               []string `json:"models,omitempty"`
+	ChannelID            int      `json:"channel_id,omitempty"`
+	AccessPlanSlug       string   `json:"access_plan_slug,omitempty"`
+	Endpoint             string   `json:"endpoint,omitempty"`
+	TestUpstreamEndpoint bool     `json:"test_upstream_endpoint,omitempty"`
+	Prompt               string   `json:"prompt,omitempty"`
+	Stream               *bool    `json:"stream,omitempty"`
+	Concurrency          int      `json:"concurrency,omitempty"`
+	TimeoutSeconds       int      `json:"timeout_seconds,omitempty"`
+	UserID               int      `json:"user_id,omitempty"`
+	APIKeyID             int      `json:"api_key_id,omitempty"`
+	AuditLog             bool     `json:"audit_log,omitempty"`
 }
 
 type ChannelTestRequest struct {
-	Channel        Channel `json:"channel"`
-	Model          string  `json:"model,omitempty"`
-	Endpoint       string  `json:"endpoint,omitempty"`
-	Prompt         string  `json:"prompt,omitempty"`
-	Stream         *bool   `json:"stream,omitempty"`
-	TimeoutSeconds int     `json:"timeout_seconds,omitempty"`
+	Channel              Channel `json:"channel"`
+	Model                string  `json:"model,omitempty"`
+	Endpoint             string  `json:"endpoint,omitempty"`
+	TestUpstreamEndpoint bool    `json:"test_upstream_endpoint,omitempty"`
+	Prompt               string  `json:"prompt,omitempty"`
+	Stream               *bool   `json:"stream,omitempty"`
+	TimeoutSeconds       int     `json:"timeout_seconds,omitempty"`
 	// Concurrency bounds the parallel per-model workers for a multi-model channel
 	// test. Zero means "runner default" (the runner applies its own sane default);
 	// it is NOT interpreted as sequential.

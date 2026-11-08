@@ -4,10 +4,10 @@ import { isStreamRequiredModel } from './model-aliases';
 export const MODEL_TEST_ENDPOINTS = [
     { value: 'openai_chat', label: 'Chat' },
     { value: 'openai_responses', label: 'Responses' },
-    { value: 'anthropic_messages', label: 'Claude' },
+    { value: 'anthropic_messages', label: 'Claude Messages' },
     { value: 'gemini_generate_content', label: 'Gemini' },
-    { value: 'openai_embeddings', label: 'Embeddings' },
-    { value: 'openai_images_generations', label: 'Images' },
+    { value: 'openai_embeddings', label: '文本向量' },
+    { value: 'openai_images_generations', label: '图片生成' },
     { value: 'systemone', label: '决策' },
 ] as const;
 
@@ -16,10 +16,10 @@ export type ModelTestEndpoint = (typeof MODEL_TEST_ENDPOINTS)[number]['value'];
 export const MODEL_TEST_ENDPOINT_LABELS: Record<ModelTestEndpoint, string> = {
     openai_chat: 'Chat',
     openai_responses: 'Responses',
-    anthropic_messages: 'Claude',
+    anthropic_messages: 'Claude Messages',
     gemini_generate_content: 'Gemini',
-    openai_embeddings: 'Embeddings',
-    openai_images_generations: 'Images',
+    openai_embeddings: '文本向量',
+    openai_images_generations: '图片生成',
     systemone: '决策',
 };
 
@@ -110,6 +110,27 @@ export function sanitizeChannelTestError(text: string): string {
         .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, '[已隐藏]')
         .replace(/\b[A-Fa-f0-9]{32,}\b/g, '[已隐藏]')
         .trim();
+}
+
+export function channelTestUpstreamPath(value?: string): string {
+    if (!value) return '';
+    try {
+        const url = new URL(value, 'https://upstream.invalid');
+        return /^https?:$/.test(url.protocol) ? sanitizeChannelTestError(url.pathname) : '';
+    } catch {
+        return '';
+    }
+}
+
+export function channelTypeForTestEndpoint(type: ChannelType, endpoint: ModelTestEndpoint): ChannelType {
+    if (![ChannelType.OpenAIChat, ChannelType.OpenAIResponse, ChannelType.Anthropic, ChannelType.Gemini].includes(type)) return type;
+    switch (endpoint) {
+        case 'openai_chat': return ChannelType.OpenAIChat;
+        case 'openai_responses': return ChannelType.OpenAIResponse;
+        case 'anthropic_messages': return ChannelType.Anthropic;
+        case 'gemini_generate_content': return ChannelType.Gemini;
+        default: return type;
+    }
 }
 
 export function defaultModelTestEndpointForChannel(type: ChannelType): ModelTestEndpoint {
@@ -285,11 +306,9 @@ export function channelUsesCodexIdentity(
     return channelTestIdentityFor('openai_chat', channelType, cloak) === 'codex';
 }
 
-/**
- * 模型/渠道测试统一默认 prompt——四位数加法（沿用原模型测试页），只回答结果不解释，
- * 快速判通道是否真能出正文；每次测试现随机一道，避免上游缓存命中。
- */
-export function makeModelTestPrompt(): string {
+/** 图片测试生成一只猫；其它端点沿用随机算术题，避免上游缓存命中。 */
+export function makeModelTestPrompt(endpoint?: string): string {
+    if (isImageTestEndpoint(endpoint)) return 'a cute cat';
     const left = 1000 + Math.floor(Math.random() * 9000);
     const right = 1000 + Math.floor(Math.random() * 9000);
     return `请只回答算式结果，不要解释：${left} + ${right} = ?`;

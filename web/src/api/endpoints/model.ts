@@ -39,6 +39,7 @@ export interface LLMChannel {
 }
 
 export interface ModelTestRequest {
+    test_upstream_endpoint?: boolean;
     model?: string;
     models?: string[];
     channel_id?: number;

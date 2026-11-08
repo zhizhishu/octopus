@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/zhizhishu/octopus/internal/helper"
 	"github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/modeltest"
@@ -19,11 +20,10 @@ import (
 	"github.com/zhizhishu/octopus/internal/server/resp"
 	"github.com/zhizhishu/octopus/internal/server/router"
 	"github.com/zhizhishu/octopus/internal/task"
-	"gorm.io/gorm"
 	"github.com/zhizhishu/octopus/internal/utils/log"
 	"github.com/zhizhishu/octopus/internal/utils/safe"
 	"github.com/zhizhishu/octopus/internal/utils/xstrings"
-	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 func init() {
@@ -336,12 +336,13 @@ func testChannel(c *gin.Context) {
 		return
 	}
 	result, err := modeltest.RunChannel(c.Request.Context(), request.Channel, model.ModelTestRequest{
-		Model:          request.Model,
-		Endpoint:       request.Endpoint,
-		Prompt:         request.Prompt,
-		Stream:         request.Stream,
-		TimeoutSeconds: request.TimeoutSeconds,
-		Concurrency:    request.Concurrency,
+		Model:                request.Model,
+		Endpoint:             request.Endpoint,
+		TestUpstreamEndpoint: request.TestUpstreamEndpoint,
+		Prompt:               request.Prompt,
+		Stream:               request.Stream,
+		TimeoutSeconds:       request.TimeoutSeconds,
+		Concurrency:          request.Concurrency,
 	})
 	if err != nil {
 		resp.Error(c, http.StatusBadRequest, err.Error())

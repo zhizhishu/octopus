@@ -37,9 +37,13 @@ import type { ChipFilter } from './audit/types';
 import { cleanOneMillionModelName, expandOneMillionModelAliases } from '@/lib/model-aliases';
 import {
     DEFAULT_MODEL_TEST_TIMEOUT_SECONDS,
+    MODEL_TEST_ENDPOINTS,
+    channelTestUpstreamPath,
     defaultModelTestEndpointForChannel,
+    isImageTestEndpoint,
     makeModelTestPrompt,
     sanitizeChannelTestError,
+    type ModelTestEndpoint,
 } from '@/lib/channel-test';
 import { CAPABILITY_EMBEDDINGS, channelCapabilityOnCount, channelToggleVisibility, hasChannelCapability, setChannelCapability } from '@/lib/channel-capabilities';
 
@@ -163,6 +167,7 @@ export interface ChannelFormData {
     openai_chat_path: string;
     openai_models_path: string;
     openai_embeddings_path: string;
+    openai_images_path: string;
     model_mapping?: Record<string, string>;
 }
 
@@ -388,6 +393,11 @@ export function ChannelForm({
         }
     }, [sortedFingerprintProfiles, fallbackProfileId, formData, onFormDataChange]);
     const [channelTestResult, setChannelTestResult] = useState<ModelTestResult | null>(null);
+    const [testEndpoint, setTestEndpoint] = useState<ModelTestEndpoint>(() => defaultModelTestEndpointForChannel(formData.type));
+    useEffect(() => {
+        setTestEndpoint(defaultModelTestEndpointForChannel(formData.type));
+        setChannelTestResult(null);
+    }, [channelId, formData.type]);
 
     // 能力位勾选态：capabilities 里有没有 'embeddings'。数组操作见 lib/channel-capabilities，
     // 取消勾选只摘掉 'embeddings'，不会顺手清掉将来的其它能力位。
@@ -489,6 +499,9 @@ export function ChannelForm({
         channel_proxy: formData.channel_proxy?.trim() || null,
         openai_chat_path: formData.openai_chat_path.trim(),
         openai_models_path: formData.openai_models_path.trim(),
+        openai_embeddings_path: formData.openai_embeddings_path.trim(),
+        openai_images_path: formData.openai_images_path.trim(),
+        capabilities: formData.capabilities,
         param_override: formData.param_override.trim() || null,
         match_regex: formData.match_regex.trim() || null,
     });
@@ -502,8 +515,9 @@ export function ChannelForm({
             {
                 channel: buildChannelTestConfig(),
                 model: testModel,
-                endpoint: defaultModelTestEndpointForChannel(formData.type),
-                prompt: makeModelTestPrompt(),
+                endpoint: testEndpoint,
+                test_upstream_endpoint: true,
+                prompt: makeModelTestPrompt(testEndpoint),
                 stream: undefined,
                 timeout_seconds: DEFAULT_MODEL_TEST_TIMEOUT_SECONDS,
             },
@@ -840,6 +854,7 @@ export function ChannelForm({
                     </label>
                     <Select
                         value={String(formData.type)}
+                        disabled={channelTest.isPending}
                         onValueChange={(value) => {
                             const type = Number(value) as ChannelType;
                             onFormDataChange({
@@ -1184,7 +1199,7 @@ export function ChannelForm({
     );
 
     const modelsCore = (
-        <>
+        <fieldset disabled={channelTest.isPending} className="min-w-0 space-y-2">
                 <div className="flex items-center justify-between">
                     <label className="text-sm font-medium text-card-foreground">{t('model')}</label>
                     <div className="flex items-center gap-1">
@@ -1213,6 +1228,32 @@ export function ChannelForm({
                         </Button>
                     </div>
                 </div>
+                <div className="flex flex-wrap items-center gap-2">
+                    <label htmlFor={`${idPrefix}-test-endpoint`} className="text-xs text-muted-foreground">测试接口</label>
+                    <Select value={testEndpoint} disabled={channelTest.isPending} onValueChange={(value) => {
+                        setTestEndpoint(value as ModelTestEndpoint);
+                        setChannelTestResult(null);
+                    }}>
+                        <SelectTrigger id={`${idPrefix}-test-endpoint`} className="h-8 w-40 rounded-xl text-xs">
+                            <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                            {MODEL_TEST_ENDPOINTS.map((endpoint) => (
+                                <SelectItem key={endpoint.value} value={endpoint.value}>{endpoint.label}</SelectItem>
+                            ))}
+                        </SelectContent>
+                    </Select>
+                </div>
+                <p className="text-xs text-muted-foreground">选择这次要访问的上游接口，不会修改渠道配置。</p>
+                {isImageTestEndpoint(testEndpoint) && (
+                    <p className="text-xs text-amber-700 dark:text-amber-400">会真实生成1张图片并消耗额度；当前只测生成，不测图片编辑。</p>
+                )}
+                {isCustomOpenAIChat(formData.type) && (
+                    <p className="text-xs text-muted-foreground">
+                        自定义渠道使用配置的完整网址，不会自动切换聊天协议。
+                        {isImageTestEndpoint(testEndpoint) && !formData.openai_images_path.trim() && '图片测试需先填写完整的图片接口前缀，留空不支持。'}
+                    </p>
+                )}
                 <input type="hidden" value={formData.model} required />
 
                 <div className="relative">
@@ -1414,7 +1455,7 @@ export function ChannelForm({
                         </AccordionContent>
                     </AccordionItem>
                 </Accordion>
-        </>
+        </fieldset>
     );
 
     const embeddingsPathField = (
@@ -1524,6 +1565,12 @@ export function ChannelForm({
                 {channelTestResult && (
                     <div className={`rounded-xl border p-2.5 text-xs ${channelTestResult.success ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'border-destructive/30 bg-destructive/10 text-destructive'}`}>
                         <span className="font-medium">{channelTestResult.success ? t('testOk') : t('testFail')}</span>
+                        {channelTestUpstreamPath(channelTestResult.upstream_path) && (
+                            <p className="mt-1 break-all font-mono">实际路径：{channelTestUpstreamPath(channelTestResult.upstream_path)}</p>
+                        )}
+                        {channelTestResult.success && isImageTestEndpoint(testEndpoint) && channelTestResult.response_preview && (
+                            <p className="mt-1 break-words">{sanitizeChannelTestError(channelTestResult.response_preview)}</p>
+                        )}
                         {!channelTestResult.success && (
                             <p className="mt-1 break-words">{sanitizeChannelTestError(channelTestResult.error || t('testNoResult'))}</p>
                         )}
@@ -1723,6 +1770,18 @@ export function ChannelForm({
                                         placeholder="/models"
                                         className="rounded-xl"
                                     />
+                                </div>
+                                <div className="space-y-2 md:col-span-2">
+                                    <label htmlFor={`${idPrefix}-openai-images-path`} className="text-sm font-medium text-card-foreground">图片接口前缀</label>
+                                    <Input
+                                        id={`${idPrefix}-openai-images-path`}
+                                        type="text"
+                                        value={formData.openai_images_path}
+                                        onChange={(e) => onFormDataChange({ ...formData, openai_images_path: e.target.value })}
+                                        placeholder="https://upstream.example/v1/images"
+                                        className="rounded-xl"
+                                    />
+                                    <p className="text-xs leading-relaxed text-muted-foreground">自动追加 /generations；自定义渠道需填完整网址。留空使用默认图片接口（自定义渠道除外）。</p>
                                 </div>
                             </div>
                         )}
