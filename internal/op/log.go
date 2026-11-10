@@ -5,7 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"io"
 	"math"
 	"sort"
@@ -20,6 +20,7 @@ import (
 	"github.com/zhizhishu/octopus/internal/utils/safe"
 	"github.com/zhizhishu/octopus/internal/utils/snowflake"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const relayLogMaxSize = 20
@@ -55,6 +56,10 @@ var relayLogCache = make([]model.RelayLog, 0, relayLogMaxSize)
 var relayLogCacheLock sync.Mutex
 
 var relayLogFlushLock sync.Mutex
+
+// Protected by relayLogFlushLock; producer signals must not hot-loop a failed write.
+var relayLogRetryAfter time.Time
+var relayLogRetryError error
 
 // relayLogFlushSignal 把“攒够一批了”从请求路径通知给后台 flusher。容量 1 + 非阻塞 send：
 // 已有待处理信号时直接丢弃本次通知(flusher 醒来会把当时的整批一起刷)，
@@ -205,29 +210,46 @@ func relayLogFlushToDB(ctx context.Context) error {
 	relayLogFlushLock.Lock()
 	defer relayLogFlushLock.Unlock()
 
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if time.Now().Before(relayLogRetryAfter) {
+		return relayLogRetryError
+	}
 	relayLogCacheLock.Lock()
 	if len(relayLogCache) == 0 {
 		relayLogCacheLock.Unlock()
 		return nil
 	}
-	batch := make([]model.RelayLog, len(relayLogCache))
-	copy(batch, relayLogCache)
+	batch := append([]model.RelayLog(nil), relayLogCache...)
 	relayLogCacheLock.Unlock()
 
-	result := db.GetDB().WithContext(ctx).Create(&batch)
-	if result.Error != nil {
-		// flush 失败也把这批从缓存排空: 否则一个坏行(如超长字段撞 varchar 上限)会让之后
-		// 每次 flush 都带着它重试、永久失败, 而 enabled 分支的封顶淘汰会替它丢掉更新的日志。
-		// 丢掉这一批(含可能是暂时性 DB 抖动的正常行), 换取落库不被单条坏行永久卡死。
-		relayLogRemoveFlushed(batch)
-		// 计数放在这里而不是各调用方: 后台 flusher 与 RelayLogSaveDBTask 都经此函数落库,
-		// 分开记会漏掉其中的失败。
+	// GORM can commit earlier INSERT chunks before a later chunk fails.
+	// Stable log IDs make replay safe even after an ambiguous commit outcome.
+	writeErr := db.GetDB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return tx.Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "id"}}, DoNothing: true,
+		}).Create(&batch).Error
+	})
+	if writeErr != nil {
+		relayLogRetryAfter = time.Now().Add(relayLogFlushInterval)
+		relayLogRetryError = writeErr
 		relayLogCacheLock.Lock()
 		relayLogWriteFailures++
 		relayLogLastWriteFailureAt = time.Now().Unix()
 		relayLogCacheLock.Unlock()
-		return result.Error
+		if relayLogPermanentWriteError(writeErr) {
+			// shortcut: discard a bounded poison batch, isolate individual rows if
+			// permanent constraint failures become a recurring operational issue.
+			relayLogCacheLock.Lock()
+			relayLogPendingDropped += int64(len(batch))
+			relayLogCacheLock.Unlock()
+			relayLogRemoveFlushed(batch)
+		}
+		return writeErr
 	}
+	relayLogRetryAfter = time.Time{}
+	relayLogRetryError = nil
 
 	// 搜索投影表跟着主表一起补: 少了这一步, 新落库的日志能列表显示却搜不到。
 	relayLogSearchIndexUpsert(db.GetDB().WithContext(ctx), batch)
@@ -236,6 +258,18 @@ func relayLogFlushToDB(ctx context.Context) error {
 
 	relayLogRemoveFlushed(batch)
 	return nil
+}
+
+func relayLogPermanentWriteError(err error) bool {
+	if isSQLiteBusyErr(err) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var coded interface{ Code() int }
+	if errors.As(err, &coded) {
+		return coded.Code()&0xff == 19 || coded.Code()&0xff == 18 // constraint or too big
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "constraint failed") || strings.Contains(message, "value too long") || strings.Contains(message, "data too long")
 }
 
 // relayLogRemoveFlushed 把已落库(或已放弃)的这一批按 ID 从待落库队列里删掉。
@@ -431,13 +465,13 @@ func RelayLogSaveDBTask(ctx context.Context) error {
 	}
 
 	if enabled {
-		if err := relayLogFlushToDB(ctx); err != nil {
-			return err
-		}
-		err := relayLogCleanup(ctx)
+		flushCtx, cancel := context.WithTimeout(ctx, relayLogFlushTimeout)
+		flushErr := relayLogFlushToDB(flushCtx)
+		cancel()
+		cleanupErr := relayLogCleanup(ctx)
 		// 日志删完再清扫图片：刚失去最后一条引用的文件这一轮就能看到。
 		relayLogImageSweepLogged(ctx, RelayLogImageOrphanGrace)
-		return err
+		return errors.Join(flushErr, cleanupErr)
 	}
 	// 不落库时不会再存新图，但以前存的照样要过期、照样受容量上限约束。
 	relayLogImageSweepLogged(ctx, RelayLogImageOrphanGrace)
@@ -473,7 +507,12 @@ func relayLogCleanup(ctx context.Context) error {
 		}
 	}
 	// 调试详情比日志本身短命：3 天后只清这一列，日志行照常按保留期走。
+	endMutation, err := relayLogStorageMutation(ctx)
+	if err != nil {
+		return err
+	}
 	relayLogClearExpiredDebugInfo(ctx)
+	endMutation()
 
 	return relayLogCleanupByStorage(ctx)
 }
@@ -526,29 +565,11 @@ func relayLogCleanupByStorage(ctx context.Context) error {
 	// (设置 10GB、实际 59GB 就是这么来的)。改为全 SQL 聚合 + 分批删除，
 	// 内存与数据量无关。详见 log_storage.go。
 	//
-	// 注意这里刻意只统计一次：relayLogStoredBytes 是全表扫描，在 29GB 的库上
-	// 实测约 2 分钟，多算一次就是白烧两分钟。
-	before, beforeRows, err := relayLogStoredBytes(ctx, nil)
-	if err != nil {
-		return err
-	}
-	if err := relayLogCleanupByStorageBounded(ctx); err != nil {
-		return err
-	}
-	after, afterRows, err := relayLogStoredBytes(ctx, nil)
-	if err != nil {
-		return err
-	}
-	// 用行数判断"是否真的删了东西"，比用字节数更可靠：字节估算受平均值影响，
-	// 而行数变化是确定的。
-	if afterRows < beforeRows {
-		// 确实删掉了行才 VACUUM：只标空闲不还空间，db 文件不会变小，
-		// 用户看到的就是"设了上限、日志也少了，文件还是那么大"。
+	// Reuse one completed paged measurement; reclaim follows committed deletes.
+	deleted, cleanupErr := relayLogCleanupStorageMeasured(ctx)
+	if deleted > 0 {
 		if vacuumErr := relayLogVacuum(ctx); vacuumErr != nil {
-			// 这里用 Debugf 而不是 Warnf：磁盘不够时跳过是**预期行为**，
-			// 每 10 分钟报一次 WARN 只会污染日志，让真正的问题淹掉。
-			log.Debugf("relay log vacuum skipped/failed (rows deleted %d→%d, bytes %d→%d): %v",
-				beforeRows, afterRows, before, after, vacuumErr)
+			log.Debugf("relay log vacuum after deleting %d rows: %v", deleted, vacuumErr)
 		}
 	}
 
@@ -563,7 +584,7 @@ func relayLogCleanupByStorage(ctx context.Context) error {
 		// 回收失败不该中断清理主流程：空间没还回去不是故障，下次还会再试。
 		log.Debugf("relay log dead-space reclaim error: %v", err)
 	}
-	return nil
+	return cleanupErr
 }
 
 func RelayLogStorageInfo(ctx context.Context, scope *model.RelayLogScope) (model.RelayLogStorage, error) {
@@ -680,7 +701,7 @@ func RelayLogStreamExportNDJSON(ctx context.Context, w io.Writer, startTime, end
 		}
 		for _, relayLog := range logs {
 			if userSummary {
-				if err := encoder.Encode(RelayLogUserSummary(relayLog)); err != nil {
+				if err := encoder.Encode(RelayLogExportSummary(relayLog, exportScope.UserProjection)); err != nil {
 					return err
 				}
 			} else if err := encoder.Encode(relayLog); err != nil {
@@ -807,7 +828,7 @@ func RelayLogList(ctx context.Context, startTime, endTime *int, page, pageSize i
 							}
 							return relayLogApplyScopeBase(q, scope)
 						}
-						found, err := relayLogSearchTopIDs(ctx, newIDQuery, search, dbLimit)
+						found, err := relayLogSearchTopIDs(ctx, newIDQuery, search, dbLimit, relayLogUserProjection(scope))
 						if err != nil {
 							return err
 						}
@@ -817,7 +838,7 @@ func RelayLogList(ctx context.Context, startTime, endTime *int, page, pageSize i
 						// 这两种情况下都必须仍然生效 —— 早先这里漏了 else 里的搜索,
 						// 导致"投影表一缺, 搜索就被静默忽略、返回全部日志"。
 						if search != "" {
-							idQuery = relayLogApplySearchOnMainTable(idQuery, search)
+							idQuery = relayLogApplySearchOnMainTable(idQuery, search, relayLogUserProjection(scope))
 						}
 						if err := idQuery.Order("id DESC").Limit(dbLimit).Pluck("id", &ids).Error; err != nil {
 							return err
@@ -860,7 +881,7 @@ func RelayLogList(ctx context.Context, startTime, endTime *int, page, pageSize i
 					}
 					q = relayLogApplyScopeBase(q, scope)
 					if scope != nil && strings.TrimSpace(scope.Search) != "" {
-						q = relayLogApplySearch(q, scope.Search)
+						q = relayLogApplySearch(q, scope.Search, scope.UserProjection)
 					}
 					return q
 				}
@@ -1216,7 +1237,22 @@ func RelayLogListSinceRange(ctx context.Context, sinceID int64, limit int, scope
 }
 
 func RelayLogClear(ctx context.Context, scope *model.RelayLogScope) error {
+	endMutation, err := relayLogStorageMutation(ctx)
+	if err != nil {
+		return err
+	}
+	defer endMutation()
+	if !relayLogFlushLock.TryLock() {
+		return errors.New("log persistence is busy; retry clear later")
+	}
+	defer relayLogFlushLock.Unlock()
+	relayLogRetryAfter = time.Time{}
+	relayLogRetryError = nil
 	relayLogCacheLock.Lock()
+	if err := ctx.Err(); err != nil {
+		relayLogCacheLock.Unlock()
+		return err
+	}
 	if scope == nil || (scope.UserID == 0 && scope.APIKeyID == 0) {
 		relayLogCache = make([]model.RelayLog, 0, relayLogMaxSize)
 	} else {
@@ -1230,38 +1266,28 @@ func RelayLogClear(ctx context.Context, scope *model.RelayLogScope) error {
 	}
 	relayLogCacheLock.Unlock()
 
-	query := db.GetDB().WithContext(ctx)
-	query = relayLogApplyScope(query, scope)
-	if scope == nil || (scope.UserID == 0 && scope.APIKeyID == 0) {
-		query = query.Where("1 = 1")
-	}
-	// 清空/按 scope 删除前, 先用同一套条件把投影表对应行删掉。
-	// 条件里只有 id/channel_id 之类投影表也有的列时才能直接下推; 含 time 的
-	// scope 条件先查 id(与上面按时间清理同一策略)。
-	var clearIDs []int64
-	if err := relayLogApplyScope(db.GetDB().WithContext(ctx).Model(&model.RelayLog{}), scope).
-		Pluck("id", &clearIDs).Error; err == nil {
-		// 投影删失败就整条中止，绝不继续删主表：否则这些投影行会变成永久孤儿，
-		// 保留期与容量两条判据都只看主表，谁也管不到它们。
-		// 清空是用户显式动作，失败要如实报错让人重试，而不是装作删干净了。
-		if err := relayLogSearchIndexDeleteByIDs(db.GetDB().WithContext(ctx), clearIDs); err != nil {
-			return fmt.Errorf("清空日志投影表失败，已中止以免产生无法清理的孤儿行: %w", err)
+	for {
+		var clearIDs []int64
+		if err := relayLogApplyScope(db.GetDB().WithContext(ctx).Model(&model.RelayLog{}), scope).
+			Order("id ASC").Limit(relayLogDeleteChunk).Pluck("id", &clearIDs).Error; err != nil {
+			return err
 		}
-		relayLogImageRefsDeleteByLogIDs(db.GetDB().WithContext(ctx), clearIDs)
-	} else {
-		// 条件无法下推时改走整表清空投影。
-		//
-		// 注意这里以前写作"整表重建"，实际是"清空"——投影行不会自动从主表补回来，
-		// 只能等下次启动的迁移续填。所以清空失败必须中止，不能吞掉：
-		// 万一投影清空了而主表只删了一部分，那部分主表的行就再也搜不到了。
-		if err := db.GetDB().WithContext(ctx).Where("1 = 1").
-			Delete(&model.RelayLogSearchIndex{}).Error; err != nil {
-			return fmt.Errorf("清空日志投影表失败，已中止以免搜索结果与主表不一致: %w", err)
+		if len(clearIDs) == 0 {
+			break
 		}
-	}
-
-	if err := query.Delete(&model.RelayLog{}).Error; err != nil {
-		return err
+		if err := db.GetDB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			if err := relayLogSearchIndexDeleteByIDs(tx, clearIDs); err != nil {
+				return err
+			}
+			if relayLogImageTableReady(tx) {
+				if err := tx.Where("log_id IN ?", clearIDs).Delete(&model.RelayLogImage{}).Error; err != nil {
+					return err
+				}
+			}
+			return tx.Where("id IN ?", clearIDs).Delete(&model.RelayLog{}).Error
+		}); err != nil {
+			return err
+		}
 	}
 	invalidateModelTelemetryCache()
 	// 清空是用户想立刻腾出空间：没了引用的图片马上删（只给正在落库的留一分钟）。
@@ -1402,11 +1428,8 @@ func RelayLogUserSummary(relayLog model.RelayLog) model.RelayLogUserSummary {
 		RequestModelName:  relayLog.RequestModelName,
 		RequestUserAgent:  relayLog.RequestUserAgent,
 		RequestAPIKeyName: relayLog.RequestAPIKeyName,
-		// ChannelId / ChannelName are intentionally NOT copied: a normal user's log
-		// view must not reveal which upstream channel served the request (the channel
-		// label can carry the upstream's identity). Users see the model names
-		// (request/actual) instead; admins keep the full RelayLog with channel info.
-		ActualModelName:    relayLog.ActualModelName,
+		// Compatibility identity fields use the requested name, including empty historical names.
+		ActualModelName:    relayLog.RequestModelName,
 		InputTokens:        relayLog.InputTokens,
 		OutputTokens:       relayLog.OutputTokens,
 		CacheHitTokens:     relayLog.CacheHitTokens,
@@ -1428,7 +1451,7 @@ func RelayLogUserSummary(relayLog model.RelayLog) model.RelayLogUserSummary {
 		UsageMissingReason: relayLog.UsageMissingReason,
 		AccessPlanSlug:     relayLog.AccessPlanSlug,
 		AccessPlanName:     relayLog.AccessPlanName,
-		BillingModel:       relayLog.BillingModel,
+		BillingModel:       relayLog.RequestModelName,
 		BaseInputPrice:     relayLog.BaseInputPrice,
 		BaseOutputPrice:    relayLog.BaseOutputPrice,
 	}
@@ -1475,6 +1498,10 @@ func relayLogMatchScope(relayLog model.RelayLog, scope *model.RelayLogScope) boo
 	if scope == nil {
 		return true
 	}
+	matchRow := relayLog
+	if scope.UserProjection {
+		matchRow = relayLogUserSearchProjection(relayLog)
+	}
 	if scope.UserID > 0 && relayLog.UserID != scope.UserID {
 		return false
 	}
@@ -1484,10 +1511,10 @@ func relayLogMatchScope(relayLog model.RelayLog, scope *model.RelayLogScope) boo
 	if scope.Endpoint != "" && !relayLogEndpointMatches(relayLog.RequestEndpoint, scope.Endpoint) {
 		return false
 	}
-	if scope.Provider != "" && !relayLogProviderMatches(relayLog, scope.Provider) {
+	if scope.Provider != "" && !relayLogProviderMatches(matchRow, scope.Provider) {
 		return false
 	}
-	if scope.Model != "" && !relayLogModelMatches(relayLog, scope.Model) {
+	if scope.Model != "" && !relayLogModelMatches(matchRow, scope.Model) {
 		return false
 	}
 	if scope.Severity != "" && relayLogSeverityValue(relayLog) != scope.Severity {
@@ -1500,12 +1527,12 @@ func relayLogMatchScope(relayLog model.RelayLog, scope *model.RelayLogScope) boo
 		return false
 	}
 	// 三态: nil 的行(上游没声明模型名)两个桶都不进, 不是"一致"也不是"不一致"。
-	if scope.UpstreamModelMismatch != nil {
+	if scope.UpstreamModelMismatch != nil && !scope.UserProjection {
 		if relayLog.UpstreamModelMismatch == nil || *relayLog.UpstreamModelMismatch != *scope.UpstreamModelMismatch {
 			return false
 		}
 	}
-	if scope.Search != "" && !relayLogSearchMatches(relayLog, scope.Search) {
+	if scope.Search != "" && !relayLogSearchMatches(matchRow, scope.Search) {
 		return false
 	}
 	return true
@@ -1725,7 +1752,15 @@ func relayLogApplyScopeRaw(query *gorm.DB, scope *model.RelayLogScope, mode rela
 		// cache/SSE path. Comparing LOWER(col) here without TRIM made the same row
 		// invisible to the DB path — a filter that "works until the row moves from the
 		// in-memory cache into the database".
-		query = query.Where("LOWER(TRIM(request_model_name)) = ? OR LOWER(TRIM(actual_model_name)) = ?", m, m)
+		if scope.UserProjection {
+			query = query.Where("LOWER(TRIM(request_model_name)) = ?", m)
+		} else {
+			query = query.Where("LOWER(TRIM(request_model_name)) = ? OR LOWER(TRIM(actual_model_name)) = ?", m, m)
+		}
+	}
+	modelFilterCols := relayLogModelFilterCols
+	if scope.UserProjection {
+		modelFilterCols = []string{"LOWER(TRIM(request_model_name))"}
 	}
 	if scope.Provider != "" {
 		providerKey := strings.ToLower(strings.TrimSpace(scope.Provider))
@@ -1742,7 +1777,7 @@ func relayLogApplyScopeRaw(query *gorm.DB, scope *model.RelayLogScope, mode rela
 				escaped := escapeLogEndpointLike(prefix)
 				patternStart := escaped + "%"
 				patternSlash := "%/" + escaped + "%"
-				for _, col := range relayLogModelFilterCols {
+				for _, col := range modelFilterCols {
 					conditions = append(conditions, col+" LIKE ? ESCAPE '\\'", col+" LIKE ? ESCAPE '\\'")
 					args = append(args, patternStart, patternSlash)
 				}
@@ -1760,7 +1795,7 @@ func relayLogApplyScopeRaw(query *gorm.DB, scope *model.RelayLogScope, mode rela
 			provSubSlash := "%/" + escapedProv + "/%"
 			provHyphen := escapedProv + "-%/"
 			provUnderscore := escapedProv + "_%/"
-			for _, col := range relayLogModelFilterCols {
+			for _, col := range modelFilterCols {
 				conditions = append(conditions,
 					col+" LIKE ? ESCAPE '\\'",
 					col+" LIKE ? ESCAPE '\\'",
@@ -1770,7 +1805,7 @@ func relayLogApplyScopeRaw(query *gorm.DB, scope *model.RelayLogScope, mode rela
 				args = append(args, provSlash, provSubSlash, provHyphen, provUnderscore)
 			}
 			if providerKey == "meta" {
-				for _, col := range relayLogModelFilterCols {
+				for _, col := range modelFilterCols {
 					conditions = append(conditions, col+" LIKE ? ESCAPE '\\'", col+" LIKE ? ESCAPE '\\'")
 					args = append(args, "meta-llama/%", "meta-%/%")
 				}
@@ -1797,7 +1832,7 @@ func relayLogApplyScopeRaw(query *gorm.DB, scope *model.RelayLogScope, mode rela
 		// The underscore is escaped so it matches literally, not as a LIKE wildcard.
 		query = query.Where(`request_endpoint NOT LIKE ? ESCAPE '\'`, `model\_test%`)
 	}
-	if scope.UpstreamModelMismatch != nil {
+	if scope.UpstreamModelMismatch != nil && !scope.UserProjection {
 		// Explicit IS NOT NULL keeps the third state (upstream declared nothing) out of
 		// both buckets — a plain `= ?` comparison would already drop NULLs, but stating it
 		// makes the tri-state contract obvious to the next reader.
@@ -1822,7 +1857,7 @@ func relayLogApplyScopeMode(query *gorm.DB, scope *model.RelayLogScope, mode rel
 	if scope == nil {
 		return query
 	}
-	return relayLogApplySearch(query, scope.Search)
+	return relayLogApplySearch(query, scope.Search, scope.UserProjection)
 }
 
 // relayLogApplyScopeBase 只应用 scope 里那些"主表自身能判断"的条件, 不含关键词搜索。
@@ -1859,7 +1894,10 @@ const relayLogSearchLikeCond = "LOWER(user_name) LIKE ? ESCAPE '\\' OR LOWER(req
 
 // relayLogSearchCond 返回 12 列 LIKE(数字时再加 id / channel_id 精确匹配)的条件与参数。
 // 投影表与主表列名相同, 两边共用这一份, 保证两条路径的匹配规则逐字一致。
-func relayLogSearchCond(trimmed string) (string, []any) {
+func relayLogSearchCond(trimmed string, userProjection bool) (string, []any) {
+	if userProjection {
+		return relayLogUserSearchCond(trimmed)
+	}
 	pattern := "%" + escapeLogEndpointLike(strings.ToLower(trimmed)) + "%"
 	args := make([]any, 0, 14)
 	cond := relayLogSearchLikeCond
@@ -1876,8 +1914,8 @@ func relayLogSearchCond(trimmed string) (string, []any) {
 
 // relayLogSearchIndexQuery 返回"在投影表里按关键词匹配"的查询, 由调用方决定
 // 取多少条、怎么排序。
-func relayLogSearchIndexQuery(search string) *gorm.DB {
-	cond, args := relayLogSearchCond(strings.TrimSpace(search))
+func relayLogSearchIndexQuery(search string, userProjection bool) *gorm.DB {
+	cond, args := relayLogSearchCond(strings.TrimSpace(search), userProjection)
 	return db.GetDB().Table(relayLogSearchIndexTable).Where(cond, args...)
 }
 
@@ -1887,8 +1925,8 @@ func relayLogSearchReady() bool {
 }
 
 // relayLogApplySearchOnMainTable 是退路(投影表不可用): 与历史行为逐字一致。
-func relayLogApplySearchOnMainTable(query *gorm.DB, trimmed string) *gorm.DB {
-	cond, args := relayLogSearchCond(trimmed)
+func relayLogApplySearchOnMainTable(query *gorm.DB, trimmed string, userProjection bool) *gorm.DB {
+	cond, args := relayLogSearchCond(trimmed, userProjection)
 	return query.Where(cond, args...)
 }
 
@@ -1911,7 +1949,7 @@ const relayLogSearchMaxIndexRounds = 8
 //  2. 投影表回填未完成时, 它只对 id <= cursor 负责; 大于游标的那段再在主表上 LIKE
 //     一次并合并。修复前只要投影表给出了 >0 个命中就只用它们, 回填期间只在主表里的
 //     老日志被静默漏掉(补表那段时间新日志也会命中, 所以这是常态而非边角)。
-func relayLogSearchTopIDs(ctx context.Context, newIDQuery func() *gorm.DB, search string, limit int) ([]int64, error) {
+func relayLogSearchTopIDs(ctx context.Context, newIDQuery func() *gorm.DB, search string, limit int, userProjection bool) ([]int64, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
@@ -1931,7 +1969,7 @@ func relayLogSearchTopIDs(ctx context.Context, newIDQuery func() *gorm.DB, searc
 
 	if !complete {
 		var tail []int64
-		tq := relayLogApplySearchOnMainTable(newIDQuery(), search)
+		tq := relayLogApplySearchOnMainTable(newIDQuery(), search, userProjection)
 		if cursor > 0 {
 			tq = tq.Where("id > ?", cursor)
 		}
@@ -1954,7 +1992,7 @@ func relayLogSearchTopIDs(ctx context.Context, newIDQuery func() *gorm.DB, searc
 		if round >= relayLogSearchMaxIndexRounds {
 			// 投影表翻够了还凑不满: 余下的区间(id < before)整段交给主表 LIKE。
 			var rest []int64
-			if err := relayLogApplySearchOnMainTable(newIDQuery(), search).
+			if err := relayLogApplySearchOnMainTable(newIDQuery(), search, userProjection).
 				Where("id < ?", before).
 				Order("id DESC").Limit(limit-fromIndex).Pluck("id", &rest).Error; err != nil {
 				return nil, err
@@ -1962,7 +2000,7 @@ func relayLogSearchTopIDs(ctx context.Context, newIDQuery func() *gorm.DB, searc
 			add(rest)
 			break
 		}
-		q := relayLogSearchIndexQuery(search).Select("id")
+		q := relayLogSearchIndexQuery(search, userProjection).Select("id")
 		if before > 0 {
 			q = q.Where("id < ?", before)
 		}
@@ -1999,27 +2037,27 @@ func relayLogSearchTopIDs(ctx context.Context, newIDQuery func() *gorm.DB, searc
 //
 // 投影表回填未完成时只信它 id <= cursor 的那段, 游标之后的行在主表上 LIKE。
 // 修复前这里无条件 id IN (投影表子查询): 补表期间徽章/总数少算老日志。
-func relayLogApplySearch(query *gorm.DB, search string) *gorm.DB {
+func relayLogApplySearch(query *gorm.DB, search string, userProjection bool) *gorm.DB {
 	trimmed := strings.TrimSpace(search)
 	if trimmed == "" {
 		return query
 	}
 	if !relayLogSearchReady() {
-		return relayLogApplySearchOnMainTable(query, trimmed)
+		return relayLogApplySearchOnMainTable(query, trimmed, userProjection)
 	}
 	ctx := context.Background()
 	if query.Statement != nil && query.Statement.Context != nil {
 		ctx = query.Statement.Context
 	}
-	sub := relayLogSearchIndexQuery(trimmed).Select("id")
+	sub := relayLogSearchIndexQuery(trimmed, userProjection).Select("id")
 	complete, cursor := relayLogSearchIndexState(ctx)
 	if complete {
 		return query.Where("id IN (?)", sub)
 	}
 	if cursor <= 0 {
 		// 投影表对任何 id 都还不担保: 整段走主表 LIKE(与投影表缺失时同一条退路)。
-		return relayLogApplySearchOnMainTable(query, trimmed)
+		return relayLogApplySearchOnMainTable(query, trimmed, userProjection)
 	}
-	cond, args := relayLogSearchCond(trimmed)
+	cond, args := relayLogSearchCond(trimmed, userProjection)
 	return query.Where("id IN (?) OR (id > ? AND ("+cond+"))", append([]any{sub, cursor}, args...)...)
 }

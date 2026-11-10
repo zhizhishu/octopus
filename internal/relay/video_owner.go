@@ -25,6 +25,7 @@ type videoTaskEntry struct {
 	channelID    int
 	channelKeyID int
 	model        string
+	requestModel string
 	ownerTokenID int
 	ownerUserID  int
 	expiresAt    time.Time
@@ -45,7 +46,7 @@ var videoTaskStore = struct {
 // recordVideoTaskOwner binds every id (task_id / video_id / id) returned by a
 // successful create to the channel+key that served it, scoped to the requesting
 // token/user so another tenant cannot poll a task they did not create.
-func recordVideoTaskOwner(ids []string, channelID, channelKeyID int, model string, ownerTokenID, ownerUserID int, mediaKind string) {
+func recordVideoTaskOwner(ids []string, channelID, channelKeyID int, model string, ownerTokenID, ownerUserID int, mediaKind string, publicModel ...string) {
 	if channelID == 0 || channelKeyID == 0 || len(ids) == 0 {
 		return
 	}
@@ -58,6 +59,9 @@ func recordVideoTaskOwner(ids []string, channelID, channelKeyID int, model strin
 		ownerUserID:  ownerUserID,
 		expiresAt:    now.Add(defaultVideoTaskTTL),
 		mediaKind:    mediaKind,
+	}
+	if len(publicModel) > 0 {
+		entry.requestModel = publicModel[0]
 	}
 	videoTaskStore.Lock()
 	defer videoTaskStore.Unlock()

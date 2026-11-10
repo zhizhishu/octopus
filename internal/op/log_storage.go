@@ -18,10 +18,12 @@ package op
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -66,55 +68,182 @@ func relayLogBytesSQL() string {
 		")"
 }
 
-// relayLogStoredBytes 精确统计主表日志占用的近似字节数(= 容量上限判定口径)。
-//
-// 纯 SQL 聚合，不把任何一行的正文读进 Go 内存。百万行表上也只是一次顺序扫描。
-func relayLogStoredBytes(ctx context.Context, scope *model.RelayLogScope) (int64, int64, error) {
-	var row struct {
-		Bytes int64
-		Rows  int64
+// The gate covers one aggregate helper at a time, including maintenance calls.
+// Helpers release it before another helper starts; callers never hold it.
+var relayLogStorageScanGate = make(chan struct{}, 1)
+
+func relayLogStorageScanContext(ctx context.Context) (context.Context, context.CancelFunc, error) {
+	ctx, cancel := context.WithTimeout(ctx, relayLogStorageQueryTimeout)
+	select {
+	case relayLogStorageScanGate <- struct{}{}:
+		return ctx, func() { <-relayLogStorageScanGate; cancel() }, nil
+	case <-ctx.Done():
+		cancel()
+		return nil, nil, ctx.Err()
 	}
-	query := db.GetDB().WithContext(ctx).Model(&model.RelayLog{}).
-		Select("COALESCE(SUM(" + relayLogBytesSQL() + "),0) AS bytes, COUNT(*) AS rows")
-	query = relayLogApplyScope(query, scope)
-	if err := query.Scan(&row).Error; err != nil {
-		return 0, 0, err
-	}
-	total := row.Bytes + int64(relayLogRowStructOverhead)*row.Rows
-	return total, row.Rows, nil
 }
 
-// relayLogSearchIndexBytes 统计搜索投影表的真实占用。
-//
-// 投影表是搜索加速用的副本，容量上限必须把它算进去 —— 只看主表的话，
-// 副本会不受任何约束地增长(它存了 12 个搜索列 + error 全文)。
-func relayLogSearchIndexBytes(ctx context.Context) int64 {
-	if !relayLogSearchReady() {
-		return 0
+const relayLogStoragePageSize = 256
+const relayLogStorageMeasureTimeout = 5 * time.Minute
+
+var errLogStorageChanged = errors.New("log storage changed; retry measurement")
+var errLogStorageCalculating = errors.New("log storage calculation in progress")
+
+type relayLogStorageMeasurement struct {
+	MainBytes, IndexBytes, OrphanBytes, Rows, Upper int64
+	Generation                                      uint64
+}
+
+func relayLogStorageEpoch() (uint64, error) {
+	relayLogStorageCache.Lock()
+	defer relayLogStorageCache.Unlock()
+	if relayLogStorageCache.activeMutations != 0 {
+		return 0, errLogStorageChanged
 	}
-	var row struct {
-		Bytes int64
-		Rows  int64
+	return relayLogStorageCache.generation, nil
+}
+
+var relayLogStorageMutationMu sync.Mutex
+
+func relayLogStorageMutation(ctx context.Context) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	err := db.GetDB().WithContext(ctx).Table(relayLogSearchIndexTable).
-		Select("COALESCE(SUM(" +
-			"COALESCE(LENGTH(CAST(COALESCE(user_name,'') AS BLOB)),0) + " +
-			"COALESCE(LENGTH(CAST(COALESCE(request_api_key_name,'') AS BLOB)),0) + " +
-			"COALESCE(LENGTH(CAST(COALESCE(request_model_name,'') AS BLOB)),0) + " +
-			"COALESCE(LENGTH(CAST(COALESCE(actual_model_name,'') AS BLOB)),0) + " +
-			"COALESCE(LENGTH(CAST(COALESCE(upstream_response_model,'') AS BLOB)),0) + " +
-			"COALESCE(LENGTH(CAST(COALESCE(channel_name,'') AS BLOB)),0) + " +
-			"COALESCE(LENGTH(CAST(COALESCE(request_endpoint,'') AS BLOB)),0) + " +
-			"COALESCE(LENGTH(CAST(COALESCE(request_path,'') AS BLOB)),0) + " +
-			"COALESCE(LENGTH(CAST(COALESCE(session_key,'') AS BLOB)),0) + " +
-			"COALESCE(LENGTH(CAST(COALESCE(error,'') AS BLOB)),0) + " +
-			"COALESCE(LENGTH(CAST(COALESCE(error_code,'') AS BLOB)),0) + " +
-			"COALESCE(LENGTH(CAST(COALESCE(request_user_agent,'') AS BLOB)),0)" +
-			"),0) AS bytes, COUNT(*) AS rows").Scan(&row).Error
+	if !relayLogStorageMutationMu.TryLock() {
+		return nil, errors.New("log storage maintenance is busy; retry later")
+	}
+	if err := ctx.Err(); err != nil {
+		relayLogStorageMutationMu.Unlock()
+		return nil, err
+	}
+	relayLogStorageCache.Lock()
+	relayLogStorageCache.activeMutations++
+	relayLogStorageCache.generation++
+	clear(relayLogStorageCache.entries)
+	relayLogStorageCache.Unlock()
+	return func() {
+		relayLogStorageCache.Lock()
+		relayLogStorageCache.activeMutations--
+		relayLogStorageCache.generation++
+		clear(relayLogStorageCache.entries)
+		relayLogStorageCache.Unlock()
+		relayLogStorageMutationMu.Unlock()
+	}, nil
+}
+
+func relayLogIndexBytesSQL() string {
+	columns := []string{"user_name", "request_api_key_name", "request_model_name", "actual_model_name", "upstream_response_model", "channel_name", "request_endpoint", "request_path", "session_key", "error", "error_code", "request_user_agent"}
+	parts := make([]string, 0, len(columns))
+	for _, column := range columns {
+		parts = append(parts, "COALESCE(LENGTH(CAST(COALESCE("+column+",'') AS BLOB)),0)")
+	}
+	return "(" + strings.Join(parts, "+") + "+256)"
+}
+
+func relayLogStorageHasIndex(ctx context.Context, conn *gorm.DB) (bool, error) {
+	if conn.Dialector.Name() == "sqlite" {
+		var count int64
+		err := conn.WithContext(ctx).Raw("SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?", relayLogSearchIndexTable).Scan(&count).Error
+		return count != 0, err
+	}
+	return conn.WithContext(ctx).Migrator().HasTable(relayLogSearchIndexTable), ctx.Err()
+}
+
+// Each page releases its SQL reader and permit before advancing. The high-water
+// ID excludes later inserts; a mutation invalidates the entire result.
+func relayLogMeasureStorage(ctx context.Context, conn *gorm.DB, scope *model.RelayLogScope, includeIndex bool) (relayLogStorageMeasurement, error) {
+	ctx, cancel := context.WithTimeout(ctx, relayLogStorageMeasureTimeout)
+	defer cancel()
+	var total relayLogStorageMeasurement
+	epoch, err := relayLogStorageEpoch()
 	if err != nil {
-		return 0
+		return total, err
 	}
-	return row.Bytes + int64(relayLogRowStructOverhead)*row.Rows
+	total.Generation = epoch
+	pageCtx, release, err := relayLogStorageScanContext(ctx)
+	if err != nil {
+		return total, err
+	}
+	err = conn.WithContext(pageCtx).Model(&model.RelayLog{}).Select("COALESCE(MAX(id),0)").Scan(&total.Upper).Error
+	hasIndex := false
+	if err == nil && includeIndex {
+		hasIndex, err = relayLogStorageHasIndex(pageCtx, conn)
+	}
+	var indexUpper int64
+	if err == nil && hasIndex {
+		err = conn.WithContext(pageCtx).Table(relayLogSearchIndexTable).Select("COALESCE(MAX(id),0)").Scan(&indexUpper).Error
+	}
+	release()
+	if err != nil {
+		return relayLogStorageMeasurement{}, err
+	}
+	for _, table := range []string{"relay_logs", relayLogSearchIndexTable} {
+		if table == relayLogSearchIndexTable && !hasIndex {
+			continue
+		}
+		upper := total.Upper
+		if table == relayLogSearchIndexTable {
+			upper = indexUpper
+		}
+		for cursor := int64(0); cursor < upper; {
+			current, err := relayLogStorageEpoch()
+			if err != nil || current != epoch {
+				return relayLogStorageMeasurement{}, errLogStorageChanged
+			}
+			pageCtx, release, err := relayLogStorageScanContext(ctx)
+			if err != nil {
+				return relayLogStorageMeasurement{}, err
+			}
+			var end int64
+			window := conn.WithContext(pageCtx).Table(table).Select("id").Where("id > ? AND id <= ?", cursor, upper).Order("id ASC").Limit(relayLogStoragePageSize)
+			err = conn.WithContext(pageCtx).Table("(?) AS page_ids", window).Select("COALESCE(MAX(id),0)").Scan(&end).Error
+			var page struct{ Bytes, Rows, Orphan int64 }
+			if err == nil && end != 0 {
+				query := conn.WithContext(pageCtx).Table(table).Where("id > ? AND id <= ?", cursor, end)
+				if table == "relay_logs" {
+					query = relayLogApplyScopeRaw(query.Model(&model.RelayLog{}), scope, relayLogSeveritySQLHybrid)
+					if scope != nil && strings.TrimSpace(scope.Search) != "" {
+						query = relayLogApplySearchOnMainTable(query, strings.TrimSpace(scope.Search), scope.UserProjection)
+					}
+					err = query.Select("COALESCE(SUM(" + relayLogBytesSQL() + "+256),0) AS bytes, COUNT(*) AS rows").Scan(&page).Error
+				} else {
+					query = query.Where("id <= ? OR NOT EXISTS (SELECT 1 FROM relay_logs WHERE relay_logs.id = relay_log_search.id)", total.Upper)
+					bytesSQL := relayLogIndexBytesSQL()
+					err = query.Select("COALESCE(SUM(" + bytesSQL + "),0) AS bytes, COALESCE(SUM(CASE WHEN NOT EXISTS (SELECT 1 FROM relay_logs WHERE relay_logs.id = relay_log_search.id) THEN " + bytesSQL + " ELSE 0 END),0) AS orphan").Scan(&page).Error
+				}
+			}
+			release()
+			if err != nil {
+				return relayLogStorageMeasurement{}, err
+			}
+			if end == 0 {
+				break
+			}
+			if table == "relay_logs" {
+				total.MainBytes += page.Bytes
+				total.Rows += page.Rows
+			} else {
+				total.IndexBytes += page.Bytes
+				total.OrphanBytes += page.Orphan
+			}
+			cursor = end
+		}
+	}
+	current, err := relayLogStorageEpoch()
+	if err != nil || current != epoch {
+		return relayLogStorageMeasurement{}, errLogStorageChanged
+	}
+	return total, nil
+}
+
+func relayLogStoredBytes(ctx context.Context, scope *model.RelayLogScope) (int64, int64, error) {
+	result, err := relayLogMeasureStorage(ctx, db.GetDB(), scope, false)
+	return result.MainBytes, result.Rows, err
+}
+
+func relayLogSearchIndexBytes(ctx context.Context) (int64, error) {
+	result, err := relayLogMeasureStorage(ctx, db.GetDB(), nil, true)
+	return result.IndexBytes, err
 }
 
 // relayLogDeleteExpiredBefore 删除 time < cutoff 的日志，分批进行。
@@ -126,6 +255,11 @@ func relayLogSearchIndexBytes(ctx context.Context) int64 {
 // 投影表必须同步删：主表删掉后就没有 time 可比了，顺序反了会留下"永远搜得到、
 // 点开却没有"的幽灵行。
 func relayLogDeleteExpiredBefore(ctx context.Context, cutoff int64) error {
+	endMutation, err := relayLogStorageMutation(ctx)
+	if err != nil {
+		return err
+	}
+	defer endMutation()
 	const deadline = 5 * time.Minute
 	start := time.Now()
 
@@ -166,100 +300,118 @@ func relayLogDeleteExpiredBefore(ctx context.Context, cutoff int64) error {
 	}
 }
 
-// relayLogCleanupByStorageBounded 按容量上限收缩，全程有界内存。
-//
-// 与旧实现的区别：不再先把所有行读进内存再倒推要删哪些 id，而是
-//
-//  1. 用 SQL 算出当前总字节；
-//  2. 若超限，按 id 从旧到新分批删除；
-//  3. 删完再核对一次，仍超限就再来一轮。
-//
-// 🔴 这里有个必须先想清楚的代价：一次 relayLogStoredBytes 是**全表扫描**。
-// 29GB 的库上实测约 2 分钟。所以绝对不能"每删一批就重新统计一遍再决定下一批"
-// —— 那会把删除变成 N 次全表扫描，在超大库上等于永远跑不完(400 批 × 2 分钟 > 13 小时)。
-//
-// 正确做法是：先算一次拿到总字节和行数，按平均行大小**一次性估算**该删多少行，
-// 然后连续删完，最后再核对一次。轮数被 relayLogCleanupMaxRounds 钉死，
-// 最坏情况是固定次数的全表扫描，而不是与删除量成正比。
-//
-// 估算偏差由最后那次核对兜底：删多了无害(本来就是超限要删)，删少了下一轮补，
-// 而轮数封顶保证绝不会无限扫。
+// Measure once, then delete the shortest oldest prefix using measured row sizes.
 func relayLogCleanupByStorageBounded(ctx context.Context) error {
-	return relayLogCleanupByStorageBoundedDepth(ctx, 0)
+	_, err := relayLogCleanupStorageMeasured(ctx)
+	return err
 }
 
-// relayLogCleanupMaxRounds 限制"统计→删除"的轮数。
-//
-// 为什么要封顶：每轮都有一次全表扫描。上限大 10 倍时按估算应当 1 轮就够，
-// 给到 3 轮足以吸收行大小分布不均(比如老日志正文特别大)，同时保证最坏情况下
-// 也只有 3 次扫描、不会变成无底洞。
-const relayLogCleanupMaxRounds = 3
-
-// relayLogDeleteChunk 是单条 DELETE 语句一次处理的行数。
-//
-// 不能一次删几百万行：那会在一个事务里持有巨大的 WAL、把 autocheckpoint 拖爆，
-// 期间所有写入都被挡住。分批删除让检查点有机会插进来。
 const relayLogDeleteChunk = 5000
 
-func relayLogCleanupByStorageBoundedDepth(ctx context.Context, depth int) error {
+func relayLogCleanupStorageMeasured(ctx context.Context) (int64, error) {
 	_, maxBytes, err := relayLogMaxStorage()
 	if err != nil || maxBytes <= 0 {
-		return err
+		return 0, err
 	}
-
-	if depth >= relayLogCleanupMaxRounds {
-		// 轮数用尽仍超限：日志会在下一个调度周期继续收敛。
-		// 不在这里死循环 —— 那会在超大库上把清理任务永久占住。
-		return nil
-	}
-
-	total, rows, err := relayLogStoredBytes(ctx, nil)
+	measured, err := relayLogStorageMeasured(ctx, nil)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	if total <= maxBytes || rows <= 1 {
-		// rows<=1：只剩最后一条，保留它(旧实现里 idx==0 永不删，语义一致)。
-		return nil
+	// Orphans cannot authorize deletion of unrelated live logs.
+	remaining := measured.MainBytes + measured.IndexBytes - measured.OrphanBytes
+	var deleted int64
+	for remaining > maxBytes && measured.Rows-deleted > 1 {
+		pageCtx, release, err := relayLogStorageScanContext(ctx)
+		if err != nil {
+			return deleted, err
+		}
+		if !relayLogStorageMutationMu.TryLock() {
+			release()
+			return deleted, errLogStorageChanged
+		}
+		relayLogStorageCache.Lock()
+		if relayLogStorageCache.activeMutations != 0 || relayLogStorageCache.generation != measured.Generation {
+			relayLogStorageCache.Unlock()
+			relayLogStorageMutationMu.Unlock()
+			release()
+			return deleted, errLogStorageChanged
+		}
+		relayLogStorageCache.activeMutations++
+		relayLogStorageCache.Unlock()
+		var removed int64
+		var ids []int64
+		err = db.GetDB().WithContext(pageCtx).Transaction(func(tx *gorm.DB) error {
+			hasIndex, err := relayLogStorageHasIndex(pageCtx, tx)
+			if err != nil {
+				return err
+			}
+			var candidates []struct{ ID, Bytes int64 }
+			limit := relayLogStoragePageSize
+			if available := measured.Rows - deleted - 1; available < int64(limit) {
+				limit = int(available)
+			}
+			if err := tx.Model(&model.RelayLog{}).Where("id <= ?", measured.Upper).Order("id ASC").Limit(limit).
+				Select("id, " + relayLogBytesSQL() + "+256 AS bytes").Scan(&candidates).Error; err != nil {
+				return err
+			}
+			indexBytesByID := make(map[int64]int64, len(candidates))
+			if hasIndex && len(candidates) > 0 {
+				candidateIDs := make([]int64, len(candidates))
+				for i, candidate := range candidates {
+					candidateIDs[i] = candidate.ID
+				}
+				var projection []struct{ ID, Bytes int64 }
+				if err := tx.Table(relayLogSearchIndexTable).Where("id IN ?", candidateIDs).Select("id, " + relayLogIndexBytesSQL() + " AS bytes").Scan(&projection).Error; err != nil {
+					return err
+				}
+				for _, row := range projection {
+					indexBytesByID[row.ID] = row.Bytes
+				}
+			}
+			for _, candidate := range candidates {
+				bytes := candidate.Bytes + indexBytesByID[candidate.ID]
+				ids = append(ids, candidate.ID)
+				removed += bytes
+				if remaining-removed <= maxBytes {
+					break
+				}
+			}
+			if len(ids) == 0 {
+				return nil
+			}
+			if err := relayLogSearchIndexDeleteByIDs(tx, ids); err != nil {
+				return err
+			}
+			if relayLogImageTableReady(tx) {
+				if err := tx.Where("log_id IN ?", ids).Delete(&model.RelayLogImage{}).Error; err != nil {
+					return err
+				}
+			}
+			return tx.Where("id IN ?", ids).Delete(&model.RelayLog{}).Error
+		})
+		relayLogStorageCache.Lock()
+		relayLogStorageCache.activeMutations--
+		if err == nil && len(ids) != 0 {
+			relayLogStorageCache.generation++
+			measured.Generation = relayLogStorageCache.generation
+			clear(relayLogStorageCache.entries)
+		}
+		relayLogStorageCache.Unlock()
+		relayLogStorageMutationMu.Unlock()
+		release()
+		if err != nil {
+			return deleted, err
+		}
+		if len(ids) == 0 {
+			break
+		}
+		remaining -= removed
+		deleted += int64(len(ids))
 	}
-
-	avg := total / rows
-	if avg <= 0 {
-		avg = 1
+	if measured.OrphanBytes > 0 && remaining+measured.OrphanBytes > maxBytes {
+		return deleted, errors.New("orphan log search rows require repair")
 	}
-	over := total - maxBytes
-	if over <= 0 {
-		return nil
-	}
-
-	// 该删多少行：超出部分 ÷ 平均行大小，再留 5% 余量吸收平均值误差，
-	// 避免"算得刚刚好、结果差一点又超限"导致多跑一轮全表扫描。
-	want := over / avg
-	want += want / 20
-	if want < 1 {
-		want = 1
-	}
-	// 永远不删最后一条。
-	if want > rows-1 {
-		want = rows - 1
-	}
-
-	deleted, err := relayLogDeleteOldest(ctx, want)
-	if err != nil {
-		return err
-	}
-	if deleted == 0 {
-		return nil
-	}
-
-	// 删完核对一次：还超限就再走一轮(轮数有封顶)。
-	after, afterRows, err := relayLogStoredBytes(ctx, nil)
-	if err != nil {
-		return err
-	}
-	if after > maxBytes && afterRows > 1 {
-		return relayLogCleanupByStorageBoundedDepth(ctx, depth+1)
-	}
-	return nil
+	return deleted, nil
 }
 
 // relayLogDeleteOldest 从最旧的开始删最多 want 行，返回实际删除的行数。
@@ -267,6 +419,11 @@ func relayLogCleanupByStorageBoundedDepth(ctx context.Context, depth int) error 
 // 全程按 id 游标推进，每批都是"取一批 id → 删这批"，不做任何全表统计，
 // 所以成本与删除量成正比，而不是与表大小成正比。
 func relayLogDeleteOldest(ctx context.Context, want int64) (int64, error) {
+	endMutation, err := relayLogStorageMutation(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer endMutation()
 	var deleted int64
 	var lastID int64
 
@@ -307,12 +464,110 @@ func relayLogDeleteOldest(ctx context.Context, want int64) (int64, error) {
 	return deleted, nil
 }
 
-// relayLogStorageInfoBounded 是 RelayLogStorageInfo 的有界实现。
-//
-// StoredBytes 现在包含主表 + 搜索投影表 + 尚未落库的内存缓存，
-// 这样"已用 / 上限"能和真实磁盘占用对上，而不是只算主表的一半。
+const relayLogStorageTTL = time.Minute
+const relayLogStorageQueryTimeout = 5 * time.Second
+
+type relayLogStorageCacheKey struct {
+	DB    *gorm.DB
+	Scope string
+}
+type relayLogStorageCacheEntry struct {
+	measurement relayLogStorageMeasurement
+	err         error
+	expires     time.Time
+}
+
+var relayLogStorageCache = struct {
+	sync.Mutex
+	entries         map[relayLogStorageCacheKey]relayLogStorageCacheEntry
+	running         chan struct{}
+	generation      uint64
+	activeMutations int
+}{entries: make(map[relayLogStorageCacheKey]relayLogStorageCacheEntry)}
+
+func relayLogStorageMeasured(ctx context.Context, scope *model.RelayLogScope) (relayLogStorageMeasurement, error) {
+	encoded, err := json.Marshal(scope)
+	if err != nil {
+		return relayLogStorageMeasurement{}, err
+	}
+	conn := db.GetDB()
+	key := relayLogStorageCacheKey{conn, string(encoded)}
+	for {
+		if err := ctx.Err(); err != nil {
+			return relayLogStorageMeasurement{}, err
+		}
+		relayLogStorageCache.Lock()
+		if relayLogStorageCache.activeMutations != 0 {
+			relayLogStorageCache.Unlock()
+			return relayLogStorageMeasurement{}, errLogStorageChanged
+		}
+		if entry, ok := relayLogStorageCache.entries[key]; ok && time.Now().Before(entry.expires) {
+			relayLogStorageCache.Unlock()
+			return entry.measurement, entry.err
+		}
+		running := relayLogStorageCache.running
+		if running == nil {
+			running = make(chan struct{})
+			relayLogStorageCache.running = running
+			generation := relayLogStorageCache.generation
+			// Decode an owned copy: caller-owned pointers cannot change in flight.
+			var copiedScope *model.RelayLogScope
+			if err := json.Unmarshal(encoded, &copiedScope); err != nil {
+				relayLogStorageCache.running = nil
+				close(running)
+				relayLogStorageCache.Unlock()
+				return relayLogStorageMeasurement{}, err
+			}
+			go func(done chan struct{}) {
+				defer func() {
+					relayLogStorageCache.Lock()
+					if recover() != nil {
+						relayLogStorageCache.entries[key] = relayLogStorageCacheEntry{err: errors.New("log storage measurement failed"), expires: time.Now().Add(15 * time.Second)}
+					}
+					relayLogStorageCache.running = nil
+					close(done)
+					relayLogStorageCache.Unlock()
+				}()
+				measureCtx, cancel := context.WithTimeout(context.Background(), relayLogStorageMeasureTimeout)
+				defer cancel()
+				includeIndex := copiedScope == nil || (copiedScope.UserID == 0 && copiedScope.APIKeyID == 0)
+				measurement, queryErr := relayLogMeasureStorage(measureCtx, conn, copiedScope, includeIndex)
+				ttl := relayLogStorageTTL
+				if queryErr != nil {
+					ttl = 15 * time.Second
+				}
+				relayLogStorageCache.Lock()
+				if len(relayLogStorageCache.entries) >= 64 {
+					clear(relayLogStorageCache.entries)
+				}
+				if generation == relayLogStorageCache.generation && relayLogStorageCache.activeMutations == 0 {
+					relayLogStorageCache.entries[key] = relayLogStorageCacheEntry{measurement, queryErr, time.Now().Add(ttl)}
+				}
+				relayLogStorageCache.Unlock()
+			}(running)
+		}
+		relayLogStorageCache.Unlock()
+		select {
+		case <-ctx.Done():
+			return relayLogStorageMeasurement{}, ctx.Err()
+		case <-running:
+		}
+	}
+}
+
+func relayLogCachedStoredBytes(ctx context.Context, scope *model.RelayLogScope) (int64, error) {
+	waitCtx, cancel := context.WithTimeout(ctx, relayLogStorageQueryTimeout)
+	defer cancel()
+	result, err := relayLogStorageMeasured(waitCtx, scope)
+	if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+		return 0, errLogStorageCalculating
+	}
+	return result.MainBytes + result.IndexBytes, err
+}
+
+// relayLogStorageInfoBounded combines cached SQL totals with live settings and pending logs.
 func relayLogStorageInfoBounded(ctx context.Context, scope *model.RelayLogScope) (model.RelayLogStorage, error) {
-	storedBytes, _, err := relayLogStoredBytes(ctx, scope)
+	storedBytes, err := relayLogCachedStoredBytes(ctx, scope)
 	if err != nil {
 		return model.RelayLogStorage{}, err
 	}
@@ -327,12 +582,6 @@ func relayLogStorageInfoBounded(ctx context.Context, scope *model.RelayLogScope)
 			continue
 		}
 		storedBytes += relayLogApproxBytes(relayLog)
-	}
-
-	// 投影表只在统计全量(admin、无 scope)时计入：它是主表的附属副本，
-	// 按用户/渠道过滤时没有对应的归属关系，硬摊派会算错。
-	if scope == nil || (scope.UserID == 0 && scope.APIKeyID == 0) {
-		storedBytes += relayLogSearchIndexBytes(ctx)
 	}
 
 	maxGB, maxBytes, err := relayLogMaxStorage()
@@ -363,7 +612,7 @@ func relayLogStorageInfoBounded(ctx context.Context, scope *model.RelayLogScope)
 // 返回 (回收页数, needsFullVacuum, error)。
 func relayLogIncrementalVacuum(ctx context.Context, maxPages int64) (int64, bool, error) {
 	var mode int64
-	if err := db.GetDB().Raw("PRAGMA auto_vacuum").Row().Scan(&mode); err != nil {
+	if err := db.GetDB().WithContext(ctx).Raw("PRAGMA auto_vacuum").Row().Scan(&mode); err != nil {
 		return 0, false, err
 	}
 	if mode != 2 { // 0=none, 1=full, 2=incremental
@@ -371,7 +620,7 @@ func relayLogIncrementalVacuum(ctx context.Context, maxPages int64) (int64, bool
 	}
 
 	var free int64
-	if err := db.GetDB().Raw("PRAGMA freelist_count").Row().Scan(&free); err != nil {
+	if err := db.GetDB().WithContext(ctx).Raw("PRAGMA freelist_count").Row().Scan(&free); err != nil {
 		return 0, false, err
 	}
 	if free <= 0 {
@@ -389,8 +638,8 @@ func relayLogIncrementalVacuum(ctx context.Context, maxPages int64) (int64, bool
 	}
 
 	var remain int64
-	if err := db.GetDB().Raw("PRAGMA freelist_count").Row().Scan(&remain); err != nil {
-		return 0, false, nil
+	if err := db.GetDB().WithContext(ctx).Raw("PRAGMA freelist_count").Row().Scan(&remain); err != nil {
+		return 0, false, err
 	}
 	return free - remain, false, nil
 }
@@ -431,14 +680,17 @@ func relayLogVacuum(ctx context.Context) error {
 func sqliteVacuumLocked(ctx context.Context) (string, error) {
 	// 先试增量：库已是 incremental 模式时，这一步只花几十毫秒。
 	pages, needsFull, err := relayLogIncrementalVacuum(ctx, 0)
-	if err == nil && !needsFull {
+	if err != nil {
+		return "", err
+	}
+	if !needsFull {
 		if pages > 0 {
 			log.Debugf("relay log incremental vacuum reclaimed %d pages", pages)
 		}
 		return "incremental", nil
 	}
 
-	safe, reason := relayLogVacuumSafe()
+	safe, reason := relayLogVacuumSafe(ctx)
 	if !safe {
 		return "", errors.New(reason)
 	}
@@ -485,13 +737,13 @@ func sqliteVacuumLocked(ctx context.Context) (string, error) {
 //
 // 判据：可用空间 > 当前库大小 + 512MB 余量。拿不到库大小或可用空间时一律
 // 判不安全(保守)，因为误判"够"的代价远大于少回收一次空间。
-func relayLogVacuumSafe() (bool, string) {
+func relayLogVacuumSafe(ctx context.Context) (bool, string) {
 	var pageCount, pageSize int64
-	row := db.GetDB().Raw("PRAGMA page_count").Row()
+	row := db.GetDB().WithContext(ctx).Raw("PRAGMA page_count").Row()
 	if err := row.Scan(&pageCount); err != nil {
 		return false, "无法读取数据库大小，已跳过空间回收"
 	}
-	row = db.GetDB().Raw("PRAGMA page_size").Row()
+	row = db.GetDB().WithContext(ctx).Raw("PRAGMA page_size").Row()
 	if err := row.Scan(&pageSize); err != nil {
 		return false, "无法读取数据库页大小，已跳过空间回收"
 	}
@@ -501,7 +753,7 @@ func relayLogVacuumSafe() (bool, string) {
 	}
 
 	var dbPath string
-	row = db.GetDB().Raw("PRAGMA database_list").Row()
+	row = db.GetDB().WithContext(ctx).Raw("PRAGMA database_list").Row()
 	// database_list 返回 (seq, name, file) 三列
 	var seq int64
 	var name string

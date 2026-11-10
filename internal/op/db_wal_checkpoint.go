@@ -90,13 +90,24 @@ func sqliteWALCheckpoint(ctx context.Context, forceTruncate bool) (sqliteWALChec
 
 // sqliteWALCheckpointLocked 是检查点本体，调用方必须已持有 dbVacuumMu（或确知没有 VACUUM 在跑）。
 func sqliteWALCheckpointLocked(ctx context.Context, forceTruncate bool) (res sqliteWALCheckpointResult, err error) {
-	path := sqliteMainPath(ctx)
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	var path string
+	if err := db.GetDB().WithContext(ctx).Raw("SELECT file FROM pragma_database_list WHERE name = 'main'").Row().Scan(&path); err != nil {
+		return res, err
+	}
 	if path == "" {
 		res.Skipped = "no database file"
 		return res, nil
 	}
 	walPath := path + "-wal"
-	res.BeforeBytes = fileSizeOrZero(walPath)
+	st, statErr := os.Stat(walPath)
+	if statErr != nil && !os.IsNotExist(statErr) {
+		return res, statErr
+	}
+	if statErr == nil {
+		res.BeforeBytes = st.Size()
+	}
 	res.AfterBytes = res.BeforeBytes
 	if res.BeforeBytes == 0 {
 		res.Skipped = "no wal file"
@@ -137,6 +148,10 @@ func sqliteWALCheckpointLocked(ctx context.Context, forceTruncate bool) (res sql
 		return res, err
 	}
 	res.Mode = "passive"
+	res.Busy = busy != 0
+	if res.Busy {
+		return res, nil
+	}
 
 	wantTruncate := res.BeforeBytes >= sqliteWALTruncateThresholdBytes || forceTruncate
 	if !wantTruncate {
@@ -173,6 +188,10 @@ func sqliteWALCheckpointLocked(ctx context.Context, forceTruncate bool) (res sql
 func logSQLiteWALCheckpoint(trigger string, res sqliteWALCheckpointResult) {
 	if res.Skipped != "" {
 		log.Debugf("sqlite wal checkpoint (%s) skipped: %s", trigger, res.Skipped)
+		return
+	}
+	if res.Busy && res.BeforeBytes >= sqliteWALTruncateThresholdBytes {
+		log.Warnf("sqlite wal checkpoint (%s) blocked: mode=%s frames=%d/%d wal_bytes=%d", trigger, res.Mode, res.CheckpointedFrames, res.LogFrames, res.AfterBytes)
 		return
 	}
 	shrunk := res.BeforeBytes - res.AfterBytes

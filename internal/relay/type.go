@@ -358,13 +358,20 @@ type relayAttempt struct {
 	claudeDefaultEffort string
 
 	// upstreamDeclaredModel is THIS attempt's own observation of the upstream's
-	// self-declared response model (captured before the model_mapping rewrite,
+	// self-declared response model (captured before the client-visible projection,
 	// first non-empty wins within the attempt — stream chunks repeat the same
 	// model). It is deliberately attempt-scoped: the request-level metrics field
 	// is committed only by the attempt that actually produced the final response
 	// (collectResponse), so a failed attempt's declaration can never be attributed
 	// to the channel that later succeeded (F10).
 	upstreamDeclaredModel string
+
+	// upstreamSystemFingerprint / upstreamServiceTier are the same attempt-scoped
+	// observations for the identity fields the client projection clears or must
+	// not be read back from. The inbound adapter stores the projected copy, so
+	// GetInternalResponse cannot be the source of these originals.
+	upstreamSystemFingerprint string
+	upstreamServiceTier       string
 
 	// outputIncompleteReason is THIS attempt's own record that what it delivered is not
 	// complete even though the attempt ends as a success: the upstream stream stopped

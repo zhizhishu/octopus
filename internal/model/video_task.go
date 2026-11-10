@@ -49,7 +49,8 @@ type VideoTask struct {
 	ChannelID    int `json:"channel_id" gorm:"index;default:0"`
 	ChannelKeyID int `json:"channel_key_id" gorm:"default:0"`
 
-	Model string `json:"model" gorm:"size:255;default:''"`
+	Model        string `json:"model" gorm:"size:255;default:''"`
+	RequestModel string `json:"-" gorm:"size:255;default:''"`
 
 	// MediaKind 记录这条任务是在哪个子路径创建的（generations / edits / extensions），
 	// 空值 = 兼容别名 /videos。轮询必须回到同一个子路径，否则上游 404 ——

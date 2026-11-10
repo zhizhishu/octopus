@@ -717,7 +717,7 @@
         "hint": "按请求/响应内容估算，超出后自动删除最旧日志",
         "current": "当前占用",
         "unlimited": "不限",
-        "cleanupNow": "立即清理",
+        "cleanupNow": "按保留规则清理",
         "cleaning": "清理中…",
         "cleanupFreed": "已释放 {size}",
         "cleanupNothing": "当前占用未超过上限，无需清理。",
@@ -731,24 +731,40 @@
         "writeFailed": "保存失败",
         "healthy": "写入正常"
       },
+      "status": {
+        "unknown": "未知",
+        "loading": "读取中…",
+        "failed": "当前统计读取失败",
+        "refresh": "刷新一次",
+        "updated": "上次成功读取：{time}",
+        "cancel": "取消"
+      },
       "clear": {
         "label": "清空历史日志",
-        "button": "清空",
-        "clearing": "清空中..."
+        "button": "清空全部日志",
+        "clearing": "清空中...",
+        "confirm": "确定永久删除全部历史日志（包括近期记录）吗？此操作无法撤销，磁盘文件可能仍需压缩才会缩小。"
       },
       "compact": {
         "label": "压缩数据库",
-        "tooltip": "删除日志后数据库文件不会自动变小。压缩会把空出来的空间还给磁盘（SQLite VACUUM）。执行期间请求可能短暂卡顿，建议在空闲时操作。",
-        "hint": "执行期间请求可能短暂卡顿",
-        "size": "当前大小",
+        "tooltip": "压缩回收数据库空闲页，保留现有日志，与按保留规则清理日志是不同操作。写入可能等待，耗时取决于数据库大小与负载。",
+        "hint": "增量回收也可能延迟写入，耗时取决于库大小与负载",
+        "size": "数据库总占用（非日志配额）",
+        "main_bytes": "主文件",
+        "wal_bytes": "WAL",
+        "shm_bytes": "SHM",
+        "fullMode": "下次执行：完整重建",
+        "incrementalMode": "下次执行：增量回收",
         "reclaimable": "可回收约 {size}",
         "button": "压缩",
         "running": "压缩中…",
-        "confirm": "压缩数据库期间请求可能会短暂卡顿，确定现在压缩吗？",
+        "confirm": "压缩可能阻塞数据库写入，耗时取决于库大小与负载。确定现在执行吗？",
         "done": "压缩完成：{before} → {after}",
+        "checkpointIncomplete": "回收已执行，但 WAL 空间释放未完成或结果未知，请刷新核对。",
+        "measurementUnknown": "回收已执行，但前后大小测量无效，尚不能确认磁盘空间是否释放，请刷新核对。",
         "busy": "已有压缩或空间回收在进行，请稍后再试",
         "failed": "压缩失败",
-        "fullWarning": "首次压缩会重建整个数据库文件，库越大停顿越久（GB 级可能数分钟），请在空闲时操作"
+        "fullWarning": "完整压缩会重建整个数据库文件，可能长时间阻塞写入，请在空闲时操作"
       },
       "clearSuccess": "日志已清空",
       "clearFailed": "清空失败",

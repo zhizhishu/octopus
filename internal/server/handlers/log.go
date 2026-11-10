@@ -373,7 +373,7 @@ func streamRelayLogExport(c *gin.Context, startTime, endTime *int, pageSize int,
 			}
 			first = false
 			if userSummary {
-				if err := encoder.Encode(op.RelayLogUserSummary(relayLog)); err != nil {
+				if err := encoder.Encode(op.RelayLogExportSummary(relayLog, scope != nil && scope.UserProjection)); err != nil {
 					return err
 				}
 			} else if err := encoder.Encode(relayLog); err != nil {
@@ -539,7 +539,7 @@ func streamLog(c *gin.Context) {
 		return
 	}
 
-	scope := model.RelayLogScope{UserID: tokenScope.UserID, APIKeyID: tokenScope.APIKeyID, Endpoint: tokenScope.Endpoint, Provider: tokenScope.Provider, Model: tokenScope.Model, Redact: !tokenScope.IsAdmin}
+	scope := model.RelayLogScope{UserID: tokenScope.UserID, APIKeyID: tokenScope.APIKeyID, Endpoint: tokenScope.Endpoint, Provider: tokenScope.Provider, Model: tokenScope.Model, Redact: !tokenScope.IsAdmin, UserProjection: !tokenScope.IsAdmin}
 	scope.Severity = tokenScope.Severity
 	scope.Search = tokenScope.Search
 	scope.RetriedOnly = tokenScope.RetriedOnly
@@ -638,7 +638,7 @@ func logScopeFromContext(c *gin.Context) model.RelayLogScope {
 	if middleware.CurrentUserIsAdmin(c) {
 		return model.RelayLogScope{}
 	}
-	return model.RelayLogScope{UserID: middleware.CurrentUserID(c), Redact: true}
+	return model.RelayLogScope{UserID: middleware.CurrentUserID(c), Redact: true, UserProjection: true}
 }
 
 func logScopeFromAdminQuery(c *gin.Context, scope model.RelayLogScope) (model.RelayLogScope, error) {
@@ -663,65 +663,7 @@ func logScopeFromAdminQuery(c *gin.Context, scope model.RelayLogScope) (model.Re
 }
 
 func relayLogMatchesScope(log model.RelayLog, scope *model.RelayLogScope) bool {
-	if scope == nil {
-		return true
-	}
-	if scope.UserID > 0 && log.UserID != scope.UserID {
-		return false
-	}
-	if scope.APIKeyID > 0 && log.APIKeyID != scope.APIKeyID {
-		return false
-	}
-	if scope.Endpoint != "" && !op.RelayLogEndpointMatches(log.RequestEndpoint, scope.Endpoint) {
-		// Family match, kept in sync with op.relayLogEndpointMatches / relayLogApplyScope.
-		return false
-	}
-	if scope.Model != "" && strings.ToLower(strings.TrimSpace(log.RequestModelName)) != strings.ToLower(strings.TrimSpace(scope.Model)) && strings.ToLower(strings.TrimSpace(log.ActualModelName)) != strings.ToLower(strings.TrimSpace(scope.Model)) {
-		return false
-	}
-	if scope.Provider != "" {
-		if !op.RelayLogProviderMatches(log, scope.Provider) {
-			return false
-		}
-	}
-	if scope.Severity != "" && op.RelayLogSeverityValue(log) != scope.Severity {
-		return false
-	}
-	if scope.RetriedOnly && log.TotalAttempts <= 1 {
-		return false
-	}
-	if scope.HideModelTest && strings.HasPrefix(log.RequestEndpoint, "model_test") {
-		return false
-	}
-	if scope.UpstreamModelMismatch != nil {
-		if log.UpstreamModelMismatch == nil || *log.UpstreamModelMismatch != *scope.UpstreamModelMismatch {
-			return false
-		}
-	}
-	if scope.Search != "" {
-		q := strings.ToLower(strings.TrimSpace(scope.Search))
-		if q != "" {
-			if num, err := strconv.ParseInt(q, 10, 64); err == nil && num > 0 {
-				if log.ID == num || int64(log.ChannelId) == num {
-					return true
-				}
-			}
-			if !strings.Contains(strings.ToLower(log.UserName), q) &&
-				!strings.Contains(strings.ToLower(log.RequestAPIKeyName), q) &&
-				!strings.Contains(strings.ToLower(log.RequestModelName), q) &&
-				!strings.Contains(strings.ToLower(log.ActualModelName), q) &&
-				!strings.Contains(strings.ToLower(log.UpstreamResponseModel), q) &&
-				!strings.Contains(strings.ToLower(log.ChannelName), q) &&
-				!strings.Contains(strings.ToLower(log.RequestEndpoint), q) &&
-				!strings.Contains(strings.ToLower(log.RequestPath), q) &&
-				!strings.Contains(strings.ToLower(log.SessionKey), q) &&
-				!strings.Contains(strings.ToLower(log.Error), q) &&
-				!strings.Contains(strings.ToLower(log.ErrorCode), q) {
-				return false
-			}
-		}
-	}
-	return true
+	return op.RelayLogMatchesScope(log, scope)
 }
 
 func relayLogMatchesTimeRange(log model.RelayLog, startTime, endTime *int) bool {

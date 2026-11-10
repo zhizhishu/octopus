@@ -80,7 +80,7 @@ type TaskView struct {
 	Object    string `json:"object"`
 	Kind      string `json:"kind"`
 	Action    string `json:"action,omitempty"`
-	Model     string `json:"model"`
+	Model     string `json:"model,omitempty"`
 	ResultURL string `json:"result_url,omitempty"`
 	SubmitAt  int64  `json:"submit_time,omitempty"`
 	StartAt   int64  `json:"start_time,omitempty"`
@@ -213,10 +213,12 @@ func videoTaskView(t model.VideoTask) TaskView {
 	v := newTaskView(TaskKindVideo, t.UpstreamTaskID)
 	v.Status = videoTaskUnifiedStatus(t.Status)
 	v.Progress = t.Progress
-	v.FailReason = t.FailReason
+	if t.FailReason != "" || v.Status == TaskStatusFailure {
+		v.FailReason = "video generation failed"
+	}
 	v.CreatedAt = t.CreatedAt
 	v.FinishedAt = t.FinishTime
-	v.Model = t.Model
+	v.Model = t.RequestModel
 	v.Action = t.MediaKind
 	if v.Action == "" {
 		v.Action = "generate"
@@ -235,7 +237,7 @@ func imageTaskView(t model.ImageTask) TaskView {
 	v.Status = imageTaskUnifiedStatus(t.Status)
 	v.CreatedAt = t.CreatedAt
 	v.SubmitAt = t.CreatedAt
-	v.Model = t.Model
+	v.Model = t.RequestModel
 	v.Action = t.Endpoint
 	if v.Action == "" {
 		v.Action = model.ImageTaskEndpointGenerations
@@ -249,10 +251,7 @@ func imageTaskView(t model.ImageTask) TaskView {
 		v.Progress = "100%"
 		v.FinishedAt = t.CompletedAt
 		// 与 /v1/images/tasks/:id 一样只给一句话，不外露上游原始返回。
-		v.FailReason = strings.TrimSpace(t.ErrorMessage)
-		if v.FailReason == "" {
-			v.FailReason = "image generation failed"
-		}
+		v.FailReason = "image generation failed"
 	default:
 		v.Progress = "0%"
 	}
@@ -262,7 +261,7 @@ func imageTaskView(t model.ImageTask) TaskView {
 func midjourneyRowView(t model.MidjourneyTask) TaskView {
 	v := newTaskView(TaskKindMidjourney, t.UpstreamTaskID)
 	v.CreatedAt = t.CreatedAt
-	v.Model = t.Model
+	v.Model = t.RequestModel
 	v.Action = strings.ToLower(t.Action)
 	return v
 }
@@ -292,7 +291,9 @@ func mjSeconds(ts int64) int64 {
 func applyMidjourneyUpstream(v *TaskView, u midjourneyUpstreamTask) {
 	v.Status = midjourneyUnifiedStatus(u.Status)
 	v.Progress = u.Progress
-	v.FailReason = u.FailReason
+	if u.FailReason != "" || v.Status == TaskStatusFailure {
+		v.FailReason = "image generation failed"
+	}
 	v.SubmitAt = mjSeconds(u.SubmitTime)
 	v.StartAt = mjSeconds(u.StartTime)
 	v.FinishedAt = mjSeconds(u.FinishTime)
@@ -341,7 +342,7 @@ func lookupOwnedMidjourneyTask(ctx context.Context, c *gin.Context, id string) (
 	}
 	row, err := op.MidjourneyTaskGetByUpstreamID(ctx, id)
 	if err != nil || row == nil {
-		row = &model.MidjourneyTask{UpstreamTaskID: id, Model: entry.model, ChannelID: entry.channelID, ChannelKeyID: entry.channelKeyID}
+		row = &model.MidjourneyTask{UpstreamTaskID: id, Model: entry.model, RequestModel: entry.requestModel, ChannelID: entry.channelID, ChannelKeyID: entry.channelKeyID}
 	}
 	return row, entry, true
 }

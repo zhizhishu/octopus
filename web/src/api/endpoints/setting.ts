@@ -365,6 +365,11 @@ export interface DBCompactInfo {
     dialect: string;
     supported: boolean;
     file_bytes: number;
+    main_bytes?: number;
+    wal_bytes?: number;
+    shm_bytes?: number;
+    stats_valid?: boolean;
+    error_code?: string;
     free_bytes: number;
     running: boolean;
     /** 下一次压缩要完整 VACUUM（重建整个文件，库越大停顿越久）。 */
@@ -378,13 +383,20 @@ export interface DBCompactResult {
     freed_bytes: number;
     duration_ms: number;
     mode: 'incremental' | 'full';
+    checkpoint_status?: 'truncated' | 'not_needed' | 'busy' | 'skipped' | 'error';
+    checkpoint_error_code?: string;
+    stats_valid?: boolean;
+    error_code?: string;
 }
 
 export function useDBCompactInfo() {
     return useQuery({
         queryKey: ['settings', 'database'],
         queryFn: async () => apiClient.get<DBCompactInfo>('/api/v1/setting/database'),
-        refetchInterval: 60000,
+        staleTime: 60000,
+        retry: false,
+        refetchOnWindowFocus: false,
+        refetchOnReconnect: false,
         refetchOnMount: 'always',
     });
 }

@@ -2,6 +2,7 @@ package relay
 
 import (
 	"encoding/json"
+	"io"
 	"strings"
 	"time"
 
@@ -197,24 +198,30 @@ func (l *ImageTaskLog) Finish(success bool, statusCode int, resultJSON string, f
 		}}
 	}
 
+	var identity passthroughIdentityEvidence
+	if resultJSON != "" {
+		_ = copyIdentityJSON(io.Discard, strings.NewReader(resultJSON), passthroughIdentity{evidence: &identity, mediaEnvelopes: true})
+	}
 	relayLog := model.RelayLog{
-		UserID:           m.UserID,
-		APIKeyID:         m.APIKeyID,
-		RequestIP:        m.RequestIP,
-		RequestUserAgent: truncateUserAgentForLog(m.RequestUserAgent),
-		Time:             m.StartTime.Unix(),
-		RequestEndpoint:  m.RequestEndpoint,
-		RequestPath:      m.RequestPath,
-		RequestModelName: m.RequestModel,
-		ChannelName:      l.channelName,
-		ChannelId:        l.channelID,
-		ActualModelName:  m.ActualModel,
-		UseTime:          int(l.callDur.Milliseconds()),
-		Attempts:         attempts,
-		TotalAttempts:    len(attempts),
-		RequestContent:   m.RequestContent,
-		ResponseContent:  m.ResponseContent,
-		Cost:             cost,
+		UpstreamResponseModel:     identity.Model,
+		UpstreamSystemFingerprint: identity.Fingerprint,
+		UserID:                    m.UserID,
+		APIKeyID:                  m.APIKeyID,
+		RequestIP:                 m.RequestIP,
+		RequestUserAgent:          truncateUserAgentForLog(m.RequestUserAgent),
+		Time:                      m.StartTime.Unix(),
+		RequestEndpoint:           m.RequestEndpoint,
+		RequestPath:               m.RequestPath,
+		RequestModelName:          m.RequestModel,
+		ChannelName:               l.channelName,
+		ChannelId:                 l.channelID,
+		ActualModelName:           m.ActualModel,
+		UseTime:                   int(l.callDur.Milliseconds()),
+		Attempts:                  attempts,
+		TotalAttempts:             len(attempts),
+		RequestContent:            m.RequestContent,
+		ResponseContent:           m.ResponseContent,
+		Cost:                      cost,
 	}
 	m.upstreamBodyLog.applyTo(&relayLog)
 	relayLog.DebugInfo = m.debug.build(l.callDur, time.Time{})

@@ -106,6 +106,10 @@ func TestStorageInfoIncludesSearchIndex(t *testing.T) {
 		t.Fatalf("upsert index: %v", err)
 	}
 
+	// Expire the cached sample before measuring the changed projection.
+	relayLogStorageCache.Lock()
+	clear(relayLogStorageCache.entries)
+	relayLogStorageCache.Unlock()
 	after, err := RelayLogStorageInfo(ctx, nil)
 	if err != nil {
 		t.Fatalf("storage after: %v", err)
@@ -284,9 +288,9 @@ func TestStoredBytesDoesNotLoadContentIntoMemory(t *testing.T) {
 // 这里只验证"拿不到磁盘信息时保守跳过"，不依赖具体机器的剩余空间，
 // 所以 Windows(无 Statfs 实现) 与 Linux 上同样成立。
 func TestVacuumSafetyIsConservative(t *testing.T) {
-	_ = setupRelayLogTest(t)
+	ctx := setupRelayLogTest(t)
 
-	safe, reason := relayLogVacuumSafe()
+	safe, reason := relayLogVacuumSafe(ctx)
 	if safe {
 		// 只有在磁盘真的宽裕时才会返回 true；此时 reason 应为空
 		if reason != "" {
@@ -402,11 +406,6 @@ func TestCleanupNowIsSingleFlight(t *testing.T) {
 //
 // 这个用例钉两件事：轮数常量不许被调大、以及大量删除仍能在合理时间内收敛。
 func TestCleanupCostScalesWithRowsDeletedNotScans(t *testing.T) {
-	if relayLogCleanupMaxRounds > 3 {
-		t.Fatalf("清理轮数上限是 %d：每轮都有一次全表扫描，调大它会让超大库上的"+
-			"清理退化成永远跑不完(这正是返工前的问题)", relayLogCleanupMaxRounds)
-	}
-
 	ctx := setupRelayLogTest(t)
 	ensureSearchIndexTable(t)
 

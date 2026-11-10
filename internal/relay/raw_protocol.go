@@ -308,6 +308,15 @@ runIterator:
 			// those must not block failover to the next channel/key — the any channel relies
 			// on retrying through its bad windows. The exhausted-all-channels path below
 			// handles the "committed only comments, then every channel failed" case.
+			if isPassthroughIdentityError(fwdErr) {
+				metrics.Save(ctx, false, fwdErr, append(allAttempts, iter.Attempts()...))
+				if !c.Writer.Written() {
+					resp.Error(c, http.StatusBadGateway, "invalid upstream response")
+				} else if isResponsesInboundPath(c.Request.URL.Path) {
+					writeResponsesFailedSSE(c, requestModel, "upstream_error", "invalid upstream response")
+				}
+				return
+			}
 			if written {
 				if isResponsesInboundPath(c.Request.URL.Path) {
 					if message := responsesStreamFailureMessage(fwdErr); message != "" {
@@ -1067,6 +1076,9 @@ func rawProtocolAttempt(
 		return respUp.StatusCode, false, nil, upstreamCT, "", upErr
 	}
 
+	if metrics != nil {
+		bindPassthroughIdentity(c, metrics.RequestModel, &metrics.passthroughIdentityEvidence)
+	}
 	if stream {
 		u, w, responseID, err := proxySSEWithOptions(ctx, c, respUp, firstTokenTimeOutSec, metrics, proxySSEOptions{
 			ScanAllData:             true,
@@ -1111,6 +1123,9 @@ func mergeRequestQuery(parsedURL *url.URL, requestQuery url.Values) {
 }
 
 func proxyOpaqueResponse(c *gin.Context, respUp *http.Response) (*imagesUsage, bool, error) {
+	if identityJSONContentType(respUp.Header.Get("Content-Type")) && respUp.Header.Get("Content-Type") != "" {
+		return proxyNonStream(c, respUp)
+	}
 	ct := respUp.Header.Get("Content-Type")
 	if ct == "" {
 		ct = "application/octet-stream"
@@ -1122,6 +1137,7 @@ func proxyOpaqueResponse(c *gin.Context, respUp *http.Response) (*imagesUsage, b
 }
 
 type rawProtocolRelayMetrics struct {
+	passthroughIdentityEvidence
 	APIKeyID         int
 	UserID           int
 	RequestIP        string
@@ -1416,25 +1432,27 @@ func (m *rawProtocolRelayMetrics) saveLog(ctx context.Context, err error, durati
 	billingSnapshot := m.currentBillingSnapshot(actualModel)
 
 	relayLog := model.RelayLog{
-		UserID:           m.UserID,
-		APIKeyID:         m.APIKeyID,
-		RequestIP:        m.RequestIP,
-		RequestUserAgent: truncateUserAgentForLog(m.RequestUserAgent),
-		Time:             m.StartTime.Unix(),
-		RequestEndpoint:  cleanRelayEndpointName(m.Protocol),
-		RequestPath:      m.RequestPath,
-		RequestModelName: m.RequestModel,
-		ChannelName:      channelName,
-		ChannelId:        channelID,
-		ActualModelName:  actualModel,
-		UseTime:          int(duration.Milliseconds()),
-		Attempts:         attempts,
-		TotalAttempts:    len(attempts),
-		SessionKey:       m.SessionKey,
-		SessionSource:    m.SessionSource,
-		RouteStickyHit:   routeStickyHit(attempts),
-		RequestContent:   m.RequestContent,
-		ResponseContent:  m.ResponseContent,
+		UpstreamResponseModel:     m.passthroughIdentityEvidence.Model,
+		UpstreamSystemFingerprint: m.passthroughIdentityEvidence.Fingerprint,
+		UserID:                    m.UserID,
+		APIKeyID:                  m.APIKeyID,
+		RequestIP:                 m.RequestIP,
+		RequestUserAgent:          truncateUserAgentForLog(m.RequestUserAgent),
+		Time:                      m.StartTime.Unix(),
+		RequestEndpoint:           cleanRelayEndpointName(m.Protocol),
+		RequestPath:               m.RequestPath,
+		RequestModelName:          m.RequestModel,
+		ChannelName:               channelName,
+		ChannelId:                 channelID,
+		ActualModelName:           actualModel,
+		UseTime:                   int(duration.Milliseconds()),
+		Attempts:                  attempts,
+		TotalAttempts:             len(attempts),
+		SessionKey:                m.SessionKey,
+		SessionSource:             m.SessionSource,
+		RouteStickyHit:            routeStickyHit(attempts),
+		RequestContent:            m.RequestContent,
+		ResponseContent:           m.ResponseContent,
 	}
 	m.upstreamBodyLog.applyTo(&relayLog)
 	relayLog.DebugInfo = m.debug.build(duration, m.FirstToken)

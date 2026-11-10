@@ -42,7 +42,12 @@ type DBCompactInfo struct {
 	Dialect   string `json:"dialect"`
 	Supported bool   `json:"supported"`
 	// FileBytes 是库文件在磁盘上的实际大小（主文件 + -wal + -shm）。
-	FileBytes int64 `json:"file_bytes"`
+	FileBytes  int64  `json:"file_bytes"`
+	MainBytes  int64  `json:"main_bytes"`
+	WALBytes   int64  `json:"wal_bytes"`
+	SHMBytes   int64  `json:"shm_bytes"`
+	StatsValid bool   `json:"stats_valid"`
+	ErrorCode  string `json:"error_code,omitempty"`
 	// FreeBytes 是库内空闲页的大小，即压缩后大约能还给磁盘的量。
 	FreeBytes int64 `json:"free_bytes"`
 	Running   bool  `json:"running"`
@@ -58,6 +63,11 @@ type DBCompactResult struct {
 	FreedBytes  int64  `json:"freed_bytes"`
 	DurationMs  int64  `json:"duration_ms"`
 	Mode        string `json:"mode"` // incremental | full
+	// CheckpointStatus describes WAL release independently of completed vacuum work.
+	CheckpointStatus    string `json:"checkpoint_status"` // truncated | not_needed | busy | skipped | error
+	CheckpointErrorCode string `json:"checkpoint_error_code,omitempty"`
+	StatsValid          bool   `json:"stats_valid"`
+	ErrorCode           string `json:"error_code,omitempty"`
 }
 
 func dbDialectName() string {
@@ -138,13 +148,77 @@ func DBCompactInfoGet(ctx context.Context) DBCompactInfo {
 	} else {
 		info.Running = true
 	}
-	info.FileBytes = sqliteFileBytes(ctx)
-	info.FreeBytes = sqliteFreeBytes(ctx)
-	var mode int64
-	if err := db.GetDB().WithContext(ctx).Raw("PRAGMA auto_vacuum").Row().Scan(&mode); err != nil || mode != 2 {
-		info.NeedsFull = true
+	statsCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	var pageSize, free, mode int64
+	conn := db.GetDB().WithContext(statsCtx)
+	var path string
+	if err := conn.Raw("SELECT file FROM pragma_database_list WHERE name = 'main'").Row().Scan(&path); err != nil {
+		info.ErrorCode = dbStatsErrorCode(err)
+		return info
 	}
+	if path == "" {
+		var pages int64
+		if err := conn.Raw("PRAGMA page_count").Row().Scan(&pages); err != nil {
+			info.ErrorCode = dbStatsErrorCode(err)
+			return info
+		}
+		info.MainBytes = pages
+	} else {
+		for _, file := range []struct {
+			suffix string
+			value  *int64
+		}{
+			{"", &info.MainBytes}, {"-wal", &info.WALBytes}, {"-shm", &info.SHMBytes},
+		} {
+			st, err := os.Stat(path + file.suffix)
+			if err != nil {
+				if file.suffix != "" && os.IsNotExist(err) {
+					continue
+				}
+				info.ErrorCode = "file_unavailable"
+				return info
+			}
+			*file.value = st.Size()
+		}
+	}
+	info.FileBytes = info.MainBytes + info.WALBytes + info.SHMBytes
+	for _, query := range []struct {
+		sql   string
+		value *int64
+	}{
+		{"PRAGMA page_size", &pageSize}, {"PRAGMA freelist_count", &free}, {"PRAGMA auto_vacuum", &mode},
+	} {
+		if err := conn.Raw(query.sql).Row().Scan(query.value); err != nil {
+			info.ErrorCode = dbStatsErrorCode(err)
+			return info
+		}
+	}
+	if pageSize <= 0 || free < 0 {
+		info.ErrorCode = "invalid_stats"
+		return info
+	}
+	info.FreeBytes = free * pageSize
+	info.NeedsFull = mode != 2
+	if path == "" {
+		info.MainBytes *= pageSize
+		info.FileBytes = info.MainBytes
+	}
+	info.StatsValid = true
 	return info
+}
+
+func dbStatsErrorCode(err error) string {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case isSQLiteBusyErr(err):
+		return "busy"
+	default:
+		return "database_unavailable"
+	}
 }
 
 // DBCompactNow 立即压缩一次 SQLite 库，返回压缩前后的磁盘占用。
@@ -158,30 +232,49 @@ func DBCompactNow(ctx context.Context) (DBCompactResult, error) {
 	defer dbVacuumMu.Unlock()
 
 	start := time.Now()
-	before := sqliteFileBytes(ctx)
+	before := DBCompactInfoGet(ctx)
+	if !before.StatsValid {
+		return DBCompactResult{}, errors.New("database size unavailable: " + before.ErrorCode)
+	}
 	mode, err := sqliteVacuumLocked(ctx)
 	if err != nil {
 		return DBCompactResult{}, err
 	}
-	// WAL 模式下重排后的内容还在 -wal 里，主文件要等检查点才截短，-wal 本身也不会自己变小。
-	// 手动压缩的意义就是"现在看到变小"，所以这里做一次 TRUNCATE 检查点。失败不算压缩失败。
-	if err := db.GetDB().WithContext(ctx).Exec("PRAGMA wal_checkpoint(TRUNCATE)").Error; err != nil {
-		log.Debugf("db compact: wal checkpoint failed: %v", err)
+	// Vacuum completion and WAL release are separate outcomes.
+	checkpoint, checkpointErr := sqliteWALCheckpointLocked(ctx, true)
+	if checkpointErr != nil {
+		log.Debugf("db compact: wal checkpoint failed: %v", checkpointErr)
+	} else {
+		logSQLiteWALCheckpoint("compact", checkpoint)
 	}
 	// 自动回收的冷却期也从这里重新计时：刚手动压过，没必要几分钟后又自动重排一次。
 	relayLogLastReclaimUnix.Store(time.Now().Unix())
 
-	after := sqliteFileBytes(ctx)
+	after := DBCompactInfoGet(ctx)
 	result := DBCompactResult{
-		BeforeBytes: before,
-		AfterBytes:  after,
-		FreedBytes:  before - after,
+		BeforeBytes: before.FileBytes,
+		AfterBytes:  after.FileBytes,
 		DurationMs:  time.Since(start).Milliseconds(),
 		Mode:        mode,
+		StatsValid:  after.StatsValid,
+		ErrorCode:   after.ErrorCode,
 	}
-	if result.FreedBytes < 0 {
-		result.FreedBytes = 0
+	switch {
+	case checkpointErr != nil:
+		result.CheckpointStatus = "error"
+		result.CheckpointErrorCode = dbStatsErrorCode(checkpointErr)
+	case checkpoint.Busy:
+		result.CheckpointStatus = "busy"
+	case checkpoint.Skipped == "no wal file" || checkpoint.Skipped == "no database file":
+		result.CheckpointStatus = "not_needed"
+	case checkpoint.Skipped != "" || checkpoint.Mode != "truncate":
+		result.CheckpointStatus = "skipped"
+	default:
+		result.CheckpointStatus = "truncated"
 	}
-	log.Infof("db compact (%s) finished in %s: %s → %s", mode, time.Since(start).Truncate(time.Millisecond), humanBytes(before), humanBytes(after))
+	if result.StatsValid && before.FileBytes > after.FileBytes {
+		result.FreedBytes = before.FileBytes - after.FileBytes
+	}
+	log.Infof("db compact (%s) finished in %s: checkpoint=%s stats_valid=%v freed_bytes=%d", mode, time.Since(start).Truncate(time.Millisecond), result.CheckpointStatus, result.StatsValid, result.FreedBytes)
 	return result, nil
 }

@@ -58,12 +58,23 @@ type RelayMetrics struct {
 	SessionKey    string
 	SessionSource string
 
-	// UpstreamDeclaredModel 是上游响应里自报的模型名。必须在 relay 把
-	// internalResponse.Model 改写成客户端可见名之前捕获(model_mapping 生效时会被覆盖),
-	// 否则拿到的永远是请求模型名而不是上游真名。归属规则: 只记「产出最终
-	// 响应的那次尝试」的观测, 失败尝试的声明不落请求级(见
-	// CommitUpstreamDeclaredModel)。
+	// UpstreamDeclaredModel is the model name the winning attempt's upstream
+	// declared. Captured before the client-visible projection. Only that attempt
+	// commits it (CommitUpstreamDeclaredModel); a failed attempt's value is not
+	// kept on the request.
 	UpstreamDeclaredModel string
+
+	// UpstreamSystemFingerprint / UpstreamServiceTier are the winning attempt's
+	// original identity fields. The client projection clears SystemFingerprint on
+	// the copy the inbound adapter stores, so saveLog must not read them back from
+	// InternalResponse once an attempt has committed its own observation.
+	UpstreamSystemFingerprint string
+	UpstreamServiceTier       string
+	// upstreamIdentityCaptured is set by CommitUpstreamIdentity. Until then,
+	// SetInternalResponse may copy fingerprint and service tier from a response
+	// that was never projected (legacy and image callers). After a commit, even an
+	// empty observation wins: the projected aggregate must not refill it.
+	upstreamIdentityCaptured bool
 
 	// UpstreamEnvelope 是「产出最终响应的那次尝试」收回复时抄下的标识位（响应头
 	// 家族 / 响应 id / 首个 tool call id / 签名形态 / 流内换模型），只在内存里
@@ -170,6 +181,18 @@ func (m *RelayMetrics) CommitUpstreamDeclaredModel(name string) {
 		return
 	}
 	m.UpstreamDeclaredModel = strings.TrimSpace(name)
+}
+
+// CommitUpstreamIdentity stores the winning attempt's original fingerprint and
+// service tier. Unconditional overwrite: a winner that declared neither leaves
+// both empty instead of keeping a failed attempt's values. Observation only.
+func (m *RelayMetrics) CommitUpstreamIdentity(fingerprint, serviceTier string) {
+	if m == nil {
+		return
+	}
+	m.UpstreamSystemFingerprint = strings.TrimSpace(fingerprint)
+	m.UpstreamServiceTier = strings.TrimSpace(serviceTier)
+	m.upstreamIdentityCaptured = true
 }
 
 // CommitUpstreamEnvelope 把「产出最终响应的那次尝试」抄下的标识位写进请求级观测。
@@ -466,6 +489,13 @@ func truncateUTF8(s string, limit int) string {
 func (m *RelayMetrics) SetInternalResponse(resp *transformerModel.InternalLLMResponse, actualModel string) {
 	m.InternalResponse = resp
 	m.ActualModel = actualModel
+	// Callers that never ran the attempt-scoped capture still pass the original
+	// response here. Keep their fingerprint and service tier. A commit from the
+	// winning attempt, including an explicit empty one, is left untouched.
+	if !m.upstreamIdentityCaptured && resp != nil {
+		m.UpstreamSystemFingerprint = strings.TrimSpace(resp.SystemFingerprint)
+		m.UpstreamServiceTier = strings.TrimSpace(resp.ServiceTier)
+	}
 
 	if resp == nil {
 		return
@@ -938,6 +968,14 @@ func cleanRelayEndpointName(endpoint string) string {
 }
 
 func (m *RelayMetrics) saveLog(ctx context.Context, err error, duration time.Duration, attempts []model.ChannelAttempt, channelID int, channelName string) {
+	relayLog := m.buildRelayLog(ctx, err, duration, attempts, channelID, channelName)
+	if logErr := op.RelayLogAdd(ctx, relayLog); logErr != nil {
+		log.Warnf("failed to save relay log: %v", logErr)
+	}
+}
+
+// buildRelayLog assembles the row saveLog persists. It does not write.
+func (m *RelayMetrics) buildRelayLog(ctx context.Context, err error, duration time.Duration, attempts []model.ChannelAttempt, channelID int, channelName string) model.RelayLog {
 	actualModel := m.ActualModel
 	if actualModel == "" {
 		actualModel = m.RequestModel
@@ -1040,13 +1078,21 @@ func (m *RelayMetrics) saveLog(ctx context.Context, err error, duration time.Dur
 		})
 	}
 
+	// Prefer the attempt observation once it has been committed, including an
+	// explicit empty value. Otherwise keep the unprojected response's own fields
+	// for callers that only SetInternalResponse. A client projection is never
+	// treated as the upstream declaration.
+	fingerprint := m.UpstreamSystemFingerprint
+	serviceTier := m.UpstreamServiceTier
+	if !m.upstreamIdentityCaptured && m.InternalResponse != nil {
+		fingerprint = m.InternalResponse.SystemFingerprint
+		serviceTier = m.InternalResponse.ServiceTier
+	}
+	relayLog.UpstreamSystemFingerprint = truncateRunes(fingerprint, 128)
+	relayLog.UpstreamServiceTier = truncateRunes(serviceTier, 32)
+
 	// 响应内容
 	if m.InternalResponse != nil {
-		// 上游自报的后端标识与服务档位：纯观测，原样存，不做任何推断或改写。
-		// 截断是防御性的——上游理论上可以回一个超长串把列撑爆。
-		relayLog.UpstreamSystemFingerprint = truncateRunes(m.InternalResponse.SystemFingerprint, 128)
-		relayLog.UpstreamServiceTier = truncateRunes(m.InternalResponse.ServiceTier, 32)
-
 		relayLog.ResponseContent = m.upstreamBodyLog.contentWithImages(func(c *imageCapture) string {
 			respForLog := filterResponseForLogWith(m.InternalResponse, c)
 			respJSON, jsonErr := json.Marshal(respForLog)
@@ -1080,9 +1126,7 @@ func (m *RelayMetrics) saveLog(ctx context.Context, err error, duration time.Dur
 		}
 	}
 
-	if logErr := op.RelayLogAdd(ctx, relayLog); logErr != nil {
-		log.Warnf("failed to save relay log: %v", logErr)
-	}
+	return relayLog
 }
 
 func usageCacheStats(usage *transformerModel.Usage) (hitTokens int64, writeTokens int64, inputTokens int64) {

@@ -6,6 +6,7 @@ import { ScrollText, Calendar, Trash2, HardDrive, Database, Send, LifeBuoy, Bug 
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Progress } from '@/components/ui/progress';
 import { useSettingList, useSetSetting, SettingKey } from '@/api/endpoints/setting';
 import { useClearLogs, useLogStorage, useLogQueueHealth, useLogCleanupNow } from '@/api/endpoints/log';
@@ -57,18 +58,25 @@ export type SettingLogSection = 'log' | 'rescue';
 export function SettingLog({ section }: { section?: SettingLogSection } = {}) {
     const t = useTranslations('setting');
     const { data: settings } = useSettingList();
-    const { data: storage } = useLogStorage();
-    const { data: queueHealth } = useLogQueueHealth();
+    const storageQuery = useLogStorage();
+    const { data: storage } = storageQuery;
+    const queueQuery = useLogQueueHealth();
+    const { data: queueHealth } = queueQuery;
+    const savedLimit = settings?.find(s => s.key === SettingKey.RelayLogMaxStorageGB)?.value;
+    const limitGB = savedLimit?.trim() ? Number(savedLimit) : NaN;
+    const limitKnown = Number.isFinite(limitGB) && limitGB >= 0;
+    const storageValid = !storageQuery.isError && !!storage && Number.isFinite(storage.stored_bytes) && storage.stored_bytes >= 0;
     const setSetting = useSetSetting();
     const clearLogs = useClearLogs();
     const cleanupNow = useLogCleanupNow();
 
     const [enabled, setEnabled] = useState(true);
     const [keepPeriod, setKeepPeriod] = useState('7');
-    const [maxStorageGB, setMaxStorageGB] = useState('0');
+    const [maxStorageGB, setMaxStorageGB] = useState(savedLimit ?? '');
     const [interventionEnabled, setInterventionEnabled] = useState(true);
     const [noBreakerRetryBudget, setNoBreakerRetryBudget] = useState('300');
     const [isClearing, setIsClearing] = useState(false);
+    const [clearOpen, setClearOpen] = useState(false);
     // 死空间回收开关：关掉=只有本轮删了行才回收，用于 VACUUM 卡住时应急止血。
     const [reclaimEnabled, setReclaimEnabled] = useState(true);
     // 记录真实出站请求体：默认关（存储成本与请求体同量级，且按原样保存、不打码）。
@@ -76,7 +84,7 @@ export function SettingLog({ section }: { section?: SettingLogSection } = {}) {
 
     const initialEnabled = useRef(true);
     const initialKeepPeriod = useRef('7');
-    const initialMaxStorageGB = useRef('0');
+    const initialMaxStorageGB = useRef(savedLimit ?? '');
     const initialInterventionEnabled = useRef(true);
     const initialNoBreakerRetryBudget = useRef('300');
     const initialReclaimEnabled = useRef(true);
@@ -266,10 +274,12 @@ export function SettingLog({ section }: { section?: SettingLogSection } = {}) {
     };
 
     const handleClearLogs = () => {
+        if (isClearing || clearLogs.isPending) return;
         setIsClearing(true);
         clearLogs.mutate(undefined, {
             onSuccess: () => {
                 toast.success(t('log.clearSuccess'));
+                setClearOpen(false);
                 setIsClearing(false);
             },
             onError: () => {
@@ -367,23 +377,31 @@ export function SettingLog({ section }: { section?: SettingLogSection } = {}) {
                         value={maxStorageGB}
                         onChange={(e) => setMaxStorageGB(e.target.value)}
                         onBlur={handleMaxStorageSave}
-                        placeholder={t('log.maxStorage.placeholder')}
-                        className="w-48 rounded-xl"
-                        disabled={!enabled}
+                        placeholder={limitKnown ? t('log.maxStorage.placeholder') : t('log.status.unknown')}
+                        className="w-32 shrink-0 rounded-xl sm:w-48"
+                        disabled={!enabled || !limitKnown}
+                        aria-label={t('log.maxStorage.label')}
                     />
                 </div>
                 <div className="pl-8 space-y-2">
-                    <Progress
-                        value={storage?.max_bytes ? Math.min(100, (storage.stored_bytes / storage.max_bytes) * 100) : 0}
-                        className="h-1.5"
-                    />
-                    <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                    {storageValid && limitKnown && limitGB > 0 && (
+                        <Progress
+                            value={Math.min(100, (storage.stored_bytes / (limitGB * 1024 ** 3)) * 100)}
+                            className="h-1.5"
+                        />
+                    )}
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
                         <span>{t('log.maxStorage.current')}</span>
-                        <div className="flex items-center gap-2">
-                            <span className="tabular-nums">
-                                {formatBytes(storage?.stored_bytes ?? 0)}
-                                {storage?.max_bytes ? ` / ${formatBytes(storage.max_bytes)}` : ` / ${t('log.maxStorage.unlimited')}`}
+                        <div className="flex flex-wrap items-center gap-2">
+                            <span className="tabular-nums" role="status">
+                                {storageQuery.isFetching ? t('log.status.loading') : storageValid ? formatBytes(storage.stored_bytes) : t(storageQuery.isError ? 'log.status.failed' : 'log.status.unknown')}
+                                {` / ${limitKnown ? limitGB === 0 ? t('log.maxStorage.unlimited') : formatBytes(limitGB * 1024 ** 3) : t('log.status.unknown')}`}
                             </span>
+                            <Button size="sm" variant="outline" className="h-7 rounded-lg px-2 text-xs"
+                                disabled={storageQuery.isFetching}
+                                onClick={() => { if (!storageQuery.isFetching) void storageQuery.refetch(); }}>
+                                {t('log.status.refresh')}
+                            </Button>
                             <Button
                                 size="sm"
                                 variant="outline"
@@ -408,9 +426,11 @@ export function SettingLog({ section }: { section?: SettingLogSection } = {}) {
                     {/* 说明"已用"含哪些东西：不说清楚的话，主表删了、副本还在长，
                         用户会以为上限没用。 */}
                     <p className="text-xs text-muted-foreground/80">{t('log.maxStorage.usageHint')}</p>
+                    {!!storageQuery.dataUpdatedAt && <p className="text-xs text-muted-foreground">{t('log.status.updated', { time: new Date(storageQuery.dataUpdatedAt).toLocaleTimeString() })}</p>}
+                    {queueQuery.isError && <p role="status" className="text-xs text-amber-600">{t('log.status.failed')}</p>}
                     {/* 落库队列健康: 没有这一行时, “日志里查不到这条”和“请求没发生”看着一模一样。
                         计数是进程内的(重启归零), 关闭持久化是主动设置、不算故障。 */}
-                    {queueHealth?.persistence_enabled && (
+                    {!queueQuery.isError && queueHealth?.persistence_enabled && (
                         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
                             <span className="text-muted-foreground">
                                 {t('log.queueHealth.pending')}
@@ -452,12 +472,26 @@ export function SettingLog({ section }: { section?: SettingLogSection } = {}) {
                 <Button
                     variant="destructive"
                     size="sm"
-                    onClick={handleClearLogs}
+                    onClick={() => setClearOpen(true)}
                     disabled={isClearing}
                     className="rounded-xl"
                 >
                     {isClearing ? t('log.clear.clearing') : t('log.clear.button')}
                 </Button>
+                <Dialog open={clearOpen} onOpenChange={(open) => { if (!isClearing) setClearOpen(open); }}>
+                    <DialogContent>
+                        <DialogHeader>
+                            <DialogTitle>{t('log.clear.label')}</DialogTitle>
+                            <DialogDescription>{t('log.clear.confirm')}</DialogDescription>
+                        </DialogHeader>
+                        <DialogFooter>
+                            <Button variant="outline" disabled={isClearing} onClick={() => setClearOpen(false)}>{t('log.status.cancel')}</Button>
+                            <Button variant="destructive" disabled={isClearing} onClick={handleClearLogs}>
+                                {isClearing ? t('log.clear.clearing') : t('log.clear.button')}
+                            </Button>
+                        </DialogFooter>
+                    </DialogContent>
+                </Dialog>
             </div>
         </div>
     );

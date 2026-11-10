@@ -29,12 +29,22 @@ export function formatCompactBytes(bytes: number): string {
  */
 export function DBCompactRow() {
     const t = useTranslations('setting');
-    const { data: info } = useDBCompactInfo();
+    const query = useDBCompactInfo();
+    const { data: info } = query;
     const compactNow = useDBCompactNow();
+    const refresh = <Button variant="outline" size="sm" disabled={query.isFetching}
+        onClick={() => { if (!query.isFetching) void query.refetch(); }}>{t('log.status.refresh')}</Button>;
 
-    if (!info?.supported) return null;
+    if (query.isError || !info) return (
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground" role="status">
+            <span>{t('log.compact.label')} · {t(query.isFetching ? 'log.status.loading' : query.isError ? 'log.status.failed' : 'log.status.unknown')}</span>
+            {refresh}
+        </div>
+    );
+    if (!info.supported) return null;
 
     const busy = compactNow.isPending || info.running;
+    const statsValid = info.stats_valid === true && !info.error_code;
 
     const handleCompact = () => {
         if (busy) return;
@@ -44,6 +54,17 @@ export function DBCompactRow() {
         if (typeof window !== 'undefined' && !window.confirm(message)) return;
         compactNow.mutate(undefined, {
             onSuccess: (r) => {
+                if (r.stats_valid === false || r.error_code ||
+                    !Number.isFinite(r.before_bytes) || r.before_bytes < 0 ||
+                    !Number.isFinite(r.after_bytes) || r.after_bytes < 0) {
+                    toast.warning(t('log.compact.measurementUnknown'));
+                    return;
+                }
+                if (r.checkpoint_error_code ||
+                    (r.checkpoint_status !== 'truncated' && r.checkpoint_status !== 'not_needed')) {
+                    toast.warning(t('log.compact.checkpointIncomplete'));
+                    return;
+                }
                 toast.success(t('log.compact.done', {
                     before: formatCompactBytes(r.before_bytes),
                     after: formatCompactBytes(r.after_bytes),
@@ -74,13 +95,20 @@ export function DBCompactRow() {
                     </span>
                     <span className="text-xs text-muted-foreground tabular-nums">
                         {`${t('log.compact.size')} ${formatCompactBytes(info.file_bytes)}`}
-                        {info.free_bytes > 0 ? ` · ${t('log.compact.reclaimable', { size: formatCompactBytes(info.free_bytes) })}` : ''}
+                        {statsValid ? ` · ${t('log.compact.reclaimable', { size: formatCompactBytes(info.free_bytes) })}` : ` · ${t(info.stats_valid === false || info.error_code ? 'log.status.failed' : 'log.status.unknown')}`}
                     </span>
+                    <span className="text-xs text-muted-foreground tabular-nums">
+                        {(['main_bytes', 'wal_bytes', 'shm_bytes'] as const).filter(key => typeof info[key] === 'number').map(key => `${t(`log.compact.${key}`)} ${formatCompactBytes(info[key]!)}`).join(' · ')}
+                    </span>
+                    <span className="text-xs text-muted-foreground">{t(info.needs_full ? 'log.compact.fullMode' : 'log.compact.incrementalMode')}</span>
+                    {!!query.dataUpdatedAt && <span className="text-xs text-muted-foreground">{t('log.status.updated', { time: new Date(query.dataUpdatedAt).toLocaleTimeString() })}</span>}
                     <span className="text-xs text-amber-600 dark:text-amber-500">
                         {info.needs_full ? t('log.compact.fullWarning') : t('log.compact.hint')}
                     </span>
                 </div>
             </div>
+            <div className="flex flex-col gap-2">
+            {refresh}
             <Button
                 variant="outline"
                 size="sm"
@@ -90,6 +118,7 @@ export function DBCompactRow() {
             >
                 {busy ? t('log.compact.running') : t('log.compact.button')}
             </Button>
+            </div>
         </div>
     );
 }

@@ -501,14 +501,14 @@ func buildImageTaskResponse(task model.ImageTask) imageTaskResponse {
 		out.CompletedAt = task.CompletedAt
 		out.ImageURL = imageTaskImageURL(task.ResultJSON)
 		if json.Valid([]byte(task.ResultJSON)) && strings.TrimSpace(task.ResultJSON) != "" {
-			out.Result = json.RawMessage(task.ResultJSON)
+			if clean, err := rewriteIdentityJSON([]byte(task.ResultJSON), passthroughIdentity{alias: task.RequestModel, mediaEnvelopes: true}); err == nil {
+				out.Result = json.RawMessage(clean)
+			} else {
+				out.Error = &imageTaskErrorPayload{Code: "invalid_upstream_result", Message: "invalid upstream image result"}
+			}
 		}
 	case model.ImageTaskStatusFailed:
-		message := strings.TrimSpace(task.ErrorMessage)
-		if message == "" {
-			message = "image generation failed"
-		}
-		out.Error = &imageTaskErrorPayload{Code: "image_generation_failed", Message: message}
+		out.Error = &imageTaskErrorPayload{Code: "image_generation_failed", Message: "image generation failed"}
 	}
 	return out
 }

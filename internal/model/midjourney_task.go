@@ -25,7 +25,8 @@ type MidjourneyTask struct {
 
 	// Model 是计费/路由用的动作模型名（mj_imagine、mj_upscale、swap_face……），
 	// 经过渠道 ModelMapping 之后的实际值。
-	Model string `json:"model" gorm:"size:255;default:''"`
+	Model        string `json:"model" gorm:"size:255;default:''"`
+	RequestModel string `json:"-" gorm:"size:255;default:''"`
 	// Action 是 mj-proxy 的动作名（IMAGINE / UPSCALE / ...），仅供排查。
 	Action string `json:"action" gorm:"size:32;default:''"`
 

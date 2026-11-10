@@ -3738,13 +3738,12 @@ func (ra *relayAttempt) handleNonStreamResponseAsStream(ctx context.Context, res
 		return fmt.Errorf("failed to transform fallback non-stream response: %w", err)
 	}
 	ra.captureUpstreamDeclaredModel(internalResponse)
-	// 同一份响应上顺手抄标识位（响应头家族在收回复时已采、这里拿编号/签名/换模型）。
+	// Same response, capture envelope ids before the client projection.
 	ra.captureUpstreamEnvelope(internalResponse)
-	// When model_mapping remapped the request model, restore the client-visible name
-	// before converting the non-stream response to SSE chunks.
-	if ra.modelMapped && internalResponse != nil {
-		internalResponse.Model = ra.requestModel
-	}
+	ra.captureUpstreamIdentity(internalResponse)
+	// Project only the copy handed to the inbound adapter. The original keeps C
+	// and system_fingerprint for the attempt-scoped observation above.
+	internalResponse = ra.projectClientResponse(internalResponse)
 
 	ra.c.Header("Content-Type", "text/event-stream")
 	ra.c.Header("Cache-Control", "no-cache")
@@ -3997,15 +3996,15 @@ func (ra *relayAttempt) transformStreamChunk(ctx context.Context, data string, o
 		return nil, nil, nil
 	}
 	ra.captureUpstreamDeclaredModel(internalStream)
-	// 同一份分片上顺手抄标识位：编号/签名只采首个非空，换模型只在同一条流内部比。
+	// Capture envelope ids on this chunk before the client projection.
 	ra.captureUpstreamEnvelope(internalStream)
-	// When model_mapping remapped the request model, restore the client-visible name
-	// in the response chunk so the upstream name is never leaked to the client.
-	if ra.modelMapped && internalStream.Model != "" {
-		internalStream.Model = ra.requestModel
-	}
+	ra.captureUpstreamIdentity(internalStream)
+	// The inbound adapter stores the pointer it is given. Hand it a shallow copy
+	// whose client-visible model is A and whose system_fingerprint is cleared.
+	// Return the original chunk: callers use it only as the unprojected observation.
+	clientStream := ra.projectClientResponse(internalStream)
 
-	inStream, err := ra.inAdapter.TransformStream(ctx, internalStream)
+	inStream, err := ra.inAdapter.TransformStream(ctx, clientStream)
 	if err != nil {
 		log.Warnf("failed to transform stream: %v", err)
 		return nil, internalStream, err
@@ -4645,15 +4644,13 @@ func (ra *relayAttempt) handleResponse(ctx context.Context, response *http.Respo
 		return fmt.Errorf("failed to transform outbound response: %w", err)
 	}
 	ra.captureUpstreamDeclaredModel(internalResponse)
-	// 同一份响应上顺手抄标识位（响应头家族在收回复时已采、这里拿编号/签名/换模型）。
+	// Same response, capture envelope ids before the client projection.
 	ra.captureUpstreamEnvelope(internalResponse)
-	// When model_mapping remapped the request model, restore the client-visible name
-	// so the upstream name is never leaked to the client.
-	if ra.modelMapped && internalResponse != nil {
-		internalResponse.Model = ra.requestModel
-	}
+	ra.captureUpstreamIdentity(internalResponse)
+	// Project only the copy stored by the inbound adapter.
+	clientResponse := ra.projectClientResponse(internalResponse)
 
-	inResponse, err := ra.inAdapter.TransformResponse(ctx, internalResponse)
+	inResponse, err := ra.inAdapter.TransformResponse(ctx, clientResponse)
 	if err != nil {
 		log.Warnf("failed to transform response: %v", err)
 		return fmt.Errorf("failed to transform inbound response: %w", err)
@@ -4684,11 +4681,13 @@ func (ra *relayAttempt) collectResponse() {
 	// 原文一致，不会把占位符存进 transcript（后续独立会话无该 token 映射会形成还原缺口）。
 	internalResponse = ra.restoreInternalResponseTexts(internalResponse)
 	ra.metrics.SetInternalResponse(internalResponse, ra.internalRequest.Model)
-	// 自报型号与 ActualModel 同点提交: 都归属「产出这次内部响应的尝试」。
-	// 失败尝试的声明留在尝试级不落请求级, 赢家不自报就是未知(F10)。
+	// Declared model, envelope, and identity are committed together from this
+	// attempt. The inbound aggregate is the client projection, so fingerprint and
+	// service tier come from the attempt observation, not from that aggregate.
+	// A failed attempt never reaches this commit.
 	ra.metrics.CommitUpstreamDeclaredModel(ra.upstreamDeclaredModel)
-	// 标识位与自报型号同点提交：都归属「产出这次内部响应的尝试」。
 	ra.metrics.CommitUpstreamEnvelope(ra.upstreamEnvelope)
+	ra.metrics.CommitUpstreamIdentity(ra.upstreamSystemFingerprint, ra.upstreamServiceTier)
 	ra.recordResponsesSessionFromInbound(internalResponse)
 }
 
@@ -4716,6 +4715,43 @@ func (ra *relayAttempt) captureUpstreamDeclaredModel(resp *model.InternalLLMResp
 		return
 	}
 	ra.upstreamDeclaredModel = name
+}
+
+// captureUpstreamIdentity copies system_fingerprint and service_tier before the
+// client projection clears the fingerprint on its shallow copy. First non-empty
+// wins inside the attempt. The inbound adapter stores that copy, so this is the
+// only place the original values survive for the winning collectResponse.
+func (ra *relayAttempt) captureUpstreamIdentity(resp *model.InternalLLMResponse) {
+	if ra == nil || resp == nil {
+		return
+	}
+	if ra.upstreamSystemFingerprint == "" {
+		if fp := strings.TrimSpace(resp.SystemFingerprint); fp != "" {
+			ra.upstreamSystemFingerprint = fp
+		}
+	}
+	if ra.upstreamServiceTier == "" {
+		if tier := strings.TrimSpace(resp.ServiceTier); tier != "" {
+			ra.upstreamServiceTier = tier
+		}
+	}
+}
+
+// projectClientResponse returns the object the inbound adapter may store.
+// It is a shallow copy: Choices, Usage, and other nested pointers stay shared and
+// are not rewritten. Only the client-visible model and system_fingerprint change.
+// A non-empty public request name is always written, mapped or not. An empty
+// request name leaves Model as the upstream declared it. Nil in, nil out.
+func (ra *relayAttempt) projectClientResponse(resp *model.InternalLLMResponse) *model.InternalLLMResponse {
+	if ra == nil || ra.relayRequest == nil || resp == nil {
+		return resp
+	}
+	client := *resp
+	if name := strings.TrimSpace(ra.requestModel); name != "" {
+		client.Model = name
+	}
+	client.SystemFingerprint = ""
+	return &client
 }
 
 // captureUpstreamEnvelope 记录这次尝试收到的上游回复里几个「号码形态」标识位。
@@ -4788,6 +4824,16 @@ func (ra *relayAttempt) captureUpstreamEnvelope(resp *model.InternalLLMResponse)
 func (ra *relayAttempt) resetResponseObservationForNewResponse() {
 	ra.upstreamEnvelope = dbmodel.RelayLogUpstreamEnvelope{HeaderFamilies: ra.upstreamEnvelope.HeaderFamilies}
 	ra.streamFirstDeclaredModel = ""
+	// Identity is per response, same as the declared model. A goto retry on this
+	// attempt must not keep the previous response's fingerprint or service tier.
+	// Request-level metrics are untouched until the winning collectResponse.
+	ra.upstreamSystemFingerprint = ""
+	ra.upstreamServiceTier = ""
+	// Declared model is per response too. captureUpstreamDeclaredModel keeps the
+	// first non-empty name, so a goto retry on this same attempt would otherwise
+	// commit the failed response's name as the winner's C. Request-level metrics
+	// stay untouched until the winning collectResponse.
+	ra.upstreamDeclaredModel = ""
 	// 用量/费用等请求级字段不动：那些是请求的累计，不是“这份回复”的观测。
 	// setFirstTokenTime 自带 nil 守卫，这里写零值就是清空。
 	ra.setFirstTokenTime(time.Time{})

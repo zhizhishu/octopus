@@ -522,9 +522,9 @@ func TestRelayLogQueueHealthCountsWriteFailures(t *testing.T) {
 	if health.LastWriteFailureAt == 0 {
 		t.Fatalf("expected a recorded last write failure time")
 	}
-	// 失败的那一批已被排空(不让坏行永久卡住落库), 队列不该还压着它。
-	if health.PendingCount != 0 {
-		t.Fatalf("pending count = %d, want 0 after the failed batch was dropped", health.PendingCount)
+	// A missing table is an availability failure; retain the bounded queue for retry.
+	if health.PendingCount != 1 {
+		t.Fatalf("pending count = %d, want 1 retained log", health.PendingCount)
 	}
 
 	relayLogCacheLock.Lock()

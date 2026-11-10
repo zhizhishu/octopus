@@ -314,6 +314,13 @@ runIterator:
 				balancer.RecordFailureWithStatus(channel.ID, usedKey.ID, item.ModelName, recordStatusCode)
 			}
 
+			if isPassthroughIdentityError(fwdErr) {
+				metrics.Save(ctx, false, fwdErr, append(allAttempts, iter.Attempts()...))
+				if !c.Writer.Written() {
+					resp.Error(c, http.StatusBadGateway, "invalid upstream response")
+				}
+				return
+			}
 			if written || c.Writer.Written() {
 				metrics.Save(ctx, false, fwdErr, append(allAttempts, iter.Attempts()...))
 				return
@@ -443,6 +450,7 @@ func (u imagesUsage) CacheInputTokenCount() int {
 }
 
 type imagesRelayMetrics struct {
+	passthroughIdentityEvidence
 	APIKeyID         int
 	UserID           int
 	RequestIP        string
@@ -696,25 +704,27 @@ func (m *imagesRelayMetrics) saveLog(ctx context.Context, err error, duration ti
 	billingSnapshot := m.currentBillingSnapshot(actualModel)
 
 	relayLog := model.RelayLog{
-		UserID:           m.UserID,
-		APIKeyID:         m.APIKeyID,
-		RequestIP:        m.RequestIP,
-		RequestUserAgent: truncateUserAgentForLog(m.RequestUserAgent),
-		Time:             m.StartTime.Unix(),
-		RequestEndpoint:  m.RequestEndpoint,
-		RequestPath:      m.RequestPath,
-		RequestModelName: m.RequestModel,
-		ChannelName:      channelName,
-		ChannelId:        channelID,
-		ActualModelName:  actualModel,
-		UseTime:          int(duration.Milliseconds()),
-		Attempts:         attempts,
-		TotalAttempts:    len(attempts),
-		SessionKey:       m.SessionKey,
-		SessionSource:    m.SessionSource,
-		RouteStickyHit:   routeStickyHit(attempts),
-		RequestContent:   m.RequestContent,
-		ResponseContent:  m.ResponseContent,
+		UpstreamResponseModel:     m.passthroughIdentityEvidence.Model,
+		UpstreamSystemFingerprint: m.passthroughIdentityEvidence.Fingerprint,
+		UserID:                    m.UserID,
+		APIKeyID:                  m.APIKeyID,
+		RequestIP:                 m.RequestIP,
+		RequestUserAgent:          truncateUserAgentForLog(m.RequestUserAgent),
+		Time:                      m.StartTime.Unix(),
+		RequestEndpoint:           m.RequestEndpoint,
+		RequestPath:               m.RequestPath,
+		RequestModelName:          m.RequestModel,
+		ChannelName:               channelName,
+		ChannelId:                 channelID,
+		ActualModelName:           actualModel,
+		UseTime:                   int(duration.Milliseconds()),
+		Attempts:                  attempts,
+		TotalAttempts:             len(attempts),
+		SessionKey:                m.SessionKey,
+		SessionSource:             m.SessionSource,
+		RouteStickyHit:            routeStickyHit(attempts),
+		RequestContent:            m.RequestContent,
+		ResponseContent:           m.ResponseContent,
 	}
 	m.upstreamBodyLog.applyTo(&relayLog)
 	relayLog.DebugInfo = m.debug.build(duration, m.FirstToken)
@@ -927,6 +937,9 @@ func imagesAttempt(
 	metrics *imagesRelayMetrics,
 	actualModel string,
 ) (statusCode int, written bool, usage *imagesUsage, upstreamCT string, err error) {
+	if metrics != nil {
+		bindPassthroughIdentity(c, metrics.RequestModel, &metrics.passthroughIdentityEvidence)
+	}
 	// 构建 URL。Images 是 OpenAI-compatible API，规范化 base URL 时会清理
 	// /v1 后缀；这里必须重新补 canonical /v1/images/*，否则规范化后的
 	// https://api.openai.com 会被误打到 /images/*。
@@ -1148,6 +1161,21 @@ func proxyNonStream(c *gin.Context, respUp *http.Response) (*imagesUsage, bool, 
 }
 
 func proxyNonStreamWithResponseID(c *gin.Context, respUp *http.Response) (*imagesUsage, bool, string, error) {
+	if identity, enabled := passthroughIdentityFor(c); enabled && identityJSONContentType(respUp.Header.Get("Content-Type")) {
+		cached, err := prepareIdentityBody(respUp.Body, identity)
+		if err != nil {
+			return nil, false, "", err
+		}
+		defer cached.Close()
+		reader, err := cached.NewReader()
+		if err != nil {
+			return nil, false, "", err
+		}
+		defer reader.Close()
+		copyResponse := *respUp
+		copyResponse.Body = reader
+		respUp = &copyResponse
+	}
 	ct := respUp.Header.Get("Content-Type")
 	if ct == "" {
 		ct = "application/json"
@@ -1209,9 +1237,10 @@ func proxySSEWithOptions(ctx context.Context, c *gin.Context, respUp *http.Respo
 	c.Header("X-Accel-Buffering", "no")
 
 	type lineResult struct {
-		line []byte
-		err  error
-		eof  bool
+		line     []byte
+		evidence *passthroughIdentityEvidence
+		err      error
+		eof      bool
 	}
 
 	results := make(chan lineResult, 1)
@@ -1223,8 +1252,31 @@ func proxySSEWithOptions(ctx context.Context, c *gin.Context, respUp *http.Respo
 	safe.SafeGo("images-sse-reader", func() {
 		defer close(results)
 		br := bufio.NewReaderSize(respUp.Body, 64*1024)
+		identity, protectIdentity := passthroughIdentityFor(c)
 		for {
-			line, err := readLineLimited(br, maxSSEEventSize)
+			var lines [][]byte
+			var err error
+			var eventEvidence passthroughIdentityEvidence
+			if protectIdentity {
+				identity.evidence = &eventEvidence
+				lines, err = readIdentitySSEEvent(br, identity, options.StopOnResponsesTerminal)
+				if err != nil && !errors.Is(err, io.EOF) {
+					err = &passthroughIdentityError{cause: err}
+				}
+			} else {
+				var line []byte
+				line, err = readLineLimited(br, maxSSEEventSize)
+				if len(line) > 0 {
+					lines = [][]byte{line}
+				}
+			}
+			for _, line := range lines {
+				select {
+				case results <- lineResult{line: line, evidence: &eventEvidence}:
+				case <-done:
+					return
+				}
+			}
 			if err != nil {
 				if errors.Is(err, io.EOF) {
 					select {
@@ -1237,11 +1289,6 @@ func proxySSEWithOptions(ctx context.Context, c *gin.Context, respUp *http.Respo
 				case results <- lineResult{err: err}:
 				case <-done:
 				}
-				return
-			}
-			select {
-			case results <- lineResult{line: line}:
-			case <-done:
 				return
 			}
 		}
@@ -1350,6 +1397,14 @@ func proxySSEWithOptions(ctx context.Context, c *gin.Context, respUp *http.Respo
 			// 收到一行上游 SSE：重置空闲超时（与主路径 resetDataTimeout 一致）。
 			resetDataTimeout()
 
+			if identity, enabled := passthroughIdentityFor(c); enabled && identity.evidence != nil && r.evidence != nil {
+				if identity.evidence.Model == "" {
+					identity.evidence.Model = r.evidence.Model
+				}
+				if identity.evidence.Fingerprint == "" {
+					identity.evidence.Fingerprint = r.evidence.Fingerprint
+				}
+			}
 			line := r.line
 			trimmed := bytes.TrimRight(line, "\r\n")
 			terminalPayloadLine := false
@@ -1382,7 +1437,9 @@ func proxySSEWithOptions(ctx context.Context, c *gin.Context, respUp *http.Respo
 			lastWriteAt = time.Now()
 
 			if firstWrite {
-				metrics.SetFirstTokenTime(time.Now())
+				if metrics != nil {
+					metrics.SetFirstTokenTime(time.Now())
+				}
 				firstWrite = false
 				if firstTokenTimer != nil {
 					if !firstTokenTimer.Stop() {

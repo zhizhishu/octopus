@@ -169,8 +169,8 @@ func TestTaskSubmitVideoDelegatesBillsAndIsOwnerScoped(t *testing.T) {
 	}
 }
 
-// 原生端点报错（模型不存在）与 mj 未受理：状态码与正文原样透传，不包装、不记归属。
-func TestTaskSubmitPassesNativeErrorsThrough(t *testing.T) {
+// 原生本地报错保持一致；MJ 未受理保留协议状态/code/result，仅公开固定错误说明。
+func TestTaskSubmitPreservesNativeErrorEnvelopeWithPublicDescription(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx := setupRelayErrorDB(t)
 	resetVideoTaskMemory(t)
@@ -189,14 +189,31 @@ func TestTaskSubmitPassesNativeErrorsThrough(t *testing.T) {
 	}
 
 	up := newFakeMJ(t, func(w http.ResponseWriter, r *http.Request, call mjCall) {
-		_, _ = w.Write([]byte(`{"code":4,"description":"banned prompt","result":""}`))
+		_, _ = w.Write([]byte(`{"code":4,"description":"private-c banned prompt","result":""}`))
 	})
 	createMJChannel(t, ctx, "mj-reject", up.srv.URL, []string{"k"}, "mj_imagine", 1, outbound.OutboundTypeOpenAIChat)
 	c, rec = newTaskContext(http.MethodPost, "/v1/tasks/mj", `{"prompt":"x"}`, 0, 1, allFamilies())
 	c.Params = gin.Params{{Key: "key", Value: "mj"}}
 	TaskSubmitHandler(c)
-	if !strings.Contains(rec.Body.String(), "banned prompt") || strings.Contains(rec.Body.String(), `"object":"task"`) {
-		t.Fatalf("rejected mj submit must pass through: %d %s", rec.Code, rec.Body.String())
+	var rejected map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &rejected); err != nil {
+		t.Fatalf("decode rejected submit: %v", err)
+	}
+	if rec.Code != http.StatusOK || len(rejected) != 3 || string(rejected["code"]) != "4" || string(rejected["description"]) != `"task failed"` || string(rejected["result"]) != `""` {
+		t.Fatalf("rejected MJ envelope must retain status/code/result with public description: %d %s", rec.Code, rec.Body.String())
+	}
+	logs, err := op.RelayLogList(ctx, nil, nil, 1, 10, &dbmodel.RelayLogScope{IncludeContent: true})
+	if err != nil {
+		t.Fatalf("read rejection evidence: %v", err)
+	}
+	foundOriginal := false
+	for _, entry := range logs {
+		if strings.Contains(entry.ResponseContent, "private-c banned prompt") {
+			foundOriginal = true
+		}
+	}
+	if !foundOriginal {
+		t.Fatal("original rejected description missing from administrator log evidence")
 	}
 
 	// 不认识的类型 / mode。
@@ -321,7 +338,7 @@ func TestTaskSubmitImageDelegatesToAsyncImages(t *testing.T) {
 }
 
 // 列表：三张表按归属归并、按 created_at 倒序分页；端点族、kind、status 过滤；MJ 状态按页批量问上游。
-func TestTaskListMergesOwnedTasksAcrossKinds(t *testing.T) {
+func TestTaskListMergesOwnedTasksAcrossKindsWithPublicFailures(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx := setupRelayErrorDB(t)
 	resetMJMemory(t)
@@ -356,7 +373,7 @@ func TestTaskListMergesOwnedTasksAcrossKinds(t *testing.T) {
 		}
 	}
 	images := []dbmodel.ImageTask{
-		{TaskID: "imgtask_mine", OwnerTokenID: token, OwnerUserID: user, Status: dbmodel.ImageTaskStatusFailed, ErrorMessage: "upstream error", CreatedAt: 950, CompletedAt: 960, ExpiresAt: now + 3600},
+		{TaskID: "imgtask_mine", OwnerTokenID: token, OwnerUserID: user, Status: dbmodel.ImageTaskStatusFailed, ErrorMessage: "private-c upstream error", CreatedAt: 950, CompletedAt: 960, ExpiresAt: now + 3600},
 		{TaskID: "imgtask_expired", OwnerTokenID: token, OwnerUserID: user, Status: dbmodel.ImageTaskStatusCompleted, CreatedAt: 1300, ExpiresAt: now - 1},
 		{TaskID: "imgtask_other", OwnerTokenID: 6, OwnerUserID: user, Status: dbmodel.ImageTaskStatusCompleted, CreatedAt: 1400, ExpiresAt: now + 3600},
 	}
@@ -401,8 +418,12 @@ func TestTaskListMergesOwnedTasksAcrossKinds(t *testing.T) {
 	if all.Data[0].Status != TaskStatusInProgress || all.Data[0].Progress != "40%" {
 		t.Fatalf("MJ status not filled from upstream: %+v", all.Data[0])
 	}
-	if all.Data[2].Status != TaskStatusFailure || all.Data[2].FailReason != "upstream error" || all.Data[2].FinishedAt != 960 {
-		t.Fatalf("image view: %+v", all.Data[2])
+	if all.Data[2].Status != TaskStatusFailure || all.Data[2].FailReason != "image generation failed" || all.Data[2].FinishedAt != 960 {
+		t.Fatalf("image public failure view: %+v", all.Data[2])
+	}
+	storedImage, err := op.ImageTaskGetForOwner(ctx, "imgtask_mine", token, user)
+	if err != nil || storedImage == nil || storedImage.ErrorMessage != "private-c upstream error" {
+		t.Fatalf("original image failure evidence changed: %+v %v", storedImage, err)
 	}
 	if calls := up.Calls(); len(calls) != 1 {
 		t.Fatalf("expected one batched MJ upstream call, got %d", len(calls))

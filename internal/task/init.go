@@ -157,7 +157,9 @@ func Init() {
 	Register(TaskStatsSave, statsSaveInterval, false, op.StatsSaveDBTask)
 	// 注册中继日志保存任务
 	Register(TaskRelayLogSave, 10*time.Minute, false, func() {
-		if err := op.RelayLogSaveDBTask(context.Background()); err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
+		defer cancel()
+		if err := op.RelayLogSaveDBTask(ctx); err != nil {
 			log.Warnf("relay log save db task failed: %v", err)
 		}
 	})

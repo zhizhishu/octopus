@@ -163,6 +163,7 @@ func VideosHandlerKind(c *gin.Context, mediaKind string) {
 	}
 
 	metrics := newRawProtocolRelayMetrics(apiKeyID, userID, c.GetString("request_ip"), requestModel, "videos", c.Request.URL.Path)
+	bindPassthroughIdentity(c, requestModel, &metrics.passthroughIdentityEvidence)
 	metrics.RequestUserAgent = c.Request.UserAgent() // 仅入站 UA 快照，供日志 / 用户页识别客户端
 	// 调试模式：挂记录器（只读观察，关着时 ctx 原样）。
 	ctx = metrics.enableDebugCapture(ctx, c.Request.Header)
@@ -241,7 +242,7 @@ runIterator:
 
 			if fwdErr == nil {
 				ids := extractVideoTaskIDs(body)
-				recordVideoTaskOwner(ids, channel.ID, usedKey.ID, item.ModelName, apiKeyID, userID, mediaKind)
+				recordVideoTaskOwner(ids, channel.ID, usedKey.ID, item.ModelName, apiKeyID, userID, mediaKind, requestModel)
 				recordVideoTaskRow(ctx, ids, channel.ID, usedKey.ID, item.ModelName, apiKeyID, userID, mediaKind, payload)
 
 				metrics.ActualModel = item.ModelName
@@ -358,6 +359,7 @@ func VideoPollHandler(c *gin.Context) {
 	// 调试模式：挂记录器（只读观察，关着时 ctx 原样）。
 	ctx = metrics.enableDebugCapture(ctx, c.Request.Header)
 	metrics.ActualModel = entry.model
+	bindPassthroughIdentity(c, entry.requestModel, &metrics.passthroughIdentityEvidence)
 	metrics.debug.target(channel, entry.channelKeyID)
 
 	statusCode, body, upstreamCT, fwdErr := videoForward(ctx, c, http.MethodGet, videoUpstreamPathForChannel(channel, entry.mediaKind, taskID, false), nil, entry.model, channel, channelKey, nil)
@@ -400,6 +402,7 @@ func VideoContentHandler(c *gin.Context) {
 	// 调试模式：挂记录器（只读观察，关着时 ctx 原样）。
 	ctx = metrics.enableDebugCapture(ctx, c.Request.Header)
 	metrics.ActualModel = entry.model
+	bindPassthroughIdentity(c, entry.requestModel, &metrics.passthroughIdentityEvidence)
 	metrics.debug.target(channel, entry.channelKeyID)
 
 	statusCode, fwdErr := videoForwardContent(ctx, c, videoUpstreamPathForChannel(channel, entry.mediaKind, taskID, true), channel, channelKey)
@@ -524,6 +527,14 @@ func writeVideoResponse(c *gin.Context, statusCode int, contentType string, body
 	if strings.TrimSpace(contentType) == "" {
 		contentType = "application/json"
 	}
+	if identity, enabled := passthroughIdentityFor(c); enabled && identityJSONContentType(contentType) {
+		var err error
+		body, err = rewriteIdentityJSON(body, identity)
+		if err != nil {
+			resp.Error(c, http.StatusBadGateway, "invalid upstream task response")
+			return
+		}
+	}
 	c.Data(statusCode, contentType, body)
 }
 
@@ -580,6 +591,10 @@ func videoForwardContent(ctx context.Context, c *gin.Context, upstreamPath strin
 		return respUp.StatusCode, newUpstreamError(respUp.StatusCode, b)
 	}
 
+	if identityJSONContentType(respUp.Header.Get("Content-Type")) && respUp.Header.Get("Content-Type") != "" {
+		_, _, err := proxyNonStream(c, respUp)
+		return respUp.StatusCode, err
+	}
 	contentType := strings.TrimSpace(respUp.Header.Get("Content-Type"))
 	if contentType == "" {
 		contentType = "application/octet-stream"
@@ -712,7 +727,9 @@ func recordVideoTaskRow(ctx context.Context, ids []string, channelID, channelKey
 		}
 	}
 
+	requestModel, _ := requestBody["model"].(string)
 	task := &model.VideoTask{
+		RequestModel:   requestModel,
 		UpstreamTaskID: upstreamID,
 		ChannelID:      channelID,
 		ChannelKeyID:   channelKeyID,
@@ -754,6 +771,7 @@ func videoTaskOwnerFromDB(ctx context.Context, taskID string) (videoTaskEntry, b
 		channelID:    task.ChannelID,
 		channelKeyID: task.ChannelKeyID,
 		model:        task.Model,
+		requestModel: task.RequestModel,
 		ownerTokenID: task.OwnerTokenID,
 		ownerUserID:  task.OwnerUserID,
 		// 库里的这一列就是「重启后查询该走哪个子路径」的唯一依据；存量行为空串，

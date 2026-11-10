@@ -36,6 +36,7 @@ function render(info, { confirm = true } = {}) {
         },
         '@/components/common/Toast': { toast: {
             success: (m) => notes.push(['success', m]),
+            warning: (m) => notes.push(['warning', m]),
             error: (m) => notes.push(['error', m]),
         } },
     });
@@ -47,6 +48,21 @@ function render(info, { confirm = true } = {}) {
     return { tree, button, notes, calls, mod, restore: () => { global.window = prevWindow; } };
 }
 
+test('old and failed statistics never claim zero reclaimable; optional file sizes render', () => {
+    const base = { supported: true, file_bytes: 2048, free_bytes: 0, running: false, needs_full: false };
+    for (const status of [undefined, false, true]) {
+        const r = render({ ...base, stats_valid: status, main_bytes: 1024, wal_bytes: 1024, shm_bytes: 0 });
+        r.restore();
+        const text = textOf(r.tree);
+        assert.equal(text.includes('log.compact.reclaimable'), status === true);
+        assert.equal(text.includes('log.status.unknown'), status === undefined);
+        assert.equal(text.includes('log.status.failed'), status === false);
+        assert.ok(text.includes('log.compact.main_bytes 1.00 KB'));
+        assert.ok(text.includes('log.compact.shm_bytes 0 B'));
+        assert.ok(text.includes('log.compact.incrementalMode'));
+    }
+});
+
 test('hidden when the database is not SQLite', () => {
     const r = render({ dialect: 'mysql', supported: false, file_bytes: 0, free_bytes: 0, running: false, needs_full: false });
     r.restore();
@@ -54,7 +70,7 @@ test('hidden when the database is not SQLite', () => {
 });
 
 test('shows size, reclaimable amount and the pause warning', () => {
-    const r = render({ dialect: 'sqlite', supported: true, file_bytes: 18 * 1024 ** 3, free_bytes: 14 * 1024 ** 3, running: false, needs_full: false });
+    const r = render({ dialect: 'sqlite', supported: true, stats_valid: true, file_bytes: 18 * 1024 ** 3, free_bytes: 14 * 1024 ** 3, running: false, needs_full: false });
     r.restore();
     const text = textOf(r.tree);
     assert.match(text, /log\.compact\.size 18\.0 GB/);
@@ -76,6 +92,34 @@ test('button is disabled while another compaction/reclaim runs', () => {
     assert.equal(r.button.props.children, 'log.compact.running');
 });
 
+test('compaction results require confirmed checkpoint completion and valid measurements', () => {
+    const r = render({ supported: true, file_bytes: 2048, free_bytes: 1024, running: false, needs_full: false });
+    r.button.props.onClick();
+    r.restore();
+    const result = { before_bytes: 2048, after_bytes: 1024, freed_bytes: 1024, duration_ms: 5, mode: 'incremental' };
+    for (const checkpoint_status of ['truncated', 'not_needed']) {
+        for (const stats_valid of [true, undefined]) {
+            r.calls[0].onSuccess({ ...result, checkpoint_status, stats_valid });
+            assert.equal(r.notes.at(-1)[0], 'success');
+        }
+    }
+    for (const checkpoint_status of ['busy', 'skipped', 'error', undefined]) {
+        r.calls[0].onSuccess({ ...result, checkpoint_status, stats_valid: true });
+        assert.deepEqual(r.notes.at(-1), ['warning', 'log.compact.checkpointIncomplete']);
+    }
+    for (const invalid of [
+        { stats_valid: false, before_bytes: 0, after_bytes: 0 },
+        { error_code: 'stat_failed' },
+        { before_bytes: NaN },
+        { after_bytes: -1 },
+    ]) {
+        r.calls[0].onSuccess({ ...result, checkpoint_status: 'truncated', ...invalid });
+        assert.deepEqual(r.notes.at(-1), ['warning', 'log.compact.measurementUnknown']);
+    }
+    r.calls[0].onSuccess({ ...result, checkpoint_status: 'not_needed', checkpoint_error_code: 'busy' });
+    assert.deepEqual(r.notes.at(-1), ['warning', 'log.compact.checkpointIncomplete']);
+});
+
 test('cancelled confirm does not run; 409 shows busy, success shows before/after', () => {
     const info = { dialect: 'sqlite', supported: true, file_bytes: 1, free_bytes: 0, running: false, needs_full: false };
     const cancelled = render(info, { confirm: false });
@@ -88,7 +132,7 @@ test('cancelled confirm does not run; 409 shows busy, success shows before/after
     r.restore();
     assert.equal(r.calls.length, 1);
     r.calls[0].onError({ code: 409, message: 'busy' });
-    r.calls[0].onSuccess({ before_bytes: 2048, after_bytes: 1024, freed_bytes: 1024, duration_ms: 5, mode: 'full' });
+    r.calls[0].onSuccess({ before_bytes: 2048, after_bytes: 1024, freed_bytes: 1024, duration_ms: 5, mode: 'full', checkpoint_status: 'truncated', stats_valid: true });
     assert.deepEqual(r.notes[0], ['error', 'log.compact.busy']);
     assert.equal(r.notes[1][0], 'success');
     assert.match(r.notes[1][1], /2\.00 KB/);

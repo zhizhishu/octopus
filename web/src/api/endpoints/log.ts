@@ -449,6 +449,7 @@ function logMatchesLiveFilters(
             const sessionKey = (log.session_key ?? '').toLowerCase();
             const error = (log.error ?? '').toLowerCase();
             const errorCode = (log.error_code ?? '').toLowerCase();
+            const userAgent = (log.request_user_agent ?? '').toLowerCase();
             if (
                 !userName.includes(q) &&
                 !apiKeyName.includes(q) &&
@@ -460,7 +461,8 @@ function logMatchesLiveFilters(
                 !path.includes(q) &&
                 !sessionKey.includes(q) &&
                 !error.includes(q) &&
-                !errorCode.includes(q)
+                !errorCode.includes(q) &&
+                !userAgent.includes(q)
             ) {
                 return false;
             }
@@ -576,7 +578,10 @@ export function useLogStorage() {
         queryFn: async () => {
             return apiClient.get<RelayLogStorage>('/api/v1/log/storage');
         },
-        refetchInterval: 30000,
+        staleTime: 60000,
+        retry: false,
+        refetchOnWindowFocus: false,
+        refetchOnReconnect: false,
         refetchOnMount: 'always',
     });
 }

@@ -372,6 +372,9 @@ type RelayLogScope struct {
 	// session_key, error, and error_code case-insensitively, or numeric log/channel id.
 	Search string
 	Redact bool
+	// UserProjection is set only from the authenticated caller, independently of
+	// content redaction. It also participates in serialized scope cache keys.
+	UserProjection bool
 	// IncludeContent 让 RelayLogList 保留 request_content / response_content 并
 	// 在 DB 查询时真的把这两列取出来。
 	//

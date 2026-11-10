@@ -460,6 +460,7 @@ type midjourneyTaskEntry struct {
 	channelID    int
 	channelKeyID int
 	model        string
+	requestModel string
 	ownerTokenID int
 	ownerUserID  int
 	expiresAt    time.Time
@@ -491,6 +492,7 @@ func recordMidjourneyTaskOwner(ctx context.Context, taskID string, entry midjour
 		ChannelID:      entry.channelID,
 		ChannelKeyID:   entry.channelKeyID,
 		Model:          entry.model,
+		RequestModel:   entry.requestModel,
 		Action:         action,
 		OwnerTokenID:   entry.ownerTokenID,
 		OwnerUserID:    entry.ownerUserID,
@@ -529,6 +531,7 @@ func midjourneyTaskOwner(ctx context.Context, taskID string) (midjourneyTaskEntr
 		channelID:    row.ChannelID,
 		channelKeyID: row.ChannelKeyID,
 		model:        row.Model,
+		requestModel: row.RequestModel,
 		ownerTokenID: row.OwnerTokenID,
 		ownerUserID:  row.OwnerUserID,
 	}, true
@@ -855,6 +858,7 @@ func finishMidjourneySubmit(c *gin.Context, ctx context.Context, plan midjourney
 				channelID:    channel.ID,
 				channelKeyID: channelKeyID,
 				model:        actualModel,
+				requestModel: plan.model,
 				ownerTokenID: c.GetInt("api_key_id"),
 				ownerUserID:  c.GetInt("user_id"),
 			}, plan.action)
@@ -869,7 +873,12 @@ func finishMidjourneySubmit(c *gin.Context, ctx context.Context, plan midjourney
 	if strings.TrimSpace(upstreamCT) == "" {
 		upstreamCT = "application/json"
 	}
-	c.Data(statusCode, upstreamCT, respBody)
+	bindPassthroughIdentity(c, plan.model, &metrics.passthroughIdentityEvidence)
+	if identity, enabled := passthroughIdentityFor(c); enabled && !accepted {
+		identity.failureDescription = true
+		c.Set(passthroughIdentityKey, identity)
+	}
+	writeVideoResponse(c, statusCode, upstreamCT, respBody)
 	return accepted
 }
 
@@ -916,7 +925,8 @@ func MidjourneyTaskFetchHandler(c *gin.Context, suffix string) {
 	if strings.TrimSpace(upstreamCT) == "" {
 		upstreamCT = "application/json"
 	}
-	c.Data(statusCode, upstreamCT, body)
+	bindPassthroughIdentity(c, entry.requestModel, &metrics.passthroughIdentityEvidence)
+	writeVideoResponse(c, statusCode, upstreamCT, body)
 	metrics.Save(ctx, true, nil, midjourneySingleAttempt(channel, entry.channelKeyID, entry.model, true, started, ""))
 }
 
@@ -985,7 +995,26 @@ func MidjourneyTaskListByConditionHandler(c *gin.Context) {
 			attempts = append(attempts, midjourneySingleAttempt(channel, k.keyID, "", false, started, "non-array response")...)
 			continue
 		}
-		results = append(results, part...)
+		for _, item := range part {
+			var taskIdentity struct {
+				ID     string `json:"id"`
+				TaskID string `json:"taskId"`
+			}
+			_ = json.Unmarshal(item, &taskIdentity)
+			id := taskIdentity.ID
+			if id == "" {
+				id = taskIdentity.TaskID
+			}
+			entry, _ := midjourneyTaskOwner(ctx, id)
+			if !originalUpstreamIdentity(c) {
+				clean, err := rewriteIdentityJSON(item, passthroughIdentity{alias: entry.requestModel, evidence: &metrics.passthroughIdentityEvidence, mediaEnvelopes: true})
+				if err != nil {
+					continue
+				}
+				item = clean
+			}
+			results = append(results, item)
+		}
 		attempts = append(attempts, midjourneySingleAttempt(channel, k.keyID, "", true, started, "")...)
 	}
 	metrics.ResponseContent = fmt.Sprintf("midjourney list-by-condition: %d of %d ids", len(results), len(req.IDs))

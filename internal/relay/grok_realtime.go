@@ -588,6 +588,13 @@ func runGrokRealtimeSession(ctx context.Context, client, upstream *websocket.Con
 					}
 				}
 			}
+			if mt == websocket.TextMessage && metrics != nil && ctx.Value(upstreamIdentityContextKey{}) != true {
+				msg, err = rewriteIdentityJSON(msg, passthroughIdentity{alias: metrics.RequestModel, evidence: &metrics.passthroughIdentityEvidence})
+				if err != nil {
+					done <- endReason{"upstream", err}
+					return
+				}
+			}
 			clientWriteMu.Lock()
 			err = client.WriteMessage(mt, msg)
 			clientWriteMu.Unlock()

@@ -1,6 +1,7 @@
 package op
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -58,6 +59,9 @@ func TestDBCompactShrinksFileAndReportsSizes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DBCompactNow: %v", err)
 	}
+	if !res.StatsValid || res.CheckpointStatus != "truncated" || res.CheckpointErrorCode != "" {
+		t.Fatalf("expected validated sizes and truncated WAL: %+v", res)
+	}
 	if res.BeforeBytes <= 0 || res.AfterBytes <= 0 {
 		t.Fatalf("前后大小应为正数: %+v", res)
 	}
@@ -110,5 +114,48 @@ func TestDBCompactRefusesConcurrentRuns(t *testing.T) {
 	// 锁释放后恢复正常。
 	if _, err := DBCompactNow(ctx); err != nil {
 		t.Fatalf("锁释放后压缩应成功: %v", err)
+	}
+}
+
+func TestDBCompactReportsBlockedWALRelease(t *testing.T) {
+	ctx := setupRelayLogTest(t)
+	prev := relayLogLastReclaimUnix.Load()
+	t.Cleanup(func() { relayLogLastReclaimUnix.Store(prev) })
+	// Set up incremental mode before opening the reader so VACUUM itself
+	// can finish without requiring a schema change while the reader is active.
+	if _, err := DBCompactNow(ctx); err != nil {
+		t.Fatal(err)
+	}
+	walTestWrite(t, ctx, 2)
+	_, release := walTestOpenReader(t, ctx)
+	defer release()
+	walTestWrite(t, ctx, 4)
+	result, err := DBCompactNow(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.CheckpointStatus != "busy" || !result.StatsValid {
+		t.Fatalf("reader must leave explicit incomplete release: %+v", result)
+	}
+	if result.FreedBytes != 0 || result.AfterBytes < result.BeforeBytes {
+		t.Fatalf("pinned WAL must not be reported as reclaimed: %+v", result)
+	}
+	release()
+	result, err = DBCompactNow(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.CheckpointStatus != "truncated" || !result.StatsValid || result.FreedBytes <= 0 {
+		t.Fatalf("released reader must allow measured WAL reclamation: %+v", result)
+	}
+}
+
+func TestSQLiteWALCheckpointCanceledIsNotSkipped(t *testing.T) {
+	ctx := setupRelayLogTest(t)
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	result, err := sqliteWALCheckpoint(canceled, true)
+	if !errors.Is(err, context.Canceled) || result.Skipped != "" {
+		t.Fatalf("cancellation must not masquerade as no WAL work: result=%+v err=%v", result, err)
 	}
 }

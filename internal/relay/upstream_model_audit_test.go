@@ -9,11 +9,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/zhizhishu/octopus/internal/transformer/inbound"
 	openaiInbound "github.com/zhizhishu/octopus/internal/transformer/inbound/openai"
 	"github.com/zhizhishu/octopus/internal/transformer/model"
 	geminiOutbound "github.com/zhizhishu/octopus/internal/transformer/outbound/gemini"
-	"github.com/gin-gonic/gin"
 )
 
 // declaredModelOutbound 模拟一个上游: 它在响应体里自报 model 名字。
@@ -307,10 +307,13 @@ func TestGeminiUpstreamModelAuditKeepsUnmappedChatBodyContract(t *testing.T) {
 	if ra.upstreamDeclaredModel != "gemini-2.5-pro" {
 		t.Fatalf("审计捕获 = %q, 应为 gemini-2.5-pro", ra.upstreamDeclaredModel)
 	}
-	// 客户端契约：未映射时 model 仍为空，且上游真名不出现在 body 里。
+	// Client contract changed: mapped or not, the public model is the request
+	// name. Gemini still leaves its own Model empty and puts the real name in the
+	// audit field; that field stays off the wire. This replaces the old "unmapped
+	// stays empty" assertion, it does not drop the audit coverage below.
 	wire := rec.Body.String()
-	if got := bodyModelField(t, wire); got != "" {
-		t.Fatalf("未映射渠道客户端 model 应保持旧行为(空), 得到 %q", got)
+	if got := bodyModelField(t, wire); got != "client-visible-name" {
+		t.Fatalf("客户端 model 应为公开请求名, 得到 %q", got)
 	}
 	if strings.Contains(wire, "gemini-2.5-pro") || strings.Contains(wire, "UpstreamDeclaredModel") {
 		t.Fatalf("上游真名/审计字段泄露到客户端 body: %s", wire)
@@ -372,18 +375,17 @@ func TestGeminiStreamUpstreamModelAuditKeepsChatSseContract(t *testing.T) {
 
 	wire := rec.Body.String()
 	assertChatSseContentAndTermination(t, wire, "hi")
-	if got := sseChunkModelField(t, wire); got != "" {
-		t.Fatalf("未映射渠道流式 model 应保持旧行为(空), 得到 %q", got)
+	if got := sseChunkModelField(t, wire); got != "client-visible-name" {
+		t.Fatalf("客户端 SSE model 应为公开请求名, 得到 %q", got)
 	}
 	if strings.Contains(wire, "gemini-2.5-pro") || strings.Contains(wire, "UpstreamDeclaredModel") {
 		t.Fatalf("上游真名/审计字段泄露到客户端 SSE: %s", wire)
 	}
 }
 
-// M2 端到端（流/SSE，已映射）：即使开了 model_mapping，客户端 SSE 也不得出现上游
-// 真名，内容与终结照旧。注：transformStreamChunk 的"上游自报名非空才改写成请求名"
-// 守卫使 Gemini 流（Model 保持空）客户端 model 仍为空——即与写 Model 之前的旧契约
-// 一致（非流路径无该守卫，映射后客户端 model = 请求名，见 body 用例）。
+// Stream, mapped. The public SSE model is the request name whether or not
+// model_mapping ran. The old guard left Gemini's empty Model untouched; the
+// client projection now fills the request name while the audit field stays C.
 func TestGeminiStreamUpstreamModelAuditKeepsMappedChatSseContract(t *testing.T) {
 	ra, rec := newGeminiChatAttempt(t, true)
 
@@ -401,8 +403,8 @@ func TestGeminiStreamUpstreamModelAuditKeepsMappedChatSseContract(t *testing.T) 
 
 	wire := rec.Body.String()
 	assertChatSseContentAndTermination(t, wire, "hi")
-	if got := sseChunkModelField(t, wire); got != "" {
-		t.Fatalf("映射渠道流式 model 应保持旧契约(空), 得到 %q", got)
+	if got := sseChunkModelField(t, wire); got != "client-visible-name" {
+		t.Fatalf("客户端 SSE model 应为公开请求名, 得到 %q", got)
 	}
 	if strings.Contains(wire, "gemini-2.5-pro") || strings.Contains(wire, "UpstreamDeclaredModel") {
 		t.Fatalf("上游真名/审计字段泄露到客户端 SSE: %s", wire)
@@ -429,8 +431,8 @@ func TestGeminiNonStreamToStreamUpstreamModelAudit(t *testing.T) {
 	if !strings.Contains(wire, `"finish_reason":"stop"`) {
 		t.Fatalf("non-stream→stream 未按旧契约产出终止帧: %q", wire)
 	}
-	if got := sseChunkModelField(t, wire); got != "" {
-		t.Fatalf("未映射渠道 non-stream→stream model 应保持旧行为(空), 得到 %q", got)
+	if got := sseChunkModelField(t, wire); got != "client-visible-name" {
+		t.Fatalf("客户端 non-stream→stream model 应为公开请求名, 得到 %q", got)
 	}
 	if strings.Contains(wire, "gemini-2.5-pro") || strings.Contains(wire, "UpstreamDeclaredModel") {
 		t.Fatalf("上游真名/审计字段泄露到客户端 SSE: %s", wire)

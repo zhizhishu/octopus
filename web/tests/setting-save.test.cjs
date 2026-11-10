@@ -192,6 +192,7 @@ const systemMocks = {
     'lucide-react': lucide,
 };
 const logMocks = {
+    '@/components/ui/dialog': widgets('Dialog DialogContent DialogDescription DialogFooter DialogHeader DialogTitle'),
     '@/components/ui/input': widgets('Input'),
     '@/components/ui/switch': widgets('Switch'),
     '@/components/ui/button': widgets('Button'),
@@ -207,6 +208,37 @@ const logMocks = {
     'lucide-react': lucide,
 };
 const makeSystemHarness = (settings) => makeHarness('src/components/modules/setting/System.tsx', 'SettingSystem', settings, systemMocks);
+test('storage failure preserves the saved 20 GB limit and clear requires confirmation', async () => {
+    const storage = { data: undefined, isError: false, isFetching: true, refetch() {} };
+    let clears = 0;
+    const h = makeHarness('src/components/modules/setting/Log.tsx', 'SettingLog', [
+        { key: 'relay_log_max_storage_gb', value: '20' },
+    ], { ...logMocks, '@/api/endpoints/log': {
+        ...logMocks['@/api/endpoints/log'],
+        useLogStorage: () => storage,
+        useClearLogs: () => ({ isPending: false, mutate: () => { clears++; } }),
+    } });
+    await h.render();
+    assert.equal(h.inputByLabel('log.maxStorage.label').props.value, '20');
+    let status = findElement(h.tree, n => n.props?.role === 'status');
+    assert.deepEqual(status.props.children, ['log.status.loading', ' / 20.0 GB']);
+    storage.isFetching = false;
+    storage.isError = true;
+    storage.data = { stored_bytes: 0, max_bytes: 0 };
+    await h.render();
+    status = findElement(h.tree, n => n.props?.role === 'status');
+    assert.deepEqual(status.props.children, ['log.status.failed', ' / 20.0 GB']);
+    const trigger = findElement(h.tree, n => n.type === 'Button' && n.props?.children === 'log.clear.button');
+    trigger.props.onClick();
+    assert.equal(clears, 0);
+    await h.render();
+    const dialog = findElement(h.tree, n => n.type === 'Dialog');
+    assert.equal(dialog.props.open, true);
+    const confirm = findElement(dialog, n => n.type === 'Button' && n.props?.variant === 'destructive');
+    confirm.props.onClick();
+    assert.equal(clears, 1);
+});
+
 const makeLogHarness = (settings) => makeHarness('src/components/modules/setting/Log.tsx', 'SettingLog', settings, logMocks);
 const cbMocks = {
     '@/components/ui/input': widgets('Input'),

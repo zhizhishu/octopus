@@ -245,6 +245,7 @@ const systemMocks = {
     '@/components/animate-ui/components/animate/tooltip': widgets('Tooltip TooltipContent TooltipProvider TooltipTrigger'),
 };
 const logMocks = {
+    '@/components/ui/dialog': widgets('Dialog DialogContent DialogDescription DialogFooter DialogHeader DialogTitle'),
     '@/components/ui/input': widgets('Input'),
     '@/components/ui/switch': widgets('Switch'),
     '@/components/ui/button': widgets('Button'),
