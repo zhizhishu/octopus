@@ -17,6 +17,7 @@ import (
 	"github.com/zhizhishu/octopus/internal/helper"
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
 	transformerModel "github.com/zhizhishu/octopus/internal/transformer/model"
+	"github.com/zhizhishu/octopus/internal/utils/imageprobe"
 	"github.com/zhizhishu/octopus/internal/utils/xurl"
 )
 
@@ -230,18 +231,37 @@ func openAIImagesResponseFromGemini(body io.Reader, modelName string, payload ma
 		if candidate == nil || candidate.Content == nil {
 			continue
 		}
-		// 一个 candidate 可能带不止一张图：请求 2K/4K 时上游先给一张 1K 预览，再给目标
-		// 分辨率的成品（实测 4K = 1376x768 预览 + 5504x3072 成品）。OpenAI Images 的
-		// data[] 语义是"每个 n 一项"，把预览也算一项会让只取 data[0] 的客户端继续看到
-		// 1K，白付了 4K 的钱。所以每个 candidate 只留数据量最大的那张（不假设顺序）。
-		var best *transformerModel.GeminiPart
+		// 一个 candidate 可能带不止一张图。实测（直连上游，`imageSize:"4K"`）一个 candidate
+		// 有四个 part：thinking 文本、**thought 图**（1K，thought:true）、thinking 文本、
+		// 最终图（4K，thought:false + thoughtSignature）。thought 图是模型的思考过程，
+		// 不是交付物；把它也当成 data[] 的一项，只取 data[0] 的客户端就永远拿到那张 1K 的
+		// 思考图——4K 的钱白花。所以这里按 part 的语义位过滤：**跳过 thought part**。
+		//
+		// 回退是**按 candidate** 的：某个 candidate 里一张非 thought 图都没有（模型没交出
+		// 最终图）时，用该 candidate 内像素面积最大的 thought 图保底——宁可给一张降级的图，
+		// 也不让整个 candidate 被当成"上游没有图片数据"，其余 candidate 各走各的。
+		// 同档多张时按像素面积挑（与编码体积无关），面积相同再比数据量，结果确定。
+		var best, thoughtFallback *transformerModel.GeminiPart
+		bestArea, bestLen := 0, 0
+		fbArea, fbLen := 0, 0
 		for _, part := range candidate.Content.Parts {
 			if part == nil || part.InlineData == nil || strings.TrimSpace(part.InlineData.Data) == "" {
 				continue
 			}
-			if best == nil || len(part.InlineData.Data) > len(best.InlineData.Data) {
-				best = part
+			area := imageprobe.PixelAreaFromBase64(part.InlineData.Data)
+			size := len(part.InlineData.Data)
+			if part.Thought {
+				if thoughtFallback == nil || area > fbArea || (area == fbArea && size > fbLen) {
+					thoughtFallback, fbArea, fbLen = part, area, size
+				}
+				continue
 			}
+			if best == nil || area > bestArea || (area == bestArea && size > bestLen) {
+				best, bestArea, bestLen = part, area, size
+			}
+		}
+		if best == nil {
+			best = thoughtFallback
 		}
 		if best != nil {
 			data = append(data, geminiImageDatum(best.InlineData.MimeType, best.InlineData.Data, payload))

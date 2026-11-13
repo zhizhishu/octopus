@@ -1,7 +1,10 @@
 package relay
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -334,26 +337,33 @@ func TestImagesHandlerGeminiGenerateContentBridgeImageSize(t *testing.T) {
 	}
 }
 
-// TestImagesHandlerGeminiGenerateContentBridgeKeepsFinalResolution 盯住"预览图不能顶替
-// 成品"。请求 2K/4K 时上游一个 candidate 会给两张图：先是 1K 预览，再是目标分辨率成品。
-// 若把两张都当 data[] 的一项，只取 data[0] 的客户端就仍然拿到 1K，等于 4K 白买。
+// TestImagesHandlerGeminiGenerateContentBridgeKeepsFinalResolution 盯住"thought 图不能
+// 顶替成品"。实测一个 candidate 里有四个 part：thinking 文本、thought 图（1K）、thinking
+// 文本、最终图（4K，带 thoughtSignature）。thought 图是思考过程，不是交付物；把它算成
+// data[] 的一项，只取 data[0] 的客户端就只拿到那张 1K 的思考图。
 func TestImagesHandlerGeminiGenerateContentBridgeKeepsFinalResolution(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx := setupRelayErrorDB(t)
 
-	const (
-		previewB64 = "cHJldmlldy0xawo=" // 8 字节的假"预览"
-		finalB64   = "ZmluYWwtNGstb3V0cHV0LTE3NTk2Nzc0LWJ5dGVzLXN0dWJiZWQtbG9uZ2Vy" // 更长的假"成品"
-	)
+	// 故意让 thought 图**面积更大、编码更长**，成品更小：这样"按面积挑""按体积挑"
+	// 都会选错，只有按 thought 语义过滤才选对——这条用例钉的是语义，不是启发式。
+	thoughtB64 := fakePNGBase64(t, 8192, 8192, 9000)
+	finalB64 := fakePNGBase64(t, 5504, 3072, 32)
+	if len(thoughtB64) <= len(finalB64) {
+		t.Fatalf("test fixture broken: thought image should be the longer one, got %d vs %d", len(thoughtB64), len(finalB64))
+	}
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		// 真实结构（实测）：thinking 文本 / thought 图 / thinking 文本 / 最终图。
 		_, _ = w.Write([]byte(`{
 			"candidates":[{
 				"index":0,
 				"content":{"role":"model","parts":[
-					{"inlineData":{"mimeType":"image/png","data":"` + previewB64 + `"}},
-					{"inlineData":{"mimeType":"image/png","data":"` + finalB64 + `"}}
+					{"text":"planning the composition","thought":true},
+					{"inlineData":{"mimeType":"image/png","data":"` + thoughtB64 + `"},"thought":true},
+					{"text":"now render it at 4K","thought":true},
+					{"inlineData":{"mimeType":"image/png","data":"` + finalB64 + `"},"thoughtSignature":"sig_final"}
 				]},
 				"finishReason":"STOP"
 			}],
@@ -395,5 +405,85 @@ func TestImagesHandlerGeminiGenerateContentBridgeKeepsFinalResolution(t *testing
 	}
 	if resp.Data[0].B64JSON != finalB64 {
 		t.Fatalf("expected the largest part (final resolution) to be returned, got %q", resp.Data[0].B64JSON)
+	}
+}
+
+// fakePNGBase64 造一张只有头是真的、像素数据当作填充的 PNG：面积由 IHDR 决定，
+// 填充长度用来模拟"编码体积"。桥梁只读头，不需要真像素。
+func fakePNGBase64(t *testing.T, w, h, pad int) string {
+	t.Helper()
+	buf := &bytes.Buffer{}
+	buf.Write([]byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a})
+	ihdr := make([]byte, 25)
+	binary.BigEndian.PutUint32(ihdr[0:4], 13)
+	copy(ihdr[4:8], "IHDR")
+	binary.BigEndian.PutUint32(ihdr[8:12], uint32(w))
+	binary.BigEndian.PutUint32(ihdr[12:16], uint32(h))
+	ihdr[16] = 8 // bit depth
+	ihdr[17] = 6 // color type RGBA
+	buf.Write(ihdr)
+	buf.Write(make([]byte, pad))
+	return base64.StdEncoding.EncodeToString(buf.Bytes())
+}
+
+// TestImagesHandlerGeminiGenerateContentBridgeFallsBackToThoughtImage 守住保底语义：
+// 若上游只回了 thought 图（没有最终图），不能让整单变成"上游没有图片数据"，应退回
+// 像素面积最大的那张 thought 图，让客户端至少拿到东西。
+func TestImagesHandlerGeminiGenerateContentBridgeFallsBackToThoughtImage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayErrorDB(t)
+
+	small := fakePNGBase64(t, 512, 512, 16)
+	big := fakePNGBase64(t, 1376, 768, 16)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"candidates":[{
+				"index":0,
+				"content":{"role":"model","parts":[
+					{"inlineData":{"mimeType":"image/png","data":"` + small + `"},"thought":true},
+					{"inlineData":{"mimeType":"image/png","data":"` + big + `"},"thought":true}
+				]},
+				"finishReason":"STOP"
+			}],
+			"usageMetadata":{"promptTokenCount":4,"candidatesTokenCount":1120,"totalTokenCount":1124}
+		}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	createImageBridgeGroup(t, ctx, upstream.URL, "gemini-thought-only", "gemini-3-pro-image", outbound.OutboundTypeGemini)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{
+		"model":"gemini-thought-only",
+		"prompt":"draw something",
+		"quality":"2K"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+	c.Set("api_key_id", 0)
+	c.Set("user_id", 0)
+	c.Set("request_ip", "127.0.0.1")
+
+	ImagesHandler("/images/generations", c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected fallback to succeed, got %d body %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Data []struct {
+			B64JSON string `json:"b64_json"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode client response: %v", err)
+	}
+	if len(resp.Data) != 1 {
+		t.Fatalf("expected exactly one fallback image, got %d", len(resp.Data))
+	}
+	if resp.Data[0].B64JSON != big {
+		t.Fatalf("expected the largest thought image as fallback")
 	}
 }
