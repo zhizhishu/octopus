@@ -9,6 +9,7 @@ import {
     useState,
 } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
+import { cn } from '@/lib/utils';
 
 const BREAKPOINTS = {
     sm: 640,
@@ -45,6 +46,8 @@ interface VirtualizedGridProps<T> {
     scrollerRef?: { current: HTMLDivElement | null };
     /** 给某一项的外层格子加 class（日志页用来给自动刷新新插入的行一个淡高亮），不碰 renderItem 的产物。 */
     getItemClassName?: (item: T) => string | undefined;
+    /** 覆盖/追加到滚动容器上的 class；不传时保持默认 rounded-t-3xl 不变。 */
+    scrollClassName?: string;
 }
 
 function getColumnsForWidth(
@@ -74,6 +77,7 @@ export function VirtualizedGrid<T>({
     reachEndOffset = 1,
     scrollerRef,
     getItemClassName,
+    scrollClassName,
 }: VirtualizedGridProps<T>) {
     'use no memo';
 
@@ -188,7 +192,7 @@ export function VirtualizedGrid<T>({
                 <div
                     ref={setContainerRef}
                     onScroll={handlePlainScroll}
-                    className="relative h-full w-full overflow-y-auto overscroll-contain rounded-t-3xl"
+                    className={cn('relative h-full w-full overflow-y-auto overscroll-contain', scrollClassName ?? 'rounded-t-3xl')}
                 >
                     {items.length > 0 && (
                         <div
@@ -225,7 +229,7 @@ export function VirtualizedGrid<T>({
         <div className="relative h-full min-h-0 w-full">
             <div
                 ref={setContainerRef}
-                className="relative h-full w-full overflow-y-auto overscroll-contain rounded-t-3xl"
+                className={cn('relative h-full w-full overflow-y-auto overscroll-contain', scrollClassName ?? 'rounded-t-3xl')}
             >
                 {rowCount === 0 ? null : (
                     <div

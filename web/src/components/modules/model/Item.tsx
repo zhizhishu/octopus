@@ -1,20 +1,20 @@
 'use client';
 
-import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useId, useMemo, useState } from 'react';
 import { Pencil, Trash2, ArrowDownToLine, ArrowUpFromLine, Lock, Timer } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
+import { AnimatePresence, motion } from 'motion/react';
 import { useTranslations } from 'next-intl';
 import { useUpdateModel, useDeleteModel, useRestoreModelPrice, type LLMInfo } from '@/api/endpoints/model';
 import { getModelIcon } from '@/lib/model-icons';
 import { toast } from '@/components/common/Toast';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/animate-ui/components/animate/tooltip';
 import { SafeText } from '@/components/common/SafeText';
+import { Dialog, DialogTrigger } from '@/components/ui/dialog';
 import { ModelDeleteOverlay, ModelEditOverlay } from './ItemOverlays';
 import { cn } from '@/lib/utils';
 import { buildModelUpdatePayload, toPriceEditValues } from './price-edit';
 import { displaySource, isZeroPrice, libraryPlaceholder } from './price-sync';
 import { Hint } from './price-sync-ui';
-import { createPortal } from 'react-dom';
 
 interface ModelItemProps {
     model: LLMInfo;
@@ -26,13 +26,8 @@ export const ModelItem = memo(function ModelItem({ model, layout = 'grid' }: Mod
     const isListLayout = layout === 'list';
     const [isEditOpen, setIsEditOpen] = useState(false);
     const [confirmDelete, setConfirmDelete] = useState(false);
-    const [overlayRect, setOverlayRect] = useState<{ top: number; left: number; width: number } | null>(null);
     const instanceId = useId();
-    const editLayoutId = `edit-btn-${model.name}-${instanceId}`;
     const deleteLayoutId = `delete-btn-${model.name}-${instanceId}`;
-    const cardRef = useRef<HTMLElement | null>(null);
-    const editButtonRef = useRef<HTMLButtonElement | null>(null);
-    const editOverlayRef = useRef<HTMLDivElement | null>(null);
     const [editValues, setEditValues] = useState(() => toPriceEditValues(model));
 
     const updateModel = useUpdateModel();
@@ -46,17 +41,14 @@ export const ModelItem = memo(function ModelItem({ model, layout = 'grid' }: Mod
 
     const { Avatar: ModelAvatar, color: brandColor } = useMemo(() => getModelIcon(model.name), [model.name]);
 
-    const updateOverlayRect = useCallback(() => {
-        const card = cardRef.current;
-        if (!card) return;
-        const rect = card.getBoundingClientRect();
-        setOverlayRect((prev) => {
-            if (prev && prev.top === rect.top && prev.left === rect.left && prev.width === rect.width) {
-                return prev;
-            }
-            return { top: rect.top, left: rect.left, width: rect.width };
-        });
-    }, []);
+    // Pending 请求在途时阻止编辑弹窗关闭（ESC/点外/取消按钮均 disabled）：不丢草稿、
+    // 不中断在途 mutation 的成功/失败回调。
+    const isEditPending = updateModel.isPending || restorePrice.isPending;
+
+    const handleEditOpenChange = (open: boolean) => {
+        if (!open && isEditPending) return;
+        setIsEditOpen(open);
+    };
 
     const closeEdit = useCallback(() => {
         setIsEditOpen(false);
@@ -65,9 +57,7 @@ export const ModelItem = memo(function ModelItem({ model, layout = 'grid' }: Mod
     const handleEditClick = () => {
         setConfirmDelete(false);
         setEditValues(toPriceEditValues(model));
-        // Ensure first open already has anchor geometry so layout animation can run.
-        updateOverlayRect();
-        setIsEditOpen(true);
+        // 开关由 DialogTrigger asChild 驱动，Radix 会把焦点还给触发按钮。
     };
 
     const handleCancelEdit = () => {
@@ -116,45 +106,16 @@ export const ModelItem = memo(function ModelItem({ model, layout = 'grid' }: Mod
         });
     };
 
-    useEffect(() => {
-        if (!isEditOpen) return;
-
-        const handlePointerDown = (event: PointerEvent) => {
-            const target = event.target as Node | null;
-            if (!target) return;
-            if (editOverlayRef.current?.contains(target)) return;
-            if (editButtonRef.current?.contains(target)) return;
-            closeEdit();
-        };
-
-        const handleKeyDown = (event: KeyboardEvent) => {
-            if (event.key === 'Escape') closeEdit();
-        };
-
-        updateOverlayRect();
-        window.addEventListener('resize', updateOverlayRect);
-        window.addEventListener('scroll', updateOverlayRect, true);
-        document.addEventListener('pointerdown', handlePointerDown);
-        document.addEventListener('keydown', handleKeyDown);
-
-        return () => {
-            window.removeEventListener('resize', updateOverlayRect);
-            window.removeEventListener('scroll', updateOverlayRect, true);
-            document.removeEventListener('pointerdown', handlePointerDown);
-            document.removeEventListener('keydown', handleKeyDown);
-        };
-    }, [isEditOpen, updateOverlayRect, closeEdit]);
-
-    const shouldRenderEditPortal = isEditOpen || overlayRect !== null;
-
     return (
         <article
-            ref={cardRef}
             className={cn(
                 'group relative rounded-3xl border border-border bg-card transition-all duration-300 flex items-center gap-3 p-4',
                 (isEditOpen || confirmDelete) && 'z-50'
             )}
         >
+        {/* Dialog Root 无 DOM 包裹：把整张卡片内容收进同一个 Radix context，
+            编辑按钮用 DialogTrigger asChild，关闭后焦点自动回到触发按钮。 */}
+        <Dialog open={isEditOpen} onOpenChange={handleEditOpenChange}>
             <ModelAvatar size={52} />
 
             <div className="flex-1 min-w-0 flex flex-col justify-center gap-2">
@@ -239,17 +200,17 @@ export const ModelItem = memo(function ModelItem({ model, layout = 'grid' }: Mod
                     (isEditOpen || confirmDelete) && 'invisible pointer-events-none'
                 )}
             >
-                <motion.button
-                    ref={editButtonRef}
-                    layoutId={editLayoutId}
-                    type="button"
-                    onClick={handleEditClick}
-                    disabled={isEditOpen || confirmDelete}
-                    className="h-9 w-9 flex items-center justify-center rounded-lg bg-muted/60 text-muted-foreground transition-colors hover:bg-muted disabled:opacity-50"
-                    title={t('card.edit')}
-                >
-                    <Pencil className="size-4" />
-                </motion.button>
+                <DialogTrigger asChild>
+                    <button
+                        type="button"
+                        onClick={handleEditClick}
+                        disabled={isEditOpen || confirmDelete}
+                        className="h-9 w-9 flex items-center justify-center rounded-lg bg-muted/60 text-muted-foreground transition-colors hover:bg-muted disabled:opacity-50"
+                        title={t('card.edit')}
+                    >
+                        <Pencil className="size-4" />
+                    </button>
+                </DialogTrigger>
 
                 <motion.button
                     layoutId={deleteLayoutId}
@@ -274,40 +235,21 @@ export const ModelItem = memo(function ModelItem({ model, layout = 'grid' }: Mod
                 )}
             </AnimatePresence>
 
-            {shouldRenderEditPortal && typeof document !== 'undefined'
-                ? createPortal(
-                    <AnimatePresence onExitComplete={() => setOverlayRect(null)}>
-                        {isEditOpen && overlayRect && (
-                            <div
-                                ref={editOverlayRef}
-                                className="fixed z-[90]"
-                                style={{
-                                    top: `${overlayRect.top}px`,
-                                    left: `${overlayRect.left}px`,
-                                    width: `${overlayRect.width}px`,
-                                }}
-                            >
-                                <div className="relative">
-                                    <ModelEditOverlay
-                                        layoutId={editLayoutId}
-                                        modelName={model.name}
-                                        brandColor={brandColor}
-                                        editValues={editValues}
-                                        isPending={updateModel.isPending || restorePrice.isPending}
-                                        isManual={source === 'manual'}
-                                        library={model.library ?? null}
-                                        onRestore={handleRestore}
-                                        onChange={setEditValues}
-                                        onCancel={handleCancelEdit}
-                                        onSave={handleSaveEdit}
-                                    />
-                                </div>
-                            </div>
-                        )}
-                    </AnimatePresence>,
-                    document.body
-                )
-                : null}
+            {isEditOpen && (
+                <ModelEditOverlay
+                    modelName={model.name}
+                    brandColor={brandColor}
+                    editValues={editValues}
+                    isPending={isEditPending}
+                    isManual={source === 'manual'}
+                    library={model.library ?? null}
+                    onRestore={handleRestore}
+                    onChange={setEditValues}
+                    onCancel={handleCancelEdit}
+                    onSave={handleSaveEdit}
+                />
+            )}
+        </Dialog>
         </article>
     );
 });

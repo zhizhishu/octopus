@@ -3,6 +3,7 @@
 import { Check, Loader, RotateCcw, Trash2, X } from 'lucide-react';
 import { motion } from 'motion/react';
 import { useTranslations } from 'next-intl';
+import { DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import type { PriceEditValues } from './price-edit';
 import type { TokenPrice } from './price-sync';
@@ -56,7 +57,6 @@ export function ModelDeleteOverlay({
 }
 
 type ModelEditOverlayProps = {
-    layoutId: string;
     modelName: string;
     brandColor: string;
     editValues: EditValues;
@@ -70,8 +70,12 @@ type ModelEditOverlayProps = {
     onSave: () => void;
 };
 
+/**
+ * 编辑弹窗走 @/components/ui/dialog 的 Radix Dialog：真正视口居中、focus trap、
+ * ESC/点外关闭（pending 时由 Item.tsx 的 onOpenChange 受控拦截）、窄屏可滚动。
+ * 本组件只负责弹窗内容，外壳样式集中在 DialogContent 的 className 上。
+ */
 export function ModelEditOverlay({
-    layoutId,
     modelName,
     brandColor,
     editValues,
@@ -85,15 +89,23 @@ export function ModelEditOverlay({
 }: ModelEditOverlayProps) {
     const t = useTranslations('model.overlay');
     return (
-        <motion.div
-            layoutId={layoutId}
-            className="absolute inset-x-0 top-0 z-20 flex flex-col bg-card p-5 rounded-3xl border border-border custom-shadow"
-            transition={{ type: 'spring', stiffness: 400, damping: 30 }}
+        <DialogContent
+            showCloseButton={false}
+            className="gap-0 rounded-3xl border-border bg-card custom-shadow p-5 sm:max-w-sm"
+            onEscapeKeyDown={(event) => {
+                // pending 时阻止 ESC 直接关闭，与 onOpenChange 的受控拦截双保险。
+                if (isPending) event.preventDefault();
+            }}
+            onInteractOutside={(event) => {
+                if (isPending) event.preventDefault();
+            }}
         >
-            <h3 className="text-sm font-semibold text-card-foreground line-clamp-1 mb-1">
+            <DialogTitle className="text-sm font-semibold text-card-foreground mb-1">
                 {modelName}
-            </h3>
-            <p className="mb-3 text-xs text-muted-foreground">{t('manualHint')}</p>
+            </DialogTitle>
+            <DialogDescription className="mb-3 text-xs text-muted-foreground">
+                {t('manualHint')}
+            </DialogDescription>
 
             <div className="grid grid-cols-2 gap-2">
                 <label className="grid gap-1 text-xs text-muted-foreground">
@@ -147,7 +159,6 @@ export function ModelEditOverlay({
                         className="h-9 text-sm rounded-xl"
                     />
                 </label>
-                {/* 编辑层在 z-[90] 的浮层里，tooltip 会被盖住，所以说明直接写在下面。 */}
                 <p className="col-span-2 text-[11px] leading-4 text-muted-foreground">{t('perCallTip')}</p>
             </div>
 
@@ -190,6 +201,6 @@ export function ModelEditOverlay({
                     {t('save')}
                 </button>
             </div>
-        </motion.div>
+        </DialogContent>
     );
 }

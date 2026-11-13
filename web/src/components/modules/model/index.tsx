@@ -39,8 +39,10 @@ export function Model() {
     }, [sortedModels, searchTerm, filter]);
 
     return (
-        <div className="flex h-full min-h-0 flex-col gap-4 overflow-hidden rounded-t-3xl">
-            <ModelPriceCatalog />
+        <div className="flex h-full min-h-0 flex-col gap-4 overflow-hidden">
+            <div className="shrink-0">
+                <ModelPriceCatalog />
+            </div>
             <div className="min-h-0 flex-1">
                 <VirtualizedGrid
                     items={visibleModels}
@@ -48,6 +50,7 @@ export function Model() {
                     columns={{ default: 1, md: 2, lg: 3 }}
                     estimateItemHeight={112}
                     getItemKey={(model) => `model-${model.name}`}
+                    scrollClassName="rounded-none"
                     renderItem={(model) => <ModelItem model={model} layout={layout} />}
                 />
             </div>
