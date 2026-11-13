@@ -1,6 +1,6 @@
 module github.com/zhizhishu/octopus
 
-go 1.25.0
+go 1.26.10
 
 require (
 	github.com/andybalholm/brotli v1.1.1
@@ -14,7 +14,7 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
-	github.com/klauspost/compress v1.17.11
+	github.com/klauspost/compress v1.20.2
 	github.com/refraction-networking/utls v1.8.2
 	github.com/samber/lo v1.52.0
 	github.com/spf13/cobra v1.10.2
