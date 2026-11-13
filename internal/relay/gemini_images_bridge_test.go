@@ -333,3 +333,67 @@ func TestImagesHandlerGeminiGenerateContentBridgeImageSize(t *testing.T) {
 		})
 	}
 }
+
+// TestImagesHandlerGeminiGenerateContentBridgeKeepsFinalResolution 盯住"预览图不能顶替
+// 成品"。请求 2K/4K 时上游一个 candidate 会给两张图：先是 1K 预览，再是目标分辨率成品。
+// 若把两张都当 data[] 的一项，只取 data[0] 的客户端就仍然拿到 1K，等于 4K 白买。
+func TestImagesHandlerGeminiGenerateContentBridgeKeepsFinalResolution(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayErrorDB(t)
+
+	const (
+		previewB64 = "cHJldmlldy0xawo=" // 8 字节的假"预览"
+		finalB64   = "ZmluYWwtNGstb3V0cHV0LTE3NTk2Nzc0LWJ5dGVzLXN0dWJiZWQtbG9uZ2Vy" // 更长的假"成品"
+	)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"candidates":[{
+				"index":0,
+				"content":{"role":"model","parts":[
+					{"inlineData":{"mimeType":"image/png","data":"` + previewB64 + `"}},
+					{"inlineData":{"mimeType":"image/png","data":"` + finalB64 + `"}}
+				]},
+				"finishReason":"STOP"
+			}],
+			"usageMetadata":{"promptTokenCount":4,"candidatesTokenCount":2000,"totalTokenCount":2004}
+		}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	createImageBridgeGroup(t, ctx, upstream.URL, "gemini-multipart", "gemini-3-pro-image", outbound.OutboundTypeGemini)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{
+		"model":"gemini-multipart",
+		"prompt":"draw a 4K apple",
+		"quality":"4K"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+	c.Set("api_key_id", 0)
+	c.Set("user_id", 0)
+	c.Set("request_ip", "127.0.0.1")
+
+	ImagesHandler("/images/generations", c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected bridge to succeed, got %d body %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Data []struct {
+			B64JSON string `json:"b64_json"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode client response: %v", err)
+	}
+	if len(resp.Data) != 1 {
+		t.Fatalf("expected exactly one image per candidate (preview dropped), got %d: %+v", len(resp.Data), resp.Data)
+	}
+	if resp.Data[0].B64JSON != finalB64 {
+		t.Fatalf("expected the largest part (final resolution) to be returned, got %q", resp.Data[0].B64JSON)
+	}
+}

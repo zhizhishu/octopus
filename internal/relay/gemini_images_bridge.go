@@ -230,11 +230,21 @@ func openAIImagesResponseFromGemini(body io.Reader, modelName string, payload ma
 		if candidate == nil || candidate.Content == nil {
 			continue
 		}
+		// 一个 candidate 可能带不止一张图：请求 2K/4K 时上游先给一张 1K 预览，再给目标
+		// 分辨率的成品（实测 4K = 1376x768 预览 + 5504x3072 成品）。OpenAI Images 的
+		// data[] 语义是"每个 n 一项"，把预览也算一项会让只取 data[0] 的客户端继续看到
+		// 1K，白付了 4K 的钱。所以每个 candidate 只留数据量最大的那张（不假设顺序）。
+		var best *transformerModel.GeminiPart
 		for _, part := range candidate.Content.Parts {
 			if part == nil || part.InlineData == nil || strings.TrimSpace(part.InlineData.Data) == "" {
 				continue
 			}
-			data = append(data, geminiImageDatum(part.InlineData.MimeType, part.InlineData.Data, payload))
+			if best == nil || len(part.InlineData.Data) > len(best.InlineData.Data) {
+				best = part
+			}
+		}
+		if best != nil {
+			data = append(data, geminiImageDatum(best.InlineData.MimeType, best.InlineData.Data, payload))
 		}
 	}
 	if len(data) == 0 {
