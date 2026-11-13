@@ -78,34 +78,13 @@ docker compose up -d
 
 ### 🛠️ 源码运行
 
-**环境要求：**
-- Go 1.24.4
-- Node.js 18+
-- pnpm
+工具链版本、前后端构建次序、测试与产物规则见 **[docs/development.md](docs/development.md)**。
 
-```bash
-# 克隆项目
-git clone https://github.com/zhizhishu/octopus.git
-cd octopus
-# 构建前端
-cd web && pnpm install && pnpm run build && cd ..
-# 移动前端产物到 static 目录
-mv web/out static/
-# 启动后端服务
-go run main.go start 
-```
+要点：
 
-> 💡 **提示**：前端构建产物会被嵌入到 Go 二进制文件中，所以必须先构建前端再启动后端。
-
-**开发模式**
-
-```bash
-cd web && pnpm install && NEXT_PUBLIC_API_BASE_URL="http://127.0.0.1:8080" pnpm run dev
-## 新建终端,启动后端服务
-go run main.go start
-## 访问前端地址
-http://localhost:3000
-```
+- 两条构建链：`web/` 的 Next.js 前端导出静态产物，Go 二进制从 `static/out` 嵌入。必须先构建前端——嵌入目录还没有内容时 `go build` / `go test` 会失败。
+- Go 版本以 `go.mod` 为准，Node.js 版本按 CI（24）；pnpm 依赖由 `web/pnpm-lock.yaml` 锁定。
+- 启动服务：`go run main.go start`（默认 `http://localhost:8080`）。前端开发时在 `web/` 起 dev server，连本地后端即可。
 
 ### 🔐 默认账户
 
@@ -255,6 +234,9 @@ http://localhost:3000
 
 
 ## 📖 功能说明
+
+- [架构概览](docs/architecture-overview.md) — 能力、分层职责、主要入口与边界
+- [开发与测试](docs/development.md) — 工具链、构建次序、测试、生成产物
 
 ### 📡 渠道管理
 

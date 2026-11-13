@@ -81,34 +81,13 @@ Download the binary for your platform from [Releases](https://github.com/zhizhis
 
 ### 🛠️ Build from Source
 
-**Requirements:**
-- Go 1.24.4
-- Node.js 18+
-- pnpm
+Toolchain versions, the frontend/backend build order, tests and generated-artifact rules live in **[docs/development.md](docs/development.md)**.
 
-```bash
-# Clone the repository
-git clone https://github.com/zhizhishu/octopus.git
-cd octopus
-# Build frontend
-cd web && pnpm install && pnpm run build && cd ..
-# Move frontend assets to static directory
-mv web/out static/
-# Start the backend service
-go run main.go start 
-```
+In short:
 
-> 💡 **Tip**: The frontend build artifacts are embedded into the Go binary, so you must build the frontend before starting the backend.
-
-**Development Mode**
-
-```bash
-cd web && pnpm install && NEXT_PUBLIC_API_BASE_URL="http://127.0.0.1:8080" pnpm run dev
-## Open a new terminal, start the backend service
-go run main.go start
-## Access the frontend at
-http://localhost:3000
-```
+- Two build chains: the Next.js app in `web/` exports static assets, and the Go binary embeds them from `static/out`. Build the frontend first — `go build` / `go test` fail if the embedded directory has no content yet.
+- The Go version follows `go.mod`; the Node.js version follows CI (24); pnpm dependencies are pinned by `web/pnpm-lock.yaml`.
+- Start the service with `go run main.go start` (default `http://localhost:8080`). For frontend work, run the dev server in `web/` against a locally running backend.
 
 ### 🔐 Default Credentials
 
@@ -257,6 +236,9 @@ All configuration options can be overridden via environment variables using the 
 
 
 ## 📖 Documentation
+
+- [Architecture overview](docs/architecture-overview.md) — responsibilities, main entry points, boundaries
+- [Development](docs/development.md) — toolchain, build order, tests, generated artifacts
 
 ### 📡 Channel Management
 

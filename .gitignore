@@ -44,6 +44,9 @@ _artifacts/
 
 # docs 下的二改设计笔记（不上传；截图 docs/screenshots/ 保留）
 docs/*.md
+# 仅两份公开文档用精确例外放行，其余 docs/*.md 保持不入库
+!docs/architecture-overview.md
+!docs/development.md
 
 # fork 维护脚本（不上传）
 /scripts/sync-upstream-future.ps1

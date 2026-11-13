@@ -12,6 +12,12 @@
 - 允许使用 AI 辅助。
 - 提交者对最终内容负责，提交前必须完成人工审查。
 
+## 开发与测试
+
+- 工具链、前后端构建次序、测试与生成产物规则见 [docs/development.md](docs/development.md)。
+- 架构职责与主要入口见 [docs/architecture-overview.md](docs/architecture-overview.md)。
+- 改代码后请确认前端回归与 Go 测试通过；未构建前端时 `go test` 会因嵌入目录缺失失败，属构建次序问题而非代码问题。
+
 ## 提交前检查
 
 - [ ] 本次 PR 仅包含一个变更主题。
