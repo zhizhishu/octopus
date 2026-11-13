@@ -694,15 +694,10 @@ func geminiAspectRatioFromSize(size string) string {
 	}
 }
 
+// geminiImageSizeFromQuality 见 model.NormalizeGeminiImageSize：档位归一化只留一份，
+// 这里不再各自维护 1K/2K/4K 的字符串表。
 func geminiImageSizeFromQuality(quality string) string {
-	switch strings.TrimSpace(quality) {
-	case "hd", "high", "2K":
-		return "2K"
-	case "standard", "medium", "low", "auto", "1K":
-		return "1K"
-	default:
-		return ""
-	}
+	return model.NormalizeGeminiImageSize(quality)
 }
 
 func convertLLMToolResultToGeminiContent(msg *model.Message, toolCallNamesByID map[string]string) *model.GeminiContent {

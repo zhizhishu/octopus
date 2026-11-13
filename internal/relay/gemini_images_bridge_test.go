@@ -3,6 +3,7 @@ package relay
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -235,4 +236,100 @@ func createRawImagesGroupWithType(t *testing.T, ctx context.Context, upstreamURL
 		t.Fatalf("create channel: %v", err)
 	}
 	return channel
+}
+
+// TestImagesHandlerGeminiGenerateContentBridgeImageSize 盯住分辨率档位真的进了出站
+// 请求体。它补的是一处空白：原先的 generateContent 桥测试只断言 aspectRatio，从没断言
+// imageSize，于是"4K 无法表达""image_config.image_size 被丢"这类回归一直无人拦截。
+func TestImagesHandlerGeminiGenerateContentBridgeImageSize(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayErrorDB(t)
+
+	cases := []struct {
+		name    string
+		payload string
+		want    string
+	}{
+		{
+			name:    "quality 4K is expressible",
+			payload: `{"model":"%s","prompt":"draw","quality":"4K"}`,
+			want:    "4K",
+		},
+		{
+			name:    "lowercase quality still maps",
+			payload: `{"model":"%s","prompt":"draw","quality":"2k"}`,
+			want:    "2K",
+		},
+		{
+			name:    "image_config.image_size wins over quality",
+			payload: `{"model":"%s","prompt":"draw","quality":"1K","image_config":{"aspect_ratio":"16:9","image_size":"4K"}}`,
+			want:    "4K",
+		},
+		{
+			name:    "no size hint sends no imageSize",
+			payload: `{"model":"%s","prompt":"draw"}`,
+			want:    "",
+		},
+	}
+
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var (
+				mu      sync.Mutex
+				gotBody map[string]any
+			)
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("decode upstream body: %v", err)
+				}
+				mu.Lock()
+				gotBody = body
+				mu.Unlock()
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{
+					"candidates":[{
+						"index":0,
+						"content":{"role":"model","parts":[{"inlineData":{"mimeType":"image/webp","data":"c2l6ZS1wcm9iZQ=="}}]},
+						"finishReason":"STOP"
+					}],
+					"usageMetadata":{"promptTokenCount":4,"candidatesTokenCount":6,"totalTokenCount":10}
+				}`))
+			}))
+			t.Cleanup(upstream.Close)
+
+			requestModel := fmt.Sprintf("gemini-size-%d", i)
+			createImageBridgeGroup(t, ctx, upstream.URL, requestModel, "gemini-3-pro-image", outbound.OutboundTypeGemini)
+
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			req := httptest.NewRequest(http.MethodPost, "/v1/images/generations",
+				strings.NewReader(fmt.Sprintf(tc.payload, requestModel)))
+			req.Header.Set("Content-Type", "application/json")
+			c.Request = req
+			c.Set("api_key_id", 0)
+			c.Set("user_id", 0)
+			c.Set("request_ip", "127.0.0.1")
+
+			ImagesHandler("/images/generations", c)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected bridge to succeed, got %d body %s", rec.Code, rec.Body.String())
+			}
+
+			mu.Lock()
+			body := gotBody
+			mu.Unlock()
+			cfg, _ := body["generationConfig"].(map[string]any)
+			imageCfg, _ := cfg["imageConfig"].(map[string]any)
+			gotSize, _ := imageCfg["imageSize"].(string)
+			if gotSize != tc.want {
+				t.Fatalf("imageConfig.imageSize = %q, want %q (generationConfig: %#v)", gotSize, tc.want, cfg)
+			}
+			if tc.want == "" && imageCfg != nil {
+				if _, exists := imageCfg["imageSize"]; exists {
+					t.Fatalf("expected no imageSize field, got %#v", imageCfg)
+				}
+			}
+		})
+	}
 }

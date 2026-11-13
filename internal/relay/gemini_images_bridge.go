@@ -147,7 +147,7 @@ func geminiImageRequestBodyAndURL(baseURL, modelName, key string, payload map[st
 				SampleCount:      positiveIntFromPayload(payload, "n", 1),
 				AspectRatio:      geminiAspectRatioFromImagePayload(payload),
 				PersonGeneration: "allow_adult",
-				ImageSize:        geminiImageSizeFromQuality(stringFromPayload(payload, "quality")),
+				ImageSize:        geminiImageSizeFromImagesPayload(payload),
 			},
 		}
 		body, err := json.Marshal(reqBody)
@@ -272,12 +272,33 @@ func imagesUsageFromGeminiUsage(usage *transformerModel.GeminiUsageMetadata) *im
 func geminiImageConfigFromImagesPayload(payload map[string]any) *transformerModel.GeminiImageConfig {
 	cfg := &transformerModel.GeminiImageConfig{
 		AspectRatio: geminiAspectRatioFromImagePayload(payload),
-		ImageSize:   geminiImageSizeFromQuality(stringFromPayload(payload, "quality")),
+		ImageSize:   geminiImageSizeFromImagesPayload(payload),
 	}
 	if cfg.AspectRatio == "" && cfg.ImageSize == "" {
 		return nil
 	}
 	return cfg
+}
+
+// geminiImageSizeFromImagesPayload 解析分辨率档位。
+//
+// 顺序按参考实现来（CLIProxyAPI 的 OpenRouter 风格 image_config、new-api 的
+// extra_body.google.image_config）：客户端显式写的 image_size 优先，OpenAI 的 quality
+// 别名只在没给档位时兜底。这样 image_config.image_size 不会再被静默丢掉。
+func geminiImageSizeFromImagesPayload(payload map[string]any) string {
+	if imageConfig, ok := payload["image_config"].(map[string]any); ok {
+		for _, key := range []string{"image_size", "imageSize"} {
+			if size := transformerModel.NormalizeGeminiImageSize(stringFromPayload(imageConfig, key)); size != "" {
+				return size
+			}
+		}
+	}
+	for _, key := range []string{"image_size", "imageSize"} {
+		if size := transformerModel.NormalizeGeminiImageSize(stringFromPayload(payload, key)); size != "" {
+			return size
+		}
+	}
+	return geminiImageSizeFromQuality(stringFromPayload(payload, "quality"))
 }
 
 func geminiAspectRatioFromImagePayload(payload map[string]any) string {
@@ -313,15 +334,10 @@ func geminiAspectRatioFromSize(size string) string {
 	}
 }
 
+// geminiImageSizeFromQuality 保留给 OpenAI 的 quality 别名；档位归一化统一走
+// model.NormalizeGeminiImageSize，避免这里和 chat 出图各养一份映射表。
 func geminiImageSizeFromQuality(quality string) string {
-	switch strings.TrimSpace(quality) {
-	case "hd", "high", "2K":
-		return "2K"
-	case "standard", "medium", "low", "auto", "1K":
-		return "1K"
-	default:
-		return ""
-	}
+	return transformerModel.NormalizeGeminiImageSize(quality)
 }
 
 func stringFromPayload(payload map[string]any, key string) string {
