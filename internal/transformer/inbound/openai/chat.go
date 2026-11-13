@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -52,6 +53,11 @@ func (i *ChatInbound) TransformRequest(ctx context.Context, body []byte) (*model
 	request.EmbeddingInput = nil
 	request.EmbeddingDimensions = nil
 	request.EmbeddingEncodingFormat = nil
+	// 生图档位透传：OpenRouter / Requesty（以及 CPA、new-api 的实现）都把分辨率写在顶层
+	// image_config 里，这个字段不属于 InternalLLMRequest，直接 Unmarshal 会被丢掉。
+	// 单独取一次塞进 TransformerMetadata（json:"-" 不参与出站序列化），仅 Gemini 出站
+	// 生图读取；其它渠道、其它端点行为不变。
+	captureGeminiImageConfig(&request, body)
 	normalizeOpenAIChatToolMessages(&request)
 	// Capture the channel opt-in before the request is handed to relay; relay
 	// re-sets TransformOptions.ThinkingToContent from the channel each attempt.
@@ -805,4 +811,64 @@ func messageHasVisibleText(msg *model.Message) bool {
 		}
 	}
 	return false
+}
+
+// captureGeminiImageConfig 把客户端的生图档位（image_config.image_size /
+// image_config.aspect_ratio，兼容驼峰与顶层写法）记进 TransformerMetadata，键名与
+// gemini 出站生图约定一致。只在同时给了 aspect_ratio 或 image_size 时才写，避免给
+// 不需要生图的请求平添元数据。
+func captureGeminiImageConfig(request *model.InternalLLMRequest, body []byte) {
+	if request == nil || len(body) == 0 {
+		return
+	}
+	// 绝大多数 chat 请求没有这个字段：先做一次字节包含判断，避免每个请求都多一次
+	// 完整反序列化。
+	if !bytes.Contains(body, []byte("image_config")) && !bytes.Contains(body, []byte("image_size")) {
+		return
+	}
+	var envelope struct {
+		ImageConfig *struct {
+			AspectRatio string `json:"aspect_ratio"`
+			AspectRatioCamel string `json:"aspectRatio"`
+			ImageSize   string `json:"image_size"`
+			ImageSizeCamel string `json:"imageSize"`
+		} `json:"image_config"`
+		AspectRatio string `json:"aspect_ratio"`
+		ImageSize   string `json:"image_size"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return
+	}
+	captured := map[string]string{}
+	pick := func(values ...string) string {
+		for _, value := range values {
+			if trimmed := strings.TrimSpace(value); trimmed != "" {
+				return trimmed
+			}
+		}
+		return ""
+	}
+	aspect := pick(envelope.AspectRatio)
+	size := pick(envelope.ImageSize)
+	if cfg := envelope.ImageConfig; cfg != nil {
+		aspect = pick(cfg.AspectRatio, cfg.AspectRatioCamel, aspect)
+		size = pick(cfg.ImageSize, cfg.ImageSizeCamel, size)
+	}
+	if aspect != "" {
+		captured["aspect_ratio"] = aspect
+	}
+	if size != "" {
+		captured["image_size"] = size
+	}
+	if len(captured) == 0 {
+		return
+	}
+	encoded, err := json.Marshal(captured)
+	if err != nil {
+		return
+	}
+	if request.TransformerMetadata == nil {
+		request.TransformerMetadata = map[string]string{}
+	}
+	request.TransformerMetadata["gemini_image_config"] = string(encoded)
 }

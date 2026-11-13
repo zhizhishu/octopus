@@ -13,6 +13,7 @@ import (
 
 	"github.com/samber/lo"
 	"github.com/zhizhishu/octopus/internal/transformer/model"
+	"github.com/zhizhishu/octopus/internal/utils/imageprobe"
 	"github.com/zhizhishu/octopus/internal/utils/mime"
 	"github.com/zhizhishu/octopus/internal/utils/xurl"
 )
@@ -641,16 +642,48 @@ func geminiImageConfigFromRequest(request *model.InternalLLMRequest) *model.Gemi
 	if request == nil || !request.IsImageGenerationRequest() {
 		return nil
 	}
-	tool := firstGeminiImageGenerationTool(request.Tools)
-	if tool == nil {
+	cfg := &model.GeminiImageConfig{}
+	// 优先级照参考实现（CPA 的 gemini translator、new-api 的 extra_body.google.image_config、
+	// Requesty 文档）：客户端在 body 里显式写的 image_config 说话最响；OpenAI 的
+	// image_generation 工具参数只在客户端没写时才补位。
+	if explicit := geminiImageConfigFromMetadata(request); explicit != nil {
+		cfg.AspectRatio = explicit.AspectRatio
+		cfg.ImageSize = explicit.ImageSize
+	}
+	if tool := firstGeminiImageGenerationTool(request.Tools); tool != nil {
+		if cfg.AspectRatio == "" {
+			cfg.AspectRatio = geminiAspectRatioFromSize(tool.Size)
+		}
+		if cfg.ImageSize == "" {
+			cfg.ImageSize = geminiImageSizeFromQuality(tool.Quality)
+		}
+	}
+	if cfg.AspectRatio == "" && cfg.ImageSize == "" {
 		return nil
 	}
-	cfg := &model.GeminiImageConfig{}
-	if aspectRatio := geminiAspectRatioFromSize(tool.Size); aspectRatio != "" {
-		cfg.AspectRatio = aspectRatio
+	return cfg
+}
+
+// geminiImageConfigFromMetadata 读入站记下的 image_config（见 openai 入站
+// captureGeminiImageConfig）。键名是 snake_case，值按 NormalizeGeminiImageSize 归一。
+func geminiImageConfigFromMetadata(request *model.InternalLLMRequest) *model.GeminiImageConfig {
+	if request == nil || request.TransformerMetadata == nil {
+		return nil
 	}
-	if imageSize := geminiImageSizeFromQuality(tool.Quality); imageSize != "" {
-		cfg.ImageSize = imageSize
+	raw, ok := request.TransformerMetadata["gemini_image_config"]
+	if !ok || strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var parsed struct {
+		AspectRatio string `json:"aspect_ratio"`
+		ImageSize   string `json:"image_size"`
+	}
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return nil
+	}
+	cfg := &model.GeminiImageConfig{
+		AspectRatio: geminiValidAspectRatio(parsed.AspectRatio),
+		ImageSize:   model.NormalizeGeminiImageSize(parsed.ImageSize),
 	}
 	if cfg.AspectRatio == "" && cfg.ImageSize == "" {
 		return nil
@@ -790,6 +823,11 @@ func convertGeminiToLLMResponse(geminiResp *model.GeminiGenerateContentResponse,
 			var hasReasoning bool
 			var reasoningContent *string
 			var hasInlineData bool
+			// thought 图是模型推理过程中的草稿：实测 4K 请求先给一张 1K 的 thought 图，
+			// 再给 thought:false 的成品。它不是交付物，混进 contentParts 会让客户端同时
+			// 收到草稿和成品（并且只取第一张的客户端就等于拿了 1K）。先攒着，整段一张
+			// 非 thought 图都没有时才退回面积最大的一张，免得把"只吐了草稿"变成"没给图"。
+			var thoughtImages []model.GeminiBlob
 
 			for _, part := range candidate.Content.Parts {
 				if part.Thought {
@@ -810,15 +848,12 @@ func convertGeminiToLLMResponse(geminiResp *model.GeminiGenerateContentResponse,
 				}
 				// Handle inline data (images, audio, etc.)
 				if part.InlineData != nil {
-					hasInlineData = true
-					// Convert to data URL format: data:{mimeType};base64,{data}
-					dataURL := fmt.Sprintf("data:%s;base64,%s", part.InlineData.MimeType, part.InlineData.Data)
-					contentParts = append(contentParts, model.MessageContentPart{
-						Type: "image_url",
-						ImageURL: &model.ImageURL{
-							URL: dataURL,
-						},
-					})
+					if part.Thought {
+						thoughtImages = append(thoughtImages, *part.InlineData)
+					} else {
+						hasInlineData = true
+						contentParts = append(contentParts, geminiInlineDataContentPart(*part.InlineData))
+					}
 				}
 				if part.FunctionCall != nil {
 					argsJSON, _ := json.Marshal(part.FunctionCall.Args)
@@ -837,6 +872,14 @@ func convertGeminiToLLMResponse(geminiResp *model.GeminiGenerateContentResponse,
 						},
 					}
 					toolCalls = append(toolCalls, toolCall)
+				}
+			}
+
+			// 整段没有任何非 thought 图时才用 thought 图保底（面积最大那张）。
+			if !hasInlineData && len(thoughtImages) > 0 {
+				if best := largestGeminiImageBlob(thoughtImages); best != nil {
+					hasInlineData = true
+					contentParts = append(contentParts, geminiInlineDataContentPart(*best))
 				}
 			}
 
@@ -1358,4 +1401,54 @@ func (t *geminiSchemaTransformer) dedupeStrings(in []string) []string {
 		out = append(out, s)
 	}
 	return out
+}
+
+// geminiInlineDataContentPart 把一处 inlineData 包成内部图片内容项（data URL 形状不变，
+// 只是把"哪些该交付"的判断挪到了调用点）。
+func geminiInlineDataContentPart(blob model.GeminiBlob) model.MessageContentPart {
+	return model.MessageContentPart{
+		Type: "image_url",
+		ImageURL: &model.ImageURL{
+			URL: fmt.Sprintf("data:%s;base64,%s", blob.MimeType, blob.Data),
+		},
+	}
+}
+
+// largestGeminiImageBlob 取像素面积最大的一张（认不出格式时比数据量），与出图桥判定一致。
+func largestGeminiImageBlob(blobs []model.GeminiBlob) *model.GeminiBlob {
+	var best *model.GeminiBlob
+	bestArea, bestLen := 0, 0
+	for i := range blobs {
+		area := imageprobe.PixelAreaFromBase64(blobs[i].Data)
+		size := len(blobs[i].Data)
+		if best == nil || area > bestArea || (area == bestArea && size > bestLen) {
+			best = &blobs[i]
+			bestArea, bestLen = area, size
+		}
+	}
+	return best
+}
+
+// geminiValidAspectRatio 只接受 "16:9" 这种形状。客户端把字段写错时宁可忽略
+// （退回工具参数或上游默认档），也不要原样发给上游换来一个 400。
+func geminiValidAspectRatio(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return ""
+	}
+	parts := strings.Split(value, ":")
+	if len(parts) != 2 {
+		return ""
+	}
+	for _, side := range parts {
+		if side == "" {
+			return ""
+		}
+		for _, r := range side {
+			if r < '0' || r > '9' {
+				return ""
+			}
+		}
+	}
+	return value
 }
