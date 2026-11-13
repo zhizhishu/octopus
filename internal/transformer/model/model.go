@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/zhizhishu/octopus/internal/modelcatalog"
 )
 
 type APIFormat string
@@ -578,6 +580,9 @@ func (r *InternalLLMRequest) IsImageGenerationRequest() bool {
 }
 
 func isImageGenerationModelName(name string) bool {
+	if metadata, ok := modelcatalog.Lookup(name); ok && metadata.ImageGeneration {
+		return true
+	}
 	name = strings.ToLower(strings.TrimSpace(name))
 	if name == "" {
 		return false

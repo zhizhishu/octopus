@@ -3,6 +3,8 @@ package behavior
 import (
 	"sort"
 	"strings"
+
+	"github.com/zhizhishu/octopus/internal/modelcatalog"
 )
 
 // isAlnumByte 判断小写化文本里的字节是否为字母或数字。
@@ -94,8 +96,13 @@ func InferFamilies(text string) []string {
 	if lower == "" {
 		return nil
 	}
+	registered, registeredOK := modelcatalog.Lookup(text)
 	var out []string
 	for _, name := range familyNames() {
+		if registeredOK && registered.Family == name {
+			out = append(out, name)
+			continue
+		}
 		for _, alias := range familyAliases[name] {
 			hit := strings.Contains(lower, alias)
 			if name == "xai" {

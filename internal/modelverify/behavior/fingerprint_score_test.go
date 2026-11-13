@@ -251,8 +251,8 @@ func TestFingerprintProbeEndToEnd(t *testing.T) {
 	if samples, _ := res.Data["fingerprint_samples"].([]map[string]any); len(samples) != 3 || samples[0]["language"] == nil {
 		t.Fatalf("样本小卡数据不全: %v", res.Data["fingerprint_samples"])
 	}
-	if candidates, _ := res.Data["fingerprint_candidates"].([]map[string]any); len(candidates) != 64 {
-		t.Fatalf("应带上全部 64 个候选，实际 %d", len(candidates))
+	if candidates, _ := res.Data["fingerprint_candidates"].([]map[string]any); len(candidates) != 70 {
+		t.Fatalf("应带上全部 70 个候选，实际 %d", len(candidates))
 	}
 	// 三条题目互不相同（随机出题）。
 	if sender.prompts[0] == sender.prompts[1] || sender.prompts[1] == sender.prompts[2] {

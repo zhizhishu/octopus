@@ -43,8 +43,8 @@ func TestSequenceGatePassesRealModelReplies(t *testing.T) {
 	if len(a.AnomalousSamples) != 0 {
 		t.Fatalf("真模型回答不该被标异常: %v", a.AnomalousSamples)
 	}
-	if a.ModelCount != 64 {
-		t.Fatalf("参考库应有 64 个模型，得到 %d", a.ModelCount)
+	if a.ModelCount != 70 {
+		t.Fatalf("参考库应有 70 个模型，得到 %d", a.ModelCount)
 	}
 }
 

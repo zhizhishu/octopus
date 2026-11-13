@@ -1,0 +1,29 @@
+{
+  "source_repository": "https://github.com/Ikaleio/lm-detector",
+  "source_commit": "2c61f8f836de93d3ce60a9f76f8b8ff9e15011ac",
+  "bank_built_at": "2026-11-12T18:48:30.723628+00:00",
+  "model_count": 70,
+  "detector_sha256": "fe32914d74896c097c46ab4e8346224a738e59716f4190b7dc667ac639020c5f",
+  "bank_sha256": "dff79cd5d1d381b5d470f4b8dd7ddb58e1ae96b1ac09b6c8b43106aa0a880ad5",
+  "reference_sha256": "d9736030e1153a95dd01b14af2c4ded49b0c02df0017edfb85f9099b4dbad1b1",
+  "suite_sha256": "18ccae737392254cbe3bc274a01d5adc8f896a64e79d2bacac0d3ac1444f40c9",
+  "calibration": {
+    "schema": "shared-confidence-v2",
+    "method": "ranking-temperature",
+    "tau": 4.748070348990396,
+    "base_sha256": "3fbb2b979b905b3c21ace1343a9ce8f35a47fc9c97530d71a75ee8d5615ebd68",
+    "reference_sha256": "d9736030e1153a95dd01b14af2c4ded49b0c02df0017edfb85f9099b4dbad1b1"
+  },
+  "fixture_sources": [
+    "claude-opus-4.6",
+    "glm-5.3",
+    "qwen3.8-max-0902",
+    "kimi-k3",
+    "gpt-5.5",
+    "gemini-3.1-pro-preview",
+    "gemini-4-argon",
+    "gemini-4-carbon",
+    "gemini-4-hydrogen"
+  ],
+  "note": "Closed-set relative scores and probabilities are not proof of model identity. All expected values are exported from the reference TypeScript."
+}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/zhizhishu/octopus/internal/modelcatalog"
 	"github.com/zhizhishu/octopus/internal/modelverify/fingerprint"
 )
 
@@ -213,7 +214,7 @@ func fingerprintFindings(res Result, requestedModel string) []Finding {
 func declaredMatches(analysis *fingerprint.Analysis, declared []string) bool {
 	// 调用方已保证 declared 非空（空的情况在上面单独处理成"无法比较"）。
 	for _, family := range declared {
-		if family == analysis.Family {
+		if modelcatalog.SameFamily(family, analysis.Family) {
 			return true
 		}
 	}
@@ -273,7 +274,7 @@ func normalizeModelName(name string) string {
 // sameFamily 判断某个家族是否落在声明型号的家族范围内。
 func sameFamily(family, requestedModel string) bool {
 	for _, declared := range InferFamilies(requestedModel) {
-		if declared == family {
+		if modelcatalog.SameFamily(declared, family) {
 			return true
 		}
 	}
