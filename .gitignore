@@ -64,3 +64,6 @@ client-key.txt
 **/keys.json
 **/keys.env
 **/*credentials*.json
+
+# Local pre-generation backup
+*.bak-pregen
