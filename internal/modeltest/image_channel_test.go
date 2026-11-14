@@ -2,6 +2,7 @@ package modeltest
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -56,6 +57,7 @@ type recordedUpstreamRequest struct {
 	method        string
 	path          string
 	body          map[string]any
+	rawBody       []byte
 	authorization string
 	userAgent     string
 	contentType   string
@@ -69,8 +71,12 @@ func imageTestUpstream(t *testing.T) (*httptest.Server, func() []recordedUpstrea
 		recorded []recordedUpstreamRequest
 	)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rawBody, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read upstream body: %v", err)
+		}
 		var body map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if err := json.Unmarshal(rawBody, &body); err != nil {
 			t.Errorf("decode upstream body: %v", err)
 		}
 		mu.Lock()
@@ -78,6 +84,7 @@ func imageTestUpstream(t *testing.T) (*httptest.Server, func() []recordedUpstrea
 			method:        r.Method,
 			path:          r.URL.Path,
 			body:          body,
+			rawBody:       rawBody,
 			authorization: r.Header.Get("Authorization"),
 			userAgent:     r.Header.Get("User-Agent"),
 			contentType:   r.Header.Get("Content-Type"),
@@ -168,6 +175,10 @@ func TestRunChannelImageEndpointGoesThroughRealImagesPath(t *testing.T) {
 		t.Fatalf("目标上游必须恰好收到 1 条请求, got %d", len(hits))
 	}
 	hit := hits[0]
+	const defaultBody = `{"model":"gpt-image-1","n":1,"prompt":"a cute cat","size":"1024x1024"}`
+	if string(hit.rawBody) != defaultBody {
+		t.Fatalf("default image-test bytes changed: got %s, want %s", hit.rawBody, defaultBody)
+	}
 	if hit.method != http.MethodPost {
 		t.Fatalf("上游方法 = %q, want POST", hit.method)
 	}
@@ -181,7 +192,7 @@ func TestRunChannelImageEndpointGoesThroughRealImagesPath(t *testing.T) {
 		t.Fatalf("上游 Content-Type = %q, want application/json", hit.contentType)
 	}
 	if hit.body["prompt"] != "a cute cat" {
-		t.Fatalf("上游 prompt = %#v, want a cute cat（照 new-api）", hit.body["prompt"])
+		t.Fatalf("上游 prompt = %#v, want a cute cat", hit.body["prompt"])
 	}
 	if hit.body["n"] != float64(1) {
 		t.Fatalf("上游 n = %#v, want 1", hit.body["n"])

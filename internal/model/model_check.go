@@ -8,6 +8,8 @@ type ModelTestRequest struct {
 	Endpoint             string   `json:"endpoint,omitempty"`
 	TestUpstreamEndpoint bool     `json:"test_upstream_endpoint,omitempty"`
 	Prompt               string   `json:"prompt,omitempty"`
+	Size                 string   `json:"size,omitempty"`
+	Quality              string   `json:"quality,omitempty"`
 	Stream               *bool    `json:"stream,omitempty"`
 	Concurrency          int      `json:"concurrency,omitempty"`
 	TimeoutSeconds       int      `json:"timeout_seconds,omitempty"`
@@ -22,6 +24,8 @@ type ChannelTestRequest struct {
 	Endpoint             string  `json:"endpoint,omitempty"`
 	TestUpstreamEndpoint bool    `json:"test_upstream_endpoint,omitempty"`
 	Prompt               string  `json:"prompt,omitempty"`
+	Size                 string  `json:"size,omitempty"`
+	Quality              string  `json:"quality,omitempty"`
 	Stream               *bool   `json:"stream,omitempty"`
 	TimeoutSeconds       int     `json:"timeout_seconds,omitempty"`
 	// Concurrency bounds the parallel per-model workers for a multi-model channel

@@ -340,6 +340,8 @@ func testChannel(c *gin.Context) {
 		Endpoint:             request.Endpoint,
 		TestUpstreamEndpoint: request.TestUpstreamEndpoint,
 		Prompt:               request.Prompt,
+		Size:                 request.Size,
+		Quality:              request.Quality,
 		Stream:               request.Stream,
 		TimeoutSeconds:       request.TimeoutSeconds,
 		Concurrency:          request.Concurrency,

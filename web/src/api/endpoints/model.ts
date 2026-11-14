@@ -46,6 +46,8 @@ export interface ModelTestRequest {
     access_plan_slug?: string;
     endpoint?: string;
     prompt?: string;
+    size?: string;
+    quality?: string;
     stream?: boolean;
     concurrency?: number;
     timeout_seconds?: number;

@@ -643,9 +643,9 @@ func geminiImageConfigFromRequest(request *model.InternalLLMRequest) *model.Gemi
 		return nil
 	}
 	cfg := &model.GeminiImageConfig{}
-	// 优先级照参考实现（CPA 的 gemini translator、new-api 的 extra_body.google.image_config、
-	// Requesty 文档）：客户端在 body 里显式写的 image_config 说话最响；OpenAI 的
-	// image_generation 工具参数只在客户端没写时才补位。
+	// 客户端显式 image_config 优先；image_generation 工具参数只在未给时补位。
+	// 决策：未给图像档位时由上游决定，不注入 1K/2K/4K 默认档；只有宽高比
+	// 也不补 image_size，避免改变既有 chat 请求的行为。
 	if explicit := geminiImageConfigFromMetadata(request); explicit != nil {
 		cfg.AspectRatio = explicit.AspectRatio
 		cfg.ImageSize = explicit.ImageSize

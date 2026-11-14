@@ -9,6 +9,7 @@ import { toast } from '@/components/common/Toast';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import {
     Table,
@@ -89,6 +90,8 @@ function AdvancedChannelTestDialog({
     const [endpoints, setEndpoints] = useState<Set<ModelTestEndpoint>>(() => new Set<ModelTestEndpoint>([defaultEndpoint]));
     const [models, setModels] = useState<Set<string>>(() => new Set(allModels.slice(0, 1)));
     const [streamTest, setStreamTest] = useState(true);
+    const [imageSize, setImageSize] = useState('default');
+    const [imageQuality, setImageQuality] = useState('default');
     const [filter, setFilter] = useState('');
     const [results, setResults] = useState<Record<string, CellResult>>({});
     const [summaries, setSummaries] = useState<Record<string, CellSummary>>({});
@@ -295,6 +298,8 @@ function AdvancedChannelTestDialog({
                             test_upstream_endpoint: true,
                             endpoint,
                             prompt,
+                            ...(isImageTestEndpoint(endpoint) && imageSize !== 'default' ? { size: imageSize } : {}),
+                            ...(isImageTestEndpoint(endpoint) && imageQuality !== 'default' ? { quality: imageQuality } : {}),
                             stream: streamLock.streamFor(endpoint, streamTest),
                             timeout_seconds: DEFAULT_MODEL_TEST_TIMEOUT_SECONDS,
                             audit_log: !summaryMode,
@@ -450,6 +455,38 @@ function AdvancedChannelTestDialog({
                                     <span className="text-xs text-muted-foreground">身份解析失败，测试仍按渠道真实 profile 进行</span>
                                 )}
                             </div>
+                        </div>
+                    )}
+
+                    {streamLock.includesImage && (
+                        <div className="space-y-2">
+                            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                            <div className="space-y-1">
+                                <label htmlFor={`channel-test-size-${channel.id}`} className="text-xs text-muted-foreground">图片尺寸</label>
+                                <Select value={imageSize} onValueChange={setImageSize} disabled={testing}>
+                                    <SelectTrigger id={`channel-test-size-${channel.id}`} className="h-8 rounded-xl text-xs"><SelectValue /></SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="default">默认（1024 × 1024）</SelectItem>
+                                        {['1024x1024', '1536x1024', '1024x1536', '1792x1024', '1024x1792'].map((value) => (
+                                            <SelectItem key={value} value={value}>{value}</SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+                            <div className="space-y-1">
+                                <label htmlFor={`channel-test-quality-${channel.id}`} className="text-xs text-muted-foreground">分辨率 / 质量</label>
+                                <Select value={imageQuality} onValueChange={setImageQuality} disabled={testing}>
+                                    <SelectTrigger id={`channel-test-quality-${channel.id}`} className="h-8 rounded-xl text-xs"><SelectValue /></SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="default">上游默认（不指定）</SelectItem>
+                                        {['1K', '2K', '4K', 'low', 'medium', 'high', 'standard', 'hd'].map((value) => (
+                                            <SelectItem key={value} value={value}>{value}</SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+                        </div>
+                            <p className="text-xs text-muted-foreground">仅用于本次图片测试；不同模型支持的尺寸和质量可能不同。</p>
                         </div>
                     )}
 

@@ -394,8 +394,12 @@ export function ChannelForm({
     }, [sortedFingerprintProfiles, fallbackProfileId, formData, onFormDataChange]);
     const [channelTestResult, setChannelTestResult] = useState<ModelTestResult | null>(null);
     const [testEndpoint, setTestEndpoint] = useState<ModelTestEndpoint>(() => defaultModelTestEndpointForChannel(formData.type));
+    const [testImageSize, setTestImageSize] = useState('default');
+    const [testImageQuality, setTestImageQuality] = useState('default');
     useEffect(() => {
         setTestEndpoint(defaultModelTestEndpointForChannel(formData.type));
+        setTestImageSize('default');
+        setTestImageQuality('default');
         setChannelTestResult(null);
     }, [channelId, formData.type]);
 
@@ -518,6 +522,8 @@ export function ChannelForm({
                 endpoint: testEndpoint,
                 test_upstream_endpoint: true,
                 prompt: makeModelTestPrompt(testEndpoint),
+                ...(isImageTestEndpoint(testEndpoint) && testImageSize !== 'default' ? { size: testImageSize } : {}),
+                ...(isImageTestEndpoint(testEndpoint) && testImageQuality !== 'default' ? { quality: testImageQuality } : {}),
                 stream: undefined,
                 timeout_seconds: DEFAULT_MODEL_TEST_TIMEOUT_SECONDS,
             },
@@ -1246,7 +1252,36 @@ export function ChannelForm({
                 </div>
                 <p className="text-xs text-muted-foreground">选择这次要访问的上游接口，不会修改渠道配置。</p>
                 {isImageTestEndpoint(testEndpoint) && (
-                    <p className="text-xs text-amber-700 dark:text-amber-400">会真实生成1张图片并消耗额度；当前只测生成，不测图片编辑。</p>
+                    <div className="space-y-2">
+                        <p className="text-xs text-amber-700 dark:text-amber-400">会真实生成1张图片并消耗额度；当前只测生成，不测图片编辑。</p>
+                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                            <div className="space-y-1">
+                                <label htmlFor={`${idPrefix}-test-image-size`} className="text-xs text-muted-foreground">图片尺寸</label>
+                                <Select value={testImageSize} onValueChange={setTestImageSize} disabled={channelTest.isPending}>
+                                    <SelectTrigger id={`${idPrefix}-test-image-size`} className="h-8 rounded-xl text-xs"><SelectValue /></SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="default">默认（1024 × 1024）</SelectItem>
+                                        {['1024x1024', '1536x1024', '1024x1536', '1792x1024', '1024x1792'].map((value) => (
+                                            <SelectItem key={value} value={value}>{value}</SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+                            <div className="space-y-1">
+                                <label htmlFor={`${idPrefix}-test-image-quality`} className="text-xs text-muted-foreground">分辨率 / 质量</label>
+                                <Select value={testImageQuality} onValueChange={setTestImageQuality} disabled={channelTest.isPending}>
+                                    <SelectTrigger id={`${idPrefix}-test-image-quality`} className="h-8 rounded-xl text-xs"><SelectValue /></SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="default">上游默认（不指定）</SelectItem>
+                                        {['1K', '2K', '4K', 'low', 'medium', 'high', 'standard', 'hd'].map((value) => (
+                                            <SelectItem key={value} value={value}>{value}</SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+                        </div>
+                        <p className="text-xs text-muted-foreground">仅用于本次图片测试；不同模型支持的尺寸和质量可能不同。</p>
+                    </div>
                 )}
                 {isCustomOpenAIChat(formData.type) && (
                     <p className="text-xs text-muted-foreground">

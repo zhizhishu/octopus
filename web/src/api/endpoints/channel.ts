@@ -264,6 +264,8 @@ export type ChannelTestRequest = {
     model?: string;
     endpoint?: string;
     prompt?: string;
+    size?: string;
+    quality?: string;
     stream?: boolean;
     timeout_seconds?: number;
 };

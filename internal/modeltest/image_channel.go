@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	// 图片探针的固定请求形状，照 new-api controller/channel-test.go：
+	// 图片探针未选参数时保持既有请求形状：
 	// Prompt "a cute cat"、N 1、Size "1024x1024"。
 	imageTestPrompt = "a cute cat"
 	imageTestN      = 1
@@ -117,19 +117,27 @@ func (r *modelRunner) forwardImageTest(ctx context.Context, channel *dbmodel.Cha
 	// 统一的判定口径——gpt-image 系列推的是 image_generation.partial_image 事件，
 	// 别的厂商干脆只在最后一帧给 data[]，而 relay 的 Images 流式分支（proxySSE）
 	// 是原样透传。若在这里按流式打，结果解析只能猜形状，猜错就会把一条好渠道报成
-	// "上游没给图片数据"。所以探针与 new-api 保持一致：一条普通的非流式 ImageRequest。
+	// "上游没给图片数据"。因此图片探针发送普通的非流式 ImageRequest。
 	// 流式图片渠道要测，得先定义清楚 SSE 判定口径，那是另一轮的事（已写进交接报告）。
 	stream := false
 	prompt := strings.TrimSpace(r.request.Prompt)
 	if prompt == "" || prompt == defaultPromptSentinel {
 		prompt = imageTestPrompt
 	}
-	body, err := json.Marshal(map[string]any{
+	size := strings.TrimSpace(r.request.Size)
+	if size == "" {
+		size = imageTestSize
+	}
+	payload := map[string]any{
 		"model":  upstreamModel,
 		"prompt": prompt,
 		"n":      imageTestN,
-		"size":   imageTestSize,
-	})
+		"size":   size,
+	}
+	if quality := strings.TrimSpace(r.request.Quality); quality != "" {
+		payload["quality"] = quality
+	}
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return imageTestOutcome{stream: stream, err: fmt.Errorf("build images request: %w", err)}
 	}
