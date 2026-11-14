@@ -129,7 +129,7 @@ export function SettingInfo() {
                 </Button>
             </div>
             {/* GitHub 仓库 */}
-            <div className="flex items-center justify-between gap-4">
+            <div className="flex flex-col items-start gap-1 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
                 <div className="flex items-center gap-3">
                     <Github className="h-5 w-5 text-muted-foreground" />
                     <span className="text-sm font-medium">{t('info.github')}</span>
@@ -138,14 +138,14 @@ export function SettingInfo() {
                     href={GITHUB_REPO}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-sm text-primary hover:underline"
+                    className="inline-flex min-h-11 max-w-full items-center break-all text-sm text-primary hover:underline sm:min-h-0"
                 >
                     {GITHUB_REPO.replace('https://github.com/', '')}
                 </a>
             </div>
             {/* 版本来源 */}
             {latestInfo?.source_repo && (
-                <div className="flex items-center justify-between gap-4">
+                <div className="flex flex-col items-start gap-1 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
                     <div className="flex items-center gap-3">
                         <Tag className="h-5 w-5 text-muted-foreground" />
                         <span className="text-sm font-medium">{t('info.versionSource')}</span>
@@ -154,7 +154,7 @@ export function SettingInfo() {
                         href={latestInfo.source_repo}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="text-sm text-primary hover:underline"
+                        className="inline-flex min-h-11 max-w-full items-center break-all text-sm text-primary hover:underline sm:min-h-0"
                     >
                         {latestInfo.source_repo.replace('https://github.com/', '')}
                     </a>

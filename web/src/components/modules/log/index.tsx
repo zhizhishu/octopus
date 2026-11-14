@@ -1246,7 +1246,7 @@ export function Log() {
                     aria-selected={logPanel === id}
                     onClick={() => setLogPanel(id)}
                     className={cn(
-                        'inline-flex h-8 items-center justify-center gap-1.5 rounded-lg px-2.5 text-xs font-medium whitespace-nowrap transition-colors',
+                        'inline-flex h-11 items-center justify-center gap-1.5 rounded-lg px-2.5 text-xs font-medium whitespace-nowrap transition-colors sm:h-8',
                         logPanel === id
                             ? 'bg-background text-foreground shadow-sm'
                             : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'
@@ -1308,14 +1308,14 @@ export function Log() {
                             onChange={(e) => { setSearchKeyword(e.target.value); setCurrentPage(1); }}
                             placeholder="搜索请求 ID / 令牌 / 错误信息…"
                             title="可搜索用户名、API Key 名、请求/实际模型名、渠道名、端点名、路径、会话 Key、错误信息及错误码；输入纯数字时额外精准匹配日志 ID 或渠道 ID"
-                            className="h-10 w-full rounded-lg border border-input bg-background pl-8 pr-9 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring sm:h-9 sm:pr-7"
+                            className="h-11 w-full rounded-lg border border-input bg-background pl-8 pr-11 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring sm:h-9 sm:pr-7"
                         />
                         {searchKeyword && (
                             <button
                                 type="button"
                                 onClick={() => { setSearchKeyword(''); setCurrentPage(1); }}
                                 aria-label="清空搜索"
-                                className="absolute right-1 top-1/2 grid size-8 -translate-y-1/2 place-items-center rounded-full text-muted-foreground transition-colors hover:text-foreground sm:right-1.5 sm:size-5"
+                                className="absolute right-0 top-1/2 grid size-11 -translate-y-1/2 place-items-center rounded-full text-muted-foreground transition-colors hover:text-foreground sm:right-1.5 sm:size-5"
                             >
                                 <X className="size-3" />
                             </button>
@@ -1327,7 +1327,7 @@ export function Log() {
                         aria-expanded={mobileFiltersOpen}
                         aria-label={mobileFiltersOpen ? '收起筛选' : '展开筛选'}
                         className={cn(
-                            'inline-flex h-10 shrink-0 items-center gap-1 rounded-lg border px-3 text-xs transition-colors sm:hidden',
+                            'inline-flex h-11 shrink-0 items-center gap-1 rounded-lg border px-3 text-xs transition-colors sm:hidden',
                             mobileFiltersOpen || hasActiveFilter
                                 ? 'border-primary/40 bg-primary/10 text-primary'
                                 : 'border-input bg-background text-muted-foreground'
@@ -1343,7 +1343,7 @@ export function Log() {
                         aria-label="端点"
                         value={selectedEndpoint}
                         onChange={(event) => handleSelectEndpoint(event.target.value)}
-                        className="h-10 sm:h-9 min-w-0 w-full rounded-lg border border-input bg-background px-2 text-xs text-foreground outline-none sm:px-3"
+                        className="h-11 sm:h-9 min-w-0 w-full rounded-lg border border-input bg-background px-2 text-xs text-foreground outline-none sm:px-3"
                     >
                         {endpointFilters.map((endpoint) => (
                             <option key={endpoint.value || 'all'} value={endpoint.value}>
@@ -1355,7 +1355,7 @@ export function Log() {
                         aria-label="厂商"
                         value={selectedProvider}
                         onChange={(event) => handleSelectProvider(event.target.value)}
-                        className="h-10 sm:h-9 min-w-0 w-full rounded-lg border border-input bg-background px-2 text-xs text-foreground outline-none sm:px-3"
+                        className="h-11 sm:h-9 min-w-0 w-full rounded-lg border border-input bg-background px-2 text-xs text-foreground outline-none sm:px-3"
                     >
                         {providerFilters.map((provider) => (
                             <option key={provider.value || 'all'} value={provider.value}>
@@ -1367,7 +1367,7 @@ export function Log() {
                         aria-label="模型"
                         value={selectedModel}
                         onChange={(event) => handleSelectModel(event.target.value)}
-                        className="h-10 sm:h-9 min-w-0 w-full rounded-lg border border-input bg-background px-2 text-xs text-foreground outline-none sm:px-3"
+                        className="h-11 sm:h-9 min-w-0 w-full rounded-lg border border-input bg-background px-2 text-xs text-foreground outline-none sm:px-3"
                     >
                         <option value="">全部模型</option>
                         {availableModelOptions.map((modelName) => (
@@ -1385,7 +1385,7 @@ export function Log() {
                                 setMismatchFilter(next);
                                 setCurrentPage(1);
                             }}
-                            className="h-10 sm:h-9 min-w-0 w-full rounded-lg border border-input bg-background px-2 text-xs text-foreground outline-none sm:px-3"
+                            className="h-11 sm:h-9 min-w-0 w-full rounded-lg border border-input bg-background px-2 text-xs text-foreground outline-none sm:px-3"
                         >
                             <option value="all">{t('list.filters.echoAll')}</option>
                             <option value="mismatch">{t('list.filters.mismatch')}</option>
@@ -1409,7 +1409,7 @@ export function Log() {
                                         aria-pressed={active}
                                         onClick={() => applyDateRangeShortcut(shortcut.id)}
                                         className={cn(
-                                            'inline-flex h-9 flex-1 items-center justify-center rounded-lg px-2 text-xs font-medium whitespace-nowrap transition-colors sm:h-8 sm:flex-none sm:px-2.5',
+                                            'inline-flex h-11 flex-1 items-center justify-center rounded-lg px-2 text-xs font-medium whitespace-nowrap transition-colors sm:h-8 sm:flex-none sm:px-2.5',
                                             active
                                                 ? 'bg-background text-foreground shadow-sm'
                                                 : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'
@@ -1428,7 +1428,7 @@ export function Log() {
                                     title={startDate && endDate ? `${startDate} ~ ${endDate}` : '选择日期（最长 90 天）'}
                                     aria-label="选择日期范围"
                                     className={cn(
-                                        'h-9 w-9 shrink-0 rounded-lg sm:h-8 sm:w-8',
+                                        'h-11 w-11 shrink-0 rounded-lg sm:h-8 sm:w-8',
                                         !activeDateShortcut && startDate ? 'border-foreground/25 bg-foreground/[0.06]' : ''
                                     )}
                                 >
@@ -1464,7 +1464,7 @@ export function Log() {
                                         setCurrentPage(1);
                                     }}
                                     className={cn(
-                                        'inline-flex h-9 min-w-0 flex-1 items-center justify-center gap-1 rounded-lg px-1.5 text-xs font-medium whitespace-nowrap transition-colors sm:h-8 sm:flex-none sm:gap-1.5 sm:px-2',
+                                        'inline-flex h-11 min-w-0 flex-1 items-center justify-center gap-1 rounded-lg px-1.5 text-xs font-medium whitespace-nowrap transition-colors sm:h-8 sm:flex-none sm:gap-1.5 sm:px-2',
                                         active
                                             ? 'bg-background text-foreground shadow-sm'
                                             : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'
@@ -1569,7 +1569,7 @@ export function Log() {
                             onClick={() => setSensitiveVisible(!sensitiveVisible)}
                             title={sensitiveVisible ? t('list.hideSensitive') : t('list.showSensitive')}
                             aria-label={sensitiveVisible ? t('list.hideSensitive') : t('list.showSensitive')}
-                            className="h-8 w-8 rounded-lg border border-border bg-background text-muted-foreground hover:text-foreground dark:bg-card max-sm:h-10 max-sm:w-10"
+                            className="h-8 w-8 rounded-lg border border-border bg-background text-muted-foreground hover:text-foreground dark:bg-card max-sm:h-11 max-sm:w-11"
                         >
                             {sensitiveVisible ? <Eye className="size-4" /> : <EyeOff className="size-4" />}
                         </Button>
@@ -1586,7 +1586,7 @@ export function Log() {
                             }}
                             title={exportLogs.isPending ? '取消导出' : t('list.export')}
                             aria-label={exportLogs.isPending ? '取消导出' : t('list.export')}
-                            className="relative h-8 w-8 rounded-lg border border-border bg-background text-muted-foreground hover:text-foreground dark:bg-card max-sm:h-10 max-sm:w-10"
+                            className="relative h-8 w-8 rounded-lg border border-border bg-background text-muted-foreground hover:text-foreground dark:bg-card max-sm:h-11 max-sm:w-11"
                         >
                             {exportLogs.isPending ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}
                             {exportLogs.isPending && (
@@ -1624,7 +1624,7 @@ export function Log() {
                             size="sm"
                             onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
                             disabled={currentPage <= 1 || isLoading}
-                            className="h-9 flex-1 rounded-lg"
+                            className="h-11 flex-1 rounded-lg"
                         >
                             <ChevronLeft className="size-4" />
                             <span>上一页</span>
@@ -1635,7 +1635,7 @@ export function Log() {
                             size="sm"
                             onClick={() => totalPages !== undefined && setCurrentPage((p) => Math.min(totalPages, p + 1))}
                             disabled={totalPages === undefined || currentPage >= totalPages || isLoading}
-                            className="h-9 flex-1 rounded-lg"
+                            className="h-11 flex-1 rounded-lg"
                         >
                             <span>下一页</span>
                             <ChevronRight className="size-4" />

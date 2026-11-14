@@ -1302,7 +1302,7 @@ const RequestFlowCard = memo(function RequestFlowCard({ data }: NodeProps<Reques
                     type="button"
                     variant="outline"
                     size="sm"
-                    className="nodrag nopan pointer-events-auto h-6 gap-1 rounded-lg border-amber-500/30 bg-transparent px-2 text-[11px] text-amber-700 hover:bg-amber-500/15 dark:text-amber-200"
+                    className="nodrag nopan pointer-events-auto hidden h-6 gap-1 rounded-lg border-amber-500/30 bg-transparent px-2 text-[11px] text-amber-700 hover:bg-amber-500/15 dark:text-amber-200 sm:inline-flex"
                     onClick={() => data.onEditRequest(data.editTarget)}
                     onPointerDown={(event) => event.stopPropagation()}
                 >
@@ -1346,7 +1346,7 @@ const TargetFlowCard = memo(function TargetFlowCard({ data }: NodeProps<TargetFl
                         <>
                             <span className="shrink-0 font-medium text-foreground/80">{accessPlanText('routes.orderLabel', { order: data.orderIndex })}</span>
                             <div
-                                className="nodrag nopan pointer-events-auto ml-0.5 inline-flex shrink-0 items-center gap-0.5"
+                                className="nodrag nopan pointer-events-auto ml-0.5 hidden shrink-0 items-center gap-0.5 sm:inline-flex"
                                 onPointerDown={(event) => event.stopPropagation()}
                                 onPointerEnter={(event) => { if (event.pointerType === 'mouse') data.onPriorityHover?.(true); }}
                                 onPointerLeave={() => data.onPriorityHover?.(false)}
@@ -1385,7 +1385,7 @@ const TargetFlowCard = memo(function TargetFlowCard({ data }: NodeProps<TargetFl
                         <>
                             <span className="shrink-0 font-medium text-foreground/80">{accessPlanText('routes.priorityLabel')}</span>
                             <div
-                                className="nodrag nopan pointer-events-auto ml-0.5 inline-flex shrink-0 items-center gap-0.5"
+                                className="nodrag nopan pointer-events-auto ml-0.5 hidden shrink-0 items-center gap-0.5 sm:inline-flex"
                                 onPointerDown={(event) => event.stopPropagation()}
                                 onPointerEnter={(event) => { if (event.pointerType === 'mouse') data.onPriorityHover?.(true); }}
                                 onPointerLeave={() => data.onPriorityHover?.(false)}
@@ -2108,6 +2108,57 @@ function RouteFlowCanvasInner({
                             </button>
                         </Panel>
                     </ReactFlow>
+                </div>
+            )}
+            {/* The scaled React Flow graph is an overview on phones. Use full-sized,
+                unscaled actions in document flow for route priority and editing. */}
+            {filteredRows.length > 0 && (
+                <div className="space-y-3 border-t border-border/70 px-3 py-4 sm:hidden" aria-label={t('routes.canvasTitle')}>
+                    {filteredRows.map((row) => (
+                        <article key={row.requestKey || row.requestModel} className="space-y-2 rounded-xl border border-border/70 bg-card p-3">
+                            <div className="flex items-start justify-between gap-2">
+                                <div className="min-w-0 flex-1">
+                                    <div className="break-all font-mono text-xs font-semibold">{row.requestModel}</div>
+                                    <div className="mt-1 text-xs text-muted-foreground">
+                                        {t(isSpreadMode(row.mode) ? 'routes.modeSpread' : 'routes.modeFillFirst')}
+                                    </div>
+                                </div>
+                                <Button type="button" variant="outline" size="sm" className="h-11 shrink-0"
+                                    onClick={() => onEditRequest(row.requestModel)}>
+                                    <PencilLine className="size-4" />{t('routes.quickEdit')}
+                                </Button>
+                            </div>
+                            {row.targets.map((target, index) => {
+                                const priority = clampRoutePriority(displayPriority(target, row.mode));
+                                const spread = isSpreadMode(row.mode);
+                                const lower = spread ? priority - 1 : priority + 1;
+                                const higher = spread ? priority + 1 : priority - 1;
+                                return (
+                                    <div key={target.id || index}
+                                        className="flex min-w-0 flex-wrap items-center justify-between gap-2 rounded-lg bg-muted/40 p-2">
+                                        <div className="min-w-0 flex-1">
+                                            <div className="break-words text-sm font-medium">
+                                                {channelNameByID.get(target.channel_id) ?? t('routes.missingChannel', { id: target.channel_id })}
+                                            </div>
+                                            <div className="break-all text-xs text-muted-foreground">{target.upstream_model}</div>
+                                        </div>
+                                        <div className="flex shrink-0 items-center gap-1">
+                                            <Button type="button" variant="outline" size="icon" className="size-11"
+                                                disabled={!target.id || (spread ? priority <= 1 : priority >= Number.MAX_SAFE_INTEGER)}
+                                                aria-label={t(spread ? 'routes.tierDown' : 'routes.moveDown')}
+                                                onClick={() => target.id && onPriorityChange?.(target.id, clampRoutePriority(lower))}>−</Button>
+                                            <span className="min-w-5 text-center text-xs font-semibold"
+                                                aria-label={t('routes.priorityLabel')}>{priority}</span>
+                                            <Button type="button" variant="outline" size="icon" className="size-11"
+                                                disabled={!target.id || (spread ? priority >= Number.MAX_SAFE_INTEGER : priority <= 1)}
+                                                aria-label={t(spread ? 'routes.tierUp' : 'routes.moveUp')}
+                                                onClick={() => target.id && onPriorityChange?.(target.id, clampRoutePriority(higher))}>+</Button>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </article>
+                    ))}
                 </div>
             )}
         </section>

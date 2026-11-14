@@ -232,6 +232,24 @@ html.dark,
   }
 }
 
+/* Shared mobile hit-area contract also covers older native controls. Keep
+   desktop geometry and compact inner icons/rails unchanged. Checkbox/radio
+   paint is handled by its labelled component, not inflated globally. */
+@media (max-width: 639px) {
+  button,
+  [role="button"],
+  [role="tab"],
+  [role="switch"],
+  [role="combobox"],
+  summary,
+  select,
+  textarea,
+  input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]) {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}
+
 /* 日志页自动刷新：新插进来的行淡淡亮一下再褪掉（只是视觉提示，不占位、不推挤布局）。
    画在卡片自身上（inset 阴影在背景之上、内容之下），列表滚动容器横向裁切也不影响。
    颜色用主题变量而不是 color-mix(var())——后者会被构建时的 CSS 处理整帧丢掉。 */

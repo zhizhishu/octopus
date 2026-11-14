@@ -496,7 +496,7 @@ function AdvancedChannelTestDialog({
                             checked={streamLock.switchLocked ? streamLock.allLocked : streamTest}
                             onCheckedChange={setStreamTest}
                             disabled={testing || streamLock.switchLocked}
-                            className="scale-90"
+                            className="sm:scale-90"
                         />
                         <span className="shrink-0 whitespace-nowrap">流式优先</span>
                         {streamLock.allLocked ? (

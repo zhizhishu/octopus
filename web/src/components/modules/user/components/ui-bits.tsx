@@ -34,7 +34,7 @@ export function Tip({ content, children, className, side = 'bottom', align = 'st
 export function HelpTip({ content, align }: { content: ReactNode; align?: 'start' | 'end' | 'center' }) {
     return (
         <Tip content={content} align={align}>
-            <span tabIndex={0} aria-label={typeof content === 'string' ? content : undefined} className="inline-flex size-3.5 cursor-help items-center justify-center text-muted-foreground/60 outline-none">
+            <span tabIndex={0} aria-label={typeof content === 'string' ? content : undefined} className="inline-flex size-3.5 cursor-help items-center justify-center text-muted-foreground/60 outline-none max-sm:size-11">
                 <CircleHelp className="size-3.5" />
             </span>
         </Tip>
@@ -57,12 +57,20 @@ export function Checkbox({ checked, indeterminate, onChange, label, className }:
             aria-label={label}
             onClick={(e) => { e.stopPropagation(); onChange(!checked); }}
             className={cn(
-                'inline-flex size-4 shrink-0 items-center justify-center rounded-[4px] border transition-colors',
-                on ? 'border-primary bg-primary text-primary-foreground' : 'border-input bg-background hover:border-primary/60',
+                'group/chk inline-flex size-4 shrink-0 items-center justify-center max-sm:size-11',
                 className
             )}
         >
-            {indeterminate ? <Minus className="size-3" /> : checked ? <Check className="size-3" /> : null}
+            {/* 画出来的 16px 小勾选框（非交互装饰）：手机上按钮本体扩到 44x44 真实命中区，图形保持原样。 */}
+            <span
+                aria-hidden
+                className={cn(
+                    'inline-flex size-4 shrink-0 items-center justify-center rounded-[4px] border transition-colors group-hover/chk:border-primary/60',
+                    on ? 'border-primary bg-primary text-primary-foreground' : 'border-input bg-background'
+                )}
+            >
+                {indeterminate ? <Minus className="size-3" /> : checked ? <Check className="size-3" /> : null}
+            </span>
         </button>
     );
 }
@@ -85,7 +93,7 @@ export function Seg<T extends string>({ value, options, onChange, className, ite
     size?: 'sm' | 'md';
 }) {
     return (
-        <div role="tablist" className={cn('inline-flex items-center rounded-lg bg-muted p-[3px] text-muted-foreground', size === 'sm' ? 'h-8' : 'h-9', className)}>
+        <div role="tablist" className={cn('inline-flex items-center rounded-lg bg-muted p-[3px] text-muted-foreground max-sm:h-13 max-sm:p-1', size === 'sm' ? 'h-8' : 'h-9', className)}>
             {options.map((o) => (
                 <button
                     key={o.value}

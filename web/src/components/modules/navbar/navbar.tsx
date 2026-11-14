@@ -64,7 +64,7 @@ export function NavBar({ activeItem: controlledActiveItem, setActiveItem: contro
                             aria-current={isActive ? 'page' : undefined}
                             title={label}
                             className={cn(
-                                "relative z-20 flex h-10 w-10 shrink-0 items-center justify-center gap-2 overflow-hidden rounded-2xl p-0 text-left md:h-auto md:w-32 md:justify-start md:px-3 md:py-2.5",
+                                "relative z-20 flex h-11 w-11 shrink-0 items-center justify-center gap-2 overflow-hidden rounded-2xl p-0 text-left md:h-auto md:w-32 md:justify-start md:px-3 md:py-2.5",
                                 isActive ? "text-sidebar-primary-foreground" : "text-sidebar-foreground/60 hover:bg-sidebar-accent"
                             )}
                             initial={{ opacity: 0, scale: 0.8 }}

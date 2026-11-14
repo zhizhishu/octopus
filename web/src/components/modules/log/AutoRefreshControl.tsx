@@ -39,7 +39,7 @@ export function AutoRefreshControl({
             title={t('hint')}
             onClick={() => onChange(on ? 'off' : 'live')}
             className={cn(
-                'inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring max-sm:h-10 max-sm:px-3',
+                'inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring max-sm:h-11 max-sm:px-3',
                 on
                     ? 'border-emerald-500/40 bg-emerald-500/[0.08] text-emerald-700 hover:bg-emerald-500/[0.14] dark:text-emerald-300'
                     : 'border-border bg-background text-muted-foreground hover:text-foreground dark:bg-card'
@@ -121,7 +121,7 @@ export function PendingLogsPill({ count, visible, overflowed = false, busy = fal
                 onClick={onClick}
                 disabled={busy}
                 aria-busy={busy}
-                className="pointer-events-auto inline-flex h-9 items-center gap-1.5 rounded-full border border-primary/30 bg-background/95 px-3.5 text-xs font-medium text-primary shadow-md backdrop-blur transition-colors hover:bg-primary/10 disabled:opacity-60 max-sm:h-10"
+                className="pointer-events-auto inline-flex h-9 items-center gap-1.5 rounded-full border border-primary/30 bg-background/95 px-3.5 text-xs font-medium text-primary shadow-md backdrop-blur transition-colors hover:bg-primary/10 disabled:opacity-60 max-sm:h-11"
             >
                 <ArrowUp className="size-3.5" aria-hidden />
                 {t('newCount', { count: pendingUnreadLabel(count, overflowed) })}
