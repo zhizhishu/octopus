@@ -142,6 +142,12 @@ func ImagesHandler(endpoint string, c *gin.Context) {
 
 	// 初始化 Metrics（Images 独立，避免 b64_json 内存膨胀）
 	metrics := newImagesRelayMetrics(apiKeyID, userID, c.GetString("request_ip"), requestModel, imageEndpointName(endpoint), c.Request.URL.Path)
+	metrics.quota, err = admitRelayUserQuota(c, requestModel)
+	if err != nil {
+		resp.Error(c, relayUserQuotaErrorStatus(err), err.Error())
+		return
+	}
+	defer metrics.quota.close()
 	metrics.RequestUserAgent = c.Request.UserAgent()
 	metrics.SetAccessPlan(routeResult.AccessPlan, routeResult.AccessRouteRule, routeResult.AccessRouteUsed)
 	metrics.SetClientSession(clientSession)
@@ -450,6 +456,7 @@ func (u imagesUsage) CacheInputTokenCount() int {
 }
 
 type imagesRelayMetrics struct {
+	quota *relayUserQuota
 	passthroughIdentityEvidence
 	APIKeyID         int
 	UserID           int
@@ -680,7 +687,11 @@ func (m *imagesRelayMetrics) Save(ctx context.Context, success bool, err error, 
 		log.Warnf("failed to record user relay ip: %v", err)
 	}
 	op.APIKeyRecordUse(m.APIKeyID, m.RequestIP, m.StartTime.Unix())
+	quotaCost := 0.0
 	if success {
+		quotaCost = globalStats.InputCost + globalStats.OutputCost
+	}
+	if !m.quota.finish(persistCtx, quotaCost, success) && success {
 		if err := op.UserRecordUsage(m.UserID, globalStats.InputCost+globalStats.OutputCost, persistCtx); err != nil {
 			log.Warnf("failed to record user usage: %v", err)
 		}

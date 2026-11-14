@@ -190,6 +190,10 @@ func (s *Service) Submit(ctx context.Context, input SubmitInput) (*model.BatchIm
 			ErrTooManyActiveJobs, active, settings.MaxConcurrentJobsPerOwner)
 	}
 
+	if quotaJob, handled, quotaErr := s.submitWithUserQuota(ctx, input, settings, selection); handled || quotaErr != nil {
+		return quotaJob, quotaErr
+	}
+
 	// 预扣：按"全部条目都成功"占一笔额度。终态时按实际成功数结算，多退。
 	//
 	// 按上限扣而不是按预估扣，是因为预估不出来（一条 prompt 出几张图只有上游知道）。
@@ -455,6 +459,10 @@ func (s *Service) Settle(ctx context.Context, job *model.BatchImageJob) (bool, e
 	}
 	if !model.IsTerminalBatchImageJobStatus(job.Status) {
 		return false, fmt.Errorf("batch image: settle called on non-terminal status %q", job.Status)
+	}
+
+	if handled, settled, quotaErr := s.settleWithUserQuota(ctx, job); handled || quotaErr != nil {
+		return settled, quotaErr
 	}
 
 	settlementMutex.Lock()

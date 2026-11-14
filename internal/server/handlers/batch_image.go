@@ -150,6 +150,12 @@ func writeBatchImageError(c *gin.Context, err error) {
 	}
 	// 归属缺失这类"查不到"必须是 404 而不是 403：403 等于确认这个批号存在。
 	switch {
+	case errors.Is(err, op.ErrUserQuotaExceeded):
+		resp.OpenAIError(c, http.StatusPaymentRequired, "insufficient_quota", "user_quota", err.Error())
+		return
+	case errors.Is(err, op.ErrUserQuotaModel):
+		resp.OpenAIError(c, http.StatusBadRequest, "invalid_request_error", "model_not_supported", err.Error())
+		return
 	case errors.Is(err, batchimage.ErrNotFound):
 		resp.OpenAIError(c, http.StatusNotFound, "invalid_request_error", "BATCH_IMAGE_NOT_FOUND",
 			"batch image job not found")

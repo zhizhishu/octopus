@@ -27,6 +27,7 @@ const metricsPersistTimeout = 30 * time.Second
 
 // RelayMetrics 负责最终的日志收集与持久化
 type RelayMetrics struct {
+	quota            *relayUserQuota
 	APIKeyID         int
 	UserID           int
 	RequestIP        string
@@ -486,6 +487,42 @@ func truncateUTF8(s string, limit int) string {
 	return s[:cut]
 }
 
+// logContentColumnLimit 是 request_content / response_content 这两列各自的落库字节上限。
+//
+// 与 upstreamRequestBodyLogLimit 同一个约定：只截断**存储副本**，真实上游/下游对象与
+// 出站/入站字节一个都不动。取 1 MiB 而不是 128 KiB 的理由是这两列不是"可丢的摘要"：
+// 详情页与被动检测都读它们，而内联图片在截断前已经被换成短占位符，剩下的通常是
+// 文本/工具结果。1 MiB 足以盖住正常回复，又能把 23MB 这种异常单行砍下来。
+//
+// 被动检测对超长正文的口径不受影响：op 侧在解析前就有 128 KiB 的整体上限
+// （op/log_passive.go passiveMaxEnvelopeBytes），比这个上限更早生效。
+const logContentColumnLimit = 1 << 20
+
+// logContentTruncatedMarker 是截断标记。它是**自描述**的：写明被截断，并给出截断前
+// 这一列的实际字节数，不让人误以为存下来的是完整的。
+// 注意这个数字是"这一列在剥离内联二进制/脱敏之后、截断之前的长度"，不是上游原始
+// body 的字节数（那个数只有 upstream_request_body 那一列的标记才有）。
+func logContentTruncatedMarker(before int) string {
+	return fmt.Sprintf("\n...[truncated: %d bytes before truncation]", before)
+}
+
+// capLogColumn 把一列即将落库的正文压到 logContentColumnLimit 以内。
+//
+// 调用方必须先完成剥离内联二进制与脱敏：这里只负责长度，不重新解析 JSON。
+// 标记本身也算在预算内（最终长度 <= 上限），且始终用 truncateUTF8 回退到字符边界，
+// 不会把多字节字符/emoji 切半。
+func capLogColumn(s string) string {
+	if len(s) <= logContentColumnLimit {
+		return s
+	}
+	marker := logContentTruncatedMarker(len(s))
+	keep := logContentColumnLimit - len(marker)
+	if keep < 0 {
+		keep = 0
+	}
+	return truncateUTF8(s, keep) + marker
+}
+
 func (m *RelayMetrics) SetInternalResponse(resp *transformerModel.InternalLLMResponse, actualModel string) {
 	m.InternalResponse = resp
 	m.ActualModel = actualModel
@@ -814,7 +851,12 @@ func (m *RelayMetrics) Save(ctx context.Context, success bool, err error, attemp
 	// 只有①没有②(没算出成本)不该扣; 只有②没有①(完全没交付: 选路失败/
 	// 上游 4xx/5xx/首字节前取消)也必须不扣, 否则无效请求就能烧掉用户余额。
 	totalCost := globalStats.InputCost + globalStats.OutputCost
-	if shouldBillUser(success, m.usageDelivered, totalCost) {
+	billUser := shouldBillUser(success, m.usageDelivered, totalCost)
+	quotaCost := 0.0
+	if billUser {
+		quotaCost = totalCost
+	}
+	if !m.quota.finish(persistCtx, quotaCost, success) && billUser {
 		if err := op.UserRecordUsage(m.UserID, totalCost, persistCtx); err != nil {
 			log.Warnf("failed to record user usage: %v", err)
 		}
@@ -828,9 +870,37 @@ func (m *RelayMetrics) Save(ctx context.Context, success bool, err error, attemp
 		m.Stats.InputCost, m.Stats.OutputCost, m.Stats.InputCost+m.Stats.OutputCost,
 		len(attempts), errorStatus, errorCode, errorStrategy)
 
+	if m.chatImageUsesUpstreamDefaultTier() {
+		log.Infof("image tier: upstream default (client sent none)")
+	}
+
 	m.logDiagnostics(success, duration, attempts, channelID, channelName)
 
 	m.saveLog(persistCtx, err, duration, attempts, channelID, channelName)
+}
+
+func (m *RelayMetrics) chatImageUsesUpstreamDefaultTier() bool {
+	if m == nil || m.RequestEndpoint != "chat" || m.InternalRequest == nil ||
+		!m.InternalRequest.IsImageGenerationRequest() {
+		return false
+	}
+	request := m.InternalRequest
+	var config struct {
+		ImageSize string `json:"image_size"`
+	}
+	if raw := request.TransformerMetadata["gemini_image_config"]; raw != "" {
+		if json.Unmarshal([]byte(raw), &config) == nil &&
+			transformerModel.NormalizeGeminiImageSize(config.ImageSize) != "" {
+			return false
+		}
+	}
+	for _, tool := range request.Tools {
+		if tool.ImageGeneration != nil &&
+			transformerModel.NormalizeGeminiImageSize(tool.ImageGeneration.Quality) != "" {
+			return false
+		}
+	}
+	return true
 }
 
 // logDiagnostics 在 diagnostic_mode 开启时额外打印一行各阶段耗时 + 逐次尝试原因,

@@ -230,6 +230,19 @@ func executeOneImageTask(ctx context.Context, task model.ImageTask) {
 	// 见 imageTaskPersistTimeout：结果必须落库，不跟着整轮预算一起取消。
 	persistCtx, persistCancel := context.WithTimeout(context.Background(), imageTaskPersistTimeout)
 	defer persistCancel()
+	quotaHandled, quotaChanged, quotaErr := op.UserQuotaImageTaskFinish(persistCtx, task, model.ImageTaskStatusCompleted, updates, settlement.Cost)
+	if quotaHandled || quotaErr != nil {
+		if quotaErr != nil {
+			log.Errorf("image task poll: quota settlement for task %s failed: %v", task.TaskID, quotaErr)
+			return
+		}
+		op.ImageTaskReservationRelease(task.TaskID)
+		if quotaChanged {
+			taskLog.SetSettlement(settlement)
+			taskLog.Finish(true, statusCode, resultJSON, "")
+		}
+		return
+	}
 	ok, err := op.ImageTaskStatusCAS(persistCtx, task.ID, model.ImageTaskStatusProcessing, model.ImageTaskStatusCompleted, updates)
 	if err != nil {
 		log.Warnf("image task poll: mark task %s completed failed: %v", task.TaskID, err)
@@ -272,6 +285,23 @@ func failImageTask(task model.ImageTask, reason string, taskLog *relay.ImageTask
 	// "判死并退款"如果被预算取消掉，用户的钱就留在库里等下一次机会了。
 	persistCtx, persistCancel := context.WithTimeout(context.Background(), imageTaskPersistTimeout)
 	defer persistCancel()
+	quotaHandled, quotaChanged, quotaErr := op.UserQuotaImageTaskFinish(persistCtx, task, model.ImageTaskStatusFailed, map[string]any{
+		"completed_at": time.Now().Unix(), "error_message": reason,
+	}, 0)
+	if quotaHandled || quotaErr != nil {
+		if quotaErr != nil {
+			log.Errorf("image task poll: quota refund for task %s failed: %v", task.TaskID, quotaErr)
+			return
+		}
+		op.ImageTaskReservationRelease(task.TaskID)
+		if quotaChanged {
+			if taskLog == nil {
+				taskLog = relay.NewImageTaskLog(task)
+			}
+			taskLog.Finish(false, statusCode, "", reason)
+		}
+		return
+	}
 	ok, err := op.ImageTaskStatusCAS(persistCtx, task.ID, model.ImageTaskStatusProcessing, model.ImageTaskStatusFailed, map[string]any{
 		"completed_at":  time.Now().Unix(),
 		"error_message": reason,

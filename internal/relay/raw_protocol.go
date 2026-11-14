@@ -148,6 +148,12 @@ func RawProtocolHandler(options RawProtocolOptions, c *gin.Context) {
 	}
 
 	metrics := newRawProtocolRelayMetrics(apiKeyID, userID, c.GetString("request_ip"), requestModel, options.Name, c.Request.URL.Path)
+	metrics.quota, err = admitRelayUserQuota(c, requestModel)
+	if err != nil {
+		resp.Error(c, relayUserQuotaErrorStatus(err), err.Error())
+		return
+	}
+	defer metrics.quota.close()
 	metrics.RequestUserAgent = c.Request.UserAgent()
 	metrics.SetAccessPlan(routeResult.AccessPlan, routeResult.AccessRouteRule, routeResult.AccessRouteUsed)
 	metrics.SetClientSession(clientSession)
@@ -1137,6 +1143,7 @@ func proxyOpaqueResponse(c *gin.Context, respUp *http.Response) (*imagesUsage, b
 }
 
 type rawProtocolRelayMetrics struct {
+	quota *relayUserQuota
 	passthroughIdentityEvidence
 	APIKeyID         int
 	UserID           int
@@ -1406,7 +1413,14 @@ func (m *rawProtocolRelayMetrics) Save(ctx context.Context, success bool, err er
 		log.Warnf("failed to record user relay ip: %v", err)
 	}
 	op.APIKeyRecordUse(m.APIKeyID, m.RequestIP, m.StartTime.Unix())
+	quotaCost := 0.0
 	if success {
+		quotaCost = globalStats.InputCost + globalStats.OutputCost - m.PreCharged
+	}
+	if quotaCost < 0 {
+		quotaCost = 0
+	}
+	if !m.quota.finish(persistCtx, quotaCost, success) && success {
 		if charge := globalStats.InputCost + globalStats.OutputCost - m.PreCharged; charge > 0 {
 			if err := op.UserRecordUsage(m.UserID, charge, persistCtx); err != nil {
 				log.Warnf("failed to record user usage: %v", err)

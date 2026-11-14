@@ -94,6 +94,12 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 
 	// 初始化 Metrics
 	metrics := NewRelayMetrics(apiKeyID, userID, c.GetString("request_ip"), requestModel, internalRequest)
+	metrics.quota, err = admitRelayUserQuota(c, requestModel)
+	if err != nil {
+		writeRelayErrorPreStream(c, inboundType, relayUserQuotaErrorStatus(err), "api_error", "user_quota", err.Error())
+		return
+	}
+	defer metrics.quota.close()
 	// 客户端识别: 原样快照调用端 User-Agent(落库时 512 截断)。纯观测字段——
 	// 出站 UA 仍由 header 默认值统一覆盖, 这里只回答"谁在调用"。
 	metrics.RequestUserAgent = c.Request.UserAgent()

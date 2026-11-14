@@ -259,14 +259,6 @@ func ImagesAsyncSubmit(endpoint string, c *gin.Context) {
 	//    PreConsumeBilling）；按 token 计费的模型此时算不出钱，只靠上面那笔在途预留占住
 	//    余额，完成时按上游用量结算（见 relay.ImageTaskSettle）。失败/过期原路退回。
 	cost := billing.precharge
-	if cost > 0 {
-		if derr := op.UserRecordUsage(userID, cost, ctx); derr != nil {
-			op.ImageTaskReservationRelease(taskID)
-			log.Warnf("image task submit: pre-charge failed for task %s: %v", taskID, derr)
-			resp.Error(c, http.StatusInternalServerError, "failed to charge for the image task")
-			return
-		}
-	}
 
 	now := time.Now()
 	task := model.ImageTask{
@@ -291,16 +283,32 @@ func ImagesAsyncSubmit(endpoint string, c *gin.Context) {
 		ImageCount:       billing.count,
 		BillingSnapshot:  billing.snapshotJSON(),
 	}
-	if cerr := op.ImageTaskCreate(ctx, &task); cerr != nil {
+	quotaHandled, quotaErr := op.UserQuotaImageTaskCreate(ctx, &task)
+	if quotaErr != nil {
 		op.ImageTaskReservationRelease(taskID)
+		resp.Error(c, relayUserQuotaErrorStatus(quotaErr), quotaErr.Error())
+		return
+	}
+	if !quotaHandled {
 		if cost > 0 {
-			if rerr := op.UserRefundUsage(userID, cost, ctx); rerr != nil {
-				log.Errorf("image task submit: refund after create failure for task %s failed: %v", taskID, rerr)
+			if derr := op.UserRecordUsage(userID, cost, ctx); derr != nil {
+				op.ImageTaskReservationRelease(taskID)
+				log.Warnf("image task submit: pre-charge failed for task %s: %v", taskID, derr)
+				resp.Error(c, http.StatusInternalServerError, "failed to charge for the image task")
+				return
 			}
 		}
-		log.Warnf("image task submit: create task %s failed: %v", taskID, cerr)
-		resp.Error(c, http.StatusInternalServerError, "failed to create the image task")
-		return
+		if cerr := op.ImageTaskCreate(ctx, &task); cerr != nil {
+			op.ImageTaskReservationRelease(taskID)
+			if cost > 0 {
+				if rerr := op.UserRefundUsage(userID, cost, ctx); rerr != nil {
+					log.Errorf("image task submit: refund after create failure for task %s failed: %v", taskID, rerr)
+				}
+			}
+			log.Warnf("image task submit: create task %s failed: %v", taskID, cerr)
+			resp.Error(c, http.StatusInternalServerError, "failed to create the image task")
+			return
+		}
 	}
 
 	log.Infof("image task submit: task %s created (channel=%d, model=%s, endpoint=%s)",

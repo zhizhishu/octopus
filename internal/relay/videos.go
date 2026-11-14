@@ -163,6 +163,12 @@ func VideosHandlerKind(c *gin.Context, mediaKind string) {
 	}
 
 	metrics := newRawProtocolRelayMetrics(apiKeyID, userID, c.GetString("request_ip"), requestModel, "videos", c.Request.URL.Path)
+	metrics.quota, err = admitRelayUserQuota(c, requestModel)
+	if err != nil {
+		resp.Error(c, relayUserQuotaErrorStatus(err), err.Error())
+		return
+	}
+	defer metrics.quota.close()
 	bindPassthroughIdentity(c, requestModel, &metrics.passthroughIdentityEvidence)
 	metrics.RequestUserAgent = c.Request.UserAgent() // 仅入站 UA 快照，供日志 / 用户页识别客户端
 	// 调试模式：挂记录器（只读观察，关着时 ctx 原样）。

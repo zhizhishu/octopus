@@ -26,10 +26,11 @@ import { PlanPicker } from './plan-picker';
 import { formatDateShort, useRelTime } from './shared';
 import { UserUsageTab, UsageRangeSeg } from './user-usage-tab';
 import { UserAccessTab } from './user-access';
+import { UserLimitsPanel } from './user-limits';
 import { ClientTelemetryPanel } from './user-client';
 import { Bar, HelpTip, Pill, Seg, btn, btnDanger, btnPrimary, chip, iconBtn, label } from './ui-bits';
 
-export type DrawerTab = 'profile' | 'usage' | 'access' | 'client';
+export type DrawerTab = 'profile' | 'usage' | 'access' | 'client' | 'limits';
 
 const input = 'flex h-9 w-full rounded-xl border border-input bg-background px-3 text-sm outline-none focus:border-ring disabled:opacity-60';
 
@@ -127,6 +128,7 @@ function DrawerBody({ user, plans, tab, onTabChange, onClose, onBalance, onDelet
     alertCount: number;
 }) {
     const t = useTranslations('user');
+    const limitsT = useTranslations('userLimits');
     const [draft, setDraft] = useState<Draft>(() => draftFrom(user, plans));
     const [range, setRange] = useState<UserUsageRange>('7d');
     const patch = usePatchUser();
@@ -201,9 +203,10 @@ function DrawerBody({ user, plans, tab, onTabChange, onClose, onBalance, onDelet
             <DrawerHead user={user} />
             {user && (
                 <div className="flex flex-wrap items-center justify-between gap-2 px-6 pt-4">
-                    <Seg value={tab} onChange={onTabChange} options={[
+                    <Seg value={tab} onChange={onTabChange} className="max-w-full flex-wrap" options={[
                         { value: 'profile', label: t('drawer.profile') },
                         { value: 'usage', label: t('drawer.usage') },
+                        { value: 'limits', label: limitsT('title') },
                         { value: 'access', label: <span className="inline-flex items-center gap-1">{t('access.tab')}{alertCount > 0 && <span aria-label={t('access.alertTitle')} className="size-1.5 rounded-full bg-amber-500" />}</span> },
                         { value: 'client', label: t('client.tab') },
                     ]} />
@@ -211,7 +214,9 @@ function DrawerBody({ user, plans, tab, onTabChange, onClose, onBalance, onDelet
                 </div>
             )}
             <div className="min-h-0 flex-1 overflow-y-auto px-6 pt-5 pb-6">
-                {user && tab === 'client' ? (
+                {user && tab === 'limits' ? (
+                    <UserLimitsPanel userID={user.id} />
+                ) : user && tab === 'client' ? (
                     <ClientTelemetryPanel userId={user.id} />
                 ) : user && tab === 'access' ? (
                     <UserAccessTab user={user} />

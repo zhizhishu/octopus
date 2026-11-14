@@ -665,6 +665,13 @@ func midjourneySubmitPinned(c *gin.Context, ctx context.Context, plan midjourney
 		metrics.Save(ctx, false, fmt.Errorf("midjourney origin task %s not available", plan.originTaskID), nil)
 		return
 	}
+	var quotaErr error
+	metrics.quota, quotaErr = admitRelayUserQuota(c, plan.model)
+	if quotaErr != nil {
+		writeMidjourneyError(c, relayUserQuotaErrorStatus(quotaErr), quotaErr.Error())
+		return
+	}
+	defer metrics.quota.close()
 	actualModel := plan.model
 	if mapped, ok := channel.ModelMapping[actualModel]; ok && mapped != "" {
 		actualModel = mapped
@@ -705,6 +712,12 @@ func midjourneySubmitRouted(c *gin.Context, ctx context.Context, plan midjourney
 		writeMidjourneyError(c, http.StatusServiceUnavailable, "no available channel")
 		return
 	}
+	metrics.quota, err = admitRelayUserQuota(c, plan.model)
+	if err != nil {
+		writeMidjourneyError(c, relayUserQuotaErrorStatus(err), err.Error())
+		return
+	}
+	defer metrics.quota.close()
 
 	var (
 		lastErr          error

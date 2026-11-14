@@ -2459,4 +2459,39 @@
       }
     }
   }
+,
+  "userLimits": {
+    "title": "Period limits",
+    "notConfigured": "No period limits are configured for this user.",
+    "enabled": "Period limits enabled",
+    "disabled": "Period limits disabled",
+    "five_hour": "Fixed 5-hour period",
+    "week": "Calendar week",
+    "month": "Calendar month",
+    "resets": "Resets {at}",
+    "costUsage": "Charged usage + reservations",
+    "unlimited": "Unlimited",
+    "reserved": "Reserved: {amount}",
+    "accepted": "Accepted generation units",
+    "failedAccepted": "Including {count} failed or cancelled units",
+    "pending": "{count} requests or batches are unsettled. If a request has ended or the service exited unexpectedly, an administrator must review it. Reservations are not cleared automatically.",
+    "countNote": "A synchronous request, realtime session or image task counts as one unit; a batch counts each input task. Retries and repeated idempotency keys do not add units. Queries and rejected requests do not count. Failure or cancellation after acceptance still counts.",
+    "costNote": "Cost limits control admission using charged usage plus reservations. In-progress requests still settle at their actual usage and can exceed the limit; later requests are then rejected. Refunds adjust the original period.",
+    "realtimeNote": "Realtime sessions are unavailable while this user policy is enabled. Other supported generation requests use the limits above.",
+    "enable": "Enable this user's period limits",
+    "preserveNote": "Saving, disabling or re-enabling never clears usage. The 5-hour anchor is fixed at first enablement; weeks start on Monday. Time zone and anchor cannot change after usage.",
+    "timezone": "Policy time zone (IANA)",
+    "timezoneDefault": "Use the statistics time zone at creation",
+    "costLimit": "Cost limit",
+    "requestLimit": "Accepted-unit limit",
+    "models": "Allowed request models",
+    "modelsNote": "Comma-separated request model names; leave empty for no additional model restriction. The API key's model restrictions also apply.",
+    "zeroNote": "A limit of 0 means unlimited. These settings are separate from the existing daily card allowance.",
+    "save": "Save period limits",
+    "saved": "Period limits saved",
+    "saveFailed": "Could not save period limits",
+    "invalidLimits": "Use non-negative amounts and whole request counts.",
+    "loading": "Loading period limits…",
+    "loadFailed": "Could not load period limits."
+  }
 }

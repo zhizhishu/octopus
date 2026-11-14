@@ -112,6 +112,15 @@ func GrokRealtimeHandler(c *gin.Context) {
 	apiKeyID := c.GetInt("api_key_id")
 	userID := c.GetInt("user_id")
 
+	quotaEnabled, quotaErr := op.UserQuotaEnabled(ctx, userID)
+	if quotaErr != nil {
+		resp.Error(c, http.StatusInternalServerError, "failed to read user quota policy")
+		return
+	}
+	if quotaEnabled {
+		resp.ErrorWithCode(c, http.StatusPaymentRequired, "user_quota_realtime_unavailable", op.ErrUserQuotaRealtime.Error())
+		return
+	}
 	requestModel := strings.TrimSpace(c.Query("model"))
 	if requestModel == "" {
 		requestModel = GrokRealtimeDefaultModel

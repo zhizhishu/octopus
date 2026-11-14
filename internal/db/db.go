@@ -72,6 +72,9 @@ func InitDB(dbType, dsn string, debug bool) error {
 		&model.User{},
 		&model.UserCheckIn{},
 		&model.UserBalanceLog{},
+		&model.UserQuotaPolicy{},
+		&model.UserQuotaWindow{},
+		&model.UserQuotaReceipt{},
 		&model.UserAccessSeen{},
 		// 客户端指纹：新表只走这份名单（不另写一次性迁移，理由见下面检测表的注释）。
 		&model.UserClientFingerprint{},
