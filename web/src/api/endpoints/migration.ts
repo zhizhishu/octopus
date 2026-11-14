@@ -1,9 +1,9 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { apiClient } from '../client';
 
-export type NewAPIMigrationJobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled';
+export type MigrationJobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled';
 
-export interface NewAPIMigrationSummary {
+export interface MigrationSummary {
     dry_run: boolean;
     quota_per_unit: number;
     source_users: number;
@@ -35,7 +35,7 @@ export interface NewAPIMigrationSummary {
     included_api_keys: boolean;
 }
 
-export interface NewAPIMigrationJobRequestView {
+export interface MigrationJobRequestView {
     source_type: string;
     source_dsn: string;
     source_log_type: string;
@@ -51,17 +51,17 @@ export interface NewAPIMigrationJobRequestView {
     preserve_admin_role: boolean;
 }
 
-export interface NewAPIMigrationJob {
+export interface MigrationJob {
     id: string;
-    status: NewAPIMigrationJobStatus;
+    status: MigrationJobStatus;
     stage: string;
     percent: number;
     message: string;
     apply: boolean;
     can_apply: boolean;
     fingerprint: string;
-    request: NewAPIMigrationJobRequestView;
-    summary?: NewAPIMigrationSummary;
+    request: MigrationJobRequestView;
+    summary?: MigrationSummary;
     error?: string;
     created_at: string;
     started_at?: string;
@@ -69,61 +69,26 @@ export interface NewAPIMigrationJob {
     updated_at: string;
 }
 
-export interface StartNewAPIMigrationJobRequest {
-    source_type: string;
-    source_dsn: string;
-    source_log_type?: string;
-    source_log_dsn?: string;
-    apply?: boolean;
-    confirm_apply?: boolean;
-    dry_run_job_id?: string;
-    include_logs: boolean;
-    include_api_keys: boolean;
-    quota_per_unit?: number;
-    batch_size: number;
-    conflict_strategy: 'skip' | 'merge' | 'rename';
-    password_mode: 'preserve' | 'random' | 'disabled';
-    api_key_prefix: string;
-    preserve_admin_role: boolean;
-}
-
-export function useNewAPIMigrationJobs() {
+// The frontend is a read-only view of backend migration jobs. Creation,
+// cancellation, credentials and batch orchestration stay in server operations.
+// Existing endpoint paths and JSON shapes are intentionally unchanged.
+export function useMigrationJobs() {
     return useQuery({
-        queryKey: ['migration', 'newapi', 'jobs'],
-        queryFn: async () => apiClient.get<NewAPIMigrationJob[]>('/api/v1/migration/newapi/jobs'),
+        queryKey: ['migration', 'jobs'],
+        queryFn: async () => apiClient.get<MigrationJob[]>('/api/v1/migration/newapi/jobs'),
         refetchInterval: 5000,
+        refetchIntervalInBackground: false,
+        refetchOnWindowFocus: false,
     });
 }
 
-export function useNewAPIMigrationJob(id?: string, polling = false) {
+export function useMigrationJob(id?: string, polling = false) {
     return useQuery({
-        queryKey: ['migration', 'newapi', 'job', id],
-        queryFn: async () => apiClient.get<NewAPIMigrationJob>(`/api/v1/migration/newapi/jobs/${id}`),
+        queryKey: ['migration', 'job', id],
+        queryFn: async () => apiClient.get<MigrationJob>(`/api/v1/migration/newapi/jobs/${encodeURIComponent(id ?? '')}`),
         enabled: Boolean(id),
         refetchInterval: polling ? 1500 : false,
-    });
-}
-
-export function useStartNewAPIMigrationJob() {
-    const queryClient = useQueryClient();
-    return useMutation({
-        mutationFn: async (data: StartNewAPIMigrationJobRequest) => (
-            apiClient.post<NewAPIMigrationJob>('/api/v1/migration/newapi/jobs', data)
-        ),
-        onSuccess: (job) => {
-            queryClient.invalidateQueries({ queryKey: ['migration', 'newapi', 'jobs'] });
-            queryClient.setQueryData(['migration', 'newapi', 'job', job.id], job);
-        },
-    });
-}
-
-export function useCancelNewAPIMigrationJob() {
-    const queryClient = useQueryClient();
-    return useMutation({
-        mutationFn: async (id: string) => apiClient.post<NewAPIMigrationJob>(`/api/v1/migration/newapi/jobs/${id}/cancel`, {}),
-        onSuccess: (job) => {
-            queryClient.invalidateQueries({ queryKey: ['migration', 'newapi', 'jobs'] });
-            queryClient.setQueryData(['migration', 'newapi', 'job', job.id], job);
-        },
+        refetchIntervalInBackground: false,
+        refetchOnWindowFocus: false,
     });
 }
