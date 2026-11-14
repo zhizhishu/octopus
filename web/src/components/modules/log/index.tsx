@@ -1662,20 +1662,21 @@ export function Log() {
                 requestStateConnected={requestStateConnected}
                 historyLogIDs={historyLogIDs}
             />
-            {/* 页面级单例详情弹窗：内容由快照驱动，不跟随任何一行被虚拟回收/新日志重排而卸载。
-                它真渲染时 portal 到 body，不占布局位置。 */}
-            {detailSnapshot && (
-                <LogCard
-                    log={detailSnapshot}
-                    detailOnly
-                    detailOpen={detailDialogOpen}
-                    onDetailOpenChange={onDetailOpenChange}
-                    onNavigate={navigateDetail}
-                    canNavigatePrev={detailCanPrev}
-                    canNavigateNext={detailCanNext}
-                />
-            )}
             <div ref={listShellRef} tabIndex={-1} className="relative min-h-0 flex-1 outline-none" aria-busy={isFetching}>
+                {/* 页面级单例详情弹窗：内容由快照驱动，不跟随任何一行被虚拟回收/新日志重排而卸载。
+                    它 portal 到 body。必须留在现有列表壳内：PageWrapper 会为每个直属子项
+                        增加真实 motion.div；把弹窗放到外层会凭空插入 gap-3，导致列表下跳 12px。 */}
+                {detailSnapshot && (
+                    <LogCard
+                        log={detailSnapshot}
+                        detailOnly
+                        detailOpen={detailDialogOpen}
+                        onDetailOpenChange={onDetailOpenChange}
+                        onNavigate={navigateDetail}
+                        canNavigatePrev={detailCanPrev}
+                        canNavigateNext={detailCanNext}
+                    />
+                )}
                 {/* 暂停（往下翻/选字）或详情冻结闩还在 → 都要能看到「N 条新日志」这个恢复入口。 */}
                 <PendingLogsPill
                     count={pendingLogCount}

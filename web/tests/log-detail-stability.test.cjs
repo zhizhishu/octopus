@@ -252,3 +252,33 @@ test('detail: page-level portal and hook connect the real shared state-machine',
     assert.match(hook, /if \(wasReconnecting && !liveStateRef\.current\.frozen/);
     assert.match(status, /pendingUnreadLabel/);
 });
+
+
+test('page-level detail lives inside an existing wrapper and cannot add a PageWrapper flex gap', () => {
+    const ts = require('typescript');
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const file = path.join(__dirname, '..', 'src/components/modules/log/index.tsx');
+    const source = ts.createSourceFile(file, fs.readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    const candidates = [];
+    const visit = node => {
+        if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(source) === 'LogCard' &&
+            node.attributes.properties.some(property => ts.isJsxAttribute(property) && property.name.getText(source) === 'detailOnly')) candidates.push(node);
+        ts.forEachChild(node, visit);
+    };
+    visit(source);
+    assert.equal(candidates.length, 1, 'one page-level detail instance');
+    let node = candidates[0].parent;
+    let insideExistingListShell = false;
+    while (node) {
+        if (ts.isJsxElement(node)) {
+            const opening = node.openingElement;
+            if (opening.tagName.getText(source) === 'PageWrapper') break;
+            if (opening.tagName.getText(source) === 'div' && opening.attributes.properties.some(property =>
+                ts.isJsxAttribute(property) && property.name.getText(source) === 'ref' &&
+                property.initializer && property.initializer.getText(source) === '{listShellRef}')) insideExistingListShell = true;
+        }
+        node = node.parent;
+    }
+    assert.ok(insideExistingListShell, 'a portal-only direct child still adds PageWrapper motion.div + 12px gap');
+});
