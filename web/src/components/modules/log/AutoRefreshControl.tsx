@@ -85,20 +85,27 @@ export function AutoRefreshStatus({
     if (!onFirstPage) {
         return <span className="text-xs text-muted-foreground">{t('onlyFirstPage')}</span>;
     }
+    // The running/paused labels differ greatly in width. A fluid inline
+    // status pushes the count/pagination toolbar onto another flex row when
+    // details open, shifting the frozen list by 12-50px despite zero inserts.
+    // Reserve the same footprint for every live state and truncate only its
+    // presentation; title retains the full pause reason on narrow screens.
+    const stableSlot = 'inline-flex h-4 w-36 max-w-[38vw] shrink-0 items-center overflow-hidden whitespace-nowrap text-xs';
     // 这里仅展示单行、定高的状态，不能再放重复的未读按钮：缓冲
     // 200 条后会把工具栏挤成两行，详情关闭时整个日志列表下跳。
     // 明确的 GET 恢复入口由不占文档流的 PendingLogsPill 提供。
     if (pauseReason || frozen) {
+        const label = `${t('paused')}${pauseReason ? ` · ${t(PAUSE_LABEL_KEY[pauseReason])}` : ''}`;
         return (
-            <span className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap text-xs text-amber-700 dark:text-amber-300">
+            <span className={`${stableSlot} gap-1.5 text-amber-700 dark:text-amber-300`} title={label}>
                 <PauseCircle className="size-3.5 shrink-0" aria-hidden />
-                <span>{t('paused')}{pauseReason ? ` · ${t(PAUSE_LABEL_KEY[pauseReason])}` : ''}</span>
+                <span className="min-w-0 truncate">{label}</span>
             </span>
         );
     }
     return (
-        <span className="text-xs text-emerald-700 dark:text-emerald-300">
-            {connected ? t('runningLive') : t('reconnecting')}
+        <span className={`${stableSlot} text-emerald-700 dark:text-emerald-300`}>
+            <span className="min-w-0 truncate">{connected ? t('runningLive') : t('reconnecting')}</span>
         </span>
     );
 }
