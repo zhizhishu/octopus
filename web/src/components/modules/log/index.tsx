@@ -1499,11 +1499,7 @@ export function Log() {
                         onFirstPage={currentPage === 1}
                         connected={isConnected}
                         pauseReason={autoRefresh.pauseReason}
-                        pendingCount={pendingLogCount}
-                        pendingOverflow={pendingOverflow}
                         frozen={isLiveFrozen}
-                        busy={isResumingLive}
-                        onShowPending={showPendingLogs}
                     />
                     {/* 重置跟计数同行，右下角只留 眼睛/下载/实时动态 */}
                     {hasActiveFilter && (

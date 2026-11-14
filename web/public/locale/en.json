@@ -1101,6 +1101,7 @@
       "pausedScrolled": "scrolled down",
       "newCount": "{count} new",
       "showNew": "Show",
+      "overflowReload": "overflow · reload latest",
       "onlyFirstPage": "Auto refresh runs on page 1 only",
       "hint": "Click to turn live updates on, click again to turn them off. New logs appear at the top as they arrive; updates pause while a detail is open, you scroll down, select text or the tab is hidden, so your place never jumps."
     },

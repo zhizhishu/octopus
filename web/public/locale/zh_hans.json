@@ -1101,6 +1101,7 @@
       "pausedScrolled": "已往下翻",
       "newCount": "{count} 条新日志",
       "showNew": "显示",
+      "overflowReload": "缓冲溢出 · 回查最新",
       "onlyFirstPage": "回到第 1 页才会自动刷新",
       "hint": "点一下开实时，再点一下关。新日志一来就插到顶部；看详情、往下翻、选文字或切到后台时自动暂停，不打乱正在看的位置。"
     },

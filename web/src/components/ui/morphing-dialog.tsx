@@ -204,27 +204,42 @@ function MorphingDialogContent({
 }: MorphingDialogContentProps) {
   const { setIsOpen, isOpen, uniqueId, triggerRef } = useMorphingDialog();
   const containerRef = useRef<HTMLDivElement>(null!);
-  const firstFocusableElementRef = useRef<HTMLElement | null>(null);
-  const lastFocusableElementRef = useRef<HTMLElement | null>(null);
+  // The first close button is mobile-only. querySelectorAll() includes it on
+  // desktop even though it is display:none, so focusing it leaves keyboard
+  // focus behind on the list item. Only trap actually visible controls.
+  const getFocusableElements = useCallback(() => (
+    Array.from(containerRef.current?.querySelectorAll<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    ) ?? []).filter((element) => (
+      !element.hasAttribute('disabled') &&
+      element.tabIndex >= 0 &&
+      element.getClientRects().length > 0 &&
+      window.getComputedStyle(element).visibility !== 'hidden'
+    ))
+  ), []);
 
   useEffect(() => {
+    if (!isOpen) return;
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         setIsOpen(false);
       }
       if (event.key === 'Tab') {
-        if (!firstFocusableElementRef.current || !lastFocusableElementRef.current) return;
-
-        if (event.shiftKey) {
-          if (document.activeElement === firstFocusableElementRef.current) {
-            event.preventDefault();
-            lastFocusableElementRef.current.focus();
-          }
-        } else {
-          if (document.activeElement === lastFocusableElementRef.current) {
-            event.preventDefault();
-            firstFocusableElementRef.current.focus();
-          }
+        // Popover/select portals are outside the dialog DOM but remain part of
+        // its active interaction. Do not steal focus while one is being used.
+        if ((document.activeElement as HTMLElement | null)?.closest(
+          '[data-slot="select-content"], [data-slot="popover-content"], [data-morphing-dialog-ignore-outside]'
+        )) return;
+        const focusable = getFocusableElements();
+        const first = focusable[0] ?? containerRef.current;
+        const last = focusable[focusable.length - 1] ?? containerRef.current;
+        const active = document.activeElement;
+        // If a virtualized row was focused before the modal mounted, recover
+        // into it immediately; also wrap both ends of the tab cycle.
+        if (!containerRef.current?.contains(active) ||
+            (event.shiftKey ? active === first : active === last)) {
+          event.preventDefault();
+          (event.shiftKey ? last : first)?.focus({ preventScroll: true });
         }
       }
     };
@@ -234,24 +249,34 @@ function MorphingDialogContent({
     return () => {
       document.removeEventListener('keydown', handleKeyDown);
     };
-  }, [setIsOpen]);
+  }, [getFocusableElements, isOpen, setIsOpen]);
 
   useEffect(() => {
     if (isOpen) {
-      document.body.classList.add('overflow-hidden');
-      const focusableElements = containerRef.current?.querySelectorAll(
-        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
-      );
-      if (focusableElements && focusableElements.length > 0) {
-        firstFocusableElementRef.current = focusableElements[0] as HTMLElement;
-        lastFocusableElementRef.current = focusableElements[focusableElements.length - 1] as HTMLElement;
-        (focusableElements[0] as HTMLElement).focus();
+      const body = document.body;
+      const wasLocked = body.classList.contains('overflow-hidden');
+      const previousPadding = body.style.paddingRight;
+      // Keep the underlying list at the exact same width when removing its
+      // scrollbar, rather than triggering a one-row header reflow.
+      const gutter = wasLocked ? 0 : Math.max(0, window.innerWidth - document.documentElement.clientWidth);
+      if (!wasLocked) {
+        if (gutter > 0) {
+          const padding = Number.parseFloat(window.getComputedStyle(body).paddingRight) || 0;
+          body.style.paddingRight = `${padding + gutter}px`;
+        }
+        body.classList.add('overflow-hidden');
       }
+      (getFocusableElements()[0] ?? containerRef.current)?.focus({ preventScroll: true });
+      return () => {
+        if (!wasLocked) {
+          body.classList.remove('overflow-hidden');
+          body.style.paddingRight = previousPadding;
+        }
+      };
     } else {
-      document.body.classList.remove('overflow-hidden');
       triggerRef.current?.focus();
     }
-  }, [isOpen, triggerRef]);
+  }, [getFocusableElements, isOpen, triggerRef]);
 
   useClickOutside(
     containerRef,
@@ -291,6 +316,7 @@ function MorphingDialogContent({
       className={cn('max-h-[calc(100dvh-1rem)] max-w-[calc(100vw-1rem)] overflow-hidden', className)}
       style={style}
       role='dialog'
+      tabIndex={-1}
       aria-modal='true'
       aria-labelledby={`motion-ui-morphing-dialog-title-${uniqueId}`}
       aria-describedby={`motion-ui-morphing-dialog-description-${uniqueId}`}

@@ -71,48 +71,28 @@ export function AutoRefreshStatus({
     onFirstPage,
     connected,
     pauseReason,
-    pendingCount,
-    pendingOverflow = false,
     frozen = false,
-    busy = false,
-    onShowPending,
 }: {
     mode: LogAutoRefresh;
     onFirstPage: boolean;
     connected: boolean;
     pauseReason: LogAutoRefreshPauseReason | null;
-    pendingCount: number;
-    /** 缓冲曾满过：徽标只说「200+」，不假装知道确切总数。 */
-    pendingOverflow?: boolean;
     /** 详情关闭后的冻结闩仍在：插入依旧暂停，等用户点「显示」或手动刷新。 */
     frozen?: boolean;
-    /** 恢复 GET 在飞：按钮先禁用，不叠第二次请求（单飞）。 */
-    busy?: boolean;
-    onShowPending: () => void;
 }) {
     const t = useTranslations('log.autoRefresh');
     if (mode === 'off') return null;
     if (!onFirstPage) {
         return <span className="text-xs text-muted-foreground">{t('onlyFirstPage')}</span>;
     }
-    // 冻结闩没有对应的「原因」（详情可能已经关掉），所以只显示「已暂停」+ 恢复入口，
-    // 不借用「正在看详情」那句——那是假的。
+    // 这里仅展示单行、定高的状态，不能再放重复的未读按钮：缓冲
+    // 200 条后会把工具栏挤成两行，详情关闭时整个日志列表下跳。
+    // 明确的 GET 恢复入口由不占文档流的 PendingLogsPill 提供。
     if (pauseReason || frozen) {
         return (
-            <span className="inline-flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-amber-700 dark:text-amber-300">
+            <span className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap text-xs text-amber-700 dark:text-amber-300">
                 <PauseCircle className="size-3.5 shrink-0" aria-hidden />
                 <span>{t('paused')}{pauseReason ? ` · ${t(PAUSE_LABEL_KEY[pauseReason])}` : ''}</span>
-                {pendingCount > 0 && (
-                    <button
-                        type="button"
-                        onClick={onShowPending}
-                        disabled={busy}
-                        aria-busy={busy}
-                        className="inline-flex h-6 items-center gap-1 rounded-full bg-primary/10 px-2 font-medium text-primary transition-colors hover:bg-primary/15 disabled:opacity-60 max-sm:h-8 max-sm:px-3"
-                    >
-                        {t('newCount', { count: pendingUnreadLabel(pendingCount, pendingOverflow) })} · {t('showNew')}
-                    </button>
-                )}
             </span>
         );
     }
@@ -138,6 +118,7 @@ export function PendingLogsPill({ count, visible, overflowed = false, busy = fal
             >
                 <ArrowUp className="size-3.5" aria-hidden />
                 {t('newCount', { count: pendingUnreadLabel(count, overflowed) })}
+                {overflowed && <span className="ml-0.5">{t('overflowReload')}</span>}
             </button>
         </div>
     );
