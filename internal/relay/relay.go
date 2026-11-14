@@ -3566,6 +3566,10 @@ func (ra *relayAttempt) handleStreamResponseAsNonStream(ctx context.Context, res
 	streamDoneSeen := false
 	seenMeaningfulChunk := false
 	sawUpstreamCompletion := false
+	// A chat finish_reason is a real terminal even if the upstream omits [DONE].
+	// A partial tool-call delta followed by plain EOF is not; treating it as a
+	// successful aggregate fabricates a tool invocation with incomplete args.
+	upstreamFinishSeen := false
 	requireResponsesCompleted := ra.requiresUpstreamResponsesCompleted(outAdapter)
 readLoop:
 	for {
@@ -3655,6 +3659,9 @@ readLoop:
 			if err != nil {
 				return err
 			}
+			if internalStreamHasFinish(internalStream) {
+				upstreamFinishSeen = true
+			}
 			if internalStream != nil && internalStream.Object != "[DONE]" && internalStreamHasMeaningfulResponse(internalStream) {
 				if !seenMeaningfulChunk {
 					seenMeaningfulChunk = true
@@ -3677,6 +3684,24 @@ readLoop:
 	}
 	if !seenMeaningfulChunk && !sawUpstreamCompletion {
 		return errors.New("upstream stream ended without internal response")
+	}
+	// Only the streaming handler checked for a meaningful response followed by
+	// EOF without *any* protocol terminal. The non-stream aggregate path used
+	// to synthesize a 200 with partial tool arguments and no diagnostic marker.
+	// Gemini's original clean-EOF synthesis is intentionally unchanged: its
+	// inbound has no compatible in-band error terminal (same protocol exception
+	// as the streaming truncation detector).
+	if seenMeaningfulChunk && !streamDoneSeen && !sawUpstreamCompletion && !upstreamFinishSeen {
+		switch ra.inboundType {
+		case inbound.InboundTypeOpenAIChat, inbound.InboundTypeOpenAIResponse, inbound.InboundTypeAnthropic:
+			ra.outputIncompleteReason = dbmodel.RelayLogOutputIncompleteUpstreamMissingTerminal
+			return &localRelayError{
+				status:   http.StatusBadGateway,
+				code:     "octopus_upstream_stream_truncated",
+				strategy: "stream_missing_terminal;upstream_forwarded=true",
+				message:  "upstream stream ended before a terminal event",
+			}
+		}
 	}
 	if !streamDoneSeen && ra.shouldSynthesizeStreamDone() {
 		if _, err := ra.synthesizeStreamDone(ctx); err != nil {
