@@ -383,3 +383,116 @@ func TestRelayProbeTrulyEmptyOutputStillFlagged(t *testing.T) {
 		t.Fatal("正文空、无工具、无推理，花了 80 个输出 token，必须报出来")
 	}
 }
+
+// checkedContains 看一条日志实际执行了哪几条检查（RelayProbeResult.Checked）。
+func checkedContains(res RelayProbeResult, code string) bool {
+	for _, got := range res.Checked {
+		if got == code {
+			return true
+		}
+	}
+	return false
+}
+
+// truncatedResponseColumn 造一列被落库预算截断的正文：前半段是真的响应 JSON，
+// 后半段是 relay.capLogColumn 追加的完整标记（永远在末尾）。
+func truncatedResponseColumn() string {
+	return `{"id":"msg_1","choices":[{"message":{"role":"assistant","content":"` +
+		"\n...[truncated: 24117248 bytes before truncation]"
+}
+
+// 被截断的正文不能跑 empty_output："没有可见输出" 只看见了前 1MiB，看不到的部分
+// 正是可能藏回答的地方。按缺证跳过，且不写进 Checked（Checked 是"查了什么"）。
+func TestRelayProbeEmptyOutputSkippedOnTruncatedResponse(t *testing.T) {
+	res := ComputeRelayLogProbes(RelayProbeInput{
+		RequestedModel:  "claude-opus-4-6",
+		InputTokens:     100,
+		OutputTokens:    8000,
+		TotalTokens:     8100,
+		ResponseContent: truncatedResponseColumn(),
+	})
+
+	if f := findCode(res, model.ProbeCodeEmptyOutputWithTokens); f != nil {
+		t.Fatalf("截断正文不该报空回复：%s", f.Title)
+	}
+	if checkedContains(res, model.ProbeCodeEmptyOutputWithTokens) {
+		t.Fatal("跳过的检查不能写进 Checked")
+	}
+	// 其余探针照旧执行：只跳过这一条，不能顺手把整个检测静默停掉。
+	if !checkedContains(res, model.ProbeCodeTokenArithmetic) {
+		t.Fatal("token 加减法仍应执行")
+	}
+	if !checkedContains(res, model.ProbeCodeCacheExceedsPrompt) {
+		t.Fatal("缓存不超输入仍应执行")
+	}
+}
+
+// 识别必须要求"完整标记在末尾"：只是正文里出现过这几个词，不能把一条完整日志
+// 当成缺证。这些近似形状都得照旧跑探针。
+func TestRelayProbeEmptyOutputMarkerMustBeExactSuffix(t *testing.T) {
+	cases := map[string]string{
+		"标记后还有正文":  chatBody("") + "\n...[truncated: 123 bytes before truncation] tail",
+		"数字不是十进制":  chatBody("") + "\n...[truncated: abc bytes before truncation]",
+		"缺少数字":     chatBody("") + "\n...[truncated:  bytes before truncation]",
+		"缺少前缀":     chatBody("") + "...bytes before truncation]",
+		"缺少换行":     chatBody("") + "...[truncated: 123 bytes before truncation]",
+		"纯正文引用这些词": chatBody("这条回答会讨论 bytes before truncation 这个措辞"),
+	}
+	for name, body := range cases {
+		res := ComputeRelayLogProbes(RelayProbeInput{
+			RequestedModel:  "claude-opus-4-6",
+			InputTokens:     100,
+			OutputTokens:    80,
+			TotalTokens:     180,
+			ResponseContent: body,
+		})
+		if !checkedContains(res, model.ProbeCodeEmptyOutputWithTokens) {
+			t.Errorf("%s：格式不符合完整标记时应照旧执行探针", name)
+		}
+	}
+}
+
+// 小样本逐条保持旧行为：空正文照报、有正文照不报，而 Checked 一律含该码；
+// 且只看 ResponseContent 那一列（请求列被截断不影响空回复判据）。
+func TestRelayProbeEmptyOutputSmallSamplesKeepOldBehavior(t *testing.T) {
+	empty := ComputeRelayLogProbes(RelayProbeInput{
+		RequestedModel:  "claude-opus-4-6",
+		InputTokens:     100,
+		OutputTokens:    80,
+		TotalTokens:     180,
+		ResponseContent: chatBody(""),
+	})
+	if findCode(empty, model.ProbeCodeEmptyOutputWithTokens) == nil {
+		t.Fatal("小样本空正文仍必须报")
+	}
+	if !checkedContains(empty, model.ProbeCodeEmptyOutputWithTokens) {
+		t.Fatal("执行过的检查必须记进 Checked")
+	}
+
+	withText := ComputeRelayLogProbes(RelayProbeInput{
+		RequestedModel:  "claude-opus-4-6",
+		InputTokens:     100,
+		OutputTokens:    80,
+		TotalTokens:     180,
+		ResponseContent: chatBody("这里有正文"),
+	})
+	if findCode(withText, model.ProbeCodeEmptyOutputWithTokens) != nil {
+		t.Fatal("有正文不该报空回复")
+	}
+	if !checkedContains(withText, model.ProbeCodeEmptyOutputWithTokens) {
+		t.Fatal("查过但没问题时 Checked 仍应包含该码")
+	}
+
+	// 请求列被截断（tokenizer 残差自会缺证）不影响空回复判据。
+	truncatedRequest := ComputeRelayLogProbes(RelayProbeInput{
+		RequestedModel:  "claude-opus-4-6",
+		InputTokens:     5000,
+		OutputTokens:    80,
+		TotalTokens:     5080,
+		RequestContent:  "{\"model\":\"claude-opus-4-6\"" + "\n...[truncated: 24117248 bytes before truncation]",
+		ResponseContent: chatBody(""),
+	})
+	if findCode(truncatedRequest, model.ProbeCodeEmptyOutputWithTokens) == nil {
+		t.Fatal("只看 ResponseContent 那一列：请求列截断不该让空回复探针静默")
+	}
+}

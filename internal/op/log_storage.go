@@ -29,6 +29,7 @@ import (
 
 	"github.com/zhizhishu/octopus/internal/db"
 	"github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/utils/diskspace"
 	"github.com/zhizhishu/octopus/internal/utils/log"
 	"gorm.io/gorm"
 )
@@ -766,7 +767,7 @@ func relayLogVacuumSafe(ctx context.Context) (bool, string) {
 		dir = dir[:idx]
 	}
 
-	free, ok := diskFreeBytes(dir)
+	free, ok := diskspace.Available(dir)
 	if !ok {
 		return false, "无法读取磁盘可用空间，已跳过空间回收"
 	}

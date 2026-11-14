@@ -242,7 +242,7 @@ func TestUpstreamBodyImageQueueFullFallsBackToOmitted(t *testing.T) {
 	img := fakeImage(t, 4096)
 	m := NewRelayMetrics(0, 0, "", "m", nil)
 	m.SetUpstreamRequestBody([]byte(chatImageBody("data:image/png;base64," + b64(img))))
-	if !strings.Contains(m.upstreamRequestBody, `"[image omitted: image/png, 4KB, save queue full]"`) {
+	if !strings.Contains(m.upstreamRequestBody, `"[image omitted: image/png, 4KB, save queue full or disk pressure]"`) {
 		t.Fatalf("queue-full fallback missing: %s", m.upstreamRequestBody)
 	}
 	if strings.Contains(m.upstreamRequestBody, "id=") || len(m.upstreamImageHashes) != 0 {
@@ -267,7 +267,7 @@ func TestUpstreamBodyImageRealQueueFullNeverBlocks(t *testing.T) {
 		}
 		m.SetUpstreamRequestBody([]byte(chatImageBody(fresh...)))
 		saved += len(m.upstreamImageHashes)
-		omitted += strings.Count(m.upstreamRequestBody, "save queue full")
+		omitted += strings.Count(m.upstreamRequestBody, "save queue full or disk pressure")
 		// 每个留下的 id 都必须对应一张已入队的图。
 		if c := strings.Count(m.upstreamRequestBody, "id="); c != len(m.upstreamImageHashes) {
 			t.Fatalf("ids in text %d != saved %d", c, len(m.upstreamImageHashes))

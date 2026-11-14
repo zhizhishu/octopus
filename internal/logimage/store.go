@@ -20,6 +20,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/zhizhishu/octopus/internal/utils/diskspace"
 	"github.com/zhizhishu/octopus/internal/utils/log"
 )
 
@@ -55,6 +56,23 @@ var (
 	pauseWorker  atomic.Bool // 只给测试用：让队列堆满
 	pauseRelease = make(chan struct{}, 1)
 )
+
+var errImageDiskPressure = errors.New("log image omitted because local disk reserve would be exhausted")
+var imageDiskAvailable = diskspace.Available
+var diskPressureWarningAt atomic.Int64
+
+func imageDiskHasSpace(dir string, extra int64) bool {
+	free, known := imageDiskAvailable(dir)
+	if !known || free >= diskspace.LogReserveBytes+extra {
+		return true
+	}
+	now := time.Now().Unix()
+	previous := diskPressureWarningAt.Load()
+	if now-previous >= 10 && diskPressureWarningAt.CompareAndSwap(previous, now) {
+		log.Warnf("log image storage paused for disk pressure: available=%d reserve=%d", free, diskspace.LogReserveBytes+extra)
+	}
+	return false
+}
 
 type job struct {
 	dir  string // 入队那一刻的目录，写盘时不再重读（测试会换目录）
@@ -177,6 +195,11 @@ func Enqueue(hash, ext string, data []byte) bool {
 		return true
 	}
 	n := int64(len(data))
+	// Include every already accepted image. The worker checks again before
+	// writing, since another process may consume disk after this admission.
+	if !imageDiskHasSpace(Dir(), queuedBytes.Load()+n) {
+		return false
+	}
 	if queuedBytes.Add(n) > queueMaxBytes {
 		queuedBytes.Add(-n)
 		return false
@@ -199,7 +222,7 @@ func startWorker() {
 			for pauseWorker.Load() {
 				<-pauseRelease
 			}
-			if err := writeFile(j); err != nil {
+			if err := writeFile(j); err != nil && !errors.Is(err, errImageDiskPressure) {
 				log.Warnf("log image write failed (%s): %v", j.hash[:12], err)
 			}
 			queuedBytes.Add(-int64(len(j.data)))
@@ -210,6 +233,9 @@ func startWorker() {
 
 func writeFile(j job) error {
 	dir := j.dir
+	if !imageDiskHasSpace(dir, int64(len(j.data))) {
+		return errImageDiskPressure
+	}
 	sub := filepath.Join(dir, j.hash[:2])
 	if err := os.MkdirAll(sub, 0o700); err != nil {
 		return err

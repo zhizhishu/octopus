@@ -34,10 +34,10 @@ import (
 // 先把占位符换成不会被打码的临时记号、打码完再换回来。
 
 const (
-	omitReasonTooLarge   = "too large"
-	omitReasonTooMany    = "too many images"
-	omitReasonOverBudget = "request image limit reached"
-	omitReasonQueueFull  = "save queue full"
+	omitReasonTooLarge    = "too large"
+	omitReasonTooMany     = "too many images"
+	omitReasonOverBudget  = "request image limit reached"
+	omitReasonStorageBusy = "save queue full or disk pressure"
 )
 
 // logImageEnqueue / logImageCaptureEnabled 是包级变量，测试可替换。
@@ -164,7 +164,7 @@ func (c *imageCapture) commit(logged string) (string, []string) {
 			saved = append(saved, e.hash)
 			continue
 		}
-		omitted := fmt.Sprintf("[image omitted: %s, %s, %s]", e.mime, formatByteSize(len(e.data)), omitReasonQueueFull)
+		omitted := fmt.Sprintf("[image omitted: %s, %s, %s]", e.mime, formatByteSize(len(e.data)), omitReasonStorageBusy)
 		logged = strings.ReplaceAll(logged, e.inner, omitted)
 	}
 	// 交出去之后不再持有字节，让大图尽早被回收。
@@ -283,11 +283,18 @@ func redactKeepingImages(s string, c *imageCapture) string {
 // 已剥离（可传 capture 登记图片）、已截断的文本，这里再打码、把截断后仍看得见的
 // 图片交给写盘队列，并把哈希记进 l，落库时一并写引用行。
 //
-// 图片另存关闭（历史日志不落库）时 capture 为 nil，结果与以前
-// redactLogBody(build(nil)) 完全一样。
+// 图片另存关闭（历史日志不落库）时 capture 为 nil：一张图都不另存，占位符退回不带
+// id 的旧格式。但长度预算照旧生效——超限仍会被截断并追加标记，所以结果**不再**等
+// 同于旧的 redactLogBody(build(nil))，只有未超限的小正文才与以前逐字节一致。
+//
+// 顺序是硬的：先剥离内联二进制（build 内部做，图片换成带 id 的占位符）→ 再脱敏
+// （占位符原样保留）→ 再按 logContentColumnLimit 截长度 → 最后才 commit 交给写盘队列。
+// 截断放在 commit 之前，是为了让"占位符被截掉的那张图"根本不进队列：否则文件写下去了、
+// 正文里却找不到引用，只能等孤儿清扫（1 小时）才回收。
 func (l *upstreamBodyLog) contentWithImages(build func(c *imageCapture) string) string {
 	capture := newLogImageCapture()
 	content := redactKeepingImages(build(capture), capture)
+	content = capLogColumn(content)
 	content, saved := capture.commit(content)
 	if l != nil && len(saved) > 0 {
 		l.contentImageHashes = append(l.contentImageHashes, saved...)

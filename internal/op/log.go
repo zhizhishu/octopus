@@ -52,8 +52,34 @@ const relayLogDropWarnInterval = 10 * time.Second
 // (export / deep pages) fall back to the single-query path.
 const relayLogTwoPhaseMaxIDs = 900
 
+// relayLogPendingByteBudget 是**待落库缓存队列**的 payload 字节预算（保守估值）。
+//
+// 它只管一件事：内存里的待落库队列（relayLogCache）不要被超大的请求/响应正文撞爆。
+// 请勿读成“进程内存上限”或“全部在途日志总预算”：
+//   - flush 在解锁之后还会持有一份快照（见 relayLogFlushToDB），同时可能存在两份；
+//   - 快照本身也按同一预算截取，所以上界是 “≤预算 pending + ≤预算 held batch”；
+//   - 真正的堆占用大于这里的估值（struct 头、slice 容量、字符串共享、GC 未回收），
+//     这里不做精确 heap 计量。
+//
+// 为什么是 64 MiB：行数上限是 500 行，两列正文各自 1 MiB、出站体 128 KiB，
+// 最坏行 ≈ 2.1 MiB ⇒ 500 行 ≈ 1 GiB。64 MiB / 500 = 131 KiB——只要行在这个水平以下，
+// 字节预算就不会先于行数预算生效，**小行行为与以前完全一样**。
+const relayLogPendingByteBudget = 64 << 20
+
+// relayLogPendingRowOverhead 是单行固定元数据的一次性定额：约 30 个短字符串头、
+// 几十个 int/float/bool、slice/map 头、GC 头部裕量。**有界的短列吃这个定额**；
+// 无界的 string 与 slice 一律逐项计数（见 relayLogPendingBytesOf）。
+// 取 2 KiB 是保守值：真正的短列合计不到 1 KiB，多算的部分当作安全余量。
+const relayLogPendingRowOverhead = 2048
+
 var relayLogCache = make([]model.RelayLog, 0, relayLogMaxSize)
 var relayLogCacheLock sync.Mutex
+
+// relayLogPendingBytes 是 relayLogCache 的保守 payload 字节估值，由 relayLogCacheLock 保护
+// （不新增锁，所以入队/淘汰/清空/重算都在同一次临界区里完成，永不阻塞转发）。
+// 不变量：>= 0，且每次变更后等于 §relayLogPendingBytesOf 对队列的累加
+// （除接写 relayLogCache 的测试会通过 relayLogPendingBytesSyncLocked 重算对齐）。
+var relayLogPendingBytes int64
 
 var relayLogFlushLock sync.Mutex
 
@@ -221,16 +247,21 @@ func relayLogFlushToDB(ctx context.Context) error {
 		relayLogCacheLock.Unlock()
 		return nil
 	}
-	batch := append([]model.RelayLog(nil), relayLogCache...)
+	// 快照也按同一预算截取：snapshot 在解锁后与队列同时存在，所以上界是
+	// “≤预算 pending + ≤预算 held batch”（最多两份）。见 relayLogNextBatchLocked。
+	batch := relayLogNextBatchLocked()
 	relayLogCacheLock.Unlock()
 
 	// GORM can commit earlier INSERT chunks before a later chunk fails.
 	// Stable log IDs make replay safe even after an ambiguous commit outcome.
-	writeErr := db.GetDB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		return tx.Clauses(clause.OnConflict{
-			Columns: []clause.Column{{Name: "id"}}, DoNothing: true,
-		}).Create(&batch).Error
-	})
+	writeErr := relayLogCheckDiskBudget(ctx, batch)
+	if writeErr == nil {
+		writeErr = db.GetDB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			return tx.Clauses(clause.OnConflict{
+				Columns: []clause.Column{{Name: "id"}}, DoNothing: true,
+			}).Create(&batch).Error
+		})
+	}
 	if writeErr != nil {
 		relayLogRetryAfter = time.Now().Add(relayLogFlushInterval)
 		relayLogRetryError = writeErr
@@ -292,13 +323,20 @@ func relayLogRemoveFlushed(batch []model.RelayLog) {
 		capHint = relayLogMaxSize
 	}
 	remaining := make([]model.RelayLog, 0, capHint)
+	removedBytes := int64(0)
 	for _, relayLog := range relayLogCache {
 		if _, ok := flushed[relayLog.ID]; ok {
+			// 只扣实际被移除的行：flush 在途期间队头可能已被淘汰，那部分已经扣过了。
+			removedBytes += relayLogPendingBytesOf(relayLog)
 			continue
 		}
 		remaining = append(remaining, relayLog)
 	}
 	relayLogCache = remaining
+	relayLogPendingBytes -= removedBytes
+	if relayLogPendingBytes < 0 {
+		relayLogPendingBytes = 0
+	}
 }
 
 // relayLogFlushNotify 非阻塞地唤醒后台 flusher(见 relayLogFlushSignal)。
@@ -327,6 +365,7 @@ func RelayLogFlusherStart() {
 func relayLogFlushLoop() {
 	ticker := time.NewTicker(relayLogFlushInterval)
 	defer ticker.Stop()
+	var lastWarning time.Time
 
 	for {
 		select {
@@ -344,8 +383,9 @@ func relayLogFlushLoop() {
 		flushCtx, cancel := context.WithTimeout(context.Background(), relayLogFlushTimeout)
 		err = relayLogFlushToDB(flushCtx)
 		cancel()
-		if err != nil {
-			log.Warnf("relay log async flush failed: %v", err)
+		if err != nil && time.Since(lastWarning) >= relayLogDropWarnInterval {
+			lastWarning = time.Now()
+			log.Warnf("relay log async flush failed (repeated warnings rate-limited): %v", err)
 		}
 	}
 }
@@ -353,29 +393,61 @@ func relayLogFlushLoop() {
 // relayLogAddPending 把日志放进待落库队列, 必要时唤醒后台 flusher(由 task.Init 经
 // RelayLogFlusherStart 启动, 这里绝不偷偷拉起协程——见该函数注释)。
 // 队列封顶后丢最旧的: DB 卡死时请求还在源源不断地来, 不淘汰就是无上限吃内存。
+//
+// 封顶有两条，先到先用：
+//   - 行数：relayLogPendingMaxSize；
+//   - 字节：relayLogPendingByteBudget（保守估値，见 relayLogPendingBytesOf）。
+//
+// 任一条超了就从队头丢，并记 dropped + 原因(bytes/rows)，告警仍按 relayLogDropWarnInterval 限频。
+// 全程只持 relayLogCacheLock，无 I/O、无等待——请求路径不会因此阻塞。
 func relayLogAddPending(relayLog model.RelayLog) {
+	rowBytes := relayLogPendingBytesOf(relayLog)
+
 	relayLogCacheLock.Lock()
-	relayLogCache = append(relayLogCache, relayLog)
+	// 自愈：有人（早期测试）直接把队列清空而没动计数器时，先对齐再入队。
+	if len(relayLogCache) == 0 && relayLogPendingBytes != 0 {
+		relayLogPendingBytes = 0
+	}
 	dropped := 0
-	warn := false
-	if len(relayLogCache) > relayLogPendingMaxSize {
-		dropped = len(relayLogCache) - relayLogPendingMaxSize
-		// 重建底层数组而不是 reslice, 避免数组继续引用被丢日志的 Request/ResponseContent
-		newCache := make([]model.RelayLog, relayLogPendingMaxSize, relayLogPendingMaxSize+relayLogMaxSize)
-		copy(newCache, relayLogCache[dropped:])
-		relayLogCache = newCache
-		relayLogPendingDropped += int64(dropped)
-		if time.Since(relayLogDropWarnAt) >= relayLogDropWarnInterval {
-			relayLogDropWarnAt = time.Now()
-			warn = true
+	reason := ""
+	if rowBytes > relayLogPendingByteBudget {
+		// Reject the incoming oversized row before it can evict valid pending logs.
+		dropped = 1
+		reason = relayLogDropReasonBytes
+	} else {
+		relayLogCache = append(relayLogCache, relayLog)
+		relayLogPendingBytes += rowBytes
+		for len(relayLogCache) > relayLogPendingMaxSize || relayLogPendingBytes > relayLogPendingByteBudget {
+			reason = relayLogDropReasonRows
+			if relayLogPendingBytes > relayLogPendingByteBudget {
+				reason = relayLogDropReasonBytes
+			}
+			relayLogPendingBytes -= relayLogPendingBytesOf(relayLogCache[0])
+			relayLogCache[0] = model.RelayLog{}
+			relayLogCache = relayLogCache[1:]
+			dropped++
 		}
 	}
+	if dropped > 0 {
+		// 重建底层数组而不是 reslice, 避免数组继续引用被丢日志的 Request/ResponseContent。
+		kept := make([]model.RelayLog, len(relayLogCache), relayLogPendingMaxSize+relayLogMaxSize)
+		copy(kept, relayLogCache)
+		relayLogCache = kept
+		relayLogPendingDropped += int64(dropped)
+	}
+	warn := false
+	if dropped > 0 && time.Since(relayLogDropWarnAt) >= relayLogDropWarnInterval {
+		relayLogDropWarnAt = time.Now()
+		warn = true
+	}
 	pending := len(relayLogCache)
+	pendingBytes := relayLogPendingBytes
 	totalDropped := relayLogPendingDropped
 	relayLogCacheLock.Unlock()
 
 	if warn {
-		log.Warnf("relay log flush is falling behind: dropped %d oldest cached logs (pending cap %d, dropped total %d)", dropped, relayLogPendingMaxSize, totalDropped)
+		log.Warnf("relay log flush is falling behind: dropped %d cached logs (reason=%s, pending rows=%d/%d, pending bytes=%d/%d, dropped total %d)",
+			dropped, reason, pending, relayLogPendingMaxSize, pendingBytes, relayLogPendingByteBudget, totalDropped)
 	}
 	if pending >= relayLogFlushBatchSize {
 		relayLogFlushNotify()
@@ -437,16 +509,17 @@ func RelayLogAdd(ctx context.Context, relayLog model.RelayLog) error {
 	}
 
 	relayLogCacheLock.Lock()
+	// 不落库模式也计入同一份 payload 预算：它同样是内存里的一队列日志。
+	if len(relayLogCache) == 0 && relayLogPendingBytes != 0 {
+		relayLogPendingBytes = 0
+	}
 	relayLogCache = append(relayLogCache, relayLog)
-	if len(relayLogCache) >= relayLogMaxSizeNoDB {
-		// 如果未启用日志保存，移除最旧的日志，保留最新的日志用于实时查询
-		// 重建底层数组而不是 reslice，避免数组持续引用旧日志的 Request/ResponseContent 导致内存无法回收
-		keepSize := relayLogMaxSizeNoDB / 2
-		if len(relayLogCache) > keepSize {
-			newCache := make([]model.RelayLog, keepSize, relayLogMaxSizeNoDB)
-			copy(newCache, relayLogCache[len(relayLogCache)-keepSize:])
-			relayLogCache = newCache
-		}
+	relayLogPendingBytes += relayLogPendingBytesOf(relayLog)
+	if len(relayLogCache) >= relayLogMaxSizeNoDB || relayLogPendingBytes > relayLogPendingByteBudget {
+		// 如果未启用日志保存，移除最旧的日志，保留最新的日志用于实时查询。
+		// 重建底层数组而不是 reslice，避免数组持续引用旧日志的 Request/ResponseContent 导致内存无法回收。
+		// 行数裁剪之后若仍超字节预算，helper 会继续从队头丢。
+		relayLogTrimCacheLocked(relayLogMaxSizeNoDB / 2)
 	}
 	relayLogCacheLock.Unlock()
 	safe.SafeGo("relay-log-notify", func() { notifySubscribers(relayLog) })
@@ -478,11 +551,8 @@ func RelayLogSaveDBTask(ctx context.Context) error {
 
 	// 如果未启用日志保存，检查缓存大小，如果超过限制则清理旧日志
 	relayLogCacheLock.Lock()
-	if len(relayLogCache) > relayLogMaxSizeNoDB {
-		keepSize := relayLogMaxSizeNoDB / 2
-		newCache := make([]model.RelayLog, keepSize, relayLogMaxSizeNoDB)
-		copy(newCache, relayLogCache[len(relayLogCache)-keepSize:])
-		relayLogCache = newCache
+	if len(relayLogCache) > relayLogMaxSizeNoDB || relayLogPendingBytes > relayLogPendingByteBudget {
+		relayLogTrimCacheLocked(relayLogMaxSizeNoDB / 2)
 	}
 	relayLogCacheLock.Unlock()
 
@@ -558,6 +628,220 @@ func relayLogApproxBytes(relayLog model.RelayLog) int64 {
 
 	return int64(size)
 }
+
+// ─────────────────── 待落库队列的 payload 预算 ───────────────────
+
+// relayLogPendingBytesOf 估算一条待落库日志在内存里**保留**的 payload 字节数。
+//
+// 它是给请求路径用的廉价估计器，与 relayLogApproxBytes（落库字节口径，带 json.Marshal）
+// 是两回事：
+//   - **零分配、零 I/O、不 marshal**，只是几十次 len()；
+//   - 包含不落库但占内存的东西：ImageHashes（gorm:"-"）以及 PassiveSummary / PassiveProbes /
+//     PassiveSource（无论是否写库，它们都跟着 RelayLog 在内存里活到落库那一刻）；
+//   - 无界的 string 与 slice 全部逐项计入，**不用定额代替**；有界的短列归一进
+//     relayLogPendingRowOverhead。
+//
+// 口径是带固定余量的 payload 估值，不是 heap 占用上界：字符串可能与其他日志共享底层数组、
+// slice 容量可能大于长度、GC 未回收的死人也会暂时留着。这些都不在这里算，也没必要算。
+func relayLogPendingBytesOf(relayLog model.RelayLog) int64 {
+	n := int64(relayLogPendingRowOverhead)
+
+	// 可能任意大的列。
+	n += int64(len(relayLog.RequestContent))
+	n += int64(len(relayLog.ResponseContent))
+	n += int64(len(relayLog.UpstreamRequestBody))
+	n += int64(len(relayLog.Error))
+	n += int64(len(relayLog.ModelAuditReport))
+
+	// 身长有界但条数不定的短列：逐个 len 只花几纳秒，算漏了反而会让估値偏小。
+	// 刻意不写成 `for _, s := range []string{...}`——那样每次调用都要看逃逸分析脸色，
+	// 而这里的硬要求是零分配，直接相加最稳。
+	n += int64(
+		len(relayLog.RequestIP) + len(relayLog.RequestUserAgent) + len(relayLog.RequestEndpoint) +
+			len(relayLog.RequestPath) + len(relayLog.RequestModelName) + len(relayLog.RequestAPIKeyName) +
+			len(relayLog.UserName) + len(relayLog.ReasoningEffort) + len(relayLog.ChannelName) +
+			len(relayLog.ChannelKeyRemark) + len(relayLog.ActualModelName) + len(relayLog.UpstreamResponseModel) +
+			len(relayLog.UpstreamSystemFingerprint) + len(relayLog.UpstreamServiceTier) +
+			len(relayLog.UpstreamMismatchCode) + len(relayLog.ModelFamilyVerdict) + len(relayLog.ModelVendorHint) +
+			len(relayLog.ModelAuditVerdict) + len(relayLog.ModelAuditTrigger) +
+			len(relayLog.ErrorCode) + len(relayLog.ErrorStrategy) +
+			len(relayLog.SessionKey) + len(relayLog.SessionSource) +
+			len(relayLog.UsageSource) + len(relayLog.UsageMissingReason) + len(relayLog.PromptOverrideMode) +
+			len(relayLog.AccessPlanSlug) + len(relayLog.AccessPlanName) + len(relayLog.RouteProfileName) +
+			len(relayLog.BillingProfileName) + len(relayLog.BillingModel))
+	for _, s := range relayLog.PromptOverrideSources {
+		n += int64(len(s)) + 16
+	}
+
+	// 图片哈希：gorm:"-" 不落库，但落库前确实在内存里（最多 MaxImagesPerRequest 个）。
+	for _, h := range relayLog.ImageHashes {
+		n += int64(len(h)) + 16
+	}
+
+	// 尝试链：每条 10 个短字符串 + 结构头。
+	for i := range relayLog.Attempts {
+		a := &relayLog.Attempts[i]
+		n += 128 + int64(len(a.ChannelName)+len(a.ModelName)+len(a.UpstreamPath)+len(a.Endpoint)+
+			len(a.Capability)+len(a.ProxySource)+len(a.ProxyScheme)+len(a.ProxyTarget)+
+			len(a.Msg)+len(a.OutputIncompleteReason))
+	}
+
+	// 调试详情：已有 48 KiB 序列化上界（model.RelayLogDebugMaxTotalBytes，见
+	// relay/debug_capture.go capDebugInfo），这里直接用常量当上界，不逐字段重算。
+	if relayLog.DebugInfo != nil {
+		n += model.RelayLogDebugMaxTotalBytes + 512
+	}
+
+	// 被动观察三层：都不依赖 json.Marshal，但都有自己的 slice/string。
+	if s := relayLog.PassiveSummary; s != nil {
+		n += 128 + int64(len(s.Version)+len(s.Status)+len(s.Reason)+len(s.Language))
+		if s.Features != nil {
+			n += 128 + int64(len(s.Features.ServiceTier))
+		}
+	}
+	for i := range relayLog.PassiveProbes {
+		f := &relayLog.PassiveProbes[i]
+		n += 128 + int64(len(f.Code)+len(f.Title)+len(f.Severity)+len(f.Confidence))
+		remaining := 4096
+		n += relayLogEvidenceBytes(f.Evidence, 0, &remaining)
+	}
+	if src := relayLog.PassiveSource; src != nil {
+		n += 128
+		for _, s := range src.CounterEvidence {
+			n += int64(len(s)) + 16
+		}
+		for _, s := range src.Signals {
+			n += int64(len(s)) + 16
+		}
+		for _, s := range src.HeaderFamilies {
+			n += int64(len(s)) + 16
+		}
+		for i := range src.Hints {
+			h := &src.Hints[i]
+			n += 96 + int64(len(h.Platform)+len(h.Strength)+len(h.Code)+len(h.Evidence))
+		}
+	}
+
+	return n
+}
+
+// relayLogEvidenceBytes counts JSON-shaped probe evidence without allocating.
+// The depth/node limits also bound work for malformed cyclic or oversized input.
+// Unknown shapes conservatively reject the row instead of understating payload.
+func relayLogEvidenceBytes(value any, depth int, remaining *int) int64 {
+	if depth > 8 || *remaining <= 0 {
+		return relayLogPendingByteBudget + 1
+	}
+	*remaining--
+	var n int64
+	switch value := value.(type) {
+	case nil:
+		return 0
+	case string:
+		return int64(len(value)) + 16
+	case []byte:
+		return int64(len(value)) + 24
+	case json.Number:
+		return int64(len(value)) + 16
+	case bool, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
+		return 16
+	case []string:
+		n = 24
+		for _, item := range value {
+			n += int64(len(item)) + 16
+			if n > relayLogPendingByteBudget {
+				return n
+			}
+		}
+	case []any:
+		n = 24
+		for _, item := range value {
+			n += 16 + relayLogEvidenceBytes(item, depth+1, remaining)
+			if n > relayLogPendingByteBudget {
+				return n
+			}
+		}
+	case map[string]any:
+		n = 48
+		for key, item := range value {
+			n += int64(len(key)) + 96 + relayLogEvidenceBytes(item, depth+1, remaining)
+			if n > relayLogPendingByteBudget {
+				return n
+			}
+		}
+	default:
+		return relayLogPendingByteBudget + 1
+	}
+	return n
+}
+
+// relayLogPendingBytesSyncLocked 把计数器按当前队列重算（调用方必须已持 relayLogCacheLock）。
+//
+// 只给三个地方用：① RelayLogClear 按 scope 过滤后；② 不落库模式裁剪后；
+// ③ 直接改写 relayLogCache 的测试。**禁止**在请求路径上无条件调用（O(n) 重算）。
+func relayLogPendingBytesSyncLocked() int64 {
+	var total int64
+	for i := range relayLogCache {
+		total += relayLogPendingBytesOf(relayLogCache[i])
+	}
+	relayLogPendingBytes = total
+	return total
+}
+
+// relayLogNextBatchLocked 从队头取一批待落库日志，按 payload 预算截断。
+//
+// 为什么要按字节截：flush 在解锁之后还持有一份快照，它和队列会同时存在（最多两份）。
+// 两边都按同一预算封顶，才能说清上界是"≤预算 pending + ≤预算 held batch"。
+// 入队路径已拒绝单条超预算的行；这里不放宽该不变量。
+// 调用方必须已持 relayLogCacheLock；纯内存前缀求和，无 I/O、无等待。
+func relayLogNextBatchLocked() []model.RelayLog {
+	batch := make([]model.RelayLog, 0, len(relayLogCache))
+	var batchBytes int64
+	for i := range relayLogCache {
+		rowBytes := relayLogPendingBytesOf(relayLogCache[i])
+		if batchBytes+rowBytes > relayLogPendingByteBudget {
+			break
+		}
+		batch = append(batch, relayLogCache[i])
+		batchBytes += rowBytes
+	}
+	return batch
+}
+
+// relayLogTrimCacheLocked 把队列裁到最多 keepSize 行，再按 payload 预算从队头继续丢
+// （至少留一行；单行自身就超预算时连它一起丢，以维持"≤预算"的不变量），
+// 最后按剩下的行重算计数器。调用方必须已持 relayLogCacheLock，且不要在请求路径上无条件调。
+func relayLogTrimCacheLocked(keepSize int) {
+	if keepSize < 0 {
+		keepSize = 0
+	}
+	if len(relayLogCache) > keepSize {
+		trimmed := make([]model.RelayLog, keepSize, relayLogMaxSizeNoDB)
+		copy(trimmed, relayLogCache[len(relayLogCache)-keepSize:])
+		relayLogCache = trimmed
+	}
+	// Recount after the row cut before applying the byte budget.
+	relayLogPendingBytesSyncLocked()
+	for len(relayLogCache) > 1 && relayLogPendingBytes > relayLogPendingByteBudget {
+		relayLogPendingBytes -= relayLogPendingBytesOf(relayLogCache[0])
+		if relayLogPendingBytes < 0 {
+			relayLogPendingBytes = 0
+		}
+		relayLogCache[0] = model.RelayLog{}
+		relayLogCache = relayLogCache[1:]
+	}
+	if len(relayLogCache) == 1 && relayLogPendingBytes > relayLogPendingByteBudget {
+		relayLogCache[0] = model.RelayLog{}
+		relayLogCache = relayLogCache[:0]
+	}
+	relayLogPendingBytesSyncLocked()
+}
+
+// relayLogDropReason 记录一次淘汰是因为行数还是字节预算，只用于日志文案。
+const (
+	relayLogDropReasonRows  = "rows"
+	relayLogDropReasonBytes = "bytes"
+)
 
 func relayLogCleanupByStorage(ctx context.Context) error {
 	// 旧实现在这里把所有日志正文一次性读进内存再倒推要删的 id：生产上几十万行
@@ -1255,6 +1539,7 @@ func RelayLogClear(ctx context.Context, scope *model.RelayLogScope) error {
 	}
 	if scope == nil || (scope.UserID == 0 && scope.APIKeyID == 0) {
 		relayLogCache = make([]model.RelayLog, 0, relayLogMaxSize)
+		relayLogPendingBytes = 0
 	} else {
 		filtered := relayLogCache[:0]
 		for _, log := range relayLogCache {
@@ -1262,7 +1547,10 @@ func RelayLogClear(ctx context.Context, scope *model.RelayLogScope) error {
 				filtered = append(filtered, log)
 			}
 		}
+		clear(relayLogCache[len(filtered):])
 		relayLogCache = filtered
+		// 按 scope 只删了一部分：直接按剩下的行重算，避免减法漂移。
+		relayLogPendingBytesSyncLocked()
 	}
 	relayLogCacheLock.Unlock()
 

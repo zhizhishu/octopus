@@ -92,8 +92,13 @@ func ComputeRelayLogProbes(in RelayProbeInput) RelayProbeResult {
 	res.Findings = append(res.Findings, probeCacheExceedsPrompt(in)...)
 	res.Checked = append(res.Checked, model.ProbeCodeCacheExceedsPrompt)
 
-	res.Findings = append(res.Findings, probeEmptyOutput(in)...)
-	res.Checked = append(res.Checked, model.ProbeCodeEmptyOutputWithTokens)
+	// 被截断的正文不是完整样本："正文是空的" 要求看过全部可见输出才敢下结论，
+	// 而落库预算砍掉的那一段正是没看过的部分。按缺证跳过，并且不写进 Checked
+	// （Checked 的语义是"这条日志实际查了什么"，不是"有哪些检查项"）。
+	if !columnWasTruncated(in.ResponseContent) {
+		res.Findings = append(res.Findings, probeEmptyOutput(in)...)
+		res.Checked = append(res.Checked, model.ProbeCodeEmptyOutputWithTokens)
+	}
 
 	if f, ok := probeCharTokenRatio(in); ok {
 		res.Findings = append(res.Findings, f)
@@ -106,6 +111,45 @@ func ComputeRelayLogProbes(in RelayProbeInput) RelayProbeResult {
 	}
 
 	return res
+}
+
+// relay 侧落库预算截断时追加的标记（见 relay.capLogColumn）。
+//
+// 形如 "\n...[truncated: 24117248 bytes before truncation]"，永远是正文的**末尾**。
+// 这里刻意只认这个完整形状，而不是搜正文里任意出现过的词：日志正文里本来就可能
+// 引用一句 "bytes before truncation" 之类的话，那不能把一条完整日志当成缺证。
+const (
+	relayLogTruncationMarkerPrefix = "\n...[truncated: "
+	relayLogTruncationMarkerSuffix = " bytes before truncation]"
+)
+
+// columnWasTruncated 判定一列正文是否以 relay 侧的自描述截断标记结尾。
+//
+// 要求：标记在末尾、前缀完全一致、中间是纯十进制数字（截断前的字节数）。
+// 只要格式对不上就当没截断——宁可多跑一条探针，也不能把完整日志误判成缺证。
+func columnWasTruncated(column string) bool {
+	if !strings.HasSuffix(column, relayLogTruncationMarkerSuffix) {
+		return false
+	}
+	start := strings.LastIndex(column, relayLogTruncationMarkerPrefix)
+	if start < 0 {
+		return false
+	}
+	// 括号防御：前缀不可能出现在尾部后缀区域内（后缀里没有冒号），但切片前先卡边界，
+	// 免得将来改了标记写成 panic。
+	if start+len(relayLogTruncationMarkerPrefix) > len(column)-len(relayLogTruncationMarkerSuffix) {
+		return false
+	}
+	digits := column[start+len(relayLogTruncationMarkerPrefix) : len(column)-len(relayLogTruncationMarkerSuffix)]
+	if digits == "" || len(digits) > 20 {
+		return false
+	}
+	for i := 0; i < len(digits); i++ {
+		if digits[i] < '0' || digits[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // probeTokenArithmetic 查 total 是否等于 prompt + completion。

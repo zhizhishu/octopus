@@ -159,7 +159,10 @@ func (l *ImageTaskLog) Finish(success bool, statusCode int, resultJSON string, f
 	usageSeen := false
 	if success {
 		cost = l.task.Cost
-		m.ResponseContent = resultJSON
+		// 异步生图的结果 JSON 走与 request_content / response_content 同一道落库预算
+		// （见 capLogColumn）。b64 已在 ImageTaskResultPayload 里换成字节数提示，
+		// 这里防的是其余字段（多图 URL / revised_prompt / usage 明细）撑出 MB 级单行。
+		m.ResponseContent = capLogColumn(resultJSON)
 		if l.hasSettlement {
 			// 最终价格以结算为准（按 token 计费的任务在完成时才算出钱）。
 			cost = l.settlement.Cost
