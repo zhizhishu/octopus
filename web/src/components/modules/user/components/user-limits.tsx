@@ -13,7 +13,7 @@ import { toast } from '@/components/common/Toast';
 import { formatUSD } from '../lib/balance-preview';
 import { btnPrimary, label } from './ui-bits';
 
-const input = 'flex min-w-0 h-9 w-full rounded-xl border border-input bg-background px-3 text-sm outline-none focus:border-ring disabled:opacity-60';
+const input = 'flex min-w-0 h-9 w-full rounded-xl border border-input bg-background px-3 text-sm outline-none focus:border-ring disabled:opacity-60 max-sm:min-h-11';
 const fields = [
     ['five_hour_cost', 'five_hour_requests', 'five_hour'],
     ['weekly_cost', 'weekly_requests', 'week'],
@@ -38,6 +38,34 @@ function numericDraft(policy: UserLimitPolicy): Record<NumericField, string> {
     };
 }
 
+// Admission-threshold wording, not a billing cap. Rendered for both the ordinary
+// user card and the admin editor so neither role reads the limit as a hard cap.
+function LimitsExplanation({ policy, data }: { policy: UserLimitPolicy; data: UserLimitStatus }) {
+    const t = useTranslations('userLimits');
+    return (
+        <div className="space-y-2">
+            <p className="text-sm font-medium">{t('admissionTitle')}</p>
+            <p className="text-xs leading-relaxed">{t('summary')}</p>
+            <p className="text-xs leading-relaxed text-muted-foreground">{t('admissionNote')}</p>
+            <details className="rounded-xl bg-muted/40 p-3">
+                <summary className="cursor-pointer text-xs font-medium max-sm:min-h-11 max-sm:min-w-11">{t('detailTitle')}</summary>
+                <ul className="mt-2 list-disc space-y-1 pl-4 text-xs leading-relaxed text-muted-foreground">
+                    <li>{t('costNote')}</li>
+                    <li>{t('countNote')}</li>
+                    <li>{t('fiveHourNote')}</li>
+                    <li>{t('calendarNote', { timezone: policy.timezone })}</li>
+                    <li>{t('refundNote')}</li>
+                    <li>{t('estimateNote')}</li>
+                    <li>{t('zeroMeansUnlimited')}</li>
+                    <li className="break-all">
+                        {policy.allowed_models ? t('modelScope', { models: policy.allowed_models }) : t('modelScopeAll')}
+                    </li>
+                </ul>
+            </details>
+        </div>
+    );
+}
+
 function LimitsUsage({ data }: { data: UserLimitStatus }) {
     const t = useTranslations('userLimits');
     const locale = useLocale();
@@ -52,6 +80,7 @@ function LimitsUsage({ data }: { data: UserLimitStatus }) {
                 <span className="font-medium">{policy.enabled ? t('enabled') : t('disabled')}</span>
                 <span className="break-all text-xs text-muted-foreground">{policy.timezone}</span>
             </div>
+            {!policy.enabled && <p className="rounded-xl bg-muted p-3 text-xs leading-relaxed">{t('disabledNote')}</p>}
             {data.windows.map((window) => (
                 <div key={window.period} className="space-y-2 rounded-2xl border border-border/70 bg-muted/20 p-4">
                     <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -73,9 +102,8 @@ function LimitsUsage({ data }: { data: UserLimitStatus }) {
                 </div>
             ))}
             <p className="text-xs leading-relaxed text-muted-foreground">{t('pending', { count: data.pending_receipts })}</p>
-            <p className="text-xs leading-relaxed text-muted-foreground">{t('countNote')}</p>
-            <p className="text-xs leading-relaxed text-muted-foreground">{t('costNote')}</p>
             {!data.realtime_supported && <p className="rounded-xl bg-muted p-3 text-xs leading-relaxed">{t('realtimeNote')}</p>}
+            <LimitsExplanation policy={policy} data={data} />
         </section>
     );
 }
@@ -132,11 +160,11 @@ function LimitsEditor({ userID, initial, data }: { userID: number; initial: User
                 ))}
                 <label className="block">
                     <div className={label}>{t('models')}</div>
-                    <textarea className="min-h-20 w-full resize-y rounded-xl border border-input bg-background p-3 text-sm outline-none focus:border-ring" value={draft.allowed_models} maxLength={16384} disabled={save.isPending} onChange={(event) => setDraft((value) => ({ ...value, allowed_models: event.target.value }))} />
+                    <textarea className="min-h-20 w-full resize-y rounded-xl border border-input bg-background p-3 text-sm outline-none focus:border-ring max-sm:min-h-11" value={draft.allowed_models} maxLength={16384} disabled={save.isPending} onChange={(event) => setDraft((value) => ({ ...value, allowed_models: event.target.value }))} />
                     <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{t('modelsNote')}</p>
                 </label>
                 <p className="text-xs leading-relaxed text-muted-foreground">{t('zeroNote')}</p>
-                <button type="button" className={btnPrimary} disabled={save.isPending} onClick={savePolicy}>
+                <button type="button" className={`${btnPrimary} max-sm:min-h-11 max-sm:min-w-11`} disabled={save.isPending} onClick={savePolicy}>
                     {save.isPending && <Loader2 className="size-4 animate-spin" />}{t('save')}
                 </button>
             </section>
