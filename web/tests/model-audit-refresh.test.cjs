@@ -68,6 +68,13 @@ function text(node) {
 }
 let lastItemModule;
 function logComponentsItem() { logComponents(); return lastItemModule; }
+// 冻结闩/缓冲/恢复的真模块。AutoRefreshControl.tsx 与 index.tsx 都 import 它，
+// 所以这个 mock 少了就会掉到真实别名解析，整份日志卡测试报
+// `Cannot find module '@/lib/log-live-buffer'`（requireStack=AutoRefreshControl.tsx）。
+// 测到的必须是线上那一套判定，所以直接加载真文件，不伪造返回。
+const liveBufferModule = load('src/lib/log-live-buffer.ts');
+assert.equal(typeof liveBufferModule.pendingUnreadLabel, 'function', 'real helper is loaded, not a stub');
+assert.equal(typeof liveBufferModule.freezeLiveBuffer, 'function', 'freeze latch comes from the real module');
 function logComponents() {
     let queryResult = { data: undefined, isError: false };
     const pageHooks = hooks();
@@ -87,7 +94,7 @@ function logComponents() {
         '@/lib/log-auto-refresh': load('src/lib/log-auto-refresh.ts'),
         // Page-owned detail snapshot/live buffer is now shared by Log and
         // AutoRefreshControl. The pure implementation must run, not a fake.
-        '@/lib/log-live-buffer': load('src/lib/log-live-buffer.ts'),
+        '@/lib/log-live-buffer': liveBufferModule,
     };
     const item = load('src/components/modules/log/Item.tsx', {
         ...common,

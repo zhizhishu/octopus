@@ -81,6 +81,150 @@ test('detail: switching filters invalidates an in-flight resume', () => {
     assert.equal(result.state.frozen, false);
 });
 
+// 真实竞态：用户点完「N 条新日志」又去点开一条（恢复 GET 还在飞）。
+// 这一次的 GET 落地后绝不能解冻、更不能把积压插到用户正在读的列表背后；
+// 它只能把 busy 收掉，闩和缓冲留给下一次显式恢复。
+test('detail: opening a detail during a slow resume cancels that resume (no late unfreeze, no backlog insert)', () => {
+    let state = live.freezeLiveBuffer({ state: live.INITIAL_LIVE_BUFFER_STATE, buffer: [] }).state;
+    const first = live.receiveLiveLog({ state, buffer: [], log: { id: 5 }, live: true, flushMs: 0, paused: false });
+    state = first.state;
+    const started = live.beginResume({ state, buffer: first.buffer, key: 'page1' });
+    assert.ok(started);
+    state = started.state;
+    // GET 期间 SSE 继续收（先进缓冲，不插列表）。
+    const later = live.receiveLiveLog({ state, buffer: started.buffer, log: { id: 6 }, live: true, flushMs: 0, paused: false });
+    state = later.state;
+    assert.deepEqual(later.insert, []);
+    // 用户在这段慢 GET 里点开了详情：闩压过在飞的恢复。
+    const refrozen = live.freezeLiveBuffer({ state, buffer: later.buffer });
+    state = refrozen.state;
+    const pending = refrozen.buffer;
+    assert.equal(state.frozen, true);
+    assert.equal(state.resuming, true, 'the GET really is still in flight, so busy stays honest');
+    // 慢 GET 现在成功了。
+    const settled = live.settleResume({ state, buffer: pending, ok: true, currentKey: 'page1' });
+    assert.equal(settled.state.frozen, true, 'a late success must not unfreeze behind the open dialog');
+    assert.equal(settled.state.resuming, false);
+    assert.deepEqual(settled.insert, [], 'and must not push the backlog into the list');
+    assert.deepEqual(settled.buffer.map((x) => x.id), [6, 5], 'backlog is kept for the next explicit resume');
+    // 关掉详情后用户再点一次，缓冲仍在、可以真恢复。
+    const retry = live.beginResume({ state: settled.state, buffer: settled.buffer, key: 'page1' });
+    assert.ok(retry, 'explicit resume is still available afterwards');
+    const done = live.settleResume({ state: retry.state, buffer: retry.buffer, ok: true, currentKey: 'page1' });
+    assert.equal(done.state.frozen, false);
+    assert.deepEqual(done.insert.map((x) => x.id), [6, 5]);
+});
+
+// 恢复成功只提交一次：GET 与积压重叠时按 id 去重，而且后续 tick 不会重插。
+test('detail: a successful resume commits once — overlap with the GET is deduped, later ticks insert nothing', () => {
+    let state = live.freezeLiveBuffer({ state: live.INITIAL_LIVE_BUFFER_STATE, buffer: [] }).state;
+    let pending = [];
+    for (const id of [18, 19]) {
+        const step = live.receiveLiveLog({ state, buffer: pending, log: { id }, live: true, flushMs: 0, paused: false });
+        state = step.state;
+        pending = step.buffer;
+    }
+    const started = live.beginResume({ state, buffer: pending, key: 'page1' });
+    const settled = live.settleResume({ state: started.state, buffer: started.buffer, ok: true, currentKey: 'page1' });
+    // 后端落库比 SSE 慢一步：GET 已经含有 18（也可能含 19）。
+    const pages = [[{ id: 18 }, { id: 17 }], [{ id: 16 }]];
+    const merged = auto.prependLogBatch(pages, settled.insert);
+    assert.deepEqual(merged.inserted, [19], 'only the id the GET did not have is inserted');
+    // 解冻之后的 tick：缓冲已清空，不会再插一次。
+    const after = live.tickLiveBuffer({ state: settled.state, buffer: settled.buffer, live: true, paused: false });
+    assert.deepEqual(after.insert, [], 'no second commit of the same batch');
+    assert.deepEqual(after.buffer, []);
+});
+
+// 慢 GET 期间定时器照样在跑：闩没解开就一拍都不能插。
+test('detail: timer ticks during a slow resume never insert', () => {    const started = live.beginResume({
+        state: live.freezeLiveBuffer({ state: live.INITIAL_LIVE_BUFFER_STATE, buffer: [] }).state,
+        buffer: [{ id: 3 }, { id: 2 }], key: 'page1'
+    });
+    assert.ok(started);
+    for (let i = 0; i < 5; i++) {
+        const tick = live.tickLiveBuffer({ state: started.state, buffer: started.buffer, live: true, paused: false });
+        assert.deepEqual(tick.insert, []);
+        assert.equal(tick.buffer.length, 2, 'backlog is untouched by ticks');
+    }
+});
+
+// 从「已往下翻」的暂停点恢复（列表本来没冻结）：GET 期间必须也冻住。
+// 否则滚回顶部后暂停原因消失，SSE 会先插行，而 refetch 落地会整份替换缓存——
+// 刚插进去、还没落库的那几行就这梓没了。
+test('detail: resuming from a scrolled pause freezes for the whole GET', () => {
+    let state = live.INITIAL_LIVE_BUFFER_STATE;
+    let pending = [];
+    for (const id of [8, 9]) {
+        const step = live.receiveLiveLog({ state, buffer: pending, log: { id }, live: true, flushMs: 0, paused: true });
+        state = step.state;
+        pending = step.buffer;
+        assert.deepEqual(step.insert, []);
+    }
+    assert.equal(state.frozen, false, 'a scrolled pause alone is not a freeze');
+    const started = live.beginResume({ state, buffer: pending, key: 'page1' });
+    assert.ok(started);
+    assert.equal(started.state.frozen, true, 'the recovery GET freezes even when the list was not frozen');
+    const arriving = live.receiveLiveLog({
+        state: started.state, buffer: started.buffer, log: { id: 10 }, live: true, flushMs: 0, paused: false
+    });
+    assert.deepEqual(arriving.insert, [], 'rows arriving during the GET must not be inserted before it lands');
+    const flushed = live.tickLiveBuffer({ state: arriving.state, buffer: arriving.buffer, live: true, paused: false });
+    assert.deepEqual(flushed.insert, [], 'the timer cannot sneak them in either');
+    const settled = live.settleResume({ state: arriving.state, buffer: arriving.buffer, ok: true, currentKey: 'page1' });
+    assert.equal(settled.state.frozen, false);
+    assert.deepEqual(settled.insert.map((x) => x.id), [10, 9, 8], 'everything buffered during the GET merges after it commits');
+});
+
+// 失败一次后溢出标记与「200+」不变，重试成功才清。
+test('detail: overflow survives a failed resume and the retry clears it', () => {
+    let state = live.freezeLiveBuffer({ state: live.INITIAL_LIVE_BUFFER_STATE, buffer: [] }).state;
+    let pending = [];
+    for (let id = 1; id <= 205; id++) {
+        const step = live.receiveLiveLog({ state, buffer: pending, log: { id }, live: true, flushMs: 0, paused: false });
+        state = step.state;
+        pending = step.buffer;
+    }
+    assert.equal(state.overflowed, true);
+    const started = live.beginResume({ state, buffer: pending, key: 'page1' });
+    const failed = live.settleResume({ state: started.state, buffer: started.buffer, ok: false, currentKey: 'page1' });
+    assert.equal(failed.state.overflowed, true, 'a failed GET cannot pretend the backlog is complete');
+    assert.equal(failed.buffer.length, auto.LOG_AUTO_REFRESH_BUFFER_MAX);
+    assert.equal(live.pendingUnreadLabel(failed.buffer.length, failed.state.overflowed), '200+');
+    assert.equal(failed.state.frozen, true);
+    const retry = live.beginResume({ state: failed.state, buffer: failed.buffer, key: 'page1' });
+    const ok = live.settleResume({ state: retry.state, buffer: retry.buffer, ok: true, currentKey: 'page1' });
+    assert.equal(ok.state.overflowed, false);
+    assert.equal(ok.insert.length, auto.LOG_AUTO_REFRESH_BUFFER_MAX);
+});
+
+// 已经没有恢复在飞（reset 已跑过/被作废过）时，迟到的 settle 不能动任何东西。
+test('detail: a settle with no resume in flight changes nothing', () => {
+    const state = live.freezeLiveBuffer({ state: live.INITIAL_LIVE_BUFFER_STATE, buffer: [] }).state;
+    const stale = live.settleResume({ state, buffer: [{ id: 9 }], ok: true, currentKey: 'page1' });
+    assert.equal(stale.state, state);
+    assert.deepEqual(stale.insert, []);
+    assert.deepEqual(stale.buffer.map((x) => x.id), [9], 'the backlog is not silently dropped');
+    assert.equal(stale.state.frozen, true);
+});
+
+// 合并节奏 > 0（批量插入）时：不暂停也先进缓冲，到点一次整批插入，且冻结时一拍不插。
+test('detail: batched cadence buffers until a tick, then flushes as one batch', () => {
+    let state = live.INITIAL_LIVE_BUFFER_STATE;
+    let pending = [];
+    for (const id of [1, 2, 3]) {
+        const step = live.receiveLiveLog({ state, buffer: pending, log: { id }, live: true, flushMs: 1500, paused: false });
+        state = step.state;
+        pending = step.buffer;
+        assert.deepEqual(step.insert, [], 'flushMs > 0 never inserts on arrival');
+    }
+    const frozen = live.freezeLiveBuffer({ state, buffer: pending });
+    assert.deepEqual(live.tickLiveBuffer({ state: frozen.state, buffer: frozen.buffer, live: true, paused: false }).insert, []);
+    const opened = live.tickLiveBuffer({ state: state, buffer: pending, live: true, paused: false });
+    assert.deepEqual(opened.insert.map((x) => x.id), [3, 2, 1], 'one batch, newest first');
+    assert.deepEqual(opened.buffer, []);
+});
+
 test('detail: same-id updates preserve the dialog snapshot, navigation changes it', () => {
     const first = { id: 42, response_content: 'old' };
     const newData = { id: 42, response_content: 'new' };

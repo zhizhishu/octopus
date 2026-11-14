@@ -106,10 +106,22 @@ export function nextDetailSnapshot<T extends WithID>(
     return candidates.find((log) => log.id === id) ?? current;
 }
 
-/** 打开详情：同步冻结（页面在点击回调里第一个调它，不经过渲染/effect/DOM 观察）。 */
+/**
+ * 打开详情：同步冻结（页面在点击回调里第一个调它，不经过渲染/effect/DOM 观察）。
+ *
+ * 如果这时正好有一次恢复 GET 在飞（用户点完「N 条新日志」又打开了一条），闩必须压过它：
+ * 把 resumeKey 清空，于是那次慢 GET 落地后 settleResume 只收掉 busy，不会解冻、
+ * 更不会把积压插到用户正在读的列表背后。resuming 保持 true —— GET 确实还在飞，
+ * 单飞与「恢复中」的显示都得照旧。
+ */
 export function freezeLiveBuffer<T extends WithID>(input: { state: LiveBufferState; buffer: readonly T[] }): LiveBufferStep<T> {
+    const { state } = input;
+    const supersedesResume = state.resuming && state.resumeKey !== null;
+    const nextState: LiveBufferState = state.frozen && !supersedesResume
+        ? state
+        : { ...state, frozen: true, resumeKey: supersedesResume ? null : state.resumeKey };
     return {
-        state: input.state.frozen ? input.state : { ...input.state, frozen: true },
+        state: nextState,
         buffer: input.buffer.slice(),
         insert: [],
     };
@@ -162,6 +174,10 @@ export function tickLiveBuffer<T extends WithID>(input: {
  * 开始一次恢复（点「N 条新日志」/手动刷新）。
  * 返回 null 表示已有恢复在飞：重复点直接忽略（单飞），不会叠出第二次 GET。
  * 冻结在整段 GET 期间保持，新 SSE 继续进缓冲。
+ *
+ * ⚠ 自己也要立闩，不能假定调用方已经冻过：从「已往下翻」的暂停点「N 条新日志」时，
+ * 列表并没有冻结，滚动回顶后暂停原因消失，GET 还没回来 SSE 就会插到列表上，
+ * 而 refetch 落地会整份替换这份缓存——刚插进去、还没落库的行因此消失。
  */
 export function beginResume<T extends WithID>(input: {
     state: LiveBufferState;
@@ -170,7 +186,7 @@ export function beginResume<T extends WithID>(input: {
 }): LiveBufferStep<T> | null {
     if (input.state.resuming) return null;
     return {
-        state: { ...input.state, resuming: true, resumeKey: input.key },
+        state: { ...input.state, frozen: true, resuming: true, resumeKey: input.key },
         buffer: input.buffer.slice(),
         insert: [],
     };
@@ -180,6 +196,8 @@ export function beginResume<T extends WithID>(input: {
  * 恢复 GET 落地。
  * - 列表签名变了（筛选/页码/实时开关切换）：这次恢复作废——不把旧列表的积压插进新列表，
  *   状态回到初始（新列表的缓冲与闩由调用方的 reset 清）。
+ * - 恢复期间用户又打开了详情（freeze 已清掉 resumeKey）：只收掉 resuming，**继续冻结**，
+ *   不插积压——否则慢 GET 落地会把行插到用户正在读的列表背后。
  * - 失败：**继续冻结**，缓冲与溢出标记原样留着，用户可以再点一次恢复（不清空、不丢）。
  * - 成功：把缓冲整批交出去，由调用方与刚 GET 到的数据在同一批次里合并去重（prependLogBatch），
  *   然后解冻、清溢出标记。GET 期间新到的 SSE 也在这一批里，所以不依赖
@@ -194,6 +212,11 @@ export function settleResume<T extends WithID>(input: {
     const { state, buffer, ok, currentKey } = input;
     // 没有恢复在飞（例如 reset 已经跑过）：什么都不动。
     if (!state.resuming) return { state, buffer: buffer.slice(), insert: [] };
+    // 这次恢复被「恢复期间又打开了详情」作废了（freeze 清掉了 resumeKey）：
+    // 只收掉 busy，**继续冻结**，缓冲与溢出标记原样留着等下一次显式恢复。
+    if (state.resumeKey === null) {
+        return { state: { ...state, resuming: false }, buffer: buffer.slice(), insert: [] };
+    }
     // 旧恢复作废：列表签名换了，积压不属于新列表。
     if (state.resumeKey !== null && currentKey !== state.resumeKey) {
         return { state: INITIAL_LIVE_BUFFER_STATE, buffer: [], insert: [] };
