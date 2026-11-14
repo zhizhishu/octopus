@@ -19,6 +19,8 @@ import { useLogAutoRefresh } from './use-log-auto-refresh';
 import { LIVE_ACTIVITY_COLLAPSED_STORAGE_KEY, logAutoRefreshFlushMs, logAutoRefreshPollMs } from '@/lib/log-auto-refresh';
 import { AutoRefreshControl, AutoRefreshStatus, PendingLogsPill } from './AutoRefreshControl';
 import { LogCard, useSensitiveStore } from './Item';
+// 详情快照的纯逻辑（同 id 不覆盖、关闭保留、换条才换），node 测试直接跑真模块。
+import { nextDetailSnapshot } from '@/lib/log-live-buffer';
 import { VideoTaskPanel } from './VideoTaskPanel';
 import { AlertCircle, AlertTriangle, Calendar as CalendarIcon, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Circle, Download, Eye, EyeOff, Loader2, RefreshCw, RotateCcw, RotateCw, ScrollText, Search, SlidersHorizontal, Video, WifiOff, X } from 'lucide-react';
 import { useTranslations } from 'next-intl';
@@ -730,7 +732,14 @@ export function Log() {
     // 自动刷新（关闭 / 实时 / 5·10·30 秒），本地记住。复用日志 SSE：新日志先进缓冲，
     // 没被打扰（没开详情/弹窗、列表在顶部、没在选字、标签页在前台）时才按节奏插到顶部。
     const listScrollerRef = useRef<HTMLDivElement | null>(null);
-    const autoRefresh = useLogAutoRefresh({ scrollerRef: listScrollerRef });
+    // 页面级单例详情弹窗：一份快照 + 一个开关。
+    // 弹窗不再挂在每一行上——行会被虚拟列表回收、也会被新日志整块重排，
+    // 弹窗跟着行走就会在看的时候被带走。
+    const [detailSnapshot, setDetailSnapshot] = useState<RelayLog | null>(null);
+    const [detailDialogOpen, setDetailDialogOpen] = useState(false);
+    // 关闭后焦点要还给触发那一行（可能已被回收），都不在就落到列表壳上。
+    const listShellRef = useRef<HTMLDivElement | null>(null);
+    const autoRefresh = useLogAutoRefresh({ scrollerRef: listScrollerRef, detailOpen: detailDialogOpen });
     const autoRefreshFlushMs = logAutoRefreshFlushMs(autoRefresh.mode);
     const autoRefreshPollMs = logAutoRefreshPollMs(autoRefresh.mode);
     // 刚插进来的新行：淡淡高亮几秒再褪掉。
@@ -856,9 +865,12 @@ export function Log() {
         isConnected,
         error: streamError,
         loadMore,
-        refresh,
         pendingCount: pendingLogCount,
-        flushPending: flushPendingLogs,
+        pendingOverflow,
+        isLiveFrozen,
+        isResuming: isResumingLive,
+        freeze: freezeLiveInsert,
+        resume: resumeLiveInsert,
     } = useLogs({
         pageSize: LOG_PAGE_SIZE,
         // 始终分页；实时刷新只是往第 1 页实时插入新日志，分页导航永远保留。
@@ -883,6 +895,12 @@ export function Log() {
         livePollFallbackMs: autoRefreshPollMs ?? undefined,
         onLiveInserted: handleLiveInserted,
     });
+
+    // 点击行时用它拿快照：回调必须保持稳定引用（行卡片按引用比 memo），所以不把 logs 塞进 deps。
+    const logsRef = useRef<RelayLog[]>(logs);
+    useEffect(() => {
+        logsRef.current = logs;
+    }, [logs]);
 
     // 收集当前可用模型候选：来自 modelList、channelRows、当前选中的模型、以及当前已经拉到的日志里的模型名
     const availableModelOptions = useMemo(() => {
@@ -1051,10 +1069,11 @@ export function Log() {
         void loadMore();
     }, [canLoadMore, loadMore]);
     const handleRefresh = useCallback(() => {
-        void refresh();
+        // 手动刷新也算显式恢复：一次明确的恢复（整段 GET 期间仍冻结，成功后合并去重再解冻）。
+        void resumeLiveInsert();
         void refreshCounts();
         if (listIsEmpty) void refreshAllTimeCounts();
-    }, [listIsEmpty, refresh, refreshAllTimeCounts, refreshCounts]);
+    }, [listIsEmpty, refreshAllTimeCounts, refreshCounts, resumeLiveInsert]);
     const handleExport = useCallback(() => {
         const controller = new AbortController();
         exportAbortRef.current = controller;
@@ -1101,34 +1120,59 @@ export function Log() {
         canNext: detailCanNext,
     } = useLogDetailNavigation({ logs, hasMore, loadMore, isLoadingMore });
 
+    // 快照只在「换条」时换：同一 id 的新数据（SSE 插入/重排/后端回写）一律不覆盖
+    // ——正在读的那一条不能因为列表动了就换内容。关掉后保留上一份，供关闭动画/焦点返回。
+    // 同一 id 时 helper 原样返回旧对象，setState 同一引用不会触发重渲染。
+    useEffect(() => {
+        setDetailSnapshot((current) => nextDetailSnapshot(current, detailActiveId, logs));
+    }, [detailActiveId, logs]);
+
+    // 关闭后把焦点还给触发那一行（可能已被虚拟列表回收）：
+    // 先在本页列表里找行锚点，再退到它可聚焦的触发器，最后落到列表壳，不把焦点丢在 body。
+    const focusLogRow = useCallback((logId: number) => {
+        const anchor = listShellRef.current?.querySelector<HTMLElement>(`[data-log-id="${logId}"]`) ?? null;
+        const target = anchor?.closest<HTMLElement>('[role="button"]') ?? listShellRef.current;
+        target?.focus?.();
+    }, []);
+
     const onDetailOpenChange = useCallback((logId: number, open: boolean) => {
-        if (open) openDetail(logId);
-        else closeDetail(false);
-    }, [closeDetail, openDetail]);
+        if (open) {
+            // 第一步同步冻结：不经过渲染/effect/DOM 观察——liveFlushMs=0（来一条插一条）时
+            // 下一条 SSE 就在同一拍里，靠异步暂停必然漏一拍、把行插到正在读的列表顶部。
+            freezeLiveInsert();
+            // 快照：打开这一刻的这一条，之后列表怎么变都不动它。
+            setDetailSnapshot(logsRef.current.find((log) => log.id === logId) ?? null);
+            setDetailDialogOpen(true);
+            openDetail(logId);
+            return;
+        }
+        // 关闭不解冻、不插积压：闩一直保持到用户点「N 条新日志」或手动刷新，
+        // 否则关弹窗后的下一条 SSE 会把积压一次性顶到刚回来的列表上。
+        setDetailDialogOpen(false);
+        closeDetail(false);
+        window.setTimeout(() => focusLogRow(logId), 0);
+    }, [closeDetail, focusLogRow, freezeLiveInsert, openDetail]);
 
     const renderLogCard = useCallback(
         (log: RelayLog) => (
             <LogCard
                 log={log}
-                detailOpen={detailActiveId === log.id}
                 onDetailOpenChange={onDetailOpenChange}
-                onNavigate={navigateDetail}
-                canNavigatePrev={detailActiveId === log.id && detailCanPrev}
-                canNavigateNext={detailActiveId === log.id && detailCanNext}
             />
         ),
-        [detailActiveId, detailCanNext, detailCanPrev, navigateDetail, onDetailOpenChange],
+        [onDetailOpenChange],
     );
     // 自动刷新新插进来的行：只给列表格子加一次性的淡高亮 class，卡片本身（及其 memo 比较）不受影响。
     const getLogRowClassName = useCallback(
         (log: RelayLog) => (freshLogIDs.has(log.id) ? 'log-row-fresh' : undefined),
         [freshLogIDs],
     );
-    // 「显示 N 条新日志」：回到列表顶部并立即插入缓冲（用户主动要看，就不再等暂停解除）。
+    // 「显示 N 条新日志」：回到列表顶部，并按显式恢复统一处理
+    // （异步：整段 GET 期间仍冻结，成功后合并去重再解冻；重复点单飞）。
     const showPendingLogs = useCallback(() => {
         listScrollerRef.current?.scrollTo({ top: 0 });
-        flushPendingLogs();
-    }, [flushPendingLogs]);
+        void resumeLiveInsert();
+    }, [resumeLiveInsert]);
     const getLogRowKey = useCallback((log: RelayLog) => log.id, []);
 
     const footer = useMemo(() => {
@@ -1456,6 +1500,9 @@ export function Log() {
                         connected={isConnected}
                         pauseReason={autoRefresh.pauseReason}
                         pendingCount={pendingLogCount}
+                        pendingOverflow={pendingOverflow}
+                        frozen={isLiveFrozen}
+                        busy={isResumingLive}
                         onShowPending={showPendingLogs}
                     />
                     {/* 重置跟计数同行，右下角只留 眼睛/下载/实时动态 */}
@@ -1619,10 +1666,26 @@ export function Log() {
                 requestStateConnected={requestStateConnected}
                 historyLogIDs={historyLogIDs}
             />
-            <div className="relative min-h-0 flex-1" aria-busy={isFetching}>
+            {/* 页面级单例详情弹窗：内容由快照驱动，不跟随任何一行被虚拟回收/新日志重排而卸载。
+                它真渲染时 portal 到 body，不占布局位置。 */}
+            {detailSnapshot && (
+                <LogCard
+                    log={detailSnapshot}
+                    detailOnly
+                    detailOpen={detailDialogOpen}
+                    onDetailOpenChange={onDetailOpenChange}
+                    onNavigate={navigateDetail}
+                    canNavigatePrev={detailCanPrev}
+                    canNavigateNext={detailCanNext}
+                />
+            )}
+            <div ref={listShellRef} tabIndex={-1} className="relative min-h-0 flex-1 outline-none" aria-busy={isFetching}>
+                {/* 暂停（往下翻/选字）或详情冻结闩还在 → 都要能看到「N 条新日志」这个恢复入口。 */}
                 <PendingLogsPill
                     count={pendingLogCount}
-                    visible={currentPage === 1 && (autoRefresh.pauseReason === 'scrolled' || autoRefresh.pauseReason === 'selecting')}
+                    overflowed={pendingOverflow}
+                    busy={isResumingLive}
+                    visible={currentPage === 1 && (autoRefresh.pauseReason === 'scrolled' || autoRefresh.pauseReason === 'selecting' || isLiveFrozen)}
                     onClick={showPendingLogs}
                 />
                 <TooltipProvider>

@@ -97,5 +97,7 @@ test('auto refresh: page wiring reuses the existing log SSE and the panel rememb
     assert.match(page, /aria-expanded=\{!collapsed\}/);
     const hook = readFileSync(path.join(__dirname, '..', 'src', 'api', 'endpoints', 'log.ts'), 'utf8');
     assert.match(hook, /\/api\/v1\/log\/stream\?/);
-    assert.match(hook, /bufferLog\(pendingRef\.current, log\)/);
+    // 缓冲/插入的判定已抽到 lib/log-live-buffer.ts 的纯状态机（并发行为由
+    // tests/log-detail-stability.test.cjs 直接压真模块）；这里只锁 hook 仍把 SSE 交给它。
+    assert.match(hook, /receiveLiveLog\(\{/);
 });

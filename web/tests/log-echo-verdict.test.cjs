@@ -561,7 +561,11 @@ test('known cross-family stays visible with both sides of the comparison', () =>
 // 的措词与配色一律不变，竞速落选/失败的尝试不得污染整行。
 
 function renderHeader(LogCard, log, variant) {
-    const tree = LogCard.type({ log });
+    // detail 变体只属于页面级单例弹窗那一份（detailOnly）：行内卡片不再构建详情子树，
+    // 所以这里要按真实调用方式渲染 detailOnly，而不是拿行内树去凑。
+    const tree = variant === 'detail'
+        ? LogCard.type({ log, detailOnly: true, detailOpen: true })
+        : LogCard.type({ log });
     const headerEl = findElement(tree, (node) => typeof node.type === 'function' && node.type.name === 'LogRouteHeader' && node.props?.variant === variant);
     assert.ok(headerEl, `${variant} variant LogRouteHeader element must exist`);
     return headerEl.type(headerEl.props);
@@ -639,12 +643,14 @@ test('fallback: the selected successful attempt marks the header and only its ow
 
 test('detail view explains the incomplete output, leaving the verdict colour alone', () => {
     const { LogCard } = loadCard();
-    const marked = LogCard.type({ log: sampleLog({ output_incomplete: true }) });
+    // Detail content is now a page-owned singleton rather than a modal
+    // mounted under every virtualized list row.
+    const marked = LogCard.type({ log: sampleLog({ output_incomplete: true }), detailOnly: true, detailOpen: true });
     assert.equal(incompleteBadges(renderHeader(LogCard, sampleLog({ output_incomplete: true }), 'detail')).length, 1, 'detail header carries the same marker');
     const note = findElement(marked, (node) => node.props?.['data-output-incomplete-explain'] !== undefined);
     assert.ok(note, 'detail explains it in words');
     assert.equal(text(note), 'outputIncompleteExplain');
     assert.ok(findElement(marked, (node) => /bg-emerald-500\/10/.test(String(node.props?.className))), 'verdict box keeps its success tint');
-    const plain = LogCard.type({ log: sampleLog() });
+    const plain = LogCard.type({ log: sampleLog(), detailOnly: true, detailOpen: true });
     assert.equal(findElement(plain, (node) => node.props?.['data-output-incomplete-explain'] !== undefined), undefined, 'no note on a complete row');
 });

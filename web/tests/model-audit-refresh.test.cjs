@@ -85,6 +85,9 @@ function logComponents() {
         '@/lib/log-export': { saveStreamToFile: async () => 0, formatBytes: () => '0 B' },
         // 日志页自动刷新的纯逻辑（无依赖），直接用真模块；行为由 tests/log-auto-refresh.test.cjs 锁。
         '@/lib/log-auto-refresh': load('src/lib/log-auto-refresh.ts'),
+        // Page-owned detail snapshot/live buffer is now shared by Log and
+        // AutoRefreshControl. The pure implementation must run, not a fake.
+        '@/lib/log-live-buffer': load('src/lib/log-live-buffer.ts'),
     };
     const item = load('src/components/modules/log/Item.tsx', {
         ...common,

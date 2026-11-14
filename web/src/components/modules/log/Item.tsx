@@ -1188,8 +1188,8 @@ const PASSIVE_SUSPICIOUS_CLASS = 'border-amber-500/40 bg-amber-500/10 font-norma
 type LogCardProps = {
     log: RelayLog;
     /**
-     * 受控的详情弹窗开合。传了就由外部接管——日志页用它实现「左右键连着翻」：
-     * 翻页时换 log、弹窗保持打开。不传则回到原来的各自管自己。
+     * 详情弹窗是否打开。只有 `detailOnly` 形态（页面级单例弹窗）用它；
+     * 列表行永远是关着的——点一下只上报 (logId, true)，由页面那份快照弹窗负责显示。
      */
     detailOpen?: boolean;
     /** 稳定回调：父组件用 useCallback，logCardPropsEqual 按引用比较它。 */
@@ -1198,6 +1198,12 @@ type LogCardProps = {
     onNavigate?: (direction: -1 | 1) => void;
     canNavigatePrev?: boolean;
     canNavigateNext?: boolean;
+    /**
+     * 只渲染详情弹窗本身，不渲染列表卡片（页面级单例详情弹窗用）。
+     * 弹窗内容与列表卡片同源（同一份代码、同一批派生值），但它挂在页面上、由快照驱动，
+     * 因此不再跟着某一行的虚拟回收 / 新日志重排一起卸载。
+     */
+    detailOnly?: boolean;
 };
 
 /**
@@ -1216,6 +1222,8 @@ export function logCardPropsEqual(prev: LogCardProps, next: LogCardProps): boole
         && prev.detailOpen === next.detailOpen
         && prev.onDetailOpenChange === next.onDetailOpenChange
         && prev.onNavigate === next.onNavigate
+        // 行内卡片与页面级弹窗是同一个组件的两种形态，形态变了必须重绘。
+        && (prev.detailOnly ?? false) === (next.detailOnly ?? false)
         && (prev.canNavigatePrev ?? false) === (next.canNavigatePrev ?? false)
         && (prev.canNavigateNext ?? false) === (next.canNavigateNext ?? false)
         // 本行审计字段随后端回写而变化时（手动检测带 log_id 写回同一行、id/time 不变），
@@ -1241,6 +1249,7 @@ export const LogCard = React.memo(function LogCard({
     onNavigate,
     canNavigatePrev = false,
     canNavigateNext = false,
+    detailOnly = false,
 }: LogCardProps) {
     const t = useTranslations('log.card');
     const canViewDetails = useAuthStore((state) => state.user?.role === 'admin');
@@ -1760,8 +1769,7 @@ export const LogCard = React.memo(function LogCard({
         onDetailOpenChange?.(log.id, open);
     }, [log.id, onDetailOpenChange]);
 
-    return (
-            <MorphingDialog open={detailOpen} onOpenChange={handleDetailOpenChange}>
+    const cardTrigger = (
                 <MorphingDialogTrigger
                     disabled={!canViewDetails}
                     className={cn(
@@ -1923,7 +1931,23 @@ export const LogCard = React.memo(function LogCard({
                         </div>
                     </div>
                 </MorphingDialogTrigger>
+    );
 
+    if (!detailOnly) {
+        // 行内卡片：只渲染触发卡片本身，**不构建**详情子树。
+        // 点一下只把 (logId, true) 交给页面；详情内容归页面级那个单例弹窗所有，
+        // 因此列表插入 / 虚拟回收 / 重排都牵不动它。
+        return (
+            <MorphingDialog open={false} onOpenChange={handleDetailOpenChange}>
+                {cardTrigger}
+            </MorphingDialog>
+        );
+    }
+
+    // 页面级单例详情弹窗：受控打开，内容由页面拿的快照驱动；
+    // 真渲染时 portal 到 body，不占列表布局。
+    return (
+            <MorphingDialog open={Boolean(detailOpen)} onOpenChange={handleDetailOpenChange}>
                 <MorphingDialogContainer>
                     <LogDetailQuery logId={log.id}>
                     {/* 手机（<md）：整块抽屉只有一个滚动源——标题、详情、底部信息一起滚，
@@ -2385,7 +2409,12 @@ export const LogCard = React.memo(function LogCard({
                             </div>
                         </MorphingDialogDescription>
 
-                        <div className="mt-auto flex min-w-0 shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 pt-4 pb-[env(safe-area-inset-bottom,0px)] text-xs text-muted-foreground md:gap-4 md:pb-0">
+                        <div
+                            // 页面级单例详情弹窗的锚点：MorphingDialogContent 不透传 data-* 属性，
+                            // 所以挂在底部信息条这个「两个断点都在」的真实 DOM 上，
+                            // 供关闭后的焦点返回与真机脚本定位。日志 id 不是敏感字段。
+                            data-log-id={log.id}
+                            className="mt-auto flex min-w-0 shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 pt-4 pb-[env(safe-area-inset-bottom,0px)] text-xs text-muted-foreground md:gap-4 md:pb-0">
                             <div className="flex items-center gap-1.5">
                                 <Clock className="size-3.5 text-muted-foreground" />
                                 <span className="tabular-nums">{formatTime(log.time)}</span>

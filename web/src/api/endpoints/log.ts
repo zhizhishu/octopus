@@ -4,7 +4,18 @@ import { apiClient, API_BASE_URL } from '../client';
 import { useAuthStore } from './user';
 import { logger } from '@/lib/logger';
 import { saveStreamToFile, type ExportProgress } from '@/lib/log-export';
-import { bufferLog, prependLogBatch } from '@/lib/log-auto-refresh';
+import { prependLogBatch } from '@/lib/log-auto-refresh';
+// 冻结闩 / 缓冲 / 恢复的判定全在纯状态机里（lib/log-live-buffer.ts，node 测试直接跑真模块），
+// 这里只负责执行它的输出：setQueryData 合并、refetch、取消在途请求。
+import {
+    INITIAL_LIVE_BUFFER_STATE,
+    beginResume,
+    freezeLiveBuffer,
+    receiveLiveLog,
+    settleResume,
+    tickLiveBuffer,
+    type LiveBufferState,
+} from '@/lib/log-live-buffer';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { classifyRelayLogSeverity, logSeverityCountQueryOptions } from './log-severity';
 
@@ -735,8 +746,15 @@ export function useLogs(options: {
     const latestLogIDRef = useRef(0);
     // 自动刷新的缓冲：SSE 推来的新日志先放这里，没暂停时按 liveFlushMs 合并插入。
     const pendingRef = useRef<RelayLog[]>([]);
+    // 冻结闩 / 单飞恢复 / 溢出标记的唯一真源：SSE、timer、resume 三个入口都读写它。
+    // 用 ref 是因为 freeze() 必须**同步**生效（state 要等一次渲染，那一拍 SSE 已经插进来了）。
+    const liveStateRef = useRef<LiveBufferState>(INITIAL_LIVE_BUFFER_STATE);
     // 计数带上所属列表的签名：筛选/页码一换，旧计数自然作废，不必在 effect 里 setState 清零。
-    const [pendingState, setPendingState] = useState<{ key: string; count: number }>({ key: '', count: 0 });
+    // overflow = 缓冲曾经满过（最旧的一条被挤掉），此时 UI 只能显示「200+」。
+    const [pendingState, setPendingState] = useState<{ key: string; count: number; overflow: boolean }>({ key: '', count: 0, overflow: false });
+    // UI 镜像（只负责渲染，判断一律读 liveStateRef）。
+    const [liveFrozen, setLiveFrozen] = useState(false);
+    const [isResuming, setIsResuming] = useState(false);
     const liveFlushMsRef = useRef(liveFlushMs);
     const livePausedRef = useRef(livePaused);
     const onLiveInsertedRef = useRef(onLiveInserted);
@@ -753,6 +771,30 @@ export function useLogs(options: {
     );
     const pendingKey = useMemo(() => `${live ? 1 : 0}:${JSON.stringify(queryKey)}`, [live, queryKey]);
     const pendingCount = live && pendingState.key === pendingKey ? pendingState.count : 0;
+    const pendingOverflow = live && pendingState.key === pendingKey ? pendingState.overflow : false;
+    // 暂停 = 观察到的暂停（滚动/选字/后台/弹窗）或详情冻结闩。闩是粘的，只有一次成功的恢复 GET 解。
+    const isLivePaused = livePaused || liveFrozen;
+    // settle 时用它判断「这次恢复还算不算当前列表的」（筛选/页码/live 一变就作废）。
+    const pendingKeyRef = useRef(pendingKey);
+    useEffect(() => {
+        pendingKeyRef.current = pendingKey;
+    }, [pendingKey]);
+
+    /**
+     * 把纯状态机的一步结果同步到 ref（给 SSE/timer 回调读）+ UI 镜像。
+     * 值与上次相同就原样返回 previous，避免每条 SSE 都触发一次重渲染。
+     */
+    const publishLive = useCallback((state: LiveBufferState, buffer: RelayLog[], key: string) => {
+        liveStateRef.current = state;
+        setLiveFrozen((previous) => (previous === state.frozen ? previous : state.frozen));
+        setIsResuming((previous) => (previous === state.resuming ? previous : state.resuming));
+        setPendingState((previous) =>
+            previous.key === key && previous.count === buffer.length && previous.overflow === state.overflowed
+                ? previous
+                : { key, count: buffer.length, overflow: state.overflowed }
+        );
+    }, []);
+    const publishLiveRef = useRef(publishLive);
 
     const logsQuery = useInfiniteQuery({
         queryKey,
@@ -803,8 +845,13 @@ export function useLogs(options: {
         // 实时性由 live(SSE) 模式负责；非 live 的无限滚动仍保留轮询。
         // 自动刷新开着但 SSE 断了：按所选节奏兜底重取（暂停时不取，免得列表在用户眼皮底下变）。
         refetchInterval: live
-            ? (!isConnected && !livePaused && livePollFallbackMs ? livePollFallbackMs : false)
+            ? (!isConnected && !isLivePaused && livePollFallbackMs ? livePollFallbackMs : false)
             : page !== undefined ? false : 3000,
+        // 详情打开（冻结）期间不许有背景重取改背后的列表：窗口聚焦 / 网络重连默认都会重取，
+        // 那会在用户读详情时把背后整块列表换掉（关掉后滚动位置/行都对不上）。
+        // 跟着冻结闩一起关；已经在飞的那种由 freeze() 里的 cancelQueries 丢弃。
+        refetchOnWindowFocus: !liveFrozen,
+        refetchOnReconnect: !liveFrozen,
         refetchIntervalInBackground: false,
     });
 
@@ -840,23 +887,28 @@ export function useLogs(options: {
         }
     }, [logsQuery]);
 
-    const refresh = useCallback(async () => {
+    /** 重取当前列表；返回是否真的拿到了数据（恢复流程靠它决定要不要解冻）。 */
+    const refresh = useCallback(async (): Promise<boolean> => {
         try {
             // Keep already loaded pages visible while the server is rechecked.
             // resetQueries drops the infinite-query page set back to page 1, which
             // makes older loaded logs look as if they disappeared after refresh.
-            await logsQuery.refetch();
+            const result = await logsQuery.refetch();
+            return !result.isError;
         } catch (e) {
             logger.error('刷新日志失败:', e);
+            return false;
         }
     }, [logsQuery]);
 
-    // 把缓冲里的新日志一次性插到第 1 页顶部（已在列表里的跳过）。返回实际插入条数。
-    const flushPending = useCallback((): number => {
-        const batch = pendingRef.current;
+    /**
+     * 把一批日志插到第 1 页顶部（已在列表里的按 id 跳过）。返回实际插入条数。
+     * 旧列表的 GET 结果永远不会经过这里（恢复流程会先校验列表签名），所以
+     * “较早的 GET 覆盖较新的插入”不可能发生：插入总是发生在一次成功的 GET 之后、
+     * 并且 prepend+去重会把两边重合的 id 收成一个。
+     */
+    const insertLogs = useCallback((batch: RelayLog[]): number => {
         if (batch.length === 0) return 0;
-        pendingRef.current = [];
-        setPendingState({ key: pendingKey, count: 0 });
         let inserted: number[] = [];
         queryClient.setQueryData(
             queryKey,
@@ -878,20 +930,73 @@ export function useLogs(options: {
         );
         if (inserted.length > 0) onLiveInsertedRef.current?.(inserted);
         return inserted.length;
-    }, [pendingKey, queryClient, queryKey]);
-    const flushPendingRef = useRef(flushPending);
+    }, [queryClient, queryKey]);
+    const insertLogsRef = useRef(insertLogs);
     useEffect(() => {
-        flushPendingRef.current = flushPending;
-    }, [flushPending]);
+        insertLogsRef.current = insertLogs;
+        publishLiveRef.current = publishLive;
+    }, [insertLogs, publishLive]);
 
     // 定时合并：没暂停时每 liveFlushMs 插一次；暂停解除时立即补插一次。
     useEffect(() => {
-        if (!live || livePaused) return;
-        flushPendingRef.current();
+        if (!live || isLivePaused) return;
+        const step = (key: string) => {
+            // ⚠ timer 回调可能抢在「冻结」那次渲染 / 本 effect 清理之前跑一拍：
+            // 这里用 ref 再判一次闩（tickLiveBuffer 内部读 state.frozen），
+            // 只靠 effect 清理挡不住那一拍。
+            const next = tickLiveBuffer({
+                buffer: pendingRef.current,
+                state: liveStateRef.current,
+                live,
+                paused: livePausedRef.current,
+            });
+            pendingRef.current = next.buffer;
+            publishLiveRef.current(next.state, next.buffer, key);
+            if (next.insert.length > 0) insertLogsRef.current(next.insert);
+        };
+        step(pendingKey);
         if (liveFlushMs <= 0) return;
-        const timer = setInterval(() => flushPendingRef.current(), liveFlushMs);
+        const timer = setInterval(() => step(pendingKey), liveFlushMs);
         return () => clearInterval(timer);
-    }, [live, liveFlushMs, livePaused]);
+    }, [isLivePaused, live, liveFlushMs, pendingKey]);
+
+    /**
+     * 同步冻结实时插入（详情打开的第一步就调它，不经过渲染/effect/DOM 观察）。
+     * - 闩：关掉详情不会自动解开，否则下一条 SSE 会把积压一次性顶到列表上；
+     * - 同时取消在飞的列表 GET：它的响应落地会把背后列表换掉（行/滚动位置都会跑）。
+     *   React Query 会丢弃被 cancelQueries 取消那次的响应，不提交数据。
+     */
+    const freeze = useCallback(() => {
+        const step = freezeLiveBuffer({ state: liveStateRef.current, buffer: pendingRef.current });
+        pendingRef.current = step.buffer;
+        publishLive(step.state, step.buffer, pendingKeyRef.current);
+        void queryClient.cancelQueries({ queryKey, exact: true });
+    }, [publishLive, queryClient, queryKey]);
+
+    /**
+     * 显式恢复（用户点「N 条新日志」或手动刷新）：一次明确的恢复流程。
+     * 1) 单飞：已有恢复在飞就忽略重复点（beginResume 返回 null）；
+     * 2) 整段 GET 期间**保持冻结**，新 SSE 只进缓冲；
+     * 3) GET 成功且列表签名没变 → 把缓冲整批与刚 GET 到的数据合并去重（insertLogs）后再解冻；
+     *    所以不会「先插 200 行再收缩回 20 行」，也不依赖 GET 一定包含最近 1 秒内未落库的日志；
+     * 4) GET 失败 → 继续冻结，缓冲与溢出标记原样保留，用户可以再点一次（不清空、不丢行）。
+     */
+    const resume = useCallback(async () => {
+        const started = beginResume({ state: liveStateRef.current, buffer: pendingRef.current, key: pendingKey });
+        if (!started) return;
+        pendingRef.current = started.buffer;
+        publishLive(started.state, started.buffer, pendingKey);
+        const ok = await refresh();
+        const settled = settleResume({
+            state: liveStateRef.current,
+            buffer: pendingRef.current,
+            ok,
+            currentKey: pendingKeyRef.current,
+        });
+        pendingRef.current = settled.buffer;
+        publishLive(settled.state, settled.buffer, pendingKeyRef.current);
+        if (settled.insert.length > 0) insertLogsRef.current(settled.insert);
+    }, [pendingKey, publishLive, refresh]);
 
     useEffect(() => {
         let cancelled = false;
@@ -908,7 +1013,10 @@ export function useLogs(options: {
         };
 
         // 筛选/页码一变（本 effect 依赖 queryKey）旧缓冲就不属于新列表了：丢掉。
+        // 冻结闩/单飞恢复/溢出标记也一并归零：新列表还没有内容可「顶走」，
+        // 继续闩着只会让自动刷新永久停摆（在飞的旧恢复会被签名校验作废）。
         pendingRef.current = [];
+        publishLiveRef.current(INITIAL_LIVE_BUFFER_STATE, [], pendingKey);
 
         if (!live) {
             clearReconnectTimer();
@@ -973,7 +1081,9 @@ export function useLogs(options: {
                     reconnectAttemptRef.current = 0;
                     setIsConnected(true);
                     setError(null);
-                    if (wasReconnecting) {
+                    // Reconnect must not repaint a frozen or scrolled log list.
+                    // Explicit resume reconciles the bounded SSE buffer by GET.
+                    if (wasReconnecting && !liveStateRef.current.frozen && !livePausedRef.current) {
                         void queryClient.invalidateQueries({ queryKey, exact: true });
                     }
                 };
@@ -987,13 +1097,19 @@ export function useLogs(options: {
                         const log: RelayLog = JSON.parse(event.data);
                         if (!logMatchesTimeRange(log, startTime, endTime)) return;
                         if (!logMatchesLiveFilters(log, { endpoint, provider, model, severity, search, retried, hideModelTest, upstreamModelMismatch })) return;
-                        // 先进缓冲；「来一条插一条」且没暂停时立刻插，其余交给定时合并。
-                        pendingRef.current = bufferLog(pendingRef.current, log);
-                        if (liveFlushMsRef.current <= 0 && !livePausedRef.current) {
-                            flushPendingRef.current();
-                        } else {
-                            setPendingState({ key: pendingKey, count: pendingRef.current.length });
-                        }
+                        // 先进缓冲；「来一条插一条」且没冻结/没被暂停时立刻插，其余交给定时合并。
+                        // 判定全在纯状态机里（冻结优先、缓冲满就记溢出）。
+                        const step = receiveLiveLog({
+                            buffer: pendingRef.current,
+                            state: liveStateRef.current,
+                            log,
+                            live,
+                            flushMs: liveFlushMsRef.current,
+                            paused: livePausedRef.current,
+                        });
+                        pendingRef.current = step.buffer;
+                        publishLiveRef.current(step.state, step.buffer, pendingKey);
+                        if (step.insert.length > 0) insertLogsRef.current(step.insert);
                     } catch (e) {
                         logger.error('解析日志数据失败:', e);
                     }
@@ -1045,10 +1161,18 @@ export function useLogs(options: {
         loadMore,
         refresh,
         clear,
-        /** 缓冲里等着插入的新日志条数（自动刷新暂停时累积）。 */
+        /** 缓冲里等着插入的新日志条数（暂停/详情冻结时累积）。 */
         pendingCount,
-        /** 立即把缓冲插进列表（「显示 N 条新日志」按钮）。 */
-        flushPending,
+        /** 缓冲曾经满过（最旧的一条被挤掉）→ UI 只显示「200+」。 */
+        pendingOverflow,
+        /** 详情打开期间的冻结闩是否还在（只有一次成功的恢复 GET 会解开）。 */
+        isLiveFrozen: liveFrozen,
+        /** 恢复 GET 正在跑（单飞；UI 用它禁用重复点）。 */
+        isResuming,
+        /** 同步冻结实时插入（详情打开的第一步）。 */
+        freeze,
+        /** 显式恢复：异步，整段 GET 期间保持冻结，成功后合并去重才解冻。 */
+        resume,
     };
 }
 
