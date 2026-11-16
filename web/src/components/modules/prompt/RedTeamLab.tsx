@@ -10,6 +10,7 @@ import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
 import { toast } from '@/components/common/Toast';
 import { cn } from '@/lib/utils';
+import { RedTeamV2 } from './RedTeamV2';
 
 const card = 'rounded-3xl border border-border bg-card p-4 shadow-sm sm:p-5';
 const input = 'min-h-11 w-full rounded-xl border border-input bg-background px-3 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring';
@@ -157,6 +158,17 @@ export function RedTeamLab() {
             toast.error((error as { message?: string }).message ?? '保存失败，请检查输入内容');
         }
     };
+    const toggleV2Enabled = async () => {
+        if (dirty) { toast.error('旧版案例有未保存的修改，请先保存后切换实验总开关'); return; }
+        try {
+            const updated = await save.mutateAsync({ ...form, enabled: !form.enabled });
+            setDraft({ ...updated, cases: [...updated.cases] });
+            setConfirmed(false);
+            toast.success(updated.enabled ? '授权评估已启用' : '授权评估已关闭');
+        } catch (error) {
+            toast.error((error as { message?: string }).message ?? '开关保存失败');
+        }
+    };
     const execute = async () => {
         if (!caseItem || !channel || !modelName || dirty || !form.enabled || !confirmed) return;
         setLatest(null);
@@ -195,7 +207,11 @@ export function RedTeamLab() {
             {configQuery.isError ? <div className="rounded-xl border border-destructive/30 p-3 text-sm text-destructive">无法读取实验配置；请使用管理员账号登录并检查后端版本。<Button variant="outline" size="sm" onClick={() => void configQuery.refetch()}>重试</Button></div> : null}
             {configQuery.isLoading ? <p className="text-sm text-muted-foreground">正在读取实验配置…</p> : null}
 
-            <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1.13fr)_minmax(0,0.87fr)]">
+            <RedTeamV2 enabled={saved.enabled} dirtyConfig={dirty} onToggleEnabled={() => void toggleV2Enabled()} toggling={save.isPending} />
+
+            <details className="rounded-3xl border border-border bg-muted/10 p-3 sm:p-4">
+                <summary className="flex min-h-11 cursor-pointer items-center gap-2 text-sm font-semibold">旧版单题实验与兼容配置 <span className="text-xs font-normal text-muted-foreground">展开编辑已有 8 案例与旧历史</span></summary>
+            <div className="mt-4 grid items-start gap-4 xl:grid-cols-[minmax(0,1.13fr)_minmax(0,0.87fr)]">
                 <section className={card}>
                     <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                         <div><h3 className="text-sm font-semibold">01 · 实验案例与策略</h3><p className="mt-1 text-xs text-muted-foreground">最多 8 个案例，每次只发送其中 1 个，不自动批量发题。</p></div>
@@ -312,6 +328,7 @@ export function RedTeamLab() {
                     </div>
                 )}
             </section>
+            </details>
         </PageWrapper>
     );
 }

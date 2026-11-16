@@ -126,6 +126,14 @@ func InitDB(dbType, dsn string, debug bool) error {
 		&model.ModelAuditHlwyBaseline{},
 		// 管理员手动红队评估记录独立于模型真伪检测，不混用审计样本或配额。
 		&model.RedTeamLabRun{},
+		// V2 授权对抗评估有独立版本、运行、轮次与跨实例 fail-closed 执行锁。
+		// 不修改旧 RedTeamLabRun 或模型真伪检测表。
+		&model.RedTeamV2Case{},
+		&model.RedTeamV2Revision{},
+		&model.RedTeamV2Run{},
+		&model.RedTeamV2Turn{},
+		&model.RedTeamV2Review{},
+		&model.RedTeamV2Lane{},
 		// 分词器可信基线：同理只走这份名单，不另写一次性迁移。
 		&model.TokenizerBaseline{},
 		&model.ResponseSession{},
