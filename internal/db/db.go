@@ -124,6 +124,8 @@ func InitDB(dbType, dsn string, debug bool) error {
 		// 它和检测表是两条独立的生命周期（基准比结果活得久），但「表在不在」
 		// 这个坑一样，所以一并放在这里每次启动对齐结构。
 		&model.ModelAuditHlwyBaseline{},
+		// 管理员手动红队评估记录独立于模型真伪检测，不混用审计样本或配额。
+		&model.RedTeamLabRun{},
 		// 分词器可信基线：同理只走这份名单，不另写一次性迁移。
 		&model.TokenizerBaseline{},
 		&model.ResponseSession{},

@@ -37,7 +37,7 @@ test('插入纯文本：不覆盖旧规则、不重复、不自动开启任何�
 test('UI插入仍走已有每层保存按钮且只在管理员视图', () => {
     const source = fs.readFileSync(path.join(__dirname, '../src/components/modules/prompt/index.tsx'), 'utf8');
     const builder = fs.readFileSync(path.join(__dirname, '../src/components/modules/prompt/PromptIdentityBuilder.tsx'), 'utf8');
-    assert.match(source, /role === 'admin' \? <AdminPromptView \/> : <UserPromptView \/>/);
+    assert.match(source, /role === 'admin' \? <AdminPromptWorkspace \/> : <UserPromptView \/>/);
     assert.match(source, /<PromptIdentityBuilder/);
     assert.match(source, /appendIdentityPreset\(current\.text, identityPreset\)/);
     assert.match(source, /onSave=\{save\}|onClick=\{save\}/);

@@ -43,6 +43,7 @@ import { matchesPromptSearch, planRouteRows, sortChannelsStable, type RoutePromp
 import { normalizePromptMode, promptEnabledFromSaved, promptLayerActive, promptStatus } from './prompt-mode';
 import { PromptLayerControls } from './PromptLayerControls';
 import { PromptIdentityBuilder } from './PromptIdentityBuilder';
+import { RedTeamLab } from './RedTeamLab';
 import { appendIdentityPreset, buildIdentityPreset, type IdentityPresetMode } from './prompt-identity';
 import { acceptPromptSave, channelIDsForPlan, channelPlanNames, editPromptDraft, groupChannelsByType, normalizeAudience, promptValuesEqual, type PromptDraftMap, type PromptValue } from './prompt-ui-state';
 
@@ -849,23 +850,35 @@ function AdminPromptView() {
                     )}
                 </section>
             ) : null}
-            <details className="rounded-2xl border border-border/70 bg-card">
-                <summary className="flex min-h-11 cursor-pointer items-center gap-2 px-4 text-sm text-muted-foreground">
-                    <ShieldCheck className="size-4" />
-                    高级实验接口（预留）
-                    <span className="ml-auto text-xs">尚未启用</span>
-                </summary>
-                <p className="border-t border-border/60 px-4 py-3 text-xs leading-5 text-muted-foreground">
-                    仅为后续经授权的独立模型评估沙箱预留管理入口；目前没有执行接口，不会更改业务提示词、生产转发、模型检测证据或产生额外上游费用。
-                </p>
-            </details>
         </PageWrapper>
         </IdentityTemplateContext.Provider>
         </PromptDraftsContext.Provider>
     );
 }
 
+function AdminPromptWorkspace() {
+    const [tab, setTab] = useState<'rules' | 'redteam'>('rules');
+    return (
+        <div className="flex h-full min-h-0 flex-col">
+            <div role="tablist" aria-label="提示词管理工作区" className="mx-3 mb-2 mt-2 flex shrink-0 flex-wrap items-center gap-2 rounded-2xl border border-border bg-card p-1.5 sm:mx-4">
+                <button type="button" role="tab" aria-selected={tab === 'rules'} onClick={() => setTab('rules')}
+                    className={cn('min-h-11 flex-1 rounded-xl px-4 text-sm font-medium sm:flex-none', tab === 'rules' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted/50')}>
+                    提示词策略
+                </button>
+                <button type="button" role="tab" aria-selected={tab === 'redteam'} onClick={() => setTab('redteam')}
+                    className={cn('min-h-11 flex-1 rounded-xl px-4 text-sm font-medium sm:flex-none', tab === 'redteam' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted/50')}>
+                    <ShieldCheck className="mr-1 inline size-4" />破甲专门设定
+                </button>
+                <span className="hidden text-xs text-muted-foreground md:ml-auto md:block">隔离实验 · 仅管理员可编辑和运行</span>
+            </div>
+            {/* Keep both trees mounted: switching tabs must never discard unsaved prompt drafts. */}
+            <div className="min-h-0 flex-1" hidden={tab !== 'rules'}><AdminPromptView /></div>
+            <div className="min-h-0 flex-1" hidden={tab !== 'redteam'}><RedTeamLab /></div>
+        </div>
+    );
+}
+
 export function PromptManagement() {
     const role = useAuthStore((state) => state.user?.role);
-    return role === 'admin' ? <AdminPromptView /> : <UserPromptView />;
+    return role === 'admin' ? <AdminPromptWorkspace /> : <UserPromptView />;
 }

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/zhizhishu/octopus/internal/conf"
 	"github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/op"
@@ -17,7 +18,6 @@ import (
 	"github.com/zhizhishu/octopus/internal/server/resp"
 	"github.com/zhizhishu/octopus/internal/server/router"
 	"github.com/zhizhishu/octopus/internal/task"
-	"github.com/gin-gonic/gin"
 )
 
 // authMethodJWT is the marker middleware.Auth writes into the gin context when the
@@ -171,6 +171,12 @@ func setSetting(c *gin.Context) {
 	var setting model.Setting
 	if err := c.ShouldBindJSON(&setting); err != nil {
 		resp.Error(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	// Red-team prompts are executable experiment settings. The general settings
+	// endpoint must not let long-lived automation admin tokens bypass the
+	// lab's real-login requirement.
+	if setting.Key == model.SettingKeyRedTeamLabConfig && !requireAdminLogin(c) {
 		return
 	}
 	if model.IsSecretSettingKey(setting.Key) && setting.Value == model.SettingSecretMaskValue {

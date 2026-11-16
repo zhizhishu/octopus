@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zhizhishu/octopus/internal/redteamlab"
 	"gorm.io/gorm/clause"
 )
 
@@ -183,6 +184,7 @@ const (
 	SettingKeyPromptOverrideMode      SettingKey = "prompt_override_mode"
 	SettingKeyPromptOverrideEnabled   SettingKey = "prompt_override_enabled"
 	SettingKeyPromptAudience          SettingKey = "prompt_audience"
+	SettingKeyRedTeamLabConfig        SettingKey = "redteam_lab_config"
 	SettingKeyUpstreamErrorStatusPass SettingKey = "upstream_error_status_passthrough"
 	SettingKeyUpstreamErrorBodyMode   SettingKey = "upstream_error_body_mode"
 	SettingKeyUpstreamErrorCustom     SettingKey = "upstream_error_custom_message"
@@ -653,6 +655,7 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyPromptOverrideMode, Value: string(PromptOverrideModeBefore)},
 		{Key: SettingKeyPromptOverrideEnabled, Value: "false"},            // 全局提示词开关: 默认关; 开=按 prompt_override_mode(before/after)加 prompt_override_system
 		{Key: SettingKeyPromptAudience, Value: string(PromptAudienceAll)}, // 默认全用户；管理员专用须显式配置
+		{Key: SettingKeyRedTeamLabConfig, Value: `{"enabled":false,"cases":[]}`},
 		{Key: SettingKeyUpstreamErrorStatusPass, Value: "false"},
 		{Key: SettingKeyUpstreamErrorBodyMode, Value: "redacted_upstream"},
 		{Key: SettingKeyUpstreamErrorCustom, Value: "Upstream request failed. Please try again later."},
@@ -1047,6 +1050,12 @@ func (s *Setting) Validate() error {
 			return nil
 		}
 		return fmt.Errorf("invalid prompt audience")
+	case SettingKeyRedTeamLabConfig:
+		if len(s.Value) < 1 || len(s.Value) > 26000 {
+			return fmt.Errorf("invalid red team lab config")
+		}
+		_, err := redteamlab.Parse(s.Value)
+		return err
 	case SettingKeyProxyURL:
 		if s.Value == "" {
 			return nil
